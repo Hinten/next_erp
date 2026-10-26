@@ -984,7 +984,8 @@ The resolver has three answers, and `montarTiers` authors one tier from each:
   silently swap a STANDARD variation for a custom one.
 - `personalizada-implicita` — nothing names the pair. The tier is CUSTOM:
   `variation_id: 0`, `variation_name` = `grupo.nome`, and one option per used
-  variante, `{0, variante.nome}`. The 50-option cap (O2, above) is unchanged.
+  variante, `{0, variante.nome}` — both names through the NAME fold below. The
+  50-option cap (O2, above) is unchanged.
   Outside Fashion every Shopee tier is custom, so this is the common case.
   Before #1911 it refused `variacao-sem-vinculo`, which is why the order test in
   `planoPublicacao.test.ts` was inverted ON PURPOSE.
@@ -994,9 +995,47 @@ tier in a standardised (Fashion) leaf has not been measured. A refusal arrives
 as a Shopee rejection, read by `problemasPublicacao.ts` like any other; the fix
 is a STANDARD binding authored on `/variacoes` (#1911's binding editor).
 
+**The NAME fold (#1911 batch-A).** Every tier and option name `montarTiers`
+SENDS (`variation_name`, `variation_option_name` — the create, the init and the
+update) and both sides of every name it PAIRS go through `nomeDeTierShopee`
+(`../produtos/taxonomiaShopeeCore.ts`), the same fold `tiersDoItem` reads the
+live tree with: the ENDS trimmed (an NBSP too), nothing else. So the string
+sent, read back and compared is one. EQUAL: `'Cor '` ≡ `' Cor'` ≡ `'Cor'`,
+`'Azul '` ≡ `'Azul'`. DISTINCT: case (`'Cor'` ≠ `'cor'`) and inner whitespace
+(`'Azul Claro'` ≠ `'Azul  Claro'`). Before it, the reader trimmed while the
+publisher sent and compared `grupo.nome` / `variante.nome` verbatim: a grupo
+`'Cor '` was refused on every update of the listing its own create had made,
+and a variante `'Azul '` never re-paired with the option it had created — the
+live option was kept as a model-less orphan and a twin appended, on every
+republish. The fold runs in the pure module, not the publisher's projection,
+because `GrupoParaTier` is built by the plan, the model leg and the tests alike.
+The option duplicate check keys on the folded name, so `'Azul'` and `'Azul '` in
+one grupo refuse `combinacao-duplicada`. ⚠️ The IMPORT's grupo/variante rung 2
+still compares the stored ERP name verbatim (step 9, untouched): importing a
+listing created from a grupo `'Cor '` matches by `tipo` or creates a grupo
+`'Cor'`.
+
+**The name BANDS (#1911 batch-A).** `get_item_limit`'s
+`tier_variation_name_length_limit` / `tier_variation_option_length_limit`
+reach `montarTiers` (`bandaNomeDoTier` / `bandaNomeDaOpcao`). Every name the
+publish AUTHORS — a custom `variation_name` no live tier holds, a custom option
+name no live option of its tier holds — is checked with `textoNaFaixaShopee`
+(the `item_name` check's function), measured AS SENT, and refused
+`opcoes-demais` (the motivo Shopee's own `error_tier_*_too_long` maps to),
+never truncated. On a CREATE the plan runs this, so the publish stops at
+`[fotos]` BEFORE `add_item` — Shopee's own refusal arrives only at
+`init_tier_variation`, after the listing exists, leaving it linked, UNLIST and
+model-less. On an UPDATE the plan withholds the two bands (it holds no live
+tree, so it cannot tell a name the listing already has from a new one) and the
+model leg checks the new names against the fresh reading. A name the listing
+already holds is never checked: Shopee accepted it, and refusing would block
+every republish. A blank name is refused on both paths and whatever the band,
+since our client's `assertTextoNaoVazio` would refuse it only after the create.
+A `null` band checks no length — the behaviour before the review.
+
 **The re-code refusal (Q2).** A custom tier has no identity but its NAME. On an
-update it pairs with a live CUSTOM tier only when the names are byte-equal
-(`grupo.nome === tierVivo.nome`, no trim). A STANDARD live tier is claimed only
+update it pairs with a live CUSTOM tier only when the names are equal through
+the NAME fold above. A STANDARD live tier is claimed only
 by a stored entry carrying its `variation_id`. An unpaired grupo used to be
 rebuilt from the ERP alone while every live model kept its old `tier_index`, so
 each model silently pointed at ANOTHER option, with the wrong stock and price
@@ -1013,18 +1052,27 @@ is stamped and recoverable. Neither of these is refused: a depth change
 (1→2, 2→1), and a listing with no addressable model. Both are
 `init_tier_variation`, which re-creates every model, so nothing can be re-coded.
 
-- ⚠️ **The live tier name is TRIMMED (`tiersDoItem`), `grupo.nome` is not.** A
-  grupo named `'Cor '` facing a live `'Cor'` is refused on every update until
-  the grupo is renamed, even when our own create sent that name. That is the
-  deliberate `'Cor '` ≠ `'Cor'` near-miss: byte-equal is the only identity a
-  custom tier has, and a fold here would be a second, looser spelling of it.
+- A grupo `'Cor '` facing a live `'Cor'` PAIRS (the NAME fold); `'cor'` or
+  `'C or'` does not, and is refused like any renamed grupo. The batch-A review
+  inverted the old `'Cor '` ≠ `'Cor'` near-miss on purpose: the reader trims, so
+  a byte-exact pairing could never match a padded name.
 - Addressable live models with NO readable tier (both trees absent, or every
-  tier nameless) refuse a custom grupo too: no live depth was read, so the leg
-  would update in place, and there is nothing to pair with. The real wire
-  always carries the tier tree with the models.
+  tier nameless and dropped by `tiersDoItem`) leave nothing to pair with. The
+  live depth still comes from the models' `tier_index` (from the tree length
+  only when every `tier_index` is empty). At OUR depth, or when no depth can be
+  read at all, the leg would update in place and a custom grupo is refused; at
+  any other depth it is `init_tier_variation`, so nothing is refused. The real
+  wire always carries the tier tree with the models.
 - **Not covered:** an unpaired grupo whose STORED entry is STANDARD
-  (`variation_id ≠ 0`) is still rebuilt in place, as before #1911. Q2 decided
-  the custom tiers only.
+  (`variation_id ≠ 0`) is still rebuilt in place at the same depth, as before
+  #1911 — Q2 decided the custom tiers only. Models bound by `model_id` or SKU
+  follow their child; a child bound only by coordinate, or a live model with
+  no child, can be re-coded. Reachable today only after a live standard tier
+  was recreated or renamed in Seller Centre over an import-written entry; P14's
+  binding editor makes it reachable on purpose. Refusing any grupo left
+  unpaired at the same depth, whatever its `variation_id`, is the batch-A
+  review's known item 2 — a follow-up, not #1911's. No test pins either
+  behaviour yet.
 
 ### A depth change invalidates every `model_id` — rewrite in place, never delete
 

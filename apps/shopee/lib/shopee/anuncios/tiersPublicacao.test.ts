@@ -133,6 +133,8 @@ function args(parcial: Partial<ArgsMontarTiers>): ArgsMontarTiers {
     grupos: [],
     filhos: [],
     bandaDeEstoque: null,
+    bandaNomeDoTier: null,
+    bandaNomeDaOpcao: null,
     ...parcial,
   };
 }
@@ -599,7 +601,7 @@ describe('montarTiers — #1911 (Q2): na ATUALIZAÇÃO, um tier custom que não 
     };
   }
 
-  it('⚠️ PAR: casado pelo nome BYTE-IGUAL ⇒ as opções e os índices vivos ficam — implícito OU entrada importada', () => {
+  it('⚠️ PAR: casado pelo nome IGUAL ⇒ as opções e os índices vivos ficam — implícito OU entrada importada', () => {
     for (const links of [null, [ENTRADA_IMPORTADA]]) {
       const r = montarTiers(
         args({ grupos: [grupoCor('Cor', links)], filhos: filhosCor, viva: VIVA_COR }),
@@ -628,13 +630,40 @@ describe('montarTiers — #1911 (Q2): na ATUALIZAÇÃO, um tier custom que não 
     }
   });
 
-  it("⚠️ QUASE: 'Cor ' não é 'Cor' (sem trim) ⇒ o tier implícito que não casa é RECUSADO, nada é montado", () => {
-    const r = montarTiers(
-      args({ grupos: [grupoCor('Cor ', null)], filhos: filhosCor, viva: VIVA_COR }),
-    );
-    expect(r.problemas).toEqual([recusaNaoCasa('Cor ')]);
-    expect(r.tiers).toEqual([]);
-    expect(r.modelos).toEqual([]);
+  it("⚠️ PAR (#1911 batch-A, INVERTIDO DE PROPÓSITO): 'Cor ' e ' Cor' CASAM com o 'Cor' vivo — as pontas dobram dos dois lados, e o que vai ao fio é 'Cor'", () => {
+    // Until the batch-A review this pinned 'Cor ' ≠ 'Cor' as a near-miss. It was
+    // the defect: the reader trims, and this app's own create SENT 'Cor ', so
+    // every update of a listing it had created was refused. The fold now runs on
+    // both sides, and the near-misses it must NOT reach are case and inner space.
+    for (const nome of ['Cor ', ' Cor', '\u00a0Cor\u00a0']) {
+      const r = montarTiers(
+        args({ grupos: [grupoCor(nome, null)], filhos: filhosCor, viva: VIVA_COR }),
+      );
+      expect(r.problemas, JSON.stringify(nome)).toEqual([]);
+      expect(r.tiers.map((t) => t.variation_name)).toEqual(['Cor']);
+      expect(r.tiers[0]!.opcoes.map((o) => [o.varianteId, o.variation_option_name])).toEqual([
+        ['v-verde', 'Verde'],
+        ['v-azul', 'Azul'],
+      ]);
+      const plano = reconciliarModelos({
+        montados: r.modelos,
+        armazenados: armazenadosCor,
+        viva: VIVA_COR,
+        profundidadeNossa: r.tiers.length,
+      });
+      expect(plano.acao, JSON.stringify(nome)).toBe('nenhuma');
+    }
+  });
+
+  it("⚠️ QUASE: 'cor' (a CAIXA) e 'C or' (o espaço de DENTRO) NÃO são 'Cor' ⇒ o tier implícito que não casa é RECUSADO, nada é montado", () => {
+    for (const nome of ['cor', 'COR', 'C or']) {
+      const r = montarTiers(
+        args({ grupos: [grupoCor(nome, null)], filhos: filhosCor, viva: VIVA_COR }),
+      );
+      expect(r.problemas, nome).toEqual([recusaNaoCasa(nome)]);
+      expect(r.tiers, nome).toEqual([]);
+      expect(r.modelos, nome).toEqual([]);
+    }
   });
 
   it('⚠️ QUASE (Q2): uma entrada variation_id 0 ARMAZENADA (escrita pela importação) que não casa também é RECUSADA', () => {
@@ -869,19 +898,103 @@ describe('montarTiers — #1911 (Q2): na ATUALIZAÇÃO, um tier custom que não 
     }
   });
 
-  it('modelos vivos sem NENHUM tier legível, na mesma profundidade: não há com o que casar ⇒ RECUSADO', () => {
-    // `get_model_list` with models always carries its tiers; when none can be
-    // read (both trees absent, or every tier nameless) the options cannot be
-    // re-sent at the live positions, so the publish refuses like a hole does.
-    const viva: ArvoreVivaDoItem = {
-      tier_variation: null,
-      standardise_tier_variation: null,
-      model: [modeloVivo({ model_id: AZUL, tier_index: [0], model_sku: 'AZ' })],
-    };
-    const r = montarTiers(
-      args({ grupos: [grupoCor('Cor', [ENTRADA_IMPORTADA])], filhos: [filhosCor[0]!], viva }),
-    );
-    expect(r.problemas).toEqual([recusaNaoCasa('Cor')]);
+  describe('modelos vivos sem NENHUM tier legível: a profundidade viva sai do tier_index dos modelos', () => {
+    // `get_model_list` with models always carries its tiers. When none can be
+    // read — both trees absent, or every tier nameless and dropped by
+    // `tiersDoItem` — there is nothing to pair with, but the live DEPTH is still
+    // read, from the models' `tier_index` (from the tree length only when every
+    // `tier_index` is empty). At OUR depth the leg would update in place, so a
+    // custom grupo is refused; at another depth it is `init_tier_variation`,
+    // which re-creates every model, and nothing is refused.
+    const arvores: readonly {
+      readonly rotulo: string;
+      readonly tier_variation: ArvoreVivaDoItem['tier_variation'];
+    }[] = [
+      { rotulo: 'as duas árvores ausentes', tier_variation: null },
+      {
+        rotulo: 'um tier SEM NOME (tiersDoItem o descarta)',
+        tier_variation: [
+          shopeeTierVariationSchema.parse({ name: '', option_list: [{ option: 'Azul' }] }),
+        ],
+      },
+    ];
+    const tam = grupo({
+      grupoId: 'g-tam',
+      nome: 'Tamanho',
+      ordem: 2,
+      variacoes: [variante('v-p', 'P')],
+      linksVariacoesShopee: null,
+    });
+
+    for (const { rotulo, tier_variation } of arvores) {
+      it(`${rotulo}, tier_index [0] e a NOSSA profundidade 1 ⇒ RECUSADO`, () => {
+        const viva: ArvoreVivaDoItem = {
+          tier_variation,
+          standardise_tier_variation: null,
+          model: [modeloVivo({ model_id: AZUL, tier_index: [0], model_sku: 'AZ' })],
+        };
+        const r = montarTiers(
+          args({ grupos: [grupoCor('Cor', [ENTRADA_IMPORTADA])], filhos: [filhosCor[0]!], viva }),
+        );
+        expect(r.problemas).toEqual([recusaNaoCasa('Cor')]);
+      });
+
+      it(`⚠️ QUASE: ${rotulo}, tier_index [0] e a nossa profundidade 2 ⇒ SEM recusa — é init_tier_variation`, () => {
+        const viva: ArvoreVivaDoItem = {
+          tier_variation,
+          standardise_tier_variation: null,
+          model: [modeloVivo({ model_id: AZUL, tier_index: [0], model_sku: 'AZ' })],
+        };
+        const r = montarTiers(
+          args({
+            grupos: [grupoCor('Cor', null), tam],
+            filhos: [
+              filho({
+                produtoId: 'p-azul-p',
+                variacoesUid: [
+                  varianteFakePath('g-cor', 'v-azul'),
+                  varianteFakePath('g-tam', 'v-p'),
+                ],
+              }),
+            ],
+            viva,
+          }),
+        );
+        expect(r.problemas).toEqual([]);
+        const plano = reconciliarModelos({
+          montados: r.modelos,
+          armazenados: [],
+          viva,
+          profundidadeNossa: r.tiers.length,
+        });
+        expect(plano).toMatchObject({ acao: 'init', mudouProfundidade: true });
+      });
+    }
+
+    it('nenhuma profundidade legível (árvores ausentes, tier_index vazio) ⇒ RECUSADO em QUALQUER profundidade nossa', () => {
+      const viva: ArvoreVivaDoItem = {
+        tier_variation: null,
+        standardise_tier_variation: null,
+        model: [modeloVivo({ model_id: AZUL, tier_index: [], model_sku: 'AZ' })],
+      };
+      const um = montarTiers(
+        args({ grupos: [grupoCor('Cor', null)], filhos: [filhosCor[0]!], viva }),
+      );
+      expect(um.problemas).toEqual([recusaNaoCasa('Cor')]);
+      const dois = montarTiers(
+        args({
+          grupos: [grupoCor('Cor', null), tam],
+          filhos: [
+            filho({
+              produtoId: 'p-azul-p',
+              variacoesUid: [varianteFakePath('g-cor', 'v-azul'), varianteFakePath('g-tam', 'v-p')],
+            }),
+          ],
+          viva,
+        }),
+      );
+      expect(dois.problemas).toEqual([recusaNaoCasa('Cor'), recusaNaoCasa('Tamanho')]);
+    });
   });
 
   it('um CREATE (sem árvore viva) nunca passa pela guarda, qualquer que seja o nome', () => {
@@ -892,6 +1005,410 @@ describe('montarTiers — #1911 (Q2): na ATUALIZAÇÃO, um tier custom que não 
       expect(r.problemas).toEqual([]);
       expect(r.tiers.map((t) => t.variation_name)).toEqual(['Cores']);
     }
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*  (2d) #1911 batch-A — the NAME fold: one string sent, read back, compared  */
+/* -------------------------------------------------------------------------- */
+
+describe('montarTiers — #1911 batch-A: os NOMES de tier e de opção passam pela MESMA dobra (as pontas) na ida, na volta e no pareamento', () => {
+  const AZUL = MODEL_ID + 1;
+  const VERDE = MODEL_ID;
+
+  /** A live CUSTOM tree, the option names RAW (the reader folds them). */
+  function viva(
+    nomeDoTier: string,
+    opcoes: readonly string[],
+    modelos: readonly ShopeeModel[],
+  ): ArvoreVivaDoItem {
+    return {
+      tier_variation: [
+        shopeeTierVariationSchema.parse({
+          name: nomeDoTier,
+          option_list: opcoes.map((option) => ({ option })),
+        }),
+      ],
+      standardise_tier_variation: null,
+      model: modelos,
+    };
+  }
+
+  function grupoCom(
+    nome: string,
+    variacoes: readonly VarianteDoTier[],
+    linksVariacoesShopee: readonly unknown[] | null = null,
+  ): GrupoParaTier {
+    return grupo({ grupoId: 'g-cor', nome, variacoes, linksVariacoesShopee });
+  }
+
+  function filhoDe(produtoId: string, varianteId: string, sku: string): FilhoParaPublicar {
+    return filho({
+      produtoId,
+      sku,
+      linkDocId: `l-${produtoId}`,
+      variacoesUid: [varianteFakePath('g-cor', varianteId)],
+    });
+  }
+
+  /** Live 'Cor' = [Verde, Azul], one model on each — the shape of VIVA_COR above. */
+  const MODELOS_VIVOS = [
+    modeloVivo({ model_id: VERDE, tier_index: [0], model_sku: 'VD' }),
+    modeloVivo({ model_id: AZUL, tier_index: [1], model_sku: 'AZ' }),
+  ];
+  const ARMAZENADOS: readonly ModeloArmazenado[] = [
+    { produtoId: 'p-azul', linkDocId: 'l-p-azul', modelId: AZUL, modelSku: 'AZ', tierIndex: [1] },
+    {
+      produtoId: 'p-verde',
+      linkDocId: 'l-p-verde',
+      modelId: VERDE,
+      modelSku: 'VD',
+      tierIndex: [0],
+    },
+  ];
+  const FILHOS = [filhoDe('p-azul', 'v-azul', 'AZ'), filhoDe('p-verde', 'v-verde', 'VD')];
+
+  it("⚠️ PAR: a variante 'Azul ' (e ' Azul', e com NBSP) CASA com a opção viva 'Azul' — o índice vivo fica, nenhuma opção fantasma, e o leg é 'nenhuma'", () => {
+    // P7-F1/F2/F5: before the fold, the live 'Azul' stayed a model-less orphan,
+    // a twin 'Azul ' was appended and the model moved to it — on EVERY republish.
+    for (const nomeAzul of ['Azul ', ' Azul', '\u00a0Azul']) {
+      // The live tree holds 'Azul' or exactly what an unfolded create sent.
+      for (const vivoAzul of ['Azul', 'Azul ']) {
+        const arvore = viva('Cor', ['Verde', vivoAzul], MODELOS_VIVOS);
+        const r = montarTiers(
+          args({
+            grupos: [grupoCom('Cor', [variante('v-azul', nomeAzul), variante('v-verde', 'Verde')])],
+            filhos: FILHOS,
+            viva: arvore,
+          }),
+        );
+        const rotulo = `${JSON.stringify(nomeAzul)} × ${JSON.stringify(vivoAzul)}`;
+        expect(r.problemas, rotulo).toEqual([]);
+        expect(
+          r.tiers[0]!.opcoes.map((o) => [o.varianteId, o.variation_option_name]),
+          rotulo,
+        ).toEqual([
+          ['v-verde', 'Verde'],
+          ['v-azul', 'Azul'],
+        ]);
+        expect(
+          r.modelos.map((m) => [m.produtoId, m.tier_index]),
+          rotulo,
+        ).toEqual([
+          ['p-azul', [1]],
+          ['p-verde', [0]],
+        ]);
+        const plano = reconciliarModelos({
+          montados: r.modelos,
+          armazenados: ARMAZENADOS,
+          viva: arvore,
+          profundidadeNossa: r.tiers.length,
+        });
+        expect(plano.acao, rotulo).toBe('nenhuma');
+        expect(plano.modelList, rotulo).toEqual([
+          { model_id: VERDE, tier_index: [0] },
+          { model_id: AZUL, tier_index: [1] },
+        ]);
+      }
+    }
+  });
+
+  it("⚠️ PAR (ida e volta): o CREATE manda 'Cor' / 'Azul' — e realimentado como árvore viva, o republish não muda NADA", () => {
+    for (const [nomeGrupo, nomeAzul] of [
+      ['Cor ', 'Azul '],
+      [' Cor', ' Azul'],
+      ['Cor', 'Azul\u00a0'],
+    ] as const) {
+      const grupos = [
+        grupoCom(nomeGrupo, [variante('v-azul', nomeAzul), variante('v-verde', 'Verde')]),
+      ];
+      const rotulo = `${JSON.stringify(nomeGrupo)} / ${JSON.stringify(nomeAzul)}`;
+
+      const criacao = montarTiers(args({ grupos, filhos: FILHOS, viva: null }));
+      expect(criacao.problemas, rotulo).toEqual([]);
+      expect(
+        criacao.tiers.map((t) => t.variation_name),
+        rotulo,
+      ).toEqual(['Cor']);
+      expect(
+        criacao.tiers[0]!.opcoes.map((o) => o.variation_option_name),
+        rotulo,
+      ).toEqual(['Azul', 'Verde']);
+
+      // Shopee now holds EXACTLY what was sent, one model per created position.
+      const arvore = viva(
+        criacao.tiers[0]!.variation_name!,
+        criacao.tiers[0]!.opcoes.map((o) => o.variation_option_name),
+        criacao.modelos.map((m, i) =>
+          modeloVivo({
+            model_id: MODEL_ID + 10 + i,
+            tier_index: m.tier_index,
+            model_sku: m.model_sku ?? null,
+          }),
+        ),
+      );
+      const armazenados = criacao.modelos.map((m, i) => ({
+        produtoId: m.produtoId,
+        linkDocId: `l-${m.produtoId}`,
+        modelId: MODEL_ID + 10 + i,
+        modelSku: m.model_sku ?? null,
+        tierIndex: m.tier_index,
+      }));
+
+      const republish = montarTiers(args({ grupos, filhos: FILHOS, viva: arvore }));
+      expect(republish.problemas, rotulo).toEqual([]);
+      expect(republish.tiers, rotulo).toEqual(criacao.tiers);
+      const plano = reconciliarModelos({
+        montados: republish.modelos,
+        armazenados,
+        viva: arvore,
+        profundidadeNossa: republish.tiers.length,
+      });
+      expect(plano.acao, rotulo).toBe('nenhuma');
+      expect(plano.novos, rotulo).toEqual([]);
+    }
+  });
+
+  it("⚠️ PAR: um shopee_option_name ARMAZENADO 'Azul ' (digitado) casa com a opção viva 'Azul' — e no create vai ao fio como 'Azul'", () => {
+    // The variante is named otherwise, so ONLY the stored entry's name can bind.
+    const entradaDigitada = entrada({
+      variation_id: 0,
+      variationOptions: [
+        { shopee_option_id: 0, shopee_option_name: 'Azul ', arakene_variation_id: ['v-azul'] },
+      ],
+    });
+    const grupos = [grupoCom('Cor', [variante('v-azul', 'Celeste')], [entradaDigitada])];
+    const filhos = [FILHOS[0]!];
+
+    const atualizacao = montarTiers(
+      args({
+        grupos,
+        filhos,
+        viva: viva('Cor', ['Azul'], [modeloVivo({ model_id: AZUL, tier_index: [0] })]),
+      }),
+    );
+    expect(atualizacao.problemas).toEqual([]);
+    expect(atualizacao.tiers[0]!.opcoes.map((o) => o.varianteId)).toEqual(['v-azul']);
+    expect(atualizacao.modelos.map((m) => m.tier_index)).toEqual([[0]]);
+
+    const criacao = montarTiers(args({ grupos, filhos, viva: null }));
+    expect(criacao.problemas).toEqual([]);
+    expect(criacao.tiers[0]!.opcoes.map((o) => o.variation_option_name)).toEqual(['Azul']);
+  });
+
+  it("⚠️ QUASE: 'azul' (a CAIXA) e 'Azul  Claro' (DOIS espaços dentro) NÃO casam — a opção viva fica órfã no seu índice e a nossa é ANEXADA", () => {
+    for (const [nossa, vivoNome] of [
+      ['azul', 'Azul'],
+      ['AZUL', 'Azul'],
+      ['Azul  Claro', 'Azul Claro'],
+    ] as const) {
+      const r = montarTiers(
+        args({
+          grupos: [grupoCom('Cor', [variante('v-azul', nossa), variante('v-verde', 'Verde')])],
+          filhos: FILHOS,
+          viva: viva('Cor', ['Verde', vivoNome], MODELOS_VIVOS),
+        }),
+      );
+      expect(r.problemas, nossa).toEqual([]);
+      expect(
+        r.tiers[0]!.opcoes.map((o) => [o.varianteId, o.variation_option_name]),
+        nossa,
+      ).toEqual([
+        ['v-verde', 'Verde'],
+        [null, vivoNome],
+        ['v-azul', nossa],
+      ]);
+      expect(r.modelos.find((m) => m.produtoId === 'p-azul')?.tier_index, nossa).toEqual([2]);
+    }
+  });
+
+  it("⛔ COLISÃO: as variantes 'Azul' e 'Azul ' do MESMO grupo dobram para a mesma opção ⇒ combinacao-duplicada, nunca duas opções", () => {
+    const r = montarTiers(
+      args({
+        grupos: [grupoCom('Cor', [variante('v-a1', 'Azul'), variante('v-a2', 'Azul ')])],
+        filhos: [filhoDe('p-1', 'v-a1', 'A1'), filhoDe('p-2', 'v-a2', 'A2')],
+      }),
+    );
+    expect(motivos(r.problemas)).toContain(MOTIVO_PUBLICACAO_BLOQUEADA.combinacaoDuplicada);
+    // ⛔ quase-par: 'Azul' e 'azul' são DUAS opções — a caixa não dobra.
+    const caixa = montarTiers(
+      args({
+        grupos: [grupoCom('Cor', [variante('v-a1', 'Azul'), variante('v-a2', 'azul')])],
+        filhos: [filhoDe('p-1', 'v-a1', 'A1'), filhoDe('p-2', 'v-a2', 'A2')],
+      }),
+    );
+    expect(caixa.problemas).toEqual([]);
+    expect(caixa.tiers[0]!.opcoes.map((o) => o.variation_option_name)).toEqual(['Azul', 'azul']);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*  (2e) #1911 batch-A — the NAME bands, checked BEFORE anything is sent      */
+/* -------------------------------------------------------------------------- */
+
+describe('montarTiers — #1911 batch-A: os nomes que a publicação AUTORA são conferidos contra a faixa da categoria', () => {
+  const BANDA_TIER = { min: 1, max: 14 } as const;
+  const BANDA_OPCAO = { min: 1, max: 20 } as const;
+  const AZUL = MODEL_ID + 1;
+
+  function publicar(
+    nomeDoGrupo: string,
+    nomesDasVariantes: readonly string[],
+    parcial: Partial<ArgsMontarTiers> = {},
+  ) {
+    const variacoes = nomesDasVariantes.map((nome, i) => variante(`v-${String(i)}`, nome));
+    return montarTiers(
+      args({
+        grupos: [
+          grupo({ grupoId: 'g-x', nome: nomeDoGrupo, variacoes, linksVariacoesShopee: null }),
+        ],
+        filhos: variacoes.map((v, i) =>
+          filho({
+            produtoId: `p-${String(i)}`,
+            variacoesUid: [varianteFakePath('g-x', v.varianteId)],
+          }),
+        ),
+        bandaNomeDoTier: BANDA_TIER,
+        bandaNomeDaOpcao: BANDA_OPCAO,
+        ...parcial,
+      }),
+    );
+  }
+
+  const recusa = (mensagem: string) => ({
+    campo: 'standardise_tier_variation',
+    motivo: MOTIVO_PUBLICACAO_BLOQUEADA.opcoesDemais,
+    mensagem,
+  });
+
+  it("um tier personalizado 'Tamanho do Calçado' (18) na faixa 1..14 ⇒ RECUSADO opcoes-demais, nunca truncado", () => {
+    const r = publicar('Tamanho do Calçado', ['P']);
+    expect(r.problemas).toEqual([
+      recusa(
+        'O nome do tier "Tamanho do Calçado" tem 18 caracteres, fora da faixa da categoria (1..14) — nunca truncado; encurte o nome em Variações.',
+      ),
+    ]);
+  });
+
+  it("⚠️ QUASE: 14 caracteres passam — e o nome é medido COMO ENVIADO ('  Tamanho de Pés ' vai como 14)", () => {
+    for (const nome of ['Tamanho de Pés', '  Tamanho de Pés ']) {
+      const r = publicar(nome, ['P']);
+      expect(r.problemas, nome).toEqual([]);
+      expect(r.tiers[0]!.variation_name, nome).toBe('Tamanho de Pés');
+    }
+  });
+
+  it('uma opção de 21 caracteres na faixa 1..20 ⇒ RECUSADA; ⚠️ QUASE: a de 20 passa', () => {
+    const r = publicar('Cor', ['Azul Marinho Profundo', 'Verde Musgo Profundo']);
+    expect(r.problemas).toEqual([
+      recusa(
+        'A opção "Azul Marinho Profundo" do grupo "Cor" tem 21 caracteres, fora da faixa da categoria (1..20) — nunca truncado; encurte o nome em Variações.',
+      ),
+    ]);
+  });
+
+  it('⚠️ QUASE: sem faixa declarada (null) nenhum comprimento é recusado', () => {
+    const r = publicar('Tamanho do Calçado', ['Azul Marinho Profundo'], {
+      bandaNomeDoTier: null,
+      bandaNomeDaOpcao: null,
+    });
+    expect(r.problemas).toEqual([]);
+  });
+
+  it('um nome EM BRANCO é recusado com OU sem faixa — nosso cliente o recusaria só DEPOIS do add_item', () => {
+    for (const bandas of [
+      { bandaNomeDoTier: BANDA_TIER, bandaNomeDaOpcao: BANDA_OPCAO },
+      { bandaNomeDoTier: null, bandaNomeDaOpcao: null },
+    ]) {
+      const r = publicar('   ', ['  '], bandas);
+      expect(r.problemas).toEqual([
+        recusa(
+          'O grupo g-x não tem nome, e um tier personalizado leva o nome do grupo — dê um nome a ele em Variações.',
+        ),
+        recusa(
+          'A variante v-0 do grupo "   " não tem nome, e uma opção personalizada leva o nome da variante — dê um nome a ela em Variações.',
+        ),
+      ]);
+    }
+  });
+
+  it('⛔ o que o anúncio JÁ tem não é conferido: o tier casado e as opções vivas longas passam; só a opção NOVA longa é recusada', () => {
+    const arvore: ArvoreVivaDoItem = {
+      tier_variation: [
+        shopeeTierVariationSchema.parse({
+          name: 'Tamanho do Calçado',
+          option_list: [{ option: 'Azul Marinho Profundo' }],
+        }),
+      ],
+      standardise_tier_variation: null,
+      model: [modeloVivo({ model_id: AZUL, tier_index: [0] })],
+    };
+    const variacoes = [
+      variante('v-held', 'Azul Marinho Profundo'),
+      variante('v-nova', 'Vermelho Sangue Escuro'),
+    ];
+    const grupos = [
+      grupo({ grupoId: 'g-x', nome: 'Tamanho do Calçado', variacoes, linksVariacoesShopee: null }),
+    ];
+    const comBandas = { bandaNomeDoTier: BANDA_TIER, bandaNomeDaOpcao: BANDA_OPCAO };
+
+    const soAViva = montarTiers(
+      args({
+        grupos,
+        filhos: [filho({ produtoId: 'p-held', variacoesUid: [varianteFakePath('g-x', 'v-held')] })],
+        viva: arvore,
+        ...comBandas,
+      }),
+    );
+    expect(soAViva.problemas).toEqual([]);
+
+    const comANova = montarTiers(
+      args({
+        grupos,
+        filhos: [
+          filho({ produtoId: 'p-held', variacoesUid: [varianteFakePath('g-x', 'v-held')] }),
+          filho({ produtoId: 'p-nova', variacoesUid: [varianteFakePath('g-x', 'v-nova')] }),
+        ],
+        viva: arvore,
+        ...comBandas,
+      }),
+    );
+    expect(comANova.problemas).toEqual([
+      recusa(
+        'A opção "Vermelho Sangue Escuro" do grupo "Tamanho do Calçado" tem 22 caracteres, fora da faixa da categoria (1..20) — nunca truncado; encurte o nome em Variações.',
+      ),
+    ]);
+  });
+
+  it('⛔ o nome de uma opção PADRÃO é da Shopee: nunca conferido', () => {
+    const r = montarTiers(
+      args({
+        grupos: [
+          grupo({
+            grupoId: 'g-x',
+            nome: 'Cor',
+            variacoes: [variante('v-0', 'Azul')],
+            linksVariacoesShopee: [
+              entrada({
+                variation_id: 77,
+                variationOptions: [
+                  {
+                    shopee_option_id: 5,
+                    shopee_option_name: 'Azul Marinho Profundo Escuro',
+                    arakene_variation_id: ['v-0'],
+                  },
+                ],
+              }),
+            ],
+          }),
+        ],
+        filhos: [filho({ produtoId: 'p-0', variacoesUid: [varianteFakePath('g-x', 'v-0')] })],
+        bandaNomeDoTier: { min: 1, max: 1 },
+        bandaNomeDaOpcao: { min: 1, max: 1 },
+      }),
+    );
+    expect(r.problemas).toEqual([]);
+    expect(r.tiers[0]!.variation_name).toBeNull();
   });
 });
 
@@ -1635,7 +2152,16 @@ describe('disciplina do módulo', () => {
     expect(/split\(['"]\/['"]\)/.test(fonte)).toBe(false);
   });
 
-  it('não nomeia nenhum helper de equivalência compartilhado', () => {
+  it('#1911 batch-A (#1369): a dobra de NOME é a do leitor — nenhuma cópia local de trim/caixa', () => {
+    // The pairs and near-misses in (2d) pin the behaviour; this only catches a
+    // local RE-spelling of the fold — the shape that let the reader trim while
+    // this module compared verbatim.
+    expect(fonte).toContain('nomeDeTierShopee(');
+    expect(/\.trim\(\)/.test(fonte)).toBe(false);
+    expect(/\.toLowerCase\(\)/.test(fonte)).toBe(false);
+  });
+
+  it('não nomeia nenhum dos helpers GENÉRICOS de equivalência (as duas dobras compartilhadas que usa estão no inventário)', () => {
     for (const nome of [
       ['normalize', 'Loose'].join(''),
       ['deep', 'Equal'].join(''),

@@ -18,6 +18,7 @@ import type { GrupoMemo } from './itemLido';
 import { nomesDasOpcoesDoModelo } from './mapeamento';
 import {
   fundirLinksVariacoesShopee,
+  nomeDeTierShopee,
   normalizarParaSlug,
   planejarTaxonomia,
   tiersDoItem,
@@ -176,6 +177,39 @@ describe('tiersDoItem', () => {
       padronizados: [],
     });
     expect(lista).toEqual([]);
+  });
+
+  it('lê cada nome de tier e de opção pela dobra COMPARTILHADA — as pontas, nunca a caixa nem o espaço de dentro', () => {
+    const lista = tiersDoItem({
+      tiers: [
+        {
+          name: ' Cor\u00a0',
+          option_list: [{ option: ' Azul ' }, { option: 'azul' }, { option: 'Azul  Claro' }],
+        },
+      ] as never,
+      padronizados: [],
+    });
+    expect(lista[0]?.nome).toBe('Cor');
+    expect(lista[0]?.opcoes.map((o) => o.nome)).toEqual(['Azul', 'azul', 'Azul  Claro']);
+  });
+});
+
+describe('nomeDeTierShopee — a ÚNICA dobra de nome de tier/opção (#1911 batch-A: o leitor E o publicador)', () => {
+  it('nomeDeTierShopee — IGUAL: as pontas; DISTINTO: a caixa e o espaço de dentro', () => {
+    // PAR: the ends go — ASCII space, tab, NBSP — so what the publisher sends
+    // and what this reader reads back are one string.
+    for (const nome of ['Azul', 'Azul ', ' Azul', '\tAzul\n', '\u00a0Azul\u00a0']) {
+      expect(nomeDeTierShopee(nome), JSON.stringify(nome)).toBe('Azul');
+    }
+    // ⛔ NEAR-MISS: case and inner whitespace are KEPT — Shopee keeps both.
+    expect(nomeDeTierShopee('azul')).not.toBe(nomeDeTierShopee('Azul'));
+    expect(nomeDeTierShopee('AZUL')).not.toBe(nomeDeTierShopee('Azul'));
+    expect(nomeDeTierShopee('Azul  Claro')).not.toBe(nomeDeTierShopee('Azul Claro'));
+    expect(nomeDeTierShopee(' Azul  Claro ')).toBe('Azul  Claro');
+    // Absent and non-string read as the blank name.
+    for (const nada of [null, undefined, 42 as never, '', '   ']) {
+      expect(nomeDeTierShopee(nada)).toBe('');
+    }
   });
 });
 

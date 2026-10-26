@@ -199,6 +199,40 @@ function inteiroOuZero(v: number | null | undefined): number {
 }
 
 /**
+ * THE fold of a Shopee tier NAME or tier-option NAME: the ends trimmed
+ * (`String.prototype.trim`, so an NBSP too) and nothing else. ONE function for
+ * both sides of the wire (#1911 batch-A, the #1369 shape):
+ *
+ * - the READER: {@link tiersDoItem} reads every live tier and option name
+ *   through it, so a listing's names always arrive trimmed;
+ * - the PUBLISHER: `anuncios/tiersPublicacao.ts` folds every name it SENDS
+ *   (`variation_name` and `variation_option_name`, on the create, the init and
+ *   the update) and BOTH sides of every name it PAIRS (a grupo with a live
+ *   custom tier; a variante, or a stored `shopee_option_name`, with a live
+ *   option).
+ *
+ * So the string sent, the string read back and the string compared are one.
+ * Before this, the reader trimmed while the publisher sent and compared
+ * `grupo.nome` / `variante.nome` verbatim: a grupo `'Cor '` was refused on every
+ * update of the listing its own create had made, and a variante `'Azul '`
+ * appended a ghost option on every republish.
+ *
+ * EQUAL: `'Azul '` ≡ `' Azul'` ≡ `'Azul'`; `null`, absent and a non-string ≡
+ * `''`. DISTINCT: case (`'Azul'` vs `'azul'`) and inner whitespace
+ * (`'Azul Claro'` vs `'Azul  Claro'`). Pinned by "nomeDeTierShopee — IGUAL: as
+ * pontas; DISTINTO: a caixa e o espaço de dentro" here and by the `(2d)` pairs
+ * and near-misses of `tiersPublicacao.test.ts`.
+ *
+ * ⚠️ Not the import's cascades: {@link planejarTaxonomia}'s rung 2 compares a
+ * STORED ERP grupo/variante name verbatim against this fold's output (`'Cor '`
+ * ≠ `'Cor'` is pinned there), and {@link mesmaOpcao} compares two stored option
+ * names byte-exact. Those are step 9's decisions; #1911 did not change them.
+ */
+export function nomeDeTierShopee(nome: string | null | undefined): string {
+  return typeof nome === 'string' ? nome.trim() : '';
+}
+
+/**
  * The tier list of one listing — names from `tier_variation`, ids from
  * `standardise_tier_variation`.
  *
@@ -222,7 +256,7 @@ export function tiersDoItem(entrada: {
 
   for (const [i, tier] of tiers.entries()) {
     const padrao = pareia ? padronizados[i] : undefined;
-    const nome = (tier.name ?? padrao?.variation_name ?? '').trim();
+    const nome = nomeDeTierShopee(tier.name ?? padrao?.variation_name);
     const variationId = inteiroOuZero(padrao?.variation_id);
     if (nome.length === 0 && variationId === 0) continue;
 
@@ -231,7 +265,7 @@ export function tiersDoItem(entrada: {
     const opcoes: OpcaoDeTierShopee[] = [];
     for (const [j, opcao] of tier.option_list.entries()) {
       const padraoOpcao = pareiaOpcoes ? opcoesPadrao[j] : undefined;
-      const nomeOpcao = (opcao.option ?? padraoOpcao?.variation_option_name ?? '').trim();
+      const nomeOpcao = nomeDeTierShopee(opcao.option ?? padraoOpcao?.variation_option_name);
       const optionId = inteiroOuZero(padraoOpcao?.variation_option_id);
       if (nomeOpcao.length === 0 && optionId === 0) continue;
       opcoes.push({ nome: nomeOpcao, optionId, indice: j });
@@ -287,8 +321,9 @@ function unirVariantes(
  * operator bound that id deliberately and the publisher reads it back.
  * Equal: both ids `0` and byte-identical names.
  * ⛔ Distinct: both ids `0` with names `'Azul'` and `'azul'` — TWO options, not
- * one. The name is sent back to Shopee verbatim on publish, so a case fold here
- * would merge two real options into one and silently drop the other's mapping.
+ * one. The publisher sends the name back with its case intact (only the ends
+ * trimmed, {@link nomeDeTierShopee}), so a case fold here would merge two real
+ * options into one and silently drop the other's mapping.
  * ⛔ Distinct: two different custom options never both match "the id-0 entry".
  */
 function mesmaOpcao(a: LinkVariacaoOpcaoShopee, b: LinkVariacaoOpcaoShopee): boolean {

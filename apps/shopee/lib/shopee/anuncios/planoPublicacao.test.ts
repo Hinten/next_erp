@@ -424,6 +424,77 @@ describe('planejarPublicacao — os passos são UMA derivação', () => {
     expect(tipos(plano.passos)).toContain('init_tier_variation');
   });
 
+  it('#1911 batch-A: um nome de tier FORA da faixa de get_item_limit RECUSA o CREATE antes do add_item — o plano para em [fotos]', () => {
+    // Shopee's own `error_tier_var_name_too_long` arrives only at
+    // `init_tier_variation`, after `add_item` created the listing: a linked,
+    // model-less UNLIST listing that every republish refused again.
+    const plano = planejarPublicacao(
+      comFilhos({
+        grupos: [grupo({ nome: 'Tamanho do Calçado' })],
+        limites: limites({
+          tierVariationNameLengthLimit: { min: 1, max: 14 },
+          tierVariationOptionLengthLimit: { min: 1, max: 20 },
+        }),
+      }),
+      fotos(),
+    );
+
+    expect(plano.problemas).toEqual([
+      {
+        campo: 'standardise_tier_variation',
+        motivo: MOTIVO_PUBLICACAO_BLOQUEADA.opcoesDemais,
+        mensagem:
+          'O nome do tier "Tamanho do Calçado" tem 18 caracteres, fora da faixa da categoria (1..14) — nunca truncado; encurte o nome em Variações.',
+      },
+    ]);
+    expect(tipos(plano.passos)).toEqual(['fotos']);
+  });
+
+  it('⛔ quase-pares: 14 caracteres passam; e numa ATUALIZAÇÃO o plano NÃO confere (não distingue o nome que o anúncio já tem) — o leg de modelos confere, com as faixas', () => {
+    const bandas = limites({
+      tierVariationNameLengthLimit: { min: 1, max: 14 },
+      tierVariationOptionLengthLimit: { min: 1, max: 20 },
+    });
+    const cabe = planejarPublicacao(
+      comFilhos({ grupos: [grupo({ nome: 'Tamanho de Pés' })], limites: bandas }),
+      fotos(),
+    );
+    expect(cabe.problemas).toEqual([]);
+    expect(tipos(cabe.passos)).toContain('add_item');
+
+    const atualizacao = planejarPublicacao(
+      comFilhos({
+        grupos: [grupo({ nome: 'Tamanho do Calçado' })],
+        limites: bandas,
+        ehAtualizacao: true,
+        link: LINK,
+        linkDocId: 'link-1',
+      }),
+      fotos(),
+    );
+    expect(atualizacao.problemas).toEqual([]);
+    expect(tipos(atualizacao.passos)).toContain('update_item');
+    // The model leg re-runs `montarTiers` from these, against the fresh tree.
+    expect(atualizacao.modelosEntrada.bandaNomeDoTier).toEqual({ min: 1, max: 14 });
+    expect(atualizacao.modelosEntrada.bandaNomeDaOpcao).toEqual({ min: 1, max: 20 });
+  });
+
+  it('⛔ quase-par: um nome de tier EM BRANCO é recusado também numa ATUALIZAÇÃO — nenhum anúncio guarda um nome em branco', () => {
+    const plano = planejarPublicacao(
+      comFilhos({
+        grupos: [grupo({ nome: '   ' })],
+        ehAtualizacao: true,
+        link: LINK,
+        linkDocId: 'link-1',
+      }),
+      fotos(),
+    );
+    expect(plano.problemas.map((p) => [p.campo, p.motivo])).toEqual([
+      ['standardise_tier_variation', MOTIVO_PUBLICACAO_BLOQUEADA.opcoesDemais],
+    ]);
+    expect(tipos(plano.passos)).toEqual(['fotos']);
+  });
+
   it('⛔ quase-par: uma entrada da conta para a folha que NÃO pôde ser lida continua recusando', () => {
     const quebrada = {
       ...(entradaDeGrupo(CATEGORIA_FOLHA) as Record<string, unknown>),
@@ -609,6 +680,8 @@ describe('legDeModelosNecessario — a ONE regra que abre (ou não) o leg', () =
     categoryId: CATEGORIA_DO_CORPO,
     grupos: [],
     bandaDeEstoque: null,
+    bandaNomeDoTier: null,
+    bandaNomeDaOpcao: null,
     imagensDeOpcao: null,
   } as const;
 
@@ -721,6 +794,25 @@ describe('planejarPublicacao — modelosEntrada', () => {
     );
 
     expect(plano.modelosEntrada.bandaDeEstoque).toEqual({ min: 3, max: 900 });
+  });
+
+  it('as faixas de NOME vêm de tierVariationNameLengthLimit / tierVariationOptionLengthLimit (#1911 batch-A)', () => {
+    const plano = planejarPublicacao(
+      comFilhos({
+        limites: limites({
+          tierVariationNameLengthLimit: { min: 1, max: 14 },
+          tierVariationOptionLengthLimit: { min: 2, max: 20 },
+        }),
+      }),
+      fotos(),
+    );
+
+    expect(plano.modelosEntrada.bandaNomeDoTier).toEqual({ min: 1, max: 14 });
+    expect(plano.modelosEntrada.bandaNomeDaOpcao).toEqual({ min: 2, max: 20 });
+    // ⛔ near-miss: the fixture's absent bands stay ABSENT (null), never `{}`.
+    const semFaixa = planejarPublicacao(comFilhos(), fotos());
+    expect(semFaixa.modelosEntrada.bandaNomeDoTier).toBeNull();
+    expect(semFaixa.modelosEntrada.bandaNomeDaOpcao).toBeNull();
   });
 
   it('as imagens de opção atravessam a entrada sem serem reprojetadas', () => {

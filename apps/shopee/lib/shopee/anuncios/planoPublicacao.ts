@@ -97,6 +97,7 @@ import {
 } from './montagemAnuncio';
 import { type MotivoTaxInfoOmitido, montarTaxInfo } from './taxInfoPublicacao';
 import {
+  type ArgsMontarTiers,
   type BandaDeEstoque,
   type FilhoParaPublicar,
   type GrupoParaTier,
@@ -240,6 +241,13 @@ export interface EntradaDeModelos {
   readonly grupos: readonly GrupoParaTier[];
   readonly filhos: readonly FilhoParaPublicar[];
   readonly bandaDeEstoque: BandaDeEstoque | null;
+  /**
+   * `get_item_limit`'s tier-NAME and option-NAME bands (#1911 batch-A),
+   * carried to the model leg, which checks every name the FRESH live tree does
+   * not already hold (`tiersPublicacao.ts`, "The name BANDS").
+   */
+  readonly bandaNomeDoTier: ArgsMontarTiers['bandaNomeDoTier'];
+  readonly bandaNomeDaOpcao: ArgsMontarTiers['bandaNomeDaOpcao'];
   readonly imagensDeOpcao: ReadonlyMap<string, string> | null;
   readonly armazenados: readonly ModeloArmazenado[];
 }
@@ -581,11 +589,26 @@ export function planejarPublicacao(
     grupos: contexto.grupos,
     filhos,
     bandaDeEstoque: contexto.limites.limites.stockLimit,
+    bandaNomeDoTier: contexto.limites.limites.tierVariationNameLengthLimit,
+    bandaNomeDaOpcao: contexto.limites.limites.tierVariationOptionLengthLimit,
     imagensDeOpcao: fotos.imagensDeOpcao,
     armazenados: armazenadosDeLinks(contexto.linksDeVariacao, filhos),
   };
 
-  const montagemTiers = montarTiers({ ...entradaParaTiers(modelosEntrada), viva: null });
+  // ⚠️ The NAME bands are checked HERE only on a CREATE (#1911 batch-A). The
+  // plan holds no live tree (`viva: null`), so on an UPDATE it cannot tell a
+  // name the listing already holds — which Shopee accepted, and refusing it
+  // would block every republish — from a new one; the model leg re-runs
+  // `montarTiers` with the bands AND the fresh reading and refuses only the new
+  // names. On a create every name is new, and this is the check that stops the
+  // plan at [fotos], before `add_item` creates a listing a too-long name would
+  // then leave model-less (Shopee's `error_tier_*_too_long` arrives only at
+  // `init_tier_variation`). A blank name is refused on both paths.
+  const montagemTiers = montarTiers({
+    ...entradaParaTiers(modelosEntrada),
+    viva: null,
+    ...(contexto.ehAtualizacao ? { bandaNomeDoTier: null, bandaNomeDaOpcao: null } : {}),
+  });
   const modelos = reconciliarModelos({
     montados: montagemTiers.modelos,
     armazenados: modelosEntrada.armazenados,
@@ -663,7 +686,9 @@ export function planejarPublicacao(
  * The tier mapper's arguments, minus the one the applier supplies.
  *
  * Exported so `modelosPublicacao.ts` re-runs `montarTiers` from EXACTLY what the
- * plan used, with `viva` as the only difference.
+ * plan used, with `viva` as the only difference — except on an UPDATE, whose
+ * plan withholds the two NAME bands (it cannot tell a held name from a new one;
+ * see {@link planejarPublicacao}). The model leg always gets them.
  */
 export function entradaParaTiers(entrada: EntradaDeModelos): {
   readonly integracaoId: string;
@@ -671,6 +696,8 @@ export function entradaParaTiers(entrada: EntradaDeModelos): {
   readonly grupos: readonly GrupoParaTier[];
   readonly filhos: readonly FilhoParaPublicar[];
   readonly bandaDeEstoque: BandaDeEstoque | null;
+  readonly bandaNomeDoTier: ArgsMontarTiers['bandaNomeDoTier'];
+  readonly bandaNomeDaOpcao: ArgsMontarTiers['bandaNomeDaOpcao'];
   readonly imagensDeOpcao: ReadonlyMap<string, string> | null;
 } {
   return {
@@ -679,6 +706,8 @@ export function entradaParaTiers(entrada: EntradaDeModelos): {
     grupos: entrada.grupos,
     filhos: entrada.filhos,
     bandaDeEstoque: entrada.bandaDeEstoque,
+    bandaNomeDoTier: entrada.bandaNomeDoTier,
+    bandaNomeDaOpcao: entrada.bandaNomeDaOpcao,
     imagensDeOpcao: entrada.imagensDeOpcao,
   };
 }
