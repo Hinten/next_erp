@@ -1732,7 +1732,8 @@ class ColetorDeAviso {
  * ⚠️ `rascunho` (#1911) is the held lock of a DRAFT's create and the live
  * controls it was taken with; `null` everywhere else, which is step 11's path
  * unchanged. With it, step 2 is preceded by the PRE-SEND re-read, every
- * `add_item` leg by the synchronous send gate, step 3 is the CLAIM, and an
+ * `add_item` leg by the credential warm and then the synchronous send gate
+ * (nothing sent yet ⇒ the error rethrown unstamped), step 3 is the CLAIM, and an
  * `add_item` failure is CLASSIFIED (`desfechoDeCriacaoDeItem`): `nao-criado` ⇒
  * the stamp and the release in ONE token-guarded write; `incerto` ⇒ no stamp,
  * the lock KEPT, the raw error rethrown — never a "Shopee refused" for a create
@@ -1911,6 +1912,12 @@ export async function aplicarPublicacao(
     registrarPublicacao(deps, resultado);
     return resultado;
   } catch (err) {
+    // A DRAFT whose lock is still `travada` sent NOTHING (#1911): the pre-send
+    // re-read, the credential warm or a gate stopped it before `add_item`. The
+    // caller's catch hands the lock back, unstamped — and a Shopee error here
+    // (the warm's token refresh) is about the TOKEN, never about the listing,
+    // so it must not reach the plain stamp below, which is not token-guarded.
+    if (rascunho !== null && rascunho.reserva.fase === 'travada') throw err;
     // A DRAFT's `add_item` failed with something that is not a Shopee answer
     // (#1911): the classifier owns it. The app's token step never left this
     // process — nothing is outstanding, so the caller's catch hands the lock
@@ -2051,8 +2058,9 @@ export interface PublicacaoDeRascunho {
  * `add_item` or `update_item`, with the body that was actually sent.
  *
  * ⚠️ On a DRAFT's create (`rascunho` non-null) EVERY `add_item` leg — the
- * fiscal retry's second one included — runs the synchronous send gate right
- * before the call, and records on the reservation whether a send may be
+ * fiscal retry's second one included — warms the credential, then runs the
+ * synchronous send gate right before the call, and records on the reservation
+ * whether a send may be
  * outstanding: each leg starts with nothing outstanding (a second leg exists
  * only after the first was refused for good, `ehRecusaDoBlocoFiscal`), is
  * `enviando` from the instant the gate passes, and `criada` once Shopee
@@ -2091,9 +2099,18 @@ async function enviarItem(
 
 /**
  * ONE `add_item` leg of a DRAFT's create, under its lock: nothing outstanding
- * → the synchronous gate (it throws `PUBLICACAO_EXPIRADA` with nothing sent)
- * → `enviando` → the call → `criada`. Nothing awaits between the gate and the
- * call, so no clock can move past the gate's reading before the send starts.
+ * → the credential warm (`controles.aquecerCredencial`) → the synchronous gate
+ * (it throws `PUBLICACAO_EXPIRADA` with nothing sent) → `enviando` → the call
+ * → `criada`.
+ *
+ * ⚠️ The warm comes FIRST, and that order is the point (batch-A review): the
+ * only await between the gate and the request is the client's own token ask
+ * inside `addItem`, and a token near expiry turns that ask into a provider
+ * REFRESH with no deadline. Warmed before the gate, any refresh is paid while
+ * nothing is outstanding, the gate reads the clock AFTER it, and the client's
+ * ask is one credential read inside `MARGEM_ENVIO_SHOPEE_MS`. A warm that
+ * throws leaves `fase` at `travada`: nothing was sent, and the caller hands the
+ * lock back unstamped.
  */
 async function enviarSobATrava(
   deps: PublicarAnuncioDeps,
@@ -2102,6 +2119,7 @@ async function enviarSobATrava(
 ): Promise<ShopeeItemWriteResponse> {
   const { reserva } = rascunho;
   reserva.fase = 'travada';
+  await rascunho.controles.aquecerCredencial();
   portaoDeEnvio(reserva.linkDocId, rascunho.trava, rascunho.controles);
   reserva.fase = 'enviando';
   const resposta = await deps.client.addItem(corpo);
@@ -2287,8 +2305,9 @@ function registrarPublicacao(deps: PublicarAnuncioDeps, r: ResultadoPublicacao):
  * (`reservaRascunho.ts`). A lock refusal throws `ConflitoDeRascunhoShopeeError`
  * (the route's 409) with nothing read beyond the links and nothing sent. Any
  * throw while nothing may have reached Shopee hands the lock back, unstamped
- * (a blocked plan, a photo or taxonomy read failure, the send gate, a lost
- * lock); every other way out is `aplicarPublicacao`'s to decide.
+ * (a blocked plan, a photo or taxonomy read failure, the credential warm, the
+ * send gate, a lost lock); every other way out is `aplicarPublicacao`'s to
+ * decide.
  *
  * ⚠️ Before that, a live create of a produto the conta holds NO link of MINTS
  * its draft ({@link nomearCriacaoSemVinculo}, K1-5) and continues named. And a

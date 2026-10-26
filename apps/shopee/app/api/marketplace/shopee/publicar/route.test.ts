@@ -1081,6 +1081,46 @@ describe('#1911 — publicar um RASCUNHO pela rota', () => {
     expect(atestado.aoVivo?.confirmarSegundoAnuncio).toBe(false);
   });
 
+  it('(batch-A P3-F2) o prazo é medido do PRIMEIRO instante do handler — antes da verificação do token e da leitura do corpo', async () => {
+    h.publicar.mockResolvedValue(resultadoDouble());
+    semearRascunho(RASCUNHO);
+    // A cold instance: the token check (Google's certs) takes 7 s of the
+    // platform's 180.
+    h.verifyIdToken.mockImplementation(() => {
+      vi.mocked(Date.now).mockReturnValue(T0 + 7_000);
+      return Promise.resolve(ESCRITOR);
+    });
+
+    await POST(req(corpoValido({ linkDocId: RASCUNHO }), AUTORIZADO));
+
+    const deps = h.publicar.mock.calls[0]?.[0] as PublicarAnuncioDeps;
+    expect(deps.aoVivo?.prazoDaRequisicao).toBe(T0 + TETO_ROTA_SHOPEE_MS);
+    expect(deps.nowMs).toBe(T0);
+    // ⛔ near-miss: the clock after the check is NOT the start of the request.
+    expect(deps.aoVivo?.prazoDaRequisicao).not.toBe(T0 + 7_000 + TETO_ROTA_SHOPEE_MS);
+  });
+
+  it('(batch-A P3-F1) aquecerCredencial é o getAccessToken do PRÓPRIO contexto — e o token não sai da rota', async () => {
+    h.publicar.mockResolvedValue(resultadoDouble());
+    semearRascunho(RASCUNHO);
+    const getAccessToken = vi.fn(() => Promise.resolve('token-de-teste'));
+    h.loadCtx.mockResolvedValue({ ...ctxDouble(), getAccessToken });
+
+    await POST(req(corpoValido({ linkDocId: RASCUNHO }), AUTORIZADO));
+
+    const deps = h.publicar.mock.calls[0]?.[0] as PublicarAnuncioDeps;
+    // Lazy: building the deps asks for no token.
+    expect(getAccessToken).not.toHaveBeenCalled();
+    await expect(deps.aoVivo?.aquecerCredencial()).resolves.toBeUndefined();
+    expect(getAccessToken).toHaveBeenCalledTimes(1);
+
+    // ⛔ quase-par: a failing token step propagates the SAME instance — the
+    // publisher's catch then hands the lock back unstamped.
+    const falha = new Error('o refresh falhou');
+    getAccessToken.mockRejectedValueOnce(falha);
+    await expect(deps.aoVivo?.aquecerCredencial()).rejects.toBe(falha);
+  });
+
   it('uma trava ALHEIA viva ⇒ 409 EM_ANDAMENTO {error, code, linkDocId, aguardarMs} — sem vinculos, nada gravado, nenhuma chamada de escrita', async () => {
     semearRascunho(RASCUNHO, { publicacaoEmCurso: travaAlheia(T0 + 40_000) });
 

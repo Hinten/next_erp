@@ -2270,7 +2270,11 @@ describe('scripts/publicar-anuncio.ts — o relógio VIVO do rascunho (#1911)', 
       [
         'aoVivo: \\{\\s*agora: \\(\\) => Date',
         '\\.now',
-        '\\(\\),\\s*prazoDaRequisicao: null,\\s*confirmarSegundoAnuncio,\\s*',
+        '\\(\\),\\s*prazoDaRequisicao: null,\\s*',
+        // Batch-A P3-F1: the warm, through the SAME token function the client
+        // signs with — the token itself never leaves the script.
+        'aquecerCredencial: async \\(\\) => \\{\\s*await ctx\\.getAccessToken\\(\\);\\s*\\},\\s*',
+        'confirmarSegundoAnuncio,\\s*',
         'confirmarCriacaoIncerta,\\s*\\}',
       ].join(''),
     );

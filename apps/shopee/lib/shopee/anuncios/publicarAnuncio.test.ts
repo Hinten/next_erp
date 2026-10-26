@@ -524,6 +524,7 @@ function deps(
     aoVivo: {
       agora: () => AGORA,
       prazoDaRequisicao: null,
+      aquecerCredencial: () => Promise.resolve(),
       confirmarSegundoAnuncio: false,
       confirmarCriacaoIncerta: false,
     },
@@ -2939,6 +2940,7 @@ describe('publicarAnuncioShopee — o RASCUNHO sob a trava (#1911, D4/D15)', () 
     return {
       agora: () => AGORA,
       prazoDaRequisicao: null,
+      aquecerCredencial: () => Promise.resolve(),
       confirmarSegundoAnuncio: false,
       confirmarCriacaoIncerta: false,
       ...over,
@@ -3292,6 +3294,181 @@ describe('publicarAnuncioShopee — o RASCUNHO sob a trava (#1911, D4/D15)', () 
 
       expect(res?.itemId).toBe(ITEM_ID);
       expect(fake.ops.filter((o) => o === 'add_item')).toHaveLength(1);
+    });
+
+    it('(batch-A P3-F1) o AQUECIMENTO da credencial roda ANTES da porta: um refresh lento até expiraEm − MARGEM ⇒ 409 PUBLICACAO_EXPIRADA, NADA enviado, trava devolvida sem carimbo', async () => {
+      const db = new FakeDb();
+      semearCatalogo(db);
+      semearRascunho(db);
+      const fake = clienteFake({ addItem: () => ecoDeItem() });
+      const r = relogio();
+
+      const err = await falhaDe(
+        publicarAnuncioShopee(
+          depsDoRascunho(
+            db,
+            fake,
+            aoVivo({
+              agora: r.agora,
+              // A token refresh that answers only at the margin.
+              aquecerCredencial: () => {
+                r.mover(EXPIRA - MARGEM_ENVIO_SHOPEE_MS);
+                return Promise.resolve();
+              },
+            }),
+          ),
+          entrada({ linkDocId: RASCUNHO }),
+        ),
+      );
+
+      expect((err as ConflitoDeRascunhoShopeeError).code).toBe(
+        CODIGO_RASCUNHO_SHOPEE.publicacaoExpirada,
+      );
+      expect(fake.ops).not.toContain('add_item');
+      expect(doRascunho(db)?.publicacaoEmCurso).toBeNull();
+      expect(doRascunho(db)).not.toHaveProperty('falhaPublicacao');
+      expect(doRascunho(db)).not.toHaveProperty('criacaoIncertaDesde');
+    });
+
+    it('⛔ quase-par (batch-A P3-F1): o aquecimento que volta um milissegundo antes da margem ENVIA — e roda ANTES do add_item', async () => {
+      const db = new FakeDb();
+      semearCatalogo(db);
+      semearRascunho(db);
+      const fake = clienteFake({ addItem: () => ecoDeItem() });
+      const r = relogio();
+
+      const res = await publicarAnuncioShopee(
+        depsDoRascunho(
+          db,
+          fake,
+          aoVivo({
+            agora: r.agora,
+            aquecerCredencial: () => {
+              fake.ops.push('aquecer');
+              r.mover(EXPIRA - MARGEM_ENVIO_SHOPEE_MS - 1);
+              return Promise.resolve();
+            },
+          }),
+        ),
+        entrada({ linkDocId: RASCUNHO }),
+      );
+
+      expect(res?.itemId).toBe(ITEM_ID);
+      expect(fake.ops.filter((o) => o === 'aquecer' || o === 'add_item')).toEqual([
+        'aquecer',
+        'add_item',
+      ]);
+    });
+
+    it('(batch-A P3-F1) o aquecimento que FALHA com um erro da Shopee (o refresh) ⇒ a MESMA instância propaga, nada enviado, trava devolvida SEM carimbo e sem registro de incerteza', async () => {
+      const db = new FakeDb();
+      semearCatalogo(db);
+      semearRascunho(db);
+      const fake = clienteFake({ addItem: () => ecoDeItem() });
+      const falha = new ShopeeNetworkError('o refresh do token caiu');
+
+      const err = await falhaDe(
+        publicarAnuncioShopee(
+          depsDoRascunho(db, fake, aoVivo({ aquecerCredencial: () => Promise.reject(falha) })),
+          entrada({ linkDocId: RASCUNHO }),
+        ),
+      );
+
+      expect(err).toBe(falha);
+      expect(fake.ops).not.toContain('add_item');
+      expect(doRascunho(db)?.publicacaoEmCurso).toBeNull();
+      // ⛔ never the plain (unguarded) stamp: the refresh failed, not the listing.
+      expect(doRascunho(db)).not.toHaveProperty('falhaPublicacao');
+      expect(doRascunho(db)).not.toHaveProperty('criacaoIncertaDesde');
+
+      // ⛔ quase-par: the SAME error class from `add_item` itself is `incerto` —
+      // the 202, the lock kept and the attempt recorded.
+      const db2 = new FakeDb();
+      semearCatalogo(db2);
+      semearRascunho(db2);
+      const fake2 = clienteFake({
+        addItem: () => {
+          throw new ShopeeNetworkError('caiu no add_item');
+        },
+      });
+      const incerto = await falhaDe(
+        publicarAnuncioShopee(depsDoRascunho(db2, fake2), entrada({ linkDocId: RASCUNHO })),
+      );
+      expect(incerto).toBeInstanceOf(CriacaoDeAnuncioIncertaError);
+      expect(doRascunho(db2)?.publicacaoEmCurso).not.toBeNull();
+      expect(doRascunho(db2)).toHaveProperty('criacaoIncertaDesde');
+    });
+
+    it('(batch-A P3-F1) o aquecimento roda antes da porta de CADA perna — a segunda perna fiscal é barrada pelo seu próprio aquecimento lento', async () => {
+      const db = new FakeDb();
+      semearCatalogo(db);
+      semearRascunho(db);
+      db.seed('operacao/op-1', { nome: 'Operação padrão' });
+      const r = relogio();
+      const ordem: string[] = [];
+      const fake = clienteFake({
+        addItem: () => {
+          ordem.push('add_item');
+          // The first leg is refused for good, promptly.
+          throw erroApi('product.error_param', `Shopee: ${FRASE_BR}`);
+        },
+      });
+      let aquecimentos = 0;
+      const controles = aoVivo({
+        agora: r.agora,
+        aquecerCredencial: () => {
+          aquecimentos += 1;
+          ordem.push('aquecer');
+          // The SECOND leg's warm is the slow refresh.
+          if (aquecimentos === 2) r.mover(EXPIRA - MARGEM_ENVIO_SHOPEE_MS);
+          return Promise.resolve();
+        },
+      });
+      const d = deps(db, fake, { operacaoOuterRef: OPERACAO, aoVivo: controles });
+      const travada = await reservarRascunhoShopee(
+        asDb(db),
+        { integracaoId: INTEGRACAO, produtoId: PAI, linkDocId: RASCUNHO },
+        controles,
+        { client: fake.client, nowMs: AGORA },
+      );
+      if (travada.tipo !== 'travada') throw new Error('fixture: o rascunho deveria travar');
+      const { plano } = await planejar(
+        db,
+        fake,
+        { operacaoOuterRef: OPERACAO },
+        {
+          linkDocId: RASCUNHO,
+        },
+      );
+      const comTaxInfo: PlanoPublicacao = {
+        ...plano,
+        item: {
+          ...plano.item,
+          criar: { ...plano.item.criar, tax_info: { ncm: '61091000', cest: '2804200' } },
+        },
+      };
+
+      const err = await falhaDe(
+        aplicarPublicacao(d, comTaxInfo, { reserva: travada.reserva, controles }),
+      );
+
+      expect(ordem).toEqual(['aquecer', 'add_item', 'aquecer']);
+      expect((err as ConflitoDeRascunhoShopeeError).code).toBe(
+        CODIGO_RASCUNHO_SHOPEE.publicacaoExpirada,
+      );
+      expect(travada.reserva.fase).toBe('travada');
+    });
+
+    it('⛔ (batch-A P3-F1) os controles sem `aquecerCredencial` NÃO compilam', () => {
+      const semAquecer = {
+        agora: () => AGORA,
+        prazoDaRequisicao: null,
+        confirmarSegundoAnuncio: false,
+        confirmarCriacaoIncerta: false,
+      };
+      // @ts-expect-error — the warm is REQUIRED: without it the client's own token ask could refresh after the gate.
+      const controles: ControlesDaPublicacaoAoVivo = semAquecer;
+      expect(controles).toBe(semAquecer);
     });
 
     it('o PRAZO DA REQUISIÇÃO limita antes da trava: prazo − MARGEM recusa; o mesmo instante sem prazo (a CLI) envia', async () => {

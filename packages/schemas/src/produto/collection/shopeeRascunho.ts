@@ -32,10 +32,14 @@
  * agora() + MARGEM_ENVIO_SHOPEE_MS < min(expiraEm, prazoDaRequisicao)
  * ```
  *
- * checked immediately before EACH `add_item` call (a route run's
- * `prazoDaRequisicao` is its start + TETO_ROTA_SHOPEE_MS; the CLI has none). So
- * no create starts at or after `expiraEm − MARGEM`. A lock nobody cleared is
- * then read, by {@link estadoPublicacaoRascunhoShopee}:
+ * checked immediately before EACH `add_item` call, right after that call's
+ * credential warm (a route run's `prazoDaRequisicao` is its handler's first
+ * instant + TETO_ROTA_SHOPEE_MS; the CLI has none). The one await left between
+ * the check and the request is the client's own token ask, which the warm made
+ * a single credential read — so MARGEM covers it, and no create's request
+ * starts at or after `expiraEm` (`apps/shopee`'s `anuncios/README.md` names
+ * the residual). A lock nobody cleared is then read, by
+ * {@link estadoPublicacaoRascunhoShopee}:
  *
  * ```
  *  desde ─────────── expiraEm ─────────────── expiraEm + AGUARDAR ──────────▶
@@ -53,7 +57,7 @@ import { z } from 'zod';
 import { textoUtilizavelShopee } from '../../faixaShopee';
 import { naoDocId } from '../../shared/outerRef';
 import { AGUARDAR_KIT_INCERTO_SHOPEE_MS } from '../../shopeeAcaoSugerida';
-import { publicacaoEmCursoShopeeSchema } from './shopeeLink';
+import { itemIdEnderecavelShopee, publicacaoEmCursoShopeeSchema } from './shopeeLink';
 import { anuncioShopeeVivo, ehRascunhoShopee } from './shopeeLinkLeitura';
 import { vinculoShopeeEhDaConta } from './vinculosShopee';
 
@@ -74,16 +78,26 @@ export const PUBLICACAO_EM_CURSO_SHOPEE_TTL_MS = 300_000;
 /**
  * MILLISECONDS. The `apps/shopee` request ceiling — `runConfig.timeoutSeconds:
  * 180` in `apps/shopee/apphosting.yaml`. The publish route turns it into the
- * request's deadline (`prazoDaRequisicao = nowMs + TETO_ROTA_SHOPEE_MS`), so a
- * create is never STARTED by a request the platform may cut off mid-send.
+ * request's deadline (`prazoDaRequisicao = nowMs + TETO_ROTA_SHOPEE_MS`, with
+ * `nowMs` read as the handler's FIRST statement — before the caller's token is
+ * verified and the body parsed), so a create is never STARTED by a request the
+ * platform may cut off mid-send. What ran before the handler (a cold boot) is
+ * not measured; {@link MARGEM_ENVIO_SHOPEE_MS} absorbs it.
  * ⚠️ Changing either number alone breaks that promise silently.
  */
 export const TETO_ROTA_SHOPEE_MS = 180_000;
 
 /**
  * MILLISECONDS. The headroom the per-leg send gate keeps before
- * `min(expiraEm, prazoDaRequisicao)` — it covers the client's token step that
- * runs between the gate and the request reaching Shopee.
+ * `min(expiraEm, prazoDaRequisicao)` — it covers the client's token ask that
+ * runs between the gate and the request reaching Shopee, and the part of a
+ * route request before its handler ran.
+ *
+ * ⚠️ Bounded only because the publisher WARMS the credential before the gate
+ * (`aquecerCredencial`, batch-A review): the ask is then one credential read.
+ * Unwarmed, a token inside its refresh skew turns it into a provider refresh
+ * with NO deadline (the Shopee transport sets none, #1094), which no margin
+ * covers.
  */
 export const MARGEM_ENVIO_SHOPEE_MS = 30_000;
 
@@ -456,7 +470,9 @@ export function rascunhoSemMarcaShopee(
 
 /**
  * One sibling link a publish (or a new draft) would sit beside — the item of a
- * 409's `vinculos[]`. `itemId` is the listing's id, `null` for a draft.
+ * 409's `vinculos[]`. `itemId` is the listing's id, `null` for a draft — and
+ * for a live listing whose stored id cannot address it (`1.5`, beyond 2^53),
+ * read through `itemIdEnderecavelShopee` so the field always fits `int()`.
  * Plain `z.object` (unknown keys stripped), so the reader tolerates a newer
  * producer's extra keys.
  */
@@ -496,9 +512,10 @@ export function vinculosQueExigemConfirmacaoShopee(
   const saida: VinculoConflitanteShopee[] = [];
   for (const { id, data } of links) {
     if (id === excluirLinkDocId || !vinculoShopeeEhDaConta(data, integracaoId)) continue;
-    const itemId = data.item_id;
-    if (anuncioShopeeVivo(data) && typeof itemId === 'number') {
-      saida.push({ linkDocId: id, itemId, rascunho: false });
+    // MEMBERSHIP is "alive" (`isFinite`); the id it CARRIES is the addressable
+    // one — the same reader the publish's own 409 list uses (#1369).
+    if (anuncioShopeeVivo(data)) {
+      saida.push({ linkDocId: id, itemId: itemIdEnderecavelShopee(data.item_id), rascunho: false });
     } else if (ehRascunhoShopee(data)) {
       saida.push({ linkDocId: id, itemId: null, rascunho: true });
     }

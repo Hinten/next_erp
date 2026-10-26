@@ -42,11 +42,19 @@
  *     stored token must still be OURS, or nothing is sent.
  *  3. **The per-leg send gate** ({@link portaoDeEnvio}) — SYNCHRONOUS, run
  *     immediately before EACH `client.addItem` call (both legs of the fiscal
- *     retry): send only while `agora() + MARGEM_ENVIO_SHOPEE_MS <
- *     min(expiraEm, prazoDaRequisicao)`. So no create STARTS at or after
- *     `expiraEm − MARGEM`, and none starts that the route's own ceiling could
- *     cut off mid-send. That bound is what the post-expiry grace of
- *     `estadoPublicacaoRascunhoShopee` is measured from.
+ *     retry), right AFTER that leg's credential warm
+ *     ({@link ControlesDaPublicacaoAoVivo.aquecerCredencial}): send only while
+ *     `agora() + MARGEM_ENVIO_SHOPEE_MS < min(expiraEm, prazoDaRequisicao)`.
+ *     The one await left between the gate and the request is the client's own
+ *     token ask, which the warm made a single credential read — so MARGEM
+ *     covers it, no create's request STARTS at or after `expiraEm`, and none
+ *     starts that the route's own ceiling could cut off mid-send. That bound is
+ *     what the post-expiry grace of `estadoPublicacaoRascunhoShopee` is
+ *     measured from. ⚠️ The residual: a warmed token whose life crosses
+ *     `REFRESH_SKEW_MS` in the instants between the warm and the client's ask
+ *     still refreshes there, unbounded — only a deadline on the TRANSPORT
+ *     (`shopeeCall`, #1094), not on `add_item` alone, closes it
+ *     (`anuncios/README.md`, accepted residual (vi)).
  *  4. **Write-back #1 on a draft is a CLAIM** ({@link reivindicarRascunhoShopee}):
  *     still a draft ⇒ `update({…the item, publicacaoEmCurso: null,
  *     criacaoIncertaDesde: null}, {lastUpdateTime})` — the listing is recorded,
@@ -87,6 +95,7 @@ import {
   PUBLICACAO_EM_CURSO_SHOPEE_TTL_MS,
   ehRascunhoShopee,
   estadoPublicacaoRascunhoShopee,
+  itemIdEnderecavelShopee,
   janelaDaCriacaoIncertaShopee,
   publicacaoEmCursoShopeeSchema,
   toOuterRef,
@@ -131,6 +140,26 @@ export interface ControlesDaPublicacaoAoVivo {
    * (the CLI): the lock's own `expiraEm` is then the only bound.
    */
   readonly prazoDaRequisicao: number | null;
+  /**
+   * Warms the shop client's access token — awaited IMMEDIATELY BEFORE each
+   * `add_item` leg's send gate ({@link portaoDeEnvio}). The route and the CLI
+   * wire the context's own `getAccessToken`, the function the client signs
+   * with; the token is discarded (it never reaches `anuncios/`).
+   *
+   * Why (batch-A review): `client.addItem` asks for the token BEFORE it builds
+   * the request, and when the stored token is inside `REFRESH_SKEW_MS` that
+   * ask is a provider REFRESH with no deadline (`shopeeCall` sets none). Run
+   * after the gate, it could start the `add_item` long past the gate's reading
+   * — past `expiraEm`, after a takeover's ENSURE already scanned. Warmed first,
+   * the refresh runs BEFORE the gate reads the clock, and the client's own ask
+   * is the fast path (one credential read), which `MARGEM_ENVIO_SHOPEE_MS`
+   * covers.
+   *
+   * REQUIRED, like `agora`. A throw means nothing was sent: the lock is handed
+   * back, unstamped — a Shopee error of the refresh is about the TOKEN, never
+   * the listing.
+   */
+  readonly aquecerCredencial: () => Promise<void>;
   /**
    * The operator confirmed that this publish may create a SECOND listing of
    * the produto on the conta (D15). Re-checked at the reservation, where the
@@ -326,12 +355,6 @@ function travaEhNossa(raw: Record<string, unknown>, token: string): boolean {
   return travaLegivel(raw)?.token === token;
 }
 
-/** A positive stored `item_id`, or `null` — the shape a 409's `vinculos[]` carries. */
-function itemIdDoVinculo(raw: Record<string, unknown>): number | null {
-  const bruto = raw.item_id;
-  return typeof bruto === 'number' && Number.isSafeInteger(bruto) && bruto > 0 ? bruto : null;
-}
-
 /* -------------------------------------------------------------------------- */
 /*                               1. reserve                                    */
 /* -------------------------------------------------------------------------- */
@@ -496,7 +519,7 @@ async function recusarSegundoAnuncio(
     if (estado.tipo === 'livre') continue;
     ocupados.push({
       linkDocId: v.id,
-      itemId: itemIdDoVinculo(v.raw),
+      itemId: itemIdEnderecavelShopee(v.raw.item_id),
       rascunho: ehRascunhoShopee(v.raw),
     });
     // Waiting helps only while every holder is still inside its window; an
@@ -749,7 +772,9 @@ export async function conferirTravaAntesDoEnvio(
     .docRef(db, { produtoId: reserva.produtoId }, reserva.linkDocId)
     .get();
   const raw = snap.exists ? ((snap.data() ?? {}) as Record<string, unknown>) : null;
-  if (raw !== null && itemIdDoVinculo(raw) !== null) throw jaPublicado(reserva.linkDocId);
+  if (raw !== null && itemIdEnderecavelShopee(raw.item_id) !== null) {
+    throw jaPublicado(reserva.linkDocId);
+  }
   const trava = raw === null ? null : travaLegivel(raw);
   if (trava === null || trava.token !== reserva.token) {
     console.warn('[shopee/anuncios] a trava do rascunho já não é desta execução; nada enviado', {
@@ -763,8 +788,11 @@ export async function conferirTravaAntesDoEnvio(
 }
 
 /**
- * The per-leg send gate (step 3) — SYNCHRONOUS, so nothing can run between it
- * and the `client.addItem` call it guards. Sends only while
+ * The per-leg send gate (step 3) — SYNCHRONOUS, so nothing of OURS runs between
+ * it and the `client.addItem` call it guards; the client's own token ask does,
+ * and the caller warms the credential first
+ * ({@link ControlesDaPublicacaoAoVivo.aquecerCredencial}) so that ask is one
+ * credential read inside the margin. Sends only while
  * `agora() + MARGEM_ENVIO_SHOPEE_MS < min(trava.expiraEm, prazoDaRequisicao)`.
  *
  * ⚠️ `agora` is read HERE, per leg — never the run's `nowMs` and never a value
@@ -832,7 +860,7 @@ export async function reivindicarRascunhoShopee(
           linkDocId: alvo.linkDocId,
           itemId: alvo.itemId,
           existe: raw !== null,
-          outroItemId: raw === null ? null : itemIdDoVinculo(raw),
+          outroItemId: raw === null ? null : itemIdEnderecavelShopee(raw.item_id),
         },
       );
       return await aplicarLinkDaListagem(db, alvo.produtoId, {

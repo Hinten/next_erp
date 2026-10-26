@@ -68,11 +68,21 @@ import { ACAO_STATUS_ANUNCIO, type AcaoStatusAnuncio } from './mercadoLivreLink'
  *    (to skip the link) and the live-link resolver behind re-verify, status and
  *    pause (to rank it last) — steps 12/13 and the order cascade ignore it;
  *  - **`publicacaoEmCurso`** (#1911, D4) — the publish LOCK of a draft's first
- *    create. Written only by `apps/shopee`'s publish of a DRAFT: taken before
- *    the run reads the content it will send, and cleared by that same run —
- *    with the `item_id` it created, or on a refusal it owns — always guarded by
- *    the run's own `token`, so a run never clears a lock it does not hold. A
- *    create whose outcome is unknown leaves it in place to EXPIRE (nobody
+ *    create. Written only by `apps/shopee`, and by three kinds of write:
+ *    - TAKEN by the reservation of a draft's publish, before the run reads the
+ *      content it will send — a tier-1 `update(…, {lastUpdateTime})` against
+ *      the snapshot that read the draft free, or past its grace (`incerta`):
+ *      that TAKEOVER is the one way a run replaces a lock it does not hold;
+ *    - RE-ARMED for the wait of an uncertain create, RELEASED (with or without
+ *      the failure stamp) and CLEARED by ENSURE's adoption — each guarded by
+ *      the run's own `token`: a foreign token means NO write (K1-14);
+ *    - CLEARED token-FREE, on purpose, in exactly two places, both recording a
+ *      listing that now EXISTS: write-back #1's claim
+ *      (`reivindicarRascunhoShopee`) and the product import's adoption of the
+ *      draft (`produtos/links.ts`, `CAMPOS_LIMPOS_NA_ADOCAO_SHOPEE`). Clearing
+ *      a foreign lock there is the point — its holder's pre-send re-read then
+ *      refuses to send.
+ *    A create whose outcome is unknown leaves it in place to EXPIRE (nobody
  *    clears it to make it expire). Nothing in a browser writes it. Every reader decides through
  *    `estadoPublicacaoRascunhoShopee` (`./shopeeRascunho.ts`), never raw;
  *  - **`criacaoIncertaDesde`** (#1911, D5) — the record of a draft's first
@@ -345,8 +355,10 @@ export const publicacaoEmCursoShopeeSchema = z
     expiraEm: z.number().int(),
     /**
      * The run's nonce — an opaque id the publishing run minted for itself. A
-     * run writes over a lock (to claim, release or stamp) only while the stored
-     * token is ITS OWN.
+     * run writes over its lock (to re-arm, release, stamp or adopt under
+     * ENSURE) only while the stored token is ITS OWN. The write-back #1 claim
+     * and the product import's adoption deliberately ignore it: both record a
+     * listing that exists (the header's writer inventory).
      */
     token: z.string().min(1),
   })
@@ -436,9 +448,12 @@ export const produtoShopeeLinkSchema = z
     /**
      * The last publish that SUCCEEDED, for the operator's audit trail.
      *
-     * ⚠️ NESTED ⇒ it can only be written through `merge`/`add`, never through
-     * `mergeIfExists` (which rejects a nested object). That is why the publish
-     * write-backs and the lifecycle write-backs use two different mechanisms.
+     * ⚠️ NESTED ⇒ never written through `mergeIfExists` (which rejects a
+     * nested object). That is why the publish write-backs and the lifecycle
+     * write-backs use two different mechanisms. The publish writes it through
+     * `merge`/`add` — and, on a DRAFT (#1911), through the claim's raw
+     * `update(…, {lastUpdateTime})`, which replaces the whole map: correct,
+     * because it is always written whole.
      */
     ultimaPublicacao: z
       .object({
@@ -452,7 +467,10 @@ export const produtoShopeeLinkSchema = z
       .default(null),
     /**
      * The last publish that FAILED, with the classified problemas the operator
-     * can act on. Same nesting rule as {@link ultimaPublicacao}: `merge` only.
+     * can act on. Same nesting rule as {@link ultimaPublicacao}: never
+     * `mergeIfExists`. A draft's token-guarded release-and-stamp, ENSURE's
+     * adoption and the import's adoption (#1911) write it through a raw
+     * `update(…, {lastUpdateTime})` — the stamp whole, or `null`.
      *
      * `motivo` and `etapa` are loose strings here on purpose — the closed
      * vocabularies live beside the publisher (`anuncios/errosPublicacao.ts`),
@@ -788,8 +806,10 @@ export const produtoShopeeLinkSchema = z
     /**
      * The in-flight lock of the FIRST `add_item` of a DRAFT
      * (`ehRascunhoShopee`) — {@link publicacaoEmCursoShopeeSchema}, every
-     * instant in MILLISECONDS. `null` or absent = no lock was ever taken, or
-     * the run that took it released it.
+     * instant in MILLISECONDS. `null` or absent = no lock was ever taken, the
+     * run that took it released it, or a create was RECORDED (the write-back
+     * #1 claim, ENSURE's adoption, or the import's adoption — the header's
+     * writer inventory).
      *
      * ⚠️ Never read raw. "Has a lock" is not "is busy": an EXPIRED lock is not
      * free (the run that held it may have sent the create), and a malformed one
@@ -1035,9 +1055,25 @@ export function podeMoverAnuncioShopee(
 /*         Step 19 (#1527) — which native-kit link is live, which sells        */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * A stored Shopee `item_id` that can ADDRESS a listing — a positive safe
+ * integer — or `null`.
+ *
+ * ⚠️ Not "is the listing alive": `anuncioShopeeVivo`
+ * (`./shopeeLinkLeitura.ts`) accepts any finite positive number on purpose.
+ * This is the id a publish may act on and a 409's `vinculos[]` carries, so it
+ * is as strict as `vinculoConflitanteShopeeSchema`'s `int()`
+ * (`./shopeeRascunho.ts`) — the ONE reader for that (#1911), shared by the
+ * schema's own `vinculosQueExigemConfirmacaoShopee` and `apps/shopee`'s draft
+ * lock and ENSURE.
+ */
+export function itemIdEnderecavelShopee(itemId: unknown): number | null {
+  return typeof itemId === 'number' && Number.isSafeInteger(itemId) && itemId > 0 ? itemId : null;
+}
+
 /** A Shopee `item_id` that can address a listing: a positive safe integer. */
 function ehItemIdEnderecavel(itemId: unknown): boolean {
-  return typeof itemId === 'number' && Number.isSafeInteger(itemId) && itemId > 0;
+  return itemIdEnderecavelShopee(itemId) !== null;
 }
 
 /**

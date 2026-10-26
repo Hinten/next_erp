@@ -5,7 +5,11 @@ import { describe, expect, it } from 'vitest';
 import type { z } from 'zod';
 
 import { AGUARDAR_KIT_INCERTO_SHOPEE_MS } from '../../shopeeAcaoSugerida';
-import { ESTADO_ANUNCIO_SHOPEE, produtoShopeeLinkSchema } from './shopeeLink';
+import {
+  ESTADO_ANUNCIO_SHOPEE,
+  itemIdEnderecavelShopee,
+  produtoShopeeLinkSchema,
+} from './shopeeLink';
 import { anuncioShopeeVivo, ehRascunhoShopee } from './shopeeLinkLeitura';
 import {
   AGUARDAR_ANUNCIO_INCERTO_SHOPEE_MS,
@@ -794,6 +798,43 @@ describe('vinculosQueExigemConfirmacaoShopee — o segundo anúncio (D15, K1-4)'
       expect(anuncioShopeeVivo(c.data) || ehRascunhoShopee(c.data), c.id).toBe(false);
     }
     expect(vinculosQueExigemConfirmacaoShopee(corrompidos, CONTA)).toEqual([]);
+  });
+
+  it('(batch-A) um vivo com item_id NÃO endereçável (1.5, além de 2^53) ainda CONTA — com `itemId: null`, e a saída cabe no schema', () => {
+    const fracionado = { id: 'F', data: { contaProdutoShopeeOuterRef: REF, item_id: 1.5 } };
+    const enorme = {
+      id: 'G',
+      data: { contaProdutoShopeeOuterRef: REF, item_id: Number.MAX_SAFE_INTEGER + 2 },
+    };
+    // Membership is "alive" (`isFinite`) — unchanged.
+    expect(anuncioShopeeVivo(fracionado.data)).toBe(true);
+    expect(anuncioShopeeVivo(enorme.data)).toBe(true);
+    const saida = vinculosQueExigemConfirmacaoShopee([fracionado, enorme, vivo], CONTA);
+    expect(saida).toEqual([
+      { linkDocId: 'F', itemId: null, rascunho: false },
+      { linkDocId: 'G', itemId: null, rascunho: false },
+      // ⛔ near-miss: an addressable id is carried verbatim.
+      { linkDocId: 'V', itemId: 2500139861, rascunho: false },
+    ]);
+    expect(() => vinculoConflitanteShopeeSchema.array().parse(saida)).not.toThrow();
+  });
+
+  it('(batch-A) `itemIdEnderecavelShopee` — o ÚNICO leitor do id endereçável: inteiro seguro > 0, senão null', () => {
+    expect(itemIdEnderecavelShopee(2500139861)).toBe(2500139861);
+    expect(itemIdEnderecavelShopee(Number.MAX_SAFE_INTEGER)).toBe(Number.MAX_SAFE_INTEGER);
+    for (const v of [
+      0,
+      -1,
+      1.5,
+      Number.MAX_SAFE_INTEGER + 2,
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      '123',
+      null,
+      undefined,
+    ]) {
+      expect(itemIdEnderecavelShopee(v), String(v)).toBeNull();
+    }
   });
 
   it('a saída é EXATAMENTE o que o leitor do 409 aceita (vinculoConflitanteShopeeSchema)', () => {

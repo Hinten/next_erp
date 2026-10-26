@@ -309,10 +309,19 @@ nothing.
    route's clock read LIVE on every call (`deps.aoVivo.agora`, REQUIRED, no
    fallback to `deps.nowMs` — a constant would make the gate vacuous, K1-3);
    `prazoDaRequisicao` is the route's `nowMs + TETO_ROTA_SHOPEE_MS` (=
-   `apphosting.yaml`'s `timeoutSeconds`, pinned by `publicar/route.test.ts`),
-   `null` from the CLI. So no create STARTS at or after `expiraEm − MARGEM`, and
-   none the request's own ceiling could cut off mid-send — which is what the
-   240 s grace is measured from.
+   `apphosting.yaml`'s `timeoutSeconds`, pinned by `publicar/route.test.ts`;
+   `nowMs` is the handler's FIRST statement, before the token check and the
+   body parse), `null` from the CLI. **Each leg first WARMS the credential**
+   (`deps.aoVivo.aquecerCredencial`, REQUIRED — the context's own
+   `getAccessToken`, the function the client signs with; the token never
+   reaches `anuncios/`). `client.addItem` asks for the token before it builds
+   the request, and a token inside `REFRESH_SKEW_MS` turns that ask into a
+   provider refresh with NO deadline; warmed first, the refresh is paid before
+   the gate reads the clock, and the ask left between the gate and the request
+   is one credential read, which MARGEM covers. So no create's request STARTS
+   at or after `expiraEm`, and none the request's own ceiling could cut off
+   mid-send — which is what the 240 s grace is measured from (residual (vi)
+   below names the one gap).
 5. **Write-back #1 is a CLAIM**: still a draft ⇒ one guarded `update` writing
    the item AND `publicacaoEmCurso: null` on the SAME document; already our
    `item_id` ⇒ the plain merge (a replay); another item claimed it, or the draft
@@ -321,14 +330,14 @@ nothing.
    lock makes its holder's pre-send re-read refuse.
 6. **Every way out**, tracked on `ReservaDeRascunhoShopee.fase`:
 
-   | what happened                                                                                | lock                     | `falhaPublicacao`                                |
-   | -------------------------------------------------------------------------------------------- | ------------------------ | ------------------------------------------------ |
-   | a throw before any send (blocked plan, photo/taxonomy read, the gate, a lost lock)           | released (token-guarded) | none                                             |
-   | `add_item` refused for good — `nao-criado` (`criacaoIncerta.ts`)                             | released                 | stamped, in the SAME guarded update              |
-   | the token step before `add_item` (the four credential classes, P5) — `nao-criado`            | released                 | none — Shopee was never reached                  |
-   | `add_item` `incerto` (network, edge, unparseable 2xx, an UNKNOWN code, a documented "maybe") | **KEPT**, re-armed (P5)  | none — a 202, never "Shopee refused" (P5, below) |
-   | any non-Shopee error once a send began, or the claim lost three times                        | **KEPT**                 | none                                             |
-   | anything after the claim (the model leg, the re-list, the read-back)                         | already null             | step 11's stamp, on the claimed link             |
+   | what happened                                                                                                                                      | lock                     | `falhaPublicacao`                                |
+   | -------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------ | ------------------------------------------------ |
+   | a throw before any send (blocked plan, photo/taxonomy read, the credential warm — a Shopee error of its refresh included —, the gate, a lost lock) | released (token-guarded) | none                                             |
+   | `add_item` refused for good — `nao-criado` (`criacaoIncerta.ts`)                                                                                   | released                 | stamped, in the SAME guarded update              |
+   | the client's own token step inside `add_item` (the four credential classes, P5) — `nao-criado`                                                     | released                 | none — Shopee was never reached                  |
+   | `add_item` `incerto` (network, edge, unparseable 2xx, an UNKNOWN code, a documented "maybe")                                                       | **KEPT**, re-armed (P5)  | none — a 202, never "Shopee refused" (P5, below) |
+   | any non-Shopee error once a send began, or the claim lost three times                                                                              | **KEPT**                 | none                                             |
+   | anything after the claim (the model leg, the re-list, the read-back)                                                                               | already null             | step 11's stamp, on the claimed link             |
 
    A guarded write whose stored token is NOT ours writes NOTHING — not the
    release and not the stamp (K1-14): a run never clears or stamps over the run
@@ -355,7 +364,9 @@ and `null` together and an imported listing's `null` must never refuse.
 
 Cost: every NAMED publish now reads its link once more (the reservation's first
 read decides whether it is a draft at all), and a draft's publish reads the
-produto's link subcollection once more (the scan) plus the pre-send re-read. No
+produto's link subcollection once more (the scan) plus the pre-send re-read,
+and one more credential read per `add_item` leg (the warm; the client's own ask
+then reads it again). No
 index, no ruleset, no multi-document atomic write — every guard is a single-document
 precondition.
 
@@ -365,8 +376,9 @@ precondition.
   outlives `expiraEm + 240 s`.** The transport has no fetch deadline
   (`apphosting.yaml`, `call.ts`), so a hung `add_item` can land after the grace;
   the claim then either converges (ours) or forks a linked second listing. A
-  deadline on `add_item` mapped to `ShopeeNetworkError` (⇒ `incerto`) is #1094's
-  to add.
+  deadline mapped to `ShopeeNetworkError` (⇒ `incerto`) is #1094's to add — on
+  the transport (`shopeeCall`, which the token refresh rides too, residual
+  (vi)), not on `add_item` alone.
 - **(ii) CLI clock skew (K1-10, deferred).** The CLI's own gate is skew-free
   (its `expiraEm` and `agora` share the laptop clock), but a laptop BEHIND the
   server by _d_ erodes the server-side grace by _d_ — absorbed while _d_ ≤ 30 s.
@@ -378,6 +390,14 @@ precondition.
   P5 adopts only with attempt evidence).
 - **(v) A corrupt `item_id: 0` link stays neither vivo nor draft**: no lock, and a
   publish onto it is step 11's create-then-merge.
+- **(vi) A warmed token that crosses its refresh skew before the client asks**
+  (batch-A review). The warm makes the client's own token ask a fast path, but
+  if the token's remaining life crosses `REFRESH_SKEW_MS` (60 s) in the
+  instants between the warm and that ask — the synchronous gate plus
+  `addItem`'s prelude, against a ~4 h token — the ask refreshes after the gate,
+  with no deadline, exactly the send-starts-late case the warm exists to
+  remove. A deadline on `add_item` alone would not bound it: #1094's deadline
+  must sit on the transport (`shopeeCall`), which the refresh also rides.
 
 ### An uncertain first create is re-found, never re-sent (#1911, P5, D5 + D15)
 
@@ -483,7 +503,11 @@ a conta that already holds another listing or draft of the produto needs
 classes (`ShopeeRefreshEmAndamentoError`, `ShopeeSemCredencialError`,
 `ShopeeContaSemShopIdError`, `ShopeeCredencialInvalidaError`) are thrown by the
 client BEFORE any request, so `add_item` never reached Shopee: the lock is
-released and no `falhaPublicacao` is written — nothing was refused.
+released and no `falhaPublicacao` is written — nothing was refused. Since the
+batch-A review the token step normally happens EARLIER, in the per-leg
+credential warm (step 4 above), where ANY error — those four classes, or a
+Shopee error of the refresh itself — leaves the lock `travada`, so it is
+released unstamped before the classifier is ever asked.
 
 **A no-link live create MINTS a draft first (K1-5).** A live item-arm create
 with no `linkDocId` — reachable only when the conta holds no link of the

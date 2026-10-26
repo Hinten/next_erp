@@ -108,8 +108,10 @@ const PAGINA_ESPECIFICOS: readonly LinhaDaPagina[] = [
     N,
   ],
   ['error_network', 'Inner http call failed', I],
-  ['error_data', 'parse data failed', N],
-  ['error_data', 'data not exist', N],
+  // The gateway's shared list (every page): neither sentence names a field of
+  // the request, so neither proves the create did not happen (batch-A review).
+  ['error_data', 'parse data failed', I],
+  ['error_data', 'data not exist', I],
   ['error_param', 'parameter invalid', N],
   ['error_param', 'The information you queried is not found.', N],
   ['error_param', 'Wrong parameters, detail: {msg}.', N],
@@ -222,7 +224,8 @@ const PAGINA_ESPECIFICOS: readonly LinhaDaPagina[] = [
   ['error_image_unavailable', 'Image is invalid: single image url length is less than 32.', N],
   ['error_reach_shop_item_limit', 'Item published item count reaches limit.', N],
   ['error_name_length_limit', 'Exceeded item_name length limitation.', N],
-  ['error_nil_shopid_or_itemid', 'Query information failed.', N],
+  // The product service's shared LOOKUP block — `add_item` sends no item_id.
+  ['error_nil_shopid_or_itemid', 'Query information failed.', I],
   ['error_desc_hash_tag_over_limit', 'Count of hash tags is more than 18', N],
   ['error_item_name_empty', 'Item name could not be empty.', N],
   ['error_holiday_on_add_item', 'Shop is under vocation mode.', N],
@@ -379,7 +382,7 @@ describe('a página do `add_item` é a fixture (rev. 2, K1-1)', () => {
     const chaves = PAGINA.map(([c, f]) => `${c}\u0000${f}`);
     expect(new Set(chaves).size).toBe(PAGINA.length);
     // As classes que a página reparte — um recorte que mude de lado aparece aqui.
-    expect(PAGINA.filter(([, , e]) => e === I)).toHaveLength(16);
+    expect(PAGINA.filter(([, , e]) => e === I)).toHaveLength(19);
   });
 
   it('CADA (código, frase) documentada cai na SUA classe — nas duas grafias do código', () => {
@@ -552,6 +555,43 @@ describe('os PARES e QUASE-ACERTOS do rev. 2', () => {
     expect(
       desfechoDeCriacaoDeItem(doEnvelope('error_auth', 'System error, please try again later.')),
     ).toBe(I);
+  });
+
+  it('(batch-A) `error_nil_*` NÃO é prefixo: o nome vazio ⇒ nao-criado ⟷ "Query information failed." ⇒ incerto', () => {
+    // A field of the request, refused before any insert.
+    expect(
+      desfechoDeCriacaoDeItem(doEnvelope('error_nil_name_new_item', 'Item_name cannot be empty.')),
+    ).toBe(N);
+    // The product service's shared LOOKUP sentence — `add_item` sends no
+    // item_id, so the failed lookup proves nothing about the create.
+    for (const codigo of ['error_nil_shopid_or_itemid', 'product.error_nil_shopid_or_itemid']) {
+      expect(desfechoDeCriacaoDeItem(doEnvelope(codigo, 'Query information failed.')), codigo).toBe(
+        I,
+      );
+      expect(desfechoDeCriacaoDeItem(doEnvelope(codigo, null)), codigo).toBe(I);
+      expect(recusaDeterministicaDeAddItem(doEnvelope(codigo, null)), codigo).toBeNull();
+    }
+  });
+
+  it('(batch-A) `error_data` ⇒ incerto em QUALQUER frase ⟷ o `error_param` do mesmo bloco do gateway ⇒ nao-criado', () => {
+    // The gateway's shared block, line for line: the validation sentence of
+    // `error_param` is a refusal; `error_data` sits between two internal errors.
+    expect(desfechoDeCriacaoDeItem(doEnvelope('error_param', 'parameter invalid'))).toBe(N);
+    for (const frase of [
+      'parse data failed',
+      'data not exist',
+      // Documented word for word under `error_data` on `v2.returns.get_return_detail`.
+      'Inner error, please try later. [5].',
+      null,
+    ]) {
+      for (const codigo of ['error_data', 'product.error_data']) {
+        expect(desfechoDeCriacaoDeItem(doEnvelope(codigo, frase)), `${codigo}: ${frase}`).toBe(I);
+        expect(
+          recusaDeterministicaDeAddItem(doEnvelope(codigo, frase)),
+          `${codigo}: ${frase}`,
+        ).toBeNull();
+      }
+    }
   });
 
   it('um código DESCONHECIDO ⇒ incerto — mesmo com o prefixo e com uma frase de validação', () => {

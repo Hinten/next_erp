@@ -78,6 +78,7 @@ function controles(over: Partial<ControlesDaPublicacaoAoVivo> = {}): ControlesDa
   return {
     agora: () => AGORA,
     prazoDaRequisicao: null,
+    aquecerCredencial: () => Promise.resolve(),
     confirmarSegundoAnuncio: false,
     confirmarCriacaoIncerta: false,
     ...over,

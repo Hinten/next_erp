@@ -70,6 +70,29 @@
  * request at all. None is a row: when the code and the sentence disagree, the
  * uncertain reading wins.
  *
+ * Two more codes are NOT rows, because their sentences name no field of the
+ * request and so prove nothing about the create (#1911 batch-A review):
+ *
+ * - `error_nil_shopid_or_itemid` ("Query information failed.") — the product
+ *   service's shared LOOKUP block, the same `(code, sentence)` beside
+ *   `error_item_not_found` on update_item, update_stock, update_price,
+ *   add_model, init_tier_variation, update_model and update_tier_variation.
+ *   The stock and price classifiers read it as "anúncio inexistente" because
+ *   THOSE requests carry an `item_id`; `add_item` carries none, so here it is
+ *   an internal lookup that failed — before the insert or after it. Its
+ *   sibling `error_nil_name_new_item` ("Item_name cannot be empty.") names a
+ *   field and stays a row: `error_nil_*` is not a prefix.
+ * - `error_data` ("parse data failed", "data not exist") — the GATEWAY's
+ *   shared list, printed on every page between `error_network` ("Inner http
+ *   call failed") and `error_server` ("Something wrong. Please try later."),
+ *   and on the returns pages the same code carries "Inner error, please try
+ *   later". "parse data failed" may be the gateway failing to parse the inner
+ *   service's ANSWER to a create that happened; neither sentence is provably a
+ *   validation of our request.
+ *
+ * Both cost the safe direction's price — one wait plus one ENSURE scan — and
+ * no captured answer says either code ever arrives on a create.
+ *
  * ## The uncertain sentences WIN (the kit's ordering rule)
  *
  * Three codes carry BOTH kinds of sentence on the page: `error_auth` ("System
@@ -171,6 +194,7 @@ import {
   TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE,
   criadoNaJanelaShopee,
   inicioDaJanelaDaCriacaoShopeeS,
+  itemIdEnderecavelShopee,
   type AcaoSugeridaPublicacaoShopee,
   type JanelaDaCriacaoIncertaShopee,
 } from '@delfrance/schemas';
@@ -252,7 +276,8 @@ export const RECUSAS_DETERMINISTICAS_ADD_ITEM: readonly LinhaCriacaoDeItem[] = [
     'error.param',
     'Can not update item with stock less than reserved stock',
   ),
-  porCodigo('error_data'),
+  // NOT `error_data` — the gateway's "parse data failed" / "data not exist"
+  // prove nothing about the create (module docblock).
   porCodigo('error_shop'),
   porCodigo('error_sign'),
   // --- one field refused (`error_invalid_*` and Shopee's `error_incalid_*`) ---
@@ -294,7 +319,8 @@ export const RECUSAS_DETERMINISTICAS_ADD_ITEM: readonly LinhaCriacaoDeItem[] = [
   porCodigo('error_item_name_empty'),
   porCodigo('error_item_name_is_too_short'),
   porCodigo('error_nil_name_new_item'),
-  porCodigo('error_nil_shopid_or_itemid'),
+  // NOT `error_nil_shopid_or_itemid` — "Query information failed." is a lookup
+  // inside the service, not a field of our request (module docblock).
   porCodigo('error_desc_length_min_limit'),
   porCodigo('error_desc_hash_tag_over_limit'),
   // --- price and wholesale limits ---------------------------------------------
@@ -616,12 +642,6 @@ export type VeredictoDaBuscaIncerta =
       readonly resumo: ResumoDaBuscaIncerta;
     };
 
-/** A positive safe-integer `item_id` off a stored link, or `null`. */
-function itemIdDoVinculo(raw: Record<string, unknown>): number | null {
-  const bruto = raw.item_id;
-  return typeof bruto === 'number' && Number.isSafeInteger(bruto) && bruto > 0 ? bruto : null;
-}
-
 /** At most this many ids in a sentence — the `acao` carries every one. */
 const IDS_NA_FRASE = 10;
 
@@ -792,7 +812,7 @@ export async function localizarAnuncioIncerto(
   const leitura = await lerBaseInfoDosItens(client, [...candidatos.keys()]);
   const proprios = new Set<number>();
   for (const v of e.vinculosDoProduto) {
-    const itemId = itemIdDoVinculo(v.raw);
+    const itemId = itemIdEnderecavelShopee(v.raw.item_id);
     if (itemId !== null) proprios.add(itemId);
   }
 

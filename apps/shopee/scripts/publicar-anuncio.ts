@@ -385,10 +385,15 @@ async function main(): Promise<void> {
     {
       ...deps,
       // #1911: the draft lock's LIVE clock and the two confirmations; no
-      // request deadline from a terminal (see the header).
+      // request deadline from a terminal (see the header). The credential is
+      // warmed before each leg's gate with the SAME token function the client
+      // signs with, so a refresh never runs between the gate and `add_item`.
       aoVivo: {
         agora: () => Date.now(),
         prazoDaRequisicao: null,
+        aquecerCredencial: async () => {
+          await ctx.getAccessToken();
+        },
         confirmarSegundoAnuncio,
         confirmarCriacaoIncerta,
       },

@@ -32,7 +32,14 @@
  *    (the same clock, read again on every call) and the request's deadline
  *    `prazoDaRequisicao = nowMs + TETO_ROTA_SHOPEE_MS` — the `timeoutSeconds`
  *    of `apps/shopee/apphosting.yaml`, so the draft's send gate never STARTS an
- *    `add_item` this request's own ceiling could cut off mid-send.
+ *    `add_item` this request's own ceiling could cut off mid-send. `nowMs` is
+ *    read as the handler's FIRST statement, before the caller's token is
+ *    verified and the body parsed, so the deadline is late only by the time
+ *    before the handler ran (a cold boot), which `MARGEM_ENVIO_SHOPEE_MS`
+ *    absorbs. And `deps.aoVivo.aquecerCredencial` — the context's own
+ *    `getAccessToken`, awaited before each leg's gate — so a token refresh,
+ *    which has no deadline, runs BEFORE the gate reads the clock rather than
+ *    between the gate and the request.
  *  - **the wait.** `add_item` needs a settle window before the model leg, and
  *    the folder constructs no timer: the promise is built here and injected.
  *  - **the partner client.** `upload_image` is Public-signed, so the photo unit
@@ -223,6 +230,15 @@ function corpoDoKit(res: ResultadoPublicacaoKit) {
 }
 
 export async function POST(req: Request): Promise<NextResponse> {
+  // ⚠️ ONE clock read for the whole request, handed DOWN — `importar`'s own
+  // rule. Two documents written by one publish can never disagree about when it
+  // happened, and no module under `anuncios/` can read a second instant.
+  // ⚠️ The FIRST statement (#1911): `prazoDaRequisicao` below is measured from
+  // here, and the platform's ceiling started before the token check (which may
+  // fetch Google's certs on a cold instance) and the body parse — read after
+  // them, the deadline would be late by exactly that time.
+  const nowMs = Date.now();
+
   const auth = await verifyCaller(req, PERM.integracao.write);
   if ('error' in auth) return auth.error;
 
@@ -233,11 +249,6 @@ export async function POST(req: Request): Promise<NextResponse> {
   const { integracaoId, produtoId, linkDocId, status, categoryId, principal, recriar } =
     corpo.valor;
   const { converterEmKit, confirmarSegundoAnuncio, confirmarCriacaoIncerta } = corpo.valor;
-
-  // ⚠️ ONE clock read for the whole request, handed DOWN — `importar`'s own
-  // rule. Two documents written by one publish can never disagree about when it
-  // happened, and no module under `anuncios/` can read a second instant.
-  const nowMs = Date.now();
 
   try {
     const db = getAdminFirestore();
@@ -275,11 +286,18 @@ export async function POST(req: Request): Promise<NextResponse> {
       increment: (n: number) => FieldValue.increment(n),
       // #1911: a DRAFT's first create runs under a lock whose send gate reads a
       // LIVE clock (never the constant `nowMs`) against the lock's expiry AND
-      // this request's own ceiling. `nowMs` is when the request started, so the
-      // deadline is the instant the platform may cut it off.
+      // this request's own ceiling. `nowMs` is the handler's first instant, so
+      // the deadline is the platform's cut-off, late only by what ran before
+      // the handler (a cold boot) — inside `MARGEM_ENVIO_SHOPEE_MS`.
       aoVivo: {
         agora: () => Date.now(),
         prazoDaRequisicao: nowMs + TETO_ROTA_SHOPEE_MS,
+        // The SAME token function the client signs with: a refresh happens
+        // here, before the gate, never between the gate and `add_item`. The
+        // token itself stays here — `anuncios/` never sees it.
+        aquecerCredencial: async () => {
+          await ctx.getAccessToken();
+        },
         confirmarSegundoAnuncio,
         confirmarCriacaoIncerta,
       },
