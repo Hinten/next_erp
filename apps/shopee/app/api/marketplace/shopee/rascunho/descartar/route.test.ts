@@ -55,6 +55,8 @@ const BASE = {
   description: null,
   category_id: 100_017,
   marca: { brand_id: 0, original_brand_name: null },
+  // P6: the projection carries `attributes` too (`null` = nothing stored).
+  attributes: null,
 };
 
 function req(corpo: unknown, headers: Record<string, string> = AUTORIZADO): Request {
@@ -146,6 +148,11 @@ describe('autenticação e corpo', () => {
       'uma `base` sem a marca (K1-13: todo campo projetado)',
       { base: { ...BASE, marca: undefined } },
       'base.marca',
+    ],
+    [
+      'uma `base` sem os atributos (P6: projetados também, K1-13)',
+      { base: { ...BASE, attributes: undefined } },
+      'base.attributes',
     ],
     [
       'uma atestação que não é booleana',

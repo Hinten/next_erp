@@ -581,6 +581,16 @@ alone). The web builds the `base` it sends from the same projection. A `base`
 is parsed by the TOLERANT `baseRascunhoShopeeSchema` (what the operator SAW,
 never normalised); only `patch` / `conteudo` go through the write whitelist.
 
+`attributes` (P6, D9) is the one field read through a DECODER: the projection
+passes a stored list through `atributosShopee.ts`'s `lerAtributosArmazenadosShopee`
+into the REQUEST shape (the import's READ shape and the legacy no-`value_id`
+value read as the values publish sends; not a list ⇒ `null`; nothing usable ⇒
+`[]`), and the compare is `valuesEqual` (`@delfrance/core/equality`): key order
+EQUAL; a reordered list, `value_unit` absent vs `''`, `[]` vs `null` DISTINCT.
+The write schema refuses the READ shape (a 400) and normalises to exactly what
+the decoder reads back, so an identical second save writes nothing — and a
+stored legacy list that reads EQUAL is never rewritten (D9: no migration).
+
 - **create** — tier 0, `create()` at the CLIENT-generated 20-character id.
   404 when the conta is absent or not Shopee, or the produto is absent · 422
   `PRODUTO_INVALIDO {motivo}` for a variation child or a virtual kit
@@ -597,8 +607,10 @@ never normalised); only `patch` / `conteudo` go through the write whitelist.
   `JA_PUBLICADO` · 409 `EM_ANDAMENTO {aguardarMs}` (a live lock, its post-expiry
   grace included) · 409 `CATEGORIA_TRAVADA` (a `category_id` patch while the
   reading is `incerta`: the uncertain create may have used the old one) · 409
-  `CONFLITO {conflitos}` (the stored projection ≠ `base` on a PATCHED field; a
-  third lost precondition answers `conflitos: []`).
+  `CONFLITO {conflitos}` (the stored projection ≠ `base` on a field
+  `camposDaBaseDoRascunhoShopee` names — the PATCHED ones, plus `attributes`
+  on a category change, below; a third lost precondition answers
+  `conflitos: []`).
 - **discard** — tier 3 + 1: the baseline compare over EVERY projected field,
   then `delete({lastUpdateTime})`, ≤ 3 re-derives. 404 · 409 `JA_PUBLICADO` ·
   409 `EM_ANDAMENTO` · 409 `CONFLITO` (stored ≠ `base`, K1-13: an edit made
@@ -623,14 +635,22 @@ Five rules a change must keep:
 
 - **An edit never writes the lock.** An `incerta` lock survives every edit; only
   publish takes, claims and releases it (above).
-- **The compare is over the PATCHED fields only** — a field someone else edited
-  that this request does not touch is not a conflict; on a discard it is over
-  every field, because a discard throws all of them away.
+- **The compare is over the fields the write touches** — the PATCHED ones, plus
+  the `attributes` a category change clears; a field someone else edited that
+  this request does not touch is not a conflict. On a discard it is over every
+  field, because a discard throws all of them away.
 - **`marca` is ONE field over two stored keys**: written whole (`brand_id` +
   `original_brand_name`; `null` ⇒ both `null`; `0` ⇒ the name `null`), compared
   by `brand_id` only.
 - **A `category_id` write clears a stored `attributes`** in the same update
-  (they belong to the old category) and reports `attributes` in `gravados`.
+  (they belong to the old category) and reports `attributes` in `gravados` —
+  unless the patch NAMES `attributes` itself (the operator chose them for the
+  new category; an unchanged list is then kept, never wiped). ⚠️ **Only what
+  the operator SAW is cleared (K1-12, P6):** beside such a patch the body
+  REQUIRES `base.attributes` (else 400
+  `MSG_BASE_SEM_ATRIBUTOS_NA_TROCA_DE_CATEGORIA_RASCUNHO_SHOPEE`) and the
+  baseline compares it first, so an attribute save another operator landed
+  meanwhile answers 409 `CONFLITO` naming `attributes` with nothing written.
 - **The discard is this app's ONE `prodshopee` delete**, of a draft only, so
   `../produtos/links.ts`'s "never delete" gains exactly this exception. A publish
   whose create lands after the discard does not resurrect the draft: its
@@ -646,6 +666,46 @@ trips' `int-1`…`int-4`), and never writes `integracao/{id}` (the create's cont
 read is injected); every vivo case stays on FakeDb. `ID_EM_USO` is proved with
 ANOTHER CONTA's draft at the id — a draft id is per produto subcollection, so
 the same id under another produto is a different document and creates (201).
+
+### `attribute_list`: ONE decoder and ONE validator, shared with the draft (#1911, P6, D9)
+
+`atributosParaPublicar` decides nothing about attributes: it composes
+`@delfrance/schemas`' `atributosShopee.ts` — `lerAtributosArmazenadosShopee` →
+`atributosParaRequisicaoShopee` for the list, and the `obrigatorio-ausente` rows
+of `validarAtributosShopee` for the missing names — the same module the draft
+route projects with and the web's draft editor will render with (#1369). A
+raw-text pin in `montagemAnuncio.test.ts` reds if `montagemAnuncio.ts` reads an
+attribute value itself or names the legacy origin. Its signature is unchanged,
+because `publicarAnuncioCli.ts`'s dry run calls it too.
+
+- **Three stored shapes, one request shape.** The publish read-back's REQUEST
+  shape, the product import's READ shape and the legacy value with no
+  `value_id` all decode to the request shape — `attribute_id` plus an
+  `attribute_value_list` of `{value_id, original_value_name?, value_unit?}` —
+  in stored order; the first entry of a repeated id that carries a usable value
+  wins. An entry with no usable value is dropped, never sent empty (Shopee
+  reads an empty list as a deletion).
+- ⚠️ **A legacy custom value stored WITHOUT `value_id` is SENT** as
+  `{value_id: 0, original_value_name}` (Lucas, #1911 Round 3 Q1 — the legacy app
+  sent it too); a blank name is still dropped. Before #1911 it was dropped in
+  silence, which on a mandatory attribute read only as "missing". A refusal of
+  it is named by Shopee and routable to the attribute editor.
+- **The mandatory check walks the tree by the values CHOSEN.** A root is named
+  `name ?? '#<id>'` as before; new in #1911, a mandatory CHILD that a chosen
+  value unlocks is checked too, named `"<filho> (em <pai>: <valor>)"` and listed
+  right after its root. The child of an unchosen value is invisible and never
+  missing; a mandatory root repeated in the tree is named once.
+- **Every other finding of the validator reaches Shopee** — a custom value on a
+  list-only attribute, a value outside the list, too many values, a unit, a
+  value type, a read-form date, an orphan or another category's attribute: the
+  editor shows them, publish refuses none of them and SENDS what is stored.
+  Dropping invisible attributes is the draft SAVE's job
+  (`atributosParaGravarShopee`), never the publisher's.
+- ⚠️ **A DATE goes out verbatim**, in the form it was stored; a read-form
+  `06/2021` is not converted here. The write form — 12:00 UTC, in SECONDS — is
+  UNVERIFIED until the BR captures 1–3 and lives in ONE place in the shared
+  module (`HORA_UTC_DA_DATA_SHOPEE` and the two functions beside it), so a
+  capture amends one constant, not a caller.
 
 ### The update sequence: full lists, and `item_status` is never sent
 

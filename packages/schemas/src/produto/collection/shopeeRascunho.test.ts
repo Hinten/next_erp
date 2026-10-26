@@ -16,6 +16,7 @@ import {
   baseRascunhoShopeeSchema,
   CAMPO_RASCUNHO_SHOPEE,
   campoRascunhoShopeeSchema,
+  camposDaBaseDoRascunhoShopee,
   camposDoRascunhoShopee,
   camposPresentesDoRascunhoShopee,
   CODIGO_RASCUNHO_SHOPEE,
@@ -37,6 +38,7 @@ import {
   MOTIVO_RASCUNHO_INVALIDO_SHOPEE,
   motivoRascunhoInvalidoShopeeSchema,
   MSG_BASE_DIFERENTE_DO_PATCH_RASCUNHO_SHOPEE,
+  MSG_BASE_SEM_ATRIBUTOS_NA_TROCA_DE_CATEGORIA_RASCUNHO_SHOPEE,
   MSG_ITEM_NAME_EM_BRANCO_RASCUNHO_SHOPEE,
   MSG_PATCH_VAZIO_RASCUNHO_SHOPEE,
   PADRAO_ID_RASCUNHO_SHOPEE,
@@ -923,7 +925,18 @@ const VAZIO: CamposRascunhoShopee = {
   description: null,
   category_id: null,
   marca: null,
+  attributes: null,
 };
+
+/** A request-shape attribute list (what the draft route writes). */
+const ATRIBUTOS = [
+  { attribute_id: 10, attribute_value_list: [{ value_id: 55 }] },
+  { attribute_id: 11, attribute_value_list: [{ value_id: 0, original_value_name: 'Algodão' }] },
+  {
+    attribute_id: 12,
+    attribute_value_list: [{ value_id: 0, original_value_name: '30', value_unit: 'cm' }],
+  },
+];
 
 /**
  * What the draft route STORES for a normalised write — the frozen rule "the
@@ -1034,12 +1047,50 @@ describe('camposDoRascunhoShopee — A projeção de um rascunho guardado (K2-4,
     });
   });
 
-  it('os campos RESERVADOS não são projetados, mesmo quando guardados', () => {
+  it('o campo RESERVADO (logistic_info) não é projetado, mesmo quando guardado; attributes SIM (P6)', () => {
     const campos = camposDoRascunhoShopee({
       attributes: [{ attribute_id: 1 }],
       logistic_info: [{ logistic_id: 2 }],
     });
-    expect(Object.keys(campos)).toEqual(['item_name', 'description', 'category_id', 'marca']);
+    expect(Object.keys(campos)).toEqual([
+      'item_name',
+      'description',
+      'category_id',
+      'marca',
+      'attributes',
+    ]);
+  });
+
+  it('attributes (P6): a forma de REQUISIÇÃO guardada é projetada como está, na ordem guardada', () => {
+    expect(camposDoRascunhoShopee({ attributes: ATRIBUTOS }).attributes).toEqual(ATRIBUTOS);
+    expect(camposDoRascunhoShopee({ attributes: [...ATRIBUTOS].reverse() }).attributes).toEqual(
+      [...ATRIBUTOS].reverse(),
+    );
+  });
+
+  it('attributes (P6): a forma de LEITURA da importação e o legado sem value_id saem na forma de REQUISIÇÃO (Q1)', () => {
+    const importado = [
+      {
+        attribute_id: 10,
+        original_attribute_name: 'Material',
+        attribute_value_list: [{ value_id: 55, original_value_name: 'Algodão', value_unit: null }],
+      },
+      { attribute_id: 11, attribute_value_list: [{ original_value_name: ' Linho ' }] },
+      { attribute_id: 12, attribute_value_list: [{ original_value_name: '  ' }] },
+    ];
+    expect(camposDoRascunhoShopee({ attributes: importado }).attributes).toEqual([
+      { attribute_id: 10, attribute_value_list: [{ value_id: 55 }] },
+      { attribute_id: 11, attribute_value_list: [{ value_id: 0, original_value_name: 'Linho' }] },
+    ]);
+  });
+
+  it('attributes (P6): ausente, `null` ou não-lista ⇒ `null` ⟷ uma lista (mesmo sem nada útil) ⇒ uma lista', () => {
+    for (const bruto of [undefined, null, 'x', 7, { attribute_id: 1 }]) {
+      expect(camposDoRascunhoShopee({ attributes: bruto }).attributes, String(bruto)).toBeNull();
+    }
+    expect(camposDoRascunhoShopee({}).attributes).toBeNull();
+    expect(camposDoRascunhoShopee({ attributes: [] }).attributes).toEqual([]);
+    expect(camposDoRascunhoShopee({ attributes: [{ attribute_id: 'x' }] }).attributes).toEqual([]);
   });
 
   it('lê qualquer documento — ser rascunho é pergunta de quem chama', () => {
@@ -1187,10 +1238,72 @@ describe('mesmoValorDoRascunhoShopee — a comparação ESTREITA', () => {
     expect(mesmoValorDoRascunhoShopee(C.marca, 77, null)).toBe(false);
   });
 
-  it('RESERVADOS: attributes e logistic_info são SEMPRE distintos, até `null` vs `null`', () => {
-    expect(mesmoValorDoRascunhoShopee(C.attributes, null, null)).toBe(false);
-    expect(mesmoValorDoRascunhoShopee(C.attributes, undefined, undefined)).toBe(false);
+  it('RESERVADO: logistic_info é SEMPRE distinto, até `null` vs `null` (até o P15)', () => {
+    expect(mesmoValorDoRascunhoShopee(C.logisticInfo, null, null)).toBe(false);
+    expect(mesmoValorDoRascunhoShopee(C.logisticInfo, undefined, undefined)).toBe(false);
     expect(mesmoValorDoRascunhoShopee(C.logisticInfo, [], [])).toBe(false);
+  });
+});
+
+describe('mesmoValorDoRascunhoShopee — attributes (P6, K2-5): ESTRUTURAL e estreita', () => {
+  /** A structurally identical COPY — never the same reference. */
+  const copia = <T>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
+
+  it('PAR: `undefined` ≡ `null`; `[]` ≡ `[]`; a mesma lista em OUTRA referência', () => {
+    expect(mesmoValorDoRascunhoShopee(C.attributes, undefined, null)).toBe(true);
+    expect(mesmoValorDoRascunhoShopee(C.attributes, null, null)).toBe(true);
+    expect(mesmoValorDoRascunhoShopee(C.attributes, [], [])).toBe(true);
+    expect(mesmoValorDoRascunhoShopee(C.attributes, ATRIBUTOS, copia(ATRIBUTOS))).toBe(true);
+  });
+
+  it('PAR: as mesmas chaves em OUTRA ORDEM (o objeto não é texto)', () => {
+    const reordenadas = [
+      { attribute_value_list: [{ value_id: 55 }], attribute_id: 10 },
+      { attribute_value_list: [{ original_value_name: 'Algodão', value_id: 0 }], attribute_id: 11 },
+      {
+        attribute_value_list: [{ value_unit: 'cm', original_value_name: '30', value_id: 0 }],
+        attribute_id: 12,
+      },
+    ];
+    expect(mesmoValorDoRascunhoShopee(C.attributes, ATRIBUTOS, reordenadas)).toBe(true);
+  });
+
+  it('⛔ NEAR-MISS: `value_unit` AUSENTE vs "" — distintos', () => {
+    const semUnidade = [{ attribute_id: 12, attribute_value_list: [{ value_id: 7 }] }];
+    const unidadeVazia = [
+      { attribute_id: 12, attribute_value_list: [{ value_id: 7, value_unit: '' }] },
+    ];
+    expect(mesmoValorDoRascunhoShopee(C.attributes, semUnidade, unidadeVazia)).toBe(false);
+  });
+
+  it('⛔ NEAR-MISS: a mesma lista REORDENADA (atributos ou valores) — distintas: reordenar é uma edição', () => {
+    expect(mesmoValorDoRascunhoShopee(C.attributes, ATRIBUTOS, [...ATRIBUTOS].reverse())).toBe(
+      false,
+    );
+    const ab = [{ attribute_id: 1, attribute_value_list: [{ value_id: 1 }, { value_id: 2 }] }];
+    const ba = [{ attribute_id: 1, attribute_value_list: [{ value_id: 2 }, { value_id: 1 }] }];
+    expect(mesmoValorDoRascunhoShopee(C.attributes, ab, ba)).toBe(false);
+  });
+
+  it('⛔ NEAR-MISS: `[]` vs `null`; 55 vs "55"; um valor a mais; um nome diferente', () => {
+    const um = [{ attribute_id: 1, attribute_value_list: [{ value_id: 55 }] }];
+    const texto = [
+      { attribute_id: 1, attribute_value_list: [{ value_id: '55' as unknown as number }] },
+    ];
+    expect(mesmoValorDoRascunhoShopee(C.attributes, [], null)).toBe(false);
+    expect(mesmoValorDoRascunhoShopee(C.attributes, um, texto)).toBe(false);
+    expect(
+      mesmoValorDoRascunhoShopee(C.attributes, um, [
+        { attribute_id: 1, attribute_value_list: [{ value_id: 55 }, { value_id: 56 }] },
+      ]),
+    ).toBe(false);
+    const linho = [
+      { attribute_id: 1, attribute_value_list: [{ value_id: 0, original_value_name: 'Linho' }] },
+    ];
+    const linhoEspaco = [
+      { attribute_id: 1, attribute_value_list: [{ value_id: 0, original_value_name: 'Linho ' }] },
+    ];
+    expect(mesmoValorDoRascunhoShopee(C.attributes, linho, linhoEspaco)).toBe(false);
   });
 });
 
@@ -1208,6 +1321,33 @@ describe('camposPresentesDoRascunhoShopee — os campos que um valor NOMEIA', ()
       'category_id',
     ]);
     expect(camposPresentesDoRascunhoShopee({})).toEqual([]);
+  });
+});
+
+describe('camposDaBaseDoRascunhoShopee — o que a base PRECISA nomear (K1-12)', () => {
+  it('os campos do patch — mais `attributes` quando o patch troca category_id sem eles', () => {
+    expect(camposDaBaseDoRascunhoShopee({ item_name: 'x' })).toEqual(['item_name']);
+    expect(camposDaBaseDoRascunhoShopee({ category_id: 1 })).toEqual(['category_id', 'attributes']);
+    expect(camposDaBaseDoRascunhoShopee({ category_id: null })).toEqual([
+      'category_id',
+      'attributes',
+    ]);
+    expect(camposDaBaseDoRascunhoShopee({ marca: null, category_id: 1, item_name: 'x' })).toEqual([
+      'item_name',
+      'category_id',
+      'marca',
+      'attributes',
+    ]);
+  });
+
+  it('⛔ QUASE-PAR: o patch que JÁ traz attributes não ganha nada; sem category_id, nada também', () => {
+    expect(camposDaBaseDoRascunhoShopee({ category_id: 1, attributes: [] })).toEqual([
+      'category_id',
+      'attributes',
+    ]);
+    expect(camposDaBaseDoRascunhoShopee({ attributes: null })).toEqual(['attributes']);
+    expect(camposDaBaseDoRascunhoShopee({ description: null })).toEqual(['description']);
+    expect(camposDaBaseDoRascunhoShopee({})).toEqual([]);
   });
 });
 
@@ -1262,14 +1402,68 @@ describe('conteudoRascunhoShopeeSchema — a whitelist de escrita (normaliza)', 
     });
   });
 
-  it('⛔ a whitelist: item_id, um campo de ciclo de vida, os RESERVADOS e chaves desconhecidas são recusados', () => {
+  it('attributes (P6): a forma de REQUISIÇÃO, `[]` ou `null` — normalizada ao que o decodificador lê', () => {
+    expect(conteudoRascunhoShopeeSchema.parse({ attributes: ATRIBUTOS })).toEqual({
+      attributes: ATRIBUTOS,
+    });
+    expect(conteudoRascunhoShopeeSchema.parse({ attributes: [] })).toEqual({ attributes: [] });
+    expect(conteudoRascunhoShopeeSchema.parse({ attributes: null })).toEqual({ attributes: null });
+    expect(
+      conteudoRascunhoShopeeSchema.parse({
+        attributes: [
+          {
+            attribute_id: 1,
+            attribute_value_list: [{ value_id: 0, original_value_name: ' Linho ', value_unit: '' }],
+          },
+        ],
+      }),
+    ).toEqual({
+      attributes: [
+        { attribute_id: 1, attribute_value_list: [{ value_id: 0, original_value_name: 'Linho' }] },
+      ],
+    });
+  });
+
+  it('⛔ attributes (P6): a forma de LEITURA, o legado sem value_id, uma lista vazia de valores, um id repetido — 400', () => {
+    for (const ruim of [
+      [
+        {
+          attribute_id: 1,
+          attribute_value_list: [{ value_id: 55, original_value_name: 'Algodão' }],
+        },
+      ],
+      [
+        {
+          attribute_id: 1,
+          original_attribute_name: 'Material',
+          attribute_value_list: [{ value_id: 55, original_value_name: null, value_unit: null }],
+        },
+      ],
+      [{ attribute_id: 1, attribute_value_list: [{ original_value_name: 'Algodão' }] }],
+      [{ attribute_id: 1, attribute_value_list: [{ value_id: 0 }] }],
+      [{ attribute_id: 1, attribute_value_list: [{ value_id: '55' }] }],
+      [{ attribute_id: 1, attribute_value_list: [] }],
+      [
+        { attribute_id: 1, attribute_value_list: [{ value_id: 5 }] },
+        { attribute_id: 1, attribute_value_list: [{ value_id: 6 }] },
+      ],
+      [{ attribute_id: 1, attribute_value_list: [{ value_id: 5 }], is_mandatory: true }],
+      { attribute_id: 1, attribute_value_list: [{ value_id: 5 }] },
+    ]) {
+      expect(
+        conteudoRascunhoShopeeSchema.safeParse({ attributes: ruim }).success,
+        JSON.stringify(ruim),
+      ).toBe(false);
+    }
+  });
+
+  it('⛔ a whitelist: item_id, um campo de ciclo de vida, o RESERVADO e chaves desconhecidas são recusados', () => {
     for (const ruim of [
       { item_id: 2500139861 },
       { item_status: 'NORMAL' },
       { brand_id: 77 },
       { original_brand_name: 'Acme' },
       { publicacaoEmCurso: null },
-      { attributes: [] },
       { logistic_info: [] },
       { item_name: 'Camiseta', foo: 1 },
     ]) {
@@ -1331,6 +1525,20 @@ describe('conteudoRascunhoShopeeSchema — a whitelist de escrita (normaliza)', 
       { description: 'Algodão', marca: { brand_id: 0, original_brand_name: 'No Brand' } },
       { marca: { brand_id: 77, original_brand_name: '  ' } },
       { marca: { brand_id: 77, original_brand_name: 'Acme' }, category_id: null },
+      { attributes: ATRIBUTOS },
+      { attributes: [] },
+      { attributes: null, category_id: 100087 },
+      {
+        attributes: [
+          {
+            attribute_id: 1,
+            attribute_value_list: [
+              { value_id: 0, original_value_name: '  Linho ', value_unit: ' ' },
+              { value_id: 9, value_unit: ' kg' },
+            ],
+          },
+        ],
+      },
     ];
     for (const bruto of conteudos) {
       const conteudo = conteudoRascunhoShopeeSchema.parse(bruto);
@@ -1338,6 +1546,8 @@ describe('conteudoRascunhoShopeeSchema — a whitelist de escrita (normaliza)', 
       expect(todosIguais(lidos, conteudo), JSON.stringify(bruto)).toBe(true);
       // e o nome da marca volta exatamente como foi gravado, não só o id
       if (conteudo.marca !== undefined) expect(lidos.marca).toEqual(conteudo.marca);
+      // e os atributos voltam BYTE a byte: a escrita já grava a forma que o decodificador lê
+      if (conteudo.attributes !== undefined) expect(lidos.attributes).toEqual(conteudo.attributes);
     }
   });
 });
@@ -1351,6 +1561,7 @@ const BASE_COMPLETA = {
   description: null,
   category_id: 100087,
   marca: { brand_id: 0, original_brand_name: null },
+  attributes: null,
 };
 
 describe('baseRascunhoShopeeSchema — o que o operador VIU, verbatim (K2-4)', () => {
@@ -1387,10 +1598,42 @@ describe('baseRascunhoShopeeSchema — o que o operador VIU, verbatim (K2-4)', (
     });
   });
 
+  it('attributes (P6): VERBATIM e tolerante — sem mínimo, sem trim, "" fica "", ids inteiros quaisquer', () => {
+    const visto = [
+      { attribute_id: 1, attribute_value_list: [] },
+      {
+        attribute_id: -3,
+        attribute_value_list: [
+          { value_id: 0, original_value_name: ' Linho ', value_unit: '' },
+          { value_id: 0, original_value_name: '' },
+          { value_id: 2 ** 60 },
+        ],
+      },
+    ];
+    expect(baseRascunhoShopeeSchema.parse({ attributes: visto })).toEqual({ attributes: visto });
+    expect(baseRascunhoShopeeSchema.parse({ attributes: null })).toEqual({ attributes: null });
+    expect(baseRascunhoShopeeSchema.parse({ attributes: [] })).toEqual({ attributes: [] });
+  });
+
+  it('⛔ attributes (P6): estrita mesmo tolerante — chave a mais, nulo da leitura, id não inteiro', () => {
+    for (const ruim of [
+      [{ attribute_id: 1, attribute_value_list: [{ value_id: 5, extra: 1 }] }],
+      [{ attribute_id: 1, attribute_value_list: [{ value_id: 5, value_unit: null }] }],
+      [{ attribute_id: 1, attribute_value_list: [{ value_id: 1.5 }] }],
+      [{ attribute_id: '1', attribute_value_list: [] }],
+      [{ attribute_id: 1 }],
+      [{ attribute_id: 1, attribute_value_list: [], original_attribute_name: 'x' }],
+    ]) {
+      expect(
+        baseRascunhoShopeeSchema.safeParse({ attributes: ruim }).success,
+        JSON.stringify(ruim),
+      ).toBe(false);
+    }
+  });
+
   it('⛔ estrita: chave desconhecida, campo RESERVADO, par incompleto e tipo errado são recusados', () => {
     for (const ruim of [
       { foo: 1 },
-      { attributes: null },
       { logistic_info: null },
       { brand_id: 77 },
       { marca: { brand_id: 77 } },
@@ -1411,6 +1654,20 @@ describe('baseRascunhoShopeeSchema — o que o operador VIU, verbatim (K2-4)', (
       { item_name: 7, category_id: 'x', brand_id: 77, original_brand_name: '' },
       { item_name: 'Camiseta', brand_id: 0, original_brand_name: 'No Brand' },
       { item_name: 'z'.repeat(5_000), description: 'y'.repeat(20_000) },
+      { attributes: ATRIBUTOS },
+      { attributes: [] },
+      { attributes: 'x' },
+      {
+        attributes: [
+          { attribute_id: -3, attribute_value_list: [{ value_id: 2 ** 60 }] },
+          { attribute_id: 7, attribute_value_list: [{ original_value_name: ' legado ' }] },
+          {
+            attribute_id: 8,
+            attribute_value_list: [{ value_id: 9, original_value_name: 'x', value_unit: null }],
+          },
+          { attribute_id: 'lixo' },
+        ],
+      },
     ];
     const descarte = corpoDescartarRascunhoShopeeSchema.shape.base;
     for (const guardado of guardados) {
@@ -1545,12 +1802,92 @@ describe('corpoAtualizarRascunhoShopeeSchema — POST rascunho/atualizar', () =>
   it('PAR: `base` nomeia exatamente os campos de `patch` — em qualquer ordem de chaves', () => {
     const lido = corpoAtualizarRascunhoShopeeSchema.parse(
       atualizar(
-        { category_id: null, item_name: 'Camiseta' },
+        { marca: null, item_name: 'Camiseta' },
+        { item_name: 'Camiseta Azul', marca: { brand_id: 77, original_brand_name: 'Acme' } },
+      ),
+    );
+    expect(lido.base).toEqual({ marca: null, item_name: 'Camiseta' });
+    expect(lido.patch).toEqual({
+      item_name: 'Camiseta Azul',
+      marca: { brand_id: 77, original_brand_name: 'Acme' },
+    });
+  });
+
+  it('PAR (K1-12, P6): trocar category_id exige a base dos ATRIBUTOS que a troca apaga — com eles, aceito', () => {
+    const lido = corpoAtualizarRascunhoShopeeSchema.parse(
+      atualizar(
+        { category_id: null, item_name: 'Camiseta', attributes: ATRIBUTOS },
         { item_name: 'Camiseta Azul', category_id: 100087 },
       ),
     );
-    expect(lido.base).toEqual({ category_id: null, item_name: 'Camiseta' });
+    expect(lido.base).toEqual({ category_id: null, item_name: 'Camiseta', attributes: ATRIBUTOS });
     expect(lido.patch).toEqual({ item_name: 'Camiseta Azul', category_id: 100087 });
+    // `attributes: null` IS a base (the operator saw none) — absent is not
+    expect(
+      corpoAtualizarRascunhoShopeeSchema.safeParse(
+        atualizar({ category_id: 1, attributes: null }, { category_id: 2 }),
+      ).success,
+    ).toBe(true);
+  });
+
+  it('⛔ (K1-12, P6): trocar category_id SEM attributes na base é 400, com a frase própria', () => {
+    for (const [base, patch] of [
+      [{ category_id: 1 }, { category_id: 2 }],
+      [{ category_id: 1 }, { category_id: null }],
+      [
+        { item_name: 'A', category_id: 1 },
+        { item_name: 'B', category_id: 2 },
+      ],
+    ] as const) {
+      const lido = corpoAtualizarRascunhoShopeeSchema.safeParse(atualizar(base, patch));
+      expect(lido.success, JSON.stringify([base, patch])).toBe(false);
+      expect(mensagens(lido)).toEqual([
+        MSG_BASE_SEM_ATRIBUTOS_NA_TROCA_DE_CATEGORIA_RASCUNHO_SHOPEE,
+      ]);
+      expect(lido.error?.issues[0]?.path).toEqual(['base']);
+    }
+  });
+
+  it('QUASE-PAR (K1-12, P6): o patch que traz os próprios attributes já os nomeia — nenhuma base extra', () => {
+    expect(
+      corpoAtualizarRascunhoShopeeSchema.safeParse(
+        atualizar({ category_id: 1, attributes: ATRIBUTOS }, { category_id: 2, attributes: [] }),
+      ).success,
+    ).toBe(true);
+    expect(
+      corpoAtualizarRascunhoShopeeSchema.safeParse(
+        atualizar({ attributes: null }, { attributes: ATRIBUTOS }),
+      ).success,
+    ).toBe(true);
+  });
+
+  it('⛔ QUASE-PAR (P6): attributes na base SEM troca de categoria e sem attributes no patch — campo a mais, 400', () => {
+    const lido = corpoAtualizarRascunhoShopeeSchema.safeParse(
+      atualizar({ item_name: 'A', attributes: null }, { item_name: 'B' }),
+    );
+    expect(lido.success).toBe(false);
+    expect(mensagens(lido)).toEqual([MSG_BASE_DIFERENTE_DO_PATCH_RASCUNHO_SHOPEE]);
+  });
+
+  it('(K1-12) o salvamento de atributos do operador B chegou; a troca de categoria de A com a base VELHA diverge em `attributes` ⟷ com a ATUAL, não', () => {
+    // A opened the draft with no attributes; B then saved some.
+    const guardadoDepoisDeB = camposDoRascunhoShopee({
+      item_id: null,
+      category_id: 100087,
+      attributes: ATRIBUTOS,
+    });
+    const divergentes = (base: unknown): CampoRascunhoShopee[] => {
+      const lido = corpoAtualizarRascunhoShopeeSchema.parse(
+        atualizar(base, { category_id: 100030 }),
+      );
+      const vista = lido.base as unknown as Record<CampoRascunhoShopee, never>;
+      const atual = guardadoDepoisDeB as unknown as Record<CampoRascunhoShopee, never>;
+      return camposDaBaseDoRascunhoShopee(lido.patch).filter(
+        (campo) => !mesmoValorDoRascunhoShopee(campo, atual[campo], vista[campo]),
+      );
+    };
+    expect(divergentes({ category_id: 100087, attributes: null })).toEqual(['attributes']);
+    expect(divergentes({ category_id: 100087, attributes: ATRIBUTOS })).toEqual([]);
   });
 
   it('`base` é VERBATIM e `patch` é NORMALIZADO, no mesmo corpo', () => {
@@ -1649,10 +1986,21 @@ describe('corpoAtualizarRascunhoShopeeSchema — POST rascunho/atualizar', () =>
     }
   });
 
-  it('⛔ o patch passa pela whitelist: item_id, um RESERVADO ou um título em branco são 400', () => {
+  it('⛔ o patch passa pela whitelist: item_id, o RESERVADO, atributos na forma de LEITURA ou um título em branco são 400', () => {
     for (const [base, patch] of [
       [{}, { item_id: 2500139861 }],
-      [{ attributes: null }, { attributes: [] }],
+      [{ logistic_info: null }, { logistic_info: [] }],
+      [
+        { attributes: null },
+        {
+          attributes: [
+            {
+              attribute_id: 1,
+              attribute_value_list: [{ value_id: 5, original_value_name: 'X', value_unit: null }],
+            },
+          ],
+        },
+      ],
       [{ item_name: 'A' }, { item_name: '  ' }],
     ] as const) {
       expect(
@@ -1695,7 +2043,7 @@ describe('corpoDescartarRascunhoShopeeSchema — POST rascunho/descartar (K1-13,
 
   it('⛔ base com RESERVADO ou chave desconhecida, atestação não booleana, corpo sem base: 400', () => {
     for (const ruim of [
-      { ...corpo, base: { ...BASE_COMPLETA, attributes: null } },
+      { ...corpo, base: { ...BASE_COMPLETA, logistic_info: null } },
       { ...corpo, base: { ...BASE_COMPLETA, foo: 1 } },
       { ...corpo, confirmarCriacaoIncerta: 'sim' },
       { ...IDS, linkDocId: ID_RASCUNHO },
@@ -1720,6 +2068,26 @@ describe('corpoDescartarRascunhoShopeeSchema — POST rascunho/descartar (K1-13,
         ),
     );
     expect(diferentes).toEqual(['item_name']);
+  });
+
+  it('a corrida (K1-13, P6): um salvamento de ATRIBUTOS feito depois do que o operador viu também aparece', () => {
+    const visto = camposDoRascunhoShopee({ item_id: null, item_name: 'Camiseta', brand_id: 0 });
+    const { base } = corpoDescartarRascunhoShopeeSchema.parse({ ...corpo, base: visto });
+    const depois = camposDoRascunhoShopee({
+      item_id: null,
+      item_name: 'Camiseta',
+      brand_id: 0,
+      attributes: ATRIBUTOS,
+    });
+    const diferentes = camposPresentesDoRascunhoShopee(base).filter(
+      (campo) =>
+        !mesmoValorDoRascunhoShopee(
+          campo,
+          (depois as unknown as Record<CampoRascunhoShopee, never>)[campo],
+          (base as unknown as Record<CampoRascunhoShopee, never>)[campo],
+        ),
+    );
+    expect(diferentes).toEqual(['attributes']);
   });
 });
 
@@ -1751,6 +2119,31 @@ describe('a repetição de uma criação (K1-9) — o mesmo conteúdo ⟷ outro 
       marca: { brand_id: 0, original_brand_name: null },
     });
     expect(todosIguais(guardado, repeticao)).toBe(false);
+  });
+
+  it('PAR/QUASE-PAR (P6): a repetição com os MESMOS atributos (nome com espaço normalizado) é igual ⟷ com outro valor, não', () => {
+    const comAtributos = conteudoRascunhoShopeeSchema.parse({
+      item_name: 'Camiseta',
+      attributes: ATRIBUTOS,
+    });
+    const guardadoComAtributos = camposDoRascunhoShopee(gravado(comAtributos));
+    const mesma = conteudoRascunhoShopeeSchema.parse({
+      item_name: 'Camiseta',
+      attributes: [
+        ATRIBUTOS[0],
+        {
+          attribute_id: 11,
+          attribute_value_list: [{ value_id: 0, original_value_name: ' Algodão ', value_unit: '' }],
+        },
+        ATRIBUTOS[2],
+      ],
+    });
+    expect(todosIguais(guardadoComAtributos, mesma)).toBe(true);
+    const outra = conteudoRascunhoShopeeSchema.parse({
+      item_name: 'Camiseta',
+      attributes: [{ attribute_id: 10, attribute_value_list: [{ value_id: 56 }] }],
+    });
+    expect(todosIguais(guardadoComAtributos, outra)).toBe(false);
   });
 });
 
@@ -1837,6 +2230,15 @@ describe('shopeeRascunho.ts — o texto do arquivo', () => {
       expect(FONTE, proibido).not.toContain(proibido);
     }
     expect(FONTE).toContain('MILLISECONDS');
+  });
+
+  it('(K2-5) a comparação estrutural é a do repo (`valuesEqual`), nunca uma cópia privada nem o helper do inventário de dobras', () => {
+    expect(FONTE).toContain("import { valuesEqual } from '@delfrance/core/equality';");
+    // `deepEqual` is in the fold inventory's PATTERN: spelling it here — even in
+    // a comment — would demand an inventory entry for a helper this file does
+    // not use (and `valuesEqual` must NOT get one: the stale-entry test).
+    expect(FONTE).not.toMatch(/\bdeepEqual\b/);
+    expect(FONTE).not.toContain('JSON.stringify');
   });
 });
 
