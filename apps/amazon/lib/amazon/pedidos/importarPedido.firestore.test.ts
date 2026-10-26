@@ -25,7 +25,15 @@
  *    stale pedido precondition writes no pagamento), the PAGAMENTO's carrier on
  *    an arm that only read its status (PR 5-d's residue, closed), and the
  *    commit clock taken as the LATEST `writeTime` — the server answers a
- *    content-identical write with the document's previous update time.
+ *    content-identical write with the document's previous update time;
+ *  - (PR 7) Easy Ship's packages in the same batch: a package-only change at an
+ *    EQUAL order clock lands (the diary's extra `statusMarketplace` key survives
+ *    the real write and parse), an unchanged redelivery commits nothing, a
+ *    cancelling read that reports a pickup keeps the estado (the fold is read
+ *    before the CANCELLED decision), and an operator's freight change landing
+ *    between the read and the commit fails attempt 1 — the update path writes
+ *    the whole `freteInicial` map, so the pedido's precondition is what keeps
+ *    it — and attempt 2 re-derives from what landed.
  *
  * ⚠️ D11. The read switch is ON in exactly one place: the object literal handed
  * to the context as `ambiente`. Never through `process.env` (the lane sets it
@@ -65,6 +73,7 @@ import {
   ATUALIZADO_US,
   depois,
   linhaAmazon,
+  pacoteAmazon,
   pedidoAmazon,
   type OpcoesPedidoTeste,
 } from '../testing/pedidoWireAmazon';
@@ -335,29 +344,31 @@ describe.skipIf(!EMULATED)('the Amazon order import on real Firestore (emulator)
     const incidente = await db().doc(`${CAMINHO}/incidentes/amz-prod-L9`).get();
     expect(incidente.data()).toMatchObject({ subtipo: 'unresolved', externalId: 'L9' });
   });
+  /** The writer called directly (no getOrder), on the read the caller took: PR 6 and PR 7. */
+  const ENTRADAS_CI = {
+    integracaoPedidoOuterRef: `documents/integracao/${CONTA}`,
+    operacaoPedidoOuterRef: null,
+    clientePedidoOuterRef: null,
+    enderecoFreteOuterReference: null,
+    integracaoFreteOuterRef: null,
+    modalidadeFreteImportacao: null,
+    vinculos: new Map<string, string>(),
+  };
+  const gravar = async (
+    order: ReturnType<typeof pedidoAmazon>,
+    primeiraLeitura: Awaited<ReturnType<typeof lerPedidoEPagamentoAmazon>>,
+  ) =>
+    gravarPedidoAmazon(db(), {
+      contaId: CONTA,
+      orderId: ORDER,
+      pedidoId: PEDIDO,
+      primeiraLeitura,
+      nowUs: agoraUsDe({ nowMs: Date.now() }),
+      mapear: () => mapearPedidoAmazon(order, ENTRADAS_CI),
+    });
+
   describe('★ PR 6 — the pagamento in the batch, on the real server', () => {
     const PAGAMENTO = `${CAMINHO}/pagamentos/${PEDIDO}`;
-    const ENTRADAS_CI = {
-      integracaoPedidoOuterRef: `documents/integracao/${CONTA}`,
-      operacaoPedidoOuterRef: null,
-      clientePedidoOuterRef: null,
-      enderecoFreteOuterReference: null,
-      integracaoFreteOuterRef: null,
-      modalidadeFreteImportacao: null,
-      vinculos: new Map<string, string>(),
-    };
-    const gravar = async (
-      order: ReturnType<typeof pedidoAmazon>,
-      primeiraLeitura: Awaited<ReturnType<typeof lerPedidoEPagamentoAmazon>>,
-    ) =>
-      gravarPedidoAmazon(db(), {
-        contaId: CONTA,
-        orderId: ORDER,
-        pedidoId: PEDIDO,
-        primeiraLeitura,
-        nowUs: agoraUsDe({ nowMs: Date.now() }),
-        mapear: () => mapearPedidoAmazon(order, ENTRADAS_CI),
-      });
 
     it('★ the PEDIDO carrier: a stale pedido precondition writes NO pagamento; attempt 2 re-derives from the operator’s cancel and writes none', async () => {
       expect((await importar(corpo({ status: 'UNSHIPPED' }))).kind).toBe('importado');
@@ -408,6 +419,104 @@ describe.skipIf(!EMULATED)('the Amazon order import on real Firestore (emulator)
       const pagamento = await db().doc(PAGAMENTO).get();
       expect(r.writeTime.isEqual(pagamento.updateTime!)).toBe(true);
       expect(pagamento.data()?.status_pagamento).toBe(STATUS_PAGAMENTO.aprovado);
+    });
+  });
+
+  describe('★ PR 7 — Easy Ship packages → freteInicial, on the real server', () => {
+    const notaAceita = { tax: { taxInvoicing: { invoiceStatus: 'ACCEPTED' } } };
+    const frete = async () =>
+      ((await db().doc(CAMINHO).get()).data()?.freteInicial ?? {}) as Record<string, unknown>;
+
+    it('★ a package-only change at an EQUAL order clock LANDS; the unchanged redelivery commits nothing (the update time does not move)', async () => {
+      expect((await importar(corpo({ status: 'UNSHIPPED', extra: notaAceita }))).kind).toBe(
+        'importado',
+      );
+      expect((await frete()).estado).toBe('aguardandoAgendamento');
+      const comPacote = corpo({
+        status: 'UNSHIPPED',
+        extra: notaAceita,
+        pacotesBrutos: [
+          pacoteAmazon('PKG-1', 'PENDING_PICK_UP', { status: 'PENDING', rastreio: 'TRK-CI-1' }),
+        ],
+      });
+      // The SAME order clock: only the package moved.
+      expect((await importar(comPacote)).kind).toBe('importado');
+      const depoisDoPacote = await frete();
+      expect(depoisDoPacote).toMatchObject({
+        estado: 'aguardandoPostagem',
+        codRastreio: 'TRK-CI-1',
+      });
+      expect(depoisDoPacote.pacotes).toEqual([
+        {
+          numero: 'PKG-1',
+          estado: 'aguardandoPostagem',
+          estadoMarketplace: 'PENDING_PICK_UP',
+          statusMarketplace: 'PENDING',
+          codRastreio: 'TRK-CI-1',
+          canalId: null,
+          prazoDespacho: null,
+          atualizadoEm: ATUALIZADO_US,
+          fonte: 'getOrder',
+        },
+      ]);
+      const carimbo = (await db().doc(CAMINHO).get()).updateTime;
+      expect((await importar(comPacote)).kind).toBe('sem-mudanca');
+      expect((await db().doc(CAMINHO).get()).updateTime?.isEqual(carimbo!)).toBe(true);
+    });
+
+    it('★ the fold is read BEFORE the CANCELLED decision: the cancelling read reports a pickup ⇒ the estado and the pagamento KEPT, freight postado, amz-cancelado-apos-envio', async () => {
+      await importar(
+        corpo({
+          status: 'UNSHIPPED',
+          extra: notaAceita,
+          pacotesBrutos: [pacoteAmazon('PKG-1', 'PENDING_PICK_UP')],
+        }),
+      );
+      expect((await frete()).estado).toBe('aguardandoPostagem');
+      const r = await importar(
+        corpo({
+          status: 'CANCELLED',
+          atualizadoEm: depois(60),
+          extra: notaAceita,
+          pacotesBrutos: [pacoteAmazon('PKG-1', 'PICKED_UP')],
+        }),
+      );
+      expect(r.kind).toBe('importado');
+      const final = (await db().doc(CAMINHO).get()).data() ?? {};
+      expect(final.estado).toBe('pago');
+      expect((final.freteInicial as Record<string, unknown>).estado).toBe('postado');
+      expect(
+        (await db().doc(`${CAMINHO}/pagamentos/${PEDIDO}`).get()).data()?.status_pagamento,
+      ).toBe(STATUS_PAGAMENTO.aprovado);
+      expect((await db().doc(`${CAMINHO}/incidentes/amz-cancelado-apos-envio`).get()).exists).toBe(
+        true,
+      );
+    });
+
+    it('★ a concurrent freight change between the read and the commit (an operator checkout): attempt 1 loses its precondition, attempt 2 refuses the regression and still lands the diary and codRastreio', async () => {
+      expect((await importar(corpo({ status: 'UNSHIPPED', extra: notaAceita }))).kind).toBe(
+        'importado',
+      );
+      expect((await frete()).estado).toBe('aguardandoAgendamento');
+      const primeiraLeitura = await lerPedidoEPagamentoAmazon(db(), PEDIDO);
+      // The operator's dispatch checkout lands after that read. The update path
+      // writes the WHOLE freteInicial map, so only the precondition keeps it.
+      await db().doc(CAMINHO).update({ 'freteInicial.estado': 'checkFinalizado' });
+      const r = await gravar(
+        pedidoAmazon({
+          status: 'UNSHIPPED',
+          extra: notaAceita,
+          pacotesBrutos: [pacoteAmazon('PKG-1', 'PENDING_PICK_UP', { rastreio: 'TRK-CI-2' })],
+        }),
+        primeiraLeitura,
+      );
+      expect(r).toMatchObject({ tipo: 'gravado', tentativas: 2 });
+      const final = await frete();
+      // PENDING_PICK_UP (rung 8) never undoes the checkout (rung 9) …
+      expect(final.estado).toBe('checkFinalizado');
+      // … while the read's own diary and tracking number still land.
+      expect(final.codRastreio).toBe('TRK-CI-2');
+      expect((final.pacotes as Record<string, unknown>[]).map((l) => l.numero)).toEqual(['PKG-1']);
     });
   });
 });

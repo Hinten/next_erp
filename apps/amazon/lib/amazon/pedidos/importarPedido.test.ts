@@ -17,6 +17,7 @@ import {
   MOTIVO_CONTA_AMAZON,
   MOTIVO_PEDIDO_AMAZON,
   TIPO_AVISO,
+  motivoPedidoAmazonSchema,
 } from '@delfrance/schemas';
 
 import {
@@ -44,6 +45,7 @@ import {
   depois,
   execucaoAmazon,
   linhaAmazon,
+  pacoteAmazon,
   pedidoAmazon,
   type OpcoesPedidoTeste,
 } from '../testing/pedidoWireAmazon';
@@ -55,6 +57,7 @@ import {
 } from './erros';
 import {
   JANELA_CANCELAMENTO_RECENTE_AMAZON_US,
+  MOTIVOS_PEDIDO_DO_IMPORTADOR_AMAZON,
   clienteDoEnderecoAmazon,
   importarPedidoAmazon,
   motivosDaContaAmazon,
@@ -1083,9 +1086,32 @@ describe('motivosDoPedidoAmazon — the resolvers (decision 26 as amended)', () 
         'aceitar-cancelamento',
       ]),
     );
-    // PR 7's motivos are never touched here.
-    expect(r.resolver).not.toContain('pacote-status-desconhecido');
-    expect(r.resolver).not.toContain('coleta-cancelada');
+    // PR 7: the two freight motivos join the list — resolved when not derived.
+    expect(r.resolver).toEqual(
+      expect.arrayContaining(['pacote-status-desconhecido', 'coleta-cancelada']),
+    );
+  });
+
+  it('★ PR 7: a derived freight motivo is RAISED and never resolved, while its condition holds (each one alone, and both)', () => {
+    for (const avisos of [
+      ['pacote-status-desconhecido'],
+      ['coleta-cancelada'],
+      ['coleta-cancelada', 'pacote-status-desconhecido'],
+    ] as const) {
+      for (const fase of ['apr', 'env', 'desconhecida', 'pre'] as const) {
+        const r = motivosDoPedidoAmazon({
+          decisao: { ...base, avisos },
+          fase,
+          estadoFinal: ESTADO_PEDIDO.pago,
+        });
+        expect(r.levantar, `${avisos.join('+')} ${fase}`).toEqual(avisos);
+        for (const m of avisos) expect(r.resolver, `${m} ${fase}`).not.toContain(m);
+      }
+    }
+    // The list holds all EIGHT motivos of the tipo (none left to a later PR).
+    expect([...MOTIVOS_PEDIDO_DO_IMPORTADOR_AMAZON].sort()).toEqual(
+      [...motivoPedidoAmazonSchema.options].sort(),
+    );
   });
 
   it('divergencia-itens is NOT resolved while the import kept the stored estado (the block stands)', () => {
@@ -1285,5 +1311,180 @@ describe('★ PR 6 — the pagamento rides the import', () => {
       relogioDoDocumentoUs(ex.h.db.carimboDe(PAGAMENTO) as never),
     );
     expect(depoisDaCarga?.relogioEvento).toBeGreaterThan(antes?.relogioEvento as number);
+  });
+});
+
+/* --------------------------- PR 7: the freight, end to end --------------------------- */
+
+describe('★ PR 7 — Easy Ship packages through the import', () => {
+  /** The approved buyer, with the order's invoice status beside the BUYER registration. */
+  function comNota(invoiceStatus: string): Record<string, unknown> {
+    const c = comprador();
+    return {
+      ...c,
+      tax: { ...(c.tax as Record<string, unknown>), taxInvoicing: { invoiceStatus } },
+    };
+  }
+  const frete = (ex: Execucao) => ex.h.db.ler(CAMINHO)?.freteInicial as Record<string, unknown>;
+
+  it('LABEL_CANCELLED ⇒ freight despachoNegado + the coleta-cancelada aviso; the reschedule at an EQUAL clock RESOLVES the aviso while the ladder keeps the failure', async () => {
+    const ex = montar();
+    const extra = comNota('ACCEPTED');
+    await ex.importar(
+      pedido({
+        status: 'UNSHIPPED',
+        extra,
+        pacotesBrutos: [pacoteAmazon('PKG-1', 'LABEL_CANCELLED')],
+      }),
+    );
+    expect(frete(ex).estado).toBe('despachoNegado');
+    expect(avisoPedido(ex, MOTIVO_PEDIDO_AMAZON.coletaCancelada)).toMatchObject({
+      resolvidoEm: null,
+      severidade: 'atencao',
+    });
+    await ex.importar(
+      pedido({
+        status: 'UNSHIPPED',
+        extra,
+        pacotesBrutos: [pacoteAmazon('PKG-1', 'PENDING_PICK_UP')],
+      }),
+    );
+    expect(avisoPedido(ex, MOTIVO_PEDIDO_AMAZON.coletaCancelada)?.resolvidoEm).not.toBeNull();
+    // An equal clock never resurrects: the stored failure stands until a newer read.
+    expect(frete(ex).estado).toBe('despachoNegado');
+    await ex.importar(
+      pedido({
+        status: 'UNSHIPPED',
+        atualizadoEm: depois(60),
+        extra,
+        pacotesBrutos: [pacoteAmazon('PKG-1', 'PENDING_PICK_UP')],
+      }),
+    );
+    expect(frete(ex).estado).toBe('aguardandoPostagem');
+    expect(linhasPedido(ex).map((l) => l.codigo)).toContain('frete-ressuscitado');
+  });
+
+  it('★ NEAR-MISS: coleta-cancelada stays OPEN while a package is still LABEL_CANCELLED (another package moving does not resolve it); the order CANCELLED resolves it', async () => {
+    const ex = montar();
+    const extra = comNota('ACCEPTED');
+    const cancelada = pacoteAmazon('PKG-1', 'LABEL_CANCELLED');
+    await ex.importar(pedido({ status: 'UNSHIPPED', extra, pacotesBrutos: [cancelada] }));
+    await ex.importar(
+      pedido({
+        status: 'UNSHIPPED',
+        atualizadoEm: depois(30),
+        extra,
+        pacotesBrutos: [cancelada, pacoteAmazon('PKG-2', 'PENDING_PICK_UP')],
+      }),
+    );
+    expect(avisoPedido(ex, MOTIVO_PEDIDO_AMAZON.coletaCancelada)?.resolvidoEm).toBeNull();
+    await ex.importar(
+      pedido({ status: 'CANCELLED', atualizadoEm: depois(60), extra, pacotesBrutos: [cancelada] }),
+    );
+    expect(avisoPedido(ex, MOTIVO_PEDIDO_AMAZON.coletaCancelada)?.resolvidoEm).not.toBeNull();
+  });
+
+  it('★ an unknown token ⇒ pacote-status-desconhecido + ONE count line with counts and closed codes only (never the token, never a tracking number); every token known and keyed resolves it', async () => {
+    const ex = montar();
+    const extra = comNota('ACCEPTED');
+    await ex.importar(
+      pedido({
+        status: 'UNSHIPPED',
+        extra,
+        pacotesBrutos: [
+          pacoteAmazon('PKG-1', 'TOKEN_NOVO_X', { rastreio: 'TRK-SECRETO-1' }),
+          pacoteAmazon('PKG-2', 'PENDING_PICK_UP', { status: 'PENDING' }),
+        ],
+      }),
+    );
+    // The fold is BLOCKED: the seed stays (the known package does not answer for its sibling).
+    expect(frete(ex).estado).toBe('iniciado');
+    expect(avisoPedido(ex, MOTIVO_PEDIDO_AMAZON.pacoteStatusDesconhecido)).toMatchObject({
+      resolvidoEm: null,
+    });
+    const linha = linhasPedido(ex).filter((l) => l.codigo === 'pacote-nao-mapeado');
+    expect(linha).toHaveLength(1);
+    expect(linha[0]).toMatchObject({
+      pedido: ORDER_ID_TESTE,
+      pacotes: 2,
+      pacotesNaoMapeados: 1,
+      pacotesSemChave: 0,
+      statusPacotes: 'IN_TRANSIT,PENDING',
+    });
+    // This import's own lines (the `pedido` event). The getOrder CALL line's
+    // excerpt is step 2b's redactor's, which shows Amazon-made ids by grammar.
+    expect(JSON.stringify(linhasPedido(ex))).not.toMatch(/TOKEN_NOVO_X|TRK-SECRETO/);
+    // A non-freight event line carries no package campos.
+    expect(
+      linhasPedido(ex).filter((l) => l.codigo !== 'pacote-nao-mapeado' && 'pacotes' in l),
+    ).toEqual([]);
+
+    await ex.importar(
+      pedido({
+        status: 'UNSHIPPED',
+        atualizadoEm: depois(60),
+        extra,
+        pacotesBrutos: [
+          pacoteAmazon('PKG-1', 'PENDING_PICK_UP', { rastreio: 'TRK-SECRETO-1' }),
+          pacoteAmazon('PKG-2', 'PENDING_PICK_UP', { status: 'PENDING' }),
+        ],
+      }),
+    );
+    expect(
+      avisoPedido(ex, MOTIVO_PEDIDO_AMAZON.pacoteStatusDesconhecido)?.resolvidoEm,
+    ).not.toBeNull();
+    expect(frete(ex)).toMatchObject({ estado: 'aguardandoPostagem', codRastreio: 'TRK-SECRETO-1' });
+  });
+
+  it('★ the package fold is read BEFORE the CANCELLED decision: a pickup Amazon reports in the cancelling read keeps the estado, the pagamento and files cancelado-apos-envio', async () => {
+    const ex = montar();
+    const extra = comNota('ACCEPTED');
+    await ex.importar(
+      pedido({
+        status: 'UNSHIPPED',
+        extra,
+        pacotesBrutos: [pacoteAmazon('PKG-1', 'PENDING_PICK_UP')],
+      }),
+    );
+    expect(frete(ex).estado).toBe('aguardandoPostagem');
+    await ex.importar(
+      pedido({
+        status: 'CANCELLED',
+        atualizadoEm: depois(60),
+        extra,
+        pacotesBrutos: [pacoteAmazon('PKG-1', 'PICKED_UP')],
+      }),
+    );
+    expect(ex.h.db.ler(CAMINHO)?.estado).toBe('pago');
+    expect(frete(ex).estado).toBe('postado');
+    expect(ex.h.db.ler(`${CAMINHO}/pagamentos/${PEDIDO_ID}`)?.status_pagamento).toBe(4);
+    expect(incidente(ex, 'amz-cancelado-apos-envio')).toBeDefined();
+  });
+
+  it('★ a CANCELLED read still carrying an unknown token keeps pacote-status-desconhecido OPEN, and its picked-up sibling keeps the estado (goods out from EVERY package)', async () => {
+    const ex = montar();
+    const extra = comNota('ACCEPTED');
+    const desconhecido = pacoteAmazon('PKG-2', 'TOKEN_NOVO_X');
+    await ex.importar(
+      pedido({
+        status: 'UNSHIPPED',
+        extra,
+        pacotesBrutos: [pacoteAmazon('PKG-1', 'PENDING_PICK_UP'), desconhecido],
+      }),
+    );
+    expect(avisoPedido(ex, MOTIVO_PEDIDO_AMAZON.pacoteStatusDesconhecido)?.resolvidoEm).toBeNull();
+    await ex.importar(
+      pedido({
+        status: 'CANCELLED',
+        atualizadoEm: depois(60),
+        extra,
+        pacotesBrutos: [pacoteAmazon('PKG-1', 'PICKED_UP'), desconhecido],
+      }),
+    );
+    expect(avisoPedido(ex, MOTIVO_PEDIDO_AMAZON.pacoteStatusDesconhecido)?.resolvidoEm).toBeNull();
+    expect(ex.h.db.ler(CAMINHO)?.estado).toBe('pago');
+    expect(incidente(ex, 'amz-cancelado-apos-envio')).toBeDefined();
+    // The blocked fold moved nothing: the seed stays (never cancelado).
+    expect(frete(ex).estado).toBe('iniciado');
   });
 });

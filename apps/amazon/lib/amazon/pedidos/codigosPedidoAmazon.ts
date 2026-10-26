@@ -76,7 +76,34 @@ export const EVENTO_PEDIDO_AMAZON = {
    * 14-character CNPJ): `cnpj_instituicao` stays `null`. Never the value.
    */
   cnpjInstituicaoRecusado: 'cnpj-instituicao-recusado',
+  /**
+   * (PR 7) A package the freight table does not know, or one without a usable
+   * reference: no package status moved the freight estado (the aviso
+   * `pacote-status-desconhecido` is the signal; this line counts it). Never the token.
+   */
+  pacoteNaoMapeado: 'pacote-nao-mapeado',
+  /**
+   * (PR 7) A `PENDING_SCHEDULE` package — or an order still to ship without
+   * packages — whose invoice status is absent or unknown: no freight change,
+   * never a guess.
+   */
+  notaFiscalNaoInformada: 'nota-fiscal-nao-informada',
+  /** (PR 7) Invoice status `NOT_REQUIRED` on a `PENDING_SCHEDULE` read: unexpected for a BR Easy Ship order. */
+  notaFiscalNaoExigida: 'nota-fiscal-nao-exigida',
+  /** (PR 7) A non-empty stored `codRastreio` was replaced by Amazon's. Never the value. */
+  codRastreioDivergente: 'codRastreio-divergente',
+  /** (PR 7) A freight failure (`despachoNegado`, …) moved back to a live rung on a newer order clock. */
+  freteRessuscitado: 'frete-ressuscitado',
 } as const satisfies Record<string, string>;
+
+/** The freight events (PR 7): their log lines carry the package counts. */
+export const EVENTOS_FRETE_AMAZON: ReadonlySet<EventoPedidoAmazon> = new Set<EventoPedidoAmazon>([
+  EVENTO_PEDIDO_AMAZON.pacoteNaoMapeado,
+  EVENTO_PEDIDO_AMAZON.notaFiscalNaoInformada,
+  EVENTO_PEDIDO_AMAZON.notaFiscalNaoExigida,
+  EVENTO_PEDIDO_AMAZON.codRastreioDivergente,
+  EVENTO_PEDIDO_AMAZON.freteRessuscitado,
+]);
 
 export type EventoPedidoAmazon = (typeof EVENTO_PEDIDO_AMAZON)[keyof typeof EVENTO_PEDIDO_AMAZON];
 

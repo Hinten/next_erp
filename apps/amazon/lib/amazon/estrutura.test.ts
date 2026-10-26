@@ -699,12 +699,15 @@ const CHAMADOR_DE_GET_ORDER = 'lib/amazon/pedidos/lerPedidoAmazon.ts';
 /**
  * Files that NAME `getOrder` without calling it, each with why: the log and
  * fixture redactor keys its allow-list tables by the operation (its closure is
- * pinned to `zod` and `@delfrance/core/*` above), and the test-only fixtures
+ * pinned to `zod` and `@delfrance/core/*` above), the test-only fixtures
  * build a call line for the logger's tests (`testing/` is imported by tests
- * only, pinned above).
+ * only, pinned above), and the PURE freight module (PR 7) stamps the
+ * operation's name as the `fonte` of a package diary row — it loads nothing of
+ * the SP-API package but types, and no context (pinned below), so it cannot call.
  */
 const NOMEIAM_GET_ORDER_SEM_CHAMAR = [
   'lib/amazon/core/redacao.ts',
+  'lib/amazon/frete/estadoFreteAmazon.ts',
   'lib/amazon/testing/fixtures.ts',
 ];
 
@@ -897,6 +900,7 @@ describe('lib/amazon layout', () => {
         'core/renovacaoUnica.ts',
         'core/respond.ts',
         'core/valvulas.ts',
+        'frete/estadoFreteAmazon.ts',
         'frete/intFrete.ts',
         'notificacoes/agendador.ts',
         'notificacoes/corpo.ts',
@@ -1438,6 +1442,24 @@ describe('the step-5 order import guards (5-d)', () => {
       expect(nomeiam).toEqual(expect.arrayContaining(NOMEIAM_GET_ORDER_SEM_CHAMAR));
     },
   );
+
+  it('the freight module’s getOrder mention cannot be a call: it loads the SP-API package as TYPES only, and no context or client (PR 7)', () => {
+    const valores = importacoesDeValor(lerDoApp('lib/amazon/frete/estadoFreteAmazon.ts') ?? '');
+    // Anti-vacuity: the parse saw its value imports.
+    expect(valores).toEqual(expect.arrayContaining(['@delfrance/schemas']));
+    expect(
+      valores.filter(
+        (e) => ehDoPacoteSpApi(e) || /core\/(?:contexto|agente)|notificacoes\//.test(e),
+      ),
+    ).toEqual([]);
+    expect(especificadores(lerDoApp('lib/amazon/frete/estadoFreteAmazon.ts') ?? '')).toContain(
+      PACOTE_SP_API,
+    );
+    // The synthetic positive: a value import of the package is seen.
+    expect(importacoesDeValor(`import { buscarPedido } from '${PACOTE_SP_API}';`)).toEqual([
+      PACOTE_SP_API,
+    ]);
+  });
 
   it(
     `exactly ONE production module opens a WriteBatch: ${LOTE_DO_IMPORTADOR}`,

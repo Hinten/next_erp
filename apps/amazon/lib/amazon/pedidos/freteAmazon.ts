@@ -1,8 +1,8 @@
 /**
  * The Amazon freight block's step-5 half (master plan step 5, PR 5-c): the
  * "goods out" table, the seed of a new `freteInicial`, and the non-money fields
- * a re-import refreshes. The freight ESTADO from Easy Ship packages is PR 7's
- * (`frete/estadoFreteAmazon.ts`).
+ * a re-import refreshes. The freight ESTADO from Easy Ship packages, the
+ * `pacotes[]` diary and `codRastreio` are PR 7's (`frete/estadoFreteAmazon.ts`).
  *
  * PURE: every instant comes through `lerInstanteAmazon` (offset REQUIRED, µs
  * read from Amazon's own text) — there is no clock conversion here, and no
@@ -72,9 +72,14 @@ export const MERCADORIA_FORA: Readonly<Record<EstadoFrete, boolean>> = Object.fr
 });
 
 /**
- * Whether the goods are out, at a STORED freight estado (`null` = no block, or a
- * value outside the enum: read as in the warehouse, like `desconhecido`). PR 7
- * widens the input to "the stored estado OR this attempt's fold target".
+ * Whether the goods are out at ONE freight estado (`null` = no block, no
+ * target, or a value outside the enum: read as in the warehouse, like
+ * `desconhecido`). Since PR 7 the CANCELLED predicate ORs two readings
+ * (`pedidoMapeamento.ts`, plan §3 decision 47): the STORED estado, through the
+ * ladder's legacy-residue projection (`estadoFreteEfetivoAmazon`), and ANY
+ * package of this read (`DobraPacotesAmazon.mercadoriaFora`) — because the
+ * stored freight lags the same read's packages whenever Amazon's clock does not
+ * move on them.
  */
 export function mercadoriaFora(estado: EstadoFrete | null): boolean {
   return estado !== null && MERCADORIA_FORA[estado];

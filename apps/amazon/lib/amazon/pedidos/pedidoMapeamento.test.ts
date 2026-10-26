@@ -5,7 +5,11 @@ import { fileURLToPath } from 'node:url';
 import { roundReais } from '@delfrance/core/money';
 import { nextPedidoEstado } from '@delfrance/data/pedido';
 import {
+  ESTADOS_FRETE_REMOVE_ESTOQUE,
+  ESTADO_FRETE,
   ESTADO_PEDIDO,
+  INTEGRACAO_FRETE,
+  freteDoPedidoSchema,
   STATUS_PAGAMENTO,
   isPagamentoPagante,
   itemDoPedidoSchema,
@@ -22,6 +26,7 @@ import {
   depois,
   execucaoAmazon,
   linhaAmazon,
+  pacoteAmazon,
   pedidoAmazon,
   type OpcoesLinhaTeste,
   type OpcoesPedidoTeste,
@@ -86,6 +91,13 @@ function decisao(r: EscritaPedidoAmazon) {
     throw new Error(`sem decisão: ${r.tipo}`);
   return r.decisao;
 }
+
+/**
+ * PR 7: an order still to ship whose read carries no package and no invoice
+ * status counts one `nota-fiscal-nao-informada` line (no freight change, never
+ * a guess) — the default test order is exactly that.
+ */
+const SEM_NOTA = 'nota-fiscal-nao-informada';
 
 const DUAS = [
   linhaAmazon('L1', { qtd: 2, preco: '10.00' }),
@@ -578,7 +590,10 @@ describe('D17 — approved, still to ship (row 10)', () => {
       },
     };
     const preenchido = montar(comZero, { linhas: DUAS });
-    expect(decisao(preenchido)).toMatchObject({ itens: 'mantidas', eventos: ['preco-preenchido'] });
+    expect(decisao(preenchido)).toMatchObject({
+      itens: 'mantidas',
+      eventos: [SEM_NOTA, 'preco-preenchido'],
+    });
     expect(linhasDo(patchDe(preenchido))).toContainEqual({ id: 'L1', q: 2, p: 10 });
     const umCentavo = {
       ...zero,
@@ -741,7 +756,7 @@ describe('D17 — before approval, the approval moment, and the freeze', () => {
     const bloqueado = montar(PENDENTE(), { linhas: comX, atualizadoEm: depois(60) });
     expect(decisao(bloqueado)).toMatchObject({
       itens: 'divergencia-itens-aprovado',
-      eventos: ['cancelamento-parcial'],
+      eventos: ['cancelamento-parcial', SEM_NOTA],
       avisos: ['divergencia-itens'],
     });
     expect(patchDe(bloqueado).estado).toBe('error');
@@ -762,7 +777,7 @@ describe('D17 — before approval, the approval moment, and the freeze', () => {
     const r = montar(PAGO(), { linhas: comX, atualizadoEm: depois(60) });
     expect(decisao(r)).toMatchObject({
       itens: 'divergencia-itens-aprovado',
-      eventos: ['cancelamento-parcial'],
+      eventos: ['cancelamento-parcial', SEM_NOTA],
     });
     expect(patchDe(r)).toMatchObject({ estado: 'error' });
     const novo = montar(null, { linhas: comX });
@@ -774,7 +789,7 @@ describe('D17 — before approval, the approval moment, and the freeze', () => {
     expect(decisao(novo)).toMatchObject({
       itens: 'escritas',
       avisos: ['divergencia-itens'],
-      eventos: ['cancelamento-parcial'],
+      eventos: ['cancelamento-parcial', SEM_NOTA],
     });
   });
 
@@ -1021,7 +1036,7 @@ describe('cancelado-so-no-erp and the resurrection refinement (2026-10-22)', () 
     });
     expect(decisao(r)).toMatchObject({
       avisos: ['divergencia-itens'],
-      eventos: ['cancelamento-parcial'],
+      eventos: ['cancelamento-parcial', SEM_NOTA],
       motivoEstado: 'terminal',
     });
   });
@@ -1040,7 +1055,7 @@ describe('cancelado-so-no-erp and the resurrection refinement (2026-10-22)', () 
     });
     const vivo = montar(amazonCancelou, { linhas: DUAS, atualizadoEm: depois(60) });
     expect(patchDe(vivo).estado).toBe('pago');
-    expect(decisao(vivo)).toMatchObject({ eventos: ['ressuscitado'], avisos: [] });
+    expect(decisao(vivo)).toMatchObject({ eventos: [SEM_NOTA, 'ressuscitado'], avisos: [] });
     const erpCancelou = montar(PAGO({ estado: 'cancelado' }), {
       linhas: DUAS,
       atualizadoEm: depois(60),
@@ -1894,5 +1909,461 @@ describe('★ PR 6 — the pagamento terms of D17', () => {
       pagamento: [execucaoAmazon('CreditCard', '25.00', { acquirerId: '12345678' })],
     });
     expect(decisao(comCartao).eventos).toContain('cnpj-instituicao-recusado');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                     ★ PR 7 — Easy Ship packages → freteInicial              */
+/* -------------------------------------------------------------------------- */
+
+describe('★ PR 7 — the freight group: packages → freteInicial, inside the same decision', () => {
+  /** A stored PAGO pedido (UNSHIPPED, invoice ACCEPTED) whose freight block holds `over`. */
+  const comFreteGuardado = (over: Doc, opcoes: OpcoesPedidoTeste = {}): Doc => {
+    const doc = criado({ linhas: DUAS, invoiceStatus: 'ACCEPTED', ...opcoes });
+    return { ...doc, freteInicial: { ...(doc.freteInicial as Doc), ...over } };
+  };
+  const freteDo = (r: EscritaPedidoAmazon): Doc | null => {
+    if (r.tipo === 'criar') return r.corpo.freteInicial as Doc;
+    if (r.tipo === 'atualizar' && Object.hasOwn(r.patch, 'freteInicial')) {
+      return r.patch.freteInicial as Doc;
+    }
+    return null;
+  };
+
+  it('create: a first-seen SHIPPED order with picked-up packages is created at postado, with its diary and codRastreio', () => {
+    const r = montar(null, {
+      status: 'SHIPPED',
+      linhas: DUAS,
+      pacotesBrutos: [
+        pacoteAmazon('PKG-B', 'PICKED_UP', { rastreio: 'TRK-B' }),
+        pacoteAmazon('PKG-A', 'DROPPED_OFF', { rastreio: 'TRK-A' }),
+      ],
+    });
+    expect(freteDo(r)).toMatchObject({
+      estado: 'postado',
+      codRastreio: 'TRK-A, TRK-B',
+      externalOptionIntegracao: 'amz',
+    });
+    expect((freteDo(r)?.pacotes as Doc[]).map((l) => [l.numero, l.estado, l.atualizadoEm])).toEqual(
+      [
+        ['PKG-A', 'postado', ATUALIZADO_US],
+        ['PKG-B', 'postado', ATUALIZADO_US],
+      ],
+    );
+  });
+
+  it('create without packages: the invoice status decides (UNSHIPPED + NOT_FOUND ⇒ aguardandoNFe); none at all ⇒ iniciado + one count line', () => {
+    expect(freteDo(montar(null, { linhas: DUAS, invoiceStatus: 'NOT_FOUND' }))).toMatchObject({
+      estado: 'aguardandoNFe',
+    });
+    const semNota = montar(null, { linhas: DUAS });
+    expect(freteDo(semNota)).toMatchObject({ estado: 'iniciado' });
+    expect(Object.hasOwn(freteDo(semNota) ?? {}, 'pacotes')).toBe(false);
+    expect(decisao(semNota).eventos).toEqual([SEM_NOTA]);
+    expect(decisao(montar(null, { linhas: DUAS, invoiceStatus: 'NOT_REQUIRED' })).eventos).toEqual([
+      'nota-fiscal-nao-exigida',
+    ]);
+  });
+
+  it('★ an EQUAL-clock delivery carrying a newer package state is APPLIED (the package-only change survives a clock that did not move)', () => {
+    const guardado = criado({ linhas: DUAS, invoiceStatus: 'ACCEPTED' });
+    expect((guardado.freteInicial as Doc).estado).toBe('aguardandoAgendamento');
+    const r = montar(guardado, {
+      linhas: DUAS,
+      invoiceStatus: 'ACCEPTED',
+      pacotesBrutos: [pacoteAmazon('PKG-1', 'PENDING_PICK_UP', { status: 'PENDING' })],
+    });
+    expect(r.tipo).toBe('atualizar');
+    expect(r.tipo === 'atualizar' ? r.grupos : []).toEqual(['frete']);
+    expect(freteDo(r)).toMatchObject({ estado: 'aguardandoPostagem' });
+    expect((freteDo(r)?.pacotes as Doc[])[0]).toMatchObject({
+      numero: 'PKG-1',
+      estadoMarketplace: 'PENDING_PICK_UP',
+      statusMarketplace: 'PENDING',
+      fonte: 'getOrder',
+    });
+  });
+
+  it('★ an unchanged redelivery ⇒ sem-mudanca (zero writes); ★ one diary field changed at an EQUAL clock ⇒ a non-empty patch (NEAR-MISS)', () => {
+    const opcoes: OpcoesPedidoTeste = {
+      status: 'SHIPPED',
+      linhas: DUAS,
+      pacotesBrutos: [pacoteAmazon('PKG-1', 'AT_ORIGIN_FC', { rastreio: 'TRK-1' })],
+    };
+    const guardado = criado(opcoes);
+    expect(montar(guardado, opcoes).tipo).toBe('sem-mudanca');
+    const r = montar(guardado, {
+      ...opcoes,
+      pacotesBrutos: [
+        pacoteAmazon('PKG-1', 'AT_ORIGIN_FC', { rastreio: 'TRK-1', status: 'SHIPPED' }),
+      ],
+    });
+    expect(r.tipo).toBe('atualizar');
+    expect(Object.keys(freteDo(r) ?? {})).toContain('pacotes');
+    expect((freteDo(r)?.pacotes as Doc[])[0]).toMatchObject({ statusMarketplace: 'SHIPPED' });
+    expect(freteDo(r)).toMatchObject({ estado: 'recebidoPelaTransportadora' });
+  });
+
+  it('★ CANCELLED + stored aguardandoPostagem + an incoming PICKED_UP ⇒ the pedido estado KEPT, freight postado, cancelado-apos-envio (the fold read BEFORE the decision)', () => {
+    const guardado = comFreteGuardado({ estado: 'aguardandoPostagem' });
+    const r = montar(guardado, {
+      status: 'CANCELLED',
+      linhas: DUAS,
+      pacotesBrutos: [pacoteAmazon('PKG-1', 'PICKED_UP')],
+    });
+    expect(Object.hasOwn(patchDe(r), 'estado')).toBe(false);
+    expect(decisao(r)).toMatchObject({ motivoEstado: 'manter' });
+    expect(decisao(r).incidentes).toContain('cancelado-apos-envio');
+    expect(freteDo(r)).toMatchObject({ estado: 'postado' });
+  });
+
+  it('★ NEAR-MISS: CANCELLED + stored aguardandoPostagem + PENDING_PICK_UP ⇒ released: cancelado, freight cancelado, no cancelado-apos-envio', () => {
+    const guardado = comFreteGuardado({ estado: 'aguardandoPostagem' });
+    const r = montar(guardado, {
+      status: 'CANCELLED',
+      linhas: DUAS,
+      pacotesBrutos: [pacoteAmazon('PKG-1', 'PENDING_PICK_UP')],
+    });
+    expect(patchDe(r).estado).toBe('cancelado');
+    expect(decisao(r).incidentes).not.toContain('cancelado-apos-envio');
+    expect(freteDo(r)).toMatchObject({ estado: 'cancelado' });
+  });
+
+  it('★ CANCELLED after postado, after objetoExtraviado and after aguardandoRetirada ⇒ KEPT (never cancelado), even with no package in the read', () => {
+    for (const estado of ['postado', 'objetoExtraviado', 'aguardandoRetirada'] as const) {
+      const r = montar(comFreteGuardado({ estado }), { status: 'CANCELLED', linhas: DUAS });
+      expect(Object.hasOwn(patchDe(r), 'estado'), estado).toBe(false);
+      expect(decisao(r).incidentes, estado).toContain('cancelado-apos-envio');
+      expect(freteDo(r)?.estado ?? estado, estado).toBe(estado);
+    }
+  });
+
+  it('★ the pair still holds through the fold: CANCELLED + an aprovado pagamento — goods out by the fold ⇒ pago/aprovado kept; goods in ⇒ estornadoIntegralmente/estornado', () => {
+    const pagamento = pagamentoCriado({ invoiceStatus: 'ACCEPTED' });
+    expect(pagamento.status_pagamento).toBe(STATUS_PAGAMENTO.aprovado);
+    const guardado = comFreteGuardado({ estado: 'aguardandoPostagem' });
+    const fora = montar(
+      guardado,
+      { status: 'CANCELLED', linhas: DUAS, pacotesBrutos: [pacoteAmazon('PKG-1', 'PICKED_UP')] },
+      { pagamento },
+    );
+    expect(decisao(fora)).toMatchObject({
+      estadoEscrito: null,
+      statusPagamento: STATUS_PAGAMENTO.aprovado,
+    });
+    expect(statusToEstadoPedido(STATUS_PAGAMENTO.aprovado)).toBe(ESTADO_PEDIDO.pago);
+    expect(pagamentoDe(fora).tipo).not.toBe('criar');
+    const dentro = montar(
+      guardado,
+      {
+        status: 'CANCELLED',
+        linhas: DUAS,
+        pacotesBrutos: [pacoteAmazon('PKG-1', 'PENDING_PICK_UP')],
+      },
+      { pagamento },
+    );
+    expect(decisao(dentro)).toMatchObject({
+      estadoEscrito: ESTADO_PEDIDO.estornadoIntegralmente,
+      statusPagamento: STATUS_PAGAMENTO.estornado,
+    });
+    expect(statusToEstadoPedido(STATUS_PAGAMENTO.estornado)).toBe(
+      ESTADO_PEDIDO.estornadoIntegralmente,
+    );
+  });
+
+  it('★ a migrated fulfillment block on an MFN order: PICKED_UP refused as regressive (rung 11 > 10), AT_DESTINATION_FC written', () => {
+    const guardado = comFreteGuardado({ estado: 'fulfillment' });
+    const recuo = montar(guardado, {
+      status: 'SHIPPED',
+      linhas: DUAS,
+      pacotesBrutos: [pacoteAmazon('PKG-1', 'PICKED_UP')],
+    });
+    expect(freteDo(recuo)?.estado).toBe('fulfillment');
+    const avanca = montar(guardado, {
+      status: 'SHIPPED',
+      linhas: DUAS,
+      pacotesBrutos: [pacoteAmazon('PKG-1', 'AT_DESTINATION_FC')],
+    });
+    expect(freteDo(avanca)?.estado).toBe('aCaminho');
+  });
+
+  it('★ a block another modality owns (Melhor Envio) is UNTOUCHED — but the freight motivos are still derived from the order', () => {
+    const guardado = comFreteGuardado({
+      externalOptionIntegracao: INTEGRACAO_FRETE.melhorEnvios,
+      estado: 'iniciado',
+    });
+    // The stored block READS (a parseable foreign block, so only the guard can stop a write).
+    expect(freteDoPedidoSchema.safeParse(guardado.freteInicial).success).toBe(true);
+    const r = montar(guardado, {
+      status: 'SHIPPED',
+      linhas: DUAS,
+      pacotesBrutos: [pacoteAmazon('PKG-1', 'PICKED_UP'), pacoteAmazon('PKG-2', 'NEW_TOKEN')],
+    });
+    expect(freteDo(r)).toBeNull();
+    expect(decisao(r).avisos).toContain('pacote-status-desconhecido');
+    // NEAR-MISS: a newer read with a moved ship-by deadline still writes nothing there.
+    const movido = montar(guardado, {
+      status: 'SHIPPED',
+      linhas: DUAS,
+      atualizadoEm: depois(60),
+      pacotesBrutos: [pacoteAmazon('PKG-1', 'PICKED_UP', { rastreio: 'TRK-1' })],
+      extra: {
+        fulfillment: {
+          fulfillmentStatus: 'SHIPPED',
+          fulfilledBy: 'MERCHANT',
+          shipByWindow: { latestDateTime: '2026-10-05T23:59:59Z' },
+        },
+      },
+    });
+    expect(movido.tipo).toBe('atualizar');
+    expect(freteDo(movido)).toBeNull();
+  });
+
+  it('an AFN order keeps its fulfillment block whatever the packages say', () => {
+    const r = montar(null, {
+      por: 'AMAZON',
+      linhas: DUAS,
+      pacotesBrutos: [pacoteAmazon('PKG-1', 'PICKED_UP')],
+    });
+    expect(freteDo(r)?.estado).toBe('fulfillment');
+  });
+
+  it('★ LABEL_CANCELLED ⇒ despachoNegado + coleta-cancelada; the reschedule on an EQUAL clock is refused, on a strictly newer one written (frete-ressuscitado), and the motivo is no longer derived', () => {
+    const cancelada: OpcoesPedidoTeste = {
+      linhas: DUAS,
+      invoiceStatus: 'ACCEPTED',
+      pacotesBrutos: [pacoteAmazon('PKG-1', 'LABEL_CANCELLED')],
+    };
+    const guardado = criado(cancelada);
+    expect((guardado.freteInicial as Doc).estado).toBe('despachoNegado');
+    expect(decisao(montar(guardado, cancelada)).avisos).toEqual(['coleta-cancelada']);
+    const reagendada: OpcoesPedidoTeste = {
+      ...cancelada,
+      pacotesBrutos: [pacoteAmazon('PKG-1', 'PENDING_PICK_UP')],
+    };
+    const igual = montar(guardado, reagendada);
+    expect(freteDo(igual)?.estado).toBe('despachoNegado');
+    expect(decisao(igual).avisos).toEqual([]);
+    expect(decisao(igual).eventos).not.toContain('frete-ressuscitado');
+    const novo = montar(guardado, { ...reagendada, atualizadoEm: depois(60) });
+    expect(freteDo(novo)?.estado).toBe('aguardandoPostagem');
+    expect(decisao(novo).eventos).toContain('frete-ressuscitado');
+  });
+
+  it('a LABEL_CANCELLED package on a CANCELLED order derives no coleta-cancelada (the order resolves it)', () => {
+    const guardado = comFreteGuardado({ estado: 'aguardandoPostagem' });
+    const r = montar(guardado, {
+      status: 'CANCELLED',
+      linhas: DUAS,
+      pacotesBrutos: [pacoteAmazon('PKG-1', 'LABEL_CANCELLED')],
+    });
+    expect(decisao(r).avisos).not.toContain('coleta-cancelada');
+  });
+
+  it('★ a package without a reference blocks the freight (no change) + pacote-status-desconhecido + the count line, while the keyed package’s row is still written', () => {
+    const guardado = comFreteGuardado({ estado: 'aguardandoAgendamento' });
+    const r = montar(guardado, {
+      linhas: DUAS,
+      invoiceStatus: 'ACCEPTED',
+      pacotesBrutos: [pacoteAmazon('PKG-1', 'PICKED_UP'), pacoteAmazon(undefined, 'PICKED_UP')],
+    });
+    expect(freteDo(r)?.estado).toBe('aguardandoAgendamento');
+    expect((freteDo(r)?.pacotes as Doc[]).map((l) => l.numero)).toEqual(['PKG-1']);
+    expect(decisao(r).avisos).toEqual(['pacote-status-desconhecido']);
+    expect(decisao(r).eventos).toContain('pacote-nao-mapeado');
+    expect(decisao(r).pacotes).toEqual({
+      pacotes: 2,
+      naoMapeados: 0,
+      semChave: 1,
+      statusPacotes: 'IN_TRANSIT',
+    });
+  });
+
+  it('★ codRastreio: a stored value is REPLACED by Amazon’s (codRastreio-divergente, never the value); an empty fold keeps it', () => {
+    const guardado = comFreteGuardado(
+      { estado: 'postado', codRastreio: 'TRK-VELHO' },
+      { status: 'SHIPPED' },
+    );
+    const troca = montar(guardado, {
+      status: 'SHIPPED',
+      linhas: DUAS,
+      invoiceStatus: 'ACCEPTED',
+      pacotesBrutos: [pacoteAmazon('PKG-1', 'PICKED_UP', { rastreio: 'TRK-NOVO' })],
+    });
+    expect(freteDo(troca)?.codRastreio).toBe('TRK-NOVO');
+    expect(decisao(troca).eventos).toContain('codRastreio-divergente');
+    const vazio = montar(guardado, {
+      status: 'SHIPPED',
+      linhas: DUAS,
+      invoiceStatus: 'ACCEPTED',
+      pacotesBrutos: [pacoteAmazon('PKG-1', 'PICKED_UP')],
+    });
+    expect(freteDo(vazio)?.codRastreio ?? 'TRK-VELHO').toBe('TRK-VELHO');
+    expect(decisao(vazio).eventos).not.toContain('codRastreio-divergente');
+  });
+
+  it('★ a stored freight error (step 14’s stamp): ACCEPTED (aguardandoAgendamento) leaves it, a picked-up package clears it', () => {
+    const guardado = comFreteGuardado({ estado: 'error' });
+    const aceita = montar(guardado, { linhas: DUAS, invoiceStatus: 'ACCEPTED' });
+    expect(freteDo(aceita)?.estado ?? 'error').toBe('error');
+    const coletada = montar(guardado, {
+      status: 'SHIPPED',
+      linhas: DUAS,
+      pacotesBrutos: [pacoteAmazon('PKG-1', 'PICKED_UP')],
+    });
+    expect(freteDo(coletada)?.estado).toBe('postado');
+  });
+
+  it('a D17 block still writes the freight (non-money, Amazon-owned)', () => {
+    const r = montar(PAGO(), {
+      linhas: [linhaAmazon('L1', { qtd: 1, preco: '10.00' }), DUAS[1] ?? {}],
+      invoiceStatus: 'ACCEPTED',
+      pacotesBrutos: [pacoteAmazon('PKG-1', 'PENDING_PICK_UP')],
+    });
+    expect(decisao(r).itens).toBe('divergencia-itens-aprovado');
+    expect(freteDo(r)?.estado).toBe('aguardandoPostagem');
+  });
+
+  it('an unreadable stored freight block writes nothing of the group (and claims no freight event)', () => {
+    const guardado = comFreteGuardado({
+      estado: 'despachoNegado',
+      modalidade: 'nao-e-modalidade',
+    });
+    const r = montar(guardado, {
+      linhas: DUAS,
+      invoiceStatus: 'ACCEPTED',
+      atualizadoEm: depois(60),
+      pacotesBrutos: [pacoteAmazon('PKG-1', 'PENDING_PICK_UP')],
+    });
+    expect(freteDo(r)).toBeNull();
+    expect(decisao(r).eventos).toContain('frete-armazenado-ilegivel');
+    expect(decisao(r).eventos).not.toContain('frete-ressuscitado');
+  });
+
+  it('★ E3: PENDING_DROP_OFF moves aguardandoAgendamento to aguardandoPostagem — a removal estado (the stock leaves at scheduling)', () => {
+    const r = montar(comFreteGuardado({ estado: 'aguardandoAgendamento' }), {
+      linhas: DUAS,
+      invoiceStatus: 'ACCEPTED',
+      pacotesBrutos: [pacoteAmazon('PKG-1', 'PENDING_DROP_OFF')],
+    });
+    expect(freteDo(r)?.estado).toBe('aguardandoPostagem');
+    expect(ESTADOS_FRETE_REMOVE_ESTOQUE.has(ESTADO_FRETE.aguardandoPostagem)).toBe(true);
+  });
+
+  it('★ an AFN-seeded block is never walked by a read WITHOUT fulfilledBy: AT_DESTINATION_FC (a removal estado) and CANCELLED both leave fulfillment', () => {
+    const afn = criado({ por: 'AMAZON', status: 'UNSHIPPED', linhas: DUAS });
+    expect((afn.freteInicial as Doc).estado).toBe('fulfillment');
+    const semPor = montar(afn, {
+      por: null,
+      status: 'SHIPPED',
+      linhas: DUAS,
+      atualizadoEm: depois(60),
+      pacotesBrutos: [pacoteAmazon('PKG-1', 'AT_DESTINATION_FC')],
+    });
+    expect(decisao(semPor).avisos).toContain('logistica-desconhecida');
+    expect(freteDo(semPor)?.estado ?? 'fulfillment').toBe('fulfillment');
+    for (const por of [null, 'AMAZON']) {
+      const cancelado = montar(afn, {
+        por,
+        status: 'CANCELLED',
+        linhas: DUAS,
+        atualizadoEm: depois(60),
+      });
+      expect(freteDo(cancelado)?.estado ?? 'fulfillment', String(por)).toBe('fulfillment');
+    }
+    // NEAR-MISS: the SAME stored value under a MERCHANT read is the legacy residue (rung 11).
+    const mfn = montar(afn, {
+      status: 'SHIPPED',
+      linhas: DUAS,
+      atualizadoEm: depois(60),
+      pacotesBrutos: [pacoteAmazon('PKG-1', 'AT_DESTINATION_FC')],
+    });
+    expect(freteDo(mfn)?.estado).toBe('aCaminho');
+  });
+
+  it('★ an AFN read moves NO block: a stored iniciado (seeded by a read without fulfilledBy) stays put through a PICKED_UP', () => {
+    const semPor = criado({ por: null, status: 'UNSHIPPED', linhas: DUAS });
+    expect((semPor.freteInicial as Doc).estado).toBe('iniciado');
+    const afn = montar(semPor, {
+      por: 'AMAZON',
+      status: 'SHIPPED',
+      linhas: DUAS,
+      atualizadoEm: depois(60),
+      pacotesBrutos: [pacoteAmazon('PKG-1', 'PICKED_UP')],
+    });
+    expect(freteDo(afn)?.estado ?? 'iniciado').toBe('iniciado');
+    // NEAR-MISS: the same stored block under a MERCHANT read follows the package.
+    const mfn = montar(semPor, {
+      status: 'SHIPPED',
+      linhas: DUAS,
+      atualizadoEm: depois(60),
+      pacotesBrutos: [pacoteAmazon('PKG-1', 'PICKED_UP')],
+    });
+    expect(freteDo(mfn)?.estado).toBe('postado');
+  });
+
+  it('★ CANCELLED: a package with the carrier is goods out WHATEVER its siblings say (waiting, unknown) and keyed or not — estado kept, cancelado-apos-envio, freight never cancelado', () => {
+    const guardado = comFreteGuardado({ estado: 'aguardandoPostagem' });
+    for (const pacotesBrutos of [
+      [pacoteAmazon('PKG-1', 'PICKED_UP'), pacoteAmazon('PKG-2', 'PENDING_PICK_UP')],
+      [pacoteAmazon('PKG-1', 'PICKED_UP'), pacoteAmazon('PKG-2', 'NEW_TOKEN')],
+      [pacoteAmazon(undefined, 'PICKED_UP')],
+    ]) {
+      const nome = pacotesBrutos.map((p) => JSON.stringify(p.packageStatus)).join();
+      const r = montar(guardado, { status: 'CANCELLED', linhas: DUAS, pacotesBrutos });
+      expect(Object.hasOwn(patchDe(r), 'estado'), nome).toBe(false);
+      expect(decisao(r).incidentes, nome).toContain('cancelado-apos-envio');
+      // The fold's own answer (the least-advanced rung, or none when blocked): never cancelado.
+      expect(freteDo(r)?.estado ?? 'aguardandoPostagem', nome).toBe('aguardandoPostagem');
+    }
+    // The blocked read still raises its aviso (and the freight was not moved by it).
+    const bloqueado = montar(guardado, {
+      status: 'CANCELLED',
+      linhas: DUAS,
+      pacotesBrutos: [pacoteAmazon('PKG-1', 'PICKED_UP'), pacoteAmazon('PKG-2', 'NEW_TOKEN')],
+    });
+    expect(decisao(bloqueado).avisos).toContain('pacote-status-desconhecido');
+    // NEAR-MISS: every package still waiting (or unknown alone) ⇒ released.
+    for (const pacotesBrutos of [
+      [pacoteAmazon('PKG-1', 'PENDING_PICK_UP'), pacoteAmazon('PKG-2', 'PENDING_PICK_UP')],
+      [pacoteAmazon('PKG-1', 'NEW_TOKEN')],
+    ]) {
+      const r = montar(guardado, { status: 'CANCELLED', linhas: DUAS, pacotesBrutos });
+      expect(patchDe(r).estado).toBe('cancelado');
+      expect(freteDo(r)?.estado).toBe('cancelado');
+    }
+  });
+
+  it('★ the migrated residue is goods out for the CANCELLED check too (ONE projection): a stored fulfillment without marketplace under a MERCHANT CANCELLED ⇒ estado kept, cancelado-apos-envio, freight never cancelado', () => {
+    const migrado: Doc = { ...comFreteGuardado({ estado: 'fulfillment' }) };
+    delete migrado.marketplace;
+    const r = montar(migrado, { status: 'CANCELLED', linhas: DUAS });
+    expect(Object.hasOwn(patchDe(r), 'estado')).toBe(false);
+    expect(decisao(r).incidentes).toContain('cancelado-apos-envio');
+    expect(freteDo(r)?.estado ?? 'fulfillment').toBe('fulfillment');
+    // NEAR-MISS (the residue's SCOPE): a read without fulfilledBy cannot tell the
+    // residue from an AFN seed — the block is fora-do-canal (untouched) and the
+    // stored value is not read as goods out.
+    const semPor = montar(migrado, { por: null, status: 'CANCELLED', linhas: DUAS });
+    expect(patchDe(semPor).estado).toBe('cancelado');
+    expect(freteDo(semPor)?.estado ?? 'fulfillment').toBe('fulfillment');
+  });
+
+  it('★ CANCELLED over an estado the operator owns (finalizado) with the goods IN: estado kept + cancelado-apos-envio, and the freight KEPT too (the predicate’s outcome, not a copy)', () => {
+    const guardado: Doc = {
+      ...comFreteGuardado({ estado: 'checkFinalizado' }),
+      estado: ESTADO_PEDIDO.finalizado,
+    };
+    const r = montar(guardado, { status: 'CANCELLED', linhas: DUAS });
+    expect(decisao(r)).toMatchObject({ motivoEstado: 'manter' });
+    expect(decisao(r).incidentes).toContain('cancelado-apos-envio');
+    expect(freteDo(r)?.estado ?? 'checkFinalizado').toBe('checkFinalizado');
+    // NEAR-MISS: the same freight under a governed pago ⇒ released, freight cancelado.
+    const governado = montar(comFreteGuardado({ estado: 'checkFinalizado' }), {
+      status: 'CANCELLED',
+      linhas: DUAS,
+    });
+    expect(patchDe(governado).estado).toBe('cancelado');
+    expect(freteDo(governado)?.estado).toBe('cancelado');
   });
 });
