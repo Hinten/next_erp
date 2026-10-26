@@ -1581,6 +1581,45 @@ export function redigirCorpo(
 }
 
 /* -------------------------------------------------------------------------- */
+/*            The restore snapshot body (the write engine, step 7)            */
+/* -------------------------------------------------------------------------- */
+
+/** The read a write is decided on: the request path, the status, the token-scrubbed text. */
+export interface EntradaRestauracaoLi {
+  readonly caminho: string;
+  readonly status: number;
+  readonly texto: string;
+}
+
+/**
+ * The body of the write engine's restore snapshot (`core/escrita.ts`): what the
+ * deciding read showed, as far as a log line may carry it — or `null` when no
+ * faithful snapshot can be made, and then the write is not made at all.
+ *
+ * - **`estrutural`** (the order, its envios, its situação): the full keep-list
+ *   walk of the `log` profile, with NO 2 KB cut (the line's own size is capped
+ *   by the logger). Only the table's leaves survive: `situacao.*`, `envios.*.id`
+ *   and `envios.*.objeto` among them; the buyer is `<redacted>`.
+ * - **`catalogo`**: `null` until the first catalogue write builds its
+ *   byte-faithful branch (master plan steps 11–13), so a catalogue write cannot
+ *   run before it has one.
+ * - **`webhook`**, **`configuracao`**: `null` — no write of either restores from here.
+ * - A non-2xx answer, an empty or non-JSON body, a body over
+ *   `LIMITE_ANALISE_BYTES.log` or nested deeper than `PROFUNDIDADE_MAXIMA_JSON`:
+ *   `null`.
+ *
+ * Pure and total, like the rest of this module.
+ */
+export function corpoDeRestauracaoLi(e: EntradaRestauracaoLi): ValorJsonLi | null {
+  const politica = classificarCaminho(e.caminho);
+  if (politica !== 'estrutural' || !ehSucesso(e.status)) return null;
+  const analise = analisar(e.texto, bytesUtf8(e.texto), LIMITE_ANALISE_BYTES.log);
+  if (analise.forma !== 'json') return null;
+  const ctx = percurso('log', tabelaDoCaminho(e.caminho), politica, false);
+  return percorrer2xx(analise.valor, '', null, 0, ctx);
+}
+
+/* -------------------------------------------------------------------------- */
 /*                    Introspection for the spec-coverage test                 */
 /* -------------------------------------------------------------------------- */
 

@@ -8,9 +8,10 @@
  * 1. **Residue** (`residuoDeRedacao`). Re-run the `fixture` profile over the
  *    envelope's body (and the path and query redactor over its request line). If
  *    anything changes, a value reached the envelope without passing the
- *    redactor. A named local `deepEqual` decides "unchanged"; it folds nothing
- *    but key ORDER (the equivalence-fold inventory records what it treats as
- *    equal and what must stay distinct).
+ *    redactor. The app's shared comparator `deepEqual` (`core/igualdadeJsonLi.ts`,
+ *    a leaf that imports nothing) decides "unchanged"; it folds nothing but key
+ *    ORDER (the equivalence-fold inventory records what it treats as equal and
+ *    what must stay distinct).
  * 2. **Patterns** (`achadosDePadroes`), over every key and string or integer
  *    leaf of the whole envelope:
  *    - the always-on patterns of the redactor (e-mail, punctuated CPF and CNPJ, a
@@ -39,6 +40,7 @@
  */
 import { validateCNPJ, validateCPF } from '@delfrance/core/documents';
 
+import { deepEqual } from '../core/igualdadeJsonLi';
 import {
   PLACEHOLDERS_FIXTURE_LI,
   type TipoMascaraLi,
@@ -242,25 +244,6 @@ export function rotuloDeChave(chave: string, lista: ListaDeNomesLi | null): stri
 
 const ehObjetoSimples = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v);
-
-/**
- * Structural identity over JSON values: the fold that decides "re-redaction left
- * this alone". Equal: the same key SET (order ignored), the same primitive
- * values, `null` only to `null`, arrays element by element. Distinct: a
- * placeholder and the value it replaced, `null` and `"REDACTED"`, `0` and `"0"`,
- * arrays of different length. Folding more would hide a leak.
- */
-function deepEqual(a: unknown, b: unknown): boolean {
-  if (a === b) return true;
-  if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) return false;
-  if (Array.isArray(a) || Array.isArray(b)) {
-    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
-    return a.every((x, i) => deepEqual(x, b[i]));
-  }
-  const ea = Object.entries(a);
-  const eb = new Map(Object.entries(b));
-  return ea.length === eb.size && ea.every(([k, v]) => eb.has(k) && deepEqual(v, eb.get(k)));
-}
 
 const juntar = (caminho: readonly string[]) => caminho.join('.');
 

@@ -13,6 +13,7 @@ import {
   LiCredencialAlteradaError,
   LiCredencialAusenteError,
   LiCredencialInvalidaError,
+  LiCredencialTrocadaError,
   LiEstacionamentoEmConflitoError,
 } from './erros';
 import {
@@ -44,6 +45,9 @@ describe('respostaDeErroLi', () => {
     [new LiContaParadaError(ID, 401, 1), 409, CODIGO_ERRO_LI.reconexaoPendente],
     [new LiEstacionamentoEmConflitoError(ID, 3), 503, CODIGO_ERRO_LI.estacionamentoEmConflito],
     [new LiChamadasDesligadasError(ID), 503, CODIGO_ERRO_LI.chamadasDesligadas],
+    // Raised only by the write context (a functions run), never by a route; mapped
+    // anyway so the mapper stays total over every app class.
+    [new LiCredencialTrocadaError(ID), 409, CODIGO_ERRO_LI.credencialAlterada],
   ] as const;
 
   for (const [err, status, code] of casos) {

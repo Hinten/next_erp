@@ -28,6 +28,7 @@ import {
   type TabelaRedacaoLi,
   bytesUtf8,
   classificarCaminho,
+  corpoDeRestauracaoLi,
   cortarUtf8,
   mascararTexto,
   profundidadeJson,
@@ -104,7 +105,8 @@ const inventarioSchema = z.object({
   }),
   operacoes: z.array(
     z.object({
-      metodo: z.literal('GET'),
+      // A PUT's leaves are those of its 2xx ECHO, walked by the same tables.
+      metodo: z.enum(['GET', 'PUT']),
       caminho: z.string().startsWith('/v1/'),
       folhas: z.array(
         z.tuple([
@@ -145,6 +147,9 @@ const OPERACOES_DO_PLANO = [
   'GET /v1/produto/{produto_id}',
   'GET /v1/produto_estoque/{produto_id}',
   'GET /v1/produto_preco/{produto_id}',
+  // The status write-back's two writes (master plan step 7): their ECHOES.
+  'PUT /v1/pedido_envio/{pedido_envio_id}',
+  'PUT /v1/situacao/pedido/{pedido_id}',
 ];
 
 describe('spec coverage — against the committed leaf inventory', () => {
@@ -154,6 +159,18 @@ describe('spec coverage — against the committed leaf inventory', () => {
     const nomes = ops.map((o) => `${o.metodo} ${o.caminho}`);
     expect(nomes).toEqual(expect.arrayContaining(OPERACOES_DO_PLANO));
     expect(ops.flatMap((o) => o.folhas).length).toBeGreaterThan(400);
+  });
+
+  it('the two write echoes are walked by their own estrutural tables, and each has leaves', () => {
+    const tabelaDe = (metodo: string, caminho: string) => {
+      const op = ops.find((o) => o.metodo === metodo && o.caminho === caminho);
+      expect(op?.folhas.length ?? 0, caminho).toBeGreaterThan(0);
+      return tabelaDoCaminho(concreto(caminho));
+    };
+    expect(tabelaDe('PUT', '/v1/pedido_envio/{pedido_envio_id}')).toBe(TABELAS_LI.pedidoEnvio);
+    expect(tabelaDe('PUT', '/v1/situacao/pedido/{pedido_id}')).toBe(TABELAS_LI.situacaoPedido);
+    expect(classificarCaminho(concreto('/v1/pedido_envio/{pedido_envio_id}'))).toBe('estrutural');
+    expect(classificarCaminho(concreto('/v1/situacao/pedido/{pedido_id}'))).toBe('estrutural');
   });
 
   it('every terminal leaf is classified EXACTLY once: allowed, denied or redacted on purpose', () => {
@@ -2499,5 +2516,85 @@ describe('near-miss pairs the mutation run found missing', () => {
       transacao_id: REDIGIDO,
       codigo: valor,
     });
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*            The restore snapshot body (the write engine, step 7)            */
+/* -------------------------------------------------------------------------- */
+
+describe('corpoDeRestauracaoLi — the estrutural walk, whole; null wherever it cannot be faithful', () => {
+  const EMAIL_ALVO = 'comprador@exemplo.invalid';
+  const PEDIDO_165 = {
+    numero: 165,
+    situacao: { codigo: 'pedido_pago', id: 4, nome: 'Pedido pago' },
+    data_modificacao: '2026-10-13T16:30:32.706',
+    cliente: { nome: 'Comprador de Teste', email: EMAIL_ALVO, cpf: CPF },
+    endereco_entrega: { endereco: 'Rua de Teste', cep: '01310-100' },
+    envios: [{ id: 801, objeto: 'PJ258408772BR', prazo: 5 }],
+  };
+  const restauracao = (corpo: unknown, caminho = '/v1/pedido/165/', status = 200) =>
+    corpoDeRestauracaoLi({ caminho, status, texto: JSON.stringify(corpo) });
+
+  it('a pedido: situação, envio ids and tracking codes survive; the buyer does not', () => {
+    const corpo = restauracao(PEDIDO_165);
+    expect(corpo).toMatchObject({
+      numero: 165,
+      situacao: { codigo: 'pedido_pago', id: 4, nome: REDIGIDO },
+      envios: [{ id: 801, objeto: 'PJ258408772BR', prazo: 5 }],
+      cliente: { nome: REDIGIDO, email: REDIGIDO, cpf: REDIGIDO },
+      endereco_entrega: { endereco: REDIGIDO, cep: REDIGIDO },
+    });
+    expect(JSON.stringify(corpo)).not.toContain('Comprador');
+    expect(JSON.stringify(corpo)).not.toContain(CPF);
+  });
+
+  it('EQUAL pair: it is the log walk itself — the same JSON the call line would show, before any cut', () => {
+    const texto = JSON.stringify(PEDIDO_165);
+    const linha = redigirCorpo({ caminho: '/v1/pedido/165/', status: 200, corpo: texto }, 'log');
+    expect(JSON.stringify(restauracao(PEDIDO_165))).toBe(linha.trecho);
+  });
+
+  it('⚠️ NEAR-MISS: never cut at 2 KB — a body the call line truncates comes back WHOLE', () => {
+    const envios = Array.from({ length: 200 }, (_, i) => ({
+      id: 1000 + i,
+      objeto: `PJ${String(i)}BR`,
+    }));
+    const corpo = restauracao({ ...PEDIDO_165, envios });
+    expect(bytesUtf8(JSON.stringify(corpo))).toBeGreaterThan(2048);
+    expect((corpo as { envios: unknown[] }).envios).toHaveLength(200);
+  });
+
+  it.each([
+    ['a catalogue path (no byte-faithful branch until its first consumer)', '/v1/produto/1', 200],
+    ['a configuration path', '/v1/situacao', 200],
+    ['a webhook path', '/webhooks/v1/pedido', 200],
+    ['a non-2xx answer', '/v1/pedido/165/', 404],
+  ])('⚠️ NEAR-MISS: %s ⇒ null', (_caso, caminho, status) => {
+    expect(restauracao(PEDIDO_165, caminho, status)).toBeNull();
+  });
+
+  it('⚠️ NEAR-MISS: nesting deeper than 256, a body over the log cap, an empty or non-JSON body ⇒ null', () => {
+    let fundo: unknown = 1;
+    for (let i = 0; i < 257; i++) fundo = [fundo];
+    expect(restauracao({ ...PEDIDO_165, x: fundo })).toBeNull();
+    // 256 deep still parses (the walk itself redacts below its own cap).
+    let raso: unknown = 1;
+    for (let i = 0; i < 255; i++) raso = [raso];
+    expect(restauracao({ x: raso })).not.toBeNull();
+    const grande = { ...PEDIDO_165, x: 'a'.repeat(LIMITE_ANALISE_BYTES.log) };
+    expect(restauracao(grande)).toBeNull();
+    expect(corpoDeRestauracaoLi({ caminho: '/v1/pedido/165/', status: 200, texto: '' })).toBeNull();
+    expect(
+      corpoDeRestauracaoLi({ caminho: '/v1/pedido/165/', status: 200, texto: '<html>x</html>' }),
+    ).toBeNull();
+  });
+
+  it('is total: odd JSON never throws', () => {
+    for (const texto of ['null', '"x"', '[]', '{}', '1', 'true', `"${'x'.repeat(10_000)}"`]) {
+      expect(() =>
+        corpoDeRestauracaoLi({ caminho: '/v1/pedido/165/', status: 200, texto }),
+      ).not.toThrow();
+    }
   });
 });

@@ -524,6 +524,9 @@ describe('lib/lojaIntegrada layout', () => {
         'core/credentialStore.ts',
         'core/estacionamento.ts',
         'core/contexto.ts',
+        'core/contextoEscrita.ts',
+        'core/escrita.ts',
+        'core/igualdadeJsonLi.ts',
         'core/respond.ts',
         'core/log.ts',
         'core/redacao.ts',
@@ -597,13 +600,17 @@ describe('lib/lojaIntegrada layout', () => {
     const fontes = arquivosTs(RAIZ_APP).filter((p) => !ehTeste(p));
     const violacoes = fontes.flatMap((p) => violacoesDoSeam(relApp(p), readFileSync(p, 'utf8')));
     expect(violacoes).toEqual([]);
-    // Anti-vacuity: the three wired sites exist, and the logger itself is exempt.
+    // Anti-vacuity: the four wired sites exist, and the logger itself is exempt.
     const sites = fontes.filter((p) => readFileSync(p, 'utf8').includes(SEAM_OK)).map(relApp);
     expect(sites.sort()).toEqual([
       'app/api/marketplace/loja-integrada/conta/[id]/credencial/route.ts',
       'app/api/marketplace/loja-integrada/conta/[id]/credencial/validade/route.ts',
       'lib/lojaIntegrada/core/contexto.ts',
+      'lib/lojaIntegrada/core/contextoEscrita.ts',
     ]);
+    // The write context builds TWO clients, each with its own inline observer (never a shared const).
+    const doContextoDeEscrita = lerDoApp('lib/lojaIntegrada/core/contextoEscrita.ts') ?? '';
+    expect(doContextoDeEscrita.split(SEAM_OK)).toHaveLength(3);
     expect(fontes.map(relApp)).toContain(ARQUIVO_DO_LOGGER);
   });
 
@@ -628,6 +635,8 @@ describe('lib/lojaIntegrada layout', () => {
         'lib/lojaIntegrada/sanitizacao/escrita.ts',
         'lib/lojaIntegrada/fixtures/piiScan.ts',
         'lib/lojaIntegrada/core/redacao.ts',
+        // The shared comparator leaf, which imports nothing.
+        'lib/lojaIntegrada/core/igualdadeJsonLi.ts',
         // The allow-listed workspace packages are walked too, not trusted.
         '../../packages/core/src/wire/index.ts',
         '../../packages/core/src/wire/prazo.ts',
