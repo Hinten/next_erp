@@ -113,6 +113,7 @@ export const TIPO_AVISO_LABELS = {
   lojaIntegradaFreteNaoSuportado: 'Forma de envio da Loja Integrada sem frete utilizável',
   lojaIntegradaPedidoPagoSemEndereco: 'Pedido pago da Loja Integrada sem endereço',
   lojaIntegradaReversaoComEtiqueta: 'Pedido da Loja Integrada revertido com etiqueta comprada',
+  lojaIntegradaRastreioDivergente: 'Envio do pedido não refletido na Loja Integrada',
   amazonReconexaoPendente: 'Autorização da Amazon recusada',
   amazonReautorizacaoExpirando: 'Autorização da Amazon expirando',
   amazonSegredoLwaExpirando: 'Segredo do aplicativo da Amazon expirando',
@@ -826,6 +827,47 @@ export const TIPO_AVISO_LABELS = {
  *
  * ---
  *
+ * **`lojaIntegradaRastreioDivergente`** (Loja Integrada step 7 — producer:
+ * `apps/loja-integrada/lib/lojaIntegrada/rastreio/avisosRastreio.ts`, raised by
+ * the status write-back run) — a freight transition the ERP recorded (a posting,
+ * a delivery, a pickup awaiting the buyer) was NOT reflected in Loja Integrada as
+ * it should have been, or was reflected over something a person must look at:
+ * the order is unpaid, stopped or in an unknown situação there, LI is ahead or
+ * sideways, LI already holds another tracking code, the ERP's code or envio
+ * cannot be sent, the write was refused or read back different, or a status set
+ * in the instant before ours was overwritten.
+ *
+ *  - **Severity `atencao`**, canal `lojaIntegrada`, in-app only — except
+ *    `situacao-sobrescrita` over a codigo the write-back never writes onto (a
+ *    dispute, a cancellation request, a cancellation, a refund, a chargeback),
+ *    which is `critico`: the buyer's request or the provider's hold was erased
+ *    and the buyer may already have the "sent" e-mail. That motivo is raised
+ *    only when the write-back's own table would have REFUSED the overwritten
+ *    codigo; a compatible intermediate step is a log line, not an aviso.
+ *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId, entidade: pedidoId })` —
+ *    one row per pedido, whatever the motivo.
+ *  - **`params` are `loja`, `pedido` (the order `numero`) and `motivo`** — a
+ *    {@link MOTIVO_RASTREIO_DIVERGENTE_LI} CODE, never a sentence — plus
+ *    `situacao` (a situação CODIGO, rendered through `ROTULO_SITUACAO_LI`) for
+ *    the five situação motivos, `estado` (the ERP freight estado) for
+ *    `transicao-lateral` and `situacao-nao-paga`, and `status` (the HTTP status,
+ *    a NUMBER) for `escrita-recusada`. `motivo` (the field) carries the code too.
+ *  - **`relogioEvento`**: the freight EVENT's own clock in µs (the source row's
+ *    ms stamp, converted once): an older event can neither reopen nor close a
+ *    newer row. ⚠️ Per-pedido µs: never compare it with another tipo's.
+ *  - **Raised only by a run whose write decision was `on`** — never under
+ *    dry-run, outside the canary list or with the valve off: the window's
+ *    replay raises it then, or writes.
+ *  - **Route**: the pedido (`ROTAS_AVISO.pedido`).
+ *  - **Machine resolvers**: a later CLEAN run for the same pedido under `on`
+ *    (the write landed and was read back, or Loja Integrada already showed
+ *    everything), clocked by its event — so a `transicao-lateral` raised because
+ *    LI was ahead closes itself at the ERP's own later delivery run; and the
+ *    expiry sweep's orphan pass once the conta is gone. Residue, accepted: a row
+ *    whose pedido has no later event stands until an operator resolves it.
+ *
+ * ---
+ *
  * **`amazonReconexaoPendente`** (Amazon step 2, #1926 — producers in
  * `apps/amazon/lib/amazon/avisos/avisos.ts`) — the Login with Amazon (LWA)
  * token endpoint refused the conta's CURRENT refresh token (`invalid_grant`, or
@@ -1137,6 +1179,7 @@ export const tipoAvisoSchema = z
     'lojaIntegradaFreteNaoSuportado',
     'lojaIntegradaPedidoPagoSemEndereco',
     'lojaIntegradaReversaoComEtiqueta',
+    'lojaIntegradaRastreioDivergente',
     'amazonReconexaoPendente',
     'amazonReautorizacaoExpirando',
     'amazonSegredoLwaExpirando',
@@ -1175,6 +1218,7 @@ export const TIPO_AVISO = {
   lojaIntegradaFreteNaoSuportado: 'lojaIntegradaFreteNaoSuportado',
   lojaIntegradaPedidoPagoSemEndereco: 'lojaIntegradaPedidoPagoSemEndereco',
   lojaIntegradaReversaoComEtiqueta: 'lojaIntegradaReversaoComEtiqueta',
+  lojaIntegradaRastreioDivergente: 'lojaIntegradaRastreioDivergente',
   amazonReconexaoPendente: 'amazonReconexaoPendente',
   amazonReautorizacaoExpirando: 'amazonReautorizacaoExpirando',
   amazonSegredoLwaExpirando: 'amazonSegredoLwaExpirando',
@@ -1499,6 +1543,70 @@ export const MOTIVO_FRETE_NAO_SUPORTADO_LI = {
   tipoNaoSuportado: 'tipo-nao-suportado',
   alvoSemServico: 'alvo-sem-servico',
 } as const satisfies Record<string, MotivoFreteNaoSuportadoLi>;
+
+/**
+ * Why a Loja Integrada status write-back was not reflected as it should have
+ * been — the `lojaIntegradaRastreioDivergente` aviso's `params.motivo`, a CODE
+ * the wording in `apps/web/lib/avisos/mensagens.ts` renders (a wording fix is
+ * retroactive). One member per thing a person must look at:
+ *
+ *  - the situação Loja Integrada shows forbids the write: `situacao-bloqueada`
+ *    (stopped: a dispute, a cancellation request, a cancellation, a refund, a
+ *    chargeback), `situacao-nao-paga` (not paid yet), `situacao-desconhecida`
+ *    (a codigo the shared table does not know), `transicao-lateral` (Loja
+ *    Integrada is ahead or sideways: never moved back, never crossed between a
+ *    pickup and a shipment);
+ *  - `situacao-sobrescrita` — a status set in the instant before our write was
+ *    overwritten by it;
+ *  - the tracking code: `objeto-divergente` (Loja Integrada holds another one),
+ *    `objeto-invalido` (the ERP's code cannot be sent as stored), and
+ *    `envio-divergente` (the pedido stores no Loja Integrada envio);
+ *  - the identity and the read: `pedido-divergente` (the live envio is not the
+ *    pedido's), `pedido-ausente` (the order is not found), and
+ *    `restauracao-indisponivel` (no copy could be logged before the write, so it
+ *    was not made);
+ *  - the write itself: `escrita-recusada` (Loja Integrada refused it), `deriva`
+ *    (it landed but reads back different), `tentativas-esgotadas` (it kept
+ *    failing).
+ *
+ * Stored as an aviso PARAM, with the same fallback contract as
+ * {@link MOTIVO_PEDIDO_CONTESTADO_LI}.
+ */
+export const motivoRastreioDivergenteLiSchema = z.enum([
+  'situacao-bloqueada',
+  'situacao-nao-paga',
+  'situacao-desconhecida',
+  'transicao-lateral',
+  'situacao-sobrescrita',
+  'objeto-divergente',
+  'objeto-invalido',
+  'envio-divergente',
+  'pedido-divergente',
+  'pedido-ausente',
+  'restauracao-indisponivel',
+  'escrita-recusada',
+  'deriva',
+  'tentativas-esgotadas',
+]);
+export type MotivoRastreioDivergenteLi = z.infer<typeof motivoRastreioDivergenteLiSchema>;
+
+/** Named members of {@link motivoRastreioDivergenteLiSchema} — see `delfrance/prefer-schema-enum`. */
+export const MOTIVO_RASTREIO_DIVERGENTE_LI = {
+  situacaoBloqueada: 'situacao-bloqueada',
+  situacaoNaoPaga: 'situacao-nao-paga',
+  situacaoDesconhecida: 'situacao-desconhecida',
+  transicaoLateral: 'transicao-lateral',
+  situacaoSobrescrita: 'situacao-sobrescrita',
+  objetoDivergente: 'objeto-divergente',
+  objetoInvalido: 'objeto-invalido',
+  envioDivergente: 'envio-divergente',
+  pedidoDivergente: 'pedido-divergente',
+  pedidoAusente: 'pedido-ausente',
+  restauracaoIndisponivel: 'restauracao-indisponivel',
+  escritaRecusada: 'escrita-recusada',
+  deriva: 'deriva',
+  tentativasEsgotadas: 'tentativas-esgotadas',
+} as const satisfies Record<string, MotivoRastreioDivergenteLi>;
 
 /**
  * Why an `anuncioForaDaSincronizacao` anúncio is out of reach — the aviso's
