@@ -125,7 +125,8 @@ function cortada(status: number, erro: Error): Response {
 /**
  * A stateful Loja Integrada: one order, its history, the two write routes. A
  * code PUT moves the order to `pedido_enviado` (as the painel does) unless told
- * not to. Every request and every pacer wait goes on ONE timeline.
+ * not to. Every request and every pacer wait goes on ONE timeline (`eventos`);
+ * every request and every engine log line on another (`linhaDoTempo`).
  */
 function criarPlataforma(o: { moverAoEscreverObjeto?: boolean } = {}) {
   const estado: { pedido: DocData; historico: DocData[] } = {
@@ -134,6 +135,7 @@ function criarPlataforma(o: { moverAoEscreverObjeto?: boolean } = {}) {
   };
   const requisicoes: Requisicao[] = [];
   const eventos: string[] = [];
+  const linhaDoTempo: string[] = [];
   const fila: Sobrescrita[] = [];
 
   const envios = () => estado.pedido.envios as DocData[];
@@ -181,6 +183,7 @@ function criarPlataforma(o: { moverAoEscreverObjeto?: boolean } = {}) {
     };
     requisicoes.push(r);
     eventos.push(`${metodo} ${url.pathname}`);
+    linhaDoTempo.push(`${metodo} ${url.pathname}`);
     const primeira = fila[0];
     const sobrescrita = primeira === undefined ? null : primeira(r, init);
     if (sobrescrita !== null) {
@@ -198,7 +201,7 @@ function criarPlataforma(o: { moverAoEscreverObjeto?: boolean } = {}) {
     return Promise.resolve();
   };
   const puts = () => requisicoes.filter((r) => r.metodo === 'PUT');
-  return { estado, requisicoes, eventos, fila, fetch, esperar, esperas, puts };
+  return { estado, requisicoes, eventos, linhaDoTempo, fila, fetch, esperar, esperas, puts };
 }
 
 type Plataforma = ReturnType<typeof criarPlataforma>;
@@ -240,7 +243,14 @@ async function montar(
     contexto,
     agora: o.agora ?? (() => AGORA_MS),
     inicioDaTarefaMs: o.inicioDaTarefaMs ?? AGORA_MS,
-    registro: { escrever: gravador.escrever, tentativa: 1, idTarefa: 't-1' },
+    registro: {
+      escrever: (severidade, mensagem, campos) => {
+        gravador.escrever(severidade, mensagem, campos);
+        p.linhaDoTempo.push(`log ${String(campos.evento)}`);
+      },
+      tentativa: 1,
+      idTarefa: 't-1',
+    },
   });
   return { db, p, linhas: gravador.linhas, motor };
 }
@@ -585,8 +595,14 @@ describe('requirement 4 — a restore line before EACH write, from its own decid
     const base = lida(await lerBaseLi(m.motor, ALVO));
     expect(base.restauracao).toBe(true);
     await escreverLi(m.motor, SITUACAO, ENVIADO, base);
-    const ordem = m.linhas.map((l) => l.campos.evento);
-    expect(ordem.indexOf('restauracao')).toBeLessThan(ordem.lastIndexOf('escrita'));
+    // On one timeline of requests and engine lines: the read, ITS restore line,
+    // then the write, then the write's own line — never a snapshot after the PUT.
+    expect(m.p.linhaDoTempo).toEqual([
+      `GET ${CAMINHO_PEDIDO}`,
+      'log restauracao',
+      `PUT ${CAMINHO_SITUACAO}`,
+      'log escrita',
+    ]);
     const [linha] = doEvento(m.linhas, 'restauracao');
     expect(linha?.severidade).toBe('INFO');
     const corpo = JSON.parse(String(linha?.campos.corpo)) as DocData;
@@ -659,11 +675,14 @@ describe('requirement 4 — a restore line before EACH write, from its own decid
     const segunda = lida(await lerBaseLi(m.motor, ALVO));
     expect((await escreverLi(m.motor, SITUACAO, ENVIADO, segunda)).kind).toBe('enviado');
     expect(doEvento(m.linhas, 'restauracao')).toHaveLength(2);
-    expect(m.p.requisicoes.map((r) => `${r.metodo} ${r.caminho}`)).toEqual([
+    expect(m.p.linhaDoTempo).toEqual([
       `GET ${CAMINHO_PEDIDO}`,
+      'log restauracao',
       `PUT ${CAMINHO_ENVIO}`,
       `GET ${CAMINHO_PEDIDO}`,
+      'log restauracao',
       `PUT ${CAMINHO_SITUACAO}`,
+      'log escrita',
     ]);
   });
 });
