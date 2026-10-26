@@ -400,6 +400,12 @@ verdicts, the live/mirror split) is `packages/schemas/src/conferenciaPagamentoLo
   poller passes its importer gate. The context refuses first while the read switch is
   off, so a run DEFERS before any read and reaches no import path, A4 included (D17).
   Every rule lives in the pure mappers beside it.
+- The freight route and the pedido id are SHARED, never copied: `pedidos/freteMapeamento.ts`
+  decides the `mapa` row and the target through `@delfrance/schemas`'s
+  `decidirLinhaDoMapaLi` and `avaliarAlvoDoMapaLi` under `POLITICA_ALVO_IMPORTACAO_LI` (the
+  pickup by `alvoDispensaEnderecoLi`), the functions the label route decides by;
+  `pedidos/orderIdsLi.ts` hashes `preimagemPedidoLi`, the string the web's identity check
+  hashes too.
 - One run: the detail, the situação history (strict on queue attempts 0–1), the pedido
   snapshot, the hub guard, produtos, freight (its `mapa` row and the
   `lojaIntegradaFreteNaoSuportado` sync run HERE, on every attempt that routed), cliente

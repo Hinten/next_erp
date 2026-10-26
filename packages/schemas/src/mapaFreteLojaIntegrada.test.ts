@@ -10,6 +10,7 @@ import { mapaDeIntegracoesSchema } from './intFrete';
 import {
   MOTIVO_ROTA_ETIQUETA_LI,
   POLITICA_ALVO_ETIQUETA_LI,
+  POLITICA_ALVO_IMPORTACAO_LI,
   TIPOS_ALVO_MAPA_FRETE_LI,
   alvoDispensaEnderecoLi,
   avaliarAlvoDoMapaLi,
@@ -594,6 +595,45 @@ describe('avaliarAlvoDoMapaLi — a target read by id, against a policy', () => 
       expect(avaliarAlvoDoMapaLi({ tipo }, null, COM_DELIBERADOS), tipo).toEqual({
         tipo: 'deliberado',
         tipoAlvo: tipo,
+      });
+    }
+  });
+
+  it('⚠️ NEAR-MISS: the same targets are `deliberado` under the IMPORT policy — left on the conta’s doc on purpose', () => {
+    for (const tipo of ['fob', 'outros']) {
+      expect(avaliarAlvoDoMapaLi({ tipo }, null, POLITICA_ALVO_IMPORTACAO_LI), tipo).toEqual({
+        tipo: 'deliberado',
+        tipoAlvo: tipo,
+      });
+      // Inactive is still judged first, under the real policy too.
+      expect(
+        avaliarAlvoDoMapaLi({ tipo, ativo: false }, null, POLITICA_ALVO_IMPORTACAO_LI),
+        tipo,
+      ).toEqual({ tipo: 'invalido', motivo: MOTIVO_FRETE_NAO_SUPORTADO_LI.alvoInativo });
+    }
+  });
+
+  it('EQUAL pair: the IMPORT policy routes Melhor Envio (with a service), motoboy and retiradaNaLoja exactly as the LABEL policy does', () => {
+    const casos: ReadonlyArray<readonly [string, string | null]> = [
+      ['melhorEnvios', '3'],
+      ['melhorEnvios', null],
+      ['motoboy', '3'],
+      ['retiradaNaLoja', null],
+    ];
+    for (const [tipo, servico] of casos) {
+      expect(
+        avaliarAlvoDoMapaLi({ tipo }, servico, POLITICA_ALVO_IMPORTACAO_LI),
+        `${tipo} ${String(servico)}`,
+      ).toEqual(avaliarAlvoDoMapaLi({ tipo }, servico, ETIQUETA));
+    }
+    expect(avaliarAlvoDoMapaLi({ tipo: 'melhorEnvios' }, '3', POLITICA_ALVO_IMPORTACAO_LI)).toEqual(
+      { tipo: 'valido', tipoAlvo: 'melhorEnvios', externalOptionId: '3' },
+    );
+    // Neither policy routes a marketplace's freight or the router itself.
+    for (const tipo of ['shopee', 'lojaIntegrada', 'MelhorEnvios']) {
+      expect(avaliarAlvoDoMapaLi({ tipo }, '3', POLITICA_ALVO_IMPORTACAO_LI), tipo).toEqual({
+        tipo: 'invalido',
+        motivo: MOTIVO_FRETE_NAO_SUPORTADO_LI.tipoNaoSuportado,
       });
     }
   });
@@ -1247,6 +1287,24 @@ describe('POLITICA_ALVO_ETIQUETA_LI', () => {
   });
 });
 
+describe('POLITICA_ALVO_IMPORTACAO_LI', () => {
+  it('routes exactly melhorEnvios, motoboy and retiradaNaLoja, and holds fob and outros deliberately', () => {
+    expect(POLITICA_ALVO_IMPORTACAO_LI.aceitos).toEqual([
+      'melhorEnvios',
+      'motoboy',
+      'retiradaNaLoja',
+    ]);
+    expect(POLITICA_ALVO_IMPORTACAO_LI.deliberados).toEqual(['fob', 'outros']);
+  });
+
+  it('splits the five targets with no tipo on both sides — every target is either routed or deliberate at import', () => {
+    const aceitos: readonly string[] = POLITICA_ALVO_IMPORTACAO_LI.aceitos;
+    const deliberados: readonly string[] = POLITICA_ALVO_IMPORTACAO_LI.deliberados;
+    expect(aceitos.filter((tipo) => deliberados.includes(tipo))).toEqual([]);
+    expect([...aceitos, ...deliberados].sort()).toEqual([...TIPOS_ALVO_MAPA_FRETE_LI].sort());
+  });
+});
+
 describe('barrel — the label route', () => {
   it('exports the resolver and its guards', () => {
     expect(barrel.planejarRotaEtiquetaLi).toBe(planejarRotaEtiquetaLi);
@@ -1256,5 +1314,10 @@ describe('barrel — the label route', () => {
     expect(barrel.idServicoMelhorEnvioLi).toBe(idServicoMelhorEnvioLi);
     expect(barrel.idIntFreteDaRefLi).toBe(idIntFreteDaRefLi);
     expect(barrel.MOTIVO_ROTA_ETIQUETA_LI).toBe(MOTIVO_ROTA_ETIQUETA_LI);
+  });
+
+  it('exports both target policies', () => {
+    expect(barrel.POLITICA_ALVO_ETIQUETA_LI).toBe(POLITICA_ALVO_ETIQUETA_LI);
+    expect(barrel.POLITICA_ALVO_IMPORTACAO_LI).toBe(POLITICA_ALVO_IMPORTACAO_LI);
   });
 });

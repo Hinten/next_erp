@@ -12,7 +12,9 @@
  * master plan's vectors, character for character, and keeps the two other
  * channels' spellings UNEQUAL:
  *
- *  - pedido: `sha256("lojaIntegrada" + contaId + "-" + numero)`;
+ *  - pedido: `sha256("lojaIntegrada" + contaId + "-" + numero)` — the shared
+ *    `preimagemPedidoLi` (`@delfrance/schemas`), the string the web's identity
+ *    check hashes too (as the paid re-check route is to);
  *  - pagamento: `sha256("integracao/" + contaId + "-" + pagamentoId)` — the bare
  *    collection name, no `documents/`, no leading slash, and never normalised
  *    through an outer-ref helper;
@@ -34,11 +36,13 @@
  * the `mapa` row, the cliente and the endereço of steps 6 and 7 included
  * (`importarPedido.test.ts` pins it on a conta where those steps would write).
  *
- * ⚠️ The helper owns the ALGORITHM (`sha256Hex`); this file owns the PREIMAGES.
- * Nothing makes the template literals below safe to reformat.
+ * ⚠️ The helper owns the ALGORITHM (`sha256Hex`); the pedido's PREIMAGE is
+ * `preimagemPedidoLi`'s (its template literal lives there), and this file owns
+ * the pagamento's. Nothing makes either template literal safe to reformat.
  */
 import { sha256Hex } from '@delfrance/data/admin';
 import { LiSchemaError, type ContextoRequisicaoLi } from '@delfrance/integrations-loja-integrada';
+import { preimagemPedidoLi } from '@delfrance/schemas';
 
 /** A positive safe integer, the only form a numeric preimage part takes. */
 function inteiroPositivo(valor: number): boolean {
@@ -48,17 +52,24 @@ function inteiroPositivo(valor: number): boolean {
 /**
  * `pedidos/{id}` for one Loja Integrada order — the corpus preimage
  * `sha256(utf8("lojaIntegrada" + contaId + "-" + numero))`, `numero` as a plain
- * decimal.
+ * decimal. The preimage is the SHARED one (`preimagemPedidoLi`,
+ * `@delfrance/schemas`): the web's identity check hashes the same string, as
+ * the paid re-check route is to, so none of them can disagree on which pedido
+ * an order is.
  *
- * @throws RangeError when `numero` is not a positive safe integer — a
- *   programming error: the import has already matched it against the path it
- *   asked for.
+ * @throws RangeError when `numero` is not a positive safe integer, or `contaId`
+ *   is not an id a document can have — a programming error: the import has
+ *   already matched the numero against the path it asked for, and the conta id
+ *   is its `integracao` document's.
  */
 export function idPedidoLi(contaId: string, numero: number): string {
-  if (!inteiroPositivo(numero)) {
-    throw new RangeError('idPedidoLi: numero precisa ser um inteiro positivo');
+  const preimagem = preimagemPedidoLi(contaId, String(numero));
+  if (preimagem === null) {
+    throw new RangeError(
+      'idPedidoLi: numero precisa ser um inteiro positivo, e contaId um id de documento',
+    );
   }
-  return sha256Hex(`lojaIntegrada${contaId}-${String(numero)}`);
+  return sha256Hex(preimagem);
 }
 
 /**

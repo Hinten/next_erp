@@ -50,8 +50,8 @@ function textoOuNull(valor: unknown): string | null {
 
 /**
  * The stored Melhor Envio service id of a row (`targetData.id`), or `null` — read through the
- * shared `idServicoMelhorEnvioLi`, the one service reader the label route resolves through (and
- * the order importer is to move onto), so a service stored as `3` and one stored as `'3'` show
+ * shared `idServicoMelhorEnvioLi`, the one service reader the label route and the order importer
+ * resolve through, so a service stored as `3` and one stored as `'3'` show
  * the same service here, and a value it does not read (`'03'`, `0`) shows none. Display only: the
  * write path stores the picked service as is.
  */

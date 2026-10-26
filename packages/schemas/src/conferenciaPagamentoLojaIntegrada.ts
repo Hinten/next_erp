@@ -210,10 +210,10 @@ export function contaIdDoPedidoLi(integracaoPedidoOuterRef: unknown): string | n
 /**
  * The preimage of an imported Loja Integrada pedido's deterministic id —
  * `` `lojaIntegrada${contaId}-${numero}` ``, whose sha256 (lowercase hex) IS that id — or `null`
- * when no imported pedido can carry these values. Written as the one home of that string (master
- * plan step 15): the web's identity check and the paid re-check route are to hash it, and the
- * order importer is to move its own template onto it; until then the two are pinned by the same
- * vector.
+ * when no imported pedido can carry these values. The one home of that string (master plan step
+ * 15): the order importer's pedido id (`idPedidoLi` in `apps/loja-integrada`) is its digest, and
+ * the web's identity check hashes it to recognise an imported pedido, as the paid re-check route
+ * is to.
  *
  * - `contaId` must be a usable document id (the `integracao` doc id, never a store id).
  * - `numero` goes through `inteiroPositivoCanonicoLi`: a positive safe integer or its canonical
