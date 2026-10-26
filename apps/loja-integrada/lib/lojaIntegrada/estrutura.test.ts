@@ -38,7 +38,15 @@
  *    read switch, no network module and no text that calls `fetch`;
  *  - the paid re-check route (`GET …/pedidos/[pedidoId]/pagamento`, step 15) reaches Loja
  *    Integrada only through the context loader, whose first act is the read switch: in its
- *    run-time closure no file calls `fetch`, and only `core/contexto.ts` builds a client.
+ *    run-time closure no file calls `fetch`, and only `core/contexto.ts` builds a client;
+ *  - neither step-15 route can reach the WRITE context (`core/contextoEscrita.ts`) or name its
+ *    factory, with no exemption;
+ *  - the write chokepoint (the write engine's requirement 9, step 7), matched by FULL path in
+ *    non-test source: only `core/contextoEscrita.ts` builds a write client; only
+ *    `core/escrita.ts` names a package write operation or a write-client method; the write
+ *    client's type is named in those two files only; and no source imports a subpath of the
+ *    package (its manifest publishes the root alone, and a deep import is how its request
+ *    core would be reached).
  */
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, posix, relative, sep } from 'node:path';
@@ -302,7 +310,12 @@ const MODULOS_FORA_DA_ROTA_ETIQUETA = [
   ...MODULOS_DE_CREDENCIAL,
   'lib/lojaIntegrada/core/valvulas.ts',
   'lib/lojaIntegrada/core/ritmo.ts',
+  'lib/lojaIntegrada/core/contextoEscrita.ts',
 ];
+
+/** The write context: no step-15 route may reach it, or name its factory or its loader. */
+const MODULO_DO_CONTEXTO_DE_ESCRITA = 'lib/lojaIntegrada/core/contextoEscrita.ts';
+const NOMES_DO_CONTEXTO_DE_ESCRITA = /\b(criarClienteEscritaLi|loadLojaIntegradaContextoEscrita)\b/;
 
 /**
  * `texto` without its type-only imports and re-exports (`import type …`, `export type … from`):
@@ -361,7 +374,11 @@ function violacoesDaRotaEtiqueta(entradas: readonly string[], lerBruto: LeitorDe
   }
   for (const arquivo of fecho.arquivos) {
     if (MODULOS_FORA_DA_ROTA_ETIQUETA.includes(arquivo)) violacoes.push(`reaches ${arquivo}`);
-    if (/\bfetch\s*\(/.test(lerBruto(arquivo) ?? '')) violacoes.push(`${arquivo} calls fetch`);
+    const texto = lerBruto(arquivo) ?? '';
+    if (/\bfetch\s*\(/.test(texto)) violacoes.push(`${arquivo} calls fetch`);
+    if (NOMES_DO_CONTEXTO_DE_ESCRITA.test(texto)) {
+      violacoes.push(`${arquivo} names the write context`);
+    }
   }
   return violacoes;
 }
@@ -402,6 +419,53 @@ function violacoesDaRotaPagamento(entradas: readonly string[], lerBruto: LeitorD
     ) {
       violacoes.push(`${arquivo} reaches Loja Integrada outside the context loader`);
     }
+    // No exemption: not even the read context loader may reach or name the write one.
+    if (arquivo === MODULO_DO_CONTEXTO_DE_ESCRITA) violacoes.push(`reaches ${arquivo}`);
+    if (NOMES_DO_CONTEXTO_DE_ESCRITA.test(texto)) {
+      violacoes.push(`${arquivo} names the write context`);
+    }
+  }
+  return violacoes;
+}
+
+/* --------------------------- the write chokepoint -------------------------- */
+
+/** The write engine: the ONE module that sends a write (requirement 9). */
+const ARQUIVO_DO_MOTOR = 'lib/lojaIntegrada/core/escrita.ts';
+
+/**
+ * Who may NAME each write identifier, by full app-relative path — never by basename: the app
+ * already has `sanitizacao/escrita.ts`, `pedidos/escritaPedido.ts` and `pedidos/escritaPagamento.ts`.
+ * Word-bounded, and read raw (a comment that names one counts): an aliased import or a method
+ * reference names it too, while a longer name built on it does not.
+ */
+const DONOS_DA_ESCRITA: readonly { readonly nome: RegExp; readonly donos: readonly string[] }[] = [
+  { nome: /\bcriarClienteEscritaLi\b/, donos: [MODULO_DO_CONTEXTO_DE_ESCRITA] },
+  {
+    nome: /\b(?:atualizarObjetoEnvioLi|alterarSituacaoPedidoLi|lerAntesDeEscreverLi|enviarEscritaLi)\b/,
+    donos: [ARQUIVO_DO_MOTOR],
+  },
+  { nome: /\bLiEscritaClient\b/, donos: [MODULO_DO_CONTEXTO_DE_ESCRITA, ARQUIVO_DO_MOTOR] },
+];
+
+/** The package, whose manifest publishes its root alone. */
+const PACOTE_LI = '@delfrance/integrations-loja-integrada';
+
+/** The chokepoint scans non-test source: a test and `lib/lojaIntegrada/testing/**` name the fakes. */
+const ehFonteDaEscrita = (arquivo: string) =>
+  !ehTeste(arquivo) && !arquivo.startsWith('lib/lojaIntegrada/testing/');
+
+/** Why a source text (`arquivo` relative to the app root) breaks the write chokepoint; empty when it does not. */
+function violacoesDaEscrita(arquivo: string, texto: string): string[] {
+  const violacoes: string[] = [];
+  for (const { nome, donos } of DONOS_DA_ESCRITA) {
+    const achado = nome.exec(texto);
+    if (achado !== null && !donos.includes(arquivo)) {
+      violacoes.push(`${arquivo} names ${achado[0]}`);
+    }
+  }
+  for (const espec of especificadores(texto)) {
+    if (espec.startsWith(`${PACOTE_LI}/`)) violacoes.push(`${arquivo} imports ${espec}`);
   }
   return violacoes;
 }
@@ -609,7 +673,7 @@ describe('lib/lojaIntegrada layout', () => {
       'lib/lojaIntegrada/core/contextoEscrita.ts',
     ]);
     // The write context builds TWO clients, each with its own inline observer (never a shared const).
-    const doContextoDeEscrita = lerDoApp('lib/lojaIntegrada/core/contextoEscrita.ts') ?? '';
+    const doContextoDeEscrita = lerDoApp(MODULO_DO_CONTEXTO_DE_ESCRITA) ?? '';
     expect(doContextoDeEscrita.split(SEAM_OK)).toHaveLength(3);
     expect(fontes.map(relApp)).toContain(ARQUIVO_DO_LOGGER);
   });
@@ -695,6 +759,21 @@ describe('lib/lojaIntegrada layout', () => {
     );
     expect(fecho.externos).toContain('@delfrance/integrations-loja-integrada');
     expect(lerDoApp(CONSTRUTOR_DO_CLIENTE)).toContain('criarClienteLeituraLi({');
+  });
+
+  it('the write chokepoint: only core/contextoEscrita.ts builds a write client, only core/escrita.ts calls a write operation or method, no source imports a package subpath', () => {
+    const fontes = arquivosTs(RAIZ_APP).map(relApp).filter(ehFonteDaEscrita);
+    const violacoes = fontes.flatMap((p) => violacoesDaEscrita(p, lerDoApp(p) ?? ''));
+    expect(violacoes).toEqual([]);
+    // Anti-vacuity: the scan reached the owners, and they really hold the calls.
+    expect(fontes).toEqual(
+      expect.arrayContaining([ARQUIVO_DO_MOTOR, MODULO_DO_CONTEXTO_DE_ESCRITA, ROTA_PAGAMENTO]),
+    );
+    const motor = lerDoApp(ARQUIVO_DO_MOTOR) ?? '';
+    expect(motor).toContain('atualizarObjetoEnvioLi(');
+    expect(motor).toContain('alterarSituacaoPedidoLi(');
+    expect(motor).toContain('.lerAntesDeEscreverLi(');
+    expect(lerDoApp(MODULO_DO_CONTEXTO_DE_ESCRITA)).toContain('criarClienteEscritaLi({');
   });
 
   it('scripts/ is typechecked and linted: the tsconfig includes **/*.ts, the ESLint config ignores nothing of it', () => {
@@ -940,6 +1019,7 @@ describe('the guards, on synthetic source', () => {
         "import { x } from '@delfrance/integrations-loja-integrada';",
       'lib/lojaIntegrada/core/valvulas.ts': 'export const v = 1;',
       'lib/lojaIntegrada/core/erros.ts': 'export class E extends Error {}',
+      [MODULO_DO_CONTEXTO_DE_ESCRITA]: "import { y } from '../core/erros';",
     });
 
   it('routing route closure: the data layer, an app error and a TYPE-only import of the package are accepted', () => {
@@ -962,6 +1042,14 @@ describe('the guards, on synthetic source', () => {
       "import { type LiError } from '@delfrance/integrations-loja-integrada';",
     ],
     ['the context loader', "import { loadLojaIntegradaContext } from '../core/contexto';"],
+    [
+      'the WRITE context (a module that itself names nothing forbidden)',
+      "import { y } from '../core/contextoEscrita';",
+    ],
+    [
+      'the write context’s loader, by name',
+      'export const z = (c: { loadLojaIntegradaContextoEscrita: unknown }) => c;',
+    ],
     ['the read switch', "import { lerChamadasLi } from '../core/valvulas';"],
     ['a fetch call', "export const f = () => fetch('https://x.invalid');"],
     ['a network module', "import { request } from 'node:https';"],
@@ -977,13 +1065,16 @@ describe('the guards, on synthetic source', () => {
   });
 
   const PAGAMENTO = 'app/y/route.ts';
-  const daRotaPagamento = (nucleo: string) =>
+  const daRotaPagamento = (
+    nucleo: string,
+    construtor = "import { criarClienteLeituraLi } from '@delfrance/integrations-loja-integrada';\n" +
+      'export const c = () => criarClienteLeituraLi({});',
+  ) =>
     leitor({
       [PAGAMENTO]: "import { f } from '@/lib/lojaIntegrada/pedidos/y';",
       'lib/lojaIntegrada/pedidos/y.ts': nucleo,
-      [CONSTRUTOR_DO_CLIENTE]:
-        "import { criarClienteLeituraLi } from '@delfrance/integrations-loja-integrada';\n" +
-        'export const c = () => criarClienteLeituraLi({});',
+      [CONSTRUTOR_DO_CLIENTE]: construtor,
+      [MODULO_DO_CONTEXTO_DE_ESCRITA]: 'export const w = 1;',
     });
 
   it('payment route closure: the context loader building the client, and the package read through it, are accepted', () => {
@@ -1010,6 +1101,125 @@ describe('the guards, on synthetic source', () => {
     expect(violacoesDaRotaPagamento([PAGAMENTO], daRotaPagamento(nucleo)).length).toBeGreaterThan(
       0,
     );
+  });
+
+  it.each([
+    ['the write context module', "import { w } from '../core/contextoEscrita';"],
+    [
+      'the write client factory, even imported for its type position',
+      "import { criarClienteEscritaLi } from '@delfrance/integrations-loja-integrada';",
+    ],
+    ['the write context loader, by name', 'export const n = "loadLojaIntegradaContextoEscrita";'],
+  ])('payment route closure flags the write side: %s', (_caso, nucleo) => {
+    expect(violacoesDaRotaPagamento([PAGAMENTO], daRotaPagamento(nucleo)).length).toBeGreaterThan(
+      0,
+    );
+  });
+
+  it('payment route closure: the read context loader has NO exemption for the write factory', () => {
+    const construtor =
+      "import { criarClienteLeituraLi, criarClienteEscritaLi } from '@delfrance/integrations-loja-integrada';\n" +
+      'export const c = () => criarClienteLeituraLi({});';
+    const nucleo = "import { c } from '../core/contexto';\n" + 'export const f = () => c();';
+    expect(violacoesDaRotaPagamento([PAGAMENTO], daRotaPagamento(nucleo, construtor))).toEqual([
+      `${CONSTRUTOR_DO_CLIENTE} names the write context`,
+    ]);
+  });
+
+  /* The write chokepoint (requirement 9), on synthetic source. */
+  const OUTRO = 'lib/lojaIntegrada/rastreio/x.ts';
+
+  it.each([
+    [
+      'a second caller of an operation',
+      OUTRO,
+      "import { atualizarObjetoEnvioLi } from '@delfrance/integrations-loja-integrada';\n" +
+        "await atualizarObjetoEnvioLi(c, 801, 'X');",
+    ],
+    [
+      'an aliased import',
+      OUTRO,
+      "import { alterarSituacaoPedidoLi as mudar } from '@delfrance/integrations-loja-integrada';\n" +
+        "await mudar(c, 1, 'pedido_enviado');",
+    ],
+    ['a method reference', OUTRO, 'const ler = contexto.escrita.lerAntesDeEscreverLi;'],
+    ['a destructured method', OUTRO, 'const { enviarEscritaLi } = contexto.escrita;'],
+    [
+      'the write client built outside the write context',
+      CONSTRUTOR_DO_CLIENTE,
+      "import { criarClienteEscritaLi } from '@delfrance/integrations-loja-integrada';",
+    ],
+    [
+      'the engine building its own client',
+      ARQUIVO_DO_MOTOR,
+      'criarClienteEscritaLi({ obterCredencial })',
+    ],
+    [
+      'the write context calling an operation itself',
+      MODULO_DO_CONTEXTO_DE_ESCRITA,
+      "await alterarSituacaoPedidoLi(escrita, 1, 'pedido_enviado');",
+    ],
+    [
+      'a file named like the engine elsewhere (matched by FULL path)',
+      'lib/lojaIntegrada/sanitizacao/escrita.ts',
+      "await atualizarObjetoEnvioLi(c, 801, 'X');",
+    ],
+    [
+      'the client type named elsewhere',
+      OUTRO,
+      "import type { LiEscritaClient } from '@delfrance/integrations-loja-integrada';",
+    ],
+    ['a comment that names a write method', OUTRO, '// then call enviarEscritaLi on the client'],
+    [
+      'a package subpath import',
+      OUTRO,
+      "import { executarLi } from '@delfrance/integrations-loja-integrada/src/client';",
+    ],
+    [
+      'a package subpath re-export',
+      'app/x/route.ts',
+      "export { rotaDeEscritaLi } from '@delfrance/integrations-loja-integrada/src/rotasEscrita';",
+    ],
+  ])('chokepoint flags %s', (_caso, arquivo, fonte) => {
+    expect(violacoesDaEscrita(arquivo, fonte).length).toBeGreaterThan(0);
+  });
+
+  it('chokepoint passes the owners, a bare `.ler(` on another receiver, longer names and the package root', () => {
+    expect(
+      violacoesDaEscrita(
+        ARQUIVO_DO_MOTOR,
+        "await atualizarObjetoEnvioLi(c, 801, 'X');\n" +
+          "await alterarSituacaoPedidoLi(c, 1, 'pedido_enviado');\n" +
+          'await contexto.escrita.lerAntesDeEscreverLi(p);\n' +
+          'type C = LiEscritaClient;',
+      ),
+    ).toEqual([]);
+    expect(
+      violacoesDaEscrita(
+        MODULO_DO_CONTEXTO_DE_ESCRITA,
+        'const escrita: LiEscritaClient = criarClienteEscritaLi({ obterCredencial });',
+      ),
+    ).toEqual([]);
+    // The positive control: the sanitizer's own file-system `ler` is not a write method.
+    expect(
+      violacoesDaEscrita(
+        'lib/lojaIntegrada/sanitizacao/executar.ts',
+        'const texto = fs.ler(caminho);',
+      ),
+    ).toEqual([]);
+    expect(
+      violacoesDaEscrita(OUTRO, 'const v = lerAntesDeEscreverLiV2(); enviarEscritaLista();'),
+    ).toEqual([]);
+    expect(
+      violacoesDaEscrita(
+        OUTRO,
+        "import { buscarPedidoLi } from '@delfrance/integrations-loja-integrada';",
+      ),
+    ).toEqual([]);
+    // Test sources and the shared test doubles are exempt; source is not.
+    expect(ehFonteDaEscrita('lib/lojaIntegrada/core/escrita.test.ts')).toBe(false);
+    expect(ehFonteDaEscrita('lib/lojaIntegrada/testing/fakeDb.ts')).toBe(false);
+    expect(ehFonteDaEscrita(OUTRO)).toBe(true);
   });
 
   it('seam accepts criarObservadorLi(…) imported from the logger, and exempts the logger itself', () => {
