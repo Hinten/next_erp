@@ -13,7 +13,8 @@
  *   `cancelado-so-no-erp`);
  * - `P` — some package's `detailedStatus` reverses the sale
  *   (`DETAILED_STATUS_REVERSAO`, imported — never a second list here);
- * - `Z` — `SHIPPED` and the lines arrive zeroed, emptied or short;
+ * - `Z` — `SHIPPED` and the lines arrive zeroed, emptied or short, or (PR 6)
+ *   the payment arrives summing to 0 while the stored pagamento's is positive;
  * - the phase: `pre` (PENDING, PENDING_AVAILABILITY), `apr` (UNSHIPPED,
  *   PARTIALLY_SHIPPED), `env` (SHIPPED), `cancelado`, `desconhecida` (absent,
  *   unknown, UNFULFILLABLE);
@@ -37,6 +38,7 @@ import {
 } from './estadoPedidoAmazon';
 import { linhasRecebidasAmazon, type LinhaArmazenadaAmazon } from './itensAmazon';
 import { ehDetailedStatusReversao } from './pacotesAmazon';
+import { execucoesPagamentoAmazon, somaPagamentoAmazon } from './pagamentoAmazon';
 
 /** The order's phase, from `fulfillmentStatus` alone. */
 export type FaseVendaAmazon = 'pre' | 'apr' | 'env' | 'cancelado' | 'desconhecida';
@@ -96,6 +98,8 @@ export interface VendaAmazon {
 export interface PedidoArmazenadoVendaAmazon {
   readonly resumo: ResumoArmazenadoAmazon;
   readonly linhas: readonly LinhaArmazenadaAmazon[];
+  /** The stored pagamento's `valor` (a finite number), or `null` (none, or unreadable). */
+  readonly pagamentoValor: number | null;
 }
 
 function zeroOuAusente(valor: number | null): boolean {
@@ -111,7 +115,8 @@ function positivo(valor: number | null): boolean {
  * `[]`; with a stored pedido, a stored `mktplaceId` missing from the incoming
  * lines, or a matched line whose incoming quantity or unit price is 0 or absent
  * while the stored one is positive; with none stored, a line whose quantity or
- * unit price is 0 or absent. (PR 6 adds the payment term.)
+ * unit price is 0 or absent; and (PR 6) the incoming Σ of payment executions 0,
+ * absent or unreadable while the stored pagamento's `valor` is positive.
  */
 function zerado(
   order: PedidoWireAmazon,
@@ -123,6 +128,10 @@ function zerado(
   if (recebidas.length === 0) return true;
   if (armazenado === null) {
     return recebidas.some((l) => zeroOuAusente(l.quantidade) || zeroOuAusente(l.precoUnitario));
+  }
+  if (positivo(armazenado.pagamentoValor)) {
+    const soma = somaPagamentoAmazon(execucoesPagamentoAmazon(order));
+    if (soma === null || soma === 0) return true;
   }
   const porId = new Map(recebidas.map((l) => [l.orderItemId, l]));
   return armazenado.linhas.some((guardada) => {

@@ -294,6 +294,32 @@ describe('step 5: the batch — all or nothing, each write under its own precond
     expect(db.carimboDe('pedidos/p')?.isEqual(w1?.writeTime)).toBe(true);
   });
 
+  it('★ (PR 6) a CONTENT-IDENTICAL update keeps the doc’s stamp and answers the PREVIOUS one; its sibling answers the commit time (the emulator’s measured behaviour)', async () => {
+    const lido = db.seed('pedidos/p', { x: 1, mapa: { a: [1, 'b'] } });
+    const lote = db.batch();
+    lote.update(pedidoRef('p'), { x: 1, mapa: { a: [1, 'b'] } }, { lastUpdateTime: lido });
+    lote.create(pagamentoRef('p'), { y: 1 });
+    const [carrier, create] = await lote.commit();
+    expect(carrier?.writeTime.isEqual(lido)).toBe(true);
+    expect(db.carimboDe('pedidos/p')?.isEqual(lido)).toBe(true);
+    expect(create?.writeTime.isEqual(lido)).toBe(false);
+    expect(create?.writeTime.isEqual(db.carimboDe('pedidos/p/pagamentos/p'))).toBe(true);
+    // The write is still logged, with the stamp it answered.
+    expect(db.escritas[0]?.writeTime.isEqual(lido)).toBe(true);
+    // NEAR-MISS: one changed leaf (deep in a map, or a key order aside) is a real write.
+    const lido2 = db.seed('pedidos/q', { x: 1, mapa: { a: [1, 'b'] } });
+    const outro = db.batch();
+    outro.update(pedidoRef('q'), { mapa: { a: [1, 'c'] } }, { lastUpdateTime: lido2 });
+    const [real] = await outro.commit();
+    expect(real?.writeTime.isEqual(lido2)).toBe(false);
+    expect(db.carimboDe('pedidos/q')?.isEqual(real?.writeTime)).toBe(true);
+    const lido3 = db.seed('pedidos/r', { a: 1, b: 2 });
+    const ordem = db.batch();
+    ordem.update(pedidoRef('r'), { b: 2, a: 1 }, { lastUpdateTime: lido3 });
+    const [mesmo] = await ordem.commit();
+    expect(mesmo?.writeTime.isEqual(lido3)).toBe(true);
+  });
+
   it('★ a create over an existing doc fails 6 and writes NO sibling', async () => {
     const lido = db.seed('pedidos/p', { x: 1 });
     db.seed('pedidos/p/pagamentos/p', { y: 1 });

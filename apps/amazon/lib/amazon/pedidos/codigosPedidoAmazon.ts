@@ -16,8 +16,8 @@
 /**
  * A pedido INCIDENTE (`amz-<code>`, created once, resolved by the operator on
  * the pedido's Incidentes tab): a permanent fact of the order, which no later
- * import can see end — so never an aviso (plan §3 decision 26). PR 6 adds the
- * two payment codes.
+ * import can see end — so never an aviso (plan §3 decision 26). PR 6 added the
+ * two payment codes and the money arm of `pagamento-divergente`.
  */
 export const INCIDENTE_PEDIDO_AMAZON = {
   /** `fulfilledBy: AMAZON` (FBA is not used, D7), or an `UNFULFILLABLE` order. */
@@ -28,8 +28,19 @@ export const INCIDENTE_PEDIDO_AMAZON = {
   possivelReembolso: 'possivel-reembolso',
   /** Amazon cancelled, but the goods are out or the estado is the operator's: nothing was released. */
   canceladoAposEnvio: 'cancelado-apos-envio',
-  /** Amazon cancelled while the stored pagamento sits off the importer's ladder (an operator's). */
+  /**
+   * The pagamento does not match the pedido: Amazon cancelled while the stored
+   * pagamento sits off the importer's ladder (an operator's), OR (PR 6) the
+   * payment executions do not add up to what the NF-e states (`valor` then
+   * covers the note's total, or keeps the larger sum), OR (PR 6) an approved
+   * order's pagamento could not be created because the stored lines do not
+   * state a total. One id for every arm.
+   */
   pagamentoDivergente: 'pagamento-divergente',
+  /** (PR 6) Amazon's `paymentMethod` is absent or not in the table: the pagamento is a 99. */
+  formaPagamentoDesconhecida: 'forma-pagamento-desconhecida',
+  /** (PR 6) More than one payment execution: ONE pagamento, the largest leg's forma. */
+  pagamentoDividido: 'pagamento-dividido',
 } as const satisfies Record<string, string>;
 
 export type IncidentePedidoAmazon =
@@ -58,6 +69,13 @@ export const EVENTO_PEDIDO_AMAZON = {
   itensArmazenadosIlegiveis: 'itens-armazenados-ilegiveis',
   /** A stored freight block the freight schema refuses: the block was left as stored. */
   freteArmazenadoIlegivel: 'frete-armazenado-ilegivel',
+  /** (PR 6) A pagamento `estornado` moved back to `aprovado` (the pedido resurrected with it). */
+  pagamentoRessuscitado: 'pagamento-ressuscitado',
+  /**
+   * (PR 6) A non-blank `acquirerId` the shared card rule refused (not a valid
+   * 14-character CNPJ): `cnpj_instituicao` stays `null`. Never the value.
+   */
+  cnpjInstituicaoRecusado: 'cnpj-instituicao-recusado',
 } as const satisfies Record<string, string>;
 
 export type EventoPedidoAmazon = (typeof EVENTO_PEDIDO_AMAZON)[keyof typeof EVENTO_PEDIDO_AMAZON];

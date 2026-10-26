@@ -1,7 +1,8 @@
 /**
  * The import batch against the fake db, which models the batch's all-or-nothing
- * commit and per-write preconditions (and nothing shaped like a transaction).
- * The REAL batch semantics run in `importarPedido.firestore.test.ts`.
+ * commit, per-write preconditions and (PR 6) the server's answer to a
+ * content-identical update — and nothing shaped like a transaction. The REAL
+ * batch semantics run in `importarPedido.firestore.test.ts`.
  */
 import { beforeEach, describe, expect, it } from 'vitest';
 import { pagamentoCollection } from '@delfrance/data/admin/collections';
@@ -17,7 +18,6 @@ import {
 import { AmazonPedidoEmConflitoError } from './erros';
 import {
   MAX_TENTATIVAS_ESCRITA_PEDIDO_AMAZON,
-  decidirPagamentosAmazon,
   gravarPedidoAmazon,
   lerPedidoEPagamentoAmazon,
   type DecidirPagamentosAmazon,
@@ -29,6 +29,7 @@ const CONTA = 'conta-1';
 const ORDER = '171-9876543-2109876';
 const PEDIDO = makePedidoIdAmazon(CONTA, ORDER);
 const CAMINHO = `pedidos/${PEDIDO}`;
+const PAGAMENTO = `${CAMINHO}/pagamentos/${PEDIDO}`;
 const NOW_US = 1_900_000_000_000_000;
 
 const ENTRADAS: EntradasPedidoAmazon = {
@@ -40,6 +41,9 @@ const ENTRADAS: EntradasPedidoAmazon = {
   modalidadeFreteImportacao: null,
   vinculos: new Map(),
 };
+
+/** A hook that writes no pagamento (to set up a pedido alone). */
+const SEM_PAGAMENTO: DecidirPagamentosAmazon = () => [];
 
 let db: FakeDb;
 
@@ -71,15 +75,23 @@ async function gravar(
 }
 
 describe('one attempt', () => {
-  it('★ a first import CREATES the pedido (never `set`) in ONE batch, parsed through the handle', async () => {
+  it('★ a first import CREATES the pedido and its pagamento (never `set`) in ONE batch, parsed through the handles', async () => {
     const r = await gravar({ status: 'UNSHIPPED' });
     expect(r.tipo).toBe('gravado');
-    expect(db.escritas.map((e) => [e.verbo, e.caminho, e.lote])).toEqual([['create', CAMINHO, 1]]);
+    expect(db.escritas.map((e) => [e.verbo, e.caminho, e.lote])).toEqual([
+      ['create', CAMINHO, 1],
+      ['create', PAGAMENTO, 1],
+    ]);
     const doc = db.ler(CAMINHO);
     expect(doc?.estado).toBe('pago');
     expect(doc?.numero).toBe(ORDER);
-    // The handle's parse filled the schema defaults the mapper leaves out.
+    // The handles' parse filled the schema defaults the mappers leave out.
     expect(Object.hasOwn(doc ?? {}, 'hasUserInteraction')).toBe(true);
+    expect(db.ler(PAGAMENTO)).toMatchObject({
+      status_pagamento: STATUS_PAGAMENTO.aprovado,
+      marketplace: null,
+      liquidacao: null,
+    });
     if (r.tipo !== 'gravado') throw new Error('esperava gravado');
     expect(r.writeTime?.isEqual(db.carimboDe(CAMINHO) as never)).toBe(true);
     expect(r.armazenado).toBeNull();
@@ -90,10 +102,10 @@ describe('one attempt', () => {
     const antes = db.carimboDe(CAMINHO);
     const r = await gravar({ status: 'UNSHIPPED', atualizadoEm: depois(60) });
     expect(r.tipo).toBe('gravado');
-    const ultima = db.escritas.at(-1);
-    expect(ultima?.verbo).toBe('update');
-    expect(ultima?.comPrecondicao).toBe(true);
-    expect(ultima?.dados?.estado).toBe('pago');
+    const doPedido = db.escritas.filter((e) => e.caminho === CAMINHO).at(-1);
+    expect(doPedido?.verbo).toBe('update');
+    expect(doPedido?.comPrecondicao).toBe(true);
+    expect(doPedido?.dados?.estado).toBe('pago');
     expect(antes).not.toBeUndefined();
   });
 
@@ -104,7 +116,7 @@ describe('one attempt', () => {
     if (r.tipo !== 'sem-mudanca') throw new Error('esperava sem-mudanca');
     expect(r.writeTime).toBeNull();
     expect(db.commitsDeLote).toHaveLength(1);
-    expect(db.escritas).toHaveLength(1);
+    expect(db.escritas).toHaveLength(2);
   });
 
   it('obsoleto (a newer write landed) ⇒ NOTHING written', async () => {
@@ -129,11 +141,14 @@ describe('one attempt', () => {
 
   it('reads the pedido AND its pagamento in one getAll (the CANCELLED predicate needs its status)', async () => {
     await lerPedidoEPagamentoAmazon(asDb(db), PEDIDO);
-    expect(db.leituras).toEqual([CAMINHO, `${CAMINHO}/pagamentos/${PEDIDO}`]);
+    expect(db.leituras).toEqual([CAMINHO, PAGAMENTO]);
   });
 
-  it('the PR-6 hook decides nothing yet', () => {
-    expect(decidirPagamentosAmazon({} as never, {} as never)).toEqual([]);
+  it('★ a PENDING order creates the pedido and NO pagamento', async () => {
+    const r = await gravar({ status: 'PENDING' });
+    expect(r.tipo).toBe('gravado');
+    expect(db.escritas.map((e) => e.caminho)).toEqual([CAMINHO]);
+    expect(db.ler(PAGAMENTO)).toBeUndefined();
   });
 });
 
@@ -178,6 +193,7 @@ describe('★ a lost precondition aborts everything; the retry re-reads and RE-D
     const r = await gravar({ status: 'UNSHIPPED', atualizadoEm: depois(60) });
     expect(r).toMatchObject({ tipo: 'gravado', tentativas: 2 });
     expect(db.ler(CAMINHO)?.estado).toBe('pago');
+    expect(db.ler(PAGAMENTO)?.status_pagamento).toBe(STATUS_PAGAMENTO.aprovado);
   });
 
   it(`three losses in a row ⇒ AmazonPedidoEmConflitoError after EXACTLY ${String(MAX_TENTATIVAS_ESCRITA_PEDIDO_AMAZON)} commits, NOTHING written`, async () => {
@@ -198,14 +214,15 @@ describe('★ a lost precondition aborts everything; the retry re-reads and RE-D
     expect(db.commitsDeLote).toHaveLength(1 + 3);
     expect(db.escritas).toHaveLength(escritasAntes);
     expect(db.ler(CAMINHO)).toEqual(antes);
+    expect(db.ler(PAGAMENTO)).toBeUndefined();
   });
 
   it('★ the retry re-reads the PAGAMENTO too: one approved between the read and the commit (beside a pedido change) ⇒ attempt 2 decides estornadoIntegralmente, and the hook sees the re-read snapshot', async () => {
-    await gravar({ status: 'UNSHIPPED' });
-    expect(db.ler(`${CAMINHO}/pagamentos/${PEDIDO}`)).toBeUndefined();
+    await gravar({ status: 'UNSHIPPED' }, { decidirPagamentos: SEM_PAGAMENTO });
+    expect(db.ler(PAGAMENTO)).toBeUndefined();
     db.antesDaProximaEscrita(CAMINHO, () => {
       db.seed(CAMINHO, { ...(db.ler(CAMINHO) ?? {}) });
-      db.seed(`${CAMINHO}/pagamentos/${PEDIDO}`, { status: STATUS_PAGAMENTO.aprovado });
+      db.seed(PAGAMENTO, { status_pagamento: STATUS_PAGAMENTO.aprovado });
     });
     const pagamentosVistos: boolean[] = [];
     const r = await gravar(
@@ -223,19 +240,6 @@ describe('★ a lost precondition aborts everything; the retry re-reads and RE-D
     expect(pagamentosVistos).toEqual([false, true]);
   });
 
-  it('RESIDUE until PR 6 (module header): a change to the PAGAMENTO alone between the read and the commit is not seen — no 5-d write carries its precondition', async () => {
-    await gravar({ status: 'UNSHIPPED' });
-    db.seed(`${CAMINHO}/pagamentos/${PEDIDO}`, { status: STATUS_PAGAMENTO.aprovado });
-    db.antesDaProximaEscrita(CAMINHO, () => {
-      db.seed(`${CAMINHO}/pagamentos/${PEDIDO}`, { status: STATUS_PAGAMENTO.em_disputa });
-    });
-    const r = await gravar({ status: 'CANCELLED', atualizadoEm: depois(60) });
-    expect(r).toMatchObject({ tipo: 'gravado', tentativas: 1 });
-    // Decided from the read's `aprovado`. The committed `em_disputa` would decide
-    // `cancelado` + `pagamento-divergente`; PR 6's pagamento carrier flips this test.
-    expect(db.ler(CAMINHO)?.estado).toBe(ESTADO_PEDIDO.estornadoIntegralmente);
-  });
-
   it('a non-precondition failure is rethrown at once — never retried', async () => {
     const falha = Object.assign(new Error('UNAVAILABLE'), { code: 14 });
     db.falharEscrita(CAMINHO, falha);
@@ -244,11 +248,114 @@ describe('★ a lost precondition aborts everything; the retry re-reads and RE-D
   });
 });
 
-describe('the pagamento slot (PR 6 fills the hook)', () => {
+describe('★ (PR 6) the pagamento is proven current at commit — PR 5-d’s residue, flipped', () => {
+  /** A stored pedido + pagamento, then a pagamento-only change landing in the read→commit window. */
+  async function comMudancaSoNoPagamento(
+    pedido: OpcoesPedidoTeste,
+    pagamentoGuardado: Record<string, unknown>,
+    pagamentoConcorrente: Record<string, unknown>,
+    incoming: OpcoesPedidoTeste,
+  ) {
+    await gravar(pedido, { decidirPagamentos: SEM_PAGAMENTO });
+    db.seed(PAGAMENTO, { id: ORDER, valor: 20, ...pagamentoGuardado });
+    db.antesDaProximaEscrita(CAMINHO, () => {
+      db.seed(PAGAMENTO, { ...(db.ler(PAGAMENTO) ?? {}), ...pagamentoConcorrente });
+    });
+    return gravar(incoming);
+  }
+
+  it('a DECIDED pagamento update (aprovado → estornado) under its stale snapshot ⇒ 9; attempt 2 decides from the operator’s em_disputa: cancelado + pagamento-divergente, the pagamento untouched', async () => {
+    const r = await comMudancaSoNoPagamento(
+      { status: 'UNSHIPPED' },
+      { status_pagamento: STATUS_PAGAMENTO.aprovado },
+      { status_pagamento: STATUS_PAGAMENTO.em_disputa },
+      { status: 'CANCELLED', atualizadoEm: depois(60) },
+    );
+    expect(r).toMatchObject({ tipo: 'gravado', tentativas: 2 });
+    if (r.tipo !== 'gravado') throw new Error('esperava gravado');
+    // Decided from the COMMITTED status (5-d's residue decided estornadoIntegralmente here).
+    expect(db.ler(CAMINHO)?.estado).toBe(ESTADO_PEDIDO.cancelado);
+    expect(r.escrita.decisao.incidentes).toContain('pagamento-divergente');
+    expect(db.ler(PAGAMENTO)?.status_pagamento).toBe(STATUS_PAGAMENTO.em_disputa);
+    // The winning batch still proved the (untouched) pagamento current: its carrier.
+    expect(r.portadorPagamento).toBe(true);
+  });
+
+  it('★ the arm that only READ the status — a stored `estornado` KEPT — still carries the pagamento’s precondition: an operator’s em_disputa landing meanwhile ⇒ attempt 2 decides cancelado', async () => {
+    const r = await comMudancaSoNoPagamento(
+      { status: 'UNSHIPPED' },
+      { status_pagamento: STATUS_PAGAMENTO.estornado },
+      { status_pagamento: STATUS_PAGAMENTO.em_disputa },
+      { status: 'CANCELLED', atualizadoEm: depois(60) },
+    );
+    expect(r).toMatchObject({ tipo: 'gravado', tentativas: 2, portadorPagamento: true });
+    // Without the carrier, attempt 1 would have committed estornadoIntegralmente.
+    expect(db.ler(CAMINHO)?.estado).toBe(ESTADO_PEDIDO.cancelado);
+  });
+
+  it('★ the off-ladder arm (an operator’s em_disputa, left alone) carries it too: the operator’s aprovado landing meanwhile ⇒ attempt 2 decides estornadoIntegralmente', async () => {
+    const r = await comMudancaSoNoPagamento(
+      { status: 'UNSHIPPED' },
+      { status_pagamento: STATUS_PAGAMENTO.em_disputa },
+      { status_pagamento: STATUS_PAGAMENTO.aprovado },
+      { status: 'CANCELLED', atualizadoEm: depois(60) },
+    );
+    expect(r).toMatchObject({ tipo: 'gravado', tentativas: 2 });
+    expect(db.ler(CAMINHO)?.estado).toBe(ESTADO_PEDIDO.estornadoIntegralmente);
+    expect(db.ler(PAGAMENTO)?.status_pagamento).toBe(STATUS_PAGAMENTO.estornado);
+  });
+
+  it('the carrier re-writes ONE stored field exactly as read (status_pagamento), under the pagamento snapshot’s precondition, and moves nothing', async () => {
+    await gravar({ status: 'UNSHIPPED' });
+    const carimboPagamento = db.carimboDe(PAGAMENTO);
+    const guardado = db.ler(PAGAMENTO);
+    const r = await gravar({ status: 'UNSHIPPED', atualizadoEm: depois(60) });
+    expect(r).toMatchObject({ tipo: 'gravado', portador: false, portadorPagamento: true });
+    const lote = db.escritas.filter((e) => e.lote === 2);
+    expect(lote.map((e) => [e.verbo, e.caminho, e.comPrecondicao])).toEqual([
+      ['update', CAMINHO, true],
+      ['update', PAGAMENTO, true],
+    ]);
+    expect(lote[1]?.dados).toEqual({ status_pagamento: STATUS_PAGAMENTO.aprovado });
+    // Content-identical: the pagamento kept its stamp and its content.
+    expect(db.carimboDe(PAGAMENTO)?.isEqual(carimboPagamento)).toBe(true);
+    expect(db.ler(PAGAMENTO)).toEqual(guardado);
+  });
+
+  it('an ABSENT pagamento carries nothing (a documented residue): a PENDING pedido moving its clock writes the pedido alone', async () => {
+    await gravar({ status: 'PENDING' });
+    const r = await gravar({ status: 'PENDING', atualizadoEm: depois(60) });
+    expect(r).toMatchObject({ tipo: 'gravado', portadorPagamento: false });
+    expect(db.escritas.filter((e) => e.lote === 2).map((e) => e.caminho)).toEqual([CAMINHO]);
+  });
+});
+
+describe('★ (PR 6) the commit’s clock is the LATEST writeTime — a carrier answers the PREVIOUS one', () => {
+  it('a pedido carrier FIRST in the batch beside a pagamento create: the result is the commit’s time, never the carrier’s stale answer', async () => {
+    await gravar({ status: 'UNSHIPPED' }, { decidirPagamentos: SEM_PAGAMENTO });
+    const carimboPedidoAntes = db.carimboDe(CAMINHO);
+    const r = await gravar({ status: 'UNSHIPPED' });
+    expect(r).toMatchObject({ tipo: 'gravado', portador: true });
+    if (r.tipo !== 'gravado' || r.writeTime === null) throw new Error('esperava gravado');
+    const lote = db.escritas.filter((e) => e.lote === 2);
+    expect(lote.map((e) => [e.verbo, e.caminho])).toEqual([
+      ['update', CAMINHO],
+      ['create', PAGAMENTO],
+    ]);
+    // The carrier changed nothing: the pedido keeps its stamp, and its write answered it.
+    expect(db.carimboDe(CAMINHO)?.isEqual(carimboPedidoAntes)).toBe(true);
+    expect(lote[0]?.writeTime.isEqual(carimboPedidoAntes)).toBe(true);
+    // `resultados[0]` would be that stale stamp — the one the previous import's avisos used.
+    expect(r.writeTime.isEqual(carimboPedidoAntes as never)).toBe(false);
+    expect(r.writeTime.isEqual(db.carimboDe(PAGAMENTO) as never)).toBe(true);
+  });
+});
+
+describe('the pagamento slot (an injected hook)', () => {
   const pagamentoRef = () => pagamentoCollection.docRef(asDb(db), { pedidoId: PEDIDO }, PEDIDO);
 
   it('★ an EMPTY pedido patch beside a pagamento write ⇒ the precondition CARRIER (the raw stamp, under the pedido’s precondition)', async () => {
-    await gravar({ status: 'UNSHIPPED' });
+    await gravar({ status: 'UNSHIPPED' }, { decidirPagamentos: SEM_PAGAMENTO });
     const bruto = db.ler(CAMINHO)?.lastMarketplaceUpdate;
     const r = await gravar(
       { status: 'UNSHIPPED' },
@@ -258,13 +365,13 @@ describe('the pagamento slot (PR 6 fills the hook)', () => {
     const lote = db.escritas.filter((e) => e.lote === 2);
     expect(lote.map((e) => [e.verbo, e.caminho, e.comPrecondicao])).toEqual([
       ['update', CAMINHO, true],
-      ['create', `${CAMINHO}/pagamentos/${PEDIDO}`, false],
+      ['create', PAGAMENTO, false],
     ]);
     expect(lote[0]?.dados).toEqual({ lastMarketplaceUpdate: bruto });
   });
 
   it('★ the carrier’s precondition lost ⇒ the pagamento is NOT written either', async () => {
-    await gravar({ status: 'UNSHIPPED' });
+    await gravar({ status: 'UNSHIPPED' }, { decidirPagamentos: SEM_PAGAMENTO });
     for (let i = 0; i < MAX_TENTATIVAS_ESCRITA_PEDIDO_AMAZON; i += 1) {
       db.antesDaProximaEscrita(CAMINHO, () => {
         db.seed(CAMINHO, { ...(db.ler(CAMINHO) ?? {}) });
@@ -276,12 +383,12 @@ describe('the pagamento slot (PR 6 fills the hook)', () => {
         { decidirPagamentos: () => [{ tipo: 'criar', ref: pagamentoRef(), dados: { status: 4 } }] },
       ),
     ).rejects.toBeInstanceOf(AmazonPedidoEmConflitoError);
-    expect(db.ler(`${CAMINHO}/pagamentos/${PEDIDO}`)).toBeUndefined();
+    expect(db.ler(PAGAMENTO)).toBeUndefined();
   });
 
   it('a pagamento update rides its OWN snapshot’s precondition, beside the pedido’s', async () => {
     await gravar({ status: 'PENDING' });
-    const carimboPagamento = db.seed(`${CAMINHO}/pagamentos/${PEDIDO}`, { status: 4 });
+    const carimboPagamento = db.seed(PAGAMENTO, { status_pagamento: 4 });
     const r = await gravar(
       { status: 'UNSHIPPED', atualizadoEm: depois(60) },
       {
@@ -291,8 +398,9 @@ describe('the pagamento slot (PR 6 fills the hook)', () => {
             {
               tipo: 'atualizar',
               ref: pagamentoRef(),
-              dados: { status: 8 },
+              dados: { status_pagamento: 8 },
               lastUpdateTime: snap.updateTime as never,
+              portador: false,
             },
           ];
         },

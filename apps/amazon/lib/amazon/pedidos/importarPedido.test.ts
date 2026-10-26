@@ -42,6 +42,7 @@ import {
   ATUALIZADO_US,
   ORDER_ID_TESTE,
   depois,
+  execucaoAmazon,
   linhaAmazon,
   pedidoAmazon,
   type OpcoesPedidoTeste,
@@ -905,7 +906,7 @@ describe('★ avisos — after the commit, from the winning attempt, on the Fire
     ).not.toBeNull();
   });
 
-  it('a printed pedido with a request ⇒ cancelado + aceitar-cancelamento; Amazon’s CANCELLED then resolves it', async () => {
+  it('a printed pedido with a request ⇒ the predicate’s target (its pagamento aprovado ⇒ estornadoIntegralmente, the pagamento estornado with it, PR 6) + aceitar-cancelamento; Amazon’s CANCELLED then resolves it', async () => {
     const ex = montar();
     await ex.importar(pedido({ status: 'UNSHIPPED', extra: comprador() }));
     ex.h.db.seed(CAMINHO, { ...(ex.h.db.ler(CAMINHO) ?? {}), foiImpresso: true });
@@ -917,7 +918,8 @@ describe('★ avisos — after the commit, from the winning attempt, on the Fire
         extra: comprador(),
       }),
     );
-    expect(ex.h.db.ler(CAMINHO)?.estado).toBe('cancelado');
+    expect(ex.h.db.ler(CAMINHO)?.estado).toBe('estornadoIntegralmente');
+    expect(ex.h.db.ler(`${CAMINHO}/pagamentos/${PEDIDO_ID}`)?.status_pagamento).toBe(8);
     expect(avisoPedido(ex, MOTIVO_PEDIDO_AMAZON.aceitarCancelamento)?.resolvidoEm).toBeNull();
     await ex.importar(
       pedido({ status: 'CANCELLED', atualizadoEm: depois(120), extra: comprador() }),
@@ -1192,5 +1194,96 @@ describe('parClienteEnderecoAmazon — never a cliente beside another cliente’
     expect(
       parClienteEnderecoAmazon({ clientePedidoOuterRef: 'clientes/cli-1' }, resolvido),
     ).toEqual({ cliente: null, endereco: ENDERECO });
+  });
+});
+
+/* ------------------------------------ PR 6 ------------------------------------ */
+
+describe('★ PR 6 — the pagamento rides the import', () => {
+  const PAGAMENTO = `${CAMINHO}/pagamentos/${PEDIDO_ID}`;
+
+  it('an approved import creates the pagamento in the SAME batch as the pedido; a PENDING one creates none', async () => {
+    const pendente = montar();
+    await pendente.importar(pedido({ status: 'PENDING' }));
+    expect(pendente.h.db.ler(PAGAMENTO)).toBeUndefined();
+    const ex = montar();
+    await ex.importar(pedido({ status: 'UNSHIPPED', extra: comprador() }));
+    const lote = ex.h.db.escritas.filter((e) => e.lote !== undefined);
+    expect(lote.map((e) => [e.verbo, e.caminho, e.lote])).toEqual([
+      ['create', CAMINHO, 1],
+      ['create', PAGAMENTO, 1],
+    ]);
+    expect(ex.h.db.ler(PAGAMENTO)).toMatchObject({
+      id: ORDER_ID_TESTE,
+      status_pagamento: 4,
+      forma_de_pagamento: 3,
+      valor: 20,
+    });
+  });
+
+  it('★ the payment incidentes are filed after the commit; a refused acquirer is ONE count line with no value', async () => {
+    const ex = montar();
+    const recusado = '12.345.678';
+    await ex.importar(
+      pedido({
+        status: 'UNSHIPPED',
+        extra: comprador(),
+        pagamento: [
+          execucaoAmazon('Rewards', '15.00', { acquirerId: recusado }),
+          execucaoAmazon('CreditCard', '5.00', { acquirerId: recusado }),
+        ],
+      }),
+    );
+    expect(incidente(ex, 'amz-forma-pagamento-desconhecida')).toMatchObject({
+      subtipo: 'forma-pagamento-desconhecida',
+    });
+    expect(incidente(ex, 'amz-pagamento-dividido')).toMatchObject({
+      subtipo: 'pagamento-dividido',
+    });
+    // The 99 leg is the larger one: no card block, so no CNPJ was even evaluated.
+    expect(linhasPedido(ex).filter((l) => l.codigo === 'cnpj-instituicao-recusado')).toEqual([]);
+    const cartao = montar();
+    await cartao.importar(
+      pedido({
+        status: 'UNSHIPPED',
+        extra: comprador(),
+        pagamento: [execucaoAmazon('CreditCard', '20.00', { acquirerId: recusado })],
+      }),
+    );
+    const linhas = linhasPedido(cartao).filter((l) => l.codigo === 'cnpj-instituicao-recusado');
+    expect(linhas).toHaveLength(1);
+    expect(JSON.stringify(cartao.h.log.linhas)).not.toContain(recusado);
+    expect(JSON.stringify(cartao.h.log.linhas)).not.toContain('12345678');
+  });
+
+  it('★ the aviso clock is the commit’s LATEST writeTime: a carrier-first batch (pedido unchanged, its pagamento re-created) re-clocks the row past the previous import’s', async () => {
+    const ex = montar();
+    const comR = pedido({
+      status: 'UNSHIPPED',
+      extra: comprador(),
+      linhas: [linhaAmazon('L1', { qtd: 2, preco: '10.00', solicitacao: true })],
+    });
+    await ex.importar(comR);
+    const antes = avisoPedido(ex, MOTIVO_PEDIDO_AMAZON.cancelamentoSolicitado);
+    expect(antes?.resolvidoEm).toBeNull();
+    expect(antes?.relogioEvento).toBe(relogioDoDocumentoUs(ex.h.db.carimboDe(CAMINHO) as never));
+    // The pagamento disappears; the same order again re-creates it beside a pedido carrier.
+    ex.h.db.apagar(PAGAMENTO);
+    const carimboPedido = ex.h.db.carimboDe(CAMINHO);
+    const r = await ex.importar(comR);
+    expect(r).toMatchObject({ kind: 'importado' });
+    const lote = ex.h.db.escritas.filter((e) => e.lote === 2);
+    expect(lote.map((e) => [e.verbo, e.caminho])).toEqual([
+      ['update', CAMINHO],
+      ['create', PAGAMENTO],
+    ]);
+    // The carrier moved nothing: the pedido kept its stamp.
+    expect(ex.h.db.carimboDe(CAMINHO)?.isEqual(carimboPedido)).toBe(true);
+    const depoisDaCarga = avisoPedido(ex, MOTIVO_PEDIDO_AMAZON.cancelamentoSolicitado);
+    // `results[0]` would have repeated the first import's clock (an EQUAL one, dropped).
+    expect(depoisDaCarga?.relogioEvento).toBe(
+      relogioDoDocumentoUs(ex.h.db.carimboDe(PAGAMENTO) as never),
+    );
+    expect(depoisDaCarga?.relogioEvento).toBeGreaterThan(antes?.relogioEvento as number);
   });
 });

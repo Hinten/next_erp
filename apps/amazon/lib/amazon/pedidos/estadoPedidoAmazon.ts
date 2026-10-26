@@ -145,12 +145,16 @@ export function lerResumoArmazenadoAmazon(
  */
 export type PagamentoArmazenadoAmazon = StatusPagamento | 'ausente' | 'ilegivel';
 
-/** {@link PagamentoArmazenadoAmazon} from the raw stored pagamento (or `null`). */
+/**
+ * {@link PagamentoArmazenadoAmazon} from the raw stored pagamento (or `null`):
+ * its `status_pagamento` — the field the pagamento schema, the legacy corpus and
+ * this importer's own writes (PR 6) all use.
+ */
 export function lerPagamentoArmazenadoAmazon(
   raw: Readonly<Record<string, unknown>> | null,
 ): PagamentoArmazenadoAmazon {
   if (raw === null) return 'ausente';
-  const status = statusPagamentoSchema.safeParse(raw.status);
+  const status = statusPagamentoSchema.safeParse(raw.status_pagamento);
   return status.success ? status.data : 'ilegivel';
 }
 

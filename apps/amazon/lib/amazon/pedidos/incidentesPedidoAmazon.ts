@@ -13,8 +13,9 @@
  *    is not usable — without the Tax Invoicing role, every approved order);
  *  - `amz-<code>` — one per informational code the winning decision derived
  *    (plan §3 decisions 26–27): `logistica-amazon`, `valor-zerado`,
- *    `possivel-reembolso`, `cancelado-apos-envio`, `pagamento-divergente`
- *    (PR 6 adds the payment ones). `subtipo` = the code.
+ *    `possivel-reembolso`, `cancelado-apos-envio`, `pagamento-divergente`,
+ *    and PR 6's `forma-pagamento-desconhecida` and `pagamento-dividido`.
+ *    `subtipo` = the code.
  *
  * ## Tier 0, and they can never block
  *
@@ -82,9 +83,18 @@ const TEXTO_DO_CODIGO: Readonly<Record<IncidentePedidoAmazon, (pedido: string) =
   [INCIDENTE_PEDIDO_AMAZON.canceladoAposEnvio]: (p) =>
     `[Amazon] O pedido ${p} foi cancelado na Amazon depois que a mercadoria saiu (ou com o ` +
     'pedido em um estado do operador). Nada foi liberado no estoque; confira o pedido.',
+  // One id for every arm (the first one to fire writes it), so the text names each.
   [INCIDENTE_PEDIDO_AMAZON.pagamentoDivergente]: (p) =>
-    `[Amazon] O pedido ${p} foi cancelado na Amazon com um pagamento em situação definida ` +
-    'pelo operador. O pedido foi cancelado e o pagamento não foi alterado; confira o pagamento.',
+    `[Amazon] O pagamento do pedido ${p} não confere com o pedido: a soma paga na Amazon ` +
+    'difere do total da nota, o total do pedido não pôde ser lido (e o pagamento não foi ' +
+    'criado), ou o pedido foi cancelado na Amazon com um pagamento em situação definida ' +
+    'pelo operador (que não foi alterado). Confira o pagamento.',
+  [INCIDENTE_PEDIDO_AMAZON.formaPagamentoDesconhecida]: (p) =>
+    `[Amazon] A forma de pagamento do pedido ${p} não foi informada pela Amazon ou não é ` +
+    'reconhecida; o pagamento foi gravado como "Outros". Confira a forma antes de emitir a NF-e.',
+  [INCIDENTE_PEDIDO_AMAZON.pagamentoDividido]: (p) =>
+    `[Amazon] O pedido ${p} foi pago em mais de uma forma na Amazon; o ERP gravou um único ` +
+    'pagamento, com a forma da maior parte. Confira o pagamento antes de emitir a NF-e.',
 };
 
 function textoDaLinha(orderId: string, linha: LinhaSemProdutoAmazon): string {

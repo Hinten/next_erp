@@ -84,11 +84,14 @@ describe('the stored readers', () => {
     });
   });
 
-  it('the pagamento: absent, a member, or unreadable', () => {
+  it('★ the pagamento: absent, a member, or unreadable — read from `status_pagamento`, the field the schema, the legacy corpus and PR 6 write', () => {
     expect(lerPagamentoArmazenadoAmazon(null)).toBe('ausente');
-    expect(lerPagamentoArmazenadoAmazon({ status: 4 })).toBe(STATUS_PAGAMENTO.aprovado);
-    expect(lerPagamentoArmazenadoAmazon({ status: '4' })).toBe('ilegivel');
+    expect(lerPagamentoArmazenadoAmazon({ status_pagamento: 4 })).toBe(STATUS_PAGAMENTO.aprovado);
+    expect(lerPagamentoArmazenadoAmazon({ status_pagamento: 8 })).toBe(STATUS_PAGAMENTO.estornado);
+    expect(lerPagamentoArmazenadoAmazon({ status_pagamento: '4' })).toBe('ilegivel');
     expect(lerPagamentoArmazenadoAmazon({})).toBe('ilegivel');
+    // NEAR-MISS: a field named `status` is no pagamento status (5-c read it by mistake).
+    expect(lerPagamentoArmazenadoAmazon({ status: 4 })).toBe('ilegivel');
   });
 });
 
