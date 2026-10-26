@@ -1,6 +1,6 @@
 /**
- * The Amazon order import (master plan step 5, PR 5-d): ONE task payload ⇒ the
- * `pedidos/{digest}` document (and, from PR 6, its pagamento), the cliente and
+ * The Amazon order import (master plan step 5, PR 5-d; step 6, PR 6): ONE task
+ * payload ⇒ the `pedidos/{digest}` document and its pagamento, the cliente and
  * its endereço, the pedido's incidentes and its avisos. It writes NOTHING to
  * Amazon; its one Amazon call (`getOrder`) goes through the context, which
  * refuses unless the read switch is exactly `on` (D11). Its only other network
@@ -57,7 +57,8 @@
  *     recovery for an unknown UF, then `ensureEndereco` (tier 0, never an
  *     overwrite) UNDER the cliente the pedido will carry — the stored one when
  *     there is one (an operator's included), else the one just resolved.
- *  7. **The pedido in ONE batch** (`escritaPedido.ts`, the rule-7 contract):
+ *  7. **The pedido and its pagamento in ONE batch** (`escritaPedido.ts`, the
+ *     rule-7 contract; the pagamento's writes from `escritaPagamento.ts`):
  *     every group re-derived from each attempt's snapshot; a lost precondition
  *     aborts and re-derives (at most 3 attempts). Steps 4–6 are NOT redone:
  *     their results reach every attempt as inputs, and the fill-once group and
@@ -384,6 +385,8 @@ const MENSAGEM_DO_CODIGO: Readonly<Record<CodigoLogPedidoAmazon, string>> = {
   'medida-nao-unitaria': 'linha vendida por peso ou volume',
   'itens-armazenados-ilegiveis': 'linhas gravadas ilegíveis; mantidas como estavam',
   'frete-armazenado-ilegivel': 'frete gravado ilegível; mantido como estava',
+  'pagamento-ressuscitado': 'pagamento estornado voltou a aprovado com o pedido',
+  'cnpj-instituicao-recusado': 'CNPJ da instituição de pagamento recusado; gravado vazio',
   'cancelado-nao-importado': 'pedido nunca visto já cancelado; não importado',
   'reversao-nao-importada': 'pedido nunca visto já revertido; não importado',
 };

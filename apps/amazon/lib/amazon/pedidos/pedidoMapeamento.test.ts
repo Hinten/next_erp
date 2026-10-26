@@ -2,7 +2,16 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { STATUS_PAGAMENTO, itemDoPedidoSchema } from '@delfrance/schemas';
+import { roundReais } from '@delfrance/core/money';
+import { nextPedidoEstado } from '@delfrance/data/pedido';
+import {
+  ESTADO_PEDIDO,
+  STATUS_PAGAMENTO,
+  isPagamentoPagante,
+  itemDoPedidoSchema,
+  statusToEstadoPedido,
+  type EstadoPedido,
+} from '@delfrance/schemas';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -11,6 +20,7 @@ import {
   CRIADO_US,
   brl,
   depois,
+  execucaoAmazon,
   linhaAmazon,
   pedidoAmazon,
   type OpcoesLinhaTeste,
@@ -25,6 +35,7 @@ import {
   type EntradasPedidoAmazon,
   type EscritaPedidoAmazon,
 } from './pedidoMapeamento';
+import type { EscritaPagamentoPuraAmazon } from './pagamentoAmazon';
 
 const AQUI = dirname(fileURLToPath(import.meta.url));
 const NOW_US = ATUALIZADO_US + 3_600_000_000;
@@ -261,7 +272,11 @@ describe('the watermark', () => {
 
   it('ultimaModificacao is appended only to a NON-empty patch, monotonic', () => {
     const vazio = montar(PAGO({ ultimaModificacao: 1 }), { linhas: DUAS });
-    expect(vazio).toEqual({ tipo: 'sem-mudanca', decisao: expect.anything() });
+    expect(vazio).toEqual({
+      tipo: 'sem-mudanca',
+      decisao: expect.anything(),
+      pagamento: expect.anything(),
+    });
     const novo = montar(PAGO({ ultimaModificacao: NOW_US + 9 }), {
       linhas: DUAS,
       atualizadoEm: depois(60),
@@ -866,7 +881,7 @@ describe('the R modifier (a cancellation REQUEST alone) — plan §3 decision 7'
     const estornado = montar(
       PAGO({ foiImpresso: true }),
       { linhas: comR(2) },
-      { pagamento: { status: STATUS_PAGAMENTO.aprovado } },
+      { pagamento: { status_pagamento: STATUS_PAGAMENTO.aprovado } },
     );
     expect(patchDe(estornado).estado).toBe('estornadoIntegralmente');
     const guardado = PAGO({ foiImpresso: true });
@@ -887,7 +902,7 @@ describe('the R modifier (a cancellation REQUEST alone) — plan §3 decision 7'
     // An operator's off-ladder pagamento: the request moves the estado and files nothing.
     const disputa = (opcoes: OpcoesPedidoTeste) =>
       montar(PAGO({ foiImpresso: true }), opcoes, {
-        pagamento: { status: STATUS_PAGAMENTO.em_disputa },
+        pagamento: { status_pagamento: STATUS_PAGAMENTO.em_disputa },
       });
     const pedido = disputa({ linhas: comR(2) });
     expect(patchDe(pedido).estado).toBe('cancelado');
@@ -898,7 +913,7 @@ describe('the R modifier (a cancellation REQUEST alone) — plan §3 decision 7'
   });
 
   it('printed, but Amazon has SHIPPED the order or its status is unknown ⇒ no cancel and no aceitar-cancelamento, only cancelamento-solicitado; NEAR-MISS: UNSHIPPED and PENDING cancel', () => {
-    for (const pagamento of [null, { status: STATUS_PAGAMENTO.aprovado }]) {
+    for (const pagamento of [null, { status_pagamento: STATUS_PAGAMENTO.aprovado }]) {
       const enviado = montar(
         PAGO({ foiImpresso: true }),
         { status: 'SHIPPED', linhas: comR(2), atualizadoEm: depois(60) },
@@ -1118,14 +1133,14 @@ describe('the CANCELLED estado through the predicate, end to end', () => {
         montar(
           PAGO(),
           { status: 'CANCELLED', linhas: DUAS },
-          { pagamento: { status: STATUS_PAGAMENTO.aprovado } },
+          { pagamento: { status_pagamento: STATUS_PAGAMENTO.aprovado } },
         ),
       ).estado,
     ).toBe('estornadoIntegralmente');
     const disputa = montar(
       PAGO(),
       { status: 'CANCELLED', linhas: DUAS },
-      { pagamento: { status: STATUS_PAGAMENTO.em_disputa } },
+      { pagamento: { status_pagamento: STATUS_PAGAMENTO.em_disputa } },
     );
     expect(patchDe(disputa).estado).toBe('cancelado');
     expect(decisao(disputa).incidentes).toEqual(['pagamento-divergente']);
@@ -1190,6 +1205,7 @@ describe('purity', () => {
       'freteAmazon.ts',
       'itensAmazon.ts',
       'pacotesAmazon.ts',
+      'pagamentoAmazon.ts',
       'pedidoMapeamento.ts',
       'vendaAmazon.ts',
       'clienteAmazon.ts',
@@ -1203,5 +1219,680 @@ describe('purity', () => {
 
   it('the base instant the suite uses is the one the helper declares', () => {
     expect(ATUALIZADO_EM).toBe('2026-10-01T12:00:00Z');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                    PR 6: the pagamento beside the pedido                    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The FOB residue rows of the pair table, BY NAME (see that test): every one is
+ * the FOB scenario, a paying pagamento beside `pago`, relabelled by the shared
+ * reconcile only because the pedido's total carries the buyer-paid freight. An
+ * owner decision flips this list to `[]`.
+ */
+const RESIDUO_FOB_ESPERADO: readonly string[] = [
+  'fob-frete × ilegivel × estornado × SHIPPED × mais-novo',
+  'fob-frete × nenhum × ausente × SHIPPED × mais-novo',
+  'fob-frete × nenhum × ausente × UNSHIPPED × mais-novo',
+  'fob-frete × pago × ausente × SHIPPED × igual',
+  'fob-frete × pago × ausente × SHIPPED × mais-novo',
+  'fob-frete × pago × ausente × UNSHIPPED × igual',
+  'fob-frete × pago × ausente × UNSHIPPED × mais-novo',
+  'fob-frete × pago × estornado × SHIPPED × mais-novo',
+  'fob-frete × pago × estornado × UNSHIPPED × mais-novo',
+  'fob-frete × pendente × aprovado × SHIPPED × igual',
+  'fob-frete × pendente × aprovado × SHIPPED × mais-novo',
+  'fob-frete × pendente × aprovado × UNSHIPPED × igual',
+  'fob-frete × pendente × aprovado × UNSHIPPED × mais-novo',
+  'fob-frete × pendente × ausente × SHIPPED × igual',
+  'fob-frete × pendente × ausente × SHIPPED × mais-novo',
+  'fob-frete × pendente × ausente × UNSHIPPED × igual',
+  'fob-frete × pendente × ausente × UNSHIPPED × mais-novo',
+  'fob-frete × pendente × em_disputa × SHIPPED × igual',
+  'fob-frete × pendente × em_disputa × SHIPPED × mais-novo',
+  'fob-frete × pendente × em_disputa × UNSHIPPED × igual',
+  'fob-frete × pendente × em_disputa × UNSHIPPED × mais-novo',
+  'fob-frete × pendente × estornado × SHIPPED × mais-novo',
+  'fob-frete × pendente × estornado × UNSHIPPED × mais-novo',
+  'fob-frete × reetiquetado × aprovado × SHIPPED × igual',
+  'fob-frete × reetiquetado × aprovado × SHIPPED × mais-novo',
+  'fob-frete × reetiquetado × aprovado × UNSHIPPED × igual',
+  'fob-frete × reetiquetado × aprovado × UNSHIPPED × mais-novo',
+  'fob-frete × reetiquetado × ausente × SHIPPED × igual',
+  'fob-frete × reetiquetado × ausente × SHIPPED × mais-novo',
+  'fob-frete × reetiquetado × ausente × UNSHIPPED × igual',
+  'fob-frete × reetiquetado × ausente × UNSHIPPED × mais-novo',
+  'fob-frete × reetiquetado × em_disputa × SHIPPED × igual',
+  'fob-frete × reetiquetado × em_disputa × SHIPPED × mais-novo',
+  'fob-frete × reetiquetado × em_disputa × UNSHIPPED × igual',
+  'fob-frete × reetiquetado × em_disputa × UNSHIPPED × mais-novo',
+  'fob-frete × reetiquetado × estornado × SHIPPED × mais-novo',
+  'fob-frete × reetiquetado × estornado × UNSHIPPED × mais-novo',
+];
+
+/** The pagamento write a decision carries. */
+function pagamentoDe(r: EscritaPedidoAmazon): EscritaPagamentoPuraAmazon {
+  if (r.tipo === 'nao-importado' || r.tipo === 'obsoleto') {
+    throw new Error(`sem pagamento: ${r.tipo}`);
+  }
+  return r.pagamento;
+}
+
+/** The pagamento this importer CREATES for `opcoes` (a stored snapshot), `over` on top. */
+function pagamentoCriado(opcoes: OpcoesPedidoTeste = {}, over: Doc = {}): Doc {
+  const p = pagamentoDe(montar(null, { linhas: DUAS, ...opcoes }));
+  if (p.tipo !== 'criar') throw new Error(`esperava criar, veio ${p.tipo}`);
+  return { ...p.corpo, ...over };
+}
+
+/** A stored line the item schema refuses: the pedido's total cannot be derived. */
+function comLinhaIlegivel(doc: Doc): Doc {
+  const copia = structuredClone(doc);
+  const itens = copia.itens as Record<string, Doc[]>;
+  const [primeira] = Object.values(itens).flat();
+  if (primeira === undefined) throw new Error('sem linha');
+  primeira.quantidade = 'x';
+  return copia;
+}
+
+describe('★ PR 6 — the pair: the pagamento status ⇔ the pedido estado, on every row the import decides', () => {
+  /** The off-ladder statuses: the operator's, never walked — the documented exception, BY NAME. */
+  const FORA_DA_ESCADA = new Set<number>([
+    STATUS_PAGAMENTO.em_disputa,
+    STATUS_PAGAMENTO.recusado,
+    STATUS_PAGAMENTO.devolvido,
+    STATUS_PAGAMENTO.estornado_parcialmente,
+  ]);
+  /** The estados a pedido may hold with NO pagamento. */
+  const SEM_PAGAMENTO = new Set<string>([
+    ESTADO_PEDIDO.aguardandoConfirmacaoDePagamento,
+    ESTADO_PEDIDO.cancelado,
+    ESTADO_PEDIDO.error,
+  ]);
+  /** The buyer-paid shipping of the FOB scenario (reais). */
+  const FRETE_FOB = 5;
+  /**
+   * The order a row reads: DUAS (no freight), and one line with a SHIPPING row
+   * under the conta default (FOB), whose pagamento excludes the freight that the
+   * pedido's own total still carries (the FOB residue below).
+   */
+  const CENARIOS: Readonly<Record<string, readonly Record<string, unknown>[]>> = {
+    'sem-frete': DUAS,
+    'fob-frete': comFrete(String(FRETE_FOB)),
+  };
+  /** The two order clocks a row is read at: strictly newer than the stored one, and EQUAL to it. */
+  const RELOGIOS: Readonly<Record<string, string>> = {
+    'mais-novo': depois(60),
+    igual: ATUALIZADO_EM,
+  };
+
+  function cenario(linhas: readonly Record<string, unknown>[]) {
+    const pagamentoDo = (over: Doc = {}): Doc => {
+      const p = pagamentoDe(montar(null, { linhas }));
+      if (p.tipo !== 'criar') throw new Error(`esperava criar, veio ${p.tipo}`);
+      return { ...p.corpo, ...over };
+    };
+    const comStatus = (status: number) => pagamentoDo({ status_pagamento: status });
+    const pagamentos: Readonly<Record<string, Doc | null>> = {
+      ausente: null,
+      aprovado: pagamentoDo(),
+      estornado: comStatus(STATUS_PAGAMENTO.estornado),
+      em_disputa: comStatus(STATUS_PAGAMENTO.em_disputa),
+      recusado: comStatus(STATUS_PAGAMENTO.recusado),
+      devolvido: comStatus(STATUS_PAGAMENTO.devolvido),
+      estornado_parcialmente: comStatus(STATUS_PAGAMENTO.estornado_parcialmente),
+    };
+    const pedidos: Readonly<Record<string, Doc | null>> = {
+      nenhum: null,
+      pendente: criado({ status: 'PENDING', linhas }),
+      pago: criado({ linhas }),
+      // The Pagamentos tab's reconcile relabelled a pago pedido (after an
+      // operator's pagamento edit): an approved order, stored pre-approval.
+      reetiquetado: criado({ linhas }, { estado: ESTADO_PEDIDO.aguardandoConfirmacaoDePagamento }),
+      // The legacy approved-without-pagamento shape with a line the schema refuses.
+      ilegivel: comLinhaIlegivel(criado({ linhas }, { marketplace: null })),
+    };
+    return { pagamentos, pedidos };
+  }
+
+  it('statusToEstadoPedido(status) names the estado (two residues excepted, each BY NAME), and nextPedidoEstado answers null with the row’s own money — at a newer AND an equal clock', () => {
+    let decididas = 0;
+    let iguais = 0;
+    const residuosForaDaEscada: string[] = [];
+    const residuosFob: string[] = [];
+    const bloqueios: string[] = [];
+    for (const [nomeCenario, linhas] of Object.entries(CENARIOS)) {
+      const { pagamentos, pedidos } = cenario(linhas);
+      for (const [nomePedido, pedido] of Object.entries(pedidos)) {
+        for (const [nomePagamento, pagamento] of Object.entries(pagamentos)) {
+          // A pagamento with no pedido above it is no row of this table (the
+          // importer never writes one; only a deleted pedido could leave it).
+          if (pedido === null && pagamento !== null) continue;
+          for (const status of ['PENDING', 'UNSHIPPED', 'SHIPPED', 'CANCELLED']) {
+            for (const [nomeRelogio, atualizadoEm] of Object.entries(RELOGIOS)) {
+              // With nothing stored, the clock compares with nothing.
+              if (pedido === null && nomeRelogio === 'igual') continue;
+              const rotulo = `${nomeCenario} × ${nomePedido} × ${nomePagamento} × ${status} × ${nomeRelogio}`;
+              const r = montar(pedido, { status, linhas, atualizadoEm }, { pagamento });
+              if (r.tipo === 'nao-importado') {
+                expect(pedido, rotulo).toBeNull();
+                continue;
+              }
+              if (r.tipo === 'obsoleto') throw new Error(rotulo);
+              const escrita = pagamentoDe(r);
+              const estadoGuardado = (pedido?.estado ?? null) as string | null;
+              const estadoFinal =
+                r.decisao.estadoEscrito ?? (r.tipo === 'criar' ? r.corpo.estado : estadoGuardado);
+              const statusGuardado = (pagamento?.status_pagamento ?? null) as number | null;
+              const statusFinal = r.decisao.statusPagamento;
+              // The pagamento never changes but where the decision says so.
+              if (escrita.tipo === 'nada') expect(statusFinal, rotulo).toBe(statusGuardado);
+              const decidiu =
+                r.decisao.estadoEscrito !== null ||
+                r.tipo === 'criar' ||
+                escrita.tipo === 'criar' ||
+                statusFinal !== statusGuardado;
+              if (!decidiu) continue;
+              decididas += 1;
+              if (nomeRelogio === 'igual') iguais += 1;
+              // A D17 block: our error, and the pagamento NOT written beside it
+              // (the plan's status table); the reconcile never moves `error`.
+              if (r.decisao.bloqueio !== null && estadoFinal === ESTADO_PEDIDO.error) {
+                expect(escrita, rotulo).toEqual({ tipo: 'nada' });
+                bloqueios.push(rotulo);
+                continue;
+              }
+              // 1. The pair.
+              if (statusFinal === null) {
+                expect(SEM_PAGAMENTO.has(String(estadoFinal)), rotulo).toBe(true);
+              } else if (!FORA_DA_ESCADA.has(statusFinal)) {
+                expect(statusToEstadoPedido(statusFinal), rotulo).toBe(estadoFinal);
+              }
+              // 2. The reconcile leaves it where the import put it.
+              const total =
+                r.tipo === 'criar'
+                  ? (r.corpo.valorCobrado as number)
+                  : r.tipo === 'atualizar' && Object.hasOwn(r.patch, 'valorCobrado')
+                    ? (r.patch.valorCobrado as number)
+                    : (pedido?.valorCobrado as number);
+              const valor =
+                escrita.tipo === 'criar'
+                  ? (escrita.corpo.valor as number)
+                  : escrita.tipo === 'atualizar' && Object.hasOwn(escrita.patch, 'valor')
+                    ? (escrita.patch.valor as number)
+                    : ((pagamento?.valor ?? 0) as number);
+              const quitado = statusFinal !== null && isPagamentoPagante(statusFinal) ? valor : 0;
+              const proximo = nextPedidoEstado(
+                estadoFinal as EstadoPedido,
+                total,
+                quitado,
+                quitado,
+              );
+              // The FOB residue: the reconcile relabels ONLY because the pedido's
+              // total carries the buyer-paid freight the note (and so the
+              // pagamento) excludes — against the note's total it holds.
+              if (
+                proximo !== null &&
+                nomeCenario === 'fob-frete' &&
+                nextPedidoEstado(
+                  estadoFinal as EstadoPedido,
+                  roundReais(total - FRETE_FOB),
+                  quitado,
+                  quitado,
+                ) === null
+              ) {
+                residuosFob.push(rotulo);
+                continue;
+              }
+              if (proximo !== null && statusFinal !== null && FORA_DA_ESCADA.has(statusFinal)) {
+                residuosForaDaEscada.push(rotulo);
+                continue;
+              }
+              expect(proximo, rotulo).toBeNull();
+            }
+          }
+        }
+      }
+    }
+    // Anti-vacuity: most rows decide something, at both clocks.
+    expect(decididas).toBeGreaterThanOrEqual(100);
+    expect(iguais).toBeGreaterThanOrEqual(30);
+    // Residue 1, BY NAME: an operator's NON-paying off-ladder status beside
+    // Amazon's approval. The import moves a pre-approval pedido to pago (5-c's
+    // table reads no pagamento there) and never walks the operator's status, so
+    // the Pagamentos tab's reconcile would relabel it, and the next import
+    // re-promote it. The operator owns that money; nothing else reaches this.
+    expect(residuosForaDaEscada.sort()).toEqual(
+      Object.keys(CENARIOS)
+        .flatMap((c) => ['pendente', 'reetiquetado'].map((p) => `${c} × ${p}`))
+        .flatMap((cp) =>
+          ['devolvido', 'estornado_parcialmente', 'recusado'].map((s) => `${cp} × ${s}`),
+        )
+        .flatMap((cps) => ['SHIPPED', 'UNSHIPPED'].map((st) => `${cps} × ${st}`))
+        .flatMap((linha) => Object.keys(RELOGIOS).map((rel) => `${linha} × ${rel}`))
+        .sort(),
+    );
+    // Residue 2, BY NAME — the FOB rule (2026-10-21) against the shared reconcile,
+    // an OWNER DECISION this PR does not take: under FOB with buyer-paid shipping
+    // the pagamento states the note's total (freight excluded) while the pedido's
+    // valorCobrado (the shared derive) still carries the freight, so a pagamento
+    // edit on the Pagamentos tab relabels the pedido and the next import
+    // re-promotes it. Only the FOB scenario, only a paying pagamento beside pago.
+    expect(residuosFob.sort()).toEqual(RESIDUO_FOB_ESPERADO);
+    // The D17 blocks the table meets, BY NAME: an approved pedido still to ship
+    // whose stored line the schema refuses diverges (row 10), and a block writes
+    // no pagamento — on every stored status, at both clocks.
+    expect(bloqueios.sort()).toEqual(
+      Object.keys(CENARIOS)
+        .flatMap((c) =>
+          [
+            'aprovado',
+            'ausente',
+            'devolvido',
+            'em_disputa',
+            'estornado',
+            'estornado_parcialmente',
+            'recusado',
+          ].map((pg) => `${c} × ilegivel × ${pg} × UNSHIPPED`),
+        )
+        .flatMap((linha) => Object.keys(RELOGIOS).map((rel) => `${linha} × ${rel}`))
+        .sort(),
+    );
+  });
+
+  it('★ CANCELLED: a stored aprovado ⇒ estornado + dataCancelamento beside estornadoIntegralmente; a PENDING pedido with none ⇒ cancelado and NO pagamento', () => {
+    const r = montar(
+      PAGO(),
+      { status: 'CANCELLED', linhas: DUAS, atualizadoEm: depois(60) },
+      { pagamento: pagamentoCriado() },
+    );
+    expect(patchDe(r).estado).toBe(ESTADO_PEDIDO.estornadoIntegralmente);
+    expect(pagamentoDe(r)).toMatchObject({
+      tipo: 'atualizar',
+      patch: {
+        status_pagamento: STATUS_PAGAMENTO.estornado,
+        dataCancelamento: ATUALIZADO_US + 60_000_000,
+      },
+    });
+    const pendente = montar(PENDENTE(), {
+      status: 'CANCELLED',
+      linhas: DUAS,
+      atualizadoEm: depois(60),
+    });
+    expect(patchDe(pendente).estado).toBe(ESTADO_PEDIDO.cancelado);
+    expect(pagamentoDe(pendente)).toEqual({ tipo: 'nada' });
+  });
+
+  it('★ CANCELLED on a stored pago WITHOUT a pagamento (the legacy shape) ⇒ cancelado, and none created', () => {
+    const r = montar(PAGO(), { status: 'CANCELLED', linhas: DUAS, atualizadoEm: depois(60) });
+    expect(patchDe(r).estado).toBe(ESTADO_PEDIDO.cancelado);
+    expect(pagamentoDe(r)).toEqual({ tipo: 'nada' });
+  });
+
+  it('★ an operator’s em_disputa + CANCELLED ⇒ cancelado + pagamento-divergente, the pagamento untouched; an operator’s recusado is never moved', () => {
+    const disputa = montar(
+      PAGO(),
+      { status: 'CANCELLED', linhas: DUAS, atualizadoEm: depois(60) },
+      { pagamento: pagamentoCriado({}, { status_pagamento: STATUS_PAGAMENTO.em_disputa }) },
+    );
+    expect(patchDe(disputa).estado).toBe(ESTADO_PEDIDO.cancelado);
+    expect(decisao(disputa).incidentes).toEqual(['pagamento-divergente']);
+    expect(pagamentoDe(disputa)).toEqual({ tipo: 'nada' });
+    for (const status of ['UNSHIPPED', 'SHIPPED', 'CANCELLED', 'PENDING']) {
+      const recusado = montar(
+        PAGO(),
+        { status, linhas: DUAS, atualizadoEm: depois(60) },
+        { pagamento: pagamentoCriado({}, { status_pagamento: STATUS_PAGAMENTO.recusado }) },
+      );
+      expect(pagamentoDe(recusado), status).toEqual({ tipo: 'nada' });
+      expect(decisao(recusado).statusPagamento, status).toBe(STATUS_PAGAMENTO.recusado);
+    }
+  });
+
+  it('★ an ERP-side cancel is never reopened, and its pagamento is not walked back: stored cancelado + estornado + a newer UNSHIPPED ⇒ both kept', () => {
+    const r = montar(
+      PAGO({ estado: ESTADO_PEDIDO.cancelado }),
+      { status: 'UNSHIPPED', linhas: DUAS, atualizadoEm: depois(60) },
+      { pagamento: pagamentoCriado({}, { status_pagamento: STATUS_PAGAMENTO.estornado }) },
+    );
+    expect(decisao(r).estadoEscrito).toBeNull();
+    expect(pagamentoDe(r)).toEqual({ tipo: 'nada' });
+  });
+
+  it('★ an Amazon-side cancel resurrected by a newer read: estornadoIntegralmente → pago AND estornado → aprovado together (logged); an equal clock moves neither', () => {
+    const cancelado = PAGO({
+      estado: ESTADO_PEDIDO.estornadoIntegralmente,
+      marketplace: { tipo: 'amazon', status: 'CANCELLED' },
+    });
+    const estornado = pagamentoCriado({}, { status_pagamento: STATUS_PAGAMENTO.estornado });
+    const novo = montar(
+      cancelado,
+      { status: 'UNSHIPPED', linhas: DUAS, atualizadoEm: depois(60) },
+      { pagamento: estornado },
+    );
+    expect(patchDe(novo).estado).toBe(ESTADO_PEDIDO.pago);
+    expect(pagamentoDe(novo)).toMatchObject({
+      patch: { status_pagamento: STATUS_PAGAMENTO.aprovado },
+    });
+    expect(decisao(novo).eventos).toEqual(
+      expect.arrayContaining(['ressuscitado', 'pagamento-ressuscitado']),
+    );
+    const igual = montar(
+      cancelado,
+      { status: 'UNSHIPPED', linhas: DUAS },
+      { pagamento: estornado },
+    );
+    expect(decisao(igual).estadoEscrito).toBeNull();
+    expect(pagamentoDe(igual)).toEqual({ tipo: 'nada' });
+  });
+
+  it('★ the pair at an EQUAL clock: an operator’s refund the reconcile relabelled (aguardando + estornado), met by the same read ⇒ BOTH kept (motivo terminal); a strictly newer read moves both (NEAR-MISS)', () => {
+    const reetiquetado = PAGO({ estado: ESTADO_PEDIDO.aguardandoConfirmacaoDePagamento });
+    const estornado = pagamentoCriado({}, { status_pagamento: STATUS_PAGAMENTO.estornado });
+    const igual = montar(
+      reetiquetado,
+      { status: 'UNSHIPPED', linhas: DUAS },
+      { pagamento: estornado },
+    );
+    expect(decisao(igual)).toMatchObject({
+      estadoEscrito: null,
+      motivoEstado: 'terminal',
+      statusPagamento: STATUS_PAGAMENTO.estornado,
+    });
+    expect(pagamentoDe(igual)).toEqual({ tipo: 'nada' });
+    // A stored pago beside it (the reconcile has not run): not resurrected either.
+    const pago = montar(PAGO(), { status: 'UNSHIPPED', linhas: DUAS }, { pagamento: estornado });
+    expect(pagamentoDe(pago)).toEqual({ tipo: 'nada' });
+    expect(decisao(pago).statusPagamento).toBe(STATUS_PAGAMENTO.estornado);
+    // NEAR-MISS: a strictly newer read resurrects the pagamento, and the pedido moves with it.
+    for (const pedido of [reetiquetado, PAGO()]) {
+      const novo = montar(
+        pedido,
+        { status: 'UNSHIPPED', linhas: DUAS, atualizadoEm: depois(60) },
+        { pagamento: estornado },
+      );
+      expect(pagamentoDe(novo)).toMatchObject({
+        patch: { status_pagamento: STATUS_PAGAMENTO.aprovado },
+      });
+      expect(decisao(novo).statusPagamento).toBe(STATUS_PAGAMENTO.aprovado);
+    }
+    expect(
+      decisao(
+        montar(
+          reetiquetado,
+          { status: 'UNSHIPPED', linhas: DUAS, atualizadoEm: depois(60) },
+          { pagamento: estornado },
+        ),
+      ).estadoEscrito,
+    ).toBe(ESTADO_PEDIDO.pago);
+  });
+
+  it('★ a reversal never writes pago beside a pagamento that stays estornado: relabelled aguardando + estornado + a newer SHIPPED with a returned package ⇒ the estado kept; NEAR-MISS: an aprovado pagamento moves it to pago', () => {
+    const reetiquetado = PAGO({ estado: ESTADO_PEDIDO.aguardandoConfirmacaoDePagamento });
+    const leitura = {
+      status: 'SHIPPED',
+      pacotes: ['RETURNED_TO_SELLER'],
+      linhas: DUAS,
+      atualizadoEm: depois(60),
+    };
+    const estornado = montar(reetiquetado, leitura, {
+      pagamento: pagamentoCriado({}, { status_pagamento: STATUS_PAGAMENTO.estornado }),
+    });
+    expect(decisao(estornado)).toMatchObject({
+      itens: 'itens-preservados-reversao',
+      estadoEscrito: null,
+      motivoEstado: 'terminal',
+      statusPagamento: STATUS_PAGAMENTO.estornado,
+    });
+    const aprovado = montar(reetiquetado, leitura, { pagamento: pagamentoCriado() });
+    expect(decisao(aprovado)).toMatchObject({
+      estadoEscrito: ESTADO_PEDIDO.pago,
+      statusPagamento: STATUS_PAGAMENTO.aprovado,
+    });
+  });
+
+  it('★ the printed-request cancel moves the pagamento with the estado (estornado beside estornadoIntegralmente), even when a line divergence blocks', () => {
+    const impresso = PAGO({ foiImpresso: true });
+    const comR = [
+      linhaAmazon('L1', { qtd: 2, preco: '10.00', solicitacao: true }),
+      linhaAmazon('L2', { qtd: 1, preco: '5.00' }),
+    ];
+    const r = montar(
+      impresso,
+      { status: 'UNSHIPPED', linhas: comR, atualizadoEm: depois(60) },
+      { pagamento: pagamentoCriado() },
+    );
+    expect(patchDe(r).estado).toBe(ESTADO_PEDIDO.estornadoIntegralmente);
+    expect(pagamentoDe(r)).toMatchObject({
+      patch: { status_pagamento: STATUS_PAGAMENTO.estornado },
+    });
+    const divergente = [
+      linhaAmazon('L1', { qtd: 3, preco: '10.00', solicitacao: true }),
+      linhaAmazon('L2', { qtd: 1, preco: '5.00' }),
+    ];
+    const bloqueado = montar(
+      impresso,
+      { status: 'UNSHIPPED', linhas: divergente, atualizadoEm: depois(60) },
+      { pagamento: pagamentoCriado() },
+    );
+    expect(decisao(bloqueado).bloqueio).not.toBeNull();
+    expect(pagamentoDe(bloqueado)).toMatchObject({
+      patch: { status_pagamento: STATUS_PAGAMENTO.estornado },
+    });
+  });
+});
+
+describe('★ PR 6 — the pagamento terms of D17', () => {
+  /** A stored pagamento THIS importer wrote, `valor` 25 (= DUAS). */
+  const NOSSO = () => pagamentoCriado();
+
+  it('★ PENDING ⇒ no pagamento, whatever the executions say', () => {
+    expect(pagamentoDe(montar(null, { status: 'PENDING', linhas: DUAS }))).toEqual({
+      tipo: 'nada',
+    });
+    expect(
+      pagamentoDe(
+        montar(PENDENTE(), { status: 'PENDING', linhas: DUAS, atualizadoEm: depois(60) }),
+      ),
+    ).toEqual({ tipo: 'nada' });
+  });
+
+  it('★ PENDING never creates a pagamento — not even beside a stored pago that has none (the legacy shape), where the estado ladder keeps pago; NEAR-MISS: UNSHIPPED creates it at aprovado', () => {
+    for (const status of ['PENDING', 'PENDING_AVAILABILITY']) {
+      const leitura = { status, linhas: DUAS, atualizadoEm: depois(60) };
+      const r = montar(PAGO(), leitura);
+      expect(decisao(r).motivoEstado, status).toBe('regressivo');
+      expect(pagamentoDe(r), status).toEqual({ tipo: 'nada' });
+      expect(decisao(r).statusPagamento, status).toBeNull();
+      // A stored aprovado one is left exactly as it is.
+      expect(
+        pagamentoDe(montar(PAGO(), leitura, { pagamento: pagamentoCriado() })),
+        status,
+      ).toEqual({ tipo: 'nada' });
+    }
+    const aprovado = montar(PAGO(), {
+      status: 'UNSHIPPED',
+      linhas: DUAS,
+      atualizadoEm: depois(60),
+    });
+    expect(pagamentoDe(aprovado)).toMatchObject({
+      tipo: 'criar',
+      corpo: { status_pagamento: STATUS_PAGAMENTO.aprovado, valor: 25 },
+    });
+  });
+
+  it('★ an approved pedido WITHOUT a pagamento whose stored line the schema refuses: no total to state ⇒ none created, no status claimed, and pagamento-divergente; NEAR-MISS: readable lines create it', () => {
+    const leitura = { status: 'SHIPPED', linhas: DUAS, atualizadoEm: depois(60) };
+    const ilegivel = montar(comLinhaIlegivel(PAGO({ marketplace: null })), leitura);
+    expect(pagamentoDe(ilegivel)).toEqual({ tipo: 'nada' });
+    expect(decisao(ilegivel).statusPagamento).toBeNull();
+    expect(decisao(ilegivel).incidentes).toContain('pagamento-divergente');
+    const legivel = montar(PAGO({ marketplace: null }), leitura);
+    expect(pagamentoDe(legivel)).toMatchObject({ tipo: 'criar', corpo: { valor: 25 } });
+    expect(decisao(legivel).statusPagamento).toBe(STATUS_PAGAMENTO.aprovado);
+    expect(decisao(legivel).incidentes).not.toContain('pagamento-divergente');
+  });
+
+  it('★ an approved create: Σ = the total ⇒ Σ, nothing filed (EQUAL); one centavo SHORT ⇒ the total + pagamento-divergente, and the reconcile stays put (NEAR-MISS); ABOVE ⇒ Σ + the incidente', () => {
+    const com = (valor: string) =>
+      montar(null, { linhas: DUAS, pagamento: [execucaoAmazon('CreditCard', valor)] });
+    const igual = com('25.00');
+    expect(pagamentoDe(igual)).toMatchObject({ tipo: 'criar', corpo: { valor: 25 } });
+    expect(decisao(igual).incidentes).toEqual([]);
+    const curto = com('24.99');
+    expect(pagamentoDe(curto)).toMatchObject({ corpo: { valor: 25 } });
+    expect(decisao(curto).incidentes).toEqual(['pagamento-divergente']);
+    expect(nextPedidoEstado(ESTADO_PEDIDO.pago, 25, 25, 25)).toBeNull();
+    // What the short sum would have done: relabel the pedido.
+    expect(nextPedidoEstado(ESTADO_PEDIDO.pago, 25, 24.99, 24.99)).not.toBeNull();
+    const acima = com('25.01');
+    expect(pagamentoDe(acima)).toMatchObject({ corpo: { valor: 25.01 } });
+    expect(decisao(acima).incidentes).toEqual(['pagamento-divergente']);
+  });
+
+  it('★ reversed (CANCELLED) with the amount zeroed ⇒ the status moves, the valor is KEPT — even one the derive would now state differently', () => {
+    for (const valor of [25, 30]) {
+      const r = montar(
+        PAGO(),
+        {
+          status: 'CANCELLED',
+          linhas: DUAS,
+          atualizadoEm: depois(60),
+          pagamento: [execucaoAmazon('CreditCard', '0.00')],
+        },
+        { pagamento: { ...NOSSO(), valor } },
+      );
+      const p = pagamentoDe(r);
+      expect(p, String(valor)).toMatchObject({
+        patch: { status_pagamento: STATUS_PAGAMENTO.estornado },
+      });
+      expect(p.tipo === 'atualizar' && Object.hasOwn(p.patch, 'valor'), String(valor)).toBe(false);
+    }
+  });
+
+  it('★ Z by the payment: SHIPPED with intact lines but the executions zeroed while the stored valor is positive ⇒ a reversal (row 4): lines, money, status and valor kept', () => {
+    const r = montar(
+      PAGO(),
+      {
+        status: 'SHIPPED',
+        linhas: DUAS,
+        atualizadoEm: depois(60),
+        pagamento: [execucaoAmazon('CreditCard', '0.00')],
+      },
+      { pagamento: NOSSO() },
+    );
+    expect(decisao(r)).toMatchObject({
+      itens: 'itens-preservados-reversao',
+      incidentes: ['possivel-reembolso'],
+    });
+    expect(pagamentoDe(r)).toEqual({ tipo: 'nada' });
+    // NEAR-MISS: the same SHIPPED read paying the stored valor is no reversal.
+    const pago = montar(
+      PAGO(),
+      { status: 'SHIPPED', linhas: DUAS, atualizadoEm: depois(60) },
+      { pagamento: NOSSO() },
+    );
+    expect(decisao(pago).itens).toBe('mantidas');
+  });
+
+  it('★ approved, still to ship: a changed DERIVED valor ⇒ the blocking divergence, our error, NO pagamento write; unchanged ⇒ no write at all', () => {
+    const mudou = montar(
+      PAGO(),
+      {
+        status: 'UNSHIPPED',
+        linhas: DUAS,
+        atualizadoEm: depois(60),
+        pagamento: [execucaoAmazon('CreditCard', '30.00')],
+      },
+      { pagamento: NOSSO() },
+    );
+    expect(decisao(mudou)).toMatchObject({
+      itens: 'divergencia-itens-aprovado',
+      bloqueio: { causa: 'pagamento', linhas: [] },
+      avisos: ['divergencia-itens'],
+    });
+    expect(patchDe(mudou)).toMatchObject({
+      estado: ESTADO_PEDIDO.error,
+      error: `${PREFIXO_ERRO_AMAZON}valor do pagamento divergente do pedido na Amazon`,
+    });
+    expect(pagamentoDe(mudou)).toEqual({ tipo: 'nada' });
+    const igual = montar(PAGO(), { status: 'UNSHIPPED', linhas: DUAS }, { pagamento: NOSSO() });
+    expect(igual.tipo).toBe('sem-mudanca');
+    expect(pagamentoDe(igual)).toEqual({ tipo: 'nada' });
+  });
+
+  it('★ derived against derived: a SHORT sum covered by the total never reads as a change (NEAR-MISS to the raw sum)', () => {
+    const curto = montar(
+      PAGO(),
+      {
+        status: 'UNSHIPPED',
+        linhas: DUAS,
+        atualizadoEm: depois(60),
+        pagamento: [execucaoAmazon('CreditCard', '20.00')],
+      },
+      { pagamento: NOSSO() },
+    );
+    expect(decisao(curto).bloqueio).toBeNull();
+    expect(decisao(curto).itens).toBe('mantidas');
+  });
+
+  it('★ a line divergence writes no pagamento — not even the create a pedido without one would get', () => {
+    const r = montar(PAGO(), {
+      status: 'UNSHIPPED',
+      linhas: [
+        linhaAmazon('L1', { qtd: 3, preco: '10.00' }),
+        linhaAmazon('L2', { qtd: 1, preco: '5.00' }),
+      ],
+      atualizadoEm: depois(60),
+    });
+    expect(decisao(r).itens).toBe('divergencia-itens-aprovado');
+    expect(pagamentoDe(r)).toEqual({ tipo: 'nada' });
+  });
+
+  it('★ a pagamento this importer never wrote (the legacy’s, no lastProviderUpdate) is ADOPTED once — never compared, never blocking', () => {
+    const legado = {
+      id: '171-9876543-2109876',
+      status_pagamento: STATUS_PAGAMENTO.aprovado,
+      forma_de_pagamento: 99,
+      descricaoPagamento: 'texto antigo',
+      cartao: null,
+      // The legacy's own total (a different freight rule).
+      valor: 33,
+    };
+    const r = montar(
+      PAGO(),
+      { status: 'UNSHIPPED', linhas: DUAS, atualizadoEm: depois(60) },
+      { pagamento: legado },
+    );
+    expect(decisao(r).bloqueio).toBeNull();
+    expect(pagamentoDe(r)).toMatchObject({
+      tipo: 'atualizar',
+      patch: { valor: 25, forma_de_pagamento: 3, lastProviderUpdate: ATUALIZADO_US + 60_000_000 },
+    });
+    // NEAR-MISS: the same stored valor on a pagamento WE wrote is a divergence.
+    const nosso = montar(
+      PAGO(),
+      { status: 'UNSHIPPED', linhas: DUAS, atualizadoEm: depois(60) },
+      { pagamento: { ...NOSSO(), valor: 33 } },
+    );
+    expect(decisao(nosso).bloqueio).toMatchObject({ causa: 'pagamento' });
+  });
+
+  it('split legs, an unknown forma and a refused acquirer reach the pedido’s incidentes and events', () => {
+    const r = montar(null, {
+      linhas: DUAS,
+      pagamento: [
+        execucaoAmazon('GC', '20.00', { acquirerId: '12345678' }),
+        execucaoAmazon('CreditCard', '5.00', { acquirerId: '12345678' }),
+      ],
+    });
+    expect(decisao(r).incidentes).toEqual(['forma-pagamento-desconhecida', 'pagamento-dividido']);
+    const comCartao = montar(null, {
+      linhas: DUAS,
+      pagamento: [execucaoAmazon('CreditCard', '25.00', { acquirerId: '12345678' })],
+    });
+    expect(decisao(comCartao).eventos).toContain('cnpj-instituicao-recusado');
   });
 });

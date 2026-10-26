@@ -20,7 +20,12 @@
  *  - the REAL `findOrCreateCliente` (its own transaction in `packages/data`) and
  *    `ensureEndereco`, with the pedido's refs pointing at what they wrote;
  *  - the collection-group link query with `in` runs (the emulator enforces no
- *    index; the declaration is pinned by `vinculoProdutoAmazon.test.ts`).
+ *    index; the declaration is pinned by `vinculoProdutoAmazon.test.ts`);
+ *  - (PR 6) the pagamento in the batch: the PEDIDO's precondition carrier (a
+ *    stale pedido precondition writes no pagamento), the PAGAMENTO's carrier on
+ *    an arm that only read its status (PR 5-d's residue, closed), and the
+ *    commit clock taken as the LATEST `writeTime` — the server answers a
+ *    content-identical write with the document's previous update time.
  *
  * ⚠️ D11. The read switch is ON in exactly one place: the object literal handed
  * to the context as `ambiente`. Never through `process.env` (the lane sets it
@@ -36,7 +41,7 @@
 import { FieldValue } from 'firebase-admin/firestore';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
-import { INTEGRACAO_TIPO, MOTIVO_CONTA_AMAZON } from '@delfrance/schemas';
+import { INTEGRACAO_TIPO, MOTIVO_CONTA_AMAZON, STATUS_PAGAMENTO } from '@delfrance/schemas';
 
 import { getAdminFirestore } from '@/lib/firebase/admin';
 
@@ -329,5 +334,80 @@ describe.skipIf(!EMULATED)('the Amazon order import on real Firestore (emulator)
     expect(r.kind).toBe('importado');
     const incidente = await db().doc(`${CAMINHO}/incidentes/amz-prod-L9`).get();
     expect(incidente.data()).toMatchObject({ subtipo: 'unresolved', externalId: 'L9' });
+  });
+  describe('★ PR 6 — the pagamento in the batch, on the real server', () => {
+    const PAGAMENTO = `${CAMINHO}/pagamentos/${PEDIDO}`;
+    const ENTRADAS_CI = {
+      integracaoPedidoOuterRef: `documents/integracao/${CONTA}`,
+      operacaoPedidoOuterRef: null,
+      clientePedidoOuterRef: null,
+      enderecoFreteOuterReference: null,
+      integracaoFreteOuterRef: null,
+      modalidadeFreteImportacao: null,
+      vinculos: new Map<string, string>(),
+    };
+    const gravar = async (
+      order: ReturnType<typeof pedidoAmazon>,
+      primeiraLeitura: Awaited<ReturnType<typeof lerPedidoEPagamentoAmazon>>,
+    ) =>
+      gravarPedidoAmazon(db(), {
+        contaId: CONTA,
+        orderId: ORDER,
+        pedidoId: PEDIDO,
+        primeiraLeitura,
+        nowUs: agoraUsDe({ nowMs: Date.now() }),
+        mapear: () => mapearPedidoAmazon(order, ENTRADAS_CI),
+      });
+
+    it('★ the PEDIDO carrier: a stale pedido precondition writes NO pagamento; attempt 2 re-derives from the operator’s cancel and writes none', async () => {
+      expect((await importar(corpo({ status: 'UNSHIPPED' }))).kind).toBe('importado');
+      expect((await db().doc(PAGAMENTO).get()).data()?.status_pagamento).toBe(
+        STATUS_PAGAMENTO.aprovado,
+      );
+      // The pagamento disappears, so the SAME order decides only its re-create.
+      await db().doc(PAGAMENTO).delete();
+      const primeiraLeitura = await lerPedidoEPagamentoAmazon(db(), PEDIDO);
+      // An operator cancels the pedido after that read.
+      await db().doc(CAMINHO).update({ estado: 'cancelado' });
+      const r = await gravar(pedidoAmazon({ status: 'UNSHIPPED' }), primeiraLeitura);
+      // Attempt 1 (carrier + create) failed whole; attempt 2 keeps the ERP-side cancel.
+      expect(r).toMatchObject({ tipo: 'sem-mudanca', tentativas: 2 });
+      expect((await db().doc(PAGAMENTO).get()).exists).toBe(false);
+      expect((await db().doc(CAMINHO).get()).data()?.estado).toBe('cancelado');
+    });
+
+    it('★ the PAGAMENTO carrier on an arm that only READ its status (estornado kept): an operator’s em_disputa landing after the read fails the batch; attempt 2 decides cancelado, and its carrier moves nothing', async () => {
+      expect((await importar(corpo({ status: 'UNSHIPPED' }))).kind).toBe('importado');
+      await db().doc(PAGAMENTO).update({ status_pagamento: STATUS_PAGAMENTO.estornado });
+      const primeiraLeitura = await lerPedidoEPagamentoAmazon(db(), PEDIDO);
+      await db().doc(PAGAMENTO).update({ status_pagamento: STATUS_PAGAMENTO.em_disputa });
+      const antes = (await db().doc(PAGAMENTO).get()).updateTime;
+      const r = await gravar(
+        pedidoAmazon({ status: 'CANCELLED', atualizadoEm: depois(60) }),
+        primeiraLeitura,
+      );
+      expect(r).toMatchObject({ tipo: 'gravado', tentativas: 2, portadorPagamento: true });
+      // From the read's `estornado` the predicate said estornadoIntegralmente.
+      expect((await db().doc(CAMINHO).get()).data()?.estado).toBe('cancelado');
+      const pagamento = await db().doc(PAGAMENTO).get();
+      expect(pagamento.data()?.status_pagamento).toBe(STATUS_PAGAMENTO.em_disputa);
+      // The winning carrier was content-identical: the server moved nothing.
+      expect(pagamento.updateTime?.isEqual(antes!)).toBe(true);
+    });
+
+    it('★ the commit clock: a content-identical pedido carrier answers the pedido’s PREVIOUS update time; the result is the LATEST (the pagamento create’s)', async () => {
+      expect((await importar(corpo({ status: 'UNSHIPPED' }))).kind).toBe('importado');
+      await db().doc(PAGAMENTO).delete();
+      const antes = (await db().doc(CAMINHO).get()).updateTime;
+      const primeiraLeitura = await lerPedidoEPagamentoAmazon(db(), PEDIDO);
+      const r = await gravar(pedidoAmazon({ status: 'UNSHIPPED' }), primeiraLeitura);
+      expect(r).toMatchObject({ tipo: 'gravado', portador: true, tentativas: 1 });
+      if (r.tipo !== 'gravado' || r.writeTime === null) throw new Error('esperava gravado');
+      expect((await db().doc(CAMINHO).get()).updateTime?.isEqual(antes!)).toBe(true);
+      expect(r.writeTime.isEqual(antes!)).toBe(false);
+      const pagamento = await db().doc(PAGAMENTO).get();
+      expect(r.writeTime.isEqual(pagamento.updateTime!)).toBe(true);
+      expect(pagamento.data()?.status_pagamento).toBe(STATUS_PAGAMENTO.aprovado);
+    });
   });
 });

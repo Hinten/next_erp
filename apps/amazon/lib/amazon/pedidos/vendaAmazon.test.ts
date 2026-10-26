@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { linhaAmazon, pedidoAmazon, type OpcoesPedidoTeste } from '../testing/pedidoWireAmazon';
+import {
+  execucaoAmazon,
+  linhaAmazon,
+  pedidoAmazon,
+  type OpcoesPedidoTeste,
+} from '../testing/pedidoWireAmazon';
 import { lerResumoArmazenadoAmazon } from './estadoPedidoAmazon';
 import { linhasArmazenadasAmazon } from './itensAmazon';
 import {
@@ -9,11 +14,18 @@ import {
   type PedidoArmazenadoVendaAmazon,
 } from './vendaAmazon';
 
-function armazenado(raw: Record<string, unknown>): PedidoArmazenadoVendaAmazon {
-  return { resumo: lerResumoArmazenadoAmazon(raw), linhas: linhasArmazenadasAmazon(raw.itens) };
+function armazenado(
+  raw: Record<string, unknown>,
+  pagamentoValor: number | null = null,
+): PedidoArmazenadoVendaAmazon {
+  return {
+    resumo: lerResumoArmazenadoAmazon(raw),
+    linhas: linhasArmazenadasAmazon(raw.itens),
+    pagamentoValor,
+  };
 }
 
-const PAGO_COM_DUAS_LINHAS = armazenado({
+const PAGO_COM_DUAS_LINHAS_RAW: Record<string, unknown> = {
   estado: 'pago',
   marketplace: { tipo: 'amazon', status: 'UNSHIPPED' },
   itens: {
@@ -22,7 +34,8 @@ const PAGO_COM_DUAS_LINHAS = armazenado({
       { mktplaceId: 'L2', quantidade: 1, precoDeVenda: 5 },
     ],
   },
-});
+};
+const PAGO_COM_DUAS_LINHAS = armazenado(PAGO_COM_DUAS_LINHAS_RAW);
 
 describe('faseVendaAmazon', () => {
   it('maps the statuses exactly; anything else is desconhecida', () => {
@@ -154,6 +167,33 @@ describe('classificarVendaAmazon — the signals', () => {
       ]),
     ).toBe(false);
     expect(z([], 'UNSHIPPED')).toBe(false);
+  });
+
+  it('★ Z’s payment term (PR 6): intact lines on SHIPPED, but the executions sum to 0, are absent or unreadable while the stored pagamento’s valor is positive ⇒ Z', () => {
+    const linhas = [
+      linhaAmazon('L1', { qtd: 2, preco: '10.00' }),
+      linhaAmazon('L2', { qtd: 1, preco: '5.00' }),
+    ];
+    const comPagamento = armazenado(PAGO_COM_DUAS_LINHAS_RAW, 25);
+    const z = (
+      pagamento: OpcoesPedidoTeste['pagamento'],
+      guardado = comPagamento,
+      status = 'SHIPPED',
+    ) => classificarVendaAmazon(pedidoAmazon({ status, linhas, pagamento }), guardado);
+    expect(z([execucaoAmazon('CreditCard', '0.00')])).toMatchObject({
+      zerado: true,
+      revertido: true,
+    });
+    expect(z([])).toMatchObject({ zerado: true });
+    expect(z(null)).toMatchObject({ zerado: true });
+    expect(z([execucaoAmazon('CreditCard', 'abc')])).toMatchObject({ zerado: true });
+    expect(z([execucaoAmazon('CreditCard', '25.00')])).toMatchObject({ zerado: false });
+    // NEAR-MISS: one centavo is a payment, not a zero; a stored valor of 0 (or none) protects nothing.
+    expect(z([execucaoAmazon('CreditCard', '0.01')])).toMatchObject({ zerado: false });
+    expect(z([], armazenado(PAGO_COM_DUAS_LINHAS_RAW, 0))).toMatchObject({ zerado: false });
+    expect(z([], armazenado(PAGO_COM_DUAS_LINHAS_RAW, null))).toMatchObject({ zerado: false });
+    // Only on SHIPPED.
+    expect(z([], comPagamento, 'UNSHIPPED')).toMatchObject({ zerado: false });
   });
 
   it('Z without a stored pedido: a zero or absent value on SHIPPED; intact lines are not Z (NEAR-MISS)', () => {

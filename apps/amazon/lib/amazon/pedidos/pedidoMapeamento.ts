@@ -1,8 +1,28 @@
 /**
- * One Amazon order → the pedido write (master plan step 5, PR 5-c): the wire
- * mapper ({@link mapearPedidoAmazon}) and the decision over a stored snapshot
+ * One Amazon order → the pedido write (master plan step 5, PR 5-c) and, since
+ * PR 6, its pagamento write: the wire mapper ({@link mapearPedidoAmazon}) and the
+ * decision over a stored snapshot of BOTH documents
  * ({@link montarEscritaPedidoAmazon}), which answers
- * `nao-importado | obsoleto | criar | sem-mudanca | atualizar`.
+ * `nao-importado | obsoleto | criar | sem-mudanca | atualizar` for the pedido,
+ * each of the last three carrying the pagamento's own write
+ * (`pagamentoAmazon.ts`).
+ *
+ * ## The pagamento terms of D17 (PR 6)
+ *
+ * - `Z` gains the payment: a SHIPPED order whose executions sum to 0 (or are
+ *   absent) while the stored pagamento's `valor` is positive is a reversal
+ *   (`vendaAmazon.ts`);
+ * - on an approved order still to ship (row 10), the DERIVED `valor` different
+ *   from the stored one, in centavos, BLOCKS like a line change — derived
+ *   against derived, so a covered short sum never reads as a change, and only
+ *   on a pagamento this importer wrote (`lastProviderUpdate` set): the legacy's
+ *   `valor` is adopted once, never compared;
+ * - a block writes no pagamento (a cancellation's status move excepted, which
+ *   stays paired with the estado it moves);
+ * - the estado and the pagamento status are decided TOGETHER: `pago` is never
+ *   written beside a pagamento that stays `estornado` (the stored estado is
+ *   kept, motivo `terminal`), so the Pagamentos tab's reconcile and the import
+ *   never take turns relabelling the pedido.
  *
  * PURE: no Firestore, no clock (`nowUs` is a parameter), no environment, no
  * logger. PR 5-d runs it once per attempt, over THAT attempt's snapshot of the
@@ -51,7 +71,9 @@ import {
   ESTADO_PEDIDO,
   INTEGRACAO_FRETE,
   MARKETPLACE_PEDIDO_TIPO,
+  MODALIDADE_FRETE,
   MOTIVO_PEDIDO_AMAZON,
+  STATUS_PAGAMENTO,
   derivePedidoFreteTotals,
   freteDoPedidoSchema,
   type EstadoPedido,
@@ -59,6 +81,7 @@ import {
   type ItemDoPedido,
   type ModalidadeFrete,
   type MotivoPedidoAmazon,
+  type StatusPagamento,
 } from '@delfrance/schemas';
 
 import {
@@ -79,6 +102,7 @@ import {
   ESTADOS_TERMINAIS_AMAZON,
   FULFILLED_BY_AMAZON,
   FULFILLMENT_STATUS_AMAZON,
+  MOTIVO_ESTADO_AMAZON,
   PREFIXO_ERRO_AMAZON,
   TEXTO_ERRO_AMAZON,
   alvoCanceladoAmazon,
@@ -91,6 +115,7 @@ import {
   type AlvoEstadoAmazon,
   type ContextoEstadoAmazon,
   type MotivoEstadoAmazon,
+  type VereditoEstadoAmazon,
 } from './estadoPedidoAmazon';
 import {
   camposFreteAmazon,
@@ -99,18 +124,34 @@ import {
   type CamposFreteAmazon,
 } from './freteAmazon';
 import {
+  ACAO_ITENS_AMAZON,
   CHAVE_SEM_PRODUTO,
   REGRA_D17_AMAZON,
+  bloquearPorValorDoPagamento,
   linhasArmazenadasAmazon,
   linhasRecebidasAmazon,
   reconciliarItens,
   type AcaoItensAmazon,
   type BloqueioItensAmazon,
   type ContagensItensAmazon,
+  type DinheiroArmazenadoAmazon,
   type LinhaArmazenadaAmazon,
   type LinhaRecebidaAmazon,
+  type ReconciliacaoItensAmazon,
 } from './itensAmazon';
 import { lerInstanteAmazon } from './janelaPoll';
+import {
+  alvoStatusPagamentoAmazon,
+  execucoesPagamentoAmazon,
+  montarEscritaPagamentoAmazon,
+  somaPagamentoAmazon,
+  valorPagamentoAmazon,
+  type EntradaPagamentoAmazon,
+  type EscritaPagamentoPuraAmazon,
+  type ModoValorPagamentoAmazon,
+  type TotaisDoPedidoAmazon,
+  type ValorPagamentoAmazon,
+} from './pagamentoAmazon';
 import { classificarVendaAmazon, type VendaAmazon } from './vendaAmazon';
 
 /* -------------------------------------------------------------------------- */
@@ -247,6 +288,8 @@ export interface DecisaoPedidoAmazon {
   readonly eventos: readonly EventoPedidoAmazon[];
   readonly bloqueio: BloqueioItensAmazon | null;
   readonly contagens: ContagensItensAmazon;
+  /** The status the pagamento holds once this attempt lands (`null`: none, or unreadable). */
+  readonly statusPagamento: StatusPagamento | null;
 }
 
 export type EscritaPedidoAmazon =
@@ -258,13 +301,20 @@ export type EscritaPedidoAmazon =
       readonly tipo: 'criar';
       readonly corpo: Readonly<Record<string, unknown>>;
       readonly decisao: DecisaoPedidoAmazon;
+      /** The pagamento's own write, decided from the same snapshot (PR 6). */
+      readonly pagamento: EscritaPagamentoPuraAmazon;
     }
-  | { readonly tipo: 'sem-mudanca'; readonly decisao: DecisaoPedidoAmazon }
+  | {
+      readonly tipo: 'sem-mudanca';
+      readonly decisao: DecisaoPedidoAmazon;
+      readonly pagamento: EscritaPagamentoPuraAmazon;
+    }
   | {
       readonly tipo: 'atualizar';
       readonly patch: Readonly<Record<string, unknown>>;
       readonly grupos: readonly GrupoPedidoAmazon[];
       readonly decisao: DecisaoPedidoAmazon;
+      readonly pagamento: EscritaPagamentoPuraAmazon;
     };
 
 /* -------------------------------------------------------------------------- */
@@ -359,7 +409,9 @@ export function textoBloqueioAmazon(bloqueio: BloqueioItensAmazon): string {
   const titulo =
     bloqueio.causa === 'cancelamento-parcial'
       ? 'linha cancelada na Amazon em pedido a enviar'
-      : 'itens divergentes do pedido na Amazon';
+      : bloqueio.causa === 'pagamento'
+        ? 'valor do pagamento divergente do pedido na Amazon'
+        : 'itens divergentes do pedido na Amazon';
   const nomeadas = bloqueio.linhas.slice(0, 5).join(', ');
   const resto = bloqueio.linhas.length > 5 ? ` (+${String(bloqueio.linhas.length - 5)})` : '';
   return `${PREFIXO_ERRO_AMAZON}${titulo}${nomeadas === '' ? '' : `: ${nomeadas}${resto}`}`;
@@ -373,6 +425,8 @@ interface DecisaoEstadoFinal {
   readonly alvo: AlvoEstadoAmazon;
   readonly incidentes: readonly IncidentePedidoAmazon[];
   readonly avisos: readonly MotivoPedidoAmazon[];
+  /** A buyer's request on a printed pedido took the CANCELLED predicate's target. */
+  readonly cancelamentoPorSolicitacao: boolean;
 }
 
 /**
@@ -404,6 +458,7 @@ function decidirEstado(
   const tabela = alvoEstadoPedidoAmazon(order, contexto);
   const avisos = [...tabela.avisos];
   let alvo = tabela.alvo;
+  let cancelamentoPorSolicitacao = false;
   if (bloqueio !== null) {
     avisos.push(MOTIVO_PEDIDO_AMAZON.divergenciaItens);
     alvo = alvoErroAmazon(textoBloqueioAmazon(bloqueio));
@@ -412,12 +467,13 @@ function decidirEstado(
     const aEnviar = venda.fase === 'pre' || venda.fase === 'apr';
     if (venda.impresso && aEnviar) {
       alvo = alvoCanceladoAmazon(contexto).alvo;
+      cancelamentoPorSolicitacao = true;
       avisos.push(MOTIVO_PEDIDO_AMAZON.aceitarCancelamento);
     } else {
       avisos.push(MOTIVO_PEDIDO_AMAZON.cancelamentoSolicitado);
     }
   }
-  return { alvo, incidentes: tabela.incidentes, avisos };
+  return { alvo, incidentes: tabela.incidentes, avisos, cancelamentoPorSolicitacao };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -428,6 +484,54 @@ const MOTIVO_DA_REGRA: Readonly<Record<string, MotivoNaoImportadoAmazon>> = {
   [REGRA_D17_AMAZON.canceladoNaoImportado]: MOTIVO_NAO_IMPORTADO_AMAZON.canceladoNaoImportado,
   [REGRA_D17_AMAZON.reversaoNaoImportada]: MOTIVO_NAO_IMPORTADO_AMAZON.reversaoNaoImportada,
 };
+
+/** The pedido's money as an UPDATE leaves it (the patch and the pagamento read the same). */
+interface TotaisDaAtualizacao {
+  /** The stored lines read, or are rewritten: a total can be derived. */
+  readonly legiveis: boolean;
+  readonly linhasFinais: readonly ItemDoPedido[];
+  /** The order-money group this attempt writes, or `null`. */
+  readonly grupo: { readonly descontoTotal: number; readonly valorFrete: number | null } | null;
+  readonly descontoFinal: number;
+  readonly freteFinal: number | null;
+  /** The freight block's modalidade once the patch lands (the seed's on a block it seeds). */
+  readonly modalidade: unknown;
+}
+
+/**
+ * A stored line the schema refuses has no trustworthy money, so while the lines
+ * are not rewritten the order total is never recomputed from it, and the
+ * order-money group derived with that total (discount, freight money) is
+ * withheld as a unit: the stored values stay until the lines read again. An
+ * `amz` freight block the schema refuses is never rewritten, so the total keeps
+ * the STORED freight money that block still holds.
+ */
+function totaisDaAtualizacao(e: {
+  readonly reconciliacao: ReconciliacaoItensAmazon;
+  readonly linhasGuardadas: readonly LinhaArmazenadaAmazon[];
+  readonly dinheiroArmazenado: DinheiroArmazenadoAmazon;
+  readonly freteRaw: Readonly<Record<string, unknown>> | null;
+  readonly modalidadeSemente: ModalidadeFrete;
+}): TotaisDaAtualizacao {
+  const { reconciliacao, linhasGuardadas, dinheiroArmazenado, freteRaw } = e;
+  const itensGuardados = linhasGuardadas.flatMap((l) => (l.item === null ? [] : [l.item]));
+  const legiveis = reconciliacao.itens !== null || itensGuardados.length === linhasGuardadas.length;
+  const grupo = legiveis ? reconciliacao.dinheiro : null;
+  const freteNosso = dinheiroArmazenado.freteNosso;
+  const freteGravavel =
+    freteRaw === null || !freteNosso || freteDoPedidoSchema.safeParse(freteRaw).success;
+  return {
+    legiveis,
+    linhasFinais: reconciliacao.itens ?? itensGuardados,
+    grupo,
+    descontoFinal: grupo?.descontoTotal ?? dinheiroArmazenado.descontoTotal ?? 0,
+    freteFinal:
+      grupo !== null && freteNosso && freteGravavel
+        ? grupo.valorFrete
+        : dinheiroArmazenado.valorFrete,
+    modalidade: freteRaw === null ? e.modalidadeSemente : freteRaw.modalidade,
+  };
+}
 
 /**
  * The write for one attempt (module header), from THAT attempt's raw snapshots
@@ -455,22 +559,33 @@ export function montarEscritaPedidoAmazon(
   }
   const maisNovo = armazenadoUs === null || watermarkUs > armazenadoUs;
 
+  // The stored pagamento: its status (the predicate, the ladder), its `valor`
+  // (Z, row 10) and whether THIS importer wrote it — its provider clock is
+  // stamped by every write of ours and by none of the legacy's.
+  const pagamentoGuardado = lerPagamentoArmazenadoAmazon(pagamentoArmazenadoRaw);
+  const valorPagamentoGuardado =
+    pagamentoArmazenadoRaw === null ? null : numero(pagamentoArmazenadoRaw.valor);
+  const pagamentoNosso =
+    pagamentoArmazenadoRaw !== null && !vazio(pagamentoArmazenadoRaw.lastProviderUpdate);
+
   const linhasGuardadas: LinhaArmazenadaAmazon[] =
     armazenadoRaw === null ? [] : linhasArmazenadasAmazon(armazenadoRaw.itens);
   const venda = classificarVendaAmazon(
     order,
-    resumo === null ? null : { resumo, linhas: linhasGuardadas },
+    resumo === null
+      ? null
+      : { resumo, linhas: linhasGuardadas, pagamentoValor: valorPagamentoGuardado },
   );
 
   const freteRaw = armazenadoRaw === null ? null : objeto(armazenadoRaw.freteInicial);
   const freteNosso =
     freteRaw === null || freteRaw.externalOptionIntegracao === INTEGRACAO_FRETE.amazon;
-  const dinheiroArmazenado = {
+  const dinheiroArmazenado: DinheiroArmazenadoAmazon = {
     descontoTotal: armazenadoRaw === null ? null : numero(armazenadoRaw.descontoTotal),
     valorFrete: freteRaw === null ? null : numero(freteRaw.valorCobrado),
     freteNosso,
   };
-  const reconciliacao = reconciliarItens(
+  const reconciliado = reconciliarItens(
     resumo === null ? null : { linhas: linhasGuardadas, dinheiro: dinheiroArmazenado },
     {
       linhas: mapeado.linhas,
@@ -480,20 +595,131 @@ export function montarEscritaPedidoAmazon(
     },
     venda,
   );
-  if (reconciliacao.acao === null) {
-    const motivo = MOTIVO_DA_REGRA[reconciliacao.regra];
+  if (reconciliado.acao === null) {
+    const motivo = MOTIVO_DA_REGRA[reconciliado.regra];
     if (motivo === undefined) throw new TypeError('montarEscritaPedidoAmazon: regra sem ação');
     return { tipo: 'nao-importado', motivo };
   }
 
+  /* ------------------------- the money the pagamento states -------------------- */
+  const modalidadeSemente = entradas.modalidadeFreteImportacao ?? MODALIDADE_FRETE.fob;
+  const execucoes = execucoesPagamentoAmazon(order);
+  const soma = somaPagamentoAmazon(execucoes);
+  const totaisDe = (r: ReconciliacaoItensAmazon): TotaisDoPedidoAmazon | null => {
+    if (armazenadoRaw === null) {
+      const dinheiro = r.dinheiro ?? { descontoTotal: 0, valorFrete: null };
+      return {
+        itens: r.itens ?? [],
+        descontoTotal: dinheiro.descontoTotal,
+        valorFrete: dinheiro.valorFrete,
+        modalidade: modalidadeSemente,
+      };
+    }
+    const t = totaisDaAtualizacao({
+      reconciliacao: r,
+      linhasGuardadas,
+      dinheiroArmazenado,
+      freteRaw,
+      modalidadeSemente,
+    });
+    return t.legiveis
+      ? {
+          itens: t.linhasFinais,
+          descontoTotal: t.descontoFinal,
+          valorFrete: t.freteFinal,
+          modalidade: t.modalidade,
+        }
+      : null;
+  };
+  const valorDe = (totais: TotaisDoPedidoAmazon | null): ValorPagamentoAmazon | null =>
+    totais === null
+      ? null
+      : valorPagamentoAmazon({ soma, freteDoComprador: mapeado.dinheiro.valorFrete, totais });
+
+  // Row 10's pagamento term (module header): derived against derived, on a
+  // positive `valor` this importer wrote.
+  const derivadoAntes =
+    pagamentoNosso && valorPagamentoGuardado !== null && valorPagamentoGuardado > 0
+      ? valorDe(totaisDe(reconciliado))
+      : null;
+  const reconciliacao =
+    derivadoAntes !== null &&
+    valorPagamentoGuardado !== null &&
+    !mesmosCentavos(derivadoAntes.valor, valorPagamentoGuardado)
+      ? bloquearPorValorDoPagamento(reconciliado, linhasGuardadas)
+      : reconciliado;
+  const acaoItens: AcaoItensAmazon = reconciliacao.acao ?? reconciliado.acao;
+
   /* ------------------------------- the estado ------------------------------ */
   const contexto: ContextoEstadoAmazon = {
     armazenado: resumo,
-    pagamentoArmazenado: lerPagamentoArmazenadoAmazon(pagamentoArmazenadoRaw),
+    pagamentoArmazenado: pagamentoGuardado,
     mercadoriaFora: mercadoriaFora(resumo?.freteEstado ?? null),
   };
   const estado = decidirEstado(order, contexto, venda, reconciliacao.bloqueio);
-  const veredito = estadoAmazonAplicavel(resumo, estado.alvo, { maisNovo });
+
+  /* ------------------------------ the pagamento ---------------------------- */
+  const cancelamento = venda.fase === 'cancelado' || estado.cancelamentoPorSolicitacao;
+  // A block writes no pagamento — but a cancellation that moves the estado
+  // still moves the status paired with it.
+  const bloqueado = reconciliacao.bloqueio !== null && !cancelamento;
+  const modoValor: ModoValorPagamentoAmazon =
+    acaoItens === ACAO_ITENS_AMAZON.preservadosReversao
+      ? 'manter'
+      : acaoItens === ACAO_ITENS_AMAZON.escritas ||
+          acaoItens === ACAO_ITENS_AMAZON.espelhadas ||
+          !pagamentoNosso
+        ? 'espelhar'
+        : 'preencher';
+  // The pagamento for the estado the pedido holds once this attempt lands: its
+  // status is paired with that estado (`pagamentoAmazon.ts`).
+  const decidirPagamento = (v: VereditoEstadoAmazon) => {
+    const estadoFinal: EstadoPedido | null = v.escrever
+      ? v.estado
+      : armazenadoRaw === null
+        ? ESTADO_PEDIDO.error
+        : (resumo?.estado ?? null);
+    const entradaPagamento: EntradaPagamentoAmazon | null = bloqueado
+      ? null
+      : {
+          orderId: mapeado.numero,
+          watermarkUs,
+          maisNovo,
+          alvo: alvoStatusPagamentoAmazon({
+            cancelamento,
+            aprovadoNaAmazon: venda.fase === 'apr' || venda.fase === 'env',
+            revertido: venda.revertido,
+            estadoFinal,
+          }),
+          cancelamento,
+          modoValor,
+          execucoes,
+          valor: valorDe(totaisDe(reconciliacao)),
+        };
+    return montarEscritaPagamentoAmazon(
+      pagamentoArmazenadoRaw,
+      pagamentoGuardado,
+      entradaPagamento,
+      { nowUs: opcoes.nowUs },
+    );
+  };
+  let veredito = estadoAmazonAplicavel(resumo, estado.alvo, { maisNovo });
+  let pagamento = decidirPagamento(veredito);
+  // The pair, decided TOGETHER: `pago` is never written beside a pagamento that
+  // stays `estornado` (an operator's refund the Pagamentos tab's reconcile turned
+  // into `aguardandoConfirmacaoDePagamento`, met by a read the pagamento ladder
+  // may not resurrect from — an equal clock, or a reversal). The stored estado is
+  // kept instead (motivo `terminal`: the pagamento's), so the reconcile and the
+  // import never take turns relabelling it.
+  if (
+    veredito.escrever &&
+    veredito.estado === ESTADO_PEDIDO.pago &&
+    pagamento.statusFinal === STATUS_PAGAMENTO.estornado
+  ) {
+    veredito = { escrever: false, motivo: MOTIVO_ESTADO_AMAZON.terminal };
+    pagamento = decidirPagamento(veredito);
+  }
+
   const avisos: MotivoPedidoAmazon[] = [...estado.avisos];
   const eventos: EventoPedidoAmazon[] = [...reconciliacao.eventos];
   if (veredito.escrever && veredito.ressuscitado) eventos.push(EVENTO_PEDIDO_AMAZON.ressuscitado);
@@ -516,16 +742,23 @@ export function montarEscritaPedidoAmazon(
     avisos.push(MOTIVO_PEDIDO_AMAZON.canceladoSoNoErp);
   }
 
+  eventos.push(...pagamento.eventos);
+
   const decisao: DecisaoPedidoAmazon = {
-    itens: reconciliacao.acao,
+    itens: acaoItens,
     linhaD17: reconciliacao.linhaD17,
     estadoEscrito: veredito.escrever ? veredito.estado : null,
     motivoEstado: veredito.escrever ? null : veredito.motivo,
     avisos: codigosOrdenados(avisos),
-    incidentes: codigosOrdenados([...estado.incidentes, ...reconciliacao.incidentes]),
+    incidentes: codigosOrdenados([
+      ...estado.incidentes,
+      ...reconciliacao.incidentes,
+      ...pagamento.incidentes,
+    ]),
     eventos: codigosOrdenados(eventos),
     bloqueio: reconciliacao.bloqueio,
     contagens: reconciliacao.contagens,
+    statusPagamento: pagamento.statusFinal,
   };
 
   /* --------------------------------- CREATE -------------------------------- */
@@ -562,7 +795,7 @@ export function montarEscritaPedidoAmazon(
       lastMarketplaceUpdate: watermarkUs,
       ultimaModificacao: opcoes.nowUs,
     };
-    return { tipo: 'criar', corpo, decisao };
+    return { tipo: 'criar', corpo, decisao, pagamento: pagamento.escrita };
   }
 
   /* --------------------------------- UPDATE -------------------------------- */
@@ -614,17 +847,16 @@ export function montarEscritaPedidoAmazon(
     }
   }
 
-  // The lines and the order money (D17). A stored line the schema refuses has
-  // no trustworthy money, so while the lines are not rewritten the order total
-  // is never recomputed from it, and the order-money group derived with that
-  // total (discount, freight money) is withheld as a unit: the stored values
-  // stay until the lines read again.
-  const itensGuardados = linhasGuardadas.flatMap((l) => (l.item === null ? [] : [l.item]));
-  const totaisLegiveis =
-    reconciliacao.itens !== null || itensGuardados.length === linhasGuardadas.length;
-  const linhasFinais: readonly ItemDoPedido[] = reconciliacao.itens ?? itensGuardados;
+  // The lines and the order money (D17), read as `totaisDaAtualizacao` explains.
+  const totais = totaisDaAtualizacao({
+    reconciliacao,
+    linhasGuardadas,
+    dinheiroArmazenado,
+    freteRaw,
+    modalidadeSemente,
+  });
   if (
-    !totaisLegiveis &&
+    !totais.legiveis &&
     (reconciliacao.dinheiro !== null || reconciliacao.dinheiroDasLinhasMudou)
   ) {
     eventos.push(EVENTO_PEDIDO_AMAZON.itensArmazenadosIlegiveis);
@@ -635,25 +867,14 @@ export function montarEscritaPedidoAmazon(
     patch.itensIds = agrupado.itensIds;
     grupos.add('itens');
   }
-  const grupo = totaisLegiveis ? reconciliacao.dinheiro : null;
+  const grupo = totais.grupo;
   if (grupo !== null && !mesmosCentavos(dinheiroArmazenado.descontoTotal, grupo.descontoTotal)) {
     patch.descontoTotal = grupo.descontoTotal;
     grupos.add('dinheiro');
   }
-  // An `amz` freight block the schema refuses is never rewritten (below), so the
-  // total keeps the STORED freight money that block still holds.
-  const freteGravavel =
-    freteRaw === null || !freteNosso || freteDoPedidoSchema.safeParse(freteRaw).success;
-  const freteFinal =
-    grupo !== null && freteNosso && freteGravavel
-      ? grupo.valorFrete
-      : dinheiroArmazenado.valorFrete;
-  if (totaisLegiveis && (reconciliacao.dinheiroDasLinhasMudou || grupo !== null)) {
-    const derivado = valorCobradoDerivado(
-      linhasFinais,
-      grupo?.descontoTotal ?? dinheiroArmazenado.descontoTotal ?? 0,
-      freteFinal,
-    );
+  const freteFinal = totais.freteFinal;
+  if (totais.legiveis && (reconciliacao.dinheiroDasLinhasMudou || grupo !== null)) {
+    const derivado = valorCobradoDerivado(totais.linhasFinais, totais.descontoFinal, freteFinal);
     if (!mesmosCentavos(numero(raw.valorCobrado), derivado)) {
       patch.valorCobrado = derivado;
       grupos.add('dinheiro');
@@ -708,11 +929,19 @@ export function montarEscritaPedidoAmazon(
   }
 
   const decisaoFinal: DecisaoPedidoAmazon = { ...decisao, eventos: codigosOrdenados(eventos) };
-  if (Object.keys(patch).length === 0) return { tipo: 'sem-mudanca', decisao: decisaoFinal };
+  if (Object.keys(patch).length === 0) {
+    return { tipo: 'sem-mudanca', decisao: decisaoFinal, pagamento: pagamento.escrita };
+  }
 
   // Monotonic and never null: another writer may already have set it ahead.
   const ultimaGuardada = coerceToMicros(raw.ultimaModificacao);
   patch.ultimaModificacao =
     ultimaGuardada === null || opcoes.nowUs > ultimaGuardada ? opcoes.nowUs : ultimaGuardada;
-  return { tipo: 'atualizar', patch, grupos: [...grupos], decisao: decisaoFinal };
+  return {
+    tipo: 'atualizar',
+    patch,
+    grupos: [...grupos],
+    decisao: decisaoFinal,
+    pagamento: pagamento.escrita,
+  };
 }

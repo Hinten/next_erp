@@ -59,12 +59,20 @@
  *    FIRST failure rejects the commit and NOTHING is applied;
  *  - otherwise every write applies under ONE commit stamp (a commit's writes
  *    share its time), each logged with the batch's number in `lote`, and the
- *    commit answers one `{ writeTime }` per write.
+ *    commit answers one `{ writeTime }` per write;
+ *  - (PR 6) EXCEPT a content-identical `update` — one leaving the document
+ *    exactly as it was, like the import's precondition carriers: the server
+ *    moves nothing, so the document KEEPS its update time and that write
+ *    answers the document's PREVIOUS update time as its `writeTime`. Measured
+ *    on the emulator (Firestore v1.22.0): a batch of a carrier and a sibling
+ *    `create` answered the carrier's previous time and the create's commit
+ *    time. A caller reading `results[0].writeTime` as "the commit's time" is
+ *    therefore wrong whenever a carrier comes first, and this fake shows it.
  *
- * ⚠️ One divergence, on the safe side: a write that changes nothing still takes
- * the new stamp here. Code that relied on a stamp NOT moving would fail against
- * this fake, never pass by accident; the emulator suite
- * (`pedidos/importarPedido.firestore.test.ts`) runs the real batch.
+ * ⚠️ One divergence, on the safe side: a SINGLE-document write that changes
+ * nothing still takes the new stamp here. Code that relied on such a stamp NOT
+ * moving would fail against this fake, never pass by accident; the emulator
+ * suite (`pedidos/importarPedido.firestore.test.ts`) runs the real writes.
  *
  * ⚠️ The batch is the ONLY multi-document write modelled. The multi-document
  * read-and-write call is not, and this fake gains no method shaped like it:
@@ -165,6 +173,35 @@ export function grpc(code: number, message: string): Error {
 /** The increment sentinel this fake applies — pass it as `deps.increment`. */
 export function increment(by: number): unknown {
   return { __increment: by };
+}
+
+/**
+ * Whether two stored documents hold the SAME content, as the server decides a
+ * no-op write: the same keys, each value strictly equal, maps and arrays
+ * compared member by member (key order is not content). Stored data here is
+ * plain JSON-shaped (`structuredClone` refuses anything else).
+ */
+function mesmoConteudo(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    return (
+      Array.isArray(a) &&
+      Array.isArray(b) &&
+      a.length === b.length &&
+      a.every((v, i) => mesmoConteudo(v, b[i]))
+    );
+  }
+  if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) return false;
+  const ka = Object.keys(a);
+  const kb = Object.keys(b);
+  return (
+    ka.length === kb.length &&
+    ka.every(
+      (k) =>
+        Object.hasOwn(b, k) &&
+        mesmoConteudo((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k]),
+    )
+  );
 }
 
 function ehIncremento(v: unknown): v is { __increment: number } {
@@ -778,15 +815,26 @@ export class FakeDb {
         // All of them, under ONE commit stamp.
         this.lotes += 1;
         const noLote = { writeTime: this.proximoCarimbo(), lote: this.lotes };
+        const resultados: { writeTime: CarimboFake }[] = [];
         for (const e of fila) {
           const comPrecondicao = e.verbo === 'update' && e.precondicao !== undefined;
-          this.registrar(e.verbo, e.caminho, e.dados, comPrecondicao, noLote);
-          const anterior = e.verbo === 'create' ? undefined : this.store.get(e.caminho)?.data;
+          const anterior = e.verbo === 'create' ? undefined : this.store.get(e.caminho);
           const dados =
-            e.verbo === 'create' ? structuredClone(e.dados) : this.aplicar(anterior, e.dados);
-          this.store.set(e.caminho, { data: dados, updateTime: noLote.writeTime });
+            e.verbo === 'create' ? structuredClone(e.dados) : this.aplicar(anterior?.data, e.dados);
+          // A content-identical update (a precondition carrier) changes nothing:
+          // the document keeps its update time, and the write answers THAT
+          // previous time as its `writeTime` (module header).
+          const semEfeito =
+            e.verbo === 'update' && anterior !== undefined && mesmoConteudo(anterior.data, dados);
+          const writeTime = semEfeito ? anterior.updateTime : noLote.writeTime;
+          this.registrar(e.verbo, e.caminho, e.dados, comPrecondicao, {
+            writeTime,
+            lote: noLote.lote,
+          });
+          if (!semEfeito) this.store.set(e.caminho, { data: dados, updateTime: noLote.writeTime });
+          resultados.push({ writeTime });
         }
-        return fila.map(() => ({ writeTime: noLote.writeTime }));
+        return resultados;
       },
     };
     return lote;

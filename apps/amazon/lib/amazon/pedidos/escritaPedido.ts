@@ -1,7 +1,7 @@
 /**
- * Import step 7 (master plan step 5, PR 5-d): the pedido write — and, from PR
- * 6, its pagamento writes — decided from ONE snapshot of BOTH documents and
- * committed in ONE atomic `WriteBatch`, each write under its own precondition.
+ * Import step 7 (master plan step 5, PR 5-d; PR 6): the pedido write and its
+ * pagamento writes, decided from ONE snapshot of BOTH documents and committed in
+ * ONE atomic `WriteBatch`, each write under its own precondition.
  * The app's ONLY batch site (`estrutura.test.ts`), and its only multi-document
  * atomic write: there is no multi-document read-and-write call in this app (plan
  * §3 decision 1), and none is named here.
@@ -20,8 +20,9 @@
  *  3. The write parsed through the pedido handle: the whole document for a
  *     create (`parse`), the patch for an update (`parseMerge`) — a `ZodError`
  *     refuses the order here, before any write.
- *  4. The pagamento writes, decided by the hook from the same snapshot and the
- *     same decision ({@link decidirPagamentosAmazon}: `[]` until PR 6).
+ *  4. The pagamento writes, from the same snapshot and the same decision
+ *     (`escritaPagamento.ts`): its create or its update, or — when the pedido
+ *     writes and the pagamento exists — the pagamento's precondition CARRIER.
  *  5. ONE batch:
  *     - the pedido `create`, or `update(patch, { lastUpdateTime: <its
  *       snapshot's updateTime> })`;
@@ -31,8 +32,13 @@
  *       precondition — the pagamento was decided from that snapshot, so it must
  *       not land if the pedido moved;
  *     - each pagamento `create`, or `update(patch, { lastUpdateTime })` on its
- *       own snapshot;
+ *       own snapshot (its carrier included);
  *     - an EMPTY batch is never committed (`sem-mudanca`).
+ *  6. The commit's clock: the LATEST `writeTime` across the batch's results.
+ *     A carrier is content-identical, and the server answers such a write with
+ *     the document's PREVIOUS update time — the stamp the previous writing
+ *     import already clocked its avisos with, which an equal-clock guard drops.
+ *     The latest is the commit's own time whenever anything changed.
  *
  * ## A lost precondition aborts everything; the retry re-derives everything
  *
@@ -50,20 +56,14 @@
  * snapshot the precondition proves is still current at commit, and the winning
  * write always carries the accepted watermark (plan §3 decision 1).
  *
- * ## What the preconditions do NOT cover yet (PR 5-d)
+ * ## What the preconditions do NOT cover
  *
- * Only the PEDIDO is proven current at commit. The pagamento is READ (the
- * CANCELLED predicate decides from its status), but until PR 6 no write in the
- * batch carries the pagamento's precondition. So a change to the pagamento
- * ALONE between the read and the commit (the Pagamentos tab's status change
- * writes only that document) is not seen, and the pedido is committed from the
- * read's pagamento: `estornadoIntegralmente` where the committed status would
- * decide `cancelado` + `pagamento-divergente`, or the reverse. A change that
- * also moves the pedido aborts the batch, and the retry re-reads both. PR 6
- * owns the fix: the pagamento's precondition whenever the decision read its
- * status (a carrier on the pagamento when no pagamento write rides the batch).
- * An ABSENT pagamento cannot be guarded without a write and stays a residue.
- * Pinned as "RESIDUE until PR 6" in `escritaPedido.test.ts`.
+ * BOTH documents are proven current at commit whenever the batch writes the
+ * pedido: the pagamento by its own update or its carrier (`escritaPagamento.ts`,
+ * PR 6 — which closed PR 5-d's residue, a pagamento-only change between the read
+ * and the commit). An ABSENT pagamento cannot be guarded without a write, so a
+ * pagamento created between the read and the commit is not seen by that attempt
+ * (the next import re-derives from it).
  */
 import type {
   DocumentReference,
@@ -78,8 +78,10 @@ import {
   isNotFound,
 } from '@delfrance/data/admin/grpcErrors';
 
+import { relogioDoDocumentoUs } from '../avisos/avisos';
 import type { MotivoNaoImportadoAmazon } from './codigosPedidoAmazon';
 import { AmazonPedidoEmConflitoError } from './erros';
+import { decidirPagamentosAmazon } from './escritaPagamento';
 import {
   montarEscritaPedidoAmazon,
   type EscritaPedidoAmazon,
@@ -104,7 +106,7 @@ export type EscritaPedidoDecididaAmazon = Extract<
   { tipo: 'criar' | 'sem-mudanca' | 'atualizar' }
 >;
 
-/** One pagamento write the batch carries (PR 6 decides them). */
+/** One pagamento write the batch carries (`escritaPagamento.ts` decides them). */
 export type EscritaPagamentoAmazon =
   | {
       readonly tipo: 'criar';
@@ -117,19 +119,18 @@ export type EscritaPagamentoAmazon =
       readonly dados: Record<string, unknown>;
       /** The pagamento snapshot's own `updateTime`. */
       readonly lastUpdateTime: Timestamp;
+      /** A content-identical carrier of the pagamento's precondition, not a decided change. */
+      readonly portador: boolean;
     };
 
 /**
  * The pagamento hook: the writes decided from THIS attempt's pagamento snapshot
- * and pedido decision. PR 6 fills it; until then it decides nothing.
+ * and pedido decision (`escritaPagamento.ts`; a test may inject another).
  */
 export type DecidirPagamentosAmazon = (
   pagamento: DocumentSnapshot,
   escrita: EscritaPedidoDecididaAmazon,
 ) => readonly EscritaPagamentoAmazon[];
-
-/** PR 5-d's hook: no pagamento write yet (module header). */
-export const decidirPagamentosAmazon: DecidirPagamentosAmazon = () => [];
 
 export interface EntradaEscritaPedidoAmazon {
   /** For the conflict error (ids only). */
@@ -141,7 +142,7 @@ export interface EntradaEscritaPedidoAmazon {
   /** The order mapped for the snapshot an attempt writes against (`null`: no pedido). */
   readonly mapear: (armazenado: DocumentoArmazenadoAmazon | null) => PedidoMapeadoAmazon;
   readonly nowUs: number;
-  /** Test seam; the default is {@link decidirPagamentosAmazon}. */
+  /** Test seam; the default is the one of `escritaPagamento.ts`. */
   readonly decidirPagamentos?: DecidirPagamentosAmazon;
 }
 
@@ -167,10 +168,12 @@ export type GravacaoPedidoAmazon =
       readonly leitura: LeituraDoPedidoAmazon;
       /** Its pedido's raw data (`null`: the attempt created the pedido). */
       readonly armazenado: DocumentoArmazenadoAmazon | null;
-      /** The commit's `writeTime` (`gravado`), or `null` (`sem-mudanca`). */
+      /** The LATEST `writeTime` of the commit's results (`gravado`), or `null` (`sem-mudanca`). */
       readonly writeTime: Timestamp | null;
       /** The batch carried the pedido's precondition on the carrier (module header). */
       readonly portador: boolean;
+      /** The batch carried the pagamento's precondition on ITS carrier (`escritaPagamento.ts`). */
+      readonly portadorPagamento: boolean;
       readonly tentativas: number;
     };
 
@@ -246,13 +249,22 @@ function escritaDoPedidoNoLote(
   };
 }
 
+/**
+ * The later of two commit stamps, compared in microseconds through the app's
+ * ONE stamp conversion (`relogioDoDocumentoUs`, the same reading the aviso
+ * clock makes) — never through milliseconds, where two commits can tie.
+ */
+function maisRecente(a: Timestamp, b: Timestamp): Timestamp {
+  return relogioDoDocumentoUs(a) >= relogioDoDocumentoUs(b) ? a : b;
+}
+
 /** A lost precondition anywhere in the batch: re-read and re-derive (module header). */
 function perdeuPrecondicao(err: unknown): boolean {
   return isFailedPrecondition(err) || isNotFound(err) || isAlreadyExists(err);
 }
 
 /**
- * The pedido (and, from PR 6, its pagamento) in ONE batch, re-derived on every
+ * The pedido and its pagamento in ONE batch, re-derived on every
  * lost precondition (module header).
  *
  * @throws ZodError when a decided write does not parse — before any write.
@@ -304,6 +316,7 @@ export async function gravarPedidoAmazon(
         armazenado,
         writeTime: null,
         portador: false,
+        portadorPagamento: false,
         tentativas: tentativa + 1,
       };
     }
@@ -328,11 +341,13 @@ export async function gravarPedidoAmazon(
       if (perdeuPrecondicao(err)) continue;
       throw err;
     }
-    const writeTime = resultados[0]?.writeTime;
-    if (writeTime === undefined) {
+    // The LATEST stamp (module header, step 6): a carrier answers the previous one.
+    const primeiro = resultados[0]?.writeTime;
+    if (primeiro === undefined) {
       // Unreachable: a committed batch answers one result per write, and it had one.
       throw new RangeError('gravarPedidoAmazon: commit sem writeTime');
     }
+    const writeTime = resultados.reduce((max, r) => maisRecente(max, r.writeTime), primeiro);
     return {
       tipo: 'gravado',
       escrita,
@@ -340,6 +355,7 @@ export async function gravarPedidoAmazon(
       armazenado,
       writeTime,
       portador: doPedido.portador,
+      portadorPagamento: pagamentos.some((p) => p.tipo === 'atualizar' && p.portador),
       tentativas: tentativa + 1,
     };
   }

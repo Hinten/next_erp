@@ -212,8 +212,13 @@ export const ACAO_ITENS_AMAZON = {
   divergencia: 'divergencia-itens-aprovado',
 } as const satisfies Record<string, AcaoItensAmazon>;
 
-/** Why the import BLOCKS (the pedido goes to our error, the lines stay). */
-export type CausaBloqueioAmazon = 'itens' | 'cancelamento-parcial';
+/**
+ * Why the import BLOCKS (the pedido goes to our error, the lines stay):
+ * `itens` and `cancelamento-parcial` (5-c), and `pagamento` (PR 6) — the derived
+ * pagamento `valor` of an approved order still to ship differs from the stored
+ * one ({@link bloquearPorValorDoPagamento}).
+ */
+export type CausaBloqueioAmazon = 'itens' | 'cancelamento-parcial' | 'pagamento';
 
 export interface BloqueioItensAmazon {
   readonly causa: CausaBloqueioAmazon;
@@ -737,6 +742,41 @@ function divergenciaPosEnvio(
       (p !== null && p !== 0 && !mesmosCentavos(p, guardada.precoDeVenda))
     );
   });
+}
+
+/**
+ * Row 10's pagamento term (PR 6; the master plan's step-6 rule): an approved
+ * order still to ship whose DERIVED pagamento `valor` differs from the stored
+ * one (the caller compares, in centavos, derived against derived) joins the
+ * SAME blocking divergence as a line change — nothing applied, every stored
+ * line kept, the order money untouched. Only a `mantidas` row 10 is turned;
+ * any other reconciliation is returned as it is.
+ */
+export function bloquearPorValorDoPagamento(
+  reconciliacao: ReconciliacaoItensAmazon,
+  armazenadas: readonly LinhaArmazenadaAmazon[],
+): ReconciliacaoItensAmazon {
+  if (
+    reconciliacao.regra !== REGRA_D17_AMAZON.comparar ||
+    reconciliacao.acao !== ACAO_ITENS_AMAZON.mantidas
+  ) {
+    return reconciliacao;
+  }
+  return {
+    ...reconciliacao,
+    acao: ACAO_ITENS_AMAZON.divergencia,
+    itens: null,
+    dinheiroDasLinhasMudou: false,
+    dinheiro: null,
+    bloqueio: { causa: 'pagamento', linhas: [] },
+    // A line price filled on the comparison is not applied either.
+    eventos: reconciliacao.eventos.filter((e) => e !== EVENTO_PEDIDO_AMAZON.precoPreenchido),
+    contagens: {
+      linhasPreservadas: armazenadas.length,
+      linhasDivergentes: 0,
+      linhasSemProduto: contarSemProduto(armazenadas),
+    },
+  };
 }
 
 /**

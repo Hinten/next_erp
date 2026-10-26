@@ -2,7 +2,15 @@ import { describe, expect, it } from 'vitest';
 
 import { linhaAmazon, pedidoAmazon } from '../testing/pedidoWireAmazon';
 import { PedidoAmazonIlegivelError } from './erros';
-import { linhasArmazenadasAmazon, linhasRecebidasAmazon, regraD17Amazon } from './itensAmazon';
+import {
+  bloquearPorValorDoPagamento,
+  linhasArmazenadasAmazon,
+  linhasRecebidasAmazon,
+  reconciliarItens,
+  regraD17Amazon,
+} from './itensAmazon';
+import { classificarVendaAmazon } from './vendaAmazon';
+import { lerResumoArmazenadoAmazon } from './estadoPedidoAmazon';
 import type { VendaAmazon } from './vendaAmazon';
 
 describe('linhasRecebidasAmazon — the wire lines', () => {
@@ -143,5 +151,92 @@ describe('regraD17Amazon — the D17 table, top-down, first match wins', () => {
       linha: 8,
       regra: 'espelhadas',
     });
+  });
+});
+
+describe('★ PR 6 — bloquearPorValorDoPagamento (row 10’s pagamento term)', () => {
+  const raw = {
+    estado: 'pago',
+    marketplace: { tipo: 'amazon', status: 'UNSHIPPED' },
+    itens: {
+      NONE: [
+        { mktplaceId: 'L1', quantidade: 2, precoDeVenda: 10, ordem: 1 },
+        { mktplaceId: 'L2', quantidade: 1, precoDeVenda: 0, ordem: 2 },
+      ],
+    },
+  };
+  const linhas = linhasArmazenadasAmazon(raw.itens);
+  const reconciliar = (status: string, l2 = '5.00') => {
+    const order = pedidoAmazon({
+      status,
+      linhas: [
+        linhaAmazon('L1', { qtd: 2, preco: '10.00' }),
+        linhaAmazon('L2', { qtd: 1, preco: l2 }),
+      ],
+    });
+    const venda = classificarVendaAmazon(order, {
+      resumo: lerResumoArmazenadoAmazon(raw),
+      linhas,
+      pagamentoValor: null,
+    });
+    return reconciliarItens(
+      { linhas, dinheiro: { descontoTotal: 0, valorFrete: null, freteNosso: true } },
+      {
+        linhas: linhasRecebidasAmazon(order),
+        dinheiro: { descontoTotal: 0, valorFrete: null },
+        criadoUs: null,
+        vinculos: new Map(),
+      },
+      venda,
+    );
+  };
+
+  it('turns a row-10 `mantidas` into the BLOCK: nothing applied (a filled price included), every stored line kept', () => {
+    const mantidas = reconciliar('UNSHIPPED');
+    expect(mantidas).toMatchObject({ linhaD17: 10, acao: 'mantidas' });
+    // The stored 0 price is FILLED on the comparison...
+    expect(mantidas.itens).not.toBeNull();
+    expect(mantidas.eventos).toContain('preco-preenchido');
+    const b = bloquearPorValorDoPagamento(mantidas, linhas);
+    expect(b).toMatchObject({
+      acao: 'divergencia-itens-aprovado',
+      itens: null,
+      dinheiro: null,
+      dinheiroDasLinhasMudou: false,
+      bloqueio: { causa: 'pagamento', linhas: [] },
+      contagens: { linhasPreservadas: 2, linhasDivergentes: 0, linhasSemProduto: 2 },
+    });
+    // ...and not under the block.
+    expect(b.eventos).not.toContain('preco-preenchido');
+  });
+
+  it('NEAR-MISS: any other reconciliation is returned AS IT IS (row 11 SHIPPED, a row-10 line divergence)', () => {
+    const enviado = reconciliar('SHIPPED');
+    expect(enviado.linhaD17).toBe(11);
+    expect(bloquearPorValorDoPagamento(enviado, linhas)).toBe(enviado);
+    // A row-10 line change (L1 qty 2 → 3) is already a block: left as it is.
+    const outra = reconciliarItens(
+      { linhas, dinheiro: { descontoTotal: 0, valorFrete: null, freteNosso: true } },
+      {
+        linhas: linhasRecebidasAmazon(
+          pedidoAmazon({
+            linhas: [
+              linhaAmazon('L1', { qtd: 3, preco: '10.00' }),
+              linhaAmazon('L2', { qtd: 1, preco: '5.00' }),
+            ],
+          }),
+        ),
+        dinheiro: { descontoTotal: 0, valorFrete: null },
+        criadoUs: null,
+        vinculos: new Map(),
+      },
+      classificarVendaAmazon(pedidoAmazon(), {
+        resumo: lerResumoArmazenadoAmazon(raw),
+        linhas,
+        pagamentoValor: null,
+      }),
+    );
+    expect(outra).toMatchObject({ linhaD17: 10, acao: 'divergencia-itens-aprovado' });
+    expect(bloquearPorValorDoPagamento(outra, linhas)).toBe(outra);
   });
 });

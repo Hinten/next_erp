@@ -12,6 +12,7 @@
  * sees exactly what the importer will (`"2"` → 2, unread leaves passing through).
  */
 import { parseIsoToMicros } from '@delfrance/core/datetime';
+import { roundReais } from '@delfrance/core/money';
 import {
   pedidoWireAmazonSchema,
   type PedidoWireAmazon,
@@ -92,8 +93,57 @@ export interface OpcoesPedidoTeste {
   readonly invoiceStatus?: string | null;
   /** Drop the whole `fulfillment` block. */
   readonly semFulfillment?: boolean;
+  /**
+   * `payment.paymentExecutions` (PR 6): `undefined` ⇒ ONE `CreditCard` leg paying
+   * exactly what the lines, the shipping and the discounts state (so an order is
+   * "clean" unless a test says otherwise); `null` ⇒ no `payment` block at all.
+   */
+  readonly pagamento?: readonly Record<string, unknown>[] | null;
   /** Extra top-level keys (`tax`, `buyer`, `recipient`, …), merged last. */
   readonly extra?: Record<string, unknown>;
+}
+
+/** A finite number read off a composed test value, else 0. */
+function numeroDoTeste(valor: unknown): number {
+  const n = typeof valor === 'number' ? valor : Number(valor);
+  return Number.isFinite(n) ? n : 0;
+}
+
+/**
+ * What the buyer paid for these composed lines, as a decimal amount: Σ
+ * quantity × unit price, + every SHIPPING subtotal, − every DISCOUNT subtotal
+ * (absolute). Test arithmetic only — the app reads money through
+ * `dinheiroAmazon.ts`.
+ */
+export function totalPagoDasLinhas(linhas: readonly Record<string, unknown>[]): string {
+  let total = 0;
+  for (const linha of linhas) {
+    const produto = linha.product as
+      | { price?: { unitPrice?: { amount?: unknown } | null } }
+      | undefined;
+    total +=
+      numeroDoTeste(linha.quantityOrdered) * numeroDoTeste(produto?.price?.unitPrice?.amount);
+    const quebras = (linha.proceeds as { breakdowns?: unknown } | undefined)?.breakdowns;
+    for (const q of Array.isArray(quebras) ? (quebras as Record<string, unknown>[]) : []) {
+      const valor = numeroDoTeste((q.subtotal as { amount?: unknown } | undefined)?.amount);
+      if (q.type === 'SHIPPING') total += valor;
+      if (q.type === 'DISCOUNT') total -= Math.abs(valor);
+    }
+  }
+  // A decimal text the wire reader parses ("25", "1599.9"): rounded by the canonical helper.
+  return String(roundReais(total));
+}
+
+/** One `payment.paymentExecutions[]` leg. */
+export function execucaoAmazon(
+  metodo: string | null,
+  valor: string | null,
+  extra: Record<string, unknown> = {},
+): Record<string, unknown> {
+  const e: Record<string, unknown> = { ...extra };
+  if (metodo !== null) e.paymentMethod = metodo;
+  if (valor !== null) e.paymentAmount = brl(valor);
+  return e;
 }
 
 /** A parsed getOrder `order` (module header). */
@@ -115,6 +165,14 @@ export function pedidoAmazon(opcoes: OpcoesPedidoTeste = {}): PedidoWireAmazon {
   }
   if (opcoes.linhas !== null) {
     corpo.orderItems = opcoes.linhas ?? [linhaAmazon('L1', { qtd: 2, preco: '10.00' })];
+  }
+  if (opcoes.pagamento !== null) {
+    const linhas = (corpo.orderItems ?? []) as Record<string, unknown>[];
+    corpo.payment = {
+      paymentExecutions: opcoes.pagamento ?? [
+        execucaoAmazon('CreditCard', totalPagoDasLinhas(linhas)),
+      ],
+    };
   }
   if (opcoes.pacotes !== undefined) {
     corpo.packages = opcoes.pacotes.map((detalhe, i) => ({
