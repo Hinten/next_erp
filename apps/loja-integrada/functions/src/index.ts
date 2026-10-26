@@ -25,7 +25,9 @@ import {
   reprocessarAdiadasLi,
   reprocessarNotificacoesLi,
 } from '../../lib/lojaIntegrada/notificacoes/notificacao';
+import { FILA_ESCRITA_LI } from '../../lib/lojaIntegrada/rastreio/notificacaoEscrita';
 import { depsDeLeituraLi } from './depsLeitura';
+import * as filaEscrita from './filaEscrita';
 import * as filaLeitura from './filaLeitura';
 import { getDb } from './lib/admin';
 
@@ -45,6 +47,14 @@ import { getDb } from './lib/admin';
  * `onIntegracaoLojaIntegradaChanged` (./onIntegracaoLojaIntegradaChanged): it
  * keeps each Loja Integrada conta's `int_frete` doc in step with the conta,
  * through the shared core, and makes no Loja Integrada call.
+ *
+ * Master plan step 7 adds the status write-back: the WRITES queue
+ * (`filaEscritaLojaIntegrada`, ./filaEscrita) — one dispatch at a time, one
+ * instance, every write of the channel and its own sweep — its producer, the
+ * freight-history trigger (`onHistoricoFreteLojaIntegrada`,
+ * ./onHistoricoFreteLojaIntegrada), and the 30-minute timer that enqueues the
+ * in-queue sweep (`varrerEscritasLojaIntegrada`, ./varrerEscritas). Until the
+ * window the write valve is unset, so nothing is recorded or written.
  *
  * Every export below is a Cloud Function name, and the names are unique across
  * codebases (`functions-export-names.test.js`): keep the exports explicit and
@@ -67,8 +77,33 @@ if (!(FILA_LEITURA_LI in filaLeitura)) {
   );
 }
 
+// The same assertion for the WRITES queue: the trigger and the varredura timer
+// enqueue against `FILA_ESCRITA_LI`.
+if (!(FILA_ESCRITA_LI in filaEscrita)) {
+  throw new Error(
+    '[loja-integrada] function-name drift: functions/src/filaEscrita.ts must export a ' +
+      `handler named '${FILA_ESCRITA_LI}' (the enqueue target). ` +
+      'Rename the export and the FILA_ESCRITA_LI constant together.',
+  );
+}
+
 /** The ONE reads queue (rate-limited to one dispatch at a time, retry with backoff). */
 export { filaLeituraLojaIntegrada } from './filaLeitura';
+
+/**
+ * The ONE writes queue (master plan step 7): one dispatch at a time on one
+ * instance, every write to Loja Integrada and its own sweep (./filaEscrita).
+ */
+export { filaEscritaLojaIntegrada } from './filaEscrita';
+
+/**
+ * The status write-back trigger: a freight history row of an imported Loja
+ * Integrada order ⇒ one named task on the writes queue (master plan step 7).
+ */
+export { onHistoricoFreteLojaIntegrada } from './onHistoricoFreteLojaIntegrada';
+
+/** The writes queue's backstop timer: one in-queue `varredura` task per tick (master plan step 7). */
+export { varrerEscritasLojaIntegrada } from './varrerEscritas';
 
 /** The 5-minute order poller: the queue's first producer (./pollPedidos). */
 export { pollLojaIntegradaPedidos } from './pollPedidos';

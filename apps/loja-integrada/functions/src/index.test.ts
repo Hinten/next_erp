@@ -5,10 +5,16 @@ import { logger } from 'firebase-functions/v2';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
-import { integracaoCollection } from '@delfrance/data/admin/collections';
+import {
+  historicoFreteInicialCollection,
+  integracaoCollection,
+} from '@delfrance/data/admin/collections';
 import { MAX_TENTATIVAS_DEFERRED, TASK_MAX_ATTEMPTS } from '@delfrance/data/admin/notifications';
+import { PRAZO_LI_MS } from '@delfrance/integrations-loja-integrada';
 
 import { __setRelogioDoCacheParaTestes } from '../../lib/lojaIntegrada/core/contaCache';
+import { PRAZO_ULTIMA_ESCRITA_MS } from '../../lib/lojaIntegrada/core/escrita';
+import { RITMO_ESCRITA_LI_MS } from '../../lib/lojaIntegrada/core/ritmo';
 import type { ImportadorPedidoLi } from '../../lib/lojaIntegrada/notificacoes/notificacao';
 import { importarPedidoLi } from '../../lib/lojaIntegrada/pedidos/importarPedido';
 import { FakeDb, asDb } from '../../lib/lojaIntegrada/testing/fakeDb';
@@ -88,13 +94,18 @@ vi.mock('../../lib/lojaIntegrada/conta/expiracaoSweep', async (importOriginal) =
 // carries no hook timeout, and `./index` is the heaviest module here.
 const modulo = await import('./index');
 const {
+  filaEscritaLojaIntegrada,
   filaLeituraLojaIntegrada,
+  onHistoricoFreteLojaIntegrada,
   onIntegracaoLojaIntegradaChanged,
   pollLojaIntegradaPedidos,
   reprocessLojaIntegradaNotifications,
   sweepLojaIntegradaTokenExpiry,
+  varrerEscritasLojaIntegrada,
 } = modulo;
 const notificacao = await import('../../lib/lojaIntegrada/notificacoes/notificacao');
+const notificacaoEscrita = await import('../../lib/lojaIntegrada/rastreio/notificacaoEscrita');
+const { VARREDURA_ESCRITA_ORCAMENTO_MS } = await import('./filaEscrita');
 const expiracao = await import('../../lib/lojaIntegrada/conta/expiracaoSweep');
 
 afterAll(() => {
@@ -115,15 +126,17 @@ const AGENDAMENTOS = {
   pollLojaIntegradaPedidos,
   reprocessLojaIntegradaNotifications,
   sweepLojaIntegradaTokenExpiry,
+  varrerEscritasLojaIntegrada,
 } as const;
 
 /**
- * Every TASK-QUEUE trigger: exactly ONE. The channel has one reads queue that
- * dispatches on `tipo` (Firebase binds one function per queue), and no writes
- * queue before step 7 — a second `onTaskDispatched` here is a defect, not a
- * feature, until that step says otherwise.
+ * Every TASK-QUEUE trigger: exactly TWO — the reads queue and the writes queue
+ * (master plan step 7), each dispatching on `tipo` (Firebase binds one function
+ * per queue). A third `onTaskDispatched` here is a defect, not a feature: every
+ * later write kind joins the writes queue, so the channel's writes stay
+ * single-file.
  */
-const FILAS = { filaLeituraLojaIntegrada } as const;
+const FILAS = { filaLeituraLojaIntegrada, filaEscritaLojaIntegrada } as const;
 
 /**
  * Every FIRESTORE-TRIGGER export — the third sibling of {@link AGENDAMENTOS}
@@ -139,7 +152,7 @@ const FILAS = { filaLeituraLojaIntegrada } as const;
  * (`onIntegracaoLojaIntegradaChanged`); the `every GATILHO…` tests below walk
  * the MAP, never a named trigger, so a second one lands covered.
  */
-const GATILHOS = { onIntegracaoLojaIntegradaChanged } as const;
+const GATILHOS = { onIntegracaoLojaIntegradaChanged, onHistoricoFreteLojaIntegrada } as const;
 
 /**
  * The document path each trigger must listen on — derived from the HANDLE,
@@ -152,6 +165,11 @@ const CAMINHOS_DOS_GATILHOS = {
     colecao: integracaoCollection.resolvePath({}),
     ancora: 'integracao',
     folha: '{integracaoId}',
+  },
+  onHistoricoFreteLojaIntegrada: {
+    colecao: historicoFreteInicialCollection.resolvePath({ pedidoId: '{pedidoId}' }),
+    ancora: 'pedidos/{pedidoId}/historicoFtIni',
+    folha: '{historicoId}',
   },
 } as const satisfies Record<
   keyof typeof GATILHOS,
@@ -581,6 +599,95 @@ describe('filaLeituraLojaIntegrada — the declared options', () => {
   });
 });
 
+/**
+ * The WRITES queue (master plan step 7). Every Loja Integrada write runs here,
+ * its sweep included, and the rule-7 argument of the status write-back rests on
+ * these numbers: one dispatch at a time, one instance serving one request, and
+ * a retry that can only start after an abandoned attempt can no longer write.
+ * The real Cloud Tasks honours them; no emulator lane can — so this block is
+ * the only place a change to them fails.
+ */
+describe('filaEscritaLojaIntegrada — the declared options', () => {
+  const fila = filaDe(filaEscritaLojaIntegrada);
+  const endpoint = endpointOf(filaEscritaLojaIntegrada);
+  const timeoutMs = (endpoint.timeoutSeconds as number) * 1000;
+
+  it('dispatches ONE task at a time, one per second — exactly the reads queue’s rate', () => {
+    expect(fila.rateLimits).toEqual({ maxConcurrentDispatches: 1, maxDispatchesPerSecond: 1 });
+  });
+
+  it('runs on ONE instance serving ONE request: an abandoned dispatch cannot run beside the next on a second instance or slot', () => {
+    // NEAR-MISS of the codebase default (`maxInstances: 10`, options.ts) and of
+    // the gen2 default concurrency (80 when CPU >= 1).
+    expect(endpoint.maxInstances).toBe(1);
+    expect(endpoint.concurrency).toBe(1);
+  });
+
+  it('gives up exactly when the pipeline starts to persist: maxAttempts IS TASK_MAX_ATTEMPTS', () => {
+    expect(fila.retryConfig.maxAttempts).toBe(TASK_MAX_ATTEMPTS);
+    expect(TASK_MAX_ATTEMPTS).toBe(3);
+  });
+
+  it('backs off a FLAT 300 s (no doubling): +5 and +10 minutes', () => {
+    expect(fila.retryConfig.minBackoffSeconds).toBe(300);
+    expect(fila.retryConfig.maxBackoffSeconds).toBe(300);
+    expect(fila.retryConfig.maxDoublings).toBe(0);
+  });
+
+  it('a retry starts only after the abandoned attempt can no longer write: minBackoff ≥ the last PUT start + one PUT deadline', () => {
+    // No write starts later than PRAZO_ULTIMA_ESCRITA_MS after the dispatch
+    // began, and a write that starts is cut by PRAZO_LI_MS.escrita.
+    expect(PRAZO_ULTIMA_ESCRITA_MS).toBe(260_000);
+    expect(PRAZO_LI_MS.escrita).toBe(20_000);
+    expect((fila.retryConfig.minBackoffSeconds ?? 0) * 1000).toBeGreaterThanOrEqual(
+      PRAZO_ULTIMA_ESCRITA_MS + PRAZO_LI_MS.escrita,
+    );
+    // …and the last write can end before the platform cuts the attempt.
+    expect(PRAZO_ULTIMA_ESCRITA_MS + PRAZO_LI_MS.escrita).toBeLessThanOrEqual(timeoutMs);
+  });
+
+  it('has timeoutSeconds 300, and the worst run (134 s) plus the varredura budget (140 s) fits in it', () => {
+    expect(endpoint.timeoutSeconds).toBe(300);
+    // The worst run: a refused code, then the 11 from a second deciding read —
+    // 7 pacer intervals (2 + 2 before the two deciding reads, 2 before the
+    // read-back of the landed write, 1 before the history read) and 6 calls each
+    // cut at its deadline. ÂNCORA: the arithmetic the plan states.
+    const piorExecucaoMs = 7 * RITMO_ESCRITA_LI_MS + 6 * PRAZO_LI_MS.escrita;
+    expect(piorExecucaoMs).toBe(134_000);
+    // A refused try that throws for a retry: 4 intervals and 3 calls.
+    const tentativaRecusadaMs = 4 * RITMO_ESCRITA_LI_MS + 3 * PRAZO_LI_MS.escrita;
+    expect(tentativaRecusadaMs).toBe(68_000);
+    expect(tentativaRecusadaMs).toBeLessThanOrEqual(piorExecucaoMs);
+    // A row the varredura starts just inside its budget still ends in time.
+    expect(VARREDURA_ESCRITA_ORCAMENTO_MS).toBe(140_000);
+    expect(VARREDURA_ESCRITA_ORCAMENTO_MS + piorExecucaoMs).toBeLessThanOrEqual(timeoutMs);
+  });
+
+  it('closes its whole retry ladder inside the hot sweep window: 3 × 300 + 2 × 300 = 1 500 ≤ 1 800', () => {
+    const tentativas = fila.retryConfig.maxAttempts ?? 0;
+    const execucao = endpoint.timeoutSeconds as number;
+    const backoff = fila.retryConfig.maxBackoffSeconds ?? 0;
+    const escadaSegundos = tentativas * execucao + Math.max(tentativas - 1, 0) * backoff;
+    expect(escadaSegundos).toBe(1500);
+    expect(escadaSegundos).toBeLessThanOrEqual(1800);
+  });
+
+  it('declares the invoker, the leg whose absence fails invisibly (#1133)', () => {
+    expect(fila.invoker).toEqual([
+      'apphosting@p.iam.gserviceaccount.com',
+      '1-compute@developer.gserviceaccount.com',
+    ]);
+  });
+});
+
+describe('varrerEscritasLojaIntegrada — the options', () => {
+  it('ticks at :15 and :45 America/Sao_Paulo, offset from the reads sweep, with a 60 s timeout (it only enqueues)', () => {
+    expect(gatilhoDe(varrerEscritasLojaIntegrada).schedule).toBe('15,45 * * * *');
+    expect(gatilhoDe(varrerEscritasLojaIntegrada).timeZone).toBe('America/Sao_Paulo');
+    expect(endpointOf(varrerEscritasLojaIntegrada).timeoutSeconds).toBe(60);
+  });
+});
+
 /* -------------------------------------------------------------------------- */
 /*                            The Firestore triggers                          */
 /* -------------------------------------------------------------------------- */
@@ -661,26 +768,34 @@ describe('the Firestore triggers (GATILHOS)', () => {
 describe('every trigger of the codebase', () => {
   const TODOS = { ...AGENDAMENTOS, ...FILAS, ...GATILHOS };
 
-  it('every onSchedule export is in AGENDAMENTOS — and there are exactly three', () => {
+  it('every onSchedule export is in AGENDAMENTOS — and there are exactly four', () => {
     expect(exportadosCom('scheduleTrigger')).toEqual(Object.keys(AGENDAMENTOS).sort());
-    expect(Object.keys(AGENDAMENTOS)).toHaveLength(3);
+    expect(Object.keys(AGENDAMENTOS)).toHaveLength(4);
     expect(exportadosCom('scheduleTrigger')).toEqual([
       'pollLojaIntegradaPedidos',
       'reprocessLojaIntegradaNotifications',
       'sweepLojaIntegradaTokenExpiry',
+      'varrerEscritasLojaIntegrada',
     ]);
   });
 
-  it('the task exports are EXACTLY {filaLeituraLojaIntegrada}', () => {
-    expect(exportadosCom('taskQueueTrigger')).toEqual(['filaLeituraLojaIntegrada']);
+  it('the task exports are EXACTLY {filaEscritaLojaIntegrada, filaLeituraLojaIntegrada}', () => {
+    expect(exportadosCom('taskQueueTrigger')).toEqual(Object.keys(FILAS).sort());
+    expect(exportadosCom('taskQueueTrigger')).toEqual([
+      'filaEscritaLojaIntegrada',
+      'filaLeituraLojaIntegrada',
+    ]);
   });
 
-  it('every event-trigger export is in GATILHOS — exactly {onIntegracaoLojaIntegradaChanged}', () => {
+  it('every event-trigger export is in GATILHOS — exactly {onHistoricoFreteLojaIntegrada, onIntegracaoLojaIntegradaChanged}', () => {
     // The third exhaustiveness twin: the two above filter on `scheduleTrigger`
     // and `taskQueueTrigger`, so an `onDocument*` export would otherwise have its
     // `database`, region, secrets and `retry` read by nothing.
     expect(exportadosCom('eventTrigger')).toEqual(Object.keys(GATILHOS).sort());
-    expect(exportadosCom('eventTrigger')).toEqual(['onIntegracaoLojaIntegradaChanged']);
+    expect(exportadosCom('eventTrigger')).toEqual([
+      'onHistoricoFreteLojaIntegrada',
+      'onIntegracaoLojaIntegradaChanged',
+    ]);
   });
 
   it('there is no HTTPS or callable trigger', () => {
@@ -735,6 +850,24 @@ describe('every trigger of the codebase', () => {
     }
   });
 
+  it('the WRITES queue export key is exactly FILA_ESCRITA_LI — the writes producer’s target', () => {
+    expect(notificacaoEscrita.FILA_ESCRITA_LI in modulo).toBe(true);
+    expect(notificacaoEscrita.FILA_ESCRITA_LI).toBe('filaEscritaLojaIntegrada');
+  });
+
+  it('and its own module-load assertion fires on a half-rename of the writes queue', async () => {
+    vi.resetModules();
+    vi.doMock('./filaEscrita', () => ({ filaEscritaRenomeada: {} }));
+    try {
+      await expect(import('./index')).rejects.toThrow(
+        "function-name drift: functions/src/filaEscrita.ts must export a handler named 'filaEscritaLojaIntegrada'",
+      );
+    } finally {
+      vi.doUnmock('./filaEscrita');
+      vi.resetModules();
+    }
+  });
+
   it('declares NO secret anywhere — the token lives per conta in Firestore, and the conta trigger never calls the platform', () => {
     // A declared secret missing from Secret Manager fails the whole deploy.
     for (const [nome, fn] of Object.entries(TODOS)) {
@@ -748,9 +881,10 @@ describe('every trigger of the codebase', () => {
     }
   });
 
-  it('caps instances at 10', () => {
+  it('caps instances at 10 — except the writes queue, held to ONE', () => {
     for (const [nome, fn] of Object.entries(TODOS)) {
-      expect(endpointOf(fn).maxInstances, nome).toBe(10);
+      const esperado = nome === 'filaEscritaLojaIntegrada' ? 1 : 10;
+      expect(endpointOf(fn).maxInstances, nome).toBe(esperado);
     }
   });
 

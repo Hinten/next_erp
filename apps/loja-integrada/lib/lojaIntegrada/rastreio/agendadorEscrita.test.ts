@@ -16,11 +16,14 @@ import {
 } from '../testing/falhaDeEnfileiramento';
 import {
   type FilaEscritaLi,
+  TIPO_TAREFA_VARREDURA_ESCRITA_LI,
+  type TarefaFilaEscritaLi,
   criarAgendadorEscritaLi,
   eventoDoHistoricoLi,
   idDaTarefaEscritaLi,
+  idDaTarefaVarreduraEscritaLi,
 } from './agendadorEscrita';
-import type { PayloadTarefaEscritaLi } from './notificacaoEscrita';
+import { type PayloadTarefaEscritaLi, tarefaEscritaLiSchema } from './notificacaoEscrita';
 
 // D17, per file: nothing here may reach the global `fetch` (no client is built at all).
 beforeEach(() => {
@@ -48,7 +51,7 @@ function payload(over: Partial<PayloadTarefaEscritaLi> = {}): PayloadTarefaEscri
 }
 
 function fila(falha: Error | null = null) {
-  const chamadas: { payload: PayloadTarefaEscritaLi; opcoes: { id: string } }[] = [];
+  const chamadas: { payload: TarefaFilaEscritaLi; opcoes: { id: string } }[] = [];
   const f: FilaEscritaLi = {
     enqueue: (p, opcoes) => {
       chamadas.push({ payload: p, opcoes });
@@ -158,5 +161,58 @@ describe('the producer: what an enqueue rejection means', () => {
         id: 'rastreio-x',
       }),
     ).rejects.toBe(falha);
+  });
+});
+
+describe('the varredura task: the writes-queue sweep, named after its tick', () => {
+  const TICK = '2026-10-26T15:15:00.000Z';
+
+  it('the id is `varredura-<the digits of the schedule time>`, inside Cloud Tasks’ grammar', () => {
+    expect(idDaTarefaVarreduraEscritaLi(TICK)).toBe('varredura-20261026151500000');
+    expect(idDaTarefaVarreduraEscritaLi(TICK)).toMatch(/^[A-Za-z0-9_-]{1,500}$/);
+  });
+
+  it('EQUAL pair: the same tick ⇒ the same id (a scheduler retry of that tick collides)', () => {
+    expect(idDaTarefaVarreduraEscritaLi(TICK)).toBe(
+      idDaTarefaVarreduraEscritaLi('2026-10-26T15:15:00.000Z'),
+    );
+  });
+
+  it('⚠️ NEAR-MISS: the next tick, a minute or a millisecond apart ⇒ another id', () => {
+    const base = idDaTarefaVarreduraEscritaLi(TICK);
+    expect(idDaTarefaVarreduraEscritaLi('2026-10-26T15:45:00.000Z')).not.toBe(base);
+    expect(idDaTarefaVarreduraEscritaLi('2026-10-26T15:16:00.000Z')).not.toBe(base);
+    expect(idDaTarefaVarreduraEscritaLi('2026-10-26T15:15:00.001Z')).not.toBe(base);
+  });
+
+  it('a value with no digit ⇒ `null` — never a bare `varredura-`, which would collide with every tick for an hour', () => {
+    expect(idDaTarefaVarreduraEscritaLi('')).toBeNull();
+    expect(idDaTarefaVarreduraEscritaLi('T::Z')).toBeNull();
+  });
+
+  it('the varredura tipo is NOT a rastreio tipo: the task schema refuses it, so only the queue’s own dispatch can run it', () => {
+    expect(TIPO_TAREFA_VARREDURA_ESCRITA_LI).toBe('varredura');
+    expect(
+      tarefaEscritaLiSchema.safeParse({ ...payload(), tipo: TIPO_TAREFA_VARREDURA_ESCRITA_LI })
+        .success,
+    ).toBe(false);
+  });
+
+  it('the producer sends `{ tipo: varredura }` ALONE with its id, and an answered already-exists is success', async () => {
+    const { f, chamadas } = fila();
+    const id = idDaTarefaVarreduraEscritaLi(TICK) ?? '';
+    await criarAgendadorEscritaLi({ fila: () => f, desligado: false }).enfileirar(
+      { tipo: TIPO_TAREFA_VARREDURA_ESCRITA_LI },
+      { id },
+    );
+    expect(chamadas).toEqual([{ payload: { tipo: 'varredura' }, opcoes: { id } }]);
+
+    const repetida = fila(falhaDoFunctions('task-already-exists', 409));
+    await expect(
+      criarAgendadorEscritaLi({ fila: () => repetida.f, desligado: false }).enfileirar(
+        { tipo: TIPO_TAREFA_VARREDURA_ESCRITA_LI },
+        { id },
+      ),
+    ).resolves.toBeUndefined();
   });
 });
