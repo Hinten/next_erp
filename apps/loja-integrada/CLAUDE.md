@@ -417,8 +417,14 @@ verdicts, the live/mirror split) is `packages/schemas/src/conferenciaPagamentoLo
   situação is inconclusive, an intermediate the matrix would write from is INFO; an
   overwritten codigo the matrix refuses ⇒ `situacao-sobrescrita` (critico over a never-write
   one). It also runs after a landed write whose effect the run did not see (a failed read-back,
-  a 202). Not after the code onto an order the deciding read saw already at 11: with no anchor
-  to judge from, a move in that gap overwritten by the code's own move is an accepted residual.
+  a 202) and after a code read back as another code (`deriva`, which the sobrescrita outranks):
+  neither proves LI never moved. Our code read back at a THIRD codigo (the order moved during the
+  run) is checked too, and there the verdict decides: a row of our move ⇒ seen
+  (`efeito-observado`, `escrito`, or the sobrescrita it reveals); `sem-linha`, `inconclusivo` or
+  an unreadable history ⇒ `parcial/efeito-pendente`. Only our code read back at the deciding
+  codigo (no move yet) skips it. Never after the code onto an order the
+  deciding read saw already at 11: with no anchor to judge from, a move in that gap overwritten
+  by the code's own move is an accepted residual.
   The import and this check order rows through ONE leaf, `limparHistoricoLi`.
 - **The aviso** `lojaIntegradaRastreioDivergente`: one row per pedido, clocked by the EVENT
   (`microsDeMillisLi`), raised ONCE per run at its end, only under `on` — the most serious
