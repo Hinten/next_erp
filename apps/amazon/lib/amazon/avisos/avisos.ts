@@ -1,5 +1,5 @@
 /**
- * The producers and resolvers of the five Amazon avisos, and the µs boundary of
+ * The producers and resolvers of the seven Amazon avisos, and the µs boundary of
  * this app:
  *
  * | tipo | key | severity | clock |
@@ -9,6 +9,12 @@
  * | `amazonSegredoLwaExpirando` | per app | `atencao` | none |
  * | `amazonSegredoLwaRecusado` | per app | `critico` | none |
  * | `amazonImportacaoParada` (step 4) | per conta | `critico` | the poll document's commit time (µs) |
+ * | `amazonPedidoPrecisaAtencao` (step 5) | per (conta, order, motivo) | per motivo | a Firestore commit or read time (µs) |
+ * | `amazonContaPrecisaAtencao` (step 5) | per (conta, motivo) | `atencao` | the conta read's read time (µs) |
+ *
+ * The two step-5 tipos land here with their KEYS and the orphan pass's handling
+ * only; their producers come with the order import. Their motivos, resolvers and
+ * residues are in the tipos' docblock entries (`packages/schemas/src/aviso.ts`).
  *
  * Every raise is in-app only: no `escalar` is ever passed. Every param is
  * structured (a name, a number, a civil date) — the wording lives in
@@ -93,6 +99,7 @@ import {
   CANAL_AVISO,
   FUSO_FISCAL,
   LIMIAR_AVISO_AMAZON_DIAS,
+  type MotivoContaAmazon,
   type MotivoImportacaoParadaAmazon,
   ROTAS_AVISO,
   SEVERIDADE_AVISO,
@@ -100,6 +107,7 @@ import {
   chaveDeAviso,
   diasAteDataCivilAmazon,
   diasParaReautorizarAmazon,
+  motivoContaAmazonSchema,
   reautorizarAteAmazon,
 } from '@delfrance/schemas';
 
@@ -126,27 +134,36 @@ export const MOTIVO_AVISO_AMAZON = {
 } as const;
 export type MotivoAvisoAmazon = (typeof MOTIVO_AVISO_AMAZON)[keyof typeof MOTIVO_AVISO_AMAZON];
 
-/** The five tipos of this channel. */
+/** The seven tipos of this channel. */
 export const TIPOS_AVISO_AMAZON: ReadonlySet<string> = new Set([
   TIPO_AVISO.amazonReconexaoPendente,
   TIPO_AVISO.amazonReautorizacaoExpirando,
   TIPO_AVISO.amazonSegredoLwaExpirando,
   TIPO_AVISO.amazonSegredoLwaRecusado,
   TIPO_AVISO.amazonImportacaoParada,
+  TIPO_AVISO.amazonPedidoPrecisaAtencao,
+  TIPO_AVISO.amazonContaPrecisaAtencao,
 ]);
 
 /**
- * The three PER-CONTA tipos the sweep's orphan pass may close. ⚠️ The pass keeps
+ * The four PER-CONTA tipos the sweep's orphan pass may close. ⚠️ The pass keeps
  * a row only when its id is one of the keys it computes for every LISTED conta
  * (`conta/expiracaoSweep.ts`), so a tipo listed here must have its key computed
  * there too: `amazonImportacaoParada` (step 4, PR 4-b) without
  * {@link chaveImportacaoParada} in that set would close EVERY live conta's open
- * import aviso, every day.
+ * import aviso, every day — and `amazonContaPrecisaAtencao` (step 5) needs BOTH
+ * of its keys there ({@link chavesContaPrecisaAtencao}).
+ *
+ * ⚠️ `amazonPedidoPrecisaAtencao` is deliberately NOT here: its key names an
+ * ORDER, which the pass cannot compute for a listed conta, so listing it would
+ * close every live pedido's open row on every run. Its rows of a deleted conta
+ * have no resolver (a documented residue).
  */
 export const TIPOS_AVISO_AMAZON_POR_CONTA: ReadonlySet<string> = new Set([
   TIPO_AVISO.amazonReconexaoPendente,
   TIPO_AVISO.amazonReautorizacaoExpirando,
   TIPO_AVISO.amazonImportacaoParada,
+  TIPO_AVISO.amazonContaPrecisaAtencao,
 ]);
 
 export interface AvisoDepsAmazon {
@@ -583,6 +600,57 @@ function sementeImportacaoParada(
 }
 
 /* -------------------------------------------------------------------------- */
+/*           amazonPedidoPrecisaAtencao / amazonContaPrecisaAtencao            */
+/*                  (step 5 — the keys; producers come with the import)         */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The key of ONE per-conta row: `(tipo, conta, no entidade, janela = motivo)`.
+ * One row per (conta, motivo), so each motivo is raised and resolved on its own.
+ */
+export function chaveContaPrecisaAtencao(integracaoId: string, motivo: MotivoContaAmazon): string {
+  return chaveDeAviso({
+    tipo: TIPO_AVISO.amazonContaPrecisaAtencao,
+    conta: integracaoId,
+    janela: motivo,
+  });
+}
+
+/**
+ * EVERY per-conta key of one conta — one per {@link motivoContaAmazonSchema}
+ * member, read off the enum so a new motivo is never left out. The sweep's
+ * orphan pass keeps exactly these for every listed conta: a key missing here
+ * would close a LIVE conta's open row on every run.
+ */
+export function chavesContaPrecisaAtencao(integracaoId: string): readonly string[] {
+  return motivoContaAmazonSchema.options.map((motivo) =>
+    chaveContaPrecisaAtencao(integracaoId, motivo),
+  );
+}
+
+/**
+ * The complete seed of a RESOLVED per-conta row, for a clocked resolve that
+ * finds none: the raise's metadata, which here carries no name at all.
+ */
+function sementeContaPrecisaAtencao(
+  integracaoId: string,
+  motivo: MotivoContaAmazon,
+  relogioUs: number,
+): ResolverAvisoOpts {
+  return {
+    tipo: TIPO_AVISO.amazonContaPrecisaAtencao,
+    conta: integracaoId,
+    janela: motivo,
+    severidade: SEVERIDADE_AVISO.atencao,
+    canal: CANAL_AVISO.amazon,
+    params: { motivo },
+    motivo,
+    urlInterna: urlDaConta(integracaoId),
+    relogioEvento: relogioUs,
+  };
+}
+
+/* -------------------------------------------------------------------------- */
 /*                          The sweep's orphan pass                            */
 /* -------------------------------------------------------------------------- */
 
@@ -591,16 +659,24 @@ type TipoComRelogioAmazon =
   | typeof TIPO_AVISO.amazonReconexaoPendente
   | typeof TIPO_AVISO.amazonImportacaoParada;
 
+/** A CLOCKED per-conta chave, parsed back into what computed it. */
+type AlvoComRelogio =
+  | { readonly tipo: TipoComRelogioAmazon; readonly conta: string }
+  | {
+      readonly tipo: typeof TIPO_AVISO.amazonContaPrecisaAtencao;
+      readonly conta: string;
+      readonly motivo: MotivoContaAmazon;
+    };
+
 /**
- * The conta a CLOCKED per-conta chave was computed for, and its tipo, or `null`
- * when `chave` is not one {@link chaveReconexao} or {@link chaveImportacaoParada}
- * could have produced. Checked by recomputing the key, never by trusting the
- * split: a fold in `chaveDeAviso` would otherwise hand back a conta whose key is
- * a DIFFERENT document.
+ * The conta a CLOCKED per-conta chave was computed for, and its tipo (and, for
+ * `amazonContaPrecisaAtencao`, its motivo), or `null` when `chave` is not one
+ * {@link chaveReconexao}, {@link chaveImportacaoParada} or
+ * {@link chaveContaPrecisaAtencao} could have produced. Checked by recomputing
+ * the key, never by trusting the split: a fold in `chaveDeAviso` would otherwise
+ * hand back a conta whose key is a DIFFERENT document.
  */
-function contaDaChaveComRelogio(
-  chave: string,
-): { readonly tipo: TipoComRelogioAmazon; readonly conta: string } | null {
+function contaDaChaveComRelogio(chave: string): AlvoComRelogio | null {
   const candidatos = [
     [TIPO_AVISO.amazonReconexaoPendente, chaveReconexao],
     [TIPO_AVISO.amazonImportacaoParada, chaveImportacaoParada],
@@ -610,6 +686,17 @@ function contaDaChaveComRelogio(
     if (!chave.startsWith(prefixo)) continue;
     const conta = chave.slice(prefixo.length);
     return conta !== '' && chaveDe(conta) === chave ? { tipo, conta } : null;
+  }
+  // `<tipo>:<conta>::<motivo>` — no `entidade`, so its segment is empty.
+  const prefixoConta = `${TIPO_AVISO.amazonContaPrecisaAtencao}:`;
+  if (chave.startsWith(prefixoConta)) {
+    const resto = chave.slice(prefixoConta.length);
+    const corte = resto.indexOf('::');
+    if (corte <= 0) return null;
+    const conta = resto.slice(0, corte);
+    const motivo = motivoContaAmazonSchema.safeParse(resto.slice(corte + 2));
+    if (!motivo.success || chaveContaPrecisaAtencao(conta, motivo.data) !== chave) return null;
+    return { tipo: TIPO_AVISO.amazonContaPrecisaAtencao, conta, motivo: motivo.data };
   }
   return null;
 }
@@ -625,6 +712,10 @@ function contaDaChaveComRelogio(
  *    and its row stays open for the next sweep, which lists the conta. A raise
  *    from a run whose lease predates the deletion carries an older clock and is
  *    closed. Each seed carries no name: the conta is gone.
+ *  - A **conta-precisa-atenção** row (step 5) is resolved CLOCKED by the same
+ *    `relogioListaUs`: its raise is clocked by the import's conta read, on the
+ *    same server timeline, so a conta created after the enumeration keeps the
+ *    row its first import raised. Its seed carries the motivo the key names.
  *  - A **reauthorization** row stays clockless, like every resolve of that tipo.
  *  - A clocked-tipo id no producer here could have computed has no write to
  *    race, so it is resolved clockless too.
@@ -639,8 +730,10 @@ export function resolverAvisoDeContaRemovida(
   const alvo = contaDaChaveComRelogio(chave);
   if (alvo === null) return resolverAviso(db, chave, MOTIVO_AVISO_AMAZON.contaRemovida, agora);
   const semente =
-    alvo.tipo === TIPO_AVISO.amazonReconexaoPendente
-      ? sementeReconexao(alvo.conta, relogioListaUs, null)
-      : sementeImportacaoParada(alvo.conta, relogioListaUs, null);
+    alvo.tipo === TIPO_AVISO.amazonContaPrecisaAtencao
+      ? sementeContaPrecisaAtencao(alvo.conta, alvo.motivo, relogioListaUs)
+      : alvo.tipo === TIPO_AVISO.amazonReconexaoPendente
+        ? sementeReconexao(alvo.conta, relogioListaUs, null)
+        : sementeImportacaoParada(alvo.conta, relogioListaUs, null);
   return resolverAviso(db, chave, MOTIVO_AVISO_AMAZON.contaRemovida, agora, semente);
 }

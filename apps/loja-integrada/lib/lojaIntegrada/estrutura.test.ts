@@ -35,7 +35,10 @@
  *    nothing outside the ERP: the run-time import closure of its route file — the app's
  *    `@/` modules walked too, type-only imports set aside because they load nothing —
  *    reaches no package client, no credential module, no context loader, no pacer, no
- *    read switch, no network module and no text that calls `fetch`.
+ *    read switch, no network module and no text that calls `fetch`;
+ *  - the paid re-check route (`GET …/pedidos/[pedidoId]/pagamento`, step 15) reaches Loja
+ *    Integrada only through the context loader, whose first act is the read switch: in its
+ *    run-time closure no file calls `fetch`, and only `core/contexto.ts` builds a client.
  */
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, posix, relative, sep } from 'node:path';
@@ -363,6 +366,46 @@ function violacoesDaRotaEtiqueta(entradas: readonly string[], lerBruto: LeitorDe
   return violacoes;
 }
 
+/* ------------------------- the paid re-check route ------------------------- */
+
+/** The paid re-check route (step 15): ERP reads, then ONE read through the context loader. */
+const ROTA_PAGAMENTO = 'app/api/marketplace/loja-integrada/pedidos/[pedidoId]/pagamento/route.ts';
+
+/** The one module of that route's closure allowed to build a Loja Integrada client. */
+const CONSTRUTOR_DO_CLIENTE = 'lib/lojaIntegrada/core/contexto.ts';
+
+/**
+ * Why the run-time closure from `entradas` lets the paid re-check route reach Loja Integrada other
+ * than through the context loader (whose first act is the read switch); empty when it does not.
+ * The files are scanned RAW: a `fetch` call anywhere, or a client or a validating GET named outside
+ * `core/contexto.ts`, fails — a comment that spells one too.
+ */
+function violacoesDaRotaPagamento(entradas: readonly string[], lerBruto: LeitorDeFonte): string[] {
+  const ler: LeitorDeFonte = (caminho) => {
+    const texto = lerBruto(caminho);
+    return texto === null ? null : semImportacoesDeTipo(texto);
+  };
+  const fecho = fechoDeImportacoes(entradas, ler, resolverAliasDoApp(ler));
+  const violacoes: string[] = [];
+  for (const espec of fecho.externos) {
+    const modulo = espec.replace(/^node:/, '').split('/')[0] ?? '';
+    if (espec.startsWith('?') || espec === 'undici' || MODULOS_DE_REDE_OU_PROCESSO.has(modulo)) {
+      violacoes.push(`imports ${espec}`);
+    }
+  }
+  for (const arquivo of fecho.arquivos) {
+    const texto = lerBruto(arquivo) ?? '';
+    if (/\bfetch\s*\(/.test(texto)) violacoes.push(`${arquivo} calls fetch`);
+    if (
+      arquivo !== CONSTRUTOR_DO_CLIENTE &&
+      /\b(criarClienteLeituraLi|validarPersonalToken)\b/.test(texto)
+    ) {
+      violacoes.push(`${arquivo} reaches Loja Integrada outside the context loader`);
+    }
+  }
+  return violacoes;
+}
+
 const LINHA_WIRE_PRETTIER = 'apps/loja-integrada/lib/lojaIntegrada/fixtures/__wire__/';
 const LINHA_WIRE_ATRIBUTOS =
   'apps/loja-integrada/lib/lojaIntegrada/fixtures/__wire__/** text eol=lf';
@@ -623,6 +666,26 @@ describe('lib/lojaIntegrada layout', () => {
     expect(lerDoApp('lib/lojaIntegrada/core/respond.ts')).toContain(
       "import type { ValidacaoTokenLi } from '@delfrance/integrations-loja-integrada';",
     );
+  });
+
+  it('the paid re-check route reaches Loja Integrada only through the context loader: no fetch, and no client or validating GET of its own, in its run-time closure', () => {
+    expect(violacoesDaRotaPagamento([ROTA_PAGAMENTO], lerDoApp)).toEqual([]);
+    // Anti-vacuity: the walk entered the core and the context loader, and the exemption is real.
+    const ler: LeitorDeFonte = (c) => {
+      const texto = lerDoApp(c);
+      return texto === null ? null : semImportacoesDeTipo(texto);
+    };
+    const fecho = fechoDeImportacoes([ROTA_PAGAMENTO], ler, resolverAliasDoApp(ler));
+    expect(fecho.arquivos).toEqual(
+      expect.arrayContaining([
+        ROTA_PAGAMENTO,
+        'lib/lojaIntegrada/pedidos/conferenciaPagamento.ts',
+        CONSTRUTOR_DO_CLIENTE,
+        'lib/auth/verifyCaller.ts',
+      ]),
+    );
+    expect(fecho.externos).toContain('@delfrance/integrations-loja-integrada');
+    expect(lerDoApp(CONSTRUTOR_DO_CLIENTE)).toContain('criarClienteLeituraLi({');
   });
 
   it('scripts/ is typechecked and linted: the tsconfig includes **/*.ts, the ESLint config ignores nothing of it', () => {
@@ -902,6 +965,42 @@ describe('the guards, on synthetic source', () => {
     expect(
       violacoesDaRotaEtiqueta([ROTA], daRota('', "import { f } from '@/lib/lojaIntegrada/sumiu';")),
     ).toEqual(['imports ?lib/lojaIntegrada/sumiu']);
+  });
+
+  const PAGAMENTO = 'app/y/route.ts';
+  const daRotaPagamento = (nucleo: string) =>
+    leitor({
+      [PAGAMENTO]: "import { f } from '@/lib/lojaIntegrada/pedidos/y';",
+      'lib/lojaIntegrada/pedidos/y.ts': nucleo,
+      [CONSTRUTOR_DO_CLIENTE]:
+        "import { criarClienteLeituraLi } from '@delfrance/integrations-loja-integrada';\n" +
+        'export const c = () => criarClienteLeituraLi({});',
+    });
+
+  it('payment route closure: the context loader building the client, and the package read through it, are accepted', () => {
+    const nucleo =
+      "import { buscarPedidoLi } from '@delfrance/integrations-loja-integrada';\n" +
+      "import { c } from '../core/contexto';\n" +
+      'export const f = () => buscarPedidoLi(c(), 1);';
+    expect(violacoesDaRotaPagamento([PAGAMENTO], daRotaPagamento(nucleo))).toEqual([]);
+  });
+
+  it.each([
+    [
+      'a client built outside the context loader',
+      "import { criarClienteLeituraLi } from '@delfrance/integrations-loja-integrada';",
+    ],
+    [
+      'a validating GET',
+      "import { validarPersonalToken } from '@delfrance/integrations-loja-integrada';",
+    ],
+    ['a fetch call', "export const f = () => fetch('https://x.invalid');"],
+    ['a network module', "import { request } from 'node:https';"],
+    ['an alias that resolves to no file', "import { f } from '@/lib/lojaIntegrada/sumiu';"],
+  ])('payment route closure flags, one module deep, %s', (_caso, nucleo) => {
+    expect(violacoesDaRotaPagamento([PAGAMENTO], daRotaPagamento(nucleo)).length).toBeGreaterThan(
+      0,
+    );
   });
 
   it('seam accepts criarObservadorLi(…) imported from the logger, and exempts the logger itself', () => {

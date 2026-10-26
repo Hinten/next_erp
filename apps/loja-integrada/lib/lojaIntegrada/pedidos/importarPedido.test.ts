@@ -1184,6 +1184,51 @@ describe('the freight routing and its aviso (import step 6)', () => {
     expect(typeof aviso?.relogioEvento).toBe('number');
   });
 
+  it('EQUAL pair: a Melhor Envio service stored as the number 2 or as the string `2` ⇒ the same route, `externalOptionId` `2`', async () => {
+    for (const id of [2, '2']) {
+      const db = novoDb();
+      seedIntFrete(db, { mapa: [linhaMapeada('me-1', { id })] });
+      db.seed('int_frete/me-1', { tipo: 'melhorEnvios', ativo: true });
+      await importar(db, cena({ cliente: COMPRADOR_COM_CPF }));
+      expect(db.ler(CAMINHO_PEDIDO)?.freteInicial, JSON.stringify(id)).toMatchObject({
+        integracaoFreteOuterRef: 'documents/int_frete/me-1',
+        externalOptionId: '2',
+      });
+      expect(
+        db.ler(`avisos/${chaveDoAvisoDeFreteLi(CONTA, CHAVE_FORMA_ENVIO_LI)}`)?.resolvidoEm,
+        JSON.stringify(id),
+      ).not.toBeNull();
+    }
+  });
+
+  it('⚠️ NEAR-MISS: a Melhor Envio service that is not a canonical positive integer (`02`, `0`, `2.0`, `1e3`) is NO service ⇒ the conta’s LI doc, the aviso RAISED `alvo-sem-servico`', async () => {
+    for (const id of ['02', 0, '2.0', '1e3']) {
+      const db = novoDb();
+      seedIntFrete(db, { mapa: [linhaMapeada('me-1', { id })] });
+      db.seed('int_frete/me-1', { tipo: 'melhorEnvios', ativo: true });
+      await importar(db, cena({ cliente: COMPRADOR_COM_CPF }));
+      expect(db.ler(CAMINHO_PEDIDO)?.freteInicial, JSON.stringify(id)).toMatchObject({
+        integracaoFreteOuterRef: `documents/int_frete/lojaIntegrada-${CONTA}`,
+        externalOptionId: null,
+      });
+      expect(
+        db.ler(`avisos/${chaveDoAvisoDeFreteLi(CONTA, CHAVE_FORMA_ENVIO_LI)}`),
+        JSON.stringify(id),
+      ).toMatchObject({ resolvidoEm: null, motivo: 'alvo-sem-servico' });
+    }
+  });
+
+  it('a motoboy target on a row that still carries a Melhor Envio service ⇒ routed to it with NO `externalOptionId`', async () => {
+    const db = novoDb();
+    seedIntFrete(db, { mapa: [linhaMapeada('moto-1', { id: 2 })] });
+    db.seed('int_frete/moto-1', { tipo: 'motoboy', ativo: true });
+    await importar(db, cena({ cliente: COMPRADOR_COM_CPF }));
+    expect(db.ler(CAMINHO_PEDIDO)?.freteInicial).toMatchObject({
+      integracaoFreteOuterRef: 'documents/int_frete/moto-1',
+      externalOptionId: null,
+    });
+  });
+
   it('an inactive target ⇒ the conta’s LI doc, the aviso RAISED with the motivo code', async () => {
     const db = novoDb();
     seedIntFrete(db, { mapa: [linhaMapeada('me-1')] });
@@ -1204,6 +1249,42 @@ describe('the freight routing and its aviso (import step 6)', () => {
         motivo: 'alvo-inativo',
       },
     });
+  });
+
+  it('EQUAL pair: a mapped row whose target doc is ABSENT ⇒ the conta’s LI doc, the aviso RAISED `alvo-ausente`, after ONE read of that doc', async () => {
+    const db = novoDb();
+    seedIntFrete(db, { mapa: [linhaMapeada('me-404')] });
+    await importar(db, cena({ cliente: COMPRADOR_COM_CPF }));
+    expect(db.ler(CAMINHO_PEDIDO)?.freteInicial).toMatchObject({
+      integracaoFreteOuterRef: `documents/int_frete/lojaIntegrada-${CONTA}`,
+      externalOptionId: null,
+    });
+    expect(db.ler(`avisos/${chaveDoAvisoDeFreteLi(CONTA, CHAVE_FORMA_ENVIO_LI)}`)).toMatchObject({
+      resolvidoEm: null,
+      motivo: 'alvo-ausente',
+    });
+    expect(db.leituras.filter((l) => l === 'int_frete/me-404')).toHaveLength(1);
+  });
+
+  it('⚠️ NEAR-MISS: a mapped row whose uid names a target NO document can be (`..`) ⇒ the same `alvo-ausente`, with NO read of it', async () => {
+    for (const uid of ['..', 'int_frete/..', '.']) {
+      const db = novoDb();
+      seedIntFrete(db, { mapa: [linhaMapeada(uid)] });
+      await importar(db, cena({ cliente: COMPRADOR_COM_CPF }));
+      expect(db.ler(CAMINHO_PEDIDO)?.freteInicial, uid).toMatchObject({
+        integracaoFreteOuterRef: `documents/int_frete/lojaIntegrada-${CONTA}`,
+        externalOptionId: null,
+      });
+      expect(
+        db.ler(`avisos/${chaveDoAvisoDeFreteLi(CONTA, CHAVE_FORMA_ENVIO_LI)}`),
+        uid,
+      ).toMatchObject({ resolvidoEm: null, motivo: 'alvo-ausente' });
+      // The shared row decision never hands such an id to a document read.
+      expect(
+        db.leituras.filter((l) => l.startsWith('int_frete/') && l !== CAMINHO_INT_FRETE),
+        uid,
+      ).toEqual([]);
+    }
   });
 
   it('an unmapped method ⇒ registered in the mapa, the conta’s LI doc, the aviso resolved clocked by the int_frete read', async () => {
@@ -2192,7 +2273,7 @@ describe('⚠️ a PAID order carrying NO CEP retries, then fails LOUDLY (owner 
   });
 });
 
-describe('⚠️ a reversal landing on a pedido whose label was BOUGHT: the approved estado AND an aviso (owner decision A7, 2026-10-19)', () => {
+describe('⚠️ a reversal landing on a pedido whose label was BOUGHT: the approved estado AND an aviso (owner decision, 2026-10-19)', () => {
   const CAMINHO_AVISO_REVERSAO = `avisos/${chaveDoAvisoDoPedidoLi(
     TIPO_AVISO.lojaIntegradaReversaoComEtiqueta,
     CONTA,

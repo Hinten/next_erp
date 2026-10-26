@@ -63,6 +63,7 @@ export {
   produtoShopeeLinkCollection,
   variacaoShopeeLinkCollection,
 } from './produtoShopeeLinkCollection';
+export { produtoAmazonLinkCollection } from './produtoAmazonLinkCollection';
 export { produtoLojaIntegradaLinkCollection } from './produtoLojaIntegradaLinkCollection';
 export { grupoDeVariacoesCollection } from './grupoDeVariacoesCollection';
 export { produtoExtraDataCollection } from './produtoExtraDataCollection';

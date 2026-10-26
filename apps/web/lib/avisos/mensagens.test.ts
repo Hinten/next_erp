@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
   CANAL_AVISO,
+  MOTIVO_CONTA_AMAZON,
   MOTIVO_FRETE_NAO_SUPORTADO_LI,
   MOTIVO_IMPORTACAO_PARADA_AMAZON,
   MOTIVO_IMPORTACAO_PARADA_LI,
+  MOTIVO_PEDIDO_AMAZON,
   MOTIVO_PEDIDO_CONTESTADO_LI,
   MOTIVO_REVERSAO_COM_ETIQUETA_LI,
   PENDENCIA_RECLAMACAO,
@@ -14,9 +16,11 @@ import {
   TIPO_AVISO_LABELS,
   avisoReceitaKitShopee,
   avisoSchema,
+  motivoContaAmazonSchema,
   motivoFreteNaoSuportadoLiSchema,
   motivoImportacaoParadaAmazonSchema,
   motivoImportacaoParadaLiSchema,
+  motivoPedidoAmazonSchema,
   motivoPedidoContestadoLiSchema,
   motivoReversaoComEtiquetaLiSchema,
   pendenciaReclamacaoSchema,
@@ -1615,5 +1619,182 @@ describe('MENSAGENS_POR_TIPO.amazonImportacaoParada', () => {
     expect(mensagem.runbook).toContain('desative a que sobra');
     expect(mensagem.runbook).toContain('AMAZON_POLL_LOOKBACK_H');
     expect(mensagem.runbook).toContain('registro da varredura de pedidos');
+  });
+});
+
+/**
+ * The two order-import tipos of Amazon (steps 5 and 7), rendered with the params
+ * their producer (the order import of `apps/amazon`, `lib/amazon/avisos/avisos.ts`)
+ * writes: per pedido `{ pedido, motivo }` (Amazon's order id and a
+ * `MOTIVO_PEDIDO_AMAZON` CODE), per conta `{ motivo }` (a `MOTIVO_CONTA_AMAZON`
+ * CODE). No other value is ever printed.
+ */
+describe('MENSAGENS_POR_TIPO.amazonPedidoPrecisaAtencao', () => {
+  const mensagem = MENSAGENS_POR_TIPO[TIPO_AVISO.amazonPedidoPrecisaAtencao];
+  const ORDER = '171-9876543-2109876';
+  const FALLBACK = `O pedido ${ORDER} da Amazon precisa de atenção: confira o pedido no Seller Central.`;
+
+  it('renders the order id and the motivo phrase in their slots', () => {
+    expect(mensagem.corpo({ pedido: ORDER, motivo: MOTIVO_PEDIDO_AMAZON.coletaCancelada })).toBe(
+      `O pedido ${ORDER} da Amazon precisa de atenção: a coleta de um pacote foi cancelada — a ` +
+        'coleta, não o pedido. Reagende a coleta no Seller Central; o aviso se encerra quando ' +
+        'nenhum pacote estiver com a coleta cancelada, ou se o pedido for cancelado.',
+    );
+  });
+
+  it('★ is TOTAL over the eight motivo codes: every one has its own phrase, never the fallback', () => {
+    expect(motivoPedidoAmazonSchema.options).toHaveLength(8);
+    const frases = new Set<string>();
+    for (const motivo of motivoPedidoAmazonSchema.options) {
+      const corpo = mensagem.corpo({ pedido: ORDER, motivo });
+      expect(corpo, motivo).not.toBe(FALLBACK);
+      expect(corpo, motivo).not.toContain('undefined');
+      expect(corpo, motivo).not.toContain(motivo);
+      expect(corpo, motivo).toContain(ORDER);
+      frases.add(corpo);
+    }
+    expect(frases.size).toBe(motivoPedidoAmazonSchema.options.length);
+  });
+
+  it('★ `aceitar-cancelamento` tells the operator to ACCEPT the cancellation in Seller Central, true for both of its producers', () => {
+    const corpo = mensagem.corpo({
+      pedido: ORDER,
+      motivo: MOTIVO_PEDIDO_AMAZON.aceitarCancelamento,
+    });
+    expect(corpo).toContain('de um pedido que já foi impresso');
+    expect(corpo).toContain('Aceite o cancelamento no Seller Central');
+    // Both resolvers of the tipo's docblock: the cancellation executed, or no
+    // request left (the seller declined it).
+    expect(corpo).toContain(
+      'quando a Amazon registrar o cancelamento ou quando não houver mais pedido de cancelamento aberto',
+    );
+    // The params carry only the CODE, and the NF-e and label steps raise it too
+    // WITHOUT cancelling the pedido: the phrase must not claim the ERP cancelled
+    // it, nor that the request came after the print.
+    expect(corpo).not.toContain('marcou');
+    expect(corpo).not.toContain('depois que');
+  });
+
+  it('★ `cancelado-so-no-erp` tells the operator to REOPEN the pedido or cancel it in Seller Central', () => {
+    const corpo = mensagem.corpo({ pedido: ORDER, motivo: MOTIVO_PEDIDO_AMAZON.canceladoSoNoErp });
+    expect(corpo).toContain('está cancelado no ERP, mas a Amazon ainda espera o envio');
+    expect(corpo).toContain('Reabra o pedido no ERP para enviá-lo, ou cancele-o no Seller Central');
+  });
+
+  it('a request on an UNPRINTED pedido asks for a decision, never says it was cancelled', () => {
+    const corpo = mensagem.corpo({
+      pedido: ORDER,
+      motivo: MOTIVO_PEDIDO_AMAZON.cancelamentoSolicitado,
+    });
+    expect(corpo).toContain('ainda não foi impresso');
+    expect(corpo).toContain('Decida no Seller Central');
+    expect(corpo).not.toContain('marcou o pedido como cancelado');
+  });
+
+  it('★ a code newer than this build, a per-conta code, an inherited key or a missing motivo falls back', () => {
+    for (const motivo of [
+      'motivo-do-futuro',
+      MOTIVO_CONTA_AMAZON.contaSemOperacao,
+      MOTIVO_IMPORTACAO_PARADA_AMAZON.semPermissao,
+      'toString',
+      '',
+      7,
+    ]) {
+      expect(mensagem.corpo({ pedido: ORDER, motivo }), String(motivo)).toBe(FALLBACK);
+    }
+    expect(mensagem.corpo({})).toBe(
+      'O pedido — da Amazon precisa de atenção: confira o pedido no Seller Central.',
+    );
+  });
+
+  it('prints no value but the order id: an extra param never reaches the sentence', () => {
+    const corpo = mensagem.corpo({
+      pedido: ORDER,
+      motivo: MOTIVO_PEDIDO_AMAZON.divergenciaItens,
+      loja: 'Conta A',
+      valor: 123.45,
+    });
+    expect(corpo).not.toContain('Conta A');
+    expect(corpo).not.toContain('123');
+  });
+
+  it('renders the producer plano as stored, titled like its label, with no runbook', () => {
+    const aviso = comoArmazenado({
+      tipo: TIPO_AVISO.amazonPedidoPrecisaAtencao,
+      severidade: SEVERIDADE_AVISO.critico,
+      canal: CANAL_AVISO.amazon,
+      params: { pedido: ORDER, motivo: MOTIVO_PEDIDO_AMAZON.canceladoSoNoErp },
+      motivo: MOTIVO_PEDIDO_AMAZON.canceladoSoNoErp,
+      urlInterna: { rota: ROTAS_AVISO.pedido.build(PEDIDO_ID), campo: null },
+      relogioEvento: 1_800_000_000_654_321,
+    });
+    expect(aviso.urlInterna?.rota).toBe(`/pedidos/${PEDIDO_ID}/editar`);
+    expect(mensagem.corpo(aviso.params)).toContain(`O pedido ${ORDER} da Amazon`);
+    expect(mensagem.titulo).toBe(TIPO_AVISO_LABELS.amazonPedidoPrecisaAtencao);
+    expect(mensagem.runbook).toBeUndefined();
+  });
+});
+
+describe('MENSAGENS_POR_TIPO.amazonContaPrecisaAtencao', () => {
+  const mensagem = MENSAGENS_POR_TIPO[TIPO_AVISO.amazonContaPrecisaAtencao];
+  const FALLBACK = 'A conta da Amazon precisa de atenção: confira o cadastro da conta.';
+
+  it('renders the motivo phrase, and says what to do in the conta', () => {
+    expect(mensagem.corpo({ motivo: MOTIVO_CONTA_AMAZON.contaSemOperacao })).toBe(
+      'A conta da Amazon precisa de atenção: ela não tem operação definida, então os pedidos ' +
+        'dela entram no ERP sem operação. Defina a operação no cadastro da conta: os pedidos já ' +
+        'importados a recebem na próxima atualização de cada um pela Amazon, e o aviso se ' +
+        'encerra na próxima importação de pedido da conta.',
+    );
+    expect(mensagem.corpo({ motivo: MOTIVO_CONTA_AMAZON.intermediadorDivergente })).toContain(
+      'Corrija o CNPJ do intermediador no cadastro da conta',
+    );
+  });
+
+  it('★ is TOTAL over the two motivo codes: every one has its own phrase, never the fallback', () => {
+    const frases = new Set<string>();
+    for (const motivo of motivoContaAmazonSchema.options) {
+      const corpo = mensagem.corpo({ motivo });
+      expect(corpo, motivo).not.toBe(FALLBACK);
+      expect(corpo, motivo).not.toContain('undefined');
+      expect(corpo, motivo).not.toContain(motivo);
+      frases.add(corpo);
+    }
+    expect(frases.size).toBe(motivoContaAmazonSchema.options.length);
+  });
+
+  it('★ a code newer than this build, a per-pedido code, an inherited key or a missing motivo falls back', () => {
+    for (const motivo of [
+      'motivo-do-futuro',
+      MOTIVO_PEDIDO_AMAZON.divergenciaItens,
+      'constructor',
+      '',
+      3,
+    ]) {
+      expect(mensagem.corpo({ motivo }), String(motivo)).toBe(FALLBACK);
+    }
+    expect(mensagem.corpo({})).toBe(FALLBACK);
+  });
+
+  it('prints no value at all: the route already names the conta', () => {
+    expect(
+      mensagem.corpo({ motivo: MOTIVO_CONTA_AMAZON.contaSemOperacao, loja: 'Conta A' }),
+    ).not.toContain('Conta A');
+  });
+
+  it('renders the producer plano as stored, titled like its label, with no runbook', () => {
+    const aviso = comoArmazenado({
+      tipo: TIPO_AVISO.amazonContaPrecisaAtencao,
+      severidade: SEVERIDADE_AVISO.atencao,
+      canal: CANAL_AVISO.amazon,
+      params: { motivo: MOTIVO_CONTA_AMAZON.intermediadorDivergente },
+      motivo: MOTIVO_CONTA_AMAZON.intermediadorDivergente,
+      urlInterna: { rota: ROTAS_AVISO.canalAmazon.build('int-1'), campo: null },
+      relogioEvento: 1_800_000_000_654_321,
+    });
+    expect(aviso.urlInterna?.rota).toBe('/canais/amazon/int-1');
+    expect(mensagem.corpo(aviso.params)).toContain('CNPJ do intermediador');
+    expect(mensagem.titulo).toBe(TIPO_AVISO_LABELS.amazonContaPrecisaAtencao);
+    expect(mensagem.runbook).toBeUndefined();
   });
 });
