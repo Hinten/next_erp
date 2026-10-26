@@ -518,11 +518,14 @@ describe('the varredura (on the writes queue)', () => {
     m.db.falharEscrita(caminhoDe(p), grpc(14, 'unavailable'));
     const r = await varrerEscritasLi(asDb(m.db), m.deps(), 140_000);
     expect(r.quente.parada).toBe('repetida');
-    // One process: ONE guard GET, one code PUT (the write landed; the bookkeeping failed).
-    expect(
-      m.p.chamadas().filter((c) => c === `GET ${CAMINHO_PEDIDO_LI}`).length,
-    ).toBeLessThanOrEqual(3);
-    expect(m.p.puts()).toHaveLength(1);
+    // ONE process: its guard GET, the code PUT (the write landed; the bookkeeping
+    // failed), its read-back and its history read — and nothing of a second run.
+    expect(m.p.chamadas()).toEqual([
+      `GET ${CAMINHO_PEDIDO_LI}`,
+      `PUT ${CAMINHO_ENVIO_LI}`,
+      `GET ${CAMINHO_PEDIDO_LI}`,
+      'GET /v1/situacao_historico/search/',
+    ]);
     expect(m.avisos.filter((a) => String(a[0]).includes('varredura'))).toHaveLength(1);
   });
 
