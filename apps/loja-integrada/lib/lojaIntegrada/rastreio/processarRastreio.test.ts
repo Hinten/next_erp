@@ -924,30 +924,47 @@ describe('PROPERTY: no run sends a PUT after a 2xx PUT', () => {
     ['204', () => new Response(null, { status: 204 })],
     ['400', () => respostaJson(400, {})],
     ['302', () => new Response('', { status: 302, headers: { location: '/x' } })],
+    // With the confirming read answering 200: the token still reads.
+    ['403', () => respostaJson(403, {})],
   ];
+  const RECUSAS = new Set(['400', '302', '403']);
 
-  it('over every codigo × event × the first PUT’s answer', async () => {
+  it('over every codigo × event × the first PUT’s answer × a normal or the last hot pass', async () => {
     for (const codigo of [...codigoSituacaoLiSchema.options, 'Pedido_Pago']) {
       for (const estado of [
         ESTADO_RASTREIO_LI.postado,
         ESTADO_RASTREIO_LI.entregue,
         ESTADO_RASTREIO_LI.aguardandoRetirada,
       ]) {
-        for (const [nome, resposta] of RESPOSTAS) {
-          const c = cenario({ codigo, freteEstado: estado });
-          let primeiro = true;
-          c.p.fila.push((r) => {
-            if (r.metodo !== 'PUT' || !primeiro) return null;
-            primeiro = false;
-            return resposta();
-          });
-          await c.rodar({ estado }).catch((err: unknown) => {
-            if (!(err instanceof EscritaRecusadaLiError)) throw err;
-          });
-          const puts = c.p.requisicoes.filter((r) => r.metodo === 'PUT');
-          const rotulo = `${codigo} / ${estado} / ${nome}`;
-          if (nome === '400' || nome === '302') expect(puts.length, rotulo).toBeLessThanOrEqual(2);
-          else expect(puts.length, rotulo).toBeLessThanOrEqual(1);
+        for (const passagemFinal of [null, 'quente'] as const) {
+          for (const [nome, resposta] of RESPOSTAS) {
+            const c = cenario({ codigo, freteEstado: estado });
+            let primeiro = true;
+            c.p.fila.push((r) => {
+              if (r.metodo !== 'PUT' || !primeiro) return null;
+              primeiro = false;
+              return resposta();
+            });
+            await c.rodar({ estado, passagemFinal }).catch((err: unknown) => {
+              if (!(err instanceof EscritaRecusadaLiError)) throw err;
+            });
+            const puts = c.p.requisicoes.filter((r) => r.metodo === 'PUT');
+            const rotulo = `${codigo} / ${estado} / ${String(passagemFinal)} / ${nome}`;
+            // A first PUT that answered 2xx is the run's only one; only a refused
+            // tracking code may be followed by ONE situação write.
+            if (!RECUSAS.has(nome)) {
+              expect(puts.length, rotulo).toBeLessThanOrEqual(1);
+            } else if (puts.length === 2) {
+              expect(puts[0]?.caminho, rotulo).toBe(CAMINHO_ENVIO_LI);
+              expect(puts[1]?.caminho, rotulo).toBe(CAMINHO_SITUACAO_LI);
+            } else {
+              expect(puts.length, rotulo).toBeLessThanOrEqual(1);
+            }
+            // A 403 on a try that is not the last hot pass never writes the situação.
+            if (nome === '403' && passagemFinal === null) {
+              expect(puts.length, rotulo).toBeLessThanOrEqual(1);
+            }
+          }
         }
       }
     }
