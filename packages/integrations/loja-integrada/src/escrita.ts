@@ -12,9 +12,9 @@
  *  - {@link LiEscritaClient.enviarEscritaLi} — one `PUT`.
  *
  * Neither name, nor the factory's, nor `LiEscritaClient`, is used anywhere else,
- * so the app's write engine (master-plan step 7, PR 7-b) can guard by name that
- * a single module of its own calls them. The two operations of master-plan
- * step 7 are in `pedidosEscrita.ts`.
+ * so the app guards by name that a single module of its own calls them (its
+ * write engine, master-plan step 7) and a single one builds the client. The two
+ * operations of master-plan step 7 are in `pedidosEscrita.ts`.
  *
  * ## What `enviarEscritaLi` sends
  *
@@ -55,8 +55,8 @@
  *  1. the caller's own abort, even after the 2xx arrived;
  *  2. an `onChamada` observer that throws (`client.ts`): it runs after the
  *     outcome is known, so it rejects a write that landed. A write client's
- *     observer must therefore be total, which the app's write engine is to pin
- *     for its own (master-plan step 7, PR 7-b);
+ *     observer must therefore be total, which the app pins for its own over
+ *     every write outcome (master-plan step 7);
  *  3. a body read that fails with something other than the deadline, a
  *     `TypeError` or the caller's abort — unclassified, so rethrown. Node's own
  *     `fetch` fails a body read only in those three ways, so only an injected

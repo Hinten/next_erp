@@ -4,16 +4,16 @@ Platform-neutral integration libraries: fetch-only, no Firestore, no Admin SDK. 
 is its own workspace package (`@delfrance/integrations-<channel>`), paired with an app
 under `apps/` that holds the stateful half.
 
-| Package              | Paired app            | Holds                                                                                                |
-| -------------------- | --------------------- | ---------------------------------------------------------------------------------------------------- |
-| `nfe`                | `apps/nfe`            | NF-e 4.00 generation, XML signing, SEFAZ transport, DANFE. XSD→TS types are generated (ADR 0004)     |
-| `mercado-livre`      | `apps/mercado-livre`  | OAuth, the 62-operation REST client, Zod wire schemas, the error taxonomy, pure ML↔ERP mappers       |
-| `mercado-pago`       | `apps/mercado-pago`   | OAuth, the REST client, response schemas, the `mpPaymentToPagamento` mapper                          |
-| `whatsapp-cloud-api` | `apps/whatsapp`       | Typed Graph client + webhook envelope schemas                                                        |
-| `freight-br`         | `apps/melhor-envio`   | Melhor Envio: OAuth, quote, cart→checkout, label print, tracking                                     |
-| `shopee`             | `apps/shopee`         | Shopee Open Platform: the HMAC request signature, hosts, consent URL + token endpoints, wire schemas |
-| `loja-integrada`     | `apps/loja-integrada` | Loja Integrada REST v1: Personal Token header, GET client, Tastypie paging, typed errors             |
-| `amazon-sp-api`      | `apps/amazon`         | Amazon SP-API (NA host, BR marketplace): LWA token exchanges, GET-only client, typed errors          |
+| Package              | Paired app            | Holds                                                                                                                     |
+| -------------------- | --------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `nfe`                | `apps/nfe`            | NF-e 4.00 generation, XML signing, SEFAZ transport, DANFE. XSD→TS types are generated (ADR 0004)                          |
+| `mercado-livre`      | `apps/mercado-livre`  | OAuth, the 62-operation REST client, Zod wire schemas, the error taxonomy, pure ML↔ERP mappers                            |
+| `mercado-pago`       | `apps/mercado-pago`   | OAuth, the REST client, response schemas, the `mpPaymentToPagamento` mapper                                               |
+| `whatsapp-cloud-api` | `apps/whatsapp`       | Typed Graph client + webhook envelope schemas                                                                             |
+| `freight-br`         | `apps/melhor-envio`   | Melhor Envio: OAuth, quote, cart→checkout, label print, tracking                                                          |
+| `shopee`             | `apps/shopee`         | Shopee Open Platform: the HMAC request signature, hosts, consent URL + token endpoints, wire schemas                      |
+| `loja-integrada`     | `apps/loja-integrada` | Loja Integrada REST v1: Personal Token header, GET-only read client, separate write client, Tastypie paging, typed errors |
+| `amazon-sp-api`      | `apps/amazon`         | Amazon SP-API (NA host, BR marketplace): LWA token exchanges, GET-only client, typed errors                               |
 
 ## ⚠️ These are libraries, not plugins
 

@@ -1,9 +1,8 @@
 /**
  * The WRITE context: the read loader's refusals in the read loader's order, two
  * clients bound to the conta's stored token, the write pacer, and the credential
- * pin a write run decides under (A9 of the step-7 plan: "the same credential" is
- * literal — a token re-saved between the deciding read and the write sends
- * nothing).
+ * pin a write run decides under ("the same credential" is literal: a token
+ * re-saved between the deciding read and the write sends nothing).
  *
  * D17: every case either stops at the read switch or answers from a stub; the
  * unit config's network kill-switch fails any `fetch` that reaches a real host.

@@ -33,7 +33,7 @@
  * (`log.ts`), with `conta` set to this context's id after the caller's options;
  * the seam guard (`estrutura.test.ts`) refuses a shared one.
  *
- * ## The credential PIN (A9 of the step-7 plan)
+ * ## The credential PIN
  *
  * The engine pins the `ref` of the credential its first deciding read used
  * (`credencial.fixar`). From then on BOTH getters re-read the stored credential

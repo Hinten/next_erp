@@ -191,7 +191,7 @@ export const POLITICA_CAMPO_ESCRITA_LI = {
   codigo: 'valor',
 } as const satisfies Record<CampoEscritaLi, PoliticaCampoLi>;
 
-/** B17: no write starts later than this after the task's dispatch began, in ms. */
+/** The task deadline: no write starts later than this after the task's dispatch began, in ms. */
 export const PRAZO_ULTIMA_ESCRITA_MS = 260_000;
 
 /**
@@ -702,9 +702,9 @@ export async function lerHistoricoSituacaoParaConferenciaLi(
 }
 
 /**
- * A confirming read that decides nothing (A9 of the step-7 plan: after a
- * situação write refused with 401/403, does the token still READ?): one pacer
- * interval, then `GET /v1/pedido/{numero}/` with the run's pinned credential.
+ * A confirming read that decides nothing (after a situação write refused with
+ * 401/403: does the token still READ?): one pacer interval, then
+ * `GET /v1/pedido/{numero}/` with the run's pinned credential.
  * Resolves when the read succeeds; every failure propagates for the flow to
  * classify (a 401/403 parks the conta; a getter refusal sends nothing). After a
  * refused tracking-code write, the confirming read is the next deciding read

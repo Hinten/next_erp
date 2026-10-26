@@ -203,7 +203,8 @@ export interface OpcoesClienteLi {
    * ⚠️ An observer that throws propagates in place of the outcome — rule 6
    * forbids the generic catch that would swallow it. Harmless for a GET; for a
    * write it REJECTS a write that landed (`escrita.ts`), so a write client's
-   * observer must be total, and its caller is to pin that with a test.
+   * observer must be total, and its caller pins that with a test (the app's
+   * logger does, over every write outcome).
    */
   readonly onChamada?: (e: ChamadaLi) => void;
   /** Milliseconds, for `latenciaMs` only. Defaults to `Date.now`. */
