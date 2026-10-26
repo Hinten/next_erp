@@ -14,9 +14,12 @@ import { PRAZO_LI_MS } from '@delfrance/integrations-loja-integrada';
 
 import { __setRelogioDoCacheParaTestes } from '../../lib/lojaIntegrada/core/contaCache';
 import { PRAZO_ULTIMA_ESCRITA_MS } from '../../lib/lojaIntegrada/core/escrita';
-import { RITMO_ESCRITA_LI_MS } from '../../lib/lojaIntegrada/core/ritmo';
 import type { ImportadorPedidoLi } from '../../lib/lojaIntegrada/notificacoes/notificacao';
 import { importarPedidoLi } from '../../lib/lojaIntegrada/pedidos/importarPedido';
+import {
+  PIOR_EXECUCAO_RASTREIO_LI_MS,
+  PIOR_TENTATIVA_RECUSADA_RASTREIO_LI_MS,
+} from '../../lib/lojaIntegrada/rastreio/processarRastreio';
 import { FakeDb, asDb } from '../../lib/lojaIntegrada/testing/fakeDb';
 import { espiarStdout, seedConta, seedCredencial } from '../../lib/lojaIntegrada/testing/fixtures';
 import { seedNotificacaoLi } from '../../lib/lojaIntegrada/testing/notificacoes';
@@ -616,9 +619,11 @@ describe('filaEscritaLojaIntegrada — the declared options', () => {
     expect(fila.rateLimits).toEqual({ maxConcurrentDispatches: 1, maxDispatchesPerSecond: 1 });
   });
 
-  it('runs on ONE instance serving ONE request: an abandoned dispatch cannot run beside the next on a second instance or slot', () => {
+  it('runs on ONE instance serving ONE request: an abandoned dispatch cannot run beside the next on a SECOND instance', () => {
     // NEAR-MISS of the codebase default (`maxInstances: 10`, options.ts) and of
-    // the gen2 default concurrency (80 when CPU >= 1).
+    // the gen2 default concurrency (80 when CPU >= 1). This NARROWS the overlap,
+    // it does not close it: a still-running abandoned handler and a duplicate
+    // delivery remain, logged as `escrita-duplicada` by the history check.
     expect(endpoint.maxInstances).toBe(1);
     expect(endpoint.concurrency).toBe(1);
   });
@@ -648,19 +653,21 @@ describe('filaEscritaLojaIntegrada — the declared options', () => {
 
   it('has timeoutSeconds 300, and the worst run (134 s) plus the varredura budget (140 s) fits in it', () => {
     expect(endpoint.timeoutSeconds).toBe(300);
-    // The worst run: a refused code, then the 11 from a second deciding read —
-    // 7 pacer intervals (2 + 2 before the two deciding reads, 2 before the
-    // read-back of the landed write, 1 before the history read) and 6 calls each
-    // cut at its deadline. ÂNCORA: the arithmetic the plan states.
-    const piorExecucaoMs = 7 * RITMO_ESCRITA_LI_MS + 6 * PRAZO_LI_MS.escrita;
-    expect(piorExecucaoMs).toBe(134_000);
-    // A refused try that throws for a retry: 4 intervals and 3 calls.
-    const tentativaRecusadaMs = 4 * RITMO_ESCRITA_LI_MS + 3 * PRAZO_LI_MS.escrita;
-    expect(tentativaRecusadaMs).toBe(68_000);
-    expect(tentativaRecusadaMs).toBeLessThanOrEqual(piorExecucaoMs);
+    // The worst run and the worst try that throws for a retry are MEASURED on
+    // the flow's real call and wait sequence (every call at its full deadline):
+    // `processarRastreio.test.ts` pins that no run of its one-write grid is
+    // slower than these constants and that the grid reaches each one exactly.
+    // ÂNCORA: the values the plan states.
+    expect(PIOR_EXECUCAO_RASTREIO_LI_MS).toBe(134_000);
+    expect(PIOR_TENTATIVA_RECUSADA_RASTREIO_LI_MS).toBe(68_000);
+    expect(PIOR_TENTATIVA_RECUSADA_RASTREIO_LI_MS).toBeLessThanOrEqual(
+      PIOR_EXECUCAO_RASTREIO_LI_MS,
+    );
     // A row the varredura starts just inside its budget still ends in time.
     expect(VARREDURA_ESCRITA_ORCAMENTO_MS).toBe(140_000);
-    expect(VARREDURA_ESCRITA_ORCAMENTO_MS + piorExecucaoMs).toBeLessThanOrEqual(timeoutMs);
+    expect(VARREDURA_ESCRITA_ORCAMENTO_MS + PIOR_EXECUCAO_RASTREIO_LI_MS).toBeLessThanOrEqual(
+      timeoutMs,
+    );
   });
 
   it('closes its whole retry ladder inside the hot sweep window: 3 × 300 + 2 × 300 = 1 500 ≤ 1 800', () => {

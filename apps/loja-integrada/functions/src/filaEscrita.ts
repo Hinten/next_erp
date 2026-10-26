@@ -25,7 +25,9 @@ export const DETALHE_TIPO_DESCONHECIDO_ESCRITA_LI = 'tipo-desconhecido';
  * How long one varredura dispatch keeps taking rows, in ms. A row it starts just
  * inside this budget still finishes within the function's 300 s: the worst
  * single run is 134 s (a refused tracking code, then the situação from a second
- * deciding read), and 140 + 134 = 274 ≤ 300. `index.test.ts` pins the sum.
+ * deciding read — `PIOR_EXECUCAO_RASTREIO_LI_MS`, measured on the flow's real
+ * call and wait sequence), and 140 + 134 = 274 ≤ 300. `index.test.ts` pins the
+ * sum. Every row it re-runs shares the dispatch's start for the write deadline.
  */
 export const VARREDURA_ESCRITA_ORCAMENTO_MS = 140_000;
 
@@ -151,16 +153,21 @@ async function despachar(
  *   per call on average) the queue makes at most 30 calls a minute.
  * - `concurrency: 1`, `maxInstances: 1`: one instance serving one request. The
  *   queue limit counts DISPATCHES — an abandoned dispatch (a reset connection)
- *   frees the slot while its handler may still run — so the instance limits
- *   are what keeps the next dispatch off a second instance or a second slot.
+ *   frees the slot while its handler may still run — and the instance limits
+ *   NARROW that window; they do not close it. Two residuals remain: an
+ *   abandoned dispatch whose handler is still running when the next one starts
+ *   (should the platform also free the instance's request slot once the caller
+ *   is gone), and a rare duplicate delivery by Cloud Tasks. Both are logged as
+ *   `escrita-duplicada` by the situação history check that follows a write.
  * - `retryConfig`: `maxAttempts` IS `TASK_MAX_ATTEMPTS` (the pipeline persists
  *   on the attempt that constant calls last). A FLAT 300 s backoff (+5, then
  *   +10 minutes): no write starts later than 260 s after a dispatch began, and a
- *   write is cut at 20 s, so a retry can only start after an abandoned attempt
- *   can no longer write. The whole ladder, 3 × 300 + 2 × 300 = 1 500 s, closes
- *   inside the hot sweep's one-hour window.
+ *   write is cut at 20 s, so a RETRY of the same task can only start after its
+ *   abandoned attempt can no longer write. The whole ladder,
+ *   3 × 300 + 2 × 300 = 1 500 s, closes inside the hot sweep's one-hour window.
  * - `timeoutSeconds: 300`: the varredura's 140 s budget plus the worst single
- *   run (134 s) fits.
+ *   run (`PIOR_EXECUCAO_RASTREIO_LI_MS`, 134 s, measured by the flow's tests)
+ *   fits.
  * - NO `secrets:`. The token lives per conta in Firestore.
  * - `...tasksInvokerOptions()`: `roles/run.invoker` on this service and
  *   `roles/cloudtasks.enqueuer` on its queue, applied at deploy time from

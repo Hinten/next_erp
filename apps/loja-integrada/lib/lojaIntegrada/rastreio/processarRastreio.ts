@@ -218,6 +218,29 @@ export interface EventoRastreioLi {
   readonly escritaRecentePossivel: boolean;
 }
 
+/**
+ * The longest ONE run can take, in ms, with every Loja Integrada call running to
+ * its whole 20 s deadline: a refused tracking code, then the 11 from the SECOND
+ * deciding read. Its waits are 4 + 4 + 4 + 2 = 14 s (two pacer intervals before
+ * each deciding read and before the read-back of the landed write, one before
+ * the history read), plus 6 calls × 20 s. A 401/403 changes nothing: for the
+ * code, the second deciding read IS the confirming read.
+ *
+ * Not an estimate kept in step by hand: `processarRastreio.test.ts` runs the
+ * one-write grid on a clock that every wait and every call advance, and pins
+ * that no run there is slower and that this path takes exactly this long. The
+ * writes queue's timeout is sized against it (`functions/src/index.test.ts`):
+ * the varredura's budget plus one such run must fit.
+ */
+export const PIOR_EXECUCAO_RASTREIO_LI_MS = 134_000;
+
+/**
+ * The longest try that THROWS for a retry, in ms (a tracking code refused with
+ * 401/403 while the token still reads, on any pass but the last): 4 + 4 s of
+ * waits plus 3 calls × 20 s. Pinned like {@link PIOR_EXECUCAO_RASTREIO_LI_MS}.
+ */
+export const PIOR_TENTATIVA_RECUSADA_RASTREIO_LI_MS = 68_000;
+
 /** The run's ONE logger: the park's lines, the deterministic refusals, the sweep's warnings. */
 export interface LoggerEscritaLi {
   warn(msg: string, meta?: Record<string, unknown>): void;

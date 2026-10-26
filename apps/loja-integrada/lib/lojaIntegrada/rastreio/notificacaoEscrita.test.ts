@@ -22,6 +22,7 @@ import {
 
 import { __setRelogioDoCacheParaTestes } from '../core/contaCache';
 import { EscritaRecusadaLiError } from '../core/erros';
+import { PrazoDeEscritaEsgotadoLiError } from '../core/escrita';
 import {
   type AmbienteLi,
   CANARIO_ENV_LI,
@@ -606,6 +607,57 @@ describe('the varredura (on the writes queue)', () => {
       await varrerEscritasLi(asDb(m.db), m.deps(), 140_000);
       expect(m.p.puts().map((r) => r.caminho)).toEqual([CAMINHO_ENVIO_LI, CAMINHO_SITUACAO_LI]);
       expect(m.db.ler(caminhoDe(payload()))).toBeUndefined();
+    },
+  );
+
+  it.each([
+    ['two hot rows', 'failed', 122_000, 0],
+    ['a hot row, then a deferred row', 'deferred', 122_000, 0],
+    // NEAR-MISS: the same second row, its write starting inside the deadline.
+    ['two hot rows, the second write inside the deadline', 'failed', 100_000, 1],
+    ['a hot row, then a deferred row inside the deadline', 'deferred', 100_000, 1],
+  ] as const)(
+    '⚠️ every row a varredura re-runs shares the DISPATCH start for the write deadline — %s',
+    async (_caso, statusDaSegunda, avancoMs, putsEsperados) => {
+      // Rule 7: no write starts later than PRAZO_ULTIMA_ESCRITA_MS after the
+      // DISPATCH began, whatever row it belongs to. The first row eats 139 s and
+      // fails; the second starts FRESH inside the 140 s budget, and its deciding
+      // read takes `avancoMs` more. Measured from the dispatch, 139 + 122 = 261 s
+      // is past the 260 s deadline — measured from its own start it would be 122 s.
+      const m = montar();
+      const deps = m.deps();
+      expect(deps.inicioDaTarefaMs).toBe(AGORA_MS);
+      const primeira = seedLinha(m, 1, 'failed', 1);
+      const segunda = seedLinha(m, 2, statusDaSegunda, 2);
+      m.p.fila.push(
+        naProxima(CAMINHO_PEDIDO_LI, 'GET', () => {
+          m.relogio.ms += 139_000;
+          return respostaJson(503, {});
+        }),
+        naProxima(CAMINHO_PEDIDO_LI, 'GET', () => {
+          m.relogio.ms += avancoMs;
+          return respostaJson(200, m.p.estado.pedido);
+        }),
+      );
+
+      await varrerEscritasLi(asDb(m.db), deps, 140_000);
+
+      // Both rows ran: the second one's deciding read happened.
+      expect(m.p.chamadas().slice(0, 2)).toEqual([
+        `GET ${CAMINHO_PEDIDO_LI}`,
+        `GET ${CAMINHO_PEDIDO_LI}`,
+      ]);
+      expect(m.db.ler(caminhoDe(primeira))).toMatchObject({ status: 'failed', tentativas: 1 });
+      expect(m.p.puts().map((r) => r.caminho)).toEqual(
+        putsEsperados === 0 ? [] : [CAMINHO_ENVIO_LI],
+      );
+      if (putsEsperados === 0) {
+        // Nothing was sent, and the row waits for a retry that decides afresh.
+        expect(m.db.ler(caminhoDe(segunda))).toMatchObject({
+          status: 'failed',
+          erro: new PrazoDeEscritaEsgotadoLiError(139_000 + avancoMs).message,
+        });
+      }
     },
   );
 

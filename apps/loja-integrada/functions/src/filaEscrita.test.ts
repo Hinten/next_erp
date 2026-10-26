@@ -261,6 +261,12 @@ describe('a `varredura` task', () => {
   }
 
   it('runs the in-queue sweep with its budget, the dispatch start and no attempt number', async () => {
+    let relogio = 5_000_000;
+    vi.spyOn(Date, 'now').mockImplementation(() => {
+      relogio += 7;
+      return relogio;
+    });
+
     await rodar({
       data: { tipo: TIPO_TAREFA_VARREDURA_ESCRITA_LI },
       retryCount: 1,
@@ -274,7 +280,11 @@ describe('a `varredura` task', () => {
     expect(VARREDURA_ESCRITA_ORCAMENTO_MS).toBe(140_000);
     expect(chamada?.[1].ambiente).toBe(process.env);
     expect(chamada?.[1].registro).toEqual({ tentativa: null, idTarefa: 'varredura-1' });
-    expect(typeof chamada?.[1].inicioDaTarefaMs).toBe('number');
+    // Rule 7: EVERY row this dispatch re-runs measures its write deadline from
+    // the dispatch's own start — the FIRST value the clock answered — never a
+    // later reading (`index.test.ts` sizes the retry backoff against that bound).
+    expect(chamada?.[1].inicioDaTarefaMs).toBe(5_000_007);
+    expect(chamada?.[1].agoraMs()).toBeGreaterThan(chamada?.[1].inicioDaTarefaMs ?? Infinity);
     expect(vi.mocked(escrita.tratarTarefaEscritaLi)).not.toHaveBeenCalled();
   });
 

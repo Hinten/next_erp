@@ -139,12 +139,15 @@ exists — so nothing is ever written to Loja Integrada before the window.
 > `FUNCTIONS_REGION` first (both below); the preflight refuses the deploy
 > without them.
 >
-> ⚠️ **Into a project that does not hold this queue yet** — which is every
-> project until the window — read **the first deploy of a NEW queue crashes on
-> the enqueuer binding** under the IAM section below FIRST. On firebase-tools
-> 15.28.2 that deploy reports an error for the queue function, with a misleading
-> organization-policy message, and the fix is one `gcloud` grant per identity
-> plus a re-run.
+> ⚠️ **Into a project that does not hold these queues yet** — which is every
+> project until the window, and a project that already holds the reads queue
+> still lacks the writes queue (master-plan step 7) — read **the first deploy of
+> a NEW queue crashes on the enqueuer binding** under the IAM section below
+> FIRST. On firebase-tools 15.28.2 that deploy reports an error for each new
+> queue's function, with a misleading organization-policy message, and the fix
+> is one `gcloud` grant per identity FOR EACH NEW QUEUE
+> (`filaLeituraLojaIntegrada` and `filaEscritaLojaIntegrada`; the workaround
+> block lists both) plus a re-run.
 
 ```bash
 # from the repo root
@@ -199,10 +202,17 @@ document, which is not a create.
 
 ⚠️ **The writes queue is single-file by design.** One dispatch at a time, on one
 instance serving one request, with no write starting later than 260 s after its
-dispatch began and a 300 s retry backoff: that is what keeps two attempts of
-the same order from writing at once. Never loosen any of them (`src/index.test.ts`
-pins every one, and no emulator honours them), and never run the write sweep
-anywhere but inside the queue — `varrerEscritasLojaIntegrada` only enqueues it.
+dispatch began and a 300 s retry backoff: that is what NARROWS two attempts of
+the same order writing at once — it does not eliminate it. Two residuals remain:
+an abandoned dispatch (a reset connection) whose handler is still running when
+the next dispatch starts, and a rare duplicate delivery by Cloud Tasks. Both are
+logged by the situação history check that follows a write, as a WARNING
+`conferencia-historico` line with `resultado: escrita-duplicada`: an occasional
+one is that documented residual, not a misconfiguration (a steady stream of them
+is a reason to re-run item 6 of "Verifying a first deploy"). Never loosen any of
+the settings (`src/index.test.ts` pins every one, and no emulator honours them),
+and never run the write sweep anywhere but inside the queue —
+`varrerEscritasLojaIntegrada` only enqueues it.
 
 ⚠️ **The conta trigger shares its path.** `onIntegracaoLojaIntegradaChanged` is
 the THIRD `onDocumentWritten` on `integracao/{integracaoId}`, after Mercado
@@ -419,9 +429,32 @@ block when the App Hosting runtime SA joins.
 queue.** `filaEscritaLojaIntegrada` is enqueued by the history trigger and the
 varredura timer, both running as the functions runtime SA and nothing else, so
 `<enqueuing-sa>` is that SA. Grants 1 and 3 are per QUEUE and per SERVICE: run
-each block below a second time with `filaEscritaLojaIntegrada` in place of
-`filaLeituraLojaIntegrada` (or let `TASKS_INVOKER_SA` apply them, below). Grant
-2 is on the account, not the queue: one grant covers both queues.
+grant 1 a second time with the queue `filaEscritaLojaIntegrada` in place of
+`filaLeituraLojaIntegrada`, and grant 3 with the service
+`filaescritalojaintegrada` in place of `filaleituralojaintegrada` (or let
+`TASKS_INVOKER_SA` apply them, below). Grant 2 is on the account, not the
+queue: one grant covers both queues.
+
+⚠️ **The writes queue's bindings are the reads queue's, by construction.** Both
+queue functions spread the same `tasksInvokerOptions()`, and `TASKS_INVOKER_SA`
+is ONE authoritative list for the whole codebase: every identity named in it
+gets `roles/cloudtasks.enqueuer` on BOTH queues and `roles/run.invoker` on BOTH
+services. Today that is the functions runtime SA alone. When step 4 adds the App
+Hosting runtime SA (the inbound order webhook, an enqueuer of the READS queue),
+that identity will hold the same rights on the writes queue — the one queue that
+writes to Loja Integrada — although nothing in App Hosting enqueues a write.
+Step 4 decides whether to accept that or to give each queue its own invoker
+list; until then the list names one identity and the question does not arise.
+
+⚠️ **A queue name and its Cloud Run service name differ in CASE.** Cloud Tasks
+keeps the function's name (`filaEscritaLojaIntegrada`); the gen2 function's Cloud
+Run service is that name LOWERCASED (`filaescritalojaintegrada`,
+`filaleituralojaintegrada`). Every `gcloud tasks queues …` line below takes the
+queue name, every `gcloud run services …` line the service name. The lowercase
+form follows Cloud Run's naming rule (a service name is lowercase, and
+firebase-tools derives it the same way), but it was not checked against a real
+deploy of this codebase: confirm it on the first deploy (`gcloud run services
+list --region=<region> --project=<project-id>`) before any switch is flipped.
 
 ```bash
 # 1 - permission to CREATE the task. Queue-level, so it can only run once the
@@ -449,7 +482,7 @@ gcloud iam service-accounts add-iam-policy-binding <functions-runtime-sa> \
 # 3 - permission to DISPATCH: roles/run.invoker ON THE SERVICE (see below).
 # ⚠ SINCE #1133 THE DEPLOY APPLIES THIS ONE when TASKS_INVOKER_SA is set. Run it
 # by hand only for a deploy without that variable.
-gcloud run services add-iam-policy-binding filaLeituraLojaIntegrada --region=<region> \
+gcloud run services add-iam-policy-binding filaleituralojaintegrada --region=<region> \
   --project=<project-id> \
   --member="serviceAccount:<enqueuing-sa>" \
   --role="roles/run.invoker"
@@ -526,8 +559,9 @@ firebase-tools skips `setInvokerUpdate` when the option is absent — but a serv
 silent case is what this variable exists for.
 
 Verify it took, with nobody having run gcloud:
-`gcloud run services get-iam-policy filaLeituraLojaIntegrada --region=<region>`,
-and the same for `filaEscritaLojaIntegrada`.
+`gcloud run services get-iam-policy filaleituralojaintegrada --region=<region>`,
+and the same for the service `filaescritalojaintegrada` (Cloud Run service
+names are the LOWERCASED function names; see the case note above).
 
 ### ⚠️ firebase-tools 15.28.2: the first deploy of a NEW queue crashes on the enqueuer binding
 
@@ -588,9 +622,12 @@ flipped:
    `filaEscritaLojaIntegrada`, each with concurrency 1 and one dispatch per
    second (item 6 checks the writes queue in full), and Cloud Scheduler lists
    the schedule functions.
-2. For EACH queue, `gcloud run services get-iam-policy <queue>` and
+2. For EACH queue, `gcloud run services get-iam-policy <service>` and
    `gcloud tasks queues get-iam-policy <queue>` both name every identity in
-   `TASKS_INVOKER_SA`, and
+   `TASKS_INVOKER_SA` — `<queue>` the function name (`filaLeituraLojaIntegrada`,
+   `filaEscritaLojaIntegrada`), `<service>` the same name LOWERCASED
+   (`filaleituralojaintegrada`, `filaescritalojaintegrada`; confirm it with
+   `gcloud run services list` first, as the IAM section says) — and
    `gcloud iam service-accounts get-iam-policy <functions-runtime-sa>` lists
    `roles/iam.serviceAccountUser` for each of them (grant 2, which no deploy
    makes).
@@ -624,15 +661,18 @@ flipped:
    conta has a `pollPedidosLojaIntegrada` document, and no
    `lojaIntegradaImportacaoParada` aviso is open.
 6. **The writes queue (master-plan step 7). `LOJA_INTEGRADA_MODO_RASTREIO`
-   stays `off` until every check of this item passes** — the whole argument
-   that two attempts of one order never write at once rests on these numbers,
-   and a queue created or altered outside the deploy (the 15.28.2 workaround
-   path above) is checked by nothing else:
+   stays `off` until every check of this item passes** — what narrows two
+   attempts of one order writing at once (it does not eliminate it: see "The
+   writes queue is single-file by design" above) rests on these numbers, and a
+   queue created or altered outside the deploy (the 15.28.2 workaround path
+   above) is checked by nothing else:
 
    ```bash
    gcloud tasks queues describe filaEscritaLojaIntegrada --location=<region> --project <project-id>
    # expect rateLimits.maxConcurrentDispatches: 1, maxDispatchesPerSecond: 1,
    # retryConfig.maxAttempts: 3, minBackoff: 300s, maxBackoff: 300s, maxDoublings: 0
+   # The Cloud Run SERVICE is the function name LOWERCASED (the IAM section's
+   # case note) — the queue above keeps its case:
    gcloud run services describe filaescritalojaintegrada --region=<region> --project <project-id>
    # expect containerConcurrency: 1 and the max-instances annotation 1
    gcloud scheduler jobs list --location=<region> --project <project-id>

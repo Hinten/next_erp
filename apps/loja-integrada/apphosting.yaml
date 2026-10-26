@@ -61,16 +61,19 @@ runConfig:
 #   LOJA_INTEGRADA_MODO_ESTOQUE            Write valves, `off | dry-run | on`; only the
 #   LOJA_INTEGRADA_MODO_PRECO              exact `on` writes and the exact `dry-run`
 #   LOJA_INTEGRADA_MODO_ANUNCIO            diffs. Read from step 7 onward.
-#   LOJA_INTEGRADA_MODO_RASTREIO           ⚠️ The rastreio pair has NO reader in this
-#   LOJA_INTEGRADA_MODO_WEBHOOK_REGISTRO   backend: the status write-back (step 7) runs in
-#                                          the functions codebase only — its trigger, the
-#                                          writes queue and its varredura — so set the
-#                                          pair in its `.env.deploy`; a row here does
-#                                          nothing.
+#   LOJA_INTEGRADA_MODO_WEBHOOK_REGISTRO
 #   LOJA_INTEGRADA_CANARIO_ESTOQUE         Canary lists, read from step 7 onward:
 #   LOJA_INTEGRADA_CANARIO_PRECO           unset = no target, exactly `*` = every
 #   LOJA_INTEGRADA_CANARIO_ANUNCIO         target, else `<contaId>:<n>,…` (see the
-#   LOJA_INTEGRADA_CANARIO_RASTREIO        root `.env.example`). Rastreio's: functions only.
+#                                          root `.env.example`).
+#
+#   LOJA_INTEGRADA_MODO_RASTREIO           ⚠️ The RASTREIO pair (the status write-back,
+#   LOJA_INTEGRADA_CANARIO_RASTREIO        step 7) is the exception to "set alike": it
+#                                          has NO reader in this backend. The write-back
+#                                          runs in the functions codebase only — its
+#                                          trigger, the writes queue and its varredura —
+#                                          so set BOTH in its `.env.deploy`; a row for
+#                                          either here does nothing.
 #
 # Read ONLY by the nested functions codebase (step 3), so a row for any of them
 # here would be read by nothing: LOJA_INTEGRADA_TASKS_REGION,
