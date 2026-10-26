@@ -228,9 +228,9 @@ function tipoAlvoOuNull(tipo: unknown): TipoAlvoMapaFreteLi | null {
  * A pedido imported from Loja Integrada points `freteInicial.integracaoFreteOuterRef` either at a
  * label TARGET (one of {@link TIPOS_ALVO_MAPA_FRETE_LI}, routed at import) or at its conta's Loja
  * Integrada `int_frete` doc (unmapped, deliberately mapped to `fob`/`outros`, or routed by an
- * aviso). Only the second needs routing before a label: the routing route is to re-point the ref
- * at the target this section resolves, and the web's read-only preview to ask the same questions
- * with the same functions, so the two can never answer differently.
+ * aviso). Only the second needs routing before a label: the routing route re-points the ref at
+ * the target this section resolves, and the web's read-only preview asks the same questions with
+ * the same functions, so the two can never answer differently.
  *
  * The sequence, for one pedido:
  *
@@ -595,7 +595,7 @@ const PREFIXO_REF_INT_FRETE = 'documents/int_frete/';
  * The `int_frete` doc id a stored REF names, or `null` when it names none — the ONE reader of an
  * `int_frete` ref on the label route. {@link planejarRotaEtiquetaLi} reads a stored override
  * (`integracaoTargetOuterRef`), and the stored `integracaoFreteOuterRef` beside it, through it;
- * the routing route and the web's read-only preview are to read the pedido's
+ * the routing route and the web's read-only preview read the pedido's
  * `integracaoFreteOuterRef` through it before any read. So the three can never disagree on which
  * doc a ref names, and a ref naming none is never read at all. The inverse of the ref a route
  * writes (`integracaoFreteOuterRef` in {@link ConclusaoRotaEtiquetaLi}).
