@@ -7,8 +7,12 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
   avisoCollection,
+  intFreteCollection,
   integracaoCollection,
   notificacaoAmazonCollection,
+  pagamentoCollection,
+  pedidoCollection,
+  produtoAmazonLinkCollection,
 } from '@delfrance/data/admin/collections';
 
 import { FakeDb, asDb, increment } from './fakeDb';
@@ -21,6 +25,8 @@ beforeEach(() => {
 
 const ref = (id: string) => integracaoCollection.docRef(asDb(db), {}, id);
 const contas = () => integracaoCollection.ref(asDb(db), {});
+const pedidoRef = (id: string) => pedidoCollection.docRef(asDb(db), {}, id);
+const pagamentoRef = (id: string) => pagamentoCollection.docRef(asDb(db), { pedidoId: id }, id);
 const CAMINHO = 'integracao/a';
 
 function codigoDe(p: Promise<unknown>): Promise<number | undefined> {
@@ -102,7 +108,7 @@ describe('reads', () => {
   });
 });
 
-describe('queries — only the three indexed shapes', () => {
+describe('queries — only the indexed shapes', () => {
   it('runs the seller-guard shape with exact equality (a missing field never matches)', async () => {
     db.seed('integracao/a', { tipo: 8, selling_partner_id: 'S', ativo: true });
     db.seed('integracao/b', { tipo: 8, ativo: true });
@@ -133,7 +139,7 @@ describe('queries — only the three indexed shapes', () => {
     await expect(q.get()).rejects.toThrow(/fora dos índices/);
   });
 
-  it('refuses any operator but == and <, and a < with a bound that is not a number', () => {
+  it('refuses any operator but ==, < and in, and a < with a bound that is not a number', () => {
     expect(() => contas().where('tipo', '>', 1)).toThrow(/operador/);
     expect(() => contas().where('tipo', '<=', 1)).toThrow(/operador/);
     expect(() => contas().where('tipo', '<', '1')).toThrow(/numérico/);
@@ -242,5 +248,192 @@ describe('step 3: the shared notification store’s exact calls on notificacoesA
     ],
   ])('REFUSES %s (not the declared composite)', async (_c, montar) => {
     await expect(montar(notificacoes()).get()).rejects.toThrow(/fora dos índices/);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                 step 5 (PR 5-d): getAll, the batch, the group               */
+/* -------------------------------------------------------------------------- */
+
+describe('step 5: getAll — ONE consistent read', () => {
+  it('answers in the order asked, every snapshot sharing ONE readTime, an absence included', async () => {
+    db.seed('pedidos/p', { x: 1 });
+    const [a, b] = await db.getAll(pedidoRef('p'), pagamentoRef('p'));
+    expect(a?.exists).toBe(true);
+    expect(a?.data()).toEqual({ x: 1 });
+    expect(a?.updateTime?.isEqual(db.carimboDe('pedidos/p'))).toBe(true);
+    expect(b?.exists).toBe(false);
+    expect(a?.readTime.isEqual(b?.readTime)).toBe(true);
+    expect(db.leituras).toEqual(['pedidos/p', 'pedidos/p/pagamentos/p']);
+  });
+
+  it('refuses a read option (a field mask) and a ref it did not build', () => {
+    expect(() => db.getAll(pedidoRef('p'), { fieldMask: ['x'] })).toThrow(/opções/);
+    expect(() => db.getAll({ path: 'pedidos/p' })).toThrow(/deste fake/);
+    expect(() => db.getAll()).toThrow(/sem referências/);
+  });
+});
+
+describe('step 5: the batch — all or nothing, each write under its own precondition', () => {
+  it('lands every write under ONE commit stamp, numbered, and answers one writeTime per write', async () => {
+    const lido = db.seed('pedidos/p', { x: 1 });
+    const lote = db.batch();
+    lote.update(pedidoRef('p'), { x: 2 }, { lastUpdateTime: lido });
+    lote.create(pagamentoRef('p'), { y: 1 });
+    const resultados = await lote.commit();
+    expect(resultados).toHaveLength(2);
+    expect(db.ler('pedidos/p')).toEqual({ x: 2 });
+    expect(db.ler('pedidos/p/pagamentos/p')).toEqual({ y: 1 });
+    const [w1, w2] = db.escritas;
+    expect(w1?.lote).toBe(1);
+    expect(w2?.lote).toBe(1);
+    expect(w1?.comPrecondicao).toBe(true);
+    expect(w2?.comPrecondicao).toBe(false);
+    expect(w1?.writeTime.isEqual(w2?.writeTime)).toBe(true);
+    expect(resultados[0]?.writeTime.isEqual(w1?.writeTime)).toBe(true);
+    expect(db.carimboDe('pedidos/p')?.isEqual(w1?.writeTime)).toBe(true);
+  });
+
+  it('★ a create over an existing doc fails 6 and writes NO sibling', async () => {
+    const lido = db.seed('pedidos/p', { x: 1 });
+    db.seed('pedidos/p/pagamentos/p', { y: 1 });
+    const lote = db.batch();
+    lote.update(pedidoRef('p'), { x: 2 }, { lastUpdateTime: lido });
+    lote.create(pagamentoRef('p'), { y: 2 });
+    expect(await codigoDe(lote.commit())).toBe(6);
+    expect(db.ler('pedidos/p')).toEqual({ x: 1 });
+    expect(db.escritas).toEqual([]);
+  });
+
+  it('★ a stale precondition fails 9 and writes NO sibling — the concurrent writer lands in the hook', async () => {
+    const lido = db.seed('pedidos/p', { x: 1 });
+    db.antesDaProximaEscrita('pedidos/p', () => {
+      db.seed('pedidos/p', { x: 'outro' });
+    });
+    const lote = db.batch();
+    lote.create(pagamentoRef('p'), { y: 1 });
+    lote.update(pedidoRef('p'), { x: 2 }, { lastUpdateTime: lido });
+    expect(await codigoDe(lote.commit())).toBe(9);
+    expect(db.ler('pedidos/p')).toEqual({ x: 'outro' });
+    expect(db.ler('pedidos/p/pagamentos/p')).toBeUndefined();
+    expect(db.commitsDeLote).toEqual([['pedidos/p/pagamentos/p', 'pedidos/p']]);
+  });
+
+  it('an update naming a doc deleted since its read fails 9 under a stamp, 5 without one', async () => {
+    const lido = db.seed('pedidos/p', { x: 1 });
+    db.apagar('pedidos/p');
+    const comStamp = db.batch();
+    comStamp.update(pedidoRef('p'), { x: 2 }, { lastUpdateTime: lido });
+    expect(await codigoDe(comStamp.commit())).toBe(9);
+    const semStamp = db.batch();
+    semStamp.update(pedidoRef('p'), { x: 2 });
+    expect(await codigoDe(semStamp.commit())).toBe(5);
+    expect(db.ler('pedidos/p')).toBeUndefined();
+  });
+
+  it('refuses what it does not model: an empty commit, two writes on one path, set, delete, a second commit, a foreign ref', async () => {
+    await expect(db.batch().commit()).rejects.toThrow(/vazio/);
+    const dois = db.batch();
+    dois.create(pedidoRef('p'), { x: 1 });
+    expect(() => dois.create(pedidoRef('p'), { x: 2 })).toThrow(/duas escritas/);
+    expect(() => db.batch().set()).toThrow(/set/);
+    expect(() => db.batch().delete()).toThrow(/delete/);
+    const uma = db.batch();
+    uma.create(pedidoRef('q'), { x: 1 });
+    await uma.commit();
+    await expect(uma.commit()).rejects.toThrow(/duas vezes/);
+    expect(() => uma.create(pedidoRef('r'), { x: 1 })).toThrow(/já enviado/);
+    expect(() => db.batch().create({ path: 'pedidos/z' }, { x: 1 })).toThrow(/deste fake/);
+    expect(() => db.batch().update(pedidoRef('p'), {})).toThrow(/vazio/);
+    expect(() => db.batch().create(pedidoRef('p'), { x: undefined })).toThrow(/undefined/);
+  });
+
+  it('has no method shaped like the multi-document read-and-write call', () => {
+    const nomes = [...Object.getOwnPropertyNames(FakeDb.prototype), ...Object.keys(db)];
+    expect(nomes.filter((n) => /transa/i.test(n))).toEqual([]);
+  });
+});
+
+describe('step 5: the prodAmazon collection group and the int_frete lookup', () => {
+  const grupo = () => produtoAmazonLinkCollection.groupQuery(asDb(db));
+  const FORMAS = ['documents/integracao/c1', 'integracao/c1'];
+
+  it('matches the last collection segment at ANY depth, by `in` + `==`, and names the owner', async () => {
+    db.seed('produtos/p1/prodAmazon/l1', { contaAmazonOuterRef: FORMAS[0], sku: 'SKU-1' });
+    db.seed('produtos/p2/prodAmazon/l2', { contaAmazonOuterRef: FORMAS[1], sku: 'SKU-1' });
+    db.seed('produtos/p3/prodAmazon/l3', {
+      contaAmazonOuterRef: 'documents/integracao/c2',
+      sku: 'SKU-1',
+    });
+    db.seed('produtos/p4/prodAmazon/l4', { contaAmazonOuterRef: FORMAS[0], sku: 'sku-1' });
+    db.seed('prodAmazon/solto', { contaAmazonOuterRef: FORMAS[0], sku: 'SKU-1' });
+    const snap = await grupo()
+      .where('contaAmazonOuterRef', 'in', FORMAS)
+      .where('sku', '==', 'SKU-1')
+      .limit(10)
+      .get();
+    // The root-level `prodAmazon/solto` is a member too: its owner is `null`.
+    expect(snap.docs.map((d) => d.ref.parent.parent?.id ?? 'sem-dono').sort()).toEqual([
+      'p1',
+      'p2',
+      'sem-dono',
+    ]);
+    expect(db.consultas.at(-1)).toEqual({
+      colecao: 'prodAmazon',
+      grupo: true,
+      filtros: [
+        ['contaAmazonOuterRef in', FORMAS],
+        ['sku', 'SKU-1'],
+      ],
+      ordens: [],
+      limite: 10,
+      apos: null,
+    });
+  });
+
+  it.each<[string, () => { get: () => Promise<unknown> }]>([
+    ['the conta equality alone', () => grupo().where('contaAmazonOuterRef', '==', 'x')],
+    [
+      'the fields swapped',
+      () => grupo().where('sku', '==', 'x').where('contaAmazonOuterRef', 'in', ['x']),
+    ],
+    [
+      'the same shape on ONE produto’s subcollection (not a group query)',
+      () =>
+        produtoAmazonLinkCollection
+          .ref(asDb(db), { produtoId: 'p1' })
+          .where('contaAmazonOuterRef', 'in', ['x'])
+          .where('sku', '==', 'x'),
+    ],
+  ])('REFUSES %s', async (_c, montar) => {
+    await expect(montar().get()).rejects.toThrow(/fora dos índices/);
+  });
+
+  it('refuses an empty or oversized `in`, and a cursor on a group query', () => {
+    expect(() => grupo().where('contaAmazonOuterRef', 'in', [])).toThrow(/1 a 30/);
+    expect(() =>
+      grupo().where(
+        'contaAmazonOuterRef',
+        'in',
+        Array.from({ length: 31 }, (_, i) => i),
+      ),
+    ).toThrow(/1 a 30/);
+    const cursor = { id: 'x', data: () => ({}) } as never;
+    expect(() => grupo().startAfter(cursor)).toThrow(/grupo/);
+  });
+
+  it('runs the freight lookup’s equality prefix on int_frete', async () => {
+    db.seed('int_frete/amz-c1', {
+      tipo: 'amz',
+      contaAmazonContaFreteAmazonOuterRef: 'documents/integracao/c1',
+      ativo: true,
+    });
+    const snap = await intFreteCollection
+      .ref(asDb(db), {})
+      .where('tipo', '==', 'amz')
+      .where('contaAmazonContaFreteAmazonOuterRef', '==', 'documents/integracao/c1')
+      .where('ativo', '==', true)
+      .get();
+    expect(snap.docs.map((d) => d.id)).toEqual(['amz-c1']);
   });
 });

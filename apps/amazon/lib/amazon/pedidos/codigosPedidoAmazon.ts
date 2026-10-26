@@ -70,7 +70,9 @@ export type EventoPedidoAmazon = (typeof EVENTO_PEDIDO_AMAZON)[keyof typeof EVEN
  * - `reversao-nao-importada`: any other reversal signal on an order this ERP
  *   never stored — a returned, refused or lost package, an executed line
  *   cancellation after shipment, a zeroed or emptied SHIPPED (plan §3 decision
- *   44, the 2026-10-22 answer). No wait: no importer creates such an order.
+ *   44, the 2026-10-22 answer). The importer waits out the same short window
+ *   first, because an importer still holding an older, pre-reversal read could
+ *   otherwise create the pedido after the skip (the importer's header, PR 5-d).
  */
 export const MOTIVO_NAO_IMPORTADO_AMAZON = {
   canceladoNaoImportado: 'cancelado-nao-importado',

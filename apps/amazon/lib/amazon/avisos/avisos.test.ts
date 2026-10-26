@@ -10,6 +10,7 @@ import {
   FUSO_FISCAL,
   MOTIVO_CONTA_AMAZON,
   MOTIVO_IMPORTACAO_PARADA_AMAZON,
+  MOTIVO_PEDIDO_AMAZON,
   ROTAS_AVISO,
   SEVERIDADE_AVISO,
   TIPO_AVISO,
@@ -21,9 +22,13 @@ import { FakeDb, asDb, increment } from '../testing/fakeDb';
 import { AGORA_MS, DIA_MS, caminhoAviso } from '../testing/fixtures';
 import {
   MOTIVO_AVISO_AMAZON,
+  SEVERIDADE_MOTIVO_PEDIDO_AMAZON,
   TIPOS_AVISO_AMAZON,
   TIPOS_AVISO_AMAZON_POR_CONTA,
   agoraUsDe,
+  chavePedidoPrecisaAtencao,
+  sincronizarAvisosDaContaAmazon,
+  sincronizarAvisosDoPedidoAmazon,
   levantarImportacaoParadaAmazon,
   avisarReautorizacao,
   avisarReconexaoPendente,
@@ -606,7 +611,7 @@ describe('amazonImportacaoParada — clocked by the poll document commit time (s
         commit: COMMIT,
         lojaNome: 'Conta Um',
       }),
-    ).toBe(false);
+    ).toBe(false); // (step 4's tipo: always seeded — the step-5 producers below are not)
     expect(db.ler(caminhoAviso(chaveImportacaoParada(ID)))).toMatchObject({
       relogioEvento: COMMIT_US,
       resolucaoMotivo: 'importacao-retomada',
@@ -615,5 +620,201 @@ describe('amazonImportacaoParada — clocked by the poll document commit time (s
     expect((chamada?.[4] as { relogioEvento?: unknown } | undefined)?.relogioEvento).toBe(
       COMMIT_US,
     );
+  });
+});
+
+describe('step 5 (PR 5-d): the order import producers — clocked on the FIRESTORE timeline', () => {
+  const ORDER = '171-9876543-2109876';
+  const PEDIDO = 'a'.repeat(64);
+  const pedido = { integracaoId: ID, orderId: ORDER, pedidoId: PEDIDO };
+  const T1 = { seconds: 20, nanoseconds: 1_000 };
+  const T2 = { seconds: 20, nanoseconds: 2_000 };
+  type MotivoPedido = (typeof MOTIVO_PEDIDO_AMAZON)[keyof typeof MOTIVO_PEDIDO_AMAZON];
+  const chave = (m: MotivoPedido) => caminhoAviso(chavePedidoPrecisaAtencao(ID, ORDER, m));
+
+  it('keys one row per (conta, order, motivo)', () => {
+    expect(chavePedidoPrecisaAtencao(ID, ORDER, MOTIVO_PEDIDO_AMAZON.divergenciaItens)).toBe(
+      chaveDeAviso({
+        tipo: TIPO_AVISO.amazonPedidoPrecisaAtencao,
+        conta: ID,
+        entidade: ORDER,
+        janela: 'divergencia-itens',
+      }),
+    );
+    expect(chavePedidoPrecisaAtencao(ID, ORDER, MOTIVO_PEDIDO_AMAZON.divergenciaItens)).not.toBe(
+      chavePedidoPrecisaAtencao(ID, ORDER, MOTIVO_PEDIDO_AMAZON.statusDesconhecido),
+    );
+  });
+
+  it('every per-pedido motivo has its severity: four critico, four atencao', () => {
+    const criticos = Object.entries(SEVERIDADE_MOTIVO_PEDIDO_AMAZON)
+      .filter(([, s]) => s === SEVERIDADE_AVISO.critico)
+      .map(([m]) => m)
+      .sort();
+    expect(criticos).toEqual([
+      'aceitar-cancelamento',
+      'cancelado-so-no-erp',
+      'divergencia-itens',
+      'logistica-desconhecida',
+    ]);
+    expect(Object.keys(SEVERIDADE_MOTIVO_PEDIDO_AMAZON)).toHaveLength(8);
+  });
+
+  it('★ raises with exactly pedido + motivo, the pedido route, in-app, the clock converted HERE', async () => {
+    const r = await sincronizarAvisosDoPedidoAmazon(asDb(db), deps(), {
+      ...pedido,
+      levantar: [MOTIVO_PEDIDO_AMAZON.divergenciaItens, MOTIVO_PEDIDO_AMAZON.statusDesconhecido],
+      resolver: [],
+      relogio: T1,
+    });
+    expect(r).toEqual({ levantados: 2, resolvidos: 0 });
+    const doc = db.ler(chave(MOTIVO_PEDIDO_AMAZON.divergenciaItens));
+    expect(doc).toMatchObject({
+      tipo: TIPO_AVISO.amazonPedidoPrecisaAtencao,
+      severidade: SEVERIDADE_AVISO.critico,
+      canal: CANAL_AVISO.amazon,
+      params: { pedido: ORDER, motivo: 'divergencia-itens' },
+      motivo: 'divergencia-itens',
+      urlInterna: { rota: ROTAS_AVISO.pedido.build(PEDIDO), campo: null },
+      relogioEvento: relogioDoDocumentoUs(T1),
+      resolvidoEm: null,
+    });
+    expect(Object.keys((doc?.params ?? {}) as object).sort()).toEqual(['motivo', 'pedido']);
+    expect(db.ler(chave(MOTIVO_PEDIDO_AMAZON.statusDesconhecido))?.severidade).toBe(
+      SEVERIDADE_AVISO.atencao,
+    );
+  });
+
+  it('★ a re-import at an EQUAL order clock that no longer derives the motivo resolves it (a newer Firestore clock)', async () => {
+    await sincronizarAvisosDoPedidoAmazon(asDb(db), deps(), {
+      ...pedido,
+      levantar: [MOTIVO_PEDIDO_AMAZON.cancelamentoSolicitado],
+      resolver: [],
+      relogio: T1,
+    });
+    const r = await sincronizarAvisosDoPedidoAmazon(asDb(db), deps(), {
+      ...pedido,
+      levantar: [],
+      resolver: [MOTIVO_PEDIDO_AMAZON.cancelamentoSolicitado],
+      relogio: T2,
+    });
+    expect(r).toEqual({ levantados: 0, resolvidos: 1 });
+    expect(db.ler(chave(MOTIVO_PEDIDO_AMAZON.cancelamentoSolicitado))).toMatchObject({
+      resolucaoMotivo: MOTIVO_AVISO_AMAZON.condicaoEncerrada,
+      relogioEvento: relogioDoDocumentoUs(T2),
+    });
+    // A late raise of the OLDER observation can no longer reopen it.
+    const tardio = await sincronizarAvisosDoPedidoAmazon(asDb(db), deps(), {
+      ...pedido,
+      levantar: [MOTIVO_PEDIDO_AMAZON.cancelamentoSolicitado],
+      resolver: [],
+      relogio: T1,
+    });
+    expect(tardio.levantados).toBe(0);
+    expect(db.ler(chave(MOTIVO_PEDIDO_AMAZON.cancelamentoSolicitado))?.resolvidoEm).not.toBeNull();
+  });
+
+  it('NEAR-MISS: a resolve at the SAME clock as the raise is stale (an equal clock is dropped)', async () => {
+    await sincronizarAvisosDoPedidoAmazon(asDb(db), deps(), {
+      ...pedido,
+      levantar: [MOTIVO_PEDIDO_AMAZON.statusDesconhecido],
+      resolver: [],
+      relogio: T1,
+    });
+    const r = await sincronizarAvisosDoPedidoAmazon(asDb(db), deps(), {
+      ...pedido,
+      levantar: [],
+      resolver: [MOTIVO_PEDIDO_AMAZON.statusDesconhecido],
+      relogio: T1,
+    });
+    expect(r.resolvidos).toBe(0);
+    expect(db.ler(chave(MOTIVO_PEDIDO_AMAZON.statusDesconhecido))?.resolvidoEm).toBeNull();
+  });
+
+  it('★ a resolve touches only a row that EXISTS: no seed for a motivo never raised (one getAll first)', async () => {
+    const r = await sincronizarAvisosDoPedidoAmazon(asDb(db), deps(), {
+      ...pedido,
+      levantar: [],
+      resolver: [MOTIVO_PEDIDO_AMAZON.divergenciaItens, MOTIVO_PEDIDO_AMAZON.canceladoSoNoErp],
+      relogio: T2,
+    });
+    expect(r).toEqual({ levantados: 0, resolvidos: 0 });
+    expect(db.escritas).toEqual([]);
+    expect(h.resolverAviso).not.toHaveBeenCalled();
+    expect(db.leituras).toEqual([
+      chave(MOTIVO_PEDIDO_AMAZON.divergenciaItens),
+      chave(MOTIVO_PEDIDO_AMAZON.canceladoSoNoErp),
+    ]);
+  });
+
+  it('a RESOLVED row has its watermark advanced by a newer clock (the shared resolver rule), never reopened', async () => {
+    await sincronizarAvisosDoPedidoAmazon(asDb(db), deps(), {
+      ...pedido,
+      levantar: [MOTIVO_PEDIDO_AMAZON.aceitarCancelamento],
+      resolver: [],
+      relogio: T1,
+    });
+    await sincronizarAvisosDoPedidoAmazon(asDb(db), deps(), {
+      ...pedido,
+      levantar: [],
+      resolver: [MOTIVO_PEDIDO_AMAZON.aceitarCancelamento],
+      relogio: T2,
+    });
+    const T3 = { seconds: 20, nanoseconds: 3_000 };
+    await sincronizarAvisosDoPedidoAmazon(asDb(db), deps(), {
+      ...pedido,
+      levantar: [],
+      resolver: [MOTIVO_PEDIDO_AMAZON.aceitarCancelamento],
+      relogio: T3,
+    });
+    const doc = db.ler(chave(MOTIVO_PEDIDO_AMAZON.aceitarCancelamento));
+    expect(doc?.relogioEvento).toBe(relogioDoDocumentoUs(T3));
+    expect(doc?.resolvidoEm).not.toBeNull();
+  });
+
+  describe('per conta — clocked by the conta read', () => {
+    type MotivoConta = (typeof MOTIVO_CONTA_AMAZON)[keyof typeof MOTIVO_CONTA_AMAZON];
+    const contaChave = (m: MotivoConta) => caminhoAviso(chaveContaPrecisaAtencao(ID, m));
+
+    it('raises atencao with exactly the motivo, on the conta route', async () => {
+      await sincronizarAvisosDaContaAmazon(asDb(db), deps(), {
+        integracaoId: ID,
+        levantar: [MOTIVO_CONTA_AMAZON.contaSemOperacao],
+        resolver: [],
+        relogio: T1,
+      });
+      expect(db.ler(contaChave(MOTIVO_CONTA_AMAZON.contaSemOperacao))).toMatchObject({
+        tipo: TIPO_AVISO.amazonContaPrecisaAtencao,
+        severidade: SEVERIDADE_AVISO.atencao,
+        params: { motivo: 'conta-sem-operacao' },
+        urlInterna: { rota: `/canais/amazon/${ID}`, campo: null },
+        relogioEvento: relogioDoDocumentoUs(T1),
+      });
+    });
+
+    it('★ an import whose conta read PREDATES the operator fix cannot reopen the row a later import resolved', async () => {
+      await sincronizarAvisosDaContaAmazon(asDb(db), deps(), {
+        integracaoId: ID,
+        levantar: [MOTIVO_CONTA_AMAZON.contaSemOperacao],
+        resolver: [],
+        relogio: T1,
+      });
+      // A later import read the conta after the fix.
+      await sincronizarAvisosDaContaAmazon(asDb(db), deps(), {
+        integracaoId: ID,
+        levantar: [],
+        resolver: [MOTIVO_CONTA_AMAZON.contaSemOperacao],
+        relogio: { seconds: 30, nanoseconds: 0 },
+      });
+      // The slower import read it BEFORE the fix (an older read time).
+      const r = await sincronizarAvisosDaContaAmazon(asDb(db), deps(), {
+        integracaoId: ID,
+        levantar: [MOTIVO_CONTA_AMAZON.contaSemOperacao],
+        resolver: [],
+        relogio: { seconds: 25, nanoseconds: 0 },
+      });
+      expect(r.levantados).toBe(0);
+      expect(db.ler(contaChave(MOTIVO_CONTA_AMAZON.contaSemOperacao))?.resolvidoEm).not.toBeNull();
+    });
   });
 });
