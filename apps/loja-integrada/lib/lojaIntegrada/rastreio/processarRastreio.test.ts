@@ -116,6 +116,7 @@ interface Cenario {
     estado?: EstadoRastreioLi;
     eventoEmMs?: number;
     passagemFinal?: PassagemFinalLi;
+    escritaRecentePossivel?: boolean;
     ambiente?: AmbienteLi;
   }): Promise<ResultadoRastreioLi>;
   aviso(): Record<string, unknown> | undefined;
@@ -181,6 +182,8 @@ function cenario(
         estado,
         eventoEmMs: r.eventoEmMs ?? EVENTO_MS,
         passagemFinal: r.passagemFinal ?? null,
+        // A sweep pass at least an hour after any earlier run, unless a test says otherwise.
+        escritaRecentePossivel: r.escritaRecentePossivel ?? false,
       };
       return processarRastreioLi(asDb(db), evento, deps(r.ambiente ?? amb));
     },
@@ -339,6 +342,61 @@ describe('a posting with a sendable code', () => {
     expect(c.p.puts()).toHaveLength(antes);
   });
 
+  it('⚠️ a run that may come less than an hour after this event’s code landed (a task attempt, a row the deferred lane just sent back) NEVER writes the 11 over our unmoved code', async () => {
+    // LI at 4 already holding our code: the move may still be on its way.
+    const c = cenario({ objeto: CODIGO });
+    expect(await c.rodar({ escritaRecentePossivel: true })).toEqual({
+      kind: 'parcial',
+      efeito: 'efeito-pendente',
+    });
+    expect(c.p.chamadas()).toEqual([GET_PEDIDO]);
+    expect(escritas(c.linhas, 'efeito-pendente')).toHaveLength(1);
+    expect(escritas(c.linhas, 'objeto-sem-efeito')).toEqual([]);
+    expect(c.aviso()).toBeUndefined();
+
+    // A pass at least an hour later still sees no move: now, and only now, the 11.
+    expect(await c.rodar()).toEqual({ kind: 'escrito' });
+    expect(c.p.puts()).toEqual([
+      { metodo: 'PUT', caminho: CAMINHO_SITUACAO_LI, corpo: { codigo: C.pedidoEnviado } },
+    ]);
+    expect(escritas(c.linhas, 'objeto-sem-efeito')).toHaveLength(1);
+  });
+
+  it('⚠️ NEAR-MISS: such a run still sends the code when LI’s objeto is EMPTY, still writes 11 without a sendable code, and still closes when LI moved', async () => {
+    const c = cenario();
+    expect(await c.rodar({ escritaRecentePossivel: true })).toEqual({ kind: 'escrito' });
+    expect(c.p.puts().map((r) => r.caminho)).toEqual([CAMINHO_ENVIO_LI]);
+
+    const d = cenario({ codRastreio: null });
+    expect(await d.rodar({ escritaRecentePossivel: true })).toEqual({ kind: 'escrito' });
+    expect(d.p.puts().map((r) => r.corpo)).toEqual([{ codigo: C.pedidoEnviado }]);
+
+    const f = cenario({ codigo: C.pedidoEnviado, objeto: CODIGO });
+    expect(await f.rodar({ escritaRecentePossivel: true })).toEqual({ kind: 'ja-refletido' });
+    expect(f.p.puts()).toEqual([]);
+  });
+
+  it('a code PUT that LANDED but answered 503: the retried attempt sends NOTHING while LI has not moved', async () => {
+    const c = cenario({ mover: false });
+    c.p.fila.push(
+      naProxima(CAMINHO_ENVIO_LI, 'PUT', () => {
+        (c.p.estado.pedido.envios as { objeto: string | null }[])[0]!.objeto = CODIGO;
+        return respostaJson(503, {});
+      }),
+    );
+    await expect(c.rodar()).rejects.toBeInstanceOf(LiHttpError);
+    expect(c.p.puts()).toHaveLength(1);
+    // The Cloud Tasks retry, minutes later: one guard GET, no write.
+    const antes = c.p.requisicoes.length;
+    expect(await c.rodar({ escritaRecentePossivel: true })).toEqual({
+      kind: 'parcial',
+      efeito: 'efeito-pendente',
+    });
+    expect(c.p.requisicoes.slice(antes).map((r) => `${r.metodo} ${r.caminho}`)).toEqual([
+      GET_PEDIDO,
+    ]);
+  });
+
   it('at 11 with an EMPTY LI objeto ⇒ exactly one PUT (the code), NO history read; at 11 with our code ⇒ zero PUTs', async () => {
     const c = cenario({ codigo: C.pedidoEnviado });
     expect(await c.rodar()).toEqual({ kind: 'escrito' });
@@ -359,15 +417,73 @@ describe('a posting with a sendable code', () => {
       expect(await c.rodar()).toEqual({ kind: 'parcial', efeito: 'nao-verificado' });
       expect(c.p.puts()).toHaveLength(1);
       expect(c.aviso()).toBeUndefined();
+      // The move the run could not see is still checked against the history.
+      expect(c.p.chamadas()).toEqual([GET_PEDIDO, PUT_ENVIO, GET_PEDIDO, GET_HISTORICO]);
+      expect(doEvento(c.linhas, 'conferencia-historico')[0]?.campos).toMatchObject({
+        resultado: 'conferido',
+      });
     }
   });
 
-  it('a 202 ⇒ parcial (accepted, maybe not applied), no read-back, NO deriva aviso', async () => {
+  it('a 202 ⇒ parcial (accepted, maybe not applied), no read-back, NO deriva aviso — the history read only', async () => {
     const c = cenario();
     c.p.fila.push(naProxima(CAMINHO_ENVIO_LI, 'PUT', () => respostaJson(202, undefined)));
     expect(await c.rodar()).toEqual({ kind: 'parcial', efeito: 'aceito' });
-    expect(c.p.chamadas()).toEqual([GET_PEDIDO, PUT_ENVIO]);
+    expect(c.p.chamadas()).toEqual([GET_PEDIDO, PUT_ENVIO, GET_HISTORICO]);
+    // Not applied yet: no row of ours — a WARNING, never an aviso.
+    expect(doEvento(c.linhas, 'conferencia-historico')[0]).toMatchObject({
+      severidade: 'WARNING',
+      campos: { resultado: 'sem-linha' },
+    });
     expect(c.aviso()).toBeUndefined();
+  });
+
+  it('⚠️ the code read-back fails, and the history shows a cancellation request overwritten in the gap ⇒ situacao-sobrescrita CRITICO, park', async () => {
+    const c = cenario();
+    let fase = 0;
+    c.p.fila.push((r) => {
+      if (fase === 0 && r.metodo === 'PUT' && r.caminho === CAMINHO_ENVIO_LI) {
+        // The buyer asks to cancel in the instant before our code lands; the
+        // default route then stores the code and moves 1019 → 11.
+        c.p.mover(C.cancelamentoSolicitado);
+        fase = 1;
+        return null;
+      }
+      if (fase === 1 && r.metodo === 'GET' && r.caminho === CAMINHO_PEDIDO_LI) {
+        return respostaJson(429, {});
+      }
+      return null;
+    });
+    expect(await c.rodar()).toEqual({ kind: 'escrito-com-aviso', motivo: M.situacaoSobrescrita });
+    expect(c.p.puts()).toHaveLength(1);
+    expect(c.aviso()).toMatchObject({
+      severidade: SEVERIDADE_AVISO.critico,
+      params: { motivo: M.situacaoSobrescrita, situacao: C.cancelamentoSolicitado },
+    });
+  });
+
+  it('⚠️ a 202 LI applied at once, over a cancellation request in the gap ⇒ situacao-sobrescrita CRITICO', async () => {
+    const c = cenario();
+    c.p.fila.push(
+      naProxima(CAMINHO_ENVIO_LI, 'PUT', () => {
+        c.p.mover(C.cancelamentoSolicitado);
+        (c.p.estado.pedido.envios as { objeto: string | null }[])[0]!.objeto = CODIGO;
+        c.p.mover(C.pedidoEnviado);
+        return respostaJson(202, undefined);
+      }),
+    );
+    expect(await c.rodar()).toEqual({ kind: 'escrito-com-aviso', motivo: M.situacaoSobrescrita });
+    expect(c.aviso()).toMatchObject({ severidade: SEVERIDADE_AVISO.critico });
+  });
+
+  it('⚠️ NEAR-MISS: the code onto an order the deciding read saw at 11 is never history-checked (an accepted residual)', async () => {
+    const c = cenario({ codigo: C.pedidoEnviado });
+    c.p.fila.push(
+      naProxima(CAMINHO_PEDIDO_LI, 'GET', () => respostaJson(200, c.p.estado.pedido)),
+      naProxima(CAMINHO_PEDIDO_LI, 'GET', () => respostaJson(429, {})),
+    );
+    expect(await c.rodar()).toEqual({ kind: 'parcial', efeito: 'nao-verificado' });
+    expect(c.p.chamadas()).toEqual([GET_PEDIDO, PUT_ENVIO, GET_PEDIDO]);
   });
 
   it('a read-back holding ANOTHER code ⇒ deriva aviso, park', async () => {
@@ -424,7 +540,7 @@ describe('a posting with a sendable code', () => {
     expect(c.p.puts().map((r) => r.caminho)).toEqual([CAMINHO_ENVIO_LI]);
   });
 
-  it('⚠️ the situação after a refused code is decided from the SECOND read, never the first', async () => {
+  it('⚠️ the situação after a refused code is decided from the SECOND read, never the first — and its refusal is the aviso the operator sees', async () => {
     // LI moved to 1019 between the two reads: the first read said 4.
     const c = cenario();
     c.p.fila.push(
@@ -433,9 +549,43 @@ describe('a posting with a sendable code', () => {
         return respostaJson(400, {});
       }),
     );
-    expect(await c.rodar()).toEqual({ kind: 'recusado', motivo: M.escritaRecusada, status: 400 });
+    expect(await c.rodar()).toEqual({
+      kind: 'recusado',
+      motivo: M.situacaoBloqueada,
+      status: null,
+    });
     expect(c.p.puts().map((r) => r.caminho)).toEqual([CAMINHO_ENVIO_LI]);
+    // The cancellation request outranks the refused code.
+    expect(c.aviso()).toMatchObject({
+      params: { motivo: M.situacaoBloqueada, situacao: C.cancelamentoSolicitado },
+    });
   });
+
+  it.each([
+    ['off its schema', () => respostaJson(200, { numero: 'x' })],
+    ['400', () => respostaJson(400, {})],
+    ['302', () => new Response('', { status: 302, headers: { location: '/x' } })],
+  ])(
+    'the code refused (400) and the SECOND read %s ⇒ the escrita-recusada aviso is still raised, park, ONE ERROR line',
+    async (_caso, segunda) => {
+      const c = cenario();
+      c.p.fila.push(
+        naProxima(CAMINHO_ENVIO_LI, 'PUT', () => respostaJson(400, {})),
+        naProxima(CAMINHO_PEDIDO_LI, 'GET', segunda),
+      );
+      expect(await c.rodar()).toEqual({
+        kind: 'recusado',
+        motivo: M.escritaRecusada,
+        status: 400,
+      });
+      expect(c.p.puts().map((r) => r.caminho)).toEqual([CAMINHO_ENVIO_LI]);
+      expect(c.aviso()).toMatchObject({
+        params: { motivo: M.escritaRecusada, status: 400 },
+        resolvidoEm: null,
+      });
+      expect(c.erros).toHaveLength(1);
+    },
+  );
 
   it('a later `entregue` after such a refusal still writes 14', async () => {
     const c = cenario();
@@ -666,6 +816,37 @@ describe('a decision that is not `on` defers every outcome but ja-refletido and 
     expect(c.aviso()).toBeUndefined();
   });
 
+  it.each([
+    ['dry-run', ambiente(MODO_LI.dryRun), 'dry-run'],
+    ['outside the canary', ambiente(MODO_LI.on, 'outra-conta:1'), 'fora-do-canario'],
+    ['on with no list', ambiente(MODO_LI.on, null), 'sem-canario'],
+  ])(
+    '⚠️ %s: a deterministic refusal of the deciding read DEFERS (replayed under `on`), never parks',
+    async (_caso, amb, motivo) => {
+      for (const resposta of [
+        () => respostaJson(200, { numero: 'x' }),
+        () => respostaJson(400, {}),
+        () => new Response('', { status: 302, headers: { location: '/x' } }),
+      ]) {
+        const c = cenario({ ambiente: amb });
+        c.p.fila.push(naProxima(CAMINHO_PEDIDO_LI, 'GET', resposta));
+        expect(await c.rodar()).toEqual({ kind: 'adiado', motivo, recusa: null });
+        expect(c.p.puts()).toEqual([]);
+        expect(c.aviso()).toBeUndefined();
+        // One WARNING line names the class; nothing is parked, so no ERROR line.
+        expect(c.avisos.filter((a) => String(a[0]).includes('recusa determinística'))).toHaveLength(
+          1,
+        );
+        expect(c.erros).toEqual([]);
+        // Under `on` the same refusal parks (with its ERROR line).
+        c.p.fila.push(naProxima(CAMINHO_PEDIDO_LI, 'GET', resposta));
+        expect((await c.rodar({ ambiente: ambiente(MODO_LI.on) })).kind).toBe(
+          'recusa-deterministica',
+        );
+      }
+    },
+  );
+
   it('dry-run: a 404 guard read ⇒ adiado with pedido-ausente, no aviso', async () => {
     const c = cenario({ ambiente: ambiente(MODO_LI.dryRun) });
     c.p.fila.push(naProxima(CAMINHO_PEDIDO_LI, 'GET', () => respostaJson(404, {})));
@@ -799,6 +980,48 @@ describe('a 401/403 on a PUT, with the token still reading', () => {
     expect(c.p.puts()).toHaveLength(1);
   });
 
+  it.each([
+    ['404', () => respostaJson(404, {})],
+    ['off its schema', () => respostaJson(200, { numero: 'x' })],
+    ['400', () => respostaJson(400, {})],
+    ['302', () => new Response('', { status: 302, headers: { location: '/x' } })],
+  ])(
+    '⚠️ a situação 403 whose confirming GET answers %s ⇒ nothing concluded: throws EscritaRecusadaLiError — on the last pass too, never a silent park',
+    async (_caso, confirmacao) => {
+      for (const passagemFinal of [null, 'quente'] as const) {
+        const c = cenario({ codRastreio: null });
+        c.p.fila.push(
+          naProxima(CAMINHO_SITUACAO_LI, 'PUT', () => respostaJson(403, {})),
+          naProxima(CAMINHO_PEDIDO_LI, 'GET', confirmacao),
+        );
+        await expect(c.rodar({ passagemFinal })).rejects.toBeInstanceOf(EscritaRecusadaLiError);
+        expect(c.p.puts()).toHaveLength(1);
+        expect(c.aviso()).toBeUndefined();
+        expect(c.db.ler(caminhoCredencial(ID))?.reconexaoPendente).toBeNull();
+      }
+    },
+  );
+
+  it.each([
+    ['404', () => respostaJson(404, {})],
+    ['off its schema', () => respostaJson(200, { numero: 'x' })],
+    ['400', () => respostaJson(400, {})],
+  ])(
+    '⚠️ a code 403 whose confirming (second) GET answers %s ⇒ nothing concluded: throws EscritaRecusadaLiError',
+    async (_caso, confirmacao) => {
+      for (const passagemFinal of [null, 'quente'] as const) {
+        const c = cenario();
+        c.p.fila.push(
+          naProxima(CAMINHO_ENVIO_LI, 'PUT', () => respostaJson(403, {})),
+          naProxima(CAMINHO_PEDIDO_LI, 'GET', confirmacao),
+        );
+        await expect(c.rodar({ passagemFinal })).rejects.toBeInstanceOf(EscritaRecusadaLiError);
+        expect(c.p.puts()).toHaveLength(1);
+        expect(c.aviso()).toBeUndefined();
+      }
+    },
+  );
+
   it('the LAST hot pass, code still 403 ⇒ aviso escrita-recusada(403), then the 11 PUT from the second base', async () => {
     const c = cenario();
     c.p.fila.push(naProxima(CAMINHO_ENVIO_LI, 'PUT', () => respostaJson(403, {})));
@@ -902,6 +1125,50 @@ describe('other refusals of a PUT', () => {
       expect(c.aviso()).toMatchObject({ params: { motivo: M.escritaRecusada, status } });
     },
   );
+
+  it('⚠️ no stored envio, then the situação PUT refused (400) ⇒ the aviso is escrita-recusada(400), never envio-divergente', async () => {
+    const c = cenario({ externalId: null });
+    c.p.fila.push(naProxima(CAMINHO_SITUACAO_LI, 'PUT', () => respostaJson(400, {})));
+    expect(await c.rodar()).toEqual({ kind: 'recusado', motivo: M.escritaRecusada, status: 400 });
+    expect(c.aviso()).toMatchObject({ params: { motivo: M.escritaRecusada, status: 400 } });
+  });
+
+  it('⚠️ no stored envio, then the situação PUT 403 on the last hot pass ⇒ escrita-recusada(403)', async () => {
+    const c = cenario({ externalId: null });
+    c.p.fila.push(naProxima(CAMINHO_SITUACAO_LI, 'PUT', () => respostaJson(403, {})));
+    expect(await c.rodar({ passagemFinal: 'quente' })).toEqual({
+      kind: 'recusado',
+      motivo: M.escritaRecusada,
+      status: 403,
+    });
+    expect(c.aviso()).toMatchObject({ params: { motivo: M.escritaRecusada, status: 403 } });
+  });
+
+  it('⚠️ an invalid stored code, then the 11’s read-back shows another situação ⇒ the deriva aviso, never objeto-invalido', async () => {
+    const c = cenario({ codRastreio: `${CODIGO} ` });
+    c.p.fila.push(
+      naProxima(CAMINHO_PEDIDO_LI, 'GET', () => respostaJson(200, c.p.estado.pedido)),
+      naProxima(CAMINHO_PEDIDO_LI, 'GET', () => {
+        c.p.mover(C.cancelamentoSolicitado);
+        return respostaJson(200, c.p.estado.pedido);
+      }),
+    );
+    expect(await c.rodar()).toEqual({ kind: 'escrito-com-aviso', motivo: M.deriva });
+    expect(c.aviso()).toMatchObject({ params: { motivo: M.deriva } });
+  });
+
+  it('an invalid stored code and a sobrescrita in the same run ⇒ the sobrescrita wins', async () => {
+    const c = cenario({ codRastreio: `${CODIGO} ` });
+    c.p.fila.push((r) => {
+      if (r.metodo === 'PUT' && r.caminho === CAMINHO_SITUACAO_LI) c.p.mover(C.pagamentoEmDisputa);
+      return null;
+    });
+    expect(await c.rodar()).toEqual({ kind: 'escrito-com-aviso', motivo: M.situacaoSobrescrita });
+    expect(c.aviso()).toMatchObject({
+      severidade: SEVERIDADE_AVISO.critico,
+      params: { situacao: C.pagamentoEmDisputa },
+    });
+  });
 
   it('a 503 or 429 on a PUT ⇒ throw (it may have landed; the retry’s guard GET decides)', async () => {
     for (const status of [503, 429]) {

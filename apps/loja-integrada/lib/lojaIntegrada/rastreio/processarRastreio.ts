@@ -24,7 +24,9 @@
  *  8. Not `on` (dry-run, outside the canary, no canary): a diff line for what
  *     `on` would write, then EVERY outcome but `ja-refletido` DEFERS, carrying the
  *     would-be refusal in its reason — no aviso, no write; the flip to `on`
- *     replays it.
+ *     replays it. A deciding read refused for good (a body off its schema, a
+ *     3xx or 4xx that is not a 404) defers too, with one WARNING line: only a
+ *     run under `on` parks it.
  *  9. `on`: at most ONE write that lands. A posting with a sendable code writes
  *     the code ALONE — Loja Integrada moves the order to `pedido_enviado` and
  *     e-mails the buyer by itself — and the read-back CHECKS the move: seen ⇒
@@ -32,14 +34,30 @@
  *     run at least an hour later decides from a fresh read. A refused code
  *     raises `escrita-recusada`, and a SECOND deciding read decides 11. A
  *     situação write is read back and then checked against the situação history.
- *     Any aviso is raised ONCE, at the end, clocked by the event.
+ *     A write that landed but whose effect the run did not see (its read-back
+ *     failed, or a 202) is still checked against the history. Any aviso is
+ *     raised ONCE, at the end, clocked by the event; when a run meets more than
+ *     one motivo, the most serious wins (`pesoDoMotivo`).
+ *
+ * ## The 11 over our own unmoved code waits an hour
+ *
+ * Loja Integrada already holding our code at a codigo before shipment means a
+ * code PUT landed and the move to 11 has not been seen yet. Only a run at least
+ * an hour after that code may have landed writes the 11 (WARNING
+ * `objeto-sem-efeito`); a run that may come sooner
+ * ({@link EventoRastreioLi.escritaRecentePossivel}: a Cloud Tasks attempt, a row
+ * the deferred lane just sent back) ends `parcial/efeito-pendente` with no write,
+ * so a slow Loja Integrada never costs a second e-mail.
  *
  * ## A write refused with 401/403
  *
  * The refusal is confirmed with one paced read on the SAME, pinned credential
  * (for the tracking code, the second deciding read IS that confirmation). The
  * read refused too ⇒ the conta is parked (`tratarFalhaDeAutenticacao`) and the
- * event defers. The read fine ⇒ on any try but a `failed` row's LAST hot pass,
+ * event defers. A read that neither reads the order nor refuses the credential
+ * (a 404, a 3xx or 4xx, a body off its schema, a 429, a 5xx, a timeout)
+ * concludes nothing: it throws, on every pass, and the row's cap reports it
+ * (`tentativas-esgotadas`). The read fine ⇒ on any try but a `failed` row's LAST hot pass,
  * one WARNING `recusada-retentativa` and {@link EscritaRecusadaLiError} (the
  * whole job retries from a fresh read, never the write alone, and no situação is
  * written meanwhile: a later code write that lands moves the order and e-mails
@@ -65,7 +83,12 @@
  * in the gap between the deciding read and the write is REPORTED by the history
  * check (`situacao-sobrescrita`); a tracking code typed in the painel inside that
  * gap is overwritten undetected (Loja Integrada keeps no history of it — an
- * accepted residual). There is no Loja Integrada precondition to use: the writes
+ * accepted residual). So is a situação move in the gap before our code lands on
+ * an order the deciding read saw ALREADY at 11 (a delivery or a cancellation
+ * request the code's own move to 11 then overwrites): the history check anchors
+ * on the codigo the deciding read saw, and with that codigo equal to the one
+ * the move writes it has no anchor to judge from, so it is not run there — an
+ * accepted residual. There is no Loja Integrada precondition to use: the writes
  * take no version. Firestore: only the aviso (tier 2, the event clock) and the
  * park (tier 1); pedidos are never written.
  *
@@ -185,6 +208,14 @@ export interface EventoRastreioLi {
   /** The event's own stamp, in MILLISECONDS: the aviso's clock. */
   readonly eventoEmMs: number;
   readonly passagemFinal: PassagemFinalLi;
+  /**
+   * Whether this run may come LESS than an hour after an earlier run of the
+   * same event landed a write (derived, never persisted): every Cloud Tasks
+   * attempt, and a `failed` row the deferred lane just sent back. Such a run
+   * never writes 11 over our code Loja Integrada has not acted on yet — the
+   * move may still be on its way (module header).
+   */
+  readonly escritaRecentePossivel: boolean;
 }
 
 /** The run's ONE logger: the park's lines, the deterministic refusals, the sweep's warnings. */
@@ -496,18 +527,24 @@ export async function processarRastreioLi(
       ? deterministica('alvo-invalido', null)
       : await depoisDaDecisao(db, evento, deps, inicio, alvo, registro, pedido);
 
-  if (resultado.kind === 'recusa-deterministica')
-    registrarRecusaDeterministica(evento, deps, resultado);
+  if (resultado.kind === 'recusa-deterministica') {
+    registrarRecusaDeterministica(evento, deps, resultado, 'estacionada');
+  }
   return resultado;
 }
 
-/** The ERROR line of a deterministic park: ids and the class only, never a body or a message. */
+/**
+ * The line of a deterministic refusal — ids and the class only, never a body or
+ * a message: ERROR when it parks the event, WARNING when a decision that is not
+ * `on` defers it (it is replayed, and parks only under `on`).
+ */
 function registrarRecusaDeterministica(
   evento: EventoRastreioLi,
   deps: DepsEscritaLi,
   r: ResultadoRastreioLi & { readonly kind: 'recusa-deterministica' },
+  desfecho: 'estacionada' | 'adiada',
 ): void {
-  const linha = '[loja-integrada] escrita estacionada: recusa determinística';
+  const linha = `[loja-integrada] escrita ${desfecho}: recusa determinística`;
   const ids = {
     integracaoId: evento.contaId,
     numero: evento.numero,
@@ -515,6 +552,11 @@ function registrarRecusaDeterministica(
     classe: r.classe,
     detalhe: r.detalhe,
   };
+  if (desfecho === 'adiada') {
+    if (deps.logger === undefined) console.warn(linha, ids);
+    else deps.logger.warn(linha, ids);
+    return;
+  }
   if (deps.logger?.error === undefined) console.error(linha, ids);
   else deps.logger.error(linha, ids);
 }
@@ -572,6 +614,12 @@ async function depoisDaDecisao(
   } catch (err) {
     r = await classificarFalhaDeLeituraLi(db, err, contexto, deps);
     if (r === null) throw err;
+    // Not `on`: a refusal for good defers like every other outcome, so the flip
+    // to `on` replays it — only a run under `on` parks it.
+    if (r.kind === 'recusa-deterministica' && decisao.modo === MODO_LI.dryRun) {
+      registrarRecusaDeterministica(evento, deps, r, 'adiada');
+      r = adiado(motivoDoAdiamento(decisao));
+    }
   }
   if (preparo !== null) {
     switch (decisao.modo) {
@@ -664,9 +712,42 @@ async function executarSemEscrever(
 /*                         Step 9: `on`, one write per run                    */
 /* -------------------------------------------------------------------------- */
 
-/** Set the run's ONE aviso: the first one wins, except an overwrite report, which always does. */
+/**
+ * How serious a motivo is, for the run's ONE aviso. Highest first: a situação
+ * overwritten in the gap; then what the order itself says — a situação a
+ * deciding read refuses, a read-back that differs, an order gone, unreadable
+ * or not matching; then a write Loja Integrada refused; last, what only the
+ * tracking code met (it is never a statement about the situação). Exhaustive:
+ * a motivo added later does not compile until it is ranked.
+ */
+function pesoDoMotivo(motivo: MotivoRastreioDivergenteLi): number {
+  switch (motivo) {
+    case M.situacaoSobrescrita:
+      return 3;
+    case M.situacaoBloqueada:
+    case M.situacaoNaoPaga:
+    case M.situacaoDesconhecida:
+    case M.transicaoLateral:
+    case M.deriva:
+    case M.pedidoAusente:
+    case M.pedidoDivergente:
+    case M.restauracaoIndisponivel:
+    case M.tentativasEsgotadas:
+      return 2;
+    case M.escritaRecusada:
+      return 1;
+    case M.objetoDivergente:
+    case M.objetoInvalido:
+    case M.envioDivergente:
+      return 0;
+  }
+}
+
+/** Set the run's ONE aviso: a later motivo replaces an earlier one only when it ranks higher. */
 function definirAviso(e: ExecucaoLi, aviso: AvisoRastreioLi): void {
-  if (e.aviso === null || aviso.motivo === M.situacaoSobrescrita) e.aviso = aviso;
+  if (e.aviso === null || pesoDoMotivo(aviso.motivo) > pesoDoMotivo(e.aviso.motivo)) {
+    e.aviso = aviso;
+  }
 }
 
 /** The aviso of a refusal by the situação, with the params its wording reads. */
@@ -897,8 +978,32 @@ async function executarLigado(e: ExecucaoLi, base0: BaseEscritaLi): Promise<Resu
     return finalizar(e, semEscrita(e));
   }
   if (seq.kind === 'objeto') return escreverObjeto(e, base, seq);
+  if (seq.objetoSemEfeito && e.evento.escritaRecentePossivel) {
+    // LI holds our code but has not moved, and that code may have landed less
+    // than an hour ago: the 11 waits for a later run (module header).
+    registrarSequencia(e, 'objeto-envio', 'efeito-pendente', null);
+    return { kind: 'parcial', efeito: 'efeito-pendente' };
+  }
   if (seq.aviso !== null) definirAviso(e, { motivo: seq.aviso });
   return escreverSituacao(e, base, seq.codigo, seq);
+}
+
+/**
+ * A write that landed but whose effect this run did not see (its read-back
+ * failed, or a 202): the move it may have made is still checked against the
+ * situação history — never when the deciding read already showed the codigo
+ * written (module header, the residual). An overwrite found there is reported
+ * (and parks); otherwise the run stays `parcial`.
+ */
+async function parcialConferido(
+  e: ExecucaoLi,
+  codigoAntes: string,
+  codigoEscrito: CodigoSituacaoEscritaLi,
+  efeito: EfeitoParcialLi,
+): Promise<ResultadoRastreioLi> {
+  if (codigoAntes !== codigoEscrito) await conferirHistorico(e, codigoAntes, codigoEscrito);
+  if (e.aviso?.motivo === M.situacaoSobrescrita) return finalizar(e, comEscrita(e, false));
+  return { kind: 'parcial', efeito };
 }
 
 /** The tracking code ALONE (module header). */
@@ -928,17 +1033,19 @@ async function escreverObjeto(
 
   // The code LANDED: from here on, no other write in this run.
   const resposta = tentativa.resultado.resposta;
-  if (resposta.aplicada === 'pendente') return { kind: 'parcial', efeito: 'aceito' };
+  const codigoAntes = base.pedido.situacao.codigo;
+  if (resposta.aplicada === 'pendente') {
+    return parcialConferido(e, codigoAntes, C.pedidoEnviado, 'aceito');
+  }
   const volta = await lerDeVoltaLi(e.motor, e.alvo, 'objeto-envio');
   if (!volta.verificado) {
     await conterFalhaDeLeitura(e, volta);
-    return { kind: 'parcial', efeito: 'nao-verificado' };
+    return parcialConferido(e, codigoAntes, C.pedidoEnviado, 'nao-verificado');
   }
   if (conferirEscritaLi(e.motor, destino, valor, volta) === 'deriva') {
     definirAviso(e, { motivo: M.deriva });
     return finalizar(e, comEscrita(e, true));
   }
-  const codigoAntes = base.pedido.situacao.codigo;
   if (volta.pedido.situacao.codigo !== C.pedidoEnviado) {
     // LI did not move (yet): a run at least an hour later decides from a fresh read.
     registrarSequencia(e, destino.tipo, 'efeito-pendente', resposta);
@@ -961,7 +1068,13 @@ async function confirmarRecusaDoObjeto(
   erro: LiAuthError,
 ): Promise<ResultadoRastreioLi> {
   const segunda = await segundaBase(e);
-  if ('resultado' in segunda) return segunda.resultado;
+  if ('resultado' in segunda) {
+    // Neither read the order nor refused the credential: nothing to conclude — retry.
+    if (segunda.resultado.kind === 'recusa-deterministica') {
+      throw new EscritaRecusadaLiError(e.evento.contaId, destino.tipo, erro.status);
+    }
+    return segunda.resultado;
+  }
   // Not found right after a read that found it: nothing to conclude — retry.
   if (segunda.base.kind !== 'lida') {
     throw new EscritaRecusadaLiError(e.evento.contaId, destino.tipo, erro.status);
@@ -975,20 +1088,37 @@ async function confirmarRecusaDoObjeto(
   return situacaoAposRecusa(e, segunda);
 }
 
-/** After a refused code: 11 from the SECOND deciding read, never from the first. */
+/**
+ * After a refused code: 11 from the SECOND deciding read, never from the
+ * first. A situação that read refuses is the aviso the operator sees (it
+ * outranks the refused code); a second read refused for good still reports the
+ * refused code, and parks.
+ */
 async function situacaoAposRecusa(
   e: ExecucaoLi,
   segunda: { readonly base: BaseEscritaLi } | { readonly resultado: ResultadoRastreioLi },
 ): Promise<ResultadoRastreioLi> {
-  if ('resultado' in segunda) return segunda.resultado;
+  if ('resultado' in segunda) {
+    if (segunda.resultado.kind !== 'recusa-deterministica') return segunda.resultado;
+    registrarRecusaDeterministica(e.evento, e.deps, segunda.resultado, 'estacionada');
+    return finalizar(e, semEscrita(e));
+  }
   const base = baseDoPedido(e, segunda.base);
   if (base === null || !base.restauracao) return finalizar(e, semEscrita(e));
-  const celula = decidirSituacaoRastreioLi(base.pedido.situacao.codigo, C.pedidoEnviado);
-  if (celula.acao !== 'escrever') return finalizar(e, semEscrita(e));
-  return escreverSituacao(e, base, C.pedidoEnviado, {
-    objetoSemEfeito: false,
-    objetoNaoEnviado: false,
-  });
+  const codigo = base.pedido.situacao.codigo;
+  const celula = decidirSituacaoRastreioLi(codigo, C.pedidoEnviado);
+  switch (celula.acao) {
+    case 'recusar':
+      definirAviso(e, avisoDaSituacao(e, celula.motivo, codigo));
+      return finalizar(e, semEscrita(e));
+    case 'pular':
+      return finalizar(e, semEscrita(e));
+    case 'escrever':
+      return escreverSituacao(e, base, C.pedidoEnviado, {
+        objetoSemEfeito: false,
+        objetoNaoEnviado: false,
+      });
+  }
 }
 
 /** One situação write, its read-back and the history check. */
@@ -1021,7 +1151,9 @@ async function escreverSituacao(
   if (flags.objetoSemEfeito) registrarSequencia(e, destino.tipo, 'objeto-sem-efeito', resposta);
   // A delivery never sends the code: said once, when LI lacks a valid one.
   if (flags.objetoNaoEnviado) registrarSequencia(e, 'objeto-envio', 'objeto-nao-enviado', null);
-  if (resposta.aplicada === 'pendente') return { kind: 'parcial', efeito: 'aceito' };
+  if (resposta.aplicada === 'pendente') {
+    return parcialConferido(e, base.pedido.situacao.codigo, codigo, 'aceito');
+  }
   const volta = await lerDeVoltaLi(e.motor, e.alvo, 'situacao-pedido');
   let conferido = true;
   if (volta.verificado) {
@@ -1054,6 +1186,11 @@ async function confirmarRecusaDaSituacao(
     } catch (err) {
       const r = await classificarFalhaDeLeituraLi(e.db, err, e.contexto, e.deps);
       if (r === null) throw err;
+      // Neither read the order nor refused the credential (a 404, a 3xx or 4xx,
+      // a body off its schema): nothing to conclude — retry, on every pass.
+      if (r.kind === 'recusa-deterministica') {
+        throw new EscritaRecusadaLiError(e.evento.contaId, destino.tipo, erro.status);
+      }
       return r;
     }
     e.confirmado = true;

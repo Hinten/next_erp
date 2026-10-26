@@ -382,33 +382,44 @@ verdicts, the live/mirror split) is `packages/schemas/src/conferenciaPagamentoLo
 - **One write per run.** A posting with a sendable code writes the code ALONE (LI moves the
   order to `pedido_enviado` and e-mails by itself); the read-back CHECKS the move — not seen ⇒
   `parcial/efeito-pendente`, and only a run at least an hour later, from a fresh read, may write
-  11 (WARNING `objeto-sem-efeito`). A refused code ⇒ `escrita-recusada`, then a SECOND deciding
-  read decides 11. `entregue` writes 14 only, never the code; `aguardandoRetirada` 13 only.
-  Every write is decided by its own fresh read; no write follows one that landed.
+  11 (WARNING `objeto-sem-efeito`): a run that may come sooner (`escritaRecentePossivel`, derived
+  and never persisted — every Cloud Tasks attempt, and a `failed` row with `processedAt: 0`, which
+  is how the deferred lane hands a row back) meets our unmoved code and ends `parcial` with no
+  write. A refused code ⇒ `escrita-recusada`, then a SECOND deciding read decides 11.
+  `entregue` writes 14 only, never the code; `aguardandoRetirada` 13 only. Every write is
+  decided by its own fresh read; no write follows one that landed.
 - **Identity first.** The pedido id must be the digest of `preimagemPedidoLi` (a duplicate, a
   devolução, another conta ⇒ nothing); a stored envio id LI does not list ⇒
   `pedido-divergente`, NOTHING written; no stored envio ⇒ `envio-divergente`, the situação as
   usual. Freshness: an event the pedido no longer describes ⇒ `superado` (one INFO line).
 - **Not `on` defers, never acts.** Dry-run, outside the canary or no canary: a diff line, then
-  every outcome but `ja-refletido` DEFERS with the would-be motivo in its reason (no aviso, no
-  write); `off` defers with zero reads, and the varredura at `off` touches neither lane.
+  every outcome but `ja-refletido` and `superado` DEFERS with the would-be motivo in its reason
+  (no aviso, no write) — a deciding read refused for good included (one WARNING line; only `on`
+  parks it); `off` defers with zero reads, and the varredura at `off` touches neither lane.
 - **A write refused with 401/403** is confirmed by one paced read on the same pinned credential:
   refused ⇒ the conta parks; fine ⇒ `EscritaRecusadaLiError` (WARNING `recusada-retentativa`),
   the whole job retries, and only a `failed` row's LAST hot pass concludes (`escrita-recusada`,
-  then 11 from the second read for a refused code). `passagemFinal` is derived from the row in
-  `fromDoc`, never persisted; the run raises `tentativas-esgotadas` itself on the parking pass of
-  a returned `parcial`/`adiado` under `on`.
+  then 11 from the second read for a refused code); a confirming read that neither reads nor
+  refuses the credential (404, 3xx/4xx, off its schema, 429, 5xx) concludes nothing and throws.
+  `passagemFinal` is derived from the row in `fromDoc`, never persisted; the run raises
+  `tentativas-esgotadas` itself on the parking pass of a returned `parcial`/`adiado` under `on`.
 - **The history check** after every situação change we caused (the code's move included):
   anchored on the last row reaching the codigo the deciding read saw, an empty previous
   situação is inconclusive, an intermediate the matrix would write from is INFO; an
   overwritten codigo the matrix refuses ⇒ `situacao-sobrescrita` (critico over a never-write
-  one). The import and this check order rows through ONE leaf, `limparHistoricoLi`.
+  one). It also runs after a landed write whose effect the run did not see (a failed read-back,
+  a 202). Not after the code onto an order the deciding read saw already at 11: with no anchor
+  to judge from, a move in that gap overwritten by the code's own move is an accepted residual.
+  The import and this check order rows through ONE leaf, `limparHistoricoLi`.
 - **The aviso** `lojaIntegradaRastreioDivergente`: one row per pedido, clocked by the EVENT
-  (`microsDeMillisLi`), raised ONCE per run at its end, only under `on`; a clean `on` run
-  resolves it. A per-pedido tipo of `TIPOS_AVISO_PEDIDO_LI`, so the orphan pass closes it.
+  (`microsDeMillisLi`), raised ONCE per run at its end, only under `on` — the most serious
+  motivo of the run wins (sobrescrita, then what the situação says, then a refused write, then
+  the code-only motivos); a clean `on` run resolves it. A per-pedido tipo of
+  `TIPOS_AVISO_PEDIDO_LI`, so the orphan pass closes it.
 - **Classifier.** The context's and the getter's refusals defer; a conta gone drops; a body off
   its schema, a `ZodError` and the package's refusal of an operation's input (`LiConfigError`
-  `corpo`, `codigo-nao-permitido`, `caminho`, `rota-nao-permitida`) PARK with one ERROR line;
+  `corpo`, `codigo-nao-permitido`, `caminho`, `rota-nao-permitida`) PARK under `on` with one
+  ERROR line (a decision that is not `on` defers them);
   429, 5xx, network, the pin, the deadline, our own `LiConfigError`, gRPC THROW.
 - **The store** `notificacoesEscritaLojaIntegrada` (bare schema, `(status, processedAt)`
   index, no re-drive index); doc id = the event digest, task id `rastreio-<evento>`; the

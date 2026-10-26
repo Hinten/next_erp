@@ -44,6 +44,17 @@
  * hot pass). A deferred row whose run THROWS graduates to the hot lane with a
  * fresh budget (`graduateDeferredTransientErrors`).
  *
+ * ## The hour after a landed write
+ *
+ * The deferred lane hands a row whose run ended `parcial` (or threw) back to the
+ * hot lane through the shared core's re-drive, stamped `processedAt: 0` — so the
+ * NEXT varredura runs it, maybe minutes after its code landed; and a Cloud Tasks
+ * retry comes 5 minutes after the attempt before it. Both are flagged
+ * ({@link escritaRecentePossivelDoDocLi}; every task attempt): such a run never
+ * writes 11 over our code Loja Integrada has not acted on yet, and ends
+ * `parcial` instead, re-marked with its own pass's time — so the 11 is written
+ * only by a pass at least an hour later.
+ *
  * ## The varredura ({@link varrerEscritasLi})
  *
  * The shared sweep runs `process` inline, so it may never run outside the
@@ -132,14 +143,24 @@ export const CANAL_LOG_ESCRITA_LI = 'loja-integrada';
 export const tarefaEscritaLiSchema = z.object(camposNotificacaoEscritaLi());
 export type PayloadTarefaEscritaLi = z.infer<typeof tarefaEscritaLiSchema>;
 
-/** The pipeline's payload: the wire fields, plus the pass a swept row runs on (never persisted). */
+/**
+ * The pipeline's payload: the wire fields, plus what the pass a run is on
+ * implies (both derived, never persisted): whether it is a row's last pass of
+ * its lane, and whether an earlier run of the same event may have landed a
+ * write less than an hour ago.
+ */
 export type PayloadEscritaRastreioLi = PayloadTarefaEscritaLi & {
   readonly passagemFinal: PassagemFinalLi;
+  readonly escritaRecentePossivel: boolean;
 };
 
-/** The task's own schema: a task attempt is never a row's last pass. */
+/**
+ * The task's own schema: a task attempt is never a row's last pass, and may
+ * always come minutes after an earlier attempt's write landed (the Cloud Tasks
+ * retries are 5 minutes apart).
+ */
 const tarefaComPassagemSchema = tarefaEscritaLiSchema.transform(
-  (p): PayloadEscritaRastreioLi => ({ ...p, passagemFinal: null }),
+  (p): PayloadEscritaRastreioLi => ({ ...p, passagemFinal: null, escritaRecentePossivel: true }),
 );
 
 /** The failure document's id: the event's own digest. Valid by construction. */
@@ -185,6 +206,21 @@ export function passagemFinalDoDocLi(doc: {
   return null;
 }
 
+/**
+ * Whether a swept row's run may come less than an hour after an earlier run of
+ * the same event landed a write (module header): a `failed` row stamped
+ * `processedAt: 0` — the shared core's re-drive, which is how the deferred
+ * lane hands a row whose run ended `parcial` (or threw) back to the hot lane,
+ * for its very next pass. Every other swept row ran at least an hour (hot) or a
+ * day (deferred) ago.
+ */
+export function escritaRecentePossivelDoDocLi(doc: {
+  readonly status: unknown;
+  readonly processedAt: unknown;
+}): boolean {
+  return doc.status === NOTIFICACAO_RESILIENCIA_STATUS.failed && doc.processedAt === 0;
+}
+
 /** A row, rehydrated STRICTLY: a row that no longer parses throws (the sweep marks it). */
 function doDocumento(raw: Record<string, unknown>): PayloadEscritaRastreioLi {
   const doc = notificacaoEscritaLojaIntegradaSchema.parse(raw);
@@ -197,6 +233,7 @@ function doDocumento(raw: Record<string, unknown>): PayloadEscritaRastreioLi {
     estado: doc.estado,
     eventoEmMs: doc.eventoEmMs,
     passagemFinal: passagemFinalDoDocLi(doc),
+    escritaRecentePossivel: escritaRecentePossivelDoDocLi(doc),
   };
 }
 
@@ -210,6 +247,7 @@ function eventoDe(p: PayloadEscritaRastreioLi): EventoRastreioLi {
     estado: p.estado,
     eventoEmMs: p.eventoEmMs,
     passagemFinal: p.passagemFinal,
+    escritaRecentePossivel: p.escritaRecentePossivel,
   };
 }
 
@@ -366,7 +404,12 @@ export function persistirFalhaEscritaLi(
   payload: PayloadTarefaEscritaLi,
   erro: string,
 ): Promise<void> {
-  return armazenamentoEscritaLi.persistFailure(db, { ...payload, passagemFinal: null }, erro);
+  // Never run here: only the wire fields reach the document.
+  return armazenamentoEscritaLi.persistFailure(
+    db,
+    { ...payload, passagemFinal: null, escritaRecentePossivel: true },
+    erro,
+  );
 }
 
 /* -------------------------------------------------------------------------- */

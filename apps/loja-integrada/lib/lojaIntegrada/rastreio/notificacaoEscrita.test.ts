@@ -59,6 +59,7 @@ import {
   criarPipelineEscritaLi,
   dedupKeyEscritaLi,
   docIdEscritaLi,
+  escritaRecentePossivelDoDocLi,
   passagemFinalDoDocLi,
   persistirFalhaEscritaLi,
   sinalizarEsgotamentoEscritaLi,
@@ -171,7 +172,11 @@ describe('the binding', () => {
     const p = payload();
     expect(docIdEscritaLi(p)).toBe(p.evento);
     expect(dedupKeyEscritaLi(p)).toBe(p.evento);
-    const comPassagem: PayloadEscritaRastreioLi = { ...p, passagemFinal: 'quente' };
+    const comPassagem: PayloadEscritaRastreioLi = {
+      ...p,
+      passagemFinal: 'quente',
+      escritaRecentePossivel: true,
+    };
     expect(camposDoDocumentoEscritaLi(comPassagem)).toEqual({
       tipo: p.tipo,
       contaId: p.contaId,
@@ -206,6 +211,14 @@ describe('the binding', () => {
       }),
     ).toBe(null);
     expect(passagemFinalDoDocLi({ ...base, status: 'parked', tentativas: 99 })).toBe(null);
+  });
+
+  it('`escritaRecentePossivel` is derived from the row, never persisted: only a `failed` row the deferred lane just sent back (processedAt 0)', () => {
+    expect(escritaRecentePossivelDoDocLi({ status: 'failed', processedAt: 0 })).toBe(true);
+    expect(escritaRecentePossivelDoDocLi({ status: 'failed', processedAt: 1 })).toBe(false);
+    expect(escritaRecentePossivelDoDocLi({ status: 'failed', processedAt: null })).toBe(false);
+    expect(escritaRecentePossivelDoDocLi({ status: 'deferred', processedAt: 0 })).toBe(false);
+    expect(escritaRecentePossivelDoDocLi({ status: 'parked', processedAt: 0 })).toBe(false);
   });
 
   it('the disposition table', () => {
@@ -291,6 +304,47 @@ describe('the task', () => {
     expect(
       (await tratarTarefaEscritaLi(asDb(m.db), { tipo: 'varredura' }, 0, m.deps())).outcome,
     ).toBe('dropped');
+  });
+
+  it('dry-run: a deciding read off its schema ⇒ a deferred row `adiado/dry-run` (replayed under `on`), never parked', async () => {
+    const m = montar();
+    m.p.fila.push(naProxima(CAMINHO_PEDIDO_LI, 'GET', () => respostaJson(200, { numero: 'x' })));
+    const r = await tratarTarefaEscritaLi(
+      asDb(m.db),
+      payload(),
+      0,
+      m.deps({ ambiente: ambiente(MODO_LI.dryRun) }),
+    );
+    expect(r.outcome).toBe('deferred');
+    expect(m.db.ler(caminhoDe(payload()))).toMatchObject({
+      status: 'deferred',
+      erro: 'adiado/dry-run',
+    });
+  });
+
+  it('⚠️ a code PUT that LANDED but answered 503: the Cloud Tasks retry writes NOTHING; the 11 waits for a hot pass at least an hour later', async () => {
+    const m = montar({ mover: false });
+    m.p.fila.push(
+      naProxima(CAMINHO_ENVIO_LI, 'PUT', () => {
+        (m.p.estado.pedido.envios as { objeto: string | null }[])[0]!.objeto = CODIGO;
+        return respostaJson(503, {});
+      }),
+    );
+    await expect(tratarTarefaEscritaLi(asDb(m.db), payload(), 0, m.deps())).rejects.toThrow();
+    expect(await tratarTarefaEscritaLi(asDb(m.db), payload(), 1, m.deps())).toEqual({
+      outcome: 'failed',
+      kind: 'parcial',
+    });
+    expect(m.p.puts().map((r) => r.caminho)).toEqual([CAMINHO_ENVIO_LI]);
+    expect(m.db.ler(caminhoDe(payload()))).toMatchObject({
+      status: 'failed',
+      erro: 'parcial/efeito-pendente',
+    });
+
+    m.relogio.ms = AGORA_MS + 2 * HORA_MS;
+    await criarPipelineEscritaLi(m.deps()).reprocess(asDb(m.db), { now: m.relogio.ms });
+    expect(m.p.puts().map((r) => r.caminho)).toEqual([CAMINHO_ENVIO_LI, CAMINHO_SITUACAO_LI]);
+    expect(m.db.ler(caminhoDe(payload()))).toBeUndefined();
   });
 
   it('(e) the park persist failing after a landed PUT: the retried attempt makes ZERO PUTs', async () => {
@@ -445,7 +499,7 @@ describe('exhaustion', () => {
     const m = montar();
     await sinalizarEsgotamentoEscritaLi(
       asDb(m.db),
-      { ...payload(), passagemFinal: 'quente' },
+      { ...payload(), passagemFinal: 'quente', escritaRecentePossivel: false },
       new TypeError('x'),
       m.deps({ ambiente: ambiente(MODO_LI.dryRun) }),
     );
@@ -511,6 +565,49 @@ describe('the varredura (on the writes queue)', () => {
     expect(r.quente.parada).toBe('orcamento');
     expect(m.db.idsEm(COLECAO).length).toBeGreaterThan(0);
   });
+
+  it.each([
+    ['its read-back shows no move (`parcial`)', false],
+    ['the code PUT answered 503 after landing (a throw)', true],
+  ])(
+    '⚠️ a DEFERRED row whose replay lands the code while LI does not move — %s: no varredura writes the 11 until at least an hour after the code landed',
+    async (_caso, cortada) => {
+      const m = montar({ mover: false });
+      m.db.seed(caminhoDe(payload()), {
+        ...payload(),
+        status: 'deferred',
+        tentativas: 2,
+        erro: 'adiado/dry-run',
+        processedAt: 1,
+      });
+      if (cortada) {
+        m.p.fila.push(
+          naProxima(CAMINHO_ENVIO_LI, 'PUT', () => {
+            (m.p.estado.pedido.envios as { objeto: string | null }[])[0]!.objeto = CODIGO;
+            return respostaJson(503, {});
+          }),
+        );
+      }
+      // The daily replay after `*`: the code lands, LI does not move ⇒ back to the hot lane.
+      await varrerEscritasLi(asDb(m.db), m.deps(), 140_000);
+      expect(m.p.puts().map((r) => r.caminho)).toEqual([CAMINHO_ENVIO_LI]);
+      expect(m.db.ler(caminhoDe(payload()))).toMatchObject({ status: 'failed', tentativas: 0 });
+
+      // The next varredura, 30 minutes later, and the one after it: ZERO PUTs.
+      for (const minutos of [30, 60]) {
+        m.relogio.ms = AGORA_MS + minutos * 60_000;
+        await varrerEscritasLi(asDb(m.db), m.deps(), 140_000);
+        expect(m.p.puts(), `+${String(minutos)} min`).toHaveLength(1);
+        expect(m.db.ler(caminhoDe(payload()))?.status).toBe('failed');
+      }
+
+      // At least an hour after the pass that held it, LI still unmoved: the 11, once.
+      m.relogio.ms = AGORA_MS + 91 * 60_000;
+      await varrerEscritasLi(asDb(m.db), m.deps(), 140_000);
+      expect(m.p.puts().map((r) => r.caminho)).toEqual([CAMINHO_ENVIO_LI, CAMINHO_SITUACAO_LI]);
+      expect(m.db.ler(caminhoDe(payload()))).toBeUndefined();
+    },
+  );
 
   it('a row whose remove AND mark both fail makes at most ONE process call, and ends the lane with ONE WARNING', async () => {
     const m = montar();

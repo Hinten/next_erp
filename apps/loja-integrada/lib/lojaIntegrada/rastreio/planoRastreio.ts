@@ -364,9 +364,10 @@ function avisoDoObjeto(o: DecisaoObjetoLi): MotivoRastreioDivergenteLi | null {
 }
 
 /**
- * The one write of an event (§4.3's event × codigo table). The identity comes
- * first: a stored envio Loja Integrada does not list refuses EVERY event. Then
- * the matrix for the event's target; a posting additionally decides its code.
+ * The one write of an event (the master plan's step-7 event × codigo
+ * sequence). The identity comes first: a stored envio Loja Integrada does not
+ * list refuses EVERY event. Then the matrix for the event's target; a posting
+ * additionally decides its code.
  */
 export function decidirSequenciaRastreioLi(entrada: {
   readonly estado: EstadoRastreioLi;
