@@ -958,6 +958,74 @@ the tier-index rungs, which is what recovers a child whose id an earlier
 titles and in the docblock (rung 1 dominates; rung 2 is exact, empty-skip and
 order-sensitive).
 
+### A grupo's tier: its binding entry, or a CUSTOM tier (#1911, D12)
+
+Which `linksVariacoesShopee` element is a grupo's entry for the pair (conta,
+LEAF category) is decided in ONE place: `resolverEntradaShopeeDoGrupo` and its
+predicate `ehEntradaShopeeDaChave`, in `@delfrance/schemas`
+(`produto/collection/shopeeLinkVariacoes.ts`). The import's merge
+(`../produtos/taxonomiaShopeeCore.ts`) reads the same key. Before #1911 the two
+spelled it twice and disagreed (the #1369 shape): the publisher folded the
+stored conta to its last path segment while the import compared it byte-exact,
+so a stored `documents/integracao/<id>` bound for the publisher and was twinned
+by the import. The key folds only the STORED conta, through `idDoRef`:
+`documents/integracao/int-1` ≡ `int-1`, `int-12` ≠ `int-1` in both directions,
+and the category is compared exactly.
+
+The resolver has three answers, and `montarTiers` authors one tier from each:
+
+- `armazenada` — the FIRST element that parses and names the pair. The tier is
+  built from it, as before #1911. An unreadable element BEFORE it does not hide
+  it.
+- `ilegivel` — no element naming the pair parses, but one the strict schema
+  refuses names it on its raw fields. That is the operator's binding, stored
+  broken. It refuses `variacao-sem-vinculo` ("existe mas não pôde ser lido —
+  corrija-o em Variações") and NEVER falls back to a custom tier, which would
+  silently swap a STANDARD variation for a custom one.
+- `personalizada-implicita` — nothing names the pair. The tier is CUSTOM:
+  `variation_id: 0`, `variation_name` = `grupo.nome`, and one option per used
+  variante, `{0, variante.nome}`. The 50-option cap (O2, above) is unchanged.
+  Outside Fashion every Shopee tier is custom, so this is the common case.
+  Before #1911 it refused `variacao-sem-vinculo`, which is why the order test in
+  `planoPublicacao.test.ts` was inverted ON PURPOSE.
+
+⚠️ **Settle-live (Q3, register 309 below).** Whether Shopee BR accepts a custom
+tier in a standardised (Fashion) leaf has not been measured. A refusal arrives
+as a Shopee rejection, read by `problemasPublicacao.ts` like any other; the fix
+is a STANDARD binding authored on `/variacoes` (#1911's binding editor).
+
+**The re-code refusal (Q2).** A custom tier has no identity but its NAME. On an
+update it pairs with a live CUSTOM tier only when the names are byte-equal
+(`grupo.nome === tierVivo.nome`, no trim). A STANDARD live tier is claimed only
+by a stored entry carrying its `variation_id`. An unpaired grupo used to be
+rebuilt from the ERP alone while every live model kept its old `tier_index`, so
+each model silently pointed at ANOTHER option, with the wrong stock and price
+per variant and nothing to detect it afterwards. Now, when the model leg will
+rewrite the tiers IN PLACE, a custom grupo that pairs with no live tier is
+refused: "Importe o anúncio ou ajuste o nome do grupo". "In place" is
+`reconciliarModelos`'s own predicate, shared and not copied
+(`reconstroiAEstrutura`): some live model has a `model_id > 0` and the live
+depth equals ours. The refusal covers the implicit fallback AND a STORED
+`variation_id: 0` entry; the import writes those, and the legacy export named
+its custom tiers by `tipo` (`Cor`, `Tamanho`), so a migrated listing can hit it
+on its first republish. It fires in the model leg after `update_item`, where it
+is stamped and recoverable. Neither of these is refused: a depth change
+(1→2, 2→1), and a listing with no addressable model. Both are
+`init_tier_variation`, which re-creates every model, so nothing can be re-coded.
+
+- ⚠️ **The live tier name is TRIMMED (`tiersDoItem`), `grupo.nome` is not.** A
+  grupo named `'Cor '` facing a live `'Cor'` is refused on every update until
+  the grupo is renamed, even when our own create sent that name. That is the
+  deliberate `'Cor '` ≠ `'Cor'` near-miss: byte-equal is the only identity a
+  custom tier has, and a fold here would be a second, looser spelling of it.
+- Addressable live models with NO readable tier (both trees absent, or every
+  tier nameless) refuse a custom grupo too: no live depth was read, so the leg
+  would update in place, and there is nothing to pair with. The real wire
+  always carries the tier tree with the models.
+- **Not covered:** an unpaired grupo whose STORED entry is STANDARD
+  (`variation_id ≠ 0`) is still rebuilt in place, as before #1911. Q2 decided
+  the custom tiers only.
+
 ### A depth change invalidates every `model_id` — rewrite in place, never delete
 
 `init_tier_variation` on an existing item replaces the whole tier structure and
@@ -1473,6 +1541,7 @@ a regression.
 | 269 | whether `support_image_size_chart: false` is ever answered for a BR apparel leaf, and honoured                                      | ⏳ BR shop: `get_item_limit` + one publish — the explicit-`false` withhold is the vetoable ruling                                                                               |
 | 307 | a freshly created item appears in `get_item_list` (`update_time_from` inside the window) before the 240 s wait ends (#1911 P5)      | ⏳ BR shop: one create, then the scan at +240 s. A longer index lag is a RESIDUAL (the scan misses it and re-sends) — `AGUARDAR_ANUNCIO_INCERTO_SHOPEE_MS` grows                |
 | 308 | `create_time` is populated on a just-created item's `get_item_base_info` (#1911 P5)                                                 | ⏳ BR shop: same call. Non-gating — a `null` reads `desconhecido` and ENSURE refuses `criacao-incerta-ambigua` (fails closed)                                                   |
+| 309 | a CUSTOM tier (`variation_id: 0`, the D12 fallback) is accepted in a BR standardised (Fashion) leaf (#1911 P7, Q3)                  | ⏳ BR shop: the first varied publish on a Fashion leaf with no binding entry. A refusal is a Shopee rejection; the fix is a STANDARD binding on `/variacoes`                    |
 
 Also unmeasured, and not a register line: nothing in this folder has met a BR
 shop. The `esperar` of 5 000 ms, the re-list door order, the daily-quota reset

@@ -413,11 +413,14 @@ export interface DocumentoDeGrupo {
  * The LOADED `grupoDeVariacoes` candidate set — what the PURE taxonomy core
  * plans against.
  *
- * `raw` is the stored document, unparsed, because the scan reads a field the
- * grupo schema types as `z.array(z.unknown())`: Firestore cannot query inside an
- * array of objects (`array-contains` needs exact element equality), so the
- * operator-authored `linksVariacoesShopee` mapping — the very thing step 11's
- * export reads — is only findable by scanning in memory.
+ * `raw` is the stored document, unparsed, because the grupo schema types
+ * `linksVariacoesShopee` STRICTLY: one element it refuses would fail the whole
+ * document's parse, so the scan reads that array element by element. And it
+ * has to scan: Firestore cannot query inside an array of objects
+ * (`array-contains` needs exact element equality), so the operator-authored
+ * `linksVariacoesShopee` mapping — the very thing the step-11 publisher reads,
+ * through the same shared key (`resolverEntradaShopeeDoGrupo`) — is only
+ * findable by scanning in memory.
  */
 export interface GrupoMemo {
   readonly docs: readonly DocumentoDeGrupo[];

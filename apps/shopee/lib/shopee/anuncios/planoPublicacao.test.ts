@@ -138,6 +138,23 @@ function entradaDeGrupo(categoryId: number, integracaoShopeeId: string = INTEGRA
 }
 
 /**
+ * A STANDARD entry (`variation_id: 77`) that binds only `v-azul` to an option,
+ * so a child on `v-preto` has nowhere to sit.
+ */
+function entradaPadraoSoAzul(categoryId: number): unknown {
+  return {
+    name: 'Cor',
+    category_id: categoryId,
+    variation_id: 77,
+    variation_group_list: 0,
+    integracaoShopeeId: INTEGRACAO,
+    variationOptions: [
+      { shopee_option_id: 5, shopee_option_name: 'Azul', arakene_variation_id: ['v-azul'] },
+    ],
+  };
+}
+
+/**
  * A grupo bound to this conta for BOTH categories the fixtures use — the
  * requested leaf and the one the stored link carries — so a create and a
  * republish of the same fixture differ only in the arm under test.
@@ -364,18 +381,64 @@ describe('planejarPublicacao — os passos são UMA derivação', () => {
   });
 
   it('os problemas saem na ordem: os do item e DEPOIS os dos tiers', () => {
+    // #1911 (P7, D12) — this fixture CHANGED ON PURPOSE. It used to draw its
+    // tier refusal from a grupo bound only to category 999999; since the custom
+    // fallback a grupo with no entry for the leaf publishes a CUSTOM tier, so
+    // that fixture refuses nothing any more (the test below pins it). The order
+    // now rides a STANDARD entry for the leaf that binds `v-azul` and leaves
+    // `v-preto` — which FILHO_B uses — unbound.
     const plano = planejarPublicacao(
       comFilhos({
         produto: { ...PRODUTO, nome: '' },
-        grupos: [grupo({ linksVariacoesShopee: [entradaDeGrupo(999999)] })],
+        grupos: [grupo({ linksVariacoesShopee: [entradaPadraoSoAzul(CATEGORIA_FOLHA)] })],
       }),
       fotos(),
     );
 
+    expect(plano.problemas.map((p) => [p.campo, p.motivo])).toEqual([
+      ['item_name', MOTIVO_PUBLICACAO_BLOQUEADA.semNome],
+      ['standardise_tier_variation', MOTIVO_PUBLICACAO_BLOQUEADA.variacaoSemVinculo],
+      ['model', MOTIVO_PUBLICACAO_BLOQUEADA.variacaoSemVinculo],
+    ]);
+  });
+
+  it('⚠️ INVERTIDO DE PROPÓSITO (#1911, D12): um grupo vinculado só a OUTRA categoria não recusa — publica o tier CUSTOM', () => {
+    // Before #1911 this exact fixture (an entry for 999999 only) refused
+    // `variacao-sem-vinculo`. Outside Fashion every Shopee tier is custom, so
+    // "no binding for this leaf" now means the implicit custom tier.
+    const plano = planejarPublicacao(
+      comFilhos({ grupos: [grupo({ linksVariacoesShopee: [entradaDeGrupo(999999)] })] }),
+      fotos(),
+    );
+
+    expect(plano.problemas).toEqual([]);
+    expect(
+      plano.tiers.map((t) => [t.variation_id, t.variation_group_id, t.variation_name]),
+    ).toEqual([[0, null, 'Cor']]);
+    expect(
+      plano.tiers[0]!.opcoes.map((o) => [o.variation_option_id, o.variation_option_name]),
+    ).toEqual([
+      [0, 'Azul'],
+      [0, 'Preto'],
+    ]);
+    expect(tipos(plano.passos)).toContain('init_tier_variation');
+  });
+
+  it('⛔ quase-par: uma entrada da conta para a folha que NÃO pôde ser lida continua recusando', () => {
+    const quebrada = {
+      ...(entradaDeGrupo(CATEGORIA_FOLHA) as Record<string, unknown>),
+      variation_group_list: [1, 2],
+    };
+    const plano = planejarPublicacao(
+      comFilhos({ grupos: [grupo({ linksVariacoesShopee: [quebrada] })] }),
+      fotos(),
+    );
+
     expect(plano.problemas.map((p) => p.motivo)).toEqual([
-      MOTIVO_PUBLICACAO_BLOQUEADA.semNome,
       MOTIVO_PUBLICACAO_BLOQUEADA.variacaoSemVinculo,
     ]);
+    expect(plano.tiers).toEqual([]);
+    expect(tipos(plano.passos)).toEqual(['fotos']);
   });
 });
 
