@@ -5,7 +5,7 @@ import { PRAZO_LI_MS } from '../src/prazos';
 
 describe('PRAZO_LI_MS', () => {
   it('pins the budget — changing it must be a deliberate, reviewed edit', () => {
-    expect(PRAZO_LI_MS).toEqual({ leitura: 20_000 });
+    expect(PRAZO_LI_MS).toEqual({ leitura: 20_000, escrita: 20_000 });
   });
 
   it.each(Object.entries(PRAZO_LI_MS))(

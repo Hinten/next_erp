@@ -179,6 +179,7 @@ export async function* paginarLi<S extends z.ZodType>(
       caminho,
       correlationId: resposta.correlationId,
       refCredencial: resposta.refCredencial,
+      metodo: 'GET' as const,
     };
     const proxima = proximaPagina(meta.next, original, { ...ctx, status: resposta.status });
     const naoAvanca =

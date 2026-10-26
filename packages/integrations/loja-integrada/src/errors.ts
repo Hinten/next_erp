@@ -16,11 +16,12 @@
  * reaches exactly one place, the `onChamada` observer (`client.ts`), already
  * scrubbed of the token, and the app's logger decides there what is kept.
  *
- * ⚠️ **Messages name the operation and the path, and nothing else.** Never the
- * token, never a query value, never a body value, never the `message` of a
- * caught platform error (an aborted `fetch` can echo its URL). That is why every
- * message is BUILT HERE from structured fields rather than passed in by the
- * caller: a call site cannot add text to one.
+ * ⚠️ **Messages name the operation, the verb and the path, and nothing else.**
+ * Never the token, never a query value, never a body value (a request's or a
+ * response's), never the `message` of a caught platform error (an aborted
+ * `fetch` can echo its URL). That is why every message is BUILT HERE from
+ * structured fields rather than passed in by the caller: a call site cannot add
+ * text to one.
  *
  * `refCredencial` is the opaque, non-secret label the caller handed in with the
  * token (`CredencialLi.ref`), echoed so the app can tell WHICH credential a 401
@@ -118,6 +119,9 @@ export function lerRetryAfter(valor: string | null | undefined): number | null {
 /*                                 The classes                                */
 /* -------------------------------------------------------------------------- */
 
+/** The HTTP verbs this package sends: the read client sends `GET` only. */
+export type MetodoLi = 'GET' | 'PUT';
+
 /** What identifies one request on every error raised after it was built. */
 export interface ContextoRequisicaoLi {
   /** The caller's label for the call (`'validarPersonalToken'`, …). */
@@ -126,6 +130,20 @@ export interface ContextoRequisicaoLi {
   readonly caminho: string;
   readonly correlationId: string;
   readonly refCredencial: string;
+  /**
+   * The verb, printed in every message. The package fills it on every request
+   * it builds; ABSENT reads as `'GET'`.
+   *
+   * ⚠️ Optional on purpose: callers outside this package build this context by
+   * hand for their own errors, and every one of those contexts describes a
+   * read. A required field would break each of them for no gain.
+   */
+  readonly metodo?: MetodoLi;
+}
+
+/** `<verb> <path>`, as every message prints it. An absent verb is a `GET`. */
+function verboECaminho(init: ContextoRequisicaoLi): string {
+  return `${init.metodo ?? 'GET'} ${init.caminho}`;
 }
 
 /** Base class for every error this package raises. */
@@ -146,7 +164,16 @@ export class LiError extends Error {
 }
 
 /** Why a request was refused before anything was sent. */
-export type MotivoConfigLi = 'token' | 'ref' | 'caminho' | 'token-na-url' | 'maxPaginas';
+export type MotivoConfigLi =
+  | 'token'
+  | 'ref'
+  | 'caminho'
+  | 'token-na-url'
+  | 'maxPaginas'
+  | 'corpo'
+  | 'token-no-corpo'
+  | 'codigo-nao-permitido'
+  | 'rota-nao-permitida';
 
 /**
  * OUR input was unusable, and **no request was made**.
@@ -159,9 +186,25 @@ export type MotivoConfigLi = 'token' | 'ref' | 'caminho' | 'token-na-url' | 'max
  * - `'token-na-url'` — the token appears in the path or in a query key or value.
  *   It travels in `Authorization` only.
  * - `'maxPaginas'` — not a positive safe integer.
+ * - `'rota-nao-permitida'` — a write's path is not one of the package's write
+ *   routes (`rotasEscrita.ts`): another resource, or a route's path in another
+ *   form (a trailing slash, a non-canonical id). Raised BEFORE the credential
+ *   is read.
+ * - `'corpo'` — a write's body failed its ROUTE's schema (a missing, empty,
+ *   malformed or extra field; a codigo outside the three on the situação
+ *   route; a code that would clear or blank the tracking code). Raised BEFORE
+ *   the credential is read.
+ * - `'token-no-corpo'` — the token appears in a write's serialised body, as
+ *   written or in its JSON-escaped form. It travels in `Authorization` only.
+ * - `'codigo-nao-permitido'` — a situação write asked for a codigo outside the
+ *   package's closed write-back set (`pedidosEscrita.ts`).
+ *
+ * Every motivo is a fact about the input, never about the provider: the same
+ * input is refused again, with no request.
  *
  * ⚠️ The message never echoes the offending value: a rejected token is still a
- * token, a rejected `ref` may contain one, and a rejected path may carry a query.
+ * token, a rejected `ref` may contain one, a rejected path may carry a query,
+ * and a rejected body or codigo is whatever the caller passed.
  */
 export class LiConfigError extends LiError {
   readonly motivo: MotivoConfigLi;
@@ -191,6 +234,14 @@ function mensagemDeConfig(motivo: MotivoConfigLi, operacao: string): string {
       return `${prefixo} o token aparece no caminho ou na query; ele só pode viajar no cabeçalho Authorization. Nada foi enviado.`;
     case 'maxPaginas':
       return `${prefixo} maxPaginas precisa ser um inteiro positivo.`;
+    case 'corpo':
+      return `${prefixo} o corpo da escrita não passou no seu schema (campo ausente, vazio, fora do formato ou a mais). Nada foi enviado.`;
+    case 'token-no-corpo':
+      return `${prefixo} o token aparece no corpo da escrita; ele só pode viajar no cabeçalho Authorization. Nada foi enviado.`;
+    case 'codigo-nao-permitido':
+      return `${prefixo} a situação pedida não está entre as três que a integração escreve (pedido_enviado, pedido_entregue, pronto_para_retirada). Nada foi enviado.`;
+    case 'rota-nao-permitida':
+      return `${prefixo} o caminho não é uma das rotas de escrita da integração. Nada foi enviado.`;
   }
 }
 
@@ -216,7 +267,7 @@ export class LiHttpError extends LiError {
   constructor(init: ContextoRequisicaoLi & { readonly status: number }, mensagem?: string) {
     super(
       mensagem ??
-        `A Loja Integrada respondeu HTTP ${String(init.status)} em ${init.operacao} (GET ${init.caminho}).`,
+        `A Loja Integrada respondeu HTTP ${String(init.status)} em ${init.operacao} (${verboECaminho(init)}).`,
       { refCredencial: init.refCredencial },
     );
     this.name = 'LiHttpError';
@@ -237,7 +288,7 @@ export class LiAuthError extends LiHttpError {
   constructor(init: ContextoRequisicaoLi & { readonly status: number }) {
     super(
       init,
-      `A Loja Integrada recusou a credencial (HTTP ${String(init.status)}) em ${init.operacao} (GET ${init.caminho}).`,
+      `A Loja Integrada recusou a credencial (HTTP ${String(init.status)}) em ${init.operacao} (${verboECaminho(init)}).`,
     );
     this.name = 'LiAuthError';
   }
@@ -248,7 +299,7 @@ export class LiNotFoundError extends LiHttpError {
   constructor(init: ContextoRequisicaoLi & { readonly status: number }) {
     super(
       init,
-      `A Loja Integrada respondeu HTTP 404 (não encontrado) em ${init.operacao} (GET ${init.caminho}).`,
+      `A Loja Integrada respondeu HTTP 404 (não encontrado) em ${init.operacao} (${verboECaminho(init)}).`,
     );
     this.name = 'LiNotFoundError';
   }
@@ -274,7 +325,7 @@ export class LiThrottleError extends LiHttpError {
   ) {
     super(
       init,
-      `A Loja Integrada limitou as requisições (HTTP ${String(init.status)}, escopo ${init.escopo}) em ${init.operacao} (GET ${init.caminho}).`,
+      `A Loja Integrada limitou as requisições (HTTP ${String(init.status)}, escopo ${init.escopo}) em ${init.operacao} (${verboECaminho(init)}).`,
     );
     this.name = 'LiThrottleError';
     this.escopo = init.escopo;
@@ -326,7 +377,7 @@ function mensagemDeSchema(
     readonly campos: readonly string[];
   },
 ): string {
-  const onde = `em ${init.operacao} (GET ${init.caminho})`;
+  const onde = `em ${init.operacao} (${verboECaminho(init)})`;
   const http = `HTTP ${String(init.status)}`;
   switch (init.motivo) {
     case 'vazio':
@@ -379,7 +430,7 @@ export class LiPaginacaoError extends LiError {
 function mensagemDePaginacao(
   init: ContextoRequisicaoLi & { readonly motivo: MotivoPaginacaoLi; readonly paginas: number },
 ): string {
-  const onde = `${init.operacao} (GET ${init.caminho})`;
+  const onde = `${init.operacao} (${verboECaminho(init)})`;
   switch (init.motivo) {
     case 'limite-de-paginas':
       return `A paginação de ${onde} parou após ${String(init.paginas)} páginas: o limite foi atingido e ainda havia próxima página.`;
@@ -403,7 +454,7 @@ export class LiNetworkError extends LiError {
   constructor(init: ContextoRequisicaoLi, cause: unknown, mensagem?: string) {
     super(
       mensagem ??
-        `Falha de rede ao chamar a Loja Integrada em ${init.operacao} (GET ${init.caminho}).`,
+        `Falha de rede ao chamar a Loja Integrada em ${init.operacao} (${verboECaminho(init)}).`,
       { refCredencial: init.refCredencial, cause },
     );
     this.name = 'LiNetworkError';
@@ -416,8 +467,10 @@ export class LiNetworkError extends LiError {
 /**
  * The per-call deadline (`PRAZO_LI_MS`) passed. The outcome is unknown — the
  * request may have been served — which for a GET only means "try again".
- * Subclasses {@link LiNetworkError}, as `MelhorEnvioTimeoutError` does, so a
- * network arm keeps catching it.
+ * ⚠️ For a write it means the write MAY HAVE LANDED: the caller re-derives
+ * from a fresh read before deciding anything, and never assumes either
+ * outcome. Subclasses {@link LiNetworkError}, as `MelhorEnvioTimeoutError`
+ * does, so a network arm keeps catching it.
  */
 export class LiTimeoutError extends LiNetworkError {
   readonly prazoMs: number;
@@ -426,7 +479,7 @@ export class LiTimeoutError extends LiNetworkError {
     super(
       init,
       cause,
-      `A Loja Integrada não respondeu em ${String(init.prazoMs / 1000)} s em ${init.operacao} (GET ${init.caminho}).`,
+      `A Loja Integrada não respondeu em ${String(init.prazoMs / 1000)} s em ${init.operacao} (${verboECaminho(init)}).`,
     );
     this.name = 'LiTimeoutError';
     this.prazoMs = init.prazoMs;

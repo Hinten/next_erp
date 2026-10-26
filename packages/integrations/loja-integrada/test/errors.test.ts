@@ -218,3 +218,69 @@ describe('the class hierarchy', () => {
     expect(err.message).toContain('meta.limit');
   });
 });
+
+describe('the verb in every message — `metodo` is optional and defaults to GET', () => {
+  /** Every class whose message names `<verb> <path>`, built from one context. */
+  function todas(c: ContextoRequisicaoLi): LiError[] {
+    return [
+      new LiHttpError({ ...c, status: 400 }),
+      new LiAuthError({ ...c, status: 403 }),
+      new LiNotFoundError({ ...c, status: 404 }),
+      new LiThrottleError({
+        ...c,
+        status: 429,
+        escopo: 'loja',
+        codigosEncontrados: [633],
+        retryAfterS: null,
+      }),
+      new LiSchemaError({ ...c, status: 200, motivo: 'vazio', campos: [] }),
+      new LiSchemaError({ ...c, status: 200, motivo: 'nao-json', campos: [] }),
+      new LiSchemaError({ ...c, status: 200, motivo: 'formato', campos: ['id'] }),
+      new LiPaginacaoError({ ...c, motivo: 'offset-nao-avanca', paginas: 2 }),
+      new LiPaginacaoError({ ...c, motivo: 'limite-de-paginas', paginas: 2 }),
+      new LiNetworkError(c, new TypeError('x')),
+      new LiTimeoutError({ ...c, prazoMs: 20_000 }, null),
+    ];
+  }
+
+  it('a context WITHOUT metodo prints GET — every hand-built context keeps its old message', () => {
+    for (const err of todas(ctx)) {
+      expect(err.message, err.name).toContain('(GET /v1/categoria/)');
+      expect(err.message, err.name).not.toContain('PUT');
+    }
+  });
+
+  it('metodo GET prints exactly the same message as no metodo', () => {
+    const semMetodo = todas(ctx).map((e) => e.message);
+    const comGet = todas({ ...ctx, metodo: 'GET' }).map((e) => e.message);
+    expect(comGet).toEqual(semMetodo);
+  });
+
+  it('near-miss: metodo PUT prints PUT, never GET', () => {
+    const put: ContextoRequisicaoLi = {
+      ...ctx,
+      metodo: 'PUT',
+      operacao: 'atualizarObjetoEnvio',
+      caminho: '/v1/pedido_envio/69291055',
+    };
+    for (const err of todas(put)) {
+      expect(err.message, err.name).toContain('(PUT /v1/pedido_envio/69291055)');
+      expect(err.message, err.name).not.toContain('GET');
+    }
+  });
+
+  it('the write refusals carry their motivo and name the operation, never a value', () => {
+    for (const motivo of [
+      'token-no-corpo',
+      'codigo-nao-permitido',
+      'corpo',
+      'rota-nao-permitida',
+    ] as const) {
+      const err = new LiConfigError(motivo, { operacao: 'op', refCredencial: 'ref-1' });
+      expect(err.motivo).toBe(motivo);
+      expect(err.refCredencial).toBe('ref-1');
+      expect(err.message).toContain('op');
+      expect(err.message).toContain('Nada foi enviado');
+    }
+  });
+});
