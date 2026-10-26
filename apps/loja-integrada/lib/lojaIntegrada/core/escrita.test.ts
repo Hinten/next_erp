@@ -1066,22 +1066,26 @@ describe('requirement 6 — any 2xx resolves, and no PUT follows a landed one', 
     expect((await escreverLi(m.motor, SITUACAO, ENVIADO, nova)).kind).toBe('enviado');
   });
 
-  it('EQUAL pair: a write the credential re-read refuses (the conta parked) sends nothing and leaves the run open', async () => {
-    const m = await montar();
-    const base = lida(await lerBaseLi(m.motor, ALVO, 'pedido'));
-    // Parked with the SAME token and stamp: the ref, and so the pin, are unchanged.
-    seedCredencial(m.db, ID, {
-      reconexaoPendente: { desdeMs: AGORA_MS - 1, status: 401, refCredencial: base.refCredencial },
-    });
-    await expect(escreverLi(m.motor, SITUACAO, ENVIADO, base)).rejects.toBeInstanceOf(
-      LiContaParadaError,
-    );
-    expect(m.p.puts()).toEqual([]);
-    seedCredencial(m.db, ID);
-    const nova = lida(await lerBaseLi(m.motor, ALVO, 'pedido'));
-    expect((await escreverLi(m.motor, SITUACAO, ENVIADO, nova)).kind).toBe('enviado');
-    expect(m.p.puts()).toHaveLength(1);
-  });
+  it.each([
+    ['the credential removed', 'ausente', LiCredencialAusenteError],
+    ['the credential unreadable', 'corrompida', LiCredencialInvalidaError],
+    ['the conta parked', 'parada', LiContaParadaError],
+    ['another token saved (the pin)', 'trocada', LiCredencialTrocadaError],
+  ] as const)(
+    'EQUAL pair: a write the credential re-read refuses (%s) sends nothing and leaves the run open',
+    async (_caso, estado, classe) => {
+      const m = await montar();
+      const base = lida(await lerBaseLi(m.motor, ALVO, 'pedido'));
+      await mudarCredencial(m.db, estado);
+      await expect(escreverLi(m.motor, SITUACAO, ENVIADO, base)).rejects.toBeInstanceOf(classe);
+      expect(m.p.puts()).toEqual([]);
+      // The original credential back — the same token and stamp, so the same ref: the pin matches.
+      seedCredencial(m.db, ID);
+      const nova = lida(await lerBaseLi(m.motor, ALVO, 'pedido'));
+      expect((await escreverLi(m.motor, SITUACAO, ENVIADO, nova)).kind).toBe('enviado');
+      expect(m.p.puts()).toHaveLength(1);
+    },
+  );
 });
 
 /* -------------------------------------------------------------------------- */
@@ -1400,13 +1404,14 @@ describe('the task’s write deadline (no PUT starts later than 260 s after the 
   const leiturasDaCredencial = (db: FakeDb) =>
     db.leituras.filter((c) => c === caminhoCredencial(ID)).length;
 
-  it('⚠️ the deadline is checked AGAIN after the write’s credential re-read: a slow re-read past it ⇒ zero PUTs', async () => {
+  it('⚠️ the deadline is checked AGAIN after the write’s credential re-read: a slow re-read past it ⇒ zero PUTs, and the run stays open', async () => {
     let db: FakeDb | null = null;
     let marco = Number.POSITIVE_INFINITY;
-    // The clock jumps past the deadline once the write's own credential re-read has been served.
+    // The clock reads past the deadline exactly while the write's own credential
+    // re-read is the latest one served (a slow re-read), and is back after it.
     const agora = () =>
       AGORA_MS +
-      (db !== null && leiturasDaCredencial(db) > marco ? PRAZO_ULTIMA_ESCRITA_MS + 1 : 0);
+      (db !== null && leiturasDaCredencial(db) === marco + 1 ? PRAZO_ULTIMA_ESCRITA_MS + 1 : 0);
     const m = await montar({ inicioDaTarefaMs: AGORA_MS, agora });
     db = m.db;
     const base = lida(await lerBaseLi(m.motor, ALVO, 'pedido'));
@@ -1418,6 +1423,10 @@ describe('the task’s write deadline (no PUT starts later than 260 s after the 
     expect(leiturasDaCredencial(m.db)).toBe(marco + 1);
     expect(m.p.puts()).toEqual([]);
     expect(doEvento(m.linhas, 'chamada').filter((l) => l.campos.metodo === 'PUT')).toEqual([]);
+    // Nothing was sent, so nothing can have landed: a fresh deciding read still writes.
+    const nova = lida(await lerBaseLi(m.motor, ALVO, 'pedido'));
+    expect((await escreverLi(m.motor, SITUACAO, ENVIADO, nova)).kind).toBe('enviado');
+    expect(m.p.puts()).toHaveLength(1);
   });
 
   it('⚠️ NEAR-MISS: the re-check is the WRITE’s only — a deciding read and a read-back past the deadline still go', async () => {
