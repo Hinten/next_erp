@@ -286,9 +286,10 @@ export function respostaTokenDeOutraConta(): NextResponse {
 }
 
 /**
- * The caller went away while its token was being validated: 499 with an EMPTY
- * body (nobody is listening). Nothing was stored — the abort can only land
- * inside the validation call, before any write.
+ * The caller went away during a Loja Integrada call (a credential route's
+ * validation, the paid re-check's read): 499 with an EMPTY body (nobody is
+ * listening). The abort can only land inside that call, before any write the
+ * request would make.
  */
 export function respostaCancelada(): NextResponse {
   return new NextResponse(null, { status: 499 });
