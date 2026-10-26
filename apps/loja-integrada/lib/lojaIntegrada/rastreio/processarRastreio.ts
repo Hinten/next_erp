@@ -35,9 +35,12 @@
  *     raises `escrita-recusada`, and a SECOND deciding read decides 11. A
  *     situação write is read back and then checked against the situação history.
  *     A write that landed but whose effect the run did not see (its read-back
- *     failed, or a 202) is still checked against the history. Any aviso is
- *     raised ONCE, at the end, clocked by the event; when a run meets more than
- *     one motivo, the most serious wins (`pesoDoMotivo`).
+ *     failed, a 202, our code read back at a third codigo) is still checked
+ *     against the history, and so is a code read back as another code
+ *     (`deriva`): neither proves Loja Integrada never moved. Only our code read
+ *     back at the deciding codigo (no move yet) skips it. Any aviso is raised
+ *     ONCE, at the end, clocked by the event; when a run meets more than one
+ *     motivo, the most serious wins (`pesoDoMotivo`).
  *
  * ## The 11 over our own unmoved code waits an hour
  *
@@ -990,7 +993,8 @@ async function executarLigado(e: ExecucaoLi, base0: BaseEscritaLi): Promise<Resu
 
 /**
  * A write that landed but whose effect this run did not see (its read-back
- * failed, or a 202): the move it may have made is still checked against the
+ * failed, a 202, or our code read back at a third codigo — the order moved
+ * during the run): the move it may have made is still checked against the
  * situação history — never when the deciding read already showed the codigo
  * written (module header, the residual). An overwrite found there is reported
  * (and parks); otherwise the run stays `parcial`.
@@ -1044,11 +1048,22 @@ async function escreverObjeto(
   }
   if (conferirEscritaLi(e.motor, destino, valor, volta) === 'deriva') {
     definirAviso(e, { motivo: M.deriva });
+    // Another code read back does not prove LI never moved: the move our code
+    // may have made is still checked (a sobrescrita outranks the deriva).
+    if (codigoAntes !== C.pedidoEnviado) {
+      await conferirHistorico(e, codigoAntes, C.pedidoEnviado);
+    }
     return finalizar(e, comEscrita(e, true));
   }
-  if (volta.pedido.situacao.codigo !== C.pedidoEnviado) {
+  const codigoDeVolta = volta.pedido.situacao.codigo;
+  if (codigoDeVolta !== C.pedidoEnviado) {
     // LI did not move (yet): a run at least an hour later decides from a fresh read.
     registrarSequencia(e, destino.tipo, 'efeito-pendente', resposta);
+    // Read back at a THIRD codigo, the order moved during the run, and LI's
+    // move to 11 may be one of those moves: checked like a write not seen.
+    if (codigoDeVolta !== codigoAntes) {
+      return parcialConferido(e, codigoAntes, C.pedidoEnviado, 'efeito-pendente');
+    }
     return { kind: 'parcial', efeito: 'efeito-pendente' };
   }
   if (codigoAntes !== C.pedidoEnviado) {
