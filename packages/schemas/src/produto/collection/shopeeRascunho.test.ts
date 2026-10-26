@@ -35,6 +35,7 @@ import {
   MAX_DESCRIPTION_RASCUNHO_SHOPEE,
   MAX_ITEM_NAME_RASCUNHO_SHOPEE,
   mesmoValorDoRascunhoShopee,
+  mesmoValorGravadoDoRascunhoShopee,
   MOTIVO_RASCUNHO_INVALIDO_SHOPEE,
   motivoRascunhoInvalidoShopeeSchema,
   MSG_BASE_DIFERENTE_DO_PATCH_RASCUNHO_SHOPEE,
@@ -958,7 +959,11 @@ function gravado(conteudo: z.output<typeof conteudoRascunhoShopeeSchema>): Recor
   };
 }
 
-/** Every field the value NAMES compares equal to the projection of what was stored. */
+/**
+ * Every field the value NAMES compares equal to the projection of what was
+ * stored — under the WRITE question (the brand's name included), the stronger
+ * of the two compares: what a write stores must read back as nothing to write.
+ */
 function todosIguais(
   campos: CamposRascunhoShopee,
   valores: Partial<Record<CampoRascunhoShopee, unknown>>,
@@ -966,7 +971,7 @@ function todosIguais(
   const lidos = campos as unknown as Record<CampoRascunhoShopee, never>;
   const dados = valores as Record<CampoRascunhoShopee, never>;
   return camposPresentesDoRascunhoShopee(valores).every((campo) =>
-    mesmoValorDoRascunhoShopee(campo, lidos[campo], dados[campo]),
+    mesmoValorGravadoDoRascunhoShopee(campo, lidos[campo], dados[campo]),
   );
 }
 
@@ -1304,6 +1309,81 @@ describe('mesmoValorDoRascunhoShopee — attributes (P6, K2-5): ESTRUTURAL e est
       { attribute_id: 1, attribute_value_list: [{ value_id: 0, original_value_name: 'Linho ' }] },
     ];
     expect(mesmoValorDoRascunhoShopee(C.attributes, linho, linhoEspaco)).toBe(false);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*        (10b) mesmoValorGravadoDoRascunhoShopee — the WRITE question         */
+/* -------------------------------------------------------------------------- */
+
+describe('mesmoValorGravadoDoRascunhoShopee — a pergunta da ESCRITA (a marca é o PAR)', () => {
+  const ACME = { brand_id: 77, original_brand_name: 'Acme' };
+  const SO_O_ID = { brand_id: 77, original_brand_name: null };
+
+  it('PAR: o mesmo id com o mesmo nome; nome `null` ≡ nome AUSENTE (o legado só com brand_id); duas marcas nulas', () => {
+    expect(mesmoValorGravadoDoRascunhoShopee(C.marca, ACME, { ...ACME })).toBe(true);
+    expect(mesmoValorGravadoDoRascunhoShopee(C.marca, SO_O_ID, { ...SO_O_ID })).toBe(true);
+    const nomeAusente = { brand_id: 77 } as unknown as typeof SO_O_ID;
+    expect(mesmoValorGravadoDoRascunhoShopee(C.marca, nomeAusente, SO_O_ID)).toBe(true);
+    expect(mesmoValorGravadoDoRascunhoShopee(C.marca, null, undefined)).toBe(true);
+    // the legacy id-only document, through THE projection, against a nameless re-pick
+    const legado = camposDoRascunhoShopee({ item_id: null, brand_id: 77 }).marca;
+    expect(mesmoValorGravadoDoRascunhoShopee(C.marca, legado, SO_O_ID)).toBe(true);
+  });
+
+  it('⛔ NEAR-MISS: o MESMO id com `null` vs "Acme" — distintos aqui, iguais na pergunta do CONFLITO', () => {
+    expect(mesmoValorGravadoDoRascunhoShopee(C.marca, SO_O_ID, ACME)).toBe(false);
+    expect(mesmoValorGravadoDoRascunhoShopee(C.marca, ACME, SO_O_ID)).toBe(false);
+    // the conflict question still lets the name follow the id
+    expect(mesmoValorDoRascunhoShopee(C.marca, SO_O_ID, ACME)).toBe(true);
+    const legado = camposDoRascunhoShopee({ item_id: null, brand_id: 77 }).marca;
+    expect(mesmoValorGravadoDoRascunhoShopee(C.marca, legado, ACME)).toBe(false);
+  });
+
+  it('⛔ NEAR-MISS: o nome NÃO é dobrado — "Acme" vs "ACME" e vs "Acme "', () => {
+    expect(
+      mesmoValorGravadoDoRascunhoShopee(C.marca, ACME, {
+        brand_id: 77,
+        original_brand_name: 'ACME',
+      }),
+    ).toBe(false);
+    expect(
+      mesmoValorGravadoDoRascunhoShopee(C.marca, ACME, {
+        brand_id: 77,
+        original_brand_name: 'Acme ',
+      }),
+    ).toBe(false);
+  });
+
+  it('⛔ tudo o que a pergunta do conflito chama de distinto segue distinto: outro id, 0 vs null, uma marca que não é par', () => {
+    expect(mesmoValorGravadoDoRascunhoShopee(C.marca, ACME, { ...ACME, brand_id: 78 })).toBe(false);
+    expect(
+      mesmoValorGravadoDoRascunhoShopee(C.marca, { brand_id: 0, original_brand_name: null }, null),
+    ).toBe(false);
+    const solto = 77 as unknown as typeof ACME;
+    expect(mesmoValorGravadoDoRascunhoShopee(C.marca, solto, solto)).toBe(false);
+  });
+
+  it('nos outros campos é EXATAMENTE a pergunta do conflito (o mesmo par e o mesmo quase-par)', () => {
+    const casos: [CampoRascunhoShopee, unknown, unknown][] = [
+      [C.itemName, 'Camiseta', 'Camiseta'],
+      [C.itemName, 'Camiseta', 'Camiseta '],
+      [C.description, '', null],
+      [C.description, undefined, null],
+      [C.categoryId, 100, '100'],
+      [C.categoryId, 100, 100],
+      [C.attributes, ATRIBUTOS, [...ATRIBUTOS].reverse()],
+      [C.attributes, ATRIBUTOS, JSON.parse(JSON.stringify(ATRIBUTOS)) as unknown],
+      [C.logisticInfo, null, null],
+    ];
+    for (const [campo, a, b] of casos) {
+      const x = a as never;
+      const y = b as never;
+      expect(
+        mesmoValorGravadoDoRascunhoShopee(campo, x, y),
+        `${campo} ${JSON.stringify([a, b])}`,
+      ).toBe(mesmoValorDoRascunhoShopee(campo, x, y));
+    }
   });
 });
 
@@ -2095,6 +2175,12 @@ describe('corpoDescartarRascunhoShopeeSchema — POST rascunho/descartar (K1-13,
 /*                    (17) the create retry compare (K1-9)                     */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * The fold the retry applies, field by field. WHICH fields it is applied to —
+ * every projected field of the document the retry would write, an omitted key
+ * being its written `null` — is the draft route's, pinned in
+ * `apps/shopee/lib/shopee/anuncios/rascunho.test.ts` (K1-9).
+ */
 describe('a repetição de uma criação (K1-9) — o mesmo conteúdo ⟷ outro conteúdo', () => {
   const primeiro = conteudoRascunhoShopeeSchema.parse({
     item_name: 'Camiseta',
@@ -2119,6 +2205,24 @@ describe('a repetição de uma criação (K1-9) — o mesmo conteúdo ⟷ outro 
       marca: { brand_id: 0, original_brand_name: null },
     });
     expect(todosIguais(guardado, repeticao)).toBe(false);
+  });
+
+  it('⛔ NEAR-MISS: a repetição com a MESMA marca e OUTRO nome NÃO é igual (a repetição é uma pergunta da escrita)', () => {
+    const comMarca = conteudoRascunhoShopeeSchema.parse({
+      item_name: 'Camiseta',
+      marca: { brand_id: 77, original_brand_name: 'Acme' },
+    });
+    const guardadoComMarca = camposDoRascunhoShopee(gravado(comMarca));
+    const mesma = conteudoRascunhoShopeeSchema.parse({
+      item_name: 'Camiseta',
+      marca: { brand_id: 77, original_brand_name: 'Acme' },
+    });
+    expect(todosIguais(guardadoComMarca, mesma)).toBe(true);
+    const outroNome = conteudoRascunhoShopeeSchema.parse({
+      item_name: 'Camiseta',
+      marca: { brand_id: 77, original_brand_name: 'Acme Ltda' },
+    });
+    expect(todosIguais(guardadoComMarca, outroNome)).toBe(false);
   });
 
   it('PAR/QUASE-PAR (P6): a repetição com os MESMOS atributos (nome com espaço normalizado) é igual ⟷ com outro valor, não', () => {

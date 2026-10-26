@@ -573,11 +573,16 @@ loudly) and the CLOCK — one `Date.now()` per request, handed to `rascunho.ts` 
 `statusAnuncio.test.ts`). Every answer body is built BY NAME, and its codes are
 `CODIGO_RASCUNHO_SHOPEE`'s, the one vocabulary the web reads.
 
-**Every value goes through `@delfrance/schemas`' ONE projection and ONE compare**
-(#1369): `camposDoRascunhoShopee` (absent ≡ `null`, verbatim — a legacy `''`
-stays `''`) and `mesmoValorDoRascunhoShopee` (`undefined` ≡ `null`; `'Camiseta'`
-≠ `'Camiseta '`, brand `0` ≠ `null`, `''` ≠ `null`; a brand pair by `brand_id`
-alone). The web builds the `base` it sends from the same projection. A `base`
+**Every value goes through `@delfrance/schemas`' ONE projection and its TWO
+compares** (#1369): `camposDoRascunhoShopee` (absent ≡ `null`, verbatim — a
+legacy `''` stays `''`); `mesmoValorDoRascunhoShopee`, the CONFLICT question
+asked of a `base` (`undefined` ≡ `null`; `'Camiseta'` ≠ `'Camiseta '`, brand `0`
+≠ `null`, `''` ≠ `null`; a brand pair by `brand_id` alone — the name follows the
+id); and `mesmoValorGravadoDoRascunhoShopee`, the WRITE question asked by the
+edit's "nothing to write" and the create retry — the same fold except that a
+brand is its PAIR (`77`/`null` ≠ `77`/`'Acme'`), because every legacy draft
+stores the id alone and re-picking the brand is how its name gets stored. The
+web builds the `base` it sends from the same projection. A `base`
 is parsed by the TOLERANT `baseRascunhoShopeeSchema` (what the operator SAW,
 never normalised); only `patch` / `conteudo` go through the write whitelist.
 
@@ -599,14 +604,21 @@ stored legacy list that reads EQUAL is never rewritten (D9: no migration).
   or another draft of the conta, `vinculosQueExigemConfirmacaoShopee`, without
   `confirmarSegundoAnuncio: true`; a `removido` one is no reason; the draft's
   own id never counts) · on `ALREADY_EXISTS` the stored document decides: the
-  same conta's draft with the SAME content ⇒ **200** `criado: false` (a double
-  click, a lost first answer); other content ⇒ 409 `CONFLITO {conflitos}`
-  (K1-9); anything else ⇒ 409 `ID_EM_USO`.
+  same conta's draft holding exactly what THIS create would write ⇒ **200**
+  `criado: false` (a double click, a lost first answer); other content ⇒ 409
+  `CONFLITO {conflitos}` (K1-9); anything else ⇒ 409 `ID_EM_USO`. "Exactly" is
+  every projected field of the would-be document, so a key the retry OMITS is
+  the `null` (or, for the title, the produto's `nome`) it would write — never a
+  wildcard: a retry that drops a brand the lost first create stored is a 409,
+  not a 200 over a brand the tab believes cleared. (Rev. 2 §3 P4 said "the
+  retry's `conteudo` keys"; this tightens it in K1-9's direction.)
 - **edit** — tier 3 + 1: the baseline compare, then `update(…, {lastUpdateTime})`,
   ≤ 3 re-derives. 404 `INEXISTENTE` (absent, or another conta's) · 409
   `JA_PUBLICADO` · 409 `EM_ANDAMENTO {aguardarMs}` (a live lock, its post-expiry
-  grace included) · 409 `CATEGORIA_TRAVADA` (a `category_id` patch while the
-  reading is `incerta`: the uncertain create may have used the old one) · 409
+  grace included) · 409 `CATEGORIA_TRAVADA` (a patch that NAMES `category_id`
+  while the reading is `incerta` — even with the stored value, and nothing
+  beside it is written: the uncertain create may have used the stored one;
+  DA-4 keys the lock on the patch, never on a value change) · 409
   `CONFLITO {conflitos}` (the stored projection ≠ `base` on a field
   `camposDaBaseDoRascunhoShopee` names — the PATCHED ones, plus `attributes`
   on a category change, below; a third lost precondition answers
@@ -641,7 +653,9 @@ Five rules a change must keep:
   field, because a discard throws all of them away.
 - **`marca` is ONE field over two stored keys**: written whole (`brand_id` +
   `original_brand_name`; `null` ⇒ both `null`; `0` ⇒ the name `null`), compared
-  by `brand_id` only.
+  by `brand_id` only for a CONFLICT (a `base`), and as the PAIR for a WRITE (the
+  patch, the create retry) — the same brand re-picked with its name over a
+  stored id-only brand writes the name.
 - **A `category_id` write clears a stored `attributes`** in the same update
   (they belong to the old category) and reports `attributes` in `gravados` —
   unless the patch NAMES `attributes` itself (the operator chose them for the

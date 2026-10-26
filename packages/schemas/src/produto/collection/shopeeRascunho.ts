@@ -5,7 +5,8 @@
  * operation answers with, the reading of the lock, the "brand still to choose"
  * test, which sibling links make a publish a SECOND listing, the draft
  * route's contract — its three bodies and answers, THE projection of a stored
- * draft's editable fields and THE comparison of two of their values (the
+ * draft's editable fields and THE two comparisons of their values (the
+ * conflict one and the write one, apart on the brand's name only; the
  * listing `attributes` among them since P6, read and written through
  * `../../atributosShopee`'s one decoder) — and the UNCERTAIN first create (D5):
  * the attempt window a lost create is looked for in, and the publish's 202.
@@ -696,16 +697,20 @@ function ehParDeMarca(valor: unknown): valor is { readonly brand_id: unknown } {
 }
 
 /**
- * THE comparison of two values of one draft field (#1911) — the draft route's
- * baseline compare (stored vs the operator's `base`), its "nothing to write"
- * test (stored vs `patch`) and its create-retry test (stored vs `conteudo`) all
- * ask THIS, over values in {@link camposDoRascunhoShopee}'s form.
+ * THE comparison of two values of one draft field (#1911) — the CONFLICT
+ * question: the draft route's baseline compare (stored vs the operator's
+ * `base`, on an edit and on a discard) asks THIS, over values in
+ * {@link camposDoRascunhoShopee}'s form. Whether a WRITE has anything to say —
+ * the edit's "nothing to write" and the create retry's "same draft" — is
+ * {@link mesmoValorGravadoDoRascunhoShopee}, which differs on `marca` alone.
  *
  * A fold, deliberately NARROW — "same" must never swallow an edit:
  *
  * - **EQUAL:** `undefined` ≡ `null` (an absent key is the projection's `null`);
  *   two brand pairs with the same `brand_id` and different names (the name
- *   FOLLOWS the id; the publish's read-back repairs it).
+ *   FOLLOWS the id: a stored name another writer changed is not a concurrent
+ *   edit the operator must see — and the write compare still writes the
+ *   operator's own name).
  * - **DISTINCT:** `'Camiseta'` vs `'Camiseta '` (no trim); `''` vs `null` (a
  *   stored `''` is not "nothing"); `100` vs `'100'` (no coercion); brand `0`
  *   ("No Brand", chosen) vs `null` (not chosen).
@@ -744,6 +749,58 @@ export function mesmoValorDoRascunhoShopee<C extends CampoRascunhoShopee>(
     case CAMPO_RASCUNHO_SHOPEE.categoryId:
       return x === y;
   }
+}
+
+/** The stored-form name of a brand pair: a string verbatim, anything else `null`. */
+function nomeDoParDeMarca(par: object): string | null {
+  const nome: unknown = (par as { readonly original_brand_name?: unknown }).original_brand_name;
+  return typeof nome === 'string' ? nome : null;
+}
+
+/**
+ * THE WRITE question of one draft field (#1911, P4 review) — is what is STORED
+ * already what this write would store? The draft route's "nothing to write"
+ * test (stored vs the normalised `patch` ⇒ `gravados: []`) and its create-retry
+ * test (stored vs the document this create would write ⇒ 200 `criado: false`)
+ * ask THIS; the conflict question is {@link mesmoValorDoRascunhoShopee}.
+ *
+ * It IS {@link mesmoValorDoRascunhoShopee} on every field but one: **`marca`
+ * compares the PAIR** — `brand_id` AND `original_brand_name`. "The name follows
+ * the id" answers whether a concurrent edit is a conflict; it cannot answer
+ * whether a write has something to say. Every legacy draft with a brand stores
+ * `brand_id` ALONE (the legacy app never wrote a name), and re-picking that
+ * brand is how the operator supplies the name — an id-only answer here dropped
+ * that edit behind a 200 `gravados: []` (#1372's class), so publish paged
+ * `get_brand_list` for a name nobody stored and refused `marca-sem-nome` when
+ * the brand lay past the pages it reads, with no way back through the picker.
+ *
+ * - **EQUAL:** the same `brand_id` and the same name; an ABSENT stored name ≡
+ *   `null` (both are "no name stored"); two `null` brands. The write schema
+ *   folds a blank name to `null` BEFORE this runs, so a blank re-pick over a
+ *   nameless brand still writes nothing.
+ * - **DISTINCT:** the same `brand_id` with `null` vs `'Acme'`; `'Acme'` vs
+ *   `'ACME'` or `'Acme '` (no fold on the name — the write keeps a non-blank
+ *   name verbatim, so a value it wrote reads back byte-equal); and everything
+ *   {@link mesmoValorDoRascunhoShopee} already calls distinct.
+ *
+ * Writing more often is the safe direction here: an extra write of the
+ * operator's own pick costs one update, a swallowed one costs the edit.
+ * Pure, total.
+ */
+export function mesmoValorGravadoDoRascunhoShopee<C extends CampoRascunhoShopee>(
+  campo: C,
+  a: CamposRascunhoShopee[C] | undefined,
+  b: CamposRascunhoShopee[C] | undefined,
+): boolean {
+  if (!mesmoValorDoRascunhoShopee(campo, a, b)) return false;
+  if ((campo as CampoRascunhoShopee) !== CAMPO_RASCUNHO_SHOPEE.marca) return true;
+  const x: unknown = a ?? null;
+  const y: unknown = b ?? null;
+  // Equal by id: both `null`, or two pairs with one `brand_id`.
+  if (x === null || y === null) return true;
+  return (
+    typeof x === 'object' && typeof y === 'object' && nomeDoParDeMarca(x) === nomeDoParDeMarca(y)
+  );
 }
 
 /**
@@ -856,8 +913,9 @@ export const MSG_ITEM_NAME_EM_BRANCO_RASCUNHO_SHOPEE =
  *
  * "Blank" is {@link textoUtilizavelShopee}'s — the one test of usable text.
  * Every value this accepts reads back through {@link camposDoRascunhoShopee}
- * EQUAL ({@link mesmoValorDoRascunhoShopee}) — a write is never re-written by
- * the next identical save.
+ * EQUAL under the WRITE question ({@link mesmoValorGravadoDoRascunhoShopee} —
+ * the brand's name included) — a write is never re-written by the next
+ * identical save.
  */
 export const conteudoRascunhoShopeeSchema = z.strictObject({
   // `.nullable()` only so `null` reaches the refine and is REFUSED with a

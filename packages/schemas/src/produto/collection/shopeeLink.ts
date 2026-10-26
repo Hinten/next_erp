@@ -437,10 +437,22 @@ export const produtoShopeeLinkSchema = z
      */
     condition: z.string().nullable().default(null),
     /**
-     * The brand name Shopee reports for `brand_id` — written by the publish
-     * read-back (write-back #2) and, since #1911 (C9), by the import
-     * (`dadosLinkListagem`); both write it beside `brand_id` from ONE read, so
-     * the pair never mixes two answers.
+     * The brand name that goes with `brand_id`. THREE writers, and only one of
+     * them writes the pair from one Shopee read:
+     *
+     *  1. **the draft route** (#1911 P4, `apps/shopee/lib/shopee/anuncios/rascunho.ts`,
+     *     create and edit) — the OPERATOR's pick, both keys always together
+     *     (D10), cleaned by the write schema (`brand_id: 0` or a blank name ⇒
+     *     `null`) but never checked against `get_brand_list`; P5's no-link mint
+     *     goes through the same create with `{brand_id: 0, original_brand_name:
+     *     null}`. A later publish's read-back overwrites the name.
+     *  2. **the import** (`dadosLinkListagem`, #1911 C9) — both keys from the
+     *     SAME `get_item_base_info` read, so there the pair never mixes two
+     *     answers.
+     *  3. **the publish read-back** (write-back #2) — the NAME only, from the
+     *     read-back. The `brand_id` beside it is write-back #1's, the value the
+     *     REQUEST sent, and an update that left `brand` out writes no id at all:
+     *     the stored pair can then hold an old id beside Shopee's current name.
      */
     original_brand_name: z.string().nullable().default(null),
     /** MILLISECONDS. The FIRST successful publish only — never rewritten by a republish. */

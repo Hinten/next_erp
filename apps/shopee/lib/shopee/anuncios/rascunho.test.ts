@@ -476,7 +476,7 @@ describe('criarRascunhoShopee — create() no id do cliente (nível 0)', () => {
       expect(escritasEm(db)).toHaveLength(1);
     });
 
-    it('a comparação é a do conteúdo NORMALIZADO e só das chaves que a repetição NOMEIA', async () => {
+    it('a comparação é a do conteúdo NORMALIZADO, campo a campo, do documento que ESTA criação gravaria', async () => {
       const db = base();
       await criarRascunhoShopee(
         deps(db),
@@ -484,31 +484,94 @@ describe('criarRascunhoShopee — create() no id do cliente (nível 0)', () => {
           conteudo: { item_name: 'Camiseta', marca: { brand_id: 77, original_brand_name: 'X' } },
         }),
       );
-      // description '   ' normalises to null (= what is stored); the brand
-      // compares by id alone (the name FOLLOWS the id); no conteudo names nothing.
+      const antes = structuredClone(doc(db));
+      // PAR: the SAME content again — description '   ' normalises to the
+      // `null` stored, and an explicit `null` is what an absent key writes.
       for (const conteudo of [
-        { description: '   ' },
-        { marca: { brand_id: 77, original_brand_name: 'Outro nome' } },
-        undefined,
-        null,
+        {
+          item_name: 'Camiseta',
+          marca: { brand_id: 77, original_brand_name: 'X' },
+          description: '   ',
+        },
+        {
+          item_name: 'Camiseta',
+          marca: { brand_id: 77, original_brand_name: 'X' },
+          description: null,
+          category_id: null,
+          attributes: null,
+        },
       ]) {
         const r = await criarRascunhoShopee(deps(db), corpoCriar({ conteudo }));
         expect(r, JSON.stringify(conteudo)).toEqual({ linkDocId: RASCUNHO, criado: false });
       }
-      // ⛔ quase-par: the brand id itself differs ⇒ conflict, and `0` is not `null`.
-      for (const marca of [{ brand_id: 78, original_brand_name: 'X' }, null]) {
-        const err = await recusaDe(
-          criarRascunhoShopee(deps(db), corpoCriar({ conteudo: { marca } })),
-        );
-        expect(err.code).toBe(CODIGO_RASCUNHO_SHOPEE.conflito);
-        expect(err.conflitos).toEqual([
-          { campo: CAMPO_RASCUNHO_SHOPEE.marca, atual: { brand_id: 77, original_brand_name: 'X' } },
-        ]);
-      }
+      expect(doc(db)).toEqual(antes);
       expect(escritasEm(db)).toHaveLength(1);
     });
 
-    it('⛔ quase-par: a repetição com DESCRIÇÃO ou CATEGORIA diferente ⇒ 409 CONFLITO — toda chave nomeada é comparada, não só título e marca', async () => {
+    it('⛔ quase-par: uma chave que a repetição OMITE não é curinga — é o null (ou o nome do produto) que esta criação gravaria ⇒ 409 CONFLITO, documento intacto', async () => {
+      const db = base();
+      await criarRascunhoShopee(
+        deps(db),
+        corpoCriar({
+          conteudo: { item_name: 'Camiseta', marca: { brand_id: 77, original_brand_name: 'X' } },
+        }),
+      );
+      const antes = structuredClone(doc(db));
+      const titulo = { campo: CAMPO_RASCUNHO_SHOPEE.itemName, atual: 'Camiseta' };
+      const marca = {
+        campo: CAMPO_RASCUNHO_SHOPEE.marca,
+        atual: { brand_id: 77, original_brand_name: 'X' },
+      };
+      const casos: [unknown, unknown[]][] = [
+        // The lost-response case: the first create stored brand 77, the
+        // operator cleared it, and the retry no longer names `marca` — never
+        // a 200 over a brand the tab believes gone.
+        [{ item_name: 'Camiseta' }, [marca]],
+        // No `item_name` ⇒ the produto's `nome` ("Camiseta Básica") is what
+        // this create writes; no `marca` ⇒ `null`.
+        [undefined, [titulo, marca]],
+        [null, [titulo, marca]],
+        [{ description: '   ' }, [titulo, marca]],
+        // The brand is a WRITE question here: the same id with another name
+        // is other content; another id, and `null`, too.
+        [
+          { item_name: 'Camiseta', marca: { brand_id: 77, original_brand_name: 'Outro nome' } },
+          [marca],
+        ],
+        [{ item_name: 'Camiseta', marca: { brand_id: 78, original_brand_name: 'X' } }, [marca]],
+        [{ item_name: 'Camiseta', marca: null }, [marca]],
+      ];
+      for (const [conteudo, conflitos] of casos) {
+        const err = await recusaDe(criarRascunhoShopee(deps(db), corpoCriar({ conteudo })));
+        expect(err.code, JSON.stringify(conteudo)).toBe(CODIGO_RASCUNHO_SHOPEE.conflito);
+        expect(err.conflitos, JSON.stringify(conteudo)).toEqual(conflitos);
+      }
+      expect(doc(db)).toEqual(antes);
+      expect(escritasEm(db)).toHaveLength(1);
+    });
+
+    it('PAR: a criação SEM conteúdo repetida sem conteúdo ⇒ 200 (as duas gravariam o nome do produto e o resto null) — ⛔ quase-par: "Sem marca" (0) não é a marca ausente (null)', async () => {
+      const db = base();
+      await criarRascunhoShopee(deps(db), corpoCriar());
+      const antes = structuredClone(doc(db));
+
+      for (const conteudo of [undefined, null, {}, { item_name: 'Camiseta Básica' }]) {
+        const r = await criarRascunhoShopee(deps(db), corpoCriar({ conteudo }));
+        expect(r, JSON.stringify(conteudo)).toEqual({ linkDocId: RASCUNHO, criado: false });
+      }
+
+      const err = await recusaDe(
+        criarRascunhoShopee(
+          deps(db),
+          corpoCriar({ conteudo: { marca: { brand_id: 0, original_brand_name: null } } }),
+        ),
+      );
+      expect(err.conflitos).toEqual([{ campo: CAMPO_RASCUNHO_SHOPEE.marca, atual: null }]);
+      expect(doc(db)).toEqual(antes);
+      expect(escritasEm(db)).toHaveLength(1);
+    });
+
+    it('⛔ quase-par: a repetição com DESCRIÇÃO ou CATEGORIA diferente — ou que as OMITE — ⇒ 409 CONFLITO: todo campo projetado é comparado, não só título e marca', async () => {
       const db = base();
       await criarRascunhoShopee(
         deps(db),
@@ -518,25 +581,32 @@ describe('criarRascunhoShopee — create() no id do cliente (nível 0)', () => {
       );
       const antes = structuredClone(doc(db));
 
-      // The same values, named again (any subset of them) ⇒ the same draft.
+      // The same values, named again (in another key order) ⇒ the same draft.
       expect(
         await criarRascunhoShopee(
           deps(db),
-          corpoCriar({ conteudo: { description: 'Algodão', category_id: 100_017 } }),
+          corpoCriar({
+            conteudo: { category_id: 100_017, description: 'Algodão', item_name: 'Camiseta' },
+          }),
         ),
       ).toEqual({ linkDocId: RASCUNHO, criado: false });
 
+      const titulo = { campo: CAMPO_RASCUNHO_SHOPEE.itemName, atual: 'Camiseta' };
       const descricao = { campo: CAMPO_RASCUNHO_SHOPEE.description, atual: 'Algodão' };
       const categoria = { campo: CAMPO_RASCUNHO_SHOPEE.categoryId, atual: 100_017 };
       const casos: [Record<string, unknown>, unknown[]][] = [
-        [{ description: 'Poliéster' }, [descricao]],
+        [{ item_name: 'Camiseta', description: 'Poliéster', category_id: 100_017 }, [descricao]],
         // `null` is "the produto's own description" — another choice, never "nothing named".
-        [{ description: null }, [descricao]],
-        [{ category_id: 100_020 }, [categoria]],
+        [{ item_name: 'Camiseta', description: null, category_id: 100_017 }, [descricao]],
+        [{ item_name: 'Camiseta', description: 'Algodão', category_id: 100_020 }, [categoria]],
         [
           { item_name: 'Camiseta', description: 'Poliéster', category_id: 100_020 },
           [descricao, categoria],
         ],
+        // A SUBSET is no longer "the same draft": what it omits is what this
+        // create would write for it — the produto's name, a `null` description.
+        [{ description: 'Algodão', category_id: 100_017 }, [titulo]],
+        [{ item_name: 'Camiseta', category_id: 100_017 }, [descricao]],
       ];
       for (const [conteudo, conflitos] of casos) {
         const err = await recusaDe(criarRascunhoShopee(deps(db), corpoCriar({ conteudo })));
@@ -1025,6 +1095,102 @@ describe('atualizarRascunhoShopee — base conferida (nível 3) + update guardad
         ),
       );
       expect(err.code).toBe(CODIGO_RASCUNHO_SHOPEE.conflito);
+    });
+
+    /** A legacy draft: `brand_id` stored ALONE — the legacy app never wrote a name. */
+    function legadoSoComBrandId(): Record<string, unknown> {
+      const legado = rascunho({ brand_id: 77 });
+      delete legado.original_brand_name;
+      return legado;
+    }
+
+    it('⛔ o rascunho LEGADO só com brand_id: escolher de novo a MESMA marca, agora com o nome, GRAVA o par — "nada a gravar" compara o PAR, não só o id', async () => {
+      const db = new FakeDb();
+      db.seed(CAMINHO, legadoSoComBrandId());
+
+      const r = await atualizarRascunhoShopee(
+        deps(db),
+        corpoAtualizar(
+          { marca: { brand_id: 77, original_brand_name: null } },
+          { marca: { brand_id: 77, original_brand_name: 'Acme' } },
+        ),
+      );
+
+      expect(r.gravados).toEqual([CAMPO_RASCUNHO_SHOPEE.marca]);
+      expect(db.patches).toEqual([
+        {
+          path: CAMINHO,
+          patch: { brand_id: 77, original_brand_name: 'Acme', ultimaModificacao: AGORA },
+        },
+      ]);
+      expect(camposDoRascunhoShopee(doc(db) ?? {}).marca).toEqual({
+        brand_id: 77,
+        original_brand_name: 'Acme',
+      });
+
+      // …and the next identical save reads the pair back EQUAL: nothing more written.
+      const deNovo = await atualizarRascunhoShopee(
+        deps(db),
+        corpoAtualizar(
+          { marca: { brand_id: 77, original_brand_name: 'Acme' } },
+          { marca: { brand_id: 77, original_brand_name: 'Acme' } },
+        ),
+      );
+      expect(deNovo.gravados).toEqual([]);
+      expect(db.patches).toHaveLength(1);
+    });
+
+    it('⛔ quase-par: a MESMA marca SEM nome (null, ou um nome em branco que a escrita dobra para null) sobre o legado sem nome ⇒ gravados [] e NADA escrito', async () => {
+      for (const original_brand_name of [null, '   ']) {
+        const db = new FakeDb();
+        db.seed(CAMINHO, legadoSoComBrandId());
+        const r = await atualizarRascunhoShopee(
+          deps(db),
+          corpoAtualizar(
+            { marca: { brand_id: 77, original_brand_name: null } },
+            { marca: { brand_id: 77, original_brand_name } },
+          ),
+        );
+        expect(r.gravados, String(original_brand_name)).toEqual([]);
+        expect(db.writes).toEqual([]);
+      }
+    });
+
+    it('⛔ quase-par: o nome da mesma marca mudado só na CAIXA ("Acme" → "ACME") é uma escrita — o nome não é dobrado', async () => {
+      const db = new FakeDb();
+      db.seed(CAMINHO, rascunho({ brand_id: 77, original_brand_name: 'Acme' }));
+      const r = await atualizarRascunhoShopee(
+        deps(db),
+        corpoAtualizar(
+          { marca: { brand_id: 77, original_brand_name: 'Acme' } },
+          { marca: { brand_id: 77, original_brand_name: 'ACME' } },
+        ),
+      );
+      expect(r.gravados).toEqual([CAMPO_RASCUNHO_SHOPEE.marca]);
+      expect(doc(db)).toMatchObject({ brand_id: 77, original_brand_name: 'ACME' });
+    });
+
+    it('o OUTRO sentido do par: a MESMA marca escolhida SEM nome sobre um nome gravado é uma escrita — o par é gravado INTEIRO (D10) e o nome vira null', async () => {
+      // Pins the write compare's other direction at the route seam (FIX-P4
+      // verifier): before the fix this was a silent no-op that kept the
+      // stored name; now the operator's nameless pick is written whole, and
+      // the publish's bounded brand walk looks the name up again.
+      const db = new FakeDb();
+      db.seed(CAMINHO, rascunho({ brand_id: 77, original_brand_name: 'Acme' }));
+      const r = await atualizarRascunhoShopee(
+        deps(db),
+        corpoAtualizar(
+          { marca: { brand_id: 77, original_brand_name: 'Acme' } },
+          { marca: { brand_id: 77, original_brand_name: null } },
+        ),
+      );
+      expect(r.gravados).toEqual([CAMPO_RASCUNHO_SHOPEE.marca]);
+      expect(db.patches).toEqual([
+        {
+          path: CAMINHO,
+          patch: { brand_id: 77, original_brand_name: null, ultimaModificacao: AGORA },
+        },
+      ]);
     });
   });
 
@@ -1523,6 +1689,39 @@ describe('atualizarRascunhoShopee — base conferida (nível 3) + update guardad
         expect(err.status).toBe(409);
         expect(err.code).toBe(CODIGO_RASCUNHO_SHOPEE.categoriaTravada);
         expect(db.writes).toEqual([]);
+      }
+    });
+
+    it('⛔ INCERTA + a categoria GRAVADA re-enviada no patch ⇒ AINDA 409 CATEGORIA_TRAVADA, e o título ao lado também não grava — a trava é "o patch NOMEIA category_id" (DA-4), nunca "o valor muda"; quase-par: o MESMO título sem category_id grava', async () => {
+      for (const extra of [
+        { publicacaoEmCurso: travaAlheia(AGORA - AGUARDAR_ANUNCIO_INCERTO_SHOPEE_MS) },
+        { criacaoIncertaDesde: AGORA - 1_000 },
+      ]) {
+        const db = new FakeDb();
+        db.seed(CAMINHO, rascunho(extra));
+        const antes = structuredClone(doc(db));
+
+        // The base is exactly the fixture's projection, so a "the value
+        // changes" lock would pass the baseline and answer 200 [item_name].
+        const err = await recusaDe(
+          atualizarRascunhoShopee(
+            deps(db),
+            corpoAtualizar(
+              { item_name: 'Camiseta do rascunho', category_id: 100_017, attributes: null },
+              { item_name: 'X', category_id: 100_017 },
+            ),
+          ),
+        );
+        expect(err.status, JSON.stringify(extra)).toBe(409);
+        expect(err.code).toBe(CODIGO_RASCUNHO_SHOPEE.categoriaTravada);
+        expect(db.writes).toEqual([]);
+        expect(doc(db)).toEqual(antes);
+
+        const r = await atualizarRascunhoShopee(
+          deps(db),
+          corpoAtualizar({ item_name: 'Camiseta do rascunho' }, { item_name: 'X' }),
+        );
+        expect(r.gravados).toEqual([CAMPO_RASCUNHO_SHOPEE.itemName]);
       }
     });
 
@@ -2041,7 +2240,8 @@ describe('rascunho.ts decide com o módulo do @delfrance/schemas, nunca com uma 
 
     // ÂNCORA: the file read is the module, and it calls THE pair.
     expect(fonte).toContain('export async function atualizarRascunhoShopee(');
-    expect(fonte).toContain('mesmoValorDoRascunhoShopee(');
+    expect(fonte).toContain('mesmoValorDoRascunhoShopee');
+    expect(fonte).toContain('mesmoValorGravadoDoRascunhoShopee(');
     expect(fonte).toContain('camposDoRascunhoShopee(');
     expect(fonte).toContain('camposDaBaseDoRascunhoShopee(');
 

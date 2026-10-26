@@ -450,6 +450,26 @@ describe('editar — recusas', () => {
     expect(db.store[CAMINHO]?.data).toEqual(antes);
   });
 
+  it('⛔ 409 CATEGORIA_TRAVADA também quando o patch re-envia a categoria GRAVADA ao lado de um título (DA-4: o patch NOMEIA category_id)', async () => {
+    semear(rascunho(trava(T0 - AGUARDAR_ANUNCIO_INCERTO_SHOPEE_MS - 1)));
+    const antes = structuredClone(db.store[CAMINHO]?.data);
+
+    const res = await POST(
+      req(
+        corpo(
+          { item_name: 'Camiseta', category_id: 100_017, attributes: null },
+          { item_name: 'Camiseta azul', category_id: 100_017 },
+        ),
+      ),
+    );
+
+    expect(res.status).toBe(409);
+    await expect(res.json()).resolves.toMatchObject({
+      code: CODIGO_RASCUNHO_SHOPEE.categoriaTravada,
+    });
+    expect(db.store[CAMINHO]?.data).toEqual(antes);
+  });
+
   it('near-miss: o TÍTULO do mesmo rascunho `incerta` muda (200), e a trava sobrevive', async () => {
     const travaIncerta = trava(T0 - AGUARDAR_ANUNCIO_INCERTO_SHOPEE_MS - 1);
     semear(rascunho(travaIncerta));
