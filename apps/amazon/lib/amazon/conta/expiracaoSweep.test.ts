@@ -1,15 +1,23 @@
 import { beforeEach, describe, expect, it } from 'vitest';
+import { escreverAviso } from '@delfrance/data/admin/avisos';
 import {
   CANAL_AVISO,
   INTEGRACAO_TIPO,
+  MOTIVO_CONTA_AMAZON,
   MOTIVO_IMPORTACAO_PARADA_AMAZON,
+  MOTIVO_PEDIDO_AMAZON,
+  ROTAS_AVISO,
+  SEVERIDADE_AVISO,
   TIPO_AVISO,
+  chaveDeAviso,
+  type MotivoContaAmazon,
 } from '@delfrance/schemas';
 
 import {
   avisarReautorizacao,
   avisarReconexaoPendente,
   avisarSegredoLwaExpirando,
+  chaveContaPrecisaAtencao,
   chaveImportacaoParada,
   chaveReautorizacao,
   chaveReconexao,
@@ -365,6 +373,134 @@ describe('pass (b) — the backstop poll’s import-stopped row (step 4, PR 4-b)
     expect(importacao('nova')).toMatchObject({ resolvidoEm: null, relogioEvento: raiseDaNova });
     expect(importacao('morta')?.resolucaoMotivo).toBe('conta-removida');
     expect(res.orfaos.resolvidos).toBe(1);
+  });
+});
+
+describe("pass (b) — the order import's two tipos (Amazon step 5)", () => {
+  const ORDER = '171-9876543-2109876';
+
+  /**
+   * Raise a row as the step-5 producers will: per conta clocked by the conta
+   * read's read time, per pedido by a Firestore commit — here, the commit of a
+   * seeded document, so the clock sits on the fake's own server timeline.
+   */
+  async function contaAvisou(id: string, motivo: MotivoContaAmazon): Promise<number> {
+    const lido = db.seed(`integracao-leitura/${id}-${motivo}`, { x: 1 });
+    const relogioEvento = relogioDoDocumentoUs(lido);
+    await escreverAviso(
+      asDb(db),
+      {
+        tipo: TIPO_AVISO.amazonContaPrecisaAtencao,
+        conta: id,
+        janela: motivo,
+        severidade: SEVERIDADE_AVISO.atencao,
+        canal: CANAL_AVISO.amazon,
+        params: { motivo },
+        motivo,
+        urlInterna: { rota: ROTAS_AVISO.canalAmazon.build(id), campo: null },
+        relogioEvento,
+      },
+      { increment, agoraUs: AGORA_MS * 1000 },
+    );
+    return relogioEvento;
+  }
+
+  function chavePedido(id: string): string {
+    return chaveDeAviso({
+      tipo: TIPO_AVISO.amazonPedidoPrecisaAtencao,
+      conta: id,
+      entidade: ORDER,
+      janela: MOTIVO_PEDIDO_AMAZON.divergenciaItens,
+    });
+  }
+
+  async function pedidoAvisou(id: string): Promise<void> {
+    const commit = db.seed(`pedidos-commit/${id}`, { x: 1 });
+    await escreverAviso(
+      asDb(db),
+      {
+        tipo: TIPO_AVISO.amazonPedidoPrecisaAtencao,
+        conta: id,
+        entidade: ORDER,
+        janela: MOTIVO_PEDIDO_AMAZON.divergenciaItens,
+        severidade: SEVERIDADE_AVISO.critico,
+        canal: CANAL_AVISO.amazon,
+        params: { pedido: ORDER, motivo: MOTIVO_PEDIDO_AMAZON.divergenciaItens },
+        motivo: MOTIVO_PEDIDO_AMAZON.divergenciaItens,
+        urlInterna: { rota: ROTAS_AVISO.pedido.build(`pedido-${id}`), campo: null },
+        relogioEvento: relogioDoDocumentoUs(commit),
+      },
+      { increment, agoraUs: AGORA_MS * 1000 },
+    );
+  }
+
+  const linha = (chave: string) => db.ler(caminhoAviso(chave));
+
+  it("★ NEAR-MISS: a LIVE conta's open per-pedido row and BOTH its open per-conta rows survive the sweep", async () => {
+    seedConta(db, 'viva', { nome: 'Viva' });
+    credencialComDias('viva', 200);
+    await pedidoAvisou('viva');
+    await contaAvisou('viva', MOTIVO_CONTA_AMAZON.contaSemOperacao);
+    await contaAvisou('viva', MOTIVO_CONTA_AMAZON.intermediadorDivergente);
+
+    const res = await varrer().r;
+
+    expect(res.contas).toBe(1);
+    expect(res.orfaos.resolvidos).toBe(0);
+    expect(linha(chavePedido('viva'))?.resolvidoEm).toBeNull();
+    for (const motivo of [
+      MOTIVO_CONTA_AMAZON.contaSemOperacao,
+      MOTIVO_CONTA_AMAZON.intermediadorDivergente,
+    ]) {
+      expect(linha(chaveContaPrecisaAtencao('viva', motivo))?.resolvidoEm, motivo).toBeNull();
+    }
+  });
+
+  it("★ a REMOVED conta's per-conta rows close `conta-removida`, CLOCKED by the enumeration; its per-pedido row is a residue", async () => {
+    seedConta(db, 'viva', { nome: 'Viva' });
+    credencialComDias('viva', 200);
+    await pedidoAvisou('morta');
+    await contaAvisou('morta', MOTIVO_CONTA_AMAZON.contaSemOperacao);
+    await contaAvisou('morta', MOTIVO_CONTA_AMAZON.intermediadorDivergente);
+    // The enumeration is the sweep's FIRST operation: its read time is the
+    // latest commit before it.
+    const ultima = db.escritas.at(-1)?.writeTime;
+    if (ultima === undefined) throw new Error('teste: nenhuma escrita antes da varredura');
+    const lidaEmUs = relogioDoDocumentoUs(ultima);
+
+    const res = await varrer().r;
+
+    expect(res.orfaos.resolvidos).toBe(2);
+    for (const motivo of [
+      MOTIVO_CONTA_AMAZON.contaSemOperacao,
+      MOTIVO_CONTA_AMAZON.intermediadorDivergente,
+    ]) {
+      expect(linha(chaveContaPrecisaAtencao('morta', motivo)), motivo).toMatchObject({
+        resolucaoMotivo: 'conta-removida',
+        relogioEvento: lidaEmUs,
+      });
+    }
+    // The per-PEDIDO tipo is not the pass's: a deleted conta's row stays open
+    // (the documented residue), never closed by a key it cannot compute.
+    expect(linha(chavePedido('morta'))?.resolvidoEm).toBeNull();
+  });
+
+  it('★ the race: a conta created AFTER the enumeration keeps the per-conta row its first import raised', async () => {
+    seedConta(db, 'viva', { nome: 'Viva' });
+    let raiseDaNova: number | null = null;
+    db.antesDaProximaEscrita(caminhoAviso(chaveReconexao('viva')), async () => {
+      seedConta(db, 'nova', { nome: 'Nova' });
+      raiseDaNova = await contaAvisou('nova', MOTIVO_CONTA_AMAZON.contaSemOperacao);
+    });
+
+    const res = await varrer().r;
+
+    expect(raiseDaNova).not.toBeNull();
+    expect(res.contas).toBe(1);
+    expect(
+      linha(chaveContaPrecisaAtencao('nova', MOTIVO_CONTA_AMAZON.contaSemOperacao)),
+    ).toMatchObject({ resolvidoEm: null, relogioEvento: raiseDaNova });
+    expect(res.orfaos.resolvidos).toBe(0);
   });
 });
 

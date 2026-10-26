@@ -1121,7 +1121,16 @@ export {
   BANDEIRA_LABELS,
   type BandeiraCartao,
   type Bandeira,
+  bandeiraDoNomeDaMarca,
+  type BandeiraDaMarca,
 } from './bandeiraCartao';
+export {
+  FORMAS_COM_CARTAO_MARKETPLACE,
+  cartaoMarketplace,
+  cnpjInstituicaoUtilizavel,
+  type CartaoMarketplace,
+  type EntradaCartaoMarketplace,
+} from './cartaoMarketplace';
 
 export * from './simplesNacional';
 export {
@@ -1590,6 +1599,10 @@ export {
   MOTIVO_IMPORTACAO_PARADA_LI,
   motivoImportacaoParadaAmazonSchema,
   MOTIVO_IMPORTACAO_PARADA_AMAZON,
+  motivoPedidoAmazonSchema,
+  MOTIVO_PEDIDO_AMAZON,
+  motivoContaAmazonSchema,
+  MOTIVO_CONTA_AMAZON,
   motivoPedidoContestadoLiSchema,
   MOTIVO_PEDIDO_CONTESTADO_LI,
   motivoFreteNaoSuportadoLiSchema,
@@ -1615,6 +1628,8 @@ export {
   type PendenciaReclamacao,
   type MotivoImportacaoParadaLi,
   type MotivoImportacaoParadaAmazon,
+  type MotivoPedidoAmazon,
+  type MotivoContaAmazon,
   type MotivoPedidoContestadoLi,
   type MotivoFreteNaoSuportadoLi,
   type MotivoReversaoComEtiquetaLi,
