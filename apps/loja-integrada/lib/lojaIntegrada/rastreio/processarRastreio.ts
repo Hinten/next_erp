@@ -35,9 +35,12 @@
  *     raises `escrita-recusada`, and a SECOND deciding read decides 11. A
  *     situação write is read back and then checked against the situação history.
  *     A write that landed but whose effect the run did not see (its read-back
- *     failed, a 202, our code read back at a third codigo) is still checked
- *     against the history, and so is a code read back as another code
- *     (`deriva`): neither proves Loja Integrada never moved. Only our code read
+ *     failed, a 202) is still checked against the history, and so is a code
+ *     read back as another code (`deriva`): neither proves Loja Integrada never
+ *     moved. Our code read back at a THIRD codigo (the order moved during the
+ *     run) is checked too, and there the history decides the move: a row of it
+ *     ⇒ seen (`efeito-observado`, done — or the overwrite it reveals); no row,
+ *     no anchor or no history ⇒ `parcial/efeito-pendente`. Only our code read
  *     back at the deciding codigo (no move yet) skips it. Any aviso is raised
  *     ONCE, at the end, clocked by the event; when a run meets more than one
  *     motivo, the most serious wins (`pesoDoMotivo`).
@@ -177,6 +180,7 @@ import {
 } from './avisosRastreio';
 import { envioDoPedidoLi, numeroConfereLi, pedidoRastreioLi } from './identidadeRastreio';
 import {
+  type ConferenciaHistoricoLi,
   type MotivoSuperadoLi,
   type SequenciaRastreioLi,
   conferirHistoricoLi,
@@ -903,13 +907,14 @@ async function conterFalhaDeLeitura(e: ExecucaoLi, falha: FalhaContidaLi): Promi
 /**
  * The situação-history check after a situação change we caused: one line,
  * and the aviso `situacao-sobrescrita` when the table would have refused the
- * overwritten codigo. Never throws for the read itself (contained).
+ * overwritten codigo. Never throws for the read itself (contained). Answers
+ * the verdict, or `null` when the history could not be read.
  */
 async function conferirHistorico(
   e: ExecucaoLi,
   codigoAntes: string,
   codigoEscrito: CodigoSituacaoEscritaLi,
-): Promise<void> {
+): Promise<ConferenciaHistoricoLi | null> {
   const historico = await lerHistoricoSituacaoParaConferenciaLi(e.motor, e.alvo);
   const campos = { recurso: e.alvo.recurso, codigoAntes, codigoEscrito };
   if (!historico.lida) {
@@ -920,7 +925,7 @@ async function conferirHistorico(
       { ...campos, resultado: 'ilegivel', classe: historico.classe },
       e.registro,
     );
-    return;
+    return null;
   }
   const v = conferirHistoricoLi(historico.linhas, {
     numero: e.alvo.recurso,
@@ -941,6 +946,26 @@ async function conferirHistorico(
   );
   if (v.kind === 'sobrescrito') {
     definirAviso(e, { motivo: M.situacaoSobrescrita, situacao: v.codigo, critico: v.critico });
+  }
+  return v;
+}
+
+/**
+ * Whether a verdict holds the row of the move we caused, after the anchor —
+ * that move happened, whatever came after it. Exhaustive: a verdict added
+ * later does not compile until it is decided.
+ */
+function historicoMostraNossaMudanca(v: ConferenciaHistoricoLi): boolean {
+  switch (v.kind) {
+    case 'conferido':
+    case 'intermediaria-compativel':
+    case 'sobrescrito':
+    case 'duplicado':
+      return true;
+    // No row of ours yet; no anchor, or our row with no previous situação.
+    case 'sem-linha':
+    case 'inconclusivo':
+      return false;
   }
 }
 
@@ -993,8 +1018,7 @@ async function executarLigado(e: ExecucaoLi, base0: BaseEscritaLi): Promise<Resu
 
 /**
  * A write that landed but whose effect this run did not see (its read-back
- * failed, a 202, or our code read back at a third codigo — the order moved
- * during the run): the move it may have made is still checked against the
+ * failed, a 202): the move it may have made is still checked against the
  * situação history — never when the deciding read already showed the codigo
  * written (module header, the residual). An overwrite found there is reported
  * (and parks); otherwise the run stays `parcial`.
@@ -1057,13 +1081,19 @@ async function escreverObjeto(
   }
   const codigoDeVolta = volta.pedido.situacao.codigo;
   if (codigoDeVolta !== C.pedidoEnviado) {
+    // Read back at a THIRD codigo, the order moved during the run, and LI's
+    // move to 11 may be one of those moves: the history says whether it was
+    // (never when the deciding read was already at 11 — the residual). A row of
+    // our move is the move SEEN: done, or the overwrite it reveals.
+    if (codigoDeVolta !== codigoAntes && codigoAntes !== C.pedidoEnviado) {
+      const v = await conferirHistorico(e, codigoAntes, C.pedidoEnviado);
+      if (v !== null && historicoMostraNossaMudanca(v)) {
+        registrarSequencia(e, destino.tipo, 'efeito-observado', resposta);
+        return finalizar(e, comEscrita(e, true));
+      }
+    }
     // LI did not move (yet): a run at least an hour later decides from a fresh read.
     registrarSequencia(e, destino.tipo, 'efeito-pendente', resposta);
-    // Read back at a THIRD codigo, the order moved during the run, and LI's
-    // move to 11 may be one of those moves: checked like a write not seen.
-    if (codigoDeVolta !== codigoAntes) {
-      return parcialConferido(e, codigoAntes, C.pedidoEnviado, 'efeito-pendente');
-    }
     return { kind: 'parcial', efeito: 'efeito-pendente' };
   }
   if (codigoAntes !== C.pedidoEnviado) {

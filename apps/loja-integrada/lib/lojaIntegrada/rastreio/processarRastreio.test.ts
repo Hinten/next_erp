@@ -918,7 +918,15 @@ describe('the history check after a situação we caused', () => {
  * BEFORE the default route stores the code and moves the order to 11;
  * `depoisDoPut` runs as the read-back GET arrives, after that route; `leitura`,
  * when given, answers the read-back from the platform's state (else the
- * default route does); `historico`, when given, answers the history read.
+ * default route does); `historico`, when given, answers the history read (else
+ * the default route does) — with or without `leitura`.
+ *
+ * ⚠️ The queue SHIFTS an override the moment it answers non-null, so a
+ * `leitura` answer consumes this one: the history answer then goes to a
+ * one-shot override queued right behind it (index 1 now, the head once the
+ * shift lands). Without that, a `historico` passed with a `leitura` was
+ * silently ignored and the run read the REAL history — a test of an unreadable
+ * history would pass vacuously.
  */
 function roteirizarPostagem(
   c: Cenario,
@@ -939,9 +947,11 @@ function roteirizarPostagem(
     if (fase === 'leitura' && r.metodo === 'GET' && r.caminho === CAMINHO_PEDIDO_LI) {
       o.depoisDoPut?.();
       fase = 'historico';
-      return o.leitura === undefined
-        ? null
-        : respostaJson(200, o.leitura(structuredClone(c.p.estado.pedido)));
+      if (o.leitura === undefined) return null;
+      if (o.historico !== undefined) {
+        c.p.fila.splice(1, 0, naProxima(CAMINHO_HISTORICO_LI, 'GET', o.historico));
+      }
+      return respostaJson(200, o.leitura(structuredClone(c.p.estado.pedido)));
     }
     if (fase === 'historico' && r.metodo === 'GET' && r.caminho === CAMINHO_HISTORICO_LI) {
       fase = 'fim';
@@ -950,6 +960,13 @@ function roteirizarPostagem(
     return null;
   });
 }
+
+/** A history page with no rows at all: no anchor, so `inconclusivo`. */
+const historicoVazio = () =>
+  respostaJson(200, {
+    meta: { limit: 50, offset: 0, next: null, previous: null, total_count: 0 },
+    objects: [],
+  });
 
 const OUTRO_CODIGO = 'OUTRO999BR';
 
@@ -964,6 +981,10 @@ describe('a landed code whose read-back does not show our move cleanly still che
     [
       'still at the deciding codigo (a read-back older than the history)',
       (p: Record<string, unknown>) => ({ ...p, situacao: { codigo: C.pedidoPago } }),
+    ],
+    [
+      'at a THIRD codigo outside the never-write set (the order moved on to 14)',
+      (p: Record<string, unknown>) => ({ ...p, situacao: { codigo: C.pedidoEntregue } }),
     ],
   ])(
     '⚠️ a read-back holding ANOTHER code (%s), over a cancellation request the code’s own move overwrote ⇒ situacao-sobrescrita CRITICO naming 1019, outranking the deriva',
@@ -1056,37 +1077,142 @@ describe('a landed code whose read-back does not show our move cleanly still che
     expect(c.p.puts()).toHaveLength(1);
   });
 
-  it('⚠️ our code read back at a THIRD codigo — the order moved on after the code’s own move overwrote a cancellation request ⇒ situacao-sobrescrita CRITICO naming 1019, park', async () => {
+  it('⚠️ NEAR-MISS: the same drift read back at the deciding codigo AND the history unreadable (a `leitura` and a `historico` scripted together) ⇒ `ilegivel`, the deriva alone — never the overwrite the real history holds', async () => {
     const c = cenario();
     roteirizarPostagem(c, {
       noIntervalo: () => c.p.mover(C.cancelamentoSolicitado),
-      // The request honoured right after the move: 11 → cancelled.
-      depoisDoPut: () => c.p.mover(C.pedidoCancelado),
+      depoisDoPut: outroCodigoNoEnvio(c),
+      leitura: (p) => ({ ...p, situacao: { codigo: C.pedidoPago } }),
+      historico: () => respostaJson(429, {}),
     });
-    expect(await c.rodar()).toEqual({
-      kind: 'escrito-com-aviso',
-      motivo: M.situacaoSobrescrita,
-    });
+    expect(await c.rodar()).toEqual({ kind: 'escrito-com-aviso', motivo: M.deriva });
     expect(c.p.chamadas()).toEqual([GET_PEDIDO, PUT_ENVIO, GET_PEDIDO, GET_HISTORICO]);
-    expect(c.p.puts()).toHaveLength(1);
+    expect(doEvento(c.linhas, 'conferencia-historico')).toEqual([
+      expect.objectContaining({
+        severidade: 'WARNING',
+        campos: expect.objectContaining({ resultado: 'ilegivel' }) as unknown,
+      }),
+    ]);
     expect(c.aviso()).toMatchObject({
-      severidade: SEVERIDADE_AVISO.critico,
-      params: { motivo: M.situacaoSobrescrita, situacao: C.cancelamentoSolicitado },
+      severidade: SEVERIDADE_AVISO.atencao,
+      params: { motivo: M.deriva },
     });
+    expect(c.p.fila).toEqual([]);
   });
 
-  it('⚠️ NEAR-MISS: our code at a third codigo the order reached AFTER a clean move (`pedido_pago → pedido_enviado → cancelamento_solicitado`) ⇒ the history read, conferido, parcial/efeito-pendente, NO aviso', async () => {
-    const c = cenario();
-    roteirizarPostagem(c, { depoisDoPut: () => c.p.mover(C.cancelamentoSolicitado) });
-    expect(await c.rodar()).toEqual({ kind: 'parcial', efeito: 'efeito-pendente' });
-    expect(c.p.chamadas()).toEqual([GET_PEDIDO, PUT_ENVIO, GET_PEDIDO, GET_HISTORICO]);
-    expect(doEvento(c.linhas, 'conferencia-historico')[0]).toMatchObject({
-      severidade: 'INFO',
-      campos: { resultado: 'conferido' },
-    });
-    expect(escritas(c.linhas, 'efeito-pendente')).toHaveLength(1);
-    expect(c.aviso()).toBeUndefined();
-  });
+  it.each([
+    ['inside the never-write set (the request honoured: 11 → cancelled)', C.pedidoCancelado],
+    ['OUTSIDE the never-write set (the order delivered: 11 → 14)', C.pedidoEntregue],
+  ])(
+    '⚠️ our code read back at a THIRD codigo %s, after the code’s own move overwrote a cancellation request ⇒ situacao-sobrescrita CRITICO naming 1019, the move OBSERVED (no efeito-pendente line), park',
+    async (_caso, terceiro) => {
+      const c = cenario();
+      roteirizarPostagem(c, {
+        noIntervalo: () => c.p.mover(C.cancelamentoSolicitado),
+        depoisDoPut: () => c.p.mover(terceiro),
+      });
+      expect(await c.rodar()).toEqual({
+        kind: 'escrito-com-aviso',
+        motivo: M.situacaoSobrescrita,
+      });
+      expect(c.p.chamadas()).toEqual([GET_PEDIDO, PUT_ENVIO, GET_PEDIDO, GET_HISTORICO]);
+      expect(c.p.puts()).toHaveLength(1);
+      // The history holds our move: it was seen, never "pending".
+      expect(escritas(c.linhas, 'efeito-observado')).toHaveLength(1);
+      expect(escritas(c.linhas, 'efeito-pendente')).toEqual([]);
+      expect(c.aviso()).toMatchObject({
+        severidade: SEVERIDADE_AVISO.critico,
+        params: { motivo: M.situacaoSobrescrita, situacao: C.cancelamentoSolicitado },
+        resolvidoEm: null,
+      });
+    },
+  );
+
+  it.each<[string, string, (c: Cenario) => Parameters<typeof roteirizarPostagem>[1]]>([
+    [
+      'a clean move then a request (`pedido_pago → pedido_enviado → cancelamento_solicitado`)',
+      'conferido',
+      (c) => ({ depoisDoPut: () => c.p.mover(C.cancelamentoSolicitado) }),
+    ],
+    [
+      'a compatible intermediate, then delivered (`pedido_pago → pedido_em_separacao → pedido_enviado → pedido_entregue`)',
+      'intermediaria-compativel',
+      (c) => ({
+        noIntervalo: () => c.p.mover(C.pedidoEmSeparacao),
+        depoisDoPut: () => c.p.mover(C.pedidoEntregue),
+      }),
+    ],
+    [
+      'a duplicate of our move, then delivered (`… → pedido_enviado → pedido_enviado → pedido_entregue`)',
+      'escrita-duplicada',
+      (c) => ({
+        depoisDoPut: () => {
+          c.p.mover(C.pedidoEnviado);
+          c.p.mover(C.pedidoEntregue);
+        },
+      }),
+    ],
+  ])(
+    '⚠️ NEAR-MISS: our code at a third codigo, the history holding our move after %s ⇒ `%s`, the move OBSERVED: `efeito-observado`, `escrito`, a clocked resolve — never parcial/efeito-pendente',
+    async (_caso, resultado, roteiro) => {
+      const c = cenario();
+      roteirizarPostagem(c, roteiro(c));
+      expect(await c.rodar()).toEqual({ kind: 'escrito' });
+      expect(c.p.chamadas()).toEqual([GET_PEDIDO, PUT_ENVIO, GET_PEDIDO, GET_HISTORICO]);
+      expect(c.p.puts()).toHaveLength(1);
+      expect(doEvento(c.linhas, 'conferencia-historico')).toEqual([
+        expect.objectContaining({
+          campos: expect.objectContaining({ resultado, codigoAntes: C.pedidoPago }) as unknown,
+        }),
+      ]);
+      expect(escritas(c.linhas, 'efeito-observado')).toHaveLength(1);
+      expect(escritas(c.linhas, 'efeito-pendente')).toEqual([]);
+      expect(c.aviso()).toMatchObject({ relogioEvento: EVENTO_MS * 1000 });
+      expect(c.aviso()?.resolvidoEm).not.toBeNull();
+    },
+  );
+
+  it.each<[string, string, (c: Cenario) => Parameters<typeof roteirizarPostagem>[1], boolean]>([
+    [
+      'NO row of our move yet (`sem-linha`: an operator moved it, LI has not)',
+      'sem-linha',
+      (c) => ({ noIntervalo: () => c.p.mover(C.emProducao) }),
+      false,
+    ],
+    [
+      'an inconclusive history (no anchor)',
+      'inconclusivo',
+      (c) => ({ depoisDoPut: () => c.p.mover(C.pedidoEntregue), historico: historicoVazio }),
+      true,
+    ],
+    [
+      'an unreadable history (429)',
+      'ilegivel',
+      (c) => ({
+        depoisDoPut: () => c.p.mover(C.pedidoEntregue),
+        historico: () => respostaJson(429, {}),
+      }),
+      true,
+    ],
+  ])(
+    '⚠️ NEAR-MISS: our code at a third codigo with %s ⇒ `%s`, the move NOT seen: parcial/efeito-pendente, the efeito-pendente line, NO aviso',
+    async (_caso, resultado, roteiro, move) => {
+      const c = cenario({ mover: move });
+      roteirizarPostagem(c, roteiro(c));
+      expect(await c.rodar()).toEqual({ kind: 'parcial', efeito: 'efeito-pendente' });
+      expect(c.p.chamadas()).toEqual([GET_PEDIDO, PUT_ENVIO, GET_PEDIDO, GET_HISTORICO]);
+      expect(c.p.puts()).toHaveLength(1);
+      expect(doEvento(c.linhas, 'conferencia-historico')).toEqual([
+        expect.objectContaining({
+          severidade: 'WARNING',
+          campos: expect.objectContaining({ resultado }) as unknown,
+        }),
+      ]);
+      expect(escritas(c.linhas, 'efeito-pendente')).toHaveLength(1);
+      expect(escritas(c.linhas, 'efeito-observado')).toEqual([]);
+      expect(c.aviso()).toBeUndefined();
+    },
+  );
 
   it('⚠️ NEAR-MISS: our code at a third codigo on an order the deciding read saw ALREADY at 11 ⇒ NO history read, parcial/efeito-pendente (the accepted residual)', async () => {
     const c = cenario({ codigo: C.pedidoEnviado });
