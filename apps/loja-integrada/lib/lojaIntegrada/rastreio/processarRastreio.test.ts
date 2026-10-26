@@ -1276,7 +1276,8 @@ describe('PROPERTY: no run sends a PUT after a 2xx PUT', () => {
         }
       }
     }
-  });
+    // A grid of ~1,300 runs: seconds on a fast machine, ~20 s on a CI runner.
+  }, 120_000);
 });
 
 describe('a retried run after a landed PUT makes ZERO PUTs', () => {
