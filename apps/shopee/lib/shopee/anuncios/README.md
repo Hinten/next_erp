@@ -18,7 +18,8 @@ The families are the seam, not a filing convention.
 
 - **The seam and the pure half** — `errosPublicacao.ts` (the two error classes,
   the `MOTIVO_PUBLICACAO_BLOQUEADA` vocabulary — step 11's 22 members plus step
-  19's native-kit members, whose count `errosPublicacao.test.ts` pins —,
+  19's native-kit members and #1911's blocked members, whose count
+  `errosPublicacao.test.ts` pins —,
   `ETAPA_PUBLICACAO` and `limitarMensagemProblema`), `constantesAnuncio.ts` (the ten app-level
   constants; every WIRE bound stays in `@delfrance/integrations-shopee`),
   `montagemAnuncio.ts` (the `add_item` / `update_item` bodies and nineteen
@@ -1199,7 +1200,8 @@ not style.
 `anuncioShopeeVivo(raw)` — in `@delfrance/schemas`'s `shopeeLinkLeitura.ts`
 since step 21, re-exported here by `statusAnuncio.ts` — is total and
 non-throwing, and reads an ABSENT `estadoAnuncio` as VIVO — the safe direction:
-a draft link that has not been published yet must not un-badge a produto.
+a link step 9 imported whose `estadoAnuncio` was never folded must not
+un-badge a produto (a #1911 DRAFT — `item_id: null` — is not vivo at all).
 `contaDoLinkShopee` reads `contaProdutoShopeeOuterRef` (⚠️ **not** ML's
 `contaOuterRef`), with a near-miss test proving a `contaOuterRef`-shaped
 document resolves to `null`.
