@@ -12,6 +12,7 @@ import { LiError } from '@delfrance/integrations-loja-integrada';
 
 import * as erros from './erros';
 import {
+  EscritaRecusadaLiError,
   LiAppError,
   LiChamadasDesligadasError,
   LiContaInativaError,
@@ -66,6 +67,18 @@ describe('the app errors are NOT LiError', () => {
   it('near-miss: the package class is not an app error either', () => {
     expect(LiError.prototype instanceof LiAppError).toBe(false);
     expect(LiAppError.prototype instanceof LiError).toBe(false);
+  });
+
+  it('the write-back retry signal is neither a LiError nor an app error about a conta, and carries the status only', () => {
+    const err = new EscritaRecusadaLiError(ID, 'objeto-envio', 403);
+    expect(err.name).toBe('EscritaRecusadaLiError');
+    expect(err).toBeInstanceOf(Error);
+    expect(err).not.toBeInstanceOf(LiError);
+    expect(err).not.toBeInstanceOf(LiAppError);
+    expect(err.status).toBe(403);
+    expect(err.tipo).toBe('objeto-envio');
+    expect(err.message).toContain('HTTP 403');
+    expect(err.message).toContain(ID);
   });
 
   it('the credential pin refusal names the conta, never a ref or a token, and is not the panel conflict', () => {

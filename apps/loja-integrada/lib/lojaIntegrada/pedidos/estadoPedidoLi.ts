@@ -195,20 +195,31 @@ export type LeituraHistoricoLi =
 const NAO_DERIVAVEL: DataDoHistoricoLi = { derivavel: false };
 const derivada = (us: number | null): DataDoHistoricoLi => ({ derivavel: true, us });
 
-/**
- * Normalise an order's situação history and take the verdict the import needs
- * from it (module header).
- *
- * Rows are ordered by their instant, then by row id; a repeated row id keeps
- * its first copy.
- */
-export function lerHistoricoLi(entrada: EntradaHistoricoLi): LeituraHistoricoLi {
-  const { numero, codigoDetalhe, modo } = entrada;
-  const lacunas = new Set<LacunaHistoricoLi>();
+/** The rows of one order's history, cleaned up: what {@link limparHistoricoLi} leaves. */
+export interface HistoricoLimpoLi {
+  /** The rows of THIS order with a readable date, one per row id, oldest first. */
+  readonly linhas: readonly LinhaHistoricoLi[];
+  /** The holes the clean-up found (`numero-divergente`, `data-ilegivel`), in the order met. */
+  readonly lacunas: readonly LacunaHistoricoLi[];
+}
 
+/**
+ * The row clean-up of an order's situação history — ONE rule for every reader
+ * of it, so the order import ({@link lerHistoricoLi}) and the status
+ * write-back's check after a write (`rastreio/planoRastreio.ts`) order the rows
+ * the same way: a row of another order is dropped (`numero-divergente`), a row
+ * whose date `lerDataLi` cannot read is dropped (`data-ilegivel`), a repeated row
+ * id keeps its first copy, and the rows are ordered by their instant, then by row
+ * id. Pure and total.
+ */
+export function limparHistoricoLi(
+  brutas: readonly SituacaoHistoricoLinhaLi[],
+  numero: number,
+): HistoricoLimpoLi {
+  const lacunas = new Set<LacunaHistoricoLi>();
   const vistos = new Set<number>();
   const linhas: LinhaHistoricoLi[] = [];
-  for (const bruta of entrada.linhas) {
+  for (const bruta of brutas) {
     if (bruta.numero !== numero) {
       lacunas.add(LACUNA_HISTORICO_LI.numeroDivergente);
       continue;
@@ -230,6 +241,21 @@ export function lerHistoricoLi(entrada: EntradaHistoricoLi): LeituraHistoricoLi 
     });
   }
   linhas.sort((a, b) => a.dataUs - b.dataUs || a.id - b.id);
+  return { linhas, lacunas: [...lacunas] };
+}
+
+/**
+ * Normalise an order's situação history and take the verdict the import needs
+ * from it (module header).
+ *
+ * Rows are ordered by their instant, then by row id; a repeated row id keeps
+ * its first copy ({@link limparHistoricoLi}).
+ */
+export function lerHistoricoLi(entrada: EntradaHistoricoLi): LeituraHistoricoLi {
+  const { numero, codigoDetalhe, modo } = entrada;
+  const limpo = limparHistoricoLi(entrada.linhas, numero);
+  const lacunas = new Set<LacunaHistoricoLi>(limpo.lacunas);
+  const linhas = limpo.linhas;
 
   // The chain. `quebras` holds the index of each row whose predecessor is missing.
   const quebras: number[] = [];

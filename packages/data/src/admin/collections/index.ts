@@ -94,6 +94,7 @@ export { notificacaoMercadoPagoCollection } from './notificacaoMercadoPagoCollec
 export { notificacaoMelhorEnvioCollection } from './notificacaoMelhorEnvioCollection';
 export { notificacaoShopeeCollection } from './notificacaoShopeeCollection';
 export { notificacaoLojaIntegradaCollection } from './notificacaoLojaIntegradaCollection';
+export { notificacaoEscritaLojaIntegradaCollection } from './notificacaoEscritaLojaIntegradaCollection';
 export { pollPedidosLojaIntegradaCollection } from './pollPedidosLojaIntegradaCollection';
 export { notificacaoAmazonCollection } from './notificacaoAmazonCollection';
 export { pollPedidosAmazonCollection } from './pollPedidosAmazonCollection';

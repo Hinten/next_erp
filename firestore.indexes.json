@@ -273,6 +273,20 @@
       ]
     },
     {
+      "collectionGroup": "notificacoesEscritaLojaIntegrada",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "processedAt",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "notificacoesAmazon",
       "queryScope": "COLLECTION",
       "fields": [
