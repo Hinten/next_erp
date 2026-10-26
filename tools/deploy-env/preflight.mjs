@@ -227,8 +227,10 @@ const CODEBASES = {
     // `preflight.test.js`.
     backendVar: null,
     backendManifest: null,
-    // The reads queue's `rateLimits` are LITERALS (concurrency 1 is a
-    // correctness property, not a tunable), so there is no deploy-shell knob.
+    // Both queues' `rateLimits` are LITERALS — the reads queue and, since
+    // master-plan step 7, the writes queue with its instance limits
+    // (concurrency 1 is a correctness property, not a tunable) — so there is
+    // no deploy-shell knob.
     deployShell: {},
     runtimeOverrides: ['LOJA_INTEGRADA_TASKS_REGION'],
   },
