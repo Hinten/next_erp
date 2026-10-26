@@ -1157,6 +1157,47 @@ describe('other refusals of a PUT', () => {
     expect(c.aviso()).toMatchObject({ params: { motivo: M.deriva } });
   });
 
+  it('⚠️ a deriva AND a sobrescrita in the same situação write ⇒ the CRITICO sobrescrita, never the deriva', async () => {
+    // The buyer asks to cancel just before our 11 lands, and again right after it.
+    const c = cenario({ codRastreio: null });
+    let fase = 0;
+    c.p.fila.push((r) => {
+      if (fase === 0 && r.metodo === 'PUT' && r.caminho === CAMINHO_SITUACAO_LI) {
+        c.p.mover(C.cancelamentoSolicitado);
+        fase = 1;
+        return null;
+      }
+      if (fase === 1 && r.metodo === 'GET' && r.caminho === CAMINHO_PEDIDO_LI) {
+        c.p.mover(C.cancelamentoSolicitado);
+        fase = 2;
+        return respostaJson(200, c.p.estado.pedido);
+      }
+      return null;
+    });
+    expect(await c.rodar()).toEqual({ kind: 'escrito-com-aviso', motivo: M.situacaoSobrescrita });
+    expect(escritas(c.linhas, 'aplicada')).toHaveLength(1);
+    expect(doEvento(c.linhas, 'deriva')).toHaveLength(1);
+    expect(c.aviso()).toMatchObject({
+      severidade: SEVERIDADE_AVISO.critico,
+      params: { motivo: M.situacaoSobrescrita, situacao: C.cancelamentoSolicitado },
+    });
+  });
+
+  it('two refused writes in one run (the code 400, then the 11 302) ⇒ the FIRST refusal’s status: an equal-rank motivo never replaces one already set', async () => {
+    const c = cenario();
+    c.p.fila.push(
+      naProxima(CAMINHO_ENVIO_LI, 'PUT', () => respostaJson(400, {})),
+      naProxima(
+        CAMINHO_SITUACAO_LI,
+        'PUT',
+        () => new Response('', { status: 302, headers: { location: '/x' } }),
+      ),
+    );
+    expect(await c.rodar()).toEqual({ kind: 'recusado', motivo: M.escritaRecusada, status: 400 });
+    expect(c.p.puts().map((r) => r.caminho)).toEqual([CAMINHO_ENVIO_LI, CAMINHO_SITUACAO_LI]);
+    expect(c.aviso()).toMatchObject({ params: { motivo: M.escritaRecusada, status: 400 } });
+  });
+
   it('an invalid stored code and a sobrescrita in the same run ⇒ the sobrescrita wins', async () => {
     const c = cenario({ codRastreio: `${CODIGO} ` });
     c.p.fila.push((r) => {
