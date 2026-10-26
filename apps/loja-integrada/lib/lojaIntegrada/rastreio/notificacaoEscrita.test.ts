@@ -661,6 +661,49 @@ describe('the varredura (on the writes queue)', () => {
     },
   );
 
+  it.each([
+    ['its write 261 s after the dispatch (256 s after the sweep began)', 117_000, 0],
+    // NEAR-MISS: exactly at the deadline from the dispatch still writes.
+    ['its write 260 s after the dispatch', 116_000, 1],
+  ] as const)(
+    '⚠️ the deadline runs from the DISPATCH, not from the sweep’s own start: a dispatch that began 5 s before its sweep — %s',
+    async (_caso, avancoMs, putsEsperados) => {
+      // The handler stamps the dispatch start FIRST; the sweep starts its own
+      // budget clock later (the pre-sweep work of the dispatch). The deadline
+      // must stay anchored on the dispatch: 5 + 139 + 117 = 261 s is past it.
+      const m = montar();
+      const deps = { ...m.deps(), inicioDaTarefaMs: AGORA_MS - 5_000 };
+      seedLinha(m, 1, 'failed', 1);
+      const segunda = seedLinha(m, 2, 'failed', 2);
+      m.p.fila.push(
+        naProxima(CAMINHO_PEDIDO_LI, 'GET', () => {
+          m.relogio.ms += 139_000;
+          return respostaJson(503, {});
+        }),
+        naProxima(CAMINHO_PEDIDO_LI, 'GET', () => {
+          m.relogio.ms += avancoMs;
+          return respostaJson(200, m.p.estado.pedido);
+        }),
+      );
+
+      await varrerEscritasLi(asDb(m.db), deps, 140_000);
+
+      expect(m.p.chamadas().slice(0, 2)).toEqual([
+        `GET ${CAMINHO_PEDIDO_LI}`,
+        `GET ${CAMINHO_PEDIDO_LI}`,
+      ]);
+      expect(m.p.puts().map((r) => r.caminho)).toEqual(
+        putsEsperados === 0 ? [] : [CAMINHO_ENVIO_LI],
+      );
+      if (putsEsperados === 0) {
+        expect(m.db.ler(caminhoDe(segunda))).toMatchObject({
+          status: 'failed',
+          erro: new PrazoDeEscritaEsgotadoLiError(5_000 + 139_000 + avancoMs).message,
+        });
+      }
+    },
+  );
+
   it('a row whose remove AND mark both fail makes at most ONE process call, and ends the lane with ONE WARNING', async () => {
     const m = montar();
     const p = seedLinha(m, 1, 'failed', 1);
