@@ -306,6 +306,11 @@ on:
       # conta's freight doc is created, adopted, patched or deactivated would
       # not fire this lane's safety net.
       - 'packages/data/src/admin/frete/**'
+      # #1911 (listing authoring) moved shared rules the publisher and the draft
+      # route read into root-level schema files no entry above covers: the
+      # taxonomy envelopes and the text-band functions.
+      - 'packages/schemas/src/taxonomiaShopeeDto.ts'
+      - 'packages/schemas/src/faixaShopee.ts'
       - 'firestore.indexes.json'
       - 'firebase.shopee.tasks.json'
       - 'pnpm-lock.yaml'
