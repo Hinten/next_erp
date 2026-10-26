@@ -380,28 +380,29 @@ describe('janelaDaCriacaoIncertaShopee — a evidência de uma tentativa (K1-8)'
   });
 
   it('só a trava ⇒ o `desde` da trava — viva, na carência OU vencida sem registro (o caminho do crash)', () => {
-    expect(janelaDaCriacaoIncertaShopee(rascunhoTravado())).toEqual({ desdeMs: DESDE });
+    expect(janelaDaCriacaoIncertaShopee(rascunhoTravado())).toEqual({ desdeMs: DESDE, sku: null });
   });
 
   it('só o registro ⇒ o registro', () => {
     expect(
       janelaDaCriacaoIncertaShopee({ item_id: null, criacaoIncertaDesde: INCERTA_DESDE }),
-    ).toEqual({ desdeMs: INCERTA_DESDE });
+    ).toEqual({ desdeMs: INCERTA_DESDE, sku: null });
   });
 
   it('⛔ NEAR-MISS: com os dois, o REGISTRO vence a trava (a tentativa mais antiga; a trava de um reenvio é mais nova)', () => {
     expect(
       janelaDaCriacaoIncertaShopee(rascunhoTravado({ criacaoIncertaDesde: INCERTA_DESDE })),
-    ).toEqual({ desdeMs: INCERTA_DESDE });
+    ).toEqual({ desdeMs: INCERTA_DESDE, sku: null });
     // O `??` do §2.1, literal: o registro vence até um `desde` de trava mais antigo.
     expect(
       janelaDaCriacaoIncertaShopee(rascunhoTravado({ criacaoIncertaDesde: DESDE + 1 })),
-    ).toEqual({ desdeMs: DESDE + 1 });
+    ).toEqual({ desdeMs: DESDE + 1, sku: null });
   });
 
   it('⛔ NEAR-MISS: `criacaoIncertaDesde: 0` é um instante, nunca "ausente"', () => {
     expect(janelaDaCriacaoIncertaShopee(rascunhoTravado({ criacaoIncertaDesde: 0 }))).toEqual({
       desdeMs: 0,
+      sku: null,
     });
   });
 
@@ -410,7 +411,7 @@ describe('janelaDaCriacaoIncertaShopee — a evidência de uma tentativa (K1-8)'
       expect(
         janelaDaCriacaoIncertaShopee(rascunhoTravado({ criacaoIncertaDesde: bruto })),
         String(bruto),
-      ).toEqual({ desdeMs: DESDE });
+      ).toEqual({ desdeMs: DESDE, sku: null });
       expect(
         janelaDaCriacaoIncertaShopee({ item_id: null, criacaoIncertaDesde: bruto }),
         String(bruto),
@@ -439,13 +440,13 @@ describe('janelaDaCriacaoIncertaShopee — a evidência de uma tentativa (K1-8)'
         publicacaoEmCurso: { token: 'x' },
         criacaoIncertaDesde: INCERTA_DESDE,
       }),
-    ).toEqual({ desdeMs: INCERTA_DESDE });
+    ).toEqual({ desdeMs: INCERTA_DESDE, sku: null });
   });
 
   it('lê qualquer documento — ser rascunho é pergunta de quem chama', () => {
     expect(
       janelaDaCriacaoIncertaShopee({ item_id: 2500139861, criacaoIncertaDesde: INCERTA_DESDE }),
-    ).toEqual({ desdeMs: INCERTA_DESDE });
+    ).toEqual({ desdeMs: INCERTA_DESDE, sku: null });
   });
 
   it('⚠️ por que a tomada de uma trava vencida CARREGA o `desde` antigo: sem isso a janela anda para frente', () => {
@@ -456,7 +457,7 @@ describe('janelaDaCriacaoIncertaShopee — a evidência de uma tentativa (K1-8)'
       token: 'tok-2',
     };
     // Lido ANTES da tomada: a janela é a da tentativa que caiu.
-    expect(janelaDaCriacaoIncertaShopee(rascunhoTravado())).toEqual({ desdeMs: DESDE });
+    expect(janelaDaCriacaoIncertaShopee(rascunhoTravado())).toEqual({ desdeMs: DESDE, sku: null });
     // A tomada que carrega o registro mantém a janela…
     expect(
       janelaDaCriacaoIncertaShopee({
@@ -464,11 +465,79 @@ describe('janelaDaCriacaoIncertaShopee — a evidência de uma tentativa (K1-8)'
         publicacaoEmCurso: novaTrava,
         criacaoIncertaDesde: DESDE,
       }),
-    ).toEqual({ desdeMs: DESDE });
+    ).toEqual({ desdeMs: DESDE, sku: null });
     // …e a que só troca a trava a estreita até depois da tentativa antiga.
     expect(janelaDaCriacaoIncertaShopee({ item_id: null, publicacaoEmCurso: novaTrava })).toEqual({
       desdeMs: TOMADA,
+      sku: null,
     });
+  });
+
+  it('`sku` (batch-A review): o SKU que a tentativa ENVIOU, da MESMA fonte que o `desdeMs`', () => {
+    // Só a trava: o `sku` dela — `''` é "enviou sem SKU", um VALOR; ausente é desconhecido.
+    expect(janelaDaCriacaoIncertaShopee(rascunhoTravado())).toEqual({ desdeMs: DESDE, sku: null });
+    expect(
+      janelaDaCriacaoIncertaShopee({
+        item_id: null,
+        publicacaoEmCurso: { ...TRAVA, sku: 'SKU-1' },
+      }),
+    ).toEqual({ desdeMs: DESDE, sku: 'SKU-1' });
+    expect(
+      janelaDaCriacaoIncertaShopee({ item_id: null, publicacaoEmCurso: { ...TRAVA, sku: '' } }),
+    ).toEqual({ desdeMs: DESDE, sku: '' });
+    // Só o registro: o `criacaoIncertaSku` dele.
+    expect(
+      janelaDaCriacaoIncertaShopee({
+        item_id: null,
+        criacaoIncertaDesde: INCERTA_DESDE,
+        criacaoIncertaSku: 'SKU-1',
+      }),
+    ).toEqual({ desdeMs: INCERTA_DESDE, sku: 'SKU-1' });
+  });
+
+  it('⛔ NEAR-MISS: um registro de SKU DESCONHECIDO nunca pega o `sku` da trava (a trava é de uma tentativa POSTERIOR)', () => {
+    expect(
+      janelaDaCriacaoIncertaShopee({
+        item_id: null,
+        publicacaoEmCurso: { ...TRAVA, sku: 'SKU-NOVO' },
+        criacaoIncertaDesde: INCERTA_DESDE,
+      }),
+    ).toEqual({ desdeMs: INCERTA_DESDE, sku: null });
+    // …e o par do registro vence o da trava quando os dois existem.
+    expect(
+      janelaDaCriacaoIncertaShopee({
+        item_id: null,
+        publicacaoEmCurso: { ...TRAVA, sku: 'SKU-NOVO' },
+        criacaoIncertaDesde: INCERTA_DESDE,
+        criacaoIncertaSku: 'SKU-VELHO',
+      }),
+    ).toEqual({ desdeMs: INCERTA_DESDE, sku: 'SKU-VELHO' });
+  });
+
+  it('⛔ NEAR-MISS: um `criacaoIncertaSku` SEM registro legível ao lado é ignorado; um não-texto é DESCONHECIDO', () => {
+    expect(janelaDaCriacaoIncertaShopee({ item_id: null, criacaoIncertaSku: 'SKU-1' })).toBeNull();
+    expect(
+      janelaDaCriacaoIncertaShopee({
+        item_id: null,
+        publicacaoEmCurso: { ...TRAVA, sku: 'SKU-DA-TRAVA' },
+        criacaoIncertaDesde: 'x',
+        criacaoIncertaSku: 'SKU-ORFAO',
+      }),
+    ).toEqual({ desdeMs: DESDE, sku: 'SKU-DA-TRAVA' });
+    for (const bruto of [null, 7, true, {}]) {
+      expect(
+        janelaDaCriacaoIncertaShopee({
+          item_id: null,
+          criacaoIncertaDesde: INCERTA_DESDE,
+          criacaoIncertaSku: bruto,
+        }),
+        JSON.stringify(bruto),
+      ).toEqual({ desdeMs: INCERTA_DESDE, sku: null });
+    }
+    // Um `sku` não-texto deixa a trava ILEGÍVEL (a UMA grafia da trava): sem janela.
+    expect(
+      janelaDaCriacaoIncertaShopee({ item_id: null, publicacaoEmCurso: { ...TRAVA, sku: 7 } }),
+    ).toBeNull();
   });
 });
 
@@ -546,7 +615,7 @@ describe('o ciclo de um 202 (P5): a trava fica viva pela espera, depois `incerta
       tipo: 'incerta',
       desdeMs: DESDE,
     });
-    expect(janelaDaCriacaoIncertaShopee(reescrito)).toEqual({ desdeMs: DESDE });
+    expect(janelaDaCriacaoIncertaShopee(reescrito)).toEqual({ desdeMs: DESDE, sku: null });
   });
 
   it('o `aguardarMs` do 202 é o que a leitura responde no mesmo instante — e o envelope o aceita', () => {

@@ -73,7 +73,8 @@
  *
  *  - still adoptable (re-derived from THAT read — draft, conta, evidence,
  *    window) ⇒ `update({…the import's fields, publicacaoEmCurso: null,
- *    criacaoIncertaDesde: null, falhaPublicacao: null}, {lastUpdateTime})`;
+ *    criacaoIncertaDesde: null, criacaoIncertaSku: null, falhaPublicacao: null},
+ *    {lastUpdateTime})`;
  *  - `item_id` already OURS (the publish's write-back #1 claim, or another
  *    import, got there first) ⇒ the plain merge onto it — converged, and the
  *    publish state it holds is not ours to clear;

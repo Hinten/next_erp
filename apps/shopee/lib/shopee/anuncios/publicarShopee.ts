@@ -17,6 +17,11 @@
  * link of the conta in every PR (L10(3), R-12(b)), a removed native kit and a
  * superseded listing included. Handing it `null` while the conta has links would
  * let it re-aim the publish at a listing the dispatcher deliberately skipped.
+ * The one `null` (no link at all) is flagged `despachoSemVinculo`, and the
+ * no-link mint REFUSES (409 `CONTENCAO`) when its own re-read finds a link that
+ * appeared after this read — another run's freshly minted draft included —
+ * rather than let that resolver pick it unlocked (#1911 batch-A review). And
+ * `aplicarPublicacao` refuses any create onto a draft it holds no lock of.
  *
  * Dependencies run ONE way — this module → {`publicarAnuncio.ts`, `kits/`}, and
  * `kits/` → `publicarAnuncio.ts`'s exported helpers — so there is no module
@@ -141,7 +146,13 @@ function armaOuRecusa(
   throw new ShopeePublishBlockedError({ produtoId: entrada.produtoId, itemId: null, problemas });
 }
 
-/** Step 11's entrada for the item arm — BY NAME, the id always the dispatcher's. */
+/**
+ * Step 11's entrada for the item arm — BY NAME, the id always the dispatcher's.
+ * `null` only when the dispatcher found NO link of the produto on the conta, and
+ * then it says so (`despachoSemVinculo`): the no-link mint's own re-read refuses
+ * any link that appeared in between instead of falling back to step 11's
+ * lexical resolver (#1911 batch-A review, the mint race).
+ */
 function entradaDoItem(
   entrada: EntradaDePublicacaoShopee,
   linkDocId: string | null,
@@ -151,6 +162,7 @@ function entradaDoItem(
     linkDocId,
     categoryId: entrada.categoryId ?? null,
     statusPedido: entrada.statusPedido,
+    ...(linkDocId === null ? { despachoSemVinculo: true } : {}),
   };
 }
 

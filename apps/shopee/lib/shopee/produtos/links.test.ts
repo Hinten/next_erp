@@ -680,7 +680,12 @@ describe('aplicarLinkDaListagem — ADOTAR um rascunho (#1911, D5 / K1-8)', () =
       docId: RASCUNHO,
       dados,
       seAusentes: { dataCadastro },
-      limpeza: { publicacaoEmCurso: null, criacaoIncertaDesde: null, falhaPublicacao: null },
+      limpeza: {
+        publicacaoEmCurso: null,
+        criacaoIncertaDesde: null,
+        criacaoIncertaSku: null,
+        falhaPublicacao: null,
+      },
       adocao: { integracaoId: INTEGRACAO, itemId: ITEM_ID, createTimeS: createTime },
     };
   }
@@ -702,6 +707,7 @@ describe('aplicarLinkDaListagem — ADOTAR um rascunho (#1911, D5 / K1-8)', () =
       kitNativo: false,
       publicacaoEmCurso: null,
       criacaoIncertaDesde: null,
+      criacaoIncertaSku: null,
       falhaPublicacao: null,
       dataCadastro: AGORA,
     });

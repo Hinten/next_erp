@@ -438,8 +438,10 @@ async function main(): Promise<void> {
   if (res.tipo === 'item-incerto') {
     // ⚠️ #1911 (D5): the first add_item's outcome is UNKNOWN — the draft kept
     // its lock and recorded the attempt. Not done: the exit code says so, and
-    // the summary prints the wait and the exact command to re-run.
+    // the summary prints the wait and the exact command to re-run — with this
+    // run's `--status UNLIST` and `--confirmar-segundo-anuncio` (batch-A review).
     process.exitCode = 1;
+    const opcoesDoIncerto = { integracaoId, projectId, status, confirmarSegundoAnuncio };
     if (json) {
       log(
         JSON.stringify(
@@ -447,7 +449,7 @@ async function main(): Promise<void> {
             modo: 'live',
             tipo: 'item-incerto',
             integracaoId,
-            resultado: resumoDoItemIncerto(res.resultado, { integracaoId, projectId }),
+            resultado: resumoDoItemIncerto(res.resultado, opcoesDoIncerto),
           },
           null,
           2,
@@ -457,7 +459,7 @@ async function main(): Promise<void> {
     }
     log('== LIVE — criação INCERTA: a Shopee pode ter criado o anúncio ==');
     log('');
-    for (const linha of renderizarItemIncerto(res.resultado, { integracaoId, projectId })) {
+    for (const linha of renderizarItemIncerto(res.resultado, opcoesDoIncerto)) {
       log(linha);
     }
     return;

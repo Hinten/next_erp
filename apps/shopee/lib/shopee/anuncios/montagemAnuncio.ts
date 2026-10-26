@@ -255,7 +255,8 @@ export interface LinkListagemLido {
    * Whether the stored document is a DRAFT whose brand was never CHOSEN
    * (#1911, P3, D10) — `rascunhoSemMarcaShopee` (`@delfrance/schemas`, the ONE
    * predicate the web's pendência calls too) over the RAW document: a draft
-   * with `brand_id` `null` or absent. Set by the ONE builder, `linkListagemLido`
+   * whose `brand_id` is not a safe non-negative integer (`null`, absent, `-1`,
+   * `'77'`, `1.5`… — fail-closed since P5). Set by the ONE builder, `linkListagemLido`
    * in `publicarAnuncio.ts`; read by {@link montarAnuncio} alone, which refuses
    * it as `marca-nao-escolhida` BEFORE the brand cascade's `0` could turn "not
    * chosen" into Shopee's "No Brand" on the operator's behalf.

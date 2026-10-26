@@ -338,6 +338,14 @@ export function estadoPublicacaoRascunhoShopee(
 export interface JanelaDaCriacaoIncertaShopee {
   /** MILLISECONDS — the start of the earliest attempt the document records. */
   readonly desdeMs: number;
+  /**
+   * The SKU that attempt SENT, folded (`''` = the body carried none), or
+   * `null` = UNKNOWN — a record or lock that never stamped it (a lock written
+   * before the pre-send stamp existed, a run that never reached the send), or
+   * two attempts that sent different SKUs. ⚠️ `null` is never "sent no SKU":
+   * the look-up fails closed on it (batch-A review).
+   */
+  readonly sku: string | null;
 }
 
 /**
@@ -358,6 +366,12 @@ export interface JanelaDaCriacaoIncertaShopee {
  *   takeover's new lock carries a LATER `desde`. That write carries this
  *   window's start into `criacaoIncertaDesde` (`./shopeeLink.ts`'s writer
  *   inventory), so a released takeover never loses it.
+ * - **`sku` comes from the SAME source as `desdeMs`, never mixed** (batch-A
+ *   review): the record's `criacaoIncertaSku` beside a readable record, else
+ *   the lock's `sku` — each a string, else `null` (unknown). A record whose
+ *   SKU is unknown never borrows the lock's: that lock is a LATER attempt's,
+ *   and pairing it with the earlier window would claim to know what the
+ *   earlier attempt sent.
  *
  * Two callers decide with it, both through {@link criadoNaJanelaShopee}: the
  * publish's look-up of an uncertain create before any new `add_item`
@@ -374,9 +388,14 @@ export function janelaDaCriacaoIncertaShopee(
 ): JanelaDaCriacaoIncertaShopee | null {
   if (link === null) return null;
   const registrada = inteiroLegivel(link.criacaoIncertaDesde);
-  if (registrada !== null) return { desdeMs: registrada };
+  if (registrada !== null) return { desdeMs: registrada, sku: textoOuNull(link.criacaoIncertaSku) };
   const trava = publicacaoEmCursoShopeeSchema.safeParse(link.publicacaoEmCurso);
-  return trava.success ? { desdeMs: trava.data.desde } : null;
+  return trava.success ? { desdeMs: trava.data.desde, sku: textoOuNull(trava.data.sku) } : null;
+}
+
+/** A stored SKU, or `null` (unknown) for anything that is not a string. */
+function textoOuNull(bruto: unknown): string | null {
+  return typeof bruto === 'string' ? bruto : null;
 }
 
 /**
@@ -1103,8 +1122,11 @@ export type CorpoAtualizarRascunhoShopee = z.output<typeof corpoAtualizarRascunh
  * them: the route refuses the discard when the stored draft is not what the
  * operator saw, so an edit made meanwhile — in another tab, by another operator
  * — is never discarded unseen.
- * `confirmarCriacaoIncerta: true` is the operator's attestation that the
- * uncertain last create did NOT reach Shopee (K1-6); without it (absent or
+ * `confirmarCriacaoIncerta: true` is the operator's attestation, after a check
+ * in Seller Centre, that the uncertain last create left NOTHING this draft must
+ * become (K1-6): it did not reach Shopee, or the listing it made is ALREADY
+ * linked — a `criacao-incerta-ja-vinculada` whose listing is the attempt's,
+ * where the draft is the redundant half (batch-A review); without it (absent or
  * `null` — only a literal `true` attests), a draft whose reading is `incerta`
  * is kept, because the draft is the only record of that attempt.
  */

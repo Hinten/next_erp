@@ -73,9 +73,11 @@ import { ACAO_STATUS_ANUNCIO, type AcaoStatusAnuncio } from './mercadoLivreLink'
  *      content it will send — a tier-1 `update(…, {lastUpdateTime})` against
  *      the snapshot that read the draft free, or past its grace (`incerta`):
  *      that TAKEOVER is the one way a run replaces a lock it does not hold;
- *    - RE-ARMED for the wait of an uncertain create, RELEASED (with or without
- *      the failure stamp) and CLEARED by ENSURE's adoption — each guarded by
- *      the run's own `token`: a foreign token means NO write (K1-14);
+ *    - STAMPED with the SKU the create sends (`sku`, the pre-send re-read,
+ *      before the first `add_item` leg — batch-A review), RE-ARMED for the
+ *      wait of an uncertain create, RELEASED (with or without the failure
+ *      stamp) and CLEARED by ENSURE's adoption — each guarded by the run's own
+ *      `token`: a foreign token means NO write (K1-14);
  *    - CLEARED token-FREE, on purpose, in exactly two places, both recording a
  *      listing that now EXISTS: write-back #1's claim
  *      (`reivindicarRascunhoShopee`) and the product import's adoption of the
@@ -99,6 +101,10 @@ import { ACAO_STATUS_ANUNCIO, type AcaoStatusAnuncio } from './mercadoLivreLink'
  *    (`produtos/`). Nothing in a browser writes it. Every reader decides
  *    through `estadoPublicacaoRascunhoShopee` and
  *    `janelaDaCriacaoIncertaShopee` (`./shopeeRascunho.ts`), never raw.
+ *    Its twin **`criacaoIncertaSku`** (batch-A review) is the SKU that attempt
+ *    SENT, folded — written in the SAME writes that set or carry
+ *    `criacaoIncertaDesde` (the `incerto` re-arm, the takeover) and cleared by
+ *    the same four; read only through `janelaDaCriacaoIncertaShopee`'s `sku`;
  * The stock sender READS `item_status` and `estadoAnuncio` into its refusal
  * fingerprint and never writes either, so it can never race the five above.
  * The price sender writes neither.
@@ -361,6 +367,17 @@ export const publicacaoEmCursoShopeeSchema = z
      * listing that exists (the header's writer inventory).
      */
     token: z.string().min(1),
+    /**
+     * The SKU the create SENDS, folded (`skuDaBuscaShopee` of the body's
+     * `item_sku` — `''` when the body carries none). Stamped by the run's
+     * token-guarded PRE-SEND re-read, before the first `add_item` leg, so a
+     * crash after the send still leaves it on the lock (batch-A review: the
+     * look-up for an uncertain create compares against what the attempt
+     * SENT, never against the produto's SKU at re-publish time). Absent on a
+     * lock that never reached the send — and on any lock written before the
+     * stamp existed: ABSENT is "unknown", never "sent no SKU".
+     */
+    sku: z.string().nullable().optional(),
   })
   .passthrough();
 export type PublicacaoEmCursoShopee = z.infer<typeof publicacaoEmCursoShopeeSchema>;
@@ -851,6 +868,20 @@ export const produtoShopeeLinkSchema = z
      * server and browser alike (#1369).
      */
     criacaoIncertaDesde: z.number().int().nullable().optional(),
+
+    /**
+     * The SKU the uncertain attempt of {@link criacaoIncertaDesde} SENT, folded
+     * (`''` = the body carried none) — carried from the lock's `sku` by the
+     * same writes that carry the attempt's start (the `incerto` re-arm, the
+     * takeover of an expired lock), and cleared with it. `null` or absent =
+     * UNKNOWN (a lock that never stamped it, or two attempts that sent
+     * different SKUs): the look-up then fails closed.
+     *
+     * ⚠️ Never read raw: `janelaDaCriacaoIncertaShopee` (`./shopeeRascunho.ts`)
+     * pairs it with the record it belongs to — a SKU with no readable
+     * `criacaoIncertaDesde` beside it is ignored.
+     */
+    criacaoIncertaSku: z.string().nullable().optional(),
   })
   .passthrough();
 export type ProdutoShopeeLink = z.infer<typeof produtoShopeeLinkSchema>;

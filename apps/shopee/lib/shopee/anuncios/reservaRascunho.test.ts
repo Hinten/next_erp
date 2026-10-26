@@ -619,13 +619,25 @@ function travaDa(r: ReservaDeRascunhoShopee) {
   return { desde: r.desde, expiraEm: r.expiraEm, token: r.token };
 }
 
-describe('conferirTravaAntesDoEnvio', () => {
-  it('o token ainda é NOSSO ⇒ devolve a trava como gravada, sem escrever', async () => {
+describe('conferirTravaAntesDoEnvio — a releitura E o carimbo do SKU enviado (batch-A review)', () => {
+  it('o token ainda é NOSSO ⇒ UM update guardado grava o SKU enviado NA trava e devolve a trava carimbada', async () => {
     const db = new FakeDb();
     const r = reservaDe();
     db.seed(CAMINHO, rascunho({ publicacaoEmCurso: travaDa(r) }));
-    expect(await conferirTravaAntesDoEnvio(asDb(db), r)).toEqual(travaDa(r));
-    expect(db.writes).toEqual([]);
+    expect(await conferirTravaAntesDoEnvio(asDb(db), r, 'SKU-1')).toEqual({
+      ...travaDa(r),
+      sku: 'SKU-1',
+    });
+    expect(escritasEm(db)).toEqual([{ publicacaoEmCurso: { ...travaDa(r), sku: 'SKU-1' } }]);
+    expect(doc(db)?.publicacaoEmCurso).toEqual({ ...travaDa(r), sku: 'SKU-1' });
+  });
+
+  it('⛔ quase-par: um corpo SEM SKU carimba \'\' — um VALOR ("enviou sem SKU"), nunca a chave ausente', async () => {
+    const db = new FakeDb();
+    const r = reservaDe();
+    db.seed(CAMINHO, rascunho({ publicacaoEmCurso: travaDa(r) }));
+    await conferirTravaAntesDoEnvio(asDb(db), r, '');
+    expect(doc(db)?.publicacaoEmCurso).toEqual({ ...travaDa(r), sku: '' });
   });
 
   it('o token foi TROCADO (outra execução assumiu) ⇒ 409 PUBLICACAO_EXPIRADA, a trava alheia intocada', async () => {
@@ -634,7 +646,7 @@ describe('conferirTravaAntesDoEnvio', () => {
     const alheia = travaAlheia(AGORA + 100_000);
     db.seed(CAMINHO, rascunho({ publicacaoEmCurso: alheia }));
 
-    const err = await conflitoDe(conferirTravaAntesDoEnvio(asDb(db), r));
+    const err = await conflitoDe(conferirTravaAntesDoEnvio(asDb(db), r, 'SKU-1'));
 
     expect(err.code).toBe(CODIGO_RASCUNHO_SHOPEE.publicacaoExpirada);
     expect(doc(db)?.publicacaoEmCurso).toEqual(alheia);
@@ -645,17 +657,51 @@ describe('conferirTravaAntesDoEnvio', () => {
     const r = reservaDe();
     const reivindicado = new FakeDb();
     reivindicado.seed(CAMINHO, rascunho({ item_id: ITEM_OUTRO, publicacaoEmCurso: null }));
-    expect((await conflitoDe(conferirTravaAntesDoEnvio(asDb(reivindicado), r))).code).toBe(
+    expect((await conflitoDe(conferirTravaAntesDoEnvio(asDb(reivindicado), r, 'SKU-1'))).code).toBe(
       CODIGO_RASCUNHO_SHOPEE.jaPublicado,
     );
-    expect((await conflitoDe(conferirTravaAntesDoEnvio(asDb(new FakeDb()), r))).code).toBe(
+    expect((await conflitoDe(conferirTravaAntesDoEnvio(asDb(new FakeDb()), r, 'SKU-1'))).code).toBe(
       CODIGO_RASCUNHO_SHOPEE.publicacaoExpirada,
     );
     const semTrava = new FakeDb();
     semTrava.seed(CAMINHO, rascunho({ publicacaoEmCurso: null }));
-    expect((await conflitoDe(conferirTravaAntesDoEnvio(asDb(semTrava), r))).code).toBe(
+    expect((await conflitoDe(conferirTravaAntesDoEnvio(asDb(semTrava), r, 'SKU-1'))).code).toBe(
       CODIGO_RASCUNHO_SHOPEE.publicacaoExpirada,
     );
+    expect(reivindicado.writes).toEqual([]);
+    expect(semTrava.writes).toEqual([]);
+  });
+
+  it('uma tomada de posse ENTRE o get e o update ⇒ a releitura decide: 409 PUBLICACAO_EXPIRADA, nada gravado sobre a alheia', async () => {
+    const db = new FakeDb();
+    const r = reservaDe();
+    db.seed(CAMINHO, rascunho({ publicacaoEmCurso: travaDa(r) }));
+    const alheia = travaAlheia(AGORA + 200_000);
+    const corrida = comEscritaConcorrente(db, CAMINHO, () => {
+      db.seed(CAMINHO, { ...doc(db), publicacaoEmCurso: alheia });
+    });
+
+    const err = await conflitoDe(conferirTravaAntesDoEnvio(asDb(corrida), r, 'SKU-1'));
+
+    expect(err.code).toBe(CODIGO_RASCUNHO_SHOPEE.publicacaoExpirada);
+    expect(doc(db)?.publicacaoEmCurso).toEqual(alheia);
+  });
+
+  it(`a precondição perdida ${String(TENTATIVAS_DA_TRAVA)} vezes ⇒ 409 CONTENCAO — nada segue para o add_item`, async () => {
+    const db = new FakeDb();
+    const r = reservaDe();
+    db.seed(CAMINHO, rascunho({ publicacaoEmCurso: travaDa(r) }));
+    const corrida = comEscritaConcorrente(
+      db,
+      CAMINHO,
+      (leitura) => db.seed(CAMINHO, { ...doc(db), ultimaModificacao: leitura }),
+      true,
+    );
+
+    const err = await conflitoDe(conferirTravaAntesDoEnvio(asDb(corrida), r, 'SKU-1'));
+
+    expect(err.code).toBe(CODIGO_RASCUNHO_SHOPEE.contencao);
+    expect(doc(db)?.publicacaoEmCurso).toEqual(travaDa(r));
   });
 });
 
@@ -1029,7 +1075,7 @@ describe('reservarRascunhoShopee — um rascunho INCERTO (P5: a busca antes de q
       publicacaoEmCurso: { desde: AGORA, expiraEm: AGORA + PUBLICACAO_EM_CURSO_SHOPEE_TTL_MS },
       criacaoIncertaDesde: DESDE_VELHO,
     });
-    expect(limpeza).toEqual({ criacaoIncertaDesde: null });
+    expect(limpeza).toEqual({ criacaoIncertaDesde: null, criacaoIncertaSku: null });
     expect(resto).toEqual([]);
     // The lock is still OURS — only the record went.
     expect(doc(db)?.publicacaoEmCurso).toMatchObject({ desde: AGORA });
@@ -1188,6 +1234,78 @@ describe('reservarRascunhoShopee — um rascunho INCERTO (P5: a busca antes de q
     expect(err.code).toBe(CODIGO_RASCUNHO_SHOPEE.publicacaoExpirada);
     expect(doc(db)).toMatchObject({ item_id: null, publicacaoEmCurso: alheia });
   });
+
+  describe('o SKU que a tentativa ENVIOU decide a busca — nunca o do produto agora (batch-A review)', () => {
+    /** A crashed attempt's lock, past its grace: what the takeover reads. */
+    function travaVencidaCom(sku: string | undefined) {
+      const expira = AGORA - AGUARDAR_ANUNCIO_INCERTO_SHOPEE_MS - 1;
+      return { ...travaAlheia(expira), ...(sku === undefined ? {} : { sku }) };
+    }
+
+    it('a TOMADA de uma trava que caiu (o caminho do crash) carrega o SKU dela para criacaoIncertaSku, na MESMA escrita', async () => {
+      const db = comProduto(new FakeDb());
+      const velha = travaVencidaCom(SKU);
+      db.seed(CAMINHO, rascunho({ publicacaoEmCurso: velha }));
+
+      const r = await reservar(asDb(db), ALVO, controles(), lojaCom().busca);
+
+      expect(r.tipo).toBe('travada');
+      const [tomada] = escritasEm(db);
+      expect(tomada).toMatchObject({ criacaoIncertaDesde: velha.desde, criacaoIncertaSku: SKU });
+    });
+
+    it('⚠️ trava que caiu com SKU-1, produto agora SKU-2 ⇒ 422 ambígua, ZERO chamadas, o registro (desde + SKU) FICA', async () => {
+      const db = comProduto(new FakeDb(), 'SKU-2');
+      const velha = travaVencidaCom(SKU);
+      db.seed(CAMINHO, rascunho({ publicacaoEmCurso: velha }));
+      const loja = lojaCom(baseDe(ITEM_NOSSO));
+
+      const err = await reservar(asDb(db), ALVO, controles(), loja.busca).catch((e: unknown) => e);
+
+      expect((err as ShopeePublishBlockedError).motivo).toBe(
+        MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaAmbigua,
+      );
+      expect(loja.ops).toEqual([]);
+      expect(doc(db)).toMatchObject({
+        publicacaoEmCurso: null,
+        criacaoIncertaDesde: velha.desde,
+        criacaoIncertaSku: SKU,
+      });
+    });
+
+    it("⚠️ O PAR do orquestrador, ponta a ponta: enviado '' + produto agora 'ABC' + X('') DENTRO ⇒ 422, o registro fica", async () => {
+      const db = comProduto(new FakeDb(), 'ABC');
+      db.seed(CAMINHO, incerto({ criacaoIncertaSku: '' }));
+      const loja = lojaCom(baseDe(ITEM_NOSSO, { item_sku: '' }));
+
+      const err = await reservar(asDb(db), ALVO, controles(), loja.busca).catch((e: unknown) => e);
+
+      expect((err as ShopeePublishBlockedError).motivo).toBe(
+        MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaAmbigua,
+      );
+      expect(loja.ops).toEqual([]);
+      expect(doc(db)).toMatchObject({ criacaoIncertaDesde: DESDE_VELHO, criacaoIncertaSku: '' });
+    });
+
+    it("⛔ …o quase-par: enviado 'ABC' + produto 'ABC' + X('') DENTRO ⇒ ignorado: travada, o registro LIMPO (os dois campos)", async () => {
+      const db = comProduto(new FakeDb(), 'ABC');
+      db.seed(CAMINHO, incerto({ criacaoIncertaSku: 'ABC' }));
+      const loja = lojaCom(baseDe(ITEM_NOSSO, { item_sku: '' }));
+
+      expect((await reservar(asDb(db), ALVO, controles(), loja.busca)).tipo).toBe('travada');
+      expect(doc(db)).toMatchObject({ criacaoIncertaDesde: null, criacaoIncertaSku: null });
+    });
+
+    it('enviado SKU-1 + produto SKU-1: o anúncio achado é ADOTADO e o registro (desde + SKU) zerado', async () => {
+      const db = comProduto(new FakeDb());
+      db.seed(CAMINHO, incerto({ criacaoIncertaSku: SKU }));
+
+      const r = await reservar(asDb(db), ALVO, controles(), lojaCom(baseDe(ITEM_NOSSO)).busca);
+
+      expect(r).toEqual({ tipo: 'adotada', itemId: ITEM_NOSSO });
+      expect(doc(db)).toMatchObject({ criacaoIncertaDesde: null, criacaoIncertaSku: null });
+    });
+  });
 });
 
 describe('registrarCriacaoIncerta — o add_item INCERTO (D5)', () => {
@@ -1226,6 +1344,51 @@ describe('registrarCriacaoIncerta — o add_item INCERTO (D5)', () => {
 
     expect(doc(db)?.criacaoIncertaDesde).toBe(r.desde - 900_000);
   });
+
+  it('(batch-A review) o SKU que a tentativa ENVIOU — o carimbo da trava — vai para criacaoIncertaSku na MESMA escrita', async () => {
+    const db = new FakeDb();
+    const r = reservaDe();
+    db.seed(CAMINHO, rascunho({ publicacaoEmCurso: { ...travaDa(r), sku: 'SKU-1' } }));
+
+    await registrarCriacaoIncerta(asDb(db), r, { agora: () => r.desde + 1 });
+
+    expect(doc(db)).toMatchObject({
+      publicacaoEmCurso: { sku: 'SKU-1' },
+      criacaoIncertaDesde: r.desde,
+      criacaoIncertaSku: 'SKU-1',
+    });
+    expect(db.patches.filter((p) => p.path === CAMINHO)).toHaveLength(1);
+  });
+
+  it.each([
+    ['o registro anterior enviou o MESMO SKU ⇒ fica', 'SKU-1', 'SKU-1', 'SKU-1'],
+    ['o registro anterior enviou OUTRO ⇒ desconhecido (null)', 'SKU-0', 'SKU-1', null],
+    ["o anterior enviou '' e este 'SKU-1' ⇒ desconhecido (null)", '', 'SKU-1', null],
+    ['o registro anterior é de SKU DESCONHECIDO ⇒ continua desconhecido', undefined, 'SKU-1', null],
+    ['a trava nunca carimbou (sem `sku`) ⇒ desconhecido', 'SKU-1', undefined, null],
+  ] as const)(
+    '⛔ duas tentativas no registro: %s',
+    async (_nome, skuDoRegistro, skuDaTrava, esperado) => {
+      const db = new FakeDb();
+      const r = reservaDe();
+      db.seed(
+        CAMINHO,
+        rascunho({
+          publicacaoEmCurso: {
+            ...travaDa(r),
+            ...(skuDaTrava === undefined ? {} : { sku: skuDaTrava }),
+          },
+          criacaoIncertaDesde: r.desde - 900_000,
+          ...(skuDoRegistro === undefined ? {} : { criacaoIncertaSku: skuDoRegistro }),
+        }),
+      );
+
+      await registrarCriacaoIncerta(asDb(db), r, { agora: () => r.desde + 1 });
+
+      expect(doc(db)?.criacaoIncertaDesde).toBe(r.desde - 900_000);
+      expect(doc(db)?.criacaoIncertaSku).toBe(esperado);
+    },
+  );
 
   it('⛔ (K1-14) a trava é de OUTRA execução ⇒ NADA gravado, e a espera responde mesmo assim', async () => {
     const db = new FakeDb();
@@ -1279,6 +1442,7 @@ describe('reivindicarRascunhoShopee — o registro da criação incerta (P5)', (
       item_id: ITEM_NOSSO,
       publicacaoEmCurso: null,
       criacaoIncertaDesde: null,
+      criacaoIncertaSku: null,
     });
   });
 });

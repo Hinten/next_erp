@@ -22,11 +22,11 @@ The families are the seam, not a filing convention.
   `ETAPA_PUBLICACAO` and `limitarMensagemProblema`), `constantesAnuncio.ts` (the ten app-level
   constants; every WIRE bound stays in `@delfrance/integrations-shopee`),
   `montagemAnuncio.ts` (the `add_item` / `update_item` bodies and nineteen
-  pre-write refusals), `criacaoIncerta.ts` (#1911: whether a FAILED create's
-  `add_item` may have created the listing — the closed table of documented
-  refusals, everything else `incerto` — and, since P5, the ENSURE scan that
-  re-finds that listing by SKU before any second `add_item`, with its four
-  refusals), `taxInfoPublicacao.ts` (the ten-member BR `tax_info`
+  pre-write refusals), `criacaoIncerta.ts`'s CLASSIFIER half (#1911: whether a
+  FAILED create's `add_item` may have created the listing — the closed table of
+  documented refusals, everything else `incerto` — plus `skuDaBuscaShopee`,
+  the 202's sentence and ENSURE's problema builders; its IO half is under "The
+  IO sequences"), `taxInfoPublicacao.ts` (the ten-member BR `tax_info`
   block), `tabelaMedidasPublicacao.ts` (step 18's `size_chart_info` decision),
   `logisticaPublicacao.ts` (`logistic_info`), `problemasPublicacao.ts`
   (Shopee's own rejection codes → a `problema` on a field),
@@ -41,7 +41,12 @@ The families are the seam, not a filing convention.
   `aplicar`, both write-backs, the re-list dance and the failure stamp),
   `reservaRascunho.ts` (#1911: a DRAFT's publish lock — the reservation and its
   second-listing scan, the pre-send re-read, the per-leg send gate, the
-  write-back #1 claim and the token-guarded release), `rascunho.ts` (#1911:
+  write-back #1 claim and the token-guarded release), `criacaoIncerta.ts`'s
+  `localizarAnuncioIncerto` (#1911 P5: ENSURE, reads only — `get_item_list`
+  narrowed by `update_time_from`, one `get_item_base_info` batch through
+  `../kits/componentesKit.ts`'s `lerBaseInfoDosItens`, and one
+  `resolverLinkPorItemId` per surviving row; called only from
+  `reservaRascunho.ts`, under the lock), `rascunho.ts` (#1911:
   the draft route's create / edit / discard — the one `prodshopee` delete),
   `fotosPublicacao.ts` (the photo up-direction), `lerImpostoDoProduto.ts` (the
   memoised imposto reader over the promoted NF-e cascade),
@@ -136,9 +141,15 @@ a first publish must CREATE the link).
 half-failed publish RESUME.** A link document holding an `item_id` and no models
 makes the next publish an UPDATE that runs the tier leg; a failure at step ≥ 2
 stamps `falhaPublicacao {em, etapa, erro, mensagem, problemas}` and **rethrows**.
-On a CREATE that failed at `add_item` with no pre-existing link there is nothing
-to stamp and the error simply propagates — a link that does not exist cannot
-become a ghost. The `etapa` is refined from the error's own `path` for the model
+A DRAFT's create — and since #1911 P5 every LIVE create, because one with no
+link first mints its draft (`nomearCriacaoSemVinculo`) — leaves through the
+"every way out" table of "A draft's first create runs under a LOCK" below:
+`nao-criado` is stamped on the draft in the token-guarded release, then
+rethrown; `incerto` is not stamped (lock kept, `criacaoIncertaDesde` recorded,
+the 202); the token step is released unstamped. So a failed first create always
+leaves a draft document behind, and no LIVE entry reaches `add_item` without a
+link document — the stamp's "no link, nothing to stamp" branch is a defensive
+guard reached only by calling `aplicarPublicacao` directly. The `etapa` is refined from the error's own `path` for the model
 leg alone, because that leg owns five calls and answers one result.
 
 ⚠️ **The read-back degrades, never fails the publish.** Step 10 narrows only
@@ -302,7 +313,12 @@ nothing.
    pass.
 3. **The pre-send re-read** (in `aplicarPublicacao`, right before `add_item`):
    the stored token must still be ours, else 409 `PUBLICACAO_EXPIRADA`, nothing
-   sent, the foreign lock untouched.
+   sent, the foreign lock untouched. Since the batch-A review it also WRITES —
+   one token-guarded update stamping the folded SKU the body sends on the lock
+   (`publicacaoEmCurso.sku`), so an uncertain create is later looked up by what
+   it SENT (P5's section); a third lost precondition is 409 `CONTENCAO`.
+   `aplicarPublicacao` also refuses (409 `CONTENCAO`) a create onto a draft it
+   holds no lock of: a draft's `add_item` is sent only under its lock.
 4. **The per-leg send gate (K1-2).** Synchronously before EACH `client.addItem`
    — the C13 fiscal retry's second leg included: send only while
    `agora() + MARGEM_ENVIO_SHOPEE_MS < min(expiraEm, prazoDaRequisicao)`. `agora` is the
@@ -356,8 +372,9 @@ reads too. The publish body and the CLI gain `confirmarSegundoAnuncio` /
 `--confirmar-segundo-anuncio`; the dry run never takes the lock
 (`PrepararPublicacaoDeps` omits `aoVivo`).
 
-`marca-nao-escolhida` (D10) refuses a draft whose `brand_id` is `null` or absent
-— "Sem marca" is the explicit `0`. `linkListagemLido` stamps
+`marca-nao-escolhida` (D10) refuses a draft whose `brand_id` is not a safe
+non-negative integer (`null`, absent, `-1`, `'77'`, `1.5`… — fail-closed since
+P5, `rascunhoSemMarcaShopee`) — "Sem marca" is the explicit `0`. `linkListagemLido` stamps
 `LinkListagemLido.marcaNaoEscolhida` from the RAW document through
 `rascunhoSemMarcaShopee`, because the projected `brand_id` already folds absent
 and `null` together and an imported listing's `null` must never refuse.
@@ -366,7 +383,11 @@ Cost: every NAMED publish now reads its link once more (the reservation's first
 read decides whether it is a draft at all), and a draft's publish reads the
 produto's link subcollection once more (the scan) plus the pre-send re-read,
 and one more credential read per `add_item` leg (the warm; the client's own ask
-then reads it again). No
+then reads it again), plus — since the batch-A review — ONE more write before
+the first leg (the pre-send re-read stamps the SKU the body sends on the lock).
+A publish of an `incerta` draft also pays ENSURE's reads (the narrowed
+`get_item_list` pages, one base-info batch, one `resolverLinkPorItemId` per
+surviving candidate — "An uncertain first create is re-found" below). No
 index, no ruleset, no multi-document atomic write — every guard is a single-document
 precondition.
 
@@ -398,6 +419,35 @@ precondition.
   with no deadline, exactly the send-starts-late case the warm exists to
   remove. A deadline on `add_item` alone would not bound it: #1094's deadline
   must sit on the transport (`shopeeCall`), which the refresh also rides.
+- **(vii) ENSURE's window only WIDENS** (batch-A review). It opens at the
+  attempt and stays there while the record stands; a refused look-up keeps the
+  record. A late re-publish on a busy shop can hit the 20-page ceiling (2 000
+  rows) — or Shopee's undocumented offset cap (`error_param` "get items offset
+  over limit", which throws and hands the lock back) — on EVERY try, and waiting
+  never helps. Nothing is duplicated; the draft is stranded, and while it reads
+  `incerta` every other draft of the produto on the conta hears 409
+  `EM_ANDAMENTO` with no `aguardarMs`. The exit, when Seller Centre holds no such
+  listing: discard the draft with the attestation (`rascunho/descartar` +
+  `confirmarCriacaoIncerta`) and create a new one — K1-11 stands, the attestation
+  is NOT honoured for `busca-de-anuncio-incompleta`. `search_item` by SKU is no
+  substitute: its index freshness after a create is unmeasured.
+- **(viii) `retomandoCriacao` lives in the adopting run's memory only.** ENSURE's
+  adoption is written BEFORE the plan runs, so an adopting run that then fails,
+  or an adoption by the product IMPORT (which never publishes), leaves a
+  has-model listing the lost attempt created UNLIST — `pausado`, recoverable with
+  re-activate — and the next publish is a plain update, which never lists. The
+  durable fix (a `relistagemPendente` marker the plan reads) waits on Lucas.
+- **(ix) A minted draft counts as a Shopee link for the produto delete guard**
+  (`findProdutoReferences`: "vinculado(a) a anúncio(s): Shopee") until it is
+  published with `--link` or discarded. Before P10's Descartar ships, discarding
+  is `POST …/rascunho/descartar` with `{integracaoId, produtoId, linkDocId,
+base}` (`base` required): do not run a no-link `publicar:anuncio --live`
+  between batch A and P10's web deploy (#1998).
+- **(x) A padded or shared SKU** (`' X'`, or two produtos with `'X'`) declines
+  the import's SKU rung, which then MINTS a produto for the attempt's listing.
+  ENSURE no longer ignores that link (it refuses `-ja-vinculada`, naming the
+  other produto), but a structural refusal of such a SKU on the FIRST create —
+  the kit arm's `kit-sku-com-espacos` / `kit-sku-repetido` — waits on Lucas.
 
 ### An uncertain first create is re-found, never re-sent (#1911, P5, D5 + D15)
 
@@ -421,8 +471,12 @@ recusa: {codigo, fraseShopee} | null}`, plus a `mensagem` for the CLI that the
 schema never declares (the kit's precedent). `recusa` is Shopee's code and
 sentence when Shopee answered one, so a deterministic refusal the closed table
 does not hold is VISIBLE, never looped. `reenvioVerificaSku` is `false` when the
-produto's SKU folds blank: the re-send cannot look the listing up and will be
-refused `criacao-incerta-sem-sku`. Because the lock stays LIVE, every tab,
+SKU the attempt SENT folds blank: the re-send cannot look the listing up and will
+be refused `criacao-incerta-sem-sku`, whose sentence (and the 202's) never sends
+the operator to `importar:anuncio` ALONE — the import binds a SKU-less listing to
+a NEW produto (its SKU rung is the only one that reaches an existing produto),
+so the listing first gets, in Seller Centre, the SKU the produto gets in the
+ERP; then the import binds it to this produto and adopts the draft. Because the lock stays LIVE, every tab,
 operator and the CLI hear 409 `EM_ANDAMENTO {aguardarMs}` until it lapses — the
 server enforces the wait, the web's countdown is a nicety.
 
@@ -430,59 +484,83 @@ server enforces the wait, the web's countdown is a nicety.
 draft whose reading is `incerta` (past the grace, an unreadable lock, or a
 recorded `criacaoIncertaDesde`) is reserved like any other — and the window is
 read from the document (`janelaDaCriacaoIncertaShopee`: `criacaoIncertaDesde`,
-else the old lock's `desde`) BEFORE our lock replaces the old one, and written
-into the same update, so a released lock can never take the record with it. No
+else the old lock's `desde` — and, from the SAME source, the SKU that attempt
+sent: `criacaoIncertaSku`, else the old lock's `sku`) BEFORE our lock replaces
+the old one, and written into the same update, so a released lock can never take
+the record with it. No
 window at all in `incerta` refuses; `null` never means "proceed". Then
 `localizarAnuncioIncerto` (`criacaoIncerta.ts`):
 
-1. **The produto's side of the compare is folded by the import's fold**,
-   `skuDoItemShopee({item_sku: produto.sku})` (`../produtos/resolveProduto.ts`,
+1. **The SKU looked up is the one the attempt SENT** (batch-A review), never
+   the produto's at re-publish time: the pre-send re-read stamps the body's
+   folded `item_sku` on the lock (`publicacaoEmCurso.sku`, `''` = none) before
+   the first `add_item` leg, so even a crash after the send leaves it there, and
+   the `incerto` re-arm and a takeover carry it into `criacaoIncertaSku`. A SKU
+   set, cleared or renamed between the attempt and the re-publish would
+   otherwise skip the attempt's listing and create a second. Both sides go
+   through the import's fold (`skuDoItemShopee`, `../produtos/resolveProduto.ts`,
    shared, trim-only, case KEPT: `' SKU-1 '` ≡ `'SKU-1'`, `'sku-1'` ≠ `'SKU-1'`;
-   the file's `equivalence-fold-inventory.test.js` entry pins both). A blank fold
-   is refused `criacao-incerta-sem-sku` with ZERO `get_item_list` calls — a blank
-   SKU would "hit" every SKU-less listing.
+   the file's `equivalence-fold-inventory.test.js` entry pins both). Recorded and
+   ≠ the produto's current fold ⇒ `criacao-incerta-ambigua`, never scanned and
+   NOT attestable (restore the sent SKU, or put one SKU on listing and produto
+   and import). Recorded UNKNOWN (a lock that never stamped it, or two attempts
+   that sent two SKUs) ⇒ the current fold is looked up and a REPORTED blank SKU
+   is a doubt. A blank SKU to look up is refused `criacao-incerta-sem-sku` with
+   ZERO `get_item_list` calls — a blank SKU would "hit" every SKU-less listing.
 2. **`get_item_list`** (NORMAL / UNLIST / REVIEWING / BANNED) narrowed to what
    the attempt could have created: `update_time_from` =
    `inicioDaJanelaDaCriacaoShopeeS(desde)` (⌊desde/1000⌋ −
    `FOLGA_JANELA_CRIACAO_SHOPEE_S`, 300 s, floored at 1) and **no
-   `update_time_to`**: `update_time` is a listing's LAST change, so an upper
-   bound on our clock would drop the attempt's own listing the moment a stock
-   push touched it — the fail-open direction — and without it ENSURE reads no
-   clock at all. Typically ONE page, where the kit's un-narrowed walk takes up
-   to 100. A 20-page ceiling (`MAX_PAGINAS_BUSCA_ANUNCIO`) and the kit's cursor
+   `update_time_to`**: a bound read off our clock at scan time sits above every
+   write already made, so it could drop only a listing whose `update_time`
+   Shopee stamps AFTER that reading — a Shopee clock ahead of ours, or a write
+   racing the call — the fail-open direction; without it ENSURE reads no clock
+   at all. (A stock or price write does NOT move `update_time` — register 94,
+   probe P5, 2026-09-21, and `../precos/README.md` — so neither is a reason
+   either way.) The trade-off is accepted: an unfrozen offset walk over more
+   than one page can skip a row a write moves mid-walk (a frozen `[from, to]`
+   would not help — its set shrinks as rows leave — and would bring back the
+   drop above), and the window only widens (residual (vii)). Typically ONE page
+   for a re-publish soon after the 202, where the kit's un-narrowed walk takes up
+   to 100; whether Shopee honours a lone `update_time_from` at all is register
+   **310**. A 20-page ceiling (`MAX_PAGINAS_BUSCA_ANUNCIO`) and the kit's cursor
    rules (a null or non-advancing `next_offset` stops the walk); a walk that
    stops early is `busca-de-anuncio-incompleta`.
 3. **One base-info batch for the candidates, classified FAIL-CLOSED (K1-7)** by
    `criadoNaJanelaShopee(create_time, desde)` — `dentro` / `fora` /
    `desconhecido` (a `null`, `0` or unreadable `create_time` is `desconhecido`,
-   never `fora`). An UNLINKED candidate is a DEFINITE hit when its SKU is equal
-   and it is `dentro`; UNDECIDABLE when its SKU is equal or UNREPORTED (`null`,
-   absent, or no base-info row) and it is `dentro` or `desconhecido`. A REPORTED
-   blank SKU (`''`) is data, not doubt — the attempt sent a non-blank one — and
-   that row is ignored. A listing ALREADY LINKED to this produto with an equal
-   SKU and `dentro`/`desconhecido` is `criacao-incerta-ja-vinculada` — the
-   earlier attempt's listing may have been linked by another path (an older
-   linked listing is excluded, as before); one linked to ANOTHER produto is
-   ignored (residual: two produtos sharing one SKU).
+   never `fora`). `fora` and another REPORTED SKU are ignored — a REPORTED blank
+   one (`''`) included when the attempt is known to have sent a non-blank SKU.
+   Every other row is SKU-equal or a DOUBT (an UNREPORTED SKU — `null`, absent,
+   no base-info row — or a reported blank one while the sent SKU is unknown).
+   An UNLINKED row is a DEFINITE hit when its SKU is equal and it is `dentro`.
+   A SKU-equal row ALREADY LINKED in the conta — to this produto, or (batch-A
+   review) to ANOTHER, since the import matches more narrowly than this fold
+   and may have minted a produto for the attempt's listing — is
+   `criacao-incerta-ja-vinculada`, naming each link's produto (an older linked
+   listing is excluded, as before). Everything else — a doubt, linked or not
+   (an own-linked listing whose SKU Shopee did not report is never ignored), or
+   SKU-equal unlinked `desconhecido` — is UNDECIDABLE.
 
 The verdicts are decided in this order: ambiguity first (never overridable),
 then an own linked listing (unless attested), then the adoption.
 
-| what the scan proved                             | answer                                                                                                                                                                                                                                                                                                                              |
-| ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| exactly one definite hit, nothing undecidable    | **ADOPT** — token-guarded update `{item_id, conta ref, publicacaoEmCurso: null, criacaoIncertaDesde: null, falhaPublicacao: null}`; the run continues as an UPDATE with `retomandoCriacao` (a has-model listing the lost attempt left UNLIST is re-listed), and edits made during `incerta` reach Shopee through that `update_item` |
-| two or more definite, or anything undecidable    | `criacao-incerta-ambigua` (`acao` `importar{itemIds}`)                                                                                                                                                                                                                                                                              |
-| an own linked listing inside the window          | `criacao-incerta-ja-vinculada` (`acao` `importar{itemIds, vinculados}`)                                                                                                                                                                                                                                                             |
-| the walk stopped early                           | `busca-de-anuncio-incompleta`                                                                                                                                                                                                                                                                                                       |
-| the SKU folds blank                              | `criacao-incerta-sem-sku` (no scan)                                                                                                                                                                                                                                                                                                 |
-| a COMPLETE walk, zero definite, zero undecidable | token-guarded clear of `criacaoIncertaDesde`, then `add_item`                                                                                                                                                                                                                                                                       |
+| what the scan proved                             | answer                                                                                                                                                                                                                                                                                                                                                                                           |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| exactly one definite hit, nothing undecidable    | **ADOPT** — token-guarded update `{item_id, conta ref, publicacaoEmCurso: null, criacaoIncertaDesde: null, criacaoIncertaSku: null, falhaPublicacao: null}`; the run continues as an UPDATE with `retomandoCriacao` (a has-model listing the lost attempt left UNLIST is re-listed — by THIS run only, residual (viii)), and edits made during `incerta` reach Shopee through that `update_item` |
+| the SKU moved since the attempt                  | `criacao-incerta-ambigua` (no scan, no `acao`; never attestable)                                                                                                                                                                                                                                                                                                                                 |
+| two or more definite, or anything undecidable    | `criacao-incerta-ambigua` (`acao` `importar{itemIds, vinculados}`)                                                                                                                                                                                                                                                                                                                               |
+| a SKU-equal linked listing inside the window     | `criacao-incerta-ja-vinculada` (`acao` `importar{itemIds, vinculados}`, each with its produto); if it IS the attempt's listing, the exit is discarding THIS draft with the attestation — never publishing it again                                                                                                                                                                               |
+| the walk stopped early                           | `busca-de-anuncio-incompleta` (repeating helps only a bad cursor — residual (vii))                                                                                                                                                                                                                                                                                                               |
+| the SKU sent folds blank                         | `criacao-incerta-sem-sku` (no scan)                                                                                                                                                                                                                                                                                                                                                              |
+| a COMPLETE walk, zero definite, zero undecidable | token-guarded clear of `criacaoIncertaDesde` and `criacaoIncertaSku`, then `add_item`                                                                                                                                                                                                                                                                                                            |
 
 The four refusals are `ShopeePublishBlockedError`s: nothing was sent, and they
 are produced ONLY in `criacaoIncerta.ts`, through `MOTIVO_PUBLICACAO_BLOQUEADA`
 (`errosPublicacao.test.ts` and `montagemAnuncio.test.ts` pin the file and the
 spelling). **`confirmarCriacaoIncerta`** (publish body; CLI
 `--confirmar-criacao-incerta`) is the operator's attestation that Seller Centre
-holds no such listing, and it is honoured for EXACTLY two verdicts —
+holds no listing this draft must become, and it is honoured for EXACTLY two verdicts —
 `criacao-incerta-sem-sku` and `criacao-incerta-ja-vinculada` (a deliberate
 second listing created minutes before sits inside the −300 s window) — ignored
 everywhere else, and it never skips the scan on a produto that has a SKU
@@ -517,14 +595,24 @@ produto — first `create()`s a draft through `rascunho.ts` at
 byte) and continues NAMED: the lock, the uncertainty memory and D15 apply as to
 any draft, and the 202's `linkDocId` is never `null`. A refusal before the send
 leaves that draft behind; the next unnamed run hears P1's `rascunho-nao-nomeado`
-(`acao` `republicar{linkDocId}`).
+(`acao` `republicar{linkDocId}`) — and the draft counts as a link for the produto
+delete guard (residual (ix)). **The mint race (batch-A review):** the dispatcher
+hands `linkDocId: null` (flagged `despachoSemVinculo`) only after its read found
+no link; the mint's own re-read finding one means another run minted or claimed
+a draft, or the import added a link, in between — 409 `CONTENCAO`, nothing
+written or sent, never a fall-back to step 11's lexical resolver (which would
+pick that run's DRAFT and send `add_item` on it unlocked: two listings, and the
+other run's lock stranded on a live link for ever). And `aplicarPublicacao`
+refuses any create onto a draft it holds no lock of, so a draft's `add_item` is
+sent ONLY under its lock.
 
 **The import adopts a draft only on evidence (K1-8)** — the other reader of the
 same window, through the SAME two functions in `@delfrance/schemas`
 (`janelaDaCriacaoIncertaShopee`, `criadoNaJanelaShopee`), placed there so
 `../produtos/` never imports this folder. A draft is adopted only with an
 attempt window AND `create_time` `dentro`; its adoption clears
-`publicacaoEmCurso` and `criacaoIncertaDesde` with the `item_id`, so the listing
+`publicacaoEmCurso`, `criacaoIncertaDesde` (with `criacaoIncertaSku`) and
+`falhaPublicacao` with the `item_id` (`CAMPOS_LIMPOS_NA_ADOCAO_SHOPEE`), so the listing
 never reads `em-andamento` / `incerta` afterwards. A draft without evidence —
 every legacy draft, every never-sent one — is never touched. Detail:
 `../produtos/README.md`.
@@ -539,16 +627,20 @@ problema carries Shopee's prose; our sentence (import it if it is this
 produto's; a second listing must differ, or Shopee may treat it as spam) is the
 web's (P11) and the CLI's copy, keyed on the motivo.
 
-Rule 7, the new writes: the `incerto` rewrite, the zero-hit clear and the
-ENSURE adoption are token-guarded updates on the draft (tier 1 — a foreign lock
-is never touched, a lost adoption re-derives); the mint is a `create()` at a
-fresh id (tier 0); the import's adoption is `update(…, {lastUpdateTime})` with
-no `...existente` spread (tier 1 — claimed meanwhile ⇒ converge or fork, never a
-lost `item_id`). Still no multi-document atomic write and no index (the scan is
-a Shopee read; the import reads the produto's own link subcollection).
+Rule 7, the new writes: the pre-send SKU stamp, the `incerto` rewrite, the
+zero-hit clear and the ENSURE adoption are token-guarded updates on the draft
+(tier 1 — a foreign lock is never touched, a lost adoption re-derives); the mint
+is a `create()` at a fresh id (tier 0); the import's adoption is
+`update(…, {lastUpdateTime})` with no `...existente` spread (tier 1 — claimed
+meanwhile ⇒ converge or fork, never a lost `item_id`). Still no multi-document
+atomic write and no NEW index: the scan reads Shopee plus one
+`resolverLinkPorItemId` per candidate that survives the SKU, window and
+own-link filters — the `prodshopee (item_id, contaProdutoShopeeOuterRef)`
+collection-group composite already declared in `firestore.indexes.json` — and
+the import reads the produto's own link subcollection.
 
-Two settle-live rows (never run by an agent; register **307** and **308**
-below), neither gating the build. **307 is a residual, not a fail-closed
+Three settle-live rows (never run by an agent; register **307**, **308** and
+**310** below), none gating the build. **307 is a residual, not a fail-closed
 case**: a listing Shopee's `get_item_list` shows only AFTER the 240 s wait is
 invisible to the scan, which then reads "zero hits" and re-sends — the wait is
 one constant, grown if the first BR measurement says so. **308 fails closed**: a
@@ -1038,7 +1130,8 @@ a slow republish read cannot revive the old kit a recriar just deleted.
 before step 19) so the count cannot silently rot.
 
 What is NOT shared: `pausadoPeloErp` is the lifecycle's alone,
-`ultimaPublicacao` / `falhaPublicacao` the publisher's alone, and
+`ultimaPublicacao` the publisher's alone, `falhaPublicacao` the publisher's plus
+the import's adoption of a draft (#1911), which only clears it to `null`, and
 `violacoesLidasEm` means "when the stored violation reading last MOVED" — the
 re-verify stamps it only with a CHANGED list, because stamping it on every
 healthy button press makes `ignorado-sem-mudanca` unreachable and turns a
@@ -1048,8 +1141,10 @@ read-only diagnostic into a write.
 
 The publish path writes through `aplicarLinkDaListagem` (merge/add), because a
 first publish must CREATE the link document. ⚠️ A DRAFT's create (#1911) is the
-one exception: its lock, its write-back #1 claim and its release are guarded
-`update(…, {lastUpdateTime})` writes (`reservaRascunho.ts`, above) — `update()`
+one exception: its lock, its pre-send SKU stamp, its write-back #1 claim, its
+release — and P5's `incerto` re-arm, zero-hit clear and ENSURE adoption — are
+guarded `update(…, {lastUpdateTime})` writes ("Rule 7, the new writes" above
+lists them; the no-link mint is a tier-0 `create()` through `rascunho.ts`) — `update()`
 REPLACES a nested map such as `ultimaPublicacao` or `falhaPublicacao` whole, which
 is what those complete values want. Every lifecycle path — pause,
 re-list, re-verify, the push handlers, the child-link sync — writes through the

@@ -124,47 +124,73 @@
  * Runs inside the draft's reservation (`reservaRascunho.ts`), lock held,
  * BEFORE `preparar`, only for a draft whose reading is `incerta`:
  *
- *  1. **The SKU, folded** — the produto's `sku` through the import's own fold
- *     (`skuDoItemShopee({item_sku: produto.sku})`, `produtos/resolveProduto.ts`
- *     — shared, never copied: the scan must ask exactly what the import asks,
- *     or "importe-o" lands the listing on another produto). A BLANK fold
- *     (`''`, `'   '`, absent) is refused `criacao-incerta-sem-sku` and NEVER
- *     scanned — a blank fold would "hit" every SKU-less listing (K2-21) —
- *     unless the operator attested (`confirmarCriacaoIncerta`), which then
- *     proceeds WITHOUT a scan (there is nothing to compare).
+ *  1. **The SKU the attempt SENT** (batch-A review) — `janela.sku`, stamped on
+ *     the lock by the pre-send re-read and carried into `criacaoIncertaSku`
+ *     (`janelaDaCriacaoIncertaShopee`), never the produto's SKU at re-publish
+ *     time: a SKU set, cleared or renamed in between would look for the wrong
+ *     listing — and skip the attempt's, then create a second. Both sides go
+ *     through the import's own fold (`skuDoItemShopee`,
+ *     `produtos/resolveProduto.ts` — shared, never copied: trim only).
+ *     - recorded, and ≠ the produto's CURRENT fold ⇒ `criacao-incerta-ambigua`,
+ *       never scanned and NOT attestable: the operator restores the SKU the
+ *       attempt sent, or gives the listing and the produto one SKU and imports;
+ *     - recorded `null` (UNKNOWN — a lock that never stamped it, or two
+ *       attempts that sent two SKUs) ⇒ the current fold is looked up, and a
+ *       REPORTED blank `item_sku` turns into a doubt (step 3) — that attempt
+ *       may have sent none;
+ *     - the SKU looked up folds BLANK (`''`, `'   '`, absent) ⇒
+ *       `criacao-incerta-sem-sku`, NEVER scanned — a blank fold would "hit"
+ *       every SKU-less listing (K2-21) — unless the operator attested
+ *       (`confirmarCriacaoIncerta`), which then proceeds WITHOUT a scan (there
+ *       is nothing to compare).
  *  2. **`get_item_list` narrowed to the attempt's window** —
  *     `update_time_from = inicioDaJanelaDaCriacaoShopeeS(desde)` (THE one
- *     computation, `@delfrance/schemas`) and NO `update_time_to` — `update_time`
- *     is a listing's LAST change, so an upper bound read off our clock would
- *     drop the very listing the attempt created the moment a stock push (or a
- *     clock ahead of ours) touched it: the fail-OPEN direction; the lower
- *     bound alone is what narrows the walk. Statuses
+ *     computation, `@delfrance/schemas`) and NO `update_time_to`. The bound
+ *     a scan could send is our clock's reading at scan time, and every write
+ *     already made sits below it; it could drop only a listing whose
+ *     `update_time` Shopee stamps AFTER that reading — a Shopee clock ahead of
+ *     ours, or a write landing while the call is in flight: the fail-OPEN
+ *     direction. Omitting it also keeps ENSURE clock-free. (A stock or a price
+ *     write does NOT move `update_time` — register 94, probe P5, 2026-09-21 —
+ *     so neither argues either way.) The lower bound alone narrows the walk,
+ *     at an accepted price: the window is fixed at the attempt, so it only
+ *     WIDENS while the record stands, and an unfrozen offset walk over more
+ *     than one page can skip a row a write moves mid-walk (a frozen `[from,
+ *     to]` would not help: its set SHRINKS as rows leave, and it would bring
+ *     back the drop above). "A page or two" holds for a re-publish soon after
+ *     the 202 — a late one on a busy shop can hit the ceiling on every try
+ *     (`anuncios/README.md`, accepted residual; settle-live row 310 asks
+ *     whether Shopee honours a lone `update_time_from` at all). Statuses
  *     NORMAL/UNLIST/REVIEWING/BANNED (a deleted listing is never a
  *     duplicate), at most {@link MAX_PAGINAS_BUSCA_ANUNCIO} pages, the kit
  *     walk's cursor rules verbatim. Incomplete ⇒ `busca-de-anuncio-incompleta`.
  *  3. **One base-info batch** over every row that is not a KIT (`add_item`
- *     never creates one; an unknown `tag` stays a candidate), then each row is
- *     placed by its SKU and by {@link criadoNaJanelaShopee} (`create_time`):
+ *     never creates one; an unknown `tag` stays a candidate). A row created
+ *     `fora` (before the window, {@link criadoNaJanelaShopee}) or reporting
+ *     ANOTHER SKU (a reported blank one included, when the sent SKU is known)
+ *     is ignored. Every other row — SKU equal, or a DOUBT (Shopee reported NO
+ *     `item_sku`: `null`, or no base row at all; or a blank one while the sent
+ *     SKU is unknown) — created `dentro` or `desconhecido`, is placed:
  *     - **DEFINITE** — unlinked, SKU equal, `dentro`;
- *     - **UNDECIDABLE** — unlinked, (SKU equal or Shopee reported NO
- *       `item_sku` — `null`, or no base row at all), (`dentro` or
- *       `desconhecido`), and not definite;
- *     - **ALREADY LINKED to THIS produto** — SKU equal, `dentro` or
- *       `desconhecido`: it may be the attempt's own listing, linked by
- *       another path (the import's `add`);
- *     - ignored: `fora` (created before the window), another SKU, a
- *       REPORTED empty `item_sku` (the attempt sent a non-blank one), and a
- *       row linked to ANOTHER produto of the conta (`resolverLinkPorItemId`).
+ *     - **ALREADY LINKED** — SKU equal and linked in the conta, to THIS
+ *       produto or to ANOTHER (`resolverLinkPorItemId`): it may be the
+ *       attempt's own listing, linked by another path — the import's `add`,
+ *       or (another produto) a SKU rung that declined a padded or shared SKU
+ *       and MINTED a produto for it (batch-A review: the import matches more
+ *       narrowly than this fold, so "another produto's" is no proof);
+ *     - **UNDECIDABLE** — everything else: a doubt, linked or not (an
+ *       own-linked listing whose SKU Shopee did not report is never ignored),
+ *       or SKU equal, unlinked, `desconhecido`.
  *  4. **Verdict** — any undecidable, or 2+ definite ⇒ `criacao-incerta-ambigua`
  *     (`importar{itemIds, vinculados}`); else linked rows and no attestation ⇒
- *     `criacao-incerta-ja-vinculada` (`importar{itemIds, vinculados}`); else
- *     exactly one definite ⇒ ADOPT it; else (a complete scan, nothing) ⇒
- *     proceed, after the caller clears the record.
+ *     `criacao-incerta-ja-vinculada` (`importar{itemIds, vinculados}`, each
+ *     linked id with ITS produto); else exactly one definite ⇒ ADOPT it; else
+ *     (a complete scan, nothing) ⇒ proceed, after the caller clears the record.
  *
  * ⚠️ `confirmarCriacaoIncerta` is honoured for EXACTLY two verdicts —
  * `-sem-sku` and `-ja-vinculada` (K1-11) — and never skips a scan of a
- * produto that HAS a SKU: an ambiguous or incomplete scan refuses whatever the
- * flag says.
+ * produto that HAS a SKU: an ambiguous (a moved SKU included) or incomplete
+ * scan refuses whatever the flag says.
  *
  * ⚠️ The four motivos are spelled HERE and only here, through
  * `MOTIVO_PUBLICACAO_BLOQUEADA` — never quoted
@@ -533,12 +559,26 @@ export interface ResultadoItemIncerto {
   readonly linkDocId: string;
   /** MILLISECONDS until the draft's lock stops reading `em-andamento`. Always > 0. */
   readonly aguardarMs: number;
-  /** Whether the re-send can look the listing up: the produto's SKU folds non-blank. */
+  /** Whether the re-send can look the listing up: the SKU the attempt SENT folds non-blank. */
   readonly reenvioVerificaSku: boolean;
   readonly recusa: RecusaDoAnuncioIncerto | null;
   /** The CLI's sentence (and the 202's undeclared `mensagem`). */
   readonly mensagem: string;
 }
+
+/**
+ * The remedy of a listing that may exist but that the ERP cannot look up — the
+ * attempt sent no SKU (batch-A review). ⚠️ Never "importe-o" ALONE: the import
+ * binds a listing to an existing produto only on its SKU rung, so a SKU-less
+ * listing is imported onto a NEW produto, this draft is never adopted, and
+ * every exit left is a duplicate listing or a false attestation. The listing
+ * first gets, in Seller Centre, the SKU the produto gets in the ERP; then the
+ * import's SKU rung binds it to THIS produto and adopts this draft.
+ */
+const SE_EXISTIR_SEM_SKU =
+  'se o anúncio existir, dê a ele no Seller Centre o MESMO SKU que você cadastrar neste ' +
+  'produto e só então importe-o (importar:anuncio), que o vincula a este produto e adota este ' +
+  'rascunho — sem SKU a importação cria OUTRO produto';
 
 /**
  * The sentence of an uncertain create — what to do next, in the order the
@@ -549,12 +589,13 @@ export function mensagemDoAnuncioIncerto(reenvioVerificaSku: boolean): string {
   const minutos = String(AGUARDAR_ANUNCIO_INCERTO_SHOPEE_MS / 60_000);
   return reenvioVerificaSku
     ? `a Shopee pode ter criado o anúncio — aguarde ${minutos} minutos e publique de novo o MESMO ` +
-        'rascunho: antes de qualquer novo add_item o ERP procura o anúncio pelo SKU, e o vincula a ' +
-        'este rascunho se ele existir; senão, o cria'
-    : 'a Shopee pode ter criado o anúncio, e o produto não tem SKU para o ERP procurá-lo — ' +
-        `aguarde ${minutos} minutos e confira no Seller Centre: se o anúncio existir, importe-o ` +
-        '(importar:anuncio); se não existir, publique de novo o mesmo rascunho confirmando a ' +
-        'criação incerta (--confirmar-criacao-incerta)';
+        'rascunho: antes de qualquer novo add_item o ERP procura o anúncio pelo SKU enviado, e o ' +
+        'vincula a este rascunho se ele existir; senão, o cria. Não mude o SKU do produto antes ' +
+        'disso'
+    : 'a Shopee pode ter criado o anúncio, e ele foi enviado sem SKU: o ERP não consegue ' +
+        `procurá-lo. Aguarde ${minutos} minutos e confira no Seller Centre: ${SE_EXISTIR_SEM_SKU}; ` +
+        'se não existir, publique de novo o mesmo rascunho confirmando a criação incerta ' +
+        '(--confirmar-criacao-incerta)';
 }
 
 /**
@@ -604,9 +645,16 @@ export const STATUS_BUSCA_ANUNCIO = STATUS_BUSCA_KIT;
 export interface EntradaDaBuscaIncerta {
   readonly integracaoId: string;
   readonly produtoId: string;
-  /** The produto's STORED `sku`, raw — folded here ({@link skuDaBuscaShopee}). */
+  /**
+   * The produto's STORED `sku` NOW, raw — folded here ({@link skuDaBuscaShopee})
+   * and compared with the SKU the attempt SENT (`janela.sku`): it is looked up
+   * only when that one is unknown (batch-A review).
+   */
   readonly sku: string | null;
-  /** The attempt window, read BEFORE the reservation replaced the lock. */
+  /**
+   * The attempt window, read BEFORE the reservation replaced the lock — its
+   * start AND the SKU the attempt sent (`null` = unknown).
+   */
   readonly janela: JanelaDaCriacaoIncertaShopee;
   /** The produto's links on this conta (`lerVinculosDaConta`) — "its OWN listings". */
   readonly vinculosDoProduto: readonly VinculoLidoDaConta[];
@@ -663,10 +711,34 @@ function bloqueio(
 function problemaSemSku(): ProblemaDeBloqueio {
   return bloqueio(
     MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaSemSku,
-    'a última tentativa de publicar este rascunho pode ter criado o anúncio na Shopee, e o ' +
-      'produto não tem SKU para o ERP procurá-lo — confira no Seller Centre: se o anúncio existir, ' +
-      'importe-o (importar:anuncio); se não existir, publique de novo confirmando a criação ' +
-      'incerta (--confirmar-criacao-incerta)',
+    'a última tentativa de publicar este rascunho pode ter criado o anúncio na Shopee, e não há ' +
+      `SKU para o ERP procurá-lo — confira no Seller Centre: ${SE_EXISTIR_SEM_SKU}; se não ` +
+      'existir, publique de novo confirmando a criação incerta (--confirmar-criacao-incerta)',
+  );
+}
+
+/** A SKU as a sentence names it: quoted, or "sem SKU". */
+function skuNaFrase(sku: string): string {
+  return sku === '' ? 'sem SKU' : `«${sku}»`;
+}
+
+/**
+ * The produto's SKU moved between the uncertain attempt and this re-publish
+ * (batch-A review): set, cleared or renamed. The listing is looked up by the
+ * SKU the attempt SENT, so the produto's current one decides nothing — and
+ * neither does a scan by the sent one, whose hit would then be ADOPTED under a
+ * SKU the produto no longer has. NOT attestable (K1-11): the operator puts one
+ * SKU on both sides.
+ */
+function problemaSkuMudou(enviado: string, atual: string): ProblemaDeBloqueio {
+  return bloqueio(
+    MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaAmbigua,
+    `a última tentativa foi enviada ${enviado === '' ? 'sem SKU' : `com o SKU ${skuNaFrase(enviado)}`} ` +
+      `e o produto agora está ${atual === '' ? 'sem SKU' : `com ${skuNaFrase(atual)}`} — o ERP só ` +
+      'procura o anúncio pelo SKU que a tentativa enviou, e não decide. Confira no Seller Centre: ' +
+      'se o anúncio existir, deixe o MESMO SKU nele e no produto e importe-o (importar:anuncio), ' +
+      'que o vincula e adota este rascunho; se não existir, volte o SKU do produto ao enviado e ' +
+      'publique de novo, ou descarte este rascunho confirmando a criação incerta',
   );
 }
 
@@ -674,60 +746,84 @@ function problemaBuscaIncompleta(paginas: number): ProblemaDeBloqueio {
   return bloqueio(
     MOTIVO_PUBLICACAO_BLOQUEADA.buscaDeAnuncioIncompleta,
     `a busca pelo anúncio que a última tentativa pode ter criado não terminou (${String(paginas)} ` +
-      'página(s) lida(s), ou um cursor da Shopee que não avança) — nada foi criado; tente de ' +
-      'novo, ou confira no Seller Centre e importe o anúncio se ele existir',
+      'página(s) lida(s), ou um cursor da Shopee que não avança) — nada foi criado. Repetir só ' +
+      'ajuda se foi o cursor: a janela da busca não encolhe com o tempo. Confira no Seller ' +
+      'Centre: se o anúncio existir, importe-o (importar:anuncio); se não existir, descarte este ' +
+      'rascunho confirmando a criação incerta e crie outro',
   );
 }
 
-/** `importar{itemIds, vinculados}` — every id, the linked ones with THIS produto. */
+/** A candidate a link of the conta already holds, with ITS produto. */
+interface Vinculado {
+  readonly itemId: number;
+  readonly produtoId: string;
+}
+
+/** `importar{itemIds, vinculados}` — every id; the linked ones each with its OWN produto. */
 function acaoImportar(
   itemIds: readonly number[],
-  vinculadas: readonly number[],
-  produtoId: string,
+  vinculados: readonly Vinculado[],
 ): AcaoSugeridaPublicacaoShopee {
   return {
     tipo: TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.importar,
     itemIds: [...itemIds],
-    vinculados: vinculadas.map((itemId) => ({ itemId, produtoId })),
+    vinculados: vinculados.map((v) => ({ itemId: v.itemId, produtoId: v.produtoId })),
   };
 }
 
 function problemaAmbigua(
   itemIds: readonly number[],
-  vinculadas: readonly number[],
-  produtoId: string,
+  vinculados: readonly Vinculado[],
 ): ProblemaDeBloqueio {
   return bloqueio(
     MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaAmbigua,
     'a última tentativa pode ter criado o anúncio, e a busca não conseguiu apontar UM só ' +
-      `(item ${listaDeIds(itemIds)}: com o SKU deste produto e criados na janela da tentativa, ` +
+      `(item ${listaDeIds(itemIds)}: com o SKU que ela enviou e criados na janela da tentativa, ` +
       'ou sem SKU ou data de criação informados pela Shopee) — confira no Seller Centre e ' +
       'importe o anúncio certo (importar:anuncio) em vez de criar outro',
-    acaoImportar(itemIds, vinculadas, produtoId),
+    acaoImportar(itemIds, vinculados),
   );
 }
 
+/**
+ * Linked candidates (batch-A review): the sentence offers BOTH exits — the
+ * listing IS the attempt's (it exists and is linked: this draft is the
+ * redundant half, discarded with the attestation, never published again), or
+ * it is a deliberate second listing (publish again, attesting). The ids go
+ * LAST, so the 500-character cap trims ids — never the remedy; the `acao`
+ * carries every one, each with its produto.
+ */
 function problemaJaVinculada(
   itemIds: readonly number[],
-  vinculadas: readonly number[],
+  vinculados: readonly Vinculado[],
   produtoId: string,
 ): ProblemaDeBloqueio {
+  const nomeados = vinculados
+    .slice(0, IDS_NA_FRASE)
+    .map((v) =>
+      v.produtoId === produtoId
+        ? `${String(v.itemId)} (deste produto)`
+        : `${String(v.itemId)} (do produto ${v.produtoId})`,
+    );
+  const mais =
+    vinculados.length > IDS_NA_FRASE ? ` e mais ${String(vinculados.length - IDS_NA_FRASE)}` : '';
   return bloqueio(
     MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaJaVinculada,
-    `o anúncio ${listaDeIds(vinculadas)}, já vinculado a este produto e com o mesmo SKU, foi ` +
-      'criado na janela da última tentativa (ou sem data de criação informada) — pode ser o ' +
-      'anúncio que ela criou, vinculado por outro caminho. Confira no Seller Centre; se é um ' +
-      'segundo anúncio feito de propósito, publique de novo confirmando a criação incerta ' +
-      '(--confirmar-criacao-incerta)',
-    acaoImportar(itemIds, vinculadas, produtoId),
+    'pode ser o anúncio da última tentativa, já vinculado no ERP por outro caminho (tem o SKU ' +
+      'enviado e foi criado na janela dela, ou sem data informada). No Seller Centre: se for ele, ' +
+      'ele já existe — descarte ESTE rascunho confirmando a criação incerta, sem publicá-lo de ' +
+      'novo; se é um segundo anúncio feito de propósito, publique de novo confirmando ' +
+      `(--confirmar-criacao-incerta). Anúncio(s): ${nomeados.join(', ')}${mais}`,
+    acaoImportar(itemIds, vinculados),
   );
 }
 
 /**
  * The SKU Shopee REPORTED for a row through the shared fold, or `null` when it
  * reported none — `item_sku: null`, or no base row at all. ⚠️ Not the fold's
- * `''`: a REPORTED blank SKU is data (the attempt sent a non-blank one), an
- * unreported one is a doubt.
+ * `''`: a REPORTED blank SKU is data when the attempt is KNOWN to have sent a
+ * non-blank one (and a doubt when what it sent is unknown — the caller's
+ * call); an unreported one is always a doubt.
  */
 function skuReportado(base: ShopeeItemBaseInfoRow | null): string | null {
   // `typeof`, not `=== null`: an absent key is "not reported" too (fail closed).
@@ -740,24 +836,35 @@ function skuReportado(base: ShopeeItemBaseInfoRow | null): string | null {
  * create may have made, and decide whether a new `add_item` is safe.
  *
  * Reads only: `get_item_list` (narrowed by `update_time_from` alone — an upper
- * bound would drop the very listing a stock push touched a second ago, so none
- * is sent), one base-info batch, and one `resolverLinkPorItemId` per row that
- * could still matter. Every Shopee and Firestore failure propagates (rule 6):
- * the reservation hands its lock back, nothing having been sent.
+ * bound read off our clock could only drop a listing Shopee stamps AFTER that
+ * reading, a skewed clock or a write racing the call: the fail-open direction,
+ * so none is sent), one base-info batch, and one `resolverLinkPorItemId` per
+ * row that could still matter. Every Shopee and Firestore failure propagates
+ * (rule 6): the reservation hands its lock back, nothing having been sent.
  */
 export async function localizarAnuncioIncerto(
   client: ShopeeClient,
   db: Firestore,
   e: EntradaDaBuscaIncerta,
 ): Promise<VeredictoDaBuscaIncerta> {
-  const sku = skuDaBuscaShopee(e.sku);
+  const atual = skuDaBuscaShopee(e.sku);
+  const enviado = e.janela.sku === null ? null : skuDaBuscaShopee(e.janela.sku);
+  const semVarrer: ResumoDaBuscaIncerta = { varreu: false, paginas: 0, chamadas: 0, candidatos: 0 };
+  // ⚠️ The SKU moved since the attempt (batch-A review): never scanned, never
+  // attestable — the sent one may find a listing the produto no longer names,
+  // the current one cannot find the attempt's.
+  if (enviado !== null && enviado !== atual) {
+    return { tipo: 'recusar', problema: problemaSkuMudou(enviado, atual), resumo: semVarrer };
+  }
+  const sku = enviado ?? atual;
   if (sku === '') {
-    const resumo: ResumoDaBuscaIncerta = { varreu: false, paginas: 0, chamadas: 0, candidatos: 0 };
     // ⚠️ Never scanned: a blank fold would "hit" every SKU-less listing.
     return e.confirmarCriacaoIncerta
-      ? { tipo: 'prosseguir', resumo }
-      : { tipo: 'recusar', problema: problemaSemSku(), resumo };
+      ? { tipo: 'prosseguir', resumo: semVarrer }
+      : { tipo: 'recusar', problema: problemaSemSku(), resumo: semVarrer };
   }
+  /** A REPORTED blank SKU is a doubt only while what the attempt sent is unknown. */
+  const brancoEhDuvida = enviado === null;
 
   // ⚠️ THE window opening (`@delfrance/schemas`), floored at 1 s: a corrupt
   // early record widens the walk — which then refuses as incomplete or
@@ -818,28 +925,39 @@ export async function localizarAnuncioIncerto(
 
   const definitivos: number[] = [];
   const indecidiveis: number[] = [];
+  /** The ALREADY-LINKED class: SKU equal, linked to this produto or another. */
   const vinculadas: number[] = [];
+  /** Every candidate kept here that a link holds, with that link's produto. */
+  const vinculados: Vinculado[] = [];
   const ordenados = [...candidatos].sort(([a], [b]) => a - b);
   for (const [itemId, linhaDaLista] of ordenados) {
     const base = leitura.linhas.get(itemId) ?? null;
     if (base !== null && ehKitDe(base, linhaDaLista)) continue;
     const reportado = skuReportado(base);
     const skuIgual = reportado === sku;
-    // Another SKU — or a REPORTED blank one — is never the attempt's listing.
-    if (!skuIgual && reportado !== null) continue;
+    const duvida = reportado === null || (reportado === '' && brancoEhDuvida);
+    // Another REPORTED SKU is never the attempt's listing — a blank one
+    // included, once the attempt is known to have sent a non-blank one. What
+    // goes on is SKU-equal or a doubt.
+    if (!skuIgual && !duvida) continue;
     const posicao = criadoNaJanelaShopee(base?.create_time ?? null, e.janela.desdeMs);
     // Created BEFORE the window: an older listing, never the attempt's.
     if (posicao === 'fora') continue;
 
-    if (proprios.has(itemId)) {
+    // Linked already — this produto's (the read, or the group query for a
+    // link written after it) or ANOTHER produto's: the import matches more
+    // narrowly than this fold (a padded or shared SKU declines its SKU rung
+    // and MINTS a produto), so neither link proves the listing is not the
+    // attempt's (batch-A review).
+    const donoDoVinculo = proprios.has(itemId)
+      ? e.produtoId
+      : ((await resolverLinkPorItemId(db, e.integracaoId, itemId))?.produtoId ?? null);
+    if (donoDoVinculo !== null) {
+      vinculados.push({ itemId, produtoId: donoDoVinculo });
+      // ⚠️ A doubt is never "already linked" (overridable): an own-linked
+      // listing whose SKU Shopee did not report is UNDECIDABLE, never ignored.
       if (skuIgual) vinculadas.push(itemId);
-      continue;
-    }
-    const link = await resolverLinkPorItemId(db, e.integracaoId, itemId);
-    if (link !== null) {
-      // Already some produto's listing in this conta: this produto's own (the
-      // import's `add`) is a doubt; another produto's is not this attempt's.
-      if (link.produtoId === e.produtoId && skuIgual) vinculadas.push(itemId);
+      else indecidiveis.push(itemId);
       continue;
     }
     if (skuIgual && posicao === 'dentro') definitivos.push(itemId);
@@ -852,7 +970,7 @@ export async function localizarAnuncioIncerto(
     chamadas: paginas + leitura.chamadas,
     candidatos: candidatos.size,
   };
-  const veredicto = decidir(e, resumo, { definitivos, indecidiveis, vinculadas });
+  const veredicto = decidir(e, resumo, { definitivos, indecidiveis, vinculadas, vinculados });
   // eslint-disable-next-line no-console -- one line per look-up: ids, counts and the verdict token
   console.info('[shopee/anuncios] busca da criação incerta', {
     integracaoId: e.integracaoId,
@@ -875,17 +993,18 @@ function decidir(
     readonly definitivos: readonly number[];
     readonly indecidiveis: readonly number[];
     readonly vinculadas: readonly number[];
+    readonly vinculados: readonly Vinculado[];
   },
 ): VeredictoDaBuscaIncerta {
   const todos = [...c.definitivos, ...c.indecidiveis, ...c.vinculadas].sort((a, b) => a - b);
   // ⚠️ Not overridable: no attestation makes an ambiguous scan safe.
   if (c.indecidiveis.length > 0 || c.definitivos.length > 1) {
-    return { tipo: 'recusar', problema: problemaAmbigua(todos, c.vinculadas, e.produtoId), resumo };
+    return { tipo: 'recusar', problema: problemaAmbigua(todos, c.vinculados), resumo };
   }
   if (c.vinculadas.length > 0 && !e.confirmarCriacaoIncerta) {
     return {
       tipo: 'recusar',
-      problema: problemaJaVinculada(todos, c.vinculadas, e.produtoId),
+      problema: problemaJaVinculada(todos, c.vinculados, e.produtoId),
       resumo,
     };
   }

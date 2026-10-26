@@ -278,7 +278,9 @@ export type MotivoPublicacaoBloqueada =
    * fills with `rascunhoSemMarcaShopee`, `@delfrance/schemas`).
    */
   /**
-   * A DRAFT whose `brand_id` is `null` or absent — "not chosen", which is NOT
+   * A DRAFT whose `brand_id` is not a safe non-negative integer — `null`,
+   * absent, `-1`, `'77'`, `1.5`… (fail-closed since P5, `rascunhoSemMarcaShopee`)
+   * — "not chosen", which is NOT
    * Shopee's "No Brand" (`brand_id: 0`, the explicit «Sem marca»). The brand
    * cascade would otherwise answer `0` and publish "No Brand" on the operator's
    * behalf; a legacy draft (whose `null` meant either "Nenhuma" or "never
@@ -298,9 +300,11 @@ export type MotivoPublicacaoBloqueada =
    */
   /**
    * The scan could not single the earlier attempt's listing out: two or more
-   * unlinked items with the produto's SKU created inside the window, or one
-   * whose SKU or `create_time` Shopee answered `null` (undecidable). The
-   * operator imports the right one (`acao` `importar{itemIds}`).
+   * unlinked items with the SKU the attempt SENT created inside the window, or
+   * one whose SKU or `create_time` Shopee answered `null` (undecidable, linked
+   * or not). The operator imports the right one (`acao` `importar{itemIds}`).
+   * Also — never scanned, no `acao` — the produto's SKU MOVED since the attempt
+   * (batch-A review): the look-up can only ask for what was sent.
    */
   | 'criacao-incerta-ambigua'
   /**
@@ -309,18 +313,20 @@ export type MotivoPublicacaoBloqueada =
    */
   | 'busca-de-anuncio-incompleta'
   /**
-   * The produto's SKU folds blank (the import's SKU fold — trim only), so
-   * there is nothing to compare — never scanned, because a blank fold would
+   * The SKU the attempt sent folds blank (the import's SKU fold — trim only;
+   * the produto's own when what was sent is unknown), so there is nothing to compare — never scanned, because a blank fold would
    * "hit" every SKU-less listing. Overridable by `confirmarCriacaoIncerta` (the operator checked
    * Seller Centre).
    */
   | 'criacao-incerta-sem-sku'
   /**
-   * A listing ALREADY LINKED to this produto in the conta, with the same SKU,
-   * created inside the window (or with an unknown `create_time`): it may be the
-   * earlier attempt's own listing, linked by another path. `acao`
-   * `importar{itemIds, vinculados}`; overridable by `confirmarCriacaoIncerta`
-   * (a deliberate second listing created minutes before).
+   * A listing ALREADY LINKED in the conta — to this produto or (batch-A review)
+   * to another — with the SKU the attempt sent, created inside the window (or
+   * with an unknown `create_time`): it may be the earlier attempt's own
+   * listing, linked by another path. `acao` `importar{itemIds, vinculados}`,
+   * each linked id with its produto; overridable by `confirmarCriacaoIncerta`
+   * (a deliberate second listing created minutes before). When it IS the
+   * attempt's listing, the exit is discarding the draft, attesting.
    */
   | 'criacao-incerta-ja-vinculada';
 

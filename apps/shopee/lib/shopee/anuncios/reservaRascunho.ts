@@ -16,8 +16,9 @@
  *     gone ⇒ the route's 404. A lock past the grace, or a recorded uncertain
  *     create (`incerta`) is TAKEN OVER — and the takeover carries the attempt
  *     window's start (`janelaDaCriacaoIncertaShopee`, read from the document
- *     BEFORE the new lock replaces the old one) into `criacaoIncertaDesde` in
- *     the SAME write, so a lock handed back later never loses the record; a
+ *     BEFORE the new lock replaces the old one) into `criacaoIncertaDesde` —
+ *     and the SKU that attempt sent into `criacaoIncertaSku` — in the SAME
+ *     write, so a lock handed back later never loses the record; a
  *     document whose window is unreadable on both keys keeps P3's 409
  *     `CRIACAO_INCERTA` (nothing says WHEN — never "proceed").
  *     Then, **lock-then-scan** (D15): the produto's other links of this conta —
@@ -38,8 +39,13 @@
  *     (token-guarded, and it must land — else nothing is sent) and go on to
  *     `add_item`. An attested SKU-less produto goes on with the record KEPT
  *     (no scan proved anything).
- *  2. **Re-read before the send** ({@link conferirTravaAntesDoEnvio}): the
- *     stored token must still be OURS, or nothing is sent.
+ *  2. **Re-read before the send, and stamp what it sends**
+ *     ({@link conferirTravaAntesDoEnvio}): the stored token must still be
+ *     OURS, or nothing is sent — then ONE token-guarded write records the
+ *     folded SKU of the create body on the lock (`publicacaoEmCurso.sku`), so
+ *     the look-up of an uncertain create compares against what the attempt
+ *     SENT, never against the produto's SKU at re-publish time (batch-A
+ *     review).
  *  3. **The per-leg send gate** ({@link portaoDeEnvio}) — SYNCHRONOUS, run
  *     immediately before EACH `client.addItem` call (both legs of the fiscal
  *     retry), right AFTER that leg's credential warm
@@ -439,8 +445,12 @@ export async function reservarRascunhoShopee(
       publicacaoEmCurso: { desde: reserva.desde, expiraEm: reserva.expiraEm, token: reserva.token },
       // The takeover KEEPS the record in the same write: our lock's `desde` is
       // LATER, and a lock handed back after a refused look-up must leave the
-      // draft reading `incerta`, never `livre`.
-      ...(janela === null ? {} : { criacaoIncertaDesde: janela.desdeMs }),
+      // draft reading `incerta`, never `livre`. The SKU that attempt SENT
+      // rides with it (batch-A review): our lock replaces the one that may be
+      // its only record, and `null` (unknown) is carried as unknown.
+      ...(janela === null
+        ? {}
+        : { criacaoIncertaDesde: janela.desdeMs, criacaoIncertaSku: janela.sku }),
     });
     try {
       await ref.update(patch as Record<string, unknown>, { lastUpdateTime: snap.updateTime });
@@ -620,6 +630,7 @@ async function garantirCriacaoIncerta(
             contaProdutoShopeeOuterRef: contaRef,
             publicacaoEmCurso: null,
             criacaoIncertaDesde: null,
+            criacaoIncertaSku: null,
             falhaPublicacao: null,
             ultimaModificacao: a.busca.nowMs,
           }
@@ -631,7 +642,10 @@ async function garantirCriacaoIncerta(
   }
 
   if (!veredicto.resumo.varreu) return null;
-  const desfecho = await gravarSobATrava(db, reserva, () => ({ criacaoIncertaDesde: null }));
+  const desfecho = await gravarSobATrava(db, reserva, () => ({
+    criacaoIncertaDesde: null,
+    criacaoIncertaSku: null,
+  }));
   if (desfecho !== 'gravada') throw perdeuATrava(reserva, desfecho, 'a limpeza do registro');
   return null;
 }
@@ -716,6 +730,11 @@ function perdeuATrava(
  * (`janelaDaCriacaoIncertaShopee` of the document as it stands — an EARLIER
  * start is kept, never moved later). No `falhaPublicacao`: nothing "falhou".
  *
+ * `criacaoIncertaSku` (batch-A review) = the SKU this attempt SENT (the lock's
+ * pre-send stamp) — unless an EARLIER attempt is already on record with a
+ * different (or unknown) one, and then `null`: two attempts that sent two
+ * SKUs have no one SKU to be looked up by, and the look-up then fails closed.
+ *
  * Marks the reservation `encerrada` whatever happened. A lock that is no
  * longer ours (or three lost preconditions) writes NOTHING — the foreign lock
  * is never touched, and ours, left as it is, still expires into `incerta`.
@@ -732,9 +751,13 @@ export async function registrarCriacaoIncerta(
   const desfecho = await gravarSobATrava(db, reserva, (raw) => {
     const trava = travaLegivel(raw);
     if (trava === null) return null;
+    const janela = janelaDaCriacaoIncertaShopee(raw);
+    const skuDaTrava = typeof trava.sku === 'string' ? trava.sku : null;
     return {
       publicacaoEmCurso: { ...trava, expiraEm },
-      criacaoIncertaDesde: janelaDaCriacaoIncertaShopee(raw)?.desdeMs ?? reserva.desde,
+      criacaoIncertaDesde: janela?.desdeMs ?? reserva.desde,
+      // With no record the window IS this lock, so the two agree.
+      criacaoIncertaSku: janela === null || janela.sku === skuDaTrava ? skuDaTrava : null,
     };
   });
   reserva.fase = 'encerrada';
@@ -753,38 +776,65 @@ export async function registrarCriacaoIncerta(
 /* -------------------------------------------------------------------------- */
 
 /**
- * The PRE-SEND re-read (step 2): the stored token must still be ours, or
- * NOTHING is sent. Returns the lock as stored — its `expiraEm` is what the send
- * gate measures against.
+ * The PRE-SEND re-read (step 2) — and the STAMP of what the create sends: the
+ * stored token must still be ours, or NOTHING is sent; then ONE token-guarded
+ * `update({publicacaoEmCurso: {…lock, sku}}, {lastUpdateTime})` records
+ * `skuEnviado` on the lock BEFORE the first `add_item` leg. Returns the lock as
+ * written — its `expiraEm` is what the send gate measures against.
  *
- * ⚠️ Never writes. A lock that is no longer ours belongs to someone else, and
- * the caller's release is token-guarded, so it leaves that lock alone too.
+ * Why it WRITES (batch-A review): the look-up of an uncertain create
+ * (`criacaoIncerta.ts`, ENSURE) must compare against the SKU the attempt SENT —
+ * the produto's SKU can be set, cleared or renamed before the re-publish, and a
+ * look-up by the CURRENT one skips the attempt's listing and creates a second.
+ * Stamped before the send, it survives every way out: the `incerto` re-arm
+ * and a takeover carry it into `criacaoIncertaSku`, and a crash after the send
+ * leaves it on the lock that expires into `incerta`.
  *
+ * ⚠️ A lock that is no longer ours belongs to someone else, and NOTHING is
+ * written over it (the caller's release is token-guarded too). A lost
+ * precondition re-reads and re-decides, ≤ {@link TENTATIVAS_DA_TRAVA} times.
+ *
+ * @param skuEnviado the create body's `item_sku` FOLDED (`skuDaBuscaShopee`);
+ *   `''` when the body carries none.
  * @throws ConflitoDeRascunhoShopeeError — `JA_PUBLICADO` when another run's
  *   create already claimed the draft, `PUBLICACAO_EXPIRADA` for any other loss
- *   of the lock.
+ *   of the lock, `CONTENCAO` after the last lost precondition — nothing sent.
  */
 export async function conferirTravaAntesDoEnvio(
   db: Firestore,
   reserva: ReservaDeRascunhoShopee,
+  skuEnviado: string,
 ): Promise<PublicacaoEmCursoShopee> {
-  const snap = await produtoShopeeLinkCollection
-    .docRef(db, { produtoId: reserva.produtoId }, reserva.linkDocId)
-    .get();
-  const raw = snap.exists ? ((snap.data() ?? {}) as Record<string, unknown>) : null;
-  if (raw !== null && itemIdEnderecavelShopee(raw.item_id) !== null) {
-    throw jaPublicado(reserva.linkDocId);
+  const ref = produtoShopeeLinkCollection.docRef(
+    db,
+    { produtoId: reserva.produtoId },
+    reserva.linkDocId,
+  );
+  for (let tentativa = 1; tentativa <= TENTATIVAS_DA_TRAVA; tentativa += 1) {
+    const snap = await ref.get();
+    const raw = snap.exists ? ((snap.data() ?? {}) as Record<string, unknown>) : null;
+    if (raw !== null && itemIdEnderecavelShopee(raw.item_id) !== null) {
+      throw jaPublicado(reserva.linkDocId);
+    }
+    const trava = raw === null ? null : travaLegivel(raw);
+    if (trava === null || trava.token !== reserva.token) {
+      console.warn('[shopee/anuncios] a trava do rascunho já não é desta execução; nada enviado', {
+        produtoId: reserva.produtoId,
+        linkDocId: reserva.linkDocId,
+        existe: raw !== null,
+      });
+      throw expirada(reserva.linkDocId, 'a trava da publicação já não é desta execução');
+    }
+    const carimbada: PublicacaoEmCursoShopee = { ...trava, sku: skuEnviado };
+    const patch = produtoShopeeLinkCollection.parseMerge({ publicacaoEmCurso: carimbada });
+    try {
+      await ref.update(patch as Record<string, unknown>, { lastUpdateTime: snap.updateTime });
+      return carimbada;
+    } catch (err) {
+      if (!isFailedPrecondition(err)) throw err;
+    }
   }
-  const trava = raw === null ? null : travaLegivel(raw);
-  if (trava === null || trava.token !== reserva.token) {
-    console.warn('[shopee/anuncios] a trava do rascunho já não é desta execução; nada enviado', {
-      produtoId: reserva.produtoId,
-      linkDocId: reserva.linkDocId,
-      existe: raw !== null,
-    });
-    throw expirada(reserva.linkDocId, 'a trava da publicação já não é desta execução');
-  }
-  return trava;
+  throw perdeuATrava(reserva, 'contencao', 'o registro do SKU antes do envio');
 }
 
 /**
@@ -882,6 +932,7 @@ export async function reivindicarRascunhoShopee(
       publicacaoEmCurso: null,
       // The listing is recorded: no uncertainty is left about this draft.
       criacaoIncertaDesde: null,
+      criacaoIncertaSku: null,
     });
     try {
       await ref.update(patch as Record<string, unknown>, { lastUpdateTime: snap.updateTime });

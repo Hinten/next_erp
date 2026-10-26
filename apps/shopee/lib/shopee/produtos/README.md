@@ -162,7 +162,7 @@ fail-closed) and two adoptable drafts (one warn) all keep today's `add`, the
 draft byte-for-byte untouched. The plan then writes an ADOPTION, not a merge
 (`EscritaDeAdocaoDeRascunho`): the import's fields WITHOUT the `...existente`
 spread, `dataCadastro` only when the draft has none, and `publicacaoEmCurso`,
-`criacaoIncertaDesde` and `falhaPublicacao` cleared — a lock left on the link
+`criacaoIncertaDesde` (with its `criacaoIncertaSku`) and `falhaPublicacao` cleared — a lock left on the link
 would read `em-andamento` / `incerta` for ever and block the produto's other
 drafts on the conta. `links.ts` applies it as rule 7 tier 1, each pass on a
 FRESH read that RE-DERIVES the verdict: still adoptable ⇒

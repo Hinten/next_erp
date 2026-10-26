@@ -1417,3 +1417,55 @@ describe('criacaoIncertaDesde — a criação incerta do rascunho (#1911, D5)', 
     expect(fonte).toContain('janelaDaCriacaoIncertaShopee');
   });
 });
+
+// ===========================================================================
+// #1911 batch-A review — o SKU que a tentativa ENVIOU (`publicacaoEmCurso.sku`,
+// `criacaoIncertaSku`)
+// ===========================================================================
+
+describe('o SKU ENVIADO — `publicacaoEmCurso.sku` e `criacaoIncertaSku` (batch-A review)', () => {
+  const RASCUNHO = {
+    contaProdutoShopeeOuterRef: CONTA_REF,
+    item_name: 'Camiseta Básica',
+    item_id: null,
+  };
+  const TRAVA = { desde: 1_761_000_000_000, expiraEm: 1_761_000_300_000, token: 'tok-1' };
+
+  it('⚠️ PAR: ausentes ficam AUSENTES (carimbo de servidor: ausente é "desconhecido", nunca um `null` inventado)', () => {
+    const lido = produtoShopeeLinkSchema.parse({ ...RASCUNHO, publicacaoEmCurso: TRAVA }) as Record<
+      string,
+      unknown
+    >;
+    expect(lido).not.toHaveProperty('criacaoIncertaSku');
+    expect(lido.publicacaoEmCurso).not.toHaveProperty('sku');
+  });
+
+  it("PAR: `''` (enviou SEM SKU) é um VALOR e sobrevive; `null` e um SKU sobrevivem", () => {
+    for (const v of ['', 'SKU-1', null]) {
+      const lido = produtoShopeeLinkSchema.parse({
+        ...RASCUNHO,
+        publicacaoEmCurso: { ...TRAVA, sku: v },
+        criacaoIncertaSku: v,
+      }) as Record<string, unknown>;
+      expect(lido.criacaoIncertaSku, String(v)).toBe(v);
+      expect((lido.publicacaoEmCurso as Record<string, unknown>).sku, String(v)).toBe(v);
+    }
+  });
+
+  it('⛔ NEAR-MISS: um SKU que não é texto é recusado nos dois lugares', () => {
+    for (const ruim of [7, true, { sku: 'x' }]) {
+      expect(
+        produtoShopeeLinkSchema.safeParse({ ...RASCUNHO, criacaoIncertaSku: ruim }).success,
+      ).toBe(false);
+      expect(
+        publicacaoEmCursoShopeeSchema.safeParse({ ...TRAVA, sku: ruim }).success,
+        JSON.stringify(ruim),
+      ).toBe(false);
+    }
+  });
+
+  it('o cabeçalho nomeia o par do registro', () => {
+    const fonte = readFileSync(join(import.meta.dirname, 'shopeeLink.ts'), 'utf8');
+    expect(fonte).toContain('**`criacaoIncertaSku`**');
+  });
+});
