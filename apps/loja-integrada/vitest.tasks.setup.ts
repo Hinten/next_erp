@@ -9,21 +9,19 @@
  * red.
  *
  * Five jobs, each guarding a way this lane could report GREEN while proving
- * nothing, or reach the platform it must never reach.
+ * nothing, or reach the platform it must never reach. The D17 refusals in (4)
+ * are pure functions in `lib/lojaIntegrada/testing/guardaDaLaneDeTarefas.ts`,
+ * proved offline by its unit test — this file only throws on their answer.
  */
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import {
+  CHAVE_DE_CHAMADAS_DA_LANE,
+  chamadasLigadasNoAmbiente,
+  envsDoArtefatoQueLigamEscritas,
+  envsDoArtefatoQueNomeiamAChave,
+  escritasLigadasNoAmbiente,
+} from './lib/lojaIntegrada/testing/guardaDaLaneDeTarefas';
 
-/**
- * The read switch (`core/valvulas.ts`, `CHAMADAS_ENV_LI`). Spelled out here, not
- * imported: this file is a guard on the environment, and a guard must not
- * depend on the module it polices.
- */
-const CHAMADAS = 'LOJA_INTEGRADA_CHAMADAS';
-
-/** The generated functions artifact the emulator loads (`prepare-deploy.mjs`). */
-const ARTEFATO = fileURLToPath(new URL('../../.deploy/loja-integrada-functions', import.meta.url));
+const CHAMADAS = CHAVE_DE_CHAMADAS_DA_LANE;
 
 /**
  * (1) The Firestore fail-loud gate.
@@ -93,33 +91,35 @@ if (EMULATED) {
 }
 
 /**
- * (4) The read switch must NOT be on — in this process or in the artifact.
+ * (4) The read switch must NOT be on, and no write may be — in this process or
+ * in the artifact.
  *
  * D17: no code of this app calls Loja Integrada before the cutover. Every call
- * goes through the context loader, which refuses unless `LOJA_INTEGRADA_CHAMADAS`
- * is exactly `on`; the lane's job env sets it to `off`, and the round-trip suite
- * asserts the refusal. This is the layer that fails the lane when someone turns
- * the switch on for it.
+ * goes through a context loader, which refuses unless `LOJA_INTEGRADA_CHAMADAS`
+ * is exactly `on`; the lane's job env sets it to `off`, and the round-trip
+ * suites assert the refusal. This is the layer that fails the lane when someone
+ * turns the switch on for it.
  *
- * Two places can turn it on, and the kill-switch in (5) reaches neither of the
- * second:
+ * Since master plan step 7 the job env also sets the rastreio write valve to
+ * `dry-run`, so the write-back trigger and the writes queue really run here —
+ * and each run still stops at the read switch, before any client exists. So
+ * the write side is refused too: a write valve EXACTLY `on` (the loader's own
+ * rule — `dry-run` is the lane's value) and a canary list that is not blank.
+ *
+ * Two places can turn either on, and the kill-switch in (5) reaches neither of
+ * the second:
  *
  * - the shell: `emulators:exec` hands its environment to the functions emulator,
- *   which is the process that runs the task handler. Checked here as the exact
- *   value the loader accepts — a stray `ON` or `true` is not `on` to the loader,
- *   so it is not this guard's business.
+ *   which is the process that runs the task handlers and the triggers.
  * - the artifact's own env files: `prepare-deploy.mjs` copies an operator's
  *   `.env.deploy*` into the artifact, and firebase-tools loads `.env` and
  *   `.env.<project>` from the functions source directory into the functions
  *   emulator. WHETHER such a value overrides the job env inside the emulator is
- *   unverified, so a file that merely NAMES the switch is refused, whatever it
- *   sets it to.
- *
- * ⚠️ The artifact's files are selected by an ANCHORED name — exactly the names
- * `copyDeployEnv` can produce — never by a prefix match: a prefix selection is
- * a denylist, and `env-secrets-no-copy.test.js` fails on it.
+ *   unverified, so a file that merely NAMES the read switch is refused, whatever
+ *   it sets it to, and a file that turns a write on is refused as well
+ *   (`guardaDaLaneDeTarefas.ts` says how it is read).
  */
-if (process.env[CHAMADAS] === 'on') {
+if (chamadasLigadasNoAmbiente(process.env)) {
   throw new Error(
     `${CHAMADAS}=on no ambiente de test:tasks — a lane de emuladores NUNCA liga a chave ` +
       'de leitura (D17: nenhuma chamada à Loja Integrada antes do cutover). ' +
@@ -127,24 +127,34 @@ if (process.env[CHAMADAS] === 'on') {
   );
 }
 
-const NOME_DE_ENV_DO_ARTEFATO = /^\.env(?:\.[a-z0-9-]+)?$/;
-
-function arquivosDeEnvDoArtefato(): string[] {
-  // No artifact yet: `prepare-deploy.mjs` has not run, so there is no file to
-  // police — and the functions emulator has nothing to load either.
-  if (!existsSync(ARTEFATO)) return [];
-  return readdirSync(ARTEFATO).filter((n) => NOME_DE_ENV_DO_ARTEFATO.test(n));
+const escritasLigadas = escritasLigadasNoAmbiente(process.env);
+if (escritasLigadas.length > 0) {
+  throw new Error(
+    `${escritasLigadas.join(', ')} no ambiente de test:tasks — a lane de emuladores ` +
+      'NUNCA liga uma válvula de escrita (exatamente `on`) nem preenche uma lista canário ' +
+      '(D17: nada escreve na Loja Integrada antes do cutover). A lane usa ' +
+      'LOJA_INTEGRADA_MODO_RASTREIO=dry-run; remova as outras variáveis do shell.',
+  );
 }
 
-for (const nome of arquivosDeEnvDoArtefato()) {
-  if (readFileSync(join(ARTEFATO, nome), 'utf8').includes(CHAMADAS)) {
-    throw new Error(
-      `${nome} em .deploy/loja-integrada-functions nomeia ${CHAMADAS} — a lane de ` +
-        'emuladores recusa um artefato que possa ligar a chave de leitura (D17). ' +
-        'Remova a linha do .env.deploy* de apps/loja-integrada/functions e rode ' +
-        'prepare-deploy.mjs de novo.',
-    );
-  }
+const nomeiamAChave = envsDoArtefatoQueNomeiamAChave();
+if (nomeiamAChave.length > 0) {
+  throw new Error(
+    `${nomeiamAChave.join(', ')} em .deploy/loja-integrada-functions nomeia ${CHAMADAS} — a ` +
+      'lane de emuladores recusa um artefato que possa ligar a chave de leitura (D17). ' +
+      'Remova a linha do .env.deploy* de apps/loja-integrada/functions e rode ' +
+      'prepare-deploy.mjs de novo.',
+  );
+}
+
+const ligamEscritas = envsDoArtefatoQueLigamEscritas();
+if (ligamEscritas.length > 0) {
+  throw new Error(
+    `${ligamEscritas.join(', ')} em .deploy/loja-integrada-functions liga uma válvula de ` +
+      'escrita ou preenche uma lista canário — a lane de emuladores recusa um artefato que ' +
+      'possa escrever na Loja Integrada (D17). Remova a linha do .env.deploy* de ' +
+      'apps/loja-integrada/functions e rode prepare-deploy.mjs de novo.',
+  );
 }
 
 /**

@@ -300,6 +300,16 @@ jobs:
       # several YAML parsers. Never set it to `on` in this lane;
       # vitest.tasks.setup.ts refuses to start when it is.
       LOJA_INTEGRADA_CHAMADAS: 'off'
+      # The status write-back's valve, at `dry-run` so the write-back trigger
+      # really enqueues and the writes queue really runs (master plan step 7):
+      # with the valve `off` both return before any read, and the round trip
+      # (functions/src/filaEscrita.tasks.test.ts) would have nothing to prove.
+      # SAFE because the read switch above is `off`: a write run stops at its
+      # write context, before any Loja Integrada client exists, and defers
+      # (`adiado/chamadas-desligadas`) — the suite asserts exactly that row. Never
+      # `on`, and no LOJA_INTEGRADA_CANARIO_* here: vitest.tasks.setup.ts refuses
+      # any write valve set to exactly `on` and any non-blank canary list.
+      LOJA_INTEGRADA_MODO_RASTREIO: 'dry-run'
       NEXT_TELEMETRY_DISABLED: '1'
     steps:
       - uses: actions/checkout@v6
