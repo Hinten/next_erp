@@ -14,7 +14,8 @@
  *
  *  - pedido: `sha256("lojaIntegrada" + contaId + "-" + numero)` — the shared
  *    `preimagemPedidoLi` (`@delfrance/schemas`), the string the web's identity
- *    check hashes too (as the paid re-check route is to);
+ *    check hashes too, and so does the paid re-check route (through
+ *    {@link idPedidoLi});
  *  - pagamento: `sha256("integracao/" + contaId + "-" + pagamentoId)` — the bare
  *    collection name, no `documents/`, no leading slash, and never normalised
  *    through an outer-ref helper;
@@ -53,9 +54,9 @@ function inteiroPositivo(valor: number): boolean {
  * `pedidos/{id}` for one Loja Integrada order — the corpus preimage
  * `sha256(utf8("lojaIntegrada" + contaId + "-" + numero))`, `numero` as a plain
  * decimal. The preimage is the SHARED one (`preimagemPedidoLi`,
- * `@delfrance/schemas`): the web's identity check hashes the same string, as
- * the paid re-check route is to, so none of them can disagree on which pedido
- * an order is.
+ * `@delfrance/schemas`): the web's identity check hashes the same string, and
+ * the paid re-check route calls this very function, so none of them can
+ * disagree on which pedido an order is.
  *
  * @throws RangeError when `numero` is not a positive safe integer, or `contaId`
  *   is not an id a document can have — a programming error: the import has

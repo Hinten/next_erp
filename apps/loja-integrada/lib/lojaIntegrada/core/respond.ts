@@ -43,6 +43,7 @@ import {
   LiCredencialAlteradaError,
   LiCredencialAusenteError,
   LiCredencialInvalidaError,
+  LiCredencialTrocadaError,
   LiEstacionamentoEmConflitoError,
 } from './erros';
 
@@ -71,6 +72,11 @@ function mapear(err: LiAppError): Mapeamento {
     return { status: 409, code: CODIGO_ERRO_LI.credencialInvalida, issues: err.campos };
   }
   if (err instanceof LiCredencialAlteradaError) {
+    return { status: 409, code: CODIGO_ERRO_LI.credencialAlterada };
+  }
+  if (err instanceof LiCredencialTrocadaError) {
+    // Raised by the write context only (a functions run, never a route); the
+    // same answer as the panel's lost race, so the mapper stays total.
     return { status: 409, code: CODIGO_ERRO_LI.credencialAlterada };
   }
   if (err instanceof LiContaParadaError) {

@@ -20,6 +20,7 @@ import {
   LiCredencialAlteradaError,
   LiCredencialAusenteError,
   LiCredencialInvalidaError,
+  LiCredencialTrocadaError,
   LiEstacionamentoEmConflitoError,
 } from './erros';
 
@@ -35,14 +36,15 @@ const INSTANCIAS: readonly LiAppError[] = [
   new LiContaParadaError(ID, 401, 1),
   new LiEstacionamentoEmConflitoError(ID, 3),
   new LiChamadasDesligadasError(ID),
+  new LiCredencialTrocadaError(ID),
 ];
 
 describe('the app errors are NOT LiError', () => {
-  it('every exported subclass of LiAppError is instantiated here (8 of them)', () => {
+  it('every exported subclass of LiAppError is instantiated here (9 of them)', () => {
     const subclasses = Object.values(erros).filter(
       (v) => typeof v === 'function' && v.prototype instanceof LiAppError,
     );
-    expect(subclasses).toHaveLength(8);
+    expect(subclasses).toHaveLength(9);
     for (const classe of subclasses) {
       expect(
         INSTANCIAS.some((e) => e.constructor === classe),
@@ -64,5 +66,15 @@ describe('the app errors are NOT LiError', () => {
   it('near-miss: the package class is not an app error either', () => {
     expect(LiError.prototype instanceof LiAppError).toBe(false);
     expect(LiAppError.prototype instanceof LiError).toBe(false);
+  });
+
+  it('the credential pin refusal names the conta, never a ref or a token, and is not the panel conflict', () => {
+    const err = new LiCredencialTrocadaError(ID);
+    expect(err.name).toBe('LiCredencialTrocadaError');
+    expect(err.message).toContain(ID);
+    expect(err.message).toMatch(/nada foi enviado/i);
+    // A different class from the credential panel's lost race: a catch for one
+    // must never handle the other.
+    expect(err).not.toBeInstanceOf(LiCredencialAlteradaError);
   });
 });

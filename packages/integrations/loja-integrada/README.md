@@ -3,8 +3,8 @@
 Platform-neutral Loja Integrada REST v1 library: **fetch-only**, no Firestore, no
 Admin SDK, no `process.env`. The **read client is GET-only by construction**; a
 separate **write client** is the package's only writer. The stateful half (the
-credential store, the connect route, the sweeps and, from master-plan step 7's PR
-7-b, the write engine) lives in `apps/loja-integrada`.
+credential store, the connect route, the sweeps and the write engine) lives in
+`apps/loja-integrada`.
 
 What ships here:
 
@@ -51,11 +51,13 @@ token **raw** after `Basic ` (not base64-encoded by us).
   clear one), a stray key or the token. Its two operations (`pedidosEscrita.ts`)
   build those calls. The manifest's `exports` map publishes the root alone, so the
   request core is reachable only through the two clients.
-- **Not called by the app yet.** The app's write engine (master-plan step 7, PR
-  7-b) is to be the write client's only caller, by a name-keyed guard, behind the
-  write valves and the read switch, all off until the window; until it lands,
-  nothing in the app imports the write client. Nothing writes to the provider
-  before the cutover.
+- **Called by the app's write engine only.** `apps/loja-integrada`'s
+  `core/escrita.ts` (master-plan step 7) is the only module there that names a
+  write operation or a write-client method, and its write context the only one
+  that builds the write client — a name-keyed guard (`estrutura.test.ts` there)
+  refuses any other, and any import of a package subpath. Every write runs behind
+  the write valves and the read switch, all off until the window. Nothing writes
+  to the provider before the cutover.
 - **No decision about a write.** Whether one is due, safe or already reflected is
   the app's, from a fresh read made just before it. A write cut by its deadline
   may have landed; the caller re-reads before deciding anything.
@@ -69,15 +71,15 @@ token **raw** after `Basic ` (not base64-encoded by us).
   `refCredencial: 'candidato'`; a malformed token sends nothing and is not
   observed). An observer must never throw: the client rethrows its error in place
   of the outcome, which for a write rejects a write that landed. The app's observer (`apps/loja-integrada`, `core/log.ts`) is the
-  only consumer, and it redacts the event before anything is written.
+  only consumer, and it redacts the event before anything is written; its totality
+  on every write outcome is pinned there (`log.test.ts`).
 - **No body excerpt on any error.** Response text never rides an exception.
 - **No `process.env`.** Every value is a parameter.
 - **No resource schema far ahead of its consumer.** Beyond the paging envelope and
   categoria, only the order import's shapes and reads ship (`pedidoTipos.ts`,
   `pedidos.ts`), consumed by `apps/loja-integrada`'s order import (master-plan
   step 5), and the status write-back's two writes and their echoes
-  (`pedidosEscrita.ts`), to be consumed by its write engine (master-plan step 7,
-  PR 7-b, stacked directly on the package's write client); every
+  (`pedidosEscrita.ts`), consumed by its write engine (master-plan step 7); every
   other resource arrives with its first consumer, written against captured
   responses. The write echoes are the one exception to "against captures": no
   write is made before the cutover, so they follow the public document and keep

@@ -6,10 +6,9 @@
  * The modules that ship here (transport, typed errors, Tastypie paging, the
  * response schemas, the token validator, the order import's reads and the
  * status write-back's two writes) are exported from this barrel as they land.
- * Everything stateful (the credential store, the connect route, the sweeps and,
- * from master-plan step 7's PR 7-b, the write engine) is driven by the App
- * Hosting backend `apps/loja-integrada` and its functions, which hold the
- * Firestore/Admin-SDK dependency.
+ * Everything stateful (the credential store, the connect route, the sweeps and
+ * the write engine) is driven by the App Hosting backend `apps/loja-integrada`
+ * and its functions, which hold the Firestore/Admin-SDK dependency.
  *
  * This is the ADR-0015 shape: a channel is a LIBRARY paired with an app, not a
  * plugin implementing an ERP-orchestration contract. There is deliberately no
@@ -28,8 +27,8 @@
  *    the write routes (`rotasEscrita.ts`): two paths, each with one strict body,
  *    so no write can carry a codigo outside the three write-back situações or
  *    clear a tracking code. `pedidosEscrita.ts` holds the two operations. The
- *    app's write engine (master-plan step 7, PR 7-b) is to be its only caller,
- *    behind the write valves; until it lands, nothing in the app imports it.
+ *    app's write engine (master-plan step 7) is their only caller there, behind
+ *    the write valves, and a name-keyed guard in the app enforces it.
  *  - **No decision about a write.** Whether one is due, safe or already
  *    reflected is the app's, from a fresh read made just before it.
  *  - **No token store, no refresh, no OAuth.** The credential is a Personal

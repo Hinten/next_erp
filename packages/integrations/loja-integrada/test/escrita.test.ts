@@ -842,7 +842,7 @@ describe('enviarEscritaLi — the observer', () => {
 
   it('⚠️ an observer that throws rejects even a write that LANDED — the documented exception', async () => {
     // No generic catch may swallow it (rule 6), so a write client's observer
-    // must be total: the app's write engine is to pin that of its own.
+    // must be total: the app pins that of its own (its logger, over every write outcome).
     const doObservador = new RangeError('observador quebrado');
     const f = ok();
     const { c } = cliente(f, {

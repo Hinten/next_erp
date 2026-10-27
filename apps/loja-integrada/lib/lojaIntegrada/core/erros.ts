@@ -93,6 +93,28 @@ export class LiCredencialAlteradaError extends LiAppError {
 }
 
 /**
+ * The credential PIN of a write run (`core/contextoEscrita.ts`): the stored
+ * credential is no longer the one the run's deciding read used — a token saved,
+ * renewed or re-saved since. The write client refuses BEFORE any request, so
+ * nothing was sent: a write and its confirming read are made with the deciding
+ * read's credential or not at all, and a token swapped between two contas can
+ * never write onto the other store's order of the same numero.
+ *
+ * Transient: the next attempt decides afresh, from a fresh read with the new
+ * token. Not {@link LiCredencialAlteradaError}, the credential panel's lost race.
+ */
+export class LiCredencialTrocadaError extends LiAppError {
+  constructor(integracaoId: string) {
+    super(
+      `A credencial da conta da Loja Integrada ${integracaoId} mudou depois da leitura que ` +
+        'decidiu a escrita. Nada foi enviado; a próxima tentativa decide de novo.',
+      integracaoId,
+    );
+    this.name = 'LiCredencialTrocadaError';
+  }
+}
+
+/**
  * Loja Integrada refused the stored token (HTTP 401/403) and the conta is
  * parked: its flows stop until a valid token is saved.
  */

@@ -127,10 +127,16 @@ export interface ContextoDeps {
 
 /**
  * A credential usable for a request right now: present, parseable, not parked.
+ * Shared with the WRITE context (`core/contextoEscrita.ts`), which reuses this
+ * loader's refusals in this loader's order; this module never imports that one,
+ * so no read route's closure can reach the write factory.
  *
  * @throws {LiCredencialAusenteError | LiCredencialInvalidaError | LiContaParadaError}
  */
-async function credencialUtilizavel(db: Firestore, integracaoId: string): Promise<CredencialLida> {
+export async function credencialUtilizavel(
+  db: Firestore,
+  integracaoId: string,
+): Promise<CredencialLida> {
   const lida = await lerCredencial(db, integracaoId);
   if (lida === null) throw new LiCredencialAusenteError(integracaoId);
   const parada = lida.credencial.reconexaoPendente;

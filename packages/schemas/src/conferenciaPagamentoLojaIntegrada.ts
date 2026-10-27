@@ -19,8 +19,8 @@ import {
  * situação must be a paid one; a reprint or a generic label outside it needs an acknowledged risk.
  *
  * ONE copy for every surface (#1369), written for both ends of master plan step 15:
- * `apps/loja-integrada`'s `GET …/pedidos/[pedidoId]/pagamento` route is to build its answer with
- * these, and `apps/web`'s gates to parse it and decide from it.
+ * `apps/loja-integrada`'s `GET …/pedidos/[pedidoId]/pagamento` route builds its answer with these,
+ * and `apps/web`'s gates parse it and decide from it.
  *
  * Pure and total: no clock, no network, no Firestore; a malformed value answers `null` or
  * `desconhecido`, never an exception.
@@ -212,8 +212,8 @@ export function contaIdDoPedidoLi(integracaoPedidoOuterRef: unknown): string | n
  * `` `lojaIntegrada${contaId}-${numero}` ``, whose sha256 (lowercase hex) IS that id — or `null`
  * when no imported pedido can carry these values. The one home of that string (master plan step
  * 15): the order importer's pedido id (`idPedidoLi` in `apps/loja-integrada`) is its digest, and
- * the web's identity check hashes it to recognise an imported pedido, as the paid re-check route
- * is to.
+ * the web's identity check hashes it to recognise an imported pedido, and so does the paid re-check
+ * route (through `idPedidoLi`).
  *
  * - `contaId` must be a usable document id (the `integracao` doc id, never a store id).
  * - `numero` goes through `inteiroPositivoCanonicoLi`: a positive safe integer or its canonical

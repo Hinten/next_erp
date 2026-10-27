@@ -26,10 +26,42 @@
  *
  * ⚠️ A run's budget signal is checked by the package only after the wait, so a
  * budgeted run can overshoot its budget by at most one interval.
+ *
+ * ## The writes pacer is spent elsewhere
+ *
+ * The WRITE context (`core/contextoEscrita.ts`) builds {@link ritmoDeEscritaLi}:
+ * its write client's getter does NOT wait — the write engine (`core/escrita.ts`)
+ * spends the interval itself, where {@link RITMO_ESCRITA_LI_MS} says — and its
+ * read client (the situação-history read) waits one interval per request, as
+ * above.
  */
 
 /** The interval before every Loja Integrada read made through a context, in ms. */
 export const RITMO_LEITURA_LI_MS = 2_000;
+
+/**
+ * The WRITES pacer's interval, in ms: 2 000 per call ON AVERAGE (master plan
+ * §4.23, step 7), owned by the write engine (`core/escrita.ts`), which spends it
+ * where it buys the most:
+ *
+ *  - TWO intervals before a GET that decides a write, and two before the
+ *    read-back of a write that landed (≈ 4 s: the read-after-write delay);
+ *  - ONE before any other GET (the situação-history read, a confirming read
+ *    that decides nothing) — the history read's own client waits it;
+ *  - NONE before a write: it follows the GET that decided it at once, after
+ *    only the credential re-read, so the window in which someone else can
+ *    change the order between the two is as short as it can be.
+ *
+ * A posting is GET, PUT, read-back, history: 4 calls, 4 + 0 + 4 + 2 = 10 s of
+ * waits, ≥ 4 × 2 s. So N calls on the writes queue wait at least N × the
+ * interval in total — at most 30 calls a minute, its sweep included (it runs
+ * inside the queue's single dispatch slot). With the reads queue, the poller
+ * and the inline reads sweep at 30 each, the theoretical worst per store is
+ * 120 a minute against Loja Integrada's 100; reaching it needs a read backlog
+ * and a write backlog on one store in the same minute, and a 429 loses nothing
+ * in any flow (the write either never landed, or its read-back is contained).
+ */
+export const RITMO_ESCRITA_LI_MS = 2_000;
 
 export interface RitmoLi {
   /** How long to wait before each call, in ms. */
@@ -41,4 +73,9 @@ export interface RitmoLi {
 /** The reads pacer, bound to the entry point's sleep. */
 export function ritmoDeLeituraLi(esperar: (ms: number) => Promise<void>): RitmoLi {
   return { intervaloMs: RITMO_LEITURA_LI_MS, esperar };
+}
+
+/** The writes pacer, bound to the entry point's sleep (the write context builds it). */
+export function ritmoDeEscritaLi(esperar: (ms: number) => Promise<void>): RitmoLi {
+  return { intervaloMs: RITMO_ESCRITA_LI_MS, esperar };
 }

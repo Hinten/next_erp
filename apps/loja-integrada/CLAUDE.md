@@ -14,6 +14,9 @@ Master plan: `.master_plans/loja-integrada/loja-integrada-marketplace-integratio
   never with a raw `fetch` here. No write to the platform before the cutover (D4).
 - Step 15 (label routing and the paid re-check): the second route family,
   `pedidos/[pedidoId]/…` (below).
+- Step 7 (the status write-back, in stacked PRs): the write engine and its write context
+  (`core/escrita.ts`, `core/contextoEscrita.ts`; "Write engine" below). No flow runs on it
+  yet, and every write valve is off until the window.
 
 ## Routes (`/api/marketplace/loja-integrada/conta/[id]…`)
 
@@ -277,7 +280,8 @@ verdicts, the live/mirror split) is `packages/schemas/src/conferenciaPagamentoLo
 - `lerValvula(fluxo, ambiente)` is THE first statement of a write flow and
   `registrarValvulaLi` the second. The environment is a PARAMETER: nothing under
   `lib/lojaIntegrada` names the process environment (`estrutura.test.ts`); the entry point
-  (a route, a step-3 function) passes it. No write flow exists before step 7.
+  (a route, a step-3 function) passes it. The write engine's `iniciarEscritaLi` makes both
+  the first two statements of every write run (below).
 - The read switch `LOJA_INTEGRADA_CHAMADAS` (D17): only the exact `on` lets this code call
   Loja Integrada. Both credential `PUT`s check it right after the id, before the body is
   read: otherwise 503 `LI_CHAMADAS_DESLIGADAS` and one `chamada-bloqueada` line, with zero
@@ -286,6 +290,80 @@ verdicts, the live/mirror split) is `packages/schemas/src/conferenciaPagamentoLo
   (locally and in staging too) until the window sets it.
 - The names live in the root `.env.example` (blank) and as comment rows in
   `apphosting.yaml`, never `env:` rows; `valvulas.test.ts` pins both.
+
+## Write engine (step 7)
+
+- **One module sends a write: `core/escrita.ts`.** It owns PLAN step 7's ten write-engine
+  requirements (its header maps each one); a flow decides WHAT to write, never how.
+  `estrutura.test.ts` keys the chokepoint on full paths in non-test source: only
+  `core/contextoEscrita.ts` builds the package's write client, only `core/escrita.ts` names a
+  write operation or a write-client method (an alias, a method reference or a comment counts),
+  the client's type is named in those two only, nothing names the package's request core
+  (`executarLi`), and no source imports a package subpath or reaches the package's files by a
+  relative path. Tests and `testing/**` are exempt — safe only because nothing in the app but a
+  test imports `testing/` (checked app-wide, `functions/` and `app/` included). Never "just
+  call" a write operation from a flow.
+- **The valve first.** `iniciarEscritaLi(fluxo, ambiente, …)` = `lerValvula`, then the
+  run-start line; `off` (unset, blank, a typo) is `desligado` and no motor can be built from
+  it (`criarMotorEscritaLi` accepts only a start it opened, and takes it: one start, one motor,
+  one run). The engine takes NO Firestore handle; a run whose target decision is not `on`
+  (dry-run, outside the canary, no canary) logs one `diff` line per field and its result
+  carries no write.
+- **The write context, `core/contextoEscrita.ts`,** refuses in the read loader's order (switch
+  FIRST, before any read; conta; inactive; credential) and reuses `contexto.ts`'s credential
+  read. Its own file so no App Hosting route's closure reaches the write factory: both step-15
+  routes are walked and refused it, with no exemption. Two clients, each with its own inline
+  observer: the WRITE client's getter only re-reads the credential (the engine paces) and runs
+  the check the engine armed for the write it is about to send; the read client (the
+  situação history) waits one interval per request.
+- **The credential pin.** The engine pins the ref its first deciding read used; from then on
+  both getters refuse a different stored ref with ZERO requests (`LiCredencialTrocadaError`,
+  transient). The ref carries the save's stamp, so even the same token saved again is
+  refused. A park still throws `LiContaParadaError` first.
+- **Every write has its own deciding read** (`lerBaseLi(motor, alvo, leitura)`, with the
+  reader its kind's `LEITURA_PREVIA_LI` row names: two pacer intervals, the order detail, the
+  pin, the restore line). A deciding read decides at most ONE write attempt, a write refuses a
+  base its kind's reader did not read, and a read-back is another type, never a base. **No
+  write follows one that landed or MAY have landed** in the same run: a write closes the run
+  before it is sent (two started together send one), and only a failure that PROVES nothing
+  landed reopens it — refused before sending, or answered 3xx/4xx other than 429. A 2xx (a 202
+  too), a 5xx, a 429, a timeout, a cut connection or an unclassified error keeps it closed, and
+  `escreverLi` throws a `TypeError`.
+- **The restore line** (`evento: 'restauracao'`, INFO): the read's token-scrubbed text
+  through `corpoDeRestauracaoLi` (`redacao.ts`: the estrutural keep-list walk, NO 2 KB cut;
+  `null` for a catalogue, configuration or webhook path, a non-2xx, a non-JSON body, over 1 MiB
+  or deeper than 256). Capped at 200 KB on the EXACT line (`linhaSerializadaLi`, UTF-8,
+  newline excluded): over the cap or `null` ⇒ no line and NO write (`sem-restauracao`),
+  never a truncated snapshot.
+- **The serialiser.** A structured value reaches a line only through `serializarValorLi`
+  (`log.ts`): JSON for a JSON value, a marker (`<ciclo>`, `<bigint>`, `<ausente>`, `<fundo>`
+  past depth 32, `<nao-serializavel>`) otherwise, no getter ever called, no `catch`. The
+  default sink writes `linhaSerializadaLi` + `\n`.
+- **The pacer** (`RITMO_ESCRITA_LI_MS`, `ritmo.ts`): two intervals before a deciding read and
+  before a read-back, one before the history read and a confirming read, NONE between a
+  deciding read and its write. No write starts later than `PRAZO_ULTIMA_ESCRITA_MS` (260 s)
+  after the task's dispatch began (`PrazoDeEscritaEsgotadoLiError`, nothing sent), checked
+  before the write AND again inside the write client's credential re-read, after it — the
+  package awaits that re-read outside its own deadline. Reads are never held to it.
+- **Read-backs and the history read are contained** for the listed classes only
+  (`CLASSES_CONTIDAS_LI`: the HTTP family, schema, network/timeout, paging, and the
+  credential refusals incl. the pin): they come back `verificado: false` / `lida: false`
+  with the error. `LiConfigError`, gRPC and anything else are rethrown; the `LiError` base
+  is never tested. Both read only the target of the write that LANDED (the read-back also
+  only its kind), with the pinned credential; the history read takes ONE page
+  (`MAX_PAGINAS_HISTORICO_CONFERENCIA_LI`), so a longer history comes back unverified,
+  never as a read that outlives the task. A confirming read needs a pinned credential. The
+  PERMITTED throws after a landed write are listed in `escrita.ts`'s header, each safe only
+  because every attempt re-derives from a fresh read.
+- **`deepEqual` has ONE home:** `core/igualdadeJsonLi.ts`, a leaf that imports nothing (the
+  sanitizer's closure admits it; `estrutura.test.ts` pins that it stays a leaf). It folds key
+  order only. `fixtures/piiScan.ts` and the engine call it; a wider fold is named in its
+  caller and gets its own inventory row.
+- **The unit kill-switch.** `vitest.setup.ts` (the unit config's `setupFiles`) makes a
+  `fetch` to any non-local host throw; `vitest.setup.test.ts` proves it, against `.invalid`
+  hosts only (a real host there would be reached the day the switch broke), and refuses any
+  other host named in its own source. Engine tests hand the write context a stub `fetch` and a
+  recording sleep, and stub the global `fetch` to throw in a file-level `beforeEach`.
 
 ## Notification pipeline (step 3)
 
