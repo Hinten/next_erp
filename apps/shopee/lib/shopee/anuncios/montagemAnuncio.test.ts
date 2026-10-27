@@ -35,6 +35,7 @@ import {
   preOrderParaPublicar,
   quantidadeParaPublicarShopee,
   sizeChartInfoParaPublicar,
+  vinculoDecideKitNativo,
 } from './montagemAnuncio';
 import { MOTIVO_TABELA_MEDIDAS_OMITIDA } from './tabelaMedidasPublicacao';
 
@@ -893,6 +894,53 @@ describe('kitNativoDoAnuncio', () => {
     expect(kitNativoDoAnuncio(null, { ehKitVirtual: false })).toBe(false);
     expect(kitNativoDoAnuncio(null, {})).toBe(false);
   });
+
+  // #1911 (P1, D3): um RASCUNHO é uma primeira publicação — a Shopee nunca
+  // respondeu por ele, então quem decide a pergunta do kit é o PRODUTO.
+  it('⚠️ PAR (#1911): um vínculo RASCUNHO cai no produto — ehKitVirtual recusa, sem ele segue', () => {
+    expect(kitNativoDoAnuncio({ ehRascunho: true, kitNativo: null }, { ehKitVirtual: true })).toBe(
+      true,
+    );
+    expect(kitNativoDoAnuncio({ ehRascunho: true }, { ehKitVirtual: true })).toBe(true);
+    expect(kitNativoDoAnuncio({ ehRascunho: true, kitNativo: false }, { ehKitVirtual: true })).toBe(
+      true,
+    );
+    expect(kitNativoDoAnuncio({ ehRascunho: true, kitNativo: null }, { ehKitVirtual: false })).toBe(
+      false,
+    );
+    expect(kitNativoDoAnuncio({ ehRascunho: true }, {})).toBe(false);
+  });
+
+  it('⛔ QUASE-PAR (#1911): ehRascunho false, AUSENTE ou só parecido ("true", 1) — o vínculo segue a autoridade', () => {
+    for (const vinculo of [
+      { ehRascunho: false, kitNativo: null },
+      { kitNativo: null },
+      { ehRascunho: 'true', kitNativo: null },
+      { ehRascunho: 1, kitNativo: false },
+    ]) {
+      expect(kitNativoDoAnuncio(vinculo, { ehKitVirtual: true }), JSON.stringify(vinculo)).toBe(
+        false,
+      );
+    }
+    // E um vínculo VIVO que é kit nativo continua recusando, num produto comum.
+    expect(
+      kitNativoDoAnuncio({ ehRascunho: false, kitNativo: true }, { ehKitVirtual: false }),
+    ).toBe(true);
+  });
+});
+
+describe('vinculoDecideKitNativo (#1911)', () => {
+  it('⚠️ PAR: um vínculo que não é rascunho decide; um rascunho e a AUSÊNCIA de vínculo não', () => {
+    expect(vinculoDecideKitNativo({ ehRascunho: false })).toBe(true);
+    expect(vinculoDecideKitNativo({ ehRascunho: true })).toBe(false);
+    expect(vinculoDecideKitNativo(null)).toBe(false);
+  });
+
+  it('⛔ QUASE-PAR: a chave ausente (projeção anterior ao #1911) e um "true" de texto deixam o vínculo decidir', () => {
+    expect(vinculoDecideKitNativo({})).toBe(true);
+    expect(vinculoDecideKitNativo({ ehRascunho: 'true' })).toBe(true);
+    expect(vinculoDecideKitNativo({ ehRascunho: null })).toBe(true);
+  });
 });
 
 describe('montarAnuncio — o apagão do catálogo legado de kits', () => {
@@ -982,6 +1030,58 @@ describe('montarAnuncio — o apagão do catálogo legado de kits', () => {
     expect(motivos(comum.problemas)).not.toContain('produto-e-kit');
   });
 
+  /** Um RASCUNHO (#1911) como `linkListagemLido` o projeta: sem item_id, sem leitura da Shopee. */
+  const RASCUNHO = link({ item_id: null, estadoAnuncio: null, kitNativo: null, ehRascunho: true });
+
+  it('⚠️ PAR (#1911, defesa em profundidade): um RASCUNHO num produto kit-virtual É recusado como produto-e-kit, com a frase do defeito do ERP', () => {
+    // O despacho recusa esse par antes (`rascunho-em-kit-virtual`); um chamador
+    // que o contornou não pode mandar o kit como anúncio COMUM por `add_item`.
+    const montado = montarAnuncio(
+      args({
+        produto: kitDoErp({ ehKitVirtual: true }),
+        link: RASCUNHO,
+        ownDisponivel: 100,
+        disponivelByProdutoId: DISPONIVEL_DOS_COMPONENTES,
+      }),
+    );
+
+    const recusa = montado.problemas.find(
+      (p) => p.motivo === MOTIVO_PUBLICACAO_BLOQUEADA.produtoEKit,
+    );
+    expect(recusa?.mensagem).toContain('defeito do ERP');
+  });
+
+  it('⛔ QUASE-PAR (#1911): o MESMO rascunho num produto COMUM (ehKitVirtual false) publica sem produto-e-kit', () => {
+    for (const p of [kitDoErp(), produto()]) {
+      const montado = montarAnuncio(
+        args({
+          produto: p,
+          link: RASCUNHO,
+          ownDisponivel: 100,
+          disponivelByProdutoId: DISPONIVEL_DOS_COMPONENTES,
+        }),
+      );
+      expect(motivos(montado.problemas)).not.toContain('produto-e-kit');
+    }
+  });
+
+  it('⛔ QUASE-PAR (#1911): sem item_id mas SEM ehRascunho (um vínculo CORROMPIDO — o item_id 0 dobrado para null) num kit-virtual NÃO recusa — quem decide é o sinal do documento cru, nunca o item_id projetado', () => {
+    for (const corrompido of [
+      link({ item_id: null, kitNativo: false, ehRascunho: false }),
+      link({ item_id: null, kitNativo: false }),
+    ]) {
+      const montado = montarAnuncio(
+        args({
+          produto: kitDoErp({ ehKitVirtual: true }),
+          link: corrompido,
+          ownDisponivel: 100,
+          disponivelByProdutoId: DISPONIVEL_DOS_COMPONENTES,
+        }),
+      );
+      expect(motivos(montado.problemas)).not.toContain('produto-e-kit');
+    }
+  });
+
   it('⚠️ os DOIS produtores de produto-e-kit chamam O MESMO predicado (M-30)', () => {
     const pasta = fileURLToPath(new URL('.', import.meta.url));
     const mapeador = readFileSync(`${pasta}montagemAnuncio.ts`, { encoding: 'utf8' });
@@ -992,6 +1092,15 @@ describe('montarAnuncio — o apagão do catálogo legado de kits', () => {
     expect(publicador).not.toContain('function kitNativoDoAnuncio');
     expect(publicador).toContain('kitNativoDoAnuncio,');
     expect(publicador).toContain('kitNativoDoAnuncio(link, produto)');
+
+    // #1911: o RÓTULO do `campo` segue o MESMO braço que o predicado tomou —
+    // uma chamada ao helper exportado, nunca uma segunda grafia do ramo.
+    expect(mapeador.match(/export function vinculoDecideKitNativo\(/g)).toHaveLength(1);
+    expect(publicador).not.toContain('function vinculoDecideKitNativo');
+    expect(publicador).toContain(
+      "campo: vinculoDecideKitNativo(link) ? 'kitNativo' : 'ehKitVirtual'",
+    );
+    expect(publicador).not.toContain("link !== null ? 'kitNativo'");
 
     // E nenhum dos dois volta a decidir a recusa pelo flag do ERP.
     for (const fonte of [mapeador, publicador]) {

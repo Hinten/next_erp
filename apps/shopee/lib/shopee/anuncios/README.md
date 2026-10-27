@@ -182,7 +182,8 @@ listings. All `ehKit` does here is send the component-derived quantity. What
 decided by `kitNativoDoAnuncio` in `montagemAnuncio.ts`: on a republish the
 stored link's `kitNativo` — what Shopee itself reported about the live listing
 (`tag.kit`) — and on a first publish the produto's `ehKitVirtual`, the ERP's own
-statement that the marketplace resolves the composition. `false`, `null` and an
+statement that the marketplace resolves the composition. A DRAFT link takes the
+first-publish arm (#1911 — see **A draft is never live** below). `false`, `null` and an
 absent key all publish: a native kit's link carries the LITERAL `true` from the
 link write that follows `add_kit_item` on (`../kits/vinculosKit.ts`), and no
 native kit existed in this catalogue before step 19 created the first ones, so
@@ -206,6 +207,57 @@ exception (OP-27, PR #1869): `lerVinculosDaConta` matches the conta by
 (`integracao/<id>`) is now visible to publish, for a non-kit produto too — it
 republishes onto that listing where step 11 created a second one. The pick's
 ORDER did not change; the `item_id` lookups still compare exactly.
+
+### A draft is never live (#1911, P1, D3)
+
+A **draft** is a `prodshopee` document the ERP intends to publish and Shopee
+never answered for: `ehRascunhoShopee` in `@delfrance/schemas`
+(`shopeeLinkLeitura.ts`) — `item_id` null or ABSENT, and not `kitNativo: true`.
+It is THE one predicate; no reader here tests `item_id == null` on its own
+(#1369). ⚠️ Two near-misses are NOT drafts and keep their old reading: a CORRUPT
+id (`item_id: 0`, `'123'` — neither vivo nor draft, a recorded residual) and an
+item-less `kitNativo: true` link (a native-kit residue, the dispatcher's X).
+
+**A draft is reachable only by a named `linkDocId`.** Before #1911 every reader
+that picks a link on its own counted it as a listing, so a draft whose doc id
+sorted first won the lexical pick over the LIVE listing: an unnamed publish sent
+`add_item` (a second listing) instead of updating the live one, and a bulk pause
+answered `pulado` for a produto whose listing was selling. Now:
+
+- **The dispatcher** (`../kits/armaDePublicacao.ts`) classes it **R**, outside
+  O ∪ RO, so the unnamed pick never sees it. An unnamed publish whose conta holds
+  ONLY drafts refuses `rascunho-nao-nomeado` rather than handing step 11 `null`
+  (`resolverLinkPorProduto` would then pick the draft lexically); a named draft
+  on an `ehKitVirtualEfetivo` produto refuses `rascunho-em-kit-virtual`. Depth:
+  `../kits/README.md`.
+- **The tiered resolver** (`resolverLinkVivoPorProduto`, `linkAnuncio.ts`, for
+  re-verify and pause) puts drafts in a fourth tier, last; a drafts-only produto
+  still resolves (pause `sem-item-id`, re-verify 409), never a 404.
+- **The stock and price planners** (`../estoque/planoEstoque.ts`,
+  `../precos/planoPreco.ts`) drop drafts: no row beside a live link, `sem-link`
+  for a drafts-only produto that reaches them (the denorm usually keeps it out
+  of discovery already).
+- **Step 11 itself, as defence in depth.** `linkListagemLido` stamps
+  `LinkListagemLido.ehRascunho` from the RAW document — never from the projected
+  `item_id`, which is already folded (`0` reads `null`) and would pass a corrupt
+  link for a draft. `kitNativoDoAnuncio` then sends a draft to the FIRST-PUBLISH
+  arm (`ehKitVirtual`): Shopee never answered for it, so nothing on it is a
+  reading of a listing. A caller that bypassed the dispatcher with a draft on a
+  kit-virtual produto therefore hears `produto-e-kit` ("defeito do ERP",
+  `campo: 'ehKitVirtual'`) instead of sending the kit out as an ordinary
+  `add_item`. `vinculoDecideKitNativo` is the one branch both producers read, so
+  the `campo` label follows the arm the predicate took.
+
+Unchanged on purpose: `anuncioShopeeVivo` and the `integracoesComProduto` denorm
+(they already exclude drafts); `resolverLinkPorProduto` (the dispatcher hands it
+the id it chose); every `item_id`-keyed lookup (a draft has no `item_id` to
+match); the kit component reads (`ehKitNativoAtivo` needs an `item_id`); the web
+readers (#1911's web PRs). Publishing a NAMED draft is step 11's first publish,
+as before — it is the only way a draft is ever published. The proof is
+`publicarShopee.test.ts`'s #1911 block: an unnamed publish beside a draft that
+sorts first sends exactly ONE `update_item`, for the live item, zero `add_item`,
+and leaves the draft byte-unchanged. No write, no schema shape, no index, no
+ruleset regeneration.
 
 ### The update sequence: full lists, and `item_status` is never sent
 

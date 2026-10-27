@@ -15,12 +15,18 @@
  * - **X** — every other native-kit link (`kitNativo === true`): removed or
  *   superseded. (A native link with no addressable `item_id` lands here too; L9
  *   leaves none behind, and it is never published to.)
- * - **O** — live ORDINARY listings: `kitNativo !== true`, not `removido`, not
- *   superseded.
+ * - **R** — DRAFTS (#1911, D3): `ehRascunhoShopee` (`@delfrance/schemas`, the
+ *   ONE predicate — `item_id` null or absent, `kitNativo !== true`), whatever
+ *   `estadoAnuncio` says. A draft is a listing the ERP INTENDS to create, so it
+ *   is never live: reachable ONLY by a named `linkDocId`, never picked by a rule
+ *   that chooses on its own. ⚠️ A CORRUPT id (`item_id: 0`, `'123'`) is not a
+ *   draft and stays in O/RO, exactly as on main (a recorded residual).
+ * - **O** — live ORDINARY listings: `kitNativo !== true`, not a draft, not
+ *   `removido`, not superseded.
  * - **RO** — removed ordinary listings that were NOT superseded.
  * - **SO** — superseded ordinary listings, removed or not (L10-R5): a converted
  *   listing Lucas later deleted is removed AND superseded, and it stays SO, so
- *   publish skips it like every superseded link. O, RO and SO partition the
+ *   publish skips it like every superseded link. R, O, RO and SO partition the
  *   ordinary links.
  *
  * ## The rules, first match wins
@@ -30,8 +36,9 @@
  *   without this rule they would reach rule (5).
  * - **(1) `converterEmKit`** (L8): `ehKit !== true` ⇒ `converter-sem-kit`. A named
  *   link: absent from the conta ⇒ `null` (the 404, below); in O ⇒ `kit-converter`
- *   on it; in SO ⇒ `vinculo-substituido`; N, X or RO ⇒
- *   `converter-sem-anuncio-comum`. Unnamed: O non-empty ⇒ `kit-converter`
+ *   on it; in SO ⇒ `vinculo-substituido`; N, X, R or RO ⇒
+ *   `converter-sem-anuncio-comum` (a draft has no listing to convert).
+ *   Unnamed: O non-empty ⇒ `kit-converter`
  *   on step 11's lexically-first pick over O (two live ordinary listings are NOT
  *   refused, L10(3)); else exactly one N ⇒ `ja-e-kit-nativo` (the re-run of a
  *   finished conversion); 2+ N ⇒ `vinculos-ambiguos`; else
@@ -44,7 +51,12 @@
  *   kit that is the retry of a delete that did not take), else
  *   `vinculo-substituido` (superseded) or the kit `listagem-removida`. An
  *   ordinary link: SO ⇒ `vinculo-substituido`; else the item arm on it (a
- *   removed one answers step 11's `listagem-removida`, as on main).
+ *   removed one answers step 11's `listagem-removida`, as on main). A DRAFT
+ *   (R): `ehKitVirtual === true` with `ehKit !== true` ⇒ `kit-virtual-sem-kit`;
+ *   `ehKitVirtualEfetivo` ⇒ `rascunho-em-kit-virtual` (the produto publishes as
+ *   a native kit, and an ordinary draft does not apply to it — a named LIVE
+ *   ordinary listing of the same produto still reaches the item arm, as above);
+ *   else the item arm on the draft — the ONLY way a draft is ever published.
  * - **(3)** exactly one N ⇒ `kit-atualizar` on it; 2+ N ⇒ `vinculos-ambiguos`
  *   naming them (native ambiguity refuses, L10(3)).
  * - **(4)** O non-empty ⇒ the item arm on **step 11's pick, in step 11's
@@ -56,14 +68,20 @@
  *   ⚠️ That conta read is not main's: it folds both stored conta encodings
  *   (`lerVinculosDaConta`), so a link in the legacy bare encoding is a candidate
  *   here where main never saw it (OP-27). The ORDER is unchanged; the candidate
- *   SET grew.
+ *   SET grew. ⚠️ And since #1911 it SHRANK by every draft: O ∪ RO holds none,
+ *   so a draft that sorts first never wins the lexical pick over a live
+ *   listing (E1 H2) — main's resolver over the same read WOULD pick it, which
+ *   is why the arm carries the id (below).
  * - **(5) no live link**: `ehKitVirtual === true` with `ehKit !== true` ⇒
  *   `kit-virtual-sem-kit`; `ehKitVirtualEfetivo` ⇒ `kit-criar` (a FIRST create;
- *   every removed/superseded link is left as it is, L0); else X ⇒ the kit
- *   `listagem-removida` naming the newest removed one; RO ⇒ the item arm on
- *   `escolherLink(RO)` (⇒ `listagem-removida`, as on main); SO ⇒
- *   `vinculo-substituido`; nothing at all ⇒ the item arm with `linkDocId: null`
- *   (a first ordinary publish).
+ *   every removed/superseded link — and every draft — is left as it is, L0);
+ *   else X ⇒ the kit `listagem-removida` naming the newest removed one; RO ⇒
+ *   the item arm on `escolherLink(RO)` (⇒ `listagem-removida`, as on main); SO
+ *   ⇒ `vinculo-substituido`; R non-empty ⇒ `rascunho-nao-nomeado` (`acao`
+ *   `republicar` the one draft, `escolher-vinculo` among 2+): a draft is never
+ *   picked on its own, and handing the item arm `null` here would let step
+ *   11's lexical resolver pick it; nothing at all ⇒ the item arm with
+ *   `linkDocId: null` (a first ordinary publish).
  *
  * After the arm: `--principal`, `--recriar` or `--converter-em-kit` sent to the
  * ITEM arm ⇒ `opcao-de-kit-em-anuncio-comum` (`principal` on `kit-atualizar` is
@@ -84,18 +102,20 @@
  *
  * ⚠️ The item arm ALWAYS carries the link id explicitly while the conta has a
  * link: step 11's own resolver stays lexical over EVERY link of the conta (a
- * removed native kit and a superseded listing included), so handing it `null`
- * would let it re-pick a listing this function skipped (M141, M186).
+ * removed native kit, a superseded listing and a draft included), so handing it
+ * `null` would let it re-pick a listing this function skipped (M141, M186) —
+ * for a draft, publish a never-created listing as if it were the live one.
  *
  * ⚠️ Every refusal is spelled through `MOTIVO_PUBLICACAO_BLOQUEADA` and never as
  * a quoted slug: `anuncios/errosPublicacao.test.ts` (O7) reads this file as the
- * producer of the five dispatcher-only members.
+ * producer of the seven dispatcher-only members (step 19's five, #1911's two).
  */
 import {
   ESTADO_ANUNCIO_SHOPEE,
   TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE,
   ehKitNativoAtivo,
   ehKitVirtualEfetivo,
+  ehRascunhoShopee,
   ehVinculoSubstituido,
   type AcaoSugeridaPublicacaoShopee,
 } from '@delfrance/schemas';
@@ -141,7 +161,7 @@ export type ResultadoDoDespacho =
   | { readonly ok: false; readonly problemas: readonly ProblemaDeBloqueio[] };
 
 /* -------------------------------------------------------------------------- */
-/*                         The five dispatcher refusals                        */
+/*                        The seven dispatcher refusals                        */
 /* -------------------------------------------------------------------------- */
 
 /**
@@ -209,6 +229,49 @@ function problemaOpcaoDeKitEmAnuncioComum(
   );
 }
 
+/**
+ * #1911 (D3): a named DRAFT on a produto that publishes as a native kit. No CLI
+ * flag in the sentence, so no `acao`: the way out is discarding the draft (the
+ * kit itself publishes unnamed, `kit-criar`).
+ */
+function problemaRascunhoEmKitVirtual(produtoId: string, linkDocId: string): ProblemaDeBloqueio {
+  return bloqueio(
+    'linkDocId',
+    MOTIVO_PUBLICACAO_BLOQUEADA.rascunhoEmKitVirtual,
+    `o produto ${produtoId} é kit virtual: ele é publicado como kit nativo da Shopee e o ` +
+      `rascunho ${linkDocId} não se aplica — descarte o rascunho e publique o kit`,
+  );
+}
+
+/**
+ * #1911 (D3): an unnamed publish whose conta holds ONLY drafts of the produto.
+ * The sentence names `--link`, so `acao` names the draft(s): `republicar` the
+ * one, `escolher-vinculo` among 2+ — in the order the sentence lists them.
+ */
+function problemaRascunhoNaoNomeado(rascunhos: readonly VinculoDaConta[]): ProblemaDeBloqueio {
+  const ids = rascunhos.map((v) => v.id);
+  const [unico, segundo] = ids;
+  if (unico === undefined) {
+    throw new Error('[shopee/kits] problemaRascunhoNaoNomeado chamada sem rascunho');
+  }
+  if (segundo === undefined) {
+    return bloqueio(
+      'linkDocId',
+      MOTIVO_PUBLICACAO_BLOQUEADA.rascunhoNaoNomeado,
+      `este produto só tem um rascunho nesta conta (${unico}) — publique-o pelo nome ` +
+        `(--link ${unico})`,
+      { tipo: TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.republicar, linkDocId: unico },
+    );
+  }
+  return bloqueio(
+    'linkDocId',
+    MOTIVO_PUBLICACAO_BLOQUEADA.rascunhoNaoNomeado,
+    `este produto só tem rascunhos nesta conta (${ids.join(', ')}) — publique um deles pelo ` +
+      'nome (--link <id>)',
+    { tipo: TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.escolherVinculo, linkDocIds: ids },
+  );
+}
+
 /* -------------------------------------------------------------------------- */
 /*                              Small readers                                 */
 /* -------------------------------------------------------------------------- */
@@ -238,6 +301,8 @@ function modificadoEm(raw: Record<string, unknown>): number {
 interface Particao {
   readonly n: readonly VinculoDaConta[];
   readonly x: readonly VinculoDaConta[];
+  /** #1911 (D3): the drafts — `ehRascunhoShopee`. Never live, never picked unnamed. */
+  readonly r: readonly VinculoDaConta[];
   readonly o: readonly VinculoDaConta[];
   readonly ro: readonly VinculoDaConta[];
   readonly so: readonly VinculoDaConta[];
@@ -245,9 +310,15 @@ interface Particao {
 
 type Classe = keyof Particao;
 
-/** Which of N / X / O / RO / SO one link belongs to — see the module header. */
+/**
+ * Which of N / X / R / O / RO / SO one link belongs to — see the module header.
+ * The draft test runs AFTER the native-kit one (an item-less native link is X,
+ * and the shared predicate says the same) and BEFORE the superseded and removed
+ * ones: a draft has no listing, so neither reading can apply to it.
+ */
 function classeDe(v: VinculoDaConta): Classe {
   if (v.raw.kitNativo === true) return ehKitNativoAtivo(v.raw) ? 'n' : 'x';
+  if (ehRascunhoShopee(v.raw)) return 'r';
   if (ehVinculoSubstituido(v.raw)) return 'so';
   return ehRemovido(v.raw) ? 'ro' : 'o';
 }
@@ -257,6 +328,7 @@ function particionar(vinculos: readonly VinculoDaConta[]): Particao {
   return {
     n: ordenados.filter((v) => classeDe(v) === 'n'),
     x: ordenados.filter((v) => classeDe(v) === 'x'),
+    r: ordenados.filter((v) => classeDe(v) === 'r'),
     o: ordenados.filter((v) => classeDe(v) === 'o'),
     ro: ordenados.filter((v) => classeDe(v) === 'ro'),
     so: ordenados.filter((v) => classeDe(v) === 'so'),
@@ -346,6 +418,7 @@ function escolherArma(
           return aRecusa(substituido(v));
         case 'n':
         case 'x':
+        case 'r':
         case 'ro':
           return aRecusa(problemaConverterSemAnuncioComum());
       }
@@ -380,6 +453,17 @@ function escolherArma(
           : aRecusa(nativoMorto(v));
       case 'so':
         return aRecusa(substituido(v));
+      case 'r':
+        // A named DRAFT — the only way one is ever published. The produto's kit
+        // flags decide first: a kit-virtual produto publishes as a native kit,
+        // which an ordinary draft can never become (#1911, D3).
+        if (produto.ehKitVirtual === true && produto.ehKit !== true) {
+          return aRecusa(problemaKitVirtualSemKit(produto.id));
+        }
+        if (ehKitVirtualEfetivo(produto)) {
+          return aRecusa(problemaRascunhoEmKitVirtual(produto.id, v.id));
+        }
+        return aArma({ arma: 'item', linkDocId: v.id });
       case 'o':
       case 'ro':
         return aArma({ arma: 'item', linkDocId: v.id });
@@ -409,6 +493,9 @@ function escolherArma(
   }
   const [superado] = p.so;
   if (superado !== undefined) return aRecusa(substituido(superado));
+  // Only drafts left: never picked unnamed — and never `linkDocId: null`, which
+  // would let step 11's lexical resolver pick one (#1911, D3).
+  if (p.r.length > 0) return aRecusa(problemaRascunhoNaoNomeado(p.r));
   return aArma({ arma: 'item', linkDocId: null });
 }
 

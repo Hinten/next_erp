@@ -64,10 +64,11 @@
  *    listing that exists on Shopee rather than decide which one to publish:
  *    re-verify (and so the `reverificar:anuncio` CLI), `anuncio-status` and
  *    pause. With no `linkDocId` it prefers an ACTIVE native kit
- *    (`ehKitNativoAtivo`), then any link that is neither removed nor superseded,
- *    then the rest — `escolherLink` within each tier — so "pause this produto"
- *    pauses the kit that sells, never the converted listing whose doc id merely
- *    sorts first.
+ *    (`ehKitNativoAtivo`), then any link that is neither removed nor superseded
+ *    nor a DRAFT, then the remaining non-drafts, and a DRAFT only last —
+ *    `escolherLink` within each tier — so "pause this produto" pauses the kit
+ *    that sells, never the converted listing (or the never-created draft, #1911
+ *    D3) whose doc id merely sorts first.
  *
  * A named `linkDocId` narrows BOTH to that one document before any ordering, so
  * an operator can always address the old listing explicitly — which is exactly
@@ -104,6 +105,7 @@ import {
   ESTADO_ANUNCIO_SHOPEE,
   SHOPEE_MODEL_STATUS,
   ehKitNativoAtivo,
+  ehRascunhoShopee,
   ehVinculoSubstituido,
   estadoAnuncioShopeeSchema,
   toOuterRef,
@@ -352,15 +354,33 @@ function ehVinculoVivo(raw: Record<string, unknown>): boolean {
  * Same signature, same no-`where` read, same conta filter and the same
  * `linkDocId` narrowing (a named id wins outright, whatever its state).
  *
- * With no `linkDocId`, three tiers, `escolherLink` (lexically first, one log
+ * With no `linkDocId`, four tiers, `escolherLink` (lexically first, one log
  * line) WITHIN each:
  *
  *  1. an ACTIVE native kit — `ehKitNativoAtivo` (`@delfrance/schemas`, the ONE
  *     predicate): `kitNativo === true`, not removed, not superseded, an
  *     addressable `item_id`;
- *  2. any other link that is neither `removido` nor superseded;
- *  3. the rest — so a produto whose every listing is gone still resolves, and
- *     the caller reports that listing's state instead of a 404.
+ *  2. any other link that is neither `removido` nor superseded, and is NOT a
+ *     draft;
+ *  3. the rest of the NON-drafts — so a produto whose every listing is gone
+ *     still resolves, and the caller reports that listing's state instead of a
+ *     404;
+ *  4. a DRAFT, last of all (#1911 D3) — so a produto that holds ONLY drafts
+ *     still resolves and the caller answers what it always answered for a link
+ *     with no listing (pause `sem-item-id`, re-verify `ignorado-sem-item-id`),
+ *     never a 404.
+ *
+ * ⚠️ **A draft is never live.** "Draft" is `ehRascunhoShopee`
+ * (`@delfrance/schemas`, the ONE predicate — never a local `item_id == null`
+ * test, #1369): `item_id` null or ABSENT, and not `kitNativo: true`. Before
+ * #1911 a draft sat in tier 2 — it is neither removed nor superseded — so a
+ * draft whose doc id sorted first won the lexical pick over the live listing,
+ * and the web's bulk pause answered `pulado` for a produto whose listing was
+ * selling. ⚠️ NEAR-MISSES that are NOT drafts and keep their tier: a corrupt
+ * `item_id: 0` / `'123'` link (neither vivo nor draft — a recorded residual),
+ * and a `kitNativo: true` link with no `item_id` (a native-kit residue). A
+ * NAMED `linkDocId` still narrows to the draft itself, which is how an
+ * operator addresses one.
  *
  * ⚠️ Callers: `reverificarAnuncio.ts` (the route and the `reverificar:anuncio`
  * CLI) and `pausarAnuncio.ts` (`anuncio-status`). NEVER the publish path: the
@@ -384,10 +404,16 @@ export async function resolverLinkVivoPorProduto(
   const nativosAtivos = candidatos.filter((l) => ehKitNativoAtivo(l.raw));
   if (nativosAtivos.length > 0) return comoLinkDeAnuncio(escolherLink(nativosAtivos, contexto));
 
-  const vivos = candidatos.filter((l) => ehVinculoVivo(l.raw));
+  // Tiers 2 and 3 read the NON-drafts only; a draft waits for tier 4.
+  const listagens = candidatos.filter((l) => !ehRascunhoShopee(l.raw));
+
+  const vivos = listagens.filter((l) => ehVinculoVivo(l.raw));
   if (vivos.length > 0) return comoLinkDeAnuncio(escolherLink(vivos, contexto));
 
-  return comoLinkDeAnuncio(escolherLink(candidatos, contexto));
+  if (listagens.length > 0) return comoLinkDeAnuncio(escolherLink(listagens, contexto));
+
+  const rascunhos = candidatos.filter((l) => ehRascunhoShopee(l.raw));
+  return comoLinkDeAnuncio(escolherLink(rascunhos, contexto));
 }
 
 function tierIndexDeLink(raw: Record<string, unknown>): readonly number[] {

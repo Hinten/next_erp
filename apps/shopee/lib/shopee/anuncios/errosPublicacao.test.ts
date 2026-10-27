@@ -39,7 +39,7 @@ const MAX_MENSAGEM_PROBLEMA = constantes.MAX_MENSAGEM_PROBLEMA;
 /**
  * As DEZENOVE recusas de kit nativo do núcleo (passo 19, PR 5) — chaves de
  * `MOTIVO_PUBLICACAO_BLOQUEADA`, todas produzidas em `kits/planoKit.ts`. (As
- * cinco só do despachante entraram com o PR 7, e `recriacao-sem-diferenca` com o
+ * sete só do despachante entraram com o PR 7 e o #1911, e `recriacao-sem-diferenca` com o
  * PR 6, cada uma junto do seu produtor.)
  */
 const CHAVES_DO_NUCLEO_DO_KIT = [
@@ -69,8 +69,10 @@ const RECUSAS_DE_KIT_DO_NUCLEO: readonly string[] = CHAVES_DO_NUCLEO_DO_KIT.map(
 );
 
 /**
- * As CINCO recusas que só o DESPACHO da publicação produz (passo 19, PR 7) —
- * chaves de `MOTIVO_PUBLICACAO_BLOQUEADA`, todas em `kits/armaDePublicacao.ts`.
+ * As SETE recusas que só o DESPACHO da publicação produz — chaves de
+ * `MOTIVO_PUBLICACAO_BLOQUEADA`, todas em `kits/armaDePublicacao.ts`: as cinco do
+ * passo 19 (PR 7) e as duas de RASCUNHO do #1911 (P1, D3: um rascunho nunca é
+ * vivo — só um `--link` nomeado o publica).
  */
 const CHAVES_DO_DESPACHO = [
   'kitVirtualSemKit',
@@ -78,6 +80,8 @@ const CHAVES_DO_DESPACHO = [
   'converterSemKit',
   'jaEKitNativo',
   'opcaoDeKitEmAnuncioComum',
+  'rascunhoEmKitVirtual',
+  'rascunhoNaoNomeado',
 ] as const satisfies readonly (keyof typeof MOTIVO_PUBLICACAO_BLOQUEADA)[];
 
 function problemaDeBloqueio(
@@ -111,7 +115,7 @@ function recusado(
 }
 
 describe('MOTIVO_PUBLICACAO_BLOQUEADA', () => {
-  it('1 — o vocabulário bloqueado é EXATAMENTE estes quarenta e sete slugs', () => {
+  it('1 — o vocabulário bloqueado é EXATAMENTE estes quarenta e nove slugs', () => {
     // A PERSISTED vocabulary (`falhaPublicacao.motivo` e
     // `falhaPublicacao.problemas[].motivo`). Esta lista É o pino: o
     // `as const satisfies` garante o TIPO dos valores, mas não impede que um
@@ -125,7 +129,9 @@ describe('MOTIVO_PUBLICACAO_BLOQUEADA', () => {
     // ⚠️ O passo 19 (PR 5, o núcleo do kit) acrescentou DEZENOVE recusas de kit
     // nativo — todas decididas LENDO, antes de qualquer escrita na Shopee —, o
     // PR 6 a rede de segurança da recriação (`recriacao-sem-diferenca`) e o PR 7
-    // as CINCO recusas do despacho da publicação.
+    // as CINCO recusas do despacho da publicação. O #1911 (P1) acrescentou as
+    // DUAS de rascunho do mesmo despacho (`rascunho-em-kit-virtual`,
+    // `rascunho-nao-nomeado`).
     expect([...Object.values(MOTIVO_PUBLICACAO_BLOQUEADA)].sort()).toEqual([
       'atributo-obrigatorio',
       'busca-de-kit-incompleta',
@@ -163,6 +169,8 @@ describe('MOTIVO_PUBLICACAO_BLOQUEADA', () => {
       'principal-obrigatorio',
       'produto-e-filho',
       'produto-e-kit',
+      'rascunho-em-kit-virtual',
+      'rascunho-nao-nomeado',
       'recriacao-sem-diferenca',
       'sem-descricao',
       'sem-dimensoes',
@@ -175,7 +183,7 @@ describe('MOTIVO_PUBLICACAO_BLOQUEADA', () => {
       'vinculo-substituido',
       'vinculos-ambiguos',
     ]);
-    expect(Object.values(MOTIVO_PUBLICACAO_BLOQUEADA)).toHaveLength(47);
+    expect(Object.values(MOTIVO_PUBLICACAO_BLOQUEADA)).toHaveLength(49);
   });
 
   it('2 — ⛔ NEAR-MISS: `imposto-incompleto` NÃO é membro, e `estoque-abaixo-do-minimo` É', () => {
@@ -238,7 +246,7 @@ describe('MOTIVO_PROBLEMA_PUBLICACAO', () => {
         'desconhecido',
       ].sort(),
     );
-    expect(Object.values(MOTIVO_PROBLEMA_PUBLICACAO)).toHaveLength(59);
+    expect(Object.values(MOTIVO_PROBLEMA_PUBLICACAO)).toHaveLength(61);
   });
 
   it('6 — ⛔ NEAR-MISS: os doze slugs de WIRE não pertencem ao vocabulário BLOQUEADO', () => {
@@ -249,7 +257,7 @@ describe('MOTIVO_PROBLEMA_PUBLICACAO', () => {
     // ⚠️ Os dois da tabela de medidas idem: um `avisoObrigatoria` é um AVISO
     // (nunca um bloqueio), e o BLOQUEADO só cresceu pelas 19 recusas de kit do
     // passo 19 (pela rede de segurança da recriação, PR 6, e pelas cinco do
-    // despacho, PR 7) — 47 membros.
+    // despacho, PR 7) e pelas duas de rascunho do despacho (#1911) — 49 membros.
     // ⚠️ E os sete de KIT (passo 19) também: cada um é uma frase da Shopee
     // classificada DEPOIS de uma escrita, nunca algo lido no produto.
     const bloqueados: readonly string[] = Object.values(MOTIVO_PUBLICACAO_BLOQUEADA);
@@ -269,7 +277,7 @@ describe('MOTIVO_PROBLEMA_PUBLICACAO', () => {
     ]) {
       expect(bloqueados, slug).not.toContain(slug);
     }
-    expect(bloqueados).toHaveLength(47);
+    expect(bloqueados).toHaveLength(49);
   });
 
   it('6b — ⛔ NEAR-MISS: as 19 recusas de KIT do núcleo SÃO bloqueio, e as 7 de wire do kit NÃO', () => {
@@ -716,9 +724,9 @@ function produzPelaConstante(fonte: string, chave: string): boolean {
 }
 
 describe('O7 — todo membro do vocabulário tem um produtor fora de errosPublicacao.ts', () => {
-  it('os 47 motivos de bloqueio: cada um é escrito por ALGUM outro arquivo', () => {
+  it('os 49 motivos de bloqueio: cada um é escrito por ALGUM outro arquivo', () => {
     // O arquivo que DECLARA está fora do universo, senão a asserção seria
-    // vácua: a própria união de tipos soletra os 47 slugs.
+    // vácua: a própria união de tipos soletra os 49 slugs.
     const fontes = fontesQuePodemProduzir(['errosPublicacao.ts']);
     // Uma âncora: se a leitura da pasta falhar, o teste passa sozinho.
     expect(fontes.size).toBeGreaterThan(10);
@@ -734,10 +742,10 @@ describe('O7 — todo membro do vocabulário tem um produtor fora de errosPublic
     }
 
     expect(orfaos, 'motivos declarados que NINGUÉM produz').toEqual([]);
-    expect(Object.keys(MOTIVO_PUBLICACAO_BLOQUEADA)).toHaveLength(47);
+    expect(Object.keys(MOTIVO_PUBLICACAO_BLOQUEADA)).toHaveLength(49);
   });
 
-  it('as 5 recusas do DESPACHO (PR 7): o produtor é `kits/armaDePublicacao.ts`, pela CONSTANTE', () => {
+  it('as 7 recusas do DESPACHO (PR 7 + #1911): o produtor é `kits/armaDePublicacao.ts`, pela CONSTANTE', () => {
     // Elas entram JUNTO do despacho (lente 8): um membro sem produtor no PR
     // dele seria uma promessa que nada cumpre. A âncora é o ARQUIVO — uma menção
     // em outro módulo de `kits/` manteria o membro "produzido" depois de o

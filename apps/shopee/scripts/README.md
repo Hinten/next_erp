@@ -1087,8 +1087,9 @@ path, never by a payload. `1` when the produto is not found, or the named
 `--link` belongs to another conta. `1` on a conta with no `shop_id`.
 ⚠️ **`1` in BOTH modes for every refusal thrown before a plan exists**: the
 dispatcher's (`produto-e-filho`, `vinculos-ambiguos`, `vinculo-substituido`,
-`kit-virtual-sem-kit`, the converter's, `opcao-de-kit-em-anuncio-comum` — all
-with ZERO Shopee calls) and a kit CREATE arm's phase A (`kit-sem-sku`,
+`kit-virtual-sem-kit`, the converter's, `opcao-de-kit-em-anuncio-comum`, and
+#1911's two draft refusals `rascunho-em-kit-virtual` and `rascunho-nao-nomeado`
+— all with ZERO Shopee calls) and a kit CREATE arm's phase A (`kit-sem-sku`,
 `kit-sku-repetido`, `sem-peso`, … — Firestore only, before the first Shopee
 read). The rule is "was a plan reached", not "how bad is the refusal".
 ⚠️ Under `--live` a refusal is not caught either, and the transcript adds `Nada
@@ -1189,6 +1190,15 @@ call; the reasoning is `lib/shopee/kits/README.md`.
   keeps receiving stock (step 12) and price (step 13) until you delete it in
   Seller Centre and run the `reverificar:anuncio` command the summary prints
   (§18).
+
+**Drafts (#1911).** A link with no `item_id` (and no `kitNativo: true`) is a DRAFT, never a row of the
+table above: an unnamed publish never picks one, so the live listing wins
+whatever the doc ids. When the conta holds nothing but drafts, an ordinary
+produto refuses `rascunho-nao-nomeado` (exit `1`; name one with `--link`), while
+a kit-virtual produto still answers `kit-criar` and leaves the draft alone.
+`--link <draft>` is the only way a draft is ever published — a first create —
+and on a produto that publishes as a native kit it refuses
+`rascunho-em-kit-virtual`. Depth: `lib/shopee/kits/README.md`.
 
 **The kit dry run** prints `## O que um kit nativo faria (produto …, arma …)`:
 the target link and its live `item_status`, `item_sku`, the variations and
@@ -2010,15 +2020,15 @@ the run, saying so.
 pnpm --filter @delfrance/shopee-app reverificar:anuncio --integracao <integracaoId> --produto <produtoId> --link <linkDocId>
 ```
 
-| flag                   | meaning                                                                                                                                                                                     |
-| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--integracao <id>`    | **required** — the integração DOCUMENT id                                                                                                                                                   |
-| `--produto <id>`       | **required** — the produto that owns the `prodshopee` link                                                                                                                                  |
-| `--link <docId>`       | the link to re-verify. Without it the LIVE listing is picked (`resolverLinkVivoPorProduto`): the active native kit, else a listing neither removed nor superseded, else the lexically first |
-| `--dry-run` / `--live` | ⚠️ **REFUSED**, with the reason: the command only READS Shopee and writes the reading                                                                                                       |
-| `--project <id>`       | sets `FIREBASE_PROJECT_ID` before the admin app opens                                                                                                                                       |
-| `--json`               | the same REDACTED summary as one parseable document on stdout; the preamble and every library line go to stderr                                                                             |
-| `--help`, `-h`         | prints the usage and exits `0`, ahead of every validation and before the first `await import(`                                                                                              |
+| flag                   | meaning                                                                                                                                                                                                                                                                                               |
+| ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--integracao <id>`    | **required** — the integração DOCUMENT id                                                                                                                                                                                                                                                             |
+| `--produto <id>`       | **required** — the produto that owns the `prodshopee` link                                                                                                                                                                                                                                            |
+| `--link <docId>`       | the link to re-verify. Without it the LIVE listing is picked (`resolverLinkVivoPorProduto`): the active native kit, else a non-draft listing neither removed nor superseded, else the remaining non-drafts, and a draft (`item_id` null or absent, #1911) only last — the lexically first within each |
+| `--dry-run` / `--live` | ⚠️ **REFUSED**, with the reason: the command only READS Shopee and writes the reading                                                                                                                                                                                                                 |
+| `--project <id>`       | sets `FIREBASE_PROJECT_ID` before the admin app opens                                                                                                                                                                                                                                                 |
+| `--json`               | the same REDACTED summary as one parseable document on stdout; the preamble and every library line go to stderr                                                                                                                                                                                       |
+| `--help`, `-h`         | prints the usage and exits `0`, ahead of every validation and before the first `await import(`                                                                                                                                                                                                        |
 
 **What it calls.** Shopee: `get_item_base_info`, `get_model_list` (only when the
 listing has models) and the best-effort `get_item_violation_info` — reads only;
