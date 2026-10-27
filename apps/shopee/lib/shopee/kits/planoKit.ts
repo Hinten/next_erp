@@ -59,11 +59,13 @@ import {
   TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE,
   chaveReceitaKitErp,
   componentesShopeeDoKit,
+  descreverFaixaShopee,
   ehKitNativoAtivo,
   ehVinculoSubstituido,
   escolherPrincipalDoKit,
   mesmoEnderecoDeComponente,
   problemasDeEstruturaDoKit,
+  textoNaFaixaShopee,
   type AcaoSugeridaPublicacaoShopee,
   type EnderecoShopeeDoComponente,
   type LinhaComponenteKitShopee,
@@ -86,6 +88,7 @@ import {
 import type { FotosResolvidas } from '../anuncios/planoPublicacao';
 import { estadoDoAnuncio } from '../anuncios/statusAnuncio';
 import { skuDoItemShopee } from '../produtos/resolveProduto';
+import { nomeDeTierShopee } from '../produtos/taxonomiaShopeeCore';
 import { faixa, type FaixaDto } from '../taxonomia/limites';
 import { CAP_FOTOS_KIT, STATUS_BUSCA_KIT } from './constantesKit';
 import type { AchadoKitPorSku } from './localizarKitPorSku';
@@ -956,10 +959,39 @@ export function decidirKitNovo(
 
 /** The ONE tier of the kit: its name, one option per child, and the content rows it raised. */
 interface TierDoKit {
+  /** The name AS SENT — the sentinel, or the grupo's name through `nomeDeTierShopee`. */
   readonly nome: string;
   /** Option text per child, in tier order (= `ctx.filhos` order). */
   readonly opcoes: readonly string[];
   readonly problemas: readonly ProblemaDeBloqueio[];
+}
+
+/**
+ * The refusal of ONE tier name or option text the kit AUTHORS, or `null` when
+ * it may be sent (#1911 batch-A, the item arm's `recusaDoNome` shape):
+ * `enviado` is the text AS SENT (already folded), and the shared
+ * `textoNaFaixaShopee` measures exactly that string — blank ⇒ `emBranco`, a
+ * served band it misses ⇒ the length sentence. Never truncated. `banda: null`
+ * (not served, or the band absent) checks no length.
+ */
+function recusaDeTextoDoTier(
+  enviado: string,
+  banda: FaixaDto | null,
+  campo: string,
+  emBranco: string,
+  rotulo: string,
+): ProblemaDeBloqueio | null {
+  const veredito = textoNaFaixaShopee(enviado, banda);
+  if (veredito.estado === 'ok') return null;
+  return bloqueio(
+    campo,
+    MOTIVO_PUBLICACAO_BLOQUEADA.opcoesDemais,
+    veredito.estado === 'ausente'
+      ? emBranco
+      : `${rotulo} tem ${String(veredito.comprimento)} caracteres, fora da faixa da categoria ` +
+          `do componente principal (${descreverFaixaShopee(banda)}) — nunca truncado; encurte o ` +
+          'nome em Variações',
+  );
 }
 
 /**
@@ -969,6 +1001,20 @@ interface TierDoKit {
  * [i]` = its position. A child of a multi-child kit with no variante cannot be
  * placed (`variacao-sem-vinculo`), and two children whose variantes are the same
  * text once trimmed would claim one option (`combinacao-duplicada`).
+ *
+ * #1911 batch-A — every non-sentinel path AUTHORS its tier name from the grupo,
+ * so the name is SENT through `nomeDeTierShopee` (the ONE tier-name fold,
+ * `produtos/taxonomiaShopeeCore.ts`: the ends trimmed, case and inner spaces
+ * kept) and a grupo whose name is blank after it (absent, `''`, whitespace)
+ * refuses `opcoes-demais` — the item arm's motivo for the same miss — before
+ * `add_kit_item`, which is ONE non-idempotent call. When `get_kit_item_limit`
+ * is SERVED, that name and every authored option are measured AS SENT against
+ * `tier_variation_name_length_limit` / `tier_variation_option_length_limit` (the
+ * KIT bands, never `get_item_limit`'s). The sentinel pair is ours and is never
+ * checked. With no grupo at all every child already refuses
+ * `variacao-sem-vinculo`, so no name row is added there. The kit never COMPARES
+ * its tier name — a republish resends the LIVE one verbatim
+ * (`republicarKit.ts`) — so this fold decides what is sent, never a sameness.
  */
 function planejarTier(ctx: ContextoKit): TierDoKit {
   const n = ctx.filhos.length;
@@ -980,7 +1026,23 @@ function planejarTier(ctx: ContextoKit): TierDoKit {
   ) {
     return { nome: NOME_TIER_KIT_UNICO, opcoes: [OPCAO_TIER_KIT_UNICO], problemas: [] };
   }
+  const servidos = limitesServidos(ctx);
+  const bandaDoNome = servidos === null ? null : faixa(servidos.tier_variation_name_length_limit);
+  const bandaDaOpcao =
+    servidos === null ? null : faixa(servidos.tier_variation_option_length_limit);
   const problemas: ProblemaDeBloqueio[] = [];
+  const nome = nomeDeTierShopee(ctx.grupo?.nome);
+  if (ctx.grupo !== null) {
+    const recusa = recusaDeTextoDoTier(
+      nome,
+      bandaDoNome,
+      'tier_variation_list',
+      `o grupo ${ctx.grupo.id} não tem nome, e o tier do kit leva o nome do grupo — dê um ` +
+        'nome a ele em Variações',
+      `o nome do tier "${nome}" (o grupo ${ctx.grupo.id})`,
+    );
+    if (recusa !== null) problemas.push(recusa);
+  }
   const opcoes: string[] = [];
   const donoDaOpcao = new Map<string, string>();
   for (const filho of ctx.filhos) {
@@ -1009,10 +1071,22 @@ function planejarTier(ctx: ContextoKit): TierDoKit {
       );
     } else {
       donoDaOpcao.set(opcao, filho.produtoId);
+      // Measured once per option text (a duplicate is already refused above).
+      // `opcao` is never blank here — `opcaoDoTierKit` read it as absent above —
+      // so only the band can refuse; the blank sentence is the item arm's.
+      const recusa = recusaDeTextoDoTier(
+        opcao,
+        bandaDaOpcao,
+        `filhos.${filho.produtoId}`,
+        `a variante da variação ${filho.produtoId} no grupo ${ctx.grupo.id} não tem nome, e ` +
+          'uma opção do kit leva o nome da variante — dê um nome a ela em Variações',
+        `a opção "${opcao}" da variação ${filho.produtoId}`,
+      );
+      if (recusa !== null) problemas.push(recusa);
     }
     opcoes.push(opcao);
   }
-  return { nome: ctx.grupo?.nome ?? '', opcoes, problemas };
+  return { nome, opcoes, problemas };
 }
 
 /** The component band (`component_count_limit_of_single_model`), only when served. */

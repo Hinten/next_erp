@@ -64,6 +64,16 @@ after the photos are uploaded, and an uploaded image no listing references chang
 on Shopee, so that order is accepted. A dry run is steps 1–6 (`ensaiarKitShopee`): reads, the
 scan and the photo upload, never a write and never `add_kit_item`.
 
+**The tier's names (#1911 batch-A).** Outside the `'Kit'`/`'Padrão'` sentinel (ours, never
+checked), the tier name is the grupo's, SENT through `nomeDeTierShopee` (ends trimmed; case
+and inner spaces kept) — so a grupo with no name, a blank one, or one `prepararKit` could
+not read (never its doc id) refuses `opcoes-demais` in phase B, before the one
+non-idempotent `add_kit_item`. When `get_kit_item_limit` is served, that name and every
+option are measured AS SENT against the KIT bands `tier_variation_name_length_limit` /
+`tier_variation_option_length_limit` (`textoNaFaixaShopee`) and refused `opcoes-demais`,
+never truncated; a null band checks nothing. A republish resends the LIVE tier name and is
+not band-checked.
+
 **No transaction, anywhere in this folder.** Every write is idempotent on its own: an upsert
 at a deterministic id, a `create()` that falls back to a re-stamp, a `merge` of values just
 read. The transaction inventory greps the bare API name, so no `kits/*.ts` file may spell
