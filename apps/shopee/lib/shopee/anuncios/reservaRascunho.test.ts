@@ -16,12 +16,13 @@ import {
   PUBLICACAO_EM_CURSO_SHOPEE_TTL_MS,
 } from '@delfrance/schemas';
 
-import { FakeDb, asDb } from '../testing/fakeDb';
+import { FakeDb, asDb, grpc } from '../testing/fakeDb';
 import {
   ConflitoDeRascunhoShopeeError,
   TENTATIVAS_DA_TRAVA,
   conferirTravaAntesDoEnvio,
   liberarTravaShopee,
+  liberarTravaShopeeSemSubstituirErro,
   portaoDeEnvio,
   reivindicarRascunhoShopee,
   reservarRascunhoShopee,
@@ -544,6 +545,68 @@ describe('reservarRascunhoShopee — o segundo anúncio (D15, K1-4)', () => {
     ]);
     expect(doc(db, CAMINHO_IRMAO)?.publicacaoEmCurso).toBeNull();
   });
+
+  describe('(#2050) a liberação que FALHA nunca troca o erro que a reserva está devolvendo', () => {
+    it('o update da liberação falha com UNAVAILABLE (gRPC 14) ⇒ o 409 CONTA_JA_TEM_ANUNCIO ORIGINAL chega ao chamador; a nossa trava FICA (expira)', async () => {
+      const db = new FakeDb();
+      db.seed(CAMINHO, rascunho());
+      db.seed(CAMINHO_IRMAO, rascunho());
+      // Armed AFTER our lock lands — the scan runs right after it — so only the
+      // RELEASE's update fails.
+      const falhando = antesDaVarredura(db, () => {
+        db.falhasDeUpdate.set(CAMINHO, grpc(14, 'UNAVAILABLE'));
+        return Promise.resolve();
+      });
+
+      const err = await conflitoDe(reservarRascunhoShopee(asDb(falhando), ALVO, controles()));
+
+      expect(err.code).toBe(CODIGO_RASCUNHO_SHOPEE.contaJaTemAnuncio);
+      expect(err.vinculos).toEqual([{ linkDocId: IRMAO, itemId: null, rascunho: true }]);
+      // The lock document is exactly what the reservation wrote: nothing cleared.
+      const travaGravada = escritasEm(db)[0]?.publicacaoEmCurso;
+      expect(travaGravada).toMatchObject({ desde: AGORA });
+      expect(doc(db)?.publicacaoEmCurso).toEqual(travaGravada);
+      expect(escritasEm(db)).toHaveLength(1);
+      expect(avisos.some((a) => String(a[0]).includes('a liberação da trava falhou'))).toBe(true);
+    });
+
+    it('a LEITURA dos irmãos falha E a liberação falha ⇒ o erro da LEITURA (o primeiro) é o que sobe, por identidade', async () => {
+      const db = new FakeDb();
+      db.seed(CAMINHO, rascunho());
+      const daLeitura = grpc(4, 'DEADLINE_EXCEEDED');
+      const falhando = antesDaVarredura(db, () => {
+        db.falhasDeUpdate.set(CAMINHO, grpc(14, 'UNAVAILABLE'));
+        return Promise.reject(daLeitura);
+      });
+
+      const err = await reservarRascunhoShopee(asDb(falhando), ALVO, controles()).then(
+        () => null,
+        (e: unknown) => e,
+      );
+
+      expect(err).toBe(daLeitura);
+      expect(doc(db)?.publicacaoEmCurso).toMatchObject({ desde: AGORA });
+    });
+
+    it('⛔ quase-par: um erro NÃO-gRPC da liberação (um defeito) SOBE — ele é o erro lançado, nunca engolido', async () => {
+      for (const defeito of [new TypeError('defeito'), new Error('sem código')]) {
+        const db = new FakeDb();
+        db.seed(CAMINHO, rascunho());
+        db.seed(CAMINHO_IRMAO, rascunho());
+        const falhando = antesDaVarredura(db, () => {
+          db.falhasDeUpdate.set(CAMINHO, defeito);
+          return Promise.resolve();
+        });
+
+        const err = await reservarRascunhoShopee(asDb(falhando), ALVO, controles()).then(
+          () => null,
+          (e: unknown) => e,
+        );
+
+        expect(err, defeito.message).toBe(defeito);
+      }
+    });
+  });
 });
 
 /* -------------------------------------------------------------------------- */
@@ -872,6 +935,114 @@ describe('liberarTravaShopee', () => {
     db.falhasDeUpdate.set(CAMINHO, Object.assign(new Error('UNAVAILABLE'), { code: 14 }));
 
     await expect(liberarTravaShopee(asDb(db), r)).rejects.toMatchObject({ code: 14 });
+  });
+});
+
+describe('liberarTravaShopeeSemSubstituirErro — para quem JÁ está devolvendo um erro (#2050)', () => {
+  it('a liberação que dá certo é a de sempre: a trava null (com o carimbo, quando dado) num update só', async () => {
+    const db = new FakeDb();
+    const r = reservaDe();
+    db.seed(CAMINHO, rascunho({ publicacaoEmCurso: travaDa(r) }));
+
+    await liberarTravaShopeeSemSubstituirErro(asDb(db), r, { ultimaModificacao: AGORA });
+
+    expect(db.patches).toEqual([
+      { path: CAMINHO, patch: { ultimaModificacao: AGORA, publicacaoEmCurso: null } },
+    ]);
+    expect(r.fase).toBe('encerrada');
+    expect(avisos).toEqual([]);
+  });
+
+  it('um erro gRPC do Firestore (UNAVAILABLE, DEADLINE_EXCEEDED…) é ENGOLIDO: resolve, a trava e o documento intactos, UMA linha de log com ids e o código — nunca a mensagem nem o carimbo', async () => {
+    for (const codigo of [4, 14]) {
+      avisos = [];
+      const db = new FakeDb();
+      const r = reservaDe();
+      db.seed(CAMINHO, rascunho({ publicacaoEmCurso: travaDa(r) }));
+      const antes = structuredClone(doc(db));
+      db.falhasDeUpdate.set(CAMINHO, grpc(codigo, 'corpo-da-mensagem-do-sdk'));
+
+      await expect(
+        liberarTravaShopeeSemSubstituirErro(asDb(db), r, {
+          falhaPublicacao: {
+            em: AGORA,
+            etapa: 'add_item',
+            erro: 'error_param',
+            mensagem: 'carimbo-que-nao-pode-vazar',
+            problemas: [],
+          },
+        }),
+      ).resolves.toBeUndefined();
+
+      expect(doc(db), String(codigo)).toEqual(antes);
+      expect(db.writes).toEqual([]);
+      expect(r.fase).toBe('encerrada');
+      expect(avisos, String(codigo)).toHaveLength(1);
+      expect(avisos[0]?.[1]).toEqual({
+        produtoId: PRODUTO,
+        linkDocId: RASCUNHO,
+        codigoGrpc: codigo,
+      });
+      expect(JSON.stringify(avisos)).not.toContain('corpo-da-mensagem-do-sdk');
+      expect(JSON.stringify(avisos)).not.toContain('carimbo-que-nao-pode-vazar');
+    }
+  });
+
+  it('QUALQUER status gRPC é engolido, não só os transitórios — NOT_FOUND (5, o rascunho apagado entre a leitura e o update), PERMISSION_DENIED (7) e as bordas 1 e 16: a regra é "o Firestore falhou", nunca "pode dar certo depois"', async () => {
+    for (const codigo of [1, 5, 7, 16]) {
+      avisos = [];
+      const db = new FakeDb();
+      const r = reservaDe();
+      db.seed(CAMINHO, rascunho({ publicacaoEmCurso: travaDa(r) }));
+      const antes = structuredClone(doc(db));
+      db.falhasDeUpdate.set(CAMINHO, grpc(codigo, 'nao-transitorio'));
+
+      await expect(
+        liberarTravaShopeeSemSubstituirErro(asDb(db), r),
+        String(codigo),
+      ).resolves.toBeUndefined();
+
+      expect(doc(db), String(codigo)).toEqual(antes);
+      expect(db.writes).toEqual([]);
+      expect(avisos, String(codigo)).toHaveLength(1);
+      expect(avisos[0]?.[1], String(codigo)).toEqual({
+        produtoId: PRODUTO,
+        linkDocId: RASCUNHO,
+        codigoGrpc: codigo,
+      });
+    }
+  });
+
+  it('⛔ quase-pares: o que NÃO é um status gRPC SOBE, por identidade — um TypeError, um Error sem código, um código em STRING (FirebaseError), um código fora de 1..16', async () => {
+    for (const defeito of [
+      new TypeError('defeito'),
+      new Error('sem código'),
+      Object.assign(new Error('functions'), { code: 'functions/unavailable' }),
+      Object.assign(new Error('fora'), { code: 17 }),
+    ]) {
+      const db = new FakeDb();
+      const r = reservaDe();
+      db.seed(CAMINHO, rascunho({ publicacaoEmCurso: travaDa(r) }));
+      db.falhasDeUpdate.set(CAMINHO, defeito);
+
+      const err = await liberarTravaShopeeSemSubstituirErro(asDb(db), r).then(
+        () => null,
+        (e: unknown) => e,
+      );
+
+      expect(err, defeito.message).toBe(defeito);
+    }
+  });
+
+  it('a trava de OUTRA execução continua intocada (o guarda do token é o mesmo)', async () => {
+    const db = new FakeDb();
+    const alheia = travaAlheia(AGORA + 10);
+    db.seed(CAMINHO, rascunho({ publicacaoEmCurso: alheia }));
+
+    await liberarTravaShopeeSemSubstituirErro(asDb(db), reservaDe(), { ultimaModificacao: AGORA });
+
+    expect(doc(db)?.publicacaoEmCurso).toEqual(alheia);
+    expect(db.writes).toEqual([]);
   });
 });
 
