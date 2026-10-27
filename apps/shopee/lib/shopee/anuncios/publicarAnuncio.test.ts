@@ -39,7 +39,7 @@ import {
 
 import { ShopeeRefreshEmAndamentoError } from '../core/tokenStore';
 import { FIXTURE_SIZE_CHART_DETAIL_DOC, lerDetalheDeTabelaDeMedidas } from '../fixtures/wireCorpus';
-import { FakeDb, asDb } from '../testing/fakeDb';
+import { FakeDb, asDb, grpc } from '../testing/fakeDb';
 import { listarTabelasDaCategoria } from '../tabelaMedidas/listarTabelasMedidas';
 import { construirIndice } from '../taxonomia/categorias';
 import { __setShopeeTaxonomiaClockForTests, type ShopeeTaxonomiaCtx } from '../taxonomia/cache';
@@ -4319,6 +4319,199 @@ describe('publicarAnuncioShopee — o RASCUNHO sob a trava (#1911, D4/D15)', () 
 
       expect(contexto?.link?.marcaNaoEscolhida).toBe(esperado);
       expect(db.writes).toEqual([]);
+    });
+  });
+
+  describe('(#2050) uma liberação que FALHA nunca troca o erro que o operador vai ler', () => {
+    /**
+     * A db whose draft takes its LOCK (the first update of the document) and
+     * then rejects every later update of it with `erro` — the release. Counts
+     * the update ATTEMPTS, so "no second release" is observable. The double's
+     * own refs, wrapped; never a raw Firestore ref.
+     */
+    function comLiberacaoQueFalha(
+      db: FakeDb,
+      erro: Error,
+    ): { db: FakeDb; tentativas: () => number } {
+      let tentativas = 0;
+      const colecao = db.collection.bind(db);
+      const proxy = new Proxy(db, {
+        get(t, prop, r) {
+          if (prop !== 'collection') return Reflect.get(t, prop, r) as unknown;
+          return (colPath: string) => {
+            const col = colecao(colPath);
+            return new Proxy(col, {
+              get(ct, cp, cr) {
+                const original = Reflect.get(ct, cp, cr) as unknown;
+                if (cp !== 'doc') return original;
+                const construirRef = original as typeof ct.doc;
+                return (id?: string) => {
+                  const ref = construirRef(id);
+                  if (ref.path !== CAMINHO_RASCUNHO) return ref;
+                  return {
+                    ...ref,
+                    update: (
+                      patch: Record<string, unknown>,
+                      pre?: { lastUpdateTime?: unknown },
+                    ) => {
+                      tentativas += 1;
+                      return tentativas === 1 ? ref.update(patch, pre) : Promise.reject(erro);
+                    },
+                  };
+                };
+              },
+            });
+          };
+        },
+      });
+      return { db: proxy, tentativas: () => tentativas };
+    }
+
+    /** The lock the reservation wrote is STILL there, untouched, and nothing was stamped. */
+    function travaIntacta(db: FakeDb): void {
+      const gravada = escritasNoRascunho(db)[0]?.publicacaoEmCurso;
+      expect(gravada).toMatchObject({ desde: AGORA, expiraEm: EXPIRA });
+      expect(doRascunho(db)?.publicacaoEmCurso).toEqual(gravada);
+      expect(doRascunho(db)).not.toHaveProperty('falhaPublicacao');
+      expect(escritasNoRascunho(db)).toHaveLength(1);
+    }
+
+    it('a saída ANTES do envio — um plano BLOQUEADO — ⇒ o ShopeePublishBlockedError ORIGINAL sobe (não um erro do Firestore); a trava fica e expira', async () => {
+      const db = new FakeDb();
+      semearCatalogo(db, { pesoBrutoKg: null, pesoLiquidoKg: null });
+      semearRascunho(db);
+      const fake = clienteFake();
+      const f = comLiberacaoQueFalha(db, grpc(14, 'UNAVAILABLE'));
+
+      const err = await falhaDe(
+        publicarAnuncioShopee(depsDoRascunho(f.db, fake), entrada({ linkDocId: RASCUNHO })),
+      );
+
+      expect(err).toBeInstanceOf(ShopeePublishBlockedError);
+      expect((err as ShopeePublishBlockedError).problemas.length).toBeGreaterThan(0);
+      expect(fake.ops).not.toContain('add_item');
+      // ONE release attempt: the lock and the failed hand-back, nothing more.
+      expect(f.tentativas()).toBe(2);
+      travaIntacta(db);
+      expect(logInteiro()).toContain('a liberação da trava falhou');
+    });
+
+    it('a porta de envio (409 PUBLICACAO_EXPIRADA) também chega intacta ao chamador', async () => {
+      const db = new FakeDb();
+      semearCatalogo(db);
+      semearRascunho(db);
+      const fake = clienteFake({ addItem: () => ecoDeItem() });
+      const r = relogio();
+      const f = comLiberacaoQueFalha(db, grpc(4, 'DEADLINE_EXCEEDED'));
+
+      const err = await falhaDe(
+        publicarAnuncioShopee(
+          depsDoRascunho(
+            f.db,
+            fake,
+            aoVivo({ agora: r.agora }),
+            resolvedorQueAge(() => r.mover(EXPIRA - MARGEM_ENVIO_SHOPEE_MS)),
+          ),
+          entrada({ linkDocId: RASCUNHO }),
+        ),
+      );
+
+      expect(err).toBeInstanceOf(ConflitoDeRascunhoShopeeError);
+      expect((err as ConflitoDeRascunhoShopeeError).code).toBe(
+        CODIGO_RASCUNHO_SHOPEE.publicacaoExpirada,
+      );
+      expect(fake.ops).not.toContain('add_item');
+      travaIntacta(db);
+    });
+
+    it('o add_item RECUSADO (nao-criado) ⇒ o ShopeePublishRejectedError com os MESMOS problemas sobe; a trava e o documento intocados (o carimbo se perde com a liberação)', async () => {
+      const recusar = () =>
+        clienteFake({
+          addItem: () => {
+            throw erroApi('product.error_invalid_price');
+          },
+        });
+      // Control: the release succeeds — the 422 the operator would read.
+      const controle = new FakeDb();
+      semearCatalogo(controle);
+      semearRascunho(controle);
+      const esperado = await falhaDe(
+        publicarAnuncioShopee(
+          depsDoRascunho(controle, recusar()),
+          entrada({ linkDocId: RASCUNHO }),
+        ),
+      );
+      expect(esperado).toBeInstanceOf(ShopeePublishRejectedError);
+
+      const db = new FakeDb();
+      semearCatalogo(db);
+      semearRascunho(db);
+      const fake = recusar();
+      const f = comLiberacaoQueFalha(db, grpc(14, 'UNAVAILABLE'));
+
+      const err = await falhaDe(
+        publicarAnuncioShopee(depsDoRascunho(f.db, fake), entrada({ linkDocId: RASCUNHO })),
+      );
+
+      expect(err).toBeInstanceOf(ShopeePublishRejectedError);
+      const rejeitado = err as ShopeePublishRejectedError;
+      expect(rejeitado.shopeeCode).toBe('product.error_invalid_price');
+      expect(rejeitado.etapa).toBe('add_item');
+      expect(rejeitado.problemas).toEqual((esperado as ShopeePublishRejectedError).problemas);
+      expect(fake.ops.filter((o) => o === 'add_item')).toHaveLength(1);
+      expect(f.tentativas()).toBe(2);
+      travaIntacta(db);
+    });
+
+    it('⛔ quase-par: um erro NÃO-gRPC da liberação (um defeito) SOBE no lugar — nos dois caminhos, ele é o erro lançado', async () => {
+      for (const caso of ['bloqueado', 'nao-criado'] as const) {
+        const defeito = new TypeError(`defeito na liberação (${caso})`);
+        const db = new FakeDb();
+        semearCatalogo(db, caso === 'bloqueado' ? { pesoBrutoKg: null, pesoLiquidoKg: null } : {});
+        semearRascunho(db);
+        const fake = clienteFake({
+          addItem: () => {
+            throw erroApi('product.error_invalid_price');
+          },
+        });
+        const f = comLiberacaoQueFalha(db, defeito);
+
+        const err = await falhaDe(
+          publicarAnuncioShopee(depsDoRascunho(f.db, fake), entrada({ linkDocId: RASCUNHO })),
+        );
+
+        expect(err, caso).toBe(defeito);
+      }
+    });
+
+    it('SEM erro a proteger — o produto sumiu (contexto null, a rota 404) — a falha gRPC da liberação É a resposta, e NÃO há segunda liberação', async () => {
+      // Control: the release succeeds ⇒ the 404's `null`, the lock handed back.
+      const controle = new FakeDb();
+      semearRascunho(controle);
+      await expect(
+        publicarAnuncioShopee(
+          depsDoRascunho(controle, clienteFake()),
+          entrada({ linkDocId: RASCUNHO }),
+        ),
+      ).resolves.toBeNull();
+      expect(controle.store[CAMINHO_RASCUNHO]?.data.publicacaoEmCurso).toBeNull();
+
+      const db = new FakeDb();
+      semearRascunho(db);
+      const indisponivel = grpc(14, 'UNAVAILABLE');
+      const f = comLiberacaoQueFalha(db, indisponivel);
+
+      const err = await falhaDe(
+        publicarAnuncioShopee(
+          depsDoRascunho(f.db, clienteFake()),
+          entrada({ linkDocId: RASCUNHO }),
+        ),
+      );
+
+      expect(err).toBe(indisponivel);
+      // The lock, then ONE failed release — the catch saw `encerrada` and stayed out.
+      expect(f.tentativas()).toBe(2);
+      travaIntacta(db);
     });
   });
 });

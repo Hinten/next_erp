@@ -66,6 +66,9 @@
  *  5. **Release** ({@link liberarTravaShopee}) — token-guarded: the stored
  *     token must be OURS, else NOTHING is written (a foreign lock is never
  *     cleared, a winner is never overwritten — not even by a failure stamp).
+ *     A way out that is already REPORTING an error releases through
+ *     {@link liberarTravaShopeeSemSubstituirErro}, so a failed release never
+ *     replaces that error.
  *
  * ⚠️ **What happens to the lock on each way out** is the caller's half
  * (`publicarAnuncio.ts`), tracked on {@link ReservaDeRascunhoShopee.fase}:
@@ -111,7 +114,7 @@ import {
   produtoCollection,
   produtoShopeeLinkCollection,
 } from '@delfrance/data/admin/collections';
-import { isFailedPrecondition } from '@delfrance/data/admin/grpcErrors';
+import { isFailedPrecondition, isGrpcStatusError } from '@delfrance/data/admin/grpcErrors';
 
 import { aplicarLinkDaListagem } from '../produtos/links';
 import { localizarAnuncioIncerto } from './criacaoIncerta';
@@ -472,7 +475,9 @@ export async function reservarRascunhoShopee(
       // equally a failed read, all happen with NOTHING sent, and a lock left
       // behind would later read as an uncertain create that never happened.
       // (An adoption that landed closed the reservation: nothing to hand back.)
-      if (reserva.fase === 'travada') await liberarTravaShopee(db, reserva);
+      // The hand-back is best-effort: a Firestore failure of the RELEASE must
+      // not turn the answer the operator acts on into a 500.
+      if (reserva.fase === 'travada') await liberarTravaShopeeSemSubstituirErro(db, reserva);
       throw err;
     }
     return { tipo: 'travada', reserva };
@@ -917,10 +922,13 @@ export type DesfechoDaLiberacao =
  * Marks the reservation `encerrada` whatever happened: after this call the lock
  * is no longer this run's to touch.
  *
- * ⚠️ A Firestore error other than a lost precondition propagates (rule 6); a
- * third lost precondition does NOT — the lock simply expires into the
- * uncertainty reading, the safe direction, and a release must never replace
- * the error the run is already reporting.
+ * ⚠️ A Firestore error other than a lost precondition PROPAGATES (rule 6) —
+ * this function never decides whose error wins. A caller that is already
+ * reporting an error releases through
+ * {@link liberarTravaShopeeSemSubstituirErro}, which keeps that error; a caller
+ * with nothing to report (a run that ends without one) lets the release's own
+ * failure be the answer. A third lost precondition does NOT throw — the lock
+ * simply expires into the uncertainty reading, the safe direction.
  */
 export async function liberarTravaShopee(
   db: Firestore,
@@ -958,4 +966,45 @@ export async function liberarTravaShopee(
     linkDocId: reserva.linkDocId,
   });
   return 'contencao';
+}
+
+/**
+ * {@link liberarTravaShopee} for a way out that is ALREADY reporting an error,
+ * and rethrows it right after: the D15 refusal ({@link reservarRascunhoShopee}),
+ * `publicarAnuncioShopee`'s throw before any send, and an `add_item` Shopee
+ * refused for good (`nao-criado`, whose failure stamp rides `extra`). Same
+ * arguments, `extra` included.
+ *
+ * ⚠️ The rule: **a release never replaces the error the run is reporting.** The
+ * operator acts on that answer — the 409 naming the sibling, the blocked
+ * plan's 422, Shopee's refusal with the field to fix — and a Firestore failure
+ * of the hand-back (`UNAVAILABLE`, `DEADLINE_EXCEEDED`, …) changed nothing the
+ * operator can act on. So a gRPC-coded failure is logged once (ids and the
+ * code — never a message body, never the stamp) and swallowed. The lock then
+ * STAYS: it expires, serves its grace and reads `incerta` — the direction
+ * {@link liberarTravaShopee}'s own `contencao` answer already takes (refused or
+ * searched, never sent twice). For a `nao-criado` create the failure STAMP is
+ * lost with the release — the same accepted residual; the caller still throws
+ * Shopee's refusal.
+ *
+ * Narrowed with `isGrpcStatusError` (rule 6): the Admin SDK rejects with a
+ * plain `Error` carrying a numeric `code`, so neither `instanceof Error` nor
+ * `FirebaseError` is the class. Anything else — a `TypeError`, a bug —
+ * rethrows: a defect must surface, never hide behind the error it would
+ * otherwise have replaced.
+ */
+export async function liberarTravaShopeeSemSubstituirErro(
+  db: Firestore,
+  reserva: ReservaDeRascunhoShopee,
+  extra: Record<string, unknown> = {},
+): Promise<void> {
+  try {
+    await liberarTravaShopee(db, reserva, extra);
+  } catch (err) {
+    if (!isGrpcStatusError(err)) throw err;
+    console.warn(
+      '[shopee/anuncios] a liberação da trava falhou no Firestore; a trava fica e expira — o erro original segue',
+      { produtoId: reserva.produtoId, linkDocId: reserva.linkDocId, codigoGrpc: err.code },
+    );
+  }
 }
