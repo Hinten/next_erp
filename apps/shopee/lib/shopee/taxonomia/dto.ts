@@ -1,43 +1,27 @@
 /**
- * The shapes the Shopee taxonomy routes ANSWER with, and the projections that
- * build them from the package's already-parsed provider payloads.
+ * The PROJECTIONS behind the Shopee taxonomy routes: each builds a route's
+ * answer from the integration package's already-parsed provider payloads.
  *
- * ## camelCase mirrors of Shopee's own names — never a translation
+ * ⚠️ **The answer SHAPES are no longer declared here** (#1911, P2). They live in
+ * `@delfrance/schemas` (`taxonomiaShopeeDto.ts`), the one package both this app
+ * and `apps/web` reach, beside one ENVELOPE per route: each route builds its 200
+ * `satisfies z.input<…>` of its envelope and its test parses that 200 with the
+ * SAME schema object, so a browser reader has one declaration to import instead
+ * of a copy to keep. `apps/web/lib/shopee/wire.ts` still mirrors the categorias
+ * and limites answers by hand, with a comment saying the names match this file
+ * — the #1369 shape, two copies the compiler cannot compare — until #1911's web
+ * PR points it at these. The naming rule (camelCase mirrors of Shopee's
+ * own names, pt-BR only for an envelope noun) and the "plain `z.number()`,
+ * never `wireInt()`" rule moved WITH the shapes and are written down there —
+ * a step-11 publish still composes its payload from these numbers, so a
+ * translated key would leave the repo two vocabularies for one field.
  *
- * `categoryId`, `hasNextPage`, `daysToShipLimit`: every FIELD is Shopee's own
- * name in camelCase, and the invented keys (`isLeaf`, `pathFromRoot`,
- * `children`, `truncated`, `position`, `applied`, `unresolved`, `scope`) are
- * English too. Two are deliberately SHORTENED rather than mirrored: `name` and
- * `originalName` on `CategoriaResumoDto` carry `display_category_name` and
- * `original_category_name`, because the type already says which entity it is
- * and neither string is ever published. A brand name IS published, which is why
- * `MarcaDto` keeps `displayBrandName` / `originalBrandName` verbatim.
- *
- * pt-BR survives in exactly ONE position: the envelope noun each route invents
- * for its own collection (`raizes`, `no`, `atributos`, `marcas`, `limites`,
- * `recomendacoes`). Never inside a row — no field carrying a provider value is
- * translated. Messages and log lines are pt-BR everywhere.
- *
- * That is not a style preference. Step 11 composes Shopee PUBLISH payloads from
- * these numbers and step 21 mirrors this shape in `apps/web`, so a translated
- * key would leave the repo holding two vocabularies for one field — the #1369
- * drift, where a panel that called itself a "line-for-line mirror" of a resolver
- * had already drifted in two places while every test stayed green.
- *
- * ## Why these schemas are plain `z.number()` and not `wireInt()`
- *
- * They describe OUR OWN answers, not Shopee's. Every provider number reaching
- * them has already been through `@delfrance/integrations-shopee`'s wire schemas,
- * which are the tolerant ones (`wireInt()` / `wireNumber()`, so a quoted id
- * cannot cost the whole resource — #1087). A string arriving HERE would be our
- * own serialisation bug, and tolerating it would hide exactly what should be
- * loud. Same reasoning, and the same spelling, as `conta/status.ts` — and the
- * case `integration-response-numbers-tolerant.test.js` names in its rule 7.
- *
- * ⚠️ The schemas exist so each route's test can PARSE the body it just built:
- * a wrong key or a missing field fails there instead of at step 11.
+ * What stays here is what reads the package's provider types (`ShopeeAttribute`,
+ * `ShopeeMarca`, …), which `@delfrance/schemas` cannot import: the projections
+ * and the attribute walk's depth cap. The moved names are RE-EXPORTED below, so
+ * every in-app `./dto` import is exactly what it was — the step-18 move
+ * (`tabelaMedidas/dto.ts`) did the same.
  */
-import { z } from 'zod';
 import type {
   ShopeeAttribute,
   ShopeeAttributeValue,
@@ -45,33 +29,46 @@ import type {
   ShopeeMarca,
   ShopeeVariation,
 } from '@delfrance/integrations-shopee';
+import type {
+  AtributoDto,
+  AtributoInfoDto,
+  AtributoValorDto,
+  CategoriaNoDto,
+  CategoriaResumoDto,
+  MarcaDto,
+  VariacaoDto,
+} from '@delfrance/schemas';
 
 import { type ShopeeCategoriaIndice, caminhoDaCategoria, ehFolha, filhosDe } from './categorias';
 
 /* -------------------------------------------------------------------------- */
-/*                                 Categories                                 */
+/*              The shapes, declared once in @delfrance/schemas               */
 /* -------------------------------------------------------------------------- */
 
-/** One category as a picker row: enough to render it and to decide if it is selectable. */
-export const categoriaResumoDtoSchema = z.object({
-  categoryId: z.number().int(),
-  /** Shopee's `display_category_name` — what the operator reads. */
-  name: z.string().nullable(),
-  /** Shopee's `original_category_name` — the untranslated one, kept for support. */
-  originalName: z.string().nullable(),
-  isLeaf: z.boolean(),
-});
-export type CategoriaResumoDto = z.infer<typeof categoriaResumoDtoSchema>;
+export {
+  atributoDtoSchema,
+  atributoInfoDtoSchema,
+  atributoValorDtoSchema,
+  categoriaNoDtoSchema,
+  categoriaResumoDtoSchema,
+  marcaDtoSchema,
+  variacaoDtoSchema,
+  variacaoGrupoDtoSchema,
+  variacaoOpcaoDtoSchema,
+  type AtributoDto,
+  type AtributoInfoDto,
+  type AtributoValorDto,
+  type CategoriaNoDto,
+  type CategoriaResumoDto,
+  type MarcaDto,
+  type VariacaoDto,
+  type VariacaoGrupoDto,
+  type VariacaoOpcaoDto,
+} from '@delfrance/schemas';
 
-/** One focused node: the row, its parent, its ancestors and its direct children. */
-export const categoriaNoDtoSchema = categoriaResumoDtoSchema.extend({
-  /** `0` marks a root. A real, meaningful zero — never read it as absent. */
-  parentId: z.number().int(),
-  /** Root FIRST, the requested node LAST. */
-  pathFromRoot: z.array(categoriaResumoDtoSchema),
-  children: z.array(categoriaResumoDtoSchema),
-});
-export type CategoriaNoDto = z.infer<typeof categoriaNoDtoSchema>;
+/* -------------------------------------------------------------------------- */
+/*                                 Categories                                 */
+/* -------------------------------------------------------------------------- */
 
 /**
  * Project one category row.
@@ -123,65 +120,6 @@ export function projetarNoDeCategoria(
  * body says it lost something rather than looking complete.
  */
 export const SHOPEE_ATTRIBUTE_MAX_DEPTH = 8;
-
-/** `attribute_info` — the per-attribute editor metadata, mirrored key for key. */
-export const atributoInfoDtoSchema = z.object({
-  /** ⚠️ INTEGER enums, exactly as the attribute-tree page declares them. */
-  inputType: z.number().int().nullable(),
-  inputValidationType: z.number().int().nullable(),
-  formatType: z.number().int().nullable(),
-  dateFormatType: z.number().int().nullable(),
-  attributeUnitList: z.array(z.string()).nullable(),
-  maxValueCount: z.number().int().nullable(),
-  introduction: z.string().nullable(),
-  isOem: z.boolean().nullable(),
-  supportSearchValue: z.boolean().nullable(),
-});
-export type AtributoInfoDto = z.infer<typeof atributoInfoDtoSchema>;
-
-/** One selectable value, with the attributes it unlocks. */
-export interface AtributoValorDto {
-  valueId: number;
-  name: string | null;
-  valueUnit: string | null;
-  childAttributeList: AtributoDto[];
-}
-
-/** One attribute of a category. */
-export interface AtributoDto {
-  attributeId: number;
-  /** ⚠️ `mandatory` on an attribute, `isMandatory` on the brand payload. Both are real. */
-  mandatory: boolean;
-  name: string | null;
-  attributeInfo: AtributoInfoDto | null;
-  attributeValueList: AtributoValorDto[];
-}
-
-/**
- * ⚠️ `z.lazy` + an explicit annotation on BOTH halves, the same shape the
- * package uses for the wire schemas: without the annotation TypeScript refuses a
- * schema that references itself through a sibling, and without `z.lazy` one of
- * the two `const`s reads the other as `undefined` at module evaluation time.
- */
-export const atributoValorDtoSchema: z.ZodType<AtributoValorDto> = z.lazy(() =>
-  z.object({
-    /** `0` is a legal value id in Shopee's data — never read it as "absent". */
-    valueId: z.number().int(),
-    name: z.string().nullable(),
-    valueUnit: z.string().nullable(),
-    childAttributeList: z.array(atributoDtoSchema),
-  }),
-);
-
-export const atributoDtoSchema: z.ZodType<AtributoDto> = z.lazy(() =>
-  z.object({
-    attributeId: z.number().int(),
-    mandatory: z.boolean(),
-    name: z.string().nullable(),
-    attributeInfo: atributoInfoDtoSchema.nullable(),
-    attributeValueList: z.array(atributoValorDtoSchema),
-  }),
-);
 
 /** What {@link projetarAtributos} answers: the tree, and whether it was cut. */
 export interface AtributosProjetados {
@@ -254,14 +192,6 @@ export function projetarAtributos(tree: readonly ShopeeAttribute[]): AtributosPr
 /*                                   Brands                                   */
 /* -------------------------------------------------------------------------- */
 
-export const marcaDtoSchema = z.object({
-  /** ⚠️ `0` is Shopee's "No Brand" — a choice the operator makes, not an absence. */
-  brandId: z.number().int(),
-  originalBrandName: z.string(),
-  displayBrandName: z.string().nullable(),
-});
-export type MarcaDto = z.infer<typeof marcaDtoSchema>;
-
 export function projetarMarcas(list: readonly ShopeeMarca[]): MarcaDto[] {
   return list.map((m) => ({
     brandId: m.brand_id,
@@ -273,27 +203,6 @@ export function projetarMarcas(list: readonly ShopeeMarca[]): MarcaDto[] {
 /* -------------------------------------------------------------------------- */
 /*                                 Variations                                 */
 /* -------------------------------------------------------------------------- */
-
-export const variacaoOpcaoDtoSchema = z.object({
-  /** ⚠️ `0` is the undocumented CUSTOM option. A value, not an absence. */
-  variationOptionId: z.number().int(),
-  variationOptionName: z.string().nullable(),
-});
-export type VariacaoOpcaoDto = z.infer<typeof variacaoOpcaoDtoSchema>;
-
-export const variacaoGrupoDtoSchema = z.object({
-  variationGroupId: z.number().int(),
-  variationGroupName: z.string().nullable(),
-  variationOptionList: z.array(variacaoOpcaoDtoSchema),
-});
-export type VariacaoGrupoDto = z.infer<typeof variacaoGrupoDtoSchema>;
-
-export const variacaoDtoSchema = z.object({
-  variationId: z.number().int(),
-  variationName: z.string().nullable(),
-  variationGroupList: z.array(variacaoGrupoDtoSchema),
-});
-export type VariacaoDto = z.infer<typeof variacaoDtoSchema>;
 
 export function projetarVariacoes(list: readonly ShopeeVariation[]): VariacaoDto[] {
   return list.map((v) => ({

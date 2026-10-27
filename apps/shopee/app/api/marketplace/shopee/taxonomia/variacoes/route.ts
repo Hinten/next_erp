@@ -19,9 +19,15 @@
  * ⚠️ `variation_option_id: 0` is an observed CUSTOM option — a value, not an
  * absence — and it reaches this body intact.
  *
+ * Both 200s are built `satisfies` the input type of their envelope,
+ * `respostaVariacoesShopeeSchema` — declared ONCE in `@delfrance/schemas`
+ * (#1911 P2) for this route and its browser readers, never mirrored.
+ *
  * Requires `PERM.integracao.read`.
  */
 import { NextResponse } from 'next/server';
+import type { respostaVariacoesShopeeSchema } from '@delfrance/schemas';
+import type { z } from 'zod';
 
 import { PERM, verifyCaller } from '@/lib/auth/verifyCaller';
 import { getAdminFirestore } from '@/lib/firebase/admin';
@@ -65,16 +71,18 @@ export async function GET(req: Request): Promise<NextResponse> {
         categoryId: id,
         standardiseVariationList: [],
         pathUsed: ctx.variationsPath,
-      });
+      } satisfies z.input<typeof respostaVariacoesShopeeSchema>);
     }
 
     const lidas = await lerVariacoes(ctx, id);
     return NextResponse.json({
       leaf: true,
       categoryId: lidas.categoryId,
-      standardiseVariationList: lidas.standardiseVariationList,
+      // A copy for the TYPE only: `VariacoesLidas` holds a `readonly` array and
+      // the envelope's input array is mutable. The serialised bytes are the same.
+      standardiseVariationList: [...lidas.standardiseVariationList],
       pathUsed: ctx.variationsPath,
-    });
+    } satisfies z.input<typeof respostaVariacoesShopeeSchema>);
   } catch (err) {
     if (isShopeeError(err)) return shopeeErrorResponse(err);
     throw err;

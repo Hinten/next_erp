@@ -1,8 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { z } from 'zod';
 import { PERM } from '@delfrance/auth';
 import { READ_CACHE_DISABLED_ENV, __resetAllReadCaches } from '@delfrance/data/admin/cache';
 import { ShopeeNetworkError } from '@delfrance/integrations-shopee';
+import {
+  categoriaNoDtoSchema as categoriaNoCompartilhado,
+  categoriaResumoDtoSchema as categoriaResumoCompartilhado,
+  respostaCategoriasShopeeSchema,
+} from '@delfrance/schemas';
 
 import { ShopeeContaNotConfiguredError } from '@/lib/shopee/core/shopee';
 import { __setShopeeTaxonomiaClockForTests } from '@/lib/shopee/taxonomia/cache';
@@ -38,10 +42,13 @@ const { GET } = await import('./route');
 
 const READER = { uid: 'u1', permissions: PERM.integracao.read.toString() };
 
-const corpoSchema = z.object({
-  raizes: z.array(categoriaResumoDtoSchema).nullable(),
-  no: categoriaNoDtoSchema.nullable(),
-});
+/**
+ * The SHARED envelope (#1911 P2) — declared once in `@delfrance/schemas` for
+ * this route and its browser readers — never a test-local twin. Bound to the old
+ * local name so every case below is byte-unedited: P2 is behaviour-neutral, and
+ * those cases staying green UNCHANGED is the proof.
+ */
+const corpoSchema = respostaCategoriasShopeeSchema;
 
 function categoria(category_id: number, parent_category_id: number, has_children: boolean) {
   return {
@@ -228,5 +235,45 @@ describe('o cache e os erros', () => {
   it('deixa um erro alheio subir em vez de engoli-lo (regra 6)', async () => {
     h.getCategory.mockRejectedValue(new TypeError('bug nosso'));
     await expect(GET(req({ integracaoId: 'int-1' }, AUTORIZADO))).rejects.toBeInstanceOf(TypeError);
+  });
+});
+
+describe('o contrato compartilhado com apps/web (#1911 P2)', () => {
+  it('as linhas que este app re-exporta SÃO as de @delfrance/schemas — nunca uma cópia', () => {
+    // Uma cópia declarada de novo em `taxonomia/dto.ts` passaria em todo parse
+    // acima e devolveria ao repo o par de cópias do #1369. A identidade é o pino.
+    expect(categoriaResumoDtoSchema).toBe(categoriaResumoCompartilhado);
+    expect(categoriaNoDtoSchema).toBe(categoriaNoCompartilhado);
+  });
+
+  it.each([
+    ['as raízes', {}],
+    ['um nó', { categoryId: '100100' }],
+  ])(
+    'o 200 com %s volta IGUAL do schema compartilhado — nenhuma chave descartada',
+    async (_c, q) => {
+      const res = await GET(req({ integracaoId: 'int-1', ...q }, AUTORIZADO));
+      const body = (await res.json()) as Record<string, unknown>;
+
+      expect(res.status).toBe(200);
+      expect(respostaCategoriasShopeeSchema.parse(body)).toEqual(body);
+      expect(Object.keys(body).sort()).toEqual(
+        Object.keys(respostaCategoriasShopeeSchema.shape).sort(),
+      );
+    },
+  );
+
+  it('QUASE: uma árvore VAZIA responde raizes: [] — uma resposta, que o refine aceita', async () => {
+    // O par do refine: `{ raizes: null, no: null }` não responde pergunta
+    // nenhuma e é recusado; uma lista de raízes VAZIA é uma resposta.
+    h.getCategory.mockResolvedValue({ category_list: [] });
+    const res = await GET(req({ integracaoId: 'int-1' }, AUTORIZADO));
+    const body = (await res.json()) as Record<string, unknown>;
+
+    expect(body).toEqual({ raizes: [], no: null });
+    expect(respostaCategoriasShopeeSchema.safeParse(body).success).toBe(true);
+    expect(respostaCategoriasShopeeSchema.safeParse({ raizes: null, no: null }).success).toBe(
+      false,
+    );
   });
 });

@@ -1039,6 +1039,71 @@ export {
   type DetalheTabelaMedidasDto,
 } from './tabelaDeMedidasShopeeDto';
 
+// The Shopee TAXONOMY route envelopes (#1911, P2), declared once like the
+// size-chart ones above: the `apps/shopee` taxonomy routes build their 200s
+// against them, for `apps/web` to parse with — including the `/medidas` slice
+// of the limits answer, DERIVED from the whole one. Not a collection, so no
+// `registry.ts` entry.
+export {
+  categoriaResumoDtoSchema,
+  categoriaNoDtoSchema,
+  respostaCategoriasShopeeSchema,
+  atributoInfoDtoSchema,
+  atributoValorDtoSchema,
+  atributoDtoSchema,
+  respostaAtributosShopeeSchema,
+  faixaDtoSchema,
+  gtinLimitDtoSchema,
+  limitesDescricaoEstendidaDtoSchema,
+  limitesDeItemDtoSchema,
+  limitesDeKitDtoSchema,
+  respostaLimitesDoItemShopeeSchema,
+  respostaLimitesTabelaMedidasShopeeSchema,
+  marcaDtoSchema,
+  respostaMarcasShopeeSchema,
+  variacaoOpcaoDtoSchema,
+  variacaoGrupoDtoSchema,
+  variacaoDtoSchema,
+  respostaVariacoesShopeeSchema,
+  recomendacaoDtoSchema,
+  respostaRecomendacaoCategoriaShopeeSchema,
+  type CategoriaResumoDto,
+  type CategoriaNoDto,
+  type RespostaCategoriasShopee,
+  type AtributoInfoDto,
+  type AtributoValorDto,
+  type AtributoDto,
+  type RespostaAtributosShopee,
+  type FaixaDto,
+  type GtinLimitDto,
+  type LimitesDescricaoEstendidaDto,
+  type LimitesDeItemDto,
+  type LimitesDeKitDto,
+  type RespostaLimitesDoItemShopee,
+  type RespostaLimitesTabelaMedidasShopee,
+  type MarcaDto,
+  type RespostaMarcasShopee,
+  type VariacaoOpcaoDto,
+  type VariacaoGrupoDto,
+  type VariacaoDto,
+  type RespostaVariacoesShopee,
+  type RecomendacaoDto,
+  type RespostaRecomendacaoCategoriaShopee,
+} from './taxonomiaShopeeDto';
+
+// …and THE band check + text resolution the publisher applies to a listing's
+// name and description — the draft editor's counter and pendências call the
+// same functions (#1369 — one copy).
+export {
+  textoUtilizavelShopee,
+  dentroDaFaixaShopee,
+  descreverFaixaShopee,
+  textoNaFaixaShopee,
+  tituloDoAnuncioShopee,
+  descricaoDoAnuncioShopee,
+  type TextoNaFaixaShopee,
+} from './faixaShopee';
+
 export {
   listaDePrecos,
   listaDePrecosSchema,
