@@ -7,6 +7,7 @@ import {
   MOTIVO_IMPORTACAO_PARADA_LI,
   MOTIVO_PEDIDO_AMAZON,
   MOTIVO_PEDIDO_CONTESTADO_LI,
+  MOTIVO_RASTREIO_DIVERGENTE_LI,
   MOTIVO_REVERSAO_COM_ETIQUETA_LI,
   PENDENCIA_RECLAMACAO,
   ROTAS_AVISO,
@@ -22,6 +23,7 @@ import {
   motivoImportacaoParadaLiSchema,
   motivoPedidoAmazonSchema,
   motivoPedidoContestadoLiSchema,
+  motivoRastreioDivergenteLiSchema,
   motivoReversaoComEtiquetaLiSchema,
   pendenciaReclamacaoSchema,
   situacaoAnuncioForaDaSincronizacaoSchema,
@@ -1796,5 +1798,136 @@ describe('MENSAGENS_POR_TIPO.amazonContaPrecisaAtencao', () => {
     expect(mensagem.corpo(aviso.params)).toContain('CNPJ do intermediador');
     expect(mensagem.titulo).toBe(TIPO_AVISO_LABELS.amazonContaPrecisaAtencao);
     expect(mensagem.runbook).toBeUndefined();
+  });
+});
+
+/**
+ * The status write-back tipo (Loja Integrada step 7, PR 7-d), rendered with the
+ * params its producer (`apps/loja-integrada/lib/lojaIntegrada/rastreio/avisosRastreio.ts`)
+ * writes: `{ loja, pedido, motivo }`, plus `situacao` (a situação CODIGO) for the
+ * situação motivos, `estado` (the ERP freight estado) for `transicao-lateral` and
+ * `situacao-nao-paga`, and `status` (a number) for `escrita-recusada`.
+ */
+describe('MENSAGENS_POR_TIPO.lojaIntegradaRastreioDivergente', () => {
+  const mensagem = MENSAGENS_POR_TIPO[TIPO_AVISO.lojaIntegradaRastreioDivergente];
+  const M = MOTIVO_RASTREIO_DIVERGENTE_LI;
+  const base = { loja: 'Conta A', pedido: '165' };
+
+  it('is TOTAL over the motivo codes: each its own sentence, never the fallback', () => {
+    const frases = new Set<string>();
+    for (const motivo of motivoRastreioDivergenteLiSchema.options) {
+      const corpo = mensagem.corpo({
+        ...base,
+        motivo,
+        situacao: CODIGO_SITUACAO_LI.pedidoCancelado,
+        estado: 'postado',
+        status: 400,
+      });
+      expect(corpo, motivo).not.toContain('não conseguiu refletir');
+      expect(corpo, motivo).not.toContain('undefined');
+      expect(corpo, motivo).toContain('165 da loja Conta A');
+      frases.add(corpo);
+    }
+    expect(frases.size).toBe(motivoRastreioDivergenteLiSchema.options.length);
+  });
+
+  it('situacao-bloqueada: names the situação by its LABEL, and says nothing was sent', () => {
+    expect(
+      mensagem.corpo({
+        ...base,
+        motivo: M.situacaoBloqueada,
+        situacao: CODIGO_SITUACAO_LI.cancelamentoSolicitado,
+      }),
+    ).toBe(
+      'A Loja Integrada mostra o pedido 165 da loja Conta A como Cancelamento solicitado. O ERP ' +
+        'não enviou o rastreio nem alterou a situação. Confira o pedido no painel da Loja Integrada.',
+    );
+  });
+
+  it('situacao-nao-paga NAMES the ERP estado (the ERP already shipped it)', () => {
+    expect(
+      mensagem.corpo({
+        ...base,
+        motivo: M.situacaoNaoPaga,
+        situacao: CODIGO_SITUACAO_LI.pagamentoEmAnalise,
+        estado: 'postado',
+      }),
+    ).toBe(
+      'A Loja Integrada mostra o pedido 165 da loja Conta A como não pago (Pagamento em análise), ' +
+        'mas no ERP ele já está postado. O ERP não enviou o rastreio nem alterou a situação. ' +
+        'Confira o pagamento antes de atualizar o pedido no painel.',
+    );
+  });
+
+  it('transicao-lateral: the ERP estado and the LI situação, "Nada foi alterado"', () => {
+    expect(
+      mensagem.corpo({
+        ...base,
+        motivo: M.transicaoLateral,
+        situacao: CODIGO_SITUACAO_LI.pedidoEntregue,
+        estado: 'aguardandoRetirada',
+      }),
+    ).toBe(
+      'O ERP marcou o pedido 165 da loja Conta A como aguardando retirada, mas a Loja Integrada ' +
+        'mostra Pedido entregue. Nada foi alterado.',
+    );
+  });
+
+  it('escrita-recusada at 401/403 names the token’s WRITE permission; any other status does not', () => {
+    for (const status of [401, 403]) {
+      expect(mensagem.corpo({ ...base, motivo: M.escritaRecusada, status })).toBe(
+        `A Loja Integrada recusou a atualização do pedido 165 da loja Conta A (HTTP ${String(status)}) ` +
+          'depois de várias tentativas. O token continua lendo pedidos; confira no painel da ' +
+          'Loja Integrada se ele tem permissão para alterar pedidos.',
+      );
+    }
+    expect(mensagem.corpo({ ...base, motivo: M.escritaRecusada, status: 400 })).toBe(
+      'A Loja Integrada recusou a atualização do pedido 165 da loja Conta A (HTTP 400).',
+    );
+  });
+
+  it('situacao-sobrescrita warns the buyer may have been e-mailed', () => {
+    expect(
+      mensagem.corpo({
+        ...base,
+        motivo: M.situacaoSobrescrita,
+        situacao: CODIGO_SITUACAO_LI.cancelamentoSolicitado,
+      }),
+    ).toContain('o comprador pode já ter recebido o e-mail da nova situação');
+  });
+
+  it('an unknown situação is shown as received, never as "undefined"', () => {
+    expect(
+      mensagem.corpo({ ...base, motivo: M.situacaoDesconhecida, situacao: 'pedido_em_transporte' }),
+    ).toContain('"pedido_em_transporte"');
+  });
+
+  it('a code newer than this build, an inherited key or a missing motivo falls back to the neutral sentence', () => {
+    for (const motivo of ['motivo-do-futuro', 'toString', '', 7]) {
+      expect(mensagem.corpo({ ...base, motivo }), String(motivo)).toBe(
+        'O ERP não conseguiu refletir o envio do pedido 165 da loja Conta A na Loja Integrada. ' +
+          'Confira o pedido no painel da Loja Integrada.',
+      );
+    }
+    expect(mensagem.corpo({})).not.toContain('undefined');
+  });
+
+  it('renders the producer plano as stored, titled like its label, opening on the pedido', () => {
+    const aviso = comoArmazenado({
+      tipo: TIPO_AVISO.lojaIntegradaRastreioDivergente,
+      severidade: SEVERIDADE_AVISO.critico,
+      canal: CANAL_AVISO.lojaIntegrada,
+      params: {
+        ...base,
+        motivo: M.situacaoSobrescrita,
+        situacao: CODIGO_SITUACAO_LI.cancelamentoSolicitado,
+      },
+      motivo: M.situacaoSobrescrita,
+      urlInterna: { rota: ROTAS_AVISO.pedido.build(PEDIDO_ID), campo: null },
+      relogioEvento: 1_789_000_000_123_000,
+    });
+    expect(aviso.urlInterna?.rota).toBe(`/pedidos/${PEDIDO_ID}/editar`);
+    expect(mensagem.corpo(aviso.params)).toContain('Cancelamento solicitado');
+    expect(mensagem.titulo).toBe(TIPO_AVISO_LABELS.lojaIntegradaRastreioDivergente);
   });
 });

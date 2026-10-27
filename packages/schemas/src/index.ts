@@ -1609,6 +1609,8 @@ export {
   MOTIVO_FRETE_NAO_SUPORTADO_LI,
   motivoReversaoComEtiquetaLiSchema,
   MOTIVO_REVERSAO_COM_ETIQUETA_LI,
+  motivoRastreioDivergenteLiSchema,
+  MOTIVO_RASTREIO_DIVERGENTE_LI,
   situacaoAnuncioForaDaSincronizacaoSchema,
   SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO,
   chaveDeAviso,
@@ -1633,6 +1635,7 @@ export {
   type MotivoPedidoContestadoLi,
   type MotivoFreteNaoSuportadoLi,
   type MotivoReversaoComEtiquetaLi,
+  type MotivoRastreioDivergenteLi,
   type SituacaoAnuncioForaDaSincronizacao,
 } from './aviso';
 export * from './shared/inicio';
@@ -1671,6 +1674,12 @@ export * from './mapaFreteLojaIntegrada';
 export * from './conferenciaPagamentoLojaIntegrada';
 export * from './rotaEtiquetaLojaIntegrada';
 export * from './faseRetirada';
+
+// Admin-only / default-deny (NOT in ALL_DOMAINS) — the failures-only backlog of
+// the Loja Integrada WRITES queue (master plan step 7: the status write-back).
+// Bare: no Meta, never a combined `{ schema, meta }`, so `registry.test.ts` sees
+// nothing to register.
+export * from './notificacaoEscritaLojaIntegrada';
 
 // The machine-readable next step of a Shopee publish refusal (step 21, #1529):
 // the refusal sites in `apps/shopee` produce it, the web's wire parses it per row

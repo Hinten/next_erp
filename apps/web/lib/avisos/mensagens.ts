@@ -1,6 +1,8 @@
 import {
+  ESTADO_RASTREIO_LI,
   MOTIVO_CONTA_AMAZON,
   MOTIVO_FRETE_NAO_SUPORTADO_LI,
+  MOTIVO_RASTREIO_DIVERGENTE_LI,
   MOTIVO_IMPORTACAO_PARADA_AMAZON,
   MOTIVO_IMPORTACAO_PARADA_LI,
   MOTIVO_PEDIDO_AMAZON,
@@ -15,10 +17,15 @@ import {
   motivoImportacaoParadaLiSchema,
   motivoPedidoAmazonSchema,
   motivoPedidoContestadoLiSchema,
+  motivoRastreioDivergenteLiSchema,
   motivoReversaoComEtiquetaLiSchema,
+  estadoRastreioLiSchema,
   pendenciaReclamacaoSchema,
+  rotuloSituacaoLi,
   situacaoAnuncioForaDaSincronizacaoSchema,
   type Aviso,
+  type EstadoRastreioLi,
+  type MotivoRastreioDivergenteLi,
   type MotivoContaAmazon,
   type MotivoFreteNaoSuportadoLi,
   type MotivoImportacaoParadaAmazon,
@@ -277,6 +284,113 @@ function fraseMotivoFreteNaoSuportado(valor: Aviso['params'][string] | undefined
   return codigo.success
     ? FRASE_MOTIVO_FRETE_NAO_SUPORTADO_LI[codigo.data]
     : 'o frete para o qual ela está mapeada não pode ser usado';
+}
+
+/**
+ * pt-BR do estado de frete que o ERP registrou, como a frase do aviso de envio
+ * não refletido o diz ("o ERP marcou o pedido … como {estado}") — TOTAL sobre
+ * os três estados que a escrita de volta trata.
+ */
+const ROTULO_ESTADO_RASTREIO_LI: Record<EstadoRastreioLi, string> = {
+  [ESTADO_RASTREIO_LI.postado]: 'postado',
+  [ESTADO_RASTREIO_LI.entregue]: 'entregue',
+  [ESTADO_RASTREIO_LI.aguardandoRetirada]: 'aguardando retirada',
+};
+
+/** O estado do ERP, ou um texto neutro para um valor que esta tela não conhece. */
+function estadoRastreioLi(valor: Aviso['params'][string] | undefined): string {
+  const estado = estadoRastreioLiSchema.safeParse(valor);
+  return estado.success ? ROTULO_ESTADO_RASTREIO_LI[estado.data] : 'enviado';
+}
+
+/**
+ * A situação da Loja Integrada pelo RÓTULO (`rotuloSituacaoLi`); um código que a
+ * tabela não conhece aparece como recebido, entre aspas, e um ausente como "—".
+ */
+function situacaoRastreioLi(valor: Aviso['params'][string] | undefined): string {
+  const rotulo = rotuloSituacaoLi(valor);
+  if (rotulo !== null) return rotulo;
+  return valor === undefined || valor === '' ? '—' : `"${String(valor)}"`;
+}
+
+/**
+ * pt-BR de cada motivo do aviso de envio não refletido — TOTAL sobre o código
+ * (`params.motivo`, um {@link MOTIVO_RASTREIO_DIVERGENTE_LI}). O produtor (a
+ * escrita de volta do rastreio, passo 7) grava o CÓDIGO e os dados, nunca a
+ * frase. `pedido` já chega como "{numero} da loja {loja}".
+ */
+const FRASE_MOTIVO_RASTREIO_LI: Record<
+  MotivoRastreioDivergenteLi,
+  (params: Aviso['params'], pedido: string) => string
+> = {
+  [MOTIVO_RASTREIO_DIVERGENTE_LI.situacaoBloqueada]: (params, pedido) =>
+    `A Loja Integrada mostra o pedido ${pedido} como ${situacaoRastreioLi(params.situacao)}. ` +
+    'O ERP não enviou o rastreio nem alterou a situação. Confira o pedido no painel da Loja ' +
+    'Integrada.',
+  [MOTIVO_RASTREIO_DIVERGENTE_LI.situacaoNaoPaga]: (params, pedido) =>
+    `A Loja Integrada mostra o pedido ${pedido} como não pago ` +
+    `(${situacaoRastreioLi(params.situacao)}), mas no ERP ele já está ` +
+    `${estadoRastreioLi(params.estado)}. O ERP não enviou o rastreio nem alterou a situação. ` +
+    'Confira o pagamento antes de atualizar o pedido no painel.',
+  [MOTIVO_RASTREIO_DIVERGENTE_LI.situacaoDesconhecida]: (params, pedido) =>
+    `A Loja Integrada mostra o pedido ${pedido} com uma situação que o ERP não conhece ` +
+    `(${situacaoRastreioLi(params.situacao)}). O ERP não enviou o rastreio nem alterou a ` +
+    'situação. Confira o pedido no painel da Loja Integrada.',
+  [MOTIVO_RASTREIO_DIVERGENTE_LI.transicaoLateral]: (params, pedido) =>
+    `O ERP marcou o pedido ${pedido} como ${estadoRastreioLi(params.estado)}, mas a Loja ` +
+    `Integrada mostra ${situacaoRastreioLi(params.situacao)}. Nada foi alterado.`,
+  [MOTIVO_RASTREIO_DIVERGENTE_LI.situacaoSobrescrita]: (params, pedido) => {
+    const situacao = situacaoRastreioLi(params.situacao);
+    return (
+      `O ERP alterou a situação do pedido ${pedido} na Loja Integrada no mesmo instante em que ` +
+      `ela mudou para ${situacao}. Confira o pedido no painel: a mudança para ${situacao} pode ` +
+      'ter sido sobrescrita, e o comprador pode já ter recebido o e-mail da nova situação.'
+    );
+  },
+  [MOTIVO_RASTREIO_DIVERGENTE_LI.objetoDivergente]: (_params, pedido) =>
+    `A Loja Integrada já tem outro código de rastreio no pedido ${pedido}. O ERP não o substituiu.`,
+  [MOTIVO_RASTREIO_DIVERGENTE_LI.objetoInvalido]: (_params, pedido) =>
+    `O código de rastreio do pedido ${pedido} no ERP tem espaços ou caracteres que a Loja ` +
+    'Integrada não aceita. Corrija o código na aba Frete.',
+  [MOTIVO_RASTREIO_DIVERGENTE_LI.envioDivergente]: (_params, pedido) =>
+    `O pedido ${pedido} no ERP não tem o envio da Loja Integrada registrado. O rastreio não foi ` +
+    'enviado; a situação foi tratada normalmente.',
+  [MOTIVO_RASTREIO_DIVERGENTE_LI.pedidoDivergente]: (_params, pedido) =>
+    `O envio do pedido ${pedido} na Loja Integrada não corresponde ao do ERP. Nada foi ` +
+    'alterado. Confira se a loja e o pedido estão corretos.',
+  [MOTIVO_RASTREIO_DIVERGENTE_LI.pedidoAusente]: (_params, pedido) =>
+    `O pedido ${pedido} não foi encontrado na Loja Integrada.`,
+  [MOTIVO_RASTREIO_DIVERGENTE_LI.restauracaoIndisponivel]: (_params, pedido) =>
+    `O ERP não conseguiu guardar uma cópia do pedido ${pedido} antes de alterá-lo, então não o ` +
+    'alterou. Atualize o pedido no painel da Loja Integrada.',
+  [MOTIVO_RASTREIO_DIVERGENTE_LI.escritaRecusada]: (params, pedido) => {
+    const status = p(params, 'status');
+    // 401/403 chega aqui só depois das novas tentativas, e com o token ainda lendo pedidos.
+    return status === '401' || status === '403'
+      ? `A Loja Integrada recusou a atualização do pedido ${pedido} (HTTP ${status}) depois de ` +
+          'várias tentativas. O token continua lendo pedidos; confira no painel da Loja ' +
+          'Integrada se ele tem permissão para alterar pedidos.'
+      : `A Loja Integrada recusou a atualização do pedido ${pedido} (HTTP ${status}).`;
+  },
+  [MOTIVO_RASTREIO_DIVERGENTE_LI.deriva]: (_params, pedido) =>
+    `A atualização do pedido ${pedido} foi enviada, mas a Loja Integrada mostra outro valor. ` +
+    'Confira no painel.',
+  [MOTIVO_RASTREIO_DIVERGENTE_LI.tentativasEsgotadas]: (_params, pedido) =>
+    `A atualização do pedido ${pedido} falhou depois de várias tentativas.`,
+};
+
+/**
+ * O corpo do aviso de envio não refletido. Um código mais novo que esta tela, uma
+ * chave herdada (`'toString'`) ou um motivo ausente caem no texto neutro, nunca em
+ * "undefined".
+ */
+function corpoRastreioDivergenteLi(params: Aviso['params']): string {
+  const pedido = `${p(params, 'pedido')} da loja ${p(params, 'loja')}`;
+  const codigo = motivoRastreioDivergenteLiSchema.safeParse(params.motivo);
+  return codigo.success
+    ? FRASE_MOTIVO_RASTREIO_LI[codigo.data](params, pedido)
+    : `O ERP não conseguiu refletir o envio do pedido ${pedido} na Loja Integrada. Confira o ` +
+        'pedido no painel da Loja Integrada.';
 }
 
 /**
@@ -848,6 +962,14 @@ export const MENSAGENS_POR_TIPO: Record<TipoAviso, MensagemAviso> = {
       'entrega (o de retirada na loja não precisa dele) ou deixar de estar pago. Se o aviso ' +
       'continuar aberto depois da alteração, confira no painel se o CEP tem 8 dígitos; se ' +
       'tiver, peça a um desenvolvedor que confira a notificação estacionada desse pedido.',
+  },
+  // A escrita de volta do rastreio (passo 7): um aviso por pedido, `atencao` — e
+  // `critico` só quando uma situação em que o ERP nunca escreve foi sobrescrita.
+  // Sem `runbook`: cada frase de motivo diz o que conferir, no painel da Loja
+  // Integrada ou na aba Frete do pedido (o link do aviso).
+  [TIPO_AVISO.lojaIntegradaRastreioDivergente]: {
+    titulo: 'Envio do pedido não refletido na Loja Integrada',
+    corpo: corpoRastreioDivergenteLi,
   },
   // Sem `runbook` nos dois avisos por CONTA da Amazon: o conserto está no app —
   // uma nova autorização pelo painel de conexão da conta (o link do aviso).

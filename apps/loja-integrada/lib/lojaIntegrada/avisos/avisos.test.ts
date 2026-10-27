@@ -333,6 +333,8 @@ describe('the import-stopped tipo (step 3) in the orphan pass', () => {
         TIPO_AVISO.lojaIntegradaFreteNaoSuportado,
         TIPO_AVISO.lojaIntegradaPedidoPagoSemEndereco,
         TIPO_AVISO.lojaIntegradaReversaoComEtiqueta,
+        // The status write-back (step 7): one row per pedido, matched by key PREFIX too.
+        TIPO_AVISO.lojaIntegradaRastreioDivergente,
       ].sort(),
     );
     const { chave } = await raise(new FakeDb(), 1_000);

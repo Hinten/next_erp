@@ -155,6 +155,38 @@ export class LiEstacionamentoEmConflitoError extends LiAppError {
 }
 
 /**
+ * A Loja Integrada WRITE refused with 401/403 while the SAME, pinned credential
+ * still READS (the confirming read succeeded): the status write-back's retry
+ * signal (master plan step 7). The conta is NOT parked — the token reads, so the
+ * refusal may be a gateway blip or a write-only refusal — and the whole job is
+ * retried on the queue's existing ladder, each try from a fresh guard read; only
+ * the hot lane's last pass concludes, with an aviso, instead of throwing this.
+ *
+ * Transient. ⚠️ A plain `Error`, NOT a {@link LiAppError}: it is never answered
+ * by a route (`respond.ts` maps conta refusals only), and a `catch` written for a
+ * conta's refusal must not swallow it. Not a package `LiError` either. Its
+ * message carries the conta, the write kind and the status — never a body, a
+ * path or a token.
+ */
+export class EscritaRecusadaLiError extends Error {
+  readonly integracaoId: string;
+  /** The write kind that was refused (`objeto-envio`, `situacao-pedido`). */
+  readonly tipo: string;
+  readonly status: number;
+
+  constructor(integracaoId: string, tipo: string, status: number) {
+    super(
+      `A Loja Integrada recusou a escrita ${tipo} da conta ${integracaoId} (HTTP ${String(status)}), ` +
+        'mas o token ainda lê pedidos: a tarefa será tentada de novo.',
+    );
+    this.name = 'EscritaRecusadaLiError';
+    this.integracaoId = integracaoId;
+    this.tipo = tipo;
+    this.status = status;
+  }
+}
+
+/**
  * The read switch (`LOJA_INTEGRADA_CHAMADAS`, `core/valvulas.ts`) is not exactly
  * `on`: the context loader refuses before any Firestore read and before a client
  * exists, so nothing was sent to Loja Integrada (D17: mock only until the window

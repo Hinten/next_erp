@@ -365,6 +365,74 @@ verdicts, the live/mirror split) is `packages/schemas/src/conferenciaPagamentoLo
   other host named in its own source. Engine tests hand the write context a stub `fetch` and a
   recording sleep, and stub the global `fetch` to throw in a file-level `beforeEach`.
 
+## Status write-back (step 7)
+
+- **`rastreio/`** reflects a pedido's freight event (`postado`, `entregue`,
+  `aguardandoRetirada`) onto its Loja Integrada order, through the engine only. Pure plan
+  `planoRastreio.ts`; identity `identidadeRastreio.ts`; one run `processarRastreio.ts` (its
+  header states the rule-7 class); the pipeline binding and the varredura
+  `notificacaoEscrita.ts`; the producer `agendadorEscrita.ts`; the aviso `avisosRastreio.ts`.
+  No trigger, no queue function here: the functions codebase wires them (step 7, PR 7-e).
+- **Paid codigos only.** The first filter is step 15's `veredictoDoCodigoLi`; the matrix
+  (`MATRIZ_RASTREIO_LI`) is typed over EVERY codigo, so a new one does not compile until its
+  row is decided, and an unknown string is refused (`situacao-desconhecida`). `NUNCA_ESCREVER_LI`
+  (1019 included) and `CODIGOS_LI_NAO_PAGO` are separate constants; the test pins
+  7 + 6 + 3 = 16, pairwise disjoint. Every codigo comparison is exact. The code column follows
+  the 11 column and is never written while LI shows 13 or 14; 14 is never regressed.
+- **One write per run.** A posting with a sendable code writes the code ALONE (LI moves the
+  order to `pedido_enviado` and e-mails by itself); the read-back CHECKS the move — not seen ⇒
+  `parcial/efeito-pendente`, and only a run at least an hour later, from a fresh read, may write
+  11 (WARNING `objeto-sem-efeito`): a run that may come sooner (`escritaRecentePossivel`, derived
+  and never persisted — every Cloud Tasks attempt, and a `failed` row with `processedAt: 0`, which
+  is how the deferred lane hands a row back) meets our unmoved code and ends `parcial` with no
+  write. A refused code ⇒ `escrita-recusada`, then a SECOND deciding read decides 11.
+  `entregue` writes 14 only, never the code; `aguardandoRetirada` 13 only. Every write is
+  decided by its own fresh read; no write follows one that landed.
+- **Identity first.** The pedido id must be the digest of `preimagemPedidoLi` (a duplicate, a
+  devolução, another conta ⇒ nothing); a stored envio id LI does not list ⇒
+  `pedido-divergente`, NOTHING written; no stored envio ⇒ `envio-divergente`, the situação as
+  usual. Freshness: an event the pedido no longer describes ⇒ `superado` (one INFO line).
+- **Not `on` defers, never acts.** Dry-run, outside the canary or no canary: a diff line, then
+  every outcome but `ja-refletido` and `superado` DEFERS with the would-be motivo in its reason
+  (no aviso, no write) — a deciding read refused for good included (one WARNING line; only `on`
+  parks it); `off` defers with zero reads, and the varredura at `off` touches neither lane.
+- **A write refused with 401/403** is confirmed by one paced read on the same pinned credential:
+  refused ⇒ the conta parks; fine ⇒ `EscritaRecusadaLiError` (WARNING `recusada-retentativa`),
+  the whole job retries, and only a `failed` row's LAST hot pass concludes (`escrita-recusada`,
+  then 11 from the second read for a refused code); a confirming read that neither reads nor
+  refuses the credential (404, 3xx/4xx, off its schema, 429, 5xx) concludes nothing and throws.
+  `passagemFinal` is derived from the row in `fromDoc`, never persisted; the run raises
+  `tentativas-esgotadas` itself on the parking pass of a returned `parcial`/`adiado` under `on`.
+- **The history check** after every situação change we caused (the code's move included):
+  anchored on the last row reaching the codigo the deciding read saw, an empty previous
+  situação is inconclusive, an intermediate the matrix would write from is INFO; an
+  overwritten codigo the matrix refuses ⇒ `situacao-sobrescrita` (critico over a never-write
+  one). It also runs after a landed write whose effect the run did not see (a failed read-back,
+  a 202) and after a code read back as another code (`deriva`, which the sobrescrita outranks):
+  neither proves LI never moved. Our code read back at a THIRD codigo (the order moved during the
+  run) is checked too, and there the verdict decides: a row of our move ⇒ seen
+  (`efeito-observado`, `escrito`, or the sobrescrita it reveals); `sem-linha`, `inconclusivo` or
+  an unreadable history ⇒ `parcial/efeito-pendente`. Only our code read back at the deciding
+  codigo (no move yet) skips it. Never after the code onto an order the
+  deciding read saw already at 11: with no anchor to judge from, a move in that gap overwritten
+  by the code's own move is an accepted residual.
+  The import and this check order rows through ONE leaf, `limparHistoricoLi`.
+- **The aviso** `lojaIntegradaRastreioDivergente`: one row per pedido, clocked by the EVENT
+  (`microsDeMillisLi`), raised ONCE per run at its end, only under `on` — the most serious
+  motivo of the run wins (sobrescrita, then what the situação says, then a refused write, then
+  the code-only motivos); a clean `on` run resolves it. A per-pedido tipo of
+  `TIPOS_AVISO_PEDIDO_LI`, so the orphan pass closes it.
+- **Classifier.** The context's and the getter's refusals defer; a conta gone drops; a body off
+  its schema, a `ZodError` and the package's refusal of an operation's input (`LiConfigError`
+  `corpo`, `codigo-nao-permitido`, `caminho`, `rota-nao-permitida`) PARK under `on` with one
+  ERROR line (a decision that is not `on` defers them);
+  429, 5xx, network, the pin, the deadline, our own `LiConfigError`, gRPC THROW.
+- **The store** `notificacoesEscritaLojaIntegrada` (bare schema, `(status, processedAt)`
+  index, no re-drive index); doc id = the event digest, task id `rastreio-<evento>`; the
+  producer treats an answered `functions/task-already-exists` as success.
+- Tests: `testing/plataformaEscritaLi.ts` is a stateful LI (one order, its history, both
+  write routes); the global `fetch` is stubbed to throw in every suite.
+
 ## Notification pipeline (step 3)
 
 - `notificacoes/notificacao.ts` binds the shared failures-only core to

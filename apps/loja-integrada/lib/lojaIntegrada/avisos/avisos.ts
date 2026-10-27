@@ -211,7 +211,9 @@ export function resolverExpiracaoToken(
  * belongs to a conta by its key PREFIX ({@link prefixoDaContaNoAvisoLi}), never
  * by one chave per conta. The paid-without-address tipo is raised by the
  * notification pipeline's exhaustion signal rather than by an import, but it
- * is keyed per pedido like the rest, so it is one of them.
+ * is keyed per pedido like the rest, so it is one of them. So is the status
+ * write-back's tipo (step 7, producer `rastreio/avisosRastreio.ts`): one row
+ * per pedido, closed by the orphan pass once the conta is gone.
  */
 export const TIPOS_AVISO_PEDIDO_LI: ReadonlySet<TipoAviso> = new Set<TipoAviso>([
   TIPO_AVISO.lojaIntegradaSituacaoDesconhecida,
@@ -220,6 +222,7 @@ export const TIPOS_AVISO_PEDIDO_LI: ReadonlySet<TipoAviso> = new Set<TipoAviso>(
   TIPO_AVISO.lojaIntegradaFreteNaoSuportado,
   TIPO_AVISO.lojaIntegradaPedidoPagoSemEndereco,
   TIPO_AVISO.lojaIntegradaReversaoComEtiqueta,
+  TIPO_AVISO.lojaIntegradaRastreioDivergente,
 ]);
 
 /**
