@@ -4842,16 +4842,18 @@ describe('publicarAnuncioShopee — o RASCUNHO sob a trava (#1911, D4/D15)', () 
 
   describe('(#2050) uma liberação que FALHA nunca troca o erro que o operador vai ler', () => {
     /**
-     * A db whose draft takes its LOCK (the first update of the document) and
-     * then rejects every later update of it with `erro` — the release. Counts
-     * the update ATTEMPTS, so "no second release" is observable. The double's
-     * own refs, wrapped; never a raw Firestore ref.
+     * A db whose draft RELEASE — the update that clears `publicacaoEmCurso` —
+     * rejects with `erro`, while every other update of the draft goes through
+     * (the lock, and the pre-send stamp of the SKU being sent, which is a second
+     * update of the same document BEFORE any release). Counts the release
+     * ATTEMPTS, so "no second release" is observable. The double's own refs,
+     * wrapped; never a raw Firestore ref.
      */
     function comLiberacaoQueFalha(
       db: FakeDb,
       erro: Error,
-    ): { db: FakeDb; tentativas: () => number } {
-      let tentativas = 0;
+    ): { db: FakeDb; liberacoes: () => number } {
+      let liberacoes = 0;
       const colecao = db.collection.bind(db);
       const proxy = new Proxy(db, {
         get(t, prop, r) {
@@ -4872,8 +4874,9 @@ describe('publicarAnuncioShopee — o RASCUNHO sob a trava (#1911, D4/D15)', () 
                       patch: Record<string, unknown>,
                       pre?: { lastUpdateTime?: unknown },
                     ) => {
-                      tentativas += 1;
-                      return tentativas === 1 ? ref.update(patch, pre) : Promise.reject(erro);
+                      if (patch.publicacaoEmCurso !== null) return ref.update(patch, pre);
+                      liberacoes += 1;
+                      return Promise.reject(erro);
                     },
                   };
                 };
@@ -4882,16 +4885,22 @@ describe('publicarAnuncioShopee — o RASCUNHO sob a trava (#1911, D4/D15)', () 
           };
         },
       });
-      return { db: proxy, tentativas: () => tentativas };
+      return { db: proxy, liberacoes: () => liberacoes };
     }
 
-    /** The lock the reservation wrote is STILL there, untouched, and nothing was stamped. */
+    /**
+     * The lock is STILL there — the last one the run wrote: the reservation's,
+     * plus the pre-send stamp of the SKU being sent when the run got that far —
+     * no write of the draft ever released it, and nothing was stamped.
+     */
     function travaIntacta(db: FakeDb): void {
-      const gravada = escritasNoRascunho(db)[0]?.publicacaoEmCurso;
+      const escritas = escritasNoRascunho(db);
+      const gravada = escritas.at(-1)?.publicacaoEmCurso;
       expect(gravada).toMatchObject({ desde: AGORA, expiraEm: EXPIRA });
       expect(doRascunho(db)?.publicacaoEmCurso).toEqual(gravada);
       expect(doRascunho(db)).not.toHaveProperty('falhaPublicacao');
-      expect(escritasNoRascunho(db)).toHaveLength(1);
+      expect(escritas.length).toBeGreaterThan(0);
+      expect(escritas.every((e) => e.publicacaoEmCurso !== null)).toBe(true);
     }
 
     it('a saída ANTES do envio — um plano BLOQUEADO — ⇒ o ShopeePublishBlockedError ORIGINAL sobe (não um erro do Firestore); a trava fica e expira', async () => {
@@ -4908,8 +4917,8 @@ describe('publicarAnuncioShopee — o RASCUNHO sob a trava (#1911, D4/D15)', () 
       expect(err).toBeInstanceOf(ShopeePublishBlockedError);
       expect((err as ShopeePublishBlockedError).problemas.length).toBeGreaterThan(0);
       expect(fake.ops).not.toContain('add_item');
-      // ONE release attempt: the lock and the failed hand-back, nothing more.
-      expect(f.tentativas()).toBe(2);
+      // ONE release attempt: the failed hand-back, never a second one.
+      expect(f.liberacoes()).toBe(1);
       travaIntacta(db);
       expect(logInteiro()).toContain('a liberação da trava falhou');
     });
@@ -4977,7 +4986,7 @@ describe('publicarAnuncioShopee — o RASCUNHO sob a trava (#1911, D4/D15)', () 
       expect(rejeitado.etapa).toBe('add_item');
       expect(rejeitado.problemas).toEqual((esperado as ShopeePublishRejectedError).problemas);
       expect(fake.ops.filter((o) => o === 'add_item')).toHaveLength(1);
-      expect(f.tentativas()).toBe(2);
+      expect(f.liberacoes()).toBe(1);
       travaIntacta(db);
     });
 
@@ -5028,7 +5037,7 @@ describe('publicarAnuncioShopee — o RASCUNHO sob a trava (#1911, D4/D15)', () 
 
       expect(err).toBe(indisponivel);
       // The lock, then ONE failed release — the catch saw `encerrada` and stayed out.
-      expect(f.tentativas()).toBe(2);
+      expect(f.liberacoes()).toBe(1);
       travaIntacta(db);
     });
   });
