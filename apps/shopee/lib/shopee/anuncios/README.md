@@ -330,6 +330,20 @@ lock and are byte-for-byte step 11's.
    turns that refusal into a search (ENSURE), a draft whose create could have
    happened is refused, never re-sent (K1-15).
 
+   ⚠️ **A release never replaces the error the run is reporting.** The three
+   ways out that release and then rethrow — the D15 refusal (step 2), a throw
+   before any send, and a `nao-criado` refusal with its stamp — release through
+   `liberarTravaShopeeSemSubstituirErro`: a gRPC-coded Firestore failure of the
+   release (`isGrpcStatusError`) is logged once (ids and the code) and
+   swallowed, so the error the run was already reporting is the one that
+   surfaces — the 409/422 the operator acts on, or a read failure's own 5xx —
+   never the release's. The lock
+   then stays and expires into `incerta` like a KEPT one (for `nao-criado` the
+   stamp is lost with it — the accepted residual). Any other error from the
+   release (a `TypeError`, a bug) still surfaces. A run with no error to report
+   — `preparar` finding nothing to publish (the 404) — releases with the plain
+   `liberarTravaShopee`, whose failure is then the answer.
+
 The 409s are `ConflitoDeRascunhoShopeeError` — an APP class, never a
 `ShopeeError`, so no stamp is ever written for one; the route maps it with
 `instanceof` BEFORE `isShopeeError`, and the CLI recognises it by its `code`
