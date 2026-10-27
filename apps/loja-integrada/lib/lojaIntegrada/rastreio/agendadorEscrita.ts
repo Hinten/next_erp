@@ -25,6 +25,16 @@
  * second write. Past that window, idempotency is the run's own — every attempt
  * decides from a fresh read of Loja Integrada and skips what is already there.
  *
+ * ## The queue's second task: the varredura
+ *
+ * The writes queue also carries its own sweep (PR 7-e): a scheduler enqueues
+ * ONE `{ tipo: 'varredura' }` task per tick, and the queue runs both lanes of
+ * the failure store inside its single dispatch slot, so a retry can never race
+ * a fresh write. That task holds no payload beyond its tipo, it is dispatched
+ * by name BEFORE any parse (the payload schema refuses it), and it is named
+ * after its tick ({@link idDaTarefaVarreduraEscritaLi}), so a scheduler's
+ * redelivery of the same tick collides instead of sweeping twice.
+ *
  * ## What a rejection MEANS — part of the contract
  *
  *  - `functions/task-already-exists` WITH an answered `httpResponse` (the 409
@@ -70,6 +80,37 @@ export function idDaTarefaEscritaLi(
   return `${payload.tipo}-${payload.evento}`;
 }
 
+/**
+ * The `tipo` of the writes queue's sweep task (module header). Deliberately NOT
+ * a member of the payload's `tipoTarefaEscritaLiSchema`: the queue dispatches
+ * it by this name before any parse, and the pipeline would drop it.
+ */
+export const TIPO_TAREFA_VARREDURA_ESCRITA_LI = 'varredura';
+
+/** The varredura task: its tipo and nothing else. */
+export interface TarefaVarreduraEscritaLi {
+  readonly tipo: typeof TIPO_TAREFA_VARREDURA_ESCRITA_LI;
+}
+
+/** Everything the writes queue carries: a write event, or its sweep. */
+export type TarefaFilaEscritaLi = PayloadTarefaEscritaLi | TarefaVarreduraEscritaLi;
+
+/**
+ * The Cloud Tasks task id of the varredura of one tick: `varredura-<the digits
+ * of the tick's schedule time>` (`2026-10-26T15:15:00.000Z` →
+ * `varredura-20261026151500000`), inside `[A-Za-z0-9_-]` by construction.
+ * The scheduler stamps the same schedule time on a redelivery of the same tick,
+ * so the two collide; the next tick is another instant, so another id.
+ *
+ * `null` when the value holds no digit: a bare `varredura-` would collide with
+ * EVERY tick for as long as Cloud Tasks keeps the name, silently skipping the
+ * sweep — the caller picks another instant instead.
+ */
+export function idDaTarefaVarreduraEscritaLi(horaAgendada: string): string | null {
+  const digitos = horaAgendada.replace(/[^0-9]/g, '');
+  return digitos === '' ? null : `${TIPO_TAREFA_VARREDURA_ESCRITA_LI}-${digitos}`;
+}
+
 /** What the enqueue takes besides the payload: the task's own id. */
 export interface OpcoesEnfileiramentoEscritaLi {
   readonly id: string;
@@ -77,15 +118,15 @@ export interface OpcoesEnfileiramentoEscritaLi {
 
 /**
  * The transport, as a root binds it — structurally, the Admin SDK's
- * `TaskQueue<PayloadTarefaEscritaLi>`, of which only `enqueue(data, { id })` is used.
+ * `TaskQueue<TarefaFilaEscritaLi>`, of which only `enqueue(data, { id })` is used.
  */
 export interface FilaEscritaLi {
-  enqueue(payload: PayloadTarefaEscritaLi, opcoes: OpcoesEnfileiramentoEscritaLi): Promise<void>;
+  enqueue(tarefa: TarefaFilaEscritaLi, opcoes: OpcoesEnfileiramentoEscritaLi): Promise<void>;
 }
 
 /** The enqueue seam a producer depends on: a fake in tests, {@link criarAgendadorEscritaLi} for real. */
 export interface AgendadorEscritaLi {
-  enfileirar(payload: PayloadTarefaEscritaLi, opcoes: OpcoesEnfileiramentoEscritaLi): Promise<void>;
+  enfileirar(tarefa: TarefaFilaEscritaLi, opcoes: OpcoesEnfileiramentoEscritaLi): Promise<void>;
 }
 
 export interface OpcoesAgendadorEscritaLi {
@@ -123,10 +164,10 @@ export function criarAgendadorEscritaLi(opcoes: OpcoesAgendadorEscritaLi): Agend
     };
   }
   return {
-    enfileirar: (payload, { id }) =>
+    enfileirar: (tarefa, { id }) =>
       enfileirarNomeandoFalhaTransitoriaLi(async () => {
         try {
-          await opcoes.fila().enqueue(payload, { id });
+          await opcoes.fila().enqueue(tarefa, { id });
         } catch (err) {
           if (tarefaJaExiste(err)) return;
           throw err;

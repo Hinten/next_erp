@@ -13,9 +13,13 @@ name: CI — Loja Integrada
 # behind its own gate. A skip of this lane therefore loses only the emulator
 # round trip, never the unit suites.
 #
-# ONE job, six suite files today:
-#   - `apps/loja-integrada/functions/src/filaLeitura.tasks.test.ts` — the round
-#     trip below;
+# ONE job, eight suite files today:
+#   - `apps/loja-integrada/functions/src/filaLeitura.tasks.test.ts` — the reads
+#     round trip below;
+#   - `apps/loja-integrada/functions/src/filaEscrita.tasks.test.ts` — the
+#     status write-back's round trip (step 7), also below;
+#   - `apps/loja-integrada/lib/lojaIntegrada/pedidos/rotaEtiqueta.firestore.test.ts`
+#     — the label routing route's conditional update on the real Firestore;
 #   - `apps/loja-integrada/lib/lojaIntegrada/pedidos/pollPedidos.tasks.test.ts` —
 #     the order poller's enqueues into that same round trip;
 #   - `apps/loja-integrada/lib/lojaIntegrada/pedidos/pollPedidos.firestore.test.ts`
@@ -32,10 +36,12 @@ name: CI — Loja Integrada
 #     — the order import (steps 5–6) in-process against the real Firestore: the
 #     ONE batch of the pedido and its pagamentos, its preconditions, and the
 #     real cliente, endereço, link-doc and `mapa` writes.
-# ⚠️ The trigger fires on EVERY suite's `integracao` writes, not only its own:
-# the functions emulator loads the whole codebase. The rules that keep the files
-# apart (unique conta ids, the step-3 suites' incomplete seeds, the trigger
-# suite awaiting its own last write) are in `vitest.tasks.config.ts`.
+# ⚠️ The triggers fire on EVERY suite's writes, not only their own: the
+# functions emulator loads the whole codebase. The conta trigger fires on every
+# `integracao` write, and the history trigger (`onHistoricoFreteLojaIntegrada`,
+# step 7) on every `pedidos/*/historicoFtIni/*` create. The rules that keep the
+# files apart (unique conta and pedido ids, the step-3 suites' incomplete seeds,
+# a trigger suite awaiting its own last effect) are in `vitest.tasks.config.ts`.
 # Adding a file with the `.tasks.test.ts` or `.firestore.test.ts` suffix adds it
 # to THIS job — no new job, no new check name, no new row in the gate manifest.
 # Both suffixes share one config on purpose (`vitest.tasks.config.ts`).
@@ -54,6 +60,22 @@ name: CI — Loja Integrada
 # plus two negatives through the same hop: a payload the schema refuses, and a
 # `tipo` the queue does not serve, are each DROPPED by the real function — no
 # document — while a sentinel enqueued after them still lands.
+#
+# And the status write-back (step 7), with the write valve at `dry-run` (job
+# env, below) and the read switch still `off`:
+#
+#   a freight history row CREATED under an imported Loja Integrada pedido
+#     → onHistoricoFreteLojaIntegrada            the real deployed Firestore trigger
+#     → ONE pedido read → a NAMED task `rastreio-<event digest>`
+#     → Cloud Tasks emulator → Functions emulator
+#     → filaEscritaLojaIntegrada                 the real deployed onTaskDispatched
+#     → the writes pipeline → the write context refuses on the read switch
+#     → `adiado/chamadas-desligadas` → a real `deferred` doc in
+#       notificacoesEscritaLojaIntegrada
+#
+# plus the backstop inside the same queue: a `varredura` task enqueued through
+# the real producer root (the scheduler's own call) runs both lanes in the
+# dispatched writes function and migrates a seeded `failed` row to `deferred`.
 #
 # OFFLINE BY CONSTRUCTION — no Loja Integrada credentials, ever, and no
 # `secrets:` anywhere in this file (D17: no code of this app calls the platform
@@ -100,9 +122,13 @@ name: CI — Loja Integrada
 #     queue sets none today; a producer that adds one must not assert it here,
 #     because a delayed enqueue would dispatch immediately and the test would
 #     pass for the wrong reason.
-#   - `rateLimits` and `retryConfig`. Whether the emulator honours
+#   - `rateLimits` and `retryConfig`, and the writes queue's instance limits
+#     (`concurrency`, `maxInstances`). Whether the emulator honours
 #     `maxConcurrentDispatches` is unverified; the options are pinned OFFLINE, off
 #     `__endpoint`, in functions/src/index.test.ts.
+#   - Named-task DEDUP. The emulator accepts the write-back's named enqueue; what
+#     it answers to a second enqueue of the same name is not asserted. The
+#     producer's unit tests pin the rule (`task-already-exists` is success).
 #   - Composite INDEX DECLARATION, and Firestore RULES. The emulator auto-creates
 #     every composite, and on Enterprise a missing index does not throw — it
 #     silently full-scans and bills the scan. The two composites on
@@ -115,14 +141,17 @@ name: CI — Loja Integrada
 #   - The DISPATCHED importer, or any call to Loja Integrada. By design — see the
 #     switch above. (The importer itself runs in process, importarPedido.firestore.test.ts.)
 #   - Eventarc's ORDERING and REDELIVERY. The emulator delivers each write to
-#     `onIntegracaoLojaIntegradaChanged` once; that a replayed or out-of-order
-#     event converges is argued by the core being state-driven and covered by
-#     its unit suite in packages/data, never here.
+#     `onIntegracaoLojaIntegradaChanged` and each history create to
+#     `onHistoricoFreteLojaIntegrada` once; that a replayed or out-of-order event
+#     converges is argued by the conta core being state-driven and by the write
+#     run deciding from a fresh read, and covered by their unit suites, never here.
 #   - The trigger's DATABASE binding, or any ABSENCE. The emulator serves
 #     whichever database it is asked for, so a trigger bound to `(default)` is
 #     not proven to fail here, and an emulator cannot show that a function did
-#     nothing. Both are pinned OFFLINE in functions/src/index.test.ts and
-#     functions/src/onIntegracaoLojaIntegradaChanged.test.ts.
+#     nothing. Both are pinned OFFLINE in functions/src/index.test.ts,
+#     functions/src/onIntegracaoLojaIntegradaChanged.test.ts and
+#     functions/src/onHistoricoFreteLojaIntegrada.test.ts (the history trigger's
+#     filter, by counting its reads and enqueues).
 #   - A PR that touches ONLY a shared package outside the app's `workspace:*`
 #     closure. The `changes` job below walks that graph from the app, so a change
 #     reaching the bundle by any other edge (a path alias, a copied file) does
@@ -300,6 +329,16 @@ jobs:
       # several YAML parsers. Never set it to `on` in this lane;
       # vitest.tasks.setup.ts refuses to start when it is.
       LOJA_INTEGRADA_CHAMADAS: 'off'
+      # The status write-back's valve, at `dry-run` so the write-back trigger
+      # really enqueues and the writes queue really runs (master plan step 7):
+      # with the valve `off` both return before any read, and the round trip
+      # (functions/src/filaEscrita.tasks.test.ts) would have nothing to prove.
+      # SAFE because the read switch above is `off`: a write run stops at its
+      # write context, before any Loja Integrada client exists, and defers
+      # (`adiado/chamadas-desligadas`) — the suite asserts exactly that row. Never
+      # `on`, and no LOJA_INTEGRADA_CANARIO_* here: vitest.tasks.setup.ts refuses
+      # any write valve set to exactly `on` and any non-blank canary list.
+      LOJA_INTEGRADA_MODO_RASTREIO: 'dry-run'
       NEXT_TELEMETRY_DISABLED: '1'
     steps:
       - uses: actions/checkout@v6

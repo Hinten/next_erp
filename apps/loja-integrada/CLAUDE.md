@@ -372,7 +372,16 @@ verdicts, the live/mirror split) is `packages/schemas/src/conferenciaPagamentoLo
   `planoRastreio.ts`; identity `identidadeRastreio.ts`; one run `processarRastreio.ts` (its
   header states the rule-7 class); the pipeline binding and the varredura
   `notificacaoEscrita.ts`; the producer `agendadorEscrita.ts`; the aviso `avisosRastreio.ts`.
-  No trigger, no queue function here: the functions codebase wires them (step 7, PR 7-e).
+  No trigger, no queue function here: the functions codebase wires them —
+  `functions/src/onHistoricoFreteLojaIntegrada.ts` (CREATE of `pedidos/*/historicoFtIni/*`:
+  the estado, then the valve, with zero reads and no line; ONE pedido read; the identity
+  proof; ONE task named `rastreio-<evento>`), `filaEscrita.ts` (`filaEscritaLojaIntegrada`:
+  `rastreio` and the in-queue `varredura`, queue AND instance concurrency 1, `maxInstances: 1`,
+  a flat 300 s backoff), `varrerEscritas.ts` (`15,45 * * * *`: it only enqueues the
+  varredura, named after its tick), `agendadorEscrita.ts` (the root, through the reads
+  root's region and valve readers) and `depsEscrita.ts` (the one binding of a write run's
+  deps; the handler stamps the dispatch start FIRST). The writes queue is the only place a
+  write — or its sweep — may run.
 - **Paid codigos only.** The first filter is step 15's `veredictoDoCodigoLi`; the matrix
   (`MATRIZ_RASTREIO_LI`) is typed over EVERY codigo, so a new one does not compile until its
   row is decided, and an unknown string is refused (`situacao-desconhecida`). `NUNCA_ESCREVER_LI`
@@ -580,7 +589,7 @@ verdicts, the live/mirror split) is `packages/schemas/src/conferenciaPagamentoLo
 - A re-import keeps the `externalOptionData` keys Loja Integrada does not own (`agency`).
 - `pedidos/importarPedido.firestore.test.ts` (emulator, CI below) pins the batch.
 
-## CI (steps 3, 5 and 20)
+## CI (steps 3, 5, 7 and 20)
 
 - Two homes, disjoint by filename suffix. `vitest.config.ts` (`pnpm test`, in `CI test`
   of `ci.yml`, unfiltered) EXCLUDES `*.firestore.test.ts` and `*.tasks.test.ts`;
@@ -596,7 +605,8 @@ verdicts, the live/mirror split) is `packages/schemas/src/conferenciaPagamentoLo
   that file sits ONE DOT from `firebase.loja-integrada.deploy.json`, the only one that
   deploys), then `pnpm test:tasks`. Run it locally the same way (JDK 21) with
   `FUNCTIONS_REGION` = `LOJA_INTEGRADA_TASKS_REGION`, `FIREBASE_PROJECT_ID=demo-erp`,
-  `FIREBASE_DATABASE_ID=default`, `REQUIRE_EMULATOR=1`, `LOJA_INTEGRADA_CHAMADAS=off`.
+  `FIREBASE_DATABASE_ID=default`, `REQUIRE_EMULATOR=1`, `LOJA_INTEGRADA_CHAMADAS=off`,
+  `LOJA_INTEGRADA_MODO_RASTREIO=dry-run`.
   A region mismatch is the silent drop of #1108: the poll times out instead of failing.
   On Windows the Firestore JVM can outlive `emulators:exec` and keep 8085: stop it after.
 - D17 holds in the lane through TWO layers. The job env sets `LOJA_INTEGRADA_CHAMADAS: 'off'`
@@ -606,6 +616,17 @@ verdicts, the live/mirror split) is `packages/schemas/src/conferenciaPagamentoLo
   DISPATCHED function must stop at the switch: this lane never turns it on in the
   environment. Only code running in the vitest process may pass a context, and only with
   `ambiente` `on` as a PARAMETER and a scripted `deps.fetch` (`pedidos/pollPedidos.tasks.test.ts`).
+- Since step 7 the job env also sets `LOJA_INTEGRADA_MODO_RASTREIO: 'dry-run'`, so the
+  history trigger enqueues and the writes queue runs (`functions/src/filaEscrita.tasks.test.ts`:
+  a history row ⇒ the trigger ⇒ a named task ⇒ a `deferred` row `adiado/chamadas-desligadas`;
+  and a `varredura` task migrating a seeded `failed` row). Safe because the switch is off: a
+  write run stops at its write context before any client exists. The setup also refuses any
+  `LOJA_INTEGRADA_MODO_*` exactly `on` and any non-blank `LOJA_INTEGRADA_CANARIO_*`, in the shell
+  and in the artifact's env files; the refusals are pure functions in
+  `lib/lojaIntegrada/testing/guardaDaLaneDeTarefas.ts`, proved offline by its unit test.
+- The history trigger fires on EVERY suite's `pedidos/*/historicoFtIni/*` creates (only
+  `filaEscrita.tasks.test.ts` writes them): a suite that adds one awaits the row its event
+  ends in, and uses pedidos and contas no other suite seeds.
 - A new `*.tasks.test.ts` / `*.firestore.test.ts` joins the same job and check name. Its
   `beforeEach` wipes what it reads (one shared emulator, files run serially), and a drop
   is proved by a LATER sentinel row, never by polling for an absence.
@@ -616,8 +637,10 @@ verdicts, the live/mirror split) is `packages/schemas/src/conferenciaPagamentoLo
   plans as `incompleto` (reads only). Why one job anyway: `vitest.tasks.config.ts`.
 - The lane cannot prove: Cloud Scheduler firing (`onSchedule` is ignored),
   `scheduleDelaySeconds` (firebase-tools#8254), index declarations, rules, that the
-  emulator honours `maxConcurrentDispatches`, Eventarc ordering or redelivery, or a
-  trigger's `database` binding (pinned offline in `functions/src/index.test.ts`).
+  emulator honours `maxConcurrentDispatches` or the instance limits, named-task dedup
+  (the emulator accepts a named enqueue; a duplicate's answer is not asserted), Eventarc
+  ordering or redelivery, or a trigger's `database` binding (pinned offline in
+  `functions/src/index.test.ts`).
 
 ## Config
 

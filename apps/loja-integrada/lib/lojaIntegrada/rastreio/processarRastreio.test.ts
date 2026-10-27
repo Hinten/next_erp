@@ -10,7 +10,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ZodError } from 'zod';
 import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
-import { LiConfigError, LiHttpError, LiSchemaError } from '@delfrance/integrations-loja-integrada';
+import {
+  LiConfigError,
+  LiHttpError,
+  LiSchemaError,
+  PRAZO_LI_MS,
+} from '@delfrance/integrations-loja-integrada';
 import {
   CODIGO_SITUACAO_LI,
   ESTADO_FRETE,
@@ -66,6 +71,8 @@ import {
   type DepsEscritaLi,
   type EventoRastreioLi,
   type PassagemFinalLi,
+  PIOR_EXECUCAO_RASTREIO_LI_MS,
+  PIOR_TENTATIVA_RECUSADA_RASTREIO_LI_MS,
   type ResultadoRastreioLi,
   classificarRecusaEscritaLi,
   processarRastreioLi,
@@ -82,6 +89,9 @@ const GET_PEDIDO = `GET ${CAMINHO_PEDIDO_LI}`;
 const PUT_ENVIO = `PUT ${CAMINHO_ENVIO_LI}`;
 const PUT_SITUACAO = `PUT ${CAMINHO_SITUACAO_LI}`;
 const GET_HISTORICO = `GET ${CAMINHO_HISTORICO_LI}`;
+
+/** One Loja Integrada call that runs to its whole deadline, read or write. */
+const PRAZO_DE_UMA_CHAMADA_MS = Math.max(PRAZO_LI_MS.leitura, PRAZO_LI_MS.escrita);
 
 beforeEach(() => {
   __resetAllReadCaches();
@@ -112,6 +122,8 @@ interface Cenario {
   readonly linhas: LinhaGravada[];
   readonly erros: unknown[][];
   readonly avisos: unknown[][];
+  /** How long the scenario's clock ran (0 unless it is `cronometrado`). */
+  decorridoMs(): number;
   rodar(o?: {
     estado?: EstadoRastreioLi;
     eventoEmMs?: number;
@@ -132,6 +144,11 @@ function cenario(
     externalId?: string | null;
     ambiente?: AmbienteLi;
     semPedido?: boolean;
+    /**
+     * A clock that every pacer wait advances by its length and every Loja
+     * Integrada call by a FULL request deadline — the slowest the run can be.
+     */
+    cronometrado?: boolean;
   } = {},
 ): Cenario {
   const db = new FakeDb();
@@ -153,10 +170,22 @@ function cenario(
   const erros: unknown[][] = [];
   const avisos: unknown[][] = [];
   const amb = o.ambiente ?? ambiente(MODO_LI.on);
+  // Still unless the scenario is timed: every other test runs at AGORA_MS.
+  const relogio = { ms: AGORA_MS };
+  const cronometrado = o.cronometrado === true;
+  const esperar = (ms: number): Promise<void> => {
+    if (cronometrado) relogio.ms += ms;
+    return p.esperar(ms);
+  };
+  const fetch: typeof globalThis.fetch = (input, init) => {
+    const resposta = p.fetch(input, init);
+    if (cronometrado) relogio.ms += PRAZO_DE_UMA_CHAMADA_MS;
+    return resposta;
+  };
   const deps = (a: AmbienteLi): DepsEscritaLi => ({
     ambiente: a,
-    esperar: p.esperar,
-    agoraMs: () => AGORA_MS,
+    esperar,
+    agoraMs: () => relogio.ms,
     inicioDaTarefaMs: AGORA_MS,
     increment,
     logger: {
@@ -164,7 +193,7 @@ function cenario(
       error: (...args: unknown[]) => erros.push(args),
     },
     registro: { escrever: gravador.escrever, tentativa: 0, idTarefa: 't-1' },
-    fetch: p.fetch,
+    fetch,
   });
   return {
     db,
@@ -172,6 +201,7 @@ function cenario(
     linhas: gravador.linhas,
     erros,
     avisos,
+    decorridoMs: () => relogio.ms - AGORA_MS,
     rodar: (r = {}) => {
       const estado = r.estado ?? ESTADO_RASTREIO_LI.postado;
       const evento: EventoRastreioLi = {
@@ -1549,6 +1579,13 @@ describe('PROPERTY: no run sends a PUT after a 2xx PUT', () => {
   const RECUSAS = new Set(['400', '302', '403']);
 
   it('over every codigo × event × the first PUT’s answer × a normal or the last hot pass', async () => {
+    // …and, on the same grid, the run's worst case is an UPPER bound measured on
+    // the real call and wait sequence (every call at its full deadline): no run
+    // is slower than PIOR_EXECUCAO_RASTREIO_LI_MS, no try that throws for a
+    // retry is slower than PIOR_TENTATIVA_RECUSADA_RASTREIO_LI_MS, and the grid
+    // reaches each bound exactly — so neither constant can drift from the code.
+    let maisLenta = 0;
+    let maisLentaRecusada = 0;
     for (const codigo of [...codigoSituacaoLiSchema.options, 'Pedido_Pago']) {
       for (const estado of [
         ESTADO_RASTREIO_LI.postado,
@@ -1557,18 +1594,28 @@ describe('PROPERTY: no run sends a PUT after a 2xx PUT', () => {
       ]) {
         for (const passagemFinal of [null, 'quente'] as const) {
           for (const [nome, resposta] of RESPOSTAS) {
-            const c = cenario({ codigo, freteEstado: estado });
+            const c = cenario({ codigo, freteEstado: estado, cronometrado: true });
             let primeiro = true;
             c.p.fila.push((r) => {
               if (r.metodo !== 'PUT' || !primeiro) return null;
               primeiro = false;
               return resposta();
             });
+            let recusada = false;
             await c.rodar({ estado, passagemFinal }).catch((err: unknown) => {
               if (!(err instanceof EscritaRecusadaLiError)) throw err;
+              recusada = true;
             });
             const puts = c.p.requisicoes.filter((r) => r.metodo === 'PUT');
             const rotulo = `${codigo} / ${estado} / ${String(passagemFinal)} / ${nome}`;
+            expect(c.decorridoMs(), rotulo).toBeLessThanOrEqual(PIOR_EXECUCAO_RASTREIO_LI_MS);
+            maisLenta = Math.max(maisLenta, c.decorridoMs());
+            if (recusada) {
+              expect(c.decorridoMs(), rotulo).toBeLessThanOrEqual(
+                PIOR_TENTATIVA_RECUSADA_RASTREIO_LI_MS,
+              );
+              maisLentaRecusada = Math.max(maisLentaRecusada, c.decorridoMs());
+            }
             // A first PUT that answered 2xx is the run's only one; only a refused
             // tracking code may be followed by ONE situação write.
             if (!RECUSAS.has(nome)) {
@@ -1587,8 +1634,67 @@ describe('PROPERTY: no run sends a PUT after a 2xx PUT', () => {
         }
       }
     }
+    expect(maisLenta).toBe(PIOR_EXECUCAO_RASTREIO_LI_MS);
+    expect(maisLentaRecusada).toBe(PIOR_TENTATIVA_RECUSADA_RASTREIO_LI_MS);
     // A grid of ~1,300 runs: seconds on a fast machine, ~20 s on a CI runner.
   }, 120_000);
+});
+
+describe('the worst case of one run, measured (the writes queue sizes its timeout on it)', () => {
+  it.each([
+    ['refused (400)', () => respostaJson(400, {}), null],
+    ['refused 403 on the LAST hot pass', () => respostaJson(403, {}), 'quente'],
+  ] as const)(
+    'the code %s, then the 11 from the SECOND deciding read, every call at its full deadline ⇒ exactly PIOR_EXECUCAO_RASTREIO_LI_MS',
+    async (_caso, resposta, passagemFinal) => {
+      const c = cenario({ cronometrado: true });
+      c.p.fila.push(naProxima(CAMINHO_ENVIO_LI, 'PUT', resposta));
+      expect(await c.rodar({ passagemFinal })).toEqual({
+        kind: 'escrito-com-aviso',
+        motivo: M.escritaRecusada,
+      });
+      // The path: 2 + 2 intervals before the two deciding reads, 2 before the
+      // read-back of the landed write, 1 before the history read; six calls.
+      expect(c.p.eventos).toEqual([
+        `espera ${String(RITMO_ESCRITA_LI_MS)}`,
+        `espera ${String(RITMO_ESCRITA_LI_MS)}`,
+        GET_PEDIDO,
+        PUT_ENVIO,
+        `espera ${String(RITMO_ESCRITA_LI_MS)}`,
+        `espera ${String(RITMO_ESCRITA_LI_MS)}`,
+        GET_PEDIDO,
+        PUT_SITUACAO,
+        `espera ${String(RITMO_ESCRITA_LI_MS)}`,
+        `espera ${String(RITMO_ESCRITA_LI_MS)}`,
+        GET_PEDIDO,
+        `espera ${String(RITMO_ESCRITA_LI_MS)}`,
+        GET_HISTORICO,
+      ]);
+      expect(c.decorridoMs()).toBe(PIOR_EXECUCAO_RASTREIO_LI_MS);
+      expect(PIOR_EXECUCAO_RASTREIO_LI_MS).toBe(
+        7 * RITMO_ESCRITA_LI_MS + 6 * PRAZO_DE_UMA_CHAMADA_MS,
+      );
+    },
+  );
+
+  it('a try that THROWS for a retry (the code refused 403, the token still reads) ⇒ exactly PIOR_TENTATIVA_RECUSADA_RASTREIO_LI_MS', async () => {
+    const c = cenario({ cronometrado: true });
+    c.p.fila.push(naProxima(CAMINHO_ENVIO_LI, 'PUT', () => respostaJson(403, {})));
+    await expect(c.rodar()).rejects.toBeInstanceOf(EscritaRecusadaLiError);
+    expect(c.p.chamadas()).toEqual([GET_PEDIDO, PUT_ENVIO, GET_PEDIDO]);
+    expect(c.decorridoMs()).toBe(PIOR_TENTATIVA_RECUSADA_RASTREIO_LI_MS);
+    expect(PIOR_TENTATIVA_RECUSADA_RASTREIO_LI_MS).toBe(
+      4 * RITMO_ESCRITA_LI_MS + 3 * PRAZO_DE_UMA_CHAMADA_MS,
+    );
+    expect(PIOR_TENTATIVA_RECUSADA_RASTREIO_LI_MS).toBeLessThan(PIOR_EXECUCAO_RASTREIO_LI_MS);
+  });
+
+  it('a normal posting (the code alone, its read-back, the history read) stays well inside it', async () => {
+    const c = cenario({ cronometrado: true });
+    expect(await c.rodar()).toEqual({ kind: 'escrito' });
+    expect(c.decorridoMs()).toBe(5 * RITMO_ESCRITA_LI_MS + 4 * PRAZO_DE_UMA_CHAMADA_MS);
+    expect(c.decorridoMs()).toBeLessThan(PIOR_EXECUCAO_RASTREIO_LI_MS);
+  });
 });
 
 describe('a retried run after a landed PUT makes ZERO PUTs', () => {
