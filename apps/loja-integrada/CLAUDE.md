@@ -420,7 +420,10 @@ verdicts, the live/mirror split) is `packages/schemas/src/conferenciaPagamentoLo
 - **The aviso** `lojaIntegradaRastreioDivergente`: one row per pedido, clocked by the EVENT
   (`microsDeMillisLi`), raised ONCE per run at its end, only under `on` — the most serious
   motivo of the run wins (sobrescrita, then what the situação says, then a refused write, then
-  the code-only motivos); a clean `on` run resolves it. A per-pedido tipo of
+  the code-only motivos); a clean `on` run resolves it. `atencao`, except `critico` for a
+  sobrescrita over a never-write codigo and for a write blocked at `cancelamento_solicitado`
+  (1019, the buyer asked to cancel), both decided in `avisosRastreio.ts`; every other blocked or
+  unpaid situação stays `atencao`. A per-pedido tipo of
   `TIPOS_AVISO_PEDIDO_LI`, so the orphan pass closes it.
 - **Classifier.** The context's and the getter's refusals defer; a conta gone drops; a body off
   its schema, a `ZodError` and the package's refusal of an operation's input (`LiConfigError`
