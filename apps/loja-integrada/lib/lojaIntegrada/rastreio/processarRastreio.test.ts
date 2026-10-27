@@ -585,9 +585,30 @@ describe('a posting with a sendable code', () => {
       status: null,
     });
     expect(c.p.puts().map((r) => r.caminho)).toEqual([CAMINHO_ENVIO_LI]);
-    // The cancellation request outranks the refused code.
+    // The cancellation request outranks the refused code, and it is critico.
     expect(c.aviso()).toMatchObject({
+      severidade: SEVERIDADE_AVISO.critico,
       params: { motivo: M.situacaoBloqueada, situacao: C.cancelamentoSolicitado },
+    });
+  });
+
+  it('⚠️ NEAR-MISS: LI CANCELLED (not a request) between the two reads ⇒ the same refusal at atencao', async () => {
+    const c = cenario();
+    c.p.fila.push(
+      naProxima(CAMINHO_ENVIO_LI, 'PUT', () => {
+        c.p.mover(C.pedidoCancelado);
+        return respostaJson(400, {});
+      }),
+    );
+    expect(await c.rodar()).toEqual({
+      kind: 'recusado',
+      motivo: M.situacaoBloqueada,
+      status: null,
+    });
+    expect(c.p.puts().map((r) => r.caminho)).toEqual([CAMINHO_ENVIO_LI]);
+    expect(c.aviso()).toMatchObject({
+      severidade: SEVERIDADE_AVISO.atencao,
+      params: { motivo: M.situacaoBloqueada, situacao: C.pedidoCancelado },
     });
   });
 
@@ -734,15 +755,28 @@ describe('delivery and pickup', () => {
 /* -------------------------------------------------------------------------- */
 
 describe('the paid allow-list under `on`', () => {
+  it('LI at cancelamento_solicitado (1019, the buyer asked to cancel) ⇒ ZERO PUTs, aviso situacao-bloqueada at CRITICO', async () => {
+    const c = cenario({ codigo: C.cancelamentoSolicitado });
+    expect(await c.rodar()).toEqual({
+      kind: 'recusado',
+      motivo: M.situacaoBloqueada,
+      status: null,
+    });
+    expect(c.p.puts()).toEqual([]);
+    expect(c.aviso()).toMatchObject({
+      severidade: SEVERIDADE_AVISO.critico,
+      params: { motivo: M.situacaoBloqueada, situacao: C.cancelamentoSolicitado },
+    });
+  });
+
   it.each([
     C.pagamentoEmDisputa,
-    C.cancelamentoSolicitado,
     C.pedidoCancelado,
     C.pagamentoDevolvido,
     C.pedidoChargeback,
     C.pagamentoDevolvidoSemRetorno,
   ])(
-    'LI at %s (never write, 1019 included) ⇒ ZERO PUTs, aviso situacao-bloqueada',
+    '⚠️ NEAR-MISS: LI at %s (another never-write codigo) ⇒ ZERO PUTs, aviso situacao-bloqueada at atencao',
     async (codigo) => {
       const c = cenario({ codigo });
       expect(await c.rodar()).toEqual({
@@ -759,7 +793,7 @@ describe('the paid allow-list under `on`', () => {
   );
 
   it.each([C.pedidoEfetuado, C.aguardandoPagamento, C.pagamentoEmAnalise])(
-    'LI at %s (unpaid) ⇒ ZERO PUTs, aviso situacao-nao-paga naming the ERP estado',
+    '⚠️ NEAR-MISS: LI at %s (unpaid) ⇒ ZERO PUTs, aviso situacao-nao-paga naming the ERP estado, at atencao',
     async (codigo) => {
       const c = cenario({ codigo });
       expect(await c.rodar()).toEqual({
@@ -769,6 +803,7 @@ describe('the paid allow-list under `on`', () => {
       });
       expect(c.p.puts()).toEqual([]);
       expect(c.aviso()).toMatchObject({
+        severidade: SEVERIDADE_AVISO.atencao,
         params: { motivo: M.situacaoNaoPaga, situacao: codigo, estado: 'postado' },
       });
     },

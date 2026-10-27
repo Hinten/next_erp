@@ -837,13 +837,17 @@ export const TIPO_AVISO_LABELS = {
  * cannot be sent, the write was refused or read back different, or a status set
  * in the instant before ours was overwritten.
  *
- *  - **Severity `atencao`**, canal `lojaIntegrada`, in-app only — except
- *    `situacao-sobrescrita` over a codigo the write-back never writes onto (a
- *    dispute, a cancellation request, a cancellation, a refund, a chargeback),
- *    which is `critico`: the buyer's request or the provider's hold was erased
- *    and the buyer may already have the "sent" e-mail. That motivo is raised
- *    only when the write-back's own table would have REFUSED the overwritten
- *    codigo; a compatible intermediate step is a log line, not an aviso.
+ *  - **Severity `atencao`**, canal `lojaIntegrada`, in-app only — except two
+ *    `critico` cases. `situacao-sobrescrita` over a codigo the write-back never
+ *    writes onto (a dispute, a cancellation request, a cancellation, a refund, a
+ *    chargeback): the buyer's request or the provider's hold was erased and the
+ *    buyer may already have the "sent" e-mail. That motivo is raised only when
+ *    the write-back's own table would have REFUSED the overwritten codigo; a
+ *    compatible intermediate step is a log line, not an aviso. And
+ *    `situacao-bloqueada` at `cancelamento_solicitado` (1019): the buyer asked
+ *    to cancel an order the ERP already shipped or delivered, and the parcel
+ *    may still be stopped. Every other blocked or unpaid situação stays
+ *    `atencao`.
  *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId, entidade: pedidoId })` —
  *    one row per pedido, whatever the motivo.
  *  - **`params` are `loja`, `pedido` (the order `numero`) and `motivo`** — a
