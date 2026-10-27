@@ -1263,6 +1263,58 @@ describe('#1911 — publicar um RASCUNHO pela rota', () => {
     expect(rascunhoArmazenado()).not.toHaveProperty('falhaPublicacao');
   });
 
+  it('(#2050) a liberação da trava FALHA no Firestore (gRPC 14) ⇒ o 409 CONTA_JA_TEM_ANUNCIO continua 409 — nunca um 500; a trava fica', async () => {
+    semearRascunho(RASCUNHO);
+    semearRascunho(IRMAO);
+    const caminho = `produtos/${PRODUTO}/prodshopee/${RASCUNHO}`;
+    // The draft's FIRST update (the lock) lands; every later one (the release) fails.
+    let atualizacoes = 0;
+    const colecao = db.collection.bind(db);
+    h.db.atual = asDb(
+      new Proxy(db, {
+        get(t, prop, r) {
+          if (prop !== 'collection') return Reflect.get(t, prop, r) as unknown;
+          return (colPath: string) => {
+            const col = colecao(colPath);
+            return new Proxy(col, {
+              get(ct, cp, cr) {
+                const original = Reflect.get(ct, cp, cr) as unknown;
+                if (cp !== 'doc') return original;
+                const construirRef = original as typeof ct.doc;
+                return (id?: string) => {
+                  const ref = construirRef(id);
+                  if (ref.path !== caminho) return ref;
+                  return {
+                    ...ref,
+                    update: (
+                      patch: Record<string, unknown>,
+                      pre?: { lastUpdateTime?: unknown },
+                    ) => {
+                      atualizacoes += 1;
+                      return atualizacoes === 1
+                        ? ref.update(patch, pre)
+                        : Promise.reject(Object.assign(new Error('UNAVAILABLE'), { code: 14 }));
+                    },
+                  };
+                };
+              },
+            });
+          };
+        },
+      }),
+    );
+
+    const res = await POST(req(corpoValido({ linkDocId: RASCUNHO }), AUTORIZADO));
+
+    expect(res.status).toBe(409);
+    await expect(res.json()).resolves.toMatchObject({
+      code: CODIGO_RASCUNHO_SHOPEE.contaJaTemAnuncio,
+      vinculos: [{ linkDocId: IRMAO, itemId: null, rascunho: true }],
+    });
+    expect(atualizacoes).toBe(2);
+    expect(rascunhoArmazenado()?.publicacaoEmCurso).toMatchObject({ desde: T0 });
+  });
+
   it('⛔ quase-par: um vínculo PUBLICADO pela mesma rota não toma trava — o 422 de sempre, nenhum publicacaoEmCurso', async () => {
     semearLink(db);
 

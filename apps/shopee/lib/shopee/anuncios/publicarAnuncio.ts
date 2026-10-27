@@ -226,6 +226,7 @@ import {
   ConflitoDeRascunhoShopeeError,
   conferirTravaAntesDoEnvio,
   liberarTravaShopee,
+  liberarTravaShopeeSemSubstituirErro,
   portaoDeEnvio,
   registrarCriacaoIncerta,
   reivindicarRascunhoShopee,
@@ -2084,8 +2085,10 @@ export async function aplicarPublicacao(
           );
         }
         // `nao-criado`: the stamp and the release in ONE token-guarded write —
-        // a lock another run holds now is never cleared nor stamped over.
-        await liberarTravaShopee(deps.db, reserva, carimboDaFalha(deps, falha));
+        // a lock another run holds now is never cleared nor stamped over. A
+        // Firestore failure of that write never replaces Shopee's refusal
+        // below (the stamp is lost with the release; the lock expires).
+        await liberarTravaShopeeSemSubstituirErro(deps.db, reserva, carimboDaFalha(deps, falha));
       } else {
         await carimbarFalhaDePublicacao(deps, { ...falha, produtoId, linkDocId });
       }
@@ -2413,8 +2416,8 @@ function registrarPublicacao(deps: PublicarAnuncioDeps, r: ResultadoPublicacao):
  * (the route's 409) with nothing read beyond the links and nothing sent. Any
  * throw while nothing may have reached Shopee hands the lock back, unstamped
  * (a blocked plan, a photo or taxonomy read failure, the credential warm, the
- * send gate, a lost lock); every other way out is `aplicarPublicacao`'s to
- * decide.
+ * send gate, a lost lock) — best-effort: a failed hand-back never replaces the
+ * error being thrown; every other way out is `aplicarPublicacao`'s to decide.
  *
  * ⚠️ Before that, a live create of a produto the conta holds NO link of MINTS
  * its draft ({@link nomearCriacaoSemVinculo}, K1-5) and continues named. And a
@@ -2444,6 +2447,9 @@ export async function publicarAnuncioShopee(
       deps.resolvedorDeImagens ?? criarResolvedorDePublicacao(deps, alvo.produtoId);
     const contexto = await prepararPublicacao(deps, alvo, resolvedorDeImagens);
     if (contexto === null) {
+      // No error to protect here: a failed release is the ONLY answer, so it
+      // propagates (the reservation is then `encerrada`, so the catch below
+      // does not release a second time).
       if (rascunho !== null) await liberarTravaShopee(deps.db, rascunho.reserva);
       return null;
     }
@@ -2458,9 +2464,11 @@ export async function publicarAnuncioShopee(
     // ⚠️ EVERY error is rethrown; this catch only hands a DRAFT's lock back
     // when nothing that may have reached Shopee is outstanding. Any other
     // `fase` was already decided where it happened — released with its stamp,
-    // claimed, or KEPT on purpose for an outcome nobody can know.
+    // claimed, or KEPT on purpose for an outcome nobody can know. The
+    // hand-back never replaces `err`: a failed release leaves the lock to
+    // expire, and the operator still gets the answer they act on.
     if (rascunho !== null && rascunho.reserva.fase === 'travada') {
-      await liberarTravaShopee(deps.db, rascunho.reserva);
+      await liberarTravaShopeeSemSubstituirErro(deps.db, rascunho.reserva);
     }
     throw err;
   }
