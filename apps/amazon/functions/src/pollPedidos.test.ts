@@ -17,6 +17,7 @@ import {
   FalhaTarefaAmazonError,
   type ImportadorPedidoAmazon,
 } from '../../lib/amazon/notificacoes/notificacao';
+import { importarPedidoAmazon } from '../../lib/amazon/pedidos/importarPedido';
 import type { ResultadoTickPollAmazon } from '../../lib/amazon/pedidos/pollPedidos';
 import { FakeDb, asDb } from '../../lib/amazon/testing/fakeDb';
 import {
@@ -37,8 +38,9 @@ import {
  * in `index.test.ts`.
  *
  * The tick runs REAL (`lib/amazon/pedidos/pollPedidos.ts`) against the fake
- * Firestore; `executarPollPedidosAmazon` and `importadorPedidoAmazon` are spied
- * THROUGH, so a test can hand the root a sentinel importer or a failing tick,
+ * Firestore; `executarPollPedidosAmazon` and the seam's `importadorPedidoAmazon`
+ * (`destinos.ts` since PR 5-e) are spied THROUGH, so a test can hand the root a
+ * sentinel importer, the EMPTY seam (`null`) or a failing tick,
  * and the producer root is a recording double (nothing here enqueues). No
  * network is reachable: the global `fetch` refuses and records.
  */
@@ -61,8 +63,8 @@ vi.mock('./agendador', () => ({
     return h.agendador;
   },
 }));
-vi.mock('../../lib/amazon/notificacoes/notificacao', async (importOriginal) => {
-  const real = await importOriginal<typeof import('../../lib/amazon/notificacoes/notificacao')>();
+vi.mock('../../lib/amazon/notificacoes/destinos', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../../lib/amazon/notificacoes/destinos')>();
   return { ...real, importadorPedidoAmazon: vi.fn(real.importadorPedidoAmazon) };
 });
 vi.mock('../../lib/amazon/pedidos/pollPedidos', async (importOriginal) => {
@@ -71,7 +73,7 @@ vi.mock('../../lib/amazon/pedidos/pollPedidos', async (importOriginal) => {
 });
 
 const { depsDoPollAmazon, pollAmazonOrders } = await import('./pollPedidos');
-const notificacao = await import('../../lib/amazon/notificacoes/notificacao');
+const destinos = await import('../../lib/amazon/notificacoes/destinos');
 const poll = await import('../../lib/amazon/pedidos/pollPedidos');
 
 function rodar(): Promise<void> {
@@ -118,23 +120,28 @@ function resumos(): Record<string, unknown>[] {
   return linhas().filter((l) => l.message === '[amazon] poll de pedidos');
 }
 
-/** A filled importer seam, as step 5 will leave it. */
+/** A sentinel importer in the seam: a run that reaches it must never run it here. */
 function semearImportador(): void {
   const sentinela: ImportadorPedidoAmazon = () => Promise.resolve({ kind: 'importado' });
-  vi.mocked(notificacao.importadorPedidoAmazon).mockReturnValueOnce(sentinela);
+  vi.mocked(destinos.importadorPedidoAmazon).mockReturnValueOnce(sentinela);
+}
+
+/** The EMPTY seam (step 3's state), handed to the root once — the gate code stays. */
+function esvaziarImportador(): void {
+  vi.mocked(destinos.importadorPedidoAmazon).mockReturnValueOnce(null);
 }
 
 describe('pollAmazonOrders — the importer gate the root binds', () => {
-  it('with the EMPTY seam the tick does ZERO Firestore operations — even with the read switch on', async () => {
+  it('with the EMPTY seam (mocked since PR 5-e) the tick does ZERO Firestore operations — even with the read switch on', async () => {
     // The switch ON on purpose: a root that bound `importadorPresente: true`
     // would get past the gate here and list the contas.
     vi.stubEnv('AMAZON_CHAMADAS', 'on');
     seedConta(fake, 'conta-1', { selling_partner_id: SPID_A });
+    esvaziarImportador();
 
     await rodar();
 
-    expect(notificacao.importadorPedidoAmazon).toHaveBeenCalledTimes(1);
-    expect(notificacao.DESTINO_TIPO_AMAZON.pedido).toBeNull();
+    expect(destinos.importadorPedidoAmazon).toHaveBeenCalledTimes(1);
     expect(fake.operacoes).toBe(0);
     expect(fake.leituras).toEqual([]);
     expect(fake.consultas).toEqual([]);
@@ -147,6 +154,20 @@ describe('pollAmazonOrders — the importer gate the root binds', () => {
         contas: 0,
         severity: 'INFO',
       }),
+    ]);
+  });
+
+  it('★ the REAL seam is filled (PR 5-e): with the switch unset the tick stops at the SWITCH — the only gate left — with zero reads', async () => {
+    seedConta(fake, 'conta-1', { selling_partner_id: SPID_A });
+
+    await rodar();
+
+    expect(destinos.importadorPedidoAmazon).toHaveBeenCalledTimes(1);
+    expect(destinos.DESTINO_TIPO_AMAZON.pedido).toBe(importarPedidoAmazon);
+    expect(fake.operacoes).toBe(0);
+    expect(linhas().filter((l) => l.desfecho === 'importador-ausente')).toEqual([]);
+    expect(resumos()).toEqual([
+      expect.objectContaining({ portao: 'chamadas-desligadas', contas: 0, severity: 'INFO' }),
     ]);
   });
 
@@ -295,12 +316,13 @@ describe('depsDoPollAmazon — what the root binds', () => {
   });
 
   it('the importer seam is read from the REAL table, per call — never cached at load', () => {
-    expect(depsDoPollAmazon().importadorPresente).toBe(false);
-    semearImportador();
+    // The real table is filled (PR 5-e) …
     expect(depsDoPollAmazon().importadorPresente).toBe(true);
-    // And back: the sentinel was handed out once.
+    esvaziarImportador();
     expect(depsDoPollAmazon().importadorPresente).toBe(false);
-    expect(notificacao.importadorPedidoAmazon).toHaveBeenCalledTimes(3);
+    // … and back: the empty seam was handed out once.
+    expect(depsDoPollAmazon().importadorPresente).toBe(true);
+    expect(destinos.importadorPedidoAmazon).toHaveBeenCalledTimes(3);
   });
 
   it('a fresh lease owner per run, and the real clock', () => {

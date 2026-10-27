@@ -129,6 +129,10 @@ function deps(ambiente: AmbienteAmazon, agora: number) {
     agora: () => agora,
     logger: espiao.logger,
     importador: null,
+    // No case here reaches a real importer: a CEP lookup is a failure (D11).
+    viaCep: {
+      buscarCep: () => Promise.reject(new Error('teste: nenhuma consulta de CEP é permitida')),
+    },
     increment: (by: number) => FieldValue.increment(by),
   };
   return { deps: d, linhas: espiao.linhas };
@@ -305,6 +309,8 @@ describe.skipIf(!EMULATED)('o pipeline da Amazon no Firestore real (emulador)', 
     expect(r).toEqual({
       resultado: 'done',
       detalhe: 'importado',
+      // The fake's bare kind carries no import report (PR 5-e's dispatch campos).
+      importacao: null,
       contaId: CONTA_RESOLVE,
       amazonOrderId: '900-0000000-0000021',
       origem: ORIGEM_NOTIFICACAO_AMAZON.push,

@@ -42,9 +42,11 @@
  *    Its creation order is the argument (the queue dispatches in order): a row
  *    the second tick had enqueued under any other id would have landed first.
  *
- * ⚠️ NOT covered: the importer (empty until step 5: the dispatched run would
- * defer as `importador-ausente` were its switch on), `onSchedule` (the emulator
- * ignores it), and any real Amazon call (D11).
+ * ⚠️ NOT covered: the importer (filled since step 5, PR 5-e, but the
+ * dispatched run stops at the read switch — `off` in the lane — before it; its
+ * own emulator suite is `lib/amazon/pedidos/importarPedido.firestore.test.ts`,
+ * in-process), `onSchedule` (the emulator ignores it), and any real Amazon call
+ * (D11).
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';

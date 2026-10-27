@@ -16,6 +16,7 @@ import {
   camposDoRegistroDaTarefaAmazon,
   tratarTarefaLeituraAmazon,
 } from '../../lib/amazon/notificacoes/notificacao';
+import { ACAO_ITENS_AMAZON } from '../../lib/amazon/pedidos/itensAmazon';
 import { SEGREDOS_DE_LEITURA_AMAZON, depsDeLeituraAmazon } from './depsLeitura';
 import { getDb } from './lib/admin';
 import { tasksInvokerOptions } from './tasksInvoker';
@@ -29,25 +30,29 @@ import { tasksInvokerOptions } from './tasksInvoker';
 export const DETALHE_TIPO_DESCONHECIDO_AMAZON = 'tipo-desconhecido';
 
 /**
- * The drops that are the pipeline WORKING — the conta is gone, or the order
- * belongs to a seller the conta no longer holds — and so log at INFO. Every
- * OTHER drop loses a notification that nothing will re-drive, with this line as
- * its only trace: `payload-invalido` (a producer/schema mismatch, which the
- * shared core drops with no row), `tipo-desconhecido` (a producer deployed
- * before its consumer), and any drop reason a later step adds until it is
- * listed here — fail loud.
+ * The drops that are the pipeline WORKING — the conta is gone, the order
+ * belongs to a seller the conta no longer holds, or (step 5) the order is not
+ * the BR marketplace's — and so log at INFO. Every OTHER drop loses a
+ * notification that nothing will re-drive, with this line as its only trace:
+ * `payload-invalido` (a producer/schema mismatch, which the shared core drops
+ * with no row), `tipo-desconhecido` (a producer deployed before its consumer),
+ * and any drop reason a later step adds until it is listed here — fail loud.
  */
 const DESCARTES_ESPERADOS_AMAZON: ReadonlySet<string> = new Set<ResultadoNotificacaoAmazon['kind']>(
-  ['conta-inexistente', 'vendedor-mudou'],
+  ['conta-inexistente', 'vendedor-mudou', 'marketplace-estrangeiro'],
 );
 
 /**
  * The dispatch line's severity, by whether a person has to look — not by
  * whether the run "failed". WARNING: `failed` (the hot sweep re-drives it),
- * `parked` (terminal: no sweep ever re-drives it) and every drop outside
- * {@link DESCARTES_ESPERADOS_AMAZON} (the notification is gone). INFO: `done`,
- * `deferred` (the deferred sweep re-drives it) and an expected drop. An alert
- * on WARNING must see the unrecoverable arms, not only the self-healing one.
+ * `parked` (terminal: no sweep ever re-drives it), every drop outside
+ * {@link DESCARTES_ESPERADOS_AMAZON} (the notification is gone), and (step 5) a
+ * `done` import that BLOCKED the order on a D17 divergence
+ * (`itens: divergencia-itens-aprovado`: the pedido waits for a person, the
+ * crítico aviso is the signal and this line the countable one). INFO: every
+ * other `done`, `deferred` (the deferred sweep re-drives it) and an expected
+ * drop. An alert on WARNING must see the unrecoverable arms, not only the
+ * self-healing one.
  */
 function severidadeDaTarefa(r: ResultadoTarefaAmazon): SeveridadeAmazon {
   switch (r.resultado) {
@@ -57,6 +62,7 @@ function severidadeDaTarefa(r: ResultadoTarefaAmazon): SeveridadeAmazon {
     case 'dropped':
       return r.detalhe !== null && DESCARTES_ESPERADOS_AMAZON.has(r.detalhe) ? 'INFO' : 'WARNING';
     case 'done':
+      return r.importacao?.itens === ACAO_ITENS_AMAZON.divergencia ? 'WARNING' : 'INFO';
     case 'deferred':
       return 'INFO';
   }
@@ -84,6 +90,7 @@ async function despachar(
   return {
     resultado: 'dropped',
     detalhe: DETALHE_TIPO_DESCONHECIDO_AMAZON,
+    importacao: null,
     contaId: null,
     amazonOrderId: null,
     origem: null,
@@ -128,9 +135,9 @@ async function despachar(
  *   `roles/cloudtasks.enqueuer` on its queue, applied at deploy time from
  *   `TASKS_INVOKER_SA` (#1133). Absent when unset.
  *
- * In step 3 a `pedido` run makes NO Amazon call: the read switch is off until
- * the window (it defers, before any Firestore read), and once on, the importer
- * seam is still empty (it defers as `importador-ausente`).
+ * A `pedido` run reaches the step-5 order import (`depsLeitura.ts` binds the
+ * filled seam) only past the read switch, which is off until the window (it
+ * defers, before any Firestore read) — so no run calls Amazon before W5.
  */
 // ⚠️ No type argument on the call: `tasks-invoker-inventory.test.js` discovers
 // task functions by the call text, and the untyped call keeps `req.data` at
@@ -158,7 +165,9 @@ export const filaLeituraAmazon = onTaskDispatched(
     // pipeline's boundary). The ids are read off the RAW data one by one, each
     // by grammar — never a spread of the data, and NEVER the seller id. A park,
     // a defer or a failure also writes its reason on the row; `detalhe` is set
-    // only on the arms that leave no document.
+    // only on the arms that leave no document. The step-5 import's report (the
+    // lines' D17 `acao` and the counts: closed codes and numbers only) is null
+    // on every arm without one, so a query keys on one shape.
     const campos = camposDoRegistroDaTarefaAmazon(dados);
     registrarEventoAmazon(
       LOGGER_STDOUT_AMAZON,
@@ -169,6 +178,11 @@ export const filaLeituraAmazon = onTaskDispatched(
         fila: FILA_LEITURA_AMAZON,
         resultado: r.resultado,
         detalhe: r.detalhe,
+        acao: r.importacao?.acao ?? null,
+        itens: r.importacao?.itens ?? null,
+        linhasPreservadas: r.importacao?.linhasPreservadas ?? null,
+        linhasDivergentes: r.importacao?.linhasDivergentes ?? null,
+        linhasSemProduto: r.importacao?.linhasSemProduto ?? null,
         tipo: campos.tipo ?? null,
         origem: r.origem ?? campos.origem ?? null,
         amazonOrderId: r.amazonOrderId ?? campos.amazonOrderId ?? null,

@@ -59,6 +59,17 @@ route is thin. `proxy.ts` allows `GET, POST, OPTIONS`.
   client (`estrutura.test.ts`). Its import closure still reaches the context, the conta reads, the
   park and the package through `./notificacao` and `../env`; no receiver path calls them, and the
   happy path makes no Amazon call and no Firestore operation (`receptor.test.ts`, `prazos.test.ts`).
+- ⚠️ The App Hosting closure (every route, the receptor, its producer `notificacoes/agendador.ts`,
+  `lib/firebase/filaLeitura.ts`, the proxy) NEVER reaches the step-5 importer or its seam, and no
+  app file in it names `@delfrance/core/cep` or builds a ViaCEP client — walked by
+  `estrutura.test.ts` with the `@/` alias and type edges followed. The walk proves APP files
+  only: it leaves packages external, and the ViaCEP module itself is still loaded, inert,
+  through the `@delfrance/schemas` barrel (`enderecoBuilder.ts` imports `ViaCepError` from it).
+  That is why the seam table lives in `notificacoes/destinos.ts` (imported only by the functions
+  roots), the importer's dependency and result types live in `notificacao.ts` (the importer
+  imports them, never the reverse), and the CEP lookup is the STRUCTURAL port
+  `BuscadorCepAmazon` (plan §3 decisions 32 and 48). Never import the importer, `destinos.ts` or
+  `@delfrance/core/cep` into `notificacao.ts`, not even by type.
 
 ## Functions codebase (step 3)
 
@@ -68,10 +79,22 @@ route is thin. `proxy.ts` allows `GET, POST, OPTIONS`.
   default, `FIREBASE_DATABASE_ID`, `TASKS_INVOKER_SA`); `scripts/prepare-deploy.mjs` writes
   `.deploy/amazon-functions`. `firebase.amazon.deploy.json` ships INERT: the deploy is W9, by a
   person, never an agent. `functions/DEPLOY.md` has the prerequisites, the commented-out runtime
-  env and the IAM. ⚠️ The conta trigger `onIntegracaoAmazonChanged` stands outside both INERT
-  switches: it makes no Amazon call and imports no importer, so deployed into a project it writes
+  env and the IAM. ⚠️ The conta trigger `onIntegracaoAmazonChanged` stands outside the read
+  switch: it makes no Amazon call and imports no importer, so deployed into a project it writes
   that project's `int_frete` on any Amazon conta save that moves a mirrored field. It deploys
   only after W12 (`functions/DEPLOY.md`).
+- **The importer seam is FILLED (step 5, PR 5-e):** `lib/amazon/notificacoes/destinos.ts`
+  (`DESTINO_TIPO_AMAZON.pedido` = `importarPedidoAmazon`), read per run by exactly two roots —
+  `src/depsLeitura.ts` (the queue and the reprocess sweep; it also binds `viaCep`, the ONE
+  process-wide `createViaCepClient()`, and is the only app file naming `@delfrance/core/cep`) and
+  `src/pollPedidos.ts` (the poll's importer gate). So the read switch `AMAZON_CHAMADAS` is now the
+  ONLY thing between a deploy and real imports: the pipeline checks it first, the context loader
+  again. A null importer (tests, a future `tipo`) still defers as `importador-ausente`; the motivo
+  stays because rows deferred under it may exist. Tests that need the empty seam MOCK
+  `destinos.ts`'s `importadorPedidoAmazon` to `null` (`mockReturnValueOnce`), never edit the
+  table. `src/index.test.ts` pins the import's recent-cancel window (15 min) above the
+  reprocess sweep's and the queue's `timeoutSeconds` plus a minute, read off `__endpoint`: raise
+  a timeout past it and that test reds (plan §3 decision 12).
 - `src/index.ts` imports `./options` FIRST and ALONE and exports ONLY triggers:
   `filaLeituraAmazon` (the reads queue, = `FILA_LEITURA_AMAZON`, asserted at load),
   `reprocessAmazonNotifications` (both lanes, logged separately), `sweepAmazonExpirations`
@@ -84,9 +107,10 @@ route is thin. `proxy.ts` allows `GET, POST, OPTIONS`.
   `console.`, never an error message (a failed sweep row by document id only). The package
   errors reach the task wrapper's own "Unhandled error" log only through the pipeline's
   sanitizing boundary (`FalhaTarefaAmazonError`). `estrutura.test.ts` widens the `.message`,
-  seller-id, `trechoCorpo`, `testing/` and conta-cache scans to `functions/src`. (The one
-  declared exception is the shared core's warning on `incompleto`, from `packages/data`; see
-  "int_frete binding (step 20)".)
+  seller-id, `trechoCorpo`, `testing/` and conta-cache scans to `functions/src`. (The two
+  declared exceptions, both from `packages/data`: the `int_frete` core's warning on
+  `incompleto` — see "int_frete binding (step 20)" — and the shared handles' soft-read warning,
+  which the order import meets in the cliente resolver — see "Logging (step 2b)".)
 - The two composition roots of the queue, `lib/firebase/filaLeitura.ts` (App Hosting, the
   receiver) and `functions/src/agendador.ts` (the step-4 poll), are the app's only `getFunctions(`
   callers; each reads the region as an object literal of STATIC `process.env` reads (esbuild's
@@ -114,9 +138,14 @@ route is thin. `proxy.ts` allows `GET, POST, OPTIONS`.
   file (anchored name) merely names it (`testing/guardaDaLaneDeTarefas.ts`, proved offline).
   Only code in the vitest process runs past the switch, with `ambiente` `on` as an object
   literal and an injected `fetch`: the resolve case of `notificacao.firestore.test.ts` (a
-  fake importer, a refusing `fetch`; step-3 plan §3 decision 37) and the poll's two suites
+  fake importer, a refusing `fetch`; step-3 plan §3 decision 37), the poll's two suites
   (`searchOrders` served by a scripted `deps.fetch`; `pollPedidos.firestore.test.ts`,
-  `functions/src/pollPedidos.tasks.test.ts`).
+  `functions/src/pollPedidos.tasks.test.ts`) and the order import's
+  (`pedidos/importarPedido.firestore.test.ts`: the REAL importer in-process, `getOrder` served
+  by an injected `fetch`, a fake ViaCEP; the real batch semantics, interleaved importers, the
+  recent-cancel race, the real cliente resolver). With the seam filled (PR 5-e), the DISPATCHED
+  function still stops at the switch (`off` in the job env) before the importer, so no queue
+  round trip in the lane ever reaches it.
 - Every suite's `beforeEach` wipes what it reads (one shared emulator, files run serially), a
   drop is proved by a LATER sentinel row, never by polling for an absence, and an absence only
   after a positive read. The receiver races its enqueue against 2 s, so
@@ -135,9 +164,11 @@ route is thin. `proxy.ts` allows `GET, POST, OPTIONS`.
   leaves the tick through `sanitizarFalhaDaTarefaAmazon` (the scheduler wrapper logs the
   message). `index.test.ts` pins tick budget 240 s < timeout 300 s < lease 360 s < the 900-s
   interval READ off the cron.
-- Two gates, in order, each with ZERO Firestore operations: no importer in the seam (until
-  step 5), then the read switch not exactly `on`. So no poll document, and no bootstrap
-  anchor, can exist before W5.
+- Two gates in the code, in order, each with ZERO Firestore operations: no importer in the seam,
+  then the read switch not exactly `on`. Since step 5 (PR 5-e) the first is permanently OPEN
+  (the seam is filled), so the read switch is the only gate that remains: no poll document, and
+  no bootstrap anchor, can exist before W5. The gate code stays (an emptied seam closes the poll
+  again).
 - `pollPedidosAmazon/{contaId}`: `cursorMs` (ms, Amazon's `lastUpdatedTime`, capped at the
   drain's start − 5 min, advance-only, moved only after a COMPLETE drain with every row valid),
   `pendente` (a stopped drain, resumed byte-identical unless its token is 23 h old), `vistos`
@@ -178,8 +209,8 @@ route is thin. `proxy.ts` allows `GET, POST, OPTIONS`.
   One `evento: 'int-frete'` line per reconcile (field NAMES joined, never a value or the
   `nome`; WARNING on `incompleto`). No `try`/`catch`: Firestore/Zod errors reach the Eventarc
   retry.
-- The order import (step 5, PR 5-d: `lib/amazon/pedidos/importarPedido.ts`, its step 5) is the
-  consumer: it reads the conta's freight doc with
+- The order import (step 5: `lib/amazon/pedidos/importarPedido.ts`, its step 5; wired into the
+  reads queue and the reprocess sweep by PR 5-e) is the consumer: it reads the conta's freight doc with
   `syncIntFreteAmazon.buscarIntFreteDaConta(db, contaId, { apenasAtivo: true })` over RAW bodies,
   uncached and outside any transaction (its answer feeds a write, fill-once on the pedido's
   freight block). Reconciliation never filters `ativo`.
@@ -202,7 +233,20 @@ route is thin. `proxy.ts` allows `GET, POST, OPTIONS`.
   pins all of it.
 - `lib/amazon/avisos/avisos.ts` is the ONLY module that converts a clock to microseconds
   (three conversion sites, counted by its test). The poll's order stamps are µs read
-  straight from Amazon's ISO text (`pedidos/janelaPoll.ts`), never a converted clock.
+  straight from Amazon's ISO text (`pedidos/janelaPoll.ts`), never a converted clock; so is
+  the order import's watermark (`lerInstanteAmazon`, offset REQUIRED), and its "now" is
+  `agoraUsDe` from `avisos.ts`, read ONCE per import. `coerceToMicros`
+  (`pedidoMapeamento.ts`, `freteAmazon.ts`, `pagamentoAmazon.ts`) only READS STORED stamps
+  (legacy ms integers, ISO text) — it is not a clock conversion, and it never reads the wire.
+- The order import (step 5) lives in `lib/amazon/pedidos/` and `lib/amazon/frete/`:
+  `lerPedidoAmazon.ts` (the ONE `getOrder` caller across `lib/`, `app/`, `functions/src` and
+  `scripts/`), `vinculoProdutoAmazon.ts` (link docs only, no SKU fallback), `escritaPedido.ts`
+  (the ONE `.batch(` site) + `escritaPagamento.ts`, `importarPedido.ts` (the orchestration),
+  `incidentesPedidoAmazon.ts`, the PURE mappers (`pedidoMapeamento.ts`, `estadoPedidoAmazon.ts`,
+  `vendaAmazon.ts`, `itensAmazon.ts`, `dinheiroAmazon.ts`, `clienteAmazon.ts`, `freteAmazon.ts`,
+  `pacotesAmazon.ts`, `pagamentoAmazon.ts`, `orderIds.ts`, `codigosPedidoAmazon.ts`, `erros.ts`)
+  and `frete/estadoFreteAmazon.ts` (the ONE freight-estado verdict steps 7, 14 and 15 route
+  through). `estrutura.test.ts` pins the single getOrder caller and the single batch site.
 - The conta cache (`core/contaCache.ts`) is token-free and used by the context
   loader ONLY; the credential is re-read uncached on every request.
 - Routes never import the park (`core/estacionamento.ts`); step 3 is its first caller.
@@ -255,6 +299,23 @@ route is thin. `proxy.ts` allows `GET, POST, OPTIONS`.
   apps/amazon/lib/amazon/testing/especificacaoFolhas.json` (the cache or
   raw.githubusercontent.com, never the SP-API; `OPERACOES_FOLHAS` lists the operations).
   `redacao.test.ts` demands every inventory leaf be classified exactly once.
+- The order import (step 5) writes `evento: 'pedido'` lines (`importarPedido.ts`): one CLOSED
+  code per line (its own `CODIGO_LOG_PEDIDO_AMAZON`, the mappers' events, the skipped first-seen
+  motivos), the order id and counts — never a buyer datum, a price, a `cancelReason`, a token
+  or a tracking number. Its `getOrder` and LWA calls write the ordinary call lines through the
+  context's client. The reads queue's ONE `evento: 'tarefa'` line per dispatch also carries the
+  import's report — `acao`, `itens` (the D17 lines verdict) and `linhasPreservadas`,
+  `linhasDivergentes`, `linhasSemProduto` — null on every arm without one; a `done` import whose
+  `itens` is `divergencia-itens-aprovado` (an order BLOCKED for a person) logs WARNING.
+- ⚠️ A SECOND declared departure from the one-logger rule, beside the `int_frete` core's (see
+  "int_frete binding"): the shared collection handles' SOFT read (`parseRead`, `packages/data`)
+  writes `[data] schema mismatch on <path>` plus the Zod issue list (codes, paths, messages) to
+  stderr when a stored document fails its schema — outside `LOGGER_STDOUT_AMAZON` and outside
+  `estrutura.test.ts`'s reach. The order import meets it on the shared cliente resolver's
+  candidate reads (`findOrCreateCliente`: `clientes/<id>`, a legacy cliente), as well as on the
+  reads this app already had (`lerContaAmazon`'s `integracao/<id>`, `escreverAviso`'s
+  `avisos/<key>`). Its own pedido, pagamento, link and freight reads are RAW (no handle parse).
+  Routing the soft read through an injectable logger is a shared-core change for every channel.
 
 ## Fixtures and captures (step 2b)
 
@@ -339,6 +400,7 @@ no `env:` block.
 | `int_frete` mirror patch and deactivate (step 20) | A (the core's) | the shared core's ONE reconcile transaction (inventoried in `packages/data`): every input from its own `tx.get`s, no event clock, never a delete; this app adds no site |
 | Pedido create / update (step 5, PR 5-d) | 2 (via 1) | ONE `WriteBatch` (`pedidos/escritaPedido.ts`), decided from one `getAll` of the pedido AND its pagamento: `create`, or `update(…, { lastUpdateTime })` on that pedido snapshot; the watermark (`lastMarketplaceUpdate`, µs) compared on it, a strictly older one dropped on a pedido this importer wrote, the accepted value written by the winner; a lost precondition (9/5/6) writes nothing and re-derives from a fresh read, ≤ 3 attempts, then `AmazonPedidoEmConflitoError` (retry). When the pedido's own patch is empty but a pagamento write rides the batch, the pedido's precondition rides a CARRIER (its stored `lastMarketplaceUpdate`, re-written as read). The commit's clock (the per-pedido aviso clock) is the LATEST `writeTime` of the results: the server answers a content-identical carrier with the document's PREVIOUS update time |
 | Pagamento create / update (step 6, PR 6) | 2 (via 1) | in the SAME batch (`pedidos/escritaPagamento.ts`, decided by the pure `pedidos/pagamentoAmazon.ts` from the same snapshot): `create` at the pedido's digest, or `update(…, { lastUpdateTime })` on its own snapshot; the status paired with the pedido estado (`aprovado` ⇔ `pago`, `estornado` ⇔ `estornadoIntegralmente`) and decided TOGETHER with it (`pago` is never written beside a pagamento that stays `estornado`), an operator's status never walked, `estornado` → `aprovado` only on a strictly newer order clock. Whenever the batch writes the pedido and the pagamento EXISTS, the pagamento is proven current too: its own update, or a content-identical CARRIER (one stored field re-written as read, `status_pagamento` first) — every pedido decision reads the pagamento (the CANCELLED predicate, the ladder, `Z`, row 10). ⚠️ Residue: an ABSENT pagamento cannot be guarded without a write, so one created between the read and the commit is not seen by that attempt (the next import re-derives from it) |
+| `freteInicial` estado, the `pacotes[]` diary, `codRastreio` (step 7, PR 7) | rides the batch | re-derived per attempt inside the SAME batch as the pedido (`frete/estadoFreteAmazon.ts`'s forward-only verdict, the package fold computed BEFORE the CANCELLED decision); applied on an EQUAL order clock so a package-only change survives a clock that did not move; a live rung after a failure or a terminal only on a STRICTLY newer clock; an empty diff writes nothing; never on a block whose `externalOptionIntegracao` is not `amz` |
 | First-seen CANCELLED skip (a no-write decision, step 5) | bounded wait | no precondition guards a write that is not made: while the cancellation is younger than 15 min the import throws the retryable `AmazonCancelamentoRecenteError` (every retry re-fetches and re-reads), so no importer holding an older read can still create a reserving pedido afterwards. A first-seen order with any other reversal signal (plan §3 decision 44) waits out the same window for the same reason, then is skipped as `reversao-nao-importada`; one reversed long ago (the cutover look-back) is past the window and skipped at once |
 | Cliente (step 5) | shared | `findOrCreateCliente` — its own transaction in `packages/data`, already inventoried; only the ref rides the batch, fill-once on each attempt's snapshot, and only when the pedido's stored freight endereço (if any) is that cliente's |
 | Endereço (step 5) | 0 | `ensureEndereco`: `create` at the legacy sha1 id under the cliente the pedido will carry, ALREADY_EXISTS swallowed; the ref filled only when it pairs with that attempt's cliente |

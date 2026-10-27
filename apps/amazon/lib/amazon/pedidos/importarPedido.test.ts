@@ -146,6 +146,8 @@ function antesDeAgora(ms: number): string {
 interface Execucao {
   readonly h: HarnessImportador;
   agoras: number;
+  /** The CEP lookup the next `deps()` hands in: a null-answering fake unless a test swaps it. */
+  viaCep: DepsImportadorAmazon['viaCep'];
   deps(registro?: ReturnType<typeof registroTeste>): DepsImportadorAmazon;
   importar(
     corpo: Record<string, unknown>,
@@ -158,6 +160,7 @@ function montar(): Execucao {
   const ex: Execucao = {
     h,
     agoras: 0,
+    viaCep: { buscarCep: () => Promise.resolve(null) },
     deps: (registro = registroTeste(0)) => ({
       agora: () => {
         ex.agoras += 1;
@@ -165,7 +168,7 @@ function montar(): Execucao {
       },
       increment,
       logger: h.log.logger,
-      viaCep: { buscarCep: () => Promise.resolve(null) },
+      viaCep: ex.viaCep,
       registro,
     }),
     async importar(corpo, opcoes = {}) {
@@ -463,6 +466,57 @@ describe('★ the cliente and the endereço — approved orders only, fill-once,
     const ex = montar();
     await ex.importar(pedido({ status: 'PENDING' }));
     expect(incidente(ex, 'amz-cliente-sem-identidade')).toBeUndefined();
+  });
+
+  it('★ an unknown UF is recovered through deps.viaCep — the INJECTED lookup, once, with the order’s CEP — and the endereço stores the recovered estado', async () => {
+    const ex = montar();
+    const consultas: string[] = [];
+    ex.viaCep = {
+      buscarCep: (cep) => {
+        consultas.push(cep);
+        return Promise.resolve({
+          logradouro: 'Rua Ficticia',
+          bairro: 'Centro',
+          cidade: 'Cidade Ficticia',
+          estado: 'MG',
+          codigoMunicipio: '0000000',
+        });
+      },
+    };
+    const extra = comprador();
+    const recipient = extra.recipient as { deliveryAddress: Record<string, unknown> };
+    recipient.deliveryAddress.stateOrRegion = 'Estado Inexistente';
+    const r = await ex.importar(pedido({ status: 'UNSHIPPED', extra }));
+    expect(r.kind).toBe('importado');
+    expect(consultas).toEqual(['01000000']);
+    expect(m.ensureEndereco).toHaveBeenCalledTimes(1);
+    expect(m.ensureEndereco.mock.calls[0]?.[2]).toMatchObject({ estado: 'MG', cep: '01000000' });
+    // Recovered, so no `uf-nao-resolvida` line.
+    expect(linhasPedido(ex).map((l) => l.codigo)).not.toContain('uf-nao-resolvida');
+  });
+
+  it('NEAR-MISS: a MAPPED UF never calls the lookup; a lookup that answers nothing keeps the AC fallback and logs uf-nao-resolvida', async () => {
+    const ex = montar();
+    const consultas: string[] = [];
+    ex.viaCep = {
+      buscarCep: (cep) => {
+        consultas.push(cep);
+        return Promise.resolve(null);
+      },
+    };
+    await ex.importar(pedido({ status: 'UNSHIPPED', extra: comprador() }));
+    expect(consultas).toEqual([]);
+    expect(m.ensureEndereco.mock.calls[0]?.[2]).toMatchObject({ estado: 'SP' });
+
+    const outra = montar();
+    outra.viaCep = ex.viaCep;
+    const extra = comprador();
+    const recipient = extra.recipient as { deliveryAddress: Record<string, unknown> };
+    recipient.deliveryAddress.stateOrRegion = 'Estado Inexistente';
+    await outra.importar(pedido({ status: 'UNSHIPPED', extra }));
+    expect(consultas).toEqual(['01000000']);
+    expect(m.ensureEndereco.mock.calls[1]?.[2]).toMatchObject({ estado: 'AC' });
+    expect(linhasPedido(outra).map((l) => l.codigo)).toContain('uf-nao-resolvida');
   });
 
   it('the shared resolver’s "no strong identity" is caught NARROWLY; anything else rethrows (rule 6)', async () => {

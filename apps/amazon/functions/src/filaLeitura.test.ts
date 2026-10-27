@@ -15,6 +15,7 @@ import type {
   ImportadorPedidoAmazon,
   PayloadNotificacaoAmazon,
 } from '../../lib/amazon/notificacoes/notificacao';
+import { importarPedidoAmazon } from '../../lib/amazon/pedidos/importarPedido';
 import { FakeDb, asDb } from '../../lib/amazon/testing/fakeDb';
 import {
   AGORA_MS,
@@ -37,9 +38,9 @@ import {
  *
  * The channel's pipeline runs REAL (the read switch, the routing read, the
  * context loader, the shared core) against the fake Firestore;
- * `tratarTarefaLeituraAmazon` and `importadorPedidoAmazon` are only spied
- * through, so a test can see what the root passed and hand it a sentinel
- * importer. The declared options live in `index.test.ts`. No network is
+ * `tratarTarefaLeituraAmazon` and the seam's `importadorPedidoAmazon`
+ * (`destinos.ts` since PR 5-e) are only spied through, so a test can see what
+ * the root passed and hand it a sentinel importer — or `null`, the empty seam. The declared options live in `index.test.ts`. No network is
  * reachable (D11): every `fetch` is refused and counted.
  */
 const originalTasksInvokerSa = process.env.TASKS_INVOKER_SA;
@@ -55,15 +56,31 @@ vi.mock('./lib/admin', () => ({
 
 vi.mock('../../lib/amazon/notificacoes/notificacao', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../lib/amazon/notificacoes/notificacao')>();
+  return { ...real, tratarTarefaLeituraAmazon: vi.fn(real.tratarTarefaLeituraAmazon) };
+});
+vi.mock('../../lib/amazon/notificacoes/destinos', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../../lib/amazon/notificacoes/destinos')>();
+  return { ...real, importadorPedidoAmazon: vi.fn(real.importadorPedidoAmazon) };
+});
+// Every ViaCEP client built through the module's export, recorded OUTSIDE a
+// `vi.fn` so `vi.clearAllMocks` cannot wipe the module-load call: the root must
+// bind the REAL client it built, not a stub that answers nothing.
+const viaCep = vi.hoisted(() => ({ criados: [] as unknown[] }));
+vi.mock('@delfrance/core/cep', async (importOriginal) => {
+  const real = await importOriginal<typeof import('@delfrance/core/cep')>();
   return {
     ...real,
-    importadorPedidoAmazon: vi.fn(real.importadorPedidoAmazon),
-    tratarTarefaLeituraAmazon: vi.fn(real.tratarTarefaLeituraAmazon),
+    createViaCepClient: (...args: Parameters<typeof real.createViaCepClient>) => {
+      const cliente = real.createViaCepClient(...args);
+      viaCep.criados.push(cliente);
+      return cliente;
+    },
   };
 });
 
 const { DETALHE_TIPO_DESCONHECIDO_AMAZON, filaLeituraAmazon } = await import('./filaLeitura');
 const notificacao = await import('../../lib/amazon/notificacoes/notificacao');
+const destinos = await import('../../lib/amazon/notificacoes/destinos');
 
 afterAll(() => {
   if (originalTasksInvokerSa === undefined) delete process.env.TASKS_INVOKER_SA;
@@ -171,6 +188,12 @@ describe('a `pedido` task', () => {
       fila: 'filaLeituraAmazon',
       resultado: 'deferred',
       detalhe: null,
+      // The step-5 import's report: null on every arm without one (one shape).
+      acao: null,
+      itens: null,
+      linhasPreservadas: null,
+      linhasDivergentes: null,
+      linhasSemProduto: null,
       tipo: 'pedido',
       origem: 'push',
       amazonOrderId: PEDIDO,
@@ -210,9 +233,15 @@ describe('a `pedido` task', () => {
     // The app's ONE logger — never firebase-functions' and never console.
     expect(deps?.logger).toBe(LOGGER_STDOUT_AMAZON);
     expect(deps?.fetch).toBeUndefined();
-    // The seam, read per dispatch, and still empty in step 3.
-    expect(notificacao.importadorPedidoAmazon).toHaveBeenCalledTimes(1);
-    expect(deps?.importador).toBeNull();
+    // The seam, read per dispatch: the step-5 order import (PR 5-e).
+    expect(destinos.importadorPedidoAmazon).toHaveBeenCalledTimes(1);
+    expect(deps?.importador).toBe(importarPedidoAmazon);
+    // …with its CEP lookup, the root's one process-wide client: built ONCE, at
+    // module load, by the real `createViaCepClient` — and that very object is
+    // what the pipeline gets (a stub answering `null` would silently turn the
+    // UF recovery off and store every unknown-UF endereço as AC).
+    expect(viaCep.criados).toHaveLength(1);
+    expect(deps?.viaCep).toBe(viaCep.criados[0]);
 
     const antes = Date.now();
     const agora = deps?.agora();
@@ -224,6 +253,22 @@ describe('a `pedido` task', () => {
     expect((incremento as FieldValue).isEqual(FieldValue.increment(3))).toBe(true);
     // NEAR-MISS: the step is passed through, not fixed at 1.
     expect((incremento as FieldValue).isEqual(FieldValue.increment(1))).toBe(false);
+  });
+
+  it('★ D11 with the FILLED seam and the switch unset: the task DEFERS at the switch — never importador-ausente, no read, no call', async () => {
+    // The real seam (no mock override): the order import is bound, and the read
+    // switch — checked first — is the only gate left before the window (W5).
+    await rodar({ data: push(), retryCount: 0, id: 'tarefa-10' });
+
+    const deps = vi.mocked(notificacao.tratarTarefaLeituraAmazon).mock.calls[0]?.[2];
+    expect(deps?.importador).toBe(importarPedidoAmazon);
+    expect(fake.leituras).toEqual([]);
+    expect(fake.consultas).toEqual([]);
+    const caminho = `${COLECAO}/${notificacao.docIdNotificacaoAmazon(push())}`;
+    expect(fake.ler(caminho)).toMatchObject({
+      status: 'deferred',
+      erro: 'adiado/chamadas-desligadas',
+    });
   });
 
   it('a missing retryCount is attempt 0 and a missing id is null — never undefined in the log', async () => {
@@ -253,7 +298,7 @@ describe('the importer binding and the final attempt', () => {
       importados.push(payload);
       return Promise.resolve({ kind: 'importado' });
     };
-    vi.mocked(notificacao.importadorPedidoAmazon).mockReturnValueOnce(sentinela);
+    vi.mocked(destinos.importadorPedidoAmazon).mockReturnValueOnce(sentinela);
 
     await rodar({ data: push(), retryCount: 0, id: 'tarefa-3' });
 
@@ -284,7 +329,7 @@ describe('the importer binding and the final attempt', () => {
           new TypeError('rede-causa-fora-do-log'),
         ),
       );
-    vi.mocked(notificacao.importadorPedidoAmazon).mockReturnValue(falha);
+    vi.mocked(destinos.importadorPedidoAmazon).mockReturnValue(falha);
 
     // What the task wrapper's own "Unhandled error" line would `util.format`:
     // the sanitized error, with no credential ref, no path and no cause.
@@ -346,7 +391,7 @@ describe("the line's severity — WARNING exactly when nothing will re-drive the
 
   afterEach(() => {
     // `mockReturnValue` outlives `vi.clearAllMocks`: put the real seam back.
-    vi.mocked(notificacao.importadorPedidoAmazon).mockReset();
+    vi.mocked(destinos.importadorPedidoAmazon).mockReset();
   });
 
   const naoEncontrado: ImportadorPedidoAmazon = () =>
@@ -397,13 +442,69 @@ describe("the line's severity — WARNING exactly when nothing will re-drive the
       { resultado: 'dropped', detalhe: 'vendedor-mudou', severity: 'INFO' },
     ],
     [
-      'the empty importer seam ⇒ DEFERRED',
+      'the empty importer seam (mocked null since PR 5-e) ⇒ DEFERRED',
       push(),
       null,
       { resultado: 'deferred', detalhe: null, severity: 'INFO' },
     ],
+    [
+      'a non-BR order ⇒ an EXPECTED drop (step 5)',
+      push(),
+      () => Promise.resolve({ kind: 'marketplace-estrangeiro' }),
+      { resultado: 'dropped', detalhe: 'marketplace-estrangeiro', severity: 'INFO' },
+    ],
+    [
+      'an import that BLOCKED the order on a D17 divergence ⇒ done, but a WARNING: a person must look',
+      push(),
+      () =>
+        Promise.resolve({
+          kind: 'importado',
+          detalhe: {
+            acao: 'atualizado',
+            itens: 'divergencia-itens-aprovado',
+            linhasPreservadas: 0,
+            linhasDivergentes: 2,
+            linhasSemProduto: 0,
+          },
+        }),
+      {
+        resultado: 'done',
+        detalhe: 'importado',
+        acao: 'atualizado',
+        itens: 'divergencia-itens-aprovado',
+        linhasPreservadas: 0,
+        linhasDivergentes: 2,
+        linhasSemProduto: 0,
+        severity: 'WARNING',
+      },
+    ],
+    [
+      'NEAR-MISS: an import whose lines were kept on a reversal ⇒ done, INFO, the counts on the line',
+      push(),
+      () =>
+        Promise.resolve({
+          kind: 'sem-mudanca',
+          detalhe: {
+            acao: null,
+            itens: 'itens-preservados-reversao',
+            linhasPreservadas: 3,
+            linhasDivergentes: 0,
+            linhasSemProduto: 1,
+          },
+        }),
+      {
+        resultado: 'done',
+        detalhe: 'sem-mudanca',
+        acao: null,
+        itens: 'itens-preservados-reversao',
+        linhasPreservadas: 3,
+        linhasDivergentes: 0,
+        linhasSemProduto: 1,
+        severity: 'INFO',
+      },
+    ],
   ])('%s', async (_caso, dados, importador, esperado) => {
-    vi.mocked(notificacao.importadorPedidoAmazon).mockReturnValue(importador);
+    vi.mocked(destinos.importadorPedidoAmazon).mockReturnValue(importador);
 
     await rodar({ data: dados, retryCount: 0, id: 'tarefa-8' });
 
@@ -411,7 +512,7 @@ describe("the line's severity — WARNING exactly when nothing will re-drive the
   });
 
   it('the parked arm really parked a row (anti-vacuity for its WARNING)', async () => {
-    vi.mocked(notificacao.importadorPedidoAmazon).mockReturnValue(naoEncontrado);
+    vi.mocked(destinos.importadorPedidoAmazon).mockReturnValue(naoEncontrado);
 
     await rodar({ data: push(), retryCount: 0, id: 'tarefa-9' });
 
