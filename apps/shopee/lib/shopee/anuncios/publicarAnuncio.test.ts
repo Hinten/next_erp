@@ -43,7 +43,11 @@ import { FakeDb, asDb, grpc } from '../testing/fakeDb';
 import { listarTabelasDaCategoria } from '../tabelaMedidas/listarTabelasMedidas';
 import { construirIndice } from '../taxonomia/categorias';
 import { __setShopeeTaxonomiaClockForTests, type ShopeeTaxonomiaCtx } from '../taxonomia/cache';
-import { CriacaoDeAnuncioIncertaError, mensagemDoAnuncioIncerto } from './criacaoIncerta';
+import {
+  CriacaoDeAnuncioIncertaError,
+  mensagemDoAnuncioIncerto,
+  skuDaBuscaShopee,
+} from './criacaoIncerta';
 import {
   ETAPA_PUBLICACAO,
   MOTIVO_PROBLEMA_PUBLICACAO,
@@ -3470,11 +3474,12 @@ describe('publicarAnuncioShopee — o RASCUNHO sob a trava (#1911, D4/D15)', () 
       };
 
       const err = await falhaDe(
-        // The send gate is the subject: the P5b look-up is pinned in its own describe.
+        // The send gate is the subject: the P5b look-up is skipped as if ENSURE had
+        // searched this body's SKU (both halves pinned in their own describe).
         aplicarPublicacao(d, comTaxInfo, {
           reserva: travada.reserva,
           controles,
-          verificarAnuncioExistente: false,
+          skuJaBuscado: skuDaBuscaShopee(comTaxInfo.item.criar.item_sku),
         }),
       );
 
@@ -3600,11 +3605,12 @@ describe('publicarAnuncioShopee — o RASCUNHO sob a trava (#1911, D4/D15)', () 
       };
 
       const err = await falhaDe(
-        // The send gate is the subject: the P5b look-up is pinned in its own describe.
+        // The send gate is the subject: the P5b look-up is skipped as if ENSURE had
+        // searched this body's SKU (both halves pinned in their own describe).
         aplicarPublicacao(d, comTaxInfo, {
           reserva: travada.reserva,
           controles,
-          verificarAnuncioExistente: false,
+          skuJaBuscado: skuDaBuscaShopee(comTaxInfo.item.criar.item_sku),
         }),
       );
 
@@ -4488,6 +4494,229 @@ describe('publicarAnuncioShopee — o RASCUNHO sob a trava (#1911, D4/D15)', () 
 
       expect(r?.itemId).toBe(ITEM_ID);
       expect(fake.ops.filter((o) => o === 'get_item_list')).toHaveLength(1);
+    });
+
+    /* ---- batch-A review: a listed row with NO base row is a doubt ---------- */
+
+    it('⛔ (batch-A) um anúncio LISTADO cuja base a Shopee não devolveu ⇒ 422 busca-de-anuncio-existente-incompleta nomeando-o, ZERO add_item, trava devolvida sem carimbo', async () => {
+      const db = new FakeDb();
+      semearCatalogo(db);
+      semearRascunho(db);
+      const fake = clienteFake({
+        getItemList: () => listaDaJanela([ITEM_ALHEIO]),
+        // Only the created listing's read-back would answer; ITEM_ALHEIO never does.
+        getItemBaseInfo: (p) =>
+          baseInfo(p.itemIds.map((id) => (id === ITEM_ID ? linhaDeLeitura() : null))),
+        addItem: () => ecoDeItem(),
+      });
+
+      const err = await falhaDe(
+        publicarAnuncioShopee(depsDoRascunho(db, fake), entrada({ linkDocId: RASCUNHO })),
+      );
+
+      expect(err).toBeInstanceOf(ShopeePublishBlockedError);
+      const bloqueio = err as ShopeePublishBlockedError;
+      expect(bloqueio.motivo).toBe(MOTIVO_PUBLICACAO_BLOQUEADA.buscaDeAnuncioExistenteIncompleta);
+      expect(bloqueio.problemas[0]?.mensagem).toContain(String(ITEM_ALHEIO));
+      expect(fake.ops).not.toContain('add_item');
+      const rascunho = doRascunho(db);
+      expect(rascunho).toMatchObject({ item_id: null, publicacaoEmCurso: null });
+      expect(rascunho?.falhaPublicacao ?? null).toBeNull();
+    });
+
+    it('⛔ quase-par (batch-A): o MESMO anúncio listado, com a base DEVOLVIDA e OUTRO SKU ⇒ publica', async () => {
+      const db = new FakeDb();
+      semearCatalogo(db);
+      semearRascunho(db);
+      const fake = clienteFake({
+        ...lojaCom([anuncioDaLoja(ITEM_ALHEIO, 'OUTRO-SKU')]),
+        addItem: () => ecoDeItem(),
+      });
+
+      const r = await publicarAnuncioShopee(
+        depsDoRascunho(db, fake),
+        entrada({ linkDocId: RASCUNHO }),
+      );
+
+      expect(r?.itemId).toBe(ITEM_ID);
+      expect(fake.ops.filter((o) => o === 'add_item')).toHaveLength(1);
+    });
+
+    /* ---- batch-A review: ENSURE covers ONLY the fold it searched ----------- */
+
+    /**
+     * Renames the produto's SKU right AFTER the first read of it that follows
+     * the lock write — ENSURE's read — so `preparar`'s later read (and the body)
+     * carries `novoSku`: the race the reservation's `skuBuscadoNaReserva` closes.
+     */
+    function renomearSkuDepoisDoEnsure(db: FakeDb, novoSku: string | null): void {
+      let travado = false;
+      let renomeado = false;
+      const patches = db.patches.push.bind(db.patches);
+      db.patches.push = (...e) => {
+        for (const w of e) {
+          const trava = (w.patch as Record<string, unknown>).publicacaoEmCurso;
+          if (w.path === CAMINHO_RASCUNHO && trava !== null && trava !== undefined) travado = true;
+        }
+        return patches(...e);
+      };
+      const leituras = db.opLog.push.bind(db.opLog);
+      db.opLog.push = (...e) => {
+        const n = leituras(...e);
+        if (
+          travado &&
+          !renomeado &&
+          e.some((o) => o.op === 'get' && o.path === `produtos/${PAI}`)
+        ) {
+          renomeado = true;
+          db.seed(`produtos/${PAI}`, { ...db.store[`produtos/${PAI}`]!.data, sku: novoSku });
+        }
+        return n;
+      };
+    }
+
+    it('⛔ (batch-A) o SKU RENOMEADO entre a reserva (ENSURE buscou CAM-BR) e o preparar (o corpo envia CAM-NOVO), com um anúncio SEM vínculo de CAM-NOVO ⇒ 422 anuncio-existente-sem-vinculo, ZERO add_item', async () => {
+      const db = new FakeDb();
+      semearCatalogo(db);
+      semearRascunho(db, { criacaoIncertaDesde: AGORA - 600_000 });
+      renomearSkuDepoisDoEnsure(db, 'CAM-NOVO');
+      // ENSURE ignores it (another REPORTED SKU); the first create's look-up must not.
+      const fake = clienteFake({
+        ...lojaCom([anuncioDaLoja(ITEM_ALHEIO, 'CAM-NOVO')]),
+        addItem: () => ecoDeItem(),
+      });
+
+      const err = await falhaDe(
+        publicarAnuncioShopee(depsDoRascunho(db, fake), entrada({ linkDocId: RASCUNHO })),
+      );
+
+      expect((err as ShopeePublishBlockedError).motivo).toBe(
+        MOTIVO_PUBLICACAO_BLOQUEADA.anuncioExistenteSemVinculo,
+      );
+      expect((err as ShopeePublishBlockedError).problemas[0]?.acao).toMatchObject({
+        itemIds: [ITEM_ALHEIO],
+      });
+      expect(fake.ops).not.toContain('add_item');
+      // ENSURE's walk, THEN the body's.
+      expect(fake.ops.filter((o) => o === 'get_item_list')).toHaveLength(2);
+      expect(doRascunho(db)?.publicacaoEmCurso).toBeNull();
+    });
+
+    it("⛔ quase-par (batch-A): o SKU NÃO mudou — o produto ' CAM-BR ' (com espaços) e o corpo 'CAM-BR' são a MESMA dobra ⇒ UMA busca só (a do ENSURE), e publica", async () => {
+      const db = new FakeDb();
+      semearCatalogo(db, { sku: '  CAM-BR ' });
+      semearRascunho(db, { criacaoIncertaDesde: AGORA - 600_000 });
+      // A same-SKU listing created BEFORE the window: ENSURE ignores it, and the
+      // first create's look-up — which would refuse it — must not run again.
+      const velho = linhaDeLeitura({
+        item_id: ITEM_ALHEIO,
+        item_sku: 'CAM-BR',
+        create_time: Math.floor((AGORA - 86_400_000) / 1000),
+        tag: { kit: false },
+      });
+      const fake = clienteFake({ ...lojaCom([velho]), addItem: () => ecoDeItem() });
+
+      const r = await publicarAnuncioShopee(
+        depsDoRascunho(db, fake),
+        entrada({ linkDocId: RASCUNHO }),
+      );
+
+      expect(r?.itemId).toBe(ITEM_ID);
+      expect(fake.ops.filter((o) => o === 'get_item_list')).toHaveLength(1);
+      expect(fake.corpos[0]?.item_sku).toBe('CAM-BR');
+    });
+
+    it('⛔ (batch-A) o caminho ATESTADO sem SKU (ENSURE não buscou nada) + um SKU que aparece antes do preparar ⇒ a busca roda no CORPO: 422 anuncio-existente-sem-vinculo', async () => {
+      const db = new FakeDb();
+      semearCatalogo(db, { sku: null });
+      semearRascunho(db, { criacaoIncertaDesde: AGORA - 600_000 });
+      renomearSkuDepoisDoEnsure(db, 'CAM-BR');
+      const fake = clienteFake({
+        ...lojaCom([anuncioDaLoja(ITEM_ALHEIO, 'CAM-BR')]),
+        addItem: () => ecoDeItem(),
+      });
+
+      const err = await falhaDe(
+        publicarAnuncioShopee(
+          depsDoRascunho(db, fake, aoVivo({ confirmarCriacaoIncerta: true })),
+          entrada({ linkDocId: RASCUNHO }),
+        ),
+      );
+
+      expect((err as ShopeePublishBlockedError).motivo).toBe(
+        MOTIVO_PUBLICACAO_BLOQUEADA.anuncioExistenteSemVinculo,
+      );
+      expect(fake.ops).not.toContain('add_item');
+      // ENSURE never scanned (SKU-less, attested): the ONE walk is the body's.
+      expect(fake.ops.filter((o) => o === 'get_item_list')).toHaveLength(1);
+    });
+
+    it('(batch-A) aplicarPublicacao compara na DOBRA: um corpo com espaços nas pontas é a busca já feita; OUTRA dobra roda a busca no corpo', async () => {
+      async function aplicarCom(skuJaBuscado: string | null) {
+        const db = new FakeDb();
+        semearCatalogo(db);
+        semearRascunho(db);
+        const fake = clienteFake({
+          ...lojaCom([anuncioDaLoja(ITEM_ALHEIO, 'CAM-BR')]),
+          addItem: () => ecoDeItem(),
+        });
+        const controles = aoVivo();
+        const d = deps(db, fake, { aoVivo: controles });
+        const travada = await reservarRascunhoShopee(
+          asDb(db),
+          { integracaoId: INTEGRACAO, produtoId: PAI, linkDocId: RASCUNHO },
+          controles,
+          { client: fake.client, nowMs: AGORA },
+        );
+        if (travada.tipo !== 'travada') throw new Error('fixture: o rascunho deveria travar');
+        const { plano } = await planejar(db, fake, {}, { linkDocId: RASCUNHO });
+        // A body the planner never builds (it trims), pinned on purpose: the
+        // comparison lives in the fold's space, never the raw string's.
+        const acolchoado: PlanoPublicacao = {
+          ...plano,
+          item: { ...plano.item, criar: { ...plano.item.criar, item_sku: ' CAM-BR ' } },
+        };
+        const ops = fake.ops.length;
+        const r = await aplicarPublicacao(d, acolchoado, {
+          reserva: travada.reserva,
+          controles,
+          skuJaBuscado,
+        }).then(
+          (v) => v,
+          (e: unknown) => e,
+        );
+        return { r, buscas: fake.ops.slice(ops).filter((o) => o === 'get_item_list').length };
+      }
+
+      const mesma = await aplicarCom('CAM-BR');
+      expect(mesma.buscas).toBe(0);
+      expect(mesma.r).toMatchObject({ itemId: ITEM_ID });
+
+      // ⛔ quase-par: ENSURE searched ANOTHER fold ⇒ the body is looked up — and refused.
+      const outra = await aplicarCom('CAM-VELHO');
+      expect(outra.buscas).toBe(1);
+      expect((outra.r as ShopeePublishBlockedError).motivo).toBe(
+        MOTIVO_PUBLICACAO_BLOQUEADA.anuncioExistenteSemVinculo,
+      );
+    });
+
+    it('⛔ quase-par (batch-A): o caminho ATESTADO sem SKU e o corpo também SEM SKU ⇒ a busca do corpo custa ZERO chamadas, e o add_item sai', async () => {
+      const db = new FakeDb();
+      semearCatalogo(db, { sku: null });
+      semearRascunho(db, { criacaoIncertaDesde: AGORA - 600_000 });
+      const fake = clienteFake({
+        ...lojaCom([anuncioDaLoja(ITEM_ALHEIO, 'CAM-BR')]),
+        addItem: () => ecoDeItem(),
+      });
+
+      const r = await publicarAnuncioShopee(
+        depsDoRascunho(db, fake, aoVivo({ confirmarCriacaoIncerta: true })),
+        entrada({ linkDocId: RASCUNHO }),
+      );
+
+      expect(r?.itemId).toBe(ITEM_ID);
+      expect(fake.ops).not.toContain('get_item_list');
+      expect(fake.ops.filter((o) => o === 'add_item')).toHaveLength(1);
     });
 
     it('⛔ o DRY RUN (preparar + planejar) nunca busca: nenhum get_item_list', async () => {

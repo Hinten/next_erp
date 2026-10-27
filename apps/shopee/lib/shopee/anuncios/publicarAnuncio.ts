@@ -69,7 +69,9 @@
  * `anuncio-existente-de-outro-produto`, an incomplete scan
  * `busca-de-anuncio-existente-incompleta` — nothing sent, the lock handed
  * back. This produto's own listing is D15's (excluded); a body with no SKU
- * scans nothing; an `incerta` draft ran ENSURE instead. The dry run never
+ * scans nothing; an `incerta` draft ran ENSURE instead — for the fold ENSURE
+ * searched only: a SKU renamed between the reservation and `preparar` is
+ * looked up here on the body (batch-A review). The dry run never
  * reaches it (it takes no lock and applies nothing).
  *
  * ## ⚠️ An UNCERTAIN first create is remembered, then LOOKED FOR (#1911, D5)
@@ -1792,8 +1794,9 @@ class ColetorDeAviso {
  * `add_item` failure is CLASSIFIED (`desfechoDeCriacaoDeItem`): `nao-criado` ⇒
  * the stamp and the release in ONE token-guarded write; `incerto` ⇒ no stamp,
  * the lock KEPT, the raw error rethrown — never a "Shopee refused" for a create
- * that may exist. And when the reservation found the draft `livre`
- * ({@link PublicacaoDeRascunho.verificarAnuncioExistente}), the FIRST create's
+ * that may exist. And unless the reservation's ENSURE already searched the
+ * very SKU fold the body sends
+ * ({@link PublicacaoDeRascunho.skuJaBuscado}), the FIRST create's
  * same-SKU look-up runs before all of that, outside the step-2 `try` (#1911
  * P5b): its refusal is a `ShopeePublishBlockedError`, its Shopee failure
  * propagates unclassified and unstamped, and its calls count into
@@ -1860,8 +1863,15 @@ export async function aplicarPublicacao(
   // Under the lock, after D15, BEFORE the `try`: a refusal is a blocked
   // refusal with nothing sent, and a scan's Shopee failure propagates
   // untouched — never classified as an `add_item` outcome nor stamped (the
-  // caller hands the lock back, `fase` still `travada`).
-  if (!plano.ehAtualizacao && rascunho !== null && rascunho.verificarAnuncioExistente) {
+  // caller hands the lock back, `fase` still `travada`). Skipped ONLY when
+  // this run's ENSURE already searched the very fold the body sends: the
+  // produto is read again after the reservation, and a SKU renamed in
+  // between was never looked up (batch-A review, rule 7).
+  if (
+    !plano.ehAtualizacao &&
+    rascunho !== null &&
+    skuDaBuscaShopee(plano.item.criar.item_sku) !== rascunho.skuJaBuscado
+  ) {
     const verificacao = await verificarAnuncioExistenteShopee(deps.client, deps.db, {
       integracaoId: deps.integracaoId,
       produtoId,
@@ -2156,12 +2166,15 @@ export interface PublicacaoDeRascunho {
   readonly reserva: ReservaDeRascunhoShopee;
   readonly controles: ControlesDaPublicacaoAoVivo;
   /**
-   * #1911 P5b: run the FIRST create's same-SKU look-up
-   * (`verificarAnuncioExistenteShopee`) before the send. `true` exactly when
-   * the reservation found the draft `livre`; an `incerta` draft's run already
-   * searched (ENSURE — Lucas, 2026-10-26: that path is not scanned twice).
+   * #1911 P5b: the SKU fold this run's ENSURE already searched under this
+   * lock (the reservation's `skuBuscadoNaReserva`), or `null` when none was —
+   * a `livre` draft, or the attested SKU-less proceed. The FIRST create's
+   * same-SKU look-up (`verificarAnuncioExistenteShopee`) is skipped ONLY when
+   * the planned body sends exactly this fold (Lucas, 2026-10-26: that path is
+   * not scanned twice); any other body — a SKU renamed between the
+   * reservation and `preparar` included (batch-A review) — is looked up.
    */
-  readonly verificarAnuncioExistente: boolean;
+  readonly skuJaBuscado: string | null;
 }
 
 /**
@@ -2514,7 +2527,7 @@ async function reservarSeForRascunho(
     rascunho: {
       reserva: desfecho.reserva,
       controles: deps.aoVivo,
-      verificarAnuncioExistente: !desfecho.buscouCriacaoIncerta,
+      skuJaBuscado: desfecho.skuBuscadoNaReserva,
     },
   };
 }

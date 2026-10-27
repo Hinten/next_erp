@@ -26,7 +26,12 @@ import {
 } from '../fixtures/wireCorpus';
 import { FakeDb, asDb } from '../testing/fakeDb';
 import { MAX_PAGINAS_BUSCA_KIT, STATUS_BUSCA_KIT } from './constantesKit';
-import { localizarKitsPorSku, varrerListaDeItensShopee } from './localizarKitPorSku';
+import {
+  fraseDaBaseInfoNaoDevolvida,
+  localizarItensPorSku,
+  localizarKitsPorSku,
+  varrerListaDeItensShopee,
+} from './localizarKitPorSku';
 
 /* --------------------------------- fixtures -------------------------------- */
 
@@ -151,6 +156,7 @@ describe('localizarKitsPorSku — over the REAL capture', () => {
     expect(r).toEqual({
       completo: true,
       achados: [{ itemId: KIT, vinculo: null }],
+      incompleta: null,
       paginas: 1,
       chamadas: 2,
     });
@@ -275,10 +281,21 @@ describe('localizarKitsPorSku — fail closed on the tag (M88)', () => {
     expect((await buscar(client)).achados).toEqual([]);
   });
 
-  it('a candidate whose base row never came back is not a hit', async () => {
-    const { client } = cliente({ paginas: () => pagina(corpoListaComKit()), bases: [] });
+  it('⛔ (#1911 batch-A) a candidate whose base row never came back is NOT "not a hit": the scan is INCOMPLETE (base-info), naming it', async () => {
+    const { client, getItemBaseInfo } = cliente({
+      paginas: () => pagina(corpoListaComKit()),
+      bases: [],
+    });
 
-    expect(await buscar(client)).toEqual({ completo: true, achados: [], paginas: 1, chamadas: 2 });
+    expect(await buscar(client)).toEqual({
+      completo: false,
+      achados: [],
+      incompleta: { causa: 'base-info', itemIds: [KIT] },
+      paginas: 1,
+      // The pages PLUS the base-info call actually made.
+      chamadas: 2,
+    });
+    expect(getItemBaseInfo).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -366,6 +383,7 @@ describe('localizarKitsPorSku — the walk', () => {
     expect(r).toEqual({
       completo: true,
       achados: [{ itemId: KIT, vinculo: null }],
+      incompleta: null,
       paginas: 2,
       chamadas: 3,
     });
@@ -376,7 +394,13 @@ describe('localizarKitsPorSku — the walk', () => {
       paginas: () => paginaSintetica([], { has: false }),
     });
 
-    expect(await buscar(client)).toEqual({ completo: true, achados: [], paginas: 1, chamadas: 1 });
+    expect(await buscar(client)).toEqual({
+      completo: true,
+      achados: [],
+      incompleta: null,
+      paginas: 1,
+      chamadas: 1,
+    });
     expect(getItemBaseInfo).not.toHaveBeenCalled();
   });
 
@@ -391,7 +415,13 @@ describe('localizarKitsPorSku — the walk', () => {
 
     expect(getItemList).toHaveBeenCalledTimes(MAX_PAGINAS_BUSCA_KIT);
     expect(getItemBaseInfo).not.toHaveBeenCalled();
-    expect(r).toEqual({ completo: false, achados: [], paginas: 100, chamadas: 100 });
+    expect(r).toEqual({
+      completo: false,
+      achados: [],
+      incompleta: { causa: 'lista' },
+      paginas: 100,
+      chamadas: 100,
+    });
   });
 
   it(`⛔ NEAR-MISS: page ${String(MAX_PAGINAS_BUSCA_KIT)} being the LAST is a complete walk`, async () => {
@@ -420,7 +450,13 @@ describe('localizarKitsPorSku — the walk', () => {
 
       const r = await buscar(client);
 
-      expect(r, String(next)).toEqual({ completo: false, achados: [], paginas: 1, chamadas: 1 });
+      expect(r, String(next)).toEqual({
+        completo: false,
+        achados: [],
+        incompleta: { causa: 'lista' },
+        paginas: 1,
+        chamadas: 1,
+      });
       expect(getItemList).toHaveBeenCalledTimes(1);
       expect(getItemBaseInfo).not.toHaveBeenCalled();
     }
@@ -441,7 +477,7 @@ describe('localizarKitsPorSku — the walk', () => {
     await expect(buscar(client)).rejects.toBe(erro);
   });
 
-  it('candidates that vanished before the base info (the batch "none exists" verdict) are simply not hits', async () => {
+  it('⛔ (#1911 batch-A) candidates that vanished before the base info (the batch "none exists" verdict) make the scan INCOMPLETE — never "nothing found"', async () => {
     const { client } = cliente({
       paginas: () => pagina(corpoListaComKit()),
       falhaDaBase: new ShopeeApiError('Shopee respondeu error_item_not_found (HTTP 200)', {
@@ -452,7 +488,13 @@ describe('localizarKitsPorSku — the walk', () => {
       }),
     });
 
-    expect(await buscar(client)).toEqual({ completo: true, achados: [], paginas: 1, chamadas: 2 });
+    expect(await buscar(client)).toEqual({
+      completo: false,
+      achados: [],
+      incompleta: { causa: 'base-info', itemIds: [KIT] },
+      paginas: 1,
+      chamadas: 2,
+    });
   });
 
   it('writes nothing', async () => {
@@ -505,5 +547,202 @@ describe('varrerListaDeItensShopee — FIRST sighting wins (the walk P5b shares 
 
     expect(r.completo).toBe(true);
     expect(r.achados.map((a) => a.itemId)).toEqual([KIT]);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*  #1911 batch-A review — a LISTED row the base-info batch never returned     */
+/*  is a DOUBT: the scan is incomplete, for BOTH kinds, in the ONE loop        */
+/* -------------------------------------------------------------------------- */
+
+describe('localizarItensPorSku — a listed candidate with NO base row fails CLOSED (#1911 batch-A review)', () => {
+  /** Ordinary listings of the shop (the ordinary arm's ids; fixture values). */
+  const ITEM_1 = 2500200001;
+  const ITEM_2 = 2500200002;
+  const SKU_ITEM = 'SKU-1';
+
+  /** An ORDINARY listing's base row — the REAL kit capture underneath, re-tagged. */
+  function baseComum(itemId: number, item_sku: string | null = SKU_ITEM): Json {
+    return baseDoKit({ item_id: itemId, item_sku, tag: { kit: false } });
+  }
+
+  function buscarItens(client: ShopeeClient, db: FakeDb = new FakeDb()) {
+    return localizarItensPorSku(client, asDb(db), {
+      integracaoId: INTEGRACAO,
+      sku: SKU_ITEM,
+      excluirItemIds: new Set<number>(),
+      kit: false,
+    });
+  }
+
+  it("the bot's repro: one NORMAL row, `tag.kit: false`, base info answers `item_list: []` ⇒ INCOMPLETE, no achados, the id named", async () => {
+    const { client, getItemBaseInfo } = cliente({
+      paginas: () => paginaSintetica([linhaDaLista(ITEM_1, false)], { has: false }),
+      bases: [],
+    });
+
+    expect(await buscarItens(client)).toEqual({
+      completo: false,
+      achados: [],
+      incompleta: { causa: 'base-info', itemIds: [ITEM_1] },
+      paginas: 1,
+      chamadas: 2,
+    });
+    expect(getItemBaseInfo).toHaveBeenCalledTimes(1);
+  });
+
+  it('⛔ quase-par: a base row with ANOTHER SKU ⇒ COMPLETE, nothing found (the read proved it is not ours)', async () => {
+    const { client } = cliente({
+      paginas: () => paginaSintetica([linhaDaLista(ITEM_1, false)], { has: false }),
+      bases: [baseComum(ITEM_1, 'OUTRO-SKU')],
+    });
+
+    expect(await buscarItens(client)).toEqual({
+      completo: true,
+      achados: [],
+      incompleta: null,
+      paginas: 1,
+      chamadas: 2,
+    });
+  });
+
+  it('a HIT beside an unread candidate is NOT reported: incomplete, `achados` empty, and NO link read', async () => {
+    const db = new FakeDb();
+    const { client } = cliente({
+      paginas: () =>
+        paginaSintetica([linhaDaLista(ITEM_1, false), linhaDaLista(ITEM_2, false)], {
+          has: false,
+        }),
+      bases: [baseComum(ITEM_1)],
+    });
+
+    const r = await buscarItens(client, db);
+
+    expect(r).toMatchObject({
+      completo: false,
+      achados: [],
+      incompleta: { causa: 'base-info', itemIds: [ITEM_2] },
+    });
+    // Nothing it found could change the refusal: no `resolverLinkPorItemId`.
+    expect(db.consultas.filter((c) => c.fonte.startsWith('group:'))).toEqual([]);
+  });
+
+  it('⛔ quase-par: EVERY row read ⇒ complete, and the hit is listed (with its link read)', async () => {
+    const db = new FakeDb();
+    const { client } = cliente({
+      paginas: () =>
+        paginaSintetica([linhaDaLista(ITEM_1, false), linhaDaLista(ITEM_2, false)], {
+          has: false,
+        }),
+      bases: [baseComum(ITEM_1), baseComum(ITEM_2, 'OUTRO-SKU')],
+    });
+
+    const r = await buscarItens(client, db);
+
+    expect(r).toEqual({
+      completo: true,
+      achados: [{ itemId: ITEM_1, vinculo: null }],
+      incompleta: null,
+      paginas: 1,
+      chamadas: 2,
+    });
+    expect(db.consultas.filter((c) => c.fonte.startsWith('group:'))).toHaveLength(1);
+  });
+
+  it('the KIT arm, the same loop: a listed kit candidate with no base row ⇒ incomplete (no `kit` fork keeps the old skip)', async () => {
+    // The ordinary arm's own repro mirrored onto `kit: true` — a row tagged kit.
+    const { client } = cliente({
+      paginas: () => paginaSintetica([linhaDaLista(KIT, true)], { has: false }),
+      bases: [],
+    });
+
+    expect(await buscar(client)).toMatchObject({
+      completo: false,
+      achados: [],
+      incompleta: { causa: 'base-info', itemIds: [KIT] },
+    });
+  });
+
+  it('⛔ quase-par (kit): a base row that is NOT a kit, or carries another SKU ⇒ complete, nothing found', async () => {
+    for (const over of [{ tag: { kit: false } }, { item_sku: 'OUTRO-KIT' }]) {
+      const { client } = cliente({
+        paginas: () => paginaSintetica([linhaDaLista(KIT, null)], { has: false }),
+        bases: [baseDoKit(over)],
+      });
+
+      expect(await buscar(client), JSON.stringify(over)).toEqual({
+        completo: true,
+        achados: [],
+        incompleta: null,
+        paginas: 1,
+        chamadas: 2,
+      });
+    }
+  });
+
+  it('`chamadas` counts EVERY base-info call made: 60 candidates ⇒ two chunks, one id missing ⇒ 1 page + 2', async () => {
+    const ids = Array.from({ length: 60 }, (_v, i) => ITEM_1 + i);
+    const faltando = ids[55]!;
+    const { client, getItemBaseInfo } = cliente({
+      paginas: () =>
+        paginaSintetica(
+          ids.map((id) => linhaDaLista(id, false)),
+          { has: false },
+        ),
+      bases: ids.filter((id) => id !== faltando).map((id) => baseComum(id, 'OUTRO-SKU')),
+    });
+
+    const r = await buscarItens(client);
+
+    expect(getItemBaseInfo).toHaveBeenCalledTimes(2);
+    expect(r).toEqual({
+      completo: false,
+      achados: [],
+      incompleta: { causa: 'base-info', itemIds: [faltando] },
+      paginas: 1,
+      chamadas: 3,
+    });
+  });
+
+  it('ONE console.warn: the count and at most 10 ids — every id still in `incompleta`, never a SKU', async () => {
+    const ids = Array.from({ length: 12 }, (_v, i) => ITEM_1 + 11 - i);
+    const aviso = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const { client } = cliente({
+        paginas: () =>
+          paginaSintetica(
+            ids.map((id) => linhaDaLista(id, false)),
+            { has: false },
+          ),
+        bases: [],
+      });
+
+      const r = await buscarItens(client);
+
+      const ordenados = [...ids].sort((x, y) => x - y);
+      expect(r.incompleta).toEqual({ causa: 'base-info', itemIds: ordenados });
+      expect(aviso).toHaveBeenCalledTimes(1);
+      const [linha, campos] = aviso.mock.calls[0]!;
+      expect(String(linha)).toContain('12 anúncio(s)');
+      expect(campos).toEqual({
+        integracaoId: INTEGRACAO,
+        naoLidos: 12,
+        itemIds: ordenados.slice(0, 10),
+      });
+      expect(JSON.stringify(aviso.mock.calls)).not.toContain(SKU_ITEM);
+    } finally {
+      aviso.mockRestore();
+    }
+  });
+
+  it('the shared sentence names the count and ≤ 10 ids ("e mais N"), and says what to do', () => {
+    const doze = Array.from({ length: 12 }, (_v, i) => ITEM_1 + i);
+    const frase = fraseDaBaseInfoNaoDevolvida(doze);
+    expect(frase).toContain('a Shopee não devolveu os dados de 12 anúncio(s) listado(s)');
+    expect(frase).toContain(`${String(ITEM_1 + 9)} e mais 2`);
+    expect(frase).not.toContain(String(ITEM_1 + 10));
+    expect(frase).toContain('nada foi criado; tente de novo');
+    expect(frase).toContain('confira esses anúncios no Seller Centre');
+    expect(fraseDaBaseInfoNaoDevolvida([ITEM_1])).toContain(`(ids ${String(ITEM_1)})`);
   });
 });

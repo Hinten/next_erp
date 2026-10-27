@@ -244,6 +244,7 @@ import {
 import { lerBaseInfoDosItens } from '../kits/componentesKit';
 import { MAX_PAGINAS_BUSCA_KIT, STATUS_BUSCA_KIT } from '../kits/constantesKit';
 import {
+  fraseDaBaseInfoNaoDevolvida,
   localizarItensPorSku,
   varrerListaDeItensShopee,
   type BuscaPorSku,
@@ -677,10 +678,20 @@ export interface EntradaDaBuscaIncerta {
   readonly confirmarCriacaoIncerta: boolean;
 }
 
-/** What one look-up spent and saw — for the log line, never for a decision. */
+/**
+ * What one look-up spent and saw. The reservation reads TWO of its fields:
+ * `varreu` (only a complete scan clears the record) and `skuBuscado` (the
+ * first create's look-up is skipped only for THAT fold — #1911 batch-A
+ * review); the rest is for the log line.
+ */
 export interface ResumoDaBuscaIncerta {
-  /** `false` ⇔ no scan ran (a blank SKU). */
+  /** `false` ⇔ no scan ran (a blank SKU, or a moved one). */
   readonly varreu: boolean;
+  /**
+   * The SKU fold this look-up searched the window for — `null` ⇔ `varreu` is
+   * false. A body that sends any OTHER fold was never looked up here.
+   */
+  readonly skuBuscado: string | null;
   readonly paginas: number;
   /** Shopee calls: the pages plus the base-info batch. */
   readonly chamadas: number;
@@ -864,7 +875,13 @@ export async function localizarAnuncioIncerto(
 ): Promise<VeredictoDaBuscaIncerta> {
   const atual = skuDaBuscaShopee(e.sku);
   const enviado = e.janela.sku === null ? null : skuDaBuscaShopee(e.janela.sku);
-  const semVarrer: ResumoDaBuscaIncerta = { varreu: false, paginas: 0, chamadas: 0, candidatos: 0 };
+  const semVarrer: ResumoDaBuscaIncerta = {
+    varreu: false,
+    skuBuscado: null,
+    paginas: 0,
+    chamadas: 0,
+    candidatos: 0,
+  };
   // ⚠️ The SKU moved since the attempt (batch-A review): never scanned, never
   // attestable — the sent one may find a listing the produto no longer names,
   // the current one cannot find the attempt's.
@@ -901,7 +918,13 @@ export async function localizarAnuncioIncerto(
   });
 
   if (!completo) {
-    const resumo = { varreu: true, paginas, chamadas: paginas, candidatos: candidatos.size };
+    const resumo = {
+      varreu: true,
+      skuBuscado: sku,
+      paginas,
+      chamadas: paginas,
+      candidatos: candidatos.size,
+    };
     return { tipo: 'recusar', problema: problemaBuscaIncompleta(paginas), resumo };
   }
 
@@ -955,6 +978,7 @@ export async function localizarAnuncioIncerto(
 
   const resumo: ResumoDaBuscaIncerta = {
     varreu: true,
+    skuBuscado: sku,
     paginas,
     chamadas: paginas + leitura.chamadas,
     candidatos: candidatos.size,
@@ -1057,13 +1081,24 @@ function problemaAnuncioExistenteDeOutroProduto(
   );
 }
 
-function problemaBuscaDoAnuncioExistenteIncompleta(paginas: number): ProblemaDeBloqueio {
+/**
+ * The incomplete scan, worded for ITS cause (#1911 batch-A review): the walk
+ * stopped short (the ceiling or the cursor — the sentence predates the second
+ * cause), or Shopee returned no base row for listed candidates (the shared
+ * clause, `fraseDaBaseInfoNaoDevolvida`, which the kit refusal words alike).
+ */
+function problemaBuscaDoAnuncioExistenteIncompleta(
+  busca: Pick<BuscaPorSku, 'incompleta' | 'paginas'>,
+): ProblemaDeBloqueio {
+  const inicio = 'a busca por um anúncio desta conta com o SKU deste produto não terminou';
   return bloqueio(
     MOTIVO_PUBLICACAO_BLOQUEADA.buscaDeAnuncioExistenteIncompleta,
-    `a busca por um anúncio desta conta com o SKU deste produto não terminou (${String(paginas)} ` +
-      `página(s) lida(s): mais de ${String(ANUNCIOS_NA_BUSCA)} anúncios, ou um cursor da Shopee ` +
-      'que não avança) — nada foi criado. Repetir ajuda só se foi o cursor: acima desse ' +
-      'tamanho a busca não cabe, como a do kit nativo',
+    busca.incompleta?.causa === 'base-info'
+      ? `${inicio}: ${fraseDaBaseInfoNaoDevolvida(busca.incompleta.itemIds)}`
+      : `${inicio} (${String(busca.paginas)} página(s) lida(s): mais de ` +
+          `${String(ANUNCIOS_NA_BUSCA)} anúncios, ou um cursor da Shopee que não avança) — nada ` +
+          'foi criado. Repetir ajuda só se foi o cursor: acima desse tamanho a busca não cabe, ' +
+          'como a do kit nativo',
   );
 }
 
@@ -1075,7 +1110,9 @@ function problemaBuscaDoAnuncioExistenteIncompleta(paginas: number): ProblemaDeB
  *
  *  - the scan did not complete ⇒ `busca-de-anuncio-existente-incompleta` and
  *    nothing else (the kit's `busca-de-kit-incompleta` answer: a listing it
- *    never saw may exist);
+ *    never saw may exist) — the walk stopped short, OR a listed candidate came
+ *    back with no base row (`incompleta.causa: 'base-info'`; the sentence names
+ *    those ids);
  *  - a hit NO link of the conta holds ⇒ `anuncio-existente-sem-vinculo`,
  *    `acao` `importar{itemIds}` — "importe-o", never a second listing;
  *  - a hit linked to ANOTHER produto ⇒ `anuncio-existente-de-outro-produto`,
@@ -1090,10 +1127,10 @@ function problemaBuscaDoAnuncioExistenteIncompleta(paginas: number): ProblemaDeB
  * remedy is the import, or a SKU of its own.
  */
 export function problemasDoAnuncioExistente(
-  busca: Pick<BuscaPorSku, 'completo' | 'achados' | 'paginas'>,
+  busca: Pick<BuscaPorSku, 'completo' | 'achados' | 'incompleta' | 'paginas'>,
   produtoId: string,
 ): readonly ProblemaDeBloqueio[] {
-  if (!busca.completo) return [problemaBuscaDoAnuncioExistenteIncompleta(busca.paginas)];
+  if (!busca.completo) return [problemaBuscaDoAnuncioExistenteIncompleta(busca)];
   const semVinculo: number[] = [];
   const deOutroProduto: Vinculado[] = [];
   for (const achado of busca.achados) {
@@ -1130,6 +1167,16 @@ export function problemasDoAnuncioExistente(
  *   100-page ceiling, un-narrowed, the same statuses, the same fold, one
  *   base-info batch, one link read per hit), then
  *   {@link problemasDoAnuncioExistente}.
+ * - ⚠️ Nothing is created on a scan that cannot prove absence: a walk that
+ *   stopped short AND a listed candidate Shopee returned no base row for
+ *   (#1911 batch-A review — before it, such a row was silently "not a hit"
+ *   and `add_item` went out) both answer
+ *   `busca-de-anuncio-existente-incompleta`, the second naming the ids.
+ *
+ * Runs ONLY when this run's ENSURE did not already look up the very SKU the
+ * body sends (`publicarAnuncio.ts`, `PublicacaoDeRascunho.skuJaBuscado`): a
+ * `livre` draft, an attested SKU-less one, or a SKU renamed between the
+ * reservation and the plan.
  *
  * ⚠️ Every Shopee and Firestore failure propagates untouched (rule 6) — the kit
  * arm's answer to a failed scan: nothing was sent, and the publish hands the
@@ -1160,6 +1207,7 @@ export async function verificarAnuncioExistenteShopee(
     integracaoId: e.integracaoId,
     produtoId: e.produtoId,
     completo: busca.completo,
+    incompleta: busca.incompleta?.causa ?? null,
     achados: busca.achados.map((a) => a.itemId),
     veredicto: problemas.length === 0 ? 'prosseguir' : problemas.map((p) => p.motivo),
     paginas: busca.paginas,

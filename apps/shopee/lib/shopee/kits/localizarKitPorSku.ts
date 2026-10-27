@@ -41,7 +41,9 @@
  *    explicit `true`. `excluirItemIds` drops the recriar's own target (the old
  *    kit carries the same SKU); every other caller excludes nothing.
  * 3. **ONE base-info batch (≤ 50 per call)** over the candidates, through the
- *    shared reader (`lerBaseInfoDosItens`). A hit is a row of the KIND asked
+ *    shared reader (`lerBaseInfoDosItens`). EVERY candidate must come back with
+ *    a row — one that does not makes the walk INCOMPLETE (below), never "not a
+ *    hit". A hit is a row of the KIND asked
  *    for — `ehKitDe(base, listRow)`, the import's own reading, so the base `tag`
  *    wins and the list row's is only the fallback — AND whose SKU folds equal:
  *    `skuDoItemShopee(base) === sku`. That fold is step 9's PARENT-SKU rung,
@@ -66,11 +68,32 @@
  * the mass import may read those as the end of a catalogue it is merely
  * importing, but here an early end would be a duplicate check that silently
  * checked half the shop — the one direction this guard cannot afford. An
- * incomplete scan reads no base info: nothing it found could change the
- * refusal. Every Shopee FAILURE propagates untouched (rule 6) — the caller's
+ * incomplete walk reads no base info: nothing it found could change the
+ * refusal.
+ *
+ * ⚠️ **And so is a listed candidate the base-info batch returned NO row for**
+ * (#1911 batch-A review, both kinds, in the ONE loop — step 19's kit scan
+ * skipped such a row since it was written, undocumented): the list says the
+ * listing exists, and without its base row nothing says it is not a same-SKU
+ * listing of the kind asked for, so skipping it would be "absent" on no
+ * evidence — the fail-open direction ENSURE already refuses (an unreported SKU
+ * is a doubt there). Whether Shopee left the id out of a batch, answered a
+ * chunk with the batch verdict "none of these ids exists"
+ * (`error_item_not_found`, which the shared reader turns into no rows), or the
+ * listing vanished between the two reads, the answer is the same: `completo:
+ * false`, NO achados, NO link read, the ids in {@link BuscaPorSku.incompleta}
+ * and ONE `console.warn` (the count and ≤ 10 ids — never a SKU, a name or a
+ * body). Both callers word it ({@link fraseDaBaseInfoNaoDevolvida}): "try
+ * again; if it persists, check those listings in Seller Centre". Each
+ * `incompleta.causa` names which of the two stopped it: `'lista'` (the
+ * ceiling or the cursor) or `'base-info'`.
+ *
+ * Every Shopee FAILURE propagates untouched (rule 6) — the caller's
  * classifier owns those.
  *
- * Reads only. `chamadas` and `paginas` are reported by the dry run and counted
+ * Reads only. `chamadas` (the pages plus the base-info calls actually made — an
+ * incomplete-by-`base-info` answer counts its batch too) and `paginas` are
+ * reported by the dry run and counted
  * into `chamadasShopee`; the route has a 180 s ceiling and the CLI none, so a
  * very large shop is the CLI's. ⚠️ The ORDINARY scan's base-info batch covers
  * the whole catalogue (every non-kit row is a candidate) where the kit's covers
@@ -171,16 +194,52 @@ export interface AchadoPorSku {
   readonly vinculo: { readonly produtoId: string; readonly linkDocId: string } | null;
 }
 
+/** Why a same-SKU scan answered INCOMPLETE ({@link BuscaPorSku.incompleta}). */
+export type IncompletudeDaBuscaPorSku =
+  /** THE walk stopped short: the page ceiling, or a cursor Shopee did not hand back / advance. */
+  | { readonly causa: 'lista' }
+  /**
+   * The walk finished, but `get_item_base_info` returned no row for these
+   * LISTED candidates — every one of them, sorted by `item_id`.
+   */
+  | { readonly causa: 'base-info'; readonly itemIds: readonly number[] };
+
 /** What {@link localizarItensPorSku} answers. */
 export interface BuscaPorSku {
-  /** `false` ⇒ the walk did not reach the end of the shop; `achados` is then EMPTY. */
+  /**
+   * `false` ⇒ the scan cannot prove absence — the walk did not reach the end
+   * of the shop, or a listed candidate came back with no base row; `achados`
+   * is then EMPTY.
+   */
   readonly completo: boolean;
   /** Every same-SKU listing of the kind asked for, sorted by `item_id`. */
   readonly achados: readonly AchadoPorSku[];
+  /** Why `completo` is `false`; `null` ⇔ `completo`. */
+  readonly incompleta: IncompletudeDaBuscaPorSku | null;
   /** `get_item_list` pages read. */
   readonly paginas: number;
-  /** Shopee calls spent: the pages plus the base-info batch. */
+  /** Shopee calls spent: the pages plus the base-info calls actually made. */
   readonly chamadas: number;
+}
+
+/** At most this many ids in a sentence or the log line — the count says the rest. */
+const IDS_NO_TEXTO = 10;
+
+/**
+ * The sentence BOTH callers give a scan that stopped on `'base-info'` — after
+ * their own "a busca … não terminou: " — so the kit and the ordinary refusal
+ * cannot word it apart. Ids last-but-one and capped at {@link IDS_NO_TEXTO}
+ * ("e mais N"); item ids are not secrets.
+ */
+export function fraseDaBaseInfoNaoDevolvida(itemIds: readonly number[]): string {
+  const mostrados = itemIds.slice(0, IDS_NO_TEXTO).map(String).join(', ');
+  const mais =
+    itemIds.length > IDS_NO_TEXTO ? ` e mais ${String(itemIds.length - IDS_NO_TEXTO)}` : '';
+  return (
+    `a Shopee não devolveu os dados de ${String(itemIds.length)} anúncio(s) listado(s) ` +
+    `(ids ${mostrados}${mais}) — nada foi criado; tente de novo; se persistir, confira esses ` +
+    'anúncios no Seller Centre'
+  );
 }
 
 /** One same-SKU KIT (step 19's name for {@link AchadoPorSku}). */
@@ -219,6 +278,7 @@ export async function localizarItensPorSku(
     );
   }
 
+  const origem = a.kit ? '[shopee/kits]' : '[shopee/anuncios]';
   const varredura = await varrerListaDeItensShopee(client, {
     maxPaginas: MAX_PAGINAS_BUSCA_KIT,
     candidato: (linha) => {
@@ -227,23 +287,54 @@ export async function localizarItensPorSku(
       if (linha.tag?.kit === !a.kit) return false;
       return !a.excluirItemIds.has(linha.item_id);
     },
-    registro: {
-      origem: a.kit ? '[shopee/kits]' : '[shopee/anuncios]',
-      ids: { integracaoId: a.integracaoId },
-    },
+    registro: { origem, ids: { integracaoId: a.integracaoId } },
   });
   const { paginas } = varredura;
-  if (!varredura.completo) return { completo: false, achados: [], paginas, chamadas: paginas };
+  if (!varredura.completo) {
+    return {
+      completo: false,
+      achados: [],
+      incompleta: { causa: 'lista' },
+      paginas,
+      chamadas: paginas,
+    };
+  }
 
   const leitura = await lerBaseInfoDosItens(client, [...varredura.candidatos.keys()]);
+  const chamadas = paginas + leitura.chamadas;
 
   const hits: number[] = [];
+  const naoLidos: number[] = [];
   for (const [itemId, linhaDaLista] of varredura.candidatos) {
     const base = leitura.linhas.get(itemId);
-    if (base === undefined) continue;
+    // ⚠️ Listed, but no base row came back: a DOUBT, never "not a hit" — the
+    // scan cannot prove absence (module header). Both kinds, one path.
+    if (base === undefined) {
+      naoLidos.push(itemId);
+      continue;
+    }
     if (ehKitDe(base, linhaDaLista) !== a.kit) continue;
     if (skuDoItemShopee(base) !== a.sku) continue;
     hits.push(itemId);
+  }
+  if (naoLidos.length > 0) {
+    naoLidos.sort((x, y) => x - y);
+    console.warn(
+      `${origem} get_item_base_info não devolveu ${String(naoLidos.length)} anúncio(s) ` +
+        'listado(s); busca incompleta',
+      {
+        integracaoId: a.integracaoId,
+        naoLidos: naoLidos.length,
+        itemIds: naoLidos.slice(0, IDS_NO_TEXTO),
+      },
+    );
+    return {
+      completo: false,
+      achados: [],
+      incompleta: { causa: 'base-info', itemIds: naoLidos },
+      paginas,
+      chamadas,
+    };
   }
   hits.sort((x, y) => x - y);
 
@@ -256,7 +347,7 @@ export async function localizarItensPorSku(
     });
   }
 
-  return { completo: true, achados, paginas, chamadas: paginas + leitura.chamadas };
+  return { completo: true, achados, incompleta: null, paginas, chamadas };
 }
 
 /**

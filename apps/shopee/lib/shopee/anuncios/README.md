@@ -493,7 +493,10 @@ base}` (`base` required): do not run a no-link `publicar:anuncio --live`
   bite first, and then the publish fails with that error, nothing sent
   (register **311**).
 - **(xii) An `incerta` draft's retry runs ENSURE and NOT the first create's
-  look-up** (Lucas: ENSURE already scans). ENSURE's window ignores a listing
+  look-up** (Lucas: ENSURE already scans) — for the SKU fold ENSURE searched
+  only: a body that sends any other fold (the SKU renamed between the
+  reservation and `preparar`, or set on an attested SKU-less produto) runs the
+  look-up on the body (batch-A review). ENSURE's window ignores a listing
   created before the attempt, so one that was unlinked between the first
   attempt's look-up and the retry is not seen; the first attempt of every
   draft since P5b ran the full look-up. And the dry run runs neither: both
@@ -722,17 +725,24 @@ a listing of the conta with the SKU the planned body SENDS
   folded) — so a produto stored `' CAM-BR '` looks up `'CAM-BR'`, what Shopee
   will hold. A body with no SKU scans nothing (zero calls): there is nothing to
   compare, and a blank fold would hit every SKU-less listing.
-- **Only a `livre` draft.** The reservation reports `buscouCriacaoIncerta`; an
-  `incerta` draft ran ENSURE instead (residual (xii)). A republish never scans.
+- **Only where ENSURE did not already look this SKU up.** The reservation
+  reports the fold ENSURE searched (`skuBuscadoNaReserva`, `null` when none
+  was), and the publish skips this look-up ONLY when the body sends that very
+  fold — an `incerta` draft whose SKU did not move (residual (xii)). A `livre`
+  draft, an attested SKU-less one, and a SKU renamed between the reservation
+  and `preparar` (which re-reads the produto) are all looked up on the body
+  (batch-A review: the loser of that race must not skip the check). A
+  republish never scans.
 
-| what the scan found                                   | answer (a `ShopeePublishBlockedError`: nothing sent, the lock handed back unstamped)                                                                                                                                                                    |
-| ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| a hit NO link of the conta holds                      | `anuncio-existente-sem-vinculo` (`acao` `importar{itemIds}`): import it instead of creating a second one, then discard this draft. The sentence adds that the import binds it to THIS produto only when the stored SKU is exact (no padding) and unique |
-| a hit linked to ANOTHER produto                       | `anuncio-existente-de-outro-produto` (`acao` `importar{itemIds, vinculados}`, each with its produto): two produtos share the SKU — give one of them its own                                                                                             |
-| a hit linked to THIS produto                          | excluded: D15's second listing, which the reservation already refused (`CONTA_JA_TEM_ANUNCIO`) or the operator confirmed                                                                                                                                |
-| the walk stopped early (100 pages, or a stuck cursor) | `busca-de-anuncio-existente-incompleta` (no `acao`) — the kit's `busca-de-kit-incompleta`                                                                                                                                                               |
-| a Shopee or Firestore failure                         | propagates untouched (rule 6) — the kit arm's answer: never classified as an `add_item` outcome, never stamped                                                                                                                                          |
-| a complete walk, no hit (or only this produto's)      | `add_item`                                                                                                                                                                                                                                              |
+| what the scan found                                                                                                               | answer (a `ShopeePublishBlockedError`: nothing sent, the lock handed back unstamped)                                                                                                                                                                                                                                                                                         |
+| --------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| a hit NO link of the conta holds                                                                                                  | `anuncio-existente-sem-vinculo` (`acao` `importar{itemIds}`): import it instead of creating a second one, then discard this draft. The sentence adds that the import binds it to THIS produto only when the stored SKU is exact (no padding) and unique                                                                                                                      |
+| a hit linked to ANOTHER produto                                                                                                   | `anuncio-existente-de-outro-produto` (`acao` `importar{itemIds, vinculados}`, each with its produto): two produtos share the SKU — give one of them its own                                                                                                                                                                                                                  |
+| a hit linked to THIS produto                                                                                                      | excluded: D15's second listing, which the reservation already refused (`CONTA_JA_TEM_ANUNCIO`) or the operator confirmed                                                                                                                                                                                                                                                     |
+| the walk stopped early (100 pages, or a stuck cursor)                                                                             | `busca-de-anuncio-existente-incompleta` (no `acao`) — the kit's `busca-de-kit-incompleta`                                                                                                                                                                                                                                                                                    |
+| a LISTED candidate came back with NO base row (left out of the batch, the batch "none exists" verdict, or gone between the reads) | `busca-de-anuncio-existente-incompleta` (no `acao`), naming the ids: "a Shopee não devolveu os dados de N anúncio(s) listado(s) … tente de novo; se persistir, confira esses anúncios no Seller Centre". Never "not a hit": without its base row nothing says it is not this SKU (batch-A review — the kit scan skipped it since step 19; the ONE loop now refuses for both) |
+| a Shopee or Firestore failure                                                                                                     | propagates untouched (rule 6) — the kit arm's answer: never classified as an `add_item` outcome, never stamped                                                                                                                                                                                                                                                               |
+| a complete walk, no hit (or only this produto's)                                                                                  | `add_item`                                                                                                                                                                                                                                                                                                                                                                   |
 
 Both kinds of hit are reported at once, one problema per kind (the kit's
 aggregated refusal). **None is attestable**: neither `confirmarSegundoAnuncio`

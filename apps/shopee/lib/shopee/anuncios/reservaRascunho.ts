@@ -42,8 +42,11 @@
  *     create's same-SKU look-up (#1911 P5b, `verificarAnuncioExistenteShopee`)
  *     runs later, in `publicarAnuncio.ts`'s `aplicarPublicacao`, still under
  *     this lock, on the SKU the planned body sends — the reservation only
- *     reports which of the two this run is ({@link DesfechoDaReserva}'s
- *     `buscouCriacaoIncerta`).
+ *     reports the fold ENSURE searched ({@link DesfechoDaReserva}'s
+ *     `skuBuscadoNaReserva`, `null` when none was), and the publish skips its
+ *     own look-up only for a body that sends that very fold: `preparar`
+ *     re-reads the produto after this, so a SKU renamed in between is looked
+ *     up on the body (batch-A review).
  *  2. **Re-read before the send, and stamp what it sends**
  *     ({@link conferirTravaAntesDoEnvio}): the stored token must still be
  *     OURS, or nothing is sent — then ONE token-guarded write records the
@@ -246,13 +249,18 @@ export type DesfechoDaReserva =
       readonly tipo: 'travada';
       readonly reserva: ReservaDeRascunhoShopee;
       /**
-       * `true` ⇔ this reservation TOOK OVER an `incerta` draft and ENSURE
-       * searched the attempt's window before handing the lock over (#1911
-       * P5b): the publish then skips the first create's same-SKU look-up
-       * (`criacaoIncerta.ts`, `verificarAnuncioExistenteShopee`), which runs
-       * for a `livre` draft only. Lucas, 2026-10-26: ENSURE already scans.
+       * The SKU fold ENSURE searched before handing the lock over — this
+       * reservation TOOK OVER an `incerta` draft and scanned the attempt's
+       * window for THAT SKU — or `null` when no look-up ran: a `livre` draft,
+       * or ENSURE's attested SKU-less proceed (#1911 P5b; Lucas, 2026-10-26:
+       * ENSURE already scans). The publish skips the first create's same-SKU
+       * look-up (`criacaoIncerta.ts`, `verificarAnuncioExistenteShopee`) ONLY
+       * when the body it plans sends this very fold: `preparar` reads the
+       * produto AGAIN after this, and a SKU renamed in between was never
+       * looked up (batch-A review — the loser of that race must not skip
+       * the check, rule 7).
        */
-      readonly buscouCriacaoIncerta: boolean;
+      readonly skuBuscadoNaReserva: string | null;
     }
   /**
    * ENSURE found the listing the earlier, uncertain create made, and recorded
@@ -483,17 +491,19 @@ export async function reservarRascunhoShopee(
     // ⚠️ LOCK-THEN-SCAN: the lock is written BEFORE the siblings are read —
     // and the look-up runs AFTER them, so a sibling's create in flight is a
     // 409, never a listing this draft adopts.
+    let skuBuscadoNaReserva: string | null = null;
     try {
       const vinculos = await recusarSegundoAnuncio(db, alvo, controles);
       if (janela !== null) {
-        const itemId = await garantirCriacaoIncerta(db, reserva, {
+        const ensure = await garantirCriacaoIncerta(db, reserva, {
           alvo,
           controles,
           busca,
           janela,
           vinculos,
         });
-        if (itemId !== null) return { tipo: 'adotada', itemId };
+        if (ensure.tipo === 'adotada') return { tipo: 'adotada', itemId: ensure.itemId };
+        skuBuscadoNaReserva = ensure.skuBuscado;
       }
     } catch (err) {
       // ⚠️ EVERY error is rethrown: this catch exists only to hand our lock
@@ -506,7 +516,7 @@ export async function reservarRascunhoShopee(
       if (reserva.fase === 'travada') await liberarTravaShopeeSemSubstituirErro(db, reserva);
       throw err;
     }
-    return { tipo: 'travada', reserva, buscouCriacaoIncerta: janela !== null };
+    return { tipo: 'travada', reserva, skuBuscadoNaReserva };
   }
 
   console.warn('[shopee/anuncios] a trava do rascunho perdeu a precondição três vezes', {
@@ -599,7 +609,9 @@ async function recusarSegundoAnuncio(
  * ENSURE at the reservation (#1911, D5 + K1-7), our lock held and the record
  * already carried over: run the look-up and act on its verdict. Throws a
  * refusal (the caller releases our lock — the record stays); answers the
- * ADOPTED `item_id`, or `null` when the publish may go on to `add_item`.
+ * ADOPTED `item_id`, or — when the publish may go on to `add_item` — the SKU
+ * fold the look-up searched (`null`: it searched nothing, the attested
+ * SKU-less produto), which the publish compares with the body's.
  *
  *  - `recusar` ⇒ `ShopeePublishBlockedError` with the look-up's ONE problema;
  *  - `adotar` ⇒ the token-guarded adoption on this document (`item_id`, the
@@ -620,7 +632,7 @@ async function garantirCriacaoIncerta(
     readonly janela: JanelaDaCriacaoIncertaShopee;
     readonly vinculos: readonly VinculoLidoDaConta[];
   },
-): Promise<number | null> {
+): Promise<DesfechoDoEnsure> {
   const produtoSnap = await produtoCollection.docRef(db, {}, a.alvo.produtoId).get();
   const produto = produtoSnap.exists ? ((produtoSnap.data() ?? {}) as Record<string, unknown>) : {};
   const veredicto = await localizarAnuncioIncerto(a.busca.client, db, {
@@ -659,17 +671,24 @@ async function garantirCriacaoIncerta(
     );
     if (desfecho !== 'gravada') throw perdeuATrava(reserva, desfecho, 'a adoção do anúncio');
     reserva.fase = 'encerrada';
-    return veredicto.itemId;
+    return { tipo: 'adotada', itemId: veredicto.itemId };
   }
 
-  if (!veredicto.resumo.varreu) return null;
+  if (!veredicto.resumo.varreu) return { tipo: 'seguir', skuBuscado: null };
   const desfecho = await gravarSobATrava(db, reserva, () => ({
     criacaoIncertaDesde: null,
     criacaoIncertaSku: null,
   }));
   if (desfecho !== 'gravada') throw perdeuATrava(reserva, desfecho, 'a limpeza do registro');
-  return null;
+  return { tipo: 'seguir', skuBuscado: veredicto.resumo.skuBuscado };
 }
+
+/** What {@link garantirCriacaoIncerta} left the run with. */
+type DesfechoDoEnsure =
+  /** The earlier attempt's listing, recorded on this draft: an UPDATE follows. */
+  | { readonly tipo: 'adotada'; readonly itemId: number }
+  /** `add_item` may go: `skuBuscado` = the fold searched, `null` ⇔ none was. */
+  | { readonly tipo: 'seguir'; readonly skuBuscado: string | null };
 
 /** What one token-guarded write ({@link gravarSobATrava}) did. */
 type DesfechoDaGravacaoSobATrava =
