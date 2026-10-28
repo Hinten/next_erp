@@ -2,6 +2,8 @@ import { getDoc, runTransaction, type Firestore } from 'firebase/firestore';
 import {
   ESTADO_PEDIDO,
   ESTADO_FRETE,
+  ESTADO_FRETE_LABELS,
+  ESTADOS_FRETE_MERCADORIA_FORA,
   avancaParaRetirada,
   bloqueioDespachoAtivo,
   checkCompleteness,
@@ -224,12 +226,17 @@ export function evaluatePreSave(input: EvaluatePreSaveInput): PreSaveResult {
     );
   }
   // 9. Frete estado out of the allowed set → CONFIRM (captures estadoContinuar on ok).
+  // When the goods already LEFT the warehouse the dialog says the save will keep
+  // that estado — the transaction never writes `checkFinalizado` over it.
   const freteEstado = fresh.freteInicial.estado;
   if (!ALLOWED_FRETE_ESTADOS.has(freteEstado) && !confirmed.has('frete-estado')) {
     return makeConfirm(
       'frete-estado',
       'Atenção',
-      'Este pedido não está no estado "Despacho autorizado" ou "Em separação". Deseja continuar?',
+      ESTADOS_FRETE_MERCADORIA_FORA.has(freteEstado)
+        ? `O frete deste pedido está em "${ESTADO_FRETE_LABELS[freteEstado]}": a mercadoria já saiu do depósito. ` +
+            'O checkout será salvo, mas o estado do frete não será alterado. Deseja continuar?'
+        : 'Este pedido não está no estado "Despacho autorizado" ou "Em separação". Deseja continuar?',
     );
   }
   // 12. Pedido must be Pago — every pedido. An imported Loja Integrada order's
@@ -325,6 +332,15 @@ export class CheckoutSaveError extends Error {
  * `checkFinalizado`, which the server stock-sync reacts to — stock is NEVER
  * written client-side. Legacy did not bump `ultimaModificacao`; kept for parity.
  *
+ * ⚠️ Except over an estado where the goods already LEFT the warehouse
+ * (`ESTADOS_FRETE_MERCADORIA_FORA`, `@delfrance/schemas`): a carrier or a
+ * marketplace importer moved the freight on before this commit, and
+ * `checkFinalizado` is goods IN, so writing it would read back as "still on the
+ * shelf" to every importer that decides from the stored estado — the Amazon
+ * CANCELLED read restocks from it units the carrier holds. That estado is kept
+ * and only the checkout doc is written. Re-derived from `tx.get`, like every
+ * gate here; the operator is told at gate 9, the only way in from such an estado.
+ *
  * ⚠️ The residual of the Loja Integrada paid re-check (rule 7, named rather
  * than closed). For an imported Loja Integrada order the screen asks the
  * order's live payment BEFORE this runs, and that answer cannot be re-derived
@@ -350,6 +366,8 @@ export async function salvarCheckoutTransacao(
   const { pedidoId, uid, log, estadoContinuar, nowMs } = input;
   const pedidoRef = pedidoCollection.docRef(db, {}, pedidoId);
   const checkoutId = newDocId();
+  // The freight estado phase 1 committed — set by the attempt that commits.
+  let estadoAposFase1: EstadoFrete = ESTADO_CHECK_FINALIZADO;
 
   await runTransaction(db, async (tx) => {
     const snap = await tx.get(pedidoRef);
@@ -388,9 +406,15 @@ export async function salvarCheckoutTransacao(
       checkoutCollection.docRef(db, { pedidoId }, checkoutId),
       buildCheckoutDoc({ numero: fresh.numero, frete, uid, log, nowMs }),
     );
+    // Goods already out of the warehouse: keep the estado (see the doc above).
+    if (ESTADOS_FRETE_MERCADORIA_FORA.has(frete.estado)) {
+      estadoAposFase1 = frete.estado;
+      return;
+    }
     // Dotted-path update → affectedKeys = {freteInicial}; never touches the
     // serverOwnedFields-blocked `estoqueAplicado` (precedent: pedido-print/batch.ts).
     tx.update(pedidoRef, { 'freteInicial.estado': ESTADO_CHECK_FINALIZADO });
+    estadoAposFase1 = ESTADO_CHECK_FINALIZADO;
   });
 
   // Phase 2 — the pickup hand-off, and ONLY because phase 1 committed. The rule
@@ -402,7 +426,7 @@ export async function salvarCheckoutTransacao(
   // `tipoAlvo === retiradaNaLoja` here would keep today's predicate after the
   // shared rule changes, and phase 2 would silently stop running.
   const tipoAlvo = await tipoDoIntFreteDoPedido(db, pedidoId);
-  const retirada = avancaParaRetirada(ESTADO_CHECK_FINALIZADO, tipoAlvo);
+  const retirada = avancaParaRetirada(estadoAposFase1, tipoAlvo);
   if (retirada) {
     await runTransaction(db, async (tx) => {
       const snap = await tx.get(pedidoRef);

@@ -190,12 +190,16 @@ export {
   // Enumerating a channel-local copy instead is the two-copies-drift-toward-
   // plausible shape (#1369): the copy reads correct and the shared set moves.
   ESTADOS_FRETE_IGNORAR_REMOCAO,
+  // The goods-out table (#2042 review): the Amazon CANCELLED read and the web
+  // checkout must agree on it — one copy, for the same #1369 reason.
+  ESTADOS_FRETE_MERCADORIA_FORA,
   ESTADOS_FRETE_NAO_POSTADO,
   ESTADOS_FRETE_PRE_AUTORIZACAO,
   ESTADOS_FRETE_REMOVE_ESTOQUE,
   FREIGHT_TIPO_CAPS,
   INTEGRACAO_FRETE,
   INTEGRACAO_FRETE_LABELS,
+  MERCADORIA_FORA_POR_ESTADO_FRETE,
   MODALIDADE_FRETE,
   MODALIDADE_FRETE_LABELS,
   dimensoesSchema,
