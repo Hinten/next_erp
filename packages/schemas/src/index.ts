@@ -474,6 +474,15 @@ export {
   type StatusContaLojaIntegrada,
 } from './contaLojaIntegrada';
 
+// The Loja Integrada catalogue contract (step 10, #1821): the four read-only
+// route answers (categories, brands, grades, one grade's options), the one
+// resource-URI reader, the route-segment and grade-identity checks, and the pure
+// projections the backend builds the answers with — `apps/loja-integrada` and
+// the web linker must agree on them (#1369). Not a collection: no meta, nothing
+// to register. A star export on purpose: the fold-inventory scan greps raw text,
+// so a listed barrel would need a row.
+export * from './catalogoLojaIntegrada';
+
 // THE Loja Integrada situação table (master plan step 5, #1817): codigo →
 // create estado and payment status, the capture sets, the contest motivo — the
 // order importer, the label step's paid re-check and the web all read it

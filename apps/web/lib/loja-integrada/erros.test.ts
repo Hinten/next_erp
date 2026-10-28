@@ -239,9 +239,21 @@ describe('descreverFalhaCredencialLi — every code the credential routes answer
     CODIGO_ERRO_LI.rotaEmConflito,
   ]);
 
+  /**
+   * The codes only the catalogue routes answer (step 10: the category, brand
+   * and grade reads). The credential panel never calls those routes; their copy
+   * belongs to the variation linker's own describer, keyed on the same codes.
+   */
+  const SO_DAS_ROTAS_DO_CATALOGO = new Set<string>([
+    CODIGO_ERRO_LI.gradeAusenteNaLoja,
+    CODIGO_ERRO_LI.catalogoExcedeLimite,
+    CODIGO_ERRO_LI.recursoNaoPermitido,
+  ]);
+
   it.each(
     Object.values(CODIGO_ERRO_LI).filter(
-      (c) => !SO_DOS_FLUXOS.has(c) && !SO_DAS_ROTAS_DE_PEDIDO.has(c),
+      (c) =>
+        !SO_DOS_FLUXOS.has(c) && !SO_DAS_ROTAS_DE_PEDIDO.has(c) && !SO_DAS_ROTAS_DO_CATALOGO.has(c),
     ),
   )('%s is described by its code, never by the backend sentence', (code) => {
     // The status is one no branch keys on, so only the code can pick the copy.
