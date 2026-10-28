@@ -32,7 +32,7 @@ import { limparTaxonomiaShopee } from '../taxonomia/cache';
 import { FakeDb, asDb } from '../testing/fakeDb';
 import { CAP_FOTOS_KIT } from './constantesKit';
 import { idDoVinculoDeKit } from './idsKit';
-import { tetoDeFotosDoKit } from './planoKit';
+import { decidirKitNovo, tetoDeFotosDoKit, vinculosNativosDoKit } from './planoKit';
 import { prepararKit, type ArmaDeKit, type EntradaDeKit } from './prepararKit';
 
 /* -------------------------------------------------------------------------- */
@@ -198,6 +198,12 @@ interface OpcoesDaLoja {
   /** `'indisponivel'` (the default — the sandbox host), a served band, or a failure. */
   readonly limites?: 'indisponivel' | Json | Error;
   readonly falhaDaBase?: (itemIds: readonly number[]) => Error | null;
+  /**
+   * #2065: this item's base row is answered by the FIRST `get_item_base_info`
+   * that carries it only — every later call DROPS it (Shopee leaving a listed
+   * row out of a second read).
+   */
+  readonly linhaSoNaPrimeiraLeitura?: number;
 }
 
 interface LojaFake {
@@ -220,15 +226,21 @@ function lojaFake(op: OpcoesDaLoja = {}): LojaFake {
     { item_id: COMP_A_ITEM, item_status: 'NORMAL', tag: { kit: false } },
     { item_id: COMP_B_ITEM, item_status: 'NORMAL', tag: { kit: false } },
   ];
+  let linhaJaServida = false;
   const conhecidas: Record<string, (...args: never[]) => Promise<unknown>> = {
     getItemBaseInfo: (p: { itemIds: readonly number[] }) => {
       ops.push('get_item_base_info');
       basePedidas.push([...p.itemIds]);
       const falha = op.falhaDaBase?.(p.itemIds) ?? null;
       if (falha !== null) return Promise.reject(falha);
+      const perdida = op.linhaSoNaPrimeiraLeitura;
+      const perde = perdida !== undefined && linhaJaServida && p.itemIds.includes(perdida);
+      if (perdida !== undefined && p.itemIds.includes(perdida)) linhaJaServida = true;
       return Promise.resolve(
         shopeeItemBaseInfoPayloadSchema.parse({
-          item_list: p.itemIds.flatMap((id) => (bases[id] === undefined ? [] : [bases[id]])),
+          item_list: p.itemIds.flatMap((id) =>
+            bases[id] === undefined || (perde && id === perdida) ? [] : [bases[id]],
+          ),
         }),
       );
     },
@@ -868,8 +880,11 @@ describe('prepararKit — a busca L6 (só nos braços de criação)', () => {
 
   it('(S2C-02) um kit NOSSO que a lista não mostrou é lido em UM lote: ausente ⇒ null; presente ⇒ o status', async () => {
     for (const [base, esperado] of [
-      [undefined, null],
-      [baseDoKit({ item_status: 'UNLIST' }), 'UNLIST'],
+      [undefined, { fonte: 'base-info', itemStatus: null, recente: false }],
+      [
+        baseDoKit({ item_status: 'UNLIST' }),
+        { fonte: 'base-info', itemStatus: 'UNLIST', recente: false },
+      ],
     ] as const) {
       const db = new FakeDb();
       semearTudo(db);
@@ -882,8 +897,104 @@ describe('prepararKit — a busca L6 (só nos braços de criação)', () => {
       expect(loja.basePedidas.at(-1)).toEqual([KIT_ITEM]);
       // OURS = 1 (the link is authoritative) ⇒ a resume, nothing sent ⇒ no
       // photo; a deleted one ⇒ a create ⇒ the photos go up.
-      expect(ctx.fotos === null).toBe(esperado !== null);
+      expect(ctx.fotos === null).toBe(esperado.itemStatus !== null);
     }
+  });
+});
+
+/** The plan's own verdict over a prepared context — the call `planejarKit` makes. */
+function kitNovoDe(ctx: Awaited<ReturnType<typeof preparar>>) {
+  const v = vinculosNativosDoKit(ctx.vinculos, ctx.alvo?.linkDocId ?? null);
+  if (ctx.busca === null) throw new Error('a busca deveria ter rodado');
+  return decidirKitNovo(ctx.busca, v.nossos, ctx.nossosVivos, v.substituidos, v.sucessorDe);
+}
+
+/** Every `get_item_base_info` that carried `itemId`. */
+function leiturasDaBaseCom(loja: LojaFake, itemId: number): (readonly number[])[] {
+  return loja.basePedidas.filter((ids) => ids.includes(itemId));
+}
+
+describe('prepararKit — #2065: os kits NOSSOS, lidos sem uma segunda leitura que perca a linha', () => {
+  /** K's kit, LISTED but carrying ANOTHER SKU (the ERP SKU renamed between runs): never a hit. */
+  const listadoComOutroSku = (): LojaFake =>
+    lojaFake({
+      lista: [{ item_id: KIT_ITEM, item_status: 'NORMAL', tag: { kit: true } }],
+      bases: { [KIT_ITEM]: baseDoKit({ item_sku: 'KIT-ANTIGO' }) },
+      // Shopee answers its row to the scan, then drops it from any later read.
+      linhaSoNaPrimeiraLeitura: KIT_ITEM,
+    });
+
+  it('o kit nosso LISTADO (não achado) lê a LINHA DA LISTA: o ÚNICO get_item_base_info que o carrega é o da busca ⇒ completar, nada sobe', async () => {
+    const db = new FakeDb();
+    semearTudo(db);
+    semearVinculoNativo(db, KIT_ITEM);
+    const loja = listadoComOutroSku();
+
+    const ctx = await preparar(db, loja);
+
+    expect(ctx.busca?.achados).toEqual([]);
+    expect([...ctx.nossosVivos]).toEqual([[KIT_ITEM, { fonte: 'lista', itemStatus: 'NORMAL' }]]);
+    expect(leiturasDaBaseCom(loja, KIT_ITEM)).toHaveLength(1);
+    const link = idDoVinculoDeKit(INTEGRACAO, KIT_ITEM);
+    expect(kitNovoDe(ctx)).toEqual({ acao: 'completar', linkDocId: link, itemId: KIT_ITEM });
+    expect(ctx.fotos).toBeNull();
+  });
+
+  it('⚠️ NEAR-MISS: o MESMO kit NÃO listado e sem linha ⇒ lido na base, ausente, apagado ⇒ criar (M165)', async () => {
+    const db = new FakeDb();
+    semearTudo(db);
+    semearVinculoNativo(db, KIT_ITEM);
+    const loja = lojaFake();
+
+    const ctx = await preparar(db, loja);
+
+    expect([...ctx.nossosVivos]).toEqual([
+      [KIT_ITEM, { fonte: 'base-info', itemStatus: null, recente: false }],
+    ]);
+    expect(leiturasDaBaseCom(loja, KIT_ITEM)).toEqual([[KIT_ITEM]]);
+    expect(kitNovoDe(ctx)).toEqual({ acao: 'criar' });
+  });
+
+  it('o vínculo criado há pouco (`publicadoEm` dentro da janela), não listado e sem linha ⇒ `recente` ⇒ RECUSA, nada sobe; ⛔ quase-par: fora da janela ⇒ criar', async () => {
+    for (const [idadeMs, recente] of [
+      [60_000, true],
+      [10 * 60_000, false],
+    ] as const) {
+      const db = new FakeDb();
+      semearTudo(db);
+      semearVinculoNativo(db, KIT_ITEM, { publicadoEm: AGORA - idadeMs });
+      const loja = lojaFake();
+
+      const ctx = await preparar(db, loja);
+
+      expect([...ctx.nossosVivos]).toEqual([
+        [KIT_ITEM, { fonte: 'base-info', itemStatus: null, recente }],
+      ]);
+      const kitNovo = kitNovoDe(ctx);
+      expect(kitNovo.acao, String(idadeMs)).toBe(recente ? 'recusar' : 'criar');
+      if (kitNovo.acao === 'recusar') {
+        expect(kitNovo.problemas.map((p) => p.motivo)).toEqual([
+          MOTIVO_PUBLICACAO_BLOQUEADA.buscaDeKitIncompleta,
+        ]);
+        expect(ctx.fotos).toBeNull();
+      }
+    }
+  });
+
+  it('uma busca INCOMPLETA não lê kit nosso nenhum: `nossosVivos` vazio, nenhum get_item_base_info o carrega', async () => {
+    const db = new FakeDb();
+    semearTudo(db);
+    semearVinculoNativo(db, KIT_ITEM);
+    // A listed kit candidate with no base row ⇒ the scan stops on `base-info`.
+    const loja = lojaFake({
+      lista: [{ item_id: KIT_2_ITEM, item_status: 'NORMAL', tag: { kit: true } }],
+    });
+
+    const ctx = await preparar(db, loja);
+
+    expect(ctx.busca?.completo).toBe(false);
+    expect(ctx.nossosVivos.size).toBe(0);
+    expect(leiturasDaBaseCom(loja, KIT_ITEM)).toEqual([]);
   });
 });
 

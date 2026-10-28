@@ -1574,7 +1574,14 @@ function ensaioDeKit(
     vivo: null,
     linhasDoAnuncio: [],
     linhasDaConta: [],
-    busca: { completo: true, achados: [], incompleta: null, paginas: 1, chamadas: 2 },
+    busca: {
+      completo: true,
+      achados: [],
+      listados: new Map(),
+      incompleta: null,
+      paginas: 1,
+      chamadas: 2,
+    },
     nossosVivos: new Map(),
     fotos: {
       item: {
