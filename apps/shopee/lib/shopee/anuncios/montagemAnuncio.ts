@@ -39,14 +39,16 @@
  *
  * `link.item_name`, `link.description`, `link.category_id`, `link.attributes` and
  * `link.brand_id` come from the last read-back of the LIVE listing, so they carry
- * the operator's Seller Centre choices. They WIN over the ERP produto, blank
+ * the operator's Seller Centre choices — or, on a DRAFT (#1911), from the draft
+ * route that wrote them (`rascunho.ts`; `attributes` in the request shape since
+ * P6). They WIN over the ERP produto, blank
  * meaning absent — the `linkTitle` rule in Mercado Livre's `assemblePublishInput`
  * (`publishCore.ts`),
  * adopted verbatim and for the same measured reason (#799 bug 4a: without it an
  * operator can never give a listing a marketplace-optimised name of its own).
  * The produto is the fallback, which is what a first publish uses.
  *
- * ## The vocabulary this file PRODUCES (nineteen of twenty-seven)
+ * ## The vocabulary this file PRODUCES (nineteen of thirty)
  *
  * `sem-nome`, `nome-fora-da-faixa`, `sem-descricao`, `descricao-fora-da-faixa`,
  * `sem-preco`, `filho-sem-preco`, `preco-fora-da-faixa`, `sem-peso`,
@@ -58,7 +60,7 @@
  * `ehAtualizacao` like the five create-only members: a draft has no `item_id`,
  * so it only ever reaches the create body, and the flag alone decides.
  *
- * The other eight are produced ELSEWHERE and are listed here so a reader does not
+ * The other eleven are produced ELSEWHERE and are listed here so a reader does not
  * hunt for them in this file: `variacao-sem-vinculo`, `combinacao-duplicada` and
  * `opcoes-demais` are `anuncios/tiersPublicacao.ts`'s; `logistica-sem-canal` is
  * `anuncios/logisticaPublicacao.ts`'s, and this module RELAYS that module's
@@ -67,9 +69,12 @@
  * `criacao-incerta-sem-sku` and `criacao-incerta-ja-vinculada` are
  * `anuncios/criacaoIncerta.ts`'s — the ENSURE a draft in `incerta` runs, under
  * its lock, before any second `add_item` (a Shopee scan by SKU over the
- * attempt's window; refused outright when the SKU folds blank). Never this
- * module's: a montagem builds a body, and these decide whether one may be SENT
- * at all. The wire-rejection-only motivos
+ * attempt's window; refused outright when the SKU folds blank) — and, since
+ * P5b, `anuncio-existente-sem-vinculo`, `anuncio-existente-de-outro-produto` and
+ * `busca-de-anuncio-existente-incompleta` are that file's too: the look-up a
+ * `livre` draft's FIRST `add_item` runs, under its lock, for a listing the conta
+ * already holds with the SKU the body sends. Never this module's: a montagem
+ * builds a body, and these decide whether one may be SENT at all. The wire-rejection-only motivos
  * (`bloqueado-por-promocao`, `imposto-recusado`, `anuncio-semelhante-existente`
  * and `desconhecido` among them) are `anuncios/problemasPublicacao.ts`'s and
  * cannot be reached by reading a produto.
@@ -104,7 +109,6 @@
 import {
   type ShopeeAddItemRequest,
   type ShopeeAttributeRequest,
-  type ShopeeAttributeValueRequest,
   type ShopeeCondition,
   type ShopeeDimensionRequest,
   type ShopeeItemStatusWritable,
@@ -121,14 +125,18 @@ import {
   type ComponentesKit,
   type EstadoAnuncioShopee,
   type Foto,
+  atributosParaEnvioShopee,
   dentroDaFaixaShopee,
   descreverFaixaShopee,
   descricaoDoAnuncioShopee,
   ESTADO_ANUNCIO_SHOPEE,
+  lerAtributosArmazenadosShopee,
   precoDaTabela,
   textoNaFaixaShopee,
   textoUtilizavelShopee,
+  TIPO_PROBLEMA_ATRIBUTO_SHOPEE,
   tituloDoAnuncioShopee,
+  validarAtributosShopee,
 } from '@delfrance/schemas';
 
 import { quantidadeParaPublicarShopee } from '../estoque/quantidadeEstoque';
@@ -250,7 +258,8 @@ export interface LinkListagemLido {
    * Whether the stored document is a DRAFT whose brand was never CHOSEN
    * (#1911, P3, D10) — `rascunhoSemMarcaShopee` (`@delfrance/schemas`, the ONE
    * predicate the web's pendência calls too) over the RAW document: a draft
-   * with `brand_id` `null` or absent. Set by the ONE builder, `linkListagemLido`
+   * whose `brand_id` is not a safe non-negative integer (`null`, absent, `-1`,
+   * `'77'`, `1.5`… — fail-closed since P5). Set by the ONE builder, `linkListagemLido`
    * in `publicarAnuncio.ts`; read by {@link montarAnuncio} alone, which refuses
    * it as `marca-nao-escolhida` BEFORE the brand cascade's `0` could turn "not
    * chosen" into Shopee's "No Brand" on the operator's behalf.
@@ -474,33 +483,60 @@ export function dimensaoParaPublicar(produto: ProdutoParaPublicar): ShopeeDimens
   };
 }
 
-/** One stored attribute entry, read tolerantly — the link stores them as `unknown`. */
-function lerValorArmazenado(bruto: unknown): ShopeeAttributeValueRequest | null {
-  if (typeof bruto !== 'object' || bruto === null || Array.isArray(bruto)) return null;
-  const linha = bruto as Record<string, unknown>;
-  const valueId = linha.value_id;
-  if (typeof valueId !== 'number' || !Number.isInteger(valueId) || valueId < 0) return null;
-  const nome = textoUtilizavelShopee(linha.original_value_name as string | null | undefined);
-  const unidade = textoUtilizavelShopee(linha.value_unit as string | null | undefined);
-  // `0` is the CUSTOM sentinel (`guide 211 §2.2`) and then the name is REQUIRED:
-  // a custom value with no name is a value Shopee refuses, so it is dropped here
-  // and the attribute may end up missing — which is how it reaches
-  // `atributo-obrigatorio` instead of a wire rejection.
-  if (valueId === 0 && nome === null) return null;
-  return {
-    value_id: valueId,
-    ...(valueId === 0 && nome !== null ? { original_value_name: nome } : {}),
-    ...(unidade !== null ? { value_unit: unidade } : {}),
-  };
-}
-
 /**
  * `attribute_list` from the stored attributes, plus the mandatory set it misses.
  *
- * The ERP models no Shopee attribute of its own, so the stored list — the last
- * read-back of the live listing, or what the operator filled in Seller Centre —
- * is the ONLY source there is. Entries with no usable values are dropped rather
- * than sent empty: Shopee reads an empty `attribute_value_list` as a deletion.
+ * ⚠️ **Neither half is decided here** (#1911, D9). Both come from
+ * `@delfrance/schemas`' `atributosShopee.ts` — the ONE decoder and the ONE
+ * validator, which the draft route and the produto's Shopee tab in `apps/web`
+ * read too (#1369: a second copy here would drift toward plausible while both
+ * read correct). This function only composes them, and keeps its signature
+ * because `publicarAnuncioCli.ts`'s dry run calls it with the same two
+ * arguments.
+ *
+ * **`lista`** — `lerAtributosArmazenadosShopee` → `atributosParaEnvioShopee`:
+ * whichever of the three stored shapes the link holds (write-back #1's REQUEST
+ * shape, as sent; the product import's READ shape; the legacy value with no
+ * `value_id`), in stored order, always in the request shape. The ERP models no
+ * Shopee attribute of its own, so the stored list is the ONLY source there is.
+ *
+ * - Everything usable that is stored is SENT — an attribute the current tree
+ *   does not show (another category's, a child whose parent value is no longer
+ *   chosen) included. Dropping those is the web editor's save (P13, via
+ *   `atributosParaGravarShopee`, before it posts); the draft route stores what
+ *   it receives, and the publisher sends what is stored.
+ * - An entry with no usable value is dropped rather than sent empty: Shopee
+ *   reads an empty `attribute_value_list` as a DELETION. A custom value
+ *   (`value_id: 0`) with a blank name is such a value — dropped, so the
+ *   attribute may end up missing, which is how it reaches
+ *   `atributo-obrigatorio` instead of a wire rejection.
+ * - ⚠️ **A legacy custom value stored with NO `value_id` is SENT**, as
+ *   `{value_id: 0, original_value_name}` (Lucas, #1911 Round 3 Q1 — the legacy
+ *   app sent it too). Before #1911 this function dropped it in silence, which on
+ *   a mandatory attribute read only as "missing"; a refusal by name is routable
+ *   to the attribute editor. A blank name is still dropped.
+ * - ⚠️ A DATE stored in the READ form (`06/2021`, what the product import
+ *   stores verbatim) goes out in the WRITE form: guide 209 §2.3 documents the
+ *   write as a Unix timestamp in `original_value_name`, so the read form sent
+ *   as is would be refused. The tree says which attributes are dates
+ *   (`inputValidationType` 4), and the conversion is the shared module's
+ *   (`atributosParaEnvioShopee` → `timestampDeDataShopee`) — never decided
+ *   here. Its instant-of-day (12:00 UTC) stays UNVERIFIED until the BR
+ *   captures (Q-DB2) and lives in that ONE place. A timestamp, a date the tree
+ *   does not know and a text that is no real date go out as stored.
+ *
+ * **`faltando`** — the `obrigatorio-ausente` rows of `validarAtributosShopee`,
+ * and ONLY those: a VISIBLE mandatory attribute with no decoded value. A ROOT
+ * (named `name ?? '#<id>'`, the pre-#1911 check) or — new in #1911 — a
+ * mandatory CHILD that a value the listing CHOSE unlocks, named
+ * `"<filho> (em <pai>: <valor>)"`; the child of an unchosen value is invisible
+ * and never missing. Every other kind the validator finds (a custom value on a
+ * list-only attribute, a value outside the list, too many values, a unit, a
+ * value type, an orphan) reaches Shopee, which names it — a read-form date
+ * reaches it CONVERTED (above): the editor shows them, the publisher refuses
+ * none of them. `obrigatorio-requer-busca`
+ * is an EXTRA row beside `obrigatorio-ausente`, so filtering on the latter names
+ * each missing attribute exactly once.
  *
  * ⚠️ `variation_id != 0 ⇒ never send variation_name` is the TIER rule
  * (`announcement 873`) and has nothing to do with attributes. It lives in
@@ -510,33 +546,11 @@ export function atributosParaPublicar(
   armazenados: readonly unknown[] | null,
   projetados: AtributosProjetados,
 ): { readonly lista: readonly ShopeeAttributeRequest[]; readonly faltando: readonly string[] } {
-  const lista: ShopeeAttributeRequest[] = [];
-  const vistos = new Set<number>();
-  for (const bruto of armazenados ?? []) {
-    if (typeof bruto !== 'object' || bruto === null || Array.isArray(bruto)) continue;
-    const linha = bruto as Record<string, unknown>;
-    const id = linha.attribute_id;
-    if (typeof id !== 'number' || !Number.isInteger(id)) continue;
-    const brutos = Array.isArray(linha.attribute_value_list) ? linha.attribute_value_list : [];
-    const valores: ShopeeAttributeValueRequest[] = [];
-    for (const valor of brutos) {
-      const lido = lerValorArmazenado(valor);
-      if (lido !== null) valores.push(lido);
-    }
-    if (valores.length === 0) continue;
-    if (vistos.has(id)) continue;
-    vistos.add(id);
-    lista.push({ attribute_id: id, attribute_value_list: valores });
-  }
-
-  const faltando: string[] = [];
-  for (const atributo of projetados.atributos) {
-    if (!atributo.mandatory) continue;
-    if (vistos.has(atributo.attributeId)) continue;
-    faltando.push(atributo.name ?? `#${String(atributo.attributeId)}`);
-  }
-
-  return { lista, faltando };
+  const lidos = lerAtributosArmazenadosShopee(armazenados).atributos;
+  const faltando = validarAtributosShopee(projetados, lidos)
+    .filter((p) => p.tipo === TIPO_PROBLEMA_ATRIBUTO_SHOPEE.obrigatorioAusente)
+    .map((p) => p.nome);
+  return { lista: atributosParaEnvioShopee(projetados, lidos), faltando };
 }
 
 /**

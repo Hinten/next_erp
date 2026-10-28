@@ -420,6 +420,10 @@ describe.skipIf(!EMULATED)('the draft route on the Firestore emulator', () => {
             desde: expiraEm - PUBLICACAO_EM_CURSO_SHOPEE_TTL_MS,
             expiraEm,
             token: 'token-de-outra-execucao',
+            // STAMPED by that run's pre-send re-read: it may have sent, so the
+            // expired lock reads `incerta` (an unstamped one reads `livre` —
+            // batch-A review, 2026-10-28).
+            sku: 'CAM-ENVIADO',
           },
         }),
       );

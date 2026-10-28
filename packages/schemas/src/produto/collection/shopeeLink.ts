@@ -73,9 +73,11 @@ import { ACAO_STATUS_ANUNCIO, type AcaoStatusAnuncio } from './mercadoLivreLink'
  *      content it will send — a tier-1 `update(…, {lastUpdateTime})` against
  *      the snapshot that read the draft free, or past its grace (`incerta`):
  *      that TAKEOVER is the one way a run replaces a lock it does not hold;
- *    - RE-ARMED for the wait of an uncertain create, RELEASED (with or without
- *      the failure stamp) and CLEARED by ENSURE's adoption — each guarded by
- *      the run's own `token`: a foreign token means NO write (K1-14);
+ *    - STAMPED with the SKU the create sends (`sku`, the pre-send re-read,
+ *      before the first `add_item` leg — batch-A review), RE-ARMED for the
+ *      wait of an uncertain create, RELEASED (with or without the failure
+ *      stamp) and CLEARED by ENSURE's adoption — each guarded by the run's own
+ *      `token`: a foreign token means NO write (K1-14);
  *    - CLEARED token-FREE, on purpose, in exactly two places, both recording a
  *      listing that now EXISTS: write-back #1's claim
  *      (`reivindicarRascunhoShopee`) and the product import's adoption of the
@@ -90,15 +92,21 @@ import { ACAO_STATUS_ANUNCIO, type AcaoStatusAnuncio } from './mercadoLivreLink'
  *    Written only by `apps/shopee`. SET by the publish of a draft — when an
  *    `add_item` ends `incerto` (the classifier in `anuncios/criacaoIncerta.ts`),
  *    in the same token-guarded write that keeps the lock live for the wait;
- *    and when a reservation takes over an EXPIRED lock nobody classified (a
- *    crashed run), which carries that lock's `desde` here in the same write
- *    that replaces the lock, because the new lock's `desde` is LATER — both
- *    keep an earlier value. CLEARED (`null`) by the publish when its ENSURE
+ *    and when a reservation takes over an EXPIRED, STAMPED lock nobody
+ *    classified (a run that crashed at or after the send), which carries that
+ *    lock's `desde` here in the same write that replaces the lock, because
+ *    the new lock's `desde` is LATER — both keep an earlier value. An expired
+ *    lock that was never stamped carries nothing: its run never sent.
+ *    CLEARED (`null`) by the publish when its ENSURE
  *    scan ends COMPLETE with no candidate at all, by ENSURE's adoption, by the
  *    write-back #1 claim, and by the product import when it adopts the draft
  *    (`produtos/`). Nothing in a browser writes it. Every reader decides
  *    through `estadoPublicacaoRascunhoShopee` and
  *    `janelaDaCriacaoIncertaShopee` (`./shopeeRascunho.ts`), never raw.
+ *    Its twin **`criacaoIncertaSku`** (batch-A review) is the SKU that attempt
+ *    SENT, folded — written in the SAME writes that set or carry
+ *    `criacaoIncertaDesde` (the `incerto` re-arm, the takeover) and cleared by
+ *    the same four; read only through `janelaDaCriacaoIncertaShopee`'s `sku`;
  * The stock sender READS `item_status` and `estadoAnuncio` into its refusal
  * fingerprint and never writes either, so it can never race the five above.
  * The price sender writes neither.
@@ -361,6 +369,33 @@ export const publicacaoEmCursoShopeeSchema = z
      * listing that exists (the header's writer inventory).
      */
     token: z.string().min(1),
+    /**
+     * The SKU the create SENDS, folded (`skuDaBuscaShopee` of the body's
+     * `item_sku` — `''` when the body carries none). Stamped by the run's
+     * token-guarded PRE-SEND re-read, before the first `add_item` leg, so a
+     * crash after the send still leaves it on the lock (batch-A review: the
+     * look-up for an uncertain create compares against what the attempt
+     * SENT, never against the produto's SKU at re-publish time).
+     *
+     * ⚠️ **STAMPED ⇔ a string** — `''` is the stamp of a SKU-less body, a
+     * VALUE. `null` or absent = NEVER STAMPED = the run never reached the
+     * send, because this stamp is the ONLY writer of the key and it runs
+     * before every `add_item` leg (the takeover writes a fresh lock without
+     * it; the `incerto` re-arm carries the one already there). So an expired
+     * lock that was never stamped, on a draft with no `criacaoIncertaDesde`,
+     * is NOT an uncertain create: `estadoPublicacaoRascunhoShopee` reads it
+     * `livre` at once and `janelaDaCriacaoIncertaShopee` gives no window
+     * (Lucas, 2026-10-28 — else the next run's look-up, narrowed to "since
+     * the attempt", skips an OLD unlinked same-SKU listing and creates a
+     * duplicate).
+     *
+     * ⚠️ Deploy: that reading holds only because #1911's batch A deploys as
+     * ONE — the lock (P3) never ships without this stamp (P6). A P3-only
+     * deploy would write unstamped locks for runs that DID send, and the
+     * rule above would free them with no grace; the P3, P4, P5 and P6 PRs
+     * each say "never without P6".
+     */
+    sku: z.string().nullable().optional(),
   })
   .passthrough();
 export type PublicacaoEmCursoShopee = z.infer<typeof publicacaoEmCursoShopeeSchema>;
@@ -437,10 +472,22 @@ export const produtoShopeeLinkSchema = z
      */
     condition: z.string().nullable().default(null),
     /**
-     * The brand name Shopee reports for `brand_id` — written by the publish
-     * read-back (write-back #2) and, since #1911 (C9), by the import
-     * (`dadosLinkListagem`); both write it beside `brand_id` from ONE read, so
-     * the pair never mixes two answers.
+     * The brand name that goes with `brand_id`. THREE writers, and only one of
+     * them writes the pair from one Shopee read:
+     *
+     *  1. **the draft route** (#1911 P4, `apps/shopee/lib/shopee/anuncios/rascunho.ts`,
+     *     create and edit) — the OPERATOR's pick, both keys always together
+     *     (D10), cleaned by the write schema (`brand_id: 0` or a blank name ⇒
+     *     `null`) but never checked against `get_brand_list`; P5's no-link mint
+     *     goes through the same create with `{brand_id: 0, original_brand_name:
+     *     null}`. A later publish's read-back overwrites the name.
+     *  2. **the import** (`dadosLinkListagem`, #1911 C9) — both keys from the
+     *     SAME `get_item_base_info` read, so there the pair never mixes two
+     *     answers.
+     *  3. **the publish read-back** (write-back #2) — the NAME only, from the
+     *     read-back. The `brand_id` beside it is write-back #1's, the value the
+     *     REQUEST sent, and an update that left `brand` out writes no id at all:
+     *     the stored pair can then hold an old id beside Shopee's current name.
      */
     original_brand_name: z.string().nullable().default(null),
     /** MILLISECONDS. The FIRST successful publish only — never rewritten by a republish. */
@@ -839,6 +886,20 @@ export const produtoShopeeLinkSchema = z
      * server and browser alike (#1369).
      */
     criacaoIncertaDesde: z.number().int().nullable().optional(),
+
+    /**
+     * The SKU the uncertain attempt of {@link criacaoIncertaDesde} SENT, folded
+     * (`''` = the body carried none) — carried from the lock's `sku` by the
+     * same writes that carry the attempt's start (the `incerto` re-arm, the
+     * takeover of an expired lock), and cleared with it. `null` or absent =
+     * UNKNOWN (a lock that never stamped it, or two attempts that sent
+     * different SKUs): the look-up then fails closed.
+     *
+     * ⚠️ Never read raw: `janelaDaCriacaoIncertaShopee` (`./shopeeRascunho.ts`)
+     * pairs it with the record it belongs to — a SKU with no readable
+     * `criacaoIncertaDesde` beside it is ignored.
+     */
+    criacaoIncertaSku: z.string().nullable().optional(),
   })
   .passthrough();
 export type ProdutoShopeeLink = z.infer<typeof produtoShopeeLinkSchema>;

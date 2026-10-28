@@ -52,13 +52,15 @@
  * that produto's `prodshopee` and adopts a draft ONLY when
  * {@link veredictoDeAdocaoShopee} answers `adotavel`: a draft of THIS conta
  * that carries attempt evidence (`janelaDaCriacaoIncertaShopee` — a record of
- * an uncertain create, or a publish lock) and whose window holds this
+ * an uncertain create, or a publish lock its run STAMPED before the send; a
+ * lock never stamped is no evidence, batch-A review) and whose window holds this
  * listing's `create_time` (`criadoNaJanelaShopee === 'dentro'`). That is the
  * listing the draft's own publish may have created and never recorded. Every
  * other draft is left byte-for-byte alone and the listing gets today's `add`:
  *
- *  - no evidence — every legacy draft, a draft never sent: a same-SKU listing
- *    the operator made elsewhere is not this draft's;
+ *  - no evidence — every legacy draft, a draft never sent (a lock whose run
+ *    has not stamped it included): a same-SKU listing the operator made
+ *    elsewhere is not this draft's;
  *  - created BEFORE the window (`fora`) — an older listing, never the attempt's;
  *  - `create_time` unknown (`desconhecido`) — never adopted, one log line: the
  *    fail-closed direction, a fork the operator can see beats an adoption

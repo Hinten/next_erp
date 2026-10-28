@@ -16,6 +16,7 @@ import {
   INTEGRACAO_TIPO,
   PUBLICACAO_EM_CURSO_SHOPEE_TTL_MS,
   MSG_BASE_DIFERENTE_DO_PATCH_RASCUNHO_SHOPEE,
+  MSG_BASE_SEM_ATRIBUTOS_NA_TROCA_DE_CATEGORIA_RASCUNHO_SHOPEE,
   MSG_PATCH_VAZIO_RASCUNHO_SHOPEE,
   respostaAtualizarRascunhoShopeeSchema,
 } from '@delfrance/schemas';
@@ -90,8 +91,18 @@ function semear(link: DocData | null = rascunho()): void {
   if (link !== null) db.seed(CAMINHO, link);
 }
 
-/** A FOREIGN publish lock expiring at `expiraEm` (ms), taken one TTL before it. */
+/**
+ * A FOREIGN publish lock expiring at `expiraEm` (ms), taken one TTL before it,
+ * STAMPED by its run's pre-send re-read (`sku`): a create may be in flight, so
+ * past `expiraEm` it serves the grace, then reads `incerta` (batch-A review).
+ */
 function trava(expiraEm: number): DocData {
+  const { publicacaoEmCurso } = travaSemCarimbo(expiraEm);
+  return { publicacaoEmCurso: { ...(publicacaoEmCurso as DocData), sku: 'CAM-BR' } };
+}
+
+/** The same lock, never stamped: its run died before the send — past `expiraEm`, `livre`. */
+function travaSemCarimbo(expiraEm: number): DocData {
   return {
     publicacaoEmCurso: {
       desde: expiraEm - PUBLICACAO_EM_CURSO_SHOPEE_TTL_MS,
@@ -144,6 +155,29 @@ describe('autenticação e corpo', () => {
       corpo({ description: null }, { item_name: 'X' }),
       MSG_BASE_DIFERENTE_DO_PATCH_RASCUNHO_SHOPEE,
     ],
+    [
+      // K1-12 (P6): a category change clears the stored attributes, so the
+      // base must show the attributes the operator saw.
+      'uma troca de categoria cuja base não traz os atributos que ela apaga',
+      corpo({ category_id: 100_017 }, { category_id: 100_009 }),
+      MSG_BASE_SEM_ATRIBUTOS_NA_TROCA_DE_CATEGORIA_RASCUNHO_SHOPEE,
+    ],
+    [
+      // D9 (P6): the import's READ shape (a name on a list value) is never written.
+      'atributos no formato de LEITURA no patch',
+      corpo(
+        { attributes: null },
+        {
+          attributes: [
+            {
+              attribute_id: 1,
+              attribute_value_list: [{ value_id: 5, original_value_name: 'Algodão' }],
+            },
+          ],
+        },
+      ),
+      'attributes',
+    ],
     ['`item_id` no patch', corpo({ item_name: 'Camiseta' }, { item_id: 1 }), 'item_id'],
     [
       '`publicacaoEmCurso` no patch',
@@ -183,6 +217,38 @@ describe('editar — 200', () => {
       ultimaModificacao: T0,
     });
     expect(Date.now).toHaveBeenCalledTimes(1);
+  });
+
+  it('P6: grava `attributes` no formato de REQUISIÇÃO, normalizado pelo corpo', async () => {
+    semear();
+    const res = await POST(
+      req(
+        corpo(
+          { attributes: null },
+          {
+            attributes: [
+              {
+                attribute_id: 1,
+                attribute_value_list: [
+                  { value_id: 0, original_value_name: ' Algodão ', value_unit: '' },
+                ],
+              },
+            ],
+          },
+        ),
+      ),
+    );
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({
+      linkDocId: RASCUNHO,
+      gravados: [CAMPO_RASCUNHO_SHOPEE.attributes],
+    });
+    // The custom name trimmed, the blank unit omitted — the request shape the
+    // decoder reads back EQUAL, so the next identical save writes nothing.
+    expect(db.store[CAMINHO]?.data?.attributes).toStrictEqual([
+      { attribute_id: 1, attribute_value_list: [{ value_id: 0, original_value_name: 'Algodão' }] },
+    ]);
   });
 
   it('um patch igual ao que está gravado responde `gravados: []` e NÃO escreve', async () => {
@@ -244,7 +310,9 @@ describe('editar — 200', () => {
     const res = await POST(
       req(
         corpo(
-          { category_id: 100_017, marca: null },
+          // K1-12: the base shows the attributes the category change clears —
+          // `[]`, the projection of a stored entry with no usable value.
+          { category_id: 100_017, marca: null, attributes: [] },
           { marca: { brand_id: 77, original_brand_name: 'Marca X' }, category_id: 100_009 },
         ),
       ),
@@ -283,6 +351,41 @@ describe('editar — recusas', () => {
       conflitos: [{ campo: CAMPO_RASCUNHO_SHOPEE.itemName, atual: 'Camiseta editada noutra aba' }],
     });
     expect(db.store[CAMINHO]?.data).toEqual(antes);
+  });
+
+  // K1-12 at the route: the category change clears the stored attributes, so it
+  // is decided against the attributes the operator SAW, before anything is written.
+  const ATRIBUTOS_DE_B = [{ attribute_id: 1, attribute_value_list: [{ value_id: 5 }] }];
+
+  it('⛔ K1-12: B gravou atributos; a troca de categoria de A com a base ANTIGA ⇒ 409 CONFLITO em `attributes`, nada apagado', async () => {
+    semear(rascunho({ attributes: ATRIBUTOS_DE_B }));
+    const antes = structuredClone(db.store[CAMINHO]?.data);
+
+    const res = await POST(
+      req(corpo({ category_id: 100_017, attributes: null }, { category_id: 100_009 })),
+    );
+
+    expect(res.status).toBe(409);
+    await expect(res.json()).resolves.toMatchObject({
+      code: CODIGO_RASCUNHO_SHOPEE.conflito,
+      conflitos: [{ campo: CAMPO_RASCUNHO_SHOPEE.attributes, atual: ATRIBUTOS_DE_B }],
+    });
+    expect(db.store[CAMINHO]?.data).toEqual(antes);
+  });
+
+  it('near-miss K1-12: a mesma troca com a base ATUAL dos atributos ⇒ 200 e `attributes: null` gravado', async () => {
+    semear(rascunho({ attributes: ATRIBUTOS_DE_B }));
+
+    const res = await POST(
+      req(corpo({ category_id: 100_017, attributes: ATRIBUTOS_DE_B }, { category_id: 100_009 })),
+    );
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({
+      linkDocId: RASCUNHO,
+      gravados: [CAMPO_RASCUNHO_SHOPEE.categoryId, CAMPO_RASCUNHO_SHOPEE.attributes],
+    });
+    expect(db.store[CAMINHO]?.data).toMatchObject({ category_id: 100_009, attributes: null });
   });
 
   it('⛔ 404 INEXISTENTE para um rascunho que não existe', async () => {
@@ -342,11 +445,46 @@ describe('editar — recusas', () => {
     });
   });
 
+  it('⛔ NEAR-MISS (batch-A review): a trava vencida NUNCA carimbada é `livre` — nem carência, nem categoria travada', async () => {
+    semear(rascunho(travaSemCarimbo(T0 - 1_000)));
+
+    const res = await POST(
+      req(corpo({ category_id: 100_017, attributes: null }, { category_id: 100_009 })),
+    );
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({
+      gravados: [CAMPO_RASCUNHO_SHOPEE.categoryId],
+    });
+  });
+
   it('⛔ 409 CATEGORIA_TRAVADA: mudar a categoria de um rascunho `incerta` (C-11)', async () => {
     semear(rascunho(trava(T0 - AGUARDAR_ANUNCIO_INCERTO_SHOPEE_MS - 1)));
     const antes = structuredClone(db.store[CAMINHO]?.data);
 
-    const res = await POST(req(corpo({ category_id: 100_017 }, { category_id: 100_009 })));
+    const res = await POST(
+      req(corpo({ category_id: 100_017, attributes: null }, { category_id: 100_009 })),
+    );
+
+    expect(res.status).toBe(409);
+    await expect(res.json()).resolves.toMatchObject({
+      code: CODIGO_RASCUNHO_SHOPEE.categoriaTravada,
+    });
+    expect(db.store[CAMINHO]?.data).toEqual(antes);
+  });
+
+  it('⛔ 409 CATEGORIA_TRAVADA também quando o patch re-envia a categoria GRAVADA ao lado de um título (DA-4: o patch NOMEIA category_id)', async () => {
+    semear(rascunho(trava(T0 - AGUARDAR_ANUNCIO_INCERTO_SHOPEE_MS - 1)));
+    const antes = structuredClone(db.store[CAMINHO]?.data);
+
+    const res = await POST(
+      req(
+        corpo(
+          { item_name: 'Camiseta', category_id: 100_017, attributes: null },
+          { item_name: 'Camiseta azul', category_id: 100_017 },
+        ),
+      ),
+    );
 
     expect(res.status).toBe(409);
     await expect(res.json()).resolves.toMatchObject({

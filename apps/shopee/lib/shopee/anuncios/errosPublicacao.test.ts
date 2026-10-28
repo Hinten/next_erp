@@ -98,6 +98,18 @@ const CHAVES_DA_CRIACAO_INCERTA = [
   'criacaoIncertaJaVinculada',
 ] as const satisfies readonly (keyof typeof MOTIVO_PUBLICACAO_BLOQUEADA)[];
 
+/**
+ * As TRÊS recusas da PRIMEIRA criação (#1911, P5b — Lucas, 2026-10-26) — chaves
+ * de `MOTIVO_PUBLICACAO_BLOQUEADA`, também em `anuncios/criacaoIncerta.ts`
+ * (`problemasDoAnuncioExistente`): a busca por SKU que um rascunho `livre` roda,
+ * sob a trava, antes do PRIMEIRO `add_item` — o espelho da busca de SKU do kit.
+ */
+const CHAVES_DO_ANUNCIO_EXISTENTE = [
+  'anuncioExistenteSemVinculo',
+  'anuncioExistenteDeOutroProduto',
+  'buscaDeAnuncioExistenteIncompleta',
+] as const satisfies readonly (keyof typeof MOTIVO_PUBLICACAO_BLOQUEADA)[];
+
 function problemaDeBloqueio(
   motivo: ProblemaDeBloqueio['motivo'],
   campo: string | null = null,
@@ -129,7 +141,7 @@ function recusado(
 }
 
 describe('MOTIVO_PUBLICACAO_BLOQUEADA', () => {
-  it('1 — o vocabulário bloqueado é EXATAMENTE estes cinquenta e quatro slugs', () => {
+  it('1 — o vocabulário bloqueado é EXATAMENTE estes cinquenta e sete slugs', () => {
     // A PERSISTED vocabulary (`falhaPublicacao.motivo` e
     // `falhaPublicacao.problemas[].motivo`). Esta lista É o pino: o
     // `as const satisfies` garante o TIPO dos valores, mas não impede que um
@@ -149,8 +161,13 @@ describe('MOTIVO_PUBLICACAO_BLOQUEADA', () => {
     // (`marca-nao-escolhida`, produzida pela montagem — D10) e o P5 as QUATRO da
     // criação INCERTA (`criacaoIncerta.ts`, D5 + K1-7: a busca que reencontra o
     // anúncio antes de qualquer segundo `add_item`, e recusa quando não prova).
+    // O P5b acrescentou as TRÊS da PRIMEIRA criação (`criacaoIncerta.ts`
+    // também: a busca por SKU antes do primeiro `add_item` de um rascunho).
     expect([...Object.values(MOTIVO_PUBLICACAO_BLOQUEADA)].sort()).toEqual([
+      'anuncio-existente-de-outro-produto',
+      'anuncio-existente-sem-vinculo',
       'atributo-obrigatorio',
+      'busca-de-anuncio-existente-incompleta',
       'busca-de-anuncio-incompleta',
       'busca-de-kit-incompleta',
       'categoria-invalida',
@@ -205,7 +222,7 @@ describe('MOTIVO_PUBLICACAO_BLOQUEADA', () => {
       'vinculo-substituido',
       'vinculos-ambiguos',
     ]);
-    expect(Object.values(MOTIVO_PUBLICACAO_BLOQUEADA)).toHaveLength(54);
+    expect(Object.values(MOTIVO_PUBLICACAO_BLOQUEADA)).toHaveLength(57);
   });
 
   it('2 — ⛔ NEAR-MISS: `imposto-incompleto` NÃO é membro, e `estoque-abaixo-do-minimo` É', () => {
@@ -271,7 +288,7 @@ describe('MOTIVO_PROBLEMA_PUBLICACAO', () => {
         'desconhecido',
       ].sort(),
     );
-    expect(Object.values(MOTIVO_PROBLEMA_PUBLICACAO)).toHaveLength(67);
+    expect(Object.values(MOTIVO_PROBLEMA_PUBLICACAO)).toHaveLength(70);
   });
 
   it('6 — ⛔ NEAR-MISS: os treze slugs de WIRE não pertencem ao vocabulário BLOQUEADO', () => {
@@ -283,8 +300,9 @@ describe('MOTIVO_PROBLEMA_PUBLICACAO', () => {
     // (nunca um bloqueio), e o BLOQUEADO só cresceu pelas 19 recusas de kit do
     // passo 19 (pela rede de segurança da recriação, PR 6, e pelas cinco do
     // despacho, PR 7), pelas duas de rascunho do despacho (#1911, P1), pela da
-    // marca não escolhida do rascunho (#1911, P3) e pelas quatro da criação
-    // incerta (#1911, P5) — 54 membros.
+    // marca não escolhida do rascunho (#1911, P3), pelas quatro da criação
+    // incerta (#1911, P5) e pelas três da primeira criação (#1911, P5b) — 57
+    // membros.
     // ⚠️ E os sete de KIT (passo 19) também: cada um é uma frase da Shopee
     // classificada DEPOIS de uma escrita, nunca algo lido no produto. O anúncio
     // SEMELHANTE (#1911, P5) idem: é a RESPOSTA de um `add_item`/`update_item`.
@@ -306,7 +324,7 @@ describe('MOTIVO_PROBLEMA_PUBLICACAO', () => {
     ]) {
       expect(bloqueados, slug).not.toContain(slug);
     }
-    expect(bloqueados).toHaveLength(54);
+    expect(bloqueados).toHaveLength(57);
   });
 
   it('6b — ⛔ NEAR-MISS: as 19 recusas de KIT do núcleo SÃO bloqueio, e as 7 de wire do kit NÃO', () => {
@@ -753,9 +771,9 @@ function produzPelaConstante(fonte: string, chave: string): boolean {
 }
 
 describe('O7 — todo membro do vocabulário tem um produtor fora de errosPublicacao.ts', () => {
-  it('os 54 motivos de bloqueio: cada um é escrito por ALGUM outro arquivo', () => {
+  it('os 57 motivos de bloqueio: cada um é escrito por ALGUM outro arquivo', () => {
     // O arquivo que DECLARA está fora do universo, senão a asserção seria
-    // vácua: a própria união de tipos soletra os 54 slugs.
+    // vácua: a própria união de tipos soletra os 57 slugs.
     const fontes = fontesQuePodemProduzir(['errosPublicacao.ts']);
     // Uma âncora: se a leitura da pasta falhar, o teste passa sozinho.
     expect(fontes.size).toBeGreaterThan(10);
@@ -771,7 +789,7 @@ describe('O7 — todo membro do vocabulário tem um produtor fora de errosPublic
     }
 
     expect(orfaos, 'motivos declarados que NINGUÉM produz').toEqual([]);
-    expect(Object.keys(MOTIVO_PUBLICACAO_BLOQUEADA)).toHaveLength(54);
+    expect(Object.keys(MOTIVO_PUBLICACAO_BLOQUEADA)).toHaveLength(57);
   });
 
   it('as 7 recusas do DESPACHO (PR 7 + #1911): o produtor é `kits/armaDePublicacao.ts`, pela CONSTANTE', () => {
@@ -881,6 +899,43 @@ describe('O7 — todo membro do vocabulário tem um produtor fora de errosPublic
     for (const [nome, outra] of fontes) {
       if (nome === 'criacaoIncerta.ts') continue;
       for (const chave of CHAVES_DA_CRIACAO_INCERTA) {
+        const produz =
+          outra.includes(`MOTIVO_PUBLICACAO_BLOQUEADA.${chave}`) ||
+          outra.includes(`MOTIVO_PROBLEMA_PUBLICACAO.${chave}`);
+        expect(produz, `${nome} produz ${MOTIVO_PUBLICACAO_BLOQUEADA[chave]}`).toBe(false);
+      }
+    }
+  });
+
+  it('as 3 recusas da PRIMEIRA criação (#1911, P5b): o produtor é `criacaoIncerta.ts`, pela CONSTANTE — e só ele', () => {
+    // A busca por SKU antes do PRIMEIRO `add_item` de um rascunho `livre`. A
+    // âncora é o ARQUIVO (uma menção em outro módulo manteria o membro
+    // "produzido" depois de a busca perder a linha que recusa — e o anúncio
+    // duplicado voltaria sem ninguém notar), e a grafia é a da constante.
+    const fontes = fontesQuePodemProduzir(['errosPublicacao.ts']);
+    const fonte = fontes.get('criacaoIncerta.ts') ?? '';
+    expect(fonte, 'criacaoIncerta.ts fora do universo de O7').not.toBe('');
+    const semProdutor = CHAVES_DO_ANUNCIO_EXISTENTE.filter(
+      (chave) => !fonte.includes(`MOTIVO_PUBLICACAO_BLOQUEADA.${chave}`),
+    );
+    expect(semProdutor, 'recusas da primeira criação que a busca não produz').toEqual([]);
+    // ⛔ Nenhum arquivo do universo — nem o produtor — soletra uma delas entre aspas.
+    const aspas: string[] = [];
+    for (const [nome, outra] of fontes) {
+      for (const chave of CHAVES_DO_ANUNCIO_EXISTENTE) {
+        const slug = MOTIVO_PUBLICACAO_BLOQUEADA[chave];
+        if (outra.includes(`'${slug}'`) || outra.includes(`"${slug}"`)) {
+          aspas.push(`${nome}: ${slug}`);
+        }
+      }
+    }
+    expect(aspas, 'slugs da primeira criação soletrados entre aspas').toEqual([]);
+    // ⛔ QUASE-PAR: nenhum OUTRO arquivo as produz pela constante — o publicador
+    // CHAMA a busca e lança o que ela devolve, nunca decide por conta própria
+    // (uma segunda cópia da decisão é o cheiro do #1369).
+    for (const [nome, outra] of fontes) {
+      if (nome === 'criacaoIncerta.ts') continue;
+      for (const chave of CHAVES_DO_ANUNCIO_EXISTENTE) {
         const produz =
           outra.includes(`MOTIVO_PUBLICACAO_BLOQUEADA.${chave}`) ||
           outra.includes(`MOTIVO_PROBLEMA_PUBLICACAO.${chave}`);

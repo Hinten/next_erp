@@ -42,7 +42,7 @@
  * ## The three vocabularies, and why there are three
  *
  * - {@link MOTIVO_PUBLICACAO_BLOQUEADA} — what the publisher may REFUSE with
- *   before writing. 54 members: step 11's 22, the nineteen native-kit
+ *   before writing. 57 members: step 11's 22, the nineteen native-kit
  *   refusals of step 19's kit core (`kits/planoKit.ts`, PR 5), the recriar's
  *   safety net `recriacao-sem-diferenca` (`kits/recriarKit.ts`, PR 6), the
  *   seven refusals only the publish dispatcher produces
@@ -51,9 +51,10 @@
  *   draft-brand refusal `marca-nao-escolhida` (P3, `anuncios/montagemAnuncio.ts`)
  *   and #1911's four refusals of an UNCERTAIN first create (P5,
  *   `anuncios/criacaoIncerta.ts`) — decided by READING Shopee before any second
- *   `add_item`, never by writing.
+ *   `add_item`, never by writing — plus the same file's three refusals of a
+ *   FIRST create over a listing the conta already holds with that SKU (P5b).
  * - {@link MOTIVO_PROBLEMA_PUBLICACAO} — what a `problemas[]` entry may carry:
- *   those 54 plus the thirteen only a WIRE rejection can produce (step 18 added
+ *   those 57 plus the thirteen only a WIRE rejection can produce (step 18 added
  *   the two size-chart refusals on `size_chart_info`; step 19 the seven
  *   native-kit refusals, whose ONE producer is `kits/recusaKit.ts`; #1911 P5 the
  *   duplicate-listing refusal `error_repeated_mtsku`, a row of
@@ -278,7 +279,9 @@ export type MotivoPublicacaoBloqueada =
    * fills with `rascunhoSemMarcaShopee`, `@delfrance/schemas`).
    */
   /**
-   * A DRAFT whose `brand_id` is `null` or absent — "not chosen", which is NOT
+   * A DRAFT whose `brand_id` is not a safe non-negative integer — `null`,
+   * absent, `-1`, `'77'`, `1.5`… (fail-closed since P5, `rascunhoSemMarcaShopee`)
+   * — "not chosen", which is NOT
    * Shopee's "No Brand" (`brand_id: 0`, the explicit «Sem marca»). The brand
    * cascade would otherwise answer `0` and publish "No Brand" on the operator's
    * behalf; a legacy draft (whose `null` meant either "Nenhuma" or "never
@@ -298,9 +301,11 @@ export type MotivoPublicacaoBloqueada =
    */
   /**
    * The scan could not single the earlier attempt's listing out: two or more
-   * unlinked items with the produto's SKU created inside the window, or one
-   * whose SKU or `create_time` Shopee answered `null` (undecidable). The
-   * operator imports the right one (`acao` `importar{itemIds}`).
+   * unlinked items with the SKU the attempt SENT created inside the window, or
+   * one whose SKU or `create_time` Shopee answered `null` (undecidable, linked
+   * or not). The operator imports the right one (`acao` `importar{itemIds}`).
+   * Also — never scanned, no `acao` — the produto's SKU MOVED since the attempt
+   * (batch-A review): the look-up can only ask for what was sent.
    */
   | 'criacao-incerta-ambigua'
   /**
@@ -309,20 +314,50 @@ export type MotivoPublicacaoBloqueada =
    */
   | 'busca-de-anuncio-incompleta'
   /**
-   * The produto's SKU folds blank (the import's SKU fold — trim only), so
-   * there is nothing to compare — never scanned, because a blank fold would
+   * The SKU the attempt sent folds blank (the import's SKU fold — trim only;
+   * the produto's own when what was sent is unknown), so there is nothing to compare — never scanned, because a blank fold would
    * "hit" every SKU-less listing. Overridable by `confirmarCriacaoIncerta` (the operator checked
    * Seller Centre).
    */
   | 'criacao-incerta-sem-sku'
   /**
-   * A listing ALREADY LINKED to this produto in the conta, with the same SKU,
-   * created inside the window (or with an unknown `create_time`): it may be the
-   * earlier attempt's own listing, linked by another path. `acao`
-   * `importar{itemIds, vinculados}`; overridable by `confirmarCriacaoIncerta`
-   * (a deliberate second listing created minutes before).
+   * A listing ALREADY LINKED in the conta — to this produto or (batch-A review)
+   * to another — with the SKU the attempt sent, created inside the window (or
+   * with an unknown `create_time`): it may be the earlier attempt's own
+   * listing, linked by another path. `acao` `importar{itemIds, vinculados}`,
+   * each linked id with its produto; overridable by `confirmarCriacaoIncerta`
+   * (a deliberate second listing created minutes before). When it IS the
+   * attempt's listing, the exit is discarding the draft, attesting.
    */
-  | 'criacao-incerta-ja-vinculada';
+  | 'criacao-incerta-ja-vinculada'
+  /*
+   * ---- #1911 (P5b — Lucas, 2026-10-26): a FIRST create never duplicates a listing. ----
+   * Produced ONLY by `anuncios/criacaoIncerta.ts` (`problemasDoAnuncioExistente`,
+   * the look-up a `livre` draft's first `add_item` runs under its lock, after
+   * D15), spelled there through this constant. Each is decided by READING
+   * Shopee — the kit arm's same-SKU scan mirrored for ORDINARY listings
+   * (`kits/localizarKitPorSku.ts`: un-narrowed, 100 pages, the import's SKU
+   * fold) — and the conta's links. None is attestable.
+   */
+  /**
+   * The conta already holds a listing with the SKU the create would send, and
+   * NO produto of the ERP links it: import it (`acao` `importar{itemIds}`)
+   * instead of creating a second one.
+   */
+  | 'anuncio-existente-sem-vinculo'
+  /**
+   * The conta already holds a listing with that SKU, linked to ANOTHER produto:
+   * two produtos share one SKU, so step 9's SKU rung could not land a new
+   * listing on either (`acao` `importar{itemIds, vinculados}`, each with its
+   * produto). A listing linked to THIS produto is D15's, never this one.
+   */
+  | 'anuncio-existente-de-outro-produto'
+  /**
+   * That scan did not complete (the kit's 100-page ceiling — 10 000 listings —
+   * or a cursor it could not follow): a listing it never saw may exist, so
+   * nothing was created. The item twin of `busca-de-kit-incompleta`.
+   */
+  | 'busca-de-anuncio-existente-incompleta';
 
 /**
  * The closed set, for iteration and for a route's own validation.
@@ -384,6 +419,9 @@ export const MOTIVO_PUBLICACAO_BLOQUEADA = {
   buscaDeAnuncioIncompleta: 'busca-de-anuncio-incompleta',
   criacaoIncertaSemSku: 'criacao-incerta-sem-sku',
   criacaoIncertaJaVinculada: 'criacao-incerta-ja-vinculada',
+  anuncioExistenteSemVinculo: 'anuncio-existente-sem-vinculo',
+  anuncioExistenteDeOutroProduto: 'anuncio-existente-de-outro-produto',
+  buscaDeAnuncioExistenteIncompleta: 'busca-de-anuncio-existente-incompleta',
 } as const satisfies Record<string, MotivoPublicacaoBloqueada>;
 
 /**

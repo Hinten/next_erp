@@ -86,9 +86,9 @@
  * {@link EscritaDeAdocaoDeRascunho} instead of a `merge`: the import's fields
  * WITHOUT the `...existente` spread (an `update` leaves every unnamed key
  * alone, so the same patch is valid against whatever the writer reads), the
- * first-time-only `dataCadastro` apart, and the three keys that say "a publish
- * is still deciding" cleared — `publicacaoEmCurso`, `criacaoIncertaDesde` and
- * `falhaPublicacao`. Leaving the lock behind would read the listing
+ * first-time-only `dataCadastro` apart, and the keys that say "a publish is
+ * still deciding" cleared — `publicacaoEmCurso`, `criacaoIncertaDesde` (with
+ * its `criacaoIncertaSku`) and `falhaPublicacao`. Leaving the lock behind would read the listing
  * `em-andamento` / `incerta` for ever and block the produto's other drafts on
  * the conta. `links.ts` writes it as rule 7 tier 1.
  */
@@ -250,12 +250,14 @@ export interface EscritaDeLink {
 
 /**
  * The keys an ADOPTION clears (#1911): the publish lock, the record of an
- * uncertain create and the failure stamp — every trace of "a publish of this
- * draft is still deciding". Written only on the arm that takes the draft.
+ * uncertain create (its start AND the SKU it sent — batch-A review) and the
+ * failure stamp — every trace of "a publish of this draft is still deciding".
+ * Written only on the arm that takes the draft.
  */
 export const CAMPOS_LIMPOS_NA_ADOCAO_SHOPEE = {
   publicacaoEmCurso: null,
   criacaoIncertaDesde: null,
+  criacaoIncertaSku: null,
   falhaPublicacao: null,
 } as const;
 

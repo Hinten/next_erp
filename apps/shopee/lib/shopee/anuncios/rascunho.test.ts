@@ -13,7 +13,11 @@
  * Fixture ids only: conta `int-1`, invented produto / link ids, Shopee's own
  * doc-sample item ids.
  */
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { ZodError } from 'zod';
 import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
 import { ShopeeError } from '@delfrance/integrations-shopee';
 import {
@@ -68,6 +72,27 @@ const ITEM_VIVO = 2500139861;
 
 const AGORA = 1_757_000_000_000;
 
+/**
+ * Attributes in the REQUEST shape — what the draft route writes (D9) and what
+ * the projection reads back: a value of the category's list (its id, no name)
+ * and a CUSTOM one (`value_id: 0` + name, here with a unit). Invented ids.
+ */
+const ATRIBUTOS = [
+  { attribute_id: 100_001, attribute_value_list: [{ value_id: 55 }] },
+  {
+    attribute_id: 100_002,
+    attribute_value_list: [{ value_id: 0, original_value_name: 'Algodão', value_unit: 'cm' }],
+  },
+];
+/** Another operator's attribute save — a different value of the same attribute. */
+const ATRIBUTOS_DE_OUTRA_ABA = [
+  { attribute_id: 100_001, attribute_value_list: [{ value_id: 56 }] },
+];
+/** The attributes of the NEW category, chosen in the same patch as the category. */
+const ATRIBUTOS_DA_NOVA_CATEGORIA = [
+  { attribute_id: 200_001, attribute_value_list: [{ value_id: 7 }] },
+];
+
 function rascunho(extra: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     contaProdutoShopeeOuterRef: REF_CONTA,
@@ -104,7 +129,17 @@ function base(): FakeDb {
   return db;
 }
 
+/**
+ * ANOTHER run's lock, STAMPED by its pre-send re-read (`sku`): that run may
+ * have a create in flight, so past `expiraEm` it serves the grace and then
+ * reads `incerta` (batch-A review — an unstamped one is {@link travaSemCarimbo}).
+ */
 function travaAlheia(expiraEm: number) {
+  return { ...travaSemCarimbo(expiraEm), sku: 'CAM-ENVIADO' };
+}
+
+/** ANOTHER run's lock that never reached the send: past `expiraEm` it reads `livre`. */
+function travaSemCarimbo(expiraEm: number) {
   return {
     desde: expiraEm - PUBLICACAO_EM_CURSO_SHOPEE_TTL_MS,
     expiraEm,
@@ -273,12 +308,15 @@ describe('criarRascunhoShopee — create() no id do cliente (nível 0)', () => {
     expect(salvo).not.toHaveProperty('criacaoIncertaDesde');
     // ONE write, the create.
     expect(escritasEm(db)).toHaveLength(1);
-    // The projection reads back exactly what was asked.
+    // The projection reads back exactly what was asked — no attributes named,
+    // none stored (P6: `attributes: null`, never absent).
+    expect(salvo?.attributes).toBeNull();
     expect(camposDoRascunhoShopee(salvo ?? {})).toEqual({
       item_name: 'Camiseta Azul ',
       description: 'Algodão',
       category_id: 100_017,
       marca: { brand_id: 77, original_brand_name: 'Marca X' },
+      attributes: null,
     });
   });
 
@@ -309,6 +347,88 @@ describe('criarRascunhoShopee — create() no id do cliente (nível 0)', () => {
     const db2 = base();
     await criarRascunhoShopee(deps(db2), corpoCriar({ conteudo: { marca: null } }));
     expect(doc(db2)).toMatchObject({ brand_id: null, original_brand_name: null });
+  });
+
+  describe('os atributos na criação (P6, D9)', () => {
+    it('grava a FORMA DE REQUISIÇÃO que o corpo normalizou (nome aparado, unidade em branco omitida) — e a projeção a lê de volta IGUAL', async () => {
+      const db = base();
+      await criarRascunhoShopee(
+        deps(db),
+        corpoCriar({
+          conteudo: {
+            attributes: [
+              { attribute_id: 100_001, attribute_value_list: [{ value_id: 55, value_unit: '  ' }] },
+              {
+                attribute_id: 100_002,
+                attribute_value_list: [
+                  { value_id: 0, original_value_name: ' Algodão ', value_unit: 'cm' },
+                ],
+              },
+            ],
+          },
+        }),
+      );
+
+      const salvo = doc(db) ?? {};
+      // STRICT: no `value_unit: undefined` key rides into the stored value.
+      expect(salvo.attributes).toStrictEqual(ATRIBUTOS);
+      expect(camposDoRascunhoShopee(salvo).attributes).toEqual(ATRIBUTOS);
+      expect(escritasEm(db)).toHaveLength(1);
+    });
+
+    it('⛔ quase-par: o formato de LEITURA da importação (nome ao lado de um value_id ≠ 0) ou o valor legado sem value_id NÃO é uma escrita ⇒ 400 no corpo, nada gravado', async () => {
+      for (const attributes of [
+        [
+          {
+            attribute_id: 100_001,
+            attribute_value_list: [{ value_id: 55, original_value_name: 'Azul' }],
+          },
+        ],
+        [{ attribute_id: 100_002, attribute_value_list: [{ original_value_name: 'Algodão' }] }],
+        [{ attribute_id: 100_001, attribute_value_list: [{ value_id: '55' }] }],
+        [{ attribute_id: 100_001, attribute_value_list: [] }],
+      ]) {
+        expect(() => corpoCriar({ conteudo: { attributes } }), JSON.stringify(attributes)).toThrow(
+          ZodError,
+        );
+      }
+    });
+
+    it('a repetição com os MESMOS atributos (antes de normalizar) ⇒ 200 criado:false; ⛔ quase-par: outro valor ou outra ORDEM ⇒ 409 CONFLITO com o gravado', async () => {
+      const db = base();
+      await criarRascunhoShopee(deps(db), corpoCriar({ conteudo: { attributes: ATRIBUTOS } }));
+      const antes = structuredClone(doc(db));
+
+      const mesmo = await criarRascunhoShopee(
+        deps(db),
+        corpoCriar({
+          conteudo: {
+            attributes: [
+              ATRIBUTOS[0],
+              {
+                attribute_id: 100_002,
+                attribute_value_list: [
+                  { value_unit: 'cm', original_value_name: 'Algodão  ', value_id: 0 },
+                ],
+              },
+            ],
+          },
+        }),
+      );
+      expect(mesmo).toEqual({ linkDocId: RASCUNHO, criado: false });
+
+      for (const attributes of [ATRIBUTOS_DE_OUTRA_ABA, [ATRIBUTOS[1], ATRIBUTOS[0]], null]) {
+        const err = await recusaDe(
+          criarRascunhoShopee(deps(db), corpoCriar({ conteudo: { attributes } })),
+        );
+        expect(err.code, JSON.stringify(attributes)).toBe(CODIGO_RASCUNHO_SHOPEE.conflito);
+        expect(err.conflitos).toEqual([
+          { campo: CAMPO_RASCUNHO_SHOPEE.attributes, atual: ATRIBUTOS },
+        ]);
+      }
+      expect(doc(db)).toEqual(antes);
+      expect(escritasEm(db)).toHaveLength(1);
+    });
   });
 
   it('o produto sem nome utilizável e nenhum item_name ⇒ 400 (code null), zero escritas — ⛔ quase-par: com item_name cria', async () => {
@@ -366,7 +486,7 @@ describe('criarRascunhoShopee — create() no id do cliente (nível 0)', () => {
       expect(escritasEm(db)).toHaveLength(1);
     });
 
-    it('a comparação é a do conteúdo NORMALIZADO e só das chaves que a repetição NOMEIA', async () => {
+    it('a comparação é a do conteúdo NORMALIZADO, campo a campo, do documento que ESTA criação gravaria', async () => {
       const db = base();
       await criarRascunhoShopee(
         deps(db),
@@ -374,31 +494,94 @@ describe('criarRascunhoShopee — create() no id do cliente (nível 0)', () => {
           conteudo: { item_name: 'Camiseta', marca: { brand_id: 77, original_brand_name: 'X' } },
         }),
       );
-      // description '   ' normalises to null (= what is stored); the brand
-      // compares by id alone (the name FOLLOWS the id); no conteudo names nothing.
+      const antes = structuredClone(doc(db));
+      // PAR: the SAME content again — description '   ' normalises to the
+      // `null` stored, and an explicit `null` is what an absent key writes.
       for (const conteudo of [
-        { description: '   ' },
-        { marca: { brand_id: 77, original_brand_name: 'Outro nome' } },
-        undefined,
-        null,
+        {
+          item_name: 'Camiseta',
+          marca: { brand_id: 77, original_brand_name: 'X' },
+          description: '   ',
+        },
+        {
+          item_name: 'Camiseta',
+          marca: { brand_id: 77, original_brand_name: 'X' },
+          description: null,
+          category_id: null,
+          attributes: null,
+        },
       ]) {
         const r = await criarRascunhoShopee(deps(db), corpoCriar({ conteudo }));
         expect(r, JSON.stringify(conteudo)).toEqual({ linkDocId: RASCUNHO, criado: false });
       }
-      // ⛔ quase-par: the brand id itself differs ⇒ conflict, and `0` is not `null`.
-      for (const marca of [{ brand_id: 78, original_brand_name: 'X' }, null]) {
-        const err = await recusaDe(
-          criarRascunhoShopee(deps(db), corpoCriar({ conteudo: { marca } })),
-        );
-        expect(err.code).toBe(CODIGO_RASCUNHO_SHOPEE.conflito);
-        expect(err.conflitos).toEqual([
-          { campo: CAMPO_RASCUNHO_SHOPEE.marca, atual: { brand_id: 77, original_brand_name: 'X' } },
-        ]);
-      }
+      expect(doc(db)).toEqual(antes);
       expect(escritasEm(db)).toHaveLength(1);
     });
 
-    it('⛔ quase-par: a repetição com DESCRIÇÃO ou CATEGORIA diferente ⇒ 409 CONFLITO — toda chave nomeada é comparada, não só título e marca', async () => {
+    it('⛔ quase-par: uma chave que a repetição OMITE não é curinga — é o null (ou o nome do produto) que esta criação gravaria ⇒ 409 CONFLITO, documento intacto', async () => {
+      const db = base();
+      await criarRascunhoShopee(
+        deps(db),
+        corpoCriar({
+          conteudo: { item_name: 'Camiseta', marca: { brand_id: 77, original_brand_name: 'X' } },
+        }),
+      );
+      const antes = structuredClone(doc(db));
+      const titulo = { campo: CAMPO_RASCUNHO_SHOPEE.itemName, atual: 'Camiseta' };
+      const marca = {
+        campo: CAMPO_RASCUNHO_SHOPEE.marca,
+        atual: { brand_id: 77, original_brand_name: 'X' },
+      };
+      const casos: [unknown, unknown[]][] = [
+        // The lost-response case: the first create stored brand 77, the
+        // operator cleared it, and the retry no longer names `marca` — never
+        // a 200 over a brand the tab believes gone.
+        [{ item_name: 'Camiseta' }, [marca]],
+        // No `item_name` ⇒ the produto's `nome` ("Camiseta Básica") is what
+        // this create writes; no `marca` ⇒ `null`.
+        [undefined, [titulo, marca]],
+        [null, [titulo, marca]],
+        [{ description: '   ' }, [titulo, marca]],
+        // The brand is a WRITE question here: the same id with another name
+        // is other content; another id, and `null`, too.
+        [
+          { item_name: 'Camiseta', marca: { brand_id: 77, original_brand_name: 'Outro nome' } },
+          [marca],
+        ],
+        [{ item_name: 'Camiseta', marca: { brand_id: 78, original_brand_name: 'X' } }, [marca]],
+        [{ item_name: 'Camiseta', marca: null }, [marca]],
+      ];
+      for (const [conteudo, conflitos] of casos) {
+        const err = await recusaDe(criarRascunhoShopee(deps(db), corpoCriar({ conteudo })));
+        expect(err.code, JSON.stringify(conteudo)).toBe(CODIGO_RASCUNHO_SHOPEE.conflito);
+        expect(err.conflitos, JSON.stringify(conteudo)).toEqual(conflitos);
+      }
+      expect(doc(db)).toEqual(antes);
+      expect(escritasEm(db)).toHaveLength(1);
+    });
+
+    it('PAR: a criação SEM conteúdo repetida sem conteúdo ⇒ 200 (as duas gravariam o nome do produto e o resto null) — ⛔ quase-par: "Sem marca" (0) não é a marca ausente (null)', async () => {
+      const db = base();
+      await criarRascunhoShopee(deps(db), corpoCriar());
+      const antes = structuredClone(doc(db));
+
+      for (const conteudo of [undefined, null, {}, { item_name: 'Camiseta Básica' }]) {
+        const r = await criarRascunhoShopee(deps(db), corpoCriar({ conteudo }));
+        expect(r, JSON.stringify(conteudo)).toEqual({ linkDocId: RASCUNHO, criado: false });
+      }
+
+      const err = await recusaDe(
+        criarRascunhoShopee(
+          deps(db),
+          corpoCriar({ conteudo: { marca: { brand_id: 0, original_brand_name: null } } }),
+        ),
+      );
+      expect(err.conflitos).toEqual([{ campo: CAMPO_RASCUNHO_SHOPEE.marca, atual: null }]);
+      expect(doc(db)).toEqual(antes);
+      expect(escritasEm(db)).toHaveLength(1);
+    });
+
+    it('⛔ quase-par: a repetição com DESCRIÇÃO ou CATEGORIA diferente — ou que as OMITE — ⇒ 409 CONFLITO: todo campo projetado é comparado, não só título e marca', async () => {
       const db = base();
       await criarRascunhoShopee(
         deps(db),
@@ -408,25 +591,32 @@ describe('criarRascunhoShopee — create() no id do cliente (nível 0)', () => {
       );
       const antes = structuredClone(doc(db));
 
-      // The same values, named again (any subset of them) ⇒ the same draft.
+      // The same values, named again (in another key order) ⇒ the same draft.
       expect(
         await criarRascunhoShopee(
           deps(db),
-          corpoCriar({ conteudo: { description: 'Algodão', category_id: 100_017 } }),
+          corpoCriar({
+            conteudo: { category_id: 100_017, description: 'Algodão', item_name: 'Camiseta' },
+          }),
         ),
       ).toEqual({ linkDocId: RASCUNHO, criado: false });
 
+      const titulo = { campo: CAMPO_RASCUNHO_SHOPEE.itemName, atual: 'Camiseta' };
       const descricao = { campo: CAMPO_RASCUNHO_SHOPEE.description, atual: 'Algodão' };
       const categoria = { campo: CAMPO_RASCUNHO_SHOPEE.categoryId, atual: 100_017 };
       const casos: [Record<string, unknown>, unknown[]][] = [
-        [{ description: 'Poliéster' }, [descricao]],
+        [{ item_name: 'Camiseta', description: 'Poliéster', category_id: 100_017 }, [descricao]],
         // `null` is "the produto's own description" — another choice, never "nothing named".
-        [{ description: null }, [descricao]],
-        [{ category_id: 100_020 }, [categoria]],
+        [{ item_name: 'Camiseta', description: null, category_id: 100_017 }, [descricao]],
+        [{ item_name: 'Camiseta', description: 'Algodão', category_id: 100_020 }, [categoria]],
         [
           { item_name: 'Camiseta', description: 'Poliéster', category_id: 100_020 },
           [descricao, categoria],
         ],
+        // A SUBSET is no longer "the same draft": what it omits is what this
+        // create would write for it — the produto's name, a `null` description.
+        [{ description: 'Algodão', category_id: 100_017 }, [titulo]],
+        [{ item_name: 'Camiseta', category_id: 100_017 }, [descricao]],
       ];
       for (const [conteudo, conflitos] of casos) {
         const err = await recusaDe(criarRascunhoShopee(deps(db), corpoCriar({ conteudo })));
@@ -729,7 +919,14 @@ describe('atualizarRascunhoShopee — base conferida (nível 3) + update guardad
       atualizarRascunhoShopee(
         deps(db),
         corpoAtualizar(
-          { item_name: 'Camiseta do rascunho', category_id: 100_017, description: null },
+          // K1-12: a category change without `attributes` in the patch shows
+          // the attributes it would clear — here equal to the stored `null`.
+          {
+            item_name: 'Camiseta do rascunho',
+            category_id: 100_017,
+            description: null,
+            attributes: null,
+          },
           { item_name: 'Camiseta Azul', category_id: 100_030, description: 'nova' },
         ),
       ),
@@ -909,14 +1106,112 @@ describe('atualizarRascunhoShopee — base conferida (nível 3) + update guardad
       );
       expect(err.code).toBe(CODIGO_RASCUNHO_SHOPEE.conflito);
     });
+
+    /** A legacy draft: `brand_id` stored ALONE — the legacy app never wrote a name. */
+    function legadoSoComBrandId(): Record<string, unknown> {
+      const legado = rascunho({ brand_id: 77 });
+      delete legado.original_brand_name;
+      return legado;
+    }
+
+    it('⛔ o rascunho LEGADO só com brand_id: escolher de novo a MESMA marca, agora com o nome, GRAVA o par — "nada a gravar" compara o PAR, não só o id', async () => {
+      const db = new FakeDb();
+      db.seed(CAMINHO, legadoSoComBrandId());
+
+      const r = await atualizarRascunhoShopee(
+        deps(db),
+        corpoAtualizar(
+          { marca: { brand_id: 77, original_brand_name: null } },
+          { marca: { brand_id: 77, original_brand_name: 'Acme' } },
+        ),
+      );
+
+      expect(r.gravados).toEqual([CAMPO_RASCUNHO_SHOPEE.marca]);
+      expect(db.patches).toEqual([
+        {
+          path: CAMINHO,
+          patch: { brand_id: 77, original_brand_name: 'Acme', ultimaModificacao: AGORA },
+        },
+      ]);
+      expect(camposDoRascunhoShopee(doc(db) ?? {}).marca).toEqual({
+        brand_id: 77,
+        original_brand_name: 'Acme',
+      });
+
+      // …and the next identical save reads the pair back EQUAL: nothing more written.
+      const deNovo = await atualizarRascunhoShopee(
+        deps(db),
+        corpoAtualizar(
+          { marca: { brand_id: 77, original_brand_name: 'Acme' } },
+          { marca: { brand_id: 77, original_brand_name: 'Acme' } },
+        ),
+      );
+      expect(deNovo.gravados).toEqual([]);
+      expect(db.patches).toHaveLength(1);
+    });
+
+    it('⛔ quase-par: a MESMA marca SEM nome (null, ou um nome em branco que a escrita dobra para null) sobre o legado sem nome ⇒ gravados [] e NADA escrito', async () => {
+      for (const original_brand_name of [null, '   ']) {
+        const db = new FakeDb();
+        db.seed(CAMINHO, legadoSoComBrandId());
+        const r = await atualizarRascunhoShopee(
+          deps(db),
+          corpoAtualizar(
+            { marca: { brand_id: 77, original_brand_name: null } },
+            { marca: { brand_id: 77, original_brand_name } },
+          ),
+        );
+        expect(r.gravados, String(original_brand_name)).toEqual([]);
+        expect(db.writes).toEqual([]);
+      }
+    });
+
+    it('⛔ quase-par: o nome da mesma marca mudado só na CAIXA ("Acme" → "ACME") é uma escrita — o nome não é dobrado', async () => {
+      const db = new FakeDb();
+      db.seed(CAMINHO, rascunho({ brand_id: 77, original_brand_name: 'Acme' }));
+      const r = await atualizarRascunhoShopee(
+        deps(db),
+        corpoAtualizar(
+          { marca: { brand_id: 77, original_brand_name: 'Acme' } },
+          { marca: { brand_id: 77, original_brand_name: 'ACME' } },
+        ),
+      );
+      expect(r.gravados).toEqual([CAMPO_RASCUNHO_SHOPEE.marca]);
+      expect(doc(db)).toMatchObject({ brand_id: 77, original_brand_name: 'ACME' });
+    });
+
+    it('o OUTRO sentido do par: a MESMA marca escolhida SEM nome sobre um nome gravado é uma escrita — o par é gravado INTEIRO (D10) e o nome vira null', async () => {
+      // Pins the write compare's other direction at the route seam (FIX-P4
+      // verifier): before the fix this was a silent no-op that kept the
+      // stored name; now the operator's nameless pick is written whole, and
+      // the publish's bounded brand walk looks the name up again.
+      const db = new FakeDb();
+      db.seed(CAMINHO, rascunho({ brand_id: 77, original_brand_name: 'Acme' }));
+      const r = await atualizarRascunhoShopee(
+        deps(db),
+        corpoAtualizar(
+          { marca: { brand_id: 77, original_brand_name: 'Acme' } },
+          { marca: { brand_id: 77, original_brand_name: null } },
+        ),
+      );
+      expect(r.gravados).toEqual([CAMPO_RASCUNHO_SHOPEE.marca]);
+      expect(db.patches).toEqual([
+        {
+          path: CAMINHO,
+          patch: { brand_id: 77, original_brand_name: null, ultimaModificacao: AGORA },
+        },
+      ]);
+    });
   });
 
   it('a mudança de CATEGORIA limpa os atributos gravados (são da categoria velha) e o diz em gravados', async () => {
     const db = new FakeDb();
+    // A stored list with nothing usable PROJECTS to `[]` — which is what the
+    // operator saw, so `[]` is the base; it is still cleared (it is stored).
     db.seed(CAMINHO, rascunho({ attributes: [{ attribute_id: 1, attribute_value_list: [] }] }));
     const r = await atualizarRascunhoShopee(
       deps(db),
-      corpoAtualizar({ category_id: 100_017 }, { category_id: 100_030 }),
+      corpoAtualizar({ category_id: 100_017, attributes: [] }, { category_id: 100_030 }),
     );
     expect(r.gravados).toEqual([
       CAMPO_RASCUNHO_SHOPEE.categoryId,
@@ -936,11 +1231,471 @@ describe('atualizarRascunhoShopee — base conferida (nível 3) + update guardad
       db.seed(CAMINHO, rascunho(extra));
       const r = await atualizarRascunhoShopee(
         deps(db),
-        corpoAtualizar({ category_id: 100_017 }, { category_id: 100_030 }),
+        corpoAtualizar({ category_id: 100_017, attributes: null }, { category_id: 100_030 }),
       );
       expect(r.gravados).toEqual([CAMPO_RASCUNHO_SHOPEE.categoryId]);
       expect(db.patches[0]?.patch).not.toHaveProperty('attributes');
     }
+  });
+
+  describe('os atributos (P6, D9) — escritos na forma de requisição, comparados pelo decodificador', () => {
+    it('grava a lista do patch por UPDATE guardado — gravados [attributes]', async () => {
+      const db = new FakeDb();
+      db.seed(CAMINHO, rascunho());
+      const r = await atualizarRascunhoShopee(
+        deps(db),
+        corpoAtualizar({ attributes: null }, { attributes: ATRIBUTOS }),
+      );
+      expect(r).toEqual({ linkDocId: RASCUNHO, gravados: [CAMPO_RASCUNHO_SHOPEE.attributes] });
+      expect(db.patches).toEqual([
+        { path: CAMINHO, patch: { attributes: ATRIBUTOS, ultimaModificacao: AGORA } },
+      ]);
+      expect(doc(db)?.attributes).toStrictEqual(ATRIBUTOS);
+    });
+
+    it('a rota NÃO filtra pela árvore (não tem uma): o atributo de OUTRA categoria vai gravado como veio — descartar o invisível é do salvar do EDITOR (P13)', async () => {
+      const deOutraCategoria = [
+        ...ATRIBUTOS,
+        { attribute_id: 9999, attribute_value_list: [{ value_id: 7 }] },
+      ];
+      const db = new FakeDb();
+      db.seed(CAMINHO, rascunho());
+      const r = await atualizarRascunhoShopee(
+        deps(db),
+        corpoAtualizar({ attributes: null }, { attributes: deOutraCategoria }),
+      );
+      expect(r.gravados).toEqual([CAMPO_RASCUNHO_SHOPEE.attributes]);
+      expect(doc(db)?.attributes).toStrictEqual(deOutraCategoria);
+    });
+
+    it('attributes: null no patch LIMPA a lista — ⛔ quase-par: [] também é uma escrita (não é null)', async () => {
+      for (const attributes of [null, []]) {
+        const db = new FakeDb();
+        db.seed(CAMINHO, rascunho({ attributes: ATRIBUTOS }));
+        const r = await atualizarRascunhoShopee(
+          deps(db),
+          corpoAtualizar({ attributes: ATRIBUTOS }, { attributes }),
+        );
+        expect(r.gravados, JSON.stringify(attributes)).toEqual([CAMPO_RASCUNHO_SHOPEE.attributes]);
+        expect(doc(db)?.attributes).toEqual(attributes);
+      }
+    });
+
+    it('o patch IGUAL ao gravado — chaves em outra ordem, nome com espaços, unidade em branco — ⇒ gravados [] e NADA escrito', async () => {
+      const db = new FakeDb();
+      db.seed(CAMINHO, rascunho({ attributes: ATRIBUTOS }));
+      const r = await atualizarRascunhoShopee(
+        deps(db),
+        corpoAtualizar(
+          { attributes: ATRIBUTOS },
+          {
+            attributes: [
+              { attribute_value_list: [{ value_unit: ' ', value_id: 55 }], attribute_id: 100_001 },
+              {
+                attribute_id: 100_002,
+                attribute_value_list: [
+                  { value_unit: 'cm', original_value_name: '  Algodão', value_id: 0 },
+                ],
+              },
+            ],
+          },
+        ),
+      );
+      expect(r).toEqual({ linkDocId: RASCUNHO, gravados: [] });
+      expect(db.writes).toEqual([]);
+    });
+
+    it('⛔ quase-par: a MESMA lista em outra ORDEM é uma edição (posicional de propósito) — grava', async () => {
+      const db = new FakeDb();
+      db.seed(CAMINHO, rascunho({ attributes: ATRIBUTOS }));
+      const invertida = [ATRIBUTOS[1], ATRIBUTOS[0]];
+      const r = await atualizarRascunhoShopee(
+        deps(db),
+        corpoAtualizar({ attributes: ATRIBUTOS }, { attributes: invertida }),
+      );
+      expect(r.gravados).toEqual([CAMPO_RASCUNHO_SHOPEE.attributes]);
+      expect(doc(db)?.attributes).toEqual(invertida);
+    });
+
+    it("⛔ quase-par: unidade 'cm' gravada contra 'CM' no patch é OUTRO valor — grava", async () => {
+      const db = new FakeDb();
+      db.seed(CAMINHO, rascunho({ attributes: ATRIBUTOS }));
+      const maiuscula = [
+        ATRIBUTOS[0],
+        {
+          attribute_id: 100_002,
+          attribute_value_list: [{ value_id: 0, original_value_name: 'Algodão', value_unit: 'CM' }],
+        },
+      ];
+      const r = await atualizarRascunhoShopee(
+        deps(db),
+        corpoAtualizar({ attributes: ATRIBUTOS }, { attributes: maiuscula }),
+      );
+      expect(r.gravados).toEqual([CAMPO_RASCUNHO_SHOPEE.attributes]);
+    });
+
+    it('o formato de LEITURA, um value_id texto ou uma lista vazia no patch ⇒ 400 no corpo (o patch é a forma de requisição)', () => {
+      for (const attributes of [
+        [
+          {
+            attribute_id: 100_001,
+            original_attribute_name: 'Cor',
+            attribute_value_list: [{ value_id: 55 }],
+          },
+        ],
+        [
+          {
+            attribute_id: 100_001,
+            attribute_value_list: [{ value_id: 55, original_value_name: 'Azul' }],
+          },
+        ],
+        [{ attribute_id: 100_001, attribute_value_list: [{ value_id: '55' }] }],
+        [{ attribute_id: 100_001, attribute_value_list: [] }],
+        [ATRIBUTOS[0], ATRIBUTOS[0]],
+      ]) {
+        expect(
+          () => corpoAtualizar({ attributes: null }, { attributes }),
+          JSON.stringify(attributes),
+        ).toThrow(ZodError);
+      }
+    });
+
+    describe('a BASE dos atributos (K2-5: o escopo da comparação)', () => {
+      it('as chaves em outra ORDEM na base ⇒ igual, grava', async () => {
+        const db = new FakeDb();
+        db.seed(CAMINHO, rascunho({ attributes: ATRIBUTOS }));
+        const r = await atualizarRascunhoShopee(
+          deps(db),
+          corpoAtualizar(
+            {
+              attributes: [
+                { attribute_value_list: [{ value_id: 55 }], attribute_id: 100_001 },
+                {
+                  attribute_value_list: [
+                    { value_unit: 'cm', original_value_name: 'Algodão', value_id: 0 },
+                  ],
+                  attribute_id: 100_002,
+                },
+              ],
+            },
+            { attributes: ATRIBUTOS_DE_OUTRA_ABA },
+          ),
+        );
+        expect(r.gravados).toEqual([CAMPO_RASCUNHO_SHOPEE.attributes]);
+      });
+
+      it("⛔ quase-par: value_unit '' na base contra a unidade AUSENTE gravada ⇒ 409; a lista em outra ORDEM na base ⇒ 409; nada escrito", async () => {
+        const semUnidade = [{ attribute_id: 100_001, attribute_value_list: [{ value_id: 55 }] }];
+        const casos: [gravado: unknown[], visto: unknown[]][] = [
+          [
+            semUnidade,
+            [{ attribute_id: 100_001, attribute_value_list: [{ value_id: 55, value_unit: '' }] }],
+          ],
+          [ATRIBUTOS, [ATRIBUTOS[1], ATRIBUTOS[0]]],
+        ];
+        for (const [gravado, visto] of casos) {
+          const db = new FakeDb();
+          db.seed(CAMINHO, rascunho({ attributes: gravado }));
+          const err = await recusaDe(
+            atualizarRascunhoShopee(
+              deps(db),
+              corpoAtualizar({ attributes: visto }, { attributes: ATRIBUTOS_DE_OUTRA_ABA }),
+            ),
+          );
+          expect(err.code, JSON.stringify(visto)).toBe(CODIGO_RASCUNHO_SHOPEE.conflito);
+          expect(err.conflitos).toEqual([
+            { campo: CAMPO_RASCUNHO_SHOPEE.attributes, atual: gravado },
+          ]);
+          expect(db.writes).toEqual([]);
+        }
+      });
+    });
+
+    describe('o valor LEGADO sem value_id (Q1: lido como PERSONALIZADO, e enviado)', () => {
+      const LEGADO = [
+        { attribute_id: 100_002, attribute_value_list: [{ original_value_name: 'Algodão' }] },
+      ];
+      const PROJETADO = [
+        {
+          attribute_id: 100_002,
+          attribute_value_list: [{ value_id: 0, original_value_name: 'Algodão' }],
+        },
+      ];
+
+      it('a base é a PROJEÇÃO ({value_id: 0, nome}): passa; o patch igual a ela NÃO escreve (sem migração, D9) — o gravado fica byte-igual', async () => {
+        const db = new FakeDb();
+        db.seed(CAMINHO, rascunho({ attributes: LEGADO }));
+        expect(camposDoRascunhoShopee(rascunho({ attributes: LEGADO })).attributes).toEqual(
+          PROJETADO,
+        );
+
+        const r = await atualizarRascunhoShopee(
+          deps(db),
+          corpoAtualizar({ attributes: PROJETADO }, { attributes: PROJETADO }),
+        );
+        expect(r.gravados).toEqual([]);
+        expect(db.writes).toEqual([]);
+        expect(doc(db)?.attributes).toEqual(LEGADO);
+      });
+
+      it('um patch NOVO sobre o legado grava a FORMA DE REQUISIÇÃO (D9: sempre)', async () => {
+        const db = new FakeDb();
+        db.seed(CAMINHO, rascunho({ attributes: LEGADO }));
+        const r = await atualizarRascunhoShopee(
+          deps(db),
+          corpoAtualizar({ attributes: PROJETADO }, { attributes: ATRIBUTOS }),
+        );
+        expect(r.gravados).toEqual([CAMPO_RASCUNHO_SHOPEE.attributes]);
+        expect(doc(db)?.attributes).toStrictEqual(ATRIBUTOS);
+      });
+
+      it('⛔ quase-par: a base [] contra o legado com NOME ⇒ 409 (o valor NÃO é descartado); contra o legado com nome EM BRANCO ⇒ passa (esse é descartado)', async () => {
+        const db = new FakeDb();
+        db.seed(CAMINHO, rascunho({ attributes: LEGADO }));
+        const err = await recusaDe(
+          atualizarRascunhoShopee(
+            deps(db),
+            corpoAtualizar({ attributes: [] }, { attributes: ATRIBUTOS }),
+          ),
+        );
+        expect(err.code).toBe(CODIGO_RASCUNHO_SHOPEE.conflito);
+        expect(err.conflitos).toEqual([
+          { campo: CAMPO_RASCUNHO_SHOPEE.attributes, atual: PROJETADO },
+        ]);
+        expect(db.writes).toEqual([]);
+
+        const db2 = new FakeDb();
+        db2.seed(
+          CAMINHO,
+          rascunho({
+            attributes: [
+              { attribute_id: 100_002, attribute_value_list: [{ original_value_name: '   ' }] },
+            ],
+          }),
+        );
+        const r = await atualizarRascunhoShopee(
+          deps(db2),
+          corpoAtualizar({ attributes: [] }, { attributes: ATRIBUTOS }),
+        );
+        expect(r.gravados).toEqual([CAMPO_RASCUNHO_SHOPEE.attributes]);
+      });
+    });
+
+    describe('a troca de CATEGORIA e os atributos (K1-12)', () => {
+      it('B gravou atributos; A troca a categoria com a base VELHA dos atributos ⇒ 409 CONFLITO nomeando attributes (atual = os de B), NADA apagado', async () => {
+        const db = new FakeDb();
+        // A opened the draft holding ATRIBUTOS; B's save of ATRIBUTOS_DE_OUTRA_ABA landed since.
+        const deB = rascunho({ attributes: ATRIBUTOS_DE_OUTRA_ABA });
+        db.seed(CAMINHO, deB);
+
+        const err = await recusaDe(
+          atualizarRascunhoShopee(
+            deps(db),
+            corpoAtualizar(
+              { category_id: 100_017, attributes: ATRIBUTOS },
+              { category_id: 100_030 },
+            ),
+          ),
+        );
+
+        expect(err.status).toBe(409);
+        expect(err.code).toBe(CODIGO_RASCUNHO_SHOPEE.conflito);
+        // ONLY attributes: the category A saw is still the stored one.
+        expect(err.conflitos).toEqual([
+          { campo: CAMPO_RASCUNHO_SHOPEE.attributes, atual: ATRIBUTOS_DE_OUTRA_ABA },
+        ]);
+        expect(doc(db)).toEqual(deB);
+        expect(db.writes).toEqual([]);
+      });
+
+      it('⛔ quase-par: A troca a categoria com a base ATUAL dos atributos ⇒ grava category_id + attributes: null, gravados [category_id, attributes]', async () => {
+        const db = new FakeDb();
+        db.seed(CAMINHO, rascunho({ attributes: ATRIBUTOS }));
+        const r = await atualizarRascunhoShopee(
+          deps(db),
+          corpoAtualizar({ category_id: 100_017, attributes: ATRIBUTOS }, { category_id: 100_030 }),
+        );
+        expect(r.gravados).toEqual([
+          CAMPO_RASCUNHO_SHOPEE.categoryId,
+          CAMPO_RASCUNHO_SHOPEE.attributes,
+        ]);
+        expect(db.patches).toEqual([
+          {
+            path: CAMINHO,
+            patch: { category_id: 100_030, attributes: null, ultimaModificacao: AGORA },
+          },
+        ]);
+      });
+
+      it('a troca de categoria SEM base.attributes ⇒ 400 no corpo (a refine do K1-12), nada lido nem escrito', () => {
+        expect(() => corpoAtualizar({ category_id: 100_017 }, { category_id: 100_030 })).toThrow(
+          ZodError,
+        );
+      });
+
+      it('B grava atributos ENTRE a leitura e o update de A ⇒ a precondição recusa, a re-leitura vê o conflito em attributes — os de B ficam', async () => {
+        const db = new FakeDb();
+        db.seed(CAMINHO, rascunho({ attributes: ATRIBUTOS }));
+        const corrida = comEscritaConcorrente(db, CAMINHO, () => {
+          db.seed(CAMINHO, rascunho({ attributes: ATRIBUTOS_DE_OUTRA_ABA }));
+        });
+
+        const err = await recusaDe(
+          atualizarRascunhoShopee(
+            deps(corrida),
+            corpoAtualizar(
+              { category_id: 100_017, attributes: ATRIBUTOS },
+              { category_id: 100_030 },
+            ),
+          ),
+        );
+
+        expect(err.code).toBe(CODIGO_RASCUNHO_SHOPEE.conflito);
+        expect(err.conflitos).toEqual([
+          { campo: CAMPO_RASCUNHO_SHOPEE.attributes, atual: ATRIBUTOS_DE_OUTRA_ABA },
+        ]);
+        expect(doc(db)?.attributes).toEqual(ATRIBUTOS_DE_OUTRA_ABA);
+        expect(doc(db)?.category_id).toBe(100_017);
+        expect(db.writes).toEqual([]);
+      });
+
+      it('⛔ quase-par: B grava OUTRO campo entre a leitura e o update ⇒ a re-leitura passa — a categoria muda e os atributos que A VIU são limpos', async () => {
+        const db = new FakeDb();
+        db.seed(CAMINHO, rascunho({ attributes: ATRIBUTOS }));
+        const corrida = comEscritaConcorrente(db, CAMINHO, () => {
+          db.seed(CAMINHO, rascunho({ attributes: ATRIBUTOS, description: 'de outra aba' }));
+        });
+        const r = await atualizarRascunhoShopee(
+          deps(corrida),
+          corpoAtualizar({ category_id: 100_017, attributes: ATRIBUTOS }, { category_id: 100_030 }),
+        );
+        expect(r.gravados).toEqual([
+          CAMPO_RASCUNHO_SHOPEE.categoryId,
+          CAMPO_RASCUNHO_SHOPEE.attributes,
+        ]);
+        expect(doc(db)).toMatchObject({
+          category_id: 100_030,
+          attributes: null,
+          description: 'de outra aba',
+        });
+      });
+
+      it('categoria + attributes NO MESMO patch ⇒ grava os atributos do patch, nunca os apaga', async () => {
+        const db = new FakeDb();
+        db.seed(CAMINHO, rascunho({ attributes: ATRIBUTOS }));
+        const r = await atualizarRascunhoShopee(
+          deps(db),
+          corpoAtualizar(
+            { category_id: 100_017, attributes: ATRIBUTOS },
+            { category_id: 100_030, attributes: ATRIBUTOS_DA_NOVA_CATEGORIA },
+          ),
+        );
+        expect(r.gravados).toEqual([
+          CAMPO_RASCUNHO_SHOPEE.categoryId,
+          CAMPO_RASCUNHO_SHOPEE.attributes,
+        ]);
+        expect(db.patches[0]?.patch).toEqual({
+          category_id: 100_030,
+          attributes: ATRIBUTOS_DA_NOVA_CATEGORIA,
+          ultimaModificacao: AGORA,
+        });
+      });
+
+      it('⛔ categoria + attributes IGUAIS ao gravado no mesmo patch ⇒ só a categoria é gravada; os atributos FICAM (o operador os escolheu para a nova categoria)', async () => {
+        const db = new FakeDb();
+        db.seed(CAMINHO, rascunho({ attributes: ATRIBUTOS }));
+        const r = await atualizarRascunhoShopee(
+          deps(db),
+          corpoAtualizar(
+            { category_id: 100_017, attributes: ATRIBUTOS },
+            { category_id: 100_030, attributes: ATRIBUTOS },
+          ),
+        );
+        expect(r.gravados).toEqual([CAMPO_RASCUNHO_SHOPEE.categoryId]);
+        expect(db.patches[0]?.patch).toEqual({ category_id: 100_030, ultimaModificacao: AGORA });
+        expect(doc(db)?.attributes).toEqual(ATRIBUTOS);
+      });
+
+      it('a categoria do patch IGUAL à gravada, SOZINHA (sem attributes) ⇒ nada escrito, os atributos ficam', async () => {
+        // ⚠️ This pins the "nothing to write" EARLY RETURN, not the wipe's key:
+        // the only patched field is equal, so `atualizarRascunhoShopee` returns
+        // before `limpaAtributosNaTrocaDeCategoria` is ever asked. The near-miss
+        // below is the one that reaches it.
+        const db = new FakeDb();
+        db.seed(CAMINHO, rascunho({ attributes: ATRIBUTOS }));
+        const r = await atualizarRascunhoShopee(
+          deps(db),
+          corpoAtualizar({ category_id: 100_017, attributes: ATRIBUTOS }, { category_id: 100_017 }),
+        );
+        expect(r.gravados).toEqual([]);
+        expect(db.writes).toEqual([]);
+        expect(doc(db)?.attributes).toEqual(ATRIBUTOS);
+      });
+
+      it('⛔ quase-par: a categoria GRAVADA re-enviada JUNTO com um título novo ⇒ só item_name é gravado, os atributos FICAM (a chave é a categoria ESCRITA, não a NOMEADA)', async () => {
+        // An editor that posts the whole form sends the stored category beside
+        // a title edit: something IS written, so the wipe's predicate is asked —
+        // and the category was named, not changed. Keying the wipe on the patch
+        // NAMING `category_id` (RA1) would write `attributes: null` here behind
+        // a 200.
+        const db = new FakeDb();
+        db.seed(CAMINHO, rascunho({ attributes: ATRIBUTOS }));
+        const r = await atualizarRascunhoShopee(
+          deps(db),
+          corpoAtualizar(
+            { item_name: 'Camiseta do rascunho', category_id: 100_017, attributes: ATRIBUTOS },
+            { item_name: 'Camiseta Azul', category_id: 100_017 },
+          ),
+        );
+        expect(r.gravados).toEqual([CAMPO_RASCUNHO_SHOPEE.itemName]);
+        expect(db.patches).toEqual([
+          { path: CAMINHO, patch: { item_name: 'Camiseta Azul', ultimaModificacao: AGORA } },
+        ]);
+        expect(doc(db)?.attributes).toEqual(ATRIBUTOS);
+      });
+
+      it('PAR do anterior: a categoria NOVA junto com um título novo ⇒ item_name + category_id + attributes: null', async () => {
+        const db = new FakeDb();
+        db.seed(CAMINHO, rascunho({ attributes: ATRIBUTOS }));
+        const r = await atualizarRascunhoShopee(
+          deps(db),
+          corpoAtualizar(
+            { item_name: 'Camiseta do rascunho', category_id: 100_017, attributes: ATRIBUTOS },
+            { item_name: 'Camiseta Azul', category_id: 100_030 },
+          ),
+        );
+        expect(r.gravados).toEqual([
+          CAMPO_RASCUNHO_SHOPEE.itemName,
+          CAMPO_RASCUNHO_SHOPEE.categoryId,
+          CAMPO_RASCUNHO_SHOPEE.attributes,
+        ]);
+        expect(db.patches).toEqual([
+          {
+            path: CAMINHO,
+            patch: {
+              item_name: 'Camiseta Azul',
+              category_id: 100_030,
+              attributes: null,
+              ultimaModificacao: AGORA,
+            },
+          },
+        ]);
+      });
+
+      it('um attributes gravado que NÃO é lista (projeta null) também é da categoria velha ⇒ limpo — a leitura é do GRAVADO, não da projeção', async () => {
+        const db = new FakeDb();
+        db.seed(CAMINHO, rascunho({ attributes: 'lixo-legado' }));
+        const r = await atualizarRascunhoShopee(
+          deps(db),
+          corpoAtualizar({ category_id: 100_017, attributes: null }, { category_id: 100_030 }),
+        );
+        expect(r.gravados).toEqual([
+          CAMPO_RASCUNHO_SHOPEE.categoryId,
+          CAMPO_RASCUNHO_SHOPEE.attributes,
+        ]);
+        expect(doc(db)?.attributes).toBeNull();
+      });
+    });
   });
 
   describe('a TRAVA da publicação (lida, nunca escrita)', () => {
@@ -1005,7 +1760,7 @@ describe('atualizarRascunhoShopee — base conferida (nível 3) + update guardad
           atualizarRascunhoShopee(
             deps(db),
             corpoAtualizar(
-              { item_name: 'Camiseta do rascunho', category_id: 100_017 },
+              { item_name: 'Camiseta do rascunho', category_id: 100_017, attributes: null },
               { item_name: 'X', category_id: 100_030 },
             ),
           ),
@@ -1016,14 +1771,84 @@ describe('atualizarRascunhoShopee — base conferida (nível 3) + update guardad
       }
     });
 
+    it('⛔ INCERTA + a categoria GRAVADA re-enviada no patch ⇒ AINDA 409 CATEGORIA_TRAVADA, e o título ao lado também não grava — a trava é "o patch NOMEIA category_id" (DA-4), nunca "o valor muda"; quase-par: o MESMO título sem category_id grava', async () => {
+      for (const extra of [
+        { publicacaoEmCurso: travaAlheia(AGORA - AGUARDAR_ANUNCIO_INCERTO_SHOPEE_MS) },
+        { criacaoIncertaDesde: AGORA - 1_000 },
+      ]) {
+        const db = new FakeDb();
+        db.seed(CAMINHO, rascunho(extra));
+        const antes = structuredClone(doc(db));
+
+        // The base is exactly the fixture's projection, so a "the value
+        // changes" lock would pass the baseline and answer 200 [item_name].
+        const err = await recusaDe(
+          atualizarRascunhoShopee(
+            deps(db),
+            corpoAtualizar(
+              { item_name: 'Camiseta do rascunho', category_id: 100_017, attributes: null },
+              { item_name: 'X', category_id: 100_017 },
+            ),
+          ),
+        );
+        expect(err.status, JSON.stringify(extra)).toBe(409);
+        expect(err.code).toBe(CODIGO_RASCUNHO_SHOPEE.categoriaTravada);
+        expect(db.writes).toEqual([]);
+        expect(doc(db)).toEqual(antes);
+
+        const r = await atualizarRascunhoShopee(
+          deps(db),
+          corpoAtualizar({ item_name: 'Camiseta do rascunho' }, { item_name: 'X' }),
+        );
+        expect(r.gravados).toEqual([CAMPO_RASCUNHO_SHOPEE.itemName]);
+      }
+    });
+
     it('⛔ quase-par: LIVRE + categoria no patch ⇒ grava', async () => {
       const db = new FakeDb();
       db.seed(CAMINHO, rascunho());
       const r = await atualizarRascunhoShopee(
         deps(db),
-        corpoAtualizar({ category_id: 100_017 }, { category_id: 100_030 }),
+        corpoAtualizar({ category_id: 100_017, attributes: null }, { category_id: 100_030 }),
       );
       expect(r.gravados).toEqual([CAMPO_RASCUNHO_SHOPEE.categoryId]);
+    });
+
+    it('⛔ NEAR-MISS (batch-A review): a trava vencida que NUNCA foi carimbada é LIVRE — sem carência, sem CATEGORIA_TRAVADA', async () => {
+      // Its run died before the pre-send stamp: nothing was sent under it.
+      for (const agora of [AGORA, AGORA + AGUARDAR_ANUNCIO_INCERTO_SHOPEE_MS]) {
+        const db = new FakeDb();
+        db.seed(CAMINHO, rascunho({ publicacaoEmCurso: travaSemCarimbo(AGORA) }));
+        const r = await atualizarRascunhoShopee(
+          deps(db, { nowMs: agora }),
+          corpoAtualizar({ category_id: 100_017, attributes: null }, { category_id: 100_030 }),
+        );
+        expect(r.gravados, String(agora)).toEqual([CAMPO_RASCUNHO_SHOPEE.categoryId]);
+      }
+      // …while it is still LIVE, it is still EM_ANDAMENTO.
+      const db = new FakeDb();
+      db.seed(CAMINHO, rascunho({ publicacaoEmCurso: travaSemCarimbo(AGORA + 1) }));
+      const err = await recusaDe(
+        atualizarRascunhoShopee(
+          deps(db),
+          corpoAtualizar({ item_name: 'Camiseta do rascunho' }, { item_name: 'X' }),
+        ),
+      );
+      expect(err.code).toBe(CODIGO_RASCUNHO_SHOPEE.publicacaoEmAndamento);
+      expect(err.aguardarMs).toBe(1);
+    });
+
+    it('INCERTA: os ATRIBUTOS ainda mudam (só a categoria trava) — a trava fica BYTE-idêntica', async () => {
+      const db = new FakeDb();
+      const trava = travaAlheia(AGORA - AGUARDAR_ANUNCIO_INCERTO_SHOPEE_MS);
+      db.seed(CAMINHO, rascunho({ publicacaoEmCurso: trava }));
+      const r = await atualizarRascunhoShopee(
+        deps(db),
+        corpoAtualizar({ attributes: null }, { attributes: ATRIBUTOS }),
+      );
+      expect(r.gravados).toEqual([CAMPO_RASCUNHO_SHOPEE.attributes]);
+      expect(doc(db)?.publicacaoEmCurso).toEqual(trava);
+      expect(doc(db)?.attributes).toEqual(ATRIBUTOS);
     });
   });
 
@@ -1274,6 +2099,29 @@ describe('descartarRascunhoShopee — base INTEIRA conferida + delete guardado',
       const err = await recusaDe(descartarRascunhoShopee(deps(db), corpoDescartar(vista(incerto))));
       expect(err.code).toBe(CODIGO_RASCUNHO_SHOPEE.criacaoIncerta);
     });
+
+    it('⛔ NEAR-MISS (batch-A review): a trava vencida NUNCA carimbada, sem registro ⇒ LIVRE — descarta SEM atestação, criacaoIncerta: false', async () => {
+      const db = new FakeDb();
+      const morto = rascunho({ publicacaoEmCurso: travaSemCarimbo(AGORA) });
+      db.seed(CAMINHO, morto);
+      const r = await descartarRascunhoShopee(deps(db), corpoDescartar(vista(morto)));
+      expect(r).toEqual({ linkDocId: RASCUNHO, descartado: true, criacaoIncerta: false });
+      expect(doc(db)).toBeUndefined();
+    });
+
+    it('⛔ NEAR-MISS: a MESMA trava sem carimbo num rascunho COM registro ⇒ AINDA exige a atestação', async () => {
+      const db = new FakeDb();
+      const comRegistro = rascunho({
+        publicacaoEmCurso: travaSemCarimbo(AGORA),
+        criacaoIncertaDesde: AGORA - 600_000,
+      });
+      db.seed(CAMINHO, comRegistro);
+      const err = await recusaDe(
+        descartarRascunhoShopee(deps(db), corpoDescartar(vista(comRegistro))),
+      );
+      expect(err.code).toBe(CODIGO_RASCUNHO_SHOPEE.criacaoIncerta);
+      expect(doc(db)).toEqual(comRegistro);
+    });
   });
 
   describe('a base do descarte (K1-13)', () => {
@@ -1318,6 +2166,29 @@ describe('descartarRascunhoShopee — base INTEIRA conferida + delete guardado',
         descartado: true,
         criacaoIncerta: false,
       });
+      expect(db.deletes).toEqual([{ path: CAMINHO, comPrecondicao: true }]);
+    });
+
+    it('⛔ os ATRIBUTOS mudaram desde a abertura (P6) ⇒ 409 CONFLITO nomeando attributes, nada apagado — quase-par: a base com os atuais ⇒ apaga', async () => {
+      const gravado = rascunho({ attributes: ATRIBUTOS_DE_OUTRA_ABA });
+      const db = new FakeDb();
+      db.seed(CAMINHO, gravado);
+      const err = await recusaDe(
+        descartarRascunhoShopee(
+          deps(db),
+          corpoDescartar(vista(rascunho({ attributes: ATRIBUTOS }))),
+        ),
+      );
+      expect(err.code).toBe(CODIGO_RASCUNHO_SHOPEE.conflito);
+      expect(err.conflitos).toEqual([
+        { campo: CAMPO_RASCUNHO_SHOPEE.attributes, atual: ATRIBUTOS_DE_OUTRA_ABA },
+      ]);
+      expect(doc(db)).toEqual(gravado);
+      expect(db.deletes).toEqual([]);
+
+      expect(
+        (await descartarRascunhoShopee(deps(db), corpoDescartar(vista(gravado)))).descartado,
+      ).toBe(true);
       expect(db.deletes).toEqual([{ path: CAMINHO, comPrecondicao: true }]);
     });
 
@@ -1463,5 +2334,45 @@ describe('corpoDaRecusaDeRascunhoShopee — o corpo, POR NOME', () => {
     expect(err).not.toBeInstanceOf(ShopeeError);
     expect(err.message).toContain(RASCUNHO);
     expect(err.message).not.toContain('SECRETO');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                5 · ONE projection, ONE comparison (#1369, P6)               */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Spelled in FRAGMENTS, so this file never names them either (the
+ * `statusAnuncio.test.ts` precedent).
+ */
+const COMPARACOES_DE_MAO = [
+  ['JSON', '.stringify('].join(''),
+  ['deep', 'Equal'].join(''),
+  ['values', 'Equal'].join(''),
+  ['isDeep', 'StrictEqual'].join(''),
+];
+const LEITURAS_CRUAS_DE_ATRIBUTOS = [
+  ['lerAtributos', 'ArmazenadosShopee'].join(''),
+  ['attribute', '_value_list'].join(''),
+];
+
+describe('rascunho.ts decide com o módulo do @delfrance/schemas, nunca com uma cópia', () => {
+  it('nenhuma comparação feita à mão e nenhuma leitura crua dos atributos: só a projeção e a comparação de shopeeRascunho.ts', () => {
+    // Every value the route compares is canonical on BOTH sides by construction
+    // (the base's parse and the projection fix the key order), so a hand-rolled
+    // serialising compare would pass every behavioural test here — and drift the
+    // day either side changes. Only the raw text can say it is not there.
+    const fonte = readFileSync(fileURLToPath(new URL('./rascunho.ts', import.meta.url)), 'utf8');
+
+    // ÂNCORA: the file read is the module, and it calls THE pair.
+    expect(fonte).toContain('export async function atualizarRascunhoShopee(');
+    expect(fonte).toContain('mesmoValorDoRascunhoShopee');
+    expect(fonte).toContain('mesmoValorGravadoDoRascunhoShopee(');
+    expect(fonte).toContain('camposDoRascunhoShopee(');
+    expect(fonte).toContain('camposDaBaseDoRascunhoShopee(');
+
+    for (const proibido of [...COMPARACOES_DE_MAO, ...LEITURAS_CRUAS_DE_ATRIBUTOS]) {
+      expect(fonte, `rascunho.ts nomeia ${proibido}`).not.toContain(proibido);
+    }
   });
 });

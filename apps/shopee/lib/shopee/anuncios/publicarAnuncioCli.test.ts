@@ -70,6 +70,7 @@ import {
   NOTA_SANDBOX_SG_KIT,
   USO_PUBLICAR_ANUNCIO,
   FRASE_ANUNCIO_SEMELHANTE,
+  LINHA_DA_BUSCA_POR_SKU_NO_ENSAIO,
   descreverConflitoDeRascunho,
   descreverErroPublicacao,
   descreverRecusaPublicacao,
@@ -787,6 +788,22 @@ describe('renderizarPlano — a lista permitida do design-P2 §10.3', () => {
     expect(texto).toContain(trecho);
   });
 
+  it('(#1911 P5b) o dry-run de uma CRIAÇÃO diz que a busca por SKU na loja NÃO rodou — ⛔ quase-par: o de uma ATUALIZAÇÃO não fala dela', () => {
+    // "problemas: NENHUM" never stands for "no listing with this SKU exists":
+    // the look-up lives under the draft's lock, which only --live takes.
+    expect(texto).toContain(LINHA_DA_BUSCA_POR_SKU_NO_ENSAIO);
+    expect(LINHA_DA_BUSCA_POR_SKU_NO_ENSAIO).toContain('só no --live');
+    const atualizacao = renderizarPlano(
+      plano({ itemId: ITEM_ID, ehAtualizacao: true }),
+      contexto(),
+    ).join('\n');
+    expect(atualizacao).not.toContain('busca de SKU na loja');
+    // The help says the same, and that no flag overrides the look-up.
+    expect(USO_PUBLICAR_ANUNCIO).toContain('Antes do PRIMEIRO add_item do rascunho');
+    expect(USO_PUBLICAR_ANUNCIO).toMatch(/Nenhuma flag passa\s+por cima dessa busca/);
+    expect(USO_PUBLICAR_ANUNCIO).toContain('NÃO procura anúncio nenhum na loja');
+  });
+
   it('diz que o produto é publicável quando não há problema nenhum', () => {
     expect(texto).toContain('problemas: NENHUM');
   });
@@ -1237,6 +1254,12 @@ describe('scripts/publicar-anuncio.ts', () => {
     expect(RAMO_LIVE).toContain('renderizarResultadoKit(');
     expect(RAMO_LIVE).toContain('renderizarItemIncerto(');
     expect(RAMO_LIVE).toContain('resumoDoItemIncerto(');
+    // batch-A review: the re-run command is built from THIS run's flags.
+    expect(RAMO_LIVE).toContain(
+      'const opcoesDoIncerto = { integracaoId, projectId, status, confirmarSegundoAnuncio };',
+    );
+    expect(RAMO_LIVE).toContain('resumoDoItemIncerto(res.resultado, opcoesDoIncerto)');
+    expect(RAMO_LIVE).toContain('renderizarItemIncerto(res.resultado, opcoesDoIncerto)');
   });
 
   it('devolve na ajuda ANTES do primeiro await import', () => {
@@ -1283,6 +1306,30 @@ describe('descreverErroPublicacao', () => {
     expect(texto).toContain(PRODUTO_ID);
     expect(texto).toContain('novo (primeira publicação)');
     expect(texto).toContain('a recusa é anterior');
+    // ⛔ quase-par do aviso abaixo: outro motivo não fala do rascunho.
+    expect(texto).not.toContain('GRAVADOS no rascunho');
+  });
+
+  it('(batch-A review) categoria-invalida ou nome-fora-da-faixa numa CRIAÇÃO: diz que o rascunho fixa os valores e como editá-lo', () => {
+    function bloqueio(motivo: ProblemaDeBloqueio['motivo'], itemId: number | null): string {
+      return descreverErroPublicacao(
+        new ShopeePublishBlockedError({
+          produtoId: PRODUTO_ID,
+          itemId,
+          problemas: [{ campo: 'category_id', motivo, mensagem: 'frase do problema' }],
+        }),
+      ).join('\n');
+    }
+    for (const motivo of [
+      MOTIVO_PUBLICACAO_BLOQUEADA.categoriaInvalida,
+      MOTIVO_PUBLICACAO_BLOQUEADA.nomeForaDaFaixa,
+    ]) {
+      const texto = bloqueio(motivo, null);
+      expect(texto, motivo).toContain('GRAVADOS no rascunho');
+      expect(texto, motivo).toContain('rascunho/atualizar');
+      // ⛔ quase-par: numa ATUALIZAÇÃO (item_id) não há rascunho a citar.
+      expect(bloqueio(motivo, 2500139861), motivo).not.toContain('GRAVADOS no rascunho');
+    }
   });
 
   it('(R3-02) o fecho de um bloqueio NUNCA promete que nenhum vínculo foi gravado no --live: um kit nativo grava antes de recusar', () => {
@@ -1525,7 +1572,7 @@ function ensaioDeKit(
     vivo: null,
     linhasDoAnuncio: [],
     linhasDaConta: [],
-    busca: { completo: true, achados: [], paginas: 1, chamadas: 2 },
+    busca: { completo: true, achados: [], incompleta: null, paginas: 1, chamadas: 2 },
     nossosVivos: new Map(),
     fotos: {
       item: {
@@ -2058,7 +2105,7 @@ describe('a recusa da trava de um rascunho (#1911)', () => {
     });
   }
 
-  it('cada um dos seis códigos é reconhecido e descrito por CLASSE + código, com o rascunho e a frase', () => {
+  it('cada código de CODIGO_RASCUNHO_SHOPEE é reconhecido e descrito por CLASSE + código, com o rascunho e a frase', () => {
     for (const code of Object.values(CODIGO_RASCUNHO_SHOPEE)) {
       const err = conflito(code);
       expect(ehConflitoDeRascunho(err), code).toBe(true);
@@ -2150,7 +2197,12 @@ describe('a recusa da trava de um rascunho (#1911)', () => {
 
 describe('a criação INCERTA de um anúncio comum (#1911, D5)', () => {
   const RASCUNHO = 'rasc-cunhado';
-  const OPCOES = { integracaoId: INTEGRACAO_ID, projectId: null } as const;
+  const OPCOES = {
+    integracaoId: INTEGRACAO_ID,
+    projectId: null,
+    status: SHOPEE_ITEM_STATUS_WRITABLE.normal,
+    confirmarSegundoAnuncio: false,
+  } as const;
 
   function incerto(over: Partial<ResultadoItemIncerto> = {}): ResultadoItemIncerto {
     return {
@@ -2198,14 +2250,58 @@ describe('a criação INCERTA de um anúncio comum (#1911, D5)', () => {
       OPCOES,
     ).join('\n');
     expect(seco).not.toContain('resposta da Shopee');
-    expect(seco).toContain('(o produto não tem SKU)');
+    expect(seco).toContain('(a tentativa foi enviada sem SKU)');
+  });
+
+  it('(batch-A review) o comando EXATO carrega --status UNLIST e --confirmar-segundo-anuncio quando a execução os usou', () => {
+    const pausado = resumoDoItemIncerto(incerto(), {
+      ...OPCOES,
+      status: SHOPEE_ITEM_STATUS_WRITABLE.unlist,
+    }).comandoDeRetomada;
+    expect(pausado).toMatch(/--link rasc-cunhado --status UNLIST --live$/);
+    // ⛔ quase-par: NORMAL (o padrão) não é impresso.
+    expect(resumoDoItemIncerto(incerto(), OPCOES).comandoDeRetomada).not.toContain('--status');
+
+    const confirmado = resumoDoItemIncerto(incerto(), {
+      ...OPCOES,
+      confirmarSegundoAnuncio: true,
+    }).comandoDeRetomada;
+    expect(confirmado).toMatch(/--link rasc-cunhado --confirmar-segundo-anuncio --live$/);
+    expect(resumoDoItemIncerto(incerto(), OPCOES).comandoDeRetomada).not.toContain(
+      '--confirmar-segundo-anuncio',
+    );
+
+    // Os dois, e o --project, na ordem: flags, --project, --live.
+    expect(
+      resumoDoItemIncerto(incerto(), {
+        integracaoId: INTEGRACAO_ID,
+        projectId: 'demo-erp',
+        status: SHOPEE_ITEM_STATUS_WRITABLE.unlist,
+        confirmarSegundoAnuncio: true,
+      }).comandoDeRetomada,
+    ).toMatch(
+      /--link rasc-cunhado --status UNLIST --confirmar-segundo-anuncio --project demo-erp --live$/,
+    );
+    // ⚠️ Nunca a atestação: ela é do operador, depois de conferir o Seller Centre.
+    expect(pausado).not.toContain('--confirmar-criacao-incerta');
+    // O renderizador imprime o MESMO comando.
+    expect(
+      renderizarItemIncerto(incerto(), { ...OPCOES, status: SHOPEE_ITEM_STATUS_WRITABLE.unlist }),
+    ).toContain(`    ${pausado}`);
   });
 
   it('o uso documenta --confirmar-criacao-incerta (os DOIS casos, só no --live) e o rascunho cunhado sem --link', () => {
     expect(USO_PUBLICAR_ANUNCIO).toContain('--confirmar-criacao-incerta');
     expect(USO_PUBLICAR_ANUNCIO).toMatch(/só vale em DOIS casos/);
     expect(USO_PUBLICAR_ANUNCIO).toMatch(/Nunca\s+pula a busca/);
-    expect(USO_PUBLICAR_ANUNCIO).toMatch(/Sem --link, o --live cria primeiro um RASCUNHO/);
+    // batch-A review: the mint happens ONLY when the conta holds NO link.
+    expect(USO_PUBLICAR_ANUNCIO).toMatch(/Sem --link, quando a conta ainda não tem NENHUM vínculo/);
+    expect(USO_PUBLICAR_ANUNCIO).not.toMatch(/Sem --link, o --live cria primeiro/);
+    expect(USO_PUBLICAR_ANUNCIO).toMatch(/sem --link ATUALIZA esse anúncio/);
+    expect(USO_PUBLICAR_ANUNCIO).toMatch(/bloqueia a exclusão do produto/);
+    expect(USO_PUBLICAR_ANUNCIO).toMatch(
+      /criação INCERTA\s+de anúncio comum no --live também sai com 1/,
+    );
   });
 
   it('a recusa do RASCUNHO cunhado (a do create da rota de rascunho) é descrita pela PRÓPRIA classe', () => {

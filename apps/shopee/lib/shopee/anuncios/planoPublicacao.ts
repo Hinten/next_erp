@@ -165,6 +165,11 @@ export interface ContextoPublicacao {
    * sent `UNLIST` when the produto has children (the tier leg never ran), so
    * the re-list dance joins this update exactly as it joins a create.
    * Absent ⇒ `false` (every fixture that predates it).
+   *
+   * ⚠️ THIS run only (batch-A review): the flag is the adopting run's memory,
+   * so a run that fails after the adoption — or an adoption by the product
+   * import — leaves the listing UNLIST (pausado) until re-activated; the next
+   * publish is a plain update. `anuncios/README.md`, accepted residual (viii).
    */
   readonly retomandoCriacao?: boolean;
   /** The status the OPERATOR asked for. See {@link PlanoPublicacao.statusInicial}. */

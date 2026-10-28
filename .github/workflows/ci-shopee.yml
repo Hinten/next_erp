@@ -327,6 +327,7 @@ on:
       - 'packages/schemas/src/faixaShopee.ts'
       - 'packages/schemas/src/shopeeAcaoSugerida.ts' # the publish lock's wait alias
       - 'packages/schemas/src/shared/outerRef.ts' # the draft route's id reader
+      - 'packages/schemas/src/atributosShopee.ts' # the shared attribute decoder/validator
       - 'firestore.indexes.json'
       - 'firebase.shopee.tasks.json'
       - 'pnpm-lock.yaml'

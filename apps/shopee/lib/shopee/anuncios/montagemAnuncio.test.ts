@@ -6,13 +6,24 @@ import { describe, expect, it } from 'vitest';
 
 import { SHOPEE_ITEM_IMAGE_MAX, SHOPEE_ITEM_STATUS_WRITABLE } from '@delfrance/integrations-shopee';
 import {
+  atributosParaGravarShopee,
+  atributosParaRequisicaoShopee,
   ESTADO_ANUNCIO_SHOPEE,
   fotoSchema,
+  lerAtributosArmazenadosShopee,
   lerEntradasShopeeDaConta,
+  timestampDeDataShopee,
+  TIPO_PROBLEMA_ATRIBUTO_SHOPEE,
+  validarAtributosShopee,
   type Foto,
 } from '@delfrance/schemas';
 
-import type { AtributoDto, AtributosProjetados } from '../taxonomia/dto';
+import type {
+  AtributoDto,
+  AtributoInfoDto,
+  AtributoValorDto,
+  AtributosProjetados,
+} from '../taxonomia/dto';
 import type { LimitesDeItemDto, LimitesDeItemLidos } from '../taxonomia/limites';
 import { FakeDb, asDb } from '../testing/fakeDb';
 import { MOTIVO_PUBLICACAO_BLOQUEADA, type ProblemaPublicacao } from './errosPublicacao';
@@ -443,8 +454,9 @@ describe('montarAnuncio — o vocabulário de recusa', () => {
     }
     expect(doKit.size).toBeGreaterThan(0);
     // #1911 (P5): the uncertain create's ENSURE produces its four members in
-    // `criacaoIncerta.ts` — read like `kits/`, through the constant, and pinned EXACTLY
-    // so a member that drifts to (or from) that file reds here.
+    // `criacaoIncerta.ts` — and (P5b) the first create's same-SKU look-up its three —
+    // read like `kits/`, through the constant, and pinned EXACTLY so a member that
+    // drifts to (or from) that file reds here.
     const fonteCriacaoIncerta = readFileSync(
       fileURLToPath(new URL('./criacaoIncerta.ts', import.meta.url)),
       { encoding: 'utf8' },
@@ -455,6 +467,9 @@ describe('montarAnuncio — o vocabulário de recusa', () => {
       if (membro !== undefined) daCriacaoIncerta.add(membro);
     }
     expect([...daCriacaoIncerta].sort()).toEqual([
+      'anuncio-existente-de-outro-produto',
+      'anuncio-existente-sem-vinculo',
+      'busca-de-anuncio-existente-incompleta',
       'busca-de-anuncio-incompleta',
       'criacao-incerta-ambigua',
       'criacao-incerta-ja-vinculada',
@@ -477,7 +492,7 @@ describe('montarAnuncio — o vocabulário de recusa', () => {
     ).toEqual([]);
   });
 
-  it('o docblock nomeia os oito membros que este módulo NÃO produz, com o arquivo produtor', () => {
+  it('o docblock nomeia os onze membros que este módulo NÃO produz, com o arquivo produtor', () => {
     const fonte = readFileSync(fileURLToPath(new URL('./montagemAnuncio.ts', import.meta.url)), {
       encoding: 'utf8',
     });
@@ -490,6 +505,9 @@ describe('montarAnuncio — o vocabulário de recusa', () => {
       'busca-de-anuncio-incompleta',
       'criacao-incerta-sem-sku',
       'criacao-incerta-ja-vinculada',
+      'anuncio-existente-sem-vinculo',
+      'anuncio-existente-de-outro-produto',
+      'busca-de-anuncio-existente-incompleta',
     ]) {
       expect(fonte).toContain(membro);
     }
@@ -497,7 +515,7 @@ describe('montarAnuncio — o vocabulário de recusa', () => {
     expect(fonte).toContain('anuncios/logisticaPublicacao.ts');
     expect(fonte).toContain('anuncios/problemasPublicacao.ts');
     expect(fonte).toContain('anuncios/criacaoIncerta.ts');
-    expect(fonte).toContain('(nineteen of twenty-seven)');
+    expect(fonte).toContain('(nineteen of thirty)');
   });
 
   it('problemas é a UNIÃO de todas as recusas, nunca a primeira', () => {
@@ -1312,6 +1330,517 @@ describe('atributosParaPublicar', () => {
       truncated: false,
     });
     expect(faltando).toEqual(['#77']);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*     (8b) atributos — o decodificador e o validador COMPARTILHADOS (#1911)   */
+/* -------------------------------------------------------------------------- */
+
+describe('atributosParaPublicar — o módulo compartilhado de @delfrance/schemas (#1911, D9, P6)', () => {
+  function infoAtributo(over: Partial<AtributoInfoDto> = {}): AtributoInfoDto {
+    return {
+      inputType: 2,
+      inputValidationType: 2,
+      formatType: 1,
+      dateFormatType: null,
+      attributeUnitList: null,
+      maxValueCount: null,
+      introduction: null,
+      isOem: false,
+      supportSearchValue: false,
+      ...over,
+    };
+  }
+
+  function noDaArvore(
+    attributeId: number,
+    name: string,
+    over: Partial<AtributoDto> = {},
+  ): AtributoDto {
+    return {
+      attributeId,
+      mandatory: false,
+      name,
+      attributeInfo: infoAtributo(),
+      attributeValueList: [],
+      ...over,
+    };
+  }
+
+  function valorDaArvore(
+    valueId: number,
+    name: string,
+    filhos: AtributoDto[] = [],
+  ): AtributoValorDto {
+    return { valueId, name, valueUnit: null, childAttributeList: filhos };
+  }
+
+  /** guide 209 §2.5's own shape: a VALUE of the parent carries the child it unlocks. */
+  const FILHO_HALTER = noDaArvore(200, 'Tipo de halter', { mandatory: true });
+  const FILHO_BARRA = noDaArvore(300, 'Tipo de barra', { mandatory: true });
+  const TIPO_DE_PESO = noDaArvore(100, 'Tipo de peso', {
+    mandatory: true,
+    attributeInfo: infoAtributo({ inputType: 1 }),
+    attributeValueList: [
+      valorDaArvore(1, 'Halteres', [FILHO_HALTER]),
+      valorDaArvore(2, 'Barras', [FILHO_BARRA]),
+    ],
+  });
+  const GENERO = noDaArvore(101, 'Gênero', { mandatory: true });
+  const ARVORE_PESO: AtributosProjetados = { atributos: [TIPO_DE_PESO, GENERO], truncated: false };
+  const MENSAGEM = 'atributos obrigatórios da categoria sem valor: ';
+
+  function recusasDeAtributo(montado: { readonly problemas: readonly ProblemaPublicacao[] }) {
+    return montado.problemas.filter(
+      (p) => p.motivo === MOTIVO_PUBLICACAO_BLOQUEADA.atributoObrigatorio,
+    );
+  }
+
+  /* ------------------------- Q1: the legacy value ------------------------- */
+
+  it('⚠️ Q1 (Lucas, Round 3) PAR: o valor legado SEM value_id é ENVIADO como personalizado {value_id: 0, …}', () => {
+    const { lista } = atributosParaPublicar(
+      [
+        { attribute_id: 100, attribute_value_list: [{ original_value_name: 'Algodão' }] },
+        {
+          attribute_id: 101,
+          attribute_value_list: [
+            { value_id: null, original_value_name: ' Linho ', value_unit: 'g' },
+          ],
+        },
+      ],
+      SEM_ATRIBUTOS,
+    );
+    expect(lista).toEqual([
+      {
+        attribute_id: 100,
+        attribute_value_list: [{ value_id: 0, original_value_name: 'Algodão' }],
+      },
+      {
+        attribute_id: 101,
+        attribute_value_list: [{ value_id: 0, original_value_name: 'Linho', value_unit: 'g' }],
+      },
+    ]);
+  });
+
+  it('⚠️ Q1 NEAR-MISS: o legado com nome em branco, vazio, nulo ou ausente é DESCARTADO — não há o que enviar', () => {
+    const { lista } = atributosParaPublicar(
+      [
+        { attribute_id: 100, attribute_value_list: [{ original_value_name: '  ' }] },
+        { attribute_id: 101, attribute_value_list: [{ original_value_name: '' }] },
+        {
+          attribute_id: 102,
+          attribute_value_list: [{ value_id: null, original_value_name: null }],
+        },
+        { attribute_id: 103, attribute_value_list: [{ value_unit: 'g' }] },
+      ],
+      SEM_ATRIBUTOS,
+    );
+    expect(lista).toEqual([]);
+  });
+
+  it('⚠️ Q1 nos DOIS corpos: o valor legado satisfaz o obrigatório e sai em add_item E update_item', () => {
+    const material: AtributosProjetados = {
+      atributos: [atributoObrigatorio(100, 'Material')],
+      truncated: false,
+    };
+    const legado = [
+      { attribute_id: 100, attribute_value_list: [{ original_value_name: 'Algodão' }] },
+    ];
+    const montado = montarAnuncio(
+      args({ link: link({ attributes: legado }), atributos: material, ehAtualizacao: true }),
+    );
+    const esperado = [
+      {
+        attribute_id: 100,
+        attribute_value_list: [{ value_id: 0, original_value_name: 'Algodão' }],
+      },
+    ];
+    expect(recusasDeAtributo(montado)).toEqual([]);
+    expect(montado.criar.attribute_list).toEqual(esperado);
+    expect(montado.atualizar?.attribute_list).toEqual(esperado);
+  });
+
+  it('⚠️ Q1 NEAR-MISS nos corpos: o legado com nome em branco NÃO sai e o obrigatório volta a faltar', () => {
+    const material: AtributosProjetados = {
+      atributos: [atributoObrigatorio(100, 'Material')],
+      truncated: false,
+    };
+    const montado = montarAnuncio(
+      args({
+        link: link({
+          attributes: [{ attribute_id: 100, attribute_value_list: [{ original_value_name: ' ' }] }],
+        }),
+        atributos: material,
+        ehAtualizacao: true,
+      }),
+    );
+    expect(recusasDeAtributo(montado).map((p) => p.mensagem)).toEqual([`${MENSAGEM}Material`]);
+    expect('attribute_list' in montado.criar).toBe(false);
+    expect('attribute_list' in (montado.atualizar ?? {})).toBe(false);
+  });
+
+  /* --------------------- B1: the mandatory CHILD ------------------------- */
+
+  it('⚠️ B1 PAR: um filho obrigatório sob o valor ESCOLHIDO falta — nomeado "<filho> (em <pai>: <valor>)", na ordem da árvore', () => {
+    const { faltando } = atributosParaPublicar(
+      [{ attribute_id: 100, attribute_value_list: [{ value_id: 1 }] }],
+      ARVORE_PESO,
+    );
+    expect(faltando).toEqual(['Tipo de halter (em Tipo de peso: Halteres)', 'Gênero']);
+  });
+
+  it('⚠️ B1 NEAR-MISS: o filho de um valor NÃO escolhido é invisível — nunca falta', () => {
+    const { faltando } = atributosParaPublicar(
+      [{ attribute_id: 100, attribute_value_list: [{ value_id: 2 }] }],
+      ARVORE_PESO,
+    );
+    // Barras is chosen, so ITS child is the one missing — and Halteres' never is.
+    expect(faltando).toEqual(['Tipo de barra (em Tipo de peso: Barras)', 'Gênero']);
+    expect(faltando.join(' ')).not.toContain('Tipo de halter');
+  });
+
+  it('B1 NEAR-MISS: com o pai SEM valor só as raízes faltam — exatamente o que faltava antes do #1911', () => {
+    expect(atributosParaPublicar(null, ARVORE_PESO).faltando).toEqual(['Tipo de peso', 'Gênero']);
+    // A custom value (value_id 0) on the parent unlocks nothing: the children stay invisible.
+    expect(
+      atributosParaPublicar(
+        [{ attribute_id: 100, attribute_value_list: [{ value_id: 0, original_value_name: 'X' }] }],
+        ARVORE_PESO,
+      ).faltando,
+    ).toEqual(['Gênero']);
+  });
+
+  it('B1 PAR: o filho preenchido sob o valor escolhido não falta — e nada recusa', () => {
+    const { faltando } = atributosParaPublicar(
+      [
+        { attribute_id: 100, attribute_value_list: [{ value_id: 1 }] },
+        {
+          attribute_id: 200,
+          attribute_value_list: [{ value_id: 0, original_value_name: 'Sextavado' }],
+        },
+        {
+          attribute_id: 101,
+          attribute_value_list: [{ value_id: 0, original_value_name: 'Unissex' }],
+        },
+      ],
+      ARVORE_PESO,
+    );
+    expect(faltando).toEqual([]);
+  });
+
+  it('B1 em montarAnuncio: UM problema em attribute_list, a mensagem nomeia o filho e o pai', () => {
+    const montado = montarAnuncio(
+      args({
+        link: link({
+          attributes: [{ attribute_id: 100, attribute_value_list: [{ value_id: 1 }] }],
+        }),
+        atributos: ARVORE_PESO,
+      }),
+    );
+    expect(recusasDeAtributo(montado)).toEqual([
+      {
+        campo: 'attribute_list',
+        motivo: MOTIVO_PUBLICACAO_BLOQUEADA.atributoObrigatorio,
+        mensagem: `${MENSAGEM}Tipo de halter (em Tipo de peso: Halteres), Gênero`,
+      },
+    ]);
+  });
+
+  it('NEAR-MISS: um obrigatório cuja entrada guardada não tem NENHUM valor utilizável continua faltando', () => {
+    const material: AtributosProjetados = {
+      atributos: [atributoObrigatorio(100, 'Material')],
+      truncated: false,
+    };
+    const semValor = atributosParaPublicar(
+      [
+        {
+          attribute_id: 100,
+          attribute_value_list: [
+            { value_id: 0, original_value_name: '  ' },
+            { value_id: '55' },
+            null,
+          ],
+        },
+      ],
+      material,
+    );
+    expect(semValor).toEqual({ lista: [], faltando: ['Material'] });
+    // PAR: one usable value in the same entry and it is present.
+    const comValor = atributosParaPublicar(
+      [{ attribute_id: 100, attribute_value_list: [{ value_id: '55' }, { value_id: 55 }] }],
+      material,
+    );
+    expect(comValor).toEqual({
+      lista: [{ attribute_id: 100, attribute_value_list: [{ value_id: 55 }] }],
+      faltando: [],
+    });
+  });
+
+  /* ------------- the publisher acts on obrigatorio-ausente ONLY ----------- */
+
+  it('⚠️ os OUTROS tipos do validador (editor) NÃO recusam a publicação — chegam à Shopee, que os nomeia', () => {
+    const arvore: AtributosProjetados = {
+      atributos: [
+        TIPO_DE_PESO,
+        noDaArvore(500, 'Cor', {
+          attributeInfo: infoAtributo({ inputType: 1 }),
+          attributeValueList: [valorDaArvore(51, 'Azul')],
+        }),
+        noDaArvore(501, 'Estampa', {
+          attributeInfo: infoAtributo({ inputType: 1 }),
+          attributeValueList: [valorDaArvore(61, 'Lisa')],
+        }),
+        noDaArvore(502, 'Gola', {
+          attributeInfo: infoAtributo({ inputType: 1 }),
+          attributeValueList: [valorDaArvore(71, 'Redonda'), valorDaArvore(72, 'V')],
+        }),
+        noDaArvore(503, 'Comprimento', {
+          attributeInfo: infoAtributo({ inputType: 3, formatType: 2, attributeUnitList: ['cm'] }),
+        }),
+        noDaArvore(504, 'Quantidade', {
+          attributeInfo: infoAtributo({ inputType: 3, inputValidationType: 1 }),
+        }),
+        noDaArvore(505, 'Fabricação', {
+          attributeInfo: infoAtributo({ inputType: 3, inputValidationType: 4, dateFormatType: 1 }),
+        }),
+      ],
+      truncated: false,
+    };
+    const guardado = [
+      { attribute_id: 100, attribute_value_list: [{ value_id: 1 }] },
+      {
+        attribute_id: 200,
+        attribute_value_list: [{ value_id: 0, original_value_name: 'Sextavado' }],
+      },
+      // filho-sem-pai: the child of the UNCHOSEN value (Barras).
+      {
+        attribute_id: 300,
+        attribute_value_list: [{ value_id: 0, original_value_name: 'Olímpica' }],
+      },
+      // personalizado-nao-permitido: a custom value on a list-only attribute.
+      {
+        attribute_id: 500,
+        attribute_value_list: [{ value_id: 0, original_value_name: 'Turquesa' }],
+      },
+      // valor-fora-da-lista
+      { attribute_id: 501, attribute_value_list: [{ value_id: 999 }] },
+      // valores-demais: two values on a single-select.
+      { attribute_id: 502, attribute_value_list: [{ value_id: 71 }, { value_id: 72 }] },
+      // unidade-invalida: EXACT match, 'CM' ≠ 'cm'.
+      {
+        attribute_id: 503,
+        attribute_value_list: [{ value_id: 0, original_value_name: '30', value_unit: 'CM' }],
+      },
+      // tipo-de-valor: not an integer.
+      { attribute_id: 504, attribute_value_list: [{ value_id: 0, original_value_name: 'abc' }] },
+      // data-em-formato-de-leitura — refused by nobody; SENT converted (the date block below).
+      {
+        attribute_id: 505,
+        attribute_value_list: [{ value_id: 0, original_value_name: '06/2021' }],
+      },
+      // fora-da-categoria
+      { attribute_id: 9999, attribute_value_list: [{ value_id: 7 }] },
+    ];
+    // Not vacuous: the SAME validator does find every editor-only kind here.
+    const achados = validarAtributosShopee(
+      arvore,
+      lerAtributosArmazenadosShopee(guardado).atributos,
+    );
+    expect(new Set(achados.map((p) => p.tipo))).toEqual(
+      new Set([
+        TIPO_PROBLEMA_ATRIBUTO_SHOPEE.filhoSemPai,
+        TIPO_PROBLEMA_ATRIBUTO_SHOPEE.personalizadoNaoPermitido,
+        TIPO_PROBLEMA_ATRIBUTO_SHOPEE.valorForaDaLista,
+        TIPO_PROBLEMA_ATRIBUTO_SHOPEE.valoresDemais,
+        TIPO_PROBLEMA_ATRIBUTO_SHOPEE.unidadeInvalida,
+        TIPO_PROBLEMA_ATRIBUTO_SHOPEE.tipoDeValor,
+        TIPO_PROBLEMA_ATRIBUTO_SHOPEE.dataEmFormatoDeLeitura,
+        TIPO_PROBLEMA_ATRIBUTO_SHOPEE.foraDaCategoria,
+      ]),
+    );
+    const { lista, faltando } = atributosParaPublicar(guardado, arvore);
+    expect(faltando).toEqual([]);
+    // Everything stored is SENT, in stored order — the orphan and the other category's included.
+    expect(lista.map((a) => a.attribute_id)).toEqual([
+      100, 200, 300, 500, 501, 502, 503, 504, 505, 9999,
+    ]);
+    const montado = montarAnuncio(
+      args({ link: link({ attributes: guardado }), atributos: arvore }),
+    );
+    expect(montado.problemas).toEqual([]);
+  });
+
+  it('⚠️ obrigatorio-requer-busca é uma linha A MAIS: o atributo falta UMA vez, nunca duas', () => {
+    const arvore: AtributosProjetados = {
+      atributos: [
+        noDaArvore(600, 'Marca registrada', {
+          mandatory: true,
+          attributeInfo: infoAtributo({ inputType: 1, supportSearchValue: true }),
+        }),
+      ],
+      truncated: false,
+    };
+    // Not vacuous: the validator answers BOTH rows for it.
+    expect(validarAtributosShopee(arvore, []).map((p) => p.tipo)).toEqual([
+      TIPO_PROBLEMA_ATRIBUTO_SHOPEE.obrigatorioAusente,
+      TIPO_PROBLEMA_ATRIBUTO_SHOPEE.obrigatorioRequerBusca,
+    ]);
+    expect(atributosParaPublicar(null, arvore).faltando).toEqual(['Marca registrada']);
+    const montado = montarAnuncio(args({ atributos: arvore }));
+    expect(recusasDeAtributo(montado).map((p) => p.mensagem)).toEqual([
+      `${MENSAGEM}Marca registrada`,
+    ]);
+  });
+
+  /* ------------------------------ what is SENT ---------------------------- */
+
+  it('⚠️ PAR/NEAR-MISS: o publicador envia o que está GUARDADO — só `atributosParaGravarShopee` (o salvar do EDITOR, P13, antes de postar) descarta o órfão; a rota do rascunho grava o que recebe', () => {
+    const arvore: AtributosProjetados = { atributos: [TIPO_DE_PESO], truncated: false };
+    const guardado = [
+      { attribute_id: 100, attribute_value_list: [{ value_id: 1 }] },
+      {
+        attribute_id: 300,
+        attribute_value_list: [{ value_id: 0, original_value_name: 'Olímpica' }],
+      },
+      { attribute_id: 9999, attribute_value_list: [{ value_id: 7 }] },
+    ];
+    expect(atributosParaPublicar(guardado, arvore).lista.map((a) => a.attribute_id)).toEqual([
+      100, 300, 9999,
+    ]);
+    expect(
+      atributosParaGravarShopee(arvore, lerAtributosArmazenadosShopee(guardado).atributos).map(
+        (a) => a.attribute_id,
+      ),
+    ).toEqual([100]);
+  });
+
+  describe('⚠️ uma DATA na forma de LEITURA sai na forma de ESCRITA (guide 209 §2.3; a hora do dia espera as capturas, Q-DB2)', () => {
+    const ARVORE_DATAS: AtributosProjetados = {
+      atributos: [
+        noDaArvore(505, 'Fabricação', {
+          attributeInfo: infoAtributo({ inputType: 3, inputValidationType: 4, dateFormatType: 1 }),
+        }),
+        noDaArvore(506, 'Validade', {
+          attributeInfo: infoAtributo({ inputType: 3, inputValidationType: 4, dateFormatType: 0 }),
+        }),
+        // The default info: inputValidationType 2 — NOT a date.
+        noDaArvore(507, 'Coleção'),
+      ],
+      truncated: false,
+    };
+
+    function personalizado(attributeId: number, nome: string) {
+      return {
+        attribute_id: attributeId,
+        attribute_value_list: [{ value_id: 0, original_value_name: nome }],
+      };
+    }
+
+    it('PAR: "06/2021" (só mês) e "30/06/2021" saem como o timestamp da convenção ÚNICA de @delfrance/schemas — em add_item E update_item', () => {
+      const guardado = [personalizado(505, '06/2021'), personalizado(506, '30/06/2021')];
+      const { lista, faltando } = atributosParaPublicar(guardado, ARVORE_DATAS);
+      const esperado = [
+        personalizado(505, timestampDeDataShopee({ ano: 2021, mes: 6, dia: null }) ?? 'x'),
+        personalizado(506, timestampDeDataShopee({ ano: 2021, mes: 6, dia: 30 }) ?? 'x'),
+      ];
+      expect(lista).toEqual(esperado);
+      expect(lista[0]?.attribute_value_list?.[0]?.original_value_name).toBe('1622548800');
+      expect(faltando).toEqual([]);
+
+      const montado = montarAnuncio(
+        args({
+          link: link({ attributes: guardado }),
+          atributos: ARVORE_DATAS,
+          ehAtualizacao: true,
+        }),
+      );
+      expect(montado.problemas).toEqual([]);
+      expect(montado.criar.attribute_list).toEqual(esperado);
+      expect(montado.atualizar?.attribute_list).toEqual(esperado);
+    });
+
+    it('⛔ QUASE-PAR: o MESMO "06/2021" num atributo que NÃO é data (inputValidationType 2) ou que a árvore não tem sai como guardado', () => {
+      const guardado = [personalizado(507, '06/2021'), personalizado(9999, '06/2021')];
+      expect(atributosParaPublicar(guardado, ARVORE_DATAS).lista).toEqual(guardado);
+    });
+
+    it('⛔ QUASE-PAR: um TIMESTAMP guardado nunca é re-codificado — nem o que não cai às 12:00 UTC', () => {
+      // 00:00 UTC of 2021-06-01 (day node) and 12:00 UTC of 2021-06-17 (month-only node):
+      // re-encoding either answers 1622548800, so keeping them is a decision a mutant breaks.
+      const guardado = [personalizado(506, '1622505600'), personalizado(505, '1623931200')];
+      expect(atributosParaPublicar(guardado, ARVORE_DATAS).lista).toEqual(guardado);
+    });
+
+    it('⛔ QUASE-PAR: "31/06/2021" (não é data real) sai como guardado — o editor o nomeia tipo-de-valor, a Shopee o recusa pelo nome', () => {
+      const guardado = [personalizado(506, '31/06/2021')];
+      expect(atributosParaPublicar(guardado, ARVORE_DATAS).lista).toEqual(guardado);
+    });
+  });
+
+  it('a forma de LEITURA (importação, verbatim) sai no corpo na forma de REQUISIÇÃO', () => {
+    const lidoDaImportacao = [
+      {
+        attribute_id: 100,
+        original_attribute_name: 'Material',
+        is_mandatory: true,
+        attribute_value_list: [
+          { value_id: 55, original_value_name: 'Algodão', value_unit: null },
+          { value_id: 0, original_value_name: ' Linho ', value_unit: null },
+        ],
+      },
+    ];
+    const montado = montarAnuncio(args({ link: link({ attributes: lidoDaImportacao }) }));
+    expect(montado.criar.attribute_list).toEqual([
+      {
+        attribute_id: 100,
+        attribute_value_list: [{ value_id: 55 }, { value_id: 0, original_value_name: 'Linho' }],
+      },
+    ]);
+  });
+
+  it('a lista É a do decodificador compartilhado — byte a byte, na ORDEM guardada, sobre um corpus hostil', () => {
+    // Stored order is deliberately NOT ascending by id: the list keeps it, never sorts.
+    const corpus: unknown[] = [
+      { attribute_id: 6, attribute_value_list: [{ value_id: 9, original_value_name: 'Lido' }] },
+      { attribute_id: 1, attribute_value_list: [{ value_id: 5, value_unit: ' kg ' }] },
+      { attribute_id: 1, attribute_value_list: [{ value_id: 6 }] },
+      { attribute_id: 2, attribute_value_list: [] },
+      { attribute_id: 2, attribute_value_list: [{ value_id: 0, original_value_name: 'B' }] },
+      { attribute_id: '3', attribute_value_list: [{ value_id: 1 }] },
+      { attribute_id: 4, attribute_value_list: [{ value_id: -1 }, { value_id: 1.5 }, 'x'] },
+      { attribute_id: 5, attribute_value_list: [{ original_value_name: 'Legado' }] },
+      'lixo',
+      null,
+      [],
+    ];
+    expect(atributosParaPublicar(corpus, SEM_ATRIBUTOS).lista).toEqual(
+      atributosParaRequisicaoShopee(lerAtributosArmazenadosShopee(corpus).atributos),
+    );
+    expect(atributosParaPublicar(corpus, SEM_ATRIBUTOS).lista).toEqual([
+      { attribute_id: 6, attribute_value_list: [{ value_id: 9 }] },
+      { attribute_id: 1, attribute_value_list: [{ value_id: 5, value_unit: 'kg' }] },
+      // An element with no usable value never claims its id: the LATER one for 2 is sent.
+      { attribute_id: 2, attribute_value_list: [{ value_id: 0, original_value_name: 'B' }] },
+      { attribute_id: 5, attribute_value_list: [{ value_id: 0, original_value_name: 'Legado' }] },
+    ]);
+  });
+
+  it('#1369: montagemAnuncio.ts não decodifica, não valida nem converte atributo por conta própria — compõe o módulo compartilhado', () => {
+    const fonte = readFileSync(fileURLToPath(new URL('./montagemAnuncio.ts', import.meta.url)), {
+      encoding: 'utf8',
+    });
+    expect(fonte).toContain('lerAtributosArmazenadosShopee(');
+    expect(fonte).toContain('atributosParaEnvioShopee(');
+    expect(fonte).toContain('validarAtributosShopee(');
+    // The date's write form is the shared module's ONE convention, never re-derived here.
+    expect(fonte).not.toMatch(/timestampDeDataShopee\(|lerDataDeAtributoShopee\(|Date\.UTC\(/);
+    expect(fonte).not.toMatch(/function lerValorArmazenado\b/);
+    // Reading a stored VALUE's keys here is a second decoder in the making.
+    expect(fonte).not.toMatch(/\.(value_id|original_value_name|value_unit)\b/);
+    // Q1 is answered SEND: a publish-time filter of the legacy row would have to name its origem.
+    expect(fonte).not.toMatch(/ORIGEM_VALOR_ATRIBUTO_SHOPEE|legado-sem-value-id/);
   });
 });
 

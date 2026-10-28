@@ -55,6 +55,8 @@ const BASE = {
   description: null,
   category_id: 100_017,
   marca: { brand_id: 0, original_brand_name: null },
+  // P6: the projection carries `attributes` too (`null` = nothing stored).
+  attributes: null,
 };
 
 function req(corpo: unknown, headers: Record<string, string> = AUTORIZADO): Request {
@@ -93,8 +95,18 @@ function semear(link: DocData | null = rascunho()): void {
   if (link !== null) db.seed(CAMINHO, link);
 }
 
-/** A FOREIGN publish lock expiring at `expiraEm` (ms), taken one TTL before it. */
+/**
+ * A FOREIGN publish lock expiring at `expiraEm` (ms), taken one TTL before it,
+ * STAMPED by its run's pre-send re-read (`sku`): a create may be in flight, so
+ * past `expiraEm` it serves the grace, then reads `incerta` (batch-A review).
+ */
 function trava(expiraEm: number): DocData {
+  const { publicacaoEmCurso } = travaSemCarimbo(expiraEm);
+  return { publicacaoEmCurso: { ...(publicacaoEmCurso as DocData), sku: 'CAM-BR' } };
+}
+
+/** The same lock, never stamped: its run died before the send — past `expiraEm`, `livre`. */
+function travaSemCarimbo(expiraEm: number): DocData {
   return {
     publicacaoEmCurso: {
       desde: expiraEm - PUBLICACAO_EM_CURSO_SHOPEE_TTL_MS,
@@ -148,6 +160,11 @@ describe('autenticação e corpo', () => {
       'base.marca',
     ],
     [
+      'uma `base` sem os atributos (P6: projetados também, K1-13)',
+      { base: { ...BASE, attributes: undefined } },
+      'base.attributes',
+    ],
+    [
       'uma atestação que não é booleana',
       { confirmarCriacaoIncerta: 'sim' },
       'confirmarCriacaoIncerta',
@@ -180,6 +197,20 @@ describe('descartar — 200', () => {
     // Rule 7 tier 1: the ONE delete carries the snapshot's stamp.
     expect(db.deletes).toEqual([{ path: CAMINHO, comPrecondicao: true }]);
     expect(Date.now).toHaveBeenCalledTimes(1);
+  });
+
+  it('⛔ NEAR-MISS (batch-A review): a trava vencida NUNCA carimbada, sem registro, é `livre` — apaga SEM atestação', async () => {
+    semear(rascunho(travaSemCarimbo(T0 - AGUARDAR_ANUNCIO_INCERTO_SHOPEE_MS - 1)));
+
+    const res = await POST(req(corpo()));
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({
+      linkDocId: RASCUNHO,
+      descartado: true,
+      criacaoIncerta: false,
+    });
+    expect(db.store[CAMINHO]).toBeUndefined();
   });
 
   it('`incerta` COM `confirmarCriacaoIncerta: true` apaga e responde `criacaoIncerta: true` (K1-6)', async () => {

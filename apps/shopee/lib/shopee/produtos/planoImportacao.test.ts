@@ -617,12 +617,13 @@ describe('planejarImportacaoShopee — a adoção de um rascunho (#1911)', () =>
     });
   });
 
-  it('a LIMPEZA nomeia as três chaves de "uma publicação ainda decide" — todas `null`', () => {
+  it('a LIMPEZA nomeia as chaves de "uma publicação ainda decide" — todas `null` (o SKU do registro junto)', () => {
     const plano = adotado();
     if (plano.linkPai.acao !== 'adotar') throw new Error('esperava uma adoção');
     expect(plano.linkPai.limpeza).toEqual({
       publicacaoEmCurso: null,
       criacaoIncertaDesde: null,
+      criacaoIncertaSku: null,
       falhaPublicacao: null,
     });
   });
