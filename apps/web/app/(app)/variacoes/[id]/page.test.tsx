@@ -14,7 +14,7 @@ import { MantineTestProvider } from '@/lib/testing/mantine';
  * invalid edit through the form's own machinery — RHF clones a kept edit on
  * "Recarregar do servidor", a staged removal undone is a copy, and `validate`
  * sees the prepared value — so a classification by object identity would let
- * each of (a)–(c) through. And that an untouched legacy defect never blocks.
+ * each of (a)–(c) through. And that an untouched stored defect never blocks.
  *
  * Doubled are only the I/O edges: the snapshot hook (`h.servido` is what the
  * listener shows, `h.docs` what the store holds — they differ exactly when a
@@ -283,7 +283,7 @@ describe('/variacoes/[id] — the Loja Integrada tab rides the grupo’s save', 
     expect(screen.getByText(/as chamadas estão desligadas/)).toBeTruthy();
   });
 
-  it('EQUAL: renaming a grupo with untouched legacy defects saves — and writes nothing to the links', async () => {
+  it('EQUAL: renaming a grupo with untouched stored defects saves — and writes nothing to the links', async () => {
     // An invalid half-made entry, and v1 in two options of ONE conta (the
     // per-store rule) — both stored, both untouched.
     const legado = [LINK, MEIA_BOCA, { ...LINK, grade_id: 8950 }, OUTRA_CONTA];

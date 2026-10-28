@@ -28,7 +28,7 @@ import {
  *  - edited vs untouched is decided BY VALUE against the form's seed, never by
  *    object identity, and fails CLOSED;
  *  - a finding blocks a save only through an edited entry (or a variante this
- *    save removes); an untouched legacy defect is shown, never blocking;
+ *    save removes); an untouched stored defect is shown, never blocking;
  *  - a conta is matched EXACTLY (no case, trim or path fold);
  *  - a conflict merges link by link, keyed by (conta, grade): neither side is
  *    ever taken wholesale, and a link both sides changed keeps the other side's
@@ -136,7 +136,7 @@ describe('validarVinculosLi — what blocks a save', () => {
   // v1 in two options of ONE conta: a per-store finding between untouched legacy entries.
   const legado = [vinculo('C1', 8946, [opcao(1, ['v1'])]), vinculo('C1', 8950, [opcao(2, ['v1'])])];
 
-  it('EQUAL: an untouched legacy finding never blocks — a rename of the grupo saves', () => {
+  it('EQUAL: an untouched stored finding never blocks — a rename of the grupo saves', () => {
     const values = { nome: 'Renomeado', variacoes: VARIANTES, linksVariacoesli: legado };
     expect(validarVinculosLi(values, seed(legado))).toEqual([]);
   });
