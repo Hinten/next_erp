@@ -45,18 +45,18 @@
  * The shared read-failure mapper (`core/falhaDeLeituraLi.ts`) narrows each class to its code and
  * answers `null` for anything else: `LiTimeoutError` BEFORE `LiNetworkError`, its parent; the
  * `LiHttpError` subclasses before `LiHttpError`; never the `LiError` base, so our own
- * misconfiguration (`LiConfigError`) stays loud. This module passes its own two choices
- * ({@link falhaDaLeituraLi}): a 404 is `pedidoAusenteNaLoja`, and a 403 parks like a 401. A `null`
- * is not this module's to answer: after the mirror (step 8) it is rethrown as it came, a 500 —
- * the mirror only ever turns it into a refusal, never into a pass. A 401/403 parks the conta
- * first (`tratarFalhaDeAutenticacao`, the step-2 park) and is answered as the park found it. The
- * caller's own abort is matched by IDENTITY (`err === sinal.reason`), before anything else: the
- * package rethrows exactly that object, so any other failure after an abort is still treated as
- * above.
+ * misconfiguration (`LiConfigError`) stays loud. This module passes its own choices
+ * ({@link falhaDaLeituraLi}): a 404 is `pedidoAusenteNaLoja`, a 403 parks like a 401, and there is
+ * no paging answer (its one read never pages). A `null` is not this module's to answer: after the
+ * mirror (step 8) it is rethrown as it came, a 500 — the mirror only ever turns it into a refusal,
+ * never into a pass. A 401/403 parks the conta first (`tratarFalhaDeAutenticacao`, the step-2
+ * park) and is answered as the park found it. The caller's own abort is matched by IDENTITY
+ * (`err === sinal.reason`), before anything else: the package rethrows exactly that object, so any
+ * other failure after an abort is still treated as above.
  *
  * | What failed | Answer | Class |
  * | --- | --- | --- |
- * | the switch, the conta, its credential, a park (`core/erros.ts`) | the shared mapper (`respond.ts`) | not verifiable, configuration |
+ * | the switch, the conta, its credential, a park (`core/erros.ts`) | the shared envelope mapper (`respond.ts`) | not verifiable, configuration |
  * | the park losing its precondition | 503 `estacionamentoEmConflito` | not verifiable, transient |
  * | 429 | 503 `limiteDeChamadas` (no retry here) | not verifiable, transient |
  * | the deadline | 504 `tempoEsgotadoLoja` | not verifiable, transient |
@@ -183,9 +183,10 @@ const DIVERGENTE = falhaDaLojaLi(
 );
 
 /**
- * This read's two choices for the shared mapper (module header, "The errors"): a 404 is an order
- * the store no longer has — imported orders do not vanish, so it points at the credential, "not
- * authorised" (no mirror) — and a 403 parks the conta exactly as a 401 does.
+ * This read's choices for the shared mapper (module header, "The errors"): a 404 is an order the
+ * store no longer has — imported orders do not vanish, so it points at the credential, "not
+ * authorised" (no mirror) — and a 403 parks the conta exactly as a 401 does. No paging answer: the
+ * one read never pages, so a paging stop is not this read's to answer.
  */
 const POLITICA_DA_CONFERENCIA: PoliticaDeFalhaLi = {
   ausente: falhaDaLojaLi(

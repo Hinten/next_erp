@@ -3,11 +3,13 @@
  * loader (`core/contexto.ts`) or of a package read becomes in the route's answer, and the 401/403
  * park behind it.
  *
- * Every route that reads Loja Integrada through the context shares the class table below; what a
- * 404 MEANS and whether a 403 PARKS are the only things that differ between them, so each caller
- * passes them in ({@link PoliticaDeFalhaLi}) instead of keeping a copy of the mapper. The paid
- * re-check (`pedidos/conferenciaPagamento.ts`, step 15) is the first caller: for it a 404 is an
- * order the store no longer has (pointing at the credential), and a 403 parks like a 401.
+ * Every route that reads Loja Integrada through the context shares the class table below. Three
+ * things differ between them — what a 404 MEANS, whether a 403 PARKS, and what a paging stop
+ * means (only a read that pages can see one) — so each caller passes them in
+ * ({@link PoliticaDeFalhaLi}) instead of keeping a copy of the mapper. The paid re-check
+ * (`pedidos/conferenciaPagamento.ts`, step 15) is the first caller: for it a 404 is an order the
+ * store no longer has (pointing at the credential), a 403 parks like a 401, and its one read
+ * never pages, so it names no paging answer.
  *
  * ## The classes (root rule 6)
  *
@@ -26,7 +28,8 @@
  * | 404 | the caller's answer, or `null` when a 404 is not the caller's to answer | the caller's |
  * | 401 | `null` from the pure mapper: the park answers it ({@link tratarFalhaDeLeituraLi}) | — |
  * | 403 | the same as a 401 when the caller parks on it; otherwise the caller's answer, and nothing is parked | the caller's |
- * | anything else: a 3xx, a 400, `LiPaginacaoError`, `LiConfigError`, a Firestore failure | `null` (rethrown by the caller) | — |
+ * | a paging stop (`LiPaginacaoError`) | the caller's answer for that motivo; `null` when the caller names none (a read that never pages) | the caller's |
+ * | anything else: a 3xx, a 400, `LiConfigError`, a Firestore failure | `null` (rethrown by the caller) | — |
  *
  * Every message here is a fixed pt-BR sentence: never a path, an id, a correlation id or a body.
  *
@@ -39,6 +42,10 @@
  * says the token itself is refused. A 403 parks only when the caller says the path it read is
  * one the token itself must reach.
  *
+ * It sees the conta's id and record ({@link ContaDaFalhaLi}), never the context's client:
+ * answering a failure never reads Loja Integrada again. A "confirming" read here would be a
+ * second paced read behind every caller's back (`prazos.test.ts` counts this file's reads at 0).
+ *
  * ⚠️ This module must never name the Admin SDK's multi-document read-and-write call — not even in
  * a comment (`firestore-transaction-inventory.test.js`). No process environment, no clock of its
  * own: the caller's deps carry them.
@@ -49,9 +56,11 @@ import {
   LiHttpError,
   LiNetworkError,
   LiNotFoundError,
+  LiPaginacaoError,
   LiSchemaError,
   LiThrottleError,
   LiTimeoutError,
+  type MotivoPaginacaoLi,
 } from '@delfrance/integrations-loja-integrada';
 import { CODIGO_ERRO_LI, type CodigoErroLi } from '@delfrance/schemas';
 
@@ -104,7 +113,7 @@ export function falhaDaLojaLi(
   return { tipo: 'loja', classe, status, code, mensagem };
 }
 
-/** The two choices that are the caller's (module header). */
+/** The choices that are the caller's (module header). */
 export interface PoliticaDeFalhaLi {
   /**
    * What a 404 means for this read: the caller's answer, or `null` when a 404 is not this
@@ -117,7 +126,19 @@ export interface PoliticaDeFalhaLi {
    * says nothing about the token.
    */
   readonly proibido: 'estacionar' | FalhaDaLojaLi;
+  /**
+   * A paging stop (`LiPaginacaoError`, the package's refusal to truncate), per motivo: the
+   * caller's answer, or `null` for a motivo that is not its to answer (rethrown, a 500). Left out
+   * by a caller whose read never pages: a paging stop is then not its to answer either.
+   */
+  readonly paginacao?: Readonly<Record<MotivoPaginacaoLi, FalhaDaLojaLi | null>>;
 }
+
+/**
+ * What the park reads of a context: the conta's id and record, never its client (module header,
+ * "The park"). Callers pass their whole context; this type is what keeps the client out of reach.
+ */
+export type ContaDaFalhaLi = Pick<ContextoLojaIntegrada, 'integracaoId' | 'conta'>;
 
 function daConta(erro: LiAppError): FalhaDaContaLi {
   const classe = erro instanceof LiEstacionamentoEmConflitoError ? 'transitorio' : 'configuracao';
@@ -184,6 +205,8 @@ export function mapearFalhaDeLeituraLi(
       'A Loja Integrada respondeu fora do formato esperado. Tente de novo em instantes.',
     );
   }
+  // A paging stop is the caller's, motivo by motivo; a caller that names none never pages.
+  if (err instanceof LiPaginacaoError) return politica.paginacao?.[err.motivo] ?? null;
   return null;
 }
 
@@ -225,7 +248,7 @@ function estacionaNaRecusa(err: LiAuthError, politica: PoliticaDeFalhaLi): boole
 async function semRespostaDaRecusa(
   deps: TratarFalhaDeLeituraDeps,
   err: LiAuthError,
-  contexto: ContextoLojaIntegrada,
+  contexto: ContaDaFalhaLi,
 ): Promise<SemRespostaLi> {
   const { integracaoId, conta } = contexto;
   let tratamento: Awaited<ReturnType<typeof tratarFalhaDeAutenticacao>>;
@@ -260,12 +283,13 @@ async function semRespostaDaRecusa(
  * {@link mapearFalhaDeLeituraLi}'s, with an error it does not own handed back unchanged.
  *
  * `contexto` is `null` when the failure came before a context existed: nothing can be parked
- * without one, so the pure mapper answers.
+ * without one, so the pure mapper answers. Of a context it sees the conta only
+ * ({@link ContaDaFalhaLi}), never the client.
  */
 export async function tratarFalhaDeLeituraLi(
   deps: TratarFalhaDeLeituraDeps,
   err: unknown,
-  contexto: ContextoLojaIntegrada | null,
+  contexto: ContaDaFalhaLi | null,
   politica: PoliticaDeFalhaLi,
 ): Promise<SemRespostaLi> {
   if (err instanceof LiAuthError && contexto !== null && estacionaNaRecusa(err, politica)) {
