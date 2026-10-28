@@ -42,15 +42,17 @@
  *
  * ## The errors (root rule 6)
  *
- * {@link falhaDaLeituraLi} narrows each class to its code and answers `null` for anything else:
- * `LiTimeoutError` BEFORE `LiNetworkError`, its parent; the `LiHttpError` subclasses before
- * `LiHttpError`; never the `LiError` base, so our own misconfiguration (`LiConfigError`) stays
- * loud. A `null` is not this module's to answer: after the mirror (step 8) it is rethrown as it
- * came, a 500 — the mirror only ever turns it into a refusal, never into a pass. A 401/403 parks
- * the conta first (`tratarFalhaDeAutenticacao`, the step-2 park) and is answered as the park found
- * it. The caller's own abort is matched by IDENTITY (`err === sinal.reason`), before anything
- * else: the package rethrows exactly that object, so any other failure after an abort is still
- * treated as above.
+ * The shared read-failure mapper (`core/falhaDeLeituraLi.ts`) narrows each class to its code and
+ * answers `null` for anything else: `LiTimeoutError` BEFORE `LiNetworkError`, its parent; the
+ * `LiHttpError` subclasses before `LiHttpError`; never the `LiError` base, so our own
+ * misconfiguration (`LiConfigError`) stays loud. This module passes its own two choices
+ * ({@link falhaDaLeituraLi}): a 404 is `pedidoAusenteNaLoja`, and a 403 parks like a 401. A `null`
+ * is not this module's to answer: after the mirror (step 8) it is rethrown as it came, a 500 —
+ * the mirror only ever turns it into a refusal, never into a pass. A 401/403 parks the conta
+ * first (`tratarFalhaDeAutenticacao`, the step-2 park) and is answered as the park found it. The
+ * caller's own abort is matched by IDENTITY (`err === sinal.reason`), before anything else: the
+ * package rethrows exactly that object, so any other failure after an abort is still treated as
+ * above.
  *
  * | What failed | Answer | Class |
  * | --- | --- | --- |
@@ -80,13 +82,6 @@
 import type { Firestore } from 'firebase-admin/firestore';
 import { avisoCollection, pedidoCollection } from '@delfrance/data/admin/collections';
 import {
-  LiAuthError,
-  LiHttpError,
-  LiNetworkError,
-  LiNotFoundError,
-  LiSchemaError,
-  LiThrottleError,
-  LiTimeoutError,
   buscarPedidoLi,
   type PedidoLi,
   type RespostaLi,
@@ -102,20 +97,19 @@ import {
   motivoPedidoContestadoLiSchema,
   situacaoLi,
   veredictoDoCodigoLi,
-  type CodigoErroLi,
   type MotivoPedidoContestadoLi,
   type RespostaConferenciaPagamentoLi,
 } from '@delfrance/schemas';
 
 import { type ContextoLojaIntegrada, loadLojaIntegradaContext } from '../core/contexto';
+import type { TratarFalhaDeps } from '../core/estacionamento';
 import {
-  LiAppError,
-  LiContaParadaError,
-  LiCredencialAlteradaError,
-  LiCredencialAusenteError,
-  LiEstacionamentoEmConflitoError,
-} from '../core/erros';
-import { type TratarFalhaDeps, tratarFalhaDeAutenticacao } from '../core/estacionamento';
+  type FalhaDeLeituraLi,
+  type PoliticaDeFalhaLi,
+  falhaDaLojaLi,
+  mapearFalhaDeLeituraLi,
+  tratarFalhaDeLeituraLi,
+} from '../core/falhaDeLeituraLi';
 import type { EscritorLogLi } from '../core/log';
 import type { RitmoLi } from '../core/ritmo';
 import type { AmbienteLi } from '../core/valvulas';
@@ -139,32 +133,8 @@ export interface ConferenciaPagamentoDeps extends TratarFalhaDeps {
   readonly escrever?: EscritorLogLi;
 }
 
-/** How a failure weighs on the gates: it picks whether the mirror is read. */
-export type ClasseFalhaConferenciaLi =
-  /** The check could not run, and retrying will not change that: the conta, its credential. */
-  | 'configuracao'
-  /** The check could not run this time: a throttle, a timeout, an outage, contention. */
-  | 'transitorio'
-  /** The check ran and points at a problem with THIS order: a refusal, never a retry. */
-  | 'nao-autorizado';
-
-/** Why there is no verdict. */
-export type FalhaConferenciaLi =
-  /** An app error (`core/erros.ts`), answered by the shared mapper (`respond.ts`). */
-  | {
-      readonly tipo: 'conta';
-      readonly classe: ClasseFalhaConferenciaLi;
-      readonly erro: LiAppError;
-    }
-  /** A failure of Loja Integrada's read, answered with this route's own code. */
-  | {
-      readonly tipo: 'loja';
-      readonly classe: ClasseFalhaConferenciaLi;
-      readonly status: number;
-      readonly code: CodigoErroLi;
-      /** A fixed pt-BR sentence: never a path, a numero, an id or a body. */
-      readonly mensagem: string;
-    };
+/** Why there is no verdict: the shared read-failure mapper's answer (`core/falhaDeLeituraLi.ts`). */
+export type FalhaConferenciaLi = FalhaDeLeituraLi;
 
 /**
  * What kept the live read from answering when the mirror stood in: this route's own failure, or an
@@ -205,16 +175,7 @@ function comoObjeto(valor: unknown): Readonly<Record<string, unknown>> | null {
     : null;
 }
 
-function loja(
-  classe: ClasseFalhaConferenciaLi,
-  status: number,
-  code: CodigoErroLi,
-  mensagem: string,
-): FalhaConferenciaLi {
-  return { tipo: 'loja', classe, status, code, mensagem };
-}
-
-const DIVERGENTE = loja(
+const DIVERGENTE = falhaDaLojaLi(
   'nao-autorizado',
   502,
   CODIGO_ERRO_LI.pedidoDivergente,
@@ -222,131 +183,28 @@ const DIVERGENTE = loja(
 );
 
 /**
+ * This read's two choices for the shared mapper (module header, "The errors"): a 404 is an order
+ * the store no longer has — imported orders do not vanish, so it points at the credential, "not
+ * authorised" (no mirror) — and a 403 parks the conta exactly as a 401 does.
+ */
+const POLITICA_DA_CONFERENCIA: PoliticaDeFalhaLi = {
+  ausente: falhaDaLojaLi(
+    'nao-autorizado',
+    409,
+    CODIGO_ERRO_LI.pedidoAusenteNaLoja,
+    'A Loja Integrada não encontrou este pedido. Confira a credencial da conta.',
+  ),
+  proibido: 'estacionar',
+};
+
+/**
  * A failure of the context or of the read, as this route answers it — or `null` for anything it
  * does not own, which the caller rethrows after the mirror (module header, "The errors"). Pure:
  * the 401/403 park and the caller's abort are the caller's, decided before this runs (a
- * `LiAuthError` reaching here answers `null`).
+ * `LiAuthError` reaching here answers `null`). The shared mapper under this read's choices.
  */
 export function falhaDaLeituraLi(err: unknown): FalhaConferenciaLi | null {
-  if (err instanceof LiAppError) {
-    const classe = err instanceof LiEstacionamentoEmConflitoError ? 'transitorio' : 'configuracao';
-    return { tipo: 'conta', classe, erro: err };
-  }
-  // The `LiHttpError` subclasses BEFORE `LiHttpError` itself.
-  if (err instanceof LiAuthError) return null;
-  if (err instanceof LiNotFoundError) {
-    return loja(
-      'nao-autorizado',
-      409,
-      CODIGO_ERRO_LI.pedidoAusenteNaLoja,
-      'A Loja Integrada não encontrou este pedido. Confira a credencial da conta.',
-    );
-  }
-  if (err instanceof LiThrottleError) {
-    return loja(
-      'transitorio',
-      503,
-      CODIGO_ERRO_LI.limiteDeChamadas,
-      'A Loja Integrada limitou as chamadas desta conta. Tente de novo em instantes.',
-    );
-  }
-  if (err instanceof LiHttpError) {
-    // A 5xx (Loja Integrada's 52x included) is an outage; any other status is a refusal of OUR
-    // request, which must stay loud.
-    return err.transitorio
-      ? loja(
-          'transitorio',
-          502,
-          CODIGO_ERRO_LI.lojaIndisponivel,
-          'A Loja Integrada está indisponível. Tente de novo em instantes.',
-        )
-      : null;
-  }
-  // The deadline BEFORE the network: a `LiTimeoutError` is a `LiNetworkError` too.
-  if (err instanceof LiTimeoutError) {
-    return loja(
-      'transitorio',
-      504,
-      CODIGO_ERRO_LI.tempoEsgotadoLoja,
-      'A Loja Integrada não respondeu a tempo. Tente de novo em instantes.',
-    );
-  }
-  if (err instanceof LiNetworkError) {
-    return loja(
-      'transitorio',
-      502,
-      CODIGO_ERRO_LI.lojaIndisponivel,
-      'Não foi possível falar com a Loja Integrada. Tente de novo em instantes.',
-    );
-  }
-  if (err instanceof LiSchemaError) {
-    return loja(
-      'transitorio',
-      502,
-      CODIGO_ERRO_LI.lojaIndisponivel,
-      'A Loja Integrada respondeu fora do formato esperado. Tente de novo em instantes.',
-    );
-  }
-  return null;
-}
-
-/**
- * Why the read gave no verdict: this route's own failure, or an error it does not own — which is
- * rethrown UNCHANGED unless the mirror holds the order (module header, "The errors").
- */
-type SemVereditoLi =
-  | { readonly tipo: 'propria'; readonly falha: FalhaConferenciaLi }
-  | { readonly tipo: 'alheia'; readonly erro: unknown };
-
-/** The mapper's answer for `err`, or `err` itself when the mapper does not own it. */
-function semVereditoDe(err: unknown): SemVereditoLi {
-  const falha = falhaDaLeituraLi(err);
-  return falha === null ? { tipo: 'alheia', erro: err } : { tipo: 'propria', falha };
-}
-
-/**
- * A 401/403: park the conta (or find it parked), then answer as the park found it — the conta's
- * own app errors, so the shared mapper answers them.
- *
- * - parked now, or already ⇒ `LiContaParadaError` (409 `reconexaoPendente`);
- * - the refused token is no longer the stored one (saved meanwhile) ⇒ `LiCredencialAlteradaError`
- *   (409 `credencialAlterada`: a retry runs with the new one), and nothing is parked;
- * - no credential any more ⇒ `LiCredencialAusenteError`;
- * - a corrupt credential, or the park's own contention, ⇒ that app error;
- * - the park failing on its own (a Firestore error) ⇒ that error, not this route's to answer;
- * - an error carrying no usable ref (unreachable: the package builds it from a request) ⇒ the
- *   401/403 itself, not this route's to answer.
- */
-async function semVereditoDaRecusa(
-  deps: ConferenciaPagamentoDeps,
-  err: LiAuthError,
-  contexto: ContextoLojaIntegrada,
-): Promise<SemVereditoLi> {
-  const { integracaoId, conta } = contexto;
-  let tratamento: Awaited<ReturnType<typeof tratarFalhaDeAutenticacao>>;
-  try {
-    tratamento = await tratarFalhaDeAutenticacao(
-      deps.db,
-      { integracaoId, lojaNome: conta.nome === '' ? integracaoId : conta.nome },
-      err,
-      deps,
-    );
-  } catch (falha) {
-    if (falha instanceof LiAppError) return semVereditoDe(falha);
-    // Anything else is the caller's to rethrow — after the mirror (`conferirPagamentoLi`).
-    return { tipo: 'alheia', erro: falha };
-  }
-  const r = tratamento.estacionamento;
-  if (r === null) return { tipo: 'alheia', erro: err };
-  switch (r.tipo) {
-    case 'estacionado':
-    case 'ja-estacionado':
-      return semVereditoDe(new LiContaParadaError(integracaoId, r.status, r.desdeMs));
-    case 'credencial-substituida':
-      return semVereditoDe(new LiCredencialAlteradaError(integracaoId));
-    case 'sem-credencial':
-      return semVereditoDe(new LiCredencialAusenteError(integracaoId));
-  }
+  return mapearFalhaDeLeituraLi(err, POLITICA_DA_CONFERENCIA);
 }
 
 /** An error's class name for the log line — never its message (it may carry a path or a numero). */
@@ -480,10 +338,9 @@ export async function conferirPagamentoLi(
     if (deps.sinal?.aborted === true && err === deps.sinal.reason) {
       return { tipo: 'cancelado', contaId };
     }
-    const semVeredito =
-      err instanceof LiAuthError && contexto !== null
-        ? await semVereditoDaRecusa(deps, err, contexto)
-        : semVereditoDe(err);
+    // A 401/403 parks the conta first and is answered as the park found it; anything else is the
+    // shared mapper's, under this read's choices.
+    const semVeredito = await tratarFalhaDeLeituraLi(deps, err, contexto, POLITICA_DA_CONFERENCIA);
     // 7. Not verifiable ⇒ the mirror ("not authorised" never reads it).
     if (semVeredito.tipo === 'propria') {
       return comEspelho(deps, contaId, pedidoId, semVeredito.falha);

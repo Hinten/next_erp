@@ -100,13 +100,15 @@ verdicts, the live/mirror split) is `packages/schemas/src/conferenciaPagamentoLo
   ⚠️ An order whose only shipment the store re-created under a new id is divergent too, and
   nothing in the ERP releases it. The verdict is the codigo's alone (`veredictoDoCodigoLi`);
   nothing else from the order body (personal data) leaves the core.
-- **Its own error mapper** (`falhaDaLeituraLi`), not `respond.ts`'s, which it reuses only for the
-  app errors: `LiTimeoutError` before `LiNetworkError`, the `LiHttpError` subclasses before
-  `LiHttpError`, never the `LiError` base; anything unlisted (a non-5xx refusal such as a 3xx or
-  a 400, `LiConfigError`, gRPC, the park failing on its own) is rethrown after the mirror. A
-  401/403 parks the conta (`tratarFalhaDeAutenticacao`) and answers as the park found it. A 404
-  is 409 `LI_PEDIDO_AUSENTE_NA_LOJA`: imported orders do not vanish from the store, so it points
-  at the credential.
+- **The shared read-failure mapper** (`core/falhaDeLeituraLi.ts`), not `respond.ts`'s, which it
+  reuses only for the app errors: `LiTimeoutError` before `LiNetworkError`, the `LiHttpError`
+  subclasses before `LiHttpError`, never the `LiError` base; anything unlisted (a non-5xx refusal
+  such as a 3xx or a 400, `LiConfigError`, gRPC, the park failing on its own) is the caller's to
+  rethrow, here after the mirror. A 401 always parks the conta (`tratarFalhaDeAutenticacao`) and
+  answers as the park found it. What a 404 means and whether a 403 parks are each caller's
+  (`PoliticaDeFalhaLi`), never a copy of the mapper: here a 403 parks like a 401, and a 404 is
+  409 `LI_PEDIDO_AUSENTE_NA_LOJA` (imported orders do not vanish from the store, so it points at
+  the credential). `falhaDaLeituraLi` is the mapper under this route's two choices.
 - **The mirror whenever the read gives no answer of its own** (the switch, the conta, its
   credential, a throttle, a timeout, an outage, or an error the mapper does not own): the pedido's
   `lojaIntegradaPedidoContestado` aviso, by the import's own key (`chaveDoAvisoDoPedidoLi`); open
