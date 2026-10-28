@@ -258,6 +258,64 @@ export interface FieldConfig<TValue = unknown> {
    * Ignored for non-nullable objects.
    */
   defaultValue?: Record<string, unknown>;
+  /**
+   * How this field MERGES when an ADR 0011 tier-3 conflict collides on it, instead
+   * of one side winning wholesale. Top-level fields of an `ObjectView` only.
+   *
+   * Without it, a conflicting list is all-or-nothing: "Recarregar do servidor"
+   * takes the server's list and drops every edit the operator made to it, and
+   * "Salvar mesmo assim" writes the operator's list over everything another
+   * writer added meanwhile. With it, BOTH buttons apply `merge`:
+   *
+   *  - "Recarregar do servidor" puts the merged value in the form (dirty) and
+   *    waits, so the operator sees it before saving;
+   *  - "Salvar mesmo assim" puts it in the form and, only when nothing
+   *    `collided`, saves it — through the form's validation, against the
+   *    server's version as the new baseline, so a third writer still raises
+   *    the modal again. When something collided it stops instead: the operator
+   *    looks first.
+   *
+   * Either way the field's form default becomes the server's value, so whatever
+   * the form compares against "what was loaded" (a `validate` that judges only
+   * what this save changed) now compares against the version just accepted.
+   */
+  rebaseOnConflict?: ConflictRebase;
+}
+
+/** What a field's {@link ConflictRebase} merges. */
+export interface ConflictRebaseInput {
+  /** The field as this form LOADED it: what the operator's edits were made against. */
+  readonly loaded: unknown;
+  /** The field as the server holds it NOW (another writer's version). */
+  readonly server: unknown;
+  /** The operator's unsaved value, exactly as the form holds it (staged marks included). */
+  readonly mine: unknown;
+}
+
+export interface ConflictRebaseResult {
+  /**
+   * The merged value, in the FORM's shape (staged marks allowed): the server's,
+   * with the operator's own changes re-applied on top.
+   */
+  readonly value: unknown;
+  /**
+   * Whether some change of the operator could NOT be re-applied, because the
+   * server changed the same part too. `value` then keeps the server's version
+   * there (marked however the field's editor shows it), and "Salvar mesmo
+   * assim" does not save.
+   */
+  readonly collided: boolean;
+}
+
+/** {@link FieldConfig.rebaseOnConflict}. */
+export interface ConflictRebase {
+  /**
+   * The conflict modal's "Sua gravação" cell for this field, in place of
+   * "Sobrescreve" — e.g. `'mescla por vínculo'`.
+   */
+  readonly label: string;
+  /** Pure, total and deterministic: it runs once per button click. */
+  readonly merge: (input: ConflictRebaseInput) => ConflictRebaseResult;
 }
 
 /**

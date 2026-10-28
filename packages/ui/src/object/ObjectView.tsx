@@ -29,7 +29,7 @@ import { ZodError, type z, type ZodObject, type ZodRawShape, type ZodTypeAny } f
 import type { CollectionHandle, PathContext } from '@delfrance/data';
 import { useDocSnapshot } from '@delfrance/data/hooks';
 import { buildEmptyDefaults, extractFieldsFromSchema } from '../schema/derive';
-import type { FieldConfig, FieldDescriptor } from '../schema/types';
+import type { ConflictRebase, FieldConfig, FieldDescriptor } from '../schema/types';
 import { AfterSaveBlockedError } from './afterSaveBlocked';
 import { ConflictModal } from './ConflictModal';
 import { buildConflictFields, labelFromShape } from './conflictFields';
@@ -594,6 +594,13 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
     documents: TransactionDocumentConflict[];
     continueEditing: boolean;
   } | null>(null);
+  // "Salvar mesmo assim" over a MERGED field does not save from the click: it
+  // queues a resubmit through `handleSubmit` (validation included) and the effect
+  // below runs it once the merged value has rendered — after the editors' own
+  // effects, which see the field's new form default first. A ref plus a render
+  // request, so no effect has to set state.
+  const pendingResubmit = useRef<{ continueEditing: boolean } | null>(null);
+  const [, requestResubmit] = useState(0);
   // Delete confirmation modal: the user must type "excluir" to enable the
   // destructive button — guards against accidental clicks.
   const [deleteOpen, setDeleteOpen] = useState(false);
@@ -611,6 +618,37 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
    * `ZodTypeAny` prop type does not say so.
    */
   const labelShape = (schema as unknown as { shape?: Record<string, ZodTypeAny> }).shape ?? {};
+
+  /** A top-level field's {@link FieldConfig.rebaseOnConflict}, own keys only. */
+  function rebaseOf(field: string): ConflictRebase | undefined {
+    return Object.hasOwn(fieldOverrides, field)
+      ? fieldOverrides[field]?.rebaseOnConflict
+      : undefined;
+  }
+
+  /**
+   * Every COLLIDED field that merges (`rebaseOnConflict`), merged: what the
+   * conflict was raised against (`loaded`), the server's version, and the
+   * operator's value from `mine`. A field that did not collide is never merged —
+   * the operator's edit to it is kept as is, like any uncontested edit.
+   */
+  function mergeCollidedFields(
+    raised: NonNullable<typeof conflict>,
+    mine: Record<string, unknown>,
+  ): Array<{ field: string; value: unknown; collided: boolean }> {
+    const merged: Array<{ field: string; value: unknown; collided: boolean }> = [];
+    for (const field of raised.fields) {
+      const rebase = rebaseOf(field);
+      if (!rebase) continue;
+      const result = rebase.merge({
+        loaded: raised.loaded[field],
+        server: raised.current[field],
+        mine: mine[field],
+      });
+      merged.push({ field, value: result.value, collided: result.collided });
+    }
+    return merged;
+  }
 
   /**
    * "Recarregar do servidor" — take the server's version for the fields that
@@ -657,6 +695,10 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
     for (const key of Object.keys(dirtyNow)) {
       if (!collided.has(key)) retained[key] = keep[key];
     }
+    // A collided field that merges takes the merge instead of the server's value:
+    // re-applied below like any retained edit (dirty), and NOT saved — the
+    // operator sees it, and whatever collided inside it, first.
+    for (const { field, value } of mergeCollidedFields(conflict, keep)) retained[field] = value;
     // Preserve loaded transient values even when their Controller was suspended.
     for (const key of transientFields) retained[key] = keep[key];
     baseline.current = conflict.current;
@@ -1073,6 +1115,15 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
   const submitDefault = form.handleSubmit(() => doSave(false), onInvalid);
   const submitContinue = form.handleSubmit(() => doSave(true), onInvalid);
 
+  // The queued resubmit of a merged override (see `pendingResubmit`). Runs after
+  // every render, and does something only on the one that follows the click.
+  useEffect(() => {
+    const pending = pendingResubmit.current;
+    if (pending === null) return;
+    pendingResubmit.current = null;
+    void (pending.continueEditing ? submitContinue() : submitDefault());
+  }, [submitContinue, submitDefault]);
+
   function fieldsBlock(descs: FieldDescriptor[]) {
     return (
       <Stack>
@@ -1263,10 +1314,14 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
                           conflict.current,
                           conflict.fields,
                           // Every listed field is one this save writes — that is how
-                          // `saveRecord` picked them — so all of them overwrite.
+                          // `saveRecord` picked them — so all of them overwrite…
                           new Set(conflict.fields),
                           { labelFor: (f) => labelFromShape(labelShape, f) },
-                        ),
+                        ).map((row) => {
+                          // …except a field that merges: it says so instead.
+                          const rebase = rebaseOf(row.field);
+                          return rebase ? { ...row, overwritten: false, merge: rebase.label } : row;
+                        }),
                         ...conflict.documents.flatMap((doc) =>
                           doc.fields.map((field) => ({
                             field: `${doc.path}:${field}`,
@@ -1289,19 +1344,43 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
                 }
                 saving={form.formState.isSubmitting}
                 onForceSave={() => {
-                  const { continueEditing } = conflict!;
+                  const raised = conflict!;
+                  const { continueEditing } = raised;
                   // Acknowledge only the displayed collisions; keep all guards armed.
                   if (baseline.current) {
                     baseline.current = { ...baseline.current };
-                    for (const field of conflict!.fields)
-                      baseline.current[field] = conflict!.current[field];
+                    for (const field of raised.fields)
+                      baseline.current[field] = raised.current[field];
                   }
                   // A sibling likewise moves only its displayed fields: the form
                   // is not re-projected here, so accepting a change the modal did
                   // not show would make the next save write the old value back.
-                  for (const doc of conflict!.documents)
+                  for (const doc of raised.documents)
                     transactionDocuments.rebase(doc.path, acknowledgedSiblingBaseline(doc));
+                  // A collided field that merges is NOT written wholesale: its
+                  // merge goes into the form, over the server's version as the
+                  // field's new default — the version this click accepts, so the
+                  // form's "what changed" now means "changed against it".
+                  const merged = mergeCollidedFields(raised, form.getValues());
+                  const serverDefaults: Record<string, unknown> = {
+                    ...emptyDefaults,
+                    ...raised.current,
+                  };
+                  for (const { field, value } of merged) {
+                    form.resetField(field, { defaultValue: serverDefaults[field] ?? null });
+                    form.setValue(field, value as never, { shouldDirty: true });
+                  }
                   setConflict(null);
+                  if (merged.length > 0) {
+                    // Saved only when every merge re-applied everything, and
+                    // through validation (the merged value is a new value); when
+                    // something collided, the operator looks first.
+                    if (merged.every((m) => !m.collided)) {
+                      pendingResubmit.current = { continueEditing };
+                      requestResubmit((n) => n + 1);
+                    }
+                    return;
+                  }
                   // Plain re-save. `baseline.current` was re-based onto the version
                   // shown when the conflict was caught, so the guard still runs: if
                   // nothing moved since, this commits; if a third writer landed
