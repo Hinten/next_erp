@@ -9,7 +9,7 @@
  */
 import React from 'react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, act } from '@testing-library/react';
+import { render, screen, fireEvent, act, within } from '@testing-library/react';
 import { MantineTestProvider } from '../testing/mantine';
 import { Notifications } from '@mantine/notifications';
 import { z } from 'zod';
@@ -756,6 +756,9 @@ const CAMPOS_COM_MESCLA = {
     rebaseOnConflict: { label: 'mescla por item', merge: mesclar },
   },
 };
+const CAMPOS_COM_ROTULO = {
+  itens: { ...CAMPOS_COM_MESCLA.itens, label: 'Itens do pedido' },
+};
 const CAMPOS_SEM_MESCLA = {
   itens: {
     renderInput: (p: { value: unknown; onChange: (next: unknown) => void }) => (
@@ -948,6 +951,31 @@ describe('ObjectView — a field that merges on conflict (rebaseOnConflict)', ()
 
     expect(saveRecordMock).toHaveBeenCalledOnce();
     expect(notifyShow).toHaveBeenCalledWith(expect.objectContaining({ color: 'red' }));
+  });
+
+  it('a row is named as the FORM names the field (its override label) before the schema label', async () => {
+    saveRecordMock.mockRejectedValueOnce(
+      new RecordConflictError({ nome: 'Alice', itens: ITENS_SERVIDOR }, ['itens']),
+    );
+    render(
+      <Wrap>
+        <ObjectView
+          schema={listaSchema}
+          collection={fakeCollection() as never}
+          db={{} as never}
+          currentUserUid="u1"
+          recordId="EXISTING"
+          fields={CAMPOS_COM_ROTULO}
+        />
+      </Wrap>,
+    );
+    await click('Adicionar c');
+    await click('Salvar');
+
+    expect(within(screen.getByRole('table')).getByText('Itens do pedido')).toBeTruthy();
+    // The schema's `.describe()` label loses to it. (A field WITHOUT an override
+    // label is still named by the schema: "shows the diff, with the schema label".)
+    expect(within(screen.getByRole('table')).queryByText('Itens')).toBeNull();
   });
 
   it('a THIRD write landing during the merged override raises the modal again', async () => {

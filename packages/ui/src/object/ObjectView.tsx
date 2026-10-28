@@ -1316,7 +1316,14 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
                           // Every listed field is one this save writes — that is how
                           // `saveRecord` picked them — so all of them overwrite…
                           new Set(conflict.fields),
-                          { labelFor: (f) => labelFromShape(labelShape, f) },
+                          {
+                            // As the form names the field: its override label
+                            // first, then the schema's.
+                            labelFor: (f) =>
+                              (Object.hasOwn(fieldOverrides, f)
+                                ? fieldOverrides[f]?.label
+                                : undefined) ?? labelFromShape(labelShape, f),
+                          },
                         ).map((row) => {
                           // …except a field that merges: it says so instead.
                           const rebase = rebaseOf(row.field);
