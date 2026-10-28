@@ -1,0 +1,393 @@
+'use client';
+
+import { useEffect, useMemo, useState } from 'react';
+import { Alert, Badge, Button, Group, Loader, Paper, Stack, Text } from '@mantine/core';
+import { IconPlus } from '@tabler/icons-react';
+import type { Firestore } from 'firebase/firestore';
+import { ZodError } from 'zod';
+import { docIdDaMarcaShopee, type MarcaDaContaShopee, type MarcaDto } from '@delfrance/schemas';
+import { useObjectViewTransactionDocuments } from '@delfrance/ui';
+import { useMarcasShopee } from '@/lib/shopee/marcas';
+import {
+  CAMPO_MARCAS_SHOPEE,
+  adicionarMarcasShopee,
+  desfazerAdicaoMarcaShopee,
+  desfazerRemocaoMarcaShopee,
+  lerAlteracoesMarcasShopee,
+  removerMarcaShopee,
+  type AlteracoesMarcasShopee,
+} from '@/lib/shopee/marcasDaConta';
+
+import { AdicionarMarcasShopeeModal } from './AdicionarMarcasShopeeModal';
+
+/**
+ * The «Marcas» section of `/canais/shopee/[id]` — the conta's brand SHORTLIST
+ * (`integracao/{id}/brandshopee`, #1911 D10), the brands a listing's brand
+ * picker offers without waiting on Shopee's slow brand API.
+ *
+ * ## The form value is the staged DELTA, never the list
+ *
+ * `value` is the transient field `marcasShopee`: `null` while nothing is
+ * staged, else `{adicionar, remover}` — built and undone ONLY through
+ * `lib/shopee/marcasDaConta.ts`, the module the conta's save turns into its
+ * sibling writes. Undoing the last staged item gives `null` back, so the form
+ * is pristine again: an untouched section never writes.
+ *
+ * Removal is STAGED (`apps/web` rule 7): the row stays, dimmed, «Será removida»
+ * with «Desfazer», and nothing is deleted until «Salvar alterações». Every
+ * staged item stays on screen with its undo — a brand staged for removal that
+ * left the list meanwhile keeps a line of its own — so the form can never stay
+ * dirty over a change the operator cannot see.
+ *
+ * ## The baselines: one per DOCUMENT, from server truth only
+ *
+ * Each `brandshopee` document gets its own ObjectView baseline, seeded from the
+ * first SERVER snapshot that shows it (`fromCache === false`, no pending
+ * writes) and never moved by a later emission — the registry refuses a second
+ * seed of a path — so a row another operator changed after that is the save's
+ * conflict, never silently the new truth. A row that first appears in a LATER
+ * server snapshot (another operator registered it) gets its own baseline then
+ * — unless it sits at the id of a registration staged HERE, which waits until
+ * that registration leaves the stage (see the seeding effect: otherwise the
+ * save would overwrite it unguarded). Until the first server snapshot has been
+ * read the section is read-only: a removal staged from a cached list would have
+ * nothing to be guarded by.
+ *
+ * ## Identity is the integer `brand_id`
+ *
+ * Rows come from `marcasDaContaShopee` (`@delfrance/schemas`, THE reader, via
+ * `useMarcasShopee`): duplicate legacy documents of one brand are ONE row
+ * ("(N registros)") whose removal deletes all of them; two brands with the same
+ * name are two rows. Rows that are not a readable brand (unreadable, or a stored
+ * «Sem marca») are counted under the list, never shown as brands.
+ *
+ * Removing needs `PERM.integracao.delete` (the generated rules' delete bit for
+ * `brandshopee`): without it there is no «Remover» button at all.
+ */
+export interface MarcasShopeeManagerProps {
+  db: Firestore;
+  integracaoId: string;
+  /** The transient form value: the staged delta, or `null`. */
+  value: unknown;
+  onChange: (next: AlteracoesMarcasShopee | null) => void;
+  /** The form is read-only (no `PERM.integracao.write`). */
+  disabled?: boolean;
+  /** `PERM.integracao.delete`. */
+  podeRemover: boolean;
+}
+
+/** "Nike · id 1001" or "Marca sem nome (id 7)", plus "(N registros)" for legacy duplicates. */
+export function rotuloDaMarcaCadastrada(m: MarcaDaContaShopee): string {
+  const nome =
+    m.originalBrandName === null && m.displayBrandName === null
+      ? `Marca sem nome (id ${String(m.brandId)})`
+      : `${m.rotulo} · id ${String(m.brandId)}`;
+  return m.docIds.length > 1 ? `${nome} (${String(m.docIds.length)} registros)` : nome;
+}
+
+function rotuloDaMarcaNova(dto: MarcaDto): string {
+  return `${dto.originalBrandName} · id ${String(dto.brandId)}`;
+}
+
+/** The staged delta, or the refusal when the form holds something that is not one. */
+function lerDelta(value: unknown): {
+  alteracoes: AlteracoesMarcasShopee | null;
+  invalida: boolean;
+} {
+  try {
+    return { alteracoes: lerAlteracoesMarcasShopee(value), invalida: false };
+  } catch (err) {
+    if (err instanceof ZodError) return { alteracoes: null, invalida: true };
+    throw err;
+  }
+}
+
+export function MarcasShopeeManager({
+  db,
+  integracaoId,
+  value,
+  onChange,
+  disabled = false,
+  podeRemover,
+}: MarcasShopeeManagerProps) {
+  const lista = useMarcasShopee(db, integracaoId);
+  const documents = useObjectViewTransactionDocuments();
+  const [modalAberto, setModalAberto] = useState(false);
+
+  const { alteracoes, invalida } = lerDelta(value);
+  const adicionadas = alteracoes?.adicionar ?? [];
+  const remocoes = alteracoes?.remover ?? [];
+  // The document ids the STAGED registrations will write (one spelling of it).
+  const idsDasAdicoes = adicionadas.map((d) => docIdDaMarcaShopee(d.brandId)).join('|');
+
+  // One baseline per document, from server truth, each path seeded ONCE: a
+  // later emission can only add the baselines of documents it is the first to
+  // show, never move one already held.
+  //
+  // ⚠️ Except a document sitting at the id a STAGED registration will write
+  // (another operator registered the same brand while this one was staged):
+  // it stays unseeded while that registration is staged. A baseline held for
+  // it would guard the registration's `set` with the very row it overwrites —
+  // a silent lost update; unseeded, the save raises the conflict instead.
+  // Once the registration leaves the stage (undone, or dropped by the
+  // conflict's "Recarregar"), the next run seeds it like any other row.
+  const { documentos, fromCache, hasPendingWrites, error } = lista;
+  useEffect(() => {
+    if (!documents || error || documentos === undefined) return;
+    if (fromCache !== false || hasPendingWrites) return;
+    const adiados = new Set(idsDasAdicoes.split('|'));
+    for (const doc of documentos) {
+      if (documents.getBaseline(doc.path) !== undefined) continue;
+      if (adiados.has(doc.id)) continue;
+      documents.seedBaseline(doc.path, { ...doc.data });
+    }
+    // The section's "server truth read" mark — nothing is staged at load.
+    documents.seedFormField(CAMPO_MARCAS_SHOPEE, null);
+  }, [documents, error, documentos, fromCache, hasPendingWrites, idsDasAdicoes]);
+
+  const semeada =
+    documents === null || documents.getFormBaseline(CAMPO_MARCAS_SHOPEE) !== undefined;
+  const bloqueada = disabled || !semeada;
+
+  const marcas = useMemo(() => lista.leitura?.marcas ?? [], [lista.leitura]);
+  const porBrandId = useMemo(() => new Map(marcas.map((m) => [m.brandId, m])), [marcas]);
+  const porRemocao = new Map(remocoes.map((r) => [r.brandId, r]));
+  const removidasForaDaLista = remocoes.filter((r) => !porBrandId.has(r.brandId));
+
+  const idsOcupados = useMemo(
+    () => new Set((lista.documentos ?? []).map((d) => d.id)),
+    [lista.documentos],
+  );
+  const outrosRegistros =
+    (lista.leitura?.semMarca.length ?? 0) + (lista.leitura?.ilegiveis.length ?? 0);
+
+  const adicionar = (dtos: MarcaDto[]) => {
+    onChange(adicionarMarcasShopee(value, dtos));
+    setModalAberto(false);
+  };
+
+  if (lista.error) {
+    return (
+      <Alert color="red" variant="light" data-testid="shopee-marcas-falha">
+        <Text size="sm">
+          Não foi possível carregar as marcas desta conta: {lista.error.message}
+        </Text>
+      </Alert>
+    );
+  }
+
+  if (invalida) {
+    return (
+      <Alert color="red" variant="light" data-testid="shopee-marcas-delta-invalido">
+        <Group justify="space-between" wrap="nowrap" gap="xs">
+          <Text size="sm">As alterações de marcas deste formulário são inválidas.</Text>
+          <Button size="xs" variant="light" disabled={disabled} onClick={() => onChange(null)}>
+            Descartar alterações de marcas
+          </Button>
+        </Group>
+      </Alert>
+    );
+  }
+
+  return (
+    <Stack gap="sm" data-testid="shopee-marcas-manager">
+      <Text size="sm" c="dimmed">
+        As marcas cadastradas aqui são as oferecidas na escolha de marca dos anúncios desta conta (a
+        Shopee demora para listar marcas). «Sem marca» está sempre disponível no anúncio.
+      </Text>
+      {lista.truncada && (
+        <Alert color="yellow" variant="light" data-testid="shopee-marcas-truncada">
+          <Text size="sm">
+            {`Mostrando os primeiros ${String(lista.documentos?.length ?? 0)} registros de marca — pode haver marcas cadastradas que não aparecem aqui.`}
+          </Text>
+        </Alert>
+      )}
+      {!podeRemover && (
+        <Text size="sm" c="dimmed" data-testid="shopee-marcas-sem-permissao-remover">
+          Remover marcas requer permissão de exclusão em integrações.
+        </Text>
+      )}
+
+      {lista.leitura === undefined ? (
+        <Group justify="center" p="md">
+          <Loader size="sm" />
+        </Group>
+      ) : (
+        <Stack gap={6}>
+          {adicionadas.map((dto) => (
+            <Paper
+              key={`nova-${String(dto.brandId)}`}
+              withBorder
+              p="xs"
+              data-testid={`shopee-marca-nova-${String(dto.brandId)}`}
+            >
+              <Group justify="space-between" wrap="nowrap" gap="xs">
+                <Group gap="xs" wrap="nowrap">
+                  <Badge color="green" variant="light" size="sm">
+                    Nova
+                  </Badge>
+                  <Text size="sm">{rotuloDaMarcaNova(dto)}</Text>
+                  {porBrandId.has(dto.brandId) && (
+                    <Text size="xs" c="orange">
+                      já consta na lista — desfaça esta adição
+                    </Text>
+                  )}
+                </Group>
+                <Button
+                  size="xs"
+                  variant="subtle"
+                  disabled={disabled}
+                  onClick={() => onChange(desfazerAdicaoMarcaShopee(value, dto.brandId))}
+                >
+                  Desfazer
+                </Button>
+              </Group>
+            </Paper>
+          ))}
+
+          {marcas.length === 0 && adicionadas.length === 0 && (
+            <Text size="sm" c="dimmed" data-testid="shopee-marcas-vazia">
+              Nenhuma marca cadastrada nesta conta.
+            </Text>
+          )}
+
+          {marcas.map((m) => {
+            const remocao = porRemocao.get(m.brandId);
+            const marcada = remocao !== undefined;
+            // A document of this brand that appeared AFTER it was marked (another
+            // operator registered it again) is not in the staged removal: the
+            // save leaves it, and the brand with it — said here, never only after.
+            const novosRegistros =
+              remocao === undefined
+                ? 0
+                : m.docIds.filter((id) => !remocao.docIds.includes(id)).length;
+            return (
+              <Paper
+                key={m.brandId}
+                withBorder
+                p="xs"
+                opacity={marcada ? 0.5 : 1}
+                data-testid={`shopee-marca-${String(m.brandId)}`}
+              >
+                <Group justify="space-between" wrap="nowrap" gap="xs">
+                  <Group gap="xs" wrap="nowrap">
+                    {marcada && (
+                      <Badge color="red" variant="light" size="sm">
+                        Será removida
+                      </Badge>
+                    )}
+                    <Text size="sm" td={marcada ? 'line-through' : undefined}>
+                      {rotuloDaMarcaCadastrada(m)}
+                    </Text>
+                  </Group>
+                  {marcada ? (
+                    <Button
+                      size="xs"
+                      variant="subtle"
+                      disabled={disabled}
+                      onClick={() => onChange(desfazerRemocaoMarcaShopee(value, m.brandId))}
+                    >
+                      Desfazer
+                    </Button>
+                  ) : (
+                    podeRemover && (
+                      <Button
+                        size="xs"
+                        variant="subtle"
+                        color="red"
+                        disabled={bloqueada}
+                        onClick={() => onChange(removerMarcaShopee(value, m))}
+                      >
+                        Remover
+                      </Button>
+                    )
+                  )}
+                </Group>
+                {novosRegistros > 0 && (
+                  <Group
+                    gap="xs"
+                    wrap="nowrap"
+                    mt={4}
+                    data-testid={`shopee-marca-registro-novo-${String(m.brandId)}`}
+                  >
+                    <Text size="xs" c="orange">
+                      {`${String(novosRegistros)} registro(s) desta marca apareceram depois de marcá-la e não serão removidos — a marca continuará na lista.`}
+                    </Text>
+                    {podeRemover && (
+                      <Button
+                        size="xs"
+                        variant="subtle"
+                        color="red"
+                        disabled={bloqueada}
+                        onClick={() => onChange(removerMarcaShopee(value, m))}
+                      >
+                        Incluir na remoção
+                      </Button>
+                    )}
+                  </Group>
+                )}
+              </Paper>
+            );
+          })}
+
+          {removidasForaDaLista.map((r) => (
+            <Paper
+              key={`fora-${String(r.brandId)}`}
+              withBorder
+              p="xs"
+              opacity={0.5}
+              data-testid={`shopee-marca-removida-fora-${String(r.brandId)}`}
+            >
+              <Group justify="space-between" wrap="nowrap" gap="xs">
+                <Group gap="xs" wrap="nowrap">
+                  <Badge color="red" variant="light" size="sm">
+                    Será removida
+                  </Badge>
+                  <Text size="sm">
+                    {`Marca id ${String(r.brandId)} — não está mais na lista (removida em outra tela?)`}
+                  </Text>
+                </Group>
+                <Button
+                  size="xs"
+                  variant="subtle"
+                  disabled={disabled}
+                  onClick={() => onChange(desfazerRemocaoMarcaShopee(value, r.brandId))}
+                >
+                  Desfazer
+                </Button>
+              </Group>
+            </Paper>
+          ))}
+        </Stack>
+      )}
+
+      {outrosRegistros > 0 && (
+        <Text size="xs" c="dimmed" data-testid="shopee-marcas-outros-registros">
+          {`${String(outrosRegistros)} registro(s) desta lista não são uma marca legível (ilegíveis ou «Sem marca») e não aparecem acima.`}
+        </Text>
+      )}
+
+      <Group>
+        <Button
+          variant="light"
+          leftSection={<IconPlus size={14} />}
+          disabled={bloqueada}
+          onClick={() => setModalAberto(true)}
+        >
+          Adicionar marcas
+        </Button>
+      </Group>
+
+      {modalAberto && (
+        <AdicionarMarcasShopeeModal
+          integracaoId={integracaoId}
+          cadastradas={new Set(porBrandId.keys())}
+          jaSelecionadas={new Set(adicionadas.map((d) => d.brandId))}
+          idsOcupados={idsOcupados}
+          onAdicionar={adicionar}
+          onFechar={() => setModalAberto(false)}
+        />
+      )}
+    </Stack>
+  );
+}

@@ -1,0 +1,539 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { OccEngine, type OccTransaction } from '@delfrance/data/testing';
+import { PERM } from '@delfrance/auth';
+import { integracaoSchema, marcaShopeeArmazenadaSchema, type MarcaDto } from '@delfrance/schemas';
+import type { ObjectViewProps } from '@delfrance/ui';
+import { MantineTestProvider } from '@/lib/testing/mantine';
+import type { AdicionarMarcasShopeeModalProps } from '../_components/AdicionarMarcasShopeeModal';
+
+/**
+ * `/canais/shopee/[id]` with its Marcas section (#1911 P9), through the REAL
+ * page, the REAL `ObjectView` + `saveRecord`, the REAL Marcas section, reader
+ * and delta writes, over an OCC FakeDb (`@delfrance/data/testing`).
+ *
+ * What only this file can show: that the conta's ONE save writes the staged
+ * brand registrations and removals as guarded siblings of the conta — only
+ * when something is staged, every document of a removed brand, the new row at
+ * its deterministic id — and never over a change made since the section seeded
+ * its baselines from server truth (root `CLAUDE.md` rule 7, tier 3).
+ *
+ * Doubled are only the I/O edges: the two snapshot hooks (`h.servido` is what
+ * the listeners show, `h.docs` what the store holds — they differ exactly when
+ * a test says another writer moved the store), `runTransaction`, the two
+ * collection handles (their `get` runs the converter's soft parse), and the
+ * unrelated pickers and panels. The add modal is a stub (its own suite) that
+ * stages {@link PUMA}.
+ */
+
+type Doc = Record<string, unknown>;
+
+const h = vi.hoisted(() => ({
+  docs: new Map<string, Record<string, unknown>>(),
+  servido: new Map<string, { raw: Record<string, unknown>; fromCache: boolean }>(),
+  occ: null as unknown as import('@delfrance/data/testing').OccEngine,
+  ler: (_path: string, raw: Record<string, unknown>): Record<string, unknown> => raw,
+  permissoes: 0n,
+  replace: vi.fn(),
+  toasts: [] as string[],
+  props: null as ObjectViewProps<never> | null,
+  adicionar: [] as unknown[],
+}));
+
+function refFalso(path: string) {
+  const ref = {
+    path,
+    id: path.slice(path.lastIndexOf('/') + 1),
+    get: async () => ({
+      exists: () => h.docs.has(path),
+      data: () => h.ler(path, structuredClone(h.docs.get(path)!)),
+    }),
+    withConverter: () => ref,
+  };
+  return ref;
+}
+
+vi.mock('@/lib/data/integracaoCollection', () => ({
+  integracaoCollection: {
+    resolvePath: () => 'integracao',
+    ref: () => ({ __col: 'integracao' }),
+    docRef: (_db: unknown, _ctx: unknown, id: string) => refFalso(`integracao/${id}`),
+    converter: {},
+    merge: vi.fn(),
+  },
+}));
+vi.mock('@/lib/data/marcaShopeeCollection', () => ({
+  marcaShopeeCollection: {
+    ref: (_db: unknown, ctx: { integracaoId: string }) => ({
+      __col: `integracao/${ctx.integracaoId}/brandshopee`,
+    }),
+    docRef: (_db: unknown, ctx: { integracaoId: string }, id: string) =>
+      refFalso(`integracao/${ctx.integracaoId}/brandshopee/${id}`),
+  },
+}));
+
+vi.mock('@delfrance/data', async (importActual) => ({
+  ...(await importActual<typeof import('@delfrance/data')>()),
+  buildQuery: (base: object, cs: unknown[]) => ({ ...base, cs }),
+  limit: (n: number) => ({ limit: n }),
+}));
+
+vi.mock('@delfrance/data/hooks', async (importActual) => ({
+  ...(await importActual<typeof import('@delfrance/data/hooks')>()),
+  useDocSnapshot: (ref: { path: string } | null) => {
+    const servido = ref == null ? undefined : h.servido.get(ref.path);
+    if (ref == null || servido === undefined)
+      return { data: undefined, loading: ref != null, error: undefined };
+    return {
+      data: {
+        id: ref.path.slice(ref.path.lastIndexOf('/') + 1),
+        data: h.ler(ref.path, structuredClone(servido.raw)),
+      },
+      loading: false,
+      error: undefined,
+      fromCache: servido.fromCache,
+      hasPendingWrites: false,
+      documentPath: ref.path,
+    };
+  },
+  useSnapshot: (q: { __col?: string } | null) => {
+    const col = q?.__col;
+    if (col === undefined) return { data: [], loading: false, error: undefined };
+    const linhas = [...h.servido.entries()]
+      .filter(([path]) => path.startsWith(`${col}/`))
+      .map(([path, s]) => ({
+        id: path.slice(path.lastIndexOf('/') + 1),
+        path,
+        data: h.ler(path, structuredClone(s.raw)),
+      }));
+    return {
+      data: linhas,
+      loading: false,
+      error: undefined,
+      fromCache: false,
+      hasPendingWrites: false,
+    };
+  },
+}));
+
+vi.mock('firebase/firestore', async (importActual) => ({
+  ...(await importActual<typeof import('firebase/firestore')>()),
+  runTransaction: (_db: unknown, fn: (tx: OccTransaction) => Promise<unknown>) =>
+    h.occ.runTransaction(fn),
+  deleteDoc: vi.fn(),
+}));
+
+vi.mock('@delfrance/ui', async (importActual) => {
+  const actual = await importActual<typeof import('@delfrance/ui')>();
+  return {
+    ...actual,
+    // The REAL ObjectView, its props recorded for the wiring assertions.
+    ObjectView: (props: ObjectViewProps<never>) => {
+      h.props = props;
+      return <actual.ObjectView {...props} />;
+    },
+  };
+});
+
+vi.mock('@/lib/auth', () => ({
+  useAuth: () => ({ user: { uid: 'u1' } }),
+  usePermission: (bit: bigint) => ({ allowed: (h.permissoes & bit) === bit, loading: false }),
+}));
+vi.mock('next/navigation', () => ({
+  useParams: () => ({ id: 'conta-1' }),
+  useRouter: () => ({ replace: h.replace, push: vi.fn() }),
+  useSearchParams: () => new URLSearchParams(),
+}));
+vi.mock('@/lib/firebase/client', () => ({ getFirebaseFirestore: () => ({}) }));
+vi.mock('@/app/(app)/canais/shopee/_components/ContaShopeePanel', () => ({
+  ContaShopeePanel: () => null,
+}));
+vi.mock('@/app/(app)/canais/_components/RecalcularPrecosCanalAction', () => ({
+  RecalcularPrecosCanalAction: () => null,
+}));
+vi.mock('@/app/(app)/canais/shopee/_components/AdicionarMarcasShopeeModal', () => ({
+  AdicionarMarcasShopeeModal: (props: AdicionarMarcasShopeeModalProps) => (
+    <button type="button" onClick={() => props.onAdicionar(h.adicionar as MarcaDto[])}>
+      stub adicionar
+    </button>
+  ),
+}));
+vi.mock('@/components/pickers/FilialPicker', () => ({ filialRefRenderInput: () => () => null }));
+vi.mock('@/components/collection-select/refRenderInput', () => ({
+  refRenderInput: () => () => null,
+}));
+vi.mock('@/components/inputs/CorInput', () => ({ CorInput: () => null }));
+vi.mock('@mantine/notifications', async (importActual) => {
+  const actual = await importActual<typeof import('@mantine/notifications')>();
+  return {
+    ...actual,
+    notifications: {
+      ...actual.notifications,
+      show: (o: { message?: unknown }) => {
+        h.toasts.push(String(o.message));
+        return '';
+      },
+    },
+  };
+});
+
+const { default: ContaShopeePage } = await import('./page');
+
+const CONTA_PATH = 'integracao/conta-1';
+const marcaPath = (id: string) => `integracao/conta-1/brandshopee/${id}`;
+
+/** The client converters' soft read: the parsed doc, or the raw one when the parse fails. */
+h.ler = (path, raw) => {
+  const r = (
+    path.includes('/brandshopee/') ? marcaShopeeArmazenadaSchema : integracaoSchema
+  ).safeParse(raw);
+  return (r.success ? r.data : raw) as Doc;
+};
+
+/** Legacy auto ids, as the Flutter app wrote them. */
+const ID_NIKE = 'a0000000000000000001';
+const ID_ADIDAS_1 = 'a0000000000000000002';
+const ID_ADIDAS_2 = 'a0000000000000000003';
+const legado = (brand_id: number, original_brand_name: string): Doc => ({
+  brand_id,
+  original_brand_name,
+  display_brand_name: null,
+});
+const PUMA: MarcaDto = { brandId: 3003, originalBrandName: 'Puma', displayBrandName: null };
+
+function conta(): Doc {
+  return {
+    tipo: 5,
+    nome: 'Loja Shopee',
+    padrao: false,
+    ativo: true,
+    shop_id: 987654,
+    dataCadastro: 1_700_000_000_000,
+    ultimaModificacao: 1_700_000_000_000,
+  };
+}
+
+/** Store `raw` and serve it to the listeners as server truth. */
+function semear(path: string, raw: Doc) {
+  h.docs.set(path, structuredClone(raw));
+  h.servido.set(path, { raw: structuredClone(raw), fromCache: false });
+}
+
+/** Another writer's commit after this page loaded; `listener: false` = not yet seen here. */
+function escritaConcorrente(path: string, raw: Doc | null, { listener = true } = {}) {
+  if (raw === null) h.docs.delete(path);
+  else h.docs.set(path, structuredClone(raw));
+  if (!listener) return;
+  if (raw === null) h.servido.delete(path);
+  else h.servido.set(path, { raw: structuredClone(raw), fromCache: false });
+}
+
+let rerenderPage: () => void = () => undefined;
+async function renderPage() {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const arvore = () => (
+    <QueryClientProvider client={qc}>
+      <MantineTestProvider>
+        <ContaShopeePage />
+      </MantineTestProvider>
+    </QueryClientProvider>
+  );
+  const view = render(arvore());
+  rerenderPage = () => view.rerender(arvore());
+  await act(async () => {
+    await new Promise((r) => setTimeout(r, 0));
+  });
+}
+
+async function clicar(nome: string, dentro?: HTMLElement) {
+  await act(async () => {
+    fireEvent.click((dentro ? within(dentro) : screen).getByRole('button', { name: nome }));
+  });
+  await act(async () => {
+    await new Promise((r) => setTimeout(r, 0));
+  });
+}
+
+async function salvar(rotulo: 'Salvar alterações' | 'Salvar e continuar' = 'Salvar e continuar') {
+  await clicar(rotulo);
+}
+
+async function abrirAba(nome: string) {
+  await act(async () => {
+    fireEvent.click(screen.getByRole('tab', { name: nome }));
+  });
+}
+
+async function adicionarPuma() {
+  h.adicionar = [PUMA];
+  await clicar('Adicionar marcas');
+  await clicar('stub adicionar');
+}
+
+const linhaDaMarca = (brandId: number) => screen.getByTestId(`shopee-marca-${String(brandId)}`);
+const commits = () => h.occ.txLog.filter((e) => e.phase === 'commit').length;
+const conflito = () => screen.queryByText('Registro alterado');
+const saidaBloqueada = () => {
+  const ev = new Event('beforeunload', { cancelable: true });
+  window.dispatchEvent(ev);
+  return ev.defaultPrevented;
+};
+/** Every write a committed transaction applied, in order. */
+const escritas: string[] = [];
+
+beforeEach(() => {
+  h.permissoes = PERM.integracao.write | PERM.integracao.delete;
+  h.docs.clear();
+  h.servido.clear();
+  h.toasts.length = 0;
+  h.replace.mockReset();
+  h.props = null;
+  h.adicionar = [];
+  escritas.length = 0;
+  semear(CONTA_PATH, conta());
+  semear(marcaPath(ID_NIKE), legado(1001, 'Nike'));
+  semear(marcaPath(ID_ADIDAS_1), legado(1002, 'Adidas'));
+  semear(marcaPath(ID_ADIDAS_2), legado(1002, ''));
+  h.occ = new OccEngine({
+    applyWrite: (kind, path, data) => {
+      escritas.push(`${kind} ${path}`);
+      const prev = h.docs.get(path) ?? {};
+      h.docs.set(
+        path,
+        kind === 'update' ? { ...prev, ...structuredClone(data) } : structuredClone(data),
+      );
+    },
+    applyDelete: (path) => {
+      escritas.push(`delete ${path}`);
+      h.docs.delete(path);
+    },
+  });
+});
+
+describe('/canais/shopee/[id] — the Marcas section rides the conta’s save', () => {
+  it('two tabs, Marcas kept mounted, and the delta a TRANSIENT key defaulting to null', async () => {
+    await renderPage();
+    for (const aba of ['Dados gerais', 'Marcas']) {
+      expect(screen.getByRole('tab', { name: aba })).toBeTruthy();
+    }
+    const props = h.props!;
+    expect(props.sections).toEqual(['Dados gerais', 'Marcas']);
+    expect(props.persistentSections).toEqual(['Marcas']);
+    expect(props.transientFields).toEqual(['marcasShopee']);
+    const schema = props.schema as unknown as typeof integracaoSchema;
+    expect((schema.parse(conta()) as Doc).marcasShopee).toBeNull();
+    // The conta's own fields stay on the first tab; the Marcas field on its own.
+    expect(props.fields?.marcasShopee?.section).toBe('Marcas');
+    expect(props.fields?.nome?.section).toBeUndefined();
+  });
+
+  it('a registration writes ONLY the new row, at String(brand_id), and leaves the conta untouched', async () => {
+    await renderPage();
+    await abrirAba('Marcas');
+    await adicionarPuma();
+    await salvar();
+    expect(conflito()).toBeNull();
+    expect(commits()).toBe(1);
+    expect(escritas).toEqual([`set ${marcaPath('3003')}`]);
+    expect(h.docs.get(marcaPath('3003'))).toEqual({
+      brand_id: 3003,
+      original_brand_name: 'Puma',
+      display_brand_name: null,
+    });
+    // The delta is transient: never a key of the conta, whose stamp did not move.
+    expect(h.docs.get(CONTA_PATH)).toEqual(conta());
+    expect(h.toasts).toEqual(['Salvo.']);
+  });
+
+  it('removing a brand stored as two legacy docs deletes BOTH; the untouched row is byte-identical', async () => {
+    await renderPage();
+    await abrirAba('Marcas');
+    await clicar('Remover', linhaDaMarca(1002));
+    await salvar();
+    expect(conflito()).toBeNull();
+    expect(commits()).toBe(1);
+    expect(escritas.sort()).toEqual(
+      [`delete ${marcaPath(ID_ADIDAS_1)}`, `delete ${marcaPath(ID_ADIDAS_2)}`].sort(),
+    );
+    expect(h.docs.has(marcaPath(ID_ADIDAS_1))).toBe(false);
+    expect(h.docs.has(marcaPath(ID_ADIDAS_2))).toBe(false);
+    expect(h.docs.get(marcaPath(ID_NIKE))).toEqual(legado(1001, 'Nike'));
+  });
+
+  it('a save with nothing staged writes nothing', async () => {
+    await renderPage();
+    await salvar();
+    expect(commits()).toBe(0);
+    expect(h.toasts).toEqual(['Nenhuma alteração para salvar']);
+  });
+
+  it('a conta field and a staged brand commit together, in ONE transaction', async () => {
+    await renderPage();
+    await act(async () => {
+      fireEvent.change(screen.getByLabelText('Nome'), { target: { value: 'Loja renomeada' } });
+    });
+    await abrirAba('Marcas');
+    await adicionarPuma();
+    await salvar('Salvar alterações');
+    expect(commits()).toBe(1);
+    expect(h.docs.get(CONTA_PATH)?.nome).toBe('Loja renomeada');
+    expect(h.docs.get(CONTA_PATH)).not.toHaveProperty('marcasShopee');
+    expect(h.docs.has(marcaPath('3003'))).toBe(true);
+    expect(h.replace).toHaveBeenCalledWith('/canais/shopee');
+  });
+
+  it('the seed is not an edit: a loaded conta does not arm the leave guard; staging does; undoing it disarms it', async () => {
+    await renderPage();
+    expect(saidaBloqueada()).toBe(false);
+    await abrirAba('Marcas');
+    await clicar('Remover', linhaDaMarca(1001));
+    expect(saidaBloqueada()).toBe(true);
+    await clicar('Desfazer', linhaDaMarca(1001));
+    expect(saidaBloqueada()).toBe(false);
+  });
+
+  it('after a commit the delta is gone: nothing staged on screen, and the next save writes nothing', async () => {
+    await renderPage();
+    await abrirAba('Marcas');
+    await adicionarPuma();
+    await clicar('Remover', linhaDaMarca(1001));
+    await salvar();
+    expect(commits()).toBe(1);
+    expect(screen.queryByTestId('shopee-marca-nova-3003')).toBeNull();
+    expect(saidaBloqueada()).toBe(false);
+    await salvar();
+    expect(commits()).toBe(1);
+    expect(h.toasts.at(-1)).toBe('Nenhuma alteração para salvar');
+  });
+
+  it('no Remover without PERM.integracao.delete; a registration still saves on the write bit alone', async () => {
+    h.permissoes = PERM.integracao.write;
+    await renderPage();
+    await abrirAba('Marcas');
+    expect(within(linhaDaMarca(1001)).queryByRole('button', { name: 'Remover' })).toBeNull();
+    expect(screen.getByTestId('shopee-marcas-sem-permissao-remover')).toBeTruthy();
+    await adicionarPuma();
+    await salvar();
+    expect(commits()).toBe(1);
+    expect(h.docs.has(marcaPath('3003'))).toBe(true);
+  });
+});
+
+describe('every write can lose a race: the save conflicts, and writes NOTHING', () => {
+  it('another operator registered the same brand meanwhile ⇒ conflict; their row survives; reload drops the stage', async () => {
+    await renderPage();
+    await abrirAba('Marcas');
+    await adicionarPuma();
+    const deles = { brand_id: 3003, original_brand_name: 'PUMA', display_brand_name: 'Puma BR' };
+    escritaConcorrente(marcaPath('3003'), deles, { listener: false });
+    await salvar();
+    expect(conflito()).toBeTruthy();
+    expect(commits()).toBe(0);
+    expect(h.docs.get(marcaPath('3003'))).toEqual(deles);
+    await clicar('Recarregar do servidor');
+    expect(conflito()).toBeNull();
+    expect(screen.queryByTestId('shopee-marca-nova-3003')).toBeNull();
+  });
+
+  it('…and the SAME race with their row already on this screen is still the conflict, never an overwrite', async () => {
+    await renderPage();
+    await abrirAba('Marcas');
+    await adicionarPuma();
+    const deles = { brand_id: 3003, original_brand_name: 'PUMA', display_brand_name: 'Puma BR' };
+    // The listener shows their row BEFORE this save: a baseline seeded for it
+    // would let the registration's `set` overwrite it unguarded.
+    escritaConcorrente(marcaPath('3003'), deles);
+    await act(async () => rerenderPage());
+    expect(
+      within(screen.getByTestId('shopee-marca-nova-3003')).getByText(
+        'já consta na lista — desfaça esta adição',
+      ),
+    ).toBeTruthy();
+    await salvar();
+    expect(conflito()).toBeTruthy();
+    expect(commits()).toBe(0);
+    expect(h.docs.get(marcaPath('3003'))).toEqual(deles);
+    // "Recarregar" drops the stage; their row is now an ordinary, guarded one.
+    await clicar('Recarregar do servidor');
+    expect(screen.queryByTestId('shopee-marca-nova-3003')).toBeNull();
+    await clicar('Remover', linhaDaMarca(3003));
+    await salvar();
+    expect(conflito()).toBeNull();
+    expect(escritas).toEqual([`delete ${marcaPath('3003')}`]);
+  });
+
+  it('«Salvar mesmo assim» on that conflict is the operator’s explicit overwrite — and it commits, no loop', async () => {
+    await renderPage();
+    await abrirAba('Marcas');
+    await adicionarPuma();
+    escritaConcorrente(marcaPath('3003'), {
+      brand_id: 3003,
+      original_brand_name: 'PUMA',
+      display_brand_name: 'Puma BR',
+    });
+    await act(async () => rerenderPage());
+    await salvar();
+    expect(conflito()).toBeTruthy();
+    await clicar('Salvar mesmo assim');
+    expect(conflito()).toBeNull();
+    expect(commits()).toBe(1);
+    expect(h.docs.get(marcaPath('3003'))).toEqual({
+      brand_id: 3003,
+      original_brand_name: 'Puma',
+      display_brand_name: null,
+    });
+  });
+
+  it('a doc staged for removal changed meanwhile ⇒ conflict, NEITHER doc of the brand deleted', async () => {
+    await renderPage();
+    await abrirAba('Marcas');
+    await clicar('Remover', linhaDaMarca(1002));
+    escritaConcorrente(marcaPath(ID_ADIDAS_2), legado(1002, 'adidas'));
+    await act(async () => rerenderPage());
+    await salvar();
+    expect(conflito()).toBeTruthy();
+    expect(commits()).toBe(0);
+    expect(h.docs.has(marcaPath(ID_ADIDAS_1))).toBe(true);
+    expect(h.docs.get(marcaPath(ID_ADIDAS_2))).toEqual(legado(1002, 'adidas'));
+  });
+
+  it('a doc staged for removal deleted meanwhile ⇒ conflict, nothing written', async () => {
+    await renderPage();
+    await abrirAba('Marcas');
+    await clicar('Remover', linhaDaMarca(1002));
+    escritaConcorrente(marcaPath(ID_ADIDAS_1), null, { listener: false });
+    await salvar();
+    expect(conflito()).toBeTruthy();
+    expect(commits()).toBe(0);
+    expect(h.docs.has(marcaPath(ID_ADIDAS_2))).toBe(true);
+  });
+
+  it('a re-registration at ANOTHER id meanwhile survives the removal — the safe direction', async () => {
+    await renderPage();
+    await abrirAba('Marcas');
+    await clicar('Remover', linhaDaMarca(1001));
+    // Another operator registered Nike again, at its deterministic id; this page sees it.
+    escritaConcorrente(marcaPath('1001'), legado(1001, 'Nike'));
+    await act(async () => rerenderPage());
+    await salvar();
+    expect(conflito()).toBeNull();
+    expect(escritas).toEqual([`delete ${marcaPath(ID_NIKE)}`]);
+    expect(h.docs.get(marcaPath('1001'))).toEqual(legado(1001, 'Nike'));
+  });
+
+  it('a row another operator added after the first seed gets its OWN baseline: removing it is guarded too', async () => {
+    await renderPage();
+    await abrirAba('Marcas');
+    const nova = 'a0000000000000000099';
+    escritaConcorrente(marcaPath(nova), legado(4004, 'Fila'));
+    await act(async () => rerenderPage());
+    await clicar('Remover', linhaDaMarca(4004));
+    // …and changed again before this save: the baseline it got is the one seen.
+    escritaConcorrente(marcaPath(nova), legado(4004, 'FILA'), { listener: false });
+    await salvar();
+    expect(conflito()).toBeTruthy();
+    expect(commits()).toBe(0);
+    expect(h.docs.get(marcaPath(nova))).toEqual(legado(4004, 'FILA'));
+  });
+});

@@ -45,6 +45,7 @@ export function shopeeClientFalso(metodos: Partial<ShopeeClient> = {}): ShopeeCl
     descartarRascunho: naoEsperado('descartarRascunho'),
     recomendacaoCategoria: naoEsperado('recomendacaoCategoria'),
     limitesDoItem: naoEsperado('limitesDoItem'),
+    marcas: naoEsperado('marcas'),
   };
   return { ...base, ...metodos };
 }

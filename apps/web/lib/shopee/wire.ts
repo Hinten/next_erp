@@ -18,9 +18,9 @@
  * browser, so there is no second copy to keep. They are re-exported here so
  * browser code keeps importing every answer shape
  * from this one file: the size-chart envelopes (step 18), the taxonomy answers
- * (the category tree, the item bands whole and cut to the size-chart slice, and
- * Shopee's category suggestion — #1911), and the listing-draft route's answers
- * and error items (#1911).
+ * (the category tree, the item bands whole and cut to the size-chart slice,
+ * Shopee's category suggestion, and a category's page of brands — #1911), and
+ * the listing-draft route's answers and error items (#1911).
  *
  * ⚠️ This header must not describe what the OTHER copy does beyond naming it.
  * A comment asserting the behaviour of a file the compiler cannot see is the
@@ -433,9 +433,9 @@ export const shopeeReclamacaoAcaoRespostaSchema = z.object({
 export type ShopeeReclamacaoAcaoResposta = z.infer<typeof shopeeReclamacaoAcaoRespostaSchema>;
 
 /* ---------------------------------------------------------------------------
- * The taxonomy reads (`GET …/taxonomia/{categorias,limites,recomendacao-categoria}`,
+ * The taxonomy reads (`GET …/taxonomia/{categorias,limites,recomendacao-categoria,marcas}`,
  * step 10's routes — the `/medidas` Shopee tab since step 18, the listing-draft
- * editor since #1911) and the two size-chart reads
+ * editor and a conta's Marcas section since #1911) and the two size-chart reads
  * (`GET …/tabela-medidas/{lista,detalhe}`, #1526, step 18)
  * ------------------------------------------------------------------------- */
 
@@ -501,6 +501,26 @@ export {
 export {
   respostaRecomendacaoCategoriaShopeeSchema,
   type RespostaRecomendacaoCategoriaShopee,
+} from '@delfrance/schemas';
+
+/**
+ * ONE page of a leaf category's brands —
+ * `GET …/taxonomia/marcas?integracaoId=&categoryId=[&offset=&pageSize=&status=]`
+ * (#1911, D10), for the registration picker of a conta's Marcas section. A
+ * non-leaf category answers the same shape, empty (`leaf: false`). One row, and
+ * the envelope.
+ *
+ * - ⚠️ Page on `hasNextPage`, never on `nextOffset` being non-null:
+ *   `nextOffset` is Shopee's own cursor, echoed verbatim — never
+ *   `offset + pageSize`.
+ * - `brandId: 0` is Shopee's "No Brand", a value the picker never registers
+ *   (`linhaDeMarcaParaGravarShopee`).
+ */
+export {
+  marcaDtoSchema,
+  respostaMarcasShopeeSchema,
+  type MarcaDto,
+  type RespostaMarcasShopee,
 } from '@delfrance/schemas';
 
 /**

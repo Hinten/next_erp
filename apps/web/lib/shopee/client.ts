@@ -20,11 +20,12 @@
  * import and the price update), each named exactly like the
  * `lib/mercado-livre/client.ts` method doing the same job, so a shared component
  * types against either client structurally. Since #1911 it creates, edits and
- * discards a listing DRAFT through the draft routes, and reads two more
- * taxonomy answers for the draft editor: the item bands WHOLE (`limitesDoItem`,
- * beside `limites`' size-chart slice) and Shopee's category suggestion. Every
- * method of {@link ShopeeClient} — twenty-seven today; re-count the interface,
- * never bump this number — is answered by `apps/shopee` over an authenticated
+ * discards a listing DRAFT through the draft routes, reads two more taxonomy
+ * answers for the draft editor — the item bands WHOLE (`limitesDoItem`, beside
+ * `limites`' size-chart slice) and Shopee's category suggestion — and pages a
+ * category's brands for a conta's Marcas section (`marcas`). Every method of
+ * {@link ShopeeClient} — twenty-eight today; re-count the interface, never bump
+ * this number — is answered by `apps/shopee` over an authenticated
  * cross-origin call (its `proxy.ts` allows exactly `/api/marketplace/*`).
  *
  * ⚠️ This client retries NOTHING. Whether a failed READ is re-attempted is the
@@ -78,6 +79,7 @@ import {
   respostaDescartarRascunhoShopeeSchema,
   respostaLimitesDoItemShopeeSchema,
   respostaLimitesShopeeSchema,
+  respostaMarcasShopeeSchema,
   respostaPublicarShopeeSchema,
   respostaRecomendacaoCategoriaShopeeSchema,
   respostaReverificarShopeeSchema,
@@ -104,6 +106,7 @@ import {
   type RespostaDescartarRascunhoShopee,
   type RespostaLimitesDoItemShopee,
   type RespostaLimitesShopee,
+  type RespostaMarcasShopee,
   type RespostaPublicarShopee,
   type RespostaRecomendacaoCategoriaShopee,
   type RespostaReverificarShopee,
@@ -642,7 +645,8 @@ export interface ShopeeClient {
     depois?: string | null;
   }): Promise<PriceSyncRelatorioPaginaShopee>;
 
-  // ---- #1911: listing drafts, and the two taxonomy reads the draft editor adds. ----
+  // ---- #1911: listing drafts, the two taxonomy reads the draft editor adds, and
+  // the brand page a conta's Marcas section reads. ----
   // A refusal of the DRAFT is a ShopeeClientHttpError whose `code` is one of
   // `CODIGO_FALHA_SHOPEE`'s #1911 block (`./erros.ts`), its extras on `detalhes`
   // (`linkDocId`, `conflitos`, `aguardarMs`, `vinculos`, `motivo`). Two answers
@@ -696,6 +700,31 @@ export interface ShopeeClient {
     integracaoId: string;
     categoryId: number | null;
   }): Promise<RespostaLimitesDoItemShopee>;
+  /**
+   * ONE page of a LEAF category's brands, straight from Shopee
+   * (PERM.integracao.read) — the registration picker of a conta's Marcas
+   * section. A non-leaf answers `leaf: false` with no brands; an id the tree
+   * does not hold is a 404 `SHOPEE_CATEGORIA_DESCONHECIDA`.
+   *
+   * - No paging loop here: the caller asks for the next page with
+   *   `offset: nextOffset` while `hasNextPage` — never on `nextOffset` alone,
+   *   and never `offset + pageSize`.
+   * - `status` — `1` the approved brands (the route's default), `2` the ones
+   *   under review; mirrored as literals because the Shopee package that names
+   *   them must never reach a browser. Any other value is a 400.
+   * - Each optional key is OMITTED when absent (the route's defaults apply);
+   *   `offset: 0` is SENT.
+   *
+   * ⚠️ Shopee's brand API is slow and there is no name search: page through it,
+   * never poll it.
+   */
+  marcas(input: {
+    integracaoId: string;
+    categoryId: number;
+    offset?: number;
+    pageSize?: number;
+    status?: 1 | 2;
+  }): Promise<RespostaMarcasShopee>;
 }
 
 /** The label route. */
@@ -735,6 +764,9 @@ const RASCUNHO_DESCARTAR_PATH = '/api/marketplace/shopee/rascunho/descartar';
 
 /** The draft editor's extra taxonomy read (#1911); the bands reuse {@link LIMITES_PATH}. */
 const RECOMENDACAO_CATEGORIA_PATH = '/api/marketplace/shopee/taxonomia/recomendacao-categoria';
+
+/** A category's brands, one page — the Marcas section's registration picker (#1911). */
+const MARCAS_PATH = '/api/marketplace/shopee/taxonomia/marcas';
 
 /**
  * A query string from named parameters, each value percent-encoded and an
@@ -1414,6 +1446,17 @@ export function createShopeeClient(config: {
           categoryId: input.categoryId ?? undefined,
         })}`,
         respostaLimitesDoItemShopeeSchema,
+      ),
+    marcas: (input) =>
+      call(
+        `${MARCAS_PATH}?${consulta({
+          integracaoId: input.integracaoId,
+          categoryId: input.categoryId,
+          offset: input.offset,
+          pageSize: input.pageSize,
+          status: input.status,
+        })}`,
+        respostaMarcasShopeeSchema,
       ),
   };
 }
