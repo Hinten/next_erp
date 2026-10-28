@@ -79,7 +79,7 @@ describe('idDoRecursoLi — the one reader of a Loja Integrada resource URI', ()
     ],
     ['an empty query string', '/api/v1/categoria/7645875?'],
     ['a fragment', '/api/v1/categoria/7645875#x'],
-    ['an absolute URL', 'https://x/api/v1/categoria/1'],
+    ['an absolute URL', 'https://loja.invalid/api/v1/categoria/1'],
     ['an extra segment', '/api/v1/categoria/1/2'],
     ['a doubled slash', '/api/v1/categoria//1'],
     ['two trailing slashes', '/api/v1/categoria/1//'],
@@ -183,7 +183,7 @@ describe('projetarCategoriasLi — a parent has THREE states, never two', () => 
   );
 
   it.each([
-    ['an absolute URL', 'https://x/api/v1/categoria/1'],
+    ['an absolute URL', 'https://loja.invalid/api/v1/categoria/1'],
     ['another API version', '/api/v2/categoria/1'],
     ['an object', { id: 1 }],
     ['the redaction marker', 'REDACTED'],
@@ -241,7 +241,7 @@ describe('projetarCategoriasLi — a parent has THREE states, never two', () => 
     const { categorias } = projetarCategoriasLi([
       { id: 1, nome: 'A', categoria_pai: null },
       { id: 2, nome: 'B', categoria_pai: '/v1/categoria/1' },
-      { id: 3, nome: 'C', categoria_pai: 'https://x/' },
+      { id: 3, nome: 'C', categoria_pai: 'https://loja.invalid/' },
     ]);
     expect(respostaCategoriasLiSchema.parse({ categorias, lidaEmMs: 1 }).categorias).toEqual(
       categorias,
@@ -372,7 +372,7 @@ describe('projetarGradeLi — the options of ONE grade', () => {
 
   it.each([
     ['absent', undefined],
-    ['unreadable', 'https://x/api/v1/grades/8946'],
+    ['unreadable', 'https://loja.invalid/api/v1/grades/8946'],
     ['the singular form', '/api/v1/grade/8946'],
     ['redacted', 'REDACTED'],
   ])('⚠️ NEAR-MISS: an option whose `grade` is %s is still OFFERED, and counted', (_r, grade) => {
