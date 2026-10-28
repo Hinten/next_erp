@@ -30,6 +30,29 @@
  * precondition — so every value here is re-derived from the snapshot, never
  * captured from an earlier read (root `CLAUDE.md` rule 7).
  *
+ * ## The freight group (PR 7)
+ *
+ * Easy Ship's packages decide `freteInicial.estado`, the `pacotes[]` diary and
+ * `codRastreio` (`frete/estadoFreteAmazon.ts`), re-derived from each attempt's
+ * snapshot like every other group and applied on an EQUAL order clock (a
+ * resurrection needs a strictly newer one). The fold is computed FIRST, so the
+ * CANCELLED predicate's "goods out" ORs three readings (plan §3 decision 47):
+ * the STORED freight estado (through the ladder's own legacy-residue
+ * projection), ANY package of this read that says the goods are out, and ANY
+ * STORED diary row of an `amz` block that says so, unless the first reading
+ * reads that block as `fulfillment` (an AFN seed under a read that does not say
+ * `MERCHANT`: its diary holds Amazon's own packages). A package Amazon already
+ * reports picked up keeps the estado even when the stored freight, or a sibling
+ * package, still says it waits — and so does a KEYED one it reported picked up
+ * on an EARLIER read, even when this read cancels its pickup or no longer names
+ * it. A package without a usable key leaves no diary row, so its pickup counts
+ * only on a read that carries it (the residual in `frete/estadoFreteAmazon.ts`).
+ * The freight's CANCELLED arm is that predicate's outcome. Only an `amz` block
+ * (or one this attempt seeds) is written; an AFN read never moves its estado
+ * but still writes its diary and `codRastreio`. The two freight aviso motivos
+ * are derived from the order alone, whoever owns the block, so each is resolved
+ * exactly when its condition ends.
+ *
  * ## The watermark (plan §3 decisions 2 and 45)
  *
  * Incoming: `lastUpdatedTime` through `lerInstanteAmazon` (offset REQUIRED, µs
@@ -68,6 +91,7 @@
 import { coerceToMicros } from '@delfrance/core/datetime';
 import type { PedidoWireAmazon } from '@delfrance/integrations-amazon-sp-api';
 import {
+  ESTADO_FRETE,
   ESTADO_PEDIDO,
   INTEGRACAO_FRETE,
   MARKETPLACE_PEDIDO_TIPO,
@@ -100,7 +124,6 @@ import {
 import { MOTIVO_PEDIDO_AMAZON_ILEGIVEL, PedidoAmazonIlegivelError } from './erros';
 import {
   ESTADOS_TERMINAIS_AMAZON,
-  FULFILLED_BY_AMAZON,
   FULFILLMENT_STATUS_AMAZON,
   MOTIVO_ESTADO_AMAZON,
   PREFIXO_ERRO_AMAZON,
@@ -118,10 +141,22 @@ import {
   type VereditoEstadoAmazon,
 } from './estadoPedidoAmazon';
 import {
+  LOGISTICA_AMAZON,
+  alvoFreteAmazon,
+  diarioComMercadoriaForaAmazon,
+  estadoFreteEfetivoAmazon,
+  grupoFreteAmazon,
+  lerFreteAmazon,
+  logisticaAmazon,
+  type GrupoFreteAmazon,
+  type LogisticaAmazon,
+} from '../frete/estadoFreteAmazon';
+import {
   camposFreteAmazon,
   mercadoriaFora,
   seedFreteAmazon,
   type CamposFreteAmazon,
+  type SementeFreteAmazon,
 } from './freteAmazon';
 import {
   ACAO_ITENS_AMAZON,
@@ -205,8 +240,10 @@ export interface PedidoMapeadoAmazon {
   readonly linhas: readonly LinhaRecebidaAmazon[];
   readonly dinheiro: DinheiroDoPedidoAmazon;
   readonly frete: CamposFreteAmazon;
-  /** `fulfilledBy === 'AMAZON'`. */
+  /** `fulfilledBy === 'AMAZON'` (the seed's `fulfillment`). */
   readonly afn: boolean;
+  /** `fulfilledBy`, exactly: `mfn` / `afn` / `desconhecida` (the freight verdict and the goods-out residue). */
+  readonly logistica: LogisticaAmazon;
   readonly entradas: EntradasPedidoAmazon;
 }
 
@@ -234,6 +271,7 @@ export function mapearPedidoAmazon(
   const criado =
     typeof order.createdTime === 'string' ? lerInstanteAmazon(order.createdTime) : null;
   const fulfilledBy = textoDoWire(order.fulfillment?.fulfilledBy);
+  const logistica = logisticaAmazon(fulfilledBy);
   return {
     order,
     numero: order.orderId,
@@ -251,7 +289,8 @@ export function mapearPedidoAmazon(
     linhas,
     dinheiro: dinheiroDoPedidoAmazon(order),
     frete: camposFreteAmazon(order, instante.us),
-    afn: fulfilledBy === FULFILLED_BY_AMAZON.amazon,
+    afn: logistica === LOGISTICA_AMAZON.afn,
+    logistica,
     entradas,
   };
 }
@@ -290,6 +329,17 @@ export interface DecisaoPedidoAmazon {
   readonly contagens: ContagensItensAmazon;
   /** The status the pagamento holds once this attempt lands (`null`: none, or unreadable). */
   readonly statusPagamento: StatusPagamento | null;
+  /** (PR 7) This read's packages, for the freight events' log lines: counts and closed codes only. */
+  readonly pacotes: ResumoPacotesAmazon;
+}
+
+/** (PR 7) What the log may say about one read's packages — never a token, never a tracking number. */
+export interface ResumoPacotesAmazon {
+  readonly pacotes: number;
+  readonly naoMapeados: number;
+  readonly semChave: number;
+  /** The distinct `packageStatus.status` values (Amazon's closed enum, else `<outro>`/`<ausente>`). */
+  readonly statusPacotes: string;
 }
 
 export type EscritaPedidoAmazon =
@@ -442,9 +492,8 @@ interface DecisaoEstadoFinal {
  *    Any other request — on a pedido not printed, or on an order Amazon has
  *    shipped or whose status is unknown — only raises `cancelamento-solicitado`
  *    and the estado follows the table: after shipment the request can no
- *    longer be accepted, and Amazon's SHIPPED is goods out that the stored
- *    freight may not show (no package fold before PR 7, none at all for an
- *    order outside Easy Ship);
+ *    longer be accepted, and Amazon's SHIPPED is goods out that the freight
+ *    may not show (an order outside Easy Ship has no package to fold);
  * 2. a D17 block ⇒ our `error` (through the same ladder: a `fora-da-escada`
  *    estado is kept) + `divergencia-itens`;
  * 3. the table.
@@ -650,13 +699,80 @@ export function montarEscritaPedidoAmazon(
       : reconciliado;
   const acaoItens: AcaoItensAmazon = reconciliacao.acao ?? reconciliado.acao;
 
+  /* ------------------------- the freight read (PR 7) ----------------------- */
+  // FIRST, so the CANCELLED predicate's goods-out reads it (plan §3 decision 47).
+  const leituraFrete = lerFreteAmazon(order, {
+    relogioUs: watermarkUs,
+    armazenados: freteRaw?.pacotes,
+  });
+
   /* ------------------------------- the estado ------------------------------ */
+  // The stored freight estado through the SAME residue projection the ladder
+  // uses (a migrated `fulfillment` under a MERCHANT read is at the carrier).
+  const freteGuardado = resumo?.freteEstado ?? null;
+  const freteGuardadoEfetivo =
+    freteGuardado === null ? null : estadoFreteEfetivoAmazon(freteGuardado, mapeado.logistica);
   const contexto: ContextoEstadoAmazon = {
     armazenado: resumo,
     pagamentoArmazenado: pagamentoGuardado,
-    mercadoriaFora: mercadoriaFora(resumo?.freteEstado ?? null),
+    // THREE readings, ORed: the STORED freight estado; any package of THIS read
+    // that says the goods are out (the stored estado lags the same read's
+    // packages whenever Amazon's clock does not move on them, and the fold's
+    // least-advanced target would hide a package already with the carrier
+    // behind a sibling still waiting); and any STORED diary row of OUR block
+    // that says so — the only record of a KEYED such package once a later read
+    // cancels its pickup or no longer names it (an unkeyed one has no row: it
+    // counts only on a read that carries it). Another modality's diary is its
+    // own importer's, never read here; and the rows of a block the first
+    // reading reads as `fulfillment` (an AFN seed, under any read that does not
+    // say MERCHANT) are Amazon's own packages — an AFN read still writes the
+    // diary — never this ERP's stock, exactly as that reading reads the block.
+    mercadoriaFora:
+      mercadoriaFora(freteGuardadoEfetivo) ||
+      leituraFrete.mercadoriaFora ||
+      (freteRaw !== null &&
+        freteNosso &&
+        freteGuardadoEfetivo !== ESTADO_FRETE.fulfillment &&
+        diarioComMercadoriaForaAmazon(freteRaw.pacotes)),
   };
   const estado = decidirEstado(order, contexto, venda, reconciliacao.bloqueio);
+
+  /* ------------------------------- the freight ----------------------------- */
+  // The block the group decides against: the stored `amz` one, or the seed this
+  // attempt writes (a create, or a stored pedido without a block). Another
+  // modality's block is never touched.
+  const sementeFrete = (valorCobrado: number | null): SementeFreteAmazon => ({
+    modalidade: entradas.modalidadeFreteImportacao,
+    afn: mapeado.afn,
+    integracaoFreteOuterRef: entradas.integracaoFreteOuterRef,
+    enderecoFreteOuterReference: entradas.enderecoFreteOuterReference,
+    campos: mapeado.frete,
+    valorCobrado,
+  });
+  const blocoDoFrete: Readonly<Record<string, unknown>> | null =
+    freteRaw === null ? seedFreteAmazon(sementeFrete(null)) : freteNosso ? freteRaw : null;
+  const grupoFrete: GrupoFreteAmazon | null =
+    blocoDoFrete === null
+      ? null
+      : grupoFreteAmazon({
+          bloco: blocoDoFrete,
+          // The pedido estado's ONE CANCELLED predicate decides, over the SAME context.
+          alvo: alvoFreteAmazon({
+            cancelado: venda.fase === 'cancelado',
+            contexto,
+            alvoDaLeitura: leituraFrete.alvo,
+          }),
+          dobra: leituraFrete.dobra,
+          maisNovo,
+          logistica: mapeado.logistica,
+        });
+  /** The events of a freight group that LANDS (an unreadable stored block lands nothing). */
+  const eventosDoGrupoFrete = (g: GrupoFreteAmazon): EventoPedidoAmazon[] => [
+    ...(g.veredito?.escrever === true && g.veredito.ressuscitado
+      ? [EVENTO_PEDIDO_AMAZON.freteRessuscitado]
+      : []),
+    ...(g.codRastreioDivergente ? [EVENTO_PEDIDO_AMAZON.codRastreioDivergente] : []),
+  ];
 
   /* ------------------------------ the pagamento ---------------------------- */
   const cancelamento = venda.fase === 'cancelado' || estado.cancelamentoPorSolicitacao;
@@ -720,9 +836,13 @@ export function montarEscritaPedidoAmazon(
     pagamento = decidirPagamento(veredito);
   }
 
-  const avisos: MotivoPedidoAmazon[] = [...estado.avisos];
+  const avisos: MotivoPedidoAmazon[] = [...estado.avisos, ...leituraFrete.motivos];
   const eventos: EventoPedidoAmazon[] = [...reconciliacao.eventos];
   if (veredito.escrever && veredito.ressuscitado) eventos.push(EVENTO_PEDIDO_AMAZON.ressuscitado);
+  // The read's own freight events (PR 7), whoever owns the block.
+  if (leituraFrete.dobra?.bloqueado === true) eventos.push(EVENTO_PEDIDO_AMAZON.pacoteNaoMapeado);
+  if (leituraFrete.semNota) eventos.push(EVENTO_PEDIDO_AMAZON.notaFiscalNaoInformada);
+  if (leituraFrete.notaNaoExigida) eventos.push(EVENTO_PEDIDO_AMAZON.notaFiscalNaoExigida);
 
   // `cancelado-so-no-erp` (2026-10-22): the STORED estado is terminal and the
   // cancel was the ERP's (the stored `marketplace.status` is not Amazon's
@@ -759,6 +879,12 @@ export function montarEscritaPedidoAmazon(
     bloqueio: reconciliacao.bloqueio,
     contagens: reconciliacao.contagens,
     statusPagamento: pagamento.statusFinal,
+    pacotes: {
+      pacotes: leituraFrete.dobra?.contagens.pacotes ?? 0,
+      naoMapeados: leituraFrete.dobra?.contagens.naoMapeados ?? 0,
+      semChave: leituraFrete.dobra?.contagens.semChave ?? 0,
+      statusPacotes: leituraFrete.dobra?.statusPacotes ?? '',
+    },
   };
 
   /* --------------------------------- CREATE -------------------------------- */
@@ -767,14 +893,12 @@ export function montarEscritaPedidoAmazon(
     const linhas = reconciliacao.itens ?? [];
     const dinheiro = reconciliacao.dinheiro ?? { descontoTotal: 0, valorFrete: null };
     const { itens, itensIds } = agruparItens(linhas);
-    const freteInicial: FreteDoPedido = seedFreteAmazon({
-      modalidade: entradas.modalidadeFreteImportacao,
-      afn: mapeado.afn,
-      integracaoFreteOuterRef: entradas.integracaoFreteOuterRef,
-      enderecoFreteOuterReference: entradas.enderecoFreteOuterReference,
-      campos: mapeado.frete,
-      valorCobrado: dinheiro.valorFrete,
+    // The seed, with the freight group on top (the seed is the block it decided against).
+    const freteInicial: FreteDoPedido = freteDoPedidoSchema.parse({
+      ...seedFreteAmazon(sementeFrete(dinheiro.valorFrete)),
+      ...grupoFrete?.mudancas,
     });
+    if (grupoFrete !== null) eventos.push(...eventosDoGrupoFrete(grupoFrete));
     const corpo = {
       ehSaida: true,
       estado: alvo.tipo === 'estado' ? alvo.estado : ESTADO_PEDIDO.error,
@@ -795,7 +919,12 @@ export function montarEscritaPedidoAmazon(
       lastMarketplaceUpdate: watermarkUs,
       ultimaModificacao: opcoes.nowUs,
     };
-    return { tipo: 'criar', corpo, decisao, pagamento: pagamento.escrita };
+    return {
+      tipo: 'criar',
+      corpo,
+      decisao: { ...decisao, eventos: codigosOrdenados(eventos) },
+      pagamento: pagamento.escrita,
+    };
   }
 
   /* --------------------------------- UPDATE -------------------------------- */
@@ -881,20 +1010,18 @@ export function montarEscritaPedidoAmazon(
     }
   }
 
-  // The freight block: seeded when absent; on an `amz` block, the non-money
-  // fields, the fill-once refs and the freight money of the group.
+  // The freight block: seeded when absent (with the freight group on top); on
+  // an `amz` block, the non-money fields, the fill-once refs, the freight money
+  // of the order-money group and the freight group (PR 7).
   if (freteRaw === null) {
-    patch.freteInicial = seedFreteAmazon({
-      modalidade: entradas.modalidadeFreteImportacao,
-      afn: mapeado.afn,
-      integracaoFreteOuterRef: entradas.integracaoFreteOuterRef,
-      enderecoFreteOuterReference: entradas.enderecoFreteOuterReference,
-      campos: mapeado.frete,
-      valorCobrado: freteFinal,
+    patch.freteInicial = freteDoPedidoSchema.parse({
+      ...seedFreteAmazon(sementeFrete(freteFinal)),
+      ...grupoFrete?.mudancas,
     });
     grupos.add('frete');
+    if (grupoFrete !== null) eventos.push(...eventosDoGrupoFrete(grupoFrete));
   } else if (freteNosso) {
-    const mudancas: Record<string, unknown> = {};
+    const mudancas: Record<string, unknown> = { ...grupoFrete?.mudancas };
     const { prazoDespacho, dataPrevisaoEntrega, ultimaModificacao } = mapeado.frete;
     // An absent deadline never erases a stored one.
     if (prazoDespacho !== null && freteRaw.prazoDespacho !== prazoDespacho) {
@@ -922,6 +1049,7 @@ export function montarEscritaPedidoAmazon(
       if (guardado.success) {
         patch.freteInicial = { ...guardado.data, ...mudancas };
         grupos.add('frete');
+        if (grupoFrete !== null) eventos.push(...eventosDoGrupoFrete(grupoFrete));
       } else {
         eventos.push(EVENTO_PEDIDO_AMAZON.freteArmazenadoIlegivel);
       }

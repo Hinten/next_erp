@@ -139,6 +139,7 @@ import {
   registroMarketplaceAmazon,
 } from './clienteAmazon';
 import {
+  EVENTOS_FRETE_AMAZON,
   MOTIVO_NAO_IMPORTADO_AMAZON,
   type EventoPedidoAmazon,
   type MotivoNaoImportadoAmazon,
@@ -181,9 +182,12 @@ import { criarResolvedorDeVinculosAmazon, type FalhaVinculoAmazon } from './vinc
 export const JANELA_CANCELAMENTO_RECENTE_AMAZON_US = 15 * 60 * 1_000_000;
 
 /**
- * The per-pedido aviso motivos THIS import raises and resolves. PR 7 adds the
- * two freight motivos (`pacote-status-desconhecido`, `coleta-cancelada`) with
- * the package fold that derives them — never resolved here before that.
+ * The per-pedido aviso motivos THIS import raises and resolves — all eight of
+ * the tipo. The two freight motivos arrived with the package fold that derives
+ * them (PR 7): `pacote-status-desconhecido` while some package is unknown or
+ * unkeyed, `coleta-cancelada` while some package is `LABEL_CANCELLED` on an
+ * order Amazon has not cancelled (`frete/estadoFreteAmazon.ts`), each derived
+ * from the order alone so its resolve is exactly its condition ending.
  */
 export const MOTIVOS_PEDIDO_DO_IMPORTADOR_AMAZON: readonly MotivoPedidoAmazon[] = [
   MOTIVO_PEDIDO_AMAZON.divergenciaItens,
@@ -192,6 +196,8 @@ export const MOTIVOS_PEDIDO_DO_IMPORTADOR_AMAZON: readonly MotivoPedidoAmazon[] 
   MOTIVO_PEDIDO_AMAZON.canceladoSoNoErp,
   MOTIVO_PEDIDO_AMAZON.statusDesconhecido,
   MOTIVO_PEDIDO_AMAZON.cancelamentoSolicitado,
+  MOTIVO_PEDIDO_AMAZON.pacoteStatusDesconhecido,
+  MOTIVO_PEDIDO_AMAZON.coletaCancelada,
 ];
 
 /** The importer's OWN log codes (closed), beside the mappers' `EventoPedidoAmazon`. */
@@ -228,7 +234,9 @@ const ROTULO_LOG = '[amazon/pedido]';
  *
  *  - every motivo the decision DERIVED is raised;
  *  - of {@link MOTIVOS_PEDIDO_DO_IMPORTADOR_AMAZON}, every motivo NOT derived is
- *    resolved — except:
+ *    resolved (the two freight motivos included: the decision derives each
+ *    exactly while its condition holds — every package token known and keyed;
+ *    no package `LABEL_CANCELLED`, or the order `CANCELLED`) — except:
  *     - `divergencia-itens` while the import KEPT the stored estado
  *       (`motivoEstado === 'manter'`: an unknown status or logistics, an AFN
  *       read, a cancellation with the goods out): the lines were not
@@ -387,6 +395,12 @@ const MENSAGEM_DO_CODIGO: Readonly<Record<CodigoLogPedidoAmazon, string>> = {
   'frete-armazenado-ilegivel': 'frete gravado ilegível; mantido como estava',
   'pagamento-ressuscitado': 'pagamento estornado voltou a aprovado com o pedido',
   'cnpj-instituicao-recusado': 'CNPJ da instituição de pagamento recusado; gravado vazio',
+  'pacote-nao-mapeado':
+    'pacote com situação desconhecida ou sem referência; nenhuma situação de pacote aplicada ao frete',
+  'nota-fiscal-nao-informada': 'situação da nota fiscal não informada; frete não movido',
+  'nota-fiscal-nao-exigida': 'nota fiscal não exigida em pacote aguardando agendamento',
+  'codRastreio-divergente': 'código de rastreio gravado substituído pelo da Amazon',
+  'frete-ressuscitado': 'frete com falha voltou a um estado de envio',
   'cancelado-nao-importado': 'pedido nunca visto já cancelado; não importado',
   'reversao-nao-importada': 'pedido nunca visto já revertido; não importado',
 };
@@ -651,6 +665,16 @@ export async function importarPedidoAmazon(
     registrar(deps, contaId, orderId, 'WARNING', evento, {
       linhasDivergentes: decisao.contagens.linhasDivergentes,
       linhasPreservadas: decisao.contagens.linhasPreservadas,
+      // A freight event (PR 7) also counts the packages: counts and Amazon's
+      // closed status codes only — never a token, never a tracking number.
+      ...(EVENTOS_FRETE_AMAZON.has(evento)
+        ? {
+            pacotes: decisao.pacotes.pacotes,
+            pacotesNaoMapeados: decisao.pacotes.naoMapeados,
+            pacotesSemChave: decisao.pacotes.semChave,
+            statusPacotes: decisao.pacotes.statusPacotes,
+          }
+        : {}),
     });
   }
 

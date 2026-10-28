@@ -15,7 +15,9 @@
  *     decision 42).
  *  2. `montarEscritaPedidoAmazon` over THAT snapshot — every group (the
  *     watermark, the estado, the lines, the money, the fill-once refs, the
- *     freight) re-derived from it, the CANCELLED predicate from THIS pagamento.
+ *     freight — since PR 7 its estado, the `pacotes[]` diary and `codRastreio`
+ *     from Easy Ship's packages) re-derived from it, the CANCELLED predicate
+ *     from THIS pagamento and the package fold of THIS attempt.
  *     `obsoleto` and `nao-importado` write NOTHING and return at once.
  *  3. The write parsed through the pedido handle: the whole document for a
  *     create (`parse`), the patch for an update (`parseMerge`) — a `ZodError`

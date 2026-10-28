@@ -723,6 +723,19 @@ export type Volume = z.infer<typeof volumeSchema>;
  * only the raw token would make the diary unreadable without the table. Two
  * fields, ONE fact, one direction of derivation (#1369).
  *
+ * ⚠️ One declared exception, in ONE direction only: a channel's fold may KEEP a
+ * stored row's `estado` where the goods are out (posted, with the carrier,
+ * delivered, failed, lost, returned) when a later projection of the same
+ * package reads the goods as in — a pickup cancelled after it happened, an
+ * unknown token. That row can be the only durable record of a package that
+ * left while the pedido's single `estado`, folded to the least-advanced
+ * sibling, still says "waiting", and a cancelled order must not restock goods
+ * that left. So a correction to the channel's token table re-derives every
+ * row EXCEPT one it would move from goods out to goods in; `estadoMarketplace`
+ * still takes the provider's token verbatim. Amazon does this
+ * (`apps/amazon/lib/amazon/frete/estadoFreteAmazon.ts`, the row gate of
+ * `dobrarPacotesAmazon`).
+ *
  * ⚠️ `fonte` is a FREE STRING, and must stay one. The set of sources is
  * per-channel (Shopee's are `get_package_detail` / `get_order_detail`; a later
  * channel's are its own), so the closed set lives in the channel's own module
@@ -738,7 +751,11 @@ export const pacoteFreteSchema = z
   .object({
     /** The provider's package identifier — the ROW IDENTITY. Never empty. */
     numero: z.string().min(1).max(60).describe('Número do pacote'),
-    /** DERIVED from `estadoMarketplace`; never authored. */
+    /**
+     * DERIVED from `estadoMarketplace`; never authored. A channel may keep a
+     * stored goods-out value over a later goods-in projection (the one-direction
+     * exception above).
+     */
     estado: estadoFreteSchema.nullable().default(null).describe('Estado do pacote'),
     /** The provider's own status token, VERBATIM — never normalized. */
     estadoMarketplace: z

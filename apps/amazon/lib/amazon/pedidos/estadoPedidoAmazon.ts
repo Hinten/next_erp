@@ -260,7 +260,13 @@ export interface ContextoEstadoAmazon {
   /** The stored pedido; `null` on a create. */
   readonly armazenado: ResumoArmazenadoAmazon | null;
   readonly pagamentoArmazenado: PagamentoArmazenadoAmazon;
-  /** The goods are out (`mercadoriaFora` over the stored freight; PR 7 adds the fold). */
+  /**
+   * The goods are out — three readings ORed (PR 7, plan §3 decision 47):
+   * `mercadoriaFora` over the stored freight (its legacy residue read as the
+   * freight ladder reads it), any package of this read, and any stored diary
+   * row of this importer's own freight block unless that block reads as
+   * `fulfillment` (`pedidoMapeamento.ts`).
+   */
   readonly mercadoriaFora: boolean;
 }
 

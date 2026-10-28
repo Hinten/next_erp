@@ -240,6 +240,58 @@ describe('★ a lost precondition aborts everything; the retry re-reads and RE-D
     expect(pagamentosVistos).toEqual([false, true]);
   });
 
+  it('★ (PR 7) the freight group is re-derived per attempt: an operator checkout landing between the read and the commit ⇒ attempt 2 refuses the PENDING_PICK_UP (regressive), never re-applies attempt 1’s aguardandoPostagem', async () => {
+    await gravar({ status: 'UNSHIPPED', invoiceStatus: 'ACCEPTED' });
+    expect((db.ler(CAMINHO)?.freteInicial as Record<string, unknown>).estado).toBe(
+      'aguardandoAgendamento',
+    );
+    db.antesDaProximaEscrita(CAMINHO, () => {
+      const atual = db.ler(CAMINHO) ?? {};
+      db.seed(CAMINHO, {
+        ...atual,
+        freteInicial: {
+          ...(atual.freteInicial as Record<string, unknown>),
+          estado: 'checkFinalizado',
+        },
+      });
+    });
+    const r = await gravar({
+      status: 'UNSHIPPED',
+      invoiceStatus: 'ACCEPTED',
+      pacotesBrutos: [
+        { packageReferenceId: 'PKG-1', packageStatus: { detailedStatus: 'PENDING_PICK_UP' } },
+      ],
+    });
+    expect(r).toMatchObject({ tipo: 'gravado', tentativas: 2 });
+    const frete = db.ler(CAMINHO)?.freteInicial as Record<string, unknown>;
+    expect(frete.estado).toBe('checkFinalizado');
+    // The diary still lands (the package was seen), at the equal order clock.
+    expect((frete.pacotes as Record<string, unknown>[]).map((l) => l.numero)).toEqual(['PKG-1']);
+  });
+
+  it('★ (PR 7) the CANCELLED goods-out reads THIS attempt’s freight: a pickup stamped between the read and the commit ⇒ attempt 2 KEEPS the estado (cancelado-apos-envio), never attempt 1’s estornadoIntegralmente', async () => {
+    await gravar({ status: 'UNSHIPPED', invoiceStatus: 'ACCEPTED' });
+    expect(db.ler(PAGAMENTO)?.status_pagamento).toBe(STATUS_PAGAMENTO.aprovado);
+    db.antesDaProximaEscrita(CAMINHO, () => {
+      const atual = db.ler(CAMINHO) ?? {};
+      db.seed(CAMINHO, {
+        ...atual,
+        freteInicial: { ...(atual.freteInicial as Record<string, unknown>), estado: 'postado' },
+      });
+    });
+    const r = await gravar({
+      status: 'CANCELLED',
+      invoiceStatus: 'ACCEPTED',
+      atualizadoEm: depois(60),
+    });
+    expect(r).toMatchObject({ tipo: 'gravado', tentativas: 2 });
+    if (r.tipo !== 'gravado') throw new Error('esperava gravado');
+    expect(r.escrita.decisao.incidentes).toContain('cancelado-apos-envio');
+    expect(db.ler(CAMINHO)?.estado).toBe(ESTADO_PEDIDO.pago);
+    expect((db.ler(CAMINHO)?.freteInicial as Record<string, unknown>).estado).toBe('postado');
+    expect(db.ler(PAGAMENTO)?.status_pagamento).toBe(STATUS_PAGAMENTO.aprovado);
+  });
+
   it('a non-precondition failure is rethrown at once — never retried', async () => {
     const falha = Object.assign(new Error('UNAVAILABLE'), { code: 14 });
     db.falharEscrita(CAMINHO, falha);

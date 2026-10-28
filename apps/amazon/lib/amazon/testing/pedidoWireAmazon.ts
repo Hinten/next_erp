@@ -88,7 +88,10 @@ export interface OpcoesPedidoTeste {
   /** `undefined` ⇒ one line `L1` (qty 2 at 10.00); `null` ⇒ `orderItems` ABSENT. */
   readonly linhas?: readonly Record<string, unknown>[] | null;
   readonly atualizadoEm?: string;
+  /** One package per token (`PKG-1`, `PKG-2`, …, status `IN_TRANSIT`). */
   readonly pacotes?: readonly string[];
+  /** (PR 7) Whole `packages[]` entries ({@link pacoteAmazon}); wins over `pacotes`. */
+  readonly pacotesBrutos?: readonly Record<string, unknown>[];
   readonly programs?: readonly string[] | null;
   readonly invoiceStatus?: string | null;
   /** Drop the whole `fulfillment` block. */
@@ -146,6 +149,32 @@ export function execucaoAmazon(
   return e;
 }
 
+export interface OpcoesPacoteTeste {
+  /** `packageStatus.status`; `null` ⇒ absent. Default `IN_TRANSIT`. */
+  readonly status?: string | null;
+  /** `trackingNumber`; absent by default. Synthetic tokens only (`TRK-*`). */
+  readonly rastreio?: string | null;
+}
+
+/**
+ * (PR 7) One `packages[]` entry: `ref` (`undefined` ⇒ the key ABSENT) and the
+ * `detailedStatus` (`undefined` ⇒ absent).
+ */
+export function pacoteAmazon(
+  ref: string | null | undefined,
+  detalhe: string | null | undefined,
+  opcoes: OpcoesPacoteTeste = {},
+): Record<string, unknown> {
+  const pacote: Record<string, unknown> = {};
+  if (ref !== undefined) pacote.packageReferenceId = ref;
+  const status: Record<string, unknown> = {};
+  if (opcoes.status !== null) status.status = opcoes.status ?? 'IN_TRANSIT';
+  if (detalhe !== undefined) status.detailedStatus = detalhe;
+  pacote.packageStatus = status;
+  if (opcoes.rastreio !== undefined) pacote.trackingNumber = opcoes.rastreio;
+  return pacote;
+}
+
 /** A parsed getOrder `order` (module header). */
 export function pedidoAmazon(opcoes: OpcoesPedidoTeste = {}): PedidoWireAmazon {
   const corpo: Record<string, unknown> = {
@@ -174,7 +203,9 @@ export function pedidoAmazon(opcoes: OpcoesPedidoTeste = {}): PedidoWireAmazon {
       ],
     };
   }
-  if (opcoes.pacotes !== undefined) {
+  if (opcoes.pacotesBrutos !== undefined) {
+    corpo.packages = opcoes.pacotesBrutos;
+  } else if (opcoes.pacotes !== undefined) {
     corpo.packages = opcoes.pacotes.map((detalhe, i) => ({
       packageReferenceId: `PKG-${String(i + 1)}`,
       packageStatus: { status: 'IN_TRANSIT', detailedStatus: detalhe },
