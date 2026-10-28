@@ -149,7 +149,8 @@ export type SpApiErros = z.infer<typeof spApiErrosSchema>;
  *
  * `buyer.buyerEmail` (an anonymized relay address the cliente never takes),
  * both `cancelReason`s (free text a buyer may type), `proceeds.grandTotal` (what
- * the SELLER receives, never what the buyer paid or the NF-e states), the
+ * the model calls the SELLER's proceeds — on every real BR read so far equal to
+ * what the buyer paid, no fee deducted — and never what the NF-e states), the
  * recipient's `phone` and `addressLine2`/`addressLine3`, the gift message,
  * `orderAliases`, `fulfillmentOrders` and every other leaf no step reads.
  */

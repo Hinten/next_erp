@@ -56,7 +56,7 @@
  *
  * Σ vPag therefore equals vNF for every order whose payment matches its lines,
  * under either modalidade, with no NF-e-side rule. `proceeds.grandTotal` is
- * never read (it is what the SELLER receives).
+ * never read (the model's SELLER proceeds; on capture C1 equal to Σ executions).
  *
  * ⚠️ The check proves the TOTAL against the payment, never the split behind
  * it: under FOB it holds for ANY split of a discount between goods and

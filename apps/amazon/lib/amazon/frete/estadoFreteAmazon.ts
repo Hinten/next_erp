@@ -162,9 +162,11 @@ export type StatusPacoteAmazon = (typeof STATUS_PACOTE_AMAZON)[keyof typeof STAT
  * EXPLICIT, EXHAUSTIVE table (a missing member is a compile error), read ONLY
  * by the goods-out fallback ({@link statusPacoteComMercadoriaForaAmazon}),
  * never by the fold's target. `IN_TRANSIT`, `SHIPPED`, `DELIVERED` and
- * `UNDELIVERABLE` say the package left the warehouse (an undeliverable parcel
- * is with the carrier or on its way back, never on the shelf); `PENDING` and
- * `CANCELLED` do not.
+ * `UNDELIVERABLE` say the package left the warehouse; `PENDING` and
+ * `CANCELLED` do not. An undeliverable parcel may be with the carrier, on its
+ * way back, or already back (capture C1 pairs `UNDELIVERABLE` with
+ * `RETURNED_TO_SELLER`): only the detailedStatus tells those apart, and the
+ * status alone reads all three as goods out.
  */
 export const MERCADORIA_FORA_DO_STATUS_PACOTE_AMAZON: Readonly<
   Record<StatusPacoteAmazon, boolean>

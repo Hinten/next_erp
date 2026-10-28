@@ -889,9 +889,10 @@ const PEDIDO_SO_LOG: EntradasSoLog = [
 
 /**
  * Order leaves the model shows that are redacted on purpose, beyond the denied
- * keys: an FBA fulfillment-order id (no pre-cutover step reads one), and a
- * tax-registration attribute's VALUE (its key is an enum; the value may be a
- * state registration).
+ * keys: a fulfillment-order id (capture C1 shows one on every MERCHANT
+ * Delivery-by-Amazon order, not only on FBA; no pre-cutover step reads one),
+ * and a tax-registration attribute's VALUE (its key is an enum; the value may
+ * be a state registration).
  */
 const PEDIDO_NEGADAS: readonly string[] = [
   'fulfillmentOrders.*.fulfillmentOrderId',

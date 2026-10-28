@@ -29,8 +29,9 @@
  * - any unreadable member, or an inconsistent difference (below 0) ⇒ that
  *   member absent.
  *
- * `proceeds.grandTotal` is NEVER read: it is what the SELLER receives, net of
- * Amazon's deductions — not what the buyer paid, nor what the NF-e states.
+ * `proceeds.grandTotal` is NEVER read: the model calls it what the SELLER
+ * receives, and it is not what the NF-e states. (Capture C1: on all seven real
+ * reads it equals Σ `paymentExecutions` — what the buyer paid, no fee deducted.)
  *
  * ## What the group cannot state (`ressalvasDoDinheiroAmazon`, PR 5-f)
  *
