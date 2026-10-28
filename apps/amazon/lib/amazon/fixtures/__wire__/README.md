@@ -28,6 +28,13 @@ sanitizer.
   The salt that keyed them is never committed, and each sidecar's `data:` is the day it was
   generated: a regeneration under a new salt or on another day differs from every committed
   fixture, so it needs `--sobrescrever` and rewrites every fake (and `capturadoEm`).
+- The `c1-*` and `c2-*` fixtures are the owner's capture C1 (master plan §6), from
+  2026-10-28. They are read-only production `getOrder`, `searchOrders` and `getInvoiceStatus`
+  responses, taken by hand with `credencial: token-legado-curl` and converted by the
+  sanitizer under one salt, so an id that recurs across them (an order read twice, an order
+  and its invoice status) keeps one fake. Each name says which order shape the capture
+  holds, not which order it is. `c1-dba-e-transito` is the first half of the 7-r pair: the
+  same order, read again once delivered, becomes `c1-dba-f-entregue`.
 - Personal and store-identifying values are fakes of the same JSON type (`fixture` profile of
   `core/redacao.ts`): buyer and recipient data, names, addresses, phones, e-mails, gift
   messages, product titles, URLs. A document under `taxRegistrationNumber` or `acquirerId`
@@ -48,7 +55,7 @@ sanitizer.
 
 `wireCorpus.test.ts` reads this folder: every file must be a valid envelope, serialised as
 `JSON.stringify(v, null, 2) + '\n'`, and pass both layers of `piiScan.ts`.
-`MINIMO_DE_FIXTURES` is the number of committed fixtures (6, the model-sandbox seed), so a
+`MINIMO_DE_FIXTURES` is the number of committed fixtures (14: the 6 model-sandbox seeds and the 8 C1 captures), so a
 fixture that disappears fails the test. A change that adds or deliberately removes a fixture
 moves it in the same commit.
 

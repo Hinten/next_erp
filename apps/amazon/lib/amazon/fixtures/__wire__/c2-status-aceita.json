@@ -1,0 +1,55 @@
+{
+  "versao": 1,
+  "perfil": "fixture",
+  "credencial": "token-legado-curl",
+  "papeis": [
+    "dtc",
+    "tax-invoicing"
+  ],
+  "capturadoEm": "2026-10-28",
+  "limiteTaxa": 1.133,
+  "requisicao": {
+    "tipo": "http",
+    "metodo": "GET",
+    "caminho": "/delivery/2022-07-01/invoice/status",
+    "query": [
+      [
+        "orderId",
+        "000-0000000-5655814"
+      ],
+      [
+        "marketplaceId",
+        "A2Q3Y263D00KWC"
+      ],
+      [
+        "invoiceType",
+        "Outbound"
+      ],
+      [
+        "programType",
+        "EasyShip"
+      ]
+    ],
+    "corpo": null
+  },
+  "resposta": {
+    "status": 200,
+    "politica": "estrutural",
+    "forma": "json",
+    "bytes": 178,
+    "corpo": {
+      "invoices": [
+        {
+          "id": "REDACTED",
+          "status": "Accepted"
+        }
+      ],
+      "amazonOrderId": "000-0000000-5655814",
+      "orderInvoicingStatus": "Accepted",
+      "invoiceStatus": "Accepted"
+    }
+  },
+  "anexos": {
+    "zip": null
+  }
+}

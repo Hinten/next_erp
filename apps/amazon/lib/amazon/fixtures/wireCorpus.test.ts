@@ -23,7 +23,7 @@ import {
  * fixtures raises it, and one that deliberately removes a fixture lowers it, in
  * the same commit.
  */
-const MINIMO_DE_FIXTURES = 6;
+const MINIMO_DE_FIXTURES = 14;
 
 describe('__wire__ corpus', () => {
   const arquivos = listarArquivosDoCorpusAmazon();

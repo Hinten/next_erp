@@ -646,12 +646,20 @@ export const ROTULOS_DA_FIXTURE_AMAZON: ReadonlySet<string> = new Set([
   'UPS',
   'DPD',
   'Royal Mail',
+  // Carrier codes on BR Delivery by Amazon packages, from the owner's C1 captures
+  // (2026-10-28): Amazon's own fleet and Correios (ECT).
+  'AMZBR',
+  'ECTBR',
   // packages.*.shippingService
   'SEDEX',
   'PAC',
   'UPS Ground',
   'DPD Next Day Delivery',
   'Royal Mail Tracked 48',
+  // Easy Ship service tiers on the same BR packages (C1 captures, 2026-10-28).
+  'Std EZ Local',
+  'Std EZ Regional',
+  'Std EZ National',
 ]);
 
 /**
