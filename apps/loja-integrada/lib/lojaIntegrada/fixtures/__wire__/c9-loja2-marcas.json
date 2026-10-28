@@ -1,0 +1,44 @@
+{
+  "versao": 1,
+  "perfil": "fixture",
+  "credencial": "personal-token",
+  "capturadoEm": "2026-10-28",
+  "requisicao": {
+    "metodo": "GET",
+    "caminho": "/v1/marca/",
+    "query": [
+      [
+        "limit",
+        "50"
+      ]
+    ]
+  },
+  "resposta": {
+    "status": 200,
+    "politica": "catalogo",
+    "forma": "json",
+    "bytes": 325,
+    "corpo": {
+      "meta": {
+        "limit": 50,
+        "offset": 0,
+        "total_count": 1,
+        "previous": null,
+        "next": null
+      },
+      "objects": [
+        {
+          "id": 990943688,
+          "ativo": true,
+          "id_externo": null,
+          "apelido": "REDACTED",
+          "descricao": null,
+          "nome": "REDACTED",
+          "destaque": false,
+          "resource_uri": "/api/v1/marca/990943688",
+          "imagem": "REDACTED"
+        }
+      ]
+    }
+  }
+}

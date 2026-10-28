@@ -28,12 +28,12 @@
       },
       "objects": [
         {
-          "id": 23948630,
+          "id": 244672331,
           "id_externo": null,
           "categoria_pai": null,
           "descricao": "",
           "nome": "REDACTED",
-          "resource_uri": "REDACTED",
+          "resource_uri": "/v1/categoria/244672331",
           "seo": "REDACTED",
           "url": "https://redacted.invalid/"
         }
