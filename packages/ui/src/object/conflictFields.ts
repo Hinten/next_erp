@@ -22,6 +22,12 @@ export interface ConflictField {
   server: unknown;
   /** True when the pending save would overwrite this remotely-changed field. */
   overwritten: boolean;
+  /**
+   * Set when the field MERGES instead (`FieldConfig.rebaseOnConflict`): what
+   * the "Sua gravação" cell says in place of "Sobrescreve". Such a row is never
+   * `overwritten`.
+   */
+  merge?: string;
 }
 
 const isComplexValue = (v: unknown): boolean => v !== null && typeof v === 'object';

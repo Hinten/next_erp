@@ -10,14 +10,22 @@ import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { useAuth } from '@/lib/auth';
 import {
   GRUPO_EXCLUDED_FIELDS,
+  GRUPO_PERSISTENT_SECTIONS,
   GRUPO_SECTIONS,
+  VINCULADOR_LI_VISIVEL,
+  copiarGrupoSemVinculosLi,
   deriveVariacoesIds,
   grupoFields,
 } from '../_components/grupoFields';
+import {
+  EstadoVinculadorLiProvider,
+  useEstadoVinculadorLi,
+} from '../_components/estadoVinculadorLi';
 
 export default function NovoGrupoVariacaoPage() {
   const router = useRouter();
   const { user } = useAuth();
+  const estadoLi = useEstadoVinculadorLi();
 
   return (
     <Stack>
@@ -28,24 +36,29 @@ export default function NovoGrupoVariacaoPage() {
         </Anchor>
       </Group>
 
-      <ObjectView
-        schema={grupoDeVariacoesSchema}
-        collection={grupoDeVariacoesCollection}
-        db={getFirebaseFirestore()}
-        currentUserUid={user?.uid ?? ''}
-        defaultValues={{
-          ordem: 1,
-          permiteFotos: false,
-          variacoes: [],
-        }}
-        sections={GRUPO_SECTIONS}
-        fields={grupoFields}
-        excludedFields={GRUPO_EXCLUDED_FIELDS}
-        deriveOnSave={deriveVariacoesIds}
-        saveLabel="Criar"
-        showSaveAndContinue={false}
-        onSaved={(id) => router.replace(`/variacoes/${id}`)}
-      />
+      <EstadoVinculadorLiProvider value={estadoLi}>
+        <ObjectView
+          schema={grupoDeVariacoesSchema}
+          collection={grupoDeVariacoesCollection}
+          db={getFirebaseFirestore()}
+          currentUserUid={user?.uid ?? ''}
+          defaultValues={{
+            ordem: 1,
+            permiteFotos: false,
+            variacoes: [],
+          }}
+          sections={GRUPO_SECTIONS}
+          persistentSections={GRUPO_PERSISTENT_SECTIONS}
+          fields={grupoFields}
+          excludedFields={GRUPO_EXCLUDED_FIELDS}
+          deriveOnSave={deriveVariacoesIds}
+          transformCopiedValues={copiarGrupoSemVinculosLi}
+          validate={VINCULADOR_LI_VISIVEL ? estadoLi.validar : undefined}
+          saveLabel="Criar"
+          showSaveAndContinue={false}
+          onSaved={(id) => router.replace(`/variacoes/${id}`)}
+        />
+      </EstadoVinculadorLiProvider>
     </Stack>
   );
 }
