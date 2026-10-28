@@ -142,7 +142,7 @@ function contexto(over: Partial<ContextoKit> = {}): ContextoKit {
     vivo: null,
     linhasDoAnuncio: [],
     linhasDaConta: [],
-    busca: { completo: true, achados: [], paginas: 1, chamadas: 1 },
+    busca: { completo: true, achados: [], incompleta: null, paginas: 1, chamadas: 1 },
     nossosVivos: new Map(),
     ...over,
   };
@@ -772,7 +772,7 @@ describe('garantirKitNovo — L9 "ensure the new kit exists"', () => {
     db.seed(`produtos/${K}/prodshopee/${LINK}`, vinculoNativo(LINK, KIT).raw);
     const ctx = contexto({
       vinculos: [vinculoNativo(LINK, KIT)],
-      busca: { completo: true, achados: [], paginas: 1, chamadas: 1 },
+      busca: { completo: true, achados: [], incompleta: null, paginas: 1, chamadas: 1 },
       nossosVivos: new Map([[KIT, 'NORMAL']]),
     });
     const plano = planejarKit(ctx, null);
@@ -821,6 +821,7 @@ describe('garantirKitNovo — L9 "ensure the new kit exists"', () => {
       busca: {
         completo: true,
         achados: [{ itemId: KIT_2, vinculo: null }],
+        incompleta: null,
         paginas: 1,
         chamadas: 2,
       },

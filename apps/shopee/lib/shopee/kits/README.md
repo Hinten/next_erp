@@ -64,6 +64,16 @@ after the photos are uploaded, and an uploaded image no listing references chang
 on Shopee, so that order is accepted. A dry run is steps 1–6 (`ensaiarKitShopee`): reads, the
 scan and the photo upload, never a write and never `add_kit_item`.
 
+**The tier's names (#1911 batch-A).** Outside the `'Kit'`/`'Padrão'` sentinel (ours, never
+checked), the tier name is the grupo's, SENT through `nomeDeTierShopee` (ends trimmed; case
+and inner spaces kept) — so a grupo with no name, a blank one, or one `prepararKit` could
+not read (never its doc id) refuses `opcoes-demais` in phase B, before the one
+non-idempotent `add_kit_item`. When `get_kit_item_limit` is served, that name and every
+option are measured AS SENT against the KIT bands `tier_variation_name_length_limit` /
+`tier_variation_option_length_limit` (`textoNaFaixaShopee`) and refused `opcoes-demais`,
+never truncated; a null band checks nothing. A republish resends the LIVE tier name and is
+not band-checked.
+
 **No transaction, anywhere in this folder.** Every write is idempotent on its own: an upsert
 at a deterministic id, a `create()` that falls back to a re-stamp, a `merge` of values just
 read. The transaction inventory greps the bare API name, so no `kits/*.ts` file may spell
@@ -508,11 +518,39 @@ are in `anuncios/publicarShopee.test.ts`.
   `--converter-em-kit` — and never on a republish (L10(4)).
 - **What it scans.** It pages `get_item_list` over `STATUS_BUSCA_KIT` =
   `NORMAL`/`UNLIST`/`REVIEWING`/`BANNED`, with no `update_time_from`. A deleted kit
-  is never a hit. Beyond `MAX_PAGINAS_BUSCA_KIT` (100 pages), it refuses
-  `busca-de-kit-incompleta`.
+  is never a hit. Beyond `MAX_PAGINAS_BUSCA_KIT` (100 pages), or on a cursor
+  Shopee did not hand back or advance, it refuses `busca-de-kit-incompleta`
+  (`incompleta.causa: 'lista'`).
 - **Fail-closed on `tag`.** A row whose `tag`/`tag.kit` is null is a candidate,
   decided by its base info; only `tag.kit === false` is dropped. A missing tag
   costs reads, never a duplicate kit.
+- **Fail-closed on the base row** (#1911 batch-A review). Every listed candidate
+  must come back from the base-info batch. One that does not — left out of the
+  answer, a chunk answered with the batch "none of these ids exists"
+  (`error_item_not_found`), or a listing gone between the two reads — makes the
+  scan INCOMPLETE (`incompleta.causa: 'base-info'`, the ids sorted): no hit is
+  reported, no link is read, one `console.warn` names the count and ≤ 10 ids, and
+  the create refuses `busca-de-kit-incompleta` with "a Shopee não devolveu os
+  dados de N anúncio(s) listado(s) (ids …) — tente de novo; se persistir, confira
+  esses anúncios no Seller Centre". Until then the loop skipped such a row as
+  "not a hit" (undocumented, since step 19) — absence on no evidence. The
+  ordinary first create (`localizarItensPorSku` with `kit: false`) rides the SAME
+  loop and words it alike (`busca-de-anuncio-existente-incompleta`); there is no
+  `kit` fork in it.
+- **The deadline checkpoint is the ordinary arm's, never the kit's** (#1911
+  batch-A review, 2026-10-28). `varrerListaDeItensShopee` and
+  `localizarItensPorSku` take an optional `podeContinuar: () => boolean`, asked
+  BEFORE each `get_item_list` page and — through `clienteDaBuscaNoPrazo`, the
+  client handed to the shared base-info reader — BEFORE each
+  `get_item_base_info` chunk. A `false` throws `BuscaForaDoPrazoShopeeError`
+  (an app class, never a `ShopeeError`) with NO answer: not an incomplete
+  scan, not a hit read so far. A draft's two look-ups under the publish lock
+  pass it (ENSURE and the first create's same-SKU scan, `anuncios/`), as a
+  closure over the route's clock built in `anuncios/reservaRascunho.ts` —
+  this folder reads no clock — and the publish answers the cut 409
+  `PUBLICACAO_EXPIRADA`. `localizarKitsPorSku` passes NONE (its arguments
+  field by field, never a spread): the kit arm's walk is byte-for-byte step
+  19's.
 - **The SKU match is step 9's identity**: `skuDoItemShopee(base) === sku`, where
   `skuDoItemShopee` is `(item_sku ?? '').trim()`, case-sensitive like the parent
   rung's `where('sku','==',…)`.

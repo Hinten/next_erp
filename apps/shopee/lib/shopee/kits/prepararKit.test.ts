@@ -477,6 +477,37 @@ describe('prepararKit — a ordem das leituras (criação)', () => {
     expect(ctx.filhos.map((f) => f.variante)).toEqual(['Verde', 'Azul']);
   });
 
+  it('(#1911 batch-A) o grupo SEM `nome` chega ao contexto como `""` — o plano o recusa; as variantes seguem lidas', async () => {
+    const db = new FakeDb();
+    semearTudo(db);
+    db.seed(`grupoDeVariacoes/${GRUPO}`, {
+      ordem: 1,
+      variacoes: [
+        { id: 'var-azul', nome: 'Azul' },
+        { id: 'var-verde', nome: 'Verde' },
+      ],
+    });
+    const loja = lojaFake();
+
+    const ctx = await preparar(db, loja);
+
+    expect(ctx.grupo).toEqual({ id: GRUPO, nome: '' });
+    expect(ctx.filhos.map((f) => f.variante)).toEqual(['Azul', 'Verde']);
+  });
+
+  it('⛔ (#1911 batch-A) um grupo ILEGÍVEL (doc ausente) NUNCA vira o nome do tier pelo id do documento', async () => {
+    const db = new FakeDb();
+    semearTudo(db);
+    delete db.store[`grupoDeVariacoes/${GRUPO}`];
+    const loja = lojaFake();
+
+    const ctx = await preparar(db, loja);
+
+    expect(ctx.grupo).toEqual({ id: GRUPO, nome: '' });
+    expect(ctx.gruposDistintos).toBe(1);
+    expect(ctx.filhos.map((f) => f.variante)).toEqual([null, null]);
+  });
+
   it('sem variante no grupo (nenhum eixo), o `ordem` do filho desempata — ausente por último', async () => {
     const db = new FakeDb();
     semearTudo(db);

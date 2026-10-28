@@ -8,8 +8,9 @@
  * what step 8 added: the operators, the ordering, the cursor, the chainable
  * `limit` and the second query log. The pre-existing behaviour stays pinned
  * where it always was — by the nineteen suites that drive it. Step 19 (#1527)
- * adds the last describe: the stamp's `seconds`/`nanoseconds` and the
- * transaction options, read-log and read-only refusal.
+ * adds a describe: the stamp's `seconds`/`nanoseconds` and the
+ * transaction options, read-log and read-only refusal. #1911 (P4) adds the
+ * last: the doc ref's guarded `delete` and its own `deletes` log.
  *
  * The queries go through `pedidoCollection.ref()` like every caller does (raw
  * `.collection()` is lint-banned in this app), but nothing here is about the
@@ -20,7 +21,7 @@ import { FieldValue } from 'firebase-admin/firestore';
 import { describe, expect, it } from 'vitest';
 
 import { avisoCollection, pedidoCollection } from '@delfrance/data/admin/collections';
-import { isFailedPrecondition } from '@delfrance/data/admin';
+import { isFailedPrecondition, isNotFound } from '@delfrance/data/admin';
 import { microsDeUpdateTime } from '@delfrance/data/admin/avisos';
 
 import { FakeDb, arrayUnion, asDb, grpc } from './fakeDb';
@@ -480,5 +481,130 @@ describe('FakeDb — passo 19: o carimbo em segundos e a transação readOnly', 
 
     expect(db.store['pedidos/a']!.data.n).toBe(2);
     expect(db.writes.map((w) => w.path)).toEqual(['pedidos/a']);
+  });
+});
+
+describe('FakeDb — #1911: o delete do doc ref com a precondição lastUpdateTime', () => {
+  it('sem precondição: apaga e registra em `deletes` (comPrecondicao: false); um documento AUSENTE é um no-op que resolve', async () => {
+    const db = new FakeDb();
+    db.seed('pedidos/a', { n: 1 });
+
+    await pedidoCollection.docRef(asDb(db), {}, 'a').delete();
+    await pedidoCollection.docRef(asDb(db), {}, 'nunca-existiu').delete();
+
+    expect(db.store['pedidos/a']).toBeUndefined();
+    expect(db.deletes).toEqual([
+      { path: 'pedidos/a', comPrecondicao: false },
+      { path: 'pedidos/nunca-existiu', comPrecondicao: false },
+    ]);
+  });
+
+  it('com o carimbo FRESCO: apaga e registra comPrecondicao: true', async () => {
+    const db = new FakeDb();
+    db.seed('pedidos/a', { n: 1 });
+    const ref = pedidoCollection.docRef(asDb(db), {}, 'a');
+    const snap = await ref.get();
+
+    await ref.delete({ lastUpdateTime: snap.updateTime! });
+
+    expect(db.store['pedidos/a']).toBeUndefined();
+    expect(db.deletes).toEqual([{ path: 'pedidos/a', comPrecondicao: true }]);
+  });
+
+  it('o carimbo é comparado pela IDENTIDADE da versão (isEqual), nunca pela referência — uma OUTRA instância do mesmo carimbo vale', async () => {
+    const db = new FakeDb();
+    db.seed('pedidos/a', { n: 1 });
+    const ref = pedidoCollection.docRef(asDb(db), {}, 'a');
+    const snap = await ref.get();
+    // Two reads of one real `Timestamp` are two INSTANCES: a double comparing
+    // references would refuse a fresh stamp that merely came from another read.
+    const outraInstancia = { ...snap.updateTime! };
+    expect(outraInstancia).not.toBe(snap.updateTime);
+
+    await ref.delete({ lastUpdateTime: outraInstancia as never });
+
+    expect(db.store['pedidos/a']).toBeUndefined();
+  });
+
+  it('⛔ NEAR-MISS: um carimbo VELHO é recusado com um erro que isFailedPrecondition reconhece — o documento FICA e nada é registrado', async () => {
+    const db = new FakeDb();
+    db.seed('pedidos/a', { n: 1 });
+    const ref = pedidoCollection.docRef(asDb(db), {}, 'a');
+    const snap = await ref.get();
+
+    // Um segundo escritor passa na frente…
+    await ref.update({ n: 99 } as never);
+
+    // …e o descarte decidido sobre a leitura antiga NÃO apaga a escrita dele.
+    // Antes do #1911 o `delete` deste dobro ignorava o argumento: o descarte
+    // guardado degradava para um sem guarda em todo teste.
+    const erro = await ref.delete({ lastUpdateTime: snap.updateTime! }).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(isFailedPrecondition(erro)).toBe(true);
+    expect(db.store['pedidos/a']!.data.n).toBe(99);
+    expect(db.deletes).toEqual([]);
+  });
+
+  it('⛔ NEAR-MISS: um carimbo que não é carimbo NENHUM é recusado, não ignorado', async () => {
+    const db = new FakeDb();
+    db.seed('pedidos/a', { n: 1 });
+    const erro = await pedidoCollection
+      .docRef(asDb(db), {}, 'a')
+      .delete({ lastUpdateTime: 101 as never })
+      .then(
+        () => null,
+        (e: unknown) => e,
+      );
+    expect(isFailedPrecondition(erro)).toBe(true);
+    expect(db.store['pedidos/a']).toBeDefined();
+  });
+
+  it('com precondição sobre um documento AUSENTE: NOT_FOUND (o braço do update), nada registrado', async () => {
+    const db = new FakeDb();
+    db.seed('pedidos/a', { n: 1 });
+    const ref = pedidoCollection.docRef(asDb(db), {}, 'a');
+    const snap = await ref.get();
+    delete db.store['pedidos/a'];
+
+    const erro = await ref.delete({ lastUpdateTime: snap.updateTime! }).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(isNotFound(erro)).toBe(true);
+    expect(isFailedPrecondition(erro)).toBe(false);
+    expect(db.deletes).toEqual([]);
+  });
+
+  it('falhasDeDelete injeta a falha em UM caminho, antes de qualquer efeito, e deixa os outros em paz', async () => {
+    const db = new FakeDb();
+    db.seed('pedidos/a', { n: 1 });
+    db.seed('pedidos/b', { n: 2 });
+    const falha = grpc(14, 'UNAVAILABLE');
+    db.falhasDeDelete.set('pedidos/a', falha);
+
+    await expect(pedidoCollection.docRef(asDb(db), {}, 'a').delete()).rejects.toBe(falha);
+    await pedidoCollection.docRef(asDb(db), {}, 'b').delete();
+
+    expect(db.store['pedidos/a']).toBeDefined();
+    expect(db.store['pedidos/b']).toBeUndefined();
+    expect(db.deletes).toEqual([{ path: 'pedidos/b', comPrecondicao: false }]);
+  });
+
+  it('⛔ ADITIVO: um delete não aparece em writes, patches, opLog nem nas consultas — os registros antigos ficam byte-iguais', async () => {
+    const db = new FakeDb();
+    db.seed('pedidos/a', { n: 1 });
+    const ref = pedidoCollection.docRef(asDb(db), {}, 'a');
+    const snap = await ref.get();
+    const opLogAntes = [...db.opLog];
+
+    await ref.delete({ lastUpdateTime: snap.updateTime! });
+
+    expect(db.writes).toEqual([]);
+    expect(db.patches).toEqual([]);
+    expect(db.opLog).toEqual(opLogAntes);
+    expect(db.consultas).toEqual([]);
+    expect(db.consultasCompletas).toEqual([]);
   });
 });

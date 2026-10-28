@@ -23,8 +23,11 @@ The families are the seam, not a filing convention.
   `planoImportacao.ts` (the ORDERED write plan). No clock, no Firestore, no wire
   call — which is what lets the CLI's dry run print exactly what a live run
   would write.
-- **The IO half** — `resolveProduto.ts` (the import-direction cascade),
-  `links.ts` (resolve-then-write, never delete), `taxonomiaShopee.ts` (the
+- **The IO half** — `resolveProduto.ts` (the import-direction cascade, and
+  since #1911 the evidence-only choice of a draft to adopt), `links.ts`
+  (resolve-then-write, never delete — the one `prodshopee` delete is a draft's
+  discard, in `../anuncios/rascunho.ts`; plus the guarded adoption arm),
+  `taxonomiaShopee.ts` (the
   guarded grupo write and the per-dispatch memo), `categoriaShopee.ts` (the
   `shopee-<id>` chain off step 10's cached tree and the category-tree memo),
   `fotosShopee.ts` (the retriable picture unit), `estoquePrecos.ts` (the guarded
@@ -123,6 +126,56 @@ claim check and the link reuse ignore the rows of ANOTHER listing the children
 carry (the old kit of a recriar, a superseded ordinary listing, a removed one),
 which would otherwise decline every child and mint duplicates.
 
+⚠️ **The ONE `prodshopee` delete in this app is a DRAFT's discard, and it is
+not the import's** (#1911, P4). The draft route's `rascunho/descartar`
+(`../anuncios/rascunho.ts`) deletes a document Shopee never answered for
+(`ehRascunhoShopee`: no `item_id`, not `kitNativo`) — never a listing link and
+never a `variashopee` row (a draft has none). It is rule 7 tiers 3 + 1,
+`delete({ lastUpdateTime })` against the snapshot that decided: no publish lock
+in progress (nor in its post-expiry grace), the stored projection equal to the
+`base` the operator saw, and an `incerta` draft only on the operator's
+attestation; a lost precondition re-decides. A publish whose create lands
+afterwards `add`s a fresh link (the claim in `../anuncios/reservaRascunho.ts`),
+so a discard never orphans a listing. Everything above still holds for every link the import resolves:
+merge or add, never delete. `links.ts`'s docblock says the same.
+
+**A DRAFT is adopted only on EVIDENCE (#1911, P5 — D5 / K1-8).** A draft's
+first `add_item` may answer nothing usable (a network drop, `error_server`, a
+crash after the send) while Shopee created the listing anyway; the publish
+then holds an UNCERTAIN create (`criacaoIncertaDesde`, or a lock left behind).
+When the import later meets that listing, the SKU rung binds it to the
+draft's produto and rung 1 finds no link for it — and without this rule the
+import would `add` a SECOND `prodshopee` while the draft stayed `incerta` for
+ever. So, on the SKU rung only, for an ordinary listing (never a kit) with NO
+link at all (a stale rung-1 row is still its link), `resolveProduto.ts` reads
+the produto's whole `prodshopee` subcollection (no `where`, no index) and adopts
+a draft only when `veredictoDeAdocaoShopee` answers `adotavel`: a draft of THIS
+conta whose attempt window (`janelaDaCriacaoIncertaShopee` — the uncertainty
+record, else the lock's `desde`) exists AND holds the listing's `create_time`
+(`criadoNaJanelaShopee === 'dentro'`, i.e. no earlier than ⌊desde/1000⌋ − 300 s).
+Both predicates are `@delfrance/schemas`'s, the ONE copy the publish's own
+look-up (`../anuncios/criacaoIncerta.ts`) decides with. **No legacy draft is
+ever adopted** — none carries evidence — so the post-cutover mass import
+replaces no draft's content; a never-sent draft, a listing created BEFORE the
+window (an older same-SKU listing), an unknown `create_time` (one log line —
+fail-closed) and two adoptable drafts (one warn) all keep today's `add`, the
+draft byte-for-byte untouched. The plan then writes an ADOPTION, not a merge
+(`EscritaDeAdocaoDeRascunho`): the import's fields WITHOUT the `...existente`
+spread, `dataCadastro` only when the draft has none, and `publicacaoEmCurso`,
+`criacaoIncertaDesde` (with its `criacaoIncertaSku`) and `falhaPublicacao` cleared — a lock left on the link
+would read `em-andamento` / `incerta` for ever and block the produto's other
+drafts on the conta. `links.ts` applies it as rule 7 tier 1, each pass on a
+FRESH read that RE-DERIVES the verdict: still adoptable ⇒
+`update(…, {lastUpdateTime})`; `item_id` already ours (the publish's claim got
+there first) ⇒ the plain merge, nothing cleared; gone, claimed by another
+item or no longer adoptable ⇒ `add` (two linked listings, never a lost
+`item_id`); `FAILED_PRECONDITION` ⇒ re-derive, a third loss rethrows. A live
+publish lock does not block it — the run that held it refuses to send on its
+pre-send re-read, or converges through its claim. Accepted residual: Shopee's
+content wins over a draft edited while `incerta` (the operator authored it for
+the listing that now exists). The mass import goes through the same resolver,
+so `processMassImport` (the functions bundle) carries it.
+
 **`kitNativo` is stamped on every listing link, on both branches.**
 `dadosLinkListagem` writes `ehKitDe(base)` — `true` for a native Shopee kit,
 `false` for an ordinary listing — unconditionally, so a stored `null` or a
@@ -137,6 +190,23 @@ listing is RE-imported: through the `importar` route, the CLI, or
 `importar-todos` with `atualizarCadastrados` on. ⚠️ A default `importar-todos`
 run heals nothing — it skips every listing that already has a link
 (`idsJaVinculados`), kits included.
+
+**The brand is stamped as a PAIR (#1911, C9).** `dadosLinkListagem` writes
+`brand_id` AND `original_brand_name` from the same `base.brand` — Shopee's name
+verbatim, both `null` when the read carries no brand — on both branches. Before
+#1911 it wrote the id alone, and the `...existente` spread kept the name of the
+brand the listing USED to have: a brand changed in Seller Centre and then
+re-imported paired the NEW id with the OLD name, which publish's brand cascade
+sends unchecked (a stored name skips the `get_brand_list` walk, `resolverMarcaDoAnuncio`
+in `../anuncios/publicarAnuncio.ts`). Publish's write-back #2 writes the name
+with the same expression, so both writers agree with the read they just made.
+Self-healing, no migration: the next import of a listing converges its pair —
+with the same caveat as `kitNativo` above, since a default `importar-todos`
+skips listings that already have a link. Rung 1 never reaches a DRAFT
+(`item_id: null`): it resolves by `item_id`, and a draft's brand is the
+operator's pick, refused at publish as `marca-nao-escolhida` while unpicked.
+The one way the import writes a draft is the evidence-only ADOPTION above, and
+it writes the pair from the read like any other link.
 
 **The grupo write is ADR 0011 tier 1.** `update(patch, { lastUpdateTime })`
 naming only `variacoes` / `variacoesIds` / `linksVariacoesShopee` /
@@ -154,6 +224,22 @@ lazily on the first `has_model` item and updated in place by every grupo this
 dispatch creates or patches — so ten items of the same shape do one read, not
 ten, and the second item sees the grupo the first one minted instead of
 creating a twin or spending its single re-plan against its own sibling.
+
+**The `linksVariacoesShopee` entry is found by the SHARED key (#1911).** Which
+stored element is a grupo's entry for (conta, LEAF category) is
+`ehEntradaShopeeDaChave` / `resolverEntradaShopeeDoGrupo` in `@delfrance/schemas`,
+the same key the publisher's tier builder resolves the pair by
+(`../anuncios/README.md`). The merge (`fundirLinksVariacoesShopee`) and rung 1 of
+the variante cascade read it; rung 1(b) (`linkDoGrupoCasa`) asks about a conta
+in ANY category, so it is not the key, but its conta half is the same `idDoRef`
+fold. That fold applies to the STORED conta only: a stored
+`documents/integracao/int-1` is merged INTO for `int-1`, never twinned, and
+`int-12` stays another conta's entry, untouched. A bare stored id behaves
+exactly as before, and the import itself always writes the bare id. An element
+the strict schema refuses is still kept VERBATIM. When it is the only element
+naming the pair, the import appends its own readable entry after it, and from
+then on the publisher binds that entry instead of refusing the unreadable one
+(unchanged by #1911).
 
 **Estoque and preços.** Prices are the first BRL `price_info` entry —
 `original_price ?? current_price` onto the conta's **normal** table only (a

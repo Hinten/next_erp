@@ -205,7 +205,8 @@ function comoLinkDeAnuncio(linha: LinhaDeLinkLida | null): LinkDeAnuncio | null 
 
 /**
  * `item_id` → the listing link, on the DECLARED collectionGroup composite. For
- * the two push handlers.
+ * the two push handlers and #1911's ENSURE (`criacaoIncerta.ts`), which asks
+ * whether an in-window listing is already linked.
  *
  * `limit(2)` is an AMBIGUITY DETECTOR, not a page size: a second row proves the
  * question has more than one answer, {@link escolherLink} takes the lexically

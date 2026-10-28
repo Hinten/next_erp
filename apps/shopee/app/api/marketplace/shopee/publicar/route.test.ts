@@ -6,14 +6,20 @@ import {
   SHOPEE_ERROR_KIND,
   SHOPEE_ITEM_STATUS_WRITABLE,
   SHOPEE_LOGISTICS_FEE_TYPE,
+  ShopeeNetworkError,
   ShopeeRateLimitError,
   shopeeLogisticsChannelSchema,
   type ShopeeCategoria,
 } from '@delfrance/integrations-shopee';
 import {
   AGUARDAR_KIT_INCERTO_SHOPEE_MS,
+  CODIGO_RASCUNHO_SHOPEE,
   ESTADO_ANUNCIO_SHOPEE,
+  INTEGRACAO_TIPO,
+  PUBLICACAO_EM_CURSO_SHOPEE_TTL_MS,
+  TETO_ROTA_SHOPEE_MS,
   TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE,
+  respostaItemIncertoShopeeSchema,
 } from '@delfrance/schemas';
 
 import {
@@ -22,12 +28,19 @@ import {
   MOTIVO_PUBLICACAO_BLOQUEADA,
   ShopeePublishRejectedError,
 } from '@/lib/shopee/anuncios/errosPublicacao';
+import { CriacaoDeAnuncioIncertaError } from '@/lib/shopee/anuncios/criacaoIncerta';
+import { RecusaDeRascunhoShopeeError } from '@/lib/shopee/anuncios/rascunho';
 import {
+  MSG_CONFIRMAR_CRIACAO_INCERTA_INVALIDO,
+  MSG_CONFIRMAR_SEGUNDO_ANUNCIO_INVALIDO,
   MSG_OPCOES_DE_KIT_EXCLUSIVAS,
   MSG_PRODUTO_ID_INVALIDO,
   MSG_RECRIAR_SEM_LINK,
 } from '@/lib/shopee/anuncios/corpoPublicacao';
-import type { ResultadoPublicacao } from '@/lib/shopee/anuncios/publicarAnuncio';
+import type {
+  PublicarAnuncioDeps,
+  ResultadoPublicacao,
+} from '@/lib/shopee/anuncios/publicarAnuncio';
 import { ShopeeContaNotConfiguredError } from '@/lib/shopee/core/shopee';
 import { MENSAGEM_KIT_INCERTO, type ResultadoPublicacaoKit } from '@/lib/shopee/kits/resultadoKit';
 import {
@@ -174,6 +187,15 @@ function ctxDouble() {
 
 /** Um produto publicável em tudo MENOS nas fotos — o publish bloqueia sozinho. */
 function semearProduto(db: FakeDb, over: Record<string, unknown> = {}): void {
+  // #1911 (K1-5): a create with NO link mints its draft through the draft
+  // route's create, whose first check is the conta document (the real
+  // `readConta`; `loadShopeeContext` is the double above).
+  db.seed(`integracao/${INT_A}`, {
+    tipo: INTEGRACAO_TIPO.shopee,
+    ativo: true,
+    nome: 'Loja Sandbox',
+    shop_id: SHOP_ID,
+  });
   db.seed(`produtos/${PRODUTO}`, {
     nome: 'Camiseta básica branca',
     sku: 'CAM-BR',
@@ -399,7 +421,17 @@ describe('as duas recusas por produto', () => {
     const corpo = (await res.json()) as { code: string; problemas: { motivo: string }[] };
     expect(corpo.code).toBe('SHOPEE_PUBLISH_BLOCKED');
     expect(corpo.problemas.map((p) => p.motivo)).toContain(MOTIVO_PUBLICACAO_BLOQUEADA.semFotos);
-    expect(db.writes).toHaveLength(0);
+    // #1911 (K1-5): with no link the create first MINTS its draft — the only
+    // document written; the blocked plan hands its lock back, unstamped.
+    const fora = db.writes.filter((w) => !w.path.startsWith(`produtos/${PRODUTO}/prodshopee/`));
+    expect(fora).toEqual([]);
+    const ids = db.idsEm(`produtos/${PRODUTO}/prodshopee`);
+    expect(ids).toHaveLength(1);
+    expect(db.store[`produtos/${PRODUTO}/prodshopee/${ids[0] ?? ''}`]?.data).toMatchObject({
+      item_id: null,
+      publicacaoEmCurso: null,
+      falhaPublicacao: null,
+    });
   });
 
   it('uma recusa da própria Shopee vira o REJECTED, com etapa e shopeeCode VERBATIM', async () => {
@@ -973,5 +1005,345 @@ describe('passo 19 — os braços de kit pela rota', () => {
     await expect(juntas.json()).resolves.toEqual({ error: MSG_OPCOES_DE_KIT_EXCLUSIVAS });
     expect(h.loadCtx).not.toHaveBeenCalled();
     expect(h.publicarKit).not.toHaveBeenCalled();
+  });
+});
+
+/* ========================================================================== */
+/*  #1911 — o RASCUNHO: os 409 da trava, o relógio vivo e o teto da rota        */
+/* ========================================================================== */
+
+describe('#1911 — publicar um RASCUNHO pela rota', () => {
+  const RASCUNHO = 'rasc-1';
+  const IRMAO = 'rasc-2';
+  const T0 = 1_757_000_000_000;
+
+  function semearRascunho(id: string, extra: Record<string, unknown> = {}): void {
+    db.seed(`produtos/${PRODUTO}/prodshopee/${id}`, {
+      contaProdutoShopeeOuterRef: REF_CONTA,
+      item_id: null,
+      item_name: 'Camiseta básica branca',
+      category_id: CATEGORIA_DO_LINK,
+      brand_id: 0,
+      ...extra,
+    });
+  }
+
+  function travaAlheia(expiraEm: number) {
+    return { desde: expiraEm - PUBLICACAO_EM_CURSO_SHOPEE_TTL_MS, expiraEm, token: 'token-alheio' };
+  }
+
+  function rascunhoArmazenado(id = RASCUNHO): Record<string, unknown> | undefined {
+    return db.store[`produtos/${PRODUTO}/prodshopee/${id}`]?.data;
+  }
+
+  beforeEach(() => {
+    semearProduto(db);
+    vi.spyOn(Date, 'now').mockReturnValue(T0);
+  });
+
+  it('confirmarSegundoAnuncio que não é booleano ⇒ 400 com a frase do campo, antes de qualquer leitura', async () => {
+    const res = await POST(
+      req(corpoValido({ linkDocId: RASCUNHO, confirmarSegundoAnuncio: 'true' }), AUTORIZADO),
+    );
+    expect(res.status).toBe(400);
+    await expect(res.json()).resolves.toEqual({ error: MSG_CONFIRMAR_SEGUNDO_ANUNCIO_INVALIDO });
+    expect(h.loadCtx).not.toHaveBeenCalled();
+  });
+
+  it('a rota entrega aoVivo: o relógio VIVO, prazoDaRequisicao = nowMs + TETO_ROTA_SHOPEE_MS e a confirmação do corpo', async () => {
+    h.publicar.mockResolvedValue(resultadoDouble());
+    semearRascunho(RASCUNHO);
+
+    await POST(
+      req(corpoValido({ linkDocId: RASCUNHO, confirmarSegundoAnuncio: true }), AUTORIZADO),
+    );
+
+    const deps = h.publicar.mock.calls[0]?.[0] as PublicarAnuncioDeps;
+    expect(deps.aoVivo?.prazoDaRequisicao).toBe(T0 + TETO_ROTA_SHOPEE_MS);
+    expect(deps.aoVivo?.confirmarSegundoAnuncio).toBe(true);
+    // ⚠️ VIVO: lê o relógio a cada chamada — nunca o `nowMs` constante (K1-3).
+    vi.mocked(Date.now).mockReturnValue(T0 + 5_000);
+    expect(deps.aoVivo?.agora()).toBe(T0 + 5_000);
+    expect(deps.nowMs).toBe(T0);
+
+    // ⛔ quase-par: sem a flag no corpo, a confirmação chega FALSE.
+    await POST(req(corpoValido({ linkDocId: RASCUNHO }), AUTORIZADO));
+    const semFlag = h.publicar.mock.calls[1]?.[0] as PublicarAnuncioDeps;
+    expect(semFlag.aoVivo?.confirmarSegundoAnuncio).toBe(false);
+    expect(semFlag.aoVivo?.confirmarCriacaoIncerta).toBe(false);
+
+    // #1911 P5: the attestation travels on the SAME object — and only its own.
+    await POST(
+      req(corpoValido({ linkDocId: RASCUNHO, confirmarCriacaoIncerta: true }), AUTORIZADO),
+    );
+    const atestado = h.publicar.mock.calls[2]?.[0] as PublicarAnuncioDeps;
+    expect(atestado.aoVivo?.confirmarCriacaoIncerta).toBe(true);
+    expect(atestado.aoVivo?.confirmarSegundoAnuncio).toBe(false);
+  });
+
+  it('(batch-A P3-F2) o prazo é medido do PRIMEIRO instante do handler — antes da verificação do token e da leitura do corpo', async () => {
+    h.publicar.mockResolvedValue(resultadoDouble());
+    semearRascunho(RASCUNHO);
+    // A cold instance: the token check (Google's certs) takes 7 s of the
+    // platform's 180.
+    h.verifyIdToken.mockImplementation(() => {
+      vi.mocked(Date.now).mockReturnValue(T0 + 7_000);
+      return Promise.resolve(ESCRITOR);
+    });
+
+    await POST(req(corpoValido({ linkDocId: RASCUNHO }), AUTORIZADO));
+
+    const deps = h.publicar.mock.calls[0]?.[0] as PublicarAnuncioDeps;
+    expect(deps.aoVivo?.prazoDaRequisicao).toBe(T0 + TETO_ROTA_SHOPEE_MS);
+    expect(deps.nowMs).toBe(T0);
+    // ⛔ near-miss: the clock after the check is NOT the start of the request.
+    expect(deps.aoVivo?.prazoDaRequisicao).not.toBe(T0 + 7_000 + TETO_ROTA_SHOPEE_MS);
+  });
+
+  it('(batch-A P3-F1) aquecerCredencial é o getAccessToken do PRÓPRIO contexto — e o token não sai da rota', async () => {
+    h.publicar.mockResolvedValue(resultadoDouble());
+    semearRascunho(RASCUNHO);
+    const getAccessToken = vi.fn(() => Promise.resolve('token-de-teste'));
+    h.loadCtx.mockResolvedValue({ ...ctxDouble(), getAccessToken });
+
+    await POST(req(corpoValido({ linkDocId: RASCUNHO }), AUTORIZADO));
+
+    const deps = h.publicar.mock.calls[0]?.[0] as PublicarAnuncioDeps;
+    // Lazy: building the deps asks for no token.
+    expect(getAccessToken).not.toHaveBeenCalled();
+    await expect(deps.aoVivo?.aquecerCredencial()).resolves.toBeUndefined();
+    expect(getAccessToken).toHaveBeenCalledTimes(1);
+
+    // ⛔ quase-par: a failing token step propagates the SAME instance — the
+    // publisher's catch then hands the lock back unstamped.
+    const falha = new Error('o refresh falhou');
+    getAccessToken.mockRejectedValueOnce(falha);
+    await expect(deps.aoVivo?.aquecerCredencial()).rejects.toBe(falha);
+  });
+
+  it('uma trava ALHEIA viva ⇒ 409 EM_ANDAMENTO {error, code, linkDocId, aguardarMs} — sem vinculos, nada gravado, nenhuma chamada de escrita', async () => {
+    semearRascunho(RASCUNHO, { publicacaoEmCurso: travaAlheia(T0 + 40_000) });
+
+    const res = await POST(req(corpoValido({ linkDocId: RASCUNHO }), AUTORIZADO));
+
+    expect(res.status).toBe(409);
+    const corpo = (await res.json()) as Record<string, unknown>;
+    expect(corpo).toEqual({
+      error: expect.stringContaining(RASCUNHO) as unknown,
+      code: CODIGO_RASCUNHO_SHOPEE.publicacaoEmAndamento,
+      linkDocId: RASCUNHO,
+      aguardarMs: 40_000,
+    });
+    expect('vinculos' in corpo).toBe(false);
+    expect(db.writes).toEqual([]);
+    expect(h.getChannelList).not.toHaveBeenCalled();
+  });
+
+  it('(P5) um rascunho INCERTO de um produto SEM SKU ⇒ 422 criacao-incerta-sem-sku: nada buscado, trava devolvida, registro mantido', async () => {
+    semearProduto(db, { sku: '   ' });
+    semearRascunho(RASCUNHO, { criacaoIncertaDesde: T0 - 600_000 });
+
+    const res = await POST(req(corpoValido({ linkDocId: RASCUNHO }), AUTORIZADO));
+
+    expect(res.status).toBe(422);
+    const corpo = (await res.json()) as { code: string; problemas: { motivo: string }[] };
+    expect(corpo.code).toBe('SHOPEE_PUBLISH_BLOCKED');
+    expect(corpo.problemas.map((p) => p.motivo)).toEqual([
+      MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaSemSku,
+    ]);
+    expect(rascunhoArmazenado()).toMatchObject({
+      publicacaoEmCurso: null,
+      criacaoIncertaDesde: T0 - 600_000,
+    });
+    expect(h.getChannelList).not.toHaveBeenCalled();
+  });
+
+  it('(P5, K1-11) …e com confirmarCriacaoIncerta: true a reserva PASSA (o plano então recusa sem-fotos) — a flag CHEGA à reserva', async () => {
+    semearProduto(db, { sku: '   ' });
+    semearRascunho(RASCUNHO, { criacaoIncertaDesde: T0 - 600_000 });
+
+    const res = await POST(
+      req(corpoValido({ linkDocId: RASCUNHO, confirmarCriacaoIncerta: true }), AUTORIZADO),
+    );
+
+    expect(res.status).toBe(422);
+    const corpo = (await res.json()) as { problemas: { motivo: string }[] };
+    expect(corpo.problemas.map((p) => p.motivo)).toContain(MOTIVO_PUBLICACAO_BLOQUEADA.semFotos);
+    // No scan proved anything: the record stays.
+    expect(rascunhoArmazenado()?.criacaoIncertaDesde).toBe(T0 - 600_000);
+  });
+
+  it('confirmarCriacaoIncerta que não é booleano ⇒ 400 com a frase do campo, antes de qualquer leitura', async () => {
+    const res = await POST(
+      req(corpoValido({ linkDocId: RASCUNHO, confirmarCriacaoIncerta: 1 }), AUTORIZADO),
+    );
+    expect(res.status).toBe(400);
+    await expect(res.json()).resolves.toEqual({ error: MSG_CONFIRMAR_CRIACAO_INCERTA_INVALIDO });
+    expect(h.loadCtx).not.toHaveBeenCalled();
+  });
+
+  it('(D5) o add_item INCERTO ⇒ 202 com o envelope ÚNICO (respostaItemIncertoShopeeSchema) + a mensagem da CLI, por NOME', async () => {
+    const resultado = {
+      produtoId: PRODUTO,
+      linkDocId: RASCUNHO,
+      aguardarMs: 240_000,
+      reenvioVerificaSku: true,
+      recusa: { codigo: 'error_inner', fraseShopee: 'Our system is taking some time' },
+      mensagem: 'frase da CLI',
+      inventadoPelaOndaSeguinte: 'NÃO PODE VAZAR',
+    };
+    semearRascunho(RASCUNHO);
+    h.publicar.mockRejectedValue(
+      new CriacaoDeAnuncioIncertaError(resultado, new ShopeeNetworkError('caiu')),
+    );
+
+    const res = await POST(req(corpoValido({ linkDocId: RASCUNHO }), AUTORIZADO));
+
+    expect(res.status).toBe(202);
+    const corpo = (await res.json()) as Record<string, unknown>;
+    expect(corpo).toEqual({
+      arma: 'item',
+      desfecho: 'incerto',
+      linkDocId: RASCUNHO,
+      aguardarMs: 240_000,
+      reenvioVerificaSku: true,
+      recusa: { codigo: 'error_inner', fraseShopee: 'Our system is taking some time' },
+      mensagem: 'frase da CLI',
+    });
+    // The web parses the SAME envelope, and `mensagem` is dropped there.
+    expect(respostaItemIncertoShopeeSchema.parse(corpo)).not.toHaveProperty('mensagem');
+  });
+
+  it('a recusa do CREATE do rascunho cunhado (sem vínculo) ⇒ o status e o corpo da rota de rascunho, antes do isShopeeError', async () => {
+    h.publicar.mockRejectedValue(
+      new RecusaDeRascunhoShopeeError({
+        status: 409,
+        code: CODIGO_RASCUNHO_SHOPEE.contaJaTemAnuncio,
+        linkDocId: 'rasc-cunhado',
+        mensagem: 'frase do create',
+        vinculos: [{ linkDocId: IRMAO, itemId: null, rascunho: true }],
+      }),
+    );
+
+    const res = await POST(req(corpoValido(), AUTORIZADO));
+
+    expect(res.status).toBe(409);
+    await expect(res.json()).resolves.toEqual({
+      error: 'frase do create',
+      code: CODIGO_RASCUNHO_SHOPEE.contaJaTemAnuncio,
+      linkDocId: 'rasc-cunhado',
+      vinculos: [{ linkDocId: IRMAO, itemId: null, rascunho: true }],
+    });
+    const fonte = readFileSync(fileURLToPath(new URL('./route.ts', import.meta.url)), 'utf8');
+    expect(fonte.indexOf('err instanceof RecusaDeRascunhoShopeeError')).toBeLessThan(
+      fonte.indexOf('if (isShopeeError(err))'),
+    );
+  });
+
+  it('dois rascunhos ⇒ 409 CONTA_JA_TEM_ANUNCIO com vinculos; com confirmarSegundoAnuncio a reserva PASSA (o plano então recusa sem-fotos, 422) e a trava volta', async () => {
+    semearRascunho(RASCUNHO);
+    semearRascunho(IRMAO);
+
+    const sem = await POST(req(corpoValido({ linkDocId: RASCUNHO }), AUTORIZADO));
+    expect(sem.status).toBe(409);
+    await expect(sem.json()).resolves.toMatchObject({
+      code: CODIGO_RASCUNHO_SHOPEE.contaJaTemAnuncio,
+      linkDocId: RASCUNHO,
+      vinculos: [{ linkDocId: IRMAO, itemId: null, rascunho: true }],
+    });
+
+    // ⛔ the flag must REACH the reservation (the "flag ignored" mutant).
+    const com = await POST(
+      req(corpoValido({ linkDocId: RASCUNHO, confirmarSegundoAnuncio: true }), AUTORIZADO),
+    );
+    expect(com.status).toBe(422);
+    await expect(com.json()).resolves.toMatchObject({ code: 'SHOPEE_PUBLISH_BLOCKED' });
+    // The blocked plan handed the lock back, unstamped.
+    expect(rascunhoArmazenado()?.publicacaoEmCurso).toBeNull();
+    expect(rascunhoArmazenado()).not.toHaveProperty('falhaPublicacao');
+  });
+
+  it('(#2050) a liberação da trava FALHA no Firestore (gRPC 14) ⇒ o 409 CONTA_JA_TEM_ANUNCIO continua 409 — nunca um 500; a trava fica', async () => {
+    semearRascunho(RASCUNHO);
+    semearRascunho(IRMAO);
+    const caminho = `produtos/${PRODUTO}/prodshopee/${RASCUNHO}`;
+    // The draft's FIRST update (the lock) lands; every later one (the release) fails.
+    let atualizacoes = 0;
+    const colecao = db.collection.bind(db);
+    h.db.atual = asDb(
+      new Proxy(db, {
+        get(t, prop, r) {
+          if (prop !== 'collection') return Reflect.get(t, prop, r) as unknown;
+          return (colPath: string) => {
+            const col = colecao(colPath);
+            return new Proxy(col, {
+              get(ct, cp, cr) {
+                const original = Reflect.get(ct, cp, cr) as unknown;
+                if (cp !== 'doc') return original;
+                const construirRef = original as typeof ct.doc;
+                return (id?: string) => {
+                  const ref = construirRef(id);
+                  if (ref.path !== caminho) return ref;
+                  return {
+                    ...ref,
+                    update: (
+                      patch: Record<string, unknown>,
+                      pre?: { lastUpdateTime?: unknown },
+                    ) => {
+                      atualizacoes += 1;
+                      return atualizacoes === 1
+                        ? ref.update(patch, pre)
+                        : Promise.reject(Object.assign(new Error('UNAVAILABLE'), { code: 14 }));
+                    },
+                  };
+                };
+              },
+            });
+          };
+        },
+      }),
+    );
+
+    const res = await POST(req(corpoValido({ linkDocId: RASCUNHO }), AUTORIZADO));
+
+    expect(res.status).toBe(409);
+    await expect(res.json()).resolves.toMatchObject({
+      code: CODIGO_RASCUNHO_SHOPEE.contaJaTemAnuncio,
+      vinculos: [{ linkDocId: IRMAO, itemId: null, rascunho: true }],
+    });
+    expect(atualizacoes).toBe(2);
+    expect(rascunhoArmazenado()?.publicacaoEmCurso).toMatchObject({ desde: T0 });
+  });
+
+  it('⛔ quase-par: um vínculo PUBLICADO pela mesma rota não toma trava — o 422 de sempre, nenhum publicacaoEmCurso', async () => {
+    semearLink(db);
+
+    const res = await POST(req(corpoValido({ linkDocId: LINK }), AUTORIZADO));
+
+    expect(res.status).toBe(422);
+    expect(db.writes.some((w) => 'publicacaoEmCurso' in w.patch)).toBe(false);
+  });
+
+  it('⚠️ o teto: apphosting.yaml timeoutSeconds × 1000 === TETO_ROTA_SHOPEE_MS, e o yaml NOMEIA a constante', () => {
+    const yaml = readFileSync(
+      fileURLToPath(new URL('../../../../../apphosting.yaml', import.meta.url)),
+      'utf8',
+    );
+    const pinos = yaml
+      .split(/\r?\n/)
+      .map((linha) => /^\s*timeoutSeconds\s*:\s*(\d+)\s*(?:#.*)?$/.exec(linha))
+      .filter((m): m is RegExpExecArray => m !== null);
+    // ÂNCORA: exactly one pin was read — a reformatted yaml must not pass vacuously.
+    expect(pinos).toHaveLength(1);
+    expect(Number(pinos[0]?.[1]) * 1000).toBe(TETO_ROTA_SHOPEE_MS);
+    expect(yaml).toContain('TETO_ROTA_SHOPEE_MS');
+  });
+
+  it('a rota mapeia o 409 por instanceof ANTES do isShopeeError (texto da fonte)', () => {
+    const fonte = readFileSync(fileURLToPath(new URL('./route.ts', import.meta.url)), 'utf8');
+    const conflito = fonte.indexOf('err instanceof ConflitoDeRascunhoShopeeError');
+    const shopee = fonte.indexOf('if (isShopeeError(err))');
+    expect(conflito).toBeGreaterThan(0);
+    expect(conflito).toBeLessThan(shopee);
   });
 });

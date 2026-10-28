@@ -14,6 +14,7 @@ import {
   resolverFilhosDaListagem,
   resolverPaiDaListagem,
   skuDoItemShopee,
+  veredictoDeAdocaoShopee,
   vinculoNomeiaOutroModelo,
   type ComboDoFilho,
 } from './resolveProduto';
@@ -1012,5 +1013,325 @@ describe('as consultas do import usam os compostos declarados', () => {
     expect(consultasDeGrupo(db, 'variashopee')[0]!.clausulas.map(([campo]) => campo)).toEqual([
       ...variacao.campos,
     ]);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*  #1911 (P5, D5 / K1-8) — a importação ADOTA um rascunho só com EVIDÊNCIA     */
+/* -------------------------------------------------------------------------- */
+
+describe('#1911 — a adoção de um rascunho pela importação', () => {
+  /** MILISSEGUNDOS — o início da tentativa de criação que o rascunho registra. */
+  const DESDE_MS = 1_757_000_000_000;
+  /** SEGUNDOS — onde a janela abre: ⌊DESDE/1000⌋ − 300. */
+  const ABRE_S = 1_757_000_000 - 300;
+  /** Criado DENTRO da janela (10 s depois do início da tentativa). */
+  const DENTRO_S = 1_757_000_010;
+  /** Um anúncio ANTIGO do mesmo SKU (L3), criado muito antes da janela. */
+  const ANTIGO_S = 1_700_000_000;
+  const SKU = 'SKU-PAI';
+  const RASCUNHO = 'rasc-1';
+  const SUBCOLECAO = `produtos/${PAI}/prodshopee`;
+
+  function rascunho(extra: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      item_id: null,
+      contaProdutoShopeeOuterRef: REF_CONTA,
+      item_name: 'Camiseta do rascunho',
+      ...extra,
+    };
+  }
+  /**
+   * A publish lock taken at `desde`. `sku` = the stamp its run's PRE-SEND
+   * re-read writes (batch-A review): absent ⇔ that run has not reached the
+   * send (photos still uploading), so the lock alone is NO evidence.
+   */
+  const travaViva = (desde: number, sku?: string) => ({
+    desde,
+    expiraEm: desde + 300_000,
+    token: 'tok-publicacao',
+    ...(sku === undefined ? {} : { sku }),
+  });
+
+  function semear(db: FakeDb, docs: Record<string, Record<string, unknown>>): void {
+    semearProduto(db, PAI, { sku: SKU });
+    for (const [id, data] of Object.entries(docs)) db.seed(`${SUBCOLECAO}/${id}`, data);
+  }
+  const anuncio = (createTime: number | null, extra: Record<string, unknown> = {}) =>
+    item({ item_sku: SKU, create_time: createTime, ...extra });
+  const leiturasDaSubcolecao = (db: FakeDb) => db.consultas.filter((c) => c.fonte === SUBCOLECAO);
+
+  it('rascunho INCERTO + anúncio criado DENTRO da janela ⇒ ADOTADO: o mesmo documento, marcado', async () => {
+    const db = new FakeDb();
+    semear(db, { [RASCUNHO]: rascunho({ criacaoIncertaDesde: DESDE_MS }) });
+
+    const r = await resolverPaiDaListagem(asDb(db), INTEGRACAO, anuncio(DENTRO_S));
+
+    expect(r.existente?.id).toBe(PAI);
+    expect(r.link).toEqual({
+      id: RASCUNHO,
+      raw: rascunho({ criacaoIncertaDesde: DESDE_MS }),
+      rascunhoAdotado: true,
+    });
+    // ONE read of the WHOLE subcollection — no `where`, so no index (rule 1).
+    expect(leiturasDaSubcolecao(db)).toEqual([{ fonte: SUBCOLECAO, clausulas: [], limite: null }]);
+    expect(avisos).not.toHaveBeenCalled();
+  });
+
+  it('⛔ NEAR-MISS: o MESMO rascunho incerto + um anúncio ANTIGO do mesmo SKU (L3) ⇒ não adota (add)', async () => {
+    const db = new FakeDb();
+    semear(db, { [RASCUNHO]: rascunho({ criacaoIncertaDesde: DESDE_MS }) });
+
+    const r = await resolverPaiDaListagem(asDb(db), INTEGRACAO, anuncio(ANTIGO_S));
+
+    expect(r.existente?.id).toBe(PAI);
+    expect(r.link).toBeNull();
+    expect(avisos).not.toHaveBeenCalled();
+  });
+
+  it('a borda da janela: criado no INSTANTE em que ela abre ⇒ adota ⟷ um segundo antes ⇒ não', async () => {
+    const db = new FakeDb();
+    semear(db, { [RASCUNHO]: rascunho({ criacaoIncertaDesde: DESDE_MS }) });
+
+    const naBorda = await resolverPaiDaListagem(asDb(db), INTEGRACAO, anuncio(ABRE_S));
+    const antes = await resolverPaiDaListagem(asDb(db), INTEGRACAO, anuncio(ABRE_S - 1));
+
+    expect(naBorda.link?.rascunhoAdotado).toBe(true);
+    expect(antes.link).toBeNull();
+  });
+
+  it('⛔ um rascunho NUNCA enviado (todo rascunho legado) + um L3 do mesmo SKU ⇒ não adota, sem uma linha de log', async () => {
+    const db = new FakeDb();
+    semear(db, { [RASCUNHO]: rascunho() });
+
+    // Even "created now": no attempt evidence ⇒ it is not this draft's listing.
+    const r = await resolverPaiDaListagem(asDb(db), INTEGRACAO, anuncio(DENTRO_S));
+
+    expect(r.link).toBeNull();
+    expect(avisos).not.toHaveBeenCalled();
+  });
+
+  it('⛔ o ÚNICO rascunho do produto, com as duas chaves `null`, também não — "o único" não é evidência', async () => {
+    const db = new FakeDb();
+    semear(db, {
+      [RASCUNHO]: rascunho({ criacaoIncertaDesde: null, publicacaoEmCurso: null }),
+    });
+
+    const r = await resolverPaiDaListagem(asDb(db), INTEGRACAO, anuncio(DENTRO_S));
+    expect(r.link).toBeNull();
+  });
+
+  it('uma TRAVA viva CARIMBADA (o caminho da queda) é evidência: criado dentro ⇒ adota', async () => {
+    const db = new FakeDb();
+    semear(db, { [RASCUNHO]: rascunho({ publicacaoEmCurso: travaViva(DESDE_MS, 'CAM-1') }) });
+
+    const r = await resolverPaiDaListagem(asDb(db), INTEGRACAO, anuncio(DENTRO_S));
+    expect(r.link?.id).toBe(RASCUNHO);
+    expect(r.link?.rascunhoAdotado).toBe(true);
+  });
+
+  it('⛔ NEAR-MISS (batch-A review, 2026-10-28): a MESMA trava SEM carimbo não é evidência — criado dentro ⇒ NÃO adota, rascunho intocado', async () => {
+    // Its run never reached the send: nothing it did can have made this listing.
+    const db = new FakeDb();
+    semear(db, { [RASCUNHO]: rascunho({ publicacaoEmCurso: travaViva(DESDE_MS) }) });
+    const dadosAntes = structuredClone(db.store[`${SUBCOLECAO}/${RASCUNHO}`]!.data);
+
+    const r = await resolverPaiDaListagem(asDb(db), INTEGRACAO, anuncio(DENTRO_S));
+
+    expect(r.link).toBeNull();
+    expect(db.store[`${SUBCOLECAO}/${RASCUNHO}`]!.data).toEqual(dadosAntes);
+    expect(db.writes).toEqual([]);
+  });
+
+  it('⛔ rascunho com trava viva (fotos subindo) + o L3 ANTIGO ⇒ não adota — e o rascunho não é tocado', async () => {
+    const db = new FakeDb();
+    semear(db, { [RASCUNHO]: rascunho({ publicacaoEmCurso: travaViva(DESDE_MS) }) });
+    const antes = db.store[`${SUBCOLECAO}/${RASCUNHO}`]!;
+    const dadosAntes = structuredClone(antes.data);
+
+    const r = await resolverPaiDaListagem(asDb(db), INTEGRACAO, anuncio(ANTIGO_S));
+
+    expect(r.link).toBeNull();
+    // The SAME stored entry (same stamp object) and the same data: the run's lock untouched.
+    expect(db.store[`${SUBCOLECAO}/${RASCUNHO}`]).toBe(antes);
+    expect(antes.data).toEqual(dadosAntes);
+    expect(db.writes).toEqual([]);
+  });
+
+  it('⛔ `create_time` DESCONHECIDO ⇒ nunca adota, e diz isso numa linha (sem corpo)', async () => {
+    const db = new FakeDb();
+    semear(db, { [RASCUNHO]: rascunho({ criacaoIncertaDesde: DESDE_MS }) });
+
+    const r = await resolverPaiDaListagem(asDb(db), INTEGRACAO, anuncio(null));
+
+    expect(r.link).toBeNull();
+    expect(avisos).toHaveBeenCalledTimes(1);
+    const [mensagem, contexto] = avisos.mock.calls[0] as [string, Record<string, unknown>];
+    expect(mensagem).toMatch(/create_time/);
+    expect(contexto).toEqual({
+      integracaoId: INTEGRACAO,
+      itemId: ITEM_ID,
+      produtoId: PAI,
+      rascunhos: 1,
+    });
+  });
+
+  it('⛔ DOIS rascunhos adotáveis ⇒ ambíguo: nenhum adotado (add) e UM aviso com a contagem', async () => {
+    const db = new FakeDb();
+    semear(db, {
+      'rasc-a': rascunho({ criacaoIncertaDesde: DESDE_MS }),
+      'rasc-b': rascunho({ publicacaoEmCurso: travaViva(DESDE_MS + 1_000, 'CAM-1') }),
+    });
+
+    const r = await resolverPaiDaListagem(asDb(db), INTEGRACAO, anuncio(DENTRO_S));
+
+    expect(r.link).toBeNull();
+    expect(avisos).toHaveBeenCalledTimes(1);
+    expect(avisos.mock.calls[0]?.[1]).toMatchObject({ encontrados: 2 });
+  });
+
+  it('um rascunho adotável ao lado de um SEM evidência ⇒ adota o adotável (a contagem é só dos adotáveis)', async () => {
+    const db = new FakeDb();
+    semear(db, {
+      'rasc-a': rascunho(),
+      'rasc-b': rascunho({ criacaoIncertaDesde: DESDE_MS }),
+    });
+
+    const r = await resolverPaiDaListagem(asDb(db), INTEGRACAO, anuncio(DENTRO_S));
+    expect(r.link?.id).toBe('rasc-b');
+  });
+
+  it('⛔ o rascunho de OUTRA conta nunca é adotado', async () => {
+    const db = new FakeDb();
+    semear(db, {
+      [RASCUNHO]: rascunho({
+        criacaoIncertaDesde: DESDE_MS,
+        contaProdutoShopeeOuterRef: REF_OUTRA,
+      }),
+    });
+
+    const r = await resolverPaiDaListagem(asDb(db), INTEGRACAO, anuncio(DENTRO_S));
+    expect(r.link).toBeNull();
+  });
+
+  it('a conta é a DOBRA compartilhada: a grafia legada `integracao/<id>` do rascunho também é desta conta', async () => {
+    const db = new FakeDb();
+    semear(db, {
+      [RASCUNHO]: rascunho({
+        criacaoIncertaDesde: DESDE_MS,
+        contaProdutoShopeeOuterRef: `integracao/${INTEGRACAO}`,
+      }),
+    });
+
+    const r = await resolverPaiDaListagem(asDb(db), INTEGRACAO, anuncio(DENTRO_S));
+    expect(r.link?.id).toBe(RASCUNHO);
+  });
+
+  it('⛔ um vínculo VIVO (ou de kit nativo) nunca é "adotado" — só um RASCUNHO', async () => {
+    const db = new FakeDb();
+    semear(db, {
+      vivo: { item_id: 999, contaProdutoShopeeOuterRef: REF_CONTA, criacaoIncertaDesde: DESDE_MS },
+      kit: {
+        item_id: null,
+        kitNativo: true,
+        contaProdutoShopeeOuterRef: REF_CONTA,
+        criacaoIncertaDesde: DESDE_MS,
+      },
+    });
+
+    const r = await resolverPaiDaListagem(asDb(db), INTEGRACAO, anuncio(DENTRO_S));
+    expect(r.link).toBeNull();
+  });
+
+  it('⛔ um anúncio KIT nunca adota — e nem lê a subcoleção', async () => {
+    const db = new FakeDb();
+    semear(db, { [RASCUNHO]: rascunho({ criacaoIncertaDesde: DESDE_MS }) });
+
+    const r = await resolverPaiDaListagem(
+      asDb(db),
+      INTEGRACAO,
+      anuncio(DENTRO_S, { tag: { kit: true } }),
+    );
+
+    expect(r.existente?.id).toBe(PAI);
+    expect(r.link).toBeNull();
+    expect(leiturasDaSubcolecao(db)).toEqual([]);
+  });
+
+  it('⛔ o anúncio já tem um vínculo (VELHO, produto apagado) ⇒ é ele, nunca uma adoção, e a subcoleção nem é lida', async () => {
+    const db = new FakeDb();
+    semearLinkDaListagem(db, { produtoId: 'prod-sumido' });
+    semear(db, { [RASCUNHO]: rascunho({ criacaoIncertaDesde: DESDE_MS }) });
+
+    const r = await resolverPaiDaListagem(asDb(db), INTEGRACAO, anuncio(DENTRO_S));
+
+    expect(r.existente?.id).toBe(PAI);
+    expect(r.link?.id).toBe('link-1');
+    expect(r.link).not.toHaveProperty('rascunhoAdotado');
+    expect(leiturasDaSubcolecao(db)).toEqual([]);
+  });
+
+  it('⛔ o degrau 1 resolve ⇒ nenhuma leitura de rascunho (só o degrau do SKU adota)', async () => {
+    const db = new FakeDb();
+    semearProduto(db, PAI, { sku: SKU });
+    semearLinkDaListagem(db, { produtoId: PAI });
+    db.seed(`${SUBCOLECAO}/${RASCUNHO}`, rascunho({ criacaoIncertaDesde: DESDE_MS }));
+
+    const r = await resolverPaiDaListagem(asDb(db), INTEGRACAO, anuncio(DENTRO_S));
+
+    expect(r.link?.id).toBe('link-1');
+    expect(leiturasDaSubcolecao(db)).toEqual([]);
+  });
+
+  it('⛔ dois produtos com o SKU (o degrau declina) ⇒ nenhum rascunho é lido nem adotado', async () => {
+    const db = new FakeDb();
+    semear(db, { [RASCUNHO]: rascunho({ criacaoIncertaDesde: DESDE_MS }) });
+    semearProduto(db, 'prod-gemeo', { sku: SKU });
+
+    const r = await resolverPaiDaListagem(asDb(db), INTEGRACAO, anuncio(DENTRO_S));
+
+    expect(r.existente).toBeNull();
+    expect(r.link).toBeNull();
+    expect(leiturasDaSubcolecao(db)).toEqual([]);
+  });
+});
+
+describe('veredictoDeAdocaoShopee — o predicado que a cascata e o escritor compartilham', () => {
+  const DESDE_MS = 1_757_000_000_000;
+  const DENTRO_S = 1_757_000_010;
+  const base = (extra: Record<string, unknown> = {}): Record<string, unknown> => ({
+    item_id: null,
+    contaProdutoShopeeOuterRef: REF_CONTA,
+    criacaoIncertaDesde: DESDE_MS,
+    ...extra,
+  });
+
+  it.each([
+    ['adotavel', base(), DENTRO_S],
+    ['nao-e-rascunho', base({ item_id: 123 }), DENTRO_S],
+    ['nao-e-rascunho', base({ kitNativo: true }), DENTRO_S],
+    ['outra-conta', base({ contaProdutoShopeeOuterRef: REF_OUTRA }), DENTRO_S],
+    ['sem-tentativa', base({ criacaoIncertaDesde: undefined }), DENTRO_S],
+    ['fora-da-janela', base(), 1_700_000_000],
+    ['janela-desconhecida', base(), null],
+    ['janela-desconhecida', base(), 0],
+  ] as const)('%s', (esperado, link, createTimeS) => {
+    expect(veredictoDeAdocaoShopee(link, INTEGRACAO, createTimeS)).toBe(esperado);
+  });
+
+  it('⛔ NEAR-MISS: `item_id: 0` não é rascunho (um vínculo corrompido, nunca adotado)', () => {
+    expect(veredictoDeAdocaoShopee(base({ item_id: 0 }), INTEGRACAO, DENTRO_S)).toBe(
+      'nao-e-rascunho',
+    );
+  });
+
+  it('⛔ NEAR-MISS: `int-1` não é `int-12` — a conta compara o id INTEIRO', () => {
+    expect(
+      veredictoDeAdocaoShopee(
+        base({ contaProdutoShopeeOuterRef: 'documents/integracao/int-12' }),
+        INTEGRACAO,
+        DENTRO_S,
+      ),
+    ).toBe('outra-conta');
   });
 });
