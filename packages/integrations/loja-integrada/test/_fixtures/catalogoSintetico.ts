@@ -20,11 +20,16 @@
  *  - grade detail: the grade row's keys plus `variacoes[]`, each `grade` (a URI
  *    string), `id`, `id_externo` null, `nome`, `resource_uri`.
  *
- * ⚠️ The URI strings are placeholders. The capture says they are strings, not
- * which form the categoria ones take (they did not match `/api/v1/…`), and the
- * package reads no id from any of them: ids come from `id`. The tests also hand
- * a categoria row an absolute URL as its parent, to pin that the package never
- * refuses a page over a URI's form.
+ * The URIs follow the FORMS the capture showed, with invented ids: a
+ * categoria's `resource_uri` and string `categoria_pai` are
+ * `/v1/categoria/<id>`, WITHOUT the `/api` prefix that the marca, grade and
+ * option URIs (`/api/v1/marca/<id>`, `/api/v1/grades/<id>`,
+ * `/api/v1/grade/<g>/variacao/<v>`) carry, and the categoria list's `next` is
+ * `/api/v1/categoria?limit=…&offset=…`. (The `seo` value, redacted in the
+ * capture, stays a placeholder.) The package still reads no id from any
+ * of them: ids come from `id`, and every URI is carried as sent. The tests
+ * also hand a categoria row an absolute URL or an object as its parent, to pin
+ * that the package never refuses a page over a URI's form.
  */
 
 /** One categoria row; `pai` is the parent's URI or `null` for a root. */
@@ -35,7 +40,7 @@ export function categoriaSintetica(id: number, pai: string | null, variante: num
     categoria_pai: pai,
     descricao: variante % 3 === 0 ? null : `Descrição sintética ${String(id)}`,
     nome: `Categoria sintética ${String(id)}`,
-    resource_uri: `/api/v1/categoria/${String(id)}`,
+    resource_uri: `/v1/categoria/${String(id)}`,
     seo: variante % 4 === 0 ? null : `/api/v1/seo/${String(id + 500_000)}`,
     url: `https://loja.invalid/categoria-${String(id)}`,
   };
@@ -50,7 +55,7 @@ export function paginaCategoriasSintetica(
 ) {
   const objects = Array.from({ length: quantos }, (_, i) => {
     const id = primeiroId + i;
-    const pai = i % 3 === 0 ? null : `/api/v1/categoria/${String(primeiroId)}`;
+    const pai = i % 3 === 0 ? null : `/v1/categoria/${String(primeiroId)}`;
     return categoriaSintetica(id, pai, i);
   });
   return {

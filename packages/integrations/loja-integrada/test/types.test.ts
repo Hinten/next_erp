@@ -267,12 +267,41 @@ describe('the categoria row is tolerant of its parent and its URI', () => {
     if (r.success) expect(r.data.categoria_pai).toBe(' ');
   });
 
+  it.each([[{}], [{ id: 1 }], [5001], [true], [['/v1/categoria/5001']]])(
+    'a parent that is not a string (%j) is carried RAW, never a refused row: what it means is the reader’s call',
+    (pai) => {
+      const r = comPai(pai);
+      expect(r.success).toBe(true);
+      if (r.success) expect(r.data.categoria_pai).toStrictEqual(pai);
+    },
+  );
+
+  it('one row with an object parent never costs the page: every other row survives', () => {
+    const pagina = paginaCategoriasSintetica(0, null, 5001, 6);
+    const objects = pagina.objects.map((o, i) => (i === 2 ? { ...o, categoria_pai: {} } : o));
+    const r = envelopeCategoria.safeParse({ ...pagina, objects });
+    expect(r.success).toBe(true);
+    if (!r.success) return;
+    expect(r.data.objects.map((o) => o.id)).toEqual([5001, 5002, 5003, 5004, 5005, 5006]);
+    expect(r.data.objects[2]?.categoria_pai).toStrictEqual({});
+    expect(r.data.objects[1]?.categoria_pai).toBe('/v1/categoria/5001');
+  });
+
   it('`resource_uri` may be absent: nothing derives an id from it', () => {
     const { resource_uri: _uri, ...semUri } = categoriaRaiz;
     const r = liCategoriaSchema.safeParse(semUri);
     expect(r.success).toBe(true);
     if (r.success) expect(r.data.id).toBe(7645875);
   });
+
+  it.each([[null], [{}], [7645875], ['']])(
+    '`resource_uri` %j parses and is kept as sent: it is unread, so it never refuses a row',
+    (uri) => {
+      const r = liCategoriaSchema.safeParse({ ...categoriaRaiz, resource_uri: uri });
+      expect(r.success).toBe(true);
+      if (r.success) expect(r.data.resource_uri).toStrictEqual(uri);
+    },
+  );
 
   it('the synthetic capture-shaped page parses: string and null parents, null and string descricao', () => {
     const pagina = paginaCategoriasSintetica(0, '/api/v1/categoria?limit=50&offset=50', 5001, 50);
@@ -344,12 +373,26 @@ describe('the marca row', () => {
     if (r.success) expect(r.data.ativo).toBeUndefined();
   });
 
-  it.each([['true'], ['false'], [1], [0], [' ']])(
-    'near-miss: `ativo: %j` is NOT folded into a boolean — refused',
+  it.each([['true'], ['false'], [1], [0], [' '], [{}]])(
+    'near-miss: `ativo: %j` is carried RAW — never folded into a boolean, never a refused row',
     (ativo) => {
-      expect(comAtivo(ativo).success).toBe(false);
+      const r = comAtivo(ativo);
+      expect(r.success).toBe(true);
+      // `toStrictEqual`, not `toEqual`: 'true' must come back as 'true', never as `true`.
+      if (r.success) expect(r.data.ativo).toStrictEqual(ativo);
     },
   );
+
+  it('one row with an odd `ativo` never costs the brand list: every other row survives', () => {
+    const objects = marcaPaginaExemplo.objects.map((o, i) =>
+      i === 1 ? { ...o, ativo: 'true' } : o,
+    );
+    const r = envelopeMarca.safeParse({ ...marcaPaginaExemplo, objects });
+    expect(r.success).toBe(true);
+    if (!r.success) return;
+    expect(r.data.objects.map((o) => o.id)).toEqual([2875259, 2875261, 3012488]);
+    expect(r.data.objects.map((o) => o.ativo)).toStrictEqual([true, 'true', true]);
+  });
 
   it('a row without a nome, or with an empty id, fails', () => {
     const { nome: _nome, ...semNome } = marcaA;
@@ -474,6 +517,22 @@ describe('the grade detail and its options', () => {
       if (r.success) expect(r.data.grade).toBe(grade);
     }
   });
+
+  it.each([[null], [{}], [8946], [['/api/v1/grades/8946']]])(
+    'an option whose `grade` is %j is KEPT and carried raw: an unreadable grade never refuses the detail',
+    (grade) => {
+      const [, ...outras] = gradeDetalheExemplo.variacoes;
+      const r = liGradeDetalheSchema.safeParse({
+        ...gradeDetalheExemplo,
+        variacoes: [{ ...opcao37097, grade }, ...outras],
+      });
+      expect(r.success).toBe(true);
+      if (!r.success) return;
+      expect(r.data.variacoes.map((v) => v.id)).toEqual([37097, 37098, 37099]);
+      expect(r.data.variacoes[0]?.grade).toStrictEqual(grade);
+      expect(r.data.variacoes[1]?.grade).toBe('/api/v1/grades/8946');
+    },
+  );
 
   it('quoted option ids read as numbers; a missing option nome fails the detail', () => {
     const r = liGradeDetalheSchema.parse({

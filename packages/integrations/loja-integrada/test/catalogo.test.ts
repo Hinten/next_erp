@@ -159,6 +159,20 @@ describe.each(LISTAS)('%s', (_nome, listar, caminho, umaPagina) => {
     expect(r.linhas.length).toBeGreaterThan(0);
   });
 
+  it('an EMPTY list (`objects: []`, `next: null`) is an empty answer after one request, never an error', async () => {
+    // A store with no brands, no grades of its own or no categories answers
+    // exactly this: zero rows is an answer, not a suspicious one.
+    const f = sequencia(
+      json({
+        meta: { limit: 20, offset: 0, next: null, previous: null, total_count: 0 },
+        objects: [],
+      }),
+    );
+    const r = await listar(cliente(f), { limite: 20, maxPaginas: 10 });
+    expect(r).toEqual({ linhas: [], correlationIds: ['corr-1'], limites: [20] });
+    expect(f).toHaveBeenCalledTimes(1);
+  });
+
   it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 2 ** 53])(
     'refuses limite %j with LiConfigError("limite") and fetches nothing',
     async (limite) => {
@@ -243,20 +257,32 @@ describe('listarCategoriasLi over several pages', () => {
     expect(Object.fromEntries(segunda.searchParams)).toEqual({ limit: '20', offset: '20' });
   });
 
-  it('a capture-shaped store over one page: 50 rows, then the rest, the parents carried verbatim', async () => {
+  it('a capture-shaped store over more than one page: 50 rows, then the rest, the parents carried verbatim', async () => {
+    // `next` in the form the capture answered: a relative `/api/v1/…` path with
+    // NO slash before the query. Only its query is read, and the second request
+    // goes to the slash path with exactly `limit` and `offset`.
     const f = sequencia(
       json(paginaCategoriasSintetica(0, '/api/v1/categoria?limit=50&offset=50', 5001, 50)),
       json(paginaCategoriasSintetica(50, null, 5051, 7)),
     );
-    const r = await listarCategoriasLi(cliente(f), { limite: 50, maxPaginas: 10 });
+    const r = await listarCategoriasLi(cliente(f), { limite: 50, maxPaginas: 2 });
     expect(r.linhas).toHaveLength(57);
     expect(r.linhas[0]?.categoria_pai).toBeNull();
-    expect(r.linhas[1]?.categoria_pai).toBe('/api/v1/categoria/5001');
+    expect(r.linhas[1]?.categoria_pai).toBe('/v1/categoria/5001');
     expect(r.limites).toEqual([50, 50]);
-    expect(Object.fromEntries(requisicao(f, 1).url.searchParams)).toEqual({
-      limit: '50',
-      offset: '50',
-    });
+    expect(f).toHaveBeenCalledTimes(2);
+    const segunda = requisicao(f, 1).url;
+    expect(segunda.pathname).toBe('/v1/categoria/');
+    expect(Object.fromEntries(segunda.searchParams)).toEqual({ limit: '50', offset: '50' });
+  });
+
+  it('one row with an object parent never costs the list: every row of every page comes back', async () => {
+    const pagina = paginaCategoriasSintetica(0, null, 5001, 6);
+    const objects = pagina.objects.map((o, i) => (i === 4 ? { ...o, categoria_pai: {} } : o));
+    const f = sequencia(json({ ...pagina, objects }));
+    const r = await listarCategoriasLi(cliente(f), { limite: 50, maxPaginas: 2 });
+    expect(r.linhas.map((l) => l.id)).toEqual([5001, 5002, 5003, 5004, 5005, 5006]);
+    expect(r.linhas[4]?.categoria_pai).toStrictEqual({});
   });
 
   it('`meta.limit` is READ BACK, never assumed: asked 50, answered 20, every page still followed', async () => {
@@ -309,6 +335,18 @@ describe('listarMarcasLi', () => {
       [7002, false],
     ]);
   });
+
+  it('a row whose `ativo` is not a boolean never hides the brand list: carried raw, never folded', async () => {
+    const objects = marcasSinteticas.objects.map((o, i) =>
+      i === 0 ? { ...o, ativo: 'false' } : o,
+    );
+    const f = sequencia(json({ ...marcasSinteticas, objects }));
+    const r = await listarMarcasLi(cliente(f), { limite: 50, maxPaginas: 10 });
+    expect(r.linhas.map((m) => [m.id, m.ativo])).toStrictEqual([
+      [7001, 'false'],
+      [7002, false],
+    ]);
+  });
 });
 
 describe('listarGradesLi', () => {
@@ -344,6 +382,17 @@ describe('buscarGradeLi', () => {
     const f = sequencia(json(gradeDetalheSintetica(900001, 33)));
     const r = await buscarGradeLi(cliente(f), 900001);
     expect(r.dados.variacoes).toHaveLength(33);
+  });
+
+  it('an option whose `grade` is null is KEPT: one unreadable option never costs the grade', async () => {
+    const [primeira, ...outras] = gradeDetalheExemplo.variacoes;
+    const f = sequencia(
+      json({ ...gradeDetalheExemplo, variacoes: [{ ...primeira, grade: null }, ...outras] }),
+    );
+    const r = await buscarGradeLi(cliente(f), 8946);
+    expect(r.dados.variacoes.map((v) => v.id)).toEqual([37097, 37098, 37099]);
+    expect(r.dados.variacoes[0]?.grade).toBeNull();
+    expect(r.dados.variacoes[1]?.grade).toBe('/api/v1/grades/8946');
   });
 
   it('a grade with no options parses', async () => {

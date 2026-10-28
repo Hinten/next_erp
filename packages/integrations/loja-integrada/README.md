@@ -90,7 +90,10 @@ token **raw** after `Basic ` (not base64-encoded by us).
 - **No catalogue decision.** `catalogo.ts` reads and parses: whether a category's
   parent URI names a parent, whether an option belongs to the grade asked for,
   and what a 403 or a 404 on a catalogue read means are the app's. Every URI is
-  carried verbatim and every id comes from `id`. `id_externo` is never sent (on
+  carried verbatim and every id comes from `id`. The leaves the app judges (a
+  category's `categoria_pai`, an option's `grade`, a brand's `ativo`) are read as
+  `z.unknown()` and carried raw whatever their type, so one odd row never refuses
+  a whole list or grade. `id_externo` is never sent (on
   these GETs it would make the path id the store's external id) and never read,
   and there is no `/set/` read: a consumer reads a whole list once. A list longer
   than the caller's `maxPaginas` throws `LiPaginacaoError('limite-de-paginas')`;
