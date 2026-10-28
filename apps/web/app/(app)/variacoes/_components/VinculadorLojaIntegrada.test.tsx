@@ -474,6 +474,27 @@ describe('Loja Integrada tab — the store is readable', () => {
 });
 
 describe('Loja Integrada tab — what it cannot read is still never dropped', () => {
+  it('⚠️ an option naming a deleted variante TWICE still renders: offered once, kept as stored', async () => {
+    h.grades.mockRejectedValue(desligado());
+    const repetida = {
+      ...GUARDADO,
+      variationOptions: [opcao(37097, ['apagada', 'apagada'], 'P'), opcao(37098, ['v2'], 'M')],
+    };
+    await renderTab([repetida]);
+
+    await clicar(within(cartao(8946)).getAllByLabelText('Variantes da opção P')[0]!);
+    expect(screen.getAllByRole('option', { name: 'apagada (excluída)' })).toHaveLength(1);
+    expect((valorAtual() as Doc[])[0]).toEqual(repetida);
+  });
+
+  it('⚠️ NEAR-MISS: two different deleted variantes are two options', async () => {
+    h.grades.mockRejectedValue(desligado());
+    await renderTab([{ ...GUARDADO, variationOptions: [opcao(37097, ['apagada', 'outra'], 'P')] }]);
+
+    await clicar(within(cartao(8946)).getAllByLabelText('Variantes da opção P')[0]!);
+    expect(screen.getAllByRole('option', { name: /\(excluída\)$/ })).toHaveLength(2);
+  });
+
   it('a stored value that is not a list is reported, and only an explicit click replaces it', async () => {
     h.grades.mockRejectedValue(desligado());
     const ilegivel = { legado: true };

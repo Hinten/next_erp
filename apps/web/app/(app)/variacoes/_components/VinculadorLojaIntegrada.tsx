@@ -502,15 +502,17 @@ function LinhaOpcaoLi({
 }) {
   const rotulo = linha.nome ?? `opção #${String(linha.id)}`;
   const oferecidas = new Set(contexto.variantesOferecidas);
+  // A selected id the group no longer offers stays visible, named as such.
+  const excluidas = new Set(selecionadas.filter((id) => !oferecidas.has(id)));
+  // Each id once: Mantine THROWS on a repeated option value, and a stored option
+  // may name one id twice (the schema allows it). Only the dropdown is deduped;
+  // `value` stays as stored, so nothing is rewritten until the operator edits.
   const data = [
-    ...contexto.variantesOferecidas.map((id) => ({
+    ...[...oferecidas].map((id) => ({ value: id, label: contexto.nomeDaVariante(id) })),
+    ...[...excluidas].map((id) => ({
       value: id,
-      label: contexto.nomeDaVariante(id),
+      label: `${contexto.nomeDaVariante(id)} (excluída)`,
     })),
-    // A selected id the group no longer offers stays visible, named as such.
-    ...selecionadas
-      .filter((id) => !oferecidas.has(id))
-      .map((id) => ({ value: id, label: `${contexto.nomeDaVariante(id)} (excluída)` })),
   ];
   return (
     <Group align="flex-end" wrap="nowrap" gap="xs">
