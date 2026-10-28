@@ -194,6 +194,8 @@ describe('projetarCategoriasLi — a parent has THREE states, never two', () => 
     const linha = { id: 5, nome: 'E', categoria_pai: null, resource_uri: '/api/v1/categoria/999' };
     const { categorias } = projetarCategoriasLi([linha]);
     expect(categorias[0]?.id).toBe(5);
+    // …and the parent comes from `categoria_pai` alone: this row is a ROOT.
+    expect(categorias[0]?.pai).toEqual({ tipo: TIPO_PAI_CATEGORIA_LI.raiz });
   });
 
   it('keeps LI’s order, and drops (and counts) a row whose id no link could ever store', () => {
