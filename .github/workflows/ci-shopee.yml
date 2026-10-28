@@ -311,6 +311,7 @@ on:
       # taxonomy envelopes and the text-band functions.
       - 'packages/schemas/src/taxonomiaShopeeDto.ts'
       - 'packages/schemas/src/faixaShopee.ts'
+      - 'packages/schemas/src/shopeeAcaoSugerida.ts' # the publish lock's wait alias
       - 'firestore.indexes.json'
       - 'firebase.shopee.tasks.json'
       - 'pnpm-lock.yaml'

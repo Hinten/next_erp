@@ -104,6 +104,13 @@ export const MSG_RECRIAR_INVALIDO = 'recriar deve ser true ou false.';
 /** The sentence a `converterEmKit` that is not a JSON boolean gets (step 19, R-a). */
 export const MSG_CONVERTER_INVALIDO = 'converterEmKit deve ser true ou false.';
 
+/**
+ * The sentence a `confirmarSegundoAnuncio` that is not a JSON boolean gets
+ * (#1911, D15).
+ */
+export const MSG_CONFIRMAR_SEGUNDO_ANUNCIO_INVALIDO =
+  'confirmarSegundoAnuncio deve ser true ou false.';
+
 /** Both kit actions in one request (step 19, R-a): one action per publish. */
 export const MSG_OPCOES_DE_KIT_EXCLUSIVAS =
   'recriar e converterEmKit não podem ir juntos — uma ação de kit por pedido.';
@@ -163,7 +170,7 @@ function lerIdOpcional(src: Record<string, unknown>, nome: string): LeituraCorpo
 
 /**
  * `{ integracaoId, produtoId, linkDocId?, status?, categoryId?, principal?,
- * recriar?, converterEmKit? }`.
+ * recriar?, converterEmKit?, confirmarSegundoAnuncio? }`.
  */
 export interface CorpoPublicar {
   readonly integracaoId: string;
@@ -186,6 +193,14 @@ export interface CorpoPublicar {
   readonly recriar: boolean;
   /** Step 19 (L8): convert the ordinary listing into a native kit. Absent/`null` ⇒ `false`. */
   readonly converterEmKit: boolean;
+  /**
+   * #1911 (D15): the operator confirmed that publishing this DRAFT may create a
+   * SECOND listing of the produto on the conta. Absent/`null` ⇒ `false`.
+   * Re-checked by the draft's reservation, where the duplicate actually
+   * happens — it never overrides a sibling that is being published, and a
+   * publish that is not a draft's first create never reads it.
+   */
+  readonly confirmarSegundoAnuncio: boolean;
 }
 
 /**
@@ -259,6 +274,12 @@ export function lerCorpoPublicar(body: unknown): LeituraCorpo<CorpoPublicar> {
   if (!recriar.ok) return recriar;
   const converterEmKit = lerFlag(src.valor, 'converterEmKit', MSG_CONVERTER_INVALIDO);
   if (!converterEmKit.ok) return converterEmKit;
+  const confirmarSegundoAnuncio = lerFlag(
+    src.valor,
+    'confirmarSegundoAnuncio',
+    MSG_CONFIRMAR_SEGUNDO_ANUNCIO_INVALIDO,
+  );
+  if (!confirmarSegundoAnuncio.ok) return confirmarSegundoAnuncio;
   // ONE kit action per request (R-a): the dispatcher cannot pick between them.
   if (recriar.valor && converterEmKit.valor) return erro(MSG_OPCOES_DE_KIT_EXCLUSIVAS);
   // A recriar always NAMES its target (S1F-02): every re-run is the same request.
@@ -273,6 +294,7 @@ export function lerCorpoPublicar(body: unknown): LeituraCorpo<CorpoPublicar> {
     principal: principal.valor,
     recriar: recriar.valor,
     converterEmKit: converterEmKit.valor,
+    confirmarSegundoAnuncio: confirmarSegundoAnuncio.valor,
   });
 }
 

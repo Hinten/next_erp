@@ -22,7 +22,7 @@ import { ACAO_STATUS_ANUNCIO, type AcaoStatusAnuncio } from './mercadoLivreLink'
  *
  * ## The writer inventory, whole
  *
- * Six groups of fields have a named writer set, and none of the six overlap:
+ * Seven groups of fields have a named writer set, and none of the seven overlap:
  *  - **`item_status` + `estadoAnuncio`** — FIVE writers, enumerated on
  *    {@link shopeeItemStatusSchema} below;
  *  - **the ten `estoque*` scalars** (step 12) — **ONE** writer, the stock
@@ -66,7 +66,15 @@ import { ACAO_STATUS_ANUNCIO, type AcaoStatusAnuncio } from './mercadoLivreLink'
  *    superseded by the new one). A flat `merge` of the two scalars; re-running
  *    it re-writes the same pointer. Nothing clears it. Only PUBLISH reads it
  *    (to skip the link) and the live-link resolver behind re-verify, status and
- *    pause (to rank it last) — steps 12/13 and the order cascade ignore it.
+ *    pause (to rank it last) — steps 12/13 and the order cascade ignore it;
+ *  - **`publicacaoEmCurso`** (#1911, D4) — the publish LOCK of a draft's first
+ *    create. Written only by `apps/shopee`'s publish of a DRAFT: taken before
+ *    the run reads the content it will send, and cleared by that same run —
+ *    with the `item_id` it created, or on a refusal it owns — always guarded by
+ *    the run's own `token`, so a run never clears a lock it does not hold. A
+ *    create whose outcome is unknown leaves it in place to EXPIRE (nobody
+ *    clears it to make it expire). Nothing in a browser writes it. Every reader decides through
+ *    `estadoPublicacaoRascunhoShopee` (`./shopeeRascunho.ts`), never raw.
  * The stock sender READS `item_status` and `estadoAnuncio` into its refusal
  * fingerprint and never writes either, so it can never race the five above.
  * The price sender writes neither.
@@ -301,6 +309,36 @@ export const shopeeViolationReasonWireSchema = z
 /** @deprecated see {@link shopeeViolationReasonWireSchema}. */
 export type ShopeeViolationReasonWire = z.infer<typeof shopeeViolationReasonWireSchema>;
 
+/**
+ * The publish LOCK of a draft's first create (#1911, D4) — the shape of
+ * {@link produtoShopeeLinkSchema}'s `publicacaoEmCurso`, exported so a reader
+ * parses the stored lock with THIS object rather than a second spelling of it.
+ *
+ * ⚠️ Every instant is MILLISECONDS, and the two instants come from the route's
+ * clock (the publishing run's `agora`), never from Firestore's server time.
+ *
+ * ⚠️ `expiraEm` is the authority, never `desde + TTL`: the lock is live while
+ * the reader's instant is BEFORE it, and what an expired lock means (a
+ * post-expiry grace, then an uncertain outcome — never "free") is decided in
+ * ONE place, `estadoPublicacaoRascunhoShopee` (`./shopeeRascunho.ts`).
+ * `.passthrough()` so a key a later writer adds survives a read-modify-write.
+ */
+export const publicacaoEmCursoShopeeSchema = z
+  .object({
+    /** MILLISECONDS — when the lock was taken. */
+    desde: z.number().int(),
+    /** MILLISECONDS — the read-time expiry. */
+    expiraEm: z.number().int(),
+    /**
+     * The run's nonce — an opaque id the publishing run minted for itself. A
+     * run writes over a lock (to claim, release or stamp) only while the stored
+     * token is ITS OWN.
+     */
+    token: z.string().min(1),
+  })
+  .passthrough();
+export type PublicacaoEmCursoShopee = z.infer<typeof publicacaoEmCursoShopeeSchema>;
+
 /** `produtos/{id}/prodshopee/{docId}` — the Shopee listing link doc. */
 export const produtoShopeeLinkSchema = z
   .object({
@@ -372,7 +410,12 @@ export const produtoShopeeLinkSchema = z
      * page.
      */
     condition: z.string().nullable().default(null),
-    /** The brand name Shopee reports for `brand_id` — written by the publish read-back. */
+    /**
+     * The brand name Shopee reports for `brand_id` — written by the publish
+     * read-back (write-back #2) and, since #1911 (C9), by the import
+     * (`dadosLinkListagem`); both write it beside `brand_id` from ONE read, so
+     * the pair never mixes two answers.
+     */
     original_brand_name: z.string().nullable().default(null),
     /** MILLISECONDS. The FIRST successful publish only — never rewritten by a republish. */
     publicadoEm: z.number().int().nullable().default(null),
@@ -721,6 +764,25 @@ export const produtoShopeeLinkSchema = z
     substituidoPorLinkDocId: z.string().nullable().default(null),
     /** MILLISECONDS. When {@link substituidoPorLinkDocId} was written. */
     substituidoEm: z.number().int().nullable().default(null),
+
+    // === #1911 (D4) — the publish LOCK of a draft's first create. A bare const
+    // on this `.passthrough()` shape like every block above ⇒ no ruleset
+    // regeneration. ⚠️ SERVER-STAMPED, so `.nullable().optional()` and NOT
+    // `.nullable().default(null)`: a parse of a link that never carried the key
+    // leaves it ABSENT instead of inventing a `null` no writer chose.
+
+    /**
+     * The in-flight lock of the FIRST `add_item` of a DRAFT
+     * (`ehRascunhoShopee`) — {@link publicacaoEmCursoShopeeSchema}, every
+     * instant in MILLISECONDS. `null` or absent = no lock was ever taken, or
+     * the run that took it released it.
+     *
+     * ⚠️ Never read raw. "Has a lock" is not "is busy": an EXPIRED lock is not
+     * free (the run that held it may have sent the create), and a malformed one
+     * is not absent. `estadoPublicacaoRascunhoShopee` (`./shopeeRascunho.ts`) is
+     * the ONE reading, server and browser alike (#1369).
+     */
+    publicacaoEmCurso: publicacaoEmCursoShopeeSchema.nullable().optional(),
   })
   .passthrough();
 export type ProdutoShopeeLink = z.infer<typeof produtoShopeeLinkSchema>;

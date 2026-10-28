@@ -138,6 +138,21 @@ listing is RE-imported: through the `importar` route, the CLI, or
 run heals nothing — it skips every listing that already has a link
 (`idsJaVinculados`), kits included.
 
+**The brand is stamped as a PAIR (#1911, C9).** `dadosLinkListagem` writes
+`brand_id` AND `original_brand_name` from the same `base.brand` — Shopee's name
+verbatim, both `null` when the read carries no brand — on both branches. Before
+#1911 it wrote the id alone, and the `...existente` spread kept the name of the
+brand the listing USED to have: a brand changed in Seller Centre and then
+re-imported paired the NEW id with the OLD name, which publish's brand cascade
+sends unchecked (a stored name skips the `get_brand_list` walk, `resolverMarcaDoAnuncio`
+in `../anuncios/publicarAnuncio.ts`). Publish's write-back #2 writes the name
+with the same expression, so both writers agree with the read they just made.
+Self-healing, no migration: the next import of a listing converges its pair —
+with the same caveat as `kitNativo` above, since a default `importar-todos`
+skips listings that already have a link. The import never reaches a DRAFT
+(`item_id: null`): it resolves by `item_id`, and a draft's brand is the
+operator's pick, refused at publish as `marca-nao-escolhida` while unpicked.
+
 **The grupo write is ADR 0011 tier 1.** `update(patch, { lastUpdateTime })`
 naming only `variacoes` / `variacoesIds` / `linksVariacoesShopee` /
 `ultimaModificacao`, `create()` for a new grupo. A lost precondition is answered

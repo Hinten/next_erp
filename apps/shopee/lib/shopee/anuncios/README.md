@@ -12,7 +12,7 @@ Everything here is **offline-verified only**. The probe measured the wire
 through the package's own operations against the **SG sandbox** shop; no module
 in this folder has ever run against a BR shop, staging or production.
 
-## The twenty-six modules, in five families
+## The twenty-eight modules, in five families
 
 The families are the seam, not a filing convention.
 
@@ -21,8 +21,10 @@ The families are the seam, not a filing convention.
   19's native-kit members, whose count `errosPublicacao.test.ts` pins —,
   `ETAPA_PUBLICACAO` and `limitarMensagemProblema`), `constantesAnuncio.ts` (the ten app-level
   constants; every WIRE bound stays in `@delfrance/integrations-shopee`),
-  `montagemAnuncio.ts` (the `add_item` / `update_item` bodies and eighteen
-  pre-write refusals), `taxInfoPublicacao.ts` (the ten-member BR `tax_info`
+  `montagemAnuncio.ts` (the `add_item` / `update_item` bodies and nineteen
+  pre-write refusals), `criacaoIncerta.ts` (#1911: whether a FAILED create's
+  `add_item` may have created the listing — the closed table of documented
+  refusals, everything else `incerto`), `taxInfoPublicacao.ts` (the ten-member BR `tax_info`
   block), `tabelaMedidasPublicacao.ts` (step 18's `size_chart_info` decision),
   `logisticaPublicacao.ts` (`logistic_info`), `problemasPublicacao.ts`
   (Shopee's own rejection codes → a `problema` on a field),
@@ -35,6 +37,9 @@ The families are the seam, not a filing convention.
   (the five model-leg calls and the three child-link passes).
 - **The IO sequences** — `publicarAnuncio.ts` (`preparar` → `planejar` →
   `aplicar`, both write-backs, the re-list dance and the failure stamp),
+  `reservaRascunho.ts` (#1911: a DRAFT's publish lock — the reservation and its
+  second-listing scan, the pre-send re-read, the per-leg send gate, the
+  write-back #1 claim and the token-guarded release),
   `fotosPublicacao.ts` (the photo up-direction), `lerImpostoDoProduto.ts` (the
   memoised imposto reader over the promoted NF-e cascade),
   `lerTabelaMedidasDoProduto.ts` (step 18: the produto's `tabMedi`, one read,
@@ -258,6 +263,127 @@ as before — it is the only way a draft is ever published. The proof is
 sorts first sends exactly ONE `update_item`, for the live item, zero `add_item`,
 and leaves the draft byte-unchanged. No write, no schema shape, no index, no
 ruleset regeneration.
+
+### A draft's first create runs under a LOCK (#1911, P3, D4 + D15)
+
+`add_item` is not idempotent, so a draft published twice at once — two tabs, two
+operators, the CLI beside the tab, a request the platform froze and later woke —
+is two listings. The lock (`publicacaoEmCurso: {desde, expiraEm, token}` on the
+draft, ms, server-stamped; read ONLY through `estadoPublicacaoRascunhoShopee` in
+`@delfrance/schemas`, `shopeeRascunho.ts`) makes "both send" impossible.
+`reservaRascunho.ts` is the mechanism; `publicarAnuncioShopee` decides which way
+out a failure is. A republish of a listing and a create with no link take no
+lock and are byte-for-byte step 11's.
+
+1. **Reserve BEFORE `preparar`** reads what will be sent, so no edit can change
+   it underneath. Rule 7 tier 1: `update({publicacaoEmCurso}, {lastUpdateTime})`
+   against the snapshot that decided, ≤ 3 re-derives (a lost precondition
+   re-reads and re-DECIDES, never re-applies). The reading decides: a live lock
+   — or one inside its **post-expiry grace**, from `expiraEm` until
+   `AGUARDAR_ANUNCIO_INCERTO_SHOPEE_MS` (240 s) later — ⇒ 409 `EM_ANDAMENTO`
+   with `aguardarMs`; past the grace, an unreadable lock or a recorded
+   `criacaoIncertaDesde` ⇒ 409 `CRIACAO_INCERTA`; no longer a draft ⇒ 409
+   `JA_PUBLICADO`; a third loss ⇒ 409 `CONTENCAO`. The token is a fresh
+   `newDocId` (no IO, no clock).
+2. **Lock-THEN-scan (D15 at publish, K1-4).** With our lock written, the
+   produto's other links of the conta are read (`lerVinculosDaConta`, one
+   subcollection read, no index). Any of them not `livre` ⇒ release ours, 409
+   `EM_ANDAMENTO {aguardarMs?, vinculos}` — even with the confirmation;
+   `vinculosQueExigemConfirmacaoShopee` non-empty and no
+   `confirmarSegundoAnuncio` ⇒ release ours, 409 `CONTA_JA_TEM_ANUNCIO` with
+   `vinculos`. Each reservation WRITES before it READS, so of two concurrent
+   ones the later scanner sees the earlier lock: they can both abort, never both
+   pass.
+3. **The pre-send re-read** (in `aplicarPublicacao`, right before `add_item`):
+   the stored token must still be ours, else 409 `PUBLICACAO_EXPIRADA`, nothing
+   sent, the foreign lock untouched.
+4. **The per-leg send gate (K1-2).** Synchronously before EACH `client.addItem`
+   — the C13 fiscal retry's second leg included: send only while
+   `agora() + MARGEM_ENVIO_SHOPEE_MS < min(expiraEm, prazoDaRequisicao)`. `agora` is the
+   route's clock read LIVE on every call (`deps.aoVivo.agora`, REQUIRED, no
+   fallback to `deps.nowMs` — a constant would make the gate vacuous, K1-3);
+   `prazoDaRequisicao` is the route's `nowMs + TETO_ROTA_SHOPEE_MS` (=
+   `apphosting.yaml`'s `timeoutSeconds`, pinned by `publicar/route.test.ts`),
+   `null` from the CLI. So no create STARTS at or after `expiraEm − MARGEM`, and
+   none the request's own ceiling could cut off mid-send — which is what the
+   240 s grace is measured from.
+5. **Write-back #1 is a CLAIM**: still a draft ⇒ one guarded `update` writing
+   the item AND `publicacaoEmCurso: null` on the SAME document; already our
+   `item_id` ⇒ the plain merge (a replay); another item claimed it, or the draft
+   was deleted ⇒ `add` a fresh link — two LINKED listings, never an orphan. The
+   claim ignores the token on purpose: the listing exists, and clearing a foreign
+   lock makes its holder's pre-send re-read refuse.
+6. **Every way out**, tracked on `ReservaDeRascunhoShopee.fase`:
+
+   | what happened                                                                                | lock                     | `falhaPublicacao`                                        |
+   | -------------------------------------------------------------------------------------------- | ------------------------ | -------------------------------------------------------- |
+   | a throw before any send (blocked plan, photo/taxonomy read, the gate, a lost lock)           | released (token-guarded) | none                                                     |
+   | `add_item` refused for good — `nao-criado` (`criacaoIncerta.ts`)                             | released                 | stamped, in the SAME guarded update                      |
+   | `add_item` `incerto` (network, edge, unparseable 2xx, an UNKNOWN code, a documented "maybe") | **KEPT**                 | none — the raw error is rethrown, never "Shopee refused" |
+   | any non-Shopee error once a send began, or the claim lost three times                        | **KEPT**                 | none                                                     |
+   | anything after the claim (the model leg, the re-list, the read-back)                         | already null             | step 11's stamp, on the claimed link                     |
+
+   A guarded write whose stored token is NOT ours writes NOTHING — not the
+   release and not the stamp (K1-14): a run never clears or stamps over the run
+   that took over. A KEPT lock expires, serves its grace, then reads `incerta`,
+   and the next publish is refused with `CRIACAO_INCERTA` — until #1911's P5
+   turns that refusal into a search (ENSURE), a draft whose create could have
+   happened is refused, never re-sent (K1-15).
+
+   ⚠️ **A release never replaces the error the run is reporting.** The three
+   ways out that release and then rethrow — the D15 refusal (step 2), a throw
+   before any send, and a `nao-criado` refusal with its stamp — release through
+   `liberarTravaShopeeSemSubstituirErro`: a gRPC-coded Firestore failure of the
+   release (`isGrpcStatusError`) is logged once (ids and the code) and
+   swallowed, so the error the run was already reporting is the one that
+   surfaces — the 409/422 the operator acts on, or a read failure's own 5xx —
+   never the release's. The lock
+   then stays and expires into `incerta` like a KEPT one (for `nao-criado` the
+   stamp is lost with it — the accepted residual). Any other error from the
+   release (a `TypeError`, a bug) still surfaces. A run with no error to report
+   — `preparar` finding nothing to publish (the 404) — releases with the plain
+   `liberarTravaShopee`, whose failure is then the answer.
+
+The 409s are `ConflitoDeRascunhoShopeeError` — an APP class, never a
+`ShopeeError`, so no stamp is ever written for one; the route maps it with
+`instanceof` BEFORE `isShopeeError`, and the CLI recognises it by its `code`
+(its class's home holds the collection handles, which the `--help` path must not
+load). Every code is `CODIGO_RASCUNHO_SHOPEE`'s, the one vocabulary the web
+reads too. The publish body and the CLI gain `confirmarSegundoAnuncio` /
+`--confirmar-segundo-anuncio`; the dry run never takes the lock
+(`PrepararPublicacaoDeps` omits `aoVivo`).
+
+`marca-nao-escolhida` (D10) refuses a draft whose `brand_id` is `null` or absent
+— "Sem marca" is the explicit `0`. `linkListagemLido` stamps
+`LinkListagemLido.marcaNaoEscolhida` from the RAW document through
+`rascunhoSemMarcaShopee`, because the projected `brand_id` already folds absent
+and `null` together and an imported listing's `null` must never refuse.
+
+Cost: every NAMED publish now reads its link once more (the reservation's first
+read decides whether it is a draft at all), and a draft's publish reads the
+produto's link subcollection once more (the scan) plus the pre-send re-read. No
+index, no ruleset, no multi-document atomic write — every guard is a single-document
+precondition.
+
+**Accepted residuals** (reconcile §5.1, recorded here as asked):
+
+- **(i) A send that STARTED inside the window and whose Shopee processing
+  outlives `expiraEm + 240 s`.** The transport has no fetch deadline
+  (`apphosting.yaml`, `call.ts`), so a hung `add_item` can land after the grace;
+  the claim then either converges (ours) or forks a linked second listing. A
+  deadline on `add_item` mapped to `ShopeeNetworkError` (⇒ `incerto`) is #1094's
+  to add.
+- **(ii) CLI clock skew (K1-10, deferred).** The CLI's own gate is skew-free
+  (its `expiraEm` and `agora` share the laptop clock), but a laptop BEHIND the
+  server by _d_ erodes the server-side grace by _d_ — absorbed while _d_ ≤ 30 s.
+  Checking `writeTime` against `agora()` would need the shared FakeDb double to
+  grow a wall clock; out of proportion for an operator-only tool.
+- **(iii) Two concurrent reservations of one produto may BOTH abort** (liveness
+  only — the operator retries).
+- **(iv) An import's Shopee truth over a draft edited during `incerta`** (#1911's
+  P5 adopts only with attempt evidence).
+- **(v) A corrupt `item_id: 0` link stays neither vivo nor draft**: no lock, and a
+  publish onto it is step 11's create-then-merge.
 
 ### The update sequence: full lists, and `item_status` is never sent
 
@@ -580,7 +706,11 @@ read-only diagnostic into a write.
 ### Two write mechanisms: `merge` for publish, `mergeIfExists` (FLAT) for lifecycle
 
 The publish path writes through `aplicarLinkDaListagem` (merge/add), because a
-first publish must CREATE the link document. Every lifecycle path — pause,
+first publish must CREATE the link document. ⚠️ A DRAFT's create (#1911) is the
+one exception: its lock, its write-back #1 claim and its release are guarded
+`update(…, {lastUpdateTime})` writes (`reservaRascunho.ts`, above) — `update()`
+REPLACES a nested map such as `ultimaPublicacao` or `falhaPublicacao` whole, which
+is what those complete values want. Every lifecycle path — pause,
 re-list, re-verify, the push handlers, the child-link sync — writes through the
 handle's `mergeIfExists` with a **FLAT** patch, so a listing that vanished is
 never resurrected by a status write.

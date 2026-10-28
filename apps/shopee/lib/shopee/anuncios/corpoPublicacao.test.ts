@@ -11,6 +11,7 @@ import {
   CODIGO_SELECAO_EXCEDE_LIMITE,
   CODIGO_SELECAO_INVALIDA,
   MSG_CATEGORY_ID_INVALIDO,
+  MSG_CONFIRMAR_SEGUNDO_ANUNCIO_INVALIDO,
   MSG_CONVERTER_INVALIDO,
   MSG_LINK_EXIGE_UM_PRODUTO,
   MSG_OPCOES_DE_KIT_EXCLUSIVAS,
@@ -59,7 +60,7 @@ describe('naoDocId', () => {
 });
 
 describe('lerCorpoPublicar', () => {
-  it('lê os três campos e aplica os padrões (os três de kit do passo 19 incluídos)', () => {
+  it('lê os três campos e aplica os padrões (os três de kit do passo 19 e a confirmação do #1911 incluídos)', () => {
     const lido = lerCorpoPublicar({ integracaoId: INT_A, produtoId: PRODUTO });
 
     expect(lido.ok).toBe(true);
@@ -73,6 +74,7 @@ describe('lerCorpoPublicar', () => {
       principal: null,
       recriar: false,
       converterEmKit: false,
+      confirmarSegundoAnuncio: false,
     });
   });
 
@@ -250,6 +252,43 @@ describe('lerCorpoPublicar — os campos de kit nativo (passo 19, R-a)', () => {
     expect(recusa({ ...base, recriar: true, linkDocId: null })).toBe(MSG_RECRIAR_SEM_LINK);
     // ⛔ quase-par: o converter NÃO exige o link (o despacho escolhe o comum).
     expect(lerCorpoPublicar({ ...base, converterEmKit: true }).ok).toBe(true);
+  });
+});
+
+describe('lerCorpoPublicar — confirmarSegundoAnuncio (#1911, D15)', () => {
+  const base = { integracaoId: INT_A, produtoId: PRODUTO, linkDocId: LINK };
+
+  it('ausente e null ⇒ false; true e false passam como vieram', () => {
+    expect(lerCorpoPublicar(base)).toMatchObject({ valor: { confirmarSegundoAnuncio: false } });
+    expect(lerCorpoPublicar({ ...base, confirmarSegundoAnuncio: null })).toMatchObject({
+      valor: { confirmarSegundoAnuncio: false },
+    });
+    expect(lerCorpoPublicar({ ...base, confirmarSegundoAnuncio: false })).toMatchObject({
+      valor: { confirmarSegundoAnuncio: false },
+    });
+    expect(lerCorpoPublicar({ ...base, confirmarSegundoAnuncio: true })).toMatchObject({
+      valor: { confirmarSegundoAnuncio: true },
+    });
+  });
+
+  it("⛔ um `'true'` em TEXTO (e 1, 'false', {}) é RECUSADO com a frase do campo, nunca coagido", () => {
+    for (const v of ['true', 'false', 1, 0, {}, []]) {
+      expect(lerCorpoPublicar({ ...base, confirmarSegundoAnuncio: v }), JSON.stringify(v)).toEqual({
+        ok: false,
+        erro: MSG_CONFIRMAR_SEGUNDO_ANUNCIO_INVALIDO,
+      });
+    }
+  });
+
+  it('⛔ quase-par: a confirmação não muda nenhum outro campo e não exige linkDocId', () => {
+    const sem = lerCorpoPublicar({ integracaoId: INT_A, produtoId: PRODUTO });
+    const com = lerCorpoPublicar({
+      integracaoId: INT_A,
+      produtoId: PRODUTO,
+      confirmarSegundoAnuncio: true,
+    });
+    if (!sem.ok || !com.ok) throw new Error('esperava os dois corpos válidos');
+    expect(com.valor).toEqual({ ...sem.valor, confirmarSegundoAnuncio: true });
   });
 });
 

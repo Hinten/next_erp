@@ -46,13 +46,17 @@
  * operator can never give a listing a marketplace-optimised name of its own).
  * The produto is the fallback, which is what a first publish uses.
  *
- * ## The vocabulary this file PRODUCES (eighteen of the twenty-two)
+ * ## The vocabulary this file PRODUCES (nineteen of twenty-three)
  *
  * `sem-nome`, `nome-fora-da-faixa`, `sem-descricao`, `descricao-fora-da-faixa`,
  * `sem-preco`, `filho-sem-preco`, `preco-fora-da-faixa`, `sem-peso`,
  * `sem-dimensoes`, `sem-fotos`, `sem-gtin`, `categoria-invalida`,
  * `atributo-obrigatorio`, `marca-sem-nome`, `estoque-abaixo-do-minimo`,
- * `listagem-removida`, `produto-e-filho`, `produto-e-kit`.
+ * `listagem-removida`, `produto-e-filho`, `produto-e-kit` — and, since #1911
+ * (P3, D10), `marca-nao-escolhida`: a DRAFT whose brand was never chosen
+ * ({@link LinkListagemLido.marcaNaoEscolhida}). It is not gated on
+ * `ehAtualizacao` like the five create-only members: a draft has no `item_id`,
+ * so it only ever reaches the create body, and the flag alone decides.
  *
  * The other four are produced ELSEWHERE and are listed here so a reader does not
  * hunt for them in this file: `variacao-sem-vinculo`, `combinacao-duplicada` and
@@ -234,6 +238,27 @@ export interface LinkListagemLido {
    * fixture predating #1911) keeps the pre-#1911 reading — the link decides.
    */
   readonly ehRascunho?: boolean;
+  /**
+   * Whether the stored document is a DRAFT whose brand was never CHOSEN
+   * (#1911, P3, D10) — `rascunhoSemMarcaShopee` (`@delfrance/schemas`, the ONE
+   * predicate the web's pendência calls too) over the RAW document: a draft
+   * with `brand_id` `null` or absent. Set by the ONE builder, `linkListagemLido`
+   * in `publicarAnuncio.ts`; read by {@link montarAnuncio} alone, which refuses
+   * it as `marca-nao-escolhida` BEFORE the brand cascade's `0` could turn "not
+   * chosen" into Shopee's "No Brand" on the operator's behalf.
+   *
+   * ⚠️ **Never re-derived here from `brand_id` + `item_id` above.** `item_id` is
+   * FOLDED (a corrupt `0` reads `null`), so a corrupt link would pass for a
+   * draft; only the raw document keeps it out of the class — the
+   * {@link ehRascunho} rule.
+   *
+   * ⚠️ **REQUIRED, unlike {@link ehRascunho}.** A builder that forgot it must
+   * fail to compile: an absent flag reads as "chosen", and the cascade then
+   * publishes "No Brand" for a draft nobody picked a brand for — the silent
+   * direction. A listing's link always carries `false`: its `brand_id: null`
+   * keeps today's cascade (D10 leaves every non-draft link untouched).
+   */
+  readonly marcaNaoEscolhida: boolean;
 }
 
 /**
@@ -721,7 +746,7 @@ export function vinculoDecideKitNativo(link: { readonly ehRascunho?: unknown } |
  * Build both bodies and every refusal the produto graph can produce.
  *
  * Field sources, the stored link winning where it has one, are in the module
- * docblock; the refusal set is the eighteen members listed there. Nothing here
+ * docblock; the refusal set is the nineteen members listed there. Nothing here
  * throws: a refusal is a `problemas[]` entry, and the caller decides.
  */
 export function montarAnuncio(args: ArgsMontarAnuncio): ItemMontado {
@@ -908,7 +933,21 @@ export function montarAnuncio(args: ArgsMontarAnuncio): ItemMontado {
   const brandId = link?.brand_id ?? args.marca.brandId;
   const nomeDaMarca = textoUtilizavelShopee(args.marca.nome);
   let brand: ShopeeAddItemRequest['brand'];
-  if (brandId === 0) {
+  if (link?.marcaNaoEscolhida === true) {
+    // ⚠️ FIRST, before the `0` arm: a draft's absent brand reaches here as the
+    // cascade's `0`, and "No Brand" is a choice the operator makes («Sem
+    // marca»), never one the ERP makes for them (#1911, D10). No `brand` block
+    // and no `marca-sem-nome` — the refusal names the one missing decision.
+    brand = undefined;
+    problemas.push(
+      problema(
+        'brand',
+        MOTIVO_PUBLICACAO_BLOQUEADA.marcaNaoEscolhida,
+        'o rascunho não tem marca escolhida — escolha a marca do rascunho na aba Shopee ' +
+          '(ou «Sem marca») antes de publicar',
+      ),
+    );
+  } else if (brandId === 0) {
     // No lookup, no read, no cascade: `brand_id: 0` IS "No Brand".
     brand = { brand_id: 0, original_brand_name: NOME_SEM_MARCA };
   } else if (nomeDaMarca !== null) {

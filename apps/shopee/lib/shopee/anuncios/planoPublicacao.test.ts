@@ -187,6 +187,7 @@ const LINK: LinkListagemLido = {
   attributes: null,
   logistic_info: null,
   estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo,
+  marcaNaoEscolhida: false,
 };
 
 /**

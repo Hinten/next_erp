@@ -5,7 +5,8 @@
  * the three kit flags (`--principal`, `--recriar`, `--converter-em-kit`) and the
  * NATIVE-KIT summaries — the dry run's ({@link resumoDoEnsaioDeKit}) and the
  * live result's ({@link resumoDoResultadoKit}), whose `incerto` block prints the
- * exact command to re-run.
+ * exact command to re-run. Since #1911 also `--confirmar-segundo-anuncio` and
+ * the description of a DRAFT's lock refusal ({@link descreverConflitoDeRascunho}).
  *
  * ⚠️ **It lives here rather than in the script because `scripts/` is outside
  * this app's vitest `include`** (`{app,lib,functions}/**\/*.test.ts`), so logic
@@ -20,8 +21,13 @@
  * mapper's attribute helper, the two publish error classes, the shared CLI
  * error describer, the three routes' own doc-id predicate and — step 19 — the
  * kit result module's `incerto` sentence, `../kits/resultadoKit.ts`, which holds
- * types, one constant and one pure renderer); everything from the IO modules is
- * `import type`, which is erased.
+ * types, one constant and one pure renderer) plus `@delfrance/schemas`' draft
+ * codes; everything from the IO modules is `import type`, which is erased.
+ * ⚠️ That includes #1911's `ConflitoDeRascunhoShopeeError`: its home
+ * (`reservaRascunho.ts`) holds the collection handles, and the script imports
+ * THIS module statically, before `--help` returns — so the refusal is
+ * recognised by its `code` (one of `CODIGO_RASCUNHO_SHOPEE`'s, a vocabulary no
+ * Shopee error shares), never by a value import of its class.
  *
  * ## The redaction is an ALLOW-LIST, and that is the whole design
  *
@@ -97,6 +103,7 @@ import {
   type ShopeeItemStatusWritable,
   type ShopeeLogisticsChannel,
 } from '@delfrance/integrations-shopee';
+import { CODIGO_RASCUNHO_SHOPEE } from '@delfrance/schemas';
 
 import type { EnsaioDeKit } from '../kits/publicarKit';
 import {
@@ -122,6 +129,7 @@ import type { MotivoCanalPulado } from './logisticaPublicacao';
 import { atributosParaPublicar } from './montagemAnuncio';
 import type { OrdemDeRelistagem, PassoPublicacao, PlanoPublicacao } from './planoPublicacao';
 import type { ResultadoPublicacao } from './publicarAnuncio';
+import type { ConflitoDeRascunhoShopeeError } from './reservaRascunho';
 import type {
   FotoTabelaMedidasOmitida,
   MotivoTabelaMedidasOmitida,
@@ -190,6 +198,19 @@ Kit nativo da Shopee (step 19)
   criar dois kits com o mesmo SKU. Se a resposta for INCERTO, espere e rode o
   comando exatamente como ele foi impresso.
 
+Rascunho (#1911)
+  --link <rascunho>   publica um RASCUNHO da aba Shopee: o ERP trava o rascunho
+                      antes de ler o conteúdo, só envia o add_item enquanto a
+                      trava vale, e recusa (sem enviar nada) quando outra
+                      execução está publicando, quando a última tentativa pode
+                      ter criado o anúncio, ou quando a conta já tem anúncio ou
+                      rascunho deste produto.
+  --confirmar-segundo-anuncio
+                      confirma que este rascunho pode virar um SEGUNDO anúncio
+                      do produto nesta conta (a Shopee pode tratar duplicata
+                      como spam). Só vale no --live; nunca passa por cima de
+                      outro vínculo que esteja sendo publicado.
+
 O dry-run continua CHAMANDO a Shopee (get_item_limit, a árvore de categorias,
 get_channel_list e o upload das fotos) e lendo o Firestore — ele não ESCREVE no
 Firestore nem cria anúncio, e isso é estrutural: prepararPublicacao e
@@ -235,6 +256,11 @@ export interface ArgsPublicarAnuncio {
   readonly recriar: boolean;
   /** `--converter-em-kit` (L8). Never together with `--recriar`. */
   readonly converterEmKit: boolean;
+  /**
+   * `--confirmar-segundo-anuncio` (#1911, D15): this DRAFT may become a SECOND
+   * listing of the produto on the conta. Read by the `--live` reservation only.
+   */
+  readonly confirmarSegundoAnuncio: boolean;
 }
 
 export type ComandoPublicarAnuncio =
@@ -382,6 +408,7 @@ export function lerArgsPublicar(argv: readonly string[]): ComandoPublicarAnuncio
   let json = false;
   let recriar = false;
   let converterEmKit = false;
+  let confirmarSegundoAnuncio = false;
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i] ?? '';
@@ -431,6 +458,9 @@ export function lerArgsPublicar(argv: readonly string[]): ComandoPublicarAnuncio
       case '--converter-em-kit':
         converterEmKit = true;
         break;
+      case '--confirmar-segundo-anuncio':
+        confirmarSegundoAnuncio = true;
+        break;
       case '--live':
         live = true;
         break;
@@ -477,6 +507,7 @@ export function lerArgsPublicar(argv: readonly string[]): ComandoPublicarAnuncio
       principal: principal ?? null,
       recriar,
       converterEmKit,
+      confirmarSegundoAnuncio,
     },
   };
 }
@@ -2225,6 +2256,9 @@ export function descreverErroPublicacao(err: unknown): string[] {
   if (err instanceof ArgumentoInvalidoError) {
     return [`❌ ${err.message}`, '', USO_PUBLICAR_ANUNCIO];
   }
+  if (ehConflitoDeRascunho(err)) {
+    return [`❌ ConflitoDeRascunhoShopeeError (${err.code})`, ...descreverConflitoDeRascunho(err)];
+  }
   if (err instanceof ShopeePublishBlockedError) {
     return [`❌ ShopeePublishBlockedError (${err.motivo})`, ...descreverBloqueioPublicacao(err)];
   }
@@ -2232,4 +2266,66 @@ export function descreverErroPublicacao(err: unknown): string[] {
     return [`❌ ShopeePublishRejectedError (${err.etapa})`, ...descreverRecusaPublicacao(err)];
   }
   return descreverErro(err);
+}
+
+/* -------------------------------------------------------------------------- */
+/*                   a DRAFT's lock refusal (#1911, the 409s)                  */
+/* -------------------------------------------------------------------------- */
+
+/** The six codes of a draft's lock refusal — the ONE vocabulary, `@delfrance/schemas`'. */
+const CODIGOS_DO_CONFLITO: ReadonlySet<unknown> = new Set<unknown>(
+  Object.values(CODIGO_RASCUNHO_SHOPEE),
+);
+
+/** The fields of the refusal this module prints — its class stays an `import type`. */
+type ConflitoLido = Pick<
+  ConflitoDeRascunhoShopeeError,
+  'code' | 'linkDocId' | 'aguardarMs' | 'vinculos' | 'message'
+>;
+
+/**
+ * Is this a DRAFT's lock refusal (the route's 409)? Recognised by its `code` —
+ * one of `CODIGO_RASCUNHO_SHOPEE`'s, which no Shopee error carries (theirs are
+ * `error_*` tokens) — so this module never value-imports the class's home
+ * (see the module docblock).
+ */
+export function ehConflitoDeRascunho(err: unknown): err is ConflitoLido {
+  if (typeof err !== 'object' || err === null) return false;
+  const { code, linkDocId, message } = err as Record<string, unknown>;
+  return (
+    CODIGOS_DO_CONFLITO.has(code) && typeof linkDocId === 'string' && typeof message === 'string'
+  );
+}
+
+/**
+ * The refusal, for a terminal: the code, the draft, the wait and the sibling
+ * links, then the sentence — ids, counts and enum tokens only, which is all the
+ * error carries. Closes with what to do, by code; every one of them sent
+ * NOTHING to Shopee.
+ */
+export function descreverConflitoDeRascunho(err: ConflitoLido): string[] {
+  const linhas = [
+    `  rascunho ................ ${err.linkDocId}`,
+    `  código .................. ${err.code}`,
+  ];
+  if (err.aguardarMs !== null) {
+    linhas.push(`  aguardar ................ ${String(Math.ceil(err.aguardarMs / 1000))} s`);
+  }
+  if (err.vinculos !== null) {
+    linhas.push(`  vínculos (${String(err.vinculos.length)}):`);
+    for (const v of err.vinculos) {
+      linhas.push(
+        `    ${v.linkDocId.padEnd(24)} ${v.rascunho ? 'rascunho' : `item ${String(v.itemId)}`}`,
+      );
+    }
+  }
+  linhas.push(`  ${err.message}`);
+  if (err.code === CODIGO_RASCUNHO_SHOPEE.contaJaTemAnuncio) {
+    linhas.push(
+      '  Para publicar mesmo assim, repita o comando com --confirmar-segundo-anuncio ' +
+        '(um SEGUNDO anúncio do mesmo produto nesta conta).',
+    );
+  }
+  linhas.push('  Nada foi enviado à Shopee por esta execução.');
+  return linhas;
 }

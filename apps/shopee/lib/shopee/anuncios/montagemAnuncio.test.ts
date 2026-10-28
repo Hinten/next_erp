@@ -117,6 +117,8 @@ const LINK: LinkListagemLido = {
   estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo,
   /** An ordinary listing — what every link in this catalogue reads back as. */
   kitNativo: false,
+  /** A listing, never a draft: the brand question (#1911, D10) does not arise. */
+  marcaNaoEscolhida: false,
 };
 
 function link(over: Partial<LinkListagemLido> = {}): LinkListagemLido {
@@ -376,6 +378,22 @@ const RECUSAS: readonly CasoDeRecusa[] = [
     args: args({ marca: { brandId: 1234, nome: null } }),
   },
   {
+    motivo: MOTIVO_PUBLICACAO_BLOQUEADA.marcaNaoEscolhida,
+    rotulo: 'um RASCUNHO cuja marca nunca foi escolhida (#1911, D10)',
+    args: args({
+      link: link({
+        item_id: null,
+        estadoAnuncio: null,
+        kitNativo: null,
+        brand_id: null,
+        ehRascunho: true,
+        marcaNaoEscolhida: true,
+      }),
+      // What the cascade answers for that draft: `link.brand_id ?? 0`.
+      marca: { brandId: 0, nome: null },
+    }),
+  },
+  {
     motivo: MOTIVO_PUBLICACAO_BLOQUEADA.estoqueAbaixoDoMinimo,
     rotulo: 'estoque disponível abaixo do min_limit da loja',
     args: args({ ownDisponivel: 1 }),
@@ -407,9 +425,9 @@ describe('montarAnuncio — o vocabulário de recusa', () => {
     expect(motivos(montado.problemas)).toContain(motivo);
   });
 
-  it('percorre EXATAMENTE os dezoito membros que este módulo produz', () => {
+  it('percorre EXATAMENTE os dezenove membros que este módulo produz', () => {
     const cobertos = new Set(RECUSAS.map((c) => c.motivo));
-    expect(cobertos.size).toBe(18);
+    expect(cobertos.size).toBe(19);
     // The native-kit arm (step 19) produces its own members under `kits/`, always through
     // the constant — never a quoted slug. Read that from the source, so this pin stays
     // EXACT for step 11's vocabulary while the kit PRs add members.
@@ -869,6 +887,7 @@ const LINK_SEM_O_CAMPO: LinkListagemLido = {
   attributes: null,
   logistic_info: null,
   estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo,
+  marcaNaoEscolhida: false,
 };
 
 describe('kitNativoDoAnuncio', () => {
@@ -1297,6 +1316,147 @@ describe('montarAnuncio — brand', () => {
       args({ link: link({ brand_id: 0 }), marca: { brandId: 1234, nome: 'Delfrance' } }),
     );
     expect(montado.criar.brand).toEqual({ brand_id: 0, original_brand_name: 'No Brand' });
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                 (9b) marca-nao-escolhida (#1911, P3, D10)                   */
+/* -------------------------------------------------------------------------- */
+
+describe('montarAnuncio — marca-nao-escolhida: a marca do RASCUNHO é uma escolha', () => {
+  /** Um RASCUNHO como `linkListagemLido` o projeta, marca NUNCA escolhida. */
+  const RASCUNHO_SEM_MARCA = link({
+    item_id: null,
+    estadoAnuncio: null,
+    kitNativo: null,
+    brand_id: null,
+    ehRascunho: true,
+    marcaNaoEscolhida: true,
+  });
+  /** O que a cascata de `publicarAnuncio.ts` responde para ele: `link.brand_id ?? 0`. */
+  const MARCA_DA_CASCATA_SEM_ESCOLHA = { brandId: 0, nome: null } as const;
+
+  it('⚠️ PAR: rascunho sem marca escolhida ⇒ recusa no campo brand, SEM bloco brand e sem marca-sem-nome', () => {
+    const montado = montarAnuncio(
+      args({ link: RASCUNHO_SEM_MARCA, marca: MARCA_DA_CASCATA_SEM_ESCOLHA }),
+    );
+    const recusas = montado.problemas.filter(
+      (p) => p.motivo === MOTIVO_PUBLICACAO_BLOQUEADA.marcaNaoEscolhida,
+    );
+    expect(recusas).toHaveLength(1);
+    expect(recusas[0]?.campo).toBe('brand');
+    expect(recusas[0]?.mensagem).toContain('Sem marca');
+    // ⚠️ Nunca o `{0, 'No Brand'}` que a cascata daria: "não escolhida" NÃO é
+    // "Sem marca" — o ERP não escolhe pela operadora.
+    expect('brand' in montado.criar).toBe(false);
+    expect(motivos(montado.problemas)).not.toContain('marca-sem-nome');
+    // Um rascunho não tem item_id: só existe o corpo de criação.
+    expect(montado.atualizar).toBeNull();
+  });
+
+  it('⚠️ PAR: a recusa vale mesmo se a cascata tiver resolvido um id e um nome — quem decide é o sinal', () => {
+    const montado = montarAnuncio(
+      args({ link: RASCUNHO_SEM_MARCA, marca: { brandId: 1234, nome: 'Delfrance' } }),
+    );
+    expect(motivos(montado.problemas)).toContain('marca-nao-escolhida');
+    expect('brand' in montado.criar).toBe(false);
+  });
+
+  it('o sinal SOZINHO decide — não é uma recusa só-de-create (um rascunho nunca chega ao update)', () => {
+    // O docblock do módulo diz por que ela não entra nas cinco só-de-create:
+    // sem `item_id` não há corpo de update. Se um chamador marcasse
+    // `ehAtualizacao` num rascunho, a recusa continua — nunca "No Brand".
+    const montado = montarAnuncio(
+      args({ link: RASCUNHO_SEM_MARCA, marca: MARCA_DA_CASCATA_SEM_ESCOLHA, ehAtualizacao: true }),
+    );
+    expect(motivos(montado.problemas)).toContain('marca-nao-escolhida');
+  });
+
+  it('⛔ QUASE-PAR: rascunho com «Sem marca» ESCOLHIDA (brand_id 0) ⇒ {0, No Brand}, sem recusa', () => {
+    const montado = montarAnuncio(
+      args({
+        link: link({ ...RASCUNHO_SEM_MARCA, brand_id: 0, marcaNaoEscolhida: false }),
+        marca: { brandId: 0, nome: null },
+      }),
+    );
+    expect(montado.criar.brand).toEqual({ brand_id: 0, original_brand_name: 'No Brand' });
+    expect(motivos(montado.problemas)).not.toContain('marca-nao-escolhida');
+    expect(montado.problemas).toEqual([]);
+  });
+
+  it('⛔ QUASE-PAR: rascunho com uma marca ESCOLHIDA (o par id + nome) ⇒ essa marca, sem recusa', () => {
+    const montado = montarAnuncio(
+      args({
+        link: link({ ...RASCUNHO_SEM_MARCA, brand_id: 77, marcaNaoEscolhida: false }),
+        marca: { brandId: 77, nome: 'Marca A' },
+      }),
+    );
+    expect(montado.criar.brand).toEqual({ brand_id: 77, original_brand_name: 'Marca A' });
+    expect(motivos(montado.problemas)).not.toContain('marca-nao-escolhida');
+  });
+
+  it('⛔ QUASE-PAR: um vínculo IMPORTADO com brand_id null (update) NÃO recusa — D10 não toca anúncio vivo', () => {
+    const montado = montarAnuncio(
+      args({
+        link: link({ brand_id: null }),
+        marca: MARCA_DA_CASCATA_SEM_ESCOLHA,
+        ehAtualizacao: true,
+      }),
+    );
+    expect(motivos(montado.problemas)).not.toContain('marca-nao-escolhida');
+    expect(montado.problemas).toEqual([]);
+    expect(montado.atualizar?.brand).toEqual({ brand_id: 0, original_brand_name: 'No Brand' });
+  });
+
+  it('⛔ QUASE-PAR: um vínculo CORROMPIDO (item_id 0 dobrado para null, brand_id null) num CREATE NÃO recusa — o sinal vem do documento cru, nunca do item_id projetado', () => {
+    const montado = montarAnuncio(
+      args({
+        link: link({ item_id: null, brand_id: null, ehRascunho: false, marcaNaoEscolhida: false }),
+        marca: MARCA_DA_CASCATA_SEM_ESCOLHA,
+      }),
+    );
+    expect(motivos(montado.problemas)).not.toContain('marca-nao-escolhida');
+    expect(montado.criar.brand).toEqual({ brand_id: 0, original_brand_name: 'No Brand' });
+  });
+
+  it('⛔ QUASE-PAR: SEM vínculo (a primeira publicação do CLI) ⇒ {0, No Brand}, o `?? 0` de hoje', () => {
+    const montado = montarAnuncio(args({ link: null, marca: MARCA_DA_CASCATA_SEM_ESCOLHA }));
+    expect(montado.criar.brand).toEqual({ brand_id: 0, original_brand_name: 'No Brand' });
+    expect(motivos(montado.problemas)).not.toContain('marca-nao-escolhida');
+  });
+
+  it('⚠️ o SINAL decide, nunca a projeção: marcaNaoEscolhida true recusa mesmo com um brand_id projetado', () => {
+    // Inalcançável pelo construtor (o predicado só diz "não escolhida" com o
+    // `brand_id` cru null/ausente), e é por isso que pina o contrato: a montagem
+    // não re-deriva a decisão de `ehRascunho` + `brand_id` — que já vêm DOBRADOS.
+    const montado = montarAnuncio(
+      args({
+        link: link({ ...RASCUNHO_SEM_MARCA, brand_id: 77 }),
+        marca: { brandId: 77, nome: 'Marca A' },
+      }),
+    );
+    expect(motivos(montado.problemas)).toContain('marca-nao-escolhida');
+    expect('brand' in montado.criar).toBe(false);
+  });
+
+  it('⚠️ a montagem LÊ o sinal da projeção e nunca chama o predicado do documento cru (#1369)', () => {
+    const pasta = fileURLToPath(new URL('.', import.meta.url));
+    const mapeador = readFileSync(`${pasta}montagemAnuncio.ts`, { encoding: 'utf8' });
+    // Ela não tem o documento cru: o `item_id` e o `brand_id` dela são dobrados.
+    expect(mapeador).toContain('link?.marcaNaoEscolhida === true');
+    expect(mapeador).not.toContain('rascunhoSemMarcaShopee(');
+    expect(mapeador).not.toContain('ehRascunhoShopee(');
+    expect(mapeador).not.toMatch(/ehRascunho === true && link\.brand_id/);
+  });
+
+  it('⚠️ o ÚNICO construtor da projeção preenche o sinal com rascunhoSemMarcaShopee — nunca uma segunda grafia (#1369)', () => {
+    const pasta = fileURLToPath(new URL('.', import.meta.url));
+    const publicador = readFileSync(`${pasta}publicarAnuncio.ts`, { encoding: 'utf8' });
+    // O predicado compartilhado de `@delfrance/schemas`, o mesmo que a
+    // pendência da web chama.
+    expect(publicador).toContain('marcaNaoEscolhida');
+    expect(publicador).toContain('rascunhoSemMarcaShopee(');
+    expect(publicador).not.toContain('function rascunhoSemMarcaShopee');
   });
 });
 
