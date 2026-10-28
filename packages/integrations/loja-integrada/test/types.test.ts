@@ -3,12 +3,26 @@ import { describe, expect, it } from 'vitest';
 import {
   liCategoriaSchema,
   liEnvelopeSchema,
+  liGradeDetalheSchema,
+  liGradeSchema,
+  liMarcaSchema,
   liMetaSchema,
+  liOpcaoGradeSchema,
   liPedidoBuscaLinhaSchema,
 } from '../src/types';
 import {
+  categoriaSintetica,
+  gradeDetalheSintetica,
+  gradesSinteticas,
+  marcasSinteticas,
+  paginaCategoriasSintetica,
+} from './_fixtures/catalogoSintetico';
+import {
   categoriaPagina1,
   categoriaUltimaPagina,
+  gradeDetalheExemplo,
+  gradesPaginaExemplo,
+  marcaPaginaExemplo,
   metaLimite15,
   pedidoBuscaExemplo,
 } from './_fixtures/especificacao';
@@ -207,5 +221,276 @@ describe('the pedido search row', () => {
       resource_uri: '/api/v1/pedido/165',
       campo_novo: 1,
     });
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                            The catalogue rows                              */
+/* -------------------------------------------------------------------------- */
+
+const [categoriaRaiz] = categoriaPagina1.objects;
+
+describe('the categoria row is tolerant of its parent and its URI', () => {
+  const comPai = (categoria_pai: unknown) =>
+    liCategoriaSchema.safeParse({ ...categoriaRaiz, categoria_pai });
+
+  it("`categoria_pai: ''` is a root (null), never a refused page", () => {
+    const r = comPai('');
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.categoria_pai).toBeNull();
+  });
+
+  it('`categoria_pai` absent is a root too (undefined), and null stays null', () => {
+    const { categoria_pai: _pai, ...semPai } = categoriaRaiz;
+    const ausente = liCategoriaSchema.safeParse(semPai);
+    expect(ausente.success).toBe(true);
+    if (ausente.success) expect(ausente.data.categoria_pai).toBeUndefined();
+    const nulo = comPai(null);
+    expect(nulo.success).toBe(true);
+    if (nulo.success) expect(nulo.data.categoria_pai).toBeNull();
+  });
+
+  it.each([
+    ['/api/v1/categoria/7645875'],
+    ['/v1/categoria/7645875/'],
+    ['https://loja.invalid/api/v1/categoria/1'],
+    ['REDACTED'],
+  ])('a parent URI in any form (%s) is carried VERBATIM: its form is the reader’s call', (uri) => {
+    const r = comPai(uri);
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.categoria_pai).toBe(uri);
+  });
+
+  it("near-miss: only the exact '' is empty — a blank parent stays a blank string", () => {
+    const r = comPai(' ');
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.categoria_pai).toBe(' ');
+  });
+
+  it('`resource_uri` may be absent: nothing derives an id from it', () => {
+    const { resource_uri: _uri, ...semUri } = categoriaRaiz;
+    const r = liCategoriaSchema.safeParse(semUri);
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.id).toBe(7645875);
+  });
+
+  it('the synthetic capture-shaped page parses: string and null parents, null and string descricao', () => {
+    const pagina = paginaCategoriasSintetica(0, '/api/v1/categoria?limit=50&offset=50', 5001, 50);
+    const r = envelopeCategoria.safeParse(pagina);
+    expect(r.success).toBe(true);
+    if (!r.success) return;
+    expect(r.data.objects).toHaveLength(50);
+    const pais = r.data.objects.map((o) => o.categoria_pai);
+    expect(pais.filter((p) => p === null).length).toBeGreaterThan(0);
+    expect(pais.filter((p) => typeof p === 'string').length).toBeGreaterThan(0);
+    const descricoes = r.data.objects.map((o) => o.descricao);
+    expect(descricoes).toContain(null);
+    expect(descricoes.some((d) => typeof d === 'string')).toBe(true);
+  });
+
+  it('a row whose parent is an absolute URL still parses (the page is never refused over it)', () => {
+    const r = liCategoriaSchema.safeParse(
+      categoriaSintetica(5002, 'https://loja.invalid/api/v1/categoria/5001', 1),
+    );
+    expect(r.success).toBe(true);
+  });
+});
+
+describe('the marca row', () => {
+  const envelopeMarca = liEnvelopeSchema(liMarcaSchema);
+  const [marcaA] = marcaPaginaExemplo.objects;
+  const comAtivo = (ativo: unknown) => liMarcaSchema.safeParse({ ...marcaA, ativo });
+
+  it("the document's example parses, with its descricao the STRING 'null' (unread, kept)", () => {
+    const r = envelopeMarca.safeParse(marcaPaginaExemplo);
+    expect(r.success).toBe(true);
+    if (!r.success) return;
+    expect(r.data.objects.map((o) => o.id)).toEqual([2875259, 2875261, 3012488]);
+    expect(r.data.objects.map((o) => o.nome)).toEqual([
+      'Marca Exemplo A',
+      'Marca Exemplo B',
+      'Marca Exemplo C',
+    ]);
+    expect(r.data.objects[0]?.ativo).toBe(true);
+    expect(r.data.objects[0]?.descricao).toBe('null');
+  });
+
+  it('the synthetic capture-shaped page parses: ativo both ways, descricao and imagem null or string', () => {
+    const r = envelopeMarca.safeParse(marcasSinteticas);
+    expect(r.success).toBe(true);
+    if (!r.success) return;
+    expect(r.data.objects.map((o) => o.ativo)).toEqual([true, false]);
+    expect(r.data.objects.map((o) => o.descricao)).toEqual([null, 'Texto sintético.']);
+    expect(r.data.objects.map((o) => o.imagem)).toEqual([
+      null,
+      'https://imagens.invalid/marca-7002.png',
+    ]);
+    expect(r.data.objects.map((o) => o.destaque)).toEqual([false, true]);
+  });
+
+  it('a quoted id reads as the number', () => {
+    expect(liMarcaSchema.parse({ ...marcaA, id: '2875259' }).id).toBe(2875259);
+  });
+
+  it("`ativo` '' or null reads as null (unknown), absent stays undefined — never a refused page", () => {
+    for (const vazio of ['', null]) {
+      const r = comAtivo(vazio);
+      expect(r.success, JSON.stringify(vazio)).toBe(true);
+      if (r.success) expect(r.data.ativo).toBeNull();
+    }
+    const { ativo: _ativo, ...semAtivo } = marcaA;
+    const r = liMarcaSchema.safeParse(semAtivo);
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.ativo).toBeUndefined();
+  });
+
+  it.each([['true'], ['false'], [1], [0], [' ']])(
+    'near-miss: `ativo: %j` is NOT folded into a boolean — refused',
+    (ativo) => {
+      expect(comAtivo(ativo).success).toBe(false);
+    },
+  );
+
+  it('a row without a nome, or with an empty id, fails', () => {
+    const { nome: _nome, ...semNome } = marcaA;
+    expect(liMarcaSchema.safeParse(semNome).success).toBe(false);
+    expect(liMarcaSchema.safeParse({ ...marcaA, id: '' }).success).toBe(false);
+  });
+
+  it('`id_externo` is unread: any value parses, and is kept untouched', () => {
+    for (const idExterno of [null, 5, '5', {}]) {
+      const r = liMarcaSchema.safeParse({ ...marcaA, id_externo: idExterno });
+      expect(r.success, JSON.stringify(idExterno)).toBe(true);
+      if (r.success) expect(r.data.id_externo).toEqual(idExterno);
+    }
+  });
+});
+
+describe('the grade row', () => {
+  const envelopeGrade = liEnvelopeSchema(liGradeSchema);
+  const [genero] = gradesPaginaExemplo.objects;
+  const comVisivel = (nome_visivel: unknown) =>
+    liGradeSchema.safeParse({ ...genero, nome_visivel });
+
+  it("the document's example parses; an empty nome_visivel reads as null", () => {
+    const r = envelopeGrade.safeParse(gradesPaginaExemplo);
+    expect(r.success).toBe(true);
+    if (!r.success) return;
+    expect(r.data.objects.map((o) => o.id)).toEqual([32769, 8945, 8946, 8949, 2047707]);
+    expect(r.data.objects.map((o) => o.nome_visivel)).toEqual([
+      'Gênero',
+      'Cor',
+      'Tamanho',
+      'Voltagem',
+      null,
+    ]);
+  });
+
+  it('the synthetic capture-shaped page parses: nome_visivel a string or null, specification_id kept', () => {
+    const r = envelopeGrade.safeParse(gradesSinteticas);
+    expect(r.success).toBe(true);
+    if (!r.success) return;
+    expect(r.data.objects.map((o) => o.nome_visivel)).toEqual([
+      'Visível um',
+      null,
+      'Visível plataforma',
+    ]);
+    expect(r.data.objects[0]?.specification_id).toBeNull();
+  });
+
+  it("`nome_visivel` '' and null read as null; absent stays undefined", () => {
+    for (const vazio of ['', null]) {
+      const r = comVisivel(vazio);
+      expect(r.success, JSON.stringify(vazio)).toBe(true);
+      if (r.success) expect(r.data.nome_visivel).toBeNull();
+    }
+    const { nome_visivel: _visivel, ...semVisivel } = genero;
+    const r = liGradeSchema.safeParse(semVisivel);
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.nome_visivel).toBeUndefined();
+  });
+
+  it("near-miss: a blank nome_visivel (' ') is NOT empty — it stays ' '", () => {
+    const r = comVisivel(' ');
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.nome_visivel).toBe(' ');
+  });
+
+  it('a quoted id reads as the number; a fractional one or a missing nome fails', () => {
+    expect(liGradeSchema.parse({ ...genero, id: '8946' }).id).toBe(8946);
+    expect(liGradeSchema.safeParse({ ...genero, id: '8946.5' }).success).toBe(false);
+    const { nome: _nome, ...semNome } = genero;
+    expect(liGradeSchema.safeParse(semNome).success).toBe(false);
+  });
+});
+
+describe('the grade detail and its options', () => {
+  const [opcao37097] = gradeDetalheExemplo.variacoes;
+
+  it("the document's example parses: the grade, then its options in order", () => {
+    const r = liGradeDetalheSchema.safeParse(gradeDetalheExemplo);
+    expect(r.success).toBe(true);
+    if (!r.success) return;
+    expect(r.data.id).toBe(8946);
+    expect(r.data.nome_visivel).toBe('Tamanho');
+    expect(r.data.variacoes.map((v) => v.id)).toEqual([37097, 37098, 37099]);
+    expect(r.data.variacoes.map((v) => v.grade)).toEqual([
+      '/api/v1/grades/8946',
+      '/api/v1/grades/8946',
+      '/api/v1/grades/8946',
+    ]);
+    // Undeclared keys survive, on the grade and on each option.
+    expect(r.data.resource_uri).toBe('/api/v1/grades/8946');
+    expect(r.data.variacoes[0]?.resource_uri).toBe('/api/v1/grade/8946/variacao/37097');
+  });
+
+  it('the synthetic capture-shaped detail parses, specification_id and every option kept', () => {
+    const r = liGradeDetalheSchema.safeParse(gradeDetalheSintetica(900001, 28));
+    expect(r.success).toBe(true);
+    if (!r.success) return;
+    expect(r.data.variacoes).toHaveLength(28);
+    expect(r.data.specification_id).toBeNull();
+  });
+
+  it('a grade with no options (`variacoes: []`) parses', () => {
+    const r = liGradeDetalheSchema.safeParse({ ...gradeDetalheExemplo, variacoes: [] });
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.variacoes).toEqual([]);
+  });
+
+  it('a detail WITHOUT `variacoes` fails: its options are the whole point of the read', () => {
+    const { variacoes: _variacoes, ...semVariacoes } = gradeDetalheExemplo;
+    expect(liGradeDetalheSchema.safeParse(semVariacoes).success).toBe(false);
+  });
+
+  it('an option’s `grade` may be absent, or any string: which grade it names is the reader’s call', () => {
+    const { grade: _grade, ...semGrade } = opcao37097;
+    const ausente = liOpcaoGradeSchema.safeParse(semGrade);
+    expect(ausente.success).toBe(true);
+    if (ausente.success) expect(ausente.data.grade).toBeUndefined();
+    for (const grade of ['/api/v1/grades/8947', 'https://loja.invalid/api/v1/grades/8946', '']) {
+      const r = liOpcaoGradeSchema.safeParse({ ...opcao37097, grade });
+      expect(r.success, grade).toBe(true);
+      if (r.success) expect(r.data.grade).toBe(grade);
+    }
+  });
+
+  it('quoted option ids read as numbers; a missing option nome fails the detail', () => {
+    const r = liGradeDetalheSchema.parse({
+      ...gradeDetalheExemplo,
+      id: '8946',
+      variacoes: [{ ...opcao37097, id: '37097' }],
+    });
+    expect(r.id).toBe(8946);
+    expect(r.variacoes[0]?.id).toBe(37097);
+    const { nome: _nome, ...semNome } = opcao37097;
+    expect(
+      liGradeDetalheSchema.safeParse({ ...gradeDetalheExemplo, variacoes: [semNome] }).success,
+    ).toBe(false);
+  });
+
+  it('the detail keeps an unknown top-level key (passthrough survives the extension)', () => {
+    const r = liGradeDetalheSchema.parse({ ...gradeDetalheExemplo, campo_novo: 1 });
+    expect(r).toMatchObject({ campo_novo: 1 });
   });
 });
