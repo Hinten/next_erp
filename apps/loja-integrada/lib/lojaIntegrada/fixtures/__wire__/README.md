@@ -13,6 +13,20 @@ Every other file in this folder is one fixture envelope, `<nome>.json`, written 
   product names, descriptions, URLs, image paths, tracking codes, external order ids,
   configuration labels and cost (`fixture` profile of `core/redacao.ts`).
 - SKUs, order numeros, dates, quantities and prices are real (master plan D17, Q3).
+- Catalogue ids are not: in a `catalogo` fixture every Loja Integrada id (a row's `id`
+  or `*_id`, the ids inside `resource_uri`, `categoria_pai`, an option's `grade` and its
+  `/grade/<g>/variacao/<v>`, the ids of the request path and of `meta.next`/
+  `meta.previous`, and a `produto=` query value) is a keyed 9-digit pseudonym
+  (`scripts/README.md`, "The pseudonym key"). One real id is one pseudonym in every
+  file and both stores, so the relations hold: a row's URI ends in its id, a
+  `categoria_pai` names a category of the same store, a grade detail is a row of its
+  store's grade list, and distinct rows keep distinct ids. Never key a test on a
+  particular id value; the whole catalogue corpus shares ONE key, which outlives the
+  raw captures, and regenerating under another key changes every id at once. Counts,
+  the other query values (`limit`, `offset`), booleans and nulls are as captured, and
+  so are the configuration ids (`situacao`, `pagamento`), which are platform-wide
+  constants. A catalogue error body never holds a number other than its status (the
+  sanitizer refuses one: it may echo an id a pseudonym cannot replace there).
 - Error bodies keep only their shape, booleans, null, safe integers below 1e7 and 1–7 digit
   strings under the allowed code keys; key names outside `[A-Za-z_]{1,32}` are renamed
   `chave_redigida_<n>`, and no error message text is ever kept.
@@ -24,9 +38,22 @@ Every other file in this folder is one fixture envelope, `<nome>.json`, written 
 
 `wireCorpus.test.ts` reads this folder: every file must be a valid envelope, serialised
 as `JSON.stringify(v, null, 2) + '\n'`, and pass both layers of `piiScan.ts`.
-`MINIMO_DE_FIXTURES` is the number of committed fixtures (18 since the owner's first
-captures, step 3), so a fixture that disappears fails the test. A change that adds or
-deliberately removes a fixture moves it in the same commit.
+`MINIMO_DE_FIXTURES` is the number of committed fixtures (29 since step 10: 18 from the
+owner's first captures, step 3, plus the 11 catalogue captures `c9-*`), and the test
+asserts the count equals it: a fixture that disappears fails, and so does one added
+without moving it. A change that adds or deliberately removes a fixture moves it in the
+same commit.
+
+A change to `core/redacao.ts` can change what the sanitizer writes for a fixture already
+committed. Re-run the dry run over every pair: a fixture whose bytes would change is
+reported `fixture-existente-diferente`. Rewrite it in the same change with
+`--so <nome> --sobrescrever`, and show the owner its diff. The corpus test catches part of
+this: a resource that two fixtures hold must carry one `resource_uri` in both. It also
+pins the catalogue ids' function without naming one (each row's URI ends in its id,
+every `categoria_pai` names a category of its store, each grade detail is one grade
+listed by its store, a store's category, grade and brand rows and a grade's options
+carry distinct ids) and that every catalogue id is in the pseudonym range
+`[100000000, 999999999]`.
 
 ## Excluded on purpose
 

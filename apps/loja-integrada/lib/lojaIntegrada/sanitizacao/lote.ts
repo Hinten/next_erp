@@ -22,6 +22,12 @@ export class ErroDeUsoSanitizacao extends Error {
 /** The owner's local list of store names and domains. It never enters the repository. */
 export const ARQUIVO_NOMES_PROIBIDOS = 'nomes-proibidos.txt';
 
+/**
+ * The catalogue-id pseudonym key (`pseudonimo.ts`), beside the captures and never
+ * in the repository: 64 hexadecimal digits, created by `--gerar-chave`.
+ */
+export const ARQUIVO_CHAVE_FIXTURES = '.chave-fixtures';
+
 /** A term shorter than this (letters and digits, after the fold) is refused. */
 export const MINIMO_POR_TERMO = 4;
 
@@ -37,7 +43,7 @@ export type ProblemaDoLote =
 export interface LoteDeCapturas {
   /** Complete pairs to convert (after `--so`), sorted. */
   readonly pares: readonly string[];
-  /** Entries that are neither a capture nor the list. Counted, never named. */
+  /** Entries that are neither a capture, the list nor the key. Counted, never named. */
   readonly ignorados: number;
   /** Unpaired captures, captures that are not regular files, names outside the grammar: the run refuses. */
   readonly problemas: readonly ProblemaDoLote[];
@@ -75,7 +81,7 @@ export function montarLote(
     ...naoArquivos.map((nome) => ({ nome, arquivo: false })),
   ];
   for (const { nome, arquivo } of entradas) {
-    if (nome === ARQUIVO_NOMES_PROIBIDOS) continue;
+    if (nome === ARQUIVO_NOMES_PROIBIDOS || nome === ARQUIVO_CHAVE_FIXTURES) continue;
     if (!CANDIDATO.test(nome)) {
       ignorados += 1;
       continue;

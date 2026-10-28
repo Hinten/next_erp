@@ -31,6 +31,7 @@ import {
   corpoDeRestauracaoLi,
   cortarUtf8,
   mascararTexto,
+  passaPredicadoLi,
   profundidadeJson,
   recursoDoCaminho,
   redigirCaminhoEQuery,
@@ -2516,6 +2517,198 @@ describe('near-miss pairs the mutation run found missing', () => {
       transacao_id: REDIGIDO,
       codigo: valor,
     });
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*        uriRecurso: the /v1/ form and the grade option form (step 10)        */
+/* -------------------------------------------------------------------------- */
+
+describe('uriRecurso — the /v1/ form and the grade option form (step 10)', () => {
+  const uri = (v: string) => passaPredicadoLi('uriRecurso', v);
+  const CPF_PONTUADO = `${CPF.slice(0, 3)}.${CPF.slice(3, 6)}.${CPF.slice(6, 9)}-${CPF.slice(9)}`;
+  const CNPJ_PONTUADO = `${CNPJ.slice(0, 2)}.${CNPJ.slice(2, 5)}.${CNPJ.slice(5, 8)}/${CNPJ.slice(8, 12)}-${CNPJ.slice(12)}`;
+
+  const recusadas = (valores: readonly string[]) => {
+    for (const v of valores) expect(uri(v), JSON.stringify(v)).toBe(false);
+  };
+
+  it('kept: /api/v1/ and /v1/, each with or without one trailing slash, and the option form under both', () => {
+    for (const v of [
+      '/api/v1/categoria/7645875',
+      '/api/v1/categoria/7645875/',
+      '/v1/categoria/7645875',
+      '/v1/categoria/7645875/',
+      '/api/v1/grades/6062',
+      '/v1/grades/6062/',
+      '/api/v1/situacao/pedido/165',
+      '/v1/situacao/pedido/165',
+      '/api/v1/grade/6062/variacao/37097',
+      '/api/v1/grade/6062/variacao/37097/',
+      '/v1/grade/6062/variacao/37097',
+      '/v1/grade/6062/variacao/37097/',
+    ]) {
+      expect(uri(v), v).toBe(true);
+    }
+  });
+
+  it('refused: a letter, a sign, a space or nothing where an id goes', () => {
+    recusadas([
+      '/v1/categoria/abc',
+      '/v1/categoria/12a',
+      '/v1/categoria/None',
+      '/v1/categoria/-1',
+      '/v1/categoria/1.5',
+      '/v1/categoria/ 1',
+      '/v1/categoria/1 ',
+      '/v1/categoria/',
+      '/v1/categoria',
+      '/v1/grade/6062/variacao/3709x',
+      '/v1/grade/x/variacao/37097',
+      '/v1/grade/6062/variacao/',
+      '/v1/grade//variacao/37097',
+      '/api/v1/grade/6062/variacao/None',
+    ]);
+  });
+
+  it('refused: an e-mail or a name anywhere in the path', () => {
+    recusadas([
+      `/v1/categoria/${PII_FALSA.email}`,
+      `/v1/${PII_FALSA.email}/1`,
+      `/api/v1/categoria/1/${PII_FALSA.email}`,
+      `/v1/grade/1/variacao/${PII_FALSA.email}`,
+      `/v1/categoria/${PII_FALSA.nome}`,
+      `/v1/${PII_FALSA.nome}/1`,
+      `/v1/categoria/${encodeURIComponent(PII_FALSA.nome)}`,
+      `/v1/grade/1/${encodeURIComponent(PII_FALSA.nome)}/2`,
+      '/v1/Fulano/1',
+      '/v1/joão/1',
+      '/v1/fulano-de-tal/1',
+      '/v1/fulano.tal/1',
+    ]);
+  });
+
+  it('refused: a CPF or a CNPJ written with its punctuation, and a letter-bearing CNPJ', () => {
+    recusadas([
+      `/v1/categoria/${CPF_PONTUADO}`,
+      `/v1/categoria/${CNPJ_PONTUADO}`,
+      `/v1/categoria/${CNPJ_LETRA}`,
+      `/v1/grade/1/variacao/${CPF_PONTUADO}`,
+      `/v1/grade/${CNPJ_PONTUADO}/variacao/1`,
+      `/api/v1/grade/1/variacao/${CNPJ_LETRA}`,
+    ]);
+  });
+
+  it('refused: a query string or a fragment, on either prefix and on the option form', () => {
+    recusadas([
+      '/v1/categoria/1?id_externo=1',
+      `/v1/categoria/1/?email=${PII_FALSA.email}`,
+      '/api/v1/categoria/1?limit=1',
+      '/v1/categoria/1?',
+      '/v1/categoria/1#x',
+      '/v1/grade/1/variacao/2?x=1',
+      '/api/v1/grade/1/variacao/2/?id_externo=1',
+    ]);
+  });
+
+  it('refused: a host, a scheme or a protocol-relative URL, even the Loja Integrada origin', () => {
+    recusadas([
+      `${ORIGEM_LI}/v1/categoria/1`,
+      `${ORIGEM_LI}/api/v1/categoria/1`,
+      `${ORIGEM_LI}/api/v1/grade/1/variacao/2`,
+      'https://loja.invalid/v1/categoria/1',
+      '//loja.invalid/v1/categoria/1',
+      'loja.invalid/v1/categoria/1',
+      'http://loja.invalid/v1/grade/1/variacao/2',
+    ]);
+  });
+
+  it('refused: the shape near-misses (version, prefix, doubled or extra segments, the option form spelled otherwise)', () => {
+    recusadas([
+      '/v2/categoria/1',
+      '/api/v2/categoria/1',
+      '/api/categoria/1',
+      'v1/categoria/1',
+      'api/v1/categoria/1',
+      '/api/api/v1/categoria/1',
+      '/api/v1/categoria//1',
+      '/v1//categoria/1',
+      '/v1/categoria/1//',
+      '/v1/categoria/1/2',
+      '/v1/../categoria/1',
+      '/V1/categoria/1',
+      '/v1/Categoria/1',
+      '/v1/categoria/1\n',
+      '/v1/grades/1/variacao/2',
+      '/v1/grade/1/variacoes/2',
+      '/v1/categoria/1/variacao/2',
+      '/v1/variacao/2/grade/1',
+      '/v1/grade/1/variacao/2/3',
+      '/v1/grade/1/2',
+    ]);
+  });
+
+  it('refused: another word before /v1/, and the option form with either word misspelled', () => {
+    recusadas([
+      '/apix/v1/categoria/1',
+      '/loja/v1/categoria/1',
+      '/fulano/v1/categoria/1',
+      '/x/v1/grade/1/variacao/2',
+      '/v1/grade/1/variacaoes/2',
+      '/v1/grade/1/variacaox/2',
+      '/v1/grade/1/variaca/2',
+      '/api/v1/grade/1/opcao/2',
+      '/v1/gradex/1/variacao/2',
+      '/v1/grad/1/variacao/2',
+    ]);
+  });
+
+  it('the fixture profile keeps the /v1/ and option URIs of a catalogue body, and fakes each near-miss', () => {
+    expect(
+      fixtureJson('/v1/categoria/', 200, {
+        objects: [
+          { id: 7, resource_uri: '/v1/categoria/7', categoria_pai: '/v1/categoria/3/' },
+          {
+            id: 8,
+            resource_uri: '/v1/categoria/8?id_externo=1',
+            categoria_pai: `/v1/categoria/${PII_FALSA.email}`,
+          },
+        ],
+      }),
+    ).toEqual({
+      objects: [
+        { id: 7, resource_uri: '/v1/categoria/7', categoria_pai: '/v1/categoria/3/' },
+        { id: 8, resource_uri: FALSO_LI.texto, categoria_pai: FALSO_LI.texto },
+      ],
+    });
+    expect(
+      fixtureJson('/v1/grades/6062/', 200, {
+        id: 6062,
+        resource_uri: '/api/v1/grades/6062',
+        variacoes: [
+          { id: 1, grade: '/api/v1/grades/6062', resource_uri: '/api/v1/grade/6062/variacao/1' },
+          { id: 2, grade: '/v1/grades/6062/', resource_uri: '/v1/grade/6062/variacao/2/' },
+          { id: 3, grade: '/api/v1/grades/89x6', resource_uri: '/api/v1/grade/6062/variacao/3x' },
+        ],
+      }),
+    ).toEqual({
+      id: 6062,
+      resource_uri: '/api/v1/grades/6062',
+      variacoes: [
+        { id: 1, grade: '/api/v1/grades/6062', resource_uri: '/api/v1/grade/6062/variacao/1' },
+        { id: 2, grade: '/v1/grades/6062/', resource_uri: '/v1/grade/6062/variacao/2/' },
+        { id: 3, grade: FALSO_LI.texto, resource_uri: FALSO_LI.texto },
+      ],
+    });
+  });
+
+  it('the log profile keeps an estrutural /v1/ resource_uri and redacts its query-string near-miss', () => {
+    expect(logJson('/v1/pedido/165', 200, { resource_uri: '/v1/pedido/165' })).toEqual({
+      resource_uri: '/v1/pedido/165',
+    });
+    expect(
+      logJson('/v1/pedido/165', 200, { resource_uri: `/v1/pedido/165?email=${PII_FALSA.email}` }),
+    ).toEqual({ resource_uri: REDIGIDO });
   });
 });
 

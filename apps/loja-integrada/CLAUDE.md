@@ -236,6 +236,23 @@ verdicts, the live/mirror split) is `packages/schemas/src/conferenciaPagamentoLo
 - Captures live in `~/li-capturas`, OUTSIDE every checkout: the sanitizer refuses a folder
   with a `.git` entry in it or above it, and refuses to run without the owner's local
   `nomes-proibidos.txt` (store names; never in the repo, never printed).
+- **Catalogue ids are keyed pseudonyms** (`sanitizacao/pseudonimo.ts`): on a `catalogo`
+  2xx pair the sanitizer maps every kept `id` and `*_id`, every id segment of a kept
+  resource URI, of the request path and of `meta.next`/`previous`, and the `produto=`
+  query value to `1e8 + HMAC-SHA256(key, "li-fixture-id:" + id)[0..6] mod 9e8`, one
+  namespace for every resource, so the relations between rows survive. The key is
+  `.chave-fixtures` in the capture folder (created once by `--gerar-chave`, which refuses
+  to replace it; never printed, never committed). ⚠️ **The key OUTLIVES the captures**:
+  deleting merged raw pairs never deletes it, and a later catalogue capture must use the
+  same key, or its ids silently stop matching the committed fixtures. No key → the
+  catalogue pair is refused (its printed request line blanks ids as `<id>`); two ids on
+  one pseudonym → the run is refused (new key). **A new key changes every catalogue id:
+  regenerate every catalogue fixture in one change.** What the mapping cannot reach is
+  refused: a catalogue error body keeping a number other than its status, and a
+  catalogue resource on a path `ehCatalogo` does not admit. Meta counts, other query
+  values (`limit`, `offset`) and the configuration/estrutural classes are untouched. The
+  dry run's leaf table shows mapped leaves as `pseudonimizado`; `wireCorpus.test.ts` pins
+  their relations, distinctness and range.
 - ⚠️ **Agents never open a raw capture** (no `cat`, editor or file tool): run the sanitizer
   and read only its output (`--dry-run` prints paths, types and treatments, never values)
   and the sanitized fixtures.
@@ -246,8 +263,9 @@ verdicts, the live/mirror split) is `packages/schemas/src/conferenciaPagamentoLo
 - A fixture is pushed only after Lucas has seen it (the repo is public), and only after
   `sanitizar --entrada … --verificar <files>` passes over the new fixtures, the changed docs
   and the PR-body draft. `wireCorpus.test.ts` re-scans the corpus in CI (no store list
-  there); its floor `MINIMO_DE_FIXTURES` is the committed count (18), so a fixture that
-  disappears fails it.
+  there); its floor `MINIMO_DE_FIXTURES` is the committed count (29: the 18 step-3 captures
+  plus the 11 step-10 catalogue captures, `c9-*`), so a fixture that disappears fails it,
+  and so does one added without moving it.
 - ⚠️ The owner's raw `pedido-enviado` pair duplicates `pedido-boleto` (the same order,
   identical sanitized bytes) and is EXCLUDED from the corpus. It stays in `~/li-capturas`
   until he deletes it, so a sanitizer run without `--so` writes it back: delete that raw
@@ -257,8 +275,9 @@ verdicts, the live/mirror split) is `packages/schemas/src/conferenciaPagamentoLo
 - Kept on review of the first corpus (2026-10-14), not leaks: a 14-digit window INSIDE a
   longer SKU that passes the CNPJ check (the scan tests whole values; any one window passes
   by chance about 1% of the time, and the sibling variant's window fails), LI's own
-  numeric ids where the profile keeps them, `meta.total_count` (the kept numeros already
-  show the store's scale) and `resposta.bytes` (step 11 sizes snapshots with it). ⚠️ An
+  numeric ids where the profile keeps them on the configuration class (platform-wide
+  constants; catalogue ids are pseudonyms, above), `meta.total_count` (the kept numeros
+  already show the store's scale) and `resposta.bytes` (step 11 sizes snapshots with it). ⚠️ An
   order detail's top-level `id` is FAKED (`0`) and so is every `itens.*.produto`
   (a placeholder, not even a URI): no capture test may key on either, and the produto
   reference form has no real capture yet.
