@@ -7,7 +7,7 @@
  * (`lib/whatsapp/client.ts`): `null` while logged out, so the panel can disable
  * its buttons, and `() => user.getIdToken()` so a refreshed ID token propagates.
  *
- * Six calls, one per route (`apps/loja-integrada/app/api/marketplace/loja-integrada/…`):
+ * Eight calls, one per route (`apps/loja-integrada/app/api/marketplace/loja-integrada/…`):
  *
  * | call | route | answer |
  * | --- | --- | --- |
@@ -15,13 +15,26 @@
  * | `salvarCredencial(id, corpo)` | `PUT …/conta/[id]/credencial` | `respostaCredencialLojaIntegradaSchema` |
  * | `renovarValidade(id, corpo)` | `PUT …/conta/[id]/credencial/validade` | `respostaCredencialLojaIntegradaSchema` |
  * | `removerCredencial(id)` | `DELETE …/conta/[id]/credencial` | `respostaRemocaoCredencialLiSchema` |
+ * | `grades(id, opcoes)` | `GET …/conta/[id]/grades` | `respostaGradesLiSchema` |
+ * | `grade(id, gradeId, opcoes)` | `GET …/conta/[id]/grades/[gradeId]` | `respostaGradeLiSchema` |
  * | `rotearEtiqueta(pedidoId, corpo)` | `PUT …/pedidos/[pedidoId]/rota-etiqueta` | `respostaRotaEtiquetaLiSchema` |
  * | `conferirPagamento(pedidoId, opcoes)` | `GET …/pedidos/[pedidoId]/pagamento` | `respostaConferenciaPagamentoLiSchema` |
  *
  * Every answer — the 2xx bodies AND the error envelope — is read against the ONE
  * shared contract in `@delfrance/schemas` (`contaLojaIntegrada.ts`,
- * `rotaEtiquetaLojaIntegrada.ts`, `conferenciaPagamentoLojaIntegrada.ts`), the
- * same modules the routes build their answers with. Nothing here is cast.
+ * `catalogoLojaIntegrada.ts`, `rotaEtiquetaLojaIntegrada.ts`,
+ * `conferenciaPagamentoLojaIntegrada.ts`), the same modules the routes build
+ * their answers with. Nothing here is cast.
+ *
+ * ## The two catalogue reads (master plan step 10)
+ *
+ * The variation linker's grade list and one grade's options. Both are READS
+ * behind the backend's switch and its 15-minute cache, each bounded by its own
+ * deadline ({@link PRAZO_CATALOGO_LI_MS}, {@link PRAZO_GRADE_LI_MS}) and by the
+ * caller's signal (a cancelled query). `atualizar: true` asks the backend for a
+ * fresh read (`?atualizar=1`). A backend older than these routes answers 404
+ * without the envelope — an HTTP error with no `code`, which the linker reads as
+ * "not offered yet".
  *
  * ## The two pedidos routes (master plan step 15)
  *
@@ -71,12 +84,16 @@ import {
   type CorpoSalvarCredencialLi,
   type RespostaConferenciaPagamentoLi,
   type RespostaCredencialLojaIntegrada,
+  type RespostaGradeLi,
+  type RespostaGradesLi,
   type RespostaRemocaoCredencialLi,
   type RespostaRotaEtiquetaLi,
   type StatusContaLojaIntegrada,
   erroContaLojaIntegradaSchema,
   respostaConferenciaPagamentoLiSchema,
   respostaCredencialLojaIntegradaSchema,
+  respostaGradeLiSchema,
+  respostaGradesLiSchema,
   respostaRemocaoCredencialLiSchema,
   respostaRotaEtiquetaLiSchema,
   statusContaLojaIntegradaSchema,
@@ -111,6 +128,20 @@ export const PRAZO_ROTA_ETIQUETA_LI_MS = 30_000;
  * verificável", never as a verdict.
  */
 export const PRAZO_CONFERENCIA_PAGAMENTO_LI_MS = 45_000;
+
+/**
+ * How long the grade LIST may take, in ms: the route's own worst case — every
+ * page it may read (`MAX_PAGINAS_CATALOGO_LI`), each the 2 s pacer plus its 20 s
+ * deadline, plus its margin: 250 s — and 10 s of slack for a cold start. A list
+ * normally answers in a few seconds (one page, or the backend's cached copy).
+ */
+export const PRAZO_CATALOGO_LI_MS = 260_000;
+
+/**
+ * How long ONE grade's options may take, in ms: one paced call (2 s), its 20 s
+ * deadline, and 30 s of margin for a cold start.
+ */
+export const PRAZO_GRADE_LI_MS = 60_000;
 
 /** Optional detail an error envelope may carry beyond `error` and `code`. */
 export interface DetalhesErroLojaIntegrada {
@@ -211,9 +242,30 @@ export interface OpcoesConferenciaPagamentoLi {
   readonly sinal?: AbortSignal;
 }
 
+/** Options of the two catalogue reads. */
+export interface OpcoesCatalogoLi {
+  /**
+   * Ask the backend for a FRESH read (`?atualizar=1`): its cached copy is
+   * evicted first. The operator's "Atualizar", never a background refresh.
+   */
+  readonly atualizar?: boolean;
+  /** Aborts the call (a cancelled query); the abort comes back as itself. */
+  readonly sinal?: AbortSignal;
+}
+
 export interface LojaIntegradaClient {
   /** The conta's credential status (`PERM.integracao.read`). Never the token. */
   conta(integracaoId: string): Promise<StatusContaLojaIntegrada>;
+  /**
+   * The store's grades, its own and the platform's (`PERM.integracao.read`).
+   * Bounded by {@link PRAZO_CATALOGO_LI_MS}.
+   */
+  grades(integracaoId: string, opcoes?: OpcoesCatalogoLi): Promise<RespostaGradesLi>;
+  /**
+   * One grade and the options it offers (`PERM.integracao.read`). Bounded by
+   * {@link PRAZO_GRADE_LI_MS}.
+   */
+  grade(integracaoId: string, gradeId: number, opcoes?: OpcoesCatalogoLi): Promise<RespostaGradeLi>;
   /**
    * Validate a Personal Token against Loja Integrada and store it
    * (`PERM.integracao.write`). The body is sent exactly as given, rebuilt by
@@ -471,10 +523,34 @@ export function createLojaIntegradaClient(config: {
   const caminhoDaConta = (integracaoId: string) =>
     `${CONTA_PATH}/${encodeURIComponent(integracaoId)}`;
   const caminhoDoPedido = (pedidoId: string) => `${PEDIDOS_PATH}/${encodeURIComponent(pedidoId)}`;
+  /** The fresh-read flag, spelled exactly as the route reads it. */
+  const consultaDoCatalogo = (opcoes: OpcoesCatalogoLi | undefined) =>
+    opcoes?.atualizar === true ? '?atualizar=1' : '';
+  const limitesDoCatalogo = (prazoMs: number, opcoes: OpcoesCatalogoLi | undefined) => ({
+    prazoMs,
+    ...(opcoes?.sinal === undefined ? {} : { sinal: opcoes.sinal }),
+  });
 
   return {
     conta: (integracaoId) =>
       call('GET', caminhoDaConta(integracaoId), statusContaLojaIntegradaSchema),
+    grades: (integracaoId, opcoes) =>
+      call(
+        'GET',
+        `${caminhoDaConta(integracaoId)}/grades${consultaDoCatalogo(opcoes)}`,
+        respostaGradesLiSchema,
+        undefined,
+        limitesDoCatalogo(PRAZO_CATALOGO_LI_MS, opcoes),
+      ),
+    grade: (integracaoId, gradeId, opcoes) =>
+      call(
+        'GET',
+        `${caminhoDaConta(integracaoId)}/grades/${encodeURIComponent(String(gradeId))}` +
+          consultaDoCatalogo(opcoes),
+        respostaGradeLiSchema,
+        undefined,
+        limitesDoCatalogo(PRAZO_GRADE_LI_MS, opcoes),
+      ),
     // Both bodies are rebuilt BY NAME: the routes' schemas are strict (an
     // unknown key is a 400), so a caller object carrying one more field must
     // not reach them.
