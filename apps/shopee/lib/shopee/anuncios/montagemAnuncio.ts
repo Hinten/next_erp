@@ -46,7 +46,7 @@
  * operator can never give a listing a marketplace-optimised name of its own).
  * The produto is the fallback, which is what a first publish uses.
  *
- * ## The vocabulary this file PRODUCES (nineteen of twenty-three)
+ * ## The vocabulary this file PRODUCES (nineteen of twenty-seven)
  *
  * `sem-nome`, `nome-fora-da-faixa`, `sem-descricao`, `descricao-fora-da-faixa`,
  * `sem-preco`, `filho-sem-preco`, `preco-fora-da-faixa`, `sem-peso`,
@@ -58,13 +58,21 @@
  * `ehAtualizacao` like the five create-only members: a draft has no `item_id`,
  * so it only ever reaches the create body, and the flag alone decides.
  *
- * The other four are produced ELSEWHERE and are listed here so a reader does not
+ * The other eight are produced ELSEWHERE and are listed here so a reader does not
  * hunt for them in this file: `variacao-sem-vinculo`, `combinacao-duplicada` and
  * `opcoes-demais` are `anuncios/tiersPublicacao.ts`'s; `logistica-sem-canal` is
  * `anuncios/logisticaPublicacao.ts`'s, and this module RELAYS that module's
- * `problemas[]` rather than re-deciding it. The three wire-rejection-only motivos
- * (`bloqueado-por-promocao`, `imposto-recusado`, `desconhecido`) are
- * `anuncios/problemasPublicacao.ts`'s and cannot be reached by reading a produto.
+ * `problemas[]` rather than re-deciding it; and, since #1911 (P5, D5),
+ * `criacao-incerta-ambigua`, `busca-de-anuncio-incompleta`,
+ * `criacao-incerta-sem-sku` and `criacao-incerta-ja-vinculada` are
+ * `anuncios/criacaoIncerta.ts`'s — the ENSURE a draft in `incerta` runs, under
+ * its lock, before any second `add_item` (a Shopee scan by SKU over the
+ * attempt's window; refused outright when the SKU folds blank). Never this
+ * module's: a montagem builds a body, and these decide whether one may be SENT
+ * at all. The wire-rejection-only motivos
+ * (`bloqueado-por-promocao`, `imposto-recusado`, `anuncio-semelhante-existente`
+ * and `desconhecido` among them) are `anuncios/problemasPublicacao.ts`'s and
+ * cannot be reached by reading a produto.
  *
  * ⚠️ **`problemas` is the UNION of every refusal found, not the first.** An
  * operator fixing a produto sees everything that is wrong in one pass; stopping

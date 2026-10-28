@@ -3,9 +3,11 @@
  * with no `item_id` (a draft, `ehRascunhoShopee`) means to every surface that
  * decides about one: the publish lock's timing, the codes a refused draft
  * operation answers with, the reading of the lock, the "brand still to choose"
- * test, which sibling links make a publish a SECOND listing, and the draft
+ * test, which sibling links make a publish a SECOND listing, the draft
  * route's contract — its three bodies and answers, THE projection of a stored
- * draft's editable fields and THE comparison of two of their values.
+ * draft's editable fields and THE comparison of two of their values — and the
+ * UNCERTAIN first create (D5): the attempt window a lost create is looked for
+ * in, and the publish's 202.
  *
  * ⚠️ ONE module (#1369). `apps/shopee` decides with these and the produto's
  * Shopee tab in `apps/web` renders with them; `apps/web` has no dependency edge
@@ -30,10 +32,14 @@
  * agora() + MARGEM_ENVIO_SHOPEE_MS < min(expiraEm, prazoDaRequisicao)
  * ```
  *
- * checked immediately before EACH `add_item` call (a route run's
- * `prazoDaRequisicao` is its start + TETO_ROTA_SHOPEE_MS; the CLI has none). So
- * no create starts at or after `expiraEm − MARGEM`. A lock nobody cleared is
- * then read, by {@link estadoPublicacaoRascunhoShopee}:
+ * checked immediately before EACH `add_item` call, right after that call's
+ * credential warm (a route run's `prazoDaRequisicao` is its handler's first
+ * instant + TETO_ROTA_SHOPEE_MS; the CLI has none). The one await left between
+ * the check and the request is the client's own token ask, which the warm made
+ * a single credential read — so MARGEM covers it, and no create's request
+ * starts at or after `expiraEm` (`apps/shopee`'s `anuncios/README.md` names
+ * the residual). A lock nobody cleared is then read, by
+ * {@link estadoPublicacaoRascunhoShopee}:
  *
  * ```
  *  desde ─────────── expiraEm ─────────────── expiraEm + AGUARDAR ──────────▶
@@ -51,7 +57,7 @@ import { z } from 'zod';
 import { textoUtilizavelShopee } from '../../faixaShopee';
 import { naoDocId } from '../../shared/outerRef';
 import { AGUARDAR_KIT_INCERTO_SHOPEE_MS } from '../../shopeeAcaoSugerida';
-import { publicacaoEmCursoShopeeSchema } from './shopeeLink';
+import { itemIdEnderecavelShopee, publicacaoEmCursoShopeeSchema } from './shopeeLink';
 import { anuncioShopeeVivo, ehRascunhoShopee } from './shopeeLinkLeitura';
 import { vinculoShopeeEhDaConta } from './vinculosShopee';
 
@@ -72,16 +78,26 @@ export const PUBLICACAO_EM_CURSO_SHOPEE_TTL_MS = 300_000;
 /**
  * MILLISECONDS. The `apps/shopee` request ceiling — `runConfig.timeoutSeconds:
  * 180` in `apps/shopee/apphosting.yaml`. The publish route turns it into the
- * request's deadline (`prazoDaRequisicao = nowMs + TETO_ROTA_SHOPEE_MS`), so a
- * create is never STARTED by a request the platform may cut off mid-send.
+ * request's deadline (`prazoDaRequisicao = nowMs + TETO_ROTA_SHOPEE_MS`, with
+ * `nowMs` read as the handler's FIRST statement — before the caller's token is
+ * verified and the body parsed), so a create is never STARTED by a request the
+ * platform may cut off mid-send. What ran before the handler (a cold boot) is
+ * not measured; {@link MARGEM_ENVIO_SHOPEE_MS} absorbs it.
  * ⚠️ Changing either number alone breaks that promise silently.
  */
 export const TETO_ROTA_SHOPEE_MS = 180_000;
 
 /**
  * MILLISECONDS. The headroom the per-leg send gate keeps before
- * `min(expiraEm, prazoDaRequisicao)` — it covers the client's token step that
- * runs between the gate and the request reaching Shopee.
+ * `min(expiraEm, prazoDaRequisicao)` — it covers the client's token ask that
+ * runs between the gate and the request reaching Shopee, and the part of a
+ * route request before its handler ran.
+ *
+ * ⚠️ Bounded only because the publisher WARMS the credential before the gate
+ * (`aquecerCredencial`, batch-A review): the ask is then one credential read.
+ * Unwarmed, a token inside its refresh skew turns it into a provider refresh
+ * with NO deadline (the Shopee transport sets none, #1094), which no margin
+ * covers.
  */
 export const MARGEM_ENVIO_SHOPEE_MS = 30_000;
 
@@ -95,6 +111,21 @@ export const MARGEM_ENVIO_SHOPEE_MS = 30_000;
  * create the route ceiling may have cut off".
  */
 export const AGUARDAR_ANUNCIO_INCERTO_SHOPEE_MS = AGUARDAR_KIT_INCERTO_SHOPEE_MS;
+
+/**
+ * ⚠️ SECONDS, not milliseconds. How far BEFORE the start of an uncertain
+ * create's attempt (its `desde`, the route's clock) the window that create is
+ * looked for in opens — {@link inicioDaJanelaDaCriacaoShopeeS}.
+ *
+ * A listing's `create_time` is Shopee's clock, in whole seconds; the attempt's
+ * start is ours. The slack absorbs the skew between the two clocks: a listing
+ * the attempt created can never read as created BEFORE its window, so it is
+ * never ignored as "older". The price is the other direction, accepted: a
+ * listing created up to this long BEFORE the attempt reads as inside the
+ * window too (the reason a same-SKU listing already linked to the produto is
+ * a refusal the operator may override, not a silent exclusion).
+ */
+export const FOLGA_JANELA_CRIACAO_SHOPEE_S = 300;
 
 /* -------------------------------------------------------------------------- */
 /*                                  The codes                                  */
@@ -207,8 +238,10 @@ function inteiroLegivel(bruto: unknown): number | null {
  * Inputs: the stored document (unvalidated — a soft-read hands the raw body
  * over) and the reader's instant, in MILLISECONDS. Two keys are read:
  * `publicacaoEmCurso` (through {@link publicacaoEmCursoShopeeSchema}) and
- * `criacaoIncertaDesde`, the record of an earlier create whose outcome is
- * unknown — absent on every document that has none.
+ * `criacaoIncertaDesde` (`produtoShopeeLinkSchema`'s field, #1911 D5), the
+ * record of an earlier create whose outcome is unknown — absent on every
+ * document that has none. `incerta`'s `desdeMs` IS
+ * {@link janelaDaCriacaoIncertaShopee}'s start (one reading, never two).
  *
  * - a READABLE lock and `nowMs < expiraEm` ⇒ **`em-andamento`**,
  *   `posExpiracao: false`, `aguardarMs = expiraEm − nowMs`, `aposIncerteza` =
@@ -247,15 +280,18 @@ export function estadoPublicacaoRascunhoShopee(
 
   const incertaBruta = link.criacaoIncertaDesde;
   const comIncerteza = incertaBruta !== null && incertaBruta !== undefined;
-  const desdeDaIncerteza = inteiroLegivel(incertaBruta);
+  const incerta = (): EstadoPublicacaoRascunhoShopee => ({
+    tipo: 'incerta',
+    desdeMs: janelaDaCriacaoIncertaShopee(link)?.desdeMs ?? null,
+  });
 
   const trava = link.publicacaoEmCurso;
   if (trava === null || trava === undefined) {
-    return comIncerteza ? { tipo: 'incerta', desdeMs: desdeDaIncerteza } : LIVRE;
+    return comIncerteza ? incerta() : LIVRE;
   }
 
   const lida = publicacaoEmCursoShopeeSchema.safeParse(trava);
-  if (!lida.success) return { tipo: 'incerta', desdeMs: desdeDaIncerteza };
+  if (!lida.success) return incerta();
   const { desde, expiraEm } = lida.data;
 
   if (nowMs < expiraEm) {
@@ -281,7 +317,102 @@ export function estadoPublicacaoRascunhoShopee(
     };
   }
 
-  return { tipo: 'incerta', desdeMs: desdeDaIncerteza ?? desde };
+  return incerta();
+}
+
+/* -------------------------------------------------------------------------- */
+/*              The uncertain first create's ATTEMPT WINDOW (D5)               */
+/* -------------------------------------------------------------------------- */
+
+/** The window an uncertain create of a draft is looked for in. */
+export interface JanelaDaCriacaoIncertaShopee {
+  /** MILLISECONDS — the start of the earliest attempt the document records. */
+  readonly desdeMs: number;
+}
+
+/**
+ * THE attempt window of a draft's uncertain first create (#1911, K1-7/K1-8) —
+ * the evidence that a create of THIS draft was ever attempted, and since when.
+ *
+ * `desdeMs` = the stored `criacaoIncertaDesde` when it is a readable instant,
+ * else the stored lock's `desde` when the lock is readable
+ * ({@link publicacaoEmCursoShopeeSchema}), else NO window (`null`).
+ *
+ * - **`null` ⇔ no attempt evidence** — every legacy draft (neither key), a
+ *   draft never sent, a `null` document. Also a document whose record is
+ *   unreadable on both keys: nothing there says WHEN.
+ * - The record of the uncertain attempt wins over the lock: it is the EARLIEST
+ *   start, and a later lock (a re-send's) would narrow the window past the
+ *   listing the first attempt created.
+ * - ⚠️ Read it from the document BEFORE a write that replaces the lock: a
+ *   takeover's new lock carries a LATER `desde`. That write carries this
+ *   window's start into `criacaoIncertaDesde` (`./shopeeLink.ts`'s writer
+ *   inventory), so a released takeover never loses it.
+ *
+ * Two callers decide with it, both through {@link criadoNaJanelaShopee}: the
+ * publish's look-up of an uncertain create before any new `add_item`
+ * (ENSURE, `apps/shopee`'s `anuncios/criacaoIncerta.ts`), and the product
+ * import, which adopts a draft only when it carries a window AND the listing
+ * was created inside it (`produtos/resolveProduto.ts`). In `@delfrance/schemas`
+ * so neither app module imports the other (#1369).
+ *
+ * Reads the two keys whatever the document is — whether it is still a DRAFT is
+ * the caller's question ({@link ehRascunhoShopee}). Pure, total.
+ */
+export function janelaDaCriacaoIncertaShopee(
+  link: Record<string, unknown> | null,
+): JanelaDaCriacaoIncertaShopee | null {
+  if (link === null) return null;
+  const registrada = inteiroLegivel(link.criacaoIncertaDesde);
+  if (registrada !== null) return { desdeMs: registrada };
+  const trava = publicacaoEmCursoShopeeSchema.safeParse(link.publicacaoEmCurso);
+  return trava.success ? { desdeMs: trava.data.desde } : null;
+}
+
+/**
+ * SECONDS — the earliest Shopee `create_time` (and `update_time`) a listing
+ * created by an attempt that started at `desdeMs` can carry:
+ * `⌊desdeMs / 1000⌋ − FOLGA_JANELA_CRIACAO_SHOPEE_S`. The ONE computation of
+ * the window's opening — the look-up's `update_time_from` and
+ * {@link criadoNaJanelaShopee}'s comparison both read it.
+ */
+export function inicioDaJanelaDaCriacaoShopeeS(desdeMs: number): number {
+  return Math.floor(desdeMs / 1000) - FOLGA_JANELA_CRIACAO_SHOPEE_S;
+}
+
+/** Where a listing's creation falls against an attempt window. */
+export type PosicaoNaJanelaShopee = 'dentro' | 'fora' | 'desconhecido';
+
+/**
+ * Was this listing created inside the attempt window that opened at `desdeMs`
+ * (#1911, K1-7/K1-8)? `createTimeS` is the listing's `create_time` as Shopee
+ * reports it (`get_item_base_info`), in SECONDS.
+ *
+ * - **`'dentro'`** — `createTimeS ≥` {@link inicioDaJanelaDaCriacaoShopeeS}
+ *   (`desdeMs`). Inclusive. No upper bound: a create is never in the future of
+ *   the look-up, and a listing created after the attempt is exactly what the
+ *   attempt may have made.
+ * - **`'fora'`** — created before the window opened: an older listing, never
+ *   the uncertain attempt's.
+ * - **`'desconhecido'`** — `createTimeS` is `null` (Shopee left it unset), or
+ *   not a POSITIVE safe integer (a `0` is no instant Shopee would report for a
+ *   real listing), or `desdeMs` is not a safe integer. ⚠️ Never folded into
+ *   `'fora'`: the look-up treats an unknown creation as a DOUBT (refuse, the
+ *   operator checks), and the import does not adopt on it — the fail-closed
+ *   direction on both sides. A `'fora'` answered for an unknown would let a
+ *   listing the attempt created be ignored, and a second one created.
+ *
+ * Pure, total.
+ */
+export function criadoNaJanelaShopee(
+  createTimeS: number | null,
+  desdeMs: number,
+): PosicaoNaJanelaShopee {
+  if (createTimeS === null || !Number.isSafeInteger(createTimeS) || createTimeS <= 0) {
+    return 'desconhecido';
+  }
+  if (!Number.isSafeInteger(desdeMs)) return 'desconhecido';
+  return createTimeS >= inicioDaJanelaDaCriacaoShopeeS(desdeMs) ? 'dentro' : 'fora';
 }
 
 /* -------------------------------------------------------------------------- */
@@ -291,18 +422,33 @@ export function estadoPublicacaoRascunhoShopee(
 /**
  * Is this a DRAFT whose brand was never chosen (#1911, D10)? A draft stores
  * the brand the operator picked; "Sem marca" is the explicit `brand_id: 0`, so
- * only a `brand_id` that is `null` or ABSENT means "nobody chose". It is the
- * test behind the listing assembly's `marca-nao-escolhida` refusal, and a
- * browser surface that warns about the same thing imports it (#1369).
+ * a chosen brand is a `brand_id` that is a safe NON-NEGATIVE integer — the
+ * only values the draft route ever writes. It is the test behind the listing
+ * assembly's `marca-nao-escolhida` refusal, and a browser surface that warns
+ * about the same thing imports it (#1369).
  *
- * - **EQUAL (no brand chosen):** a draft with `brand_id: null`; a draft with no
- *   `brand_id` key.
- * - **DISTINCT:** `brand_id: 0` ("Sem marca" IS a choice); any other stored
- *   value, a malformed one included — this answers "was a brand chosen", and
- *   what a malformed id sends is the assembly's question;
+ * ⚠️ **FAIL-CLOSED** (#1911 P5, the §2.1 amendment): anything that is not such
+ * an integer counts as NOT chosen — `null`, absent, and a malformed value
+ * (`'77'`, `''`, `false`, `1.5`, `NaN`, `-1`, beyond 2^53). Before the
+ * amendment a malformed id read "chosen" here while
+ * {@link camposDoRascunhoShopee} read it `marca: null`, so the editor showed
+ * "no brand" while the publish went on with whatever brand its cascade
+ * supplied — an unchosen brand sent. Now the publish refuses and the operator
+ * picks.
+ *
+ * - **EQUAL (no brand chosen):** `brand_id` `null`, absent, or any value that
+ *   is not a safe non-negative integer.
+ * - **DISTINCT:** `brand_id: 0` ("Sem marca" IS a choice) and every positive
+ *   safe integer;
  * - **DISTINCT:** any link that is not a draft ({@link ehRascunhoShopee}) — an
  *   imported listing with `brand_id: null` was never the operator's to pick
  *   here — and a `null` document.
+ *
+ * Against the projection: `camposDoRascunhoShopee(link).marca === null` ⇒
+ * this is `true`, for every draft (the unsafe mismatch is gone). The converse
+ * fails only for a NEGATIVE safe integer, which the projection reads verbatim
+ * (reading is not validating) — the safe direction: the editor shows the
+ * stored id beside the pendência, and the publish refuses.
  *
  * Pure, total over `unknown`.
  */
@@ -314,7 +460,8 @@ export function rascunhoSemMarcaShopee(
   } | null,
 ): boolean {
   if (link === null || !ehRascunhoShopee(link)) return false;
-  return link.brand_id === null || link.brand_id === undefined;
+  const brandId = inteiroLegivel(link.brand_id);
+  return brandId === null || brandId < 0;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -323,7 +470,9 @@ export function rascunhoSemMarcaShopee(
 
 /**
  * One sibling link a publish (or a new draft) would sit beside — the item of a
- * 409's `vinculos[]`. `itemId` is the listing's id, `null` for a draft.
+ * 409's `vinculos[]`. `itemId` is the listing's id, `null` for a draft — and
+ * for a live listing whose stored id cannot address it (`1.5`, beyond 2^53),
+ * read through `itemIdEnderecavelShopee` so the field always fits `int()`.
  * Plain `z.object` (unknown keys stripped), so the reader tolerates a newer
  * producer's extra keys.
  */
@@ -363,9 +512,10 @@ export function vinculosQueExigemConfirmacaoShopee(
   const saida: VinculoConflitanteShopee[] = [];
   for (const { id, data } of links) {
     if (id === excluirLinkDocId || !vinculoShopeeEhDaConta(data, integracaoId)) continue;
-    const itemId = data.item_id;
-    if (anuncioShopeeVivo(data) && typeof itemId === 'number') {
-      saida.push({ linkDocId: id, itemId, rascunho: false });
+    // MEMBERSHIP is "alive" (`isFinite`); the id it CARRIES is the addressable
+    // one — the same reader the publish's own 409 list uses (#1369).
+    if (anuncioShopeeVivo(data)) {
+      saida.push({ linkDocId: id, itemId: itemIdEnderecavelShopee(data.item_id), rascunho: false });
     } else if (ehRascunhoShopee(data)) {
       saida.push({ linkDocId: id, itemId: null, rascunho: true });
     }
@@ -812,3 +962,50 @@ export const conflitoRascunhoShopeeSchema = z.object({
   atual: z.unknown(),
 });
 export type ConflitoRascunhoShopee = z.infer<typeof conflitoRascunhoShopeeSchema>;
+
+/* -------------------------------------------------------------------------- */
+/*                  The publish's 202 — an uncertain first create (D5)         */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The **202** of `POST /api/marketplace/shopee/publicar` when the FIRST
+ * `add_item` of an ordinary listing ended with an outcome nobody can know
+ * (#1911, D5): Shopee may or may not have created the listing. Accepted, not
+ * done — never "falhou". The draft's lock stays live for `aguardarMs`, so every
+ * tab, operator and the CLI hear 409 `publicacaoEmAndamento` until then; the
+ * next publish of the draft first LOOKS for the listing by SKU before any new
+ * `add_item`.
+ *
+ * - `arma: 'item'` + `desfecho: 'incerto'` — the tag. The item arm's 200 has no
+ *   `arma`, and every kit arm's `arma` is a `kit-*` value, so a reader tries the
+ *   kit arm first, then this one, then the item 200.
+ * - `linkDocId` — the DRAFT that records the attempt. Never `null`: a live
+ *   create with no named link mints a draft first (K1-5).
+ * - `aguardarMs` — MILLISECONDS until the draft's lock stops being
+ *   `em-andamento`: the wait before a re-send. Always > 0.
+ * - `reenvioVerificaSku` — whether that re-send can look the listing up: the
+ *   produto's SKU is not blank under the import's SKU fold. `false` ⇒ the
+ *   re-send refuses (`criacao-incerta-sem-sku`) until the operator confirms in
+ *   Seller Centre that nothing was created.
+ * - `recusa` — Shopee's own `codigo` and sentence (`fraseShopee`, `null` when
+ *   it sent none) when Shopee ANSWERED with an error whose outcome is still
+ *   unknown; `null` when no answer arrived at all (network, timeout).
+ *
+ * ⚠️ `mensagem` (the CLI's sentence) is sent and deliberately NOT declared — the
+ * kit's 202 precedent: the browser renders its own copy, and a plain
+ * `z.object` drops the key on parse.
+ */
+export const respostaItemIncertoShopeeSchema = z.object({
+  arma: z.literal('item'),
+  desfecho: z.literal('incerto'),
+  linkDocId: z.string().min(1),
+  aguardarMs: z.number().int().positive(),
+  reenvioVerificaSku: z.boolean(),
+  recusa: z
+    .object({
+      codigo: z.string(),
+      fraseShopee: z.string().nullable(),
+    })
+    .nullable(),
+});
+export type RespostaItemIncertoShopee = z.infer<typeof respostaItemIncertoShopeeSchema>;

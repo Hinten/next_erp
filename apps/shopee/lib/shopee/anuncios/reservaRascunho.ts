@@ -12,9 +12,14 @@
  *     content it will send — rule 7 tier 1: `update({publicacaoEmCurso},
  *     {lastUpdateTime})` against the snapshot that decided, ≤ 3 re-derives
  *     (never a re-apply). A live lock (incl. its post-expiry grace) ⇒ 409
- *     `EM_ANDAMENTO`; a lock past the grace, or a recorded uncertain create ⇒
- *     409 `CRIACAO_INCERTA` (#1911's P5 turns that branch into a search); the
- *     document is no longer a draft ⇒ 409 `JA_PUBLICADO`; gone ⇒ the route's 404.
+ *     `EM_ANDAMENTO`; the document is no longer a draft ⇒ 409 `JA_PUBLICADO`;
+ *     gone ⇒ the route's 404. A lock past the grace, or a recorded uncertain
+ *     create (`incerta`) is TAKEN OVER — and the takeover carries the attempt
+ *     window's start (`janelaDaCriacaoIncertaShopee`, read from the document
+ *     BEFORE the new lock replaces the old one) into `criacaoIncertaDesde` in
+ *     the SAME write, so a lock handed back later never loses the record; a
+ *     document whose window is unreadable on both keys keeps P3's 409
+ *     `CRIACAO_INCERTA` (nothing says WHEN — never "proceed").
  *     Then, **lock-then-scan** (D15): the produto's other links of this conta —
  *     one subcollection read, no index ({@link lerVinculosDaConta}). Any of
  *     them locked or uncertain ⇒ release ours, 409 `EM_ANDAMENTO` (confirmed or
@@ -23,18 +28,37 @@
  *     Two reservations of one produto cannot both pass: each WRITES before it
  *     READS, so the later scanner sees the earlier lock (both may abort — a
  *     liveness cost only; the operator retries).
+ *     Then, for an `incerta` draft only, **ENSURE** (`criacaoIncerta.ts`,
+ *     `localizarAnuncioIncerto`) — AFTER the sibling check, so a sibling's
+ *     create in flight can never be mistaken for this draft's: a refusal ⇒
+ *     release ours (the record STAYS), the 422; one listing found ⇒ ADOPT it on
+ *     this very document (token-guarded: `item_id`, the canonical conta ref,
+ *     lock + record + `falhaPublicacao` cleared) and the run continues as an
+ *     UPDATE; a COMPLETE scan that found nothing ⇒ clear the record
+ *     (token-guarded, and it must land — else nothing is sent) and go on to
+ *     `add_item`. An attested SKU-less produto goes on with the record KEPT
+ *     (no scan proved anything).
  *  2. **Re-read before the send** ({@link conferirTravaAntesDoEnvio}): the
  *     stored token must still be OURS, or nothing is sent.
  *  3. **The per-leg send gate** ({@link portaoDeEnvio}) — SYNCHRONOUS, run
  *     immediately before EACH `client.addItem` call (both legs of the fiscal
- *     retry): send only while `agora() + MARGEM_ENVIO_SHOPEE_MS <
- *     min(expiraEm, prazoDaRequisicao)`. So no create STARTS at or after
- *     `expiraEm − MARGEM`, and none starts that the route's own ceiling could
- *     cut off mid-send. That bound is what the post-expiry grace of
- *     `estadoPublicacaoRascunhoShopee` is measured from.
+ *     retry), right AFTER that leg's credential warm
+ *     ({@link ControlesDaPublicacaoAoVivo.aquecerCredencial}): send only while
+ *     `agora() + MARGEM_ENVIO_SHOPEE_MS < min(expiraEm, prazoDaRequisicao)`.
+ *     The one await left between the gate and the request is the client's own
+ *     token ask, which the warm made a single credential read — so MARGEM
+ *     covers it, no create's request STARTS at or after `expiraEm`, and none
+ *     starts that the route's own ceiling could cut off mid-send. That bound is
+ *     what the post-expiry grace of `estadoPublicacaoRascunhoShopee` is
+ *     measured from. ⚠️ The residual: a warmed token whose life crosses
+ *     `REFRESH_SKEW_MS` in the instants between the warm and the client's ask
+ *     still refreshes there, unbounded — only a deadline on the TRANSPORT
+ *     (`shopeeCall`, #1094), not on `add_item` alone, closes it
+ *     (`anuncios/README.md`, accepted residual (vi)).
  *  4. **Write-back #1 on a draft is a CLAIM** ({@link reivindicarRascunhoShopee}):
- *     still a draft ⇒ `update({…the item, publicacaoEmCurso: null},
- *     {lastUpdateTime})`; already ours (a replay) ⇒ the plain merge; claimed
+ *     still a draft ⇒ `update({…the item, publicacaoEmCurso: null,
+ *     criacaoIncertaDesde: null}, {lastUpdateTime})` — the listing is recorded,
+ *     so no uncertainty is left; already ours (a replay) ⇒ the plain merge; claimed
  *     by ANOTHER item or deleted ⇒ `add` a fresh link — two LINKED listings,
  *     never an orphan. The claim ignores the token on purpose: the listing
  *     exists and needs its link, and clearing a foreign lock makes its holder's
@@ -50,10 +74,13 @@
  * (`publicarAnuncio.ts`), tracked on {@link ReservaDeRascunhoShopee.fase}:
  * nothing outstanding ⇒ released, no stamp; an `add_item` Shopee refused for
  * good (`nao-criado`, `criacaoIncerta.ts`'s classifier) ⇒ released WITH the
- * `falhaPublicacao` stamp in the same guarded write; an outcome nobody can know
- * (`incerto`, or any non-Shopee error once a send began) ⇒ the lock is KEPT —
- * it expires, then the grace, then reads `incerta`, and the next publish is
- * refused rather than sent again.
+ * `falhaPublicacao` stamp in the same guarded write (the app's token step,
+ * which never reached Shopee, without one); an outcome nobody can know
+ * (`incerto`) ⇒ {@link registrarCriacaoIncerta}: the lock KEPT live for
+ * `AGUARDAR_ANUNCIO_INCERTO_SHOPEE_MS` and the attempt recorded, in ONE
+ * token-guarded write, so the next publish waits, then looks before it sends;
+ * any non-Shopee error once a send began ⇒ the lock is KEPT as it is — it
+ * expires, then the grace, then reads `incerta`.
  *
  * Clock-free and Next-free like the rest of `anuncios/`: every instant comes
  * from the route's clock through `agora`, a REQUIRED parameter with no
@@ -63,24 +90,36 @@
  * precondition.
  */
 import type { Firestore } from 'firebase-admin/firestore';
+import type { ShopeeClient } from '@delfrance/integrations-shopee';
 import {
+  AGUARDAR_ANUNCIO_INCERTO_SHOPEE_MS,
   CODIGO_RASCUNHO_SHOPEE,
   MARGEM_ENVIO_SHOPEE_MS,
   PUBLICACAO_EM_CURSO_SHOPEE_TTL_MS,
   ehRascunhoShopee,
   estadoPublicacaoRascunhoShopee,
+  itemIdEnderecavelShopee,
+  janelaDaCriacaoIncertaShopee,
   publicacaoEmCursoShopeeSchema,
+  toOuterRef,
   vinculoShopeeEhDaConta,
   vinculosQueExigemConfirmacaoShopee,
   type CodigoRascunhoShopee,
+  type JanelaDaCriacaoIncertaShopee,
   type PublicacaoEmCursoShopee,
   type VinculoConflitanteShopee,
 } from '@delfrance/schemas';
-import { produtoShopeeLinkCollection } from '@delfrance/data/admin/collections';
+import {
+  integracaoCollection,
+  produtoCollection,
+  produtoShopeeLinkCollection,
+} from '@delfrance/data/admin/collections';
 import { isFailedPrecondition, isGrpcStatusError } from '@delfrance/data/admin/grpcErrors';
 
 import { aplicarLinkDaListagem } from '../produtos/links';
-import { lerVinculosDaConta } from './linkAnuncio';
+import { localizarAnuncioIncerto } from './criacaoIncerta';
+import { ShopeePublishBlockedError } from './errosPublicacao';
+import { lerVinculosDaConta, type VinculoLidoDaConta } from './linkAnuncio';
 
 /* -------------------------------------------------------------------------- */
 /*                                 the inputs                                  */
@@ -105,11 +144,51 @@ export interface ControlesDaPublicacaoAoVivo {
    */
   readonly prazoDaRequisicao: number | null;
   /**
+   * Warms the shop client's access token — awaited IMMEDIATELY BEFORE each
+   * `add_item` leg's send gate ({@link portaoDeEnvio}). The route and the CLI
+   * wire the context's own `getAccessToken`, the function the client signs
+   * with; the token is discarded (it never reaches `anuncios/`).
+   *
+   * Why (batch-A review): `client.addItem` asks for the token BEFORE it builds
+   * the request, and when the stored token is inside `REFRESH_SKEW_MS` that
+   * ask is a provider REFRESH with no deadline (`shopeeCall` sets none). Run
+   * after the gate, it could start the `add_item` long past the gate's reading
+   * — past `expiraEm`, after a takeover's ENSURE already scanned. Warmed first,
+   * the refresh runs BEFORE the gate reads the clock, and the client's own ask
+   * is the fast path (one credential read), which `MARGEM_ENVIO_SHOPEE_MS`
+   * covers.
+   *
+   * REQUIRED, like `agora`. A throw means nothing was sent: the lock is handed
+   * back, unstamped — a Shopee error of the refresh is about the TOKEN, never
+   * the listing.
+   */
+  readonly aquecerCredencial: () => Promise<void>;
+  /**
    * The operator confirmed that this publish may create a SECOND listing of
    * the produto on the conta (D15). Re-checked at the reservation, where the
    * duplicate actually happens; it never overrides a sibling that is busy.
    */
   readonly confirmarSegundoAnuncio: boolean;
+  /**
+   * The operator attested in Seller Centre that the earlier, UNCERTAIN create
+   * of this draft made nothing it has to import (#1911, D5). Honoured for
+   * EXACTLY two ENSURE verdicts — `criacao-incerta-sem-sku` and
+   * `criacao-incerta-ja-vinculada` (K1-11) — and ignored everywhere else: it
+   * never skips the scan of a produto that has a SKU, and never overrides an
+   * ambiguous or incomplete one.
+   */
+  readonly confirmarCriacaoIncerta: boolean;
+}
+
+/**
+ * What ENSURE (`criacaoIncerta.ts`) needs beyond the controls — supplied by
+ * the publisher from its own deps, never by the route.
+ */
+export interface BuscaDaCriacaoIncerta {
+  /** The shop-signed client the look-up reads Shopee with. */
+  readonly client: ShopeeClient;
+  /** MILLISECONDS — the run's ONE instant; an adoption stamps it as `ultimaModificacao`. */
+  readonly nowMs: number;
 }
 
 /** The draft one publish addresses — always a NAMED link (the dispatcher's). */
@@ -152,7 +231,13 @@ export type DesfechoDaReserva =
   | { readonly tipo: 'nao-e-rascunho' }
   /** The named link does not exist (or is not this conta's): the route's 404. */
   | { readonly tipo: 'inexistente' }
-  | { readonly tipo: 'travada'; readonly reserva: ReservaDeRascunhoShopee };
+  | { readonly tipo: 'travada'; readonly reserva: ReservaDeRascunhoShopee }
+  /**
+   * ENSURE found the listing the earlier, uncertain create made, and recorded
+   * it on THIS draft (now a listing link, lock and record cleared): the run
+   * goes on as an UPDATE, with no lock.
+   */
+  | { readonly tipo: 'adotada'; readonly itemId: number };
 
 /* -------------------------------------------------------------------------- */
 /*                                 the refusal                                 */
@@ -273,12 +358,6 @@ function travaEhNossa(raw: Record<string, unknown>, token: string): boolean {
   return travaLegivel(raw)?.token === token;
 }
 
-/** A positive stored `item_id`, or `null` — the shape a 409's `vinculos[]` carries. */
-function itemIdDoVinculo(raw: Record<string, unknown>): number | null {
-  const bruto = raw.item_id;
-  return typeof bruto === 'number' && Number.isSafeInteger(bruto) && bruto > 0 ? bruto : null;
-}
-
 /* -------------------------------------------------------------------------- */
 /*                               1. reserve                                    */
 /* -------------------------------------------------------------------------- */
@@ -302,12 +381,18 @@ export const TENTATIVAS_DA_TRAVA = 3;
  * @param controles `null` only for a caller that never publishes a draft; a
  *   draft reached with `null` throws BEFORE any write — the composition root
  *   forgot the route's clock, which is a defect, never a fallback.
- * @throws ConflitoDeRascunhoShopeeError for every 409 above.
+ * @param busca what ENSURE reads Shopee with — used only for an `incerta` draft.
+ * @returns `adotada` when ENSURE recorded the earlier attempt's listing on the
+ *   draft (the run goes on as an update, lock-free).
+ * @throws ConflitoDeRascunhoShopeeError for every 409 above;
+ *   ShopeePublishBlockedError for an ENSURE refusal (the 422; the record kept);
+ *   any Shopee or Firestore failure of the look-up, with our lock handed back.
  */
 export async function reservarRascunhoShopee(
   db: Firestore,
   alvo: AlvoDaReserva,
   controles: ControlesDaPublicacaoAoVivo | null,
+  busca: BuscaDaCriacaoIncerta,
 ): Promise<DesfechoDaReserva> {
   const ref = produtoShopeeLinkCollection.docRef(db, { produtoId: alvo.produtoId }, alvo.linkDocId);
   for (let tentativa = 1; tentativa <= TENTATIVAS_DA_TRAVA; tentativa += 1) {
@@ -335,7 +420,15 @@ export async function reservarRascunhoShopee(
     if (estado.tipo === 'em-andamento') {
       throw emAndamento(alvo.linkDocId, estado.aguardarMs, estado.posExpiracao);
     }
-    if (estado.tipo === 'incerta') throw criacaoIncerta(alvo.linkDocId);
+    // ⚠️ `incerta`: the attempt window is read from the document AS IT STANDS,
+    // BEFORE the lock below replaces the stored one (whose `desde` may be the
+    // only record of when the attempt began). No window ⇒ nothing says WHEN:
+    // refused, never "no evidence, so proceed".
+    let janela: JanelaDaCriacaoIncertaShopee | null = null;
+    if (estado.tipo === 'incerta') {
+      janela = janelaDaCriacaoIncertaShopee(raw);
+      if (janela === null) throw criacaoIncerta(alvo.linkDocId);
+    }
 
     const reserva: ReservaDeRascunhoShopee = {
       produtoId: alvo.produtoId,
@@ -347,6 +440,10 @@ export async function reservarRascunhoShopee(
     };
     const patch = produtoShopeeLinkCollection.parseMerge({
       publicacaoEmCurso: { desde: reserva.desde, expiraEm: reserva.expiraEm, token: reserva.token },
+      // The takeover KEEPS the record in the same write: our lock's `desde` is
+      // LATER, and a lock handed back after a refused look-up must leave the
+      // draft reading `incerta`, never `livre`.
+      ...(janela === null ? {} : { criacaoIncertaDesde: janela.desdeMs }),
     });
     try {
       await ref.update(patch as Record<string, unknown>, { lastUpdateTime: snap.updateTime });
@@ -357,17 +454,30 @@ export async function reservarRascunhoShopee(
       continue;
     }
 
-    // ⚠️ LOCK-THEN-SCAN: the lock is written BEFORE the siblings are read.
+    // ⚠️ LOCK-THEN-SCAN: the lock is written BEFORE the siblings are read —
+    // and the look-up runs AFTER them, so a sibling's create in flight is a
+    // 409, never a listing this draft adopts.
     try {
-      await recusarSegundoAnuncio(db, alvo, controles);
+      const vinculos = await recusarSegundoAnuncio(db, alvo, controles);
+      if (janela !== null) {
+        const itemId = await garantirCriacaoIncerta(db, reserva, {
+          alvo,
+          controles,
+          busca,
+          janela,
+          vinculos,
+        });
+        if (itemId !== null) return { tipo: 'adotada', itemId };
+      }
     } catch (err) {
       // ⚠️ EVERY error is rethrown: this catch exists only to hand our lock
-      // back first — a 409 from the scan, and equally a failed sibling read,
-      // happen with NOTHING sent, and a lock left behind would later read as
-      // an uncertain create that never happened. The hand-back is best-effort:
-      // a Firestore failure of the RELEASE must not turn the 409 the operator
-      // acts on into a 500.
-      await liberarTravaShopeeSemSubstituirErro(db, reserva);
+      // back first — a 409 from the scan, a refusal of the look-up, and
+      // equally a failed read, all happen with NOTHING sent, and a lock left
+      // behind would later read as an uncertain create that never happened.
+      // (An adoption that landed closed the reservation: nothing to hand back.)
+      // The hand-back is best-effort: a Firestore failure of the RELEASE must
+      // not turn the answer the operator acts on into a 500.
+      if (reserva.fase === 'travada') await liberarTravaShopeeSemSubstituirErro(db, reserva);
       throw err;
     }
     return { tipo: 'travada', reserva };
@@ -388,8 +498,8 @@ export async function reservarRascunhoShopee(
 
 /**
  * D15 at the reservation, with OUR lock already written (K1-4). Throws when the
- * conta refuses (the caller releases the lock); returns quietly when the
- * publish may go on.
+ * conta refuses (the caller releases the lock); otherwise answers the links it
+ * read — ENSURE's "this produto's own listings", read AFTER our lock.
  *
  *  1. any OTHER link of this conta under the produto whose lock reading is not
  *     `livre` (em-andamento, its grace, or incerta) ⇒ 409 `EM_ANDAMENTO` with
@@ -402,7 +512,7 @@ async function recusarSegundoAnuncio(
   db: Firestore,
   alvo: AlvoDaReserva,
   controles: ControlesDaPublicacaoAoVivo,
-): Promise<void> {
+): Promise<readonly VinculoLidoDaConta[]> {
   const vinculos = await lerVinculosDaConta(db, alvo.integracaoId, alvo.produtoId);
   const agora = controles.agora();
 
@@ -414,7 +524,7 @@ async function recusarSegundoAnuncio(
     if (estado.tipo === 'livre') continue;
     ocupados.push({
       linkDocId: v.id,
-      itemId: itemIdDoVinculo(v.raw),
+      itemId: itemIdEnderecavelShopee(v.raw.item_id),
       rascunho: ehRascunhoShopee(v.raw),
     });
     // Waiting helps only while every holder is still inside its window; an
@@ -456,6 +566,191 @@ async function recusarSegundoAnuncio(
         'duplicata. Confirme o segundo anúncio para seguir. Nada foi enviado agora.',
     });
   }
+  return vinculos;
+}
+
+/**
+ * ENSURE at the reservation (#1911, D5 + K1-7), our lock held and the record
+ * already carried over: run the look-up and act on its verdict. Throws a
+ * refusal (the caller releases our lock — the record stays); answers the
+ * ADOPTED `item_id`, or `null` when the publish may go on to `add_item`.
+ *
+ *  - `recusar` ⇒ `ShopeePublishBlockedError` with the look-up's ONE problema;
+ *  - `adotar` ⇒ the token-guarded adoption on this document (`item_id`, the
+ *    canonical conta ref, lock + record + failure stamp cleared) — the run is
+ *    then an UPDATE of that listing;
+ *  - `prosseguir` after a COMPLETE scan ⇒ the token-guarded clear of the
+ *    record, which MUST land (a record left behind would let a crash after the
+ *    send read `incerta` with no grace); after an attested SKU-less produto ⇒
+ *    nothing written, the record kept (no scan proved anything).
+ */
+async function garantirCriacaoIncerta(
+  db: Firestore,
+  reserva: ReservaDeRascunhoShopee,
+  a: {
+    readonly alvo: AlvoDaReserva;
+    readonly controles: ControlesDaPublicacaoAoVivo;
+    readonly busca: BuscaDaCriacaoIncerta;
+    readonly janela: JanelaDaCriacaoIncertaShopee;
+    readonly vinculos: readonly VinculoLidoDaConta[];
+  },
+): Promise<number | null> {
+  const produtoSnap = await produtoCollection.docRef(db, {}, a.alvo.produtoId).get();
+  const produto = produtoSnap.exists ? ((produtoSnap.data() ?? {}) as Record<string, unknown>) : {};
+  const veredicto = await localizarAnuncioIncerto(a.busca.client, db, {
+    integracaoId: a.alvo.integracaoId,
+    produtoId: a.alvo.produtoId,
+    sku: typeof produto.sku === 'string' ? produto.sku : null,
+    janela: a.janela,
+    vinculosDoProduto: a.vinculos,
+    confirmarCriacaoIncerta: a.controles.confirmarCriacaoIncerta,
+  });
+
+  if (veredicto.tipo === 'recusar') {
+    throw new ShopeePublishBlockedError({
+      produtoId: a.alvo.produtoId,
+      itemId: null,
+      problemas: [veredicto.problema],
+    });
+  }
+
+  if (veredicto.tipo === 'adotar') {
+    const contaRef = toOuterRef(integracaoCollection.docPath({}, a.alvo.integracaoId));
+    const desfecho = await gravarSobATrava(db, reserva, (raw) =>
+      // Still a draft — anything that wrote an `item_id` cleared our lock too,
+      // so a lock we still hold sits on a draft; checked anyway.
+      ehRascunhoShopee(raw)
+        ? {
+            item_id: veredicto.itemId,
+            contaProdutoShopeeOuterRef: contaRef,
+            publicacaoEmCurso: null,
+            criacaoIncertaDesde: null,
+            falhaPublicacao: null,
+            ultimaModificacao: a.busca.nowMs,
+          }
+        : null,
+    );
+    if (desfecho !== 'gravada') throw perdeuATrava(reserva, desfecho, 'a adoção do anúncio');
+    reserva.fase = 'encerrada';
+    return veredicto.itemId;
+  }
+
+  if (!veredicto.resumo.varreu) return null;
+  const desfecho = await gravarSobATrava(db, reserva, () => ({ criacaoIncertaDesde: null }));
+  if (desfecho !== 'gravada') throw perdeuATrava(reserva, desfecho, 'a limpeza do registro');
+  return null;
+}
+
+/** What one token-guarded write ({@link gravarSobATrava}) did. */
+type DesfechoDaGravacaoSobATrava =
+  | 'gravada'
+  /** The stored lock is not ours (or there is none): NOTHING was written. */
+  | 'nao-e-nossa'
+  /** The document is gone. */
+  | 'ausente'
+  /** `montar` refused the document as it stands (e.g. no longer a draft). */
+  | 'recusada'
+  /** Lost the precondition on every attempt. */
+  | 'contencao';
+
+/**
+ * ONE token-guarded `update(patch, {lastUpdateTime})` that KEEPS the lock
+ * unless `montar` names it: re-read, our token or NOTHING is written, `montar`
+ * re-derives the patch from each reading (never re-applied), ≤
+ * {@link TENTATIVAS_DA_TRAVA} attempts. A non-precondition Firestore error
+ * propagates (rule 6).
+ */
+async function gravarSobATrava(
+  db: Firestore,
+  reserva: ReservaDeRascunhoShopee,
+  montar: (raw: Record<string, unknown>) => Record<string, unknown> | null,
+): Promise<DesfechoDaGravacaoSobATrava> {
+  const ref = produtoShopeeLinkCollection.docRef(
+    db,
+    { produtoId: reserva.produtoId },
+    reserva.linkDocId,
+  );
+  for (let tentativa = 1; tentativa <= TENTATIVAS_DA_TRAVA; tentativa += 1) {
+    const snap = await ref.get();
+    if (!snap.exists) return 'ausente';
+    const raw = (snap.data() ?? {}) as Record<string, unknown>;
+    if (!travaEhNossa(raw, reserva.token)) return 'nao-e-nossa';
+    const dados = montar(raw);
+    if (dados === null) return 'recusada';
+    const patch = produtoShopeeLinkCollection.parseMerge(dados);
+    try {
+      await ref.update(patch as Record<string, unknown>, { lastUpdateTime: snap.updateTime });
+      return 'gravada';
+    } catch (err) {
+      if (!isFailedPrecondition(err)) throw err;
+    }
+  }
+  return 'contencao';
+}
+
+/** A token-guarded write of the look-up that did not land: nothing may be sent. */
+function perdeuATrava(
+  reserva: ReservaDeRascunhoShopee,
+  desfecho: Exclude<DesfechoDaGravacaoSobATrava, 'gravada'>,
+  oQue: string,
+): ConflitoDeRascunhoShopeeError {
+  console.warn('[shopee/anuncios] a gravação sob a trava não aconteceu; nada enviado', {
+    produtoId: reserva.produtoId,
+    linkDocId: reserva.linkDocId,
+    desfecho,
+  });
+  if (desfecho === 'recusada') return jaPublicado(reserva.linkDocId);
+  if (desfecho === 'contencao') {
+    return new ConflitoDeRascunhoShopeeError({
+      code: CODIGO_RASCUNHO_SHOPEE.contencao,
+      linkDocId: reserva.linkDocId,
+      mensagem:
+        `${oQue} do rascunho ${reserva.linkDocId} perdeu para gravações concorrentes ` +
+        `${String(TENTATIVAS_DA_TRAVA)} vezes seguidas. Nada foi enviado à Shopee; tente de novo.`,
+    });
+  }
+  return expirada(reserva.linkDocId, `${oQue} encontrou a trava fora desta execução`);
+}
+
+/**
+ * An `add_item` of this draft ended `incerto` (#1911, D5): ONE token-guarded
+ * write keeps the lock LIVE for {@link AGUARDAR_ANUNCIO_INCERTO_SHOPEE_MS} —
+ * so every tab, operator and the CLI hear 409 `EM_ANDAMENTO` until the listing
+ * the attempt may have made can show up in `get_item_list` — and records the
+ * attempt: `criacaoIncertaDesde = stored ?? lock.desde`
+ * (`janelaDaCriacaoIncertaShopee` of the document as it stands — an EARLIER
+ * start is kept, never moved later). No `falhaPublicacao`: nothing "falhou".
+ *
+ * Marks the reservation `encerrada` whatever happened. A lock that is no
+ * longer ours (or three lost preconditions) writes NOTHING — the foreign lock
+ * is never touched, and ours, left as it is, still expires into `incerta`.
+ *
+ * @returns MILLISECONDS until the lock stops reading `em-andamento` — the
+ *   202's `aguardarMs`.
+ */
+export async function registrarCriacaoIncerta(
+  db: Firestore,
+  reserva: ReservaDeRascunhoShopee,
+  controles: Pick<ControlesDaPublicacaoAoVivo, 'agora'>,
+): Promise<number> {
+  const expiraEm = controles.agora() + AGUARDAR_ANUNCIO_INCERTO_SHOPEE_MS;
+  const desfecho = await gravarSobATrava(db, reserva, (raw) => {
+    const trava = travaLegivel(raw);
+    if (trava === null) return null;
+    return {
+      publicacaoEmCurso: { ...trava, expiraEm },
+      criacaoIncertaDesde: janelaDaCriacaoIncertaShopee(raw)?.desdeMs ?? reserva.desde,
+    };
+  });
+  reserva.fase = 'encerrada';
+  if (desfecho !== 'gravada') {
+    console.warn('[shopee/anuncios] o registro da criação incerta não foi gravado', {
+      produtoId: reserva.produtoId,
+      linkDocId: reserva.linkDocId,
+      desfecho,
+    });
+  }
+  return AGUARDAR_ANUNCIO_INCERTO_SHOPEE_MS;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -482,7 +777,9 @@ export async function conferirTravaAntesDoEnvio(
     .docRef(db, { produtoId: reserva.produtoId }, reserva.linkDocId)
     .get();
   const raw = snap.exists ? ((snap.data() ?? {}) as Record<string, unknown>) : null;
-  if (raw !== null && itemIdDoVinculo(raw) !== null) throw jaPublicado(reserva.linkDocId);
+  if (raw !== null && itemIdEnderecavelShopee(raw.item_id) !== null) {
+    throw jaPublicado(reserva.linkDocId);
+  }
   const trava = raw === null ? null : travaLegivel(raw);
   if (trava === null || trava.token !== reserva.token) {
     console.warn('[shopee/anuncios] a trava do rascunho já não é desta execução; nada enviado', {
@@ -496,8 +793,11 @@ export async function conferirTravaAntesDoEnvio(
 }
 
 /**
- * The per-leg send gate (step 3) — SYNCHRONOUS, so nothing can run between it
- * and the `client.addItem` call it guards. Sends only while
+ * The per-leg send gate (step 3) — SYNCHRONOUS, so nothing of OURS runs between
+ * it and the `client.addItem` call it guards; the client's own token ask does,
+ * and the caller warms the credential first
+ * ({@link ControlesDaPublicacaoAoVivo.aquecerCredencial}) so that ask is one
+ * credential read inside the margin. Sends only while
  * `agora() + MARGEM_ENVIO_SHOPEE_MS < min(trava.expiraEm, prazoDaRequisicao)`.
  *
  * ⚠️ `agora` is read HERE, per leg — never the run's `nowMs` and never a value
@@ -535,7 +835,8 @@ export function portaoDeEnvio(
  * Write-back #1 of a DRAFT's create — the tier-1 CLAIM (step 4). `montar`
  * builds the write-back's field set from the document as it stands NOW (the
  * "first time only" fields are decided per attempt — re-derived, never
- * re-applied); the claim adds `publicacaoEmCurso: null` when it takes the draft.
+ * re-applied); the claim adds `publicacaoEmCurso: null` and
+ * `criacaoIncertaDesde: null` when it takes the draft.
  *
  * Loop ≤ {@link TENTATIVAS_DA_TRAVA}: absent ⇒ `add` a fresh link · `item_id`
  * already OURS ⇒ the plain merge (a replay converges) · still a draft ⇒
@@ -564,7 +865,7 @@ export async function reivindicarRascunhoShopee(
           linkDocId: alvo.linkDocId,
           itemId: alvo.itemId,
           existe: raw !== null,
-          outroItemId: raw === null ? null : itemIdDoVinculo(raw),
+          outroItemId: raw === null ? null : itemIdEnderecavelShopee(raw.item_id),
         },
       );
       return await aplicarLinkDaListagem(db, alvo.produtoId, {
@@ -584,6 +885,8 @@ export async function reivindicarRascunhoShopee(
     const patch = produtoShopeeLinkCollection.parseMerge({
       ...montar(raw),
       publicacaoEmCurso: null,
+      // The listing is recorded: no uncertainty is left about this draft.
+      criacaoIncertaDesde: null,
     });
     try {
       await ref.update(patch as Record<string, unknown>, { lastUpdateTime: snap.updateTime });

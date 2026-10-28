@@ -159,6 +159,14 @@ export interface ContextoPublicacao {
    */
   readonly resolvedorDeImagens: ResolvedorDeImagensShopee;
   readonly ehAtualizacao: boolean;
+  /**
+   * #1911 (D5): an UPDATE that RESUMES a first create — the listing an earlier,
+   * uncertain `add_item` of the draft made, adopted by this run. That attempt
+   * sent `UNLIST` when the produto has children (the tier leg never ran), so
+   * the re-list dance joins this update exactly as it joins a create.
+   * Absent ⇒ `false` (every fixture that predates it).
+   */
+  readonly retomandoCriacao?: boolean;
   /** The status the OPERATOR asked for. See {@link PlanoPublicacao.statusInicial}. */
   readonly statusPedido: ShopeeItemStatusWritable;
   /**
@@ -591,8 +599,11 @@ export function planejarPublicacao(
     reutilizadas: fotos.resumo.reutilizadas,
   };
 
+  // A create WITH children goes out UNLIST and is re-listed after the tier leg;
+  // so is an update that RESUMES such a create (#1911) — the lost attempt
+  // left its listing UNLIST and model-less.
   const relistagem =
-    !contexto.ehAtualizacao &&
+    (!contexto.ehAtualizacao || contexto.retomandoCriacao === true) &&
     temFilhos &&
     contexto.statusPedido === SHOPEE_ITEM_STATUS_WRITABLE.normal
       ? ORDEM_RELISTAGEM

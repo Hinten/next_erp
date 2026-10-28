@@ -442,6 +442,24 @@ describe('montarAnuncio — o vocabulário de recusa', () => {
       }
     }
     expect(doKit.size).toBeGreaterThan(0);
+    // #1911 (P5): the uncertain create's ENSURE produces its four members in
+    // `criacaoIncerta.ts` — read like `kits/`, through the constant, and pinned EXACTLY
+    // so a member that drifts to (or from) that file reds here.
+    const fonteCriacaoIncerta = readFileSync(
+      fileURLToPath(new URL('./criacaoIncerta.ts', import.meta.url)),
+      { encoding: 'utf8' },
+    );
+    const daCriacaoIncerta = new Set<string>();
+    for (const [, chave] of fonteCriacaoIncerta.matchAll(/MOTIVO_PUBLICACAO_BLOQUEADA\.(\w+)/g)) {
+      const membro = (MOTIVO_PUBLICACAO_BLOQUEADA as Record<string, string>)[chave ?? ''];
+      if (membro !== undefined) daCriacaoIncerta.add(membro);
+    }
+    expect([...daCriacaoIncerta].sort()).toEqual([
+      'busca-de-anuncio-incompleta',
+      'criacao-incerta-ambigua',
+      'criacao-incerta-ja-vinculada',
+      'criacao-incerta-sem-sku',
+    ]);
     const outros = Object.values(MOTIVO_PUBLICACAO_BLOQUEADA).filter((m) => !cobertos.has(m));
     // The four step-11 members other step-11 files produce (the docblock test below names
     // them) — the kit arm reuses two of them, so they are NOT subtracted as "kit" here.
@@ -452,11 +470,14 @@ describe('montarAnuncio — o vocabulário de recusa', () => {
       'variacao-sem-vinculo',
     ];
     expect(outros).toEqual(expect.arrayContaining(doPasso11Fora));
-    // Every OTHER member this module does not produce must come from the kit arm.
-    expect(outros.filter((m) => !doPasso11Fora.includes(m) && !doKit.has(m))).toEqual([]);
+    // Every OTHER member this module does not produce must come from the kit arm or from
+    // the uncertain create.
+    expect(
+      outros.filter((m) => !doPasso11Fora.includes(m) && !doKit.has(m) && !daCriacaoIncerta.has(m)),
+    ).toEqual([]);
   });
 
-  it('o docblock nomeia os quatro membros que este módulo NÃO produz, com o arquivo produtor', () => {
+  it('o docblock nomeia os oito membros que este módulo NÃO produz, com o arquivo produtor', () => {
     const fonte = readFileSync(fileURLToPath(new URL('./montagemAnuncio.ts', import.meta.url)), {
       encoding: 'utf8',
     });
@@ -465,12 +486,18 @@ describe('montarAnuncio — o vocabulário de recusa', () => {
       'combinacao-duplicada',
       'opcoes-demais',
       'logistica-sem-canal',
+      'criacao-incerta-ambigua',
+      'busca-de-anuncio-incompleta',
+      'criacao-incerta-sem-sku',
+      'criacao-incerta-ja-vinculada',
     ]) {
       expect(fonte).toContain(membro);
     }
     expect(fonte).toContain('anuncios/tiersPublicacao.ts');
     expect(fonte).toContain('anuncios/logisticaPublicacao.ts');
     expect(fonte).toContain('anuncios/problemasPublicacao.ts');
+    expect(fonte).toContain('anuncios/criacaoIncerta.ts');
+    expect(fonte).toContain('(nineteen of twenty-seven)');
   });
 
   it('problemas é a UNIÃO de todas as recusas, nunca a primeira', () => {

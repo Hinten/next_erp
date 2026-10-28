@@ -16,22 +16,50 @@ import {
   ShopeeRateLimitError,
   ShopeeReauthRequiredError,
   ShopeeSchemaError,
+  type GetItemListParams,
   type ShopeeAddItemRequest,
   type ShopeeClient,
+  type ShopeeItemBaseInfo,
+  type ShopeeItemList,
   classifyShopeeError,
   createShopeeClient,
   resolveShopeeHosts,
   shopeeErrorFromEnvelope,
+  shopeeItemBaseInfoPayloadSchema,
+  shopeeItemBaseInfoSchema,
+  shopeeItemListPayloadSchema,
 } from '@delfrance/integrations-shopee';
-
-import { codigoCanonicoShopee, fraseCanonicaShopee } from '../core/recusaShopee';
-import { MOTIVO_RECUSA_KIT_TRANSITORIO, TABELA_RECUSA_KIT } from '../kits/recusaKit';
 import {
+  AGUARDAR_ANUNCIO_INCERTO_SHOPEE_MS,
+  inicioDaJanelaDaCriacaoShopeeS,
+  toOuterRef,
+} from '@delfrance/schemas';
+import { integracaoCollection } from '@delfrance/data/admin/collections';
+
+import { ShopeeCredencialInvalidaError } from '../core/credentialStore';
+import { codigoCanonicoShopee, fraseCanonicaShopee } from '../core/recusaShopee';
+import {
+  ShopeeContaSemShopIdError,
+  ShopeeRefreshEmAndamentoError,
+  ShopeeSemCredencialError,
+} from '../core/tokenStore';
+import { FIXTURE_ITEM_BASE_INFO_SG_KIT, lerFixture } from '../fixtures/wireCorpus';
+import { MOTIVO_RECUSA_KIT_TRANSITORIO, TABELA_RECUSA_KIT } from '../kits/recusaKit';
+import { FakeDb, asDb } from '../testing/fakeDb';
+import {
+  CriacaoDeAnuncioIncertaError,
   INCERTEZAS_DOCUMENTADAS_ADD_ITEM,
+  MAX_PAGINAS_BUSCA_ANUNCIO,
   RECUSAS_DETERMINISTICAS_ADD_ITEM,
+  STATUS_BUSCA_ANUNCIO,
   desfechoDeCriacaoDeItem,
+  ehFalhaDoPassoDoToken,
   incertezaDocumentadaDeAddItem,
+  localizarAnuncioIncerto,
+  mensagemDoAnuncioIncerto,
   recusaDeterministicaDeAddItem,
+  recusaDoAnuncioIncerto,
+  skuDaBuscaShopee,
   type DesfechoDeCriacaoDeItem,
   type LinhaCriacaoDeItem,
 } from './criacaoIncerta';
@@ -80,8 +108,10 @@ const PAGINA_ESPECIFICOS: readonly LinhaDaPagina[] = [
     N,
   ],
   ['error_network', 'Inner http call failed', I],
-  ['error_data', 'parse data failed', N],
-  ['error_data', 'data not exist', N],
+  // The gateway's shared list (every page): neither sentence names a field of
+  // the request, so neither proves the create did not happen (batch-A review).
+  ['error_data', 'parse data failed', I],
+  ['error_data', 'data not exist', I],
   ['error_param', 'parameter invalid', N],
   ['error_param', 'The information you queried is not found.', N],
   ['error_param', 'Wrong parameters, detail: {msg}.', N],
@@ -194,7 +224,8 @@ const PAGINA_ESPECIFICOS: readonly LinhaDaPagina[] = [
   ['error_image_unavailable', 'Image is invalid: single image url length is less than 32.', N],
   ['error_reach_shop_item_limit', 'Item published item count reaches limit.', N],
   ['error_name_length_limit', 'Exceeded item_name length limitation.', N],
-  ['error_nil_shopid_or_itemid', 'Query information failed.', N],
+  // The product service's shared LOOKUP block — `add_item` sends no item_id.
+  ['error_nil_shopid_or_itemid', 'Query information failed.', I],
   ['error_desc_hash_tag_over_limit', 'Count of hash tags is more than 18', N],
   ['error_item_name_empty', 'Item name could not be empty.', N],
   ['error_holiday_on_add_item', 'Shop is under vocation mode.', N],
@@ -351,7 +382,7 @@ describe('a página do `add_item` é a fixture (rev. 2, K1-1)', () => {
     const chaves = PAGINA.map(([c, f]) => `${c}\u0000${f}`);
     expect(new Set(chaves).size).toBe(PAGINA.length);
     // As classes que a página reparte — um recorte que mude de lado aparece aqui.
-    expect(PAGINA.filter(([, , e]) => e === I)).toHaveLength(16);
+    expect(PAGINA.filter(([, , e]) => e === I)).toHaveLength(19);
   });
 
   it('CADA (código, frase) documentada cai na SUA classe — nas duas grafias do código', () => {
@@ -429,13 +460,22 @@ describe('as tabelas — fechadas, alcançáveis, sem motivo soletrado', () => {
     }
   });
 
-  it('o FONTE não soletra motivo algum — nem entre aspas, nem pela constante', () => {
+  it('o FONTE não soletra motivo algum entre aspas, e pela constante produz SÓ as quatro da busca (P5)', () => {
     const fonte = readFileSync(
       fileURLToPath(new URL('./criacaoIncerta.ts', import.meta.url)),
       'utf8',
     );
     expect(fonte).toContain('RECUSAS_DETERMINISTICAS_ADD_ITEM');
-    expect(fonte).not.toContain('MOTIVO_PUBLICACAO_BLOQUEADA.');
+    // The look-up's four refusals — and nothing else of either vocabulary.
+    const pelaConstante = [...fonte.matchAll(/MOTIVO_PUBLICACAO_BLOQUEADA\.(\w+)/g)]
+      .map((m) => m[1])
+      .sort();
+    expect([...new Set(pelaConstante)]).toEqual([
+      'buscaDeAnuncioIncompleta',
+      'criacaoIncertaAmbigua',
+      'criacaoIncertaJaVinculada',
+      'criacaoIncertaSemSku',
+    ]);
     expect(fonte).not.toContain('MOTIVO_PROBLEMA_PUBLICACAO.');
     const slugs = [
       ...Object.values(MOTIVO_PUBLICACAO_BLOQUEADA),
@@ -515,6 +555,43 @@ describe('os PARES e QUASE-ACERTOS do rev. 2', () => {
     expect(
       desfechoDeCriacaoDeItem(doEnvelope('error_auth', 'System error, please try again later.')),
     ).toBe(I);
+  });
+
+  it('(batch-A) `error_nil_*` NÃO é prefixo: o nome vazio ⇒ nao-criado ⟷ "Query information failed." ⇒ incerto', () => {
+    // A field of the request, refused before any insert.
+    expect(
+      desfechoDeCriacaoDeItem(doEnvelope('error_nil_name_new_item', 'Item_name cannot be empty.')),
+    ).toBe(N);
+    // The product service's shared LOOKUP sentence — `add_item` sends no
+    // item_id, so the failed lookup proves nothing about the create.
+    for (const codigo of ['error_nil_shopid_or_itemid', 'product.error_nil_shopid_or_itemid']) {
+      expect(desfechoDeCriacaoDeItem(doEnvelope(codigo, 'Query information failed.')), codigo).toBe(
+        I,
+      );
+      expect(desfechoDeCriacaoDeItem(doEnvelope(codigo, null)), codigo).toBe(I);
+      expect(recusaDeterministicaDeAddItem(doEnvelope(codigo, null)), codigo).toBeNull();
+    }
+  });
+
+  it('(batch-A) `error_data` ⇒ incerto em QUALQUER frase ⟷ o `error_param` do mesmo bloco do gateway ⇒ nao-criado', () => {
+    // The gateway's shared block, line for line: the validation sentence of
+    // `error_param` is a refusal; `error_data` sits between two internal errors.
+    expect(desfechoDeCriacaoDeItem(doEnvelope('error_param', 'parameter invalid'))).toBe(N);
+    for (const frase of [
+      'parse data failed',
+      'data not exist',
+      // Documented word for word under `error_data` on `v2.returns.get_return_detail`.
+      'Inner error, please try later. [5].',
+      null,
+    ]) {
+      for (const codigo of ['error_data', 'product.error_data']) {
+        expect(desfechoDeCriacaoDeItem(doEnvelope(codigo, frase)), `${codigo}: ${frase}`).toBe(I);
+        expect(
+          recusaDeterministicaDeAddItem(doEnvelope(codigo, frase)),
+          `${codigo}: ${frase}`,
+        ).toBeNull();
+      }
+    }
   });
 
   it('um código DESCONHECIDO ⇒ incerto — mesmo com o prefixo e com uma frase de validação', () => {
@@ -909,5 +986,540 @@ describe('pelo CAMINHO REAL: o erro que `addItem` do pacote LANÇA (fetch → en
       expect(api.message).toContain(SHOPEE_ADD_ITEM_PATH);
       expect(desfechoDeCriacaoDeItem(api), caso.envelope.error).toBe(caso.esperado);
     }
+  });
+});
+
+/* ========================================================================== */
+/*  #1911 P5 — o PASSO DO TOKEN do app nunca chega à Shopee                    */
+/* ========================================================================== */
+
+describe('o passo do TOKEN (as quatro classes do app) ⇒ nao-criado — nunca chegou à Shopee', () => {
+  const classes = [
+    new ShopeeRefreshEmAndamentoError('outro refresh segura o lease', 1_767_000_030_000),
+    new ShopeeSemCredencialError('a conta não tem credencial'),
+    new ShopeeContaSemShopIdError('consentimento da conta principal, sem shop_id'),
+    new ShopeeCredencialInvalidaError('credencial ilegível', ['access_token']),
+  ];
+
+  it('cada uma, pelo NOME da classe ⇒ nao-criado (ehFalhaDoPassoDoToken)', () => {
+    for (const err of classes) {
+      expect(ehFalhaDoPassoDoToken(err), err.name).toBe(true);
+      expect(desfechoDeCriacaoDeItem(err), err.name).toBe(N);
+    }
+  });
+
+  it('⛔ quase-par: o Error NU, um TypeError e uma subclasse qualquer de Error continuam RELANÇADOS', async () => {
+    class OutroErroDoApp extends Error {}
+    for (const err of [new Error('genérico'), new TypeError('bug'), new OutroErroDoApp('x')]) {
+      expect(ehFalhaDoPassoDoToken(err)).toBe(false);
+      await expect(relancado(err)).rejects.toBe(err);
+    }
+  });
+
+  it('pelo cliente REAL: o token pedido ANTES da requisição lança a classe — zero fetch', async () => {
+    for (const falha of classes) {
+      const transporte = vi.fn<typeof globalThis.fetch>();
+      const client = createShopeeClient({
+        partnerId: 1000001,
+        partnerKey: 'chave-de-teste-nao-e-credencial',
+        hosts: resolveShopeeHosts({ sandbox: true }),
+        shopId: 987654,
+        getAccessToken: () => Promise.reject(falha),
+        now: () => 1_767_000_000_000,
+        fetch: transporte,
+      });
+      const err = await erroDe(client.addItem(CRIAR));
+      expect(err, falha.name).toBe(falha);
+      expect(transporte, falha.name).not.toHaveBeenCalled();
+      expect(desfechoDeCriacaoDeItem(err), falha.name).toBe(N);
+    }
+  });
+});
+
+/* ========================================================================== */
+/*  #1911 P5 — o 202 (as peças puras)                                          */
+/* ========================================================================== */
+
+describe('o 202 de uma criação incerta — as peças', () => {
+  it('recusa: o código e a frase da Shopee quando ela RESPONDEU; null quando nada chegou', () => {
+    expect(
+      recusaDoAnuncioIncerto(doEnvelope('error_inner', 'Our system is taking some time')),
+    ).toEqual({ codigo: 'error_inner', fraseShopee: 'Our system is taking some time' });
+    expect(recusaDoAnuncioIncerto(doEnvelope('error_unknown', null))).toEqual({
+      codigo: 'error_unknown',
+      fraseShopee: null,
+    });
+    expect(recusaDoAnuncioIncerto(new ShopeeNetworkError('caiu'))).toBeNull();
+    expect(recusaDoAnuncioIncerto(new ShopeeError('nu'))).toBeNull();
+  });
+
+  it('skuDaBuscaShopee — IGUAL: as pontas e a ausência; DISTINTO: a caixa e o espaço de dentro', () => {
+    expect(skuDaBuscaShopee(' SKU-1 ')).toBe('SKU-1');
+    expect(skuDaBuscaShopee('SKU-1')).toBe('SKU-1');
+    for (const vazio of [null, undefined, '', '   ', '\t']) {
+      expect(skuDaBuscaShopee(vazio), JSON.stringify(vazio)).toBe('');
+    }
+    // ⛔ quase-pares: a dobra é SÓ trim — a caixa e o espaço interno ficam.
+    expect(skuDaBuscaShopee('sku-1')).not.toBe(skuDaBuscaShopee('SKU-1'));
+    expect(skuDaBuscaShopee('SKU 1')).not.toBe(skuDaBuscaShopee('SKU1'));
+  });
+
+  it('a frase: com SKU manda reenviar o MESMO rascunho; sem SKU manda conferir e nomeia a flag', () => {
+    const comSku = mensagemDoAnuncioIncerto(true);
+    const semSku = mensagemDoAnuncioIncerto(false);
+    expect(comSku).toContain(`${String(AGUARDAR_ANUNCIO_INCERTO_SHOPEE_MS / 60_000)} minutos`);
+    expect(comSku).toContain('procura o anúncio pelo SKU');
+    expect(comSku).not.toContain('--confirmar-criacao-incerta');
+    expect(semSku).toContain('não tem SKU');
+    expect(semSku).toContain('--confirmar-criacao-incerta');
+    expect(semSku).toContain('importar:anuncio');
+  });
+
+  it('CriacaoDeAnuncioIncertaError é do APP — nunca um ShopeeError — e guarda a causa', () => {
+    const causa = new ShopeeNetworkError('caiu');
+    const err = new CriacaoDeAnuncioIncertaError(
+      {
+        produtoId: 'prod-1',
+        linkDocId: 'rasc-1',
+        aguardarMs: AGUARDAR_ANUNCIO_INCERTO_SHOPEE_MS,
+        reenvioVerificaSku: true,
+        recusa: null,
+        mensagem: mensagemDoAnuncioIncerto(true),
+      },
+      causa,
+    );
+    expect(err).not.toBeInstanceOf(ShopeeError);
+    expect(err.cause).toBe(causa);
+    expect(err.message).toContain('rasc-1');
+    expect(err.resultado.linkDocId).toBe('rasc-1');
+  });
+});
+
+/* ========================================================================== */
+/*  #1911 P5 — ENSURE: localizarAnuncioIncerto, que FALHA FECHADO (K1-7)       */
+/* ========================================================================== */
+
+describe('localizarAnuncioIncerto — a busca que falha FECHADO (D5, K1-7, K1-11, K2-21)', () => {
+  const INTEGRACAO = 'int-1';
+  const REF_CONTA = toOuterRef(integracaoCollection.docPath({}, INTEGRACAO));
+  const PRODUTO = 'prod-1';
+  const OUTRO_PRODUTO = 'prod-2';
+  const SKU = 'SKU-1';
+  /** ms — the attempt's start; the window opens 300 s before its whole second. */
+  const DESDE = 1_757_000_000_000;
+  const INICIO_S = inicioDaJanelaDaCriacaoShopeeS(DESDE);
+  const DENTRO = INICIO_S + 10;
+  const FORA = INICIO_S - 1;
+  const ITEM_A = 2500139861;
+  const ITEM_B = 2500139862;
+  const ITEM_C = 2500139863;
+
+  type Json = Record<string, unknown>;
+
+  function linhaDaLista(itemId: number, kit: boolean | null = false): Json {
+    return {
+      item_id: itemId,
+      item_status: 'NORMAL',
+      update_time: DENTRO,
+      tag: kit === null ? null : { kit },
+    };
+  }
+
+  function pagina(
+    linhas: readonly Json[],
+    has = false,
+    next: number | null = null,
+  ): ShopeeItemList {
+    return shopeeItemListPayloadSchema.parse({
+      item: linhas,
+      total_count: linhas.length,
+      has_next_page: has,
+      next_offset: next,
+      next: '',
+    });
+  }
+
+  /** A base row from the REAL capture, with what this case needs on top. */
+  function base(itemId: number, over: Json = {}): Json {
+    const corpo = shopeeItemBaseInfoSchema.parse(
+      lerFixture(FIXTURE_ITEM_BASE_INFO_SG_KIT),
+    ).response;
+    const linha = corpo.item_list[0] as Json;
+    return {
+      ...linha,
+      item_id: itemId,
+      item_sku: SKU,
+      create_time: DENTRO,
+      tag: { kit: false },
+      ...over,
+    };
+  }
+
+  function cliente(a: {
+    readonly paginas?: readonly ShopeeItemList[];
+    readonly bases?: readonly Json[];
+  }): {
+    readonly client: ShopeeClient;
+    readonly getItemList: ReturnType<typeof vi.fn>;
+    readonly getItemBaseInfo: ReturnType<typeof vi.fn>;
+  } {
+    const paginas = a.paginas ?? [pagina([])];
+    let i = 0;
+    const getItemList = vi.fn((_p: GetItemListParams) =>
+      Promise.resolve(paginas[Math.min(i++, paginas.length - 1)] as ShopeeItemList),
+    );
+    const porId = new Map((a.bases ?? []).map((b) => [b.item_id as number, b]));
+    const getItemBaseInfo = vi.fn(
+      (p: { itemIds: readonly number[] }): Promise<ShopeeItemBaseInfo> =>
+        Promise.resolve(
+          shopeeItemBaseInfoPayloadSchema.parse({
+            item_list: p.itemIds.map((id) => porId.get(id)).filter((b) => b !== undefined),
+          }),
+        ),
+    );
+    return {
+      client: { getItemList, getItemBaseInfo } as unknown as ShopeeClient,
+      getItemList,
+      getItemBaseInfo,
+    };
+  }
+
+  /** One listing of the window: listed, with its base row. */
+  function umaLoja(...bases: readonly Json[]) {
+    return cliente({
+      paginas: [pagina(bases.map((b) => linhaDaLista(b.item_id as number)))],
+      bases,
+    });
+  }
+
+  function buscar(
+    client: ShopeeClient,
+    over: Partial<{
+      db: FakeDb;
+      sku: string | null;
+      desdeMs: number;
+      confirmar: boolean;
+      vinculos: readonly { id: string; raw: Json }[];
+    }> = {},
+  ) {
+    return localizarAnuncioIncerto(client, asDb(over.db ?? new FakeDb()), {
+      integracaoId: INTEGRACAO,
+      produtoId: PRODUTO,
+      sku: over.sku === undefined ? SKU : over.sku,
+      janela: { desdeMs: over.desdeMs ?? DESDE },
+      vinculosDoProduto: over.vinculos ?? [],
+      confirmarCriacaoIncerta: over.confirmar ?? false,
+    });
+  }
+
+  function recusa(v: Awaited<ReturnType<typeof localizarAnuncioIncerto>>) {
+    if (v.tipo !== 'recusar') throw new Error(`esperava uma recusa, veio ${v.tipo}`);
+    return v.problema;
+  }
+
+  it('(K2-21) SKU que dobra em BRANCO ⇒ criacao-incerta-sem-sku, ZERO get_item_list — nunca varre', async () => {
+    for (const sku of [null, '', '   ', '\t ']) {
+      const c = cliente({});
+      const v = await buscar(c.client, { sku });
+      expect(recusa(v), JSON.stringify(sku)).toMatchObject({
+        campo: 'item_sku',
+        motivo: MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaSemSku,
+      });
+      expect(recusa(v).mensagem).toContain('--confirmar-criacao-incerta');
+      expect(c.getItemList).not.toHaveBeenCalled();
+      expect(v.resumo.varreu).toBe(false);
+    }
+  });
+
+  it('(K1-11) sem SKU + confirmarCriacaoIncerta ⇒ prossegue SEM varrer (varreu: false — o registro fica)', async () => {
+    const c = cliente({});
+    const v = await buscar(c.client, { sku: '  ', confirmar: true });
+    expect(v).toMatchObject({ tipo: 'prosseguir', resumo: { varreu: false } });
+    expect(c.getItemList).not.toHaveBeenCalled();
+  });
+
+  it('a janela: update_time_from = THE inicioDaJanelaDaCriacaoShopeeS, os quatro status, 100 por página, SEM update_time_to', async () => {
+    const c = cliente({});
+    await buscar(c.client);
+    expect(c.getItemList).toHaveBeenCalledTimes(1);
+    const p = c.getItemList.mock.calls[0]?.[0] as GetItemListParams;
+    expect(p.updateTimeFromS).toBe(INICIO_S);
+    expect(p.updateTimeFromS).toBe(Math.floor(DESDE / 1000) - 300);
+    expect(p.statuses).toEqual(STATUS_BUSCA_ANUNCIO);
+    expect(STATUS_BUSCA_ANUNCIO).toEqual(['NORMAL', 'UNLIST', 'REVIEWING', 'BANNED']);
+    expect(p.pageSize).toBe(100);
+    expect(p.offset).toBe(0);
+    // ⚠️ No upper bound: a listing a stock push touched a second ago is still listed.
+    expect(p).not.toHaveProperty('updateTimeToS');
+  });
+
+  it('um registro CORROMPIDO cedo demais abre a janela no segundo 1 — nunca um parâmetro que o pacote recusa', async () => {
+    const c = cliente({});
+    await buscar(c.client, { desdeMs: 5_000 });
+    expect((c.getItemList.mock.calls[0]?.[0] as GetItemListParams).updateTimeFromS).toBe(1);
+  });
+
+  it('nada na janela (busca COMPLETA) ⇒ prosseguir, varreu: true, zero base info', async () => {
+    const c = cliente({});
+    const v = await buscar(c.client);
+    expect(v).toMatchObject({ tipo: 'prosseguir', resumo: { varreu: true, paginas: 1 } });
+    expect(c.getItemBaseInfo).not.toHaveBeenCalled();
+  });
+
+  it('UM definitivo (sem vínculo, SKU igual, criado DENTRO) ⇒ adotar esse item_id', async () => {
+    const c = umaLoja(base(ITEM_A));
+    const v = await buscar(c.client);
+    expect(v).toMatchObject({ tipo: 'adotar', itemId: ITEM_A });
+    expect(v.resumo).toMatchObject({ varreu: true, paginas: 1, chamadas: 2, candidatos: 1 });
+  });
+
+  it("⛔ a dobra do lado da Shopee: ' SKU-1 ' É o mesmo; 'sku-1' NÃO é (a caixa fica)", async () => {
+    expect(await buscar(umaLoja(base(ITEM_A, { item_sku: ' SKU-1 ' })).client)).toMatchObject({
+      tipo: 'adotar',
+      itemId: ITEM_A,
+    });
+    expect(await buscar(umaLoja(base(ITEM_A, { item_sku: 'sku-1' })).client)).toMatchObject({
+      tipo: 'prosseguir',
+    });
+  });
+
+  it("⛔ a dobra do lado do PRODUTO (skuDoItemShopee): ' SKU-1 ' acha; 'sku-1' não acha", async () => {
+    expect(await buscar(umaLoja(base(ITEM_A)).client, { sku: ' SKU-1 ' })).toMatchObject({
+      tipo: 'adotar',
+    });
+    expect(await buscar(umaLoja(base(ITEM_A)).client, { sku: 'sku-1' })).toMatchObject({
+      tipo: 'prosseguir',
+    });
+  });
+
+  it('⛔ create_time: o INÍCIO exato da janela está DENTRO; um segundo antes está FORA (ignorado)', async () => {
+    expect(await buscar(umaLoja(base(ITEM_A, { create_time: INICIO_S })).client)).toMatchObject({
+      tipo: 'adotar',
+    });
+    expect(await buscar(umaLoja(base(ITEM_A, { create_time: FORA })).client)).toMatchObject({
+      tipo: 'prosseguir',
+    });
+  });
+
+  it('dois definitivos ⇒ criacao-incerta-ambigua com importar{itemIds} ordenados — nunca adota o primeiro', async () => {
+    const v = await buscar(umaLoja(base(ITEM_B), base(ITEM_A)).client);
+    expect(recusa(v)).toMatchObject({
+      motivo: MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaAmbigua,
+      acao: { tipo: 'importar', itemIds: [ITEM_A, ITEM_B], vinculados: [] },
+    });
+  });
+
+  it('(K1-7) INDECIDÍVEL: create_time NULL num item de SKU igual ⇒ ambígua — NUNCA "zero achados"', async () => {
+    const v = await buscar(umaLoja(base(ITEM_A, { create_time: null })).client);
+    expect(recusa(v)).toMatchObject({
+      motivo: MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaAmbigua,
+      acao: { tipo: 'importar', itemIds: [ITEM_A] },
+    });
+  });
+
+  it('(K1-7) INDECIDÍVEL: item_sku NULL (a Shopee não informou) criado DENTRO ⇒ ambígua ⟷ criado FORA ⇒ ignorado', async () => {
+    expect(recusa(await buscar(umaLoja(base(ITEM_A, { item_sku: null })).client)).motivo).toBe(
+      MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaAmbigua,
+    );
+    expect(
+      await buscar(umaLoja(base(ITEM_A, { item_sku: null, create_time: FORA })).client),
+    ).toMatchObject({ tipo: 'prosseguir' });
+  });
+
+  it("⛔ quase-par: um item_sku INFORMADO em branco ('') é DADO — a tentativa enviou um SKU — ignorado", async () => {
+    expect(await buscar(umaLoja(base(ITEM_A, { item_sku: '' })).client)).toMatchObject({
+      tipo: 'prosseguir',
+    });
+    expect(await buscar(umaLoja(base(ITEM_A, { item_sku: '   ' })).client)).toMatchObject({
+      tipo: 'prosseguir',
+    });
+  });
+
+  it('(K1-7) INDECIDÍVEL: um item listado SEM linha de base info ⇒ ambígua', async () => {
+    const c = cliente({ paginas: [pagina([linhaDaLista(ITEM_A)])], bases: [] });
+    expect(recusa(await buscar(c.client)).motivo).toBe(
+      MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaAmbigua,
+    );
+  });
+
+  it('um definitivo + um indecidível ⇒ ambígua listando os DOIS — nunca adota o definitivo', async () => {
+    const v = await buscar(umaLoja(base(ITEM_A), base(ITEM_B, { create_time: null })).client);
+    expect(recusa(v).acao).toEqual({
+      tipo: 'importar',
+      itemIds: [ITEM_A, ITEM_B],
+      vinculados: [],
+    });
+  });
+
+  it('KITS ficam de fora: tag.kit true na LISTA (sem base info) ou na BASE; tag nula na lista é decidida pela base', async () => {
+    const naLista = cliente({
+      paginas: [pagina([linhaDaLista(ITEM_A, true)])],
+      bases: [base(ITEM_A)],
+    });
+    expect(await buscar(naLista.client)).toMatchObject({ tipo: 'prosseguir' });
+    expect(naLista.getItemBaseInfo).not.toHaveBeenCalled();
+
+    const naBase = cliente({
+      paginas: [pagina([linhaDaLista(ITEM_A, null)])],
+      bases: [base(ITEM_A, { tag: { kit: true } })],
+    });
+    expect(await buscar(naBase.client)).toMatchObject({ tipo: 'prosseguir' });
+
+    // ⛔ quase-par: sem tag na lista e NÃO kit na base ⇒ um candidato de verdade.
+    const semTag = cliente({
+      paginas: [pagina([linhaDaLista(ITEM_A, null)])],
+      bases: [base(ITEM_A)],
+    });
+    expect(await buscar(semTag.client)).toMatchObject({ tipo: 'adotar', itemId: ITEM_A });
+  });
+
+  describe('os vínculos da conta', () => {
+    function vinculoProprio(itemId: number) {
+      return {
+        id: `link-${String(itemId)}`,
+        raw: { contaProdutoShopeeOuterRef: REF_CONTA, item_id: itemId },
+      };
+    }
+
+    it('(K1-7) um item JÁ vinculado a ESTE produto, SKU igual, criado DENTRO ⇒ criacao-incerta-ja-vinculada com importar{itemIds, vinculados}', async () => {
+      const v = await buscar(umaLoja(base(ITEM_A)).client, {
+        vinculos: [vinculoProprio(ITEM_A)],
+      });
+      expect(recusa(v)).toMatchObject({
+        campo: 'item_sku',
+        motivo: MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaJaVinculada,
+        acao: {
+          tipo: 'importar',
+          itemIds: [ITEM_A],
+          vinculados: [{ itemId: ITEM_A, produtoId: PRODUTO }],
+        },
+      });
+      expect(recusa(v).mensagem).toContain('--confirmar-criacao-incerta');
+    });
+
+    it('…e com create_time DESCONHECIDO também (fail-closed)', async () => {
+      const v = await buscar(umaLoja(base(ITEM_A, { create_time: null })).client, {
+        vinculos: [vinculoProprio(ITEM_A)],
+      });
+      expect(recusa(v).motivo).toBe(MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaJaVinculada);
+    });
+
+    it('⛔ quase-par: o vinculado criado ANTES da janela continua EXCLUÍDO ⇒ prosseguir', async () => {
+      expect(
+        await buscar(umaLoja(base(ITEM_A, { create_time: FORA })).client, {
+          vinculos: [vinculoProprio(ITEM_A)],
+        }),
+      ).toMatchObject({ tipo: 'prosseguir' });
+    });
+
+    it('(K1-11) confirmarCriacaoIncerta passa por cima do JÁ VINCULADO — a busca RODOU (completa, nada mais)', async () => {
+      const c = umaLoja(base(ITEM_A));
+      const v = await buscar(c.client, { vinculos: [vinculoProprio(ITEM_A)], confirmar: true });
+      expect(v).toMatchObject({ tipo: 'prosseguir', resumo: { varreu: true } });
+      expect(c.getItemList).toHaveBeenCalledTimes(1);
+    });
+
+    it('um definitivo + um já vinculado: sem a flag recusa listando os DOIS; com a flag adota o definitivo', async () => {
+      const lojaDosDois = () => umaLoja(base(ITEM_A), base(ITEM_B));
+      const vinculos = [vinculoProprio(ITEM_B)];
+      expect(recusa(await buscar(lojaDosDois().client, { vinculos }))).toMatchObject({
+        motivo: MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaJaVinculada,
+        acao: {
+          tipo: 'importar',
+          itemIds: [ITEM_A, ITEM_B],
+          vinculados: [{ itemId: ITEM_B, produtoId: PRODUTO }],
+        },
+      });
+      expect(await buscar(lojaDosDois().client, { vinculos, confirmar: true })).toMatchObject({
+        tipo: 'adotar',
+        itemId: ITEM_A,
+      });
+    });
+
+    it('⛔ (K1-11) a flag NUNCA vale para uma busca AMBÍGUA nem INCOMPLETA', async () => {
+      expect(
+        recusa(await buscar(umaLoja(base(ITEM_A), base(ITEM_B)).client, { confirmar: true }))
+          .motivo,
+      ).toBe(MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaAmbigua);
+      const semFim = cliente({ paginas: [pagina([], true, 100), pagina([], true, 100)] });
+      expect(recusa(await buscar(semFim.client, { confirmar: true })).motivo).toBe(
+        MOTIVO_PUBLICACAO_BLOQUEADA.buscaDeAnuncioIncompleta,
+      );
+    });
+
+    it('um item vinculado a OUTRO produto da conta (resolverLinkPorItemId) ⇒ não é desta tentativa — ignorado', async () => {
+      const db = new FakeDb();
+      db.seed(`produtos/${OUTRO_PRODUTO}/prodshopee/link-outro`, {
+        contaProdutoShopeeOuterRef: REF_CONTA,
+        item_id: ITEM_A,
+      });
+      expect(await buscar(umaLoja(base(ITEM_A)).client, { db })).toMatchObject({
+        tipo: 'prosseguir',
+      });
+    });
+
+    it('um vínculo DESTE produto que só a consulta de grupo achou (não estava na leitura) ⇒ já vinculado', async () => {
+      const db = new FakeDb();
+      db.seed(`produtos/${PRODUTO}/prodshopee/link-tardio`, {
+        contaProdutoShopeeOuterRef: REF_CONTA,
+        item_id: ITEM_A,
+      });
+      expect(recusa(await buscar(umaLoja(base(ITEM_A)).client, { db })).motivo).toBe(
+        MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaJaVinculada,
+      );
+    });
+  });
+
+  describe('a busca INCOMPLETA é um veredito', () => {
+    it(`${String(MAX_PAGINAS_BUSCA_ANUNCIO)} páginas ainda com has_next_page ⇒ busca-de-anuncio-incompleta, zero base info`, async () => {
+      const paginas = Array.from({ length: MAX_PAGINAS_BUSCA_ANUNCIO + 1 }, (_v, i) =>
+        pagina([linhaDaLista(ITEM_A + i)], true, (i + 1) * 100),
+      );
+      const c = cliente({ paginas, bases: [base(ITEM_A)] });
+      const v = await buscar(c.client);
+      expect(recusa(v)).toMatchObject({
+        campo: 'item_sku',
+        motivo: MOTIVO_PUBLICACAO_BLOQUEADA.buscaDeAnuncioIncompleta,
+      });
+      expect(c.getItemList).toHaveBeenCalledTimes(MAX_PAGINAS_BUSCA_ANUNCIO);
+      expect(c.getItemBaseInfo).not.toHaveBeenCalled();
+    });
+
+    it('⛔ quase-par: a última página SEM has_next_page dentro do teto ⇒ completa, e o cursor é o next_offset da Shopee', async () => {
+      const c = cliente({
+        paginas: [pagina([linhaDaLista(ITEM_A)], true, 37), pagina([linhaDaLista(ITEM_B)], false)],
+        bases: [base(ITEM_A, { item_sku: 'OUTRO' }), base(ITEM_B)],
+      });
+      expect(await buscar(c.client)).toMatchObject({ tipo: 'adotar', itemId: ITEM_B });
+      expect((c.getItemList.mock.calls[1]?.[0] as GetItemListParams).offset).toBe(37);
+    });
+
+    it('um cursor que NÃO avança, ou ausente com has_next_page ⇒ incompleta (nunca o fim do catálogo)', async () => {
+      for (const proximo of [null, 0]) {
+        const c = cliente({ paginas: [pagina([linhaDaLista(ITEM_A)], true, proximo)] });
+        expect(recusa(await buscar(c.client)).motivo, String(proximo)).toBe(
+          MOTIVO_PUBLICACAO_BLOQUEADA.buscaDeAnuncioIncompleta,
+        );
+        // ⚠️ It STOPS there — never re-reads the same page until the ceiling.
+        expect(c.getItemList, String(proximo)).toHaveBeenCalledTimes(1);
+      }
+    });
+  });
+
+  it('uma falha da Shopee na busca PROPAGA (regra 6) — nunca vira "nada achado"', async () => {
+    const falha = new ShopeeNetworkError('caiu');
+    const client = {
+      getItemList: () => Promise.reject(falha),
+    } as unknown as ShopeeClient;
+    await expect(buscar(client)).rejects.toBe(falha);
+  });
+
+  it('a frase cabe: muitos ids são cortados na FRASE, e a acao leva TODOS', async () => {
+    const bases = Array.from({ length: 15 }, (_v, i) => base(ITEM_C + i));
+    const v = await buscar(umaLoja(...bases).client);
+    const p = recusa(v);
+    expect(p.mensagem).toContain('e mais 5');
+    expect(p.acao).toMatchObject({ tipo: 'importar' });
+    expect((p.acao as { itemIds: number[] }).itemIds).toHaveLength(15);
   });
 });

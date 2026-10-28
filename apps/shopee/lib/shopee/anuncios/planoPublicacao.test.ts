@@ -425,6 +425,48 @@ describe('planejarPublicacao — o status inicial de um create com filhos', () =
   });
 });
 
+describe('planejarPublicacao — o update que RETOMA uma criação incerta (#1911, D5: retomandoCriacao)', () => {
+  const republicar = (parcial: Partial<ContextoPublicacao> = {}) =>
+    comFilhos({ ehAtualizacao: true, link: LINK, linkDocId: 'link-1', ...parcial });
+
+  it('com filhos e NORMAL ⇒ o update planeja a RELISTAGEM depois do leg de modelos — a tentativa perdida deixou o anúncio UNLIST', () => {
+    const plano = planejarPublicacao(republicar({ retomandoCriacao: true }), fotos());
+
+    expect(plano.relistagem).toEqual(ORDEM_RELISTAGEM);
+    expect(tipos(plano.passos)).toEqual([
+      'fotos',
+      'update_item',
+      'get_model_list',
+      'init_tier_variation',
+      'get_model_list',
+      'relistagem',
+      'leitura-de-volta',
+    ]);
+    // Still an UPDATE: no wait, no add_item.
+    expect(tipos(plano.passos)).not.toContain('add_item');
+    expect(tipos(plano.passos)).not.toContain('esperar');
+  });
+
+  it('⛔ quase-pares: sem retomandoCriacao (ausente ou false), pedindo UNLIST, ou SEM filhos ⇒ nenhuma relistagem', () => {
+    for (const [rotulo, ctx] of [
+      ['ausente', republicar()],
+      ['false', republicar({ retomandoCriacao: false })],
+      [
+        'UNLIST',
+        republicar({ retomandoCriacao: true, statusPedido: SHOPEE_ITEM_STATUS_WRITABLE.unlist }),
+      ],
+      [
+        'sem filhos',
+        contexto({ ehAtualizacao: true, link: LINK, linkDocId: 'link-1', retomandoCriacao: true }),
+      ],
+    ] as const) {
+      const plano = planejarPublicacao(ctx, fotos());
+      expect(plano.relistagem, rotulo).toBeNull();
+      expect(tipos(plano.passos), rotulo).not.toContain('relistagem');
+    }
+  });
+});
+
 /* -------------------------------------------------------------------------- */
 /*                        (3) passosDoLegDeModelos                            */
 /* -------------------------------------------------------------------------- */

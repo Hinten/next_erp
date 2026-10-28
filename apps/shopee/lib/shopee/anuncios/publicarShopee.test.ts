@@ -31,6 +31,7 @@ import {
   SHOPEE_LOGISTICS_FEE_TYPE,
   SHOPEE_SURFACE,
   assertUpdateKitItemRequest,
+  ShopeeNetworkError,
   shopeeErrorFromEnvelope,
   shopeeItemBaseInfoPayloadSchema,
   shopeeItemListPayloadSchema,
@@ -62,6 +63,7 @@ import { limparTaxonomiaShopee } from '../taxonomia/cache';
 import { construirIndice } from '../taxonomia/categorias';
 import { FakeDb, asDb, increment } from '../testing/fakeDb';
 import { MSG_RECRIAR_SEM_LINK, lerCorpoPublicar } from './corpoPublicacao';
+import { CriacaoDeAnuncioIncertaError } from './criacaoIncerta';
 import { MOTIVO_PUBLICACAO_BLOQUEADA, ShopeePublishBlockedError } from './errosPublicacao';
 import type { ResolvedorDeImagensShopee } from './fotosPublicacao';
 import { resolverLinkPorProduto } from './linkAnuncio';
@@ -1738,5 +1740,43 @@ describe('#1911 (P1, D3) — um RASCUNHO nunca é o anúncio vivo, pela entrada'
 
     expect(contexto?.link).toMatchObject({ item_id: null, ehRascunho: true });
     expect(contexto?.ehAtualizacao).toBe(false);
+  });
+
+  describe('#1911 P5 (D5) — o add_item INCERTO de um anúncio comum é um RESULTADO, nunca um throw', () => {
+    const RESULTADO = {
+      produtoId: PRODUTO,
+      linkDocId: RASCUNHO,
+      aguardarMs: 240_000,
+      reenvioVerificaSku: true,
+      recusa: null,
+      mensagem: 'frase',
+    };
+
+    it('o braço de item que lança CriacaoDeAnuncioIncertaError ⇒ { tipo: item-incerto, resultado } — o MESMO objeto', async () => {
+      const db = new FakeDb();
+      semear(db);
+      const causa = new ShopeeNetworkError('caiu');
+      vi.mocked(publicarAnuncioShopee).mockRejectedValueOnce(
+        new CriacaoDeAnuncioIncertaError(RESULTADO, causa),
+      );
+
+      const r = await publicarShopee(
+        depsDeItem(db, lojaDeItem()),
+        entradaDoItem({ linkDocId: RASCUNHO }),
+      );
+
+      expect(r).toEqual({ tipo: 'item-incerto', resultado: RESULTADO });
+    });
+
+    it('⛔ quase-par: qualquer OUTRA falha do braço de item PROPAGA — só a classe vira resultado', async () => {
+      const db = new FakeDb();
+      semear(db);
+      const falha = new ShopeeNetworkError('caiu');
+      vi.mocked(publicarAnuncioShopee).mockRejectedValueOnce(falha);
+
+      await expect(
+        publicarShopee(depsDeItem(db, lojaDeItem()), entradaDoItem({ linkDocId: RASCUNHO })),
+      ).rejects.toBe(falha);
+    });
   });
 });
