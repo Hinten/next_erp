@@ -48,11 +48,14 @@ const TIMEOUT_SECONDS_LINHA = /^\s*timeoutSeconds\s*:\s*(\d+)\s*(?:#.*)?$/;
  * The pedidos routes (step 15) and the core each delegates to, with how many order-detail reads
  * (`buscarPedidoLi(`) and context loads (`loadLojaIntegradaContext(`) each file makes. The paid
  * re-check makes exactly ONE read, through ONE context (so it is switched and paced); the label
- * routing makes none. The route files themselves make none: the cores do.
+ * routing makes none. The route files themselves make none: the cores do. Nor does the shared
+ * read-failure mapper the paid re-check hands its failures to: it answers a failure and parks,
+ * and a "confirming" read there would be a second paced read no other row here would see.
  */
 const ROTAS_DE_PEDIDOS: readonly (readonly [string, number, number])[] = [
   ['app/api/marketplace/loja-integrada/pedidos/[pedidoId]/pagamento/route.ts', 0, 0],
   ['lib/lojaIntegrada/pedidos/conferenciaPagamento.ts', 1, 1],
+  ['lib/lojaIntegrada/core/falhaDeLeituraLi.ts', 0, 0],
   ['app/api/marketplace/loja-integrada/pedidos/[pedidoId]/rota-etiqueta/route.ts', 0, 0],
   ['lib/lojaIntegrada/pedidos/rotaEtiqueta.ts', 0, 0],
 ];
