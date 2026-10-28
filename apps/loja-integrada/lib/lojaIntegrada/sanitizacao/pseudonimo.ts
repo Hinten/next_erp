@@ -54,7 +54,12 @@
  */
 import { createHmac } from 'node:crypto';
 
-import { type TabelaRedacaoLi, type ValorJsonLi, passaPredicadoLi } from '../core/redacao';
+import {
+  type TabelaRedacaoLi,
+  type ValorJsonLi,
+  decodificarValorDaQueryLi,
+  passaPredicadoLi,
+} from '../core/redacao';
 import { segmentoDaTabela } from './folhas';
 
 /** The smallest and the largest pseudonym: every one has exactly 9 digits. */
@@ -207,13 +212,20 @@ export function pseudonimizarCaminhoLi(caminho: string, troca: TrocaDeIdsLi): st
  */
 export const CHAVES_DE_ID_NA_QUERY_LI: ReadonlySet<string> = new Set(['produto']);
 
-const trocarPar = (
+/**
+ * An id query pair with its value mapped. The redactor tests a value DECODED and
+ * keeps its raw spelling (`produto=%35%35` passes as `55`), so the value is
+ * decoded the same way here: every spelling the redactor kept is mapped, and
+ * written as the plain pseudonym.
+ */
+function trocarPar(
   [chave, valor]: readonly [string, string],
   troca: TrocaDeIdsLi,
-): readonly [string, string] =>
-  CHAVES_DE_ID_NA_QUERY_LI.has(chave) && DIGITOS.test(valor)
-    ? [chave, troca.troca(idCanonicoLi(valor))]
-    : [chave, valor];
+): readonly [string, string] {
+  if (!CHAVES_DE_ID_NA_QUERY_LI.has(chave)) return [chave, valor];
+  const id = decodificarValorDaQueryLi(valor);
+  return DIGITOS.test(id) ? [chave, troca.troca(idCanonicoLi(id))] : [chave, valor];
+}
 
 /** The redacted query pairs with each id value ({@link CHAVES_DE_ID_NA_QUERY_LI}) mapped. */
 export function pseudonimizarQueryLi(

@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-import { type ValorJsonLi, passaPredicadoLi } from '../core/redacao';
+import { type ValorJsonLi, decodificarValorDaQueryLi, passaPredicadoLi } from '../core/redacao';
 import { PSEUDONIMO_MAXIMO_LI, PSEUDONIMO_MINIMO_LI } from '../sanitizacao/pseudonimo';
 import { formatarAchadosLi, piiScan } from './piiScan';
 import {
@@ -303,11 +303,13 @@ function idsDaUrl(texto: string): number[] {
   const interrogacao = texto.indexOf('?');
   const caminho = interrogacao === -1 ? texto : texto.slice(0, interrogacao);
   const query = interrogacao === -1 ? '' : texto.slice(interrogacao + 1);
-  const pares = query
+  const valores = query
     .split('&')
     .map((par) => par.split('=') as [string, string | undefined])
-    .filter(([k, v]) => CHAVES_DE_ID_NA_QUERY.has(k) && /^\d+$/.test(v ?? ''));
-  return [...segmentosDeId(caminho), ...pares.map(([, v]) => v ?? '')].map(Number);
+    .filter(([k]) => CHAVES_DE_ID_NA_QUERY.has(k))
+    .map(([, v]) => decodificarValorDaQueryLi(v ?? ''))
+    .filter((v) => /^\d+$/.test(v));
+  return [...segmentosDeId(caminho), ...valores].map(Number);
 }
 
 /**
@@ -325,9 +327,12 @@ function idsForaDaFaixa(fixtures: FixturesLi): { foraDaFaixa: string[]; ids: num
     const { caminho, query } = envelope.requisicao;
     const valores: number[] = [
       ...segmentosDeId(caminho).map(Number),
+      // Decoded as the redactor tests it: `%35%35` is the id 55.
       ...query
-        .filter(([k, v]) => CHAVES_DE_ID_NA_QUERY.has(k) && /^\d+$/.test(v))
-        .map(([, v]) => Number(v)),
+        .filter(([k]) => CHAVES_DE_ID_NA_QUERY.has(k))
+        .map(([, v]) => decodificarValorDaQueryLi(v))
+        .filter((v) => /^\d+$/.test(v))
+        .map(Number),
     ];
     for (const { onde, objeto } of objetosDe(envelope.resposta.corpo)) {
       for (const [k, v] of Object.entries(objeto)) {
@@ -721,6 +726,9 @@ describe('catalogue id relations: what the corpus checks compare', () => {
         ['a.json', envelope('/v1/produto_imagem/', { objects: [{ imagem_id: 4444 }] })],
         ['b.json', comQuery([['produto', '5555']])],
         ['c.json', meta('/api/v1/produto_imagem/?limit=1&offset=1&produto=5555')],
+        // A percent-encoded spelling is the same id (the redactor kept it decoded-tested).
+        ['b2.json', comQuery([['produto', '%35%35%35%35']])],
+        ['c2.json', meta('/api/v1/produto_imagem/?limit=1&offset=1&produto=55%355')],
         ['d.json', meta('/api/v1/categoria/set/3333;2222/?limit=1&offset=1')],
         [
           'e.json',
@@ -739,6 +747,8 @@ describe('catalogue id relations: what the corpus checks compare', () => {
       'a.json :: 1 id(s) outside the pseudonym range',
       'b.json :: 1 id(s) outside the pseudonym range',
       'c.json :: 1 id(s) outside the pseudonym range',
+      'b2.json :: 1 id(s) outside the pseudonym range',
+      'c2.json :: 1 id(s) outside the pseudonym range',
       'd.json :: 2 id(s) outside the pseudonym range',
       'e.json :: 1 id(s) outside the pseudonym range',
     ]);

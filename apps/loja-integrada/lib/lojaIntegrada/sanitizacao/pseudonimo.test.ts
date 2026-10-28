@@ -383,6 +383,27 @@ describe('pseudonimizarCorpoLi: meta.next and meta.previous', () => {
     });
   });
 
+  it('EQUAL: a percent-encoded `produto=` id in meta.next maps like its plain spelling', () => {
+    const corpo = {
+      meta: {
+        limit: 1,
+        offset: 0,
+        total_count: 2,
+        next: '/api/v1/produto_imagem/?limit=1&offset=1&produto=%35%35%35%35',
+        previous: null,
+      },
+      objects: [
+        { id: 1, produto: '/api/v1/produto/5555', resource_uri: '/api/v1/produto_imagem/1' },
+      ],
+    };
+    const { depois } = pseudonimizar('/v1/produto_imagem/', corpo);
+    const p = String(f(5555));
+    expect(depois).toMatchObject({
+      meta: { next: `/api/v1/produto_imagem/?limit=1&offset=1&produto=${p}` },
+      objects: [{ produto: `/api/v1/produto/${p}` }],
+    });
+  });
+
   it('NEAR-MISS: limit, offset and every other query value of meta.next stay as captured', () => {
     const corpo = {
       meta: {
@@ -424,6 +445,37 @@ describe('pseudonimizarQueryLi: the request query', () => {
     ]);
     expect(p.ids.size).toBe(1);
   });
+
+  it('EQUAL: a percent-encoded `produto` id maps like its plain spelling (the redactor kept it decoded-tested)', () => {
+    const p = new PseudonimosLi(CHAVE);
+    expect(
+      pseudonimizarQueryLi(
+        [
+          ['produto', '%35%35%35%35'],
+          ['produto', '55%355'],
+          ['produto', '0%35555'],
+        ],
+        p,
+      ),
+    ).toEqual([
+      ['produto', String(f(5555))],
+      ['produto', String(f(5555))],
+      ['produto', String(f(5555))],
+    ]);
+    expect(p.ids.size).toBe(1);
+  });
+
+  it('NEAR-MISS: a `produto` value that does not DECODE to digits is left as it is', () => {
+    const p = new PseudonimosLi(CHAVE);
+    const pares: (readonly [string, string])[] = [
+      ['produto', '%2B5555'],
+      ['produto', '5555+'],
+      ['produto', '55%2055'],
+      ['produto', '%zz'],
+    ];
+    expect(pseudonimizarQueryLi(pares, p)).toEqual(pares);
+    expect(p.ids.size).toBe(0);
+  });
 });
 
 describe('OCULTAR_IDS_LI: the request line of a pair with no key', () => {
@@ -442,6 +494,9 @@ describe('OCULTAR_IDS_LI: the request line of a pair with no key', () => {
     ).toEqual([
       ['produto', '<id>'],
       ['limit', '5'],
+    ]);
+    expect(pseudonimizarQueryLi([['produto', '%35%35']], OCULTAR_IDS_LI)).toEqual([
+      ['produto', '<id>'],
     ]);
   });
 });

@@ -489,8 +489,13 @@ export interface RequisicaoParaRedigirLi {
   readonly query: readonly (readonly [string, string])[];
 }
 
-/** Decoded the way `URLSearchParams` decodes (`+` is a space); never throws. */
-function decodificar(bruto: string): string {
+/**
+ * A raw query value decoded the way `URLSearchParams` decodes (`+` is a space);
+ * never throws. The predicates test THIS, while a kept value keeps its raw
+ * spelling, so anything that reads a kept value as an id (the sanitizer's
+ * pseudonyms) must decode it the same way first.
+ */
+export function decodificarValorDaQueryLi(bruto: string): string {
   return new URLSearchParams(`v=${bruto}`).get('v') ?? '';
 }
 
@@ -573,7 +578,7 @@ export function redigirCaminhoEQuery(
       const igual = parBruto.indexOf('=');
       const chave = igual === -1 ? parBruto : parBruto.slice(0, igual);
       const valor = igual === -1 ? '' : parBruto.slice(igual + 1);
-      somar(redigirPar(chave, valor, decodificar(valor), perfil));
+      somar(redigirPar(chave, valor, decodificarValorDaQueryLi(valor), perfil));
     }
   }
   return { caminho: `${origem}${redigirSegmentos(caminho)}`, query: pares, mascarados };
