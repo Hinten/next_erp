@@ -12,11 +12,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
 import {
+  EFEITO_ESTOQUE_NENHUM,
   ESTADO_PEDIDO,
   MODALIDADE_FRETE,
   MOTIVO_CONTA_AMAZON,
   MOTIVO_PEDIDO_AMAZON,
+  ORIGEM_INCIDENTE,
+  STATUS_PAGAMENTO,
   TIPO_AVISO,
+  TIPO_INCIDENTE,
+  efeitoEstoquePedido,
+  estadoFreteSchema,
+  estadoPedidoSchema,
   motivoPedidoAmazonSchema,
 } from '@delfrance/schemas';
 
@@ -42,6 +49,7 @@ import {
 import {
   ATUALIZADO_US,
   ORDER_ID_TESTE,
+  brl,
   depois,
   execucaoAmazon,
   linhaAmazon,
@@ -55,6 +63,7 @@ import {
   AmazonPedidoEmConflitoError,
   PedidoAmazonIlegivelError,
 } from './erros';
+import { TEXTO_ERRO_AMAZON } from './estadoPedidoAmazon';
 import {
   JANELA_CANCELAMENTO_RECENTE_AMAZON_US,
   MOTIVOS_PEDIDO_DO_IMPORTADOR_AMAZON,
@@ -799,6 +808,86 @@ describe('★ a divergence on an approved pedido', () => {
     expect(ex.h.db.ler(CAMINHO)?.estado).toBe('error');
     expect(linhasPedido(ex).map((l) => l.codigo)).toContain('cancelamento-parcial');
   });
+
+  it('★ PR 5-f: an INVOICE_UNCONFIRMED read between the block and the next UNSHIPPED read keeps the pedido BLOCKED (row 10 again, never row 9’s mirror); divergencia-itens stays open', async () => {
+    const ex = montar();
+    await ex.importar(pedido({ status: 'UNSHIPPED', extra: comprador() }));
+    const antes = ex.h.db.ler(CAMINHO) ?? {};
+    const divergentes = [linhaAmazon('L1', { qtd: 3, preco: '10.00' })];
+    await ex.importar(
+      pedido({
+        status: 'UNSHIPPED',
+        atualizadoEm: depois(60),
+        linhas: divergentes,
+        extra: comprador(),
+      }),
+    );
+    const bloqueado = ex.h.db.ler(CAMINHO) ?? {};
+    expect(bloqueado.estado).toBe('error');
+    await ex.importar(
+      pedido({
+        status: 'INVOICE_UNCONFIRMED',
+        atualizadoEm: depois(120),
+        linhas: divergentes,
+        extra: comprador(),
+      }),
+    );
+    expect(ex.h.db.ler(CAMINHO)).toMatchObject({ estado: 'error', error: bloqueado.error });
+    expect(avisoPedido(ex, MOTIVO_PEDIDO_AMAZON.statusDesconhecido)?.resolvidoEm).toBeNull();
+    const r = await ex.importar(
+      pedido({
+        status: 'UNSHIPPED',
+        atualizadoEm: depois(180),
+        linhas: divergentes,
+        extra: comprador(),
+      }),
+    );
+    expect(r).toEqual({
+      kind: 'importado',
+      detalhe: expect.objectContaining({
+        itens: 'divergencia-itens-aprovado',
+        linhasDivergentes: 1,
+      }),
+    });
+    const doc = ex.h.db.ler(CAMINHO) ?? {};
+    expect(doc).toMatchObject({
+      estado: 'error',
+      error: bloqueado.error,
+      valorCobrado: antes.valorCobrado,
+      marketplace: { status: 'UNSHIPPED' },
+    });
+    expect(doc.itens).toEqual(antes.itens);
+    expect(avisoPedido(ex, MOTIVO_PEDIDO_AMAZON.divergenciaItens)?.resolvidoEm).toBeNull();
+    // The known status resolves the read's own motivo.
+    expect(avisoPedido(ex, MOTIVO_PEDIDO_AMAZON.statusDesconhecido)?.resolvidoEm).not.toBeNull();
+  });
+
+  it('★ NEAR-MISS (decision 5 unchanged): a pedido CREATED at an unknown status was never approved — its first UNSHIPPED read mirrors the lines and clears our error', async () => {
+    const ex = montar();
+    await ex.importar(pedido({ status: 'INVOICE_UNCONFIRMED', extra: comprador() }));
+    expect(ex.h.db.ler(CAMINHO)).toMatchObject({
+      estado: 'error',
+      marketplace: { status: 'INVOICE_UNCONFIRMED' },
+    });
+    const r = await ex.importar(
+      pedido({
+        status: 'UNSHIPPED',
+        atualizadoEm: depois(60),
+        linhas: [linhaAmazon('L1', { qtd: 3, preco: '10.00' })],
+        extra: comprador(),
+      }),
+    );
+    expect(r).toEqual({
+      kind: 'importado',
+      detalhe: expect.objectContaining({ itens: 'espelhadas' }),
+    });
+    expect(ex.h.db.ler(CAMINHO)).toMatchObject({
+      estado: 'pago',
+      error: null,
+      valorCobrado: 30,
+      marketplace: { status: 'UNSHIPPED' },
+    });
+  });
 });
 
 /* ------------------------------ races and retries ------------------------------ */
@@ -1123,7 +1212,7 @@ describe('★ avisos — after the commit, from the winning attempt, on the Fire
 /* -------------------------------- the pure pieces -------------------------------- */
 
 describe('motivosDoPedidoAmazon — the resolvers (decision 26 as amended)', () => {
-  const base = { avisos: [], motivoEstado: null } as const;
+  const base = { avisos: [], motivoEstado: null, itensConferem: true } as const;
 
   it('a derived motivo is raised, never resolved; every other importer motivo is resolved', () => {
     const r = motivosDoPedidoAmazon({
@@ -1183,6 +1272,39 @@ describe('motivosDoPedidoAmazon — the resolvers (decision 26 as amended)', () 
         estadoFinal: ESTADO_PEDIDO.pago,
       }).resolver,
     ).toContain('divergencia-itens');
+  });
+
+  it('★ PR 5-f: divergencia-itens resolves ONLY when the lines agree (or are congelado) — an estado the import WROTE, a sem-mudanca and every phase resolve nothing without it; NEAR-MISS: the same with the lines agreeing resolves', () => {
+    for (const motivoEstado of [null, 'sem-mudanca', 'regressivo', 'terminal'] as const) {
+      for (const fase of ['apr', 'env', 'cancelado', 'pre', 'desconhecida'] as const) {
+        for (const estadoFinal of [ESTADO_PEDIDO.pago, ESTADO_PEDIDO.cancelado, null]) {
+          const rotulo = `${String(motivoEstado)} ${fase} ${String(estadoFinal)}`;
+          const semConferir = motivosDoPedidoAmazon({
+            decisao: { ...base, motivoEstado, itensConferem: false },
+            fase,
+            estadoFinal,
+          });
+          expect(semConferir.resolver, rotulo).not.toContain('divergencia-itens');
+          // Never raised by the resolver either: only the decision raises it.
+          expect(semConferir.levantar, rotulo).toEqual([]);
+          const conferindo = motivosDoPedidoAmazon({
+            decisao: { ...base, motivoEstado, itensConferem: true },
+            fase,
+            estadoFinal,
+          });
+          expect(conferindo.resolver, rotulo).toContain('divergencia-itens');
+        }
+      }
+    }
+    // The other motivos are not touched by the lines' verdict.
+    const r = motivosDoPedidoAmazon({
+      decisao: { ...base, itensConferem: false },
+      fase: 'env',
+      estadoFinal: ESTADO_PEDIDO.pago,
+    });
+    expect(r.resolver).toEqual(
+      MOTIVOS_PEDIDO_DO_IMPORTADOR_AMAZON.filter((m) => m !== 'divergencia-itens'),
+    );
   });
 
   it.each<[string, Parameters<typeof motivosDoPedidoAmazon>[0], boolean]>([
@@ -1518,7 +1640,8 @@ describe('★ PR 7 — Easy Ship packages through the import', () => {
   it('★ a CANCELLED read still carrying an unknown token keeps pacote-status-desconhecido OPEN, and its picked-up sibling keeps the estado (goods out from EVERY package)', async () => {
     const ex = montar();
     const extra = comNota('ACCEPTED');
-    const desconhecido = pacoteAmazon('PKG-2', 'TOKEN_NOVO_X');
+    // Its closed status PENDING: the picked-up sibling alone says the goods left.
+    const desconhecido = pacoteAmazon('PKG-2', 'TOKEN_NOVO_X', { status: 'PENDING' });
     await ex.importar(
       pedido({
         status: 'UNSHIPPED',
@@ -1540,5 +1663,690 @@ describe('★ PR 7 — Easy Ship packages through the import', () => {
     expect(incidente(ex, 'amz-cancelado-apos-envio')).toBeDefined();
     // The blocked fold moved nothing: the seed stays (never cancelado).
     expect(frete(ex).estado).toBe('iniciado');
+  });
+
+  it('★ (PR 5-f) a CANCELLED read whose package has NO detailedStatus but which Amazon reports IN_TRANSIT keeps the estado, the pagamento and files cancelado-apos-envio — the freight stays where it was; NEAR-MISS: the same package at PENDING is released', async () => {
+    for (const [status, fica] of [
+      ['IN_TRANSIT', true],
+      ['PENDING', false],
+    ] as const) {
+      const ex = montar();
+      const extra = comNota('ACCEPTED');
+      await ex.importar(
+        pedido({
+          status: 'UNSHIPPED',
+          extra,
+          pacotesBrutos: [pacoteAmazon('PKG-1', 'PENDING_PICK_UP', { status: 'PENDING' })],
+        }),
+      );
+      expect(frete(ex).estado, status).toBe('aguardandoPostagem');
+      await ex.importar(
+        pedido({
+          status: 'CANCELLED',
+          atualizadoEm: depois(60),
+          extra,
+          pacotesBrutos: [pacoteAmazon('PKG-1', undefined, { status })],
+        }),
+      );
+      const pagamentoGuardado = ex.h.db.ler(`${CAMINHO}/pagamentos/${PEDIDO_ID}`);
+      expect(
+        avisoPedido(ex, MOTIVO_PEDIDO_AMAZON.pacoteStatusDesconhecido)?.resolvidoEm,
+        status,
+      ).toBeNull();
+      if (fica) {
+        expect(ex.h.db.ler(CAMINHO)?.estado, status).toBe('pago');
+        expect(pagamentoGuardado?.status_pagamento, status).toBe(4);
+        expect(incidente(ex, 'amz-cancelado-apos-envio'), status).toBeDefined();
+        expect(frete(ex).estado, status).toBe('aguardandoPostagem');
+      } else {
+        expect(ex.h.db.ler(CAMINHO)?.estado, status).toBe('estornadoIntegralmente');
+        expect(pagamentoGuardado?.status_pagamento, status).toBe(8);
+        expect(incidente(ex, 'amz-cancelado-apos-envio'), status).toBeUndefined();
+        expect(frete(ex).estado, status).toBe('cancelado');
+      }
+    }
+  });
+});
+
+describe('★ PR 5-f — a D17 block over goods already out, through the import', () => {
+  /** The approved buyer, with the order's invoice status beside the BUYER registration. */
+  function comNota(invoiceStatus: string): Record<string, unknown> {
+    const c = comprador();
+    return {
+      ...c,
+      tax: { ...(c.tax as Record<string, unknown>), taxInvoicing: { invoiceStatus } },
+    };
+  }
+  const DUAS = [
+    linhaAmazon('L1', { qtd: 2, preco: '10.00' }),
+    linhaAmazon('L2', { qtd: 1, preco: '5.00' }),
+  ];
+  const L2_CANCELADA = [
+    DUAS[0] ?? {},
+    linhaAmazon('L2', { qtd: 0, preco: '5.00', execucao: true }),
+  ];
+  const frete = (ex: Execucao) => ex.h.db.ler(CAMINHO)?.freteInicial as Record<string, unknown>;
+  const pagamentoGuardado = (ex: Execucao) => ex.h.db.ler(`${CAMINHO}/pagamentos/${PEDIDO_ID}`);
+
+  /** Imported pago with its pagamento, then `pacote` reported for PKG-1 (scheduled, freight aguardandoPostagem). */
+  async function agendado(ex: Execucao, extra: Record<string, unknown>): Promise<void> {
+    await ex.importar(
+      pedido({
+        status: 'UNSHIPPED',
+        linhas: DUAS,
+        extra,
+        pacotesBrutos: [pacoteAmazon('PKG-1', 'PENDING_PICK_UP')],
+      }),
+    );
+    expect(ex.h.db.ler(CAMINHO)?.estado).toBe('pago');
+    expect(frete(ex).estado).toBe('aguardandoPostagem');
+  }
+
+  it('★ L2 cancelled while PKG-1 is PICKED_UP ⇒ the pedido stays pago (no stock reversal), the crítico aviso and the cancelamento-parcial line still come, the lines and the pagamento untouched; the next read keeps all of it', async () => {
+    const ex = montar();
+    const extra = comNota('ACCEPTED');
+    await agendado(ex, extra);
+    const antes = ex.h.db.ler(CAMINHO) ?? {};
+    const pagamentoAntes = pagamentoGuardado(ex);
+    expect(pagamentoAntes?.status_pagamento).toBe(STATUS_PAGAMENTO.aprovado);
+
+    for (const [segundos, nome] of [
+      [60, 'the blocking read'],
+      [120, 'the next read'],
+    ] as const) {
+      const r = await ex.importar(
+        pedido({
+          status: 'PARTIALLY_SHIPPED',
+          linhas: L2_CANCELADA,
+          atualizadoEm: depois(segundos),
+          extra,
+          pacotesBrutos: [pacoteAmazon('PKG-1', 'PICKED_UP')],
+        }),
+      );
+      expect(r, nome).toEqual({
+        kind: 'importado',
+        detalhe: expect.objectContaining({
+          itens: 'divergencia-itens-aprovado',
+          linhasDivergentes: 1,
+        }),
+      });
+      const doc = ex.h.db.ler(CAMINHO) ?? {};
+      expect(doc.estado, nome).toBe('pago');
+      expect(doc.error ?? null, nome).toBeNull();
+      expect(doc.itens, nome).toEqual(antes.itens);
+      expect(frete(ex).estado, nome).toBe('postado');
+      expect(pagamentoGuardado(ex), nome).toEqual(pagamentoAntes);
+      expect(avisoPedido(ex, MOTIVO_PEDIDO_AMAZON.divergenciaItens), nome).toMatchObject({
+        severidade: 'critico',
+        resolvidoEm: null,
+      });
+    }
+    expect(linhasPedido(ex).filter((l) => l.codigo === 'cancelamento-parcial')).toHaveLength(2);
+  });
+
+  it('★ NEAR-MISS: the same cancelled line while nothing is scheduled (freight aguardandoNFe) ⇒ our error — the reservation released, as the owner decided', async () => {
+    const ex = montar();
+    const extra = comNota('NOT_FOUND');
+    await ex.importar(pedido({ status: 'UNSHIPPED', linhas: DUAS, extra }));
+    expect(frete(ex).estado).toBe('aguardandoNFe');
+    await ex.importar(
+      pedido({
+        status: 'PARTIALLY_SHIPPED',
+        linhas: L2_CANCELADA,
+        atualizadoEm: depois(60),
+        extra,
+      }),
+    );
+    expect(ex.h.db.ler(CAMINHO)).toMatchObject({
+      estado: 'error',
+      error: '[amazon] linha cancelada na Amazon em pedido a enviar: L2',
+    });
+    expect(avisoPedido(ex, MOTIVO_PEDIDO_AMAZON.divergenciaItens)?.resolvidoEm).toBeNull();
+    expect(linhasPedido(ex).map((l) => l.codigo)).toContain('cancelamento-parcial');
+  });
+});
+
+/* ------------- PR 5-f: the block's aviso and the missing pagamento ------------- */
+
+describe('★ PR 5-f — divergencia-itens resolves only on lines that agree, and an approved pedido never sits without a pagamento in silence', () => {
+  const INTEIRAS = [
+    linhaAmazon('L1', { qtd: 2, preco: '10.00' }),
+    linhaAmazon('L2', { qtd: 1, preco: '5.00' }),
+  ];
+  /** L2 cancelled on Amazon (an executed line cancellation that stays on the line). */
+  const L2_CANCELADA = [
+    linhaAmazon('L1', { qtd: 2, preco: '10.00' }),
+    linhaAmazon('L2', { qtd: 0, preco: '5.00', execucao: true }),
+  ];
+  const PAGAMENTO = `${CAMINHO}/pagamentos/${PEDIDO_ID}`;
+  const divergencia = (ex: Execucao) => avisoPedido(ex, MOTIVO_PEDIDO_AMAZON.divergenciaItens);
+
+  /** An operator's fix on the pedido form: L2 dropped, the edit latch stamped. */
+  function corrigir(ex: Execucao): void {
+    const doc = ex.h.db.ler(CAMINHO) ?? {};
+    const itens = doc.itens as Record<string, Record<string, unknown>[]>;
+    ex.h.db.seed(CAMINHO, {
+      ...doc,
+      hasUserInteraction: true,
+      itens: Object.fromEntries(
+        Object.entries(itens).map(([chave, linhas]) => [
+          chave,
+          linhas.filter((l) => l.mktplaceId !== 'L2'),
+        ]),
+      ),
+    });
+  }
+
+  /** `primeiro` read, then the UNSHIPPED read with L2 cancelled: our error, the crítico aviso open. */
+  async function bloqueado(
+    ex: Execucao,
+    primeiro: 'PENDING' | 'UNSHIPPED',
+    extra: Record<string, unknown>,
+  ): Promise<void> {
+    await ex.importar(pedido({ status: primeiro, linhas: INTEIRAS, extra }));
+    await ex.importar(
+      pedido({ status: 'UNSHIPPED', linhas: L2_CANCELADA, atualizadoEm: depois(60), extra }),
+    );
+    expect(ex.h.db.ler(CAMINHO)).toMatchObject({
+      estado: 'error',
+      error: '[amazon] linha cancelada na Amazon em pedido a enviar: L2',
+    });
+    expect(divergencia(ex)).toMatchObject({ severidade: 'critico', resolvidoEm: null });
+  }
+
+  const enviado = (ex: Execucao, extra: Record<string, unknown>, linhas = L2_CANCELADA) =>
+    ex.importar(pedido({ status: 'SHIPPED', linhas, atualizadoEm: depois(120), extra }));
+
+  it('★ (b) the block, then Amazon SHIPS the order with the execution still on L2 ⇒ pago and our text cleared (the goods are out), but divergencia-itens STAYS OPEN — the lines were never judged; possivel-reembolso filed, the stored lines and the pagamento untouched', async () => {
+    const ex = montar();
+    const extra = comprador();
+    await bloqueado(ex, 'UNSHIPPED', extra);
+    const antes = ex.h.db.ler(CAMINHO) ?? {};
+    const pagamentoAntes = ex.h.db.ler(PAGAMENTO);
+    expect(pagamentoAntes?.status_pagamento).toBe(STATUS_PAGAMENTO.aprovado);
+    const r = await enviado(ex, extra);
+    expect(r).toEqual({
+      kind: 'importado',
+      detalhe: expect.objectContaining({ itens: 'itens-preservados-reversao' }),
+    });
+    const doc = ex.h.db.ler(CAMINHO) ?? {};
+    expect(doc).toMatchObject({ estado: 'pago', error: null });
+    expect(doc.itens).toEqual(antes.itens);
+    expect(divergencia(ex)).toMatchObject({ severidade: 'critico', resolvidoEm: null });
+    expect(incidente(ex, 'amz-possivel-reembolso')).toBeDefined();
+    expect(incidente(ex, 'amz-pagamento-divergente')).toBeUndefined();
+    expect(ex.h.db.ler(PAGAMENTO)).toEqual(pagamentoAntes);
+  });
+
+  it('★ NEAR-MISS: the same SHIPPED read after an operator fixed the lines (congelado) RESOLVES it; so does an UNSHIPPED read whose lines agree again with the stored ones', async () => {
+    const congelado = montar();
+    const extra = comprador();
+    await bloqueado(congelado, 'UNSHIPPED', extra);
+    corrigir(congelado);
+    await enviado(congelado, extra);
+    expect(congelado.h.db.ler(CAMINHO)).toMatchObject({ estado: 'pago', error: null });
+    expect(divergencia(congelado)?.resolvidoEm).not.toBeNull();
+
+    const deAcordo = montar();
+    await bloqueado(deAcordo, 'UNSHIPPED', extra);
+    const r = await deAcordo.importar(
+      pedido({ status: 'UNSHIPPED', linhas: INTEIRAS, atualizadoEm: depois(120), extra }),
+    );
+    expect(r).toEqual({
+      kind: 'importado',
+      detalhe: expect.objectContaining({ itens: 'mantidas' }),
+    });
+    expect(deAcordo.h.db.ler(CAMINHO)).toMatchObject({ estado: 'pago', error: null });
+    expect(divergencia(deAcordo)?.resolvidoEm).not.toBeNull();
+  });
+
+  it('★ (a) PENDING first (no pagamento), the block, an operator’s fix, and a first read after it that is already SHIPPED with the execution still on L2 ⇒ pago with NO pagamento document, and the pagamento-divergente incidente says so — the aviso resolved (congelado)', async () => {
+    const ex = montar();
+    const extra = comprador();
+    await bloqueado(ex, 'PENDING', extra);
+    expect(ex.h.db.ler(PAGAMENTO)).toBeUndefined();
+    corrigir(ex);
+    const r = await enviado(ex, extra);
+    expect(r).toEqual({
+      kind: 'importado',
+      detalhe: expect.objectContaining({ itens: 'congeladas' }),
+    });
+    expect(ex.h.db.ler(CAMINHO)).toMatchObject({ estado: 'pago', error: null });
+    expect(ex.h.db.ler(PAGAMENTO)).toBeUndefined();
+    const filed = incidente(ex, 'amz-pagamento-divergente');
+    expect(filed).toMatchObject({ subtipo: 'pagamento-divergente', resolucao: null });
+    expect(String(filed?.motivoDoIncidente)).toContain(
+      'possível devolução, reembolso ou item cancelado',
+    );
+    expect(divergencia(ex)?.resolvidoEm).not.toBeNull();
+    // A later SHIPPED read: still none created, the incidente not re-dated.
+    const primeiro = incidente(ex, 'amz-pagamento-divergente');
+    await ex.importar(
+      pedido({ status: 'SHIPPED', linhas: L2_CANCELADA, atualizadoEm: depois(180), extra }),
+    );
+    expect(ex.h.db.ler(PAGAMENTO)).toBeUndefined();
+    expect(incidente(ex, 'amz-pagamento-divergente')).toEqual(primeiro);
+  });
+
+  it('★ NEAR-MISS: the same fix with an UNSHIPPED first read after it (not a reversal) ⇒ the pagamento IS created at aprovado for the operator’s lines, nothing filed', async () => {
+    const ex = montar();
+    const extra = comprador();
+    await bloqueado(ex, 'PENDING', extra);
+    corrigir(ex);
+    await ex.importar(
+      pedido({ status: 'UNSHIPPED', linhas: L2_CANCELADA, atualizadoEm: depois(120), extra }),
+    );
+    expect(ex.h.db.ler(CAMINHO)).toMatchObject({ estado: 'pago', error: null });
+    expect(ex.h.db.ler(PAGAMENTO)).toMatchObject({
+      status_pagamento: STATUS_PAGAMENTO.aprovado,
+      valor: 20,
+    });
+    expect(incidente(ex, 'amz-pagamento-divergente')).toBeUndefined();
+  });
+});
+
+/* ------- PR 5-f: a migrated fulfillment residue under a read without fulfilledBy ------- */
+
+describe('★ PR 5-f — a migrated fulfillment residue under a CANCELLED read WITHOUT fulfilledBy, through the import', () => {
+  /** The approved buyer, with the order's invoice status beside the BUYER registration. */
+  function comNota(invoiceStatus: string): Record<string, unknown> {
+    const c = comprador();
+    return {
+      ...c,
+      tax: { ...(c.tax as Record<string, unknown>), taxInvoicing: { invoiceStatus } },
+    };
+  }
+  const DUAS = [
+    linhaAmazon('L1', { qtd: 2, preco: '10.00' }),
+    linhaAmazon('L2', { qtd: 1, preco: '5.00' }),
+  ];
+  const frete = (ex: Execucao) => ex.h.db.ler(CAMINHO)?.freteInicial as Record<string, unknown>;
+  const pagamentoGuardado = (ex: Execucao) => ex.h.db.ler(`${CAMINHO}/pagamentos/${PEDIDO_ID}`);
+
+  /**
+   * Imported `pago` with its pagamento, then re-seeded in the SHAPE of a migrated
+   * MFN pedido: no marketplace block of this importer's, its freight block at
+   * `fulfillment` (the legacy residue: the package at the carrier's facility).
+   */
+  async function migrado(ex: Execucao, extra: Record<string, unknown>): Promise<void> {
+    await ex.importar(pedido({ status: 'UNSHIPPED', linhas: DUAS, extra }));
+    const doc = ex.h.db.ler(CAMINHO) ?? {};
+    const semMarketplace: Record<string, unknown> = { ...doc };
+    delete semMarketplace.marketplace;
+    ex.h.db.seed(CAMINHO, {
+      ...semMarketplace,
+      freteInicial: { ...(doc.freteInicial as Record<string, unknown>), estado: 'fulfillment' },
+    });
+    expect(ex.h.db.ler(CAMINHO)?.estado).toBe(ESTADO_PEDIDO.pago);
+    expect(pagamentoGuardado(ex)?.status_pagamento).toBe(STATUS_PAGAMENTO.aprovado);
+  }
+
+  it('★ the probe end to end: CANCELLED without fulfilledBy ⇒ pago KEPT, the pagamento still aprovado, amz-cancelado-apos-envio filed, the freight still fulfillment; the C1 flip: the same doc under an AFN CANCELLED read ⇒ estornadoIntegralmente, the pagamento estornado, no incidente, the freight still fulfillment (as today)', async () => {
+    for (const [por, fica] of [
+      [null, true],
+      ['AMAZON', false],
+    ] as const) {
+      const nome = String(por);
+      const ex = montar();
+      const extra = comNota('ACCEPTED');
+      await migrado(ex, extra);
+      await ex.importar(
+        pedido({ por, status: 'CANCELLED', linhas: DUAS, atualizadoEm: depois(60), extra }),
+      );
+      const doc = ex.h.db.ler(CAMINHO) ?? {};
+      expect(frete(ex).estado, nome).toBe('fulfillment');
+      if (fica) {
+        expect(doc.estado, nome).toBe(ESTADO_PEDIDO.pago);
+        expect(pagamentoGuardado(ex)?.status_pagamento, nome).toBe(STATUS_PAGAMENTO.aprovado);
+        expect(incidente(ex, 'amz-cancelado-apos-envio'), nome).toBeDefined();
+      } else {
+        expect(doc.estado, nome).toBe(ESTADO_PEDIDO.estornadoIntegralmente);
+        expect(pagamentoGuardado(ex)?.status_pagamento, nome).toBe(STATUS_PAGAMENTO.estornado);
+        expect(incidente(ex, 'amz-cancelado-apos-envio'), nome).toBeUndefined();
+      }
+    }
+  });
+
+  it('★ NEAR-MISS, the old behaviour kept: our AFN seed (created at our AFN error, freight fulfillment, no pagamento) under the same CANCELLED read without fulfilledBy ⇒ cancelado, no incidente', async () => {
+    const ex = montar();
+    const extra = comNota('ACCEPTED');
+    await ex.importar(pedido({ por: 'AMAZON', status: 'UNSHIPPED', linhas: DUAS, extra }));
+    expect(ex.h.db.ler(CAMINHO)).toMatchObject({
+      estado: ESTADO_PEDIDO.error,
+      error: '[amazon] pedido atendido pela Amazon',
+    });
+    expect(frete(ex).estado).toBe('fulfillment');
+    expect(pagamentoGuardado(ex)).toBeUndefined();
+    await ex.importar(
+      pedido({ por: null, status: 'CANCELLED', linhas: DUAS, atualizadoEm: depois(60), extra }),
+    );
+    expect(ex.h.db.ler(CAMINHO)?.estado).toBe(ESTADO_PEDIDO.cancelado);
+    expect(incidente(ex, 'amz-cancelado-apos-envio')).toBeUndefined();
+    expect(frete(ex).estado).toBe('fulfillment');
+  });
+});
+
+/* --------------- PR 5-f: what the order money cannot state, end to end --------------- */
+
+describe('★ PR 5-f — a money shape the pagamento check cannot see ⇒ a pedido incidente + a count line', () => {
+  /** L1 charges SHIPPING 8 with a DISCOUNT 3 whose shipping part Amazon did not itemise. */
+  const linhasSemDetalhe = (detalhes?: readonly unknown[]) => [
+    linhaAmazon('L1', {
+      qtd: 2,
+      preco: '10.00',
+      quebras: [
+        { type: 'SHIPPING', subtotal: brl('8.00') },
+        {
+          type: 'DISCOUNT',
+          subtotal: brl('3.00'),
+          ...(detalhes === undefined ? {} : { detailedBreakdowns: detalhes }),
+        },
+      ],
+    }),
+  ];
+  const linhasDoCodigo = (ex: Execucao, codigo: string) =>
+    ex.h.log.linhas.filter((l) => l.meta?.evento === 'pedido' && l.meta.codigo === codigo);
+
+  it('★ the silent case (the buyer paid exactly what the lines, freight and discount state): `amz-desconto-nao-detalhado`, non-blocking, ONE WARNING count line; a redelivery creates nothing new', async () => {
+    const ex = montar();
+    const corpo = pedido({ status: 'UNSHIPPED', linhas: linhasSemDetalhe(), extra: comprador() });
+    await ex.importar(corpo);
+    const doc = ex.h.db.ler(CAMINHO) ?? {};
+    // The money is what it was: the whole discount on the goods, the freight gross.
+    expect(doc).toMatchObject({ estado: 'pago', descontoTotal: 3 });
+    expect(doc.freteInicial).toMatchObject({ valorCobrado: 8 });
+    expect(incidente(ex, 'amz-desconto-nao-detalhado')).toMatchObject({
+      origem: ORIGEM_INCIDENTE.outros,
+      tipo: TIPO_INCIDENTE.outros,
+      subtipo: 'desconto-nao-detalhado',
+      externalId: null,
+      resolucao: null,
+    });
+    const texto = String(incidente(ex, 'amz-desconto-nao-detalhado')?.motivoDoIncidente);
+    expect(texto).toContain(ORDER_ID_TESTE);
+    expect(texto).toContain('antes de emitir a NF-e');
+    // The payment check agreed: no other money incidente speaks for it.
+    expect(incidente(ex, 'amz-pagamento-divergente')).toBeUndefined();
+    expect(incidente(ex, 'amz-imposto-destacado')).toBeUndefined();
+    const linhas = linhasDoCodigo(ex, 'desconto-nao-detalhado');
+    expect(linhas).toHaveLength(1);
+    expect(linhas[0]?.nivel).toBe('warn');
+    expect(linhas[0]?.meta).toMatchObject({
+      pedido: ORDER_ID_TESTE,
+      conta: CONTA_IMPORTADOR,
+      linhasDescontoNaoDetalhado: 1,
+      quebrasImposto: 0,
+    });
+    // Counts only: never an amount.
+    expect(JSON.stringify(linhas[0]?.meta)).not.toMatch(/8\.00|3\.00|:(8|3|17)[,}]|Compradora/);
+    // Only a money event line carries the money counts.
+    expect(
+      linhasPedido(ex).filter(
+        (l) => l.codigo !== 'desconto-nao-detalhado' && 'linhasDescontoNaoDetalhado' in l,
+      ),
+    ).toEqual([]);
+
+    const criacoes = () =>
+      escritasEm(ex, `${CAMINHO}/incidentes/amz-desconto-nao-detalhado`).filter(
+        (e) => e.verbo === 'create',
+      ).length;
+    expect(criacoes()).toBe(1);
+    const primeiro = incidente(ex, 'amz-desconto-nao-detalhado');
+    await ex.importar(corpo);
+    // Created once (tier 0, ALREADY_EXISTS swallowed, never re-dated); the count line is per read.
+    expect(criacoes()).toBe(1);
+    expect(incidente(ex, 'amz-desconto-nao-detalhado')).toEqual(primeiro);
+    expect(linhasDoCodigo(ex, 'desconto-nao-detalhado')).toHaveLength(2);
+  });
+
+  it('NEAR-MISS: the same amounts with the shipping part itemised ⇒ no incidente, no line', async () => {
+    const ex = montar();
+    await ex.importar(
+      pedido({
+        status: 'UNSHIPPED',
+        linhas: linhasSemDetalhe([{ subtype: 'SHIPPING', value: brl('3.00') }]),
+        extra: comprador(),
+      }),
+    );
+    expect(ex.h.db.ler(CAMINHO)).toMatchObject({ estado: 'pago', descontoTotal: 0 });
+    expect(incidente(ex, 'amz-desconto-nao-detalhado')).toBeUndefined();
+    expect(linhasDoCodigo(ex, 'desconto-nao-detalhado')).toEqual([]);
+  });
+
+  it('NEAR-MISS: a PENDING read files nothing; the UNSHIPPED re-read of the same shape files it', async () => {
+    const ex = montar();
+    await ex.importar(pedido({ status: 'PENDING', linhas: linhasSemDetalhe() }));
+    expect(incidente(ex, 'amz-desconto-nao-detalhado')).toBeUndefined();
+    expect(linhasDoCodigo(ex, 'desconto-nao-detalhado')).toEqual([]);
+    await ex.importar(
+      pedido({
+        status: 'UNSHIPPED',
+        atualizadoEm: depois(60),
+        linhas: linhasSemDetalhe(),
+        extra: comprador(),
+      }),
+    );
+    expect(incidente(ex, 'amz-desconto-nao-detalhado')?.subtipo).toBe('desconto-nao-detalhado');
+  });
+
+  it('★ a TAX row that is not 0 ⇒ `amz-imposto-destacado` + its count line; TAX exactly 0 ⇒ nothing (NEAR-MISS)', async () => {
+    const comImposto = (valor: string) =>
+      pedido({
+        status: 'UNSHIPPED',
+        linhas: [
+          linhaAmazon('L1', {
+            qtd: 2,
+            preco: '10.00',
+            quebras: [{ type: 'TAX', subtotal: brl(valor) }],
+          }),
+        ],
+        extra: comprador(),
+      });
+    const ex = montar();
+    await ex.importar(comImposto('2.00'));
+    expect(incidente(ex, 'amz-imposto-destacado')).toMatchObject({
+      tipo: TIPO_INCIDENTE.outros,
+      subtipo: 'imposto-destacado',
+    });
+    expect(linhasDoCodigo(ex, 'imposto-destacado')[0]?.meta).toMatchObject({
+      linhasDescontoNaoDetalhado: 0,
+      quebrasImposto: 1,
+    });
+
+    const zero = montar();
+    await zero.importar(comImposto('0.00'));
+    expect(incidente(zero, 'amz-imposto-destacado')).toBeUndefined();
+    expect(linhasDoCodigo(zero, 'imposto-destacado')).toEqual([]);
+  });
+});
+
+/* -------- PR 5-f: an order created PENDING without fulfilledBy, through the import -------- */
+
+describe('★ PR 5-f — fulfilledBy ausente na criação: a PENDING order created WITHOUT fulfilledBy, through the import (the provisional default a C1 capture will validate)', () => {
+  const DUAS = [
+    linhaAmazon('L1', { qtd: 2, preco: '10.00' }),
+    linhaAmazon('L2', { qtd: 1, preco: '5.00' }),
+  ];
+  /** An approved read's lines: L1 re-counted and re-priced (a mirror takes them, a lock does not). */
+  const OUTRAS = [
+    linhaAmazon('L1', { qtd: 3, preco: '12.00' }),
+    linhaAmazon('L2', { qtd: 1, preco: '5.00' }),
+  ];
+  const PAGAMENTO = `${CAMINHO}/pagamentos/${PEDIDO_ID}`;
+  const logistica = (ex: Execucao) => avisoPedido(ex, MOTIVO_PEDIDO_AMAZON.logisticaDesconhecida);
+  const divergencia = (ex: Execucao) => avisoPedido(ex, MOTIVO_PEDIDO_AMAZON.divergenciaItens);
+
+  /** The stored lines as `[mktplaceId, quantidade, precoDeVenda]`, by id. */
+  function linhas(ex: Execucao): unknown[][] {
+    const itens = (ex.h.db.ler(CAMINHO)?.itens ?? {}) as Record<string, Record<string, unknown>[]>;
+    return Object.values(itens)
+      .flat()
+      .map((l) => [l.mktplaceId, l.quantidade, l.precoDeVenda])
+      .sort((a, b) => String(a[0]).localeCompare(String(b[0])));
+  }
+
+  /**
+   * What the stock sync converges to for the stored pedido under an operação that
+   * moves stock AND tracks the reservation: the shared desired-state predicate
+   * (`efeitoEstoquePedido`), fed the two estados it reads beside the operação.
+   */
+  function estoque(ex: Execucao) {
+    const doc = ex.h.db.ler(CAMINHO) ?? {};
+    const frete = estadoFreteSchema.safeParse(
+      (doc.freteInicial as Record<string, unknown> | undefined)?.estado,
+    );
+    return efeitoEstoquePedido({
+      estado: estadoPedidoSchema.parse(doc.estado),
+      estadoFrete: frete.success ? frete.data : null,
+      ehSaida: doc.ehSaida === true,
+      movimentaEstoque: true,
+      movimentaIndisponivelEstoque: true,
+      jaMovimentado: false,
+    });
+  }
+
+  /** The create every case starts from: `status` with `fulfillment.fulfilledBy` ABSENT. */
+  async function criadoSemPor(ex: Execucao, status: string): Promise<void> {
+    conta(ex, { operacaoOuterRef: 'documents/operacao/op-1' });
+    intFrete(ex);
+    const r = await ex.importar(pedido({ status, por: null, linhas: DUAS }));
+    expect(r, status).toMatchObject({ kind: 'importado', detalhe: { acao: 'criado' } });
+    expect(ex.h.db.ler(CAMINHO), status).toMatchObject({
+      estado: ESTADO_PEDIDO.error,
+      error: TEXTO_ERRO_AMAZON.logisticaDesconhecida,
+      marketplace: { status, fulfilledBy: null },
+      freteInicial: { estado: 'iniciado' },
+    });
+    // No pagamento before approval, and `error` holds no stock: nothing is reserved
+    // while the order waits — today's cost (plan §3 decision 13 wants a reservation).
+    expect(ex.h.db.ler(PAGAMENTO), status).toBeUndefined();
+    expect(estoque(ex), status).toEqual(EFEITO_ESTOQUE_NENHUM);
+    expect(logistica(ex), status).toMatchObject({
+      severidade: 'critico',
+      resolvidoEm: null,
+      ocorrencias: 1,
+    });
+  }
+
+  it('★ the lifecycle: created at our error + the crítico logistica-desconhecida, nothing reserved; the UNSHIPPED+MERCHANT read is the APPROVAL moment ⇒ pago, our text cleared, the lines MIRRORED (row 9, never locked), the pagamento aprovado, the reservation applied, the aviso RESOLVED — PENDING and PENDING_AVAILABILITY alike', async () => {
+    for (const status of ['PENDING', 'PENDING_AVAILABILITY']) {
+      const ex = montar();
+      await criadoSemPor(ex, status);
+      const r = await ex.importar(
+        pedido({
+          status: 'UNSHIPPED',
+          linhas: OUTRAS,
+          atualizadoEm: depois(60),
+          extra: comprador(),
+        }),
+      );
+      expect(r, status).toEqual({
+        kind: 'importado',
+        detalhe: expect.objectContaining({ acao: 'atualizado', itens: 'espelhadas' }),
+      });
+      expect(ex.h.db.ler(CAMINHO), status).toMatchObject({
+        estado: ESTADO_PEDIDO.pago,
+        error: null,
+        marketplace: { status: 'UNSHIPPED', fulfilledBy: 'MERCHANT' },
+      });
+      expect(linhas(ex), status).toEqual([
+        ['L1', 3, 12],
+        ['L2', 1, 5],
+      ]);
+      expect(ex.h.db.ler(PAGAMENTO), status).toMatchObject({
+        status_pagamento: STATUS_PAGAMENTO.aprovado,
+        valor: 41,
+      });
+      expect(estoque(ex), status).toEqual({ reservar: true, remover: false, adicionar: false });
+      expect(logistica(ex)?.resolvidoEm, status).not.toBeNull();
+      // Mirrored, never judged: no block, so no divergence row was ever raised.
+      expect(divergencia(ex), status).toBeUndefined();
+    }
+  });
+
+  it('★ NEAR-MISS: the approval moment is the FIRST approved read, with or without fulfilledBy — after an UNSHIPPED read WITHOUT it (mirrored, our error kept), the same UNSHIPPED+MERCHANT read with other lines is LOCKED: a block, the lines kept, no pagamento, nothing reserved', async () => {
+    const ex = montar();
+    await criadoSemPor(ex, 'PENDING');
+    const primeira = await ex.importar(
+      pedido({
+        status: 'UNSHIPPED',
+        por: null,
+        linhas: DUAS,
+        atualizadoEm: depois(30),
+        extra: comprador(),
+      }),
+    );
+    expect(primeira).toEqual({
+      kind: 'importado',
+      detalhe: expect.objectContaining({ itens: 'espelhadas' }),
+    });
+    expect(ex.h.db.ler(CAMINHO)).toMatchObject({
+      estado: ESTADO_PEDIDO.error,
+      error: TEXTO_ERRO_AMAZON.logisticaDesconhecida,
+      marketplace: { status: 'UNSHIPPED', fulfilledBy: null },
+    });
+    const r = await ex.importar(
+      pedido({ status: 'UNSHIPPED', linhas: OUTRAS, atualizadoEm: depois(60), extra: comprador() }),
+    );
+    expect(r).toEqual({
+      kind: 'importado',
+      detalhe: expect.objectContaining({ itens: 'divergencia-itens-aprovado' }),
+    });
+    const doc = ex.h.db.ler(CAMINHO) ?? {};
+    expect(doc.estado).toBe(ESTADO_PEDIDO.error);
+    expect(String(doc.error)).toMatch(/^\[amazon\] itens divergentes/);
+    expect(linhas(ex)).toEqual([
+      ['L1', 2, 10],
+      ['L2', 1, 5],
+    ]);
+    expect(ex.h.db.ler(PAGAMENTO)).toBeUndefined();
+    expect(estoque(ex)).toEqual(EFEITO_ESTOQUE_NENHUM);
+    // The logistics are known now; the block is what holds the pedido.
+    expect(logistica(ex)?.resolvidoEm).not.toBeNull();
+    expect(divergencia(ex)).toMatchObject({ severidade: 'critico', resolvidoEm: null });
+  });
+
+  it('★ fulfilledBy absent on EVERY read (today’s behaviour, pinned until the capture): PENDING → UNSHIPPED → SHIPPED keeps our error, no pagamento, nothing reserved, the crítico aviso OPEN; the lines are mirrored at the first approved read, then kept', async () => {
+    for (const status of ['PENDING', 'PENDING_AVAILABILITY']) {
+      const ex = montar();
+      await criadoSemPor(ex, status);
+      for (const [i, [seguinte, itens]] of (
+        [
+          ['UNSHIPPED', 'espelhadas'],
+          ['SHIPPED', 'mantidas'],
+        ] as const
+      ).entries()) {
+        const nome = `${status} → ${seguinte}`;
+        const r = await ex.importar(
+          pedido({
+            status: seguinte,
+            por: null,
+            linhas: OUTRAS,
+            atualizadoEm: depois(60 * (i + 1)),
+            extra: comprador(),
+          }),
+        );
+        expect(r, nome).toEqual({
+          kind: 'importado',
+          detalhe: expect.objectContaining({ acao: 'atualizado', itens }),
+        });
+        expect(ex.h.db.ler(CAMINHO), nome).toMatchObject({
+          estado: ESTADO_PEDIDO.error,
+          error: TEXTO_ERRO_AMAZON.logisticaDesconhecida,
+          marketplace: { status: seguinte, fulfilledBy: null },
+        });
+        expect(linhas(ex), nome).toEqual([
+          ['L1', 3, 12],
+          ['L2', 1, 5],
+        ]);
+        expect(ex.h.db.ler(PAGAMENTO), nome).toBeUndefined();
+        expect(estoque(ex), nome).toEqual(EFEITO_ESTOQUE_NENHUM);
+        expect(logistica(ex), nome).toMatchObject({
+          severidade: 'critico',
+          resolvidoEm: null,
+          ocorrencias: i + 2,
+        });
+      }
+    }
   });
 });

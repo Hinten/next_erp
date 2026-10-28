@@ -213,7 +213,9 @@ export const ACAO_ITENS_AMAZON = {
 } as const satisfies Record<string, AcaoItensAmazon>;
 
 /**
- * Why the import BLOCKS (the pedido goes to our error, the lines stay):
+ * Why the import BLOCKS (the lines stay, and the pedido goes to our error
+ * unless the goods are out or the freight removes stock —
+ * `pedidoMapeamento.ts`, PR 5-f):
  * `itens` and `cancelamento-parcial` (5-c), and `pagamento` (PR 6) — the derived
  * pagamento `valor` of an approved order still to ship differs from the stored
  * one ({@link bloquearPorValorDoPagamento}).
@@ -279,6 +281,20 @@ export interface ReconciliacaoItensAmazon {
    */
   readonly dinheiro: { readonly descontoTotal: number; readonly valorFrete: number | null } | null;
   readonly bloqueio: BloqueioItensAmazon | null;
+  /**
+   * (PR 5-f) This import JUDGED the stored lines against Amazon's and found them
+   * agreeing — written or mirrored as they arrive (rows 7, 8, 9, 13 on a
+   * create), or compared equal, the order money included (row 10's `mantidas`,
+   * and row 11 through the same comparison) — or an operator owns them
+   * (`congeladas`, row 1). The ONE fact the `divergencia-itens` aviso resolves on
+   * (its documented resolver: the lines agreeing again, or `congelado`).
+   * `false` wherever the lines are not judged, or disagree: a reversal (row 4),
+   * a block (rows 5, 6, and the pagamento term), a regression (row 12), an
+   * unknown status on an update (row 13), and a mirror that kept a stored LINE
+   * value against Amazon's (an absent or protected one), had nothing to compare
+   * (an empty `orderItems`) or stopped at a stored line the schema refuses.
+   */
+  readonly conferem: boolean;
   readonly incidentes: readonly IncidentePedidoAmazon[];
   readonly eventos: readonly EventoPedidoAmazon[];
   readonly contagens: ContagensItensAmazon;
@@ -489,6 +505,8 @@ interface Montagem {
   dinheiroDasLinhasMudou: boolean;
   dinheiro: { descontoTotal: number; valorFrete: number | null } | null;
   bloqueio: BloqueioItensAmazon | null;
+  /** {@link ReconciliacaoItensAmazon.conferem}: `false` unless a row sets it. */
+  conferem: boolean;
   incidentes: IncidentePedidoAmazon[];
   eventos: EventoPedidoAmazon[];
   linhasPreservadas: number;
@@ -501,6 +519,7 @@ function vazia(acao: AcaoItensAmazon): Montagem {
     dinheiroDasLinhasMudou: false,
     dinheiro: null,
     bloqueio: null,
+    conferem: false,
     incidentes: [],
     eventos: [],
     linhasPreservadas: 0,
@@ -511,6 +530,8 @@ function vazia(acao: AcaoItensAmazon): Montagem {
 function escrever(recebido: ItensRecebidosAmazon, venda: VendaAmazon): Montagem {
   const m = vazia(ACAO_ITENS_AMAZON.escritas);
   m.itens = recebido.linhas.map((linha) => novaLinha(linha, linha.posicao, recebido));
+  // What is written IS what arrives (row 5 blocks, and a block never agrees).
+  m.conferem = true;
   m.dinheiroDasLinhasMudou = true;
   m.dinheiro = {
     descontoTotal: recebido.dinheiro.descontoTotal ?? 0,
@@ -559,6 +580,8 @@ function espelhar(
   const maiorOrdem = armazenado.linhas.reduce((max, l) => Math.max(max, l.ordem ?? 0), 0);
   let proximaOrdem = maiorOrdem;
   let mudou = false;
+  /** Some stored line value was KEPT against Amazon's (absent, or protected). */
+  let manteveContraAmazon = false;
   const saida: ItemDoPedido[] = [];
 
   for (const recebida of recebido.linhas) {
@@ -582,6 +605,7 @@ function espelhar(
       (protegida &&
         ((recebida.quantidade === 0 && positivo(guardada.quantidade)) ||
           (recebida.precoUnitario === 0 && positivo(guardada.precoDeVenda))));
+    if (manterDinheiro) manteveContraAmazon = true;
     const quantidade = manterDinheiro ? guardada.item.quantidade : (recebida.quantidade ?? 0);
     const preco =
       manterDinheiro || mesmosCentavos(recebida.precoUnitario, guardada.precoDeVenda)
@@ -623,6 +647,10 @@ function espelhar(
   }
   m.itens = mudou ? saida : null;
   if (!mudou) m.dinheiroDasLinhasMudou = false;
+  // The stored lines end as Amazon's, unless a line value was kept against
+  // them. The order money is judged as row 10 judges it: a member Amazon did
+  // not send, or a protected 0, is no evidence of a difference.
+  m.conferem = !manteveContraAmazon;
   return m;
 }
 
@@ -720,7 +748,12 @@ function comparar(
       linhasPreservadas: armazenado.linhas.length,
     };
   }
-  return manterComVinculos(ACAO_ITENS_AMAZON.mantidas, armazenado, recebido, precos);
+  // Compared equal: the lines agree (the binding of a newly linked line, or a
+  // stored line the schema refuses there, changes nothing of that verdict).
+  return {
+    ...manterComVinculos(ACAO_ITENS_AMAZON.mantidas, armazenado, recebido, precos),
+    conferem: true,
+  };
 }
 
 /** Row 11: a non-zero difference after shipment is logged, never applied. */
@@ -769,6 +802,7 @@ export function bloquearPorValorDoPagamento(
     dinheiroDasLinhasMudou: false,
     dinheiro: null,
     bloqueio: { causa: 'pagamento', linhas: [] },
+    conferem: false,
     // A line price filled on the comparison is not applied either.
     eventos: reconciliacao.eventos.filter((e) => e !== EVENTO_PEDIDO_AMAZON.precoPreenchido),
     contagens: {
@@ -793,6 +827,10 @@ export function bloquearPorValorDoPagamento(
  * - row 10: the comparison; row 11 logs a post-shipment difference; rows 12–13
  *   keep the lines. Every `mantidas` binds a newly linked `'NONE'` line and fills
  *   a stored-null group member with a positive incoming one.
+ *
+ * Every row also answers whether the lines AGREE
+ * ({@link ReconciliacaoItensAmazon.conferem}, PR 5-f) — row 11 through row 10's
+ * own comparison, whose verdict it reads and never applies.
  */
 export function reconciliarItens(
   armazenado: ItensArmazenadosAmazon | null,
@@ -814,14 +852,21 @@ export function reconciliarItens(
         dinheiroDasLinhasMudou: false,
         dinheiro: null,
         bloqueio: null,
+        conferem: false,
         incidentes: [],
         eventos: [],
         contagens: SEM_CONTAGEM,
       };
     case REGRA_D17_AMAZON.congeladas:
-      m = { ...vazia(ACAO_ITENS_AMAZON.congeladas), linhasPreservadas: guardadas.length };
+      // An operator owns the lines: what they hold is the operator's answer.
+      m = {
+        ...vazia(ACAO_ITENS_AMAZON.congeladas),
+        linhasPreservadas: guardadas.length,
+        conferem: true,
+      };
       break;
     case REGRA_D17_AMAZON.preservarReversao:
+      // The lines are not judged against a reversed order (`conferem` stays false).
       m = { ...vazia(ACAO_ITENS_AMAZON.preservadosReversao), linhasPreservadas: guardadas.length };
       if (venda.reversaoPacote || venda.execucao || venda.zerado) {
         m.incidentes.push(INCIDENTE_PEDIDO_AMAZON.possivelReembolso);
@@ -861,8 +906,14 @@ export function reconciliarItens(
         break;
       }
       m = manterComVinculos(ACAO_ITENS_AMAZON.mantidas, armazenado, recebido, new Map());
-      if (linha === 11 && divergenciaPosEnvio(armazenado, recebido)) {
-        m.eventos.push(EVENTO_PEDIDO_AMAZON.divergenciaPosEnvio);
+      if (linha === 11) {
+        if (divergenciaPosEnvio(armazenado, recebido)) {
+          m.eventos.push(EVENTO_PEDIDO_AMAZON.divergenciaPosEnvio);
+        }
+        // (PR 5-f) After shipment nothing is applied, but the lines are still
+        // JUDGED, by row 10's own comparison (its verdict only), so a block an
+        // operator never fixed is not taken as resolved by the shipment.
+        m.conferem = comparar(armazenado, recebido, venda).bloqueio === null;
       }
       break;
   }
@@ -879,6 +930,8 @@ export function reconciliarItens(
     dinheiroDasLinhasMudou: m.dinheiroDasLinhasMudou,
     dinheiro: m.dinheiro,
     bloqueio: m.bloqueio,
+    // A block never agrees (row 5 writes the lines as they arrive, and blocks).
+    conferem: m.conferem && m.bloqueio === null,
     incidentes: codigosOrdenados(m.incidentes),
     eventos: codigosOrdenados(m.eventos),
     contagens: {

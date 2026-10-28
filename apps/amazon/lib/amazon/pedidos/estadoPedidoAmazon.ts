@@ -22,7 +22,16 @@
  * over a `pago` pedido would release the reservation and revert a removal for
  * goods that may already be gone. On UPDATE an absent or unknown status or
  * `fulfilledBy` therefore KEEPS the stored estado (+ an aviso), and AFN moves to
- * `error` only from a pre-approval estado or our own error.
+ * `error` only from a pre-approval estado or our own error. A D17 block (the
+ * lines, not logistics) does move a `pago` pedido to our `error` — releasing
+ * the reservation is the point — but never while the goods are out or the
+ * freight is in `ESTADOS_FRETE_REMOVE_ESTOQUE` once the import lands; and a
+ * pedido already held at our block error leaves it for `pago` once that holds,
+ * even on a read whose status or logistics is unknown (`pedidoMapeamento.ts`,
+ * PR 5-f). With the goods out and the freight still outside that set, the
+ * stock sync applies no removal, so `pago` then HOLDS the reservation: units
+ * that left are not offered to other channels, a deliberate exception to the
+ * releasing rule.
  */
 import type { PedidoWireAmazon } from '@delfrance/integrations-amazon-sp-api';
 import {
@@ -66,6 +75,21 @@ export const FULFILLMENT_STATUS_AMAZON = {
   unfulfillable: 'UNFULFILLABLE',
 } as const satisfies Record<string, string>;
 
+const STATUS_CONHECIDOS_AMAZON: ReadonlySet<string> = new Set<string>(
+  Object.values(FULFILLMENT_STATUS_AMAZON),
+);
+
+/**
+ * Whether `status` is one of {@link FULFILLMENT_STATUS_AMAZON}, EXACTLY (no
+ * trim, no case fold: `unshipped` is not `UNSHIPPED`). The ONE meaning of
+ * "known": the table raises `status-desconhecido` for every other value, and an
+ * update never replaces a stored known `marketplace.status` with one of those
+ * (`pedidoMapeamento.ts`, PR 5-f).
+ */
+export function ehStatusConhecidoAmazon(status: string | null): boolean {
+  return status !== null && STATUS_CONHECIDOS_AMAZON.has(status);
+}
+
 /** `fulfillment.fulfilledBy` (an open string on the wire). */
 export const FULFILLED_BY_AMAZON = {
   merchant: 'MERCHANT',
@@ -78,6 +102,17 @@ export const TEXTO_ERRO_AMAZON = {
   naoAtendivel: `${PREFIXO_ERRO_AMAZON}pedido não atendível (UNFULFILLABLE)`,
   logisticaDesconhecida: `${PREFIXO_ERRO_AMAZON}logística do pedido não informada pela Amazon`,
   statusDesconhecido: `${PREFIXO_ERRO_AMAZON}status de atendimento desconhecido`,
+} as const satisfies Record<string, string>;
+
+/**
+ * The titles of OUR D17 block texts (`textoBloqueioAmazon`, `pedidoMapeamento.ts`),
+ * one per `BloqueioItensAmazon.causa`. Each is written after
+ * {@link PREFIXO_ERRO_AMAZON}, followed by `: <ids>` when the block names lines.
+ */
+export const TITULO_BLOQUEIO_AMAZON = {
+  itens: 'itens divergentes do pedido na Amazon',
+  cancelamentoParcial: 'linha cancelada na Amazon em pedido a enviar',
+  pagamento: 'valor do pagamento divergente do pedido na Amazon',
 } as const satisfies Record<string, string>;
 
 /** A token of Amazon's closed-grammar shape, so a status may be quoted in our text. */
@@ -94,7 +129,13 @@ export interface ResumoArmazenadoAmazon {
   readonly error: string | null;
   /** `marketplace.tipo` (`'amazon'` once this importer wrote the pedido). */
   readonly marketplaceTipo: string | null;
-  /** `marketplace.status`: Amazon's status the LAST accepted import saw. */
+  /**
+   * `marketplace.status`: the last KNOWN status an accepted import saw. An
+   * update whose read names no known status ({@link ehStatusConhecidoAmazon})
+   * keeps the stored known one (PR 5-f), so the two decisions that read it —
+   * {@link aprovadoAmazon} on our own error, and the resurrection discriminator
+   * of {@link estadoAmazonAplicavel} — never take such a read as Amazon's word.
+   */
   readonly marketplaceStatus: string | null;
   /**
    * The pedido slip was printed: `foiImpresso === true || dtImpressao != null`
@@ -167,6 +208,48 @@ export function ehErroAmazon(error: unknown): boolean {
   return typeof error === 'string' && error.startsWith(PREFIXO_ERRO_AMAZON);
 }
 
+/**
+ * Whether the stored pedido is held at OUR AFN error: estado `error` with
+ * EXACTLY {@link TEXTO_ERRO_AMAZON.afn} (no trim, no prefix match). It is the
+ * state an AFN create writes beside its `fulfillment` freight seed, and every
+ * later AFN read, or read without `fulfilledBy`, keeps it. The goods-out reading
+ * of the CANCELLED predicate uses it to tell that seed apart from the legacy
+ * `fulfillment` residue under a read without `fulfilledBy`
+ * (`frete/estadoFreteAmazon.ts`, PR 5-f). Any other stored estado or text,
+ * another text of ours included, is not this state. A pedido that left it
+ * (an operator's move, a later `MERCHANT` read) is then read as the residue,
+ * the side that keeps the pedido and files an incidente.
+ */
+export function ehErroAfnAmazon(
+  armazenado: Pick<ResumoArmazenadoAmazon, 'estado' | 'error'>,
+): boolean {
+  return armazenado.estado === ESTADO_PEDIDO.error && armazenado.error === TEXTO_ERRO_AMAZON.afn;
+}
+
+/**
+ * Whether the stored pedido is held at OUR D17 block error (PR 5-f): estado
+ * `error` with a text that is EXACTLY {@link PREFIXO_ERRO_AMAZON} + one of
+ * {@link TITULO_BLOQUEIO_AMAZON}, alone or followed by `: ` (the named lines).
+ * No trim, no case fold, no other separator. Our other texts (logistics, AFN,
+ * unknown status, `UNFULFILLABLE`) are not a block, and neither is a block
+ * text beside another estado.
+ *
+ * A block is written only by a read Amazon APPROVED (D17 rows 5, 6 and 10, and
+ * the pagamento term of row 10), so this state is itself the approval: it
+ * carries D17's lock ({@link aprovadoAmazon}) and the ladder's `pago` rung
+ * ({@link estadoAmazonAplicavel}) whatever status a later read stores.
+ */
+export function ehErroBloqueioAmazon(
+  armazenado: Pick<ResumoArmazenadoAmazon, 'estado' | 'error'>,
+): boolean {
+  const texto = armazenado.error;
+  if (armazenado.estado !== ESTADO_PEDIDO.error || texto === null) return false;
+  return Object.values(TITULO_BLOQUEIO_AMAZON).some((titulo) => {
+    const base = `${PREFIXO_ERRO_AMAZON}${titulo}`;
+    return texto === base || texto.startsWith(`${base}: `);
+  });
+}
+
 /** The two TERMINAL estados of this channel (leaving one is a resurrection). */
 export const ESTADOS_TERMINAIS_AMAZON: ReadonlySet<EstadoPedido> = new Set<EstadoPedido>([
   ESTADO_PEDIDO.cancelado,
@@ -216,15 +299,33 @@ const STATUS_APROVADOS_AMAZON: ReadonlySet<string> = new Set<string>([
  * import that FIRST sees the approval mirrors Amazon and the lock starts after
  * it.
  *
- * Outside the pre-approval set ⇒ approved — EXCEPT our own `[amazon]` error,
- * which counts only when the stored `marketplace.status` is an approved one: a
+ * Outside the pre-approval set ⇒ approved — EXCEPT our own `[amazon]` error.
+ * Our D17 BLOCK error ({@link ehErroBloqueioAmazon}) is approved whatever the
+ * stored status: only an approved read writes it (PR 5-f). Our other texts
+ * count only when the stored `marketplace.status` is an approved one: a
  * pedido CREATED at our error (unknown status, AFN, absent `fulfilledBy`) was
- * never approved, while one held at our error by a divergence was. An estado
- * outside the enum reads as approved (the conservative arm: it locks).
+ * never approved. The first
+ * read that stores an approved status is the approval moment even when it keeps
+ * our error: an `UNSHIPPED` read still without `fulfilledBy` mirrors the lines
+ * (D17 row 9) and stores `UNSHIPPED`, so the lock starts after it (PR 5-f pins
+ * the whole lifecycle in `importarPedido.test.ts`). An estado outside the enum
+ * reads as approved (the conservative arm: it locks).
+ *
+ * The lock is durable (PR 5-f). Through a read that names no known status: an
+ * update replaces a stored known status only with another KNOWN one — an
+ * `INVOICE_UNCONFIRMED`, a blank, a `null` or an absent `fulfillment` keeps it.
+ * Through a KNOWN pre-approval status (`PENDING`, which Amazon does not
+ * document after approval): the block text itself is the latch above, and the
+ * ladder keeps the estado ({@link estadoAmazonAplicavel}: our approved error
+ * sits on the `pago` rung, so `aguardandoConfirmacaoDePagamento` is a
+ * regression). So no separate approval field is stored. Residual: an
+ * `UNFULFILLABLE` read replaces the block text with its own, which is no
+ * latch (the model documents that status for Amazon-fulfilled orders only).
  */
 export function aprovadoAmazon(armazenado: ResumoArmazenadoAmazon): boolean {
   const { estado } = armazenado;
   if (estado === ESTADO_PEDIDO.error && ehErroAmazon(armazenado.error)) {
+    if (ehErroBloqueioAmazon(armazenado)) return true;
     return (
       armazenado.marketplaceStatus !== null &&
       STATUS_APROVADOS_AMAZON.has(armazenado.marketplaceStatus)
@@ -263,9 +364,10 @@ export interface ContextoEstadoAmazon {
   /**
    * The goods are out — three readings ORed (PR 7, plan §3 decision 47):
    * `mercadoriaFora` over the stored freight (its legacy residue read as the
-   * freight ladder reads it), any package of this read, and any stored diary
-   * row of this importer's own freight block unless that block reads as
-   * `fulfillment` (`pedidoMapeamento.ts`).
+   * freight ladder reads it, and since PR 5-f also under a read without
+   * `fulfilledBy` unless the pedido is our own AFN error, {@link ehErroAfnAmazon}),
+   * any package of this read, and any stored diary row of this importer's own
+   * freight block unless that block reads as `fulfillment` (`pedidoMapeamento.ts`).
    */
   readonly mercadoriaFora: boolean;
 }
@@ -369,12 +471,7 @@ export function alvoEstadoPedidoAmazon(
 
   if (status === FULFILLMENT_STATUS_AMAZON.cancelled) return alvoCanceladoAmazon(contexto);
 
-  const statusConhecido =
-    status !== null &&
-    Object.values(FULFILLMENT_STATUS_AMAZON).includes(
-      status as (typeof FULFILLMENT_STATUS_AMAZON)[keyof typeof FULFILLMENT_STATUS_AMAZON],
-    );
-  const avisosDoStatus: MotivoPedidoAmazon[] = statusConhecido
+  const avisosDoStatus: MotivoPedidoAmazon[] = ehStatusConhecidoAmazon(status)
     ? []
     : [MOTIVO_PEDIDO_AMAZON.statusDesconhecido];
 
@@ -466,7 +563,11 @@ export type VereditoEstadoAmazon =
  *    request, plan §3 decision 7, or an operator) and is NEVER reopened by an
  *    import (`terminal`; the caller raises `cancelado-so-no-erp`). An equal
  *    clock never resurrects;
- * 5. backwards on {@link ORDEM_ESTADO_AMAZON} ⇒ `regressivo`;
+ * 5. backwards on {@link ORDEM_ESTADO_AMAZON} ⇒ `regressivo`. Our own `error`
+ *    that {@link aprovadoAmazon} approves sits on the `pago` rung here (PR 5-f):
+ *    an approved pedido held at our error never moves back to
+ *    `aguardandoConfirmacaoDePagamento`, which would clear our text and drop
+ *    D17's lock with it. Our error that was never approved has no rung;
  * 6. otherwise written.
  */
 export function estadoAmazonAplicavel(
@@ -488,7 +589,9 @@ export function estadoAmazonAplicavel(
       : { escrever: false, motivo: MOTIVO_ESTADO_AMAZON.terminal };
   }
   const ordem = ORDEM_ESTADO_AMAZON as readonly EstadoPedido[];
-  const indiceDe = ordem.indexOf(de);
+  // Gate 3 already returned for a foreign error: an `error` here is ours.
+  const degrau = de === ESTADO_PEDIDO.error && aprovadoAmazon(armazenado) ? ESTADO_PEDIDO.pago : de;
+  const indiceDe = ordem.indexOf(degrau);
   const indicePara = ordem.indexOf(alvo.estado);
   if (indiceDe >= 0 && indicePara >= 0 && indicePara < indiceDe) {
     return { escrever: false, motivo: MOTIVO_ESTADO_AMAZON.regressivo };

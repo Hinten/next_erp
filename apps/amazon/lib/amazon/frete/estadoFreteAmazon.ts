@@ -20,8 +20,9 @@
  * as its second input. The reversal rows are typed against the ONE reversal set
  * (`DETAILED_STATUS_REVERSAO`, `pedidos/pacotesAmazon.ts`) and never a second
  * list. `packageStatus.status` (Amazon's closed enum) is stored in the diary and
- * counted in the log, never mapped: there is no status-only floor (plan §3
- * decision 37).
+ * counted in the log, never mapped to an estado or a target: there is no
+ * status-only floor (plan §3 decision 37). Its one other reader is the goods-out
+ * FALLBACK below, for a package whose token the table does not know.
  *
  * ## The fold ({@link dobrarPacotesAmazon})
  *
@@ -47,34 +48,63 @@
  * decision 2): a package-only change Amazon did not stamp is not lost. An AFN
  * read never moves the block, and a stored `fulfillment` walks the ladder only
  * under a read that SAYS `MERCHANT` ({@link LogisticaAmazon}): an absent
- * `fulfilledBy` is no evidence of either.
+ * `fulfilledBy` is no evidence of either, so the ladder never walks it. (The
+ * goods-out reading below reads it on the restock side instead — and, through
+ * the same flag, so does the D17 block's choice between the table's target and
+ * our error, `remocaoDeEstoque` in `pedidos/pedidoMapeamento.ts`.)
  *
  * ## Goods out
  *
  * The CANCELLED predicate's "goods out" (plan §3 decision 47) ORs THREE
- * readings (`pedidos/pedidoMapeamento.ts`): the stored block estado through the
- * SAME legacy-residue projection as the ladder ({@link estadoFreteEfetivoAmazon});
- * ANY package of this read whose token projects to an estado where the goods
- * are out ({@link DobraPacotesAmazon.mercadoriaFora}); and ANY stored diary row
- * of this importer's own block that says so ({@link diarioComMercadoriaForaAmazon}),
- * unless the first reading reads that block as `fulfillment` (an AFN seed
- * under a read that does not say `MERCHANT`: an AFN read writes no estado but
- * still writes the diary, and those rows are Amazon's own packages) — never the
- * least-advanced target, which is the stock-safe answer for REMOVING stock and
- * the unsafe one for RESTOCKING it. The stored block alone is not enough: it
+ * readings (`pedidos/pedidoMapeamento.ts`). The first is the stored block
+ * estado, read through the ladder's legacy-residue projection widened for the
+ * restock side ({@link estadoFreteParaMercadoriaForaAmazon}, PR 5-f). Under a
+ * read without `fulfilledBy`, a stored `fulfillment` counts as goods out too,
+ * unless the pedido is held at our own AFN error: wrongly keeping costs an
+ * incidente, wrongly releasing restocks goods that may be at the carrier. The
+ * second is ANY package of this read whose token projects to an estado where
+ * the goods are out ({@link DobraPacotesAmazon.mercadoriaFora}). The third is
+ * ANY stored diary row of this importer's own block that says so
+ * ({@link diarioComMercadoriaForaAmazon}), unless the first reading reads that
+ * block as `fulfillment`. That happens for an AFN seed, under an AFN read or
+ * under a read without `fulfilledBy` while the pedido holds our AFN error: an
+ * AFN read writes no estado but still writes the diary, and those rows are
+ * Amazon's own packages. The predicate never reads the least-advanced target,
+ * which is the stock-safe answer for REMOVING stock and the unsafe one for
+ * RESTOCKING it. The stored block alone is not enough: it
  * lags this read's packages (the second reading), and it never shows a KEYED
  * package that left beside a sibling still waiting, which a later read may
  * cancel the pickup of or stop naming (the third). The verdict (gate 8) and the
  * fold's row gate keep the first and the third from moving from goods out to
  * goods in.
  *
- * ⚠️ The residual: a package the fold cannot key (no usable
+ * The FALLBACK (PR 5-f, {@link statusPacoteComMercadoriaForaAmazon}): a package
+ * whose `detailedStatus` the table does not know (absent included — only
+ * `status` is required in the model's `PackageStatus`) projects to no estado,
+ * so its token says nothing; its closed `packageStatus.status` then answers for
+ * the second and the third readings — `IN_TRANSIT`, `SHIPPED`, `DELIVERED`,
+ * `UNDELIVERABLE` ⇒ the goods are out. A known token always decides on its
+ * own. The fallback is read on the wire (the second reading) and on a stored
+ * row's verbatim `estadoMarketplace` + `statusMarketplace` (the third, same
+ * ownership and AFN scope), through the ONE predicate, so a read and the next
+ * read of the row it wrote answer the same. It NEVER feeds the fold's target,
+ * the block estado or a row's `estado`: for REMOVING stock, an unreadable
+ * package stays no answer (decision 37 holds).
+ *
+ * ⚠️ The residuals: a package the fold cannot key (no usable
  * `packageReferenceId`, or the same key twice in one read) BLOCKS the block and
  * leaves no row, so its goods out is read ONLY from a read that carries it (the
  * second reading). If a later read cancels its pickup or stops naming it, a
  * CANCELLED read without packages releases the pedido — pinned as it is today
  * in `pedidos/pedidoMapeamento.test.ts`, so closing it flips that test
- * deliberately. The freight's own CANCELLED arm is the predicate's outcome
+ * deliberately. And the fallback's evidence on a KEYED row lives in that row's
+ * WIRE fields, which take every read's values verbatim (the row gate keeps a
+ * goods-out `estado` only, and no estado is invented from a status): a later
+ * read that names the same package with a goods-in reading (a known pre-pickup
+ * token, or an unknown one at `PENDING`/`CANCELLED`) rewrites them — on an
+ * EQUAL order clock too, as a stale re-derive does — and a
+ * CANCELLED read without packages after it releases — pinned too, in both test
+ * files. The freight's own CANCELLED arm is the predicate's outcome
  * ({@link alvoFreteAmazon}), never a second copy of its rules.
  */
 import type { PacoteWireAmazon, PedidoWireAmazon } from '@delfrance/integrations-amazon-sp-api';
@@ -109,7 +139,13 @@ export const INVOICE_STATUS_AMAZON = {
   accepted: 'ACCEPTED',
 } as const satisfies Record<string, string>;
 
-/** `packageStatus.status` — Amazon's CLOSED enum (Orders v2026 `PackageStatus`). Never mapped. */
+/**
+ * `packageStatus.status` — Amazon's CLOSED enum (Orders v2026 `PackageStatus`;
+ * an open string on the wire). Never mapped to a freight estado or a target
+ * (no status-only floor, plan §3 decision 37). Its ONE consumer outside the
+ * diary and the log is the goods-out fallback
+ * ({@link MERCADORIA_FORA_DO_STATUS_PACOTE_AMAZON}).
+ */
 export const STATUS_PACOTE_AMAZON = {
   pending: 'PENDING',
   inTransit: 'IN_TRANSIT',
@@ -118,6 +154,28 @@ export const STATUS_PACOTE_AMAZON = {
   cancelled: 'CANCELLED',
   undeliverable: 'UNDELIVERABLE',
 } as const satisfies Record<string, string>;
+
+export type StatusPacoteAmazon = (typeof STATUS_PACOTE_AMAZON)[keyof typeof STATUS_PACOTE_AMAZON];
+
+/**
+ * Whether the goods are out at each closed `packageStatus.status` — an
+ * EXPLICIT, EXHAUSTIVE table (a missing member is a compile error), read ONLY
+ * by the goods-out fallback ({@link statusPacoteComMercadoriaForaAmazon}),
+ * never by the fold's target. `IN_TRANSIT`, `SHIPPED`, `DELIVERED` and
+ * `UNDELIVERABLE` say the package left the warehouse (an undeliverable parcel
+ * is with the carrier or on its way back, never on the shelf); `PENDING` and
+ * `CANCELLED` do not.
+ */
+export const MERCADORIA_FORA_DO_STATUS_PACOTE_AMAZON: Readonly<
+  Record<StatusPacoteAmazon, boolean>
+> = Object.freeze({
+  PENDING: false,
+  IN_TRANSIT: true,
+  SHIPPED: true,
+  DELIVERED: true,
+  CANCELLED: false,
+  UNDELIVERABLE: true,
+});
 
 /** The two tokens the fold names on their own. */
 export const DETAILED_STATUS_AMAZON = {
@@ -141,7 +199,10 @@ export const FONTE_PACOTE_AMAZON = { getOrder: 'getOrder' } as const satisfies R
  * matched EXACTLY: `MERCHANT` ⇒ `mfn`, `AMAZON` ⇒ `afn`, anything else (absent,
  * blank, another spelling) ⇒ `desconhecida`. Never inferred from the stored
  * block: a `fulfillment` this importer seeded for an AFN order and the legacy
- * residue on an MFN order hold the same value.
+ * residue on an MFN order hold the same value. Only the goods-out reading tells
+ * them apart under `desconhecida`, and it does so by the stored PEDIDO (our
+ * own AFN error), never by a logistics it infers
+ * ({@link estadoFreteParaMercadoriaForaAmazon}).
  */
 export type LogisticaAmazon = 'mfn' | 'afn' | 'desconhecida';
 
@@ -266,18 +327,57 @@ function projecaoDaNota(invoiceStatus: unknown): ProjecaoPacoteAmazon {
   }
 }
 
+/** The table's row for a `detailedStatus`, matched EXACTLY; `null` = unknown (absent included). */
+function linhaDoToken(detailedStatus: unknown): LinhaFreteAmazon | null {
+  if (typeof detailedStatus !== 'string') return null;
+  if (!Object.hasOwn(ESTADO_FRETE_DE_DETAILED_STATUS, detailedStatus)) return null;
+  return ESTADO_FRETE_DE_DETAILED_STATUS[detailedStatus] ?? null;
+}
+
 /** One package's `detailedStatus` (+ the order's invoice status) → its projection. */
 export function projetarPacoteAmazon(
   detailedStatus: unknown,
   invoiceStatus: unknown,
 ): ProjecaoPacoteAmazon {
-  if (typeof detailedStatus !== 'string') return DESCONHECIDO;
-  if (!Object.hasOwn(ESTADO_FRETE_DE_DETAILED_STATUS, detailedStatus)) return DESCONHECIDO;
-  const linhaDaTabela = ESTADO_FRETE_DE_DETAILED_STATUS[detailedStatus];
-  if (linhaDaTabela === undefined) return DESCONHECIDO;
+  const linhaDaTabela = linhaDoToken(detailedStatus);
+  if (linhaDaTabela === null) return DESCONHECIDO;
   return linhaDaTabela.tipo === 'estado'
     ? projecaoEstado(linhaDaTabela.estado)
     : projecaoDaNota(invoiceStatus);
+}
+
+/**
+ * The goods-out FALLBACK on `packageStatus.status` (PR 5-f), for ONE package
+ * — or one stored diary row, read through its verbatim `estadoMarketplace` and
+ * `statusMarketplace`: `true` only when its `detailedStatus` is NOT a row of
+ * the table (absent, blank, an undocumented or misspelt token — the
+ * `desconhecido` projection) AND its closed status says the package left
+ * ({@link MERCADORIA_FORA_DO_STATUS_PACOTE_AMAZON}, matched EXACTLY: no trim,
+ * no case fold, no inherited name; an unknown status is not goods out).
+ *
+ * A KNOWN `detailedStatus` always decides on its own, whatever the status
+ * says: `PENDING_PICK_UP` beside `SHIPPED` is not goods out, and
+ * `PICKED_UP` beside `PENDING` is. The fallback feeds the CANCELLED
+ * predicate's goods-out readings ONLY — the RESTOCK side, where reading an
+ * unreadable package as "in the warehouse" puts units back on the shelf that
+ * Amazon says are with the carrier — and, through the same flag, whether a
+ * D17 block keeps the table's target instead of our error
+ * (`remocaoDeEstoque`, `pedidos/pedidoMapeamento.ts`), the same question
+ * asked of a block. It never feeds the fold's target, the
+ * block, a diary row's `estado` or the reversal signal: for REMOVING stock,
+ * the stock-safe answer to an unreadable package stays no answer (plan §3
+ * decision 37: no status-only floor).
+ */
+export function statusPacoteComMercadoriaForaAmazon(
+  detailedStatus: unknown,
+  status: unknown,
+): boolean {
+  if (linhaDoToken(detailedStatus) !== null) return false;
+  return (
+    typeof status === 'string' &&
+    Object.hasOwn(MERCADORIA_FORA_DO_STATUS_PACOTE_AMAZON, status) &&
+    MERCADORIA_FORA_DO_STATUS_PACOTE_AMAZON[status as StatusPacoteAmazon]
+  );
 }
 
 /**
@@ -428,13 +528,15 @@ export type VereditoFreteAmazon =
   | { readonly escrever: false; readonly motivo: MotivoFreteAmazon };
 
 /**
- * The stored freight estado as the ladder AND the goods-out check read it —
- * ONE projection, so the two never disagree on one stored value. The legacy
- * residue (described by shape): a stored `fulfillment` under a read that says
- * `MERCHANT` stands for a package already at the carrier's facility, rung 11
- * (`recebidoPelaTransportadora`, goods out). Under any other read it is
- * returned as stored: the AFN seed of this importer holds the same value, and
- * an absent `fulfilledBy` does not say which one it is.
+ * The stored freight estado as the LADDER reads it. The goods-out check reads
+ * it through {@link estadoFreteParaMercadoriaForaAmazon}, which is this
+ * projection under a `MERCHANT` or an AFN read and widens it only under a read
+ * without `fulfilledBy`. The legacy residue (described by shape): a stored
+ * `fulfillment` under a read that says `MERCHANT` stands for a package already
+ * at the carrier's facility, rung 11 (`recebidoPelaTransportadora`, goods out).
+ * Under any other read it is returned as stored: the AFN seed of this importer
+ * holds the same value, and an absent `fulfilledBy` does not say which one it
+ * is, so the ladder never walks it.
  */
 export function estadoFreteEfetivoAmazon(
   armazenado: EstadoFrete,
@@ -443,6 +545,44 @@ export function estadoFreteEfetivoAmazon(
   return armazenado === ESTADO_FRETE.fulfillment && logistica === LOGISTICA_AMAZON.mfn
     ? ESTADO_FRETE.recebidoPelaTransportadora
     : armazenado;
+}
+
+/**
+ * The stored freight estado as the CANCELLED predicate's FIRST goods-out
+ * reading reads it (PR 5-f) — and, through the same flag, whether a D17 block
+ * keeps the table's target instead of our error (`remocaoDeEstoque`,
+ * `pedidos/pedidoMapeamento.ts`). It is {@link estadoFreteEfetivoAmazon} with ONE
+ * widening, on the restock side only: a stored `fulfillment` under a read whose
+ * logistics is `desconhecida` (no `fulfilledBy`, a blank, another spelling) is
+ * read as the legacy residue too, rung 11 and goods out, UNLESS `afnNosso`
+ * says the stored pedido is held at this importer's own AFN error
+ * (`ehErroAfnAmazon`). That is the state an AFN seed is created in, and every
+ * later AFN read, or read without `fulfilledBy`, keeps it. Under `MERCHANT` and
+ * AFN it IS the ladder's projection: an AFN read still never reads the stored
+ * value as goods out, because Amazon then says the order is its own.
+ *
+ * Why the two readings differ: the ladder must not WALK a block it cannot
+ * attribute (an AFN block never moves into a stock-removal estado), while a
+ * CANCELLED read must not RESTOCK goods that may already be at the carrier.
+ * The two errors cost differently. Wrongly keeping a cancelled pedido costs an
+ * incidente a person reads (`cancelado-apos-envio`). Wrongly releasing one puts
+ * units that left back on sale. The stored `marketplace.fulfilledBy` is not the
+ * tiebreak: a migrated pedido holds no such field until this importer writes
+ * one, and this importer rewrites it verbatim on every read (`null` on a read
+ * without it).
+ */
+export function estadoFreteParaMercadoriaForaAmazon(
+  armazenado: EstadoFrete,
+  e: { readonly logistica: LogisticaAmazon; readonly afnNosso: boolean },
+): EstadoFrete {
+  if (
+    armazenado === ESTADO_FRETE.fulfillment &&
+    e.logistica === LOGISTICA_AMAZON.desconhecida &&
+    !e.afnNosso
+  ) {
+    return ESTADO_FRETE.recebidoPelaTransportadora;
+  }
+  return estadoFreteEfetivoAmazon(armazenado, e.logistica);
 }
 
 /**
@@ -563,10 +703,12 @@ export interface DobraPacotesAmazon {
   readonly coletaCancelada: boolean;
   /**
    * Some package of this read — keyed or not, beside an unknown sibling or not —
-   * PROJECTS to an estado where the goods are out (`mercadoriaFora`): the
-   * CANCELLED predicate's second reading, this read's own (plan §3 decision
-   * 47). Computed apart from {@link alvo}: the least-advanced rung, or no answer
-   * at all, is the stock-safe reading for REMOVING stock and the unsafe one for
+   * PROJECTS to an estado where the goods are out (`mercadoriaFora`), or, its
+   * token unknown (absent included), carries a closed status that says it left
+   * ({@link statusPacoteComMercadoriaForaAmazon}, PR 5-f): the CANCELLED
+   * predicate's second reading, this read's own (plan §3 decision 47).
+   * Computed apart from {@link alvo}: the least-advanced rung, or no answer at
+   * all, is the stock-safe reading for REMOVING stock and the unsafe one for
    * restocking. A missing key makes a package unaddressable, not its status
    * unreadable — for THIS read only: an unkeyed package leaves no row, so no
    * later read's predicate sees it (the module header's residual). The row
@@ -656,22 +798,35 @@ export function estadoDaLinhaAmazon(linhaDiario: unknown): EstadoFrete | null {
  * the rows of this importer's own `amz` block only: another channel's diary is
  * its own importer's, and that block's estado already speaks for it. Nor does
  * it hand in the rows of a block the first reading reads as `fulfillment` (an
- * AFN seed under a read that does not say `MERCHANT`): an AFN read writes no
- * estado but still writes the diary, and those rows are Amazon's own packages,
- * never this ERP's stock. A row whose `estado` does not read
- * ({@link estadoDaLinhaAmazon}) contributes nothing, and anything that is not
- * an array reads as no row. Every readable stored row counts, a string
+ * AFN seed: under an AFN read, or under a read without `fulfilledBy` while the
+ * pedido holds our AFN error, {@link estadoFreteParaMercadoriaForaAmazon}): an
+ * AFN read writes no estado but still writes the diary, and those rows are
+ * Amazon's own packages, never this ERP's stock. A row says the goods are out by its `estado`
+ * ({@link estadoDaLinhaAmazon}), or (PR 5-f) — its verbatim
+ * `estadoMarketplace` not a token the table knows, absent included — by its
+ * verbatim `statusMarketplace` ({@link statusPacoteComMercadoriaForaAmazon},
+ * the same predicate the read's own packages go through, so the row a read
+ * wrote answers what that read answered). A row whose `estado` does not read
+ * and whose statuses do not say it contributes nothing, and anything that is
+ * not an array reads as no row. Every readable stored row counts, a string
  * `numero` or not: wrongly KEEPING a cancelled pedido costs an incidente a
  * person reads, wrongly releasing it restocks goods that left. A `devolvido`
  * row counts too (`MERCADORIA_FORA.devolvido`): a package Amazon reported
  * returned to the seller keeps a CANCELLED pedido, and a person restocks those
  * units by hand — the accepted cost. Only KEYED packages ever reach the diary:
- * an unkeyed one is the module header's residual.
+ * an unkeyed one is the module header's residual; so is a status-only row a
+ * later goods-in read of the same package rewrote.
  */
 export function diarioComMercadoriaForaAmazon(armazenados: unknown): boolean {
   return (
     Array.isArray(armazenados) &&
-    (armazenados as unknown[]).some((l) => mercadoriaFora(estadoDaLinhaAmazon(l)))
+    (armazenados as unknown[]).some((l) => {
+      if (mercadoriaFora(estadoDaLinhaAmazon(l))) return true;
+      const o = objeto(l);
+      return (
+        o !== null && statusPacoteComMercadoriaForaAmazon(o.estadoMarketplace, o.statusMarketplace)
+      );
+    })
   );
 }
 
@@ -741,15 +896,18 @@ function statusComoCodigo(valor: unknown): string {
  * ⚠️ The ONE-direction exception `pacoteFreteSchema` declares to its contract
  * (#1369: `estado` a projection of `estadoMarketplace`, so a token-table
  * correction retro-applies to every row): such a correction still re-derives
- * every row, except one it would move from goods out to goods in.
+ * every row, except one it would move from goods out to goods in. The gate
+ * reads the stored `estado` only: a row whose goods out came from the status
+ * fallback (`estado: null`) is re-derived like any goods-in row — the module
+ * header's second residual.
  *
  * A package without a usable `packageReferenceId` (absent, blank, over 60, or
  * the same key twice in one read) answers nothing for the target: the fold is
  * BLOCKED and it writes no row (it has no key) — never a parse refusal, never
  * silently dropped. The other packages' rows are still written, and its token
- * still counts for {@link DobraPacotesAmazon.mercadoriaFora} — for THIS read
- * only: with no row, no later read remembers that it left (the module
- * header's residual).
+ * (or, the token unknown, its closed status) still counts for
+ * {@link DobraPacotesAmazon.mercadoriaFora} — for THIS read only: with no row,
+ * no later read remembers that it left (the module header's residual).
  */
 export function dobrarPacotesAmazon(
   pacotes: readonly PacoteWireAmazon[],
@@ -790,8 +948,14 @@ export function dobrarPacotesAmazon(
     status.add(statusComoCodigo(p.packageStatus?.status));
     if (token === DETAILED_STATUS_AMAZON.labelCancelled) coletaCancelada = true;
     const projecao = projetarPacoteAmazon(token, contexto.invoiceStatus);
-    // Goods out: read from EVERY package, before the key and the block decide anything.
-    if (projecao.tipo === 'estado' && mercadoriaFora(projecao.estado)) algumaMercadoriaFora = true;
+    // Goods out: read from EVERY package, before the key and the block decide
+    // anything — its projection, or (an unknown token only) its closed status.
+    if (
+      (projecao.tipo === 'estado' && mercadoriaFora(projecao.estado)) ||
+      statusPacoteComMercadoriaForaAmazon(token, p.packageStatus?.status)
+    ) {
+      algumaMercadoriaFora = true;
+    }
     const chave = chaveDoPacote(p.packageReferenceId);
     if (chave === null || (ocorrencias.get(chave) ?? 0) > 1) {
       semChave += 1;

@@ -76,19 +76,27 @@ export const MERCADORIA_FORA: Readonly<Record<EstadoFrete, boolean>> = Object.fr
  * target, or a value outside the enum: read as in the warehouse, like
  * `desconhecido`). Since PR 7 the CANCELLED predicate ORs three readings
  * (`pedidoMapeamento.ts`, plan §3 decision 47): the STORED block estado,
- * through the ladder's legacy-residue projection (`estadoFreteEfetivoAmazon`);
- * ANY package of this read (`DobraPacotesAmazon.mercadoriaFora`), because the
- * stored freight lags the same read's packages whenever Amazon's clock does not
- * move on them; and ANY stored diary row of this importer's own block
- * (`diarioComMercadoriaForaAmazon`; never on a block the first reading reads
- * as `fulfillment`, whose diary an AFN read wrote), because the block sits at
+ * through the ladder's legacy-residue projection, widened in PR 5-f to a read
+ * without `fulfilledBy` unless the pedido holds our own AFN error
+ * (`estadoFreteParaMercadoriaForaAmazon`);
+ * ANY package of this read (`DobraPacotesAmazon.mercadoriaFora`: its token
+ * through this table, or — the token unknown, absent included — its closed
+ * `packageStatus.status`, PR 5-f), because the stored freight lags the same
+ * read's packages whenever Amazon's clock does not move on them; and ANY
+ * stored diary row of this importer's own block (`diarioComMercadoriaForaAmazon`:
+ * its `estado`, or the same status fallback over its verbatim statuses; never
+ * on a block the first reading reads as `fulfillment`, whose diary an AFN read
+ * wrote), because the block sits at
  * the least-advanced package and never shows a KEYED one that left beside a
  * sibling still waiting — once a later read cancels that package's pickup or
  * stops naming it, its row is the only record. A package without a usable key
  * leaves no row, so its goods out is read only from a read that carries it
  * (the residual in `frete/estadoFreteAmazon.ts`). The freight verdict and the
  * diary's row gate never move the first and the third from goods out to goods
- * in.
+ * in — except a row whose goods out came from the status fallback, which a
+ * later goods-in read of the same package rewrites (the second residual there).
+ * The status fallback never reaches this table: no estado is ever derived
+ * from `packageStatus.status`.
  */
 export function mercadoriaFora(estado: EstadoFrete | null): boolean {
   return estado !== null && MERCADORIA_FORA[estado];

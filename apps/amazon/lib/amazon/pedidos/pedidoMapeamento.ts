@@ -19,6 +19,12 @@
  *   `valor` is adopted once, never compared;
  * - a block writes no pagamento (a cancellation's status move excepted, which
  *   stays paired with the estado it moves);
+ * - a possible reversal on a read Amazon approved never creates one either;
+ *   when it leaves the pedido `pago` with NONE stored it files
+ *   `pagamento-divergente` instead (PR 5-f, `pagamentoAmazon.ts`), so a
+ *   reversal never leaves an approved pedido without a money record in
+ *   silence (a block that keeps `pago` has its crítico aviso instead, and the
+ *   pagamento is created once the block ends);
  * - the estado and the pagamento status are decided TOGETHER: `pago` is never
  *   written beside a pagamento that stays `estornado` (the stored estado is
  *   kept, motivo `terminal`), so the Pagamentos tab's reconcile and the import
@@ -37,21 +43,83 @@
  * snapshot like every other group and applied on an EQUAL order clock (a
  * resurrection needs a strictly newer one). The fold is computed FIRST, so the
  * CANCELLED predicate's "goods out" ORs three readings (plan §3 decision 47):
- * the STORED freight estado (through the ladder's own legacy-residue
- * projection), ANY package of this read that says the goods are out, and ANY
+ * the STORED freight estado (through `estadoFreteParaMercadoriaForaAmazon` —
+ * the ladder's legacy-residue projection, widened for this reading only
+ * (PR 5-f) to a stored `fulfillment` under a read without `fulfilledBy`
+ * unless the pedido holds our own AFN error; the ladder itself never walks
+ * that block), ANY package of this read that says the goods are out, and ANY
  * STORED diary row of an `amz` block that says so, unless the first reading
- * reads that block as `fulfillment` (an AFN seed under a read that does not say
- * `MERCHANT`: its diary holds Amazon's own packages). A package Amazon already
+ * reads that block as `fulfillment` (an AFN seed, under an AFN read or under a
+ * read without `fulfilledBy` while the pedido holds our AFN error: its diary
+ * holds Amazon's own packages). A package Amazon already
  * reports picked up keeps the estado even when the stored freight, or a sibling
  * package, still says it waits — and so does a KEYED one it reported picked up
  * on an EARLIER read, even when this read cancels its pickup or no longer names
  * it. A package without a usable key leaves no diary row, so its pickup counts
  * only on a read that carries it (the residual in `frete/estadoFreteAmazon.ts`).
+ * A package whose `detailedStatus` the table does not know (absent included)
+ * says the goods are out when its closed `packageStatus.status` does
+ * (`IN_TRANSIT`, `SHIPPED`, `DELIVERED`, `UNDELIVERABLE`; PR 5-f), on this read
+ * and through the row it leaves — for this predicate (and, through the same
+ * flag, whether a D17 block keeps the table's target instead of our error:
+ * `remocaoDeEstoque`, below) only, never for the freight target, which stays
+ * the blocked fold's (no status-only floor).
  * The freight's CANCELLED arm is that predicate's outcome. Only an `amz` block
  * (or one this attempt seeds) is written; an AFN read never moves its estado
  * but still writes its diary and `codRastreio`. The two freight aviso motivos
  * are derived from the order alone, whoever owns the block, so each is resolved
  * exactly when its condition ends.
+ *
+ * ## A D17 block never puts goods that left back on sale (PR 5-f)
+ *
+ * A block moves the estado to our `error` only while the goods are in and the
+ * freight removes nothing once the attempt lands: not when the goods are out
+ * (the CANCELLED predicate's goods-out reading), and not when the freight
+ * estado the pedido then holds is in the shared `ESTADOS_FRETE_REMOVE_ESTOQUE`
+ * (packed, pickup scheduled, or later). There the table's target stays
+ * (`pago`), because `error` is outside the movement set. The stock sync reads
+ * the pedido estado and the FREIGHT estado only: with the freight in the
+ * removal set it would revert the removal it applied; with the goods out and
+ * the freight still outside it (a fold a sibling's unknown token blocks, a
+ * package known only by its closed status, the migrated residue) it applies no
+ * removal, so `pago` HOLDS the reservation of units already gone — a
+ * deliberate exception to "a divergence error releases the reservation",
+ * because releasing it would offer those units to other channels. A pedido
+ * already held at our block error leaves it for `pago` as soon as that holds,
+ * on a read whose status or logistics is unknown too (`decidirEstado`, arm 3).
+ * The block still raises `divergencia-itens`, still logs
+ * `cancelamento-parcial` for an executed line cancellation, still keeps the
+ * stored lines and still writes no pagamento: the line lock reads the stored
+ * approval (`pago` is approved) and rows 5, 6 and 10 re-derive the block on
+ * every read. With the goods in and no removal, a block still releases the
+ * reservation through our `error`, as before.
+ *
+ * ## The block's aviso outlives the estado's move (PR 5-f)
+ *
+ * The estado and the aviso are decided apart. A read that moves the pedido off
+ * our block error — a `SHIPPED` read that is a possible reversal (D17 row 4),
+ * or one whose lines still differ (row 11) — sends it where the table says
+ * (`pago`: the goods are out), but `divergencia-itens` stays open: it resolves
+ * only on an import that JUDGED the lines and found them agreeing, or found them
+ * `congelado` (`DecisaoPedidoAmazon.itensConferem`, read by the importer's
+ * `motivosDoPedidoAmazon`). So the crítico signal is never lost while the
+ * stored lines still hold what Amazon cancelled or changed.
+ *
+ * ## What the order money cannot state (PR 5-f)
+ *
+ * Two proceeds shapes leave the NF-e's numbers unverifiable and are invisible
+ * to the pagamento check (`dinheiroAmazon.ts`, `ressalvasDoDinheiroAmazon`): a
+ * DISCOUNT whose shipping part is not itemised on a line that charges SHIPPING
+ * (`desconto-nao-detalhado`), and a TAX breakdown that is not exactly 0
+ * (`imposto-destacado`). Neither is guessed into a split: a read Amazon
+ * APPROVED that carries one files its pedido incidente (once, tier 0) and a
+ * count line, whatever the D17 row — a block, a kept money group or a reversal
+ * included, because the stored money may come from an earlier read of the same
+ * shape. Only an approved read: its money is what the pedido holds when the
+ * NF-e is emitted (a create writes it, the approval moment mirrors it), a
+ * PENDING read's money is mirrored again at approval, and a cancelled order
+ * emits nothing. The money group itself is unchanged, and the incidentes do not
+ * block emission (`incidentesPedidoAmazon.ts`).
  *
  * ## The watermark (plan §3 decisions 2 and 45)
  *
@@ -76,6 +144,12 @@
  * so it yields an EMPTY patch (`sem-mudanca`, no write), and `ultimaModificacao`
  * is appended ONLY to a non-empty patch.
  *
+ * The marketplace group is compared and written as an UPDATE stores it, which
+ * is the read's block with ONE exception (PR 5-f): a `status` this code does not
+ * know never replaces a stored known one (`marketplaceDaAtualizacao`), because
+ * D17's approval of our own error and the resurrection discriminator both read
+ * the stored status.
+ *
  * ## Never written
  *
  * `historicoEstadoPedido`, `historicoFtIni`, `historicoDeModificacoes`,
@@ -91,6 +165,7 @@
 import { coerceToMicros } from '@delfrance/core/datetime';
 import type { PedidoWireAmazon } from '@delfrance/integrations-amazon-sp-api';
 import {
+  ESTADOS_FRETE_REMOVE_ESTOQUE,
   ESTADO_FRETE,
   ESTADO_PEDIDO,
   INTEGRACAO_FRETE,
@@ -100,6 +175,7 @@ import {
   STATUS_PAGAMENTO,
   derivePedidoFreteTotals,
   freteDoPedidoSchema,
+  type EstadoFrete,
   type EstadoPedido,
   type FreteDoPedido,
   type ItemDoPedido,
@@ -110,6 +186,7 @@ import {
 
 import {
   EVENTO_PEDIDO_AMAZON,
+  INCIDENTE_PEDIDO_AMAZON,
   MOTIVO_NAO_IMPORTADO_AMAZON,
   codigosOrdenados,
   type EventoPedidoAmazon,
@@ -119,19 +196,26 @@ import {
 import {
   dinheiroDoPedidoAmazon,
   mesmosCentavos,
+  ressalvasDoDinheiroAmazon,
   type DinheiroDoPedidoAmazon,
+  type RessalvasDinheiroAmazon,
 } from './dinheiroAmazon';
 import { MOTIVO_PEDIDO_AMAZON_ILEGIVEL, PedidoAmazonIlegivelError } from './erros';
 import {
   ESTADOS_TERMINAIS_AMAZON,
   FULFILLMENT_STATUS_AMAZON,
   MOTIVO_ESTADO_AMAZON,
+  ESTADOS_PRE_APROVACAO_AMAZON,
   PREFIXO_ERRO_AMAZON,
   TEXTO_ERRO_AMAZON,
+  TITULO_BLOQUEIO_AMAZON,
   alvoCanceladoAmazon,
   alvoErroAmazon,
   alvoEstadoPedidoAmazon,
+  ehErroAfnAmazon,
   ehErroAmazon,
+  ehErroBloqueioAmazon,
+  ehStatusConhecidoAmazon,
   estadoAmazonAplicavel,
   lerPagamentoArmazenadoAmazon,
   lerResumoArmazenadoAmazon,
@@ -144,7 +228,7 @@ import {
   LOGISTICA_AMAZON,
   alvoFreteAmazon,
   diarioComMercadoriaForaAmazon,
-  estadoFreteEfetivoAmazon,
+  estadoFreteParaMercadoriaForaAmazon,
   grupoFreteAmazon,
   lerFreteAmazon,
   logisticaAmazon,
@@ -214,7 +298,11 @@ export interface EntradasPedidoAmazon {
 /** The Amazon `pedido.marketplace` block, as this importer writes it (plan §3 decision 24). */
 export interface MarketplaceAmazon {
   readonly tipo: typeof MARKETPLACE_PEDIDO_TIPO.amazon;
-  /** `fulfillmentStatus`, verbatim (blank ⇒ `null`). */
+  /**
+   * `fulfillmentStatus`, verbatim (blank ⇒ `null`) — as the READ states it. What
+   * an update STORES may differ: a status this code does not know never
+   * replaces a stored known one ({@link marketplaceDaAtualizacao}, PR 5-f).
+   */
   readonly status: string | null;
   /** The accepted order clock, µs. */
   readonly statusEm: number;
@@ -239,6 +327,8 @@ export interface PedidoMapeadoAmazon {
   readonly marketplace: MarketplaceAmazon;
   readonly linhas: readonly LinhaRecebidaAmazon[];
   readonly dinheiro: DinheiroDoPedidoAmazon;
+  /** (PR 5-f) What {@link PedidoMapeadoAmazon.dinheiro} cannot state, as counts (`dinheiroAmazon.ts`). */
+  readonly ressalvasDinheiro: RessalvasDinheiroAmazon;
   readonly frete: CamposFreteAmazon;
   /** `fulfilledBy === 'AMAZON'` (the seed's `fulfillment`). */
   readonly afn: boolean;
@@ -288,6 +378,7 @@ export function mapearPedidoAmazon(
     },
     linhas,
     dinheiro: dinheiroDoPedidoAmazon(order),
+    ressalvasDinheiro: ressalvasDoDinheiroAmazon(order),
     frete: camposFreteAmazon(order, instante.us),
     afn: logistica === LOGISTICA_AMAZON.afn,
     logistica,
@@ -326,11 +417,24 @@ export interface DecisaoPedidoAmazon {
   /** The log events (closed codes; ids and counts only in the line). */
   readonly eventos: readonly EventoPedidoAmazon[];
   readonly bloqueio: BloqueioItensAmazon | null;
+  /**
+   * (PR 5-f) This import judged the stored lines and found them agreeing with
+   * Amazon's, or an operator owns them (`ReconciliacaoItensAmazon.conferem`):
+   * the condition under which the importer may resolve `divergencia-itens`.
+   * Never true beside a block.
+   */
+  readonly itensConferem: boolean;
   readonly contagens: ContagensItensAmazon;
   /** The status the pagamento holds once this attempt lands (`null`: none, or unreadable). */
   readonly statusPagamento: StatusPagamento | null;
   /** (PR 7) This read's packages, for the freight events' log lines: counts and closed codes only. */
   readonly pacotes: ResumoPacotesAmazon;
+  /**
+   * (PR 5-f) What this read's order money cannot state, as FILED: the read's
+   * counts on a read Amazon approved, zero on any other (module header) — for
+   * the money events' log lines. Counts only, never an amount.
+   */
+  readonly ressalvasDinheiro: RessalvasDinheiroAmazon;
 }
 
 /** (PR 7) What the log may say about one read's packages — never a token, never a tracking number. */
@@ -419,6 +523,30 @@ function mesmoMarketplace(guardado: unknown, novo: MarketplaceAmazon): boolean {
   );
 }
 
+/**
+ * The marketplace block an UPDATE stores (PR 5-f): the read's, except that a
+ * `status` this code does not know (`ehStatusConhecidoAmazon` false: a token
+ * outside `FULFILLMENT_STATUS_AMAZON` such as `INVOICE_UNCONFIRMED`, a blank or
+ * `null` one, no `fulfillment` object) never replaces a stored KNOWN one — the
+ * last known status stays. Two decisions read the STORED status, and a read
+ * that names none must change neither: D17's lock on our own `[amazon]` error
+ * (`aprovadoAmazon` — our error re-read as never approved is mirrored over by
+ * the next approved read, row 9 instead of 10 or 11; a BLOCK text is approved
+ * on its own too, which also covers a known `PENDING` read) and the resurrection
+ * discriminator (an Amazon `CANCELLED` re-read as an ERP-side cancel). The read
+ * still raises `status-desconhecido`, and every other field is the read's —
+ * `statusEm` included, which stays the accepted order clock. Over a stored
+ * unknown or absent status, the read's is stored, as on a create.
+ */
+function marketplaceDaAtualizacao(
+  statusGuardado: string | null,
+  novo: MarketplaceAmazon,
+): MarketplaceAmazon {
+  return ehStatusConhecidoAmazon(statusGuardado) && !ehStatusConhecidoAmazon(novo.status)
+    ? { ...novo, status: statusGuardado }
+    : novo;
+}
+
 /** The marketplace block to write — named field by field, never a spread. */
 function marketplaceParaEscrita(novo: MarketplaceAmazon): Record<string, unknown> {
   return {
@@ -454,22 +582,63 @@ function valorCobradoDerivado(
   }).valorCobrado;
 }
 
-/** Our `error` text for a block (ids only, sorted, at most five named). */
+/**
+ * Our `error` text for a block (ids only, sorted, at most five named). Its
+ * shape is what `ehErroBloqueioAmazon` recognises (`estadoPedidoAmazon.ts`).
+ */
 export function textoBloqueioAmazon(bloqueio: BloqueioItensAmazon): string {
   const titulo =
     bloqueio.causa === 'cancelamento-parcial'
-      ? 'linha cancelada na Amazon em pedido a enviar'
+      ? TITULO_BLOQUEIO_AMAZON.cancelamentoParcial
       : bloqueio.causa === 'pagamento'
-        ? 'valor do pagamento divergente do pedido na Amazon'
-        : 'itens divergentes do pedido na Amazon';
+        ? TITULO_BLOQUEIO_AMAZON.pagamento
+        : TITULO_BLOQUEIO_AMAZON.itens;
   const nomeadas = bloqueio.linhas.slice(0, 5).join(', ');
   const resto = bloqueio.linhas.length > 5 ? ` (+${String(bloqueio.linhas.length - 5)})` : '';
   return `${PREFIXO_ERRO_AMAZON}${titulo}${nomeadas === '' ? '' : `: ${nomeadas}${resto}`}`;
 }
 
 /* -------------------------------------------------------------------------- */
+/*                  what the order money cannot state (PR 5-f)                */
+/* -------------------------------------------------------------------------- */
+
+const SEM_RESSALVAS: RessalvasDinheiroAmazon = {
+  linhasDescontoNaoDetalhado: 0,
+  quebrasImposto: 0,
+};
+
+/**
+ * The ressalvas this read FILES (module header): the read's own counts on an
+ * order Amazon approved (`UNSHIPPED`, `PARTIALLY_SHIPPED`, `SHIPPED`), none on
+ * any other — and the incidente and the log event of each nonzero count.
+ */
+function ressalvasArquivadas(
+  aprovadoNaAmazon: boolean,
+  lidas: RessalvasDinheiroAmazon,
+): {
+  readonly ressalvas: RessalvasDinheiroAmazon;
+  readonly incidentes: IncidentePedidoAmazon[];
+  readonly eventos: EventoPedidoAmazon[];
+} {
+  const ressalvas = aprovadoNaAmazon ? lidas : SEM_RESSALVAS;
+  const incidentes: IncidentePedidoAmazon[] = [];
+  const eventos: EventoPedidoAmazon[] = [];
+  if (ressalvas.linhasDescontoNaoDetalhado > 0) {
+    incidentes.push(INCIDENTE_PEDIDO_AMAZON.descontoNaoDetalhado);
+    eventos.push(EVENTO_PEDIDO_AMAZON.descontoNaoDetalhado);
+  }
+  if (ressalvas.quebrasImposto > 0) {
+    incidentes.push(INCIDENTE_PEDIDO_AMAZON.impostoDestacado);
+    eventos.push(EVENTO_PEDIDO_AMAZON.impostoDestacado);
+  }
+  return { ressalvas, incidentes, eventos };
+}
+
+/* -------------------------------------------------------------------------- */
 /*                                 the estado                                 */
 /* -------------------------------------------------------------------------- */
+
+const ALVO_PAGO: AlvoEstadoAmazon = { tipo: 'estado', estado: ESTADO_PEDIDO.pago, erro: null };
 
 interface DecisaoEstadoFinal {
   readonly alvo: AlvoEstadoAmazon;
@@ -494,15 +663,39 @@ interface DecisaoEstadoFinal {
  *    and the estado follows the table: after shipment the request can no
  *    longer be accepted, and Amazon's SHIPPED is goods out that the freight
  *    may not show (an order outside Easy Ship has no package to fold);
- * 2. a D17 block ⇒ our `error` (through the same ladder: a `fora-da-escada`
- *    estado is kept) + `divergencia-itens`;
- * 3. the table.
+ * 2. a D17 block ⇒ `divergencia-itens`, and our `error` (through the same
+ *    ladder: a `fora-da-escada` estado is kept) — UNLESS the goods are out or
+ *    the freight removes stock once this attempt lands (`remocaoDeEstoque`,
+ *    PR 5-f): then the table's target stays. `error` is outside the shared
+ *    `ESTADOS_PEDIDO_MOVIMENTACAO`: over a removal the stock sync applied (the
+ *    freight in `ESTADOS_FRETE_REMOVE_ESTOQUE`) it would REVERT it and put on
+ *    sale units already gone, or packed for a scheduled pickup; with the goods
+ *    out and the freight still outside that set it applies no removal and
+ *    would RELEASE the reservation of units that left. So in that second case
+ *    the block HOLDS the reservation — a deliberate exception to the rule that
+ *    a divergence error releases it (so other channels may sell while a person
+ *    fixes the order), which still holds whenever the goods are in and the
+ *    freight removes nothing. The block itself does not need our error: `pago`
+ *    is approved (`aprovadoAmazon`), rows 5 and 6 re-derive the block from the
+ *    order on every read, and row 10 from the stored lines; a block writes no
+ *    pagamento either way;
+ * 3. a pedido ALREADY held at our block error (`ehErroBloqueioAmazon`) while
+ *    `remocaoDeEstoque` holds ⇒ `pago`, when the table would keep it (an
+ *    unknown status or logistics: row 13, or row 10 without `fulfilledBy`) or
+ *    move it before approval (a `PENDING` read). Otherwise the error would
+ *    stay over goods the carrier holds, and the sync, which reverted the
+ *    reservation when the block wrote it, would never start the removal
+ *    (PR 5-f, the sibling of 2). Never on a `CANCELLED` read (the predicate
+ *    decides), and never where the table answers another target (`pago`
+ *    already, an AFN or `UNFULFILLABLE` error);
+ * 4. the table.
  */
 function decidirEstado(
   order: PedidoWireAmazon,
   contexto: ContextoEstadoAmazon,
   venda: VendaAmazon,
   bloqueio: BloqueioItensAmazon | null,
+  remocaoDeEstoque: boolean,
 ): DecisaoEstadoFinal {
   const tabela = alvoEstadoPedidoAmazon(order, contexto);
   const avisos = [...tabela.avisos];
@@ -510,7 +703,16 @@ function decidirEstado(
   let cancelamentoPorSolicitacao = false;
   if (bloqueio !== null) {
     avisos.push(MOTIVO_PEDIDO_AMAZON.divergenciaItens);
-    alvo = alvoErroAmazon(textoBloqueioAmazon(bloqueio));
+    if (!remocaoDeEstoque) alvo = alvoErroAmazon(textoBloqueioAmazon(bloqueio));
+  }
+  if (
+    remocaoDeEstoque &&
+    venda.fase !== 'cancelado' &&
+    contexto.armazenado !== null &&
+    ehErroBloqueioAmazon(contexto.armazenado) &&
+    (alvo.tipo === 'manter' || ESTADOS_PRE_APROVACAO_AMAZON.has(alvo.estado))
+  ) {
+    alvo = ALVO_PAGO;
   }
   if (venda.solicitacao) {
     const aEnviar = venda.fase === 'pre' || venda.fase === 'apr';
@@ -625,6 +827,7 @@ export function montarEscritaPedidoAmazon(
       ? null
       : { resumo, linhas: linhasGuardadas, pagamentoValor: valorPagamentoGuardado },
   );
+  const aprovadoNaAmazon = venda.fase === 'apr' || venda.fase === 'env';
 
   const freteRaw = armazenadoRaw === null ? null : objeto(armazenadoRaw.freteInicial);
   const freteNosso =
@@ -706,12 +909,20 @@ export function montarEscritaPedidoAmazon(
     armazenados: freteRaw?.pacotes,
   });
 
-  /* ------------------------------- the estado ------------------------------ */
-  // The stored freight estado through the SAME residue projection the ladder
-  // uses (a migrated `fulfillment` under a MERCHANT read is at the carrier).
+  /* ------------------------- the estado's context -------------------------- */
+  // The stored freight estado through the goods-out reading's residue
+  // projection: the ladder's (a migrated `fulfillment` under a MERCHANT read is
+  // at the carrier), and since PR 5-f the same under a read without
+  // `fulfilledBy` unless the pedido is our own AFN error — the one state an AFN
+  // seed is created in (`frete/estadoFreteAmazon.ts`).
   const freteGuardado = resumo?.freteEstado ?? null;
   const freteGuardadoEfetivo =
-    freteGuardado === null ? null : estadoFreteEfetivoAmazon(freteGuardado, mapeado.logistica);
+    freteGuardado === null
+      ? null
+      : estadoFreteParaMercadoriaForaAmazon(freteGuardado, {
+          logistica: mapeado.logistica,
+          afnNosso: resumo !== null && ehErroAfnAmazon(resumo),
+        });
   const contexto: ContextoEstadoAmazon = {
     armazenado: resumo,
     pagamentoArmazenado: pagamentoGuardado,
@@ -722,11 +933,15 @@ export function montarEscritaPedidoAmazon(
     // behind a sibling still waiting); and any STORED diary row of OUR block
     // that says so — the only record of a KEYED such package once a later read
     // cancels its pickup or no longer names it (an unkeyed one has no row: it
-    // counts only on a read that carries it). Another modality's diary is its
+    // counts only on a read that carries it). A package (or row) says so by its
+    // token, or — the token unknown, absent included — by its closed
+    // `packageStatus.status` (PR 5-f; `frete/estadoFreteAmazon.ts`, never the
+    // fold's target). Another modality's diary is its
     // own importer's, never read here; and the rows of a block the first
-    // reading reads as `fulfillment` (an AFN seed, under any read that does not
-    // say MERCHANT) are Amazon's own packages — an AFN read still writes the
-    // diary — never this ERP's stock, exactly as that reading reads the block.
+    // reading reads as `fulfillment` (an AFN seed: under an AFN read, or under
+    // a read without fulfilledBy while the pedido holds our AFN error) are
+    // Amazon's own packages — an AFN read still writes the diary — never this
+    // ERP's stock, exactly as that reading reads the block.
     mercadoriaFora:
       mercadoriaFora(freteGuardadoEfetivo) ||
       leituraFrete.mercadoriaFora ||
@@ -735,12 +950,13 @@ export function montarEscritaPedidoAmazon(
         freteGuardadoEfetivo !== ESTADO_FRETE.fulfillment &&
         diarioComMercadoriaForaAmazon(freteRaw.pacotes)),
   };
-  const estado = decidirEstado(order, contexto, venda, reconciliacao.bloqueio);
 
   /* ------------------------------- the freight ----------------------------- */
-  // The block the group decides against: the stored `amz` one, or the seed this
-  // attempt writes (a create, or a stored pedido without a block). Another
-  // modality's block is never touched.
+  // Decided BEFORE the estado (PR 5-f), which reads the freight estado this
+  // attempt leaves behind; the freight group reads the context, never the
+  // estado. The block the group decides against: the stored `amz` one, or the
+  // seed this attempt writes (a create, or a stored pedido without a block).
+  // Another modality's block is never touched.
   const sementeFrete = (valorCobrado: number | null): SementeFreteAmazon => ({
     modalidade: entradas.modalidadeFreteImportacao,
     afn: mapeado.afn,
@@ -774,6 +990,30 @@ export function montarEscritaPedidoAmazon(
     ...(g.codRastreioDivergente ? [EVENTO_PEDIDO_AMAZON.codRastreioDivergente] : []),
   ];
 
+  /* ------------------------------- the estado ------------------------------ */
+  // (PR 5-f) Our error would put goods that left back on sale once this
+  // attempt lands: the goods are out (the CANCELLED predicate's own three
+  // readings — the sync then holds the reservation, or keeps a removal it
+  // applied), or the freight estado the pedido then holds — the one the stock
+  // sync reads beside the pedido estado — is in the shared
+  // `ESTADOS_FRETE_REMOVE_ESTOQUE` (packed, pickup scheduled, or later: a
+  // removal the sync applies). That estado is the one this attempt's freight group
+  // writes when the block takes it — the seed always does; a stored `amz`
+  // block the schema refuses is never rewritten — else the stored one. Read
+  // AFTER this attempt, never the stored one alone, so the next read of the
+  // same order answers the same: a removal this batch starts is protected,
+  // and a pickup cancelled before it happened (`LABEL_CANCELLED` ⇒
+  // `despachoNegado`, the goods still on the shelf) protects nothing.
+  const estadoFreteFinal: EstadoFrete | null =
+    grupoFrete?.veredito?.escrever === true &&
+    (freteRaw === null || freteDoPedidoSchema.safeParse(freteRaw).success)
+      ? grupoFrete.veredito.estado
+      : (resumo?.freteEstado ?? null);
+  const remocaoDeEstoque =
+    contexto.mercadoriaFora ||
+    (estadoFreteFinal !== null && ESTADOS_FRETE_REMOVE_ESTOQUE.has(estadoFreteFinal));
+  const estado = decidirEstado(order, contexto, venda, reconciliacao.bloqueio, remocaoDeEstoque);
+
   /* ------------------------------ the pagamento ---------------------------- */
   const cancelamento = venda.fase === 'cancelado' || estado.cancelamentoPorSolicitacao;
   // A block writes no pagamento — but a cancellation that moves the estado
@@ -803,7 +1043,7 @@ export function montarEscritaPedidoAmazon(
           maisNovo,
           alvo: alvoStatusPagamentoAmazon({
             cancelamento,
-            aprovadoNaAmazon: venda.fase === 'apr' || venda.fase === 'env',
+            aprovadoNaAmazon,
             revertido: venda.revertido,
             estadoFinal,
           }),
@@ -863,6 +1103,10 @@ export function montarEscritaPedidoAmazon(
   }
 
   eventos.push(...pagamento.eventos);
+  // (PR 5-f) What the order money cannot state: an incidente for a person to
+  // check the NF-e's values, whatever the D17 row (module header).
+  const ressalvas = ressalvasArquivadas(aprovadoNaAmazon, mapeado.ressalvasDinheiro);
+  eventos.push(...ressalvas.eventos);
 
   const decisao: DecisaoPedidoAmazon = {
     itens: acaoItens,
@@ -874,9 +1118,11 @@ export function montarEscritaPedidoAmazon(
       ...estado.incidentes,
       ...reconciliacao.incidentes,
       ...pagamento.incidentes,
+      ...ressalvas.incidentes,
     ]),
     eventos: codigosOrdenados(eventos),
     bloqueio: reconciliacao.bloqueio,
+    itensConferem: reconciliacao.conferem,
     contagens: reconciliacao.contagens,
     statusPagamento: pagamento.statusFinal,
     pacotes: {
@@ -885,6 +1131,7 @@ export function montarEscritaPedidoAmazon(
       semChave: leituraFrete.dobra?.contagens.semChave ?? 0,
       statusPacotes: leituraFrete.dobra?.statusPacotes ?? '',
     },
+    ressalvasDinheiro: ressalvas.ressalvas,
   };
 
   /* --------------------------------- CREATE -------------------------------- */
@@ -957,8 +1204,14 @@ export function montarEscritaPedidoAmazon(
     }
   }
 
-  if (!mesmoMarketplace(raw.marketplace, mapeado.marketplace)) {
-    patch.marketplace = marketplaceParaEscrita(mapeado.marketplace);
+  // Compared AND written as it will be stored, so an equal redelivery of a read
+  // whose status is kept stays an empty patch.
+  const marketplace = marketplaceDaAtualizacao(
+    resumo?.marketplaceStatus ?? null,
+    mapeado.marketplace,
+  );
+  if (!mesmoMarketplace(raw.marketplace, marketplace)) {
+    patch.marketplace = marketplaceParaEscrita(marketplace);
     grupos.add('marketplace');
   }
 

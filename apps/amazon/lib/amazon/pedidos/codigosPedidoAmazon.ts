@@ -17,7 +17,8 @@
  * A pedido INCIDENTE (`amz-<code>`, created once, resolved by the operator on
  * the pedido's Incidentes tab): a permanent fact of the order, which no later
  * import can see end — so never an aviso (plan §3 decision 26). PR 6 added the
- * two payment codes and the money arm of `pagamento-divergente`.
+ * two payment codes and the money arm of `pagamento-divergente`; PR 5-f the two
+ * codes for what the order money cannot state (`dinheiroAmazon.ts`).
  */
 export const INCIDENTE_PEDIDO_AMAZON = {
   /** `fulfilledBy: AMAZON` (FBA is not used, D7), or an `UNFULFILLABLE` order. */
@@ -34,13 +35,28 @@ export const INCIDENTE_PEDIDO_AMAZON = {
    * payment executions do not add up to what the NF-e states (`valor` then
    * covers the note's total, or keeps the larger sum), OR (PR 6) an approved
    * order's pagamento could not be created because the stored lines do not
-   * state a total. One id for every arm.
+   * state a total, OR (PR 5-f) a pedido Amazon approved ends `pago` with no
+   * pagamento because the read is a possible reversal, which never creates one
+   * (`pagamentoAmazon.ts`). One id for every arm.
    */
   pagamentoDivergente: 'pagamento-divergente',
   /** (PR 6) Amazon's `paymentMethod` is absent or not in the table: the pagamento is a 99. */
   formaPagamentoDesconhecida: 'forma-pagamento-desconhecida',
   /** (PR 6) More than one payment execution: ONE pagamento, the largest leg's forma. */
   pagamentoDividido: 'pagamento-dividido',
+  /**
+   * (PR 5-f) A read Amazon approved carries, on a line that also charges
+   * SHIPPING, a DISCOUNT whose shipping part is not itemised: the whole discount
+   * went to `descontoTotal` with the freight gross, and the payment check cannot
+   * see it. The NF-e's discount, freight and total need a person.
+   */
+  descontoNaoDetalhado: 'desconto-nao-detalhado',
+  /**
+   * (PR 5-f) A read Amazon approved carries a TAX breakdown that is not exactly
+   * 0: Amazon shows the tax apart, so its other amounts may be tax-exclusive
+   * while the line price is read as tax-inclusive. The NF-e's values need a person.
+   */
+  impostoDestacado: 'imposto-destacado',
 } as const satisfies Record<string, string>;
 
 export type IncidentePedidoAmazon =
@@ -53,8 +69,10 @@ export type IncidentePedidoAmazon =
 export const EVENTO_PEDIDO_AMAZON = {
   /**
    * An executed line cancellation on an order Amazon still has to ship (plan §3
-   * decision 6, 2026-10-22): the pedido is held at our error and a person fixes
-   * the lines. Its own code, so the case is countable.
+   * decision 6, 2026-10-22): the lines are held for a person to fix, the
+   * pedido at our error unless the goods are out or the freight removes stock
+   * (then the estado stays, and with the goods out it holds the reservation;
+   * PR 5-f). Its own code, so the case is countable.
    */
   cancelamentoParcial: 'cancelamento-parcial',
   /** A terminal estado moved back to a live one (only when Amazon itself had cancelled). */
@@ -94,6 +112,16 @@ export const EVENTO_PEDIDO_AMAZON = {
   codRastreioDivergente: 'codRastreio-divergente',
   /** (PR 7) A freight failure (`despachoNegado`, …) moved back to a live rung on a newer order clock. */
   freteRessuscitado: 'frete-ressuscitado',
+  /**
+   * (PR 5-f) One count line on EVERY read that derives the
+   * `desconto-nao-detalhado` incidente (which is created once): the lines, never an amount.
+   */
+  descontoNaoDetalhado: 'desconto-nao-detalhado',
+  /**
+   * (PR 5-f) One count line on EVERY read that derives the `imposto-destacado`
+   * incidente (which is created once): the TAX rows, never an amount.
+   */
+  impostoDestacado: 'imposto-destacado',
 } as const satisfies Record<string, string>;
 
 /** The freight events (PR 7): their log lines carry the package counts. */
@@ -104,6 +132,11 @@ export const EVENTOS_FRETE_AMAZON: ReadonlySet<EventoPedidoAmazon> = new Set<Eve
   EVENTO_PEDIDO_AMAZON.codRastreioDivergente,
   EVENTO_PEDIDO_AMAZON.freteRessuscitado,
 ]);
+
+/** The order-money events (PR 5-f): their log lines carry the ressalvas counts. */
+export const EVENTOS_DINHEIRO_AMAZON: ReadonlySet<EventoPedidoAmazon> = new Set<EventoPedidoAmazon>(
+  [EVENTO_PEDIDO_AMAZON.descontoNaoDetalhado, EVENTO_PEDIDO_AMAZON.impostoDestacado],
+);
 
 export type EventoPedidoAmazon = (typeof EVENTO_PEDIDO_AMAZON)[keyof typeof EVENTO_PEDIDO_AMAZON];
 

@@ -9,11 +9,16 @@ import { describe, expect, it } from 'vitest';
 
 import { pedidoAmazon } from '../testing/pedidoWireAmazon';
 import {
+  FULFILLMENT_STATUS_AMAZON,
   PREFIXO_ERRO_AMAZON,
   TEXTO_ERRO_AMAZON,
   alvoCanceladoAmazon,
   alvoEstadoPedidoAmazon,
+  TITULO_BLOQUEIO_AMAZON,
   aprovadoAmazon,
+  ehErroAfnAmazon,
+  ehErroBloqueioAmazon,
+  ehStatusConhecidoAmazon,
   estadoAmazonAplicavel,
   governadoAmazon,
   lerPagamentoArmazenadoAmazon,
@@ -112,19 +117,142 @@ describe('governed estados and aprovadoAmazon', () => {
     );
   });
 
-  it('our own error counts as approved ONLY when the stored marketplace.status is an approved one (NEAR-MISS pair)', () => {
+  it('our own NON-block error counts as approved ONLY when the stored marketplace.status is an approved one (NEAR-MISS pair)', () => {
+    const naoBloqueio = TEXTO_ERRO_AMAZON.statusDesconhecido;
     expect(
-      aprovadoAmazon(resumo({ estado: 'error', error: NOSSO_ERRO, marketplaceStatus: null })),
+      aprovadoAmazon(resumo({ estado: 'error', error: naoBloqueio, marketplaceStatus: null })),
     ).toBe(false);
     expect(
       aprovadoAmazon(
-        resumo({ estado: 'error', error: NOSSO_ERRO, marketplaceStatus: 'UNSHIPPED' }),
+        resumo({ estado: 'error', error: naoBloqueio, marketplaceStatus: 'UNSHIPPED' }),
       ),
     ).toBe(true);
     expect(aprovadoAmazon(resumo({ estado: 'aguardandoConfirmacaoDePagamento' }))).toBe(false);
     expect(aprovadoAmazon(resumo({ estado: 'pago' }))).toBe(true);
     expect(aprovadoAmazon(resumo({ estado: 'finalizado' }))).toBe(true);
     expect(aprovadoAmazon(resumo({ estado: null }))).toBe(true);
+  });
+
+  it('★ (PR 5-f) our own error with a stored PENDING or PENDING_AVAILABILITY was NEVER approved — what a create without fulfilledBy stores; NEAR-MISS: the same error with UNSHIPPED is', () => {
+    // The state a PENDING create without fulfilledBy writes (and every later read without it keeps).
+    const criado = alvoEstadoPedidoAmazon(
+      pedidoAmazon({ status: 'PENDING', por: null }),
+      contexto(null),
+    );
+    expect(criado.alvo).toMatchObject({
+      estado: ESTADO_PEDIDO.error,
+      erro: TEXTO_ERRO_AMAZON.logisticaDesconhecida,
+    });
+    // Every known status, decided by the stored status alone (every NON-block
+    // text of ours); a block text is approved whatever the status (PR 5-f).
+    const aprovados = new Set<string>(['UNSHIPPED', 'PARTIALLY_SHIPPED', 'SHIPPED']);
+    for (const error of Object.values(TEXTO_ERRO_AMAZON)) {
+      for (const status of Object.values(FULFILLMENT_STATUS_AMAZON)) {
+        expect(
+          aprovadoAmazon(resumo({ estado: 'error', error, marketplaceStatus: status })),
+          `${error} / ${status}`,
+        ).toBe(aprovados.has(status));
+        expect(
+          aprovadoAmazon(resumo({ estado: 'error', error: NOSSO_ERRO, marketplaceStatus: status })),
+          `block / ${status}`,
+        ).toBe(true);
+      }
+    }
+    expect(
+      aprovadoAmazon(
+        resumo({
+          estado: 'error',
+          error: TEXTO_ERRO_AMAZON.logisticaDesconhecida,
+          marketplaceStatus: 'PENDING',
+        }),
+      ),
+    ).toBe(false);
+    expect(
+      aprovadoAmazon(
+        resumo({
+          estado: 'error',
+          error: TEXTO_ERRO_AMAZON.logisticaDesconhecida,
+          marketplaceStatus: 'PENDING_AVAILABILITY',
+        }),
+      ),
+    ).toBe(false);
+    // NEAR-MISS: the same stored error once an UNSHIPPED read was stored over it.
+    expect(
+      aprovadoAmazon(
+        resumo({
+          estado: 'error',
+          error: TEXTO_ERRO_AMAZON.logisticaDesconhecida,
+          marketplaceStatus: 'UNSHIPPED',
+        }),
+      ),
+    ).toBe(true);
+    // NEAR-MISS: a stored PENDING beside an estado that is not our error answers by the estado.
+    expect(
+      aprovadoAmazon(
+        resumo({ estado: 'aguardandoConfirmacaoDePagamento', marketplaceStatus: 'PENDING' }),
+      ),
+    ).toBe(false);
+    expect(aprovadoAmazon(resumo({ estado: 'pago', marketplaceStatus: 'PENDING' }))).toBe(true);
+  });
+
+  it('ehStatusConhecidoAmazon: every FULFILLMENT_STATUS_AMAZON member, EXACTLY; NEAR-MISS: a case or whitespace variant, INVOICE_UNCONFIRMED, blank, null', () => {
+    for (const status of Object.values(FULFILLMENT_STATUS_AMAZON)) {
+      expect(ehStatusConhecidoAmazon(status), status).toBe(true);
+    }
+    for (const status of [
+      'unshipped',
+      'Unshipped',
+      ' UNSHIPPED',
+      'UNSHIPPED ',
+      'INVOICE_UNCONFIRMED',
+      '',
+      '   ',
+      null,
+    ]) {
+      expect(ehStatusConhecidoAmazon(status), String(status)).toBe(false);
+    }
+  });
+
+  it('the table raises status-desconhecido exactly for what ehStatusConhecidoAmazon refuses (one meaning of "known")', () => {
+    for (const status of [
+      ...Object.values(FULFILLMENT_STATUS_AMAZON),
+      'unshipped',
+      'INVOICE_UNCONFIRMED',
+    ]) {
+      const avisos = alvoEstadoPedidoAmazon(pedidoAmazon({ status }), contexto(resumo())).avisos;
+      expect(avisos.includes('status-desconhecido'), status).toBe(!ehStatusConhecidoAmazon(status));
+    }
+  });
+
+  it('★ (PR 5-f) ehErroAfnAmazon: exactly estado error + the AFN text — the state an AFN create writes and the table keeps; NEAR-MISS: another text of ours, a case or whitespace variant, the text beside another estado, a foreign error', () => {
+    expect(ehErroAfnAmazon({ estado: ESTADO_PEDIDO.error, error: TEXTO_ERRO_AMAZON.afn })).toBe(
+      true,
+    );
+    // What the table writes on an AFN create, and keeps on the later AFN or logistics-less reads.
+    const criado = alvoEstadoPedidoAmazon(pedidoAmazon({ por: 'AMAZON' }), contexto(null)).alvo;
+    expect(criado).toMatchObject({ estado: ESTADO_PEDIDO.error, erro: TEXTO_ERRO_AMAZON.afn });
+    const guardado = resumo({ estado: ESTADO_PEDIDO.error, error: TEXTO_ERRO_AMAZON.afn });
+    for (const por of ['AMAZON', null]) {
+      const alvo = alvoEstadoPedidoAmazon(pedidoAmazon({ por }), contexto(guardado)).alvo;
+      expect(alvo.tipo === 'manter' || alvo.erro === TEXTO_ERRO_AMAZON.afn, String(por)).toBe(true);
+    }
+    for (const [nome, armazenado] of [
+      [
+        'another text of ours',
+        { estado: ESTADO_PEDIDO.error, error: TEXTO_ERRO_AMAZON.naoAtendivel },
+      ],
+      ['the block text', { estado: ESTADO_PEDIDO.error, error: NOSSO_ERRO }],
+      ['a trailing space', { estado: ESTADO_PEDIDO.error, error: `${TEXTO_ERRO_AMAZON.afn} ` }],
+      ['upper case', { estado: ESTADO_PEDIDO.error, error: TEXTO_ERRO_AMAZON.afn.toUpperCase() }],
+      ['a prefix of it', { estado: ESTADO_PEDIDO.error, error: PREFIXO_ERRO_AMAZON }],
+      ['beside pago', { estado: ESTADO_PEDIDO.pago, error: TEXTO_ERRO_AMAZON.afn }],
+      ['beside cancelado', { estado: ESTADO_PEDIDO.cancelado, error: TEXTO_ERRO_AMAZON.afn }],
+      ['a foreign error', { estado: ESTADO_PEDIDO.error, error: 'Rejeição 539 da SEFAZ' }],
+      ['no text', { estado: ESTADO_PEDIDO.error, error: null }],
+      ['an estado outside the enum', { estado: null, error: TEXTO_ERRO_AMAZON.afn }],
+    ] as const) {
+      expect(ehErroAfnAmazon(armazenado), nome).toBe(false);
+    }
   });
 });
 
@@ -411,5 +539,119 @@ describe('estadoAmazonAplicavel — the ladder', () => {
       escrever: true,
       estado: aguardando.estado,
     });
+  });
+});
+
+describe('★ PR 5-f — our D17 block error is itself the approval: the lock and the pago rung survive a known pre-approval status', () => {
+  const BLOQUEIOS = [
+    `${PREFIXO_ERRO_AMAZON}${TITULO_BLOQUEIO_AMAZON.itens}: L1`,
+    `${PREFIXO_ERRO_AMAZON}${TITULO_BLOQUEIO_AMAZON.cancelamentoParcial}: L2, L3 (+4)`,
+    `${PREFIXO_ERRO_AMAZON}${TITULO_BLOQUEIO_AMAZON.pagamento}`,
+    `${PREFIXO_ERRO_AMAZON}${TITULO_BLOQUEIO_AMAZON.itens}`,
+  ];
+  const aguardando = {
+    tipo: 'estado',
+    estado: ESTADO_PEDIDO.aguardandoConfirmacaoDePagamento,
+    erro: null,
+  } as const;
+  const pago = { tipo: 'estado', estado: ESTADO_PEDIDO.pago, erro: null } as const;
+
+  it('ehErroBloqueioAmazon recognises exactly our three block titles, alone or with ": <ids>"', () => {
+    for (const error of BLOQUEIOS) {
+      expect(ehErroBloqueioAmazon({ estado: ESTADO_PEDIDO.error, error }), error).toBe(true);
+    }
+  });
+
+  it('NEAR-MISS: our other texts, a stray space, another case or separator, a foreign text, and a block text beside another estado are NOT a block', () => {
+    const base = `${PREFIXO_ERRO_AMAZON}${TITULO_BLOQUEIO_AMAZON.itens}`;
+    for (const error of [
+      ...Object.values(TEXTO_ERRO_AMAZON),
+      `${base} `,
+      ` ${base}`,
+      `${base}:L1`,
+      `${base} - L1`,
+      `${base}s: L1`,
+      base.toUpperCase(),
+      `${TITULO_BLOQUEIO_AMAZON.itens}: L1`,
+      'Rejeição 539',
+      null,
+    ]) {
+      expect(ehErroBloqueioAmazon({ estado: ESTADO_PEDIDO.error, error }), String(error)).toBe(
+        false,
+      );
+    }
+    expect(ehErroBloqueioAmazon({ estado: ESTADO_PEDIDO.pago, error: `${base}: L1` })).toBe(false);
+  });
+
+  it('aprovadoAmazon: a block text is approved whatever the stored status (PENDING, unknown, null); NEAR-MISS: our logistics text beside the same statuses is not', () => {
+    for (const marketplaceStatus of [
+      'PENDING',
+      'PENDING_AVAILABILITY',
+      'INVOICE_UNCONFIRMED',
+      null,
+    ]) {
+      for (const error of BLOQUEIOS) {
+        expect(
+          aprovadoAmazon(resumo({ estado: 'error', error, marketplaceStatus })),
+          `${error} / ${String(marketplaceStatus)}`,
+        ).toBe(true);
+      }
+      expect(
+        aprovadoAmazon(
+          resumo({
+            estado: 'error',
+            error: TEXTO_ERRO_AMAZON.logisticaDesconhecida,
+            marketplaceStatus,
+          }),
+        ),
+        String(marketplaceStatus),
+      ).toBe(false);
+    }
+  });
+
+  it('the ladder: our APPROVED error sits on the pago rung, so a pre-approval target is regressivo (the text and the lock stay); it still moves to pago or a terminal', () => {
+    for (const armazenado of [
+      resumo({ estado: 'error', error: BLOQUEIOS[0] ?? '', marketplaceStatus: 'PENDING' }),
+      resumo({ estado: 'error', error: BLOQUEIOS[1] ?? '', marketplaceStatus: 'UNSHIPPED' }),
+      resumo({
+        estado: 'error',
+        error: TEXTO_ERRO_AMAZON.logisticaDesconhecida,
+        marketplaceStatus: 'UNSHIPPED',
+      }),
+    ]) {
+      const nome = `${String(armazenado.error)} / ${String(armazenado.marketplaceStatus)}`;
+      expect(estadoAmazonAplicavel(armazenado, aguardando, { maisNovo: true }), nome).toEqual({
+        escrever: false,
+        motivo: 'regressivo',
+      });
+      expect(estadoAmazonAplicavel(armazenado, pago, { maisNovo: true }), nome).toMatchObject({
+        escrever: true,
+        estado: ESTADO_PEDIDO.pago,
+      });
+      expect(
+        estadoAmazonAplicavel(
+          armazenado,
+          { tipo: 'estado', estado: ESTADO_PEDIDO.cancelado, erro: null },
+          { maisNovo: false },
+        ),
+        nome,
+      ).toMatchObject({ escrever: true, estado: ESTADO_PEDIDO.cancelado });
+    }
+  });
+
+  it('NEAR-MISS: our error that was NEVER approved (a create without fulfilledBy, stored PENDING) has no rung — PENDING moves it to aguardandoConfirmacaoDePagamento, as before', () => {
+    for (const error of [
+      TEXTO_ERRO_AMAZON.logisticaDesconhecida,
+      TEXTO_ERRO_AMAZON.statusDesconhecido,
+    ]) {
+      expect(
+        estadoAmazonAplicavel(
+          resumo({ estado: 'error', error, marketplaceStatus: 'PENDING' }),
+          aguardando,
+          { maisNovo: true },
+        ),
+        error,
+      ).toMatchObject({ escrever: true, estado: ESTADO_PEDIDO.aguardandoConfirmacaoDePagamento });
+    }
   });
 });
