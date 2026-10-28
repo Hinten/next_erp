@@ -59,8 +59,8 @@ export const MAX_PAGINAS_CATALOGO_LI = 10;
 
 /**
  * The resources whose URI this contract reads. `grades` is PLURAL: an option's `grade` field is
- * `/api/v1/grades/<g>`, while the option's own URI uses the singular `grade` (and two ids), which
- * is not a grade URI.
+ * `/api/v1/grades/<g>` (in the public document and in the store's captured answers alike), while
+ * the option's own URI uses the singular `grade` (and two ids), which is not a grade URI.
  */
 export const recursoUriLiSchema = z.enum(['categoria', 'marca', 'grades']);
 export type RecursoUriLi = z.infer<typeof recursoUriLiSchema>;
@@ -79,9 +79,11 @@ const FORMA_URI_RECURSO_LI = /^(?:\/api)?\/v1\/([a-z_]+)\/([^/?#]+)\/?$/;
  * `inteiroPositivoCanonicoLi`, the one reader of the positive integers the Loja Integrada surfaces
  * key on.
  *
- * Both prefixes, because the public document answers `/api/v1/…` while a captured category URI
- * did not match that form; anything else reads as `null`, so the caller can count it as unreadable
- * (never as "no parent").
+ * Both prefixes, because the store answers both: the owner's read-only capture of both stores shows
+ * a category's `resource_uri` and `categoria_pai` as `/v1/categoria/<id>` (no `/api`, no trailing
+ * slash), while an option's `grade` is `/api/v1/grades/<g>` and a brand's `resource_uri`
+ * `/api/v1/marca/<id>`, as in the public document. Anything else reads as `null`, so the caller can
+ * count it as unreadable (never as "no parent").
  *
  * Equal (⇒ `7645875`): `/api/v1/categoria/7645875` ≡ `/api/v1/categoria/7645875/` ≡
  * `/v1/categoria/7645875` ≡ `/v1/categoria/7645875/`.

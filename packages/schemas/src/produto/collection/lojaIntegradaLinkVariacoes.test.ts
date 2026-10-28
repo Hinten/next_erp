@@ -423,6 +423,121 @@ describe('an invalid entry', () => {
     });
     expect(tipos(conflitos(lista, [0]))).toEqual([TIPO_CONFLITO_LINK_LI.entradaInvalida]);
   });
+
+  /** Invalid only because its grade id is a STRING; it still names `v1`. */
+  const INVALIDA_NOMEANDO_V1 = {
+    grade_id: '8946',
+    integracaoLiId: 'C1',
+    variationOptions: [{ li_option_id: 37097, arakene_variation_id: ['v1'] }],
+  };
+
+  it('⚠️ NEAR-MISS: untouched, but naming a variante THIS save removes ⇒ that removal is blocked, under its own index', () => {
+    // The one rule an invalid entry still takes part in: deleting the variante
+    // would leave the stored entry naming a variante that no longer exists.
+    const lista = entradas(INVALIDA_NOMEANDO_V1);
+    expect(conflitos(lista, [], { variantesIds: [], removidas: ['v1'] })).toEqual([
+      {
+        tipo: TIPO_CONFLITO_LINK_LI.entradaInvalida,
+        bloqueia: false,
+        indices: [0],
+        integracaoLiId: null,
+        gradeId: null,
+        opcaoId: null,
+        varianteId: null,
+        campos: ['grade_id'],
+      },
+      {
+        tipo: TIPO_CONFLITO_LINK_LI.varianteRemovidaVinculada,
+        bloqueia: true,
+        indices: [0],
+        integracaoLiId: null,
+        gradeId: null,
+        opcaoId: null,
+        varianteId: 'v1',
+        campos: [],
+      },
+    ]);
+  });
+
+  it('EQUAL: naming only variantes this save did NOT remove ⇒ its own finding alone', () => {
+    // `v1` stays in the grupo; `v9` was deleted long ago (in neither the seed
+    // nor this save): an invalid entry never yields "inexistente".
+    const lista = entradas({
+      ...INVALIDA_NOMEANDO_V1,
+      variationOptions: [{ li_option_id: 37097, arakene_variation_id: ['v1', 'v9'] }],
+    });
+    expect(tipos(conflitos(lista, [], { variantesIds: ['v1'], removidas: ['v4'] }))).toEqual([
+      TIPO_CONFLITO_LINK_LI.entradaInvalida,
+    ]);
+  });
+
+  it('a valid and an invalid entry naming the same removed variante ⇒ ONE finding over both', () => {
+    const lista = entradas(link('C1', 8946, [{ id: 37097, variantes: ['v4'] }]), {
+      ...link('C2', 9000, [{ id: 50001, variantes: ['v4'] }]),
+      grade_id: null,
+    });
+    expect(
+      conflitos(lista, [], { variantesIds: ['v1', 'v2', 'v3'], removidas: ['v4'] }),
+    ).toMatchObject([
+      { tipo: TIPO_CONFLITO_LINK_LI.entradaInvalida, bloqueia: false, indices: [1] },
+      {
+        tipo: TIPO_CONFLITO_LINK_LI.varianteRemovidaVinculada,
+        bloqueia: true,
+        indices: [0, 1],
+        varianteId: 'v4',
+      },
+    ]);
+  });
+
+  it('a variante listed as removed but still in the grupo is no finding for an invalid entry either', () => {
+    const lista = entradas(INVALIDA_NOMEANDO_V1);
+    expect(tipos(conflitos(lista, [], { variantesIds: ['v1'], removidas: ['v1'] }))).toEqual([
+      TIPO_CONFLITO_LINK_LI.entradaInvalida,
+    ]);
+  });
+
+  it.each([
+    ['an upper-case id', { variationOptions: [{ li_option_id: 1, arakene_variation_id: ['V4'] }] }],
+    [
+      'an id with a trailing space',
+      { variationOptions: [{ li_option_id: 1, arakene_variation_id: ['v4 '] }] },
+    ],
+    ['a NUMBER id', { variationOptions: [{ li_option_id: 1, arakene_variation_id: [4] }] }],
+    [
+      'a bare string where the list belongs',
+      { variationOptions: [{ li_option_id: 1, arakene_variation_id: 'v4' }] },
+    ],
+    ['options that are not a list', { variationOptions: 'v4' }],
+    ['options that are not objects', { variationOptions: ['v4', null, ['v4']] }],
+  ])(
+    '⚠️ NEAR-MISS: an invalid entry naming it only through %s does not name it (exact ids, lists of strings only)',
+    (_rotulo, patch) => {
+      const lista = entradas({ integracaoLiId: 'C1', ...patch });
+      expect(tipos(conflitos(lista, [], { variantesIds: [], removidas: ['v4', '4'] }))).toEqual([
+        TIPO_CONFLITO_LINK_LI.entradaInvalida,
+      ]);
+    },
+  );
+
+  it('⚠️ NEAR-MISS: an INHERITED field is not stored data, so it names nothing', () => {
+    const herdada: unknown = Object.create({
+      variationOptions: [{ li_option_id: 1, arakene_variation_id: ['v4'] }],
+    });
+    const lista = entradas(herdada);
+    expect(tipos(conflitos(lista, [], { variantesIds: [], removidas: ['v4'] }))).toEqual([
+      TIPO_CONFLITO_LINK_LI.entradaInvalida,
+    ]);
+  });
+
+  it.each([['lixo'], [null], [42], [['v4']]])(
+    'an invalid entry that is not an object (%j) names nothing, and never throws',
+    (valor) => {
+      const lista = entradas(valor);
+      expect(tipos(conflitos(lista, [], { variantesIds: [], removidas: ['v4'] }))).toEqual([
+        TIPO_CONFLITO_LINK_LI.entradaInvalida,
+      ]);
+    },
+  );
 });
 
 describe('what blocks a save: a finding blocks only through an EDITED entry', () => {

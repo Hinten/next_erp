@@ -15,9 +15,9 @@ import { z } from 'zod';
  *  - every reader goes through {@link lerLinksVariacoesLi}, the one typed view, which never throws;
  *  - every WRITER checks what it writes through {@link conflitosLinksVariacoesLi}: the web linker
  *    (the entries edited in the form, decided by VALUE against what the form loaded, never by object
- *    identity, and failing closed: an entry it cannot classify counts as edited), the product import
- *    (step 9, every entry it creates) and the publish pre-flight (step 11, the entries a family
- *    uses);
+ *    identity, and failing closed: an entry it cannot classify counts as edited) and the product
+ *    import (step 9, every entry it creates). The publish pre-flight (step 11) writes no link: it
+ *    runs the same function over the entries a family uses, and refuses that family through them;
  *  - an entry nobody touched is written back EXACTLY as stored, valid or not, and shown as such.
  *
  * ⚠️ Both levels are `.passthrough()` on purpose, unlike `shopeeLinkVariacoes.ts` (strict at both
@@ -168,7 +168,8 @@ export function lerLinksVariacoesLi(bruto: unknown): LeituraLinksVariacoesLi {
  *  - `varianteEmDuasOpcoes`: one variante held by two DIFFERENT store options of ONE conta, in one
  *    link or across two links of that conta: per store, one ERP variante points at one store option.
  *  - `varianteRemovidaVinculada`: a variante THIS save removes from the grupo, still named by an
- *    entry (edited or not). Its message belongs on the variantes, where the removal happened.
+ *    entry (edited or not, valid or not). Its message belongs on the variantes, where the removal
+ *    happened.
  *  - `varianteInexistente`: a variante id the grupo does not have and this save did not remove (one
  *    deleted earlier).
  *  - `opcaoComVariasVariantes`: one store option holding several variantes. A WARNING: it never
@@ -262,13 +263,51 @@ function obter<K, V>(mapa: Map<K, V>, chave: K, criar: () => NoInfer<V>): V {
   return novo;
 }
 
+/** A plain object in the Firestore sense: not `null`, not an array, not a primitive. */
+function ehObjeto(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+/** An OWN property only: an inherited one is not stored data. */
+function proprio(o: Record<string, unknown>, chave: string): unknown {
+  return Object.hasOwn(o, chave) ? o[chave] : undefined;
+}
+
 /**
- * THE uniqueness rules of a grupo's Loja Integrada links, shared by every writer: the web linker's
- * save, the product import (step 9) and the publish pre-flight (step 11). Returns every finding, in
- * the order of {@link TIPO_CONFLITO_LINK_LI}, then by first entry index.
+ * The variante ids an INVALID stored entry still names: every string of
+ * `variationOptions[*].arakene_variation_id[*]`, read through plain objects and lists only and
+ * kept exactly as stored (no fold). Anything shaped otherwise names nothing: a bare string where
+ * the list belongs, a number id, an option that is not an object.
+ */
+function variantesNomeadasPorInvalida(bruto: unknown): Set<string> {
+  const ids = new Set<string>();
+  if (!ehObjeto(bruto)) return ids;
+  const valorOpcoes = proprio(bruto, 'variationOptions');
+  if (!Array.isArray(valorOpcoes)) return ids;
+  const opcoes: readonly unknown[] = valorOpcoes;
+  for (const opcao of opcoes) {
+    if (!ehObjeto(opcao)) continue;
+    const valorVariantes = proprio(opcao, 'arakene_variation_id');
+    if (!Array.isArray(valorVariantes)) continue;
+    const variantes: readonly unknown[] = valorVariantes;
+    for (const id of variantes) if (typeof id === 'string') ids.add(id);
+  }
+  return ids;
+}
+
+/**
+ * THE uniqueness rules of a grupo's Loja Integrada links, shared by every writer (the web linker's
+ * save, the product import of step 9) and run again by the publish pre-flight (step 11) over the
+ * entries a family uses. Returns every finding, in the order of {@link TIPO_CONFLITO_LINK_LI}, then
+ * by first entry index.
  *
  * Only VALID entries take part in the uniqueness rules: an invalid one resolves nothing (it yields
- * its own `entradaInvalida` finding and nothing else). Scopes:
+ * its own `entradaInvalida` finding), with ONE exception. A variante THIS write removes that an
+ * invalid entry still names (read by `variantesNomeadasPorInvalida`) joins the
+ * `varianteRemovidaVinculada` finding under that entry's index, exactly as a valid entry's would:
+ * the removal would otherwise leave the stored entry naming a variante that no longer exists.
+ *
+ * Scopes:
  *  - per conta (`integracaoLiId`, exact): a grade linked twice; a variante in two different options
  *    (an option is the pair `(grade_id, li_option_id)`, so the same option id repeated inside one
  *    link is that link's repeat, not a second option);
@@ -294,24 +333,31 @@ export function conflitosLinksVariacoesLi(
     return false;
   };
 
+  // variante not in the grupo → entries naming it
+  const foraDoGrupo = new Map<string, number[]>();
+
   const invalidas: ConflitoLinkLi[] = [];
   const validas: { readonly indice: number; readonly link: LinkVariacoesLi }[] = [];
   for (const e of entradas) {
-    if (e.tipo === TIPO_ENTRADA_LINK_LI.valida) validas.push({ indice: e.indice, link: e.link });
-    else
-      invalidas.push(
-        conflito(TIPO_CONFLITO_LINK_LI.entradaInvalida, editadas.has(e.indice), [e.indice], {
-          campos: e.campos,
-        }),
-      );
+    if (e.tipo === TIPO_ENTRADA_LINK_LI.valida) {
+      validas.push({ indice: e.indice, link: e.link });
+      continue;
+    }
+    invalidas.push(
+      conflito(TIPO_CONFLITO_LINK_LI.entradaInvalida, editadas.has(e.indice), [e.indice], {
+        campos: e.campos,
+      }),
+    );
+    // The one rule an invalid entry takes part in: a variante THIS write removes.
+    for (const varianteId of variantesNomeadasPorInvalida(e.bruto))
+      if (removidas.has(varianteId) && !doGrupo.has(varianteId))
+        obter(foraDoGrupo, varianteId, () => []).push(e.indice);
   }
 
   // conta → grade → entries
   const gradesPorConta = new Map<string, Map<number, number[]>>();
   // conta → variante → option key `grade:option` → entries
   const opcoesDaVariantePorConta = new Map<string, Map<string, Map<string, number[]>>>();
-  // variante not in the grupo → entries naming it
-  const foraDoGrupo = new Map<string, number[]>();
 
   const opcoesRepetidas: ConflitoLinkLi[] = [];
   const avisos: ConflitoLinkLi[] = [];

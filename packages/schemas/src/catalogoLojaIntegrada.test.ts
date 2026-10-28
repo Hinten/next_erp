@@ -62,6 +62,15 @@ describe('idDoRecursoLi — the one reader of a Loja Integrada resource URI', ()
     expect(idDoRecursoLi('/api/v1/marca/12', RECURSO_URI_LI.marca)).toBe(12);
   });
 
+  it('EQUAL: the exact forms the store was captured answering (fake ids) read as their ids', () => {
+    // A category's `resource_uri` and `categoria_pai` carry NO `/api` prefix
+    // and no trailing slash; an option's `grade` is the PLURAL `/api/v1/grades/<g>`
+    // and a brand's `resource_uri` is `/api/v1/marca/<id>`.
+    expect(idDoRecursoLi('/v1/categoria/1000001', RECURSO_URI_LI.categoria)).toBe(1000001);
+    expect(idDoRecursoLi('/api/v1/grades/1000002', RECURSO_URI_LI.grades)).toBe(1000002);
+    expect(idDoRecursoLi('/api/v1/marca/1000003', RECURSO_URI_LI.marca)).toBe(1000003);
+  });
+
   it.each([
     ['a leading zero', '/api/v1/categoria/07645875'],
     [
@@ -189,6 +198,25 @@ describe('projetarCategoriasLi — a parent has THREE states, never two', () => 
     expect(paisIlegiveis).toBe(1);
   });
 
+  it('EQUAL: a row in the captured shape (fake ids) reads its parent, with nothing unreadable', () => {
+    // Package rows carry `resource_uri` too (never read here).
+    const linhas = [
+      {
+        id: 1000002,
+        nome: 'Filha',
+        categoria_pai: '/v1/categoria/1000001',
+        resource_uri: '/v1/categoria/1000002',
+      },
+      { id: 1000001, nome: 'Raiz', categoria_pai: null, resource_uri: '/v1/categoria/1000001' },
+    ];
+    const { categorias, paisIlegiveis } = projetarCategoriasLi(linhas);
+    expect(categorias.map((c) => c.pai)).toEqual([
+      { tipo: TIPO_PAI_CATEGORIA_LI.id, id: 1000001 },
+      { tipo: TIPO_PAI_CATEGORIA_LI.raiz },
+    ]);
+    expect(paisIlegiveis).toBe(0);
+  });
+
   it('ids come from `id`, never from `resource_uri`', () => {
     // A package row carries `resource_uri` too; the projection never reads it.
     const linha = { id: 5, nome: 'E', categoria_pai: null, resource_uri: '/api/v1/categoria/999' };
@@ -265,10 +293,10 @@ describe('projetarGradesLi — `nomeVisivel`', () => {
 
   it('keeps every grade, the store’s and the platform’s, in LI’s order', () => {
     const { grades } = projetarGradesLi([
-      { id: 2225524, nome: 'Própria', nome_visivel: 'Tamanho' },
-      { id: 8949, nome: 'Sistema', nome_visivel: 'Tamanho' },
+      { id: 1000001, nome: 'Própria', nome_visivel: 'Tamanho' },
+      { id: 8946, nome: 'Sistema', nome_visivel: 'Tamanho' },
     ]);
-    expect(grades.map((g) => g.id)).toEqual([2225524, 8949]);
+    expect(grades.map((g) => g.id)).toEqual([1000001, 8946]);
     expect(respostaGradesLiSchema.parse({ grades, lidaEmMs: 1 }).grades).toEqual(grades);
   });
 });
@@ -295,6 +323,40 @@ describe('projetarGradeLi — the options of ONE grade', () => {
       { id: 37099, nome: 'G' },
     ]);
     expect(projecao?.opcoesDeOutraGrade).toBe(0);
+  });
+
+  it('EQUAL: options in the captured shape (fake ids) are all offered, with nothing counted', () => {
+    // Each option carries the PLURAL `grade` URI and its own singular two-id URI.
+    const capturado = {
+      id: 1000001,
+      nome: 'Tamanho',
+      nome_visivel: 'Tamanho',
+      variacoes: [
+        {
+          id: 2000001,
+          nome: 'P',
+          grade: '/api/v1/grades/1000001',
+          resource_uri: '/api/v1/grade/1000001/variacao/2000001',
+        },
+        {
+          id: 2000002,
+          nome: 'M',
+          grade: '/api/v1/grades/1000001',
+          resource_uri: '/api/v1/grade/1000001/variacao/2000002',
+        },
+      ],
+    };
+    const projecao = projetarGradeLi(capturado);
+    expect(projecao).toEqual({
+      grade: { id: 1000001, nome: 'Tamanho', nomeVisivel: 'Tamanho' },
+      opcoes: [
+        { id: 2000001, nome: 'P' },
+        { id: 2000002, nome: 'M' },
+      ],
+      opcoesDeOutraGrade: 0,
+      opcoesComGradeIlegivel: 0,
+      linhasSemId: 0,
+    });
   });
 
   it('⚠️ NEAR-MISS: an option whose `grade` READS as another grade is NOT offered, and counted', () => {
