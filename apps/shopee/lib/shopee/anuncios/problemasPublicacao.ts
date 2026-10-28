@@ -58,6 +58,13 @@
  * in both directions. It needs the ERROR (code AND provider sentence), which is
  * why only {@link problemasDeErroShopee} can reach it.
  *
+ * ⚠️ **The duplicate-listing row (#1911, P5, D15) is SECOND, and code-only.**
+ * `error_repeated_mtsku` lands on `item_sku` as `anuncio-semelhante-existente`
+ * whatever sentence carries it, because the create classifier
+ * (`criacaoIncerta.ts`) reads that same code alone as "nothing was created" —
+ * the field and the outcome of ONE refusal must not disagree. No other row
+ * lists the code, so the slot shadows nothing.
+ *
  * ## Whose prose `mensagem` carries
  *
  * `mensagem` is the provider's, verbatim, through
@@ -256,6 +263,31 @@ const FAMILIAS: readonly FamiliaProblema[] = [
     campo: 'size_chart_info',
     motivo: MOTIVO_PROBLEMA_PUBLICACAO.tabelaDeMedidasRecusada,
     mensagem: MENSAGEM_TABELA_MEDIDAS_RECUSADA,
+  },
+  {
+    // #1911 (P5, D15): "A similar product has already been uploaded" — Shopee
+    // refused a listing it judges a DUPLICATE of one the shop already has. On
+    // `add_item` AND `update_item` (both pages list it).
+    //
+    // ⚠️ The CODE alone, exactly — no prefix, no phrase: the code is specific,
+    // and `criacaoIncerta.ts`'s closed table reads this same code, alone, as
+    // `nao-criado`. A sibling code is `incerto` there, so a prefix here would
+    // name a duplicate the outcome calls "maybe created"; and the sentence
+    // under another code is a string nobody measured (the test pins both
+    // near-misses AND the agreement with the classifier).
+    //
+    // ⚠️ SECOND, right after the template row: a code row placed below a phrase
+    // row loses to that phrase, and this code must decide whatever sentence
+    // rides with it. It cannot shadow anything: no other row lists the code.
+    //
+    // ⚠️ Shopee's prose, NO `mensagem` override: the two fixed sentences are
+    // the size-chart rows' alone (pinned). OUR sentence — import it if it is
+    // this produto's listing; a second one must differ, or Shopee may treat
+    // it as spam — is the web's and the CLI's copy, keyed on the motivo.
+    rotulo: 'anuncio-semelhante',
+    codigos: ['error_repeated_mtsku'],
+    campo: 'item_sku',
+    motivo: MOTIVO_PROBLEMA_PUBLICACAO.anuncioSemelhanteExistente,
   },
   {
     rotulo: 'categoria',

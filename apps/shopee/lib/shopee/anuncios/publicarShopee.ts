@@ -17,6 +17,11 @@
  * link of the conta in every PR (L10(3), R-12(b)), a removed native kit and a
  * superseded listing included. Handing it `null` while the conta has links would
  * let it re-aim the publish at a listing the dispatcher deliberately skipped.
+ * The one `null` (no link at all) is flagged `despachoSemVinculo`, and the
+ * no-link mint REFUSES (409 `CONTENCAO`) when its own re-read finds a link that
+ * appeared after this read — another run's freshly minted draft included —
+ * rather than let that resolver pick it unlocked (#1911 batch-A review). And
+ * `aplicarPublicacao` refuses any create onto a draft it holds no lock of.
  *
  * Dependencies run ONE way — this module → {`publicarAnuncio.ts`, `kits/`}, and
  * `kits/` → `publicarAnuncio.ts`'s exported helpers — so there is no module
@@ -29,6 +34,7 @@ import { escolherArmaDePublicacao, type ResultadoDoDespacho } from '../kits/arma
 import type { ArmaDeKit, EntradaDeKit } from '../kits/prepararKit';
 import { ensaiarKitShopee, publicarKitShopee, type EnsaioDeKit } from '../kits/publicarKit';
 import type { ArmaDePublicacao, KitDeps, ResultadoPublicacaoKit } from '../kits/resultadoKit';
+import { CriacaoDeAnuncioIncertaError, type ResultadoItemIncerto } from './criacaoIncerta';
 import { ShopeePublishBlockedError, temProblemaDeBloqueio } from './errosPublicacao';
 import type { ResolvedorDeImagensShopee } from './fotosPublicacao';
 import { lerVinculosDaConta } from './linkAnuncio';
@@ -60,9 +66,14 @@ export type EntradaDePublicacaoShopee = EntradaDePublicacao & {
   readonly converterEmKit: boolean;
 };
 
-/** One publish, done: step 11's result, or a native-kit run's. */
+/**
+ * One publish, done: step 11's result, a native-kit run's — or (#1911, D5) an
+ * ordinary listing's first `add_item` whose outcome nobody can know: the
+ * draft's lock kept for the wait and the attempt recorded (the route's 202).
+ */
 export type ResultadoPublicacaoShopee =
   | { readonly tipo: 'item'; readonly resultado: ResultadoPublicacao }
+  | { readonly tipo: 'item-incerto'; readonly resultado: ResultadoItemIncerto }
   | { readonly tipo: 'kit'; readonly resultado: ResultadoPublicacaoKit };
 
 /** One dry run: the arm chosen, and what its READ half read. Nothing written, nothing created. */
@@ -135,7 +146,13 @@ function armaOuRecusa(
   throw new ShopeePublishBlockedError({ produtoId: entrada.produtoId, itemId: null, problemas });
 }
 
-/** Step 11's entrada for the item arm — BY NAME, the id always the dispatcher's. */
+/**
+ * Step 11's entrada for the item arm — BY NAME, the id always the dispatcher's.
+ * `null` only when the dispatcher found NO link of the produto on the conta, and
+ * then it says so (`despachoSemVinculo`): the no-link mint's own re-read refuses
+ * any link that appeared in between instead of falling back to step 11's
+ * lexical resolver (#1911 batch-A review, the mint race).
+ */
 function entradaDoItem(
   entrada: EntradaDePublicacaoShopee,
   linkDocId: string | null,
@@ -145,6 +162,7 @@ function entradaDoItem(
     linkDocId,
     categoryId: entrada.categoryId ?? null,
     statusPedido: entrada.statusPedido,
+    ...(linkDocId === null ? { despachoSemVinculo: true } : {}),
   };
 }
 
@@ -174,7 +192,10 @@ function entradaDoKit(entrada: EntradaDePublicacaoShopee): EntradaDeKit {
  *   `ShopeePublishRejectedError` for a wire refusal. A kit create whose outcome
  *   is uncertain is NOT a throw:
  *   it is a `ResultadoPublicacaoKit` with `desfecho: 'incerto'` (the route's
- *   202), because nothing was written and the operator must re-run.
+ *   202), because nothing was written and the operator must re-run. Neither is
+ *   an ordinary listing's (#1911): the item arm's `CriacaoDeAnuncioIncertaError`
+ *   — thrown only AFTER the draft recorded the attempt — is narrowed BY CLASS
+ *   into `tipo: 'item-incerto'` here, the one place that reads it.
  */
 export async function publicarShopee(
   deps: KitDeps,
@@ -185,8 +206,15 @@ export async function publicarShopee(
   const arma = armaOuRecusa(entrada, despacho);
 
   if (arma.arma === 'item') {
-    const resultado = await publicarAnuncioShopee(deps, entradaDoItem(entrada, arma.linkDocId));
-    return resultado === null ? null : { tipo: 'item', resultado };
+    try {
+      const resultado = await publicarAnuncioShopee(deps, entradaDoItem(entrada, arma.linkDocId));
+      return resultado === null ? null : { tipo: 'item', resultado };
+    } catch (err) {
+      if (err instanceof CriacaoDeAnuncioIncertaError) {
+        return { tipo: 'item-incerto', resultado: err.resultado };
+      }
+      throw err;
+    }
   }
   return { tipo: 'kit', resultado: await publicarKitShopee(deps, entradaDoKit(entrada), arma) };
 }
@@ -197,7 +225,10 @@ export async function publicarShopee(
  * dispatcher's `linkDocId` for the item arm, `ensaiarKitShopee` for a kit arm.
  * No Shopee write, no `add_kit_item`, no Firestore write. (A kit arm may still
  * READ — the L6 scan on a create arm — and upload the photos when content would
- * be sent: step 11's documented dry-run exception.)
+ * be sent: step 11's documented dry-run exception.) ⚠️ The item arm's dry run
+ * runs NEITHER of its look-ups — ENSURE nor, since #1911 P5b, the first
+ * create's same-SKU scan: both live under the draft's lock, which only the live
+ * publish takes, and the CLI's summary of a create says so.
  *
  * @returns `null` exactly when {@link publicarShopee} would answer `null`.
  * @throws ShopeePublishBlockedError on a dispatcher refusal (zero Shopee calls),

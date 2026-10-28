@@ -184,6 +184,25 @@
  *    FRESHER data, so it can hide no stale-snapshot bug — but a test that holds
  *    a read-only callback at `occ.beforeCommit` sees the retry, not the stale
  *    snapshot. Hold such a caller AFTER its transaction instead.
+ *
+ * Added by #1911 (P4), again strictly ADDITIVELY, for the draft route's
+ * discard (`anuncios/rascunho.ts`) — the FIRST source in this app that deletes
+ * a document through a doc ref, and it deletes under a precondition:
+ *
+ *  - the doc ref's `delete(precond?)` honours `lastUpdateTime` exactly like
+ *    `update` does — a stale stamp (or a value that is not a stamp at all)
+ *    rejects with the gRPC 9 `isFailedPrecondition` recognises, and the
+ *    document STAYS. Before this the doc ref's `delete` ignored its argument,
+ *    so a guarded discard degraded to an unguarded one in every test. Under a
+ *    precondition an ABSENT document rejects with gRPC 5 — the `update` arm's
+ *    answer — and without one it resolves as a no-op, as the real `delete`
+ *    does;
+ *  - {@link FakeDb.deletes}, a NEW log of every delete that landed, with
+ *    whether it carried a precondition, and {@link FakeDb.falhasDeDelete}, the
+ *    `delete` twin of {@link FakeDb.falhasDeUpdate}. ⚠️ {@link FakeDb.writes},
+ *    {@link FakeDb.patches}, {@link FakeDb.opLog} and both query logs are
+ *    byte-unchanged on purpose — a delete appears in NONE of them, exactly as
+ *    before, so no suite's exact-log assertion moves.
  */
 import { FieldValue, type Firestore } from 'firebase-admin/firestore';
 import {
@@ -486,6 +505,15 @@ export class FakeDb {
   readonly falhasDeCriacao = new Map<string, Error>();
   /** Injected failures for `update`, keyed by the FULL document path. */
   readonly falhasDeUpdate = new Map<string, Error>();
+  /** Injected failures for a doc ref's `delete`, keyed by the FULL document path (#1911). */
+  readonly falhasDeDelete = new Map<string, Error>();
+  /**
+   * Every doc-ref `delete` that LANDED, in order (#1911): its path and whether
+   * it carried a `lastUpdateTime` precondition. A refused delete (a stale
+   * stamp, an injected failure) is not in it — like {@link FakeDb.writes}, it
+   * is a log of what HAPPENED.
+   */
+  readonly deletes: { path: string; comPrecondicao: boolean }[] = [];
   /**
    * Every read and write in CALL order — `get` logged by the doc ref, the writes
    * logged by the engine when they are STAGED (not at commit).
@@ -647,8 +675,24 @@ export class FakeDb {
         };
         return Promise.resolve();
       },
-      delete: () => {
+      // #1911: the SAME precondition rule as `update` above — compared through
+      // the stamp's `seq`, and a value that is not a stamp is refused, never
+      // ignored. With no precondition an absent document is a no-op, as the
+      // real `delete` is; WITH one, it is the `update` arm's NOT_FOUND.
+      delete: (precond?: { lastUpdateTime?: unknown }) => {
+        const falha = this.falhasDeDelete.get(path);
+        if (falha) return Promise.reject(falha);
+        const comPrecondicao = precond?.lastUpdateTime !== undefined;
+        const atual = this.store[path];
+        if (comPrecondicao) {
+          if (!atual) return Promise.reject(grpc(5, 'NOT_FOUND'));
+          const esperado = precond.lastUpdateTime;
+          if (!ehCarimbo(esperado) || !atual.updateTime.isEqual(esperado)) {
+            return Promise.reject(grpc(9, 'FAILED_PRECONDITION'));
+          }
+        }
         delete this.store[path];
+        this.deletes.push({ path, comPrecondicao });
         return Promise.resolve();
       },
     };

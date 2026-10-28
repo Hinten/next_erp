@@ -1113,6 +1113,52 @@ export {
   type TextoNaFaixaShopee,
 } from './faixaShopee';
 
+// …and THE listing-attribute rules (#1911, D9, P6): one decoder for the three
+// stored shapes (always answering the request shape), the draft write's
+// schema, the visible-given-values walk and the validator the publisher and
+// the draft editor both decide with (#1369 — one copy), and what a publish
+// SENDS (a read-form date converted through the one date convention).
+export {
+  lerAtributosArmazenadosShopee,
+  atributosParaRequisicaoShopee,
+  atributoShopeeRequisicaoSchema,
+  atributosShopeeRequisicaoSchema,
+  tipoDeEntradaShopee,
+  atributosVisiveisShopee,
+  validarAtributosShopee,
+  atributosParaGravarShopee,
+  atributosParaEnvioShopee,
+  lerDataDeAtributoShopee,
+  timestampDeDataShopee,
+  origemValorAtributoShopeeSchema,
+  ORIGEM_VALOR_ATRIBUTO_SHOPEE,
+  motivoDescarteAtributoShopeeSchema,
+  MOTIVO_DESCARTE_ATRIBUTO_SHOPEE,
+  tipoProblemaAtributoShopeeSchema,
+  TIPO_PROBLEMA_ATRIBUTO_SHOPEE,
+  INPUT_TYPE_ATRIBUTO_SHOPEE,
+  INPUT_VALIDATION_TYPE_ATRIBUTO_SHOPEE,
+  FORMAT_TYPE_COM_UNIDADE_SHOPEE,
+  DATE_FORMAT_TYPE_ATRIBUTO_SHOPEE,
+  MSG_PERSONALIZADO_SEM_NOME_ATRIBUTO_SHOPEE,
+  MSG_NOME_EM_VALOR_DA_LISTA_ATRIBUTO_SHOPEE,
+  MSG_ATRIBUTO_REPETIDO_SHOPEE,
+  type ValorAtributoShopee,
+  type AtributoShopeeRequisicao,
+  type OrigemValorAtributoShopee,
+  type ValorAtributoLidoShopee,
+  type AtributoLidoShopee,
+  type MotivoDescarteAtributoShopee,
+  type DescarteAtributoShopee,
+  type AtributosLidosShopee,
+  type EntradaAtributoShopee,
+  type ArvoreAtributosShopee,
+  type AtributoVisivelShopee,
+  type DataDeAtributoShopee,
+  type TipoProblemaAtributoShopee,
+  type ProblemaAtributoShopee,
+} from './atributosShopee';
+
 export {
   listaDePrecos,
   listaDePrecosSchema,

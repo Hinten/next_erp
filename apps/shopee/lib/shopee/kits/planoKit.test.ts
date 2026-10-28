@@ -133,14 +133,21 @@ const RAW_DO_KIT: Record<string, unknown> = {
 };
 
 function buscaVazia(): NonNullable<ContextoKit['busca']> {
-  return { completo: true, achados: [], paginas: 1, chamadas: 1 };
+  return { completo: true, achados: [], incompleta: null, paginas: 1, chamadas: 1 };
 }
 
+/** `completo: false` ⇒ the walk stopped short (`causa: 'lista'`) — the documented shape. */
 function busca(
   achados: readonly AchadoKitPorSku[],
   completo = true,
 ): NonNullable<ContextoKit['busca']> {
-  return { completo, achados, paginas: 1, chamadas: 2 };
+  return {
+    completo,
+    achados,
+    incompleta: completo ? null : { causa: 'lista' },
+    paginas: 1,
+    chamadas: 2,
+  };
 }
 
 function contexto(over: Partial<ContextoKit> = {}): ContextoKit {
@@ -514,6 +521,36 @@ describe('decidirKitNovo — "garanta que o kit novo existe" (L9, R-14)', () => 
     const r = decidirKitNovo(busca([], false), nenhum, semStatus, nenhum);
     expect(r.acao).toBe('recusar');
     expect(r.acao === 'recusar' ? motivos(r.problemas) : []).toEqual([M.buscaDeKitIncompleta]);
+  });
+
+  it('(#1911 batch-A) a frase diz a CAUSA: base-info não devolvida nomeia os ids e pede para tentar de novo; o teto mantém a frase do passo 19', () => {
+    const porBase = decidirKitNovo(
+      {
+        completo: false,
+        achados: [],
+        incompleta: { causa: 'base-info', itemIds: [KIT, KIT_2] },
+      },
+      nenhum,
+      semStatus,
+      nenhum,
+    );
+    expect(porBase.acao).toBe('recusar');
+    const fraseBase = porBase.acao === 'recusar' ? porBase.problemas[0]?.mensagem : '';
+    expect(porBase.acao === 'recusar' ? motivos(porBase.problemas) : []).toEqual([
+      M.buscaDeKitIncompleta,
+    ]);
+    expect(fraseBase).toContain('a Shopee não devolveu os dados de 2 anúncio(s) listado(s)');
+    expect(fraseBase).toContain(`${String(KIT)}, ${String(KIT_2)}`);
+    expect(fraseBase).toContain('tente de novo');
+    expect(fraseBase).toContain('Seller Centre');
+    expect(fraseBase).not.toContain('10 000');
+
+    // ⛔ quase-par: the walk that stopped short keeps step 19's sentence.
+    const porLista = decidirKitNovo(busca([], false), nenhum, semStatus, nenhum);
+    const fraseLista = porLista.acao === 'recusar' ? porLista.problemas[0]?.mensagem : '';
+    expect(fraseLista).toBe(
+      'a busca de kit duplicado não terminou (mais de 10 000 anúncios) — nada foi criado',
+    );
   });
 
   it('M81/M89 — um achado que não é nosso recusa "importe-o"; o vinculado a outro produto é nomeado', () => {
@@ -931,6 +968,186 @@ describe('planejarKit — a família (L2: um modelo por filho, UM tier)', () => 
     expect(motivos(plano.problemas)).toEqual([M.variacaoSemVinculo]);
     expect(plano.problemas[0]?.campo).toBe(`filhos.${F_PRETO}`);
     expect(plano.corpo).toBeNull();
+  });
+});
+
+describe('planejarKit — o NOME do tier e as faixas de tier do kit (#1911 batch-A, bot #2054)', () => {
+  const comNome = (nome: string, over: Partial<ContextoKit> = {}) =>
+    planejarKit(familia({ grupo: { id: 'g-cor', nome }, ...over }), fotos());
+
+  it("um grupo SEM nome ('', só espaços, NBSP) recusa opcoes-demais ANTES do add_kit_item — nenhum corpo", () => {
+    for (const nome of ['', '   ', ' \t']) {
+      const plano = comNome(nome);
+      expect(plano.problemas, JSON.stringify(nome)).toEqual([
+        {
+          campo: 'tier_variation_list',
+          motivo: M.opcoesDemais,
+          mensagem:
+            'o grupo g-cor não tem nome, e o tier do kit leva o nome do grupo — dê um nome a ' +
+            'ele em Variações',
+        },
+      ]);
+      expect(plano.corpo, JSON.stringify(nome)).toBeNull();
+    }
+  });
+
+  it("⚠️ QUASE-PAR: ' Cor ' passa e vai ao fio APARADO ('Cor'); a CAIXA e o espaço de DENTRO ficam", () => {
+    const nomeEnviado = (nome: string) => {
+      const plano = comNome(nome);
+      expect(plano.problemas, JSON.stringify(nome)).toEqual([]);
+      const corpo = plano.corpo;
+      expect(corpo, JSON.stringify(nome)).not.toBeNull();
+      if (corpo !== null) expect(() => assertAddKitItemRequest(corpo)).not.toThrow();
+      return corpo?.item_setting.tier_variation_list[0]?.name;
+    };
+    expect(nomeEnviado(' Cor ')).toBe('Cor');
+    expect(nomeEnviado(' Cor\t')).toBe('Cor');
+    expect(nomeEnviado('cor')).toBe('cor');
+    expect(nomeEnviado('C  or')).toBe('C  or');
+  });
+
+  it('⚠️ QUASE-PAR — as sentinelas NÃO chegam à recusa: família de um e um filho só sem variante, com o grupo sem nome', () => {
+    const sentinela = (plano: ReturnType<typeof planejarKit>) => {
+      expect(plano.problemas).toEqual([]);
+      expect(plano.corpo?.item_setting.tier_variation_list).toEqual([
+        { name: NOME_TIER_KIT_UNICO, option_list: [{ option: OPCAO_TIER_KIT_UNICO }] },
+      ]);
+    };
+    // A família de um (a hand-built context carrying a nameless grupo anyway).
+    sentinela(planejarKit(contexto({ grupo: { id: 'g-cor', nome: '' } }), fotos()));
+    // A lone child of a non-família kit, with NO variante in the nameless grupo.
+    sentinela(
+      planejarKit(
+        contexto({
+          familiaDeUm: false,
+          grupo: { id: 'g-cor', nome: '   ' },
+          gruposDistintos: 1,
+          filhos: [filho(F_AZUL, { variante: null })],
+        }),
+        fotos(),
+      ),
+    );
+    // ⛔ The SAME lone child WITH a variante authors the grupo's name ⇒ refused.
+    const comVariante = planejarKit(
+      contexto({
+        familiaDeUm: false,
+        grupo: { id: 'g-cor', nome: '   ' },
+        gruposDistintos: 1,
+        filhos: [filho(F_AZUL, { variante: 'Azul' })],
+      }),
+      fotos(),
+    );
+    expect(motivos(comVariante.problemas)).toEqual([M.opcoesDemais]);
+    expect(comVariante.corpo).toBeNull();
+  });
+
+  it('sem grupo algum, cada filho já recusa variacao-sem-vinculo — nenhuma linha de NOME é somada', () => {
+    const plano = planejarKit(familia({ grupo: null, gruposDistintos: 0 }), fotos());
+    expect(motivos(plano.problemas)).toEqual([
+      M.kitDoisEixos,
+      M.variacaoSemVinculo,
+      M.variacaoSemVinculo,
+    ]);
+    expect(plano.corpo).toBeNull();
+  });
+
+  it('(verificador) o nome EM BRANCO recusa também com as faixas SERVIDAS — a frase do branco, nunca "tem 0 caracteres"', () => {
+    // The blank refusal is independent of whether get_kit_item_limit answered:
+    // with both tier bands served, a nameless grupo is still ONE blank row.
+    const ambas = servidos({
+      tier_variation_name_length_limit: { min_limit: 1, max_limit: 20 },
+      tier_variation_option_length_limit: { min_limit: 1, max_limit: 20 },
+    });
+    for (const nome of ['', '   ']) {
+      const plano = comNome(nome, { limites: ambas });
+      expect(plano.problemas, JSON.stringify(nome)).toEqual([
+        {
+          campo: 'tier_variation_list',
+          motivo: M.opcoesDemais,
+          mensagem:
+            'o grupo g-cor não tem nome, e o tier do kit leva o nome do grupo — dê um nome a ' +
+            'ele em Variações',
+        },
+      ]);
+      expect(plano.corpo, JSON.stringify(nome)).toBeNull();
+    }
+    // ⚠️ Near-miss: the SAME served bands pass a named grupo.
+    expect(comNome('Cor', { limites: ambas }).problemas).toEqual([]);
+  });
+
+  it('a faixa do NOME, medida como ENVIADA: no máximo passa, máximo + 1 recusa — nunca truncado', () => {
+    const faixaDoNome = servidos({
+      tier_variation_name_length_limit: { min_limit: 1, max_limit: 3 },
+    });
+    expect(comNome('Cor', { limites: faixaDoNome }).problemas).toEqual([]);
+    // Padded to 5 code units, sent as 3: the band measures what is SENT.
+    expect(comNome('  Cor  ', { limites: faixaDoNome }).problemas).toEqual([]);
+    const fora = comNome('Core', { limites: faixaDoNome });
+    expect(fora.problemas).toEqual([
+      {
+        campo: 'tier_variation_list',
+        motivo: M.opcoesDemais,
+        mensagem:
+          'o nome do tier "Core" (o grupo g-cor) tem 4 caracteres, fora da faixa da categoria do ' +
+          'componente principal (1..3) — nunca truncado; encurte o nome em Variações',
+      },
+    ]);
+    expect(fora.corpo).toBeNull();
+  });
+
+  it('a faixa da OPÇÃO, medida como ENVIADA: no máximo passa, máximo + 1 recusa no campo do filho', () => {
+    const faixaDaOpcao = servidos({
+      tier_variation_option_length_limit: { min_limit: 1, max_limit: 4 },
+    });
+    const opcoes = (azul: string, preto: string) =>
+      planejarKit(
+        familia({
+          limites: faixaDaOpcao,
+          filhos: [filho(F_AZUL, { variante: azul }), filho(F_PRETO, { variante: preto })],
+        }),
+        fotos(),
+      );
+    expect(opcoes('Azul', 'Roxo').problemas).toEqual([]);
+    expect(opcoes(' Azul ', 'Roxo').problemas).toEqual([]);
+    const fora = opcoes('Azul', 'Preto');
+    expect(fora.problemas).toEqual([
+      {
+        campo: `filhos.${F_PRETO}`,
+        motivo: M.opcoesDemais,
+        mensagem:
+          `a opção "Preto" da variação ${F_PRETO} tem 5 caracteres, fora da faixa da categoria ` +
+          'do componente principal (1..4) — nunca truncado; encurte o nome em Variações',
+      },
+    ]);
+    expect(fora.corpo).toBeNull();
+  });
+
+  it('⚠️ QUASE-PAR: faixa NULA, limites não servidos ou ausentes ⇒ nenhum comprimento é medido', () => {
+    const longo = 'Cor de um nome bem comprido';
+    const variantesLongas = [
+      filho(F_AZUL, { variante: 'Azul celeste bem comprido' }),
+      filho(F_PRETO, { variante: 'Preto' }),
+    ];
+    for (const limites of [
+      servidos({}),
+      servidos({ item_name_length_limit: { min_limit: 1, max_limit: 100 } }),
+      { estado: 'indisponivel' } as const,
+      null,
+    ]) {
+      const plano = comNome(longo, { limites, filhos: variantesLongas });
+      expect(plano.problemas, JSON.stringify(limites)).toEqual([]);
+      expect(plano.corpo?.item_setting.tier_variation_list[0]?.name).toBe(longo);
+    }
+  });
+
+  it('a sentinela é NOSSA: faixas de 2 caracteres não recusam o par Kit / Padrão', () => {
+    const apertadas = servidos({
+      tier_variation_name_length_limit: { min_limit: 1, max_limit: 2 },
+      tier_variation_option_length_limit: { min_limit: 1, max_limit: 2 },
+    });
+    const plano = planejarKit(contexto({ limites: apertadas }), fotos());
+    expect(plano.problemas).toEqual([]);
+    expect(plano.corpo?.item_setting.tier_variation_list[0]?.name).toBe(NOME_TIER_KIT_UNICO);
   });
 });
 

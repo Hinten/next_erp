@@ -1186,6 +1186,19 @@ export function mapearFilho(args: ArgsMapearFilho): MapaProdutoShopee {
  * writes is `true`. ⚠️ Never `produto.ehKit` — thousands of ERP kits are
  * ORDINARY Shopee listings, and conflating the two stops their stock and price
  * sync without a word.
+ *
+ * ⚠️ **`brand_id` and `original_brand_name` are stamped TOGETHER, from the same
+ * `base.brand` (#1911, C9)** — an absent `brand` stamps BOTH `null`, and the
+ * name is Shopee's own, verbatim (blank included: publish reads it through
+ * `textoUtilizavel`, so a blank name reads as absent there). Until #1911 this
+ * builder wrote the id alone, so the `...existente` spread kept the name of the
+ * brand the listing USED to have: a brand changed in Seller Centre and
+ * re-imported paired the NEW id with the OLD name, which publish's brand cascade
+ * (`resolverMarcaDoAnuncio`, rung 2) sends UNCHECKED — a stored name skips the
+ * `get_brand_list` walk. Publish's write-back #2 (`publicarAnuncio.ts`) writes
+ * the name with the same expression; both writers now agree with the read they
+ * just made. Self-healing: the next import of a listing converges its pair, so
+ * no migration.
  */
 export function dadosLinkListagem(
   entrada: ItemLido,
@@ -1212,7 +1225,10 @@ export function dadosLinkListagem(
     item_status: itemStatusDeLink(entrada),
     logistic_info: base.logistic_info,
     wholesale: base.wholesales,
+    // ⚠️ The brand is a PAIR, both halves from this ONE read (#1911, C9) — never
+    // the id alone. See the docblock.
     brand_id: base.brand?.brand_id ?? null,
+    original_brand_name: base.brand?.original_brand_name ?? null,
     item_dangerous: base.item_dangerous,
     ...(entrada.taxInfo != null ? { tax_info: entrada.taxInfo } : {}),
     // ⚠️ UNCONDITIONAL, unlike `tax_info` above: a stored `null` (a link

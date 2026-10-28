@@ -55,6 +55,22 @@
  * same single clock read, same `esperar`, the same `FieldValue.increment` the
  * kit's recipe aviso raises through — and prints what it reported.
  *
+ * ⚠️ **A DRAFT (`--link <rascunho>`, #1911) needs a LIVE clock too.** Its first
+ * `add_item` runs under a publish lock whose send gate re-reads the time before
+ * EACH leg, so `--live` hands down `aoVivo.agora` — a real clock read on every
+ * call, NEVER the run's one `nowMs` (a constant would let a run that spent six
+ * minutes uploading photos still send after its lock expired) — and NO request
+ * deadline: a terminal has no platform ceiling, so the lock's own expiry is the
+ * only bound. `--confirmar-segundo-anuncio` and `--confirmar-criacao-incerta`
+ * ride the same object. The dry run never takes the lock.
+ *
+ * ⚠️ **A `--live` create with no `--link` MINTS a draft first** (#1911, K1-5),
+ * so the lock and the memory of an uncertain create have a document to live
+ * on. When the outcome of that first `add_item` is UNKNOWN the run exits 1 and
+ * prints the wait and the exact command to re-run (with `--link <the draft>`):
+ * the re-run looks for the listing by SKU before it sends anything. The dry
+ * run mints nothing.
+ *
  * ## What it prints, and what it must never print
  *
  * Everything is rendered through `lib/shopee/anuncios/publicarAnuncioCli.ts`,
@@ -86,19 +102,24 @@
  * is printed and answers 0.
  * ⚠️ A kit `--live` whose `add_kit_item` outcome is UNCERTAIN (`incerto`, the
  * route's 202) exits 1 too: nothing was written, and the summary prints the
- * exact command to re-run once the wait it names has passed.
+ * exact command to re-run once the wait it names has passed. So does an
+ * ordinary listing's uncertain `add_item` (#1911) — there the DRAFT recorded
+ * the attempt, and the command it prints names that draft.
  */
 import {
   ArgumentoInvalidoError,
   USO_PUBLICAR_ANUNCIO,
   descreverErroPublicacao,
+  ehConflitoDeRascunho,
   lerArgsPublicar,
   renderizarEnsaioDeKit,
+  renderizarItemIncerto,
   renderizarPlano,
   renderizarResultado,
   renderizarResultadoKit,
   resumoDaPublicacao,
   resumoDoEnsaioDeKit,
+  resumoDoItemIncerto,
   resumoDoResultado,
   resumoDoResultadoKit,
 } from '../lib/shopee/anuncios/publicarAnuncioCli';
@@ -142,6 +163,8 @@ async function main(): Promise<void> {
     principal,
     recriar,
     converterEmKit,
+    confirmarSegundoAnuncio,
+    confirmarCriacaoIncerta,
   } = comando.args;
 
   // ⚠️ The dynamic imports are what make "`--help` touches no environment and no
@@ -358,7 +381,25 @@ async function main(): Promise<void> {
 
   /* ---------------------------------- live ---------------------------------- */
 
-  const res = await publicarShopee(deps, entrada);
+  const res = await publicarShopee(
+    {
+      ...deps,
+      // #1911: the draft lock's LIVE clock and the two confirmations; no
+      // request deadline from a terminal (see the header). The credential is
+      // warmed before each leg's gate with the SAME token function the client
+      // signs with, so a refresh never runs between the gate and `add_item`.
+      aoVivo: {
+        agora: () => Date.now(),
+        prazoDaRequisicao: null,
+        aquecerCredencial: async () => {
+          await ctx.getAccessToken();
+        },
+        confirmarSegundoAnuncio,
+        confirmarCriacaoIncerta,
+      },
+    },
+    entrada,
+  );
   if (res === null) {
     aviso('');
     aviso(
@@ -394,6 +435,36 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (res.tipo === 'item-incerto') {
+    // ⚠️ #1911 (D5): the first add_item's outcome is UNKNOWN — the draft kept
+    // its lock and recorded the attempt. Not done: the exit code says so, and
+    // the summary prints the wait and the exact command to re-run — with this
+    // run's `--status UNLIST` and `--confirmar-segundo-anuncio` (batch-A review).
+    process.exitCode = 1;
+    const opcoesDoIncerto = { integracaoId, projectId, status, confirmarSegundoAnuncio };
+    if (json) {
+      log(
+        JSON.stringify(
+          {
+            modo: 'live',
+            tipo: 'item-incerto',
+            integracaoId,
+            resultado: resumoDoItemIncerto(res.resultado, opcoesDoIncerto),
+          },
+          null,
+          2,
+        ),
+      );
+      return;
+    }
+    log('== LIVE — criação INCERTA: a Shopee pode ter criado o anúncio ==');
+    log('');
+    for (const linha of renderizarItemIncerto(res.resultado, opcoesDoIncerto)) {
+      log(linha);
+    }
+    return;
+  }
+
   if (json) {
     log(
       JSON.stringify(
@@ -414,7 +485,9 @@ await main().catch((err: unknown) => {
   // Narrow enough to be useful and never wide enough to print a payload — the
   // whole table is `descreverErroPublicacao`, which is unit-tested.
   for (const linha of descreverErroPublicacao(err)) aviso(linha);
-  if (!(err instanceof ArgumentoInvalidoError)) {
+  // A draft's lock refusal (#1911) sent NOTHING — its describer says so, and
+  // the "maybe created" warning below would contradict it.
+  if (!(err instanceof ArgumentoInvalidoError) && !ehConflitoDeRascunho(err)) {
     aviso('');
     aviso(
       'Nada garante que nada foi criado: um erro DEPOIS do add_item (ou do add_kit_item) ' +

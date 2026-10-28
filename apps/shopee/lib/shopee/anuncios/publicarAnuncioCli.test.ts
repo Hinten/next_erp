@@ -36,7 +36,7 @@ import {
   type ShopeeLogisticsChannel,
 } from '@delfrance/integrations-shopee';
 
-import { ESTADO_ANUNCIO_SHOPEE, fotoSchema } from '@delfrance/schemas';
+import { CODIGO_RASCUNHO_SHOPEE, ESTADO_ANUNCIO_SHOPEE, fotoSchema } from '@delfrance/schemas';
 
 import type { PlanoKit } from '../kits/planoKit';
 import type { ContextoKitPreparado } from '../kits/prepararKit';
@@ -55,7 +55,10 @@ import {
   ShopeePublishBlockedError,
   ShopeePublishRejectedError,
   type ProblemaDeBloqueio,
+  type ProblemaPublicacao,
 } from './errosPublicacao';
+import type { ResultadoItemIncerto } from './criacaoIncerta';
+
 import { MOTIVO_FOTO_PUBLICACAO } from './fotosPublicacao';
 import type { PlanoPublicacao } from './planoPublicacao';
 import {
@@ -66,19 +69,27 @@ import {
   MSG_STATUS_INVALIDO,
   NOTA_SANDBOX_SG_KIT,
   USO_PUBLICAR_ANUNCIO,
+  FRASE_ANUNCIO_SEMELHANTE,
+  LINHA_DA_BUSCA_POR_SKU_NO_ENSAIO,
+  descreverConflitoDeRascunho,
   descreverErroPublicacao,
+  descreverRecusaPublicacao,
+  ehConflitoDeRascunho,
   lerArgsPublicar,
   renderizarEnsaioDeKit,
+  renderizarItemIncerto,
   renderizarPlano,
   renderizarResultado,
   renderizarResultadoKit,
   resumoDaPublicacao,
   resumoDoEnsaioDeKit,
+  resumoDoItemIncerto,
   resumoDoResultado,
   resumoDoResultadoKit,
   type ContextoDoEnsaio,
   type OpcoesDoKitCli,
 } from './publicarAnuncioCli';
+import { ConflitoDeRascunhoShopeeError } from './reservaRascunho';
 import { lerArgsReverificar } from './reverificarAnuncioCli';
 import type { ResultadoPublicacao } from './publicarAnuncio';
 import type { ResultadoTabelaDeMedidasShopee } from './tabelaMedidasPublicacao';
@@ -341,6 +352,8 @@ function plano(over: Partial<PlanoPublicacao> = {}): PlanoPublicacao {
       grupos: [],
       filhos: [],
       bandaDeEstoque: null,
+      bandaNomeDoTier: null,
+      bandaNomeDaOpcao: null,
       imagensDeOpcao: null,
       armazenados: [],
     },
@@ -467,6 +480,8 @@ describe('lerArgsPublicar', () => {
         principal: null,
         recriar: false,
         converterEmKit: false,
+        confirmarSegundoAnuncio: false,
+        confirmarCriacaoIncerta: false,
       },
     });
   });
@@ -502,8 +517,35 @@ describe('lerArgsPublicar', () => {
         principal: 'comp-a-filho',
         recriar: true,
         converterEmKit: false,
+        confirmarSegundoAnuncio: false,
+        confirmarCriacaoIncerta: false,
       },
     });
+  });
+
+  it('#1911 P5: --confirmar-criacao-incerta liga a atestação; sem ela, false — independente da outra, e não liga o --live', () => {
+    const base = ['--integracao', INTEGRACAO_ID, '--produto', PRODUTO_ID, '--link', LINK_DOC_ID];
+    const sem = lerArgsPublicar([...base, '--live']);
+    const com = lerArgsPublicar([...base, '--live', '--confirmar-criacao-incerta']);
+    if (sem.kind !== 'publicar' || com.kind !== 'publicar') throw new Error('esperava publicar');
+    expect(sem.args.confirmarCriacaoIncerta).toBe(false);
+    expect(com.args).toEqual({ ...sem.args, confirmarCriacaoIncerta: true });
+    // ⛔ quase-pares: não liga a OUTRA confirmação, nem o --live.
+    expect(com.args.confirmarSegundoAnuncio).toBe(false);
+    const soAtesta = lerArgsPublicar([...base, '--confirmar-criacao-incerta']);
+    expect(soAtesta.kind === 'publicar' && soAtesta.args.live).toBe(false);
+  });
+
+  it('#1911: --confirmar-segundo-anuncio liga a confirmação; sem ela, false — e ela não mexe em mais nada', () => {
+    const base = ['--integracao', INTEGRACAO_ID, '--produto', PRODUTO_ID, '--link', LINK_DOC_ID];
+    const sem = lerArgsPublicar([...base, '--live']);
+    const com = lerArgsPublicar([...base, '--live', '--confirmar-segundo-anuncio']);
+    if (sem.kind !== 'publicar' || com.kind !== 'publicar') throw new Error('esperava publicar');
+    expect(sem.args.confirmarSegundoAnuncio).toBe(false);
+    expect(com.args).toEqual({ ...sem.args, confirmarSegundoAnuncio: true });
+    // ⛔ quase-par: a confirmação NÃO liga o --live — o dry-run continua o padrão.
+    const soConfirma = lerArgsPublicar([...base, '--confirmar-segundo-anuncio']);
+    expect(soConfirma.kind === 'publicar' && soConfirma.args.live).toBe(false);
   });
 
   it('--help responde ANTES de qualquer validação, e -h também', () => {
@@ -746,6 +788,22 @@ describe('renderizarPlano — a lista permitida do design-P2 §10.3', () => {
     ['os passos que o --live executaria', 'init_tier_variation'],
   ])('imprime %s', (_o, trecho) => {
     expect(texto).toContain(trecho);
+  });
+
+  it('(#1911 P5b) o dry-run de uma CRIAÇÃO diz que a busca por SKU na loja NÃO rodou — ⛔ quase-par: o de uma ATUALIZAÇÃO não fala dela', () => {
+    // "problemas: NENHUM" never stands for "no listing with this SKU exists":
+    // the look-up lives under the draft's lock, which only --live takes.
+    expect(texto).toContain(LINHA_DA_BUSCA_POR_SKU_NO_ENSAIO);
+    expect(LINHA_DA_BUSCA_POR_SKU_NO_ENSAIO).toContain('só no --live');
+    const atualizacao = renderizarPlano(
+      plano({ itemId: ITEM_ID, ehAtualizacao: true }),
+      contexto(),
+    ).join('\n');
+    expect(atualizacao).not.toContain('busca de SKU na loja');
+    // The help says the same, and that no flag overrides the look-up.
+    expect(USO_PUBLICAR_ANUNCIO).toContain('Antes do PRIMEIRO add_item do rascunho');
+    expect(USO_PUBLICAR_ANUNCIO).toMatch(/Nenhuma flag passa\s+por cima dessa busca/);
+    expect(USO_PUBLICAR_ANUNCIO).toContain('NÃO procura anúncio nenhum na loja');
   });
 
   it('diz que o produto é publicável quando não há problema nenhum', () => {
@@ -1191,10 +1249,19 @@ describe('scripts/publicar-anuncio.ts', () => {
     expect(FONTE_SCRIPT).toContain("await import('firebase-admin/firestore')");
   });
 
-  it('⚠️ um kit INCERTO no --live sai com 1 — e é o ÚNICO exitCode do ramo live além do 404', () => {
+  it('⚠️ os INCERTOS no --live saem com 1 — o do kit e (#1911 P5) o do anúncio comum — os ÚNICOS exitCode do ramo live além do 404', () => {
     expect(RAMO_LIVE).toContain("res.resultado.desfecho === 'incerto'");
-    expect(RAMO_LIVE.match(/process\.exitCode = 1/g)).toHaveLength(2);
+    expect(RAMO_LIVE).toContain("res.tipo === 'item-incerto'");
+    expect(RAMO_LIVE.match(/process\.exitCode = 1/g)).toHaveLength(3);
     expect(RAMO_LIVE).toContain('renderizarResultadoKit(');
+    expect(RAMO_LIVE).toContain('renderizarItemIncerto(');
+    expect(RAMO_LIVE).toContain('resumoDoItemIncerto(');
+    // batch-A review: the re-run command is built from THIS run's flags.
+    expect(RAMO_LIVE).toContain(
+      'const opcoesDoIncerto = { integracaoId, projectId, status, confirmarSegundoAnuncio };',
+    );
+    expect(RAMO_LIVE).toContain('resumoDoItemIncerto(res.resultado, opcoesDoIncerto)');
+    expect(RAMO_LIVE).toContain('renderizarItemIncerto(res.resultado, opcoesDoIncerto)');
   });
 
   it('devolve na ajuda ANTES do primeiro await import', () => {
@@ -1241,6 +1308,30 @@ describe('descreverErroPublicacao', () => {
     expect(texto).toContain(PRODUTO_ID);
     expect(texto).toContain('novo (primeira publicação)');
     expect(texto).toContain('a recusa é anterior');
+    // ⛔ quase-par do aviso abaixo: outro motivo não fala do rascunho.
+    expect(texto).not.toContain('GRAVADOS no rascunho');
+  });
+
+  it('(batch-A review) categoria-invalida ou nome-fora-da-faixa numa CRIAÇÃO: diz que o rascunho fixa os valores e como editá-lo', () => {
+    function bloqueio(motivo: ProblemaDeBloqueio['motivo'], itemId: number | null): string {
+      return descreverErroPublicacao(
+        new ShopeePublishBlockedError({
+          produtoId: PRODUTO_ID,
+          itemId,
+          problemas: [{ campo: 'category_id', motivo, mensagem: 'frase do problema' }],
+        }),
+      ).join('\n');
+    }
+    for (const motivo of [
+      MOTIVO_PUBLICACAO_BLOQUEADA.categoriaInvalida,
+      MOTIVO_PUBLICACAO_BLOQUEADA.nomeForaDaFaixa,
+    ]) {
+      const texto = bloqueio(motivo, null);
+      expect(texto, motivo).toContain('GRAVADOS no rascunho');
+      expect(texto, motivo).toContain('rascunho/atualizar');
+      // ⛔ quase-par: numa ATUALIZAÇÃO (item_id) não há rascunho a citar.
+      expect(bloqueio(motivo, 2500139861), motivo).not.toContain('GRAVADOS no rascunho');
+    }
   });
 
   it('(R3-02) o fecho de um bloqueio NUNCA promete que nenhum vínculo foi gravado no --live: um kit nativo grava antes de recusar', () => {
@@ -1483,7 +1574,7 @@ function ensaioDeKit(
     vivo: null,
     linhasDoAnuncio: [],
     linhasDaConta: [],
-    busca: { completo: true, achados: [], paginas: 1, chamadas: 2 },
+    busca: { completo: true, achados: [], incompleta: null, paginas: 1, chamadas: 2 },
     nossosVivos: new Map(),
     fotos: {
       item: {
@@ -1991,5 +2082,315 @@ describe('o resultado de um kit nativo no --live (passo 19)', () => {
       OPCOES_KIT,
     );
     expect(JSON.parse(JSON.stringify(r))).toEqual(r);
+  });
+});
+
+/* ========================================================================== */
+/*  #1911 · a recusa da TRAVA de um rascunho (os 409) e o --live do script     */
+/* ========================================================================== */
+
+describe('a recusa da trava de um rascunho (#1911)', () => {
+  const RASCUNHO = 'rasc-a';
+
+  function conflito(
+    code: (typeof CODIGO_RASCUNHO_SHOPEE)[keyof typeof CODIGO_RASCUNHO_SHOPEE],
+    extra: Partial<{
+      aguardarMs: number;
+      vinculos: ConflitoDeRascunhoShopeeError['vinculos'];
+    }> = {},
+  ): ConflitoDeRascunhoShopeeError {
+    return new ConflitoDeRascunhoShopeeError({
+      code,
+      linkDocId: RASCUNHO,
+      mensagem: `frase de mecanismo do rascunho ${RASCUNHO}`,
+      ...extra,
+    });
+  }
+
+  it('cada código de CODIGO_RASCUNHO_SHOPEE é reconhecido e descrito por CLASSE + código, com o rascunho e a frase', () => {
+    for (const code of Object.values(CODIGO_RASCUNHO_SHOPEE)) {
+      const err = conflito(code);
+      expect(ehConflitoDeRascunho(err), code).toBe(true);
+      const linhas = descreverErroPublicacao(err);
+      expect(linhas[0]).toBe(`❌ ConflitoDeRascunhoShopeeError (${code})`);
+      const texto = linhas.join('\n');
+      expect(texto).toContain(RASCUNHO);
+      expect(texto).toContain(`frase de mecanismo do rascunho ${RASCUNHO}`);
+      expect(texto).toContain('Nada foi enviado à Shopee por esta execução.');
+    }
+  });
+
+  it('EM_ANDAMENTO de um irmão: a espera em segundos (arredondada PARA CIMA) e os vínculos, rascunho e item', () => {
+    const texto = descreverConflitoDeRascunho(
+      conflito(CODIGO_RASCUNHO_SHOPEE.publicacaoEmAndamento, {
+        aguardarMs: 1_001,
+        vinculos: [
+          { linkDocId: 'rasc-b', itemId: null, rascunho: true },
+          { linkDocId: 'link-vivo', itemId: ITEM_ID, rascunho: false },
+        ],
+      }),
+    ).join('\n');
+    expect(texto).toContain('aguardar ................ 2 s');
+    expect(texto).toContain('vínculos (2):');
+    expect(texto).toMatch(/rasc-b\s+rascunho/);
+    expect(texto).toMatch(new RegExp(`link-vivo\\s+item ${String(ITEM_ID)}`));
+    // ⛔ quase-par: sem a espera e sem vínculos, nenhuma das duas linhas aparece.
+    const seco = descreverConflitoDeRascunho(conflito(CODIGO_RASCUNHO_SHOPEE.contencao)).join('\n');
+    expect(seco).not.toContain('aguardar');
+    expect(seco).not.toContain('vínculos');
+  });
+
+  it('CONTA_JA_TEM_ANUNCIO — e SÓ ele — ensina a repetir com --confirmar-segundo-anuncio', () => {
+    const dica = '--confirmar-segundo-anuncio';
+    expect(
+      descreverConflitoDeRascunho(
+        conflito(CODIGO_RASCUNHO_SHOPEE.contaJaTemAnuncio, {
+          vinculos: [{ linkDocId: 'rasc-b', itemId: null, rascunho: true }],
+        }),
+      ).join('\n'),
+    ).toContain(dica);
+    for (const code of Object.values(CODIGO_RASCUNHO_SHOPEE)) {
+      if (code === CODIGO_RASCUNHO_SHOPEE.contaJaTemAnuncio) continue;
+      // ⚠️ a flag nunca passa por cima de um irmão OCUPADO — sugerir ali seria mentira.
+      expect(descreverConflitoDeRascunho(conflito(code)).join('\n'), code).not.toContain(dica);
+    }
+  });
+
+  it('⛔ quase-pares: um erro da Shopee, um código fora do vocabulário ou um objeto sem linkDocId NÃO são a recusa', () => {
+    const shopee = new ShopeeApiError('Shopee respondeu error_param (HTTP 200)', {
+      code: 'error_param',
+      kind: SHOPEE_ERROR_KIND.other,
+      httpStatus: 200,
+      path: '/api/v2/product/add_item',
+    });
+    expect(ehConflitoDeRascunho(shopee)).toBe(false);
+    expect(descreverErroPublicacao(shopee)[0]).not.toContain('ConflitoDeRascunhoShopeeError');
+    expect(
+      ehConflitoDeRascunho({
+        code: 'SHOPEE_PUBLICACAO_EM_OUTRA_COISA',
+        linkDocId: 'x',
+        message: 'm',
+      }),
+    ).toBe(false);
+    expect(
+      ehConflitoDeRascunho({ code: CODIGO_RASCUNHO_SHOPEE.contencao, message: 'sem linkDocId' }),
+    ).toBe(false);
+    expect(ehConflitoDeRascunho(null)).toBe(false);
+    expect(ehConflitoDeRascunho(CODIGO_RASCUNHO_SHOPEE.contencao)).toBe(false);
+  });
+
+  it('⚠️ a classe é import TYPE aqui: o script importa este módulo antes do --help, e a casa da classe carrega as coleções', () => {
+    expect(FONTE_CLI).toContain(
+      "import type { ConflitoDeRascunhoShopeeError } from './reservaRascunho';",
+    );
+    expect(FONTE_CLI).not.toMatch(/import \{[^}]*\} from '\.\/reservaRascunho'/);
+    expect(FONTE_CLI).not.toMatch(/instanceof ConflitoDeRascunhoShopeeError/);
+  });
+
+  it('o uso documenta a flag e diz que ela só vale no --live', () => {
+    expect(USO_PUBLICAR_ANUNCIO).toContain('--confirmar-segundo-anuncio');
+    expect(USO_PUBLICAR_ANUNCIO).toMatch(/Só vale no --live/);
+  });
+});
+
+/* ========================================================================== */
+/*  #1911 P5 · a criação INCERTA de um anúncio comum e o anúncio SEMELHANTE    */
+/* ========================================================================== */
+
+describe('a criação INCERTA de um anúncio comum (#1911, D5)', () => {
+  const RASCUNHO = 'rasc-cunhado';
+  const OPCOES = {
+    integracaoId: INTEGRACAO_ID,
+    projectId: null,
+    status: SHOPEE_ITEM_STATUS_WRITABLE.normal,
+    confirmarSegundoAnuncio: false,
+  } as const;
+
+  function incerto(over: Partial<ResultadoItemIncerto> = {}): ResultadoItemIncerto {
+    return {
+      produtoId: PRODUTO_ID,
+      linkDocId: RASCUNHO,
+      aguardarMs: 240_000,
+      reenvioVerificaSku: true,
+      recusa: { codigo: 'error_inner', fraseShopee: 'Our system is taking some time' },
+      mensagem: 'a Shopee pode ter criado o anúncio — frase do resultado',
+      ...over,
+    };
+  }
+
+  it('o resumo é por NOME, e o comando de retomada NOMEIA o rascunho (--link), com --live no fim', () => {
+    const r = resumoDoItemIncerto(incerto(), OPCOES);
+    expect(r).toEqual({
+      produtoId: PRODUTO_ID,
+      linkDocId: RASCUNHO,
+      aguardarMs: 240_000,
+      reenvioVerificaSku: true,
+      recusa: { codigo: 'error_inner', fraseShopee: 'Our system is taking some time' },
+      mensagem: 'a Shopee pode ter criado o anúncio — frase do resultado',
+      comandoDeRetomada:
+        `pnpm --filter @delfrance/shopee-app publicar:anuncio --integracao ${INTEGRACAO_ID} ` +
+        `--produto ${PRODUTO_ID} --link ${RASCUNHO} --live`,
+    });
+    expect(JSON.parse(JSON.stringify(r))).toEqual(r);
+    // ⛔ quase-par: --project entra quando foi passado, ANTES do --live.
+    expect(
+      resumoDoItemIncerto(incerto(), { ...OPCOES, projectId: 'demo-erp' }).comandoDeRetomada,
+    ).toMatch(/--link rasc-cunhado --project demo-erp --live$/);
+  });
+
+  it('as linhas: a espera em segundos (para CIMA), o SKU, a resposta da Shopee e o comando', () => {
+    const texto = renderizarItemIncerto(incerto({ aguardarMs: 239_001 }), OPCOES).join('\n');
+    expect(texto).toContain('INCERTO');
+    expect(texto).toContain(`rascunho ................ ${RASCUNHO}`);
+    expect(texto).toContain('aguardar ................ 240 s');
+    expect(texto).toContain('reenvio confere o SKU ... sim');
+    expect(texto).toContain('error_inner — "Our system is taking some time"');
+    expect(texto).toContain(`--link ${RASCUNHO} --live`);
+    // ⛔ quase-pares: sem resposta da Shopee não há a linha; sem SKU, ela diz.
+    const seco = renderizarItemIncerto(
+      incerto({ recusa: null, reenvioVerificaSku: false }),
+      OPCOES,
+    ).join('\n');
+    expect(seco).not.toContain('resposta da Shopee');
+    expect(seco).toContain('(a tentativa foi enviada sem SKU)');
+  });
+
+  it('(batch-A review) o comando EXATO carrega --status UNLIST e --confirmar-segundo-anuncio quando a execução os usou', () => {
+    const pausado = resumoDoItemIncerto(incerto(), {
+      ...OPCOES,
+      status: SHOPEE_ITEM_STATUS_WRITABLE.unlist,
+    }).comandoDeRetomada;
+    expect(pausado).toMatch(/--link rasc-cunhado --status UNLIST --live$/);
+    // ⛔ quase-par: NORMAL (o padrão) não é impresso.
+    expect(resumoDoItemIncerto(incerto(), OPCOES).comandoDeRetomada).not.toContain('--status');
+
+    const confirmado = resumoDoItemIncerto(incerto(), {
+      ...OPCOES,
+      confirmarSegundoAnuncio: true,
+    }).comandoDeRetomada;
+    expect(confirmado).toMatch(/--link rasc-cunhado --confirmar-segundo-anuncio --live$/);
+    expect(resumoDoItemIncerto(incerto(), OPCOES).comandoDeRetomada).not.toContain(
+      '--confirmar-segundo-anuncio',
+    );
+
+    // Os dois, e o --project, na ordem: flags, --project, --live.
+    expect(
+      resumoDoItemIncerto(incerto(), {
+        integracaoId: INTEGRACAO_ID,
+        projectId: 'demo-erp',
+        status: SHOPEE_ITEM_STATUS_WRITABLE.unlist,
+        confirmarSegundoAnuncio: true,
+      }).comandoDeRetomada,
+    ).toMatch(
+      /--link rasc-cunhado --status UNLIST --confirmar-segundo-anuncio --project demo-erp --live$/,
+    );
+    // ⚠️ Nunca a atestação: ela é do operador, depois de conferir o Seller Centre.
+    expect(pausado).not.toContain('--confirmar-criacao-incerta');
+    // O renderizador imprime o MESMO comando.
+    expect(
+      renderizarItemIncerto(incerto(), { ...OPCOES, status: SHOPEE_ITEM_STATUS_WRITABLE.unlist }),
+    ).toContain(`    ${pausado}`);
+  });
+
+  it('o uso documenta --confirmar-criacao-incerta (os DOIS casos, só no --live) e o rascunho cunhado sem --link', () => {
+    expect(USO_PUBLICAR_ANUNCIO).toContain('--confirmar-criacao-incerta');
+    expect(USO_PUBLICAR_ANUNCIO).toMatch(/só vale em DOIS casos/);
+    expect(USO_PUBLICAR_ANUNCIO).toMatch(/Nunca\s+pula a busca/);
+    // batch-A review: the mint happens ONLY when the conta holds NO link.
+    expect(USO_PUBLICAR_ANUNCIO).toMatch(/Sem --link, quando a conta ainda não tem NENHUM vínculo/);
+    expect(USO_PUBLICAR_ANUNCIO).not.toMatch(/Sem --link, o --live cria primeiro/);
+    expect(USO_PUBLICAR_ANUNCIO).toMatch(/sem --link ATUALIZA esse anúncio/);
+    expect(USO_PUBLICAR_ANUNCIO).toMatch(/bloqueia a exclusão do produto/);
+    expect(USO_PUBLICAR_ANUNCIO).toMatch(
+      /criação INCERTA\s+de anúncio comum no --live também sai com 1/,
+    );
+  });
+
+  it('a recusa do RASCUNHO cunhado (a do create da rota de rascunho) é descrita pela PRÓPRIA classe', () => {
+    const recusa = Object.assign(new Error('frase do create'), {
+      name: 'RecusaDeRascunhoShopeeError',
+      code: CODIGO_RASCUNHO_SHOPEE.contaJaTemAnuncio,
+      linkDocId: RASCUNHO,
+      aguardarMs: null,
+      vinculos: [{ linkDocId: 'rasc-b', itemId: null, rascunho: true }],
+    });
+    expect(ehConflitoDeRascunho(recusa)).toBe(true);
+    expect(descreverErroPublicacao(recusa)[0]).toBe(
+      `❌ RecusaDeRascunhoShopeeError (${CODIGO_RASCUNHO_SHOPEE.contaJaTemAnuncio})`,
+    );
+  });
+});
+
+describe('o anúncio SEMELHANTE (#1911, D15, K2-2) — a NOSSA frase mora na CLI', () => {
+  function recusa(motivo: ProblemaPublicacao['motivo']): ShopeePublishRejectedError {
+    return new ShopeePublishRejectedError({
+      etapa: ETAPA_PUBLICACAO.addItem,
+      shopeeCode: 'error_repeated_mtsku',
+      produtoId: PRODUTO_ID,
+      itemId: null,
+      problemas: [
+        { campo: 'item_sku', motivo, mensagem: 'A similar product has already been uploaded' },
+      ],
+    });
+  }
+
+  it('a linha do error_repeated_mtsku ganha a frase do D15 (importe-o; duplicata pode ser spam)', () => {
+    const texto = descreverRecusaPublicacao(
+      recusa(MOTIVO_PROBLEMA_PUBLICACAO.anuncioSemelhanteExistente),
+    ).join('\n');
+    expect(texto).toContain('A similar product has already been uploaded');
+    expect(texto).toContain(FRASE_ANUNCIO_SEMELHANTE);
+    expect(FRASE_ANUNCIO_SEMELHANTE).toContain('importe-o');
+    expect(FRASE_ANUNCIO_SEMELHANTE).toContain('spam');
+  });
+
+  it('⛔ quase-par: qualquer OUTRO motivo não ganha a frase', () => {
+    expect(
+      descreverRecusaPublicacao(recusa(MOTIVO_PROBLEMA_PUBLICACAO.desconhecido)).join('\n'),
+    ).not.toContain(FRASE_ANUNCIO_SEMELHANTE);
+  });
+});
+
+describe('scripts/publicar-anuncio.ts — o relógio VIVO do rascunho (#1911)', () => {
+  const RAMO_DRY_RUN = FONTE_SCRIPT.slice(
+    FONTE_SCRIPT.indexOf('if (!live) {'),
+    FONTE_SCRIPT.indexOf('/* ---------------------------------- live'),
+  );
+  const RAMO_LIVE = FONTE_SCRIPT.slice(
+    FONTE_SCRIPT.indexOf('/* ---------------------------------- live'),
+    FONTE_SCRIPT.indexOf('await main()'),
+  );
+
+  it('o --live entrega aoVivo com um relógio LIDO A CADA CHAMADA, sem prazo de requisição, e as DUAS flags', () => {
+    // ⚠️ Spelled in FRAGMENTS: every `.ts` under `anuncios/` — tests included —
+    // is grepped as raw text for the clock call (`avisos/autorizacao.test.ts`).
+    const aoVivo = new RegExp(
+      [
+        'aoVivo: \\{\\s*agora: \\(\\) => Date',
+        '\\.now',
+        '\\(\\),\\s*prazoDaRequisicao: null,\\s*',
+        // Batch-A P3-F1: the warm, through the SAME token function the client
+        // signs with — the token itself never leaves the script.
+        'aquecerCredencial: async \\(\\) => \\{\\s*await ctx\\.getAccessToken\\(\\);\\s*\\},\\s*',
+        'confirmarSegundoAnuncio,\\s*',
+        'confirmarCriacaoIncerta,\\s*\\}',
+      ].join(''),
+    );
+    expect(RAMO_LIVE).toMatch(aoVivo);
+
+    // ⛔ o mutante K1-3: o relógio constante da execução faria a porta passar para sempre.
+    expect(FONTE_SCRIPT).not.toMatch(/agora:\s*\(\)\s*=>\s*nowMs/);
+    expect(FONTE_SCRIPT).not.toMatch(/agora:\s*nowMs/);
+  });
+
+  it('⛔ o dry-run nunca recebe aoVivo — a trava é uma ESCRITA', () => {
+    expect(RAMO_DRY_RUN.length).toBeGreaterThan(0);
+    expect(RAMO_DRY_RUN).not.toContain('aoVivo');
+  });
+
+  it('a recusa da trava não ganha o aviso de "talvez criado" — nada foi enviado', () => {
+    expect(FONTE_SCRIPT).toContain(
+      '!(err instanceof ArgumentoInvalidoError) && !ehConflitoDeRascunho(err)',
+    );
   });
 });

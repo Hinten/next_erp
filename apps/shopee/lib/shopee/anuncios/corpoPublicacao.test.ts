@@ -11,6 +11,8 @@ import {
   CODIGO_SELECAO_EXCEDE_LIMITE,
   CODIGO_SELECAO_INVALIDA,
   MSG_CATEGORY_ID_INVALIDO,
+  MSG_CONFIRMAR_CRIACAO_INCERTA_INVALIDO,
+  MSG_CONFIRMAR_SEGUNDO_ANUNCIO_INVALIDO,
   MSG_CONVERTER_INVALIDO,
   MSG_LINK_EXIGE_UM_PRODUTO,
   MSG_OPCOES_DE_KIT_EXCLUSIVAS,
@@ -59,7 +61,7 @@ describe('naoDocId', () => {
 });
 
 describe('lerCorpoPublicar', () => {
-  it('lê os três campos e aplica os padrões (os três de kit do passo 19 incluídos)', () => {
+  it('lê os três campos e aplica os padrões (os três de kit do passo 19 e a confirmação do #1911 incluídos)', () => {
     const lido = lerCorpoPublicar({ integracaoId: INT_A, produtoId: PRODUTO });
 
     expect(lido.ok).toBe(true);
@@ -73,6 +75,8 @@ describe('lerCorpoPublicar', () => {
       principal: null,
       recriar: false,
       converterEmKit: false,
+      confirmarSegundoAnuncio: false,
+      confirmarCriacaoIncerta: false,
     });
   });
 
@@ -250,6 +254,79 @@ describe('lerCorpoPublicar — os campos de kit nativo (passo 19, R-a)', () => {
     expect(recusa({ ...base, recriar: true, linkDocId: null })).toBe(MSG_RECRIAR_SEM_LINK);
     // ⛔ quase-par: o converter NÃO exige o link (o despacho escolhe o comum).
     expect(lerCorpoPublicar({ ...base, converterEmKit: true }).ok).toBe(true);
+  });
+});
+
+describe('lerCorpoPublicar — confirmarSegundoAnuncio (#1911, D15)', () => {
+  const base = { integracaoId: INT_A, produtoId: PRODUTO, linkDocId: LINK };
+
+  it('ausente e null ⇒ false; true e false passam como vieram', () => {
+    expect(lerCorpoPublicar(base)).toMatchObject({ valor: { confirmarSegundoAnuncio: false } });
+    expect(lerCorpoPublicar({ ...base, confirmarSegundoAnuncio: null })).toMatchObject({
+      valor: { confirmarSegundoAnuncio: false },
+    });
+    expect(lerCorpoPublicar({ ...base, confirmarSegundoAnuncio: false })).toMatchObject({
+      valor: { confirmarSegundoAnuncio: false },
+    });
+    expect(lerCorpoPublicar({ ...base, confirmarSegundoAnuncio: true })).toMatchObject({
+      valor: { confirmarSegundoAnuncio: true },
+    });
+  });
+
+  it("⛔ um `'true'` em TEXTO (e 1, 'false', {}) é RECUSADO com a frase do campo, nunca coagido", () => {
+    for (const v of ['true', 'false', 1, 0, {}, []]) {
+      expect(lerCorpoPublicar({ ...base, confirmarSegundoAnuncio: v }), JSON.stringify(v)).toEqual({
+        ok: false,
+        erro: MSG_CONFIRMAR_SEGUNDO_ANUNCIO_INVALIDO,
+      });
+    }
+  });
+
+  it('⛔ quase-par: a confirmação não muda nenhum outro campo e não exige linkDocId', () => {
+    const sem = lerCorpoPublicar({ integracaoId: INT_A, produtoId: PRODUTO });
+    const com = lerCorpoPublicar({
+      integracaoId: INT_A,
+      produtoId: PRODUTO,
+      confirmarSegundoAnuncio: true,
+    });
+    if (!sem.ok || !com.ok) throw new Error('esperava os dois corpos válidos');
+    expect(com.valor).toEqual({ ...sem.valor, confirmarSegundoAnuncio: true });
+  });
+});
+
+describe('lerCorpoPublicar — confirmarCriacaoIncerta (#1911, D5)', () => {
+  const base = { integracaoId: INT_A, produtoId: PRODUTO, linkDocId: LINK };
+
+  it('ausente e null ⇒ false; true e false passam como vieram', () => {
+    expect(lerCorpoPublicar(base)).toMatchObject({ valor: { confirmarCriacaoIncerta: false } });
+    for (const [v, esperado] of [
+      [null, false],
+      [false, false],
+      [true, true],
+    ] as const) {
+      expect(lerCorpoPublicar({ ...base, confirmarCriacaoIncerta: v }), String(v)).toMatchObject({
+        valor: { confirmarCriacaoIncerta: esperado },
+      });
+    }
+  });
+
+  it("⛔ um `'true'` em TEXTO (e 1, 'false', {}) é RECUSADO com a frase DO CAMPO, nunca coagido", () => {
+    for (const v of ['true', 'false', 1, 0, {}, []]) {
+      expect(lerCorpoPublicar({ ...base, confirmarCriacaoIncerta: v }), JSON.stringify(v)).toEqual({
+        ok: false,
+        erro: MSG_CONFIRMAR_CRIACAO_INCERTA_INVALIDO,
+      });
+    }
+    expect(MSG_CONFIRMAR_CRIACAO_INCERTA_INVALIDO).toContain('confirmarCriacaoIncerta');
+  });
+
+  it('⛔ quase-par: as duas confirmações são INDEPENDENTES — uma nunca liga a outra', () => {
+    const sem = lerCorpoPublicar(base);
+    const incerta = lerCorpoPublicar({ ...base, confirmarCriacaoIncerta: true });
+    const segundo = lerCorpoPublicar({ ...base, confirmarSegundoAnuncio: true });
+    if (!sem.ok || !incerta.ok || !segundo.ok) throw new Error('esperava os três corpos válidos');
+    expect(incerta.valor).toEqual({ ...sem.valor, confirmarCriacaoIncerta: true });
+    expect(segundo.valor).toEqual({ ...sem.valor, confirmarSegundoAnuncio: true });
   });
 });
 

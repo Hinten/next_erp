@@ -454,10 +454,12 @@ export async function prepararKit(
     ehFamiliaDeUm({ id: produto.id, paiId: textoOuNull(raw.paiId), filhoUnicoId }) &&
     filhosCrus.length === 1 &&
     filhosCrus[0]?.id === filhoUnicoId;
+  // #1911 batch-A: the name is the grupo's OWN (`lerGrupos` reads a nameless
+  // grupo as `''`), and an UNREADABLE grupo (absent doc) is `''` too — never the
+  // doc id, which would be published as the buyer-visible tier name. The plan
+  // refuses a blank authored name (`planejarTier`, `opcoes-demais`).
   const grupo =
-    familiaDeUm || grupoIds.length !== 1
-      ? null
-      : { id: grupoIds[0]!, nome: grupoLido?.nome ?? grupoIds[0]! };
+    familiaDeUm || grupoIds.length !== 1 ? null : { id: grupoIds[0]!, nome: grupoLido?.nome ?? '' };
 
   const ordenados = filhosCrus
     .map((cru, i) => {

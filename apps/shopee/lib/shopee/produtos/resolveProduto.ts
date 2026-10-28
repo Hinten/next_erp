@@ -44,12 +44,47 @@
  * one set of tests, and the CLI's dry run reaches the same verdict a live run
  * would. Nothing is written between this module and that throw.
  *
+ * ## ⚠️ A DRAFT is adopted only on EVIDENCE (#1911, D5 / K1-8)
+ *
+ * A draft (`ehRascunhoShopee`: no `item_id`) is never reached by rung 1 — it
+ * resolves by `item_id`. When the SKU rung binds an ordinary listing to ONE
+ * produto that holds no link for it yet, {@link resolverPaiDaListagem} reads
+ * that produto's `prodshopee` and adopts a draft ONLY when
+ * {@link veredictoDeAdocaoShopee} answers `adotavel`: a draft of THIS conta
+ * that carries attempt evidence (`janelaDaCriacaoIncertaShopee` — a record of
+ * an uncertain create, or a publish lock its run STAMPED before the send; a
+ * lock never stamped is no evidence, batch-A review) and whose window holds this
+ * listing's `create_time` (`criadoNaJanelaShopee === 'dentro'`). That is the
+ * listing the draft's own publish may have created and never recorded. Every
+ * other draft is left byte-for-byte alone and the listing gets today's `add`:
+ *
+ *  - no evidence — every legacy draft, a draft never sent (a lock whose run
+ *    has not stamped it included): a same-SKU listing the operator made
+ *    elsewhere is not this draft's;
+ *  - created BEFORE the window (`fora`) — an older listing, never the attempt's;
+ *  - `create_time` unknown (`desconhecido`) — never adopted, one log line: the
+ *    fail-closed direction, a fork the operator can see beats an adoption
+ *    nobody can undo;
+ *  - two or more adoptable drafts — ambiguous, one warn.
+ *
+ * The two predicates live in `@delfrance/schemas` (`shopeeRascunho.ts`), the
+ * ONE copy the publish's look-up (`../anuncios/criacaoIncerta.ts`) decides
+ * with too — so the import can never adopt what that look-up would have called
+ * someone else's listing, and `produtos/` never imports `anuncios/`.
+ *
  * Pure of clocks and Next: every stamp is a parameter, and no module under
  * `produtos/` reads the ambient clock.
  */
 import type { Firestore } from 'firebase-admin/firestore';
 import type { ShopeeModel } from '@delfrance/integrations-shopee';
-import { sameCombo, toOuterRef } from '@delfrance/schemas';
+import {
+  criadoNaJanelaShopee,
+  ehRascunhoShopee,
+  janelaDaCriacaoIncertaShopee,
+  sameCombo,
+  toOuterRef,
+  vinculoShopeeEhDaConta,
+} from '@delfrance/schemas';
 import {
   integracaoCollection,
   produtoCollection,
@@ -60,7 +95,7 @@ import {
 
 import { idDoRef } from '../core/vinculosShopee';
 import { INDICES_COMPOSTOS_SHOPEE } from '../pedidos/produtoResolve';
-import type { ItemLido } from './itemLido';
+import { ehKitDe, type ItemLido } from './itemLido';
 import type { DocumentoLido } from './planoImportacao';
 import { idProdutoFilhoShopee, idProdutoPaiShopee } from './produtoIds';
 
@@ -78,7 +113,11 @@ export interface ResolucaoPaiShopee {
   readonly linkSobFilho: boolean;
   /** Does the ERP already hold children for this produto? */
   readonly jaTemFilhos: boolean;
-  /** The `prodshopee` document to MERGE onto; `null` ⇒ the link is an `add`. */
+  /**
+   * The `prodshopee` document to MERGE onto; `null` ⇒ the link is an `add`.
+   * (#1911) On the SKU rung it may be a DRAFT to ADOPT instead, marked
+   * `rascunhoAdotado: true` — the plan then writes an adoption, never a merge.
+   */
   readonly link: DocumentoLido | null;
 }
 
@@ -217,6 +256,95 @@ export function skuDoItemShopee(base: { readonly item_sku?: string | null }): st
   return (base.item_sku ?? '').trim();
 }
 
+/** Why one stored `prodshopee` may, or may not, be adopted by a listing (#1911). */
+export type VeredictoDeAdocaoShopee =
+  /** A draft of this conta, attempt evidence, the listing created inside the window. */
+  | 'adotavel'
+  /** Not a draft at all — a listing link (`item_id` set) or a native kit's. */
+  | 'nao-e-rascunho'
+  /** A draft, of ANOTHER conta. */
+  | 'outra-conta'
+  /** A draft of this conta with NO attempt evidence — every legacy draft, one never sent. */
+  | 'sem-tentativa'
+  /** The listing was created BEFORE the attempt window opened. */
+  | 'fora-da-janela'
+  /** The listing's `create_time` is unknown: never adopted, the fail-closed direction. */
+  | 'janela-desconhecida';
+
+/**
+ * May this stored `prodshopee` be ADOPTED by the listing being imported (#1911,
+ * D5 / K1-8)? `adotavel` ⇔ a draft (`ehRascunhoShopee`) of the conta
+ * `integracaoId` (`vinculoShopeeEhDaConta`, the shared conta fold) whose
+ * attempt window (`janelaDaCriacaoIncertaShopee`) is NOT null and holds
+ * `createTimeS` (`criadoNaJanelaShopee === 'dentro'`).
+ *
+ * ⚠️ ONE predicate, two readers: the cascade below decides with it, and
+ * `links.ts` RE-DERIVES it from its own fresh read of the draft before the
+ * guarded write — so a draft claimed, discarded, cleared or re-locked in
+ * between is never adopted on a stale decision.
+ *
+ * Pure, total over an unvalidated document.
+ */
+export function veredictoDeAdocaoShopee(
+  link: Record<string, unknown>,
+  integracaoId: string,
+  createTimeS: number | null,
+): VeredictoDeAdocaoShopee {
+  if (!ehRascunhoShopee(link)) return 'nao-e-rascunho';
+  if (!vinculoShopeeEhDaConta(link, integracaoId)) return 'outra-conta';
+  const janela = janelaDaCriacaoIncertaShopee(link);
+  if (janela === null) return 'sem-tentativa';
+  const posicao = criadoNaJanelaShopee(createTimeS, janela.desdeMs);
+  if (posicao === 'dentro') return 'adotavel';
+  return posicao === 'fora' ? 'fora-da-janela' : 'janela-desconhecida';
+}
+
+/**
+ * The DRAFT this listing adopts, if exactly one qualifies (#1911, D5 / K1-8).
+ *
+ * One read of the produto's WHOLE `prodshopee` subcollection — no `where`, so
+ * no index (the `lerVinculosDaConta` shape; read here rather than imported,
+ * because `../anuncios/linkAnuncio.ts` imports THIS module). Every row is
+ * judged by {@link veredictoDeAdocaoShopee}; exactly ONE `adotavel` is the
+ * answer, returned with `rascunhoAdotado: true`. Two or more is ambiguous —
+ * `null` (today's `add`) and one warn. A draft whose listing `create_time` is
+ * unknown is never adopted and says so in one line. Nothing is written.
+ */
+async function rascunhoParaAdotar(
+  db: Firestore,
+  integracaoId: string,
+  produtoId: string,
+  entrada: ItemLido,
+): Promise<DocumentoLido | null> {
+  const snap = await produtoShopeeLinkCollection.ref(db, { produtoId }).get();
+  const createTimeS = entrada.base.create_time ?? null;
+  const julgados = snap.docs.map((d) => {
+    const raw = (d.data() ?? {}) as Record<string, unknown>;
+    return { id: d.id, raw, veredicto: veredictoDeAdocaoShopee(raw, integracaoId, createTimeS) };
+  });
+
+  const desconhecidos = julgados.filter((j) => j.veredicto === 'janela-desconhecida');
+  if (desconhecidos.length > 0) {
+    console.warn(
+      '[shopee/importacao] rascunho com tentativa de criação, mas a Shopee não informou create_time; não adotado',
+      { integracaoId, itemId: entrada.itemId, produtoId, rascunhos: desconhecidos.length },
+    );
+  }
+
+  const adotaveis = julgados.filter((j) => j.veredicto === 'adotavel');
+  if (adotaveis.length > 1) {
+    console.warn(
+      '[shopee/importacao] mais de um rascunho adotável para o anúncio; criando um vínculo novo',
+      { integracaoId, itemId: entrada.itemId, produtoId, encontrados: adotaveis.length },
+    );
+    return null;
+  }
+  const [escolhido] = adotaveis;
+  return escolhido === undefined
+    ? null
+    : { id: escolhido.id, raw: escolhido.raw, rascunhoAdotado: true };
+}
+
 /**
  * The PARENT cascade.
  *
@@ -231,6 +359,12 @@ export function skuDoItemShopee(base: { readonly item_sku?: string | null }): st
  * ⚠️ A produto reached through rung 2 still reuses its existing link for THIS
  * integração when the group query found one: otherwise every re-import would
  * mint a second `prodshopee` document under the same produto.
+ *
+ * ⚠️ (#1911) When rung 2 binds an ORDINARY listing (`!ehKitDe`) and rung 1 found
+ * no link at all, the produto's drafts are read and ONE may be ADOPTED — see
+ * the header and {@link veredictoDeAdocaoShopee}. A kit never adopts (a kit
+ * create is the kit arm's, with its own derived link id), and a listing that
+ * already has a link (even a stale one) keeps it.
  */
 export async function resolverPaiDaListagem(
   db: Firestore,
@@ -291,12 +425,21 @@ export async function resolverPaiDaListagem(
     // ⚠️ EXACTLY one. `length`, never `size`; two hits DECLINE the rung.
     if (porSku.docs.length === 1) {
       const produto = produtoLido(porSku.docs[0]!);
+      const extraData = await lerExtraData(db, produto.id);
+      const jaTemFilhos = await produtoJaTemFilhos(db, produto.id);
       return {
         existente: produto,
-        extraData: await lerExtraData(db, produto.id),
+        extraData,
         linkSobFilho: false,
-        jaTemFilhos: await produtoJaTemFilhos(db, produto.id),
-        link: comoDocumento(linkEscolhido),
+        jaTemFilhos,
+        // ⚠️ Only with NO link for this listing (a stale rung-1 row is still
+        // the listing's link) and only for an ordinary listing (#1911).
+        link:
+          linkEscolhido !== null
+            ? comoDocumento(linkEscolhido)
+            : ehKitDe(entrada.base)
+              ? null
+              : await rascunhoParaAdotar(db, integracaoId, produto.id, entrada),
       };
     }
   }
