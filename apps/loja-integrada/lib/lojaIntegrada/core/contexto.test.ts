@@ -521,3 +521,160 @@ describe('the pacer: one full interval BEFORE every request', () => {
     }
   });
 });
+
+describe('the credential VERSION: on the context, and reported per request', () => {
+  /** A context whose every per-request report lands in `vistas`. */
+  async function contextoQueRelata(db: FakeDb, fetch = fetchEspiao().fetch) {
+    const vistas: (string | null)[] = [];
+    const ctx = await loadLojaIntegradaContext(asDb(db), ID, {
+      ...depsLigado(),
+      fetch,
+      registro: { escrever: gravadorDeLog().escrever },
+      aoUsarCredencial: (versao) => {
+        vistas.push(versao);
+      },
+    });
+    return { ctx, vistas };
+  }
+
+  it('`versaoCredencial` is the stored save stamp, from the ONE fail-fast read (no new read)', async () => {
+    const db = new FakeDb();
+    seedConta(db, ID);
+    const atualizadoEmMs = AGORA_MS - 3 * DIA_MS;
+    seedCredencial(db, ID, { tokenAtualizadoEmMs: atualizadoEmMs });
+    const ctx = await loadLojaIntegradaContext(asDb(db), ID, depsLigado());
+    expect(ctx.versaoCredencial).toBe(String(atualizadoEmMs));
+    expect(db.leituras.filter((p) => p === caminhoCredencial(ID))).toHaveLength(1);
+  });
+
+  it('⚠️ NEAR-MISS: the version is never the ref, the fingerprint or the token', async () => {
+    const db = new FakeDb();
+    seedConta(db, ID);
+    seedCredencial(db, ID);
+    const ctx = await loadLojaIntegradaContext(asDb(db), ID, depsLigado());
+    const lida = await lerCredencial(asDb(db), ID);
+    expect(ctx.versaoCredencial).not.toBe(refDaCredencial(lida!.credencial));
+    expect(ctx.versaoCredencial).not.toContain(fingerprintDoToken(TOKEN_A));
+    expect(ctx.versaoCredencial).not.toContain(TOKEN_A);
+  });
+
+  it('a stamp with no version form (negative) ⇒ `null`, never a guessed one', async () => {
+    const db = new FakeDb();
+    seedConta(db, ID);
+    seedCredencial(db, ID, { tokenAtualizadoEmMs: -1 });
+    const ctx = await loadLojaIntegradaContext(asDb(db), ID, depsLigado());
+    expect(ctx.versaoCredencial).toBeNull();
+  });
+
+  it('`aoUsarCredencial` gets the version of EACH request, after the re-read and before the fetch', async () => {
+    const db = new FakeDb();
+    seedConta(db, ID);
+    seedCredencial(db, ID);
+    const eventos: string[] = [];
+    const espiao = fetchEspiao();
+    const ctx = await loadLojaIntegradaContext(asDb(db), ID, {
+      ...depsLigado(),
+      fetch: (input, init) => {
+        eventos.push('fetch');
+        return espiao.fetch(input, init);
+      },
+      registro: { escrever: gravadorDeLog().escrever },
+      aoUsarCredencial: (versao) => {
+        eventos.push(`versao:${String(versao)}`);
+      },
+    });
+    // Loading the context makes no request, so nothing is reported.
+    expect(eventos).toEqual([]);
+    const leiturasAntes = db.leituras.filter((p) => p === caminhoCredencial(ID)).length;
+    await chamar(ctx.cliente);
+    await chamar(ctx.cliente);
+    const versao = String(AGORA_MS - DIA_MS);
+    expect(eventos).toEqual([`versao:${versao}`, 'fetch', `versao:${versao}`, 'fetch']);
+    // Still exactly one credential read per request: the report adds none.
+    expect(db.leituras.filter((p) => p === caminhoCredencial(ID)).length - leiturasAntes).toBe(2);
+  });
+
+  it('a token saved mid-batch is reported under its NEW version, while the context keeps the old one', async () => {
+    const db = new FakeDb();
+    seedConta(db, ID);
+    seedCredencial(db, ID);
+    const { ctx, vistas } = await contextoQueRelata(db);
+    await chamar(ctx.cliente);
+    const lida = await lerCredencial(asDb(db), ID);
+    await salvarCredencial(asDb(db), ID, {
+      personalToken: TOKEN_B,
+      tokenExpiraEmMs: AGORA_MS + 60 * DIA_MS,
+      agoraMs: AGORA_MS,
+      versaoEsperada: lida!.updateTime,
+    });
+    await chamar(ctx.cliente);
+    expect(vistas).toEqual([String(AGORA_MS - DIA_MS), String(AGORA_MS)]);
+    expect(ctx.versaoCredencial).toBe(String(AGORA_MS - DIA_MS));
+    const texto = JSON.stringify(vistas);
+    expect(texto).not.toContain(fingerprintDoToken(TOKEN_A));
+    expect(texto).not.toContain(fingerprintDoToken(TOKEN_B));
+  });
+
+  it('⚠️ NEAR-MISS: the SAME token saved again is a new version (the save stamp, not the token)', async () => {
+    const db = new FakeDb();
+    seedConta(db, ID);
+    seedCredencial(db, ID);
+    const { ctx, vistas } = await contextoQueRelata(db);
+    const lida = await lerCredencial(asDb(db), ID);
+    await salvarCredencial(asDb(db), ID, {
+      personalToken: TOKEN_A,
+      tokenExpiraEmMs: AGORA_MS + 60 * DIA_MS,
+      agoraMs: AGORA_MS,
+      versaoEsperada: lida!.updateTime,
+    });
+    await chamar(ctx.cliente);
+    expect(vistas).toEqual([String(AGORA_MS)]);
+    expect(vistas[0]).not.toBe(ctx.versaoCredencial);
+  });
+
+  it('a stamp with no version form is reported as `null`, so a caller comparing versions sees it', async () => {
+    const db = new FakeDb();
+    seedConta(db, ID);
+    seedCredencial(db, ID);
+    const { ctx, vistas } = await contextoQueRelata(db);
+    seedCredencial(db, ID, { tokenAtualizadoEmMs: -1 });
+    await chamar(ctx.cliente);
+    expect(vistas).toEqual([null]);
+  });
+
+  it('a request refused by a park reports nothing: no credential was handed out', async () => {
+    const db = new FakeDb();
+    seedConta(db, ID);
+    seedCredencial(db, ID);
+    const espiao = fetchEspiao();
+    const { ctx, vistas } = await contextoQueRelata(db, espiao.fetch);
+    const lida = await lerCredencial(asDb(db), ID);
+    await estacionarConta(
+      asDb(db),
+      ID,
+      { refCredencial: refDaCredencial(lida!.credencial), status: 401 },
+      { agoraMs: () => AGORA_MS },
+    );
+    await expect(chamar(ctx.cliente)).rejects.toBeInstanceOf(LiContaParadaError);
+    expect(vistas).toEqual([]);
+    expect(espiao.pedidos).toEqual([]);
+  });
+
+  it('what the report throws is what the call throws, and that request is never sent', async () => {
+    const db = new FakeDb();
+    seedConta(db, ID);
+    seedCredencial(db, ID);
+    const recusa = new TypeError('outra versão');
+    const espiao = fetchEspiao();
+    const ctx = await loadLojaIntegradaContext(asDb(db), ID, {
+      ...depsLigado(),
+      fetch: espiao.fetch,
+      registro: { escrever: gravadorDeLog().escrever },
+      aoUsarCredencial: () => {
+        throw recusa;
+      },
+    });
+    await expect(chamar(ctx.cliente)).rejects.toBe(recusa);
+    expect(espiao.pedidos).toEqual([]);
+  });
+});
