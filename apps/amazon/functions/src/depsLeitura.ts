@@ -1,11 +1,10 @@
 import { FieldValue } from 'firebase-admin/firestore';
+import { createViaCepClient } from '@delfrance/core/cep';
 
 import { LOGGER_STDOUT_AMAZON } from '../../lib/amazon/core/log';
 import { LWA_CLIENT_SECRET_ENV } from '../../lib/amazon/env';
-import {
-  type DepsLeituraAmazon,
-  importadorPedidoAmazon,
-} from '../../lib/amazon/notificacoes/notificacao';
+import { importadorPedidoAmazon } from '../../lib/amazon/notificacoes/destinos';
+import type { DepsLeituraAmazon } from '../../lib/amazon/notificacoes/notificacao';
 
 /**
  * The Secret Manager names a READ run binds (`secrets:`): the LWA client
@@ -20,6 +19,19 @@ import {
 export const SEGREDOS_DE_LEITURA_AMAZON: readonly string[] = [LWA_CLIENT_SECRET_ENV];
 
 /**
+ * The process-wide CEP client the order import recovers an unknown UF with —
+ * ONE per instance, so its memo (and its in-flight dedup) spans every import
+ * the instance serves. ⚠️ This is the ONLY file of the app that names the
+ * ViaCEP module (`estrutura.test.ts`): `lib/` takes it through the structural
+ * port `BuscadorCepAmazon`, so no app file of the App Hosting receiver's
+ * closure names that module or builds a client. (The module itself still loads
+ * there, inert, through the `@delfrance/schemas` barrel, which the guard leaves
+ * external.) It is only ever called after an Amazon read, so it sits behind the
+ * read switch too.
+ */
+const VIA_CEP = createViaCepClient();
+
+/**
  * The dependencies of one READ run — a reads-queue dispatch, or one tick of the
  * reprocess sweep — bound to the runtime. The ONE place in this codebase that
  * binds them, so the queue and the sweep can never disagree about the
@@ -30,12 +42,16 @@ export const SEGREDOS_DE_LEITURA_AMAZON: readonly string[] = [LWA_CLIENT_SECRET_
  *   (`AMAZON_CHAMADAS`) and the LWA pair are read from it per run, never cached
  *   at module load. `lib/` never names the process environment itself
  *   (`estrutura.test.ts`).
- * - `importador`: the step-5 seam, read from the table HERE, per run — never
- *   cached at module load and never hard-coded. Step 5 fills
- *   `DESTINO_TIPO_AMAZON.pedido` and both roots pick it up with no edit of their
- *   own; until then it is `null`, and a run DEFERS as `importador-ausente`.
- * - `increment`: a tier-0 `FieldValue`, for the park's avisos, so two producers
- *   landing together cannot lose each other's bump.
+ * - `importador`: the step-5 seam (`lib/amazon/notificacoes/destinos.ts`), read
+ *   from the table HERE, per run — never cached at module load and never
+ *   hard-coded. Step 5 filled `DESTINO_TIPO_AMAZON.pedido` with the order
+ *   import; the read switch still stops every run before it (the pipeline
+ *   checks it first, the context loader again), so nothing calls Amazon until
+ *   the window sets it.
+ * - `viaCep`: {@link VIA_CEP}, the importer's CEP recovery.
+ * - `increment`: a tier-0 `FieldValue`, for every aviso counter a run bumps —
+ *   the park's and the importer's — so two producers landing together cannot
+ *   lose each other's bump.
  * - `logger`: the app's ONE logger (`LOGGER_STDOUT_AMAZON`, one JSON line on
  *   stdout). Never `firebase-functions`' logger and never `console.*`
  *   (`estrutura.test.ts`).
@@ -49,6 +65,7 @@ export function depsDeLeituraAmazon(): DepsLeituraAmazon {
     agora: () => Date.now(),
     logger: LOGGER_STDOUT_AMAZON,
     importador: importadorPedidoAmazon(),
+    viaCep: VIA_CEP,
     increment: (by: number) => FieldValue.increment(by),
   };
 }

@@ -17,16 +17,26 @@
  * mapping it; the routing ids re-derive the order, so the dead-letter row loses
  * nothing it needs. Do not "fix" it toward the skill.
  *
- * ## The task makes NO Amazon call in step 3
+ * ## The importer is a SEAM, filled in step 5 (PR 5-e)
  *
- * The importer is a SEAM ({@link DESTINO_TIPO_AMAZON}), empty until step 5 fills
- * it. `lib` takes it as a required dependency (`deps.importador`) and only the
- * functions codebase's composition root reads the table
- * ({@link importadorPedidoAmazon}). With the seam empty the outcome is
+ * `lib` takes the importer as a required dependency (`deps.importador`). The
+ * table that fills it, `DESTINO_TIPO_AMAZON` (`pedido` → the step-5 order
+ * import, `pedidos/importarPedido.ts`), lives in `./destinos.ts`, which ONLY the
+ * functions codebase's two roots import (`depsLeitura.ts` and `pollPedidos.ts`;
+ * plan §3 decision 32): this module is in the App Hosting receiver's import
+ * closure, and the receiver never needs the importer, ViaCEP or the cliente
+ * code. So nothing here imports the importer — not even by type: the importer
+ * imports its dependency and result types FROM here (plan §3 decision 48), and
+ * the CEP lookup is a local STRUCTURAL port ({@link BuscadorCepAmazon}).
+ *
+ * A null importer (a test, or a later `tipo` with no importer yet) is still
  * `adiado/importador-ausente`, which DEFERS (step-3 plan §3 decision 12; Loja
- * Integrada parks): the blockage is cleared by a deploy, a precondition outside
- * the task, and a deferred row survives a window-order mistake (a subscription
- * before step 5's deploy) for seven daily re-drives instead of being lost.
+ * Integrada parks): the blockage is cleared by a deploy, and rows deferred under
+ * that motivo before step 5 may still exist, so the motivo stays.
+ *
+ * The importer calls Amazon only through the context, which refuses unless the
+ * read switch is exactly `on` (D11) — and this module checks the switch FIRST,
+ * before any Firestore read.
  *
  * ## The order of one run ({@link processarNotificacaoAmazon})
  *
@@ -42,7 +52,9 @@
  *     is the CACHED copy, so a mismatch evicts it and reloads the context before
  *     deciding: a stale copy must never drop a current poll.
  *  3. The CONTEXT (`core/contexto.ts`): switch, LWA pair, conta, credential.
- *  4. The IMPORTER seam: empty ⇒ `adiado/importador-ausente`.
+ *  4. The IMPORTER seam: `null` ⇒ `adiado/importador-ausente`; otherwise the
+ *     importer runs with ITS deps (the clock, the increment, the logger, the
+ *     CEP lookup and this run's registro), built field by field.
  *  5. Every throw goes through {@link classificarFalhaDaTarefaAmazon}; `null`
  *     rethrows through the SANITIZING BOUNDARY (below).
  *
@@ -70,8 +82,8 @@
  * | `conta-inexistente`, `vendedor-mudou`, `marketplace-estrangeiro` (step 5) | drop | delete | delete |
  * | `adiado/<motivo>` | defer | migrate to `deferred`, `tentativas` 0 | stays deferred; parks at 7 |
  * | `pedido-inexistente` | park | park | park |
- * | `recusa-deterministica/<classe>[/<status>]` | park | park | park |
- * | thrown (429, 5xx, network, timeout, our config, gRPC, unknown) | queue backoff, then `failed` | `failed`, parks at 5 | GRADUATES to the hot lane |
+ * | `recusa-deterministica/<classe>[/<status>]` (an order a key cannot be built from — `PedidoAmazonIlegivelError` — included, step 5) | park | park | park |
+ * | thrown (429, 5xx, network, timeout, our config, gRPC, unknown; and step 5's three retryable classes: a lagging poll read, persistent batch contention, a recent first-seen cancellation) | queue backoff, then `failed` | `failed`, parks at 5 | GRADUATES to the hot lane |
  *
  * `graduateDeferredTransientErrors`: a deferred row whose precondition cleared
  * and whose import then THREW returns to the hot lane with a fresh budget. A
@@ -118,9 +130,7 @@ import {
   NOTIFICATION_ID_AMAZON_REGEX,
   ORIGEM_NOTIFICACAO_AMAZON,
   PEDIDO_AMAZON_REGEX,
-  TIPO_TAREFA_AMAZON,
   type TarefaAmazon,
-  type TipoTarefaAmazon,
   origemNotificacaoAmazonSchema,
   type recoverEnderecoFromCep,
   tarefaAmazonSchema,
@@ -128,6 +138,12 @@ import {
 } from '@delfrance/schemas';
 
 import type { AmbienteAmazon } from '../env';
+import {
+  AmazonCancelamentoRecenteError,
+  AmazonLeituraDefasadaError,
+  AmazonPedidoEmConflitoError,
+  PedidoAmazonIlegivelError,
+} from '../pedidos/erros';
 import type { AcaoItensAmazon } from '../pedidos/itensAmazon';
 import { invalidarContaEmCache } from '../core/contaCache';
 import { contasPorSellingPartnerId } from '../core/contas';
@@ -268,12 +284,21 @@ export const MOTIVO_ADIAMENTO_AMAZON = {
 export type MotivoAdiamentoAmazon =
   (typeof MOTIVO_ADIAMENTO_AMAZON)[keyof typeof MOTIVO_ADIAMENTO_AMAZON];
 
-/** The error classes a deterministic refusal names — the class and status only, never a body. */
-export type ClasseRecusaAmazon = 'AmazonHttpError' | 'AmazonSchemaError' | 'ZodError';
+/**
+ * The error classes a deterministic refusal names — the class and status only,
+ * never a body. `PedidoAmazonIlegivelError` (step 5) is an order a key cannot be
+ * built from: a retry reads the same body, so it parks.
+ */
+export type ClasseRecusaAmazon =
+  | 'AmazonHttpError'
+  | 'AmazonSchemaError'
+  | 'ZodError'
+  | 'PedidoAmazonIlegivelError';
 
 /**
  * What the step-5 importer reports beside its kind, for the task's ONE log line
- * (PR 5-e adds the campos): numbers and closed codes only.
+ * (`functions/src/filaLeitura.ts` writes each field as a campo, PR 5-e):
+ * numbers and closed codes only.
  */
 export interface DetalheImportacaoAmazon {
   /** `criado` / `atualizado` on `importado`; `null` on `sem-mudanca`. */
@@ -289,9 +314,8 @@ export interface DetalheImportacaoAmazon {
 }
 
 /**
- * What the importer returns (step 5, PR 5-d; the seam stays empty until 5-e).
- * {@link toDispositionAmazon} maps each kind, and stops compiling until a new
- * one is mapped:
+ * What the importer returns (step 5, PR 5-d). {@link toDispositionAmazon} maps
+ * each kind, and stops compiling until a new one is mapped:
  *
  *  - `importado` — a batch committed (a divergence included: the error, where
  *    applicable, is persisted and the aviso is the signal);
@@ -326,32 +350,18 @@ export type ResultadoNotificacaoAmazon =
       readonly status: number | null;
     };
 
-/** The step-5 importer: one order, re-fetched through the context's client. */
+/**
+ * The step-5 importer: one order, re-fetched through the context's client, with
+ * its own deps ({@link DepsImportadorAmazon}, built by
+ * {@link processarNotificacaoAmazon}). The seam that holds it is
+ * `./destinos.ts` (module header), read only by the functions roots.
+ */
 export type ImportadorPedidoAmazon = (
   db: Firestore,
   contexto: ContextoAmazon,
   payload: PayloadNotificacaoAmazon,
+  deps: DepsImportadorAmazon,
 ) => Promise<ResultadoImportacaoAmazon>;
-
-/**
- * The importer SEAM, keyed by task `tipo`. Empty in step 3: step 5 fills
- * `pedido`, and the functions codebase's root picks it up through
- * {@link importadorPedidoAmazon} with no edit of its own.
- *
- * ⚠️ A typed TABLE, never `const X: T | null = null`: TypeScript narrows such a
- * constant to `null` at every use, which would make step 5's non-null branch
- * `never` and fail to compile the day it is filled.
- */
-export const DESTINO_TIPO_AMAZON: Readonly<
-  Record<TipoTarefaAmazon, ImportadorPedidoAmazon | null>
-> = {
-  [TIPO_TAREFA_AMAZON.pedido]: null,
-};
-
-/** The pedido importer, or `null` while the seam is empty. Read ONLY by composition roots. */
-export function importadorPedidoAmazon(): ImportadorPedidoAmazon | null {
-  return DESTINO_TIPO_AMAZON[TIPO_TAREFA_AMAZON.pedido];
-}
 
 /** The motivo of a deterministic refusal: `recusa-deterministica/<classe>[/<status>]`. */
 function motivoDaRecusa(classe: ClasseRecusaAmazon, status: number | null): string {
@@ -521,6 +531,23 @@ export async function classificarFalhaDaTarefaAmazon(
   if (err instanceof AmazonSchemaError) return recusa('AmazonSchemaError', err.status);
   if (err instanceof ZodError) return recusa('ZodError', null);
 
+  // The step-5 importer's own classes (`pedidos/erros.ts`), each NAMED: an order a
+  // key cannot be built from parks (a retry reads the same body); the other three
+  // are retryable by design and are rethrown AS THEMSELVES (ids and counts only,
+  // no `cause`), so the queue's backoff — then a sweep re-drive — runs them again:
+  //  - a lagging poll read (only ever thrown on a queue attempt; a re-drive
+  //    imports what it reads, so it can never park the row for good);
+  //  - persistent batch contention (every attempt lost a precondition);
+  //  - a first-seen cancellation still inside the recent-cancel window.
+  if (err instanceof PedidoAmazonIlegivelError) return recusa('PedidoAmazonIlegivelError', null);
+  if (
+    err instanceof AmazonLeituraDefasadaError ||
+    err instanceof AmazonPedidoEmConflitoError ||
+    err instanceof AmazonCancelamentoRecenteError
+  ) {
+    return null;
+  }
+
   // Network and timeout, the park's contention, gRPC, anything unknown: rethrown.
   return null;
 }
@@ -568,7 +595,9 @@ export class FalhaTarefaAmazonError extends Error {
 /**
  * The boundary: a package error becomes a {@link FalhaTarefaAmazonError};
  * ANYTHING else is returned as the same object (this app's own errors name
- * conta ids and keys only; gRPC and a bug stay loud). Most-derived first.
+ * conta ids and keys only — the step-5 importer's retryable classes included,
+ * which carry ids and counts and no `cause`; gRPC and a bug stay loud).
+ * Most-derived first.
  */
 export function sanitizarFalhaDaTarefaAmazon(err: unknown): unknown {
   if (err instanceof AmazonThrottleError) {
@@ -608,14 +637,31 @@ export interface RegistroLeituraAmazon {
 }
 
 /**
+ * A CEP lookup, as the order import's endereço recovery takes it: a LOCAL
+ * structural port (plan §3 decision 48), read off the shared
+ * `recoverEnderecoFromCep`'s own signature, so this module — which the receiver
+ * imports — never names the ViaCEP module, not even by type. The functions root
+ * (`functions/src/depsLeitura.ts`) hands in its process-wide
+ * `createViaCepClient()`, which satisfies it structurally; a test hands in a
+ * fake.
+ */
+export type BuscadorCepAmazon = Parameters<typeof recoverEnderecoFromCep>[1];
+
+/**
  * ONE deps binding shared by the task and the sweeps (the functions codebase's
  * `depsLeitura.ts`, PR 3-d). The registro is added per entry point.
  */
 export interface DepsLeituraAmazon extends DepsClassificadorAmazon {
   /** The process environment, from the composition root — the read switch and the LWA pair. */
   readonly ambiente: AmbienteAmazon;
-  /** The importer seam: {@link importadorPedidoAmazon} in the root, a fake in tests. */
+  /** The importer seam: `importadorPedidoAmazon()` (`./destinos.ts`) in the root, a fake in tests. */
   readonly importador: ImportadorPedidoAmazon | null;
+  /**
+   * The importer's CEP lookup (an endereço whose UF is unknown): the root's ONE
+   * process-wide client, so its memo spans every import an instance serves.
+   * Only ever called after an Amazon read, so it sits behind the read switch.
+   */
+  readonly viaCep: BuscadorCepAmazon;
   /** Test seams, forwarded to the context's client. */
   readonly fetch?: typeof globalThis.fetch;
   readonly gerarCorrelationId?: () => string;
@@ -626,21 +672,11 @@ export interface DepsExecucaoAmazon extends DepsLeituraAmazon {
 }
 
 /**
- * A CEP lookup, as the order import's endereço recovery takes it: a LOCAL
- * structural port (plan §3 decision 48), read off the shared
- * `recoverEnderecoFromCep`'s own signature, so this module — which the receiver
- * imports — never names the ViaCEP module, not even by type. The functions root
- * (PR 5-e) hands in `createViaCepClient()`, which satisfies it structurally; a
- * test hands in a fake.
- */
-export type BuscadorCepAmazon = Parameters<typeof recoverEnderecoFromCep>[1];
-
-/**
  * What the step-5 importer (`pedidos/importarPedido.ts`) needs besides the db,
  * the context and the payload. Declared HERE, and the importer imports it —
  * never the reverse — so the receiver's import closure never reaches the
- * importer (plan §3 decision 48). `ImportadorPedidoAmazon` and
- * {@link processarNotificacaoAmazon} stay as they are until PR 5-e widens them.
+ * importer (plan §3 decision 48). {@link processarNotificacaoAmazon} builds it
+ * per run, field by field, from the run's deps.
  */
 export interface DepsImportadorAmazon {
   /** Now, in MILLISECONDS — read ONCE per import. */
@@ -743,9 +779,16 @@ export async function processarNotificacaoAmazon(
       }
     }
 
-    // 4. The importer seam.
+    // 4. The importer seam, with ITS deps — named one by one, never a spread of
+    // the run's (which carry the environment and the test seams).
     if (deps.importador === null) return adiado(MOTIVO_ADIAMENTO_AMAZON.importadorAusente);
-    return await deps.importador(db, contexto, payload);
+    return await deps.importador(db, contexto, payload, {
+      agora: deps.agora,
+      increment: deps.increment,
+      logger: deps.logger,
+      viaCep: deps.viaCep,
+      registro: deps.registro,
+    });
   } catch (err) {
     // 5. Classify; whatever leaves, leaves through the boundary (module header).
     let desfecho: ResultadoNotificacaoAmazon | null;
@@ -826,6 +869,12 @@ export interface ResultadoTarefaAmazon {
    * all there is. A park, a defer or a failure writes its reason on the row.
    */
   readonly detalhe: string | null;
+  /**
+   * What the step-5 importer did, on a `done` run it reported on (`importado`,
+   * `sem-mudanca`): the lines' D17 `acao` and the counts, for the dispatch line.
+   * `null` on every other arm — and on a fake importer's bare kind.
+   */
+  readonly importacao: DetalheImportacaoAmazon | null;
   /** The conta the run ran for (a push's routed one), `null` before any routing. */
   readonly contaId: string | null;
   /** From the PARSED payload; `null` when the payload never parsed. */
@@ -833,13 +882,24 @@ export interface ResultadoTarefaAmazon {
   readonly origem: PayloadNotificacaoAmazon['origem'] | null;
 }
 
+type ResultadoDaTarefaNoCore = NotificationTaskResult<
+  PayloadNotificacaoAmazon,
+  ResultadoNotificacaoAmazon
+>;
+
 /** The `detalhe` of a dispatch: present only on the arms that leave no document. */
-function detalheDaTarefa(
-  r: NotificationTaskResult<PayloadNotificacaoAmazon, ResultadoNotificacaoAmazon>,
-): string | null {
+function detalheDaTarefa(r: ResultadoDaTarefaNoCore): string | null {
   if (r.outcome !== 'done' && r.outcome !== 'dropped') return null;
   // A payload that failed the task schema has no outcome at all.
   return r.result?.kind ?? 'payload-invalido';
+}
+
+/** The importer's own report of a `done` run (`importado` / `sem-mudanca`), else `null`. */
+function importacaoDaTarefa(r: ResultadoDaTarefaNoCore): DetalheImportacaoAmazon | null {
+  if (r.outcome !== 'done') return null;
+  const resultado = r.result;
+  if (resultado?.kind !== 'importado' && resultado?.kind !== 'sem-mudanca') return null;
+  return resultado.detalhe ?? null;
 }
 
 /** The task's registro: the intake flow, with the Cloud Tasks attempt it drives the persist by. */
@@ -867,6 +927,7 @@ export async function tratarTarefaLeituraAmazon(
   return {
     resultado: r.outcome,
     detalhe: detalheDaTarefa(r),
+    importacao: importacaoDaTarefa(r),
     contaId: relatorio.contaId,
     amazonOrderId: r.payload?.amazonOrderId ?? null,
     origem: r.payload?.origem ?? null,

@@ -20,29 +20,41 @@ nothing. Nobody has run this codebase against any project. The deploy is a
 the production data has not moved, the legacy integration is still the sole
 writer of the real orders, and nothing here may read or write them first.
 
-Two switches keep it harmless even if it were deployed early, and both stay
-exactly as they are until the window:
+ONE switch keeps it harmless even if it were deployed early, and it stays exactly
+as it is until the window:
 
 - **The read switch `AMAZON_CHAMADAS` stays UNSET.** Only the exact `on` lets this
   code call Amazon at all (D11); the intake task and the reprocess sweep defer
   before any Firestore read, the backstop poll stops before any Firestore
   operation (so no poll document, and no bootstrap anchor, exists before the
   window), and the context loader refuses before it builds a client.
-- **The importer seam is empty.** The reads queue's task has no importer yet
-  (master-plan step 5), so a run that gets past the switch defers as
-  `importador-ausente`, and every poll tick stops at its importer gate with ZERO
-  Firestore operations. Nothing in this codebase turns a notification into a
-  `pedido` before step 5.
 
-⚠️ **The expiry sweep stands outside both switches.** `sweepAmazonExpirations`
+⚠️ **The importer seam is FILLED (master-plan step 5, PR 5-e).** Until step 5 an
+empty seam was a second switch: a run past the read switch deferred as
+`importador-ausente` and every poll tick stopped at its importer gate. That gate
+is now permanently open. **The order import is LIVE the moment this codebase is
+deployed AND `AMAZON_CHAMADAS=on`**: every push and poll task then re-fetches its
+order (`getOrder`) and writes `pedidos/{digest}`, its pagamento, the cliente and
+its endereço, the pedido's incidentes and its avisos, and the stock sync reserves
+and releases from there. So, in the window, in this order:
+
+1. **W4: the legacy integration's order poll is PAUSED** before anything else:
+   from the first imported order on, this importer is the only writer of Amazon
+   pedidos, and two writers of one order are a race neither side guards.
+2. **W9: the deploy**, with every prerequisite below (the `prodAmazon` index
+   READY first).
+3. **W5: the read switch**, on both surfaces, by a person (the env bakes at
+   deploy: a functions redeploy as well as the App Hosting rollout).
+
+⚠️ **The expiry sweep stands outside the switch.** `sweepAmazonExpirations`
 makes no Amazon call, so the read switch does not gate its conta passes: deployed
 into a project, it raises and resolves the per-conta reauthorization and
 reconnection avisos of that project's Amazon contas (only its LWA client secret
 pass waits for the switch).
 
-⚠️ **The conta trigger stands outside both switches.** `onIntegracaoAmazonChanged`
+⚠️ **The conta trigger stands outside the switch.** `onIntegracaoAmazonChanged`
 (master-plan step 20) makes no Amazon call, so the read switch does not gate it,
-and it imports no importer, so the empty seam does not either. Deployed into a
+and it imports no importer. Deployed into a
 project, it writes that project's `int_frete` on every Amazon conta save that
 moves a mirrored field: create, patch or deactivate. That is why this deploy
 waits for the window's `int_frete` adoption pass (Prerequisites below).
@@ -80,6 +92,12 @@ waits for the window's `int_frete` adoption pass (Prerequisites below).
 - **The index `notificacoesAmazon (status ASC, processedAt ASC)` READY** before
   the first sweep tick: on Enterprise a missing index does not fail, it
   full-scans and bills the scan (root `CLAUDE.md` rule 1).
+- **The collection-group index `prodAmazon (contaAmazonOuterRef ASC, sku ASC)`
+  READY before `functions:amazon`** (master-plan step 5; window item W9, deploy
+  order indexes → rules → functions → App Hosting → web). Every imported line
+  resolves its produto through that query (the conta's link docs by SKU, no SKU
+  fallback): without the index each line full-scans every `prodAmazon` link doc
+  of every produto, billed, and still answers.
 - **Before `functions:amazon` (step 20), in this order:**
   1. the index
      `int_frete (tipo, contaAmazonContaFreteAmazonOuterRef, ativo, dataCadastro DESC)`
@@ -149,7 +167,10 @@ are local builds; neither deploys anything.
 - **`reprocessAmazonNotifications`** — `onSchedule('10,40 * * * *')`. The backstop, draining
   BOTH lanes on one tick (`limit 10` each): `failed` notifications older than the hot window,
   then the deferred lane (the read switch off, an unknown seller, a parked or inactive conta, a
-  missing credential, the empty importer seam). Logged separately — summing them would hide a
+  missing credential, a null importer seam). It runs the order import INLINE (beside the
+  queue, not through it), so its 540-s timeout bounds how long an import can hold a read:
+  the import's 15-minute recent-cancel window must stay above it (`src/index.test.ts` pins
+  the arithmetic against this endpoint and the queue's). Logged separately — summing them would hide a
   growing deferred backlog inside a healthy `processed`. `America/Sao_Paulo`,
   `timeoutSeconds 540`, `secrets: AMAZON_LWA_CLIENT_SECRET`.
 - **`sweepAmazonExpirations`** — `onSchedule('15 7 * * *')`. The DAILY expiry sweep (the step-2
@@ -166,8 +187,8 @@ are local builds; neither deploys anything.
   `origem: 'poll'` notification per changed order onto `filaLeituraAmazon` (ids only; the
   task re-fetches the order). Runs inline in its own schedule, so sweep-only mode
   (`AMAZON_TASKS_DISABLED=1`) persists each notification `failed` for the reprocess sweep
-  instead. Two gates with ZERO Firestore operations: the empty importer seam (until step 5)
-  and the read switch. Raises `amazonImportacaoParada` on a counted failure at its threshold
+  instead. One gate with ZERO Firestore operations: the read switch (the importer-seam gate
+  in the code is permanently open since step 5). Raises `amazonImportacaoParada` on a counted failure at its threshold
   and resolves it on the next clean run. `America/Sao_Paulo`, `timeoutSeconds 300` (above
   the 240-s tick budget, below the 360-s lease, itself below the 15-minute interval),
   `retryCount 0`, `secrets: AMAZON_LWA_CLIENT_SECRET`. ⚠️ It is the queue's SECOND enqueuer:
@@ -200,12 +221,56 @@ dispatch, one `evento: 'varredura'` line per sweep lane (and one per expiry
 run), per poll tick one `evento: 'poll'` line per conta run plus ONE summary
 line (`[amazon] poll de pedidos`, the counters flattened), and one
 `evento: 'int-frete'` line per conta-trigger reconcile (WARNING on
-`incompleto`). No line carries a seller id, a token or an error message; a
-failed sweep row is named by its document id only (the row holds the reason).
-⚠️ The one declared exception: on `incompleto` the shared core in
-`packages/data` also writes its own unstructured
+`incompleto`). The order import (step 5) adds `evento: 'pedido'` lines (one
+closed code each, the order id and counts) and its `getOrder` call lines, and the
+dispatch line carries the import's report: `acao`, `itens` and the counts
+`linhasPreservadas`, `linhasDivergentes`, `linhasSemProduto` (null on every arm
+without one). No line carries a seller id, a token, a buyer datum, a price or an
+error message; a failed sweep row is named by its document id only (the row
+holds the reason).
+⚠️ Two declared exceptions, both from `packages/data`, both on stderr outside
+`LOGGER_STDOUT_AMAZON`: on `incompleto` the `int_frete` core writes its own
+unstructured
 `console.warn('[amazon] conta Amazon sem dados suficientes para criar o int_frete', …)`
-(stderr, the conta id and field names only), outside `LOGGER_STDOUT_AMAZON`.
+(the conta id and field names only); and a shared collection handle's soft read
+writes `[data] schema mismatch on <path>` plus the Zod issue list when a stored
+document fails its schema (the order import meets it on the cliente resolver's
+reads of legacy `clientes/<id>`).
+
+### What to alert on, and what to watch at W7 (the order import, step 5)
+
+Alert on (each means an order is NOT being imported and nothing will fix it by
+itself):
+
+- **ERROR: the runtime's own "Unhandled error" line naming
+  `AmazonPedidoEmConflitoError`** (every one of the import batch's three attempts
+  lost a precondition: persistent contention on one pedido). The queue retries it;
+  after its last attempt the dispatch line says `resultado: failed` (WARNING) and
+  the reprocess sweep re-drives the row, parking it at 5. Repeats for the same
+  order mean a second writer keeps moving that pedido.
+- **WARNING dispatch line `resultado: parked`** whose row (`notificacoesAmazon`)
+  says `erro: recusa-deterministica/PedidoAmazonIlegivelError`: Amazon answered an
+  order no key can be built from (another order id than the one asked for, a
+  `lastUpdatedTime` without an offset, two lines with one `orderItemId`). It parks
+  on the first attempt (a retry reads the same body), so a person must look.
+
+Watch in the first hours after W5 (W7: the look-back re-lists migrated, in-flight
+orders through the importer):
+
+- **WARNING dispatch lines `itens: divergencia-itens-aprovado`** (`linhasDivergentes`
+  counts the lines): D17 BLOCKED an approved, unshipped order whose lines or money
+  differ from the stored pedido (estado at our `[amazon]` error, a crítico aviso
+  raised). A flood here means the migrated pedidos disagree with Amazon on a price
+  or a line shape: switch `AMAZON_CHAMADAS` off and look before it goes back on.
+- **WARNING `evento: 'pedido'` lines `codigo: leitura-defasada-aceita`**: a sweep
+  re-drive imported a `getOrder` read older than the search the poll enqueued it
+  from (that the two endpoints render one order's clock identically is a
+  capture-dependent default, still to be validated before the window).
+- **WARNING `evento: 'pedido'` lines `codigo: cancelamento-recente`** (with
+  `idadeS`): a first-seen order cancelled or reversed less than 15 minutes ago;
+  the import waits (a retryable throw, the queue's backoff, then a sweep
+  re-drive) and then skips it. A steady stream of them for the SAME order past 15
+  minutes is a clock problem, not a race.
 
 ### Durability & the residual loss window
 
@@ -499,9 +564,12 @@ flipped:
 4. A reprocess tick logs two `evento: 'varredura'` lines (`lane: hot` and
    `lane: deferred`), and the first expiry run logs one.
 5. A poll tick logs its summary line `[amazon] poll de pedidos` with
-   `portao: importador-ausente` (before step 5) or `chamadas-desligadas`, and
-   `pollPedidosAmazon` holds no document: neither gate reads or writes Firestore.
-6. The conta trigger is bound to the NAMED database, and the Eventarc trigger
+   `portao: chamadas-desligadas` (the read switch, still off; since step 5 the
+   importer gate is open, so `importador-ausente` would mean a build with an
+   emptied seam), and `pollPedidosAmazon` holds no document: the gate reads and
+   writes nothing in Firestore.
+6. The collection-group index `prodAmazon (contaAmazonOuterRef, sku)` is READY.
+7. The conta trigger is bound to the NAMED database, and the Eventarc trigger
    carries that filter:
 
    ```bash
@@ -511,7 +579,7 @@ flipped:
    # filtered to database 'default' + the integracao/* document path
    ```
 
-7. With the operator's OK, rename the conta and rename it back: the `amz`
+8. With the operator's OK, rename the conta and rename it back: the `amz`
    freight doc's `nome` follows both times and its `ultimaModificacao` moves, and
    the two `[amazon] onIntegracaoAmazonChanged` lines are INFO
    `acao: atualizado`, never WARNING `acao: incompleto` (that would mean the

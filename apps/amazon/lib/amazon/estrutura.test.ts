@@ -54,6 +54,14 @@
  *    seller-id, `trechoCorpo`, `testing/` and conta-cache scans read it too; and
  *    there the app keeps ONE logger: no `firebase-functions` logger import, no
  *    `console.`, and every line written through `LOGGER_STDOUT_AMAZON`;
+ *  - (step 5, PR 5-e) the importer SEAM (`notificacoes/destinos.ts`) is imported
+ *    only by the functions codebase's two roots; the App Hosting bundle's
+ *    closure (the routes, the receiver, its producer and root; the `@/` alias
+ *    and type edges walked) never reaches the seam or the importer, and no app
+ *    file of it imports the ViaCEP module (packages stay external: the module
+ *    itself still loads there, inert, through the `@delfrance/schemas` barrel);
+ *    and exactly one production file of the app names that module
+ *    (`functions/src/depsLeitura.ts`);
  *  - (step 20) D11 by construction on the conta trigger, which runs on EVERY
  *    conta write of every channel: its transitive import closure (type edges
  *    walked too, so it fails closed) is pinned file by file, reaches no context,
@@ -729,6 +737,97 @@ const ABRE_LOTE = /\.\s*batch\s*\(/;
 
 const abreLote = (texto: string) => ABRE_LOTE.test(semComentarios(texto));
 
+/* ------------------------- step 5 (5-e): the seam fill ------------------------- */
+
+/** The importer seam's table (plan §3 decision 32), relative to the APP root. */
+const SEAM_DO_IMPORTADOR = 'lib/amazon/notificacoes/destinos.ts';
+
+/** The ONLY production files that may import the seam: the functions codebase's two roots. */
+const IMPORTADORES_DO_SEAM = ['functions/src/depsLeitura.ts', 'functions/src/pollPedidos.ts'];
+
+/** The ONE production file that may name the ViaCEP module (the importer gets a structural port). */
+const NOMEIA_VIA_CEP = 'functions/src/depsLeitura.ts';
+
+/** The ViaCEP module, or any subpath of it. */
+const ehViaCep = (espec: string) =>
+  espec === '@delfrance/core/cep' || espec.startsWith('@delfrance/core/cep/');
+
+/**
+ * What the two 5-e scans (the seam's importers, the ViaCEP module's namers)
+ * read: EVERY production file of the app, tests excluded — all of `lib/`
+ * (`lib/firebase/` and `lib/auth/` too, not only `lib/amazon`), `app/`,
+ * `functions/`, `scripts/`, `proxy.ts` and the root configs. The App Hosting
+ * bundle holds `lib/firebase/filaLeitura.ts` and the proxy, so a scan scoped to
+ * `lib/amazon` would let either import the seam or the ViaCEP module unseen.
+ */
+const fontesDeTodoOApp = () => arquivosTs(RAIZ_APP).filter((p) => !ehTeste(p));
+
+/** Anti-vacuity of {@link fontesDeTodoOApp}: App Hosting files outside `lib/amazon`, `app/` and `functions/src`. */
+const FORA_DE_LIB_AMAZON = ['lib/firebase/filaLeitura.ts', 'proxy.ts'];
+
+/** Does `arquivo` (relative to the app root) import the module at `alvo` (app-relative, no extension)? */
+const importaModulo = (arquivo: string, texto: string, alvo: string) =>
+  especificadores(texto).some(
+    (espec) =>
+      (espec.startsWith('.') || espec.startsWith('@/')) && moduloDe(arquivo, espec) === alvo,
+  );
+
+/**
+ * The App Hosting bundle's entry points, relative to the APP root: every
+ * production file under `app/` (the routes, the push receiver's included), the
+ * proxy, and — named too, although the routes reach them — the receiver's body,
+ * its queue producer and the queue's App Hosting composition root.
+ */
+const entradasDoAppHosting = (): string[] => [
+  ...arquivosTs(join(RAIZ_APP, 'app'))
+    .filter((p) => !ehTeste(p))
+    .map(relApp),
+  'proxy.ts',
+  'lib/amazon/notificacoes/receptor.ts',
+  'lib/amazon/notificacoes/agendador.ts',
+  'lib/firebase/filaLeitura.ts',
+];
+
+/**
+ * The app's `@/` alias (`tsconfig.json` `paths`: `@/*` → `./*`), as a
+ * {@link ResolvedorDePacote} over `ler`: the walk ENTERS an aliased module
+ * instead of leaving it external — the routes import everything through it.
+ * An alias that resolves to no file comes back as its bare path, which reads
+ * as nothing: the walk reports it `?<path>` (fail closed).
+ */
+const resolverAliasDoApp =
+  (ler: LeitorDeFonte): ResolvedorDePacote =>
+  (espec) => {
+    if (!espec.startsWith('@/')) return null;
+    const base = espec.slice(2);
+    return [`${base}.ts`, `${base}.tsx`, `${base}/index.ts`].find((c) => ler(c) !== null) ?? base;
+  };
+
+/** What the App Hosting closure may never reach (the importer and the seam that holds it). */
+const PROIBIDOS_NO_APP_HOSTING = [SEAM_DO_IMPORTADOR, 'lib/amazon/pedidos/importarPedido.ts'];
+
+/**
+ * Why the App Hosting closure (a {@link fechoDeImportacoes} walk with the alias
+ * resolver; type edges walked too, since {@link especificadores} reads every
+ * `from '…'`) breaks plan §3 decisions 32 and 48; empty when it does not: it
+ * reaches the seam or the importer, imports the ViaCEP module (by value or by
+ * type), or holds an import the walk could not resolve (fail closed).
+ */
+function violacoesDoAppHosting(fecho: {
+  arquivos: readonly string[];
+  externos: readonly string[];
+}): string[] {
+  const violacoes: string[] = [];
+  for (const arquivo of fecho.arquivos) {
+    if (PROIBIDOS_NO_APP_HOSTING.includes(arquivo)) violacoes.push(`reaches ${arquivo}`);
+  }
+  for (const espec of fecho.externos) {
+    if (ehViaCep(espec)) violacoes.push(`imports ${espec}`);
+    else if (espec.startsWith('?')) violacoes.push(`unresolved ${espec.slice(1)}`);
+  }
+  return violacoes;
+}
+
 /* --------------------- step 20: the conta trigger, D11 by construction --------------------- */
 
 /** The conta trigger and the app's one `int_frete` binding, relative to the APP root. */
@@ -904,6 +1003,7 @@ describe('lib/amazon layout', () => {
         'frete/intFrete.ts',
         'notificacoes/agendador.ts',
         'notificacoes/corpo.ts',
+        'notificacoes/destinos.ts',
         'notificacoes/envelope.ts',
         'notificacoes/notificacao.ts',
         'notificacoes/prazo.ts',
@@ -1485,6 +1585,91 @@ describe('the step-5 order import guards (5-d)', () => {
   });
 });
 
+describe('the step-5 seam guards (5-e)', () => {
+  // App-wide scans: CI headroom, not a budget.
+  it(
+    `${SEAM_DO_IMPORTADOR} is imported ONLY by the functions codebase's two roots`,
+    { timeout: 30_000 },
+    () => {
+      const alvo = SEAM_DO_IMPORTADOR.replace(/\.ts$/, '');
+      const fontes = fontesDeTodoOApp();
+      const importadores = fontes
+        .map((p) => [relApp(p), readFileSync(p, 'utf8')] as const)
+        .filter(([arquivo, texto]) => importaModulo(arquivo, texto, alvo))
+        .map(([arquivo]) => arquivo)
+        .sort();
+      expect(importadores).toEqual([...IMPORTADORES_DO_SEAM].sort());
+      // Anti-vacuity: the scan read the seam's own file, the receiver's, and the
+      // App Hosting files outside `lib/amazon` (the queue's root, the proxy).
+      expect(fontes.map(relApp)).toEqual(
+        expect.arrayContaining([
+          SEAM_DO_IMPORTADOR,
+          ARQUIVOS_DO_RECEPTOR[1],
+          ...FORA_DE_LIB_AMAZON,
+        ]),
+      );
+    },
+  );
+
+  it(
+    `the ViaCEP module is named by exactly ONE production file of the app: ${NOMEIA_VIA_CEP}`,
+    { timeout: 30_000 },
+    () => {
+      const fontes = fontesDeTodoOApp();
+      const nomeiam = fontes
+        .filter((p) => especificadores(readFileSync(p, 'utf8')).some(ehViaCep))
+        .map(relApp)
+        .sort();
+      expect(nomeiam).toEqual([NOMEIA_VIA_CEP]);
+      // Anti-vacuity: the scan reached the App Hosting files outside `lib/amazon`.
+      expect(fontes.map(relApp)).toEqual(expect.arrayContaining(FORA_DE_LIB_AMAZON));
+    },
+  );
+
+  it('★ the App Hosting closure (the routes, the receiver, its producer and root) never reaches the seam or the importer, and no app file of it imports the ViaCEP module — type edges and the @/ alias walked', () => {
+    const fecho = fechoDeImportacoes(
+      entradasDoAppHosting(),
+      lerDoApp,
+      resolverAliasDoApp(lerDoApp),
+    );
+    expect(violacoesDoAppHosting(fecho)).toEqual([]);
+    // Anti-vacuity: the walk entered the routes' aliased modules and reached the
+    // pipeline the receiver persists through — and the step-5 modules it MAY
+    // reach (the error classes the classifier names, the D17 codes by type).
+    expect(fecho.arquivos).toEqual(
+      expect.arrayContaining([
+        'app/api/webhooks/amazon/route.ts',
+        'lib/amazon/core/respond.ts',
+        'lib/amazon/notificacoes/notificacao.ts',
+        'lib/amazon/notificacoes/receptor.ts',
+        'lib/amazon/pedidos/erros.ts',
+        'lib/amazon/pedidos/itensAmazon.ts',
+        'lib/firebase/filaLeitura.ts',
+      ]),
+    );
+    expect(fecho.externos).toEqual(expect.arrayContaining(['@/lib/amazon/notificacoes/receptor']));
+  });
+
+  it('the functions roots DO reach the importer through the seam (the fill is real, anti-vacuity of the guard above)', () => {
+    const fecho = fechoDeImportacoes(['functions/src/depsLeitura.ts'], lerDoApp);
+    expect(fecho.arquivos).toEqual(
+      expect.arrayContaining([SEAM_DO_IMPORTADOR, 'lib/amazon/pedidos/importarPedido.ts']),
+    );
+    expect(fecho.externos).toContain('@delfrance/core/cep');
+    expect(violacoesDoAppHosting(fecho)).not.toEqual([]);
+  });
+
+  // (4) The D11 closure of the conta trigger is pinned file by file by the
+  // step-20 block below; the seam fill adds no edge to it (that exact list is
+  // unchanged), and `PROIBIDOS_NO_GATILHO` already refuses every
+  // `notificacoes/` and `pedidos/` module and `functions/src/depsLeitura.ts`.
+  it('the conta trigger’s closure reaches neither the seam nor the importer nor the ViaCEP module', () => {
+    const fecho = fechoDeImportacoes(ENTRADAS_DO_GATILHO, lerDoApp);
+    expect(violacoesDoAppHosting(fecho)).toEqual([]);
+    expect(fecho.arquivos).toContain('functions/src/onIntegracaoAmazonChanged.ts');
+  });
+});
+
 describe('the step-20 conta trigger guards (D11 by construction)', () => {
   it('the trigger’s import closure reaches no Amazon client, context, credential, park, valve or env reader — transitively, type edges walked', () => {
     const fecho = fechoDeImportacoes(ENTRADAS_DO_GATILHO, lerDoApp);
@@ -1897,6 +2082,124 @@ describe('the guards, on synthetic source', () => {
     ]) {
       expect(abreLote(fonte), fonte).toBe(false);
     }
+  });
+
+  describe('the App Hosting closure guard (5-e)', () => {
+    const ROTA = 'app/api/webhooks/amazon/route.ts';
+    const RECEPTOR = 'lib/amazon/notificacoes/receptor.ts';
+    const NOTIFICACAO = 'lib/amazon/notificacoes/notificacao.ts';
+    const IMPORTADOR = 'lib/amazon/pedidos/importarPedido.ts';
+
+    /** A three-hop app: the route → (alias) the receptor → the pipeline, which imports `fonte`. */
+    function fechoCom(fonteDaNotificacao: string, extras: Record<string, string> = {}) {
+      const ler = leitor({
+        [ROTA]: "import { receber } from '@/lib/amazon/notificacoes/receptor';",
+        [RECEPTOR]: "import { processar } from './notificacao';",
+        [NOTIFICACAO]: fonteDaNotificacao,
+        [IMPORTADOR]: 'export function importarPedidoAmazon() {}',
+        [SEAM_DO_IMPORTADOR]: "import { importarPedidoAmazon } from '../pedidos/importarPedido';",
+        ...extras,
+      });
+      return fechoDeImportacoes([ROTA], ler, resolverAliasDoApp(ler));
+    }
+
+    it('accepts the pipeline as it is: a structural port, schemas by type, no importer', () => {
+      const fecho = fechoCom(
+        "import type { recoverEnderecoFromCep } from '@delfrance/schemas';\nexport function processar() {}",
+      );
+      expect(violacoesDoAppHosting(fecho)).toEqual([]);
+      // Anti-vacuity: the alias edge WAS walked, three hops deep.
+      expect(fecho.arquivos).toEqual([ROTA, NOTIFICACAO, RECEPTOR].sort());
+    });
+
+    it('★ flags a TYPE-ONLY edge to the ViaCEP module (mutation 12: ViaCepClient imported by type)', () => {
+      expect(
+        violacoesDoAppHosting(fechoCom("import type { ViaCepClient } from '@delfrance/core/cep';")),
+      ).toEqual(['imports @delfrance/core/cep']);
+      expect(
+        violacoesDoAppHosting(
+          fechoCom("import { type ViaCepClient } from '@delfrance/core/cep/viaCep';"),
+        ),
+      ).toEqual(['imports @delfrance/core/cep/viaCep']);
+    });
+
+    it('★ flags the importer reached from the pipeline — by value, by type, or through the seam (mutation 5)', () => {
+      for (const fonte of [
+        "import { importarPedidoAmazon } from '../pedidos/importarPedido';",
+        "import type { importarPedidoAmazon } from '../pedidos/importarPedido';",
+      ]) {
+        expect(violacoesDoAppHosting(fechoCom(fonte)), fonte).toEqual([`reaches ${IMPORTADOR}`]);
+      }
+      expect(
+        violacoesDoAppHosting(fechoCom("import { DESTINO_TIPO_AMAZON } from './destinos';")).sort(),
+      ).toEqual([`reaches ${IMPORTADOR}`, `reaches ${SEAM_DO_IMPORTADOR}`].sort());
+    });
+
+    it('★ flags the seam imported by a ROUTE through the alias', () => {
+      const ler = leitor({
+        [ROTA]: "import { importadorPedidoAmazon } from '@/lib/amazon/notificacoes/destinos';",
+        [SEAM_DO_IMPORTADOR]: "import { importarPedidoAmazon } from '../pedidos/importarPedido';",
+        [IMPORTADOR]: 'export function importarPedidoAmazon() {}',
+      });
+      expect(
+        violacoesDoAppHosting(fechoDeImportacoes([ROTA], ler, resolverAliasDoApp(ler))).sort(),
+      ).toEqual([`reaches ${IMPORTADOR}`, `reaches ${SEAM_DO_IMPORTADOR}`].sort());
+    });
+
+    it('fails closed: an alias or a relative import that resolves to no file', () => {
+      const ler = leitor({
+        [ROTA]: "import { x } from '@/lib/amazon/sumiu';\nimport { y } from './tambem-sumiu';",
+      });
+      expect(
+        violacoesDoAppHosting(fechoDeImportacoes([ROTA], ler, resolverAliasDoApp(ler))).sort(),
+      ).toEqual(
+        ['unresolved lib/amazon/sumiu', 'unresolved app/api/webhooks/amazon/tambem-sumiu'].sort(),
+      );
+    });
+
+    it('the seam-importer and ViaCEP scans see every import shape, and nothing alike', () => {
+      const alvo = SEAM_DO_IMPORTADOR.replace(/\.ts$/, '');
+      expect(
+        importaModulo(
+          'functions/src/x.ts',
+          "import { a } from '../../lib/amazon/notificacoes/destinos';",
+          alvo,
+        ),
+      ).toBe(true);
+      expect(
+        importaModulo(
+          'app/x/route.ts',
+          "import type { a } from '@/lib/amazon/notificacoes/destinos';",
+          alvo,
+        ),
+      ).toBe(true);
+      expect(
+        importaModulo(
+          'lib/amazon/x/y.ts',
+          "const m = await import('../notificacoes/destinos');",
+          alvo,
+        ),
+      ).toBe(true);
+      // NEAR-MISS: a longer name, or the pipeline beside it.
+      expect(
+        importaModulo(
+          'lib/amazon/x/y.ts',
+          "import { a } from '../notificacoes/destinosNovos';",
+          alvo,
+        ),
+      ).toBe(false);
+      expect(
+        importaModulo(
+          'lib/amazon/x/y.ts',
+          "import { a } from '../notificacoes/notificacao';",
+          alvo,
+        ),
+      ).toBe(false);
+      expect(ehViaCep('@delfrance/core/cep')).toBe(true);
+      expect(ehViaCep('@delfrance/core/cep/viaCep')).toBe(true);
+      expect(ehViaCep('@delfrance/core/cepx')).toBe(false);
+      expect(ehViaCep('@delfrance/core/region')).toBe(false);
+    });
   });
 
   it('the SDK import guard flags another production file, and exempts tests and testing/', () => {

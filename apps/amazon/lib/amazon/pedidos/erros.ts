@@ -51,7 +51,8 @@ export type MotivoPedidoAmazonIlegivel =
 
 /**
  * An order a key cannot be built from. Deterministic: a retry reads the same
- * body, so PR 5-e's classifier parks it (`recusa-deterministica`).
+ * body, so the task's classifier (`notificacoes/notificacao.ts`) parks it
+ * (`recusa-deterministica/PedidoAmazonIlegivelError`).
  */
 export class PedidoAmazonIlegivelError extends Error {
   /** The order id when it matches the 3-7-7 grammar, else `null`. */
@@ -73,7 +74,7 @@ export class PedidoAmazonIlegivelError extends Error {
  * attempt: the read lags, so the task retries (10 s, then 20 s) instead of
  * importing a state the poll has already seen pass. A sweep re-drive (no queue
  * attempt, at least 30 min later) never throws it: it imports what it reads.
- * Retryable — PR 5-e's classifier answers `null` for it.
+ * Retryable — the task's classifier answers `null` for it (rethrown as is).
  */
 export class AmazonLeituraDefasadaError extends Error {
   readonly contaId: string | null;
@@ -93,7 +94,7 @@ export class AmazonLeituraDefasadaError extends Error {
 /**
  * Persistent contention on one pedido: every attempt of the import batch lost a
  * precondition (PR 5-d, `escritaPedido.ts`). Nothing was written; the queue
- * retries. Retryable — PR 5-e's classifier answers `null` for it.
+ * retries. Retryable — the task's classifier answers `null` for it.
  */
 export class AmazonPedidoEmConflitoError extends Error {
   readonly contaId: string | null;
@@ -119,8 +120,8 @@ export class AmazonPedidoEmConflitoError extends Error {
  * and 44): no record is ever made of it, and a
  * no-write decision cannot be guarded by a precondition, so the import waits
  * until no other importer can still hold an older read of it. Zero writes;
- * retryable — each retry re-fetches the order and re-reads the pedido. PR 5-e's
- * classifier answers `null` for it.
+ * retryable — each retry re-fetches the order and re-reads the pedido. The
+ * task's classifier answers `null` for it.
  */
 export class AmazonCancelamentoRecenteError extends Error {
   readonly contaId: string | null;

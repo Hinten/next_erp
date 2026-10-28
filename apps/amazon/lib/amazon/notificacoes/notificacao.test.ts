@@ -66,14 +66,22 @@ import {
   tokenDeAcesso,
 } from '../testing/fixtures';
 import {
-  DESTINO_TIPO_AMAZON,
+  AmazonCancelamentoRecenteError,
+  AmazonLeituraDefasadaError,
+  AmazonPedidoEmConflitoError,
+  MOTIVO_PEDIDO_AMAZON_ILEGIVEL,
+  PedidoAmazonIlegivelError,
+} from '../pedidos/erros';
+import {
   FILA_LEITURA_AMAZON,
   FalhaTarefaAmazonError,
   MAX_TENTATIVAS,
   MAX_TENTATIVAS_DEFERRED,
   MOTIVO_ADIAMENTO_AMAZON,
   TASK_MAX_ATTEMPTS,
+  type BuscadorCepAmazon,
   type DepsExecucaoAmazon,
+  type DepsImportadorAmazon,
   type DepsLeituraAmazon,
   type ImportadorPedidoAmazon,
   type PayloadNotificacaoAmazon,
@@ -83,7 +91,6 @@ import {
   classificarFalhaDaTarefaAmazon,
   dedupKeyAmazon,
   docIdNotificacaoAmazon,
-  importadorPedidoAmazon,
   persistirFalhaNotificacaoAmazon,
   processarNotificacaoAmazon,
   reprocessarAdiadasAmazon,
@@ -123,6 +130,19 @@ afterEach(() => {
   chamadasDeRede.length = 0;
 });
 
+/** The CEP lookup a run hands its importer: every call is a failure here too (D11). */
+const cepsConsultados: string[] = [];
+const viaCepProibido: BuscadorCepAmazon = {
+  buscarCep: (cep) => {
+    cepsConsultados.push(cep);
+    return Promise.reject(new Error('teste: nenhuma consulta de CEP é permitida'));
+  },
+};
+afterEach(() => {
+  expect(cepsConsultados).toEqual([]);
+  cepsConsultados.length = 0;
+});
+
 function push(over: Partial<Extract<PayloadNotificacaoAmazon, { origem: 'push' }>> = {}) {
   return {
     tipo: TIPO_TAREFA_AMAZON.pedido,
@@ -156,6 +176,7 @@ function depsLeitura(over: Partial<DepsLeituraAmazon> = {}) {
     agora: () => AGORA_MS,
     logger: log.logger,
     importador: null,
+    viaCep: viaCepProibido,
     increment,
     fetch: fetchProibido,
     ...over,
@@ -233,10 +254,17 @@ const throttle = () => new AmazonThrottleError({ ...CTX_SP, status: 429, limiteT
 /* -------------------------------------------------------------------------- */
 
 describe('the queue and the importer seam', () => {
-  it('the reads queue is named for its function, and the seam is EMPTY in step 3', () => {
+  // Step 3 pinned the seam EMPTY here. PR 5-e filled it and moved the table to
+  // `./destinos.ts` (`destinos.test.ts` pins the filled table); this module —
+  // the receiver imports it — must no longer hold or name it, and a NULL
+  // importer still defers (`the importer seam` below, unchanged).
+  it('the reads queue is named for its function, and the seam table lives OUTSIDE this module', async () => {
     expect(FILA_LEITURA_AMAZON).toBe('filaLeituraAmazon');
-    expect(importadorPedidoAmazon()).toBeNull();
-    expect(Object.keys(DESTINO_TIPO_AMAZON)).toEqual([TIPO_TAREFA_AMAZON.pedido]);
+    const modulo: Record<string, unknown> = await import('./notificacao');
+    expect(modulo).not.toHaveProperty('DESTINO_TIPO_AMAZON');
+    expect(modulo).not.toHaveProperty('importadorPedidoAmazon');
+    // Anti-vacuity: the namespace really is this module's.
+    expect(modulo).toHaveProperty('processarNotificacaoAmazon');
   });
 
   it('the conta-id grammar restated in @delfrance/schemas is the app’s, byte for byte', () => {
@@ -705,11 +733,86 @@ describe('the importer seam', () => {
     expect(r).toEqual({
       resultado: 'done',
       detalhe: 'importado',
+      // A fake's bare kind carries no report: the line's import campos are null.
+      importacao: null,
       contaId: ID,
       amazonOrderId: PEDIDO,
       origem: 'push',
     });
     expect(db.escritas).toEqual([]);
+  });
+
+  it('★ the importer gets ITS deps from the run — exactly the clock, the increment, the logger, the CEP lookup and the registro, never the environment or a test seam', async () => {
+    contaConectada();
+    const recebidos: DepsImportadorAmazon[] = [];
+    const { deps } = depsExec(
+      {
+        importador: (_db, _contexto, _payload, depsDoImportador) => {
+          recebidos.push(depsDoImportador);
+          return Promise.resolve({ kind: 'importado' });
+        },
+      },
+      2,
+    );
+    await processarNotificacaoAmazon(asDb(db), push(), deps);
+    expect(recebidos).toHaveLength(1);
+    const [d] = recebidos;
+    // Field by field, never a spread: `ambiente` (the LWA pair) and the
+    // transport seams stay with the context.
+    expect(Object.keys(d ?? {}).sort()).toEqual(
+      ['agora', 'increment', 'logger', 'registro', 'viaCep'].sort(),
+    );
+    expect(d?.agora).toBe(deps.agora);
+    expect(d?.increment).toBe(deps.increment);
+    expect(d?.logger).toBe(deps.logger);
+    expect(d?.viaCep).toBe(viaCepProibido);
+    expect(d?.registro).toEqual({ fluxo: 'intake', tentativa: 2, idTarefa: 'tarefa-1' });
+  });
+
+  it('a sweep re-drive hands the importer the sweep’s registro: no attempt, no task id (its stale-read rule keys on it)', async () => {
+    contaConectada();
+    const registros: DepsImportadorAmazon['registro'][] = [];
+    seedNotificacao(push());
+    const { deps } = depsLeitura({
+      importador: (_db, _contexto, _payload, d) => {
+        registros.push(d.registro);
+        return Promise.resolve({ kind: 'importado' });
+      },
+    });
+    await reprocessarNotificacoesAmazon(asDb(db), { limit: 5, now: AGORA_MS }, deps);
+    expect(registros).toEqual([{ fluxo: 'reprocesso', tentativa: null, idTarefa: null }]);
+  });
+
+  it.each(['importado', 'sem-mudanca'] as const)(
+    '★ a `%s` report reaches the task result whole (the dispatch line’s campos)',
+    async (kind) => {
+      contaConectada();
+      const detalhe = {
+        acao: kind === 'importado' ? ('atualizado' as const) : null,
+        itens: 'itens-preservados-reversao' as const,
+        linhasPreservadas: 2,
+        linhasDivergentes: 0,
+        linhasSemProduto: 1,
+      };
+      const { deps } = depsExec({ importador: () => Promise.resolve({ kind, detalhe }) });
+      const r = await tratarTarefaLeituraAmazon(asDb(db), push(), deps);
+      expect(r).toMatchObject({ resultado: 'done', detalhe: kind });
+      expect(r.importacao).toEqual(detalhe);
+    },
+  );
+
+  it('near-miss: a resolved kind with no report (obsoleto) and a defer carry no import campos', async () => {
+    contaConectada();
+    const { deps } = depsExec({ importador: () => Promise.resolve({ kind: 'obsoleto' }) });
+    expect(await tratarTarefaLeituraAmazon(asDb(db), push(), deps)).toMatchObject({
+      resultado: 'done',
+      detalhe: 'obsoleto',
+      importacao: null,
+    });
+    const { deps: semImportador } = depsExec({ importador: null });
+    expect(
+      await tratarTarefaLeituraAmazon(asDb(db), push({ notificationId: 'outra' }), semImportador),
+    ).toMatchObject({ resultado: 'deferred', importacao: null });
   });
 
   it('the run’s registro reaches the call lines: flow, attempt, task id and the doc id as notification id', async () => {
@@ -823,6 +926,29 @@ describe('classificarFalhaDaTarefaAmazon — the table, most-derived first', () 
     ]) {
       expect(await classifica(err), String(err)).toBeNull();
     }
+  });
+
+  it('★ step 5: an order a key cannot be built from PARKS — a retry reads the same body', async () => {
+    for (const motivo of Object.values(MOTIVO_PEDIDO_AMAZON_ILEGIVEL)) {
+      const desfecho = await classifica(new PedidoAmazonIlegivelError(PEDIDO, motivo));
+      expect(desfecho, motivo).toEqual({
+        kind: 'recusa-deterministica',
+        classe: 'PedidoAmazonIlegivelError',
+        status: null,
+      });
+      expect(toDispositionAmazon(desfecho ?? { kind: 'obsoleto' })).toEqual({
+        kind: 'park',
+        reason: 'recusa-deterministica/PedidoAmazonIlegivelError',
+      });
+    }
+  });
+
+  it.each<[string, () => Error]>([
+    ['AmazonLeituraDefasadaError', () => new AmazonLeituraDefasadaError(ID, PEDIDO)],
+    ['AmazonPedidoEmConflitoError', () => new AmazonPedidoEmConflitoError(ID, PEDIDO, 3)],
+    ['AmazonCancelamentoRecenteError', () => new AmazonCancelamentoRecenteError(ID, PEDIDO, 42)],
+  ])('★ step 5: %s is RETRYABLE (null) — never parked, never deferred', async (_nome, criar) => {
+    expect(await classifica(criar())).toBeNull();
   });
 });
 
@@ -1082,6 +1208,72 @@ describe('the sanitizing boundary (§3 decision 31)', () => {
     }
   });
 
+  /** Step 5's three retryable classes, each with the own fields it may carry (ids and counts). */
+  const RETENTAVEIS: [string, () => Error, string[]][] = [
+    [
+      'AmazonLeituraDefasadaError',
+      () => new AmazonLeituraDefasadaError(ID, PEDIDO),
+      ['contaId', 'name', 'orderId'],
+    ],
+    [
+      'AmazonPedidoEmConflitoError',
+      () => new AmazonPedidoEmConflitoError(ID, PEDIDO, 3),
+      ['contaId', 'name', 'orderId', 'tentativas'],
+    ],
+    [
+      'AmazonCancelamentoRecenteError',
+      () => new AmazonCancelamentoRecenteError(ID, PEDIDO, 42),
+      ['contaId', 'idadeS', 'name', 'orderId'],
+    ],
+  ];
+
+  it.each(RETENTAVEIS)(
+    '★ step 5: %s leaves the run AS ITSELF — no cause, ids and counts only — for the queue to retry',
+    async (_nome, criar, campos) => {
+      contaConectada();
+      const original = criar();
+      const { deps } = depsExec({ importador: falhaCom(original) });
+      const err = await processarNotificacaoAmazon(asDb(db), push(), deps).catch((e: unknown) => e);
+      expect(err).toBe(original);
+      expect(original.cause).toBeUndefined();
+      expect(Object.keys(original).sort()).toEqual(campos);
+      // What the shared core persists and prints: the ids, nothing else.
+      expect(original.message).toContain(`${ID}/${PEDIDO}`);
+    },
+  );
+
+  it.each(RETENTAVEIS)(
+    '★ step 5: %s on the FINAL attempt is persisted `failed` (the hot sweep re-drives it), never parked',
+    async (_nome, criar) => {
+      contaConectada();
+      // Before the last attempt it is rethrown for the queue's backoff …
+      const { deps: antes } = depsExec({ importador: falhaCom(criar()) }, 0);
+      await expect(tratarTarefaLeituraAmazon(asDb(db), push(), antes)).rejects.toThrow(PEDIDO);
+      expect(db.ler(caminhoDe(push()))).toBeUndefined();
+      // … and on it, persisted `failed` for the hot sweep.
+      const { deps } = depsExec({ importador: falhaCom(criar()) }, TASK_MAX_ATTEMPTS - 1);
+      const r = await tratarTarefaLeituraAmazon(asDb(db), push(), deps);
+      expect(r.resultado).toBe('failed');
+      expect(db.ler(caminhoDe(push()))).toMatchObject({ status: 'failed' });
+      expect(String(db.ler(caminhoDe(push()))?.erro)).toContain(PEDIDO);
+    },
+  );
+
+  it('★ step 5: PedidoAmazonIlegivelError PARKS the notification at once, with its class as the reason', async () => {
+    contaConectada();
+    const ilegivel = new PedidoAmazonIlegivelError(
+      PEDIDO,
+      MOTIVO_PEDIDO_AMAZON_ILEGIVEL.pedidoDivergente,
+    );
+    const { deps } = depsExec({ importador: falhaCom(ilegivel) }, 0);
+    const r = await tratarTarefaLeituraAmazon(asDb(db), push(), deps);
+    expect(r.resultado).toBe('parked');
+    expect(db.ler(caminhoDe(push()))).toMatchObject({
+      status: 'parked',
+      erro: 'recusa-deterministica/PedidoAmazonIlegivelError',
+    });
+  });
+
   it('the boundary names EVERY package class, never the base, and returns anything else as is', () => {
     expect(
       sanitizarFalhaDaTarefaAmazon(new AmazonNotFoundError({ ...CTX_SUJO, status: 404 })),
@@ -1155,6 +1347,7 @@ describe('the task arms', () => {
     expect(r).toEqual({
       resultado: 'dropped',
       detalhe: 'payload-invalido',
+      importacao: null,
       contaId: null,
       amazonOrderId: null,
       origem: null,

@@ -7,11 +7,13 @@
  * call is the ViaCEP recovery of an endereço whose UF is unknown, through the
  * injected `deps.viaCep`.
  *
- * ⚠️ UNWIRED in PR 5-d: the seam (`DESTINO_TIPO_AMAZON` in
- * `notificacoes/notificacao.ts`) stays empty until PR 5-e fills it. This module
- * imports its dependency and result types FROM `notificacao.ts`, never the
- * reverse, so the receiver's import closure never reaches it (plan §3 decision
- * 48). A function DECLARATION, so the 5-e import cycle stays safe.
+ * WIRED in PR 5-e: the seam (`DESTINO_TIPO_AMAZON` in
+ * `notificacoes/destinos.ts`, read only by the functions codebase's roots)
+ * holds it. This module imports its dependency and result types FROM
+ * `notificacoes/notificacao.ts`, never the reverse, so the receiver's import
+ * closure never reaches it (plan §3 decision 48; `estrutura.test.ts` walks that
+ * closure, type edges included). A function DECLARATION, so an import cycle
+ * through the seam would stay safe.
  *
  * Every rule lives in the PURE mappers beside this file (`pedidoMapeamento.ts`
  * and its modules); this one reads, calls them, and writes what they answer, in
@@ -177,7 +179,8 @@ import { criarResolvedorDeVinculosAmazon, type FalhaVinculoAmazon } from './vinc
  * How long a first-seen CANCELLED or otherwise reversed order is waited out
  * before it is skipped (plan §3 decisions 12 and 44): 15 min, above the longest fetch → commit any importer
  * can hold (the reprocess sweep's 540-s timeout; the queue's is 120 s) plus
- * margin. PR 5-e pins the arithmetic against the deployed options.
+ * margin. `functions/src/index.test.ts` pins the arithmetic against the deployed
+ * options (PR 5-e).
  */
 export const JANELA_CANCELAMENTO_RECENTE_AMAZON_US = 15 * 60 * 1_000_000;
 

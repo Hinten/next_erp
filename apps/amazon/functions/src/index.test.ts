@@ -17,6 +17,10 @@ import type {
   PayloadNotificacaoAmazon,
 } from '../../lib/amazon/notificacoes/notificacao';
 import {
+  JANELA_CANCELAMENTO_RECENTE_AMAZON_US,
+  importarPedidoAmazon,
+} from '../../lib/amazon/pedidos/importarPedido';
+import {
   INTERVALO_POLL_AMAZON_MS,
   LEASE_POLL_MS,
   ORCAMENTO_TICK_MS,
@@ -72,16 +76,20 @@ vi.mock('./lib/admin', () => ({
 
 // The channel's functions run REAL (spied through), so a schedule's run below
 // drives the real pipeline against the fake Firestore; the spies only record
-// what the root bound. `importadorPedidoAmazon` is spied so a test can hand the
-// root a sentinel and see it come out the other side.
+// what the root bound. `importadorPedidoAmazon` (the seam, `destinos.ts` since
+// PR 5-e) is spied so a test can hand the root a sentinel — or `null`, the
+// empty seam — and see it come out the other side.
 vi.mock('../../lib/amazon/notificacoes/notificacao', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../lib/amazon/notificacoes/notificacao')>();
   return {
     ...real,
-    importadorPedidoAmazon: vi.fn(real.importadorPedidoAmazon),
     reprocessarNotificacoesAmazon: vi.fn(real.reprocessarNotificacoesAmazon),
     reprocessarAdiadasAmazon: vi.fn(real.reprocessarAdiadasAmazon),
   };
+});
+vi.mock('../../lib/amazon/notificacoes/destinos', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../../lib/amazon/notificacoes/destinos')>();
+  return { ...real, importadorPedidoAmazon: vi.fn(real.importadorPedidoAmazon) };
 });
 
 /** What the mocked expiry body returns: every counter distinct, so a swapped field shows. */
@@ -118,6 +126,7 @@ const {
   sweepAmazonExpirations,
 } = modulo;
 const notificacao = await import('../../lib/amazon/notificacoes/notificacao');
+const destinos = await import('../../lib/amazon/notificacoes/destinos');
 const expiracao = await import('../../lib/amazon/conta/expiracaoSweep');
 
 afterAll(() => {
@@ -388,21 +397,32 @@ describe('reprocessAmazonNotifications — what the run binds', () => {
     // hard-coded `null` (or cached the table at load) would pass this test's
     // sibling and fail this one.
     const sentinela: ImportadorPedidoAmazon = () => Promise.resolve({ kind: 'importado' });
-    vi.mocked(notificacao.importadorPedidoAmazon).mockReturnValueOnce(sentinela);
+    vi.mocked(destinos.importadorPedidoAmazon).mockReturnValueOnce(sentinela);
 
     await rodarAgendamento(reprocessAmazonNotifications);
 
-    expect(notificacao.importadorPedidoAmazon).toHaveBeenCalledTimes(1);
+    expect(destinos.importadorPedidoAmazon).toHaveBeenCalledTimes(1);
     const deps = vi.mocked(notificacao.reprocessarNotificacoesAmazon).mock.calls[0]?.[2];
     expect(deps?.importador).toBe(sentinela);
   });
 
-  it('and with the seam untouched it is the table itself — empty in step 3', async () => {
+  it('★ and with the seam untouched it is the table itself — the step-5 order import (PR 5-e)', async () => {
     await rodarAgendamento(reprocessAmazonNotifications);
 
     const deps = vi.mocked(notificacao.reprocessarNotificacoesAmazon).mock.calls[0]?.[2];
-    expect(deps?.importador).toBe(notificacao.DESTINO_TIPO_AMAZON.pedido);
-    expect(deps?.importador).toBeNull();
+    expect(deps?.importador).toBe(destinos.DESTINO_TIPO_AMAZON.pedido);
+    expect(deps?.importador).toBe(importarPedidoAmazon);
+  });
+
+  it('binds the importer’s CEP lookup: ONE process-wide client, the same object on every run', async () => {
+    await rodarAgendamento(reprocessAmazonNotifications);
+    await rodarAgendamento(reprocessAmazonNotifications);
+
+    const [primeira, segunda] = vi
+      .mocked(notificacao.reprocessarNotificacoesAmazon)
+      .mock.calls.map((c) => c[2]);
+    expect(typeof primeira?.viaCep.buscarCep).toBe('function');
+    expect(segunda?.viaCep).toBe(primeira?.viaCep);
   });
 
   it('runs the real pipeline: with the switch off a failed row MIGRATES to deferred, and a deferred one stays', async () => {
@@ -611,6 +631,10 @@ describe('reprocessAmazonNotifications — what the run binds', () => {
     seedConta(fake, 'conta-1', { selling_partner_id: SPID_A });
     seedCredencial(fake, 'conta-1');
     const falhou = seedNotificacao(push(1), 'failed', 0);
+    // The seam MOCKED empty (step 3's state, PR 5-e): the row stops at the seam
+    // after its conta read, with no Amazon call — the filled seam would run the
+    // real import, whose getOrder this file's refusing fetch would fail.
+    vi.mocked(destinos.importadorPedidoAmazon).mockReturnValueOnce(null);
 
     await rodarAgendamento(reprocessAmazonNotifications);
 
@@ -823,6 +847,40 @@ describe('filaLeituraAmazon — the declared options', () => {
 
   it('binds EXACTLY the LWA client secret', () => {
     expect(segredosDe(filaLeituraAmazon)).toEqual([SEGREDO_LWA]);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*               The step-5 recent-cancel window vs the deployed options      */
+/* -------------------------------------------------------------------------- */
+
+describe('the recent-cancel window of the order import (plan §3 decisions 12 and 44)', () => {
+  // A first-seen CANCELLED (or otherwise reversed) order is skipped with ZERO
+  // writes, a decision no precondition can guard: the import waits until no
+  // other importer can still hold an older read of the order — one that would
+  // create a reserving pedido after the skip, with nothing ever cancelling it.
+  // The longest any importer can hold a read before its commit is its
+  // function's timeout: the reprocess sweep runs the import INLINE (540 s),
+  // the queue's dispatch for 120 s. Both read off the deployed endpoints, never
+  // restated, each with a minute of margin.
+  const janelaS = JANELA_CANCELAMENTO_RECENTE_AMAZON_US / 1_000_000;
+  const MARGEM_S = 60;
+
+  it.each([
+    ['the reprocess sweep (inline re-drives)', () => reprocessAmazonNotifications],
+    ['the reads queue', () => filaLeituraAmazon],
+  ] as const)('★ the window exceeds %s timeout plus a minute', (_nome, funcao) => {
+    const timeoutS = endpointOf(funcao()).timeoutSeconds as number;
+    expect(Number.isInteger(timeoutS) && timeoutS > 0).toBe(true);
+    expect(janelaS).toBeGreaterThan(timeoutS + MARGEM_S);
+  });
+
+  it('ÂNCORA: the numbers this arithmetic was written for — 15 min against 540 s and 120 s', () => {
+    expect([
+      janelaS,
+      endpointOf(reprocessAmazonNotifications).timeoutSeconds,
+      endpointOf(filaLeituraAmazon).timeoutSeconds,
+    ]).toEqual([900, 540, 120]);
   });
 });
 

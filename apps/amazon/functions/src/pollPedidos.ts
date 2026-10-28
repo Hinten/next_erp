@@ -8,10 +8,8 @@ import {
   type SeveridadeAmazon,
   registrarEventoAmazon,
 } from '../../lib/amazon/core/log';
-import {
-  importadorPedidoAmazon,
-  sanitizarFalhaDaTarefaAmazon,
-} from '../../lib/amazon/notificacoes/notificacao';
+import { importadorPedidoAmazon } from '../../lib/amazon/notificacoes/destinos';
+import { sanitizarFalhaDaTarefaAmazon } from '../../lib/amazon/notificacoes/notificacao';
 import { TEMPO_LIMITE_POLL_AMAZON_S } from '../../lib/amazon/pedidos/orcamentoPoll';
 import {
   type DepsPollAmazon,
@@ -34,10 +32,11 @@ import { getDb } from './lib/admin';
  *   (`AMAZON_POLL_LOOKBACK_H`) from it; each conta's context reads the switch
  *   again and the LWA pair. `lib/` never names the process environment
  *   (`estrutura.test.ts`).
- * - `importadorPresente`: the step-5 seam, read from the table HERE, per tick —
- *   never cached, never hard-coded. Empty until step 5, so every tick stops at
- *   the gate with ZERO Firestore operations; step 5 fills the table and the poll
- *   starts with no edit here.
+ * - `importadorPresente`: the step-5 seam (`lib/amazon/notificacoes/destinos.ts`),
+ *   read from the table HERE, per tick — never cached, never hard-coded. Step 5
+ *   filled it (PR 5-e), so this gate is open for good and the read switch is
+ *   the only one left; the gate code stays, so an emptied seam would close the
+ *   poll again with ZERO Firestore operations.
  * - `agendador`: this codebase's own producer root (`./agendador`): the
  *   sweep-only valve read once per tick, the region per enqueue (no default).
  * - `esperar`: a real sleep, bound only so a test can prove the poll never
@@ -84,10 +83,10 @@ function severidadeDoTick(r: ResultadoTickPollAmazon): SeveridadeAmazon {
  * running in sweep-only mode (`AMAZON_TASKS_DISABLED=1`: each notification is
  * persisted `failed` for the reprocess sweep instead).
  *
- * Two gates keep it inert until the window, each with ZERO Firestore
- * operations: the importer seam is empty until step 5, and the read switch
- * `AMAZON_CHAMADAS` is unset everywhere until W5. So no poll document — and no
- * bootstrap anchor — can exist before the window.
+ * One gate keeps it inert until the window, with ZERO Firestore operations: the
+ * read switch `AMAZON_CHAMADAS`, unset everywhere until W5. (The first gate, an
+ * empty importer seam, is permanently open since step 5 filled it.) So no poll
+ * document — and no bootstrap anchor — can exist before the window.
  *
  * The numbers (`index.test.ts` pins them off the deployed endpoint):
  *
