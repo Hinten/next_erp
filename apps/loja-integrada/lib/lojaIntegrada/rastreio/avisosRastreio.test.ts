@@ -20,11 +20,13 @@ import { TIPOS_AVISO_LI, TIPOS_AVISO_PEDIDO_LI } from '../avisos/avisos';
 import { FakeDb, asDb, increment } from '../testing/fakeDb';
 import { AGORA_MS } from '../testing/fixtures';
 import {
+  type AvisoRastreioLi,
   MOTIVO_RESOLUCAO_RASTREIO_LI,
   type PedidoDoAvisoRastreioLi,
   avisarRastreioDivergenteLi,
   chaveDoAvisoRastreioLi,
   resolverRastreioDivergenteLi,
+  severidadeDoAvisoRastreioLi,
 } from './avisosRastreio';
 
 // D17, per file: nothing here may reach the global `fetch` (no client is built at all).
@@ -120,43 +122,123 @@ describe('the raise', () => {
       status: 403,
     });
   });
+});
 
-  it('critico ONLY for a situacao-sobrescrita flagged critico (a never-write codigo was overwritten)', async () => {
-    const db1 = new FakeDb();
-    await avisarRastreioDivergenteLi(
-      asDb(db1),
-      pedido(1_000),
-      {
+describe('the severity', () => {
+  const C = CODIGO_SITUACAO_LI;
+  /** The never-write codigos other than the cancellation request. */
+  const OUTROS_NUNCA_ESCREVER = [
+    C.pagamentoEmDisputa,
+    C.pedidoCancelado,
+    C.pagamentoDevolvido,
+    C.pedidoChargeback,
+    C.pagamentoDevolvidoSemRetorno,
+  ];
+
+  /** The severity the raise stored, through the REAL `escreverAviso`. */
+  async function severidadeGravada(aviso: AvisoRastreioLi): Promise<unknown> {
+    const db = new FakeDb();
+    await avisarRastreioDivergenteLi(asDb(db), pedido(1_000), aviso, deps);
+    return db.ler(caminho())?.severidade;
+  }
+
+  it('a situacao-sobrescrita flagged critico (a never-write codigo was overwritten) ⇒ critico; unflagged ⇒ atencao', async () => {
+    expect(
+      await severidadeGravada({
         motivo: M.situacaoSobrescrita,
-        situacao: CODIGO_SITUACAO_LI.cancelamentoSolicitado,
+        situacao: C.cancelamentoSolicitado,
         critico: true,
-      },
-      deps,
-    );
-    expect(db1.ler(caminho())?.severidade).toBe(SEVERIDADE_AVISO.critico);
+      }),
+    ).toBe(SEVERIDADE_AVISO.critico);
+    expect(
+      await severidadeGravada({ motivo: M.situacaoSobrescrita, situacao: C.aguardandoPagamento }),
+    ).toBe(SEVERIDADE_AVISO.atencao);
+  });
 
-    const db2 = new FakeDb();
-    await avisarRastreioDivergenteLi(
-      asDb(db2),
-      pedido(1_000),
-      { motivo: M.situacaoSobrescrita, situacao: CODIGO_SITUACAO_LI.aguardandoPagamento },
-      deps,
-    );
-    expect(db2.ler(caminho())?.severidade).toBe(SEVERIDADE_AVISO.atencao);
+  it('EQUAL: a write blocked because LI shows cancelamento_solicitado (1019, the buyer asked to cancel) ⇒ critico, with no flag', async () => {
+    expect(
+      await severidadeGravada({ motivo: M.situacaoBloqueada, situacao: C.cancelamentoSolicitado }),
+    ).toBe(SEVERIDADE_AVISO.critico);
+  });
 
-    // NEAR-MISS: a `critico` flag on any other motivo is ignored.
-    const db3 = new FakeDb();
-    await avisarRastreioDivergenteLi(
-      asDb(db3),
-      pedido(1_000),
-      {
-        motivo: M.situacaoBloqueada,
-        situacao: CODIGO_SITUACAO_LI.cancelamentoSolicitado,
+  it.each(OUTROS_NUNCA_ESCREVER)(
+    'NEAR-MISS: a write blocked at %s (another never-write codigo) ⇒ atencao — a critico flag on it is ignored',
+    async (situacao) => {
+      expect(await severidadeGravada({ motivo: M.situacaoBloqueada, situacao })).toBe(
+        SEVERIDADE_AVISO.atencao,
+      );
+      expect(
+        await severidadeGravada({ motivo: M.situacaoBloqueada, situacao, critico: true }),
+      ).toBe(SEVERIDADE_AVISO.atencao);
+    },
+  );
+
+  it.each([C.pedidoEfetuado, C.aguardandoPagamento, C.pagamentoEmAnalise])(
+    'NEAR-MISS: a write refused because LI shows %s unpaid (situacao-nao-paga) ⇒ atencao',
+    async (situacao) => {
+      expect(
+        await severidadeGravada({
+          motivo: M.situacaoNaoPaga,
+          situacao,
+          estado: ESTADO_RASTREIO_LI.postado,
+        }),
+      ).toBe(SEVERIDADE_AVISO.atencao);
+    },
+  );
+
+  it.each(['Cancelamento_Solicitado', 'cancelamento_solicitado ', ' cancelamento_solicitado'])(
+    'NEAR-MISS: the codigo is compared EXACTLY — blocked at %j is not 1019 ⇒ atencao',
+    async (situacao) => {
+      expect(await severidadeGravada({ motivo: M.situacaoBloqueada, situacao })).toBe(
+        SEVERIDADE_AVISO.atencao,
+      );
+    },
+  );
+
+  it.each([M.situacaoNaoPaga, M.situacaoDesconhecida, M.transicaoLateral, M.situacaoSobrescrita])(
+    'NEAR-MISS: 1019 under %s (no flag) ⇒ atencao — only the BLOCKED write is decided by the codigo',
+    async (motivo) => {
+      expect(await severidadeGravada({ motivo, situacao: C.cancelamentoSolicitado })).toBe(
+        SEVERIDADE_AVISO.atencao,
+      );
+    },
+  );
+
+  it('NEAR-MISS: a critico flag on any motivo but situacao-sobrescrita is ignored', async () => {
+    expect(await severidadeGravada({ motivo: M.deriva, critico: true })).toBe(
+      SEVERIDADE_AVISO.atencao,
+    );
+    expect(
+      await severidadeGravada({
+        motivo: M.situacaoNaoPaga,
+        situacao: C.aguardandoPagamento,
         critico: true,
-      },
-      deps,
+      }),
+    ).toBe(SEVERIDADE_AVISO.atencao);
+  });
+
+  it('GRID: over every motivo × every codigo (and none) × the flag, critico ONLY at those two rules; atencao everywhere else', () => {
+    const situacoes: readonly (string | null)[] = [...Object.values(C), null];
+    const criticos = new Set<string>();
+    for (const motivo of Object.values(M)) {
+      for (const situacao of situacoes) {
+        for (const critico of [false, true]) {
+          const severidade = severidadeDoAvisoRastreioLi({ motivo, situacao, critico });
+          if (severidade === SEVERIDADE_AVISO.critico) {
+            criticos.add(`${motivo}|${String(situacao)}|${String(critico)}`);
+          } else {
+            expect(severidade).toBe(SEVERIDADE_AVISO.atencao);
+          }
+        }
+      }
+    }
+    expect(criticos).toEqual(
+      new Set([
+        `${M.situacaoBloqueada}|${C.cancelamentoSolicitado}|false`,
+        `${M.situacaoBloqueada}|${C.cancelamentoSolicitado}|true`,
+        ...situacoes.map((s) => `${M.situacaoSobrescrita}|${String(s)}|true`),
+      ]),
     );
-    expect(db3.ler(caminho())?.severidade).toBe(SEVERIDADE_AVISO.atencao);
   });
 });
 

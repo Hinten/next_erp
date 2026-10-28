@@ -964,7 +964,9 @@ export const MENSAGENS_POR_TIPO: Record<TipoAviso, MensagemAviso> = {
       'tiver, peça a um desenvolvedor que confira a notificação estacionada desse pedido.',
   },
   // A escrita de volta do rastreio (passo 7): um aviso por pedido, `atencao` — e
-  // `critico` só quando uma situação em que o ERP nunca escreve foi sobrescrita.
+  // `critico` só quando uma situação em que o ERP nunca escreve foi sobrescrita,
+  // ou quando a escrita foi barrada porque o comprador pediu o cancelamento
+  // (`cancelamento_solicitado`). A frase é a mesma; só a severidade muda.
   // Sem `runbook`: cada frase de motivo diz o que conferir, no painel da Loja
   // Integrada ou na aba Frete do pedido (o link do aviso).
   [TIPO_AVISO.lojaIntegradaRastreioDivergente]: {

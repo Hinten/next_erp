@@ -111,8 +111,11 @@ exists — so nothing is ever written to Loja Integrada before the window.
   it parks — see "A parked notification logs ERROR" below), and only a run past
   the switch imports; a web build older than them has no wording for those
   rows. The status write-back adds a seventh, `lojaIntegradaRastreioDivergente`
-  (`atencao`, `critico` for a situação overwritten over a cancellation request
-  or a refund), raised by the writes queue only under
+  (`atencao`; `critico` for a situação overwritten over a codigo the write-back
+  never writes onto — a dispute, a cancellation request, a cancellation, a
+  refund, a chargeback — and for a write blocked at 1019,
+  `cancelamento_solicitado`, where the buyer asked to cancel), raised by the
+  writes queue only under
   `LOJA_INTEGRADA_MODO_RASTREIO=on`: **the web build carrying its copy must be
   live before that valve is set to `on`**, or the avisos panel cannot render it.
 - **The writes store's index READY before this deploy.**
@@ -362,7 +365,8 @@ the wipe. Create `apps/loja-integrada/functions/.env.deploy` (gitignored):
 # freight-history trigger, the writes queue and its varredura; App Hosting has no
 # reader of it): the status write-back.
 #   - `dry-run` is the EMERGENCY BRAKE: every event is still recorded, deferred
-#     and replayed daily (at most 7 passes) once the valve is `on` again.
+#     and replayed daily (at most 7 passes) once the valve is `on` again. It is
+#     also the HOLD while a window check fails (never `off`).
 #   - `off` (or unset) RECORDS NOTHING: a posting made while it is off is never
 #     written back. It keeps what was already recorded, but the deploy that opens
 #     operations must already carry `dry-run`.
@@ -616,7 +620,11 @@ Verify the enqueue leg, which the `run` check above cannot see:
 ## Verifying a first deploy
 
 Do these in the window, in this order, after the deploy and before any switch is
-flipped:
+flipped. ⚠️ **A failed check of ANY item below still leaves the write-back at
+`dry-run`** (owner decision, 2026-10-27): the deploy that opens operations
+carries `LOJA_INTEGRADA_MODO_RASTREIO=dry-run` — never `off`, never unset, since
+either records no posting — and the valve never reaches `on` until every check
+of this section passes.
 
 1. Cloud Tasks lists the queues `filaLeituraLojaIntegrada` and
    `filaEscritaLojaIntegrada`, each with concurrency 1 and one dispatch per
@@ -661,11 +669,15 @@ flipped:
    conta has a `pollPedidosLojaIntegrada` document, and no
    `lojaIntegradaImportacaoParada` aviso is open.
 6. **The writes queue (master-plan step 7). `LOJA_INTEGRADA_MODO_RASTREIO`
-   stays `off` until every check of this item passes** — what narrows two
-   attempts of one order writing at once (it does not eliminate it: see "The
-   writes queue is single-file by design" above) rests on these numbers, and a
-   queue created or altered outside the deploy (the 15.28.2 workaround path
-   above) is checked by nothing else:
+   never reaches `on` until every check of this item passes, and while one
+   fails it is HELD at `dry-run` — never `off`** (owner decision, 2026-10-27).
+   `off` stops recording the postings, so none made meanwhile could ever be
+   written back; `dry-run` sends nothing to Loja Integrada and keeps every event
+   for the daily replay (the 7-pass deadline of the window section below still
+   runs). What narrows two attempts of one order writing at once (it does not
+   eliminate it: see "The writes queue is single-file by design" above) rests on
+   these numbers, and a queue created or altered outside the deploy (the 15.28.2
+   workaround path above) is checked by nothing else:
 
    ```bash
    gcloud tasks queues describe filaEscritaLojaIntegrada --location=<region> --project <project-id>
@@ -707,7 +719,8 @@ writer of these orders, and a write from here would be a second one.
    switched off goes unrecorded. `off` records NOTHING: a posting made under
    `off` is never written back and needs a hand fix in the Loja Integrada panel.
    `dry-run` is the brake: it keeps every event and replays it once the valve is
-   `on`.
+   `on`. It is also where the valve is HELD while any check under "Verifying a
+   first deploy" fails — never `off`.
 3. **The deadline.** An event not written (dry-run, outside the canary list, `on`
    with no list) is deferred and replayed once a day for at most 7 passes, so the
    list must reach exactly `*` by the day of the first dry-run event plus 6.

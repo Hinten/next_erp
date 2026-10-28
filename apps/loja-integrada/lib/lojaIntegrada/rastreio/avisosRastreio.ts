@@ -12,9 +12,15 @@
  *    clock — seeding a RESOLVED row when none exists — so an older event can
  *    neither reopen nor close a row a newer event wrote. Every raise and resolve
  *    of one run carries the same clock, which is why a run raises at most ONCE.
- *  - **Severity per call site:** `atencao`, except a `situacao-sobrescrita` the
- *    run flags `critico` (a codigo the write-back never writes onto was
- *    overwritten). A `critico` flag on any other motivo is ignored.
+ *  - **Severity, decided HERE ({@link severidadeDoAvisoRastreioLi}):** `atencao`,
+ *    except two `critico` rules — a `situacao-sobrescrita` the run flags
+ *    `critico` (a codigo the write-back never writes onto was overwritten), and
+ *    a `situacao-bloqueada` at `cancelamento_solicitado` (1019, the buyer asked
+ *    to cancel an order the ERP already shipped or delivered: the parcel may
+ *    still be stopped), decided by that codigo, compared exactly. Every other
+ *    situação refusal — another never-write codigo, an unpaid one — stays
+ *    `atencao`, and a `critico` flag on any motivo but `situacao-sobrescrita`
+ *    is ignored.
  *  - **Route:** the pedido. Canal `lojaIntegrada`, in-app only. Structured params
  *    only — the wording lives in `apps/web/lib/avisos/mensagens.ts`.
  *
@@ -30,16 +36,20 @@ import {
 } from '@delfrance/data/admin/avisos';
 import {
   CANAL_AVISO,
+  CODIGO_SITUACAO_LI,
   MOTIVO_RASTREIO_DIVERGENTE_LI,
   ROTAS_AVISO,
   SEVERIDADE_AVISO,
   TIPO_AVISO,
   chaveDeAviso,
   type MotivoRastreioDivergenteLi,
+  type SeveridadeAviso,
 } from '@delfrance/schemas';
 
 import { type AvisoDepsLi, agoraUsDe } from '../avisos/avisos';
 import { microsDeMillisLi } from '../pedidos/dataLi';
+
+const M = MOTIVO_RASTREIO_DIVERGENTE_LI;
 
 /** The motivo every machine resolution of this tipo is stamped with. */
 export const MOTIVO_RESOLUCAO_RASTREIO_LI = {
@@ -70,6 +80,34 @@ export interface AvisoRastreioLi {
   readonly status?: number | null;
   /** `situacao-sobrescrita` over a never-write codigo: `critico`. Ignored on any other motivo. */
   readonly critico?: boolean;
+}
+
+/**
+ * The severity of one raise (module header). Exhaustive over the motivo: a
+ * motivo added later does not compile until its severity is decided.
+ */
+export function severidadeDoAvisoRastreioLi(aviso: AvisoRastreioLi): SeveridadeAviso {
+  switch (aviso.motivo) {
+    case M.situacaoSobrescrita:
+      return aviso.critico === true ? SEVERIDADE_AVISO.critico : SEVERIDADE_AVISO.atencao;
+    case M.situacaoBloqueada:
+      return aviso.situacao === CODIGO_SITUACAO_LI.cancelamentoSolicitado
+        ? SEVERIDADE_AVISO.critico
+        : SEVERIDADE_AVISO.atencao;
+    case M.situacaoNaoPaga:
+    case M.situacaoDesconhecida:
+    case M.transicaoLateral:
+    case M.objetoDivergente:
+    case M.objetoInvalido:
+    case M.envioDivergente:
+    case M.pedidoDivergente:
+    case M.pedidoAusente:
+    case M.restauracaoIndisponivel:
+    case M.escritaRecusada:
+    case M.deriva:
+    case M.tentativasEsgotadas:
+      return SEVERIDADE_AVISO.atencao;
+  }
 }
 
 /** The dedup identity — and the document id — of one pedido's row. */
@@ -116,13 +154,11 @@ export async function avisarRastreioDivergenteLi(
   aviso: AvisoRastreioLi,
   deps: AvisoDepsLi,
 ): Promise<ResultadoAviso> {
-  const critico =
-    aviso.critico === true && aviso.motivo === MOTIVO_RASTREIO_DIVERGENTE_LI.situacaoSobrescrita;
   const { resultado } = await escreverAviso(
     db,
     {
       ...base(pedido),
-      severidade: critico ? SEVERIDADE_AVISO.critico : SEVERIDADE_AVISO.atencao,
+      severidade: severidadeDoAvisoRastreioLi(aviso),
       params: paramsDo(pedido, aviso),
       motivo: aviso.motivo,
       relogioEvento: microsDeMillisLi(pedido.eventoEmMs),
