@@ -421,7 +421,7 @@ describe('what blocks a save: a finding blocks only through an EDITED entry', ()
     link('C2', 9000, [{ id: 50001, variantes: ['v2'] }]),
   );
 
-  it('an untouched legacy entry carrying a conflict ⇒ shown, save allowed', () => {
+  it('an untouched stored entry carrying a conflict ⇒ shown, save allowed', () => {
     expect(conflitos(lista, [1])).toMatchObject([
       { tipo: TIPO_CONFLITO_LINK_LI.varianteEmDuasOpcoes, bloqueia: false, indices: [0] },
     ]);
