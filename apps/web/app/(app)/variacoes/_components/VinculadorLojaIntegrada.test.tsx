@@ -380,6 +380,53 @@ describe('Loja Integrada tab — the store is readable', () => {
     );
   });
 
+  it('⚠️ an "Atualizar" clicked before a link existed leaves it nothing pending: its NEXT read is plain too', async () => {
+    // One client for the whole test: the tab is switched away and back.
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const arvore = (aba: string) => (
+      <QueryClientProvider client={qc}>
+        <MantineTestProvider>
+          <SectionTabs
+            sections={['Dados gerais', 'Loja Integrada']}
+            contents={{ 'Dados gerais': null, 'Loja Integrada': <Harness inicial={[GUARDADO]} /> }}
+            value={aba}
+            onChange={() => undefined}
+          />
+        </MantineTestProvider>
+      </QueryClientProvider>
+    );
+    const view = render(arvore('Loja Integrada'));
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    await clicar(within(blocoDaConta()).getByRole('button', { name: 'Atualizar' }));
+    await escolher(blocoDaConta(), 'Grade da loja', 'Numeração (8950)');
+    await clicar(botaoAdicionar());
+    h.grade.mockClear();
+
+    // Away and back: the copies are stale, so every open grade is read again — plainly.
+    await act(async () => {
+      view.rerender(arvore('Dados gerais'));
+    });
+    await act(async () => {
+      view.rerender(arvore('Loja Integrada'));
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+
+    expect(h.grade).toHaveBeenCalledWith(
+      'CONTA1',
+      8950,
+      expect.objectContaining({ atualizar: false }),
+    );
+    expect(h.grade).not.toHaveBeenCalledWith(
+      'CONTA1',
+      8950,
+      expect.objectContaining({ atualizar: true }),
+    );
+  });
+
   it('each conta block and each link is a group NAMED for a screen reader', async () => {
     await renderTab([GUARDADO]);
 
@@ -475,6 +522,25 @@ describe('Loja Integrada tab — what it cannot read is still never dropped', ()
     expect(screen.getByText(/permissão de leitura de Integrações/)).toBeTruthy();
     expect(screen.queryByText(/Não foi possível ler as contas/)).toBeNull();
     expect(screen.getByTestId('vinculo-li-outro-0')).toBeTruthy();
+  });
+
+  it('while the conta list is still loading, an entry’s conta is not called unknown either', async () => {
+    h.statusIntegracoes = 'pending';
+    await renderTab([GUARDADO]);
+
+    const linha = screen.getByTestId('vinculo-li-outro-0');
+    expect(within(linha).getByText('conta CONTA1 (lendo a lista de contas…)')).toBeTruthy();
+    expect(screen.queryByText(/conta não reconhecida/)).toBeNull();
+  });
+
+  it('each read-only line is a group named by the entry and its conta', async () => {
+    h.grades.mockRejectedValue(desligado());
+    await renderTab([GUARDADO, DE_OUTRA_CONTA]);
+
+    const linha = screen.getByRole('group', {
+      name: 'Cor (9001) · 1 opção(ões) — Loja B (inativa)',
+    });
+    expect(within(linha).getByRole('button', { name: 'Remover vínculo' })).toBeTruthy();
   });
 
   it('⚠️ NEAR-MISS: once the conta list IS read, an id it lacks is "conta não reconhecida"', async () => {

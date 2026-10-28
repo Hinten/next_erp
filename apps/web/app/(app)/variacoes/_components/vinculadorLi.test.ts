@@ -78,6 +78,16 @@ describe('prepararVinculosLi — what the save writes (the field’s prepareForS
     expect(saida[0]).toBe(intacto);
   });
 
+  it('⚠️ an untouched entry holding an EMPTY option is written back as stored: only an edit drops an option', () => {
+    const comOpcaoVazia = vinculo('C1', 8946, [opcao(1, ['v1']), opcao(2, [])]);
+    const antes = structuredClone(comOpcaoVazia);
+
+    const saida = prepararVinculosLi([comOpcaoVazia]) as Doc[];
+
+    expect(saida[0]).toBe(comOpcaoVazia);
+    expect(saida[0]).toEqual(antes);
+  });
+
   it('an entry the server removed while this operator changed it ("removido") is dropped on save', () => {
     const marcado = { ...vinculo('C1', 8946, []), [MARCA_CONFLITO_VINCULO_LI]: 'removido' };
     expect(prepararVinculosLi([marcado])).toEqual([]);
