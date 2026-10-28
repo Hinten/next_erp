@@ -1219,6 +1219,17 @@ a kit-virtual produto still answers `kit-criar` and leaves the draft alone.
 and on a produto that publishes as a native kit it refuses
 `rascunho-em-kit-virtual`. Depth: `lib/shopee/kits/README.md`.
 
+**This CLI publishes a draft; it never edits or discards one (#1911, P4).**
+Those belong to the draft route — `POST …/rascunho`, `…/rascunho/atualizar`,
+`…/rascunho/descartar`, all `PERM.integracao.write`, zero Shopee calls — whose
+every answer is in `lib/shopee/anuncios/README.md` ("A draft is created, edited
+and discarded through the draft route"). Its discard is this app's ONE
+`prodshopee` delete, of a draft only, so §11.3's "nothing is ever deleted" still
+holds for every link the import touches. A draft that answers
+`SHOPEE_RASCUNHO_CRIACAO_INCERTA` (§12.7) is discarded only on the operator's
+attestation (`confirmarCriacaoIncerta: true`) that Seller Centre holds no such
+listing — if it does, import it instead.
+
 **The kit dry run** prints `## O que um kit nativo faria (produto …, arma …)`:
 the target link and its live `item_status`, `item_sku`, the variations and
 their axis, the main component, the kit bands (`servidos` or `indisponíveis

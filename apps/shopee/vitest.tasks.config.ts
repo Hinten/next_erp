@@ -20,7 +20,10 @@ import { defineConfig } from 'vitest/config';
 // (`integracao/{id}`, `pedidos/{id}/nfev4/{id}`, `produtos/{id}/prodshopee/{id}`),
 // so they fire on every suite's writes here. Sharing stays safe under three rules:
 //   - a `*.firestore.test.ts` writes none of those paths, or it becomes a
-//     trigger suite and must await the trigger's LAST write before it ends;
+//     trigger suite and must await the trigger's LAST write before it ends —
+//     unless the trigger provably writes nothing for what it seeds (#1911's
+//     `rascunho.firestore.test.ts` seeds DRAFT links only, which the link
+//     trigger answers with zero reads and zero writes);
 //   - conta ids `int-1`…`int-4` belong to the round trips, whose credential
 //     ABSENCE is what keeps a dispatched function offline — mint your own;
 //   - each file deletes what it wrote (`fileParallelism: false`).

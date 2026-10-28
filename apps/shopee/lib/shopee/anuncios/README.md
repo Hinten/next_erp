@@ -12,7 +12,7 @@ Everything here is **offline-verified only**. The probe measured the wire
 through the package's own operations against the **SG sandbox** shop; no module
 in this folder has ever run against a BR shop, staging or production.
 
-## The twenty-eight modules, in five families
+## The twenty-nine modules, in five families
 
 The families are the seam, not a filing convention.
 
@@ -39,7 +39,8 @@ The families are the seam, not a filing convention.
   `aplicar`, both write-backs, the re-list dance and the failure stamp),
   `reservaRascunho.ts` (#1911: a DRAFT's publish lock — the reservation and its
   second-listing scan, the pre-send re-read, the per-leg send gate, the
-  write-back #1 claim and the token-guarded release),
+  write-back #1 claim and the token-guarded release), `rascunho.ts` (#1911:
+  the draft route's create / edit / discard — the one `prodshopee` delete),
   `fotosPublicacao.ts` (the photo up-direction), `lerImpostoDoProduto.ts` (the
   memoised imposto reader over the promoted NF-e cascade),
   `lerTabelaMedidasDoProduto.ts` (step 18: the produto's `tabMedi`, one read,
@@ -385,6 +386,98 @@ precondition.
 - **(v) A corrupt `item_id: 0` link stays neither vivo nor draft**: no lock, and a
   publish onto it is step 11's create-then-merge.
 
+### A draft is created, edited and discarded through the draft route (#1911, P4, D1/D2/D18)
+
+The browser never writes `prodshopee` (D1): three POST routes —
+`rascunho`, `rascunho/atualizar`, `rascunho/descartar` (CORS admits only
+`GET, POST, OPTIONS`, hence sub-paths, the `importar-todos/{cancelar,status}`
+shape) — all `PERM.integracao.write`, write a draft through ONE module,
+`rascunho.ts`. **Zero Shopee calls** on every path: the leaf gate, the bands and
+the brand are publish's (`montagemAnuncio.ts`), never the draft's.
+
+**The route owns four things and decides nothing else**: the caller check, the
+JSON parse, the STRICT body parse (`corpo{Criar,Atualizar,Descartar}RascunhoShopeeSchema`
+in `@delfrance/schemas`, `shopeeRascunho.ts` — an unknown key, `item_id`
+included, is a 400, never dropped, so a web deployed before this app fails
+loudly) and the CLOCK — one `Date.now()` per request, handed to `rascunho.ts` as
+`nowMs`. No module in this folder reads a clock (the raw-text pin in
+`statusAnuncio.test.ts`). Every answer body is built BY NAME, and its codes are
+`CODIGO_RASCUNHO_SHOPEE`'s, the one vocabulary the web reads.
+
+**Every value goes through `@delfrance/schemas`' ONE projection and ONE compare**
+(#1369): `camposDoRascunhoShopee` (absent ≡ `null`, verbatim — a legacy `''`
+stays `''`) and `mesmoValorDoRascunhoShopee` (`undefined` ≡ `null`; `'Camiseta'`
+≠ `'Camiseta '`, brand `0` ≠ `null`, `''` ≠ `null`; a brand pair by `brand_id`
+alone). The web builds the `base` it sends from the same projection. A `base`
+is parsed by the TOLERANT `baseRascunhoShopeeSchema` (what the operator SAW,
+never normalised); only `patch` / `conteudo` go through the write whitelist.
+
+- **create** — tier 0, `create()` at the CLIENT-generated 20-character id.
+  404 when the conta is absent or not Shopee, or the produto is absent · 422
+  `PRODUTO_INVALIDO {motivo}` for a variation child or a virtual kit
+  (`MOTIVO_RASCUNHO_INVALIDO_SHOPEE` — deliberately not the dispatcher's
+  persisted slugs) · 409 `CONTA_JA_TEM_ANUNCIO {vinculos}` (D15: a live listing
+  or another draft of the conta, `vinculosQueExigemConfirmacaoShopee`, without
+  `confirmarSegundoAnuncio: true`; a `removido` one is no reason; the draft's
+  own id never counts) · on `ALREADY_EXISTS` the stored document decides: the
+  same conta's draft with the SAME content ⇒ **200** `criado: false` (a double
+  click, a lost first answer); other content ⇒ 409 `CONFLITO {conflitos}`
+  (K1-9); anything else ⇒ 409 `ID_EM_USO`.
+- **edit** — tier 3 + 1: the baseline compare, then `update(…, {lastUpdateTime})`,
+  ≤ 3 re-derives. 404 `INEXISTENTE` (absent, or another conta's) · 409
+  `JA_PUBLICADO` · 409 `EM_ANDAMENTO {aguardarMs}` (a live lock, its post-expiry
+  grace included) · 409 `CATEGORIA_TRAVADA` (a `category_id` patch while the
+  reading is `incerta`: the uncertain create may have used the old one) · 409
+  `CONFLITO {conflitos}` (the stored projection ≠ `base` on a PATCHED field; a
+  third lost precondition answers `conflitos: []`).
+- **discard** — tier 3 + 1: the baseline compare over EVERY projected field,
+  then `delete({lastUpdateTime})`, ≤ 3 re-derives. 404 · 409 `JA_PUBLICADO` ·
+  409 `EM_ANDAMENTO` · 409 `CONFLITO` (stored ≠ `base`, K1-13: an edit made
+  meanwhile is never discarded unseen) · 409 `CRIACAO_INCERTA` (`incerta`
+  without `confirmarCriacaoIncerta: true`, K1-6: the draft is the only record
+  of that attempt).
+
+Answers: create **201** `{linkDocId, criado: true}` / **200** `{linkDocId,
+criado: false}`; edit 200 `{linkDocId, gravados}` (`[]` = equal, NOTHING
+written); discard 200 `{linkDocId, descartado: true, criacaoIncerta}`. A
+refusal is `rascunho.ts`'s `RecusaDeRascunhoShopeeError` (an APP class, mapped
+with `instanceof` BEFORE `isShopeeError`), its body built by
+`corpoDaRecusaDeRascunhoShopee`: `error`, `code`, `linkDocId` and only the
+detail key the code names — an absent key is "not applicable". The conta check
+of a create throws `ShopeeContaNotConfiguredError` instead, so its 404 is
+`shopeeErrorResponse`'s, like every conta-scoped route's. The 400 is the
+route's own — Zod's rendering of the issues, paths and the schema's sentences,
+never a value of the body — plus one of the module's: a create whose produto
+has no usable name and no `item_name`.
+
+Five rules a change must keep:
+
+- **An edit never writes the lock.** An `incerta` lock survives every edit; only
+  publish takes, claims and releases it (above).
+- **The compare is over the PATCHED fields only** — a field someone else edited
+  that this request does not touch is not a conflict; on a discard it is over
+  every field, because a discard throws all of them away.
+- **`marca` is ONE field over two stored keys**: written whole (`brand_id` +
+  `original_brand_name`; `null` ⇒ both `null`; `0` ⇒ the name `null`), compared
+  by `brand_id` only.
+- **A `category_id` write clears a stored `attributes`** in the same update
+  (they belong to the old category) and reports `attributes` in `gravados`.
+- **The discard is this app's ONE `prodshopee` delete**, of a draft only, so
+  `../produtos/links.ts`'s "never delete" gains exactly this exception. A publish
+  whose create lands after the discard does not resurrect the draft: its
+  write-back #1 `add`s a fresh link (the claim, above).
+
+`rascunho.firestore.test.ts` runs the three real preconditions — `create()`'s
+`ALREADY_EXISTS`, a stale `update(…, {lastUpdateTime})` and a stale
+`delete({lastUpdateTime})` — on the emulator in `CI gate (shopee)`, so the
+FakeDb double is never their only witness. It seeds DRAFTS only (the link
+trigger's fast path answers zero reads and zero writes for a non-vivo
+transition) on its own contas, `int-rasc-1` and `int-rasc-2` (never the round
+trips' `int-1`…`int-4`), and never writes `integracao/{id}` (the create's conta
+read is injected); every vivo case stays on FakeDb. `ID_EM_USO` is proved with
+ANOTHER CONTA's draft at the id — a draft id is per produto subcollection, so
+the same id under another produto is a different document and creates (201).
+
 ### The update sequence: full lists, and `item_status` is never sent
 
 `update_item` is a **field-wise merge and a list-wise replace**, so every list
@@ -412,7 +505,8 @@ is therefore PROVISIONAL; `aplicarModelos` re-runs both pure mappers from
 `plano.modelos` nowhere. An omitted model is a DELETED model at Shopee (the #831
 shape one channel over), so a model whose `model_id` binds no ERP child is
 carried in `modelosSemFilho` and kept in the list, and its tier option keeps its
-position in the union. **No link document is deleted on any path.**
+position in the union. **No link document is deleted on any publish path** —
+the one `prodshopee` delete in this app is a DRAFT's discard (above).
 
 A live model whose `model_id` is `0` is in neither counter and in no list: `0` is
 Shopee's "this item has no variation" sentinel and a link carrying it would bind

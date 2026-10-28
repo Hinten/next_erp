@@ -3,7 +3,9 @@
  * with no `item_id` (a draft, `ehRascunhoShopee`) means to every surface that
  * decides about one: the publish lock's timing, the codes a refused draft
  * operation answers with, the reading of the lock, the "brand still to choose"
- * test, and which sibling links make a publish a SECOND listing.
+ * test, which sibling links make a publish a SECOND listing, and the draft
+ * route's contract — its three bodies and answers, THE projection of a stored
+ * draft's editable fields and THE comparison of two of their values.
  *
  * ⚠️ ONE module (#1369). `apps/shopee` decides with these and the produto's
  * Shopee tab in `apps/web` renders with them; `apps/web` has no dependency edge
@@ -46,6 +48,8 @@
  */
 import { z } from 'zod';
 
+import { textoUtilizavelShopee } from '../../faixaShopee';
+import { naoDocId } from '../../shared/outerRef';
 import { AGUARDAR_KIT_INCERTO_SHOPEE_MS } from '../../shopeeAcaoSugerida';
 import { publicacaoEmCursoShopeeSchema } from './shopeeLink';
 import { anuncioShopeeVivo, ehRascunhoShopee } from './shopeeLinkLeitura';
@@ -130,6 +134,31 @@ export const CODIGO_RASCUNHO_SHOPEE = {
    * `vinculos`.
    */
   contaJaTemAnuncio: 'SHOPEE_RASCUNHO_CONTA_JA_TEM_ANUNCIO',
+  /**
+   * 409 — the stored draft is not what the request says the operator SAW (its
+   * `base`), or a create retry at the same id carries other content. Nothing
+   * was written. Detail: `conflitos` ({@link conflitoRascunhoShopeeSchema};
+   * `[]` when the write lost to concurrent writes on every attempt).
+   */
+  conflito: 'SHOPEE_RASCUNHO_CONFLITO',
+  /**
+   * 409 — a create named an id that already holds a document which is not THIS
+   * draft (another produto's, another conta's, or a listing). Nothing written.
+   */
+  idEmUso: 'SHOPEE_RASCUNHO_ID_EM_USO',
+  /**
+   * 409 — the category of a draft whose last create may have reached Shopee
+   * (the reading is `incerta`) cannot change: the uncertain attempt may have
+   * created the listing in the OLD category.
+   */
+  categoriaTravada: 'SHOPEE_RASCUNHO_CATEGORIA_TRAVADA',
+  /**
+   * 422 — the produto cannot carry a draft. Detail: `motivo`
+   * ({@link MOTIVO_RASCUNHO_INVALIDO_SHOPEE}).
+   */
+  produtoInvalido: 'SHOPEE_RASCUNHO_PRODUTO_INVALIDO',
+  /** 404 — the named draft does not exist on this produto, or belongs to another conta. */
+  inexistente: 'SHOPEE_RASCUNHO_INEXISTENTE',
 } as const satisfies Record<string, string>;
 export type CodigoRascunhoShopee =
   (typeof CODIGO_RASCUNHO_SHOPEE)[keyof typeof CODIGO_RASCUNHO_SHOPEE];
@@ -162,8 +191,11 @@ export type EstadoPublicacaoRascunhoShopee =
 
 const LIVRE: EstadoPublicacaoRascunhoShopee = { tipo: 'livre' };
 
-/** A stored MILLISECOND instant, or `null` when the value is not a safe integer. */
-function msLegivel(bruto: unknown): number | null {
+/**
+ * A stored safe integer — a MILLISECOND instant, a category or brand id — or
+ * `null` when the value is anything else (absent included).
+ */
+function inteiroLegivel(bruto: unknown): number | null {
   return typeof bruto === 'number' && Number.isSafeInteger(bruto) ? bruto : null;
 }
 
@@ -215,7 +247,7 @@ export function estadoPublicacaoRascunhoShopee(
 
   const incertaBruta = link.criacaoIncertaDesde;
   const comIncerteza = incertaBruta !== null && incertaBruta !== undefined;
-  const desdeDaIncerteza = msLegivel(incertaBruta);
+  const desdeDaIncerteza = inteiroLegivel(incertaBruta);
 
   const trava = link.publicacaoEmCurso;
   if (trava === null || trava === undefined) {
@@ -340,3 +372,443 @@ export function vinculosQueExigemConfirmacaoShopee(
   }
   return saida;
 }
+
+/* -------------------------------------------------------------------------- */
+/*              A produto that cannot carry a draft (the 422's motivo)         */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Why a draft create refused the produto (#1911, K2-10) — the `motivo` of a 422
+ * {@link CODIGO_RASCUNHO_SHOPEE}`.produtoInvalido`:
+ *
+ * - `filho` — a variation child: its MODEL lives on the parent's listing, so a
+ *   child never carries a listing (nor a draft) of its own;
+ * - `kit-virtual` — a virtual kit's first publish is a NATIVE kit, built by the
+ *   kit arm, never an ordinary listing drafted here.
+ *
+ * ⚠️ A route-only answer, deliberately NOT the persisted publish-refusal slugs
+ * (`falhaPublicacao`'s vocabulary): the publish dispatcher's slugs have exactly
+ * one producer each, pinned in `apps/shopee`, and an answer nobody stores must
+ * not mix with what the produto's history keeps.
+ */
+export const motivoRascunhoInvalidoShopeeSchema = z.enum(['filho', 'kit-virtual']);
+export type MotivoRascunhoInvalidoShopee = z.infer<typeof motivoRascunhoInvalidoShopeeSchema>;
+export const MOTIVO_RASCUNHO_INVALIDO_SHOPEE = {
+  filho: 'filho',
+  kitVirtual: 'kit-virtual',
+} as const satisfies Record<string, MotivoRascunhoInvalidoShopee>;
+
+/* -------------------------------------------------------------------------- */
+/*                 The draft's editable fields — THE projection                */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * One editable field of a draft (#1911) — the unit the draft route compares,
+ * writes (`gravados`) and reports in a conflict, and the unit the produto's
+ * Shopee tab marks as touched.
+ *
+ * - `marca` is ONE field over TWO stored keys, `brand_id` + `original_brand_name`
+ *   (D10): the pair is never written, compared or reported apart.
+ * - `attributes` and `logistic_info` are RESERVED — in the vocabulary from the
+ *   start, so it never changes shape under a reader, but no body accepts them,
+ *   {@link camposDoRascunhoShopee} does not produce them and they compare
+ *   DISTINCT until their decoders join this module.
+ *
+ * The enum's option order is the CANONICAL order: every list of fields this
+ * module answers ({@link camposPresentesDoRascunhoShopee}) follows it.
+ */
+export const campoRascunhoShopeeSchema = z.enum([
+  'item_name',
+  'description',
+  'category_id',
+  'marca',
+  'attributes',
+  'logistic_info',
+]);
+export type CampoRascunhoShopee = z.infer<typeof campoRascunhoShopeeSchema>;
+export const CAMPO_RASCUNHO_SHOPEE = {
+  itemName: 'item_name',
+  description: 'description',
+  categoryId: 'category_id',
+  marca: 'marca',
+  attributes: 'attributes',
+  logisticInfo: 'logistic_info',
+} as const satisfies Record<string, CampoRascunhoShopee>;
+
+/**
+ * A draft's brand as ONE value: the id the operator chose and the name that
+ * follows it. `brand_id: 0` is Shopee's "No Brand" — a choice, never "not
+ * chosen" (which is the whole value being `null`).
+ */
+export interface MarcaRascunhoShopee {
+  readonly brand_id: number;
+  readonly original_brand_name: string | null;
+}
+
+/**
+ * The editable fields of a stored draft, as {@link camposDoRascunhoShopee}
+ * reads them. `null` = nothing stored (or nothing READABLE stored).
+ */
+export interface CamposRascunhoShopee {
+  readonly item_name: string | null;
+  /** `null` = the listing uses the produto's own description (D2). */
+  readonly description: string | null;
+  readonly category_id: number | null;
+  /** `null` = no brand chosen yet. */
+  readonly marca: MarcaRascunhoShopee | null;
+  /** RESERVED — not produced yet. */
+  readonly attributes?: readonly unknown[] | null;
+  /** RESERVED — not produced yet. */
+  readonly logistic_info?: readonly unknown[] | null;
+}
+
+/** A stored string, VERBATIM; anything else (absent included) is `null`. */
+function textoGuardado(bruto: unknown): string | null {
+  return typeof bruto === 'string' ? bruto : null;
+}
+
+/**
+ * THE projection of a stored draft onto its editable fields (#1911) — the ONE
+ * place "what the draft holds" is decided. The draft route compares the
+ * operator's `base` against it and reports conflicts in its terms; the
+ * produto's Shopee tab builds the `base` it sends from it (#1369: one reading,
+ * never a browser copy).
+ *
+ * Input: the stored document, unvalidated (a soft-read hands the raw body over).
+ *
+ * - **Absent ≡ `null`** — decided HERE, once: a legacy draft with no
+ *   `item_name` key reads `item_name: null`, exactly like an explicit `null`.
+ * - **Verbatim.** Never trims, never folds blank to `null`: a stored legacy
+ *   `''` stays `''` and `'Camiseta '` keeps its space. A `base` is what the
+ *   operator SAW, so the projection must be what is STORED.
+ * - **`marca` is `null` ⇔ `brand_id` is `null`/absent**; otherwise it is the
+ *   pair, with the stored `original_brand_name` (verbatim, else `null`).
+ * - **An unreadable value reads `null`** — a non-string text, a `category_id`
+ *   or `brand_id` that is not a safe integer. The type cannot hold it, and
+ *   `null` keeps the draft EDITABLE: the operator sees an empty field, writes a
+ *   value, and the compare still catches every concurrent edit, since every
+ *   value the draft route writes is readable.
+ * - `attributes` / `logistic_info` are not projected yet (RESERVED).
+ *
+ * Pure, total over any record; reads whatever the document is — whether it is
+ * still a DRAFT is the caller's question ({@link ehRascunhoShopee}).
+ */
+export function camposDoRascunhoShopee(link: Record<string, unknown>): CamposRascunhoShopee {
+  const brandId = inteiroLegivel(link.brand_id);
+  return {
+    item_name: textoGuardado(link.item_name),
+    description: textoGuardado(link.description),
+    category_id: inteiroLegivel(link.category_id),
+    marca:
+      brandId === null
+        ? null
+        : { brand_id: brandId, original_brand_name: textoGuardado(link.original_brand_name) },
+  };
+}
+
+/** Does `valor` look like a brand pair (an object carrying `brand_id`)? */
+function ehParDeMarca(valor: unknown): valor is { readonly brand_id: unknown } {
+  return typeof valor === 'object' && valor !== null && 'brand_id' in valor;
+}
+
+/**
+ * THE comparison of two values of one draft field (#1911) — the draft route's
+ * baseline compare (stored vs the operator's `base`), its "nothing to write"
+ * test (stored vs `patch`) and its create-retry test (stored vs `conteudo`) all
+ * ask THIS, over values in {@link camposDoRascunhoShopee}'s form.
+ *
+ * A fold, deliberately NARROW — "same" must never swallow an edit:
+ *
+ * - **EQUAL:** `undefined` ≡ `null` (an absent key is the projection's `null`);
+ *   two brand pairs with the same `brand_id` and different names (the name
+ *   FOLLOWS the id; the publish's read-back repairs it).
+ * - **DISTINCT:** `'Camiseta'` vs `'Camiseta '` (no trim); `''` vs `null` (a
+ *   stored `''` is not "nothing"); `100` vs `'100'` (no coercion); brand `0`
+ *   ("No Brand", chosen) vs `null` (not chosen).
+ * - **RESERVED** `attributes` / `logistic_info`: always DISTINCT, even `null`
+ *   vs `null`, until their structural compare joins with their decoders. A
+ *   compare that answers "different" when unsure raises a conflict the human
+ *   sees; one that answers "same" drops an edit silently.
+ *
+ * Scalars compare with `===`. Pure, total.
+ */
+export function mesmoValorDoRascunhoShopee<C extends CampoRascunhoShopee>(
+  campo: C,
+  a: CamposRascunhoShopee[C] | undefined,
+  b: CamposRascunhoShopee[C] | undefined,
+): boolean {
+  const x: unknown = a ?? null;
+  const y: unknown = b ?? null;
+  switch (campo as CampoRascunhoShopee) {
+    case CAMPO_RASCUNHO_SHOPEE.marca:
+      if (x === null || y === null) return x === y;
+      return ehParDeMarca(x) && ehParDeMarca(y) && x.brand_id === y.brand_id;
+    case CAMPO_RASCUNHO_SHOPEE.attributes:
+    case CAMPO_RASCUNHO_SHOPEE.logisticInfo:
+      return false;
+    case CAMPO_RASCUNHO_SHOPEE.itemName:
+    case CAMPO_RASCUNHO_SHOPEE.description:
+    case CAMPO_RASCUNHO_SHOPEE.categoryId:
+      return x === y;
+  }
+}
+
+/**
+ * The fields a parsed `base`, `patch` or `conteudo` NAMES — every key whose
+ * value is not `undefined` — in the canonical order of
+ * {@link campoRascunhoShopeeSchema}. The update body's own check (`base` names
+ * exactly `patch`'s fields) uses it, so the route iterating the same list
+ * compares exactly the fields that check accepted.
+ */
+export function camposPresentesDoRascunhoShopee(
+  valores: Partial<Record<CampoRascunhoShopee, unknown>>,
+): CampoRascunhoShopee[] {
+  return campoRascunhoShopeeSchema.options.filter((campo) => valores[campo] !== undefined);
+}
+
+/* -------------------------------------------------------------------------- */
+/*                         The draft route's bodies                            */
+/* -------------------------------------------------------------------------- */
+
+/** The longest `item_name` a draft write accepts — an abuse bound; Shopee's band is the publisher's. */
+export const MAX_ITEM_NAME_RASCUNHO_SHOPEE = 2_000;
+
+/** The longest `description` a draft write accepts — an abuse bound; Shopee's band is the publisher's. */
+export const MAX_DESCRIPTION_RASCUNHO_SHOPEE = 10_000;
+
+/**
+ * The id a draft CREATE may name: exactly Firestore's auto-id shape, 20
+ * characters of `[A-Za-z0-9]` — the client generates it. A native-kit link's
+ * derived id is 64 lowercase-hex characters, so the two can never collide.
+ * Edits and discards name an EXISTING document, which only has to be a usable
+ * document id (a legacy draft's id is whatever the legacy app gave it).
+ */
+export const PADRAO_ID_RASCUNHO_SHOPEE = /^[A-Za-z0-9]{20}$/;
+
+/** {@link PADRAO_ID_RASCUNHO_SHOPEE} as a body field. */
+export const idRascunhoShopeeSchema = z.string().regex(PADRAO_ID_RASCUNHO_SHOPEE, {
+  message: 'linkDocId deve ter 20 letras ou dígitos (o formato de id do Firestore).',
+});
+
+/**
+ * A usable Firestore document id ({@link naoDocId}): never `''`, never a `/`,
+ * never `.` or `..` — refused HERE, before it can reach `.doc(id)`.
+ */
+const idDeDocumentoSchema = z.string().refine((id) => !naoDocId(id), {
+  message: 'deve ser um id de documento (sem "/" nem "..").',
+});
+
+/**
+ * The brand pair a write accepts, NORMALISED: `brand_id: 0` drops the name
+ * (Shopee's "No Brand" has its own); a blank name is `null` (nothing to say).
+ * A non-blank name is kept VERBATIM.
+ */
+const marcaConteudoSchema = z
+  .strictObject({
+    brand_id: z.number().int().nonnegative(),
+    original_brand_name: z.string().nullable(),
+  })
+  .transform(
+    (marca): MarcaRascunhoShopee => ({
+      brand_id: marca.brand_id,
+      original_brand_name:
+        marca.brand_id === 0 || textoUtilizavelShopee(marca.original_brand_name) === null
+          ? null
+          : marca.original_brand_name,
+    }),
+  );
+
+/** The write's 400 when `item_name` is `null` or blank. */
+export const MSG_ITEM_NAME_EM_BRANCO_RASCUNHO_SHOPEE =
+  'item_name deve ser um texto não vazio — o título de um rascunho nunca fica em branco.';
+
+/**
+ * **The draft WRITE whitelist** (#1911, D1/D2) — every field a draft create
+ * (`conteudo`) or edit (`patch`) may set, NORMALISED to what is stored. Every
+ * key optional; an unknown key — `item_id`, a lifecycle field, a reserved field
+ * — is a 400, never silently dropped (`.strict`).
+ *
+ * | key | accepts | stored as |
+ * |---|---|---|
+ * | `item_name` | a non-blank string ≤ {@link MAX_ITEM_NAME_RASCUNHO_SHOPEE} (`null` refused) | verbatim |
+ * | `description` | a string ≤ {@link MAX_DESCRIPTION_RASCUNHO_SHOPEE}, or `null` | verbatim; blank ⇒ `null` ("the produto's") |
+ * | `category_id` | a positive safe integer, or `null` | verbatim (the leaf check is the publisher's) |
+ * | `marca` | `{brand_id: int ≥ 0, original_brand_name: string or null}`, or `null` | BOTH stored keys always: `null` ⇒ both `null`; `0` ⇒ name `null`; blank name ⇒ `null` |
+ *
+ * "Blank" is {@link textoUtilizavelShopee}'s — the one test of usable text.
+ */
+export const conteudoRascunhoShopeeSchema = z.strictObject({
+  // `.nullable()` only so `null` reaches the refine and is REFUSED with a
+  // sentence — a draft's title is never cleared (the stored schema's `min(1)`).
+  item_name: z
+    .string()
+    .max(MAX_ITEM_NAME_RASCUNHO_SHOPEE)
+    .nullable()
+    .refine((nome) => nome !== null && textoUtilizavelShopee(nome) !== null, {
+      message: MSG_ITEM_NAME_EM_BRANCO_RASCUNHO_SHOPEE,
+    })
+    .optional(),
+  description: z
+    .string()
+    .max(MAX_DESCRIPTION_RASCUNHO_SHOPEE)
+    .nullable()
+    .transform((texto) => (textoUtilizavelShopee(texto) === null ? null : texto))
+    .optional(),
+  category_id: z.number().int().positive().nullable().optional(),
+  marca: marcaConteudoSchema.nullable().optional(),
+});
+export type ConteudoRascunhoShopee = z.output<typeof conteudoRascunhoShopeeSchema>;
+
+/**
+ * **What the operator SAW** (#1911, K2-4) — the `base` of an edit or a discard:
+ * {@link camposDoRascunhoShopee}'s shape, every key optional, values VERBATIM.
+ * Nullable, no minimum length, no maximum, no trim, no blank ⇒ `null`: a base
+ * is compared against the STORED projection, never written, so normalising it
+ * would turn a legacy `''` into a conflict on every save, and a bound would
+ * make a legacy draft uneditable. Strict, like the bodies.
+ *
+ * Every value {@link camposDoRascunhoShopee} can produce parses here unchanged.
+ */
+export const baseRascunhoShopeeSchema = z.strictObject({
+  item_name: z.string().nullable().optional(),
+  description: z.string().nullable().optional(),
+  category_id: z.number().int().nullable().optional(),
+  marca: z
+    .strictObject({
+      brand_id: z.number().int(),
+      original_brand_name: z.string().nullable(),
+    })
+    .nullable()
+    .optional(),
+});
+export type BaseRascunhoShopee = z.output<typeof baseRascunhoShopeeSchema>;
+
+/**
+ * `POST /api/marketplace/shopee/rascunho` — create the draft at the
+ * client-generated `linkDocId` ({@link PADRAO_ID_RASCUNHO_SHOPEE}). `conteudo`
+ * absent or `null` ⇒ nothing but the defaults. `confirmarSegundoAnuncio: true`
+ * is the operator's confirmation that the conta's live listing or other draft
+ * of this produto is not a reason to stop (D15); absent or `null` is `false` —
+ * only a literal `true` confirms.
+ */
+export const corpoCriarRascunhoShopeeSchema = z.strictObject({
+  integracaoId: idDeDocumentoSchema,
+  produtoId: idDeDocumentoSchema,
+  linkDocId: idRascunhoShopeeSchema,
+  conteudo: conteudoRascunhoShopeeSchema.nullable().optional(),
+  confirmarSegundoAnuncio: z.boolean().nullable().optional(),
+});
+export type CorpoCriarRascunhoShopee = z.output<typeof corpoCriarRascunhoShopeeSchema>;
+
+/** The update body's 400 when `patch` names no field. */
+export const MSG_PATCH_VAZIO_RASCUNHO_SHOPEE = 'patch deve alterar ao menos um campo.';
+
+/** The update body's 400 when `base` and `patch` name different fields. */
+export const MSG_BASE_DIFERENTE_DO_PATCH_RASCUNHO_SHOPEE =
+  'base deve trazer exatamente os campos de patch, com os valores que o operador viu.';
+
+/**
+ * `POST /api/marketplace/shopee/rascunho/atualizar` — edit a draft. `patch` is
+ * the write ({@link conteudoRascunhoShopeeSchema}, normalised); `base` is what
+ * the operator saw for EXACTLY those fields ({@link baseRascunhoShopeeSchema},
+ * verbatim) — the route compares it against the stored projection before
+ * writing. `patch` must name at least one field
+ * ({@link MSG_PATCH_VAZIO_RASCUNHO_SHOPEE}); `base` must name exactly `patch`'s
+ * fields ({@link MSG_BASE_DIFERENTE_DO_PATCH_RASCUNHO_SHOPEE}), so a field is
+ * never written unchecked nor checked unwritten.
+ */
+export const corpoAtualizarRascunhoShopeeSchema = z
+  .strictObject({
+    integracaoId: idDeDocumentoSchema,
+    produtoId: idDeDocumentoSchema,
+    linkDocId: idDeDocumentoSchema,
+    base: baseRascunhoShopeeSchema,
+    patch: conteudoRascunhoShopeeSchema,
+  })
+  .superRefine((corpo, ctx) => {
+    const alterados = camposPresentesDoRascunhoShopee(corpo.patch);
+    if (alterados.length === 0) {
+      ctx.addIssue({ code: 'custom', path: ['patch'], message: MSG_PATCH_VAZIO_RASCUNHO_SHOPEE });
+      return;
+    }
+    const vistos = camposPresentesDoRascunhoShopee(corpo.base);
+    const mesmos =
+      vistos.length === alterados.length && vistos.every((campo, i) => campo === alterados[i]);
+    if (!mesmos) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['base'],
+        message: MSG_BASE_DIFERENTE_DO_PATCH_RASCUNHO_SHOPEE,
+      });
+    }
+  });
+export type CorpoAtualizarRascunhoShopee = z.output<typeof corpoAtualizarRascunhoShopeeSchema>;
+
+/**
+ * `POST /api/marketplace/shopee/rascunho/descartar` — delete a draft. `base`
+ * carries EVERY projected field (K1-13): the route refuses the discard when the
+ * stored draft is not what the operator saw, so an edit made meanwhile — in
+ * another tab, by another operator — is never discarded unseen.
+ * `confirmarCriacaoIncerta: true` is the operator's attestation that the
+ * uncertain last create did NOT reach Shopee (K1-6); without it (absent or
+ * `null` — only a literal `true` attests), a draft whose reading is `incerta`
+ * is kept, because the draft is the only record of that attempt.
+ */
+export const corpoDescartarRascunhoShopeeSchema = z.strictObject({
+  integracaoId: idDeDocumentoSchema,
+  produtoId: idDeDocumentoSchema,
+  linkDocId: idDeDocumentoSchema,
+  base: baseRascunhoShopeeSchema.required(),
+  confirmarCriacaoIncerta: z.boolean().nullable().optional(),
+});
+export type CorpoDescartarRascunhoShopee = z.output<typeof corpoDescartarRascunhoShopeeSchema>;
+
+/* -------------------------------------------------------------------------- */
+/*                        The draft route's answers                            */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The create's 2xx: **201** `criado: true` — the draft was created now; **200**
+ * `criado: false` — it already existed, for the same conta and produto, with
+ * the SAME content (a double click, or a retry whose first answer was lost).
+ * A retry carrying other content is a 409 `conflito`, never this.
+ */
+export const respostaCriarRascunhoShopeeSchema = z.object({
+  linkDocId: z.string().min(1),
+  criado: z.boolean(),
+});
+export type RespostaCriarRascunhoShopee = z.infer<typeof respostaCriarRascunhoShopeeSchema>;
+
+/**
+ * The edit's 200: the fields WRITTEN, canonical order. `[]` = the patch equals
+ * what is stored, and nothing was written.
+ */
+export const respostaAtualizarRascunhoShopeeSchema = z.object({
+  linkDocId: z.string().min(1),
+  gravados: z.array(campoRascunhoShopeeSchema),
+});
+export type RespostaAtualizarRascunhoShopee = z.infer<typeof respostaAtualizarRascunhoShopeeSchema>;
+
+/**
+ * The discard's 200. `criacaoIncerta: true` = the draft deleted was `incerta`
+ * (discarded on the operator's attestation): if a listing appears on Shopee
+ * after all, it is imported, never re-created.
+ */
+export const respostaDescartarRascunhoShopeeSchema = z.object({
+  linkDocId: z.string().min(1),
+  descartado: z.literal(true),
+  criacaoIncerta: z.boolean(),
+});
+export type RespostaDescartarRascunhoShopee = z.infer<typeof respostaDescartarRascunhoShopeeSchema>;
+
+/**
+ * One item of a 409 {@link CODIGO_RASCUNHO_SHOPEE}`.conflito`'s `conflitos[]`:
+ * the field, and what is stored NOW, in {@link camposDoRascunhoShopee}'s form
+ * (so the tab can show it beside what the operator typed). Plain `z.object`, so
+ * the reader tolerates a newer producer's extra keys.
+ */
+export const conflitoRascunhoShopeeSchema = z.object({
+  campo: campoRascunhoShopeeSchema,
+  atual: z.unknown(),
+});
+export type ConflitoRascunhoShopee = z.infer<typeof conflitoRascunhoShopeeSchema>;

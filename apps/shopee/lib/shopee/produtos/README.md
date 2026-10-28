@@ -24,7 +24,8 @@ The families are the seam, not a filing convention.
   call — which is what lets the CLI's dry run print exactly what a live run
   would write.
 - **The IO half** — `resolveProduto.ts` (the import-direction cascade),
-  `links.ts` (resolve-then-write, never delete), `taxonomiaShopee.ts` (the
+  `links.ts` (resolve-then-write, never delete — the one `prodshopee` delete is
+  a draft's discard, in `../anuncios/rascunho.ts`), `taxonomiaShopee.ts` (the
   guarded grupo write and the per-dispatch memo), `categoriaShopee.ts` (the
   `shopee-<id>` chain off step 10's cached tree and the category-tree memo),
   `fotosShopee.ts` (the retriable picture unit), `estoquePrecos.ts` (the guarded
@@ -122,6 +123,19 @@ keeps `add`. And the kit's CHILD cascade is scoped to its own listing: the
 claim check and the link reuse ignore the rows of ANOTHER listing the children
 carry (the old kit of a recriar, a superseded ordinary listing, a removed one),
 which would otherwise decline every child and mint duplicates.
+
+⚠️ **The ONE `prodshopee` delete in this app is a DRAFT's discard, and it is
+not the import's** (#1911, P4). The draft route's `rascunho/descartar`
+(`../anuncios/rascunho.ts`) deletes a document Shopee never answered for
+(`ehRascunhoShopee`: no `item_id`, not `kitNativo`) — never a listing link and
+never a `variashopee` row (a draft has none). It is rule 7 tiers 3 + 1,
+`delete({ lastUpdateTime })` against the snapshot that decided: no publish lock
+in progress (nor in its post-expiry grace), the stored projection equal to the
+`base` the operator saw, and an `incerta` draft only on the operator's
+attestation; a lost precondition re-decides. A publish whose create lands
+afterwards `add`s a fresh link (the claim in `../anuncios/reservaRascunho.ts`),
+so a discard never orphans a listing. Everything above still holds for every link the import resolves:
+merge or add, never delete. `links.ts`'s docblock says the same.
 
 **`kitNativo` is stamped on every listing link, on both branches.**
 `dadosLinkListagem` writes `ehKitDe(base)` — `true` for a native Shopee kit,
