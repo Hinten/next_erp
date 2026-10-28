@@ -199,7 +199,14 @@ describe('the class hierarchy', () => {
   });
 
   it('a config error carries its motivo and names the operation', () => {
-    for (const motivo of ['token', 'ref', 'caminho', 'token-na-url', 'maxPaginas'] as const) {
+    for (const motivo of [
+      'token',
+      'ref',
+      'caminho',
+      'token-na-url',
+      'maxPaginas',
+      'limite',
+    ] as const) {
       const err = new LiConfigError(motivo, { operacao: 'op', refCredencial: null });
       expect(err.motivo).toBe(motivo);
       expect(err.refCredencial).toBeNull();

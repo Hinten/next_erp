@@ -1,13 +1,32 @@
 /**
  * Loja Integrada REST v1 wire schemas — RESPONSE shapes only, and only the ones
- * something consumes today: the Tastypie paging envelope, the categoria row
- * (the validating GET lists categorias) and the pedido search row (the order
- * poller, master-plan step 3).
+ * something consumes: the Tastypie paging envelope, the pedido search row (the
+ * order poller, master-plan step 3) and the catalogue rows the catalogue reads
+ * parse (`catalogo.ts`, master-plan step 10): categoria, marca, grade, and a
+ * grade's detail with its options.
  *
- * Every other resource (the pedido detail, situação, produto, estoque, preço,
- * imagem, marca, grades, envio, pagamento) arrives with its first consumer,
- * written against captured responses rather than the public document's
- * examples.
+ * The catalogue rows were written against the leaf shapes of the owner's
+ * catalogue capture C9 (every list and both kinds of grade detail answered 200
+ * on the slash path) and the public document's examples. They read only what a
+ * consumer decides on, as tolerantly as the provider's quirks require:
+ *
+ *  - ids through `wireInt()`, so one quoted id never costs a page;
+ *  - optional text through `vazioComoNulo` (`vazio.ts`), so the provider's
+ *    `''` reads as `null` and never refuses a page;
+ *  - `id_externo` deliberately unread (the document types it `null`, and
+ *    nothing here keys on it); ids come from `id`, never from a `resource_uri`;
+ *  - every leaf a reader JUDGES rather than parses (a category's parent, an
+ *    option's grade, a brand's `ativo`) read as `z.unknown()` and carried RAW,
+ *    whatever its form or type: whether it names a parent, names this grade or
+ *    says "active" is the reader's call, and one odd row is never a reason to
+ *    refuse the page here (the `data_modificacao` precedent below). A resource
+ *    URI nothing reads (`resource_uri`) is not declared at all: passthrough
+ *    keeps it, and declaring it would only add a way to refuse a row.
+ *
+ * Every other resource (the produto, estoque, preço, imagem, envio) arrives
+ * with its first consumer, written against captured responses rather than the
+ * public document's examples (the pedido detail and situação are in
+ * `pedidoTipos.ts`).
  *
  * ## Passthrough
  *
@@ -30,7 +49,7 @@
 import { wireInt } from '@delfrance/core/wire';
 import { z } from 'zod';
 
-import { inteiroOpcional } from './vazio';
+import { inteiroOpcional, vazioComoNulo } from './vazio';
 
 /**
  * Tastypie's `meta` block.
@@ -68,19 +87,101 @@ export function liEnvelopeSchema<S extends z.ZodType>(linha: S) {
 }
 
 /**
- * One categoria row. `categoria_pai` is the parent's resource URI
- * (`/api/v1/categoria/<id>`) or `null` for a root categoria.
+ * One categoria row (`GET /v1/categoria/`, also the validating GET's list).
+ *
+ *  - `categoria_pai`: the parent's resource URI, or no parent — `null`, `''`
+ *    (read as `null`) or an absent key (`undefined`) is a root. Anything else
+ *    is carried RAW, whatever its type. The public document writes the URI as
+ *    `/api/v1/categoria/<id>`; the owner's capture C9 answered
+ *    `/v1/categoria/<id>`, WITHOUT the `/api` prefix that the brand, grade and
+ *    option URIs carry. No form is assumed here: a parent the reader cannot
+ *    place (another form, an object, a number) is ITS finding, never a root
+ *    and never a refused page.
+ *  - `resource_uri` (the same `/v1/categoria/<id>` form in C9) is unread and
+ *    kept: nothing derives an id from it.
+ *
+ * ⚠️ `id: wireInt(),` stays on its own line: it is one of this file's three
+ * guard anchors (header, "Numbers").
  */
 export const liCategoriaSchema = z
   .object({
     id: wireInt(),
     nome: z.string(),
-    categoria_pai: z.string().nullable(),
-    resource_uri: z.string(),
+    categoria_pai: vazioComoNulo(z.unknown()),
   })
   .passthrough();
 
 export type CategoriaLi = z.infer<typeof liCategoriaSchema>;
+
+/**
+ * One marca row (`GET /v1/marca/`). The listing carries every brand, inactive
+ * ones included: `ativo` says which. C9 answered a boolean on every row;
+ * `null` (`''` included) or `undefined` means the row did not say. Anything
+ * else (a string `'true'`, a number) is carried RAW and is NOT folded into a
+ * boolean here: what a non-boolean means is the reader's call, and one odd row
+ * never hides the brand list, which a published product needs.
+ * `apelido`, `descricao` (sometimes the STRING `"null"`), `destaque`, `imagem`
+ * and `resource_uri` are unread and kept.
+ */
+export const liMarcaSchema = z
+  .object({
+    id: wireInt(),
+    nome: z.string(),
+    ativo: vazioComoNulo(z.unknown()),
+  })
+  .passthrough();
+
+export type MarcaLi = z.infer<typeof liMarcaSchema>;
+
+/**
+ * One grade row (`GET /v1/grades/`): the store's own grades and the platform's
+ * alike, which no field tells apart. `nome` is the grade's identity label;
+ * `nome_visivel` is what a storefront shows, often `''` (read as `null`) or
+ * `null`. Only the exact `''` is empty: a blank `' '` is kept as sent.
+ * `specification_id` and `resource_uri` are unread and kept.
+ */
+export const liGradeSchema = z
+  .object({
+    id: wireInt(),
+    nome: z.string(),
+    nome_visivel: vazioComoNulo(z.string()),
+  })
+  .passthrough();
+
+export type GradeLi = z.infer<typeof liGradeSchema>;
+
+/**
+ * One option of a grade (`variacoes[]` of `GET /v1/grades/{id}/`). Its id is
+ * `id`. `grade` is the URI of the grade it belongs to (`/api/v1/grades/<g>`,
+ * plural, in the document and in C9), carried RAW whatever its type, absent
+ * included: whether it names THIS grade is the reader's check, and an option
+ * whose `grade` is absent, `null` or unreadable is still an option, never a
+ * refused detail. Its `resource_uri` (`/api/v1/grade/<g>/variacao/<v>`,
+ * singular) is unread and kept.
+ *
+ * ⚠️ The `.optional()` is load-bearing: Zod 4 rejects an ABSENT key under a
+ * bare `z.unknown()` (`data_modificacao`, below).
+ */
+export const liOpcaoGradeSchema = z
+  .object({
+    id: wireInt(),
+    nome: z.string(),
+    grade: z.unknown().optional(),
+  })
+  .passthrough();
+
+export type OpcaoGradeLi = z.infer<typeof liOpcaoGradeSchema>;
+
+/**
+ * One grade with its options (`GET /v1/grades/{id}/`). `variacoes` is
+ * REQUIRED: the options are the read's whole point, so a detail without them
+ * is refused rather than read as a grade with none (`[]` is a grade with none).
+ */
+export const liGradeDetalheSchema = liGradeSchema.extend({
+  variacoes: z.array(liOpcaoGradeSchema),
+});
+
+export type GradeDetalheLi = z.infer<typeof liGradeDetalheSchema>;
 
 /**
  * One row of `GET /v1/pedido/search` as the order poller reads it: only what it

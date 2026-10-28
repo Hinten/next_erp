@@ -1,7 +1,8 @@
 /**
- * The one reader of an id that goes INTO a path: the order reads (`pedidos.ts`)
- * and the write-back operations (`pedidosEscrita.ts`) both use it, and neither
- * keeps its own. Package-local on purpose — not exported from the package root.
+ * The one reader of an id that goes INTO a path: the order reads (`pedidos.ts`),
+ * the write-back operations (`pedidosEscrita.ts`) and the grade detail read
+ * (`catalogo.ts`) all use it, and none keeps its own. Package-local on purpose —
+ * not exported from the package root.
  *
  * An id must be a positive safe integer — a number, or its plain decimal text
  * (no sign, no leading zero, no space, no exponent, no fraction). Anything else

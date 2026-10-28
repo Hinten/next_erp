@@ -170,6 +170,7 @@ export type MotivoConfigLi =
   | 'caminho'
   | 'token-na-url'
   | 'maxPaginas'
+  | 'limite'
   | 'corpo'
   | 'token-no-corpo'
   | 'codigo-nao-permitido'
@@ -186,6 +187,10 @@ export type MotivoConfigLi =
  * - `'token-na-url'` — the token appears in the path or in a query key or value.
  *   It travels in `Authorization` only.
  * - `'maxPaginas'` — not a positive safe integer.
+ * - `'limite'` — a page size asked of a catalogue list that is not a positive
+ *   safe integer. Refused rather than sent: Tastypie, the framework these lists
+ *   page with, reads `limit=0` as "every row" (up to its own ceiling), which
+ *   would turn a bounded read into one nobody sized.
  * - `'rota-nao-permitida'` — a write's path is not one of the package's write
  *   routes (`rotasEscrita.ts`): another resource, or a route's path in another
  *   form (a trailing slash, a non-canonical id). Raised BEFORE the credential
@@ -234,6 +239,8 @@ function mensagemDeConfig(motivo: MotivoConfigLi, operacao: string): string {
       return `${prefixo} o token aparece no caminho ou na query; ele só pode viajar no cabeçalho Authorization. Nada foi enviado.`;
     case 'maxPaginas':
       return `${prefixo} maxPaginas precisa ser um inteiro positivo.`;
+    case 'limite':
+      return `${prefixo} o limite de linhas por página precisa ser um inteiro positivo. Nada foi enviado.`;
     case 'corpo':
       return `${prefixo} o corpo da escrita não passou no seu schema (campo ausente, vazio, fora do formato ou a mais). Nada foi enviado.`;
     case 'token-no-corpo':
