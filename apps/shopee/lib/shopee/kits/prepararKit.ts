@@ -27,9 +27,11 @@
  *    failure propagates), and the UNCACHED channels. On a create arm, a NAMED
  *    `--principal` the resolution could not place throws `principal-invalido`
  *    right after the component batch, before any of the rest (OP-8).
- * 4. **The L6 scan, on a create arm ONLY** (`localizarKitsPorSku`), plus ONE
- *    batched `get_item_base_info` over our own linked kits the list did not
- *    show (S2C-02). A republish NEVER scans (L10(4)): `busca` is `null` and
+ * 4. **The L6 scan, on a create arm ONLY** (`localizarKitsPorSku`), then our
+ *    own linked kits (`lerKitsNossos`): one the complete walk LISTED reads from
+ *    its list row (#2065 — never a second call), and only the ones it did NOT
+ *    list get ONE batched `get_item_base_info` (S2C-02). An incomplete scan
+ *    reads none. A republish NEVER scans (L10(4)): `busca` is `null` and
  *    `nossosVivos` empty there.
  *
  *    PR 6's two create arms: `kit-recriar` reads its TARGET (the old native
@@ -109,9 +111,16 @@ import {
   problemasDaFaseA,
   situacaoDoSkuDoKit,
   tetoDeFotosDoKit,
+  vinculoDeKitRecente,
   vinculosNativosDoKit,
 } from './planoKit';
-import type { ArmaDePublicacao, ContextoKit, FilhoDoKit, VinculoDaConta } from './resultadoKit';
+import type {
+  ArmaDePublicacao,
+  ContextoKit,
+  FilhoDoKit,
+  LeituraDeKitNosso,
+  VinculoDaConta,
+} from './resultadoKit';
 
 /* -------------------------------------------------------------------------- */
 /*                                   Types                                    */
@@ -261,21 +270,48 @@ async function lerRaizesComOSku(
 /* -------------------------------------------------------------------------- */
 
 /**
- * S2C-02: the live `item_status` of each of OUR linked kits the scan did not
- * list — through the component reader's batch (`lerBaseInfoDosItens`: ≤ 50 ids
- * per `get_item_base_info`, reconciled by id, the batch verdict "none exists"
- * narrowed), usually one id, usually none. `null` = Shopee answered no readable
- * row for it, which is the existing fold's reading of an absent status
- * (`statusAnuncio.ts`: absent ⇒ `removido`); the applier writes that.
+ * S2C-02 / #2065: what each of OUR linked kits (`nossos`) reads as, on a
+ * COMPLETE scan only — an incomplete one is refused whatever the kits read, so
+ * it reads nothing.
+ *
+ * - A kit the walk LISTED (`busca.listados`) takes its status from the list
+ *   row, with NO second call: a second `get_item_base_info` that dropped its
+ *   row would read a live kit as deleted, and the run would create another.
+ * - Only the kits the walk did NOT list get ONE batched base-info read, through
+ *   the component reader's batch (`lerBaseInfoDosItens`: ≤ 50 ids per call,
+ *   reconciled by id, the batch verdict "none exists" narrowed) — usually none.
+ *   A missing row there has TWO signals behind it; each carries whether its
+ *   link is too new to trust them (`vinculoDeKitRecente`, at `agoraMs`).
+ *
+ * `planoKit.ts`'s `situacaoDoKitNosso` is the ONE reader of what this returns.
  */
-async function lerStatusDosNossos(
+async function lerKitsNossos(
   client: ShopeeClient,
-  itemIds: readonly number[],
-): Promise<ReadonlyMap<number, string | null>> {
-  const saida = new Map<number, string | null>();
-  if (itemIds.length === 0) return saida;
-  const { linhas } = await lerBaseInfoDosItens(client, itemIds);
-  for (const itemId of itemIds) saida.set(itemId, linhas.get(itemId)?.item_status ?? null);
+  busca: NonNullable<ContextoKit['busca']>,
+  nossos: ReadonlyMap<number, string>,
+  vinculos: readonly VinculoDaConta[],
+  agoraMs: number,
+): Promise<ReadonlyMap<number, LeituraDeKitNosso>> {
+  const saida = new Map<number, LeituraDeKitNosso>();
+  if (!busca.completo) return saida;
+  const naoListados: number[] = [];
+  for (const itemId of nossos.keys()) {
+    const status = busca.listados.get(itemId);
+    if (status === undefined) naoListados.push(itemId);
+    else saida.set(itemId, { fonte: 'lista', itemStatus: status });
+  }
+  if (naoListados.length === 0) return saida;
+  const rawDoVinculo = new Map(vinculos.map((v) => [v.id, v.raw]));
+  const { linhas } = await lerBaseInfoDosItens(client, naoListados);
+  for (const itemId of naoListados) {
+    const linkDocId = nossos.get(itemId);
+    const raw = (linkDocId === undefined ? undefined : rawDoVinculo.get(linkDocId)) ?? {};
+    saida.set(itemId, {
+      fonte: 'base-info',
+      itemStatus: linhas.get(itemId)?.item_status ?? null,
+      recente: vinculoDeKitRecente(raw, agoraMs),
+    });
+  }
   return saida;
 }
 
@@ -599,7 +635,7 @@ export async function prepararKit(
   // `decidirKitNovo` read one derivation (#1369).
   const nativos = vinculosNativosDoKit(vinculos, alvo?.linkDocId ?? null);
   let busca: ContextoKit['busca'] = null;
-  let nossosVivos: ReadonlyMap<number, string | null> = new Map();
+  let nossosVivos: ContextoKit['nossosVivos'] = new Map();
   if (ehCriacao && produto.sku !== null) {
     busca = await localizarKitsPorSku(deps.client, db, {
       integracaoId: deps.integracaoId,
@@ -608,11 +644,7 @@ export async function prepararKit(
       // not a kit row); the recriar excludes its target's `item_id` (M115).
       excluirItemIds: itemIdsForaDaBusca(arma, alvo),
     });
-    const listados = new Set(busca.achados.map((a) => a.itemId));
-    nossosVivos = await lerStatusDosNossos(
-      deps.client,
-      [...nativos.nossos.keys()].filter((id) => !listados.has(id)),
-    );
+    nossosVivos = await lerKitsNossos(deps.client, busca, nativos.nossos, vinculos, deps.nowMs);
   }
 
   /* ---- 4b. PR 6: a recriar/converter RESUME reads the COMPLETED kit's main. */

@@ -47,7 +47,7 @@ import {
 } from './aplicarKit';
 import { idDaVariacaoDeKit, idDoVinculoDeKit } from './idsKit';
 import { planejarKit, type ModeloDoPlanoKit, type PlanoKit } from './planoKit';
-import type { ContextoKit, FilhoDoKit, KitDeps } from './resultadoKit';
+import type { ContextoKit, FilhoDoKit, KitDeps, LeituraDeKitNosso } from './resultadoKit';
 
 /* -------------------------------------------------------------------------- */
 /*  Fixture ids by ROLE only (s19-ctx / reconcile §0): kit 2500139870 with     */
@@ -142,7 +142,14 @@ function contexto(over: Partial<ContextoKit> = {}): ContextoKit {
     vivo: null,
     linhasDoAnuncio: [],
     linhasDaConta: [],
-    busca: { completo: true, achados: [], incompleta: null, paginas: 1, chamadas: 1 },
+    busca: {
+      completo: true,
+      achados: [],
+      listados: new Map(),
+      incompleta: null,
+      paginas: 1,
+      chamadas: 1,
+    },
     nossosVivos: new Map(),
     ...over,
   };
@@ -747,6 +754,11 @@ describe('a failed add_kit_item — nao-criado vs incerto (recusaKit.ts decides)
 /*            the ensure step: OURS from the links, recusar, completar        */
 /* -------------------------------------------------------------------------- */
 
+/** #2065: a `nossos` kit the complete walk did NOT list, as the base-info batch read it. */
+function lidoNaBase(itemStatus: string | null, recente = false): LeituraDeKitNosso {
+  return { fonte: 'base-info', itemStatus, recente };
+}
+
 /** A live native-kit link of K for the conta. */
 function vinculoNativo(
   id: string,
@@ -772,8 +784,15 @@ describe('garantirKitNovo — L9 "ensure the new kit exists"', () => {
     db.seed(`produtos/${K}/prodshopee/${LINK}`, vinculoNativo(LINK, KIT).raw);
     const ctx = contexto({
       vinculos: [vinculoNativo(LINK, KIT)],
-      busca: { completo: true, achados: [], incompleta: null, paginas: 1, chamadas: 1 },
-      nossosVivos: new Map([[KIT, 'NORMAL']]),
+      busca: {
+        completo: true,
+        achados: [],
+        listados: new Map(),
+        incompleta: null,
+        paginas: 1,
+        chamadas: 1,
+      },
+      nossosVivos: new Map([[KIT, lidoNaBase('NORMAL')]]),
     });
     const plano = planejarKit(ctx, null);
     expect(plano.kitNovo).toEqual({ acao: 'completar', linkDocId: LINK, itemId: KIT });
@@ -795,7 +814,7 @@ describe('garantirKitNovo — L9 "ensure the new kit exists"', () => {
       semear(db, contexto());
       const ctx = contexto({
         vinculos: [vinculoNativo(velho, KIT_2)],
-        nossosVivos: new Map([[KIT_2, status]]),
+        nossosVivos: new Map([[KIT_2, lidoNaBase(status)]]),
       });
       const real = planejarKit(ctx, null);
       expect(real.kitNovo).toEqual({ acao: 'criar' });
@@ -815,12 +834,78 @@ describe('garantirKitNovo — L9 "ensure the new kit exists"', () => {
     }
   });
 
+  it('(#2065) a linked kit with no row whose link is RECENT is a doubt: refused busca-de-kit-incompleta, ZERO Shopee calls, NOTHING written — its link stays ativo', async () => {
+    const db = new FakeDb();
+    const novo = idDoVinculoDeKit('int-1', KIT_2);
+    db.seed(`produtos/${K}/prodshopee/${novo}`, vinculoNativo(novo, KIT_2).raw);
+    const ctx = contexto({
+      vinculos: [vinculoNativo(novo, KIT_2)],
+      nossosVivos: new Map([[KIT_2, lidoNaBase(null, true)]]),
+    });
+    const plano = planejarKit(ctx, null);
+    expect(plano.kitNovo?.acao).toBe('recusar');
+    const shopee = shopeeDaFamilia();
+
+    const erro = await garantirKitNovo(depsDe(db, shopee.client), ctx, plano).then(
+      () => null,
+      (e: unknown) => e,
+    );
+
+    expect(erro).toBeInstanceOf(ShopeePublishBlockedError);
+    const duvida = (erro as ShopeePublishBlockedError).problemas.find(
+      (p) => p.motivo === 'busca-de-kit-incompleta',
+    );
+    expect(duvida?.mensagem).toContain('o kit criado há pouco ainda não aparece na Shopee');
+    expect(shopee.chamadas).toEqual([]);
+    expect(db.writes).toEqual([]);
+    expect(db.store[`produtos/${K}/prodshopee/${novo}`]?.data.estadoAnuncio).toBe('ativo');
+  });
+
+  it('⚠️ NEAR-MISS (#2065): the SAME linked kit past the window reads GONE ⇒ removido before ONE add_kit_item (M165)', async () => {
+    const db = new FakeDb();
+    const novo = idDoVinculoDeKit('int-1', KIT_2);
+    db.seed(`produtos/${K}/prodshopee/${novo}`, vinculoNativo(novo, KIT_2).raw);
+    semear(db, contexto());
+    const ctx = contexto({
+      vinculos: [vinculoNativo(novo, KIT_2)],
+      nossosVivos: new Map([[KIT_2, lidoNaBase(null, false)]]),
+    });
+    expect(planejarKit(ctx, null).kitNovo).toEqual({ acao: 'criar' });
+    const shopee = shopeeDaFamilia();
+    vi.spyOn(console, 'info').mockImplementation(() => undefined);
+
+    const g = await garantirKitNovo(depsDe(db, shopee.client), ctx, planoDeCriacao(ctx));
+
+    expect(g.desfecho).toBe('criado');
+    expect(shopee.quantas(SHOPEE_ADD_KIT_ITEM_PATH)).toBe(1);
+    expect(db.store[`produtos/${K}/prodshopee/${novo}`]?.data.estadoAnuncio).toBe('removido');
+  });
+
+  it('(#2065) a LISTED linked kit is never written removido — not even when its list row carried no status', async () => {
+    const db = new FakeDb();
+    db.seed(`produtos/${K}/prodshopee/${LINK}`, vinculoNativo(LINK, KIT).raw);
+    const ctx = contexto({
+      vinculos: [vinculoNativo(LINK, KIT)],
+      nossosVivos: new Map([[KIT, { fonte: 'lista', itemStatus: null }]]),
+    });
+    const plano = planejarKit(ctx, null);
+    expect(plano.kitNovo).toEqual({ acao: 'completar', linkDocId: LINK, itemId: KIT });
+    const shopee = shopeeDaFamilia();
+
+    const g = await garantirKitNovo(depsDe(db, shopee.client), ctx, plano);
+
+    expect(g.desfecho).toBe('retomado');
+    expect(shopee.quantas(SHOPEE_ADD_KIT_ITEM_PATH)).toBe(0);
+    expect(db.store[`produtos/${K}/prodshopee/${LINK}`]?.data.estadoAnuncio).not.toBe('removido');
+  });
+
   it('(M81) a FOREIGN same-SKU kit refuses "importe-o" with ZERO add_kit_item and nothing written', async () => {
     const db = new FakeDb();
     const ctx = contexto({
       busca: {
         completo: true,
         achados: [{ itemId: KIT_2, vinculo: null }],
+        listados: new Map([[KIT_2, 'NORMAL']]),
         incompleta: null,
         paginas: 1,
         chamadas: 2,
@@ -848,7 +933,7 @@ describe('garantirKitNovo — L9 "ensure the new kit exists"', () => {
       principal: null,
       principalPedido: null,
       vinculos: [vinculoNativo(LINK, KIT)],
-      nossosVivos: new Map([[KIT, 'NORMAL']]),
+      nossosVivos: new Map([[KIT, lidoNaBase('NORMAL')]]),
     });
     const plano = planejarKit(ctx, null);
     expect(plano.problemas).toEqual([]);
@@ -883,7 +968,7 @@ describe('garantirKitNovo — L9 "ensure the new kit exists"', () => {
       filhos: [FILHO_A, filhoB],
       canais: [],
       vinculos: [vinculoNativo(LINK, KIT)],
-      nossosVivos: new Map([[KIT, 'NORMAL']]),
+      nossosVivos: new Map([[KIT, lidoNaBase('NORMAL')]]),
     });
     const plano = planejarKit(ctx, null);
     expect(plano.problemas).toEqual([]);
