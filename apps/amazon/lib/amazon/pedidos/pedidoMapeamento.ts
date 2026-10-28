@@ -36,14 +36,22 @@
  * `codRastreio` (`frete/estadoFreteAmazon.ts`), re-derived from each attempt's
  * snapshot like every other group and applied on an EQUAL order clock (a
  * resurrection needs a strictly newer one). The fold is computed FIRST, so the
- * CANCELLED predicate's "goods out" reads the STORED freight estado (through
- * the ladder's own legacy-residue projection) OR ANY package of this read that
- * says the goods are out (plan §3 decision 47): a package Amazon already
+ * CANCELLED predicate's "goods out" ORs three readings (plan §3 decision 47):
+ * the STORED freight estado (through the ladder's own legacy-residue
+ * projection), ANY package of this read that says the goods are out, and ANY
+ * STORED diary row of an `amz` block that says so, unless the first reading
+ * reads that block as `fulfillment` (an AFN seed under a read that does not say
+ * `MERCHANT`: its diary holds Amazon's own packages). A package Amazon already
  * reports picked up keeps the estado even when the stored freight, or a sibling
- * package, still says it waits. The freight's CANCELLED arm is that predicate's
- * outcome. Only an `amz` block (or one this attempt seeds) is written, never by
- * an AFN read; the two freight aviso motivos are derived from the order alone,
- * whoever owns the block, so each is resolved exactly when its condition ends.
+ * package, still says it waits — and so does a KEYED one it reported picked up
+ * on an EARLIER read, even when this read cancels its pickup or no longer names
+ * it. A package without a usable key leaves no diary row, so its pickup counts
+ * only on a read that carries it (the residual in `frete/estadoFreteAmazon.ts`).
+ * The freight's CANCELLED arm is that predicate's outcome. Only an `amz` block
+ * (or one this attempt seeds) is written; an AFN read never moves its estado
+ * but still writes its diary and `codRastreio`. The two freight aviso motivos
+ * are derived from the order alone, whoever owns the block, so each is resolved
+ * exactly when its condition ends.
  *
  * ## The watermark (plan §3 decisions 2 and 45)
  *
@@ -83,6 +91,7 @@
 import { coerceToMicros } from '@delfrance/core/datetime';
 import type { PedidoWireAmazon } from '@delfrance/integrations-amazon-sp-api';
 import {
+  ESTADO_FRETE,
   ESTADO_PEDIDO,
   INTEGRACAO_FRETE,
   MARKETPLACE_PEDIDO_TIPO,
@@ -134,6 +143,7 @@ import {
 import {
   LOGISTICA_AMAZON,
   alvoFreteAmazon,
+  diarioComMercadoriaForaAmazon,
   estadoFreteEfetivoAmazon,
   grupoFreteAmazon,
   lerFreteAmazon,
@@ -700,17 +710,30 @@ export function montarEscritaPedidoAmazon(
   // The stored freight estado through the SAME residue projection the ladder
   // uses (a migrated `fulfillment` under a MERCHANT read is at the carrier).
   const freteGuardado = resumo?.freteEstado ?? null;
+  const freteGuardadoEfetivo =
+    freteGuardado === null ? null : estadoFreteEfetivoAmazon(freteGuardado, mapeado.logistica);
   const contexto: ContextoEstadoAmazon = {
     armazenado: resumo,
     pagamentoArmazenado: pagamentoGuardado,
-    // The STORED freight estado OR any package of this read that says the goods
-    // are out: the stored one lags the same read's packages whenever Amazon's
-    // clock does not move on them, and the fold's least-advanced target would
-    // hide a package already with the carrier behind a sibling still waiting.
+    // THREE readings, ORed: the STORED freight estado; any package of THIS read
+    // that says the goods are out (the stored estado lags the same read's
+    // packages whenever Amazon's clock does not move on them, and the fold's
+    // least-advanced target would hide a package already with the carrier
+    // behind a sibling still waiting); and any STORED diary row of OUR block
+    // that says so — the only record of a KEYED such package once a later read
+    // cancels its pickup or no longer names it (an unkeyed one has no row: it
+    // counts only on a read that carries it). Another modality's diary is its
+    // own importer's, never read here; and the rows of a block the first
+    // reading reads as `fulfillment` (an AFN seed, under any read that does not
+    // say MERCHANT) are Amazon's own packages — an AFN read still writes the
+    // diary — never this ERP's stock, exactly as that reading reads the block.
     mercadoriaFora:
-      (freteGuardado !== null &&
-        mercadoriaFora(estadoFreteEfetivoAmazon(freteGuardado, mapeado.logistica))) ||
-      leituraFrete.mercadoriaFora,
+      mercadoriaFora(freteGuardadoEfetivo) ||
+      leituraFrete.mercadoriaFora ||
+      (freteRaw !== null &&
+        freteNosso &&
+        freteGuardadoEfetivo !== ESTADO_FRETE.fulfillment &&
+        diarioComMercadoriaForaAmazon(freteRaw.pacotes)),
   };
   const estado = decidirEstado(order, contexto, venda, reconciliacao.bloqueio);
 

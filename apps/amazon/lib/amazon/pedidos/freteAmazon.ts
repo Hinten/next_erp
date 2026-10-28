@@ -74,12 +74,21 @@ export const MERCADORIA_FORA: Readonly<Record<EstadoFrete, boolean>> = Object.fr
 /**
  * Whether the goods are out at ONE freight estado (`null` = no block, no
  * target, or a value outside the enum: read as in the warehouse, like
- * `desconhecido`). Since PR 7 the CANCELLED predicate ORs two readings
- * (`pedidoMapeamento.ts`, plan §3 decision 47): the STORED estado, through the
- * ladder's legacy-residue projection (`estadoFreteEfetivoAmazon`), and ANY
- * package of this read (`DobraPacotesAmazon.mercadoriaFora`) — because the
+ * `desconhecido`). Since PR 7 the CANCELLED predicate ORs three readings
+ * (`pedidoMapeamento.ts`, plan §3 decision 47): the STORED block estado,
+ * through the ladder's legacy-residue projection (`estadoFreteEfetivoAmazon`);
+ * ANY package of this read (`DobraPacotesAmazon.mercadoriaFora`), because the
  * stored freight lags the same read's packages whenever Amazon's clock does not
- * move on them.
+ * move on them; and ANY stored diary row of this importer's own block
+ * (`diarioComMercadoriaForaAmazon`; never on a block the first reading reads
+ * as `fulfillment`, whose diary an AFN read wrote), because the block sits at
+ * the least-advanced package and never shows a KEYED one that left beside a
+ * sibling still waiting — once a later read cancels that package's pickup or
+ * stops naming it, its row is the only record. A package without a usable key
+ * leaves no row, so its goods out is read only from a read that carries it
+ * (the residual in `frete/estadoFreteAmazon.ts`). The freight verdict and the
+ * diary's row gate never move the first and the third from goods out to goods
+ * in.
  */
 export function mercadoriaFora(estado: EstadoFrete | null): boolean {
   return estado !== null && MERCADORIA_FORA[estado];

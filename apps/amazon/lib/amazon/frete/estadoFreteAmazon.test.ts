@@ -26,7 +26,9 @@ import {
   REVERSAO_DO_FRETE_AMAZON,
   alvoFreteAmazon,
   alvoSemPacotesAmazon,
+  diarioComMercadoriaForaAmazon,
   dobrarPacotesAmazon,
+  estadoDaLinhaAmazon,
   estadoFreteAmazonAplicavel,
   estadoFreteEfetivoAmazon,
   grupoFreteAmazon,
@@ -296,20 +298,81 @@ describe('the ladder and the verdict', () => {
     }
   });
 
-  it('★ a live rung after a failure: refused on an EQUAL clock, ressuscitado on a strictly newer one (a reschedule after LABEL_CANCELLED)', () => {
-    for (const falha of FALHAS_FRETE_AMAZON) {
-      for (const vivo of ['aguardandoPostagem', 'postado', 'aCaminho'] as const) {
-        expect(aplicavel(falha, vivo), `${falha}→${vivo}`).toEqual({
+  /** The ladder split by the goods-out table (pinned literally, then checked against it). */
+  const DEGRAUS_DENTRO = [
+    'iniciado',
+    'aguardandoAutorizacao',
+    'aguardandoNFe',
+    'aguardandoValidacaoTransporadora',
+    'aguardandoAgendamento',
+    'despachoAutorizado',
+    'emSeparacao',
+    'empacotado',
+    'aguardandoPostagem',
+    'checkFinalizado',
+  ] as const satisfies readonly EstadoFrete[];
+  const DEGRAUS_FORA_VIVOS = [
+    'postado',
+    'recebidoPelaTransportadora',
+    'aCaminho',
+    'tentandoRealizarEntrega',
+  ] as const satisfies readonly EstadoFrete[];
+  const FALHAS_DENTRO = ['despachoNegado', 'cancelado'] as const satisfies readonly EstadoFrete[];
+  const FALHAS_FORA = [
+    'falhaNaEntrega',
+    'enderecoNaoEncontrado',
+    'objetoExtraviado',
+  ] as const satisfies readonly EstadoFrete[];
+
+  it('the splits the verdict tests use ARE the ladder, the failure set and the goods-out table', () => {
+    expect(ESCADA_FRETE_AMAZON).toEqual([...DEGRAUS_DENTRO, ...DEGRAUS_FORA_VIVOS, 'entregue']);
+    for (const e of DEGRAUS_DENTRO) expect(MERCADORIA_FORA[e], e).toBe(false);
+    for (const e of [...DEGRAUS_FORA_VIVOS, 'entregue'] as const) {
+      expect(MERCADORIA_FORA[e], e).toBe(true);
+    }
+    expect([...FALHAS_FRETE_AMAZON].filter((f) => !MERCADORIA_FORA[f])).toEqual(FALHAS_DENTRO);
+    expect([...FALHAS_FRETE_AMAZON].filter((f) => MERCADORIA_FORA[f])).toEqual(FALHAS_FORA);
+  });
+
+  it('★ a live rung after a failure: a goods-IN failure → any rung, and a goods-OUT failure → a goods-out rung, are refused on an EQUAL clock and ressuscitado on a strictly newer one (the reschedule after LABEL_CANCELLED); a goods-OUT failure → a goods-IN rung is regressivo on ANY clock', () => {
+    for (const logistica of ['mfn', 'desconhecida'] as const) {
+      const ressuscita = (falha: EstadoFrete, vivo: EstadoFrete) => {
+        const nome = `${falha}→${vivo}/${logistica}`;
+        expect(aplicavel(falha, vivo, { logistica }), nome).toEqual({
           escrever: false,
           motivo: 'terminal',
         });
-        expect(aplicavel(falha, vivo, { maisNovo: true }), `${falha}→${vivo}`).toEqual({
+        expect(aplicavel(falha, vivo, { logistica, maisNovo: true }), nome).toEqual({
           escrever: true,
           estado: vivo,
           ressuscitado: true,
         });
+      };
+      // The pickup cancelled with the goods still in: every rung, the reschedule included.
+      for (const falha of FALHAS_DENTRO) {
+        for (const vivo of [...DEGRAUS_DENTRO, ...DEGRAUS_FORA_VIVOS]) ressuscita(falha, vivo);
+      }
+      for (const falha of FALHAS_FORA) {
+        // NEAR-MISS: the goods out again (a re-delivery attempt, a found parcel).
+        for (const vivo of DEGRAUS_FORA_VIVOS) ressuscita(falha, vivo);
+        // A sibling still waiting beside a lost one is no fact that the units came back.
+        for (const vivo of DEGRAUS_DENTRO) {
+          for (const maisNovo of [false, true]) {
+            expect(
+              aplicavel(falha, vivo, { logistica, maisNovo }),
+              `${falha}→${vivo}/${logistica}/${String(maisNovo)}`,
+            ).toEqual({ escrever: false, motivo: 'regressivo' });
+          }
+        }
       }
     }
+    // The two the PR-review probes walked, side by side.
+    expect(
+      aplicavel(ESTADO_FRETE.objetoExtraviado, ESTADO_FRETE.aguardandoPostagem, { maisNovo: true }),
+    ).toEqual({ escrever: false, motivo: 'regressivo' });
+    expect(
+      aplicavel(ESTADO_FRETE.despachoNegado, ESTADO_FRETE.aguardandoPostagem, { maisNovo: true }),
+    ).toEqual({ escrever: true, estado: 'aguardandoPostagem', ressuscitado: true });
   });
 
   it('a live rung → a failure, a failure → another failure, and a failure → the reverse leg are written', () => {
@@ -327,6 +390,111 @@ describe('the ladder and the verdict', () => {
     });
     expect(aplicavel(ESTADO_FRETE.enderecoNaoEncontrado, ESTADO_FRETE.devolvido)).toMatchObject({
       escrever: true,
+    });
+  });
+
+  it('★ gate 8, ENUMERATED over every stored estado × every target × the three logistics × both clocks: goods OUT at the stored estado (through the residue projection) → goods IN at the target ⇒ regressivo, exactly on the documented pairs', () => {
+    /** The targets where the goods are in that are OFF the ladder. */
+    const DENTRO_FORA_DA_ESCADA = [
+      'fulfillment',
+      'despachoNegado',
+      'cancelado',
+      'desconhecido',
+      'error',
+    ] as const satisfies readonly EstadoFrete[];
+    const DEGRAUS_FORA = [...DEGRAUS_FORA_VIVOS, 'entregue'] as const;
+    // The two lists are EVERY estado where the goods are in, once.
+    expect([...DENTRO_FORA_DA_ESCADA, ...DEGRAUS_DENTRO].sort()).toEqual(
+      estadoFreteSchema.options.filter((e) => !MERCADORIA_FORA[e]).sort(),
+    );
+    /** The pairs the docblock names: a goods-out rung → off-ladder; a goods-out failure → anything in. */
+    const documentados = (logistica: LogisticaAmazon): string[] => {
+      if (logistica === 'afn') return [];
+      const pares: string[] = [];
+      // The residue is rung 11 only under a MERCHANT read (gate 4 holds it otherwise).
+      const degraus = logistica === 'mfn' ? [...DEGRAUS_FORA, 'fulfillment'] : [...DEGRAUS_FORA];
+      for (const de of degraus) {
+        for (const para of DENTRO_FORA_DA_ESCADA) if (de !== para) pares.push(`${de}→${para}`);
+      }
+      for (const de of FALHAS_FORA) {
+        for (const para of [...DENTRO_FORA_DA_ESCADA, ...DEGRAUS_DENTRO]) {
+          pares.push(`${de}→${para}`);
+        }
+      }
+      return pares.sort();
+    };
+    const escada = ESCADA_FRETE_AMAZON as readonly EstadoFrete[];
+    for (const logistica of LOGISTICAS) {
+      for (const maisNovo of [false, true]) {
+        const disparam: string[] = [];
+        for (const de of estadoFreteSchema.options) {
+          const efetivo = estadoFreteEfetivoAmazon(de, logistica);
+          for (const para of estadoFreteSchema.options) {
+            const v = aplicavel(de, para, { maisNovo, logistica });
+            const i = escada.indexOf(efetivo);
+            const j = escada.indexOf(para);
+            // Gate 7 is the only OTHER source of `regressivo`.
+            const peloGate7 = i >= 0 && j >= 0 && j < i;
+            if (!v.escrever && v.motivo === 'regressivo' && !peloGate7) {
+              disparam.push(`${de}→${para}`);
+            }
+            // And no gate ever WRITES goods out → goods in.
+            if (MERCADORIA_FORA[efetivo] && !MERCADORIA_FORA[para]) {
+              expect(v.escrever, `${de}→${para}/${logistica}/${String(maisNovo)}`).toBe(false);
+            }
+          }
+        }
+        expect(disparam.sort(), `${logistica}/${String(maisNovo)}`).toEqual(
+          documentados(logistica),
+        );
+      }
+    }
+    // Anti-vacuity: the MERCHANT set is 5×5 + 4 (the residue) + 3×15.
+    expect(documentados('mfn')).toHaveLength(74);
+  });
+
+  it('★ goods out → an estado where they are IN (a LABEL_CANCELLED after the pickup) ⇒ regressivo on ANY clock; the NEAR-MISSes are still written', () => {
+    for (const de of [...DEGRAUS_FORA_VIVOS, 'entregue', ...FALHAS_FORA] as const) {
+      for (const para of ['despachoNegado', 'cancelado', 'error'] as const) {
+        for (const maisNovo of [false, true]) {
+          expect(aplicavel(de, para, { maisNovo }), `${de}→${para}/${String(maisNovo)}`).toEqual({
+            escrever: false,
+            motivo: 'regressivo',
+          });
+        }
+      }
+    }
+    // The legacy residue is rung 11 under a MERCHANT read: goods out, the same gate.
+    expect(aplicavel(ESTADO_FRETE.fulfillment, ESTADO_FRETE.despachoNegado)).toEqual({
+      escrever: false,
+      motivo: 'regressivo',
+    });
+    // NEAR-MISS: a step-14 `error` stamp over goods-IN freight is still written.
+    expect(aplicavel(ESTADO_FRETE.aguardandoPostagem, ESTADO_FRETE.error)).toEqual({
+      escrever: true,
+      estado: 'error',
+      ressuscitado: false,
+    });
+    // NEAR-MISS: the goods still in the warehouse — the pickup cancellation is written.
+    for (const de of [
+      'iniciado',
+      'aguardandoAgendamento',
+      'aguardandoPostagem',
+      'checkFinalizado',
+      'cancelado',
+      'desconhecido',
+    ] as const) {
+      expect(aplicavel(de, ESTADO_FRETE.despachoNegado), de).toEqual({
+        escrever: true,
+        estado: 'despachoNegado',
+        ressuscitado: false,
+      });
+    }
+    // NEAR-MISS: goods out → goods out off the ladder is still written.
+    expect(aplicavel(ESTADO_FRETE.postado, ESTADO_FRETE.objetoExtraviado)).toEqual({
+      escrever: true,
+      estado: 'objetoExtraviado',
+      ressuscitado: false,
     });
   });
 
@@ -699,6 +867,149 @@ describe('the fold (dobrarPacotesAmazon)', () => {
     expect(fora([]).mercadoriaFora).toBe(false);
   });
 
+  it('★ the ROW GATE: a stored row where the goods are OUT keeps its estado when this read projects them IN, or projects nothing — the wire fields still take this read, verbatim, and atualizadoEm advances on that wire change', () => {
+    const coletado = dobrar([
+      pacote('PKG-1', 'PICKED_UP', { status: 'IN_TRANSIT', rastreio: 'TRK-1' }),
+    ]);
+    expect(coletado.pacotes[0]).toMatchObject({ numero: 'PKG-1', estado: 'postado' });
+    const casos: [string, Partial<DobraPacotesAmazon>][] = [
+      ['LABEL_CANCELLED', { alvo: ESTADO_FRETE.despachoNegado, coletaCancelada: true }],
+      ['PENDING_PICK_UP', { alvo: ESTADO_FRETE.aguardandoPostagem }],
+      ['PENDING_DROP_OFF', { alvo: ESTADO_FRETE.aguardandoPostagem }],
+      ['NEW_TOKEN', { alvo: null, bloqueado: true }],
+      ['PENDING_SCHEDULE', { alvo: null, semNota: true }],
+    ];
+    for (const [token, dobra] of casos) {
+      const d = dobrar([pacote('PKG-1', token, { status: 'PENDING', rastreio: 'TRK-2' })], {
+        relogioUs: DEPOIS_US,
+        armazenados: coletado.pacotes,
+      });
+      expect(d.pacotes, token).toEqual([
+        {
+          canalId: null,
+          prazoDespacho: null,
+          numero: 'PKG-1',
+          estado: 'postado',
+          estadoMarketplace: token,
+          statusMarketplace: 'PENDING',
+          codRastreio: 'TRK-2',
+          atualizadoEm: DEPOIS_US,
+          fonte: 'getOrder',
+        },
+      ]);
+      // The target and the flags read the PROJECTION: the stock-safe target for
+      // REMOVING stock is unchanged, and the kept estado (a STORED row's, which
+      // the predicate's third reading counts) does not feed this read's flag.
+      expect(d, token).toMatchObject({ ...dobra, mercadoriaFora: false });
+    }
+    // A sibling still waiting beside the kept row: the target is the waiting one.
+    const comIrmao = dobrar(
+      [pacote('PKG-1', 'LABEL_CANCELLED'), pacote('PKG-2', 'PENDING_PICK_UP')],
+      {
+        relogioUs: DEPOIS_US,
+        armazenados: coletado.pacotes,
+      },
+    );
+    expect(comIrmao.alvo).toBe('aguardandoPostagem');
+    expect(comIrmao.pacotes.map((l) => [l.numero, l.estado])).toEqual([
+      ['PKG-1', 'postado'],
+      ['PKG-2', 'aguardandoPostagem'],
+    ]);
+    // An EQUAL-clock redelivery of the read that kept the row is an EMPTY diff,
+    // and a later clock on the same wire keeps the stored atualizadoEm.
+    const cancelado = dobrar([pacote('PKG-1', 'LABEL_CANCELLED', { rastreio: 'TRK-1' })], {
+      relogioUs: DEPOIS_US,
+      armazenados: coletado.pacotes,
+    });
+    for (const relogioUs of [DEPOIS_US, DEPOIS_US + 60_000_000]) {
+      const deNovo = dobrar([pacote('PKG-1', 'LABEL_CANCELLED', { rastreio: 'TRK-1' })], {
+        relogioUs,
+        armazenados: cancelado.pacotes,
+      });
+      expect(mesmoDiarioAmazon(cancelado.pacotes, deNovo.pacotes), String(relogioUs)).toBe(true);
+      expect(deNovo.pacotes[0]).toMatchObject({ estado: 'postado', atualizadoEm: DEPOIS_US });
+    }
+  });
+
+  it('★ the row gate’s NEAR-MISSes: goods out → a DIFFERENT goods-out projection is written; a goods-in row is re-derived; a malformed or another package’s stored row keeps nothing', () => {
+    const linha = (estado: unknown, numero = 'PKG-1'): LinhaDiarioAmazon => ({
+      numero,
+      estado,
+      estadoMarketplace: 'X',
+      statusMarketplace: 'IN_TRANSIT',
+      codRastreio: null,
+      atualizadoEm: RELOGIO_US,
+      fonte: 'getOrder',
+    });
+    const estadoApos = (guardado: unknown, token: string, invoiceStatus: unknown = 'ACCEPTED') =>
+      dobrar([pacote('PKG-1', token)], {
+        invoiceStatus,
+        relogioUs: DEPOIS_US,
+        armazenados: [guardado],
+      }).pacotes.find((l) => l.numero === 'PKG-1')?.estado;
+    // Goods out → goods out, a different estado: written (the row follows Amazon).
+    const foraParaFora: [EstadoFrete, string, EstadoFrete][] = [
+      ['postado', 'AT_DESTINATION_FC', 'aCaminho'],
+      ['postado', 'LOST', 'objetoExtraviado'],
+      ['postado', 'RETURNED_TO_SELLER', 'devolvido'],
+      ['aCaminho', 'DELIVERED', 'entregue'],
+      ['objetoExtraviado', 'PICKED_UP', 'postado'],
+      ['recebidoPelaTransportadora', 'REJECTED_BY_BUYER', 'falhaNaEntrega'],
+    ];
+    for (const [guardado, token, esperado] of foraParaFora) {
+      expect(estadoApos(linha(guardado), token), `${guardado}+${token}`).toBe(esperado);
+    }
+    // Goods in → anything: re-derived as before.
+    const dentro: [EstadoFrete, string, EstadoFrete | null][] = [
+      ['aguardandoPostagem', 'LABEL_CANCELLED', 'despachoNegado'],
+      ['despachoNegado', 'PENDING_PICK_UP', 'aguardandoPostagem'],
+      ['aguardandoNFe', 'PENDING_SCHEDULE', 'aguardandoAgendamento'],
+      ['aguardandoPostagem', 'PICKED_UP', 'postado'],
+      ['aguardandoPostagem', 'NEW_TOKEN', null],
+      // A row this importer never writes, read AS STORED (no residue projection).
+      ['fulfillment', 'LABEL_CANCELLED', 'despachoNegado'],
+    ];
+    for (const [guardado, token, esperado] of dentro) {
+      expect(estadoApos(linha(guardado), token), `${guardado}+${token}`).toBe(esperado);
+    }
+    // A malformed stored estado keeps nothing (no trim, no case fold, no coercion,
+    // no inherited property name: an `in`-style lookup would read those as goods out).
+    for (const malformado of [
+      'POSTADO',
+      ' postado',
+      'postado ',
+      7,
+      null,
+      undefined,
+      ['postado'],
+      'toString',
+      'constructor',
+      '__proto__',
+    ]) {
+      expect(estadoApos(linha(malformado), 'LABEL_CANCELLED'), String(malformado)).toBe(
+        'despachoNegado',
+      );
+    }
+    // Another package's goods-out row never lends PKG-1 its estado (and is kept as stored).
+    const outro = linha('postado', 'PKG-0');
+    const d = dobrar([pacote('PKG-1', 'LABEL_CANCELLED')], {
+      relogioUs: DEPOIS_US,
+      armazenados: [outro],
+    });
+    expect(d.pacotes.map((l) => [l.numero, l.estado])).toEqual([
+      ['PKG-0', 'postado'],
+      ['PKG-1', 'despachoNegado'],
+    ]);
+    expect(d.pacotes[0]).toBe(outro);
+    // The goods-out flag is never weakened by a stored row: a goods-out projection counts.
+    expect(
+      dobrar([pacote('PKG-1', 'AT_DESTINATION_FC')], {
+        relogioUs: DEPOIS_US,
+        armazenados: [linha('aguardandoPostagem')],
+      }).mercadoriaFora,
+    ).toBe(true);
+  });
+
   it('atualizadoEm advances ONLY when a wire field of that row changed — never on a re-projection alone', () => {
     const primeiro = dobrar([pacote('A', 'PENDING_SCHEDULE', { status: 'PENDING' })], {
       invoiceStatus: 'NOT_FOUND',
@@ -781,6 +1092,80 @@ describe('the fold (dobrarPacotesAmazon)', () => {
     expect(cortado.length).toBeLessThanOrEqual(200);
     expect(cortado).toMatch(/ \+\d+$/);
     expect(cortado.startsWith(`TRK-${'9'.repeat(20)}-0, `)).toBe(true);
+  });
+});
+
+describe('the stored diary as goods-out evidence (the predicate’s third reading)', () => {
+  it('★ some stored row whose estado READS as goods out ⇒ true — keyed or not, beside goods-in and malformed rows', () => {
+    for (const estado of estadoFreteSchema.options) {
+      expect(diarioComMercadoriaForaAmazon([{ numero: 'A', estado }]), estado).toBe(
+        MERCADORIA_FORA[estado],
+      );
+    }
+    expect(diarioComMercadoriaForaAmazon([{ estado: 'objetoExtraviado' }])).toBe(true);
+    expect(
+      diarioComMercadoriaForaAmazon([
+        null,
+        7,
+        'postado',
+        { numero: 'B', estado: 'aguardandoPostagem' },
+        { numero: 'C', estado: 'POSTADO' },
+        { numero: 'A', estado: 'aCaminho' },
+      ]),
+    ).toBe(true);
+  });
+
+  it('★ NEAR-MISS: a goods-in diary, a malformed row (no trim, no case fold, no coercion), a non-array, or a row read through the residue projection contribute NOTHING', () => {
+    for (const diario of [
+      undefined,
+      null,
+      'postado',
+      7,
+      { 0: { numero: 'A', estado: 'postado' }, length: 1 },
+      [],
+      [
+        { numero: 'A', estado: 'aguardandoPostagem' },
+        { numero: 'B', estado: 'despachoNegado' },
+      ],
+      [{ numero: 'A', estado: 'POSTADO' }],
+      [{ numero: 'A', estado: ' postado' }],
+      [{ numero: 'A', estado: 'postado ' }],
+      [{ numero: 'A', estado: 7 }],
+      [{ numero: 'A', estado: null }],
+      [{ numero: 'A' }],
+      [{ numero: 'A', estado: ['postado'] }],
+      // Inherited property names: an `in`-style lookup would read them as goods out.
+      [{ numero: 'A', estado: 'toString' }],
+      [{ numero: 'A', estado: 'constructor' }],
+      [{ numero: 'A', estado: '__proto__' }],
+      ['postado'],
+      [['postado']],
+      [null],
+      // AS STORED: a row is never the block's legacy residue.
+      [{ numero: 'A', estado: 'fulfillment' }],
+    ]) {
+      expect(diarioComMercadoriaForaAmazon(diario), JSON.stringify(diario)).toBe(false);
+    }
+  });
+
+  it('estadoDaLinhaAmazon: a member of the enum, or null', () => {
+    expect(estadoDaLinhaAmazon({ numero: 'A', estado: 'postado' })).toBe('postado');
+    expect(estadoDaLinhaAmazon({ estado: 'aguardandoPostagem', extra: 1 })).toBe(
+      'aguardandoPostagem',
+    );
+    for (const linhaRuim of [
+      null,
+      undefined,
+      'postado',
+      ['postado'],
+      { estado: 'Postado' },
+      {},
+      { estado: 'toString' },
+      { estado: 'constructor' },
+      { estado: '__proto__' },
+    ]) {
+      expect(estadoDaLinhaAmazon(linhaRuim), JSON.stringify(linhaRuim)).toBeNull();
+    }
   });
 });
 
