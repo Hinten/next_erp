@@ -508,6 +508,11 @@ describe('an invalid entry', () => {
       { variationOptions: [{ li_option_id: 1, arakene_variation_id: 'v4' }] },
     ],
     ['options that are not a list', { variationOptions: 'v4' }],
+    [
+      'ONE option object where the list belongs',
+      { variationOptions: { li_option_id: 1, arakene_variation_id: ['v4'] } },
+    ],
+    ['options that are a number', { variationOptions: 42 }],
     ['options that are not objects', { variationOptions: ['v4', null, ['v4']] }],
   ])(
     '⚠️ NEAR-MISS: an invalid entry naming it only through %s does not name it (exact ids, lists of strings only)',
