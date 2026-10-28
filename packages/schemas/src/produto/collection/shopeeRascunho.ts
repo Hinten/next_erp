@@ -8,8 +8,10 @@
  * draft's editable fields and THE two comparisons of their values (the
  * conflict one and the write one, apart on the brand's name only; the
  * listing `attributes` among them since P6, read and written through
- * `../../atributosShopee`'s one decoder) — and the UNCERTAIN first create (D5):
- * the attempt window a lost create is looked for in, and the publish's 202.
+ * `../../atributosShopee`'s one decoder) — the UNCERTAIN first create (D5):
+ * the attempt window a lost create is looked for in, and the publish's 202 —
+ * and (P10) the PENDÊNCIAS the draft editor lists: what would still stop a
+ * publish, asked with the listing assembly's own predicates.
  *
  * ⚠️ ONE module (#1369). `apps/shopee` decides with these and the produto's
  * Shopee tab in `apps/web` renders with them; `apps/web` has no dependency edge
@@ -70,15 +72,24 @@ import { valuesEqual } from '@delfrance/core/equality';
 import { z } from 'zod';
 
 import {
+  type ArvoreAtributosShopee,
   type AtributoShopeeRequisicao,
   atributosParaRequisicaoShopee,
   atributosShopeeRequisicaoSchema,
   lerAtributosArmazenadosShopee,
+  TIPO_PROBLEMA_ATRIBUTO_SHOPEE,
+  validarAtributosShopee,
   type ValorAtributoShopee,
 } from '../../atributosShopee';
-import { textoUtilizavelShopee } from '../../faixaShopee';
+import {
+  descricaoDoAnuncioShopee,
+  textoNaFaixaShopee,
+  textoUtilizavelShopee,
+  tituloDoAnuncioShopee,
+} from '../../faixaShopee';
 import { naoDocId } from '../../shared/outerRef';
 import { AGUARDAR_KIT_INCERTO_SHOPEE_MS } from '../../shopeeAcaoSugerida';
+import type { FaixaDto, LimitesDeItemDto } from '../../taxonomiaShopeeDto';
 import {
   itemIdEnderecavelShopee,
   publicacaoEmCursoShopeeSchema,
@@ -926,6 +937,200 @@ export function camposDaBaseDoRascunhoShopee(
   return campoRascunhoShopeeSchema.options.filter(
     (campo) => campo === CAMPO_RASCUNHO_SHOPEE.attributes || alterados.includes(campo),
   );
+}
+
+/* -------------------------------------------------------------------------- */
+/*              What would still stop a publish — the pendências (P10)         */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * One thing that would still stop a draft's publish (#1911, P10, K2-7) — each
+ * kind the browser twin of ONE refusal the listing assembly (`apps/shopee`'s
+ * `montarAnuncio`) raises before anything is sent, decided by the SAME shared
+ * function it calls:
+ *
+ * | `tipo` | the assembly's motivo | decided by | extra |
+ * |---|---|---|---|
+ * | `sem-nome` | `sem-nome` | `tituloDoAnuncioShopee` → `textoNaFaixaShopee` `ausente` | — |
+ * | `titulo-fora-da-faixa` | `nome-fora-da-faixa` | the same verdict, `fora-da-faixa` | `comprimento`, `faixa` |
+ * | `sem-descricao` | `sem-descricao` | `descricaoDoAnuncioShopee` → `textoNaFaixaShopee` `ausente` | — |
+ * | `descricao-fora-da-faixa` | `descricao-fora-da-faixa` | the same verdict, `fora-da-faixa` | `comprimento`, `faixa` |
+ * | `categoria-ausente` | `categoria-invalida`, the NO-category arm | `category_id` absent | — |
+ * | `atributo-obrigatorio` | `atributo-obrigatorio` | `validarAtributosShopee`'s `obrigatorio-ausente` rows | `nomes` |
+ * | `marca-nao-escolhida` | `marca-nao-escolhida` | {@link rascunhoSemMarcaShopee} | — |
+ *
+ * - `comprimento` is the UTF-16 length of the TRIMMED text, the one the
+ *   assembly measures and sends ({@link textoNaFaixaShopee}); `faixa` is the
+ *   band it fell outside (never `null`: a `null` band bounds nothing).
+ * - `nomes` are the validator's operator names, walk order — a root's name, a
+ *   child's `"<filho> (em <pai>: <valor>)"` — exactly the list the assembly
+ *   joins into its sentence; ONE pendência for all of them, never empty.
+ *
+ * A hand-written union, not a Zod enum: pendências are computed, never parsed
+ * from a wire or stored.
+ */
+export type PendenciaRascunhoShopee =
+  | { readonly tipo: 'sem-nome' }
+  | {
+      readonly tipo: 'titulo-fora-da-faixa';
+      readonly comprimento: number;
+      readonly faixa: FaixaDto;
+    }
+  | { readonly tipo: 'sem-descricao' }
+  | {
+      readonly tipo: 'descricao-fora-da-faixa';
+      readonly comprimento: number;
+      readonly faixa: FaixaDto;
+    }
+  | { readonly tipo: 'categoria-ausente' }
+  | { readonly tipo: 'atributo-obrigatorio'; readonly nomes: readonly string[] }
+  | { readonly tipo: 'marca-nao-escolhida' };
+export type TipoPendenciaRascunhoShopee = PendenciaRascunhoShopee['tipo'];
+
+/**
+ * What {@link pendenciasDoRascunhoShopee} reads beside the draft's fields —
+ * the produto-side inputs the listing assembly reads, and the category's
+ * Shopee facts.
+ */
+export interface ArgsPendenciasRascunhoShopee {
+  /**
+   * The STORED produto's `nome` — the title's fallback when the draft's own is
+   * not usable. ⚠️ The STORED document (the one the publish reads), never the
+   * produto form's unsaved text: a pendência cleared by a keystroke nobody
+   * saved is a publish the server then refuses.
+   */
+  readonly nomeProduto: string | null | undefined;
+  /**
+   * The STORED produto's description — its `extraData/singleton.descricao`,
+   * the document the publish reads — the fallback of a draft whose own
+   * `description` is not usable (`null` = "the produto's", D2). Same STORED
+   * rule as {@link ArgsPendenciasRascunhoShopee.nomeProduto}.
+   */
+  readonly descricaoProduto: string | null | undefined;
+  /**
+   * The bands the title and the description are measured against — the
+   * `limites` of `limitesDoItem`'s answer (`respostaLimitesDoItemShopeeSchema`).
+   * `null` = not known (not loaded yet): NO band pendência is raised from
+   * missing knowledge, exactly as an absent band bounds nothing in
+   * `dentroDaFaixaShopee`. ⚠️ So a list computed without the bands is not the
+   * whole list: a surface that GATES a publish on "no pendência" must hold the
+   * bands the publish reads — the category's, or the shop-wide answer
+   * (`limitesDoItem` without `categoryId`) when the draft has no category.
+   */
+  readonly limites: Pick<
+    LimitesDeItemDto,
+    'itemNameLengthLimit' | 'itemDescriptionLengthLimit'
+  > | null;
+  /**
+   * The category's attribute tree (`ArvoreAtributosShopee`). Absent or `null`
+   * ⇒ no `atributo-obrigatorio` — the assembly's own reading of a category with
+   * no tree read (it reads one only for a LEAF category). The draft editor
+   * supplies it once it reads the tree (P13).
+   */
+  readonly arvore?: ArvoreAtributosShopee | null;
+}
+
+/**
+ * **THE pendências of a draft** (#1911, P10, K2-7) — what would still stop its
+ * publish, in the listing assembly's terms ({@link PendenciaRascunhoShopee}),
+ * in the assembly's own order: title, description, category, attributes,
+ * brand. `[]` = nothing this function can see stops it (the assembly checks
+ * more — photos, weight, price, …, the produto's, which the editor does not
+ * own).
+ *
+ * ⚠️ **Composed ONLY of the functions the assembly itself calls, over the SAME
+ * inputs it reads** (#1369, C-8): the draft's own text, else the STORED
+ * produto's `nome` / description; the category's bands and tree; the brand
+ * through {@link rascunhoSemMarcaShopee}, THE predicate behind the assembly's
+ * `marca-nao-escolhida`. No rule is re-derived here — a second copy of "usable
+ * text" or of "brand chosen" in the browser is exactly the #1369 drift.
+ *
+ * `campos` is {@link camposDoRascunhoShopee}'s form — a stored draft's
+ * projection, or the editor's values in that form (a local new draft's
+ * included). Over a stored draft each kind agrees with the assembly's reading
+ * of the RAW document:
+ *
+ * - title / description: the projection keeps a stored string VERBATIM and
+ *   reads a non-string as `null`, the assembly's own read of the two keys;
+ * - brand: `marca === null` ⇔ the stored `brand_id` is not a safe integer, and
+ *   a NEGATIVE one is projected verbatim — {@link rascunhoSemMarcaShopee} then
+ *   answers exactly what it answers over the raw document (malformed or
+ *   negative ⇒ pendência; `0`, "Sem marca", is a choice);
+ * - attributes: the request-shape list goes back through THE decoder
+ *   (`lerAtributosArmazenadosShopee`), which reads its own output unchanged,
+ *   so the validator meets the values it meets over the stored list;
+ * - category: absent ⇔ the projection reads no safe integer. ⚠️ A stored
+ *   category the projection cannot read (`1.5`) is `categoria-ausente` here
+ *   and an UNKNOWN category to the assembly — both block, and choosing a
+ *   category is the fix for both. A non-LEAF category, or an id the tree does
+ *   not hold (a stored `0`), is no pendência (the picker offers leaves only);
+ *   the assembly refuses it.
+ *
+ * ⚠️ **A DRAFT's question.** The brand rule holds for drafts only — a live
+ * listing's `brand_id: null` keeps the publish's brand cascade — so the caller
+ * asks {@link ehRascunhoShopee} first, as the assembly's input does. The
+ * function cannot tell: `campos` carries no `item_id`.
+ *
+ * Pure, total.
+ */
+export function pendenciasDoRascunhoShopee(
+  campos: CamposRascunhoShopee,
+  args: ArgsPendenciasRascunhoShopee,
+): PendenciaRascunhoShopee[] {
+  const pendencias: PendenciaRascunhoShopee[] = [];
+
+  const bandaDoTitulo = args.limites?.itemNameLengthLimit ?? null;
+  const titulo = textoNaFaixaShopee(
+    tituloDoAnuncioShopee(campos.item_name, args.nomeProduto),
+    bandaDoTitulo,
+  );
+  if (titulo.estado === 'ausente') {
+    pendencias.push({ tipo: 'sem-nome' });
+  } else if (titulo.estado === 'fora-da-faixa' && bandaDoTitulo !== null) {
+    // `bandaDoTitulo !== null` always holds here (a `null` band bounds nothing):
+    // it only names the band the pendência carries.
+    pendencias.push({
+      tipo: 'titulo-fora-da-faixa',
+      comprimento: titulo.comprimento,
+      faixa: bandaDoTitulo,
+    });
+  }
+
+  const bandaDaDescricao = args.limites?.itemDescriptionLengthLimit ?? null;
+  const descricao = textoNaFaixaShopee(
+    descricaoDoAnuncioShopee(campos.description, args.descricaoProduto),
+    bandaDaDescricao,
+  );
+  if (descricao.estado === 'ausente') {
+    pendencias.push({ tipo: 'sem-descricao' });
+  } else if (descricao.estado === 'fora-da-faixa' && bandaDaDescricao !== null) {
+    pendencias.push({
+      tipo: 'descricao-fora-da-faixa',
+      comprimento: descricao.comprimento,
+      faixa: bandaDaDescricao,
+    });
+  }
+
+  // `== null`: an absent key is the projection's `null` (fail-closed).
+  if (campos.category_id == null) pendencias.push({ tipo: 'categoria-ausente' });
+
+  if (args.arvore != null) {
+    const nomes = validarAtributosShopee(
+      args.arvore,
+      lerAtributosArmazenadosShopee(campos.attributes).atributos,
+    )
+      .filter((p) => p.tipo === TIPO_PROBLEMA_ATRIBUTO_SHOPEE.obrigatorioAusente)
+      .map((p) => p.nome);
+    if (nomes.length > 0) pendencias.push({ tipo: 'atributo-obrigatorio', nomes });
+  }
+
+  // THE predicate, over the draft's brand as a draft document holds it: no
+  // `item_id` (a draft by construction — the caller's gate) and the stored id.
+  if (rascunhoSemMarcaShopee({ item_id: null, brand_id: campos.marca?.brand_id ?? null })) {
+    pendencias.push({ tipo: 'marca-nao-escolhida' });
+  }
+
+  return pendencias;
 }
 
 /* -------------------------------------------------------------------------- */

@@ -21,6 +21,8 @@ import {
   integracaoSchema,
   INTEGRACAO_TIPO,
   ESTADO_ANUNCIO_SHOPEE,
+  PRODUTO_EXTRA_DATA_DOC_ID,
+  produtoExtraDataSchema,
   produtoShopeeLinkSchema,
   SHOPEE_ITEM_STATUS,
   MODALIDADE_FRETE,
@@ -4195,7 +4197,13 @@ export const SHOPEE_E2E_ITEM_KIT_REMOVIDO = 1000002;
  *  - `ativo` — live and deboosted, with one deboost violation and a CURRENT
  *    price refusal (its refusal stamp is newer than its clean-send stamp);
  *  - `kitRemovido` — a native kit Shopee removed (`removido`, `SELLER_DELETE`);
- *  - `rascunho` — a draft never published (`item_id: null`, no category).
+ *  - `rascunho` — a draft never published (`item_id: null`), with NO category
+ *    and NO brand chosen (`brand_id: null`) and no publish lock (it reads
+ *    `livre`). Two consequences the Shopee tab's draft editor (#1911 P10)
+ *    relies on: its `categoria-ausente` and `marca-nao-escolhida` pendências
+ *    show in EVERY test that opens the conta, and it makes NO apps/shopee
+ *    request on render — a category's bands are read only once a category
+ *    exists — so a spec that renders it needs no taxonomy stub.
  *
  * Also stamps the conta's `shop_id` with {@link SHOPEE_E2E_SHOP_ID}: the
  * fixture conta `seedShopeeFixtures` writes carries none, and without it no
@@ -4292,10 +4300,76 @@ export async function seedProdutoShopeeVinculado(
       item_name: `${prefix}-rascunho`,
       item_id: null,
       category_id: null,
+      brand_id: null,
     }),
   );
   await batch.commit();
   return { produtoId, links };
+}
+
+/** Fixture item id of the ONE listing {@link seedEditorRascunhoShopee} seeds on its second conta — never a real one. */
+const SHOPEE_E2E_ITEM_REMOVIDO = 1000003;
+
+/** The stored Descrição (`produtos/<id>/extraData/singleton.descricao`) {@link seedEditorRascunhoShopee} gives the produto. */
+const DESCRICAO_PRODUTO_SHOPEE_E2E = 'Descrição do produto semeada pelo e2e da Shopee.';
+
+/**
+ * What the produto editor's Shopee DRAFT editor (#1911 P10) needs on top of
+ * {@link seedProdutoShopeeVinculado} — call it AFTER that seed (same `prefix`)
+ * and after `seedShopeeFixtures(prefix, 2)`:
+ *
+ *  - **a second conta, `contaSoRemovido`, holding ONE `removido` listing** of
+ *    the produto (`${prefix}-removido`, an ordinary listing — not a kit). Two
+ *    reasons. The tab lists contas through an UNORDERED, bounded query and
+ *    reads by id only the contas a link of this produto names, so on a shared
+ *    staging project with many Shopee contas a conta holding nothing of this
+ *    produto might get no tab at all; the link makes its tab certain. And a
+ *    `removido` listing is exactly what the second-listing confirmation
+ *    IGNORES (`vinculosQueExigemConfirmacaoShopee`, `@delfrance/schemas` — the
+ *    set the draft route's create refuses with too — counts only a live
+ *    listing, a superseded one still on Shopee, or a draft), so "Novo
+ *    anúncio" there opens the new draft with NO confirmation — the near-miss
+ *    of conta 1, whose live listing and draft ask first. The conta is also
+ *    made ACTIVE (`seedShopeeFixtures` seeds every even conta inactive):
+ *    whether a draft may start on an inactive conta is not what that case
+ *    is about.
+ *  - **the produto's stored Descrição** (`extraData/singleton`, through the
+ *    schema), so a draft with no description of its own has no `sem-descricao`
+ *    pendência: the pendências read the STORED produto documents the publish
+ *    reads, never the form.
+ *
+ * Every id is deterministic. Teardown: the spec's `prodshopee` and
+ * `extraData` subcollection sweeps (`cleanupProdutoSubcollection`) BEFORE the
+ * produto's, then `cleanupShopeeFixtures` — Firestore never cascades.
+ */
+export async function seedEditorRascunhoShopee(
+  prefix: string,
+  contaSoRemovido: string,
+): Promise<{ removido: string }> {
+  const produtoId = `${prefix}-prod`;
+  const removido = `${prefix}-removido`;
+  const now = Date.now();
+  const produtoRef = db().collection('produtos').doc(produtoId);
+  const batch = db().batch();
+  batch.update(db().collection('integracao').doc(contaSoRemovido), { ativo: true });
+  batch.set(
+    produtoRef.collection('prodshopee').doc(removido),
+    produtoShopeeLinkSchema.parse({
+      contaProdutoShopeeOuterRef: `documents/integracao/${contaSoRemovido}`,
+      item_name: `${prefix}-removido`,
+      item_id: SHOPEE_E2E_ITEM_REMOVIDO,
+      category_id: 100087,
+      item_status: SHOPEE_ITEM_STATUS.sellerDelete,
+      estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.removido,
+      publicadoEm: now - 3 * 86_400_000,
+    }),
+  );
+  batch.set(
+    produtoRef.collection('extraData').doc(PRODUTO_EXTRA_DATA_DOC_ID),
+    produtoExtraDataSchema.parse({ descricao: DESCRICAO_PRODUTO_SHOPEE_E2E }),
+  );
+  await batch.commit();
+  return { removido };
 }
 
 /**

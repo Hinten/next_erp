@@ -4,6 +4,7 @@ import { Button, Group, Text } from '@mantine/core';
 import {
   ACAO_STATUS_ANUNCIO,
   anuncioShopeeVivo,
+  ehRascunhoShopee,
   ehVinculoSubstituido,
   podeMoverAnuncioShopee,
   type ProdutoShopeeLink,
@@ -11,22 +12,27 @@ import {
 
 import {
   FRASE_ITEM_ID_INVALIDO_SHOPEE,
-  FRASE_PRIMEIRA_PUBLICACAO_SHOPEE,
   itemIdDoAnuncioShopee,
   type IncertoKitShopee,
 } from '@/lib/shopee/anuncioProduto';
 import type { DesfechoAcaoShopee } from './DesfechoAcaoShopee';
+import type { AcaoDoRascunhoShopee } from './RascunhoShopee';
 
 /** The two native-kit CREATE arms of a publish — each makes a NEW kit on Shopee. */
 export type ArmaKitShopee = 'recriar' | 'converter';
 
-/** The writes a listing block can start — each one an apps/shopee route. */
+/**
+ * The writes a listing block can start — each one an apps/shopee route. A
+ * DRAFT's two writes (#1911 P10: «Salvar rascunho», «Descartar») ride the SAME
+ * one-write-at-a-time lock, so they are members too.
+ */
 export type AcaoDoAnuncioShopee =
   | 'pausar'
   | 'reativar'
   | 'reverificar'
   | 'publicar'
-  | ArmaKitShopee;
+  | ArmaKitShopee
+  | AcaoDoRascunhoShopee;
 
 /**
  * A kit create the server could not confirm, as the tab shows it: the stored
@@ -117,27 +123,26 @@ export interface AcoesAnuncioShopeeProps {
  *  - **Republicar** — a listing the ERP still publishes to: alive by
  *    `anuncioShopeeVivo` and not superseded (a superseded link is refused by the
  *    dispatcher, a removed one has nothing to update). Never with a kit option.
- *  - A DRAFT link (`item_id` absent) gets no button: a first publish is not
- *    offered in this step, and the row says where it will come from.
- *  - A link whose `item_id` is present but NOT addressable gets no button
- *    either, and one dimmed line saying so — never the draft's sentence: it is
- *    not waiting for a first publish. (Its status reads "Não publicado", the
- *    same `itemIdDoAnuncioShopee` reading.)
+ *  - A DRAFT (`ehRascunhoShopee`, `@delfrance/schemas` — #1911 P10) renders
+ *    NOTHING here: the block shows the draft editor (`RascunhoShopee`) where
+ *    this row would be. ⚠️ The schemas' predicate, never a local
+ *    `item_id == null` (#1369): a `kitNativo: true` link with no `item_id` is
+ *    NOT a draft — a native kit's link always names its kit — so it falls to
+ *    the next rule.
+ *  - A link whose `item_id` is present but NOT addressable — or a native-kit
+ *    link with none — gets no button either, and one dimmed line saying so: it
+ *    is not a draft, so no editor. (Its status reads "Não publicado", the same
+ *    `itemIdDoAnuncioShopee` reading.)
  *
  * The native-kit arms (recriar, converter, the principal) are not here — they
  * sit in the block's kit section (`KitAnuncioShopee`), with the uncertain
  * outcome a create can end in.
  */
 export function AcoesAnuncioShopee({ contaId, linkDocId, link, acoes }: AcoesAnuncioShopeeProps) {
-  // `== null`: a raw (unparsed) draft may lack the key altogether.
-  if (link.item_id == null) {
-    return (
-      <Text size="sm" c="dimmed">
-        {FRASE_PRIMEIRA_PUBLICACAO_SHOPEE}
-      </Text>
-    );
-  }
-  // The addressing gate, before every button (the docblock's ⚠️).
+  // A draft's editor replaces this row (`AnuncioShopeeBlock`).
+  if (ehRascunhoShopee(link)) return null;
+  // The addressing gate, before every button (the docblock's ⚠️) — a native-kit
+  // link with NO `item_id` lands here too: corrupt, never a draft.
   if (itemIdDoAnuncioShopee(link.item_id) === null) {
     return (
       <Text size="sm" c="dimmed">

@@ -4,7 +4,14 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { z } from 'zod';
 
+import {
+  type ArvoreAtributosShopee,
+  lerAtributosArmazenadosShopee,
+  TIPO_PROBLEMA_ATRIBUTO_SHOPEE,
+  validarAtributosShopee,
+} from '../../atributosShopee';
 import { AGUARDAR_KIT_INCERTO_SHOPEE_MS } from '../../shopeeAcaoSugerida';
+import type { AtributoDto, AtributoInfoDto, FaixaDto } from '../../taxonomiaShopeeDto';
 import {
   ESTADO_ANUNCIO_SHOPEE,
   itemIdEnderecavelShopee,
@@ -43,6 +50,7 @@ import {
   MSG_ITEM_NAME_EM_BRANCO_RASCUNHO_SHOPEE,
   MSG_PATCH_VAZIO_RASCUNHO_SHOPEE,
   PADRAO_ID_RASCUNHO_SHOPEE,
+  pendenciasDoRascunhoShopee,
   PUBLICACAO_EM_CURSO_SHOPEE_TTL_MS,
   rascunhoSemMarcaShopee,
   respostaAtualizarRascunhoShopeeSchema,
@@ -52,11 +60,14 @@ import {
   TETO_ROTA_SHOPEE_MS,
   vinculoConflitanteShopeeSchema,
   vinculosQueExigemConfirmacaoShopee,
+  type ArgsPendenciasRascunhoShopee,
   type CampoRascunhoShopee,
   type CamposRascunhoShopee,
   type EstadoPublicacaoRascunhoShopee,
+  type PendenciaRascunhoShopee,
   type PosicaoNaJanelaShopee,
   type RespostaItemIncertoShopee,
+  type TipoPendenciaRascunhoShopee,
 } from './shopeeRascunho';
 
 /* ---------------------------------- fixtures ------------------------------ */
@@ -2700,5 +2711,521 @@ describe('respostaItemIncertoShopeeSchema — o 202 do item incerto (§2.1, K1-5
     const item200 = { itemId: 2500139861, estadoAnuncio: 'ativo', itemStatus: 'NORMAL' };
     expect(respostaItemIncertoShopeeSchema.safeParse(kitIncerto).success).toBe(false);
     expect(respostaItemIncertoShopeeSchema.safeParse(item200).success).toBe(false);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*          (O) pendenciasDoRascunhoShopee — what still stops a publish (P10)  */
+/* -------------------------------------------------------------------------- */
+
+const FAIXA_TITULO: FaixaDto = { min: 5, max: 20 };
+const FAIXA_DESCRICAO: FaixaDto = { min: 10, max: 100 };
+
+/** Every band known, a produto with a usable name and description. */
+const ARGS_PEND: ArgsPendenciasRascunhoShopee = {
+  nomeProduto: 'Camiseta azul',
+  descricaoProduto: 'Camiseta de algodão, azul.',
+  limites: { itemNameLengthLimit: FAIXA_TITULO, itemDescriptionLengthLimit: FAIXA_DESCRICAO },
+};
+
+/** A draft nothing stops: own title, the produto's description, a category, "Sem marca". */
+const CAMPOS_OK: CamposRascunhoShopee = {
+  item_name: 'Camiseta azul P',
+  description: null,
+  category_id: 100087,
+  marca: { brand_id: 0, original_brand_name: null },
+  attributes: null,
+};
+
+function pend(
+  campos: Partial<CamposRascunhoShopee> = {},
+  args: Partial<ArgsPendenciasRascunhoShopee> = {},
+): PendenciaRascunhoShopee[] {
+  return pendenciasDoRascunhoShopee({ ...CAMPOS_OK, ...campos }, { ...ARGS_PEND, ...args });
+}
+
+function tiposDe(lista: readonly PendenciaRascunhoShopee[]): TipoPendenciaRascunhoShopee[] {
+  return lista.map((p) => p.tipo);
+}
+
+function infoAtr(over: Partial<AtributoInfoDto> = {}): AtributoInfoDto {
+  return {
+    inputType: 2,
+    inputValidationType: 2,
+    formatType: 1,
+    dateFormatType: null,
+    attributeUnitList: null,
+    maxValueCount: null,
+    introduction: null,
+    isOem: false,
+    supportSearchValue: false,
+    ...over,
+  };
+}
+
+function atr(
+  attributeId: number,
+  over: Partial<AtributoDto> & { readonly info?: Partial<AtributoInfoDto> } = {},
+): AtributoDto {
+  const { info: infoOver, ...resto } = over;
+  return {
+    attributeId,
+    mandatory: false,
+    name: `Atributo ${String(attributeId)}`,
+    attributeInfo: infoAtr(infoOver),
+    attributeValueList: [],
+    ...resto,
+  };
+}
+
+/**
+ * 1001 Material — MANDATORY, list or custom; its value 1 (Algodão) unlocks the
+ * MANDATORY child 2001 Gramatura. 1002 Gênero — MANDATORY, list only, values by
+ * SEARCH (missing ⇒ `obrigatorio-ausente` AND `obrigatorio-requer-busca`).
+ * 1003 Estilo — optional, list only.
+ */
+const ARVORE_PEND: ArvoreAtributosShopee = {
+  truncated: false,
+  atributos: [
+    atr(1001, {
+      mandatory: true,
+      name: 'Material',
+      attributeValueList: [
+        {
+          valueId: 1,
+          name: 'Algodão',
+          valueUnit: null,
+          childAttributeList: [atr(2001, { mandatory: true, name: 'Gramatura' })],
+        },
+        { valueId: 2, name: 'Poliéster', valueUnit: null, childAttributeList: [] },
+      ],
+    }),
+    atr(1002, {
+      mandatory: true,
+      name: 'Gênero',
+      info: { inputType: 1, supportSearchValue: true },
+    }),
+    atr(1003, {
+      name: 'Estilo',
+      info: { inputType: 1 },
+      attributeValueList: [
+        { valueId: 10, name: 'Casual', valueUnit: null, childAttributeList: [] },
+      ],
+    }),
+  ],
+};
+
+/** The assembly's own `faltando` (`atributosParaPublicar`): the validator over the RAW stored list. */
+function faltandoDoMontador(arvore: ArvoreAtributosShopee, armazenados: unknown): string[] {
+  return validarAtributosShopee(arvore, lerAtributosArmazenadosShopee(armazenados).atributos)
+    .filter((p) => p.tipo === TIPO_PROBLEMA_ATRIBUTO_SHOPEE.obrigatorioAusente)
+    .map((p) => p.nome);
+}
+
+function nomesDaPendencia(lista: readonly PendenciaRascunhoShopee[]): readonly string[] | null {
+  const achada = lista.find((p) => p.tipo === 'atributo-obrigatorio');
+  return achada?.tipo === 'atributo-obrigatorio' ? achada.nomes : null;
+}
+
+describe('pendenciasDoRascunhoShopee — o rascunho inteiro (P10, K2-7)', () => {
+  it('PAR: título próprio, a descrição do produto, uma categoria e «Sem marca» ⇒ NENHUMA pendência', () => {
+    expect(pend()).toEqual([]);
+  });
+
+  it('o rascunho recém-criado (título do produto, nada mais) ⇒ categoria e marca, nessa ordem — e só elas', () => {
+    // The local "Novo anúncio" entry and the e2e seed (B.7: no category, no brand).
+    const novo: CamposRascunhoShopee = {
+      item_name: 'Camiseta azul',
+      description: null,
+      category_id: null,
+      marca: null,
+      attributes: null,
+    };
+    expect(pendenciasDoRascunhoShopee(novo, ARGS_PEND)).toEqual([
+      { tipo: 'categoria-ausente' },
+      { tipo: 'marca-nao-escolhida' },
+    ]);
+  });
+
+  it('a ORDEM é a do montador: título, descrição, categoria, atributos, marca', () => {
+    const todas = pendenciasDoRascunhoShopee(
+      { item_name: null, description: null, category_id: null, marca: null, attributes: null },
+      { nomeProduto: '  ', descricaoProduto: null, limites: null, arvore: ARVORE_PEND },
+    );
+    expect(tiposDe(todas)).toEqual([
+      'sem-nome',
+      'sem-descricao',
+      'categoria-ausente',
+      'atributo-obrigatorio',
+      'marca-nao-escolhida',
+    ]);
+    const foraDaFaixa = pend({ item_name: 'abc', description: 'curta' });
+    expect(tiposDe(foraDaFaixa)).toEqual(['titulo-fora-da-faixa', 'descricao-fora-da-faixa']);
+  });
+
+  it('é pura: não muda as entradas e responde o mesmo duas vezes', () => {
+    const campos = Object.freeze({ ...CAMPOS_OK, marca: null, category_id: null });
+    const args = Object.freeze({ ...ARGS_PEND, arvore: ARVORE_PEND });
+    const antes: unknown = structuredClone({ campos, args });
+    const a = pendenciasDoRascunhoShopee(campos, args);
+    const b = pendenciasDoRascunhoShopee(campos, args);
+    expect(a).toEqual(b);
+    expect({ campos, args }).toEqual(antes);
+  });
+});
+
+describe('pendenciasDoRascunhoShopee — o título (`tituloDoAnuncioShopee` → `textoNaFaixaShopee`)', () => {
+  it('PAR: o rascunho sem título próprio usa o NOME do produto — sem pendência', () => {
+    expect(pend({ item_name: null })).toEqual([]);
+    expect(pend({ item_name: '   ' })).toEqual([]);
+  });
+
+  it('⛔ NEAR-MISS: nem o rascunho nem o produto têm texto utilizável ⇒ `sem-nome`', () => {
+    const casos: readonly (readonly [string | null, string | null | undefined])[] = [
+      [null, null],
+      [null, ''],
+      ['   ', '  '],
+      ['', undefined],
+    ];
+    for (const [proprio, doProduto] of casos) {
+      expect(
+        tiposDe(pend({ item_name: proprio }, { nomeProduto: doProduto })),
+        `${String(proprio)} / ${String(doProduto)}`,
+      ).toEqual(['sem-nome']);
+    }
+  });
+
+  it('o título do RASCUNHO vence o do produto: medido o do rascunho, nunca o do produto', () => {
+    const longo = 'x'.repeat(25);
+    expect(pend({ item_name: longo }, { nomeProduto: 'Camiseta azul' })).toEqual([
+      { tipo: 'titulo-fora-da-faixa', comprimento: 25, faixa: FAIXA_TITULO },
+    ]);
+    // ⛔ NEAR-MISS: the produto's out-of-band name is never consulted beside a usable own one.
+    expect(pend({ item_name: 'Camiseta azul P' }, { nomeProduto: longo })).toEqual([]);
+    // …but it IS measured when the draft has no usable title of its own.
+    expect(pend({ item_name: null }, { nomeProduto: longo })).toEqual([
+      { tipo: 'titulo-fora-da-faixa', comprimento: 25, faixa: FAIXA_TITULO },
+    ]);
+  });
+
+  it('mede o texto APARADO, as duas pontas inclusivas (5..20)', () => {
+    expect(pend({ item_name: '  abcde  ' })).toEqual([]);
+    expect(pend({ item_name: '  abcd  ' })).toEqual([
+      { tipo: 'titulo-fora-da-faixa', comprimento: 4, faixa: FAIXA_TITULO },
+    ]);
+    expect(pend({ item_name: 'y'.repeat(20) })).toEqual([]);
+    expect(pend({ item_name: 'y'.repeat(21) })).toEqual([
+      { tipo: 'titulo-fora-da-faixa', comprimento: 21, faixa: FAIXA_TITULO },
+    ]);
+  });
+
+  it('⛔ sem as faixas (`limites: null`) não há pendência de faixa — mas a AUSÊNCIA ainda é', () => {
+    expect(pend({ item_name: 'z'.repeat(3_000) }, { limites: null })).toEqual([]);
+    expect(tiposDe(pend({ item_name: null }, { nomeProduto: null, limites: null }))).toEqual([
+      'sem-nome',
+    ]);
+    // A band whose end is open bounds nothing on that side (`dentroDaFaixaShopee`).
+    expect(
+      pend(
+        { item_name: 'z'.repeat(3_000) },
+        {
+          limites: { itemNameLengthLimit: { min: 5, max: null }, itemDescriptionLengthLimit: null },
+        },
+      ),
+    ).toEqual([]);
+  });
+});
+
+describe('pendenciasDoRascunhoShopee — a descrição (`descricaoDoAnuncioShopee` → `textoNaFaixaShopee`)', () => {
+  it('PAR: `description: null` usa a do PRODUTO (D2) — sem pendência', () => {
+    expect(pend({ description: null })).toEqual([]);
+    expect(pend({ description: '  ' })).toEqual([]);
+  });
+
+  it('⛔ NEAR-MISS (K2-7): rascunho `description: null` + produto SEM descrição ⇒ `sem-descricao`', () => {
+    for (const doProduto of [null, undefined, '', '   ']) {
+      expect(
+        tiposDe(pend({ description: null }, { descricaoProduto: doProduto })),
+        String(doProduto),
+      ).toEqual(['sem-descricao']);
+    }
+  });
+
+  it('a descrição própria vence a do produto, e é ELA que é medida', () => {
+    expect(pend({ description: 'curta' })).toEqual([
+      { tipo: 'descricao-fora-da-faixa', comprimento: 5, faixa: FAIXA_DESCRICAO },
+    ]);
+    // ⛔ NEAR-MISS: an out-of-band produto description is not consulted beside a usable own one.
+    expect(pend({ description: 'Uma descrição própria.' }, { descricaoProduto: 'x' })).toEqual([]);
+    // …but the produto's IS measured when the draft has none of its own.
+    expect(pend({ description: null }, { descricaoProduto: 'x' })).toEqual([
+      { tipo: 'descricao-fora-da-faixa', comprimento: 1, faixa: FAIXA_DESCRICAO },
+    ]);
+  });
+});
+
+describe('pendenciasDoRascunhoShopee — a categoria', () => {
+  it('`category_id: null` (e a chave ausente) ⇒ `categoria-ausente`', () => {
+    expect(tiposDe(pend({ category_id: null }))).toEqual(['categoria-ausente']);
+    const { category_id: _omitida, ...semChave } = CAMPOS_OK;
+    expect(
+      tiposDe(pendenciasDoRascunhoShopee(semChave as unknown as CamposRascunhoShopee, ARGS_PEND)),
+    ).toEqual(['categoria-ausente']);
+  });
+
+  it('⛔ NEAR-MISS: uma categoria escolhida não é pendência — a folha é a pergunta do seletor e do montador', () => {
+    expect(pend({ category_id: 100087 })).toEqual([]);
+    expect(pend({ category_id: 0 })).toEqual([]);
+  });
+
+  it('sobre um documento guardado: a categoria ILEGÍVEL da projeção (1.5, "100087") é ausente aqui', () => {
+    for (const bruto of [1.5, '100087', null, undefined]) {
+      const campos = camposDoRascunhoShopee({ item_id: null, category_id: bruto, brand_id: 0 });
+      expect(tiposDe(pendenciasDoRascunhoShopee(campos, ARGS_PEND)), String(bruto)).toEqual([
+        'categoria-ausente',
+      ]);
+    }
+  });
+});
+
+describe('pendenciasDoRascunhoShopee — a marca (`rascunhoSemMarcaShopee`, D10)', () => {
+  it('`marca: null` (e a chave ausente) ⇒ `marca-nao-escolhida`', () => {
+    expect(tiposDe(pend({ marca: null }))).toEqual(['marca-nao-escolhida']);
+    const { marca: _omitida, ...semChave } = CAMPOS_OK;
+    expect(
+      tiposDe(pendenciasDoRascunhoShopee(semChave as unknown as CamposRascunhoShopee, ARGS_PEND)),
+    ).toEqual(['marca-nao-escolhida']);
+  });
+
+  it('⛔ NEAR-MISS: «Sem marca» (`brand_id: 0`) é ESCOLHA — e qualquer marca escolhida também', () => {
+    expect(pend({ marca: { brand_id: 0, original_brand_name: null } })).toEqual([]);
+    expect(pend({ marca: { brand_id: 77, original_brand_name: 'Acme' } })).toEqual([]);
+    expect(pend({ marca: { brand_id: 77, original_brand_name: null } })).toEqual([]);
+  });
+
+  it('⛔ FALHA FECHADA: um brand_id NEGATIVO (a projeção o lê verbatim) é pendência', () => {
+    expect(tiposDe(pend({ marca: { brand_id: -1, original_brand_name: null } }))).toEqual([
+      'marca-nao-escolhida',
+    ]);
+  });
+
+  it('diferencial: sobre o documento CRU, a pendência ⇔ `rascunhoSemMarcaShopee` (o que o montador lê)', () => {
+    const marcas: readonly unknown[] = [
+      0,
+      1,
+      77,
+      Number.MAX_SAFE_INTEGER,
+      null,
+      undefined,
+      -1,
+      '77',
+      '',
+      false,
+      1.5,
+      Number.NaN,
+      2 ** 53,
+      { brand_id: 77 },
+    ];
+    for (const brand of marcas) {
+      const cru: Record<string, unknown> = {
+        item_id: null,
+        item_name: 'Camiseta azul P',
+        category_id: 100087,
+        brand_id: brand,
+        original_brand_name: 'Acme',
+      };
+      const tem = tiposDe(
+        pendenciasDoRascunhoShopee(camposDoRascunhoShopee(cru), ARGS_PEND),
+      ).includes('marca-nao-escolhida');
+      expect(tem, typeof brand === 'object' ? JSON.stringify(brand) : String(brand)).toBe(
+        rascunhoSemMarcaShopee(cru),
+      );
+    }
+  });
+});
+
+describe('pendenciasDoRascunhoShopee — os atributos (`validarAtributosShopee`, ativo no P13)', () => {
+  it('sem árvore (ausente ou `null`) ⇒ nenhuma pendência de atributo — como o montador sem árvore lida', () => {
+    expect(pend({ attributes: null })).toEqual([]);
+    expect(pend({ attributes: null }, { arvore: null })).toEqual([]);
+  });
+
+  it('⛔ NEAR-MISS: com a árvore, os obrigatórios sem valor ⇒ UMA pendência com os nomes, na ordem do percurso', () => {
+    expect(pend({ attributes: null }, { arvore: ARVORE_PEND })).toEqual([
+      { tipo: 'atributo-obrigatorio', nomes: ['Material', 'Gênero'] },
+    ]);
+  });
+
+  it('só `obrigatorio-ausente` conta: a busca não duplica o nome, e um valor fora da lista NÃO é pendência', () => {
+    const atributos = [
+      { attribute_id: 1001, attribute_value_list: [{ value_id: 2 }] },
+      { attribute_id: 1003, attribute_value_list: [{ value_id: 99 }] },
+    ];
+    const problemas = validarAtributosShopee(
+      ARVORE_PEND,
+      lerAtributosArmazenadosShopee(atributos).atributos,
+    ).map((p) => p.tipo);
+    // The validator DOES see more than the pendência keeps:
+    expect(problemas).toContain(TIPO_PROBLEMA_ATRIBUTO_SHOPEE.obrigatorioRequerBusca);
+    expect(problemas).toContain(TIPO_PROBLEMA_ATRIBUTO_SHOPEE.valorForaDaLista);
+    expect(pend({ attributes: atributos }, { arvore: ARVORE_PEND })).toEqual([
+      { tipo: 'atributo-obrigatorio', nomes: ['Gênero'] },
+    ]);
+  });
+
+  it('um filho obrigatório que o valor ESCOLHIDO revela entra com o nome do validador', () => {
+    const atributos = [
+      { attribute_id: 1001, attribute_value_list: [{ value_id: 1 }] },
+      { attribute_id: 1002, attribute_value_list: [{ value_id: 5 }] },
+    ];
+    const nomes = nomesDaPendencia(pend({ attributes: atributos }, { arvore: ARVORE_PEND }));
+    expect(nomes).toEqual(faltandoDoMontador(ARVORE_PEND, atributos));
+    expect(nomes).toHaveLength(1);
+    expect(nomes?.[0]).toContain('Gramatura');
+  });
+
+  it('tudo preenchido ⇒ nenhuma pendência de atributo', () => {
+    const atributos = [
+      { attribute_id: 1001, attribute_value_list: [{ value_id: 2 }] },
+      { attribute_id: 1002, attribute_value_list: [{ value_id: 5 }] },
+    ];
+    expect(pend({ attributes: atributos }, { arvore: ARVORE_PEND })).toEqual([]);
+  });
+
+  it('diferencial: os três formatos guardados, pela PROJEÇÃO ⇔ o `faltando` do montador sobre o documento CRU', () => {
+    const casos: readonly unknown[] = [
+      // the request shape
+      [{ attribute_id: 1001, attribute_value_list: [{ value_id: 2 }] }],
+      // the import's READ shape (names beside list ids, null keys, extra keys)
+      [
+        {
+          attribute_id: 1001,
+          original_attribute_name: 'Material',
+          is_mandatory: true,
+          attribute_value_list: [{ value_id: 1, original_value_name: 'Algodão', value_unit: null }],
+        },
+        {
+          attribute_id: 1002,
+          attribute_value_list: [{ value_id: 5, original_value_name: 'Unissex', value_unit: '' }],
+        },
+      ],
+      // the legacy custom value with NO value_id satisfies Material…
+      [{ attribute_id: 1001, attribute_value_list: [{ original_value_name: 'Linho' }] }],
+      // …but a blank custom name is dropped, so Material is missing again
+      [{ attribute_id: 1001, attribute_value_list: [{ value_id: 0, original_value_name: '  ' }] }],
+      // a repeated id: the FIRST usable element wins on both sides
+      [
+        { attribute_id: 1002, attribute_value_list: [] },
+        { attribute_id: 1002, attribute_value_list: [{ value_id: 5 }] },
+        { attribute_id: 1002, attribute_value_list: [{ value_id: 6 }] },
+      ],
+      [],
+      null,
+      'não é uma lista',
+    ];
+    for (const armazenados of casos) {
+      const campos = camposDoRascunhoShopee({
+        item_id: null,
+        item_name: 'Camiseta azul P',
+        category_id: 100087,
+        brand_id: 0,
+        attributes: armazenados,
+      });
+      const esperado = faltandoDoMontador(ARVORE_PEND, armazenados);
+      const nomes = nomesDaPendencia(
+        pendenciasDoRascunhoShopee(campos, { ...ARGS_PEND, arvore: ARVORE_PEND }),
+      );
+      expect(nomes ?? [], JSON.stringify(armazenados)).toEqual(esperado);
+    }
+  });
+});
+
+describe('pendenciasDoRascunhoShopee — documentos guardados, de ponta a ponta', () => {
+  it('o rascunho que o P5 cunha (`brand_id: 0`, sem categoria) ⇒ só a categoria', () => {
+    const cunhado: Record<string, unknown> = {
+      item_id: null,
+      item_name: 'Camiseta azul',
+      description: null,
+      category_id: null,
+      brand_id: 0,
+      original_brand_name: null,
+      publicacaoEmCurso: null,
+    };
+    expect(tiposDe(pendenciasDoRascunhoShopee(camposDoRascunhoShopee(cunhado), ARGS_PEND))).toEqual(
+      ['categoria-ausente'],
+    );
+  });
+
+  it("o rascunho LEGADO (título '', só `brand_id`) usa o nome do produto e tem a marca escolhida", () => {
+    const legado: Record<string, unknown> = {
+      item_id: null,
+      item_name: '',
+      category_id: 100087,
+      brand_id: 77,
+    };
+    expect(pendenciasDoRascunhoShopee(camposDoRascunhoShopee(legado), ARGS_PEND)).toEqual([]);
+    // ⛔ NEAR-MISS: the same legacy draft on a produto with no usable name.
+    expect(
+      tiposDe(
+        pendenciasDoRascunhoShopee(camposDoRascunhoShopee(legado), {
+          ...ARGS_PEND,
+          nomeProduto: ' ',
+        }),
+      ),
+    ).toEqual(['sem-nome']);
+  });
+
+  it('um título NÃO-texto guardado (42) é ausente: cai para o nome do produto, como no montador', () => {
+    const cru: Record<string, unknown> = {
+      item_id: null,
+      item_name: 42,
+      category_id: 100087,
+      brand_id: 0,
+    };
+    expect(pendenciasDoRascunhoShopee(camposDoRascunhoShopee(cru), ARGS_PEND)).toEqual([]);
+    expect(
+      tiposDe(
+        pendenciasDoRascunhoShopee(camposDoRascunhoShopee(cru), {
+          ...ARGS_PEND,
+          nomeProduto: null,
+        }),
+      ),
+    ).toEqual(['sem-nome']);
+  });
+});
+
+describe('pendenciasDoRascunhoShopee — o texto do arquivo (#1369: composta, nunca re-derivada)', () => {
+  const FONTE = readFileSync(join(import.meta.dirname, 'shopeeRascunho.ts'), 'utf8');
+  const inicio = FONTE.indexOf('export function pendenciasDoRascunhoShopee(');
+  const corpo = FONTE.slice(inicio, FONTE.indexOf('\n}\n', inicio));
+
+  it('chama as MESMAS funções que o montador chama', () => {
+    expect(inicio).toBeGreaterThan(0);
+    for (const chamada of [
+      'tituloDoAnuncioShopee(',
+      'descricaoDoAnuncioShopee(',
+      'textoNaFaixaShopee(',
+      'rascunhoSemMarcaShopee(',
+      'validarAtributosShopee(',
+      'lerAtributosArmazenadosShopee(',
+      'TIPO_PROBLEMA_ATRIBUTO_SHOPEE.obrigatorioAusente',
+    ]) {
+      expect(corpo, chamada).toContain(chamada);
+    }
+  });
+
+  it('não refaz à mão nem o "texto utilizável" nem o "marca escolhida"', () => {
+    for (const proibido of [
+      '.trim(',
+      'textoUtilizavelShopee(',
+      'dentroDaFaixaShopee(',
+      'isSafeInteger',
+      'brand_id <',
+      'brand_id ===',
+      '.length >= ',
+      '.length <= ',
+    ]) {
+      expect(corpo, proibido).not.toContain(proibido);
+    }
   });
 });

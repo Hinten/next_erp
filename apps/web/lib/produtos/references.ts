@@ -23,6 +23,14 @@ export interface ProdutoReferences {
  * - Marketplace links: every channel stores its listing/variation doc in a
  *   subcollection of the produto itself, so a limit-1 existence read per
  *   known subcollection covers parents and children alike.
+ *
+ * ⚠️ A Shopee listing DRAFT (#1911 — a `prodshopee` doc with no `item_id`) is
+ * one of those docs, so it blocks the delete as "Shopee" although nothing was
+ * ever published. That is the safe direction, kept on purpose: a draft is the
+ * operator's work, and while its last publish is uncertain it is the ONLY
+ * record that a listing may exist on Shopee. The way out is the draft's own
+ * "Descartar" in the produto's Shopee tab, which deletes it through
+ * apps/shopee's draft route — never a delete from here.
  */
 export async function findProdutoReferences(
   db: Firestore,

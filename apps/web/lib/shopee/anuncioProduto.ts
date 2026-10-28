@@ -26,6 +26,13 @@
  * which failures leave a kit create UNCERTAIN ({@link criacaoDeKitIncerta}), and
  * the per-tab store that keeps that uncertainty across a reload
  * ({@link lerIncerto} / {@link gravarIncerto}).
+ *
+ * The fourth part (#1911, P10) is the listing DRAFT's copy: the refusal motivos
+ * of an ordinary listing's draft ({@link TEXTO_MOTIVO_ANUNCIO_SHOPEE}), the
+ * draft block's notices and pendências, and what each answer of the three
+ * draft routes reads as. The DECISIONS behind them (what is dirty, what a body
+ * carries, which answer is which) live in `./rascunho.ts`; this half only words
+ * them.
  */
 import { z } from 'zod';
 import {
@@ -33,10 +40,15 @@ import {
   FUSO_FISCAL,
   TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE,
   anuncioShopeeVivo,
+  descreverFaixaShopee,
   ehVinculoSubstituido,
   estadoAnuncioShopeeSchema,
   type AcaoSugeridaPublicacaoShopee,
+  type CampoRascunhoShopee,
   type EstadoAnuncioShopee,
+  type EstadoPublicacaoRascunhoShopee,
+  type FaixaDto,
+  type PendenciaRascunhoShopee,
   type TipoAcaoSugeridaPublicacaoShopee,
 } from '@delfrance/schemas';
 
@@ -206,21 +218,12 @@ export function ordenarVinculosShopee<
 /* -------------------------------------------------------------------------- */
 
 /**
- * What a DRAFT link (`item_id: null`) shows where "Publicar" would be. A first
- * publish is NOT offered in step 21: the item arm has no duplicate guard (its
- * first write-back lands only after `add_item` answers), so a network error on
- * one would invite a second listing — and the draft link itself belongs to the
- * listing-authoring step that follows (#1911).
- */
-export const FRASE_PRIMEIRA_PUBLICACAO_SHOPEE =
-  'Primeira publicação: chega na etapa de autoria do anúncio.';
-
-/**
  * What a link whose stored `item_id` is present but addresses no listing (`0`, a
  * negative, a fraction, past 2^53, a quoted number — a malformed or migrated
- * row) shows where its buttons would be. ⚠️ Never
- * {@link FRASE_PRIMEIRA_PUBLICACAO_SHOPEE}: the link is not a draft, so a first
- * publish is not what it is waiting for.
+ * row) shows where its buttons would be — and so does a `kitNativo: true` link
+ * with NO `item_id` (#1911 P10): a native kit's link always names its kit, so
+ * that row is corrupt, not a draft. ⚠️ Neither gets the draft editor: the
+ * schemas' `ehRascunhoShopee` decides what a draft is, and both are outside it.
  */
 export const FRASE_ITEM_ID_INVALIDO_SHOPEE =
   'O código do anúncio guardado neste vínculo é inválido — nenhuma ação disponível.';
@@ -328,7 +331,8 @@ export const FRASE_RECUSA_SEM_PASSO_SHOPEE =
 /**
  * The operator copy of ONE refusal row of a 422.
  *
- *  - A `motivo` the tab words itself ({@link TEXTO_MOTIVO_KIT}) reads that copy
+ *  - A `motivo` the tab words itself ({@link TEXTO_MOTIVO_KIT}, then
+ *    {@link TEXTO_MOTIVO_ANUNCIO_SHOPEE} — disjoint keys, pinned) reads that copy
  *    first — with or without an `acao`; the `acao`'s ids still follow it.
  *  - WITH an `acao`: {@link TEXTO_ACAO_SUGERIDA} plus the ids the `acao` names.
  *    ⚠️ The server's `mensagem` is NEVER shown for such a row — it is the CLI's
@@ -347,7 +351,7 @@ export function textoDoProblemaShopee(
   linkDoBloco?: string,
 ): string {
   const { acao } = p;
-  const doMotivo = p.motivo === undefined ? null : textoProprio(TEXTO_MOTIVO_KIT, p.motivo);
+  const doMotivo = p.motivo === undefined ? null : textoDoMotivoShopee(p.motivo);
   if (acao === null) {
     if (doMotivo !== null) return doMotivo;
     return ehFraseDeTerminal(p.mensagem) ? FRASE_RECUSA_SEM_PASSO_SHOPEE : p.mensagem;
@@ -534,7 +538,10 @@ const MINUTOS_DE_ESPERA_DO_KIT = Math.ceil(AGUARDAR_KIT_INCERTO_SHOPEE_MS / 60_0
  *
  * ⚠️ Only motivos the kit arms or the dispatcher produce. A motivo the ordinary
  * listing's publish shares (`listagem-removida`, `preco-fora-da-faixa`) keeps
- * the server's mechanism sentence there, so it is not in this map.
+ * the server's mechanism sentence there, so it is not in this map. The
+ * dispatcher's two DRAFT motivos (#1911) are about an ordinary listing's draft,
+ * so they live in {@link TEXTO_MOTIVO_ANUNCIO_SHOPEE} instead — the keys of the
+ * two maps never overlap (pinned), so which one answers never depends on order.
  *
  * ⚠️ `instabilidade-shopee` is the one row here with NO `acao`: its server
  * sentence tells the CLI to re-run "o mesmo comando" (reconcile fact 14), and
@@ -798,3 +805,430 @@ export function gravarIncerto(
     throw err;
   }
 }
+
+/* -------------------------------------------------------------------------- */
+/*            #1911 P10 — the listing DRAFT (edited here, no Publicar)         */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The notice of a draft whose produto is a VIRTUAL kit — and the copy of the
+ * dispatcher's `rascunho-em-kit-virtual` refusal (one constant for both, §C
+ * #1): on Shopee a virtual kit is published as a NATIVE kit, never as the
+ * ordinary listing a draft becomes, so such a draft can only be discarded.
+ */
+export const FRASE_RASCUNHO_EM_KIT_VIRTUAL_SHOPEE =
+  'Este produto é kit virtual: na Shopee ele é publicado como kit nativo, e um rascunho de ' +
+  'anúncio comum não se aplica. Descarte este rascunho e publique o kit.';
+
+/**
+ * The draft's "brand still to choose" — the pendência AND the copy of the
+ * publish's `marca-nao-escolhida` refusal (one constant for both, §C #3).
+ * "Sem marca" is a choice; nothing chosen is not.
+ */
+export const FRASE_MARCA_NAO_ESCOLHIDA_SHOPEE =
+  'Escolha a marca deste rascunho (ou «Sem marca») antes de publicar.';
+
+/**
+ * The tab's OWN copy for the refusal motivos of an ORDINARY listing's draft
+ * (#1911) — read by {@link textoDoProblemaShopee} right after
+ * {@link TEXTO_MOTIVO_KIT}. The two maps' keys never overlap (pinned), so the
+ * order of the two lookups decides nothing.
+ *
+ * Keyed by the 422 row's `motivo`, a FREE string on the wire (apps/shopee's
+ * vocabulary, which the browser cannot import): a renamed slug falls back to
+ * the row's `acao` copy, then to the server sentence — never to a wrong row.
+ *
+ * - `rascunho-em-kit-virtual` (the dispatcher) — {@link FRASE_RASCUNHO_EM_KIT_VIRTUAL_SHOPEE};
+ * - `rascunho-nao-nomeado` (the dispatcher) — its server sentence names the
+ *   CLI's `--link`, which the tab never shows. Unreachable from this tab, whose
+ *   every publish names its link; kept as a cheap guard, and its `acao` gets no
+ *   button (a draft is not addressable);
+ * - `marca-nao-escolhida` (the listing assembly) — {@link FRASE_MARCA_NAO_ESCOLHIDA_SHOPEE}.
+ */
+export const TEXTO_MOTIVO_ANUNCIO_SHOPEE: Readonly<Record<string, string>> = {
+  'rascunho-em-kit-virtual': FRASE_RASCUNHO_EM_KIT_VIRTUAL_SHOPEE,
+  'rascunho-nao-nomeado':
+    'Este produto só tem rascunho(s) nesta conta: publique pelo botão Publicar do bloco do ' +
+    'rascunho.',
+  'marca-nao-escolhida': FRASE_MARCA_NAO_ESCOLHIDA_SHOPEE,
+};
+
+/** The tab's own copy of a refusal `motivo` — {@link TEXTO_MOTIVO_KIT}, then {@link TEXTO_MOTIVO_ANUNCIO_SHOPEE}. */
+function textoDoMotivoShopee(motivo: string): string | null {
+  return (
+    textoProprio(TEXTO_MOTIVO_KIT, motivo) ?? textoProprio(TEXTO_MOTIVO_ANUNCIO_SHOPEE, motivo)
+  );
+}
+
+/** What each draft field is called on screen — the conflict modal's rows. Exhaustive by type. */
+export const ROTULO_CAMPO_RASCUNHO_SHOPEE = {
+  item_name: 'Título',
+  description: 'Descrição',
+  category_id: 'Categoria',
+  marca: 'Marca',
+  attributes: 'Atributos',
+  logistic_info: 'Logística',
+} as const satisfies Record<CampoRascunhoShopee, string>;
+
+/* ---- The block's notices ------------------------------------------------- */
+
+/** A draft created on this screen and not saved yet: nothing exists on the server. */
+export const FRASE_RASCUNHO_NOVO_SHOPEE = 'Novo rascunho (ainda não salvo).';
+
+/**
+ * The server-truth gate (DC §2.2): a stored draft is not editable until the
+ * links listener has answered FROM THE SERVER — a cached pre-write copy must
+ * never become what the operator says they saw.
+ */
+export const FRASE_RASCUNHO_CARREGANDO_SHOPEE = 'Carregando a versão do servidor…';
+
+/**
+ * Right after a save: what was saved is shown, read-only, until the listener
+ * brings the stored draft back — the next edit starts from THAT, never from a
+ * copy of what was sent.
+ */
+export const FRASE_RASCUNHO_AGUARDANDO_SERVIDOR_SHOPEE =
+  'Salvo. Aguardando a versão do servidor para editar de novo…';
+
+/** Logistics are not authored on a draft yet (DC §2.6, #1911 P15/P16). */
+export const FRASE_LOGISTICA_RASCUNHO_SHOPEE =
+  'Logística: escolhida automaticamente na publicação, entre os canais ativos da loja.';
+
+/** A category change on a draft that stores attributes: the change clears them (K1-12). */
+export const FRASE_TROCA_DE_CATEGORIA_APAGA_ATRIBUTOS_SHOPEE =
+  'Trocar a categoria remove os atributos já gravados neste rascunho.';
+
+/**
+ * How the search for a create that may have happened works — the advice the
+ * operator needs while one is pending (§C.2): the ERP looks the listing up by
+ * the SKU that was SENT, or by the produto's CURRENT SKU when the sent one was
+ * not recorded; "do not change the SKU" holds in both cases.
+ */
+const FRASE_SKU_DA_CRIACAO_INCERTA_SHOPEE =
+  'Antes de criar outro, o ERP procura o anúncio pelo SKU enviado (ou, se ele não ficou ' +
+  'registrado, pelo SKU atual do produto): não mude o SKU do produto.';
+
+/**
+ * The notice of a draft whose publish lock reads `em-andamento`
+ * (`estadoPublicacaoRascunhoShopee`, `@delfrance/schemas`) at `nowMs`. "Até"
+ * is `nowMs + aguardarMs` — the instant the reading itself changes, so the
+ * minutes are the schemas' and never a second copy of the lock's timeline.
+ * ⚠️ It never promises the draft comes back "free" then: a run that reached
+ * the send leaves an UNCERTAIN create behind, which only the reading knows.
+ */
+export function fraseDoRascunhoEmAndamentoShopee(
+  estado: Extract<EstadoPublicacaoRascunhoShopee, { tipo: 'em-andamento' }>,
+  nowMs: number,
+): string {
+  const ate = formatarInstanteShopee(nowMs + estado.aguardarMs);
+  const desde = formatarInstanteShopee(estado.desdeMs);
+  const espera = ate === null ? 'aguarde' : `aguarde até ${ate}`;
+  const abertura = estado.posExpiracao
+    ? `A publicação anterior deste rascunho expirou, mas ainda pode estar terminando na Shopee — ${espera} e confira.`
+    : `Este rascunho está sendo publicado${desde === null ? '' : ` desde ${desde}`} — ${espera} e confira o resultado.`;
+  const partes = [abertura, 'Enquanto isso, ele não pode ser editado nem descartado.'];
+  if (estado.aposIncerteza) {
+    partes.push(
+      `Uma tentativa anterior pode ter criado o anúncio. ${FRASE_SKU_DA_CRIACAO_INCERTA_SHOPEE}`,
+    );
+  }
+  return partes.join(' ');
+}
+
+/**
+ * The notice of a draft whose reading is `incerta`: its last create may have
+ * reached Shopee. The draft stays editable — but not its category, which the
+ * uncertain attempt may already have used (409 `rascunhoCategoriaTravada`).
+ */
+export const FRASE_RASCUNHO_INCERTO_SHOPEE =
+  'A última tentativa de publicar este rascunho não terminou com certeza — o anúncio pode já ' +
+  `existir na Shopee. ${FRASE_SKU_DA_CRIACAO_INCERTA_SHOPEE} A categoria fica travada ` +
+  'enquanto isso não se resolve.';
+
+/* ---- Pendências ----------------------------------------------------------- */
+
+/** The draft names no category (a LEAF of the conta's Shopee tree). */
+export const FRASE_PENDENCIA_CATEGORIA_AUSENTE_SHOPEE =
+  'Escolha a categoria (uma categoria final da árvore da Shopee).';
+
+/** Neither the draft nor the stored produto has a usable title. */
+export const FRASE_PENDENCIA_SEM_NOME_SHOPEE =
+  'O anúncio não tem título: escreva o título do anúncio.';
+
+/** Neither the draft nor the stored produto (aba Descrição) has a usable description. */
+export const FRASE_PENDENCIA_SEM_DESCRICAO_SHOPEE =
+  'O anúncio não tem descrição: escreva uma aqui ou preencha a Descrição do produto (aba ' +
+  'Descrição).';
+
+/**
+ * A title or description outside the category's band: its length (the TRIMMED
+ * text's, the publisher's measure) and the band as the schemas describe it.
+ */
+export function fraseDoTextoForaDaFaixaShopee(
+  qual: 'titulo' | 'descricao',
+  comprimento: number,
+  banda: FaixaDto | null | undefined,
+): string {
+  const oQue = qual === 'titulo' ? 'O título' : 'A descrição';
+  return (
+    `${oQue} tem ${String(comprimento)} caracteres; esta categoria aceita ` +
+    `${descreverFaixaShopee(banda)}.`
+  );
+}
+
+/** Mandatory attributes left empty (P13 renders them; the sentence is ready). */
+export function fraseDosAtributosObrigatoriosShopee(nomes: readonly string[]): string {
+  return `Preencha os atributos obrigatórios: ${nomes.join(', ')}.`;
+}
+
+/**
+ * The sentence of ONE pendência (`pendenciasDoRascunhoShopee`,
+ * `@delfrance/schemas` — the listing assembly's own predicates). Exhaustive by
+ * type: a kind added there breaks the build here until it has a sentence.
+ */
+export function textoDaPendenciaRascunhoShopee(p: PendenciaRascunhoShopee): string {
+  switch (p.tipo) {
+    case 'sem-nome':
+      return FRASE_PENDENCIA_SEM_NOME_SHOPEE;
+    case 'titulo-fora-da-faixa':
+      return fraseDoTextoForaDaFaixaShopee('titulo', p.comprimento, p.faixa);
+    case 'sem-descricao':
+      return FRASE_PENDENCIA_SEM_DESCRICAO_SHOPEE;
+    case 'descricao-fora-da-faixa':
+      return fraseDoTextoForaDaFaixaShopee('descricao', p.comprimento, p.faixa);
+    case 'categoria-ausente':
+      return FRASE_PENDENCIA_CATEGORIA_AUSENTE_SHOPEE;
+    case 'atributo-obrigatorio':
+      return fraseDosAtributosObrigatoriosShopee(p.nomes);
+    case 'marca-nao-escolhida':
+      return FRASE_MARCA_NAO_ESCOLHIDA_SHOPEE;
+  }
+}
+
+/* ---- The second listing (D15) --------------------------------------------- */
+
+/** The confirmation's title, before a SECOND listing of the produto on one conta. */
+export const TITULO_SEGUNDO_ANUNCIO_SHOPEE = 'Criar outro anúncio nesta conta?';
+
+/** The confirmation's button. */
+export const ROTULO_CONFIRMAR_SEGUNDO_ANUNCIO_SHOPEE = 'Criar rascunho mesmo assim';
+
+/**
+ * The second-listing confirmation (D15, DC §2.4): how many of the produto's
+ * listings and drafts the conta already holds, and the duplicate risk. Copy
+ * pending Lucas's check of Shopee BR's seller policy.
+ */
+export function textoDoSegundoAnuncioShopee(existentes: {
+  readonly quantidade: number;
+  readonly comRascunho: boolean;
+}): string {
+  const partes = [
+    // A 409 whose `vinculos` could not be read counts 0: never "já tem 0".
+    `Esta conta já tem ${existentes.quantidade > 0 ? `${String(existentes.quantidade)} ` : ''}` +
+      `anúncio(s) deste produto${existentes.comRascunho ? ', incluindo um rascunho' : ''}.`,
+    'Um segundo anúncio do mesmo produto (com o mesmo SKU) na mesma loja pode ser tratado pela ' +
+      'Shopee como anúncio duplicado (spam), e isso pode render pontos de penalidade à loja. ' +
+      'Crie outro apenas se ele for realmente diferente do que já existe.',
+  ];
+  if (existentes.comRascunho) {
+    partes.push('Se a ideia é continuar o rascunho existente, edite-o em vez de criar outro.');
+  }
+  return partes.join(' ');
+}
+
+/* ---- Discard -------------------------------------------------------------- */
+
+/** The discard confirmation of a SAVED draft whose reading is `livre`. */
+export const FRASE_CONFIRMAR_DESCARTE_SHOPEE =
+  'O rascunho será excluído. Nada foi publicado na Shopee.';
+
+/** The discard confirmation of a LOCAL draft — nothing was ever saved. */
+export const FRASE_CONFIRMAR_DESCARTE_LOCAL_SHOPEE =
+  'Este rascunho ainda não foi salvo: descartá-lo apaga só o que está nesta tela.';
+
+/**
+ * The three-case dialog of a discard refused 409 `rascunhoCriacaoIncerta`
+ * (§C.2, R-K6). Cases (a) and (b) re-send the SAME discard with
+ * `confirmarCriacaoIncerta: true`; case (c) is TEXT ONLY — discarding there
+ * would lose the one record that lets the import adopt the listing.
+ */
+export const DIALOGO_DESCARTE_CRIACAO_INCERTA_SHOPEE = {
+  titulo: 'A última publicação pode ter criado o anúncio',
+  texto:
+    'A última tentativa de publicar este rascunho não terminou com certeza: o anúncio pode ' +
+    'existir na Shopee. Confira no Seller Centre antes de descartar.',
+  naoExiste: 'Conferi no Seller Centre: o anúncio não existe — descartar',
+  existeVinculado:
+    'O anúncio existe e já está vinculado no ERP (é o da tentativa) — descartar este rascunho',
+  existeSemVinculo:
+    'O anúncio existe e não está vinculado: não descarte — dê a ele o mesmo SKU do produto e ' +
+    'importe-o (Canais › Shopee); a importação adota este rascunho.',
+} as const;
+
+/* ---- The conflict modal (409 rascunhoConflito with a field list) ---------- */
+
+/** The modal's title. */
+export const TITULO_CONFLITO_RASCUNHO_SHOPEE = 'Rascunho alterado';
+
+/** The modal's alert after an EDIT: someone else saved the draft meanwhile. */
+export const FRASE_CONFLITO_RASCUNHO_SHOPEE =
+  'Este rascunho foi alterado (em outra aba ou por outra pessoa) depois que você começou a ' +
+  'editar. Salvar vai sobrescrever os campos abaixo.';
+
+/**
+ * The modal's alert after a CREATE retry: the draft at this id was saved with
+ * other content — possibly fields the operator never touched, since the route
+ * compares every projected field of the create.
+ */
+export const FRASE_CONFLITO_CRIACAO_RASCUNHO_SHOPEE =
+  'Este rascunho já foi salvo com outro conteúdo (numa tentativa anterior ou em outra aba). ' +
+  'Salvar vai sobrescrever os campos abaixo.';
+
+/* ---- The answers of the three draft routes (§C.2) ------------------------- */
+
+/** Toasts of the three 2xx. */
+export const FRASE_RASCUNHO_CRIADO_SHOPEE = 'Rascunho criado.';
+export const FRASE_RASCUNHO_SALVO_SHOPEE = 'Rascunho salvo.';
+/** An edit answered `gravados: []` — the stored draft already held every value. */
+export const FRASE_RASCUNHO_SEM_MUDANCA_SHOPEE =
+  'Nada a salvar: o rascunho já tinha esses valores.';
+export const FRASE_RASCUNHO_DESCARTADO_SHOPEE = 'Rascunho descartado.';
+/** A discard of an `incerta` draft, attested by the operator (`criacaoIncerta: true`). */
+export const FRASE_RASCUNHO_DESCARTADO_INCERTO_SHOPEE =
+  'Rascunho descartado. Se um anúncio aparecer na Shopee depois, importe-o — não crie outro.';
+
+/** Which draft route answered — two codes mean different things per route. */
+export type OperacaoRascunhoShopee = 'criar' | 'atualizar' | 'descartar';
+
+/** "Nothing was saved / discarded" — the closing words of a refusal, per route. */
+function nadaFeito(operacao: OperacaoRascunhoShopee): string {
+  return operacao === 'descartar' ? 'Nada foi descartado.' : 'Nada foi gravado.';
+}
+
+/**
+ * 409 `publicacaoEmAndamento` from a draft route: the draft's OWN lock (the
+ * draft routes never answer a sibling's). `aguardarMs` absent ⇒ no seconds,
+ * never "0 s".
+ */
+export function fraseDaPublicacaoEmAndamentoShopee(
+  aguardarMs: number | null,
+  operacao: OperacaoRascunhoShopee,
+): string {
+  const espera =
+    aguardarMs === null || aguardarMs <= 0
+      ? 'aguarde e confira'
+      : `aguarde ${String(Math.ceil(aguardarMs / 1000))} s e confira`;
+  return (
+    'O rascunho está sendo publicado agora (ou a publicação anterior ainda pode estar ' +
+    `terminando na Shopee) — ${espera}. ${nadaFeito(operacao)}`
+  );
+}
+
+/** 409 `rascunhoJaPublicado`: the draft became a listing meanwhile. */
+export const FRASE_RASCUNHO_JA_PUBLICADO_SHOPEE =
+  'Este rascunho já virou anúncio na Shopee — recarregue a aba; o conteúdo de um anúncio ' +
+  'publicado não é editado aqui.';
+
+/** 409 `rascunhoConflito` with `conflitos: []`: the write lost every attempt to concurrent writes. */
+export function fraseDoConflitoDeConcorrenciaShopee(operacao: OperacaoRascunhoShopee): string {
+  return (
+    `Não foi possível ${operacao === 'descartar' ? 'descartar' : 'gravar'}: outras gravações ` +
+    `venceram todas as tentativas. ${nadaFeito(operacao)} Tente de novo.`
+  );
+}
+
+/**
+ * 409 `rascunhoConflito` whose `conflitos` could not be read (`null` — an item
+ * names a field this build does not know: a newer backend). Nothing written,
+ * never a success, never an empty field modal (§C.2, §G #16).
+ */
+export function fraseDoConflitoIlegivelShopee(operacao: OperacaoRascunhoShopee): string {
+  return (
+    `Não foi possível ${operacao === 'descartar' ? 'descartar' : 'gravar'}: o rascunho mudou ` +
+    `em outra gravação. ${nadaFeito(operacao)} Recarregue a aba e tente de novo.`
+  );
+}
+
+/** 409 `rascunhoConflito` on a DISCARD: the stored draft is not what the operator saw (K1-13). */
+export const FRASE_DESCARTE_EM_CONFLITO_SHOPEE =
+  'O rascunho mudou desde que você o abriu (em outra aba ou por outra pessoa) — nada foi ' +
+  'descartado. Confira a versão atual e descarte de novo, se for o caso.';
+
+/** 409 `rascunhoCategoriaTravada` (a correct tab never triggers it: the picker is disabled in `incerta`). */
+export const FRASE_CATEGORIA_TRAVADA_SHOPEE =
+  'A categoria não muda enquanto a última tentativa de publicar estiver incerta: ela pode ter ' +
+  'criado o anúncio na categoria gravada. Confira no Seller Centre: se o anúncio existe, dê a ' +
+  'ele o mesmo SKU do produto e importe-o; se não, descarte este rascunho confirmando.';
+
+/** 409 `rascunhoIdEmUso` (create only): never retried at the same id (C-19). */
+export const FRASE_RASCUNHO_ID_EM_USO_SHOPEE =
+  'Este id de rascunho já é usado por outro vínculo — abra «Novo anúncio» de novo.';
+
+/** 422 `rascunhoProdutoInvalido`, `motivo: 'filho'`. */
+export const FRASE_RASCUNHO_DE_VARIACAO_SHOPEE =
+  'Este produto é uma variação: o anúncio é do produto pai.';
+
+/** 422 `rascunhoProdutoInvalido`, `motivo: 'kit-virtual'`. */
+export const FRASE_RASCUNHO_DE_KIT_VIRTUAL_SHOPEE =
+  'Este produto é kit virtual: publique-o como kit nativo.';
+
+/** 404 `rascunhoInexistente` on a CREATE: it is the PRODUTO that is gone. */
+export const FRASE_PRODUTO_INEXISTENTE_SHOPEE = 'O produto não existe mais.';
+
+/** 404 `rascunhoInexistente` on an edit or a discard: the DRAFT is gone (or is another conta's). */
+export const FRASE_RASCUNHO_INEXISTENTE_SHOPEE =
+  'O rascunho não existe mais (ou é de outra conta) — recarregue a aba.';
+
+/** The CODELESS 404 of the draft routes: the conta is gone or is not Shopee's. */
+export const FRASE_CONTA_NAO_ENCONTRADA_SHOPEE =
+  'A conta não foi encontrada ou não é da Shopee — recarregue a aba.';
+
+/** The create's CODELESS 400 with a `linkDocId`: no title, and the produto has no name either. */
+export const FRASE_RASCUNHO_SEM_TITULO_SHOPEE =
+  'O produto não tem nome: escreva o título do anúncio.';
+
+/**
+ * A draft route answered 2xx in a shape this build cannot read
+ * (`ShopeeClientRespostaInvalidaError` — e.g. a newer backend naming a field
+ * in `gravados` this build does not know, a CLOSED enum on purpose). The write
+ * MAY have happened: never a success toast, never "nada foi salvo".
+ */
+export function fraseDaRespostaIlegivelDoRascunhoShopee(operacao: OperacaoRascunhoShopee): string {
+  const oQue =
+    operacao === 'criar'
+      ? 'o rascunho PODE ter sido criado'
+      : operacao === 'atualizar'
+        ? 'as alterações PODEM ter sido salvas'
+        : 'o rascunho PODE ter sido descartado';
+  return `A resposta do servidor não pôde ser lida: ${oQue}. Recarregue a aba antes de editar de novo.`;
+}
+
+/**
+ * No answer the tab can trust — a network failure, or a 5xx after which the
+ * route may already have written. The create may be re-sent as is (the SAME id
+ * is never created twice); an edit or a discard is checked against the list
+ * the listener brings back first.
+ */
+export function fraseDaRespostaIncertaDoRascunhoShopee(operacao: OperacaoRascunhoShopee): string {
+  if (operacao === 'criar') {
+    return (
+      'Sem resposta confirmada do servidor: o rascunho pode ter sido criado ou não. Salve de ' +
+      'novo — o mesmo rascunho nunca é criado duas vezes.'
+    );
+  }
+  return operacao === 'atualizar'
+    ? 'Sem resposta confirmada do servidor: as alterações podem ter sido salvas ou não. ' +
+        'Aguarde a aba atualizar e confira antes de salvar de novo.'
+    : 'Sem resposta confirmada do servidor: o rascunho pode ter sido descartado ou não. ' +
+        'Aguarde a aba atualizar e confira.';
+}
+
+/**
+ * The notices of a dirty draft the snapshot overtook (DC §2.2) — never a silent
+ * drop of what the operator typed.
+ */
+export const FRASE_RASCUNHO_PUBLICADO_DURANTE_EDICAO_SHOPEE =
+  'Este anúncio foi publicado enquanto você editava o rascunho: as alterações não salvas não ' +
+  'foram aplicadas.';
+export const FRASE_RASCUNHO_DESCARTADO_DURANTE_EDICAO_SHOPEE =
+  'O rascunho que você editava foi descartado — em outra aba ou por outra pessoa.';

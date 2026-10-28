@@ -2,7 +2,13 @@ import { expect, test, type Locator, type Page } from '@playwright/test';
 import {
   ACAO_STATUS_ANUNCIO,
   ESTADO_ANUNCIO_SHOPEE,
+  PADRAO_ID_RASCUNHO_SHOPEE,
   TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE,
+  campoRascunhoShopeeSchema,
+  type CampoRascunhoShopee,
+  type RespostaAtualizarRascunhoShopee,
+  type RespostaCriarRascunhoShopee,
+  type RespostaDescartarRascunhoShopee,
 } from '@delfrance/schemas';
 import type { AnuncioStatusShopee, ProblemaShopee } from '../lib/shopee/wire';
 import {
@@ -12,6 +18,7 @@ import {
   cleanupProdutoSubcollection,
   cleanupShopeeFixtures,
   e2ePrefix,
+  seedEditorRascunhoShopee,
   seedProdutoShopeeVinculado,
   seedShopeeFixtures,
 } from './_helpers/seed-data';
@@ -23,7 +30,11 @@ import { warmRoutes } from './helpers/warmup';
  * `produtos/<id>/prodshopee` link document, and the actions on it — the
  * native-kit ones included (the confirmed Recriar on a removed kit, and a
  * refused publish worded by its motivo and its `acao`, never by the CLI
- * sentence the server writes beside them).
+ * sentence the server writes beside them) — and, since #1911 P10, the listing
+ * DRAFT editor: a draft link edited with its own buttons (Salvar rascunho /
+ * Descartar — still no Publicar, which is P11's), a new draft opened per conta
+ * by "Novo anúncio" and written only on Salvar rascunho, and the
+ * second-listing confirmation.
  *
  * The apps/shopee backend does NOT run in this suite. Every route under
  * `/api/marketplace/shopee/` is intercepted on the PATHNAME (any host the
@@ -32,12 +43,19 @@ import { warmRoutes } from './helpers/warmup';
  * is answered 404, recorded in `semStub` and never forwarded — and each test
  * asserts that list is empty. What a real pause does on Shopee is the route's
  * own suite's to prove; this proves what the browser SENDS and what it SHOWS.
+ * ⚠️ The draft routes are stubbed too, so no draft document is ever written,
+ * created or deleted by this suite: every test opens the seeded draft as
+ * seeded. That draft has no category, so the editor reads no category bands
+ * and asks apps/shopee for nothing on render — no test needs a taxonomy stub.
+ * A test that seeds or picks a category stubs `taxonomia/categorias` and
+ * `taxonomia/limites` itself.
  *
  * The tab lists every Shopee conta on staging (shared project), so every
  * assertion is scoped by the run-scoped `data-testid="shopee-conta-<id>"` /
- * `shopee-anuncio-<linkDocId>`. Navigation is TWO levels — the Shopee tab, then
- * the conta's tab inside it — and a conta's panel is lazy, so a `toHaveCount(0)`
- * is always paired with something positive proving the panel rendered.
+ * `shopee-anuncio-<linkDocId>` / `shopee-rascunho-<linkDocId>`. Navigation is
+ * TWO levels — the Shopee tab, then the conta's tab inside it — and a conta's
+ * panel is lazy, so a `toHaveCount(0)` is always paired with something
+ * positive proving the panel rendered.
  */
 
 const PREFIXO_ROTAS = '/api/marketplace/shopee/';
@@ -47,6 +65,38 @@ const MENSAGEM_PAUSA_STUB = 'Anúncio pausado na Shopee (resposta do e2e).';
 
 /** CLI copy — a flag, a `<verbo>:anuncio` script name or the word "comando" — never reaches the page. */
 const TEXTO_DE_TERMINAL = /(^|\s)--[a-z]|:anuncio|comando/i;
+
+/*
+ * The draft editor's copy (#1911 P10), spelled here as the rest of this spec
+ * spells the tab's copy: its source, `lib/shopee/anuncioProduto.ts`, imports the
+ * browser's Shopee client (and through it the auth hook), which a Node spec
+ * must not load. Each names the constant it mirrors.
+ */
+
+/** `FRASE_MARCA_NAO_ESCOLHIDA_SHOPEE` — the `marca-nao-escolhida` pendência. */
+const PENDENCIA_MARCA = 'Escolha a marca deste rascunho (ou «Sem marca») antes de publicar.';
+/** `FRASE_PENDENCIA_CATEGORIA_AUSENTE_SHOPEE` — the `categoria-ausente` pendência. */
+const PENDENCIA_CATEGORIA = 'Escolha a categoria (uma categoria final da árvore da Shopee).';
+/** `FRASE_PENDENCIA_SEM_DESCRICAO_SHOPEE`'s opening — the `sem-descricao` pendência. */
+const PENDENCIA_SEM_DESCRICAO = /O anúncio não tem descrição/;
+/** `FRASE_RASCUNHO_NOVO_SHOPEE` — a draft opened here and not saved yet. */
+const FRASE_RASCUNHO_NOVO = 'Novo rascunho (ainda não salvo).';
+/** `TITULO_SEGUNDO_ANUNCIO_SHOPEE` — the second-listing confirmation's title. */
+const TITULO_SEGUNDO_ANUNCIO = 'Criar outro anúncio nesta conta?';
+/** `ROTULO_CONFIRMAR_SEGUNDO_ANUNCIO_SHOPEE` — its confirming button. */
+const ROTULO_CONFIRMAR_SEGUNDO_ANUNCIO = 'Criar rascunho mesmo assim';
+/** `FRASE_CONFIRMAR_DESCARTE_SHOPEE` — the discard confirmation of a saved draft. */
+const FRASE_CONFIRMAR_DESCARTE = 'O rascunho será excluído. Nada foi publicado na Shopee.';
+/** `FRASE_RASCUNHO_CRIADO_SHOPEE` / `…_SALVO_…` / `…_DESCARTADO_…` — the three 2xx toasts. */
+const TOAST_RASCUNHO_CRIADO = 'Rascunho criado.';
+const TOAST_RASCUNHO_SALVO = 'Rascunho salvo.';
+const TOAST_RASCUNHO_DESCARTADO = 'Rascunho descartado.';
+/**
+ * The sentence a draft link showed BEFORE the editor existed (P10 removed it
+ * with its constant). Asserted absent: the draft block is the editor now.
+ */
+const FRASE_PRIMEIRA_PUBLICACAO_REMOVIDA =
+  'Primeira publicação: chega na etapa de autoria do anúncio.';
 
 type Resposta = { readonly status: number; readonly corpo: unknown };
 
@@ -66,6 +116,12 @@ function corpoDaChamada(corpo: string | null): Record<string, unknown> | null {
     if (err instanceof SyntaxError) return { corpoNaoJson: corpo };
     throw err;
   }
+}
+
+/** A string member of a request body, or `''` (which no assertion of this spec expects). */
+function textoDoCorpo(corpo: Record<string, unknown> | null, chave: string): string {
+  const valor = corpo?.[chave];
+  return typeof valor === 'string' ? valor : '';
 }
 
 /**
@@ -138,6 +194,43 @@ function recusaDaPublicacao(
   };
 }
 
+/**
+ * The draft create's 201 — `{linkDocId, criado: true}`, the answer of the
+ * draft route for a draft it created — typed by the shared answer schema's
+ * type, so the stub cannot drift from what the tab parses.
+ */
+function respostaDoRascunhoCriado(
+  corpo: Record<string, unknown> | null,
+): RespostaCriarRascunhoShopee {
+  return { linkDocId: textoDoCorpo(corpo, 'linkDocId'), criado: true };
+}
+
+/**
+ * The draft edit's 200 — the fields it WROTE: here, every field the request's
+ * `patch` named (the stub stores nothing, and nothing differs from a stub).
+ * Read through the shared campo schema, so an unknown key is never echoed.
+ */
+function respostaDoRascunhoAtualizado(
+  corpo: Record<string, unknown> | null,
+): RespostaAtualizarRascunhoShopee {
+  const patch = corpo?.patch;
+  const gravados: CampoRascunhoShopee[] =
+    typeof patch === 'object' && patch !== null
+      ? Object.keys(patch).flatMap((chave) => {
+          const lido = campoRascunhoShopeeSchema.safeParse(chave);
+          return lido.success ? [lido.data] : [];
+        })
+      : [];
+  return { linkDocId: textoDoCorpo(corpo, 'linkDocId'), gravados };
+}
+
+/** The draft discard's 200 for a draft with no uncertain create behind it. */
+function respostaDoRascunhoDescartado(
+  corpo: Record<string, unknown> | null,
+): RespostaDescartarRascunhoShopee {
+  return { linkDocId: textoDoCorpo(corpo, 'linkDocId'), descartado: true, criacaoIncerta: false };
+}
+
 /** The apps/shopee routes this spec answers, by path under {@link PREFIXO_ROTAS}. */
 function rotasComStub(
   kitRemovido: string,
@@ -145,6 +238,17 @@ function rotasComStub(
   return new Map([
     ['anuncio-status', (corpo) => ({ status: 200, corpo: respostaDoStatus(corpo) })],
     ['publicar', (corpo) => ({ status: 422, corpo: recusaDaPublicacao(corpo, kitRemovido) })],
+    // The three draft routes (#1911 P10). Answered 2xx and writing NOTHING, so
+    // the seeded draft stays exactly as seeded for every later test.
+    ['rascunho', (corpo) => ({ status: 201, corpo: respostaDoRascunhoCriado(corpo) })],
+    [
+      'rascunho/atualizar',
+      (corpo) => ({ status: 200, corpo: respostaDoRascunhoAtualizado(corpo) }),
+    ],
+    [
+      'rascunho/descartar',
+      (corpo) => ({ status: 200, corpo: respostaDoRascunhoDescartado(corpo) }),
+    ],
   ]);
 }
 
@@ -191,9 +295,28 @@ async function instalarStubsShopee(page: Page, kitRemovido: string): Promise<Stu
   return stubs;
 }
 
+/** The prefix of a draft editor's root test id; the rest is the draft's link doc id. */
+const RAIZ_DO_RASCUNHO = 'shopee-rascunho-';
+
+/**
+ * The link doc id of the ONE draft editor in `painel` holding a "Salvar
+ * rascunho" button — read off its root's test id. Its two pickers carry test
+ * ids under the same prefix, but neither holds that button, so only the root
+ * matches.
+ */
+async function idDoUnicoRascunho(painel: Locator): Promise<string> {
+  const raiz = painel.locator(`[data-testid^="${RAIZ_DO_RASCUNHO}"]`).filter({
+    has: painel.page().getByRole('button', { name: 'Salvar rascunho', exact: true }),
+  });
+  const testId = (await raiz.getAttribute('data-testid')) ?? '';
+  return testId.slice(RAIZ_DO_RASCUNHO.length);
+}
+
 test.describe.serial('Produto Shopee tab e2e — listing state, actions and the native kit', () => {
   const prefix = e2ePrefix('shpaba');
   const conta = `${prefix}-001`;
+  /** The second conta: it holds ONE removed listing of the produto and nothing else. */
+  const contaSoRemovido = `${prefix}-002`;
   // Deterministic (mirrors `seedProdutoShopeeVinculado`) so afterAll can always
   // sweep the link SUBCOLLECTION even when beforeAll dies mid-way: the
   // nome-prefix sweep only reaches the parent doc, and Firestore never cascades.
@@ -202,20 +325,27 @@ test.describe.serial('Produto Shopee tab e2e — listing state, actions and the 
     ativo: `${prefix}-ativo`,
     kitRemovido: `${prefix}-kit-removido`,
     rascunho: `${prefix}-rascunho`,
+    // Mirrors `seedEditorRascunhoShopee` — on `contaSoRemovido`.
+    removido: `${prefix}-removido`,
   };
+  /** The seeded draft's stored title — every edit's baseline. */
+  const tituloGuardado = `${prefix}-rascunho`;
 
   test.beforeAll(async ({ browser }) => {
     // Compiling cold routes can outlast the default 60s hook budget.
     test.setTimeout(240_000);
     await Promise.all([
-      // The link seed stamps the conta's `shop_id`, so the conta comes first.
-      seedShopeeFixtures(prefix, 1).then(() => seedProdutoShopeeVinculado(prefix, conta)),
+      // The link seed stamps the conta's `shop_id`, so the contas come first.
+      seedShopeeFixtures(prefix, 2)
+        .then(() => seedProdutoShopeeVinculado(prefix, conta))
+        .then(() => seedEditorRascunhoShopee(prefix, contaSoRemovido)),
       warmRoutes(browser, ['/produtos/__aquecimento__/editar']),
     ]);
   });
 
   test.afterAll(async () => {
     await cleanupProdutoSubcollection(produtoId, 'prodshopee');
+    await cleanupProdutoSubcollection(produtoId, 'extraData');
     await cleanupByNamePrefix('produtos', prefix);
     await cleanupShopeeFixtures(prefix);
   });
@@ -305,7 +435,7 @@ test.describe.serial('Produto Shopee tab e2e — listing state, actions and the 
     expect(stubs.semStub, 'Shopee routes this spec does not stub').toEqual([]);
   });
 
-  test('shows no Publicar on a draft link, only where a first publish will come from', async ({
+  test('edits a draft link with its own buttons and pendências, and offers no Publicar on it', async ({
     page,
   }) => {
     const stubs = await instalarStubsShopee(page, links.kitRemovido);
@@ -320,11 +450,30 @@ test.describe.serial('Produto Shopee tab e2e — listing state, actions and the 
         .getByRole('button', { name: 'Republicar', exact: true }),
     ).toBeVisible({ timeout: 30_000 });
 
+    // The draft block IS the editor now, with its own buttons; nothing differs
+    // from what is stored yet, so there is nothing to save.
     const rascunho = painel.getByTestId(`shopee-anuncio-${links.rascunho}`);
-    await expect(
-      rascunho.getByText('Primeira publicação: chega na etapa de autoria do anúncio.'),
-    ).toBeVisible();
+    const editor = rascunho.getByTestId(`${RAIZ_DO_RASCUNHO}${links.rascunho}`);
+    await expect(editor.getByRole('button', { name: 'Descartar', exact: true })).toBeVisible({
+      timeout: 30_000,
+    });
+    const salvar = editor.getByRole('button', { name: 'Salvar rascunho', exact: true });
+    await expect(salvar).toBeVisible();
+    await expect(salvar).toBeDisabled();
+    await expect(rascunho.getByText(FRASE_PRIMEIRA_PUBLICACAO_REMOVIDA)).toHaveCount(0);
+
+    // The seeded draft has neither a category nor a brand: both pendências,
+    // in every test that opens this conta.
+    await expect(editor.getByText(PENDENCIA_CATEGORIA).first()).toBeVisible();
+    await expect(editor.getByText(PENDENCIA_MARCA).first()).toBeVisible();
+    // Its description is empty, but the produto's STORED Descrição stands in
+    // for it — the document the publish reads — so no `sem-descricao`.
+    await expect(editor.getByText(PENDENCIA_SEM_DESCRICAO)).toHaveCount(0);
+
+    // ⚠️ Still no Publicar on a draft block: the first publish of a draft is
+    // #1911 P11's, which inverts this line.
     await expect(rascunho.getByRole('button', { name: /Publicar/ })).toHaveCount(0);
+    expect(stubs.chamadas).toEqual([]);
     expect(stubs.semStub, 'Shopee routes this spec does not stub').toEqual([]);
   });
 
@@ -408,6 +557,197 @@ test.describe.serial('Produto Shopee tab e2e — listing state, actions and the 
     // The state the tab reads from Firestore is still there.
     await expect(ativo.getByText('Ativo', { exact: true })).toBeVisible();
     await expect(painel.getByText(/Erro ao carregar os anúncios da Shopee/)).toHaveCount(0);
+    expect(stubs.semStub, 'Shopee routes this spec does not stub').toEqual([]);
+  });
+
+  test("saves only a draft's edited title, with the stored title as its baseline", async ({
+    page,
+  }) => {
+    const stubs = await instalarStubsShopee(page, links.kitRemovido);
+    await page.goto(`/produtos/${produtoId}/editar`);
+    const painel = await abrirConta(page, conta);
+
+    const editor = painel.getByTestId(`${RAIZ_DO_RASCUNHO}${links.rascunho}`);
+    const titulo = editor.getByRole('textbox', { name: /^Título/ });
+    await expect(titulo).toHaveValue(tituloGuardado, { timeout: 30_000 });
+    const tituloEditado = `${tituloGuardado} editado`;
+
+    // The field takes typing once the links listener answered FROM THE SERVER
+    // (a cached copy is never an edit's baseline) — `fill` waits for that.
+    await titulo.fill(tituloEditado, { timeout: 30_000 });
+    // An undo puts the stored title back and sends nothing.
+    await editor.getByRole('button', { name: 'Desfazer alterações', exact: true }).click();
+    await expect(titulo).toHaveValue(tituloGuardado);
+
+    await titulo.fill(tituloEditado);
+    // Nothing leaves the browser before the operator saves.
+    expect(stubs.chamadas).toEqual([]);
+    await editor.getByRole('button', { name: 'Salvar rascunho', exact: true }).click();
+
+    // ONLY the edited field, and beside it the value the operator SAW stored —
+    // never the description, category or brand nobody touched.
+    await expect
+      .poll(() => stubs.chamadas, { timeout: 30_000 })
+      .toEqual([
+        {
+          metodo: 'POST',
+          rota: 'rascunho/atualizar',
+          corpo: {
+            integracaoId: conta,
+            produtoId,
+            linkDocId: links.rascunho,
+            base: { item_name: tituloGuardado },
+            patch: { item_name: tituloEditado },
+          },
+        },
+      ]);
+    await expect(page.getByText(TOAST_RASCUNHO_SALVO, { exact: true })).toBeVisible({
+      timeout: 30_000,
+    });
+    expect(stubs.semStub, 'Shopee routes this spec does not stub').toEqual([]);
+  });
+
+  test('discards a draft after a confirmation, sending every stored field as its baseline', async ({
+    page,
+  }) => {
+    const stubs = await instalarStubsShopee(page, links.kitRemovido);
+    await page.goto(`/produtos/${produtoId}/editar`);
+    const painel = await abrirConta(page, conta);
+
+    const editor = painel.getByTestId(`${RAIZ_DO_RASCUNHO}${links.rascunho}`);
+    const descartar = editor.getByRole('button', { name: 'Descartar', exact: true });
+    await descartar.click({ timeout: 30_000 });
+    const dialogo = page.getByRole('dialog').filter({ hasText: FRASE_CONFIRMAR_DESCARTE });
+    await expect(dialogo).toBeVisible();
+    // A cancel sends nothing.
+    await dialogo.getByRole('button', { name: 'Cancelar' }).click();
+    await expect(dialogo).toHaveCount(0);
+    expect(stubs.chamadas).toEqual([]);
+
+    await descartar.click();
+    await expect(dialogo).toBeVisible();
+    // Nothing leaves the browser before the operator confirms.
+    expect(stubs.chamadas).toEqual([]);
+    await dialogo.getByRole('button', { name: /^Descartar/ }).click();
+
+    // ALL FIVE stored fields, as stored — `null` included — so a draft edited
+    // meanwhile is refused instead of deleted unseen; never `logistic_info`,
+    // and no Seller-Centre attestation for a draft with no uncertain create.
+    await expect
+      .poll(() => stubs.chamadas, { timeout: 30_000 })
+      .toEqual([
+        {
+          metodo: 'POST',
+          rota: 'rascunho/descartar',
+          corpo: {
+            integracaoId: conta,
+            produtoId,
+            linkDocId: links.rascunho,
+            base: {
+              item_name: tituloGuardado,
+              description: null,
+              category_id: null,
+              marca: null,
+              attributes: null,
+            },
+          },
+        },
+      ]);
+    await expect(page.getByText(TOAST_RASCUNHO_DESCARTADO, { exact: true })).toBeVisible({
+      timeout: 30_000,
+    });
+    expect(stubs.semStub, 'Shopee routes this spec does not stub').toEqual([]);
+  });
+
+  test('opens a new draft on a conta holding only a removed listing and writes it only on Salvar rascunho', async ({
+    page,
+  }) => {
+    const stubs = await instalarStubsShopee(page, links.kitRemovido);
+    await page.goto(`/produtos/${produtoId}/editar`);
+    const painel = await abrirConta(page, contaSoRemovido);
+
+    // Positive first: the conta's one listing rendered — removed, so it makes
+    // no new listing here a SECOND one.
+    await expect(
+      painel.getByTestId(`shopee-anuncio-${links.removido}`).getByText('Removido', { exact: true }),
+    ).toBeVisible({ timeout: 30_000 });
+    await painel.getByRole('button', { name: 'Novo anúncio', exact: true }).click();
+
+    // The new draft opens at once: no second-listing confirmation was asked.
+    await expect(
+      painel.getByRole('button', { name: 'Salvar rascunho', exact: true }),
+    ).toBeVisible();
+    await expect(page.getByRole('dialog', { name: TITULO_SEGUNDO_ANUNCIO })).toHaveCount(0);
+    const novoId = await idDoUnicoRascunho(painel);
+    // Minted here — a Firestore-style id, the only shape the create accepts.
+    expect(novoId).toMatch(PADRAO_ID_RASCUNHO_SHOPEE);
+    const editor = painel.getByTestId(`${RAIZ_DO_RASCUNHO}${novoId}`);
+    await expect(editor.getByText(FRASE_RASCUNHO_NOVO)).toBeVisible();
+    // Prefilled with the produto's name; no category, no brand chosen.
+    await expect(editor.getByRole('textbox', { name: /^Título/ })).toHaveValue(produtoId);
+    await expect(editor.getByText(PENDENCIA_CATEGORIA).first()).toBeVisible();
+    await expect(editor.getByText(PENDENCIA_MARCA).first()).toBeVisible();
+    // Opening it wrote nothing.
+    expect(stubs.chamadas).toEqual([]);
+
+    await editor.getByRole('button', { name: 'Salvar rascunho', exact: true }).click();
+    // The create names EVERY field (`attributes: null` on a new draft) at the
+    // id minted when the draft was opened — and no second-listing flag, since
+    // nothing was confirmed.
+    await expect
+      .poll(() => stubs.chamadas, { timeout: 30_000 })
+      .toEqual([
+        {
+          metodo: 'POST',
+          rota: 'rascunho',
+          corpo: {
+            integracaoId: contaSoRemovido,
+            produtoId,
+            linkDocId: novoId,
+            conteudo: {
+              item_name: produtoId,
+              description: null,
+              category_id: null,
+              marca: null,
+              attributes: null,
+            },
+          },
+        },
+      ]);
+    await expect(page.getByText(TOAST_RASCUNHO_CRIADO, { exact: true })).toBeVisible({
+      timeout: 30_000,
+    });
+    expect(stubs.semStub, 'Shopee routes this spec does not stub').toEqual([]);
+  });
+
+  test('asks before a second listing on a conta that already holds one, and a cancel opens nothing', async ({
+    page,
+  }) => {
+    const stubs = await instalarStubsShopee(page, links.kitRemovido);
+    await page.goto(`/produtos/${produtoId}/editar`);
+    const painel = await abrirConta(page, conta);
+
+    // Positive first: the conta's stored draft editor rendered.
+    const salvarRascunho = painel.getByRole('button', { name: 'Salvar rascunho', exact: true });
+    await expect(salvarRascunho).toHaveCount(1, { timeout: 30_000 });
+    await painel.getByRole('button', { name: 'Novo anúncio', exact: true }).click();
+
+    const dialogo = page.getByRole('dialog', { name: TITULO_SEGUNDO_ANUNCIO });
+    await expect(dialogo).toBeVisible();
+    // The live listing and the draft count; the removed kit does not.
+    await expect(
+      dialogo.getByText(/Esta conta já tem 2 anúncio\(s\) deste produto, incluindo um rascunho\./),
+    ).toBeVisible();
+    await expect(
+      dialogo.getByRole('button', { name: ROTULO_CONFIRMAR_SEGUNDO_ANUNCIO, exact: true }),
+    ).toBeVisible();
+    await dialogo.getByRole('button', { name: 'Cancelar' }).click();
+    await expect(dialogo).toHaveCount(0);
+
+    // No new draft opened: the stored draft's editor is still the only one.
+    await expect(salvarRascunho).toHaveCount(1);
+    await expect(painel.getByText(FRASE_RASCUNHO_NOVO)).toHaveCount(0);
+    expect(stubs.chamadas).toEqual([]);
     expect(stubs.semStub, 'Shopee routes this spec does not stub').toEqual([]);
   });
 });
