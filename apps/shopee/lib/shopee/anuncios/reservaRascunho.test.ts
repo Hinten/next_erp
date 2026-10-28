@@ -8,6 +8,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  SHOPEE_ITEM_BASE_INFO_MAX_IDS,
   ShopeeError,
   shopeeItemBaseInfoPayloadSchema,
   shopeeItemBaseInfoSchema,
@@ -24,13 +25,17 @@ import {
 } from '@delfrance/schemas';
 
 import { FIXTURE_ITEM_BASE_INFO_SG_KIT, lerFixture } from '../fixtures/wireCorpus';
-import { FakeDb, asDb } from '../testing/fakeDb';
+import { BuscaForaDoPrazoShopeeError } from '../kits/localizarKitPorSku';
+import { FakeDb, asDb, grpc } from '../testing/fakeDb';
 import { MOTIVO_PUBLICACAO_BLOQUEADA, ShopeePublishBlockedError } from './errosPublicacao';
 import {
   ConflitoDeRascunhoShopeeError,
   TENTATIVAS_DA_TRAVA,
+  buscaNoPrazoDoEnvio,
   conferirTravaAntesDoEnvio,
+  dentroDoPrazoDeEnvio,
   liberarTravaShopee,
+  liberarTravaShopeeSemSubstituirErro,
   portaoDeEnvio,
   registrarCriacaoIncerta,
   reivindicarRascunhoShopee,
@@ -70,8 +75,18 @@ function rascunho(extra: Record<string, unknown> = {}): Record<string, unknown> 
   };
 }
 
+/** Another run's lock, NOT stamped: that run has not (or never) reached the send. */
 function travaAlheia(expiraEm: number, token = 'token-de-outra-execucao') {
   return { desde: expiraEm - PUBLICACAO_EM_CURSO_SHOPEE_TTL_MS, expiraEm, token };
+}
+
+/**
+ * Another run's lock as its PRE-SEND re-read left it — stamped with the SKU
+ * the create sends: a send may be in flight, so past `expiraEm` it serves the
+ * grace and then reads `incerta` (batch-A review).
+ */
+function travaAlheiaCarimbada(expiraEm: number, sku = 'SKU-1') {
+  return { ...travaAlheia(expiraEm), sku };
 }
 
 function controles(over: Partial<ControlesDaPublicacaoAoVivo> = {}): ControlesDaPublicacaoAoVivo {
@@ -335,7 +350,8 @@ describe('reservarRascunhoShopee — a trava', () => {
       ],
     ] as const)('%s', async (_nome, agora, code, aguardarMs) => {
       const db = new FakeDb();
-      db.seed(CAMINHO, rascunho({ publicacaoEmCurso: travaAlheia(EXPIRA) }));
+      // STAMPED: the grace is for a send that may be in flight.
+      db.seed(CAMINHO, rascunho({ publicacaoEmCurso: travaAlheiaCarimbada(EXPIRA) }));
 
       const err = await conflitoDe(reservar(asDb(db), ALVO, controles({ agora: () => agora })));
 
@@ -346,11 +362,12 @@ describe('reservarRascunhoShopee — a trava', () => {
 
     it('expiraEm + 240 000 — incerta: TOMADA, e a tomada CARREGA o desde da trava velha para criacaoIncertaDesde (P5)', async () => {
       const db = new FakeDb();
-      const velha = travaAlheia(EXPIRA);
+      const velha = travaAlheiaCarimbada(EXPIRA);
       db.seed(CAMINHO, rascunho({ publicacaoEmCurso: velha }));
       const agora = EXPIRA + AGUARDAR_ANUNCIO_INCERTO_SHOPEE_MS;
 
-      // No produto seeded ⇒ no SKU ⇒ the look-up refuses before any Shopee call.
+      // No produto seeded ⇒ the produto has no SKU while the attempt SENT one ⇒
+      // the look-up refuses (the SKU moved) before any Shopee call.
       const err = await reservar(asDb(db), ALVO, controles({ agora: () => agora })).catch(
         (e: unknown) => e,
       );
@@ -360,9 +377,68 @@ describe('reservarRascunhoShopee — a trava', () => {
       expect(tomada).toMatchObject({
         publicacaoEmCurso: { desde: agora, expiraEm: agora + PUBLICACAO_EM_CURSO_SHOPEE_TTL_MS },
         criacaoIncertaDesde: velha.desde,
+        criacaoIncertaSku: velha.sku,
       });
       // Released, the RECORD kept: the draft still reads `incerta`, never `livre`.
       expect(doc(db)).toMatchObject({ publicacaoEmCurso: null, criacaoIncertaDesde: velha.desde });
+    });
+
+    describe('⛔ a trava que NUNCA foi carimbada (batch-A review, 2026-10-28): o run morreu antes do envio', () => {
+      it('vencida há 1 ms, sem registro ⇒ LIVRE: TOMADA como uma trava nova — SEM registro, SEM busca, ZERO chamadas', async () => {
+        const db = new FakeDb();
+        db.seed(CAMINHO, rascunho({ publicacaoEmCurso: travaAlheia(EXPIRA) }));
+
+        // `buscaSemShopee`: any Shopee call throws.
+        const r = await reservar(asDb(db), ALVO, controles({ agora: () => EXPIRA }));
+
+        expect(r).toMatchObject({ tipo: 'travada', skuBuscadoNaReserva: null });
+        const [tomada, ...resto] = escritasEm(db);
+        expect(resto).toEqual([]);
+        expect(tomada).toEqual({
+          publicacaoEmCurso: {
+            desde: EXPIRA,
+            expiraEm: EXPIRA + PUBLICACAO_EM_CURSO_SHOPEE_TTL_MS,
+            token: expect.any(String) as unknown,
+          },
+        });
+        expect(doc(db)).not.toHaveProperty('criacaoIncertaDesde');
+      });
+
+      it('⛔ NEAR-MISS: ainda VIVA (expiraEm − 1) ⇒ 409 EM_ANDAMENTO — o run pode estar a caminho do envio', async () => {
+        const db = new FakeDb();
+        db.seed(CAMINHO, rascunho({ publicacaoEmCurso: travaAlheia(EXPIRA) }));
+        const err = await conflitoDe(
+          reservar(asDb(db), ALVO, controles({ agora: () => EXPIRA - 1 })),
+        );
+        expect(err.code).toBe(CODIGO_RASCUNHO_SHOPEE.publicacaoEmAndamento);
+        expect(err.aguardarMs).toBe(1);
+        expect(db.writes).toEqual([]);
+      });
+
+      it('⛔ NEAR-MISS: a mesma trava sem carimbo num rascunho COM registro ⇒ a tomada incerta de sempre: o registro (o MAIS ANTIGO) é carregado', async () => {
+        const db = new FakeDb();
+        const registro = EXPIRA - 3_600_000;
+        db.seed(
+          CAMINHO,
+          rascunho({
+            publicacaoEmCurso: travaAlheia(EXPIRA),
+            criacaoIncertaDesde: registro,
+            criacaoIncertaSku: 'SKU-1',
+          }),
+        );
+
+        // No produto ⇒ the SKU moved since the attempt ⇒ refused with zero calls.
+        const err = await reservar(asDb(db), ALVO, controles({ agora: () => EXPIRA })).catch(
+          (e: unknown) => e,
+        );
+
+        expect(err).toBeInstanceOf(ShopeePublishBlockedError);
+        expect(escritasEm(db)[0]).toMatchObject({
+          criacaoIncertaDesde: registro,
+          criacaoIncertaSku: 'SKU-1',
+        });
+        expect(doc(db)).toMatchObject({ publicacaoEmCurso: null, criacaoIncertaDesde: registro });
+      });
     });
   });
 
@@ -597,6 +673,68 @@ describe('reservarRascunhoShopee — o segundo anúncio (D15, K1-4)', () => {
     ]);
     expect(doc(db, CAMINHO_IRMAO)?.publicacaoEmCurso).toBeNull();
   });
+
+  describe('(#2050) a liberação que FALHA nunca troca o erro que a reserva está devolvendo', () => {
+    it('o update da liberação falha com UNAVAILABLE (gRPC 14) ⇒ o 409 CONTA_JA_TEM_ANUNCIO ORIGINAL chega ao chamador; a nossa trava FICA (expira)', async () => {
+      const db = new FakeDb();
+      db.seed(CAMINHO, rascunho());
+      db.seed(CAMINHO_IRMAO, rascunho());
+      // Armed AFTER our lock lands — the scan runs right after it — so only the
+      // RELEASE's update fails.
+      const falhando = antesDaVarredura(db, () => {
+        db.falhasDeUpdate.set(CAMINHO, grpc(14, 'UNAVAILABLE'));
+        return Promise.resolve();
+      });
+
+      const err = await conflitoDe(reservar(asDb(falhando), ALVO, controles()));
+
+      expect(err.code).toBe(CODIGO_RASCUNHO_SHOPEE.contaJaTemAnuncio);
+      expect(err.vinculos).toEqual([{ linkDocId: IRMAO, itemId: null, rascunho: true }]);
+      // The lock document is exactly what the reservation wrote: nothing cleared.
+      const travaGravada = escritasEm(db)[0]?.publicacaoEmCurso;
+      expect(travaGravada).toMatchObject({ desde: AGORA });
+      expect(doc(db)?.publicacaoEmCurso).toEqual(travaGravada);
+      expect(escritasEm(db)).toHaveLength(1);
+      expect(avisos.some((a) => String(a[0]).includes('a liberação da trava falhou'))).toBe(true);
+    });
+
+    it('a LEITURA dos irmãos falha E a liberação falha ⇒ o erro da LEITURA (o primeiro) é o que sobe, por identidade', async () => {
+      const db = new FakeDb();
+      db.seed(CAMINHO, rascunho());
+      const daLeitura = grpc(4, 'DEADLINE_EXCEEDED');
+      const falhando = antesDaVarredura(db, () => {
+        db.falhasDeUpdate.set(CAMINHO, grpc(14, 'UNAVAILABLE'));
+        return Promise.reject(daLeitura);
+      });
+
+      const err = await reservar(asDb(falhando), ALVO, controles()).then(
+        () => null,
+        (e: unknown) => e,
+      );
+
+      expect(err).toBe(daLeitura);
+      expect(doc(db)?.publicacaoEmCurso).toMatchObject({ desde: AGORA });
+    });
+
+    it('⛔ quase-par: um erro NÃO-gRPC da liberação (um defeito) SOBE — ele é o erro lançado, nunca engolido', async () => {
+      for (const defeito of [new TypeError('defeito'), new Error('sem código')]) {
+        const db = new FakeDb();
+        db.seed(CAMINHO, rascunho());
+        db.seed(CAMINHO_IRMAO, rascunho());
+        const falhando = antesDaVarredura(db, () => {
+          db.falhasDeUpdate.set(CAMINHO, defeito);
+          return Promise.resolve();
+        });
+
+        const err = await reservar(asDb(falhando), ALVO, controles()).then(
+          () => null,
+          (e: unknown) => e,
+        );
+
+        expect(err, defeito.message).toBe(defeito);
+      }
+    });
+  });
 });
 
 /* -------------------------------------------------------------------------- */
@@ -766,6 +904,116 @@ describe('portaoDeEnvio — agora() + MARGEM < min(expiraEm, prazoDaRequisicao)'
     expect(() => portaoDeEnvio(RASCUNHO, trava, c)).not.toThrow();
     t = EXPIRA;
     expect(() => portaoDeEnvio(RASCUNHO, trava, c)).toThrow(ConflitoDeRascunhoShopeeError);
+  });
+});
+
+describe('dentroDoPrazoDeEnvio — a condição do portão, UMA cópia (batch-A review)', () => {
+  const EXPIRA = AGORA + PUBLICACAO_EM_CURSO_SHOPEE_TTL_MS;
+  const trava = { expiraEm: EXPIRA };
+  const em = (agora: number, prazo: number | null): boolean =>
+    dentroDoPrazoDeEnvio(trava, { agora: () => agora, prazoDaRequisicao: prazo });
+
+  it('responde EXATAMENTE o que o portão decide, nas mesmas fronteiras (o portão a chama)', () => {
+    const prazo = AGORA + 180_000;
+    const casos: readonly (readonly [number, number | null])[] = [
+      [EXPIRA - MARGEM_ENVIO_SHOPEE_MS - 1, null],
+      [EXPIRA - MARGEM_ENVIO_SHOPEE_MS, null],
+      [prazo - MARGEM_ENVIO_SHOPEE_MS - 1, prazo],
+      [prazo - MARGEM_ENVIO_SHOPEE_MS, prazo],
+      [EXPIRA - MARGEM_ENVIO_SHOPEE_MS - 1, EXPIRA + 60_000],
+      [EXPIRA - MARGEM_ENVIO_SHOPEE_MS, EXPIRA + 60_000],
+      [Number.NaN, null],
+    ];
+    for (const [agora, p] of casos) {
+      let passou = true;
+      try {
+        portaoDeEnvio(RASCUNHO, trava, { agora: () => agora, prazoDaRequisicao: p });
+      } catch (err) {
+        if (!(err instanceof ConflitoDeRascunhoShopeeError)) throw err;
+        passou = false;
+      }
+      expect(em(agora, p), `${String(agora)} / ${String(p)}`).toBe(passou);
+    }
+  });
+
+  it('⛔ a fronteira é ESTRITA: agora + MARGEM == limite ⇒ false; um ms antes ⇒ true', () => {
+    expect(em(EXPIRA - MARGEM_ENVIO_SHOPEE_MS, null)).toBe(false);
+    expect(em(EXPIRA - MARGEM_ENVIO_SHOPEE_MS - 1, null)).toBe(true);
+  });
+
+  it('⚠️ um relógio NaN responde false — parar, nunca seguir', () => {
+    expect(em(Number.NaN, null)).toBe(false);
+    expect(em(Number.NaN, AGORA + 180_000)).toBe(false);
+  });
+
+  it('lê o relógio uma vez por chamada, na hora', () => {
+    let leituras = 0;
+    let t = AGORA;
+    const c = {
+      agora: () => {
+        leituras += 1;
+        return t;
+      },
+      prazoDaRequisicao: null,
+    };
+    expect(dentroDoPrazoDeEnvio(trava, c)).toBe(true);
+    t = EXPIRA;
+    expect(dentroDoPrazoDeEnvio(trava, c)).toBe(false);
+    expect(leituras).toBe(2);
+  });
+});
+
+describe('buscaNoPrazoDoEnvio — a busca sob o prazo do portão (batch-A review)', () => {
+  const EXPIRA = AGORA + PUBLICACAO_EM_CURSO_SHOPEE_TTL_MS;
+  const trava = { expiraEm: EXPIRA };
+
+  it('entrega à busca o predicado do portão sobre ESTA trava e ESTES controles', async () => {
+    let t = AGORA;
+    const respostas: boolean[] = [];
+    const r = await buscaNoPrazoDoEnvio(
+      RASCUNHO,
+      trava,
+      { agora: () => t, prazoDaRequisicao: AGORA + 100_000 },
+      (podeContinuar) => {
+        respostas.push(podeContinuar());
+        t = AGORA + 100_000 - MARGEM_ENVIO_SHOPEE_MS - 1;
+        respostas.push(podeContinuar());
+        t = AGORA + 100_000 - MARGEM_ENVIO_SHOPEE_MS;
+        respostas.push(podeContinuar());
+        return Promise.resolve('resposta');
+      },
+    );
+    expect(r).toBe('resposta');
+    expect(respostas).toEqual([true, true, false]);
+  });
+
+  it('o CORTE da busca vira o 409 PUBLICACAO_EXPIRADA do portão — a frase diz qual prazo, e que nada foi enviado', async () => {
+    const corte = (prazo: number | null): Promise<ConflitoDeRascunhoShopeeError> =>
+      conflitoDe(
+        buscaNoPrazoDoEnvio(RASCUNHO, trava, { agora: () => AGORA, prazoDaRequisicao: prazo }, () =>
+          Promise.reject(new BuscaForaDoPrazoShopeeError('get_item_list')),
+        ),
+      );
+    const daRota = await corte(AGORA + 180_000);
+    expect(daRota.code).toBe(CODIGO_RASCUNHO_SHOPEE.publicacaoExpirada);
+    expect(daRota.linkDocId).toBe(RASCUNHO);
+    expect(daRota.message).toContain('a busca não coube no tempo desta requisição');
+    expect(daRota.message).toContain('pelo CLI');
+    expect(daRota.message).toContain('Nada foi enviado');
+    const doCli = await corte(null);
+    expect(doCli.code).toBe(CODIGO_RASCUNHO_SHOPEE.publicacaoExpirada);
+    expect(doCli.message).toContain('a busca não coube no tempo da trava');
+    expect(doCli.message).not.toContain('pelo CLI');
+  });
+
+  it('⛔ quase-par: qualquer OUTRO erro da busca sobe intacto, por identidade (regra 6)', async () => {
+    for (const falha of [new ShopeeError('a busca caiu'), new TypeError('bug'), grpc(14, 'x')]) {
+      await expect(
+        buscaNoPrazoDoEnvio(RASCUNHO, trava, { agora: () => AGORA, prazoDaRequisicao: null }, () =>
+          Promise.reject(falha),
+        ),
+      ).rejects.toBe(falha);
+    }
   });
 });
 
@@ -971,6 +1219,114 @@ describe('liberarTravaShopee', () => {
     db.falhasDeUpdate.set(CAMINHO, Object.assign(new Error('UNAVAILABLE'), { code: 14 }));
 
     await expect(liberarTravaShopee(asDb(db), r)).rejects.toMatchObject({ code: 14 });
+  });
+});
+
+describe('liberarTravaShopeeSemSubstituirErro — para quem JÁ está devolvendo um erro (#2050)', () => {
+  it('a liberação que dá certo é a de sempre: a trava null (com o carimbo, quando dado) num update só', async () => {
+    const db = new FakeDb();
+    const r = reservaDe();
+    db.seed(CAMINHO, rascunho({ publicacaoEmCurso: travaDa(r) }));
+
+    await liberarTravaShopeeSemSubstituirErro(asDb(db), r, { ultimaModificacao: AGORA });
+
+    expect(db.patches).toEqual([
+      { path: CAMINHO, patch: { ultimaModificacao: AGORA, publicacaoEmCurso: null } },
+    ]);
+    expect(r.fase).toBe('encerrada');
+    expect(avisos).toEqual([]);
+  });
+
+  it('um erro gRPC do Firestore (UNAVAILABLE, DEADLINE_EXCEEDED…) é ENGOLIDO: resolve, a trava e o documento intactos, UMA linha de log com ids e o código — nunca a mensagem nem o carimbo', async () => {
+    for (const codigo of [4, 14]) {
+      avisos = [];
+      const db = new FakeDb();
+      const r = reservaDe();
+      db.seed(CAMINHO, rascunho({ publicacaoEmCurso: travaDa(r) }));
+      const antes = structuredClone(doc(db));
+      db.falhasDeUpdate.set(CAMINHO, grpc(codigo, 'corpo-da-mensagem-do-sdk'));
+
+      await expect(
+        liberarTravaShopeeSemSubstituirErro(asDb(db), r, {
+          falhaPublicacao: {
+            em: AGORA,
+            etapa: 'add_item',
+            erro: 'error_param',
+            mensagem: 'carimbo-que-nao-pode-vazar',
+            problemas: [],
+          },
+        }),
+      ).resolves.toBeUndefined();
+
+      expect(doc(db), String(codigo)).toEqual(antes);
+      expect(db.writes).toEqual([]);
+      expect(r.fase).toBe('encerrada');
+      expect(avisos, String(codigo)).toHaveLength(1);
+      expect(avisos[0]?.[1]).toEqual({
+        produtoId: PRODUTO,
+        linkDocId: RASCUNHO,
+        codigoGrpc: codigo,
+      });
+      expect(JSON.stringify(avisos)).not.toContain('corpo-da-mensagem-do-sdk');
+      expect(JSON.stringify(avisos)).not.toContain('carimbo-que-nao-pode-vazar');
+    }
+  });
+
+  it('QUALQUER status gRPC é engolido, não só os transitórios — NOT_FOUND (5, o rascunho apagado entre a leitura e o update), PERMISSION_DENIED (7) e as bordas 1 e 16: a regra é "o Firestore falhou", nunca "pode dar certo depois"', async () => {
+    for (const codigo of [1, 5, 7, 16]) {
+      avisos = [];
+      const db = new FakeDb();
+      const r = reservaDe();
+      db.seed(CAMINHO, rascunho({ publicacaoEmCurso: travaDa(r) }));
+      const antes = structuredClone(doc(db));
+      db.falhasDeUpdate.set(CAMINHO, grpc(codigo, 'nao-transitorio'));
+
+      await expect(
+        liberarTravaShopeeSemSubstituirErro(asDb(db), r),
+        String(codigo),
+      ).resolves.toBeUndefined();
+
+      expect(doc(db), String(codigo)).toEqual(antes);
+      expect(db.writes).toEqual([]);
+      expect(avisos, String(codigo)).toHaveLength(1);
+      expect(avisos[0]?.[1], String(codigo)).toEqual({
+        produtoId: PRODUTO,
+        linkDocId: RASCUNHO,
+        codigoGrpc: codigo,
+      });
+    }
+  });
+
+  it('⛔ quase-pares: o que NÃO é um status gRPC SOBE, por identidade — um TypeError, um Error sem código, um código em STRING (FirebaseError), um código fora de 1..16', async () => {
+    for (const defeito of [
+      new TypeError('defeito'),
+      new Error('sem código'),
+      Object.assign(new Error('functions'), { code: 'functions/unavailable' }),
+      Object.assign(new Error('fora'), { code: 17 }),
+    ]) {
+      const db = new FakeDb();
+      const r = reservaDe();
+      db.seed(CAMINHO, rascunho({ publicacaoEmCurso: travaDa(r) }));
+      db.falhasDeUpdate.set(CAMINHO, defeito);
+
+      const err = await liberarTravaShopeeSemSubstituirErro(asDb(db), r).then(
+        () => null,
+        (e: unknown) => e,
+      );
+
+      expect(err, defeito.message).toBe(defeito);
+    }
+  });
+
+  it('a trava de OUTRA execução continua intocada (o guarda do token é o mesmo)', async () => {
+    const db = new FakeDb();
+    const alheia = travaAlheia(AGORA + 10);
+    db.seed(CAMINHO, rascunho({ publicacaoEmCurso: alheia }));
+
+    await liberarTravaShopeeSemSubstituirErro(asDb(db), reservaDe(), { ultimaModificacao: AGORA });
+
+    expect(doc(db)?.publicacaoEmCurso).toEqual(alheia);
+    expect(db.writes).toEqual([]);
   });
 });
 
@@ -1304,6 +1660,167 @@ describe('reservarRascunhoShopee — um rascunho INCERTO (P5: a busca antes de q
 
       expect(r).toEqual({ tipo: 'adotada', itemId: ITEM_NOSSO });
       expect(doc(db)).toMatchObject({ criacaoIncertaDesde: null, criacaoIncertaSku: null });
+    });
+  });
+
+  describe('⏱️ a busca para ANTES do prazo da requisição (batch-A review, 2026-10-28)', () => {
+    /**
+     * A shop whose every Shopee call advances the route's clock by `passo` ms
+     * (1 by default; 0 = a constant clock), so with 1
+     * `prazoDaRequisicao = AGORA + MARGEM + k` lets exactly k calls through
+     * (the checkpoint before call k+1 reads `AGORA + k + MARGEM`, which is
+     * not `<` the deadline). `paginas[i]` is page i's rows; the base rows
+     * answer by id.
+     */
+    function lojaNoRelogio(
+      paginas: readonly (readonly Json[])[],
+      passo = 1,
+    ): {
+      readonly busca: BuscaDaCriacaoIncerta;
+      readonly ops: string[];
+      readonly relogio: { t: number };
+    } {
+      const ops: string[] = [];
+      const relogio = { t: AGORA };
+      const porId = new Map(paginas.flat().map((b) => [b.item_id as number, b]));
+      const client = {
+        getItemList: (p: { offset: number }) => {
+          ops.push('get_item_list');
+          relogio.t += passo;
+          const i = p.offset / 100;
+          const linhas = paginas[i] ?? [];
+          return Promise.resolve(
+            shopeeItemListPayloadSchema.parse({
+              item: linhas.map((b) => ({
+                item_id: b.item_id,
+                item_status: 'NORMAL',
+                update_time: DENTRO_S,
+                tag: { kit: false },
+              })),
+              total_count: porId.size,
+              has_next_page: i + 1 < paginas.length,
+              next_offset: i + 1 < paginas.length ? (i + 1) * 100 : null,
+              next: '',
+            }),
+          );
+        },
+        getItemBaseInfo: (p: { itemIds: readonly number[] }) => {
+          ops.push(`get_item_base_info:${String(p.itemIds.length)}`);
+          relogio.t += passo;
+          return Promise.resolve(
+            shopeeItemBaseInfoPayloadSchema.parse({
+              item_list: p.itemIds.map((id) => porId.get(id)).filter((b) => b !== undefined),
+            }),
+          );
+        },
+      } as unknown as ShopeeClient;
+      return { busca: { client, nowMs: AGORA }, ops, relogio };
+    }
+
+    /** The route's controls on THAT clock, with the request deadline `AGORA + MARGEM + k`. */
+    function noPrazo(relogio: { t: number }, k: number): ControlesDaPublicacaoAoVivo {
+      return controles({
+        agora: () => relogio.t,
+        prazoDaRequisicao: AGORA + MARGEM_ENVIO_SHOPEE_MS + k,
+      });
+    }
+
+    /** One definite hit (SKU equal, created in the window) FIRST, then `outros` rows of another SKU. */
+    function umAchadoE(outros: number): Json[] {
+      return [
+        baseDe(ITEM_NOSSO),
+        ...Array.from({ length: outros }, (_v, i) =>
+          baseDe(ITEM_NOSSO + 1_000 + i, { item_sku: 'OUTRO-SKU' }),
+        ),
+      ];
+    }
+
+    async function cortada(
+      db: FakeDb,
+      busca: BuscaDaCriacaoIncerta,
+      c: ControlesDaPublicacaoAoVivo,
+    ): Promise<ConflitoDeRascunhoShopeeError> {
+      const err = await conflitoDe(reservar(asDb(db), ALVO, c, busca));
+      expect(err.code).toBe(CODIGO_RASCUNHO_SHOPEE.publicacaoExpirada);
+      expect(err.message).toContain('a busca não coube no tempo desta requisição');
+      expect(err.message).toContain('Nada foi enviado');
+      // The lock handed back, the RECORD kept: the draft still reads `incerta`.
+      expect(doc(db)).toMatchObject({
+        item_id: null,
+        publicacaoEmCurso: null,
+        criacaoIncertaDesde: DESDE_VELHO,
+      });
+      return err;
+    }
+
+    it('a FRONTEIRA na reserva: agora + MARGEM == prazo ⇒ 409 PUBLICACAO_EXPIRADA antes da 1ª página — ZERO chamadas', async () => {
+      const db = comProduto(new FakeDb());
+      db.seed(CAMINHO, incerto());
+      const loja = lojaNoRelogio([umAchadoE(0)], 0);
+
+      await cortada(db, loja.busca, noPrazo(loja.relogio, 0));
+
+      expect(loja.ops).toEqual([]);
+    });
+
+    it('⛔ NEAR-MISS da fronteira: um ms antes (agora + MARGEM == prazo − 1) ⇒ a busca roda inteira e ADOTA', async () => {
+      const db = comProduto(new FakeDb());
+      db.seed(CAMINHO, incerto());
+      const loja = lojaNoRelogio([umAchadoE(0)], 0);
+
+      const r = await reservar(asDb(db), ALVO, noPrazo(loja.relogio, 1), loja.busca);
+
+      expect(r).toEqual({ tipo: 'adotada', itemId: ITEM_NOSSO });
+      expect(loja.ops).toEqual(['get_item_list', 'get_item_base_info:1']);
+    });
+
+    it('o prazo acaba DEPOIS da página k ⇒ para em k (k = 2 de 3), nenhum base-info, 409, o registro fica', async () => {
+      const db = comProduto(new FakeDb());
+      db.seed(CAMINHO, incerto());
+      const loja = lojaNoRelogio([umAchadoE(0), [baseDe(ITEM_OUTRO)], [baseDe(ITEM_OUTRO + 1)]]);
+
+      await cortada(db, loja.busca, noPrazo(loja.relogio, 2));
+
+      expect(loja.ops).toEqual(['get_item_list', 'get_item_list']);
+    });
+
+    it('⛔ o prazo acaba ENTRE dois lotes de base-info ⇒ 409 e NENHUMA decisão — nem sobre o achado DEFINITIVO do 1º lote', async () => {
+      const db = comProduto(new FakeDb());
+      db.seed(CAMINHO, incerto());
+      // 51 candidates ⇒ two chunks (50 + 1); the definite hit is in chunk 1.
+      const loja = lojaNoRelogio([umAchadoE(SHOPEE_ITEM_BASE_INFO_MAX_IDS)]);
+
+      await cortada(db, loja.busca, noPrazo(loja.relogio, 2));
+
+      expect(loja.ops).toEqual(['get_item_list', 'get_item_base_info:50']);
+      // Nothing adopted: the draft is still a draft.
+      expect(doc(db)?.item_id).toBeNull();
+    });
+
+    it('⛔ NEAR-MISS: o prazo cabe as três chamadas ⇒ a busca termina como sempre e ADOTA o achado', async () => {
+      const db = comProduto(new FakeDb());
+      db.seed(CAMINHO, incerto());
+      const loja = lojaNoRelogio([umAchadoE(SHOPEE_ITEM_BASE_INFO_MAX_IDS)]);
+
+      const r = await reservar(asDb(db), ALVO, noPrazo(loja.relogio, 3), loja.busca);
+
+      expect(r).toEqual({ tipo: 'adotada', itemId: ITEM_NOSSO });
+      expect(loja.ops).toEqual(['get_item_list', 'get_item_base_info:50', 'get_item_base_info:1']);
+    });
+
+    it('o CLI (sem prazo de requisição): o limite é o expiraEm da trava — a mesma busca roda inteira', async () => {
+      const db = comProduto(new FakeDb());
+      db.seed(CAMINHO, incerto());
+      const loja = lojaNoRelogio([umAchadoE(SHOPEE_ITEM_BASE_INFO_MAX_IDS)]);
+
+      const r = await reservar(
+        asDb(db),
+        ALVO,
+        controles({ agora: () => loja.relogio.t, prazoDaRequisicao: null }),
+        loja.busca,
+      );
+
+      expect(r).toEqual({ tipo: 'adotada', itemId: ITEM_NOSSO });
     });
   });
 });

@@ -91,7 +91,11 @@ import { skuDoItemShopee } from '../produtos/resolveProduto';
 import { nomeDeTierShopee } from '../produtos/taxonomiaShopeeCore';
 import { faixa, type FaixaDto } from '../taxonomia/limites';
 import { CAP_FOTOS_KIT, STATUS_BUSCA_KIT } from './constantesKit';
-import type { AchadoKitPorSku } from './localizarKitPorSku';
+import {
+  fraseDaBaseInfoNaoDevolvida,
+  type AchadoKitPorSku,
+  type BuscaDeKitPorSku,
+} from './localizarKitPorSku';
 import type { AvisoKit, ContextoKit, VinculoDaConta } from './resultadoKit';
 
 /* -------------------------------------------------------------------------- */
@@ -565,11 +569,19 @@ function problemaKitJaExiste(achados: readonly AchadoKitPorSku[]): ProblemaDeBlo
   );
 }
 
-function problemaBuscaIncompleta(): ProblemaDeBloqueio {
+/**
+ * `busca-de-kit-incompleta`, worded for ITS cause (#1911 batch-A review): the
+ * walk stopped short (the sentence step 19 wrote, kept), or Shopee returned no
+ * base row for listed candidates — the shared clause the ordinary arm's
+ * `busca-de-anuncio-existente-incompleta` words alike.
+ */
+function problemaBuscaIncompleta(incompleta: BuscaDeKitPorSku['incompleta']): ProblemaDeBloqueio {
   return bloqueio(
     'sku',
     MOTIVO_PUBLICACAO_BLOQUEADA.buscaDeKitIncompleta,
-    'a busca de kit duplicado não terminou (mais de 10 000 anúncios) — nada foi criado',
+    incompleta?.causa === 'base-info'
+      ? `a busca de kit duplicado não terminou: ${fraseDaBaseInfoNaoDevolvida(incompleta.itemIds)}`
+      : 'a busca de kit duplicado não terminou (mais de 10 000 anúncios) — nada foi criado',
   );
 }
 
@@ -898,13 +910,15 @@ const STATUS_DE_KIT_EXISTENTE: ReadonlySet<string> = new Set<string>(STATUS_BUSC
  * OURS 0 ⇒ `criar`; 1 ⇒ `completar`; ≥ 2 ⇒ `vinculos-ambiguos`.
  */
 export function decidirKitNovo(
-  busca: { readonly completo: boolean; readonly achados: readonly AchadoKitPorSku[] },
+  busca: Pick<BuscaDeKitPorSku, 'completo' | 'achados' | 'incompleta'>,
   nossos: ReadonlyMap<number, string>,
   nossosVivos: ReadonlyMap<number, string | null>,
   substituidosDeK: ReadonlyMap<number, string>,
   sucessorDe: ReadonlyMap<string, string> = new Map<string, string>(),
 ): GarantiaDeKitNovo {
-  if (!busca.completo) return { acao: 'recusar', problemas: [problemaBuscaIncompleta()] };
+  if (!busca.completo) {
+    return { acao: 'recusar', problemas: [problemaBuscaIncompleta(busca.incompleta)] };
+  }
 
   const nossosAchados = new Set<number>();
   const estrangeiros: AchadoKitPorSku[] = [];

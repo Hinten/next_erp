@@ -1261,7 +1261,7 @@ describe('localizarAnuncioIncerto — a busca que falha FECHADO (D5, K1-7, K1-11
   it('(K1-11) sem SKU + confirmarCriacaoIncerta ⇒ prossegue SEM varrer (varreu: false — o registro fica)', async () => {
     const c = cliente({});
     const v = await buscar(c.client, { sku: '  ', confirmar: true });
-    expect(v).toMatchObject({ tipo: 'prosseguir', resumo: { varreu: false } });
+    expect(v).toMatchObject({ tipo: 'prosseguir', resumo: { varreu: false, skuBuscado: null } });
     expect(c.getItemList).not.toHaveBeenCalled();
   });
 
@@ -1292,6 +1292,12 @@ describe('localizarAnuncioIncerto — a busca que falha FECHADO (D5, K1-7, K1-11
     const v = await buscar(c.client);
     expect(v).toMatchObject({ tipo: 'prosseguir', resumo: { varreu: true, paginas: 1 } });
     expect(c.getItemBaseInfo).not.toHaveBeenCalled();
+  });
+
+  it('(batch-A) o resumo diz QUAL dobra a busca procurou: a do produto, aparada — nunca a crua', async () => {
+    // Nothing recorded (`enviado` unknown): the produto's own SKU is the fold.
+    const v = await buscar(cliente({}).client, { sku: `  ${SKU} `, enviado: null });
+    expect(v).toMatchObject({ tipo: 'prosseguir', resumo: { varreu: true, skuBuscado: SKU } });
   });
 
   it('UM definitivo (sem vínculo, SKU igual, criado DENTRO) ⇒ adotar esse item_id', async () => {
@@ -2030,14 +2036,71 @@ describe('verificarAnuncioExistenteShopee — a busca da PRIMEIRA criação (#19
 
   it('problemasDoAnuncioExistente (puro): a incompleta vence mesmo com achados; nada achado ⇒ nada', () => {
     expect(
-      problemasDoAnuncioExistente({ completo: true, achados: [], paginas: 1 }, PRODUTO),
+      problemasDoAnuncioExistente(
+        { completo: true, achados: [], incompleta: null, paginas: 1 },
+        PRODUTO,
+      ),
     ).toEqual([]);
     const incompleta = problemasDoAnuncioExistente(
-      { completo: false, achados: [{ itemId: ITEM_A, vinculo: null }], paginas: 100 },
+      {
+        completo: false,
+        achados: [{ itemId: ITEM_A, vinculo: null }],
+        incompleta: { causa: 'lista' },
+        paginas: 100,
+      },
       PRODUTO,
     );
     expect(incompleta.map((p) => p.motivo)).toEqual([
       MOTIVO_PUBLICACAO_BLOQUEADA.buscaDeAnuncioExistenteIncompleta,
     ]);
+  });
+
+  /* -------- #1911 batch-A review: a LISTED row with no base row is a DOUBT ------- */
+
+  it("⛔ (batch-A) o repro do bot: UMA linha NORMAL (tag.kit false) e a base devolve `item_list: []` ⇒ busca-de-anuncio-existente-incompleta nomeando o id — nunca 'nada achado'", async () => {
+    const c = cliente({ paginas: [pagina([linhaDaLista(ITEM_A)])], bases: [] });
+    const v = await verificar(c.client);
+    expect(v.varreu).toBe(true);
+    expect(v.problemas.map((p) => p.motivo)).toEqual([
+      MOTIVO_PUBLICACAO_BLOQUEADA.buscaDeAnuncioExistenteIncompleta,
+    ]);
+    expect(v.problemas[0]?.acao).toBeUndefined();
+    const frase = v.problemas[0]?.mensagem ?? '';
+    // The cause, the ids and the remedy — never the page/cursor sentence.
+    expect(frase).toContain('a Shopee não devolveu os dados de 1 anúncio(s) listado(s)');
+    expect(frase).toContain(String(ITEM_A));
+    expect(frase).toContain('tente de novo');
+    expect(frase).toContain('Seller Centre');
+    expect(frase).not.toContain('página(s) lida(s)');
+    // The page plus the base-info call actually made.
+    expect(v.chamadas).toBe(2);
+  });
+
+  it('⛔ quase-par (o par do bot): a base DEVOLVIDA com OUTRO SKU ⇒ nada recusado', async () => {
+    const v = await verificar(
+      cliente({ paginas: [pagina([linhaDaLista(ITEM_A)])], bases: [base(ITEM_A, 'OUTRO')] }).client,
+    );
+    expect(v).toMatchObject({ varreu: true, problemas: [], chamadas: 2 });
+  });
+
+  it('⛔ (batch-A) um ACHADO ao lado de um candidato não lido NÃO vira "importe-o": a busca é incompleta, e só ela é dita', async () => {
+    const c = cliente({
+      paginas: [pagina([linhaDaLista(ITEM_A), linhaDaLista(ITEM_B)])],
+      bases: [base(ITEM_A)],
+    });
+    const v = await verificar(c.client);
+    expect(v.problemas.map((p) => p.motivo)).toEqual([
+      MOTIVO_PUBLICACAO_BLOQUEADA.buscaDeAnuncioExistenteIncompleta,
+    ]);
+    expect(v.problemas[0]?.mensagem).toContain(String(ITEM_B));
+  });
+
+  it('⛔ (batch-A) a frase da página/cursor continua a mesma para ESSA causa', () => {
+    const [p] = problemasDoAnuncioExistente(
+      { completo: false, achados: [], incompleta: { causa: 'lista' }, paginas: 100 },
+      PRODUTO,
+    );
+    expect(p?.mensagem).toContain('100 página(s) lida(s): mais de 10000 anúncios');
+    expect(p?.mensagem).not.toContain('não devolveu');
   });
 });

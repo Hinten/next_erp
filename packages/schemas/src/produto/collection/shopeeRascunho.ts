@@ -53,6 +53,18 @@
  * the create runs at least AGUARDAR_ANUNCIO_INCERTO_SHOPEE_MS after the latest
  * instant a send could have started — the same wait an uncertain kit create
  * asks for.
+ *
+ * ⚠️ **That timeline is a STAMPED lock's** (#1911 batch-A review, Lucas
+ * 2026-10-28). The run stamps the SKU it sends on its lock (`sku`) in a
+ * token-guarded write BEFORE the first `add_item` leg, so a send in flight is
+ * always stamped. A lock that expires UNSTAMPED, on a draft that records no
+ * earlier uncertain attempt, belongs to a run that died before the send (the
+ * first create's same-SKU walk ran past the request ceiling, the instance
+ * went away): nothing was sent under it, so it reads `livre` the instant it
+ * expires — no grace, no `incerta`, no attempt window. Reading it as an
+ * uncertain create would hand the next run a look-up narrowed to "since the
+ * attempt", which never sees an OLD unlinked same-SKU listing the dead run's
+ * walk had not reached — and a duplicate `add_item`.
  */
 import { valuesEqual } from '@delfrance/core/equality';
 import { z } from 'zod';
@@ -67,7 +79,11 @@ import {
 import { textoUtilizavelShopee } from '../../faixaShopee';
 import { naoDocId } from '../../shared/outerRef';
 import { AGUARDAR_KIT_INCERTO_SHOPEE_MS } from '../../shopeeAcaoSugerida';
-import { itemIdEnderecavelShopee, publicacaoEmCursoShopeeSchema } from './shopeeLink';
+import {
+  itemIdEnderecavelShopee,
+  publicacaoEmCursoShopeeSchema,
+  type PublicacaoEmCursoShopee,
+} from './shopeeLink';
 import { anuncioShopeeVivo, ehRascunhoShopee } from './shopeeLinkLeitura';
 import { vinculoShopeeEhDaConta } from './vinculosShopee';
 
@@ -241,6 +257,28 @@ function inteiroLegivel(bruto: unknown): number | null {
 }
 
 /**
+ * Does the document RECORD an earlier create whose outcome is unknown? Set ⇔
+ * `criacaoIncertaDesde` is neither `null` nor absent — a set value that is not
+ * a readable instant still counts (the doubt runs away from `livre`).
+ */
+function registraCriacaoIncerta(link: Record<string, unknown>): boolean {
+  return link.criacaoIncertaDesde !== null && link.criacaoIncertaDesde !== undefined;
+}
+
+/**
+ * Was a READABLE lock stamped with the SKU its run sends (#1911 batch-A
+ * review)? ⇔ `sku` is a string — `''` included, the stamp of a body that
+ * carries no SKU. `null` or absent = never stamped: the run that took it never
+ * reached the send. ⚠️ ONLY the run's pre-send re-read writes `sku`
+ * (`apps/shopee`'s `conferirTravaAntesDoEnvio`), always as a string; a
+ * takeover writes a fresh lock without it, and the `incerto` re-arm carries
+ * the one already there.
+ */
+function travaCarimbada(trava: PublicacaoEmCursoShopee): boolean {
+  return typeof trava.sku === 'string';
+}
+
+/**
  * THE reading of a draft's publish lock (#1911, D4) — the publish's
  * reservation, the draft operations and the produto's Shopee tab all decide or
  * render with this, never with `publicacaoEmCurso` compared raw.
@@ -255,32 +293,43 @@ function inteiroLegivel(bruto: unknown): number | null {
  *
  * - a READABLE lock and `nowMs < expiraEm` ⇒ **`em-andamento`**,
  *   `posExpiracao: false`, `aguardarMs = expiraEm − nowMs`, `aposIncerteza` =
- *   whether `criacaoIncertaDesde` is set;
- * - a readable lock, NO `criacaoIncertaDesde`, and `expiraEm ≤ nowMs <
+ *   whether `criacaoIncertaDesde` is set — stamped or not (a live run may
+ *   still be on its way to the send);
+ * - a readable lock past `expiraEm` that was never STAMPED (`sku` not a
+ *   string — `null` or absent), NO `criacaoIncertaDesde` ⇒ **`livre`** at
+ *   once (batch-A review, Lucas 2026-10-28): its run died before the
+ *   pre-send stamp, so no create was ever sent under it — the grace exists
+ *   for a send in flight, and a send in flight is always stamped;
+ * - a readable STAMPED lock, NO `criacaoIncertaDesde`, and `expiraEm ≤ nowMs <
  *   expiraEm + AGUARDAR_ANUNCIO_INCERTO_SHOPEE_MS` ⇒ STILL **`em-andamento`**
  *   (`posExpiracao: true`, `aguardarMs = expiraEm + AGUARDAR − nowMs`): the
  *   run may have started a send just before `expiraEm − MARGEM`, and its
  *   outcome is not observable yet;
- * - a readable lock past that grace, a readable lock past `expiraEm` WITH
- *   `criacaoIncertaDesde` set (that wait was already served), or an UNREADABLE
- *   lock ⇒ **`incerta`**;
+ * - a readable stamped lock past that grace, a readable lock (stamped or
+ *   not) past `expiraEm` WITH `criacaoIncertaDesde` set (that wait was already
+ *   served, and a takeover that died unstamped never erases an earlier real
+ *   attempt), or an UNREADABLE lock ⇒ **`incerta`**;
  * - no lock (`null` or absent) and `criacaoIncertaDesde` set ⇒ **`incerta`**;
  * - otherwise (incl. a `null` document) ⇒ **`livre`**.
  *
- * ⚠️ The direction of every doubt is AWAY from `livre`: an expired lock is
- * never "free" (the run that held it may have created the listing), a
- * malformed lock is never "absent", and a `criacaoIncertaDesde` that is set but
+ * ⚠️ The direction of every doubt is AWAY from `livre`: an expired STAMPED
+ * lock is never "free" (the run that held it may have created the listing),
+ * a malformed lock is never "absent" (nor "unstamped"), an invalid clock
+ * never frees anything (the expired-unstamped rule is written `nowMs ≥
+ * expiraEm`, which `NaN` fails), and a `criacaoIncertaDesde` that is set but
  * not a readable instant still counts as set (`desdeMs` then falls back to the
- * lock's `desde`, else `null`). `livre` is only ever "nothing on record".
+ * lock's `desde`, else `null`). `livre` is only ever "nothing on record" —
+ * and an expired lock nobody stamped records nothing.
  *
  * Reads the lock whatever the document is — whether it is still a DRAFT is the
  * caller's question ({@link ehRascunhoShopee}).
  *
- * Boundaries (pinned in `shopeeRascunho.test.ts`): `expiraEm − 1` ⇒
- * em-andamento/`posExpiracao: false`; `expiraEm` ⇒ em-andamento/`posExpiracao:
- * true`; `expiraEm + 240 000 − 1` ⇒ em-andamento/`posExpiracao: true`;
- * `expiraEm + 240 000` ⇒ incerta; `expiraEm` WITH `criacaoIncertaDesde` ⇒
- * incerta.
+ * Boundaries (pinned in `shopeeRascunho.test.ts`), STAMPED lock: `expiraEm −
+ * 1` ⇒ em-andamento/`posExpiracao: false`; `expiraEm` ⇒
+ * em-andamento/`posExpiracao: true`; `expiraEm + 240 000 − 1` ⇒
+ * em-andamento/`posExpiracao: true`; `expiraEm + 240 000` ⇒ incerta;
+ * `expiraEm` WITH `criacaoIncertaDesde` ⇒ incerta. UNSTAMPED lock, no record:
+ * `expiraEm − 1` ⇒ em-andamento; `expiraEm` ⇒ livre.
  */
 export function estadoPublicacaoRascunhoShopee(
   link: Record<string, unknown> | null,
@@ -288,8 +337,7 @@ export function estadoPublicacaoRascunhoShopee(
 ): EstadoPublicacaoRascunhoShopee {
   if (link === null) return LIVRE;
 
-  const incertaBruta = link.criacaoIncertaDesde;
-  const comIncerteza = incertaBruta !== null && incertaBruta !== undefined;
+  const comIncerteza = registraCriacaoIncerta(link);
   const incerta = (): EstadoPublicacaoRascunhoShopee => ({
     tipo: 'incerta',
     desdeMs: janelaDaCriacaoIncertaShopee(link)?.desdeMs ?? null,
@@ -314,6 +362,11 @@ export function estadoPublicacaoRascunhoShopee(
       posExpiracao: false,
     };
   }
+
+  // ⚠️ Expired and never STAMPED, nothing on record: its run never reached
+  // the send — free now, no grace (batch-A review). `nowMs >= expiraEm`, not
+  // "else": a NaN clock fails it and falls through to `incerta`.
+  if (!comIncerteza && !travaCarimbada(lida.data) && nowMs >= expiraEm) return LIVRE;
 
   const fimDaCarencia = expiraEm + AGUARDAR_ANUNCIO_INCERTO_SHOPEE_MS;
   if (!comIncerteza && nowMs < fimDaCarencia) {
@@ -340,10 +393,11 @@ export interface JanelaDaCriacaoIncertaShopee {
   readonly desdeMs: number;
   /**
    * The SKU that attempt SENT, folded (`''` = the body carried none), or
-   * `null` = UNKNOWN — a record or lock that never stamped it (a lock written
-   * before the pre-send stamp existed, a run that never reached the send), or
-   * two attempts that sent different SKUs. ⚠️ `null` is never "sent no SKU":
-   * the look-up fails closed on it (batch-A review).
+   * `null` = UNKNOWN — a record that never learnt it (two attempts that sent
+   * different SKUs, a record carried from one that did not know), or a
+   * window read off a lock beside a set-but-unreadable record. ⚠️ `null` is
+   * never "sent no SKU": the look-up fails closed on it (batch-A review). A
+   * lock that was never stamped and stands ALONE gives no window at all.
    */
   readonly sku: string | null;
 }
@@ -354,14 +408,23 @@ export interface JanelaDaCriacaoIncertaShopee {
  *
  * `desdeMs` = the stored `criacaoIncertaDesde` when it is a readable instant,
  * else the stored lock's `desde` when the lock is readable
- * ({@link publicacaoEmCursoShopeeSchema}), else NO window (`null`).
+ * ({@link publicacaoEmCursoShopeeSchema}) AND is evidence of a send — stamped
+ * with the SKU it sends, or beside a (set but unreadable) record — else NO
+ * window (`null`).
  *
  * - **`null` ⇔ no attempt evidence** — every legacy draft (neither key), a
  *   draft never sent, a `null` document. Also a document whose record is
- *   unreadable on both keys: nothing there says WHEN.
+ *   unreadable on both keys: nothing there says WHEN. And (batch-A review,
+ *   Lucas 2026-10-28) a lock that was never STAMPED on a document with NO
+ *   record (`criacaoIncertaDesde` null or absent), live or expired: the
+ *   stamp precedes every `add_item` leg, so its run never sent anything —
+ *   the takeover then writes NO record and runs NO look-up, and the publish
+ *   is a first create, whose same-SKU look-up walks the WHOLE shop.
  * - The record of the uncertain attempt wins over the lock: it is the EARLIEST
  *   start, and a later lock (a re-send's) would narrow the window past the
- *   listing the first attempt created.
+ *   listing the first attempt created. A readable record gives ITS window
+ *   whatever the newer lock is — stamped or not: a later takeover that died
+ *   unstamped never erases an earlier REAL attempt.
  * - ⚠️ Read it from the document BEFORE a write that replaces the lock: a
  *   takeover's new lock carries a LATER `desde`. That write carries this
  *   window's start into `criacaoIncertaDesde` (`./shopeeLink.ts`'s writer
@@ -390,7 +453,10 @@ export function janelaDaCriacaoIncertaShopee(
   const registrada = inteiroLegivel(link.criacaoIncertaDesde);
   if (registrada !== null) return { desdeMs: registrada, sku: textoOuNull(link.criacaoIncertaSku) };
   const trava = publicacaoEmCursoShopeeSchema.safeParse(link.publicacaoEmCurso);
-  return trava.success ? { desdeMs: trava.data.desde, sku: textoOuNull(trava.data.sku) } : null;
+  if (!trava.success) return null;
+  // Never stamped, nothing on record: no create was sent under this lock.
+  if (!registraCriacaoIncerta(link) && !travaCarimbada(trava.data)) return null;
+  return { desdeMs: trava.data.desde, sku: textoOuNull(trava.data.sku) };
 }
 
 /** A stored SKU, or `null` (unknown) for anything that is not a string. */

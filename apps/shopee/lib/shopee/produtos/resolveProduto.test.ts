@@ -1041,10 +1041,16 @@ describe('#1911 — a adoção de um rascunho pela importação', () => {
       ...extra,
     };
   }
-  const travaViva = (desde: number) => ({
+  /**
+   * A publish lock taken at `desde`. `sku` = the stamp its run's PRE-SEND
+   * re-read writes (batch-A review): absent ⇔ that run has not reached the
+   * send (photos still uploading), so the lock alone is NO evidence.
+   */
+  const travaViva = (desde: number, sku?: string) => ({
     desde,
     expiraEm: desde + 300_000,
     token: 'tok-publicacao',
+    ...(sku === undefined ? {} : { sku }),
   });
 
   function semear(db: FakeDb, docs: Record<string, Record<string, unknown>>): void {
@@ -1115,13 +1121,26 @@ describe('#1911 — a adoção de um rascunho pela importação', () => {
     expect(r.link).toBeNull();
   });
 
-  it('uma TRAVA viva (o caminho da queda) é evidência: criado dentro ⇒ adota', async () => {
+  it('uma TRAVA viva CARIMBADA (o caminho da queda) é evidência: criado dentro ⇒ adota', async () => {
     const db = new FakeDb();
-    semear(db, { [RASCUNHO]: rascunho({ publicacaoEmCurso: travaViva(DESDE_MS) }) });
+    semear(db, { [RASCUNHO]: rascunho({ publicacaoEmCurso: travaViva(DESDE_MS, 'CAM-1') }) });
 
     const r = await resolverPaiDaListagem(asDb(db), INTEGRACAO, anuncio(DENTRO_S));
     expect(r.link?.id).toBe(RASCUNHO);
     expect(r.link?.rascunhoAdotado).toBe(true);
+  });
+
+  it('⛔ NEAR-MISS (batch-A review, 2026-10-28): a MESMA trava SEM carimbo não é evidência — criado dentro ⇒ NÃO adota, rascunho intocado', async () => {
+    // Its run never reached the send: nothing it did can have made this listing.
+    const db = new FakeDb();
+    semear(db, { [RASCUNHO]: rascunho({ publicacaoEmCurso: travaViva(DESDE_MS) }) });
+    const dadosAntes = structuredClone(db.store[`${SUBCOLECAO}/${RASCUNHO}`]!.data);
+
+    const r = await resolverPaiDaListagem(asDb(db), INTEGRACAO, anuncio(DENTRO_S));
+
+    expect(r.link).toBeNull();
+    expect(db.store[`${SUBCOLECAO}/${RASCUNHO}`]!.data).toEqual(dadosAntes);
+    expect(db.writes).toEqual([]);
   });
 
   it('⛔ rascunho com trava viva (fotos subindo) + o L3 ANTIGO ⇒ não adota — e o rascunho não é tocado', async () => {
@@ -1161,7 +1180,7 @@ describe('#1911 — a adoção de um rascunho pela importação', () => {
     const db = new FakeDb();
     semear(db, {
       'rasc-a': rascunho({ criacaoIncertaDesde: DESDE_MS }),
-      'rasc-b': rascunho({ publicacaoEmCurso: travaViva(DESDE_MS + 1_000) }),
+      'rasc-b': rascunho({ publicacaoEmCurso: travaViva(DESDE_MS + 1_000, 'CAM-1') }),
     });
 
     const r = await resolverPaiDaListagem(asDb(db), INTEGRACAO, anuncio(DENTRO_S));

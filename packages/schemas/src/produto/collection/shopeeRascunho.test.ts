@@ -67,9 +67,23 @@ const GRACA = 240_000;
 const TRAVA = { desde: DESDE, expiraEm: EXPIRA, token: 'tok-1' };
 const INCERTA_DESDE = DESDE - 600_000;
 
-/** A draft carrying the lock (and, when given, an earlier uncertain attempt). */
+/**
+ * The lock as its run's PRE-SEND re-read leaves it: stamped with the SKU the
+ * create sends (batch-A review) — the lock a send in flight always carries.
+ */
+const TRAVA_CARIMBADA = { ...TRAVA, sku: 'SKU-1' };
+
+/**
+ * A draft carrying the lock (and, when given, an earlier uncertain attempt).
+ * ⚠️ The lock is NOT stamped: its run has not reached the send.
+ */
 function rascunhoTravado(extra: Record<string, unknown> = {}): Record<string, unknown> {
   return { item_id: null, publicacaoEmCurso: TRAVA, ...extra };
+}
+
+/** A draft whose lock was STAMPED by its run's pre-send re-read. */
+function rascunhoCarimbado(extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return { item_id: null, publicacaoEmCurso: TRAVA_CARIMBADA, ...extra };
 }
 
 const CONTA = 'int-1';
@@ -267,7 +281,12 @@ describe('estadoPublicacaoRascunhoShopee — as fronteiras congeladas (§2.1, K1
 
   for (const caso of casos) {
     it(caso.nome, () => {
-      const link = rascunhoTravado(caso.comIncerteza ? { criacaoIncertaDesde: INCERTA_DESDE } : {});
+      // Sem registro: a trava CARIMBADA (a carência é de um envio em curso, e
+      // todo envio em curso está carimbado). Com registro: a trava SEM
+      // carimbo — o registro decide sozinho (batch-A review, 2026-10-28).
+      const link = caso.comIncerteza
+        ? rascunhoTravado({ criacaoIncertaDesde: INCERTA_DESDE })
+        : rascunhoCarimbado();
       expect(estadoPublicacaoRascunhoShopee(link, caso.agora)).toEqual(caso.esperado);
     });
   }
@@ -277,7 +296,7 @@ describe('estadoPublicacaoRascunhoShopee — as fronteiras congeladas (§2.1, K1
       e.tipo === 'livre' ? -1 : e.tipo === 'incerta' ? 2 : e.posExpiracao ? 1 : 0;
     let anterior = 0;
     for (let t = DESDE - 1_000; t <= EXPIRA + GRACA + 60_000; t += 7_919) {
-      const atual = ordem(estadoPublicacaoRascunhoShopee(rascunhoTravado(), t));
+      const atual = ordem(estadoPublicacaoRascunhoShopee(rascunhoCarimbado(), t));
       expect(atual, String(t)).toBeGreaterThanOrEqual(anterior);
       anterior = atual;
     }
@@ -286,7 +305,7 @@ describe('estadoPublicacaoRascunhoShopee — as fronteiras congeladas (§2.1, K1
 
   it('`aguardarMs` é sempre > 0 enquanto em-andamento, e chega exatamente no fim da carência', () => {
     for (let t = DESDE; t < EXPIRA + GRACA; t += 13_337) {
-      const e = estadoPublicacaoRascunhoShopee(rascunhoTravado(), t);
+      const e = estadoPublicacaoRascunhoShopee(rascunhoCarimbado(), t);
       if (e.tipo !== 'em-andamento') throw new Error(`esperava em-andamento em ${String(t)}`);
       expect(e.aguardarMs).toBeGreaterThan(0);
       expect(t + e.aguardarMs).toBe(e.posExpiracao ? EXPIRA + GRACA : EXPIRA);
@@ -306,6 +325,116 @@ describe('estadoPublicacaoRascunhoShopee — as fronteiras congeladas (§2.1, K1
     expect(
       estadoPublicacaoRascunhoShopee(rascunhoTravado({ criacaoIncertaDesde: 'x' }), EXPIRA),
     ).toEqual({ tipo: 'incerta', desdeMs: DESDE });
+  });
+});
+
+describe('estadoPublicacaoRascunhoShopee — a trava NUNCA CARIMBADA (batch-A review, 2026-10-28)', () => {
+  // A run that took the lock and died BEFORE its pre-send stamp (the same-SKU
+  // walk past the route ceiling, the instance gone) sent nothing: reading its
+  // expired lock as an uncertain create would narrow the next run's look-up to
+  // "since the attempt" and miss an OLD unlinked same-SKU listing.
+
+  it('vencida, sem carimbo e sem registro ⇒ `livre` EXATAMENTE em expiraEm — sem carência', () => {
+    expect(estadoPublicacaoRascunhoShopee(rascunhoTravado(), EXPIRA)).toEqual({ tipo: 'livre' });
+    expect(estadoPublicacaoRascunhoShopee(rascunhoTravado(), EXPIRA + GRACA)).toEqual({
+      tipo: 'livre',
+    });
+    expect(estadoPublicacaoRascunhoShopee(rascunhoTravado(), EXPIRA + 86_400_000)).toEqual({
+      tipo: 'livre',
+    });
+  });
+
+  it('PAR: enquanto viva (expiraEm − 1), a trava sem carimbo AINDA é em-andamento — o run pode estar a caminho do envio', () => {
+    expect(estadoPublicacaoRascunhoShopee(rascunhoTravado(), EXPIRA - 1)).toEqual({
+      tipo: 'em-andamento',
+      desdeMs: DESDE,
+      expiraEmMs: EXPIRA,
+      aguardarMs: 1,
+      aposIncerteza: false,
+      posExpiracao: false,
+    });
+  });
+
+  it('⛔ NEAR-MISS: a MESMA trava CARIMBADA ⇒ carência em expiraEm, depois `incerta`', () => {
+    const carimbada = { item_id: null, publicacaoEmCurso: { ...TRAVA, sku: 'X' } };
+    expect(estadoPublicacaoRascunhoShopee(carimbada, EXPIRA)).toEqual({
+      tipo: 'em-andamento',
+      desdeMs: DESDE,
+      expiraEmMs: EXPIRA,
+      aguardarMs: GRACA,
+      aposIncerteza: false,
+      posExpiracao: true,
+    });
+    expect(estadoPublicacaoRascunhoShopee(carimbada, EXPIRA + GRACA)).toEqual({
+      tipo: 'incerta',
+      desdeMs: DESDE,
+    });
+  });
+
+  it('⛔ NEAR-MISS: `sku: ""` É um carimbo (um corpo sem SKU foi enviado) — `null` e ausente NÃO são', () => {
+    const vazio = { item_id: null, publicacaoEmCurso: { ...TRAVA, sku: '' } };
+    expect(estadoPublicacaoRascunhoShopee(vazio, EXPIRA)).toMatchObject({
+      tipo: 'em-andamento',
+      posExpiracao: true,
+    });
+    expect(estadoPublicacaoRascunhoShopee(vazio, EXPIRA + GRACA)).toEqual({
+      tipo: 'incerta',
+      desdeMs: DESDE,
+    });
+    for (const semCarimbo of [{ ...TRAVA, sku: null }, TRAVA]) {
+      expect(
+        estadoPublicacaoRascunhoShopee({ item_id: null, publicacaoEmCurso: semCarimbo }, EXPIRA),
+        JSON.stringify(semCarimbo),
+      ).toEqual({ tipo: 'livre' });
+    }
+  });
+
+  it('⛔ NEAR-MISS: a trava sem carimbo num rascunho COM registro ⇒ inalterada (`incerta` já em expiraEm, desde = o registro)', () => {
+    // Uma tomada que morreu sem carimbo nunca apaga uma tentativa REAL anterior.
+    for (const agora of [EXPIRA, EXPIRA + GRACA, EXPIRA + 86_400_000]) {
+      expect(
+        estadoPublicacaoRascunhoShopee(
+          rascunhoTravado({ criacaoIncertaDesde: INCERTA_DESDE }),
+          agora,
+        ),
+        String(agora),
+      ).toEqual({ tipo: 'incerta', desdeMs: INCERTA_DESDE });
+    }
+    // …um registro ilegível também é registro.
+    expect(
+      estadoPublicacaoRascunhoShopee(rascunhoTravado({ criacaoIncertaDesde: 'x' }), EXPIRA),
+    ).toEqual({ tipo: 'incerta', desdeMs: DESDE });
+  });
+
+  it('⛔ NEAR-MISS: um `sku` que não é texto deixa a trava ILEGÍVEL ⇒ `incerta`, nunca "sem carimbo" ⇒ `livre`', () => {
+    for (const sku of [7, true, {}]) {
+      expect(
+        estadoPublicacaoRascunhoShopee(
+          { item_id: null, publicacaoEmCurso: { ...TRAVA, sku } },
+          EXPIRA,
+        ),
+        JSON.stringify(sku),
+      ).toEqual({ tipo: 'incerta', desdeMs: null });
+    }
+  });
+
+  it('⛔ um relógio inválido nunca libera a trava sem carimbo (a regra é `agora ≥ expiraEm`, que NaN reprova)', () => {
+    expect(estadoPublicacaoRascunhoShopee(rascunhoTravado(), Number.NaN)).toEqual({
+      tipo: 'incerta',
+      desdeMs: null,
+    });
+  });
+
+  it('a leitura sem carimbo é MONÓTONA: em-andamento → livre, nunca carência, nunca `incerta`', () => {
+    const vistos = new Set<string>();
+    let livre = false;
+    for (let t = DESDE - 1_000; t <= EXPIRA + GRACA + 60_000; t += 7_919) {
+      const e = estadoPublicacaoRascunhoShopee(rascunhoTravado(), t);
+      vistos.add(e.tipo === 'em-andamento' ? `em-andamento:${String(e.posExpiracao)}` : e.tipo);
+      if (e.tipo === 'livre') livre = true;
+      else expect(livre, String(t)).toBe(false);
+    }
+    expect([...vistos].sort()).toEqual(['em-andamento:false', 'livre']);
   });
 });
 
@@ -379,8 +508,38 @@ describe('janelaDaCriacaoIncertaShopee — a evidência de uma tentativa (K1-8)'
     ).toBeNull();
   });
 
-  it('só a trava ⇒ o `desde` da trava — viva, na carência OU vencida sem registro (o caminho do crash)', () => {
-    expect(janelaDaCriacaoIncertaShopee(rascunhoTravado())).toEqual({ desdeMs: DESDE, sku: null });
+  it('só a trava CARIMBADA ⇒ o `desde` da trava — viva, na carência OU vencida sem registro (o caminho do crash)', () => {
+    expect(janelaDaCriacaoIncertaShopee(rascunhoCarimbado())).toEqual({
+      desdeMs: DESDE,
+      sku: 'SKU-1',
+    });
+  });
+
+  it('⛔ NEAR-MISS (batch-A review, 2026-10-28): só a trava NUNCA carimbada ⇒ SEM janela — o run não chegou ao envio', () => {
+    expect(janelaDaCriacaoIncertaShopee(rascunhoTravado())).toBeNull();
+    expect(
+      janelaDaCriacaoIncertaShopee({ item_id: null, publicacaoEmCurso: { ...TRAVA, sku: null } }),
+    ).toBeNull();
+    expect(
+      janelaDaCriacaoIncertaShopee({
+        item_id: null,
+        publicacaoEmCurso: TRAVA,
+        criacaoIncertaDesde: null,
+      }),
+    ).toBeNull();
+    // `''` é um carimbo (um corpo sem SKU foi ENVIADO): há janela.
+    expect(
+      janelaDaCriacaoIncertaShopee({ item_id: null, publicacaoEmCurso: { ...TRAVA, sku: '' } }),
+    ).toEqual({ desdeMs: DESDE, sku: '' });
+  });
+
+  it('⛔ NEAR-MISS: com registro, a janela é a do REGISTRO mesmo ao lado de uma trava mais nova SEM carimbo', () => {
+    // A tomada que morreu antes do carimbo não apaga a tentativa real anterior.
+    expect(
+      janelaDaCriacaoIncertaShopee(
+        rascunhoTravado({ criacaoIncertaDesde: INCERTA_DESDE, criacaoIncertaSku: 'SKU-VELHO' }),
+      ),
+    ).toEqual({ desdeMs: INCERTA_DESDE, sku: 'SKU-VELHO' });
   });
 
   it('só o registro ⇒ o registro', () => {
@@ -456,26 +615,38 @@ describe('janelaDaCriacaoIncertaShopee — a evidência de uma tentativa (K1-8)'
       expiraEm: TOMADA + PUBLICACAO_EM_CURSO_SHOPEE_TTL_MS,
       token: 'tok-2',
     };
-    // Lido ANTES da tomada: a janela é a da tentativa que caiu.
-    expect(janelaDaCriacaoIncertaShopee(rascunhoTravado())).toEqual({ desdeMs: DESDE, sku: null });
+    // Lido ANTES da tomada: a janela é a da tentativa (carimbada) que caiu.
+    expect(janelaDaCriacaoIncertaShopee(rascunhoCarimbado())).toEqual({
+      desdeMs: DESDE,
+      sku: 'SKU-1',
+    });
     // A tomada que carrega o registro mantém a janela…
     expect(
       janelaDaCriacaoIncertaShopee({
         item_id: null,
         publicacaoEmCurso: novaTrava,
         criacaoIncertaDesde: DESDE,
+        criacaoIncertaSku: 'SKU-1',
       }),
-    ).toEqual({ desdeMs: DESDE, sku: null });
-    // …e a que só troca a trava a estreita até depois da tentativa antiga.
-    expect(janelaDaCriacaoIncertaShopee({ item_id: null, publicacaoEmCurso: novaTrava })).toEqual({
-      desdeMs: TOMADA,
-      sku: null,
-    });
+    ).toEqual({ desdeMs: DESDE, sku: 'SKU-1' });
+    // …e a que só troca a trava PERDE a tentativa antiga: a trava nova, ainda
+    // sem carimbo, não é evidência de nada…
+    expect(
+      janelaDaCriacaoIncertaShopee({ item_id: null, publicacaoEmCurso: novaTrava }),
+    ).toBeNull();
+    // …e, carimbada, estreita a janela até depois da tentativa antiga.
+    expect(
+      janelaDaCriacaoIncertaShopee({
+        item_id: null,
+        publicacaoEmCurso: { ...novaTrava, sku: 'SKU-1' },
+      }),
+    ).toEqual({ desdeMs: TOMADA, sku: 'SKU-1' });
   });
 
   it('`sku` (batch-A review): o SKU que a tentativa ENVIOU, da MESMA fonte que o `desdeMs`', () => {
-    // Só a trava: o `sku` dela — `''` é "enviou sem SKU", um VALOR; ausente é desconhecido.
-    expect(janelaDaCriacaoIncertaShopee(rascunhoTravado())).toEqual({ desdeMs: DESDE, sku: null });
+    // Só a trava: o `sku` dela — `''` é "enviou sem SKU", um VALOR; ausente é
+    // NUNCA CARIMBADA, e sem registro isso não é janela nenhuma (2026-10-28).
+    expect(janelaDaCriacaoIncertaShopee(rascunhoTravado())).toBeNull();
     expect(
       janelaDaCriacaoIncertaShopee({
         item_id: null,
@@ -551,14 +722,19 @@ describe('estadoPublicacaoRascunhoShopee × janelaDaCriacaoIncertaShopee — UMA
     rascunhoTravado(),
     rascunhoTravado({ criacaoIncertaDesde: INCERTA_DESDE }),
     rascunhoTravado({ criacaoIncertaDesde: 'x' }),
+    rascunhoCarimbado(),
+    rascunhoCarimbado({ criacaoIncertaDesde: INCERTA_DESDE }),
+    { item_id: null, publicacaoEmCurso: { ...TRAVA, sku: '' } },
+    { item_id: null, publicacaoEmCurso: { ...TRAVA, sku: null } },
     { item_id: null, publicacaoEmCurso: { token: 'x' } },
     { item_id: null, publicacaoEmCurso: { token: 'x' }, criacaoIncertaDesde: INCERTA_DESDE },
     { item_id: null, publicacaoEmCurso: 'tok-1', criacaoIncertaDesde: 'x' },
   ];
   const instantes = [DESDE, EXPIRA - 1, EXPIRA, EXPIRA + GRACA - 1, EXPIRA + GRACA, Number.NaN];
 
-  it('`incerta`.desdeMs É o início da janela; `livre` ⇒ sem janela; `em-andamento` ⇒ há janela', () => {
+  it('`incerta`.desdeMs É o início da janela; `livre` ⇒ sem janela; a CARÊNCIA ⇒ há janela', () => {
     let incertas = 0;
+    let livresComTrava = 0;
     for (const doc of documentos) {
       const janela = janelaDaCriacaoIncertaShopee(doc);
       for (const agora of instantes) {
@@ -569,13 +745,18 @@ describe('estadoPublicacaoRascunhoShopee × janelaDaCriacaoIncertaShopee — UMA
           expect(estado.desdeMs, rotulo).toBe(janela?.desdeMs ?? null);
         } else if (estado.tipo === 'livre') {
           expect(janela, rotulo).toBeNull();
-        } else {
+          if (doc !== null && doc.publicacaoEmCurso) livresComTrava += 1;
+        } else if (estado.posExpiracao) {
+          // A carência só existe para um envio que PODE ter começado: há
+          // evidência, logo há janela.
           expect(janela, rotulo).not.toBeNull();
         }
       }
     }
-    // A propriedade não é vacuamente verdadeira: muitas leituras são `incerta`.
+    // A propriedade não é vacuamente verdadeira: muitas leituras são `incerta`,
+    // e a trava vencida sem carimbo aparece como `livre`.
     expect(incertas).toBeGreaterThan(20);
+    expect(livresComTrava).toBeGreaterThan(0);
   });
 });
 

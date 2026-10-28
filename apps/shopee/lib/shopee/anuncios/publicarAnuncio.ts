@@ -69,7 +69,9 @@
  * `anuncio-existente-de-outro-produto`, an incomplete scan
  * `busca-de-anuncio-existente-incompleta` — nothing sent, the lock handed
  * back. This produto's own listing is D15's (excluded); a body with no SKU
- * scans nothing; an `incerta` draft ran ENSURE instead. The dry run never
+ * scans nothing; an `incerta` draft ran ENSURE instead — for the fold ENSURE
+ * searched only: a SKU renamed between the reservation and `preparar` is
+ * looked up here on the body (batch-A review). The dry run never
  * reaches it (it takes no lock and applies nothing).
  *
  * ## ⚠️ An UNCERTAIN first create is remembered, then LOOKED FOR (#1911, D5)
@@ -223,9 +225,11 @@ import {
 import { problemaDeErroShopee, problemasDeErroShopee } from './problemasPublicacao';
 import { criarRascunhoShopee } from './rascunho';
 import {
+  buscaNoPrazoDoEnvio,
   ConflitoDeRascunhoShopeeError,
   conferirTravaAntesDoEnvio,
   liberarTravaShopee,
+  liberarTravaShopeeSemSubstituirErro,
   portaoDeEnvio,
   registrarCriacaoIncerta,
   reivindicarRascunhoShopee,
@@ -1794,8 +1798,9 @@ class ColetorDeAviso {
  * `add_item` failure is CLASSIFIED (`desfechoDeCriacaoDeItem`): `nao-criado` ⇒
  * the stamp and the release in ONE token-guarded write; `incerto` ⇒ no stamp,
  * the lock KEPT, the raw error rethrown — never a "Shopee refused" for a create
- * that may exist. And when the reservation found the draft `livre`
- * ({@link PublicacaoDeRascunho.verificarAnuncioExistente}), the FIRST create's
+ * that may exist. And unless the reservation's ENSURE already searched the
+ * very SKU fold the body sends
+ * ({@link PublicacaoDeRascunho.skuJaBuscado}), the FIRST create's
  * same-SKU look-up runs before all of that, outside the step-2 `try` (#1911
  * P5b): its refusal is a `ShopeePublishBlockedError`, its Shopee failure
  * propagates unclassified and unstamped, and its calls count into
@@ -1862,13 +1867,32 @@ export async function aplicarPublicacao(
   // Under the lock, after D15, BEFORE the `try`: a refusal is a blocked
   // refusal with nothing sent, and a scan's Shopee failure propagates
   // untouched — never classified as an `add_item` outcome nor stamped (the
-  // caller hands the lock back, `fase` still `travada`).
-  if (!plano.ehAtualizacao && rascunho !== null && rascunho.verificarAnuncioExistente) {
-    const verificacao = await verificarAnuncioExistenteShopee(deps.client, deps.db, {
-      integracaoId: deps.integracaoId,
-      produtoId,
-      itemSku: plano.item.criar.item_sku,
-    });
+  // caller hands the lock back, `fase` still `travada`). Skipped ONLY when
+  // this run's ENSURE already searched the very fold the body sends: the
+  // produto is read again after the reservation, and a SKU renamed in
+  // between was never looked up (batch-A review, rule 7).
+  if (
+    !plano.ehAtualizacao &&
+    rascunho !== null &&
+    skuDaBuscaShopee(plano.item.criar.item_sku) !== rascunho.skuJaBuscado
+  ) {
+    // ⚠️ Under the send gate's deadline (batch-A review): on a shop of
+    // thousands of listings the walk can outlive the request, and a run the
+    // platform cuts there leaves its lock UNSTAMPED. It stops before its next
+    // Shopee read instead — 409 `PUBLICACAO_EXPIRADA`, nothing decided, the
+    // lock handed back by `publicarAnuncioShopee`'s catch (`fase` `travada`).
+    const verificacao = await buscaNoPrazoDoEnvio(
+      rascunho.reserva.linkDocId,
+      rascunho.reserva,
+      rascunho.controles,
+      (podeContinuar) =>
+        verificarAnuncioExistenteShopee(deps.client, deps.db, {
+          integracaoId: deps.integracaoId,
+          produtoId,
+          itemSku: plano.item.criar.item_sku,
+          podeContinuar,
+        }),
+    );
     chamadasShopee += verificacao.chamadas;
     if (temProblemaDeBloqueio(verificacao.problemas)) {
       throw new ShopeePublishBlockedError({
@@ -2087,8 +2111,10 @@ export async function aplicarPublicacao(
           );
         }
         // `nao-criado`: the stamp and the release in ONE token-guarded write —
-        // a lock another run holds now is never cleared nor stamped over.
-        await liberarTravaShopee(deps.db, reserva, carimboDaFalha(deps, falha));
+        // a lock another run holds now is never cleared nor stamped over. A
+        // Firestore failure of that write never replaces Shopee's refusal
+        // below (the stamp is lost with the release; the lock expires).
+        await liberarTravaShopeeSemSubstituirErro(deps.db, reserva, carimboDaFalha(deps, falha));
       } else {
         await carimbarFalhaDePublicacao(deps, { ...falha, produtoId, linkDocId });
       }
@@ -2156,12 +2182,15 @@ export interface PublicacaoDeRascunho {
   readonly reserva: ReservaDeRascunhoShopee;
   readonly controles: ControlesDaPublicacaoAoVivo;
   /**
-   * #1911 P5b: run the FIRST create's same-SKU look-up
-   * (`verificarAnuncioExistenteShopee`) before the send. `true` exactly when
-   * the reservation found the draft `livre`; an `incerta` draft's run already
-   * searched (ENSURE — Lucas, 2026-10-26: that path is not scanned twice).
+   * #1911 P5b: the SKU fold this run's ENSURE already searched under this
+   * lock (the reservation's `skuBuscadoNaReserva`), or `null` when none was —
+   * a `livre` draft, or the attested SKU-less proceed. The FIRST create's
+   * same-SKU look-up (`verificarAnuncioExistenteShopee`) is skipped ONLY when
+   * the planned body sends exactly this fold (Lucas, 2026-10-26: that path is
+   * not scanned twice); any other body — a SKU renamed between the
+   * reservation and `preparar` included (batch-A review) — is looked up.
    */
-  readonly verificarAnuncioExistente: boolean;
+  readonly skuJaBuscado: string | null;
 }
 
 /**
@@ -2416,8 +2445,8 @@ function registrarPublicacao(deps: PublicarAnuncioDeps, r: ResultadoPublicacao):
  * (the route's 409) with nothing read beyond the links and nothing sent. Any
  * throw while nothing may have reached Shopee hands the lock back, unstamped
  * (a blocked plan, a photo or taxonomy read failure, the credential warm, the
- * send gate, a lost lock); every other way out is `aplicarPublicacao`'s to
- * decide.
+ * send gate, a lost lock) — best-effort: a failed hand-back never replaces the
+ * error being thrown; every other way out is `aplicarPublicacao`'s to decide.
  *
  * ⚠️ Before that, a live create of a produto the conta holds NO link of MINTS
  * its draft ({@link nomearCriacaoSemVinculo}, K1-5) and continues named. And a
@@ -2447,6 +2476,9 @@ export async function publicarAnuncioShopee(
       deps.resolvedorDeImagens ?? criarResolvedorDePublicacao(deps, alvo.produtoId);
     const contexto = await prepararPublicacao(deps, alvo, resolvedorDeImagens);
     if (contexto === null) {
+      // No error to protect here: a failed release is the ONLY answer, so it
+      // propagates (the reservation is then `encerrada`, so the catch below
+      // does not release a second time).
       if (rascunho !== null) await liberarTravaShopee(deps.db, rascunho.reserva);
       return null;
     }
@@ -2461,9 +2493,11 @@ export async function publicarAnuncioShopee(
     // ⚠️ EVERY error is rethrown; this catch only hands a DRAFT's lock back
     // when nothing that may have reached Shopee is outstanding. Any other
     // `fase` was already decided where it happened — released with its stamp,
-    // claimed, or KEPT on purpose for an outcome nobody can know.
+    // claimed, or KEPT on purpose for an outcome nobody can know. The
+    // hand-back never replaces `err`: a failed release leaves the lock to
+    // expire, and the operator still gets the answer they act on.
     if (rascunho !== null && rascunho.reserva.fase === 'travada') {
-      await liberarTravaShopee(deps.db, rascunho.reserva);
+      await liberarTravaShopeeSemSubstituirErro(deps.db, rascunho.reserva);
     }
     throw err;
   }
@@ -2509,7 +2543,7 @@ async function reservarSeForRascunho(
     rascunho: {
       reserva: desfecho.reserva,
       controles: deps.aoVivo,
-      verificarAnuncioExistente: !desfecho.buscouCriacaoIncerta,
+      skuJaBuscado: desfecho.skuBuscadoNaReserva,
     },
   };
 }

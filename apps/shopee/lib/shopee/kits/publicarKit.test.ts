@@ -1031,6 +1031,93 @@ describe('RT3 — o passo 12 pula o kit criado', () => {
 });
 
 /* ========================================================================== */
+/*  (3b) #1911 batch-A — a LISTED kit candidate with no base row fails CLOSED   */
+/* ========================================================================== */
+
+describe('(#1911 batch-A) o L6 de uma criação: um candidato LISTADO cuja base a Shopee não devolveu', () => {
+  /** A same-SKU listing the shop LISTS (fixture id). */
+  const GEMEO = 2500139899;
+
+  /**
+   * `loja` seen through two named transforms: `get_item_base_info` drops
+   * `semBase`'s row (the list still shows it), and the LIST row of
+   * `listaSemTag` carries no `tag` (a row that predates it — a candidate).
+   */
+  /** Every id `get_item_base_info` was asked for, through {@link lida}. */
+  const idsLidos: number[] = [];
+
+  function lida(loja: Loja, a: { readonly semBase?: number; readonly listaSemTag?: number }): Loja {
+    idsLidos.length = 0;
+    const original = loja.client;
+    const client = new Proxy({} as Record<string, unknown>, {
+      get(_alvo, prop) {
+        if (prop === 'getItemBaseInfo') {
+          return async (p: { itemIds: readonly number[] }) => {
+            idsLidos.push(...p.itemIds);
+            const r = await original.getItemBaseInfo(p);
+            return { ...r, item_list: r.item_list.filter((l) => l?.item_id !== a.semBase) };
+          };
+        }
+        if (prop === 'getItemList') {
+          return async (p: Parameters<ShopeeClient['getItemList']>[0]) => {
+            const r = await original.getItemList(p);
+            return {
+              ...r,
+              item: r.item.map((l) => (l.item_id === a.listaSemTag ? { ...l, tag: null } : l)),
+            };
+          };
+        }
+        return (original as unknown as Record<string, unknown>)[prop as string];
+      },
+    }) as unknown as ShopeeClient;
+    return { ...loja, client };
+  }
+
+  function comGemeo(loja: Loja, tag: Json): void {
+    loja.itens.set(GEMEO, {
+      base: { item_id: GEMEO, item_status: 'NORMAL', item_sku: SKU, has_model: false, tag },
+    });
+  }
+
+  it('⇒ busca-de-kit-incompleta nomeando o id, ZERO add_kit_item, nada gravado', async () => {
+    const db = new FakeDb();
+    semearComponentes(db);
+    semearFamilia(db);
+    const loja = lojaComKits();
+    // A same-SKU KIT the list shows — and whose base row never comes back.
+    comGemeo(loja, { kit: true });
+
+    const erro = await recusaDe(criarKit(db, lida(loja, { semBase: GEMEO })));
+
+    expect(erro.problemas.map((p) => p.motivo)).toEqual([
+      MOTIVO_PUBLICACAO_BLOQUEADA.buscaDeKitIncompleta,
+    ]);
+    expect(idsLidos).toContain(GEMEO);
+    expect(erro.problemas[0]?.mensagem).toContain(String(GEMEO));
+    expect(erro.problemas[0]?.mensagem).toContain('tente de novo');
+    expect(loja.ops).toContain('get_item_list');
+    expect(loja.ops.filter((o) => o === 'add_kit_item')).toHaveLength(0);
+    expect(db.writes).toEqual([]);
+  });
+
+  it('⛔ quase-par: a base devolvida diz que NÃO é kit ⇒ não é achado, e a criação segue (UM add_kit_item)', async () => {
+    const db = new FakeDb();
+    semearComponentes(db);
+    semearFamilia(db);
+    const loja = lojaComKits();
+    comGemeo(loja, { kit: false });
+    // The LIST row says nothing (a pre-tag row), so it is a candidate whose
+    // base row IS read — and says "not a kit".
+    const r = await criarKit(db, lida(loja, { listaSemTag: GEMEO }));
+
+    expect(r).toMatchObject({ desfecho: 'criado', itemId: KIT_ITEM });
+    // Not vacuous: the twin WAS asked about (and answered "not a kit").
+    expect(idsLidos).toContain(GEMEO);
+    expect(loja.ops.filter((o) => o === 'add_kit_item')).toHaveLength(1);
+  });
+});
+
+/* ========================================================================== */
 /*  (4) RT7 — THE L9 RECOVERY                                                  */
 /* ========================================================================== */
 

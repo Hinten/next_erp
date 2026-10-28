@@ -133,14 +133,21 @@ const RAW_DO_KIT: Record<string, unknown> = {
 };
 
 function buscaVazia(): NonNullable<ContextoKit['busca']> {
-  return { completo: true, achados: [], paginas: 1, chamadas: 1 };
+  return { completo: true, achados: [], incompleta: null, paginas: 1, chamadas: 1 };
 }
 
+/** `completo: false` ⇒ the walk stopped short (`causa: 'lista'`) — the documented shape. */
 function busca(
   achados: readonly AchadoKitPorSku[],
   completo = true,
 ): NonNullable<ContextoKit['busca']> {
-  return { completo, achados, paginas: 1, chamadas: 2 };
+  return {
+    completo,
+    achados,
+    incompleta: completo ? null : { causa: 'lista' },
+    paginas: 1,
+    chamadas: 2,
+  };
 }
 
 function contexto(over: Partial<ContextoKit> = {}): ContextoKit {
@@ -514,6 +521,36 @@ describe('decidirKitNovo — "garanta que o kit novo existe" (L9, R-14)', () => 
     const r = decidirKitNovo(busca([], false), nenhum, semStatus, nenhum);
     expect(r.acao).toBe('recusar');
     expect(r.acao === 'recusar' ? motivos(r.problemas) : []).toEqual([M.buscaDeKitIncompleta]);
+  });
+
+  it('(#1911 batch-A) a frase diz a CAUSA: base-info não devolvida nomeia os ids e pede para tentar de novo; o teto mantém a frase do passo 19', () => {
+    const porBase = decidirKitNovo(
+      {
+        completo: false,
+        achados: [],
+        incompleta: { causa: 'base-info', itemIds: [KIT, KIT_2] },
+      },
+      nenhum,
+      semStatus,
+      nenhum,
+    );
+    expect(porBase.acao).toBe('recusar');
+    const fraseBase = porBase.acao === 'recusar' ? porBase.problemas[0]?.mensagem : '';
+    expect(porBase.acao === 'recusar' ? motivos(porBase.problemas) : []).toEqual([
+      M.buscaDeKitIncompleta,
+    ]);
+    expect(fraseBase).toContain('a Shopee não devolveu os dados de 2 anúncio(s) listado(s)');
+    expect(fraseBase).toContain(`${String(KIT)}, ${String(KIT_2)}`);
+    expect(fraseBase).toContain('tente de novo');
+    expect(fraseBase).toContain('Seller Centre');
+    expect(fraseBase).not.toContain('10 000');
+
+    // ⛔ quase-par: the walk that stopped short keeps step 19's sentence.
+    const porLista = decidirKitNovo(busca([], false), nenhum, semStatus, nenhum);
+    const fraseLista = porLista.acao === 'recusar' ? porLista.problemas[0]?.mensagem : '';
+    expect(fraseLista).toBe(
+      'a busca de kit duplicado não terminou (mais de 10 000 anúncios) — nada foi criado',
+    );
   });
 
   it('M81/M89 — um achado que não é nosso recusa "importe-o"; o vinculado a outro produto é nomeado', () => {

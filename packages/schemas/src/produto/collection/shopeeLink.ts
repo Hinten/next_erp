@@ -92,10 +92,12 @@ import { ACAO_STATUS_ANUNCIO, type AcaoStatusAnuncio } from './mercadoLivreLink'
  *    Written only by `apps/shopee`. SET by the publish of a draft — when an
  *    `add_item` ends `incerto` (the classifier in `anuncios/criacaoIncerta.ts`),
  *    in the same token-guarded write that keeps the lock live for the wait;
- *    and when a reservation takes over an EXPIRED lock nobody classified (a
- *    crashed run), which carries that lock's `desde` here in the same write
- *    that replaces the lock, because the new lock's `desde` is LATER — both
- *    keep an earlier value. CLEARED (`null`) by the publish when its ENSURE
+ *    and when a reservation takes over an EXPIRED, STAMPED lock nobody
+ *    classified (a run that crashed at or after the send), which carries that
+ *    lock's `desde` here in the same write that replaces the lock, because
+ *    the new lock's `desde` is LATER — both keep an earlier value. An expired
+ *    lock that was never stamped carries nothing: its run never sent.
+ *    CLEARED (`null`) by the publish when its ENSURE
  *    scan ends COMPLETE with no candidate at all, by ENSURE's adoption, by the
  *    write-back #1 claim, and by the product import when it adopts the draft
  *    (`produtos/`). Nothing in a browser writes it. Every reader decides
@@ -373,9 +375,25 @@ export const publicacaoEmCursoShopeeSchema = z
      * token-guarded PRE-SEND re-read, before the first `add_item` leg, so a
      * crash after the send still leaves it on the lock (batch-A review: the
      * look-up for an uncertain create compares against what the attempt
-     * SENT, never against the produto's SKU at re-publish time). Absent on a
-     * lock that never reached the send — and on any lock written before the
-     * stamp existed: ABSENT is "unknown", never "sent no SKU".
+     * SENT, never against the produto's SKU at re-publish time).
+     *
+     * ⚠️ **STAMPED ⇔ a string** — `''` is the stamp of a SKU-less body, a
+     * VALUE. `null` or absent = NEVER STAMPED = the run never reached the
+     * send, because this stamp is the ONLY writer of the key and it runs
+     * before every `add_item` leg (the takeover writes a fresh lock without
+     * it; the `incerto` re-arm carries the one already there). So an expired
+     * lock that was never stamped, on a draft with no `criacaoIncertaDesde`,
+     * is NOT an uncertain create: `estadoPublicacaoRascunhoShopee` reads it
+     * `livre` at once and `janelaDaCriacaoIncertaShopee` gives no window
+     * (Lucas, 2026-10-28 — else the next run's look-up, narrowed to "since
+     * the attempt", skips an OLD unlinked same-SKU listing and creates a
+     * duplicate).
+     *
+     * ⚠️ Deploy: that reading holds only because #1911's batch A deploys as
+     * ONE — the lock (P3) never ships without this stamp (P6). A P3-only
+     * deploy would write unstamped locks for runs that DID send, and the
+     * rule above would free them with no grace; the P3, P4, P5 and P6 PRs
+     * each say "never without P6".
      */
     sku: z.string().nullable().optional(),
   })

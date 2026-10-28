@@ -129,7 +129,17 @@ function base(): FakeDb {
   return db;
 }
 
+/**
+ * ANOTHER run's lock, STAMPED by its pre-send re-read (`sku`): that run may
+ * have a create in flight, so past `expiraEm` it serves the grace and then
+ * reads `incerta` (batch-A review — an unstamped one is {@link travaSemCarimbo}).
+ */
 function travaAlheia(expiraEm: number) {
+  return { ...travaSemCarimbo(expiraEm), sku: 'CAM-ENVIADO' };
+}
+
+/** ANOTHER run's lock that never reached the send: past `expiraEm` it reads `livre`. */
+function travaSemCarimbo(expiraEm: number) {
   return {
     desde: expiraEm - PUBLICACAO_EM_CURSO_SHOPEE_TTL_MS,
     expiraEm,
@@ -1804,6 +1814,30 @@ describe('atualizarRascunhoShopee — base conferida (nível 3) + update guardad
       expect(r.gravados).toEqual([CAMPO_RASCUNHO_SHOPEE.categoryId]);
     });
 
+    it('⛔ NEAR-MISS (batch-A review): a trava vencida que NUNCA foi carimbada é LIVRE — sem carência, sem CATEGORIA_TRAVADA', async () => {
+      // Its run died before the pre-send stamp: nothing was sent under it.
+      for (const agora of [AGORA, AGORA + AGUARDAR_ANUNCIO_INCERTO_SHOPEE_MS]) {
+        const db = new FakeDb();
+        db.seed(CAMINHO, rascunho({ publicacaoEmCurso: travaSemCarimbo(AGORA) }));
+        const r = await atualizarRascunhoShopee(
+          deps(db, { nowMs: agora }),
+          corpoAtualizar({ category_id: 100_017, attributes: null }, { category_id: 100_030 }),
+        );
+        expect(r.gravados, String(agora)).toEqual([CAMPO_RASCUNHO_SHOPEE.categoryId]);
+      }
+      // …while it is still LIVE, it is still EM_ANDAMENTO.
+      const db = new FakeDb();
+      db.seed(CAMINHO, rascunho({ publicacaoEmCurso: travaSemCarimbo(AGORA + 1) }));
+      const err = await recusaDe(
+        atualizarRascunhoShopee(
+          deps(db),
+          corpoAtualizar({ item_name: 'Camiseta do rascunho' }, { item_name: 'X' }),
+        ),
+      );
+      expect(err.code).toBe(CODIGO_RASCUNHO_SHOPEE.publicacaoEmAndamento);
+      expect(err.aguardarMs).toBe(1);
+    });
+
     it('INCERTA: os ATRIBUTOS ainda mudam (só a categoria trava) — a trava fica BYTE-idêntica', async () => {
       const db = new FakeDb();
       const trava = travaAlheia(AGORA - AGUARDAR_ANUNCIO_INCERTO_SHOPEE_MS);
@@ -2064,6 +2098,29 @@ describe('descartarRascunhoShopee — base INTEIRA conferida + delete guardado',
       db.seed(CAMINHO, incerto);
       const err = await recusaDe(descartarRascunhoShopee(deps(db), corpoDescartar(vista(incerto))));
       expect(err.code).toBe(CODIGO_RASCUNHO_SHOPEE.criacaoIncerta);
+    });
+
+    it('⛔ NEAR-MISS (batch-A review): a trava vencida NUNCA carimbada, sem registro ⇒ LIVRE — descarta SEM atestação, criacaoIncerta: false', async () => {
+      const db = new FakeDb();
+      const morto = rascunho({ publicacaoEmCurso: travaSemCarimbo(AGORA) });
+      db.seed(CAMINHO, morto);
+      const r = await descartarRascunhoShopee(deps(db), corpoDescartar(vista(morto)));
+      expect(r).toEqual({ linkDocId: RASCUNHO, descartado: true, criacaoIncerta: false });
+      expect(doc(db)).toBeUndefined();
+    });
+
+    it('⛔ NEAR-MISS: a MESMA trava sem carimbo num rascunho COM registro ⇒ AINDA exige a atestação', async () => {
+      const db = new FakeDb();
+      const comRegistro = rascunho({
+        publicacaoEmCurso: travaSemCarimbo(AGORA),
+        criacaoIncertaDesde: AGORA - 600_000,
+      });
+      db.seed(CAMINHO, comRegistro);
+      const err = await recusaDe(
+        descartarRascunhoShopee(deps(db), corpoDescartar(vista(comRegistro))),
+      );
+      expect(err.code).toBe(CODIGO_RASCUNHO_SHOPEE.criacaoIncerta);
+      expect(doc(db)).toEqual(comRegistro);
     });
   });
 
