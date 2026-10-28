@@ -91,6 +91,23 @@
  * Every Shopee FAILURE propagates untouched (rule 6) — the caller's
  * classifier owns those.
  *
+ * ## The deadline checkpoint (`podeContinuar`, #1911 batch-A review)
+ *
+ * A DRAFT's two look-ups (ENSURE and the first create's same-SKU scan) run
+ * under the publish lock, and a walk that outlives the request (the route's
+ * 180 s ceiling — a shop of thousands of listings) dies with the lock
+ * unstamped, or worse races its own deadline. So both pass an optional
+ * `podeContinuar: () => boolean`, asked BEFORE EACH `get_item_list` page
+ * ({@link varrerListaDeItensShopee}) and BEFORE EACH `get_item_base_info`
+ * chunk ({@link clienteDaBuscaNoPrazo} wraps the client the shared reader
+ * batches through). A `false` stops the walk where it stands with NO decision
+ * on the rows read so far — a cut mid-batch never decides, not even on a
+ * definite hit — and throws {@link BuscaForaDoPrazoShopeeError}, which the
+ * publish turns into its send gate's own 409 `PUBLICACAO_EXPIRADA` (nothing
+ * sent, the lock handed back). The predicate is a CLOSURE built where the
+ * clock is (`anuncios/reservaRascunho.ts`, `buscaNoPrazoDoEnvio`): this module
+ * reads no clock. The KIT arm passes none — its walk is unchanged.
+ *
  * Reads only. `chamadas` (the pages plus the base-info calls actually made — an
  * incomplete-by-`base-info` answer counts its batch too) and `paginas` are
  * reported by the dry run and counted
@@ -113,6 +130,62 @@ import { lerBaseInfoDosItens } from './componentesKit';
 import { MAX_PAGINAS_BUSCA_KIT, STATUS_BUSCA_KIT } from './constantesKit';
 
 /* -------------------------------------------------------------------------- */
+/*                          the deadline checkpoint                            */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * A walk stopped at a deadline checkpoint (module header): the caller's
+ * `podeContinuar` answered `false` before the next Shopee read. Nothing was
+ * decided — the rows read so far are discarded. An APP class, never a
+ * `ShopeeError`: no Shopee answer is involved, and no Shopee-error ladder or
+ * `falhaPublicacao` stamp may read it. The publish converts it
+ * (`buscaNoPrazoDoEnvio`, `anuncios/reservaRascunho.ts`) into 409
+ * `PUBLICACAO_EXPIRADA`.
+ */
+export class BuscaForaDoPrazoShopeeError extends Error {
+  /** Which read the checkpoint refused: a list page, or a base-info chunk. */
+  readonly antesDe: 'get_item_list' | 'get_item_base_info';
+
+  constructor(antesDe: 'get_item_list' | 'get_item_base_info') {
+    super(
+      `a busca de anúncios parou antes de um ${antesDe}: não cabe mais no prazo desta ` +
+        'publicação. Nada foi decidido nem enviado.',
+    );
+    this.name = 'BuscaForaDoPrazoShopeeError';
+    this.antesDe = antesDe;
+  }
+}
+
+/** Ask the checkpoint (absent ⇒ always on); `false` ⇒ throw, nothing decided. */
+function conferirPrazoDaBusca(
+  podeContinuar: (() => boolean) | undefined,
+  antesDe: BuscaForaDoPrazoShopeeError['antesDe'],
+): void {
+  // ⚠️ "Continue only if": anything but an explicit `true` stops the walk.
+  if (podeContinuar === undefined || podeContinuar() === true) return;
+  throw new BuscaForaDoPrazoShopeeError(antesDe);
+}
+
+/**
+ * The client to hand the shared base-info reader (`lerBaseInfoDosItens`) so
+ * that EVERY `get_item_base_info` chunk it batches asks `podeContinuar` first
+ * (module header). `undefined` ⇒ the client itself, untouched.
+ */
+export function clienteDaBuscaNoPrazo(
+  client: ShopeeClient,
+  podeContinuar: (() => boolean) | undefined,
+): ShopeeClient {
+  if (podeContinuar === undefined) return client;
+  return {
+    ...client,
+    getItemBaseInfo: async (p) => {
+      conferirPrazoDaBusca(podeContinuar, 'get_item_base_info');
+      return client.getItemBaseInfo(p);
+    },
+  };
+}
+
+/* -------------------------------------------------------------------------- */
 /*                        the walk — ONE copy, three callers                   */
 /* -------------------------------------------------------------------------- */
 
@@ -129,6 +202,9 @@ export interface VarreduraDaLojaShopee {
 /**
  * Walk `get_item_list` — see the module header, steps 1–2. Reads only; every
  * Shopee failure propagates untouched (rule 6).
+ *
+ * @throws BuscaForaDoPrazoShopeeError when `podeContinuar` answers `false`
+ *   before a page — nothing decided on the pages already read.
  */
 export async function varrerListaDeItensShopee(
   client: ShopeeClient,
@@ -144,6 +220,8 @@ export async function varrerListaDeItensShopee(
       readonly origem: string;
       readonly ids: Readonly<Record<string, string>>;
     };
+    /** The deadline checkpoint, asked before EACH page (module header); absent ⇒ none. */
+    readonly podeContinuar?: () => boolean;
   },
 ): Promise<VarreduraDaLojaShopee> {
   const candidatos = new Map<number, ShopeeItemListRow>();
@@ -152,6 +230,7 @@ export async function varrerListaDeItensShopee(
   let offset = 0;
 
   while (paginas < a.maxPaginas) {
+    conferirPrazoDaBusca(a.podeContinuar, 'get_item_list');
     const pagina = await client.getItemList({
       offset,
       pageSize: SHOPEE_MAX_PAGE_SIZE,
@@ -259,6 +338,10 @@ export type BuscaDeKitPorSku = BuscaPorSku;
  * calls (an empty SKU would match every SKU-less listing; a padded one would
  * match none). Kit phase A refuses `kit-sem-sku` / `kit-sku-com-espacos` before
  * any scan; the ordinary arm folds first and never scans a blank fold.
+ *
+ * @throws BuscaForaDoPrazoShopeeError when `podeContinuar` answers `false`
+ *   before a page or a base-info chunk — no answer at all, not an incomplete
+ *   one (module header).
  */
 export async function localizarItensPorSku(
   client: ShopeeClient,
@@ -269,6 +352,11 @@ export async function localizarItensPorSku(
     readonly excluirItemIds: ReadonlySet<number>;
     /** `true` ⇒ native kits; `false` ⇒ ordinary listings. */
     readonly kit: boolean;
+    /**
+     * The deadline checkpoint (module header) — the ordinary arm's, under a
+     * draft's lock. The KIT arm passes none.
+     */
+    readonly podeContinuar?: () => boolean;
   },
 ): Promise<BuscaPorSku> {
   if (a.sku === '' || a.sku.trim() !== a.sku) {
@@ -288,6 +376,7 @@ export async function localizarItensPorSku(
       return !a.excluirItemIds.has(linha.item_id);
     },
     registro: { origem, ids: { integracaoId: a.integracaoId } },
+    ...(a.podeContinuar === undefined ? {} : { podeContinuar: a.podeContinuar }),
   });
   const { paginas } = varredura;
   if (!varredura.completo) {
@@ -300,7 +389,9 @@ export async function localizarItensPorSku(
     };
   }
 
-  const leitura = await lerBaseInfoDosItens(client, [...varredura.candidatos.keys()]);
+  const leitura = await lerBaseInfoDosItens(clienteDaBuscaNoPrazo(client, a.podeContinuar), [
+    ...varredura.candidatos.keys(),
+  ]);
   const chamadas = paginas + leitura.chamadas;
 
   const hits: number[] = [];
@@ -367,5 +458,12 @@ export async function localizarKitsPorSku(
     readonly excluirItemIds: ReadonlySet<number>;
   },
 ): Promise<BuscaDeKitPorSku> {
-  return localizarItensPorSku(client, db, { ...a, kit: true });
+  // Field by field, never `...a`: the kit arm has NO deadline checkpoint
+  // (#1911 batch-A review), and a spread would carry one through at run time.
+  return localizarItensPorSku(client, db, {
+    integracaoId: a.integracaoId,
+    sku: a.sku,
+    excluirItemIds: a.excluirItemIds,
+    kit: true,
+  });
 }

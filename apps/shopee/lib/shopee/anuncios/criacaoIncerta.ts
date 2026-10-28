@@ -244,6 +244,7 @@ import {
 import { lerBaseInfoDosItens } from '../kits/componentesKit';
 import { MAX_PAGINAS_BUSCA_KIT, STATUS_BUSCA_KIT } from '../kits/constantesKit';
 import {
+  clienteDaBuscaNoPrazo,
   fraseDaBaseInfoNaoDevolvida,
   localizarItensPorSku,
   varrerListaDeItensShopee,
@@ -676,6 +677,14 @@ export interface EntradaDaBuscaIncerta {
   readonly vinculosDoProduto: readonly VinculoLidoDaConta[];
   /** The operator's attestation — honoured for `-sem-sku` and `-ja-vinculada` ONLY (K1-11). */
   readonly confirmarCriacaoIncerta: boolean;
+  /**
+   * The deadline checkpoint (#1911 batch-A review) — asked before EACH
+   * `get_item_list` page and EACH base-info chunk; `false` ⇒ the look-up stops
+   * with NO verdict and throws `BuscaForaDoPrazoShopeeError`
+   * (`kits/localizarKitPorSku.ts`). A closure over the route's clock, built by
+   * the reservation — this module reads none. Absent ⇒ no checkpoint.
+   */
+  readonly podeContinuar?: () => boolean;
 }
 
 /**
@@ -867,6 +876,11 @@ function skuReportado(base: ShopeeItemBaseInfoRow | null): string | null {
  * so none is sent), one base-info batch, and one `resolverLinkPorItemId` per
  * row that could still matter. Every Shopee and Firestore failure propagates
  * (rule 6): the reservation hands its lock back, nothing having been sent.
+ *
+ * ⚠️ `e.podeContinuar` is asked before every page and every base-info chunk;
+ * a `false` throws `BuscaForaDoPrazoShopeeError` with NO verdict — not even
+ * on a definite hit already read (a cut mid-batch never decides) — and the
+ * reservation answers 409 `PUBLICACAO_EXPIRADA`, the record KEPT.
  */
 export async function localizarAnuncioIncerto(
   client: ShopeeClient,
@@ -915,6 +929,7 @@ export async function localizarAnuncioIncerto(
       origem: '[shopee/anuncios]',
       ids: { integracaoId: e.integracaoId, produtoId: e.produtoId },
     },
+    ...(e.podeContinuar === undefined ? {} : { podeContinuar: e.podeContinuar }),
   });
 
   if (!completo) {
@@ -928,7 +943,11 @@ export async function localizarAnuncioIncerto(
     return { tipo: 'recusar', problema: problemaBuscaIncompleta(paginas), resumo };
   }
 
-  const leitura = await lerBaseInfoDosItens(client, [...candidatos.keys()]);
+  // Every chunk asks the checkpoint first: a cut between two chunks decides
+  // nothing, a definite hit in the first one included.
+  const leitura = await lerBaseInfoDosItens(clienteDaBuscaNoPrazo(client, e.podeContinuar), [
+    ...candidatos.keys(),
+  ]);
   const proprios = new Set<number>();
   for (const v of e.vinculosDoProduto) {
     const itemId = itemIdEnderecavelShopee(v.raw.item_id);
@@ -1181,6 +1200,13 @@ export function problemasDoAnuncioExistente(
  * ⚠️ Every Shopee and Firestore failure propagates untouched (rule 6) — the kit
  * arm's answer to a failed scan: nothing was sent, and the publish hands the
  * lock back unstamped.
+ *
+ * ⚠️ `e.podeContinuar` (#1911 batch-A review): the walk of a large shop can
+ * outlive the request — and a run cut there dies with its lock UNSTAMPED. The
+ * checkpoint is asked before every page and every base-info chunk; a `false`
+ * throws `BuscaForaDoPrazoShopeeError` with NO verdict, which the publish
+ * answers as its send gate's 409 `PUBLICACAO_EXPIRADA` (lock released, no
+ * record written).
  */
 export async function verificarAnuncioExistenteShopee(
   client: ShopeeClient,
@@ -1190,6 +1216,8 @@ export async function verificarAnuncioExistenteShopee(
     readonly produtoId: string;
     /** The planned create body's `item_sku` (absent ⇔ the body sends none). */
     readonly itemSku: string | null | undefined;
+    /** The deadline checkpoint (see above); absent ⇒ none. */
+    readonly podeContinuar?: () => boolean;
   },
 ): Promise<VerificacaoDoAnuncioExistente> {
   const sku = skuDaBuscaShopee(e.itemSku);
@@ -1200,6 +1228,7 @@ export async function verificarAnuncioExistenteShopee(
     sku,
     excluirItemIds: new Set<number>(),
     kit: false,
+    ...(e.podeContinuar === undefined ? {} : { podeContinuar: e.podeContinuar }),
   });
   const problemas = problemasDoAnuncioExistente(busca, e.produtoId);
   // eslint-disable-next-line no-console -- one line per look-up: ids, counts and the verdict

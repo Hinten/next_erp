@@ -20,7 +20,13 @@
  *     and the SKU that attempt sent into `criacaoIncertaSku` — in the SAME
  *     write, so a lock handed back later never loses the record; a
  *     document whose window is unreadable on both keys keeps P3's 409
- *     `CRIACAO_INCERTA` (nothing says WHEN — never "proceed").
+ *     `CRIACAO_INCERTA` (nothing says WHEN — never "proceed"). ⚠️ An
+ *     expired lock its run never STAMPED (step 2), on a draft with no
+ *     record, reads `livre` (batch-A review, Lucas 2026-10-28): that run died
+ *     before the send, so the lock is simply replaced — NO record, NO ENSURE —
+ *     and the publish is a first create, whose same-SKU look-up walks the
+ *     whole shop. Taken over as an uncertain create, ENSURE's window ("since
+ *     the attempt") would never see an OLD unlinked same-SKU listing.
  *     Then, **lock-then-scan** (D15): the produto's other links of this conta —
  *     one subcollection read, no index ({@link lerVinculosDaConta}). Any of
  *     them locked or uncertain ⇒ release ours, 409 `EM_ANDAMENTO` (confirmed or
@@ -46,19 +52,26 @@
  *     `skuBuscadoNaReserva`, `null` when none was), and the publish skips its
  *     own look-up only for a body that sends that very fold: `preparar`
  *     re-reads the produto after this, so a SKU renamed in between is looked
- *     up on the body (batch-A review).
+ *     up on the body (batch-A review). Both look-ups run under the send
+ *     gate's deadline ({@link buscaNoPrazoDoEnvio}): a walk that would
+ *     outlive the request stops before its next Shopee read with 409
+ *     `PUBLICACAO_EXPIRADA`, nothing decided, our lock handed back.
  *  2. **Re-read before the send, and stamp what it sends**
  *     ({@link conferirTravaAntesDoEnvio}): the stored token must still be
  *     OURS, or nothing is sent — then ONE token-guarded write records the
  *     folded SKU of the create body on the lock (`publicacaoEmCurso.sku`), so
  *     the look-up of an uncertain create compares against what the attempt
  *     SENT, never against the produto's SKU at re-publish time (batch-A
- *     review).
+ *     review). The stamp is also what tells a crashed run's lock apart: it
+ *     is the ONLY writer of `publicacaoEmCurso.sku` and precedes every leg,
+ *     so an expired lock without it never had a send in flight (step 1).
  *  3. **The per-leg send gate** ({@link portaoDeEnvio}) — SYNCHRONOUS, run
  *     immediately before EACH `client.addItem` call (both legs of the fiscal
  *     retry), right AFTER that leg's credential warm
  *     ({@link ControlesDaPublicacaoAoVivo.aquecerCredencial}): send only while
- *     `agora() + MARGEM_ENVIO_SHOPEE_MS < min(expiraEm, prazoDaRequisicao)`.
+ *     `agora() + MARGEM_ENVIO_SHOPEE_MS < min(expiraEm, prazoDaRequisicao)` —
+ *     {@link dentroDoPrazoDeEnvio}, the ONE copy of that condition, which the
+ *     look-ups of step 1 ask too.
  *     The one await left between the gate and the request is the client's own
  *     token ask, which the warm made a single credential read — so MARGEM
  *     covers it, no create's request STARTS at or after `expiraEm`, and none
@@ -130,6 +143,7 @@ import {
 } from '@delfrance/data/admin/collections';
 import { isFailedPrecondition, isGrpcStatusError } from '@delfrance/data/admin/grpcErrors';
 
+import { BuscaForaDoPrazoShopeeError } from '../kits/localizarKitPorSku';
 import { aplicarLinkDaListagem } from '../produtos/links';
 import { localizarAnuncioIncerto } from './criacaoIncerta';
 import { ShopeePublishBlockedError } from './errosPublicacao';
@@ -508,8 +522,9 @@ export async function reservarRascunhoShopee(
     } catch (err) {
       // ⚠️ EVERY error is rethrown: this catch exists only to hand our lock
       // back first — a 409 from the scan, a refusal of the look-up, and
-      // equally a failed read, all happen with NOTHING sent, and a lock left
-      // behind would later read as an uncertain create that never happened.
+      // equally a failed read (or a walk cut by the deadline), all happen with
+      // NOTHING sent, and a lock left behind would hold every other publish of
+      // the draft off until it expires (unstamped, it then reads `livre`).
       // (An adoption that landed closed the reservation: nothing to hand back.)
       // The hand-back is best-effort: a Firestore failure of the RELEASE must
       // not turn the answer the operator acts on into a 500.
@@ -635,14 +650,24 @@ async function garantirCriacaoIncerta(
 ): Promise<DesfechoDoEnsure> {
   const produtoSnap = await produtoCollection.docRef(db, {}, a.alvo.produtoId).get();
   const produto = produtoSnap.exists ? ((produtoSnap.data() ?? {}) as Record<string, unknown>) : {};
-  const veredicto = await localizarAnuncioIncerto(a.busca.client, db, {
-    integracaoId: a.alvo.integracaoId,
-    produtoId: a.alvo.produtoId,
-    sku: typeof produto.sku === 'string' ? produto.sku : null,
-    janela: a.janela,
-    vinculosDoProduto: a.vinculos,
-    confirmarCriacaoIncerta: a.controles.confirmarCriacaoIncerta,
-  });
+  // Under the send gate's deadline (batch-A review): a walk that cannot finish
+  // before it is a 409 with our lock handed back — never a run the platform
+  // cuts mid-walk.
+  const veredicto = await buscaNoPrazoDoEnvio(
+    reserva.linkDocId,
+    reserva,
+    a.controles,
+    (podeContinuar) =>
+      localizarAnuncioIncerto(a.busca.client, db, {
+        integracaoId: a.alvo.integracaoId,
+        produtoId: a.alvo.produtoId,
+        sku: typeof produto.sku === 'string' ? produto.sku : null,
+        janela: a.janela,
+        vinculosDoProduto: a.vinculos,
+        confirmarCriacaoIncerta: a.controles.confirmarCriacaoIncerta,
+        podeContinuar,
+      }),
+  );
 
   if (veredicto.tipo === 'recusar') {
     throw new ShopeePublishBlockedError({
@@ -878,12 +903,46 @@ export async function conferirTravaAntesDoEnvio(
 }
 
 /**
+ * THE condition of the send gate (#1911 batch-A review) — the ONE copy, read
+ * by {@link portaoDeEnvio} before each `add_item` leg and by the draft's two
+ * look-ups ({@link buscaNoPrazoDoEnvio}) before each Shopee read:
+ *
+ * ```
+ * agora() + MARGEM_ENVIO_SHOPEE_MS < min(trava.expiraEm, prazoDaRequisicao ?? trava.expiraEm)
+ * ```
+ *
+ * Reads the clock ONCE, here, per call. ⚠️ Written as "go on only if", so a
+ * NaN clock (every comparison false) answers `false` — refuse rather than
+ * send, stop rather than walk. A second, inline copy of this comparison is the
+ * drift the #1369 rule forbids (a `<=` there would let a walk run where the
+ * gate refuses).
+ */
+export function dentroDoPrazoDeEnvio(
+  trava: Pick<PublicacaoEmCursoShopee, 'expiraEm'>,
+  controles: Pick<ControlesDaPublicacaoAoVivo, 'agora' | 'prazoDaRequisicao'>,
+): boolean {
+  const limite =
+    controles.prazoDaRequisicao === null
+      ? trava.expiraEm
+      : Math.min(trava.expiraEm, controles.prazoDaRequisicao);
+  return controles.agora() + MARGEM_ENVIO_SHOPEE_MS < limite;
+}
+
+/** Which deadline binds first: the request's ceiling (a route run) or the lock's. */
+function prazoDaRequisicaoVenceAntes(
+  trava: Pick<PublicacaoEmCursoShopee, 'expiraEm'>,
+  controles: Pick<ControlesDaPublicacaoAoVivo, 'prazoDaRequisicao'>,
+): boolean {
+  return controles.prazoDaRequisicao !== null && controles.prazoDaRequisicao < trava.expiraEm;
+}
+
+/**
  * The per-leg send gate (step 3) — SYNCHRONOUS, so nothing of OURS runs between
  * it and the `client.addItem` call it guards; the client's own token ask does,
  * and the caller warms the credential first
  * ({@link ControlesDaPublicacaoAoVivo.aquecerCredencial}) so that ask is one
  * credential read inside the margin. Sends only while
- * `agora() + MARGEM_ENVIO_SHOPEE_MS < min(trava.expiraEm, prazoDaRequisicao)`.
+ * {@link dentroDoPrazoDeEnvio}.
  *
  * ⚠️ `agora` is read HERE, per leg — never the run's `nowMs` and never a value
  * captured before the first leg: the fiscal retry's second `add_item` may start
@@ -896,20 +955,57 @@ export function portaoDeEnvio(
   trava: Pick<PublicacaoEmCursoShopee, 'expiraEm'>,
   controles: Pick<ControlesDaPublicacaoAoVivo, 'agora' | 'prazoDaRequisicao'>,
 ): void {
-  const limite =
-    controles.prazoDaRequisicao === null
-      ? trava.expiraEm
-      : Math.min(trava.expiraEm, controles.prazoDaRequisicao);
-  const agora = controles.agora();
-  // ⚠️ Written as "send only if", so a NaN clock (every comparison false)
-  // refuses rather than sends.
-  if (agora + MARGEM_ENVIO_SHOPEE_MS < limite) return;
+  if (dentroDoPrazoDeEnvio(trava, controles)) return;
   throw expirada(
     linkDocId,
-    controles.prazoDaRequisicao !== null && controles.prazoDaRequisicao < trava.expiraEm
+    prazoDaRequisicaoVenceAntes(trava, controles)
       ? 'o tempo desta requisição acabaria durante o envio'
       : 'o tempo da trava acabaria durante o envio',
   );
+}
+
+/**
+ * Run one of a DRAFT's look-ups — ENSURE (`localizarAnuncioIncerto`) or the
+ * first create's same-SKU scan (`verificarAnuncioExistenteShopee`) — under
+ * the send gate's deadline (#1911 batch-A review, Lucas 2026-10-28).
+ *
+ * `buscar` receives `podeContinuar` = {@link dentroDoPrazoDeEnvio} over THIS
+ * lock and controls — a closure over the route's clock, so `criacaoIncerta.ts`
+ * and `kits/` stay clock-free — and the walk asks it before each
+ * `get_item_list` page and each `get_item_base_info` chunk. A `false` stops
+ * the walk with NO decision (`BuscaForaDoPrazoShopeeError`), turned HERE into
+ * the gate's own 409 `PUBLICACAO_EXPIRADA`: nothing was sent, and the caller's
+ * `fase === 'travada'` catch hands the lock back (the reservation's for
+ * ENSURE — the record KEPT; `publicarAnuncioShopee`'s for the first create's
+ * scan — no record written).
+ *
+ * Why the walks must stop (Lucas: the biggest conta holds 2 000–10 000
+ * listings): a walk the platform cuts at the request ceiling leaves the lock
+ * UNSTAMPED and the run gone; stopping while there is still MARGEM answers
+ * the operator and releases the lock instead. Same condition as the gate, so
+ * a walk never runs where a send would be refused.
+ *
+ * @throws ConflitoDeRascunhoShopeeError `PUBLICACAO_EXPIRADA` on a cut; every
+ *   other error of `buscar` untouched (rule 6).
+ */
+export async function buscaNoPrazoDoEnvio<T>(
+  linkDocId: string,
+  trava: Pick<PublicacaoEmCursoShopee, 'expiraEm'>,
+  controles: Pick<ControlesDaPublicacaoAoVivo, 'agora' | 'prazoDaRequisicao'>,
+  buscar: (podeContinuar: () => boolean) => Promise<T>,
+): Promise<T> {
+  try {
+    return await buscar(() => dentroDoPrazoDeEnvio(trava, controles));
+  } catch (err) {
+    if (!(err instanceof BuscaForaDoPrazoShopeeError)) throw err;
+    throw expirada(
+      linkDocId,
+      prazoDaRequisicaoVenceAntes(trava, controles)
+        ? 'a busca não coube no tempo desta requisição — pelo CLI (publicar:anuncio), que tem ' +
+            'o tempo da trava, ela pode caber'
+        : 'a busca não coube no tempo da trava',
+    );
+  }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1014,7 +1110,9 @@ export type DesfechoDaLiberacao =
  * {@link liberarTravaShopeeSemSubstituirErro}, which keeps that error; a caller
  * with nothing to report (a run that ends without one) lets the release's own
  * failure be the answer. A third lost precondition does NOT throw — the lock
- * simply expires into the uncertainty reading, the safe direction.
+ * simply expires: STAMPED (a send was possible) into the grace and then the
+ * uncertainty reading, the safe direction; never stamped (no send reached)
+ * into `livre`, which is true.
  */
 export async function liberarTravaShopee(
   db: Firestore,
@@ -1067,9 +1165,10 @@ export async function liberarTravaShopee(
  * of the hand-back (`UNAVAILABLE`, `DEADLINE_EXCEEDED`, …) changed nothing the
  * operator can act on. So a gRPC-coded failure is logged once (ids and the
  * code — never a message body, never the stamp) and swallowed. The lock then
- * STAYS: it expires, serves its grace and reads `incerta` — the direction
- * {@link liberarTravaShopee}'s own `contencao` answer already takes (refused or
- * searched, never sent twice). For a `nao-criado` create the failure STAMP is
+ * STAYS: it expires — a STAMPED one serves its grace and reads `incerta`, an
+ * unstamped one (its run never reached the send) reads `livre` — the
+ * direction {@link liberarTravaShopee}'s own `contencao` answer already takes
+ * (refused or searched, never sent twice). For a `nao-criado` create the failure STAMP is
  * lost with the release — the same accepted residual; the caller still throws
  * Shopee's refusal.
  *

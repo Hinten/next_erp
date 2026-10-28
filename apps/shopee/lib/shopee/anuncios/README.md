@@ -301,13 +301,31 @@ nothing.
    it underneath. Rule 7 tier 1: `update({publicacaoEmCurso}, {lastUpdateTime})`
    against the snapshot that decided, ≤ 3 re-derives (a lost precondition
    re-reads and re-DECIDES, never re-applies). The reading decides: a live lock
-   — or one inside its **post-expiry grace**, from `expiraEm` until
-   `AGUARDAR_ANUNCIO_INCERTO_SHOPEE_MS` (240 s) later — ⇒ 409 `EM_ANDAMENTO`
-   with `aguardarMs`; past the grace, an unreadable lock or a recorded
-   `criacaoIncertaDesde` ⇒ 409 `CRIACAO_INCERTA` in P3, the ENSURE scan since
-   P5; no longer a draft ⇒ 409
+   — or a STAMPED one (step 3) inside its **post-expiry grace**, from
+   `expiraEm` until `AGUARDAR_ANUNCIO_INCERTO_SHOPEE_MS` (240 s) later — ⇒ 409
+   `EM_ANDAMENTO` with `aguardarMs`; past the grace, an unreadable lock or a
+   recorded `criacaoIncertaDesde` ⇒ 409 `CRIACAO_INCERTA` in P3, the ENSURE
+   scan since P5; no longer a draft ⇒ 409
    `JA_PUBLICADO`; a third loss ⇒ 409 `CONTENCAO`. The token is a fresh
    `newDocId` (no IO, no clock).
+   ⚠️ **An expired lock its run never STAMPED, on a draft with no
+   `criacaoIncertaDesde`, reads `livre` the instant it expires** (batch-A
+   review, Lucas 2026-10-28): the stamp is written before every `add_item`
+   leg, so that run died before the send — the same-SKU walk ran past the
+   request ceiling, the instance went away — and nothing was sent under it. It
+   is simply replaced: NO record, NO ENSURE, and the publish is a FIRST
+   create, whose same-SKU look-up walks the WHOLE shop. Read as an uncertain
+   create (the rule before), ENSURE's window — "updated since the attempt" —
+   never saw an OLD unlinked same-SKU listing, and the first-create check was
+   skipped for the SKU ENSURE had searched: a duplicate `add_item`. A STAMPED
+   lock keeps the grace and then `incerta` (its run passed the first-create
+   check before stamping, so ENSURE's window covers what that check could not
+   have seen), and so does ANY lock on a draft with a record — a takeover that
+   died unstamped never erases an earlier REAL attempt. ONE rule
+   (`estadoPublicacaoRascunhoShopee` + `janelaDaCriacaoIncertaShopee`), read
+   by the reservation, the draft routes, the import and the web. It holds
+   because batch A deploys as ONE: the lock (P3) never ships without the stamp
+   (P6).
 2. **Lock-THEN-scan (D15 at publish, K1-4).** With our lock written, the
    produto's other links of the conta are read (`lerVinculosDaConta`, one
    subcollection read, no index). Any of them not `livre` ⇒ release ours, 409
@@ -322,9 +340,25 @@ nothing.
    sent, the foreign lock untouched. Since the batch-A review it also WRITES —
    one token-guarded update stamping the folded SKU the body sends on the lock
    (`publicacaoEmCurso.sku`), so an uncertain create is later looked up by what
-   it SENT (P5's section); a third lost precondition is 409 `CONTENCAO`.
+   it SENT (P5's section); a third lost precondition is 409 `CONTENCAO`. That
+   stamp is the ONLY writer of `sku` (the takeover writes a fresh lock without
+   it, the `incerto` re-arm carries it), always a string (`''` for a SKU-less
+   body) — which is what lets step 1 read an unstamped expired lock as "never
+   sent".
    `aplicarPublicacao` also refuses (409 `CONTENCAO`) a create onto a draft it
    holds no lock of: a draft's `add_item` is sent only under its lock.
+   **Both look-ups run under the gate's deadline** (batch-A review): ENSURE
+   (step 1) and the first create's same-SKU scan (P5b, below) ask
+   `dentroDoPrazoDeEnvio` — the gate's ONE condition (step 4), handed to the
+   walks as a `podeContinuar` closure (`buscaNoPrazoDoEnvio`), so
+   `criacaoIncerta.ts` and `kits/` stay clock-free — before EACH
+   `get_item_list` page and EACH `get_item_base_info` chunk. A `false` stops
+   the walk with NO decision on what it read (a definite hit in a finished
+   chunk included) and answers 409 `PUBLICACAO_EXPIRADA` ("a busca não coube no
+   tempo desta requisição — pelo CLI, que tem o tempo da trava, ela pode
+   caber"), nothing sent, the lock handed back (ENSURE's record kept). Lucas's
+   largest conta holds 2 000–10 000 listings: a walk the platform cut at 180 s
+   used to leave the lock UNSTAMPED with its run gone.
 4. **The per-leg send gate (K1-2).** Synchronously before EACH `client.addItem`
    — the C13 fiscal retry's second leg included: send only while
    `agora() + MARGEM_ENVIO_SHOPEE_MS < min(expiraEm, prazoDaRequisicao)`. `agora` is the
@@ -352,14 +386,14 @@ nothing.
    lock makes its holder's pre-send re-read refuse.
 6. **Every way out**, tracked on `ReservaDeRascunhoShopee.fase`:
 
-   | what happened                                                                                                                                      | lock                     | `falhaPublicacao`                                |
-   | -------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------ | ------------------------------------------------ |
-   | a throw before any send (blocked plan, photo/taxonomy read, the credential warm — a Shopee error of its refresh included —, the gate, a lost lock) | released (token-guarded) | none                                             |
-   | `add_item` refused for good — `nao-criado` (`criacaoIncerta.ts`)                                                                                   | released                 | stamped, in the SAME guarded update              |
-   | the client's own token step inside `add_item` (the four credential classes, P5) — `nao-criado`                                                     | released                 | none — Shopee was never reached                  |
-   | `add_item` `incerto` (network, edge, unparseable 2xx, an UNKNOWN code, a documented "maybe")                                                       | **KEPT**, re-armed (P5)  | none — a 202, never "Shopee refused" (P5, below) |
-   | any non-Shopee error once a send began, or the claim lost three times                                                                              | **KEPT**                 | none                                             |
-   | anything after the claim (the model leg, the re-list, the read-back)                                                                               | already null             | step 11's stamp, on the claimed link             |
+   | what happened                                                                                                                                                                     | lock                     | `falhaPublicacao`                                |
+   | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------ | ------------------------------------------------ |
+   | a throw before any send (blocked plan, photo/taxonomy read, a look-up cut by the deadline, the credential warm — a Shopee error of its refresh included —, the gate, a lost lock) | released (token-guarded) | none                                             |
+   | `add_item` refused for good — `nao-criado` (`criacaoIncerta.ts`)                                                                                                                  | released                 | stamped, in the SAME guarded update              |
+   | the client's own token step inside `add_item` (the four credential classes, P5) — `nao-criado`                                                                                    | released                 | none — Shopee was never reached                  |
+   | `add_item` `incerto` (network, edge, unparseable 2xx, an UNKNOWN code, a documented "maybe")                                                                                      | **KEPT**, re-armed (P5)  | none — a 202, never "Shopee refused" (P5, below) |
+   | any non-Shopee error once a send began, or the claim lost three times                                                                                                             | **KEPT**                 | none                                             |
+   | anything after the claim (the model leg, the re-list, the read-back)                                                                                                              | already null             | step 11's stamp, on the claimed link             |
 
    A guarded write whose stored token is NOT ours writes NOTHING — not the
    release and not the stamp (K1-14): a run never clears or stamps over the run
@@ -377,8 +411,11 @@ nothing.
    swallowed, so the error the run was already reporting is the one that
    surfaces — the 409/422 the operator acts on, or a read failure's own 5xx —
    never the release's. The lock
-   then stays and expires into `incerta` like a KEPT one (for `nao-criado` the
-   stamp is lost with it — the accepted residual). Any other error from the
+   then stays and expires — into `incerta` like a KEPT one when it was
+   stamped (a `nao-criado` create: its failure stamp is lost with it, the
+   accepted residual; a gate refusal after the stamp), into `livre` when its
+   run never reached the stamp (the D15 refusal, a throw before the pre-send
+   re-read: nothing was sent). Any other error from the
    release (a `TypeError`, a bug) still surfaces. A run with no error to report
    — `preparar` finding nothing to publish (the 404) — releases with the plain
    `liberarTravaShopee`, whose failure is then the answer.
@@ -484,9 +521,11 @@ base}` (`base` required): do not run a no-link `publicar:anuncio --live`
 - **(xi) The first create's look-up is the WHOLE catalogue** (P5b). The kit
   scan's base-info batch covers the shop's few kits; the ordinary one covers
   every non-kit listing — ⌈n/100⌉ + ⌈n/50⌉ calls on every first create with a
-  SKU, inside the route's 180 s ceiling (a slow walk ends in
-  `PUBLICACAO_EXPIRADA`, nothing sent; `publicar:anuncio --live` has no
-  ceiling). A shop past the kit's 100 pages (10 000 listings) answers
+  SKU, inside the route's 180 s ceiling (a slow walk STOPS at the deadline
+  checkpoint before its next read — batch-A review — and ends in
+  `PUBLICACAO_EXPIRADA`, nothing sent, the lock handed back;
+  `publicar:anuncio --live` has no request ceiling, only the lock's
+  `expiraEm`). A shop past the kit's 100 pages (10 000 listings) answers
   `busca-de-anuncio-existente-incompleta` on EVERY first create — the kit
   arm's own limit, and no flag overrides it; Shopee's undocumented offset cap
   (`error_param` "get items offset over limit", seen by the mass import) may
@@ -499,7 +538,12 @@ base}` (`base` required): do not run a no-link `publicar:anuncio --live`
   look-up on the body (batch-A review). ENSURE's window ignores a listing
   created before the attempt, so one that was unlinked between the first
   attempt's look-up and the retry is not seen; the first attempt of every
-  draft since P5b ran the full look-up. And the dry run runs neither: both
+  draft since P5b ran the full look-up — and only an attempt that PASSED it
+  is an attempt at all: ENSURE runs on a record or a STAMPED lock, and the
+  stamp follows the look-up, so a run that died during it (the walk past the
+  request ceiling) leaves an unstamped lock that reads `livre`, and the retry
+  is a first create with the full look-up again (batch-A review, Lucas
+  2026-10-28). And the dry run runs neither: both
   live under the lock, which only `--live` takes — its summary says so.
 
 ### An uncertain first create is re-found, never re-sent (#1911, P5, D5 + D15)
@@ -534,10 +578,11 @@ operator and the CLI hear 409 `EM_ANDAMENTO {aguardarMs}` until it lapses — th
 server enforces the wait, the web's countdown is a nicety.
 
 **ENSURE runs inside the reservation, under our lock, before `preparar`.** A
-draft whose reading is `incerta` (past the grace, an unreadable lock, or a
-recorded `criacaoIncertaDesde`) is reserved like any other — and the window is
-read from the document (`janelaDaCriacaoIncertaShopee`: `criacaoIncertaDesde`,
-else the old lock's `desde` — and, from the SAME source, the SKU that attempt
+draft whose reading is `incerta` (a STAMPED lock past the grace, an unreadable
+lock, or a recorded `criacaoIncertaDesde`) is reserved like any other — and the
+window is read from the document (`janelaDaCriacaoIncertaShopee`:
+`criacaoIncertaDesde`, else the old STAMPED lock's `desde` — an expired lock
+never stamped is `livre`, no window, no ENSURE — and, from the SAME source, the SKU that attempt
 sent: `criacaoIncertaSku`, else the old lock's `sku`) BEFORE our lock replaces
 the old one, and written into the same update, so a released lock can never take
 the record with it. No
@@ -605,6 +650,7 @@ then an own linked listing (unless attested), then the adoption.
 | two or more definite, or anything undecidable    | `criacao-incerta-ambigua` (`acao` `importar{itemIds, vinculados}`)                                                                                                                                                                                                                                                                                                                               |
 | a SKU-equal linked listing inside the window     | `criacao-incerta-ja-vinculada` (`acao` `importar{itemIds, vinculados}`, each with its produto); if it IS the attempt's listing, the exit is discarding THIS draft with the attestation — never publishing it again                                                                                                                                                                               |
 | the walk stopped early                           | `busca-de-anuncio-incompleta` (repeating helps only a bad cursor — residual (vii))                                                                                                                                                                                                                                                                                                               |
+| the request deadline cut the walk (batch-A)      | 409 `PUBLICACAO_EXPIRADA` — asked before every page and every base-info chunk; NO verdict on what was read (a definite hit included), the lock handed back, the record KEPT                                                                                                                                                                                                                      |
 | the SKU sent folds blank                         | `criacao-incerta-sem-sku` (no scan)                                                                                                                                                                                                                                                                                                                                                              |
 | a COMPLETE walk, zero definite, zero undecidable | token-guarded clear of `criacaoIncertaDesde` and `criacaoIncertaSku`, then `add_item`                                                                                                                                                                                                                                                                                                            |
 
@@ -741,6 +787,7 @@ a listing of the conta with the SKU the planned body SENDS
 | a hit linked to THIS produto                                                                                                      | excluded: D15's second listing, which the reservation already refused (`CONTA_JA_TEM_ANUNCIO`) or the operator confirmed                                                                                                                                                                                                                                                     |
 | the walk stopped early (100 pages, or a stuck cursor)                                                                             | `busca-de-anuncio-existente-incompleta` (no `acao`) — the kit's `busca-de-kit-incompleta`                                                                                                                                                                                                                                                                                    |
 | a LISTED candidate came back with NO base row (left out of the batch, the batch "none exists" verdict, or gone between the reads) | `busca-de-anuncio-existente-incompleta` (no `acao`), naming the ids: "a Shopee não devolveu os dados de N anúncio(s) listado(s) … tente de novo; se persistir, confira esses anúncios no Seller Centre". Never "not a hit": without its base row nothing says it is not this SKU (batch-A review — the kit scan skipped it since step 19; the ONE loop now refuses for both) |
+| the request deadline cut the walk (batch-A review)                                                                                | 409 `PUBLICACAO_EXPIRADA` (`ConflitoDeRascunhoShopeeError`, not a blocked refusal) — asked before every page and every base-info chunk; NO verdict on what was read (a hit included), the lock handed back, no record written. The kit arm has no such checkpoint                                                                                                            |
 | a Shopee or Firestore failure                                                                                                     | propagates untouched (rule 6) — the kit arm's answer: never classified as an `add_item` outcome, never stamped                                                                                                                                                                                                                                                               |
 | a complete walk, no hit (or only this produto's)                                                                                  | `add_item`                                                                                                                                                                                                                                                                                                                                                                   |
 

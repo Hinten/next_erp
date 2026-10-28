@@ -91,8 +91,18 @@ function semear(link: DocData | null = rascunho()): void {
   if (link !== null) db.seed(CAMINHO, link);
 }
 
-/** A FOREIGN publish lock expiring at `expiraEm` (ms), taken one TTL before it. */
+/**
+ * A FOREIGN publish lock expiring at `expiraEm` (ms), taken one TTL before it,
+ * STAMPED by its run's pre-send re-read (`sku`): a create may be in flight, so
+ * past `expiraEm` it serves the grace, then reads `incerta` (batch-A review).
+ */
 function trava(expiraEm: number): DocData {
+  const { publicacaoEmCurso } = travaSemCarimbo(expiraEm);
+  return { publicacaoEmCurso: { ...(publicacaoEmCurso as DocData), sku: 'CAM-BR' } };
+}
+
+/** The same lock, never stamped: its run died before the send — past `expiraEm`, `livre`. */
+function travaSemCarimbo(expiraEm: number): DocData {
   return {
     publicacaoEmCurso: {
       desde: expiraEm - PUBLICACAO_EM_CURSO_SHOPEE_TTL_MS,
@@ -432,6 +442,19 @@ describe('editar — recusas', () => {
     await expect(res.json()).resolves.toMatchObject({
       code: CODIGO_RASCUNHO_SHOPEE.publicacaoEmAndamento,
       aguardarMs: AGUARDAR_ANUNCIO_INCERTO_SHOPEE_MS - 1_000,
+    });
+  });
+
+  it('⛔ NEAR-MISS (batch-A review): a trava vencida NUNCA carimbada é `livre` — nem carência, nem categoria travada', async () => {
+    semear(rascunho(travaSemCarimbo(T0 - 1_000)));
+
+    const res = await POST(
+      req(corpo({ category_id: 100_017, attributes: null }, { category_id: 100_009 })),
+    );
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({
+      gravados: [CAMPO_RASCUNHO_SHOPEE.categoryId],
     });
   });
 

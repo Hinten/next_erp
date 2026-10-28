@@ -527,6 +527,20 @@ are in `anuncios/publicarShopee.test.ts`.
   ordinary first create (`localizarItensPorSku` with `kit: false`) rides the SAME
   loop and words it alike (`busca-de-anuncio-existente-incompleta`); there is no
   `kit` fork in it.
+- **The deadline checkpoint is the ordinary arm's, never the kit's** (#1911
+  batch-A review, 2026-10-28). `varrerListaDeItensShopee` and
+  `localizarItensPorSku` take an optional `podeContinuar: () => boolean`, asked
+  BEFORE each `get_item_list` page and — through `clienteDaBuscaNoPrazo`, the
+  client handed to the shared base-info reader — BEFORE each
+  `get_item_base_info` chunk. A `false` throws `BuscaForaDoPrazoShopeeError`
+  (an app class, never a `ShopeeError`) with NO answer: not an incomplete
+  scan, not a hit read so far. A draft's two look-ups under the publish lock
+  pass it (ENSURE and the first create's same-SKU scan, `anuncios/`), as a
+  closure over the route's clock built in `anuncios/reservaRascunho.ts` —
+  this folder reads no clock — and the publish answers the cut 409
+  `PUBLICACAO_EXPIRADA`. `localizarKitsPorSku` passes NONE (its arguments
+  field by field, never a spread): the kit arm's walk is byte-for-byte step
+  19's.
 - **The SKU match is step 9's identity**: `skuDoItemShopee(base) === sku`, where
   `skuDoItemShopee` is `(item_sku ?? '').trim()`, case-sensitive like the parent
   rung's `where('sku','==',…)`.

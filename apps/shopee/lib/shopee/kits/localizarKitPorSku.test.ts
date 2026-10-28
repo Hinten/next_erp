@@ -27,6 +27,8 @@ import {
 import { FakeDb, asDb } from '../testing/fakeDb';
 import { MAX_PAGINAS_BUSCA_KIT, STATUS_BUSCA_KIT } from './constantesKit';
 import {
+  BuscaForaDoPrazoShopeeError,
+  clienteDaBuscaNoPrazo,
   fraseDaBaseInfoNaoDevolvida,
   localizarItensPorSku,
   localizarKitsPorSku,
@@ -744,5 +746,175 @@ describe('localizarItensPorSku — a listed candidate with NO base row fails CLO
     expect(frase).toContain('nada foi criado; tente de novo');
     expect(frase).toContain('confira esses anúncios no Seller Centre');
     expect(fraseDaBaseInfoNaoDevolvida([ITEM_1])).toContain(`(ids ${String(ITEM_1)})`);
+  });
+});
+
+describe('the deadline checkpoint `podeContinuar` (#1911 batch-A review, 2026-10-28)', () => {
+  const ITEM_1 = 2500300001;
+  const SKU_ITEM = 'SKU-1';
+
+  function baseComum(itemId: number, item_sku: string | null = SKU_ITEM): Json {
+    return baseDoKit({ item_id: itemId, item_sku, tag: { kit: false } });
+  }
+
+  /** `n` pages of one ordinary row each, Shopee's own cursor between them. */
+  function paginas(n: number): (p: GetItemListParams, i: number) => ShopeeItemList {
+    return (_p, i) =>
+      paginaSintetica([linhaDaLista(ITEM_1 + i, false)], {
+        has: i + 1 < n,
+        next: i + 1 < n ? (i + 1) * 100 : null,
+      });
+  }
+
+  /** A predicate that answers `true` exactly `k` times, then `false`, counting the asks. */
+  function ate(k: number): {
+    readonly podeContinuar: () => boolean;
+    readonly perguntas: () => number;
+  } {
+    let n = 0;
+    return {
+      podeContinuar: () => {
+        n += 1;
+        return n <= k;
+      },
+      perguntas: () => n,
+    };
+  }
+
+  it('the walk asks BEFORE EACH page: false before page 1 ⇒ throws, ZERO pages', async () => {
+    const { client, getItemList } = cliente({ paginas: paginas(3) });
+    const p = ate(0);
+
+    const err = await varrerListaDeItensShopee(client, {
+      maxPaginas: 10,
+      candidato: () => true,
+      registro: { origem: '[t]', ids: {} },
+      podeContinuar: p.podeContinuar,
+    }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(BuscaForaDoPrazoShopeeError);
+    expect((err as BuscaForaDoPrazoShopeeError).antesDe).toBe('get_item_list');
+    expect(getItemList).not.toHaveBeenCalled();
+  });
+
+  it('…false after page k (k = 2 of 3) ⇒ stops at k: no answer at all, never a partial "complete"', async () => {
+    const { client, getItemList } = cliente({ paginas: paginas(3) });
+
+    const err = await varrerListaDeItensShopee(client, {
+      maxPaginas: 10,
+      candidato: () => true,
+      registro: { origem: '[t]', ids: {} },
+      podeContinuar: ate(2).podeContinuar,
+    }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(BuscaForaDoPrazoShopeeError);
+    expect(getItemList).toHaveBeenCalledTimes(2);
+  });
+
+  it('⛔ NEAR-MISS: true throughout ⇒ the walk completes as before, asking once per page', async () => {
+    const { client } = cliente({ paginas: paginas(3) });
+    const p = ate(99);
+
+    const r = await varrerListaDeItensShopee(client, {
+      maxPaginas: 10,
+      candidato: () => true,
+      registro: { origem: '[t]', ids: {} },
+      podeContinuar: p.podeContinuar,
+    });
+
+    expect(r).toMatchObject({ completo: true, paginas: 3 });
+    expect(p.perguntas()).toBe(3);
+  });
+
+  it('⛔ "continue only if": a predicate answering anything but `true` stops the walk', async () => {
+    const { client, getItemList } = cliente({ paginas: paginas(1) });
+    const err = await varrerListaDeItensShopee(client, {
+      maxPaginas: 10,
+      candidato: () => true,
+      registro: { origem: '[t]', ids: {} },
+      podeContinuar: () => undefined as unknown as boolean,
+    }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(BuscaForaDoPrazoShopeeError);
+    expect(getItemList).not.toHaveBeenCalled();
+  });
+
+  it('the same-SKU scan asks before EACH base-info chunk too: false between two chunks ⇒ throws, NO decision on chunk 1 (a hit there included), NO link read', async () => {
+    // 51 candidates ⇒ two chunks (50 + 1); the same-SKU listing is in chunk 1.
+    const ids = Array.from({ length: 51 }, (_v, i) => ITEM_1 + i);
+    const { client, getItemBaseInfo } = cliente({
+      paginas: () =>
+        paginaSintetica(
+          ids.map((id) => linhaDaLista(id, false)),
+          { has: false },
+        ),
+      bases: ids.map((id, i) => baseComum(id, i === 0 ? SKU_ITEM : 'OUTRO-SKU')),
+    });
+    const db = new FakeDb();
+
+    // page + chunk 1 pass; chunk 2 is refused.
+    const err = await localizarItensPorSku(client, asDb(db), {
+      integracaoId: INTEGRACAO,
+      sku: SKU_ITEM,
+      excluirItemIds: new Set<number>(),
+      kit: false,
+      podeContinuar: ate(2).podeContinuar,
+    }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(BuscaForaDoPrazoShopeeError);
+    expect((err as BuscaForaDoPrazoShopeeError).antesDe).toBe('get_item_base_info');
+    expect(getItemBaseInfo).toHaveBeenCalledTimes(1);
+    expect(db.consultas).toEqual([]);
+  });
+
+  it('⛔ NEAR-MISS: the deadline fits all three calls ⇒ the scan decides as before (the hit, its link read)', async () => {
+    const ids = Array.from({ length: 51 }, (_v, i) => ITEM_1 + i);
+    const { client, getItemBaseInfo } = cliente({
+      paginas: () =>
+        paginaSintetica(
+          ids.map((id) => linhaDaLista(id, false)),
+          { has: false },
+        ),
+      bases: ids.map((id, i) => baseComum(id, i === 0 ? SKU_ITEM : 'OUTRO-SKU')),
+    });
+
+    const r = await localizarItensPorSku(client, asDb(new FakeDb()), {
+      integracaoId: INTEGRACAO,
+      sku: SKU_ITEM,
+      excluirItemIds: new Set<number>(),
+      kit: false,
+      podeContinuar: ate(3).podeContinuar,
+    });
+
+    expect(getItemBaseInfo).toHaveBeenCalledTimes(2);
+    expect(r).toMatchObject({ completo: true, achados: [{ itemId: ITEM_1, vinculo: null }] });
+  });
+
+  it('`clienteDaBuscaNoPrazo` without a predicate is the client ITSELF (no wrapper, no behaviour change)', () => {
+    const { client } = cliente({ paginas: paginas(1) });
+    expect(clienteDaBuscaNoPrazo(client, undefined)).toBe(client);
+    expect(clienteDaBuscaNoPrazo(client, () => true)).not.toBe(client);
+  });
+
+  it('the KIT arm takes NO predicate: its walk is unchanged (a 100-page shop walks to the end)', async () => {
+    const { client, getItemList } = cliente({ paginas: paginas(MAX_PAGINAS_BUSCA_KIT) });
+
+    const r = await buscar(client);
+
+    expect(r.completo).toBe(true);
+    expect(getItemList).toHaveBeenCalledTimes(MAX_PAGINAS_BUSCA_KIT);
+    await localizarKitsPorSku(client, asDb(new FakeDb()), {
+      integracaoId: INTEGRACAO,
+      sku: SKU,
+      excluirItemIds: new Set<number>(),
+      // @ts-expect-error — the kit arm has no deadline checkpoint (#1911 batch-A review).
+      podeContinuar: () => false,
+    });
+  });
+
+  it('BuscaForaDoPrazoShopeeError is an APP class, never a Shopee error', () => {
+    const err = new BuscaForaDoPrazoShopeeError('get_item_list');
+    expect(err).not.toBeInstanceOf(ShopeeApiError);
+    expect(err.name).toBe('BuscaForaDoPrazoShopeeError');
+    expect(err.message).toContain('Nada foi decidido nem enviado');
   });
 });

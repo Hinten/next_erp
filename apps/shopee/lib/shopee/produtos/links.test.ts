@@ -809,11 +809,31 @@ describe('aplicarLinkDaListagem — ADOTAR um rascunho (#1911, D5 / K1-8)', () =
 
   it('uma trava VIVA não bloqueia: a adoção a limpa (senão o anúncio leria "em andamento" para sempre)', async () => {
     const db = new FakeDb();
-    db.seed(CAMINHO, rascunho({ criacaoIncertaDesde: undefined }));
+    // Stamped by its run's pre-send re-read: that run may have sent THIS listing.
+    db.seed(
+      CAMINHO,
+      rascunho({
+        criacaoIncertaDesde: undefined,
+        publicacaoEmCurso: { desde: DESDE_MS, expiraEm: DESDE_MS + 300_000, token: 'tok', sku: '' },
+      }),
+    );
 
     await aplicarLinkDaListagem(asDb(db), PAI, adocao());
 
     expect(lerDoc(db, CAMINHO)).toMatchObject({ item_id: ITEM_ID, publicacaoEmCurso: null });
+  });
+
+  it('⛔ NEAR-MISS (batch-A review, 2026-10-28): a trava SEM carimbo e sem registro não é evidência ⇒ add, rascunho intocado', async () => {
+    // Its run never reached the send: nothing it did can have made this listing.
+    const db = new FakeDb();
+    db.seed(CAMINHO, rascunho({ criacaoIncertaDesde: undefined }));
+    const antes = structuredClone(lerDoc(db, CAMINHO));
+
+    const id = await aplicarLinkDaListagem(asDb(db), PAI, adocao());
+
+    expect(id).not.toBe(RASCUNHO);
+    expect(lerDoc(db, CAMINHO)).toEqual(antes);
+    expect(avisos.mock.calls[0]?.[1]).toMatchObject({ veredicto: 'sem-tentativa' });
   });
 
   it('a precondição perdida para um CLAIM de outro item ⇒ relê e bifurca (add) — nunca escreve por cima', async () => {

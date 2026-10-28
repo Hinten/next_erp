@@ -225,6 +225,7 @@ import {
 import { problemaDeErroShopee, problemasDeErroShopee } from './problemasPublicacao';
 import { criarRascunhoShopee } from './rascunho';
 import {
+  buscaNoPrazoDoEnvio,
   ConflitoDeRascunhoShopeeError,
   conferirTravaAntesDoEnvio,
   liberarTravaShopee,
@@ -1872,11 +1873,23 @@ export async function aplicarPublicacao(
     rascunho !== null &&
     skuDaBuscaShopee(plano.item.criar.item_sku) !== rascunho.skuJaBuscado
   ) {
-    const verificacao = await verificarAnuncioExistenteShopee(deps.client, deps.db, {
-      integracaoId: deps.integracaoId,
-      produtoId,
-      itemSku: plano.item.criar.item_sku,
-    });
+    // ⚠️ Under the send gate's deadline (batch-A review): on a shop of
+    // thousands of listings the walk can outlive the request, and a run the
+    // platform cuts there leaves its lock UNSTAMPED. It stops before its next
+    // Shopee read instead — 409 `PUBLICACAO_EXPIRADA`, nothing decided, the
+    // lock handed back by `publicarAnuncioShopee`'s catch (`fase` `travada`).
+    const verificacao = await buscaNoPrazoDoEnvio(
+      rascunho.reserva.linkDocId,
+      rascunho.reserva,
+      rascunho.controles,
+      (podeContinuar) =>
+        verificarAnuncioExistenteShopee(deps.client, deps.db, {
+          integracaoId: deps.integracaoId,
+          produtoId,
+          itemSku: plano.item.criar.item_sku,
+          podeContinuar,
+        }),
+    );
     chamadasShopee += verificacao.chamadas;
     if (temProblemaDeBloqueio(verificacao.problemas)) {
       throw new ShopeePublishBlockedError({
