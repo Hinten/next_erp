@@ -1062,7 +1062,10 @@ export async function lerGrupos(
     });
     grupos.push({
       grupoId,
-      nome: textoOuNull(raw.nome) ?? grupoId,
+      // A grupo with no string `nome` is NAMELESS: `''` lets the custom-tier
+      // blank-name refusal stop it before `add_item`. Falling back to the doc
+      // id would publish the id as the tier name Shopee buyers see.
+      nome: textoOuNull(raw.nome) ?? '',
       ordem: numeroOuNull(raw.ordem) ?? ORDEM_AUSENTE,
       permiteFotos: booleano(raw.permiteFotos),
       variacoes,

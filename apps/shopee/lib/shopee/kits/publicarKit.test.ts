@@ -661,6 +661,93 @@ describe('publicarKitShopee — kit-criar de ponta a ponta', () => {
     expect(r.desfecho).toBe('criado');
   });
 
+  it('(#1911 batch-A, bot #2054) o grupo SEM nome, lido por `lerGrupos` ⇒ opcoes-demais LOCAL: zero add_kit_item, nada gravado', async () => {
+    const db = new FakeDb();
+    semearComponentes(db);
+    semearFamilia(db);
+    db.seed(`grupoDeVariacoes/${GRUPO}`, {
+      ordem: 1,
+      variacoes: [
+        { id: 'var-azul', nome: 'Azul' },
+        { id: 'var-verde', nome: 'Verde' },
+      ],
+    });
+    const loja = lojaComKits();
+
+    const erro = await recusaDe(criarKit(db, loja));
+
+    expect(erro.problemas).toEqual([
+      {
+        campo: 'tier_variation_list',
+        motivo: MOTIVO_PUBLICACAO_BLOQUEADA.opcoesDemais,
+        mensagem: `o grupo ${GRUPO} não tem nome, e o tier do kit leva o nome do grupo — dê um nome a ele em Variações`,
+      },
+    ]);
+    expect(loja.ops).not.toContain('add_kit_item');
+    expect(loja.corposDoAdd).toEqual([]);
+    expect(db.writes).toEqual([]);
+    // The dry run plans the same refusal and builds no body.
+    const ensaio = await ensaiarKitShopee(deps(db, loja), entrada(), CRIAR, resolvedorFake(loja));
+    expect(ensaio.plano.problemas.map((p) => p.motivo)).toEqual([
+      MOTIVO_PUBLICACAO_BLOQUEADA.opcoesDemais,
+    ]);
+    expect(ensaio.plano.corpo).toBeNull();
+  });
+
+  it('⛔ (#1911 batch-A) um grupo ILEGÍVEL (doc ausente) recusa — o id do documento NUNCA vira o nome do tier', async () => {
+    const db = new FakeDb();
+    semearComponentes(db);
+    semearFamilia(db);
+    delete db.store[`grupoDeVariacoes/${GRUPO}`];
+    const loja = lojaComKits();
+
+    const erro = await recusaDe(criarKit(db, loja));
+
+    expect(erro.problemas.map((p) => p.motivo)).toEqual([
+      MOTIVO_PUBLICACAO_BLOQUEADA.opcoesDemais,
+      MOTIVO_PUBLICACAO_BLOQUEADA.variacaoSemVinculo,
+      MOTIVO_PUBLICACAO_BLOQUEADA.variacaoSemVinculo,
+    ]);
+    expect(erro.problemas[0]?.campo).toBe('tier_variation_list');
+    expect(loja.ops).not.toContain('add_kit_item');
+    expect(loja.corposDoAdd).toEqual([]);
+    expect(db.writes).toEqual([]);
+  });
+
+  it("⚠️ QUASE-PAR (#1911 batch-A): o grupo ' Cor ' cria o kit, e o nome do tier vai ao fio APARADO", async () => {
+    const db = new FakeDb();
+    semearComponentes(db);
+    semearFamilia(db);
+    db.seed(`grupoDeVariacoes/${GRUPO}`, {
+      ...db.store[`grupoDeVariacoes/${GRUPO}`]!.data,
+      nome: ' Cor ',
+    });
+    const loja = lojaComKits();
+
+    const r = await criarKit(db, loja);
+
+    expect(r.desfecho).toBe('criado');
+    expect(loja.corposDoAdd.map((c) => c.item_setting.tier_variation_list[0]?.name)).toEqual([
+      'Cor',
+    ]);
+  });
+
+  it('(#1911 batch-A) a faixa SERVIDA da opção do kit recusa LOCAL a opção longa demais: zero add_kit_item', async () => {
+    const db = new FakeDb();
+    semearComponentes(db);
+    semearFamilia(db);
+    const loja = lojaComKits({
+      limites: { tier_variation_option_length_limit: { min_limit: 1, max_limit: 4 } },
+    });
+
+    const erro = await recusaDe(criarKit(db, loja));
+
+    expect(erro.problemas.map((p) => [p.motivo, p.campo])).toEqual([
+      [MOTIVO_PUBLICACAO_BLOQUEADA.opcoesDemais, `filhos.${K_VERDE}`],
+    ]);
+    expect(loja.ops).not.toContain('add_kit_item');
+  });
+
   it('(M96 / L1) uma família de 2 itens SEM --principal ⇒ principal-obrigatorio, nunca um padrão silencioso', async () => {
     const db = new FakeDb();
     semearComponentes(db);

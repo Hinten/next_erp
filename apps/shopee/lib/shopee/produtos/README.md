@@ -225,6 +225,22 @@ dispatch creates or patches — so ten items of the same shape do one read, not
 ten, and the second item sees the grupo the first one minted instead of
 creating a twin or spending its single re-plan against its own sibling.
 
+**The `linksVariacoesShopee` entry is found by the SHARED key (#1911).** Which
+stored element is a grupo's entry for (conta, LEAF category) is
+`ehEntradaShopeeDaChave` / `resolverEntradaShopeeDoGrupo` in `@delfrance/schemas`,
+the same key the publisher's tier builder resolves the pair by
+(`../anuncios/README.md`). The merge (`fundirLinksVariacoesShopee`) and rung 1 of
+the variante cascade read it; rung 1(b) (`linkDoGrupoCasa`) asks about a conta
+in ANY category, so it is not the key, but its conta half is the same `idDoRef`
+fold. That fold applies to the STORED conta only: a stored
+`documents/integracao/int-1` is merged INTO for `int-1`, never twinned, and
+`int-12` stays another conta's entry, untouched. A bare stored id behaves
+exactly as before, and the import itself always writes the bare id. An element
+the strict schema refuses is still kept VERBATIM. When it is the only element
+naming the pair, the import appends its own readable entry after it, and from
+then on the publisher binds that entry instead of refusing the unreadable one
+(unchanged by #1911).
+
 **Estoque and preços.** Prices are the first BRL `price_info` entry —
 `original_price ?? current_price` onto the conta's **normal** table only (a
 non-positive `original_price` falls to `current_price`, because Shopee

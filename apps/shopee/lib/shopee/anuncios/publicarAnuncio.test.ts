@@ -163,12 +163,18 @@ function semearFilho(db: FakeDb, over: Record<string, unknown> = {}): void {
 }
 
 /**
- * The grupo, WITH its `(integração, categoria)` binding entry.
+ * The grupo, WITH a STORED `(integração, categoria)` binding entry — a CUSTOM
+ * one (`variation_id: 0`: outside Fashion every tier is custom and only the
+ * NAMES identify options), the shape the import writes.
  *
- * ⚠️ Without that entry every option is `variacao-sem-vinculo` and no tier can
- * be authored at all — it is the ERP↔Shopee option map, not decoration.
- * `variation_id: 0` is Shopee's CUSTOM tier (outside Fashion every tier is
- * custom and only the NAMES identify options).
+ * Since #1911 (D12) the entry is no longer required: a grupo with NO entry for
+ * the pair publishes the same custom tier, named `grupo.nome`, one option per
+ * variante named after it (`tiersPublicacao.ts`'s fallback; an entry that names
+ * the pair but cannot be parsed still refuses `variacao-sem-vinculo`). It stays
+ * here so these suites drive the stored-entry arm. On an UPDATE it pairs with
+ * the live tier by name (`'Cor'`, see {@link modelList}) — both sides through
+ * the shared name fold, ends trimmed (#1911 batch-A); an unpaired custom tier at
+ * the same depth is refused, never re-coded (Q2).
  */
 function semearGrupo(db: FakeDb, over: Record<string, unknown> = {}): void {
   db.seed(`grupoDeVariacoes/${GRUPO}`, {
@@ -244,9 +250,18 @@ function ecoDeItem(
   } as unknown as ShopeeItemWriteResponse;
 }
 
+/**
+ * One `get_model_list` reading. With models it carries the live CUSTOM tier
+ * they sit on — `'Cor'` / `['Azul']`, the names {@link semearGrupo} seeds —
+ * because the wire always does (`__wire__/get_model_list.sg-kit.json`), and
+ * since #1911 (Q2) a custom grupo that pairs with NO live tier at the same depth
+ * is REFUSED rather than re-coded. Without models it is the empty listing
+ * (`get_model_list.sg-item-sem-variacao.json`): no tier either.
+ */
 function modelList(modelos: readonly Record<string, unknown>[] = [modelo()]): ShopeeModelList {
   return {
-    tier_variation: null,
+    tier_variation:
+      modelos.length === 0 ? null : [{ name: 'Cor', option_list: [{ option: 'Azul' }] }],
     standardise_tier_variation: null,
     model: modelos,
   } as unknown as ShopeeModelList;
@@ -330,6 +345,8 @@ const CANAL_DA_LOJA = shopeeLogisticsChannelSchema.parse({
 });
 
 interface OpcoesCliente {
+  /** `get_item_limit`'s answer; absent ⇒ {@link BANDAS_DA_LOJA}. */
+  readonly bandas?: unknown;
   readonly addItem?: (body: Record<string, unknown>) => ShopeeItemWriteResponse;
   readonly updateItem?: (body: Record<string, unknown>) => ShopeeItemWriteResponse;
   readonly initTierVariation?: (body: Record<string, unknown>) => ShopeeTierWriteResponse;
@@ -381,7 +398,7 @@ function clienteFake(op: OpcoesCliente = {}): ClienteFake {
   const client = {
     getItemLimit: () => {
       ops.push('get_item_limit');
-      return Promise.resolve(BANDAS_DA_LOJA);
+      return Promise.resolve(op.bandas ?? BANDAS_DA_LOJA);
     },
     getAttributeTree: () => {
       ops.push('get_attribute_tree');
@@ -1053,6 +1070,64 @@ describe('aplicarPublicacao — a ORDEM dos onze passos', () => {
     expect((carimbo.problemas as { campo: string }[])[0]?.campo).not.toBe('');
   });
 
+  it('⚠️ #1911 (Q2): um tier CUSTOM que não casa pelo nome com o tier vivo é recusado DEPOIS do update_item — e o leg de modelos não manda NADA', async () => {
+    // The ERP grupo is 'Cor' (semearGrupo, a STORED `variation_id: 0` entry —
+    // the import's shape); the live listing calls its tier 'Cores' (a renamed
+    // grupo, or a tier the legacy app named by `tipo`). Rewriting that tier in
+    // place would re-code the live model's option. The publish refuses where
+    // the hole refusal does: after `update_item`, stamped, and with no tier or
+    // model write sent. The paired twin ('Cor' live) is the update test
+    // above, which goes on to `update_tier_variation`.
+    const db = new FakeDb();
+    semearCatalogo(db);
+    semearFilho(db);
+    semearLink(db);
+    db.seed(`produtos/${FILHO}/variashopee/v-1`, {
+      contaVariacaoShopeeOuterRef: REF_CONTA,
+      produtoShopeeOuterRef: `documents/${CAMINHO_LINK}`,
+      model_id: MODEL_A,
+      tier_index: [0],
+      model_status: SHOPEE_MODEL_STATUS.normal,
+    });
+    const fake = clienteFake({
+      updateItem: () => ecoDeItem(),
+      getModelList: () =>
+        ({
+          tier_variation: [{ name: 'Cores', option_list: [{ option: 'Azul' }] }],
+          standardise_tier_variation: null,
+          model: [modelo()],
+        }) as unknown as ShopeeModelList,
+    });
+
+    const { plano } = await planejar(db, fake);
+    expect(plano.ehAtualizacao).toBe(true);
+    const err = await aplicarPublicacao(deps(db, fake), plano).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(ShopeePublishBlockedError);
+    const esperado = {
+      campo: 'standardise_tier_variation',
+      motivo: MOTIVO_PUBLICACAO_BLOQUEADA.variacaoSemVinculo,
+      mensagem:
+        'O tier "Cor" não casa pelo nome com nenhum tier do anúncio (grupo renomeado, ou anúncio exportado pelo app antigo) — republicar reescreveria as opções. Importe o anúncio ou ajuste o nome do grupo.',
+    };
+    expect((err as ShopeePublishBlockedError).problemas).toEqual([esperado]);
+
+    expect(fake.ops).toContain('update_item');
+    for (const escrita of [
+      'update_tier_variation',
+      'init_tier_variation',
+      'update_model',
+      'add_model',
+    ]) {
+      expect(fake.ops, escrita).not.toContain(escrita);
+    }
+    const carimbo = patchesDoLink(db).at(-1)?.falhaPublicacao as Record<string, unknown>;
+    expect(carimbo).toMatchObject({ em: AGORA, erro: 'ShopeePublishBlockedError' });
+    expect(carimbo.problemas).toEqual([esperado]);
+  });
+
   it('um update sem nada a mudar no leg de modelos NÃO manda nada', async () => {
     const db = new FakeDb();
     semearCatalogo(db);
@@ -1076,6 +1151,168 @@ describe('aplicarPublicacao — a ORDEM dos onze passos', () => {
     // O leg fechou sem uma segunda leitura: nada foi enviado, então a leitura
     // que ele já tem é a corrente.
     expect(fake.ops.filter((o) => o === 'get_model_list')).toHaveLength(2);
+  });
+});
+
+/* ========================================================================== */
+/*  (2b) #1911 batch-A — the tier NAMES on the wire, and their bands          */
+/* ========================================================================== */
+
+describe('publicar — os nomes de tier e de opção (#1911 batch-A)', () => {
+  /** The body of the ONE `init_tier_variation` the fake received. */
+  function arvoreDoInit(fake: ClienteFake): unknown {
+    const corpo = fake.corpos.find((c) => 'model' in c && 'standardise_tier_variation' in c);
+    if (corpo === undefined) throw new Error('fixture: nenhum init_tier_variation foi enviado');
+    return corpo.standardise_tier_variation;
+  }
+
+  /** `get_item_limit` with the tier-NAME band set to `1..max`. */
+  function bandasComNomeAte(max: number): unknown {
+    return {
+      ...BANDAS_DA_LOJA,
+      response: {
+        ...BANDAS_DA_LOJA.response,
+        tier_variation_name_length_limit: { min_limit: 1, max_limit: max, min: null, max: null },
+      },
+    };
+  }
+
+  it("⚠️ PAR: o grupo 'Cor ' com a variante 'Azul ' — gravados assim, sem vínculo — vão ao init_tier_variation como 'Cor' / 'Azul', o que a leitura devolve", async () => {
+    const db = new FakeDb();
+    semearCatalogo(db);
+    semearFilho(db);
+    semearGrupo(db, {
+      nome: 'Cor ',
+      variacoes: [{ id: VARIANTE, nome: 'Azul ' }],
+      linksVariacoesShopee: [],
+    });
+    const fake = clienteFake({ addItem: () => ecoDeItem() });
+
+    const { plano } = await planejar(db, fake);
+    expect(plano.problemas).toEqual([]);
+    await aplicarPublicacao(deps(db, fake), plano);
+
+    expect(arvoreDoInit(fake)).toEqual([
+      {
+        variation_id: 0,
+        variation_name: 'Cor',
+        variation_option_list: [{ variation_option_id: 0, variation_option_name: 'Azul' }],
+      },
+    ]);
+  });
+
+  it('um nome de tier FORA da faixa de get_item_limit é RECUSADO antes do add_item — nada é criado nem escrito', async () => {
+    const db = new FakeDb();
+    semearCatalogo(db);
+    semearFilho(db);
+    // 'Cor' has 3 characters; the band admits 2.
+    const fake = clienteFake({ bandas: bandasComNomeAte(2), addItem: () => ecoDeItem() });
+
+    const { plano } = await planejar(db, fake);
+    expect(plano.problemas).toEqual([
+      {
+        campo: 'standardise_tier_variation',
+        motivo: MOTIVO_PUBLICACAO_BLOQUEADA.opcoesDemais,
+        mensagem:
+          'O nome do tier "Cor" tem 3 caracteres, fora da faixa da categoria (1..2) — nunca truncado; encurte o nome em Variações.',
+      },
+    ]);
+    await expect(aplicarPublicacao(deps(db, fake), plano)).rejects.toBeInstanceOf(
+      ShopeePublishBlockedError,
+    );
+    expect(fake.ops).not.toContain('add_item');
+    expect(fake.ops).not.toContain('init_tier_variation');
+    expect(db.writes).toEqual([]);
+  });
+
+  it('⛔ QUASE-PAR: a MESMA faixa num UPDATE cujo anúncio já tem o tier "Cor" — o nome que a Shopee aceitou não é recusado, e o leg não manda nada', async () => {
+    const db = new FakeDb();
+    semearCatalogo(db);
+    semearFilho(db);
+    semearLink(db);
+    db.seed(`produtos/${FILHO}/variashopee/v-1`, {
+      contaVariacaoShopeeOuterRef: REF_CONTA,
+      produtoShopeeOuterRef: `documents/${CAMINHO_LINK}`,
+      model_id: MODEL_A,
+      tier_index: [0],
+      model_status: SHOPEE_MODEL_STATUS.normal,
+    });
+    const fake = clienteFake({ bandas: bandasComNomeAte(2), updateItem: () => ecoDeItem() });
+
+    const { plano } = await planejar(db, fake);
+    expect(plano.problemas).toEqual([]);
+    const r = await aplicarPublicacao(deps(db, fake), plano);
+
+    expect(r.modelos.acao).toBe('nenhuma');
+    expect(fake.ops).toContain('update_item');
+    expect(fake.ops).not.toContain('update_tier_variation');
+  });
+
+  it('#1911 batch-A (verifier): numa ATUALIZAÇÃO o leg de modelos confere a opção NOVA contra a faixa e a árvore FRESCA — recusada depois do update_item, antes de qualquer escrita de tier; ⛔ QUASE-PAR: a opção que o anúncio JÁ tem (mais longa que a faixa) passa', async () => {
+    // The plan withholds the name bands on an update (it holds no live tree),
+    // so the model leg is the ONLY check on that path. The live listing holds
+    // 'Cor' = ['Azul'] (`modelList`); the option band admits 2 characters.
+    function bandasComOpcaoAte(max: number): unknown {
+      return {
+        ...BANDAS_DA_LOJA,
+        response: {
+          ...BANDAS_DA_LOJA.response,
+          tier_variation_option_length_limit: {
+            min_limit: 1,
+            max_limit: max,
+            min: null,
+            max: null,
+          },
+        },
+      };
+    }
+    async function republicar(nomeDaVariante: string) {
+      const db = new FakeDb();
+      semearCatalogo(db);
+      semearFilho(db);
+      // No binding: the implicit custom tier, so the option name IS the variante's.
+      semearGrupo(db, {
+        variacoes: [{ id: VARIANTE, nome: nomeDaVariante }],
+        linksVariacoesShopee: [],
+      });
+      semearLink(db);
+      db.seed(`produtos/${FILHO}/variashopee/v-1`, {
+        contaVariacaoShopeeOuterRef: REF_CONTA,
+        produtoShopeeOuterRef: `documents/${CAMINHO_LINK}`,
+        model_id: MODEL_A,
+        tier_index: [0],
+        model_status: SHOPEE_MODEL_STATUS.normal,
+      });
+      const fake = clienteFake({ bandas: bandasComOpcaoAte(2), updateItem: () => ecoDeItem() });
+      const { plano } = await planejar(db, fake);
+      expect(plano.ehAtualizacao).toBe(true);
+      expect(plano.problemas).toEqual([]);
+      const desfecho = await aplicarPublicacao(deps(db, fake), plano).then(
+        (r) => ({ r, err: null }),
+        (err: unknown) => ({ r: null, err }),
+      );
+      return { fake, ...desfecho };
+    }
+
+    const nova = await republicar('Verde');
+    expect(nova.err).toBeInstanceOf(ShopeePublishBlockedError);
+    expect((nova.err as ShopeePublishBlockedError).problemas).toEqual([
+      {
+        campo: 'standardise_tier_variation',
+        motivo: MOTIVO_PUBLICACAO_BLOQUEADA.opcoesDemais,
+        mensagem:
+          'A opção "Verde" do grupo "Cor" tem 5 caracteres, fora da faixa da categoria (1..2) — nunca truncado; encurte o nome em Variações.',
+      },
+    ]);
+    expect(nova.fake.ops).toContain('update_item');
+    for (const escrita of ['update_tier_variation', 'init_tier_variation', 'add_model']) {
+      expect(nova.fake.ops, escrita).not.toContain(escrita);
+    }
+
+    const ja = await republicar('Azul');
+    expect(ja.err).toBeNull();
+    expect(ja.r?.modelos.acao).toBe('nenhuma');
+    expect(ja.fake.ops).not.toContain('update_tier_variation');
   });
 });
 

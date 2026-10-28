@@ -214,7 +214,11 @@ export interface ContextoKit {
   /** Ordered by `ordem`; a família de um = `[member]`. */
   readonly filhos: readonly FilhoDoKit[];
   readonly familiaDeUm: boolean;
-  /** The ONE variation axis (n ≥ 2). */
+  /**
+   * The ONE variation axis (n ≥ 2). `nome` is the grupo's stored name, raw —
+   * `''` when the grupo has none OR could not be read, never its doc id (#1911
+   * batch-A); the plan sends it trimmed and refuses it blank.
+   */
   readonly grupo: { readonly id: string; readonly nome: string } | null;
   /** ≠ 1 with 2+ children ⇒ `kit-dois-eixos` on a create arm (0 = no axis at all). */
   readonly gruposDistintos: number;

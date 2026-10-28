@@ -352,6 +352,8 @@ function plano(over: Partial<PlanoPublicacao> = {}): PlanoPublicacao {
       grupos: [],
       filhos: [],
       bandaDeEstoque: null,
+      bandaNomeDoTier: null,
+      bandaNomeDaOpcao: null,
       imagensDeOpcao: null,
       armazenados: [],
     },
