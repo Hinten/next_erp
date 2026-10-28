@@ -651,6 +651,50 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
   }
 
   /**
+   * How the conflict modal names a field. A field that MERGES is named as the
+   * form names it — its override label first, then the schema's — because its
+   * row stands for an editor, not a value. Every other row keeps the schema's
+   * label, exactly as before the hook existed.
+   */
+  function conflictLabel(field: string): string {
+    const override = rebaseOf(field) ? fieldOverrides[field]?.label : undefined;
+    return override ?? labelFromShape(labelShape, field);
+  }
+
+  /**
+   * A merge that COLLIDED saves nothing: say so, and take the operator to the
+   * tab holding the first such field (in tab order), so what collided is on
+   * screen before any other save. Called BEFORE the merged value is written
+   * into the form: a hidden panel's inputs do not re-sync when they show again
+   * (see `goToSection`), so the tab is committed first. `nothingSaved`: the
+   * operator had asked to save ("Salvar mesmo assim"), and this click did not.
+   */
+  function revealCollidedMerge(
+    merged: ReadonlyArray<{ field: string; collided: boolean }>,
+    nothingSaved: boolean,
+  ): void {
+    const fields = merged.filter((m) => m.collided).map((m) => m.field);
+    if (fields.length === 0) return;
+    // The first tab (in tab order) holding one of them, placed as `grouped`
+    // places a field: its override's `section`, else the first tab. Every
+    // collided field here has an override (`rebaseOnConflict` is one).
+    const tabOf = (f: string) => fieldOverrides[f]?.section ?? sections?.[0];
+    const section = sections?.find((s) => fields.some((f) => tabOf(f) === s));
+    if (section !== undefined) flushSync(() => setActiveSection(section));
+    const labels = fields.map((f) => `“${conflictLabel(f)}”`).join(', ');
+    const changed = fields.length === 1 ? 'foi alterado' : 'foram alterados';
+    const where = section === undefined ? '' : ` na aba "${section}"`;
+    notifications.show({
+      color: 'yellow',
+      message: nothingSaved
+        ? `Nada foi salvo: ${labels} ${changed} por outra pessoa ao mesmo tempo que você. ` +
+          `Revise o que ficou marcado${where} e salve de novo.`
+        : `${labels} ${changed} por outra pessoa ao mesmo tempo que você: revise o que ficou ` +
+          `marcado${where} antes de salvar.`,
+    });
+  }
+
+  /**
    * "Recarregar do servidor" — take the server's version for the fields that
    * actually collided, and KEEP every edit that did not.
    *
@@ -698,7 +742,9 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
     // A collided field that merges takes the merge instead of the server's value:
     // re-applied below like any retained edit (dirty), and NOT saved — the
     // operator sees it, and whatever collided inside it, first.
-    for (const { field, value } of mergeCollidedFields(conflict, keep)) retained[field] = value;
+    const merged = mergeCollidedFields(conflict, keep);
+    for (const { field, value } of merged) retained[field] = value;
+    revealCollidedMerge(merged, false);
     // Preserve loaded transient values even when their Controller was suspended.
     for (const key of transientFields) retained[key] = keep[key];
     baseline.current = conflict.current;
@@ -1316,14 +1362,7 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
                           // Every listed field is one this save writes — that is how
                           // `saveRecord` picked them — so all of them overwrite…
                           new Set(conflict.fields),
-                          {
-                            // As the form names the field: its override label
-                            // first, then the schema's.
-                            labelFor: (f) =>
-                              (Object.hasOwn(fieldOverrides, f)
-                                ? fieldOverrides[f]?.label
-                                : undefined) ?? labelFromShape(labelShape, f),
-                          },
+                          { labelFor: conflictLabel },
                         ).map((row) => {
                           // …except a field that merges: it says so instead.
                           const rebase = rebaseOf(row.field);
@@ -1369,6 +1408,9 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
                   // field's new default — the version this click accepts, so the
                   // form's "what changed" now means "changed against it".
                   const merged = mergeCollidedFields(raised, form.getValues());
+                  // When something collided this click saves nothing: say so, on
+                  // the field's tab, before the merge lands in the form.
+                  revealCollidedMerge(merged, true);
                   const serverDefaults: Record<string, unknown> = {
                     ...emptyDefaults,
                     ...raised.current,

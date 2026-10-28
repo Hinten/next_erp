@@ -998,3 +998,158 @@ describe('ObjectView — a field that merges on conflict (rebaseOnConflict)', ()
     expect(screen.getByText('Registro alterado')).toBeTruthy();
   });
 });
+
+/*
+ * A merge that COLLIDES stops instead of saving — and must say so where the
+ * operator is. Without a word and a tab switch, an operator who saved from
+ * another tab saw the modal close on nothing, clicked "Salvar" again, and the
+ * merged value (the other writer's version of what collided) went in without
+ * ever having been shown.
+ */
+describe('ObjectView — a COLLIDED merge is shown, wherever the operator saved from', () => {
+  const CAMPOS_EM_ABAS = {
+    nome: { section: 'Geral' },
+    email: { section: 'Geral' },
+    itens: { ...CAMPOS_COM_MESCLA.itens, section: 'Lista' },
+  };
+
+  function renderEmAbas() {
+    return render(
+      <Wrap>
+        <ObjectView
+          schema={listaSchema}
+          collection={fakeCollection() as never}
+          db={{} as never}
+          currentUserUid="u1"
+          recordId="EXISTING"
+          sections={['Geral', 'Lista']}
+          fields={CAMPOS_EM_ABAS}
+        />
+      </Wrap>,
+    );
+  }
+
+  const abaAtiva = () =>
+    screen.getAllByRole('tab').find((t) => t.getAttribute('aria-selected') === 'true')?.textContent;
+  const avisos = () =>
+    notifyShow.mock.calls
+      .map((c) => c[0] as { color?: string; message?: string })
+      .filter((n) => n.color === 'yellow');
+
+  /** Edit the list on its tab, then go back to "Geral", rename and save there. */
+  async function editarListaESalvarDeOutraAba() {
+    await act(async () => {
+      fireEvent.click(screen.getByRole('tab', { name: 'Lista' }));
+    });
+    await click('Alterar a');
+    await act(async () => {
+      fireEvent.click(screen.getByRole('tab', { name: 'Geral' }));
+    });
+    await editAndSave('Nome', 'Alicia');
+  }
+
+  beforeEach(() => {
+    mesclar.mockClear();
+    docState.current = {
+      data: { id: 'EXISTING', data: structuredClone(LISTA_CARREGADA) },
+      loading: false,
+      error: undefined,
+      fromCache: false,
+    };
+  });
+
+  it('"Salvar mesmo assim" that collides switches to the field’s tab and says nothing was saved', async () => {
+    // Both sides changed `a`: the server's version stays, and nothing is saved.
+    saveRecordMock.mockRejectedValueOnce(
+      new RecordConflictError({ nome: 'Alice', itens: [{ id: 'a', v: 9 }] }, ['itens']),
+    );
+    renderEmAbas();
+    await editarListaESalvarDeOutraAba();
+    expect(abaAtiva()).toBe('Geral');
+
+    await click('Salvar mesmo assim');
+    await esperarEfeitos();
+
+    expect(saveRecordMock).toHaveBeenCalledOnce();
+    expect(abaAtiva()).toBe('Lista');
+    expect(itensNaTela()).toBe('a=9');
+    expect(avisos()).toHaveLength(1);
+    expect(avisos()[0]?.message).toContain('Nada foi salvo');
+    expect(avisos()[0]?.message).toContain('“Itens”');
+    expect(avisos()[0]?.message).toContain('aba "Lista"');
+  });
+
+  it('⚠️ NEAR-MISS: a merge that did NOT collide saves, with no warning and no tab switch', async () => {
+    saveRecordMock
+      .mockRejectedValueOnce(
+        new RecordConflictError({ nome: 'Alice', itens: ITENS_SERVIDOR }, ['itens']),
+      )
+      .mockResolvedValueOnce({ id: 'EXISTING', patch: {} });
+    renderEmAbas();
+    await editarListaESalvarDeOutraAba();
+
+    await click('Salvar mesmo assim');
+    await esperarEfeitos();
+
+    expect(saveRecordMock).toHaveBeenCalledTimes(2);
+    expect(avisos()).toEqual([]);
+    expect(abaAtiva()).toBe('Geral');
+  });
+
+  it('"Recarregar do servidor" that collides also switches to the field’s tab and warns', async () => {
+    saveRecordMock.mockRejectedValueOnce(
+      new RecordConflictError({ nome: 'Alice', itens: [{ id: 'a', v: 9 }] }, ['itens']),
+    );
+    renderEmAbas();
+    await editarListaESalvarDeOutraAba();
+
+    await click('Recarregar do servidor');
+    await esperarEfeitos();
+
+    expect(abaAtiva()).toBe('Lista');
+    expect(itensNaTela()).toBe('a=9');
+    expect(avisos()).toHaveLength(1);
+    expect(avisos()[0]?.message).toContain('“Itens”');
+    // A reload never saves, so it does not claim a save was stopped.
+    expect(avisos()[0]?.message).not.toContain('Nada foi salvo');
+  });
+
+  it('⚠️ NEAR-MISS: "Recarregar do servidor" over a merge that did NOT collide warns nothing', async () => {
+    saveRecordMock.mockRejectedValueOnce(
+      new RecordConflictError({ nome: 'Alice', itens: ITENS_SERVIDOR }, ['itens']),
+    );
+    renderEmAbas();
+    await editarListaESalvarDeOutraAba();
+
+    await click('Recarregar do servidor');
+    await esperarEfeitos();
+
+    expect(avisos()).toEqual([]);
+    expect(abaAtiva()).toBe('Geral');
+  });
+});
+
+describe('ObjectView — the modal’s override label is the MERGING field’s only', () => {
+  it('a field WITHOUT the hook keeps the schema label, whatever its override label says', async () => {
+    saveRecordMock.mockRejectedValueOnce(
+      new RecordConflictError({ ...LOADED, nome: 'Remote' }, ['nome']),
+    );
+    render(
+      <Wrap>
+        <ObjectView
+          schema={schema}
+          collection={fakeCollection()}
+          db={{} as never}
+          currentUserUid="u1"
+          recordId="EXISTING"
+          fields={{ nome: { label: 'Nome do cliente' } }}
+        />
+      </Wrap>,
+    );
+    await editAndSave('Nome do cliente', 'Local');
+
+    const tabela = within(screen.getByRole('table'));
+    expect(tabela.getByText('Nome')).toBeTruthy();
+    expect(tabela.queryByText('Nome do cliente')).toBeNull();
+  });
+});

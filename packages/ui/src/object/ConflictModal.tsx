@@ -86,7 +86,7 @@ export function ConflictModal({
           {anyMerged &&
             ' Nos campos marcados “mescla”, as suas alterações são reaplicadas sobre a versão do ' +
               'servidor; o que os dois lados mudaram ao mesmo tempo fica com a versão do servidor, ' +
-              'marcado para você refazer.'}
+              'marcado para você revisar, e nesse caso nada é salvo até você salvar de novo.'}
         </Alert>
 
         {fields.length > 0 && (

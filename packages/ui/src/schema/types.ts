@@ -275,6 +275,11 @@ export interface FieldConfig<TValue = unknown> {
    *    the modal again. When something collided it stops instead: the operator
    *    looks first.
    *
+   * A merge that collided is never silent: the form switches to the field's tab
+   * and a notice names the field (on "Salvar mesmo assim", that nothing was
+   * saved), so what collided is on screen before the next save. The modal row
+   * of a merging field is named by its override `label`, as the form names it.
+   *
    * Either way the field's form default becomes the server's value, so whatever
    * the form compares against "what was loaded" (a `validate` that judges only
    * what this save changed) now compares against the version just accepted.
