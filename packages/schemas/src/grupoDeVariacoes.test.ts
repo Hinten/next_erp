@@ -8,6 +8,7 @@ import {
   tipoVariacaoSchema,
   varianteSchema,
 } from './grupoDeVariacoes';
+import { linkVariacoesLiSchema } from './produto/collection/lojaIntegradaLinkVariacoes';
 
 describe('grupoDeVariacoesSchema', () => {
   it('accepts a minimal valid group and applies defaults', () => {
@@ -88,18 +89,27 @@ describe('externalVariacaoLinkSchema', () => {
   });
 });
 
-describe('legacy marketplace variation JSON', () => {
-  it('accepts JSON for LI/Amazon and rejects runtime-only values', () => {
+describe('the marketplace variation link fields that stay tolerant JSON', () => {
+  it('the LI field accepts ANY JSON entry, so an untouched stored entry never blocks a save of the grupo', () => {
+    // The form validates the whole document on every save: typing this field
+    // here would let one half-made stored link block renaming the grupo or
+    // adding a size. Its entries are typed by `linkVariacoesLiSchema` instead,
+    // enforced where a link is WRITTEN.
     expect(
       grupoDeVariacoesSchema.safeParse({
         nome: 'Cor',
-        linksVariacoesli: [{ legacy: ['v1', 1, null] }],
+        linksVariacoesli: [{ legacy: ['v1', 1, null] }, { integracaoLiId: 'CONTA1' }],
         linksVariacoesAmazon: ['legacy-id'],
       }).success,
     ).toBe(true);
     expect(
       grupoDeVariacoesSchema.safeParse({ nome: 'Cor', linksVariacoesli: [undefined] }).success,
     ).toBe(false);
+  });
+
+  it('⚠️ NEAR-MISS: the LI ELEMENT schema refuses the same value the field accepts', () => {
+    expect(linkVariacoesLiSchema.safeParse({ legacy: ['v1', 1, null] }).success).toBe(false);
+    expect(linkVariacoesLiSchema.safeParse({ integracaoLiId: 'CONTA1' }).success).toBe(false);
   });
 });
 

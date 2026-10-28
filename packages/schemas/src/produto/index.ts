@@ -30,6 +30,7 @@ export * from './collection/shopeeLink'; // typed Shopee link-doc write shapes (
 export * from './collection/shopeeLinkLeitura'; // pure READ rules over a stored Shopee link (refusal legibility, stock skip set, vivo)
 export * from './collection/vinculosShopee'; // pure link folds: a prodshopee's conta, a variashopee's listing
 export * from './collection/shopeeLinkVariacoes'; // typed grupoDeVariacoes.linksVariacoesShopee[] element (bare const)
+export * from './collection/lojaIntegradaLinkVariacoes'; // typed grupoDeVariacoes.linksVariacoesli[] element + its reader and validator (bare const)
 export * from './collection/amazonLink'; // typed Amazon link-doc write shapes (not DomainSchemas)
 export * from './collection/magaluLink'; // typed Magalu link-doc write shapes (not DomainSchemas)
 export * from './collection/lojaIntegradaLink'; // typed Loja Integrada link-doc write shapes (not DomainSchemas)
