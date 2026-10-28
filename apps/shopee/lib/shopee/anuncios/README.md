@@ -490,8 +490,14 @@ precondition.
   `EM_ANDAMENTO` with no `aguardarMs`. The exit, when Seller Centre holds no such
   listing: discard the draft with the attestation (`rascunho/descartar` +
   `confirmarCriacaoIncerta`) and create a new one — K1-11 stands, the attestation
-  is NOT honoured for `busca-de-anuncio-incompleta`. `search_item` by SKU is no
-  substitute: its index freshness after a create is unmeasured.
+  is NOT honoured for `busca-de-anuncio-incompleta`. What fills the window is
+  every create and every `update_item` since the attempt — never a stock or
+  price write, which does not move `update_time` (register 94). The new draft is
+  still guarded: its first create runs the full same-SKU walk (P5b), so the
+  manual exit cannot duplicate an older listing either. Follow-up #2061: fall
+  back to that walk in the same run when the window walk hits its ceiling.
+  `search_item` by SKU alone is no substitute (its index freshness after a
+  create is unmeasured); #2064 pairs it with a recency walk for the first create.
 - **(viii) `retomandoCriacao` lives in the adopting run's memory only.** ENSURE's
   adoption is written BEFORE the plan runs, so an adopting run that then fails,
   or an adoption by the product IMPORT (which never publishes), leaves a
@@ -1663,6 +1669,8 @@ a regression.
 | 309 | a CUSTOM tier (`variation_id: 0`, the D12 fallback) is accepted in a BR standardised (Fashion) leaf (#1911 P7, Q3)                                                                                                             | ⏳ BR shop: the first varied publish on a Fashion leaf with no binding entry. A refusal is a Shopee rejection; the fix is a STANDARD binding on `/variacoes`                                                                                                                                                                |
 | 310 | `get_item_list` honours `update_time_from` with NO `update_time_to` (filters — neither refused nor ignored), and the widest window it takes (#1911 P5)                                                                         | ⏳ BR shop: the 307 probe, plus one from-only call compared with an unwindowed walk. Refused ⇒ ENSURE throws on every re-run (lock released, record kept); ignored ⇒ a shop past 2 000 live listings answers `busca-de-anuncio-incompleta` every time. Both fail closed. Overlaps register 58 (inclusivity, maximum window) |
 | 311 | where Shopee's `get_item_list` offset cap ("get items offset over limit", `error_param`) sits for an UN-narrowed walk, against the 100-page / 10 000-row ceiling the kit scan and the first create's look-up share (#1911 P5b) | ⏳ BR shop: one un-narrowed walk to the end. A cap below 10 000 ⇒ every first create (and every kit create) on a shop past it throws that `error_param` — nothing sent, the lock released (fail closed); the fix would be a narrowed walk, the mass import's documented mitigation                                          |
+| 312 | `get_item_base_info` returns every item `get_item_list` lists under `STATUS_BUSCA_KIT` (incl. `BANNED`, `REVIEWING`) (#1911 P6)                                                                                                | ⏳ BR shop: one page plus its base-info batch, compare the id sets. A systematic omission ⇒ every first create (and every kit create) on that conta refuses `busca-de-anuncio-existente-incompleta` / `busca-de-kit-incompleta` — fail closed; the fix would be to narrow the statuses                                      |
+| 313 | a full first-create same-SKU walk (⌈n/100⌉ `get_item_list` + ⌈n/50⌉ `get_item_base_info`) of the largest conta (2 000–10 000 listings, Lucas) fits the route's 180 s less the 30 s margin (#1911 P6)                           | ⏳ BR shop: time one dry walk. Too slow ⇒ every route first create there answers 409 `PUBLICACAO_EXPIRADA` — nothing sent, the lock released — and the CLI (the lock's 300 s) is the path; #2064 narrows the walk                                                                                                           |
 
 Also unmeasured, and not a register line: nothing in this folder has met a BR
 shop. The `esperar` of 5 000 ms, the re-list door order, the daily-quota reset
