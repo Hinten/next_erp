@@ -6,13 +6,12 @@
  * `@delfrance/schemas` (`taxonomiaShopeeDto.ts`), the one package both this app
  * and `apps/web` reach, beside one ENVELOPE per route: each route builds its 200
  * `satisfies z.input<…>` of its envelope and its test parses that 200 with the
- * SAME schema object, so a browser reader has one declaration to import instead
- * of a copy to keep. `apps/web/lib/shopee/wire.ts` still mirrors the categorias
- * and limites answers by hand, with a comment saying the names match this file
- * — the #1369 shape, two copies the compiler cannot compare — until #1911's web
- * PR points it at these. The naming rule (camelCase mirrors of Shopee's
- * own names, pt-BR only for an envelope noun) and the "plain `z.number()`,
- * never `wireInt()`" rule moved WITH the shapes and are written down there —
+ * SAME schema object, so a browser reader imports that one declaration instead
+ * of keeping a hand copy beside a comment saying the names match — the #1369
+ * shape, two copies the compiler cannot compare. The naming rule (camelCase
+ * mirrors of Shopee's own names, pt-BR only for an envelope noun) and the
+ * "plain `z.number()`, never `wireInt()`" rule moved WITH the shapes and are
+ * written down there —
  * a step-11 publish still composes its payload from these numbers, so a
  * translated key would leave the repo two vocabularies for one field.
  *

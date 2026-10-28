@@ -1,13 +1,25 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  CAMPO_RASCUNHO_SHOPEE,
+  CODIGO_RASCUNHO_SHOPEE,
   ESTADO_ANUNCIO_SHOPEE,
+  MOTIVO_RASCUNHO_INVALIDO_SHOPEE,
   PROBLEMA_TABELA_SHOPEE,
   TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE,
   TIPO_CELULA_TABELA_SHOPEE,
+  categoriaNoDtoSchema as noCompartilhadoSchema,
+  categoriaResumoDtoSchema as resumoCompartilhadoSchema,
   detalheTabelaMedidasDtoSchema as detalheCompartilhadoSchema,
   listaTabelasMedidasDtoSchema as listaCompartilhadaSchema,
   projetarTabelaShopee,
+  respostaAtualizarRascunhoShopeeSchema as atualizarCompartilhadoSchema,
+  respostaCategoriasShopeeSchema as categoriasCompartilhadaSchema,
+  respostaCriarRascunhoShopeeSchema as criarCompartilhadoSchema,
+  respostaDescartarRascunhoShopeeSchema as descartarCompartilhadoSchema,
+  respostaLimitesDoItemShopeeSchema as limitesDoItemCompartilhadoSchema,
+  respostaLimitesTabelaMedidasShopeeSchema,
+  respostaRecomendacaoCategoriaShopeeSchema as recomendacaoCompartilhadaSchema,
   tabelaMedidasLinhaDtoSchema as linhaCompartilhadaSchema,
   tabelaShopeeProjetadaSchema,
   type DetalheTabelaShopeeEntrada,
@@ -23,6 +35,7 @@ import {
   anuncioStatusShopeeSchema,
   canceladoShopeeSchema,
   categoriaNoDtoSchema,
+  categoriaResumoDtoSchema,
   detalheTabelaMedidasDtoSchema,
   detalhesErroShopeeSchema,
   envioEstoqueManualShopeeSchema,
@@ -35,9 +48,14 @@ import {
   priceSyncRelatorioPaginaShopeeSchema,
   priceSyncStatusShopeeSchema,
   problemaShopeeSchema,
+  respostaAtualizarRascunhoShopeeSchema,
   respostaCategoriasShopeeSchema,
+  respostaCriarRascunhoShopeeSchema,
+  respostaDescartarRascunhoShopeeSchema,
+  respostaLimitesDoItemShopeeSchema,
   respostaLimitesShopeeSchema,
   respostaPublicarShopeeSchema,
+  respostaRecomendacaoCategoriaShopeeSchema,
   respostaReverificarShopeeSchema,
   shopeeContaStatusSchema,
   shopeeEtiquetaPendenteSchema,
@@ -1919,4 +1937,305 @@ describe('step 21 — a stored-doc default is NOT a wire tolerance: a missing ke
       expect((err as ShopeeClientRespostaInvalidaError).campos).toContain(campo);
     },
   );
+});
+
+/* ---------------------------------------------------------------------------
+ * #1911 (P8) — the taxonomy answers, the draft answers and the draft refusals
+ * ------------------------------------------------------------------------- */
+
+describe('#1911 — every taxonomy and draft answer here IS the shared schema object (#1369)', () => {
+  // The neutrality proof of the categorias/limites move is the UNEDITED blocks
+  // above ("the categorias answer", "the limites answer — only the size-chart
+  // slice"); this pins WHY they still pass: there is no browser copy left to
+  // drift, only a re-export.
+  it.each([
+    ['categoriaResumoDtoSchema', categoriaResumoDtoSchema, resumoCompartilhadoSchema],
+    ['categoriaNoDtoSchema', categoriaNoDtoSchema, noCompartilhadoSchema],
+    [
+      'respostaCategoriasShopeeSchema',
+      respostaCategoriasShopeeSchema,
+      categoriasCompartilhadaSchema,
+    ],
+    [
+      'respostaLimitesShopeeSchema (the SLICE)',
+      respostaLimitesShopeeSchema,
+      respostaLimitesTabelaMedidasShopeeSchema,
+    ],
+    [
+      'respostaLimitesDoItemShopeeSchema (the WHOLE answer)',
+      respostaLimitesDoItemShopeeSchema,
+      limitesDoItemCompartilhadoSchema,
+    ],
+    [
+      'respostaRecomendacaoCategoriaShopeeSchema',
+      respostaRecomendacaoCategoriaShopeeSchema,
+      recomendacaoCompartilhadaSchema,
+    ],
+    [
+      'respostaCriarRascunhoShopeeSchema',
+      respostaCriarRascunhoShopeeSchema,
+      criarCompartilhadoSchema,
+    ],
+    [
+      'respostaAtualizarRascunhoShopeeSchema',
+      respostaAtualizarRascunhoShopeeSchema,
+      atualizarCompartilhadoSchema,
+    ],
+    [
+      'respostaDescartarRascunhoShopeeSchema',
+      respostaDescartarRascunhoShopeeSchema,
+      descartarCompartilhadoSchema,
+    ],
+  ] as const)('%s', (_nome, daqui, compartilhado) => {
+    expect(daqui).toBe(compartilhado);
+  });
+
+  it('NEAR-MISS: the SLICE is not the whole answer — two schemas, two readers', () => {
+    expect(respostaLimitesShopeeSchema).not.toBe(respostaLimitesDoItemShopeeSchema);
+  });
+});
+
+/** A whole `taxonomia/limites` 200 with EVERY band present, as the route answers it. */
+const LIMITES_DO_ITEM = {
+  scope: 'category',
+  categoryId: 100087,
+  limites: {
+    priceLimit: { min: 0.5, max: 100_000 },
+    wholesalePriceThresholdPercentage: { min: 1, max: 90 },
+    stockLimit: { min: 0, max: 999_999 },
+    itemNameLengthLimit: { min: 1, max: 120 },
+    itemImageCountLimit: { min: 1, max: 9 },
+    itemDescriptionLengthLimit: { min: 20, max: 3000 },
+    tierVariationNameLengthLimit: { min: 1, max: 14 },
+    tierVariationOptionLengthLimit: { min: 1, max: 30 },
+    itemCountLimit: { min: 0, max: 5000 },
+    extendedDescriptionLimit: null,
+    dtsLimit: { daysToShipLimit: { min: -1, max: 30 }, nonPreOrderDaysToShip: 2 },
+    weightLimit: { weightMandatory: true },
+    dimensionLimit: { dimensionMandatory: false },
+    sizeChartLimit: {
+      sizeChartMandatory: true,
+      supportImageSizeChart: false,
+      supportTemplateSizeChart: null,
+    },
+  },
+  gtinLimit: { gtinValidationRule: 'Optional' },
+  supportsPreOrder: true,
+};
+
+describe('#1911 — the WHOLE item bands (`limitesDoItem`): the opposite tolerance of the slice', () => {
+  it('the control: every band parses and is KEPT — `-1` on daysToShipLimit included', () => {
+    expect(respostaLimitesDoItemShopeeSchema.parse(LIMITES_DO_ITEM)).toEqual(LIMITES_DO_ITEM);
+  });
+
+  it('⭐ a malformed band REFUSES the whole answer — where the slice, on the SAME body, drops it unread', () => {
+    const corpo = {
+      ...LIMITES_DO_ITEM,
+      limites: { ...LIMITES_DO_ITEM.limites, priceLimit: 'quebrado' },
+    };
+
+    expect(respostaLimitesDoItemShopeeSchema.safeParse(corpo).success).toBe(false);
+    expect(respostaLimitesShopeeSchema.safeParse(corpo).success).toBe(true);
+  });
+
+  it.each([
+    ['a missing band (rule 2)', { ...LIMITES_DO_ITEM, limites: { sizeChartLimit: null } }],
+    ['a missing `supportsPreOrder`', { ...LIMITES_DO_ITEM, supportsPreOrder: undefined }],
+    ['a quoted number (rule 3)', { ...LIMITES_DO_ITEM, categoryId: '100087' }],
+  ])('NEAR-MISS: %s is refused', (_n, corpo) => {
+    expect(respostaLimitesDoItemShopeeSchema.safeParse(corpo).success).toBe(false);
+  });
+
+  it('the shop-wide answer (`categoryId: null`) parses — `null` is "every category", a value', () => {
+    expect(
+      respostaLimitesDoItemShopeeSchema.parse({
+        ...LIMITES_DO_ITEM,
+        scope: 'shop',
+        categoryId: null,
+      }).categoryId,
+    ).toBeNull();
+  });
+});
+
+describe('#1911 — the category suggestion is OFFERED, never applied (#799)', () => {
+  const RECOMENDACAO = {
+    recomendacoes: [
+      {
+        position: 1,
+        categoryId: 100087,
+        name: 'Camisetas',
+        isLeaf: true,
+        pathFromRoot: [{ categoryId: 100017, name: 'Moda', originalName: null, isLeaf: false }],
+      },
+      { position: 2, categoryId: 999_999, name: null, isLeaf: null, pathFromRoot: [] },
+    ],
+    unresolved: 1,
+    applied: false,
+  };
+
+  it('the control: an answer with an unresolved row parses — `isLeaf: null` is "unknown", kept', () => {
+    const r = respostaRecomendacaoCategoriaShopeeSchema.parse(RECOMENDACAO);
+
+    expect(r.recomendacoes[1]?.isLeaf).toBeNull();
+    expect(r.unresolved).toBe(1);
+  });
+
+  it('⭐ NEAR-MISS: `applied: true` is refused — a suggestion applied with no human is the defect', () => {
+    expect(
+      respostaRecomendacaoCategoriaShopeeSchema.safeParse({ ...RECOMENDACAO, applied: true })
+        .success,
+    ).toBe(false);
+  });
+});
+
+describe('#1911 — the three draft answers', () => {
+  it.each([true, false])(
+    'the create’s `criado: %s` parses — 201 and 200 are both a success',
+    (criado) => {
+      expect(
+        respostaCriarRascunhoShopeeSchema.parse({ linkDocId: 'AbCdEfGhIjKlMnOpQrSt', criado }),
+      ).toEqual({ linkDocId: 'AbCdEfGhIjKlMnOpQrSt', criado });
+    },
+  );
+
+  it('the edit’s `gravados: []` ("nothing differed") parses as `[]`; a written list keeps its order', () => {
+    expect(
+      respostaAtualizarRascunhoShopeeSchema.parse({ linkDocId: 'r-1', gravados: [] }).gravados,
+    ).toEqual([]);
+    expect(
+      respostaAtualizarRascunhoShopeeSchema.parse({
+        linkDocId: 'r-1',
+        gravados: [CAMPO_RASCUNHO_SHOPEE.categoryId, CAMPO_RASCUNHO_SHOPEE.attributes],
+      }).gravados,
+    ).toEqual([CAMPO_RASCUNHO_SHOPEE.categoryId, CAMPO_RASCUNHO_SHOPEE.attributes]);
+  });
+
+  it('NEAR-MISS: a discard that did not say `descartado: true` is not a discard', () => {
+    const corpo = { linkDocId: 'r-1', descartado: true, criacaoIncerta: false };
+    expect(respostaDescartarRascunhoShopeeSchema.safeParse(corpo).success).toBe(true);
+    expect(
+      respostaDescartarRascunhoShopeeSchema.safeParse({ ...corpo, descartado: false }).success,
+    ).toBe(false);
+  });
+});
+
+/** A 409 CONFLITO body exactly as `corpoDaRecusaDeRascunhoShopee` builds it. */
+const CONFLITO = {
+  error: 'o rascunho r-1 mudou desde que foi aberto (item_name, marca). Recarregue.',
+  code: CODIGO_RASCUNHO_SHOPEE.conflito,
+  linkDocId: 'r-1',
+  conflitos: [
+    { campo: CAMPO_RASCUNHO_SHOPEE.itemName, atual: 'Camiseta' },
+    { campo: CAMPO_RASCUNHO_SHOPEE.marca, atual: { brand_id: 0, original_brand_name: null } },
+  ],
+};
+
+const IRMAO = { linkDocId: 'link-2', itemId: 1000001, rascunho: false };
+
+describe('#1911 — the draft refusals’ extras: `conflitos`, `aguardarMs`, `vinculos` (each on its own)', () => {
+  it('⭐ a CONFLITO list reads WHOLE — `atual` verbatim, an object included', () => {
+    expect(detalhesErroShopeeSchema.parse(CONFLITO)).toMatchObject({
+      linkDocId: 'r-1',
+      conflitos: CONFLITO.conflitos,
+    });
+  });
+
+  it('⭐ `conflitos: []` (three lost writes) reads `[]` ⟷ an ABSENT key reads `null` — never folded', () => {
+    expect(detalhesErroShopeeSchema.parse({ ...CONFLITO, conflitos: [] }).conflitos).toEqual([]);
+    expect(
+      detalhesErroShopeeSchema.parse({ code: CODIGO_RASCUNHO_SHOPEE.conflito, linkDocId: 'r-1' })
+        .conflitos,
+    ).toBeNull();
+  });
+
+  it('⭐ DEPLOY SKEW (pinned choice): one item naming a campo this build lacks nulls the WHOLE list — never a partial modal, never `[]`', () => {
+    const r = detalhesErroShopeeSchema.parse({
+      ...CONFLITO,
+      conflitos: [...CONFLITO.conflitos, { campo: 'campo-de-um-backend-novo', atual: 1 }],
+    });
+
+    expect(r.conflitos).toBeNull();
+    // …and only itself: its siblings survive.
+    expect(r.linkDocId).toBe('r-1');
+  });
+
+  it('NEAR-MISS: the same list with every campo known reads whole — the catch fires only on the unknown', () => {
+    const todos = Object.values(CAMPO_RASCUNHO_SHOPEE).map((campo) => ({ campo, atual: null }));
+    expect(detalhesErroShopeeSchema.parse({ ...CONFLITO, conflitos: todos }).conflitos).toEqual(
+      todos,
+    );
+  });
+
+  it('⭐ `aguardarMs` present ⇒ the number, `0` included ⟷ ABSENT ⇒ `null` (a sibling’s uncertain create: waiting does not help)', () => {
+    const andamento = { code: CODIGO_RASCUNHO_SHOPEE.publicacaoEmAndamento, linkDocId: 'r-1' };
+
+    expect(detalhesErroShopeeSchema.parse({ ...andamento, aguardarMs: 240_000 }).aguardarMs).toBe(
+      240_000,
+    );
+    expect(detalhesErroShopeeSchema.parse({ ...andamento, aguardarMs: 0 }).aguardarMs).toBe(0);
+    expect(detalhesErroShopeeSchema.parse({ ...andamento, vinculos: [IRMAO] })).toMatchObject({
+      aguardarMs: null,
+      vinculos: [IRMAO],
+    });
+  });
+
+  it.each([
+    ['negative', -1],
+    ['fractional', 1.5],
+    ['quoted', '240000'],
+  ])('NEAR-MISS: a %s `aguardarMs` nulls ONLY itself', (_n, aguardarMs) => {
+    const r = detalhesErroShopeeSchema.parse({
+      code: CODIGO_RASCUNHO_SHOPEE.publicacaoEmAndamento,
+      linkDocId: 'r-1',
+      aguardarMs,
+      vinculos: [IRMAO],
+    });
+
+    expect(r.aguardarMs).toBeNull();
+    expect(r.vinculos).toEqual([IRMAO]);
+    expect(r.linkDocId).toBe('r-1');
+  });
+
+  it('`vinculos` reads a sibling listing AND a sibling draft; a malformed list nulls only itself', () => {
+    const rascunho = { linkDocId: 'link-3', itemId: null, rascunho: true };
+    expect(
+      detalhesErroShopeeSchema.parse({
+        code: CODIGO_RASCUNHO_SHOPEE.contaJaTemAnuncio,
+        linkDocId: 'r-1',
+        vinculos: [IRMAO, rascunho],
+      }).vinculos,
+    ).toEqual([IRMAO, rascunho]);
+
+    const quebrado = detalhesErroShopeeSchema.parse({
+      code: CODIGO_RASCUNHO_SHOPEE.contaJaTemAnuncio,
+      linkDocId: 'r-1',
+      vinculos: [{ ...IRMAO, itemId: '1000001' }],
+    });
+    expect(quebrado.vinculos).toBeNull();
+    expect(quebrado.linkDocId).toBe('r-1');
+  });
+
+  it('⭐ `motivo` stays a FREE string: the draft’s slug AND a price slug read verbatim (never retyped to one vocabulary)', () => {
+    expect(
+      detalhesErroShopeeSchema.parse({
+        code: CODIGO_RASCUNHO_SHOPEE.produtoInvalido,
+        linkDocId: 'r-1',
+        motivo: MOTIVO_RASCUNHO_INVALIDO_SHOPEE.filho,
+      }).motivo,
+    ).toBe(MOTIVO_RASCUNHO_INVALIDO_SHOPEE.filho);
+    expect(
+      detalhesErroShopeeSchema.parse({
+        code: 'SHOPEE_PRECO_CONTA_RECUSADA',
+        motivo: 'regiao-nao-suportada',
+      }).motivo,
+    ).toBe('regiao-nao-suportada');
+  });
+
+  it('the all-absent constant carries the three new keys as `null`', () => {
+    expect(DETALHES_ERRO_SHOPEE_VAZIOS).toMatchObject({
+      conflitos: null,
+      aguardarMs: null,
+      vinculos: null,
+    });
+  });
 });
