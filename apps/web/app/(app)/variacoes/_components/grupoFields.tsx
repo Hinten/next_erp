@@ -73,6 +73,20 @@ export function deriveVariacoesIds(values: Record<string, unknown>): { variacoes
   return { variacoesIds: [...new Set(variacoes.map((v) => v.id))] };
 }
 
+/**
+ * The `novo` page's `transformCopiedValues`: a copy ("copiar" on the list)
+ * starts with NO Loja Integrada links. A create writes every field, so a copied
+ * link would be created by that save while counting as untouched (it is the
+ * form's seed) and skipping every check a new link must pass; and a valid one
+ * would put the same store grade and options in two grupos, which publishing
+ * and importing treat as ambiguous for both. The operator links the copy.
+ */
+export function copiarGrupoSemVinculosLi(
+  origem: Readonly<Record<string, unknown>>,
+): Record<string, unknown> {
+  return { ...origem, linksVariacoesli: null };
+}
+
 const TIPO_OPTIONS = Object.entries(TIPO_VARIACAO_LABELS).map(([value, label]) => ({
   value,
   label,

@@ -10,6 +10,7 @@ import {
   alternarRemocaoLi,
   definirVariantesDaOpcaoLi,
   editadasPorValorLi,
+  marcaDeConflitoLi,
   mensagemDoConflitoLi,
   novoVinculoLi,
   prepararVinculosLi,
@@ -264,6 +265,31 @@ describe('the edits — immutable, and an emptied option is dropped AS IT IS EDI
     const marcada = alternarRemocaoLi([guardado], 0);
     expect((marcada[0] as Doc)[DELETE_MARK]).toBe(true);
     expect(alternarRemocaoLi(marcada, 0)).toEqual([guardado]);
+  });
+
+  it('⚠️ remove, then undo, on an entry a conflict marked "removido": the note STAYS, and the save still drops it', () => {
+    const marcado = { ...guardado, [MARCA_CONFLITO_VINCULO_LI]: CONFLITO_VINCULO_LI.removido };
+
+    const volta = alternarRemocaoLi(alternarRemocaoLi([marcado], 0), 0);
+
+    expect(volta).toEqual([marcado]);
+    expect(marcaDeConflitoLi(volta[0])).toBe(CONFLITO_VINCULO_LI.removido);
+    expect(prepararVinculosLi(volta)).toEqual([]);
+  });
+
+  it('⚠️ NEAR-MISS: EDITING that entry is what clears the note — and then the save keeps it', () => {
+    const marcado = { ...guardado, [MARCA_CONFLITO_VINCULO_LI]: CONFLITO_VINCULO_LI.removido };
+
+    const editado = definirVariantesDaOpcaoLi(marcado, { id: 1, nome: 'P' }, ['v1', 'v3']);
+
+    expect(marcaDeConflitoLi(editado)).toBeNull();
+    expect(prepararVinculosLi([editado])).toEqual([editado]);
+  });
+
+  it('remove, then undo, on an "alterado" entry keeps its note too', () => {
+    const marcado = { ...guardado, [MARCA_CONFLITO_VINCULO_LI]: CONFLITO_VINCULO_LI.alterado };
+    const volta = alternarRemocaoLi(alternarRemocaoLi([marcado], 0), 0);
+    expect(volta).toEqual([marcado]);
   });
 
   it('even an element that is not an object can be staged for removal, and restored', () => {

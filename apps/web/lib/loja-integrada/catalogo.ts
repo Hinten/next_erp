@@ -179,8 +179,13 @@ function falhaPorCodigo(err: LojaIntegradaClientHttpError): FalhaCatalogoLi | nu
   if (err.code === null) return null;
   switch (err.code) {
     case CODIGO_ERRO_LI.chamadasDesligadas:
+      // The backend's read switch is not the exact `on`: every environment until
+      // the migration, and after it a switch turned off or mis-set — the same
+      // code, so the copy names both causes (as the credential copy does).
       return falha(
-        `As listas da Loja Integrada só podem ser lidas depois da migração. ${VINCULOS_CONTINUAM}`,
+        'As listas da Loja Integrada não podem ser lidas agora: as chamadas estão desligadas ' +
+          'neste backend (até a migração para este sistema, ou por configuração; se a migração ' +
+          `já ocorreu, avise o suporte). ${VINCULOS_CONTINUAM}`,
         'yellow',
         false,
       );

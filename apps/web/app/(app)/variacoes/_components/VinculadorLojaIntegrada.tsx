@@ -1,6 +1,7 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { FirebaseError } from 'firebase/app';
 import { useFormContext, useWatch } from 'react-hook-form';
 import {
   ActionIcon,
@@ -29,7 +30,7 @@ import {
 } from '@delfrance/schemas';
 import { useSectionActive, type FieldRenderProps } from '@delfrance/ui';
 
-import { useIntegracoes } from '@/lib/data/useIntegracoes';
+import { useIntegracoes, type IntegracoesStatus } from '@/lib/data/useIntegracoes';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import {
   descreverFalhaCatalogoLi,
@@ -102,12 +103,19 @@ export function VinculadorLojaIntegrada({
     lista,
     onChange,
     disabled: disabled === true,
+    formatoInvalido: grupos.formatoInvalido,
     ativa,
     achados,
     nomeDaVariante,
     variantesOferecidas: idsDasVariantesLi(variacoesVivas),
     seedLinks,
   };
+  // A user without the integrations read (`PERM.integracao.read`) is refused
+  // the shared conta list itself, before any store read: say which permission.
+  const semPermissao =
+    integracoes.status === 'error' &&
+    integracoes.query.error instanceof FirebaseError &&
+    integracoes.query.error.code === 'permission-denied';
 
   return (
     <Stack gap="sm">
@@ -132,8 +140,11 @@ export function VinculadorLojaIntegrada({
       {integracoes.status === 'pending' && <Loader size="sm" />}
       {integracoes.status === 'error' && (
         <Alert color="orange">
-          Não foi possível ler as contas da Loja Integrada. Os vínculos guardados aparecem abaixo,
-          sem edição.
+          {semPermissao
+            ? 'Você está sem permissão para ler as contas da Loja Integrada: o seu cargo precisa ' +
+              'da permissão de leitura de Integrações.'
+            : 'Não foi possível ler as contas da Loja Integrada.'}{' '}
+          Os vínculos guardados aparecem abaixo, sem edição.
         </Alert>
       )}
       {integracoes.status === 'success' && ativas.length === 0 && (
@@ -151,7 +162,12 @@ export function VinculadorLojaIntegrada({
         />
       ))}
       {grupos.outras.length > 0 && (
-        <OutrosVinculosLi itens={grupos.outras} contas={integracoes.byId} contexto={contexto} />
+        <OutrosVinculosLi
+          itens={grupos.outras}
+          contas={integracoes.byId}
+          statusContas={integracoes.status}
+          contexto={contexto}
+        />
       )}
     </Stack>
   );
@@ -163,6 +179,11 @@ interface ContextoDoVinculador {
   readonly lista: readonly unknown[];
   readonly onChange: (next: unknown) => void;
   readonly disabled: boolean;
+  /**
+   * The stored value is not a list: only the explicit "Substituir por uma lista
+   * vazia" may replace it, so nothing that writes `lista` is offered.
+   */
+  readonly formatoInvalido: boolean;
   /** The tab is the active one: the store may be read. */
   readonly ativa: boolean;
   /** The tab's findings, on the form's indices. */
@@ -191,7 +212,11 @@ function BlocoContaLi({
 }) {
   const grades = useGradesLi(contaId, { habilitado: contexto.ativa });
   const [escolhida, setEscolhida] = useState<string | null>(null);
+  // Each "Atualizar" click: the cards read their grade's options afresh too, so
+  // an option created in the store's painel shows without waiting out a cache.
+  const [rodadaDeAtualizacao, setRodadaDeAtualizacao] = useState(0);
   const daLoja = grades.dados?.grades;
+  const podeAdicionar = daLoja !== undefined && !contexto.formatoInvalido;
   const jaVinculadas = new Set(
     itens.flatMap((i) =>
       i.entrada.tipo === TIPO_ENTRADA_LINK_LI.valida && !i.removida
@@ -206,14 +231,27 @@ function BlocoContaLi({
   const falha = grades.erro === null ? null : descreverFalhaCatalogoLi(grades.erro);
 
   function adicionar(): void {
+    // A stored value that is not a list is replaced only by its own explicit button.
+    if (contexto.formatoInvalido) return;
     const grade = escolhida === null ? undefined : porValor.get(escolhida);
     if (grade === undefined) return;
     contexto.onChange([...contexto.lista, novoVinculoLi(contaId, grade)]);
     setEscolhida(null);
   }
 
+  function atualizar(): void {
+    grades.atualizar();
+    setRodadaDeAtualizacao((n) => n + 1);
+  }
+
   return (
-    <Paper withBorder p="sm" data-testid={`vinculador-li-conta-${contaId}`}>
+    <Paper
+      withBorder
+      p="sm"
+      role="group"
+      aria-label={nome}
+      data-testid={`vinculador-li-conta-${contaId}`}
+    >
       <Stack gap="xs">
         <Group justify="space-between">
           <Text fw={600}>{nome}</Text>
@@ -227,7 +265,7 @@ function BlocoContaLi({
               size="xs"
               variant="subtle"
               leftSection={<IconRefresh size={14} />}
-              onClick={grades.atualizar}
+              onClick={atualizar}
               loading={grades.lendo}
               disabled={grades.indisponivel !== null}
             >
@@ -252,6 +290,7 @@ function BlocoContaLi({
               item={item}
               link={item.entrada.link}
               daLoja={daLoja}
+              rodadaDeAtualizacao={rodadaDeAtualizacao}
               contexto={contexto}
             />
           ) : null,
@@ -264,14 +303,14 @@ function BlocoContaLi({
               data={oferecidas}
               value={escolhida}
               onChange={setEscolhida}
-              disabled={!daLoja}
+              disabled={!podeAdicionar}
               searchable
               style={{ flex: 1 }}
             />
             <Button
               leftSection={<IconPlus size={14} />}
               onClick={adicionar}
-              disabled={!daLoja || escolhida === null}
+              disabled={!podeAdicionar || escolhida === null}
             >
               Adicionar vínculo
             </Button>
@@ -330,12 +369,15 @@ function CartaoVinculoLi({
   item,
   link,
   daLoja,
+  rodadaDeAtualizacao,
   contexto,
 }: {
   contaId: string;
   item: ItemVinculoLi;
   link: LinkVariacoesLi;
   daLoja: readonly GradeCatalogoLi[] | undefined;
+  /** Bumped by the block's "Atualizar": read this grade afresh as well. */
+  rodadaDeAtualizacao: number;
   contexto: ContextoDoVinculador;
 }) {
   const gradeDaLoja = daLoja?.find((g) => g.id === link.grade_id);
@@ -343,9 +385,17 @@ function CartaoVinculoLi({
   // One grade's options are read only once the store's list holds that grade:
   // a list that failed already says why (above), and a grade the store no
   // longer lists has nothing to read.
-  const detalhe = useGradeLi(contaId, link.grade_id, {
-    habilitado: contexto.ativa && !item.removida && gradeDaLoja !== undefined,
-  });
+  const lerDetalhe = contexto.ativa && !item.removida && gradeDaLoja !== undefined;
+  const detalhe = useGradeLi(contaId, link.grade_id, { habilitado: lerDetalhe });
+  // Once per "Atualizar" click, and only for a card that reads its grade; a card
+  // mounted after the click starts at the current round, so it inherits nothing.
+  const rodadaVista = useRef(rodadaDeAtualizacao);
+  const atualizarDetalhe = detalhe.atualizar;
+  useEffect(() => {
+    if (rodadaVista.current === rodadaDeAtualizacao) return;
+    rodadaVista.current = rodadaDeAtualizacao;
+    if (lerDetalhe) atualizarDetalhe();
+  }, [rodadaDeAtualizacao, lerDetalhe, atualizarDetalhe]);
   const rotulo = gradeDaLoja?.nome ?? link.name ?? `grade #${String(link.grade_id)}`;
   const linhas = linhasDeOpcao(link, doSeed(contexto.seedLinks, link), detalhe.dados?.opcoes);
   const falhaDetalhe =
@@ -364,6 +414,8 @@ function CartaoVinculoLi({
     <Paper
       withBorder
       p="xs"
+      role="group"
+      aria-label={`${rotulo} (${String(link.grade_id)})`}
       data-testid={`vinculo-li-${contaId}-${String(link.grade_id)}`}
       style={
         item.removida ? { opacity: 0.55, borderColor: 'var(--mantine-color-red-6)' } : undefined
@@ -492,7 +544,7 @@ function AchadoLi({
   const aviso = achado.tipo === TIPO_CONFLITO_LINK_LI.opcaoComVariasVariantes;
   const mensagem = mensagemDoConflitoLi(achado, contexto.nomeDaVariante);
   return (
-    <Text size="sm" c={aviso ? 'yellow.8' : 'red'}>
+    <Text size="sm" c={aviso ? 'yellow' : 'red'}>
       {mensagem}
       {!aviso && !achado.bloqueia && ' (vínculo guardado assim; não impede salvar)'}
     </Text>
@@ -515,9 +567,19 @@ function BotaoRemocaoLi({ removida, onClick }: { removida: boolean; onClick: () 
   );
 }
 
-/** What a read-only line says about whose entry it is. */
-function rotuloDaConta(conta: unknown, contas: ReadonlyMap<string, Integracao>): string {
+/**
+ * What a read-only line says about whose entry it is. An id is "não
+ * reconhecida" only against a conta list that WAS read: while it loads or
+ * failed, the conta may well exist.
+ */
+function rotuloDaConta(
+  conta: unknown,
+  contas: ReadonlyMap<string, Integracao>,
+  statusContas: IntegracoesStatus,
+): string {
   if (typeof conta !== 'string') return 'sem conta';
+  if (statusContas === 'pending') return `conta ${conta} (lendo a lista de contas…)`;
+  if (statusContas === 'error') return `conta ${conta} (lista de contas indisponível)`;
   const doc = contas.get(conta);
   if (doc === undefined) return `conta não reconhecida (${conta})`;
   if (doc.tipo !== INTEGRACAO_TIPO.lojaIntegrada) {
@@ -529,10 +591,12 @@ function rotuloDaConta(conta: unknown, contas: ReadonlyMap<string, Integracao>):
 function OutrosVinculosLi({
   itens,
   contas,
+  statusContas,
   contexto,
 }: {
   itens: readonly ItemVinculoLi[];
   contas: ReadonlyMap<string, Integracao>;
+  statusContas: IntegracoesStatus;
   contexto: ContextoDoVinculador;
 }) {
   return (
@@ -556,11 +620,14 @@ function OutrosVinculosLi({
                 ? (e.bruto as Record<string, unknown>).integracaoLiId
                 : undefined;
           const meus = contexto.achados.filter((a) => a.indices.includes(item.indice));
+          const daConta = rotuloDaConta(conta, contas, statusContas);
           return (
             <Group
               key={item.indice}
               justify="space-between"
               wrap="nowrap"
+              role="group"
+              aria-label={`${descricao} — ${daConta}`}
               data-testid={`vinculo-li-outro-${String(item.indice)}`}
               style={item.removida ? { opacity: 0.55 } : undefined}
             >
@@ -569,7 +636,7 @@ function OutrosVinculosLi({
                   {descricao}
                 </Text>
                 <Text size="xs" c="dimmed">
-                  {rotuloDaConta(conta, contas)}
+                  {daConta}
                 </Text>
                 {meus.map((a) => (
                   <AchadoLi

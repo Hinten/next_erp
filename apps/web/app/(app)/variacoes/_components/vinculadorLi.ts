@@ -421,11 +421,24 @@ export function definirVariantesDaOpcaoLi(
   return registro;
 }
 
+/**
+ * Undo a staged removal: only what the removal ADDED goes — the staged mark, or
+ * the wrapper of a non-object element. A conflict merge's note stays: an undo is
+ * not an edit, so a `removido` link is still dropped on save, and an `alterado`
+ * one still says so.
+ */
+function desfazerRemocaoLi(entrada: Registro): unknown {
+  if (Object.hasOwn(entrada, VALOR_ILEGIVEL_LI)) return entrada[VALOR_ILEGIVEL_LI];
+  const copia: Registro = { ...entrada };
+  delete copia[DELETE_MARK];
+  return copia;
+}
+
 /** Stage the element at `indice` for removal, or undo it: a NEW list. */
 export function alternarRemocaoLi(lista: readonly unknown[], indice: number): unknown[] {
   return lista.map((e, i) => {
     if (i !== indice) return e;
-    if (removidaNoFormularioLi(e)) return normalizarEntradaLi(e);
+    if (ehObjeto(e) && removidaNoFormularioLi(e)) return desfazerRemocaoLi(e);
     return ehObjeto(e)
       ? { ...e, [DELETE_MARK]: true }
       : { [DELETE_MARK]: true, [VALOR_ILEGIVEL_LI]: e };

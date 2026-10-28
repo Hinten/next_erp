@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useEffect, type ReactNode } from 'react';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { FirebaseError } from 'firebase/app';
 import { FormProvider, useForm, useWatch } from 'react-hook-form';
 import {
   CODIGO_ERRO_LI,
@@ -34,6 +35,7 @@ const h = vi.hoisted(() => ({
   grade: vi.fn(),
   integracoes: [] as { id: string; data: Record<string, unknown> }[],
   statusIntegracoes: 'success' as 'pending' | 'error' | 'success',
+  erroIntegracoes: null as unknown,
 }));
 
 vi.mock('@/lib/loja-integrada/client', async (importActual) => {
@@ -42,12 +44,17 @@ vi.mock('@/lib/loja-integrada/client', async (importActual) => {
   const client = lojaIntegradaClientFalso({ grades: h.grades, grade: h.grade });
   return { ...actual, useBackendLojaIntegrada: () => ({ client, indisponivel: null }) };
 });
+// As the real hook: `rows` and `byId` are empty unless the read succeeded.
 vi.mock('@/lib/data/useIntegracoes', () => ({
-  useIntegracoes: () => ({
-    rows: h.statusIntegracoes === 'success' ? h.integracoes : [],
-    byId: new Map(h.integracoes.map((r) => [r.id, r.data])),
-    status: h.statusIntegracoes,
-  }),
+  useIntegracoes: () => {
+    const rows = h.statusIntegracoes === 'success' ? h.integracoes : [];
+    return {
+      rows,
+      byId: new Map(rows.map((r) => [r.id, r.data])),
+      status: h.statusIntegracoes,
+      query: { error: h.erroIntegracoes },
+    };
+  },
 }));
 vi.mock('@/lib/firebase/client', () => ({ getFirebaseFirestore: () => ({}) }));
 
@@ -165,11 +172,17 @@ async function escolher(escopo: HTMLElement, label: string, rotulo: string) {
 
 const blocoDaConta = () => screen.getByTestId('vinculador-li-conta-CONTA1');
 const cartao = (grade: number) => screen.getByTestId(`vinculo-li-CONTA1-${grade}`);
+/** The conta block's "Grade da loja" input (its dropdown carries the same label). */
+const gradeDaLoja = () =>
+  within(blocoDaConta()).getAllByLabelText('Grade da loja')[0] as HTMLInputElement;
+const botaoAdicionar = () =>
+  within(blocoDaConta()).getByRole('button', { name: 'Adicionar vínculo' }) as HTMLButtonElement;
 
 beforeEach(() => {
   h.grades.mockReset();
   h.grade.mockReset();
   h.statusIntegracoes = 'success';
+  h.erroIntegracoes = null;
   h.integracoes = [
     { id: 'CONTA1', data: { tipo: INTEGRACAO_TIPO.lojaIntegrada, nome: 'Loja A', ativo: true } },
     { id: 'CONTA2', data: { tipo: INTEGRACAO_TIPO.lojaIntegrada, nome: 'Loja B', ativo: false } },
@@ -189,15 +202,13 @@ describe('Loja Integrada tab — the store cannot be read (switch off)', () => {
     expect(within(cartao(8946)).getByText('Tamanho (8946)')).toBeTruthy();
     expect(within(cartao(8946)).getAllByLabelText('Variantes da opção P')).not.toHaveLength(0);
     expect(within(cartao(8946)).getAllByLabelText('Variantes da opção M')).not.toHaveLength(0);
-    expect(within(blocoDaConta()).getByText(/só podem ser lidas depois da migração/)).toBeTruthy();
-    // Adding needs the store's grade list.
-    expect(
-      (
-        within(blocoDaConta()).getByRole('button', {
-          name: 'Adicionar vínculo',
-        }) as HTMLButtonElement
-      ).disabled,
-    ).toBe(true);
+    // Both causes of the switch-off answer are named, never a deployment timeline alone.
+    expect(within(blocoDaConta()).getByText(/as chamadas estão desligadas/)).toBeTruthy();
+    expect(within(blocoDaConta()).getByText(/ou por configuração/)).toBeTruthy();
+    // Adding needs the store's grade list: the grade picker itself is off (the
+    // button is off anyway while no grade is picked).
+    expect(gradeDaLoja().disabled).toBe(true);
+    expect(botaoAdicionar().disabled).toBe(true);
   });
 
   it('stays editable: assigning a variante changes ONLY that entry, extra keys kept', async () => {
@@ -310,6 +321,74 @@ describe('Loja Integrada tab — the store is readable', () => {
     expect((valorAtual() as Doc[])[1]?.variationOptions).toEqual([opcao(41, ['v3'], '40')]);
   });
 
+  it('NEAR-MISS of the switch-off: with the grade list read, the grade picker is on', async () => {
+    await renderTab([GUARDADO]);
+    expect(gradeDaLoja().disabled).toBe(false);
+  });
+
+  it('"Atualizar" reads the list AND each open link’s grade afresh, from the store', async () => {
+    await renderTab([GUARDADO]);
+    expect(h.grade).toHaveBeenCalledWith(
+      'CONTA1',
+      8946,
+      expect.objectContaining({ atualizar: false }),
+    );
+    h.grades.mockClear();
+    h.grade.mockClear();
+
+    await clicar(within(blocoDaConta()).getByRole('button', { name: 'Atualizar' }));
+
+    expect(h.grades).toHaveBeenCalledWith('CONTA1', expect.objectContaining({ atualizar: true }));
+    expect(h.grade).toHaveBeenCalledOnce();
+    expect(h.grade).toHaveBeenCalledWith(
+      'CONTA1',
+      8946,
+      expect.objectContaining({ atualizar: true }),
+    );
+  });
+
+  it('⚠️ NEAR-MISS: "Atualizar" reads no grade of a link staged for removal or one the store does not list', async () => {
+    const removido = { ...GUARDADO, [DELETE_MARK]: true };
+    const sumida = { ...GUARDADO, grade_id: 7777, name: 'Antiga' };
+    await renderTab([removido, sumida]);
+    h.grades.mockClear();
+    h.grade.mockClear();
+
+    await clicar(within(blocoDaConta()).getByRole('button', { name: 'Atualizar' }));
+
+    expect(h.grades).toHaveBeenCalledOnce();
+    expect(h.grade).not.toHaveBeenCalled();
+  });
+
+  it('a link added after an "Atualizar" reads its grade normally (no fresh read inherited)', async () => {
+    await renderTab([GUARDADO]);
+    await clicar(within(blocoDaConta()).getByRole('button', { name: 'Atualizar' }));
+    h.grade.mockClear();
+
+    await escolher(blocoDaConta(), 'Grade da loja', 'Numeração (8950)');
+    await clicar(botaoAdicionar());
+
+    expect(h.grade).toHaveBeenCalledWith(
+      'CONTA1',
+      8950,
+      expect.objectContaining({ atualizar: false }),
+    );
+    expect(h.grade).not.toHaveBeenCalledWith(
+      'CONTA1',
+      8950,
+      expect.objectContaining({ atualizar: true }),
+    );
+  });
+
+  it('each conta block and each link is a group NAMED for a screen reader', async () => {
+    await renderTab([GUARDADO]);
+
+    const conta = screen.getByRole('group', { name: 'Loja A' });
+    expect(within(conta).getAllByLabelText('Grade da loja')).not.toHaveLength(0);
+    const vinculo = within(conta).getByRole('group', { name: 'Tamanho (8946)' });
+    expect(within(vinculo).getByRole('button', { name: 'Remover vínculo' })).toBeTruthy();
+  });
+
   it('a grade already linked for this conta is not offered again', async () => {
     await renderTab([GUARDADO]);
 
@@ -339,11 +418,11 @@ describe('Loja Integrada tab — the store is readable', () => {
 
     await escolher(cartao(8946), 'Variantes da opção P', 'G');
 
-    expect(
-      within(cartao(8946)).getByText(
-        /duas variantes usam a mesma opção; um produto que tenha as duas não poderá ser enviado/,
-      ),
-    ).toBeTruthy();
+    const aviso = within(cartao(8946)).getByText(
+      /duas variantes usam a mesma opção; um produto que tenha as duas não poderá ser enviado/,
+    );
+    // The theme's readable foreground for the colour, never a fixed palette shade.
+    expect(aviso.getAttribute('style')).toContain('var(--mantine-color-yellow-text)');
   });
 });
 
@@ -359,13 +438,47 @@ describe('Loja Integrada tab — what it cannot read is still never dropped', ()
     expect(valorAtual()).toEqual([]);
   });
 
+  it('⚠️ even with the store readable, "Adicionar vínculo" cannot replace a value that is not a list', async () => {
+    h.grades.mockResolvedValue(GRADES);
+    const ilegivel = { legado: true };
+    await renderTab(ilegivel);
+
+    expect(gradeDaLoja().disabled).toBe(true);
+    expect(botaoAdicionar().disabled).toBe(true);
+    await clicar(botaoAdicionar());
+    expect(valorAtual()).toEqual(ilegivel);
+  });
+
   it('while the conta list fails, every entry is listed read-only and kept', async () => {
     h.statusIntegracoes = 'error';
+    h.erroIntegracoes = new FirebaseError('unavailable', 'offline');
     h.grades.mockRejectedValue(desligado());
     await renderTab([GUARDADO]);
 
     expect(screen.getByText(/Não foi possível ler as contas/)).toBeTruthy();
-    expect(screen.getByTestId('vinculo-li-outro-0')).toBeTruthy();
+    const linha = screen.getByTestId('vinculo-li-outro-0');
+    // The conta list was UNREADABLE: the entry's conta is not called unknown.
+    expect(within(linha).getByText('conta CONTA1 (lista de contas indisponível)')).toBeTruthy();
+    expect(screen.queryByText(/conta não reconhecida/)).toBeNull();
     expect(h.grades).not.toHaveBeenCalled();
+  });
+
+  it('⭐ without permission to read the contas, the tab says so — and which permission is missing', async () => {
+    h.statusIntegracoes = 'error';
+    h.erroIntegracoes = new FirebaseError(
+      'permission-denied',
+      'Missing or insufficient permissions.',
+    );
+    await renderTab([GUARDADO]);
+
+    expect(screen.getByText(/sem permissão para ler as contas da Loja Integrada/)).toBeTruthy();
+    expect(screen.getByText(/permissão de leitura de Integrações/)).toBeTruthy();
+    expect(screen.queryByText(/Não foi possível ler as contas/)).toBeNull();
+    expect(screen.getByTestId('vinculo-li-outro-0')).toBeTruthy();
+  });
+
+  it('⚠️ NEAR-MISS: once the conta list IS read, an id it lacks is "conta não reconhecida"', async () => {
+    await renderTab([{ ...GUARDADO, integracaoLiId: 'CONTA9' }]);
+    expect(screen.getByText('conta não reconhecida (CONTA9)')).toBeTruthy();
   });
 });

@@ -280,7 +280,7 @@ describe('/variacoes/[id] — the Loja Integrada tab rides the grupo’s save', 
     await abrirAba('Loja Integrada');
 
     expect(within(cartao()).getByText('Tamanho (8946)')).toBeTruthy();
-    expect(screen.getByText(/só podem ser lidas depois da migração/)).toBeTruthy();
+    expect(screen.getByText(/as chamadas estão desligadas/)).toBeTruthy();
   });
 
   it('EQUAL: renaming a grupo with untouched legacy defects saves — and writes nothing to the links', async () => {
@@ -447,5 +447,83 @@ describe('/variacoes/[id] — a conflicting save merges link by link (rebaseOnCo
     expect(commits()).toBe(0);
     expect(guardado()).toEqual(remoto);
     expect(within(cartao()).getByText(/Alterado por outra pessoa/)).toBeTruthy();
+  });
+
+  it('⭐ the other writer’s entries are judged UNTOUCHED after the merge: a half-made one does not block "Salvar mesmo assim"', async () => {
+    semear(
+      grupo({ linksVariacoesli: [{ ...LINK, variationOptions: [opcao(37097, ['v1'], 'P')] }] }),
+    );
+    await renderPage();
+    await abrirAba('Loja Integrada');
+    await alternarVariante('P', 'M'); // a valid edit
+
+    // The other writer's version holds a half-made entry: this save never touched it.
+    escritaConcorrente((doc) => {
+      doc.linksVariacoesli = [...(doc.linksVariacoesli as Doc[]), MEIA_BOCA, OUTRA_CONTA];
+    });
+    await act(async () => rerenderPage());
+    await salvar();
+    expect(conflito()).toBeTruthy();
+    await clicar(screen.getByRole('button', { name: 'Salvar mesmo assim' }));
+    await esperar();
+
+    expect(recusado()).toBe(false);
+    expect(commits()).toBe(1);
+    expect(guardado().linksVariacoesli).toEqual([
+      { ...LINK, variationOptions: [opcao(37097, ['v1', 'v2'], 'P')] },
+      MEIA_BOCA,
+      OUTRA_CONTA,
+    ]);
+  });
+
+  it('⚠️ a collision met while saving from ANOTHER tab takes the operator to the links and says nothing was saved', async () => {
+    semear(grupo());
+    await renderPage();
+    await abrirAba('Loja Integrada');
+    await alternarVariante('G', 'G'); // mine: G emptied
+    await renomear('Tamanhos (meu)'); // …and the save is clicked from "Dados gerais"
+
+    const remoto = escritaConcorrente((doc) => {
+      doc.linksVariacoesli = [{ ...LINK, variationOptions: [opcao(37097, ['v1', 'v2'], 'P')] }];
+    });
+    await act(async () => rerenderPage());
+    await salvar();
+    await clicar(screen.getByRole('button', { name: 'Salvar mesmo assim' }));
+    await esperar();
+
+    expect(commits()).toBe(0);
+    expect(guardado()).toEqual(remoto);
+    expect(screen.getByRole('tab', { name: 'Loja Integrada' }).getAttribute('aria-selected')).toBe(
+      'true',
+    );
+    expect(h.toasts.at(-1)).toContain('Nada foi salvo');
+    expect(h.toasts.at(-1)).toContain('“Vínculos da Loja Integrada”');
+    expect(within(cartao()).getByText(/Alterado por outra pessoa/)).toBeTruthy();
+  });
+
+  it('⚠️ remove-then-undo of a link the other writer REMOVED does not bring it back on save', async () => {
+    semear(grupo());
+    await renderPage();
+    await abrirAba('Loja Integrada');
+    await alternarVariante('G', 'G'); // mine: G emptied
+
+    // The other writer removed the very link this operator changed.
+    escritaConcorrente((doc) => {
+      doc.linksVariacoesli = [OUTRA_CONTA];
+    });
+    await act(async () => rerenderPage());
+    await salvar();
+    await clicar(screen.getByRole('button', { name: 'Recarregar do servidor' }));
+    expect(within(cartao()).getByText(/Removido por outra pessoa/)).toBeTruthy();
+
+    // Trash, then undo: not an edit — the note stays, so the save still drops it.
+    await clicar(within(cartao()).getByRole('button', { name: 'Remover vínculo' }));
+    await clicar(within(cartao()).getByRole('button', { name: 'Desfazer remoção' }));
+    expect(within(cartao()).getByText(/Removido por outra pessoa/)).toBeTruthy();
+    await renomear('Tamanhos (meu)');
+    await salvar();
+
+    expect(commits()).toBe(1);
+    expect(guardado().linksVariacoesli).toEqual([OUTRA_CONTA]);
   });
 });

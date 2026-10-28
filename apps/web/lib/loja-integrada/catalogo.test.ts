@@ -186,12 +186,16 @@ describe('descreverFalhaCatalogoLi — the linker’s own copy', () => {
   const http = (status: number, code: string | null) =>
     new LojaIntegradaClientHttpError('backend sentence', status, code);
 
-  it('the switch off says the stored links can still be edited and saved', () => {
+  it('the switch off names BOTH its causes, and says the stored links can still be edited and saved', () => {
     const f = descreverFalhaCatalogoLi(http(503, CODIGO_ERRO_LI.chamadasDesligadas));
     expect(f.mensagem).toBe(
-      'As listas da Loja Integrada só podem ser lidas depois da migração. Os vínculos já ' +
-        'guardados aparecem abaixo e podem ser editados e salvos.',
+      'As listas da Loja Integrada não podem ser lidas agora: as chamadas estão desligadas ' +
+        'neste backend (até a migração para este sistema, ou por configuração; se a migração ' +
+        'já ocorreu, avise o suporte). Os vínculos já guardados aparecem abaixo e podem ser ' +
+        'editados e salvos.',
     );
+    // Nothing was refused that a save could lose.
+    expect(f.mensagem).not.toContain('Nada foi');
     expect(f.repetivel).toBe(false);
   });
 

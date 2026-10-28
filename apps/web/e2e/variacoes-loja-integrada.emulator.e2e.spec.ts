@@ -173,12 +173,11 @@ test.describe.serial('Variações — o vínculo com a Loja Integrada', () => {
     await abrir(page);
 
     await expect(cartao(page, 8946).getByText('Tamanho (8946)')).toBeVisible();
-    await expect(page.getByText(/só podem ser lidas depois da migração/)).toBeVisible();
-    await expect(
-      page
-        .getByTestId(`vinculador-li-conta-${fx.contaAtivaId}`)
-        .getByRole('button', { name: 'Adicionar vínculo' }),
-    ).toBeDisabled();
+    await expect(page.getByText(/as chamadas estão desligadas/)).toBeVisible();
+    // Adding needs the store's grade list: the grade picker itself is off.
+    const bloco = page.getByTestId(`vinculador-li-conta-${fx.contaAtivaId}`);
+    await expect(bloco.getByLabel('Grade da loja', { exact: true }).first()).toBeDisabled();
+    await expect(bloco.getByRole('button', { name: 'Adicionar vínculo' })).toBeDisabled();
     const outras = page.getByTestId('vinculador-li-outras');
     await expect(outras.getByText(/vínculo ilegível/)).toBeVisible();
     await expect(outras.getByText(/\(inativa\)/)).toBeVisible();
@@ -192,6 +191,8 @@ test.describe.serial('Variações — o vínculo com a Loja Integrada', () => {
     await abrir(page);
     const bloco = page.getByTestId(`vinculador-li-conta-${fx.contaAtivaId}`);
 
+    // NEAR-MISS of the switch-off case: with the list read, the picker is on.
+    await expect(bloco.getByLabel('Grade da loja', { exact: true }).first()).toBeEnabled();
     await bloco.getByLabel('Grade da loja', { exact: true }).first().click();
     await page.getByRole('option', { name: 'Numeração (8950)', exact: true }).click();
     await bloco.getByRole('button', { name: 'Adicionar vínculo' }).click();
@@ -215,7 +216,7 @@ test.describe.serial('Variações — o vínculo com a Loja Integrada', () => {
   test('refuses a save that puts one variante in two options of the same store', async ({
     page,
   }) => {
-    await stubCatalogo(page, fx.contaAtivaId, 'desligado');
+    const stub = await stubCatalogo(page, fx.contaAtivaId, 'desligado');
     await abrir(page);
 
     // P already holds variante P; option M gets it too.
@@ -229,12 +230,13 @@ test.describe.serial('Variações — o vínculo com a Loja Integrada', () => {
       cartao(page, 8946).getByText(/"P" está em mais de uma opção desta loja/),
     ).toBeVisible();
     expect(await linksGuardados()).toEqual(fx.links);
+    expect(stub.inesperadas).toEqual([]);
   });
 
   test('renaming the grupo with an untouched half-made link saves, and leaves the links as stored', async ({
     page,
   }) => {
-    await stubCatalogo(page, fx.contaAtivaId, 'desligado');
+    const stub = await stubCatalogo(page, fx.contaAtivaId, 'desligado');
     await abrir(page);
     await page.getByRole('tab', { name: 'Dados gerais' }).click();
 
@@ -245,12 +247,13 @@ test.describe.serial('Variações — o vínculo com a Loja Integrada', () => {
       .poll(async () => (await getGrupoDeVariacoesDoc(fx.grupoId))?.nome, { timeout: 15_000 })
       .toBe(`${prefix}-Tamanhos renomeado`);
     expect(await linksGuardados()).toEqual(fx.links);
+    expect(stub.inesperadas).toEqual([]);
   });
 
   test('a link another operator saved meanwhile is kept: the conflict merges link by link', async ({
     page,
   }) => {
-    await stubCatalogo(page, fx.contaAtivaId, 'desligado');
+    const stub = await stubCatalogo(page, fx.contaAtivaId, 'desligado');
     await abrir(page);
     // A valid edit: option G gets variante G.
     await alternarVariante(page, cartao(page, 8946), 'G', 'G');
@@ -282,5 +285,6 @@ test.describe.serial('Variações — o vínculo com a Loja Integrada', () => {
       .poll(async () => (await linksGuardados())?.[0], { timeout: 15_000 })
       .toEqual(editado);
     expect(await linksGuardados()).toEqual([editado, ...resto, daOutraPessoa]);
+    expect(stub.inesperadas).toEqual([]);
   });
 });
