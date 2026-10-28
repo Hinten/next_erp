@@ -59,6 +59,19 @@ describe('linkVariacoesLiSchema — the element', () => {
     ).toBe(true);
   });
 
+  it('an absent label READS as null, never undefined (a writer must never hand Firestore an undefined)', () => {
+    const { name: _nome, ...semNome } = ENTRADA_ARMAZENADA;
+    const lido = linkVariacoesLiSchema.parse(semNome);
+    expect(Object.hasOwn(lido, 'name')).toBe(true);
+    expect(lido.name).toBeNull();
+    const opcao = linkVariacaoOpcaoLiSchema.parse({
+      li_option_id: 1,
+      arakene_variation_id: ['v1'],
+    });
+    expect(Object.hasOwn(opcao, 'li_option_name')).toBe(true);
+    expect(opcao.li_option_name).toBeNull();
+  });
+
   it.each([
     ['grade_id as a STRING (never coerced)', { grade_id: '8946' }],
     ['grade_id absent (a half-made entry)', { grade_id: undefined }],

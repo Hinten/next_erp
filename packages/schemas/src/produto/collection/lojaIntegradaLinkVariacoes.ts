@@ -33,8 +33,10 @@ import { z } from 'zod';
  *     the import (step 9) never guesses which variante a store option means.
  *  3. `name` holds the grade's `nome` (never its `nome_visivel`) and `li_option_name` the option's
  *     `nome`: LABELS copied when the operator linked, shown while the store cannot be read. Either
- *     may be `null` or absent; no decision ever keys on a name (the public document's own examples
- *     list several different grades all named "Tamanho").
+ *     may be `null` or absent in a stored entry, and an absent one READS as `null`
+ *     (`.nullable().default(null)`: a writer building an entry from the parsed type can never put
+ *     an `undefined` label on it, which the Firebase SDK refuses). No decision ever keys on a name
+ *     (the public document's own examples list several different grades all named "Tamanho").
  *
  * ## Identity is the ids, compared exactly
  * `grade_id` and `li_option_id` are STORED Firestore numbers — `z.number().int().positive()`, never
@@ -51,7 +53,7 @@ export const linkVariacaoOpcaoLiSchema = z
     /** The option id: `variacoes[].id` of `GET /v1/grades/{id}`. */
     li_option_id: z.number().int().positive(),
     /** The option's `nome` when it was linked: a LABEL, never an identity (trap 3). */
-    li_option_name: z.string().nullable().optional(),
+    li_option_name: z.string().nullable().default(null),
     /** Bare ERP Variante ids: a LIST (trap 2). */
     arakene_variation_id: z.array(z.string().min(1)),
   })
@@ -62,7 +64,7 @@ export type LinkVariacaoOpcaoLi = z.infer<typeof linkVariacaoOpcaoLiSchema>;
 export const linkVariacoesLiSchema = z
   .object({
     /** The grade's `nome` (never `nome_visivel`) when it was linked: a LABEL (trap 3). */
-    name: z.string().nullable().optional(),
+    name: z.string().nullable().default(null),
     /** The Loja Integrada grade id. */
     grade_id: z.number().int().positive(),
     /** A BARE conta doc id, stored verbatim (trap 1). */
