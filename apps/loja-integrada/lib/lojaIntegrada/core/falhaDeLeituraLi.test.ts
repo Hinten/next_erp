@@ -482,6 +482,43 @@ describe('tratarFalhaDeLeituraLi — a 401/403: park, then answer as the park fo
     expect(r).toEqual({ tipo: 'alheia', erro: falhaDoFirestore });
   });
 
+  it('⚠️ NEAR-MISS: a refusal the park cannot use (neither 401 nor 403) ⇒ `alheia` with the SAME object, never "parked"', async () => {
+    const ctxLi = await contexto();
+    const err = new LiAuthError({ ...ctx, status: 407, refCredencial: await refAtual() });
+    const escritasAntes = db.escritas.length;
+
+    const r = await tratarFalhaDeLeituraLi(deps(), err, ctxLi, ESTACIONA);
+
+    expect(r.tipo === 'alheia' && r.erro).toBe(err);
+    expect(db.escritas.slice(escritasAntes)).toEqual([]);
+    expect(db.ler(caminhoCredencial(CONTA))?.reconexaoPendente).toBeNull();
+    expect(db.ler(caminhoAviso(chaveReconexao(CONTA)))).toBeUndefined();
+  });
+
+  it('the reconexão aviso names the store by the conta’s name, and by its id when the name is empty', async () => {
+    const nomeado = await contexto();
+    await tratarFalhaDeLeituraLi(deps(), erroAuth(401, await refAtual()), nomeado, ESTACIONA);
+    expect(db.ler(caminhoAviso(chaveReconexao(CONTA)))).toMatchObject({
+      params: { loja: 'Loja Leitura' },
+    });
+
+    // A record whose name reads empty: the park sees the conta it is handed, nothing else.
+    const outra = 'conta-li-sem-nome';
+    seedCredencial(db, outra);
+    const lida = await lerCredencial(asDb(db), outra);
+    if (lida === null) throw new TypeError('nenhuma credencial semeada');
+    const semNome = { integracaoId: outra, conta: { ...nomeado.conta, nome: '' } };
+
+    await tratarFalhaDeLeituraLi(
+      deps(),
+      erroAuth(401, refDaCredencial(lida.credencial)),
+      semNome,
+      ESTACIONA,
+    );
+
+    expect(db.ler(caminhoAviso(chaveReconexao(outra)))).toMatchObject({ params: { loja: outra } });
+  });
+
   it('a refusal with no context (it failed before one existed) is mapped, never parked', async () => {
     const leiturasAntes = db.leituras.length;
     const recusa = erroAuth(401, 'ref.1');
