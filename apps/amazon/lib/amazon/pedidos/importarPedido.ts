@@ -88,7 +88,9 @@
  * counts only — never a buyer datum, a price, a `cancelReason` or an
  * `AmazonError`'s message. The mappers' events (`decisao.eventos`) are logged
  * one line per code, so `cancelamento-parcial` (plan §3 decision 6) is countable
- * on its own.
+ * on its own; a freight event also carries the package counts, and a money
+ * event (`desconto-nao-detalhado`, `imposto-destacado`, PR 5-f) the counts of
+ * what the order money cannot state.
  */
 import type { Firestore } from 'firebase-admin/firestore';
 import {
@@ -141,6 +143,7 @@ import {
   registroMarketplaceAmazon,
 } from './clienteAmazon';
 import {
+  EVENTOS_DINHEIRO_AMAZON,
   EVENTOS_FRETE_AMAZON,
   MOTIVO_NAO_IMPORTADO_AMAZON,
   type EventoPedidoAmazon,
@@ -240,17 +243,29 @@ const ROTULO_LOG = '[amazon/pedido]';
  *    resolved (the two freight motivos included: the decision derives each
  *    exactly while its condition holds — every package token known and keyed;
  *    no package `LABEL_CANCELLED`, or the order `CANCELLED`) — except:
- *     - `divergencia-itens` while the import KEPT the stored estado
- *       (`motivoEstado === 'manter'`: an unknown status or logistics, an AFN
- *       read, a cancellation with the goods out): the lines were not
- *       re-judged against a re-derived estado, so the block stands;
+ *     - `divergencia-itens`, which resolves ONLY on an import that judged the
+ *       lines and found them agreeing with Amazon's, or found them `congelado`
+ *       (`decisao.itensConferem`, PR 5-f — its documented resolver). An import
+ *       that moves the estado without judging the lines resolves nothing: a
+ *       reversal (D17 row 4: a `SHIPPED` read with a line cancellation still
+ *       on it takes our block error to `pago`), a `SHIPPED` read whose lines
+ *       still differ (row 11), a regression (row 12), an `UNFULFILLABLE` or an
+ *       unknown status, a CANCELLED (the residue: a cancelled order keeps the
+ *       row until an operator's edit is seen, or retention). And not while the
+ *       import KEPT the stored estado either (`motivoEstado === 'manter'`: an
+ *       unknown status or logistics, an AFN read, a cancellation with the goods
+ *       out), whatever the lines: our block text may still stand on the pedido
+ *       — past that read too: a status this code does not know never replaces
+ *       the stored known one (PR 5-f, `pedidoMapeamento.ts`), so the next
+ *       approved read re-judges the block as approved (D17 row 10 or 11),
+ *       never as the approval moment (row 9);
  *     - `cancelado-so-no-erp` unless Amazon reports `CANCELLED` or `SHIPPED`,
  *       or the pedido is no longer terminal after this import (reopened by an
  *       operator, or resurrected by Amazon's own newer read). A PENDING, an
  *       unknown status or a request opened meanwhile leaves it as it is.
  */
 export function motivosDoPedidoAmazon(e: {
-  readonly decisao: Pick<DecisaoPedidoAmazon, 'avisos' | 'motivoEstado'>;
+  readonly decisao: Pick<DecisaoPedidoAmazon, 'avisos' | 'motivoEstado' | 'itensConferem'>;
   readonly fase: FaseVendaAmazon;
   /** The pedido's estado once this import landed (`null`: outside the enum). */
   readonly estadoFinal: EstadoPedido | null;
@@ -258,7 +273,7 @@ export function motivosDoPedidoAmazon(e: {
   const levantar = [...e.decisao.avisos];
   const resolve = (motivo: MotivoPedidoAmazon): boolean => {
     if (motivo === MOTIVO_PEDIDO_AMAZON.divergenciaItens) {
-      return e.decisao.motivoEstado !== MOTIVO_ESTADO_AMAZON.manter;
+      return e.decisao.itensConferem && e.decisao.motivoEstado !== MOTIVO_ESTADO_AMAZON.manter;
     }
     if (motivo === MOTIVO_PEDIDO_AMAZON.canceladoSoNoErp) {
       return (
@@ -404,6 +419,9 @@ const MENSAGEM_DO_CODIGO: Readonly<Record<CodigoLogPedidoAmazon, string>> = {
   'nota-fiscal-nao-exigida': 'nota fiscal não exigida em pacote aguardando agendamento',
   'codRastreio-divergente': 'código de rastreio gravado substituído pelo da Amazon',
   'frete-ressuscitado': 'frete com falha voltou a um estado de envio',
+  'desconto-nao-detalhado':
+    'desconto sem a parte do frete separada em item com frete; confira a NF-e antes de emitir',
+  'imposto-destacado': 'imposto destacado nos valores da Amazon; confira a NF-e antes de emitir',
   'cancelado-nao-importado': 'pedido nunca visto já cancelado; não importado',
   'reversao-nao-importada': 'pedido nunca visto já revertido; não importado',
 };
@@ -676,6 +694,14 @@ export async function importarPedidoAmazon(
             pacotesNaoMapeados: decisao.pacotes.naoMapeados,
             pacotesSemChave: decisao.pacotes.semChave,
             statusPacotes: decisao.pacotes.statusPacotes,
+          }
+        : {}),
+      // A money event (PR 5-f) also counts what the order money cannot state:
+      // lines and TAX rows — never an amount.
+      ...(EVENTOS_DINHEIRO_AMAZON.has(evento)
+        ? {
+            linhasDescontoNaoDetalhado: decisao.ressalvasDinheiro.linhasDescontoNaoDetalhado,
+            quebrasImposto: decisao.ressalvasDinheiro.quebrasImposto,
           }
         : {}),
     });

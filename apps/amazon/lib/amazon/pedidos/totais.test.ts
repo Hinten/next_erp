@@ -294,3 +294,141 @@ describe('★ on an UPDATE the PEDIDO’s freight modalidade decides, never the 
     expect(acima.incidentes).toEqual(['pagamento-divergente']);
   });
 });
+
+/**
+ * (PR 5-f) What the order money cannot state. The pagamento check proves the
+ * TOTAL against the payment, never the split behind it, so two shapes leave the
+ * note's numbers wrong with every total agreeing: the money stays as derived
+ * (never a guessed split), and a pedido incidente asks a person to check the
+ * NF-e before emitting it.
+ */
+describe('★ a money shape the check cannot see ⇒ an incidente, the money unchanged (PR 5-f)', () => {
+  const ITEM_1450 = { type: 'ITEM', subtotal: brl('1450.00') };
+  const descontoDeFrete = (valor: string, detalhes?: readonly unknown[]) => ({
+    type: 'DISCOUNT',
+    subtotal: brl(valor),
+    ...(detalhes === undefined ? {} : { detailedBreakdowns: detalhes }),
+  });
+
+  it('★ a free-shipping DISCOUNT 25 with NO detail, the buyer paying 1599.90: FOB vNF = valor = 1574.90 with every total agreeing ⇒ desconto-nao-detalhado', () => {
+    const quebras = [ITEM, FRETE, descontoDeFrete('25.00')];
+    const fob = totais(pedidoB2b({ quebras, pago: '1599.90' }), MODALIDADE_FRETE.fob);
+    // The money is what it was (no guessed split): the whole discount on the goods, the freight gross.
+    expect(fob).toMatchObject({ descontoTotal: 25, frete: 25, valor: 1574.9 });
+    expect(fob.vNF).toBe(fob.valor);
+    // The payment check agrees with it (no pagamento-divergente); only the new incidente speaks.
+    expect(fob.incidentes).toEqual(['desconto-nao-detalhado']);
+    // Under CIF the note's total is right, but its discount and freight are each off by 25.
+    const cif = totais(pedidoB2b({ quebras, pago: '1599.90' }), MODALIDADE_FRETE.cif);
+    expect(cif).toMatchObject({ descontoTotal: 25, frete: 25, valor: 1599.9 });
+    expect(cif.incidentes).toEqual(['desconto-nao-detalhado']);
+  });
+
+  it('the same with an ITEM detail that does not account for the whole discount (10 of 25), and with a NEGATIVE discount (goods 10 + shipping 5 as −15), ⇒ desconto-nao-detalhado', () => {
+    const itemParcial = totais(
+      pedidoB2b({
+        quebras: [
+          ITEM,
+          FRETE,
+          descontoDeFrete('25.00', [{ subtype: 'ITEM', value: brl('10.00') }]),
+        ],
+        pago: '1599.90',
+      }),
+      MODALIDADE_FRETE.fob,
+    );
+    expect(itemParcial.incidentes).toEqual(['desconto-nao-detalhado']);
+    const negativo = totais(
+      pedidoB2b({ quebras: [ITEM, FRETE, descontoDeFrete('-15.00')], pago: '1609.90' }),
+      MODALIDADE_FRETE.fob,
+    );
+    expect(negativo).toMatchObject({ descontoTotal: 15, frete: 25, valor: 1584.9 });
+    expect(negativo.incidentes).toEqual(['desconto-nao-detalhado']);
+  });
+
+  it('NEAR-MISS: the same DISCOUNT 25 ITEMISED as SHIPPING (either sign) ⇒ freight net, vNF 1599.90, nothing filed', () => {
+    for (const valor of ['25.00', '-25.00']) {
+      const t = totais(
+        pedidoB2b({
+          quebras: [
+            ITEM,
+            FRETE,
+            descontoDeFrete(valor, [{ subtype: 'SHIPPING', value: brl(valor) }]),
+          ],
+          pago: '1599.90',
+        }),
+        MODALIDADE_FRETE.fob,
+      );
+      expect(t, valor).toMatchObject({ descontoTotal: 0, frete: 0, valor: 1599.9, incidentes: [] });
+      expect(t.vNF, valor).toBe(1599.9);
+    }
+  });
+
+  it('★ NEAR-MISS: a DISCOUNT 10 whose ITEM detail accounts for all of it (its shipping part stated as 0), the buyer paying 1614.90 ⇒ every number right under CIF and FOB, nothing filed', () => {
+    const quebras = [
+      ITEM,
+      FRETE,
+      descontoDeFrete('10.00', [{ subtype: 'ITEM', value: brl('10.00') }]),
+    ];
+    const cif = totais(pedidoB2b({ quebras, pago: '1614.90' }), MODALIDADE_FRETE.cif);
+    expect(cif).toMatchObject({ descontoTotal: 10, frete: 25, valor: 1614.9, incidentes: [] });
+    expect(cif.vNF).toBe(1614.9);
+    const fob = totais(pedidoB2b({ quebras, pago: '1614.90' }), MODALIDADE_FRETE.fob);
+    expect(fob).toMatchObject({ descontoTotal: 10, frete: 25, valor: 1589.9, incidentes: [] });
+    expect(fob.vNF).toBe(1589.9);
+  });
+
+  it('NEAR-MISS: a DISCOUNT with no detail on an order charging NO shipping ⇒ a plain goods discount, nothing filed', () => {
+    const t = totais(
+      pedidoB2b({ quebras: [ITEM, descontoDeFrete('100.00')], pago: '1499.90' }),
+      MODALIDADE_FRETE.fob,
+    );
+    expect(t).toMatchObject({ descontoTotal: 100, frete: null, valor: 1499.9, incidentes: [] });
+  });
+
+  it('★ a TAX breakdown beside an itemised order, every total agreeing (the mixed basis is silent) ⇒ imposto-destacado', () => {
+    // ITEM 1450 + TAX 149.90 (unitPrice stays 1599.90), SHIPPING 100 and a goods
+    // DISCOUNT 100 (its shipping part itemised as 0), each with a TAX detail of 10.
+    const quebras = [
+      ITEM_1450,
+      { type: 'SHIPPING', subtotal: brl('100.00') },
+      descontoDeFrete('100.00', [
+        { subtype: 'ITEM', value: brl('100.00') },
+        { subtype: 'SHIPPING', value: brl('0.00') },
+      ]),
+      {
+        type: 'TAX',
+        subtotal: brl('149.90'),
+        detailedBreakdowns: [
+          { subtype: 'ITEM', value: brl('149.90') },
+          { subtype: 'SHIPPING', value: brl('10.00') },
+          { subtype: 'DISCOUNT', value: brl('-10.00') },
+        ],
+      },
+    ];
+    const fob = totais(pedidoB2b({ quebras, pago: '1599.90' }), MODALIDADE_FRETE.fob);
+    expect(fob).toMatchObject({ descontoTotal: 100, frete: 100, valor: 1499.9 });
+    expect(fob.vNF).toBe(fob.valor);
+    expect(fob.incidentes).toEqual(['imposto-destacado']);
+  });
+
+  it('NEAR-MISS: the same order with TAX exactly 0, or with no TAX row ⇒ nothing filed', () => {
+    const base = [
+      ITEM,
+      { type: 'SHIPPING', subtotal: brl('100.00') },
+      descontoDeFrete('100.00', [
+        { subtype: 'ITEM', value: brl('100.00') },
+        { subtype: 'SHIPPING', value: brl('0.00') },
+      ]),
+    ];
+    const zero = {
+      type: 'TAX',
+      subtotal: brl('0.00'),
+      detailedBreakdowns: [{ subtype: 'ITEM', value: brl('0.00') }],
+    };
+    for (const quebras of [[...base, zero], base]) {
+      const t = totais(pedidoB2b({ quebras, pago: '1599.90' }), MODALIDADE_FRETE.fob);
+      expect(t.incidentes).toEqual([]);
+      expect(t.valor).toBe(1499.9);
+    }
+  });
+});

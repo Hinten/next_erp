@@ -14,7 +14,9 @@
  *  - `amz-<code>` — one per informational code the winning decision derived
  *    (plan §3 decisions 26–27): `logistica-amazon`, `valor-zerado`,
  *    `possivel-reembolso`, `cancelado-apos-envio`, `pagamento-divergente`,
- *    and PR 6's `forma-pagamento-desconhecida` and `pagamento-dividido`.
+ *    PR 6's `forma-pagamento-desconhecida` and `pagamento-dividido`, and PR
+ *    5-f's `desconto-nao-detalhado` and `imposto-destacado` (what the order
+ *    money cannot state: check the NF-e's values before emitting it).
  *    `subtipo` = the code.
  *
  * ## Tier 0, and they can never block
@@ -24,7 +26,11 @@
  * `ALREADY_EXISTS` (root rule 6). Created once, never reopened or rewritten by
  * the importer — the operator resolves them on the pedido. `TIPO_INCIDENTE.outros`
  * + `ORIGEM_INCIDENTE.outros` (the Shopee, Mercado Livre and Loja Integrada
- * pair): absent from the blocking tipos AND from the marketplace origens.
+ * pair): absent from the blocking tipos AND from the marketplace origens. So
+ * even the two "check the NF-e first" codes (PR 5-f) do not stop an emission:
+ * the shared emission blocks are the operator's own `bloquearEmissaoNFe` and
+ * the open-dispute overlay of a Mercado Livre or Shopee claim, and neither is
+ * this importer's to set.
  *
  * The texts carry ids and closed codes only — never a buyer datum, a price, a
  * SKU or a title.
@@ -87,14 +93,23 @@ const TEXTO_DO_CODIGO: Readonly<Record<IncidentePedidoAmazon, (pedido: string) =
   [INCIDENTE_PEDIDO_AMAZON.pagamentoDivergente]: (p) =>
     `[Amazon] O pagamento do pedido ${p} não confere com o pedido: a soma paga na Amazon ` +
     'difere do total da nota, o total do pedido não pôde ser lido (e o pagamento não foi ' +
-    'criado), ou o pedido foi cancelado na Amazon com um pagamento em situação definida ' +
-    'pelo operador (que não foi alterado). Confira o pagamento.',
+    'criado), o pedido aprovado indica uma possível devolução, reembolso ou item cancelado ' +
+    '(e o pagamento não foi criado), ou o pedido foi cancelado na Amazon com um pagamento ' +
+    'em situação definida pelo operador (que não foi alterado). Confira o pagamento.',
   [INCIDENTE_PEDIDO_AMAZON.formaPagamentoDesconhecida]: (p) =>
     `[Amazon] A forma de pagamento do pedido ${p} não foi informada pela Amazon ou não é ` +
     'reconhecida; o pagamento foi gravado como "Outros". Confira a forma antes de emitir a NF-e.',
   [INCIDENTE_PEDIDO_AMAZON.pagamentoDividido]: (p) =>
     `[Amazon] O pedido ${p} foi pago em mais de uma forma na Amazon; o ERP gravou um único ` +
     'pagamento, com a forma da maior parte. Confira o pagamento antes de emitir a NF-e.',
+  [INCIDENTE_PEDIDO_AMAZON.descontoNaoDetalhado]: (p) =>
+    `[Amazon] O pedido ${p} tem um desconto em item com frete cobrado, e a Amazon não separou ` +
+    'a parte do desconto que é do frete. O ERP lançou o desconto inteiro como desconto da ' +
+    'mercadoria e o frete sem desconto. Confira o desconto, o frete e o total antes de emitir a NF-e.',
+  [INCIDENTE_PEDIDO_AMAZON.impostoDestacado]: (p) =>
+    `[Amazon] O pedido ${p} veio com imposto destacado nos valores da Amazon: o desconto e o ` +
+    'frete podem estar sem imposto, enquanto o preço do item foi lido com imposto. Confira o ' +
+    'total, o desconto e o frete antes de emitir a NF-e.',
 };
 
 function textoDaLinha(orderId: string, linha: LinhaSemProdutoAmazon): string {

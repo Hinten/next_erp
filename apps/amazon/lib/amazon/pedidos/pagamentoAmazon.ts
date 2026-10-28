@@ -58,6 +58,14 @@
  * under either modalidade, with no NF-e-side rule. `proceeds.grandTotal` is
  * never read (it is what the SELLER receives).
  *
+ * ⚠️ The check proves the TOTAL against the payment, never the split behind
+ * it: under FOB it holds for ANY split of a discount between goods and
+ * shipping (the freight moves on both sides), and a tax Amazon shows apart can
+ * leave the discount and the freight off by amounts that cancel each other out
+ * in that comparison. Those two shapes are reported
+ * by their own incidentes (`desconto-nao-detalhado`, `imposto-destacado`;
+ * `dinheiroAmazon.ts`, PR 5-f), never by `pagamento-divergente`.
+ *
  * ## The status: a ladder paired with the pedido estado
  *
  * Two rungs of equal rank, `aprovado` and `estornado`; any other stored status
@@ -69,6 +77,28 @@
  * pedido decision never writes `pago` beside a pagamento that stays `estornado`
  * (`pedidoMapeamento.ts`). A pagamento is created only at `aprovado` — never on
  * a PENDING order, never on a reversal.
+ *
+ * ## A possible reversal never leaves an approved pedido without a pagamento in silence (PR 5-f)
+ *
+ * A read Amazon approved (`UNSHIPPED`, `PARTIALLY_SHIPPED`, `SHIPPED`) that
+ * leaves the pedido `pago` but is a possible reversal (`rev`: a reversal
+ * package, an executed line cancellation after shipment, a zeroed `SHIPPED`)
+ * keeps what is stored and creates nothing, because its money is the human's
+ * to settle. When NO pagamento is stored, that read files `pagamento-divergente`
+ * — on every such read, the incidente being created once — so the pedido never
+ * sits `pago` with no money record and no signal. The likeliest path is a
+ * PENDING-first import (no pagamento), a buyer's line cancellation that blocks
+ * the order, an operator's fix of the lines, and a first read after the fix that
+ * is already `SHIPPED` while Amazon still shows the cancellation on that line:
+ * the execution never leaves the line, so no later read would ever create one.
+ * A stored pagamento is kept exactly as before.
+ *
+ * The OTHER way to `pago` without a pagamento is a D17 block, which writes no
+ * pagamento and, since PR 5-f, keeps `pago` while the goods are out or the
+ * freight removes stock (a create included). That one files nothing here: the
+ * crítico `divergencia-itens` aviso is its signal while it stands, and the
+ * first read after the block ends (the lines agreeing, or edited by an
+ * operator) creates the pagamento, so an incidente would outlive its cause.
  */
 import { coerceToMicros } from '@delfrance/core/datetime';
 import { centavosDeReais, roundReais } from '@delfrance/core/money';
@@ -307,9 +337,16 @@ export type AlvoStatusPagamentoAmazon =
       readonly status: typeof STATUS_PAGAMENTO.aprovado | typeof STATUS_PAGAMENTO.estornado;
     }
   /** Keep what is stored (and create nothing). */
-  | { readonly tipo: 'manter' };
+  | { readonly tipo: 'manter' }
+  /**
+   * (PR 5-f) Keep what is stored and create nothing, like `manter` — for an
+   * order Amazon approved that leaves the pedido `pago` but reads as a possible
+   * reversal: with NO pagamento stored, the human is told (`pagamento-divergente`).
+   */
+  | { readonly tipo: 'manter-reversao' };
 
 const MANTER_STATUS: AlvoStatusPagamentoAmazon = { tipo: 'manter' };
+const MANTER_REVERSAO: AlvoStatusPagamentoAmazon = { tipo: 'manter-reversao' };
 
 /**
  * The status target, PAIRED with the pedido estado this attempt leaves:
@@ -323,7 +360,10 @@ const MANTER_STATUS: AlvoStatusPagamentoAmazon = { tipo: 'manter' };
  *   reversed ⇒ `aprovado` exactly when the pedido ends `pago`: never beside our
  *   own `error`, a terminal estado the import did not reopen, or an estado the
  *   operator owns (the reconcile would relabel some of them);
- * - anything else (PENDING, an unknown status, a reversal) ⇒ keep.
+ * - the same order READ AS REVERSED, the pedido still ending `pago` ⇒
+ *   `manter-reversao`: keep, and a missing pagamento is reported, never created
+ *   (module header, PR 5-f);
+ * - anything else (PENDING, an unknown status, a reversal ending elsewhere) ⇒ keep.
  */
 export function alvoStatusPagamentoAmazon(e: {
   readonly cancelamento: boolean;
@@ -336,8 +376,8 @@ export function alvoStatusPagamentoAmazon(e: {
       ? { tipo: 'status', status: STATUS_PAGAMENTO.estornado }
       : MANTER_STATUS;
   }
-  if (e.aprovadoNaAmazon && !e.revertido && e.estadoFinal === ESTADO_PEDIDO.pago) {
-    return { tipo: 'status', status: STATUS_PAGAMENTO.aprovado };
+  if (e.aprovadoNaAmazon && e.estadoFinal === ESTADO_PEDIDO.pago) {
+    return e.revertido ? MANTER_REVERSAO : { tipo: 'status', status: STATUS_PAGAMENTO.aprovado };
   }
   return MANTER_STATUS;
 }
@@ -358,17 +398,18 @@ export type VereditoStatusPagamentoAmazon =
   | { readonly escrever: false; readonly motivo: MotivoStatusPagamentoAmazon };
 
 /**
- * May the stored status be moved to the target? In order: `manter` ⇒ nothing;
- * the same status ⇒ nothing; none stored ⇒ created at `aprovado` only; off the
- * ladder ⇒ never walked; `estornado` → `aprovado` only when the order clock is
- * STRICTLY newer (`ressuscitado`); `aprovado` → `estornado` ⇒ written.
+ * May the stored status be moved to the target? In order: `manter` (either
+ * kind) ⇒ nothing; the same status ⇒ nothing; none stored ⇒ created at
+ * `aprovado` only; off the ladder ⇒ never walked; `estornado` → `aprovado` only
+ * when the order clock is STRICTLY newer (`ressuscitado`); `aprovado` →
+ * `estornado` ⇒ written.
  */
 export function statusPagamentoAmazonAplicavel(
   armazenado: PagamentoArmazenadoAmazon,
   alvo: AlvoStatusPagamentoAmazon,
   opcoes: { readonly maisNovo: boolean },
 ): VereditoStatusPagamentoAmazon {
-  if (alvo.tipo === 'manter') return { escrever: false, motivo: 'manter' };
+  if (alvo.tipo !== 'status') return { escrever: false, motivo: 'manter' };
   if (armazenado === alvo.status) return { escrever: false, motivo: 'sem-mudanca' };
   if (armazenado === 'ausente') {
     return alvo.status === STATUS_PAGAMENTO.aprovado
@@ -543,7 +584,11 @@ export function montarEscritaPagamentoAmazon(
 
   /* --------------------------------- CREATE -------------------------------- */
   if (armazenadoRaw === null) {
-    if (semTotal) incidentes.push(INCIDENTE_PEDIDO_AMAZON.pagamentoDivergente);
+    // Two reasons an approved pedido gets no pagamento here, both reported:
+    // the total cannot be stated, or the read is a possible reversal (PR 5-f).
+    if (semTotal || entrada.alvo.tipo === 'manter-reversao') {
+      incidentes.push(INCIDENTE_PEDIDO_AMAZON.pagamentoDivergente);
+    }
     if (!veredito.escrever || entrada.valor === null) return fechar(NADA);
     if (!forma.conhecida) incidentes.push(INCIDENTE_PEDIDO_AMAZON.formaPagamentoDesconhecida);
     return fechar({

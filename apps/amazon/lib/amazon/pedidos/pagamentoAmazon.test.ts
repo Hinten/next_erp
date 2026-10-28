@@ -368,7 +368,33 @@ describe('the status: a ladder of two equal rungs', () => {
       expect(alvo({ estadoFinal }), String(estadoFinal)).toEqual({ tipo: 'manter' });
     }
     expect(alvo({ aprovadoNaAmazon: false })).toEqual({ tipo: 'manter' });
-    expect(alvo({ revertido: true })).toEqual({ tipo: 'manter' });
+    // (PR 5-f) A reversal ending pago keeps too, but says WHY (a missing pagamento is reported).
+    expect(alvo({ revertido: true })).toEqual({ tipo: 'manter-reversao' });
+    // NEAR-MISS: a reversal that does not end pago, or on an order Amazon has not approved, is a plain keep.
+    for (const estadoFinal of [ESTADO_PEDIDO.error, ESTADO_PEDIDO.finalizado, null]) {
+      expect(alvo({ revertido: true, estadoFinal }), String(estadoFinal)).toEqual({
+        tipo: 'manter',
+      });
+    }
+    expect(alvo({ revertido: true, aprovadoNaAmazon: false })).toEqual({ tipo: 'manter' });
+    expect(
+      alvo({ revertido: true, cancelamento: true, estadoFinal: ESTADO_PEDIDO.cancelado }),
+    ).toEqual({ tipo: 'manter' });
+  });
+
+  it('★ PR 5-f: manter-reversao writes nothing, like manter, on every stored status', () => {
+    for (const status of [
+      'ausente' as const,
+      'ilegivel' as const,
+      STATUS_PAGAMENTO.aprovado,
+      STATUS_PAGAMENTO.estornado,
+      STATUS_PAGAMENTO.em_disputa,
+    ]) {
+      expect(
+        statusPagamentoAmazonAplicavel(status, { tipo: 'manter-reversao' }, { maisNovo: true }),
+        String(status),
+      ).toEqual({ escrever: false, motivo: 'manter' });
+    }
   });
 });
 
@@ -529,6 +555,42 @@ describe('the CREATE', () => {
     expect(montar(null, entrada()).escrita.tipo).toBe('criar');
     // And a target that creates nothing files nothing.
     expect(montar(null, entrada({ valor: null, alvo: { tipo: 'manter' } })).incidentes).toEqual([]);
+  });
+
+  it('★ PR 5-f: an approved read that is a possible reversal, leaving pago, with NO pagamento stored ⇒ nothing created, no status claimed, and pagamento-divergente; NEAR-MISS: a stored pagamento is kept with nothing filed, and a plain manter files nothing', () => {
+    const reversao = { tipo: 'manter-reversao' } as const;
+    expect(montar(null, entrada({ alvo: reversao, modoValor: 'manter' }))).toEqual({
+      escrita: { tipo: 'nada' },
+      statusFinal: null,
+      incidentes: ['pagamento-divergente'],
+      eventos: [],
+    });
+    // Whatever the executions say (a split, an unknown forma): nothing about a pagamento is filed but that.
+    expect(
+      montar(
+        null,
+        entrada({
+          alvo: reversao,
+          execucoes: legs(execucaoAmazon('Other', '10.00'), execucaoAmazon('Pix', '15.00')),
+        }),
+      ).incidentes,
+    ).toEqual(['pagamento-divergente']);
+    // NEAR-MISS: a stored pagamento stays exactly as it is, and nothing is filed.
+    const guardado = corpoDe(montar(null, entrada()));
+    for (const status of [STATUS_PAGAMENTO.aprovado, STATUS_PAGAMENTO.estornado]) {
+      const r = montar(
+        { ...guardado, status_pagamento: status },
+        entrada({ alvo: reversao, modoValor: 'manter' }),
+      );
+      expect(r, String(status)).toEqual({
+        escrita: { tipo: 'nada' },
+        statusFinal: status,
+        incidentes: [],
+        eventos: [],
+      });
+    }
+    // NEAR-MISS: a plain manter (PENDING, a reversal ending elsewhere) files nothing.
+    expect(montar(null, entrada({ alvo: { tipo: 'manter' } })).incidentes).toEqual([]);
   });
 
   it('the money arm of pagamento-divergente rides the derived valor', () => {

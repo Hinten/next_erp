@@ -23,7 +23,9 @@ import {
   ESCADA_FRETE_AMAZON,
   ESTADO_FRETE_DE_DETAILED_STATUS,
   FALHAS_FRETE_AMAZON,
+  MERCADORIA_FORA_DO_STATUS_PACOTE_AMAZON,
   REVERSAO_DO_FRETE_AMAZON,
+  STATUS_PACOTE_AMAZON,
   alvoFreteAmazon,
   alvoSemPacotesAmazon,
   diarioComMercadoriaForaAmazon,
@@ -31,11 +33,13 @@ import {
   estadoDaLinhaAmazon,
   estadoFreteAmazonAplicavel,
   estadoFreteEfetivoAmazon,
+  estadoFreteParaMercadoriaForaAmazon,
   grupoFreteAmazon,
   lerFreteAmazon,
   logisticaAmazon,
   mesmoDiarioAmazon,
   projetarPacoteAmazon,
+  statusPacoteComMercadoriaForaAmazon,
   type DobraPacotesAmazon,
   type LinhaDiarioAmazon,
   type LogisticaAmazon,
@@ -596,12 +600,13 @@ describe('the ladder and the verdict', () => {
     }
   });
 
-  it('★ ONE residue projection for the ladder and the goods-out: stored fulfillment under MERCHANT ⇒ rung 11 (goods out); under any other read, or any other estado, as stored', () => {
+  it('★ the LADDER’s residue projection: stored fulfillment under MERCHANT ⇒ rung 11 (goods out); under any other read, or any other estado, as stored', () => {
     expect(estadoFreteEfetivoAmazon(ESTADO_FRETE.fulfillment, 'mfn')).toBe(
       'recebidoPelaTransportadora',
     );
     expect(MERCADORIA_FORA[estadoFreteEfetivoAmazon(ESTADO_FRETE.fulfillment, 'mfn')]).toBe(true);
-    // NEAR-MISS: the AFN seed and an unknown read keep it (in the warehouse: never this ERP's stock).
+    // NEAR-MISS: an AFN read and an unknown one keep it — the ladder cannot
+    // attribute the block, so it never walks it.
     for (const logistica of ['afn', 'desconhecida'] as const) {
       expect(estadoFreteEfetivoAmazon(ESTADO_FRETE.fulfillment, logistica)).toBe('fulfillment');
     }
@@ -611,6 +616,36 @@ describe('the ladder and the verdict', () => {
         expect(estadoFreteEfetivoAmazon(de, logistica), `${de}/${logistica}`).toBe(de);
       }
     }
+  });
+
+  it('★ (PR 5-f) the GOODS-OUT reading’s projection is the ladder’s with ONE widening: a stored fulfillment under a read without fulfilledBy is rung 11 too unless the pedido is our own AFN error — over every stored estado × the three logistics × both answers of the AFN-error test', () => {
+    for (const de of estadoFreteSchema.options) {
+      for (const logistica of LOGISTICAS) {
+        for (const afnNosso of [false, true]) {
+          const nome = `${de}/${logistica}/${String(afnNosso)}`;
+          const alargado =
+            de === ESTADO_FRETE.fulfillment && logistica === 'desconhecida' && !afnNosso;
+          expect(estadoFreteParaMercadoriaForaAmazon(de, { logistica, afnNosso }), nome).toBe(
+            alargado
+              ? ESTADO_FRETE.recebidoPelaTransportadora
+              : estadoFreteEfetivoAmazon(de, logistica),
+          );
+        }
+      }
+    }
+    // The pair that must come out equal, and the near-misses that must stay distinct.
+    const fora = (logistica: LogisticaAmazon, afnNosso: boolean) =>
+      MERCADORIA_FORA[
+        estadoFreteParaMercadoriaForaAmazon(ESTADO_FRETE.fulfillment, { logistica, afnNosso })
+      ];
+    expect(fora('desconhecida', false)).toBe(fora('mfn', false));
+    expect(fora('desconhecida', false)).toBe(true);
+    // Our AFN seed under an unknown read, and the AFN read itself (the C1 flip), stay goods IN.
+    expect(fora('desconhecida', true)).toBe(false);
+    expect(fora('afn', false)).toBe(false);
+    expect(fora('afn', true)).toBe(false);
+    // MERCHANT reads the residue whatever the stored pedido (unchanged).
+    expect(fora('mfn', true)).toBe(true);
   });
 
   it('★ legacy residue: a stored fulfillment on an MFN order reads as rung 11 — PICKED_UP regressive, AT_DESTINATION_FC written (NEAR-MISS against fora-do-canal)', () => {
@@ -835,8 +870,11 @@ describe('the fold (dobrarPacotesAmazon)', () => {
     // waiting one (stock-safe for REMOVING), the goods are out all the same.
     const misto = fora([pacote('A', 'PICKED_UP'), pacote('B', 'PENDING_PICK_UP')]);
     expect(misto).toMatchObject({ alvo: 'aguardandoPostagem', mercadoriaFora: true });
-    // Beside an unknown token (blocked: no target) and an unkeyed package.
-    expect(fora([pacote('A', 'PICKED_UP'), pacote('B', 'NEW_TOKEN')])).toMatchObject({
+    // Beside an unknown token (blocked: no target; its closed status PENDING, so
+    // the picked-up package alone says it) and an unkeyed package.
+    expect(
+      fora([pacote('A', 'PICKED_UP'), pacote('B', 'NEW_TOKEN', { status: 'PENDING' })]),
+    ).toMatchObject({
       alvo: null,
       bloqueado: true,
       mercadoriaFora: true,
@@ -853,13 +891,15 @@ describe('the fold (dobrarPacotesAmazon)', () => {
     });
     // A failure is goods out too (lost, refused, returning).
     expect(fora([pacote('A', 'LOST')]).mercadoriaFora).toBe(true);
-    // NEAR-MISS: nothing out — waiting, a cancelled pickup, an unknown token, a spaced token.
+    // NEAR-MISS: nothing out — waiting, a cancelled pickup, and an unknown or a
+    // spaced token whose closed status still says PENDING (PR 5-f's fallback).
+    const pendente = { status: 'PENDING' };
     for (const pacotes of [
       [pacote('A', 'PENDING_PICK_UP'), pacote('B', 'PENDING_SCHEDULE')],
       [pacote('A', 'LABEL_CANCELLED')],
-      [pacote('A', 'NEW_TOKEN')],
-      [pacote('A', 'PICKED_UP ')],
-      [pacote('A', 'picked_up')],
+      [pacote('A', 'NEW_TOKEN', pendente)],
+      [pacote('A', 'PICKED_UP ', pendente)],
+      [pacote('A', 'picked_up', pendente)],
     ]) {
       const tokens = pacotes.map((x) => x.packageStatus?.detailedStatus).join();
       expect(fora(pacotes).mercadoriaFora, tokens).toBe(false);
@@ -1165,6 +1205,254 @@ describe('the stored diary as goods-out evidence (the predicate’s third readin
       { estado: '__proto__' },
     ]) {
       expect(estadoDaLinhaAmazon(linhaRuim), JSON.stringify(linhaRuim)).toBeNull();
+    }
+  });
+});
+
+describe('★ PR 5-f — the goods-out fallback on packageStatus.status (an unknown detailedStatus only; never the target)', () => {
+  const FORA = ['IN_TRANSIT', 'SHIPPED', 'DELIVERED', 'UNDELIVERABLE'] as const;
+  /** Tokens the table does not hold: absent, blank, undocumented, misspelt, inherited, not a string. */
+  const DESCONHECIDOS: readonly unknown[] = [
+    undefined,
+    null,
+    '',
+    '   ',
+    'NEW_TOKEN',
+    'PICKED_UP ',
+    'picked_up',
+    'LABEL_CANCELED',
+    'toString',
+    '__proto__',
+    7,
+  ];
+
+  it('the status table is EXPLICIT and EXHAUSTIVE over the closed enum, frozen: exactly IN_TRANSIT, SHIPPED, DELIVERED and UNDELIVERABLE say the goods left', () => {
+    expect(Object.keys(MERCADORIA_FORA_DO_STATUS_PACOTE_AMAZON).sort()).toEqual(
+      Object.values(STATUS_PACOTE_AMAZON).sort(),
+    );
+    expect(
+      Object.entries(MERCADORIA_FORA_DO_STATUS_PACOTE_AMAZON)
+        .filter(([, fora]) => fora)
+        .map(([status]) => status)
+        .sort(),
+    ).toEqual([...FORA].sort());
+    expect(Object.isFrozen(MERCADORIA_FORA_DO_STATUS_PACOTE_AMAZON)).toBe(true);
+  });
+
+  it('★ an unknown detailedStatus (absent included) beside a goods-out status ⇒ goods out', () => {
+    for (const token of DESCONHECIDOS) {
+      expect(projetarPacoteAmazon(token, 'ACCEPTED'), String(token)).toEqual({
+        tipo: 'desconhecido',
+      });
+      for (const status of FORA) {
+        expect(
+          statusPacoteComMercadoriaForaAmazon(token, status),
+          `${String(token)}+${status}`,
+        ).toBe(true);
+      }
+    }
+  });
+
+  it('★ NEAR-MISS (the status): PENDING, CANCELLED, absent, or anything not EXACTLY a member (case, a space, an inherited name, an undocumented value, not a string) ⇒ not goods out', () => {
+    for (const status of [
+      'PENDING',
+      'CANCELLED',
+      undefined,
+      null,
+      '',
+      'in_transit',
+      'IN_TRANSIT ',
+      ' SHIPPED',
+      'Delivered',
+      'toString',
+      'constructor',
+      '__proto__',
+      'NEW_STATUS',
+      7,
+      ['IN_TRANSIT'],
+    ]) {
+      for (const token of [undefined, 'NEW_TOKEN']) {
+        expect(
+          statusPacoteComMercadoriaForaAmazon(token, status),
+          `${String(token)}+${JSON.stringify(status)}`,
+        ).toBe(false);
+      }
+    }
+  });
+
+  it('★ NEAR-MISS (the token): a KNOWN detailedStatus always decides on its own — no table row falls back to the status, whatever it says', () => {
+    for (const token of Object.keys(ESTADO_FRETE_DE_DETAILED_STATUS)) {
+      for (const status of FORA) {
+        expect(statusPacoteComMercadoriaForaAmazon(token, status), `${token}+${status}`).toBe(
+          false,
+        );
+      }
+    }
+  });
+
+  it('★ the fold: the flag rises for an unknown or absent token whose status says the package left — keyed or not — while the TARGET stays the blocked answer and the row estado stays null (no status-only floor)', () => {
+    for (const status of FORA) {
+      for (const p of [
+        pacote('A', undefined, { status }),
+        pacote('A', 'NEW_TOKEN', { status }),
+        pacote(undefined, undefined, { status }),
+      ]) {
+        const d = dobrar([p], { invoiceStatus: 'ACCEPTED' });
+        expect(d, status).toMatchObject({ alvo: null, bloqueado: true, mercadoriaFora: true });
+        for (const l of d.pacotes) expect(l.estado, status).toBeNull();
+      }
+    }
+    // Beside a sibling still waiting: the target stays blocked, the goods are out.
+    expect(
+      dobrar(
+        [
+          pacote('A', 'PENDING_PICK_UP', { status: 'PENDING' }),
+          pacote('B', undefined, { status: 'DELIVERED' }),
+        ],
+        { invoiceStatus: 'ACCEPTED' },
+      ),
+    ).toMatchObject({ alvo: null, bloqueado: true, mercadoriaFora: true });
+    // NEAR-MISS: the same unreadable packages whose status does not say it ⇒ nothing out.
+    for (const status of ['PENDING', 'CANCELLED', null, 'NEW_STATUS']) {
+      for (const p of [pacote('A', undefined, { status }), pacote('A', 'NEW_TOKEN', { status })]) {
+        expect(dobrar([p]).mercadoriaFora, String(status)).toBe(false);
+      }
+    }
+    // NEAR-MISS: a known token decides, against the status in BOTH directions.
+    const casos: [string, string, boolean][] = [
+      ['PENDING_PICK_UP', 'SHIPPED', false],
+      ['LABEL_CANCELLED', 'DELIVERED', false],
+      ['PENDING_SCHEDULE', 'IN_TRANSIT', false],
+      ['PICKED_UP', 'PENDING', true],
+      ['DELIVERED', 'CANCELLED', true],
+    ];
+    for (const [token, status, fora] of casos) {
+      expect(dobrar([pacote('A', token, { status })]).mercadoriaFora, `${token}+${status}`).toBe(
+        fora,
+      );
+    }
+  });
+
+  it('★ durable: the row the fold writes reads as goods out in the stored-diary reading, through its VERBATIM estadoMarketplace and statusMarketplace; the fold and the stored reading answer the same for every token × status', () => {
+    const d = dobrar([pacote('PKG-1', undefined, { status: 'IN_TRANSIT' })]);
+    expect(d.pacotes).toEqual([
+      expect.objectContaining({
+        numero: 'PKG-1',
+        estado: null,
+        estadoMarketplace: null,
+        statusMarketplace: 'IN_TRANSIT',
+      }),
+    ]);
+    expect(diarioComMercadoriaForaAmazon(d.pacotes)).toBe(true);
+    for (const status of FORA) {
+      expect(
+        diarioComMercadoriaForaAmazon([
+          { numero: 'A', estado: null, estadoMarketplace: 'NEW_TOKEN', statusMarketplace: status },
+        ]),
+        status,
+      ).toBe(true);
+      // A row without an estadoMarketplace key: an unknown token, like absent.
+      expect(diarioComMercadoriaForaAmazon([{ numero: 'A', statusMarketplace: status }])).toBe(
+        true,
+      );
+    }
+    // NEAR-MISS rows: a known estadoMarketplace decides; a status not EXACTLY in the set.
+    for (const linhaGuardada of [
+      {
+        numero: 'A',
+        estado: 'aguardandoPostagem',
+        estadoMarketplace: 'PENDING_PICK_UP',
+        statusMarketplace: 'SHIPPED',
+      },
+      {
+        numero: 'A',
+        estado: 'despachoNegado',
+        estadoMarketplace: 'LABEL_CANCELLED',
+        statusMarketplace: 'DELIVERED',
+      },
+      {
+        numero: 'A',
+        estado: null,
+        estadoMarketplace: 'PENDING_SCHEDULE',
+        statusMarketplace: 'IN_TRANSIT',
+      },
+      { numero: 'A', estado: null, estadoMarketplace: null, statusMarketplace: 'PENDING' },
+      { numero: 'A', estado: null, estadoMarketplace: null, statusMarketplace: 'CANCELLED' },
+      { numero: 'A', estado: null, estadoMarketplace: null, statusMarketplace: null },
+      { numero: 'A', estado: null, estadoMarketplace: null },
+      { numero: 'A', estado: null, estadoMarketplace: null, statusMarketplace: 'in_transit' },
+      { numero: 'A', estado: null, estadoMarketplace: null, statusMarketplace: 'IN_TRANSIT ' },
+      { numero: 'A', estado: null, estadoMarketplace: null, statusMarketplace: 'toString' },
+    ]) {
+      expect(diarioComMercadoriaForaAmazon([linhaGuardada]), JSON.stringify(linhaGuardada)).toBe(
+        false,
+      );
+    }
+    // Read N and read N+1 agree: the read's flag equals the stored reading of the row it wrote.
+    const tokens: (string | undefined)[] = [
+      ...Object.keys(ESTADO_FRETE_DE_DETAILED_STATUS),
+      undefined,
+      '',
+      '   ',
+      'NEW_TOKEN',
+      'X'.repeat(121),
+    ];
+    const statuses: (string | null)[] = [
+      ...Object.values(STATUS_PACOTE_AMAZON),
+      null,
+      '   ',
+      'NEW_STATUS',
+      ' IN_TRANSIT',
+      'S'.repeat(121),
+    ];
+    for (const token of tokens) {
+      for (const status of statuses) {
+        for (const invoiceStatus of [null, 'ACCEPTED']) {
+          const lida = dobrar([pacote('PKG-1', token, { status })], { invoiceStatus });
+          expect(
+            diarioComMercadoriaForaAmazon(lida.pacotes),
+            `${String(token)}+${String(status)}+${String(invoiceStatus)}`,
+          ).toBe(lida.mercadoriaFora);
+        }
+      }
+    }
+  });
+
+  it('★ RESIDUAL, pinned as it is today: the fallback’s evidence lives in the row’s WIRE fields, so a later read naming the same package with a goods-IN reading rewrites them and the row stops saying the goods left (no estado is invented for it); NEAR-MISS: a row whose goods out is its ESTADO keeps it (the row gate)', () => {
+    const emTransito = dobrar([pacote('PKG-1', undefined, { status: 'IN_TRANSIT' })]);
+    expect(diarioComMercadoriaForaAmazon(emTransito.pacotes)).toBe(true);
+    const leituras: [string | undefined, string][] = [
+      ['PENDING_PICK_UP', 'PENDING'],
+      ['LABEL_CANCELLED', 'CANCELLED'],
+      [undefined, 'PENDING'],
+      ['NEW_TOKEN', 'CANCELLED'],
+    ];
+    for (const [token, status] of leituras) {
+      const depois = dobrar([pacote('PKG-1', token, { status })], {
+        invoiceStatus: 'ACCEPTED',
+        relogioUs: DEPOIS_US,
+        armazenados: emTransito.pacotes,
+      });
+      expect(depois.pacotes[0], `${String(token)}+${status}`).toMatchObject({
+        estadoMarketplace: token ?? null,
+        statusMarketplace: status,
+      });
+      expect(diarioComMercadoriaForaAmazon(depois.pacotes), `${String(token)}+${status}`).toBe(
+        false,
+      );
+    }
+    // NEAR-MISS: the same later read over a row whose estado says the goods left.
+    const coletado = dobrar([pacote('PKG-1', 'PICKED_UP')]);
+    for (const [token, status] of leituras) {
+      const depois = dobrar([pacote('PKG-1', token, { status })], {
+        invoiceStatus: 'ACCEPTED',
+        relogioUs: DEPOIS_US,
+        armazenados: coletado.pacotes,
+      });
+      expect(depois.pacotes[0]?.estado, `${String(token)}+${status}`).toBe('postado');
+      expect(diarioComMercadoriaForaAmazon(depois.pacotes), `${String(token)}+${status}`).toBe(
+        true,
+      );
     }
   });
 });

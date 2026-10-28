@@ -6,6 +6,7 @@ import {
   dinheiroDoPedidoAmazon,
   mesmosCentavos,
   reaisDeMoneyAmazon,
+  ressalvasDoDinheiroAmazon,
   somaReais,
 } from './dinheiroAmazon';
 
@@ -139,5 +140,244 @@ describe('dinheiroDoPedidoAmazon — the order-money group from the line breakdo
       extra: { proceeds: { grandTotal: brl('9999.99') } },
     });
     expect(dinheiroDoPedidoAmazon(order)).toEqual({ descontoTotal: 0, valorFrete: 10 });
+  });
+});
+
+describe('ressalvasDoDinheiroAmazon — what the group cannot state (PR 5-f), counted, never folded', () => {
+  const linha = (id: string, quebras: readonly unknown[]) =>
+    linhaAmazon(id, { qtd: 1, preco: '100.00', quebras });
+  const ressalvas = (...linhas: Record<string, unknown>[]) =>
+    ressalvasDoDinheiroAmazon(pedidoAmazon({ linhas }));
+  const FRETE = { type: 'SHIPPING', subtotal: brl('25.00') };
+  const desconto = (valor: string, detalhes?: readonly unknown[]) => ({
+    type: 'DISCOUNT',
+    subtotal: brl(valor),
+    ...(detalhes === undefined ? {} : { detailedBreakdowns: detalhes }),
+  });
+
+  it('COUNTS: a DISCOUNT on a line charging SHIPPING whose shipping part is not stated — no details, or details (no SHIPPING) that do not add up to it, either sign', () => {
+    for (const [nome, d] of [
+      ['no details', desconto('25.00')],
+      ['an empty details list', desconto('25.00', [])],
+      [
+        'an ITEM detail short of the subtotal',
+        desconto('25.00', [{ subtype: 'ITEM', value: brl('10.00') }]),
+      ],
+      [
+        'an ITEM detail one centavo short',
+        desconto('25.00', [{ subtype: 'ITEM', value: brl('24.99') }]),
+      ],
+      [
+        'ITEM details over the subtotal',
+        desconto('25.00', [{ subtype: 'ITEM', value: brl('30.00') }]),
+      ],
+      ['an unreadable ITEM detail', desconto('25.00', [{ subtype: 'ITEM', value: brl('') }])],
+      ['negative, no details', desconto('-25.00')],
+      ['negative, only ITEM', desconto('-15.00', [{ subtype: 'ITEM', value: brl('-10.00') }])],
+      // An undocumented subtype might be the shipping part: it never accounts
+      // for the discount, even when it adds up to it (the match is exact).
+      [
+        'a new subtype token adding up to it',
+        desconto('25.00', [{ subtype: 'NEW_SUBTYPE', value: brl('25.00') }]),
+      ],
+      [
+        'an ITEM detail beside an undocumented one, adding up',
+        desconto('25.00', [
+          { subtype: 'ITEM', value: brl('20.00') },
+          { subtype: 'NEW_SUBTYPE', value: brl('5.00') },
+        ]),
+      ],
+      [
+        'a lower-case shipping detail',
+        desconto('25.00', [{ subtype: 'shipping', value: brl('25.00') }]),
+      ],
+    ] as const) {
+      expect(ressalvas(linha('L1', [FRETE, d])), nome).toEqual({
+        linhasDescontoNaoDetalhado: 1,
+        quebrasImposto: 0,
+      });
+    }
+  });
+
+  it('NEAR-MISS: an itemised shipping part (positive, negative, or 0), no SHIPPING on THAT line, or a 0 row ⇒ nothing', () => {
+    for (const [nome, l] of [
+      [
+        'itemised',
+        linha('L1', [FRETE, desconto('25.00', [{ subtype: 'SHIPPING', value: brl('25.00') }])]),
+      ],
+      [
+        'itemised, negative',
+        linha('L1', [FRETE, desconto('-25.00', [{ subtype: 'SHIPPING', value: brl('-25.00') }])]),
+      ],
+      [
+        'itemised as 0 beside an ITEM detail',
+        linha('L1', [
+          FRETE,
+          desconto('10.00', [
+            { subtype: 'ITEM', value: brl('10.00') },
+            { subtype: 'SHIPPING', value: brl('0.00') },
+          ]),
+        ]),
+      ],
+      ['a DISCOUNT on a line with no SHIPPING row', linha('L1', [desconto('25.00')])],
+      [
+        'SHIPPING exactly 0',
+        linha('L1', [{ type: 'SHIPPING', subtotal: brl('0.00') }, desconto('25.00')]),
+      ],
+      ['DISCOUNT exactly 0', linha('L1', [FRETE, desconto('0.00')])],
+      ['no DISCOUNT at all', linha('L1', [FRETE])],
+      // Details that account for the WHOLE discount state its shipping part as 0.
+      [
+        'only an ITEM detail equal to the subtotal',
+        linha('L1', [FRETE, desconto('25.00', [{ subtype: 'ITEM', value: brl('25.00') }])]),
+      ],
+      [
+        'two ITEM details adding up to it',
+        linha('L1', [
+          FRETE,
+          desconto('25.00', [
+            { subtype: 'ITEM', value: brl('10.00') },
+            { subtype: 'ITEM', value: brl('15.00') },
+          ]),
+        ]),
+      ],
+      [
+        'documented non-shipping subtypes adding up (ITEM + OTHER + GIFT_WRAP)',
+        linha('L1', [
+          FRETE,
+          desconto('25.00', [
+            { subtype: 'ITEM', value: brl('20.00') },
+            { subtype: 'OTHER', value: brl('3.00') },
+            { subtype: 'GIFT_WRAP', value: brl('2.00') },
+          ]),
+        ]),
+      ],
+      [
+        'negative, ITEM equal to it (either sign)',
+        linha('L1', [FRETE, desconto('-15.00', [{ subtype: 'ITEM', value: brl('15.00') }])]),
+      ],
+    ] as const) {
+      expect(ressalvas(l).linhasDescontoNaoDetalhado, nome).toBe(0);
+    }
+    // Per LINE: a discount on one line is never read against another line's shipping.
+    expect(ressalvas(linha('L1', [desconto('25.00')]), linha('L2', [FRETE]))).toEqual({
+      linhasDescontoNaoDetalhado: 0,
+      quebrasImposto: 0,
+    });
+    expect(
+      ressalvas(linha('L1', [FRETE, desconto('5.00')]), linha('L2', [FRETE, desconto('-5.00')]))
+        .linhasDescontoNaoDetalhado,
+    ).toBe(2);
+  });
+
+  it('an amount that does not READ counts (fail-safe): an unreadable SHIPPING or DISCOUNT, a non-BRL one', () => {
+    expect(
+      ressalvas(linha('L1', [{ type: 'SHIPPING', subtotal: brl('') }, desconto('25.00')]))
+        .linhasDescontoNaoDetalhado,
+    ).toBe(1);
+    expect(
+      ressalvas(
+        linha('L1', [
+          FRETE,
+          { type: 'DISCOUNT', subtotal: { amount: '3.00', currencyCode: 'USD' } },
+        ]),
+      ).linhasDescontoNaoDetalhado,
+    ).toBe(1);
+  });
+
+  it('COUNTS a TAX row whose subtotal or any detail is not exactly 0 — line or order level, either sign, unreadable', () => {
+    const imposto = (valor: unknown, detalhes?: readonly unknown[]) => ({
+      type: 'TAX',
+      subtotal: brl(valor),
+      ...(detalhes === undefined ? {} : { detailedBreakdowns: detalhes }),
+    });
+    for (const [nome, q] of [
+      ['a positive subtotal', imposto('149.90')],
+      ['a negative subtotal', imposto('-0.24')],
+      [
+        'a 0 subtotal with a nonzero detail',
+        imposto('0.00', [{ subtype: 'DISCOUNT', value: brl('-0.24') }]),
+      ],
+      ['an unreadable subtotal', imposto('')],
+    ] as const) {
+      expect(ressalvas(linha('L1', [q])), nome).toEqual({
+        linhasDescontoNaoDetalhado: 0,
+        quebrasImposto: 1,
+      });
+    }
+    expect(
+      ressalvasDoDinheiroAmazon(
+        pedidoAmazon({
+          extra: { proceeds: { breakdowns: [{ type: 'TAX', subtotal: brl('4.00') }] } },
+        }),
+      ).quebrasImposto,
+    ).toBe(1);
+    // Two lines, each with a TAX row, plus the order-level aggregate: the line rows
+    // count, and their aggregate is never counted again (one tax, one count).
+    expect(
+      ressalvasDoDinheiroAmazon(
+        pedidoAmazon({
+          linhas: [linha('L1', [imposto('1.00')]), linha('L2', [imposto('2.00')])],
+          extra: { proceeds: { breakdowns: [{ type: 'TAX', subtotal: brl('3.00') }] } },
+        }),
+      ).quebrasImposto,
+    ).toBe(2);
+    expect(
+      ressalvasDoDinheiroAmazon(
+        pedidoAmazon({
+          linhas: [linha('L1', [imposto('5.00')])],
+          extra: { proceeds: { breakdowns: [{ type: 'TAX', subtotal: brl('5.00') }] } },
+        }),
+      ).quebrasImposto,
+    ).toBe(1);
+    // NEAR-MISS: lines with breakdowns but no TAX row — the order-level TAX still counts.
+    expect(
+      ressalvasDoDinheiroAmazon(
+        pedidoAmazon({
+          linhas: [linha('L1', [FRETE])],
+          extra: { proceeds: { breakdowns: [{ type: 'TAX', subtotal: brl('5.00') }] } },
+        }),
+      ).quebrasImposto,
+    ).toBe(1);
+  });
+
+  it('NEAR-MISS: TAX exactly 0 (subtotal and details), TAX absent, or a differently spelt token ⇒ nothing', () => {
+    expect(
+      ressalvas(
+        linha('L1', [
+          {
+            type: 'TAX',
+            subtotal: brl('0.00'),
+            detailedBreakdowns: [{ subtype: 'ITEM', value: brl('0') }],
+          },
+        ]),
+      ).quebrasImposto,
+    ).toBe(0);
+    expect(
+      ressalvas(linha('L1', [{ type: 'ITEM', subtotal: brl('100.00') }, FRETE])).quebrasImposto,
+    ).toBe(0);
+    expect(ressalvas(linha('L1', [{ type: 'tax', subtotal: brl('9.00') }])).quebrasImposto).toBe(0);
+    expect(
+      ressalvasDoDinheiroAmazon(
+        pedidoAmazon({
+          extra: { proceeds: { breakdowns: [{ type: 'TAX', subtotal: brl('0.00') }] } },
+        }),
+      ).quebrasImposto,
+    ).toBe(0);
+    // No breakdowns anywhere.
+    expect(ressalvasDoDinheiroAmazon(pedidoAmazon())).toEqual({
+      linhasDescontoNaoDetalhado: 0,
+      quebrasImposto: 0,
+    });
+  });
+
+  it('TAX never moves the group: the same order with and without a TAX row reads the same discount and freight', () => {
+    const base = [FRETE, desconto('10.00', [{ subtype: 'SHIPPING', value: brl('5.00') }])];
+    const sem = dinheiroDoPedidoAmazon(pedidoAmazon({ linhas: [linha('L1', base)] }));
+    const com = dinheiroDoPedidoAmazon(
+      pedidoAmazon({ linhas: [linha('L1', [...base, { type: 'TAX', subtotal: brl('15.00') }])] }),
+    );
+    expect(com).toEqual(sem);
+    expect(com).toEqual({ descontoTotal: 5, valorFrete: 20 });
   });
 });
