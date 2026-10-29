@@ -14,9 +14,12 @@ runConfig:
   # reasoning of the other channel backends: it does not apply here.
   minInstances: 0 # scale-to-zero: a per-channel backend costs only per request
   concurrency: 80
-# No `timeoutSeconds` — the platform default is what
-# `lib/lojaIntegrada/prazos.test.ts` compares the credential routes and the paid
-# re-check route (pacer + read deadline) against.
+# No `timeoutSeconds` — the platform default (300 s) is what
+# `lib/lojaIntegrada/prazos.test.ts` compares the credential routes, the paid
+# re-check route (pacer + read deadline) and the catalogue routes against. The
+# catalogue's worst case is the largest: MAX_PAGINAS_CATALOGO_LI paced pages, each
+# the pacer plus the read deadline, plus a margin — 10 x (2 s + 20 s) + 30 s =
+# 250 s. A pin below that turns the test red.
 #
 # No `runConfig.vpcAccess` — this channel needs no static egress IP (master plan
 # D3).
@@ -49,13 +52,17 @@ runConfig:
 # console and in the functions codebase's `.env.deploy`
 # (apps/loja-integrada/functions/DEPLOY.md):
 #
-#   LOJA_INTEGRADA_CHAMADAS                The read switch, read by the credential routes
-#                                          and the paid re-check route (GET
-#                                          …/pedidos/[pedidoId]/pagamento): only the exact
-#                                          `on` lets them call Loja Integrada; anything
-#                                          else answers 503 LI_CHAMADAS_DESLIGADAS before
-#                                          any call (the re-check answers from the ERP's
-#                                          contested mirror instead when it is open). The
+#   LOJA_INTEGRADA_CHAMADAS                The read switch, read by the credential routes,
+#                                          the paid re-check route (GET
+#                                          …/pedidos/[pedidoId]/pagamento) and the four
+#                                          catalogue routes (GET …/conta/[id]/categorias,
+#                                          …/marcas, …/grades, …/grades/[gradeId]): only
+#                                          the exact `on` lets them call Loja Integrada;
+#                                          anything else answers 503
+#                                          LI_CHAMADAS_DESLIGADAS before any call (the
+#                                          re-check answers from the ERP's contested
+#                                          mirror instead when it is open; the catalogue
+#                                          routes read no Firestore at all then). The
 #                                          label routing route reads no switch: it calls
 #                                          nothing.
 #   LOJA_INTEGRADA_MODO_ESTOQUE            Write valves, `off | dry-run | on`; only the

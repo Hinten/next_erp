@@ -17,16 +17,19 @@ Master plan: `.master_plans/loja-integrada/loja-integrada-marketplace-integratio
 - Step 7 (the status write-back, in stacked PRs): the write engine and its write context
   (`core/escrita.ts`, `core/contextoEscrita.ts`; "Write engine" below). No flow runs on it
   yet, and every write valve is off until the window.
+- Step 10 (the catalogue reads): four `GET`s in the conta route family (below), the core
+  `lib/lojaIntegrada/catalogo/catalogo.ts` and its caches `catalogo/cache.ts`. The web's
+  variation linker reads the grades; categories and brands wait for step 11's product tab.
 
 ## Routes (`/api/marketplace/loja-integrada/conta/[id]…`)
 
 `GET` status (`PERM.integracao.read`); `PUT …/credencial` save, `PUT …/credencial/validade`
-renew the expiry date, `DELETE …/credencial` remove (all `PERM.integracao.write`).
-Every route exports its verb as `export async function GET|PUT|DELETE` (never a
+renew the expiry date, `DELETE …/credencial` remove (all `PERM.integracao.write`); and the four
+catalogue `GET`s (step 10, "The catalogue reads" below). Every route exports its verb as `export async function GET|PUT|DELETE` (never a
 re-export: `cors-proxy-covers-routes.test.js` cannot read one), and every verb must
-be listed in the literal `Access-Control-Allow-Methods` in `proxy.ts`. The routes read
-the conta uncached and require only `tipo === 3`, so a parked or inactive conta can
-still be fixed. Only the context loader refuses those.
+be listed in the literal `Access-Control-Allow-Methods` in `proxy.ts`. The status and
+credential routes read the conta uncached and require only `tipo === 3`, so a parked or
+inactive conta can still be fixed. Only the context loader refuses those.
 
 - The wire contract (bodies, answers, error codes, the accepted date window
   `janelaDeValidadeTokenLi`) is `packages/schemas/src/contaLojaIntegrada.ts`, shared with
@@ -39,6 +42,46 @@ still be fixed. Only the context loader refuses those.
   → 499. A save re-reads the conta after writing and undoes the write on a 404.
 - The aviso step runs after the write landed: a TRANSIENT gRPC failure there is logged and
   the answer stays 200 (`semDerrubarAEscrita` in `avisos/avisos.ts`); anything else throws.
+
+### The catalogue reads (step 10)
+
+`GET …/categorias`, `…/marcas`, `…/grades` and `…/grades/[gradeId]` (all
+`PERM.integracao.read`): the store's category, brand and grade lists, and one grade with its
+options. The wire contract (answers, projections, `idDoRecursoLi`, `gradeIdDaRotaLi`,
+`mesmaGradeLi`, the paging constants) is `packages/schemas/src/catalogoLojaIntegrada.ts`, shared
+with the web linker; every 200 is built through its schema, with `Cache-Control: no-store`. The
+work is `lib/lojaIntegrada/catalogo/catalogo.ts`.
+
+- **Unlike the credential routes, these go through the context loader**, so the read switch
+  is their first act: off (everywhere until the window) ⇒ 503 `LI_CHAMADAS_DESLIGADAS`, zero
+  calls and zero Firestore reads; a parked or inactive conta is refused. The grade route
+  answers 400 `LI_ID_INVALIDO` for a non-canonical `gradeId` before anything is read.
+  `?atualizar=1` is read EXACTLY (one parameter, value `1`); anything else is not a refresh.
+- **The cache** (`catalogo/cache.ts`): four module-scope `createReadCache` instances keyed
+  `[conta, credential version, resource, grade]`, TTL `READ_CACHE_TTL.config`, 8/8/8/128
+  entries, no negative caching. The context comes FIRST (the switch, and the version only it
+  knows), so a hit still costs the cached conta read and one credential read. `?atualizar=1`
+  evicts the settled copy only: an in-flight load is joined. The shared load never takes the
+  caller's signal (one tab closing must not fail the others); the caller alone gets 499.
+- **The version is re-checked at the end of every load**: the context reports each request's
+  credential version (`aoUsarCredencial`), and a load that saw any other version than its
+  key's — a token saved between two pages — fails (`LiCredencialTrocadaNaLeituraError`), is
+  never cached, and answers 502 `LI_LOJA_INDISPONIVEL` with one WARN line. A grade detail
+  whose `id` is not the asked grade (`LiGradeDivergenteError`) answers the same way.
+- **The shared read-failure mapper** under the catalogue's own choices: a 401 parks on every
+  route; a 403 parks ONLY on `categorias` (the path the token check itself reads), elsewhere
+  502 `LI_RECURSO_NAO_PERMITIDO` + one WARN with nothing parked; a 404 on a grade is 409
+  `LI_GRADE_AUSENTE_NA_LOJA`, on a list it is rethrown (a 500); more pages than
+  `MAX_PAGINAS_CATALOGO_LI` is 502 `LI_CATALOGO_EXCEDE_LIMITE` (never a truncated list), a
+  `next` that does not advance 502 `LI_LOJA_INDISPONIVEL`. Both refusals the catalogue answers
+  itself (the 403 and the grade 404) carry the class `nao-autorizado`.
+- **Budget**: `MAX_PAGINAS_CATALOGO_LI × (pacer + PRAZO_LI_MS.leitura) + 30 s` = 250 s under
+  the 300 s ceiling (`prazos.test.ts`, which also counts ONE context load and one call of each
+  package catalogue GET in the core, and none in the route files). `estrutura.test.ts` walks
+  each route's closure (`ROTAS_DE_LEITURA_LI`) as it walks the paid re-check's.
+- Log lines: the context's carry `fluxo: catalogo`; the core's own WARN lines are prefixed
+  `[loja-integrada/catalogo]` with ids and counts only (rows the projection could not read,
+  once per load). No write of its own (only the park's), no ruleset, index or env change.
 
 ## Routes (`/api/marketplace/loja-integrada/pedidos/[pedidoId]…`, step 15)
 
