@@ -129,6 +129,13 @@ describe('GET …/conta/[id]/grades/[gradeId] — the caller and the ids: nothin
     expect(db.leituras).toEqual([]);
   });
 
+  it('⚠️ the caller answers FIRST: a malformed grade id from a caller without a token is a 401, from one without the permission a 403', async () => {
+    expect((await get('08946', { semAuth: true })).status).toBe(401);
+    h.verifyIdToken.mockResolvedValue(ESTRANHO);
+    expect((await get('08946')).status).toBe(403);
+    expect(db.leituras).toEqual([]);
+  });
+
   it('400 LI_ID_INVALIDO for a malformed conta id', async () => {
     vi.stubEnv(CHAMADAS_ENV_LI, 'on');
     const res = await get(String(GRADE), { conta: 'a.b' });
@@ -245,8 +252,24 @@ describe('GET …/grades/[gradeId] — the read', () => {
 
     await get(String(GRADE));
     await get(String(GRADE));
+    // Only the exact `1` is a refresh.
+    await get(String(GRADE), { sufixo: '?atualizar=true' });
     expect(chamadas).toHaveLength(1);
     await get(String(GRADE), { sufixo: '?atualizar=1' });
     expect(chamadas).toHaveLength(2);
+  });
+
+  it('the caller going away during the read ⇒ 499 with an EMPTY body', async () => {
+    vi.stubEnv(CHAMADAS_ENV_LI, 'on');
+    const controle = new AbortController();
+    scriptarLoja(() => {
+      controle.abort();
+      return ok(detalheGradeLi(GRADE, [1]));
+    });
+
+    const res = await get(String(GRADE), { sinal: controle.signal });
+
+    expect(res.status).toBe(499);
+    expect(await res.text()).toBe('');
   });
 });

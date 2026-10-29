@@ -80,8 +80,12 @@ function scriptarLoja(responder: (c: ChamadaCatalogoLi) => RespostaCatalogoLi): 
   });
 }
 
-function get(sufixo = '', opts: { semAuth?: boolean } = {}) {
-  return GET(requisicao('GET', `${CONTA}/marcas${sufixo}`, opts), contexto(CONTA));
+function get(sufixo = '', opts: { semAuth?: boolean; sinal?: AbortSignal; conta?: string } = {}) {
+  const conta = opts.conta ?? CONTA;
+  return GET(
+    requisicao('GET', `${encodeURIComponent(conta)}/marcas${sufixo}`, opts),
+    contexto(conta),
+  );
 }
 
 async function corpoDe(res: Response): Promise<unknown> {
@@ -115,10 +119,48 @@ afterEach(() => {
 });
 
 describe('GET …/conta/[id]/marcas', () => {
-  it('403 without integracao.read, nothing read', async () => {
+  it('401 without a bearer token; 403 without integracao.read — nothing read', async () => {
+    expect((await get('', { semAuth: true })).status).toBe(401);
     h.verifyIdToken.mockResolvedValue(ESTRANHO);
     expect((await get()).status).toBe(403);
     expect(db.leituras).toEqual([]);
+  });
+
+  it.each(['..', 'a.b'])('400 LI_ID_INVALIDO for the conta id %j, nothing read', async (id) => {
+    vi.stubEnv(CHAMADAS_ENV_LI, 'on');
+    const res = await get('', { conta: id });
+
+    expect(res.status).toBe(400);
+    expect(erroContaLojaIntegradaSchema.parse(await corpoDe(res))).toMatchObject({
+      code: CODIGO_ERRO_LI.idInvalido,
+    });
+    expect(db.leituras).toEqual([]);
+  });
+
+  it('a cache hit; `?atualizar=true` is not a refresh; `?atualizar=1` reads again', async () => {
+    vi.stubEnv(CHAMADAS_ENV_LI, 'on');
+    scriptarLoja(() => paginaCatalogoLi('marca', [marcaLi(1)]));
+
+    expect((await get()).status).toBe(200);
+    expect((await get()).status).toBe(200);
+    expect((await get('?atualizar=true')).status).toBe(200);
+    expect(chamadas).toHaveLength(1);
+    expect((await get('?atualizar=1')).status).toBe(200);
+    expect(chamadas).toHaveLength(2);
+  });
+
+  it('the caller going away during the read ⇒ 499 with an EMPTY body', async () => {
+    vi.stubEnv(CHAMADAS_ENV_LI, 'on');
+    const controle = new AbortController();
+    scriptarLoja(() => {
+      controle.abort();
+      return paginaCatalogoLi('marca', [marcaLi(1)]);
+    });
+
+    const res = await get('', { sinal: controle.signal });
+
+    expect(res.status).toBe(499);
+    expect(await res.text()).toBe('');
   });
 
   it('the switch unset ⇒ 503 LI_CHAMADAS_DESLIGADAS, zero calls, zero Firestore reads', async () => {

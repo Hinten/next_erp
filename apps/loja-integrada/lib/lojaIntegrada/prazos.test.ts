@@ -238,6 +238,17 @@ describe('the catalogue routes fit inside the backend ceiling', () => {
         /criarClienteLeituraLi|validarPersonalToken|paginarLi|buscarPedidoLi|listarHistoricoSituacaoLi|buscarProdutoPorIdExternoLi|\.get\(\s*\{\s*operacao|fetch\(/,
       );
     }
+    // Complete: every route under the conta folder is a catalogue route or a conta route above,
+    // so a new read route cannot skip both lists.
+    const pastaDaConta = 'app/api/marketplace/loja-integrada/conta/[id]';
+    const naPasta = readdirSync(path.join(APP_DIR, pastaDaConta), { recursive: true })
+      .map((f) => `${pastaDaConta}/${String(f).replaceAll('\\', '/')}`)
+      .filter((f) => f.endsWith('/route.ts'));
+    const doCatalogo = new Set(ROTAS_DO_CATALOGO.map(([a]) => a));
+    const daConta = new Set(ROTAS.map(([a]) => a));
+    expect(naPasta.filter((f) => !doCatalogo.has(f) && !daConta.has(f))).toEqual([]);
+    expect(naPasta.filter((f) => doCatalogo.has(f))).toHaveLength(4);
+    expect(naPasta.filter((f) => daConta.has(f))).toHaveLength(3);
     // Anti-vacuity: each route delegates to the core, exactly once.
     for (const [arquivo] of ROTAS_DO_CATALOGO.filter(([a]) => a.startsWith('app/'))) {
       const fonte = readFileSync(path.join(APP_DIR, arquivo), 'utf8');

@@ -456,6 +456,18 @@ describe('lerCatalogoLi — the cache', () => {
     expect(p.chamadas).toHaveLength(2);
   });
 
+  it('a stored stamp with no version form (a negative one) still answers, and its copy is reused', async () => {
+    seedCredencial(db, CONTA, { tokenAtualizadoEmMs: -1 });
+    const p = plataforma();
+
+    const primeira = await ler(deps({ fetch: p.fetch }), { recurso: 'categorias' });
+    const segunda = await ler(deps({ fetch: p.fetch }), { recurso: 'categorias' });
+
+    expect(respostaDe(primeira)).toBe(respostaDe(segunda));
+    expect(p.chamadas).toHaveLength(1);
+    expect(avisos()).toEqual([]);
+  });
+
   it('⚠️ a token saved BETWEEN page 1 and page 2 ⇒ 502 `lojaIndisponivel` + one WARN, nothing cached; the next request reads under the new version', async () => {
     let salvo = false;
     const p = plataforma((c) => {
@@ -558,6 +570,55 @@ describe('lerCatalogoLi — the cache', () => {
     segura.abrir();
     expect(respostaDe(await b).grades).toHaveLength(2);
     expect(p.chamadas).toHaveLength(1);
+  });
+
+  it.each([...LISTAS, 'grade' as const])(
+    '⚠️ %s: the shared load never takes the first caller’s signal (its request stays open after the abort)',
+    async (recurso) => {
+      const segura = portao();
+      const chegou = portao();
+      const sinais: (AbortSignal | null | undefined)[] = [];
+      const p = plataforma(async (c) => {
+        chegou.abrir();
+        await segura.aberto;
+        return padrao(c);
+      });
+      const espiado: typeof globalThis.fetch = (input, init) => {
+        sinais.push(init?.signal);
+        return p.fetch(input, init);
+      };
+      const controle = new AbortController();
+
+      const a = ler(deps({ fetch: espiado, sinal: controle.signal }), pedidoDe(recurso));
+      await chegou.aberto;
+      const b = ler(deps({ fetch: espiado }), pedidoDe(recurso));
+      controle.abort();
+
+      expect(await a).toEqual({ tipo: 'cancelado' });
+      expect(sinais).toHaveLength(1);
+      expect(sinais[0]?.aborted).toBe(false);
+      segura.abrir();
+      expect((await b).tipo).toBe('resposta');
+      expect(p.chamadas).toHaveLength(1);
+    },
+  );
+
+  it('⚠️ NEAR-MISS: a caller already gone, but the CONTEXT failing on its own ⇒ that failure, never `cancelado`', async () => {
+    const p = plataforma();
+    const controle = new AbortController();
+    controle.abort();
+
+    const r = await ler(
+      deps({ fetch: p.fetch, sinal: controle.signal }),
+      { recurso: 'grades' },
+      false,
+      OUTRA_CONTA,
+    );
+
+    expect(r.tipo === 'falha' && r.falha.tipo === 'conta' && r.falha.erro).toBeInstanceOf(
+      LiContaNaoEncontradaError,
+    );
+    expect(p.chamadas).toEqual([]);
   });
 
   it('a caller already gone before the read ⇒ `cancelado`, and no load starts', async () => {
@@ -701,6 +762,49 @@ describe('lerCatalogoLi — the error table (the shared mapper)', () => {
     ]);
   });
 
+  it.each([
+    ['categorias', 'categoria', (n: number) => categoriaLi(n)],
+    ['marcas', 'marca', (n: number) => marcaLi(n)],
+    ['grades', 'grades', (n: number) => gradeLi(n)],
+  ] as const)(
+    '%s: the ceiling and a stuck offset are the list’s own answers (502), never a 500',
+    async (recurso, caminho, linha) => {
+      const longa = plataforma((c) =>
+        paginaCatalogoLi(caminho, [linha(offsetDe(c) + 1)], {
+          offset: offsetDe(c),
+          limite: 1,
+          total: 1_000,
+        }),
+      );
+      const parada = plataforma(() =>
+        ok({
+          meta: {
+            limit: 50,
+            offset: 0,
+            total_count: 2,
+            previous: null,
+            next: `/api/v1/${caminho}?limit=50&offset=0`,
+          },
+          objects: [linha(1)],
+        }),
+      );
+
+      const teto = await ler(deps({ fetch: longa.fetch }), { recurso });
+      const presa = await ler(deps({ fetch: parada.fetch }), { recurso });
+
+      expect(falhaDe(teto)).toMatchObject({
+        status: 502,
+        code: CODIGO_ERRO_LI.catalogoExcedeLimite,
+      });
+      expect(falhaDe(presa)).toMatchObject({
+        status: 502,
+        code: CODIGO_ERRO_LI.lojaIndisponivel,
+      });
+      expect(longa.chamadas).toHaveLength(MAX_PAGINAS_CATALOGO_LI);
+      expect(parada.chamadas).toHaveLength(1);
+    },
+  );
+
   it('a `next` whose offset does not advance ⇒ 502 `lojaIndisponivel`', async () => {
     const p = plataforma(() =>
       ok({
@@ -731,6 +835,8 @@ describe('lerCatalogoLi — the error table (the shared mapper)', () => {
     const r = await ler(deps({ fetch: p.fetch }), { recurso: 'categorias' });
 
     expect(falhaDe(r)).toMatchObject({ tipo: 'loja', classe: 'transitorio', status, code });
+    // Not one of the answers that log a WARN line (only the 403 and the ceiling do).
+    expect(avisos()).toEqual([]);
     // Never cached: the next request reads again.
     await ler(deps({ fetch: p.fetch }), { recurso: 'categorias' });
     expect(p.chamadas).toHaveLength(2);

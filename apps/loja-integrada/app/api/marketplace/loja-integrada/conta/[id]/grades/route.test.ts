@@ -87,8 +87,12 @@ function scriptarLoja(responder: (c: ChamadaCatalogoLi) => RespostaCatalogoLi): 
   });
 }
 
-function get(sufixo = '', opts: { semAuth?: boolean } = {}) {
-  return GET(requisicao('GET', `${CONTA}/grades${sufixo}`, opts), contexto(CONTA));
+function get(sufixo = '', opts: { semAuth?: boolean; sinal?: AbortSignal; conta?: string } = {}) {
+  const conta = opts.conta ?? CONTA;
+  return GET(
+    requisicao('GET', `${encodeURIComponent(conta)}/grades${sufixo}`, opts),
+    contexto(conta),
+  );
 }
 
 async function corpoDe(res: Response): Promise<unknown> {
@@ -129,6 +133,17 @@ describe('GET …/conta/[id]/grades', () => {
     expect(db.leituras).toEqual([]);
   });
 
+  it.each(['..', 'a.b'])('400 LI_ID_INVALIDO for the conta id %j, nothing read', async (id) => {
+    vi.stubEnv(CHAMADAS_ENV_LI, 'on');
+    const res = await get('', { conta: id });
+
+    expect(res.status).toBe(400);
+    expect(erroContaLojaIntegradaSchema.parse(await corpoDe(res))).toMatchObject({
+      code: CODIGO_ERRO_LI.idInvalido,
+    });
+    expect(db.leituras).toEqual([]);
+  });
+
   it('the switch unset ⇒ 503 LI_CHAMADAS_DESLIGADAS, zero calls, zero Firestore reads', async () => {
     const res = await get();
 
@@ -145,11 +160,14 @@ describe('GET …/conta/[id]/grades', () => {
 
     const res = await get();
     expect(res.status).toBe(200);
+    expect(res.headers.get('cache-control')).toBe('no-store');
     expect(respostaGradesLiSchema.parse(await corpoDe(res)).grades).toEqual([
       { id: 7, nome: 'Grade 7', nomeVisivel: null },
       { id: 8, nome: 'Grade 8', nomeVisivel: 'Cor' },
     ]);
     await get();
+    // Only the exact `1` is a refresh.
+    await get('?atualizar=true');
     expect(chamadas).toHaveLength(1);
     await get('?atualizar=1');
     expect(chamadas).toHaveLength(2);
@@ -227,6 +245,20 @@ describe('GET …/conta/[id]/grades', () => {
       7,
     ]);
     expect(chamadas).toHaveLength(2);
+  });
+
+  it('the caller going away during the read ⇒ 499 with an EMPTY body', async () => {
+    vi.stubEnv(CHAMADAS_ENV_LI, 'on');
+    const controle = new AbortController();
+    scriptarLoja(() => {
+      controle.abort();
+      return paginaCatalogoLi('grades', [gradeLi(7)]);
+    });
+
+    const res = await get('', { sinal: controle.signal });
+
+    expect(res.status).toBe(499);
+    expect(await res.text()).toBe('');
   });
 
   it('a 429 ⇒ 503 LI_LIMITE_DE_CHAMADAS', async () => {
