@@ -646,12 +646,20 @@ export const ROTULOS_DA_FIXTURE_AMAZON: ReadonlySet<string> = new Set([
   'UPS',
   'DPD',
   'Royal Mail',
+  // Carrier codes on BR Delivery by Amazon packages, from the owner's C1 captures
+  // (2026-10-28): Amazon's own fleet and Correios (ECT).
+  'AMZBR',
+  'ECTBR',
   // packages.*.shippingService
   'SEDEX',
   'PAC',
   'UPS Ground',
   'DPD Next Day Delivery',
   'Royal Mail Tracked 48',
+  // Easy Ship service tiers on the same BR packages (C1 captures, 2026-10-28).
+  'Std EZ Local',
+  'Std EZ Regional',
+  'Std EZ National',
 ]);
 
 /**
@@ -881,9 +889,10 @@ const PEDIDO_SO_LOG: EntradasSoLog = [
 
 /**
  * Order leaves the model shows that are redacted on purpose, beyond the denied
- * keys: an FBA fulfillment-order id (no pre-cutover step reads one), and a
- * tax-registration attribute's VALUE (its key is an enum; the value may be a
- * state registration).
+ * keys: a fulfillment-order id (capture C1 shows one on every MERCHANT
+ * Delivery-by-Amazon order, not only on FBA; no pre-cutover step reads one),
+ * and a tax-registration attribute's VALUE (its key is an enum; the value may
+ * be a state registration).
  */
 const PEDIDO_NEGADAS: readonly string[] = [
   'fulfillmentOrders.*.fulfillmentOrderId',
