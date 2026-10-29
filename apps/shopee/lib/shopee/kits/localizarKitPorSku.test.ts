@@ -158,6 +158,7 @@ describe('localizarKitsPorSku — over the REAL capture', () => {
     expect(r).toEqual({
       completo: true,
       achados: [{ itemId: KIT, vinculo: null }],
+      listados: new Map([[KIT, 'NORMAL']]),
       incompleta: null,
       paginas: 1,
       chamadas: 2,
@@ -292,6 +293,7 @@ describe('localizarKitsPorSku — fail closed on the tag (M88)', () => {
     expect(await buscar(client)).toEqual({
       completo: false,
       achados: [],
+      listados: new Map(),
       incompleta: { causa: 'base-info', itemIds: [KIT] },
       paginas: 1,
       // The pages PLUS the base-info call actually made.
@@ -385,10 +387,40 @@ describe('localizarKitsPorSku — the walk', () => {
     expect(r).toEqual({
       completo: true,
       achados: [{ itemId: KIT, vinculo: null }],
+      listados: new Map([[KIT, 'NORMAL']]),
       incompleta: null,
       paginas: 2,
       chamadas: 3,
     });
+  });
+
+  it('(#2065) `listados` = EVERY candidate the complete walk listed — hit or not — with its LIST row status; never a non-candidate, never the excluded id', async () => {
+    const { client } = cliente({
+      paginas: () =>
+        paginaSintetica(
+          [
+            linhaDaLista(KIT, true),
+            // Not a hit (another SKU), but listed: it exists.
+            linhaDaLista(KIT_2, null, 'UNLIST'),
+            // DATA says not a kit: never a candidate.
+            linhaDaLista(COMP_B, false),
+            // The recriar's own target: excluded before any base info.
+            linhaDaLista(COMP_A, true),
+          ],
+          { has: false },
+        ),
+      bases: [baseDoKit(), baseDoKit({ item_id: KIT_2, item_sku: 'OUTRO-KIT' })],
+    });
+
+    const r = await buscar(client, new FakeDb(), { excluir: [COMP_A] });
+
+    expect(r.achados).toEqual([{ itemId: KIT, vinculo: null }]);
+    expect(r.listados).toEqual(
+      new Map([
+        [KIT, 'NORMAL'],
+        [KIT_2, 'UNLIST'],
+      ]),
+    );
   });
 
   it('an empty shop: complete, nothing found, one call', async () => {
@@ -399,6 +431,7 @@ describe('localizarKitsPorSku — the walk', () => {
     expect(await buscar(client)).toEqual({
       completo: true,
       achados: [],
+      listados: new Map(),
       incompleta: null,
       paginas: 1,
       chamadas: 1,
@@ -420,6 +453,7 @@ describe('localizarKitsPorSku — the walk', () => {
     expect(r).toEqual({
       completo: false,
       achados: [],
+      listados: new Map(),
       incompleta: { causa: 'lista' },
       paginas: 100,
       chamadas: 100,
@@ -455,6 +489,7 @@ describe('localizarKitsPorSku — the walk', () => {
       expect(r, String(next)).toEqual({
         completo: false,
         achados: [],
+        listados: new Map(),
         incompleta: { causa: 'lista' },
         paginas: 1,
         chamadas: 1,
@@ -493,6 +528,7 @@ describe('localizarKitsPorSku — the walk', () => {
     expect(await buscar(client)).toEqual({
       completo: false,
       achados: [],
+      listados: new Map(),
       incompleta: { causa: 'base-info', itemIds: [KIT] },
       paginas: 1,
       chamadas: 2,
@@ -586,6 +622,7 @@ describe('localizarItensPorSku — a listed candidate with NO base row fails CLO
     expect(await buscarItens(client)).toEqual({
       completo: false,
       achados: [],
+      listados: new Map(),
       incompleta: { causa: 'base-info', itemIds: [ITEM_1] },
       paginas: 1,
       chamadas: 2,
@@ -602,6 +639,7 @@ describe('localizarItensPorSku — a listed candidate with NO base row fails CLO
     expect(await buscarItens(client)).toEqual({
       completo: true,
       achados: [],
+      listados: new Map([[ITEM_1, 'NORMAL']]),
       incompleta: null,
       paginas: 1,
       chamadas: 2,
@@ -644,6 +682,10 @@ describe('localizarItensPorSku — a listed candidate with NO base row fails CLO
     expect(r).toEqual({
       completo: true,
       achados: [{ itemId: ITEM_1, vinculo: null }],
+      listados: new Map([
+        [ITEM_1, 'NORMAL'],
+        [ITEM_2, 'NORMAL'],
+      ]),
       incompleta: null,
       paginas: 1,
       chamadas: 2,
@@ -675,6 +717,7 @@ describe('localizarItensPorSku — a listed candidate with NO base row fails CLO
       expect(await buscar(client), JSON.stringify(over)).toEqual({
         completo: true,
         achados: [],
+        listados: new Map([[KIT, 'NORMAL']]),
         incompleta: null,
         paginas: 1,
         chamadas: 2,
@@ -700,6 +743,7 @@ describe('localizarItensPorSku — a listed candidate with NO base row fails CLO
     expect(r).toEqual({
       completo: false,
       achados: [],
+      listados: new Map(),
       incompleta: { causa: 'base-info', itemIds: [faltando] },
       paginas: 1,
       chamadas: 3,

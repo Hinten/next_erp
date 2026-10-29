@@ -9,7 +9,7 @@
  */
 import React from 'react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, act } from '@testing-library/react';
+import { render, screen, fireEvent, act, within } from '@testing-library/react';
 import { MantineTestProvider } from '../testing/mantine';
 import { Notifications } from '@mantine/notifications';
 import { z } from 'zod';
@@ -53,6 +53,8 @@ import { ObjectView } from './ObjectView';
 import { useObjectViewTransactionDocuments } from './ObjectViewTransactionDocuments';
 import type { TransactionDocumentGuard, TransactionDocumentConflict } from './saveRecord';
 import { RecordConflictError, acknowledgedSiblingBaseline } from './saveRecord';
+import { valuesEqual } from './diff';
+import type { ConflictRebaseInput, ConflictRebaseResult } from '../schema/types';
 
 const schema = z.object({
   nome: z.string().nullable().optional().describe('Nome'),
@@ -675,5 +677,479 @@ describe('ObjectView — a sibling shown in SEVERAL form fields', () => {
     expect(marca()).toBe('Remote marca');
     // …and its form baseline with it, which the next reload's defaults start from.
     expect(screen.getByTestId('marca-baseline').textContent).toBe('Remote marca');
+  });
+});
+
+/*
+ * `FieldConfig.rebaseOnConflict` — a list field that MERGES on a tier-3
+ * conflict instead of one side winning wholesale. The merge itself is the
+ * field's own (here a test double keyed by `id`); what this file pins is the
+ * WIRING: which fields reach it, with which three values, what each button does
+ * with the answer, and that the merged value is validated before it is written.
+ *
+ * Every case comes as a pair: the field WITH the hook is merged, and its
+ * near-miss — a field without the hook, or a field with the hook that did not
+ * collide — keeps the behaviour above exactly.
+ */
+interface Item {
+  readonly id: string;
+  readonly v: number;
+}
+const listaSchema = schema.extend({
+  itens: z.array(z.json()).nullable().optional().describe('Itens'),
+});
+const ITENS_CARREGADOS: Item[] = [{ id: 'a', v: 1 }];
+/** Another operator added `b` after this form loaded. */
+const ITENS_SERVIDOR: Item[] = [
+  { id: 'a', v: 1 },
+  { id: 'b', v: 1 },
+];
+const LISTA_CARREGADA = { nome: 'Alice', itens: ITENS_CARREGADOS };
+
+/**
+ * The test double: the server's list is the base and each item the operator
+ * added or changed (by value against `loaded`, keyed by `id`) is re-applied on
+ * it; an item BOTH sides changed keeps the server's version and collides.
+ */
+function mesclarPorId({ loaded, server, mine }: ConflictRebaseInput): ConflictRebaseResult {
+  const carregados = new Map(((loaded as Item[] | null) ?? []).map((i) => [i.id, i]));
+  const saida = [...((server as Item[] | null) ?? [])];
+  let collided = false;
+  for (const meu of (mine as Item[] | null) ?? []) {
+    const antes = carregados.get(meu.id);
+    if (antes !== undefined && valuesEqual(antes, meu)) continue;
+    const i = saida.findIndex((s) => s.id === meu.id);
+    if (antes !== undefined && !valuesEqual(saida[i], antes)) {
+      collided = true;
+      continue;
+    }
+    if (i >= 0) saida[i] = meu;
+    else saida.push(meu);
+  }
+  return { value: saida, collided };
+}
+const mesclar = vi.fn(mesclarPorId);
+
+function ItensInput({ value, onChange }: { value: unknown; onChange: (next: unknown) => void }) {
+  const itens = (value as Item[] | null) ?? [];
+  return (
+    <div>
+      <span data-testid="itens">{itens.map((i) => `${i.id}=${String(i.v)}`).join(',')}</span>
+      <button type="button" onClick={() => onChange([...itens, { id: 'c', v: 1 }])}>
+        Adicionar c
+      </button>
+      <button
+        type="button"
+        onClick={() => onChange(itens.map((i) => (i.id === 'a' ? { ...i, v: i.v + 1 } : i)))}
+      >
+        Alterar a
+      </button>
+    </div>
+  );
+}
+
+const CAMPOS_COM_MESCLA = {
+  itens: {
+    renderInput: (p: { value: unknown; onChange: (next: unknown) => void }) => (
+      <ItensInput value={p.value} onChange={p.onChange} />
+    ),
+    rebaseOnConflict: { label: 'mescla por item', merge: mesclar },
+  },
+};
+const CAMPOS_COM_ROTULO = {
+  itens: { ...CAMPOS_COM_MESCLA.itens, label: 'Itens do pedido' },
+};
+const CAMPOS_SEM_MESCLA = {
+  itens: {
+    renderInput: (p: { value: unknown; onChange: (next: unknown) => void }) => (
+      <ItensInput value={p.value} onChange={p.onChange} />
+    ),
+  },
+};
+
+function renderLista(
+  opcoes: {
+    fields?: typeof CAMPOS_COM_MESCLA | typeof CAMPOS_SEM_MESCLA;
+    validate?: React.ComponentProps<typeof ObjectView<typeof listaSchema>>['validate'];
+  } = {},
+) {
+  return render(
+    <Wrap>
+      <ObjectView
+        schema={listaSchema}
+        collection={fakeCollection() as never}
+        db={{} as never}
+        currentUserUid="u1"
+        recordId="EXISTING"
+        fields={opcoes.fields ?? CAMPOS_COM_MESCLA}
+        validate={opcoes.validate}
+      />
+    </Wrap>,
+  );
+}
+
+const itensNaTela = () => screen.getByTestId('itens').textContent;
+const chamadaDoSave = (n: number) =>
+  saveRecordMock.mock.calls[n]?.[0] as {
+    values: Record<string, unknown>;
+    dirtyFields: Record<string, unknown>;
+    baseline?: Record<string, unknown>;
+  };
+async function esperarEfeitos() {
+  await act(async () => {
+    await new Promise((r) => setTimeout(r, 0));
+  });
+}
+
+describe('ObjectView — a field that merges on conflict (rebaseOnConflict)', () => {
+  beforeEach(() => {
+    mesclar.mockClear();
+    docState.current = {
+      data: { id: 'EXISTING', data: structuredClone(LISTA_CARREGADA) },
+      loading: false,
+      error: undefined,
+      fromCache: false,
+    };
+  });
+
+  it('the modal row of a merging field reads its label; a field without the hook still reads "Sobrescreve"', async () => {
+    saveRecordMock.mockRejectedValueOnce(
+      new RecordConflictError({ nome: 'Alexandra', itens: ITENS_SERVIDOR }, ['nome', 'itens']),
+    );
+    renderLista();
+    await click('Adicionar c');
+    await editAndSave('Nome', 'Alicia');
+
+    expect(screen.getByText('mescla por item')).toBeTruthy();
+    // NEAR-MISS: `nome` has no hook, so its row still overwrites.
+    expect(screen.getAllByText('Sobrescreve')).toHaveLength(1);
+  });
+
+  it('"Recarregar do servidor" applies the merge over the server value and WAITS — nothing is saved', async () => {
+    saveRecordMock.mockRejectedValueOnce(
+      new RecordConflictError({ nome: 'Alice', itens: ITENS_SERVIDOR }, ['itens']),
+    );
+    renderLista();
+    await click('Adicionar c');
+    await click('Salvar');
+    await click('Recarregar do servidor');
+
+    expect(mesclar).toHaveBeenCalledWith({
+      loaded: ITENS_CARREGADOS,
+      server: ITENS_SERVIDOR,
+      mine: [...ITENS_CARREGADOS, { id: 'c', v: 1 }],
+    });
+    expect(itensNaTela()).toBe('a=1,b=1,c=1');
+    expect(saveRecordMock).toHaveBeenCalledOnce();
+
+    // The next save writes the merged list, judged against the SERVER's version.
+    saveRecordMock.mockResolvedValueOnce({ id: 'EXISTING', patch: {} });
+    await click('Salvar');
+    expect(chamadaDoSave(1).values.itens).toEqual([...ITENS_SERVIDOR, { id: 'c', v: 1 }]);
+    expect(chamadaDoSave(1).dirtyFields).toMatchObject({ itens: true });
+    expect(chamadaDoSave(1).baseline?.itens).toEqual(ITENS_SERVIDOR);
+  });
+
+  it('NEAR-MISS: "Recarregar do servidor" on a field WITHOUT the hook takes the server list wholesale', async () => {
+    saveRecordMock.mockRejectedValueOnce(
+      new RecordConflictError({ nome: 'Alice', itens: ITENS_SERVIDOR }, ['itens']),
+    );
+    renderLista({ fields: CAMPOS_SEM_MESCLA });
+    await click('Adicionar c');
+    await click('Salvar');
+    await click('Recarregar do servidor');
+
+    expect(itensNaTela()).toBe('a=1,b=1');
+    expect(mesclar).not.toHaveBeenCalled();
+  });
+
+  it('"Salvar mesmo assim" with nothing collided saves the MERGED list, validated, against the server baseline', async () => {
+    saveRecordMock
+      .mockRejectedValueOnce(
+        new RecordConflictError({ nome: 'Alice', itens: ITENS_SERVIDOR }, ['itens']),
+      )
+      .mockResolvedValueOnce({ id: 'EXISTING', patch: {} });
+    const validate = vi.fn((_values: Record<string, unknown>) => []);
+    renderLista({ validate });
+    await click('Adicionar c');
+    await click('Salvar');
+    const validacoesAntes = validate.mock.calls.length;
+    await click('Salvar mesmo assim');
+    await esperarEfeitos();
+
+    expect(saveRecordMock).toHaveBeenCalledTimes(2);
+    expect(chamadaDoSave(1).values.itens).toEqual([...ITENS_SERVIDOR, { id: 'c', v: 1 }]);
+    expect(chamadaDoSave(1).baseline?.itens).toEqual(ITENS_SERVIDOR);
+    // The merged list went through validation before it was written.
+    expect(validate.mock.calls.length).toBeGreaterThan(validacoesAntes);
+    expect(validate.mock.lastCall?.[0]).toMatchObject({
+      itens: [...ITENS_SERVIDOR, { id: 'c', v: 1 }],
+    });
+  });
+
+  it('NEAR-MISS: "Salvar mesmo assim" on a field WITHOUT the hook re-saves the operator list wholesale', async () => {
+    saveRecordMock
+      .mockRejectedValueOnce(
+        new RecordConflictError({ nome: 'Alice', itens: ITENS_SERVIDOR }, ['itens']),
+      )
+      .mockResolvedValueOnce({ id: 'EXISTING', patch: {} });
+    renderLista({ fields: CAMPOS_SEM_MESCLA });
+    await click('Adicionar c');
+    await click('Salvar');
+    await click('Salvar mesmo assim');
+    await esperarEfeitos();
+
+    expect(chamadaDoSave(1).values.itens).toEqual([...ITENS_CARREGADOS, { id: 'c', v: 1 }]);
+  });
+
+  it('"Salvar mesmo assim" with a collision does NOT save: the merged list waits in the form', async () => {
+    // Both sides changed `a`: the server's version stays, and the operator looks first.
+    const servidor: Item[] = [{ id: 'a', v: 9 }];
+    saveRecordMock.mockRejectedValueOnce(
+      new RecordConflictError({ nome: 'Alice', itens: servidor }, ['itens']),
+    );
+    renderLista();
+    await click('Alterar a');
+    await click('Salvar');
+    await click('Salvar mesmo assim');
+    await esperarEfeitos();
+
+    expect(saveRecordMock).toHaveBeenCalledOnce();
+    expect(screen.queryByText('Registro alterado')).toBeNull();
+    expect(itensNaTela()).toBe('a=9');
+  });
+
+  it('a merging field that did NOT collide is not merged: the reload keeps the operator edit', async () => {
+    saveRecordMock.mockRejectedValueOnce(
+      new RecordConflictError({ nome: 'Alexandra', itens: ITENS_CARREGADOS }, ['nome']),
+    );
+    renderLista();
+    await click('Adicionar c');
+    await editAndSave('Nome', 'Alicia');
+    await click('Recarregar do servidor');
+
+    expect(mesclar).not.toHaveBeenCalled();
+    expect(itensNaTela()).toBe('a=1,c=1');
+    expect((screen.getByLabelText('Nome') as HTMLInputElement).value).toBe('Alexandra');
+  });
+
+  it('a validate refusing the MERGED list blocks the override: nothing more is written', async () => {
+    saveRecordMock.mockRejectedValueOnce(
+      new RecordConflictError({ nome: 'Alice', itens: ITENS_SERVIDOR }, ['itens']),
+    );
+    // Refuses only the list the merge produces (it carries the server's `b`).
+    renderLista({
+      validate: (values) =>
+        ((values.itens as Item[] | null) ?? []).some((i) => i.id === 'b')
+          ? [{ path: 'itens', message: 'b não pode' }]
+          : [],
+    });
+    await click('Adicionar c');
+    await click('Salvar');
+    await click('Salvar mesmo assim');
+    await esperarEfeitos();
+
+    expect(saveRecordMock).toHaveBeenCalledOnce();
+    expect(notifyShow).toHaveBeenCalledWith(expect.objectContaining({ color: 'red' }));
+  });
+
+  it('a row is named as the FORM names the field (its override label) before the schema label', async () => {
+    saveRecordMock.mockRejectedValueOnce(
+      new RecordConflictError({ nome: 'Alice', itens: ITENS_SERVIDOR }, ['itens']),
+    );
+    render(
+      <Wrap>
+        <ObjectView
+          schema={listaSchema}
+          collection={fakeCollection() as never}
+          db={{} as never}
+          currentUserUid="u1"
+          recordId="EXISTING"
+          fields={CAMPOS_COM_ROTULO}
+        />
+      </Wrap>,
+    );
+    await click('Adicionar c');
+    await click('Salvar');
+
+    expect(within(screen.getByRole('table')).getByText('Itens do pedido')).toBeTruthy();
+    // The schema's `.describe()` label loses to it. (A field WITHOUT an override
+    // label is still named by the schema: "shows the diff, with the schema label".)
+    expect(within(screen.getByRole('table')).queryByText('Itens')).toBeNull();
+  });
+
+  it('a THIRD write landing during the merged override raises the modal again', async () => {
+    saveRecordMock
+      .mockRejectedValueOnce(
+        new RecordConflictError({ nome: 'Alice', itens: ITENS_SERVIDOR }, ['itens']),
+      )
+      .mockRejectedValueOnce(
+        new RecordConflictError({ nome: 'Alice', itens: [...ITENS_SERVIDOR, { id: 'd', v: 1 }] }, [
+          'itens',
+        ]),
+      );
+    renderLista();
+    await click('Adicionar c');
+    await click('Salvar');
+    await click('Salvar mesmo assim');
+    await esperarEfeitos();
+
+    expect(saveRecordMock).toHaveBeenCalledTimes(2);
+    expect(screen.getByText('Registro alterado')).toBeTruthy();
+  });
+});
+
+/*
+ * A merge that COLLIDES stops instead of saving — and must say so where the
+ * operator is. Without a word and a tab switch, an operator who saved from
+ * another tab saw the modal close on nothing, clicked "Salvar" again, and the
+ * merged value (the other writer's version of what collided) went in without
+ * ever having been shown.
+ */
+describe('ObjectView — a COLLIDED merge is shown, wherever the operator saved from', () => {
+  const CAMPOS_EM_ABAS = {
+    nome: { section: 'Geral' },
+    email: { section: 'Geral' },
+    itens: { ...CAMPOS_COM_MESCLA.itens, section: 'Lista' },
+  };
+
+  function renderEmAbas() {
+    return render(
+      <Wrap>
+        <ObjectView
+          schema={listaSchema}
+          collection={fakeCollection() as never}
+          db={{} as never}
+          currentUserUid="u1"
+          recordId="EXISTING"
+          sections={['Geral', 'Lista']}
+          fields={CAMPOS_EM_ABAS}
+        />
+      </Wrap>,
+    );
+  }
+
+  const abaAtiva = () =>
+    screen.getAllByRole('tab').find((t) => t.getAttribute('aria-selected') === 'true')?.textContent;
+  const avisos = () =>
+    notifyShow.mock.calls
+      .map((c) => c[0] as { color?: string; message?: string })
+      .filter((n) => n.color === 'yellow');
+
+  /** Edit the list on its tab, then go back to "Geral", rename and save there. */
+  async function editarListaESalvarDeOutraAba() {
+    await act(async () => {
+      fireEvent.click(screen.getByRole('tab', { name: 'Lista' }));
+    });
+    await click('Alterar a');
+    await act(async () => {
+      fireEvent.click(screen.getByRole('tab', { name: 'Geral' }));
+    });
+    await editAndSave('Nome', 'Alicia');
+  }
+
+  beforeEach(() => {
+    mesclar.mockClear();
+    docState.current = {
+      data: { id: 'EXISTING', data: structuredClone(LISTA_CARREGADA) },
+      loading: false,
+      error: undefined,
+      fromCache: false,
+    };
+  });
+
+  it('"Salvar mesmo assim" that collides switches to the field’s tab and says nothing was saved', async () => {
+    // Both sides changed `a`: the server's version stays, and nothing is saved.
+    saveRecordMock.mockRejectedValueOnce(
+      new RecordConflictError({ nome: 'Alice', itens: [{ id: 'a', v: 9 }] }, ['itens']),
+    );
+    renderEmAbas();
+    await editarListaESalvarDeOutraAba();
+    expect(abaAtiva()).toBe('Geral');
+
+    await click('Salvar mesmo assim');
+    await esperarEfeitos();
+
+    expect(saveRecordMock).toHaveBeenCalledOnce();
+    expect(abaAtiva()).toBe('Lista');
+    expect(itensNaTela()).toBe('a=9');
+    expect(avisos()).toHaveLength(1);
+    expect(avisos()[0]?.message).toContain('Nada foi salvo');
+    expect(avisos()[0]?.message).toContain('“Itens”');
+    expect(avisos()[0]?.message).toContain('aba "Lista"');
+  });
+
+  it('⚠️ NEAR-MISS: a merge that did NOT collide saves, with no warning and no tab switch', async () => {
+    saveRecordMock
+      .mockRejectedValueOnce(
+        new RecordConflictError({ nome: 'Alice', itens: ITENS_SERVIDOR }, ['itens']),
+      )
+      .mockResolvedValueOnce({ id: 'EXISTING', patch: {} });
+    renderEmAbas();
+    await editarListaESalvarDeOutraAba();
+
+    await click('Salvar mesmo assim');
+    await esperarEfeitos();
+
+    expect(saveRecordMock).toHaveBeenCalledTimes(2);
+    expect(avisos()).toEqual([]);
+    expect(abaAtiva()).toBe('Geral');
+  });
+
+  it('"Recarregar do servidor" that collides also switches to the field’s tab and warns', async () => {
+    saveRecordMock.mockRejectedValueOnce(
+      new RecordConflictError({ nome: 'Alice', itens: [{ id: 'a', v: 9 }] }, ['itens']),
+    );
+    renderEmAbas();
+    await editarListaESalvarDeOutraAba();
+
+    await click('Recarregar do servidor');
+    await esperarEfeitos();
+
+    expect(abaAtiva()).toBe('Lista');
+    expect(itensNaTela()).toBe('a=9');
+    expect(avisos()).toHaveLength(1);
+    expect(avisos()[0]?.message).toContain('“Itens”');
+    // A reload never saves, so it does not claim a save was stopped.
+    expect(avisos()[0]?.message).not.toContain('Nada foi salvo');
+  });
+
+  it('⚠️ NEAR-MISS: "Recarregar do servidor" over a merge that did NOT collide warns nothing', async () => {
+    saveRecordMock.mockRejectedValueOnce(
+      new RecordConflictError({ nome: 'Alice', itens: ITENS_SERVIDOR }, ['itens']),
+    );
+    renderEmAbas();
+    await editarListaESalvarDeOutraAba();
+
+    await click('Recarregar do servidor');
+    await esperarEfeitos();
+
+    expect(avisos()).toEqual([]);
+    expect(abaAtiva()).toBe('Geral');
+  });
+});
+
+describe('ObjectView — the modal’s override label is the MERGING field’s only', () => {
+  it('a field WITHOUT the hook keeps the schema label, whatever its override label says', async () => {
+    saveRecordMock.mockRejectedValueOnce(
+      new RecordConflictError({ ...LOADED, nome: 'Remote' }, ['nome']),
+    );
+    render(
+      <Wrap>
+        <ObjectView
+          schema={schema}
+          collection={fakeCollection()}
+          db={{} as never}
+          currentUserUid="u1"
+          recordId="EXISTING"
+          fields={{ nome: { label: 'Nome do cliente' } }}
+        />
+      </Wrap>,
+    );
+    await editAndSave('Nome do cliente', 'Local');
+
+    const tabela = within(screen.getByRole('table'));
+    expect(tabela.getByText('Nome')).toBeTruthy();
+    expect(tabela.queryByText('Nome do cliente')).toBeNull();
   });
 });

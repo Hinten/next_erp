@@ -275,6 +275,30 @@ describe('CODIGO_ERRO_LI', () => {
     });
   });
 
+  it('the catalogue routes’ codes are pinned to their wire strings (step 10, #1821)', () => {
+    // The web keys its tables and the linker's copy on these strings; a rename
+    // here changes what an operator is told.
+    expect({
+      gradeAusenteNaLoja: CODIGO_ERRO_LI.gradeAusenteNaLoja,
+      catalogoExcedeLimite: CODIGO_ERRO_LI.catalogoExcedeLimite,
+      recursoNaoPermitido: CODIGO_ERRO_LI.recursoNaoPermitido,
+    }).toEqual({
+      gradeAusenteNaLoja: 'LI_GRADE_AUSENTE_NA_LOJA',
+      catalogoExcedeLimite: 'LI_CATALOGO_EXCEDE_LIMITE',
+      recursoNaoPermitido: 'LI_RECURSO_NAO_PERMITIDO',
+    });
+  });
+
+  it('⚠️ NEAR-MISS: a grade missing from the store is not an order missing from it', () => {
+    // Both are 409s that point at the conta's credential, but the advice differs:
+    // an order cannot vanish, a grade can be deleted in the painel.
+    expect(CODIGO_ERRO_LI.gradeAusenteNaLoja).not.toBe(CODIGO_ERRO_LI.pedidoAusenteNaLoja);
+    // A refused list parks nothing; a refused token does.
+    expect(CODIGO_ERRO_LI.recursoNaoPermitido).not.toBe(CODIGO_ERRO_LI.reconexaoPendente);
+    // A list longer than the ceiling is never "the store is down".
+    expect(CODIGO_ERRO_LI.catalogoExcedeLimite).not.toBe(CODIGO_ERRO_LI.lojaIndisponivel);
+  });
+
   it('⚠️ NEAR-MISS: the three 503s stay distinct — a retry, a retry, and "off until the cutover"', () => {
     const tresCodigos = [
       CODIGO_ERRO_LI.rotaEmConflito,

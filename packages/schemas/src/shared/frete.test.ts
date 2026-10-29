@@ -3,10 +3,12 @@ import { z } from 'zod';
 import {
   ESTADO_FRETE,
   ESTADOS_FRETE_IGNORAR_REMOCAO,
+  ESTADOS_FRETE_MERCADORIA_FORA,
   ESTADOS_FRETE_PRE_AUTORIZACAO,
   ESTADOS_FRETE_REMOVE_ESTOQUE,
   FREIGHT_TIPO_CAPS,
   INTEGRACAO_FRETE,
+  MERCADORIA_FORA_POR_ESTADO_FRETE,
   MODALIDADE_FRETE,
   ehFreteRoteado,
   estadoFreteSchema,
@@ -519,6 +521,101 @@ describe('ESTADOS_FRETE_PRE_AUTORIZACAO', () => {
     expect(podeAutorizarDespacho(ESTADO_FRETE.desconhecido)).toBe(false);
     expect(podeAutorizarDespacho(ESTADO_FRETE.fulfillment)).toBe(false);
     expect(podeAutorizarDespacho(ESTADO_FRETE.postado)).toBe(false);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*       MERCADORIA_FORA — the goods-out table (Amazon + the web checkout)     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Literals on BOTH sides again: compared against the table, never against the
+ * set built from it. Together they partition the enum, so a new member reds
+ * the test until someone decides which side its goods are on.
+ */
+const FORA: EstadoFrete[] = [
+  ESTADO_FRETE.postado,
+  ESTADO_FRETE.recebidoPelaTransportadora,
+  ESTADO_FRETE.aCaminho,
+  ESTADO_FRETE.tentandoRealizarEntrega,
+  ESTADO_FRETE.entregue,
+  ESTADO_FRETE.falhaNaEntrega,
+  ESTADO_FRETE.suspenso,
+  ESTADO_FRETE.enderecoNaoEncontrado,
+  ESTADO_FRETE.aCaminhoDoRemetente,
+  ESTADO_FRETE.devolvido,
+  ESTADO_FRETE.objetoExtraviado,
+  ESTADO_FRETE.aguardandoRetirada,
+];
+
+const DENTRO: EstadoFrete[] = [
+  ESTADO_FRETE.fulfillment,
+  ESTADO_FRETE.iniciado,
+  ESTADO_FRETE.aguardandoAutorizacao,
+  ESTADO_FRETE.aguardandoNFe,
+  ESTADO_FRETE.aguardandoValidacaoTransporadora,
+  ESTADO_FRETE.despachoAutorizado,
+  ESTADO_FRETE.aguardandoAgendamento,
+  ESTADO_FRETE.despachoNegado,
+  ESTADO_FRETE.emSeparacao,
+  ESTADO_FRETE.empacotado,
+  ESTADO_FRETE.aguardandoPostagem,
+  ESTADO_FRETE.checkFinalizado,
+  ESTADO_FRETE.cancelado,
+  ESTADO_FRETE.desconhecido,
+  ESTADO_FRETE.error,
+];
+
+describe('MERCADORIA_FORA_POR_ESTADO_FRETE / ESTADOS_FRETE_MERCADORIA_FORA', () => {
+  it('classifies every estado of the enum, once (a new member must be classified deliberately)', () => {
+    expect([...FORA, ...DENTRO].sort()).toEqual([...estadoFreteSchema.options].sort());
+    expect(Object.keys(MERCADORIA_FORA_POR_ESTADO_FRETE).sort()).toEqual(
+      [...estadoFreteSchema.options].sort(),
+    );
+    for (const estado of estadoFreteSchema.options) {
+      expect(MERCADORIA_FORA_POR_ESTADO_FRETE[estado], estado).toBe(FORA.includes(estado));
+    }
+  });
+
+  it('the set is exactly the table’s true estados', () => {
+    expect([...ESTADOS_FRETE_MERCADORIA_FORA].sort()).toEqual([...FORA].sort());
+    expect(Object.isFrozen(MERCADORIA_FORA_POR_ESTADO_FRETE)).toBe(true);
+  });
+
+  it('⚠️ NEAR-MISS against the ladder index: packed is still in the warehouse; lost, suspended and pickup are out', () => {
+    for (const estado of [
+      ESTADO_FRETE.empacotado,
+      ESTADO_FRETE.aguardandoPostagem,
+      ESTADO_FRETE.checkFinalizado,
+      ESTADO_FRETE.fulfillment,
+      ESTADO_FRETE.cancelado,
+    ]) {
+      expect(ESTADOS_FRETE_MERCADORIA_FORA.has(estado), estado).toBe(false);
+    }
+    for (const estado of [
+      ESTADO_FRETE.objetoExtraviado,
+      ESTADO_FRETE.suspenso,
+      ESTADO_FRETE.aguardandoRetirada,
+      ESTADO_FRETE.falhaNaEntrega,
+    ]) {
+      expect(ESTADOS_FRETE_MERCADORIA_FORA.has(estado), estado).toBe(true);
+    }
+  });
+
+  it('goods out ⊂ ESTADOS_FRETE_REMOVE_ESTOQUE, and the difference is exactly the packed estados', () => {
+    // Goods out of the warehouse are goods whose stock already left. What the
+    // stock sync removes but is NOT goods out is packed-on-the-shelf — exactly
+    // where a cancellation must still restock.
+    for (const estado of ESTADOS_FRETE_MERCADORIA_FORA) {
+      expect(ESTADOS_FRETE_REMOVE_ESTOQUE.has(estado), estado).toBe(true);
+    }
+    expect(
+      [...ESTADOS_FRETE_REMOVE_ESTOQUE].filter((e) => !ESTADOS_FRETE_MERCADORIA_FORA.has(e)),
+    ).toEqual([
+      ESTADO_FRETE.empacotado,
+      ESTADO_FRETE.aguardandoPostagem,
+      ESTADO_FRETE.checkFinalizado,
+    ]);
   });
 });
 

@@ -554,10 +554,24 @@ are in `anuncios/publicarShopee.test.ts`.
 - **The SKU match is step 9's identity**: `skuDoItemShopee(base) === sku`, where
   `skuDoItemShopee` is `(item_sku ?? '').trim()`, case-sensitive like the parent
   rung's `where('sku','==',…)`.
-- **OURS is decided by the link docs.** A linked kit that the list does not show
-  yet (~9 s of listing latency) still exists: one batched `get_item_base_info`
-  confirms it. A linked id that reads deleted is written `removido` before the
-  run acts.
+- **OURS is decided by the link docs.** A linked kit the COMPLETE walk listed
+  exists — hit or not — and is read from its list row (`BuscaPorSku.listados`),
+  never asked about again (#2065: a second `get_item_base_info` that dropped the
+  row read a live kit as deleted, and a resumed `--recriar` / `--converter-em-kit`
+  created another kit and marked the live one `removido`). A linked kit the list
+  does not show yet (~9 s of listing latency) still exists when one batched
+  `get_item_base_info` confirms it. Only a linked kit absent from the complete
+  list AND read gone by that batch — a deleted status, or no row at all — is
+  written `removido` before the run acts. When there is no row and its link is
+  younger than
+  `AGUARDAR_KIT_INCERTO_SHOPEE_MS` (`publicadoEm`, the stamp
+  `escreverVinculoDoKit` writes right after `add_kit_item`), a missing row is a
+  DOUBT instead: the create refuses `busca-de-kit-incompleta` ("o kit criado há
+  pouco ainda não aparece na Shopee — aguarde 4 minutos e tente de novo") and
+  writes nothing. A link with no `publicadoEm` (step 9's import writes none) has
+  an unknown age and keeps the `removido` reading. `planoKit.ts`'s
+  `situacaoDoKitNosso` is the ONE reading the plan and the applier share; an
+  incomplete scan reads no linked kit at all.
 - **Our side must be clean.** A SKU missing, padded or shared is refused in phase
   A, before any Shopee read. "Missing" and "padded" are not re-derived here: every
   guard (phase A, the republish's `sku-do-kit-nao-enviado`, the rung-2 read) asks

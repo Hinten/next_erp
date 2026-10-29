@@ -2,6 +2,7 @@ import {
   ESTADOS_FRETE_REMOVE_ESTOQUE,
   ESTADO_FRETE,
   INTEGRACAO_FRETE,
+  MERCADORIA_FORA_POR_ESTADO_FRETE,
   MODALIDADE_FRETE,
   estadoFreteSchema,
 } from '@delfrance/schemas';
@@ -47,6 +48,10 @@ describe('MERCADORIA_FORA — the exhaustive goods-out table', () => {
     expect(mercadoriaFora(ESTADO_FRETE.aguardandoRetirada)).toBe(true);
     expect(mercadoriaFora(ESTADO_FRETE.fulfillment)).toBe(false);
     expect(mercadoriaFora(null)).toBe(false);
+  });
+
+  it('is the SHARED table the web checkout reads — never a local copy', () => {
+    expect(MERCADORIA_FORA).toBe(MERCADORIA_FORA_POR_ESTADO_FRETE);
   });
 
   it('every "out" estado past posting is one the stock sync already treats as removed', () => {

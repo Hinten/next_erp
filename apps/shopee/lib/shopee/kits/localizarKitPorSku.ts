@@ -56,6 +56,10 @@
  * 4. **ONE `resolverLinkPorItemId` per hit** — the declared `(item_id, conta)`
  *    composite — fills {@link AchadoPorSku.vinculo}, so the refusal can say
  *    "já vinculado ao produto {id}" and the classifier can tell ours from not.
+ * 5. **Every listed candidate, hit or not** ({@link BuscaPorSku.listados},
+ *    #2065), with its list row's `item_status` — on a complete answer only. The
+ *    kit arm reads its OWN linked kits from it: a kit listed here exists, and a
+ *    second `get_item_base_info` that dropped its row would read it as deleted.
  *
  * ## Incomplete is a verdict, not an error
  *
@@ -293,6 +297,15 @@ export interface BuscaPorSku {
   readonly completo: boolean;
   /** Every same-SKU listing of the kind asked for, sorted by `item_id`. */
   readonly achados: readonly AchadoPorSku[];
+  /**
+   * #2065: EVERY candidate the complete walk listed — hits or not — → its list
+   * row's `item_status` (`null` = the row carried none). Each one came from
+   * `get_item_list` under {@link STATUS_BUSCA_KIT} and had its base row read,
+   * so it EXISTS: the kit arm reads its own linked kits' liveness here instead
+   * of asking `get_item_base_info` a second time. EMPTY when `completo` is
+   * `false` — an incomplete walk proves nothing about any id.
+   */
+  readonly listados: ReadonlyMap<number, string | null>;
   /** Why `completo` is `false`; `null` ⇔ `completo`. */
   readonly incompleta: IncompletudeDaBuscaPorSku | null;
   /** `get_item_list` pages read. */
@@ -383,6 +396,7 @@ export async function localizarItensPorSku(
     return {
       completo: false,
       achados: [],
+      listados: new Map(),
       incompleta: { causa: 'lista' },
       paginas,
       chamadas: paginas,
@@ -422,12 +436,15 @@ export async function localizarItensPorSku(
     return {
       completo: false,
       achados: [],
+      listados: new Map(),
       incompleta: { causa: 'base-info', itemIds: naoLidos },
       paginas,
       chamadas,
     };
   }
   hits.sort((x, y) => x - y);
+  const listados = new Map<number, string | null>();
+  for (const [itemId, linha] of varredura.candidatos) listados.set(itemId, linha.item_status);
 
   const achados: AchadoPorSku[] = [];
   for (const itemId of hits) {
@@ -438,7 +455,7 @@ export async function localizarItensPorSku(
     });
   }
 
-  return { completo: true, achados, incompleta: null, paginas, chamadas };
+  return { completo: true, achados, listados, incompleta: null, paginas, chamadas };
 }
 
 /**

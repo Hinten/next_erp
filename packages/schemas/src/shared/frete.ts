@@ -239,6 +239,71 @@ export const ESTADOS_FRETE_IGNORAR_REMOCAO: ReadonlySet<EstadoFrete> = new Set<E
   ESTADO_FRETE.error,
 ]);
 
+/**
+ * Whether the goods have LEFT the warehouse (or their whereabouts are the
+ * carrier's) at each freight estado — an EXPLICIT, EXHAUSTIVE table, never
+ * "`postado` or later": the enum order is not the lifecycle (`cancelado`,
+ * `desconhecido` and `aguardandoRetirada` sit after the carrier tail).
+ *
+ * `true`: posted and everything after it, the delivery failures, the return
+ * leg, `suspenso` and `aguardandoRetirada` — the units are not on the shelf, a
+ * lost or in-transit parcel included. `false`: everything up to
+ * `checkFinalizado` (packed, still in the warehouse), `despachoNegado`,
+ * `cancelado`, `desconhecido`, `error`, and `fulfillment` (the marketplace
+ * warehouses the goods — never this ERP's stock).
+ *
+ * ⚠️ It is shared because a goods-in estado written OVER a goods-out one undoes
+ * the protection of every reader at once. The Amazon importer decides from it
+ * whether a CANCELLED order restocks (it must not while the carrier holds the
+ * units); the web checkout decides from it whether to leave the stored estado
+ * alone instead of writing `checkFinalizado` (the #2042 review). One table, so
+ * the two can never disagree (#1369). It moved here from
+ * `apps/amazon/lib/amazon/pedidos/freteAmazon.ts`, which still names it
+ * `MERCADORIA_FORA` for its ladder.
+ *
+ * INVARIANT: every `true` estado is in {@link ESTADOS_FRETE_REMOVE_ESTOQUE} —
+ * goods out of the warehouse are goods whose stock already left (asserted in
+ * the unit tests). The `Record` makes a missing member a compile error; to ask
+ * about a value read from outside, use its true set
+ * {@link ESTADOS_FRETE_MERCADORIA_FORA}, since indexing a plain object with a
+ * string outside the enum reaches `Object.prototype`.
+ */
+export const MERCADORIA_FORA_POR_ESTADO_FRETE: Readonly<Record<EstadoFrete, boolean>> =
+  Object.freeze({
+    fulfillment: false,
+    iniciado: false,
+    aguardandoAutorizacao: false,
+    aguardandoNFe: false,
+    aguardandoValidacaoTransporadora: false,
+    despachoAutorizado: false,
+    aguardandoAgendamento: false,
+    despachoNegado: false,
+    emSeparacao: false,
+    empacotado: false,
+    aguardandoPostagem: false,
+    checkFinalizado: false,
+    postado: true,
+    recebidoPelaTransportadora: true,
+    aCaminho: true,
+    tentandoRealizarEntrega: true,
+    entregue: true,
+    falhaNaEntrega: true,
+    suspenso: true,
+    enderecoNaoEncontrado: true,
+    aCaminhoDoRemetente: true,
+    devolvido: true,
+    objetoExtraviado: true,
+    cancelado: false,
+    desconhecido: false,
+    error: false,
+    aguardandoRetirada: true,
+  });
+
+/** The estados {@link MERCADORIA_FORA_POR_ESTADO_FRETE} marks `true` — the goods-out set. */
+export const ESTADOS_FRETE_MERCADORIA_FORA: ReadonlySet<EstadoFrete> = new Set<EstadoFrete>(
+  estadoFreteSchema.options.filter((estado) => MERCADORIA_FORA_POR_ESTADO_FRETE[estado]),
+);
+
 /* -------------------------------------------------------------------------- */
 /*                         modalidadeFrete enum (modFrete)                    */
 /* -------------------------------------------------------------------------- */

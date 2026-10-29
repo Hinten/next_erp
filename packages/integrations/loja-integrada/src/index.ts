@@ -4,8 +4,9 @@
  * that is the package's only writer.
  *
  * The modules that ship here (transport, typed errors, Tastypie paging, the
- * response schemas, the token validator, the order import's reads and the
- * status write-back's two writes) are exported from this barrel as they land.
+ * response schemas, the token validator, the order import's reads, the status
+ * write-back's two writes and the four catalogue reads — categories, brands,
+ * grades and one grade's options) are exported from this barrel as they land.
  * Everything stateful (the credential store, the connect route, the sweeps and
  * the write engine) is driven by the App Hosting backend `apps/loja-integrada`
  * and its functions, which hold the Firestore/Admin-SDK dependency.
@@ -70,3 +71,4 @@ export * from './api';
 export * from './pedidoTipos';
 export * from './pedidos';
 export * from './pedidosEscrita';
+export * from './catalogo';

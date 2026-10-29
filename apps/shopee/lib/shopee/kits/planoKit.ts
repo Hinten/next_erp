@@ -52,6 +52,7 @@ import {
   type ShopeeKitTierRequest,
 } from '@delfrance/integrations-shopee';
 import {
+  AGUARDAR_KIT_INCERTO_SHOPEE_MS,
   ESTADO_ANUNCIO_SHOPEE,
   NOME_TIER_KIT_UNICO,
   OPCAO_TIER_KIT_UNICO,
@@ -96,7 +97,7 @@ import {
   type AchadoKitPorSku,
   type BuscaDeKitPorSku,
 } from './localizarKitPorSku';
-import type { AvisoKit, ContextoKit, VinculoDaConta } from './resultadoKit';
+import type { AvisoKit, ContextoKit, LeituraDeKitNosso, VinculoDaConta } from './resultadoKit';
 
 /* -------------------------------------------------------------------------- */
 /*                                   Types                                    */
@@ -586,6 +587,25 @@ function problemaBuscaIncompleta(incompleta: BuscaDeKitPorSku['incompleta']): Pr
 }
 
 /**
+ * #2065: OUR linked kits created moments ago that the complete walk did not
+ * list and `get_item_base_info` did not return — a DOUBT, never a deletion
+ * (Shopee's reads may not show a create yet). `busca-de-kit-incompleta`: the
+ * scan could not prove the new kit absent, and nothing was created. No `acao`
+ * — the remedy is to wait and run the same command again.
+ */
+function problemaKitNossoRecente(
+  kits: readonly { readonly itemId: number; readonly linkDocId: string }[],
+): ProblemaDeBloqueio {
+  const ids = kits.map((k) => `${String(k.itemId)} (vínculo ${k.linkDocId})`).join(', ');
+  return bloqueio(
+    'sku',
+    MOTIVO_PUBLICACAO_BLOQUEADA.buscaDeKitIncompleta,
+    `o kit criado há pouco ainda não aparece na Shopee (item ${ids}) — nada foi criado; ` +
+      `aguarde ${String(AGUARDAR_KIT_INCERTO_SHOPEE_MS / 60_000)} minutos e tente de novo`,
+  );
+}
+
+/**
  * `listagem-removida`, the KIT sentence (§2.5.2 "Reused"): the native kit a link
  * names reads deleted on Shopee. Shared by the republish (its live read, PR 5)
  * and the dispatcher (a stored `removido` native link, PR 7), so the two cannot
@@ -888,12 +908,67 @@ export function vinculosNativosDoKit(
 const STATUS_DE_KIT_EXISTENTE: ReadonlySet<string> = new Set<string>(STATUS_BUSCA_KIT);
 
 /**
+ * #2065: was this native-kit link created less than
+ * `AGUARDAR_KIT_INCERTO_SHOPEE_MS` before `agoraMs` — too new for Shopee's
+ * listing reads to be trusted to show its kit?
+ *
+ * The creation stamp is `publicadoEm` (MILLISECONDS): `escreverVinculoDoKit`
+ * writes it right after `add_kit_item`'s 200, and nothing rewrites it ("the
+ * FIRST successful publish only"). A link with no usable stamp is NOT recent —
+ * its age is unknown, and every link a kit CREATE writes carries one; step 9's
+ * import writes none, for a kit it had just read from Shopee. A stamp AHEAD of
+ * `agoraMs` (another instance's clock) is recent: the safe side is the wait.
+ */
+export function vinculoDeKitRecente(raw: Record<string, unknown>, agoraMs: number): boolean {
+  const criadoEmMs = raw.publicadoEm;
+  if (typeof criadoEmMs !== 'number' || !Number.isSafeInteger(criadoEmMs)) return false;
+  return agoraMs - criadoEmMs < AGUARDAR_KIT_INCERTO_SHOPEE_MS;
+}
+
+/** What ONE of OUR linked kits is, for {@link decidirKitNovo} and the applier alike. */
+export type SituacaoDeKitNosso =
+  /** It exists — OURS. */
+  | 'existe'
+  /** Gone: the applier writes `removido` on its link before it acts. */
+  | 'apagado'
+  /** No row, and too new to read as gone: the create arm REFUSES. */
+  | 'recente';
+
+/**
+ * THE one reading of a {@link LeituraDeKitNosso} (#2065) — `decidirKitNovo`
+ * and the applier's `removido` write (`aplicarKit.ts`) both ask it, so the kit
+ * the plan drops is exactly the link the applier marks.
+ *
+ * - **listed** by the complete walk ⇒ `existe`, whatever its row's status: the
+ *   walk's own filter ({@link STATUS_BUSCA_KIT}) is the evidence — a hit is
+ *   OURS on the same terms;
+ * - **not listed**, a base-info status in {@link STATUS_BUSCA_KIT} ⇒ `existe`
+ *   (the list does not show it yet, S2C-02); any other status ⇒ `apagado`;
+ * - **not listed and no row** — TWO signals — ⇒ `apagado` (a kit purged ~90
+ *   days after its delete must not refuse every run), unless the link is
+ *   `recente`: then the absence may be Shopee's lag, never proof ⇒ `recente`.
+ *
+ * `undefined` (no reading) is `null`: nothing is known, nothing is written,
+ * and the kit is not OURS.
+ */
+export function situacaoDoKitNosso(
+  leitura: LeituraDeKitNosso | undefined,
+): SituacaoDeKitNosso | null {
+  if (leitura === undefined) return null;
+  if (leitura.fonte === 'lista') return 'existe';
+  if (leitura.itemStatus !== null) {
+    return STATUS_DE_KIT_EXISTENTE.has(leitura.itemStatus) ? 'existe' : 'apagado';
+  }
+  return leitura.recente ? 'recente' : 'apagado';
+}
+
+/**
  * R-14 / L9 "ensure the new kit exists". Pure.
  *
  * - `nossos` = item_id → linkDocId of K's `ehKitNativoAtivo` links for the conta,
  *   MINUS the recriar target;
- * - `nossosVivos` = the base-info status of each `nossos` id the scan did NOT
- *   list (`null` = deleted/absent);
+ * - `nossosVivos` = what each `nossos` id read as on the complete scan
+ *   ({@link situacaoDoKitNosso} reads it);
  * - `substituidosDeK` = item_id → linkDocId of K's superseded (not removed)
  *   native links for the conta;
  * - `sucessorDe` (optional) = superseded linkDocId → the link that replaced it,
@@ -904,15 +979,19 @@ const STATUS_DE_KIT_EXISTENTE: ReadonlySet<string> = new Set<string>(STATUS_BUSC
  * `vinculo-substituido` for EACH hit on K's own superseded kit (never
  * "importe-o", S3F-09) AND `kit-ja-existe-na-shopee` listing EVERY other hit —
  * never a return on the first hit. OURS = (hits ∩ nossos) ∪ { n ∈ nossos :
- * nossosVivos.get(n) ∈ STATUS_BUSCA_KIT } — the LINK is authoritative: a linked
- * kit the list does not show yet still exists (S2C-02); a `nossos` id whose
- * status read `null` is dropped (the applier writes `removido` on that link).
+ * situacaoDoKitNosso(nossosVivos.get(n)) = existe } — the LINK is
+ * authoritative: a linked kit the complete walk listed exists (#2065), and one
+ * it did not list yet still exists when base info shows it (S2C-02); an
+ * `apagado` one is dropped (the applier writes `removido` on that link). A
+ * `recente` one — not listed, no row, linked moments ago — joins the SAME
+ * refusal as a `busca-de-kit-incompleta` doubt (#2065): dropping it would create
+ * a second kit beside one that may well exist.
  * OURS 0 ⇒ `criar`; 1 ⇒ `completar`; ≥ 2 ⇒ `vinculos-ambiguos`.
  */
 export function decidirKitNovo(
   busca: Pick<BuscaDeKitPorSku, 'completo' | 'achados' | 'incompleta'>,
   nossos: ReadonlyMap<number, string>,
-  nossosVivos: ReadonlyMap<number, string | null>,
+  nossosVivos: ReadonlyMap<number, LeituraDeKitNosso>,
   substituidosDeK: ReadonlyMap<number, string>,
   sucessorDe: ReadonlyMap<string, string> = new Map<string, string>(),
 ): GarantiaDeKitNovo {
@@ -937,14 +1016,16 @@ export function decidirKitNovo(
   }
 
   const ours: { readonly itemId: number; readonly linkDocId: string }[] = [];
+  const recentes: { readonly itemId: number; readonly linkDocId: string }[] = [];
   for (const [itemId, linkDocId] of nossos) {
-    const status = nossosVivos.get(itemId);
-    const existe =
-      nossosAchados.has(itemId) ||
-      (typeof status === 'string' && STATUS_DE_KIT_EXISTENTE.has(status));
-    if (existe) ours.push({ itemId, linkDocId });
+    const situacao = nossosAchados.has(itemId)
+      ? 'existe'
+      : situacaoDoKitNosso(nossosVivos.get(itemId));
+    if (situacao === 'existe') ours.push({ itemId, linkDocId });
+    if (situacao === 'recente') recentes.push({ itemId, linkDocId });
   }
   ours.sort((a, b) => a.itemId - b.itemId);
+  recentes.sort((a, b) => a.itemId - b.itemId);
 
   const problemas: ProblemaDeBloqueio[] = [];
   for (const s of [...proprioSubstituido].sort((a, b) => a.itemId - b.itemId)) {
@@ -959,6 +1040,7 @@ export function decidirKitNovo(
   if (estrangeiros.length > 0) {
     problemas.push(problemaKitJaExiste([...estrangeiros].sort((a, b) => a.itemId - b.itemId)));
   }
+  if (recentes.length > 0) problemas.push(problemaKitNossoRecente(recentes));
   if (ours.length >= 2) problemas.push(problemaVinculosAmbiguos(ours));
   if (problemas.length > 0) return { acao: 'recusar', problemas };
 

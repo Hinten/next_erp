@@ -190,12 +190,16 @@ export {
   // Enumerating a channel-local copy instead is the two-copies-drift-toward-
   // plausible shape (#1369): the copy reads correct and the shared set moves.
   ESTADOS_FRETE_IGNORAR_REMOCAO,
+  // The goods-out table (#2042 review): the Amazon CANCELLED read and the web
+  // checkout must agree on it — one copy, for the same #1369 reason.
+  ESTADOS_FRETE_MERCADORIA_FORA,
   ESTADOS_FRETE_NAO_POSTADO,
   ESTADOS_FRETE_PRE_AUTORIZACAO,
   ESTADOS_FRETE_REMOVE_ESTOQUE,
   FREIGHT_TIPO_CAPS,
   INTEGRACAO_FRETE,
   INTEGRACAO_FRETE_LABELS,
+  MERCADORIA_FORA_POR_ESTADO_FRETE,
   MODALIDADE_FRETE,
   MODALIDADE_FRETE_LABELS,
   dimensoesSchema,
@@ -469,6 +473,15 @@ export {
   type SituacaoValidadeTokenLi,
   type StatusContaLojaIntegrada,
 } from './contaLojaIntegrada';
+
+// The Loja Integrada catalogue contract (step 10, #1821): the four read-only
+// route answers (categories, brands, grades, one grade's options), the one
+// resource-URI reader, the route-segment and grade-identity checks, and the pure
+// projections the backend builds the answers with — `apps/loja-integrada` and
+// the web linker must agree on them (#1369). Not a collection: no meta, nothing
+// to register. A star export on purpose: the fold-inventory scan greps raw text,
+// so a listed barrel would need a row.
+export * from './catalogoLojaIntegrada';
 
 // THE Loja Integrada situação table (master plan step 5, #1817): codigo →
 // create estado and payment status, the capture sets, the contest motivo — the

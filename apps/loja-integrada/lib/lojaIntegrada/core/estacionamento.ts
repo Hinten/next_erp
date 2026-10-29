@@ -44,8 +44,10 @@
  * (`notificacoes/notificacao.ts`, a `LiAuthError` from the importer), through
  * {@link tratarFalhaDeAutenticacao}; the order poller is the second; the paid
  * re-check route (`GET …/pedidos/[pedidoId]/pagamento`, through
- * `pedidos/conferenciaPagamento.ts`, step 15) is the third — a 401/403 on its
- * one read parks the conta and raises the reconexão aviso like any flow's.
+ * `pedidos/conferenciaPagamento.ts` and the shared read-failure mapper
+ * `core/falhaDeLeituraLi.ts`, step 15) is the third — a 401/403 on its one read
+ * parks the conta and raises the reconexão aviso like any flow's. Whether a 403
+ * parks is each read route's choice there; a 401 always does.
  */
 import type { Firestore } from 'firebase-admin/firestore';
 import { credenciaisLojaIntegradaCollection } from '@delfrance/data/admin/collections';
