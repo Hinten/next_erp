@@ -95,11 +95,13 @@ export const EVENTO_PEDIDO_AMAZON = {
    */
   cnpjInstituicaoRecusado: 'cnpj-instituicao-recusado',
   /**
-   * (PR 5-c1) A non-blank card brand the shared fold (`bandeiraDoNomeDaMarca`)
-   * does not know: `bandeira` is stored as 99 (outros). The fold's contract
-   * leaves the count to its caller, and Amazon writes brands in CamelCase
-   * (`MasterCard`, capture C1), so a compound one (`AmericanExpress`) lands
-   * here rather than on its code. Never the brand itself.
+   * (PR 5-c1) A non-blank card brand the shared brand fold
+   * (`packages/schemas/src/bandeiraCartao.ts`, reached through
+   * `cartaoMarketplace`) does not know: `bandeira` is stored as 99 (outros).
+   * The fold's contract leaves the count to its caller, and Amazon writes
+   * brands in CamelCase (`MasterCard`, capture C1), so a compound one
+   * (`AmericanExpress`) lands here rather than on its code. Never the brand
+   * itself.
    */
   bandeiraDesconhecida: 'bandeira-desconhecida',
   /**
