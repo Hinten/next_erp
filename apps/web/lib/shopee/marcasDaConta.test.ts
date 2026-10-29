@@ -1,7 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ZodError } from 'zod';
 import { OccEngine, type OccTransaction } from '@delfrance/data/testing';
-import { marcasDaContaShopee, type MarcaDaContaShopee, type MarcaDto } from '@delfrance/schemas';
+import {
+  linhaDeMarcaParaGravarShopee,
+  marcasDaContaShopee,
+  type MarcaDaContaShopee,
+  type MarcaDto,
+} from '@delfrance/schemas';
 import type {
   TransactionDocumentGuard,
   TransactionWrite,
@@ -53,7 +58,11 @@ vi.mock('firebase/firestore', async (importActual) => ({
 const {
   CAMPO_MARCAS_SHOPEE,
   adicionarMarcasShopee,
+  ajustesDasBaselinesMarcasShopee,
   alteracoesMarcasShopeeSchema,
+  caminhoDoRegistroMarcaShopee,
+  ocupantesDosRegistrosMarcasShopee,
+  recusaDoCadastroMarcaShopee,
   desfazerAdicaoMarcaShopee,
   desfazerRemocaoMarcaShopee,
   escritasMarcasDaContaShopee,
@@ -593,5 +602,166 @@ describe('escritasMarcasDaContaShopee × saveRecord — what reaches the store',
     expect(h.docs.has(caminho(LEGADO_7A))).toBe(true);
     expect(h.docs.has(caminho(LEGADO_7B))).toBe(true);
     expect(h.occ.txLog).toEqual([]);
+  });
+});
+
+describe('ajustesDasBaselinesMarcasShopee — a server snapshot moves a path’s EXISTENCE, never a held row', () => {
+  const A = caminho('a0000000000000000001');
+  const B = caminho('3003');
+  const linhaA: Doc = { brand_id: 1001, original_brand_name: 'Nike', display_brand_name: null };
+  const linhaB: Doc = { brand_id: 3003, original_brand_name: 'Puma', display_brand_name: null };
+
+  function ajustes(o: {
+    listados?: Record<string, Doc>;
+    guardadas?: Record<string, Doc | null>;
+    conhecidos?: string[];
+    adicionados?: string[];
+    removidos?: string[];
+  }) {
+    const guardadas = o.guardadas ?? {};
+    return ajustesDasBaselinesMarcasShopee({
+      listados: Object.entries(o.listados ?? {}).map(([path, data]) => ({ path, data })),
+      conhecidos: o.conhecidos ?? Object.keys(guardadas),
+      guardada: (path) => (path in guardadas ? guardadas[path] : undefined),
+      caminhosAdicionados: new Set(o.adicionados ?? []),
+      caminhosRemovidos: new Set(o.removidos ?? []),
+    });
+  }
+
+  it('listed with no baseline ⇒ seeded ⟷ at the path of a STAGED registration ⇒ left unseeded', () => {
+    expect(ajustes({ listados: { [A]: linhaA } })).toEqual([
+      { path: A, tipo: 'semear', data: linhaA },
+    ]);
+    expect(ajustes({ listados: { [B]: linhaB }, adicionados: [B] })).toEqual([]);
+  });
+
+  it('⭐ listed while held ABSENT ⇒ its row again ⟷ not at the path of a STAGED registration', () => {
+    expect(ajustes({ listados: { [A]: linhaA }, guardadas: { [A]: null } })).toEqual([
+      { path: A, tipo: 'rebase', data: linhaA },
+    ]);
+    expect(
+      ajustes({ listados: { [B]: linhaB }, guardadas: { [B]: null }, adicionados: [B] }),
+    ).toEqual([]);
+  });
+
+  it('NEAR-MISS: listed while held as a row moves NOTHING — even when the listed row changed', () => {
+    const mudada = { ...linhaA, display_brand_name: 'Nike BR' };
+    expect(ajustes({ listados: { [A]: mudada }, guardadas: { [A]: linhaA } })).toEqual([]);
+  });
+
+  it('⭐ held as a row and NO LONGER listed ⇒ absent — a staged registration there included (null fails closed)', () => {
+    expect(ajustes({ guardadas: { [A]: linhaA } })).toEqual([
+      { path: A, tipo: 'rebase', data: null },
+    ]);
+    expect(ajustes({ guardadas: { [B]: linhaB }, adicionados: [B] })).toEqual([
+      { path: B, tipo: 'rebase', data: null },
+    ]);
+  });
+
+  it('⭐ NEAR-MISS: …but a path a STAGED REMOVAL names keeps its row — its disappearance is that removal’s conflict', () => {
+    expect(ajustes({ guardadas: { [A]: linhaA }, removidos: [A] })).toEqual([]);
+  });
+
+  it('held absent, or never held, and not listed ⇒ nothing; an unknown path is never touched', () => {
+    expect(ajustes({ guardadas: { [A]: null } })).toEqual([]);
+    expect(ajustes({ conhecidos: [A] })).toEqual([]);
+    expect(ajustes({ guardadas: { [A]: linhaA }, conhecidos: [] })).toEqual([]);
+  });
+
+  it('a path known twice is moved once', () => {
+    expect(ajustes({ guardadas: { [A]: linhaA }, conhecidos: [A, A] })).toEqual([
+      { path: A, tipo: 'rebase', data: null },
+    ]);
+  });
+
+  it('the seeded row is a COPY — mutating it never reaches the snapshot', () => {
+    const listado = { ...linhaA };
+    const [ajuste] = ajustes({ listados: { [A]: listado } });
+    ajuste!.data!.original_brand_name = 'mexido';
+    expect(listado.original_brand_name).toBe('Nike');
+  });
+
+  it('the path a baseline is keyed by is the handle’s own ref path — the one the writes guard', () => {
+    expect(caminhoDoRegistroMarcaShopee(db, INT, '3003')).toBe(caminho('3003'));
+    const [w] = escritasMarcasDaContaShopee(
+      db,
+      INT,
+      valores({ adicionar: [NOVA], remover: [] }),
+      contexto({}),
+    );
+    expect(w!.ref.path).toBe(caminhoDoRegistroMarcaShopee(db, INT, '3001'));
+  });
+});
+
+describe('recusaDoCadastroMarcaShopee — the shared rule’s verdict, worded, never re-derived', () => {
+  const dto = (brandId: number, originalBrandName: string): MarcaDto => ({
+    brandId,
+    originalBrandName,
+    displayBrandName: null,
+  });
+
+  it('a bad id ⇒ «id inválido» — before the name: an id refused under ANY name is the id’s fault', () => {
+    expect(recusaDoCadastroMarcaShopee(dto(-3, 'Quebrada'))).toBe(
+      'id inválido — não pode ser cadastrada',
+    );
+    expect(recusaDoCadastroMarcaShopee(dto(-3, '   '))).toBe(
+      'id inválido — não pode ser cadastrada',
+    );
+    expect(recusaDoCadastroMarcaShopee(dto(0, ''))).toBe('id inválido — não pode ser cadastrada');
+    expect(recusaDoCadastroMarcaShopee(dto(1.5, 'Meia'))).toBe(
+      'id inválido — não pode ser cadastrada',
+    );
+  });
+
+  it('a blank name ⇒ «sem nome» ⟷ NEAR-MISS: an edge-spaced name is registrable (null)', () => {
+    expect(recusaDoCadastroMarcaShopee(dto(5, '  '))).toBe(
+      'sem nome na Shopee — não pode ser cadastrada',
+    );
+    expect(recusaDoCadastroMarcaShopee(dto(5, ' Nike '))).toBeNull();
+  });
+
+  it('it refuses EXACTLY when linhaDeMarcaParaGravarShopee does', () => {
+    const casos = [
+      dto(-3, 'X'),
+      dto(0, 'No Brand'),
+      dto(5, ''),
+      dto(5, ' '),
+      dto(5, ' Nike '),
+      dto(Number.MAX_SAFE_INTEGER, 'Grande'),
+      dto(Number.MAX_SAFE_INTEGER + 2, 'Grande demais'),
+      dto(7, 'Nike'),
+    ];
+    for (const c of casos)
+      expect(recusaDoCadastroMarcaShopee(c) === null).toBe(
+        linhaDeMarcaParaGravarShopee(c) !== null,
+      );
+  });
+
+  it('the delta refuses such an add with the SAME words, naming the brand', () => {
+    const r = alteracoesMarcasShopeeSchema.safeParse({ adicionar: [dto(-3, 'X')], remover: [] });
+    expect(r.success).toBe(false);
+    expect(r.error?.issues.map((i) => i.message)).toEqual([
+      'Marca id -3: id inválido — não pode ser cadastrada.',
+    ]);
+  });
+});
+
+describe('ocupantesDosRegistrosMarcasShopee — EVERY doc id, with what holds it', () => {
+  it('a brand’s every doc names the brand by the label given; «Sem marca» and unreadable rows by kind', () => {
+    const leitura = marcasDaContaShopee([
+      { id: LEGADO_7A, data: ROW_7A },
+      { id: LEGADO_7B, data: ROW_7B },
+      { id: '9', data: ROW_9 },
+      { id: 'semMarca00000000000001', data: { brand_id: 0, original_brand_name: 'No Brand' } },
+      { id: 'ilegivel0000000000001', data: { brand_id: '9', original_brand_name: 'Texto' } },
+    ]);
+    const ocupantes = ocupantesDosRegistrosMarcasShopee(leitura, (m) => `R${String(m.brandId)}`);
+    expect(Object.fromEntries(ocupantes)).toEqual({
+      [LEGADO_7A]: { tipo: 'marca', brandId: 7, rotulo: 'R7' },
+      [LEGADO_7B]: { tipo: 'marca', brandId: 7, rotulo: 'R7' },
+      '9': { tipo: 'marca', brandId: 9, rotulo: 'R9' },
+      semMarca00000000000001: { tipo: 'sem-marca' },
+      ilegivel0000000000001: { tipo: 'ilegivel' },
+    });
   });
 });

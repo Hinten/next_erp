@@ -1,9 +1,12 @@
 import type { DocumentReference, Firestore } from 'firebase/firestore';
 import { z } from 'zod';
 import {
+  MOTIVO_RECUSA_MARCA_SHOPEE,
   linhaDeMarcaParaGravarShopee,
   marcaDtoSchema,
   marcasDaContaShopee,
+  motivoRecusaMarcaShopee,
+  type LeituraMarcasShopee,
   type MarcaDaContaShopee,
   type MarcaDto,
 } from '@delfrance/schemas';
@@ -51,10 +54,15 @@ import { marcaShopeeCollection } from '@/lib/data/marcaShopeeCollection';
  *   operator registered there meanwhile would otherwise guard the `set` with
  *   the very row it overwrites — a silent lost update (pinned by the page
  *   test "…and the SAME race with their row already on this screen is still
- *   the conflict, never an overwrite"). A same-brand row the section seeded
- *   and that was then deleted elsewhere guards a re-add too: the save re-reads
- *   the path absent and raises one conflict, which "Recarregar do servidor"
- *   clears — the safe direction.
+ *   the conflict, never an overwrite").
+ *   ⚠️ A same-brand row the section seeded and that was then deleted elsewhere
+ *   is NOT such a baseline, and nothing here would tell it apart: held, it
+ *   equals what a re-add writes, `saveRecord` skips a sibling whose baseline
+ *   equals its data WITHOUT re-reading it, and the re-add was dropped in
+ *   silence (#1911 batch-B review R1-rule7#1). It is guarded only because the
+ *   section CLEARS that path's baseline to "absent" when server truth stops
+ *   listing it ({@link ajustesDasBaselinesMarcasShopee}) — so the re-add's
+ *   `set` is guarded by `null`, and lands, or conflicts if a doc is back.
  * - **Removing a brand** — one `delete` PER document of the brand (the legacy
  *   app let several auto-id docs name one brand; deleting only one would bring
  *   the brand back on the next read), each guarded by the baseline the section
@@ -62,7 +70,11 @@ import { marcaShopeeCollection } from '@/lib/data/marcaShopeeCollection';
  *   raises the conflict, and NOTHING is written. A brand re-registered meanwhile
  *   at another id survives — the safe direction. A path with no baseline yet
  *   makes the save refuse ("Aguarde o carregamento…"): never an unguarded
- *   delete.
+ *   delete. ⚠️ A path whose baseline is "absent" (`null`) is SKIPPED by
+ *   `saveRecord` — there is nothing to delete — so a doc re-created at a path
+ *   this session saw deleted must get its baseline back before a removal can
+ *   reach it; the section re-seeds it from the server snapshot that shows it
+ *   again ({@link ajustesDasBaselinesMarcasShopee}).
  *
  * On a commit, and on "Recarregar do servidor", each guarded document drops ITS
  * entry from the delta ({@link desfazerAdicaoMarcaShopee},
@@ -86,11 +98,48 @@ export const remocaoMarcaShopeeSchema = z.object({
 });
 export type RemocaoMarcaShopee = z.infer<typeof remocaoMarcaShopeeSchema>;
 
+/**
+ * Shown while the Marcas section waits for its first SERVER snapshot (a cached
+ * list, or one with pending writes): its buttons stay disabled until then — a
+ * change staged from a list server truth has not confirmed would have nothing
+ * to be guarded by. The wording of the draft editor's own wait (P10), plus the
+ * reason the buttons are greyed.
+ */
+export const FRASE_MARCAS_CARREGANDO_SHOPEE =
+  'Carregando a versão do servidor… as marcas poderão ser alteradas quando ela chegar.';
+
+/**
+ * Why the registration refuses `dto`, in words — `null` when it does not.
+ *
+ * The rule AND its reason are `motivoRecusaMarcaShopee`'s (`@delfrance/schemas`
+ * — the one `linhaDeMarcaParaGravarShopee` applies, so the wording cannot
+ * disagree with the write; #1369). This only words each reason: the `switch`
+ * is exhaustive, so a reason the rule gains fails the build here instead of
+ * being worded as one it is not.
+ */
+export function recusaDoCadastroMarcaShopee(dto: MarcaDto): string | null {
+  const motivo = motivoRecusaMarcaShopee(dto);
+  if (motivo === null) return null;
+  switch (motivo) {
+    case MOTIVO_RECUSA_MARCA_SHOPEE.idInvalido:
+      return 'id inválido — não pode ser cadastrada';
+    case MOTIVO_RECUSA_MARCA_SHOPEE.semNome:
+      return 'sem nome na Shopee — não pode ser cadastrada';
+    default: {
+      // Exhaustive: a third reason is a compile error here, never a row
+      // labelled with a cause it does not have.
+      const nunca: never = motivo;
+      throw new TypeError(`motivo de recusa desconhecido: ${String(nunca)}`);
+    }
+  }
+}
+
 /** A `taxonomia/marcas` row this module can register (`linhaDeMarcaParaGravarShopee`). */
-const adicaoMarcaShopeeSchema = marcaDtoSchema.refine(
-  (dto) => linhaDeMarcaParaGravarShopee(dto) !== null,
-  'Marca que não pode ser cadastrada: o id 0 é «Sem marca», e o nome não pode ficar em branco.',
-);
+const adicaoMarcaShopeeSchema = marcaDtoSchema.superRefine((dto, ctx) => {
+  const recusa = recusaDoCadastroMarcaShopee(dto);
+  if (recusa !== null)
+    ctx.addIssue({ code: 'custom', message: `Marca id ${String(dto.brandId)}: ${recusa}.` });
+});
 
 /**
  * The staged delta — the form value of {@link CAMPO_MARCAS_SHOPEE}. Valid BY
@@ -158,8 +207,8 @@ const VAZIA: AlteracoesMarcasShopee = { adicionar: [], remover: [] };
 
 /**
  * Stage brands of a `taxonomia/marcas` page for registration. A row that cannot
- * be registered (`linhaDeMarcaParaGravarShopee` says `null`: `brandId` 0 or a
- * blank name) and a brand already staged are skipped; a brand staged for
+ * be registered (`linhaDeMarcaParaGravarShopee` says `null` — its rule, not
+ * restated here) and a brand already staged are skipped; a brand staged for
  * REMOVAL gets that removal undone instead (it is registered already).
  */
 export function adicionarMarcasShopee(
@@ -251,6 +300,134 @@ function baselineDoCadastro(
   return mesmaMarca ? { ...guardada } : null;
 }
 
+/** The ref of one `brandshopee` document — the ONE spelling, for the writes and for the baselines' keys. */
+function refDoRegistro(
+  db: Firestore,
+  integracaoId: string,
+  docId: string,
+): DocumentReference<unknown> {
+  return marcaShopeeCollection.docRef(db, { integracaoId }, docId) as DocumentReference<unknown>;
+}
+
+/** The full path of one `brandshopee` document: the key its save baseline is held under. */
+export function caminhoDoRegistroMarcaShopee(
+  db: Firestore,
+  integracaoId: string,
+  docId: string,
+): string {
+  return refDoRegistro(db, integracaoId, docId).path;
+}
+
+/**
+ * A save baseline as ObjectView's registry holds it: a row, `null` ("absent"),
+ * or `undefined` (none yet) — the registry's own type, read off its exported
+ * seam rather than restated.
+ */
+type BaselineGuardada = ReturnType<TransactionWriteContext['getBaseline']>;
+
+/** One move of a `brandshopee` save baseline, made on a SERVER-truth emission. */
+export interface AjusteDeBaselineMarcaShopee {
+  readonly path: string;
+  /** `semear` — the path's first baseline; `rebase` — a held one replaced. */
+  readonly tipo: 'semear' | 'rebase';
+  /** The listed row, or `null`: server truth no longer lists the document. */
+  readonly data: Exclude<BaselineGuardada, undefined>;
+}
+
+/**
+ * What one SERVER-truth emission of the shortlist (`fromCache === false`, no
+ * pending writes) does to the save baselines the Marcas section holds — pure,
+ * so every branch is pinned without a page (root `CLAUDE.md` rule 7).
+ *
+ * A held ROW is never moved by a later emission: a row another operator changed
+ * since it was seeded is the save's conflict, never silently the new truth.
+ * What an emission does move is a path's EXISTENCE, because `saveRecord` skips
+ * a sibling write whose baseline already equals what it would leave — without
+ * re-reading it — and a stale existence is exactly that:
+ * - **listed, no baseline** ⇒ `semear` its row — the first snapshot to show it;
+ * - **listed, held "absent"** (a delete this session committed, or a path
+ *   cleared below, and the doc is back) ⇒ `rebase` to its row: held absent, a
+ *   removal of it would be skipped as "already gone" while it exists;
+ * - **NOT listed, held as a row** ⇒ `rebase` to `null`: held as a row of the
+ *   same brand, a re-add would equal it and be skipped while the doc is gone
+ *   (R1-rule7#1) — while `null` makes the re-add's `set` land, or conflict if a
+ *   doc is back by then.
+ *
+ * Two exceptions, each to keep a conflict that must fire:
+ * - a path a STAGED REMOVAL names keeps its row: the doc's disappearance is that
+ *   removal's conflict, and cleared, the removal's `delete` would be skipped —
+ *   deleting the rest of the brand in silence;
+ * - a path a STAGED REGISTRATION writes gets no row: a doc another operator put
+ *   there would guard the registration's `set` with the very row it overwrites.
+ *   Staged registrations are NOT exempt from the clearing: `null` on a `set`
+ *   fails closed (a doc present at save raises `@exists`).
+ *
+ * ⚠️ `rebase` is the registry's only way to move a held baseline. It is
+ * documented for an accepted conflict version or a commit; these moves are
+ * neither — they never adopt a changed row, only record whether the document
+ * EXISTS as server truth now says. A truncated read (`LIMITE_MARCAS_SHOPEE`)
+ * can leave out a doc that exists: clearing it is then the fail-closed
+ * direction (`@exists` at save), never an overwrite.
+ *
+ * @param conhecidos every path the section may hold a baseline for — listed by
+ *   an earlier emission or written by a staged registration — since the
+ *   registry cannot be enumerated.
+ */
+export function ajustesDasBaselinesMarcasShopee(entrada: {
+  readonly listados: readonly {
+    readonly path: string;
+    readonly data: Readonly<Record<string, unknown>>;
+  }[];
+  readonly conhecidos: Iterable<string>;
+  readonly guardada: (path: string) => BaselineGuardada;
+  readonly caminhosAdicionados: ReadonlySet<string>;
+  readonly caminhosRemovidos: ReadonlySet<string>;
+}): AjusteDeBaselineMarcaShopee[] {
+  const ajustes: AjusteDeBaselineMarcaShopee[] = [];
+  const listados = new Set<string>();
+  for (const doc of entrada.listados) {
+    listados.add(doc.path);
+    if (entrada.caminhosAdicionados.has(doc.path)) continue;
+    const guardada = entrada.guardada(doc.path);
+    if (guardada === undefined)
+      ajustes.push({ path: doc.path, tipo: 'semear', data: { ...doc.data } });
+    else if (guardada === null)
+      ajustes.push({ path: doc.path, tipo: 'rebase', data: { ...doc.data } });
+  }
+  for (const path of new Set(entrada.conhecidos)) {
+    if (listados.has(path) || entrada.caminhosRemovidos.has(path)) continue;
+    const guardada = entrada.guardada(path);
+    if (guardada !== undefined && guardada !== null)
+      ajustes.push({ path, tipo: 'rebase', data: null });
+  }
+  return ajustes;
+}
+
+/** What sits at one `brandshopee` document id, as THE reader classified it. */
+export type OcupanteDoRegistroMarcaShopee =
+  | { readonly tipo: 'marca'; readonly brandId: number; readonly rotulo: string }
+  | { readonly tipo: 'sem-marca' }
+  | { readonly tipo: 'ilegivel' };
+
+/**
+ * EVERY document id of a reading, with what occupies it — the ids a new
+ * registration could collide with. `rotulo` is the brand row's own label on
+ * the section (passed in), so a refusal can name the row the operator sees.
+ */
+export function ocupantesDosRegistrosMarcasShopee(
+  leitura: LeituraMarcasShopee,
+  rotulo: (m: MarcaDaContaShopee) => string,
+): Map<string, OcupanteDoRegistroMarcaShopee> {
+  const ocupantes = new Map<string, OcupanteDoRegistroMarcaShopee>();
+  for (const m of leitura.marcas) {
+    const ocupante = { tipo: 'marca', brandId: m.brandId, rotulo: rotulo(m) } as const;
+    for (const docId of m.docIds) ocupantes.set(docId, ocupante);
+  }
+  for (const docId of leitura.semMarca) ocupantes.set(docId, { tipo: 'sem-marca' });
+  for (const docId of leitura.ilegiveis) ocupantes.set(docId, { tipo: 'ilegivel' });
+  return ocupantes;
+}
+
 /**
  * The sibling writes a conta save makes from the staged delta in
  * `values[CAMPO_MARCAS_SHOPEE]` — none when nothing is staged. Removals first
@@ -272,14 +449,14 @@ export function escritasMarcasDaContaShopee(
 
   for (const remocao of alteracoes.remover) {
     for (const docId of remocao.docIds) {
-      const ref = marcaShopeeCollection.docRef(db, { integracaoId }, docId);
+      const ref = refDoRegistro(db, integracaoId, docId);
       const guard: TransactionDocumentGuard = {
         baseline: context.getBaseline(ref.path),
         label: `Marca ${String(remocao.brandId)} (registro ${docId})`,
         formField: CAMPO_MARCAS_SHOPEE,
         toFormValue: (_atual, valor) => desfazerRemocaoMarcaShopee(valor, remocao.brandId),
       };
-      escritas.push({ type: 'delete', ref: ref as DocumentReference<unknown>, guard });
+      escritas.push({ type: 'delete', ref, guard });
     }
   }
 
@@ -288,7 +465,7 @@ export function escritasMarcasDaContaShopee(
     // The delta's schema refuses an add with no row, so this is an invariant
     // breach — never an add silently skipped while the form still shows it.
     if (linha === null) throw new TypeError(`marca não registrável: ${String(dto.brandId)}`);
-    const ref = marcaShopeeCollection.docRef(db, { integracaoId }, linha.docId);
+    const ref = refDoRegistro(db, integracaoId, linha.docId);
     const guard: TransactionDocumentGuard = {
       baseline: baselineDoCadastro(context.getBaseline(ref.path), linha.docId, dto.brandId),
       label: `Marca «${dto.originalBrandName}» (id ${String(dto.brandId)})`,
@@ -297,7 +474,7 @@ export function escritasMarcasDaContaShopee(
     };
     escritas.push({
       type: 'set',
-      ref: ref as DocumentReference<unknown>,
+      ref,
       data: { ...linha.data },
       guard,
     });

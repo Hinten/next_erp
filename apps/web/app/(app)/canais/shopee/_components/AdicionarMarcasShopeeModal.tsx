@@ -15,7 +15,7 @@ import {
   Text,
 } from '@mantine/core';
 import {
-  linhaDeMarcaParaGravarShopee,
+  docIdDaMarcaShopee,
   textoUtilizavelShopee,
   type CategoriaResumoDto,
   type MarcaDto,
@@ -29,6 +29,10 @@ import {
 } from '@/components/shopee/ShopeeCategoriaBrowser';
 import { useShopeeClient, type ShopeeClient } from '@/lib/shopee/client';
 import { descreverFalhaShopee, shopeeQueryRetry } from '@/lib/shopee/erros';
+import {
+  recusaDoCadastroMarcaShopee,
+  type OcupanteDoRegistroMarcaShopee,
+} from '@/lib/shopee/marcasDaConta';
 
 /**
  * Pick brands from ONE Shopee leaf category's brand list to REGISTER in the
@@ -50,12 +54,16 @@ import { descreverFalhaShopee, shopeeQueryRetry } from '@/lib/shopee/erros';
  *   `get_brand_list` takes none), and a filter would be a fold.
  * - **What cannot be picked** is shown, never dropped: a brand already in the
  *   shortlist ("já cadastrada") or already staged ("já selecionada") is
- *   checked and disabled; a brand the registration refuses
- *   ({@link linhaDeMarcaParaGravarShopee} — no name, or an id that is not a
- *   positive integer) is disabled with the reason; a brand whose document id
- *   is already taken by a row that is NOT that brand (unreadable, «Sem marca»
- *   or another brand's) is disabled too — its registration could only ever
- *   raise the save's conflict. Shopee's `0` ("No Brand") is hidden: «Sem
+ *   checked and disabled; a brand the registration refuses is disabled with
+ *   the reason — the rule and its reason are `motivoRecusaMarcaShopee`'s (the
+ *   one `linhaDeMarcaParaGravarShopee` applies), worded by
+ *   `recusaDoCadastroMarcaShopee` (`lib/shopee/marcasDaConta.ts`), never
+ *   re-derived here; a brand whose document id is already taken by a row that
+ *   is NOT that brand is disabled too — its registration could only ever raise
+ *   the save's conflict — and the line names what holds the id and what clears
+ *   it: another brand's row clears with that brand's removal (the section's
+ *   «Remover»); an unreadable or «Sem marca» row, which this screen never
+ *   removes, only outside the ERP. Shopee's `0` ("No Brand") is hidden: «Sem
  *   marca» is always offered on the listing, and the shortlist never holds it.
  *
  * Reads only; writes nothing. Retries follow `shopeeQueryRetry`.
@@ -68,9 +76,10 @@ export interface AdicionarMarcasShopeeModalProps {
   jaSelecionadas: ReadonlySet<number>;
   /**
    * EVERY document id the shortlist holds, its unreadable and «Sem marca»
-   * rows included — the ids a new registration could collide with.
+   * rows included — the ids a new registration could collide with — with what
+   * occupies each (`ocupantesDosRegistrosMarcasShopee`).
    */
-  idsOcupados: ReadonlySet<string>;
+  ocupantes: ReadonlyMap<string, OcupanteDoRegistroMarcaShopee>;
   onAdicionar: (marcas: MarcaDto[]) => void;
   onFechar: () => void;
 }
@@ -119,26 +128,40 @@ type Bloqueio =
   | { readonly tipo: 'cadastrada' }
   | { readonly tipo: 'selecionada' }
   | { readonly tipo: 'recusada'; readonly texto: string }
-  | { readonly tipo: 'ocupada'; readonly docId: string };
+  | {
+      readonly tipo: 'ocupada';
+      readonly docId: string;
+      readonly ocupante: OcupanteDoRegistroMarcaShopee;
+    };
 
 function bloqueioDaMarca(
   dto: MarcaDto,
-  props: Pick<AdicionarMarcasShopeeModalProps, 'cadastradas' | 'jaSelecionadas' | 'idsOcupados'>,
+  props: Pick<AdicionarMarcasShopeeModalProps, 'cadastradas' | 'jaSelecionadas' | 'ocupantes'>,
 ): Bloqueio | null {
   if (props.cadastradas.has(dto.brandId)) return { tipo: 'cadastrada' };
   if (props.jaSelecionadas.has(dto.brandId)) return { tipo: 'selecionada' };
-  const linha = linhaDeMarcaParaGravarShopee(dto);
-  if (linha === null) {
-    return {
-      tipo: 'recusada',
-      texto:
-        Number.isSafeInteger(dto.brandId) && dto.brandId > 0
-          ? 'sem nome na Shopee — não pode ser cadastrada'
-          : 'id inválido — não pode ser cadastrada',
-    };
-  }
-  if (props.idsOcupados.has(linha.docId)) return { tipo: 'ocupada', docId: linha.docId };
+  const recusa = recusaDoCadastroMarcaShopee(dto);
+  if (recusa !== null) return { tipo: 'recusada', texto: recusa };
+  // Registrable, so it is written at this id (`linhaDeMarcaParaGravarShopee`).
+  const docId = docIdDaMarcaShopee(dto.brandId);
+  const ocupante = props.ocupantes.get(docId);
+  if (ocupante !== undefined) return { tipo: 'ocupada', docId, ocupante };
   return null;
+}
+
+/**
+ * What holds a brand's document id, and what clears it — only exits this
+ * screen offers, or the plain fact that it offers none.
+ */
+function textoDaOcupacao(docId: string, ocupante: OcupanteDoRegistroMarcaShopee): string {
+  switch (ocupante.tipo) {
+    case 'marca':
+      return `o registro ${docId} desta lista é da marca «${ocupante.rotulo}» — esta só pode ser cadastrada depois que essa marca for removida da lista e a remoção, salva`;
+    case 'sem-marca':
+      return `o registro ${docId} desta lista guarda «Sem marca» e esta tela não o remove — esta marca só pode ser cadastrada depois que ele for excluído fora do ERP, por quem administra o banco de dados`;
+    case 'ilegivel':
+      return `o registro ${docId} desta lista é ilegível e esta tela não o remove — esta marca só pode ser cadastrada depois que ele for excluído fora do ERP, por quem administra o banco de dados`;
+  }
 }
 
 function textoDoBloqueio(b: Bloqueio): string {
@@ -150,7 +173,7 @@ function textoDoBloqueio(b: Bloqueio): string {
     case 'recusada':
       return b.texto;
     case 'ocupada':
-      return `o registro ${b.docId} desta lista é ilegível ou de outra marca — não é possível cadastrar`;
+      return textoDaOcupacao(b.docId, b.ocupante);
   }
 }
 
@@ -171,10 +194,7 @@ function rotuloDaMarca(dto: MarcaDto): string {
 interface EtapaMarcasProps {
   integracaoId: string;
   categoria: CategoriaResumoDto;
-  bloqueios: Pick<
-    AdicionarMarcasShopeeModalProps,
-    'cadastradas' | 'jaSelecionadas' | 'idsOcupados'
-  >;
+  bloqueios: Pick<AdicionarMarcasShopeeModalProps, 'cadastradas' | 'jaSelecionadas' | 'ocupantes'>;
   selecionadas: ReadonlyMap<number, MarcaDto>;
   onAlternar: (dto: MarcaDto) => void;
   onTrocarCategoria: () => void;
@@ -373,7 +393,7 @@ export function AdicionarMarcasShopeeModal({
   integracaoId,
   cadastradas,
   jaSelecionadas,
-  idsOcupados,
+  ocupantes,
   onAdicionar,
   onFechar,
 }: AdicionarMarcasShopeeModalProps) {
@@ -383,7 +403,7 @@ export function AdicionarMarcasShopeeModal({
   // Kept across categories and statuses: a brand is a brand wherever it was
   // ticked, and the count on the confirm button names them all.
   const [selecionadas, setSelecionadas] = useState<ReadonlyMap<number, MarcaDto>>(new Map());
-  const bloqueios = { cadastradas, jaSelecionadas, idsOcupados };
+  const bloqueios = { cadastradas, jaSelecionadas, ocupantes };
 
   const alternar = (dto: MarcaDto) =>
     setSelecionadas((atual) => {
