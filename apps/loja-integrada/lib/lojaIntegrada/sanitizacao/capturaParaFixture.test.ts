@@ -10,19 +10,35 @@ import {
   gerarCpf,
 } from '../testing/especificacaoPii';
 import {
+  CHAVE_DE_TESTE_HEX,
+  OUTRA_CHAVE_DE_TESTE_HEX,
+  chaveDeTeste,
+  colisaoDePseudonimo,
+} from '../testing/chaveDeFixtures';
+import {
   type ResultadoDaCapturaLi,
   capturaParaFixture,
   contarInteirosInseguros,
 } from './capturaParaFixture';
+import type { ChaveDeFixturesLi } from './pseudonimo';
 
-/* Synthetic captures only: PII inline, CPFs generated at run time. */
+/* Synthetic captures and a TEST pseudonym key only: PII inline, CPFs generated at run time. */
 const CPF = gerarCpf('529982247');
 const CNPJ = gerarCnpj('112223330001');
 const LISTA = criarListaDeNomes(['Loja Exemplo']);
+const CHAVE = chaveDeTeste();
 const b = (t: string) => new TextEncoder().encode(t);
 const MTIME = Date.UTC(2026, 9, 7, 23, 30); // 2026-10-07 23:30 UTC
+/** The pseudonym of `id` under the TEST key (or another one). */
+const f = (id: number, chave: ChaveDeFixturesLi = CHAVE) => chave.pseudonimo(String(id));
 
-function captura(linha1: string, corpo: unknown, ...extra: string[]): ResultadoDaCapturaLi {
+/** One pair through the sanitizer, under the TEST key unless another key (or none) is given. */
+function capturaCom(
+  chave: ChaveDeFixturesLi | null,
+  linha1: string,
+  corpo: unknown,
+  ...extra: string[]
+): ResultadoDaCapturaLi {
   return capturaParaFixture(
     {
       sidecar: b([linha1, 'credencial: personal-token', ...extra].join('\n')),
@@ -30,8 +46,12 @@ function captura(linha1: string, corpo: unknown, ...extra: string[]): ResultadoD
       corpoModificadoEmMs: MTIME,
     },
     LISTA,
+    chave,
   );
 }
+
+const captura = (linha1: string, corpo: unknown, ...extra: string[]) =>
+  capturaCom(CHAVE, linha1, corpo, ...extra);
 
 function envelope(r: ResultadoDaCapturaLi): EnvelopeFixtureLi {
   if (!r.ok) throw new Error(`refused: ${r.achados.map((a) => `${a.onde} ${a.tipo}`).join('; ')}`);
@@ -175,7 +195,7 @@ describe('capturaParaFixture — a 2xx pedido search', () => {
 });
 
 describe('capturaParaFixture — the catalogue and configuration classes', () => {
-  it('a produto detail keeps its keep-list and fakes names, descriptions, URLs, image paths and cost', () => {
+  it('a produto detail keeps its keep-list (ids as their pseudonyms) and fakes names, descriptions, URLs, image paths and cost', () => {
     const corpo = envelope(
       captura('GET /v1/produto/7 200', {
         id: 7,
@@ -191,7 +211,7 @@ describe('capturaParaFixture — the catalogue and configuration classes', () =>
       }),
     ).resposta.corpo;
     expect(corpo).toEqual({
-      id: 7,
+      id: f(7),
       sku: 'CAM-001',
       ncm: '61091000',
       preco_cheio: '59.90',
@@ -200,7 +220,7 @@ describe('capturaParaFixture — the catalogue and configuration classes', () =>
       descricao_completa: FALSO_LI.texto,
       url: FALSO_LI.url,
       preco_custo: FALSO_LI.texto,
-      imagem_principal: { caminho: FALSO_LI.texto, principal: true, id: 9 },
+      imagem_principal: { caminho: FALSO_LI.texto, principal: true, id: f(9) },
     });
   });
 
@@ -247,15 +267,20 @@ describe('capturaParaFixture — non-2xx, per class', () => {
       captura('GET /v1/categoria/?limit=1 401', {
         error: 'Token SENTINELA invalido',
         codigo: '533',
-        detalhes: { tentativa: 2 },
+        detalhes: { ativo: false },
       }),
     );
     expect(env.resposta.corpo).toEqual({
       error: FALSO_LI.texto,
       codigo: '533',
-      detalhes: { tentativa: 2 },
+      detalhes: { ativo: false },
     });
     expect(JSON.stringify(env)).not.toContain('SENTINELA');
+    // A number the error walk keeps (below 1e7) may be an echoed catalogue id, and
+    // a pseudonym cannot live in an error body: the pair is refused, never written.
+    expect(
+      achados(captura('GET /v1/categoria/?limit=1 401', { detalhes: { tentativa: 2 } })),
+    ).toEqual(['resposta.corpo.detalhes.tentativa :: numero-em-erro-do-catalogo']);
   });
 
   it('a catalogue 401 HTML body gives `corpo: null`', () => {
@@ -301,6 +326,7 @@ describe('capturaParaFixture — refusals', () => {
         corpoModificadoEmMs: MTIME,
       },
       LISTA,
+      CHAVE,
     );
     expect(achados(r)).toEqual(['.json :: corpo-acima-do-limite']);
   });
@@ -389,8 +415,292 @@ describe('capturaParaFixture — refusals', () => {
         corpoModificadoEmMs: MTIME,
       },
       LISTA,
+      CHAVE,
     );
     expect(achados(r)).toEqual(['.json :: utf16']);
+  });
+});
+
+describe('capturaParaFixture — catalogue ids are pseudonymized', () => {
+  const CATEGORIAS = {
+    meta: {
+      limit: 50,
+      offset: 50,
+      total_count: 67,
+      previous: '/api/v1/categoria?limit=50&offset=0',
+      next: null,
+    },
+    objects: [
+      { id: 4101, categoria_pai: null, nome: 'Camisetas', resource_uri: '/v1/categoria/4101' },
+      {
+        id: 4102,
+        categoria_pai: '/v1/categoria/4101',
+        nome: 'Regatas',
+        resource_uri: '/v1/categoria/4102',
+      },
+    ],
+  };
+  const LINHA_CATEGORIAS = 'GET /v1/categoria/?limit=50&offset=50 200';
+  const GRADE = {
+    id: 6062,
+    nome: 'Tamanho',
+    resource_uri: '/api/v1/grades/6062',
+    variacoes: [
+      { grade: '/api/v1/grades/6062', id: 31, resource_uri: '/api/v1/grade/6062/variacao/31' },
+    ],
+  };
+
+  it('EQUAL: a grade id in the request path, the body, its URI and every option URI is one pseudonym', () => {
+    const r = captura('GET /v1/grades/6062/ 200', GRADE);
+    const env = envelope(r);
+    const g = String(f(6062));
+    expect(env.requisicao.caminho).toBe(`/v1/grades/${g}/`);
+    expect(env.resposta.corpo).toEqual({
+      id: f(6062),
+      nome: FALSO_LI.texto,
+      resource_uri: `/api/v1/grades/${g}`,
+      variacoes: [
+        {
+          grade: `/api/v1/grades/${g}`,
+          id: f(31),
+          resource_uri: `/api/v1/grade/${g}/variacao/${String(f(31))}`,
+        },
+      ],
+    });
+    // The dry run prints the line the fixture holds.
+    expect(r.resumo?.linhaRequisicao).toBe(`GET /v1/grades/${g}/`);
+    expect(JSON.stringify(env)).not.toMatch(/\b(?:6062|31)\b/);
+  });
+
+  it('EQUAL: a category row and the categoria_pai naming it share one pseudonym', () => {
+    const corpo = envelope(captura(LINHA_CATEGORIAS, CATEGORIAS)).resposta.corpo;
+    expect(em(corpo, 'objects.0.id')).toBe(f(4101));
+    expect(em(corpo, 'objects.0.resource_uri')).toBe(`/v1/categoria/${String(f(4101))}`);
+    expect(em(corpo, 'objects.1.categoria_pai')).toBe(`/v1/categoria/${String(f(4101))}`);
+  });
+
+  it('EQUAL: the same key and the same capture give identical bytes', () => {
+    const a = captura(LINHA_CATEGORIAS, CATEGORIAS);
+    const b2 = captura(LINHA_CATEGORIAS, CATEGORIAS);
+    expect(a.ok && b2.ok && a.texto === b2.texto).toBe(true);
+  });
+
+  it('NEAR-MISS: another key gives other ids', () => {
+    const outra = chaveDeTeste(OUTRA_CHAVE_DE_TESTE_HEX);
+    const corpo = envelope(capturaCom(outra, LINHA_CATEGORIAS, CATEGORIAS)).resposta.corpo;
+    expect(em(corpo, 'objects.0.id')).toBe(f(4101, outra));
+    expect(em(corpo, 'objects.0.id')).not.toBe(f(4101));
+  });
+
+  it('NEAR-MISS: meta numbers, meta.next/previous and the query values stay as captured', () => {
+    const env = envelope(captura(LINHA_CATEGORIAS, CATEGORIAS));
+    expect(em(env.resposta.corpo, 'meta')).toEqual(CATEGORIAS.meta);
+    expect(env.requisicao.query).toEqual([
+      ['limit', '50'],
+      ['offset', '50'],
+    ]);
+  });
+
+  it('the leaf table reads `pseudonimizado` for the mapped leaves, and no finding is raised for them', () => {
+    const r = captura(LINHA_CATEGORIAS, CATEGORIAS);
+    expect(achados(r)).toEqual([]);
+    expect(r.resumo?.folhas).toEqual(
+      expect.arrayContaining([
+        { caminho: 'objects.*.id', tipo: 'number', tratamento: 'pseudonimizado', contagem: 2 },
+        {
+          caminho: 'objects.*.resource_uri',
+          tipo: 'string',
+          tratamento: 'pseudonimizado',
+          contagem: 2,
+        },
+        {
+          caminho: 'objects.*.categoria_pai',
+          tipo: 'string',
+          tratamento: 'pseudonimizado',
+          contagem: 1,
+        },
+        { caminho: 'meta.total_count', tipo: 'number', tratamento: 'mantido', contagem: 1 },
+      ]),
+    );
+  });
+
+  it('NEAR-MISS: an allow-listed catalogue value the profile had to fake is still a finding', () => {
+    const r = captura('GET /v1/produto/?limit=1 200', { objects: [{ id: 7, sku: CPF }] });
+    expect(achados(r)).toEqual(['resposta.corpo.objects.*.sku :: cpf']);
+  });
+
+  it('NEAR-MISS: a configuracao-class id stays real', () => {
+    const env = envelope(
+      captura('GET /v1/situacao/ 200', { objects: [{ id: 2, codigo: 'pedido_pago' }] }),
+    );
+    expect(em(env.resposta.corpo, 'objects.0.id')).toBe(2);
+  });
+
+  it('NEAR-MISS: a configuracao or estrutural pair is byte-identical with the key, without it, or under another', () => {
+    for (const [linha, corpo] of [
+      ['GET /v1/situacao/ 200', { objects: [{ id: 2, codigo: 'pedido_pago' }] }],
+      ['GET /v1/pedido/search/ 200', PEDIDO_BUSCA],
+      ['GET /v1/pedido/1234 200', { numero: 1234, id: 99 }],
+    ] as const) {
+      const textos = [CHAVE, null, chaveDeTeste(OUTRA_CHAVE_DE_TESTE_HEX)].map((chave) => {
+        const r = capturaCom(chave, linha, corpo);
+        return r.ok ? r.texto : 'refused';
+      });
+      expect(new Set(textos).size, linha).toBe(1);
+      expect(textos[0], linha).not.toBe('refused');
+    }
+  });
+
+  it('no key: a catalogue pair is refused, naming the remedy kind', () => {
+    const r = capturaCom(null, LINHA_CATEGORIAS, CATEGORIAS);
+    expect(achados(r)).toEqual(['.chave-fixtures :: sem-chave-de-fixtures']);
+  });
+
+  it('a collision (two ids, one pseudonym) refuses the pair', () => {
+    const [a, b2] = colisaoDePseudonimo();
+    const r = captura('GET /v1/marca/ 200', {
+      objects: [
+        { id: a, resource_uri: `/api/v1/marca/${String(a)}` },
+        { id: b2, resource_uri: `/api/v1/marca/${String(b2)}` },
+      ],
+    });
+    expect(achados(r)).toEqual(['pseudonimos :: colisao-de-pseudonimo']);
+  });
+
+  it('a clean pair reports the pseudonyms it used (pseudonym -> real), in memory only', () => {
+    const r = captura('GET /v1/grades/6062/ 200', GRADE);
+    if (!r.ok) throw new Error('refused');
+    expect([...r.pseudonimos.entries()].sort()).toEqual(
+      [
+        [f(6062), '6062'],
+        [f(31), '31'],
+      ].sort(),
+    );
+  });
+
+  it('SENTINEL: the key never appears in a result, clean or refused', () => {
+    for (const r of [
+      captura(LINHA_CATEGORIAS, CATEGORIAS),
+      captura('GET /v1/produto/?limit=1 200', { objects: [{ id: 7, sku: CPF }] }),
+    ]) {
+      expect(JSON.stringify(r)).not.toContain(CHAVE_DE_TESTE_HEX);
+      expect(JSON.stringify(r)).not.toContain('7e57');
+    }
+  });
+});
+
+describe('capturaParaFixture — catalogue ids outside the body rows', () => {
+  const IMAGENS = {
+    meta: {
+      limit: 1,
+      offset: 0,
+      total_count: 2,
+      next: '/api/v1/produto_imagem/?limit=1&offset=1&produto=5555',
+      previous: null,
+    },
+    objects: [
+      {
+        id: 1,
+        imagem_id: 4444444,
+        produto: '/api/v1/produto/5555',
+        resource_uri: '/api/v1/produto_imagem/1',
+      },
+    ],
+  };
+  const LINHA_IMAGENS = 'GET /v1/produto_imagem/?produto=5555&limit=1 200';
+
+  it("EQUAL: a `produto=` query value, meta.next's and the rows' produto URI share one pseudonym", () => {
+    const r = captura(LINHA_IMAGENS, IMAGENS);
+    const env = envelope(r);
+    const p = String(f(5555));
+    expect(env.requisicao.query).toEqual([
+      ['produto', p],
+      ['limit', '1'],
+    ]);
+    expect(em(env.resposta.corpo, 'meta.next')).toBe(
+      `/api/v1/produto_imagem/?limit=1&offset=1&produto=${p}`,
+    );
+    expect(em(env.resposta.corpo, 'objects.0.produto')).toBe(`/api/v1/produto/${p}`);
+    expect(em(env.resposta.corpo, 'objects.0.imagem_id')).toBe(f(4444444));
+    expect(r.resumo?.linhaRequisicao).toBe(`GET /v1/produto_imagem/?produto=${p}&limit=1`);
+    expect(JSON.stringify(env)).not.toMatch(/\b(?:5555|4444444)\b/);
+    expect(r.resumo?.folhas).toEqual(
+      expect.arrayContaining([
+        { caminho: 'meta.next', tipo: 'string', tratamento: 'pseudonimizado', contagem: 1 },
+        {
+          caminho: 'objects.*.imagem_id',
+          tipo: 'number',
+          tratamento: 'pseudonimizado',
+          contagem: 1,
+        },
+      ]),
+    );
+  });
+
+  it('no key: the refused pair prints its request line with every id position blanked', () => {
+    for (const [linha, esperada] of [
+      ['GET /v1/grades/7777/ 200', 'GET /v1/grades/<id>/'],
+      [LINHA_IMAGENS, 'GET /v1/produto_imagem/?produto=<id>&limit=1'],
+    ] as const) {
+      const r = capturaCom(null, linha, IMAGENS);
+      expect(achados(r)).toEqual(['.chave-fixtures :: sem-chave-de-fixtures']);
+      expect(r.resumo?.linhaRequisicao).toBe(esperada);
+      expect(JSON.stringify(r)).not.toMatch(/\b(?:7777|5555)\b/);
+    }
+  });
+
+  it('a catalogue error body that keeps a number is refused: it may echo a resource id', () => {
+    expect(achados(captura('GET /v1/grades/7777/ 404', { error: '404', id: 7777 }))).toEqual([
+      'resposta.corpo.id :: numero-em-erro-do-catalogo',
+    ]);
+    expect(achados(captura('GET /v1/categoria/9191/ 404', { error: { categoria: 9191 } }))).toEqual(
+      ['resposta.corpo.error.categoria :: numero-em-erro-do-catalogo'],
+    );
+  });
+
+  it('NEAR-MISS: a catalogue error body whose only number is its status is written, unmapped', () => {
+    const env = envelope(captura('GET /v1/grades/7777/ 404', { status: 404, sucesso: false }));
+    expect(env.requisicao.caminho).toBe(`/v1/grades/${String(f(7777))}/`);
+    expect(env.resposta.corpo).toEqual({ status: 404, sucesso: false });
+    // The 401 shape of the corpus: a code string equal to the status.
+    expect(achados(captura('GET /v1/categoria/?limit=1 401', { Code: '401' }))).toEqual([]);
+  });
+
+  it('NEAR-MISS: a number the error walk FAKED (1e7 or more) is no finding: the fake carries nothing', () => {
+    const env = envelope(captura('GET /v1/categoria/9/ 404', { referencia: 123_456_789 }));
+    expect(env.resposta.corpo).toEqual({ referencia: 0 });
+  });
+
+  it('a catalogue error body that is a bare number is refused at the body itself', () => {
+    expect(achados(captura('GET /v1/categoria/9191/ 404', '9191'))).toEqual([
+      // The leaf table names the root `<raiz>`.
+      'resposta.corpo.<raiz> :: numero-em-erro-do-catalogo',
+    ]);
+  });
+
+  it('a single collision (one second id on a taken pseudonym) refuses the pair', () => {
+    const [a, b2] = colisaoDePseudonimo();
+    expect(achados(captura('GET /v1/marca/ 200', { objects: [{ id: a }, { id: b2 }] }))).toEqual([
+      'pseudonimos :: colisao-de-pseudonimo',
+    ]);
+  });
+
+  it('NEAR-MISS: an estrutural error body keeps its numbers, as before', () => {
+    expect(achados(captura('GET /v1/pedido/5/ 404', { id: 5 }))).toEqual([]);
+  });
+
+  it('a catalogue resource on a path the catalogue class does not admit is refused', () => {
+    for (const linha of [
+      'GET /v1/grades/7777/variacoes/ 200',
+      'GET /v1/produto/7/fotos/ 200',
+      'GET /v1/categoria/7/filhas/ 200',
+    ]) {
+      expect(achados(captura(linha, { objects: [{ id: 31 }] })), linha).toEqual([
+        '.txt:1 :: catalogo-fora-da-classe',
+      ]);
+    }
+    // Near-miss: an estrutural path of another resource is converted as before.
+    expect(achados(captura('GET /v1/pedido/5/ 200', { numero: 5 }))).toEqual([]);
   });
 });
 

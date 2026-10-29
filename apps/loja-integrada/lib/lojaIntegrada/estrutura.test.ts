@@ -205,6 +205,9 @@ const EXTERNOS_DO_SANITIZADOR = new Set([
   'node:fs',
   'node:path',
   'node:url',
+  // The catalogue-id pseudonyms (`sanitizacao/pseudonimo.ts`): an HMAC, and the
+  // random bytes of a new key. Computation only; it opens nothing.
+  'node:crypto',
 ]);
 
 /** The modules that hold the credential, the context or Firestore handles. */
@@ -636,6 +639,8 @@ describe('lib/lojaIntegrada layout', () => {
         'sanitizacao/folhas.ts',
         'sanitizacao/executar.ts',
         'sanitizacao/escrita.ts',
+        'sanitizacao/pseudonimo.ts',
+        'sanitizacao/sistemaNode.ts',
         'fixtures/piiScan.ts',
         'fixtures/wireCorpus.ts',
       ]),
@@ -739,6 +744,8 @@ describe('lib/lojaIntegrada layout', () => {
         'scripts/sanitizar.ts',
         'lib/lojaIntegrada/sanitizacao/executar.ts',
         'lib/lojaIntegrada/sanitizacao/escrita.ts',
+        'lib/lojaIntegrada/sanitizacao/pseudonimo.ts',
+        'lib/lojaIntegrada/sanitizacao/sistemaNode.ts',
         'lib/lojaIntegrada/fixtures/piiScan.ts',
         'lib/lojaIntegrada/core/redacao.ts',
         // The shared comparator leaf, which imports nothing.
