@@ -503,6 +503,40 @@ describe('the CREATE', () => {
     expect(montar(null).eventos).toEqual([]);
   });
 
+  it('★ PR 5-c1: a card brand the shared fold does not know ⇒ 99 + ONE count event, never the brand; a known one, a Pix leg or no brand ⇒ none', () => {
+    const comMarca = (metodo: string, cardBrand?: string) =>
+      montar(
+        null,
+        entrada({
+          execucoes: legs(
+            execucaoAmazon(metodo, '20.00', cardBrand === undefined ? {} : { cardBrand }),
+          ),
+        }),
+      );
+    // Amazon's CamelCase compound spelling (capture C1 shows `MasterCard`):
+    // neither a BANDEIRA member name nor an alias once lower-cased.
+    for (const marca of ['AmericanExpress', 'DinersClub']) {
+      const r = comMarca('CreditCard', marca);
+      expect(corpoDe(r).cartao).toMatchObject({ bandeira: BANDEIRA.outros });
+      expect(r.eventos).toEqual(['bandeira-desconhecida']);
+      expect(JSON.stringify(r.eventos)).not.toContain(marca);
+    }
+    // NEAR-MISS: the real C1 spellings are known and count nothing.
+    for (const [marca, bandeira] of [
+      ['MasterCard', BANDEIRA.mastercard],
+      ['Visa', BANDEIRA.visa],
+      ['Elo', BANDEIRA.elo],
+    ] as const) {
+      const r = comMarca('CreditCard', marca);
+      expect(corpoDe(r).cartao).toMatchObject({ bandeira });
+      expect(r.eventos).toEqual([]);
+    }
+    // NEAR-MISS: a Pix leg never carries a brand, so an unknown one counts nothing;
+    // neither does a card leg with no brand at all.
+    expect(comMarca('Pix', 'AmericanExpress').eventos).toEqual([]);
+    expect(comMarca('CreditCard').eventos).toEqual([]);
+  });
+
   it('★ split legs ⇒ ONE document, the largest leg’s forma, pagamento-dividido; another array order ⇒ the SAME document', () => {
     const a = execucaoAmazon('CreditCard', '5.00', { authorizationCode: 'A1' });
     const b = execucaoAmazon('Pix', '15.00', { authorizationCode: 'B1' });

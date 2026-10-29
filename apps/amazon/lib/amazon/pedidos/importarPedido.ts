@@ -413,6 +413,7 @@ const MENSAGEM_DO_CODIGO: Readonly<Record<CodigoLogPedidoAmazon, string>> = {
   'frete-armazenado-ilegivel': 'frete gravado ilegível; mantido como estava',
   'pagamento-ressuscitado': 'pagamento estornado voltou a aprovado com o pedido',
   'cnpj-instituicao-recusado': 'CNPJ da instituição de pagamento recusado; gravado vazio',
+  'bandeira-desconhecida': 'bandeira do cartão desconhecida; gravada como 99 (outros)',
   'pacote-nao-mapeado':
     'pacote com situação desconhecida ou sem referência; nenhuma situação de pacote aplicada ao frete',
   'nota-fiscal-nao-informada': 'situação da nota fiscal não informada; frete não movido',
