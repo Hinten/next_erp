@@ -3,12 +3,22 @@
  * `fakeDb.ts` rule: nothing outside a `*.test.ts` imports this) — shared by the catalogue core's
  * suite (`catalogo/catalogo.test.ts`) and the four catalogue route suites.
  *
- * Every value is invented, in the shape the sanitized captures show (`/v1/categoria/<id>` parents,
- * `/api/v1/grades/<g>` option grades). Nothing here comes from a capture, and nothing reaches the
- * network: the platform is a `fetch` the test hands the context's client or stubs globally (D17).
+ * Every synthetic value is invented, in the shape the sanitized captures show (`/v1/categoria/<id>`
+ * parents, `/api/v1/grades/<g>` option grades). The C9 captures are reached only through the
+ * corpus loader ({@link capturaC9}), and nothing reaches the network: the platform is a `fetch`
+ * the test hands the context's client or stubs globally (D17).
  */
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { URL_BASE_LI } from '@delfrance/integrations-loja-integrada';
+import { z } from 'zod';
 
+import {
+  DIRETORIO_WIRE_LI,
+  type EnvelopeFixtureLi,
+  lerFixtureLi,
+  listarArquivosDoCorpusLi,
+} from '../fixtures/wireCorpus';
 import type { DocData } from './fakeDb';
 
 /** What the scripted platform answers for one request: a status and a JSON body. */
@@ -140,3 +150,59 @@ export function detalheGradeLi(
     })),
   };
 }
+
+/* -------------------------------------------------------------------------- */
+/*                      The C9 captures, as a scripted platform                 */
+/* -------------------------------------------------------------------------- */
+
+/** One C9 capture, through the corpus loader (never parsed by hand). */
+export function capturaC9(nome: string): EnvelopeFixtureLi {
+  if (!listarArquivosDoCorpusLi().includes(nome)) {
+    throw new Error(`${nome}: missing from the corpus`);
+  }
+  const leitura = lerFixtureLi(readFileSync(join(DIRETORIO_WIRE_LI, nome), 'utf8'));
+  // ⚠️ Never print a failed reading: its `nao-json` arm carries the raw text.
+  if (!leitura.ok) throw new Error(`${nome}: not a valid fixture envelope`);
+  return leitura.data;
+}
+
+/**
+ * A responder for {@link plataformaCatalogoLi} answering ONLY a request equal to one of the named
+ * captures' (path and query pairs, in order) with that capture's status and body; anything else
+ * is a 500, so a request built differently fails loudly.
+ */
+export function respostasDasCapturasC9(
+  nomes: readonly string[],
+): (chamada: ChamadaCatalogoLi) => RespostaCatalogoLi {
+  const capturas = nomes.map(capturaC9);
+  return (chamada) => {
+    const c = capturas.find(
+      (e) =>
+        e.requisicao.caminho === chamada.caminho &&
+        e.requisicao.query.length === chamada.query.length &&
+        e.requisicao.query.every(
+          ([k, v], i) => chamada.query[i]?.[0] === k && chamada.query[i]?.[1] === v,
+        ),
+    );
+    return c === undefined
+      ? { status: 500, corpo: { erro: 'sem captura' } }
+      : { status: c.resposta.status, corpo: c.resposta.corpo };
+  };
+}
+
+/** The grade id a captured detail request names (`/v1/grades/<id>/`), computed, never copied. */
+export function gradeIdDaCapturaC9(nome: string): string {
+  const id = /^\/v1\/grades\/(\d+)\/$/.exec(capturaC9(nome).requisicao.caminho)?.[1];
+  if (id === undefined) throw new Error(`${nome}: not a grade detail capture`);
+  return id;
+}
+
+/** The `meta.total_count` a captured list page announces. */
+export function totalDaCapturaC9(nome: string): number {
+  const r = metaDaLista.safeParse(capturaC9(nome).resposta.corpo);
+  // The Zod error is never printed: it can quote the value it refused.
+  if (!r.success) throw new Error(`${nome}: no meta.total_count`);
+  return r.data.meta.total_count;
+}
+
+const metaDaLista = z.object({ meta: z.object({ total_count: z.number() }) });
