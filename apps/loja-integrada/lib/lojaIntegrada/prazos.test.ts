@@ -3,6 +3,7 @@ import path from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 import { PRAZO_LI_MS } from '@delfrance/integrations-loja-integrada';
+import { MAX_PAGINAS_CATALOGO_LI } from '@delfrance/schemas';
 
 import { RITMO_LEITURA_LI_MS } from './core/ritmo';
 import { CONCORRENCIA_REDRIVE_LI, LIMITE_REDRIVE_LI } from './notificacoes/notificacao';
@@ -59,6 +60,32 @@ const ROTAS_DE_PEDIDOS: readonly (readonly [string, number, number])[] = [
   ['app/api/marketplace/loja-integrada/pedidos/[pedidoId]/rota-etiqueta/route.ts', 0, 0],
   ['lib/lojaIntegrada/pedidos/rotaEtiqueta.ts', 0, 0],
 ];
+
+/**
+ * The catalogue routes (step 10) and the core they delegate to, with how many context loads
+ * (`loadLojaIntegradaContext(`) each file makes. The route files make none and read nothing: the
+ * core makes ONE context load and names each package catalogue GET exactly once (the one list or
+ * detail a request reads), and the cache module makes no read at all.
+ */
+const ROTAS_DO_CATALOGO: readonly (readonly [string, number])[] = [
+  ['app/api/marketplace/loja-integrada/conta/[id]/categorias/route.ts', 0],
+  ['app/api/marketplace/loja-integrada/conta/[id]/marcas/route.ts', 0],
+  ['app/api/marketplace/loja-integrada/conta/[id]/grades/route.ts', 0],
+  ['app/api/marketplace/loja-integrada/conta/[id]/grades/[gradeId]/route.ts', 0],
+  ['lib/lojaIntegrada/catalogo/catalogo.ts', 1],
+  ['lib/lojaIntegrada/catalogo/cache.ts', 0],
+];
+
+/** The core of the catalogue routes: the one file that may name the package's catalogue GETs. */
+const NUCLEO_DO_CATALOGO = 'lib/lojaIntegrada/catalogo/catalogo.ts';
+
+/** The package's catalogue GETs, each named once by the core and by nothing else here. */
+const LEITURAS_DO_CATALOGO = [
+  'listarCategoriasLi(',
+  'listarMarcasLi(',
+  'listarGradesLi(',
+  'buscarGradeLi(',
+] as const;
 
 /** The three conta routes, and how many validating calls and re-drives each may make. */
 const ROTAS: readonly (readonly [string, number, number])[] = [
@@ -174,6 +201,47 @@ describe('the pedidos routes fit inside the backend ceiling', () => {
       expect(fonte, arquivo).not.toMatch(
         /criarClienteLeituraLi|validarPersonalToken|listarHistoricoSituacaoLi|buscarProdutoPorIdExternoLi|paginarLi|\.get\(\s*\{\s*operacao|fetch\(/,
       );
+    }
+  });
+});
+
+/**
+ * The catalogue routes (step 10). A list read is at most `MAX_PAGINAS_CATALOGO_LI` paced pages,
+ * each the pacer's wait (outside the call's deadline, `core/ritmo.ts`) plus one call bounded by
+ * `PRAZO_LI_MS.leitura`; a grade detail is one such page. The context's handful of Firestore reads
+ * (the conta, the credential once per page) and, on a 401, the park's few writes sit inside the
+ * margin. The shared load never takes the caller's signal, so a closed tab does not shorten it:
+ * the whole worst case must fit the ceiling.
+ */
+describe('the catalogue routes fit inside the backend ceiling', () => {
+  it('MAX_PAGINAS_CATALOGO_LI × (the pacer + PRAZO_LI_MS.leitura) + margin ≤ the smallest ceiling', () => {
+    const { pinados } = configDoBackend();
+    const tetoS = pinados.length > 0 ? Math.min(...pinados) : TETO_APP_HOSTING_PADRAO_S;
+    expect(MAX_PAGINAS_CATALOGO_LI).toBeGreaterThan(1);
+    const porPaginaMs = RITMO_LEITURA_LI_MS + PRAZO_LI_MS.leitura;
+    expect(MAX_PAGINAS_CATALOGO_LI * porPaginaMs + MARGEM_MS).toBeLessThanOrEqual(tetoS * 1000);
+    // Today's numbers: 10 × (2 s + 20 s) + 30 s = 250 s under the 300 s default.
+    expect(MAX_PAGINAS_CATALOGO_LI * porPaginaMs + MARGEM_MS).toBe(250_000);
+  });
+
+  it('the route files read nothing; the core makes ONE context load and names each catalogue GET once; nothing else reaches Loja Integrada', () => {
+    for (const [arquivo, contextos] of ROTAS_DO_CATALOGO) {
+      const fonte = readFileSync(path.join(APP_DIR, arquivo), 'utf8');
+      expect(contar(fonte, 'loadLojaIntegradaContext('), arquivo).toBe(contextos);
+      for (const leitura of LEITURAS_DO_CATALOGO) {
+        expect(contar(fonte, leitura), `${arquivo}: ${leitura}`).toBe(
+          arquivo === NUCLEO_DO_CATALOGO ? 1 : 0,
+        );
+      }
+      // No other way out: no raw fetch, no client of its own, no pager, no other package read.
+      expect(fonte, arquivo).not.toMatch(
+        /criarClienteLeituraLi|validarPersonalToken|paginarLi|buscarPedidoLi|listarHistoricoSituacaoLi|buscarProdutoPorIdExternoLi|\.get\(\s*\{\s*operacao|fetch\(/,
+      );
+    }
+    // Anti-vacuity: each route delegates to the core, exactly once.
+    for (const [arquivo] of ROTAS_DO_CATALOGO.filter(([a]) => a.startsWith('app/'))) {
+      const fonte = readFileSync(path.join(APP_DIR, arquivo), 'utf8');
+      expect(contar(fonte, 'lerCatalogoLi('), arquivo).toBe(1);
     }
   });
 });
