@@ -58,6 +58,10 @@
  * | a token saved during the load ({@link LiCredencialTrocadaNaLeituraError}) | 502 `lojaIndisponivel` + one WARN |
  * | anything else (`LiConfigError`, a 3xx, a 400, Firestore) | rethrown (a 500) |
  *
+ * A refused credential (a 401, or a 403) is answered by the SHARED load itself, once per load
+ * ({@link LiRecusaTratadaNaCargaError}): the park never waits on a caller, so closing the tab
+ * mid-read still parks the conta and raises its reconnection aviso.
+ *
  * The CLASS the catalogue's own answers carry (`ClasseFalhaDeLeituraLi`): a 403 not parked and a
  * grade 404 are `nao-autorizado` — the read ran, and what it asked for was refused or is not
  * there; a retry changes nothing (the paid re-check's 404 is the same class). The paging ceiling
@@ -85,6 +89,7 @@ import type { Firestore } from 'firebase-admin/firestore';
 import {
   type LiLeituraClient,
   buscarGradeLi,
+  LiAuthError,
   listarCategoriasLi,
   listarGradesLi,
   listarMarcasLi,
@@ -184,6 +189,21 @@ export class LiGradeDivergenteError extends Error {
   constructor() {
     super('A Loja Integrada respondeu outra grade.');
     this.name = 'LiGradeDivergenteError';
+  }
+}
+
+/**
+ * The store refused the load's credential (a 401, or a 403), and the SHARED load already answered
+ * it through the mapper: parked the conta where this resource parks, once per load. Carries that
+ * answer to every waiter. Never cached (the cache keeps no failure).
+ */
+export class LiRecusaTratadaNaCargaError extends Error {
+  readonly falha: FalhaDeLeituraLi;
+
+  constructor(falha: FalhaDeLeituraLi) {
+    super('A Loja Integrada recusou a credencial durante a leitura do catálogo.');
+    this.name = 'LiRecusaTratadaNaCargaError';
+    this.falha = falha;
   }
 }
 
@@ -348,6 +368,31 @@ function ateOChamadorDesistir<V>(promessa: Promise<V>, sinal: AbortSignal | unde
 }
 
 /**
+ * The shared load's own handling of a refused credential. A park must not depend on a caller
+ * still waiting: when every caller has gone away (499), their abort race absorbs the load's
+ * rejection, so a park left to the waiters would never run, and the conta would stay unparked
+ * with no reconnection aviso. So the load itself answers a `LiAuthError` through the mapper
+ * (parking where this resource parks, once per load, not once per waiter) and hands that answer
+ * on as {@link LiRecusaTratadaNaCargaError}. Anything else is rethrown unchanged, for each waiter
+ * to answer.
+ */
+async function comRecusaTratadaNaCarga<V>(
+  carga: Promise<V>,
+  deps: CatalogoDeps,
+  contexto: ContextoLojaIntegrada,
+  recurso: RecursoCatalogoLi,
+): Promise<V> {
+  try {
+    return await carga;
+  } catch (err) {
+    if (!(err instanceof LiAuthError)) throw err;
+    const semResposta = await tratarFalhaDeLeituraLi(deps, err, contexto, politicaDe(recurso));
+    if (semResposta.tipo === 'alheia') throw semResposta.erro;
+    throw new LiRecusaTratadaNaCargaError(semResposta.falha);
+  }
+}
+
+/**
  * Read one catalogue resource of one conta (module header). Everything it cannot answer is
  * rethrown unchanged: a Firestore failure, our own misconfiguration, a refusal of our request, a
  * 404 on a list.
@@ -391,11 +436,16 @@ export async function lerCatalogoLi<R extends RecursoCatalogoLi>(
     if (deps.sinal?.aborted === true) return { tipo: 'cancelado' };
 
     // 4. The shared load, raced against this caller's abort.
-    const cliente = contexto.cliente;
+    const contextoDaCarga = contexto;
     const carregar = CARREGADORES[recurso];
     const resposta = await ateOChamadorDesistir(
       cache.get(chave, async () => {
-        const carga = await carregar(cliente, pedido, deps.agoraMs);
+        const carga = await comRecusaTratadaNaCarga(
+          carregar(contextoDaCarga.cliente, pedido, deps.agoraMs),
+          deps,
+          contextoDaCarga,
+          recurso,
+        );
         if (vistas.some((v) => (v ?? SEM_VERSAO_CATALOGO_LI) !== versaoDaChave)) {
           throw new LiCredencialTrocadaNaLeituraError(recurso);
         }
@@ -421,11 +471,17 @@ export async function lerCatalogoLi<R extends RecursoCatalogoLi>(
       deps.logger?.warn(`${LOG} a Loja Integrada respondeu outra grade; nada foi guardado`, linha);
       return { tipo: 'falha', falha: LEITURA_NAO_CONFIAVEL };
     }
-    // A 401 (and a 403 on the category list) parks the conta first; anything else is the shared
-    // mapper's, under this resource's choices. What it does not own is rethrown unchanged.
-    const semResposta = await tratarFalhaDeLeituraLi(deps, err, contexto, politicaDe(recurso));
-    if (semResposta.tipo === 'alheia') throw semResposta.erro;
-    const falha = semResposta.falha;
+    // A refused credential was answered by the shared load itself (a 401, and a 403 on the
+    // category list, parked there once); anything else is the shared mapper's, under this
+    // resource's choices. What it does not own is rethrown unchanged.
+    let falha: FalhaDeLeituraLi;
+    if (err instanceof LiRecusaTratadaNaCargaError) {
+      falha = err.falha;
+    } else {
+      const semResposta = await tratarFalhaDeLeituraLi(deps, err, contexto, politicaDe(recurso));
+      if (semResposta.tipo === 'alheia') throw semResposta.erro;
+      falha = semResposta.falha;
+    }
     if (falha.tipo === 'loja' && CODIGOS_COM_AVISO.has(falha.code)) {
       deps.logger?.warn(`${LOG} leitura do catálogo sem resposta`, {
         ...linha,

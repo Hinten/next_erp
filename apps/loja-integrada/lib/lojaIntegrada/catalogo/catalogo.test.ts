@@ -603,6 +603,83 @@ describe('lerCatalogoLi — the cache', () => {
     },
   );
 
+  it.each([
+    ['a 401 on grades', 'grades', 401],
+    ['a 401 on the grade detail', 'grade', 401],
+    ['a 403 on categorias', 'categorias', 403],
+  ] as const)(
+    '⚠️ %s after EVERY caller went away still parks the conta: the shared load handles the refusal itself',
+    async (_nome, recurso, status) => {
+      const segura = portao();
+      const chegou = portao();
+      const p = plataforma(async () => {
+        chegou.abrir();
+        await segura.aberto;
+        return { status, corpo: { erro: 'recusado' } };
+      });
+      const controle = new AbortController();
+
+      const a = ler(deps({ fetch: p.fetch, sinal: controle.signal }), pedidoDe(recurso));
+      await chegou.aberto;
+      controle.abort();
+      expect(await a).toEqual({ tipo: 'cancelado' });
+      expect(db.ler(caminhoCredencial(CONTA))?.reconexaoPendente).toBeNull();
+
+      segura.abrir();
+      await vi.waitFor(() => {
+        expect(db.ler(caminhoCredencial(CONTA))?.reconexaoPendente).toMatchObject({ status });
+      });
+      expect(p.chamadas).toHaveLength(1);
+    },
+  );
+
+  it('⚠️ NEAR-MISS: a 403 on grades after the first caller went away parks NOTHING (only categorias parks)', async () => {
+    const segura = portao();
+    const chegou = portao();
+    const p = plataforma(async () => {
+      chegou.abrir();
+      await segura.aberto;
+      return { status: 403, corpo: { erro: 'proibido' } };
+    });
+    const controle = new AbortController();
+
+    const a = ler(deps({ fetch: p.fetch, sinal: controle.signal }), { recurso: 'grades' });
+    await chegou.aberto;
+    // A second caller keeps waiting, so the test knows when the shared load has settled.
+    const b = ler(deps({ fetch: p.fetch }), { recurso: 'grades' });
+    controle.abort();
+    expect(await a).toEqual({ tipo: 'cancelado' });
+    segura.abrir();
+
+    expect(falhaDe(await b)).toMatchObject({ code: CODIGO_ERRO_LI.recursoNaoPermitido });
+    expect(db.ler(caminhoCredencial(CONTA))?.reconexaoPendente).toBeNull();
+    expect(db.escritas).toEqual([]);
+    expect(p.chamadas).toHaveLength(1);
+  });
+
+  it('two callers waiting on ONE load that gets a 401 both get the parked answer', async () => {
+    const segura = portao();
+    const chegou = portao();
+    const p = plataforma(async () => {
+      chegou.abrir();
+      await segura.aberto;
+      return { status: 401, corpo: { erro: 'token' } };
+    });
+
+    const a = ler(deps({ fetch: p.fetch }), { recurso: 'grades' });
+    await chegou.aberto;
+    const b = ler(deps({ fetch: p.fetch }), { recurso: 'grades' });
+    segura.abrir();
+
+    for (const r of [await a, await b]) {
+      expect(r.tipo === 'falha' && r.falha.tipo === 'conta' && r.falha.erro).toBeInstanceOf(
+        LiContaParadaError,
+      );
+    }
+    expect(db.ler(caminhoCredencial(CONTA))?.reconexaoPendente).toMatchObject({ status: 401 });
+    expect(p.chamadas).toHaveLength(1);
+  });
+
   it('⚠️ NEAR-MISS: a caller already gone, but the CONTEXT failing on its own ⇒ that failure, never `cancelado`', async () => {
     const p = plataforma();
     const controle = new AbortController();
