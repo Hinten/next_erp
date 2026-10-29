@@ -3,6 +3,9 @@ import { createEvent, fireEvent, render, screen, within } from '@testing-library
 import type { Firestore } from 'firebase/firestore';
 import {
   CAMPO_RASCUNHO_SHOPEE,
+  ehRascunhoShopee,
+  estadoPublicacaoRascunhoShopee,
+  vinculoShopeeEhDaConta,
   type CampoRascunhoShopee,
   type MarcaRascunhoShopee as ParMarcaRascunhoShopee,
 } from '@delfrance/schemas';
@@ -18,6 +21,7 @@ import {
   FRASE_RASCUNHO_EM_KIT_VIRTUAL_SHOPEE,
   FRASE_RASCUNHO_INCERTO_SHOPEE,
   FRASE_RASCUNHO_NOVO_SHOPEE,
+  FRASE_VOLTAR_CATEGORIA_GRAVADA_SHOPEE,
 } from '@/lib/shopee/anuncioProduto';
 import {
   comCampoRascunhoShopee,
@@ -51,7 +55,9 @@ vi.mock('./CategoriaRascunhoShopee', () => ({
     return <div data-testid="stub-categoria" />;
   },
 }));
-vi.mock('./MarcaRascunhoShopee', () => ({
+vi.mock('./MarcaRascunhoShopee', async (importOriginal) => ({
+  // The REAL display rule (`rotuloDaMarcaRascunhoShopee`): a conta-less block reads it.
+  ...(await importOriginal<typeof import('./MarcaRascunhoShopee')>()),
   MarcaRascunhoShopee: (props: MarcaRascunhoShopeeProps) => {
     h.marca = props;
     return <div data-testid="stub-marca" />;
@@ -71,17 +77,25 @@ const RAIZ = `shopee-rascunho-${LINK}`;
 /** MILLISECONDS — the instant every reading below is taken at (a fixture, never the clock). */
 const AGORA = Date.UTC(2026, 9, 28, 12, 0, 0);
 
-/** A stored draft as P5 mints it: no listing, the produto's title, nothing chosen. */
+/**
+ * A MINIMAL stored draft — only keys P5's create (`criarRascunhoShopee`,
+ * apps/shopee `anuncios/rascunho.ts`) writes, and only those the form reads:
+ * the canonical conta ref, no listing, the produto's title, nothing chosen
+ * (`marca: null` ⇒ both brand keys `null`), `attributes: null`. Every other key
+ * the create writes is a schema default or a stamp the form never reads. No
+ * `publicacaoEmCurso`: the create leaves it ABSENT (a released lock writes
+ * `null`; both read `livre`). Never `integracaoId`: no link carries it.
+ */
 function rascunho(extra: Record<string, unknown> = {}): Record<string, unknown> {
   return {
+    contaProdutoShopeeOuterRef: `documents/integracao/${CONTA}`,
     item_id: null,
-    integracaoId: CONTA,
     item_name: 'Camiseta',
     description: null,
     category_id: null,
     brand_id: null,
     original_brand_name: null,
-    publicacaoEmCurso: null,
+    attributes: null,
     ...extra,
   };
 }
@@ -128,6 +142,7 @@ function show(props: Partial<RascunhoShopeeProps> = {}, emFormulario = false) {
       limites={null}
       divergencias={[]}
       podeEditar
+      somenteDescartar={false}
       emVoo={null}
       resultado={null}
       onCampo={cb.onCampo}
@@ -341,14 +356,75 @@ describe('RascunhoShopee — the publish reading (through `bloco` only)', () => 
     expect(cb.onDescartar).toHaveBeenCalledWith('confirmar');
   });
 
-  it('a category changed before the reading turned `incerta` cannot be saved, and it says why', () => {
+  it('a category changed before the reading turned `incerta` cannot be saved, and it says why — naming the ONE exit the block offers, «Desfazer alterações», which is enabled', () => {
     const link = rascunho({ category_id: 100087, criacaoIncertaDesde: AGORA - 600_000 });
-    const edicao = comCampoRascunhoShopee(entrada(link), CAMPO_RASCUNHO_SHOPEE.categoryId, 100090);
-    show({ bloco: bloco({ link, edicao }) });
+    const edicao = comCampoRascunhoShopee(
+      comCampoRascunhoShopee(entrada(link), CAMPO_RASCUNHO_SHOPEE.categoryId, 100090),
+      CAMPO_RASCUNHO_SHOPEE.itemName,
+      'Camiseta nova',
+    );
+    const cb = show({ bloco: bloco({ link, edicao }) });
+    const impedimento = screen.getByTestId(`${RAIZ}-impedimento`).textContent;
+    expect(impedimento).toBe(FRASE_CATEGORIA_TRAVADA_SHOPEE);
+    // The sentence names the exit, and that exit IS on screen and acts.
+    expect(impedimento).toContain('«Desfazer alterações»');
+    expect(botao('Salvar rascunho').disabled).toBe(true);
+    expect(h.categoria?.editavel).toBe(false);
+    expect(botao('Desfazer alterações').disabled).toBe(false);
+    fireEvent.click(botao('Desfazer alterações'));
+    expect(cb.onDesfazer).toHaveBeenCalledTimes(1);
+  });
+
+  it('R1-rule7#5: the put-back keeps the other edits — Categoria gets `onVoltar`, which picks the HELD category, and the sentence naming it shows', () => {
+    const link = rascunho({ category_id: 100087, criacaoIncertaDesde: AGORA - 600_000 });
+    const edicao = comCampoRascunhoShopee(
+      comCampoRascunhoShopee(entrada(link), CAMPO_RASCUNHO_SHOPEE.categoryId, 100090),
+      CAMPO_RASCUNHO_SHOPEE.itemName,
+      'Camiseta nova',
+    );
+    const cb = show({ bloco: bloco({ link, edicao }) });
+    expect(screen.getByTestId(`${RAIZ}-voltar-categoria`).textContent).toBe(
+      FRASE_VOLTAR_CATEGORIA_GRAVADA_SHOPEE,
+    );
+    expect(h.categoria?.onVoltar).not.toBeNull();
+    h.categoria?.onVoltar?.();
+    expect(cb.onCampo).toHaveBeenCalledWith(CAMPO_RASCUNHO_SHOPEE.categoryId, 100087);
+  });
+
+  it('NEAR-MISS: the same stranded change while a write is in flight — the travada sentence stays, but neither the put-back nor the sentence naming it (never an exit the block does not offer)', () => {
+    const link = rascunho({ category_id: 100087, criacaoIncertaDesde: AGORA - 600_000 });
+    const edicao = comCampoRascunhoShopee(
+      comCampoRascunhoShopee(entrada(link), CAMPO_RASCUNHO_SHOPEE.categoryId, 100090),
+      CAMPO_RASCUNHO_SHOPEE.itemName,
+      'Camiseta nova',
+    );
+    show({ bloco: bloco({ link, edicao, ocupado: true }) });
     expect(screen.getByTestId(`${RAIZ}-impedimento`).textContent).toBe(
       FRASE_CATEGORIA_TRAVADA_SHOPEE,
     );
-    expect(botao('Salvar rascunho').disabled).toBe(true);
+    expect(h.categoria?.onVoltar).toBeNull();
+    expect(screen.queryByTestId(`${RAIZ}-voltar-categoria`)).toBeNull();
+  });
+
+  it('NEAR-MISS: no unsaved category change (a title-only `incerta` edit) ⇒ no put-back and no sentence naming it', () => {
+    const incerta = rascunho({ category_id: 100087, criacaoIncertaDesde: AGORA - 600_000 });
+    const soTitulo = comCampoRascunhoShopee(entrada(incerta), CAMPO_RASCUNHO_SHOPEE.itemName, 'X');
+    show({ bloco: bloco({ link: incerta, edicao: soTitulo }) });
+    expect(h.categoria?.onVoltar).toBeNull();
+    expect(screen.queryByTestId(`${RAIZ}-voltar-categoria`)).toBeNull();
+  });
+
+  it('NEAR-MISS: a category change while `livre` is a plain pick — no put-back offered', () => {
+    const livre = rascunho({ category_id: 100087 });
+    const trocada = comCampoRascunhoShopee(
+      entrada(livre),
+      CAMPO_RASCUNHO_SHOPEE.categoryId,
+      100090,
+    );
+    show({ bloco: bloco({ link: livre, edicao: trocada }) });
+    expect(h.categoria?.editavel).toBe(true);
+    expect(h.categoria?.onVoltar).toBeNull();
+    expect(screen.queryByTestId(`${RAIZ}-voltar-categoria`)).toBeNull();
   });
 
   it('NEAR-MISS: a title edit in `incerta` saves (only `category_id` is locked)', () => {
@@ -560,5 +636,77 @@ describe('RascunhoShopee — what blocks a save, and the last answer', () => {
     show({ bloco: bloco({ ocupado: true }), emVoo: 'descartar-rascunho' });
     expect(botao('Descartar').getAttribute('data-loading')).toBe('true');
     expect(botao('Salvar rascunho').getAttribute('data-loading')).toBeNull();
+  });
+});
+
+describe('RascunhoShopee — the fixture is a shape P5 writes (R3-tests#7)', () => {
+  it('belongs to its conta by the canonical ref, reads `livre`, and carries no key no link has', () => {
+    const link = rascunho();
+    expect(ehRascunhoShopee(link)).toBe(true);
+    expect(vinculoShopeeEhDaConta(link, CONTA)).toBe(true);
+    expect(estadoPublicacaoRascunhoShopee(link, AGORA)).toStrictEqual({ tipo: 'livre' });
+    expect(link).not.toHaveProperty('integracaoId');
+    expect(link).not.toHaveProperty('publicacaoEmCurso');
+    expect(link.attributes).toBeNull();
+  });
+
+  it('NEAR-MISS: it is NOT another conta’s draft — a "not shown for another conta" test cannot pass vacuously', () => {
+    expect(vinculoShopeeEhDaConta(rascunho(), 'int-2')).toBe(false);
+  });
+});
+
+describe('RascunhoShopee — a draft whose conta document is gone (R2-drafts#2, #6)', () => {
+  const semConta = (over: Partial<EntradaDoBlocoRascunhoShopee> = {}) =>
+    bloco({ podeEditar: false, permiteDescarte: true, ...over });
+
+  it('`somenteDescartar`: «Descartar» ALONE, read-only fields, and it fires the block’s own discard', () => {
+    const cb = show({
+      bloco: semConta(),
+      podeEditar: false,
+      somenteDescartar: true,
+      contaId: null,
+    });
+    expect(nomesDosBotoes()).toEqual(['Descartar']);
+    expect(titulo().disabled).toBe(true);
+    expect(botao('Descartar').disabled).toBe(false);
+    fireEvent.click(botao('Descartar'));
+    expect(cb.onDescartar).toHaveBeenCalledWith('confirmar');
+  });
+
+  it('an `incerta` one still asks for the Seller-Centre attestation', () => {
+    const link = rascunho({ criacaoIncertaDesde: AGORA - 600_000 });
+    const cb = show({
+      bloco: semConta({ link }),
+      podeEditar: false,
+      somenteDescartar: true,
+      contaId: null,
+    });
+    fireEvent.click(botao('Descartar'));
+    expect(cb.onDescartar).toHaveBeenCalledWith('atestar');
+  });
+
+  it('NEAR-MISS: without `somenteDescartar` a read-only block has NO button; with `podeEditar` the flag changes nothing', () => {
+    show({ bloco: semConta(), podeEditar: false, somenteDescartar: false });
+    expect(nomesDosBotoes()).toEqual([]);
+  });
+
+  it('NEAR-MISS: an editor with the flag still gets the three buttons, once', () => {
+    show({ somenteDescartar: true });
+    expect(nomesDosBotoes()).toEqual(['Salvar rascunho', 'Desfazer alterações', 'Descartar']);
+  });
+
+  it('`contaId: null`: no brand picker mounts (no shortlist listener) — the held pair as text; the category gets no conta', () => {
+    const link = rascunho({ category_id: 100087, brand_id: 77, original_brand_name: 'Acme' });
+    show({ bloco: semConta({ link }), podeEditar: false, somenteDescartar: true, contaId: null });
+    expect(h.marca).toBeNull();
+    expect(screen.getByTestId(`shopee-rascunho-marca-${LINK}`).textContent).toContain('Acme');
+    expect(h.categoria?.contaId).toBeNull();
+    expect(h.categoria?.categoryId).toBe(100087);
+  });
+
+  it('NEAR-MISS: a found conta mounts the picker with its id', () => {
+    show({ contaId: CONTA });
+    expect(h.marca?.contaId).toBe(CONTA);
+    expect(h.categoria?.contaId).toBe(CONTA);
   });
 });

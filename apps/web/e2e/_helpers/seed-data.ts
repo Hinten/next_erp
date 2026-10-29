@@ -21,6 +21,8 @@ import {
   integracaoSchema,
   INTEGRACAO_TIPO,
   ESTADO_ANUNCIO_SHOPEE,
+  linhaDeMarcaParaGravarShopee,
+  motivoRecusaMarcaShopee,
   PRODUTO_EXTRA_DATA_DOC_ID,
   produtoExtraDataSchema,
   produtoShopeeLinkSchema,
@@ -33,6 +35,7 @@ import {
   STATUS_LINK_PAGAMENTO,
   STATUS_PAGAMENTO,
   TIPO_AVISO,
+  type MarcaDto,
   type MlSizeChart,
   type Mensagem,
   TIPO_INTEGRACAO_PGTO,
@@ -1080,6 +1083,36 @@ async function cleanupMarcasShopeeDasContas(prefix: string): Promise<void> {
 export async function cleanupShopeeFixtures(prefix: string): Promise<void> {
   await cleanupMarcasShopeeDasContas(prefix);
   await cleanupIntegracaoFixtures(prefix);
+}
+
+/**
+ * Register ONE brand on a Shopee conta's shortlist,
+ * `integracao/{integracaoId}/brandshopee` (#1911 P9), the way the conta's
+ * Marcas section writes it: through `linhaDeMarcaParaGravarShopee`
+ * (`@delfrance/schemas`, that section's writer rule), so the row sits at
+ * `String(brand_id)` with exactly the three fields a new row stores, and a
+ * fixture cannot drift from what a draft's brand picker (P10) reads. Throws
+ * for a brand that rule refuses: a seed never holds a row the section could
+ * not have written. Answers the row's doc id.
+ *
+ * Call it once `seedShopeeFixtures` has made the conta:
+ * `cleanupShopeeFixtures` finds the rows THROUGH their conta (Firestore never
+ * cascades), so a row under a conta that was never made is swept by nothing.
+ */
+export async function seedMarcaShopee(integracaoId: string, marca: MarcaDto): Promise<string> {
+  const linha = linhaDeMarcaParaGravarShopee(marca);
+  if (linha === null) {
+    throw new Error(
+      `seedMarcaShopee: brand ${String(marca.brandId)} refused (${String(motivoRecusaMarcaShopee(marca))})`,
+    );
+  }
+  await db()
+    .collection('integracao')
+    .doc(integracaoId)
+    .collection('brandshopee')
+    .doc(linha.docId)
+    .set(linha.data);
+  return linha.docId;
 }
 
 /** Teardown for `seedLojaIntegradaFixtures`. */

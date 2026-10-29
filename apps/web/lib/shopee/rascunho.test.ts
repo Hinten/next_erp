@@ -41,6 +41,7 @@ import {
   ShopeeClientHttpError,
   ShopeeClientNetworkError,
   ShopeeClientRespostaInvalidaError,
+  shopeeHttpFallbackMessage,
 } from './client';
 import { CODIGO_FALHA_SHOPEE } from './erros';
 import {
@@ -48,8 +49,10 @@ import {
   MARCA_SEM_MARCA_RASCUNHO_SHOPEE,
   MARGEM_DA_RELEITURA_DO_ESTADO_SHOPEE_MS,
   algumRascunhoShopeeSujo,
+  categoriaAceitaNoBlocoShopee,
   comCampoRascunhoShopee,
   conciliarEdicaoRascunhoShopee,
+  conflitosAtualizadosDoRascunhoShopee,
   corpoAtualizarRascunhoShopee,
   corpoCriarRascunhoShopee,
   corpoDescartarRascunhoShopee,
@@ -566,30 +569,204 @@ describe('the entry over time (rev. 2a #7, DC §2.2)', () => {
     ]);
   });
 
-  it('after a 2xx the entry shows what was SAVED (normalised), read-only, until the snapshot moves', () => {
-    const snapshot = [{ id: 'R1' }];
-    let e = comCampoRascunhoShopee(edicaoDe(guardado()), CAMPO_RASCUNHO_SHOPEE.description, '   ');
+  describe('the stale check REACHES `attributes` through a category change (its base)', () => {
+    const ATR = [{ attribute_id: 10, attribute_value_list: [{ value_id: 5 }, { value_id: 6 }] }];
+    const comCategoriaTrocada = () =>
+      comCampoRascunhoShopee(
+        edicaoDe(guardado({ attributes: ATR })),
+        CAMPO_RASCUNHO_SHOPEE.categoryId,
+        100088,
+      );
+
+    it('PAIR: the same stored list with its object keys in another order ⇒ no divergence', () => {
+      const outraOrdemDeChaves = [
+        { attribute_value_list: [{ value_id: 5 }, { value_id: 6 }], attribute_id: 10 },
+      ];
+      expect(
+        divergenciasDoServidorShopee(
+          comCategoriaTrocada(),
+          guardado({ attributes: outraOrdemDeChaves }),
+        ),
+      ).toEqual([]);
+    });
+
+    it('⛔ NEAR-MISS: a REORDERED value list, or another writer’s list, diverges on `attributes`', () => {
+      const reordenada = [
+        { attribute_id: 10, attribute_value_list: [{ value_id: 6 }, { value_id: 5 }] },
+      ];
+      const deOutroEscritor = [{ attribute_id: 10, attribute_value_list: [{ value_id: 9 }] }];
+      expect(
+        divergenciasDoServidorShopee(comCategoriaTrocada(), guardado({ attributes: reordenada })),
+      ).toEqual([CAMPO_RASCUNHO_SHOPEE.attributes]);
+      expect(
+        divergenciasDoServidorShopee(
+          comCategoriaTrocada(),
+          guardado({ attributes: deOutroEscritor }),
+        ),
+      ).toEqual([CAMPO_RASCUNHO_SHOPEE.attributes]);
+    });
+
+    it('⛔ NEAR-MISS: the ATTRIBUTES list itself reordered (two attributes swapped) diverges too — positional on purpose', () => {
+      const dois = [
+        { attribute_id: 10, attribute_value_list: [{ value_id: 5 }] },
+        { attribute_id: 11, attribute_value_list: [{ value_id: 7 }] },
+      ];
+      const e = comCampoRascunhoShopee(
+        edicaoDe(guardado({ attributes: dois })),
+        CAMPO_RASCUNHO_SHOPEE.categoryId,
+        100088,
+      );
+      expect(divergenciasDoServidorShopee(e, guardado({ attributes: [dois[1], dois[0]] }))).toEqual(
+        [CAMPO_RASCUNHO_SHOPEE.attributes],
+      );
+    });
+
+    it('SCOPE: a title-only edit over that same moved list never compares `attributes`', () => {
+      const e = comCampoRascunhoShopee(
+        edicaoDe(guardado({ attributes: ATR })),
+        CAMPO_RASCUNHO_SHOPEE.itemName,
+        'Outro título',
+      );
+      expect(
+        divergenciasDoServidorShopee(
+          e,
+          guardado({ attributes: [{ attribute_id: 10, attribute_value_list: [{ value_id: 9 }] }] }),
+        ),
+      ).toEqual([]);
+    });
+  });
+
+  it('after a 2xx the entry shows what was SAVED (normalised), read-only, until THIS draft’s echo', () => {
+    const antes = guardado({ ultimaModificacao: 1_000 });
+    const snapshot = [{ id: 'R1', data: antes }];
+    let e = comCampoRascunhoShopee(edicaoDe(antes), CAMPO_RASCUNHO_SHOPEE.description, '   ');
     e = comCampoRascunhoShopee(e, CAMPO_RASCUNHO_SHOPEE.itemName, 'Novo');
     const salvo = marcarRascunhoShopeeSalvo(e, snapshot);
     expect(salvo.novo).toBe(false);
     expect(salvo.atual.description).toBeNull();
+    expect(salvo.salvo).toEqual({ snapshot, documento: { ultimaModificacao: 1_000 } });
     expect(edicaoRascunhoShopeeSuja(salvo)).toBe(false);
     expect(planoDoRascunhoShopee(salvo, LIVRE).impedimento).toBe('aguardando-servidor');
     expect(
-      conciliarEdicaoRascunhoShopee(salvo, {
-        link: guardado(),
-        snapshot,
-        servidorConfirmado: true,
-      }),
+      conciliarEdicaoRascunhoShopee(salvo, { link: antes, snapshot, servidorConfirmado: true }),
     ).toEqual({ acao: 'manter' });
-    // ANY newer snapshot drops it — the held projection is re-read, never rebuilt from the patch.
+    // The echo — THIS document re-stamped — drops it: the held projection is
+    // re-read from the snapshot, never rebuilt from the patch.
+    const eco = guardado({ item_name: 'Novo', ultimaModificacao: 2_000 });
     expect(
       conciliarEdicaoRascunhoShopee(salvo, {
-        link: guardado({ item_name: 'Novo' }),
-        snapshot: [{ id: 'R1' }],
+        link: eco,
+        snapshot: [{ id: 'R1', data: eco }],
         servidorConfirmado: true,
       }),
     ).toEqual({ acao: 'largar', aviso: null });
+  });
+
+  describe('R1-rule7#2 — a just-saved entry waits for ITS OWN echo, never for any newer snapshot', () => {
+    const antes = guardado({ ultimaModificacao: 1_000 });
+    const outro = { id: 'L2', data: { item_id: 1000001, ultimaModificacao: 5 } };
+    const enviadoContra = [{ id: 'R1', data: antes }, outro];
+    const salvoDe = (edicao: EdicaoRascunhoShopee, snap: unknown = enviadoContra) =>
+      marcarRascunhoShopeeSalvo(
+        comCampoRascunhoShopee(edicao, CAMPO_RASCUNHO_SHOPEE.itemName, 'Novo'),
+        snap,
+      );
+
+    it('⛔ ANOTHER link’s write (a new snapshot, R1 with the SAME stamp) keeps it read-only ⟷ NEAR-MISS: R1 re-stamped drops it', () => {
+      const salvo = salvoDe(edicaoDe(antes));
+      const outroEscrito = { ...outro, data: { ...outro.data, ultimaModificacao: 6 } };
+      // A NEW array, and a NEW object for R1 (mapSnapshotRows re-reads every
+      // row): only the stamp says whether R1 moved.
+      expect(
+        conciliarEdicaoRascunhoShopee(salvo, {
+          link: { ...antes },
+          snapshot: [{ id: 'R1', data: { ...antes } }, outroEscrito],
+          servidorConfirmado: true,
+        }),
+      ).toEqual({ acao: 'manter' });
+      expect(
+        conciliarEdicaoRascunhoShopee(salvo, {
+          link: guardado({ item_name: 'Novo', ultimaModificacao: 1_001 }),
+          snapshot: [],
+          servidorConfirmado: true,
+        }),
+      ).toEqual({ acao: 'largar', aviso: null });
+    });
+
+    it('an edit’s document gone from a SERVER snapshot drops it ⟷ from a cached one keeps it', () => {
+      const salvo = salvoDe(edicaoDe(antes));
+      expect(
+        conciliarEdicaoRascunhoShopee(salvo, {
+          link: undefined,
+          snapshot: [outro],
+          servidorConfirmado: true,
+        }),
+      ).toEqual({ acao: 'largar', aviso: null });
+      expect(
+        conciliarEdicaoRascunhoShopee(salvo, {
+          link: undefined,
+          snapshot: [outro],
+          servidorConfirmado: false,
+        }),
+      ).toEqual({ acao: 'manter' });
+    });
+
+    it('a CREATE (its document not in the snapshot it left against) is kept while the document is absent ⟷ its arrival drops it', () => {
+      const criado = marcarRascunhoShopeeSalvo(
+        novaEdicaoRascunhoShopee({ linkDocId: ID_NOVO, contaId: CONTA, nomeProduto: 'X' }),
+        [outro],
+      );
+      expect(criado.salvo?.documento).toBeNull();
+      expect(
+        conciliarEdicaoRascunhoShopee(criado, {
+          link: undefined,
+          snapshot: [{ ...outro }],
+          servidorConfirmado: true,
+        }),
+      ).toEqual({ acao: 'manter' });
+      expect(
+        conciliarEdicaoRascunhoShopee(criado, {
+          link: guardado(),
+          snapshot: [outro, { id: ID_NOVO, data: guardado() }],
+          servidorConfirmado: true,
+        }),
+      ).toEqual({ acao: 'largar', aviso: null });
+    });
+
+    it('liveness: a saturated query (the document may never come) drops it on any newer snapshot ⟷ the SAME snapshot never does', () => {
+      const criado = marcarRascunhoShopeeSalvo(
+        novaEdicaoRascunhoShopee({ linkDocId: ID_NOVO, contaId: CONTA, nomeProduto: 'X' }),
+        enviadoContra,
+      );
+      expect(
+        conciliarEdicaoRascunhoShopee(criado, {
+          link: undefined,
+          snapshot: [...enviadoContra],
+          servidorConfirmado: true,
+          saturado: true,
+        }),
+      ).toEqual({ acao: 'largar', aviso: null });
+      expect(
+        conciliarEdicaoRascunhoShopee(criado, {
+          link: undefined,
+          snapshot: enviadoContra,
+          servidorConfirmado: true,
+          saturado: true,
+        }),
+      ).toEqual({ acao: 'manter' });
+    });
+
+    it('a document with no numeric stamp to compare (legacy, never written by the route) falls back to "any newer snapshot" — never stuck read-only', () => {
+      const legado = guardado();
+      const salvo = salvoDe(edicaoDe(legado), [{ id: 'R1', data: legado }]);
+      expect(
+        conciliarEdicaoRascunhoShopee(salvo, {
+          link: legado,
+          snapshot: [{ id: 'R1', data: legado }],
+          servidorConfirmado: true,
+        }),
+      ).toEqual({ acao: 'largar', aviso: null });
+    });
   });
 
   it('typing into a just-saved entry ends its bridge (the save then compares against the PRE-save base)', () => {
@@ -654,6 +831,83 @@ describe('the entry over time (rev. 2a #7, DC §2.2)', () => {
       ).toEqual({ acao: 'manter' });
     }
   });
+
+  describe('R1-rule7#3 — a dirty entry holding NOTHING beyond what is stored is dropped (an uncertain save that landed)', () => {
+    const agora = (link: Record<string, unknown>) => ({
+      link,
+      snapshot: [],
+      servidorConfirmado: true,
+    });
+
+    it('PAIR: the stored title IS the typed one (the uncertain update landed) ⇒ dropped silently — the next Salvar never 409s against the operator’s own write', () => {
+      const e = comCampoRascunhoShopee(
+        edicaoDe(guardado()),
+        CAMPO_RASCUNHO_SHOPEE.itemName,
+        'Camiseta azul',
+      );
+      expect(edicaoRascunhoShopeeSuja(e)).toBe(true);
+      const eco = guardado({ item_name: 'Camiseta azul' });
+      expect(conciliarEdicaoRascunhoShopee(e, agora(eco))).toEqual({ acao: 'largar', aviso: null });
+      // …and a brand pair stored WITH its name is the same write.
+      const marca = { brand_id: 88, original_brand_name: 'Beta' };
+      const m = comCampoRascunhoShopee(edicaoDe(guardado()), CAMPO_RASCUNHO_SHOPEE.marca, marca);
+      expect(
+        conciliarEdicaoRascunhoShopee(
+          m,
+          agora(guardado({ brand_id: 88, original_brand_name: 'Beta' })),
+        ),
+      ).toEqual({ acao: 'largar', aviso: null });
+    });
+
+    it('NEAR-MISS: the title stored but a SECOND changed field (description) not ⇒ kept', () => {
+      let e = comCampoRascunhoShopee(
+        edicaoDe(guardado()),
+        CAMPO_RASCUNHO_SHOPEE.itemName,
+        'Camiseta azul',
+      );
+      e = comCampoRascunhoShopee(e, CAMPO_RASCUNHO_SHOPEE.description, 'Minha');
+      expect(
+        conciliarEdicaoRascunhoShopee(e, agora(guardado({ item_name: 'Camiseta azul' }))),
+      ).toEqual({ acao: 'manter' });
+    });
+
+    it('NEAR-MISS: a changed field still INVALID (a blank title) beside a stored one ⇒ kept — typed work never vanishes', () => {
+      let e = comCampoRascunhoShopee(
+        edicaoDe(guardado()),
+        CAMPO_RASCUNHO_SHOPEE.description,
+        'Minha',
+      );
+      e = comCampoRascunhoShopee(e, CAMPO_RASCUNHO_SHOPEE.itemName, '   ');
+      expect(conciliarEdicaoRascunhoShopee(e, agora(guardado({ description: 'Minha' })))).toEqual({
+        acao: 'manter',
+      });
+    });
+
+    it('⛔ NEAR-MISS (§H Q1 pair scope): the SAME brand id stored id-only while the patch carries its name ⇒ kept — the name is still to write', () => {
+      const e = comCampoRascunhoShopee(
+        edicaoDe(guardado({ brand_id: 99, original_brand_name: 'Outra' })),
+        CAMPO_RASCUNHO_SHOPEE.marca,
+        { brand_id: 77, original_brand_name: 'Acme' },
+      );
+      expect(
+        conciliarEdicaoRascunhoShopee(
+          e,
+          agora(guardado({ brand_id: 77, original_brand_name: undefined })),
+        ),
+      ).toEqual({ acao: 'manter' });
+    });
+
+    it('NEAR-MISS: another tab stored a DIFFERENT title ⇒ kept, and the stale check names it', () => {
+      const e = comCampoRascunhoShopee(
+        edicaoDe(guardado()),
+        CAMPO_RASCUNHO_SHOPEE.itemName,
+        'Camiseta azul',
+      );
+      const outraAba = guardado({ item_name: 'Camiseta (outra aba)' });
+      expect(conciliarEdicaoRascunhoShopee(e, agora(outraAba))).toEqual({ acao: 'manter' });
+      expect(divergenciasDoServidorShopee(e, outraAba)).toEqual([CAMPO_RASCUNHO_SHOPEE.itemName]);
+    });
+  });
 });
 
 describe('rev. 2a #19 — the create retry’s «Salvar mesmo assim» is an ordinary update against the STORED draft', () => {
@@ -692,6 +946,280 @@ describe('rev. 2a #19 — the create retry’s «Salvar mesmo assim» is an ordi
     expect(usado.atual.item_name).toBe('Deles');
     expect(usado.atual.description).toBe('Minha');
     expect(usado.base.item_name).toBe('Deles');
+  });
+});
+
+describe('R1-rule7#0 — an EDIT’s conflict rebase moves only what the operator was shown or never touched', () => {
+  const ATRIBUTOS = [{ attribute_id: 10, attribute_value_list: [{ value_id: 5 }] }];
+  /** Loaded: {Camiseta, X, 100087, Acme 77}. */
+  const carregado = () => guardado({ description: 'X' });
+  /** Another tab saved title, description, category (and its attributes) meanwhile. */
+  const outraAba = (extra: Record<string, unknown> = {}) =>
+    guardado({
+      item_name: 'C',
+      description: 'Y',
+      category_id: 100088,
+      attributes: ATRIBUTOS,
+      ...extra,
+    });
+  const tituloB = () =>
+    comCampoRascunhoShopee(edicaoDe(carregado()), CAMPO_RASCUNHO_SHOPEE.itemName, 'B');
+
+  it('⛔ «Salvar mesmo assim» on a title-only 409 re-sends {item_name} ALONE — the other tab’s description, category and attributes are never reverted', () => {
+    const esperado = {
+      integracaoId: CONTA,
+      produtoId: PRODUTO,
+      linkDocId: 'R1',
+      base: { item_name: 'C' },
+      patch: { item_name: 'B' },
+    };
+    // With the 409's list, and with the default the tab passes today (none).
+    for (const listados of [[CAMPO_RASCUNHO_SHOPEE.itemName], undefined]) {
+      const rebaseada = rebasearEdicaoRascunhoShopee(tituloB(), outraAba(), [], listados);
+      expect(atualizacaoAceita(rebaseada)).toStrictEqual(esperado);
+      // The untouched fields now SHOW the stored values.
+      expect(rebaseada.atual).toStrictEqual({
+        item_name: 'B',
+        description: 'Y',
+        category_id: 100088,
+        marca: { brand_id: 77, original_brand_name: 'Acme' },
+      });
+    }
+  });
+
+  it('NEAR-MISS: a field the operator DID change keeps their value — and, unlisted, the base they LOADED (a later writer there is a 409 again, never overwritten unseen)', () => {
+    const e = comCampoRascunhoShopee(tituloB(), CAMPO_RASCUNHO_SHOPEE.description, 'Minha');
+    const rebaseada = rebasearEdicaoRascunhoShopee(
+      e,
+      outraAba({ description: 'Z' }),
+      [],
+      [CAMPO_RASCUNHO_SHOPEE.itemName],
+    );
+    expect(atualizacaoAceita(rebaseada)).toStrictEqual({
+      integracaoId: CONTA,
+      produtoId: PRODUTO,
+      linkDocId: 'R1',
+      base: { item_name: 'C', description: 'X' },
+      patch: { item_name: 'B', description: 'Minha' },
+    });
+  });
+
+  it('a LISTED category change is rebased with the attributes the operator saw only when they were listed too', () => {
+    const e = comCampoRascunhoShopee(
+      edicaoDe(carregado()),
+      CAMPO_RASCUNHO_SHOPEE.categoryId,
+      100099,
+    );
+    const semAtributos = rebasearEdicaoRascunhoShopee(
+      e,
+      outraAba(),
+      [],
+      [CAMPO_RASCUNHO_SHOPEE.categoryId],
+    );
+    // Unlisted ⇒ the loaded (null) list: the stored ATRIBUTOS make the re-send a 409.
+    expect(atualizacaoAceita(semAtributos).base).toStrictEqual({
+      category_id: 100088,
+      attributes: null,
+    });
+    const comAtributos = rebasearEdicaoRascunhoShopee(
+      e,
+      outraAba(),
+      [],
+      [CAMPO_RASCUNHO_SHOPEE.categoryId, CAMPO_RASCUNHO_SHOPEE.attributes],
+    );
+    expect(atualizacaoAceita(comAtributos).base).toStrictEqual({
+      category_id: 100088,
+      attributes: ATRIBUTOS,
+    });
+  });
+
+  it('«Usar o que está salvo» with the listed title leaves the entry CLEAN — untouched fields follow the stored draft, and the entry is dropped with no notice', () => {
+    const link = outraAba();
+    const usado = rebasearEdicaoRascunhoShopee(tituloB(), link, [CAMPO_RASCUNHO_SHOPEE.itemName]);
+    expect(edicaoRascunhoShopeeSuja(usado)).toBe(false);
+    expect(planoDoRascunhoShopee(usado, LIVRE).impedimento).toBe('nada-a-salvar');
+    expect(
+      conciliarEdicaoRascunhoShopee(usado, { link, snapshot: [], servidorConfirmado: true }),
+    ).toEqual({ acao: 'largar', aviso: null });
+  });
+
+  it('⛔ NEAR-MISS (the scope of «untouched» is the WRITE question): the same brand id re-picked WITH its name over an id-only legacy brand is an EDIT — «Salvar mesmo assim» re-sends it, «Usar o que está salvo» keeps it ⟷ PAIR: a brand left alone follows the stored draft and is never sent', () => {
+    const legado = guardado({ description: 'X', original_brand_name: undefined });
+    const comNome = comCampoRascunhoShopee(
+      comCampoRascunhoShopee(edicaoDe(legado), CAMPO_RASCUNHO_SHOPEE.itemName, 'B'),
+      CAMPO_RASCUNHO_SHOPEE.marca,
+      { brand_id: 77, original_brand_name: 'Acme' },
+    );
+    // Another tab saved only the title: the brand is still stored id-only, so
+    // the 409 lists the title alone (the conflict question compares by id).
+    const link = guardado({ item_name: 'C', description: 'X', original_brand_name: undefined });
+    const listados = [CAMPO_RASCUNHO_SHOPEE.itemName];
+    expect(
+      atualizacaoAceita(rebasearEdicaoRascunhoShopee(comNome, link, [], listados)),
+    ).toStrictEqual({
+      integracaoId: CONTA,
+      produtoId: PRODUTO,
+      linkDocId: 'R1',
+      base: { item_name: 'C', marca: { brand_id: 77, original_brand_name: null } },
+      patch: { item_name: 'B', marca: { brand_id: 77, original_brand_name: 'Acme' } },
+    });
+    const usado = rebasearEdicaoRascunhoShopee(comNome, link, listados, listados);
+    expect(usado.atual.marca).toStrictEqual({ brand_id: 77, original_brand_name: 'Acme' });
+    expect(edicaoRascunhoShopeeSuja(usado)).toBe(true);
+
+    // PAIR: the brand left alone is untouched — it takes the name another tab
+    // stored meanwhile, and only the title is sent.
+    const soTitulo = comCampoRascunhoShopee(edicaoDe(legado), CAMPO_RASCUNHO_SHOPEE.itemName, 'B');
+    const comNomeGuardado = guardado({ item_name: 'C', description: 'X' });
+    const rebaseada = rebasearEdicaoRascunhoShopee(soTitulo, comNomeGuardado, [], listados);
+    expect(rebaseada.atual.marca).toStrictEqual({ brand_id: 77, original_brand_name: 'Acme' });
+    expect(atualizacaoAceita(rebaseada).patch).toStrictEqual({ item_name: 'B' });
+  });
+});
+
+describe('conflitosAtualizadosDoRascunhoShopee — «Salvar mesmo assim» re-sends only over what the modal SHOWED', () => {
+  const carregado = () => guardado({ description: 'X' });
+  const tituloB = () =>
+    comCampoRascunhoShopee(edicaoDe(carregado()), CAMPO_RASCUNHO_SHOPEE.itemName, 'B');
+  const linha409 = [{ campo: CAMPO_RASCUNHO_SHOPEE.itemName, atual: 'C' }];
+
+  it('the listed field still holds the 409’s value ⇒ null (re-send) ⟷ NEAR-MISS: a third writer changed it ⇒ the refreshed row, nothing sent', () => {
+    expect(
+      conflitosAtualizadosDoRascunhoShopee(tituloB(), guardado({ item_name: 'C' }), linha409),
+    ).toBeNull();
+    expect(
+      conflitosAtualizadosDoRascunhoShopee(tituloB(), guardado({ item_name: 'D' }), linha409),
+    ).toEqual([{ campo: CAMPO_RASCUNHO_SHOPEE.itemName, atual: 'D' }]);
+  });
+
+  it('a writer on an UNTOUCHED field changes nothing the re-send writes ⇒ null ⟷ on a field the operator CHANGED but was not shown ⇒ that row joins', () => {
+    expect(
+      conflitosAtualizadosDoRascunhoShopee(
+        tituloB(),
+        guardado({ item_name: 'C', description: 'Z' }),
+        linha409,
+      ),
+    ).toBeNull();
+    const comDescricao = comCampoRascunhoShopee(
+      tituloB(),
+      CAMPO_RASCUNHO_SHOPEE.description,
+      'Minha',
+    );
+    expect(
+      conflitosAtualizadosDoRascunhoShopee(
+        comDescricao,
+        guardado({ item_name: 'C', description: 'Z' }),
+        linha409,
+      ),
+    ).toEqual([
+      { campo: CAMPO_RASCUNHO_SHOPEE.itemName, atual: 'C' },
+      { campo: CAMPO_RASCUNHO_SHOPEE.description, atual: 'Z' },
+    ]);
+  });
+
+  it('⛔ a brand renamed under the SAME id after the 409 refreshes (the modal showed the old name) — the WRITE question, not the conflict one', () => {
+    const e = comCampoRascunhoShopee(edicaoDe(carregado()), CAMPO_RASCUNHO_SHOPEE.marca, {
+      brand_id: 66,
+      original_brand_name: 'Minha',
+    });
+    const linhas = [
+      { campo: CAMPO_RASCUNHO_SHOPEE.marca, atual: { brand_id: 88, original_brand_name: 'Beta' } },
+    ];
+    expect(
+      conflitosAtualizadosDoRascunhoShopee(
+        e,
+        guardado({ brand_id: 88, original_brand_name: 'Beta' }),
+        linhas,
+      ),
+    ).toBeNull();
+    expect(
+      conflitosAtualizadosDoRascunhoShopee(
+        e,
+        guardado({ brand_id: 88, original_brand_name: 'BETA' }),
+        linhas,
+      ),
+    ).toEqual([
+      { campo: CAMPO_RASCUNHO_SHOPEE.marca, atual: { brand_id: 88, original_brand_name: 'BETA' } },
+    ]);
+  });
+
+  it('the refreshed rows converge: checked again against the same draft they answer null — one refresh, never a loop', () => {
+    const link = guardado({ item_name: 'D' });
+    const novas = conflitosAtualizadosDoRascunhoShopee(tituloB(), link, linha409);
+    expect(novas).not.toBeNull();
+    expect(conflitosAtualizadosDoRascunhoShopee(tituloB(), link, novas ?? [])).toBeNull();
+  });
+
+  it('a CREATE retry differing only in category: its unlisted null attributes are what it saw ⇒ null ⟷ NEAR-MISS: attributes stored after the 409 ⇒ refreshed', () => {
+    const novo = comCampoRascunhoShopee(
+      novaEdicaoRascunhoShopee({ linkDocId: ID_NOVO, contaId: CONTA, nomeProduto: 'Camiseta' }),
+      CAMPO_RASCUNHO_SHOPEE.categoryId,
+      100087,
+    );
+    const linhas = [{ campo: CAMPO_RASCUNHO_SHOPEE.categoryId, atual: null }];
+    const semMarca = { category_id: null, brand_id: null, original_brand_name: null };
+    expect(conflitosAtualizadosDoRascunhoShopee(novo, guardado(semMarca), linhas)).toBeNull();
+    const atributos = [{ attribute_id: 10, attribute_value_list: [{ value_id: 5 }] }];
+    expect(
+      conflitosAtualizadosDoRascunhoShopee(
+        novo,
+        guardado({ ...semMarca, attributes: atributos }),
+        linhas,
+      ),
+    ).toEqual([
+      { campo: CAMPO_RASCUNHO_SHOPEE.categoryId, atual: null },
+      { campo: CAMPO_RASCUNHO_SHOPEE.attributes, atual: atributos },
+    ]);
+  });
+});
+
+describe('R4-1369-fold#7 — §H Q1 holds after a conflict rebase too', () => {
+  const comMarca = (form: { brand_id: number; original_brand_name: string | null }) =>
+    comCampoRascunhoShopee(
+      edicaoDe(guardado({ brand_id: 88, original_brand_name: 'X' })),
+      CAMPO_RASCUNHO_SHOPEE.marca,
+      form,
+    );
+
+  it('PAIR: a nameless {77} rebased onto a stored {77, Acme} takes the stored name — nothing left to send', () => {
+    const e = rebasearEdicaoRascunhoShopee(
+      comMarca({ brand_id: 77, original_brand_name: null }),
+      guardado({ brand_id: 77, original_brand_name: 'Acme' }),
+    );
+    expect(e.atual.marca).toStrictEqual({ brand_id: 77, original_brand_name: 'Acme' });
+    expect(planoDoRascunhoShopee(e, LIVRE).impedimento).toBe('nada-a-salvar');
+    expect(corpoAtualizarRascunhoShopee(e, LIVRE, { produtoId: PRODUTO })).toBeNull();
+  });
+
+  it('NEAR-MISS: a DIFFERENT stored id keeps the pair as picked (null name), and sends it', () => {
+    const e = rebasearEdicaoRascunhoShopee(
+      comMarca({ brand_id: 77, original_brand_name: null }),
+      guardado({ brand_id: 66, original_brand_name: 'Acme' }),
+    );
+    expect(atualizacaoAceita(e).patch).toStrictEqual({
+      marca: { brand_id: 77, original_brand_name: null },
+    });
+  });
+
+  it('NEAR-MISS: a NAMED form pair over the same stored id keeps its own name', () => {
+    const e = rebasearEdicaoRascunhoShopee(
+      comMarca({ brand_id: 77, original_brand_name: 'Outra' }),
+      guardado({ brand_id: 77, original_brand_name: 'Acme' }),
+    );
+    expect(atualizacaoAceita(e).patch).toStrictEqual({
+      marca: { brand_id: 77, original_brand_name: 'Outra' },
+    });
+  });
+
+  it('a CREATE retry holding a nameless {77} over a stored {77, Acme}: the name is kept, no brand in the patch', () => {
+    const novo = comCampoRascunhoShopee(
+      novaEdicaoRascunhoShopee({ linkDocId: ID_NOVO, contaId: CONTA, nomeProduto: 'Camiseta' }),
+      CAMPO_RASCUNHO_SHOPEE.marca,
+      { brand_id: 77, original_brand_name: null },
+    );
+    const e = rebasearEdicaoRascunhoShopee(novo, guardado({ category_id: null }));
+    expect(e.atual.marca).toStrictEqual({ brand_id: 77, original_brand_name: 'Acme' });
+    expect(planoDoRascunhoShopee(e, LIVRE).alterados).not.toContain(CAMPO_RASCUNHO_SHOPEE.marca);
   });
 });
 
@@ -931,6 +1459,45 @@ describe('falhaDoRascunhoShopee — §C.2, by CLASS then by code', () => {
     expect(falhaDoRascunhoShopee(http(501, null), 'criar')).toMatchObject({ incerto: false });
   });
 
+  it('R3-tests#2: EVERY 5xx but 501 is uncertain on all three routes — 500 is Next’s answer when a commit that may have landed rethrows (rule 6’s `throw err`); a coded 5xx too (deploy-skew guard) ⟷ 501 definite', () => {
+    for (const op of ['criar', 'atualizar', 'descartar'] as const) {
+      const incerta = {
+        tipo: 'mensagem',
+        mensagem: fraseDaRespostaIncertaDoRascunhoShopee(op),
+        incerto: true,
+      };
+      for (const status of [500, 502, 503, 504]) {
+        expect(falhaDoRascunhoShopee(http(status, null), op), `${op} ${String(status)}`).toEqual(
+          incerta,
+        );
+      }
+      // No draft route sends a coded 5xx today (zero Shopee calls, every
+      // recusa a 4xx): a code this switch does not map must still read uncertain.
+      expect(
+        falhaDoRascunhoShopee(http(503, 'SHOPEE_NETWORK_ERROR'), op),
+        `${op} 503 coded`,
+      ).toEqual(incerta);
+      expect(falhaDoRascunhoShopee(http(501, null), op), `${op} 501`).toMatchObject({
+        incerto: false,
+      });
+    }
+  });
+
+  it('R7-roundtrip#1: a codeless 404 WITH the route’s {error} envelope is the conta ⟷ NEAR-MISS: one WITHOUT it (a route this backend lacks — deploy skew) keeps the fallback sentence, never "the conta"', () => {
+    for (const op of ['criar', 'atualizar', 'descartar'] as const) {
+      expect(
+        falhaDoRascunhoShopee(http(404, null, {}, 'Conta Shopee int-1 não encontrada.'), op),
+      ).toEqual({ tipo: 'mensagem', mensagem: FRASE_CONTA_NAO_ENCONTRADA_SHOPEE, incerto: false });
+      // What the client builds from Next's HTML (or an empty) 404.
+      const semEnvelope = http(404, null, {}, shopeeHttpFallbackMessage(404));
+      expect(falhaDoRascunhoShopee(semEnvelope, op)).toEqual({
+        tipo: 'mensagem',
+        mensagem: shopeeHttpFallbackMessage(404),
+        incerto: false,
+      });
+    }
+  });
+
   it('the CODELESS answers: the conta 404; the create’s no-title 400 names its draft ⟷ a schema 400 names nothing', () => {
     expect(falhaDoRascunhoShopee(http(404, null), 'atualizar')).toMatchObject({
       mensagem: FRASE_CONTA_NAO_ENCONTRADA_SHOPEE,
@@ -1086,6 +1653,138 @@ describe('estadoDoBlocoRascunhoShopee — THE decision of a draft block', () => 
       podeDescartar: true,
     });
     expect(b.avisos).toEqual([FRASE_RASCUNHO_INCERTO_SHOPEE]);
+  });
+
+  describe('R1-rule7#5 — a category picked while livre, then the reading turns incerta', () => {
+    const incerto = guardado({ criacaoIncertaDesde: NOW - 600_000 });
+    /** Picked 100088 and typed a title while the draft read livre. */
+    const pendente = () =>
+      comCampoRascunhoShopee(
+        comCampoRascunhoShopee(edicaoDe(guardado()), CAMPO_RASCUNHO_SHOPEE.categoryId, 100088),
+        CAMPO_RASCUNHO_SHOPEE.itemName,
+        'Novo',
+      );
+
+    it('the block blocks the save, closes the picker — and accepts the HELD category put back, which the save then omits (the pin, through the block)', () => {
+      const travado = estadoDoBlocoRascunhoShopee(entrada({ link: incerto, edicao: pendente() }));
+      expect(travado).toMatchObject({
+        impedimento: 'categoria-travada',
+        podeSalvar: false,
+        categoriaEditavel: false,
+        categoriaGravada: 100087,
+        podeVoltarCategoria: true,
+        podeDesfazer: true,
+      });
+      expect(categoriaAceitaNoBlocoShopee(travado, 100087)).toBe(true);
+      const devolvida = comCampoRascunhoShopee(
+        pendente(),
+        CAMPO_RASCUNHO_SHOPEE.categoryId,
+        travado.categoriaGravada,
+      );
+      const livreDeNovo = estadoDoBlocoRascunhoShopee(
+        entrada({ link: incerto, edicao: devolvida }),
+      );
+      expect(livreDeNovo).toMatchObject({
+        impedimento: null,
+        podeSalvar: true,
+        podeVoltarCategoria: false,
+      });
+      const corpo = atualizacaoAceita(devolvida, livreDeNovo.publicacao);
+      expect(corpo.patch).toStrictEqual({ item_name: 'Novo' });
+      expect(corpo.base).toStrictEqual({ item_name: 'Camiseta' });
+    });
+
+    it('NEAR-MISS: in incerta a THIRD category is still refused — a revert, never a change ⟷ outside incerta any pick goes', () => {
+      const travado = estadoDoBlocoRascunhoShopee(entrada({ link: incerto, edicao: pendente() }));
+      expect(categoriaAceitaNoBlocoShopee(travado, 100099)).toBe(false);
+      expect(categoriaAceitaNoBlocoShopee(travado, null)).toBe(false);
+      const livre = estadoDoBlocoRascunhoShopee(entrada({ edicao: pendente() }));
+      expect(livre.podeVoltarCategoria).toBe(false);
+      expect(categoriaAceitaNoBlocoShopee(livre, 100099)).toBe(true);
+      // incerta with NO pending change: nothing to put back.
+      const semTroca = estadoDoBlocoRascunhoShopee(entrada({ link: incerto }));
+      expect(semTroca.podeVoltarCategoria).toBe(false);
+      expect(categoriaAceitaNoBlocoShopee(semTroca, 100088)).toBe(false);
+    });
+
+    it('(verify) a LOCAL new draft in incerta is never offered the put-back — it has no stored category to go back to ⟷ the same pending change on a stored draft is', () => {
+      const local = { ...pendente(), novo: true };
+      const b = estadoDoBlocoRascunhoShopee(entrada({ link: incerto, edicao: local }));
+      expect(b.podeVoltarCategoria).toBe(false);
+      expect(categoriaAceitaNoBlocoShopee(b, b.categoriaGravada)).toBe(false);
+      const guardadoNoServidor = estadoDoBlocoRascunhoShopee(
+        entrada({ link: incerto, edicao: pendente() }),
+      );
+      expect(guardadoNoServidor.podeVoltarCategoria).toBe(true);
+    });
+
+    it('(verify) the put-back restores the category the operator LOADED, never the one another tab stored meanwhile — the title goes alone and the other writer’s category is never reverted ⟷ NEAR-MISS: picking the STORED one is a change, refused', () => {
+      // Loaded 100087, picked 100088 while livre; another tab then stored 100089, and a publish went uncertain.
+      const outroEscreveu = guardado({ category_id: 100089, criacaoIncertaDesde: NOW - 600_000 });
+      const travado = estadoDoBlocoRascunhoShopee(
+        entrada({ link: outroEscreveu, edicao: pendente() }),
+      );
+      expect(travado).toMatchObject({
+        impedimento: 'categoria-travada',
+        categoriaGravada: 100087,
+        podeVoltarCategoria: true,
+      });
+      expect(categoriaAceitaNoBlocoShopee(travado, 100089)).toBe(false);
+      const devolvida = comCampoRascunhoShopee(
+        pendente(),
+        CAMPO_RASCUNHO_SHOPEE.categoryId,
+        travado.categoriaGravada,
+      );
+      const depois = estadoDoBlocoRascunhoShopee(
+        entrada({ link: outroEscreveu, edicao: devolvida }),
+      );
+      expect(depois).toMatchObject({ impedimento: null, podeVoltarCategoria: false });
+      const corpo = atualizacaoAceita(devolvida, depois.publicacao);
+      expect(corpo.patch).toStrictEqual({ item_name: 'Novo' });
+      expect(corpo.base).toStrictEqual({ item_name: 'Camiseta' });
+    });
+  });
+
+  describe('R2-drafts#2 — Descartar has its OWN authority: a draft whose conta was deleted can still go', () => {
+    it('permiteDescarte without podeEditar offers Descartar and nothing else', () => {
+      const b = estadoDoBlocoRascunhoShopee(entrada({ podeEditar: false, permiteDescarte: true }));
+      expect(b).toMatchObject({
+        podeDescartar: true,
+        descarte: 'confirmar',
+        camposEditaveis: false,
+        categoriaEditavel: false,
+        podeSalvar: false,
+        podeDesfazer: false,
+      });
+      const incerta = estadoDoBlocoRascunhoShopee(
+        entrada({
+          link: guardado({ criacaoIncertaDesde: NOW - 600_000 }),
+          podeEditar: false,
+          permiteDescarte: true,
+        }),
+      );
+      expect(incerta).toMatchObject({ podeDescartar: true, descarte: 'atestar' });
+    });
+
+    it('NEAR-MISS: absent, it follows podeEditar (today’s tab) ⟷ false withholds Descartar even from an editor; ocupado / em-andamento / unconfirmed still gate it', () => {
+      expect(estadoDoBlocoRascunhoShopee(entrada({ podeEditar: false })).podeDescartar).toBe(false);
+      expect(estadoDoBlocoRascunhoShopee(entrada()).podeDescartar).toBe(true);
+      expect(
+        estadoDoBlocoRascunhoShopee(entrada({ podeEditar: true, permiteDescarte: false }))
+          .podeDescartar,
+      ).toBe(false);
+      for (const over of [
+        { ocupado: true },
+        { servidorConfirmado: false },
+        { link: guardado({ publicacaoEmCurso: trava(NOW - 1_000, NOW + 5_000) }) },
+      ]) {
+        expect(
+          estadoDoBlocoRascunhoShopee(
+            entrada({ podeEditar: false, permiteDescarte: true, ...over }),
+          ).podeDescartar,
+        ).toBe(false);
+      }
+    });
   });
 
   it('kit virtual: no editor, the refusal notice, Descartar only — even with typed work', () => {

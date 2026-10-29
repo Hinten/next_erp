@@ -13,6 +13,7 @@ import { formularioDoRascunhoShopee, type EdicaoRascunhoShopee } from '@/lib/sho
 
 import {
   ConflitoRascunhoShopeeModal,
+  FRASE_CONFLITO_RENOVADO_RASCUNHO_SHOPEE,
   textoDoValorDoRascunhoShopee,
   type ConflitoRascunhoShopeeAberto,
 } from './ConflitoRascunhoShopeeModal';
@@ -244,5 +245,32 @@ describe('textoDoValorDoRascunhoShopee — display only, total over `unknown`', 
     expect(textoDoValorDoRascunhoShopee(CAMPO_RASCUNHO_SHOPEE.attributes, { a: 1 })).toBe(
       '(valor não reconhecido)',
     );
+  });
+});
+
+describe('ConflitoRascunhoShopeeModal — rows refreshed instead of a re-send (R1-rule7#0)', () => {
+  it('`renovado`: says the draft moved again and NOTHING was sent, above the refreshed rows', () => {
+    show({
+      conflito: {
+        ...EDITADO,
+        conflitos: [{ campo: CAMPO_RASCUNHO_SHOPEE.itemName, atual: 'Camiseta (terceira aba)' }],
+        renovado: true,
+      },
+    });
+    expect(screen.getByTestId('shopee-rascunho-conflito-renovado').textContent).toBe(
+      FRASE_CONFLITO_RENOVADO_RASCUNHO_SHOPEE,
+    );
+    expect(FRASE_CONFLITO_RENOVADO_RASCUNHO_SHOPEE).toContain('nada foi enviado');
+    expect(celulas('item_name')).toEqual([
+      'Título',
+      'Camiseta',
+      'Camiseta (terceira aba)',
+      'Camiseta azul',
+    ]);
+  });
+
+  it('NEAR-MISS: the 409’s own rows (no `renovado`) say nothing of the sort', () => {
+    show();
+    expect(screen.queryByTestId('shopee-rascunho-conflito-renovado')).toBeNull();
   });
 });

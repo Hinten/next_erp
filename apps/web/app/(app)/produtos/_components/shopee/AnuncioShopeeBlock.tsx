@@ -95,7 +95,12 @@ export function AnuncioShopeeBlock({
             {avisoDoRascunho}
           </Alert>
         )}
-        <StatusAnuncioShopee link={link} shopId={conta.shopId} />
+        <StatusAnuncioShopee
+          link={link}
+          shopId={conta.shopId}
+          // A draft's badge reads ITS block decision — never the lock fields again (#1369).
+          publicacao={rascunho !== null ? rascunho.bloco.publicacao : null}
+        />
         <RecusasAnuncioShopee link={link} agoraMs={agoraMs} />
         <ViolacoesAnuncioShopee link={link} />
         <Divider />

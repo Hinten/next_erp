@@ -52,6 +52,9 @@ import {
   FRASE_PENDENCIA_SEM_DESCRICAO_SHOPEE,
   FRASE_PENDENCIA_SEM_NOME_SHOPEE,
   FRASE_PRODUTO_INEXISTENTE_SHOPEE,
+  FRASE_CATEGORIA_TRAVADA_SHOPEE,
+  FRASE_DESCARTE_EM_CONFLITO_SHOPEE,
+  FRASE_RASCUNHO_DE_KIT_VIRTUAL_SHOPEE,
   FRASE_RASCUNHO_DESCARTADO_INCERTO_SHOPEE,
   FRASE_RASCUNHO_DESCARTADO_SHOPEE,
   FRASE_RASCUNHO_INEXISTENTE_SHOPEE,
@@ -958,6 +961,51 @@ describe('the second-listing confirmation (D15)', () => {
     const t = textoDoSegundoAnuncioShopee({ quantidade: 0, comRascunho: false });
     expect(t).toContain('Esta conta já tem anúncio(s) deste produto.');
     expect(t).not.toMatch(/\b0\b/);
+  });
+
+  it('§I3: says ONLY that Shopee may treat it as a duplicate (spam) and to create it only if really different — never a penalty claim', () => {
+    for (const existentes of [
+      { quantidade: 2, comRascunho: true },
+      { quantidade: 1, comRascunho: false },
+      { quantidade: 0, comRascunho: false },
+    ]) {
+      const t = textoDoSegundoAnuncioShopee(existentes);
+      expect(t).not.toMatch(/penalidade|pontos/i);
+      expect(t).toContain('pode ser tratado pela Shopee como anúncio duplicado (spam).');
+      expect(t).toContain('Crie outro apenas se ele for realmente diferente');
+    }
+  });
+});
+
+describe('the draft sentences name only exits this tab offers (#1911 P10 review)', () => {
+  it('R8-copy#11: the kit-virtual notice and 422 never say "publique" — the tab has no first native-kit publish — and say where it is done', () => {
+    for (const frase of [
+      FRASE_RASCUNHO_EM_KIT_VIRTUAL_SHOPEE,
+      FRASE_RASCUNHO_DE_KIT_VIRTUAL_SHOPEE,
+    ]) {
+      expect(frase).not.toMatch(/publique/i);
+      expect(frase).toContain('não é feita por esta tela');
+      expect(frase).toContain('terminal');
+      expect(frase).not.toMatch(TEXTO_DE_TERMINAL);
+    }
+    // The notice still says what to do with THIS draft.
+    expect(FRASE_RASCUNHO_EM_KIT_VIRTUAL_SHOPEE).toContain('descarte este rascunho');
+  });
+
+  it('R1-rule7#4 / R8-copy#7: a discard conflict names «Desfazer alterações» as the way to the current version — CONDITIONALLY (a clean block shows it already, its Desfazer disabled)', () => {
+    expect(FRASE_DESCARTE_EM_CONFLITO_SHOPEE).toContain('nada foi descartado');
+    expect(FRASE_DESCARTE_EM_CONFLITO_SHOPEE).toContain(
+      'se este rascunho tem alterações não salvas, use antes «Desfazer alterações»',
+    );
+    // NEAR-MISS: never the unconditional order (wrong when the snapshot lagged
+    // and the block, with no entry, already shows the current version).
+    expect(FRASE_DESCARTE_EM_CONFLITO_SHOPEE).not.toContain('Use «Desfazer alterações»');
+    expect(FRASE_DESCARTE_EM_CONFLITO_SHOPEE).not.toMatch(/tente de novo/i);
+  });
+
+  it('R1-rule7#5: the locked-category sentence names how to save the OTHER edits — «Desfazer alterações», offered whenever it shows', () => {
+    expect(FRASE_CATEGORIA_TRAVADA_SHOPEE).toContain('Nada é salvo enquanto a troca de categoria');
+    expect(FRASE_CATEGORIA_TRAVADA_SHOPEE).toContain('«Desfazer alterações»');
   });
 });
 
