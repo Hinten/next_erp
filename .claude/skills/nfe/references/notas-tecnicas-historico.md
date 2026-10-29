@@ -85,6 +85,7 @@ vezes (#1471 em 03/09, #1612 em 17/09) enquanto estava ausente.
 
 | NT | Topic | Skill impact |
 |---|---|---|
+| **`2023.002 v1.02` (Out/2026)** | **Eliminação da autorização assíncrona e dos serviços de inutilização em AC/BA/SP** | **MAJOR para emissão em lote.** Homologação até **01/02/2027**, produção **05/04/2027**: GAP03a-6 rejeita `indSinc=0` com **129** (55/65). Com GAP03a-1/**764**, exige uma NF-e por requisição; o lote do ERP permanece possível com tarefas individuais. Inutilização: desligamento técnico em **11/11/2026**, distinto do guarda legal de **01/11/2026** já implementado. PDF vendorado; ver `nt-2023-002-v1.02.md`, `sincrono-vs-assincrono.md`, `webservices.md`, `cstat-rejeicoes.md` e `eventos.md`. |
 | `2023.005 v1.02` | Evento Insucesso na Entrega NF-e | Novo evento (código 110131 ou similar). Relevante para `eventos.md` se a aplicação suportar manifestação do transportador. |
 | `2023.004 v1.20` | Campos e Regras — atualizações gerais | Detalhamentos no leiaute (consultar PDF). Provavelmente já refletidos no XSD vendorado. |
 | `2023.001 v1.60` | Tributação monofásica dos combustíveis | Novo regime para combustíveis: CST-Mono, novos campos. Afeta itens com `cProdANP`. Cross-ref RTC: NT 2025.002 mantém vínculo com tributação monofásica (cClassTrib 620xxx). |

@@ -1,8 +1,21 @@
 # Síncrono vs Assíncrono — autorização da NF-e
 
-Fonte: **NT 2025.001 v1.03** (Set/2025), `references/sources/nt/2025/`.
+Fontes: **NT 2025.001 v1.03** (Set/2025) e **NT 2023.002 v1.02**
+(Out/2026), nos respectivos diretórios de `sources/nt/`.
 Aplicação obrigatória em produção desde **03/11/2025** (RV GAP03a-3,
 cStat 452).
+
+## Transição publicada para 2027
+
+**NT 2023.002 v1.02**: homologação até **01/02/2027**, produção
+**05/04/2027**. GAP03a-6 rejeita `indSinc=0` com **129** (modelos 55/65).
+GAP03a-1 continua rejeitando síncrono com várias NF-e com **764**:
+o destino é **uma NF-e por autorização**, com `indSinc=1`.
+O ERP pode manter a emissão coletiva através de tarefas individuais.
+O restante deste guia documenta os formatos atuais, a transição de 2025 e
+a recuperação de recibos históricos; não recomenda novos lotes assíncronos
+após a aplicação da v1.02. Ver
+[impacto e critérios da adaptação](nt-2023-002-v1.02.md).
 
 ## O que mudou
 
@@ -19,26 +32,26 @@ implementavam. NT 2025.001 §02.3 inverteu o jogo:
 
 > **Quando o lote tem exatamente 1 NF-e, `indSinc=1` é obrigatório.**
 > Enviar `indSinc=0` para lote de 1 NF-e é rejeitado com **cStat 452**
-> (RV `GAP03a-3`, em produção desde 13/10/2025).
+> (RV `GAP03a-3`, homologação 13/10/2025, produção 03/11/2025).
 
 A RV antiga `GAP03a-2` ("UF não disponibiliza síncrono") foi **eliminada**
 no mesmo NT — todas as UFs autorizadoras agora obrigatoriamente implementam
 o modo síncrono.
 
-## A regra prática (decisão na hora de montar enviNFe)
+## Regra atual, antes da aplicação da NT 2023.002 v1.02
 
 ```
 if (NFes.length === 1) {
     indSinc = 1;   // mandatório — cStat 452 se enviar 0
 } else if (NFes.length >= 2 && NFes.length <= 50) {
     indSinc = 0;   // assíncrono é o normal para lote > 1
-    // (indSinc=1 com lote > 1 cai em cStat=776 — UF não disponibiliza,
-    //  vide observação abaixo)
+    // indSinc=1 com lote > 1 é rejeitado com 764 (GAP03a-1).
 }
 ```
 
-A NT não tornou `indSinc=1` obrigatório para lote ≥ 2 — para lotes
-maiores o caminho assíncrono permanece o único viável.
+A NT 2025.001 não tornou `indSinc=1` obrigatório para lote ≥ 2.
+Essa decisão por tamanho deixa de servir quando a NT 2023.002 v1.02 se
+aplicar: não haverá combinação válida para várias NF-e no mesmo envio.
 
 ## Formato da resposta (retEnviNFe)
 
@@ -95,7 +108,11 @@ Cliente deve esperar `tMed` segundos (mínimo 15s pela MOC) e então chamar
 `<infRec>` é **omitido**. O cliente recebe o protocolo imediatamente e já
 pode montar o `<nfeProc>` (envelope para arquivamento e DANFE).
 
-## Implementação no projeto
+## Contrato anterior à transição (NT 2025.001)
+
+O formato abaixo descreve o caminho pré-transição. Na adaptação para 2027,
+substituir a escolha de `indSinc` por tamanho por uma nota por requisição;
+preservar o parsing histórico e a âncora anti-perda.
 
 O helper `autorizarLote` em `packages/integrations/nfe/src/operations/`
 deve:
@@ -113,14 +130,16 @@ deve:
    computável antes do envio; persistir `{ chave, estado: 'enviando' }` é
    a única âncora anti-perda. Vide `recovery` em `cstat-rejeicoes.md`.
 
-## cStats novos (NT 2025.001)
+## cStats relevantes para a transição
 
 | cStat | Mensagem | Quando |
 |---|---|---|
+| **129** | Rejeição: A autorização deve ser solicitada de forma síncrona | NT 2023.002 v1.02, GAP03a-6; `indSinc=0` após aplicação. |
+| **764** | Rejeição: Solicitada resposta síncrona para Lote com mais de uma NF-e | GAP03a-1 existente; não confundir com 776. |
 | **452** | Rejeição: Solicitada resposta assíncrona para Lote com somente 1 NF-e | Cliente mandou `indSinc=0` com `NFe.length=1`. **Crítico** — exige fix no cliente. |
 | ~~776~~ | (anteriormente "UF não disponibiliza síncrono") | RV GAP03a-2 removida — não deveria mais aparecer em produção. |
 
-Para a lista completa de cStats novos das duas NTs, vide `cstat-rejeicoes.md`.
+Para a lista consolidada por NT, vide `cstat-rejeicoes.md`.
 
 ## Migração: código que assume sempre async
 
@@ -128,7 +147,7 @@ Sintomas de código pré-NT 2025.001:
 
 - Sempre envia `<indSinc>0</indSinc>`, mesmo com lote de 1.
   → Vai pegar `cStat=452` para 100% das emissões de 1 NF-e a partir de
-  Out/2025. **Quebra silenciosamente** — a NF-e nunca é autorizada.
+  Nov/2025. **Quebra silenciosamente** — a NF-e nunca é autorizada.
 
 - Parser do retorno só procura `<infRec>/nRec`.
   → Vai falhar quando a resposta vier com `<protNFe>` inline (síncrono).

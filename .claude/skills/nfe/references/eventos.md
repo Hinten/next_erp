@@ -75,6 +75,12 @@ by NF-e pendentes de retorno that were never authorized).
   "Rejeição: Serviço Desativado"** (#2030). Expect the same in produção from
   01/11. Inutilização still exists in the other UFs. Primary source:
   `confaz.fazenda.gov.br/legislacao/ajustes/2026/AJ040_26`.
+- **NT 2023.002 v1.02 (Out/2026), pp. 4, 6 e 10:** cronograma técnico de
+  desligamento em AC/BA/SP até 11/11/2026 (homologação) e em 11/11/2026
+  (produção), podendo retornar HTTP 404 ou 998. Isso não altera o guarda
+  legal de 01/11 já implementado. A SEFAZ-BA anunciou desligamento em 03/11;
+  conciliar o comunicado da UF antes de inferir disponibilidade. Ver
+  [a referência e suas fontes](nt-2023-002-v1.02.md#inutilização-distinguir-prazo-legal-e-desligamento-do-serviço).
 - ⚠️ A **rejection** may carry `<dhRecbto>0001-01-01T00:00:00+00:00</dhRecbto>`
   (.NET `DateTime.MinValue`), first seen from SEFAZ-SP homologação on 2026-10-22.
   MOC 7.0 Tabela 5-10 says dhRecbto/nProt "não serão preenchidos em caso de
