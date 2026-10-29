@@ -67,6 +67,20 @@ sources/
 
 ## Source index — SEFAZ portal
 
+### NT 2023.002 v1.02
+
+- File: `nt/2023/NFe_NT2023.002_v1.02.pdf` (12 pages, 557310 bytes).
+- Version: **1.02 — Outubro 2026**, published **26/10/2026** on the
+  [official SVRS documents page](https://dfe-portal.svrs.rs.gov.br/Nfe/Documentos).
+- Obtained from the PDF supplied by the user on 29/10/2026; preserved
+  byte-for-byte, without re-rendering or modification.
+- SHA-256: `e375b487fdb38c0f114dbc9fd4a0b109151d0a21e1770d738f5c5f9597758202`.
+- Read pp. **4** (schedule), **6–7** (sync-only 55/65; GAP03a-6 / 129),
+  **10** (998 / service shutdown). The dedicated analysis is
+  [nt-2023-002-v1.02.md](../nt-2023-002-v1.02.md).
+
+### Portal indexes
+
 - **MOC pages**: https://www.nfe.fazenda.gov.br/portal/listaConteudo.aspx?tipoConteudo=ndIjl+iEFdE=
 - **NT index**:  https://www.nfe.fazenda.gov.br/portal/listaConteudo.aspx?tipoConteudo=04BIflQt1aY=
 - **CONFAZ mirror (MOC PDFs)**: https://www.confaz.fazenda.gov.br/legislacao/arquivo-manuais/
