@@ -1,18 +1,29 @@
 'use client';
 
-import type { KeyboardEvent } from 'react';
-import { Alert, Button, Group, List, Stack, Text, TextInput, Textarea } from '@mantine/core';
+import { useState, type KeyboardEvent } from 'react';
+import {
+  Alert,
+  Button,
+  Checkbox,
+  Group,
+  List,
+  Modal,
+  Stack,
+  Text,
+  TextInput,
+  Textarea,
+} from '@mantine/core';
 import type { Firestore } from 'firebase/firestore';
 import {
   CAMPO_RASCUNHO_SHOPEE,
   MAX_DESCRIPTION_RASCUNHO_SHOPEE,
   MAX_ITEM_NAME_RASCUNHO_SHOPEE,
   descreverFaixaShopee,
-  pendenciasDoRascunhoShopee,
   textoNaFaixaShopee,
   textoUtilizavelShopee,
   type ArgsPendenciasRascunhoShopee,
   type CampoRascunhoShopee,
+  type EstadoPublicacaoRascunhoShopee,
   type FaixaDto,
   type MarcaRascunhoShopee as ParMarcaRascunhoShopee,
 } from '@delfrance/schemas';
@@ -24,16 +35,27 @@ import {
   FRASE_RASCUNHO_CARREGANDO_SHOPEE,
   FRASE_RASCUNHO_NOVO_SHOPEE,
   ROTULO_CAMPO_RASCUNHO_SHOPEE,
+  ROTULO_CRIAR_PAUSADO_SHOPEE,
+  ROTULO_PUBLICAR_RASCUNHO_SHOPEE,
+  ROTULO_PUBLICAR_SEGUNDO_ANUNCIO_SHOPEE,
+  TITULO_PUBLICAR_RASCUNHO_SHOPEE,
+  TITULO_SEGUNDO_ANUNCIO_NA_PUBLICACAO_SHOPEE,
+  textoDaConfirmacaoDePublicacaoShopee,
   textoDaPendenciaRascunhoShopee,
+  textoDoSegundoAnuncioNaPublicacaoShopee,
 } from '@/lib/shopee/anuncioProduto';
 import type {
   BlocoRascunhoShopee,
   CampoDoFormularioRascunhoShopee,
   DescarteDoRascunhoShopee,
+  ExistentesNaContaShopee,
   FormularioRascunhoShopee,
+  PublicacaoDoRascunhoShopee,
+  SaidaDoProblemaShopee,
 } from '@/lib/shopee/rascunho';
 
 import { CategoriaRascunhoShopee } from './CategoriaRascunhoShopee';
+import { idDoCampoRascunhoShopee } from './DesfechoAcaoShopee';
 import { MarcaRascunhoShopee } from './MarcaRascunhoShopee';
 
 /**
@@ -42,6 +64,49 @@ import { MarcaRascunhoShopee } from './MarcaRascunhoShopee';
  * members, so its `emVoo` names a draft write the same way it names a publish.
  */
 export type AcaoDoRascunhoShopee = 'salvar-rascunho' | 'descartar-rascunho';
+
+/**
+ * Every write a draft block starts (#1911 P11): its two draft writes plus its
+ * «Publicar» — the `publicar` route, the editor's existing
+ * `AcaoDoAnuncioShopee` member, sent by `linkDocId`.
+ */
+export type AcaoDoBlocoRascunhoShopee = AcaoDoRascunhoShopee | 'publicar';
+
+/**
+ * The «Publicar» confirmation of ONE draft while it is open (#1911 P11, DC
+ * §2.6). Editor state (R2): it survives a hidden tab, and a 409 re-ask or a
+ * refusal row's attestation exit opens it as well as the block's own button.
+ * The form renders it as a controlled modal
+ * (`data-testid="shopee-rascunho-publicar-<linkDocId>"`): the publish text
+ * (`textoDaConfirmacaoDePublicacaoShopee`), the «Criar pausado» checkbox
+ * (`ROTULO_CRIAR_PAUSADO_SHOPEE`), the D15 warning while {@link segundoAnuncio}
+ * is set, «Cancelar» and the confirm button.
+ */
+export interface ConfirmacaoDePublicacaoShopee {
+  /**
+   * D15: what makes this publish a SECOND listing of the produto on the conta
+   * — `segundoAnuncioNaContaShopee(links, contaId, edicoes, linkDocId)` as the
+   * dialog opens (the draft itself excluded; a conta holding only removed
+   * listings ⇒ `null`), or `existentesDosVinculosShopee(vinculos)` when a 409
+   * `rascunhoContaJaTemAnuncio` re-asks. Non-null ⇒ the warning
+   * (`textoDoSegundoAnuncioNaPublicacaoShopee`) shows and the send carries
+   * `confirmarSegundoAnuncio: true`; `null` ⇒ neither. Supplied by the editor.
+   */
+  readonly segundoAnuncio: ExistentesNaContaShopee | null;
+  /** «Criar pausado» as the dialog opens — `false` on a click; the refused request's own choice when a 409 re-asks (the re-send is identical but for the flag). Supplied by the editor. */
+  readonly pausado: boolean;
+  /**
+   * The refusal-row exit that opened it — `saidasDoProblemaShopee`'s
+   * `publicar-atestando` (its `rotulo` is what the operator attested, its
+   * `adota` the unlinked listing(s) the publish adopts instead of creating) —
+   * so the send carries `confirmarCriacaoIncerta: true`, on a 409 re-ask too;
+   * `null` for the block's own «Publicar». Supplied by the editor.
+   */
+  readonly atestacao: Extract<
+    SaidaDoProblemaShopee,
+    { readonly tipo: 'publicar-atestando' }
+  > | null;
+}
 
 /**
  * A sentence the last draft operation left on THIS block — never a success
@@ -79,16 +144,16 @@ export interface RascunhoShopeeProps {
   bloco: BlocoRascunhoShopee;
   /** The HELD projection's brand pair — §H Q1's "stored" brand: `projecaoGuardadaDoRascunhoShopee(edicao, link).marca` for a stored draft, `null` for a local new one; supplied by the tab. */
   marcaGuardada: ParMarcaRascunhoShopee | null;
-  /** The STORED produto `nome` (`produtoSnap`) and `extraData/singleton.descricao` (rev. 2a #10's new `useDocSnapshot`), each `null` when absent — or `null` while either document has not answered (then no pendência is computed); supplied by the editor. */
+  /** The STORED produto `nome` (`produtoSnap`) and `extraData/singleton.descricao` (rev. 2a #10's new `useDocSnapshot`), each `null` when absent — or `null` while either document has not answered (then no pendência is computed); supplied by the editor. Since #1911 P11 the form reads the pendências from {@link decisaoDePublicar}, which the tab computes over this SAME value — so the list shown is the list that gates. */
   textosDoProduto: TextosDoProdutoRascunhoShopee | null;
-  /** The EDITED category's title/description bands (`client.limitesDoItem({integracaoId, categoryId: bloco.valores.category_id}).limites`, requested only while that category is not `null`), or `null` while unknown — no category, loading or failed: no band pendência, no counter; supplied by the tab. */
+  /** The title/description bands the tab holds (`client.limitesDoItem(…).limites` — the EDITED category's), or `null` while unknown: the fields' measured counter reads them (the band pendências are {@link decisaoDePublicar}'s); supplied by the tab. */
   limites: ArgsPendenciasRascunhoShopee['limites'];
   /** The stale check — `divergenciasDoServidorShopee(edicao, link)` (`[]` for no entry, a local new draft or nothing to save): fields another writer changed since the entry was loaded, so the next Salvar will answer 409; supplied by the tab. */
   divergencias: readonly CampoRascunhoShopee[];
   /** `PERM.integracao.write` ∧ `PERM.produto.write` ∧ the produto form editable — the SAME flag the tab passes as `bloco`'s `podeEditar`; `false` ⇒ fields read-only and NO button renders. */
   podeEditar: boolean;
-  /** This link's draft write in flight (the editor's `emVoo` when it names this link and a draft action), else `null` — that button shows the spinner. */
-  emVoo: AcaoDoRascunhoShopee | null;
+  /** This link's write in flight (the editor's `emVoo` when it names this link and a draft action or its «Publicar» — `'publicar'` on a draft's link is always this block's), else `null` — that button shows the spinner. */
+  emVoo: AcaoDoBlocoRascunhoShopee | null;
   /** The last draft operation's sentence on this block (editor state, R2), or `null`. */
   resultado: ResultadoDoRascunhoShopee | null;
   /** One form field typed or picked: the editor creates the entry on the first one (`edicaoDoRascunhoGuardadoShopee`) and applies `comCampoRascunhoShopee`; fired only while `bloco.camposEditaveis` (`category_id` only while `bloco.categoriaEditavel`). */
@@ -102,6 +167,32 @@ export interface RascunhoShopeeProps {
   onDesfazer: () => void;
   /** «Descartar» (enabled ⇔ `bloco.podeDescartar`) with `bloco.descarte`: the editor opens that confirmation — `local` (drop, no request), `confirmar`, or `atestar` (the three-case Seller-Centre dialog). */
   onDescartar: (descarte: DescarteDoRascunhoShopee) => void;
+  /**
+   * THE «Publicar» gate (#1911 P11) — `publicacaoDoRascunhoShopee({bloco,
+   * podeEditar, ocupado, servidorConfirmado, produtoSujo, textosDoProduto,
+   * limites})` over the SAME `bloco`, `podeEditar` and `textosDoProduto` this
+   * form gets (`limites`: the draft category's bands, or the shop-wide ones
+   * when it has none); computed by the tab. «Publicar» (named exactly
+   * `ROTULO_PUBLICAR_RASCUNHO_SHOPEE`) renders with the other buttons and is
+   * enabled ⇔ `podePublicar`; a non-null `aviso` shows under it; `pendencias`
+   * is the list that gates — the one the form shows.
+   */
+  decisaoDePublicar: PublicacaoDoRascunhoShopee;
+  /** «Publicar» (enabled ⇔ `decisaoDePublicar.podePublicar`): the editor re-checks the gate and opens `confirmacaoDePublicacao` — the click itself sends nothing. */
+  onPublicar: () => void;
+  /** This draft's open «Publicar» confirmation (editor state, R2), or `null` while closed. */
+  confirmacaoDePublicacao: ConfirmacaoDePublicacaoShopee | null;
+  /**
+   * The confirm, with «Criar pausado» as ticked now: the editor closes the
+   * dialog and sends `corpoPublicarRascunhoShopee({contaId, produtoId,
+   * linkDocId, pausado, confirmarSegundoAnuncio: segundoAnuncio !== null,
+   * confirmarCriacaoIncerta: atestacao !== null})` through `executar` — by
+   * `linkDocId`, never `categoryId`. The confirm button acts only while
+   * `decisaoDePublicar.podePublicar` (the reading can change while it is open).
+   */
+  onConfirmarPublicacao: (pausado: boolean) => void;
+  /** «Cancelar» (or the dialog closed): the editor closes it; nothing is sent. */
+  onCancelarPublicacao: () => void;
 }
 
 /** A changed title no write accepts (the draft route's `item_name` refine: never blank). */
@@ -163,12 +254,13 @@ function semEnviarOFormularioDoProduto(e: KeyboardEvent<HTMLInputElement>): void
 }
 
 /**
- * The draft form of ONE listing draft (#1911 P10, DC §2.3/§2.6): Título,
+ * The draft form of ONE listing draft (#1911 P10/P11, DC §2.3/§2.6): Título,
  * Descrição, Categoria (`CategoriaRascunhoShopee`), Marca
- * (`MarcaRascunhoShopee`), the read-only logistics line, the pendências
- * (`pendenciasDoRascunhoShopee` over `bloco.campos`), the block's notices, and
- * «Salvar rascunho» / «Desfazer alterações» / «Descartar». A virtual-kit
- * produto (`bloco.kitVirtual`) gets the notice and «Descartar» only.
+ * (`MarcaRascunhoShopee`), the read-only logistics line, the pendências, the
+ * block's notices, and «Salvar rascunho» / «Desfazer alterações» /
+ * «Publicar» / «Descartar» — with the «Publicar» confirmation. A virtual-kit
+ * produto (`bloco.kitVirtual`) gets the notice and «Descartar» only: its first
+ * publish is a native kit, never this draft (§C #1).
  *
  * Presentational: every piece of state and every write is the editor's (R2);
  * it fetches nothing itself (its two pickers carry their own reads).
@@ -177,17 +269,31 @@ function semEnviarOFormularioDoProduto(e: KeyboardEvent<HTMLInputElement>): void
  *   fields show, whether they accept typing (the category separately — never
  *   in `incerta`), whether each button acts, which discard runs, the notices.
  *   Nothing here re-reads the publish lock or the clock (#1369).
- * - **Pendências** read `bloco.campos` (the form's values in the projection's
- *   form) with the STORED produto texts (`textosDoProduto`) — never the
- *   produto form's unsaved text — and only once those are known: a list built
- *   from missing knowledge would claim pendências that do not exist.
+ * - **«Publicar» is `decisaoDePublicar`'s** (`publicacaoDoRascunhoShopee`):
+ *   enabled ⇔ `podePublicar`, its `aviso` under the button. The pendências
+ *   shown ARE `decisaoDePublicar.pendencias` — the list that gates, computed
+ *   once by the tab over `bloco.campos` and the STORED produto texts (never
+ *   the produto form's unsaved text), empty while those texts are unknown: a
+ *   list built from missing knowledge would claim pendências that do not
+ *   exist. The form never recomputes them (#1369).
+ * - **The click sends nothing**: `onPublicar` asks the editor to open
+ *   `confirmacaoDePublicacao` — the ONE way to publish a draft, also taken by
+ *   a 409 `rascunhoContaJaTemAnuncio` re-ask and by a refusal row's
+ *   attestation exit, so the confirmation, «Criar pausado» and the D15
+ *   warning are never skipped (K2-13). Its confirm acts only while
+ *   `decisaoDePublicar.podePublicar` still holds.
  * - **Buttons** render only with `podeEditar`; a read-only operator sees the
  *   values and the notices, nothing to click.
  *
  * Contract for the tab's tests and the e2e: root
  * `data-testid="shopee-rascunho-<linkDocId>"`; buttons named exactly «Salvar
- * rascunho», «Desfazer alterações», «Descartar»; ⚠️ NO button whose name
- * contains "Publicar" (P10's pin `semBotao(id, /Publicar/)` — Publicar is P11).
+ * rascunho», «Desfazer alterações», «Publicar»
+ * (`ROTULO_PUBLICAR_RASCUNHO_SHOPEE`), «Descartar», in that order; the
+ * confirmation `data-testid="shopee-rascunho-publicar-<linkDocId>"` (a Mantine
+ * `Modal`: portalled outside the root in the browser, so scope its buttons by
+ * that test id or the `dialog` role — its confirm is also named «Publicar»,
+ * or «Publicar mesmo assim» with the D15 warning); field ids
+ * {@link idDoCampoRascunhoShopee}.
  */
 export function RascunhoShopee({
   db,
@@ -196,7 +302,6 @@ export function RascunhoShopee({
   linkDocId,
   bloco,
   marcaGuardada,
-  textosDoProduto,
   limites,
   divergencias,
   podeEditar,
@@ -206,13 +311,16 @@ export function RascunhoShopee({
   onSalvar,
   onDesfazer,
   onDescartar,
+  decisaoDePublicar,
+  onPublicar,
+  confirmacaoDePublicacao,
+  onConfirmarPublicacao,
+  onCancelarPublicacao,
 }: RascunhoShopeeProps) {
   const raiz = `shopee-rascunho-${linkDocId}`;
   const { valores } = bloco;
-  const pendencias =
-    textosDoProduto === null || bloco.kitVirtual
-      ? []
-      : pendenciasDoRascunhoShopee(bloco.campos, { ...textosDoProduto, limites });
+  // The gate's own list (#1369) — `[]` while the produto texts are unknown or on a kit.
+  const { pendencias } = decisaoDePublicar;
   const tituloEmBranco =
     bloco.impedimento === 'campo-invalido' && textoUtilizavelShopee(valores.item_name) === null;
 
@@ -263,6 +371,7 @@ export function RascunhoShopee({
       {!bloco.kitVirtual && (
         <>
           <TextInput
+            id={idDoCampoRascunhoShopee(linkDocId, CAMPO_RASCUNHO_SHOPEE.itemName)}
             label="Título do anúncio"
             description={descricaoDoCampo(
               'Começa com o nome do produto; é o título que a Shopee mostra.',
@@ -277,6 +386,7 @@ export function RascunhoShopee({
             onChange={(e) => onCampo(CAMPO_RASCUNHO_SHOPEE.itemName, e.currentTarget.value)}
           />
           <Textarea
+            id={idDoCampoRascunhoShopee(linkDocId, CAMPO_RASCUNHO_SHOPEE.description)}
             label="Descrição do anúncio"
             description={descricaoDoCampo(
               'Em branco: a Shopee recebe a descrição do produto (aba Descrição).',
@@ -291,25 +401,29 @@ export function RascunhoShopee({
             disabled={!bloco.camposEditaveis}
             onChange={(e) => onCampo(CAMPO_RASCUNHO_SHOPEE.description, e.currentTarget.value)}
           />
-          <CategoriaRascunhoShopee
-            contaId={contaId}
-            linkDocId={linkDocId}
-            categoryId={valores.category_id}
-            titulo={valores.item_name}
-            editavel={bloco.categoriaEditavel}
-            atributosGravados={bloco.atributosGravados}
-            onEscolher={(categoryId) => onCampo(CAMPO_RASCUNHO_SHOPEE.categoryId, categoryId)}
-          />
-          <MarcaRascunhoShopee
-            db={db}
-            contaId={contaId}
-            contaNome={contaNome}
-            linkDocId={linkDocId}
-            marca={valores.marca}
-            marcaGuardada={marcaGuardada}
-            editavel={bloco.camposEditaveis}
-            onEscolher={(marca) => onCampo(CAMPO_RASCUNHO_SHOPEE.marca, marca)}
-          />
+          <div id={idDoCampoRascunhoShopee(linkDocId, CAMPO_RASCUNHO_SHOPEE.categoryId)}>
+            <CategoriaRascunhoShopee
+              contaId={contaId}
+              linkDocId={linkDocId}
+              categoryId={valores.category_id}
+              titulo={valores.item_name}
+              editavel={bloco.categoriaEditavel}
+              atributosGravados={bloco.atributosGravados}
+              onEscolher={(categoryId) => onCampo(CAMPO_RASCUNHO_SHOPEE.categoryId, categoryId)}
+            />
+          </div>
+          <div id={idDoCampoRascunhoShopee(linkDocId, CAMPO_RASCUNHO_SHOPEE.marca)}>
+            <MarcaRascunhoShopee
+              db={db}
+              contaId={contaId}
+              contaNome={contaNome}
+              linkDocId={linkDocId}
+              marca={valores.marca}
+              marcaGuardada={marcaGuardada}
+              editavel={bloco.camposEditaveis}
+              onEscolher={(marca) => onCampo(CAMPO_RASCUNHO_SHOPEE.marca, marca)}
+            />
+          </div>
           <Text size="xs" c="dimmed">
             {FRASE_LOGISTICA_RASCUNHO_SHOPEE}
           </Text>
@@ -366,11 +480,141 @@ export function RascunhoShopee({
                   Desfazer alterações
                 </Button>
               )}
+              <Button
+                type="button"
+                size="xs"
+                color="green"
+                disabled={!decisaoDePublicar.podePublicar}
+                loading={emVoo === 'publicar'}
+                onClick={onPublicar}
+              >
+                {ROTULO_PUBLICAR_RASCUNHO_SHOPEE}
+              </Button>
               {descartar}
             </>
           )}
         </Group>
       )}
+      {podeEditar && !bloco.kitVirtual && decisaoDePublicar.aviso !== null && (
+        <Text size="xs" c="dimmed" data-testid={`${raiz}-publicar-aviso`}>
+          {decisaoDePublicar.aviso}
+        </Text>
+      )}
+
+      {/* Mounted only while open, so «Criar pausado» starts from the editor's value on every opening. */}
+      {podeEditar && !bloco.kitVirtual && confirmacaoDePublicacao !== null && (
+        <ConfirmacaoDePublicacaoModal
+          linkDocId={linkDocId}
+          contaNome={contaNome}
+          publicacao={bloco.publicacao}
+          confirmacao={confirmacaoDePublicacao}
+          podePublicar={decisaoDePublicar.podePublicar}
+          aviso={decisaoDePublicar.aviso}
+          onConfirmar={onConfirmarPublicacao}
+          onCancelar={onCancelarPublicacao}
+        />
+      )}
     </Stack>
+  );
+}
+
+/**
+ * The «Publicar» confirmation (DC §2.6): what the publish sends and reads
+ * (`textoDaConfirmacaoDePublicacaoShopee` — on an `incerta` draft it also
+ * says the publish may ADOPT the last attempt's listing, and an attestation
+ * exit whose `adota` names one is worded as that adoption, never as a
+ * create), the attestation the
+ * operator gave when a refusal row's exit opened it, the D15 second-listing
+ * warning while `confirmacao.segundoAnuncio` is set (then titled and confirmed
+ * as a second listing), and «Criar pausado».
+ *
+ * The confirm acts only while `podePublicar` holds — the reading can change
+ * while the dialog is open (another tab starts a publish, the produto form
+ * turns dirty) — and then hands the editor «Criar pausado» as ticked NOW.
+ */
+function ConfirmacaoDePublicacaoModal({
+  linkDocId,
+  contaNome,
+  publicacao,
+  confirmacao,
+  podePublicar,
+  aviso,
+  onConfirmar,
+  onCancelar,
+}: {
+  linkDocId: string;
+  contaNome: string;
+  publicacao: EstadoPublicacaoRascunhoShopee;
+  confirmacao: ConfirmacaoDePublicacaoShopee;
+  podePublicar: boolean;
+  aviso: string | null;
+  onConfirmar: (pausado: boolean) => void;
+  onCancelar: () => void;
+}) {
+  const [pausado, setPausado] = useState(confirmacao.pausado);
+  const { segundoAnuncio, atestacao } = confirmacao;
+  return (
+    <Modal
+      opened
+      onClose={onCancelar}
+      title={
+        segundoAnuncio === null
+          ? TITULO_PUBLICAR_RASCUNHO_SHOPEE
+          : TITULO_SEGUNDO_ANUNCIO_NA_PUBLICACAO_SHOPEE
+      }
+      centered
+    >
+      <Stack gap="sm" data-testid={`shopee-rascunho-publicar-${linkDocId}`}>
+        <Text size="sm">
+          {textoDaConfirmacaoDePublicacaoShopee({
+            contaNome,
+            publicacao,
+            // An attestation exit that ADOPTS a listing creates nothing (§C #8).
+            adota: atestacao?.adota ?? [],
+          })}
+        </Text>
+        {atestacao !== null && (
+          <Text size="sm" data-testid={`shopee-rascunho-publicar-${linkDocId}-atestacao`}>
+            Você confirmou: «{atestacao.rotulo}».
+          </Text>
+        )}
+        {segundoAnuncio !== null && (
+          <Alert
+            color="orange"
+            variant="light"
+            data-testid={`shopee-rascunho-publicar-${linkDocId}-segundo-anuncio`}
+          >
+            {textoDoSegundoAnuncioNaPublicacaoShopee(segundoAnuncio)}
+          </Alert>
+        )}
+        <Checkbox
+          label={ROTULO_CRIAR_PAUSADO_SHOPEE}
+          checked={pausado}
+          onChange={(e) => setPausado(e.currentTarget.checked)}
+        />
+        {!podePublicar && aviso !== null && (
+          <Text size="sm" c="dimmed">
+            {aviso}
+          </Text>
+        )}
+        <Group justify="flex-end">
+          <Button type="button" variant="default" onClick={onCancelar}>
+            Cancelar
+          </Button>
+          <Button
+            type="button"
+            color={segundoAnuncio === null ? 'green' : 'orange'}
+            disabled={!podePublicar}
+            onClick={() => {
+              if (podePublicar) onConfirmar(pausado);
+            }}
+          >
+            {segundoAnuncio === null
+              ? ROTULO_PUBLICAR_RASCUNHO_SHOPEE
+              : ROTULO_PUBLICAR_SEGUNDO_ANUNCIO_SHOPEE}
+          </Button>
+        </Group>
+      </Stack>
+    </Modal>
   );
 }

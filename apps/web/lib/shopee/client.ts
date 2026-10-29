@@ -337,6 +337,19 @@ export type ReclamacaoAcaoShopeeInput =
  * - `principal` — the native kit's principal produto;
  * - `recriar` / `converterEmKit` — the two kit arms. ⚠️ The route refuses both
  *   together, and `recriar` without `linkDocId` (400 each).
+ * - `confirmarSegundoAnuncio` (#1911) — the operator confirmed a SECOND listing
+ *   of the produto on the conta (D15) before a draft's publish: without it the
+ *   reservation refuses 409 `rascunhoContaJaTemAnuncio` with `detalhes.vinculos`.
+ * - `confirmarCriacaoIncerta` (#1911) — the operator's Seller-Centre
+ *   attestation that a draft's uncertain last create left nothing to adopt.
+ *   The route honours it ONLY for the refusals `criacao-incerta-sem-sku` and
+ *   `criacao-incerta-ja-vinculada`, ignores it everywhere else, and it never
+ *   skips the look-up.
+ *
+ * ⚠️ A DRAFT is published by its `linkDocId` alone — never `categoryId` (the
+ * draft carries its own) and never a kit flag. The route's parser is not
+ * strict: a backend older than the two flags ignores them, a non-boolean one
+ * is a 400 — hence the literal `true`, omitted when absent.
  */
 export interface PublicarShopeeInput {
   integracaoId: string;
@@ -347,6 +360,8 @@ export interface PublicarShopeeInput {
   principal?: string;
   recriar?: true;
   converterEmKit?: true;
+  confirmarSegundoAnuncio?: true;
+  confirmarCriacaoIncerta?: true;
 }
 
 /**
@@ -560,15 +575,22 @@ export interface ShopeeClient {
     signal?: AbortSignal;
   }): Promise<AnuncioStatusShopee>;
   /**
-   * Publish an EXISTING link — an ordinary listing or a native kit
-   * (PERM.integracao.write). The answer is tagged: `tipo: 'item'` or
-   * `tipo: 'kit'`, and a kit whose `desfecho` is `incerto` is the 202 — the
-   * caller waits `aguardarMs` and re-sends the IDENTICAL input.
+   * Publish an EXISTING link — an ordinary listing, a native kit, or a listing
+   * DRAFT's first create (#1911) (PERM.integracao.write). The answer is
+   * tagged: `tipo: 'item'`, `tipo: 'kit'` — a kit whose `desfecho` is
+   * `incerto` is its 202: the caller waits `aguardarMs` and re-sends the
+   * IDENTICAL input — or `tipo: 'item-incerto'`, the 202 of a draft's create
+   * whose outcome nobody knows (never "falhou"; the next publish of the same
+   * draft looks the listing up first).
    *
    * A refusal before any Shopee write is a 422 `SHOPEE_PUBLISH_BLOCKED`, one
    * after is a 422 `SHOPEE_PUBLISH_REJECTED` (`detalhes.etapa`); both carry
    * `detalhes.problemas`, each with its machine-readable `acao`. 404
-   * `SHOPEE_ANUNCIO_NAO_ENCONTRADO` when the conta holds no such link.
+   * `SHOPEE_ANUNCIO_NAO_ENCONTRADO` when the conta holds no such link — for a
+   * draft, one discarded meanwhile. A draft's lock answers the 409s of
+   * `CODIGO_FALHA_SHOPEE`'s #1911 block (`publicacaoEmAndamento`,
+   * `rascunhoJaPublicado`, `publicacaoExpirada`, `rascunhoContencao`,
+   * `rascunhoCriacaoIncerta`, `rascunhoContaJaTemAnuncio`).
    *
    * ⚠️ **No `signal`, on purpose.** Creating a kit is not idempotent: an abort
    * would turn a publish the server goes on to finish into an "unknown" the
@@ -987,6 +1009,12 @@ function corpoDaPublicacao(p: PublicarShopeeInput): Record<string, unknown> {
     ...(p.principal === undefined ? {} : { principal: p.principal }),
     ...(p.recriar === undefined ? {} : { recriar: p.recriar }),
     ...(p.converterEmKit === undefined ? {} : { converterEmKit: p.converterEmKit }),
+    ...(p.confirmarSegundoAnuncio === undefined
+      ? {}
+      : { confirmarSegundoAnuncio: p.confirmarSegundoAnuncio }),
+    ...(p.confirmarCriacaoIncerta === undefined
+      ? {}
+      : { confirmarCriacaoIncerta: p.confirmarCriacaoIncerta }),
   };
 }
 

@@ -8,7 +8,7 @@ import {
   type ProdutoShopeeLink,
 } from '@delfrance/schemas';
 
-import { formatarInstanteShopee } from '@/lib/shopee/anuncioProduto';
+import { formatarInstanteShopee, textoDaRecusaGuardadaShopee } from '@/lib/shopee/anuncioProduto';
 import { textoPreenchido } from './campos';
 
 export interface RecusasAnuncioShopeeProps {
@@ -165,7 +165,15 @@ function sentencaDaRecusa(
   return `${quando === null ? '' : `Em ${quando}: `}${texto}${cod === null ? '' : ` (código ${cod})`}`;
 }
 
-/** The last failed publish, read field by field from the stored (possibly raw) value. */
+/**
+ * The last failed publish, read field by field from the stored (possibly raw)
+ * value. Each stored refusal row reads the tab's OWN copy of its `motivo`
+ * first (`textoDaRecusaGuardadaShopee`, #1911 rev. 2a #12) and its stored
+ * `mensagem` only as the fallback: a draft's refused `add_item` is stamped
+ * here, and Shopee's English prose (`anuncio-semelhante-existente`, its
+ * `error_repeated_mtsku`) must not be what stays on screen once the outcome
+ * panel is gone. A row with neither is dropped.
+ */
 function lerFalhaPublicacao(valor: unknown): {
   em: string | null;
   etapa: string | null;
@@ -177,7 +185,8 @@ function lerFalhaPublicacao(valor: unknown): {
   const problemas = Array.isArray(f.problemas)
     ? f.problemas.flatMap((p: unknown) => {
         if (typeof p !== 'object' || p === null) return [];
-        const texto = textoPreenchido((p as Record<string, unknown>).mensagem);
+        const linha = p as Record<string, unknown>;
+        const texto = textoDaRecusaGuardadaShopee(linha.motivo, linha.mensagem);
         return texto === null ? [] : [texto];
       })
     : [];

@@ -1970,6 +1970,92 @@ describe('step 21 — publicar sends exactly what the caller chose (C2)', () => 
       converterEmKit: true,
     });
   });
+
+  it('#1911 P11: a DRAFT’s publish sends its link and each confirmation flag only when given', async () => {
+    const ambos = gravador(JSON.stringify(PUBLICAR_ITEM_200));
+    await ambos.c.publicar({
+      integracaoId: 'int-1',
+      produtoId: 'prod-1',
+      linkDocId: 'AbCdEfGhIj0123456789',
+      status: 'UNLIST',
+      confirmarSegundoAnuncio: true,
+      confirmarCriacaoIncerta: true,
+    });
+    expect(corpoEnviado(ambos.pedidos[0]?.init)).toStrictEqual({
+      integracaoId: 'int-1',
+      produtoId: 'prod-1',
+      linkDocId: 'AbCdEfGhIj0123456789',
+      status: 'UNLIST',
+      confirmarSegundoAnuncio: true,
+      confirmarCriacaoIncerta: true,
+    });
+
+    // Each flag on its own — the other is OMITTED, never `false` or `null`.
+    const segundo = gravador(JSON.stringify(PUBLICAR_ITEM_200));
+    await segundo.c.publicar({
+      integracaoId: 'int-1',
+      produtoId: 'prod-1',
+      linkDocId: 'R1',
+      confirmarSegundoAnuncio: true,
+    });
+    expect(corpoEnviado(segundo.pedidos[0]?.init)).toStrictEqual({
+      integracaoId: 'int-1',
+      produtoId: 'prod-1',
+      linkDocId: 'R1',
+      confirmarSegundoAnuncio: true,
+    });
+    const atestado = gravador(JSON.stringify(PUBLICAR_ITEM_200));
+    await atestado.c.publicar({
+      integracaoId: 'int-1',
+      produtoId: 'prod-1',
+      linkDocId: 'R1',
+      confirmarCriacaoIncerta: true,
+    });
+    expect(corpoEnviado(atestado.pedidos[0]?.init)).toStrictEqual({
+      integracaoId: 'int-1',
+      produtoId: 'prod-1',
+      linkDocId: 'R1',
+      confirmarCriacaoIncerta: true,
+    });
+  });
+
+  it('NEAR-MISS: with neither flag the body names neither key — what every publish before #1911 sent', async () => {
+    const { c, pedidos } = gravador(JSON.stringify(PUBLICAR_ITEM_200));
+
+    await c.publicar({ integracaoId: 'int-1', produtoId: 'prod-1', linkDocId: 'R1' });
+
+    const corpo = corpoEnviado(pedidos[0]?.init) as Record<string, unknown>;
+    expect(corpo).not.toHaveProperty('confirmarSegundoAnuncio');
+    expect(corpo).not.toHaveProperty('confirmarCriacaoIncerta');
+    expect(Object.keys(corpo).sort()).toEqual(['integracaoId', 'linkDocId', 'produtoId']);
+  });
+
+  it('⭐ the item 202 resolves (any 2xx is an answer) as `tipo: item-incerto` — never a thrown failure', async () => {
+    const { c } = gravador(
+      JSON.stringify({
+        arma: 'item',
+        desfecho: 'incerto',
+        linkDocId: 'R1',
+        aguardarMs: 240_000,
+        reenvioVerificaSku: false,
+        recusa: null,
+        mensagem: 'a Shopee pode ter criado o anúncio (--confirmar-criacao-incerta)',
+      }),
+      202,
+    );
+
+    const r = await c.publicar({ integracaoId: 'int-1', produtoId: 'prod-1', linkDocId: 'R1' });
+
+    expect(r).toEqual({
+      tipo: 'item-incerto',
+      arma: 'item',
+      desfecho: 'incerto',
+      linkDocId: 'R1',
+      aguardarMs: 240_000,
+      reenvioVerificaSku: false,
+      recusa: null,
+    });
+  });
 });
 
 describe('step 21 — enviarPrecos is NOT Mercado Livre’s (C3)', () => {

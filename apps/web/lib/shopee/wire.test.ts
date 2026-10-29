@@ -18,6 +18,7 @@ import {
   respostaCategoriasShopeeSchema as categoriasCompartilhadaSchema,
   respostaCriarRascunhoShopeeSchema as criarCompartilhadoSchema,
   respostaDescartarRascunhoShopeeSchema as descartarCompartilhadoSchema,
+  respostaItemIncertoShopeeSchema as itemIncertoCompartilhadoSchema,
   respostaLimitesDoItemShopeeSchema as limitesDoItemCompartilhadoSchema,
   respostaLimitesTabelaMedidasShopeeSchema,
   respostaMarcasShopeeSchema as marcasCompartilhadaSchema,
@@ -55,6 +56,7 @@ import {
   respostaCategoriasShopeeSchema,
   respostaCriarRascunhoShopeeSchema,
   respostaDescartarRascunhoShopeeSchema,
+  respostaItemIncertoShopeeSchema,
   respostaLimitesDoItemShopeeSchema,
   respostaLimitesShopeeSchema,
   respostaMarcasShopeeSchema,
@@ -1366,6 +1368,21 @@ const KIT_202 = {
   aguardarMs: 240_000,
 };
 
+/**
+ * The ordinary listing's 202 (#1911 P11) as `publicar/route.ts`'s
+ * `corpoDoItemIncerto` builds it — the declared keys, then the CLI's `mensagem`.
+ */
+const ITEM_202 = {
+  arma: 'item',
+  desfecho: 'incerto',
+  linkDocId: 'AbCdEfGhIj0123456789',
+  aguardarMs: 240_000,
+  reenvioVerificaSku: true,
+  recusa: { codigo: 'error_inner', fraseShopee: 'taking some time to respond' },
+  mensagem:
+    'a Shopee pode ter criado o anúncio — aguarde 4 minutos e publique de novo o MESMO rascunho',
+};
+
 /** One violation row as `shopeeViolacaoSchema` stores it — the re-verify answers the ROW LIST. */
 const VIOLACAO = {
   violation_type: 'deboost',
@@ -1486,6 +1503,7 @@ describe('step 21 — every route body parses here (the control)', () => {
     ['enviar-precos', envioPrecoManualShopeeSchema, ENVELOPE_PRECO],
     ['publicar (item)', respostaPublicarShopeeSchema, ITEM_200],
     ['publicar (kit 202)', respostaPublicarShopeeSchema, KIT_202],
+    ['publicar (item 202, #1911 P11)', respostaPublicarShopeeSchema, ITEM_202],
     ['reverificar-anuncio', respostaReverificarShopeeSchema, REVERIFICAR],
     ['importar-todos/status', massImportStatusShopeeSchema, MASS_STATUS],
     ['atualizar-precos/status', priceSyncStatusShopeeSchema, PRICE_STATUS],
@@ -1688,6 +1706,79 @@ describe('step 21 — publish: the arms are tagged, the kit FIRST (C10, C18)', (
   });
 });
 
+describe('#1911 P11 — the ordinary listing’s 202: a THIRD arm, between the kit and the item 200 (B.4)', () => {
+  it('⭐ the item 202 is `tipo: item-incerto` with the four facts the tab reads — and never the CLI’s `mensagem`', () => {
+    const r = respostaPublicarShopeeSchema.parse(ITEM_202);
+
+    expect(r).toEqual({
+      tipo: 'item-incerto',
+      arma: 'item',
+      desfecho: 'incerto',
+      linkDocId: 'AbCdEfGhIj0123456789',
+      aguardarMs: 240_000,
+      reenvioVerificaSku: true,
+      recusa: { codigo: 'error_inner', fraseShopee: 'taking some time to respond' },
+    });
+    expect(r).not.toHaveProperty('mensagem');
+  });
+
+  it('⭐ UNION ORDER: a body carrying the 202’s tag AND every key of the item 200 reads UNCERTAIN, never a listing', () => {
+    // The item 200's object strips unknown keys, so it WOULD accept this body:
+    // only the arm order keeps an uncertain create from reading as published.
+    const ambos = { ...ITEM_200, ...ITEM_202 };
+    expect(respostaPublicarShopeeSchema.parse(ambos).tipo).toBe('item-incerto');
+    // NEAR-MISS: the same body with any other `desfecho` is no 202 — the item 200 then reads it.
+    expect(respostaPublicarShopeeSchema.parse({ ...ambos, desfecho: 'criado' }).tipo).toBe('item');
+  });
+
+  it('the kit arm stays FIRST and disjoint: a kit body is `kit`, an item 202 is never `kit`', () => {
+    expect(respostaPublicarShopeeSchema.parse(KIT_202).tipo).toBe('kit');
+    // A kit `arma` on the item 202: neither the kit arm (keys missing) nor the 202 (literal `item`).
+    expect(respostaPublicarShopeeSchema.safeParse({ ...ITEM_202, arma: 'kit-criar' }).success).toBe(
+      false,
+    );
+    // `arma: 'item'` on a kit 202: the kit enum refuses it, and its `linkDocId: null` is no 202.
+    expect(respostaPublicarShopeeSchema.safeParse({ ...KIT_202, arma: 'item' }).success).toBe(
+      false,
+    );
+  });
+
+  it('a `tipo` key the backend might send never overrides the tag', () => {
+    expect(respostaPublicarShopeeSchema.parse({ ...ITEM_202, tipo: 'item' }).tipo).toBe(
+      'item-incerto',
+    );
+  });
+
+  it('`recusa` is null when no answer arrived at all, and its sentence may be null', () => {
+    expect(respostaPublicarShopeeSchema.parse({ ...ITEM_202, recusa: null })).toMatchObject({
+      tipo: 'item-incerto',
+      recusa: null,
+    });
+    expect(
+      respostaPublicarShopeeSchema.parse({
+        ...ITEM_202,
+        recusa: { codigo: 'error_inner', fraseShopee: null },
+      }),
+    ).toMatchObject({ recusa: { codigo: 'error_inner', fraseShopee: null } });
+  });
+
+  it('NEAR-MISS: a 202 the tab could not wait on or re-send is refused, never read', () => {
+    for (const ruim of [
+      { ...ITEM_202, aguardarMs: 0 },
+      { ...ITEM_202, aguardarMs: 1.5 },
+      { ...ITEM_202, linkDocId: null },
+      { ...ITEM_202, linkDocId: '' },
+      { ...ITEM_202, reenvioVerificaSku: 'sim' },
+    ]) {
+      expect(respostaPublicarShopeeSchema.safeParse(ruim).success, JSON.stringify(ruim)).toBe(
+        false,
+      );
+    }
+    const { reenvioVerificaSku: _sem, ...semReenvio } = ITEM_202;
+    expect(respostaPublicarShopeeSchema.safeParse(semReenvio).success).toBe(false);
+  });
+});
+
 describe('step 21 — the jobs: Shopee’s shapes, not Mercado Livre’s (C11, C12)', () => {
   it('⭐ C11: a mass-import failure row carries Shopee’s NUMERIC itemId', () => {
     const r = massImportStatusShopeeSchema.parse(MASS_STATUS);
@@ -1773,7 +1864,11 @@ describe('step 21 — `estadoAnuncio` degrades ONE field, never the answer (C13)
       estadoAnuncio: 'novo-estado',
     });
 
-    expect(item.estadoAnuncio).toBe(ESTADO_ANUNCIO_SHOPEE.desconhecido);
+    // #1911 P11: the 202 arm carries no `estadoAnuncio`, so the read is narrowed first.
+    expect(item.tipo).toBe('item');
+    expect(item.tipo === 'item' ? item.estadoAnuncio : null).toBe(
+      ESTADO_ANUNCIO_SHOPEE.desconhecido,
+    );
     expect(reverificado.estadoAnuncio).toBe(ESTADO_ANUNCIO_SHOPEE.desconhecido);
   });
 });
@@ -1991,6 +2086,11 @@ describe('#1911 — every taxonomy and draft answer here IS the shared schema ob
       'respostaDescartarRascunhoShopeeSchema',
       respostaDescartarRascunhoShopeeSchema,
       descartarCompartilhadoSchema,
+    ],
+    [
+      'respostaItemIncertoShopeeSchema (P11)',
+      respostaItemIncertoShopeeSchema,
+      itemIncertoCompartilhadoSchema,
     ],
   ] as const)('%s', (_nome, daqui, compartilhado) => {
     expect(daqui).toBe(compartilhado);

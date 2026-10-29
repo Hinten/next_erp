@@ -10,6 +10,7 @@ import {
   corpoCriarRascunhoShopeeSchema,
   corpoDescartarRascunhoShopeeSchema,
   pendenciasDoRascunhoShopee,
+  TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE,
   type EstadoPublicacaoRascunhoShopee,
   type MarcaDaContaShopee,
 } from '@delfrance/schemas';
@@ -36,6 +37,25 @@ import {
   fraseDaRespostaIncertaDoRascunhoShopee,
   fraseDoConflitoDeConcorrenciaShopee,
   fraseDoConflitoIlegivelShopee,
+  FRASE_LIMITE_NA_PUBLICACAO_DO_RASCUNHO_SHOPEE,
+  FRASE_MARCA_PODE_NAO_VALER_SHOPEE,
+  FRASE_PUBLICACAO_CONTENCAO_SHOPEE,
+  FRASE_PUBLICACAO_CRIACAO_INCERTA_SEM_JANELA_SHOPEE,
+  FRASE_PUBLICAR_COM_ALTERACOES_SHOPEE,
+  FRASE_PUBLICAR_PRODUTO_NAO_SALVO_SHOPEE,
+  FRASE_PUBLICAR_RASCUNHO_NOVO_SHOPEE,
+  FRASE_PUBLICAR_SEM_FAIXAS_SHOPEE,
+  FRASE_RASCUNHO_INEXISTENTE_NA_PUBLICACAO_SHOPEE,
+  MOTIVO_ANUNCIO_SHOPEE,
+  ROTULO_CAMPO_RASCUNHO_SHOPEE,
+  ROTULO_DESCARTAR_ANUNCIO_DA_TENTATIVA_SHOPEE,
+  ROTULO_PUBLICAR_ATESTANDO_SEM_SKU_SHOPEE,
+  ROTULO_PUBLICAR_SEGUNDO_DE_PROPOSITO_SHOPEE,
+  avisoDoDescarteComAnuncioSemVinculoShopee,
+  fraseDaPublicacaoDoRascunhoEmAndamentoShopee,
+  fraseDaPublicacaoExpiradaShopee,
+  fraseDaPublicacaoInterrompidaShopee,
+  rotuloDaPublicacaoQueAdotaShopee,
 } from './anuncioProduto';
 import {
   ShopeeClientHttpError,
@@ -67,10 +87,17 @@ import {
   projecaoGuardadaDoRascunhoShopee,
   rebasearEdicaoRascunhoShopee,
   segundoAnuncioNaContaShopee,
+  corpoPublicarRascunhoShopee,
+  falhaDaPublicacaoDoRascunhoShopee,
+  publicacaoDoRascunhoShopee,
+  rotuloDaSuperficieShopee,
+  saidasDoProblemaShopee,
+  superficieDoCampoShopee,
   type EdicaoRascunhoShopee,
+  type EntradaDaPublicacaoDoRascunhoShopee,
   type EntradaDoBlocoRascunhoShopee,
 } from './rascunho';
-import { DETALHES_ERRO_SHOPEE_VAZIOS, type DetalhesErroShopee } from './wire';
+import { DETALHES_ERRO_SHOPEE_VAZIOS, type DetalhesErroShopee, type ProblemaShopee } from './wire';
 
 /**
  * #1911 P10 — the draft's state model. Each rule is pinned from BOTH sides: a
@@ -1189,5 +1216,718 @@ describe('estadoDoBlocoRascunhoShopee — THE decision of a draft block', () => 
       estadoDoBlocoRascunhoShopee(entrada({ link: guardado({ attributes: [] }) }))
         .atributosGravados,
     ).toBe(false);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                     #1911 P11 — Publicar on a draft                         */
+/* -------------------------------------------------------------------------- */
+
+describe('publicacaoDoRascunhoShopee — THE decision of a draft’s Publicar (rev. 2a §D P11)', () => {
+  const LIMITES = {
+    itemNameLengthLimit: { min: 1, max: 120 },
+    itemDescriptionLengthLimit: { min: 1, max: 3000 },
+  };
+  const TEXTOS = { nomeProduto: 'Camiseta', descricaoProduto: 'Algodão' };
+  const blocoDe = (over: Partial<EntradaDoBlocoRascunhoShopee> = {}) =>
+    estadoDoBlocoRascunhoShopee({
+      link: guardado(),
+      edicao: null,
+      nowMs: NOW,
+      kitVirtual: false,
+      servidorConfirmado: true,
+      podeEditar: true,
+      ocupado: false,
+      ...over,
+    });
+  const decidir = (
+    over: Partial<EntradaDaPublicacaoDoRascunhoShopee> = {},
+    bloco: Partial<EntradaDoBlocoRascunhoShopee> = {},
+  ) =>
+    publicacaoDoRascunhoShopee({
+      bloco: blocoDe(bloco),
+      podeEditar: true,
+      ocupado: false,
+      servidorConfirmado: true,
+      produtoSujo: false,
+      textosDoProduto: TEXTOS,
+      limites: LIMITES,
+      ...over,
+    });
+  /** A lock as the publish writes it; `sku` stamped ⇔ a string (the pre-send stamp). */
+  const trava = (desde: number, expiraEm: number, sku?: string) => ({
+    desde,
+    expiraEm,
+    token: 't1',
+    ...(sku === undefined ? {} : { sku }),
+  });
+
+  it('⭐ a saved, clean, complete draft with its bands loaded ⇒ Publicar acts', () => {
+    expect(decidir()).toEqual({
+      podePublicar: true,
+      impedimento: null,
+      pendencias: [],
+      aviso: null,
+    });
+  });
+
+  it('(e) the bands must be LOADED: `limites: null` lists no band pendência, so it is an impediment of its own', () => {
+    const semFaixas = decidir({ limites: null });
+    expect(semFaixas).toMatchObject({
+      podePublicar: false,
+      impedimento: 'faixas-desconhecidas',
+      pendencias: [],
+      aviso: FRASE_PUBLICAR_SEM_FAIXAS_SHOPEE,
+    });
+    // NEAR-MISS: loaded bands that the title breaks are a PENDÊNCIA (the list says why).
+    const longo = decidir({}, { link: guardado({ item_name: 'x'.repeat(121) }) });
+    expect(longo.impedimento).toBe('pendencias');
+    expect(longo.pendencias.map((p) => p.tipo)).toEqual(['titulo-fora-da-faixa']);
+  });
+
+  it('a draft with no category (and no bands): the categoria pendência speaks first', () => {
+    const r = decidir({ limites: null }, { link: guardado({ category_id: null }) });
+    expect(r.impedimento).toBe('pendencias');
+    expect(r.pendencias.map((p) => p.tipo)).toEqual(['categoria-ausente']);
+    expect(r.aviso).toBeNull();
+  });
+
+  it('pendências read the STORED produto texts: a brand not chosen blocks ⟷ «Sem marca» (0) does not', () => {
+    const semMarca = decidir({}, { link: guardado({ brand_id: null, original_brand_name: null }) });
+    expect(semMarca.impedimento).toBe('pendencias');
+    expect(semMarca.pendencias.map((p) => p.tipo)).toEqual(['marca-nao-escolhida']);
+    expect(
+      decidir({}, { link: guardado({ brand_id: 0, original_brand_name: null }) }).podePublicar,
+    ).toBe(true);
+  });
+
+  it('saved ∧ clean: a local draft ⇒ «Salve o rascunho»; a dirty one ⇒ «Salve as alterações»', () => {
+    const novo = novaEdicaoRascunhoShopee({ linkDocId: ID_NOVO, contaId: CONTA, nomeProduto: 'X' });
+    expect(decidir({}, { link: null, edicao: novo })).toMatchObject({
+      impedimento: 'rascunho-novo',
+      aviso: FRASE_PUBLICAR_RASCUNHO_NOVO_SHOPEE,
+    });
+    const sujo = comCampoRascunhoShopee(
+      edicaoDe(guardado()),
+      CAMPO_RASCUNHO_SHOPEE.itemName,
+      'Outro título',
+    );
+    expect(decidir({}, { edicao: sujo })).toMatchObject({
+      impedimento: 'alteracoes-nao-salvas',
+      aviso: FRASE_PUBLICAR_COM_ALTERACOES_SHOPEE,
+    });
+    // NEAR-MISS: an entry typed back to the stored value is clean.
+    const devolta = comCampoRascunhoShopee(sujo, CAMPO_RASCUNHO_SHOPEE.itemName, 'Camiseta');
+    expect(decidir({}, { edicao: devolta }).podePublicar).toBe(true);
+    // Just saved: waiting for the listener, read-only, no Publicar yet.
+    const salvo = marcarRascunhoShopeeSalvo(sujo, {});
+    expect(decidir({}, { edicao: salvo }).impedimento).toBe('aguardando-servidor');
+  });
+
+  it('K2-7: the produto form must be clean — the publish reads the STORED produto', () => {
+    expect(decidir({ produtoSujo: true })).toMatchObject({
+      impedimento: 'produto-nao-salvo',
+      aviso: FRASE_PUBLICAR_PRODUTO_NAO_SALVO_SHOPEE,
+    });
+  });
+
+  it('em-andamento blocks ⟷ `incerta` does NOT (its publish is a real one: ENSURE first)', () => {
+    const vivo = decidir(
+      {},
+      { link: guardado({ publicacaoEmCurso: trava(NOW - 1, NOW + 60_000) }) },
+    );
+    expect(vivo.impedimento).toBe('publicacao-em-andamento');
+    const incerta = decidir({}, { link: guardado({ criacaoIncertaDesde: NOW - 600_000 }) });
+    expect(incerta.podePublicar).toBe(true);
+  });
+
+  it("§H Q3: an expired UNSTAMPED lock with no record reads livre ⇒ Publicar ⟷ the same lock STAMPED (`X` or `''`) is still in its grace", () => {
+    const expirada = trava(NOW - 400_000, NOW - 1);
+    expect(decidir({}, { link: guardado({ publicacaoEmCurso: expirada }) }).podePublicar).toBe(
+      true,
+    );
+    for (const sku of ['X', '']) {
+      expect(
+        decidir({}, { link: guardado({ publicacaoEmCurso: trava(NOW - 400_000, NOW - 1, sku) }) })
+          .impedimento,
+        sku,
+      ).toBe('publicacao-em-andamento');
+    }
+  });
+
+  it('server truth, the produto texts, the write in flight, the virtual kit and the permission each block', () => {
+    expect(decidir({ servidorConfirmado: false }).impedimento).toBe('carregando');
+    expect(decidir({ textosDoProduto: null })).toMatchObject({
+      impedimento: 'carregando',
+      pendencias: [],
+    });
+    expect(decidir({ ocupado: true }).impedimento).toBe('ocupado');
+    expect(decidir({}, { kitVirtual: true })).toMatchObject({
+      impedimento: 'kit-virtual',
+      pendencias: [],
+    });
+    expect(decidir({ podeEditar: false }).impedimento).toBe('sem-permissao');
+  });
+});
+
+describe('corpoPublicarRascunhoShopee — a draft is published by its link ALONE', () => {
+  it('⭐ the plain publish: the three ids and nothing else — no categoryId, no kit flag, no status', () => {
+    expect(
+      corpoPublicarRascunhoShopee({
+        contaId: CONTA,
+        produtoId: PRODUTO,
+        linkDocId: 'R1',
+        pausado: false,
+      }),
+    ).toStrictEqual({ integracaoId: CONTA, produtoId: PRODUTO, linkDocId: 'R1' });
+  });
+
+  it('«Criar pausado» ⇒ UNLIST; each confirmation only when given — never `false`', () => {
+    expect(
+      corpoPublicarRascunhoShopee({
+        contaId: CONTA,
+        produtoId: PRODUTO,
+        linkDocId: 'R1',
+        pausado: true,
+        confirmarSegundoAnuncio: true,
+        confirmarCriacaoIncerta: true,
+      }),
+    ).toStrictEqual({
+      integracaoId: CONTA,
+      produtoId: PRODUTO,
+      linkDocId: 'R1',
+      status: 'UNLIST',
+      confirmarSegundoAnuncio: true,
+      confirmarCriacaoIncerta: true,
+    });
+    const semFlags = corpoPublicarRascunhoShopee({
+      contaId: CONTA,
+      produtoId: PRODUTO,
+      linkDocId: 'R1',
+      pausado: false,
+      confirmarSegundoAnuncio: false,
+      confirmarCriacaoIncerta: false,
+    });
+    expect(Object.keys(semFlags).sort()).toEqual(['integracaoId', 'linkDocId', 'produtoId']);
+  });
+});
+
+describe('segundoAnuncioNaContaShopee for a PUBLISH — the draft itself is left out (g)', () => {
+  const vivo = (id: string, extra: Record<string, unknown> = {}) => ({
+    id,
+    data: { contaProdutoShopeeOuterRef: `integracao/${CONTA}`, item_id: 1000001, ...extra },
+  });
+
+  it('a conta holding only the draft being published asks nothing ⟷ WITHOUT the exclusion it counts itself', () => {
+    const links = [{ id: 'R1', data: guardado() }];
+    expect(segundoAnuncioNaContaShopee(links, CONTA, [], 'R1')).toBeNull();
+    expect(segundoAnuncioNaContaShopee(links, CONTA, [])).toEqual({
+      quantidade: 1,
+      comRascunho: true,
+    });
+  });
+
+  it('a live sibling listing asks ⟷ a REMOVED-only sibling asks nothing', () => {
+    expect(
+      segundoAnuncioNaContaShopee([{ id: 'R1', data: guardado() }, vivo('L1')], CONTA, [], 'R1'),
+    ).toEqual({ quantidade: 1, comRascunho: false });
+    expect(
+      segundoAnuncioNaContaShopee(
+        [{ id: 'R1', data: guardado() }, vivo('L1', { estadoAnuncio: 'removido' })],
+        CONTA,
+        [],
+        'R1',
+      ),
+    ).toBeNull();
+  });
+
+  it('an entry OF the excluded draft never counts as a local one', () => {
+    const salvo = marcarRascunhoShopeeSalvo(
+      novaEdicaoRascunhoShopee({ linkDocId: 'R1', contaId: CONTA, nomeProduto: 'X' }),
+      {},
+    );
+    expect(segundoAnuncioNaContaShopee([], CONTA, [salvo], 'R1')).toBeNull();
+    expect(segundoAnuncioNaContaShopee([], CONTA, [salvo])).toEqual({
+      quantidade: 1,
+      comRascunho: true,
+    });
+  });
+});
+
+describe('falhaDaPublicacaoDoRascunhoShopee — §C.2 for a DRAFT’s Publicar, by CLASS then by code', () => {
+  const http = (
+    status: number,
+    code: string | null,
+    detalhes: Partial<DetalhesErroShopee> = {},
+    message = 'frase do servidor',
+    kind: string | null = null,
+  ) =>
+    new ShopeeClientHttpError(message, status, code, null, kind, {
+      ...DETALHES_ERRO_SHOPEE_VAZIOS,
+      ...detalhes,
+    });
+  const F = CODIGO_FALHA_SHOPEE;
+
+  it('#15: no trustworthy answer — network, an unreadable 2xx, a codeless 5xx (the 504) — is `sem-resposta`, never a failure', () => {
+    expect(
+      falhaDaPublicacaoDoRascunhoShopee(new ShopeeClientNetworkError('rede', new TypeError('x'))),
+    ).toEqual({ tipo: 'sem-resposta' });
+    expect(
+      falhaDaPublicacaoDoRascunhoShopee(
+        new ShopeeClientRespostaInvalidaError('ilegível', 202, ['recusa']),
+      ),
+    ).toEqual({ tipo: 'sem-resposta' });
+    for (const status of [500, 502, 503, 504]) {
+      expect(falhaDaPublicacaoDoRascunhoShopee(http(status, null)), String(status)).toEqual({
+        tipo: 'sem-resposta',
+      });
+    }
+    // A coded 5xx other than 502 too (the route may have written before it failed).
+    expect(falhaDaPublicacaoDoRascunhoShopee(http(503, 'SHOPEE_NETWORK_ERROR'))).toEqual({
+      tipo: 'sem-resposta',
+    });
+    // NEAR-MISS: 501 is a fact about the deployment — the publish's own reading.
+    expect(falhaDaPublicacaoDoRascunhoShopee(http(501, null))).toBeNull();
+  });
+
+  it('§H Q2: a CODED 502 is definite — the rate limit its own copy, any other the server sentence + the exit', () => {
+    // Both of Shopee's rate limits — the burst and the daily quota.
+    for (const kind of ['burst', 'daily']) {
+      expect(
+        falhaDaPublicacaoDoRascunhoShopee(http(502, 'SHOPEE_HTTP_ERROR', {}, 'x', kind)),
+        kind,
+      ).toEqual({ tipo: 'mensagem', mensagem: FRASE_LIMITE_NA_PUBLICACAO_DO_RASCUNHO_SHOPEE });
+    }
+    // NEAR-MISS: a transient Shopee hiccup is no rate limit — the interrupted-publish copy.
+    expect(
+      falhaDaPublicacaoDoRascunhoShopee(http(502, 'SHOPEE_HTTP_ERROR', {}, 'x', 'transient')),
+    ).toEqual({ tipo: 'mensagem', mensagem: fraseDaPublicacaoInterrompidaShopee('x') });
+    const outro = falhaDaPublicacaoDoRascunhoShopee(
+      http(502, 'SHOPEE_HTTP_ERROR', {}, 'offset fora do limite'),
+    );
+    expect(outro).toEqual({
+      tipo: 'mensagem',
+      mensagem: fraseDaPublicacaoInterrompidaShopee('offset fora do limite'),
+    });
+  });
+
+  it('#6 EM_ANDAMENTO: a sibling (vinculos) vs the own lock — never keyed on aguardarMs alone', () => {
+    const vinculos = [{ linkDocId: 'R2', itemId: null, rascunho: true }];
+    expect(
+      falhaDaPublicacaoDoRascunhoShopee(
+        http(409, F.publicacaoEmAndamento, { aguardarMs: 9_000, vinculos }),
+      ),
+    ).toEqual({
+      tipo: 'mensagem',
+      mensagem: fraseDaPublicacaoDoRascunhoEmAndamentoShopee({ aguardarMs: 9_000, vinculos }),
+    });
+    const proprio = falhaDaPublicacaoDoRascunhoShopee(
+      http(409, F.publicacaoEmAndamento, { aguardarMs: 9_000 }),
+    );
+    expect(proprio).toMatchObject({ tipo: 'mensagem' });
+    expect(proprio?.tipo === 'mensagem' ? proprio.mensagem : '').not.toContain('Outro vínculo');
+  });
+
+  it('EXPIRADA, CONTENCAO, CRIACAO_INCERTA (no window) and JA_PUBLICADO: the publish’s own copy', () => {
+    expect(
+      falhaDaPublicacaoDoRascunhoShopee(
+        http(409, F.publicacaoExpirada, {}, 'a busca não coube no tempo desta requisição'),
+      ),
+    ).toEqual({
+      tipo: 'mensagem',
+      mensagem: fraseDaPublicacaoExpiradaShopee('a busca não coube no tempo desta requisição'),
+    });
+    expect(falhaDaPublicacaoDoRascunhoShopee(http(409, F.rascunhoContencao))).toEqual({
+      tipo: 'mensagem',
+      mensagem: FRASE_PUBLICACAO_CONTENCAO_SHOPEE,
+    });
+    expect(falhaDaPublicacaoDoRascunhoShopee(http(409, F.rascunhoCriacaoIncerta))).toEqual({
+      tipo: 'mensagem',
+      mensagem: FRASE_PUBLICACAO_CRIACAO_INCERTA_SEM_JANELA_SHOPEE,
+    });
+    expect(falhaDaPublicacaoDoRascunhoShopee(http(409, F.rascunhoJaPublicado))).toEqual({
+      tipo: 'mensagem',
+      mensagem: FRASE_RASCUNHO_JA_PUBLICADO_SHOPEE,
+    });
+  });
+
+  it('K1-4: CONTA_JA_TEM_ANUNCIO re-asks the second-listing warning from `vinculos` (unreadable ⇒ [])', () => {
+    const vinculos = [{ linkDocId: 'L1', itemId: 1000001, rascunho: false }];
+    expect(
+      falhaDaPublicacaoDoRascunhoShopee(http(409, F.rascunhoContaJaTemAnuncio, { vinculos })),
+    ).toEqual({ tipo: 'segundo-anuncio', vinculos });
+    expect(falhaDaPublicacaoDoRascunhoShopee(http(409, F.rascunhoContaJaTemAnuncio))).toEqual({
+      tipo: 'segundo-anuncio',
+      vinculos: [],
+    });
+  });
+
+  it('#14: a 404 on a draft is «o rascunho não existe mais» ⟷ NEAR-MISS: the 422 rows, the quota pause and other 4xx keep the publish’s reading', () => {
+    expect(falhaDaPublicacaoDoRascunhoShopee(http(404, F.anuncioNaoEncontrado))).toEqual({
+      tipo: 'mensagem',
+      mensagem: FRASE_RASCUNHO_INEXISTENTE_NA_PUBLICACAO_SHOPEE,
+    });
+    for (const [status, code] of [
+      [422, F.publicacaoBloqueada],
+      [422, F.publicacaoRecusada],
+      [409, F.contaPausada],
+      [404, F.anuncioSemVinculo],
+      [400, null],
+      [403, null],
+    ] as const) {
+      expect(falhaDaPublicacaoDoRascunhoShopee(http(status, code)), `${status} ${code}`).toBeNull();
+    }
+  });
+});
+
+describe('saidasDoProblemaShopee — the Seller-Centre exits, keyed on the slug EXACTLY (§C #7, #8)', () => {
+  const T = TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE;
+  const M = MOTIVO_ANUNCIO_SHOPEE;
+  const RASCUNHO = { ehRascunho: true } as const;
+  const importar = (itemIds: number[], vinculados?: { itemId: number; produtoId: string }[]) => ({
+    tipo: T.importar,
+    itemIds,
+    ...(vinculados === undefined ? {} : { vinculados }),
+  });
+
+  it('#7 sem-sku ⇒ ONE exit: the attested publish (it creates — adopts nothing)', () => {
+    expect(
+      saidasDoProblemaShopee({ motivo: M.criacaoIncertaSemSku, acao: null }, RASCUNHO),
+    ).toEqual([
+      { tipo: 'publicar-atestando', rotulo: ROTULO_PUBLICAR_ATESTANDO_SEM_SKU_SHOPEE, adota: [] },
+    ]);
+  });
+
+  it('#8 ja-vinculada, every candidate linked ⇒ TWO exits: discard (no warning) and «segundo anúncio, de propósito»', () => {
+    const saidas = saidasDoProblemaShopee(
+      {
+        motivo: M.criacaoIncertaJaVinculada,
+        acao: importar([1000009], [{ itemId: 1000009, produtoId: PRODUTO }]),
+      },
+      RASCUNHO,
+    );
+    expect(saidas).toEqual([
+      {
+        tipo: 'descartar-atestando',
+        rotulo: ROTULO_DESCARTAR_ANUNCIO_DA_TENTATIVA_SHOPEE,
+        aviso: null,
+      },
+      {
+        tipo: 'publicar-atestando',
+        rotulo: ROTULO_PUBLICAR_SEGUNDO_DE_PROPOSITO_SHOPEE,
+        adota: [],
+      },
+    ]);
+  });
+
+  it('#8 MIXED (one linked + one UNLINKED definitivo): the publish promises ADOPTION, the discard warns the free id stays', () => {
+    const saidas = saidasDoProblemaShopee(
+      {
+        motivo: M.criacaoIncertaJaVinculada,
+        acao: importar([1000009, 1000011], [{ itemId: 1000009, produtoId: PRODUTO }]),
+      },
+      RASCUNHO,
+    );
+    expect(saidas).toEqual([
+      {
+        tipo: 'descartar-atestando',
+        rotulo: ROTULO_DESCARTAR_ANUNCIO_DA_TENTATIVA_SHOPEE,
+        aviso: avisoDoDescarteComAnuncioSemVinculoShopee([1000011]),
+      },
+      {
+        tipo: 'publicar-atestando',
+        rotulo: rotuloDaPublicacaoQueAdotaShopee([1000011]),
+        adota: [1000011],
+      },
+    ]);
+    // Never «o anúncio não existe» on a ja-vinculada exit.
+    for (const s of saidas) expect(s.rotulo).not.toContain('não existe');
+  });
+
+  it('both exits send the right route WITH the flag', () => {
+    expect(
+      corpoPublicarRascunhoShopee({
+        contaId: CONTA,
+        produtoId: PRODUTO,
+        linkDocId: 'R1',
+        pausado: false,
+        confirmarCriacaoIncerta: true,
+      }),
+    ).toStrictEqual({
+      integracaoId: CONTA,
+      produtoId: PRODUTO,
+      linkDocId: 'R1',
+      confirmarCriacaoIncerta: true,
+    });
+    const descarte = corpoDescartarRascunhoShopee({
+      contaId: CONTA,
+      linkDocId: 'R1',
+      produtoId: PRODUTO,
+      projecao: camposDoRascunhoShopee(guardado()),
+      confirmarCriacaoIncerta: true,
+    });
+    expect(descarte.confirmarCriacaoIncerta).toBe(true);
+    expect(corpoDescartarRascunhoShopeeSchema.safeParse(descarte).success).toBe(true);
+  });
+
+  it('NEAR-MISS: ambígua (both shapes), the two busca-*, the P5b look-up refusals ⇒ NO exit — the flag would not be honoured', () => {
+    for (const problema of [
+      { motivo: M.criacaoIncertaAmbigua, acao: importar([1000009], []) },
+      { motivo: M.criacaoIncertaAmbigua, acao: null },
+      { motivo: M.buscaDeAnuncioIncompleta, acao: null },
+      { motivo: M.buscaDeAnuncioExistenteIncompleta, acao: null },
+      { motivo: M.anuncioExistenteSemVinculo, acao: importar([1000009], []) },
+      {
+        motivo: M.anuncioExistenteDeOutroProduto,
+        acao: importar([1000009], [{ itemId: 1000009, produtoId: 'p9' }]),
+      },
+    ]) {
+      expect(saidasDoProblemaShopee(problema, RASCUNHO), problema.motivo).toEqual([]);
+    }
+  });
+
+  it('NEAR-MISS: a renamed or merely similar slug ⇒ no exit (never a prefix match)', () => {
+    for (const motivo of [
+      'criacao-incerta',
+      'criacao-incerta-sem-sku-v2',
+      'Criacao-incerta-sem-sku',
+    ]) {
+      expect(saidasDoProblemaShopee({ motivo, acao: null }, RASCUNHO), motivo).toEqual([]);
+    }
+    // ja-vinculada renamed, WITH the importar it carries — `acao: null` alone
+    // would be refused by the fail-closed branch and prove nothing about the slug.
+    for (const motivo of [`${M.criacaoIncertaJaVinculada}-v2`, 'criacao-incerta-ja-vinculad']) {
+      expect(
+        saidasDoProblemaShopee(
+          {
+            motivo,
+            acao: importar([1000009, 1000011], [{ itemId: 1000009, produtoId: PRODUTO }]),
+          },
+          RASCUNHO,
+        ),
+        motivo,
+      ).toEqual([]);
+    }
+  });
+
+  it('fail closed: ja-vinculada whose acao does not say which are linked ⇒ no exit; a live listing’s row ⇒ none', () => {
+    expect(
+      saidasDoProblemaShopee(
+        { motivo: M.criacaoIncertaJaVinculada, acao: importar([1000009]) },
+        RASCUNHO,
+      ),
+    ).toEqual([]);
+    expect(
+      saidasDoProblemaShopee({ motivo: M.criacaoIncertaJaVinculada, acao: null }, RASCUNHO),
+    ).toEqual([]);
+    expect(
+      saidasDoProblemaShopee({ motivo: M.criacaoIncertaSemSku, acao: null }, { ehRascunho: false }),
+    ).toEqual([]);
+  });
+});
+
+describe('superficieDoCampoShopee — campo → the surface that fixes it (D17, DC §2.9)', () => {
+  const M = MOTIVO_ANUNCIO_SHOPEE;
+  const RASCUNHO = { ehRascunho: true, descricaoPropria: false } as const;
+  const ANUNCIO = { ehRascunho: false, descricaoPropria: false } as const;
+  const linha = (
+    campo: string | null,
+    motivo = 'qualquer',
+    acao: ProblemaShopee['acao'] = null,
+  ) => ({
+    campo,
+    motivo,
+    acao,
+  });
+
+  it('the draft’s own fields route to the draft ⟷ a published listing’s go to Seller Centre (D8)', () => {
+    expect(superficieDoCampoShopee(linha('item_name'), RASCUNHO)).toEqual({
+      tipo: 'rascunho',
+      campo: 'item_name',
+      aviso: null,
+    });
+    expect(superficieDoCampoShopee(linha('category_id'), RASCUNHO)).toMatchObject({
+      tipo: 'rascunho',
+      campo: 'category_id',
+    });
+    expect(superficieDoCampoShopee(linha('item_name'), ANUNCIO)).toEqual({ tipo: 'seller-centre' });
+    expect(superficieDoCampoShopee(linha('category_id'), ANUNCIO)).toEqual({
+      tipo: 'seller-centre',
+    });
+  });
+
+  it('description: the draft’s own text ⇒ the draft; none ⇒ the produto’s Descrição — on a listing likewise', () => {
+    expect(
+      superficieDoCampoShopee(linha('description'), { ehRascunho: true, descricaoPropria: true }),
+    ).toMatchObject({ tipo: 'rascunho', campo: 'description' });
+    expect(superficieDoCampoShopee(linha('description'), RASCUNHO)).toEqual({
+      tipo: 'produto',
+      campo: 'extraData',
+    });
+    expect(
+      superficieDoCampoShopee(linha('description'), { ehRascunho: false, descricaoPropria: true }),
+    ).toEqual({ tipo: 'seller-centre' });
+    expect(superficieDoCampoShopee(linha('description'), ANUNCIO)).toEqual({
+      tipo: 'produto',
+      campo: 'extraData',
+    });
+  });
+
+  it('brand: a Shopee REJECTION warns «a marca pode não valer» ⟷ `marca-nao-escolhida` never does (R-N-P11-5)', () => {
+    expect(superficieDoCampoShopee(linha('brand', 'marca-invalida'), RASCUNHO)).toEqual({
+      tipo: 'rascunho',
+      campo: 'marca',
+      aviso: FRASE_MARCA_PODE_NAO_VALER_SHOPEE,
+    });
+    expect(superficieDoCampoShopee(linha('brand', M.marcaNaoEscolhida), RASCUNHO)).toEqual({
+      tipo: 'rascunho',
+      campo: 'marca',
+      aviso: null,
+    });
+    expect(superficieDoCampoShopee(linha('brand'), ANUNCIO)).toEqual({ tipo: 'seller-centre' });
+  });
+
+  it('⭐ item_sku is an ALLOW-LIST: the SKU only for de-outro-produto and an acao-less ambígua', () => {
+    const SKU = { tipo: 'produto', campo: 'sku' };
+    expect(
+      superficieDoCampoShopee(linha('item_sku', M.anuncioExistenteDeOutroProduto), RASCUNHO),
+    ).toEqual(SKU);
+    expect(superficieDoCampoShopee(linha('item_sku', M.criacaoIncertaAmbigua), RASCUNHO)).toEqual(
+      SKU,
+    );
+    // NEAR-MISS: the same ambígua WITH its importar is not the SKU's to fix.
+    expect(
+      superficieDoCampoShopee(
+        linha('item_sku', M.criacaoIncertaAmbigua, {
+          tipo: TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.importar,
+          itemIds: [1000009],
+        }),
+        RASCUNHO,
+      ),
+    ).toBeNull();
+    for (const motivo of [
+      M.criacaoIncertaSemSku,
+      M.criacaoIncertaJaVinculada,
+      M.buscaDeAnuncioIncompleta,
+      M.anuncioExistenteSemVinculo,
+      M.buscaDeAnuncioExistenteIncompleta,
+      M.anuncioSemelhanteExistente,
+      // A renamed slug: the deny-list mutant would route it.
+      'anuncio-existente-de-outro-produto-v2',
+      'sku-invalido',
+    ]) {
+      expect(superficieDoCampoShopee(linha('item_sku', motivo), RASCUNHO), motivo).toBeNull();
+      expect(superficieDoCampoShopee(linha('sku', motivo), RASCUNHO), motivo).toBeNull();
+    }
+    // The bare `sku` root reads the SAME allow-list (DC §2.9 names both roots) …
+    expect(
+      superficieDoCampoShopee(linha('sku', M.anuncioExistenteDeOutroProduto), RASCUNHO),
+    ).toEqual(SKU);
+    // … and its one real producer — the native kit's «já existe na Shopee» row
+    // (campo `sku`, an `importar` acao) — is fixed by importing, never by the SKU.
+    expect(
+      superficieDoCampoShopee(
+        linha('sku', 'kit-ja-existe-na-shopee', {
+          tipo: TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.importar,
+          itemIds: [1000009],
+        }),
+        ANUNCIO,
+      ),
+    ).toBeNull();
+  });
+
+  it('the produto’s fields, the size chart and the variations — on a draft and a listing alike', () => {
+    for (const [campo, alvo] of [
+      ['weight', 'pesoBrutoKg'],
+      ['logistic_info', 'pesoBrutoKg'],
+      ['dimension', 'alturaCm'],
+      ['image', 'fotos'],
+      ['gtin_code', 'gtin'],
+      ['original_price', 'precos'],
+      ['seller_stock', 'estoques'],
+      ['tax_info', 'impostos'],
+      ['pre_order', 'crossdocking'],
+    ] as const) {
+      for (const contexto of [RASCUNHO, ANUNCIO]) {
+        expect(superficieDoCampoShopee(linha(campo), contexto), campo).toEqual({
+          tipo: 'produto',
+          campo: alvo,
+        });
+      }
+    }
+    // DC §2.9: the size chart and the variations are the PRODUTO's — the same
+    // surface under a published listing as under a draft (never Seller Centre).
+    for (const contexto of [RASCUNHO, ANUNCIO]) {
+      expect(superficieDoCampoShopee(linha('size_chart_info'), contexto)).toEqual({
+        tipo: 'medidas',
+      });
+      for (const campo of [
+        'standardise_tier_variation',
+        'standardise_tier_variation[0].variation_option_list',
+        'tier_variation',
+        'model_list',
+        'model',
+        'grupoDeVariacoesUid',
+      ]) {
+        expect(superficieDoCampoShopee(linha(campo), contexto), campo).toEqual({
+          tipo: 'variacoes',
+        });
+      }
+    }
+  });
+
+  it('the ROOT is cut at the first `[` or `.` and matched EXACTLY — never a prefix', () => {
+    expect(superficieDoCampoShopee(linha('item_name.0'), RASCUNHO)).toMatchObject({
+      campo: 'item_name',
+    });
+    expect(superficieDoCampoShopee(linha('attribute_list[COLOR]'), ANUNCIO)).toEqual({
+      tipo: 'seller-centre',
+    });
+    for (const campo of ['item_names', 'item_name_x', 'weights', 'image_list2']) {
+      expect(superficieDoCampoShopee(linha(campo), RASCUNHO), campo).toBeNull();
+    }
+  });
+
+  it('UNMAPPED ⇒ null (the sentence, no button): attributes on a draft before P13, the kit’s tier, the link keys, unknowns', () => {
+    for (const campo of [
+      'attribute_list',
+      'attribute_list[COLOR]',
+      // §H: the native kit's tier-name band (`opcoes-demais`) — no surface owns it.
+      'tier_variation_list',
+      'filhos.prod-2',
+      'linkDocId',
+      'recriar',
+      'principal',
+      'kitNativo',
+      'ehKitVirtual',
+      'paiId',
+      'item_id',
+      'shop',
+      'constructor',
+      '',
+      null,
+    ]) {
+      expect(
+        superficieDoCampoShopee(linha(campo, 'opcoes-demais'), RASCUNHO),
+        String(campo),
+      ).toBeNull();
+    }
+  });
+
+  it('the button of each surface', () => {
+    expect(
+      rotuloDaSuperficieShopee({ tipo: 'rascunho', campo: 'item_name', aviso: null }, null),
+    ).toBe(`Corrigir no rascunho: ${ROTULO_CAMPO_RASCUNHO_SHOPEE.item_name}`);
+    expect(
+      rotuloDaSuperficieShopee({ tipo: 'produto', campo: 'pesoBrutoKg' }, 'Dimensões e peso'),
+    ).toBe('Abrir no produto: Dimensões e peso');
+    expect(rotuloDaSuperficieShopee({ tipo: 'produto', campo: 'sku' }, null)).toBe(
+      'Abrir no produto',
+    );
+    expect(rotuloDaSuperficieShopee({ tipo: 'variacoes' }, null)).toBe('Abrir Variações');
+    expect(rotuloDaSuperficieShopee({ tipo: 'medidas' }, null)).toBe('Abrir a tabela de medidas');
+    expect(rotuloDaSuperficieShopee({ tipo: 'seller-centre' }, null)).toBe(
+      'Corrigir no Seller Centre',
+    );
   });
 });

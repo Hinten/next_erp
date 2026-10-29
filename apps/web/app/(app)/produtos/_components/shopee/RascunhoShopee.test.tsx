@@ -16,28 +16,46 @@ import {
   FRASE_PENDENCIA_SEM_DESCRICAO_SHOPEE,
   FRASE_RASCUNHO_CARREGANDO_SHOPEE,
   FRASE_RASCUNHO_EM_KIT_VIRTUAL_SHOPEE,
+  FRASE_PENDENCIA_SEM_NOME_SHOPEE,
+  FRASE_PUBLICAR_COM_ALTERACOES_SHOPEE,
+  FRASE_PUBLICAR_PRODUTO_NAO_SALVO_SHOPEE,
+  FRASE_PUBLICAR_RASCUNHO_NOVO_SHOPEE,
+  FRASE_PUBLICAR_SEM_FAIXAS_SHOPEE,
   FRASE_RASCUNHO_INCERTO_SHOPEE,
   FRASE_RASCUNHO_NOVO_SHOPEE,
+  ROTULO_CRIAR_PAUSADO_SHOPEE,
+  ROTULO_PUBLICAR_ATESTANDO_SEM_SKU_SHOPEE,
+  ROTULO_PUBLICAR_RASCUNHO_SHOPEE,
+  ROTULO_PUBLICAR_SEGUNDO_ANUNCIO_SHOPEE,
+  TITULO_PUBLICAR_RASCUNHO_SHOPEE,
+  TITULO_SEGUNDO_ANUNCIO_NA_PUBLICACAO_SHOPEE,
+  textoDaConfirmacaoDePublicacaoShopee,
+  textoDoSegundoAnuncioNaPublicacaoShopee,
 } from '@/lib/shopee/anuncioProduto';
 import {
   comCampoRascunhoShopee,
   edicaoDoRascunhoGuardadoShopee,
   estadoDoBlocoRascunhoShopee,
   novaEdicaoRascunhoShopee,
+  publicacaoDoRascunhoShopee,
   type EdicaoRascunhoShopee,
+  type EntradaDaPublicacaoDoRascunhoShopee,
   type EntradaDoBlocoRascunhoShopee,
+  type PublicacaoDoRascunhoShopee,
 } from '@/lib/shopee/rascunho';
 
 import type { CategoriaRascunhoShopeeProps } from './CategoriaRascunhoShopee';
+import { idDoCampoRascunhoShopee } from './DesfechoAcaoShopee';
 import type { MarcaRascunhoShopeeProps } from './MarcaRascunhoShopee';
-import type { RascunhoShopeeProps } from './RascunhoShopee';
+import type { ConfirmacaoDePublicacaoShopee, RascunhoShopeeProps } from './RascunhoShopee';
 
 /**
  * The draft form, over the REAL block decision (`estadoDoBlocoRascunhoShopee`
- * from REAL stored-draft fixtures) and the REAL pendências
- * (`pendenciasDoRascunhoShopee`). Doubled: the two pickers (their own suites),
- * captured so the props this form hands them — and what it does with their
- * picks — are pinned here.
+ * from REAL stored-draft fixtures) and — unless a test hands its own — the
+ * REAL Publicar decision (`publicacaoDoRascunhoShopee`, whose `pendencias`
+ * the form shows). Doubled: the two pickers (their own suites), captured so
+ * the props this form hands them — and what it does with their picks — are
+ * pinned here.
  */
 
 const h = vi.hoisted(() => ({
@@ -108,13 +126,52 @@ function entrada(link: Record<string, unknown>): EdicaoRascunhoShopee {
   return edicaoDoRascunhoGuardadoShopee({ linkDocId: LINK, contaId: CONTA, link });
 }
 
-function show(props: Partial<RascunhoShopeeProps> = {}, emFormulario = false) {
-  const cb = {
+/**
+ * The Publicar decision the tab would hand over — the REAL gate over the same
+ * `bloco`, `podeEditar`, `textosDoProduto` and `limites` the form gets (the
+ * produto form clean, the snapshot from the server, nothing in flight unless
+ * `gate` says otherwise).
+ */
+function decisao(
+  p: Pick<RascunhoShopeeProps, 'bloco' | 'podeEditar' | 'textosDoProduto' | 'limites'>,
+  gate: Partial<EntradaDaPublicacaoDoRascunhoShopee> = {},
+): PublicacaoDoRascunhoShopee {
+  return publicacaoDoRascunhoShopee({
+    bloco: p.bloco,
+    podeEditar: p.podeEditar,
+    ocupado: false,
+    servidorConfirmado: true,
+    produtoSujo: false,
+    textosDoProduto: p.textosDoProduto,
+    limites: p.limites,
+    ...gate,
+  });
+}
+
+function callbacks() {
+  return {
     onCampo: vi.fn(),
     onSalvar: vi.fn(),
     onDesfazer: vi.fn(),
     onDescartar: vi.fn(),
+    onPublicar: vi.fn(),
+    onConfirmarPublicacao: vi.fn(),
+    onCancelarPublicacao: vi.fn(),
     onSubmit: vi.fn((e: { preventDefault: () => void }) => e.preventDefault()),
+  };
+}
+
+function elemento(
+  props: Partial<RascunhoShopeeProps>,
+  cb: ReturnType<typeof callbacks>,
+  emFormulario: boolean,
+) {
+  const base = {
+    bloco: bloco(),
+    podeEditar: true,
+    textosDoProduto: null,
+    limites: null,
+    ...props,
   };
   const ui = (
     <RascunhoShopee
@@ -122,28 +179,53 @@ function show(props: Partial<RascunhoShopeeProps> = {}, emFormulario = false) {
       contaId={CONTA}
       contaNome="Loja Principal"
       linkDocId={LINK}
-      bloco={bloco()}
       marcaGuardada={null}
-      textosDoProduto={null}
-      limites={null}
       divergencias={[]}
-      podeEditar
       emVoo={null}
       resultado={null}
+      decisaoDePublicar={decisao(base)}
+      confirmacaoDePublicacao={null}
       onCampo={cb.onCampo}
       onSalvar={cb.onSalvar}
       onDesfazer={cb.onDesfazer}
       onDescartar={cb.onDescartar}
-      {...props}
+      onPublicar={cb.onPublicar}
+      onConfirmarPublicacao={cb.onConfirmarPublicacao}
+      onCancelarPublicacao={cb.onCancelarPublicacao}
+      {...base}
     />
   );
-  render(
+  return (
     <MantineTestProvider>
       {emFormulario ? <form onSubmit={cb.onSubmit}>{ui}</form> : ui}
-    </MantineTestProvider>,
+    </MantineTestProvider>
   );
-  return cb;
 }
+
+function show(props: Partial<RascunhoShopeeProps> = {}, emFormulario = false) {
+  const cb = callbacks();
+  const r = render(elemento(props, cb, emFormulario));
+  return {
+    ...cb,
+    rerender: (outras: Partial<RascunhoShopeeProps>) =>
+      r.rerender(elemento(outras, cb, emFormulario)),
+  };
+}
+
+/** A decision with nothing in the way — for the tests about the button and the dialog themselves. */
+const PRONTO: PublicacaoDoRascunhoShopee = {
+  podePublicar: true,
+  impedimento: null,
+  pendencias: [],
+  aviso: null,
+};
+
+/** The block's own «Publicar» opened it: no D15 warning, «Criar pausado» unticked, no attestation. */
+const CONFIRMACAO: ConfirmacaoDePublicacaoShopee = {
+  segundoAnuncio: null,
+  pausado: false,
+  atestacao: null,
+};
 
 const raiz = () => screen.getByTestId(RAIZ);
 const titulo = () => screen.getByLabelText('Título do anúncio') as HTMLInputElement;
@@ -171,7 +253,12 @@ describe('RascunhoShopee — the form of a stored draft', () => {
     expect(h.categoria?.titulo).toBe('Camiseta');
     expect(h.marca?.marca).toEqual({ brand_id: 0, original_brand_name: null });
     expect(screen.getByText(FRASE_LOGISTICA_RASCUNHO_SHOPEE)).toBeTruthy();
-    expect(nomesDosBotoes()).toEqual(['Salvar rascunho', 'Desfazer alterações', 'Descartar']);
+    expect(nomesDosBotoes()).toEqual([
+      'Salvar rascunho',
+      'Desfazer alterações',
+      ROTULO_PUBLICAR_RASCUNHO_SHOPEE,
+      'Descartar',
+    ]);
   });
 
   it('a CLEAN stored draft: nothing to save or undo, Descartar asks once (`confirmar`)', () => {
@@ -238,6 +325,23 @@ describe('RascunhoShopee — the form of a stored draft', () => {
     expect(cb.onSubmit).not.toHaveBeenCalled();
   });
 
+  it('NEAR-MISS: «Publicar» and the confirmation’s controls never submit it either', () => {
+    const cb = show({ decisaoDePublicar: PRONTO, confirmacaoDePublicacao: CONFIRMACAO }, true);
+    // The dialog renders inline under `env="test"`: the block's own button is the FIRST «Publicar».
+    const [doBloco] = within(raiz()).getAllByRole('button', {
+      name: ROTULO_PUBLICAR_RASCUNHO_SHOPEE,
+    });
+    fireEvent.click(doBloco!);
+    const dialogo = within(screen.getByTestId(`shopee-rascunho-publicar-${LINK}`));
+    fireEvent.click(dialogo.getByRole('checkbox'));
+    fireEvent.click(dialogo.getByRole('button', { name: ROTULO_PUBLICAR_RASCUNHO_SHOPEE }));
+    fireEvent.click(dialogo.getByRole('button', { name: 'Cancelar' }));
+    expect(cb.onPublicar).toHaveBeenCalledTimes(1);
+    expect(cb.onConfirmarPublicacao).toHaveBeenCalledTimes(1);
+    expect(cb.onCancelarPublicacao).toHaveBeenCalledTimes(1);
+    expect(cb.onSubmit).not.toHaveBeenCalled();
+  });
+
   it('Enter in the title never submits the produto form (implicit submission is swallowed)', () => {
     show();
     const enter = createEvent.keyDown(titulo(), { key: 'Enter' });
@@ -253,7 +357,7 @@ describe('RascunhoShopee — the form of a stored draft', () => {
   });
 });
 
-describe('RascunhoShopee — ⛔ no Publicar in P10 (the pin P11 inverts)', () => {
+describe('RascunhoShopee — «Publicar» on every draft block (#1911 P11: the P10 pin, INVERTED)', () => {
   const estados: [string, Partial<EntradaDoBlocoRascunhoShopee>][] = [
     ['clean', {}],
     [
@@ -269,12 +373,33 @@ describe('RascunhoShopee — ⛔ no Publicar in P10 (the pin P11 inverts)', () =
         edicao: novaEdicaoRascunhoShopee({ linkDocId: LINK, contaId: CONTA, nomeProduto: 'X' }),
       },
     ],
-    ['kit virtual', { kitVirtual: true }],
     ['incerta', { link: rascunho({ criacaoIncertaDesde: AGORA - 600_000 }) }],
   ];
-  it.each(estados)('%s: no button whose name contains "Publicar"', (_nome, over) => {
+  it.each(estados)('%s: exactly one button whose name contains "Publicar"', (_nome, over) => {
     show({ bloco: bloco(over) });
+    const publicar = within(raiz()).getAllByRole('button', { name: /Publicar/ });
+    expect(publicar.map((b) => b.textContent)).toEqual([ROTULO_PUBLICAR_RASCUNHO_SHOPEE]);
+  });
+
+  it('NEAR-MISS: a virtual-kit produto has NO «Publicar» (its first publish is a native kit, §C #1)', () => {
+    show({
+      bloco: bloco({ kitVirtual: true }),
+      decisaoDePublicar: PRONTO,
+      confirmacaoDePublicacao: CONFIRMACAO,
+    });
     expect(within(raiz()).queryByRole('button', { name: /Publicar/ })).toBeNull();
+    expect(screen.queryByTestId(`shopee-rascunho-publicar-${LINK}`)).toBeNull();
+  });
+
+  it('NEAR-MISS: a read-only operator has NO «Publicar», nor its confirmation', () => {
+    show({
+      bloco: bloco({ podeEditar: false }),
+      podeEditar: false,
+      decisaoDePublicar: PRONTO,
+      confirmacaoDePublicacao: CONFIRMACAO,
+    });
+    expect(within(raiz()).queryByRole('button', { name: /Publicar/ })).toBeNull();
+    expect(screen.queryByTestId(`shopee-rascunho-publicar-${LINK}`)).toBeNull();
   });
 });
 
@@ -370,7 +495,16 @@ describe('RascunhoShopee — a local new draft and a virtual kit', () => {
     const cb = show({ bloco: bloco({ link: null, edicao }) });
     expect(screen.getByText(FRASE_RASCUNHO_NOVO_SHOPEE)).toBeTruthy();
     expect(titulo().value).toBe('Camiseta');
-    expect(nomesDosBotoes()).toEqual(['Salvar rascunho', 'Descartar']);
+    expect(nomesDosBotoes()).toEqual([
+      'Salvar rascunho',
+      ROTULO_PUBLICAR_RASCUNHO_SHOPEE,
+      'Descartar',
+    ]);
+    // Nothing stored to publish yet: disabled, and it says why.
+    expect(botao(ROTULO_PUBLICAR_RASCUNHO_SHOPEE).disabled).toBe(true);
+    expect(screen.getByTestId(`${RAIZ}-publicar-aviso`).textContent).toBe(
+      FRASE_PUBLICAR_RASCUNHO_NOVO_SHOPEE,
+    );
     expect(botao('Salvar rascunho').disabled).toBe(false);
     fireEvent.click(botao('Descartar'));
     expect(cb.onDescartar).toHaveBeenCalledWith('local');
@@ -560,5 +694,323 @@ describe('RascunhoShopee — what blocks a save, and the last answer', () => {
     show({ bloco: bloco({ ocupado: true }), emVoo: 'descartar-rascunho' });
     expect(botao('Descartar').getAttribute('data-loading')).toBe('true');
     expect(botao('Salvar rascunho').getAttribute('data-loading')).toBeNull();
+  });
+});
+
+describe('RascunhoShopee — the pendências shown ARE the Publicar decision’s (#1369)', () => {
+  it('the form lists `decisaoDePublicar.pendencias`, never a list of its own', () => {
+    // The form's own inputs (`textosDoProduto: null`) would compute NONE: what
+    // shows can only come from the decision.
+    show({
+      textosDoProduto: null,
+      decisaoDePublicar: {
+        podePublicar: false,
+        impedimento: 'pendencias',
+        pendencias: [{ tipo: 'sem-nome' }],
+        aviso: null,
+      },
+    });
+    const itens = within(screen.getByTestId(`${RAIZ}-pendencias`))
+      .getAllByRole('listitem')
+      .map((li) => li.textContent);
+    expect(itens).toEqual([FRASE_PENDENCIA_SEM_NOME_SHOPEE]);
+  });
+
+  it('NEAR-MISS: a decision with no pendência ⇒ no list, whatever the form’s own inputs say', () => {
+    show({
+      textosDoProduto: { nomeProduto: 'Camiseta', descricaoProduto: null },
+      decisaoDePublicar: PRONTO,
+    });
+    expect(screen.queryByTestId(`${RAIZ}-pendencias`)).toBeNull();
+  });
+});
+
+describe('RascunhoShopee — «Publicar» (`decisaoDePublicar`)', () => {
+  it('enabled ⇔ `podePublicar`; the click asks the editor (`onPublicar`) and sends nothing itself', () => {
+    const cb = show({ decisaoDePublicar: PRONTO });
+    const publicar = botao(ROTULO_PUBLICAR_RASCUNHO_SHOPEE);
+    expect(publicar.disabled).toBe(false);
+    fireEvent.click(publicar);
+    expect(cb.onPublicar).toHaveBeenCalledTimes(1);
+    expect(cb.onConfirmarPublicacao).not.toHaveBeenCalled();
+    expect(screen.queryByTestId(`${RAIZ}-publicar-aviso`)).toBeNull();
+  });
+
+  it('NEAR-MISS: a decision that blocks ⇒ disabled, no `onPublicar`, and its `aviso` under the button', () => {
+    const cb = show({
+      decisaoDePublicar: {
+        podePublicar: false,
+        impedimento: 'produto-nao-salvo',
+        pendencias: [],
+        aviso: FRASE_PUBLICAR_PRODUTO_NAO_SALVO_SHOPEE,
+      },
+    });
+    const publicar = botao(ROTULO_PUBLICAR_RASCUNHO_SHOPEE);
+    expect(publicar.disabled).toBe(true);
+    fireEvent.click(publicar);
+    expect(cb.onPublicar).not.toHaveBeenCalled();
+    expect(screen.getByTestId(`${RAIZ}-publicar-aviso`).textContent).toBe(
+      FRASE_PUBLICAR_PRODUTO_NAO_SALVO_SHOPEE,
+    );
+  });
+
+  it('a block impediment with NO aviso (the block’s notice already says why) ⇒ disabled, no aviso line', () => {
+    show({
+      decisaoDePublicar: {
+        podePublicar: false,
+        impedimento: 'publicacao-em-andamento',
+        pendencias: [],
+        aviso: null,
+      },
+    });
+    expect(botao(ROTULO_PUBLICAR_RASCUNHO_SHOPEE).disabled).toBe(true);
+    expect(screen.queryByTestId(`${RAIZ}-publicar-aviso`)).toBeNull();
+  });
+
+  it('the publish in flight spins on «Publicar» only', () => {
+    show({ bloco: bloco({ ocupado: true }), emVoo: 'publicar' });
+    expect(botao(ROTULO_PUBLICAR_RASCUNHO_SHOPEE).getAttribute('data-loading')).toBe('true');
+    expect(botao('Salvar rascunho').getAttribute('data-loading')).toBeNull();
+    expect(botao('Descartar').getAttribute('data-loading')).toBeNull();
+  });
+
+  it('NEAR-MISS: a save in flight does not spin «Publicar»', () => {
+    show({ bloco: bloco({ ocupado: true }), emVoo: 'salvar-rascunho' });
+    expect(botao(ROTULO_PUBLICAR_RASCUNHO_SHOPEE).getAttribute('data-loading')).toBeNull();
+  });
+});
+
+describe('RascunhoShopee — «Publicar» through the REAL gate (`publicacaoDoRascunhoShopee`)', () => {
+  const TEXTOS = { nomeProduto: 'Camiseta', descricaoProduto: 'Algodão' };
+  const LIMITES = { itemNameLengthLimit: { min: 1, max: 120 }, itemDescriptionLengthLimit: null };
+  /** Saved, with a category and «Sem marca»: nothing the publish would refuse. */
+  const pronto = (extra: Record<string, unknown> = {}) =>
+    rascunho({ category_id: 100087, brand_id: 0, ...extra });
+
+  it('a clean saved draft with every input known ⇒ enabled, no pendência, no aviso', () => {
+    show({ bloco: bloco({ link: pronto() }), textosDoProduto: TEXTOS, limites: LIMITES });
+    expect(botao(ROTULO_PUBLICAR_RASCUNHO_SHOPEE).disabled).toBe(false);
+    expect(screen.queryByTestId(`${RAIZ}-pendencias`)).toBeNull();
+    expect(screen.queryByTestId(`${RAIZ}-publicar-aviso`)).toBeNull();
+  });
+
+  it('NEAR-MISS: unsaved changes ⇒ disabled with «Salve as alterações…»', () => {
+    const link = pronto();
+    const edicao = comCampoRascunhoShopee(entrada(link), CAMPO_RASCUNHO_SHOPEE.itemName, 'Outra');
+    show({ bloco: bloco({ link, edicao }), textosDoProduto: TEXTOS, limites: LIMITES });
+    expect(botao(ROTULO_PUBLICAR_RASCUNHO_SHOPEE).disabled).toBe(true);
+    expect(screen.getByTestId(`${RAIZ}-publicar-aviso`).textContent).toBe(
+      FRASE_PUBLICAR_COM_ALTERACOES_SHOPEE,
+    );
+  });
+
+  it('NEAR-MISS: the bands not loaded ⇒ disabled with the bands sentence (rule e)', () => {
+    show({ bloco: bloco({ link: pronto() }), textosDoProduto: TEXTOS, limites: null });
+    expect(botao(ROTULO_PUBLICAR_RASCUNHO_SHOPEE).disabled).toBe(true);
+    expect(screen.getByTestId(`${RAIZ}-publicar-aviso`).textContent).toBe(
+      FRASE_PUBLICAR_SEM_FAIXAS_SHOPEE,
+    );
+  });
+
+  it('`incerta` does NOT block: its publish is a real one (ENSURE first)', () => {
+    const link = pronto(travaCarimbada(AGORA - 1_000_000, AGORA - 500_000));
+    show({ bloco: bloco({ link }), textosDoProduto: TEXTOS, limites: LIMITES });
+    expect(screen.getByText(FRASE_RASCUNHO_INCERTO_SHOPEE)).toBeTruthy();
+    expect(botao(ROTULO_PUBLICAR_RASCUNHO_SHOPEE).disabled).toBe(false);
+  });
+
+  it('NEAR-MISS: `em-andamento` blocks it (the publish answers 409 now)', () => {
+    const link = pronto(travaCarimbada(AGORA - 10_000, AGORA + 60_000));
+    show({ bloco: bloco({ link }), textosDoProduto: TEXTOS, limites: LIMITES });
+    expect(botao(ROTULO_PUBLICAR_RASCUNHO_SHOPEE).disabled).toBe(true);
+  });
+});
+
+describe('RascunhoShopee — the «Publicar» confirmation (controlled by the editor)', () => {
+  const dialogo = () => within(screen.getByTestId(`shopee-rascunho-publicar-${LINK}`));
+  const confirmar = (nome: string) =>
+    dialogo().getByRole('button', { name: nome }) as HTMLButtonElement;
+  const caixa = () => dialogo().getByRole('checkbox') as HTMLInputElement;
+
+  it('closed (`null`) ⇒ nothing rendered', () => {
+    show({ decisaoDePublicar: PRONTO, confirmacaoDePublicacao: null });
+    expect(screen.queryByTestId(`shopee-rascunho-publicar-${LINK}`)).toBeNull();
+  });
+
+  it('open: the publish text for THIS conta, «Criar pausado» unticked, no D15 warning, no attestation', () => {
+    const b = bloco();
+    show({ bloco: b, decisaoDePublicar: PRONTO, confirmacaoDePublicacao: CONFIRMACAO });
+    expect(screen.getByText(TITULO_PUBLICAR_RASCUNHO_SHOPEE)).toBeTruthy();
+    const texto = textoDaConfirmacaoDePublicacaoShopee({
+      contaNome: 'Loja Principal',
+      publicacao: b.publicacao,
+    });
+    expect(texto).toContain('«Loja Principal»');
+    expect(dialogo().getByText(texto)).toBeTruthy();
+    expect(dialogo().getByLabelText(ROTULO_CRIAR_PAUSADO_SHOPEE)).toBe(caixa());
+    expect(caixa().checked).toBe(false);
+    expect(screen.queryByTestId(`shopee-rascunho-publicar-${LINK}-segundo-anuncio`)).toBeNull();
+    expect(screen.queryByTestId(`shopee-rascunho-publicar-${LINK}-atestacao`)).toBeNull();
+    expect(confirmar(ROTULO_PUBLICAR_RASCUNHO_SHOPEE).disabled).toBe(false);
+  });
+
+  it('confirm hands «Criar pausado» AS TICKED NOW — unticked ⇒ `false`', () => {
+    const cb = show({ decisaoDePublicar: PRONTO, confirmacaoDePublicacao: CONFIRMACAO });
+    fireEvent.click(confirmar(ROTULO_PUBLICAR_RASCUNHO_SHOPEE));
+    expect(cb.onConfirmarPublicacao).toHaveBeenCalledWith(false);
+    expect(cb.onCancelarPublicacao).not.toHaveBeenCalled();
+  });
+
+  it('NEAR-MISS: ticked ⇒ `true`', () => {
+    const cb = show({ decisaoDePublicar: PRONTO, confirmacaoDePublicacao: CONFIRMACAO });
+    fireEvent.click(caixa());
+    expect(caixa().checked).toBe(true);
+    fireEvent.click(confirmar(ROTULO_PUBLICAR_RASCUNHO_SHOPEE));
+    expect(cb.onConfirmarPublicacao).toHaveBeenCalledWith(true);
+  });
+
+  it('«Cancelar» closes through the editor and sends nothing', () => {
+    const cb = show({ decisaoDePublicar: PRONTO, confirmacaoDePublicacao: CONFIRMACAO });
+    fireEvent.click(confirmar('Cancelar'));
+    expect(cb.onCancelarPublicacao).toHaveBeenCalledTimes(1);
+    expect(cb.onConfirmarPublicacao).not.toHaveBeenCalled();
+  });
+
+  it('a 409 re-ask keeps the refused request’s «Criar pausado» (`pausado: true` ⇒ ticked)', () => {
+    const cb = show({
+      decisaoDePublicar: PRONTO,
+      confirmacaoDePublicacao: { ...CONFIRMACAO, pausado: true },
+    });
+    expect(caixa().checked).toBe(true);
+    fireEvent.click(confirmar(ROTULO_PUBLICAR_RASCUNHO_SHOPEE));
+    expect(cb.onConfirmarPublicacao).toHaveBeenCalledWith(true);
+  });
+
+  it('every opening starts from the EDITOR’s value — a tick does not survive a close', () => {
+    const r = show({ decisaoDePublicar: PRONTO, confirmacaoDePublicacao: CONFIRMACAO });
+    fireEvent.click(caixa());
+    expect(caixa().checked).toBe(true);
+    r.rerender({ decisaoDePublicar: PRONTO, confirmacaoDePublicacao: null });
+    expect(screen.queryByTestId(`shopee-rascunho-publicar-${LINK}`)).toBeNull();
+    r.rerender({ decisaoDePublicar: PRONTO, confirmacaoDePublicacao: CONFIRMACAO });
+    expect(caixa().checked).toBe(false);
+  });
+
+  it('D15: a second listing ⇒ the warning, its title, and «Publicar mesmo assim»', () => {
+    const segundoAnuncio = { quantidade: 2, comRascunho: true };
+    const cb = show({
+      decisaoDePublicar: PRONTO,
+      confirmacaoDePublicacao: { ...CONFIRMACAO, segundoAnuncio },
+    });
+    expect(screen.getByText(TITULO_SEGUNDO_ANUNCIO_NA_PUBLICACAO_SHOPEE)).toBeTruthy();
+    expect(screen.queryByText(TITULO_PUBLICAR_RASCUNHO_SHOPEE)).toBeNull();
+    expect(screen.getByTestId(`shopee-rascunho-publicar-${LINK}-segundo-anuncio`).textContent).toBe(
+      textoDoSegundoAnuncioNaPublicacaoShopee(segundoAnuncio),
+    );
+    expect(dialogo().queryByRole('button', { name: ROTULO_PUBLICAR_RASCUNHO_SHOPEE })).toBeNull();
+    fireEvent.click(confirmar(ROTULO_PUBLICAR_SEGUNDO_ANUNCIO_SHOPEE));
+    expect(cb.onConfirmarPublicacao).toHaveBeenCalledWith(false);
+  });
+
+  it('an attestation exit opened it ⇒ what the operator attested is said', () => {
+    show({
+      decisaoDePublicar: PRONTO,
+      confirmacaoDePublicacao: {
+        ...CONFIRMACAO,
+        atestacao: {
+          tipo: 'publicar-atestando',
+          rotulo: ROTULO_PUBLICAR_ATESTANDO_SEM_SKU_SHOPEE,
+          adota: [],
+        },
+      },
+    });
+    expect(screen.getByTestId(`shopee-rascunho-publicar-${LINK}-atestacao`).textContent).toContain(
+      ROTULO_PUBLICAR_ATESTANDO_SEM_SKU_SHOPEE,
+    );
+    // `adota: []` ⇒ the publish creates: the create text.
+    expect(screen.getByTestId(`shopee-rascunho-publicar-${LINK}`).textContent).toContain(
+      'O anúncio será criado na conta «Loja Principal»',
+    );
+  });
+
+  it('an attestation exit that ADOPTS (§C #8 mixed) ⇒ the text names the adopted listing and never «será criado»', () => {
+    const b = bloco();
+    show({
+      bloco: b,
+      decisaoDePublicar: PRONTO,
+      confirmacaoDePublicacao: {
+        ...CONFIRMACAO,
+        atestacao: { tipo: 'publicar-atestando', rotulo: 'Publicar confirmando', adota: [222] },
+      },
+    });
+    const texto = screen.getByTestId(`shopee-rascunho-publicar-${LINK}`).textContent ?? '';
+    expect(texto).toContain(
+      textoDaConfirmacaoDePublicacaoShopee({
+        contaNome: 'Loja Principal',
+        publicacao: b.publicacao,
+        adota: [222],
+      }),
+    );
+    expect(texto).not.toContain('será criado');
+  });
+
+  it('an `incerta` draft’s text says the publish may ADOPT (and «Criar pausado» then does not apply)', () => {
+    const link = rascunho(travaCarimbada(AGORA - 1_000_000, AGORA - 500_000));
+    const b = bloco({ link });
+    expect(b.publicacao.tipo).toBe('incerta');
+    show({ bloco: b, decisaoDePublicar: PRONTO, confirmacaoDePublicacao: CONFIRMACAO });
+    const texto = textoDaConfirmacaoDePublicacaoShopee({
+      contaNome: 'Loja Principal',
+      publicacao: b.publicacao,
+    });
+    expect(texto).toContain('«Criar pausado» não se aplica');
+    expect(dialogo().getByText(texto)).toBeTruthy();
+  });
+
+  it('NEAR-MISS: a `livre` draft’s text never mentions an adoption', () => {
+    show({ decisaoDePublicar: PRONTO, confirmacaoDePublicacao: CONFIRMACAO });
+    expect(screen.getByTestId(`shopee-rascunho-publicar-${LINK}`).textContent).not.toContain(
+      'não se aplica',
+    );
+  });
+
+  it('the decision turned against it while open ⇒ the confirm is disabled, says why, and sends nothing', () => {
+    const cb = show({
+      decisaoDePublicar: {
+        podePublicar: false,
+        impedimento: 'produto-nao-salvo',
+        pendencias: [],
+        aviso: FRASE_PUBLICAR_PRODUTO_NAO_SALVO_SHOPEE,
+      },
+      confirmacaoDePublicacao: CONFIRMACAO,
+    });
+    const botaoConfirmar = confirmar(ROTULO_PUBLICAR_RASCUNHO_SHOPEE);
+    expect(botaoConfirmar.disabled).toBe(true);
+    fireEvent.click(botaoConfirmar);
+    expect(cb.onConfirmarPublicacao).not.toHaveBeenCalled();
+    expect(dialogo().getByText(FRASE_PUBLICAR_PRODUTO_NAO_SALVO_SHOPEE)).toBeTruthy();
+  });
+});
+
+describe('RascunhoShopee — field ids (what a refusal row’s «Corrigir no rascunho» focuses)', () => {
+  it('the title and the description inputs carry their ids; the pickers sit inside theirs', () => {
+    show();
+    expect(titulo().id).toBe(idDoCampoRascunhoShopee(LINK, CAMPO_RASCUNHO_SHOPEE.itemName));
+    expect(descricao().id).toBe(idDoCampoRascunhoShopee(LINK, CAMPO_RASCUNHO_SHOPEE.description));
+    const categoria = document.getElementById(
+      idDoCampoRascunhoShopee(LINK, CAMPO_RASCUNHO_SHOPEE.categoryId),
+    );
+    const marca = document.getElementById(
+      idDoCampoRascunhoShopee(LINK, CAMPO_RASCUNHO_SHOPEE.marca),
+    );
+    expect(within(categoria!).getByTestId('stub-categoria')).toBeTruthy();
+    expect(within(marca!).getByTestId('stub-marca')).toBeTruthy();
+  });
+
+  it('NEAR-MISS: ids are per DRAFT — another link’s id names nothing here', () => {
+    show();
+    expect(
+      document.getElementById(idDoCampoRascunhoShopee('outro', CAMPO_RASCUNHO_SHOPEE.itemName)),
+    ).toBeNull();
   });
 });

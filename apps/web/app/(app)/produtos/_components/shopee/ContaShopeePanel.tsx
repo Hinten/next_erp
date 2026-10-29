@@ -8,6 +8,7 @@ import type { ProdutoShopeeLink } from '@delfrance/schemas';
 import { ordenarVinculosShopee } from '@/lib/shopee/anuncioProduto';
 import type { AcoesShopee } from './AcoesAnuncioShopee';
 import { AnuncioShopeeBlock } from './AnuncioShopeeBlock';
+import type { DesfechoDoRascunhoShopee, DestinosDasSuperficiesShopee } from './DesfechoAcaoShopee';
 import { AvisoReceitaKitShopee } from './AvisoReceitaKitShopee';
 import { IncertoDoKit } from './KitAnuncioShopee';
 import { RascunhoShopee, type RascunhoShopeeProps } from './RascunhoShopee';
@@ -91,6 +92,19 @@ export interface RascunhosShopee {
   readonly avisosSemBlocoDe: (contaId: string) => readonly AvisoDeRascunhoShopee[];
   /** The operator read a notice: the dropped draft is forgotten. */
   readonly dispensarAviso: (linkDocId: string) => void;
+  /**
+   * The outcome panel's draft inputs (#1911 P11) for a block that is a DRAFT
+   * now — its publish reading at the editor's clock, the «Publicar» decision
+   * its attestation exits share with the form, and those exits' handler — or
+   * `null` for a live listing (and once a draft stopped being one).
+   */
+  readonly desfechoDoRascunhoDe: (linkDocId: string) => DesfechoDoRascunhoShopee | null;
+  /**
+   * Where a refusal row's `variacoes` / `medidas` surface leads — the STORED
+   * produto's, the same for every block of the tab, a draft's or a live
+   * listing's.
+   */
+  readonly destinosDasSuperficies: DestinosDasSuperficiesShopee;
 }
 
 export interface ContaShopeePanelProps {

@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import Link from 'next/link';
 import { FirebaseError } from 'firebase/app';
 import { getDoc, type Firestore } from 'firebase/firestore';
@@ -11,6 +11,7 @@ import {
   useQuery,
   useQueryClient,
 } from '@tanstack/react-query';
+import { useFormContext, useFormState } from 'react-hook-form';
 import { Alert, Anchor, Badge, Button, Group, Loader, Modal, Stack, Text } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { PERM } from '@delfrance/auth';
@@ -80,16 +81,19 @@ import {
   corpoAtualizarRascunhoShopee,
   corpoCriarRascunhoShopee,
   corpoDescartarRascunhoShopee,
+  corpoPublicarRascunhoShopee,
   divergenciasDoServidorShopee,
   edicaoDoRascunhoGuardadoShopee,
   edicaoRascunhoShopeeSuja,
   estadoDoBlocoRascunhoShopee,
   existentesDosVinculosShopee,
+  falhaDaPublicacaoDoRascunhoShopee,
   falhaDoRascunhoShopee,
   idDeNovoRascunhoShopee,
   marcarRascunhoShopeeSalvo,
   novaEdicaoRascunhoShopee,
   projecaoGuardadaDoRascunhoShopee,
+  publicacaoDoRascunhoShopee,
   rebasearEdicaoRascunhoShopee,
   segundoAnuncioNaContaShopee,
   type BlocoRascunhoShopee,
@@ -98,6 +102,8 @@ import {
   type EdicaoRascunhoShopee,
   type ExistentesNaContaShopee,
   type FormularioRascunhoShopee,
+  type PublicacaoDoRascunhoShopee,
+  type SaidaDoProblemaShopee,
 } from '@/lib/shopee/rascunho';
 import { useReceitaKitShopee } from '@/lib/shopee/useReceitaKitShopee';
 import { ContaTabs, type ContaTabItem } from '../marketplace/ContaTabs';
@@ -120,10 +126,15 @@ import {
   ConflitoRascunhoShopeeModal,
   type ConflitoRascunhoShopeeAberto,
 } from './ConflitoRascunhoShopeeModal';
-import type { DesfechoAcaoShopee } from './DesfechoAcaoShopee';
+import type {
+  DesfechoAcaoShopee,
+  DesfechoDoRascunhoShopee,
+  DestinosDasSuperficiesShopee,
+} from './DesfechoAcaoShopee';
 import { KitNativoShopeeModal, type AlvoDoKitShopee } from './KitNativoShopeeModal';
 import type {
-  AcaoDoRascunhoShopee,
+  AcaoDoBlocoRascunhoShopee,
+  ConfirmacaoDePublicacaoShopee,
   RascunhoShopeeProps,
   ResultadoDoRascunhoShopee,
   TextosDoProdutoRascunhoShopee,
@@ -156,7 +167,25 @@ import type {
  * produto's listings or drafts (D15); its block edits Título, Descrição,
  * Categoria and Marca; «Salvar rascunho» sends a create or an edit, «Descartar»
  * a discard, each through the draft route (P8's client methods) and the SAME
- * one-write lock as every other action. Publicar is not offered yet (P11).
+ * one-write lock as every other action.
+ *
+ * «Publicar» (#1911 P11) sends the STORED draft to the `publicar` route by its
+ * `linkDocId` — never a `categoryId`, never a kit flag — under that lock too.
+ * It acts only on `publicacaoDoRascunhoShopee`'s yes: saved, clean, the
+ * produto FORM clean as well (the route reads the stored produto, K2-7 — read
+ * from the surrounding ObjectView form, see {@link ShopeeEditor}), no
+ * pendência, the bands loaded, and a reading that is not `em-andamento`. The
+ * click opens a confirmation (with «Criar pausado») and sends nothing; that
+ * confirmation carries the second-listing warning (D15) whenever
+ * `segundoAnuncioNaContaShopee` — P10's ONE count, the draft itself left out —
+ * names one, and then sends `confirmarSegundoAnuncio`. Three things open it,
+ * and only it: the block's button, a 409 `rascunhoContaJaTemAnuncio` (re-asked
+ * from `detalhes.vinculos`), and a refusal row's Seller-Centre attestation
+ * exit (`confirmarCriacaoIncerta`) — so no path skips its gate (K2-13). Every
+ * answer is `falhaDaPublicacaoDoRascunhoShopee`'s reading first: a 202, a
+ * network failure, an unreadable 2xx or a codeless 5xx is never «falhou» —
+ * its wait is the block's CURRENT reading, worded on every render, never a
+ * constant (rev. 2a #7, #15) — and a 200 never says «criado» (#14).
  *
  * Every decision is `@/lib/shopee/rascunho`'s — what is dirty, what each body
  * carries, what each refusal means, what a block may do now
@@ -248,8 +277,8 @@ import type {
  *  - **R2 — every piece of UI state lives HERE, keyed by link doc id**
  *    (`modelosAbertos`, `kitAbertos`, `desfechos`, the write in flight, the
  *    pause and the kit create being confirmed, the principal picked, the
- *    drafts being edited and their last sentence, the draft conflict, discard
- *    and second-listing confirmations) or by conta (`incertos`), never inside
+ *    drafts being edited and their last sentence, the draft conflict, discard,
+ *    second-listing and Publicar confirmations) or by conta (`incertos`), never inside
  *    a block: React keeps a hidden Activity's state, and one map at the top
  *    survives anything a child's remount could throw away — an in-flight
  *    handler's `setState` lands here normally.
@@ -280,8 +309,12 @@ const CHAVE_SEM_CONTA = '__sem_conta__';
 /** Firestore reserves every `__…__` id, so no conta can carry one — and none is read. */
 const ID_RESERVADO = /^__.*__$/;
 
-/** Can a conta with this id exist at all? If not, "não encontrada" is the truth and nothing is read. */
-function idDeContaLegivel(id: string): boolean {
+/**
+ * Can a document with this id exist at all? For a conta: if not, "não
+ * encontrada" is the truth and nothing is read; for a variation group, no
+ * `/variacoes/<id>` page is offered.
+ */
+function idDeDocumentoLegivel(id: string): boolean {
   return !naoDocId(id) && !ID_RESERVADO.test(id);
 }
 
@@ -368,6 +401,20 @@ interface DescarteAberto {
    * of something unseen.
    */
   readonly projecao: CamposRascunhoShopee | null;
+  /**
+   * The discard a refusal row's Seller-Centre exit asked for (#1911 P11 —
+   * `saidasDoProblemaShopee`'s `descartar-atestando`): the operator already
+   * attested (the listing IS the attempt's), so the plain confirmation shows
+   * `aviso` (what stays on Shopee) and the confirm sends
+   * `confirmarCriacaoIncerta: true`. `null` for the block's own «Descartar».
+   */
+  readonly atestado: { readonly aviso: string | null } | null;
+}
+
+/** A draft's «Publicar» confirmation while it is open — at most one (R2). */
+interface PublicacaoAberta {
+  readonly linkDocId: string;
+  readonly confirmacao: ConfirmacaoDePublicacaoShopee;
 }
 
 /** One draft block as this render decides it. */
@@ -379,9 +426,30 @@ interface BlocoDoEditor {
   readonly bloco: BlocoRascunhoShopee;
 }
 
-/** The draft writes — `emVoo` names one of these when a draft write is in flight. */
-function ehAcaoDeRascunho(acao: AcaoDoAnuncioShopee): acao is AcaoDoRascunhoShopee {
-  return acao === 'salvar-rascunho' || acao === 'descartar-rascunho';
+/**
+ * The writes a draft block starts — its two draft writes and its «Publicar»:
+ * `emVoo` naming one of these on a DRAFT's link is that block's spinner (a
+ * draft has no action row, so `'publicar'` there is never a republish).
+ */
+function ehAcaoDoBlocoRascunho(acao: AcaoDoAnuncioShopee): acao is AcaoDoBlocoRascunhoShopee {
+  return acao === 'salvar-rascunho' || acao === 'descartar-rascunho' || acao === 'publicar';
+}
+
+/**
+ * Where the produto's STORED variation group is fixed — `/variacoes/<id>` when
+ * `grupoDeVariacoesUid` names exactly ONE readable group (a refusal row names
+ * no group, so with two the page cannot pick one), else `null`: the row then
+ * keeps its sentence, which names the group, and gets no button.
+ */
+function destinoDasVariacoes(grupoDeVariacoesUid: unknown): string | null {
+  if (!Array.isArray(grupoDeVariacoesUid)) return null;
+  const ids = new Set<string>();
+  for (const bruto of grupoDeVariacoesUid) {
+    const id = idDoRef(bruto);
+    if (id !== null && idDeDocumentoLegivel(id)) ids.add(id);
+  }
+  const [unico] = ids;
+  return ids.size === 1 && unico !== undefined ? `/variacoes/${unico}` : null;
 }
 
 /** `limitesDoItem`'s cache key part for one conta's category. */
@@ -467,7 +535,53 @@ function desfechoDaFalha(
   };
 }
 
-export function ShopeeEditor({ produtoId, db, disabled, onDirtyChange }: ShopeeEditorProps) {
+/**
+ * The tab's editor — read with the SURROUNDING produto form's `isDirty`, which
+ * a draft's «Publicar» is gated on: the route publishes the STORED produto
+ * (weight, photos, SKU, price, stock, the Descrição tab's text — every one of
+ * them a field of that form, `extraData` / `estoques` / `impostos` included as
+ * its transient fields), so unsaved produto edits would silently not be
+ * published (K2-7). Read through the form context, as `MercadoLivreEditor`'s
+ * `OuterFormDirty` does — the page threads nothing — and `false` outside one
+ * (component tests).
+ *
+ * Two components because hooks cannot be called conditionally and
+ * `useFormState` needs a control: `useFormContext` is TYPED non-null but
+ * returns `null` outside a provider. Subscribing through `useFormState` — not
+ * reading `form.formState` — is what re-renders this when the produto form
+ * turns dirty or clean. Inside the page the provider is always there, so the
+ * tree under it never changes shape (the editor's state is never remounted).
+ */
+export function ShopeeEditor(props: ShopeeEditorProps) {
+  const form = useFormContext();
+  // `useFormContext` answers `null` outside a provider, whatever its type says.
+  const control = form?.control;
+  if (!control) return <EditorShopee {...props} produtoSujo={false} />;
+  return (
+    <FormularioDoProdutoSujo control={control}>
+      {(sujo) => <EditorShopee {...props} produtoSujo={sujo} />}
+    </FormularioDoProdutoSujo>
+  );
+}
+
+function FormularioDoProdutoSujo({
+  control,
+  children,
+}: {
+  control: NonNullable<ReturnType<typeof useFormContext>>['control'];
+  children: (sujo: boolean) => ReactNode;
+}) {
+  const { isDirty } = useFormState({ control });
+  return <>{children(isDirty)}</>;
+}
+
+function EditorShopee({
+  produtoId,
+  db,
+  disabled,
+  onDirtyChange,
+  produtoSujo,
+}: ShopeeEditorProps & { readonly produtoSujo: boolean }) {
   // `integracao` is integracao.read-protected while the links follow the
   // produto's permissions, so the contas query is gated on the bit — without
   // it Firestore would answer a raw permission-denied. `loading` first: the
@@ -522,7 +636,7 @@ export function ShopeeEditor({ produtoId, db, disabled, onDirtyChange }: ShopeeE
     const ids = new Set<string>();
     for (const l of vinculosLidos) {
       const id = idDoRef(l.data.contaProdutoShopeeOuterRef);
-      if (id !== null && !naPagina.has(id) && idDeContaLegivel(id)) ids.add(id);
+      if (id !== null && !naPagina.has(id) && idDeDocumentoLegivel(id)) ids.add(id);
     }
     return [...ids].sort();
   }, [contasDaPagina, vinculosLidos]);
@@ -696,7 +810,8 @@ export function ShopeeEditor({ produtoId, db, disabled, onDirtyChange }: ShopeeE
     void executar(linkDocId, 'publicar', async (c) => {
       const resposta = await c.publicar({ integracaoId: contaId, produtoId, linkDocId });
       invalidarModelos();
-      return { tipo: 'publicado', resposta };
+      // A live link's republish: never a draft's (that is `enviarPublicacao`).
+      return { tipo: 'publicado', resposta, pedidoRascunho: null };
     });
   }
 
@@ -843,7 +958,7 @@ export function ShopeeEditor({ produtoId, db, disabled, onDirtyChange }: ShopeeE
         }
         limparIncerto(contaId);
         invalidarModelos();
-        return { tipo: 'publicado', resposta };
+        return { tipo: 'publicado', resposta, pedidoRascunho: null };
       },
       corpo,
     );
@@ -964,7 +1079,8 @@ export function ShopeeEditor({ produtoId, db, disabled, onDirtyChange }: ShopeeE
       const semConta = contaId === CHAVE_SEM_CONTA;
       // Its by-id read has not answered yet: never called missing before it
       // says so. Same tab id either way, so the selection survives the answer.
-      const lendo = !semConta && idDeContaLegivel(contaId) && !(contasFora?.has(contaId) ?? false);
+      const lendo =
+        !semConta && idDeDocumentoLegivel(contaId) && !(contasFora?.has(contaId) ?? false);
       saida.push({
         conta: {
           id: contaId,
@@ -1040,6 +1156,8 @@ export function ShopeeEditor({ produtoId, db, disabled, onDirtyChange }: ShopeeE
   const [segundosConfirmados, setSegundosConfirmados] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
+  /** The «Publicar» confirmation being shown (#1911 P11) — at most one at a time. */
+  const [publicacaoAberta, setPublicacaoAberta] = useState<PublicacaoAberta | null>(null);
   // The clock the drafts' publish reading is taken against — re-read by the
   // timer below at the instant a reading changes (see the docblock).
   const [relogioRascunho, setRelogioRascunho] = useState(() => Date.now());
@@ -1167,6 +1285,50 @@ export function ShopeeEditor({ produtoId, db, disabled, onDirtyChange }: ShopeeE
       limitesLidos[i]?.data?.limites ?? null,
     ]),
   );
+  /**
+   * The bands one block is read against: its EDITED category's, or `null`
+   * while they load (or failed) — and for a draft with no category. That last
+   * `null` is deliberate (rev. 2a B.7(b): a draft with no category asks
+   * apps/shopee nothing on render): such a draft always carries the
+   * `categoria-ausente` pendência, which disables «Publicar» before unknown
+   * bands could, so the shop-wide bands would add list rows but never change
+   * the gate. «Publicar» is therefore never enabled on bands not loaded.
+   */
+  const limitesDoBloco = ({ contaId, bloco }: BlocoDoEditor): RascunhoShopeeProps['limites'] => {
+    const categoryId = bloco.valores.category_id;
+    return categoryId === null
+      ? null
+      : (limitesPorChave.get(chaveDeLimites(contaId, categoryId)) ?? null);
+  };
+
+  // THE «Publicar» decision of every draft block, this render — the form's
+  // button, the refusal rows' attestation exits and every handler below read
+  // this one value (the handlers re-read it at click time: a reading can move
+  // while a confirmation is open).
+  const decisoesDePublicar = new Map<string, PublicacaoDoRascunhoShopee>();
+  for (const [linkDocId, entrada] of blocos) {
+    decisoesDePublicar.set(
+      linkDocId,
+      publicacaoDoRascunhoShopee({
+        bloco: entrada.bloco,
+        podeEditar: entrada.podeEditar,
+        ocupado,
+        servidorConfirmado,
+        produtoSujo,
+        textosDoProduto,
+        limites: limitesDoBloco(entrada),
+      }),
+    );
+  }
+  const podePublicarAgora = (linkDocId: string) =>
+    decisoesDePublicar.get(linkDocId)?.podePublicar === true;
+
+  // Where a refusal row's `variacoes` / `medidas` surface leads — the STORED
+  // produto's group and size chart (`null` ⇒ that row gets no button).
+  const destinosDasSuperficies: DestinosDasSuperficiesShopee = {
+    variacoes: destinoDasVariacoes(produto?.grupoDeVariacoesUid),
+    medidas: tabelaMedidas.estado === 'tabela' ? `/medidas/${tabelaMedidas.id}` : null,
+  };
 
   function definirResultado(linkDocId: string, resultado: ResultadoDoRascunhoShopee | null) {
     setResultadosRascunho((prev) => {
@@ -1237,7 +1399,7 @@ export function ShopeeEditor({ produtoId, db, disabled, onDirtyChange }: ShopeeE
         });
         return null;
       case 'criacao-incerta':
-        setDescarte({ contaId, linkDocId, tipo: 'atestar', projecao });
+        setDescarte({ contaId, linkDocId, tipo: 'atestar', projecao, atestado: null });
         return null;
       case 'largar':
         largarEdicao(linkDocId);
@@ -1396,6 +1558,7 @@ export function ShopeeEditor({ produtoId, db, disabled, onDirtyChange }: ShopeeE
         tipo === 'local' || link === null
           ? null
           : projecaoGuardadaDoRascunhoShopee(efetivas.get(linkDocId) ?? null, link),
+      atestado: null,
     });
   }
 
@@ -1520,13 +1683,168 @@ export function ShopeeEditor({ produtoId, db, disabled, onDirtyChange }: ShopeeE
     );
   }
 
+  // ---- «Publicar» on a draft (#1911 P11). Every decision is `@/lib/shopee/rascunho`'s.
+
+  /**
+   * Open ONE draft's «Publicar» confirmation — from the block's button
+   * (`atestacao: null`) or a refusal row's attestation exit — only while the
+   * gate says yes NOW. The second-listing count is taken as it opens, by P10's
+   * one function with the draft itself left out: a conta holding only REMOVED
+   * listings is asked nothing (the route's set). Nothing is sent.
+   */
+  function abrirPublicacao(
+    linkDocId: string,
+    atestacao: ConfirmacaoDePublicacaoShopee['atestacao'],
+  ) {
+    const entrada = blocos.get(linkDocId);
+    if (entrada === undefined || !podePublicarAgora(linkDocId)) return;
+    setPublicacaoAberta({
+      linkDocId,
+      confirmacao: {
+        segundoAnuncio: segundoAnuncioNaContaShopee(
+          vinculosLidos ?? [],
+          entrada.contaId,
+          efetivas.values(),
+          linkDocId,
+        ),
+        pausado: false,
+        atestacao,
+      },
+    });
+  }
+
+  /**
+   * The confirmation confirmed: sent only while it is THIS draft's, its block
+   * still is one, and the gate still says yes (the reading may have moved).
+   * A confirmation whose block is gone (published or discarded elsewhere) is
+   * neither painted — no form renders it — nor sent: `blocos` no longer holds
+   * the link.
+   */
+  function confirmarPublicacao(linkDocId: string, pausado: boolean) {
+    const aberta = publicacaoAberta;
+    const entrada = blocos.get(linkDocId);
+    if (aberta?.linkDocId !== linkDocId || entrada === undefined) return;
+    if (!podePublicarAgora(linkDocId)) return;
+    setPublicacaoAberta(null);
+    enviarPublicacao(entrada.contaId, linkDocId, { ...aberta.confirmacao, pausado });
+  }
+
+  function cancelarPublicacao(linkDocId: string) {
+    setPublicacaoAberta((aberta) => (aberta?.linkDocId === linkDocId ? null : aberta));
+  }
+
+  /**
+   * Send ONE draft's publish under the one-write lock — by `linkDocId` alone
+   * (`corpoPublicarRascunhoShopee`), each flag only because the operator gave
+   * it: `confirmarSegundoAnuncio` after the D15 warning, `confirmarCriacaoIncerta`
+   * after a Seller-Centre attestation. Every answer ends in exactly one of:
+   *
+   *  - a 2xx — the 200 or the 202 — recorded with the REQUEST's «Criar
+   *    pausado» (`pedidoRascunho`): once published the link is no draft, and a
+   *    200 is no proof of a create (#14); the 202's wait is the block's
+   *    reading, worded on every render (#7);
+   *  - a 409 `rascunhoContaJaTemAnuncio` — the SAME confirmation again, its
+   *    count from `detalhes.vinculos`, everything else as sent (K1-4);
+   *  - no answer to trust — `sem-resposta`, never «falhou» (#15);
+   *  - a definite answer about the draft (`falhaDaPublicacaoDoRascunhoShopee`),
+   *    else the publish's own reading (`desfechoDaFalha`: the 422 rows, the
+   *    quota pause, the channel's ladder) — so a draft's 404 never reads as a
+   *    live link's «não pertence mais a esta conta».
+   */
+  function enviarPublicacao(
+    contaId: string,
+    linkDocId: string,
+    pedido: ConfirmacaoDePublicacaoShopee,
+  ) {
+    const corpo = corpoPublicarRascunhoShopee({
+      contaId,
+      produtoId,
+      linkDocId,
+      pausado: pedido.pausado,
+      confirmarSegundoAnuncio: pedido.segundoAnuncio !== null,
+      confirmarCriacaoIncerta: pedido.atestacao !== null,
+    });
+    void executar(
+      linkDocId,
+      'publicar',
+      async (c) => {
+        definirResultado(linkDocId, null);
+        try {
+          const resposta = await c.publicar(corpo);
+          invalidarModelos();
+          return { tipo: 'publicado', resposta, pedidoRascunho: { pausado: pedido.pausado } };
+        } catch (err) {
+          if (err instanceof ShopeeClientHttpError || err instanceof ShopeeClientNetworkError) {
+            const falha = falhaDaPublicacaoDoRascunhoShopee(err);
+            if (falha === null) return desfechoDaFalha(err, corpo);
+            switch (falha.tipo) {
+              case 'segundo-anuncio':
+                setPublicacaoAberta({
+                  linkDocId,
+                  confirmacao: {
+                    ...pedido,
+                    segundoAnuncio: existentesDosVinculosShopee(falha.vinculos),
+                  },
+                });
+                return null;
+              case 'sem-resposta':
+                return { tipo: 'sem-resposta' };
+              case 'mensagem':
+                return { tipo: 'falha', mensagem: falha.mensagem };
+            }
+          }
+          // A `FirebaseError` (the ID token, refreshed before the request
+          // leaves) is `executar`'s definite outcome; anything else is not ours.
+          throw err;
+        }
+      },
+      corpo,
+    );
+  }
+
+  /**
+   * A refusal row's Seller-Centre exit (`saidasDoProblemaShopee`):
+   * `publicar-atestando` opens the SAME confirmation and gate as the block's
+   * «Publicar» — never a bare re-send (K2-13); `descartar-atestando` opens the
+   * discard confirmation with its warning, then sends the HELD projection with
+   * `confirmarCriacaoIncerta: true`.
+   */
+  function saidaDoProblema(linkDocId: string, saida: SaidaDoProblemaShopee) {
+    if (saida.tipo === 'publicar-atestando') {
+      abrirPublicacao(linkDocId, saida);
+      return;
+    }
+    const entrada = blocos.get(linkDocId);
+    if (entrada === undefined || entrada.link === null || !entrada.bloco.podeDescartar) return;
+    setDescarte({
+      contaId: entrada.contaId,
+      linkDocId,
+      tipo: entrada.bloco.descarte,
+      projecao: projecaoGuardadaDoRascunhoShopee(efetivas.get(linkDocId) ?? null, entrada.link),
+      atestado: { aviso: saida.aviso },
+    });
+  }
+
+  /** A draft block's outcome inputs — `null` once the link is no draft this tab decides. */
+  function desfechoDoRascunhoDe(linkDocId: string): DesfechoDoRascunhoShopee | null {
+    const entrada = blocos.get(linkDocId);
+    if (entrada === undefined) return null;
+    return {
+      publicacao: entrada.bloco.publicacao,
+      nowMs: relogioRascunho,
+      podePublicar: podePublicarAgora(linkDocId),
+      podeDescartar: entrada.bloco.podeDescartar,
+      onSaida: (saida) => saidaDoProblema(linkDocId, saida),
+    };
+  }
+
   /** ONE draft's form: its decision, the inputs it reads and its handlers. */
   function propsDoRascunho(conta: ContaShopee, linkDocId: string): RascunhoShopeeProps | null {
     const entrada = blocos.get(linkDocId);
-    if (entrada === undefined) return null;
+    const decisaoDePublicar = decisoesDePublicar.get(linkDocId);
+    if (entrada === undefined || decisaoDePublicar === undefined) return null;
     const { link, bloco, podeEditar } = entrada;
     const edicao = efetivas.get(linkDocId) ?? null;
-    const categoryId = bloco.valores.category_id;
     return {
       db,
       contaId: conta.id,
@@ -1536,15 +1854,12 @@ export function ShopeeEditor({ produtoId, db, disabled, onDirtyChange }: ShopeeE
       // §H Q1's "stored" brand: the HELD projection's (a local draft has none).
       marcaGuardada: link === null ? null : projecaoGuardadaDoRascunhoShopee(edicao, link).marca,
       textosDoProduto,
-      limites:
-        categoryId === null
-          ? null
-          : (limitesPorChave.get(chaveDeLimites(conta.id, categoryId)) ?? null),
+      limites: limitesDoBloco(entrada),
       divergencias:
         edicao === null || link === null ? [] : divergenciasDoServidorShopee(edicao, link),
       podeEditar,
       emVoo:
-        emVoo !== null && emVoo.linkDocId === linkDocId && ehAcaoDeRascunho(emVoo.acao)
+        emVoo !== null && emVoo.linkDocId === linkDocId && ehAcaoDoBlocoRascunho(emVoo.acao)
           ? emVoo.acao
           : null,
       resultado: resultadosRascunho.get(linkDocId) ?? null,
@@ -1555,6 +1870,12 @@ export function ShopeeEditor({ produtoId, db, disabled, onDirtyChange }: ShopeeE
       onSalvar: () => salvarDoBloco(linkDocId),
       onDesfazer: () => desfazerRascunho(linkDocId),
       onDescartar: (tipo) => pedirDescarte(linkDocId, tipo),
+      decisaoDePublicar,
+      onPublicar: () => abrirPublicacao(linkDocId, null),
+      confirmacaoDePublicacao:
+        publicacaoAberta?.linkDocId === linkDocId ? publicacaoAberta.confirmacao : null,
+      onConfirmarPublicacao: (pausado) => confirmarPublicacao(linkDocId, pausado),
+      onCancelarPublicacao: () => cancelarPublicacao(linkDocId),
     };
   }
 
@@ -1567,6 +1888,8 @@ export function ShopeeEditor({ produtoId, db, disabled, onDirtyChange }: ShopeeE
     avisoDe: (linkDocId) => avisosSobreBloco.get(linkDocId) ?? null,
     avisosSemBlocoDe: (contaId) => avisosSemBloco.filter((a) => a.contaId === contaId),
     dispensarAviso: (linkDocId) => largarEdicao(linkDocId),
+    desfechoDoRascunhoDe,
+    destinosDasSuperficies,
   };
 
   // Plain, not memoised: the dirty marks change with every keystroke.
@@ -1801,19 +2124,22 @@ export function ShopeeEditor({ produtoId, db, disabled, onDirtyChange }: ShopeeE
       {/* A discard deletes the draft: confirmed. `atestar` (the reading is
           `incerta`, or the route said so) is the three-case Seller-Centre
           dialog: (a) and (b) re-send the SAME discard attested, (c) is text
-          only — discarding there would lose the record the import adopts. */}
+          only — discarding there would lose the record the import adopts. A
+          refusal row's attestation exit (#1911 P11, `atestado`) already IS
+          the operator's case (b): the plain confirmation, with what stays on
+          Shopee, sent attested. */}
       <Modal
         opened={descarte !== null}
         onClose={() => setDescarte(null)}
         title={
-          descarte?.tipo === 'atestar'
+          descarte?.tipo === 'atestar' && descarte.atestado === null
             ? DIALOGO_DESCARTE_CRIACAO_INCERTA_SHOPEE.titulo
             : 'Descartar rascunho'
         }
         centered
       >
         {descarte !== null &&
-          (descarte.tipo === 'atestar' ? (
+          (descarte.tipo === 'atestar' && descarte.atestado === null ? (
             <Stack gap="md">
               <Text size="sm">{DIALOGO_DESCARTE_CRIACAO_INCERTA_SHOPEE.texto}</Text>
               {[
@@ -1848,6 +2174,11 @@ export function ShopeeEditor({ produtoId, db, disabled, onDirtyChange }: ShopeeE
                   ? FRASE_CONFIRMAR_DESCARTE_LOCAL_SHOPEE
                   : FRASE_CONFIRMAR_DESCARTE_SHOPEE}
               </Text>
+              {descarte.atestado?.aviso != null && (
+                <Alert color="orange" variant="light">
+                  {descarte.atestado.aviso}
+                </Alert>
+              )}
               <Group justify="flex-end" gap="sm">
                 <Button type="button" variant="default" onClick={() => setDescarte(null)}>
                   Cancelar
@@ -1856,7 +2187,7 @@ export function ShopeeEditor({ produtoId, db, disabled, onDirtyChange }: ShopeeE
                   type="button"
                   color="red"
                   disabled={descarteBloqueado}
-                  onClick={() => confirmarDescarte(descarte, false)}
+                  onClick={() => confirmarDescarte(descarte, descarte.atestado !== null)}
                 >
                   Descartar rascunho
                 </Button>

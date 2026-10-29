@@ -6,12 +6,16 @@ import {
   TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE,
   campoRascunhoShopeeSchema,
   type CampoRascunhoShopee,
+  type CategoriaResumoDto,
   type RespostaAtualizarRascunhoShopee,
+  type RespostaCategoriasShopee,
   type RespostaCriarRascunhoShopee,
   type RespostaDescartarRascunhoShopee,
+  type RespostaLimitesDoItemShopee,
 } from '@delfrance/schemas';
 import type { AnuncioStatusShopee, ProblemaShopee } from '../lib/shopee/wire';
 import {
+  SHOPEE_E2E_CATEGORIA,
   SHOPEE_E2E_ITEM_ATIVO,
   SHOPEE_E2E_SHOP_ID,
   cleanupByNamePrefix,
@@ -20,6 +24,7 @@ import {
   e2ePrefix,
   seedEditorRascunhoShopee,
   seedProdutoShopeeVinculado,
+  seedRascunhoProntoShopee,
   seedShopeeFixtures,
 } from './_helpers/seed-data';
 import { warmRoutes } from './helpers/warmup';
@@ -32,9 +37,10 @@ import { warmRoutes } from './helpers/warmup';
  * refused publish worded by its motivo and its `acao`, never by the CLI
  * sentence the server writes beside them) — and, since #1911 P10, the listing
  * DRAFT editor: a draft link edited with its own buttons (Salvar rascunho /
- * Descartar — still no Publicar, which is P11's), a new draft opened per conta
- * by "Novo anúncio" and written only on Salvar rascunho, and the
- * second-listing confirmation.
+ * Descartar / Publicar), a new draft opened per conta by "Novo anúncio" and
+ * written only on Salvar rascunho, and the second-listing confirmation. Since
+ * P11 a draft with no pendência is PUBLISHED by its link alone, after a
+ * confirmation, and a refusal row is routed to the produto tab that fixes it.
  *
  * The apps/shopee backend does NOT run in this suite. Every route under
  * `/api/marketplace/shopee/` is intercepted on the PATHNAME (any host the
@@ -46,9 +52,11 @@ import { warmRoutes } from './helpers/warmup';
  * ⚠️ The draft routes are stubbed too, so no draft document is ever written,
  * created or deleted by this suite: every test opens the seeded draft as
  * seeded. That draft has no category, so the editor reads no category bands
- * and asks apps/shopee for nothing on render — no test needs a taxonomy stub.
- * A test that seeds or picks a category stubs `taxonomia/categorias` and
- * `taxonomia/limites` itself.
+ * and asks apps/shopee for nothing on render — no test of ITS produto needs a
+ * taxonomy stub. The one test that publishes opens a SECOND produto, whose
+ * draft has a category, and stubs that category's `taxonomia/categorias` and
+ * `taxonomia/limites` itself (and its own `publicar`), through
+ * {@link instalarStubsShopee}'s per-test map.
  *
  * The tab lists every Shopee conta on staging (shared project), so every
  * assertion is scoped by the run-scoped `data-testid="shopee-conta-<id>"` /
@@ -98,7 +106,46 @@ const TOAST_RASCUNHO_DESCARTADO = 'Rascunho descartado.';
 const FRASE_PRIMEIRA_PUBLICACAO_REMOVIDA =
   'Primeira publicação: chega na etapa de autoria do anúncio.';
 
+/*
+ * The «Publicar» copy of a draft (#1911 P11), spelled for the same reason, from
+ * `lib/shopee/anuncioProduto.ts` (and the produto section from
+ * `produtos/_components/produtoFields.ts`).
+ */
+
+/** `ROTULO_PUBLICAR_RASCUNHO_SHOPEE` — a draft's «Publicar», and its confirmation's confirm. */
+const ROTULO_PUBLICAR = 'Publicar';
+/** `FRASE_PUBLICAR_RASCUNHO_NOVO_SHOPEE` — why a draft not saved yet cannot be published. */
+const FRASE_PUBLICAR_RASCUNHO_NOVO = 'Salve o rascunho antes de publicar.';
+/** `TITULO_PUBLICAR_RASCUNHO_SHOPEE` — the Publicar confirmation's title. */
+const TITULO_PUBLICAR = 'Publicar na Shopee';
+/** `ROTULO_CRIAR_PAUSADO_SHOPEE` — the confirmation's «Criar pausado» checkbox. */
+const ROTULO_CRIAR_PAUSADO = 'Criar pausado (o anúncio só aparece na loja depois de reativado)';
+/** `textoDaConfirmacaoDePublicacaoShopee`'s opening — it names the conta the listing goes to. */
+function aberturaDaConfirmacao(contaNome: string): string {
+  return `O anúncio será criado na conta «${contaNome}»`;
+}
+/** `textoDoSegundoAnuncioNaPublicacaoShopee`'s warning — the duplicate-listing risk (D15). */
+const AVISO_SEGUNDO_ANUNCIO_NA_PUBLICACAO = /Publicar este rascunho cria OUTRO anúncio/;
+/** `TITULO_ANUNCIO_INCERTO_SHOPEE` — the uncertain create's title, never a definite refusal's. */
+const TITULO_ANUNCIO_INCERTO = 'A Shopee pode ter criado o anúncio';
+/** The blocked publish's title (`DesfechoAcaoShopee`), as test 5 reads it on a live listing. */
+const TITULO_PUBLICACAO_BLOQUEADA = 'Publicação bloqueada — nada foi enviado à Shopee';
+/** The produto tab holding `pesoBrutoKg` (`produtoFields.ts`) — where a `weight` refusal is fixed. */
+const SECAO_DO_PESO = 'Dimensões e peso';
+/** `rotuloDaSuperficieShopee` for a produto surface in {@link SECAO_DO_PESO}. */
+const ROTULO_ABRIR_SECAO_DO_PESO = `Abrir no produto: ${SECAO_DO_PESO}`;
+/** The `sem-peso` row's sentence, as `montagemAnuncio.ts` builds it (no CLI text: shown verbatim). */
+const MENSAGEM_SEM_PESO = 'o produto não tem peso bruto nem líquido utilizável';
+
 type Resposta = { readonly status: number; readonly corpo: unknown };
+
+/**
+ * The answer a stubbed route gives one call — from its parsed body (POSTs) or
+ * its URL (the GETs' query) — or `null`: the call is then treated exactly as
+ * an unstubbed route's (answered 404 and recorded in `semStub`), so a stub
+ * that answers one category, or one link, refuses every other.
+ */
+type Stub = (corpo: Record<string, unknown> | null, url: URL) => Resposta | null;
 
 /** One recorded request to the apps/shopee backend. */
 interface Chamada {
@@ -231,11 +278,120 @@ function respostaDoRascunhoDescartado(
   return { linkDocId: textoDoCorpo(corpo, 'linkDocId'), descartado: true, criacaoIncerta: false };
 }
 
+/** The fixture category's parent in the stubbed tree — a fixture id, never a real one. */
+const CATEGORIA_RAIZ_E2E = 100001;
+
+/**
+ * `taxonomia/categorias?categoryId=` for the ready draft's category — ONE leaf
+ * node with its path from the root (what the draft's category label reads),
+ * typed by the shared answer type.
+ */
+function categoriaDoRascunhoPronto(): RespostaCategoriasShopee {
+  const folha: CategoriaResumoDto = {
+    categoryId: SHOPEE_E2E_CATEGORIA,
+    name: 'Categoria do e2e',
+    originalName: 'E2E category',
+    isLeaf: true,
+  };
+  const raiz: CategoriaResumoDto = {
+    categoryId: CATEGORIA_RAIZ_E2E,
+    name: 'Raiz do e2e',
+    originalName: 'E2E root',
+    isLeaf: false,
+  };
+  return {
+    raizes: null,
+    no: { ...folha, parentId: CATEGORIA_RAIZ_E2E, pathFromRoot: [raiz, folha], children: [] },
+  };
+}
+
+/**
+ * `taxonomia/limites?categoryId=` for the ready draft's category — the WHOLE
+ * envelope, typed by the shared answer type. Only the two bands the draft's
+ * pendências measure are set, wide enough for its title and for the produto's
+ * stored Descrição; every other band is "Shopee did not say" (`null`).
+ */
+function limitesDoRascunhoPronto(): RespostaLimitesDoItemShopee {
+  return {
+    scope: 'category',
+    categoryId: SHOPEE_E2E_CATEGORIA,
+    limites: {
+      priceLimit: null,
+      wholesalePriceThresholdPercentage: null,
+      stockLimit: null,
+      itemNameLengthLimit: { min: 1, max: 120 },
+      itemImageCountLimit: null,
+      itemDescriptionLengthLimit: { min: 1, max: 5000 },
+      tierVariationNameLengthLimit: null,
+      tierVariationOptionLengthLimit: null,
+      itemCountLimit: null,
+      extendedDescriptionLimit: null,
+      dtsLimit: null,
+      weightLimit: null,
+      dimensionLimit: null,
+      sizeChartLimit: null,
+    },
+    gtinLimit: null,
+    supportsPreOrder: false,
+  };
+}
+
+/**
+ * The publish route's 422 for the ready draft: blocked BEFORE any Shopee write
+ * on the produto's missing weight — the row `montagemAnuncio.ts` builds
+ * (campo `weight`, motivo `sem-peso`, no `acao`), with the keys
+ * `core/respond.ts`'s blocked arm sends; `itemId: null` (a first publish names
+ * no listing).
+ */
+function recusaSemPeso(corpo: Record<string, unknown> | null): Record<string, unknown> {
+  const produtoId = textoDoCorpo(corpo, 'produtoId');
+  const problemas: ProblemaShopee[] = [
+    { campo: 'weight', motivo: 'sem-peso', mensagem: MENSAGEM_SEM_PESO, acao: null },
+  ];
+  return {
+    error: `Publicação bloqueada (sem-peso) no produto ${produtoId}: 1 problema`,
+    code: 'SHOPEE_PUBLISH_BLOCKED',
+    motivo: 'sem-peso',
+    produtoId,
+    itemId: null,
+    problemas,
+  };
+}
+
+/**
+ * The per-test stubs of the publish case (rev. 2a §D P11 #11): the ready
+ * draft's category node and bands — answered for THAT conta and category only —
+ * and its publish, answered for THAT link only. Any other read or publish
+ * falls to `semStub`.
+ */
+function rotasDoRascunhoPronto(conta: string, rascunho: string): ReadonlyMap<string, Stub> {
+  const daCategoria = (url: URL): boolean =>
+    url.searchParams.get('integracaoId') === conta &&
+    url.searchParams.get('categoryId') === String(SHOPEE_E2E_CATEGORIA);
+  return new Map<string, Stub>([
+    [
+      'taxonomia/categorias',
+      (_corpo, url) =>
+        daCategoria(url) ? { status: 200, corpo: categoriaDoRascunhoPronto() } : null,
+    ],
+    [
+      'taxonomia/limites',
+      (_corpo, url) =>
+        daCategoria(url) ? { status: 200, corpo: limitesDoRascunhoPronto() } : null,
+    ],
+    [
+      'publicar',
+      (corpo) =>
+        textoDoCorpo(corpo, 'linkDocId') === rascunho
+          ? { status: 422, corpo: recusaSemPeso(corpo) }
+          : null,
+    ],
+  ]);
+}
+
 /** The apps/shopee routes this spec answers, by path under {@link PREFIXO_ROTAS}. */
-function rotasComStub(
-  kitRemovido: string,
-): ReadonlyMap<string, (corpo: Record<string, unknown> | null) => Resposta> {
-  return new Map([
+function rotasComStub(kitRemovido: string): ReadonlyMap<string, Stub> {
+  return new Map<string, Stub>([
     ['anuncio-status', (corpo) => ({ status: 200, corpo: respostaDoStatus(corpo) })],
     ['publicar', (corpo) => ({ status: 422, corpo: recusaDaPublicacao(corpo, kitRemovido) })],
     // The three draft routes (#1911 P10). Answered 2xx and writing NOTHING, so
@@ -264,10 +420,16 @@ interface StubsShopee {
  * answers the CORS preflight itself (the backend is cross-origin), so only the
  * real requests land here. A route registered AFTER this one takes precedence
  * (Playwright tries the newest handler first) — how test 6 cuts one route off.
+ * `porTeste` adds or REPLACES stubs by path for one test (the publish case's
+ * taxonomy reads and its own publish); every call is still recorded.
  */
-async function instalarStubsShopee(page: Page, kitRemovido: string): Promise<StubsShopee> {
+async function instalarStubsShopee(
+  page: Page,
+  kitRemovido: string,
+  porTeste: ReadonlyMap<string, Stub> = new Map(),
+): Promise<StubsShopee> {
   const stubs: StubsShopee = { chamadas: [], semStub: [] };
-  const rotas = rotasComStub(kitRemovido);
+  const rotas = new Map([...rotasComStub(kitRemovido), ...porTeste]);
   await page.route(
     (url) => url.pathname.startsWith(PREFIXO_ROTAS),
     async (route) => {
@@ -276,7 +438,7 @@ async function instalarStubsShopee(page: Page, kitRemovido: string): Promise<Stu
       const rota = url.pathname.slice(PREFIXO_ROTAS.length);
       const corpo = corpoDaChamada(pedido.postData());
       stubs.chamadas.push({ metodo: pedido.method(), rota, corpo });
-      let resposta = rotas.get(rota)?.(corpo) ?? null;
+      let resposta = rotas.get(rota)?.(corpo, url) ?? null;
       if (resposta === null) {
         stubs.semStub.push(`${pedido.method()} ${url.pathname}`);
         resposta = {
@@ -293,6 +455,11 @@ async function instalarStubsShopee(page: Page, kitRemovido: string): Promise<Stu
     },
   );
   return stubs;
+}
+
+/** The recorded WRITES — the POSTs; the GETs are reads (here, the taxonomy). */
+function escritas(stubs: StubsShopee): Chamada[] {
+  return stubs.chamadas.filter((c) => c.metodo === 'POST');
 }
 
 /** The prefix of a draft editor's root test id; the rest is the draft's link doc id. */
@@ -330,6 +497,12 @@ test.describe.serial('Produto Shopee tab e2e — listing state, actions and the 
   };
   /** The seeded draft's stored title — every edit's baseline. */
   const tituloGuardado = `${prefix}-rascunho`;
+  /**
+   * The SECOND produto and its one draft READY to publish on `conta` — mirrors
+   * `seedRascunhoProntoShopee`. Only the publish test opens it, so its
+   * category's reads reach no other test.
+   */
+  const pronto = { produtoId: `${prefix}-pronto`, rascunho: `${prefix}-pronto-rascunho` };
 
   test.beforeAll(async ({ browser }) => {
     // Compiling cold routes can outlast the default 60s hook budget.
@@ -338,7 +511,8 @@ test.describe.serial('Produto Shopee tab e2e — listing state, actions and the 
       // The link seed stamps the conta's `shop_id`, so the contas come first.
       seedShopeeFixtures(prefix, 2)
         .then(() => seedProdutoShopeeVinculado(prefix, conta))
-        .then(() => seedEditorRascunhoShopee(prefix, contaSoRemovido)),
+        .then(() => seedEditorRascunhoShopee(prefix, contaSoRemovido))
+        .then(() => seedRascunhoProntoShopee(prefix, conta)),
       warmRoutes(browser, ['/produtos/__aquecimento__/editar']),
     ]);
   });
@@ -346,6 +520,8 @@ test.describe.serial('Produto Shopee tab e2e — listing state, actions and the 
   test.afterAll(async () => {
     await cleanupProdutoSubcollection(produtoId, 'prodshopee');
     await cleanupProdutoSubcollection(produtoId, 'extraData');
+    await cleanupProdutoSubcollection(pronto.produtoId, 'prodshopee');
+    await cleanupProdutoSubcollection(pronto.produtoId, 'extraData');
     await cleanupByNamePrefix('produtos', prefix);
     await cleanupShopeeFixtures(prefix);
   });
@@ -435,7 +611,7 @@ test.describe.serial('Produto Shopee tab e2e — listing state, actions and the 
     expect(stubs.semStub, 'Shopee routes this spec does not stub').toEqual([]);
   });
 
-  test('edits a draft link with its own buttons and pendências, and offers no Publicar on it', async ({
+  test('edits a draft link with its own buttons and pendências, and keeps its Publicar disabled while they stand', async ({
     page,
   }) => {
     const stubs = await instalarStubsShopee(page, links.kitRemovido);
@@ -470,9 +646,14 @@ test.describe.serial('Produto Shopee tab e2e — listing state, actions and the 
     // for it — the document the publish reads — so no `sem-descricao`.
     await expect(editor.getByText(PENDENCIA_SEM_DESCRICAO)).toHaveCount(0);
 
-    // ⚠️ Still no Publicar on a draft block: the first publish of a draft is
-    // #1911 P11's, which inverts this line.
-    await expect(rascunho.getByRole('button', { name: /Publicar/ })).toHaveCount(0);
+    // The draft block offers its first publish now (#1911 P11 inverted P10's
+    // count-0 pin on purpose): ONE «Publicar», disabled while a pendência
+    // stands — the publish would refuse it. Its gate also asks apps/shopee
+    // nothing for a draft with no category (the `chamadas` below).
+    const publicar = editor.getByRole('button', { name: ROTULO_PUBLICAR, exact: true });
+    await expect(publicar).toBeVisible();
+    await expect(publicar).toBeDisabled();
+    await expect(rascunho.getByRole('button', { name: /Publicar/ })).toHaveCount(1);
     expect(stubs.chamadas).toEqual([]);
     expect(stubs.semStub, 'Shopee routes this spec does not stub').toEqual([]);
   });
@@ -687,6 +868,10 @@ test.describe.serial('Produto Shopee tab e2e — listing state, actions and the 
     await expect(editor.getByRole('textbox', { name: /^Título/ })).toHaveValue(produtoId);
     await expect(editor.getByText(PENDENCIA_CATEGORIA).first()).toBeVisible();
     await expect(editor.getByText(PENDENCIA_MARCA).first()).toBeVisible();
+    // Nothing exists on the server to publish yet: «Publicar» is disabled, and
+    // says the draft must be saved first.
+    await expect(editor.getByRole('button', { name: ROTULO_PUBLICAR, exact: true })).toBeDisabled();
+    await expect(editor.getByText(FRASE_PUBLICAR_RASCUNHO_NOVO)).toBeVisible();
     // Opening it wrote nothing.
     expect(stubs.chamadas).toEqual([]);
 
@@ -748,6 +933,82 @@ test.describe.serial('Produto Shopee tab e2e — listing state, actions and the 
     await expect(salvarRascunho).toHaveCount(1);
     await expect(painel.getByText(FRASE_RASCUNHO_NOVO)).toHaveCount(0);
     expect(stubs.chamadas).toEqual([]);
+    expect(stubs.semStub, 'Shopee routes this spec does not stub').toEqual([]);
+  });
+
+  test('publishes a ready draft by its link after a confirmation, and routes its refusal to the produto tab that fixes it', async ({
+    page,
+  }) => {
+    const stubs = await instalarStubsShopee(
+      page,
+      links.kitRemovido,
+      rotasDoRascunhoPronto(conta, pronto.rascunho),
+    );
+    await page.goto(`/produtos/${pronto.produtoId}/editar`);
+    const painel = await abrirConta(page, conta);
+
+    const bloco = painel.getByTestId(`shopee-anuncio-${pronto.rascunho}`);
+    const editor = bloco.getByTestId(`${RAIZ_DO_RASCUNHO}${pronto.rascunho}`);
+    // Positive first: saved, clean, a category and «Sem marca» chosen, the
+    // produto's stored Descrição standing in — so «Publicar» acts once the
+    // category's bands are read (the stubbed `taxonomia/limites`).
+    const publicar = editor.getByRole('button', { name: ROTULO_PUBLICAR, exact: true });
+    await expect(publicar).toBeEnabled({ timeout: 30_000 });
+    await expect(editor.getByText(PENDENCIA_CATEGORIA)).toHaveCount(0);
+    await expect(editor.getByText(PENDENCIA_MARCA)).toHaveCount(0);
+    await expect(editor.getByText(PENDENCIA_SEM_DESCRICAO)).toHaveCount(0);
+
+    await publicar.click();
+    const dialogo = page.getByRole('dialog', { name: TITULO_PUBLICAR });
+    await expect(dialogo).toBeVisible();
+    await expect(dialogo.getByText(aberturaDaConfirmacao(conta))).toBeVisible();
+    const pausado = dialogo.getByRole('checkbox', { name: ROTULO_CRIAR_PAUSADO });
+    await expect(pausado).toBeVisible();
+    await expect(pausado).not.toBeChecked();
+    // The conta holds nothing else of this produto — the draft being published
+    // never counts as its own "second listing" — so no duplicate warning.
+    await expect(dialogo.getByText(AVISO_SEGUNDO_ANUNCIO_NA_PUBLICACAO)).toHaveCount(0);
+    // A cancel sends nothing.
+    await dialogo.getByRole('button', { name: 'Cancelar' }).click();
+    await expect(dialogo).toHaveCount(0);
+    expect(escritas(stubs)).toEqual([]);
+
+    await publicar.click();
+    await expect(dialogo).toBeVisible();
+    // Nothing leaves the browser before the operator confirms.
+    expect(escritas(stubs)).toEqual([]);
+    await dialogo.getByRole('button', { name: ROTULO_PUBLICAR, exact: true }).click();
+
+    // By its link ALONE: never a `categoryId` (the draft carries its own), no
+    // `status` («Criar pausado» left unticked) and no confirmation flag nobody
+    // gave.
+    await expect
+      .poll(() => escritas(stubs), { timeout: 30_000 })
+      .toEqual([
+        {
+          metodo: 'POST',
+          rota: 'publicar',
+          corpo: { integracaoId: conta, produtoId: pronto.produtoId, linkDocId: pronto.rascunho },
+        },
+      ]);
+
+    // A refusal decided before any Shopee write is DEFINITE: its row, never the
+    // uncertain create's wording.
+    const desfecho = painel.getByTestId(`shopee-desfecho-${pronto.rascunho}`);
+    await expect(desfecho.getByText(TITULO_PUBLICACAO_BLOQUEADA)).toBeVisible({ timeout: 30_000 });
+    const linha = desfecho.getByTestId(`shopee-problema-${pronto.rascunho}-0`);
+    await expect(linha.getByText(MENSAGEM_SEM_PESO)).toBeVisible();
+    await expect(desfecho.getByText(TITULO_ANUNCIO_INCERTO)).toHaveCount(0);
+    await expect(desfecho.getByText(/falhou/i)).toHaveCount(0);
+
+    // Campo `weight` is fixed in the produto's own field: the row's button opens
+    // the produto tab holding it.
+    await linha.getByRole('button', { name: ROTULO_ABRIR_SECAO_DO_PESO, exact: true }).click();
+    await expect(page.getByRole('tab', { name: SECAO_DO_PESO, exact: true })).toHaveAttribute(
+      'aria-selected',
+      'true',
+      { timeout: 30_000 },
+    );
     expect(stubs.semStub, 'Shopee routes this spec does not stub').toEqual([]);
   });
 });

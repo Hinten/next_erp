@@ -2,8 +2,13 @@
  * The produto's Shopee tab — the listing DRAFT's state model (#1911, P10): the
  * entry a block edits, what is DIRTY, what each of the three draft routes is
  * SENT, what each of their refusals MEANS, and what a draft block may do right
- * now. The tab (`app/(app)/produtos/_components/shopee/`) renders with these;
- * the copy they point at is `./anuncioProduto.ts`'s.
+ * now. P11 adds its PUBLICAR: when it acts ({@link publicacaoDoRascunhoShopee}),
+ * what it sends ({@link corpoPublicarRascunhoShopee}), what a failure means
+ * ({@link falhaDaPublicacaoDoRascunhoShopee}), and what a refusal row offers —
+ * its Seller-Centre exits ({@link saidasDoProblemaShopee}) and the surface its
+ * `campo` routes to ({@link superficieDoCampoShopee}). The tab
+ * (`app/(app)/produtos/_components/shopee/`) renders with these; the copy they
+ * point at is `./anuncioProduto.ts`'s.
  *
  * ⚠️ PURE: no React, no Firestore read or write, and NO CLOCK — every instant
  * is a parameter. The tab reads `Date.now()` and reads it
@@ -61,6 +66,7 @@
 import {
   CAMPO_RASCUNHO_SHOPEE,
   MOTIVO_RASCUNHO_INVALIDO_SHOPEE,
+  TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE,
   camposDaBaseDoRascunhoShopee,
   camposDoRascunhoShopee,
   conteudoRascunhoShopeeSchema,
@@ -69,13 +75,16 @@ import {
   marcaParaRascunhoShopee,
   mesmoValorDoRascunhoShopee,
   mesmoValorGravadoDoRascunhoShopee,
+  pendenciasDoRascunhoShopee,
   vinculosQueExigemConfirmacaoShopee,
+  type ArgsPendenciasRascunhoShopee,
   type CampoRascunhoShopee,
   type CamposRascunhoShopee,
   type ConflitoRascunhoShopee,
   type EstadoPublicacaoRascunhoShopee,
   type MarcaDaContaShopee,
   type MarcaRascunhoShopee,
+  type PendenciaRascunhoShopee,
   type VinculoConflitanteShopee,
 } from '@delfrance/schemas';
 
@@ -83,8 +92,30 @@ import { newDocId } from '@/lib/data/newDocId';
 import {
   FRASE_CATEGORIA_TRAVADA_SHOPEE,
   FRASE_CONTA_NAO_ENCONTRADA_SHOPEE,
+  FRASE_CORRIGIR_NO_SELLER_CENTRE_SHOPEE,
   FRASE_DESCARTE_EM_CONFLITO_SHOPEE,
+  FRASE_LIMITE_NA_PUBLICACAO_DO_RASCUNHO_SHOPEE,
+  FRASE_MARCA_PODE_NAO_VALER_SHOPEE,
   FRASE_PRODUTO_INEXISTENTE_SHOPEE,
+  FRASE_PUBLICACAO_CONTENCAO_SHOPEE,
+  FRASE_PUBLICACAO_CRIACAO_INCERTA_SEM_JANELA_SHOPEE,
+  FRASE_PUBLICAR_COM_ALTERACOES_SHOPEE,
+  FRASE_PUBLICAR_PRODUTO_NAO_SALVO_SHOPEE,
+  FRASE_PUBLICAR_RASCUNHO_NOVO_SHOPEE,
+  FRASE_PUBLICAR_SEM_FAIXAS_SHOPEE,
+  FRASE_RASCUNHO_INEXISTENTE_NA_PUBLICACAO_SHOPEE,
+  MOTIVO_ANUNCIO_SHOPEE,
+  ROTULO_ABRIR_TABELA_DE_MEDIDAS_SHOPEE,
+  ROTULO_ABRIR_VARIACOES_SHOPEE,
+  ROTULO_CAMPO_RASCUNHO_SHOPEE,
+  ROTULO_DESCARTAR_ANUNCIO_DA_TENTATIVA_SHOPEE,
+  ROTULO_PUBLICAR_ATESTANDO_SEM_SKU_SHOPEE,
+  ROTULO_PUBLICAR_SEGUNDO_DE_PROPOSITO_SHOPEE,
+  avisoDoDescarteComAnuncioSemVinculoShopee,
+  fraseDaPublicacaoDoRascunhoEmAndamentoShopee,
+  fraseDaPublicacaoExpiradaShopee,
+  fraseDaPublicacaoInterrompidaShopee,
+  rotuloDaPublicacaoQueAdotaShopee,
   FRASE_RASCUNHO_AGUARDANDO_SERVIDOR_SHOPEE,
   FRASE_RASCUNHO_CARREGANDO_SHOPEE,
   FRASE_RASCUNHO_DE_KIT_VIRTUAL_SHOPEE,
@@ -113,9 +144,11 @@ import {
   type CamposDoCorpoRascunhoShopee,
   type CriarRascunhoShopeeInput,
   type DescartarRascunhoShopeeInput,
+  type PublicarShopeeInput,
   type ShopeeClientHttpError,
 } from './client';
 import { CODIGO_FALHA_SHOPEE, descreverFalhaShopee, motivoRascunhoInvalido } from './erros';
+import type { ProblemaShopee } from './wire';
 
 /* -------------------------------------------------------------------------- */
 /*                         The fields this form renders                        */
@@ -743,17 +776,31 @@ export interface ExistentesNaContaShopee {
  * a `novo` one, and one JUST created (`salvo`, its echo not arrived) — a
  * saved entry of a STORED draft always has its document in the snapshot it
  * is tied to, so only a fresh create reaches this.
+ *
+ * `excluirLinkDocId` (#1911 P11) — the draft being PUBLISHED: the question
+ * is then "does publishing it make a second listing", so it is left out of
+ * both halves (the route's reservation excludes it the same way). Its local
+ * drafts still count — the safe direction: one more warning, never one less.
+ * A conta holding only REMOVED listings asks nothing, here as at the route.
  */
 export function segundoAnuncioNaContaShopee(
   links: readonly { readonly id: string; readonly data: Record<string, unknown> }[],
   contaId: string,
   edicoes: Iterable<EdicaoRascunhoShopee>,
+  excluirLinkDocId?: string,
 ): ExistentesNaContaShopee | null {
-  const vinculos = vinculosQueExigemConfirmacaoShopee(links, contaId);
+  const vinculos = vinculosQueExigemConfirmacaoShopee(links, contaId, excluirLinkDocId);
   const ids = new Set(links.map((l) => l.id));
   let locais = 0;
   for (const e of edicoes) {
-    if ((e.novo || e.salvo !== null) && e.contaId === contaId && !ids.has(e.linkDocId)) locais++;
+    if (
+      (e.novo || e.salvo !== null) &&
+      e.contaId === contaId &&
+      !ids.has(e.linkDocId) &&
+      e.linkDocId !== excluirLinkDocId
+    ) {
+      locais++;
+    }
   }
   if (vinculos.length === 0 && locais === 0) return null;
   return {
@@ -798,8 +845,9 @@ function mensagem(texto: string, incerto = false): FalhaDoRascunhoShopee {
  * THE reading of a failed draft call — by the client's error CLASS, then the
  * backend's `code` (never the status alone: one 404 means the produto on a
  * create and the draft on an edit or a discard). The codes the draft routes
- * never answer (`publicacaoExpirada`, `rascunhoContencao` — publish only, P11)
- * fall through to the channel's ladder with the server's own sentence.
+ * never answer (`publicacaoExpirada`, `rascunhoContencao` — publish only, read
+ * by {@link falhaDaPublicacaoDoRascunhoShopee}) fall through to the channel's
+ * ladder with the server's own sentence.
  */
 export function falhaDoRascunhoShopee(
   err: ShopeeClientHttpError | ShopeeClientNetworkError,
@@ -1036,4 +1084,462 @@ export function estadoDoBlocoRascunhoShopee(e: EntradaDoBlocoRascunhoShopee): Bl
     atributosGravados: projecao?.attributes != null && projecao.attributes.length > 0,
     avisos,
   };
+}
+
+/* -------------------------------------------------------------------------- */
+/*                     #1911 P11 — Publicar on a draft                         */
+/* -------------------------------------------------------------------------- */
+
+/** Why a draft's «Publicar» is disabled now — the FIRST reason, in this order. */
+export type ImpedimentoDaPublicacaoShopee =
+  /** The operator may not author (`podeEditar` false): no button at all. */
+  | 'sem-permissao'
+  /** A virtual-kit produto: its first publish is a native kit, never this draft. */
+  | 'kit-virtual'
+  /** A local draft: nothing is stored to publish. */
+  | 'rascunho-novo'
+  /** Just saved: the listener has not brought the stored draft back yet. */
+  | 'aguardando-servidor'
+  /** The draft has unsaved changes (P10's plan): the publish reads the STORED draft. */
+  | 'alteracoes-nao-salvas'
+  /** The reading is `em-andamento`: the publish answers 409 now. */
+  | 'publicacao-em-andamento'
+  /** The links snapshot is a cached copy, or the stored produto's texts are not known yet. */
+  | 'carregando'
+  /** A write of this tab is in flight. */
+  | 'ocupado'
+  /** The produto form has unsaved changes: the publish reads the STORED produto (K2-7). */
+  | 'produto-nao-salvo'
+  /** A pendência the publish would refuse ({@link PublicacaoDoRascunhoShopee.pendencias}). */
+  | 'pendencias'
+  /** The title/description bands are not loaded: a band pendência cannot be seen yet. */
+  | 'faixas-desconhecidas';
+
+/** The facts a draft's Publicar is decided from. */
+export interface EntradaDaPublicacaoDoRascunhoShopee {
+  /** THE block decision at this render ({@link estadoDoBlocoRascunhoShopee}, `nowMs` fresh). */
+  readonly bloco: BlocoRascunhoShopee;
+  /** The same three facts the block was decided from. */
+  readonly podeEditar: boolean;
+  readonly ocupado: boolean;
+  readonly servidorConfirmado: boolean;
+  /** The produto form holds unsaved changes (the page's dirty state). */
+  readonly produtoSujo: boolean;
+  /** The STORED produto `nome` and `extraData/singleton.descricao`, or `null` while either is unknown. */
+  readonly textosDoProduto: Pick<
+    ArgsPendenciasRascunhoShopee,
+    'nomeProduto' | 'descricaoProduto'
+  > | null;
+  /**
+   * The title/description bands — `limitesDoItem(...).limites` for the draft's
+   * category, or the SHOP-WIDE answer (`limitesDoItem` without `categoryId`)
+   * when the draft has none — or `null` while not loaded (or failed).
+   */
+  readonly limites: ArgsPendenciasRascunhoShopee['limites'];
+}
+
+/** Whether a draft's «Publicar» acts now, and why not. */
+export interface PublicacaoDoRascunhoShopee {
+  readonly podePublicar: boolean;
+  /** `null` ⇔ {@link podePublicar}. */
+  readonly impedimento: ImpedimentoDaPublicacaoShopee | null;
+  /**
+   * The pendências the publish would refuse (`pendenciasDoRascunhoShopee`, the
+   * listing assembly's own predicates, over the STORED produto texts) — `[]`
+   * when those texts are unknown or the produto is a virtual kit. ⚠️ Computed
+   * with `limites: null`, the list holds NO band pendência: that is why
+   * unknown bands are an impediment of their own.
+   */
+  readonly pendencias: readonly PendenciaRascunhoShopee[];
+  /**
+   * The sentence under a disabled «Publicar», or `null` when the block already
+   * says why (its notices, the pendências list) or nothing blocks.
+   */
+  readonly aviso: string | null;
+}
+
+/**
+ * THE decision of a draft's «Publicar» (#1911 P11, rev. 2a §D P11):
+ * saved ∧ clean (P10's plan empty, not a local draft) ∧ the produto form clean
+ * ∧ server truth ∧ no pendência ∧ the bands LOADED ∧ the publish reading not
+ * `em-andamento`. `incerta` does NOT block: its publish is a real one — ENSURE
+ * looks the listing up first, then adopts it, refuses (a 422 row), or creates.
+ *
+ * Every input is the schemas' or P10's own reading — the block decision
+ * (`estadoPublicacaoRascunhoShopee` inside it) and `pendenciasDoRascunhoShopee`
+ * — so nothing here re-derives the lock or the pendências (#1369).
+ */
+export function publicacaoDoRascunhoShopee(
+  e: EntradaDaPublicacaoDoRascunhoShopee,
+): PublicacaoDoRascunhoShopee {
+  const { bloco } = e;
+  const pendencias =
+    e.textosDoProduto === null || bloco.kitVirtual
+      ? []
+      : pendenciasDoRascunhoShopee(bloco.campos, { ...e.textosDoProduto, limites: e.limites });
+  const impedido = (
+    impedimento: ImpedimentoDaPublicacaoShopee,
+    aviso: string | null = null,
+  ): PublicacaoDoRascunhoShopee => ({ podePublicar: false, impedimento, pendencias, aviso });
+
+  if (!e.podeEditar) return impedido('sem-permissao');
+  if (bloco.kitVirtual) return impedido('kit-virtual');
+  if (bloco.novo) return impedido('rascunho-novo', FRASE_PUBLICAR_RASCUNHO_NOVO_SHOPEE);
+  if (bloco.impedimento === 'aguardando-servidor') return impedido('aguardando-servidor');
+  if (bloco.sujo) return impedido('alteracoes-nao-salvas', FRASE_PUBLICAR_COM_ALTERACOES_SHOPEE);
+  if (bloco.publicacao.tipo === 'em-andamento') return impedido('publicacao-em-andamento');
+  if (!e.servidorConfirmado || e.textosDoProduto === null) return impedido('carregando');
+  if (e.ocupado) return impedido('ocupado');
+  if (e.produtoSujo) return impedido('produto-nao-salvo', FRASE_PUBLICAR_PRODUTO_NAO_SALVO_SHOPEE);
+  if (pendencias.length > 0) return impedido('pendencias');
+  if (e.limites === null) return impedido('faixas-desconhecidas', FRASE_PUBLICAR_SEM_FAIXAS_SHOPEE);
+  return { podePublicar: true, impedimento: null, pendencias, aviso: null };
+}
+
+/**
+ * The publish input of a draft's «Publicar» — by `linkDocId` ALONE (never
+ * `categoryId`: the draft carries its own; never a kit flag). «Criar pausado»
+ * sends `status: 'UNLIST'`; otherwise no status (the route's default for a
+ * create). Each confirmation is sent only once the operator gave it:
+ * `confirmarSegundoAnuncio` after the D15 warning
+ * ({@link segundoAnuncioNaContaShopee} non-empty, or a 409
+ * `rascunhoContaJaTemAnuncio`), `confirmarCriacaoIncerta` after a
+ * Seller-Centre attestation exit ({@link saidasDoProblemaShopee}).
+ */
+export function corpoPublicarRascunhoShopee(args: {
+  readonly contaId: string;
+  readonly produtoId: string;
+  readonly linkDocId: string;
+  readonly pausado: boolean;
+  readonly confirmarSegundoAnuncio?: boolean;
+  readonly confirmarCriacaoIncerta?: boolean;
+}): PublicarShopeeInput {
+  return {
+    integracaoId: args.contaId,
+    produtoId: args.produtoId,
+    linkDocId: args.linkDocId,
+    ...(args.pausado ? { status: 'UNLIST' as const } : {}),
+    ...(args.confirmarSegundoAnuncio === true ? { confirmarSegundoAnuncio: true as const } : {}),
+    ...(args.confirmarCriacaoIncerta === true ? { confirmarCriacaoIncerta: true as const } : {}),
+  };
+}
+
+/* ---- What a failed draft Publicar means (§C.2) ----------------------------- */
+
+/** A failed draft Publicar, read for the tab — or `null` (the publish's own reading applies). */
+export type FalhaDaPublicacaoDoRascunhoShopee =
+  /**
+   * 409 `rascunhoContaJaTemAnuncio`: the second-listing warning again — the
+   * SAME copy as the confirmation, from `vinculos` ({@link existentesDosVinculosShopee})
+   * — then the identical publish with `confirmarSegundoAnuncio: true` (K1-4).
+   */
+  | { readonly tipo: 'segundo-anuncio'; readonly vinculos: readonly VinculoConflitanteShopee[] }
+  /**
+   * No answer the tab can trust: a network failure, a 2xx it cannot read, a
+   * 5xx without a usable code (App Hosting's 504 is one). NEVER "falhou" — the
+   * publish may still be running or may have created the listing. The tab
+   * shows {@link fraseDaPublicacaoSemRespostaShopee} over the block's CURRENT
+   * reading (`bloco.publicacao`), so the wait follows the snapshot.
+   */
+  | { readonly tipo: 'sem-resposta' }
+  /** A definite answer about the draft: show `mensagem`. */
+  | { readonly tipo: 'mensagem'; readonly mensagem: string };
+
+/**
+ * THE reading of a failed DRAFT Publicar — by the client's error CLASS, then
+ * the backend's `code` (never the status alone: a 404 here is a draft
+ * discarded meanwhile, not a link of another conta). `null` for what the
+ * publish's own reading already handles: the two 422s (`publicacaoBloqueada` /
+ * `publicacaoRecusada` — their rows, worded by `textoDoProblemaShopee` with
+ * the block's link and produto, plus {@link superficieDoCampoShopee} and
+ * {@link saidasDoProblemaShopee}), the conta's quota pause and every other
+ * definite 4xx.
+ */
+export function falhaDaPublicacaoDoRascunhoShopee(
+  err: ShopeeClientHttpError | ShopeeClientNetworkError,
+): FalhaDaPublicacaoDoRascunhoShopee | null {
+  if (err instanceof ShopeeClientNetworkError) return SEM_RESPOSTA;
+  // A SUBCLASS of the HTTP error: read first, or its `code` would be read.
+  if (err instanceof ShopeeClientRespostaInvalidaError) return SEM_RESPOSTA;
+  const { code, detalhes, status } = err;
+  switch (code) {
+    case CODIGO_FALHA_SHOPEE.publicacaoEmAndamento:
+      return {
+        tipo: 'mensagem',
+        mensagem: fraseDaPublicacaoDoRascunhoEmAndamentoShopee(detalhes),
+      };
+    case CODIGO_FALHA_SHOPEE.rascunhoJaPublicado:
+      return { tipo: 'mensagem', mensagem: FRASE_RASCUNHO_JA_PUBLICADO_SHOPEE };
+    case CODIGO_FALHA_SHOPEE.publicacaoExpirada:
+      return { tipo: 'mensagem', mensagem: fraseDaPublicacaoExpiradaShopee(err.message) };
+    case CODIGO_FALHA_SHOPEE.rascunhoContencao:
+      return { tipo: 'mensagem', mensagem: FRASE_PUBLICACAO_CONTENCAO_SHOPEE };
+    case CODIGO_FALHA_SHOPEE.rascunhoCriacaoIncerta:
+      return { tipo: 'mensagem', mensagem: FRASE_PUBLICACAO_CRIACAO_INCERTA_SEM_JANELA_SHOPEE };
+    case CODIGO_FALHA_SHOPEE.rascunhoContaJaTemAnuncio:
+      return { tipo: 'segundo-anuncio', vinculos: detalhes.vinculos ?? [] };
+    case CODIGO_FALHA_SHOPEE.anuncioNaoEncontrado:
+      return { tipo: 'mensagem', mensagem: FRASE_RASCUNHO_INEXISTENTE_NA_PUBLICACAO_SHOPEE };
+    case CODIGO_FALHA_SHOPEE.publicacaoBloqueada:
+    case CODIGO_FALHA_SHOPEE.publicacaoRecusada:
+      return null;
+    case null:
+      // Codeless: a proxy's or the platform's answer (App Hosting's 504), read by status below.
+      break;
+  }
+  if (status === 502 && code !== null) {
+    // Definite (a backend code), but it says nothing of what exists — the
+    // block's reading does.
+    return {
+      tipo: 'mensagem',
+      mensagem:
+        err.kind === 'burst' || err.kind === 'daily'
+          ? FRASE_LIMITE_NA_PUBLICACAO_DO_RASCUNHO_SHOPEE
+          : fraseDaPublicacaoInterrompidaShopee(err.message),
+    };
+  }
+  // Any other 5xx may follow a write the route already made; 501 is a fact
+  // about the deployment, a definite answer.
+  if (status >= 500 && status !== 501) return SEM_RESPOSTA;
+  return null;
+}
+
+const SEM_RESPOSTA: FalhaDaPublicacaoDoRascunhoShopee = { tipo: 'sem-resposta' };
+
+/* ---- The Seller-Centre attestation exits of a refusal row (§C #7, #8) ------ */
+
+/** One exit a refusal row of a DRAFT's Publicar offers. */
+export type SaidaDoProblemaShopee =
+  /**
+   * Publish THIS draft again with `confirmarCriacaoIncerta: true`
+   * ({@link corpoPublicarRascunhoShopee}) — ⚠️ through the SAME «Publicar»
+   * confirmation and gate ({@link publicacaoDoRascunhoShopee}: pendências,
+   * «Criar pausado», D15), never a bare re-send. `adota` = the UNLINKED
+   * candidates the attested publish adopts instead of creating (`[]` ⇒ it
+   * creates).
+   */
+  | {
+      readonly tipo: 'publicar-atestando';
+      readonly rotulo: string;
+      readonly adota: readonly number[];
+    }
+  /**
+   * Discard THIS draft with `confirmarCriacaoIncerta: true`
+   * ({@link corpoDescartarRascunhoShopee} over the held projection). `aviso`:
+   * what stays on Shopee, said before the discard.
+   */
+  | {
+      readonly tipo: 'descartar-atestando';
+      readonly rotulo: string;
+      readonly aviso: string | null;
+    };
+
+/**
+ * The exits a refusal row offers — keyed on the motivo SLUG, exactly
+ * ({@link MOTIVO_ANUNCIO_SHOPEE}; the route honours the attestation for these
+ * two only), so a renamed or merely similar slug gets NONE (the safe direction):
+ *
+ * - `criacao-incerta-sem-sku` ⇒ one: the operator checked that nothing exists;
+ * - `criacao-incerta-ja-vinculada` ⇒ two — (1) discard (the listing IS the
+ *   attempt's), warning about any UNLINKED candidate left on Shopee; (2) the
+ *   attested publish, worded as an ADOPTION when an unlinked candidate is
+ *   there (the attested re-publish adopts it and sends nothing), else as a
+ *   deliberate second listing. Only when the row's `importar` names which
+ *   candidates are linked — without that list, none (fail closed);
+ * - everything else — `criacao-incerta-ambigua` in both shapes, the two
+ *   `busca-*`, the first create's look-up refusals — ⇒ none.
+ *
+ * `ehRascunho` false (a live listing's row) ⇒ none: the flag is a draft's.
+ */
+export function saidasDoProblemaShopee(
+  problema: Pick<ProblemaShopee, 'motivo' | 'acao'>,
+  contexto: { readonly ehRascunho: boolean },
+): readonly SaidaDoProblemaShopee[] {
+  if (!contexto.ehRascunho) return [];
+  const { motivo, acao } = problema;
+  if (motivo === MOTIVO_ANUNCIO_SHOPEE.criacaoIncertaSemSku) {
+    return [
+      { tipo: 'publicar-atestando', rotulo: ROTULO_PUBLICAR_ATESTANDO_SEM_SKU_SHOPEE, adota: [] },
+    ];
+  }
+  if (motivo !== MOTIVO_ANUNCIO_SHOPEE.criacaoIncertaJaVinculada) return [];
+  if (acao?.tipo !== TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.importar || acao.vinculados == null) {
+    return [];
+  }
+  const vinculados = new Set(acao.vinculados.map((v) => v.itemId));
+  const livres = acao.itemIds.filter((id) => !vinculados.has(id));
+  return [
+    {
+      tipo: 'descartar-atestando',
+      rotulo: ROTULO_DESCARTAR_ANUNCIO_DA_TENTATIVA_SHOPEE,
+      aviso: livres.length === 0 ? null : avisoDoDescarteComAnuncioSemVinculoShopee(livres),
+    },
+    {
+      tipo: 'publicar-atestando',
+      rotulo:
+        livres.length === 0
+          ? ROTULO_PUBLICAR_SEGUNDO_DE_PROPOSITO_SHOPEE
+          : rotuloDaPublicacaoQueAdotaShopee(livres),
+      adota: livres,
+    },
+  ];
+}
+
+/* ---- campo → the surface that fixes it (D17, DC §2.9) ---------------------- */
+
+/** A produto FIELD key a refusal row routes to — the ObjectView resolves its section (no tab name is copied). */
+export type CampoDoProdutoShopee =
+  | 'pesoBrutoKg'
+  | 'alturaCm'
+  | 'fotos'
+  | 'sku'
+  | 'gtin'
+  | 'precos'
+  | 'estoques'
+  | 'impostos'
+  | 'crossdocking'
+  | 'extraData';
+
+/** Where the operator fixes what a refusal row's `campo` names. */
+export type SuperficieDoCampoShopee =
+  /** A field of THIS draft's form. `aviso`: a sentence shown with the button (a Shopee brand refusal). */
+  | {
+      readonly tipo: 'rascunho';
+      readonly campo: CampoDoFormularioRascunhoShopee;
+      readonly aviso: string | null;
+    }
+  /** A produto field (`useObjectViewSections().sectionOfField(campo)` → `goToSection`). */
+  | { readonly tipo: 'produto'; readonly campo: CampoDoProdutoShopee }
+  /** The produto's variations (`/variacoes`). */
+  | { readonly tipo: 'variacoes' }
+  /** The size chart (`/medidas`). */
+  | { readonly tipo: 'medidas' }
+  /** A PUBLISHED listing's own content (D8): fixed in Seller Centre — text, no link. */
+  | { readonly tipo: 'seller-centre' };
+
+/** Shopee request roots that are a produto field, on a draft and a listing alike. */
+const CAMPO_DO_PRODUTO_POR_RAIZ: Readonly<Record<string, CampoDoProdutoShopee>> = {
+  logistic_info: 'pesoBrutoKg',
+  weight: 'pesoBrutoKg',
+  dimension: 'alturaCm',
+  image: 'fotos',
+  gtin_code: 'gtin',
+  original_price: 'precos',
+  seller_stock: 'estoques',
+  tax_info: 'impostos',
+  pre_order: 'crossdocking',
+};
+
+/**
+ * Roots fixed in the produto's VARIATIONS. ⚠️ Not `tier_variation_list` — the
+ * native kit's tier (its `opcoes-demais` names a kit option): no surface here
+ * owns it, so it keeps the sentence and gets no button (§H).
+ */
+const RAIZES_DE_VARIACAO: ReadonlySet<string> = new Set([
+  'standardise_tier_variation',
+  'tier_variation',
+  'model_list',
+  'model',
+  'grupoDeVariacoesUid',
+]);
+
+/** The two SKU roots: routed ONLY for the allow-listed motivos ({@link superficieDoCampoShopee}). */
+const RAIZES_DE_SKU: ReadonlySet<string> = new Set(['item_sku', 'sku']);
+
+/**
+ * THE campo → surface map of a refusal row (D17, DC §2.9, rev. 2a #4). The key
+ * is the request path's ROOT — `campo` cut at its first `[` or `.`
+ * (`attribute_list[COLOR]` ⇒ `attribute_list`) — matched EXACTLY: never a
+ * prefix (`item_names` and `tier_variation_list` route nowhere). `null` ⇒ the
+ * row keeps its sentence and gets no button — the safe fallback, also for
+ * `linkDocId`, the kit and link keys (`recriar`, `principal`, `kitNativo`,
+ * `paiId`, `item_id`, `shop`, …) and anything unknown; the row's `acao`
+ * buttons are another matter and stay.
+ *
+ * - `item_name` / `category_id` — the draft's field; a listing's ⇒ Seller Centre.
+ * - `description` — the draft's own text when it has one (`descricaoPropria`),
+ *   else the produto's (`extraData`); a listing with its own text ⇒ Seller Centre.
+ * - `brand` — the draft's Marca, with {@link FRASE_MARCA_PODE_NAO_VALER_SHOPEE}
+ *   EXCEPT for `marca-nao-escolhida` (nothing was rejected: nothing was
+ *   chosen); a listing's ⇒ Seller Centre.
+ * - `attribute_list` — none on a draft until the attribute editor (P13); a
+ *   listing's ⇒ Seller Centre.
+ * - `item_sku` / `sku` — an ALLOW-LIST (§C rule 4): the produto's SKU ONLY for
+ *   `anuncio-existente-de-outro-produto` and an acao-less
+ *   `criacao-incerta-ambigua` (the SKU moved). Every other motivo carrying it
+ *   (the uncertain create's, the look-ups', Shopee's duplicate refusal) — or
+ *   a renamed one — gets none: there the SKU is not the fix.
+ * - weight, dimensions, photos, GTIN, price, stock, taxes, pre-order — the
+ *   produto's field; `size_chart_info` — the size chart; the variation roots —
+ *   the variations.
+ */
+export function superficieDoCampoShopee(
+  problema: Pick<ProblemaShopee, 'campo' | 'motivo' | 'acao'>,
+  contexto: { readonly ehRascunho: boolean; readonly descricaoPropria: boolean },
+): SuperficieDoCampoShopee | null {
+  const { campo } = problema;
+  if (campo === null) return null;
+  const raiz = campo.split(/[[.]/, 1)[0] ?? '';
+  const { ehRascunho } = contexto;
+  const SELLER_CENTRE: SuperficieDoCampoShopee = { tipo: 'seller-centre' };
+  const doRascunho = (
+    c: CampoDoFormularioRascunhoShopee,
+    aviso: string | null = null,
+  ): SuperficieDoCampoShopee => ({ tipo: 'rascunho', campo: c, aviso });
+
+  switch (raiz) {
+    case 'item_name':
+      return ehRascunho ? doRascunho(CAMPO_RASCUNHO_SHOPEE.itemName) : SELLER_CENTRE;
+    case 'category_id':
+      return ehRascunho ? doRascunho(CAMPO_RASCUNHO_SHOPEE.categoryId) : SELLER_CENTRE;
+    case 'description':
+      if (!contexto.descricaoPropria) return { tipo: 'produto', campo: 'extraData' };
+      return ehRascunho ? doRascunho(CAMPO_RASCUNHO_SHOPEE.description) : SELLER_CENTRE;
+    case 'brand':
+      if (!ehRascunho) return SELLER_CENTRE;
+      return doRascunho(
+        CAMPO_RASCUNHO_SHOPEE.marca,
+        problema.motivo === MOTIVO_ANUNCIO_SHOPEE.marcaNaoEscolhida
+          ? null
+          : FRASE_MARCA_PODE_NAO_VALER_SHOPEE,
+      );
+    case 'attribute_list':
+      return ehRascunho ? null : SELLER_CENTRE;
+    case 'size_chart_info':
+      return { tipo: 'medidas' };
+  }
+  if (RAIZES_DE_SKU.has(raiz)) {
+    const permitido =
+      problema.motivo === MOTIVO_ANUNCIO_SHOPEE.anuncioExistenteDeOutroProduto ||
+      (problema.motivo === MOTIVO_ANUNCIO_SHOPEE.criacaoIncertaAmbigua && problema.acao === null);
+    return permitido ? { tipo: 'produto', campo: 'sku' } : null;
+  }
+  if (RAIZES_DE_VARIACAO.has(raiz)) return { tipo: 'variacoes' };
+  const doProduto = Object.hasOwn(CAMPO_DO_PRODUTO_POR_RAIZ, raiz)
+    ? CAMPO_DO_PRODUTO_POR_RAIZ[raiz]
+    : undefined;
+  return doProduto === undefined ? null : { tipo: 'produto', campo: doProduto };
+}
+
+/**
+ * The button (or, for Seller Centre, the line) of a surface. `secaoDoProduto`
+ * is the ObjectView's section of a produto field (`sectionOfField`), `null`
+ * when it is not known.
+ */
+export function rotuloDaSuperficieShopee(
+  s: SuperficieDoCampoShopee,
+  secaoDoProduto: string | null,
+): string {
+  switch (s.tipo) {
+    case 'rascunho':
+      return `Corrigir no rascunho: ${ROTULO_CAMPO_RASCUNHO_SHOPEE[s.campo]}`;
+    case 'produto':
+      return secaoDoProduto === null ? 'Abrir no produto' : `Abrir no produto: ${secaoDoProduto}`;
+    case 'variacoes':
+      return ROTULO_ABRIR_VARIACOES_SHOPEE;
+    case 'medidas':
+      return ROTULO_ABRIR_TABELA_DE_MEDIDAS_SHOPEE;
+    case 'seller-centre':
+      return FRASE_CORRIGIR_NO_SELLER_CENTRE_SHOPEE;
+  }
 }

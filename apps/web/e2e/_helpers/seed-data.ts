@@ -4373,6 +4373,86 @@ export async function seedEditorRascunhoShopee(
 }
 
 /**
+ * Fixture Shopee category of the READY draft {@link seedRascunhoProntoShopee}
+ * seeds (the one the other seeded links carry) — the spec stubs that
+ * category's tree node and bands, and only it.
+ */
+export const SHOPEE_E2E_CATEGORIA = 100087;
+
+/**
+ * A SECOND produto, `${prefix}-pronto`, holding ONE Shopee draft READY to
+ * publish on `integracaoId` — what the produto editor's «Publicar» on a draft
+ * (#1911 P11) needs. Call it AFTER {@link seedProdutoShopeeVinculado} (same
+ * `prefix` and conta): that seed stamps the conta's `shop_id`.
+ *
+ *  - The draft `${prefix}-pronto-rascunho` — `item_id: null`, no publish lock
+ *    (it reads `livre`) — has a category ({@link SHOPEE_E2E_CATEGORIA}),
+ *    «Sem marca» (`brand_id: 0`: a CHOSEN brand, never the `null` of "not
+ *    chosen") and a non-blank title; its description is `null`, so the
+ *    produto's STORED Descrição (seeded here, through the schema) stands in.
+ *    So it has no pendência once its category's bands are read — and those
+ *    are a request to apps/shopee, which the spec stubs for that test alone.
+ *  - Why a produto of its OWN: the Shopee tab reads the bands of every draft
+ *    of ITS produto that has a category, on render — so a categorised draft
+ *    beside {@link seedProdutoShopeeVinculado}'s links would add an apps/shopee
+ *    read to every test of the spec. And the conta holds nothing else of this
+ *    produto, so its Publicar confirmation carries no second-listing warning
+ *    (`vinculosQueExigemConfirmacaoShopee`, `@delfrance/schemas`, without the
+ *    draft being published).
+ *  - The produto has NO weight (neither `pesoBrutoKg` nor `pesoLiquidoKg`), so
+ *    the refusal the spec's publish stub answers — `sem-peso` on campo
+ *    `weight` — is the one the real route would give it.
+ *
+ * Every id is deterministic. Teardown: the spec's `prodshopee` and `extraData`
+ * sweeps of THIS produto (`cleanupProdutoSubcollection`) before
+ * `cleanupByNamePrefix('produtos', prefix)` — its `nome` carries the prefix —
+ * since Firestore never cascades.
+ */
+export async function seedRascunhoProntoShopee(
+  prefix: string,
+  integracaoId: string,
+): Promise<{ produtoId: string; rascunho: string }> {
+  const produtoId = `${prefix}-pronto`;
+  const rascunho = `${prefix}-pronto-rascunho`;
+  const produtoRef = db().collection('produtos').doc(produtoId);
+  const batch = db().batch();
+  batch.set(produtoRef, {
+    ultimaModificacao: Date.now(),
+    nome: produtoId,
+    sku: `${prefix.toUpperCase().replace(/-/g, '_')}_SHP_PRONTO`,
+    publicado: true,
+    ehKit: false,
+    ehKitVirtual: false,
+    ofereceFreteGratis: false,
+    permiteVendaSemEstoque: false,
+    fotos: null,
+    videos: null,
+    paiId: null,
+    ordem: null,
+    timestamp: new Date().toISOString(),
+    integracoesComProduto: [integracaoId],
+  });
+  batch.set(
+    produtoRef.collection('prodshopee').doc(rascunho),
+    produtoShopeeLinkSchema.parse({
+      contaProdutoShopeeOuterRef: `documents/integracao/${integracaoId}`,
+      item_name: `${prefix}-pronto`,
+      item_id: null,
+      category_id: SHOPEE_E2E_CATEGORIA,
+      brand_id: 0,
+      original_brand_name: null,
+      description: null,
+    }),
+  );
+  batch.set(
+    produtoRef.collection('extraData').doc(PRODUTO_EXTRA_DATA_DOC_ID),
+    produtoExtraDataSchema.parse({ descricao: DESCRICAO_PRODUTO_SHOPEE_E2E }),
+  );
+  await batch.commit();
+  return { produtoId, rascunho };
+}
+
+/**
  * Delete every doc of one produto subcollection (Firestore never cascades —
  * link docs seeded by `seedVariacaoMlLink` must be swept before the produto).
  */

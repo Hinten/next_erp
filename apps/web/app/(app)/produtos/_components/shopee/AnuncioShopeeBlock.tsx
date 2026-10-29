@@ -2,7 +2,7 @@
 
 import type { Firestore } from 'firebase/firestore';
 import { Alert, Card, Divider, Stack, Text } from '@mantine/core';
-import type { ProdutoShopeeLink } from '@delfrance/schemas';
+import { textoUtilizavelShopee, type ProdutoShopeeLink } from '@delfrance/schemas';
 
 import { AcoesAnuncioShopee, type AcoesShopee } from './AcoesAnuncioShopee';
 import type { ContaShopee, RascunhosShopee, TabelaMedidasDoProduto } from './ContaShopeePanel';
@@ -49,6 +49,11 @@ export interface AnuncioShopeeBlockProps {
  * line reads the category the operator is EDITING, not the stored one. A
  * listing that was a draft being edited when it got published says so above
  * its state — the unsaved edits were not applied, and that is never silent.
+ * The outcome panel gets what a draft's «Publicar» answers are read with
+ * (#1911 P11): the produto (for an `importar` row's ids), whether the STORED
+ * link has its own description (where a `description` row routes), the
+ * tab's surface destinations, and — while the link is a draft — its publish
+ * reading and attestation exits (`RascunhosShopee.desfechoDoRascunhoDe`).
  *
  * Every value shown comes from the live link document (or, for the models, a
  * one-shot read): an action calls an apps/shopee route, and the block repaints
@@ -125,9 +130,14 @@ export function AnuncioShopeeBlock({
         {desfecho !== null && (
           <DesfechoAcaoShopee
             contaId={conta.id}
+            produtoId={produtoId}
             linkDocId={linkDocId}
             desfecho={desfecho}
             acoes={acoes}
+            // The STORED link's own text (a draft's Publicar reads the stored draft).
+            descricaoPropria={textoUtilizavelShopee(link.description) !== null}
+            destinosDasSuperficies={rascunhos.destinosDasSuperficies}
+            rascunho={rascunhos.desfechoDoRascunhoDe(linkDocId)}
           />
         )}
         {rascunho !== null ? (
