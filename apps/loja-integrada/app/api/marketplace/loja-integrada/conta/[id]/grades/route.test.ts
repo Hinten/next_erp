@@ -26,7 +26,13 @@ import {
   totalDaCapturaC9,
 } from '@/lib/lojaIntegrada/testing/catalogoLi';
 import { FakeDb, asDb } from '@/lib/lojaIntegrada/testing/fakeDb';
-import { caminhoCredencial, seedConta, seedCredencial } from '@/lib/lojaIntegrada/testing/fixtures';
+import {
+  AGORA_MS,
+  TOKEN_B,
+  caminhoCredencial,
+  seedConta,
+  seedCredencial,
+} from '@/lib/lojaIntegrada/testing/fixtures';
 import {
   ESTRANHO,
   LEITOR,
@@ -189,6 +195,38 @@ describe('GET …/conta/[id]/grades', () => {
       code: CODIGO_ERRO_LI.reconexaoPendente,
     });
     expect(db.ler(caminhoCredencial(CONTA))?.reconexaoPendente).toMatchObject({ status: 401 });
+  });
+
+  it('⚠️ a 401 to a token REPLACED while the list was read ⇒ 409 LI_CREDENCIAL_ALTERADA, nothing parked; a retry reads under the new token', async () => {
+    vi.stubEnv(CHAMADAS_ENV_LI, 'on');
+    let trocado = false;
+    scriptarLoja(() => {
+      if (!trocado) {
+        // An operator saves a new token while the first request is in flight; the store then
+        // refuses the token that request carried.
+        trocado = true;
+        seedCredencial(db, CONTA, { personalToken: TOKEN_B, tokenAtualizadoEmMs: AGORA_MS });
+        return { status: 401, corpo: { erro: 'token' } };
+      }
+      return paginaCatalogoLi('grades', [gradeLi(7)]);
+    });
+
+    const res = await get();
+
+    expect(res.status).toBe(409);
+    expect(erroContaLojaIntegradaSchema.parse(await corpoDe(res))).toMatchObject({
+      code: CODIGO_ERRO_LI.credencialAlterada,
+    });
+    expect(db.ler(caminhoCredencial(CONTA))?.reconexaoPendente).toBeNull();
+    expect(chamadas).toHaveLength(1);
+
+    // The new token is the stored one: a plain retry answers.
+    const depois = await get();
+    expect(depois.status).toBe(200);
+    expect(respostaGradesLiSchema.parse(await corpoDe(depois)).grades.map((g) => g.id)).toEqual([
+      7,
+    ]);
+    expect(chamadas).toHaveLength(2);
   });
 
   it('a 429 ⇒ 503 LI_LIMITE_DE_CHAMADAS', async () => {

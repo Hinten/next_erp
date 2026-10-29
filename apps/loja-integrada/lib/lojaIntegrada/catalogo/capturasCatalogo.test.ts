@@ -50,7 +50,7 @@ import {
   projetarGradesLi,
   projetarMarcasLi,
 } from '@delfrance/schemas';
-import { describe, expect, it } from 'vitest';
+import { type Mock, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
 import {
@@ -182,6 +182,24 @@ function limitesHonrados(lista: ListaCatalogoLi<unknown>, paginas: number): bool
     lista.limites.length === paginas && lista.limites.every((l) => l === LIMITE_PAGINA_CATALOGO_LI)
   );
 }
+
+/**
+ * The replay reaches the store ONLY through the fetch it injects into the client: the global one
+ * throws, and every case asserts it was never called (D17, on top of the setup's kill-switch).
+ */
+let fetchGlobal: Mock<typeof globalThis.fetch>;
+
+beforeEach(() => {
+  fetchGlobal = vi.fn<typeof globalThis.fetch>(() => {
+    throw new Error('the C9 replay never calls the global fetch');
+  });
+  vi.stubGlobal('fetch', fetchGlobal);
+});
+
+afterEach(() => {
+  expect(fetchGlobal).not.toHaveBeenCalled();
+  vi.unstubAllGlobals();
+});
 
 describe('C9 — the corpus', () => {
   it(`holds the ${String(FIXTURES_C9)} catalogue captures, two stores, every one a 200 GET under a Personal Token`, () => {

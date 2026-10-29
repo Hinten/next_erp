@@ -238,6 +238,14 @@ function falhaPorCodigo(err: LojaIntegradaClientHttpError): FalhaCatalogoLi | nu
       );
     case CODIGO_ERRO_LI.contaInativa:
       return falha('Esta conta da Loja Integrada está inativa.', 'orange', false);
+    case CODIGO_ERRO_LI.credencialAlterada:
+      // The store refused the token this read carried, which is no longer the stored one (saved
+      // while the list was read): nothing was parked, and the next read uses the new token.
+      return falha(
+        'O token desta conta acabou de mudar enquanto a lista era lida. Tente de novo.',
+        'yellow',
+        true,
+      );
     case CODIGO_ERRO_LI.estacionamentoEmConflito:
       return falha(
         'A conta está sendo atualizada por outra operação neste momento. Tente de novo em ' +
