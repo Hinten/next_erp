@@ -255,21 +255,43 @@ export interface LinhaDeMarcaShopeeParaGravar {
   readonly data: MarcaShopeeParaGravar;
 }
 
+/** Why a brand of a `taxonomia/marcas` page cannot be registered ({@link motivoRecusaMarcaShopee}). */
+export const motivoRecusaMarcaShopeeSchema = z.enum(['id-invalido', 'sem-nome']);
+export type MotivoRecusaMarcaShopee = z.infer<typeof motivoRecusaMarcaShopeeSchema>;
+export const MOTIVO_RECUSA_MARCA_SHOPEE = {
+  idInvalido: 'id-invalido',
+  semNome: 'sem-nome',
+} as const satisfies Record<string, MotivoRecusaMarcaShopee>;
+
+/**
+ * Why one brand of a `taxonomia/marcas` page cannot be registered, or `null`
+ * when it can — THE registration rule: {@link linhaDeMarcaParaGravarShopee}
+ * applies it, and a surface that words a refusal switches on it instead of
+ * re-deriving it (#1369). The id is checked FIRST, so a bad id with a blank
+ * name is `id-invalido`:
+ * - `id-invalido` — `brandId` not a POSITIVE safe integer; `0` is "Sem marca",
+ *   which the picker always offers and the shortlist never holds;
+ * - `sem-nome` — an `originalBrandName` with no text
+ *   ({@link textoUtilizavelShopee}): a new row never carries `''`, so the name
+ *   a draft takes from it is always one publish can send.
+ */
+export function motivoRecusaMarcaShopee(dto: MarcaDto): MotivoRecusaMarcaShopee | null {
+  if (!Number.isSafeInteger(dto.brandId) || dto.brandId <= 0)
+    return MOTIVO_RECUSA_MARCA_SHOPEE.idInvalido;
+  if (textoUtilizavelShopee(dto.originalBrandName) === null)
+    return MOTIVO_RECUSA_MARCA_SHOPEE.semNome;
+  return null;
+}
+
 /**
  * The row a registration writes for one brand of a `taxonomia/marcas` page,
- * or `null` when that brand cannot be registered:
- * - `brandId` not a POSITIVE safe integer — `0` is "Sem marca", which the
- *   picker always offers and the shortlist never holds;
- * - an `originalBrandName` with no text ({@link textoUtilizavelShopee}) — a new
- *   row never carries `''`, so the name a draft takes from it is always one
- *   publish can send.
+ * or `null` exactly when {@link motivoRecusaMarcaShopee} refuses that brand.
  *
  * Names are kept VERBATIM (Shopee's own spelling, the one publish sends); a
  * blank `displayBrandName` is written `null`.
  */
 export function linhaDeMarcaParaGravarShopee(dto: MarcaDto): LinhaDeMarcaShopeeParaGravar | null {
-  if (!Number.isSafeInteger(dto.brandId) || dto.brandId <= 0) return null;
-  if (textoUtilizavelShopee(dto.originalBrandName) === null) return null;
+  if (motivoRecusaMarcaShopee(dto) !== null) return null;
   return {
     docId: docIdDaMarcaShopee(dto.brandId),
     data: {

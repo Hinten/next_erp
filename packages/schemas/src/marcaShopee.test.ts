@@ -2,11 +2,14 @@ import { describe, expect, it } from 'vitest';
 
 import * as barrel from './index';
 import {
+  MOTIVO_RECUSA_MARCA_SHOPEE,
   docIdDaMarcaShopee,
   linhaDeMarcaParaGravarShopee,
   marcaParaRascunhoShopee,
   marcaShopeeArmazenadaSchema,
   marcasDaContaShopee,
+  motivoRecusaMarcaShopee,
+  motivoRecusaMarcaShopeeSchema,
   type MarcaDaContaShopee,
 } from './marcaShopee';
 import { conteudoRascunhoShopeeSchema } from './produto/collection/shopeeRascunho';
@@ -38,6 +41,8 @@ describe('the barrel exposes THESE objects — one copy', () => {
     expect(barrel.marcaParaRascunhoShopee).toBe(marcaParaRascunhoShopee);
     expect(barrel.linhaDeMarcaParaGravarShopee).toBe(linhaDeMarcaParaGravarShopee);
     expect(barrel.docIdDaMarcaShopee).toBe(docIdDaMarcaShopee);
+    expect(barrel.motivoRecusaMarcaShopee).toBe(motivoRecusaMarcaShopee);
+    expect(barrel.MOTIVO_RECUSA_MARCA_SHOPEE).toBe(MOTIVO_RECUSA_MARCA_SHOPEE);
   });
 
   it('integracao.ts keeps its loose RULES surface — this module did not replace it', () => {
@@ -450,5 +455,51 @@ describe('linhaDeMarcaParaGravarShopee — the row a registration writes', () =>
       brand_id: 4321,
       original_brand_name: 'Marca Exemplo',
     });
+  });
+});
+
+describe('motivoRecusaMarcaShopee — THE registration rule, with its reason', () => {
+  const dto = (brandId: number, originalBrandName: string): MarcaDto => ({
+    brandId,
+    originalBrandName,
+    displayBrandName: null,
+  });
+
+  it('a bad id ⇒ id-invalido, checked BEFORE the name ⟷ NEAR-MISS: a blank name on a good id is sem-nome', () => {
+    expect(motivoRecusaMarcaShopee(dto(-3, 'X'))).toBe(MOTIVO_RECUSA_MARCA_SHOPEE.idInvalido);
+    expect(motivoRecusaMarcaShopee(dto(0, ''))).toBe(MOTIVO_RECUSA_MARCA_SHOPEE.idInvalido);
+    expect(motivoRecusaMarcaShopee(dto(1.5, 'Meia'))).toBe(MOTIVO_RECUSA_MARCA_SHOPEE.idInvalido);
+    expect(motivoRecusaMarcaShopee(dto(2 ** 53, 'Grande'))).toBe(
+      MOTIVO_RECUSA_MARCA_SHOPEE.idInvalido,
+    );
+    expect(motivoRecusaMarcaShopee(dto(5, '  '))).toBe(MOTIVO_RECUSA_MARCA_SHOPEE.semNome);
+    expect(motivoRecusaMarcaShopee(dto(5, ''))).toBe(MOTIVO_RECUSA_MARCA_SHOPEE.semNome);
+  });
+
+  it('NEAR-MISS: an edge-spaced name and brand 1 are registrable (null)', () => {
+    expect(motivoRecusaMarcaShopee(dto(5, ' Nike '))).toBeNull();
+    expect(motivoRecusaMarcaShopee(dto(1, 'Nike'))).toBeNull();
+  });
+
+  it('linhaDeMarcaParaGravarShopee refuses EXACTLY when it gives a reason', () => {
+    const casos = [
+      dto(-3, 'X'),
+      dto(0, ''),
+      dto(0, 'No Brand'),
+      dto(5, ''),
+      dto(5, ' 	 '),
+      dto(5, ' Nike '),
+      dto(Number.MAX_SAFE_INTEGER, 'Grande'),
+      dto(Number.MAX_SAFE_INTEGER + 2, 'Grande demais'),
+      dto(7, 'Nike'),
+    ];
+    for (const c of casos)
+      expect(motivoRecusaMarcaShopee(c) === null).toBe(linhaDeMarcaParaGravarShopee(c) !== null);
+  });
+
+  it('the companion names every reason of the enum, and nothing else', () => {
+    expect(Object.values(MOTIVO_RECUSA_MARCA_SHOPEE).sort()).toEqual(
+      [...motivoRecusaMarcaShopeeSchema.options].sort(),
+    );
   });
 });

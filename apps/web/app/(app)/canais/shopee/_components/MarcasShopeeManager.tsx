@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Badge, Button, Group, Loader, Paper, Stack, Text } from '@mantine/core';
 import { IconPlus } from '@tabler/icons-react';
 import type { Firestore } from 'firebase/firestore';
@@ -10,12 +10,17 @@ import { useObjectViewTransactionDocuments } from '@delfrance/ui';
 import { useMarcasShopee } from '@/lib/shopee/marcas';
 import {
   CAMPO_MARCAS_SHOPEE,
+  FRASE_MARCAS_CARREGANDO_SHOPEE,
   adicionarMarcasShopee,
+  ajustesDasBaselinesMarcasShopee,
+  caminhoDoRegistroMarcaShopee,
   desfazerAdicaoMarcaShopee,
   desfazerRemocaoMarcaShopee,
   lerAlteracoesMarcasShopee,
+  ocupantesDosRegistrosMarcasShopee,
   removerMarcaShopee,
   type AlteracoesMarcasShopee,
+  type OcupanteDoRegistroMarcaShopee,
 } from '@/lib/shopee/marcasDaConta';
 
 import { AdicionarMarcasShopeeModal } from './AdicionarMarcasShopeeModal';
@@ -43,15 +48,25 @@ import { AdicionarMarcasShopeeModal } from './AdicionarMarcasShopeeModal';
  *
  * Each `brandshopee` document gets its own ObjectView baseline, seeded from the
  * first SERVER snapshot that shows it (`fromCache === false`, no pending
- * writes) and never moved by a later emission — the registry refuses a second
- * seed of a path — so a row another operator changed after that is the save's
- * conflict, never silently the new truth. A row that first appears in a LATER
- * server snapshot (another operator registered it) gets its own baseline then
- * — unless it sits at the id of a registration staged HERE, which waits until
- * that registration leaves the stage (see the seeding effect: otherwise the
- * save would overwrite it unguarded). Until the first server snapshot has been
- * read the section is read-only: a removal staged from a cached list would have
- * nothing to be guarded by.
+ * writes). A held ROW is never moved to newer content by a later emission, so
+ * a row another operator changed after that is the save's conflict, never
+ * silently the new truth. A row that first appears in a LATER server snapshot
+ * (another operator registered it) gets its own baseline then — unless it sits
+ * at the id of a registration staged HERE, which waits until that registration
+ * leaves the stage (otherwise the save would overwrite it unguarded).
+ *
+ * What a later server snapshot DOES move is a path's EXISTENCE
+ * (`ajustesDasBaselinesMarcasShopee`, `lib/shopee/marcasDaConta.ts`): a held
+ * row the snapshot no longer lists becomes "absent", and a held "absent" it
+ * lists again becomes its row — each with the exception that keeps a staged
+ * change's conflict. A stale existence is a write `saveRecord` skips without
+ * re-reading it: a re-add of a brand another tab deleted, or a removal of a doc
+ * re-created at a path this tab deleted, would otherwise be dropped in silence
+ * (#1911 batch-B review R1-rule7#1).
+ *
+ * Until the first server snapshot has been read the section is read-only, and
+ * says why: a change staged from a cached list would have nothing to be guarded
+ * by.
  *
  * ## Identity is the integer `brand_id`
  *
@@ -117,33 +132,50 @@ export function MarcasShopeeManager({
   const { alteracoes, invalida } = lerDelta(value);
   const adicionadas = alteracoes?.adicionar ?? [];
   const remocoes = alteracoes?.remover ?? [];
-  // The document ids the STAGED registrations will write (one spelling of it).
-  const idsDasAdicoes = adicionadas.map((d) => docIdDaMarcaShopee(d.brandId)).join('|');
+  // Every path this section may hold a baseline for: listed by a server
+  // snapshot, or written by a staged registration (its commit leaves the row's
+  // baseline even when no snapshot ever listed it). The registry cannot be
+  // enumerated, and a held path a snapshot stops listing must be found again.
+  const conhecidos = useRef(new Set<string>());
 
-  // One baseline per document, from server truth, each path seeded ONCE: a
-  // later emission can only add the baselines of documents it is the first to
-  // show, never move one already held.
+  // The baselines, from server truth (`ajustesDasBaselinesMarcasShopee`): a
+  // path's first row, and its existence as each server snapshot says — never a
+  // held row moved to newer content.
   //
-  // ⚠️ Except a document sitting at the id a STAGED registration will write
-  // (another operator registered the same brand while this one was staged):
-  // it stays unseeded while that registration is staged. A baseline held for
-  // it would guard the registration's `set` with the very row it overwrites —
-  // a silent lost update; unseeded, the save raises the conflict instead.
-  // Once the registration leaves the stage (undone, or dropped by the
-  // conflict's "Recarregar"), the next run seeds it like any other row.
+  // ⚠️ A document at the id a STAGED registration will write (another operator
+  // registered the same brand while this one was staged) stays unseeded while
+  // that registration is staged. A baseline held for it would guard the
+  // registration's `set` with the very row it overwrites — a silent lost
+  // update; unseeded, the save raises the conflict instead. Once the
+  // registration leaves the stage (undone, or dropped by the conflict's
+  // "Recarregar"), the next run seeds it like any other row — hence `value`
+  // in the deps: unstaging a change re-runs this against the latest snapshot.
   const { documentos, fromCache, hasPendingWrites, error } = lista;
   useEffect(() => {
     if (!documents || error || documentos === undefined) return;
+    const delta = lerDelta(value).alteracoes;
+    const caminho = (docId: string) => caminhoDoRegistroMarcaShopee(db, integracaoId, docId);
+    const caminhosAdicionados = new Set(
+      (delta?.adicionar ?? []).map((d) => caminho(docIdDaMarcaShopee(d.brandId))),
+    );
+    const caminhosRemovidos = new Set((delta?.remover ?? []).flatMap((r) => r.docIds.map(caminho)));
+    for (const path of caminhosAdicionados) conhecidos.current.add(path);
     if (fromCache !== false || hasPendingWrites) return;
-    const adiados = new Set(idsDasAdicoes.split('|'));
-    for (const doc of documentos) {
-      if (documents.getBaseline(doc.path) !== undefined) continue;
-      if (adiados.has(doc.id)) continue;
-      documents.seedBaseline(doc.path, { ...doc.data });
+    for (const doc of documentos) conhecidos.current.add(doc.path);
+    const ajustes = ajustesDasBaselinesMarcasShopee({
+      listados: documentos,
+      conhecidos: conhecidos.current,
+      guardada: (path) => documents.getBaseline(path),
+      caminhosAdicionados,
+      caminhosRemovidos,
+    });
+    for (const ajuste of ajustes) {
+      if (ajuste.tipo === 'semear') documents.seedBaseline(ajuste.path, ajuste.data);
+      else documents.rebase(ajuste.path, ajuste.data);
     }
     // The section's "server truth read" mark — nothing is staged at load.
     documents.seedFormField(CAMPO_MARCAS_SHOPEE, null);
-  }, [documents, error, documentos, fromCache, hasPendingWrites, idsDasAdicoes]);
+  }, [db, integracaoId, documents, error, documentos, fromCache, hasPendingWrites, value]);
 
   const semeada =
     documents === null || documents.getFormBaseline(CAMPO_MARCAS_SHOPEE) !== undefined;
@@ -154,9 +186,12 @@ export function MarcasShopeeManager({
   const porRemocao = new Map(remocoes.map((r) => [r.brandId, r]));
   const removidasForaDaLista = remocoes.filter((r) => !porBrandId.has(r.brandId));
 
-  const idsOcupados = useMemo(
-    () => new Set((lista.documentos ?? []).map((d) => d.id)),
-    [lista.documentos],
+  const ocupantes = useMemo(
+    () =>
+      lista.leitura === undefined
+        ? new Map<string, OcupanteDoRegistroMarcaShopee>()
+        : ocupantesDosRegistrosMarcasShopee(lista.leitura, rotuloDaMarcaCadastrada),
+    [lista.leitura],
   );
   const outrosRegistros =
     (lista.leitura?.semMarca.length ?? 0) + (lista.leitura?.ilegiveis.length ?? 0);
@@ -201,6 +236,11 @@ export function MarcasShopeeManager({
             {`Mostrando os primeiros ${String(lista.documentos?.length ?? 0)} registros de marca — pode haver marcas cadastradas que não aparecem aqui.`}
           </Text>
         </Alert>
+      )}
+      {lista.leitura !== undefined && !semeada && !disabled && (
+        <Text size="sm" c="dimmed" data-testid="shopee-marcas-carregando-servidor">
+          {FRASE_MARCAS_CARREGANDO_SHOPEE}
+        </Text>
       )}
       {!podeRemover && (
         <Text size="sm" c="dimmed" data-testid="shopee-marcas-sem-permissao-remover">
@@ -383,7 +423,7 @@ export function MarcasShopeeManager({
           integracaoId={integracaoId}
           cadastradas={new Set(porBrandId.keys())}
           jaSelecionadas={new Set(adicionadas.map((d) => d.brandId))}
-          idsOcupados={idsOcupados}
+          ocupantes={ocupantes}
           onAdicionar={adicionar}
           onFechar={() => setModalAberto(false)}
         />

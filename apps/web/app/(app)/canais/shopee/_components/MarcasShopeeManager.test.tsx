@@ -33,8 +33,30 @@ const h = vi.hoisted(() => ({
 
 vi.mock('@/lib/shopee/marcas', async (importActual) => {
   const actual = await importActual<typeof import('@/lib/shopee/marcas')>();
-  return { ...actual, useMarcasShopee: () => actual.lerMarcasShopee(h.estado) };
+  // One reading per emission, as the real hook memoizes it: a re-render that
+  // is not an emission hands the section the SAME arrays, so an effect that
+  // must re-run on something else (unstaging) cannot ride a new array.
+  const lidas = new WeakMap<object, ReturnType<typeof actual.lerMarcasShopee>>();
+  return {
+    ...actual,
+    useMarcasShopee: () => {
+      const lida = lidas.get(h.estado) ?? actual.lerMarcasShopee(h.estado);
+      lidas.set(h.estado, lida);
+      return lida;
+    },
+  };
 });
+
+// The handle's ref is a path here: the section keys a staged change's baseline
+// by it, and the test's `{}` database could not build a real one.
+vi.mock('@/lib/data/marcaShopeeCollection', () => ({
+  marcaShopeeCollection: {
+    docRef: (_db: unknown, ctx: { integracaoId: string }, id: string) => ({
+      path: `integracao/${ctx.integracaoId}/brandshopee/${id}`,
+      id,
+    }),
+  },
+}));
 
 vi.mock('./AdicionarMarcasShopeeModal', () => ({
   AdicionarMarcasShopeeModal: (props: AdicionarMarcasShopeeModalProps) => {
@@ -56,6 +78,8 @@ const { MarcasShopeeManager } = await import('./MarcasShopeeManager');
 const { CAMPO_MARCAS_SHOPEE } = await import('@/lib/shopee/marcasDaConta');
 
 const CONTA = 'int-1';
+/** ONE database, as the app's singleton is: a new object per render would re-run every effect. */
+const DB = {} as Firestore;
 const caminho = (id: string) => `integracao/${CONTA}/brandshopee/${id}`;
 const linha = (id: string, data: Record<string, unknown>): Linha => ({
   id,
@@ -110,7 +134,7 @@ function Host(props: {
   const [value, setValue] = useState<unknown>(props.inicial);
   const manager = (
     <MarcasShopeeManager
-      db={{} as Firestore}
+      db={DB}
       integracaoId={CONTA}
       value={value}
       onChange={(v) => {
@@ -329,7 +353,7 @@ describe('staged registrations', () => {
     displayBrandName: null,
   };
 
-  it('the modal is handed the listed ids, EVERY doc id (unreadable and «Sem marca» included) and the staged adds', () => {
+  it('the modal is handed the listed ids, EVERY doc id (unreadable and «Sem marca» included) with its occupant, and the staged adds', () => {
     emitir([
       ...linhasPadrao(),
       linha(ID_ILEGIVEL, legado('123', 'Texto')),
@@ -340,9 +364,15 @@ describe('staged registrations', () => {
     expect(h.modal).not.toBeNull();
     expect([...h.modal!.cadastradas].sort((a, b) => a - b)).toEqual([7, 1001, 1002]);
     expect([...h.modal!.jaSelecionadas]).toEqual([2001]);
-    expect([...h.modal!.idsOcupados].sort()).toEqual(
-      [ID_NIKE, ID_ADIDAS_1, ID_ADIDAS_2, ID_SEM_NOME, ID_ILEGIVEL, ID_SEM_MARCA].sort(),
-    );
+    expect(Object.fromEntries(h.modal!.ocupantes)).toEqual({
+      [ID_NIKE]: { tipo: 'marca', brandId: 1001, rotulo: 'Nike · id 1001' },
+      // The label the section's row shows, so a refusal names a row on screen.
+      [ID_ADIDAS_1]: { tipo: 'marca', brandId: 1002, rotulo: 'Adidas · id 1002 (2 registros)' },
+      [ID_ADIDAS_2]: { tipo: 'marca', brandId: 1002, rotulo: 'Adidas · id 1002 (2 registros)' },
+      [ID_SEM_NOME]: { tipo: 'marca', brandId: 7, rotulo: 'Marca sem nome (id 7)' },
+      [ID_ILEGIVEL]: { tipo: 'ilegivel' },
+      [ID_SEM_MARCA]: { tipo: 'sem-marca' },
+    });
   });
 
   it('an add from the modal is staged on top as «Nova», closes the modal, and Desfazer undoes it to null', () => {
@@ -383,25 +413,48 @@ describe('the save baselines: one per DOCUMENT, from server truth only', () => {
     expect(botao('Adicionar marcas').disabled).toBe(false);
   });
 
-  it('a CACHED emission seeds nothing and leaves the section read-only ⟷ the server one then seeds it', () => {
+  it('a CACHED emission seeds nothing and leaves the section read-only, SAYING why ⟷ the server one then seeds it and the line goes', () => {
     emitir(linhasPadrao(), { fromCache: true });
     const { documents, reemitir } = show();
     expect(documents!.getBaseline(caminho(ID_NIKE))).toBeUndefined();
     expect(documents!.getFormBaseline(CAMPO_MARCAS_SHOPEE)).toBeUndefined();
     expect(botao('Remover', linhaDaMarca(1001)).disabled).toBe(true);
     expect(botao('Adicionar marcas').disabled).toBe(true);
+    expect(screen.getByTestId('shopee-marcas-carregando-servidor').textContent).toBe(
+      'Carregando a versão do servidor… as marcas poderão ser alteradas quando ela chegar.',
+    );
 
     emitir(linhasPadrao());
     act(() => reemitir());
     expect(documents!.getBaseline(caminho(ID_NIKE))).toEqual(legado(1001, 'Nike'));
     expect(botao('Remover', linhaDaMarca(1001)).disabled).toBe(false);
+    expect(screen.queryByTestId('shopee-marcas-carregando-servidor')).toBeNull();
   });
 
-  it('an emission with pending writes seeds nothing', () => {
+  it('an emission with pending writes seeds nothing — and says why', () => {
     emitir(linhasPadrao(), { hasPendingWrites: true });
     const { documents } = show();
     expect(documents!.getBaseline(caminho(ID_NIKE))).toBeUndefined();
     expect(botao('Adicionar marcas').disabled).toBe(true);
+    expect(screen.getByTestId('shopee-marcas-carregando-servidor')).toBeTruthy();
+  });
+
+  it('no «Carregando» line where it is not the reason: a server snapshot, a read-only form, the loader', () => {
+    const { unmount } = show();
+    expect(screen.queryByTestId('shopee-marcas-carregando-servidor')).toBeNull();
+    unmount();
+
+    // Disabled for lack of PERM.integracao.write: server truth would change nothing.
+    emitir(linhasPadrao(), { fromCache: true });
+    const v = show({ disabled: true });
+    expect(botao('Adicionar marcas').disabled).toBe(true);
+    expect(screen.queryByTestId('shopee-marcas-carregando-servidor')).toBeNull();
+    v.unmount();
+
+    // Before any emission the loader stands for it.
+    emitir(undefined);
+    show();
+    expect(screen.queryByTestId('shopee-marcas-carregando-servidor')).toBeNull();
   });
 
   it('a later emission never MOVES a baseline ⟷ a row first shown by it gets its OWN', () => {
@@ -420,11 +473,79 @@ describe('the save baselines: one per DOCUMENT, from server truth only', () => {
     expect(within(linhaDaMarca(3003)).getByText('Puma · id 3003')).toBeTruthy();
   });
 
-  it('a removed doc keeps the baseline it had (its removal by someone else is the save’s conflict)', () => {
+  it('a doc another tab deleted is held ABSENT from then on ⟷ one STAGED for removal keeps its row (that removal’s conflict)', () => {
     const { documents, reemitir } = show();
+    fireEvent.click(botao('Remover', linhaDaMarca(1002)));
+    emitir(linhasPadrao().filter((l) => l.id !== ID_NIKE && l.id !== ID_ADIDAS_1));
+    act(() => reemitir());
+    // Held as its row, a re-add equal to it would be skipped by the save.
+    expect(documents!.getBaseline(caminho(ID_NIKE))).toBeNull();
+    // Cleared, the staged removal's `delete` of it would be skipped instead.
+    expect(documents!.getBaseline(caminho(ID_ADIDAS_1))).toEqual(legado(1002, 'Adidas'));
+    // Undoing that removal hands it back to the rule, on the snapshot already read.
+    fireEvent.click(botao('Desfazer', linhaDaMarca(1002)));
+    expect(ultimaMudanca()).toBeNull();
+    expect(documents!.getBaseline(caminho(ID_ADIDAS_1))).toBeNull();
+  });
+
+  it('a doc held ABSENT that a snapshot shows again gets its row back ⟷ not at the id of a STAGED registration', () => {
+    const PUMA: MarcaDto = { brandId: 3003, originalBrandName: 'Puma', displayBrandName: null };
+    const { documents, reemitir } = show();
+    // Nike's doc deleted (server truth), and Puma's deterministic id held absent
+    // as a committed removal leaves it.
     emitir(linhasPadrao().filter((l) => l.id !== ID_NIKE));
     act(() => reemitir());
+    act(() => documents!.rebase(caminho('3003'), null));
+    expect(documents!.getBaseline(caminho(ID_NIKE))).toBeNull();
+    h.adicionarNoModal = [PUMA];
+    fireEvent.click(botao('Adicionar marcas'));
+    fireEvent.click(botao('stub adicionar'));
+    // Another tab registered both again; this snapshot shows them.
+    const nikeDeNovo = legado(1001, 'NIKE');
+    const pumaDeles = legado(3003, 'PUMA');
+    emitir([
+      ...linhasPadrao().filter((l) => l.id !== ID_NIKE),
+      linha(ID_NIKE, nikeDeNovo),
+      linha('3003', pumaDeles),
+    ]);
+    act(() => reemitir());
+    // Held absent, a removal of it would be skipped as "already gone".
+    expect(documents!.getBaseline(caminho(ID_NIKE))).toEqual(nikeDeNovo);
+    // Their row would guard the staged registration's `set` that overwrites it.
+    expect(documents!.getBaseline(caminho('3003'))).toBeNull();
+  });
+
+  it('a staged registration’s path held as a row no snapshot lists is cleared too ⟷ a listed one is kept', () => {
+    const PUMA: MarcaDto = { brandId: 3003, originalBrandName: 'Puma', displayBrandName: null };
+    const linhaPuma = { brand_id: 3003, original_brand_name: 'Puma', display_brand_name: null };
+    const { documents, reemitir } = show({ inicial: { adicionar: [PUMA], remover: [] } });
+    // A row held for it (as a commit or "Salvar mesmo assim" leaves one), and
+    // the next server snapshot does not list it: `null` fails closed at save.
+    act(() => documents!.rebase(caminho('3003'), linhaPuma));
+    act(() => reemitir());
+    // A re-render is not a snapshot: nothing moves until one arrives.
+    expect(documents!.getBaseline(caminho('3003'))).toEqual(linhaPuma);
+    emitir(linhasPadrao());
+    act(() => reemitir());
+    expect(documents!.getBaseline(caminho('3003'))).toBeNull();
+
+    act(() => documents!.rebase(caminho('3003'), linhaPuma));
+    emitir([...linhasPadrao(), linha('3003', linhaPuma)]);
+    act(() => reemitir());
+    expect(documents!.getBaseline(caminho('3003'))).toEqual(linhaPuma);
+  });
+
+  it('a CACHED emission moves nothing: a deleted doc stays held as its row until server truth says so', () => {
+    const { documents, reemitir } = show();
+    emitir(
+      linhasPadrao().filter((l) => l.id !== ID_NIKE),
+      { fromCache: true },
+    );
+    act(() => reemitir());
     expect(documents!.getBaseline(caminho(ID_NIKE))).toEqual(legado(1001, 'Nike'));
+    emitir(linhasPadrao().filter((l) => l.id !== ID_NIKE));
+    act(() => reemitir());
+    expect(documents!.getBaseline(caminho(ID_NIKE))).toBeNull();
   });
 
   it('a row at the id of a STAGED registration stays unseeded while staged ⟷ the same brand at another id, and the row once unstaged, are seeded', () => {
