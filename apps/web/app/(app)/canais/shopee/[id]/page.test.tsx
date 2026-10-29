@@ -229,6 +229,17 @@ function escritaConcorrente(path: string, raw: Doc | null, { listener = true } =
   else h.servido.set(path, { raw: structuredClone(raw), fromCache: false });
 }
 
+/** The listeners catch up with the store — this page's own commit included — as server truth. */
+function ecoDoListener() {
+  for (const path of [...h.servido.keys()]) {
+    if (path.includes('/brandshopee/') && !h.docs.has(path)) h.servido.delete(path);
+  }
+  for (const [path, raw] of h.docs) {
+    if (path.includes('/brandshopee/'))
+      h.servido.set(path, { raw: structuredClone(raw), fromCache: false });
+  }
+}
+
 let rerenderPage: () => void = () => undefined;
 async function renderPage() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -522,6 +533,21 @@ describe('every write can lose a race: the save conflicts, and writes NOTHING', 
     expect(h.docs.get(marcaPath('1001'))).toEqual(legado(1001, 'Nike'));
   });
 
+  it('a doc staged for removal that the listener SHOWS deleted meanwhile is still the conflict — the brand’s other doc survives', async () => {
+    await renderPage();
+    await abrirAba('Marcas');
+    await clicar('Remover', linhaDaMarca(1002));
+    // Seen here this time: the staged removal still names it, so its seed is
+    // kept — cleared, the `delete` of the gone doc would be skipped and the
+    // save would delete HALF of the brand without a word.
+    escritaConcorrente(marcaPath(ID_ADIDAS_1), null);
+    await act(async () => rerenderPage());
+    await salvar();
+    expect(conflito()).toBeTruthy();
+    expect(commits()).toBe(0);
+    expect(h.docs.get(marcaPath(ID_ADIDAS_2))).toEqual(legado(1002, ''));
+  });
+
   it('a row another operator added after the first seed gets its OWN baseline: removing it is guarded too', async () => {
     await renderPage();
     await abrirAba('Marcas');
@@ -535,5 +561,147 @@ describe('every write can lose a race: the save conflicts, and writes NOTHING', 
     expect(conflito()).toBeTruthy();
     expect(commits()).toBe(0);
     expect(h.docs.get(marcaPath(nova))).toEqual(legado(4004, 'FILA'));
+  });
+});
+
+describe('a doc this page seeded and another tab deleted or re-created: the write lands or conflicts, NEVER dropped', () => {
+  /** A NEW-style row, exactly what this section's registration of {@link PUMA} writes. */
+  const linhaPuma = (display_brand_name: string | null = null): Doc => ({
+    brand_id: 3003,
+    original_brand_name: 'Puma',
+    display_brand_name,
+  });
+
+  /** Puma at its deterministic id, seeded here, then removed in another tab — and seen here. */
+  async function pumaSemeadaERemovidaEmOutraAba(display: string | null = null) {
+    semear(marcaPath('3003'), linhaPuma(display));
+    await renderPage();
+    await abrirAba('Marcas');
+    expect(linhaDaMarca(3003)).toBeTruthy();
+    escritaConcorrente(marcaPath('3003'), null);
+    await act(async () => rerenderPage());
+    expect(screen.queryByTestId('shopee-marca-3003')).toBeNull();
+  }
+
+  it('(A) re-adding it, brand only, WRITES the row — never «Nenhuma alteração» over a dirty form', async () => {
+    await pumaSemeadaERemovidaEmOutraAba();
+    await adicionarPuma();
+    await salvar();
+    expect(conflito()).toBeNull();
+    expect(commits()).toBe(1);
+    expect(escritas).toEqual([`set ${marcaPath('3003')}`]);
+    expect(h.docs.get(marcaPath('3003'))).toEqual(linhaPuma());
+    expect(h.toasts).toEqual(['Salvo.']);
+    expect(saidaBloqueada()).toBe(false);
+  });
+
+  it('(B) …and with a conta field, «Salvar alterações» commits BOTH — never the conta alone before leaving', async () => {
+    await pumaSemeadaERemovidaEmOutraAba();
+    await abrirAba('Dados gerais');
+    await act(async () => {
+      fireEvent.change(screen.getByLabelText('Nome'), { target: { value: 'Loja renomeada' } });
+    });
+    await abrirAba('Marcas');
+    await adicionarPuma();
+    await salvar('Salvar alterações');
+    expect(conflito()).toBeNull();
+    expect(commits()).toBe(1);
+    expect([...escritas].sort()).toEqual(
+      [`set ${marcaPath('3003')}`, `update ${CONTA_PATH}`].sort(),
+    );
+    expect(h.docs.get(marcaPath('3003'))).toEqual(linhaPuma());
+    expect(h.docs.get(CONTA_PATH)?.nome).toBe('Loja renomeada');
+    expect(h.replace).toHaveBeenCalledWith('/canais/shopee');
+  });
+
+  it('near-miss: a stale seed that DIFFERS from the row (a display name) decides nothing — also written', async () => {
+    // Before the fix this twin of (A) was the only one that conflicted: the
+    // outcome hung on whether the stale seed happened to equal the new row.
+    await pumaSemeadaERemovidaEmOutraAba('Puma BR');
+    await adicionarPuma();
+    await salvar();
+    expect(conflito()).toBeNull();
+    expect(escritas).toEqual([`set ${marcaPath('3003')}`]);
+    expect(h.docs.get(marcaPath('3003'))).toEqual(linhaPuma());
+  });
+
+  it('near-miss: their row coming BACK before this save (seen here) is the conflict, never an overwrite', async () => {
+    await pumaSemeadaERemovidaEmOutraAba();
+    await adicionarPuma();
+    const deles = { brand_id: 3003, original_brand_name: 'PUMA', display_brand_name: 'Puma BR' };
+    escritaConcorrente(marcaPath('3003'), deles);
+    await act(async () => rerenderPage());
+    await salvar();
+    expect(conflito()).toBeTruthy();
+    expect(commits()).toBe(0);
+    expect(h.docs.get(marcaPath('3003'))).toEqual(deles);
+  });
+
+  it('«Salvar mesmo assim» before this page sees their row (listener behind) still commits — no loop', async () => {
+    await renderPage();
+    await abrirAba('Marcas');
+    await adicionarPuma();
+    escritaConcorrente(
+      marcaPath('3003'),
+      { brand_id: 3003, original_brand_name: 'PUMA', display_brand_name: 'Puma BR' },
+      { listener: false },
+    );
+    await salvar();
+    expect(conflito()).toBeTruthy();
+    await clicar('Salvar mesmo assim');
+    expect(conflito()).toBeNull();
+    expect(commits()).toBe(1);
+    expect(h.docs.get(marcaPath('3003'))).toEqual(linhaPuma());
+  });
+
+  /** Puma removed HERE by «Salvar e continuar», then registered again by another tab — both seen here. */
+  async function pumaRemovidaAquiERecriadaEmOutraAba() {
+    semear(marcaPath('3003'), linhaPuma());
+    await renderPage();
+    await abrirAba('Marcas');
+    await clicar('Remover', linhaDaMarca(3003));
+    await salvar();
+    expect(escritas).toEqual([`delete ${marcaPath('3003')}`]);
+    ecoDoListener();
+    await act(async () => rerenderPage());
+    expect(screen.queryByTestId('shopee-marca-3003')).toBeNull();
+    escritas.length = 0;
+    escritaConcorrente(marcaPath('3003'), linhaPuma());
+    await act(async () => rerenderPage());
+    expect(linhaDaMarca(3003)).toBeTruthy();
+  }
+
+  it('(C) removing it AGAIN deletes it — the committed delete’s «absent» baseline never skips the new doc', async () => {
+    await pumaRemovidaAquiERecriadaEmOutraAba();
+    await clicar('Remover', linhaDaMarca(3003));
+    await salvar();
+    expect(conflito()).toBeNull();
+    expect(escritas).toEqual([`delete ${marcaPath('3003')}`]);
+    expect(h.docs.has(marcaPath('3003'))).toBe(false);
+  });
+
+  it('(C′) …and with a conta field, «Salvar alterações» deletes it too — never the conta alone', async () => {
+    await pumaRemovidaAquiERecriadaEmOutraAba();
+    await clicar('Remover', linhaDaMarca(3003));
+    await abrirAba('Dados gerais');
+    await act(async () => {
+      fireEvent.change(screen.getByLabelText('Nome'), { target: { value: 'Loja renomeada' } });
+    });
+    await salvar('Salvar alterações');
+    expect(conflito()).toBeNull();
+    expect([...escritas].sort()).toEqual(
+      [`delete ${marcaPath('3003')}`, `update ${CONTA_PATH}`].sort(),
+    );
+    expect(h.docs.has(marcaPath('3003'))).toBe(false);
+  });
+
+  it('near-miss: the re-created doc changed AGAIN before the removal (not seen) is the conflict, nothing deleted', async () => {
+    await pumaRemovidaAquiERecriadaEmOutraAba();
+    await clicar('Remover', linhaDaMarca(3003));
+    escritaConcorrente(marcaPath('3003'), linhaPuma('Puma BR'), { listener: false });
+    await salvar();
+    expect(conflito()).toBeTruthy();
+    expect(commits()).toBe(1);
+    expect(h.docs.get(marcaPath('3003'))).toEqual(linhaPuma('Puma BR'));
   });
 });
