@@ -36,11 +36,13 @@
  *    `@/` modules walked too, type-only imports set aside because they load nothing —
  *    reaches no package client, no credential module, no context loader, no pacer, no
  *    read switch, no network module and no text that calls `fetch`;
- *  - the paid re-check route (`GET …/pedidos/[pedidoId]/pagamento`, step 15) reaches Loja
- *    Integrada only through the context loader, whose first act is the read switch: in its
- *    run-time closure no file calls `fetch`, and only `core/contexto.ts` builds a client;
- *  - neither step-15 route can reach the WRITE context (`core/contextoEscrita.ts`) or name its
- *    factory, with no exemption;
+ *  - every READ route — the paid re-check (`GET …/pedidos/[pedidoId]/pagamento`, step 15) and
+ *    the four catalogue reads (`GET …/conta/[id]/{categorias,marcas,grades,grades/[gradeId]}`,
+ *    step 10) — reaches Loja Integrada only through the context loader, whose first act is the
+ *    read switch: in each one's run-time closure no file calls `fetch`, and only
+ *    `core/contexto.ts` builds a client;
+ *  - none of those routes, nor the label routing route, can reach the WRITE context
+ *    (`core/contextoEscrita.ts`) or name its factory, with no exemption;
  *  - the write chokepoint (the write engine's requirement 9, step 7), matched by FULL path in
  *    non-test source: only `core/contextoEscrita.ts` builds a write client; only
  *    `core/escrita.ts` names a package write operation or a write-client method; the write
@@ -388,21 +390,39 @@ function violacoesDaRotaEtiqueta(entradas: readonly string[], lerBruto: LeitorDe
   return violacoes;
 }
 
-/* ------------------------- the paid re-check route ------------------------- */
+/* ------------------------------ the read routes ----------------------------- */
 
 /** The paid re-check route (step 15): ERP reads, then ONE read through the context loader. */
 const ROTA_PAGAMENTO = 'app/api/marketplace/loja-integrada/pedidos/[pedidoId]/pagamento/route.ts';
 
-/** The one module of that route's closure allowed to build a Loja Integrada client. */
+/** The conta route family's folder: the credential routes and the catalogue reads (step 10). */
+const PASTA_DA_CONTA = 'app/api/marketplace/loja-integrada/conta/[id]';
+
+/** The catalogue core every catalogue route delegates to. */
+const NUCLEO_DO_CATALOGO = 'lib/lojaIntegrada/catalogo/catalogo.ts';
+
+/**
+ * Every route that READS Loja Integrada, with the core it delegates to: each must reach the store
+ * through the context loader only. A new read route joins this list, or its closure goes unwalked.
+ */
+const ROTAS_DE_LEITURA_LI: readonly (readonly [string, string])[] = [
+  [ROTA_PAGAMENTO, 'lib/lojaIntegrada/pedidos/conferenciaPagamento.ts'],
+  [`${PASTA_DA_CONTA}/categorias/route.ts`, NUCLEO_DO_CATALOGO],
+  [`${PASTA_DA_CONTA}/marcas/route.ts`, NUCLEO_DO_CATALOGO],
+  [`${PASTA_DA_CONTA}/grades/route.ts`, NUCLEO_DO_CATALOGO],
+  [`${PASTA_DA_CONTA}/grades/[gradeId]/route.ts`, NUCLEO_DO_CATALOGO],
+];
+
+/** The one module of a read route's closure allowed to build a Loja Integrada client. */
 const CONSTRUTOR_DO_CLIENTE = 'lib/lojaIntegrada/core/contexto.ts';
 
 /**
- * Why the run-time closure from `entradas` lets the paid re-check route reach Loja Integrada other
- * than through the context loader (whose first act is the read switch); empty when it does not.
- * The files are scanned RAW: a `fetch` call anywhere, or a client or a validating GET named outside
+ * Why the run-time closure from `entradas` lets a read route reach Loja Integrada other than
+ * through the context loader (whose first act is the read switch); empty when it does not. The
+ * files are scanned RAW: a `fetch` call anywhere, or a client or a validating GET named outside
  * `core/contexto.ts`, fails — a comment that spells one too.
  */
-function violacoesDaRotaPagamento(entradas: readonly string[], lerBruto: LeitorDeFonte): string[] {
+function violacoesDaRotaDeLeitura(entradas: readonly string[], lerBruto: LeitorDeFonte): string[] {
   const ler: LeitorDeFonte = (caminho) => {
     const texto = lerBruto(caminho);
     return texto === null ? null : semImportacoesDeTipo(texto);
@@ -611,6 +631,8 @@ describe('lib/lojaIntegrada layout', () => {
     expect(fontes.map(rel)).toEqual(
       expect.arrayContaining([
         'avisos/avisos.ts',
+        'catalogo/cache.ts',
+        'catalogo/catalogo.ts',
         'conta/expiracaoSweep.ts',
         'conta/status.ts',
         'conta/validade.ts',
@@ -670,7 +692,8 @@ describe('lib/lojaIntegrada layout', () => {
     expect(fontesDoApp).toEqual(
       expect.arrayContaining([
         'functions/src/index.ts',
-        ROTA_PAGAMENTO,
+        ...ROTAS_DE_LEITURA_LI.map(([rota]) => rota),
+        NUCLEO_DO_CATALOGO,
         MODULO_DO_CONTEXTO_DE_ESCRITA,
         'proxy.ts',
       ]),
@@ -790,24 +813,42 @@ describe('lib/lojaIntegrada layout', () => {
     );
   });
 
-  it('the paid re-check route reaches Loja Integrada only through the context loader: no fetch, and no client or validating GET of its own, in its run-time closure', () => {
-    expect(violacoesDaRotaPagamento([ROTA_PAGAMENTO], lerDoApp)).toEqual([]);
-    // Anti-vacuity: the walk entered the core and the context loader, and the exemption is real.
-    const ler: LeitorDeFonte = (c) => {
-      const texto = lerDoApp(c);
-      return texto === null ? null : semImportacoesDeTipo(texto);
-    };
-    const fecho = fechoDeImportacoes([ROTA_PAGAMENTO], ler, resolverAliasDoApp(ler));
-    expect(fecho.arquivos).toEqual(
-      expect.arrayContaining([
-        ROTA_PAGAMENTO,
-        'lib/lojaIntegrada/pedidos/conferenciaPagamento.ts',
-        CONSTRUTOR_DO_CLIENTE,
-        'lib/auth/verifyCaller.ts',
-      ]),
-    );
-    expect(fecho.externos).toContain('@delfrance/integrations-loja-integrada');
-    expect(lerDoApp(CONSTRUTOR_DO_CLIENTE)).toContain('criarClienteLeituraLi({');
+  it.each(ROTAS_DE_LEITURA_LI)(
+    'the read route %s reaches Loja Integrada only through the context loader: no fetch, and no client or validating GET of its own, in its run-time closure',
+    (rota, nucleo) => {
+      expect(lerDoApp(rota), rota).not.toBeNull();
+      expect(violacoesDaRotaDeLeitura([rota], lerDoApp)).toEqual([]);
+      // Anti-vacuity: the walk entered the core and the context loader, and the exemption is real.
+      const ler: LeitorDeFonte = (c) => {
+        const texto = lerDoApp(c);
+        return texto === null ? null : semImportacoesDeTipo(texto);
+      };
+      const fecho = fechoDeImportacoes([rota], ler, resolverAliasDoApp(ler));
+      expect(fecho.arquivos).toEqual(
+        expect.arrayContaining([rota, nucleo, CONSTRUTOR_DO_CLIENTE, 'lib/auth/verifyCaller.ts']),
+      );
+      expect(fecho.externos).toContain('@delfrance/integrations-loja-integrada');
+      expect(lerDoApp(CONSTRUTOR_DO_CLIENTE)).toContain('criarClienteLeituraLi({');
+    },
+  );
+
+  it('every route file under the conta folder is in ROTAS_DE_LEITURA_LI or one of the credential routes (a new read route cannot skip the walk)', () => {
+    const naPasta = arquivosTs(RAIZ_APP)
+      .map(relApp)
+      .filter((p) => p.startsWith(`${PASTA_DA_CONTA}/`) && p.endsWith('/route.ts'));
+    const listadas = new Set(ROTAS_DE_LEITURA_LI.map(([rota]) => rota));
+    // The status route calls nothing, and the credential routes read the conta uncached and
+    // validate a candidate token: each has its own guard (`prazos.test.ts`), and none goes
+    // through the context loader.
+    const daCredencial = new Set([
+      `${PASTA_DA_CONTA}/route.ts`,
+      `${PASTA_DA_CONTA}/credencial/route.ts`,
+      `${PASTA_DA_CONTA}/credencial/validade/route.ts`,
+    ]);
+    expect(naPasta.filter((p) => !listadas.has(p) && !daCredencial.has(p))).toEqual([]);
+    // Anti-vacuity: the scan found the four catalogue routes and the three credential ones.
+    expect(naPasta.filter((p) => listadas.has(p))).toHaveLength(4);
+    expect(naPasta.filter((p) => daCredencial.has(p))).toHaveLength(3);
   });
 
   it('the write chokepoint: only core/contextoEscrita.ts builds a write client, only core/escrita.ts calls a write operation or method, no source imports a package subpath', () => {
@@ -816,7 +857,12 @@ describe('lib/lojaIntegrada layout', () => {
     expect(violacoes).toEqual([]);
     // Anti-vacuity: the scan reached the owners, and they really hold the calls.
     expect(fontes).toEqual(
-      expect.arrayContaining([ARQUIVO_DO_MOTOR, MODULO_DO_CONTEXTO_DE_ESCRITA, ROTA_PAGAMENTO]),
+      expect.arrayContaining([
+        ARQUIVO_DO_MOTOR,
+        MODULO_DO_CONTEXTO_DE_ESCRITA,
+        ROTA_PAGAMENTO,
+        NUCLEO_DO_CATALOGO,
+      ]),
     );
     const motor = lerDoApp(ARQUIVO_DO_MOTOR) ?? '';
     expect(motor).toContain('atualizarObjetoEnvioLi(');
@@ -1113,25 +1159,25 @@ describe('the guards, on synthetic source', () => {
     ).toEqual(['imports ?lib/lojaIntegrada/sumiu']);
   });
 
-  const PAGAMENTO = 'app/y/route.ts';
-  const daRotaPagamento = (
+  const LEITURA = 'app/y/route.ts';
+  const daRotaDeLeitura = (
     nucleo: string,
     construtor = "import { criarClienteLeituraLi } from '@delfrance/integrations-loja-integrada';\n" +
       'export const c = () => criarClienteLeituraLi({});',
   ) =>
     leitor({
-      [PAGAMENTO]: "import { f } from '@/lib/lojaIntegrada/pedidos/y';",
+      [LEITURA]: "import { f } from '@/lib/lojaIntegrada/pedidos/y';",
       'lib/lojaIntegrada/pedidos/y.ts': nucleo,
       [CONSTRUTOR_DO_CLIENTE]: construtor,
       [MODULO_DO_CONTEXTO_DE_ESCRITA]: 'export const w = 1;',
     });
 
-  it('payment route closure: the context loader building the client, and the package read through it, are accepted', () => {
+  it('read route closure: the context loader building the client, and the package read through it, are accepted', () => {
     const nucleo =
       "import { buscarPedidoLi } from '@delfrance/integrations-loja-integrada';\n" +
       "import { c } from '../core/contexto';\n" +
       'export const f = () => buscarPedidoLi(c(), 1);';
-    expect(violacoesDaRotaPagamento([PAGAMENTO], daRotaPagamento(nucleo))).toEqual([]);
+    expect(violacoesDaRotaDeLeitura([LEITURA], daRotaDeLeitura(nucleo))).toEqual([]);
   });
 
   it.each([
@@ -1146,10 +1192,8 @@ describe('the guards, on synthetic source', () => {
     ['a fetch call', "export const f = () => fetch('https://x.invalid');"],
     ['a network module', "import { request } from 'node:https';"],
     ['an alias that resolves to no file', "import { f } from '@/lib/lojaIntegrada/sumiu';"],
-  ])('payment route closure flags, one module deep, %s', (_caso, nucleo) => {
-    expect(violacoesDaRotaPagamento([PAGAMENTO], daRotaPagamento(nucleo)).length).toBeGreaterThan(
-      0,
-    );
+  ])('read route closure flags, one module deep, %s', (_caso, nucleo) => {
+    expect(violacoesDaRotaDeLeitura([LEITURA], daRotaDeLeitura(nucleo)).length).toBeGreaterThan(0);
   });
 
   it.each([
@@ -1159,18 +1203,16 @@ describe('the guards, on synthetic source', () => {
       "import { criarClienteEscritaLi } from '@delfrance/integrations-loja-integrada';",
     ],
     ['the write context loader, by name', 'export const n = "loadLojaIntegradaContextoEscrita";'],
-  ])('payment route closure flags the write side: %s', (_caso, nucleo) => {
-    expect(violacoesDaRotaPagamento([PAGAMENTO], daRotaPagamento(nucleo)).length).toBeGreaterThan(
-      0,
-    );
+  ])('read route closure flags the write side: %s', (_caso, nucleo) => {
+    expect(violacoesDaRotaDeLeitura([LEITURA], daRotaDeLeitura(nucleo)).length).toBeGreaterThan(0);
   });
 
-  it('payment route closure: the read context loader has NO exemption for the write factory', () => {
+  it('read route closure: the read context loader has NO exemption for the write factory', () => {
     const construtor =
       "import { criarClienteLeituraLi, criarClienteEscritaLi } from '@delfrance/integrations-loja-integrada';\n" +
       'export const c = () => criarClienteLeituraLi({});';
     const nucleo = "import { c } from '../core/contexto';\n" + 'export const f = () => c();';
-    expect(violacoesDaRotaPagamento([PAGAMENTO], daRotaPagamento(nucleo, construtor))).toEqual([
+    expect(violacoesDaRotaDeLeitura([LEITURA], daRotaDeLeitura(nucleo, construtor))).toEqual([
       `${CONSTRUTOR_DO_CLIENTE} names the write context`,
     ]);
   });
