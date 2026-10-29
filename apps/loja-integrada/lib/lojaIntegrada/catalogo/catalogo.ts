@@ -4,9 +4,11 @@
  * brand and grade lists, and one grade with its options, for the web's variation linker (and,
  * from step 11, its product tab).
  *
- * The wire contract (the answers, the projections, `idDoRecursoLi`, `mesmaGradeLi`) is
+ * The wire contract (the answers, the projections and their URI reader, `mesmaGradeLi`) is
  * `packages/schemas/src/catalogoLojaIntegrada.ts`, shared with the web; the reads are the
- * package's `catalogo.ts`. This module only orders them.
+ * package's `catalogo.ts`. This module only orders them, and folds nothing of its own: the one
+ * sameness decision it makes (is this detail the grade asked for?) is `mesmaGradeLi`, applied
+ * verbatim.
  *
  * ## The order — the context FIRST; nothing reaches Loja Integrada before the switch
  *
