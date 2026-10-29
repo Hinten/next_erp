@@ -2138,6 +2138,61 @@ describe('CI lanes always report', () => {
     ).toEqual([]);
   });
 
+  it('native Playwright jobs pin the supported Ubuntu release', () => {
+    // PR #2076 failed before tests when ubuntu-latest moved to 26.04:
+    // Playwright 1.60.0 has no Chromium build for that platform. The staging
+    // lanes use a pinned container; these two jobs install on the host itself.
+    const nativeJobs = {
+      '.github/workflows/e2e-emulator.yml': 'e2e-emulator',
+      '.github/workflows/copilot-setup-steps.yml': 'copilot-setup-steps',
+    };
+    const isPinned = (source, jobId) => {
+      const body = jobBlocks(source)[jobId];
+      if (body === undefined) return false;
+      const lines = stripComments(body)
+        .split('\n')
+        .filter((line) => line.trim());
+      if (lines.length === 0) return false;
+      const indent = Math.min(...lines.map((line) => line.match(/^ */)[0].length));
+      const runner = new RegExp(
+        `^ {${indent}}runs-on: (?:ubuntu-24\\.04|'ubuntu-24\\.04'|"ubuntu-24\\.04")(?: +#.*)? *$`,
+      );
+      return lines.some((line) => runner.test(line));
+    };
+
+    for (const [file, jobId] of Object.entries(nativeJobs)) {
+      expect(
+        isPinned(read(file), jobId),
+        `${file}:${jobId} must pin ubuntu-24.04 while native Chromium uses Playwright 1.60.0`,
+      ).toBe(true);
+
+      // Decoys in comments, another job and a step's env must not supply the
+      // pin. Drive the same scanner with both incompatible runner choices.
+      const fixture = (runner) =>
+        [
+          'jobs:',
+          '  another-job:',
+          '    runs-on: ubuntu-24.04',
+          `  ${jobId}:`,
+          '    # runs-on: ubuntu-24.04',
+          `    runs-on: ${runner}`,
+          '    steps:',
+          '      - run: echo done',
+          '        env:',
+          '          runs-on: ubuntu-24.04',
+        ].join('\n');
+      expect(isPinned(fixture('ubuntu-24.04'), jobId), jobId).toBe(true);
+      for (const runner of ['ubuntu-latest', 'ubuntu-26.04']) {
+        expect(isPinned(fixture(runner), jobId), `${jobId}: ${runner}`).toBe(false);
+      }
+      expect(
+        isPinned(fixture('ubuntu-latest').replace('    runs-on: ubuntu-latest\n', ''), jobId),
+        `${jobId}: missing job-level runner`,
+      ).toBe(false);
+      expect(isPinned('jobs:\n', jobId), `${jobId}: missing job`).toBe(false);
+    }
+  });
+
   // ------------------------------------------------------------------
   // 17. The job-existence cross-check absorbs API lag without forgiving
   //     anything.
