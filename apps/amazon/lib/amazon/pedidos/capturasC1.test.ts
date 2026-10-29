@@ -790,6 +790,32 @@ describe('★ C1 item 2 — the payment', () => {
     }
     expect([...new Set(marcas)].sort()).toEqual(['Elo', 'MasterCard', 'Visa']);
   });
+
+  // The real brands log nothing (the first-sight table above asserts no code but
+  // the UF artifact); this is the other half, on a real order with ONE leaf changed.
+  it('★ an unknown brand in Amazon’s CamelCase style (AmericanExpress) on a real card order ⇒ bandeira 99 AND the bandeira-desconhecida line; the real MasterCard ⇒ neither', async () => {
+    const real = montar();
+    const orderReal = pedidoC1('c1-busca-mesmo-pedido.json');
+    expect(valorEm(orderReal, 'payment', 'paymentExecutions', 0, 'cardBrand')).toBe('MasterCard');
+    configurar(real, orderReal);
+    await real.importar(orderReal);
+    expect(real.h.db.ler(caminhoPagamento(orderReal))).toMatchObject({
+      cartao: { bandeira: BANDEIRA.mastercard },
+    });
+    expect(codigosDeLog(real)).not.toContain('bandeira-desconhecida');
+
+    const ex = montar();
+    const order = pedidoC1('c1-busca-mesmo-pedido.json');
+    const [execucao] = (order.payment as { paymentExecutions: Json[] }).paymentExecutions;
+    if (execucao === undefined) throw new Error('c1-busca-mesmo-pedido sem execução');
+    execucao.cardBrand = 'AmericanExpress';
+    configurar(ex, order);
+    await ex.importar(order);
+    expect(ex.h.db.ler(caminhoPagamento(order))).toMatchObject({
+      cartao: { bandeira: BANDEIRA.outros },
+    });
+    expect(codigosDeLog(ex).filter((c) => c === 'bandeira-desconhecida')).toHaveLength(1);
+  });
 });
 
 /* ======================================================================================= */
@@ -1302,8 +1328,11 @@ describe('★ capture C2 — getInvoiceStatus (Delivery API) for the in-transit 
 
 /* ======================================================================================= */
 
-describe('RESIDUES on real data — owner decisions, pinned so the choice flips exactly these tests', () => {
-  it('RESIDUE (plan §4 item 4, #873): c1-entregue-antigo under FOB is pago with valor 39.44 against a pedido total of 63.48, so the shared reconcile relabels it on any Pagamentos-tab mutation; NEAR-MISS: under CIF nothing is relabelled', async () => {
+describe('Owner calls on real data — the answered ones and the open residues, pinned so a change of mind flips exactly these tests', () => {
+  // Answered 2026-10-29: kept. The NF-e under FOB already leaves the freight out
+  // (vFrete only for modalidade 0), so the fiscal document is right; what remains
+  // is the pedido relabel on a manual Pagamentos-tab edit (#873), accepted.
+  it('OWNER DECISION (FOB kept, #873): c1-entregue-antigo under FOB is pago with valor 39.44 against a pedido total of 63.48, so the shared reconcile relabels it on any Pagamentos-tab mutation; NEAR-MISS: under CIF nothing is relabelled', async () => {
     for (const [modalidade, relabel] of [
       [MODALIDADE_FRETE.fob, true],
       [MODALIDADE_FRETE.cif, false],
@@ -1362,7 +1391,9 @@ describe('RESIDUES on real data — owner decisions, pinned so the choice flips 
     }
   });
 
-  it('RESIDUE (stock): a real return keeps the units REMOVED — devolvido is a removing freight estado — and the only signal is possivel-reembolso, which names no restock', async () => {
+  // Answered 2026-10-29: by design. Returned units re-enter stock only through a
+  // staff member's stock entry for the returned product, never from the import.
+  it('OWNER DECISION (returned units): a real return keeps the units REMOVED — devolvido is a removing freight estado — and the only signal is possivel-reembolso; the units come back through a manual stock entry', async () => {
     expect(ESTADOS_FRETE_REMOVE_ESTOQUE.has(ESTADO_FRETE.devolvido)).toBe(true);
     const ex = montar();
     const antes = antesDaDevolucao();

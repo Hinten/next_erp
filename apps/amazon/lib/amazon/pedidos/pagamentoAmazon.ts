@@ -571,6 +571,7 @@ export function montarEscritaPagamentoAmazon(
   if (vivo) {
     if (entrada.execucoes.length > 1) incidentes.push(INCIDENTE_PEDIDO_AMAZON.pagamentoDividido);
     if (cartao.cnpjRecusado) eventos.push(EVENTO_PEDIDO_AMAZON.cnpjInstituicaoRecusado);
+    if (cartao.bandeiraDesconhecida) eventos.push(EVENTO_PEDIDO_AMAZON.bandeiraDesconhecida);
     if (entrada.valor?.divergente === true) {
       incidentes.push(INCIDENTE_PEDIDO_AMAZON.pagamentoDivergente);
     }

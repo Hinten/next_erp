@@ -95,6 +95,14 @@ export const EVENTO_PEDIDO_AMAZON = {
    */
   cnpjInstituicaoRecusado: 'cnpj-instituicao-recusado',
   /**
+   * (PR 5-c1) A non-blank card brand the shared fold (`bandeiraDoNomeDaMarca`)
+   * does not know: `bandeira` is stored as 99 (outros). The fold's contract
+   * leaves the count to its caller, and Amazon writes brands in CamelCase
+   * (`MasterCard`, capture C1), so a compound one (`AmericanExpress`) lands
+   * here rather than on its code. Never the brand itself.
+   */
+  bandeiraDesconhecida: 'bandeira-desconhecida',
+  /**
    * (PR 7) A package the freight table does not know, or one without a usable
    * reference: no package status moved the freight estado (the aviso
    * `pacote-status-desconhecido` is the signal; this line counts it). Never the token.
