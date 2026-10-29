@@ -15,7 +15,8 @@ jobs:
   # The job name must be exactly `copilot-setup-steps` or Copilot cloud agent
   # will ignore this workflow and fall back to the default environment.
   copilot-setup-steps:
-    runs-on: ubuntu-latest
+    # Playwright 1.60.0 cannot install Chromium on Ubuntu 26.04 (#2076).
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
       contents: read
