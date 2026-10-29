@@ -270,7 +270,7 @@ be imported only behind `./admin`; enforced by
 `packages/config-eslint/rules/ai-root-entry-browser-safe.test.js`, because
 breaking it fails nothing) · `integrations/<channel>` — **eight packages, all
 implemented**: nfe, mercado-livre, mercado-pago, freight-br, whatsapp-cloud-api,
-shopee, loja-integrada (read client only so far), amazon-sp-api (LWA + GET client only). ⚠️ The five throw-only marketplace scaffolds (shopee, magalu,
+shopee, loja-integrada (a GET-only read client and a separate write client), amazon-sp-api (LWA + GET client only). ⚠️ The five throw-only marketplace scaffolds (shopee, magalu,
 amazon-sp-api, facebook, loja-integrada) were **deleted** in #815: they existed
 only to typecheck against `MarketplaceChannel`, and had no importer anywhere.
 **Two of the five stay deleted**; `shopee`, `loja-integrada` and `amazon-sp-api` were **re-created** as

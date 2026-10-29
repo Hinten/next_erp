@@ -52,6 +52,7 @@ import {
   type ShopeeKitTierRequest,
 } from '@delfrance/integrations-shopee';
 import {
+  AGUARDAR_KIT_INCERTO_SHOPEE_MS,
   ESTADO_ANUNCIO_SHOPEE,
   NOME_TIER_KIT_UNICO,
   OPCAO_TIER_KIT_UNICO,
@@ -59,11 +60,13 @@ import {
   TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE,
   chaveReceitaKitErp,
   componentesShopeeDoKit,
+  descreverFaixaShopee,
   ehKitNativoAtivo,
   ehVinculoSubstituido,
   escolherPrincipalDoKit,
   mesmoEnderecoDeComponente,
   problemasDeEstruturaDoKit,
+  textoNaFaixaShopee,
   type AcaoSugeridaPublicacaoShopee,
   type EnderecoShopeeDoComponente,
   type LinhaComponenteKitShopee,
@@ -86,10 +89,15 @@ import {
 import type { FotosResolvidas } from '../anuncios/planoPublicacao';
 import { estadoDoAnuncio } from '../anuncios/statusAnuncio';
 import { skuDoItemShopee } from '../produtos/resolveProduto';
+import { nomeDeTierShopee } from '../produtos/taxonomiaShopeeCore';
 import { faixa, type FaixaDto } from '../taxonomia/limites';
 import { CAP_FOTOS_KIT, STATUS_BUSCA_KIT } from './constantesKit';
-import type { AchadoKitPorSku } from './localizarKitPorSku';
-import type { AvisoKit, ContextoKit, VinculoDaConta } from './resultadoKit';
+import {
+  fraseDaBaseInfoNaoDevolvida,
+  type AchadoKitPorSku,
+  type BuscaDeKitPorSku,
+} from './localizarKitPorSku';
+import type { AvisoKit, ContextoKit, LeituraDeKitNosso, VinculoDaConta } from './resultadoKit';
 
 /* -------------------------------------------------------------------------- */
 /*                                   Types                                    */
@@ -562,11 +570,38 @@ function problemaKitJaExiste(achados: readonly AchadoKitPorSku[]): ProblemaDeBlo
   );
 }
 
-function problemaBuscaIncompleta(): ProblemaDeBloqueio {
+/**
+ * `busca-de-kit-incompleta`, worded for ITS cause (#1911 batch-A review): the
+ * walk stopped short (the sentence step 19 wrote, kept), or Shopee returned no
+ * base row for listed candidates — the shared clause the ordinary arm's
+ * `busca-de-anuncio-existente-incompleta` words alike.
+ */
+function problemaBuscaIncompleta(incompleta: BuscaDeKitPorSku['incompleta']): ProblemaDeBloqueio {
   return bloqueio(
     'sku',
     MOTIVO_PUBLICACAO_BLOQUEADA.buscaDeKitIncompleta,
-    'a busca de kit duplicado não terminou (mais de 10 000 anúncios) — nada foi criado',
+    incompleta?.causa === 'base-info'
+      ? `a busca de kit duplicado não terminou: ${fraseDaBaseInfoNaoDevolvida(incompleta.itemIds)}`
+      : 'a busca de kit duplicado não terminou (mais de 10 000 anúncios) — nada foi criado',
+  );
+}
+
+/**
+ * #2065: OUR linked kits created moments ago that the complete walk did not
+ * list and `get_item_base_info` did not return — a DOUBT, never a deletion
+ * (Shopee's reads may not show a create yet). `busca-de-kit-incompleta`: the
+ * scan could not prove the new kit absent, and nothing was created. No `acao`
+ * — the remedy is to wait and run the same command again.
+ */
+function problemaKitNossoRecente(
+  kits: readonly { readonly itemId: number; readonly linkDocId: string }[],
+): ProblemaDeBloqueio {
+  const ids = kits.map((k) => `${String(k.itemId)} (vínculo ${k.linkDocId})`).join(', ');
+  return bloqueio(
+    'sku',
+    MOTIVO_PUBLICACAO_BLOQUEADA.buscaDeKitIncompleta,
+    `o kit criado há pouco ainda não aparece na Shopee (item ${ids}) — nada foi criado; ` +
+      `aguarde ${String(AGUARDAR_KIT_INCERTO_SHOPEE_MS / 60_000)} minutos e tente de novo`,
   );
 }
 
@@ -873,12 +908,67 @@ export function vinculosNativosDoKit(
 const STATUS_DE_KIT_EXISTENTE: ReadonlySet<string> = new Set<string>(STATUS_BUSCA_KIT);
 
 /**
+ * #2065: was this native-kit link created less than
+ * `AGUARDAR_KIT_INCERTO_SHOPEE_MS` before `agoraMs` — too new for Shopee's
+ * listing reads to be trusted to show its kit?
+ *
+ * The creation stamp is `publicadoEm` (MILLISECONDS): `escreverVinculoDoKit`
+ * writes it right after `add_kit_item`'s 200, and nothing rewrites it ("the
+ * FIRST successful publish only"). A link with no usable stamp is NOT recent —
+ * its age is unknown, and every link a kit CREATE writes carries one; step 9's
+ * import writes none, for a kit it had just read from Shopee. A stamp AHEAD of
+ * `agoraMs` (another instance's clock) is recent: the safe side is the wait.
+ */
+export function vinculoDeKitRecente(raw: Record<string, unknown>, agoraMs: number): boolean {
+  const criadoEmMs = raw.publicadoEm;
+  if (typeof criadoEmMs !== 'number' || !Number.isSafeInteger(criadoEmMs)) return false;
+  return agoraMs - criadoEmMs < AGUARDAR_KIT_INCERTO_SHOPEE_MS;
+}
+
+/** What ONE of OUR linked kits is, for {@link decidirKitNovo} and the applier alike. */
+export type SituacaoDeKitNosso =
+  /** It exists — OURS. */
+  | 'existe'
+  /** Gone: the applier writes `removido` on its link before it acts. */
+  | 'apagado'
+  /** No row, and too new to read as gone: the create arm REFUSES. */
+  | 'recente';
+
+/**
+ * THE one reading of a {@link LeituraDeKitNosso} (#2065) — `decidirKitNovo`
+ * and the applier's `removido` write (`aplicarKit.ts`) both ask it, so the kit
+ * the plan drops is exactly the link the applier marks.
+ *
+ * - **listed** by the complete walk ⇒ `existe`, whatever its row's status: the
+ *   walk's own filter ({@link STATUS_BUSCA_KIT}) is the evidence — a hit is
+ *   OURS on the same terms;
+ * - **not listed**, a base-info status in {@link STATUS_BUSCA_KIT} ⇒ `existe`
+ *   (the list does not show it yet, S2C-02); any other status ⇒ `apagado`;
+ * - **not listed and no row** — TWO signals — ⇒ `apagado` (a kit purged ~90
+ *   days after its delete must not refuse every run), unless the link is
+ *   `recente`: then the absence may be Shopee's lag, never proof ⇒ `recente`.
+ *
+ * `undefined` (no reading) is `null`: nothing is known, nothing is written,
+ * and the kit is not OURS.
+ */
+export function situacaoDoKitNosso(
+  leitura: LeituraDeKitNosso | undefined,
+): SituacaoDeKitNosso | null {
+  if (leitura === undefined) return null;
+  if (leitura.fonte === 'lista') return 'existe';
+  if (leitura.itemStatus !== null) {
+    return STATUS_DE_KIT_EXISTENTE.has(leitura.itemStatus) ? 'existe' : 'apagado';
+  }
+  return leitura.recente ? 'recente' : 'apagado';
+}
+
+/**
  * R-14 / L9 "ensure the new kit exists". Pure.
  *
  * - `nossos` = item_id → linkDocId of K's `ehKitNativoAtivo` links for the conta,
  *   MINUS the recriar target;
- * - `nossosVivos` = the base-info status of each `nossos` id the scan did NOT
- *   list (`null` = deleted/absent);
+ * - `nossosVivos` = what each `nossos` id read as on the complete scan
+ *   ({@link situacaoDoKitNosso} reads it);
  * - `substituidosDeK` = item_id → linkDocId of K's superseded (not removed)
  *   native links for the conta;
  * - `sucessorDe` (optional) = superseded linkDocId → the link that replaced it,
@@ -889,19 +979,25 @@ const STATUS_DE_KIT_EXISTENTE: ReadonlySet<string> = new Set<string>(STATUS_BUSC
  * `vinculo-substituido` for EACH hit on K's own superseded kit (never
  * "importe-o", S3F-09) AND `kit-ja-existe-na-shopee` listing EVERY other hit —
  * never a return on the first hit. OURS = (hits ∩ nossos) ∪ { n ∈ nossos :
- * nossosVivos.get(n) ∈ STATUS_BUSCA_KIT } — the LINK is authoritative: a linked
- * kit the list does not show yet still exists (S2C-02); a `nossos` id whose
- * status read `null` is dropped (the applier writes `removido` on that link).
+ * situacaoDoKitNosso(nossosVivos.get(n)) = existe } — the LINK is
+ * authoritative: a linked kit the complete walk listed exists (#2065), and one
+ * it did not list yet still exists when base info shows it (S2C-02); an
+ * `apagado` one is dropped (the applier writes `removido` on that link). A
+ * `recente` one — not listed, no row, linked moments ago — joins the SAME
+ * refusal as a `busca-de-kit-incompleta` doubt (#2065): dropping it would create
+ * a second kit beside one that may well exist.
  * OURS 0 ⇒ `criar`; 1 ⇒ `completar`; ≥ 2 ⇒ `vinculos-ambiguos`.
  */
 export function decidirKitNovo(
-  busca: { readonly completo: boolean; readonly achados: readonly AchadoKitPorSku[] },
+  busca: Pick<BuscaDeKitPorSku, 'completo' | 'achados' | 'incompleta'>,
   nossos: ReadonlyMap<number, string>,
-  nossosVivos: ReadonlyMap<number, string | null>,
+  nossosVivos: ReadonlyMap<number, LeituraDeKitNosso>,
   substituidosDeK: ReadonlyMap<number, string>,
   sucessorDe: ReadonlyMap<string, string> = new Map<string, string>(),
 ): GarantiaDeKitNovo {
-  if (!busca.completo) return { acao: 'recusar', problemas: [problemaBuscaIncompleta()] };
+  if (!busca.completo) {
+    return { acao: 'recusar', problemas: [problemaBuscaIncompleta(busca.incompleta)] };
+  }
 
   const nossosAchados = new Set<number>();
   const estrangeiros: AchadoKitPorSku[] = [];
@@ -920,14 +1016,16 @@ export function decidirKitNovo(
   }
 
   const ours: { readonly itemId: number; readonly linkDocId: string }[] = [];
+  const recentes: { readonly itemId: number; readonly linkDocId: string }[] = [];
   for (const [itemId, linkDocId] of nossos) {
-    const status = nossosVivos.get(itemId);
-    const existe =
-      nossosAchados.has(itemId) ||
-      (typeof status === 'string' && STATUS_DE_KIT_EXISTENTE.has(status));
-    if (existe) ours.push({ itemId, linkDocId });
+    const situacao = nossosAchados.has(itemId)
+      ? 'existe'
+      : situacaoDoKitNosso(nossosVivos.get(itemId));
+    if (situacao === 'existe') ours.push({ itemId, linkDocId });
+    if (situacao === 'recente') recentes.push({ itemId, linkDocId });
   }
   ours.sort((a, b) => a.itemId - b.itemId);
+  recentes.sort((a, b) => a.itemId - b.itemId);
 
   const problemas: ProblemaDeBloqueio[] = [];
   for (const s of [...proprioSubstituido].sort((a, b) => a.itemId - b.itemId)) {
@@ -942,6 +1040,7 @@ export function decidirKitNovo(
   if (estrangeiros.length > 0) {
     problemas.push(problemaKitJaExiste([...estrangeiros].sort((a, b) => a.itemId - b.itemId)));
   }
+  if (recentes.length > 0) problemas.push(problemaKitNossoRecente(recentes));
   if (ours.length >= 2) problemas.push(problemaVinculosAmbiguos(ours));
   if (problemas.length > 0) return { acao: 'recusar', problemas };
 
@@ -956,10 +1055,39 @@ export function decidirKitNovo(
 
 /** The ONE tier of the kit: its name, one option per child, and the content rows it raised. */
 interface TierDoKit {
+  /** The name AS SENT — the sentinel, or the grupo's name through `nomeDeTierShopee`. */
   readonly nome: string;
   /** Option text per child, in tier order (= `ctx.filhos` order). */
   readonly opcoes: readonly string[];
   readonly problemas: readonly ProblemaDeBloqueio[];
+}
+
+/**
+ * The refusal of ONE tier name or option text the kit AUTHORS, or `null` when
+ * it may be sent (#1911 batch-A, the item arm's `recusaDoNome` shape):
+ * `enviado` is the text AS SENT (already folded), and the shared
+ * `textoNaFaixaShopee` measures exactly that string — blank ⇒ `emBranco`, a
+ * served band it misses ⇒ the length sentence. Never truncated. `banda: null`
+ * (not served, or the band absent) checks no length.
+ */
+function recusaDeTextoDoTier(
+  enviado: string,
+  banda: FaixaDto | null,
+  campo: string,
+  emBranco: string,
+  rotulo: string,
+): ProblemaDeBloqueio | null {
+  const veredito = textoNaFaixaShopee(enviado, banda);
+  if (veredito.estado === 'ok') return null;
+  return bloqueio(
+    campo,
+    MOTIVO_PUBLICACAO_BLOQUEADA.opcoesDemais,
+    veredito.estado === 'ausente'
+      ? emBranco
+      : `${rotulo} tem ${String(veredito.comprimento)} caracteres, fora da faixa da categoria ` +
+          `do componente principal (${descreverFaixaShopee(banda)}) — nunca truncado; encurte o ` +
+          'nome em Variações',
+  );
 }
 
 /**
@@ -969,6 +1097,20 @@ interface TierDoKit {
  * [i]` = its position. A child of a multi-child kit with no variante cannot be
  * placed (`variacao-sem-vinculo`), and two children whose variantes are the same
  * text once trimmed would claim one option (`combinacao-duplicada`).
+ *
+ * #1911 batch-A — every non-sentinel path AUTHORS its tier name from the grupo,
+ * so the name is SENT through `nomeDeTierShopee` (the ONE tier-name fold,
+ * `produtos/taxonomiaShopeeCore.ts`: the ends trimmed, case and inner spaces
+ * kept) and a grupo whose name is blank after it (absent, `''`, whitespace)
+ * refuses `opcoes-demais` — the item arm's motivo for the same miss — before
+ * `add_kit_item`, which is ONE non-idempotent call. When `get_kit_item_limit`
+ * is SERVED, that name and every authored option are measured AS SENT against
+ * `tier_variation_name_length_limit` / `tier_variation_option_length_limit` (the
+ * KIT bands, never `get_item_limit`'s). The sentinel pair is ours and is never
+ * checked. With no grupo at all every child already refuses
+ * `variacao-sem-vinculo`, so no name row is added there. The kit never COMPARES
+ * its tier name — a republish resends the LIVE one verbatim
+ * (`republicarKit.ts`) — so this fold decides what is sent, never a sameness.
  */
 function planejarTier(ctx: ContextoKit): TierDoKit {
   const n = ctx.filhos.length;
@@ -980,7 +1122,23 @@ function planejarTier(ctx: ContextoKit): TierDoKit {
   ) {
     return { nome: NOME_TIER_KIT_UNICO, opcoes: [OPCAO_TIER_KIT_UNICO], problemas: [] };
   }
+  const servidos = limitesServidos(ctx);
+  const bandaDoNome = servidos === null ? null : faixa(servidos.tier_variation_name_length_limit);
+  const bandaDaOpcao =
+    servidos === null ? null : faixa(servidos.tier_variation_option_length_limit);
   const problemas: ProblemaDeBloqueio[] = [];
+  const nome = nomeDeTierShopee(ctx.grupo?.nome);
+  if (ctx.grupo !== null) {
+    const recusa = recusaDeTextoDoTier(
+      nome,
+      bandaDoNome,
+      'tier_variation_list',
+      `o grupo ${ctx.grupo.id} não tem nome, e o tier do kit leva o nome do grupo — dê um ` +
+        'nome a ele em Variações',
+      `o nome do tier "${nome}" (o grupo ${ctx.grupo.id})`,
+    );
+    if (recusa !== null) problemas.push(recusa);
+  }
   const opcoes: string[] = [];
   const donoDaOpcao = new Map<string, string>();
   for (const filho of ctx.filhos) {
@@ -1009,10 +1167,22 @@ function planejarTier(ctx: ContextoKit): TierDoKit {
       );
     } else {
       donoDaOpcao.set(opcao, filho.produtoId);
+      // Measured once per option text (a duplicate is already refused above).
+      // `opcao` is never blank here — `opcaoDoTierKit` read it as absent above —
+      // so only the band can refuse; the blank sentence is the item arm's.
+      const recusa = recusaDeTextoDoTier(
+        opcao,
+        bandaDaOpcao,
+        `filhos.${filho.produtoId}`,
+        `a variante da variação ${filho.produtoId} no grupo ${ctx.grupo.id} não tem nome, e ` +
+          'uma opção do kit leva o nome da variante — dê um nome a ela em Variações',
+        `a opção "${opcao}" da variação ${filho.produtoId}`,
+      );
+      if (recusa !== null) problemas.push(recusa);
     }
     opcoes.push(opcao);
   }
-  return { nome: ctx.grupo?.nome ?? '', opcoes, problemas };
+  return { nome, opcoes, problemas };
 }
 
 /** The component band (`component_count_limit_of_single_model`), only when served. */

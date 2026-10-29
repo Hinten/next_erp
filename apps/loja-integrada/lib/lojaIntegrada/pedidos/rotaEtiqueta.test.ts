@@ -663,7 +663,7 @@ describe('rotearEtiquetaLi — the operator’s choice and the stored override',
   });
 });
 
-describe('rotearEtiquetaLi — the retirada hand-off (B9)', () => {
+describe('rotearEtiquetaLi — the retirada hand-off', () => {
   it('a checked-out pedido routed to a PICKUP target moves to aguardandoRetirada in the same write', async () => {
     semear(db, { pedido: pedido({}, { externalOptionData: RETIRA, estado: 'checkFinalizado' }) });
 

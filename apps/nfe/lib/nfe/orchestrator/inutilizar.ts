@@ -12,6 +12,7 @@ import {
 import {
   ESTADO_ENVI_NFE_MSG,
   ESTADO_NFE,
+  inutilizacaoSeAplica,
   type EstadoNFe,
   type Filial,
   type NotaFiscalEletronica,
@@ -19,7 +20,11 @@ import {
 
 import type { NFeBaseRuntime } from '../runtime';
 import { resolveFilialRuntime } from '../filial-cert';
-import { NFeInutilizacaoAbortedError, NFeOrchestratorError } from './errors';
+import {
+  NFeInutilizacaoAbortedError,
+  NFeInutilizacaoNaoSeAplicaError,
+  NFeOrchestratorError,
+} from './errors';
 
 /** Result of an inutilização de numeração. */
 export interface InutilizarNumeracaoResult {
@@ -52,6 +57,10 @@ export const ESTADOS_NFE_AUTORIZADAS: ReadonlySet<EstadoNFe> = new Set<EstadoNFe
  * (`NfeInutilizacao4`). For números that will never be authorized (gaps).
  *
  * Flow:
+ *   0. **UF guard:** a filial in AC, BA or SP has no Pedido de Inutilização
+ *      from 01/11/2026 (Ajuste SINIEF nº 40/2026, `inutilizacaoSeAplica`) →
+ *      `NFeInutilizacaoNaoSeAplicaError` before the cert, the scan or SEFAZ.
+ *      There the gap simply stays unused; SEFAZ would only answer cStat 998.
  *   1. **Pre-check (consumo indevido guard):** collection-group scan of `nfev4`
  *      in the (série, range) attributable to this filial; if any is already
  *      authorized (aprovada / EPEC / cancelada) → abort with
@@ -92,6 +101,10 @@ export async function inutilizarNumeracao(
     throw new NFeOrchestratorError(`filial '${args.filialId}' not found`);
   }
   const filial = filialSnap.data() as Filial;
+  // 0. Ajuste SINIEF 40/2026: refuse before decrypting the cert or scanning.
+  if (!inutilizacaoSeAplica(filial.sede.estado, Date.now())) {
+    throw new NFeInutilizacaoNaoSeAplicaError(filial.sede.estado);
+  }
   // Inutilização is sent + signed with the filial's own cert (or env fallback).
   const rt = await resolveFilialRuntime(fs, baseRt, args.filialId);
   const cUF = cUFFromUF(filial.sede.estado);

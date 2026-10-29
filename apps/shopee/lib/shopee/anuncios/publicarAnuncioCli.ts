@@ -5,7 +5,12 @@
  * the three kit flags (`--principal`, `--recriar`, `--converter-em-kit`) and the
  * NATIVE-KIT summaries — the dry run's ({@link resumoDoEnsaioDeKit}) and the
  * live result's ({@link resumoDoResultadoKit}), whose `incerto` block prints the
- * exact command to re-run.
+ * exact command to re-run. Since #1911 also `--confirmar-segundo-anuncio` and
+ * the description of a DRAFT's lock refusal ({@link descreverConflitoDeRascunho}),
+ * and — P5 — `--confirmar-criacao-incerta`, the summary of an ordinary
+ * listing's UNCERTAIN first create ({@link resumoDoItemIncerto}, with the exact
+ * command to re-run) and the D15 sentence beside Shopee's
+ * `anuncio-semelhante-existente` refusal.
  *
  * ⚠️ **It lives here rather than in the script because `scripts/` is outside
  * this app's vitest `include`** (`{app,lib,functions}/**\/*.test.ts`), so logic
@@ -20,8 +25,13 @@
  * mapper's attribute helper, the two publish error classes, the shared CLI
  * error describer, the three routes' own doc-id predicate and — step 19 — the
  * kit result module's `incerto` sentence, `../kits/resultadoKit.ts`, which holds
- * types, one constant and one pure renderer); everything from the IO modules is
- * `import type`, which is erased.
+ * types, one constant and one pure renderer) plus `@delfrance/schemas`' draft
+ * codes; everything from the IO modules is `import type`, which is erased.
+ * ⚠️ That includes #1911's `ConflitoDeRascunhoShopeeError`: its home
+ * (`reservaRascunho.ts`) holds the collection handles, and the script imports
+ * THIS module statically, before `--help` returns — so the refusal is
+ * recognised by its `code` (one of `CODIGO_RASCUNHO_SHOPEE`'s, a vocabulary no
+ * Shopee error shares), never by a value import of its class.
  *
  * ## The redaction is an ALLOW-LIST, and that is the whole design
  *
@@ -97,6 +107,7 @@ import {
   type ShopeeItemStatusWritable,
   type ShopeeLogisticsChannel,
 } from '@delfrance/integrations-shopee';
+import { CODIGO_RASCUNHO_SHOPEE } from '@delfrance/schemas';
 
 import type { EnsaioDeKit } from '../kits/publicarKit';
 import {
@@ -110,8 +121,11 @@ import { ArgumentoInvalidoError, descreverErro } from '../pedidos/importarPedido
 import type { VerdictoFolha } from '../taxonomia/categorias';
 import type { AtributosProjetados } from '../taxonomia/dto';
 import { naoDocId } from './corpoPublicacao';
+import type { ResultadoItemIncerto } from './criacaoIncerta';
 import {
   ETAPA_PUBLICACAO,
+  MOTIVO_PROBLEMA_PUBLICACAO,
+  MOTIVO_PUBLICACAO_BLOQUEADA,
   ShopeePublishBlockedError,
   ShopeePublishRejectedError,
   cabecalhoDaRecusa,
@@ -122,6 +136,7 @@ import type { MotivoCanalPulado } from './logisticaPublicacao';
 import { atributosParaPublicar } from './montagemAnuncio';
 import type { OrdemDeRelistagem, PassoPublicacao, PlanoPublicacao } from './planoPublicacao';
 import type { ResultadoPublicacao } from './publicarAnuncio';
+import type { ConflitoDeRascunhoShopeeError } from './reservaRascunho';
 import type {
   FotoTabelaMedidasOmitida,
   MotivoTabelaMedidasOmitida,
@@ -190,12 +205,51 @@ Kit nativo da Shopee (step 19)
   criar dois kits com o mesmo SKU. Se a resposta for INCERTO, espere e rode o
   comando exatamente como ele foi impresso.
 
+Rascunho (#1911)
+  --link <rascunho>   publica um RASCUNHO da aba Shopee: o ERP trava o rascunho
+                      antes de ler o conteúdo, só envia o add_item enquanto a
+                      trava vale, e recusa (sem enviar nada) quando outra
+                      execução está publicando, quando a última tentativa pode
+                      ter criado o anúncio e a busca pelo SKU não decide, ou
+                      quando a conta já tem anúncio ou rascunho deste produto.
+                      Antes do PRIMEIRO add_item do rascunho o ERP procura na
+                      loja um anúncio com o SKU do produto: sem vínculo, importe-o
+                      (importar:anuncio) em vez de criar outro; vinculado a OUTRO
+                      produto, dê a um dos dois um SKU próprio. Nenhuma flag passa
+                      por cima dessa busca.
+  --confirmar-segundo-anuncio
+                      confirma que este rascunho pode virar um SEGUNDO anúncio
+                      do produto nesta conta (a Shopee pode tratar duplicata
+                      como spam). Só vale no --live; nunca passa por cima de
+                      outro vínculo que esteja sendo publicado.
+  --confirmar-criacao-incerta
+                      depois de uma criação INCERTA (o add_item pode ter
+                      criado o anúncio), o ERP procura o anúncio pelo SKU antes
+                      de enviar de novo. Esta flag confirma que você conferiu
+                      no Seller Centre, e só vale em DOIS casos: a tentativa
+                      foi enviada sem SKU (não há busca), ou o anúncio achado
+                      já está vinculado no ERP e é um segundo anúncio feito de
+                      propósito. Nunca pula a busca de um produto com SKU, nem
+                      uma busca ambígua ou incompleta, nem um SKU que mudou
+                      depois da tentativa. Só vale no --live.
+  Sem --link, quando a conta ainda não tem NENHUM vínculo deste produto (nem
+  anúncio, nem rascunho), o --live de um anúncio comum cria primeiro um
+  RASCUNHO (o vínculo onde a trava e a memória de uma criação incerta moram) e
+  publica esse rascunho. Com um anúncio vivo, sem --link ATUALIZA esse anúncio.
+  Se o rascunho criado for recusado antes do envio, ele FICA: conta como
+  vínculo Shopee (bloqueia a exclusão do produto) até ser publicado com
+  --link <rascunho> ou descartado, e a próxima execução sem --link pede o
+  --link dele.
+
 O dry-run continua CHAMANDO a Shopee (get_item_limit, a árvore de categorias,
 get_channel_list e o upload das fotos) e lendo o Firestore — ele não ESCREVE no
 Firestore nem cria anúncio, e isso é estrutural: prepararPublicacao e
 planejarPublicacao não têm escritor nenhum no corpo. As fotos, essas SOBEM: o
 corpo do add_item precisa de image_id de verdade, e cada id fica no cache
 arquivos.externalIds, então o custo é pago UMA vez.
+O dry-run de um anúncio comum NÃO procura anúncio nenhum na loja: a busca por
+SKU antes do primeiro add_item de um rascunho (e a da criação incerta) roda só
+no --live, sob a trava — o resumo do dry-run de uma criação diz isso.
 Num kit nativo o dry-run lê o kit e os componentes, faz a busca de SKU
 duplicado (só ao criar, recriar ou converter) e sobe as fotos só quando o kit
 seria enviado; nunca chama add_kit_item, update_kit_item nem delete_item.
@@ -207,7 +261,10 @@ erro.
 (criar, atualizar, recriar, converter). Um produto FILHO, ou uma opção de kit
 que não vale para este produto, é recusado ali, sem chamar a Shopee: essa
 recusa LANÇA nos dois modos e sai com 1. Um kit INCERTO no --live também sai
-com 1: nada foi gravado, e o comando a repetir é impresso.
+com 1: nada foi gravado, e o comando a repetir é impresso. Uma criação INCERTA
+de anúncio comum no --live também sai com 1: o rascunho guarda a tentativa, e o
+comando a repetir (com --link, e com --status UNLIST e
+--confirmar-segundo-anuncio quando você os passou) é impresso.
 Ver apps/shopee/scripts/README.md.
 `.trim();
 
@@ -235,6 +292,17 @@ export interface ArgsPublicarAnuncio {
   readonly recriar: boolean;
   /** `--converter-em-kit` (L8). Never together with `--recriar`. */
   readonly converterEmKit: boolean;
+  /**
+   * `--confirmar-segundo-anuncio` (#1911, D15): this DRAFT may become a SECOND
+   * listing of the produto on the conta. Read by the `--live` reservation only.
+   */
+  readonly confirmarSegundoAnuncio: boolean;
+  /**
+   * `--confirmar-criacao-incerta` (#1911, D5): the operator checked Seller
+   * Centre after an UNCERTAIN create. Read by the `--live` look-up only, and
+   * honoured for exactly two verdicts (`-sem-sku`, `-ja-vinculada`).
+   */
+  readonly confirmarCriacaoIncerta: boolean;
 }
 
 export type ComandoPublicarAnuncio =
@@ -382,6 +450,8 @@ export function lerArgsPublicar(argv: readonly string[]): ComandoPublicarAnuncio
   let json = false;
   let recriar = false;
   let converterEmKit = false;
+  let confirmarSegundoAnuncio = false;
+  let confirmarCriacaoIncerta = false;
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i] ?? '';
@@ -431,6 +501,12 @@ export function lerArgsPublicar(argv: readonly string[]): ComandoPublicarAnuncio
       case '--converter-em-kit':
         converterEmKit = true;
         break;
+      case '--confirmar-segundo-anuncio':
+        confirmarSegundoAnuncio = true;
+        break;
+      case '--confirmar-criacao-incerta':
+        confirmarCriacaoIncerta = true;
+        break;
       case '--live':
         live = true;
         break;
@@ -477,6 +553,8 @@ export function lerArgsPublicar(argv: readonly string[]): ComandoPublicarAnuncio
       principal: principal ?? null,
       recriar,
       converterEmKit,
+      confirmarSegundoAnuncio,
+      confirmarCriacaoIncerta,
     },
   };
 }
@@ -1071,6 +1149,16 @@ function renderTabelaDeMedidas(t: ResumoTabelaDeMedidasShopee): string[] {
   return linhas;
 }
 
+/**
+ * #1911 P5b: the dry run of a CREATE says the same-SKU look-up did NOT run — it
+ * lives under the draft's lock, which only `--live` takes (and so does ENSURE).
+ * A reader of the dry run must not take "problemas: NENHUM" for "no listing
+ * with this SKU exists".
+ */
+export const LINHA_DA_BUSCA_POR_SKU_NO_ENSAIO =
+  '  busca de SKU na loja .... NÃO rodou: só no --live, sob a trava do rascunho, antes do ' +
+  'add_item (um anúncio da conta com este SKU recusa a criação)';
+
 /** The human rendering of one publish plan — design-P2 §10.3's printout. */
 export function renderResumoPublicacao(r: ResumoPublicacaoShopee): string[] {
   const linhas: string[] = [];
@@ -1103,6 +1191,7 @@ export function renderResumoPublicacao(r: ResumoPublicacaoShopee): string[] {
     }`,
   );
   linhas.push(`  item_sku / gtin_code .... ${txt(r.itemSku)} / ${txt(r.gtinCode)}`);
+  if (r.itemId === null) linhas.push(LINHA_DA_BUSCA_POR_SKU_NO_ENSAIO);
   linhas.push(
     `  pre_order ............... ${
       r.preOrder === null
@@ -2108,6 +2197,120 @@ export function renderizarResultadoKit(
 }
 
 /* -------------------------------------------------------------------------- */
+/*            an ordinary listing's UNCERTAIN first create (#1911, D5)          */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * What an uncertain `add_item` reported, by NAME — the route's 202 plus the
+ * EXACT command to re-run. ⚠️ `fraseShopee` is provider prose, carried for the
+ * kit's reason: the operator's only channel for it.
+ */
+export interface ResumoItemIncerto {
+  readonly produtoId: string;
+  /** The DRAFT that records the attempt — the re-run names it. */
+  readonly linkDocId: string;
+  readonly aguardarMs: number;
+  readonly reenvioVerificaSku: boolean;
+  readonly recusa: { readonly codigo: string; readonly fraseShopee: string | null } | null;
+  readonly mensagem: string;
+  /**
+   * The re-run, NAMED by the draft (`--link`): a re-run without it would mint
+   * ANOTHER draft's twin instead of looking for this attempt's listing — the
+   * dispatcher refuses that anyway (`rascunho-nao-nomeado`). Then the flags of
+   * THIS run that change what the re-run does (batch-A review): `--status
+   * UNLIST` when the run asked for a paused listing (`NORMAL` is the default
+   * and is not printed — the kit's OP-9 rule), and `--confirmar-segundo-anuncio`
+   * when it was passed; then `--project` when it was passed, then `--live`.
+   * ⚠️ Never `--confirmar-criacao-incerta`: that one is the operator's to add,
+   * after the Seller Centre check the sentence asks for.
+   */
+  readonly comandoDeRetomada: string;
+}
+
+/** The CLI flags of the run an uncertain item create re-prints (batch-A review). */
+export interface OpcoesDoItemIncertoCli extends Pick<OpcoesDoKitCli, 'integracaoId' | 'projectId'> {
+  /** `--status` as the run parsed it; `UNLIST` rides the re-run, `NORMAL` (the default) does not. */
+  readonly status: ShopeeItemStatusWritable;
+  /** `--confirmar-segundo-anuncio` was passed: the re-run needs it again (D15 re-checks). */
+  readonly confirmarSegundoAnuncio: boolean;
+}
+
+/**
+ * The re-run of an uncertain item create — the flags of THIS run, so a paste
+ * is literally the same publish. ⚠️ Without `--status UNLIST` a run that asked
+ * for a paused listing would re-run as `NORMAL`: a create on sale, or (an
+ * adopted has-model listing) a re-list on sale, against the operator's pause.
+ */
+function comandoDeRetomadaDoItem(
+  res: ResultadoItemIncerto,
+  opcoes: OpcoesDoItemIncertoCli,
+): string {
+  const partes = [
+    'publicar:anuncio',
+    '--integracao',
+    opcoes.integracaoId,
+    '--produto',
+    res.produtoId,
+    '--link',
+    res.linkDocId,
+  ];
+  if (opcoes.status === SHOPEE_ITEM_STATUS_WRITABLE.unlist) partes.push('--status', opcoes.status);
+  if (opcoes.confirmarSegundoAnuncio) partes.push('--confirmar-segundo-anuncio');
+  return `${PREFIXO_PNPM} ${comProjeto(partes.join(' '), opcoes.projectId)} --live`;
+}
+
+/** `--json --live` for an uncertain create: the SAME allow-list, as an object. */
+export function resumoDoItemIncerto(
+  res: ResultadoItemIncerto,
+  opcoes: OpcoesDoItemIncertoCli,
+): ResumoItemIncerto {
+  return {
+    produtoId: res.produtoId,
+    linkDocId: res.linkDocId,
+    aguardarMs: res.aguardarMs,
+    reenvioVerificaSku: res.reenvioVerificaSku,
+    recusa:
+      res.recusa === null
+        ? null
+        : { codigo: res.recusa.codigo, fraseShopee: res.recusa.fraseShopee },
+    mensagem: res.mensagem,
+    comandoDeRetomada: comandoDeRetomadaDoItem(res, opcoes),
+  };
+}
+
+/** The uncertain create as terminal lines. */
+export function renderResumoItemIncerto(r: ResumoItemIncerto): string[] {
+  const linhas: string[] = ['### ⚠️ INCERTO — a Shopee pode ter criado o anúncio'];
+  linhas.push(`  produtoId ............... ${r.produtoId}`);
+  linhas.push(`  rascunho ................ ${r.linkDocId} (trava mantida; tentativa registrada)`);
+  linhas.push(`  aguardar ................ ${String(Math.ceil(r.aguardarMs / 1000))} s`);
+  linhas.push(
+    `  reenvio confere o SKU ... ${sim(r.reenvioVerificaSku)}${
+      r.reenvioVerificaSku ? '' : ' (a tentativa foi enviada sem SKU)'
+    }`,
+  );
+  if (r.recusa !== null) {
+    linhas.push(
+      `  resposta da Shopee ...... ${r.recusa.codigo}${
+        r.recusa.fraseShopee === null ? '' : ` — "${r.recusa.fraseShopee}"`
+      }`,
+    );
+  }
+  linhas.push(`  ${r.mensagem}`);
+  linhas.push('  o comando, exatamente (depois da espera):');
+  linhas.push(`    ${r.comandoDeRetomada}`);
+  return linhas;
+}
+
+/** An uncertain create, straight to the terminal lines. */
+export function renderizarItemIncerto(
+  res: ResultadoItemIncerto,
+  opcoes: OpcoesDoItemIncertoCli,
+): string[] {
+  return renderResumoItemIncerto(resumoDoItemIncerto(res, opcoes));
+}
+
+/* -------------------------------------------------------------------------- */
 /*                                   errors                                    */
 /* -------------------------------------------------------------------------- */
 
@@ -2173,9 +2376,31 @@ export function descreverBloqueioPublicacao(err: ShopeePublishBlockedError): str
   for (const p of err.problemas) {
     linhas.push(`    ${txt(p.campo).padEnd(18)} ${p.motivo.padEnd(28)} ${p.mensagem}`);
   }
+  if (err.itemId === null && err.problemas.some((p) => MOTIVOS_FIXADOS_NO_RASCUNHO.has(p.motivo))) {
+    linhas.push(LINHA_DO_RASCUNHO_FIXADO);
+  }
   linhas.push(...LINHAS_DO_BLOQUEIO);
   return linhas;
 }
+
+/**
+ * The refusals a DRAFT pins (#1911 batch-A review): a draft stores its own
+ * `item_name` and `category_id` — the no-link `--live` mint writes the
+ * produto's `nome` and `--categoria` into it — and the publish reads the
+ * STORED values first, so neither a renamed produto nor a new `--categoria`
+ * changes them. Until the tab's editor (P10), the draft route edits or
+ * discards it.
+ */
+const MOTIVOS_FIXADOS_NO_RASCUNHO: ReadonlySet<string> = new Set([
+  MOTIVO_PUBLICACAO_BLOQUEADA.categoriaInvalida,
+  MOTIVO_PUBLICACAO_BLOQUEADA.nomeForaDaFaixa,
+]);
+
+const LINHA_DO_RASCUNHO_FIXADO =
+  '  ⚠️ Se o vínculo é um RASCUNHO (o --live sem --link cria um), a categoria e o título dele ' +
+  'são os GRAVADOS no rascunho: --categoria e renomear o produto não os mudam. Edite ou descarte ' +
+  'o rascunho (POST …/rascunho/atualizar ou …/rascunho/descartar; a aba Shopee, quando tiver o ' +
+  'editor).';
 
 /**
  * A Shopee refusal AFTER the first write — the other half of the pair, and the
@@ -2206,11 +2431,28 @@ export function descreverRecusaPublicacao(err: ShopeePublishRejectedError): stri
   for (const p of err.problemas) {
     linhas.push(`    ${txt(p.campo).padEnd(18)} ${p.motivo.padEnd(28)} ${p.mensagem}`);
   }
+  // #1911 (D15, K2-2): the row keeps Shopee's prose; OUR sentence lives here
+  // (and in the web's map), read by the constant — never spelled.
+  if (
+    err.problemas.some((p) => p.motivo === MOTIVO_PROBLEMA_PUBLICACAO.anuncioSemelhanteExistente)
+  ) {
+    linhas.push(`  ${FRASE_ANUNCIO_SEMELHANTE}`);
+  }
   linhas.push(
     '  ⚠️ Escritas ANTERIORES podem ter acontecido. Releia com --dry-run antes de repetir.',
   );
   return linhas;
 }
+
+/**
+ * The D15 sentence beside Shopee's `error_repeated_mtsku` refusal ("A similar
+ * product has already been uploaded") — the CLI's half of K2-2: the FAMILIAS
+ * row keeps Shopee's own prose, and the operator reads what to do here.
+ */
+export const FRASE_ANUNCIO_SEMELHANTE =
+  'a Shopee recusou: já existe um anúncio semelhante nesta loja. Se ele é deste produto, ' +
+  'importe-o (importar:anuncio); um segundo anúncio precisa ser diferente (título, fotos) — a ' +
+  'Shopee pode tratar duplicata como spam. Nada foi criado.';
 
 /**
  * One failure, described by CLASS plus Shopee's `code`/`path` — never a payload.
@@ -2225,6 +2467,11 @@ export function descreverErroPublicacao(err: unknown): string[] {
   if (err instanceof ArgumentoInvalidoError) {
     return [`❌ ${err.message}`, '', USO_PUBLICAR_ANUNCIO];
   }
+  if (ehConflitoDeRascunho(err)) {
+    // The CLASS's own name: since #1911's P5 a no-link `--live` mints its draft
+    // through the draft route's create, whose refusal carries the same codes.
+    return [`❌ ${err.name} (${err.code})`, ...descreverConflitoDeRascunho(err)];
+  }
   if (err instanceof ShopeePublishBlockedError) {
     return [`❌ ShopeePublishBlockedError (${err.motivo})`, ...descreverBloqueioPublicacao(err)];
   }
@@ -2232,4 +2479,77 @@ export function descreverErroPublicacao(err: unknown): string[] {
     return [`❌ ShopeePublishRejectedError (${err.etapa})`, ...descreverRecusaPublicacao(err)];
   }
   return descreverErro(err);
+}
+
+/* -------------------------------------------------------------------------- */
+/*                   a DRAFT's lock refusal (#1911, the 409s)                  */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * EVERY `CODIGO_RASCUNHO_SHOPEE` code — the ONE vocabulary, `@delfrance/schemas`':
+ * the publish lock's own refusals (`ConflitoDeRascunhoShopeeError`) AND the
+ * draft route's, which a no-link `--live` mint surfaces as its create refusal
+ * (`RecusaDeRascunhoShopeeError`). ⚠️ Do not narrow it to the lock's codes: a
+ * mint refused `ID_EM_USO` or `PRODUTO_INVALIDO` would then fall to the generic
+ * describer and lose its sentence.
+ */
+const CODIGOS_DO_CONFLITO: ReadonlySet<unknown> = new Set<unknown>(
+  Object.values(CODIGO_RASCUNHO_SHOPEE),
+);
+
+/** The fields of the refusal this module prints — its class stays an `import type`. */
+type ConflitoLido = Pick<
+  ConflitoDeRascunhoShopeeError,
+  'name' | 'code' | 'linkDocId' | 'aguardarMs' | 'vinculos' | 'message'
+>;
+
+/**
+ * Is this a DRAFT refusal — the lock's 409, or the minted draft's create
+ * refusal (404/409/422)? Recognised by its `code` —
+ * one of `CODIGO_RASCUNHO_SHOPEE`'s, which no Shopee error carries (theirs are
+ * `error_*` tokens) — so this module never value-imports the class's home
+ * (see the module docblock).
+ */
+export function ehConflitoDeRascunho(err: unknown): err is ConflitoLido {
+  if (typeof err !== 'object' || err === null) return false;
+  const { name, code, linkDocId, message } = err as Record<string, unknown>;
+  return (
+    CODIGOS_DO_CONFLITO.has(code) &&
+    typeof linkDocId === 'string' &&
+    typeof message === 'string' &&
+    typeof name === 'string'
+  );
+}
+
+/**
+ * The refusal, for a terminal: the code, the draft, the wait and the sibling
+ * links, then the sentence — ids, counts and enum tokens only, which is all the
+ * error carries. Closes with what to do, by code; every one of them sent
+ * NOTHING to Shopee.
+ */
+export function descreverConflitoDeRascunho(err: ConflitoLido): string[] {
+  const linhas = [
+    `  rascunho ................ ${err.linkDocId}`,
+    `  código .................. ${err.code}`,
+  ];
+  if (err.aguardarMs !== null) {
+    linhas.push(`  aguardar ................ ${String(Math.ceil(err.aguardarMs / 1000))} s`);
+  }
+  if (err.vinculos !== null) {
+    linhas.push(`  vínculos (${String(err.vinculos.length)}):`);
+    for (const v of err.vinculos) {
+      linhas.push(
+        `    ${v.linkDocId.padEnd(24)} ${v.rascunho ? 'rascunho' : `item ${String(v.itemId)}`}`,
+      );
+    }
+  }
+  linhas.push(`  ${err.message}`);
+  if (err.code === CODIGO_RASCUNHO_SHOPEE.contaJaTemAnuncio) {
+    linhas.push(
+      '  Para publicar mesmo assim, repita o comando com --confirmar-segundo-anuncio ' +
+        '(um SEGUNDO anúncio do mesmo produto nesta conta).',
+    );
+  }
+  linhas.push('  Nada foi enviado à Shopee por esta execução.');
+  return linhas;
 }

@@ -12,10 +12,16 @@ import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { useAuth, usePermission } from '@/lib/auth';
 import {
   GRUPO_EXCLUDED_FIELDS,
+  GRUPO_PERSISTENT_SECTIONS,
   GRUPO_SECTIONS,
+  VINCULADOR_LI_VISIVEL,
   deriveVariacoesIds,
   grupoFields,
 } from '../_components/grupoFields';
+import {
+  EstadoVinculadorLiProvider,
+  useEstadoVinculadorLi,
+} from '../_components/estadoVinculadorLi';
 
 export default function GrupoVariacaoPage() {
   const params = useParams<{ id: string }>();
@@ -24,6 +30,9 @@ export default function GrupoVariacaoPage() {
   const { allowed: canWrite } = usePermission(PERM.produto.write);
   const { allowed: canDelete } = usePermission(PERM.produto.delete);
   const db = getFirebaseFirestore();
+  // The Loja Integrada tab publishes the form's seed here; `validar` checks the
+  // links this save edits against it (see `estadoVinculadorLi`).
+  const estadoLi = useEstadoVinculadorLi();
 
   async function handleDelete(id: string) {
     await deleteDoc(grupoDeVariacoesCollection.docRef(db, {}, id));
@@ -39,23 +48,27 @@ export default function GrupoVariacaoPage() {
         </Anchor>
       </Group>
 
-      <ObjectView
-        schema={grupoDeVariacoesSchema}
-        collection={grupoDeVariacoesCollection}
-        db={db}
-        currentUserUid={user?.uid ?? ''}
-        recordId={params.id}
-        sections={GRUPO_SECTIONS}
-        fields={grupoFields}
-        excludedFields={GRUPO_EXCLUDED_FIELDS}
-        deriveOnSave={deriveVariacoesIds}
-        saveLabel="Salvar alterações"
-        canEdit={canWrite}
-        readOnly={!canWrite}
-        canDelete={canDelete}
-        onDelete={handleDelete}
-        onSaved={() => router.replace('/variacoes')}
-      />
+      <EstadoVinculadorLiProvider value={estadoLi}>
+        <ObjectView
+          schema={grupoDeVariacoesSchema}
+          collection={grupoDeVariacoesCollection}
+          db={db}
+          currentUserUid={user?.uid ?? ''}
+          recordId={params.id}
+          sections={GRUPO_SECTIONS}
+          persistentSections={GRUPO_PERSISTENT_SECTIONS}
+          fields={grupoFields}
+          excludedFields={GRUPO_EXCLUDED_FIELDS}
+          deriveOnSave={deriveVariacoesIds}
+          validate={VINCULADOR_LI_VISIVEL ? estadoLi.validar : undefined}
+          saveLabel="Salvar alterações"
+          canEdit={canWrite}
+          readOnly={!canWrite}
+          canDelete={canDelete}
+          onDelete={handleDelete}
+          onSaved={() => router.replace('/variacoes')}
+        />
+      </EstadoVinculadorLiProvider>
     </Stack>
   );
 }

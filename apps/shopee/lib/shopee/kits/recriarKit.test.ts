@@ -2678,3 +2678,156 @@ describe('(H2) o comando de um recriar/converter `incerto` é LITERALMENTE o mes
     expect(mapeado.comando).toContain('--principal comp-a-alias');
   });
 });
+
+/* ========================================================================== */
+/*  (#2065) a resumed recriar/converter: a linked kit with no base row          */
+/* ========================================================================== */
+
+/** A THIRD kit role — what a resume that wrongly reads the new kit as gone would mint. */
+const KIT_3 = 2500139874;
+
+/** The kit publish at a given clock (the resumes below run minutes after the crash). */
+async function publicarEm(
+  db: FakeDb,
+  loja: Loja,
+  nowMs: number,
+  arma: ArmaDeKit,
+): Promise<ResultadoPublicacaoKit> {
+  return await publicarKitShopee(deps(db, loja, nowMs), entrada(), arma);
+}
+
+/**
+ * Every STATUS-ONLY `get_item_base_info` carrying `itemId` since `desde` — one
+ * not followed at once by `get_kit_item_info` for it (a full read of a kit is
+ * base info THEN the kit page; a status read is base info alone).
+ */
+function leiturasSoDeStatus(loja: Loja, itemId: number, desde: number): number {
+  const chamadas = loja.chamadas.slice(desde);
+  return chamadas.filter(
+    (c, i) =>
+      c.op === 'get_item_base_info' &&
+      c.ids.includes(itemId) &&
+      !(chamadas[i + 1]?.op === 'get_kit_item_info' && chamadas[i + 1]?.ids.includes(itemId)),
+  ).length;
+}
+
+const DEZ_MINUTOS = 10 * 60_000;
+
+describe('(#2065) uma recriação/conversão RETOMADA nunca lê o kit novo como apagado sem duas provas', () => {
+  it('R2 + o SKU do ERP RENOMEADO: o kit novo é LISTADO mas não é achado ⇒ nosso pela linha da lista: `retomado`, zero add_kit_item, o vínculo novo NUNCA `removido`, e a ÚNICA leitura de status dele é o lote da busca', async () => {
+    const db = new FakeDb();
+    const loja = novaLoja();
+    await kitAntigoComReceitaEditada(db, loja);
+    await recriacaoInterrompidaEmR2(db, loja);
+    salvar(db, K, { sku: 'KIT-1-B' });
+    const desdeOps = loja.ops.length;
+    const desdeChamadas = loja.chamadas.length;
+
+    const r = await publicarEm(db, loja, AGORA + DEZ_MINUTOS, {
+      arma: 'kit-recriar',
+      linkDocId: VINCULO_1,
+    });
+
+    expect(r).toMatchObject({ desfecho: 'retomado', itemId: KIT_2, linkDocId: VINCULO_2 });
+    expect(quantas(loja, 'add_kit_item', desdeOps)).toBe(0);
+    expect(vinculo(db, VINCULO_2)?.estadoAnuncio).not.toBe(ESTADO_ANUNCIO_SHOPEE.removido);
+    // The scan's own batch — and no second, status-only read that could drop the row.
+    expect(leiturasSoDeStatus(loja, KIT_2, desdeChamadas)).toBe(1);
+  });
+
+  it('R2 e o kit novo AINDA INVISÍVEL (nem listado, nem na base), o vínculo dele criado há 60 s ⇒ RECUSA "criado há pouco": zero escrita na Shopee e NADA gravado — o vínculo novo segue ativo', async () => {
+    const db = new FakeDb();
+    const loja = novaLoja();
+    await kitAntigoComReceitaEditada(db, loja);
+    await recriacaoInterrompidaEmR2(db, loja);
+    expect(vinculo(db, VINCULO_2)?.publicadoEm).toBe(AGORA);
+    loja.itens.delete(KIT_2);
+    const desde = loja.ops.length;
+    const escritas = db.writes.length;
+
+    const erro = await recusaDe(
+      publicarEm(db, loja, AGORA + 60_000, { arma: 'kit-recriar', linkDocId: VINCULO_1 }),
+    );
+
+    expect(motivos(erro)).toEqual([MOTIVO_PUBLICACAO_BLOQUEADA.buscaDeKitIncompleta]);
+    expect(erro.problemas[0]?.mensagem).toContain(
+      'o kit criado há pouco ainda não aparece na Shopee',
+    );
+    expect(erro.problemas[0]?.mensagem).toContain(VINCULO_2);
+    expect(escritasNaLoja(loja, desde)).toEqual([]);
+    expect(db.writes.slice(escritas)).toEqual([]);
+    expect(vinculo(db, VINCULO_2)?.estadoAnuncio).toBe(ESTADO_ANUNCIO_SHOPEE.ativo);
+  });
+
+  it('⛔ quase-par — o MESMO kit novo invisível 10 min depois ⇒ ausente da lista E da base: o vínculo novo `removido` e UM add_kit_item (o terceiro kit)', async () => {
+    const db = new FakeDb();
+    const loja = novaLoja();
+    await kitAntigoComReceitaEditada(db, loja);
+    await recriacaoInterrompidaEmR2(db, loja);
+    loja.itens.delete(KIT_2);
+    loja.proximos.push(KIT_3);
+    loja.criadoDoProximo = CRIADO_EM[KIT_2]! + 3_600;
+    const desde = loja.ops.length;
+
+    const r = await publicarEm(db, loja, AGORA + DEZ_MINUTOS, {
+      arma: 'kit-recriar',
+      linkDocId: VINCULO_1,
+    });
+
+    expect(r).toMatchObject({ desfecho: 'criado', itemId: KIT_3 });
+    expect(quantas(loja, 'add_kit_item', desde)).toBe(1);
+    expect(vinculo(db, VINCULO_2)?.estadoAnuncio).toBe(ESTADO_ANUNCIO_SHOPEE.removido);
+  });
+
+  /** V2: the converter crashed right after the new kit's link (no #2, no rows). */
+  async function conversaoInterrompidaEmV2(db: FakeDb, loja: Loja): Promise<void> {
+    kitComAnuncioComum(db, loja);
+    loja.falhaNaLeitura = {
+      itemId: KIT_1,
+      erro: new TypeError('fixture: o processo caiu depois do vínculo novo'),
+      depois: 0,
+    };
+    expect(await falhaDe(converter(db, loja))).toBeInstanceOf(TypeError);
+    expect(vinculo(db, VINCULO_1)).toMatchObject({ kitNativo: true, publicadoEm: AGORA });
+  }
+
+  it('converter V2 e o kit novo AINDA INVISÍVEL, vínculo de 60 s ⇒ RECUSA "criado há pouco": zero add_kit_item, NADA gravado, o comum NÃO substituído', async () => {
+    const db = new FakeDb();
+    const loja = novaLoja();
+    await conversaoInterrompidaEmV2(db, loja);
+    loja.itens.delete(KIT_1);
+    const desde = loja.ops.length;
+    const escritas = db.writes.length;
+
+    const erro = await recusaDe(
+      publicarEm(db, loja, AGORA + 60_000, {
+        arma: 'kit-converter',
+        antecessorLinkDocId: VINCULO_COMUM,
+      }),
+    );
+
+    expect(motivos(erro)).toEqual([MOTIVO_PUBLICACAO_BLOQUEADA.buscaDeKitIncompleta]);
+    expect(erro.problemas[0]?.mensagem).toContain(VINCULO_1);
+    expect(escritasNaLoja(loja, desde)).toEqual([]);
+    expect(db.writes.slice(escritas)).toEqual([]);
+    expect(vinculo(db, VINCULO_COMUM)?.substituidoPorLinkDocId ?? null).toBeNull();
+  });
+
+  it('⛔ quase-par — o MESMO converter 10 min depois ⇒ o vínculo novo `removido`, UM add_kit_item, e o comum substituído pelo kit criado AGORA', async () => {
+    const db = new FakeDb();
+    const loja = novaLoja();
+    await conversaoInterrompidaEmV2(db, loja);
+    loja.itens.delete(KIT_1);
+    const desde = loja.ops.length;
+
+    const r = await publicarEm(db, loja, AGORA + DEZ_MINUTOS, {
+      arma: 'kit-converter',
+      antecessorLinkDocId: VINCULO_COMUM,
+    });
+
+    expect(r).toMatchObject({ desfecho: 'criado', itemId: KIT_2, linkDocId: VINCULO_2 });
+    expect(quantas(loja, 'add_kit_item', desde)).toBe(1);
+    expect(vinculo(db, VINCULO_1)?.estadoAnuncio).toBe(ESTADO_ANUNCIO_SHOPEE.removido);
+    expect(vinculo(db, VINCULO_COMUM)?.substituidoPorLinkDocId).toBe(VINCULO_2);
+  });
+});

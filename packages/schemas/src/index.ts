@@ -190,12 +190,16 @@ export {
   // Enumerating a channel-local copy instead is the two-copies-drift-toward-
   // plausible shape (#1369): the copy reads correct and the shared set moves.
   ESTADOS_FRETE_IGNORAR_REMOCAO,
+  // The goods-out table (#2042 review): the Amazon CANCELLED read and the web
+  // checkout must agree on it — one copy, for the same #1369 reason.
+  ESTADOS_FRETE_MERCADORIA_FORA,
   ESTADOS_FRETE_NAO_POSTADO,
   ESTADOS_FRETE_PRE_AUTORIZACAO,
   ESTADOS_FRETE_REMOVE_ESTOQUE,
   FREIGHT_TIPO_CAPS,
   INTEGRACAO_FRETE,
   INTEGRACAO_FRETE_LABELS,
+  MERCADORIA_FORA_POR_ESTADO_FRETE,
   MODALIDADE_FRETE,
   MODALIDADE_FRETE_LABELS,
   dimensoesSchema,
@@ -469,6 +473,15 @@ export {
   type SituacaoValidadeTokenLi,
   type StatusContaLojaIntegrada,
 } from './contaLojaIntegrada';
+
+// The Loja Integrada catalogue contract (step 10, #1821): the four read-only
+// route answers (categories, brands, grades, one grade's options), the one
+// resource-URI reader, the route-segment and grade-identity checks, and the pure
+// projections the backend builds the answers with — `apps/loja-integrada` and
+// the web linker must agree on them (#1369). Not a collection: no meta, nothing
+// to register. A star export on purpose: the fold-inventory scan greps raw text,
+// so a listed barrel would need a row.
+export * from './catalogoLojaIntegrada';
 
 // THE Loja Integrada situação table (master plan step 5, #1817): codigo →
 // create estado and payment status, the capture sets, the contest motivo — the
@@ -1039,6 +1052,117 @@ export {
   type DetalheTabelaMedidasDto,
 } from './tabelaDeMedidasShopeeDto';
 
+// The Shopee TAXONOMY route envelopes (#1911, P2), declared once like the
+// size-chart ones above: the `apps/shopee` taxonomy routes build their 200s
+// against them, for `apps/web` to parse with — including the `/medidas` slice
+// of the limits answer, DERIVED from the whole one. Not a collection, so no
+// `registry.ts` entry.
+export {
+  categoriaResumoDtoSchema,
+  categoriaNoDtoSchema,
+  respostaCategoriasShopeeSchema,
+  atributoInfoDtoSchema,
+  atributoValorDtoSchema,
+  atributoDtoSchema,
+  respostaAtributosShopeeSchema,
+  faixaDtoSchema,
+  gtinLimitDtoSchema,
+  limitesDescricaoEstendidaDtoSchema,
+  limitesDeItemDtoSchema,
+  limitesDeKitDtoSchema,
+  respostaLimitesDoItemShopeeSchema,
+  respostaLimitesTabelaMedidasShopeeSchema,
+  marcaDtoSchema,
+  respostaMarcasShopeeSchema,
+  variacaoOpcaoDtoSchema,
+  variacaoGrupoDtoSchema,
+  variacaoDtoSchema,
+  respostaVariacoesShopeeSchema,
+  recomendacaoDtoSchema,
+  respostaRecomendacaoCategoriaShopeeSchema,
+  type CategoriaResumoDto,
+  type CategoriaNoDto,
+  type RespostaCategoriasShopee,
+  type AtributoInfoDto,
+  type AtributoValorDto,
+  type AtributoDto,
+  type RespostaAtributosShopee,
+  type FaixaDto,
+  type GtinLimitDto,
+  type LimitesDescricaoEstendidaDto,
+  type LimitesDeItemDto,
+  type LimitesDeKitDto,
+  type RespostaLimitesDoItemShopee,
+  type RespostaLimitesTabelaMedidasShopee,
+  type MarcaDto,
+  type RespostaMarcasShopee,
+  type VariacaoOpcaoDto,
+  type VariacaoGrupoDto,
+  type VariacaoDto,
+  type RespostaVariacoesShopee,
+  type RecomendacaoDto,
+  type RespostaRecomendacaoCategoriaShopee,
+} from './taxonomiaShopeeDto';
+
+// …and THE band check + text resolution the publisher applies to a listing's
+// name and description — the draft editor's counter and pendências call the
+// same functions (#1369 — one copy).
+export {
+  textoUtilizavelShopee,
+  dentroDaFaixaShopee,
+  descreverFaixaShopee,
+  textoNaFaixaShopee,
+  tituloDoAnuncioShopee,
+  descricaoDoAnuncioShopee,
+  type TextoNaFaixaShopee,
+} from './faixaShopee';
+
+// …and THE listing-attribute rules (#1911, D9, P6): one decoder for the three
+// stored shapes (always answering the request shape), the draft write's
+// schema, the visible-given-values walk and the validator the publisher and
+// the draft editor both decide with (#1369 — one copy), and what a publish
+// SENDS (a read-form date converted through the one date convention).
+export {
+  lerAtributosArmazenadosShopee,
+  atributosParaRequisicaoShopee,
+  atributoShopeeRequisicaoSchema,
+  atributosShopeeRequisicaoSchema,
+  tipoDeEntradaShopee,
+  atributosVisiveisShopee,
+  validarAtributosShopee,
+  atributosParaGravarShopee,
+  atributosParaEnvioShopee,
+  lerDataDeAtributoShopee,
+  timestampDeDataShopee,
+  origemValorAtributoShopeeSchema,
+  ORIGEM_VALOR_ATRIBUTO_SHOPEE,
+  motivoDescarteAtributoShopeeSchema,
+  MOTIVO_DESCARTE_ATRIBUTO_SHOPEE,
+  tipoProblemaAtributoShopeeSchema,
+  TIPO_PROBLEMA_ATRIBUTO_SHOPEE,
+  INPUT_TYPE_ATRIBUTO_SHOPEE,
+  INPUT_VALIDATION_TYPE_ATRIBUTO_SHOPEE,
+  FORMAT_TYPE_COM_UNIDADE_SHOPEE,
+  DATE_FORMAT_TYPE_ATRIBUTO_SHOPEE,
+  MSG_PERSONALIZADO_SEM_NOME_ATRIBUTO_SHOPEE,
+  MSG_NOME_EM_VALOR_DA_LISTA_ATRIBUTO_SHOPEE,
+  MSG_ATRIBUTO_REPETIDO_SHOPEE,
+  type ValorAtributoShopee,
+  type AtributoShopeeRequisicao,
+  type OrigemValorAtributoShopee,
+  type ValorAtributoLidoShopee,
+  type AtributoLidoShopee,
+  type MotivoDescarteAtributoShopee,
+  type DescarteAtributoShopee,
+  type AtributosLidosShopee,
+  type EntradaAtributoShopee,
+  type ArvoreAtributosShopee,
+  type AtributoVisivelShopee,
+  type DataDeAtributoShopee,
+  type TipoProblemaAtributoShopee,
+  type ProblemaAtributoShopee,
+} from './atributosShopee';
+
 export {
   listaDePrecos,
   listaDePrecosSchema,
@@ -1215,6 +1339,8 @@ export {
   inutNumeracao,
   inutNumeracaoSchema,
   inutNumeracaoMeta,
+  inutilizacaoSeAplica,
+  motivoInutilizacaoNaoSeAplica,
   type InutNumeracao,
 } from './inutilizacaoNumeracao';
 
@@ -1607,6 +1733,8 @@ export {
   MOTIVO_FRETE_NAO_SUPORTADO_LI,
   motivoReversaoComEtiquetaLiSchema,
   MOTIVO_REVERSAO_COM_ETIQUETA_LI,
+  motivoRastreioDivergenteLiSchema,
+  MOTIVO_RASTREIO_DIVERGENTE_LI,
   situacaoAnuncioForaDaSincronizacaoSchema,
   SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO,
   chaveDeAviso,
@@ -1631,6 +1759,7 @@ export {
   type MotivoPedidoContestadoLi,
   type MotivoFreteNaoSuportadoLi,
   type MotivoReversaoComEtiquetaLi,
+  type MotivoRastreioDivergenteLi,
   type SituacaoAnuncioForaDaSincronizacao,
 } from './aviso';
 export * from './shared/inicio';
@@ -1669,6 +1798,12 @@ export * from './mapaFreteLojaIntegrada';
 export * from './conferenciaPagamentoLojaIntegrada';
 export * from './rotaEtiquetaLojaIntegrada';
 export * from './faseRetirada';
+
+// Admin-only / default-deny (NOT in ALL_DOMAINS) — the failures-only backlog of
+// the Loja Integrada WRITES queue (master plan step 7: the status write-back).
+// Bare: no Meta, never a combined `{ schema, meta }`, so `registry.test.ts` sees
+// nothing to register.
+export * from './notificacaoEscritaLojaIntegrada';
 
 // The machine-readable next step of a Shopee publish refusal (step 21, #1529):
 // the refusal sites in `apps/shopee` produce it, the web's wire parses it per row

@@ -18,9 +18,17 @@
  * ⚠️ `imagemCapa` is Shopee's `product_cover_image`, which is an **image id**
  * from `v2.media_space.upload_image` — never a URL.
  *
+ * The 200 is built `satisfies` the input type of its envelope,
+ * `respostaRecomendacaoCategoriaShopeeSchema` — declared ONCE in
+ * `@delfrance/schemas` (#1911 P2) for this route and its browser readers —
+ * whose `applied` is the LITERAL `false`: `applied: true` here does not
+ * compile, and a reader parsing with that schema refuses a body claiming it.
+ *
  * Requires `PERM.integracao.read`.
  */
 import { NextResponse } from 'next/server';
+import type { respostaRecomendacaoCategoriaShopeeSchema } from '@delfrance/schemas';
+import type { z } from 'zod';
 
 import { PERM, verifyCaller } from '@/lib/auth/verifyCaller';
 import { getAdminFirestore } from '@/lib/firebase/admin';
@@ -58,7 +66,7 @@ export async function GET(req: Request): Promise<NextResponse> {
       unresolved: lida.unresolved,
       // A constant, and it stays one: this endpoint offers.
       applied: false,
-    });
+    } satisfies z.input<typeof respostaRecomendacaoCategoriaShopeeSchema>);
   } catch (err) {
     if (isShopeeError(err)) return shopeeErrorResponse(err);
     throw err;

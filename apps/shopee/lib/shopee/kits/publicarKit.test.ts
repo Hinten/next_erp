@@ -661,6 +661,93 @@ describe('publicarKitShopee — kit-criar de ponta a ponta', () => {
     expect(r.desfecho).toBe('criado');
   });
 
+  it('(#1911 batch-A, bot #2054) o grupo SEM nome, lido por `lerGrupos` ⇒ opcoes-demais LOCAL: zero add_kit_item, nada gravado', async () => {
+    const db = new FakeDb();
+    semearComponentes(db);
+    semearFamilia(db);
+    db.seed(`grupoDeVariacoes/${GRUPO}`, {
+      ordem: 1,
+      variacoes: [
+        { id: 'var-azul', nome: 'Azul' },
+        { id: 'var-verde', nome: 'Verde' },
+      ],
+    });
+    const loja = lojaComKits();
+
+    const erro = await recusaDe(criarKit(db, loja));
+
+    expect(erro.problemas).toEqual([
+      {
+        campo: 'tier_variation_list',
+        motivo: MOTIVO_PUBLICACAO_BLOQUEADA.opcoesDemais,
+        mensagem: `o grupo ${GRUPO} não tem nome, e o tier do kit leva o nome do grupo — dê um nome a ele em Variações`,
+      },
+    ]);
+    expect(loja.ops).not.toContain('add_kit_item');
+    expect(loja.corposDoAdd).toEqual([]);
+    expect(db.writes).toEqual([]);
+    // The dry run plans the same refusal and builds no body.
+    const ensaio = await ensaiarKitShopee(deps(db, loja), entrada(), CRIAR, resolvedorFake(loja));
+    expect(ensaio.plano.problemas.map((p) => p.motivo)).toEqual([
+      MOTIVO_PUBLICACAO_BLOQUEADA.opcoesDemais,
+    ]);
+    expect(ensaio.plano.corpo).toBeNull();
+  });
+
+  it('⛔ (#1911 batch-A) um grupo ILEGÍVEL (doc ausente) recusa — o id do documento NUNCA vira o nome do tier', async () => {
+    const db = new FakeDb();
+    semearComponentes(db);
+    semearFamilia(db);
+    delete db.store[`grupoDeVariacoes/${GRUPO}`];
+    const loja = lojaComKits();
+
+    const erro = await recusaDe(criarKit(db, loja));
+
+    expect(erro.problemas.map((p) => p.motivo)).toEqual([
+      MOTIVO_PUBLICACAO_BLOQUEADA.opcoesDemais,
+      MOTIVO_PUBLICACAO_BLOQUEADA.variacaoSemVinculo,
+      MOTIVO_PUBLICACAO_BLOQUEADA.variacaoSemVinculo,
+    ]);
+    expect(erro.problemas[0]?.campo).toBe('tier_variation_list');
+    expect(loja.ops).not.toContain('add_kit_item');
+    expect(loja.corposDoAdd).toEqual([]);
+    expect(db.writes).toEqual([]);
+  });
+
+  it("⚠️ QUASE-PAR (#1911 batch-A): o grupo ' Cor ' cria o kit, e o nome do tier vai ao fio APARADO", async () => {
+    const db = new FakeDb();
+    semearComponentes(db);
+    semearFamilia(db);
+    db.seed(`grupoDeVariacoes/${GRUPO}`, {
+      ...db.store[`grupoDeVariacoes/${GRUPO}`]!.data,
+      nome: ' Cor ',
+    });
+    const loja = lojaComKits();
+
+    const r = await criarKit(db, loja);
+
+    expect(r.desfecho).toBe('criado');
+    expect(loja.corposDoAdd.map((c) => c.item_setting.tier_variation_list[0]?.name)).toEqual([
+      'Cor',
+    ]);
+  });
+
+  it('(#1911 batch-A) a faixa SERVIDA da opção do kit recusa LOCAL a opção longa demais: zero add_kit_item', async () => {
+    const db = new FakeDb();
+    semearComponentes(db);
+    semearFamilia(db);
+    const loja = lojaComKits({
+      limites: { tier_variation_option_length_limit: { min_limit: 1, max_limit: 4 } },
+    });
+
+    const erro = await recusaDe(criarKit(db, loja));
+
+    expect(erro.problemas.map((p) => [p.motivo, p.campo])).toEqual([
+      [MOTIVO_PUBLICACAO_BLOQUEADA.opcoesDemais, `filhos.${K_VERDE}`],
+    ]);
+    expect(loja.ops).not.toContain('add_kit_item');
+  });
+
   it('(M96 / L1) uma família de 2 itens SEM --principal ⇒ principal-obrigatorio, nunca um padrão silencioso', async () => {
     const db = new FakeDb();
     semearComponentes(db);
@@ -940,6 +1027,93 @@ describe('RT3 — o passo 12 pula o kit criado', () => {
         motivo: MOTIVO_ESTOQUE_SHOPEE.kitDerivado,
       },
     );
+  });
+});
+
+/* ========================================================================== */
+/*  (3b) #1911 batch-A — a LISTED kit candidate with no base row fails CLOSED   */
+/* ========================================================================== */
+
+describe('(#1911 batch-A) o L6 de uma criação: um candidato LISTADO cuja base a Shopee não devolveu', () => {
+  /** A same-SKU listing the shop LISTS (fixture id). */
+  const GEMEO = 2500139899;
+
+  /**
+   * `loja` seen through two named transforms: `get_item_base_info` drops
+   * `semBase`'s row (the list still shows it), and the LIST row of
+   * `listaSemTag` carries no `tag` (a row that predates it — a candidate).
+   */
+  /** Every id `get_item_base_info` was asked for, through {@link lida}. */
+  const idsLidos: number[] = [];
+
+  function lida(loja: Loja, a: { readonly semBase?: number; readonly listaSemTag?: number }): Loja {
+    idsLidos.length = 0;
+    const original = loja.client;
+    const client = new Proxy({} as Record<string, unknown>, {
+      get(_alvo, prop) {
+        if (prop === 'getItemBaseInfo') {
+          return async (p: { itemIds: readonly number[] }) => {
+            idsLidos.push(...p.itemIds);
+            const r = await original.getItemBaseInfo(p);
+            return { ...r, item_list: r.item_list.filter((l) => l?.item_id !== a.semBase) };
+          };
+        }
+        if (prop === 'getItemList') {
+          return async (p: Parameters<ShopeeClient['getItemList']>[0]) => {
+            const r = await original.getItemList(p);
+            return {
+              ...r,
+              item: r.item.map((l) => (l.item_id === a.listaSemTag ? { ...l, tag: null } : l)),
+            };
+          };
+        }
+        return (original as unknown as Record<string, unknown>)[prop as string];
+      },
+    }) as unknown as ShopeeClient;
+    return { ...loja, client };
+  }
+
+  function comGemeo(loja: Loja, tag: Json): void {
+    loja.itens.set(GEMEO, {
+      base: { item_id: GEMEO, item_status: 'NORMAL', item_sku: SKU, has_model: false, tag },
+    });
+  }
+
+  it('⇒ busca-de-kit-incompleta nomeando o id, ZERO add_kit_item, nada gravado', async () => {
+    const db = new FakeDb();
+    semearComponentes(db);
+    semearFamilia(db);
+    const loja = lojaComKits();
+    // A same-SKU KIT the list shows — and whose base row never comes back.
+    comGemeo(loja, { kit: true });
+
+    const erro = await recusaDe(criarKit(db, lida(loja, { semBase: GEMEO })));
+
+    expect(erro.problemas.map((p) => p.motivo)).toEqual([
+      MOTIVO_PUBLICACAO_BLOQUEADA.buscaDeKitIncompleta,
+    ]);
+    expect(idsLidos).toContain(GEMEO);
+    expect(erro.problemas[0]?.mensagem).toContain(String(GEMEO));
+    expect(erro.problemas[0]?.mensagem).toContain('tente de novo');
+    expect(loja.ops).toContain('get_item_list');
+    expect(loja.ops.filter((o) => o === 'add_kit_item')).toHaveLength(0);
+    expect(db.writes).toEqual([]);
+  });
+
+  it('⛔ quase-par: a base devolvida diz que NÃO é kit ⇒ não é achado, e a criação segue (UM add_kit_item)', async () => {
+    const db = new FakeDb();
+    semearComponentes(db);
+    semearFamilia(db);
+    const loja = lojaComKits();
+    comGemeo(loja, { kit: false });
+    // The LIST row says nothing (a pre-tag row), so it is a candidate whose
+    // base row IS read — and says "not a kit".
+    const r = await criarKit(db, lida(loja, { listaSemTag: GEMEO }));
+
+    expect(r).toMatchObject({ desfecho: 'criado', itemId: KIT_ITEM });
+    // Not vacuous: the twin WAS asked about (and answered "not a kit").
+    expect(idsLidos).toContain(GEMEO);
+    expect(loja.ops.filter((o) => o === 'add_kit_item')).toHaveLength(1);
   });
 });
 

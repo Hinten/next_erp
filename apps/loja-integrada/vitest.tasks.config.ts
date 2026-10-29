@@ -37,6 +37,18 @@ import { defineConfig } from 'vitest/config';
 //     (`functions/src/onIntegracaoLojaIntegradaChanged.tasks.test.ts`), so no
 //     reconcile spills into the next file.
 //
+// ⚠️ Since step 7 a SECOND Firestore trigger loads too,
+// `onHistoricoFreteLojaIntegrada`, on every CREATE of
+// `pedidos/*/historicoFtIni/*` — with the lane's write valve at `dry-run`, it
+// reads the pedido and enqueues onto the writes queue, whose run ends as a row in
+// `notificacoesEscritaLojaIntegrada`. Today only
+// `functions/src/filaEscrita.tasks.test.ts` creates such rows. A suite that does:
+//   - uses pedidos and contas no other suite seeds;
+//   - awaits the row its event ends in before it ends (a history row with no
+//     awaited effect would land its task in the NEXT file's emulator state);
+//   - remembers that the writes queue's varredura re-runs EVERY `failed` and
+//     `deferred` row of that collection, not only its own.
+//
 // Each file's `beforeEach` deletes what it reads, because the files
 // share one emulator and run one at a time (`fileParallelism: false`).
 export default defineConfig({

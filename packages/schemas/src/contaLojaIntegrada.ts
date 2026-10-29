@@ -115,9 +115,11 @@ export function situacaoValidadeTokenLi(dias: number): SituacaoValidadeTokenLi {
 
 /**
  * The `code` of every error envelope (`{ error, code, issues? }`) the routes of
- * `apps/loja-integrada` answer with: the conta routes (`…/conta/[id]…`) and the
- * pedidos routes (`PUT …/pedidos/[pedidoId]/rota-etiqueta`, the label routing,
- * and `GET …/pedidos/[pedidoId]/pagamento`, the paid re-check). The web keys its
+ * `apps/loja-integrada` answer with: the conta routes (`…/conta/[id]…`), among
+ * them the catalogue reads (`GET …/conta/[id]/{categorias,marcas,grades}` and
+ * `GET …/conta/[id]/grades/[gradeId]`, step 10), and the pedidos routes
+ * (`PUT …/pedidos/[pedidoId]/rota-etiqueta`, the label routing, and
+ * `GET …/pedidos/[pedidoId]/pagamento`, the paid re-check). The web keys its
  * copy and its decisions on `code`, never on the status alone: a 422 can mean
  * "refused by Loja Integrada" or "malformed, never sent", and a 503 can mean
  * "retry" or "switched off until the cutover" — each needs its own advice.
@@ -196,6 +198,21 @@ export const CODIGO_ERRO_LI = {
    * row (another writer kept changing the pedido); nothing was written. Retry.
    */
   rotaEmConflito: 'LI_ROTA_EM_CONFLITO',
+  /**
+   * 409 — Loja Integrada answered 404 for the grade the catalogue route asked for:
+   * deleted in the painel, or the conta's token is another store's. Never cached.
+   */
+  gradeAusenteNaLoja: 'LI_GRADE_AUSENTE_NA_LOJA',
+  /**
+   * 502 — a catalogue list needs more pages than the route may read
+   * (`MAX_PAGINAS_CATALOGO_LI`). The list is refused whole, never truncated.
+   */
+  catalogoExcedeLimite: 'LI_CATALOGO_EXCEDE_LIMITE',
+  /**
+   * 502 — Loja Integrada refused (403) a catalogue read other than the category
+   * list. Only that list fails: the conta is NOT parked, so its orders keep flowing.
+   */
+  recursoNaoPermitido: 'LI_RECURSO_NAO_PERMITIDO',
 } as const;
 export type CodigoErroLi = (typeof CODIGO_ERRO_LI)[keyof typeof CODIGO_ERRO_LI];
 

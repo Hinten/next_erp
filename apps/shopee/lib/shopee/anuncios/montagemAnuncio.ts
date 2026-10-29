@@ -39,28 +39,45 @@
  *
  * `link.item_name`, `link.description`, `link.category_id`, `link.attributes` and
  * `link.brand_id` come from the last read-back of the LIVE listing, so they carry
- * the operator's Seller Centre choices. They WIN over the ERP produto, blank
+ * the operator's Seller Centre choices — or, on a DRAFT (#1911), from the draft
+ * route that wrote them (`rascunho.ts`; `attributes` in the request shape since
+ * P6). They WIN over the ERP produto, blank
  * meaning absent — the `linkTitle` rule in Mercado Livre's `assemblePublishInput`
  * (`publishCore.ts`),
  * adopted verbatim and for the same measured reason (#799 bug 4a: without it an
  * operator can never give a listing a marketplace-optimised name of its own).
  * The produto is the fallback, which is what a first publish uses.
  *
- * ## The vocabulary this file PRODUCES (eighteen of the twenty-two)
+ * ## The vocabulary this file PRODUCES (nineteen of thirty)
  *
  * `sem-nome`, `nome-fora-da-faixa`, `sem-descricao`, `descricao-fora-da-faixa`,
  * `sem-preco`, `filho-sem-preco`, `preco-fora-da-faixa`, `sem-peso`,
  * `sem-dimensoes`, `sem-fotos`, `sem-gtin`, `categoria-invalida`,
  * `atributo-obrigatorio`, `marca-sem-nome`, `estoque-abaixo-do-minimo`,
- * `listagem-removida`, `produto-e-filho`, `produto-e-kit`.
+ * `listagem-removida`, `produto-e-filho`, `produto-e-kit` — and, since #1911
+ * (P3, D10), `marca-nao-escolhida`: a DRAFT whose brand was never chosen
+ * ({@link LinkListagemLido.marcaNaoEscolhida}). It is not gated on
+ * `ehAtualizacao` like the five create-only members: a draft has no `item_id`,
+ * so it only ever reaches the create body, and the flag alone decides.
  *
- * The other four are produced ELSEWHERE and are listed here so a reader does not
+ * The other eleven are produced ELSEWHERE and are listed here so a reader does not
  * hunt for them in this file: `variacao-sem-vinculo`, `combinacao-duplicada` and
  * `opcoes-demais` are `anuncios/tiersPublicacao.ts`'s; `logistica-sem-canal` is
  * `anuncios/logisticaPublicacao.ts`'s, and this module RELAYS that module's
- * `problemas[]` rather than re-deciding it. The three wire-rejection-only motivos
- * (`bloqueado-por-promocao`, `imposto-recusado`, `desconhecido`) are
- * `anuncios/problemasPublicacao.ts`'s and cannot be reached by reading a produto.
+ * `problemas[]` rather than re-deciding it; and, since #1911 (P5, D5),
+ * `criacao-incerta-ambigua`, `busca-de-anuncio-incompleta`,
+ * `criacao-incerta-sem-sku` and `criacao-incerta-ja-vinculada` are
+ * `anuncios/criacaoIncerta.ts`'s — the ENSURE a draft in `incerta` runs, under
+ * its lock, before any second `add_item` (a Shopee scan by SKU over the
+ * attempt's window; refused outright when the SKU folds blank) — and, since
+ * P5b, `anuncio-existente-sem-vinculo`, `anuncio-existente-de-outro-produto` and
+ * `busca-de-anuncio-existente-incompleta` are that file's too: the look-up a
+ * `livre` draft's FIRST `add_item` runs, under its lock, for a listing the conta
+ * already holds with the SKU the body sends. Never this module's: a montagem
+ * builds a body, and these decide whether one may be SENT at all. The wire-rejection-only motivos
+ * (`bloqueado-por-promocao`, `imposto-recusado`, `anuncio-semelhante-existente`
+ * and `desconhecido` among them) are `anuncios/problemasPublicacao.ts`'s and
+ * cannot be reached by reading a produto.
  *
  * ⚠️ **`problemas` is the UNION of every refusal found, not the first.** An
  * operator fixing a produto sees everything that is wrong in one pass; stopping
@@ -92,7 +109,6 @@
 import {
   type ShopeeAddItemRequest,
   type ShopeeAttributeRequest,
-  type ShopeeAttributeValueRequest,
   type ShopeeCondition,
   type ShopeeDimensionRequest,
   type ShopeeItemStatusWritable,
@@ -109,8 +125,18 @@ import {
   type ComponentesKit,
   type EstadoAnuncioShopee,
   type Foto,
+  atributosParaEnvioShopee,
+  dentroDaFaixaShopee,
+  descreverFaixaShopee,
+  descricaoDoAnuncioShopee,
   ESTADO_ANUNCIO_SHOPEE,
+  lerAtributosArmazenadosShopee,
   precoDaTabela,
+  textoNaFaixaShopee,
+  textoUtilizavelShopee,
+  TIPO_PROBLEMA_ATRIBUTO_SHOPEE,
+  tituloDoAnuncioShopee,
+  validarAtributosShopee,
 } from '@delfrance/schemas';
 
 import { quantidadeParaPublicarShopee } from '../estoque/quantidadeEstoque';
@@ -148,7 +174,8 @@ import {
  *
  * What `produto-e-kit` refuses is a **NATIVE Shopee kit** (`add_kit_item`,
  * step 19), decided by {@link kitNativoDoAnuncio}: the stored link's
- * `kitNativo` on a republish, `ehKitVirtual` on a first publish. Step 11 keyed
+ * `kitNativo` on a republish, `ehKitVirtual` on a first publish — a DRAFT
+ * link's included (#1911). Step 11 keyed
  * that refusal on `ehKit` alone, which made the entire legacy kit catalogue
  * permanently unpublishable. Since step 19 (PR 7) that refusal is a defensive
  * assertion: the dispatcher sends a native kit to the kit arms before this
@@ -211,6 +238,44 @@ export interface LinkListagemLido {
    * reading for it.
    */
   readonly kitNativo?: boolean | null;
+  /**
+   * Whether the stored document is a DRAFT (#1911, D3) — a listing the ERP
+   * intends to create and Shopee never answered for — as `ehRascunhoShopee`
+   * (`@delfrance/schemas`, THE one predicate) reads the RAW document. Set by the
+   * ONE builder, `linkListagemLido` in `publicarAnuncio.ts`; read by
+   * {@link vinculoDecideKitNativo} alone.
+   *
+   * ⚠️ **Never re-derived from `item_id` above.** That field is already FOLDED
+   * (`0`, `-1`, `'123'` all read `null`), so a CORRUPT link would pass for a
+   * draft here and stop being decided by its own `kitNativo` — the raw document
+   * is the only input that keeps a corrupt link out of the class.
+   *
+   * OPTIONAL and read `=== true`: a projection built without it (a hand-built
+   * fixture predating #1911) keeps the pre-#1911 reading — the link decides.
+   */
+  readonly ehRascunho?: boolean;
+  /**
+   * Whether the stored document is a DRAFT whose brand was never CHOSEN
+   * (#1911, P3, D10) — `rascunhoSemMarcaShopee` (`@delfrance/schemas`, the ONE
+   * predicate the web's pendência calls too) over the RAW document: a draft
+   * whose `brand_id` is not a safe non-negative integer (`null`, absent, `-1`,
+   * `'77'`, `1.5`… — fail-closed since P5). Set by the ONE builder, `linkListagemLido`
+   * in `publicarAnuncio.ts`; read by {@link montarAnuncio} alone, which refuses
+   * it as `marca-nao-escolhida` BEFORE the brand cascade's `0` could turn "not
+   * chosen" into Shopee's "No Brand" on the operator's behalf.
+   *
+   * ⚠️ **Never re-derived here from `brand_id` + `item_id` above.** `item_id` is
+   * FOLDED (a corrupt `0` reads `null`), so a corrupt link would pass for a
+   * draft; only the raw document keeps it out of the class — the
+   * {@link ehRascunho} rule.
+   *
+   * ⚠️ **REQUIRED, unlike {@link ehRascunho}.** A builder that forgot it must
+   * fail to compile: an absent flag reads as "chosen", and the cascade then
+   * publishes "No Brand" for a draft nobody picked a brand for — the silent
+   * direction. A listing's link always carries `false`: its `brand_id: null`
+   * keeps today's cascade (D10 leaves every non-draft link untouched).
+   */
+  readonly marcaNaoEscolhida: boolean;
 }
 
 /**
@@ -344,12 +409,15 @@ function problema(
   return { campo, motivo, mensagem: limitarMensagemProblema(mensagem) };
 }
 
-/** A usable text value: trimmed and non-empty. Blank means ABSENT everywhere here. */
-function textoUtilizavel(valor: string | null | undefined): string | null {
-  if (typeof valor !== 'string') return null;
-  const limpo = valor.trim();
-  return limpo.length > 0 ? limpo : null;
-}
+/*
+ * "Usable text" (trimmed, blank ⇒ ABSENT), the band check (`null` band or end =
+ * NO bound, both ends inclusive) and its description live in
+ * `@delfrance/schemas`' `faixaShopee.ts` (#1911) — `textoUtilizavelShopee`,
+ * `dentroDaFaixaShopee`, `descreverFaixaShopee`, `textoNaFaixaShopee` — together
+ * with the name and description resolutions (`tituloDoAnuncioShopee`,
+ * `descricaoDoAnuncioShopee`), so a browser surface (#1911's draft editor) can
+ * ask the same questions this module refuses on, with no second copy (#1369).
+ */
 
 /** A usable positive number. `0`, a negative and a non-finite all read as absent. */
 function numeroPositivo(valor: number | null | undefined): number | null {
@@ -357,32 +425,10 @@ function numeroPositivo(valor: number | null | undefined): number | null {
   return valor;
 }
 
-/**
- * Whether `valor` sits inside `banda`.
- *
- * An absent band, or an absent end of one, is NO BOUND — Shopee's limit pages
- * leave ends `null` when the category states none, and treating that as `0`
- * would refuse every description on a category that declares no maximum.
- */
-function dentroDaFaixa(valor: number, banda: FaixaDto | null | undefined): boolean {
-  if (banda == null) return true;
-  if (banda.min !== null && valor < banda.min) return false;
-  if (banda.max !== null && valor > banda.max) return false;
-  return true;
-}
-
 /** A band's lower bound as a number, `0` when the category states none. */
 function minimoDaFaixa(banda: FaixaDto | null | undefined): number {
   if (banda == null || banda.min === null || !Number.isFinite(banda.min)) return 0;
   return banda.min;
-}
-
-/** A human description of a band, for a problema's `mensagem`. */
-function descreverFaixa(banda: FaixaDto | null | undefined): string {
-  if (banda == null) return 'sem faixa informada';
-  const min = banda.min === null ? '—' : String(banda.min);
-  const max = banda.max === null ? '—' : String(banda.max);
-  return `${min}..${max}`;
 }
 
 /**
@@ -437,33 +483,60 @@ export function dimensaoParaPublicar(produto: ProdutoParaPublicar): ShopeeDimens
   };
 }
 
-/** One stored attribute entry, read tolerantly — the link stores them as `unknown`. */
-function lerValorArmazenado(bruto: unknown): ShopeeAttributeValueRequest | null {
-  if (typeof bruto !== 'object' || bruto === null || Array.isArray(bruto)) return null;
-  const linha = bruto as Record<string, unknown>;
-  const valueId = linha.value_id;
-  if (typeof valueId !== 'number' || !Number.isInteger(valueId) || valueId < 0) return null;
-  const nome = textoUtilizavel(linha.original_value_name as string | null | undefined);
-  const unidade = textoUtilizavel(linha.value_unit as string | null | undefined);
-  // `0` is the CUSTOM sentinel (`guide 211 §2.2`) and then the name is REQUIRED:
-  // a custom value with no name is a value Shopee refuses, so it is dropped here
-  // and the attribute may end up missing — which is how it reaches
-  // `atributo-obrigatorio` instead of a wire rejection.
-  if (valueId === 0 && nome === null) return null;
-  return {
-    value_id: valueId,
-    ...(valueId === 0 && nome !== null ? { original_value_name: nome } : {}),
-    ...(unidade !== null ? { value_unit: unidade } : {}),
-  };
-}
-
 /**
  * `attribute_list` from the stored attributes, plus the mandatory set it misses.
  *
- * The ERP models no Shopee attribute of its own, so the stored list — the last
- * read-back of the live listing, or what the operator filled in Seller Centre —
- * is the ONLY source there is. Entries with no usable values are dropped rather
- * than sent empty: Shopee reads an empty `attribute_value_list` as a deletion.
+ * ⚠️ **Neither half is decided here** (#1911, D9). Both come from
+ * `@delfrance/schemas`' `atributosShopee.ts` — the ONE decoder and the ONE
+ * validator, which the draft route and the produto's Shopee tab in `apps/web`
+ * read too (#1369: a second copy here would drift toward plausible while both
+ * read correct). This function only composes them, and keeps its signature
+ * because `publicarAnuncioCli.ts`'s dry run calls it with the same two
+ * arguments.
+ *
+ * **`lista`** — `lerAtributosArmazenadosShopee` → `atributosParaEnvioShopee`:
+ * whichever of the three stored shapes the link holds (write-back #1's REQUEST
+ * shape, as sent; the product import's READ shape; the legacy value with no
+ * `value_id`), in stored order, always in the request shape. The ERP models no
+ * Shopee attribute of its own, so the stored list is the ONLY source there is.
+ *
+ * - Everything usable that is stored is SENT — an attribute the current tree
+ *   does not show (another category's, a child whose parent value is no longer
+ *   chosen) included. Dropping those is the web editor's save (P13, via
+ *   `atributosParaGravarShopee`, before it posts); the draft route stores what
+ *   it receives, and the publisher sends what is stored.
+ * - An entry with no usable value is dropped rather than sent empty: Shopee
+ *   reads an empty `attribute_value_list` as a DELETION. A custom value
+ *   (`value_id: 0`) with a blank name is such a value — dropped, so the
+ *   attribute may end up missing, which is how it reaches
+ *   `atributo-obrigatorio` instead of a wire rejection.
+ * - ⚠️ **A legacy custom value stored with NO `value_id` is SENT**, as
+ *   `{value_id: 0, original_value_name}` (Lucas, #1911 Round 3 Q1 — the legacy
+ *   app sent it too). Before #1911 this function dropped it in silence, which on
+ *   a mandatory attribute read only as "missing"; a refusal by name is routable
+ *   to the attribute editor. A blank name is still dropped.
+ * - ⚠️ A DATE stored in the READ form (`06/2021`, what the product import
+ *   stores verbatim) goes out in the WRITE form: guide 209 §2.3 documents the
+ *   write as a Unix timestamp in `original_value_name`, so the read form sent
+ *   as is would be refused. The tree says which attributes are dates
+ *   (`inputValidationType` 4), and the conversion is the shared module's
+ *   (`atributosParaEnvioShopee` → `timestampDeDataShopee`) — never decided
+ *   here. Its instant-of-day (12:00 UTC) stays UNVERIFIED until the BR
+ *   captures (Q-DB2) and lives in that ONE place. A timestamp, a date the tree
+ *   does not know and a text that is no real date go out as stored.
+ *
+ * **`faltando`** — the `obrigatorio-ausente` rows of `validarAtributosShopee`,
+ * and ONLY those: a VISIBLE mandatory attribute with no decoded value. A ROOT
+ * (named `name ?? '#<id>'`, the pre-#1911 check) or — new in #1911 — a
+ * mandatory CHILD that a value the listing CHOSE unlocks, named
+ * `"<filho> (em <pai>: <valor>)"`; the child of an unchosen value is invisible
+ * and never missing. Every other kind the validator finds (a custom value on a
+ * list-only attribute, a value outside the list, too many values, a unit, a
+ * value type, an orphan) reaches Shopee, which names it — a read-form date
+ * reaches it CONVERTED (above): the editor shows them, the publisher refuses
+ * none of them. `obrigatorio-requer-busca`
+ * is an EXTRA row beside `obrigatorio-ausente`, so filtering on the latter names
+ * each missing attribute exactly once.
  *
  * ⚠️ `variation_id != 0 ⇒ never send variation_name` is the TIER rule
  * (`announcement 873`) and has nothing to do with attributes. It lives in
@@ -473,33 +546,11 @@ export function atributosParaPublicar(
   armazenados: readonly unknown[] | null,
   projetados: AtributosProjetados,
 ): { readonly lista: readonly ShopeeAttributeRequest[]; readonly faltando: readonly string[] } {
-  const lista: ShopeeAttributeRequest[] = [];
-  const vistos = new Set<number>();
-  for (const bruto of armazenados ?? []) {
-    if (typeof bruto !== 'object' || bruto === null || Array.isArray(bruto)) continue;
-    const linha = bruto as Record<string, unknown>;
-    const id = linha.attribute_id;
-    if (typeof id !== 'number' || !Number.isInteger(id)) continue;
-    const brutos = Array.isArray(linha.attribute_value_list) ? linha.attribute_value_list : [];
-    const valores: ShopeeAttributeValueRequest[] = [];
-    for (const valor of brutos) {
-      const lido = lerValorArmazenado(valor);
-      if (lido !== null) valores.push(lido);
-    }
-    if (valores.length === 0) continue;
-    if (vistos.has(id)) continue;
-    vistos.add(id);
-    lista.push({ attribute_id: id, attribute_value_list: valores });
-  }
-
-  const faltando: string[] = [];
-  for (const atributo of projetados.atributos) {
-    if (!atributo.mandatory) continue;
-    if (vistos.has(atributo.attributeId)) continue;
-    faltando.push(atributo.name ?? `#${String(atributo.attributeId)}`);
-  }
-
-  return { lista, faltando };
+  const lidos = lerAtributosArmazenadosShopee(armazenados).atributos;
+  const faltando = validarAtributosShopee(projetados, lidos)
+    .filter((p) => p.tipo === TIPO_PROBLEMA_ATRIBUTO_SHOPEE.obrigatorioAusente)
+    .map((p) => p.nome);
+  return { lista: atributosParaEnvioShopee(projetados, lidos), faltando };
 }
 
 /**
@@ -532,7 +583,7 @@ export function preOrderParaPublicar(
   const normal = dts?.nonPreOrderDaysToShip;
   if (typeof normal !== 'number' || !Number.isFinite(normal)) return negado;
   if (dias <= normal) return negado;
-  if (!dentroDaFaixa(dias, dts?.daysToShipLimit)) return negado;
+  if (!dentroDaFaixaShopee(dias, dts?.daysToShipLimit)) return negado;
   return { is_pre_order: true, days_to_ship: dias };
 }
 
@@ -640,9 +691,12 @@ export function sizeChartInfoParaPublicar(
  * refusal on it alone and so blocked the whole legacy kit catalogue from being
  * re-published; step 12 (#1520) narrows it to the two arms below.
  *
- * - **A link exists — a republish.** `link.kitNativo` is what Shopee itself
- *   reported about the live listing (`tag.kit`, folded by `ehKitDe` in
- *   `../produtos/itemLido.ts`), so on an update it is the only statement about
+ * Which arm runs is {@link vinculoDecideKitNativo}'s answer, exported so that
+ * `recusarProdutoNaoPublicavel` labels its `campo` from the SAME branch.
+ *
+ * - **A link that is not a draft — a republish.** `link.kitNativo` is what
+ *   Shopee itself reported about the live listing (`tag.kit`, folded by
+ *   `ehKitDe` in `../produtos/itemLido.ts`), so on an update it is the only statement about
  *   the listing that is not a guess, and it WINS over anything the produto
  *   says. `false` and an absent/`null` reading both publish: a native kit's
  *   link carries the LITERAL `true` from the link write that follows
@@ -650,17 +704,24 @@ export function sizeChartInfoParaPublicar(
  *   this catalogue before step 19 created the first ones — so an unstamped link
  *   is an ORDINARY listing (the legacy corpus, or one imported before the field
  *   existed) and must not be read as a kit.
- * - **No link — a first publish.** `produto.ehKitVirtual` is the ERP's own
- *   statement that the MARKETPLACE resolves the composition
- *   (`produto/collection/produto.ts:105-110`), which on Shopee means
- *   `add_kit_item` — step 19's `kit-criar` arm. ⚠️ `ehKit === false ⇒
- *   ehKitVirtual === false` is NOT an invariant of the stored data: nothing in
+ * - **No link, or a DRAFT link (#1911, D3) — a first publish.**
+ *   `produto.ehKitVirtual` is the ERP's own statement that the MARKETPLACE
+ *   resolves the composition (`produto/collection/produto.ts:105-110`), which
+ *   on Shopee means `add_kit_item` — step 19's `kit-criar` arm. ⚠️ `ehKit ===
+ *   false ⇒ ehKitVirtual === false` is NOT an invariant of the stored data: nothing in
  *   the schema stops a doc from carrying the flag beside `ehKit: false`
  *   (`onProdutoDeleted` clears the pair only when a kit's LAST component is
  *   deleted — `ehKitVirtualEfetivo`'s docblock, `@delfrance/schemas`). What
  *   keeps an ordinary produto out of this arm is `escolherArmaDePublicacao`,
  *   which refuses that mismatch (`kit-virtual-sem-kit`) before any plan exists,
  *   while the web switches the flag off on save from step 19 on.
+ *   ⚠️ A DRAFT takes this arm because Shopee never answered for it: whatever
+ *   its `kitNativo` holds is no reading of a listing, so on the kit question it
+ *   is exactly a first publish. Read by the link arm, a draft on a kit-virtual
+ *   produto would go out as an ORDINARY `add_item` with no refusal at all
+ *   (#1911's spot-check row 6). The dispatcher refuses that pair first
+ *   (`rascunho-em-kit-virtual`); this arm is the defence in depth for a caller
+ *   that bypassed it, which hears `produto-e-kit` ("defeito do ERP").
  *
  * ⚠️ It is deliberately **not** the same predicate as the stock sweep's
  * (`../estoque/podeEnviarEstoque.ts`), which reads the link's field and nothing
@@ -675,10 +736,28 @@ export function sizeChartInfoParaPublicar(
  * absent key all read as "not a native kit".
  */
 export function kitNativoDoAnuncio(
-  link: { readonly kitNativo?: unknown } | null,
+  link: { readonly kitNativo?: unknown; readonly ehRascunho?: unknown } | null,
   produto: { readonly ehKitVirtual?: unknown },
 ): boolean {
-  return link !== null ? link.kitNativo === true : produto.ehKitVirtual === true;
+  return link !== null && vinculoDecideKitNativo(link)
+    ? link.kitNativo === true
+    : produto.ehKitVirtual === true;
+}
+
+/**
+ * Does the stored LINK answer {@link kitNativoDoAnuncio} (a republish), or the
+ * PRODUTO (a first publish)? `false` for no link and for a DRAFT link
+ * ({@link LinkListagemLido.ehRascunho} `=== true`, #1911): a draft is a listing
+ * Shopee never answered for, so nothing on it is a reading of the listing.
+ *
+ * Exported for ONE reason: `recusarProdutoNaoPublicavel` names the field the
+ * operator must look at (`kitNativo` vs `ehKitVirtual`) from the arm the
+ * predicate took, and a second spelling of the branch there is the label
+ * drifting from the decision. `ehRascunho` is read `=== true`, so an absent key
+ * (a projection predating #1911) lets the link decide, as before.
+ */
+export function vinculoDecideKitNativo(link: { readonly ehRascunho?: unknown } | null): boolean {
+  return link !== null && link.ehRascunho !== true;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -689,7 +768,7 @@ export function kitNativoDoAnuncio(
  * Build both bodies and every refusal the produto graph can produce.
  *
  * Field sources, the stored link winning where it has one, are in the module
- * docblock; the refusal set is the eighteen members listed there. Nothing here
+ * docblock; the refusal set is the nineteen members listed there. Nothing here
  * throws: a refusal is a `problemas[]` entry, and the caller decides.
  */
 export function montarAnuncio(args: ArgsMontarAnuncio): ItemMontado {
@@ -731,26 +810,30 @@ export function montarAnuncio(args: ArgsMontarAnuncio): ItemMontado {
 
   /* --------------------------------- name --------------------------------- */
 
-  const nome = textoUtilizavel(link?.item_name) ?? textoUtilizavel(produto.nome);
-  if (nome === null) {
+  // The resolved text is what the bodies carry (even on a refusal); the verdict
+  // is what refuses — both from `@delfrance/schemas`, so a browser can share them.
+  const nome = tituloDoAnuncioShopee(link?.item_name, produto.nome);
+  const nomeNaFaixa = textoNaFaixaShopee(nome, bandas.itemNameLengthLimit);
+  if (nomeNaFaixa.estado === 'ausente') {
     problemas.push(
       problema('item_name', MOTIVO_PUBLICACAO_BLOQUEADA.semNome, 'o produto não tem nome'),
     );
-  } else if (!dentroDaFaixa(nome.length, bandas.itemNameLengthLimit)) {
+  } else if (nomeNaFaixa.estado === 'fora-da-faixa') {
     problemas.push(
       problema(
         'item_name',
         MOTIVO_PUBLICACAO_BLOQUEADA.nomeForaDaFaixa,
-        `o nome tem ${String(nome.length)} caracteres, fora da faixa da categoria ` +
-          `(${descreverFaixa(bandas.itemNameLengthLimit)}) — nunca truncado`,
+        `o nome tem ${String(nomeNaFaixa.comprimento)} caracteres, fora da faixa da categoria ` +
+          `(${descreverFaixaShopee(bandas.itemNameLengthLimit)}) — nunca truncado`,
       ),
     );
   }
 
   /* ------------------------------ description ----------------------------- */
 
-  const descricao = textoUtilizavel(link?.description) ?? textoUtilizavel(args.descricao);
-  if (descricao === null) {
+  const descricao = descricaoDoAnuncioShopee(link?.description, args.descricao);
+  const descricaoNaFaixa = textoNaFaixaShopee(descricao, bandas.itemDescriptionLengthLimit);
+  if (descricaoNaFaixa.estado === 'ausente') {
     problemas.push(
       problema(
         'description',
@@ -758,13 +841,13 @@ export function montarAnuncio(args: ArgsMontarAnuncio): ItemMontado {
         'o produto não tem descrição',
       ),
     );
-  } else if (!dentroDaFaixa(descricao.length, bandas.itemDescriptionLengthLimit)) {
+  } else if (descricaoNaFaixa.estado === 'fora-da-faixa') {
     problemas.push(
       problema(
         'description',
         MOTIVO_PUBLICACAO_BLOQUEADA.descricaoForaDaFaixa,
-        `a descrição tem ${String(descricao.length)} caracteres, fora da faixa da categoria ` +
-          `(${descreverFaixa(bandas.itemDescriptionLengthLimit)})`,
+        `a descrição tem ${String(descricaoNaFaixa.comprimento)} caracteres, fora da faixa da categoria ` +
+          `(${descreverFaixaShopee(bandas.itemDescriptionLengthLimit)})`,
       ),
     );
   }
@@ -842,8 +925,8 @@ export function montarAnuncio(args: ArgsMontarAnuncio): ItemMontado {
 
   /* --------------------------------- gtin --------------------------------- */
 
-  const gtin = textoUtilizavel(produto.gtin);
-  const regraGtin = textoUtilizavel(limites.gtinLimit?.gtinValidationRule);
+  const gtin = textoUtilizavelShopee(produto.gtin);
+  const regraGtin = textoUtilizavelShopee(limites.gtinLimit?.gtinValidationRule);
   if (gtin === null && regraGtin === REGRA_GTIN_OBRIGATORIA) {
     problemas.push(
       problema(
@@ -870,9 +953,23 @@ export function montarAnuncio(args: ArgsMontarAnuncio): ItemMontado {
   /* -------------------------------- brand --------------------------------- */
 
   const brandId = link?.brand_id ?? args.marca.brandId;
-  const nomeDaMarca = textoUtilizavel(args.marca.nome);
+  const nomeDaMarca = textoUtilizavelShopee(args.marca.nome);
   let brand: ShopeeAddItemRequest['brand'];
-  if (brandId === 0) {
+  if (link?.marcaNaoEscolhida === true) {
+    // ⚠️ FIRST, before the `0` arm: a draft's absent brand reaches here as the
+    // cascade's `0`, and "No Brand" is a choice the operator makes («Sem
+    // marca»), never one the ERP makes for them (#1911, D10). No `brand` block
+    // and no `marca-sem-nome` — the refusal names the one missing decision.
+    brand = undefined;
+    problemas.push(
+      problema(
+        'brand',
+        MOTIVO_PUBLICACAO_BLOQUEADA.marcaNaoEscolhida,
+        'o rascunho não tem marca escolhida — escolha a marca do rascunho na aba Shopee ' +
+          '(ou «Sem marca») antes de publicar',
+      ),
+    );
+  } else if (brandId === 0) {
     // No lookup, no read, no cascade: `brand_id: 0` IS "No Brand".
     brand = { brand_id: 0, original_brand_name: NOME_SEM_MARCA };
   } else if (nomeDaMarca !== null) {
@@ -936,13 +1033,13 @@ export function montarAnuncio(args: ArgsMontarAnuncio): ItemMontado {
               'o produto não tem preço na tabela normal da conta',
             ),
       );
-    } else if (!dentroDaFaixa(preco, bandas.priceLimit)) {
+    } else if (!dentroDaFaixaShopee(preco, bandas.priceLimit)) {
       problemas.push(
         problema(
           'original_price',
           MOTIVO_PUBLICACAO_BLOQUEADA.precoForaDaFaixa,
           `o preço ${String(preco)} está fora da faixa da categoria ` +
-            `(${descreverFaixa(bandas.priceLimit)})`,
+            `(${descreverFaixaShopee(bandas.priceLimit)})`,
         ),
       );
     }
@@ -975,7 +1072,7 @@ export function montarAnuncio(args: ArgsMontarAnuncio): ItemMontado {
           'seller_stock',
           MOTIVO_PUBLICACAO_BLOQUEADA.estoqueAbaixoDoMinimo,
           `o estoque disponível ${String(estoque)} está abaixo do mínimo da loja ` +
-            `(${descreverFaixa(banda)}) — a Shopee recusa a criação e o estoque nunca ` +
+            `(${descreverFaixaShopee(banda)}) — a Shopee recusa a criação e o estoque nunca ` +
             'é arredondado para cima',
         ),
       );
@@ -991,7 +1088,7 @@ export function montarAnuncio(args: ArgsMontarAnuncio): ItemMontado {
 
   const taxInfo = args.taxInfo?.taxInfo ?? null;
   const condition = condicaoDoProduto(produto);
-  const sku = textoUtilizavel(produto.sku);
+  const sku = textoUtilizavelShopee(produto.sku);
   const image = { image_id_list: imagens };
   const atributoLista = atributos.lista;
 

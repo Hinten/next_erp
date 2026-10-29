@@ -64,6 +64,16 @@ after the photos are uploaded, and an uploaded image no listing references chang
 on Shopee, so that order is accepted. A dry run is steps 1–6 (`ensaiarKitShopee`): reads, the
 scan and the photo upload, never a write and never `add_kit_item`.
 
+**The tier's names (#1911 batch-A).** Outside the `'Kit'`/`'Padrão'` sentinel (ours, never
+checked), the tier name is the grupo's, SENT through `nomeDeTierShopee` (ends trimmed; case
+and inner spaces kept) — so a grupo with no name, a blank one, or one `prepararKit` could
+not read (never its doc id) refuses `opcoes-demais` in phase B, before the one
+non-idempotent `add_kit_item`. When `get_kit_item_limit` is served, that name and every
+option are measured AS SENT against the KIT bands `tier_variation_name_length_limit` /
+`tier_variation_option_length_limit` (`textoNaFaixaShopee`) and refused `opcoes-demais`,
+never truncated; a null band checks nothing. A republish resends the LIVE tier name and is
+not band-checked.
+
 **No transaction, anywhere in this folder.** Every write is idempotent on its own: an upsert
 at a deterministic id, a `create()` that falls back to a re-stamp, a `merge` of values just
 read. The transaction inventory greps the bare API name, so no `kits/*.ts` file may spell
@@ -367,14 +377,59 @@ whose delete did not take. It changes **publish only**:
   accepts both stored conta-ref encodings (OP-27, PR #1869), so a legacy
   bare-encoded link is now a candidate for a non-kit produto too. Reordering it would publish a non-kit produto whose REMOVED link
   sorts first to its live link, where main answers `listagem-removida` (M185,
-  `publicarAnuncio.test.ts`).
+  `publicarAnuncio.test.ts`). ⚠️ That lexical set still includes every DRAFT
+  (#1911), which is why the dispatcher never hands it `null` while a draft
+  exists (below).
 - **`resolverLinkVivoPorProduto`** (`linkAnuncio.ts`) serves the reverify, the
   status, `pausar` and the `reverificar:anuncio` CLI. Same signature, conta
   filter and `linkDocId` narrowing. With no `linkDocId` it picks an active native
-  kit (`ehKitNativoAtivo`), then a link neither removed nor superseded, then the
-  rest, using `escolherLink` within each tier. So `pausar` on a converted produto
-  unlists the new kit, never the superseded listing (M185's near-miss,
-  `pausarAnuncio.test.ts`).
+  kit (`ehKitNativoAtivo`), then a non-draft link neither removed nor superseded,
+  then the remaining non-drafts, and a draft only last (#1911), using
+  `escolherLink` within each tier. So `pausar` on a converted produto unlists the
+  new kit, never the superseded listing (M185's near-miss,
+  `pausarAnuncio.test.ts`), and never a draft whose id sorts first.
+
+### Drafts: never live, reachable only by name (#1911, D3)
+
+A DRAFT is a `prodshopee` doc that Shopee never answered for: `item_id` null or
+absent, and not `kitNativo: true`. It is listing authoring's intention to create
+a listing (#1911). ONE predicate decides it: `ehRascunhoShopee` in
+`@delfrance/schemas` (`shopeeLinkLeitura.ts`), disjoint from `anuncioShopeeVivo`
+by construction. Never test `item_id == null` locally (#1369).
+
+On main a draft sat in the dispatcher's O class: it is neither removed nor
+superseded. So an unnamed publish whose draft id sorted before the live listing's
+reached the item arm ON THE DRAFT, which sends `add_item` and creates a second
+listing beside the one that sells (E1 H2). The dispatcher now has a sixth class,
+**R**, tested after the native-kit test and before the superseded and removed
+ones:
+
+| request                                 | conta holds                         | answer                                                                                                                                                                                        |
+| --------------------------------------- | ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--link <draft>`                        | —                                   | `ehKitVirtual` without `ehKit` ⇒ `kit-virtual-sem-kit`; `ehKitVirtualEfetivo` ⇒ **`rascunho-em-kit-virtual`**; else the item arm on the draft. This is the ONLY way a draft is ever published |
+| `--link <draft>` + `--converter-em-kit` | —                                   | `converter-sem-anuncio-comum` (a draft has no listing to convert)                                                                                                                             |
+| unnamed                                 | a live N, or a live O beside drafts | rules (3)/(4) as before; O ∪ RO holds no draft, so the live listing wins whatever the ids                                                                                                     |
+| unnamed                                 | no live link                        | rule (5) keeps its order (`kit-virtual-sem-kit` → `kit-criar` → X → RO → SO); only when nothing but drafts is left ⇒ **`rascunho-nao-nomeado`**                                               |
+
+`rascunho-nao-nomeado` names `--link`, so it carries `acao`: `republicar` with
+the one draft, or `escolher-vinculo` with 2+ drafts in id order. It never falls
+back to the item arm with `linkDocId: null`, because step 11's lexical resolver
+would pick the draft. A kit-virtual produto with only a draft answers `kit-criar`
+and leaves the draft alone. `rascunho-em-kit-virtual` names no flag and carries
+no `acao`: the operator discards the draft, and the kit publishes unnamed.
+
+⚠️ **Near-misses that are NOT drafts.** A corrupt `item_id` (`0`, `'123'`) is
+neither vivo nor a draft. It stays in O/RO exactly as on main, and wins the
+lexical pick, which is a recorded residual. `{ item_id: null, kitNativo: true }`
+is a native-kit residue, class X. Only `kitNativo === true` excludes a draft;
+`'true'` or `null` leave it a draft.
+
+Both refusals are dispatcher-only motivos, spelled here through
+`MOTIVO_PUBLICACAO_BLOQUEADA`. `anuncios/errosPublicacao.test.ts` (O7) pins this
+file as their sole producer. Pinned by the "um RASCUNHO nunca é vivo" block of
+`armaDePublicacao.test.ts`, which includes the stored-doc case where the lexical
+resolver picks the draft and the dispatcher does not. The publish IO half is in
+`anuncios/publicarShopee.test.ts`.
 
 ### The model-list sync is per LISTING (R-12(e))
 
@@ -463,18 +518,60 @@ are in `anuncios/publicarShopee.test.ts`.
   `--converter-em-kit` — and never on a republish (L10(4)).
 - **What it scans.** It pages `get_item_list` over `STATUS_BUSCA_KIT` =
   `NORMAL`/`UNLIST`/`REVIEWING`/`BANNED`, with no `update_time_from`. A deleted kit
-  is never a hit. Beyond `MAX_PAGINAS_BUSCA_KIT` (100 pages), it refuses
-  `busca-de-kit-incompleta`.
+  is never a hit. Beyond `MAX_PAGINAS_BUSCA_KIT` (100 pages), or on a cursor
+  Shopee did not hand back or advance, it refuses `busca-de-kit-incompleta`
+  (`incompleta.causa: 'lista'`).
 - **Fail-closed on `tag`.** A row whose `tag`/`tag.kit` is null is a candidate,
   decided by its base info; only `tag.kit === false` is dropped. A missing tag
   costs reads, never a duplicate kit.
+- **Fail-closed on the base row** (#1911 batch-A review). Every listed candidate
+  must come back from the base-info batch. One that does not — left out of the
+  answer, a chunk answered with the batch "none of these ids exists"
+  (`error_item_not_found`), or a listing gone between the two reads — makes the
+  scan INCOMPLETE (`incompleta.causa: 'base-info'`, the ids sorted): no hit is
+  reported, no link is read, one `console.warn` names the count and ≤ 10 ids, and
+  the create refuses `busca-de-kit-incompleta` with "a Shopee não devolveu os
+  dados de N anúncio(s) listado(s) (ids …) — tente de novo; se persistir, confira
+  esses anúncios no Seller Centre". Until then the loop skipped such a row as
+  "not a hit" (undocumented, since step 19) — absence on no evidence. The
+  ordinary first create (`localizarItensPorSku` with `kit: false`) rides the SAME
+  loop and words it alike (`busca-de-anuncio-existente-incompleta`); there is no
+  `kit` fork in it.
+- **The deadline checkpoint is the ordinary arm's, never the kit's** (#1911
+  batch-A review, 2026-10-28). `varrerListaDeItensShopee` and
+  `localizarItensPorSku` take an optional `podeContinuar: () => boolean`, asked
+  BEFORE each `get_item_list` page and — through `clienteDaBuscaNoPrazo`, the
+  client handed to the shared base-info reader — BEFORE each
+  `get_item_base_info` chunk. A `false` throws `BuscaForaDoPrazoShopeeError`
+  (an app class, never a `ShopeeError`) with NO answer: not an incomplete
+  scan, not a hit read so far. A draft's two look-ups under the publish lock
+  pass it (ENSURE and the first create's same-SKU scan, `anuncios/`), as a
+  closure over the route's clock built in `anuncios/reservaRascunho.ts` —
+  this folder reads no clock — and the publish answers the cut 409
+  `PUBLICACAO_EXPIRADA`. `localizarKitsPorSku` passes NONE (its arguments
+  field by field, never a spread): the kit arm's walk is byte-for-byte step
+  19's.
 - **The SKU match is step 9's identity**: `skuDoItemShopee(base) === sku`, where
   `skuDoItemShopee` is `(item_sku ?? '').trim()`, case-sensitive like the parent
   rung's `where('sku','==',…)`.
-- **OURS is decided by the link docs.** A linked kit that the list does not show
-  yet (~9 s of listing latency) still exists: one batched `get_item_base_info`
-  confirms it. A linked id that reads deleted is written `removido` before the
-  run acts.
+- **OURS is decided by the link docs.** A linked kit the COMPLETE walk listed
+  exists — hit or not — and is read from its list row (`BuscaPorSku.listados`),
+  never asked about again (#2065: a second `get_item_base_info` that dropped the
+  row read a live kit as deleted, and a resumed `--recriar` / `--converter-em-kit`
+  created another kit and marked the live one `removido`). A linked kit the list
+  does not show yet (~9 s of listing latency) still exists when one batched
+  `get_item_base_info` confirms it. Only a linked kit absent from the complete
+  list AND read gone by that batch — a deleted status, or no row at all — is
+  written `removido` before the run acts. When there is no row and its link is
+  younger than
+  `AGUARDAR_KIT_INCERTO_SHOPEE_MS` (`publicadoEm`, the stamp
+  `escreverVinculoDoKit` writes right after `add_kit_item`), a missing row is a
+  DOUBT instead: the create refuses `busca-de-kit-incompleta` ("o kit criado há
+  pouco ainda não aparece na Shopee — aguarde 4 minutos e tente de novo") and
+  writes nothing. A link with no `publicadoEm` (step 9's import writes none) has
+  an unknown age and keeps the `removido` reading. `planoKit.ts`'s
+  `situacaoDoKitNosso` is the ONE reading the plan and the applier share; an
+  incomplete scan reads no linked kit at all.
 - **Our side must be clean.** A SKU missing, padded or shared is refused in phase
   A, before any Shopee read. "Missing" and "padded" are not re-derived here: every
   guard (phase A, the republish's `sku-do-kit-nao-enviado`, the rung-2 read) asks

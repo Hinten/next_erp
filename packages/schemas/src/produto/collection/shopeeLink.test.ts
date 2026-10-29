@@ -15,6 +15,7 @@ import {
   ehVinculoSubstituido,
   ehKitNativoAtivo,
   ehKitNativoQueAindaVende,
+  publicacaoEmCursoShopeeSchema,
   type EstadoAnuncioShopee,
   type MotivoAnuncioNaoMovivel,
 } from './shopeeLink';
@@ -1269,5 +1270,202 @@ describe('ehKitNativoQueAindaVende — o filtro de linhas do aviso (M178)', () =
     for (const { link } of TABELA) {
       if (ehKitNativoAtivo(link)) expect(ehKitNativoQueAindaVende(link)).toBe(true);
     }
+  });
+});
+
+// ===========================================================================
+// #1911 (D4) — a trava de publicação do rascunho (`publicacaoEmCurso`)
+// ===========================================================================
+
+describe('publicacaoEmCurso — a trava do rascunho (#1911, D4)', () => {
+  const RASCUNHO = {
+    contaProdutoShopeeOuterRef: CONTA_REF,
+    item_name: 'Camiseta Básica',
+    item_id: null,
+  };
+  const TRAVA = { desde: 1_761_000_000_000, expiraEm: 1_761_000_300_000, token: 'tok-1' };
+
+  it('⚠️ PAR: um link SEM a chave faz parse e a chave continua AUSENTE — carimbo de servidor, nunca um `null` inventado', () => {
+    const lido = produtoShopeeLinkSchema.parse(RASCUNHO) as Record<string, unknown>;
+    expect(lido).not.toHaveProperty('publicacaoEmCurso');
+    // O contraste: um campo do cliente (`.nullable().default(null)`) ENTRA null.
+    expect(lido).toHaveProperty('substituidoEm', null);
+  });
+
+  it('PAR: `null` sobrevive `null`; a trava inteira sobrevive inalterada, chaves a mais inclusive', () => {
+    expect(
+      produtoShopeeLinkSchema.parse({ ...RASCUNHO, publicacaoEmCurso: null }).publicacaoEmCurso,
+    ).toBeNull();
+    expect(
+      produtoShopeeLinkSchema.parse({
+        ...RASCUNHO,
+        publicacaoEmCurso: { ...TRAVA, etapa: 'addItem' },
+      }).publicacaoEmCurso,
+    ).toEqual({ ...TRAVA, etapa: 'addItem' });
+  });
+
+  it('⛔ NEAR-MISS: token vazio, instante fracionário ou em texto, chave faltando são recusados', () => {
+    for (const ruim of [
+      { ...TRAVA, token: '' },
+      { ...TRAVA, desde: 1.5 },
+      { ...TRAVA, expiraEm: String(TRAVA.expiraEm) },
+      { desde: TRAVA.desde, token: 'tok-1' },
+      { expiraEm: TRAVA.expiraEm, token: 'tok-1' },
+      { desde: TRAVA.desde, expiraEm: TRAVA.expiraEm },
+      'tok-1',
+    ]) {
+      expect(
+        produtoShopeeLinkSchema.safeParse({ ...RASCUNHO, publicacaoEmCurso: ruim }).success,
+        JSON.stringify(ruim),
+      ).toBe(false);
+    }
+  });
+
+  it('UMA grafia: o campo do link É o `publicacaoEmCursoShopeeSchema` exportado (#1369)', () => {
+    const campo = produtoShopeeLinkSchema.shape.publicacaoEmCurso;
+    expect(campo.unwrap().unwrap()).toBe(publicacaoEmCursoShopeeSchema);
+    expect(campo.parse(undefined)).toBeUndefined();
+  });
+
+  it('o MODELO (`variashopee`) não declara a trava — ela é do anúncio', () => {
+    expect(variacaoShopeeLinkSchema.shape).not.toHaveProperty('publicacaoEmCurso');
+  });
+
+  it('o inventário de escritores do cabeçalho nomeia o sétimo grupo', () => {
+    const fonte = readFileSync(join(import.meta.dirname, 'shopeeLink.ts'), 'utf8');
+    expect(fonte).toContain('Eight groups of fields have a named writer set');
+    expect(fonte).toContain('**`publicacaoEmCurso`** (#1911, D4)');
+    expect(fonte).toContain('estadoPublicacaoRascunhoShopee');
+  });
+});
+
+// ===========================================================================
+// #1911 (D5) — o registro da criação INCERTA (`criacaoIncertaDesde`)
+// ===========================================================================
+
+describe('criacaoIncertaDesde — a criação incerta do rascunho (#1911, D5)', () => {
+  const RASCUNHO = {
+    contaProdutoShopeeOuterRef: CONTA_REF,
+    item_name: 'Camiseta Básica',
+    item_id: null,
+  };
+  const DESDE = 1_761_000_000_000;
+
+  it('⚠️ PAR: um link SEM a chave (todo rascunho legado) faz parse e a chave continua AUSENTE — carimbo de servidor', () => {
+    const lido = produtoShopeeLinkSchema.parse(RASCUNHO) as Record<string, unknown>;
+    expect(lido).not.toHaveProperty('criacaoIncertaDesde');
+    // O contraste: um campo do cliente (`.nullable().default(null)`) ENTRA null.
+    expect(lido).toHaveProperty('substituidoEm', null);
+  });
+
+  it('PAR: `null` sobrevive `null`; um instante inteiro em ms sobrevive inalterado (0 inclusive)', () => {
+    const ler = (v: unknown) =>
+      (
+        produtoShopeeLinkSchema.parse({ ...RASCUNHO, criacaoIncertaDesde: v }) as Record<
+          string,
+          unknown
+        >
+      ).criacaoIncertaDesde;
+    expect(ler(null)).toBeNull();
+    expect(ler(DESDE)).toBe(DESDE);
+    expect(ler(0)).toBe(0);
+  });
+
+  it('⛔ NEAR-MISS: fracionário, em texto, booleano, objeto, não finito ou além de 2^53 são recusados', () => {
+    for (const ruim of [
+      DESDE + 0.5,
+      String(DESDE),
+      true,
+      { desde: DESDE },
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      2 ** 53,
+    ]) {
+      expect(
+        produtoShopeeLinkSchema.safeParse({ ...RASCUNHO, criacaoIncertaDesde: ruim }).success,
+        String(ruim),
+      ).toBe(false);
+    }
+  });
+
+  it('a forma congelada no §2.1: `z.number().int().nullable().optional()` — `undefined` passa ausente', () => {
+    const campo = produtoShopeeLinkSchema.shape.criacaoIncertaDesde;
+    expect(campo.parse(undefined)).toBeUndefined();
+    expect(campo.parse(null)).toBeNull();
+    expect(campo.unwrap().unwrap().safeParse(DESDE).success).toBe(true);
+  });
+
+  it('a trava e o registro da incerteza são INDEPENDENTES: um link com os dois faz parse com os dois', () => {
+    const trava = { desde: DESDE + 600_000, expiraEm: DESDE + 840_000, token: 'tok-2' };
+    const lido = produtoShopeeLinkSchema.parse({
+      ...RASCUNHO,
+      publicacaoEmCurso: trava,
+      criacaoIncertaDesde: DESDE,
+    }) as Record<string, unknown>;
+    expect(lido.publicacaoEmCurso).toEqual(trava);
+    expect(lido.criacaoIncertaDesde).toBe(DESDE);
+  });
+
+  it('o MODELO (`variashopee`) não declara o registro — ele é do anúncio', () => {
+    expect(variacaoShopeeLinkSchema.shape).not.toHaveProperty('criacaoIncertaDesde');
+  });
+
+  it('o inventário de escritores do cabeçalho nomeia o oitavo grupo e as suas DUAS leituras', () => {
+    const fonte = readFileSync(join(import.meta.dirname, 'shopeeLink.ts'), 'utf8');
+    expect(fonte).toContain('none of the eight overlap');
+    expect(fonte).toContain('**`criacaoIncertaDesde`** (#1911, D5)');
+    expect(fonte).toContain('janelaDaCriacaoIncertaShopee');
+  });
+});
+
+// ===========================================================================
+// #1911 batch-A review — o SKU que a tentativa ENVIOU (`publicacaoEmCurso.sku`,
+// `criacaoIncertaSku`)
+// ===========================================================================
+
+describe('o SKU ENVIADO — `publicacaoEmCurso.sku` e `criacaoIncertaSku` (batch-A review)', () => {
+  const RASCUNHO = {
+    contaProdutoShopeeOuterRef: CONTA_REF,
+    item_name: 'Camiseta Básica',
+    item_id: null,
+  };
+  const TRAVA = { desde: 1_761_000_000_000, expiraEm: 1_761_000_300_000, token: 'tok-1' };
+
+  it('⚠️ PAR: ausentes ficam AUSENTES (carimbo de servidor: ausente é "desconhecido", nunca um `null` inventado)', () => {
+    const lido = produtoShopeeLinkSchema.parse({ ...RASCUNHO, publicacaoEmCurso: TRAVA }) as Record<
+      string,
+      unknown
+    >;
+    expect(lido).not.toHaveProperty('criacaoIncertaSku');
+    expect(lido.publicacaoEmCurso).not.toHaveProperty('sku');
+  });
+
+  it("PAR: `''` (enviou SEM SKU) é um VALOR e sobrevive; `null` e um SKU sobrevivem", () => {
+    for (const v of ['', 'SKU-1', null]) {
+      const lido = produtoShopeeLinkSchema.parse({
+        ...RASCUNHO,
+        publicacaoEmCurso: { ...TRAVA, sku: v },
+        criacaoIncertaSku: v,
+      }) as Record<string, unknown>;
+      expect(lido.criacaoIncertaSku, String(v)).toBe(v);
+      expect((lido.publicacaoEmCurso as Record<string, unknown>).sku, String(v)).toBe(v);
+    }
+  });
+
+  it('⛔ NEAR-MISS: um SKU que não é texto é recusado nos dois lugares', () => {
+    for (const ruim of [7, true, { sku: 'x' }]) {
+      expect(
+        produtoShopeeLinkSchema.safeParse({ ...RASCUNHO, criacaoIncertaSku: ruim }).success,
+      ).toBe(false);
+      expect(
+        publicacaoEmCursoShopeeSchema.safeParse({ ...TRAVA, sku: ruim }).success,
+        JSON.stringify(ruim),
+      ).toBe(false);
+    }
+  });
+
+  it('o cabeçalho nomeia o par do registro', () => {
+    const fonte = readFileSync(join(import.meta.dirname, 'shopeeLink.ts'), 'utf8');
+    expect(fonte).toContain('**`criacaoIncertaSku`**');
   });
 });

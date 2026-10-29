@@ -22,10 +22,19 @@
  * one. `brand_id: 0` ("No Brand") comes back as the value it is on the pages
  * that do have brands.
  *
+ * Both 200s are built `satisfies` the input type of their envelope,
+ * `respostaMarcasShopeeSchema` — declared ONCE in `@delfrance/schemas` (#1911
+ * P2) for this route and its browser readers, never mirrored. ⚠️ The page
+ * arrives through a SPREAD, and `satisfies` checks no excess key on one: a key
+ * `PaginaDeMarcas` gains that the envelope lacks is the route test's key-set
+ * pin to catch.
+ *
  * Requires `PERM.integracao.read`.
  */
 import { NextResponse } from 'next/server';
 import { SHOPEE_BRAND_MAX_PAGE_SIZE, SHOPEE_BRAND_STATUS } from '@delfrance/integrations-shopee';
+import type { respostaMarcasShopeeSchema } from '@delfrance/schemas';
+import type { z } from 'zod';
 
 import { PERM, verifyCaller } from '@/lib/auth/verifyCaller';
 import { getAdminFirestore } from '@/lib/firebase/admin';
@@ -97,10 +106,16 @@ export async function GET(req: Request): Promise<NextResponse> {
       );
     }
     if (veredicto === 'nao-folha') {
-      return NextResponse.json({ leaf: false, ...paginaDeMarcasVazia(pedido) });
+      return NextResponse.json({
+        leaf: false,
+        ...paginaDeMarcasVazia(pedido),
+      } satisfies z.input<typeof respostaMarcasShopeeSchema>);
     }
 
-    return NextResponse.json({ leaf: true, ...(await lerPaginaDeMarcas(ctx, pedido)) });
+    return NextResponse.json({
+      leaf: true,
+      ...(await lerPaginaDeMarcas(ctx, pedido)),
+    } satisfies z.input<typeof respostaMarcasShopeeSchema>);
   } catch (err) {
     if (isShopeeError(err)) return shopeeErrorResponse(err);
     throw err;

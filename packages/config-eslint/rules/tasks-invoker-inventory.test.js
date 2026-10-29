@@ -72,6 +72,8 @@ const INVENTORY = {
   // ---- codebase `loja-integrada` -------------------------------------------
   'apps/loja-integrada/functions/src/filaLeitura.ts':
     'The Loja Integrada reads queue (filaLeituraLojaIntegrada, order intake). Enqueued by the order poller (functions runtime SA); the App Hosting runtime SA joins in step 4 (the inbound webhook), and the credential routes only re-drive Firestore rows.',
+  'apps/loja-integrada/functions/src/filaEscrita.ts':
+    'The Loja Integrada writes queue (filaEscritaLojaIntegrada, master-plan step 7: the status write-back and its in-queue varredura). Enqueued by the onHistoricoFreteLojaIntegrada Firestore trigger (one named rastreio task per freight history row) and by the varrerEscritasLojaIntegrada onSchedule timer (one named varredura task per tick) — both the functions runtime SA, and nothing else; the varredura re-runs rows inside the queue and never enqueues.',
 
   // ---- codebase `amazon` --------------------------------------------------
   'apps/amazon/functions/src/filaLeitura.ts':
@@ -135,7 +137,7 @@ const TASK_CALL_RE = /\bonTaskDispatched\s*(?:<[\s\S]*?>)?\s*\(/;
  * having checked NOTHING — the "green job that ran zero tests" shape. These are
  * a floor, not an inventory: they only ever need raising.
  */
-const MIN_TASK_FILES = 19;
+const MIN_TASK_FILES = 20;
 const MIN_CODEBASES = 9;
 
 function read(file) {

@@ -25,6 +25,8 @@ export function lojaIntegradaClientFalso(
     salvarCredencial: naoEsperado('salvarCredencial'),
     renovarValidade: naoEsperado('renovarValidade'),
     removerCredencial: naoEsperado('removerCredencial'),
+    grades: naoEsperado('grades'),
+    grade: naoEsperado('grade'),
     rotearEtiqueta: naoEsperado('rotearEtiqueta'),
     conferirPagamento: naoEsperado('conferirPagamento'),
   };

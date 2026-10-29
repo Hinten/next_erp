@@ -8,6 +8,7 @@ import {
   type ShopeeLogisticsChannel,
 } from '@delfrance/integrations-shopee';
 import {
+  AGUARDAR_KIT_INCERTO_SHOPEE_MS,
   NOME_TIER_KIT_UNICO,
   OPCAO_TIER_KIT_UNICO,
   TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE,
@@ -30,12 +31,14 @@ import {
   problemaVinculoSubstituido,
   problemaVinculosAmbiguos,
   problemasDaFaseA,
+  situacaoDoKitNosso,
   situacaoDoSkuDoKit,
   tetoDeFotosDoKit,
+  vinculoDeKitRecente,
   vinculosNativosDoKit,
   type EntradaDaFaseA,
 } from './planoKit';
-import type { ContextoKit, FilhoDoKit, VinculoDaConta } from './resultadoKit';
+import type { ContextoKit, FilhoDoKit, LeituraDeKitNosso, VinculoDaConta } from './resultadoKit';
 import { exigirAcaoEmTodas, exigirAcaoSeHaComando } from './testing/exigirAcao';
 
 /**
@@ -133,14 +136,35 @@ const RAW_DO_KIT: Record<string, unknown> = {
 };
 
 function buscaVazia(): NonNullable<ContextoKit['busca']> {
-  return { completo: true, achados: [], paginas: 1, chamadas: 1 };
+  return {
+    completo: true,
+    achados: [],
+    listados: new Map(),
+    incompleta: null,
+    paginas: 1,
+    chamadas: 1,
+  };
 }
 
+/** `completo: false` ⇒ the walk stopped short (`causa: 'lista'`) — the documented shape. */
 function busca(
   achados: readonly AchadoKitPorSku[],
   completo = true,
 ): NonNullable<ContextoKit['busca']> {
-  return { completo, achados, paginas: 1, chamadas: 2 };
+  return {
+    completo,
+    achados,
+    // Every hit is a listed candidate; an incomplete walk lists nothing.
+    listados: new Map(completo ? achados.map((a) => [a.itemId, 'NORMAL']) : []),
+    incompleta: completo ? null : { causa: 'lista' },
+    paginas: 1,
+    chamadas: 2,
+  };
+}
+
+/** #2065: a `nossos` kit the complete walk did NOT list, as the base-info batch read it. */
+function lidoNaBase(itemStatus: string | null, recente = false): LeituraDeKitNosso {
+  return { fonte: 'base-info', itemStatus, recente };
 }
 
 function contexto(over: Partial<ContextoKit> = {}): ContextoKit {
@@ -504,7 +528,7 @@ describe('vinculosNativosDoKit', () => {
 
 describe('decidirKitNovo — "garanta que o kit novo existe" (L9, R-14)', () => {
   const nenhum = new Map<number, string>();
-  const semStatus = new Map<number, string | null>();
+  const semStatus = new Map<number, LeituraDeKitNosso>();
 
   it('nada na busca e nenhum vínculo ⇒ criar', () => {
     expect(decidirKitNovo(buscaVazia(), nenhum, semStatus, nenhum)).toEqual({ acao: 'criar' });
@@ -514,6 +538,36 @@ describe('decidirKitNovo — "garanta que o kit novo existe" (L9, R-14)', () => 
     const r = decidirKitNovo(busca([], false), nenhum, semStatus, nenhum);
     expect(r.acao).toBe('recusar');
     expect(r.acao === 'recusar' ? motivos(r.problemas) : []).toEqual([M.buscaDeKitIncompleta]);
+  });
+
+  it('(#1911 batch-A) a frase diz a CAUSA: base-info não devolvida nomeia os ids e pede para tentar de novo; o teto mantém a frase do passo 19', () => {
+    const porBase = decidirKitNovo(
+      {
+        completo: false,
+        achados: [],
+        incompleta: { causa: 'base-info', itemIds: [KIT, KIT_2] },
+      },
+      nenhum,
+      semStatus,
+      nenhum,
+    );
+    expect(porBase.acao).toBe('recusar');
+    const fraseBase = porBase.acao === 'recusar' ? porBase.problemas[0]?.mensagem : '';
+    expect(porBase.acao === 'recusar' ? motivos(porBase.problemas) : []).toEqual([
+      M.buscaDeKitIncompleta,
+    ]);
+    expect(fraseBase).toContain('a Shopee não devolveu os dados de 2 anúncio(s) listado(s)');
+    expect(fraseBase).toContain(`${String(KIT)}, ${String(KIT_2)}`);
+    expect(fraseBase).toContain('tente de novo');
+    expect(fraseBase).toContain('Seller Centre');
+    expect(fraseBase).not.toContain('10 000');
+
+    // ⛔ quase-par: the walk that stopped short keeps step 19's sentence.
+    const porLista = decidirKitNovo(busca([], false), nenhum, semStatus, nenhum);
+    const fraseLista = porLista.acao === 'recusar' ? porLista.problemas[0]?.mensagem : '';
+    expect(fraseLista).toBe(
+      'a busca de kit duplicado não terminou (mais de 10 000 anúncios) — nada foi criado',
+    );
   });
 
   it('M81/M89 — um achado que não é nosso recusa "importe-o"; o vinculado a outro produto é nomeado', () => {
@@ -551,7 +605,9 @@ describe('decidirKitNovo — "garanta que o kit novo existe" (L9, R-14)', () => 
   it('M165 — OURS vem do VÍNCULO: o kit ligado que a lista ainda não mostra é completado, nunca recriado', () => {
     const nossos = new Map([[KIT, 'link-1']]);
     // A busca não listou o kit (latência de ~9 s), mas a leitura em lote diz que ele vive.
-    expect(decidirKitNovo(buscaVazia(), nossos, new Map([[KIT, 'NORMAL']]), nenhum)).toEqual({
+    expect(
+      decidirKitNovo(buscaVazia(), nossos, new Map([[KIT, lidoNaBase('NORMAL')]]), nenhum),
+    ).toEqual({
       acao: 'completar',
       linkDocId: 'link-1',
       itemId: KIT,
@@ -561,18 +617,21 @@ describe('decidirKitNovo — "garanta que o kit novo existe" (L9, R-14)', () => 
       decidirKitNovo(busca([{ itemId: KIT, vinculo: null }]), nossos, semStatus, nenhum),
     ).toEqual({ acao: 'completar', linkDocId: 'link-1', itemId: KIT });
     // ⛔ QUASE-PAR: lido como excluído (null) ⇒ não é nosso ⇒ criar.
-    expect(decidirKitNovo(buscaVazia(), nossos, new Map([[KIT, null]]), nenhum)).toEqual({
+    expect(
+      decidirKitNovo(buscaVazia(), nossos, new Map([[KIT, lidoNaBase(null)]]), nenhum),
+    ).toEqual({
       acao: 'criar',
     });
     // O escopo do "existe": BANNED e REVIEWING ainda seguram o SKU; SELLER_DELETE não.
-    expect(decidirKitNovo(buscaVazia(), nossos, new Map([[KIT, 'BANNED']]), nenhum).acao).toBe(
-      'completar',
-    );
-    expect(decidirKitNovo(buscaVazia(), nossos, new Map([[KIT, 'REVIEWING']]), nenhum).acao).toBe(
-      'completar',
-    );
     expect(
-      decidirKitNovo(buscaVazia(), nossos, new Map([[KIT, 'SELLER_DELETE']]), nenhum).acao,
+      decidirKitNovo(buscaVazia(), nossos, new Map([[KIT, lidoNaBase('BANNED')]]), nenhum).acao,
+    ).toBe('completar');
+    expect(
+      decidirKitNovo(buscaVazia(), nossos, new Map([[KIT, lidoNaBase('REVIEWING')]]), nenhum).acao,
+    ).toBe('completar');
+    expect(
+      decidirKitNovo(buscaVazia(), nossos, new Map([[KIT, lidoNaBase('SELLER_DELETE')]]), nenhum)
+        .acao,
     ).toBe('criar');
   });
 
@@ -641,6 +700,129 @@ describe('decidirKitNovo — "garanta que o kit novo existe" (L9, R-14)', () => 
       tipo: T.escolherVinculo,
       linkDocIds: ['link-1', 'link-2'],
     });
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*        #2065 — a linked kit with no base row is not always a deleted one    */
+/* -------------------------------------------------------------------------- */
+
+describe('#2065 — situacaoDoKitNosso, a ÚNICA leitura de um kit nosso', () => {
+  it('listado pela varredura completa ⇒ existe, QUALQUER que seja o status da linha da lista', () => {
+    for (const itemStatus of ['NORMAL', 'UNLIST', null]) {
+      expect(situacaoDoKitNosso({ fonte: 'lista', itemStatus })).toBe('existe');
+    }
+  });
+
+  it('não listado: o status da base decide; sem linha ⇒ apagado, ou `recente` se o vínculo é novo demais', () => {
+    expect(situacaoDoKitNosso(lidoNaBase('NORMAL'))).toBe('existe');
+    expect(situacaoDoKitNosso(lidoNaBase('BANNED'))).toBe('existe');
+    expect(situacaoDoKitNosso(lidoNaBase('SELLER_DELETE'))).toBe('apagado');
+    // ⛔ quase-par: um status de exclusão LIDO decide mesmo num vínculo recente —
+    // só a AUSÊNCIA de linha vira dúvida.
+    expect(situacaoDoKitNosso(lidoNaBase('SELLER_DELETE', true))).toBe('apagado');
+    expect(situacaoDoKitNosso(lidoNaBase(null))).toBe('apagado');
+    expect(situacaoDoKitNosso(lidoNaBase(null, true))).toBe('recente');
+    expect(situacaoDoKitNosso(undefined)).toBeNull();
+  });
+});
+
+describe('#2065 — vinculoDeKitRecente: `publicadoEm` (ms) contra AGUARDAR_KIT_INCERTO_SHOPEE_MS', () => {
+  const AGORA = 1_757_000_000_000;
+
+  it('dentro da janela ⇒ recente; na borda exata ⇒ NÃO (estrito)', () => {
+    const janela = AGUARDAR_KIT_INCERTO_SHOPEE_MS;
+    expect(vinculoDeKitRecente({ publicadoEm: AGORA - janela + 1 }, AGORA)).toBe(true);
+    expect(vinculoDeKitRecente({ publicadoEm: AGORA - janela }, AGORA)).toBe(false);
+    expect(vinculoDeKitRecente({ publicadoEm: AGORA }, AGORA)).toBe(true);
+  });
+
+  it('um carimbo À FRENTE do relógio (outra instância) ⇒ recente: o lado seguro é esperar', () => {
+    expect(vinculoDeKitRecente({ publicadoEm: AGORA + 5_000 }, AGORA)).toBe(true);
+  });
+
+  it('sem carimbo utilizável ⇒ NÃO recente (idade desconhecida — o vínculo da importação do passo 9)', () => {
+    for (const raw of [
+      {},
+      { publicadoEm: null },
+      { publicadoEm: String(AGORA) },
+      { publicadoEm: 1.5 },
+    ]) {
+      expect(vinculoDeKitRecente(raw, AGORA)).toBe(false);
+    }
+    // ⛔ quase-par: `dataCadastro` (não declarado no schema) NÃO é o carimbo.
+    expect(vinculoDeKitRecente({ dataCadastro: AGORA }, AGORA)).toBe(false);
+  });
+});
+
+describe('#2065 — decidirKitNovo com a leitura de cada kit nosso', () => {
+  const nenhum = new Map<number, string>();
+  const nossos = new Map([[KIT, 'link-1']]);
+
+  it('o kit nosso LISTADO (outro SKU, não é achado) ⇒ completar; ⛔ quase-par: o MESMO não listado e sem linha ⇒ criar', () => {
+    expect(
+      decidirKitNovo(
+        buscaVazia(),
+        nossos,
+        new Map([[KIT, { fonte: 'lista', itemStatus: 'NORMAL' }]]),
+        nenhum,
+      ),
+    ).toEqual({ acao: 'completar', linkDocId: 'link-1', itemId: KIT });
+    expect(
+      decidirKitNovo(buscaVazia(), nossos, new Map([[KIT, lidoNaBase(null)]]), nenhum),
+    ).toEqual({ acao: 'criar' });
+  });
+
+  it('o kit nosso RECENTE, não listado e sem linha ⇒ recusa busca-de-kit-incompleta "criado há pouco", sem `acao`; ⛔ quase-par: fora da janela ⇒ criar', () => {
+    const r = decidirKitNovo(
+      buscaVazia(),
+      nossos,
+      new Map([[KIT, lidoNaBase(null, true)]]),
+      nenhum,
+    );
+    expect(r.acao).toBe('recusar');
+    const problemas = r.acao === 'recusar' ? exigirAcaoEmTodas(r.problemas) : [];
+    expect(motivos(problemas)).toEqual([M.buscaDeKitIncompleta]);
+    expect(problemas[0]?.mensagem).toBe(
+      'o kit criado há pouco ainda não aparece na Shopee (item 2500139870 (vínculo link-1)) — ' +
+        'nada foi criado; aguarde 4 minutos e tente de novo',
+    );
+    expect(problemas[0]?.acao).toBeUndefined();
+
+    expect(
+      decidirKitNovo(buscaVazia(), nossos, new Map([[KIT, lidoNaBase(null)]]), nenhum),
+    ).toEqual({ acao: 'criar' });
+  });
+
+  it('um recente ao lado de OUTRO kit nosso que existe ⇒ recusa (a dúvida decide), nunca completar o outro', () => {
+    const dois = new Map([
+      [KIT, 'link-1'],
+      [KIT_2, 'link-2'],
+    ]);
+    const r = decidirKitNovo(
+      buscaVazia(),
+      dois,
+      new Map([
+        [KIT, lidoNaBase('NORMAL')],
+        [KIT_2, lidoNaBase(null, true)],
+      ]),
+      nenhum,
+    );
+    expect(r.acao).toBe('recusar');
+    expect(r.acao === 'recusar' ? r.problemas[0]?.mensagem : '').toContain(
+      '2500139873 (vínculo link-2)',
+    );
+  });
+
+  it('um ACHADO nosso é nosso mesmo com uma leitura `recente` ao lado: o achado decide primeiro', () => {
+    expect(
+      decidirKitNovo(
+        busca([{ itemId: KIT, vinculo: { produtoId: K, linkDocId: 'link-1' } }]),
+        nossos,
+        new Map([[KIT, lidoNaBase(null, true)]]),
+        nenhum,
+      ),
+    ).toEqual({ acao: 'completar', linkDocId: 'link-1', itemId: KIT });
   });
 });
 
@@ -931,6 +1113,186 @@ describe('planejarKit — a família (L2: um modelo por filho, UM tier)', () => 
     expect(motivos(plano.problemas)).toEqual([M.variacaoSemVinculo]);
     expect(plano.problemas[0]?.campo).toBe(`filhos.${F_PRETO}`);
     expect(plano.corpo).toBeNull();
+  });
+});
+
+describe('planejarKit — o NOME do tier e as faixas de tier do kit (#1911 batch-A, bot #2054)', () => {
+  const comNome = (nome: string, over: Partial<ContextoKit> = {}) =>
+    planejarKit(familia({ grupo: { id: 'g-cor', nome }, ...over }), fotos());
+
+  it("um grupo SEM nome ('', só espaços, NBSP) recusa opcoes-demais ANTES do add_kit_item — nenhum corpo", () => {
+    for (const nome of ['', '   ', ' \t']) {
+      const plano = comNome(nome);
+      expect(plano.problemas, JSON.stringify(nome)).toEqual([
+        {
+          campo: 'tier_variation_list',
+          motivo: M.opcoesDemais,
+          mensagem:
+            'o grupo g-cor não tem nome, e o tier do kit leva o nome do grupo — dê um nome a ' +
+            'ele em Variações',
+        },
+      ]);
+      expect(plano.corpo, JSON.stringify(nome)).toBeNull();
+    }
+  });
+
+  it("⚠️ QUASE-PAR: ' Cor ' passa e vai ao fio APARADO ('Cor'); a CAIXA e o espaço de DENTRO ficam", () => {
+    const nomeEnviado = (nome: string) => {
+      const plano = comNome(nome);
+      expect(plano.problemas, JSON.stringify(nome)).toEqual([]);
+      const corpo = plano.corpo;
+      expect(corpo, JSON.stringify(nome)).not.toBeNull();
+      if (corpo !== null) expect(() => assertAddKitItemRequest(corpo)).not.toThrow();
+      return corpo?.item_setting.tier_variation_list[0]?.name;
+    };
+    expect(nomeEnviado(' Cor ')).toBe('Cor');
+    expect(nomeEnviado(' Cor\t')).toBe('Cor');
+    expect(nomeEnviado('cor')).toBe('cor');
+    expect(nomeEnviado('C  or')).toBe('C  or');
+  });
+
+  it('⚠️ QUASE-PAR — as sentinelas NÃO chegam à recusa: família de um e um filho só sem variante, com o grupo sem nome', () => {
+    const sentinela = (plano: ReturnType<typeof planejarKit>) => {
+      expect(plano.problemas).toEqual([]);
+      expect(plano.corpo?.item_setting.tier_variation_list).toEqual([
+        { name: NOME_TIER_KIT_UNICO, option_list: [{ option: OPCAO_TIER_KIT_UNICO }] },
+      ]);
+    };
+    // A família de um (a hand-built context carrying a nameless grupo anyway).
+    sentinela(planejarKit(contexto({ grupo: { id: 'g-cor', nome: '' } }), fotos()));
+    // A lone child of a non-família kit, with NO variante in the nameless grupo.
+    sentinela(
+      planejarKit(
+        contexto({
+          familiaDeUm: false,
+          grupo: { id: 'g-cor', nome: '   ' },
+          gruposDistintos: 1,
+          filhos: [filho(F_AZUL, { variante: null })],
+        }),
+        fotos(),
+      ),
+    );
+    // ⛔ The SAME lone child WITH a variante authors the grupo's name ⇒ refused.
+    const comVariante = planejarKit(
+      contexto({
+        familiaDeUm: false,
+        grupo: { id: 'g-cor', nome: '   ' },
+        gruposDistintos: 1,
+        filhos: [filho(F_AZUL, { variante: 'Azul' })],
+      }),
+      fotos(),
+    );
+    expect(motivos(comVariante.problemas)).toEqual([M.opcoesDemais]);
+    expect(comVariante.corpo).toBeNull();
+  });
+
+  it('sem grupo algum, cada filho já recusa variacao-sem-vinculo — nenhuma linha de NOME é somada', () => {
+    const plano = planejarKit(familia({ grupo: null, gruposDistintos: 0 }), fotos());
+    expect(motivos(plano.problemas)).toEqual([
+      M.kitDoisEixos,
+      M.variacaoSemVinculo,
+      M.variacaoSemVinculo,
+    ]);
+    expect(plano.corpo).toBeNull();
+  });
+
+  it('(verificador) o nome EM BRANCO recusa também com as faixas SERVIDAS — a frase do branco, nunca "tem 0 caracteres"', () => {
+    // The blank refusal is independent of whether get_kit_item_limit answered:
+    // with both tier bands served, a nameless grupo is still ONE blank row.
+    const ambas = servidos({
+      tier_variation_name_length_limit: { min_limit: 1, max_limit: 20 },
+      tier_variation_option_length_limit: { min_limit: 1, max_limit: 20 },
+    });
+    for (const nome of ['', '   ']) {
+      const plano = comNome(nome, { limites: ambas });
+      expect(plano.problemas, JSON.stringify(nome)).toEqual([
+        {
+          campo: 'tier_variation_list',
+          motivo: M.opcoesDemais,
+          mensagem:
+            'o grupo g-cor não tem nome, e o tier do kit leva o nome do grupo — dê um nome a ' +
+            'ele em Variações',
+        },
+      ]);
+      expect(plano.corpo, JSON.stringify(nome)).toBeNull();
+    }
+    // ⚠️ Near-miss: the SAME served bands pass a named grupo.
+    expect(comNome('Cor', { limites: ambas }).problemas).toEqual([]);
+  });
+
+  it('a faixa do NOME, medida como ENVIADA: no máximo passa, máximo + 1 recusa — nunca truncado', () => {
+    const faixaDoNome = servidos({
+      tier_variation_name_length_limit: { min_limit: 1, max_limit: 3 },
+    });
+    expect(comNome('Cor', { limites: faixaDoNome }).problemas).toEqual([]);
+    // Padded to 5 code units, sent as 3: the band measures what is SENT.
+    expect(comNome('  Cor  ', { limites: faixaDoNome }).problemas).toEqual([]);
+    const fora = comNome('Core', { limites: faixaDoNome });
+    expect(fora.problemas).toEqual([
+      {
+        campo: 'tier_variation_list',
+        motivo: M.opcoesDemais,
+        mensagem:
+          'o nome do tier "Core" (o grupo g-cor) tem 4 caracteres, fora da faixa da categoria do ' +
+          'componente principal (1..3) — nunca truncado; encurte o nome em Variações',
+      },
+    ]);
+    expect(fora.corpo).toBeNull();
+  });
+
+  it('a faixa da OPÇÃO, medida como ENVIADA: no máximo passa, máximo + 1 recusa no campo do filho', () => {
+    const faixaDaOpcao = servidos({
+      tier_variation_option_length_limit: { min_limit: 1, max_limit: 4 },
+    });
+    const opcoes = (azul: string, preto: string) =>
+      planejarKit(
+        familia({
+          limites: faixaDaOpcao,
+          filhos: [filho(F_AZUL, { variante: azul }), filho(F_PRETO, { variante: preto })],
+        }),
+        fotos(),
+      );
+    expect(opcoes('Azul', 'Roxo').problemas).toEqual([]);
+    expect(opcoes(' Azul ', 'Roxo').problemas).toEqual([]);
+    const fora = opcoes('Azul', 'Preto');
+    expect(fora.problemas).toEqual([
+      {
+        campo: `filhos.${F_PRETO}`,
+        motivo: M.opcoesDemais,
+        mensagem:
+          `a opção "Preto" da variação ${F_PRETO} tem 5 caracteres, fora da faixa da categoria ` +
+          'do componente principal (1..4) — nunca truncado; encurte o nome em Variações',
+      },
+    ]);
+    expect(fora.corpo).toBeNull();
+  });
+
+  it('⚠️ QUASE-PAR: faixa NULA, limites não servidos ou ausentes ⇒ nenhum comprimento é medido', () => {
+    const longo = 'Cor de um nome bem comprido';
+    const variantesLongas = [
+      filho(F_AZUL, { variante: 'Azul celeste bem comprido' }),
+      filho(F_PRETO, { variante: 'Preto' }),
+    ];
+    for (const limites of [
+      servidos({}),
+      servidos({ item_name_length_limit: { min_limit: 1, max_limit: 100 } }),
+      { estado: 'indisponivel' } as const,
+      null,
+    ]) {
+      const plano = comNome(longo, { limites, filhos: variantesLongas });
+      expect(plano.problemas, JSON.stringify(limites)).toEqual([]);
+      expect(plano.corpo?.item_setting.tier_variation_list[0]?.name).toBe(longo);
+    }
+  });
+
+  it('a sentinela é NOSSA: faixas de 2 caracteres não recusam o par Kit / Padrão', () => {
+    const apertadas = servidos({
+      tier_variation_name_length_limit: { min_limit: 1, max_limit: 2 },
+      tier_variation_option_length_limit: { min_limit: 1, max_limit: 2 },
+    });
+    const plano = planejarKit(contexto({ limites: apertadas }), fotos());
+    expect(plano.problemas).toEqual([]);
+    expect(plano.corpo?.item_setting.tier_variation_list[0]?.name).toBe(NOME_TIER_KIT_UNICO);
   });
 });
 
@@ -1260,7 +1622,7 @@ describe('planejarKit — o veredito da busca decide o que conta (R-c)', () => {
       contexto({
         vinculos: [ligado],
         busca: buscaVazia(),
-        nossosVivos: new Map([[KIT, 'UNLIST']]),
+        nossosVivos: new Map([[KIT, lidoNaBase('UNLIST')]]),
       }),
       null,
     );

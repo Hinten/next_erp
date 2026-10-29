@@ -355,8 +355,9 @@ describe('MarketplaceChannel stays deleted (#815)', () => {
     // ⚠️ `shopee`, `loja-integrada` and `amazon-sp-api` LEFT this list, and only
     // this list. Each is a real package again — `shopee`: fetch-only
     // signing/hosts/wire schemas/typed errors for the Shopee Open Platform,
-    // paired with `apps/shopee`; `loja-integrada`: a fetch-only, GET-only client
-    // with typed errors and paging, paired with `apps/loja-integrada`;
+    // paired with `apps/shopee`; `loja-integrada`: a fetch-only library — a
+    // GET-only read client and a separate write client — with typed errors and
+    // paging, paired with `apps/loja-integrada`;
     // `amazon-sp-api`: the two Login with Amazon token exchanges and a GET-only
     // SP-API client with typed errors, paired with `apps/amazon` — which is the
     // ADR-0015 shape, the opposite of the throw-only scaffold that was deleted.

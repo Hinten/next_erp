@@ -3517,6 +3517,107 @@ export async function seedGruposDeVariacao(prefix: string): Promise<{
   return { tamanhosId, coresId };
 }
 
+/** The Loja Integrada linker fixtures (step 10): what the spec reads back. */
+export interface VinculadorLojaIntegradaFixtures {
+  readonly grupoId: string;
+  /** The ACTIVE tipo-3 conta: the tab has one block for it. */
+  readonly contaAtivaId: string;
+  /** An INACTIVE tipo-3 conta: its stored link is listed apart. */
+  readonly contaInativaId: string;
+  /** The grupo's stored `linksVariacoesli`, in order. */
+  readonly links: Record<string, unknown>[];
+}
+
+/**
+ * The variation linker's fixtures (master plan step 10): two Loja Integrada
+ * contas from `seedLojaIntegradaFixtures` (the first active, the second
+ * inactive) and a grupo `Tamanhos` with three variantes (P/M/G) whose
+ * `linksVariacoesli` holds three stored entries, in this order:
+ *  1. a legacy-shaped valid link of the ACTIVE conta to grade 8946, options
+ *     37097 → P, 37098 → M, 37099 → (none);
+ *  2. a half-made entry of the active conta (no grade): invalid, carried back;
+ *  3. a link of the INACTIVE conta, carried back.
+ * Every id is a fake one; nothing here names a real store.
+ */
+export async function seedVinculadorLojaIntegradaFixtures(
+  prefix: string,
+): Promise<VinculadorLojaIntegradaFixtures> {
+  await seedLojaIntegradaFixtures(prefix, 2);
+  const contaAtivaId = `${prefix}-${pad(1)}`;
+  const contaInativaId = `${prefix}-${pad(2)}`;
+  const opcao = (id: number, nome: string, variantes: string[]) => ({
+    li_option_id: id,
+    li_option_name: nome,
+    arakene_variation_id: variantes,
+  });
+  const links: Record<string, unknown>[] = [
+    {
+      name: 'Tamanho',
+      grade_id: 8946,
+      integracaoLiId: contaAtivaId,
+      variationOptions: [opcao(37097, 'P', ['p']), opcao(37098, 'M', ['m']), opcao(37099, 'G', [])],
+    },
+    { integracaoLiId: contaAtivaId },
+    {
+      name: 'Cor',
+      grade_id: 9001,
+      integracaoLiId: contaInativaId,
+      variationOptions: [opcao(1, 'Azul', ['g'])],
+    },
+  ];
+  const grupoId = `${prefix}-grupo-li`;
+  // grupoDeVariacoes datetimes are millisecondsSinceEpoch INT (#484/#486).
+  const now = Date.now();
+  await db()
+    .collection('grupoDeVariacoes')
+    .doc(grupoId)
+    .set({
+      nome: `${prefix}-Tamanhos`,
+      codigo: null,
+      ordem: 1,
+      tipo: 1,
+      permiteFotos: false,
+      variacoesIds: ['p', 'm', 'g'],
+      variacoes: [
+        { id: 'p', nome: 'P', codigo: 'P', timestamp: now },
+        { id: 'm', nome: 'M', codigo: 'M', timestamp: now },
+        { id: 'g', nome: 'G', codigo: 'G', timestamp: now },
+      ],
+      linksVariacoesli: links,
+      timestamp: now,
+      ultimaModificacao: now,
+    });
+  return { grupoId, contaAtivaId, contaInativaId, links };
+}
+
+/** Teardown for `seedVinculadorLojaIntegradaFixtures`. */
+export async function cleanupVinculadorLojaIntegradaFixtures(prefix: string): Promise<void> {
+  await Promise.all([
+    cleanupLojaIntegradaFixtures(prefix),
+    cleanupByNamePrefix('grupoDeVariacoes', prefix),
+  ]);
+}
+
+/** Full data of the `grupoDeVariacoes` doc `id`, or null (an Admin read — strongly consistent). */
+export async function getGrupoDeVariacoesDoc(id: string): Promise<Record<string, unknown> | null> {
+  const data = (await db().collection('grupoDeVariacoes').doc(id).get()).data();
+  return data ? (data as Record<string, unknown>) : null;
+}
+
+/**
+ * Another operator's save of the grupo's Loja Integrada links, landing while a
+ * page has it open: the whole array replaced, the last-modified stamp moved.
+ */
+export async function escreverLinksVariacoesLiConcorrente(
+  id: string,
+  links: Record<string, unknown>[],
+): Promise<void> {
+  await db()
+    .collection('grupoDeVariacoes')
+    .doc(id)
+    .update({ linksVariacoesli: links, ultimaModificacao: Date.now() });
+}
+
 /**
  * Seed a parent produto wired to the groups from `seedGruposDeVariacao` —
  * `grupoDeVariacoesUid` (bare ids) + `variacoesUid` (fake paths, group-major:

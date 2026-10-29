@@ -214,7 +214,11 @@ export interface ContextoKit {
   /** Ordered by `ordem`; a família de um = `[member]`. */
   readonly filhos: readonly FilhoDoKit[];
   readonly familiaDeUm: boolean;
-  /** The ONE variation axis (n ≥ 2). */
+  /**
+   * The ONE variation axis (n ≥ 2). `nome` is the grupo's stored name, raw —
+   * `''` when the grupo has none OR could not be read, never its doc id (#1911
+   * batch-A); the plan sends it trimmed and refuses it blank.
+   */
   readonly grupo: { readonly id: string; readonly nome: string } | null;
   /** ≠ 1 with 2+ children ⇒ `kit-dois-eixos` on a create arm (0 = no axis at all). */
   readonly gruposDistintos: number;
@@ -285,11 +289,35 @@ export interface ContextoKit {
   /** Create arms ONLY; `null` on `kit-atualizar` (a republish never scans, L10(4)). */
   readonly busca: Awaited<ReturnType<typeof localizarKitsPorSku>> | null;
   /**
-   * S2C-02: each `nossos` item_id the scan did NOT list → its batched base-info
-   * status (`null` = deleted/absent); empty on `kit-atualizar` (no scan, L10(4)).
+   * S2C-02 / #2065: each `nossos` item_id → what it read as on a COMPLETE scan
+   * ({@link LeituraDeKitNosso}); empty on `kit-atualizar` (no scan, L10(4)) and
+   * on an incomplete scan (refused whatever the kits read). `planoKit.ts`'s
+   * `situacaoDoKitNosso` is the ONE reader of a value.
    */
-  readonly nossosVivos: ReadonlyMap<number, string | null>;
+  readonly nossosVivos: ReadonlyMap<number, LeituraDeKitNosso>;
 }
+
+/**
+ * #2065: what ONE of OUR linked native kits (`nossos`) reads as on a create
+ * arm's complete scan — the SOURCE decides what a missing status means.
+ */
+export type LeituraDeKitNosso =
+  /**
+   * The complete walk LISTED it (`BuscaPorSku.listados`): it exists, by the
+   * walk's own status filter. `itemStatus` is the list row's; nothing re-reads it.
+   */
+  | { readonly fonte: 'lista'; readonly itemStatus: string | null }
+  /**
+   * The complete walk did NOT list it: the batched `get_item_base_info` status,
+   * `null` = no row came back. `recente` = its link was created less than
+   * `AGUARDAR_KIT_INCERTO_SHOPEE_MS` ago (`publicadoEm`), so a missing row is a
+   * DOUBT — Shopee's reads may not show a create yet — never a deletion.
+   */
+  | {
+      readonly fonte: 'base-info';
+      readonly itemStatus: string | null;
+      readonly recente: boolean;
+    };
 
 /* -------------------------------------------------------------------------- */
 /*                         The uncertain create (202)                          */

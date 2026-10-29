@@ -12,6 +12,7 @@ import type { PedidoWireAmazon } from '@delfrance/integrations-amazon-sp-api';
 import {
   ESTADO_FRETE,
   INTEGRACAO_FRETE,
+  MERCADORIA_FORA_POR_ESTADO_FRETE,
   MODALIDADE_FRETE,
   freteDoPedidoSchema,
   seedFreteInicial,
@@ -29,47 +30,18 @@ import { lerInstanteAmazon } from './janelaPoll';
 /**
  * Whether the goods have LEFT the warehouse (or their whereabouts are the
  * carrier's) at each freight estado — an EXPLICIT, EXHAUSTIVE table (plan §3
- * decision 47), never "`postado` or later".
+ * decision 47), never "`postado` or later". A cancellation at a `true` estado
+ * must NOT restock, because the units are not on the shelf; at a `false` one
+ * (packed and earlier, `fulfillment` included) it restocks correctly.
  *
- * `true`: posted and everything after it, the failures, the return leg,
- * `suspenso` and `aguardandoRetirada` — a cancellation there must NOT restock,
- * because the units are not on the shelf (a lost or in-transit parcel included).
- * `false`: everything up to `checkFinalizado` (packed, still in the warehouse,
- * so a cancellation restocks correctly), `despachoNegado`, `cancelado`,
- * `desconhecido`, `error`, and `fulfillment` (AFN: never this ERP's stock).
- *
- * The `Record` makes a missing member a compile error; `freteAmazon.test.ts`
- * iterates `estadoFreteSchema.options` and pins the exact `true` set.
+ * It is the SHARED `MERCADORIA_FORA_POR_ESTADO_FRETE` (`@delfrance/schemas`),
+ * named here for the ladder: the web checkout reads the same table so it never
+ * writes `checkFinalizado` over a goods-out estado, which made a later CANCELLED
+ * read restock units the carrier holds (the #2042 review). `freteAmazon.test.ts`
+ * still pins the exact `true` set.
  */
-export const MERCADORIA_FORA: Readonly<Record<EstadoFrete, boolean>> = Object.freeze({
-  fulfillment: false,
-  iniciado: false,
-  aguardandoAutorizacao: false,
-  aguardandoNFe: false,
-  aguardandoValidacaoTransporadora: false,
-  despachoAutorizado: false,
-  aguardandoAgendamento: false,
-  despachoNegado: false,
-  emSeparacao: false,
-  empacotado: false,
-  aguardandoPostagem: false,
-  checkFinalizado: false,
-  postado: true,
-  recebidoPelaTransportadora: true,
-  aCaminho: true,
-  tentandoRealizarEntrega: true,
-  entregue: true,
-  falhaNaEntrega: true,
-  suspenso: true,
-  enderecoNaoEncontrado: true,
-  aCaminhoDoRemetente: true,
-  devolvido: true,
-  objetoExtraviado: true,
-  cancelado: false,
-  desconhecido: false,
-  error: false,
-  aguardandoRetirada: true,
-});
+export const MERCADORIA_FORA: Readonly<Record<EstadoFrete, boolean>> =
+  MERCADORIA_FORA_POR_ESTADO_FRETE;
 
 /**
  * Whether the goods are out at ONE freight estado (`null` = no block, no

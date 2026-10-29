@@ -11,6 +11,7 @@ import {
   MOTIVO_IMPORTACAO_PARADA_LI,
   MOTIVO_PEDIDO_AMAZON,
   MOTIVO_PEDIDO_CONTESTADO_LI,
+  MOTIVO_RASTREIO_DIVERGENTE_LI,
   MOTIVO_REVERSAO_COM_ETIQUETA_LI,
   PENDENCIA_RECLAMACAO,
   ROTAS_AVISO,
@@ -31,6 +32,7 @@ import {
   motivoImportacaoParadaLiSchema,
   motivoPedidoAmazonSchema,
   motivoPedidoContestadoLiSchema,
+  motivoRastreioDivergenteLiSchema,
   motivoReversaoComEtiquetaLiSchema,
   pendenciaReclamacaoSchema,
   rotaInternaSegura,
@@ -764,6 +766,80 @@ describe('lojaIntegradaReversaoComEtiqueta: a reversal landing on a pedido whose
       params: { loja: 'Conta A', pedido: '165', motivo: 'cancelado' },
       motivo: 'cancelado',
     });
+  });
+});
+
+describe('lojaIntegradaRastreioDivergente: a write-back the ERP could not, or would not, reflect in Loja Integrada', () => {
+  const PEDIDO_ID = '0123456789abcdef'.repeat(4);
+
+  it('is a tipo, named and labelled', () => {
+    expect(TIPO_AVISO.lojaIntegradaRastreioDivergente).toBe('lojaIntegradaRastreioDivergente');
+    expect(TIPO_AVISO_LABELS.lojaIntegradaRastreioDivergente).toBe(
+      'Envio do pedido não refletido na Loja Integrada',
+    );
+  });
+
+  it('one row per pedido, apart from the order-import rows of the same pedido', () => {
+    const chave = (tipo: (typeof TIPO_AVISO)[keyof typeof TIPO_AVISO]) =>
+      chaveDeAviso({ tipo, conta: 'int-1', entidade: PEDIDO_ID });
+    expect(chave(TIPO_AVISO.lojaIntegradaRastreioDivergente)).toBe(
+      `lojaIntegradaRastreioDivergente:int-1:${PEDIDO_ID}`,
+    );
+    expect(chave(TIPO_AVISO.lojaIntegradaRastreioDivergente)).not.toBe(
+      chave(TIPO_AVISO.lojaIntegradaPedidoContestado),
+    );
+  });
+
+  it('its motivo codes: the fourteen the write-back names, the constant in step with the enum', () => {
+    expect(motivoRastreioDivergenteLiSchema.options).toEqual([
+      'situacao-bloqueada',
+      'situacao-nao-paga',
+      'situacao-desconhecida',
+      'transicao-lateral',
+      'situacao-sobrescrita',
+      'objeto-divergente',
+      'objeto-invalido',
+      'envio-divergente',
+      'pedido-divergente',
+      'pedido-ausente',
+      'restauracao-indisponivel',
+      'escrita-recusada',
+      'deriva',
+      'tentativas-esgotadas',
+    ]);
+    expect(Object.values(MOTIVO_RASTREIO_DIVERGENTE_LI).sort()).toEqual(
+      [...motivoRastreioDivergenteLiSchema.options].sort(),
+    );
+  });
+
+  it('NEAR-MISS: a situação codigo, a dry-run reason and another case are not motivo codes', () => {
+    for (const quase of ['pedido_cancelado', 'dry-run', 'Deriva', 'deriva ', 'superado']) {
+      expect(motivoRastreioDivergenteLiSchema.safeParse(quase).success, quase).toBe(false);
+    }
+  });
+
+  it('parses as stored: the pedido page, an event clock, atencao or critico', () => {
+    for (const severidade of [SEVERIDADE_AVISO.atencao, SEVERIDADE_AVISO.critico]) {
+      const aviso = umAviso({
+        tipo: TIPO_AVISO.lojaIntegradaRastreioDivergente,
+        severidade,
+        canal: CANAL_AVISO.lojaIntegrada,
+        params: {
+          loja: 'Conta A',
+          pedido: '165',
+          motivo: MOTIVO_RASTREIO_DIVERGENTE_LI.situacaoSobrescrita,
+          situacao: 'cancelamento_solicitado',
+        },
+        motivo: MOTIVO_RASTREIO_DIVERGENTE_LI.situacaoSobrescrita,
+        urlInterna: { rota: ROTAS_AVISO.pedido.build(PEDIDO_ID), campo: null },
+        relogioEvento: 1_789_000_000_123_000,
+      });
+      expect(aviso).toMatchObject({
+        tipo: 'lojaIntegradaRastreioDivergente',
+        severidade,
+        params: { motivo: 'situacao-sobrescrita', situacao: 'cancelamento_solicitado' },
+      });
+    }
   });
 });
 

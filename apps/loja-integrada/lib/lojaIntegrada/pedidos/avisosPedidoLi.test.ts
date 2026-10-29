@@ -371,7 +371,7 @@ describe('the paid-without-address tipo (owner decision, 2026-10-19)', () => {
   });
 });
 
-describe('the reversal-after-the-label tipo (owner decision A7, 2026-10-19)', () => {
+describe('the reversal-after-the-label tipo (owner decision, 2026-10-19)', () => {
   const caminhoReversao = `avisos/${chaveDoAvisoDoPedidoLi(
     TIPO_AVISO.lojaIntegradaReversaoComEtiqueta,
     CONTA,

@@ -13,7 +13,7 @@ name: CI — Shopee
 # (the Loja Integrada shape) instead of adding one, so the offline job stays in
 # `ci.yml` and the smaller blast radius stands.
 #
-# ⚠️ ONE job, NINE suite files (26 tests) since step 22: the receiver round
+# ⚠️ ONE job, TEN suite files (34 tests) since #1911's P4: the receiver round
 # trip (`app/api/webhooks/shopee/route.tasks.test.ts`, 3), the mass-import one
 # (`lib/shopee/produtos/importacaoMassa.tasks.test.ts`, 2), the push-16 one
 # (`lib/shopee/notificacoes/pushAnuncio.tasks.test.ts`, 1), the stock one
@@ -21,10 +21,12 @@ name: CI — Shopee
 # (`lib/shopee/precos/atualizarPrecos.tasks.test.ts`, 3), the NF-e one
 # (`lib/shopee/nfe/enviarNfe.tasks.test.ts`, 1), the auto-arrange one
 # (`lib/shopee/pedidos/arranjoAutomatico.tasks.test.ts`, 1), the returns one
-# (`lib/shopee/devolucoes/devolucao.tasks.test.ts`, 4) and the leased token
-# refresh (`lib/shopee/core/tokenStore.firestore.test.ts`, 10). Adding a file
-# with the `.tasks.test.ts` OR `.firestore.test.ts` suffix adds it to THIS job —
-# no new job, no new check name, no new row in the gate manifest.
+# (`lib/shopee/devolucoes/devolucao.tasks.test.ts`, 4), the leased token
+# refresh (`lib/shopee/core/tokenStore.firestore.test.ts`, 10) and the draft
+# route's preconditions (`lib/shopee/anuncios/rascunho.firestore.test.ts`, 8).
+# Adding a file with the `.tasks.test.ts` OR `.firestore.test.ts` suffix adds
+# it to THIS job — no new job, no new check name, no new row in the gate
+# manifest.
 #
 # What the single job proves, with nothing mocked:
 #
@@ -86,6 +88,18 @@ name: CI — Shopee
 #     provider call injected: two callers spend the refresh token once, a
 #     crashed refresher's lease is taken over at its TTL, a consent beats an
 #     in-flight refresh, and a terminal stamp replaces the stored map.
+#
+# and, since #1911 (P4), a SECOND queue-less suite:
+#
+#   lib/shopee/anuncios/rascunho.firestore.test.ts   the draft route's three
+#     single-document guards on the REAL engine, in THIS process: `create()`'s
+#     ALREADY_EXISTS (a double click writes one draft; other content is a
+#     409), a stale `update(…, {lastUpdateTime})` and a stale
+#     `delete({lastUpdateTime})` refused and re-derived — so the FakeDb double
+#     is never their only witness. It writes the link-trigger path, and may:
+#     every document is a DRAFT, whose create/edit/delete the trigger's fast
+#     path answers with zero reads and zero writes; it never writes
+#     `integracao/{id}` and mints its own contas (`int-rasc-1`, `int-rasc-2`).
 #
 # ⚠️ That second path is NOT a push delivery, and neither are the third, the
 # fourth and the fifth. The wrong-tipo conta, the unmapped shop, the over-sized
@@ -306,6 +320,14 @@ on:
       # conta's freight doc is created, adopted, patched or deactivated would
       # not fire this lane's safety net.
       - 'packages/data/src/admin/frete/**'
+      # #1911 (listing authoring) moved shared rules the publisher and the draft
+      # route read into root-level schema files no entry above covers: the
+      # taxonomy envelopes and the text-band functions.
+      - 'packages/schemas/src/taxonomiaShopeeDto.ts'
+      - 'packages/schemas/src/faixaShopee.ts'
+      - 'packages/schemas/src/shopeeAcaoSugerida.ts' # the publish lock's wait alias
+      - 'packages/schemas/src/shared/outerRef.ts' # the draft route's id reader
+      - 'packages/schemas/src/atributosShopee.ts' # the shared attribute decoder/validator
       - 'firestore.indexes.json'
       - 'firebase.shopee.tasks.json'
       - 'pnpm-lock.yaml'

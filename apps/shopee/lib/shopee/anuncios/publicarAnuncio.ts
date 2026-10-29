@@ -12,9 +12,19 @@
  * and `get_item_base_info` (the read-back, through `produtos/lerAnuncio.ts`) —
  * plus `get_channel_list` in `preparar` and the bounded `get_brand_list` paging
  * of the brand cascade. The five tier/model calls are
- * `modelosPublicacao.ts`'s and `upload_image` is `fotosPublicacao.ts`'s; no
- * other module under `anuncios/` calls Shopee at all, which is what makes
- * "which module owns which call" answerable by FILE.
+ * `modelosPublicacao.ts`'s and `upload_image` is `fotosPublicacao.ts`'s; and
+ * since #1911 P5 the publish of an `incerta` draft also reaches ENSURE's reads —
+ * `get_item_list` and one `get_item_base_info` batch — which are
+ * `criacaoIncerta.ts`'s (`localizarAnuncioIncerto`), reached from
+ * `reservaRascunho.ts` before `preparar`; since #1911 P5b a `livre` draft's
+ * FIRST create pays the same two kinds of read (`get_item_list` pages, the
+ * base-info batch) for its same-SKU look-up — `criacaoIncerta.ts`'s
+ * `verificarAnuncioExistenteShopee` over `../kits/localizarKitPorSku.ts`'s
+ * walk, reached from {@link aplicarPublicacao} just before the send. On the
+ * PUBLISH path no other module
+ * under `anuncios/` calls Shopee, which is what makes "which module owns which
+ * call" answerable by FILE (the lifecycle and push modules —
+ * `pausarAnuncio.ts`, `reverificarAnuncio.ts`, `pushAnuncio.ts` — own their own).
  *
  * ## ⚠️ The read-back is the ONLY source of listing STATE (O5)
  *
@@ -37,10 +47,61 @@
  * at the end — loses the id of a listing that exists, and the next attempt
  * creates a SECOND one.
  *
- * Clock-free and timer-free: `deps.nowMs` is the ONE clock read and
- * `deps.esperar` the ONE wait, both parameters. Every Firestore access goes
- * through a `@delfrance/data/admin/collections` handle and nothing here opens a
- * multi-document atomic write.
+ * ## ⚠️ A DRAFT's first create runs under a LOCK (#1911, D4/D15)
+ *
+ * When the named link is a draft (`ehRascunhoShopee`), {@link
+ * publicarAnuncioShopee} takes the draft's publish lock BEFORE `preparar` reads
+ * the content it will send, re-reads it immediately before `add_item`, gates
+ * EACH `add_item` leg on the live clock, turns write-back #1 into a tier-1
+ * CLAIM, and hands the lock back on every way out — or KEEPS it when the create
+ * may have happened. The mechanism is `reservaRascunho.ts`; this module decides
+ * which way out a failure is, through {@link ReservaDeRascunhoShopee.fase} and
+ * the `add_item` classifier (`criacaoIncerta.ts`). A republish of a listing
+ * takes no lock and is byte-for-byte step 11's.
+ *
+ * ## ⚠️ A FIRST create never duplicates a listing the conta holds (#1911 P5b)
+ *
+ * Lucas, 2026-10-26: before a `livre` draft's first `add_item`, still under
+ * its lock and after D15, {@link aplicarPublicacao} looks for a listing of the
+ * conta with the SKU the planned body SENDS (`verificarAnuncioExistenteShopee`,
+ * the kit arm's same-SKU scan mirrored): an unlinked hit refuses
+ * `anuncio-existente-sem-vinculo` ("importe-o"), another produto's
+ * `anuncio-existente-de-outro-produto`, an incomplete scan
+ * `busca-de-anuncio-existente-incompleta` — nothing sent, the lock handed
+ * back. This produto's own listing is D15's (excluded); a body with no SKU
+ * scans nothing; an `incerta` draft ran ENSURE instead — for the fold ENSURE
+ * searched only: a SKU renamed between the reservation and `preparar` is
+ * looked up here on the body (batch-A review). The dry run never
+ * reaches it (it takes no lock and applies nothing).
+ *
+ * ## ⚠️ An UNCERTAIN first create is remembered, then LOOKED FOR (#1911, D5)
+ *
+ * - **No link at all ⇒ a draft is MINTED first** (K1-5): a live create of a
+ *   produto the conta holds NO link of goes through the draft route's own
+ *   create (`rascunho.ts`, tier 0 at a fresh `newDocId`) carrying the brand
+ *   `{brand_id: 0, original_brand_name: null}` — the `?? 0` this path always
+ *   sent — and the operator's category, then continues NAMED: lock, memory,
+ *   D15. A refusal before the send leaves the draft, and the next no-link run
+ *   hears `rascunho-nao-nomeado` (`kits/armaDePublicacao.ts`). The dry run
+ *   (`prepararPublicacao` alone) mints nothing. A link that appears between
+ *   the dispatcher's read and the mint's is a 409 `CONTENCAO`, never a
+ *   fall-back to step 11's lexical resolver; and `aplicarPublicacao` refuses
+ *   any create onto a draft it holds no lock of (batch-A review, the mint
+ *   race).
+ * - **`incerto` ⇒ 202, never "falhou"**: the lock is kept live for the wait
+ *   and the attempt recorded (`registrarCriacaoIncerta`), then
+ *   `CriacaoDeAnuncioIncertaError` carries the 202's facts to `publicarShopee`.
+ * - **The next publish looks first** (ENSURE, inside the reservation): a
+ *   listing it ADOPTS turns this run into an UPDATE of it
+ *   ({@link EntradaDePublicacao.retomandoCriacao}, so a has-model listing the
+ *   lost attempt created UNLIST is re-listed — by THIS run only: a run that
+ *   fails after the adoption, or the import's adoption, leaves it pausado).
+ *
+ * Clock-free and timer-free: `deps.nowMs` is the ONE instant every write
+ * stamps and `deps.esperar` the ONE wait, both parameters; the draft lock's
+ * live clock is `deps.aoVivo.agora`, also a parameter (the route's clock).
+ * Every Firestore access goes through a `@delfrance/data/admin/collections`
+ * handle and nothing here opens a multi-document atomic write.
  */
 import type { Firestore } from 'firebase-admin/firestore';
 import {
@@ -61,8 +122,10 @@ import {
   type ShopeeUpdateItemRequest,
 } from '@delfrance/integrations-shopee';
 import {
+  CODIGO_RASCUNHO_SHOPEE,
   SHOPEE_ITEM_STATUS,
   componentesKitSchema,
+  ehRascunhoShopee,
   estoqueDisponivel,
   fotoSchema,
   kitEstoqueDisponivel,
@@ -70,6 +133,8 @@ import {
   parseRef,
   precoDoFilhoNaTabela,
   propagaPrecoAosFilhos,
+  rascunhoSemMarcaShopee,
+  textoUtilizavelShopee,
   toOuterRef,
   varianteFakePath,
   type ComponentesKit,
@@ -108,6 +173,14 @@ import {
   MAX_PAGINAS_MARCAS,
 } from './constantesAnuncio';
 import {
+  CriacaoDeAnuncioIncertaError,
+  desfechoDeCriacaoDeItem,
+  mensagemDoAnuncioIncerto,
+  recusaDoAnuncioIncerto,
+  skuDaBuscaShopee,
+  verificarAnuncioExistenteShopee,
+} from './criacaoIncerta';
+import {
   ETAPA_PUBLICACAO,
   MOTIVO_PUBLICACAO_BLOQUEADA,
   ShopeePublishBlockedError,
@@ -126,11 +199,17 @@ import {
 } from './fotosPublicacao';
 import { criarLeitorDeImpostoShopee } from './lerImpostoDoProduto';
 import { lerTabelaMedidasDoProduto } from './lerTabelaMedidasDoProduto';
-import { lerLinksDeVariacao, resolverLinkPorProduto, type LinkDeVariacao } from './linkAnuncio';
+import {
+  lerLinksDeVariacao,
+  lerVinculosDaConta,
+  resolverLinkPorProduto,
+  type LinkDeVariacao,
+} from './linkAnuncio';
 import { aplicarModelos, type ResultadoModelos } from './modelosPublicacao';
 import {
   categoriaDoAnuncio,
   kitNativoDoAnuncio,
+  vinculoDecideKitNativo,
   type LinkListagemLido,
   type ProdutoParaPublicar,
 } from './montagemAnuncio';
@@ -144,6 +223,20 @@ import {
   type PlanoPublicacao,
 } from './planoPublicacao';
 import { problemaDeErroShopee, problemasDeErroShopee } from './problemasPublicacao';
+import { criarRascunhoShopee } from './rascunho';
+import {
+  buscaNoPrazoDoEnvio,
+  ConflitoDeRascunhoShopeeError,
+  conferirTravaAntesDoEnvio,
+  liberarTravaShopee,
+  liberarTravaShopeeSemSubstituirErro,
+  portaoDeEnvio,
+  registrarCriacaoIncerta,
+  reivindicarRascunhoShopee,
+  reservarRascunhoShopee,
+  type ControlesDaPublicacaoAoVivo,
+  type ReservaDeRascunhoShopee,
+} from './reservaRascunho';
 import { agendadoParaMsDe, estadoDoAnuncio } from './statusAnuncio';
 import {
   FONTE_TABELA_MEDIDAS,
@@ -196,6 +289,19 @@ export interface PublicarAnuncioDeps {
    * idiom. It is the ONE resolver of the publish either way (C7).
    */
   readonly resolvedorDeImagens?: ResolvedorDeImagensShopee;
+  /**
+   * What a LIVE run supplies to publish a DRAFT (#1911, D4/D15): the route's
+   * clock `agora`, the request's deadline and the second-listing confirmation
+   * (`reservaRascunho.ts`). The route and `publicar:anuncio --live` always set
+   * it; a dry run never reaches the lock at all.
+   *
+   * ⚠️ OPTIONAL on THIS type only because every `KitDeps` builder shares it
+   * and the kit arms never read it — never because it may be skipped: a DRAFT
+   * reached without it is refused before any write, and there is no fallback to
+   * {@link PublicarAnuncioDeps.nowMs} anywhere (a constant clock makes the send
+   * gate vacuous). Inside the object, `agora` is REQUIRED.
+   */
+  readonly aoVivo?: ControlesDaPublicacaoAoVivo;
 }
 
 /**
@@ -207,11 +313,13 @@ export interface PublicarAnuncioDeps {
  * download allow-list. Omitting all four is the `PrepararImportacaoShopeeDeps`
  * discipline: the property is proved by the call graph rather than asserted in a
  * comment — and it is also why the resolver arrives as a PARAMETER of
- * {@link prepararPublicacao} instead of being built there.
+ * {@link prepararPublicacao} instead of being built there. `aoVivo` (#1911) is
+ * omitted for the same reason: the draft lock is a WRITE, and the dry run that
+ * runs this half alone must not be able to reach it.
  */
 export type PrepararPublicacaoDeps = Omit<
   PublicarAnuncioDeps,
-  'partnerClient' | 'fetchImpl' | 'esperar' | 'hostEmulador' | 'resolvedorDeImagens'
+  'partnerClient' | 'fetchImpl' | 'esperar' | 'hostEmulador' | 'resolvedorDeImagens' | 'aoVivo'
 >;
 
 /** What the route's body (and the CLI's flags) resolve to. */
@@ -230,6 +338,31 @@ export interface EntradaDePublicacao {
   readonly categoryId?: number | null;
   /** What the operator asked for. A create WITH children still sends `UNLIST` first. */
   readonly statusPedido: ShopeeItemStatusWritable;
+  /**
+   * #1911 (D5): this run ADOPTED the listing an earlier, uncertain create of
+   * the draft made (ENSURE, `reservaRascunho.ts`), and goes on as an UPDATE of
+   * it. Set by {@link publicarAnuncioShopee} alone, never by a body: the plan
+   * then re-lists a has-model listing the lost attempt left `UNLIST`
+   * (`planoPublicacao.ts`). Absent ⇒ `false`.
+   *
+   * ⚠️ It lives in this run's memory ONLY (batch-A review, accepted for now):
+   * the adoption is written BEFORE the plan runs, so an adopting run that then
+   * fails — or an adoption by the product IMPORT, which never publishes — leaves
+   * the listing `UNLIST` (pausado) until the operator re-activates it; the next
+   * publish is a plain update, which never lists. `anuncios/README.md` records
+   * the residual and the durable-marker fix it waits on.
+   */
+  readonly retomandoCriacao?: boolean;
+  /**
+   * #1911 batch-A review: the DISPATCHER read the conta and found NO link of
+   * this produto (`publicarShopee.ts`, the `linkDocId: null` arm). Set by that
+   * entry alone. The mint's own re-read then finding ANY link means another run
+   * (or the import) wrote one in between, and the run refuses — it never falls
+   * back to step 11's lexical resolver ({@link nomearCriacaoSemVinculo}).
+   * Absent ⇒ a direct caller, which keeps the step-11 unnamed pick (a draft
+   * among the links still refuses).
+   */
+  readonly despachoSemVinculo?: boolean;
 }
 
 /**
@@ -445,6 +578,20 @@ function produtoParaPublicar(id: string, raw: Record<string, unknown>): ProdutoP
  * ⚠️ `kitNativo` is read THREE-valued and never coerced — it is what Shopee
  * reported about the live listing, and it is the authority behind
  * `produto-e-kit` on every republish.
+ *
+ * ⚠️ `ehRascunho` (#1911, D3) is the shared `ehRascunhoShopee` over the RAW
+ * document, never over the projection built here: `item_id` below is already
+ * folded (`0` and `'123'` read `null`), and a corrupt link must not pass for a
+ * draft. It moves the kit question of a draft to the produto
+ * (`vinculoDecideKitNativo`, `montagemAnuncio.ts`).
+ *
+ * ⚠️ `marcaNaoEscolhida` (#1911, D10) is the shared `rascunhoSemMarcaShopee`
+ * over the RAW document too, for the same reason and one more: `brand_id`
+ * below is already folded by `numeroOuNull`, so an ABSENT key and a stored
+ * `null` both read `null` there — the predicate must see the stored document
+ * to tell a draft nobody gave a brand from an imported listing whose
+ * `brand_id` is `null`. The listing assembly refuses the first
+ * (`marca-nao-escolhida`) and never the second.
  */
 function linkListagemLido(
   raw: Record<string, unknown>,
@@ -462,6 +609,8 @@ function linkListagemLido(
       : null,
     estadoAnuncio,
     kitNativo: booleanoOuNull(raw.kitNativo),
+    ehRascunho: ehRascunhoShopee(raw),
+    marcaNaoEscolhida: rascunhoSemMarcaShopee(raw),
   };
 }
 
@@ -661,6 +810,9 @@ export async function prepararPublicacao(
     tabelaDeMedidas,
     resolvedorDeImagens,
     ehAtualizacao,
+    // Only an UPDATE resumes a create: an adoption that found no item_id on
+    // the re-read is an ordinary first publish.
+    retomandoCriacao: ehAtualizacao && entrada.retomandoCriacao === true,
     statusPedido: entrada.statusPedido,
     tabelaNormalId,
     ownDisponivel,
@@ -704,8 +856,11 @@ export function problemaProdutoEFilho(produtoId: string, paiId: string): Problem
  *
  * `campo` names the field the operator must look at, and it therefore follows
  * the arm the predicate took: the link's `kitNativo` on a republish, the
- * produto's `ehKitVirtual` on a first publish. Both spellings are pinned by
- * tests, because nothing in the type system ties a label to a branch.
+ * produto's `ehKitVirtual` on a first publish — a DRAFT link's included
+ * (#1911). The arm is {@link vinculoDecideKitNativo}'s answer, the same call the
+ * predicate makes, so the label cannot drift from the branch; both spellings
+ * are pinned by tests, because nothing in the type system ties a label to a
+ * branch.
  */
 function recusarProdutoNaoPublicavel(
   produto: ProdutoParaPublicar,
@@ -717,7 +872,7 @@ function recusarProdutoNaoPublicavel(
   }
   if (kitNativoDoAnuncio(link, produto)) {
     problemas.push({
-      campo: link !== null ? 'kitNativo' : 'ehKitVirtual',
+      campo: vinculoDecideKitNativo(link) ? 'kitNativo' : 'ehKitVirtual',
       motivo: MOTIVO_PUBLICACAO_BLOQUEADA.produtoEKit,
       mensagem:
         `o anúncio do produto ${produto.id} é um kit NATIVO da Shopee e chegou ao publicador de ` +
@@ -907,7 +1062,10 @@ export async function lerGrupos(
     });
     grupos.push({
       grupoId,
-      nome: textoOuNull(raw.nome) ?? grupoId,
+      // A grupo with no string `nome` is NAMELESS: `''` lets the custom-tier
+      // blank-name refusal stop it before `add_item`. Falling back to the doc
+      // id would publish the id as the tier name Shopee buyers see.
+      nome: textoOuNull(raw.nome) ?? '',
       ordem: numeroOuNull(raw.ordem) ?? ORDEM_AUSENTE,
       permiteFotos: booleano(raw.permiteFotos),
       variacoes,
@@ -950,8 +1108,10 @@ function idDeRef(ref: string | null): string | null {
  *  1. `brand_id === 0` ⇒ **no read at all**. Shopee's own "No Brand" is a
  *     CHOICE, and `montarAnuncio` supplies its wire name — so this module never
  *     spells that literal and never spends a call on it.
- *  2. the link's stored `original_brand_name`, written by every read-back. Zero
- *     cost on a republish.
+ *  2. the link's stored `original_brand_name` — written by every read-back
+ *     (write-back #2), by the draft route with the operator's brand pick (the
+ *     no-link mint's `null` included), and by the import (`shopeeLink.ts`'s
+ *     writer list). Zero cost on a republish.
  *  3. a BOUNDED `get_brand_list` walk of the item's category
  *     (≤ {@link MAX_PAGINAS_MARCAS} pages), through step 10's TTL cache.
  *  4. `nome: null` — `montarAnuncio` then refuses a CREATE (`marca-sem-nome`)
@@ -1216,6 +1376,12 @@ type CorpoDeItem = ShopeeAddItemRequest | ShopeeUpdateItemRequest;
  * ⚠️ `publicadoEm` is written on the FIRST success only. A republish leaves the
  * stored value alone, so the field keeps meaning "when this listing first went
  * out" rather than "when it was last touched" — `ultimaPublicacao.em` is that.
+ *
+ * ⚠️ On a DRAFT's create (#1911, `reserva` non-null) this is the tier-1 CLAIM
+ * of `reservaRascunho.ts` instead of the plain merge, and the field set is
+ * re-derived from the document each attempt reads — never the `armazenado`
+ * read before the send. Every other target keeps the plain merge/add above,
+ * byte for byte.
  */
 async function escreverWriteBack1(
   deps: PublicarAnuncioDeps,
@@ -1228,9 +1394,42 @@ async function escreverWriteBack1(
     readonly etapa: EtapaPublicacao;
     readonly taxInfoOmitido: MotivoTaxInfoOmitido | null;
   },
+  reserva: ReservaDeRascunhoShopee | null,
 ): Promise<string> {
-  const { armazenado, corpo } = args;
-  const dados: Record<string, unknown> = {
+  const montar = (armazenado: Record<string, unknown>): Record<string, unknown> =>
+    dadosDoWriteBack1(deps, args, armazenado);
+
+  if (reserva !== null) {
+    const linkDocId = await reivindicarRascunhoShopee(
+      deps.db,
+      { produtoId: args.produtoId, linkDocId: reserva.linkDocId, itemId: args.itemId },
+      montar,
+    );
+    // Claimed (or forked onto a fresh link): the lock is no longer ours to touch.
+    reserva.fase = 'encerrada';
+    return linkDocId;
+  }
+
+  return await aplicarLinkDaListagem(deps.db, args.produtoId, {
+    acao: args.linkDocId === null ? 'add' : 'merge',
+    docId: args.linkDocId,
+    dados: montar(args.armazenado),
+  });
+}
+
+/** Write-back #1's field set — §2.4's, AS SENT — over one reading of the link. */
+function dadosDoWriteBack1(
+  deps: PublicarAnuncioDeps,
+  args: {
+    readonly itemId: number;
+    readonly corpo: CorpoDeItem;
+    readonly etapa: EtapaPublicacao;
+    readonly taxInfoOmitido: MotivoTaxInfoOmitido | null;
+  },
+  armazenado: Record<string, unknown>,
+): Record<string, unknown> {
+  const { corpo } = args;
+  return {
     // Always canonical, never the stored value — the conta filter every reader
     // applies is this field.
     contaProdutoShopeeOuterRef: toOuterRef(integracaoCollection.docPath({}, deps.integracaoId)),
@@ -1248,12 +1447,6 @@ async function escreverWriteBack1(
     ...(numeroOuNull(armazenado.publicadoEm) === null ? { publicadoEm: deps.nowMs } : {}),
     ...(numeroOuNull(armazenado.dataCadastro) === null ? { dataCadastro: deps.nowMs } : {}),
   };
-
-  return await aplicarLinkDaListagem(deps.db, args.produtoId, {
-    acao: args.linkDocId === null ? 'add' : 'merge',
-    docId: args.linkDocId,
-    dados,
-  });
 }
 
 /**
@@ -1301,10 +1494,14 @@ async function escreverWriteBack2(
 /**
  * The failure stamp — and it stamps only once WRITES HAVE BEGUN.
  *
- * On a create that failed at `add_item` there is no link document, so there is
- * nothing to stamp and nothing is created: a link that does not exist cannot be
- * a ghost, while an invented one would be a listing record for a listing that
- * was never made.
+ * Its `linkDocId === null` branch (nothing to stamp, nothing created: a link
+ * that does not exist cannot be a ghost, and an invented one would record a
+ * listing that was never made) is a DEFENSIVE guard for a plan with no link,
+ * reached only by a direct `aplicarPublicacao` call. Since #1911 P5 no LIVE
+ * entry reaches `add_item` without a link document: a create with no link
+ * first mints its draft (`nomearCriacaoSemVinculo`), and a DRAFT's failed
+ * create is never stamped here — `nao-criado` is stamped by the token-guarded
+ * release (`liberarTravaShopee`), `incerto` is not stamped at all (the 202).
  *
  * ⚠️ A failure of the stamp itself is NOT caught. Swallowing it would need
  * exactly the generic catch root `CLAUDE.md` rule 6 bans, and the two things
@@ -1343,15 +1540,7 @@ function codigoDaFalha(err: ShopeeError): string {
 
 async function carimbarFalhaDePublicacao(
   deps: PublicarAnuncioDeps,
-  args: {
-    readonly produtoId: string;
-    readonly linkDocId: string | null;
-    readonly itemId: number | null;
-    readonly etapa: EtapaPublicacao;
-    readonly erro: string;
-    readonly mensagem: string;
-    readonly problemas: readonly ProblemaPublicacao[];
-  },
+  args: DadosDaFalha & { readonly produtoId: string; readonly linkDocId: string | null },
 ): Promise<void> {
   if (args.linkDocId === null) {
     console.warn('[shopee/anuncios] falha antes de qualquer vínculo; nada a carimbar', {
@@ -1364,24 +1553,42 @@ async function carimbarFalhaDePublicacao(
   await aplicarLinkDaListagem(deps.db, args.produtoId, {
     acao: 'merge',
     docId: args.linkDocId,
-    dados: {
-      falhaPublicacao: {
-        em: deps.nowMs,
-        etapa: args.etapa,
-        erro: args.erro,
-        mensagem: limitarMensagemProblema(args.mensagem),
-        // ⚠️ `campo` is a REQUIRED non-nullable string on the link schema while a
-        // problema's is `string | null`, so a field-less refusal stores `''`.
-        // The information the operator acts on is `mensagem`, which is kept whole.
-        problemas: args.problemas.map((p) => ({
-          campo: p.campo ?? '',
-          motivo: p.motivo,
-          mensagem: p.mensagem,
-        })),
-      },
-      ultimaModificacao: deps.nowMs,
-    },
+    dados: carimboDaFalha(deps, args),
   });
+}
+
+/** What one failure stamp says. */
+interface DadosDaFalha {
+  readonly itemId: number | null;
+  readonly etapa: EtapaPublicacao;
+  readonly erro: string;
+  readonly mensagem: string;
+  readonly problemas: readonly ProblemaPublicacao[];
+}
+
+/**
+ * The stamp's patch — ONE builder for both writers of it: the plain merge
+ * above, and the token-guarded release of a draft's lock (#1911), which lands
+ * this same patch together with `publicacaoEmCurso: null` or not at all.
+ */
+function carimboDaFalha(deps: PublicarAnuncioDeps, args: DadosDaFalha): Record<string, unknown> {
+  return {
+    falhaPublicacao: {
+      em: deps.nowMs,
+      etapa: args.etapa,
+      erro: args.erro,
+      mensagem: limitarMensagemProblema(args.mensagem),
+      // ⚠️ `campo` is a REQUIRED non-nullable string on the link schema while a
+      // problema's is `string | null`, so a field-less refusal stores `''`.
+      // The information the operator acts on is `mensagem`, which is kept whole.
+      problemas: args.problemas.map((p) => ({
+        campo: p.campo ?? '',
+        motivo: p.motivo,
+        mensagem: p.mensagem,
+      })),
+    },
+    ultimaModificacao: deps.nowMs,
+  };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1582,10 +1789,27 @@ class ColetorDeAviso {
  * prevent. The three write-time facts that are NOT on the plan
  * (`publicadoEm`/`dataCadastro` first-time and the stored violation count) are
  * read from the link document itself, which is fresher than any context.
+ *
+ * ⚠️ `rascunho` (#1911) is the held lock of a DRAFT's create and the live
+ * controls it was taken with; `null` everywhere else, which is step 11's path
+ * unchanged. With it, step 2 is preceded by the PRE-SEND re-read, every
+ * `add_item` leg by the credential warm and then the synchronous send gate
+ * (nothing sent yet ⇒ the error rethrown unstamped), step 3 is the CLAIM, and an
+ * `add_item` failure is CLASSIFIED (`desfechoDeCriacaoDeItem`): `nao-criado` ⇒
+ * the stamp and the release in ONE token-guarded write; `incerto` ⇒ no stamp,
+ * the lock KEPT, the raw error rethrown — never a "Shopee refused" for a create
+ * that may exist. And unless the reservation's ENSURE already searched the
+ * very SKU fold the body sends
+ * ({@link PublicacaoDeRascunho.skuJaBuscado}), the FIRST create's
+ * same-SKU look-up runs before all of that, outside the step-2 `try` (#1911
+ * P5b): its refusal is a `ShopeePublishBlockedError`, its Shopee failure
+ * propagates unclassified and unstamped, and its calls count into
+ * `chamadasShopee`.
  */
 export async function aplicarPublicacao(
   deps: PublicarAnuncioDeps,
   plano: PlanoPublicacao,
+  rascunho: PublicacaoDeRascunho | null = null,
 ): Promise<ResultadoPublicacao> {
   if (temProblemaDeBloqueio(plano.problemas)) {
     throw new ShopeePublishBlockedError({
@@ -1625,9 +1849,80 @@ export async function aplicarPublicacao(
   // violation count are decided from the document as it stands right now.
   const armazenado = await lerLinkArmazenado(deps.db, produtoId, linkDocId);
 
+  // ⚠️ A DRAFT's `add_item` is sent ONLY under its lock (#1911 batch-A
+  // review). A create planned onto a named link that reads as a draft (a gone
+  // document reads so too) with no reservation in hand reached here unlocked —
+  // step 11's lexical resolver picking a draft another run just minted — and
+  // would send a second `add_item` beside that run's. Refused with NOTHING
+  // written or sent; the ONE predicate on the raw document, never on
+  // `linkDocId` alone (a corrupt `item_id: 0` link is no draft and goes on).
+  if (!plano.ehAtualizacao && rascunho === null && linkDocId !== null) {
+    if (ehRascunhoShopee(armazenado)) throw rascunhoSemTrava(linkDocId);
+  }
+
+  // ⚠️ #1911 P5b (Lucas, 2026-10-26): a `livre` draft's FIRST create looks
+  // for a listing the conta already holds with the SKU this body SENDS —
+  // unlinked ⇒ "importe-o", another produto's ⇒ one SKU per produto,
+  // incomplete ⇒ nothing created — the kit arm's same-SKU scan mirrored.
+  // Under the lock, after D15, BEFORE the `try`: a refusal is a blocked
+  // refusal with nothing sent, and a scan's Shopee failure propagates
+  // untouched — never classified as an `add_item` outcome nor stamped (the
+  // caller hands the lock back, `fase` still `travada`). Skipped ONLY when
+  // this run's ENSURE already searched the very fold the body sends: the
+  // produto is read again after the reservation, and a SKU renamed in
+  // between was never looked up (batch-A review, rule 7).
+  if (
+    !plano.ehAtualizacao &&
+    rascunho !== null &&
+    skuDaBuscaShopee(plano.item.criar.item_sku) !== rascunho.skuJaBuscado
+  ) {
+    // ⚠️ Under the send gate's deadline (batch-A review): on a shop of
+    // thousands of listings the walk can outlive the request, and a run the
+    // platform cuts there leaves its lock UNSTAMPED. It stops before its next
+    // Shopee read instead — 409 `PUBLICACAO_EXPIRADA`, nothing decided, the
+    // lock handed back by `publicarAnuncioShopee`'s catch (`fase` `travada`).
+    const verificacao = await buscaNoPrazoDoEnvio(
+      rascunho.reserva.linkDocId,
+      rascunho.reserva,
+      rascunho.controles,
+      (podeContinuar) =>
+        verificarAnuncioExistenteShopee(deps.client, deps.db, {
+          integracaoId: deps.integracaoId,
+          produtoId,
+          itemSku: plano.item.criar.item_sku,
+          podeContinuar,
+        }),
+    );
+    chamadasShopee += verificacao.chamadas;
+    if (temProblemaDeBloqueio(verificacao.problemas)) {
+      throw new ShopeePublishBlockedError({
+        produtoId,
+        itemId: null,
+        problemas: verificacao.problemas,
+      });
+    }
+  }
+
   try {
     /* ---- (2) the item write. -------------------------------------------- */
-    const envio = await enviarItem(deps, plano);
+    // A DRAFT's create: the lock must still be OURS immediately before the
+    // send — and the SKU the body sends is STAMPED on it there, so a look-up
+    // of an uncertain create compares against what was SENT (batch-A review);
+    // its `expiraEm` is what every leg's gate measures against.
+    const envio = await enviarItem(
+      deps,
+      plano,
+      rascunho === null
+        ? null
+        : {
+            ...rascunho,
+            trava: await conferirTravaAntesDoEnvio(
+              deps.db,
+              rascunho.reserva,
+              skuDaBuscaShopee(plano.item.criar.item_sku),
+            ),
+          },
+    );
     chamadasShopee += envio.chamadas;
     const corpo = envio.corpo;
     // ⚠️ The echo's `item_id` is an IDENTIFIER, not state — the one thing this
@@ -1642,16 +1937,12 @@ export async function aplicarPublicacao(
     const taxInfoOmitido = envio.taxInfoOmitido ?? plano.taxInfoOmitido;
     avisos.juntar(avisoDeShopee(envio.resposta.warning), etapa, { produtoId, itemId });
 
-    /* ---- (3) write-back #1. --------------------------------------------- */
-    linkDocId = await escreverWriteBack1(deps, {
-      produtoId,
-      linkDocId,
-      armazenado,
-      itemId,
-      corpo,
-      etapa,
-      taxInfoOmitido,
-    });
+    /* ---- (3) write-back #1 — a CLAIM on a draft. ------------------------ */
+    linkDocId = await escreverWriteBack1(
+      deps,
+      { produtoId, linkDocId, armazenado, itemId, corpo, etapa, taxInfoOmitido },
+      rascunho?.reserva ?? null,
+    );
 
     /* ---- (4) the wait — exactly when the plan says so. ------------------ */
     if (plano.passos.some((p) => p.tipo === 'esperar')) {
@@ -1748,6 +2039,26 @@ export async function aplicarPublicacao(
     registrarPublicacao(deps, resultado);
     return resultado;
   } catch (err) {
+    // A DRAFT whose lock is still `travada` sent NOTHING (#1911): the pre-send
+    // re-read, the credential warm or a gate stopped it before `add_item`. The
+    // caller's catch hands the lock back, unstamped — and a Shopee error here
+    // (the warm's token refresh) is about the TOKEN, never about the listing,
+    // so it must not reach the plain stamp below, which is not token-guarded.
+    if (rascunho !== null && rascunho.reserva.fase === 'travada') throw err;
+    // A DRAFT's `add_item` failed with something that is not a Shopee answer
+    // (#1911): the classifier owns it. The app's token step never left this
+    // process — nothing is outstanding, so the caller's catch hands the lock
+    // back, unstamped. Any other such error is OURS: the classifier rethrows it
+    // and the lock is KEPT (it expires into `incerta`).
+    if (
+      rascunho !== null &&
+      rascunho.reserva.fase === 'enviando' &&
+      !(err instanceof ShopeeError) &&
+      desfechoDeCriacaoDeItem(err) === 'nao-criado'
+    ) {
+      rascunho.reserva.fase = 'travada';
+      throw err;
+    }
     // ⚠️ The BASE class, and it is safe here for one reason: nothing is
     // swallowed. Every error rethrows; the narrow decides only whether a
     // `falhaPublicacao` stamp is worth writing, and a failure Shopee reported is
@@ -1758,15 +2069,55 @@ export async function aplicarPublicacao(
       // The model leg is the ONE step whose exact call the applier cannot know;
       // everywhere else the cursor already is the call.
       const etapaReal = etapa === ETAPA_PUBLICACAO.getModelList ? etapaDaFalha(err, etapa) : etapa;
-      await carimbarFalhaDePublicacao(deps, {
-        produtoId,
-        linkDocId,
+      const falha: DadosDaFalha = {
         itemId,
         etapa: etapaReal,
         erro: codigoDaFalha(err),
         mensagem: err.message,
         problemas,
-      });
+      };
+      if (rascunho !== null && rascunho.reserva.fase === 'enviando') {
+        const { reserva } = rascunho;
+        // A DRAFT's `add_item` failed (#1911): only the classifier may say
+        // nothing was created. `incerto` ⇒ NO stamp (never "falhou" for a
+        // listing that may exist): the lock KEPT live for the wait and the
+        // attempt RECORDED in one token-guarded write, then the 202 — the next
+        // publish waits, then looks for the listing before any new `add_item`.
+        if (desfechoDeCriacaoDeItem(err) === 'incerto') {
+          const aguardarMs = await registrarCriacaoIncerta(deps.db, reserva, rascunho.controles);
+          // The same fold the re-send's look-up will run on the produto's SKU —
+          // the body sent it iff it was usable.
+          const reenvioVerificaSku = skuDaBuscaShopee(plano.item.criar.item_sku) !== '';
+          console.warn(
+            '[shopee/anuncios] add_item do rascunho com desfecho INCERTO; trava mantida',
+            {
+              produtoId,
+              linkDocId: reserva.linkDocId,
+              erro: falha.erro,
+              aguardarMs,
+              reenvioVerificaSku,
+            },
+          );
+          throw new CriacaoDeAnuncioIncertaError(
+            {
+              produtoId,
+              linkDocId: reserva.linkDocId,
+              aguardarMs,
+              reenvioVerificaSku,
+              recusa: recusaDoAnuncioIncerto(err),
+              mensagem: mensagemDoAnuncioIncerto(reenvioVerificaSku),
+            },
+            err,
+          );
+        }
+        // `nao-criado`: the stamp and the release in ONE token-guarded write —
+        // a lock another run holds now is never cleared nor stamped over. A
+        // Firestore failure of that write never replaces Shopee's refusal
+        // below (the stamp is lost with the release; the lock expires).
+        await liberarTravaShopeeSemSubstituirErro(deps.db, reserva, carimboDaFalha(deps, falha));
+      } else {
+        await carimbarFalhaDePublicacao(deps, { ...falha, produtoId, linkDocId });
+      }
       // A rate limit is excluded: it is a transient with its own HTTP mapping,
       // not a refusal of this publish.
       if (err instanceof ShopeeApiError && !(err instanceof ShopeeRateLimitError)) {
@@ -1823,17 +2174,49 @@ function violacoesArmazenadas(raw: Record<string, unknown>): number {
   return Array.isArray(raw.violations) ? raw.violations.length : 0;
 }
 
-/** `add_item` or `update_item`, with the body that was actually sent. */
+/**
+ * A DRAFT's publish in progress (#1911): the lock this run holds and the live
+ * controls it was taken with — `aplicarPublicacao`'s third parameter.
+ */
+export interface PublicacaoDeRascunho {
+  readonly reserva: ReservaDeRascunhoShopee;
+  readonly controles: ControlesDaPublicacaoAoVivo;
+  /**
+   * #1911 P5b: the SKU fold this run's ENSURE already searched under this
+   * lock (the reservation's `skuBuscadoNaReserva`), or `null` when none was —
+   * a `livre` draft, or the attested SKU-less proceed. The FIRST create's
+   * same-SKU look-up (`verificarAnuncioExistenteShopee`) is skipped ONLY when
+   * the planned body sends exactly this fold (Lucas, 2026-10-26: that path is
+   * not scanned twice); any other body — a SKU renamed between the
+   * reservation and `preparar` included (batch-A review) — is looked up.
+   */
+  readonly skuJaBuscado: string | null;
+}
+
+/**
+ * `add_item` or `update_item`, with the body that was actually sent.
+ *
+ * ⚠️ On a DRAFT's create (`rascunho` non-null) EVERY `add_item` leg — the
+ * fiscal retry's second one included — warms the credential, then runs the
+ * synchronous send gate right before the call, and records on the reservation
+ * whether a send may be
+ * outstanding: each leg starts with nothing outstanding (a second leg exists
+ * only after the first was refused for good, `ehRecusaDoBlocoFiscal`), is
+ * `enviando` from the instant the gate passes, and `criada` once Shopee
+ * answers with success.
+ */
 async function enviarItem(
   deps: PublicarAnuncioDeps,
   plano: PlanoPublicacao,
+  rascunho: (PublicacaoDeRascunho & { readonly trava: { readonly expiraEm: number } }) | null,
 ): Promise<EnvioDeItem & { readonly corpo: CorpoDeItem }> {
   if (!plano.ehAtualizacao) {
     const corpo = plano.item.criar;
-    const envio = await enviarItemComRetentativaFiscal((c) => deps.client.addItem(c), corpo, {
-      produtoId: plano.produtoId,
-      etapa: ETAPA_PUBLICACAO.addItem,
-    });
+    const envio = await enviarItemComRetentativaFiscal(
+      (c) => (rascunho === null ? deps.client.addItem(c) : enviarSobATrava(deps, rascunho, c)),
+      corpo,
+      { produtoId: plano.produtoId, etapa: ETAPA_PUBLICACAO.addItem },
+    );
     return { ...envio, corpo: envio.taxInfoOmitido === null ? corpo : semBlocoFiscal(corpo) };
   }
 
@@ -1851,6 +2234,36 @@ async function enviarItem(
     etapa: ETAPA_PUBLICACAO.updateItem,
   });
   return { ...envio, corpo: envio.taxInfoOmitido === null ? corpo : semBlocoFiscal(corpo) };
+}
+
+/**
+ * ONE `add_item` leg of a DRAFT's create, under its lock: nothing outstanding
+ * → the credential warm (`controles.aquecerCredencial`) → the synchronous gate
+ * (it throws `PUBLICACAO_EXPIRADA` with nothing sent) → `enviando` → the call
+ * → `criada`.
+ *
+ * ⚠️ The warm comes FIRST, and that order is the point (batch-A review): the
+ * only await between the gate and the request is the client's own token ask
+ * inside `addItem`, and a token near expiry turns that ask into a provider
+ * REFRESH with no deadline. Warmed before the gate, any refresh is paid while
+ * nothing is outstanding, the gate reads the clock AFTER it, and the client's
+ * ask is one credential read inside `MARGEM_ENVIO_SHOPEE_MS`. A warm that
+ * throws leaves `fase` at `travada`: nothing was sent, and the caller hands the
+ * lock back unstamped.
+ */
+async function enviarSobATrava(
+  deps: PublicarAnuncioDeps,
+  rascunho: PublicacaoDeRascunho & { readonly trava: { readonly expiraEm: number } },
+  corpo: ShopeeAddItemRequest,
+): Promise<ShopeeItemWriteResponse> {
+  const { reserva } = rascunho;
+  reserva.fase = 'travada';
+  await rascunho.controles.aquecerCredencial();
+  portaoDeEnvio(reserva.linkDocId, rascunho.trava, rascunho.controles);
+  reserva.fase = 'enviando';
+  const resposta = await deps.client.addItem(corpo);
+  reserva.fase = 'criada';
+  return resposta;
 }
 
 /**
@@ -2026,26 +2439,250 @@ function registrarPublicacao(deps: PublicarAnuncioDeps, r: ResultadoPublicacao):
 /**
  * Publish ONE produto: read, resolve the pictures, plan, then apply.
  *
+ * ⚠️ A NAMED link that is a DRAFT (#1911) is reserved FIRST — before `preparar`
+ * reads the content the create will send, so no edit can change it underneath
+ * (`reservaRascunho.ts`). A lock refusal throws `ConflitoDeRascunhoShopeeError`
+ * (the route's 409) with nothing read beyond the links and nothing sent. Any
+ * throw while nothing may have reached Shopee hands the lock back, unstamped
+ * (a blocked plan, a photo or taxonomy read failure, the credential warm, the
+ * send gate, a lost lock) — best-effort: a failed hand-back never replaces the
+ * error being thrown; every other way out is `aplicarPublicacao`'s to decide.
+ *
+ * ⚠️ Before that, a live create of a produto the conta holds NO link of MINTS
+ * its draft ({@link nomearCriacaoSemVinculo}, K1-5) and continues named. And a
+ * reservation whose ENSURE ADOPTED the earlier attempt's listing goes on as an
+ * UPDATE of it (`retomandoCriacao`), lock-free. An `add_item` whose outcome
+ * nobody can know throws `CriacaoDeAnuncioIncertaError` (the 202 — the lock
+ * kept, the attempt recorded), which `publicarShopee` turns into a result.
+ *
  * @returns `null` when this conta has nothing to publish onto (the produto does
  *   not exist, or a named `linkDocId` is not this conta's) — the route's **404**.
  *   Every refusal is a throw: `ShopeePublishBlockedError` before the first write,
- *   `ShopeePublishRejectedError` for a wire refusal after writes began.
+ *   `ShopeePublishRejectedError` for a wire refusal after writes began; the
+ *   draft route's own `RecusaDeRascunhoShopeeError` when the mint is refused.
  */
 export async function publicarAnuncioShopee(
   deps: PublicarAnuncioDeps,
   entrada: EntradaDePublicacao,
 ): Promise<ResultadoPublicacao | null> {
-  const resolvedorDeImagens =
-    deps.resolvedorDeImagens ?? criarResolvedorDePublicacao(deps, entrada.produtoId);
-  const contexto = await prepararPublicacao(deps, entrada, resolvedorDeImagens);
-  if (contexto === null) return null;
+  const nomeada = await nomearCriacaoSemVinculo(deps, entrada);
+  const desfechoDaReserva = await reservarSeForRascunho(deps, nomeada);
+  const rascunho = desfechoDaReserva.tipo === 'travada' ? desfechoDaReserva.rascunho : null;
+  const alvo: EntradaDePublicacao =
+    desfechoDaReserva.tipo === 'adotada' ? { ...nomeada, retomandoCriacao: true } : nomeada;
 
-  // ⚠️ The pictures BEFORE the plan: `montarAnuncio` needs the real `image_id[]`
-  // to build a body at all, and an empty list is the `sem-fotos` REFUSAL rather
-  // than an error.
-  const fotos = await resolverFotosDaPublicacao(contexto);
-  const plano = planejarPublicacao(contexto, fotos);
-  return await aplicarPublicacao(deps, plano);
+  try {
+    const resolvedorDeImagens =
+      deps.resolvedorDeImagens ?? criarResolvedorDePublicacao(deps, alvo.produtoId);
+    const contexto = await prepararPublicacao(deps, alvo, resolvedorDeImagens);
+    if (contexto === null) {
+      // No error to protect here: a failed release is the ONLY answer, so it
+      // propagates (the reservation is then `encerrada`, so the catch below
+      // does not release a second time).
+      if (rascunho !== null) await liberarTravaShopee(deps.db, rascunho.reserva);
+      return null;
+    }
+
+    // ⚠️ The pictures BEFORE the plan: `montarAnuncio` needs the real `image_id[]`
+    // to build a body at all, and an empty list is the `sem-fotos` REFUSAL rather
+    // than an error.
+    const fotos = await resolverFotosDaPublicacao(contexto);
+    const plano = planejarPublicacao(contexto, fotos);
+    return await aplicarPublicacao(deps, plano, rascunho);
+  } catch (err) {
+    // ⚠️ EVERY error is rethrown; this catch only hands a DRAFT's lock back
+    // when nothing that may have reached Shopee is outstanding. Any other
+    // `fase` was already decided where it happened — released with its stamp,
+    // claimed, or KEPT on purpose for an outcome nobody can know. The
+    // hand-back never replaces `err`: a failed release leaves the lock to
+    // expire, and the operator still gets the answer they act on.
+    if (rascunho !== null && rascunho.reserva.fase === 'travada') {
+      await liberarTravaShopeeSemSubstituirErro(deps.db, rascunho.reserva);
+    }
+    throw err;
+  }
+}
+
+/** What the reservation step left this publish with. */
+type ReservaDaPublicacao =
+  /** No lock: a republish, or a named document that is gone / not this conta's. */
+  | { readonly tipo: 'nenhuma' }
+  | { readonly tipo: 'travada'; readonly rascunho: PublicacaoDeRascunho }
+  /** ENSURE adopted the earlier attempt's listing: an update, lock-free. */
+  | { readonly tipo: 'adotada' };
+
+/**
+ * The draft lock of this publish, when it addresses one: a NAMED `linkDocId`
+ * (the dispatcher reaches a draft only by name; a no-link create was named by
+ * {@link nomearCriacaoSemVinculo}) whose document is a draft. `nenhuma` = no
+ * lock — `prepararPublicacao` then answers a gone document exactly as before
+ * (the route's 404, after its produto refusals).
+ */
+async function reservarSeForRascunho(
+  deps: PublicarAnuncioDeps,
+  entrada: EntradaDePublicacao,
+): Promise<ReservaDaPublicacao> {
+  const linkDocId = textoUtilizavel(entrada.linkDocId);
+  if (linkDocId === null) return { tipo: 'nenhuma' };
+  const desfecho = await reservarRascunhoShopee(
+    deps.db,
+    { integracaoId: deps.integracaoId, produtoId: entrada.produtoId, linkDocId },
+    deps.aoVivo ?? null,
+    // ENSURE reads Shopee with the run's own client (an `incerta` draft only).
+    { client: deps.client, nowMs: deps.nowMs },
+  );
+  if (desfecho.tipo === 'adotada') return { tipo: 'adotada' };
+  if (desfecho.tipo !== 'travada') return { tipo: 'nenhuma' };
+  // `reservarRascunhoShopee` refuses a draft without the controls BEFORE any
+  // write, so a reservation exists only when they do.
+  if (deps.aoVivo === undefined) {
+    throw new Error('[shopee/anuncios] reserva de rascunho sem deps.aoVivo');
+  }
+  return {
+    tipo: 'travada',
+    rascunho: {
+      reserva: desfecho.reserva,
+      controles: deps.aoVivo,
+      skuJaBuscado: desfecho.skuBuscadoNaReserva,
+    },
+  };
+}
+
+/**
+ * A live FIRST create of a produto the conta holds NO link of (K1-5): MINT its
+ * draft through the draft route's own create (`rascunho.ts` — tier 0, a fresh
+ * `newDocId`, the same document shape and checks the tab's «Novo anúncio»
+ * writes), then publish it NAMED — the lock, the attempt's memory and D15 all
+ * need a document to live on.
+ *
+ * The draft carries the brand `{brand_id: 0, original_brand_name: null}` —
+ * "Sem marca", the `?? 0` this path always sent, byte for byte — and the
+ * operator's `categoryId` when one came (the body the create sends is the
+ * same; an uncertain attempt's category is then on record, D8). Its title is
+ * the produto's `nome`, verbatim (the route's fallback).
+ *
+ * ⚠️ **The mint race (#1911 batch-A review).** The dispatcher hands
+ * `linkDocId: null` only after ITS read found no link; this re-read finding
+ * one means another run minted (or claimed) a draft, or the import added a
+ * link, in between. Falling back to step 11's lexical resolver then would pick
+ * that run's DRAFT and send `add_item` on it with no lock — two listings, and
+ * the other run's lock stranded on a live link. So, with NOTHING written or
+ * sent, 409 `CONTENCAO` (the operator retries, and the dispatcher re-reads):
+ * whenever the dispatcher said "no link" ({@link EntradaDePublicacao.despachoSemVinculo}),
+ * and — for a direct caller — whenever any link read is a DRAFT.
+ *
+ * Anything else answers `entrada` unchanged, with NOTHING written:
+ *  - a named `linkDocId` (the dispatcher's), or — for a direct caller only —
+ *    links of this produto on the conta none of which is a draft: step 11's
+ *    resolver keeps picking among those;
+ *  - a produto that does not exist — `prepararPublicacao`'s 404;
+ *  - a produto the plan refuses before any send for want of a NAME
+ *    (`sem-nome`): nothing can reach `add_item`, so nothing needs a lock — and
+ *    the draft route would refuse to mint it (its 400).
+ * A variation child or a native kit is refused here by `preparar`'s OWN
+ * refusal ({@link recusarProdutoNaoPublicavel}), before any write — the same
+ * error, the same precedence.
+ *
+ * ⚠️ `deps.aoVivo` is REQUIRED from here on: a mint without the live controls
+ * would leave a draft the reservation then refuses to lock. The defect throws
+ * BEFORE the mint.
+ */
+async function nomearCriacaoSemVinculo(
+  deps: PublicarAnuncioDeps,
+  entrada: EntradaDePublicacao,
+): Promise<EntradaDePublicacao> {
+  if (textoUtilizavel(entrada.linkDocId) !== null) return entrada;
+  const vinculos = await lerVinculosDaConta(deps.db, deps.integracaoId, entrada.produtoId);
+  if (vinculos.length > 0) {
+    // The mint race (docblock): never an unnamed fall-through onto a link the
+    // dispatcher did not see — and never onto a draft at all.
+    if (entrada.despachoSemVinculo === true || vinculos.some((v) => ehRascunhoShopee(v.raw))) {
+      throw vinculoNovoDuranteAPublicacao(entrada.produtoId, vinculos);
+    }
+    return entrada;
+  }
+  const snap = await produtoCollection.docRef(deps.db, {}, entrada.produtoId).get();
+  if (!snap.exists) return entrada;
+  const produto = produtoParaPublicar(
+    entrada.produtoId,
+    (snap.data() ?? {}) as Record<string, unknown>,
+  );
+  recusarProdutoNaoPublicavel(produto, null);
+  if (textoUtilizavelShopee(produto.nome) === null) return entrada;
+  if (deps.aoVivo === undefined) {
+    throw new Error(
+      `[shopee/anuncios] a primeira publicação do produto ${entrada.produtoId} chegou sem o ` +
+        'relógio da rota (deps.aoVivo): sem ele o rascunho não pode ser travado. Nada foi ' +
+        'gravado nem enviado.',
+    );
+  }
+
+  const linkDocId = produtoShopeeLinkCollection.newDocId(deps.db, {
+    produtoId: entrada.produtoId,
+  });
+  await criarRascunhoShopee(
+    { db: deps.db, nowMs: deps.nowMs },
+    {
+      integracaoId: deps.integracaoId,
+      produtoId: entrada.produtoId,
+      linkDocId,
+      conteudo: {
+        marca: { brand_id: 0, original_brand_name: null },
+        ...(entrada.categoryId == null ? {} : { category_id: entrada.categoryId }),
+      },
+      confirmarSegundoAnuncio: deps.aoVivo.confirmarSegundoAnuncio,
+    },
+  );
+  // eslint-disable-next-line no-console -- one line per mint: ids only
+  console.info('[shopee/anuncios] rascunho criado para a primeira publicação sem vínculo', {
+    integracaoId: deps.integracaoId,
+    produtoId: entrada.produtoId,
+    linkDocId,
+  });
+  return { ...entrada, linkDocId };
+}
+
+/**
+ * The mint race's refusal ({@link nomearCriacaoSemVinculo}) — 409 `CONTENCAO`,
+ * nothing written or sent. It names the draft that appeared when there is one
+ * (the link the operator's retry will be about), else the first link read.
+ */
+function vinculoNovoDuranteAPublicacao(
+  produtoId: string,
+  vinculos: readonly { readonly id: string; readonly raw: Record<string, unknown> }[],
+): ConflitoDeRascunhoShopeeError {
+  const ids = vinculos.map((v) => v.id);
+  const alvo = vinculos.find((v) => ehRascunhoShopee(v.raw))?.id ?? ids[0] ?? produtoId;
+  console.warn('[shopee/anuncios] o produto ganhou um vínculo durante a publicação; nada enviado', {
+    produtoId,
+    vinculos: ids,
+  });
+  return new ConflitoDeRascunhoShopeeError({
+    code: CODIGO_RASCUNHO_SHOPEE.contencao,
+    linkDocId: alvo,
+    mensagem:
+      `o produto ${produtoId} ganhou um vínculo nesta conta durante a publicação ` +
+      `(${ids.join(', ')}) — outra execução (ou a importação) o gravou depois que a publicação ` +
+      'leu a conta sem nenhum. Nada foi enviado à Shopee; tente de novo.',
+  });
+}
+
+/**
+ * A DRAFT reached the send with no reservation (the aplicar guard) — 409
+ * `CONTENCAO`, nothing written or sent: only its lock may carry its `add_item`.
+ */
+function rascunhoSemTrava(linkDocId: string): ConflitoDeRascunhoShopeeError {
+  console.warn('[shopee/anuncios] add_item de um rascunho sem a trava dele; nada enviado', {
+    linkDocId,
+  });
+  return new ConflitoDeRascunhoShopeeError({
+    code: CODIGO_RASCUNHO_SHOPEE.contencao,
+    linkDocId,
+    mensagem:
+      `o vínculo ${linkDocId} é um rascunho e esta publicação chegou ao add_item sem a trava ` +
+      'dele (um rascunho só é publicado pelo nome, sob a trava). Nada foi enviado à Shopee; ' +
+      'tente de novo.',
+  });
 }
 
 /**

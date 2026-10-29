@@ -56,6 +56,11 @@ runConfig:
   # /api/marketplace/shopee/enviar-precos, one `update_price` per listing under
   # its OWN budget (SHOPEE_PRICE_MANUAL_DEADLINE_MS, also 120 s by default) — so
   # this ceiling stays at 180 and still sits above both.
+  # ⚠️ Since #1911 this number has a CODE twin: TETO_ROTA_SHOPEE_MS (180_000) in
+  # packages/schemas/src/produto/collection/shopeeRascunho.ts. The publish route
+  # turns it into the request's deadline, and a draft's send gate refuses to
+  # START an add_item this ceiling could cut off mid-send. Change both together:
+  # publicar/route.test.ts pins seconds × 1000 === the constant.
   timeoutSeconds: 180
 # ⚠️ That `timeoutSeconds` is NEW, and it replaces a paragraph that claimed the
 # opposite. Until step 12 every route here WAS a fast Firestore read/write plus

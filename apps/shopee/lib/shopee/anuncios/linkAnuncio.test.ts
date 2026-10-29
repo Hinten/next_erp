@@ -555,6 +555,168 @@ describe('resolverLinkVivoPorProduto', () => {
 });
 
 /* -------------------------------------------------------------------------- */
+/*     (2c) resolverLinkVivoPorProduto — um RASCUNHO nunca é vivo (#1911 D3)    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * A DRAFT: this conta's `prodshopee` with NO listing — `item_id: null`, or the
+ * key ABSENT when `semItemId` is `'ausente'` (a projection that omits it reads
+ * the same). The ids below are chosen so the DRAFT sorts FIRST: that is the
+ * order in which the pre-#1911 lexical tier picked it.
+ */
+function semearRascunho(
+  db: FakeDb,
+  id: string,
+  extra: Record<string, unknown> = {},
+  semItemId: 'nulo' | 'ausente' = 'nulo',
+): void {
+  db.seed(`produtos/${PAI}/prodshopee/${id}`, {
+    contaProdutoShopeeOuterRef: REF_CONTA,
+    item_name: 'Camiseta Básica',
+    ...(semItemId === 'nulo' ? { item_id: null } : {}),
+    ...extra,
+  });
+}
+
+describe('resolverLinkVivoPorProduto — o rascunho fica por ÚLTIMO (#1911 D3)', () => {
+  it('⛔ um rascunho que ordena primeiro PERDE para o anúncio vivo (pausado) — nas duas grafias do rascunho', async () => {
+    for (const semItemId of ['nulo', 'ausente'] as const) {
+      const db = new FakeDb();
+      semearRascunho(db, 'link-a', {}, semItemId);
+      semearLinkPai(db, 'link-b', { estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.pausado });
+
+      const link = await resolverLinkVivoPorProduto(asDb(db), INTEGRACAO, PAI);
+      expect(link).toMatchObject({ linkDocId: 'link-b', itemId: ITEM_ID });
+    }
+  });
+
+  it('um rascunho que (no corpus legado) diz `estadoAnuncio: ativo` continua sendo rascunho — o vivo vence', async () => {
+    const db = new FakeDb();
+    semearRascunho(db, 'link-a', { estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo });
+    semearLinkPai(db, 'link-b', { estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo });
+
+    expect((await resolverLinkVivoPorProduto(asDb(db), INTEGRACAO, PAI))?.linkDocId).toBe('link-b');
+  });
+
+  it('⚠️ NEAR-MISS: o resolvedor da PUBLICAÇÃO, sobre os MESMOS documentos, continua léxico (o despachante é quem nomeia)', async () => {
+    const db = new FakeDb();
+    semearRascunho(db, 'link-a');
+    semearLinkPai(db, 'link-b', { estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo });
+
+    expect((await resolverLinkPorProduto(asDb(db), INTEGRACAO, PAI))?.linkDocId).toBe('link-a');
+  });
+
+  it('⛔ um rascunho que ordena primeiro PERDE até para o anúncio REMOVIDO — o degrau 3 lê só os não-rascunhos', async () => {
+    // The caller then reports the removed listing's state; a draft would have
+    // answered `sem-item-id` about a listing that never existed.
+    const db = new FakeDb();
+    semearRascunho(db, 'link-a');
+    semearLinkPai(db, 'link-b', { estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.removido });
+
+    const link = await resolverLinkVivoPorProduto(asDb(db), INTEGRACAO, PAI);
+    expect(link).toMatchObject({
+      linkDocId: 'link-b',
+      itemId: ITEM_ID,
+      estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.removido,
+    });
+  });
+
+  it('o mesmo vale para um SUBSTITUÍDO: o rascunho nunca passa à frente de uma listagem', async () => {
+    const db = new FakeDb();
+    semearRascunho(db, 'link-a');
+    semearLinkPai(db, 'link-b', {
+      estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo,
+      substituidoPorLinkDocId: 'link-x',
+    });
+
+    expect((await resolverLinkVivoPorProduto(asDb(db), INTEGRACAO, PAI))?.linkDocId).toBe('link-b');
+  });
+
+  it('um rascunho SOZINHO ainda resolve (o degrau 4) — o chamador responde `sem-item-id`, nunca um 404', async () => {
+    for (const semItemId of ['nulo', 'ausente'] as const) {
+      const db = new FakeDb();
+      semearRascunho(db, 'link-a', {}, semItemId);
+
+      const link = await resolverLinkVivoPorProduto(asDb(db), INTEGRACAO, PAI);
+      expect(link).toMatchObject({ linkDocId: 'link-a', itemId: null });
+    }
+  });
+
+  it('dois rascunhos e nada mais: o léxico decide ENTRE eles', async () => {
+    const db = new FakeDb();
+    semearRascunho(db, 'link-b');
+    semearRascunho(db, 'link-a');
+
+    expect((await resolverLinkVivoPorProduto(asDb(db), INTEGRACAO, PAI))?.linkDocId).toBe('link-a');
+  });
+
+  it('um rascunho NOMEADO vence qualquer degrau — é assim que o operador se dirige a ele', async () => {
+    const db = new FakeDb();
+    semearRascunho(db, 'link-b');
+    semearLinkPai(db, 'link-a', { estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo });
+
+    const link = await resolverLinkVivoPorProduto(asDb(db), INTEGRACAO, PAI, 'link-b');
+    expect(link).toMatchObject({ linkDocId: 'link-b', itemId: null });
+  });
+
+  it('⚠️ NEAR-MISS: um `item_id` CORROMPIDO (0, -1, "123") NÃO é rascunho — fica no degrau 2, à frente do rascunho', async () => {
+    // The predicate is the SHARED `ehRascunhoShopee`, never "no usable item_id":
+    // a corrupt link is a recorded residual (neither vivo nor draft), and a
+    // local `itemId === null` test would demote it beside the draft.
+    for (const corrompido of [0, -1, String(ITEM_ID)]) {
+      const db = new FakeDb();
+      semearRascunho(db, 'link-a');
+      semearLinkPai(db, 'link-b', { item_id: corrompido });
+
+      const link = await resolverLinkVivoPorProduto(asDb(db), INTEGRACAO, PAI);
+      expect(link).toMatchObject({ linkDocId: 'link-b', itemId: null });
+    }
+  });
+
+  it('⚠️ NEAR-MISS: `kitNativo: true` sem `item_id` é RESÍDUO de kit, não rascunho — fica à frente do rascunho', async () => {
+    const db = new FakeDb();
+    semearRascunho(db, 'link-a');
+    semearLinkPai(db, 'link-b', { kitNativo: true, item_id: null });
+
+    expect((await resolverLinkVivoPorProduto(asDb(db), INTEGRACAO, PAI))?.linkDocId).toBe('link-b');
+  });
+
+  it('QUASE-IGUAL: `kitNativo` falso, nulo ou o texto "true" NÃO tiram o rascunho da classe — ele continua por último', async () => {
+    for (const kitNativo of [false, null, 'true']) {
+      const db = new FakeDb();
+      semearRascunho(db, 'link-a', { kitNativo });
+      semearLinkPai(db, 'link-b', { estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.pausado });
+
+      expect((await resolverLinkVivoPorProduto(asDb(db), INTEGRACAO, PAI))?.linkDocId).toBe(
+        'link-b',
+      );
+    }
+  });
+
+  it('o kit nativo ativo continua no degrau 1, à frente de rascunho e de comum', async () => {
+    const db = new FakeDb();
+    semearRascunho(db, 'link-a');
+    semearLinkPai(db, 'link-b', { estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo });
+    semearLinkPai(db, 'link-c', {
+      kitNativo: true,
+      item_id: ITEM_KIT,
+      estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo,
+    });
+
+    expect((await resolverLinkVivoPorProduto(asDb(db), INTEGRACAO, PAI))?.linkDocId).toBe('link-c');
+  });
+
+  it('o rascunho de OUTRA conta nem entra na conta: o vivo desta resolve sem degrau 4', async () => {
+    const db = new FakeDb();
+    semearRascunho(db, 'link-a', { contaProdutoShopeeOuterRef: REF_OUTRA_CONTA });
+    semearLinkPai(db, 'link-b', { estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo });
+
+    expect((await resolverLinkVivoPorProduto(asDb(db), INTEGRACAO, PAI))?.linkDocId).toBe('link-b');
+    expect(await resolverLinkVivoPorProduto(asDb(db), INTEGRACAO, PAI, 'link-a')).toBeNull();
+  });
+});
+
+/* -------------------------------------------------------------------------- */
 /*                        (3) lerLinksDeVariacao                               */
 /* -------------------------------------------------------------------------- */
 

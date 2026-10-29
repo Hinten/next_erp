@@ -4,6 +4,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { PRAZO_LI_MS } from '@delfrance/integrations-loja-integrada';
 
+import { RITMO_LEITURA_LI_MS } from './core/ritmo';
 import { CONCORRENCIA_REDRIVE_LI, LIMITE_REDRIVE_LI } from './notificacoes/notificacao';
 
 /**
@@ -42,6 +43,22 @@ const REDRIVE_MS =
   (1 + Math.ceil(LIMITE_REDRIVE_LI / CONCORRENCIA_REDRIVE_LI)) * RODADA_FIRESTORE_MS;
 const APP_DIR = path.resolve(__dirname, '../..');
 const TIMEOUT_SECONDS_LINHA = /^\s*timeoutSeconds\s*:\s*(\d+)\s*(?:#.*)?$/;
+
+/**
+ * The pedidos routes (step 15) and the core each delegates to, with how many order-detail reads
+ * (`buscarPedidoLi(`) and context loads (`loadLojaIntegradaContext(`) each file makes. The paid
+ * re-check makes exactly ONE read, through ONE context (so it is switched and paced); the label
+ * routing makes none. The route files themselves make none: the cores do. Nor does the shared
+ * read-failure mapper the paid re-check hands its failures to: it answers a failure and parks,
+ * and a "confirming" read there would be a second paced read no other row here would see.
+ */
+const ROTAS_DE_PEDIDOS: readonly (readonly [string, number, number])[] = [
+  ['app/api/marketplace/loja-integrada/pedidos/[pedidoId]/pagamento/route.ts', 0, 0],
+  ['lib/lojaIntegrada/pedidos/conferenciaPagamento.ts', 1, 1],
+  ['lib/lojaIntegrada/core/falhaDeLeituraLi.ts', 0, 0],
+  ['app/api/marketplace/loja-integrada/pedidos/[pedidoId]/rota-etiqueta/route.ts', 0, 0],
+  ['lib/lojaIntegrada/pedidos/rotaEtiqueta.ts', 0, 0],
+];
 
 /** The three conta routes, and how many validating calls and re-drives each may make. */
 const ROTAS: readonly (readonly [string, number, number])[] = [
@@ -130,5 +147,33 @@ describe('the credential routes fit inside the backend ceiling', () => {
     expect(PRAZO_LI_MS.leitura + MARGEM_MS + REDRIVE_MS).toBeLessThanOrEqual(60 * 1000);
     const serialMs = (1 + LIMITE_REDRIVE_LI) * RODADA_FIRESTORE_MS;
     expect(PRAZO_LI_MS.leitura + MARGEM_MS + serialMs).toBeGreaterThan(60 * 1000);
+  });
+});
+
+/**
+ * The pedidos routes (step 15). The paid re-check makes ONE order-detail read through a context:
+ * the pacer's wait (outside the call's deadline, `core/ritmo.ts`), then the call bounded by
+ * `PRAZO_LI_MS.leitura`, plus a handful of Firestore reads (the pedido, the conta, the credential
+ * twice, the mirror) and, on a 401, the park's few writes — all inside the margin. The label
+ * routing makes no Loja Integrada call at all.
+ */
+describe('the pedidos routes fit inside the backend ceiling', () => {
+  it('the pacer + PRAZO_LI_MS.leitura + margin ≤ the smallest ceiling', () => {
+    const { pinados } = configDoBackend();
+    const tetoS = pinados.length > 0 ? Math.min(...pinados) : TETO_APP_HOSTING_PADRAO_S;
+    expect(RITMO_LEITURA_LI_MS).toBeGreaterThan(0);
+    expect(RITMO_LEITURA_LI_MS + PRAZO_LI_MS.leitura + MARGEM_MS).toBeLessThanOrEqual(tetoS * 1000);
+  });
+
+  it('the paid re-check makes exactly ONE order-detail read, through ONE context; nothing else reaches Loja Integrada', () => {
+    for (const [arquivo, leituras, contextos] of ROTAS_DE_PEDIDOS) {
+      const fonte = readFileSync(path.join(APP_DIR, arquivo), 'utf8');
+      expect(contar(fonte, 'buscarPedidoLi('), arquivo).toBe(leituras);
+      expect(contar(fonte, 'loadLojaIntegradaContext('), arquivo).toBe(contextos);
+      // No other way out: no raw fetch, no client of its own, no other package read.
+      expect(fonte, arquivo).not.toMatch(
+        /criarClienteLeituraLi|validarPersonalToken|listarHistoricoSituacaoLi|buscarProdutoPorIdExternoLi|paginarLi|\.get\(\s*\{\s*operacao|fetch\(/,
+      );
+    }
   });
 });

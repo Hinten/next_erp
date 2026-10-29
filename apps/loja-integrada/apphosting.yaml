@@ -15,7 +15,8 @@ runConfig:
   minInstances: 0 # scale-to-zero: a per-channel backend costs only per request
   concurrency: 80
 # No `timeoutSeconds` — the platform default is what
-# `lib/lojaIntegrada/prazos.test.ts` compares the credential routes against.
+# `lib/lojaIntegrada/prazos.test.ts` compares the credential routes and the paid
+# re-check route (pacer + read deadline) against.
 #
 # No `runConfig.vpcAccess` — this channel needs no static egress IP (master plan
 # D3).
@@ -48,19 +49,31 @@ runConfig:
 # console and in the functions codebase's `.env.deploy`
 # (apps/loja-integrada/functions/DEPLOY.md):
 #
-#   LOJA_INTEGRADA_CHAMADAS                The read switch, read by the credential routes:
-#                                          only the exact `on` lets them call Loja
-#                                          Integrada; anything else answers 503
-#                                          LI_CHAMADAS_DESLIGADAS before any call.
+#   LOJA_INTEGRADA_CHAMADAS                The read switch, read by the credential routes
+#                                          and the paid re-check route (GET
+#                                          …/pedidos/[pedidoId]/pagamento): only the exact
+#                                          `on` lets them call Loja Integrada; anything
+#                                          else answers 503 LI_CHAMADAS_DESLIGADAS before
+#                                          any call (the re-check answers from the ERP's
+#                                          contested mirror instead when it is open). The
+#                                          label routing route reads no switch: it calls
+#                                          nothing.
 #   LOJA_INTEGRADA_MODO_ESTOQUE            Write valves, `off | dry-run | on`; only the
 #   LOJA_INTEGRADA_MODO_PRECO              exact `on` writes and the exact `dry-run`
 #   LOJA_INTEGRADA_MODO_ANUNCIO            diffs. Read from step 7 onward.
-#   LOJA_INTEGRADA_MODO_RASTREIO
 #   LOJA_INTEGRADA_MODO_WEBHOOK_REGISTRO
 #   LOJA_INTEGRADA_CANARIO_ESTOQUE         Canary lists, read from step 7 onward:
 #   LOJA_INTEGRADA_CANARIO_PRECO           unset = no target, exactly `*` = every
 #   LOJA_INTEGRADA_CANARIO_ANUNCIO         target, else `<contaId>:<n>,…` (see the
-#   LOJA_INTEGRADA_CANARIO_RASTREIO        root `.env.example`).
+#                                          root `.env.example`).
+#
+#   LOJA_INTEGRADA_MODO_RASTREIO           ⚠️ The RASTREIO pair (the status write-back,
+#   LOJA_INTEGRADA_CANARIO_RASTREIO        step 7) is the exception to "set alike": it
+#                                          has NO reader in this backend. The write-back
+#                                          runs in the functions codebase only — its
+#                                          trigger, the writes queue and its varredura —
+#                                          so set BOTH in its `.env.deploy`; a row for
+#                                          either here does nothing.
 #
 # Read ONLY by the nested functions codebase (step 3), so a row for any of them
 # here would be read by nothing: LOJA_INTEGRADA_TASKS_REGION,

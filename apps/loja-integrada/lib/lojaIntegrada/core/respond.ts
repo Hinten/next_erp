@@ -43,6 +43,7 @@ import {
   LiCredencialAlteradaError,
   LiCredencialAusenteError,
   LiCredencialInvalidaError,
+  LiCredencialTrocadaError,
   LiEstacionamentoEmConflitoError,
 } from './erros';
 
@@ -71,6 +72,11 @@ function mapear(err: LiAppError): Mapeamento {
     return { status: 409, code: CODIGO_ERRO_LI.credencialInvalida, issues: err.campos };
   }
   if (err instanceof LiCredencialAlteradaError) {
+    return { status: 409, code: CODIGO_ERRO_LI.credencialAlterada };
+  }
+  if (err instanceof LiCredencialTrocadaError) {
+    // Raised by the write context only (a functions run, never a route); the
+    // same answer as the panel's lost race, so the mapper stays total.
     return { status: 409, code: CODIGO_ERRO_LI.credencialAlterada };
   }
   if (err instanceof LiContaParadaError) {
@@ -286,9 +292,10 @@ export function respostaTokenDeOutraConta(): NextResponse {
 }
 
 /**
- * The caller went away while its token was being validated: 499 with an EMPTY
- * body (nobody is listening). Nothing was stored — the abort can only land
- * inside the validation call, before any write.
+ * The caller went away during a Loja Integrada call (a credential route's
+ * validation, the paid re-check's read): 499 with an EMPTY body (nobody is
+ * listening). The abort can only land inside that call, before any write the
+ * request would make.
  */
 export function respostaCancelada(): NextResponse {
   return new NextResponse(null, { status: 499 });

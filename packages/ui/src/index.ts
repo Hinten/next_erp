@@ -12,6 +12,9 @@ export { parseZodDescription, type ParsedDescription } from './schema/describe';
 export type {
   ActionConfig,
   ColumnFilterValue,
+  ConflictRebase,
+  ConflictRebaseInput,
+  ConflictRebaseResult,
   FieldConfig,
   FieldDescriptor,
   FieldKind,

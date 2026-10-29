@@ -72,7 +72,7 @@ Firestore-bound half**:
 | `whatsapp-cloud-api` | `apps/whatsapp` | typed Graph client + webhook envelope schemas |
 | `freight-br` | `apps/melhor-envio` | Melhor Envio: OAuth, quote, cart→checkout, label print, tracking |
 | `shopee` | `apps/shopee` | Shopee Open Platform: HMAC request signing, hosts, consent URL + token endpoints, wire schemas |
-| `loja-integrada` | `apps/loja-integrada` | Loja Integrada REST v1: Personal Token header, GET client, Tastypie paging, typed errors |
+| `loja-integrada` | `apps/loja-integrada` | Loja Integrada REST v1: Personal Token header, GET-only read client, separate write client, Tastypie paging, typed errors |
 | `amazon-sp-api` | `apps/amazon` | Amazon SP-API (NA host, BR marketplace): LWA token exchanges, GET-only client, typed errors |
 
 ⚠️ Two throw-only marketplace scaffolds (`magalu`, `facebook`) were deleted in

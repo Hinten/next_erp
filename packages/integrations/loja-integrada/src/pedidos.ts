@@ -28,10 +28,11 @@
  * or its plain decimal text (no sign, no leading zero, no space). Anything else
  * is refused with `LiConfigError('caminho')` and NOTHING is fetched: the value
  * would not name one resource, and interpolated into a path it could name
- * another one.
+ * another one. The reader is `idsDeCaminho.ts`, shared with the write-back
+ * operations (`pedidosEscrita.ts`).
  */
 import type { LiLeituraClient, RespostaLi } from './client';
-import { LiConfigError } from './errors';
+import { idOuRecusa } from './idsDeCaminho';
 import { paginarLi } from './paginacao';
 import {
   liPedidoSchema,
@@ -58,21 +59,6 @@ export const LIMITE_HISTORICO_SITUACAO_LI = 50;
  * otherwise read the whole store's history, page by page, inside one task.
  */
 export const MAX_PAGINAS_HISTORICO_SITUACAO_LI = 10;
-
-const INTEIRO_POSITIVO = /^[1-9][0-9]*$/;
-
-/** The canonical decimal of a positive safe integer, or `null`. */
-function idDoCaminho(valor: number | string): string | null {
-  const texto = typeof valor === 'number' ? String(valor) : valor;
-  if (!INTEIRO_POSITIVO.test(texto)) return null;
-  return Number.isSafeInteger(Number(texto)) ? texto : null;
-}
-
-function idOuRecusa(valor: number | string, operacao: string): string {
-  const id = idDoCaminho(valor);
-  if (id === null) throw new LiConfigError('caminho', { operacao, refCredencial: null });
-  return id;
-}
 
 export interface OpcoesLeituraLi {
   /** The caller's cancellation; its abort is rethrown as itself. */

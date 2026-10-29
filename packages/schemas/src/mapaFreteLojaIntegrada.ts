@@ -24,6 +24,9 @@ import { naoDocId, toOuterRef, toOuterRefOrNull, type OuterRef } from './shared/
  * still pointing at its conta's Loja Integrada `int_frete` doc is printed through, the pure guards
  * written for the routing route and the web's read-only preview to apply alike, the one reader of
  * an `int_frete` ref and the one reader of a Melhor Envio service id. See "The label route" below.
+ * The order importer routes an order through the same row decision ({@link decidirLinhaDoMapaLi})
+ * and target evaluator ({@link avaliarAlvoDoMapaLi}), under its own policy
+ * ({@link POLITICA_ALVO_IMPORTACAO_LI}), so the import and the label never read one row two ways.
  *
  * Pure and total: no clock, no network, no Firestore, and no input throws — a malformed value
  * reads as `null` ("not a key", "not mapped"), never as an exception. The importer parks a task on
@@ -225,9 +228,9 @@ function tipoAlvoOuNull(tipo: unknown): TipoAlvoMapaFreteLi | null {
  * A pedido imported from Loja Integrada points `freteInicial.integracaoFreteOuterRef` either at a
  * label TARGET (one of {@link TIPOS_ALVO_MAPA_FRETE_LI}, routed at import) or at its conta's Loja
  * Integrada `int_frete` doc (unmapped, deliberately mapped to `fob`/`outros`, or routed by an
- * aviso). Only the second needs routing before a label: the routing route is to re-point the ref
- * at the target this section resolves, and the web's read-only preview to ask the same questions
- * with the same functions, so the two can never answer differently.
+ * aviso). Only the second needs routing before a label: the routing route re-points the ref at
+ * the target this section resolves, and the web's read-only preview asks the same questions with
+ * the same functions, so the two can never answer differently.
  *
  * The sequence, for one pedido:
  *
@@ -248,9 +251,9 @@ function tipoAlvoOuNull(tipo: unknown): TipoAlvoMapaFreteLi | null {
  * The Melhor Envio service id a `mapa` row's `targetData` names (`targetData.id`), as its canonical
  * decimal — or `null` when there is none. {@link inteiroPositivoCanonicoLi} over `targetData.id`.
  * It is the ONE service reader for every surface: the conta screen's service select reads it,
- * the label route resolves through it ({@link decidirLinhaDoMapaLi}), and the order importer is
- * to move its own copy onto it (master plan step 15) — so a service stored as `3` and one stored
- * as `'3'` are the same service everywhere.
+ * and the label route and the order importer both resolve through it
+ * ({@link decidirLinhaDoMapaLi}) — so a service stored as `3` and one stored as `'3'` are the
+ * same service everywhere.
  *
  * Equal: `{id: 3}` ≡ `{id: '3'}` → `'3'`. Distinct (`null`): `'03'`, `'3.0'`, `0`, `'1e3'`, an
  * absent `id`, a `targetData` that is not a plain object.
@@ -271,11 +274,13 @@ export type LinhaDoMapaLi =
       readonly tipo: 'mapeado';
       readonly chave: string;
       /**
-       * The target `int_frete` doc id ({@link idDoAlvoDoMapaLi}) — always one a document can have.
-       * `null` when the row's uid names a target no document can be (its last segment is `.` or
-       * `..`): the row IS mapped, and its target is ABSENT — judge it `alvo-ausente`
-       * ({@link avaliarAlvoDoMapaLi} over `null`) without a read. The type makes every caller
-       * handle it, so none can hand such an id to a document read.
+       * The target `int_frete` doc id ({@link idDoAlvoDoMapaLi}) — never `''`, `.`, `..` or a
+       * path ({@link naoDocId}). `null` when the row's uid names a target no document can be (its
+       * last segment is `.` or `..`): the row IS mapped, and its target is ABSENT — judge it
+       * `alvo-ausente` ({@link avaliarAlvoDoMapaLi} over `null`) without a read. The type makes
+       * every caller handle it, so none can hand such an id to a document read. Firestore's other
+       * id limits (a reserved `__…__` id, the byte cap) are NOT screened here: such an id still
+       * reaches the read.
        */
       readonly alvoId: string | null;
       /** The row's display name, when it is a string. */
@@ -337,6 +342,22 @@ export interface PoliticaAlvoLi {
 export const POLITICA_ALVO_ETIQUETA_LI = {
   aceitos: TIPOS_ALVO_MAPA_FRETE_LI,
   deliberados: [],
+} as const satisfies PoliticaAlvoLi;
+
+/**
+ * The IMPORT policy: the order importer routes an order straight to a `melhorEnvios` (with a
+ * service), `motoboy` or `retiradaNaLoja` target, and leaves one mapped to `fob` or `outros` on
+ * the conta's own Loja Integrada doc on purpose — the label route resolves those under
+ * {@link POLITICA_ALVO_ETIQUETA_LI} when a label is asked for, and the import raises no aviso
+ * for them. The two lists split the five targets: every target is routed or deliberate here.
+ */
+export const POLITICA_ALVO_IMPORTACAO_LI = {
+  aceitos: [
+    INTEGRACAO_FRETE.melhorEnvios,
+    INTEGRACAO_FRETE.motoboy,
+    INTEGRACAO_FRETE.retiradaNaLoja,
+  ],
+  deliberados: [INTEGRACAO_FRETE.fob, INTEGRACAO_FRETE.outros],
 } as const satisfies PoliticaAlvoLi;
 
 /** What {@link avaliarAlvoDoMapaLi} answers for one target read. */
@@ -574,7 +595,7 @@ const PREFIXO_REF_INT_FRETE = 'documents/int_frete/';
  * The `int_frete` doc id a stored REF names, or `null` when it names none — the ONE reader of an
  * `int_frete` ref on the label route. {@link planejarRotaEtiquetaLi} reads a stored override
  * (`integracaoTargetOuterRef`), and the stored `integracaoFreteOuterRef` beside it, through it;
- * the routing route and the web's read-only preview are to read the pedido's
+ * the routing route and the web's read-only preview read the pedido's
  * `integracaoFreteOuterRef` through it before any read. So the three can never disagree on which
  * doc a ref names, and a ref naming none is never read at all. The inverse of the ref a route
  * writes (`integracaoFreteOuterRef` in {@link ConclusaoRotaEtiquetaLi}).

@@ -19,9 +19,17 @@
  * `onWarning`. Its noise values (`''`, `'success'`) are filtered by EXACT
  * equality in `avisoDeShopee`, so a healthy read carries `warning: null`.
  *
+ * Both 200s are built `satisfies` the input type of their envelope,
+ * `respostaAtributosShopeeSchema` — declared ONCE in `@delfrance/schemas`
+ * (#1911 P2) for this route and its browser readers, never mirrored — so a
+ * renamed or dropped key, down to the attribute tree's rows, is a compile error
+ * here.
+ *
  * Requires `PERM.integracao.read`.
  */
 import { NextResponse } from 'next/server';
+import type { respostaAtributosShopeeSchema } from '@delfrance/schemas';
+import type { z } from 'zod';
 
 import { PERM, verifyCaller } from '@/lib/auth/verifyCaller';
 import { getAdminFirestore } from '@/lib/firebase/admin';
@@ -67,7 +75,7 @@ export async function GET(req: Request): Promise<NextResponse> {
         warning: null,
         truncated: false,
         atributos: [],
-      });
+      } satisfies z.input<typeof respostaAtributosShopeeSchema>);
     }
 
     const lido = await lerAtributos(ctx, id);
@@ -78,7 +86,7 @@ export async function GET(req: Request): Promise<NextResponse> {
       warning: lido.warning,
       truncated,
       atributos,
-    });
+    } satisfies z.input<typeof respostaAtributosShopeeSchema>);
   } catch (err) {
     if (isShopeeError(err)) return shopeeErrorResponse(err);
     throw err;
