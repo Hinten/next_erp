@@ -2,7 +2,13 @@ import type { ReactElement } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import type { CategoriaResumoDto, MarcaDto, RespostaMarcasShopee } from '@delfrance/schemas';
+import {
+  MOTIVO_RECUSA_MARCA_SHOPEE,
+  type CategoriaResumoDto,
+  type MarcaDto,
+  type RespostaMarcasShopee,
+} from '@delfrance/schemas';
+import type { OcupanteDoRegistroMarcaShopee } from '@/lib/shopee/marcasDaConta';
 
 import { MantineTestProvider } from '@/lib/testing/mantine';
 import { QUERY_DEFAULT_OPTIONS } from '@/lib/query/QueryProvider';
@@ -14,7 +20,32 @@ import type { ShopeeCategoriaBrowserProps } from '@/components/shopee/ShopeeCate
  * `marcas` read (one call per page) and the category browser (its own suite).
  */
 
-const h = vi.hoisted(() => ({ marcas: vi.fn() }));
+const h = vi.hoisted(() => ({
+  marcas: vi.fn(),
+  /**
+   * A reason forced onto the shared registration rule for some rows
+   * (`undefined` = the real rule decides) — what a re-derivation in the modal
+   * could not reproduce.
+   */
+  motivoForcado: null as
+    | ((
+        dto: import('@delfrance/schemas').MarcaDto,
+      ) => import('@delfrance/schemas').MotivoRecusaMarcaShopee | null | undefined)
+    | null,
+}));
+
+// The REAL registration rule, with a hook to force its answer: the modal must
+// take its verdict AND its reason from it, never from a copy of the rule.
+vi.mock('@delfrance/schemas', async (importActual) => {
+  const actual = await importActual<typeof import('@delfrance/schemas')>();
+  return {
+    ...actual,
+    motivoRecusaMarcaShopee: (dto: MarcaDto) => {
+      const forcado = h.motivoForcado?.(dto);
+      return forcado !== undefined ? forcado : actual.motivoRecusaMarcaShopee(dto);
+    },
+  };
+});
 
 // The REAL error classes stay: `erros.ts` narrows on them.
 vi.mock('@/lib/shopee/client', async (importActual) => {
@@ -94,7 +125,7 @@ function pagina(over: Partial<RespostaMarcasShopee> = {}): RespostaMarcasShopee 
 interface Opcoes {
   cadastradas?: number[];
   jaSelecionadas?: number[];
-  idsOcupados?: string[];
+  ocupantes?: Record<string, OcupanteDoRegistroMarcaShopee>;
 }
 
 function show(o: Opcoes = {}) {
@@ -108,7 +139,7 @@ function show(o: Opcoes = {}) {
           integracaoId={CONTA}
           cadastradas={new Set(props.cadastradas ?? [])}
           jaSelecionadas={new Set(props.jaSelecionadas ?? [])}
-          idsOcupados={new Set(props.idsOcupados ?? [])}
+          ocupantes={new Map(Object.entries(props.ocupantes ?? {}))}
           onAdicionar={onAdicionar}
           onFechar={onFechar}
         />
@@ -132,6 +163,7 @@ const confirmar = () =>
   screen.getByTestId('shopee-adicionar-marcas-confirmar') as HTMLButtonElement;
 
 beforeEach(() => {
+  h.motivoForcado = null;
   h.marcas.mockReset();
   h.marcas.mockResolvedValue(pagina());
 });
@@ -253,19 +285,78 @@ describe('what cannot be picked is shown, disabled, never dropped', () => {
   });
 
   it('a document id taken by a row that is NOT this brand ⇒ disabled ⟷ "01001" is not 1001’s id', async () => {
-    const { unmount } = show({ idsOcupados: ['1001'] });
+    const { unmount } = show({ ocupantes: { '1001': { tipo: 'ilegivel' } } });
     await escolher();
     expect((await caixa(1001)).disabled).toBe(true);
-    expect(
-      within(await opcao(1001)).getByText(
-        'o registro 1001 desta lista é ilegível ou de outra marca — não é possível cadastrar',
-      ),
-    ).toBeTruthy();
     expect((await caixa(1002)).disabled).toBe(false);
     unmount();
 
-    show({ idsOcupados: ['01001', 'aaaaaaaaaaaaaaaaaaaa'] });
+    show({
+      ocupantes: { '01001': { tipo: 'ilegivel' }, aaaaaaaaaaaaaaaaaaaa: { tipo: 'sem-marca' } },
+    });
     await escolher();
+    expect((await caixa(1001)).disabled).toBe(false);
+  });
+
+  it('the «ocupada» line names WHAT holds the id and what clears it — the removal the section offers, or none here', async () => {
+    h.marcas.mockResolvedValue(pagina({ marcas: [NIKE, ADIDAS, PUMA] }));
+    show({
+      ocupantes: {
+        // Another brand's row, as the section's list labels it.
+        '1001': { tipo: 'marca', brandId: 4004, rotulo: 'Fila · id 4004' },
+        '1002': { tipo: 'sem-marca' },
+        '1003': { tipo: 'ilegivel' },
+      },
+    });
+    await escolher();
+    expect(
+      within(await opcao(1001)).getByText(
+        'o registro 1001 desta lista é da marca «Fila · id 4004» — esta só pode ser cadastrada depois que essa marca for removida da lista e a remoção, salva',
+      ),
+    ).toBeTruthy();
+    expect(
+      within(await opcao(1002)).getByText(
+        'o registro 1002 desta lista guarda «Sem marca» e esta tela não o remove — esta marca só pode ser cadastrada depois que ele for excluído fora do ERP, por quem administra o banco de dados',
+      ),
+    ).toBeTruthy();
+    expect(
+      within(await opcao(1003)).getByText(
+        'o registro 1003 desta lista é ilegível e esta tela não o remove — esta marca só pode ser cadastrada depois que ele for excluído fora do ERP, por quem administra o banco de dados',
+      ),
+    ).toBeTruthy();
+    for (const id of [1001, 1002, 1003]) expect((await caixa(id)).disabled).toBe(true);
+  });
+
+  it('the verdict AND the reason are the shared rule’s: a well-formed row it refuses is worded by ITS reason ⟷ a row it accepts stays pickable', async () => {
+    // Forced answers no copy of the rule could give: a positive id refused as
+    // «id inválido», a named brand refused as «sem nome», and a blank-named
+    // brand ACCEPTED.
+    h.motivoForcado = (dto) =>
+      dto.brandId === 2_000_000
+        ? MOTIVO_RECUSA_MARCA_SHOPEE.idInvalido
+        : dto.brandId === 1007
+          ? MOTIVO_RECUSA_MARCA_SHOPEE.semNome
+          : dto.brandId === 1005
+            ? null
+            : undefined;
+    h.marcas.mockResolvedValue(
+      pagina({
+        marcas: [marca(2_000_000, 'Grande'), marca(1007, 'Nomeada'), marca(1005, '   '), NIKE],
+      }),
+    );
+    show();
+    await escolher();
+    expect((await caixa(2_000_000)).disabled).toBe(true);
+    expect(
+      within(await opcao(2_000_000)).getByText('id inválido — não pode ser cadastrada'),
+    ).toBeTruthy();
+    expect((await caixa(1007)).disabled).toBe(true);
+    expect(
+      within(await opcao(1007)).getByText('sem nome na Shopee — não pode ser cadastrada'),
+    ).toBeTruthy();
+    // Near-misses: what the shared rule accepts is pickable, whatever its name looks like.
+    expect((await caixa(1005)).disabled).toBe(false);
+    expect(within(await opcao(1005)).queryByText(/não pode ser cadastrada/)).toBeNull();
     expect((await caixa(1001)).disabled).toBe(false);
   });
 
