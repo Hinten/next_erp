@@ -1266,13 +1266,15 @@ under its lock, so an uncertain outcome has a document to live on. The dry run
 mints nothing. A refusal before the send leaves the draft behind, and the next
 unnamed run answers `rascunho-nao-nomeado`: name it with `--link`. ⚠️ Until
 then the leftover draft counts as a Shopee link for the produto delete guard
-(`findProdutoReferences`: "vinculado(a) a anúncio(s): Shopee"); until P10's
-Descartar ships, discarding it is `POST …/rascunho/descartar` with
-`{integracaoId, produtoId, linkDocId, base}` (`base` required) — so do not run a
-no-link `--live` between batch A and P10's web deploy. The draft also FIXES the
+(`findProdutoReferences`: "vinculado(a) a anúncio(s): Shopee"). Discard it with
+«Descartar» in its block on the produto's Shopee tab (#1911 P10), or
+`POST …/rascunho/descartar` with `{integracaoId, produtoId, linkDocId, base}`
+(`base` required); until P10's web deploy (#1998) the route is the only
+discard, so do not run a no-link `--live` before it. The draft also FIXES the
 title and category it was minted with: a later `--categoria` or a renamed
 produto does not change them (the CLI says so beside a `categoria-invalida` /
-`nome-fora-da-faixa` refusal); edit it through `…/rascunho/atualizar`. If a link
+`nome-fora-da-faixa` refusal); edit it in the draft's editor on that tab, or
+through `…/rascunho/atualizar`. If a link
 of the produto appears between the dispatcher's read and the mint's (another
 run, the import), the run answers 409 `SHOPEE_RASCUNHO_CONTENCAO` with nothing
 sent — run it again. A produto missing, with no usable `nome`, or refused by the
@@ -1280,14 +1282,16 @@ dispatcher (a child, a native kit) mints nothing — its own refusal comes first
 
 **This CLI publishes a draft; it never edits or discards one (#1911, P4).**
 Those belong to the draft route — `POST …/rascunho`, `…/rascunho/atualizar`,
-`…/rascunho/descartar`, all `PERM.integracao.write`, zero Shopee calls — whose
+`…/rascunho/descartar`, all `PERM.integracao.write`, zero Shopee calls, and the
+routes the produto's Shopee tab calls (#1911 P10) — whose
 every answer is in `lib/shopee/anuncios/README.md` ("A draft is created, edited
 and discarded through the draft route"). Its discard is this app's ONE
 `prodshopee` delete, of a draft only, so §11.3's "nothing is ever deleted" still
 holds for every link the import touches. A draft that answers
 `SHOPEE_RASCUNHO_CRIACAO_INCERTA` (§12.7) is discarded only on the operator's
 attestation (`confirmarCriacaoIncerta: true`) that Seller Centre holds no such
-listing — if it does, import it instead.
+listing, or holds it already linked in the ERP — one with NO link is imported
+instead (give it the produto's SKU first), which adopts the draft.
 
 **The kit dry run** prints `## O que um kit nativo faria (produto …, arma …)`:
 the target link and its live `item_status`, `item_sku`, the variations and

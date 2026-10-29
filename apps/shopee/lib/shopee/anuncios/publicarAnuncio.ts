@@ -1118,9 +1118,11 @@ function idDeRef(ref: string | null): string | null {
  *     and OMITS the whole `brand` object on an update, which destroys nothing
  *     because `update_item` is field-wise.
  *
- * ⚠️ `integracao/{id}/brandshopee` is NEVER read: its schema is
- * `z.object({}).passthrough()`, so a name taken out of it is an undeclared key,
- * and it stays the curated registration shortlist with no reader.
+ * ⚠️ `integracao/{id}/brandshopee` is NEVER read here. It is the conta's
+ * curated shortlist, typed in `@delfrance/schemas` (`marcaShopee.ts`, #1911
+ * P9) and read by `apps/web` only: the draft editor's brand picker stores the
+ * picked `brand_id` + `original_brand_name` pair on the link (through the
+ * draft route), and rung 2 above reads that stored name.
  */
 async function resolverMarcaDoAnuncio(
   deps: PrepararPublicacaoDeps,
@@ -2457,7 +2459,9 @@ function registrarPublicacao(deps: PublicarAnuncioDeps, r: ResultadoPublicacao):
  *
  * @returns `null` when this conta has nothing to publish onto (the produto does
  *   not exist, or a named `linkDocId` is not this conta's) — the route's **404**.
- *   Every refusal is a throw: `ShopeePublishBlockedError` before the first write,
+ *   Every refusal is a throw: `ShopeePublishBlockedError` before the first
+ *   listing write — except the model leg's fresh-tree refusals on an update,
+ *   which follow `update_item` (`modelosPublicacao.ts`, `anuncios/README.md`) —,
  *   `ShopeePublishRejectedError` for a wire refusal after writes began; the
  *   draft route's own `RecusaDeRascunhoShopeeError` when the mint is refused.
  */

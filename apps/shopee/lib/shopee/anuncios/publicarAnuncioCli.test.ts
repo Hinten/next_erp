@@ -1329,6 +1329,12 @@ describe('descreverErroPublicacao', () => {
       const texto = bloqueio(motivo, null);
       expect(texto, motivo).toContain('GRAVADOS no rascunho');
       expect(texto, motivo).toContain('rascunho/atualizar');
+      // #1911 P12: the tab's draft editor and «Descartar» exist (P10) — the
+      // line names them first, the route only "sem a aba".
+      expect(texto, motivo).toContain('editor do rascunho, na aba Shopee do produto');
+      expect(texto, motivo).toContain('(Descartar)');
+      // ⛔ quase-par: the time-bound "quando tiver o editor" is gone.
+      expect(texto, motivo).not.toContain('quando tiver o');
       // ⛔ quase-par: numa ATUALIZAÇÃO (item_id) não há rascunho a citar.
       expect(bloqueio(motivo, 2500139861), motivo).not.toContain('GRAVADOS no rascunho');
     }
@@ -1362,9 +1368,9 @@ describe('descreverErroPublicacao', () => {
     // …and `--live` says what a kit arm may already have written.
     expect(linhas.at(-1)).toBe(
       '  ⚠️ No --live ela pode vir DEPOIS de escritas: um kit nativo grava antes no ERP o que ' +
-        'leu da Shopee (o vínculo, as variações do kit, o aviso de composição), e a atualização ' +
-        'de um anúncio comum pode já ter enviado o update_item. Releia com --dry-run antes de ' +
-        'repetir.',
+        'leu da Shopee (o vínculo, as variações do kit, o aviso de composição), a atualização ' +
+        'de um anúncio comum pode já ter enviado o update_item, e um --live sem --link pode ter ' +
+        'criado o rascunho do produto (ele fica). Releia com --dry-run antes de repetir.',
     );
     // ⛔ QUASE-PAR: a REJEIÇÃO da Shopee não ganha essas linhas — ela já tem a sua.
     const rejeitada = descreverErroPublicacao(

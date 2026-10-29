@@ -125,7 +125,16 @@ export type MotivoPublicacaoBloqueada =
    * instead, so this is a create-only refusal.
    */
   | 'marca-sem-nome'
-  /** A variação with no `tier_index` binding — the model could not be placed. */
+  /**
+   * A variação the tier authoring cannot place (`tiersPublicacao.ts`): it has
+   * no position in a grupo's tier (the model cannot be placed), its grupo's
+   * binding entry is unreadable, a variante is bound to no option of the
+   * standardised variation, a live option position cannot be read back, or
+   * (#1911 P7) an unpaired custom tier would be re-coded in place on an
+   * update — the last two raised by the model leg after `update_item`. The
+   * kit arm (`kits/planoKit.ts`) raises it for a child with no variante in the
+   * kit's grupo.
+   */
   | 'variacao-sem-vinculo'
   /**
    * Two variantes resolve to the SAME tier combination. `arakene_variation_id`
@@ -133,7 +142,12 @@ export type MotivoPublicacaoBloqueada =
    * exactly how two of them end up claiming one model.
    */
   | 'combinacao-duplicada'
-  /** More options in one tier than the wire accepts. */
+  /**
+   * The tier authoring breaks a wire limit (`tiersPublicacao.ts`): more tier
+   * levels, more options in one tier or more models per item than Shopee
+   * accepts, or (#1911 batch A) a tier or option NAME blank or outside its
+   * band — the kit's tier and option names too (`kits/planoKit.ts`).
+   */
   | 'opcoes-demais'
   /**
    * An item- or model-level available stock below the shop's

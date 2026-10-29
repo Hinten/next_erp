@@ -2340,8 +2340,9 @@ const LINHAS_DO_BLOQUEIO = [
   '  No --dry-run a recusa é anterior a qualquer escrita: nada foi enviado à Shopee e nenhum ' +
     'vínculo foi gravado.',
   '  ⚠️ No --live ela pode vir DEPOIS de escritas: um kit nativo grava antes no ERP o que leu ' +
-    'da Shopee (o vínculo, as variações do kit, o aviso de composição), e a atualização de um ' +
-    'anúncio comum pode já ter enviado o update_item. Releia com --dry-run antes de repetir.',
+    'da Shopee (o vínculo, as variações do kit, o aviso de composição), a atualização de um ' +
+    'anúncio comum pode já ter enviado o update_item, e um --live sem --link pode ter criado o ' +
+    'rascunho do produto (ele fica). Releia com --dry-run antes de repetir.',
 ] as const;
 
 /**
@@ -2352,7 +2353,8 @@ const LINHAS_DO_BLOQUEIO = [
  * plan exists — since step 19 above all the dispatcher's
  * (`escolherArmaDePublicacao`: `produto-e-filho`, `vinculos-ambiguos`,
  * `vinculo-substituido`, `kit-virtual-sem-kit`, the converter refusals,
- * `opcao-de-kit-em-anuncio-comum`, all with ZERO Shopee calls), a kit create
+ * `opcao-de-kit-em-anuncio-comum` and #1911's `rascunho-nao-nomeado` /
+ * `rascunho-em-kit-virtual`, all with ZERO Shopee calls), a kit create
  * arm's phase-A refusal (Firestore-only, before the first Shopee read) and
  * `prepararPublicacao`'s defensive `produto-e-kit` — and, under `--live`, the
  * appliers' own throws, which can FOLLOW writes ({@link LINHAS_DO_BLOQUEIO}).
@@ -2388,8 +2390,8 @@ export function descreverBloqueioPublicacao(err: ShopeePublishBlockedError): str
  * `item_name` and `category_id` — the no-link `--live` mint writes the
  * produto's `nome` and `--categoria` into it — and the publish reads the
  * STORED values first, so neither a renamed produto nor a new `--categoria`
- * changes them. Until the tab's editor (P10), the draft route edits or
- * discards it.
+ * changes them. The draft's editor in the produto's Shopee tab (#1911 P10)
+ * edits it or discards it («Descartar»); without the tab, the draft route does.
  */
 const MOTIVOS_FIXADOS_NO_RASCUNHO: ReadonlySet<string> = new Set([
   MOTIVO_PUBLICACAO_BLOQUEADA.categoriaInvalida,
@@ -2398,9 +2400,9 @@ const MOTIVOS_FIXADOS_NO_RASCUNHO: ReadonlySet<string> = new Set([
 
 const LINHA_DO_RASCUNHO_FIXADO =
   '  ⚠️ Se o vínculo é um RASCUNHO (o --live sem --link cria um), a categoria e o título dele ' +
-  'são os GRAVADOS no rascunho: --categoria e renomear o produto não os mudam. Edite ou descarte ' +
-  'o rascunho (POST …/rascunho/atualizar ou …/rascunho/descartar; a aba Shopee, quando tiver o ' +
-  'editor).';
+  'são os GRAVADOS no rascunho: --categoria e renomear o produto não os mudam. Edite-os no ' +
+  'editor do rascunho, na aba Shopee do produto, ou descarte-o lá (Descartar); sem a aba, ' +
+  'POST …/rascunho/atualizar ou …/rascunho/descartar.';
 
 /**
  * A Shopee refusal AFTER the first write — the other half of the pair, and the

@@ -2081,6 +2081,25 @@ describe('descartarRascunhoShopee — base INTEIRA conferida + delete guardado',
       }
     });
 
+    it('(#1911 P12) a frase do 409 CRIACAO_INCERTA dá os TRÊS casos do Seller Centre e a ressalva do SKU', async () => {
+      const db = new FakeDb();
+      db.seed(CAMINHO, raw);
+      const err = await recusaDe(descartarRascunhoShopee(deps(db), corpoDescartar(vista(raw))));
+      expect(err.code).toBe(CODIGO_RASCUNHO_SHOPEE.criacaoIncerta);
+      // (a) + (b): não existe, ou existe e já está vinculado ⇒ confirmar o descarte.
+      expect(err.message).toContain(
+        'se o anúncio NÃO existe, ou existe e já está vinculado no ERP, confirme para descartar',
+      );
+      // (c): existe SEM vínculo ⇒ NÃO descartar; o SKU antes da importação.
+      expect(err.message).toContain(
+        'se existe SEM vínculo, não descarte — dê a ele o mesmo SKU do produto',
+      );
+      expect(err.message).toContain('(sem SKU, a importação cria outro produto)');
+      expect(err.message).toContain('Nada foi apagado.');
+      // ⛔ quase-par: nunca o "importe-o" sozinho de antes, sem o passo do SKU.
+      expect(err.message).not.toContain('se o anúncio existe, importe-o;');
+    });
+
     it('com confirmarCriacaoIncerta: true ⇒ apaga, criacaoIncerta: true', async () => {
       const db = new FakeDb();
       db.seed(CAMINHO, raw);

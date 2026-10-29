@@ -809,8 +809,10 @@ export async function descartarRascunhoShopee(
         mensagem:
           `a última tentativa de publicar o rascunho ${linkDocId} pode ter criado o anúncio na ` +
           'Shopee (resultado desconhecido), e o rascunho é o único registro dela. Confira no ' +
-          'Seller Centre: se o anúncio existe, importe-o; se NÃO existe, confirme para ' +
-          'descartar. Nada foi apagado.',
+          'Seller Centre: se o anúncio NÃO existe, ou existe e já está vinculado no ERP, confirme ' +
+          'para descartar; se existe SEM vínculo, não descarte — dê a ele o mesmo SKU do produto ' +
+          '(sem SKU, a importação cria outro produto) e importe-o, que a importação adota este ' +
+          'rascunho. Nada foi apagado.',
       });
     }
 

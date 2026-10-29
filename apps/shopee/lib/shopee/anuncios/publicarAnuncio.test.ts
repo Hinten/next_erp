@@ -1672,7 +1672,8 @@ describe('prepararPublicacao — a cascata de marca', () => {
     const { plano, contexto } = await planejar(db, fake);
     expect(contexto.marca).toEqual({ brandId: 0, nome: null });
     // ⚠️ Nenhum get_brand_list e — acima de tudo — nenhuma leitura de
-    // `brandshopee`, que é uma lista curada sem leitor e sem schema tipado.
+    // `brandshopee`, a lista curada da conta: só o `apps/web` a lê (#1911 P9),
+    // e a publicação lê o par de marca gravado no vínculo.
     expect(fake.ops).not.toContain('get_brand_list');
     expect(db.caminhos.some((c) => c.includes('brandshopee'))).toBe(false);
     // O nome de wire é do mapeador, e é o único lugar em que a literal existe.

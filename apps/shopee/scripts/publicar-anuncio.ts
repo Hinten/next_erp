@@ -95,7 +95,8 @@
  * ⚠️ In `--live` the same refusal is NOT caught: it takes the error path and
  * exits 1 like any other throw, exactly as `importar-anuncio.ts` does.
  * ⚠️ The dispatcher's refusals (`produto-e-filho`, `vinculos-ambiguos`,
- * `vinculo-substituido`, the converter's, `opcao-de-kit-em-anuncio-comum`, …)
+ * `vinculo-substituido`, the converter's, `opcao-de-kit-em-anuncio-comum`,
+ * #1911's `rascunho-nao-nomeado` / `rascunho-em-kit-virtual`, …)
  * and a kit CREATE arm's phase-A refusal (`kit-sem-sku`, `sem-peso`, …) exit 1
  * in BOTH modes, and it is not an inconsistency: they are thrown before a plan
  * exists, so there is no plan to print. Every refusal that survives into a plan
