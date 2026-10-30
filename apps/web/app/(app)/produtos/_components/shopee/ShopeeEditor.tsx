@@ -76,8 +76,10 @@ import {
 import { CODIGO_FALHA_SHOPEE, descreverFalhaShopee, shopeeQueryRetry } from '@/lib/shopee/erros';
 import {
   algumRascunhoShopeeSujo,
+  categoriaAceitaNoBlocoShopee,
   comCampoRascunhoShopee,
   conciliarEdicaoRascunhoShopee,
+  conflitosAtualizadosDoRascunhoShopee,
   corpoAtualizarRascunhoShopee,
   corpoCriarRascunhoShopee,
   corpoDescartarRascunhoShopee,
@@ -89,6 +91,7 @@ import {
   existentesDosVinculosShopee,
   falhaDaPublicacaoDoRascunhoShopee,
   falhaDoRascunhoShopee,
+  idDeCategoriaShopeeValido,
   idDeNovoRascunhoShopee,
   marcarRascunhoShopeeSalvo,
   novaEdicaoRascunhoShopee,
@@ -205,10 +208,14 @@ import type {
  *    dirty one is kept over a concurrent write, a dirty one whose draft got
  *    published or discarded elsewhere is dropped WITH a notice the operator
  *    dismisses (never a silent drop).
- *  - **After a 2xx** the entry shows what was saved, read-only, until the
- *    snapshot moves past the one current when the request LEFT — the route's
- *    write echo then repaints the block. An answer that wrote nothing drops
- *    the entry at once: no echo will come.
+ *  - **After a 2xx** the entry shows what was saved, read-only, until THIS
+ *    draft's echo: its document's stamp moves past the one it had when the
+ *    request LEFT (a create: its document arrives) — another link's write is
+ *    no echo (`conciliarEdicaoRascunhoShopee`). The echo then repaints the
+ *    block. An answer that wrote nothing drops the entry at once: no echo
+ *    will come. Nor may one come while the bounded links query is FULL
+ *    (`MAX_LINKS`): then any newer snapshot releases the entry (`saturado`),
+ *    never a block stuck read-only.
  *  - **The publish reading** (`estadoPublicacaoRascunhoShopee`, through the
  *    block decision) is taken against `relogioRascunho`, a clock re-read by a
  *    timer at the instant the reading changes (`releituraEmMs` = `aguardarMs`
@@ -217,6 +224,11 @@ import type {
  *    reads a lock as still in progress (the reading moves one way in time),
  *    and the timer fires at the ABSOLUTE instant the reading changes, so it
  *    costs at most one immediate re-read.
+ *  - **A draft whose conta document is gone** (a «não encontrada» tab whose
+ *    id a document could carry) is read-only and offers «Descartar» alone —
+ *    the discard route reads only the link — so it never blocks the produto's
+ *    delete for good; nothing is read for that conta (no tree, no bands, no
+ *    brand shortlist).
  *  - **Unsaved work** is reported through `onDirtyChange` with NO cleanup (see
  *    `ShopeeTab`) and marks the conta's tab; the page blocks its own save's
  *    navigation on it (`exigirRascunhosShopeeSalvos`).
@@ -423,6 +435,8 @@ interface BlocoDoEditor {
   /** The stored document, or `null` for a local draft. */
   readonly link: Record<string, unknown> | null;
   readonly podeEditar: boolean;
+  /** The operator may discard it — also on a tab whose conta document is gone (`decidirBloco`). */
+  readonly permiteDescarte: boolean;
   readonly bloco: BlocoRascunhoShopee;
 }
 
@@ -463,6 +477,29 @@ function chaveDeLimites(contaId: string, categoryId: number): string {
  * keeps the wait, not the sentence).
  */
 type IncertoNaPagina = IncertoKitShopee & { readonly fraseShopee: string | null };
+
+/** A token refresh that could not reach the network: nothing was sent, and a retry is safe. */
+export const FRASE_SESSAO_SEM_CONEXAO_SHOPEE =
+  'Sem conexão para renovar a sessão — nada foi enviado. Confira a conexão e tente de novo.';
+
+/** Any other token-refresh failure: nothing was sent, and only signing in again helps. */
+export const FRASE_SESSAO_NAO_RENOVADA_SHOPEE =
+  'A sessão não pôde ser renovada — nada foi enviado. Entre novamente para continuar.';
+
+/**
+ * A failed ID-token refresh (`getAuthToken()`, awaited BEFORE any request
+ * leaves) worded for the operator. The SDK's own message is English and
+ * developer-shaped (`Firebase: Error (auth/network-request-failed).`), so it
+ * is never shown: the code picks one of two pt-BR sentences — a network
+ * failure can be retried, any other code (an expired or revoked session, a
+ * disabled user) needs a new sign-in. Both say nothing was sent, which holds:
+ * the refresh precedes the request.
+ */
+export function fraseDaSessaoShopee(err: FirebaseError): string {
+  return err.code === 'auth/network-request-failed'
+    ? FRASE_SESSAO_SEM_CONEXAO_SHOPEE
+    : FRASE_SESSAO_NAO_RENOVADA_SHOPEE;
+}
 
 /** A link that is not (or no longer) this conta's — the 404s of publish and re-verify. */
 const MENSAGEM_VINCULO_FORA_DA_CONTA =
@@ -1166,6 +1203,9 @@ function EditorShopee({
   // here, every render, so nothing stale is ever painted (no effect, no
   // flicker). A dirty one dropped this way keeps its notice until dismissed.
   const servidorConfirmado = linksSnap.fromCache === false;
+  // The bounded links query is full: a just-saved draft's document may never
+  // be in it, so its echo may never come — the bridge must not stay read-only.
+  const linksSaturados = (vinculosLidos?.length ?? 0) >= MAX_LINKS;
   const vinculoPorId = new Map((vinculosLidos ?? []).map((l) => [l.id, l] as const));
   const efetivas = new Map<string, EdicaoRascunhoShopee>();
   const avisosSobreBloco = new Map<string, string>();
@@ -1176,6 +1216,7 @@ function EditorShopee({
       link,
       snapshot: vinculosLidos,
       servidorConfirmado,
+      saturado: linksSaturados,
     });
     if (conciliacao.acao === 'manter') {
       efetivas.set(linkDocId, edicao);
@@ -1199,11 +1240,25 @@ function EditorShopee({
     link: Record<string, unknown> | null,
   ): BlocoDoEditor => {
     // A tab built from a link's conta ref alone names no conta to write to.
-    const podeEditar = podeEditarRascunhos && (contaPorId.get(contaId)?.encontrada ?? false);
+    const conta = contaPorId.get(contaId);
+    const podeEditar = podeEditarRascunhos && (conta?.encontrada ?? false);
+    // …but the DISCARD route reads only the link (no conta document, no Shopee
+    // call), so a draft whose conta was DELETED can still go — never left to
+    // block the produto's delete forever. Not while the conta's read is in
+    // flight, and never for an id no document can carry (the route would
+    // refuse it, and no such conta ever existed).
+    const contaApagada =
+      conta !== undefined &&
+      !conta.encontrada &&
+      !conta.carregando &&
+      contaId !== CHAVE_SEM_CONTA &&
+      idDeDocumentoLegivel(contaId);
+    const permiteDescarte = podeEditarRascunhos && (podeEditar || contaApagada);
     return {
       contaId,
       link,
       podeEditar,
+      permiteDescarte,
       bloco: estadoDoBlocoRascunhoShopee({
         link,
         edicao: efetivas.get(linkDocId) ?? null,
@@ -1211,6 +1266,7 @@ function EditorShopee({
         kitVirtual,
         servidorConfirmado,
         podeEditar,
+        permiteDescarte,
         ocupado,
       }),
     };
@@ -1258,12 +1314,15 @@ function EditorShopee({
   }, [proximaReleitura]);
 
   // The bands of the category each draft is EDITED to — only while one is set
-  // (a draft with no category asks apps/shopee nothing on render).
+  // (a draft with no category asks apps/shopee nothing on render), and only
+  // for a conta whose document was found: apps/shopee can only answer 404 for
+  // a «não encontrada» / unreadable / still-loading tab's conta.
   const pedidosDeLimites: { readonly contaId: string; readonly categoryId: number }[] = [];
   for (const { contaId, bloco } of blocos.values()) {
+    if (contaPorId.get(contaId)?.encontrada !== true) continue;
     const categoryId = bloco.valores.category_id;
     // A positive id only: the picker offers leaves, and a legacy `0` asks nothing.
-    if (categoryId === null || categoryId <= 0) continue;
+    if (!idDeCategoriaShopeeValido(categoryId)) continue;
     const chave = chaveDeLimites(contaId, categoryId);
     if (pedidosDeLimites.some((p) => chaveDeLimites(p.contaId, p.categoryId) === chave)) continue;
     pedidosDeLimites.push({ contaId, categoryId });
@@ -1356,7 +1415,11 @@ function EditorShopee({
     });
   }
 
-  /** After a 2xx: the entry shows what was saved until the snapshot moves past `enviadoContra`. */
+  /**
+   * After a 2xx: the entry shows what was saved until THIS draft's echo — its
+   * document in `enviadoContra` (the snapshot the request left against) is
+   * what the echo must move past (`marcarRascunhoShopeeSalvo`).
+   */
   function marcarSalvo(linkDocId: string, enviadoContra: unknown) {
     setEdicoes((prev) => {
       const edicao = prev.get(linkDocId);
@@ -1413,12 +1476,13 @@ function EditorShopee({
 
   /**
    * A failed ID-token refresh on a draft call: `getAuthToken()` runs before the
-   * request leaves, so NOTHING was sent — a definite sentence on the block
-   * (`executar`'s own reason, kept on the draft's surface).
+   * request leaves, so NOTHING was sent — a definite sentence on the block,
+   * in pt-BR ({@link fraseDaSessaoShopee}): never the SDK's raw English
+   * `FirebaseError.message`.
    */
   function falhaDeSessao(linkDocId: string, err: FirebaseError): null {
     fecharConflito(linkDocId);
-    definirResultado(linkDocId, { mensagem: err.message, incerto: false });
+    definirResultado(linkDocId, { mensagem: fraseDaSessaoShopee(err), incerto: false });
     return null;
   }
 
@@ -1435,8 +1499,9 @@ function EditorShopee({
     confirmarSegundoAnuncio: boolean,
   ): boolean {
     const { linkDocId } = edicao;
-    // The snapshot current as the request LEAVES: any newer one is (or comes
-    // after) the write's echo, which then repaints the block.
+    // The snapshot current as the request LEAVES: THIS draft's document there
+    // is what its echo moves past (never just any newer snapshot — another
+    // link's write is no echo), which then repaints the block.
     const enviadoContra = vinculosLidos;
     const docListado = vinculoPorId.has(linkDocId);
 
@@ -1496,6 +1561,17 @@ function EditorShopee({
     return true;
   }
 
+  /**
+   * The gates of a save that a MODAL re-sends (the second-listing confirmation,
+   * «Salvar mesmo assim») and `salvarDoBloco` reads through `podeSalvar`: the
+   * operator may author it now, and the produto is no virtual kit (the route
+   * refuses one). Not `podeSalvar` itself: its plan was computed before the
+   * modal's rebase or flag; the body builders re-plan.
+   */
+  function podeReenviarRascunho(entrada: BlocoDoEditor): boolean {
+    return entrada.podeEditar && !entrada.bloco.kitVirtual;
+  }
+
   /** «Salvar rascunho» on a block — only what its decision allows. */
   function salvarDoBloco(linkDocId: string) {
     const entrada = blocos.get(linkDocId);
@@ -1512,7 +1588,9 @@ function EditorShopee({
   /**
    * One field typed or picked. The FIRST one of a stored draft creates its
    * entry from the snapshot — only under server truth, which the block's
-   * `camposEditaveis` says (and the category only while `categoriaEditavel`).
+   * `camposEditaveis` says (and the category only as the block accepts it:
+   * any pick while `categoriaEditavel`; in `incerta`, only the held category
+   * put back — `categoriaAceitaNoBlocoShopee`).
    */
   function definirCampo<C extends CampoDoFormularioRascunhoShopee>(
     linkDocId: string,
@@ -1521,7 +1599,12 @@ function EditorShopee({
   ) {
     const entrada = blocos.get(linkDocId);
     if (entrada === undefined || !entrada.bloco.camposEditaveis) return;
-    if (campo === CAMPO_RASCUNHO_SHOPEE.categoryId && !entrada.bloco.categoriaEditavel) return;
+    if (
+      campo === CAMPO_RASCUNHO_SHOPEE.categoryId &&
+      !categoriaAceitaNoBlocoShopee(entrada.bloco, typeof valor === 'number' ? valor : null)
+    ) {
+      return;
+    }
     const { contaId, link } = entrada;
     const naRender = edicoes.get(linkDocId);
     const efetiva = efetivas.get(linkDocId) ?? null;
@@ -1562,9 +1645,35 @@ function EditorShopee({
     });
   }
 
+  /**
+   * The discard confirmation as THIS render may still show it — and send it —
+   * or `null` when it is no longer offered: the draft is no block here any
+   * more (published, adopted or discarded elsewhere while the dialog was
+   * open; a local one saved meanwhile), or a publish holds its lock
+   * (`em-andamento`: every draft route answers 409, and «Nada foi publicado»
+   * is no longer known). A plain confirmation whose draft turned `incerta`
+   * meanwhile becomes the three-case dialog: the route would answer exactly
+   * that, and the plain sentence would no longer be true. The `base` stays the
+   * one the operator SAW at the click.
+   */
+  function descarteAindaOferecido(alvo: DescarteAberto | null): DescarteAberto | null {
+    if (alvo === null) return null;
+    const entrada = blocos.get(alvo.linkDocId);
+    if (entrada === undefined || entrada.bloco.publicacao.tipo === 'em-andamento') return null;
+    if (alvo.tipo === 'local') return entrada.bloco.descarte === 'local' ? alvo : null;
+    if (entrada.bloco.descarte === 'local') return null;
+    if (alvo.tipo === 'confirmar' && entrada.bloco.descarte === 'atestar') {
+      return { ...alvo, tipo: 'atestar' };
+    }
+    return alvo;
+  }
+
   /** The discard confirmed: a local draft is dropped here, a saved one goes to the route. */
-  function confirmarDescarte(alvo: DescarteAberto, confirmarCriacaoIncerta: boolean) {
+  function confirmarDescarte(clicado: DescarteAberto, confirmarCriacaoIncerta: boolean) {
     setDescarte(null);
+    // Re-read: the dialog may be one render behind the snapshot.
+    const alvo = descarteAindaOferecido(clicado);
+    if (alvo === null) return;
     const { contaId, linkDocId, projecao } = alvo;
     if (alvo.tipo === 'local' || projecao === null) {
       largarEdicao(linkDocId);
@@ -1636,6 +1745,7 @@ function EditorShopee({
     const edicao = efetivas.get(reenviar);
     const entrada = blocos.get(reenviar);
     if (edicao === undefined || entrada === undefined || !edicao.novo) return;
+    if (!podeReenviarRascunho(entrada)) return;
     setSegundosConfirmados((prev) => new Set(prev).add(reenviar));
     enviarSalvar(edicao, contaId, entrada.bloco.publicacao, true);
   }
@@ -1651,14 +1761,41 @@ function EditorShopee({
       ? guardadoDoConflito
       : null;
 
-  /** «Salvar mesmo assim»: rebase on the stored draft and re-send (an edit, even after a create retry — rev. 2a #19). */
+  /**
+   * «Salvar mesmo assim»: re-send, rebased on the stored draft (an edit, even
+   * after a create retry — rev. 2a #19) — but ONLY over what the modal showed.
+   *
+   * 1. The rows must still show what the re-send would overwrite
+   *    (`conflitosAtualizadosDoRascunhoShopee` against the CURRENT snapshot's
+   *    document). A writer that landed while the modal was open makes it
+   *    answer the rows to show NOW: the modal refreshes (`renovado`) and
+   *    NOTHING is sent — never an overwrite of a value nobody showed (rule 7).
+   * 2. The rebase moves only the rows' fields (`listados`): an untouched field
+   *    takes the stored value and never enters the patch; a changed field the
+   *    rows do not name keeps the base the operator loaded, so a writer there
+   *    is another 409, never a revert.
+   *
+   * The block's own gates are re-read too (the produto may have become a
+   * virtual kit, the bits gone): this send skips `salvarDoBloco`.
+   */
   function salvarMesmoAssim() {
     if (conflitoAberto === null || servidorDoConflito === null) return;
-    const { linkDocId } = conflitoAberto;
+    const { linkDocId, conflitos } = conflitoAberto;
     const edicao = efetivas.get(linkDocId);
     const entrada = blocos.get(linkDocId);
     if (edicao === undefined || entrada === undefined) return;
-    const rebaseada = rebasearEdicaoRascunhoShopee(edicao, servidorDoConflito);
+    if (!podeReenviarRascunho(entrada)) {
+      // The entry stays as typed; the block says why it cannot be saved now.
+      setConflitoRascunho(null);
+      return;
+    }
+    const atualizados = conflitosAtualizadosDoRascunhoShopee(edicao, servidorDoConflito, conflitos);
+    if (atualizados !== null) {
+      setConflitoRascunho({ ...conflitoAberto, conflitos: atualizados, renovado: true });
+      return;
+    }
+    const campos = conflitos.map((c) => c.campo);
+    const rebaseada = rebasearEdicaoRascunhoShopee(edicao, servidorDoConflito, [], campos);
     setEdicoes((prev) => new Map(prev).set(linkDocId, rebaseada));
     // Nothing left to send (the stored draft holds what was typed): close; the
     // clean entry is then read as gone and the block shows the stored draft.
@@ -1667,7 +1804,11 @@ function EditorShopee({
     }
   }
 
-  /** «Usar o que está salvo»: the conflicting fields take the stored values; nothing is sent. */
+  /**
+   * «Usar o que está salvo»: the rows' fields take the stored values (base AND
+   * form); an untouched field follows the stored draft too, so it never reads
+   * as an edit. Nothing is sent.
+   */
   function usarOQueEstaSalvo() {
     if (conflitoAberto === null || servidorDoConflito === null) return;
     const { linkDocId, conflitos } = conflitoAberto;
@@ -1678,7 +1819,7 @@ function EditorShopee({
     setEdicoes((prev) =>
       new Map(prev).set(
         linkDocId,
-        rebasearEdicaoRascunhoShopee(edicao, servidorDoConflito, campos),
+        rebasearEdicaoRascunhoShopee(edicao, servidorDoConflito, campos, campos),
       ),
     );
   }
@@ -1843,11 +1984,13 @@ function EditorShopee({
     const entrada = blocos.get(linkDocId);
     const decisaoDePublicar = decisoesDePublicar.get(linkDocId);
     if (entrada === undefined || decisaoDePublicar === undefined) return null;
-    const { link, bloco, podeEditar } = entrada;
+    const { link, bloco, podeEditar, permiteDescarte } = entrada;
     const edicao = efetivas.get(linkDocId) ?? null;
     return {
       db,
-      contaId: conta.id,
+      // A tab whose conta document is not found (or not read yet) hands NO
+      // conta: the pickers then read nothing apps/shopee could only 404.
+      contaId: conta.encontrada ? conta.id : null,
       contaNome: conta.nome,
       linkDocId,
       bloco,
@@ -1858,6 +2001,7 @@ function EditorShopee({
       divergencias:
         edicao === null || link === null ? [] : divergenciasDoServidorShopee(edicao, link),
       podeEditar,
+      somenteDescartar: !podeEditar && permiteDescarte,
       emVoo:
         emVoo !== null && emVoo.linkDocId === linkDocId && ehAcaoDoBlocoRascunho(emVoo.acao)
           ? emVoo.acao
@@ -1969,12 +2113,16 @@ function EditorShopee({
   }
 
   const contasPorId = new Map(abas.map((a) => [a.conta.id, a]));
-  // A saved draft's discard is a write: held by the lock, and only while the
-  // link is still a draft (it may have been published since the click).
+  // The discard confirmation is painted only while this render still offers
+  // it (`descarteAindaOferecido`): one that is no longer offered CLOSES —
+  // never a dead button under a sentence that stopped being true. The block
+  // itself then says why (published, or the publish notice). Closed for good:
+  // a lock released later never re-opens it on its own.
+  const descarteNaTela = descarteAindaOferecido(descarte);
+  if (descarte !== null && descarteNaTela === null) setDescarte(null);
+  // A saved draft's discard is a write: held by the lock.
   const descarteBloqueado =
-    descarte !== null &&
-    descarte.tipo !== 'local' &&
-    (bloqueadas || !ehRascunhoShopee(vinculoPorId.get(descarte.linkDocId)?.data ?? null));
+    descarteNaTela !== null && descarteNaTela.tipo !== 'local' && bloqueadas;
 
   return (
     <Stack gap="sm">
@@ -2129,17 +2277,17 @@ function EditorShopee({
           the operator's case (b): the plain confirmation, with what stays on
           Shopee, sent attested. */}
       <Modal
-        opened={descarte !== null}
+        opened={descarteNaTela !== null}
         onClose={() => setDescarte(null)}
         title={
-          descarte?.tipo === 'atestar' && descarte.atestado === null
+          descarteNaTela?.tipo === 'atestar' && descarteNaTela.atestado === null
             ? DIALOGO_DESCARTE_CRIACAO_INCERTA_SHOPEE.titulo
             : 'Descartar rascunho'
         }
         centered
       >
-        {descarte !== null &&
-          (descarte.tipo === 'atestar' && descarte.atestado === null ? (
+        {descarteNaTela !== null &&
+          (descarteNaTela.tipo === 'atestar' && descarteNaTela.atestado === null ? (
             <Stack gap="md">
               <Text size="sm">{DIALOGO_DESCARTE_CRIACAO_INCERTA_SHOPEE.texto}</Text>
               {[
@@ -2152,7 +2300,7 @@ function EditorShopee({
                   color="red"
                   variant="light"
                   disabled={descarteBloqueado}
-                  onClick={() => confirmarDescarte(descarte, true)}
+                  onClick={() => confirmarDescarte(descarteNaTela, true)}
                   styles={ROTULO_EM_LINHAS}
                 >
                   {rotulo}
@@ -2170,13 +2318,13 @@ function EditorShopee({
           ) : (
             <Stack gap="md">
               <Text size="sm">
-                {descarte.tipo === 'local'
+                {descarteNaTela.tipo === 'local'
                   ? FRASE_CONFIRMAR_DESCARTE_LOCAL_SHOPEE
                   : FRASE_CONFIRMAR_DESCARTE_SHOPEE}
               </Text>
-              {descarte.atestado?.aviso != null && (
+              {descarteNaTela.atestado?.aviso != null && (
                 <Alert color="orange" variant="light">
-                  {descarte.atestado.aviso}
+                  {descarteNaTela.atestado.aviso}
                 </Alert>
               )}
               <Group justify="flex-end" gap="sm">
@@ -2187,7 +2335,9 @@ function EditorShopee({
                   type="button"
                   color="red"
                   disabled={descarteBloqueado}
-                  onClick={() => confirmarDescarte(descarte, descarte.atestado !== null)}
+                  onClick={() =>
+                    confirmarDescarte(descarteNaTela, descarteNaTela.atestado !== null)
+                  }
                 >
                   Descartar rascunho
                 </Button>

@@ -30,9 +30,24 @@ export interface ConflitoRascunhoShopeeAberto {
   readonly linkDocId: string;
   /** `'criar'` (a create retry) or `'atualizar'` — picks the alert sentence; a discard's conflict is a message, never this modal. */
   readonly operacao: Exclude<OperacaoRascunhoShopee, 'descartar'>;
-  /** `detalhes.conflitos` — each field with its STORED value `atual`, DISPLAY-ONLY (§C.2, rev. 2a #19). */
+  /** `detalhes.conflitos` — each field with its STORED value `atual`, DISPLAY-ONLY (§C.2, rev. 2a #19) — or, once refreshed (`renovado`), the rows `conflitosAtualizadosDoRascunhoShopee` answered from the stored draft. */
   readonly conflitos: readonly ConflitoRascunhoShopee[];
+  /**
+   * `true` once «Salvar mesmo assim» found the stored draft moved AGAIN after
+   * the 409 (a writer landed while the modal was open): the rows now show the
+   * values stored NOW, and nothing was sent. Absent ⇒ the 409's own rows.
+   */
+  readonly renovado?: boolean;
 }
+
+/**
+ * The rows were refreshed instead of re-sending: another write landed while the
+ * modal was open, and the operator never saw its values (rule 7 — nothing is
+ * overwritten unseen).
+ */
+export const FRASE_CONFLITO_RENOVADO_RASCUNHO_SHOPEE =
+  'O rascunho mudou de novo enquanto esta janela estava aberta: nada foi enviado. A coluna ' +
+  '«Salvo agora» mostra os valores atuais — confira antes de salvar.';
 
 export interface ConflitoRascunhoShopeeModalProps {
   /** The conflict shown, or `null` (closed) — the editor's state (R2), set from a `tipo: 'conflito'` refusal. */
@@ -43,9 +58,9 @@ export interface ConflitoRascunhoShopeeModalProps {
   servidorCarregado: boolean;
   /** The resend is in flight (the editor's `emVoo` = this link's `'salvar-rascunho'`) — spinner on «Salvar mesmo assim», the other buttons disabled. */
   salvando: boolean;
-  /** «Salvar mesmo assim»: the editor rebases on the CURRENT snapshot's doc (`rebasearEdicaoRascunhoShopee(edicao, link)` — never from `conflitos`) and resends through `executar`. */
+  /** «Salvar mesmo assim»: the editor first checks the rows still show what the CURRENT snapshot's doc stores (`conflitosAtualizadosDoRascunhoShopee`) — if not, it refreshes them (`renovado`) and sends nothing; else it rebases with the rows' fields as `listados` (`rebasearEdicaoRascunhoShopee(edicao, link, [], <campos>)` — never from `conflitos`' values) and resends through `executar`. */
   onSalvarMesmoAssim: () => void;
-  /** «Usar o que está salvo»: the editor applies `rebasearEdicaoRascunhoShopee(edicao, link, <the conflitos' campos>)` and closes; nothing is sent. */
+  /** «Usar o que está salvo»: the editor applies `rebasearEdicaoRascunhoShopee(edicao, link, <campos>, <campos>)` and closes; nothing is sent. */
   onUsarOQueEstaSalvo: () => void;
   /** «Cancelar» or the close button: the modal closes, the entry stays as typed. */
   onCancelar: () => void;
@@ -125,6 +140,8 @@ function valorDaEdicao(
  *   draft (`servidorCarregado: false`): both rebase on THAT document, never on
  *   the 409's values (rev. 2a #19), and a resend against an older snapshot
  *   would only 409 again.
+ * - `renovado`: the rows were refreshed from the stored draft instead of a
+ *   re-send — said above the table ({@link FRASE_CONFLITO_RENOVADO_RASCUNHO_SHOPEE}).
  */
 export function ConflitoRascunhoShopeeModal({
   conflito,
@@ -149,6 +166,11 @@ export function ConflitoRascunhoShopeeModal({
           <Alert color="red" icon={<IconAlertTriangle size={18} />}>
             {criacao ? FRASE_CONFLITO_CRIACAO_RASCUNHO_SHOPEE : FRASE_CONFLITO_RASCUNHO_SHOPEE}
           </Alert>
+          {conflito.renovado === true && (
+            <Alert color="orange" variant="light" data-testid="shopee-rascunho-conflito-renovado">
+              {FRASE_CONFLITO_RENOVADO_RASCUNHO_SHOPEE}
+            </Alert>
+          )}
 
           <Table withTableBorder withColumnBorders striped>
             <Table.Thead>

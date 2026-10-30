@@ -31,6 +31,12 @@
  *   write change what is stored?") decides what is DIRTY and what a patch
  *   holds ({@link planoDoRascunhoShopee}). A legacy draft storing `brand_id`
  *   alone, re-picked WITH the brand's name, is dirty: the name is the edit.
+ *   The same question says which fields the operator left UNTOUCHED (a rebase
+ *   moves those, and only those, onto the stored draft —
+ *   {@link rebasearEdicaoRascunhoShopee}), whether a dirty entry already holds
+ *   nothing beyond what is stored ({@link conciliarEdicaoRascunhoShopee}), and
+ *   whether a 409's rows still show what is stored
+ *   ({@link conflitosAtualizadosDoRascunhoShopee}).
  * - **`mesmoValorDoRascunhoShopee`, the CONFLICT question** ("is what I hold
  *   still what is stored?") is the stale check only
  *   ({@link divergenciasDoServidorShopee}) — never dirtiness, which would
@@ -140,6 +146,7 @@ import {
 import {
   ShopeeClientNetworkError,
   ShopeeClientRespostaInvalidaError,
+  shopeeHttpFallbackMessage,
   type AtualizarRascunhoShopeeInput,
   type CamposDoCorpoRascunhoShopee,
   type CriarRascunhoShopeeInput,
@@ -217,14 +224,28 @@ export interface EdicaoRascunhoShopee {
   /** The form's current values. */
   readonly atual: FormularioRascunhoShopee;
   /**
-   * Set by {@link marcarRascunhoShopeeSalvo} after a 2xx: the links snapshot
-   * (`data`, by identity) current when the request LEFT — never the one
-   * current at the answer, which may already be the route's echo (then it
-   * would never move again and the block would stay read-only). While the snapshot
-   * is still that object the entry shows what was saved, read-only; the first
-   * newer snapshot drops it ({@link conciliarEdicaoRascunhoShopee}).
+   * Set by {@link marcarRascunhoShopeeSalvo} after a 2xx: what THIS draft's
+   * document looked like in the links snapshot current when the request LEFT
+   * — never the one current at the answer, which may already be the route's
+   * echo (then nothing would ever move again and the block would stay
+   * read-only). While it shows what was saved, read-only, the entry waits for
+   * THIS document's echo, never for just any newer snapshot: the query holds
+   * every Shopee link of the produto, and another link's write landing first
+   * would repaint the PRE-save draft ({@link conciliarEdicaoRascunhoShopee}).
    */
-  readonly salvo: { readonly snapshot: unknown } | null;
+  readonly salvo: SalvoDoRascunhoShopee | null;
+}
+
+/** What a just-saved entry waits on (see {@link EdicaoRascunhoShopee.salvo}). */
+export interface SalvoDoRascunhoShopee {
+  /** The links snapshot (`linksSnap.data`, by identity) current when the request left. */
+  readonly snapshot: unknown;
+  /**
+   * THIS draft's document in that snapshot — its `ultimaModificacao` as read
+   * (raw: the draft route stamps every create and update with it) — or `null`
+   * when the snapshot did not hold it (a create).
+   */
+  readonly documento: { readonly ultimaModificacao: unknown } | null;
 }
 
 /**
@@ -325,13 +346,43 @@ export const MARCA_SEM_MARCA_RASCUNHO_SHOPEE: MarcaRascunhoShopee = Object.freez
  *   nothing and no patch carries the brand;
  * - a DIFFERENT id, nameless row ⇒ `{id, null}` (the pair as picked);
  * - same id, a NAMED row ⇒ that row's name (a re-pick is how a name arrives).
+ *
+ * The rule itself is {@link comNomeGuardadoDaMarca} — the ONE copy, which the
+ * conflict rebase applies too (a nameless pair the form already holds meets a
+ * stored name there, not at a pick).
  */
 export function marcaDaLinhaParaRascunhoShopee(
   linha: MarcaDaContaShopee,
   guardada: MarcaRascunhoShopee | null,
 ): MarcaRascunhoShopee {
-  const par = marcaParaRascunhoShopee(linha);
-  if (par.original_brand_name !== null || guardada === null || guardada.brand_id !== par.brand_id) {
+  return comNomeGuardadoDaMarca(marcaParaRascunhoShopee(linha), guardada);
+}
+
+/**
+ * §H Q1 (Lucas, 2026-10-28), THE rule: a pair with NO name whose `brand_id`
+ * equals the stored one takes the STORED name — the same id is the same brand,
+ * and a nameless pair must never erase the name the draft holds (the route
+ * writes the pair whole). Any other pair is returned as is: a different id
+ * keeps its `null` name, and a named pair keeps its own name.
+ */
+function comNomeGuardadoDaMarca(
+  par: MarcaRascunhoShopee,
+  guardada: MarcaRascunhoShopee | null,
+): MarcaRascunhoShopee;
+function comNomeGuardadoDaMarca(
+  par: MarcaRascunhoShopee | null,
+  guardada: MarcaRascunhoShopee | null,
+): MarcaRascunhoShopee | null;
+function comNomeGuardadoDaMarca(
+  par: MarcaRascunhoShopee | null,
+  guardada: MarcaRascunhoShopee | null,
+): MarcaRascunhoShopee | null {
+  if (
+    par === null ||
+    par.original_brand_name !== null ||
+    guardada === null ||
+    guardada.brand_id !== par.brand_id
+  ) {
     return par;
   }
   return { brand_id: par.brand_id, original_brand_name: guardada.original_brand_name };
@@ -636,14 +687,16 @@ export function corpoDescartarRascunhoShopee(args: {
 
 /**
  * The entry after a create's or an edit's 2xx: no longer `novo`, showing what
- * was SAVED (each field normalised as the route stored it) and tied to the
- * links snapshot current when the request LEFT (`snapshot` — `linksSnap.data`,
- * by identity; the echo may land before the 2xx). Its
- * `base` is deliberately NOT rebuilt from the patch (rev. 2a #7): the first
- * newer snapshot drops the entry and the block repaints from the stored draft.
+ * was SAVED (each field normalised as the route stored it) and tied to what
+ * THIS draft's document looked like in the links snapshot current when the
+ * request LEFT (`snapshot` — `linksSnap.data`; the echo may land before the
+ * 2xx). Its `base` is deliberately NOT rebuilt from the patch (rev. 2a #7):
+ * the document's echo drops the entry and the block repaints from the stored
+ * draft ({@link conciliarEdicaoRascunhoShopee}).
  */
 export function marcarRascunhoShopeeSalvo(
   edicao: EdicaoRascunhoShopee,
+  /** `linksSnap.data` as the request LEFT: rows of `{ id, data }` (read defensively). */
   snapshot: unknown,
 ): EdicaoRascunhoShopee {
   let atual: FormularioRascunhoShopee = edicao.atual;
@@ -651,38 +704,188 @@ export function marcarRascunhoShopeeSalvo(
     const normalizado = normalizar(campo, edicao.atual[campo]);
     if (normalizado.ok) atual = { ...atual, [campo]: normalizado.valor };
   }
-  return { ...edicao, novo: false, atual, salvo: { snapshot } };
+  const documento = documentoNoSnapshot(snapshot, edicao.linkDocId);
+  return {
+    ...edicao,
+    novo: false,
+    atual,
+    salvo: {
+      snapshot,
+      documento: documento === null ? null : { ultimaModificacao: documento.ultimaModificacao },
+    },
+  };
 }
 
 /**
- * The entry rebased on the STORED draft — after a 409 `rascunhoConflito`:
+ * The document `linkDocId` in a links snapshot (`linksSnap.data` — rows of
+ * `{id, data}`), or `null` when it holds none. Read defensively: the tab hands
+ * the snapshot over as it got it, and anything that is not such a row is no
+ * document.
+ */
+function documentoNoSnapshot(snapshot: unknown, linkDocId: string): Record<string, unknown> | null {
+  if (!Array.isArray(snapshot)) return null;
+  for (const linha of snapshot as readonly unknown[]) {
+    if (typeof linha !== 'object' || linha === null) continue;
+    const { id, data } = linha as { readonly id?: unknown; readonly data?: unknown };
+    if (id === linkDocId && typeof data === 'object' && data !== null) {
+      return data as Record<string, unknown>;
+    }
+  }
+  return null;
+}
+
+/**
+ * The entry rebased on the STORED draft at `link` — after a 409
+ * `rascunhoConflito`, by the conflict modal's two buttons. `link` must be the
+ * CURRENT snapshot's document.
  *
- * - «Salvar mesmo assim» (`usarDoServidor` empty): the form stays as typed and
- *   `base` becomes the projection of `link` (the snapshot's document). On a
- *   create retry this turns the entry into an UPDATE built exactly like any
- *   other (rev. 2a #19): the patch is the form fields the stored draft does not
- *   already hold, the base its projection cut to `camposDaBaseDoRascunhoShopee`.
- *   ⚠️ Never built from the 409's `conflitos[].atual`, which is display-only:
- *   a list differing only in `category_id` would make a base without the
- *   `attributes` that change clears — a 400.
- * - «Usar o que está salvo» (`usarDoServidor` = the conflicting fields): those
- *   form fields take the stored values too.
+ * **A stored draft's edit** (`!edicao.novo`). Its 409 lists only the fields of
+ * the patch's base that changed (the CONFLICT question), so the rebase moves
+ * ONLY what the operator was shown or never touched:
  *
- * `link` must be the CURRENT snapshot's document: a snapshot older than the
- * 409 only answers 409 again — the safe direction.
+ * - a field the operator did NOT change (the form value is the held one under
+ *   the WRITE question): its base AND its form value become the stored ones —
+ *   it never enters a patch, so another writer's value there is never
+ *   reverted, and the block shows it;
+ * - a field in `listados` (the 409's rows, which the modal showed): its base
+ *   becomes the stored value, so the re-send overwrites exactly what the
+ *   operator agreed to overwrite; the typed value stays;
+ * - a field in `usarDoServidor` («Usar o que está salvo»): base and form value
+ *   both become the stored ones;
+ * - any OTHER changed field keeps the base the operator LOADED: a writer that
+ *   landed there after the 409 makes the re-send a 409 again — the safe
+ *   direction, never an overwrite of a value nobody showed.
+ * - `attributes` (not a form field) follows the category: while the category
+ *   is not changed it becomes the stored list; while it is, it moves only when
+ *   listed (the base a category change sends must be what the operator saw).
+ *
+ * `listados` defaults to `usarDoServidor` when that is given, else to the
+ * fields that diverge NOW ({@link divergenciasDoServidorShopee} against
+ * `link`). ⚠️ Pass the 409's own list on «Salvar mesmo assim»: the default
+ * would also rebase a changed field another writer touched AFTER the 409, and
+ * the modal never showed that value — check first with
+ * {@link conflitosAtualizadosDoRascunhoShopee}.
+ *
+ * **A create retry** (`edicao.novo`, rev. 2a #19). Its 409 lists every field
+ * that differs under the WRITE question, so nothing is hidden: `base` becomes
+ * the whole projection of `link` and the entry an UPDATE built like any other —
+ * the patch is the form fields the stored draft does not already hold, the base
+ * its projection cut to `camposDaBaseDoRascunhoShopee`; `usarDoServidor`
+ * fields take the stored values. ⚠️ Never built from the 409's
+ * `conflitos[].atual`, which is display-only: a list differing only in
+ * `category_id` would make a base without the `attributes` that change clears —
+ * a 400.
+ *
+ * Both arms then re-apply §H Q1 to the form's brand against the new base (a
+ * nameless pair with the stored `brand_id` takes the stored name), so a rebase
+ * never erases a brand name a pick would have kept.
  */
 export function rebasearEdicaoRascunhoShopee(
   edicao: EdicaoRascunhoShopee,
   link: Record<string, unknown>,
   usarDoServidor: readonly CampoRascunhoShopee[] = [],
+  listados?: readonly CampoRascunhoShopee[],
 ): EdicaoRascunhoShopee {
-  const base = camposDoRascunhoShopee(link);
-  const doServidor = formularioDoRascunhoShopee(base);
+  const guardado = camposDoRascunhoShopee(link);
+  const doServidor = formularioDoRascunhoShopee(guardado);
+  let base: CamposRascunhoShopee = edicao.novo ? guardado : edicao.base;
   let atual = edicao.atual;
-  for (const campo of CAMPOS_DO_FORMULARIO_RASCUNHO_SHOPEE) {
-    if (usarDoServidor.includes(campo)) atual = { ...atual, [campo]: doServidor[campo] };
+
+  if (edicao.novo) {
+    for (const campo of CAMPOS_DO_FORMULARIO_RASCUNHO_SHOPEE) {
+      if (usarDoServidor.includes(campo)) atual = { ...atual, [campo]: doServidor[campo] };
+    }
+  } else {
+    const mostrados =
+      listados ??
+      (usarDoServidor.length > 0 ? usarDoServidor : divergenciasDoServidorShopee(edicao, link));
+    const rebasear = <C extends CampoDoFormularioRascunhoShopee>(campo: C): void => {
+      const intocado = mesmoValorGravadoDoRascunhoShopee(
+        campo,
+        edicao.base[campo],
+        edicao.atual[campo],
+      );
+      if (intocado || usarDoServidor.includes(campo)) {
+        base = { ...base, [campo]: guardado[campo] };
+        atual = { ...atual, [campo]: doServidor[campo] };
+      } else if (mostrados.includes(campo)) {
+        base = { ...base, [campo]: guardado[campo] };
+      }
+    };
+    for (const campo of CAMPOS_DO_FORMULARIO_RASCUNHO_SHOPEE) rebasear(campo);
+    const trocaCategoria = !mesmoValorGravadoDoRascunhoShopee(
+      CAMPO_RASCUNHO_SHOPEE.categoryId,
+      base.category_id,
+      atual.category_id,
+    );
+    const atributos = CAMPO_RASCUNHO_SHOPEE.attributes;
+    if (!trocaCategoria || mostrados.includes(atributos) || usarDoServidor.includes(atributos)) {
+      base = { ...base, attributes: guardado.attributes };
+    }
+  }
+
+  if (!usarDoServidor.includes(CAMPO_RASCUNHO_SHOPEE.marca)) {
+    atual = { ...atual, marca: comNomeGuardadoDaMarca(atual.marca, base.marca) };
   }
   return { ...edicao, novo: false, base, atual, salvo: null };
+}
+
+/**
+ * Before «Salvar mesmo assim» re-sends: do the 409's rows (`conflitos`, what
+ * the modal shows as «Salvo agora») still show what the re-send would
+ * overwrite? `null` ⇔ yes — re-send, rebased with `listados` = those rows'
+ * fields. Otherwise the rows the modal must show NOW (each with the stored
+ * value), and NOTHING is sent: a writer landed after the 409.
+ *
+ * What the re-send overwrites is every field of its base that the rebase took
+ * from the stored draft — the listed ones of an edit, every one of a create
+ * retry ({@link rebasearEdicaoRascunhoShopee}); each must be a row whose value
+ * is still what is stored, under the WRITE question (a brand renamed under the
+ * same id counts: the modal showed the old name). A changed field of an edit
+ * whose stored value moved after the 409 is added too: the re-send would only
+ * answer 409 on it.
+ *
+ * The refreshed rows carry the projection's own values, so the next click
+ * compares like with like and goes through unless the draft moves again — a
+ * row value the wire changed in shape costs one refresh, never a loop.
+ */
+export function conflitosAtualizadosDoRascunhoShopee(
+  edicao: EdicaoRascunhoShopee,
+  link: Record<string, unknown>,
+  conflitos: readonly ConflitoRascunhoShopee[],
+): ConflitoRascunhoShopee[] | null {
+  const listados = conflitos.map((c) => c.campo);
+  const rebaseada = rebasearEdicaoRascunhoShopee(edicao, link, [], listados);
+  const { patch } = planoDoRascunhoShopee(rebaseada, { tipo: 'livre' });
+  const guardado = camposDoRascunhoShopee(link);
+  const sobrescritos = camposDaBaseDoRascunhoShopee(patch).filter(
+    (campo) => edicao.novo || listados.includes(campo),
+  );
+  const moveram = edicao.novo ? [] : divergenciasDoServidorShopee(rebaseada, link);
+  const aindaMostrado = (campo: CampoRascunhoShopee): boolean => {
+    const linha = conflitos.find((c) => c.campo === campo);
+    if (linha === undefined) {
+      // A create retry's unlisted `attributes`: the create sent `null`, and the
+      // 409 not listing them said the stored draft held the same.
+      return (
+        edicao.novo &&
+        campo === CAMPO_RASCUNHO_SHOPEE.attributes &&
+        mesmoValorGravadoDoRascunhoShopee(campo, null, guardado[campo])
+      );
+    }
+    // `atual` is the wire's (`z.unknown()`), in the projection's form; the
+    // compare is total over any value, so a foreign shape only reads DISTINCT.
+    return mesmoValorGravadoDoRascunhoShopee(
+      campo,
+      linha.atual as CamposRascunhoShopee[typeof campo] | undefined,
+      guardado[campo],
+    );
+  };
+  if (moveram.length === 0 && sobrescritos.every(aindaMostrado)) return null;
+  const campos = new Set<CampoRascunhoShopee>([...sobrescritos, ...moveram]);
+  return [...campos]
+    .filter((campo) => listados.includes(campo) || !aindaMostrado(campo))
+    .map((campo) => ({ campo, atual: guardado[campo] }));
 }
 
 /** What the tab does with an entry once the links snapshot moved. */
@@ -692,13 +895,21 @@ export type ConciliacaoDaEdicaoShopee =
   | { readonly acao: 'largar'; readonly aviso: string | null };
 
 const MANTER: ConciliacaoDaEdicaoShopee = { acao: 'manter' };
+const LARGAR: ConciliacaoDaEdicaoShopee = { acao: 'largar', aviso: null };
 
 /**
  * Reconcile one entry with the CURRENT links snapshot (DC §2.2). Pure — call
  * it on every snapshot; a `largar` is applied by the tab.
  *
- * - **Just saved** — kept while `snapshot` is still the object it was saved
- *   against, dropped (silently) by the first newer one.
+ * - **Just saved** — kept until THIS draft's echo: dropped (silently) once its
+ *   document's `ultimaModificacao` differs from the one in the snapshot the
+ *   request left against (the route stamps every write), or — for a create —
+ *   once the document is in the snapshot at all; an edit's document gone from
+ *   a SERVER-truth snapshot drops it too. Another link's write is NOT the echo
+ *   and keeps it. A document with no numeric stamp to compare (a legacy draft
+ *   never written by the route) is dropped by any newer snapshot, and so is
+ *   every entry once `saturado` says the bounded query may never return the
+ *   document — never a block stuck read-only.
  * - **A stored draft that is no longer a draft** (it gained a listing) —
  *   dropped, with a notice when it held unsaved work.
  * - **A stored draft gone from a SERVER-truth snapshot** — dropped, with a
@@ -710,7 +921,12 @@ const MANTER: ConciliacaoDaEdicaoShopee = { acao: 'manter' };
  *   created) or still a draft (a create that landed while its answer was lost:
  *   the next Salvar is that create's retry).
  * - **A dirty entry** is never replaced by a snapshot: the operator's text
- *   survives a concurrent write, and the route's baseline is the guard.
+ *   survives a concurrent write, and the route's baseline is the guard —
+ *   EXCEPT one holding nothing beyond what is stored (every field it would
+ *   write is already stored, under the WRITE question, and none is invalid):
+ *   an uncertain save that landed, or another tab saving the same text. It is
+ *   dropped silently — nothing is lost — or its next Salvar would answer a 409
+ *   against the operator's own write.
  */
 export function conciliarEdicaoRascunhoShopee(
   edicao: EdicaoRascunhoShopee,
@@ -718,11 +934,11 @@ export function conciliarEdicaoRascunhoShopee(
     readonly link: Record<string, unknown> | undefined;
     readonly snapshot: unknown;
     readonly servidorConfirmado: boolean;
+    /** The links query hit its limit: a document may never arrive. Absent ⇒ `false`. */
+    readonly saturado?: boolean;
   },
 ): ConciliacaoDaEdicaoShopee {
-  if (edicao.salvo !== null) {
-    return agora.snapshot === edicao.salvo.snapshot ? MANTER : { acao: 'largar', aviso: null };
-  }
+  if (edicao.salvo !== null) return conciliarSalvo(edicao.salvo, agora);
   const sujo = edicaoRascunhoShopeeSuja(edicao);
   const { link } = agora;
   if (link !== undefined && !ehRascunhoShopee(link)) {
@@ -733,7 +949,54 @@ export function conciliarEdicaoRascunhoShopee(
     if (!agora.servidorConfirmado) return MANTER;
     return { acao: 'largar', aviso: sujo ? FRASE_RASCUNHO_DESCARTADO_DURANTE_EDICAO_SHOPEE : null };
   }
-  return sujo ? MANTER : { acao: 'largar', aviso: null };
+  if (!sujo) return LARGAR;
+  return jaEstaGuardado(edicao, link) ? LARGAR : MANTER;
+}
+
+/** A just-saved entry against the current snapshot (see {@link conciliarEdicaoRascunhoShopee}). */
+function conciliarSalvo(
+  salvo: SalvoDoRascunhoShopee,
+  agora: {
+    readonly link: Record<string, unknown> | undefined;
+    readonly snapshot: unknown;
+    readonly servidorConfirmado: boolean;
+    readonly saturado?: boolean;
+  },
+): ConciliacaoDaEdicaoShopee {
+  if (agora.snapshot === salvo.snapshot) return MANTER;
+  if (agora.saturado === true) return LARGAR;
+  const { link } = agora;
+  const { documento } = salvo;
+  if (link === undefined) {
+    // A create: its document is not here yet. An edit: gone only if the server says so.
+    return documento !== null && agora.servidorConfirmado ? LARGAR : MANTER;
+  }
+  if (documento === null) return LARGAR;
+  return mesmoCarimbo(documento.ultimaModificacao, link.ultimaModificacao) ? MANTER : LARGAR;
+}
+
+/**
+ * The same `ultimaModificacao` — a plain stamp compare, no fold: only two
+ * equal FINITE numbers are the same stamp; anything else (absent, a foreign
+ * shape) reads as "moved", which drops the bridge — the safe direction.
+ */
+function mesmoCarimbo(antes: unknown, agora: unknown): boolean {
+  return typeof antes === 'number' && Number.isFinite(antes) && antes === agora;
+}
+
+/**
+ * A dirty STORED entry holding nothing beyond what `link` stores: no changed
+ * field is invalid, and every field its patch would write is already stored
+ * (the WRITE question — a brand stored id-only still differs from the same id
+ * WITH a name).
+ */
+function jaEstaGuardado(edicao: EdicaoRascunhoShopee, link: Record<string, unknown>): boolean {
+  const plano = planoDoRascunhoShopee(edicao, { tipo: 'livre' });
+  if (plano.invalidos.length > 0) return false;
+  const guardado = camposDoRascunhoShopee(link);
+  return plano.alterados.every((campo) =>
+    mesmoValorGravadoDoRascunhoShopee(campo, guardado[campo], plano.patch[campo]),
+  );
 }
 
 /**
@@ -899,17 +1162,23 @@ export function falhaDoRascunhoShopee(
       return mensagem(err.message);
     }
     case null:
-      // The two CODELESS answers: the conta's 404 (no `linkDocId`), and the
-      // create's no-title 400 — the one codeless 400 that names the draft (a
-      // schema 400 names nothing).
-      if (status === 404) return mensagem(FRASE_CONTA_NAO_ENCONTRADA_SHOPEE);
+      // The CODELESS answers. The conta's 404 carries the route's `{error}`
+      // envelope; a 404 WITHOUT one (the client's fallback sentence) is a
+      // route this backend LACKS — an apps/shopee build older than the draft
+      // routes, or a rollback — and keeps that sentence: never "the conta".
+      // The create's no-title 400 is the one codeless 400 that names the
+      // draft (a schema 400 names nothing).
+      if (status === 404 && err.message !== shopeeHttpFallbackMessage(404)) {
+        return mensagem(FRASE_CONTA_NAO_ENCONTRADA_SHOPEE);
+      }
       if (status === 400 && operacao === 'criar' && detalhes.linkDocId !== null) {
         return mensagem(FRASE_RASCUNHO_SEM_TITULO_SHOPEE);
       }
       break;
   }
-  // A 5xx may follow a write the route already made (App Hosting's 504 at the
-  // ceiling is one); 501 is a fact about the deployment.
+  // A 5xx may follow a write the route already made — Next's codeless 500
+  // when a commit that may have landed rethrows, App Hosting's 502/503/504 —
+  // coded or not; 501 is a fact about the deployment.
   if (status >= 500 && status !== 501) {
     return mensagem(fraseDaRespostaIncertaDoRascunhoShopee(operacao), true);
   }
@@ -942,6 +1211,13 @@ export interface EntradaDoBlocoRascunhoShopee {
   readonly servidorConfirmado: boolean;
   /** `PERM.integracao.write` ∧ `PERM.produto.write` ∧ the produto form editable. */
   readonly podeEditar: boolean;
+  /**
+   * The operator may DISCARD this draft — decoupled from {@link podeEditar}:
+   * the discard route reads only the link (no conta document, no Shopee call),
+   * so a draft whose conta was deleted can still be discarded while nothing
+   * else may be done to it. Absent ⇒ {@link podeEditar}.
+   */
+  readonly permiteDescarte?: boolean;
   /** A write of this tab is in flight. */
   readonly ocupado: boolean;
 }
@@ -980,6 +1256,16 @@ export interface BlocoRascunhoShopee {
   readonly camposEditaveis: boolean;
   /** The category picker accepts a pick (never in `incerta`). */
   readonly categoriaEditavel: boolean;
+  /** The HELD projection's category — what "put the category back" restores. */
+  readonly categoriaGravada: number | null;
+  /**
+   * `incerta` with an UNSAVED category change (picked while the draft read
+   * `livre`): the change blocks every save (`categoria-travada`), the picker
+   * is closed, and putting the HELD category back — a revert, never a change —
+   * is the one pick still accepted ({@link categoriaAceitaNoBlocoShopee}), so
+   * the other edits can be saved without «Desfazer alterações» losing them.
+   */
+  readonly podeVoltarCategoria: boolean;
   /** Unsaved work in this block. */
   readonly sujo: boolean;
   readonly podeSalvar: boolean;
@@ -1013,8 +1299,12 @@ const VAZIO: CamposRascunhoShopee = {
  * - **kit virtual** (`ehKitVirtualEfetivo`) — no editor; Descartar only;
  * - **em-andamento** — nothing editable, nothing sent (every draft route
  *   answers 409 now); one clock re-read at `aguardarMs` + 1 s;
- * - **incerta** — editable except the category; Descartar asks for the
- *   Seller-Centre attestation;
+ * - **incerta** — editable except the category (an unsaved category change
+ *   made while `livre` may only be put back — `podeVoltarCategoria`);
+ *   Descartar asks for the Seller-Centre attestation;
+ * - **discard** — its own authority (`permiteDescarte`, else `podeEditar`):
+ *   the discard route needs only the link, so a draft whose conta document is
+ *   gone can still be discarded while nothing else is offered;
  * - **server truth** — a stored draft with no entry is read-only until the
  *   snapshot came from the server (an existing entry keeps editing through an
  *   Activity re-listen, which re-emits `fromCache: true`);
@@ -1070,12 +1360,27 @@ export function estadoDoBlocoRascunhoShopee(e: EntradaDoBlocoRascunhoShopee): Bl
     kitVirtual: e.kitVirtual,
     camposEditaveis,
     categoriaEditavel: camposEditaveis && publicacao.tipo !== 'incerta',
+    categoriaGravada: guardado.category_id,
+    // Never on a local new draft: it has no stored category to go back to
+    // (`guardado` is its prefill), so the button would put back nothing.
+    podeVoltarCategoria:
+      camposEditaveis &&
+      publicacao.tipo === 'incerta' &&
+      edicao !== null &&
+      !novo &&
+      !mesmoValorGravadoDoRascunhoShopee(
+        CAMPO_RASCUNHO_SHOPEE.categoryId,
+        guardado.category_id,
+        valores.category_id,
+      ),
     sujo,
     podeSalvar,
     impedimento,
     podeDesfazer: e.podeEditar && !e.ocupado && edicao !== null && !novo && sujo,
+    // Its own authority: a deleted conta still lets its draft go (the route
+    // needs only the link) — every other action stays under `podeEditar`.
     podeDescartar:
-      e.podeEditar &&
+      (e.permiteDescarte ?? e.podeEditar) &&
       !e.ocupado &&
       !emAndamento &&
       !salvo &&
@@ -1084,6 +1389,31 @@ export function estadoDoBlocoRascunhoShopee(e: EntradaDoBlocoRascunhoShopee): Bl
     atributosGravados: projecao?.attributes != null && projecao.attributes.length > 0,
     avisos,
   };
+}
+
+/**
+ * Whether the block accepts `valor` as its category pick: any pick while the
+ * picker is open ({@link BlocoRascunhoShopee.categoriaEditavel}); in `incerta`,
+ * ONLY the held category put back ({@link BlocoRascunhoShopee.podeVoltarCategoria})
+ * — a revert, never a change. The tab asks this before applying a pick.
+ */
+export function categoriaAceitaNoBlocoShopee(
+  bloco: BlocoRascunhoShopee,
+  valor: number | null,
+): boolean {
+  if (bloco.categoriaEditavel) return true;
+  return bloco.podeVoltarCategoria && valor === bloco.categoriaGravada;
+}
+
+/**
+ * Whether a held `category_id` can name a Shopee category at all: a POSITIVE
+ * id. A legacy `0` (or a negative) names none — no tree read, no bands read,
+ * and the picker opens at the roots. THE one test, for the Categoria label,
+ * the tab's bands request and the draft's «Publicar» gate
+ * ({@link publicacaoDoRascunhoShopee}) alike.
+ */
+export function idDeCategoriaShopeeValido(categoryId: number | null): categoryId is number {
+  return categoryId !== null && categoryId > 0;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1112,6 +1442,13 @@ export type ImpedimentoDaPublicacaoShopee =
   | 'produto-nao-salvo'
   /** A pendência the publish would refuse ({@link PublicacaoDoRascunhoShopee.pendencias}). */
   | 'pendencias'
+  /**
+   * The held category names none ({@link idDeCategoriaShopeeValido} — a
+   * legacy `0`): no bands are ever read for it and the listing assembly
+   * refuses it. The Categoria field already says so (and asks for a category
+   * where the picker is offered), so no `aviso` repeats it.
+   */
+  | 'categoria-inexistente'
   /** The title/description bands are not loaded: a band pendência cannot be seen yet. */
   | 'faixas-desconhecidas';
 
@@ -1161,9 +1498,13 @@ export interface PublicacaoDoRascunhoShopee {
 /**
  * THE decision of a draft's «Publicar» (#1911 P11, rev. 2a §D P11):
  * saved ∧ clean (P10's plan empty, not a local draft) ∧ the produto form clean
- * ∧ server truth ∧ no pendência ∧ the bands LOADED ∧ the publish reading not
- * `em-andamento`. `incerta` does NOT block: its publish is a real one — ENSURE
- * looks the listing up first, then adopts it, refuses (a 422 row), or creates.
+ * ∧ server truth ∧ no pendência ∧ a held category that names one
+ * ({@link idDeCategoriaShopeeValido}) ∧ the bands LOADED ∧ the publish reading
+ * not `em-andamento`. `incerta` does NOT block: its publish is a real one —
+ * ENSURE looks the listing up first, then adopts it, refuses (a 422 row), or
+ * creates. A draft whose conta document is gone is not the operator's to
+ * author (`podeEditar` false ⇒ `sem-permissao`): it offers «Descartar» alone
+ * (P10's `permiteDescarte`), never «Publicar».
  *
  * Every input is the schemas' or P10's own reading — the block decision
  * (`estadoPublicacaoRascunhoShopee` inside it) and `pendenciasDoRascunhoShopee`
@@ -1186,12 +1527,27 @@ export function publicacaoDoRascunhoShopee(
   if (bloco.kitVirtual) return impedido('kit-virtual');
   if (bloco.novo) return impedido('rascunho-novo', FRASE_PUBLICAR_RASCUNHO_NOVO_SHOPEE);
   if (bloco.impedimento === 'aguardando-servidor') return impedido('aguardando-servidor');
-  if (bloco.sujo) return impedido('alteracoes-nao-salvas', FRASE_PUBLICAR_COM_ALTERACOES_SHOPEE);
+  if (bloco.sujo) {
+    // A category change stranded by `incerta` blocks every save: «Salve as
+    // alterações» would name an exit that is disabled. The block's own
+    // `categoria-travada` sentence says why and names the exits that act
+    // («Desfazer alterações», «Voltar à categoria gravada» — P10).
+    return impedido(
+      'alteracoes-nao-salvas',
+      bloco.impedimento === 'categoria-travada' ? null : FRASE_PUBLICAR_COM_ALTERACOES_SHOPEE,
+    );
+  }
   if (bloco.publicacao.tipo === 'em-andamento') return impedido('publicacao-em-andamento');
   if (!e.servidorConfirmado || e.textosDoProduto === null) return impedido('carregando');
   if (e.ocupado) return impedido('ocupado');
   if (e.produtoSujo) return impedido('produto-nao-salvo', FRASE_PUBLICAR_PRODUTO_NAO_SALVO_SHOPEE);
   if (pendencias.length > 0) return impedido('pendencias');
+  // A held id that names no category (a legacy `0`) is no pendência and has no
+  // bands to wait for — the tab never asks for them — so it is said as itself,
+  // never as «limites … forem lidos», a wait that would never end.
+  if (!idDeCategoriaShopeeValido(bloco.valores.category_id)) {
+    return impedido('categoria-inexistente');
+  }
   if (e.limites === null) return impedido('faixas-desconhecidas', FRASE_PUBLICAR_SEM_FAIXAS_SHOPEE);
   return { podePublicar: true, impedimento: null, pendencias, aviso: null };
 }

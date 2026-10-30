@@ -34,6 +34,7 @@ import {
   FRASE_RASCUNHO_AGUARDANDO_SERVIDOR_SHOPEE,
   FRASE_RASCUNHO_CARREGANDO_SHOPEE,
   FRASE_RASCUNHO_NOVO_SHOPEE,
+  FRASE_VOLTAR_CATEGORIA_GRAVADA_SHOPEE,
   ROTULO_CAMPO_RASCUNHO_SHOPEE,
   ROTULO_CRIAR_PAUSADO_SHOPEE,
   ROTULO_PUBLICAR_RASCUNHO_SHOPEE,
@@ -56,7 +57,7 @@ import type {
 
 import { CategoriaRascunhoShopee } from './CategoriaRascunhoShopee';
 import { idDoCampoRascunhoShopee } from './DesfechoAcaoShopee';
-import { MarcaRascunhoShopee } from './MarcaRascunhoShopee';
+import { MarcaRascunhoShopee, rotuloDaMarcaRascunhoShopee } from './MarcaRascunhoShopee';
 
 /**
  * The two draft writes a block starts (DC §2.1). The editor's
@@ -134,8 +135,8 @@ export type TextosDoProdutoRascunhoShopee = Pick<
 export interface RascunhoShopeeProps {
   /** The Firestore handle — forwarded to the brand picker's shortlist listener (`useMarcasShopee`); supplied by the editor. */
   db: Firestore;
-  /** The conta (`integracao` id) the draft belongs to — every taxonomy read and the shortlist are this conta's; supplied by the conta panel. */
-  contaId: string;
+  /** The conta (`integracao` id) the draft belongs to — every taxonomy read and the shortlist are this conta's; `null` when the tab names no conta document that can answer (not found, an unreadable ref, still loading): then NOTHING is read — no tree, no shortlist listener — and the held category and brand show as plain text; supplied by the tab. */
+  contaId: string | null;
   /** The conta's display name (`ContaShopee.nome`) — the brand picker's empty-shortlist sentence names it; supplied by the conta panel. */
   contaNome: string;
   /** The draft's link doc id (a stored draft's, or a local new one's minted id) — the test ids' suffix; supplied by the block. */
@@ -150,13 +151,15 @@ export interface RascunhoShopeeProps {
   limites: ArgsPendenciasRascunhoShopee['limites'];
   /** The stale check — `divergenciasDoServidorShopee(edicao, link)` (`[]` for no entry, a local new draft or nothing to save): fields another writer changed since the entry was loaded, so the next Salvar will answer 409; supplied by the tab. */
   divergencias: readonly CampoRascunhoShopee[];
-  /** `PERM.integracao.write` ∧ `PERM.produto.write` ∧ the produto form editable — the SAME flag the tab passes as `bloco`'s `podeEditar`; `false` ⇒ fields read-only and NO button renders. */
+  /** `PERM.integracao.write` ∧ `PERM.produto.write` ∧ the produto form editable — the SAME flag the tab passes as `bloco`'s `podeEditar`; `false` ⇒ fields read-only and NO button renders (but see `somenteDescartar`). */
   podeEditar: boolean;
+  /** The draft's conta document is GONE (a «não encontrada» tab whose id a document could carry) and the operator holds both bits: «Descartar» renders ALONE — enabled by `bloco.podeDescartar` — since the discard route needs only the link; nothing else is offered (no «Publicar»: `decisaoDePublicar` reads `sem-permissao` for a block the operator may not author, and the button renders only with `podeEditar`). Read only while `podeEditar` is `false`; supplied by the tab. */
+  somenteDescartar: boolean;
   /** This link's write in flight (the editor's `emVoo` when it names this link and a draft action or its «Publicar» — `'publicar'` on a draft's link is always this block's), else `null` — that button shows the spinner. */
   emVoo: AcaoDoBlocoRascunhoShopee | null;
   /** The last draft operation's sentence on this block (editor state, R2), or `null`. */
   resultado: ResultadoDoRascunhoShopee | null;
-  /** One form field typed or picked: the editor creates the entry on the first one (`edicaoDoRascunhoGuardadoShopee`) and applies `comCampoRascunhoShopee`; fired only while `bloco.camposEditaveis` (`category_id` only while `bloco.categoriaEditavel`). */
+  /** One form field typed or picked: the editor creates the entry on the first one (`edicaoDoRascunhoGuardadoShopee`) and applies `comCampoRascunhoShopee`; fired only while `bloco.camposEditaveis` (`category_id` only while `bloco.categoriaEditavel`, or the held one put back while `bloco.podeVoltarCategoria` — the editor re-checks with `categoriaAceitaNoBlocoShopee`). */
   onCampo: <C extends CampoDoFormularioRascunhoShopee>(
     campo: C,
     valor: FormularioRascunhoShopee[C],
@@ -283,7 +286,11 @@ function semEnviarOFormularioDoProduto(e: KeyboardEvent<HTMLInputElement>): void
  *   warning are never skipped (K2-13). Its confirm acts only while
  *   `decisaoDePublicar.podePublicar` still holds.
  * - **Buttons** render only with `podeEditar`; a read-only operator sees the
- *   values and the notices, nothing to click.
+ *   values and the notices, nothing to click — except `somenteDescartar` (the
+ *   draft of a conta that was deleted): «Descartar» alone.
+ * - **No conta that can answer** (`contaId: null`): the category and the
+ *   brand show as text; no picker mounts, so nothing is read for a conta
+ *   apps/shopee could only answer 404 for.
  *
  * Contract for the tab's tests and the e2e: root
  * `data-testid="shopee-rascunho-<linkDocId>"`; buttons named exactly «Salvar
@@ -305,6 +312,7 @@ export function RascunhoShopee({
   limites,
   divergencias,
   podeEditar,
+  somenteDescartar,
   emVoo,
   resultado,
   onCampo,
@@ -410,19 +418,34 @@ export function RascunhoShopee({
               editavel={bloco.categoriaEditavel}
               atributosGravados={bloco.atributosGravados}
               onEscolher={(categoryId) => onCampo(CAMPO_RASCUNHO_SHOPEE.categoryId, categoryId)}
+              onVoltar={
+                bloco.podeVoltarCategoria
+                  ? () => onCampo(CAMPO_RASCUNHO_SHOPEE.categoryId, bloco.categoriaGravada)
+                  : null
+              }
             />
           </div>
           <div id={idDoCampoRascunhoShopee(linkDocId, CAMPO_RASCUNHO_SHOPEE.marca)}>
-            <MarcaRascunhoShopee
-              db={db}
-              contaId={contaId}
-              contaNome={contaNome}
-              linkDocId={linkDocId}
-              marca={valores.marca}
-              marcaGuardada={marcaGuardada}
-              editavel={bloco.camposEditaveis}
-              onEscolher={(marca) => onCampo(CAMPO_RASCUNHO_SHOPEE.marca, marca)}
-            />
+            {contaId === null ? (
+              // No shortlist listener for a conta that cannot answer: the pair as text.
+              <Stack gap={4} data-testid={`shopee-rascunho-marca-${linkDocId}`}>
+                <Text size="sm" fw={500}>
+                  Marca
+                </Text>
+                <Text size="sm">{rotuloDaMarcaRascunhoShopee(valores.marca)}</Text>
+              </Stack>
+            ) : (
+              <MarcaRascunhoShopee
+                db={db}
+                contaId={contaId}
+                contaNome={contaNome}
+                linkDocId={linkDocId}
+                marca={valores.marca}
+                marcaGuardada={marcaGuardada}
+                editavel={bloco.camposEditaveis}
+                onEscolher={(marca) => onCampo(CAMPO_RASCUNHO_SHOPEE.marca, marca)}
+              />
+            )}
           </div>
           <Text size="xs" c="dimmed">
             {FRASE_LOGISTICA_RASCUNHO_SHOPEE}
@@ -453,7 +476,17 @@ export function RascunhoShopee({
           {FRASE_CATEGORIA_TRAVADA_SHOPEE}
         </Text>
       )}
+      {podeEditar &&
+        !bloco.kitVirtual &&
+        bloco.impedimento === 'categoria-travada' &&
+        bloco.podeVoltarCategoria && (
+          // Only while the button it names is on screen.
+          <Text size="sm" c="red" data-testid={`${raiz}-voltar-categoria`}>
+            {FRASE_VOLTAR_CATEGORIA_GRAVADA_SHOPEE}
+          </Text>
+        )}
 
+      {!podeEditar && somenteDescartar && <Group gap="xs">{descartar}</Group>}
       {podeEditar && (
         <Group gap="xs">
           {bloco.kitVirtual ? (

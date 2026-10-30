@@ -23,6 +23,7 @@ import {
   cleanupShopeeFixtures,
   e2ePrefix,
   seedEditorRascunhoShopee,
+  seedMarcaShopee,
   seedProdutoShopeeVinculado,
   seedRascunhoProntoShopee,
   seedShopeeFixtures,
@@ -99,6 +100,23 @@ const FRASE_CONFIRMAR_DESCARTE = 'O rascunho será excluído. Nada foi publicado
 const TOAST_RASCUNHO_CRIADO = 'Rascunho criado.';
 const TOAST_RASCUNHO_SALVO = 'Rascunho salvo.';
 const TOAST_RASCUNHO_DESCARTADO = 'Rascunho descartado.';
+/** `ROTULO_SEM_MARCA_SHOPEE` (`MarcaRascunhoShopee.tsx`) — the picker's own «Sem marca» option. */
+const ROTULO_SEM_MARCA = 'Sem marca (No Brand)';
+
+/**
+ * The ONE brand seeded on conta 1's shortlist (`integracao/{id}/brandshopee`,
+ * #1911 P9) by `seedMarcaShopee`, through the Marcas section's own writer rule
+ * — a fixture id, never a real Shopee brand. Its two names DIFFER on purpose:
+ * the draft's picker labels a row by its display name, while the draft stores
+ * (and publish sends) its ORIGINAL name, so a body carrying the label is a
+ * drift this spec sees.
+ */
+const MARCA_DA_CONTA = {
+  brandId: 9_200_001,
+  originalBrandName: 'E2E Brand',
+  displayBrandName: 'Marca do e2e',
+} as const;
+
 /**
  * The sentence a draft link showed BEFORE the editor existed (P10 removed it
  * with its constant). Asserted absent: the draft block is the editor now.
@@ -409,7 +427,12 @@ function rotasComStub(kitRemovido: string): ReadonlyMap<string, Stub> {
 }
 
 interface StubsShopee {
-  /** Every Shopee backend call the page made, in order. */
+  /**
+   * Every Shopee backend call the page made, in order. A test whose page must
+   * send nothing asserts it EMPTY, never `semStub` alone: every stubbed route
+   * answers 2xx — the three draft writes, a pause, a publish — so a stray
+   * call to one of them never reaches `semStub`.
+   */
   readonly chamadas: Chamada[];
   /** Calls to a Shopee route this spec does not stub (answered 404, never forwarded). */
   readonly semStub: string[];
@@ -515,6 +538,9 @@ test.describe.serial('Produto Shopee tab e2e — listing state, actions and the 
         .then(() => seedRascunhoProntoShopee(prefix, conta)),
       warmRoutes(browser, ['/produtos/__aquecimento__/editar']),
     ]);
+    // Once the conta exists: `cleanupShopeeFixtures` reaches a shortlist row
+    // only through its conta.
+    await seedMarcaShopee(conta, MARCA_DA_CONTA);
   });
 
   test.afterAll(async () => {
@@ -578,6 +604,8 @@ test.describe.serial('Produto Shopee tab e2e — listing state, actions and the 
       `shopee-anuncio-${links.rascunho}`,
     ]);
 
+    // Showing the state sends nothing — no draft write, no pause, no publish.
+    expect(stubs.chamadas).toEqual([]);
     expect(stubs.semStub, 'Shopee routes this spec does not stub').toEqual([]);
   });
 
@@ -738,6 +766,10 @@ test.describe.serial('Produto Shopee tab e2e — listing state, actions and the 
     // The state the tab reads from Firestore is still there.
     await expect(ativo.getByText('Ativo', { exact: true })).toBeVisible();
     await expect(painel.getByText(/Erro ao carregar os anúncios da Shopee/)).toHaveCount(0);
+    // The cut-off re-verify never reaches the recorder (the newer handler took
+    // it), so anything recorded is a call the failure set off — a draft save,
+    // a pause or a publish, each answered 2xx and so invisible to `semStub`.
+    expect(stubs.chamadas).toEqual([]);
     expect(stubs.semStub, 'Shopee routes this spec does not stub').toEqual([]);
   });
 
@@ -779,6 +811,68 @@ test.describe.serial('Produto Shopee tab e2e — listing state, actions and the 
             linkDocId: links.rascunho,
             base: { item_name: tituloGuardado },
             patch: { item_name: tituloEditado },
+          },
+        },
+      ]);
+    await expect(page.getByText(TOAST_RASCUNHO_SALVO, { exact: true })).toBeVisible({
+      timeout: 30_000,
+    });
+    expect(stubs.semStub, 'Shopee routes this spec does not stub').toEqual([]);
+  });
+
+  test("saves a draft's brand picked from the conta's shortlist under the brand's original name", async ({
+    page,
+  }) => {
+    const stubs = await instalarStubsShopee(page, links.kitRemovido);
+    await page.goto(`/produtos/${produtoId}/editar`);
+    const painel = await abrirConta(page, conta);
+
+    // Positive first: the stored draft's form loaded, and it holds no brand.
+    const editor = painel.getByTestId(`${RAIZ_DO_RASCUNHO}${links.rascunho}`);
+    await expect(editor.getByRole('textbox', { name: /^Título/ })).toHaveValue(tituloGuardado, {
+      timeout: 30_000,
+    });
+    await expect(editor.getByText(PENDENCIA_MARCA).first()).toBeVisible();
+
+    // The picker reads the conta's shortlist from Firestore — the row the
+    // Marcas section writes — and asks apps/shopee nothing. Like typing, a
+    // pick waits for the links listener's server answer; `click` waits for it.
+    const marca = editor
+      .getByTestId(`shopee-rascunho-marca-${links.rascunho}`)
+      .getByRole('combobox', { name: 'Marca', exact: true });
+    await marca.click({ timeout: 30_000 });
+    // «Sem marca» is the picker's own option, never a shortlist row; the row
+    // is offered under its DISPLAY name.
+    await expect(page.getByRole('option', { name: ROTULO_SEM_MARCA, exact: true })).toBeVisible();
+    await page.getByRole('option', { name: MARCA_DA_CONTA.displayBrandName, exact: true }).click();
+    await expect(marca).toHaveValue(MARCA_DA_CONTA.displayBrandName);
+    // The pick answers the brand's pendência, and only that one.
+    await expect(editor.getByText(PENDENCIA_MARCA)).toHaveCount(0);
+    await expect(editor.getByText(PENDENCIA_CATEGORIA).first()).toBeVisible();
+    // Nothing leaves the browser before the operator saves.
+    expect(stubs.chamadas).toEqual([]);
+    await editor.getByRole('button', { name: 'Salvar rascunho', exact: true }).click();
+
+    // ONLY the brand, as the pair the draft stores: the row's id with its
+    // ORIGINAL name — the one publish sends — never the label the picker
+    // showed; and beside it the brand the operator saw stored, none.
+    await expect
+      .poll(() => stubs.chamadas, { timeout: 30_000 })
+      .toEqual([
+        {
+          metodo: 'POST',
+          rota: 'rascunho/atualizar',
+          corpo: {
+            integracaoId: conta,
+            produtoId,
+            linkDocId: links.rascunho,
+            base: { marca: null },
+            patch: {
+              marca: {
+                brand_id: MARCA_DA_CONTA.brandId,
+                original_brand_name: MARCA_DA_CONTA.originalBrandName,
+              },
+            },
           },
         },
       ]);

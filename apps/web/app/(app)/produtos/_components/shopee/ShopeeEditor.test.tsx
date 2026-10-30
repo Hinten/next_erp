@@ -273,12 +273,13 @@ vi.mock('@/lib/data/produtoExtraDataCollection', () => ({
  * props the EDITOR hands them and expose its handlers, so what this suite pins
  * is the editor's wiring: which decision each block gets, what each handler
  * sends. The double keeps the frozen contract's names — the root test id and
- * the four buttons, rendered only with `podeEditar`, each enabled by the
- * block's own decision — and (#1911 P11, the pin split's `/Publicar/` half
- * INVERTED on purpose, K2-3) «Publicar», enabled by `decisaoDePublicar`, plus
- * the controlled confirmation it opens: the editor's state, painted with the
- * D15 warning when `segundoAnuncio` is set, the attestation when one opened
- * it, «Criar pausado», and a confirm that acts only while the gate says yes.
+ * the four buttons, rendered only with `podeEditar` («Descartar» alone with
+ * `somenteDescartar` — never «Publicar»), each enabled by the block's own
+ * decision — and (#1911 P11, the pin split's `/Publicar/` half INVERTED on
+ * purpose, K2-3) «Publicar», enabled by `decisaoDePublicar`, plus the
+ * controlled confirmation it opens: the editor's state, painted with the D15
+ * warning when `segundoAnuncio` is set, the attestation when one opened it,
+ * «Criar pausado», and a confirm that acts only while the gate says yes.
  */
 vi.mock('./RascunhoShopee', async () => {
   const { useState } = await import('react');
@@ -357,6 +358,15 @@ vi.mock('./RascunhoShopee', async () => {
               </button>
             </>
           )}
+          {!p.podeEditar && p.somenteDescartar && (
+            <button
+              type="button"
+              disabled={!p.bloco.podeDescartar}
+              onClick={() => p.onDescartar(p.bloco.descarte)}
+            >
+              Descartar
+            </button>
+          )}
           {p.confirmacaoDePublicacao !== null && <ConfirmacaoDupla p={p} />}
         </div>
       );
@@ -403,7 +413,14 @@ vi.mock('./ConflitoRascunhoShopeeModal', () => ({
   },
 }));
 
-const { ShopeeEditor } = await import('./ShopeeEditor');
+const {
+  FRASE_SESSAO_NAO_RENOVADA_SHOPEE,
+  FRASE_SESSAO_SEM_CONEXAO_SHOPEE,
+  ShopeeEditor,
+  fraseDaSessaoShopee,
+} = await import('./ShopeeEditor');
+const { ROTULO_PUBLICACAO_EM_ANDAMENTO_SHOPEE, ROTULO_PUBLICACAO_INCERTA_SHOPEE } =
+  await import('./StatusAnuncioShopee');
 const { AcoesAnuncioShopee } = await import('./AcoesAnuncioShopee');
 const { MAX_MODELOS_POR_FILHO } = await import('./ModelosAnuncioShopee');
 const { convertivel } = await import('./KitAnuncioShopee');
@@ -3341,9 +3358,16 @@ function recusaDoRascunho(
     ...detalhes,
   });
 }
-/** The editor, re-rendered after the test moved the snapshot (`h.links` reassigned = a NEW emission). */
-const rerenderEditor = (rerender: (ui: ReactNode) => void, props: { disabled?: boolean } = {}) =>
-  rerender(<ShopeeEditor produtoId="prod-1" db={{} as Firestore} {...props} />);
+/**
+ * The editor, re-rendered after the test moved the snapshot (`h.links`
+ * reassigned = a NEW emission). Pass the SAME `onDirtyChange` the first render
+ * got: a re-render without it drops the callback, and the guard's last report
+ * would then be whatever came before.
+ */
+const rerenderEditor = (
+  rerender: (ui: ReactNode) => void,
+  props: { disabled?: boolean; onDirtyChange?: (dirty: boolean) => void } = {},
+) => rerender(<ShopeeEditor produtoId="prod-1" db={{} as Firestore} {...props} />);
 
 type RespostaCriar = Awaited<ReturnType<ShopeeClient['criarRascunho']>>;
 type RespostaAtualizar = Awaited<ReturnType<ShopeeClient['atualizarRascunho']>>;
@@ -3439,6 +3463,73 @@ describe('ShopeeEditor — «Novo anúncio» and the create (#1911 P10)', () => 
     expect(tituloDo(id!).value).toBe('Camiseta nova (servidor)');
     expect(tituloDo(id!).readOnly).toBe(false);
   });
+
+  /** A saved title, then the bridge — the R1-rule7#2 pair's shared opening. */
+  async function salvarTituloDoRascunho(outros: Linha[]) {
+    comAutoria();
+    h.client = shopeeClientFalso({
+      atualizarRascunho: async (input): Promise<RespostaAtualizar> => ({
+        linkDocId: input.linkDocId,
+        gravados: ['item_name'],
+      }),
+    });
+    h.links = [rascunho('L-rasc', { ultimaModificacao: 1_000 }), ...outros];
+    const render = renderEditor();
+    digitarTitulo('L-rasc', 'Camiseta nova');
+    fireEvent.click(botaoDoRascunho('L-rasc', 'Salvar rascunho'));
+    await waitFor(() =>
+      expect(
+        within(raizDoRascunho('L-rasc')).getByText(FRASE_RASCUNHO_AGUARDANDO_SERVIDOR_SHOPEE),
+      ).toBeDefined(),
+    );
+    return render;
+  }
+
+  it('R1-rule7#2: a just-saved draft waits for ITS OWN echo — another link’s write keeps it read-only ⟷ its own re-stamped document releases it', async () => {
+    const { rerender } = await salvarTituloDoRascunho([link('L1', { ultimaModificacao: 5 })]);
+    // Another link's write: a NEW snapshot, this draft's stamp unchanged.
+    h.links = [
+      rascunho('L-rasc', { ultimaModificacao: 1_000 }),
+      link('L1', { ultimaModificacao: 6 }),
+    ];
+    rerenderEditor(rerender);
+    expect(
+      within(raizDoRascunho('L-rasc')).getByText(FRASE_RASCUNHO_AGUARDANDO_SERVIDOR_SHOPEE),
+    ).toBeDefined();
+    expect(tituloDo('L-rasc').value).toBe('Camiseta nova');
+    expect(tituloDo('L-rasc').readOnly).toBe(true);
+
+    // ITS echo: the route re-stamped the document.
+    h.links = [
+      rascunho('L-rasc', { item_name: 'Camiseta nova', ultimaModificacao: 2_000 }),
+      link('L1', { ultimaModificacao: 6 }),
+    ];
+    rerenderEditor(rerender);
+    expect(
+      within(raizDoRascunho('L-rasc')).queryByText(FRASE_RASCUNHO_AGUARDANDO_SERVIDOR_SHOPEE),
+    ).toBeNull();
+    expect(tituloDo('L-rasc').value).toBe('Camiseta nova');
+    expect(tituloDo('L-rasc').readOnly).toBe(false);
+  });
+
+  it('R1-rule7#2: a FULL links query (MAX_LINKS) may never return the echo — the SAME kind of emission releases the bridge (never stuck read-only)', async () => {
+    // 199 listings + the draft = the query's 200-row limit.
+    const cheios = Array.from({ length: 199 }, (_, i) =>
+      link(`L-${String(i)}`, { item_id: 2_000_000 + i, ultimaModificacao: 5 }),
+    );
+    const { rerender } = await salvarTituloDoRascunho(cheios);
+    h.links = [
+      rascunho('L-rasc', { ultimaModificacao: 1_000 }),
+      ...cheios.slice(1),
+      link('L-0', { item_id: 2_000_000, ultimaModificacao: 6 }),
+    ];
+    rerenderEditor(rerender);
+    expect(
+      within(raizDoRascunho('L-rasc')).queryByText(FRASE_RASCUNHO_AGUARDANDO_SERVIDOR_SHOPEE),
+    ).toBeNull();
+    expect(tituloDo('L-rasc').readOnly).toBe(false);
+    // 200 blocks rendered three times: ~2.6 s alone, over the 5 s default under the full suite.
+  }, 30_000);
 
   it.each([
     ['only a DRAFT', [rascunho('L-rasc')]],
@@ -3694,6 +3785,9 @@ describe('ShopeeEditor — editing a stored draft (#1911 P10)', () => {
     h.links = [rascunho('L-rasc', { criacaoIncertaDesde: Date.now() - 600_000 })];
     renderEditor();
     expect(within(raizDoRascunho('L-rasc')).getByText(FRASE_RASCUNHO_INCERTO_SHOPEE)).toBeDefined();
+    // The badge above agrees with the notice: never a definite «Não publicado».
+    expect(within(bloco('L-rasc')).getByText(ROTULO_PUBLICACAO_INCERTA_SHOPEE)).toBeDefined();
+    expect(within(bloco('L-rasc')).queryByText('Não publicado')).toBeNull();
     expect(formDe('L-rasc').bloco.categoriaEditavel).toBe(false);
     act(() => formDe('L-rasc').onCampo('category_id', 100087));
     digitarTitulo('L-rasc', 'Camiseta azul marinho');
@@ -3705,6 +3799,53 @@ describe('ShopeeEditor — editing a stored draft (#1911 P10)', () => {
       patch: { item_name: 'Camiseta azul marinho' },
     });
     expect(atualizarRascunho.mock.calls[0]?.[0].patch).not.toHaveProperty('category_id');
+  });
+
+  it('R1-rule7#5: a category change picked while `livre` is stranded by `incerta` — putting the HELD category back is the one pick accepted, and the title then goes ALONE ⟷ NEAR-MISS: a THIRD category is still ignored', async () => {
+    comAutoria();
+    const atualizarRascunho = vi.fn<ShopeeClient['atualizarRascunho']>(async (input) => ({
+      linkDocId: input.linkDocId,
+      gravados: ['item_name'],
+    }));
+    h.client = shopeeClientFalso({
+      atualizarRascunho,
+      limitesDoItem: async (input) => limitesDoItem(input.categoryId),
+    });
+    h.links = [rascunho('L-rasc', { category_id: 100087 })];
+    const { rerender } = renderEditor();
+    act(() => formDe('L-rasc').onCampo('category_id', 100088));
+    digitarTitulo('L-rasc', 'Camiseta azul marinho');
+    expect(formDe('L-rasc').bloco.valores.category_id).toBe(100088);
+
+    // The reading turns `incerta` (an uncertain create on record) while the entry holds both edits.
+    h.links = [
+      rascunho('L-rasc', { category_id: 100087, criacaoIncertaDesde: Date.now() - 600_000 }),
+    ];
+    rerenderEditor(rerender);
+    expect(formDe('L-rasc').bloco.impedimento).toBe('categoria-travada');
+    expect(formDe('L-rasc').bloco.podeVoltarCategoria).toBe(true);
+    expect(formDe('L-rasc').bloco.categoriaGravada).toBe(100087);
+    expect(botaoDoRascunho('L-rasc', 'Salvar rascunho').disabled).toBe(true);
+
+    // NEAR-MISS: a third category is a CHANGE — still refused.
+    act(() => formDe('L-rasc').onCampo('category_id', 100090));
+    expect(formDe('L-rasc').bloco.valores.category_id).toBe(100088);
+
+    // The put-back: the held category, the title kept.
+    act(() => formDe('L-rasc').onCampo('category_id', formDe('L-rasc').bloco.categoriaGravada));
+    expect(formDe('L-rasc').bloco.valores.category_id).toBe(100087);
+    expect(formDe('L-rasc').bloco.podeVoltarCategoria).toBe(false);
+    expect(formDe('L-rasc').bloco.impedimento).toBeNull();
+    expect(tituloDo('L-rasc').value).toBe('Camiseta azul marinho');
+    fireEvent.click(botaoDoRascunho('L-rasc', 'Salvar rascunho'));
+    await waitFor(() => expect(atualizarRascunho).toHaveBeenCalledTimes(1));
+    expect(atualizarRascunho.mock.calls[0]?.[0]).toStrictEqual({
+      integracaoId: 'int-1',
+      produtoId: 'prod-1',
+      linkDocId: 'L-rasc',
+      base: { item_name: 'Camiseta azul' },
+      patch: { item_name: 'Camiseta azul marinho' },
+    });
   });
 
   it('NEAR-MISS: outside `incerta` a category change is sent WITH the attributes it clears in its base', async () => {
@@ -3953,6 +4094,7 @@ describe('ShopeeEditor — a draft write that loses (#1911 P10, rule 7 tier 3)',
       'only in category_id: the base carries the attributes that change clears',
       (id: string) => act(() => formDe(id).onCampo('category_id', 100088)),
       { category_id: 100087, item_name: 'Camiseta' },
+      [{ campo: CAMPO_RASCUNHO_SHOPEE.categoryId, atual: 100087 }],
       {
         base: { category_id: 100087, attributes: null },
         patch: { category_id: 100088 },
@@ -3962,17 +4104,18 @@ describe('ShopeeEditor — a draft write that loses (#1911 P10, rule 7 tier 3)',
       'only in item_name: the base is that field alone',
       (id: string) => digitarTitulo(id, 'Camiseta nova'),
       { category_id: null, item_name: 'Camiseta' },
+      [{ campo: CAMPO_RASCUNHO_SHOPEE.itemName, atual: 'Camiseta' }],
       { base: { item_name: 'Camiseta' }, patch: { item_name: 'Camiseta nova' } },
     ],
   ])(
     'a create retry’s «Salvar mesmo assim» differing %s — an UPDATE against the stored draft, never built from `conflitos`',
-    async (_caso, editar, guardado, esperado) => {
+    async (_caso, editar, guardado, conflitos, esperado) => {
       comAutoria();
-      const criarRascunho = vi.fn<ShopeeClient['criarRascunho']>().mockRejectedValueOnce(
-        recusaDoRascunho(409, CODIGO_FALHA_SHOPEE.rascunhoConflito, {
-          conflitos: [{ campo: CAMPO_RASCUNHO_SHOPEE.categoryId, atual: 100087 }],
-        }),
-      );
+      const criarRascunho = vi
+        .fn<ShopeeClient['criarRascunho']>()
+        .mockRejectedValueOnce(
+          recusaDoRascunho(409, CODIGO_FALHA_SHOPEE.rascunhoConflito, { conflitos }),
+        );
       const atualizarRascunho = vi.fn<ShopeeClient['atualizarRascunho']>(async (input) => ({
         linkDocId: input.linkDocId,
         gravados: ['category_id'],
@@ -4060,30 +4203,103 @@ describe('ShopeeEditor — a draft write that loses (#1911 P10, rule 7 tier 3)',
     expect(tituloDo('L-rasc').value).toBe('Camiseta azul marinho');
   });
 
+  describe('R1-rule7#3 — an uncertain update that DID land', () => {
+    const falhas: [string, () => Error][] = [
+      [
+        'a 2xx it cannot read',
+        () => new ShopeeClientRespostaInvalidaError('Resposta inválida.', 200, ['gravados.0']),
+      ],
+      [
+        'no answer (network)',
+        () => new ShopeeClientNetworkError('Failed to fetch', new TypeError('x')),
+      ],
+    ];
+
+    /** The uncertain save, then the echo storing `tituloGuardado`. */
+    async function salvarSemResposta(erro: () => Error, tituloGuardado: string) {
+      comAutoria();
+      const onDirtyChange = vi.fn();
+      const atualizarRascunho = vi.fn<ShopeeClient['atualizarRascunho']>(() =>
+        Promise.reject(erro()),
+      );
+      h.client = shopeeClientFalso({ atualizarRascunho });
+      h.links = [rascunho('L-rasc')];
+      const { rerender } = renderEditor({ onDirtyChange });
+      digitarTitulo('L-rasc', 'Camiseta azul marinho');
+      fireEvent.click(botaoDoRascunho('L-rasc', 'Salvar rascunho'));
+      await waitFor(() => expect(screen.getByTestId('resultado-L-rasc')).toBeDefined());
+      expect(onDirtyChange).toHaveBeenLastCalledWith(true);
+      h.links = [rascunho('L-rasc', { item_name: tituloGuardado })];
+      rerenderEditor(rerender, { onDirtyChange });
+      return { onDirtyChange, atualizarRascunho };
+    }
+
+    it.each(falhas)(
+      '%s, then the echo holds the TYPED title ⇒ the entry drops silently: no divergence, the guard clean, the stored value shown, nothing left to send',
+      async (_c, erro) => {
+        const { onDirtyChange, atualizarRascunho } = await salvarSemResposta(
+          erro,
+          'Camiseta azul marinho',
+        );
+        expect(formDe('L-rasc').divergencias).toEqual([]);
+        expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+        expect(tituloDo('L-rasc').value).toBe('Camiseta azul marinho');
+        expect(formDe('L-rasc').bloco.sujo).toBe(false);
+        expect(botaoDoRascunho('L-rasc', 'Salvar rascunho').disabled).toBe(true);
+        expect(atualizarRascunho).toHaveBeenCalledTimes(1);
+      },
+    );
+
+    it.each(falhas)(
+      'NEAR-MISS: %s, then ANOTHER tab’s title is stored ⇒ the entry is kept, the stale check names it, the guard stays armed',
+      async (_c, erro) => {
+        const { onDirtyChange } = await salvarSemResposta(erro, 'Título de outra aba');
+        expect(formDe('L-rasc').divergencias).toEqual(['item_name']);
+        expect(onDirtyChange).toHaveBeenLastCalledWith(true);
+        expect(tituloDo('L-rasc').value).toBe('Camiseta azul marinho');
+        expect(formDe('L-rasc').bloco.sujo).toBe(true);
+      },
+    );
+  });
+
   it('a dirty entry whose draft got PUBLISHED is dropped with a notice on its block; one DISCARDED elsewhere with a notice on the conta — a cache-served snapshot proves nothing gone', () => {
     comAutoria();
+    const onDirtyChange = vi.fn();
+    const aba = () => screen.getByRole('tab', { name: /Loja A/ });
     h.links = [rascunho('L-a'), rascunho('L-b', { item_name: 'Outra' })];
-    const { rerender } = renderEditor();
+    const { rerender } = renderEditor({ onDirtyChange });
     digitarTitulo('L-a', 'Editando A');
     digitarTitulo('L-b', 'Editando B');
+    expect(onDirtyChange).toHaveBeenLastCalledWith(true);
 
     // From the cache: L-b is absent, but nothing proves it is gone.
     h.fromCache = true;
     h.links = [link('L-a', { item_id: 1000005 })];
-    rerenderEditor(rerender);
+    rerenderEditor(rerender, { onDirtyChange });
     expect(
       within(bloco('L-a')).getByText(FRASE_RASCUNHO_PUBLICADO_DURANTE_EDICAO_SHOPEE),
     ).toBeDefined();
     expect(screen.queryByTestId('shopee-rascunho-aviso-L-b')).toBeNull();
+    // NEAR-MISS: L-a is dropped, but L-b is KEPT (cache) and still dirty — armed.
+    expect(onDirtyChange).toHaveBeenLastCalledWith(true);
+    expect(aba().getAttribute('data-dirty')).toBe('true');
 
     h.fromCache = false;
     h.links = [link('L-a', { item_id: 1000005 })];
-    rerenderEditor(rerender);
+    rerenderEditor(rerender, { onDirtyChange });
     expect(
       within(screen.getByTestId('shopee-rascunho-aviso-L-b')).getByText(
         FRASE_RASCUNHO_DESCARTADO_DURANTE_EDICAO_SHOPEE,
       ),
     ).toBeDefined();
+    // R3-tests#1: both entries are DROPPED (their notices still on screen, not
+    // dismissed): the guard reads the RECONCILED entries, never the raw state —
+    // a page save now must not be blocked by a draft that no longer exists.
+    expect(
+      within(bloco('L-a')).getByText(FRASE_RASCUNHO_PUBLICADO_DURANTE_EDICAO_SHOPEE),
+    ).toBeDefined();
+    expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+    expect(aba().hasAttribute('data-dirty')).toBe(false);
     // Dismissed, it is forgotten.
     fireEvent.click(
       within(screen.getByTestId('shopee-rascunho-aviso-L-b')).getByRole('button', {
@@ -4243,6 +4459,61 @@ describe('ShopeeEditor — discarding a draft (#1911 P10)', () => {
     expect(screen.queryByTestId('shopee-rascunho-conflito')).toBeNull();
   });
 
+  it('R1-rule7#4 / R8-copy#7 (verify): the exit the discard-conflict sentence names is ON SCREEN — a second Descartar re-sends the LOADED base (the safe loop) ⟷ after «Desfazer alterações» the block shows the current version and Descartar sends it', async () => {
+    comAutoria();
+    const conflito = () =>
+      recusaDoRascunho(409, CODIGO_FALHA_SHOPEE.rascunhoConflito, {
+        conflitos: [{ campo: CAMPO_RASCUNHO_SHOPEE.itemName, atual: 'Camiseta (outra aba)' }],
+      });
+    const descartarRascunho = vi
+      .fn<ShopeeClient['descartarRascunho']>()
+      .mockRejectedValueOnce(conflito())
+      .mockRejectedValueOnce(conflito())
+      .mockResolvedValueOnce({ linkDocId: 'L-rasc', descartado: true, criacaoIncerta: false });
+    h.client = shopeeClientFalso({ descartarRascunho });
+    h.links = [rascunho('L-rasc')];
+    const { rerender } = renderEditor();
+    digitarTitulo('L-rasc', 'Camiseta azul marinho');
+    h.links = [rascunho('L-rasc', { item_name: 'Camiseta (outra aba)' })];
+    rerenderEditor(rerender);
+    const descartar = async (vezes: number) => {
+      fireEvent.click(botaoDoRascunho('L-rasc', 'Descartar'));
+      fireEvent.click(
+        within(screen.getByRole('dialog', { name: 'Descartar rascunho' })).getByRole('button', {
+          name: 'Descartar rascunho',
+        }),
+      );
+      await waitFor(() => expect(descartarRascunho).toHaveBeenCalledTimes(vezes));
+    };
+
+    await descartar(1);
+    await waitFor(() =>
+      expect(screen.getByTestId('resultado-L-rasc').textContent).toBe(
+        FRASE_DESCARTE_EM_CONFLITO_SHOPEE,
+      ),
+    );
+    // The sentence names «Desfazer alterações»: it is enabled on this block.
+    await waitFor(() =>
+      expect(botaoDoRascunho('L-rasc', 'Desfazer alterações').disabled).toBe(false),
+    );
+    // The loop is deliberate (K1-13): the block still shows the operator's text,
+    // and a second discard sends the version they LOADED again — never the new one.
+    expect(tituloDo('L-rasc').value).toBe('Camiseta azul marinho');
+    await descartar(2);
+    expect(descartarRascunho.mock.calls[1]?.[0].base.item_name).toBe('Camiseta azul');
+
+    // The exit: the edits go, the current version shows, the sentence clears…
+    await waitFor(() =>
+      expect(botaoDoRascunho('L-rasc', 'Desfazer alterações').disabled).toBe(false),
+    );
+    fireEvent.click(botaoDoRascunho('L-rasc', 'Desfazer alterações'));
+    expect(tituloDo('L-rasc').value).toBe('Camiseta (outra aba)');
+    expect(screen.queryByTestId('resultado-L-rasc')).toBeNull();
+    // …and the next discard sends the version now on screen.
+    await descartar(3);
+    expect(descartarRascunho.mock.calls[2]?.[0].base.item_name).toBe('Camiseta (outra aba)');
+  });
+
   it('a LOCAL draft is discarded here, after a confirmation, with no request', () => {
     comAutoria();
     const descartarRascunho = vi.fn<ShopeeClient['descartarRascunho']>();
@@ -4286,6 +4557,9 @@ describe('ShopeeEditor — the draft’s publish reading moves with the clock (#
     expect(botaoDoRascunho('L-rasc', 'Salvar rascunho').disabled).toBe(true);
     expect(botaoDoRascunho('L-rasc', 'Descartar').disabled).toBe(true);
     expect(tituloDo('L-rasc').readOnly).toBe(true);
+    // The badge reads the SAME block decision (R2-drafts#0).
+    expect(within(bloco('L-rasc')).getByText(ROTULO_PUBLICACAO_EM_ANDAMENTO_SHOPEE)).toBeDefined();
+    expect(within(bloco('L-rasc')).queryByText('Não publicado')).toBeNull();
 
     act(() => {
       vi.advanceTimersByTime(1_999);
@@ -4298,6 +4572,105 @@ describe('ShopeeEditor — the draft’s publish reading moves with the clock (#
     expect(formDe('L-rasc').bloco.descarte).toBe('atestar');
     expect(botaoDoRascunho('L-rasc', 'Descartar').disabled).toBe(false);
     expect(tituloDo('L-rasc').readOnly).toBe(false);
+    expect(within(bloco('L-rasc')).getByText(ROTULO_PUBLICACAO_INCERTA_SHOPEE)).toBeDefined();
+    expect(within(bloco('L-rasc')).queryByText(ROTULO_PUBLICACAO_EM_ANDAMENTO_SHOPEE)).toBeNull();
+    expect(within(bloco('L-rasc')).queryByText('Não publicado')).toBeNull();
+  });
+
+  it('a wall clock stepped back MORE than the 1 s re-read margin during a lock’s wait still ends it — the timer is clamped to the instant it was armed for (R3-tests#0)', () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    vi.setSystemTime(T0);
+    comAutoria();
+    // UNSTAMPED, no record: at expiry it reads `livre` at once (§H Q3).
+    h.links = [
+      rascunho('L-rasc', {
+        publicacaoEmCurso: { desde: T0 - 240_000, expiraEm: T0 + 60_000, token: 't-1' },
+      }),
+    ];
+    renderEditor();
+    expect(formDe('L-rasc').bloco.publicacao.tipo).toBe('em-andamento');
+    expect(tituloDo('L-rasc').readOnly).toBe(true);
+
+    act(() => {
+      vi.advanceTimersByTime(30_000);
+    });
+    // ⚠️ MORE than `MARGEM_DA_RELEITURA_DO_ESTADO_SHOPEE_MS` (1 s): a step back
+    // inside the margin reads the same with or without the `Math.max` clamp
+    // (the kit test's `- 1` would not tell them apart here). The timer still
+    // fires on schedule; the wall clock then reads 1.5 s BEFORE the lock ends.
+    vi.setSystemTime(Date.now() - 1_500);
+    act(() => {
+      vi.advanceTimersByTime(31_000);
+    });
+    expect(formDe('L-rasc').bloco.publicacao).toStrictEqual({ tipo: 'livre' });
+    expect(tituloDo('L-rasc').readOnly).toBe(false);
+    expect(botaoDoRascunho('L-rasc', 'Descartar').disabled).toBe(false);
+  });
+
+  it('the ONE timer fires at the EARLIEST draft’s change — the later lock listed FIRST still reads in progress (R3-tests#4)', () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    vi.setSystemTime(T0);
+    comAutoria();
+    h.links = [
+      // Listed first on purpose: an "always the first draft's instant" reducer
+      // would wait for THIS one.
+      rascunho('L-b', {
+        publicacaoEmCurso: { desde: T0, expiraEm: T0 + 300_000, token: 't-b', sku: 'SKU-B' },
+      }),
+      rascunho('L-a', {
+        publicacaoEmCurso: {
+          desde: T0 - 270_000,
+          expiraEm: T0 + 30_000,
+          token: 't-a',
+          sku: 'SKU-A',
+        },
+        criacaoIncertaDesde: T0 - 600_000,
+      }),
+    ];
+    renderEditor();
+    expect(formDe('L-a').bloco.publicacao.tipo).toBe('em-andamento');
+    expect(formDe('L-b').bloco.publicacao.tipo).toBe('em-andamento');
+    expect(tituloDo('L-a').readOnly).toBe(true);
+
+    act(() => {
+      vi.advanceTimersByTime(31_000);
+    });
+    expect(formDe('L-a').bloco.publicacao.tipo).toBe('incerta');
+    expect(tituloDo('L-a').readOnly).toBe(false);
+    expect(botaoDoRascunho('L-a', 'Descartar').disabled).toBe(false);
+    expect(within(bloco('L-a')).getByText(ROTULO_PUBLICACAO_INCERTA_SHOPEE)).toBeDefined();
+    // NEAR-MISS: the later lock is untouched by the earlier one's timer.
+    expect(formDe('L-b').bloco.publicacao.tipo).toBe('em-andamento');
+    expect(tituloDo('L-b').readOnly).toBe(true);
+    expect(within(bloco('L-b')).getByText(ROTULO_PUBLICACAO_EM_ANDAMENTO_SHOPEE)).toBeDefined();
+  });
+
+  it('the earliest lock listed FIRST still releases first — an «always the LAST draft’s instant» reducer would wait for the later one (R3-tests#4, mirrored order)', () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    vi.setSystemTime(T0);
+    comAutoria();
+    h.links = [
+      rascunho('L-a', {
+        publicacaoEmCurso: {
+          desde: T0 - 270_000,
+          expiraEm: T0 + 30_000,
+          token: 't-a',
+          sku: 'SKU-A',
+        },
+        criacaoIncertaDesde: T0 - 600_000,
+      }),
+      rascunho('L-b', {
+        publicacaoEmCurso: { desde: T0, expiraEm: T0 + 300_000, token: 't-b', sku: 'SKU-B' },
+      }),
+    ];
+    renderEditor();
+    expect(formDe('L-a').bloco.publicacao.tipo).toBe('em-andamento');
+    act(() => {
+      vi.advanceTimersByTime(31_000);
+    });
+    expect(formDe('L-a').bloco.publicacao.tipo).toBe('incerta');
+    expect(tituloDo('L-a').readOnly).toBe(false);
+    expect(formDe('L-b').bloco.publicacao.tipo).toBe('em-andamento');
   });
 
   it('§H Q3: an EXPIRED lock never stamped (no record) reads `livre` at once ⟷ the same lock STAMPED is still in progress (the post-expiry grace)', () => {
@@ -4431,14 +4804,662 @@ describe('ShopeeEditor — who may author a draft (#1911 P10, D6)', () => {
     expect(screen.getByTestId('shopee-novo-anuncio-int-1')).toBeDefined();
   });
 
-  it('a draft on a conta the query did not return is read-only, with no «Novo anúncio» there', async () => {
+  it('a draft whose conta document is GONE is read-only with «Descartar» ALONE — the discard needs no conta document — no «Novo anúncio», and NOTHING is read for that conta (R2-drafts#2, #6)', async () => {
     comAutoria();
+    const descartarRascunho = vi.fn<ShopeeClient['descartarRascunho']>(async (input) => ({
+      linkDocId: input.linkDocId,
+      descartado: true,
+      criacaoIncerta: false,
+    }));
+    const limitesDoItemFn = vi.fn<ShopeeClient['limitesDoItem']>(async (input) =>
+      limitesDoItem(input.categoryId),
+    );
+    h.client = shopeeClientFalso({ descartarRascunho, limitesDoItem: limitesDoItemFn });
+    h.links = [
+      rascunho('L9', {
+        contaProdutoShopeeOuterRef: 'documents/integracao/int-9',
+        category_id: 100087,
+        brand_id: 77,
+        original_brand_name: 'Acme',
+      }),
+    ];
+    renderEditor();
+    fireEvent.click(await screen.findByRole('tab', { name: /Conta int-9 \(não encontrada\)/ }));
+    expect(tituloDo('L9').readOnly).toBe(true);
+    const botoes = within(raizDoRascunho('L9'))
+      .getAllByRole('button')
+      .map((b) => b.textContent);
+    expect(botoes).toEqual(['Descartar']);
+    expect(formDe('L9').podeEditar).toBe(false);
+    expect(formDe('L9').somenteDescartar).toBe(true);
+    // R2-drafts#6: no conta to read for — the pickers get none, no bands asked.
+    expect(formDe('L9').contaId).toBeNull();
+    expect(limitesDoItemFn).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('shopee-novo-anuncio-int-9')).toBeNull();
+
+    fireEvent.click(botaoDoRascunho('L9', 'Descartar'));
+    const dialogo = screen.getByRole('dialog', { name: 'Descartar rascunho' });
+    fireEvent.click(within(dialogo).getByRole('button', { name: 'Descartar rascunho' }));
+    await waitFor(() => expect(descartarRascunho).toHaveBeenCalledTimes(1));
+    expect(descartarRascunho.mock.calls[0]?.[0]).toStrictEqual({
+      integracaoId: 'int-9',
+      produtoId: 'prod-1',
+      linkDocId: 'L9',
+      base: {
+        item_name: 'Camiseta azul',
+        description: null,
+        category_id: 100087,
+        marca: { brand_id: 77, original_brand_name: 'Acme' },
+        attributes: null,
+      },
+    });
+  });
+
+  it('an `incerta` draft of a deleted conta still asks for the Seller-Centre attestation', async () => {
+    comAutoria();
+    h.links = [
+      rascunho('L9', {
+        contaProdutoShopeeOuterRef: 'documents/integracao/int-9',
+        criacaoIncertaDesde: Date.now() - 600_000,
+      }),
+    ];
+    renderEditor();
+    fireEvent.click(await screen.findByRole('tab', { name: /Conta int-9 \(não encontrada\)/ }));
+    fireEvent.click(botaoDoRascunho('L9', 'Descartar'));
+    expect(
+      screen.getByRole('dialog', { name: DIALOGO_DESCARTE_CRIACAO_INCERTA_SHOPEE.titulo }),
+    ).toBeDefined();
+  });
+
+  it.each([
+    ['the unreadable-ref tab', '', /Sem conta legível/, false],
+    ['a reserved id no document can carry', 'integracao/__x__', /Conta __x__/, false],
+    [
+      'a conta whose by-id read is still in flight',
+      'documents/integracao/int-9',
+      /carregando/,
+      true,
+    ],
+  ])(
+    'NEAR-MISS: %s offers NO button and reads nothing for its conta',
+    async (_caso, ref, aba, pendente) => {
+      comAutoria();
+      const limitesDoItemFn = vi.fn<ShopeeClient['limitesDoItem']>(async (input) =>
+        limitesDoItem(input.categoryId),
+      );
+      h.client = shopeeClientFalso({ limitesDoItem: limitesDoItemFn });
+      if (pendente) h.getDoc.mockImplementation(() => new Promise(() => undefined));
+      h.links = [rascunho('L9', { contaProdutoShopeeOuterRef: ref, category_id: 100087 })];
+      renderEditor();
+      fireEvent.click(await screen.findByRole('tab', { name: aba }));
+      // Positive first: the draft rendered, read-only.
+      expect(tituloDo('L9').readOnly).toBe(true);
+      expect(within(raizDoRascunho('L9')).queryAllByRole('button')).toEqual([]);
+      expect(formDe('L9').somenteDescartar).toBe(false);
+      expect(formDe('L9').contaId).toBeNull();
+      expect(limitesDoItemFn).not.toHaveBeenCalled();
+    },
+  );
+
+  it('NEAR-MISS: an operator without produto.write gets no «Descartar» on a deleted conta’s draft either', async () => {
+    h.permitidos = new Set([PERM.integracao.read, PERM.integracao.write]);
     h.links = [rascunho('L9', { contaProdutoShopeeOuterRef: 'documents/integracao/int-9' })];
     renderEditor();
-    fireEvent.click(await screen.findByRole('tab', { name: /int-9/ }));
-    expect(tituloDo('L9').readOnly).toBe(true);
-    expect(within(raizDoRascunho('L9')).queryByRole('button', { name: 'Descartar' })).toBeNull();
-    expect(screen.queryByTestId('shopee-novo-anuncio-int-9')).toBeNull();
+    fireEvent.click(await screen.findByRole('tab', { name: /Conta int-9 \(não encontrada\)/ }));
+    expect(within(raizDoRascunho('L9')).queryAllByRole('button')).toEqual([]);
+    // …and a call past the missing button opens nothing.
+    act(() => formDe('L9').onDescartar('confirmar'));
+    expect(screen.queryByRole('dialog', { name: 'Descartar rascunho' })).toBeNull();
+  });
+});
+
+describe('ShopeeEditor — «Salvar mesmo assim» overwrites only what the modal showed (#1911 P10 review, R1-rule7#0)', () => {
+  const recusaDoTitulo = (atual: string) =>
+    recusaDoRascunho(409, CODIGO_FALHA_SHOPEE.rascunhoConflito, {
+      conflitos: [{ campo: CAMPO_RASCUNHO_SHOPEE.itemName, atual }],
+    });
+  const corpo = (base: Record<string, unknown>, patch: Record<string, unknown>) => ({
+    integracaoId: 'int-1',
+    produtoId: 'prod-1',
+    linkDocId: 'L-rasc',
+    base,
+    patch,
+  });
+
+  function editor(primeiro: ShopeeClientHttpError) {
+    const atualizarRascunho = vi
+      .fn<ShopeeClient['atualizarRascunho']>()
+      .mockRejectedValueOnce(primeiro)
+      .mockImplementation(async (input) => ({
+        linkDocId: input.linkDocId,
+        gravados: ['item_name'],
+      }));
+    h.client = shopeeClientFalso({
+      atualizarRascunho,
+      limitesDoItem: async (input) => limitesDoItem(input.categoryId),
+    });
+    return atualizarRascunho;
+  }
+
+  it('a TITLE-only 409 re-sends the title ALONE — the description and category another tab saved are never reverted (whole body)', async () => {
+    comAutoria();
+    const atualizarRascunho = editor(recusaDoTitulo('C'));
+    h.links = [rascunho('L-rasc', { item_name: 'A', description: 'X', category_id: 100087 })];
+    const { rerender } = renderEditor();
+    digitarTitulo('L-rasc', 'B');
+    fireEvent.click(botaoDoRascunho('L-rasc', 'Salvar rascunho'));
+    await screen.findByTestId('shopee-rascunho-conflito');
+    expect(atualizarRascunho.mock.calls[0]?.[0]).toStrictEqual(
+      corpo({ item_name: 'A' }, { item_name: 'B' }),
+    );
+    // Tab 2 saved title, description AND category; the 409 lists the title only.
+    h.links = [rascunho('L-rasc', { item_name: 'C', description: 'Y', category_id: 100088 })];
+    rerenderEditor(rerender);
+    fireEvent.click(screen.getByRole('button', { name: 'Salvar mesmo assim' }));
+    await waitFor(() => expect(atualizarRascunho).toHaveBeenCalledTimes(2));
+    expect(atualizarRascunho.mock.calls[1]?.[0]).toStrictEqual(
+      corpo({ item_name: 'C' }, { item_name: 'B' }),
+    );
+    // The untouched fields now SHOW what is stored, never the old values.
+    expect(formDe('L-rasc').bloco.valores.description).toBe('Y');
+    expect(formDe('L-rasc').bloco.valores.category_id).toBe(100088);
+  });
+
+  it('NEAR-MISS: a field the operator DID change (unlisted, not moved since) keeps their value against the base they LOADED', async () => {
+    comAutoria();
+    const atualizarRascunho = editor(recusaDoTitulo('C'));
+    h.links = [rascunho('L-rasc', { item_name: 'A', description: 'X', category_id: 100087 })];
+    const { rerender } = renderEditor();
+    digitarTitulo('L-rasc', 'B');
+    act(() => formDe('L-rasc').onCampo('description', 'Minha'));
+    fireEvent.click(botaoDoRascunho('L-rasc', 'Salvar rascunho'));
+    await screen.findByTestId('shopee-rascunho-conflito');
+    h.links = [rascunho('L-rasc', { item_name: 'C', description: 'X', category_id: 100088 })];
+    rerenderEditor(rerender);
+    fireEvent.click(screen.getByRole('button', { name: 'Salvar mesmo assim' }));
+    await waitFor(() => expect(atualizarRascunho).toHaveBeenCalledTimes(2));
+    expect(atualizarRascunho.mock.calls[1]?.[0]).toStrictEqual(
+      corpo({ item_name: 'C', description: 'X' }, { item_name: 'B', description: 'Minha' }),
+    );
+  });
+
+  it('a writer that lands WHILE the modal is open is SHOWN, never overwritten: the rows refresh and nothing is sent — the next click sends against what was shown', async () => {
+    comAutoria();
+    const atualizarRascunho = editor(recusaDoTitulo('Camiseta (outra aba)'));
+    h.links = [rascunho('L-rasc')];
+    const { rerender } = renderEditor();
+    digitarTitulo('L-rasc', 'Minha');
+    fireEvent.click(botaoDoRascunho('L-rasc', 'Salvar rascunho'));
+    await screen.findByTestId('shopee-rascunho-conflito');
+    // A THIRD writer: the stored title is no longer the one the modal shows.
+    h.links = [rascunho('L-rasc', { item_name: 'Camiseta (terceira aba)' })];
+    rerenderEditor(rerender);
+    fireEvent.click(screen.getByRole('button', { name: 'Salvar mesmo assim' }));
+    expect(atualizarRascunho).toHaveBeenCalledTimes(1);
+    expect(h.conflito?.conflito).toStrictEqual({
+      linkDocId: 'L-rasc',
+      operacao: 'atualizar',
+      conflitos: [{ campo: CAMPO_RASCUNHO_SHOPEE.itemName, atual: 'Camiseta (terceira aba)' }],
+      renovado: true,
+    });
+    expect(tituloDo('L-rasc').value).toBe('Minha');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Salvar mesmo assim' }));
+    await waitFor(() => expect(atualizarRascunho).toHaveBeenCalledTimes(2));
+    expect(atualizarRascunho.mock.calls[1]?.[0]).toStrictEqual(
+      corpo({ item_name: 'Camiseta (terceira aba)' }, { item_name: 'Minha' }),
+    );
+  });
+
+  it('a CHANGED field the 409 did not list that moves while the modal is open joins the rows — shown before it is overwritten', async () => {
+    comAutoria();
+    const atualizarRascunho = editor(recusaDoTitulo('C'));
+    h.links = [rascunho('L-rasc', { item_name: 'A', description: 'X' })];
+    const { rerender } = renderEditor();
+    digitarTitulo('L-rasc', 'B');
+    act(() => formDe('L-rasc').onCampo('description', 'Minha'));
+    fireEvent.click(botaoDoRascunho('L-rasc', 'Salvar rascunho'));
+    await screen.findByTestId('shopee-rascunho-conflito');
+    h.links = [rascunho('L-rasc', { item_name: 'C', description: 'Z' })];
+    rerenderEditor(rerender);
+    fireEvent.click(screen.getByRole('button', { name: 'Salvar mesmo assim' }));
+    expect(atualizarRascunho).toHaveBeenCalledTimes(1);
+    expect(h.conflito?.conflito?.conflitos).toStrictEqual([
+      { campo: CAMPO_RASCUNHO_SHOPEE.itemName, atual: 'C' },
+      { campo: CAMPO_RASCUNHO_SHOPEE.description, atual: 'Z' },
+    ]);
+    fireEvent.click(screen.getByRole('button', { name: 'Salvar mesmo assim' }));
+    await waitFor(() => expect(atualizarRascunho).toHaveBeenCalledTimes(2));
+    expect(atualizarRascunho.mock.calls[1]?.[0]).toStrictEqual(
+      corpo({ item_name: 'C', description: 'Z' }, { item_name: 'B', description: 'Minha' }),
+    );
+  });
+
+  it('«Usar o que está salvo» leaves NOTHING to save when only the listed field was typed: Salvar disabled, the leave-guard clean, the untouched fields stored', async () => {
+    comAutoria();
+    const onDirtyChange = vi.fn();
+    const atualizarRascunho = editor(recusaDoTitulo('C'));
+    h.links = [rascunho('L-rasc', { item_name: 'A', description: 'X', category_id: 100087 })];
+    const { rerender } = renderEditor({ onDirtyChange });
+    digitarTitulo('L-rasc', 'B');
+    fireEvent.click(botaoDoRascunho('L-rasc', 'Salvar rascunho'));
+    await screen.findByTestId('shopee-rascunho-conflito');
+    h.links = [rascunho('L-rasc', { item_name: 'C', description: 'Y', category_id: 100088 })];
+    rerenderEditor(rerender, { onDirtyChange });
+    fireEvent.click(screen.getByRole('button', { name: 'Usar o que está salvo' }));
+    expect(tituloDo('L-rasc').value).toBe('C');
+    expect(formDe('L-rasc').bloco.valores.description).toBe('Y');
+    expect(formDe('L-rasc').bloco.valores.category_id).toBe(100088);
+    expect(formDe('L-rasc').bloco.sujo).toBe(false);
+    expect(botaoDoRascunho('L-rasc', 'Salvar rascunho').disabled).toBe(true);
+    expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+    expect(atualizarRascunho).toHaveBeenCalledTimes(1);
+  });
+
+  it('NEAR-MISS: «Usar o que está salvo» keeps an UNLISTED field the operator changed — still dirty, Salvar enabled', async () => {
+    comAutoria();
+    const onDirtyChange = vi.fn();
+    editor(recusaDoTitulo('C'));
+    h.links = [rascunho('L-rasc', { item_name: 'A', description: 'X' })];
+    const { rerender } = renderEditor({ onDirtyChange });
+    digitarTitulo('L-rasc', 'B');
+    act(() => formDe('L-rasc').onCampo('description', 'Minha'));
+    fireEvent.click(botaoDoRascunho('L-rasc', 'Salvar rascunho'));
+    await screen.findByTestId('shopee-rascunho-conflito');
+    h.links = [rascunho('L-rasc', { item_name: 'C', description: 'X' })];
+    rerenderEditor(rerender, { onDirtyChange });
+    fireEvent.click(screen.getByRole('button', { name: 'Usar o que está salvo' }));
+    expect(tituloDo('L-rasc').value).toBe('C');
+    expect(formDe('L-rasc').bloco.valores.description).toBe('Minha');
+    expect(botaoDoRascunho('L-rasc', 'Salvar rascunho').disabled).toBe(false);
+    expect(onDirtyChange).toHaveBeenLastCalledWith(true);
+  });
+});
+
+describe('ShopeeEditor — the discard confirmation follows the draft (#1911 P10 review, R2-drafts#1)', () => {
+  const dialogoDescarte = () => screen.queryByRole('dialog', { name: 'Descartar rascunho' });
+
+  function abrirDescarte() {
+    comAutoria();
+    const descartarRascunho = vi.fn<ShopeeClient['descartarRascunho']>(async (input) => ({
+      linkDocId: input.linkDocId,
+      descartado: true,
+      criacaoIncerta: false,
+    }));
+    h.client = shopeeClientFalso({ descartarRascunho });
+    h.links = [rascunho('L-rasc')];
+    const r = renderEditor();
+    fireEvent.click(botaoDoRascunho('L-rasc', 'Descartar'));
+    expect(within(dialogoDescarte()!).getByText(FRASE_CONFIRMAR_DESCARTE_SHOPEE)).toBeDefined();
+    return { ...r, descartarRascunho };
+  }
+
+  it('a draft PUBLISHED while the dialog is open: it closes — «Nada foi publicado» is never left over a live listing', () => {
+    const { rerender, descartarRascunho } = abrirDescarte();
+    h.links = [link('L-rasc', { item_id: 2000002 })];
+    rerenderEditor(rerender);
+    expect(dialogoDescarte()).toBeNull();
+    expect(screen.queryByText(FRASE_CONFIRMAR_DESCARTE_SHOPEE)).toBeNull();
+    expect(descartarRascunho).not.toHaveBeenCalled();
+  });
+
+  it('a publish that TAKES the lock while it is open closes it — and a lock released later never re-opens it on its own', () => {
+    const { rerender, descartarRascunho } = abrirDescarte();
+    const agora = Date.now();
+    h.links = [
+      rascunho('L-rasc', {
+        publicacaoEmCurso: {
+          desde: agora - 1_000,
+          expiraEm: agora + 200_000,
+          token: 't-x',
+          sku: 'SKU-1',
+        },
+      }),
+    ];
+    rerenderEditor(rerender);
+    expect(dialogoDescarte()).toBeNull();
+    h.links = [rascunho('L-rasc', { publicacaoEmCurso: null })];
+    rerenderEditor(rerender);
+    expect(formDe('L-rasc').bloco.publicacao).toStrictEqual({ tipo: 'livre' });
+    expect(dialogoDescarte()).toBeNull();
+    expect(descartarRascunho).not.toHaveBeenCalled();
+  });
+
+  it('a draft that turned `incerta` while it is open becomes the three-case dialog — the plain sentence is no longer true — and sends the base the operator SAW, attested', async () => {
+    const { rerender, descartarRascunho } = abrirDescarte();
+    h.links = [rascunho('L-rasc', { criacaoIncertaDesde: Date.now() - 600_000 })];
+    rerenderEditor(rerender);
+    expect(dialogoDescarte()).toBeNull();
+    expect(screen.queryByText(FRASE_CONFIRMAR_DESCARTE_SHOPEE)).toBeNull();
+    const D = DIALOGO_DESCARTE_CRIACAO_INCERTA_SHOPEE;
+    const dialogo = screen.getByRole('dialog', { name: D.titulo });
+    fireEvent.click(within(dialogo).getByRole('button', { name: D.naoExiste }));
+    await waitFor(() => expect(descartarRascunho).toHaveBeenCalledTimes(1));
+    expect(descartarRascunho.mock.calls[0]?.[0]).toMatchObject({
+      base: { item_name: 'Camiseta azul' },
+      confirmarCriacaoIncerta: true,
+    });
+  });
+
+  it('the THREE-CASE dialog follows the draft too: published, or a publish took the lock, it closes — whether the reading or the route’s 409 opened it', async () => {
+    const D = DIALOGO_DESCARTE_CRIACAO_INCERTA_SHOPEE;
+    const trava = () => ({
+      desde: Date.now() - 1_000,
+      expiraEm: Date.now() + 200_000,
+      token: 't-x',
+      sku: 'SKU-1',
+    });
+    const incerto = { criacaoIncertaDesde: Date.now() - 600_000 };
+    // Opened by the READING (an incerta draft).
+    for (const depois of [
+      () => link('L-rasc', { item_id: 2000002 }),
+      () => rascunho('L-rasc', { ...incerto, publicacaoEmCurso: trava() }),
+    ]) {
+      comAutoria();
+      const descartarRascunho = vi.fn<ShopeeClient['descartarRascunho']>();
+      h.client = shopeeClientFalso({ descartarRascunho });
+      h.links = [rascunho('L-rasc', incerto)];
+      const { rerender, unmount } = renderEditor();
+      fireEvent.click(botaoDoRascunho('L-rasc', 'Descartar'));
+      expect(screen.getByRole('dialog', { name: D.titulo })).toBeDefined();
+      h.links = [depois()];
+      rerenderEditor(rerender);
+      expect(screen.queryByRole('dialog', { name: D.titulo })).toBeNull();
+      expect(descartarRascunho).not.toHaveBeenCalled();
+      unmount();
+    }
+    // Opened by the ROUTE’s 409 criacaoIncerta on a draft that reads livre.
+    for (const depois of [
+      () => link('L-rasc', { item_id: 2000002 }),
+      () => rascunho('L-rasc', { publicacaoEmCurso: trava() }),
+    ]) {
+      comAutoria();
+      const descartarRascunho = vi
+        .fn<ShopeeClient['descartarRascunho']>()
+        .mockRejectedValueOnce(recusaDoRascunho(409, CODIGO_FALHA_SHOPEE.rascunhoCriacaoIncerta));
+      h.client = shopeeClientFalso({ descartarRascunho });
+      h.links = [rascunho('L-rasc')];
+      const { rerender, unmount } = renderEditor();
+      fireEvent.click(botaoDoRascunho('L-rasc', 'Descartar'));
+      fireEvent.click(
+        within(screen.getByRole('dialog', { name: 'Descartar rascunho' })).getByRole('button', {
+          name: 'Descartar rascunho',
+        }),
+      );
+      await screen.findByRole('dialog', { name: D.titulo });
+      h.links = [depois()];
+      rerenderEditor(rerender);
+      expect(screen.queryByRole('dialog', { name: D.titulo })).toBeNull();
+      expect(descartarRascunho).toHaveBeenCalledTimes(1);
+      unmount();
+    }
+  });
+
+  it('NEAR-MISS: a concurrent title edit keeps it open and enabled, and the confirm sends the HELD base (the route’s 409 answers it)', async () => {
+    const { rerender, descartarRascunho } = abrirDescarte();
+    h.links = [rascunho('L-rasc', { item_name: 'Outro título' })];
+    rerenderEditor(rerender);
+    const dialogo = dialogoDescarte()!;
+    const confirmar = within(dialogo).getByRole('button', {
+      name: 'Descartar rascunho',
+    }) as HTMLButtonElement;
+    expect(confirmar.disabled).toBe(false);
+    fireEvent.click(confirmar);
+    await waitFor(() => expect(descartarRascunho).toHaveBeenCalledTimes(1));
+    expect(descartarRascunho.mock.calls[0]?.[0].base.item_name).toBe('Camiseta azul');
+  });
+});
+
+describe('ShopeeEditor — every draft handler re-checks its own gate (#1911 P10 review, R3-tests#5)', () => {
+  it('«Salvar rascunho» called past its disabled button sends nothing — a produto turned VIRTUAL KIT, or the bit gone — ⟷ NEAR-MISS the same call with the gate open sends', async () => {
+    const casos: [string, () => void][] = [
+      [
+        'virtual kit',
+        () => {
+          h.produto = { nome: 'Kit', paiId: null, ehKit: true, ehKitVirtual: true };
+        },
+      ],
+      [
+        'no produto.write',
+        () => {
+          h.permitidos = new Set([PERM.integracao.read, PERM.integracao.write]);
+        },
+      ],
+    ];
+    for (const [caso, fechar] of casos) {
+      comAutoria();
+      h.produto = { nome: 'Camiseta', paiId: null };
+      const atualizarRascunho = vi.fn<ShopeeClient['atualizarRascunho']>(async (input) => ({
+        linkDocId: input.linkDocId,
+        gravados: ['item_name'],
+      }));
+      h.client = shopeeClientFalso({ atualizarRascunho });
+      h.links = [rascunho('L-rasc')];
+      const { rerender, unmount } = renderEditor();
+      digitarTitulo('L-rasc', 'Camiseta azul marinho');
+      fechar();
+      rerenderEditor(rerender);
+      expect(formDe('L-rasc').bloco.podeSalvar, caso).toBe(false);
+      act(() => formDe('L-rasc').onSalvar());
+      expect(atualizarRascunho, caso).not.toHaveBeenCalled();
+      unmount();
+    }
+    // NEAR-MISS: the gate open, the same direct call sends.
+    comAutoria();
+    h.produto = { nome: 'Camiseta', paiId: null };
+    const atualizarRascunho = vi.fn<ShopeeClient['atualizarRascunho']>(async (input) => ({
+      linkDocId: input.linkDocId,
+      gravados: ['item_name'],
+    }));
+    h.client = shopeeClientFalso({ atualizarRascunho });
+    h.links = [rascunho('L-rasc')];
+    renderEditor();
+    digitarTitulo('L-rasc', 'Camiseta azul marinho');
+    act(() => formDe('L-rasc').onSalvar());
+    await waitFor(() => expect(atualizarRascunho).toHaveBeenCalledTimes(1));
+  });
+
+  it('«Desfazer» called on a LOCAL new draft (never offered there) keeps its typed text — ⟷ NEAR-MISS on a dirty stored draft it undoes', () => {
+    comAutoria();
+    h.links = [rascunho('L-rasc')];
+    renderEditor();
+    // Positive: offered on the dirty stored draft, it undoes.
+    digitarTitulo('L-rasc', 'Editado');
+    act(() => formDe('L-rasc').onDesfazer());
+    expect(tituloDo('L-rasc').value).toBe('Camiseta azul');
+
+    // The conta holds that draft: confirm the second listing.
+    novoAnuncio();
+    fireEvent.click(
+      within(screen.getByRole('dialog', { name: TITULO_SEGUNDO_ANUNCIO_SHOPEE })).getByRole(
+        'button',
+        { name: ROTULO_CONFIRMAR_SEGUNDO_ANUNCIO_SHOPEE },
+      ),
+    );
+    const [id] = idsLocais();
+    digitarTitulo(id!, 'Rascunho novo');
+    expect(formDe(id!).bloco.podeDesfazer).toBe(false);
+    act(() => formDe(id!).onDesfazer());
+    expect(screen.getByTestId(`shopee-novo-rascunho-${id!}`)).toBeDefined();
+    expect(tituloDo(id!).value).toBe('Rascunho novo');
+  });
+
+  it('«Descartar» called while a publish holds the lock opens nothing and sends nothing', () => {
+    comAutoria();
+    const descartarRascunho = vi.fn<ShopeeClient['descartarRascunho']>();
+    h.client = shopeeClientFalso({ descartarRascunho });
+    const agora = Date.now();
+    h.links = [
+      rascunho('L-rasc', {
+        publicacaoEmCurso: { desde: agora - 10_000, expiraEm: agora + 60_000, token: 't-1' },
+      }),
+    ];
+    renderEditor();
+    expect(botaoDoRascunho('L-rasc', 'Descartar').disabled).toBe(true);
+    act(() => formDe('L-rasc').onDescartar('confirmar'));
+    expect(screen.queryByRole('dialog', { name: 'Descartar rascunho' })).toBeNull();
+    expect(descartarRascunho).not.toHaveBeenCalled();
+  });
+
+  it('«Salvar mesmo assim» re-checks too: a produto turned VIRTUAL KIT while the modal is open sends nothing and closes it', async () => {
+    comAutoria();
+    const atualizarRascunho = vi.fn<ShopeeClient['atualizarRascunho']>().mockRejectedValueOnce(
+      recusaDoRascunho(409, CODIGO_FALHA_SHOPEE.rascunhoConflito, {
+        conflitos: [{ campo: CAMPO_RASCUNHO_SHOPEE.itemName, atual: 'Camiseta (outra aba)' }],
+      }),
+    );
+    h.client = shopeeClientFalso({ atualizarRascunho });
+    h.links = [rascunho('L-rasc')];
+    const { rerender } = renderEditor();
+    digitarTitulo('L-rasc', 'Minha');
+    fireEvent.click(botaoDoRascunho('L-rasc', 'Salvar rascunho'));
+    await screen.findByTestId('shopee-rascunho-conflito');
+    h.links = [rascunho('L-rasc', { item_name: 'Camiseta (outra aba)' })];
+    h.produto = { nome: 'Kit', paiId: null, ehKit: true, ehKitVirtual: true };
+    rerenderEditor(rerender);
+    fireEvent.click(screen.getByRole('button', { name: 'Salvar mesmo assim' }));
+    expect(atualizarRascunho).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId('shopee-rascunho-conflito')).toBeNull();
+  });
+
+  it('the second-listing re-send re-checks too: a produto turned VIRTUAL KIT meanwhile sends no second create', async () => {
+    comAutoria();
+    const criarRascunho = vi
+      .fn<ShopeeClient['criarRascunho']>()
+      .mockRejectedValueOnce(
+        recusaDoRascunho(409, CODIGO_FALHA_SHOPEE.rascunhoContaJaTemAnuncio, {
+          vinculos: [{ linkDocId: 'L-a', itemId: 1000009, rascunho: false }],
+        }),
+      )
+      .mockImplementation(async (input) => ({ linkDocId: input.linkDocId, criado: true }));
+    h.client = shopeeClientFalso({ criarRascunho });
+    const { rerender } = renderEditor();
+    novoAnuncio();
+    const [id] = idsLocais();
+    fireEvent.click(botaoDoRascunho(id!, 'Salvar rascunho'));
+    const dialogo = await screen.findByRole('dialog', { name: TITULO_SEGUNDO_ANUNCIO_SHOPEE });
+    h.produto = { nome: 'Kit', paiId: null, ehKit: true, ehKitVirtual: true };
+    rerenderEditor(rerender);
+    fireEvent.click(
+      within(dialogo).getByRole('button', { name: ROTULO_CONFIRMAR_SEGUNDO_ANUNCIO_SHOPEE }),
+    );
+    expect(criarRascunho).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('ShopeeEditor — a failed session refresh on a draft call is pt-BR, never the SDK’s English (#1911 P10 review, R8-copy#14)', () => {
+  const REDE = new FirebaseError(
+    'auth/network-request-failed',
+    'Firebase: Error (auth/network-request-failed).',
+  );
+  const EXPIRADA = new FirebaseError(
+    'auth/user-token-expired',
+    'Firebase: Error (auth/user-token-expired).',
+  );
+
+  it('the create: «sem conexão», nothing sent, the draft kept and Salvar still offered — never «Firebase: Error»', async () => {
+    comAutoria();
+    h.client = shopeeClientFalso({ criarRascunho: () => Promise.reject(REDE) });
+    renderEditor();
+    novoAnuncio();
+    const [id] = idsLocais();
+    fireEvent.click(botaoDoRascunho(id!, 'Salvar rascunho'));
+    await waitFor(() =>
+      expect(formDe(id!).resultado).toStrictEqual({
+        mensagem: FRASE_SESSAO_SEM_CONEXAO_SHOPEE,
+        incerto: false,
+      }),
+    );
+    expect(screen.queryByText(/Firebase/)).toBeNull();
+    expect(botaoDoRascunho(id!, 'Salvar rascunho').disabled).toBe(false);
+    expect(h.notify).not.toHaveBeenCalled();
+  });
+
+  it('NEAR-MISS: an EXPIRED session on an edit asks for a new sign-in, never a retry — the typed text survives', async () => {
+    comAutoria();
+    h.client = shopeeClientFalso({ atualizarRascunho: () => Promise.reject(EXPIRADA) });
+    h.links = [rascunho('L-rasc')];
+    renderEditor();
+    digitarTitulo('L-rasc', 'Camiseta azul marinho');
+    fireEvent.click(botaoDoRascunho('L-rasc', 'Salvar rascunho'));
+    await waitFor(() =>
+      expect(screen.getByTestId('resultado-L-rasc').textContent).toBe(
+        FRASE_SESSAO_NAO_RENOVADA_SHOPEE,
+      ),
+    );
+    expect(tituloDo('L-rasc').value).toBe('Camiseta azul marinho');
+    expect(formDe('L-rasc').resultado?.incerto).toBe(false);
+  });
+
+  it('the discard too', async () => {
+    comAutoria();
+    h.client = shopeeClientFalso({ descartarRascunho: () => Promise.reject(REDE) });
+    h.links = [rascunho('L-rasc')];
+    renderEditor();
+    fireEvent.click(botaoDoRascunho('L-rasc', 'Descartar'));
+    fireEvent.click(
+      within(screen.getByRole('dialog', { name: 'Descartar rascunho' })).getByRole('button', {
+        name: 'Descartar rascunho',
+      }),
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId('resultado-L-rasc').textContent).toBe(
+        FRASE_SESSAO_SEM_CONEXAO_SHOPEE,
+      ),
+    );
+  });
+
+  it('the wording, by code: the network failure ⟷ every other code', () => {
+    expect(fraseDaSessaoShopee(REDE)).toBe(FRASE_SESSAO_SEM_CONEXAO_SHOPEE);
+    expect(fraseDaSessaoShopee(EXPIRADA)).toBe(FRASE_SESSAO_NAO_RENOVADA_SHOPEE);
+    expect(fraseDaSessaoShopee(new FirebaseError('auth/user-disabled', 'x'))).toBe(
+      FRASE_SESSAO_NAO_RENOVADA_SHOPEE,
+    );
+    for (const frase of [FRASE_SESSAO_SEM_CONEXAO_SHOPEE, FRASE_SESSAO_NAO_RENOVADA_SHOPEE]) {
+      expect(frase).toContain('nada foi enviado');
+    }
+  });
+});
+
+describe('ShopeeEditor — a legacy category_id 0 asks apps/shopee nothing (#1911 P10 review, R7-roundtrip#2)', () => {
+  it('a stored `0` never requests the bands ⟷ NEAR-MISS a positive id does', async () => {
+    comAutoria();
+    const limitesDoItemFn = vi.fn<ShopeeClient['limitesDoItem']>(async (input) =>
+      limitesDoItem(input.categoryId),
+    );
+    h.client = shopeeClientFalso({ limitesDoItem: limitesDoItemFn });
+    h.links = [rascunho('L-zero', { category_id: 0 }), rascunho('L-ok', { category_id: 100017 })];
+    renderEditor();
+    await waitFor(() => expect(formDe('L-ok').limites).not.toBeNull());
+    expect(limitesDoItemFn.mock.calls.map(([i]) => i)).toStrictEqual([
+      { integracaoId: 'int-1', categoryId: 100017 },
+    ]);
+    expect(formDe('L-zero').limites).toBeNull();
+    expect(formDe('L-zero').bloco.valores.category_id).toBe(0);
+  });
+});
+
+describe('ShopeeEditor — a draft’s badge reads its block decision (#1911 P10 review, R2-drafts#0)', () => {
+  it('`livre` keeps «Não publicado» — the e2e’s deliberate reading', () => {
+    comAutoria();
+    h.links = [rascunho('L-rasc')];
+    renderEditor();
+    expect(formDe('L-rasc').bloco.publicacao).toStrictEqual({ tipo: 'livre' });
+    expect(within(bloco('L-rasc')).getByText('Não publicado')).toBeDefined();
+    expect(within(bloco('L-rasc')).queryByText(ROTULO_PUBLICACAO_INCERTA_SHOPEE)).toBeNull();
+  });
+
+  it('NEAR-MISS: a native-kit link with no item_id is no draft — «Não publicado», whatever its lock fields say', () => {
+    h.links = [
+      link('L-kit', {
+        item_id: null,
+        kitNativo: true,
+        criacaoIncertaDesde: Date.now() - 600_000,
+      }),
+    ];
+    renderEditor();
+    expect(within(bloco('L-kit')).getByText('Não publicado')).toBeDefined();
+    expect(within(bloco('L-kit')).queryByText(ROTULO_PUBLICACAO_INCERTA_SHOPEE)).toBeNull();
   });
 });
 
@@ -5267,5 +6288,125 @@ describe('ShopeeEditor — «Publicar» on a draft (#1911 P11)', () => {
     });
     expect(formDe('L-rasc').limites).toBeNull();
     expect(limites).not.toHaveBeenCalled();
+  });
+});
+
+describe('ShopeeEditor — the Publicar gate reads P10’s review-fix block fields (merge of P10’s fix into P11)', () => {
+  it('a READY draft whose conta document is GONE: «Descartar» alone, NO «Publicar» (`sem-permissao`), no bands asked — and a call past the missing button opens nothing', async () => {
+    const publicar = vi.fn<ShopeeClient['publicar']>(async () => ITEM_REPUBLICADO);
+    const limites = vi.fn<ShopeeClient['limitesDoItem']>(async (input) =>
+      limitesDoItem(input.categoryId ?? null),
+    );
+    prontoParaPublicar(publicar, { limitesDoItem: limites });
+    h.links = [rascunhoPronto('L9', { contaProdutoShopeeOuterRef: 'documents/integracao/int-9' })];
+    renderEditor();
+    fireEvent.click(await screen.findByRole('tab', { name: /Conta int-9 \(não encontrada\)/ }));
+    // Positive first: the block rendered, its discard authority held.
+    expect(formDe('L9').somenteDescartar).toBe(true);
+    expect(formDe('L9').bloco.podeDescartar).toBe(true);
+    expect(
+      within(raizDoRascunho('L9'))
+        .getAllByRole('button')
+        .map((b) => b.textContent),
+    ).toEqual(['Descartar']);
+    expect(formDe('L9').contaId).toBeNull();
+    expect(formDe('L9').decisaoDePublicar).toMatchObject({
+      podePublicar: false,
+      impedimento: 'sem-permissao',
+      aviso: null,
+    });
+    expect(limites).not.toHaveBeenCalled();
+    act(() => formDe('L9').onPublicar());
+    expect(semDialogoDePublicar()).toBeNull();
+    expect(publicar).not.toHaveBeenCalled();
+  });
+
+  it('NEAR-MISS: the SAME ready draft on a found conta asks for its bands and offers «Publicar», enabled', async () => {
+    const limites = vi.fn<ShopeeClient['limitesDoItem']>(async (input) =>
+      limitesDoItem(input.categoryId ?? null),
+    );
+    prontoParaPublicar(vi.fn<ShopeeClient['publicar']>(), { limitesDoItem: limites });
+    h.links = [rascunhoPronto('L-rasc')];
+    await renderPronto();
+    expect(formDe('L-rasc').somenteDescartar).toBe(false);
+    expect(formDe('L-rasc').contaId).toBe('int-1');
+    expect(limites.mock.calls.map(([i]) => i)).toStrictEqual([
+      { integracaoId: 'int-1', categoryId: 100087 },
+    ]);
+  });
+
+  it('a ready draft holding a legacy category `0`: no bands asked and the gate says `categoria-inexistente` with no «limites … forem lidos» wait ⟷ NEAR-MISS a positive id, Publicar enabled', async () => {
+    const limites = vi.fn<ShopeeClient['limitesDoItem']>(async (input) =>
+      limitesDoItem(input.categoryId ?? null),
+    );
+    prontoParaPublicar(vi.fn<ShopeeClient['publicar']>(), { limitesDoItem: limites });
+    h.links = [rascunhoPronto('L-zero', { category_id: 0 }), rascunhoPronto('L-rasc')];
+    await renderPronto('L-rasc');
+    expect(formDe('L-zero').decisaoDePublicar).toStrictEqual({
+      podePublicar: false,
+      impedimento: 'categoria-inexistente',
+      pendencias: [],
+      aviso: null,
+    });
+    expect(publicarDo('L-zero').disabled).toBe(true);
+    expect(limites.mock.calls.map(([i]) => i.categoryId)).toStrictEqual([100087]);
+    expect(formDe('L-rasc').decisaoDePublicar.podePublicar).toBe(true);
+  });
+
+  it('a refusal row’s ATTESTED discard (P11 `descartar-atestando`) closes like any discard once a publish takes the lock (P10) — nothing sent ⟷ NEAR-MISS a new emission that changes nothing keeps it, plain and warned', async () => {
+    const problema: ProblemaShopee = {
+      campo: null,
+      motivo: MOTIVO_ANUNCIO_SHOPEE.criacaoIncertaJaVinculada,
+      mensagem: 'Pode ser o anúncio da tentativa.',
+      acao: {
+        tipo: TIPO.importar,
+        itemIds: [1000011, 1000012],
+        vinculados: [{ itemId: 1000011, produtoId: 'prod-1' }],
+      },
+    };
+    const descartarRascunho = vi.fn<ShopeeClient['descartarRascunho']>(async (input) => ({
+      linkDocId: input.linkDocId,
+      descartado: true,
+      criacaoIncerta: true,
+    }));
+    const publicar = vi.fn<ShopeeClient['publicar']>().mockRejectedValueOnce(recusa422([problema]));
+    prontoParaPublicar(publicar, { descartarRascunho });
+    const incerta = { criacaoIncertaDesde: Date.now() - 600_000 };
+    h.links = [rascunhoPronto('L-rasc', incerta)];
+    const { rerender } = await renderPronto();
+    fireEvent.click(publicarDo('L-rasc'));
+    confirmarPublicacao();
+    await waitFor(() => expect(desfechoDe('L-rasc').desfecho.tipo).toBe('recusado'));
+    const saida = saidasDoProblemaShopee(problema, { ehRascunho: true }).find(
+      (s): s is Extract<SaidaDoProblemaShopee, { tipo: 'descartar-atestando' }> =>
+        s.tipo === 'descartar-atestando',
+    );
+    if (saida?.aviso == null) throw new Error('fixture must warn about the unlinked candidate');
+    const aviso = saida.aviso;
+    act(() => desfechoDe('L-rasc').rascunho?.onSaida(saida));
+    const plano = () => screen.queryByRole('dialog', { name: 'Descartar rascunho' });
+    expect(within(plano()!).getByText(aviso)).toBeDefined();
+
+    // NEAR-MISS: an emission that changes nothing — still the plain, warned
+    // confirmation (the block reads `incerta`, yet never the three-case dialog).
+    h.links = [rascunhoPronto('L-rasc', incerta)];
+    rerenderEditor(rerender);
+    expect(within(plano()!).getByText(aviso)).toBeDefined();
+    expect(
+      screen.queryByRole('dialog', { name: DIALOGO_DESCARTE_CRIACAO_INCERTA_SHOPEE.titulo }),
+    ).toBeNull();
+
+    // A publish takes the lock: the confirmation closes, nothing is sent.
+    const agora = Date.now();
+    h.links = [
+      rascunhoPronto('L-rasc', {
+        ...incerta,
+        publicacaoEmCurso: { desde: agora - 1_000, expiraEm: agora + 200_000, token: 't-x' },
+      }),
+    ];
+    rerenderEditor(rerender);
+    expect(formDe('L-rasc').bloco.publicacao.tipo).toBe('em-andamento');
+    expect(plano()).toBeNull();
+    expect(descartarRascunho).not.toHaveBeenCalled();
   });
 });
