@@ -15,8 +15,12 @@ import {
   rotuloCategoriaShopee,
   useCategoriasShopee,
 } from '@/components/shopee/ShopeeCategoriaBrowser';
-import { FRASE_TROCA_DE_CATEGORIA_APAGA_ATRIBUTOS_SHOPEE } from '@/lib/shopee/anuncioProduto';
+import {
+  FRASE_TROCA_DE_CATEGORIA_APAGA_ATRIBUTOS_SHOPEE,
+  ROTULO_VOLTAR_CATEGORIA_GRAVADA_SHOPEE,
+} from '@/lib/shopee/anuncioProduto';
 import { useShopeeClient, type ShopeeClient } from '@/lib/shopee/client';
+import { idDeCategoriaShopeeValido } from '@/lib/shopee/rascunho';
 import {
   CODIGO_FALHA_SHOPEE,
   MENSAGEM_CATEGORIA_DESCONHECIDA,
@@ -27,11 +31,11 @@ import {
 import type { RespostaCategoriasShopee } from '@/lib/shopee/wire';
 
 export interface CategoriaRascunhoShopeeProps {
-  /** The conta (`integracao` id) whose tree every read is (`useCategoriasShopee`, `recomendacaoCategoria`, `ShopeeCategoriaBrowser`); supplied by `RascunhoShopee`. */
-  contaId: string;
+  /** The conta (`integracao` id) whose tree every read is (`useCategoriasShopee`, `recomendacaoCategoria`, `ShopeeCategoriaBrowser`); `null` = the draft's tab names no conta document that can answer (not found, unreadable ref, still loading) — then NO read at all and no picker; supplied by `RascunhoShopee`. */
+  contaId: string | null;
   /** The draft's link doc id — the test ids' suffix only; supplied by `RascunhoShopee`. */
   linkDocId: string;
-  /** The category the form holds (`bloco.valores.category_id`); `null` = none chosen — the label then makes NO request (rev. 2a B.7 (b)). */
+  /** The category the form holds (`bloco.valores.category_id`); `null` = none chosen — the label then makes NO request (rev. 2a B.7 (b)); a non-positive id (a legacy `0`) is no Shopee category — no request either, a sentence instead. */
   categoryId: number | null;
   /** The form's current title (`bloco.valores.item_name`) — the Shopee suggestions' `nome`; blank or `null` ⇒ no suggestions section and no request. */
   titulo: string | null;
@@ -41,6 +45,8 @@ export interface CategoriaRascunhoShopeeProps {
   atributosGravados: boolean;
   /** A LEAF was picked (a browser row, or a suggestion with `isLeaf === true`); `RascunhoShopee` forwards it as `onCampo('category_id', categoryId)`. */
   onEscolher: (categoryId: number) => void;
+  /** Put the HELD category back — offered only while `bloco.podeVoltarCategoria` (`incerta` with an unsaved category change: the picker is closed, and this revert is the one pick the block still accepts); `null` ⇒ no such button. `RascunhoShopee` forwards it as `onCampo('category_id', bloco.categoriaGravada)`. */
+  onVoltar: (() => void) | null;
 }
 
 /** The modal's title (DC §2.10). */
@@ -48,6 +54,23 @@ export const TITULO_ESCOLHA_CATEGORIA_SHOPEE = 'Categoria na Shopee';
 
 /** No category on the draft yet — its pendência says what to do. */
 export const FRASE_SEM_CATEGORIA_RASCUNHO_SHOPEE = 'Nenhuma categoria escolhida.';
+
+/**
+ * THE one test of whether a held `category_id` names a Shopee category — it
+ * lives with the block decisions (`@/lib/shopee/rascunho`), since the draft's
+ * «Publicar» gate reads it too; re-exported for this label's callers.
+ */
+export { idDeCategoriaShopeeValido };
+
+/**
+ * A held `category_id` that names no Shopee category (a legacy `0`): said
+ * plainly — never the taxonomy route's raw 400. «Escolha uma categoria» only
+ * where the picker is offered (`editavel`): never an exit the block lacks.
+ */
+export function fraseDaCategoriaInexistenteShopee(categoryId: number, editavel: boolean): string {
+  const fato = `A categoria guardada (#${String(categoryId)}) não existe na Shopee.`;
+  return editavel ? `${fato} Escolha uma categoria.` : fato;
+}
 
 /** A held category the tree has but which is not a leaf: the publish refuses it. */
 export const FRASE_CATEGORIA_NAO_FOLHA_SHOPEE = 'não é uma categoria final — escolha outra';
@@ -291,6 +314,15 @@ function SugestoesDaCategoria({
  *   `false` row says why it is not.
  * - **Not editable ⇒ no modal at all** — and one already open closes, so no
  *   pick can land while the reading is `incerta` or the block is busy.
+ * - **No conta that can answer** (`contaId: null` — the tab is «não
+ *   encontrada», unreadable, or still loading) ⇒ NO read and no picker: the
+ *   held id as plain text. apps/shopee could only answer 404 for it.
+ * - **A held id that names no category** (a legacy `0`,
+ *   {@link idDeCategoriaShopeeValido}) ⇒ no read; a plain sentence, «Escolher
+ *   categoria», and the browser opens at the roots.
+ * - **«Voltar à categoria gravada»** (`onVoltar`) — in `incerta`, with the
+ *   picker closed, the one way to drop a category change made while `livre`
+ *   and keep the other edits: a revert, never a change.
  */
 export function CategoriaRascunhoShopee({
   contaId,
@@ -300,18 +332,49 @@ export function CategoriaRascunhoShopee({
   editavel,
   atributosGravados,
   onEscolher,
+  onVoltar,
 }: CategoriaRascunhoShopeeProps) {
   const [aberto, setAberto] = useState(false);
-  const atual = useCategoriasShopee(contaId, categoryId, { enabled: categoryId !== null });
+  const valida = idDeCategoriaShopeeValido(categoryId);
+  // A disabled query never runs, so the `''` key of a conta-less block reads nothing.
+  const atual = useCategoriasShopee(contaId ?? '', categoryId, {
+    enabled: contaId !== null && valida,
+  });
   const raiz = `shopee-rascunho-categoria-${linkDocId}`;
+  const podeEscolher = editavel && contaId !== null;
   // ONE decision for the modal AND its body: the body (and its suggestions
   // request) never depends on Mantine's unmount-on-close default.
-  const modalAberto = aberto && editavel;
+  const modalAberto = aberto && podeEscolher;
 
   const escolher = (id: number) => {
     setAberto(false);
     onEscolher(id);
   };
+
+  let rotulo: ReactNode;
+  if (categoryId === null) {
+    rotulo = (
+      <Text size="sm" c="dimmed" data-testid={`${raiz}-rotulo`}>
+        {FRASE_SEM_CATEGORIA_RASCUNHO_SHOPEE}
+      </Text>
+    );
+  } else if (!valida) {
+    rotulo = (
+      <Text size="sm" c="orange" data-testid={`${raiz}-rotulo`}>
+        {fraseDaCategoriaInexistenteShopee(categoryId, podeEscolher)}
+      </Text>
+    );
+  } else if (contaId === null) {
+    rotulo = (
+      <Text size="sm" data-testid={`${raiz}-rotulo`}>
+        {`Categoria ${String(categoryId)}`}
+      </Text>
+    );
+  } else {
+    rotulo = (
+      <RotuloDaCategoria categoryId={categoryId} consulta={atual} testId={`${raiz}-rotulo`} />
+    );
+  }
 
   return (
     <Stack gap={4} data-testid={raiz}>
@@ -319,42 +382,44 @@ export function CategoriaRascunhoShopee({
         Categoria
       </Text>
       <Group justify="space-between" wrap="nowrap" gap="xs" align="flex-start">
-        {categoryId === null ? (
-          <Text size="sm" c="dimmed" data-testid={`${raiz}-rotulo`}>
-            {FRASE_SEM_CATEGORIA_RASCUNHO_SHOPEE}
-          </Text>
-        ) : (
-          <RotuloDaCategoria categoryId={categoryId} consulta={atual} testId={`${raiz}-rotulo`} />
-        )}
-        {editavel && (
+        {rotulo}
+        {podeEscolher && (
           <Button type="button" size="xs" variant="light" onClick={() => setAberto(true)}>
-            {categoryId === null ? 'Escolher categoria' : 'Trocar categoria'}
+            {valida ? 'Trocar categoria' : 'Escolher categoria'}
+          </Button>
+        )}
+        {onVoltar !== null && (
+          <Button type="button" size="xs" variant="light" onClick={onVoltar}>
+            {ROTULO_VOLTAR_CATEGORIA_GRAVADA_SHOPEE}
           </Button>
         )}
       </Group>
-      <Modal
-        opened={modalAberto}
-        onClose={() => setAberto(false)}
-        title={TITULO_ESCOLHA_CATEGORIA_SHOPEE}
-        size="lg"
-        centered
-      >
-        {modalAberto && (
-          <Stack gap="md" data-testid={`${raiz}-modal`}>
-            {atributosGravados && (
-              <Alert color="yellow" variant="light">
-                {FRASE_TROCA_DE_CATEGORIA_APAGA_ATRIBUTOS_SHOPEE}
-              </Alert>
-            )}
-            <SugestoesDaCategoria contaId={contaId} titulo={titulo} onEscolher={escolher} />
-            <ShopeeCategoriaBrowser
-              integracaoId={contaId}
-              categoriaInicial={categoryId}
-              onEscolher={(c) => escolher(c.categoryId)}
-            />
-          </Stack>
-        )}
-      </Modal>
+      {contaId !== null && (
+        <Modal
+          opened={modalAberto}
+          onClose={() => setAberto(false)}
+          title={TITULO_ESCOLHA_CATEGORIA_SHOPEE}
+          size="lg"
+          centered
+        >
+          {modalAberto && (
+            <Stack gap="md" data-testid={`${raiz}-modal`}>
+              {atributosGravados && (
+                <Alert color="yellow" variant="light">
+                  {FRASE_TROCA_DE_CATEGORIA_APAGA_ATRIBUTOS_SHOPEE}
+                </Alert>
+              )}
+              <SugestoesDaCategoria contaId={contaId} titulo={titulo} onEscolher={escolher} />
+              <ShopeeCategoriaBrowser
+                integracaoId={contaId}
+                // A held id that names no category opens the roots, never its 400.
+                categoriaInicial={valida ? categoryId : null}
+                onEscolher={(c) => escolher(c.categoryId)}
+              />
+            </Stack>
+          )}
+        </Modal>
+      )}
     </Stack>
   );
 }

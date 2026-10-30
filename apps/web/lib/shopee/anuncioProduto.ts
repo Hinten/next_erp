@@ -920,10 +920,18 @@ export function gravarIncerto(
  * dispatcher's `rascunho-em-kit-virtual` refusal (one constant for both, §C
  * #1): on Shopee a virtual kit is published as a NATIVE kit, never as the
  * ordinary listing a draft becomes, so such a draft can only be discarded.
+ *
+ * ⚠️ It never tells the operator to publish the kit: this tab has no first
+ * native-kit publish (its kit arms need a listed link, «Novo anúncio» is hidden
+ * for a virtual kit, and every publish it sends names a link) — that first
+ * publish is the terminal's. The server's own sentence ("descarte o rascunho e
+ * publique o kit") is right for the CLI only. Amends §C row 1 (review
+ * R8-copy#11; `design-DC-web.md`'s original wording).
  */
 export const FRASE_RASCUNHO_EM_KIT_VIRTUAL_SHOPEE =
   'Este produto é kit virtual: na Shopee ele é publicado como kit nativo, e um rascunho de ' +
-  'anúncio comum não se aplica. Descarte este rascunho e publique o kit.';
+  'anúncio comum não se aplica — descarte este rascunho. A primeira publicação de um kit ' +
+  'nativo não é feita por esta tela (é feita pelo terminal).';
 
 /**
  * The draft's "brand still to choose" — the pendência AND the copy of the
@@ -1260,8 +1268,9 @@ export const ROTULO_CONFIRMAR_SEGUNDO_ANUNCIO_SHOPEE = 'Criar rascunho mesmo ass
 
 /**
  * The second-listing confirmation (D15, DC §2.4): how many of the produto's
- * listings and drafts the conta already holds, and the duplicate risk. Copy
- * pending Lucas's check of Shopee BR's seller policy.
+ * listings and drafts the conta already holds, and the duplicate risk — ONLY
+ * that Shopee may treat it as a duplicate (spam): no penalty claim, since the
+ * BR policy is unconfirmed (§I3, Lucas 2026-10-29).
  */
 export function textoDoSegundoAnuncioShopee(existentes: {
   readonly quantidade: number;
@@ -1272,8 +1281,8 @@ export function textoDoSegundoAnuncioShopee(existentes: {
     `Esta conta já tem ${existentes.quantidade > 0 ? `${String(existentes.quantidade)} ` : ''}` +
       `anúncio(s) deste produto${existentes.comRascunho ? ', incluindo um rascunho' : ''}.`,
     'Um segundo anúncio do mesmo produto (com o mesmo SKU) na mesma loja pode ser tratado pela ' +
-      'Shopee como anúncio duplicado (spam), e isso pode render pontos de penalidade à loja. ' +
-      'Crie outro apenas se ele for realmente diferente do que já existe.',
+      'Shopee como anúncio duplicado (spam). Crie outro apenas se ele for realmente diferente ' +
+      'do que já existe.',
   ];
   if (existentes.comRascunho) {
     partes.push('Se a ideia é continuar o rascunho existente, edite-o em vez de criar outro.');
@@ -1394,16 +1403,49 @@ export function fraseDoConflitoIlegivelShopee(operacao: OperacaoRascunhoShopee):
   );
 }
 
-/** 409 `rascunhoConflito` on a DISCARD: the stored draft is not what the operator saw (K1-13). */
+/**
+ * 409 `rascunhoConflito` on a DISCARD: the stored draft is not what the
+ * operator saw (K1-13). A discard compares what the block HOLDS — for unsaved
+ * edits, the version the operator loaded — so every retry from such a block
+ * answers the same 409 (deliberately: it never deletes a version nobody saw)
+ * until «Desfazer alterações» drops the edits and shows the current version.
+ * The sentence names that exit CONDITIONALLY: a block with no unsaved edits
+ * already shows the current version, and «Desfazer» is disabled there.
+ */
 export const FRASE_DESCARTE_EM_CONFLITO_SHOPEE =
   'O rascunho mudou desde que você o abriu (em outra aba ou por outra pessoa) — nada foi ' +
-  'descartado. Confira a versão atual e descarte de novo, se for o caso.';
+  'descartado. Confira a versão atual e, se ainda quiser, descarte de novo; se este ' +
+  'rascunho tem alterações não salvas, use antes «Desfazer alterações» — só assim a versão ' +
+  'atual aparece.';
 
-/** 409 `rascunhoCategoriaTravada` (a correct tab never triggers it: the picker is disabled in `incerta`). */
+/**
+ * A category change while the reading is `incerta` — the block's own
+ * `categoria-travada` and the route's 409 `rascunhoCategoriaTravada` (one
+ * sentence: in both the block holds an unsaved category change, so «Desfazer
+ * alterações» is offered). The way to save the OTHER edits is named: the
+ * category change blocks every save until it is gone.
+ */
 export const FRASE_CATEGORIA_TRAVADA_SHOPEE =
   'A categoria não muda enquanto a última tentativa de publicar estiver incerta: ela pode ter ' +
   'criado o anúncio na categoria gravada. Confira no Seller Centre: se o anúncio existe, dê a ' +
-  'ele o mesmo SKU do produto e importe-o; se não, descarte este rascunho confirmando.';
+  'ele o mesmo SKU do produto e importe-o; se não, descarte este rascunho confirmando. Nada ' +
+  'é salvo enquanto a troca de categoria estiver pendente: para salvar o resto, use ' +
+  '«Desfazer alterações» (desfaz todas as alterações não salvas) e refaça as outras sem ' +
+  'trocar a categoria.';
+
+/** The button that puts the HELD category back in `incerta` (`bloco.podeVoltarCategoria`). */
+export const ROTULO_VOLTAR_CATEGORIA_GRAVADA_SHOPEE = 'Voltar à categoria gravada';
+
+/**
+ * Beside {@link FRASE_CATEGORIA_TRAVADA_SHOPEE} ONLY while the block offers
+ * {@link ROTULO_VOLTAR_CATEGORIA_GRAVADA_SHOPEE} (the local impediment of an
+ * editable `incerta` block) — never with the route's 409, whose block may not
+ * offer it yet: the way to keep the other edits. True with or without them
+ * (it never says there are any).
+ */
+export const FRASE_VOLTAR_CATEGORIA_GRAVADA_SHOPEE =
+  `Ou use «${ROTULO_VOLTAR_CATEGORIA_GRAVADA_SHOPEE}» (em Categoria): desfaz só a troca ` +
+  'de categoria e mantém as outras alterações.';
 
 /** 409 `rascunhoIdEmUso` (create only): never retried at the same id (C-19). */
 export const FRASE_RASCUNHO_ID_EM_USO_SHOPEE =
@@ -1413,9 +1455,15 @@ export const FRASE_RASCUNHO_ID_EM_USO_SHOPEE =
 export const FRASE_RASCUNHO_DE_VARIACAO_SHOPEE =
   'Este produto é uma variação: o anúncio é do produto pai.';
 
-/** 422 `rascunhoProdutoInvalido`, `motivo: 'kit-virtual'`. */
+/**
+ * 422 `rascunhoProdutoInvalido`, `motivo: 'kit-virtual'`. Never "publique o
+ * kit": this tab has no first native-kit publish (see
+ * {@link FRASE_RASCUNHO_EM_KIT_VIRTUAL_SHOPEE}).
+ */
 export const FRASE_RASCUNHO_DE_KIT_VIRTUAL_SHOPEE =
-  'Este produto é kit virtual: publique-o como kit nativo.';
+  'Este produto é kit virtual: na Shopee ele é publicado como kit nativo, cuja primeira ' +
+  'publicação não é feita por esta tela (é feita pelo terminal) — um rascunho de anúncio ' +
+  'comum não se aplica.';
 
 /** 404 `rascunhoInexistente` on a CREATE: it is the PRODUTO that is gone. */
 export const FRASE_PRODUTO_INEXISTENTE_SHOPEE = 'O produto não existe mais.';

@@ -6,6 +6,7 @@ import {
   ESTADO_ANUNCIO_SHOPEE,
   ehKitNativoAtivo,
   ehVinculoSubstituido,
+  type EstadoPublicacaoRascunhoShopee,
   type ProdutoShopeeLink,
 } from '@delfrance/schemas';
 
@@ -24,7 +25,20 @@ export interface StatusAnuncioShopeeProps {
   link: ProdutoShopeeLink;
   /** The conta's `shop_id`, unvalidated — half of the storefront URL. */
   shopId: unknown;
+  /**
+   * A DRAFT block's publish reading — the editor's block decision
+   * (`bloco.publicacao`, `estadoPublicacaoRascunhoShopee` re-read on the
+   * draft clock), handed down as is and NEVER re-derived here from the lock
+   * fields (#1369). `null` (or absent) for a link that is no draft block.
+   */
+  publicacao?: EstadoPublicacaoRascunhoShopee | null;
 }
+
+/** The badge of a draft whose publish lock is held (`em-andamento`). */
+export const ROTULO_PUBLICACAO_EM_ANDAMENTO_SHOPEE = 'Publicação em andamento';
+
+/** The badge of a draft whose last create may have reached Shopee (`incerta`). */
+export const ROTULO_PUBLICACAO_INCERTA_SHOPEE = 'Publicação incerta';
 
 /**
  * A listing's state, as the ERP last recorded it: the folded `estadoAnuncio`
@@ -41,7 +55,7 @@ export interface StatusAnuncioShopeeProps {
  * NEVER FOLDED (every link step 9 imported), which is not evidence of anything —
  * the same reading `anuncioShopeeVivo` and `podeMoverAnuncioShopee` give it.
  */
-export function StatusAnuncioShopee({ link, shopId }: StatusAnuncioShopeeProps) {
+export function StatusAnuncioShopee({ link, shopId, publicacao = null }: StatusAnuncioShopeeProps) {
   const itemId = itemIdDoAnuncioShopee(link.item_id);
   const url = urlDoAnuncioShopee(shopId, link.item_id);
   const substituidoPor = ehVinculoSubstituido(link) ? link.substituidoPorLinkDocId : null;
@@ -53,7 +67,7 @@ export function StatusAnuncioShopee({ link, shopId }: StatusAnuncioShopeeProps) 
   return (
     <Stack gap="xs">
       <Group gap="xs">
-        <EstadoBadge link={link} publicado={itemId !== null} />
+        <EstadoBadge link={link} publicado={itemId !== null} publicacao={publicacao} />
         {link.deboost === true && (
           <Badge color="orange" variant="light">
             Rebaixado na busca
@@ -126,14 +140,40 @@ function comData(valor: string, em: unknown): string {
 }
 
 /**
- * The folded state. A link with no listing yet is "Não publicado" whatever it
- * stores; a published one reads its `estadoAnuncio`, `null` (and a value this
- * build does not know) as "Não verificado". "Pausado" says WHO paused it:
- * `pausadoPeloErp` is the only thing that separates a seller pause from a
- * Shopee hold — both are `UNLIST` on the wire.
+ * The folded state. A link with no listing yet is "Não publicado" — UNLESS it
+ * is a draft whose publish reading (handed down by the editor) says a publish
+ * holds its lock ("Publicação em andamento") or its last create may have
+ * reached Shopee ("Publicação incerta"): the card's own notice says the
+ * listing may exist, so the badge never contradicts it. A published one reads
+ * its `estadoAnuncio`, `null` (and a value this build does not know) as "Não
+ * verificado". "Pausado" says WHO paused it: `pausadoPeloErp` is the only thing
+ * that separates a seller pause from a Shopee hold — both are `UNLIST` on the
+ * wire.
  */
-function EstadoBadge({ link, publicado }: { link: ProdutoShopeeLink; publicado: boolean }) {
+function EstadoBadge({
+  link,
+  publicado,
+  publicacao,
+}: {
+  link: ProdutoShopeeLink;
+  publicado: boolean;
+  publicacao: EstadoPublicacaoRascunhoShopee | null;
+}) {
   if (!publicado) {
+    if (publicacao?.tipo === 'em-andamento') {
+      return (
+        <Badge color="blue" variant="light">
+          {ROTULO_PUBLICACAO_EM_ANDAMENTO_SHOPEE}
+        </Badge>
+      );
+    }
+    if (publicacao?.tipo === 'incerta') {
+      return (
+        <Badge color="yellow" variant="light">
+          {ROTULO_PUBLICACAO_INCERTA_SHOPEE}
+        </Badge>
+      );
+    }
     return (
       <Badge color="gray" variant="light">
         Não publicado

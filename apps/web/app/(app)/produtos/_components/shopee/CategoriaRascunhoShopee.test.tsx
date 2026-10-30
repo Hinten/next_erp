@@ -48,11 +48,13 @@ const {
   FRASE_SUGESTOES_SEM_TITULO_SHOPEE,
   TITULO_ESCOLHA_CATEGORIA_SHOPEE,
   chaveRecomendacaoCategoriaShopee,
+  fraseDaCategoriaInexistenteShopee,
   fraseDasSugestoesForaDaArvoreShopee,
+  idDeCategoriaShopeeValido,
 } = await import('./CategoriaRascunhoShopee');
 const { ShopeeClientHttpError } = await import('@/lib/shopee/client');
 const { MENSAGEM_CATEGORIA_DESCONHECIDA } = await import('@/lib/shopee/erros');
-const { FRASE_TROCA_DE_CATEGORIA_APAGA_ATRIBUTOS_SHOPEE } =
+const { FRASE_TROCA_DE_CATEGORIA_APAGA_ATRIBUTOS_SHOPEE, ROTULO_VOLTAR_CATEGORIA_GRAVADA_SHOPEE } =
   await import('@/lib/shopee/anuncioProduto');
 
 const CONTA = 'int-1';
@@ -128,31 +130,42 @@ const SUGESTOES: RespostaRecomendacaoCategoriaShopee = {
 
 function show(
   props: {
+    contaId?: string | null;
     categoryId?: number | null;
     titulo?: string | null;
     editavel?: boolean;
     atributosGravados?: boolean;
+    /** `bloco.podeVoltarCategoria` — the put-back button is offered. */
+    voltar?: boolean;
   } = {},
 ) {
   const qc = new QueryClient({ defaultOptions: QUERY_DEFAULT_OPTIONS });
   const onEscolher = vi.fn<(categoryId: number) => void>();
+  const onVoltar = vi.fn<() => void>();
   const ui = (p: typeof props) => (
     <MantineTestProvider>
       <QueryClientProvider client={qc}>
         <CategoriaRascunhoShopee
-          contaId={CONTA}
+          contaId={p.contaId === undefined ? CONTA : p.contaId}
           linkDocId={LINK}
           categoryId={p.categoryId === undefined ? null : p.categoryId}
           titulo={p.titulo === undefined ? 'Camiseta básica' : p.titulo}
           editavel={p.editavel ?? true}
           atributosGravados={p.atributosGravados ?? false}
           onEscolher={onEscolher}
+          onVoltar={p.voltar === true ? onVoltar : null}
         />
       </QueryClientProvider>
     </MantineTestProvider>
   );
   const r = render(ui(props));
-  return { ...r, onEscolher, qc, rerenderCom: (p: typeof props) => r.rerender(ui(p)) };
+  return {
+    ...r,
+    onEscolher,
+    onVoltar,
+    qc,
+    rerenderCom: (p: typeof props) => r.rerender(ui(p)),
+  };
 }
 
 const rotulo = () => screen.getByTestId(`${RAIZ}-rotulo`);
@@ -219,6 +232,31 @@ describe('CategoriaRascunhoShopee — who may pick', () => {
     rerenderCom({ categoryId: null, editavel: false });
     expect(screen.queryByTestId(`${RAIZ}-modal`)).toBeNull();
     expect(screen.queryByTestId('shopee-categoria-browser')).toBeNull();
+  });
+});
+
+describe('CategoriaRascunhoShopee — «Voltar à categoria gravada» (R1-rule7#5)', () => {
+  it('`incerta` with an unsaved change: the picker is closed and the put-back is the ONE button — it fires `onVoltar`, never a pick', () => {
+    const { onVoltar, onEscolher } = show({ categoryId: 100090, editavel: false, voltar: true });
+    const botoes = within(screen.getByTestId(RAIZ)).getAllByRole('button');
+    expect(botoes.map((b) => b.textContent)).toEqual([ROTULO_VOLTAR_CATEGORIA_GRAVADA_SHOPEE]);
+    fireEvent.click(botoes[0]!);
+    expect(onVoltar).toHaveBeenCalledTimes(1);
+    expect(onEscolher).not.toHaveBeenCalled();
+    expect(screen.queryByTestId(`${RAIZ}-modal`)).toBeNull();
+  });
+
+  it('NEAR-MISS: not offered (`onVoltar: null`) ⇒ no such button, editable or not', () => {
+    const { unmount } = show({ categoryId: 100090, editavel: false });
+    expect(
+      screen.queryByRole('button', { name: ROTULO_VOLTAR_CATEGORIA_GRAVADA_SHOPEE }),
+    ).toBeNull();
+    unmount();
+    show({ categoryId: 100090 });
+    expect(
+      screen.queryByRole('button', { name: ROTULO_VOLTAR_CATEGORIA_GRAVADA_SHOPEE }),
+    ).toBeNull();
+    expect(screen.getByRole('button', { name: 'Trocar categoria' })).toBeTruthy();
   });
 });
 
@@ -352,5 +390,65 @@ describe('CategoriaRascunhoShopee — the browser and the attributes warning', (
     abrir();
     await screen.findByTestId(`${RAIZ}-modal`);
     expect(screen.queryByText(FRASE_TROCA_DE_CATEGORIA_APAGA_ATRIBUTOS_SHOPEE)).toBeNull();
+  });
+});
+
+describe('CategoriaRascunhoShopee — a held id that names no category (R7-roundtrip#2)', () => {
+  it('a legacy `0` asks NOTHING: a plain sentence (never the route’s raw 400), «Escolher categoria», and the browser opens at the ROOTS', async () => {
+    show({ categoryId: 0 });
+    expect(rotulo().textContent).toBe(fraseDaCategoriaInexistenteShopee(0, true));
+    expect(rotulo().textContent).toBe(
+      'A categoria guardada (#0) não existe na Shopee. Escolha uma categoria.',
+    );
+    await new Promise((r) => setTimeout(r, 0));
+    expect(h.categorias).not.toHaveBeenCalled();
+    expect(
+      within(screen.getByTestId(RAIZ)).queryByRole('button', { name: 'Trocar categoria' }),
+    ).toBeNull();
+    abrir('Escolher categoria');
+    const browser = await screen.findByTestId('shopee-categoria-browser');
+    await within(browser).findByTestId('shopee-categoria-linha-100001');
+    expect(h.categorias.mock.calls.map(([i]) => (i as { categoryId: unknown }).categoryId)).toEqual(
+      [null],
+    );
+  });
+
+  it('a negative id too; not editable ⇒ the fact alone — no exit the block does not offer', async () => {
+    show({ categoryId: -1, editavel: false });
+    expect(rotulo().textContent).toBe('A categoria guardada (#-1) não existe na Shopee.');
+    expect(within(screen.getByTestId(RAIZ)).queryByRole('button')).toBeNull();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(h.categorias).not.toHaveBeenCalled();
+  });
+
+  it('NEAR-MISS: a positive id is read and labelled from the tree, with «Trocar categoria»', async () => {
+    show({ categoryId: 100087 });
+    await waitFor(() => expect(rotulo().textContent).toContain('Roupas › Camisetas'));
+    expect(h.categorias).toHaveBeenCalledWith({ integracaoId: CONTA, categoryId: 100087 });
+    expect(screen.getByRole('button', { name: 'Trocar categoria' })).toBeTruthy();
+  });
+
+  it('THE positive-id test the tab’s bands request shares: 0 and negatives name no category ⟷ 1 and up do', () => {
+    expect(idDeCategoriaShopeeValido(null)).toBe(false);
+    expect(idDeCategoriaShopeeValido(0)).toBe(false);
+    expect(idDeCategoriaShopeeValido(-1)).toBe(false);
+    expect(idDeCategoriaShopeeValido(1)).toBe(true);
+    expect(idDeCategoriaShopeeValido(100017)).toBe(true);
+  });
+});
+
+describe('CategoriaRascunhoShopee — no conta that can answer (R2-drafts#6)', () => {
+  it('`contaId: null` reads NOTHING — the held id as plain text, no spinner, no picker even if "editable"', async () => {
+    show({ contaId: null, categoryId: 100087, editavel: true });
+    expect(rotulo().textContent).toBe('Categoria 100087');
+    expect(within(screen.getByTestId(RAIZ)).queryByRole('button')).toBeNull();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(h.categorias).not.toHaveBeenCalled();
+    expect(h.recomendacao).not.toHaveBeenCalled();
+  });
+
+  it('NEAR-MISS: the same id with a conta is read', async () => {
+    show({ contaId: CONTA, categoryId: 100087, editavel: false });
+    await waitFor(() => expect(h.categorias).toHaveBeenCalledTimes(1));
   });
 });
