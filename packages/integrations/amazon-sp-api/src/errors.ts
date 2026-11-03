@@ -11,12 +11,19 @@
  *
  * ## What an error may carry
  *
- * ⚠️ **No part of a response body, ever.** An SP-API body echoes request values
- * and can carry a buyer's name, address or CPF; an LWA body is either a token
- * pair or an `error_description`. An error travels further than any log line:
- * into `err.message`, a route's 5xx answer, a durable failure doc. An SP-API
- * body reaches exactly one place, the `onChamada` observer (`client.ts`),
- * already scrubbed of the access token; an LWA body reaches nothing at all.
+ * ⚠️ **No part of a response body, ever** — with ONE bounded exception, the
+ * `errors[].code` labels on {@link AmazonHttpError.codigosErro}. An SP-API body
+ * echoes request values and can carry a buyer's name, address or CPF; an LWA
+ * body is either a token pair or an `error_description`. An error travels
+ * further than any log line: into `err.message`, a route's 5xx answer, a
+ * durable failure doc. An SP-API body reaches exactly one place, the
+ * `onChamada` observer (`client.ts`), already scrubbed of the access token; an
+ * LWA body reaches nothing at all. The codes are the observer's own bounded
+ * list (printable ASCII, at most 64 characters each, at most 10, never one
+ * holding the token), never a `message` or `details`, and a NON-ENUMERABLE
+ * property: a caller that must tell one 400 from another (`EntityNotFound` on
+ * a write) reads them in process, while no message and no serialization of the
+ * error (`JSON.stringify`, a spread, a logged object) ever carries them.
  *
  * ⚠️ **No token or secret, ever.** Not the access token, the refresh token, the
  * authorization code or the client secret, and not the `message` of a caught
@@ -119,7 +126,10 @@ export function lerCodigoErroLwa(valor: unknown): CodigoErroLwa | null {
 /** Which Amazon endpoint a request went to. */
 export type DestinoAmazon = 'sp-api' | 'lwa';
 
-/** The only two methods this package sends: SP-API reads and the LWA token POST. */
+/**
+ * The only two methods this package sends: SP-API reads (`GET`), and a `POST`
+ * — the LWA token exchange, or the write client's one write (`escrita.ts`).
+ */
 export type MetodoAmazon = 'GET' | 'POST';
 
 /** What identifies one request on every error raised after it was built. */
@@ -168,7 +178,11 @@ export type MotivoConfigAmazon =
   | 'credencial-lwa'
   | 'redirect-uri'
   | 'application-id'
-  | 'state';
+  | 'state'
+  | 'token-no-corpo'
+  | 'pedido'
+  | 'md5'
+  | 'base64';
 
 /**
  * OUR input was unusable, and **no request was made**.
@@ -192,12 +206,24 @@ export type MotivoConfigAmazon =
  *   Provider Portal id) is empty, longer than 200 characters, or outside
  *   visible ASCII.
  * - `'state'` — the consent URL's `state` is empty or outside visible ASCII.
+ * - `'token-no-corpo'` — the write client's request body contains the access
+ *   token (it travels in `x-amz-access-token` only), or is not text, so it
+ *   cannot be checked for one.
+ * - `'pedido'` — a Delivery helper (`entrega.ts`) was handed an order id
+ *   outside Amazon's `3-7-7` digit grammar.
+ * - `'md5'` — `submitInvoice`'s `contentMD5Value` is not the base64 of a
+ *   16-byte digest (24 characters ending in `==`); a hex digest is refused.
+ * - `'base64'` — `submitInvoice`'s `invoiceContent` is empty or not standard
+ *   base64 (its alphabet, `=` padding only at the end, a length multiple of 4).
  *
- * The last two are raised by `montarUrlConsentimento` (`consentimento.ts`), which
- * builds a URL and sends nothing: "no request was made" holds trivially there.
+ * `'application-id'` and `'state'` are raised by `montarUrlConsentimento`
+ * (`consentimento.ts`), which builds a URL and sends nothing; `'pedido'`,
+ * `'md5'` and `'base64'` by the Delivery helpers, before the credential is
+ * read: "no request was made" holds trivially there.
  *
  * ⚠️ The message never echoes the offending value: a rejected token is still a
- * token, a rejected `ref` may contain one, and a rejected path may carry a query.
+ * token, a rejected `ref` may contain one, a rejected path may carry a query, and
+ * a rejected digest or body is a document's.
  */
 export class AmazonConfigError extends AmazonError {
   readonly motivo: MotivoConfigAmazon;
@@ -236,6 +262,14 @@ function mensagemDeConfig(motivo: MotivoConfigAmazon, operacao: string): string 
       return `${prefixo} o application_id do aplicativo está vazio, passa de 200 caracteres ou tem caractere fora do ASCII visível. ${nada}`;
     case 'state':
       return `${prefixo} o state está vazio ou tem caractere fora do ASCII visível. ${nada}`;
+    case 'token-no-corpo':
+      return `${prefixo} o corpo da requisição contém o access token, ou não é texto e não pode ser conferido; o token só pode viajar no cabeçalho x-amz-access-token. ${nada}`;
+    case 'pedido':
+      return `${prefixo} o id do pedido precisa ter três, sete e sete dígitos separados por hífen. ${nada}`;
+    case 'md5':
+      return `${prefixo} o contentMD5Value precisa ser o MD5 em base64 (24 caracteres terminando em ==), nunca em hexadecimal. ${nada}`;
+    case 'base64':
+      return `${prefixo} o invoiceContent está vazio ou não é base64 padrão. ${nada}`;
   }
 }
 
@@ -259,6 +293,13 @@ function ehTransitorio(status: number): boolean {
   return status === 429 || (status >= 500 && status <= 599);
 }
 
+/** What every HTTP error is built from: the request, its status, and its codes. */
+export type InicioHttpAmazon = ContextoRequisicaoAmazon & {
+  readonly status: number;
+  /** See {@link AmazonHttpError.codigosErro}; absent means none. */
+  readonly codigosErro?: readonly string[];
+};
+
 /**
  * A non-2xx that no subclass below claims — including a 3xx (redirects are
  * never followed, so a moved endpoint fails visibly), 400, 409, 413, 415, 422,
@@ -267,6 +308,13 @@ function ehTransitorio(status: number): boolean {
  * unknown code).
  *
  * `transitorio` is `true` for 5xx and 429, `false` otherwise.
+ *
+ * `codigosErro` — SP-API only: the distinct `errors[].code` labels of the body,
+ * the SAME bounded list the observer event carries (`client.ts`). `[]` when the
+ * body had none (`{}`, free text, a bare array: a 413's `ErrorList`), and
+ * always `[]` for LWA. The status classifies; the codes only let a caller tell
+ * two answers of one status apart. ⚠️ Frozen and NON-ENUMERABLE (module
+ * header): never in the message, and never in `JSON.stringify(err)`.
  */
 export class AmazonHttpError extends AmazonError {
   readonly status: number;
@@ -277,8 +325,11 @@ export class AmazonHttpError extends AmazonError {
   readonly caminho: string;
   readonly correlationId: string;
   readonly requestIdAmazon: string | null;
+  // `declare`: no class field is emitted, so the property defined below stays
+  // non-enumerable.
+  declare readonly codigosErro: readonly string[];
 
-  constructor(init: ContextoRequisicaoAmazon & { readonly status: number }, mensagem?: string) {
+  constructor(init: InicioHttpAmazon, mensagem?: string) {
     super(
       mensagem ??
         `${nomeDestino(init.destino)} respondeu HTTP ${String(init.status)} em ${onde(init)}.`,
@@ -293,6 +344,12 @@ export class AmazonHttpError extends AmazonError {
     this.caminho = init.caminho;
     this.correlationId = init.correlationId;
     this.requestIdAmazon = init.requestIdAmazon;
+    Object.defineProperty(this, 'codigosErro', {
+      value: Object.freeze([...(init.codigosErro ?? [])]),
+      enumerable: false,
+      writable: false,
+      configurable: false,
+    });
   }
 }
 
@@ -322,8 +379,7 @@ export class AmazonAuthError extends AmazonHttpError {
   readonly codigoLwa: CodigoErroLwa | null;
 
   constructor(
-    init: ContextoRequisicaoAmazon & {
-      readonly status: number;
+    init: InicioHttpAmazon & {
       readonly codigoLwa: CodigoErroLwa | null;
     },
   ) {
@@ -339,7 +395,7 @@ export class AmazonAuthError extends AmazonHttpError {
 
 /** 404: "The resource specified does not exist." Not transient. */
 export class AmazonNotFoundError extends AmazonHttpError {
-  constructor(init: ContextoRequisicaoAmazon & { readonly status: number }) {
+  constructor(init: InicioHttpAmazon) {
     super(
       init,
       `${nomeDestino(init.destino)} respondeu HTTP 404 (não encontrado) em ${onde(init)}.`,
@@ -360,8 +416,7 @@ export class AmazonThrottleError extends AmazonHttpError {
   readonly limiteTaxa: number | null;
 
   constructor(
-    init: ContextoRequisicaoAmazon & {
-      readonly status: number;
+    init: InicioHttpAmazon & {
       readonly limiteTaxa: number | null;
     },
   ) {

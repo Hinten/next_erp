@@ -1,0 +1,39 @@
+{
+  "versao": 1,
+  "perfil": "fixture",
+  "credencial": "modelo-sandbox",
+  "papeis": [
+    "nao-se-aplica"
+  ],
+  "capturadoEm": "2026-11-03",
+  "limiteTaxa": null,
+  "requisicao": {
+    "tipo": "http",
+    "metodo": "POST",
+    "caminho": "/delivery/2022-07-01/invoice",
+    "query": [
+      [
+        "shipmentId",
+        "SHP-Z3b8c5e33"
+      ]
+    ],
+    "corpo": null
+  },
+  "resposta": {
+    "status": 400,
+    "politica": "estrutural",
+    "forma": "json",
+    "bytes": 102,
+    "corpo": {
+      "errors": [
+        {
+          "code": "EntityNotFound",
+          "message": "REDACTED"
+        }
+      ]
+    }
+  },
+  "anexos": {
+    "zip": null
+  }
+}

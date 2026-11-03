@@ -585,6 +585,8 @@ describe('the status table', () => {
     expect((err as AmazonHttpError).transitorio).toBe(transitorio);
     expect((err as AmazonHttpError).destino).toBe('sp-api');
     expect(eventos[0]?.codigosErro).toEqual(codigos);
+    // The same bounded list rides the error (step 14: a write tells two 400s apart).
+    expect((err as AmazonHttpError).codigosErro).toEqual(codigos);
   });
 
   it('exact classes: 400, 409, 413 and 415 are plain AmazonHttpError, never auth or throttle', async () => {

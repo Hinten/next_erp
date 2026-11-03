@@ -6,28 +6,41 @@ the credential store, the access-token cache, the sweeps) lives in `apps/amazon`
 
 What ships here:
 
-| Module             | Holds                                                                                               |
-| ------------------ | --------------------------------------------------------------------------------------------------- |
-| `lwa.ts`           | `URL_TOKEN_LWA`, `trocarRefreshToken`, `trocarCodigoAutorizacao` and `credencialLwaValida`          |
-| `consentimento.ts` | `URL_CONSENTIMENTO_BR`, `montarUrlConsentimento` (a consent URL, never sent), `applicationIdValido` |
-| `client.ts`        | `URL_BASE_SP_API`, `MARKETPLACE_ID_BR`, `criarClienteSpApi`: GET-only, redirects never followed     |
-| `pedidos.ts`       | `searchOrders` (`buscarPedidosAtualizados`) and `getOrder` (`buscarPedido`): the two Orders reads   |
-| `prazos.ts`        | `PRAZO_AMAZON_MS`, the per-call deadline keyed on the operation class                               |
-| `types.ts`         | The LWA token response and error body, the SP-API `errors[]` envelope, the Orders v2026 order       |
-| `errors.ts`        | The typed errors, `lerLimiteTaxa` (`x-amzn-RateLimit-Limit`) and `lerCodigoErroLwa`                 |
-| `transporte.ts`    | Internal (not re-exported): the one deadline-and-catch sequence both callers share                  |
+| Module             | Holds                                                                                                 |
+| ------------------ | ----------------------------------------------------------------------------------------------------- |
+| `lwa.ts`           | `URL_TOKEN_LWA`, `trocarRefreshToken`, `trocarCodigoAutorizacao` and `credencialLwaValida`            |
+| `consentimento.ts` | `URL_CONSENTIMENTO_BR`, `montarUrlConsentimento` (a consent URL, never sent), `applicationIdValido`   |
+| `client.ts`        | `URL_BASE_SP_API`, `MARKETPLACE_ID_BR`, `criarClienteSpApi` (`get`, no body); the shared request core |
+| `escrita.ts`       | `criarClienteEscritaSpApi`: the ONE write client, `post` only (a JSON body, `escrita` deadline)       |
+| `pedidos.ts`       | `searchOrders` (`buscarPedidosAtualizados`) and `getOrder` (`buscarPedido`): the two Orders reads     |
+| `entrega.ts`       | Delivery: `consultarStatusNotaFiscal`, `enviarNotaFiscal`, the PascalCase status constants            |
+| `prazos.ts`        | `PRAZO_AMAZON_MS`, the per-call deadline keyed on the operation class                                 |
+| `types.ts`         | The LWA token response and error body, the SP-API `errors[]` envelope, the Orders v2026 order         |
+| `errors.ts`        | The typed errors, `lerLimiteTaxa` (`x-amzn-RateLimit-Limit`) and `lerCodigoErroLwa`                   |
+| `transporte.ts`    | Internal (not re-exported): the one deadline-and-catch sequence both callers share                    |
 
 ## Operations
 
 Every SP-API operation this package can call, with the model's default usage plan
 (`x-amzn-RateLimit-Limit` reports the one actually applied, when Amazon sends it):
 
-| Operation      | Helper                     | Path                                  | Query sent                                                                    | Rate (rps) | Burst |
-| -------------- | -------------------------- | ------------------------------------- | ----------------------------------------------------------------------------- | ---------- | ----- |
-| `searchOrders` | `buscarPedidosAtualizados` | `/orders/2026-01-01/orders`           | `lastUpdatedAfter`, `marketplaceIds`, `maxResultsPerPage`, `paginationToken`? | 0.0056     | 20    |
-| `getOrder`     | `buscarPedido`             | `/orders/2026-01-01/orders/{orderId}` | `includedData` only: `DADOS_INCLUIDOS_GET_ORDER` joined with `,`              | 0.5        | 30    |
+| Operation              | Helper                      | Path                                  | Query sent                                                                                               | Rate (rps) | Burst |
+| ---------------------- | --------------------------- | ------------------------------------- | -------------------------------------------------------------------------------------------------------- | ---------- | ----- |
+| `searchOrders`         | `buscarPedidosAtualizados`  | `/orders/2026-01-01/orders`           | `lastUpdatedAfter`, `marketplaceIds`, `maxResultsPerPage`, `paginationToken`?                            | 0.0056     | 20    |
+| `getOrder`             | `buscarPedido`              | `/orders/2026-01-01/orders/{orderId}` | `includedData` only: `DADOS_INCLUIDOS_GET_ORDER` joined with `,`                                         | 0.5        | 30    |
+| `getInvoiceStatus`     | `consultarStatusNotaFiscal` | `/delivery/2022-07-01/invoice/status` | `orderId`, `marketplaceId`, `invoiceType=Outbound`, `programType=EasyShip`                               | 1.133      | 25    |
+| `submitInvoice` (POST) | `enviarNotaFiscal`          | `/delivery/2022-07-01/invoice`        | `orderId` only; body: `invoiceContent`, `contentMD5Value`, `invoiceType`, `programType`, `marketplaceId` | 1.133      | 25    |
 
-- Each helper builds its query from NAMED keys, never a spread of the caller's object.
+- Each helper builds its query (and `submitInvoice` its body) from NAMED keys, never a spread of
+  the caller's object. `getInvoiceStatus` never sends `shipmentId` or `invoiceId`.
+- The Delivery helpers check SHAPE before anything is read or sent (`AmazonConfigError`): the
+  order id's 3-7-7 grammar (`pedido`), `contentMD5Value` as the base64 of a 16-byte digest — a
+  hex digest is refused (`md5`) — and `invoiceContent` as standard base64 (`base64`). Computing
+  them is the app's job; this package holds no crypto.
+- The Delivery responses are tolerant: every field nullish, every status an OPEN string (the
+  API answers PascalCase, `Accepted`; the order's own `invoiceStatus` is UPPER_SNAKE, and the
+  two are never compared). `submitInvoice` takes an empty 2xx, `{}` and `{ errors: [] }` alike
+  as accepted for processing.
 - `getOrder` requests eight datasets: `BUYER`, `RECIPIENT`, `TAX`, `PAYMENT`, `PROCEEDS`,
   `FULFILLMENT`, `PACKAGES`, `CANCELLATION`. `FULFILLMENT_ORDERS`, `EXPENSE` and
   `PROMOTION` stay out until a step reads them.
@@ -40,7 +53,9 @@ Every SP-API operation this package can call, with the model's default usage pla
 ## The credential rule
 
 - The **access token** travels in `x-amz-access-token` and nowhere else. There is
-  no SigV4, no `Authorization` and no `x-amz-date`.
+  no SigV4 and no `Authorization` header; `x-amz-date` is sent as a plain timestamp, never a
+  signature. A write body that contains the access token, or that is not text and so cannot
+  be checked, is refused (`token-no-corpo`) before anything is sent.
 - The **client secret, refresh token and authorization code** travel only in the
   form body of the LWA token POST.
 - None of them ever appears in a URL, an error, an error's `cause` or an observer
@@ -97,32 +112,42 @@ same configured application ids (`AMAZON_APPLICATION_ID`) as the OAuth start.
 The non-2xx rows are checked top to bottom: 5xx, then 429, then auth, then 404, and
 anything left is the catch-all.
 
-| Response                                                                                           | Error                                             |
-| -------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
-| 5xx (whatever the body says)                                                                       | `AmazonHttpError`, `transitorio: true`            |
-| 429                                                                                                | `AmazonThrottleError` (`limiteTaxa` when sent)    |
-| SP-API 401 / 403                                                                                   | `AmazonAuthError` (`destino: 'sp-api'`)           |
-| LWA 401 / 403, or a 4xx `invalid_grant` / `invalid_client` / `unauthorized_client`                 | `AmazonAuthError` (`destino: 'lwa'`, `codigoLwa`) |
-| 404                                                                                                | `AmazonNotFoundError`                             |
-| Any other non-2xx (3xx, 400, 409, 413, 415, 422, …; any other LWA code, e.g. `invalid_request`)    | `AmazonHttpError`, `transitorio: false`           |
-| 2xx that is empty, not JSON or the wrong shape                                                     | `AmazonSchemaError` (field paths only)            |
-| DNS / TLS / reset / body dropped mid-stream                                                        | `AmazonNetworkError`                              |
-| The per-call deadline                                                                              | `AmazonTimeoutError` (an `AmazonNetworkError`)    |
-| Our own input (token, ref, path, user-agent, LWA credentials, redirect URI, application id, state) | `AmazonConfigError` — nothing was sent            |
+| Response                                                                                           | Error                                                                       |
+| -------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| 5xx (whatever the body says)                                                                       | `AmazonHttpError`, `transitorio: true`                                      |
+| 429                                                                                                | `AmazonThrottleError` (`limiteTaxa` when sent)                              |
+| SP-API 401 / 403                                                                                   | `AmazonAuthError` (`destino: 'sp-api'`)                                     |
+| LWA 401 / 403, or a 4xx `invalid_grant` / `invalid_client` / `unauthorized_client`                 | `AmazonAuthError` (`destino: 'lwa'`, `codigoLwa`)                           |
+| 404                                                                                                | `AmazonNotFoundError`                                                       |
+| Any other non-2xx (3xx, 400, 409, 413, 415, 422, …; any other LWA code, e.g. `invalid_request`)    | `AmazonHttpError`, `transitorio: false`                                     |
+| 2xx that is empty, not JSON or the wrong shape (an empty `submitInvoice` 2xx is accepted instead)  | `AmazonSchemaError` (field paths only)                                      |
+| A `submitInvoice` 2xx whose `errors` list is NOT empty                                             | NOT an error class: `enviarNotaFiscal` returns `{ tipo: 'erros', codigos }` |
+| DNS / TLS / reset / body dropped mid-stream                                                        | `AmazonNetworkError`                                                        |
+| The per-call deadline                                                                              | `AmazonTimeoutError` (an `AmazonNetworkError`)                              |
+| Our own input (token, ref, path, user-agent, LWA credentials, redirect URI, application id, state) | `AmazonConfigError` — nothing was sent                                      |
+| A write body holding the token or not text; a Delivery order id, MD5 or base64 of the wrong shape  | `AmazonConfigError` — nothing was sent                                      |
 
 `AmazonAuthError` is the INPUT to the app's parking decision, not the decision: an
 SP-API 403 also means "expired access token" (a refresh fixes it) or "missing role",
 an LWA `invalid_client` refuses the app's own secret, and an `invalid_grant` from the
 code exchange means the five-minute code expired or was spent. The SP-API body's
-`errors[].code` rides the observer event (`codigosErro`), never the error.
+`errors[].code` rides the observer event (`codigosErro`) and, as a frozen NON-ENUMERABLE
+`codigosErro` property, the HTTP error: readable by a caller that must tell two answers of one
+status apart (`EntityNotFound` on a 400), never in a message or in any serialization of the
+error. A 413's body is a bare array, so its codes are `[]`.
+
+On the write client, a 2xx failing its schema, a 5xx, a timeout or a dropped connection MAY HAVE
+LANDED: the caller never repeats it in the same attempt, it re-reads the provider's state.
 
 ## What it deliberately is not
 
 - **No Firestore / Admin SDK / `@delfrance/data`.** ADR 0015: a channel package is a
   library, not a plugin, and the ERP orchestration lives in its app.
 - **No SigV4.** SP-API has not required AWS signing since 2023-10-02.
-- **No SP-API write method and no request body.** Every SP-API request is a `GET` by
-  construction; the only POST is the LWA token exchange.
+- **Exactly one write client, `escrita.ts`, used only by the app's write engine.** The read
+  client's `get` takes no body by construction; the one SP-API write is `submitInvoice`
+  (`entrega.ts`), and the other POST is the LWA token exchange. The request body never reaches
+  the observer event.
 - **No OAuth route, no credential store, no token cache.** The access token is
   supplied by the caller on every call.
 - **No `client_credentials` (grantless) grant yet.** No pre-cutover step calls a
@@ -139,7 +164,8 @@ code exchange means the five-minute code expired or was spent. The SP-API body's
   that first reads it (`searchOrders`' page schema with step 4, `getOrder`'s order with
   step 5). Within step 5, the order schema and `buscarPedido` land in PR 5-a, ahead of
   their one consumer, the importer (PR 5-d of the same stack); nothing calls
-  `buscarPedido` until then.
+  `buscarPedido` until then. Step 14 does the same: the write client and the Delivery helpers
+  land in PR 14-a, and nothing calls them until the app's NF-e task (PR 14-c).
 - **No call to Amazon from the tests** (D11). Every test injects its own `fetch`, and
   `test/_setup/semRede.ts` makes an un-injected one throw.
 - **No `build` script**, deliberately: `ci.yml`'s seven-job split relies on no
