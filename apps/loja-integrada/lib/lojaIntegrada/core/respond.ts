@@ -14,7 +14,9 @@
  *    read switch off (503), and a caller that went away (499);
  *  - the pedidos routes' own (step 15): a malformed pedido id, a pedido that does
  *    not exist, and the label routing's write losing its precondition on every
- *    attempt.
+ *    attempt;
+ *  - the catalogue routes' own (step 10): a malformed grade id, and the envelope
+ *    of a read that gave no answer (the shared read-failure mapper's).
  *
  * ⚠️ The ONE module under `lib/lojaIntegrada/` that imports `next/server`, and
  * therefore the one module step 3's functions bundle must never reach. Nothing
@@ -34,6 +36,7 @@ import { CODIGO_ERRO_LI, type CodigoErroLi } from '@delfrance/schemas';
 
 import type { ValidadeRecusada } from '../conta/validade';
 
+import type { FalhaDeLeituraLi } from './falhaDeLeituraLi';
 import {
   LiAppError,
   LiChamadasDesligadasError,
@@ -147,6 +150,24 @@ export function respostaIdInvalido(): NextResponse {
 /** 400 — the `[pedidoId]` segment cannot be a document id (`naoDocId`). Nothing was read. */
 export function respostaIdDePedidoInvalido(): NextResponse {
   return respostaLi(400, CODIGO_ERRO_LI.idInvalido, 'Id de pedido inválido.');
+}
+
+/**
+ * 400 — the `[gradeId]` segment of a catalogue route is not a canonical positive integer
+ * (`gradeIdDaRotaLi`). Answered before anything is read.
+ */
+export function respostaIdDeGradeInvalido(): NextResponse {
+  return respostaLi(400, CODIGO_ERRO_LI.idInvalido, 'Id de grade inválido.');
+}
+
+/**
+ * The envelope of a read that gave no answer (`core/falhaDeLeituraLi.ts`): a conta's own app
+ * error through {@link respostaDeErroLi}, else the read's own status and code.
+ */
+export function respostaDeFalhaDeLeituraLi(falha: FalhaDeLeituraLi): NextResponse {
+  return falha.tipo === 'conta'
+    ? respostaDeErroLi(falha.erro)
+    : respostaLi(falha.status, falha.code, falha.mensagem);
 }
 
 /** 404 — no pedido with this id. Nothing was written. */

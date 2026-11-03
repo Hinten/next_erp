@@ -220,11 +220,21 @@ describe('descreverFalhaCatalogoLi — the linker’s own copy', () => {
     [CODIGO_ERRO_LI.limiteDeChamadas, 503, 'limitou as chamadas', true],
     [CODIGO_ERRO_LI.tempoEsgotadoLoja, 504, 'demorou demais', true],
     [CODIGO_ERRO_LI.lojaIndisponivel, 502, 'não respondeu como esperado', true],
+    [CODIGO_ERRO_LI.credencialAlterada, 409, 'acabou de mudar', true],
   ] as const)('%s ⇒ its own copy', (code, status, trecho, repetivel) => {
     const f = descreverFalhaCatalogoLi(http(status, code));
     expect(f.mensagem).toContain(trecho);
     expect(f.mensagem).not.toContain('backend sentence');
     expect(f.repetivel).toBe(repetivel);
+  });
+
+  it('⭐ a token replaced while the list was read is a yellow, repeatable notice, not the credential panel’s sentence', () => {
+    const f = descreverFalhaCatalogoLi(http(409, CODIGO_ERRO_LI.credencialAlterada));
+    expect(f.cor).toBe('yellow');
+    expect(f.repetivel).toBe(true);
+    expect(f.mensagem).toContain('Tente de novo');
+    // Nothing was being edited on this screen.
+    expect(f.mensagem).not.toContain('salve de novo');
   });
 
   it('⭐ a 403 with no code is the operator’s permission (integrations read), not the store’s', () => {
