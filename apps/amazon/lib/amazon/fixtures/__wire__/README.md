@@ -29,12 +29,17 @@ sanitizer.
   generated: a regeneration under a new salt or on another day differs from every committed
   fixture, so it needs `--sobrescrever` and rewrites every fake (and `capturadoEm`).
 - The `c1-*` and `c2-*` fixtures are the owner's capture C1 (master plan §6), from
-  2026-10-28. They are read-only production `getOrder`, `searchOrders` and `getInvoiceStatus`
-  responses, taken by hand with `credencial: token-legado-curl` and converted by the
-  sanitizer under one salt, so an id that recurs across them (an order read twice, an order
-  and its invoice status) keeps one fake. Each name says which order shape the capture
-  holds, not which order it is. `c1-dba-e-transito` is the first half of the 7-r pair: the
-  same order, read again once delivered, becomes `c1-dba-f-entregue`.
+  2026-10-28, except the two C1b ones below. They are read-only production `getOrder`,
+  `searchOrders` and `getInvoiceStatus` responses, taken by hand with
+  `credencial: token-legado-curl` and converted by the sanitizer under one salt, so an id
+  that recurs across them (an order read twice, an order and its invoice status) keeps one
+  fake. Each name says which order shape the capture holds, not which order it is.
+  `c1-dba-e-transito` is the first half of the 7-r pair: the same order, read again once
+  delivered, becomes `c1-dba-f-entregue`.
+- The C1b batch, from 2026-11-03, is two more `getOrder` reads taken and converted the same
+  way, under the same salt: `c1-pendente` (one order still PENDING, awaiting payment
+  confirmation, when read) and `c1-dba-f-entregue` (the delivered re-read of the
+  `c1-dba-e-transito` order, so both carry one fake order id).
 - Personal and store-identifying values are fakes of the same JSON type (`fixture` profile of
   `core/redacao.ts`): buyer and recipient data, names, addresses, phones, e-mails, gift
   messages, product titles, URLs. A document under `taxRegistrationNumber` or `acquirerId`
@@ -55,8 +60,8 @@ sanitizer.
 
 `wireCorpus.test.ts` reads this folder: every file must be a valid envelope, serialised as
 `JSON.stringify(v, null, 2) + '\n'`, and pass both layers of `piiScan.ts`.
-`MINIMO_DE_FIXTURES` is the number of committed fixtures (14: the 6 model-sandbox seeds and the 8 C1 captures), so a
-fixture that disappears fails the test. A change that adds or deliberately removes a fixture
+`MINIMO_DE_FIXTURES` is the number of committed fixtures (16: the 6 model-sandbox seeds, the 8 C1 captures and the 2
+C1b ones), so a fixture that disappears fails the test. A change that adds or deliberately removes a fixture
 moves it in the same commit.
 
 This folder is excluded from Prettier and checked out with LF line endings

@@ -453,8 +453,9 @@ function textoStatusDesconhecido(status: string | null): string {
  * - `fulfilledBy` is read first for every other status: `AMAZON` (AFN) ⇒
  *   create `error` / update `error` only from a pre-approval estado or our own
  *   error, else KEEP — `logistica-amazon` either way; absent or unknown ⇒ create
- *   `error` / update KEEP, + `logistica-desconhecida` (a C1 checkpoint: if
- *   PENDING reads lack it, 5-c1 flips the create arm);
+ *   `error` / update KEEP, + `logistica-desconhecida` (capture C1b, 2026-11-03:
+ *   a real PENDING read carries `MERCHANT`, so the create arm stays; an absent
+ *   value keeps this defensive default);
  * - `MERCHANT`: `PENDING`/`PENDING_AVAILABILITY` ⇒ `aguardandoConfirmacaoDePagamento`
  *   (it reserves, plan §3 decision 13); `UNSHIPPED`/`PARTIALLY_SHIPPED`/`SHIPPED`
  *   ⇒ `pago` (the ceiling: `finalizado` is the checkout's); `UNFULFILLABLE` ⇒

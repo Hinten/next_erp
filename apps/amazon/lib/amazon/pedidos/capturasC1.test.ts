@@ -1080,8 +1080,9 @@ describe('★ the real reads as UPDATES of a stored pedido (each pre-read compos
 
   // At an EQUAL clock the row's stamp cannot tell "unmoved" from "re-stamped"
   // (both are the same µs): the row-clock rule is pinned by the NEWER-clock
-  // unchanged-package re-read below.
-  it('★ the 7-r readiness pair (C1 holds only its first half): DELIVERED at an EQUAL clock ⇒ entregue (decision 2); at a NEWER clock ⇒ entregue with the row stamped at it', async () => {
+  // unchanged-package re-read below. The REAL second half (capture C1b,
+  // `c1-dba-f-entregue.json`) is the newer-clock arm: `capturasC1b.test.ts`.
+  it('★ the 7-r readiness pair, composed: DELIVERED at an EQUAL clock ⇒ entregue (decision 2); at a NEWER clock ⇒ entregue with the row stamped at it', async () => {
     for (const novoClock of [null, '2026-11-06T17:00:00.000Z'] as const) {
       const ex = montar();
       const transito = pedidoC1('c1-dba-e-transito.json');
