@@ -1,12 +1,22 @@
 /**
- * The Selling Partner API transport: one GET-only client, `criarClienteSpApi`.
+ * The Selling Partner API transport: the read client `criarClienteSpApi`, and
+ * the request core it shares with the write client (`escrita.ts`).
  *
- * ## There is no write method, by construction
+ * ## `get` takes no body, by construction
  *
- * The client exposes `get` and nothing else, and `get` takes no body. Every
- * SP-API request this package can make is a `GET` — there is no flag to flip,
- * no verb parameter, no request body to fill. Nothing writes to Amazon before
- * the cutover; the first write step adds its own, separately reviewed method.
+ * The read client exposes `get` and nothing else, and `get` takes no body:
+ * there is no flag to flip, no verb parameter, no request body to fill. It
+ * hands the core a `GET` built from its named fields, so nothing a caller adds
+ * to the request object can ride along. The write path is a SEPARATE client in
+ * `escrita.ts` (one `post`, the Delivery invoice only), never a widened `get`.
+ *
+ * ## The request core is INTERNAL
+ *
+ * {@link prepararNucleoSpApi} and {@link executarSpApi} are exported from this
+ * module for `escrita.ts` alone; the barrel (`index.ts`) lists this module's
+ * public names one by one and leaves both out. One core means the path checks,
+ * the token-in-URL refusal, the correlation id, the deadline and the status
+ * classification can never drift between the two clients.
  *
  * ## The host and the marketplace
  *
@@ -56,12 +66,18 @@
  *  3. Generate the correlation id (ours only; Amazon documents no request
  *     header for it, so it is never sent).
  *  4. Build exactly `x-amz-access-token`, `x-amz-date`, `user-agent` and
- *     `accept`. No `Content-Type` on a GET.
- *  5. Send through `transporte.ts`: one deadline, `redirect: 'manual'`, the body
- *     read inside the window, the deadline released in `finally`.
+ *     `accept`. No `Content-Type` on a GET; the write client's `POST` adds
+ *     `content-type: application/json` and nothing else, after refusing a body
+ *     that carries the token, or that is not text and so cannot be checked
+ *     (`AmazonConfigError('token-no-corpo')`).
+ *  5. Send through `transporte.ts`: one deadline (`PRAZO_AMAZON_MS.leitura`
+ *     for a GET, `.escrita` for the POST), `redirect: 'manual'`, the response
+ *     body read inside the window, the deadline released in `finally`.
  *  6. Classify the outcome into the `errors.ts` taxonomy, by HTTP STATUS —
- *     never by `errors[].code`, which is free-form.
- *  7. Call `onChamada` once, then return or throw.
+ *     never by `errors[].code`, which is free-form. The codes ride the
+ *     observer event and the HTTP error (`codigosErro`) as labels only.
+ *  7. Call `onChamada` once, then return or throw. The REQUEST body never
+ *     reaches the event: `ChamadaAmazon` has no field for it.
  *
  * ⚠️ **Redirects are never followed.** SP-API documents none (no 3xx in any
  * model), so a 3xx is an `AmazonHttpError` with `transitorio: false`. Following
@@ -163,7 +179,8 @@ export interface OpcoesClienteSpApi {
    * The step-2b logger attaches here.
    *
    * ⚠️ An observer that throws propagates in place of the outcome. Harmless for
-   * a GET; a logger must still never throw.
+   * a GET; on the write client (`escrita.ts`) it would hide whether a write
+   * landed. A logger must never throw.
    */
   readonly onChamada?: (e: ChamadaAmazon) => void;
   /** Milliseconds, for `latenciaMs` only. Defaults to `Date.now`. */
@@ -238,6 +255,15 @@ function caminhoValido(caminho: unknown): caminho is string {
 }
 
 /**
+ * Whether a write's body is TEXT, the one form the token check can read. The
+ * type already says `string`; this holds the check total against a cast, as
+ * {@link caminhoValido} does for the path.
+ */
+function corpoDeTexto(corpo: unknown): corpo is string {
+  return typeof corpo === 'string';
+}
+
+/**
  * Refuse an unusable credential before anything is built from it.
  *
  * ⚠️ **A refused token never carries its `ref`.** `refValida` can only spot the
@@ -269,8 +295,9 @@ function tokenNaUrl(
 }
 
 /**
- * The distinct `errors[].code` values of a non-2xx body, for the observer.
- * A body that is not the envelope (`{}`, HTML, empty) has none.
+ * The distinct `errors[].code` values of a non-2xx body, for the observer
+ * event and the HTTP error alike. A body that is not the envelope (`{}`,
+ * HTML, empty, a bare `ErrorList` array) has none.
  */
 function lerCodigosErro(texto: string, token: string): readonly string[] {
   const leitura = lerRespostaJson(texto, spApiErrosSchema);
@@ -299,139 +326,213 @@ function dataAmz(ms: number): string {
     .replace(/\.\d{3}Z$/, 'Z');
 }
 
-export function criarClienteSpApi(opts: OpcoesClienteSpApi): SpApiLeituraClient {
+/* -------------------------------------------------------------------------- */
+/*                     The request core (INTERNAL, see header)                 */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * What the core needs from a client, resolved ONCE at construction.
+ * ⚠️ INTERNAL: exported for `escrita.ts`, never from the barrel.
+ */
+export interface NucleoSpApi {
+  /** The caller's options, kept whole: `obterCredencial` is called on them every time. */
+  readonly opts: OpcoesClienteSpApi;
+  readonly userAgent: string;
+  readonly fetchImpl: typeof globalThis.fetch;
+  readonly gerarCorrelationId: () => string;
+  readonly agora: () => number;
+}
+
+/**
+ * One request as a client hands it to the core. A `GET` has no body BY TYPE;
+ * only the write client (`escrita.ts`) builds the `POST` arm, whose `corpo` is
+ * the JSON text exactly as it will be sent.
+ * ⚠️ INTERNAL: exported for `escrita.ts`, never from the barrel.
+ */
+export type RequisicaoSpApi<S extends z.ZodType> = PedidoGetSpApi<S> &
+  ({ readonly metodo: 'GET' } | { readonly metodo: 'POST'; readonly corpo: string });
+
+/**
+ * Check the options and resolve the defaults. `operacaoConstrucao` names the
+ * factory on the refusal (`criarClienteSpApi`, `criarClienteEscritaSpApi`).
+ * ⚠️ INTERNAL: exported for `escrita.ts`, never from the barrel.
+ */
+export function prepararNucleoSpApi(
+  opts: OpcoesClienteSpApi,
+  operacaoConstrucao: string,
+): NucleoSpApi {
   if (!userAgentValido(opts.userAgent)) {
     throw new AmazonConfigError('user-agent', {
-      operacao: OPERACAO_CONSTRUCAO,
+      operacao: operacaoConstrucao,
       refCredencial: null,
     });
   }
-  const userAgent = opts.userAgent;
-  const fetchImpl = resolverFetch(opts.fetch);
-  const gerarCorrelationId = opts.gerarCorrelationId ?? (() => globalThis.crypto.randomUUID());
-  const agora = opts.agora ?? (() => Date.now());
+  return {
+    opts,
+    userAgent: opts.userAgent,
+    fetchImpl: resolverFetch(opts.fetch),
+    gerarCorrelationId: opts.gerarCorrelationId ?? (() => globalThis.crypto.randomUUID()),
+    agora: opts.agora ?? (() => Date.now()),
+  };
+}
 
+/**
+ * ONE SP-API request, every step of the module header in order.
+ * ⚠️ INTERNAL: exported for `escrita.ts`, never from the barrel.
+ */
+export async function executarSpApi<S extends z.ZodType>(
+  n: NucleoSpApi,
+  p: RequisicaoSpApi<S>,
+): Promise<RespostaSpApi<z.infer<S>>> {
+  const { operacao, caminho, schema, sinal, metodo } = p;
+
+  // 1. The path. Its message never echoes it: a malformed one may carry a query.
+  if (!caminhoValido(caminho)) {
+    throw new AmazonConfigError('caminho', { operacao, refCredencial: null });
+  }
+
+  // 2. The credential, OUTSIDE the deadline, every time.
+  const credencial = await n.opts.obterCredencial();
+  validarCredencial(credencial, operacao);
+  const { accessToken, ref } = credencial;
+
+  const query: readonly (readonly [string, string])[] = Object.entries(p.query ?? {}).map(
+    ([k, v]) => [k, String(v)] as const,
+  );
+  const qs = new URLSearchParams(query.map(([k, v]) => [k, v])).toString();
+  const url = `${URL_BASE_SP_API}${caminho}${qs === '' ? '' : `?${qs}`}`;
+
+  // The token travels in `x-amz-access-token` only. Refused here, before any
+  // message or event is built from the path and the query.
+  if (tokenNaUrl(accessToken, url, query)) {
+    throw new AmazonConfigError('token-na-url', { operacao, refCredencial: ref });
+  }
+  if (contemSegredo(n.userAgent, [accessToken])) {
+    throw new AmazonConfigError('user-agent', { operacao, refCredencial: ref });
+  }
+  // The write's body, checked on the exact text that would be sent. A body that
+  // is not text (bytes behind a cast) cannot be inspected, so it is never cleared.
+  const corpo = p.metodo === 'POST' ? p.corpo : undefined;
+  if (p.metodo === 'POST' && (!corpoDeTexto(corpo) || contemSegredo(corpo, [accessToken]))) {
+    throw new AmazonConfigError('token-no-corpo', { operacao, refCredencial: ref });
+  }
+
+  // 3. The correlation id: ours, never sent.
+  const correlationId = n.gerarCorrelationId();
+
+  // 4. Exactly these headers; a write adds its content type and nothing else.
+  const headers: Record<string, string> = {
+    'x-amz-access-token': accessToken,
+    'x-amz-date': dataAmz(n.agora()),
+    'user-agent': n.userAgent,
+    accept: 'application/json',
+  };
+  if (corpo !== undefined) headers['content-type'] = 'application/json';
+
+  // Built from named fields: the request body has no slot in the event.
+  const emitir = criarEmissor(
+    {
+      destino: 'sp-api',
+      operacao,
+      metodo,
+      caminho,
+      query,
+      correlationId,
+      refCredencial: ref,
+    },
+    true,
+    n.opts.onChamada,
+  );
+
+  // 5. Send. A write is bounded by its own class (`prazos.ts`).
+  const r = await enviar({
+    fetchImpl: n.fetchImpl,
+    agora: n.agora,
+    url,
+    metodo,
+    headers,
+    ...(corpo === undefined ? {} : { corpo }),
+    prazoMs: metodo === 'POST' ? PRAZO_AMAZON_MS.escrita : PRAZO_AMAZON_MS.leitura,
+    sinal,
+    ctx: {
+      destino: 'sp-api',
+      operacao,
+      metodo,
+      caminho,
+      correlationId,
+      refCredencial: ref,
+    },
+    segredos: [accessToken],
+    emitir,
+  });
+
+  // 6. Classify. The scrubbed text is for the observer ONLY; the parse reads
+  // the raw text, so a scrub can never alter the data.
+  const { status, texto, ctx } = r;
+  const base = {
+    status,
+    latenciaMs: r.latenciaMs,
+    requestIdAmazon: r.requestIdAmazon,
+    limiteTaxa: r.limiteTaxa,
+    corpo: texto.replaceAll(accessToken, TOKEN_REMOVIDO),
+  };
+
+  if (r.ok) {
+    const leitura = lerRespostaJson(texto, schema);
+    if (leitura.ok) {
+      emitir({ ...base, resultado: 'ok' });
+      return {
+        dados: leitura.data,
+        status,
+        correlationId,
+        requestIdAmazon: r.requestIdAmazon,
+        limiteTaxa: r.limiteTaxa,
+        refCredencial: ref,
+      };
+    }
+    // `'nao-json'` hands back the raw text; it is dropped here, never carried.
+    const campos = leitura.motivo === 'formato' ? leitura.campos : [];
+    emitir({ ...base, resultado: 'schema' });
+    throw new AmazonSchemaError({ ...ctx, status, motivo: leitura.motivo, campos });
+  }
+
+  // The same bounded list for the event and the error (`errors.ts`).
+  const codigosErro = lerCodigosErro(texto, accessToken);
+  if (status === 401 || status === 403) {
+    emitir({ ...base, resultado: 'auth', codigosErro });
+    throw new AmazonAuthError({ ...ctx, status, codigoLwa: null, codigosErro });
+  }
+  if (status === 404) {
+    emitir({ ...base, resultado: 'nao-encontrado', codigosErro });
+    throw new AmazonNotFoundError({ ...ctx, status, codigosErro });
+  }
+  if (status === 429) {
+    emitir({ ...base, resultado: 'limite', codigosErro });
+    throw new AmazonThrottleError({ ...ctx, status, limiteTaxa: r.limiteTaxa, codigosErro });
+  }
+  emitir({ ...base, resultado: 'http', codigosErro });
+  throw new AmazonHttpError({ ...ctx, status, codigosErro });
+}
+
+/* -------------------------------------------------------------------------- */
+/*                               The read client                              */
+/* -------------------------------------------------------------------------- */
+
+export function criarClienteSpApi(opts: OpcoesClienteSpApi): SpApiLeituraClient {
+  const n = prepararNucleoSpApi(opts, OPERACAO_CONSTRUCAO);
+
+  // The core gets a GET built from the named fields: no body, whatever `p` holds.
   async function get<S extends z.ZodType>(
     p: PedidoGetSpApi<S>,
   ): Promise<RespostaSpApi<z.infer<S>>> {
-    const { operacao, caminho, schema, sinal } = p;
-
-    // 1. The path. Its message never echoes it: a malformed one may carry a query.
-    if (!caminhoValido(caminho)) {
-      throw new AmazonConfigError('caminho', { operacao, refCredencial: null });
-    }
-
-    // 2. The credential, OUTSIDE the deadline, every time.
-    const credencial = await opts.obterCredencial();
-    validarCredencial(credencial, operacao);
-    const { accessToken, ref } = credencial;
-
-    const query: readonly (readonly [string, string])[] = Object.entries(p.query ?? {}).map(
-      ([k, v]) => [k, String(v)] as const,
-    );
-    const qs = new URLSearchParams(query.map(([k, v]) => [k, v])).toString();
-    const url = `${URL_BASE_SP_API}${caminho}${qs === '' ? '' : `?${qs}`}`;
-
-    // The token travels in `x-amz-access-token` only. Refused here, before any
-    // message or event is built from the path and the query.
-    if (tokenNaUrl(accessToken, url, query)) {
-      throw new AmazonConfigError('token-na-url', { operacao, refCredencial: ref });
-    }
-    if (contemSegredo(userAgent, [accessToken])) {
-      throw new AmazonConfigError('user-agent', { operacao, refCredencial: ref });
-    }
-
-    // 3. The correlation id: ours, never sent.
-    const correlationId = gerarCorrelationId();
-
-    // 4. Exactly these headers.
-    const headers: Record<string, string> = {
-      'x-amz-access-token': accessToken,
-      'x-amz-date': dataAmz(agora()),
-      'user-agent': userAgent,
-      accept: 'application/json',
-    };
-
-    const emitir = criarEmissor(
-      {
-        destino: 'sp-api',
-        operacao,
-        metodo: 'GET',
-        caminho,
-        query,
-        correlationId,
-        refCredencial: ref,
-      },
-      true,
-      opts.onChamada,
-    );
-
-    // 5. Send.
-    const r = await enviar({
-      fetchImpl,
-      agora,
-      url,
+    return executarSpApi(n, {
       metodo: 'GET',
-      headers,
-      prazoMs: PRAZO_AMAZON_MS.leitura,
-      sinal,
-      ctx: {
-        destino: 'sp-api',
-        operacao,
-        metodo: 'GET',
-        caminho,
-        correlationId,
-        refCredencial: ref,
-      },
-      segredos: [accessToken],
-      emitir,
+      operacao: p.operacao,
+      caminho: p.caminho,
+      query: p.query,
+      schema: p.schema,
+      sinal: p.sinal,
     });
-
-    // 6. Classify. The scrubbed text is for the observer ONLY; the parse reads
-    // the raw text, so a scrub can never alter the data.
-    const { status, texto, ctx } = r;
-    const base = {
-      status,
-      latenciaMs: r.latenciaMs,
-      requestIdAmazon: r.requestIdAmazon,
-      limiteTaxa: r.limiteTaxa,
-      corpo: texto.replaceAll(accessToken, TOKEN_REMOVIDO),
-    };
-
-    if (r.ok) {
-      const leitura = lerRespostaJson(texto, schema);
-      if (leitura.ok) {
-        emitir({ ...base, resultado: 'ok' });
-        return {
-          dados: leitura.data,
-          status,
-          correlationId,
-          requestIdAmazon: r.requestIdAmazon,
-          limiteTaxa: r.limiteTaxa,
-          refCredencial: ref,
-        };
-      }
-      // `'nao-json'` hands back the raw text; it is dropped here, never carried.
-      const campos = leitura.motivo === 'formato' ? leitura.campos : [];
-      emitir({ ...base, resultado: 'schema' });
-      throw new AmazonSchemaError({ ...ctx, status, motivo: leitura.motivo, campos });
-    }
-
-    const codigosErro = lerCodigosErro(texto, accessToken);
-    if (status === 401 || status === 403) {
-      emitir({ ...base, resultado: 'auth', codigosErro });
-      throw new AmazonAuthError({ ...ctx, status, codigoLwa: null });
-    }
-    if (status === 404) {
-      emitir({ ...base, resultado: 'nao-encontrado', codigosErro });
-      throw new AmazonNotFoundError({ ...ctx, status });
-    }
-    if (status === 429) {
-      emitir({ ...base, resultado: 'limite', codigosErro });
-      throw new AmazonThrottleError({ ...ctx, status, limiteTaxa: r.limiteTaxa });
-    }
-    emitir({ ...base, resultado: 'http', codigosErro });
-    throw new AmazonHttpError({ ...ctx, status });
   }
 
   return { get };

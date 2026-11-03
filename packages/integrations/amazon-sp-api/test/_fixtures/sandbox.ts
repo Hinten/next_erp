@@ -62,6 +62,18 @@
  *    (brands), the substitution options, the carrier and service names, the
  *    ship-from address and the transparency codes. Every id is a FAKE shape
  *    (order, line, package reference, tracking number).
+ *  - `statusNotaFiscal200` — delivery `getInvoiceStatus` 200 static[0], the
+ *    model's example as printed: its order id, shipment id and `invoices[].id`
+ *    (a 44-digit key shape, all zeros after `352`) are the model's own
+ *    placeholders.
+ *  - `erro400StatusInvalidInput` — delivery `getInvoiceStatus` 400 static[0].
+ *  - `envioNotaFiscal200` — delivery `submitInvoice` 200 static[0]: `{}`.
+ *  - `erro400EnvioEntityNotFound` — delivery `submitInvoice` 400 static[0].
+ *  - `statusNotaFiscalSemRemessa` — NOT a sandbox example: the KEY shape of the
+ *    owner's one read-only status capture (C2; `apps/amazon`'s
+ *    `c2-status-aceita.json`, which this package cannot read): no
+ *    `amazonShipmentId`, keys in the order Amazon sent them. Every value is a
+ *    placeholder.
  *
  * The LWA token response is the shape of the example on
  * D:connecting-to-the-selling-partner-api (`token_type: 'bearer'`,
@@ -79,6 +91,39 @@ import { ACCESS_TOKEN, REFRESH_TOKEN } from '../_helpers/mockFetch';
 /* -------------------------------------------------------------------------- */
 /*                     SP-API — from the models' sandbox                      */
 /* -------------------------------------------------------------------------- */
+
+export const statusNotaFiscal200 = {
+  amazonShipmentId: '1111111111111',
+  amazonOrderId: '000-0000000-0000000',
+  invoiceStatus: 'Accepted',
+  orderInvoicingStatus: 'Accepted',
+  invoices: [{ id: '35200000000000000000000000000000000000000000', status: 'Accepted' }],
+} as const;
+
+export const erro400StatusInvalidInput = {
+  errors: [
+    {
+      code: 'InvalidInput',
+      message: 'Invalid Shipment Id',
+      details: "'BadIDForShipment' is an invalid shipment Id",
+    },
+  ],
+} as const;
+
+export const envioNotaFiscal200 = {} as const;
+
+export const erro400EnvioEntityNotFound = {
+  errors: [
+    { code: 'EntityNotFound', message: 'Entity (ShipmentId, BadIDForShipment) was not found' },
+  ],
+} as const;
+
+export const statusNotaFiscalSemRemessa = {
+  invoices: [{ id: 'ID-DA-FATURA-FALSO', status: 'Accepted' }],
+  amazonOrderId: '000-0000000-0000000',
+  orderInvoicingStatus: 'Accepted',
+  invoiceStatus: 'Accepted',
+} as const;
 
 export const erro400InvalidInput = {
   errors: [{ code: 'InvalidInput', message: 'Invalid Input' }],

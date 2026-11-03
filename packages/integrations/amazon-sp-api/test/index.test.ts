@@ -21,6 +21,15 @@ describe('the constants', () => {
     ]);
     expect(barril.MAX_USER_AGENT).toBe(500);
     expect(barril.MAX_REF_CREDENCIAL).toBe(64);
+    expect(barril.OPERACAO_GET_INVOICE_STATUS).toBe('getInvoiceStatus');
+    expect(barril.OPERACAO_SUBMIT_INVOICE).toBe('submitInvoice');
+    expect(barril.CAMINHO_STATUS_NOTA_FISCAL).toBe('/delivery/2022-07-01/invoice/status');
+    expect(barril.CAMINHO_NOTA_FISCAL).toBe('/delivery/2022-07-01/invoice');
+    expect(barril.TIPO_FATURA_AMAZON).toBe('Outbound');
+    expect(barril.PROGRAMA_ENTREGA_AMAZON).toBe('EasyShip');
+    expect(Object.keys(barril.STATUS_FATURA_ENTREGA_AMAZON)).toHaveLength(4);
+    expect(Object.keys(barril.STATUS_FATURAMENTO_PEDIDO_AMAZON)).toHaveLength(4);
+    expect(Object.keys(barril.STATUS_FATURA_ITEM_AMAZON)).toHaveLength(4);
   });
 });
 
@@ -38,6 +47,9 @@ describe('the barrel', () => {
       'buscarPedidosAtualizados',
       'buscarPedido',
       'caminhoGetOrder',
+      'criarClienteEscritaSpApi',
+      'consultarStatusNotaFiscal',
+      'enviarNotaFiscal',
     ] as const) {
       expect(typeof barril[nome], nome).toBe('function');
     }
@@ -51,10 +63,12 @@ describe('the barrel', () => {
       'itemPedidoWireAmazonSchema',
       'pacoteWireAmazonSchema',
       'dinheiroWireAmazonSchema',
+      'respostaStatusNotaFiscalSchema',
+      'respostaEnvioNotaFiscalSchema',
     ] as const) {
       expect(typeof barril[nome].safeParse, nome).toBe('function');
     }
-    expect(barril.PRAZO_AMAZON_MS).toEqual({ leitura: 20_000, lwa: 20_000 });
+    expect(barril.PRAZO_AMAZON_MS).toEqual({ leitura: 20_000, lwa: 20_000, escrita: 30_000 });
     for (const classe of [
       barril.AmazonError,
       barril.AmazonConfigError,
@@ -82,6 +96,9 @@ describe('the barrel', () => {
       'contemSegredo',
       'lerRequestIdAmazon',
       'redirectUriValido',
+      // The request core both clients share (`client.ts`).
+      'executarSpApi',
+      'prepararNucleoSpApi',
     ]) {
       expect(exportados, interno).not.toContain(interno);
     }

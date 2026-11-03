@@ -4,11 +4,13 @@
  *
  * What ships here: the two Login with Amazon token exchanges (`lwa.ts`), the
  * Seller Central consent URL that starts the authorization (`consentimento.ts`),
- * a GET-only SP-API client for the North America host that serves the BR store
- * (`client.ts`), the backstop poll's one list read, `searchOrders`
- * (`pedidos.ts`, step 4), the importer's one order read, `getOrder` (`pedidos.ts`,
- * step 5), the per-call deadlines, the typed errors, and the wire schemas those
- * consume. Everything stateful (the credential store, the OAuth routes,
+ * a read client for the North America host that serves the BR store
+ * (`client.ts`, `get` only), exactly ONE write client (`escrita.ts`, `post`
+ * only), the backstop poll's one list read, `searchOrders` (`pedidos.ts`,
+ * step 4), the importer's one order read, `getOrder` (`pedidos.ts`, step 5),
+ * the Delivery-by-Amazon NF-e status read and upload, `getInvoiceStatus` and
+ * `submitInvoice` (`entrega.ts`, step 14), the per-call deadlines, the typed
+ * errors, and the wire schemas those consume. Everything stateful (the credential store, the OAuth routes,
  * the access-token cache, the sweeps) is driven by the App Hosting backend
  * `apps/amazon`, which holds the Firestore/Admin-SDK dependency.
  *
@@ -24,9 +26,10 @@
  *
  *  - **No Firestore, no Admin SDK, no `@delfrance/data`.** ADR 0015.
  *  - **No SigV4.** SP-API has not required AWS signing since 2023-10-02.
- *  - **No SP-API write method and no request body.** Every SP-API request is a
- *    `GET` by construction; there is no write to the provider before the
- *    cutover. The only POST is the LWA token exchange.
+ *  - **Exactly one write client, `escrita.ts`, used only by the app's write
+ *    engine.** The read client's `get` takes no body by construction; the one
+ *    SP-API write is `submitInvoice` (`entrega.ts`), and nothing writes to the
+ *    provider before the cutover (D11). The other POST is the LWA token exchange.
  *  - **No OAuth route, no credential store, no token cache.** The access token
  *    is supplied per call by the caller and never kept here.
  *  - **No `client_credentials` (grantless) grant yet.** No pre-cutover step
@@ -43,16 +46,36 @@
  *    the step that first reads it (`searchOrders`' page schema with step 4,
  *    `getOrder`'s order with step 5). Within step 5, the order schema and
  *    `buscarPedido` land in PR 5-a, ahead of their one consumer, the importer
- *    (PR 5-d of the same stack); nothing calls `buscarPedido` until then.
+ *    (PR 5-d of the same stack); nothing calls `buscarPedido` until then. Step
+ *    14 does the same: the write client and the Delivery helpers land in PR
+ *    14-a, and nothing calls them until the app's NF-e task (PR 14-c).
  *  - **No `build` script.** `ci.yml`'s seven-job split relies on no `packages/*`
  *    workspace defining one.
  *
- * `transporte.ts` is internal and deliberately not re-exported.
+ * `transporte.ts` is internal and deliberately not re-exported, and so is the
+ * request core both clients share (`prepararNucleoSpApi` / `executarSpApi` in
+ * `client.ts`): that module's public names are listed one by one below.
  */
 export * from './errors';
 export * from './prazos';
 export * from './types';
-export * from './client';
+export {
+  type ChamadaAmazon,
+  criarClienteSpApi,
+  type CredencialSpApi,
+  MARKETPLACE_ID_BR,
+  MAX_REF_CREDENCIAL,
+  MAX_USER_AGENT,
+  type OpcoesClienteSpApi,
+  type PedidoGetSpApi,
+  type RespostaSpApi,
+  type ResultadoChamadaAmazon,
+  type SpApiLeituraClient,
+  TOKEN_REMOVIDO,
+  URL_BASE_SP_API,
+} from './client';
+export * from './escrita';
 export * from './lwa';
 export * from './consentimento';
 export * from './pedidos';
+export * from './entrega';

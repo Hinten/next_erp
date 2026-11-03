@@ -11,8 +11,8 @@
  * ## Why the budget is keyed on the operation CLASS, not the endpoint
  *
  * The question a budget answers is "what does a cut HERE leave behind?" (the
- * Melhor Envio precedent, `freight-br/src/melhor-envio/prazos.ts`). Two classes
- * exist today:
+ * Melhor Envio precedent, `freight-br/src/melhor-envio/prazos.ts`). Three
+ * classes exist:
  *
  * - `'leitura'` — an SP-API `GET`. A cut one leaves nothing behind, and
  *   repeating it is harmless.
@@ -25,10 +25,11 @@
  *     `invalid_grant`, and the only remedy is for the seller to consent again.
  *     So it must never be retried automatically — the budget is the same, but
  *     what the caller does after a timeout is not.
- *
- * ⚠️ The first write step adds `'escrita'` to {@link ClasseOperacaoAmazon}, and
- * `satisfies Record<ClasseOperacaoAmazon, number>` then makes the missing budget
- * a compile error until someone decides what a cut write leaves behind.
+ * - `'escrita'` — an SP-API `POST` through the write client (`escrita.ts`).
+ *   ⚠️ A cut write may already have been ingested: Amazon can hold it while
+ *   the answer never arrived. So it is NEVER repeated in the same attempt — the
+ *   caller re-reads the provider's state and decides from that. The budget is
+ *   longer than a read's because the body (a whole document) travels up.
  *
  * ⚠️ There is no `{ curto, longo }` pair and no row in
  * `http-client-timeout-ceiling.test.js`: that registry holds clients of OUR
@@ -39,10 +40,15 @@
  */
 
 /** The idempotency class of a call. */
-export type ClasseOperacaoAmazon = 'leitura' | 'lwa';
+export type ClasseOperacaoAmazon = 'leitura' | 'lwa' | 'escrita';
 
-/** Milliseconds per call, by class. */
+/**
+ * Milliseconds per call, by class. `satisfies Record<ClasseOperacaoAmazon, …>`
+ * makes a new class without a budget a compile error until someone decides what
+ * a cut call of that class leaves behind.
+ */
 export const PRAZO_AMAZON_MS = {
   leitura: 20_000,
   lwa: 20_000,
+  escrita: 30_000,
 } as const satisfies Record<ClasseOperacaoAmazon, number>;

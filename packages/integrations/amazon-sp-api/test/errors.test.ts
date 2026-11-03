@@ -213,14 +213,61 @@ describe('the class hierarchy', () => {
       'redirect-uri',
       'application-id',
       'state',
+      'token-no-corpo',
+      'pedido',
+      'md5',
+      'base64',
     ];
+    const mensagens = new Set<string>();
     for (const motivo of motivos) {
       const err = new AmazonConfigError(motivo, { operacao: 'op', refCredencial: null });
       expect(err.motivo).toBe(motivo);
       expect(err.refCredencial).toBeNull();
       expect(err.message).toContain('op');
       expect(err.message).toContain('Nada foi enviado');
+      mensagens.add(err.message);
     }
+    // ★ Each motivo has its OWN sentence.
+    expect(mensagens.size).toBe(motivos.length);
+  });
+
+  it('★ the step-14 motivos echo no value: no digit run, no digest, no body', () => {
+    for (const motivo of ['token-no-corpo', 'pedido', 'md5', 'base64'] as const) {
+      const { message } = new AmazonConfigError(motivo, {
+        operacao: 'submitInvoice',
+        refCredencial: null,
+      });
+      expect(message, motivo).not.toMatch(/\d{3,}/);
+      expect(message, motivo).not.toMatch(/[A-Za-z0-9+/]{16,}={0,2}/);
+    }
+    expect(new AmazonConfigError('md5', { operacao: 'x', refCredencial: null }).message).toContain(
+      'base64',
+    );
+  });
+
+  it('an HTTP error carries its codes as given, frozen and NON-enumerable; none by default (LWA)', () => {
+    const err = new AmazonHttpError({ ...ctx, status: 400, codigosErro: ['EntityNotFound'] });
+    expect(err.codigosErro).toEqual(['EntityNotFound']);
+    expect(Object.isFrozen(err.codigosErro)).toBe(true);
+    expect(err.message).not.toContain('EntityNotFound');
+    // Readable in process, absent from every serialization of the error.
+    expect(Object.keys(err)).not.toContain('codigosErro');
+    expect(JSON.stringify(err)).not.toContain('EntityNotFound');
+    expect({ ...err }).not.toHaveProperty('codigosErro');
+    expect(new AmazonHttpError({ ...ctxLwa, status: 400 }).codigosErro).toEqual([]);
+    expect(
+      new AmazonAuthError({ ...ctx, status: 403, codigoLwa: null, codigosErro: ['Forbidden'] })
+        .codigosErro,
+    ).toEqual(['Forbidden']);
+    expect(new AmazonNotFoundError({ ...ctx, status: 404 }).codigosErro).toEqual([]);
+    expect(
+      new AmazonThrottleError({
+        ...ctx,
+        status: 429,
+        limiteTaxa: null,
+        codigosErro: ['RateLimited'],
+      }).codigosErro,
+    ).toEqual(['RateLimited']);
   });
 
   it('a schema error names field PATHS in its message', () => {

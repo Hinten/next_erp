@@ -28,6 +28,7 @@ import {
   SELLER_ID_REDIGIDO,
   SUBARVORES_NEGADAS_AMAZON,
   TABELAS_AMAZON,
+  TABELAS_REQUISICAO_AMAZON,
   type TabelaRedacaoAmazon,
   bytesUtf8,
   chaveDeCredencialAmazon,
@@ -35,6 +36,7 @@ import {
   classificarCaminho,
   cortarUtf8,
   mascararTexto,
+  passaPredicadoAmazon,
   placeholderDeDocumento,
   profundidadeJson,
   redigirCaminhoEQuery,
@@ -56,6 +58,7 @@ const CNPJ_LETRA = gerarCnpj('12ABC34501DE');
 const GET_ORDER = '/orders/2026-01-01/orders/123-4567890-1234567';
 const SEARCH = '/orders/2026-01-01/orders';
 const STATUS_NF = '/delivery/2022-07-01/invoice/status';
+const NOTA_FISCAL = '/delivery/2022-07-01/invoice';
 const BULK = '/easyShip/2022-03-23/packages/bulk';
 const PACOTE = '/easyShip/2022-03-23/package';
 const RDT = '/tokens/2021-03-01/restrictedDataToken';
@@ -363,6 +366,7 @@ describe('spec coverage — against the committed leaf inventory', () => {
       'url',
       'restrictedDataToken',
       'invoiceContent',
+      'contentMD5Value',
       'receiptHandle',
       'eventSourceARN',
       'SenderId',
@@ -1555,5 +1559,89 @@ describe('the bulk REQUEST table (step 2b-b `.req.json`, fixture only)', () => {
       ok: false,
       motivo: 'nao-json',
     });
+  });
+});
+
+describe('the submitInvoice REQUEST table and the MD5 key (step 14)', () => {
+  /** A short, synthetic body: what the write client sends, never a real NF-e. */
+  const corpo = JSON.stringify({
+    invoiceContent: 'PG5mZVByb2MvPg==',
+    contentMD5Value: 'kAFQmDzST7DWlj99KOF/cg==',
+    invoiceType: 'Outbound',
+    programType: 'EasyShip',
+    marketplaceId: 'A2Q3Y263D00KWC',
+    observacao: 'texto livre',
+  });
+
+  it('★ keeps invoiceType, programType and marketplaceId; the document, its digest and anything unnamed are redacted', () => {
+    expect(Object.keys(TABELAS_REQUISICAO_AMAZON)).toEqual([
+      'createScheduledPackageBulk',
+      'submitInvoice',
+    ]);
+    const r = redigirRequisicaoParaFixture(
+      { caminho: NOTA_FISCAL, metodo: 'POST', corpo },
+      { falsificador: falsificadorDeTeste() },
+    );
+    if (!r.ok) throw new Error(r.motivo);
+    expect(r.corpo).toEqual({
+      invoiceContent: 'REDACTED',
+      contentMD5Value: 'REDACTED',
+      invoiceType: 'Outbound',
+      programType: 'EasyShip',
+      marketplaceId: 'A2Q3Y263D00KWC',
+      observacao: 'REDACTED',
+    });
+  });
+
+  it('★ near-miss: marketplaceId keeps only a MARKETPLACE id — an opaque value outside that grammar is not kept', () => {
+    const r = redigirRequisicaoParaFixture(
+      {
+        caminho: NOTA_FISCAL,
+        metodo: 'POST',
+        corpo: JSON.stringify({ marketplaceId: 'vendedor_x-1' }),
+      },
+      { falsificador: falsificadorDeTeste() },
+    );
+    if (!r.ok) throw new Error(r.motivo);
+    // Anti-vacuity: the value IS opaque-shaped, so only the row's predicate kind refuses it.
+    expect(passaPredicadoAmazon('opaco', 'vendedor_x-1')).toBe(true);
+    expect(passaPredicadoAmazon('idMarketplace', 'vendedor_x-1')).toBe(false);
+    expect(r.corpo).not.toEqual({ marketplaceId: 'vendedor_x-1' });
+  });
+
+  it('near-miss: the status path (a GET) has no request table — sem-tabela', () => {
+    expect(
+      redigirRequisicaoParaFixture(
+        { caminho: STATUS_NF, metodo: 'POST', corpo },
+        { falsificador: falsificadorDeTeste() },
+      ),
+    ).toEqual({ ok: false, motivo: 'sem-tabela' });
+  });
+
+  it.each(['contentMD5Value', 'CONTENTMD5VALUE', 'contentmd5value'])(
+    '★ %s is denied in every walk, in any case',
+    (k) => {
+      expect(chaveNegadaAmazon(k)).toBe(true);
+      // A 2xx echo under the submit template, in both profiles.
+      expect(em(logJson(NOTA_FISCAL, 200, { [k]: 'kAFQmDzST7DWlj99KOF/cg==' }), k)).toBe(REDIGIDO);
+      expect(em(fixtureJson(NOTA_FISCAL, 200, { [k]: 'kAFQmDzST7DWlj99KOF/cg==' }), k)).toBe(
+        'REDACTED',
+      );
+      // An error body, where a small integer would otherwise survive (the walk
+      // may rename the key itself; the value is what must not survive).
+      const erro = em(
+        logJson(NOTA_FISCAL, 400, { errors: [{ code: 'InvalidInput', [k]: 12 }] }),
+        'errors.0',
+      );
+      expect(Object.values(erro as Record<string, unknown>)).toEqual(['InvalidInput', REDIGIDO]);
+    },
+  );
+
+  it('the submitInvoice 400 sandbox code survives the error walk: EntityNotFound is in the closed set', () => {
+    const saida = logJson(NOTA_FISCAL, 400, {
+      errors: [{ code: 'EntityNotFound', message: 'Entity (ShipmentId, X) was not found' }],
+    });
+    expect(em(saida, 'errors.0.code')).toBe('EntityNotFound');
+    expect(em(saida, 'errors.0.message')).toBe(REDIGIDO);
   });
 });

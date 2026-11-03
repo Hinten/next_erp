@@ -113,7 +113,8 @@ export const PROFUNDIDADE_MAXIMA_PERCURSO = 32;
  * - `Invalid Input` — ordersV0's examples (the spaced spelling the package's
  *   `types.ts` also names).
  * - `InvalidRequest` — tokens `createRestrictedDataToken` 400 sandbox.
- * - `EntityNotFound` — Delivery `getInvoiceStatus` sandbox.
+ * - `EntityNotFound` — Delivery `submitInvoice` 400 sandbox (`getInvoiceStatus`'s
+ *   400 sandbox is `InvalidInput`, above).
  * - `ResourceNotFound` — Easy Ship sandbox.
  * - `Forbidden`, `DuplicateRequest`, `RateLimited`, `InternalFailure`,
  *   `ServiceUnavailable` — External Fulfillment returns `listReturns`
@@ -1048,10 +1049,19 @@ const PACOTE_DO_BULK = `${PEDIDO_DO_BULK}.packageDetails`;
 /**
  * REQUEST-body tables, keyed by template name: a capture's optional
  * `<nome>.req.json` (step 2b-b; C3 is `copia-do-legado` only) goes through
- * {@link redigirRequisicaoParaFixture}, never through a table of its own. Only
- * the Easy Ship bulk request (`CreateScheduledPackagesRequest`, easyShip
- * 2022-03-23) has one. `packageIdentifier` and `orderItemSerialNumbers` are
- * denied keys; anything the table does not name is faked.
+ * {@link redigirRequisicaoParaFixture}, never through a table of its own. Two
+ * exist:
+ *
+ * - the Easy Ship bulk request (`CreateScheduledPackagesRequest`, easyShip
+ *   2022-03-23): `packageIdentifier` and `orderItemSerialNumbers` are denied
+ *   keys; anything the table does not name is faked;
+ * - the Delivery invoice upload (`SubmitInvoiceRequest`, delivery 2022-07-01,
+ *   step 14): only `invoiceType`, `programType` and `marketplaceId` keep their
+ *   value. `invoiceContent` (the whole NF-e, buyer data included) and
+ *   `contentMD5Value` (a hash of it) are denied keys in EVERY walk. The capture
+ *   sanitizer still refuses a `.req.json` beside this operation (attachments
+ *   are the bulk's only, `sanitizacao/capturaParaFixture.ts`): the table is the
+ *   fail-closed answer if a write's body is ever redacted.
  */
 export const TABELAS_REQUISICAO_AMAZON: Readonly<Record<string, TabelaRedacaoAmazon>> = {
   createScheduledPackageBulk: tabela(
@@ -1070,6 +1080,11 @@ export const TABELAS_REQUISICAO_AMAZON: Readonly<Record<string, TabelaRedacaoAma
       [`${PACOTE_DO_BULK}.packageTimeSlot.slotId`, 'opaco', 'slot'],
     ],
   ),
+  submitInvoice: tabela('submitInvoice:requisicao', [
+    ['invoiceType', 'enumCamel'],
+    ['programType', 'enumCamel'],
+    ['marketplaceId', 'idMarketplace'],
+  ]),
 };
 
 /* -------------------------------------------------------------------------- */
@@ -1114,6 +1129,7 @@ export const CHAVES_NEGADAS_AMAZON: ReadonlySet<string> = new Set([
   'url',
   'restrictedDataToken',
   'invoiceContent',
+  'contentMD5Value',
   'receiptHandle',
   'eventSourceARN',
   'SenderId',
