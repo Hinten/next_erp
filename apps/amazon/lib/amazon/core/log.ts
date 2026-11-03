@@ -8,9 +8,10 @@
  * The package hands each call to an observer as a `ChamadaAmazon`, which
  * carries the raw query, the credential ref and the full response text. This
  * file is the ONLY place in the app that names that type or builds an
- * observer: the package's hook is wired at exactly three sites (the LWA
+ * observer: the package's hook is wired at exactly four sites (the LWA
  * refresh and the SP-API client in `contexto.ts`, the code exchange in
- * `conectar.ts`), each with `criarObservadorAmazon(…)` as its whole value, and
+ * `conectar.ts`, and the write engine's write client in `escrita.ts`), each
+ * with `criarObservadorAmazon(…)` as its whole value, and
  * `estrutura.test.ts` fails on any other observer, or on the type named
  * anywhere else. So the raw event reaches a line only through
  * {@link linhaDaChamada}.
@@ -99,10 +100,12 @@ export interface LoggerAmazon {
  * one dispatch line, and the intake's own refusals), a reprocess sweep lane
  * (step 3), a push delivery at the receiver (step 3: one line per delivery),
  * the backstop poll (step 4: one line per conta run, and the tick's gate), the
- * conta trigger (step 20: one line per `int_frete` reconcile) or the order
+ * conta trigger (step 20: one line per `int_frete` reconcile), the order
  * import (step 5: its own WARNING lines — a stale read accepted, a lost
  * precondition, a recent-cancel wait, the decision's closed log codes — ids,
- * counts and closed codes only).
+ * counts and closed codes only) or the NF-e upload (step 14: the write engine's
+ * dry-run line, and the NF-e task's own lines — ids, closed codes and Amazon's
+ * status constants only, never the XML, its digest or the access key).
  */
 export type EventoAmazon =
   | 'chamada'
@@ -113,7 +116,8 @@ export type EventoAmazon =
   | 'notificacao'
   | 'poll'
   | 'int-frete'
-  | 'pedido';
+  | 'pedido'
+  | 'nfe';
 
 /** What a NON-call line is about: `chamada` is written by the observer alone. */
 export type EventoAvulsoAmazon = Exclude<EventoAmazon, 'chamada'>;
@@ -128,6 +132,7 @@ const EVENTOS_AVULSOS: Readonly<Record<EventoAvulsoAmazon, true>> = {
   poll: true,
   'int-frete': true,
   pedido: true,
+  nfe: true,
 };
 
 /** The body excerpt's cap, in UTF-8 bytes, applied AFTER the regex layer. */
@@ -470,7 +475,7 @@ function escrever(logger: LoggerAmazon, severidade: SeveridadeAmazon) {
 }
 
 /**
- * The observer handed to the package's hook at the three call sites: one line
+ * The observer handed to the package's hook at the four call sites: one line
  * per call, through `o.logger`, with the method named by the severity and the
  * message `[amazon] <operacao>: <status|sem-resposta> (<resultado>)`. No `catch`:
  * total by construction (module header).

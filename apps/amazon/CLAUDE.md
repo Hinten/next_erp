@@ -247,6 +247,19 @@ route is thin. `proxy.ts` allows `GET, POST, OPTIONS`.
   `pacotesAmazon.ts`, `pagamentoAmazon.ts`, `orderIds.ts`, `codigosPedidoAmazon.ts`, `erros.ts`)
   and `frete/estadoFreteAmazon.ts` (the ONE freight-estado verdict steps 7, 14 and 15 route
   through). `estrutura.test.ts` pins the single getOrder caller and the single batch site.
+- The write engine `core/escrita.ts` (step 14, PR 14-b) is the ONE module that builds an
+  SP-API write client (`estrutura.test.ts` refuses the constructor named in any other
+  production file of the app — all of `lib/`, `app/`, `functions/`, `scripts/` and
+  `proxy.ts`): the target under the valve (`off` reads nothing), the current-state read,
+  the pure plan, ONE `evento` diff line under dry-run (or `on` outside the canary), else ONE
+  write through the forced-refresh-once rule. It never repeats a write that may have
+  landed. The NF-e upload's pure decisions live in
+  `lib/amazon/nfe/` (the task payload and its builders, the status reader, the MD5/base64
+  content, the ownership proof, the live-order gates, the decision tables, the closed motivos);
+  14-b ships them UNWIRED — the trigger, the queue and every Firestore write arrive in 14-c.
+  `nfe/tarefaNfe.ts`, `nfe/motivosNfe.ts` and `nfe/pedidoNfe.ts` stay LIGHT (no SP-API value
+  import, nothing of `pedidos/` but `orderIds.ts`; `estrutura.test.ts` walks their closure,
+  type edges included): 14-c's NF-e trigger closure reaches them.
 - The conta cache (`core/contaCache.ts`) is token-free and used by the context
   loader ONLY; the credential is re-read uncached on every request.
 - Routes never import the park (`core/estacionamento.ts`); step 3 is its first caller.
@@ -266,9 +279,10 @@ route is thin. `proxy.ts` allows `GET, POST, OPTIONS`.
   Never `console.*`, never a second logger. A shared module that logs untyped campos
   (`escreverAviso`) gets the app's `warn` through `warnNaoTipado`.
 - ONE line per Amazon call, built by `criarObservadorAmazon` and handed to the package's
-  hook at EXACTLY three sites: the LWA refresh and the SP-API client (`core/contexto.ts`;
+  hook at EXACTLY four sites: the LWA refresh and the SP-API client (`core/contexto.ts`;
   callers pass `registro` — flow, attempt, task/notification ids — and the loader writes
-  `logger` and `conta` LAST), and the code exchange (`conta/conectar.ts`). Only
+  `logger` and `conta` LAST), the code exchange (`conta/conectar.ts`), and the write
+  engine's write client (`core/escrita.ts`, step 14; labelled the loader's way). Only
   `core/log.ts` names the raw event type; `estrutura.test.ts` refuses any other observer
   (inline, forwarded, shorthand, combined, shadowed, renamed).
 - The line is a projection (`CHAVES_DA_LINHA`, 26 keys): envelope by grammar, the redacted
@@ -287,7 +301,8 @@ route is thin. `proxy.ts` allows `GET, POST, OPTIONS`.
 - ⚠️ **The observer must never throw.** The package rethrows an observer's error in place
   of the outcome, and at the code exchange the state is already consumed: a throwing
   logger loses the seller's grant. `log.ts` and `redacao.ts` have no `catch` — they are
-  total by construction; the totality matrix runs through all three real call sites.
+  total by construction; the totality matrix covers every outcome the four call sites can
+  emit. A write client's observer matters most: a throw there would hide whether a write landed.
 - Never log `err.message` of an `AmazonError` (it embeds the path, which can carry a seller
   id): log `err.name`, the status and the codes. `estrutura.test.ts` refuses a `.message`
   inside any `.info|warn|error(` call and any non-call writer (`registrarEventoAmazon`,
@@ -373,8 +388,8 @@ no `env:` block.
   `alvo-invalido` member is left out of the feed and dry-runs.
 - Order inside a write flow: `lerValvula` FIRST (reads its two names once, a snapshot for the
   run), `registrarValvulaAmazon` second (`evento: 'valvula'`), then `decidirLote` per batch and
-  `decidirAlvo` for every member. No flow calls them yet; the write engine (step 14 PR a) is
-  the first.
+  `decidirAlvo` for every member. No flow calls them yet; the write engine (`core/escrita.ts`,
+  step 14, PR 14-b; first wired caller 14-c) is the first.
 - W8 (the window, never before it), per flow: `dry-run` → a canary list → `on` → `*`, set ALIKE
   on both surfaces. Check the run-start line, then the dry-run diffs, then clean read-backs.
 

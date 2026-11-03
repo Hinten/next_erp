@@ -3,9 +3,13 @@
  * token table, the ladder, the write verdict, the package fold and the freight
  * group one import writes. The ONE module steps 7, 14 and 15 route their
  * `freteInicial.estado` writes through (plan §3 decision 38): a set or rule only
- * a later step consumes (step 15's "already scheduled" set; whether an
- * `ACCEPTED` invoice clears step 14's `error`) is added by that step, beside its
- * consumer.
+ * a later step consumes (step 15's "already scheduled" set) is added by that
+ * step, beside its consumer. Step 14's are here (PR 14-b): the estados its
+ * NF-e `error` stamp may cover ({@link ESTADOS_FRETE_CARIMBAVEIS_NFE_AMAZON}),
+ * the one estado its acceptance clears the stamp to
+ * ({@link estadoFreteAposAceiteNfeAmazon}), and the verdict's gate 5 opened to
+ * `cancelado` (step-14 plan §3 decision 12). Only step 14's own Delivery-API
+ * acceptance clears its `error`; the order-level `ACCEPTED` never does.
  *
  * PURE: no Firestore, no wire call, no clock (the order clock is a parameter),
  * no environment, no logger. Every instant here is already µs; nothing is
@@ -110,6 +114,7 @@
 import type { PacoteWireAmazon, PedidoWireAmazon } from '@delfrance/integrations-amazon-sp-api';
 import {
   ESTADO_FRETE,
+  ESTADOS_FRETE_NAO_POSTADO,
   ESTADOS_FRETE_REMOVE_ESTOQUE,
   MOTIVO_PEDIDO_AMAZON,
   estadoFreteSchema,
@@ -501,7 +506,7 @@ export type MotivoFreteAmazon =
    * `fulfillment` under a read that does not say `MERCHANT`.
    */
   | 'fora-do-canal'
-  /** The stored `error` (step 14's stamp) and the target is no physical fact. */
+  /** The stored `error` (step 14's stamp) and the target is neither a physical fact nor `cancelado`. */
   | 'erro-preservado'
   /** The stored estado is on the reverse leg and the target is not forward on it. */
   | 'retorno-preservado'
@@ -596,8 +601,12 @@ export function estadoFreteParaMercadoriaForaAmazon(
  *     Amazon's own: a block never walks into a stock-removal estado for it);
  *  4. a stored `aguardandoRetirada` or `suspenso`, or a stored `fulfillment`
  *     under a read that does not say `MERCHANT` ⇒ `fora-do-canal`;
- *  5. a stored `error` (step 14's future stamp) ⇒ written ONLY for a physical
- *     fact: a target in the SHARED `ESTADOS_FRETE_REMOVE_ESTOQUE`;
+ *  5. a stored `error` (step 14's stamp) ⇒ written ONLY for a physical fact —
+ *     a target in the SHARED `ESTADOS_FRETE_REMOVE_ESTOQUE` — or for
+ *     `cancelado`: a cancelled order ends the stamp's meaning (step-14 plan §3
+ *     decision 12). `despachoNegado`, `aguardandoAgendamento` (an order-level
+ *     `ACCEPTED` included: it cannot say which invoice it describes, and it
+ *     outlives a cancellation) and `aguardandoNFe` keep the stamp;
  *  6. a stored estado on the reverse leg ⇒ only forward on that leg;
  *  7. both on the ladder (the stored one through the residue projection) and
  *     the target lower ⇒ `regressivo`;
@@ -655,7 +664,7 @@ export function estadoFreteAmazonAplicavel(
     return { escrever: false, motivo: MOTIVO_FRETE_AMAZON.foraDoCanal };
   }
   if (armazenado === ESTADO_FRETE.error) {
-    return ESTADOS_FRETE_REMOVE_ESTOQUE.has(alvo)
+    return ESTADOS_FRETE_REMOVE_ESTOQUE.has(alvo) || alvo === ESTADO_FRETE.cancelado
       ? { escrever: true, estado: alvo, ressuscitado: false }
       : { escrever: false, motivo: MOTIVO_FRETE_AMAZON.erroPreservado };
   }
@@ -682,6 +691,43 @@ export function estadoFreteAmazonAplicavel(
       : { escrever: false, motivo: MOTIVO_FRETE_AMAZON.terminal };
   }
   return { escrever: true, estado: alvo, ressuscitado: false };
+}
+
+/* -------------------------------------------------------------------------- */
+/*                        step 14: the NF-e stamp and its clear                */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The stored estados step 14's NF-e `error` stamp may cover (step-14 plan,
+ * PR 14-b): the shared NOT-POSTED set, minus every estado where the stock
+ * already left (`ESTADOS_FRETE_REMOVE_ESTOQUE`: `empacotado` is in both) and
+ * minus this channel's failures ({@link FALHAS_FRETE_AMAZON}: `despachoNegado`
+ * is in both). DERIVED, never listed: a change to either shared set moves this
+ * one, and its test pins the eight members as well as the expression.
+ *
+ * What it leaves out, on purpose: `aguardandoPostagem` and every rung after it
+ * (the goods are out or about to be, and a physical fact makes the stamp
+ * obsolete), the failures, `error` itself (already stamped: ZERO writes), the
+ * blocks another modality owns, and `fulfillment`. The stamp's writer (PR 14-c)
+ * still routes the write through {@link estadoFreteAmazonAplicavel}.
+ */
+export const ESTADOS_FRETE_CARIMBAVEIS_NFE_AMAZON: ReadonlySet<EstadoFrete> = new Set<EstadoFrete>(
+  [...ESTADOS_FRETE_NAO_POSTADO].filter(
+    (e) => !ESTADOS_FRETE_REMOVE_ESTOQUE.has(e) && !FALHAS_FRETE_AMAZON.has(e),
+  ),
+);
+
+/**
+ * The estado an accepted NF-e clears step 14's stamp to: `aguardandoAgendamento`
+ * (rung 4, "the invoice is accepted, schedule the pickup") — and ONLY from a
+ * stored `error`. Anything else answers `null`: an acceptance never moves
+ * freight it did not stamp, so the clear is a no-op on every other estado
+ * (zero writes). Its writer (PR 14-c) calls it only on step 14's own
+ * Delivery-API acceptance, never on the order-level `ACCEPTED` (step-14 plan
+ * §3 decision 12).
+ */
+export function estadoFreteAposAceiteNfeAmazon(armazenado: EstadoFrete | null): EstadoFrete | null {
+  return armazenado === ESTADO_FRETE.error ? ESTADO_FRETE.aguardandoAgendamento : null;
 }
 
 /* -------------------------------------------------------------------------- */

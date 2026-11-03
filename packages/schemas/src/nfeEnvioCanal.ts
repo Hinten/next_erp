@@ -32,6 +32,15 @@
  * enums identifies one by the declaration behind a position, so retyping this
  * return would turn every caller's raw `'1'` comparison into a lint error.
  *
+ * `finalidadeDaNfeProc` is the SALE gate every channel applies before an
+ * upload: only the note whose first `tpNF` is `1` (saída) and whose first
+ * `finNFe` is `1` (normal) is the order's sale note. It was first written in
+ * Shopee's NF-e folder (`finalidadeDoProc`) and is COPIED here unchanged, near
+ * misses included, so the next channel (Amazon, step 14) reads the one shared
+ * definition instead of a third copy. Shopee still holds its own until its
+ * re-point (a follow-up of its own): until then the two must agree, and both
+ * test files pin the same table.
+ *
  * Why a file of its own and not a block inside `nfe.ts`: the NF-e lane's live
  * job selects its scope by LITERAL path prefix, and `nfe.ts` is on that list,
  * so any edit there emits test documents at the rate-limited SEFAZ homologação
@@ -118,4 +127,55 @@ export function decideNfeUploadTransition(
   return decideNfeUploadDispatch(undefined, before).action === 'enqueue'
     ? { action: 'skip', reason: 'ja-pronta' }
     : depois;
+}
+
+/* ------------------------------ the sale gate ------------------------------- */
+
+/** The first `tpNF` element's text (B11 — 0 entrada, 1 saída); any namespace prefix. */
+const ELEMENTO_TP_NF = /<(?:[\w.-]+:)?tpNF\s*>([^<]*)<\/(?:[\w.-]+:)?tpNF\s*>/;
+
+/** The first `finNFe` element's text (B25 — 1 normal … 6 débito since NT 2025.002). */
+const ELEMENTO_FIN_NFE = /<(?:[\w.-]+:)?finNFe\s*>([^<]*)<\/(?:[\w.-]+:)?finNFe\s*>/;
+
+/** A LEGIBLE code: exactly one decimal digit once trimmed. */
+const CODIGO_DE_UM_DIGITO = /^[0-9]$/;
+
+/** `tpNF` of an outgoing note, and `finNFe` of a normal one — the SALE, and only it. */
+const SAIDA = '1';
+const FINALIDADE_NORMAL = '1';
+
+/** What the sale gate says about a proc. */
+export type FinalidadeDaNfeProc = 'venda' | 'outra' | 'ilegivel';
+
+/** The trimmed text of the first match of `elemento`, or `null` when it is absent. */
+function textoDoPrimeiro(xml: string, elemento: RegExp): string | null {
+  const achado = elemento.exec(xml);
+  return achado === null ? null : (achado[1] ?? '').trim();
+}
+
+/**
+ * Whether a proc is the order's SALE note (the shared sale gate; module
+ * header). PURE and total:
+ *
+ * - first `tpNF` = `1` AND first `finNFe` = `1` ⇒ `venda`;
+ * - both legible (one digit each, once trimmed) but anything else ⇒ `outra` —
+ *   an entrada (`tpNF 0`), a complementar, an ajuste, a devolução
+ *   (`finNFe 4`), or a crédito/débito note (`finNFe 5`/`6`, NT 2025.002). A
+ *   channel DISCARDS it: uploading it would attach the wrong fiscal document to
+ *   the order;
+ * - either element missing, or not one digit ⇒ `ilegivel` — a channel judges
+ *   it loudly (its own "invalid XML" reason), never as a sale.
+ *
+ * ⚠️ "Legible" is a SHAPE, not the XSD's value list: the note is authorized, so
+ * its domain is SEFAZ's to enforce, and a digit a future layout adds lands on
+ * `outra` — never a sale. Only the EXACT pair `1`/`1` is a sale: `01` is
+ * illegible, never read as `1`. The FIRST element of each wins (the `ide`
+ * group precedes everything else in an `nfeProc`).
+ */
+export function finalidadeDaNfeProc(xml: string): FinalidadeDaNfeProc {
+  const tpNF = textoDoPrimeiro(xml, ELEMENTO_TP_NF);
+  const finNFe = textoDoPrimeiro(xml, ELEMENTO_FIN_NFE);
+  if (tpNF === null || finNFe === null) return 'ilegivel';
+  if (!CODIGO_DE_UM_DIGITO.test(tpNF) || !CODIGO_DE_UM_DIGITO.test(finNFe)) return 'ilegivel';
+  return tpNF === SAIDA && finNFe === FINALIDADE_NORMAL ? 'venda' : 'outra';
 }

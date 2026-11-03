@@ -31,9 +31,16 @@
  *  - (step 2b) the observer seam: outside `core/log.ts`, every observer handed to
  *    the package is exactly `criarObservadorAmazon(…)` as imported from the
  *    logger — the whole value, under its own name, never shadowed — at exactly
- *    three sites, and no file names the raw event type: it carries the raw
- *    query, the credential ref and the full response text, and only the logger
- *    redacts them;
+ *    four sites (the fourth, step 14's write engine `core/escrita.ts`), and no
+ *    file names the raw event type: it carries the raw query, the credential
+ *    ref and the full response text, and only the logger redacts them;
+ *  - (step 14, PR 14-b) the package's write-client constructor is named by ONE
+ *    production file, the write engine `core/escrita.ts`, across the WHOLE app
+ *    (all of `lib/`, `app/`, `functions/`, `scripts/` and `proxy.ts`); `nfe/`
+ *    reads no process environment; `nfe/tarefaNfe.ts`, `nfe/motivosNfe.ts` and
+ *    `nfe/pedidoNfe.ts` stay LIGHT (no SP-API value import, nothing of
+ *    `pedidos/` but `orderIds.ts`, type edges walked); and `node:crypto` (the
+ *    NF-e digest's) stays out of the logger's import closure;
  *  - (step 2b) no `.message` inside a logger call (any `.info|warn|error(`, or
  *    any non-call line writer), no `console.` anywhere, no `catch` in the
  *    logger or the redactor (they are total by construction), and only the
@@ -963,6 +970,58 @@ function violacoesD11(
   return violacoes;
 }
 
+/* --------------------- step 14 (PR 14-b): the write engine --------------------- */
+
+/** The ONE module that may build an SP-API write client (step-2b plan §3 decision 18). */
+const CONSTRUTOR_DO_CLIENTE_DE_ESCRITA = 'lib/amazon/core/escrita.ts';
+
+/** The package's write-client constructor, by name (a call, an import, a re-export). */
+const CLIENTE_DE_ESCRITA = /\bcriarClienteEscritaSpApi\b/;
+
+/** Whether a source names the write-client constructor in CODE (comments aside). */
+const nomeiaClienteDeEscrita = (texto: string) => CLIENTE_DE_ESCRITA.test(semComentarios(texto));
+
+/**
+ * The NF-e modules 14-c's trigger closure will reach, kept LIGHT now (their
+ * headers and `apps/amazon/CLAUDE.md` say so): relative to the APP root.
+ */
+const MODULOS_LEVES_DA_NFE = [
+  'lib/amazon/nfe/tarefaNfe.ts',
+  'lib/amazon/nfe/motivosNfe.ts',
+  'lib/amazon/nfe/pedidoNfe.ts',
+];
+
+/** The ONE `pedidos/` module the light NF-e modules may reach: the importer's digest. */
+const ORDER_IDS_DA_NFE = 'lib/amazon/pedidos/orderIds.ts';
+
+/**
+ * Why the light NF-e modules' closure is not light; empty when it is: a reached
+ * `pedidos/` file other than the digest, a VALUE import of the SP-API package
+ * (or a computed one) in any reached file, an unresolved relative import or an
+ * `@/` one (fail closed). A narrower cousin of {@link violacoesD11}; 14-c's
+ * trigger guard walks the whole trigger and supersedes it.
+ */
+function violacoesDosModulosLevesDaNfe(
+  fecho: { arquivos: readonly string[]; externos: readonly string[] },
+  ler: LeitorDeFonte,
+): string[] {
+  const violacoes: string[] = [];
+  for (const arquivo of fecho.arquivos) {
+    if (arquivo.startsWith('lib/amazon/pedidos/') && arquivo !== ORDER_IDS_DA_NFE) {
+      violacoes.push(`reaches ${arquivo}`);
+    }
+    for (const espec of importacoesDeValor(ler(arquivo) ?? '')) {
+      if (ehDoPacoteSpApi(espec)) violacoes.push(`${arquivo} imports ${espec} as a value`);
+      else if (espec === '<dinamico>') violacoes.push(`${arquivo} imports a computed module`);
+    }
+  }
+  for (const espec of fecho.externos) {
+    if (espec.startsWith('?')) violacoes.push(`unresolved ${espec.slice(1)}`);
+    else if (espec.startsWith('@/')) violacoes.push(`imports ${espec} (the alias is not walked)`);
+  }
+  return violacoes;
+}
+
 /* -------------------------------- the pinned lines -------------------------------- */
 
 const INVENTARIO = 'apps/amazon/lib/amazon/testing/especificacaoFolhas.json';
@@ -994,6 +1053,7 @@ describe('lib/amazon layout', () => {
         'core/formatoDaRef.ts',
         'core/idConta.ts',
         'core/log.ts',
+        'core/escrita.ts',
         'core/redacao.ts',
         'core/refCredencial.ts',
         'core/renovacaoUnica.ts',
@@ -1001,6 +1061,13 @@ describe('lib/amazon layout', () => {
         'core/valvulas.ts',
         'frete/estadoFreteAmazon.ts',
         'frete/intFrete.ts',
+        'nfe/conteudoNfe.ts',
+        'nfe/decisaoNfe.ts',
+        'nfe/gatesPedidoNfe.ts',
+        'nfe/motivosNfe.ts',
+        'nfe/pedidoNfe.ts',
+        'nfe/statusNfe.ts',
+        'nfe/tarefaNfe.ts',
         'notificacoes/agendador.ts',
         'notificacoes/corpo.ts',
         'notificacoes/destinos.ts',
@@ -1231,18 +1298,22 @@ describe('the step-2b logger guards', () => {
     const fecho = fechoDeImportacoes(ENTRADAS_DO_FECHO, lerDoDisco);
     expect(fecho.arquivos).toEqual([...ENTRADAS_DO_FECHO, 'env.ts'].sort());
     expect(fecho.externos.filter(proibidoNoFecho)).toEqual([]);
+    // Step 14 (PR 14-b): the NF-e digest's `node:crypto` lives in `nfe/conteudoNfe.ts`
+    // and never reaches the logger, under either spelling.
+    expect(fecho.externos.filter((e) => e === 'node:crypto' || e === 'crypto')).toEqual([]);
     // Anti-vacuity: the closure really walks the package and core imports.
     expect(fecho.externos).toEqual(
       expect.arrayContaining(['@delfrance/integrations-amazon-sp-api', 'zod']),
     );
   });
 
-  it('the observer seam: only criarObservadorAmazon(…) is handed to the package, at exactly 3 sites, and only log.ts names the raw event', () => {
+  it('the observer seam: only criarObservadorAmazon(…) is handed to the package, at exactly 4 sites, and only log.ts names the raw event', () => {
     const fontes = arquivosTs(RAIZ_APP).filter((p) => !ehTeste(p));
     const violacoes = fontes.flatMap((p) => violacoesDoSeam(relApp(p), readFileSync(p, 'utf8')));
     expect(violacoes).toEqual([]);
-    // Anti-vacuity: the three wired sites — the LWA refresh, the SP-API client,
-    // the code exchange — and the logger itself is exempt.
+    // Anti-vacuity: the four wired sites — the LWA refresh, the SP-API client,
+    // the code exchange, and (step 14, PR 14-b) the write engine's write client
+    // — and the logger itself is exempt.
     const sites = fontes.flatMap((p) =>
       [...readFileSync(p, 'utf8').matchAll(new RegExp(SEAM_OK.replace('(', '\\('), 'g'))].map(() =>
         relApp(p),
@@ -1252,6 +1323,7 @@ describe('the step-2b logger guards', () => {
       'lib/amazon/conta/conectar.ts',
       'lib/amazon/core/contexto.ts',
       'lib/amazon/core/contexto.ts',
+      'lib/amazon/core/escrita.ts',
     ]);
     expect(fontes.map(relApp)).toContain(ARQUIVO_DO_LOGGER);
   });
@@ -1727,6 +1799,91 @@ describe('the step-20 conta trigger guards (D11 by construction)', () => {
       expect(deps.filter(ehDoPacoteSpApi), pacote).toEqual([]);
       // Anti-vacuity: the manifest was read.
       expect(deps.length, pacote).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe('the step-14 write engine guards (14-b)', () => {
+  // An app-wide parse: CI headroom, not a budget.
+  it(
+    `the SP-API write client is named by exactly ONE production file of the WHOLE app (all of lib/, app/, functions/, scripts/, proxy.ts): ${CONSTRUTOR_DO_CLIENTE_DE_ESCRITA}`,
+    { timeout: 30_000 },
+    () => {
+      // Every production file, `lib/firebase/`, `lib/auth/` and the proxy
+      // included: the App Hosting bundle holds them, and a write client built
+      // there would bypass the valve and the canary.
+      const fontes = fontesDeTodoOApp();
+      const nomeiam = fontes
+        .filter((p) => nomeiaClienteDeEscrita(readFileSync(p, 'utf8')))
+        .map(relApp)
+        .sort();
+      expect(nomeiam).toEqual([CONSTRUTOR_DO_CLIENTE_DE_ESCRITA]);
+      // Anti-vacuity: the scan read the App Hosting files outside `lib/amazon`,
+      // the functions codebase and the scripts too.
+      expect(fontes.map(relApp)).toEqual(
+        expect.arrayContaining([
+          ...FORA_DE_LIB_AMAZON,
+          'functions/src/index.ts',
+          'scripts/sanitizar.ts',
+        ]),
+      );
+    },
+  );
+
+  it('★ nfe/tarefaNfe.ts, nfe/motivosNfe.ts and nfe/pedidoNfe.ts stay LIGHT: their closure (type edges walked) holds no SP-API value import and nothing of pedidos/ but orderIds.ts', () => {
+    const fecho = fechoDeImportacoes(MODULOS_LEVES_DA_NFE, lerDoApp);
+    expect(violacoesDosModulosLevesDaNfe(fecho, lerDoApp)).toEqual([]);
+    // Anti-vacuity: the walk read the three modules and reached the digest.
+    expect(fecho.arquivos).toEqual(
+      expect.arrayContaining([...MODULOS_LEVES_DA_NFE, ORDER_IDS_DA_NFE]),
+    );
+  });
+
+  it('the LIGHT check refuses a value import of the SP-API package and any other pedidos/ module, and allows a type import', () => {
+    const TAREFA = 'lib/amazon/nfe/tarefaNfe.ts';
+    const comFonte =
+      (corpo: string): LeitorDeFonte =>
+      (caminho) =>
+        caminho === TAREFA ? corpo : lerDoApp(caminho);
+    const violacoes = (corpo: string) => {
+      const ler = comFonte(corpo);
+      return violacoesDosModulosLevesDaNfe(fechoDeImportacoes([TAREFA], ler), ler);
+    };
+    expect(violacoes(`import { criarClienteSpApi } from '${PACOTE_SP_API}';`)).toEqual([
+      `${TAREFA} imports ${PACOTE_SP_API} as a value`,
+    ]);
+    expect(violacoes("import { importarPedidoAmazon } from '../pedidos/importarPedido';")).toEqual(
+      expect.arrayContaining(['reaches lib/amazon/pedidos/importarPedido.ts']),
+    );
+    expect(violacoes("import { x } from '../pedidos/naoExiste';")).toEqual(
+      expect.arrayContaining(['unresolved lib/amazon/pedidos/naoExiste']),
+    );
+    expect(violacoes(`import type { CredencialSpApi } from '${PACOTE_SP_API}';`)).toEqual([]);
+    expect(violacoes("import { makePedidoIdAmazon } from '../pedidos/orderIds';")).toEqual([]);
+  });
+
+  it('nfe/ reads no process environment: the environment is the deps’ `ambiente`', () => {
+    const nfe = arquivosTs(join(RAIZ_LIB, 'nfe')).filter((p) => !ehTeste(p));
+    expect(nfe.map(rel).sort()).toEqual([
+      'nfe/conteudoNfe.ts',
+      'nfe/decisaoNfe.ts',
+      'nfe/gatesPedidoNfe.ts',
+      'nfe/motivosNfe.ts',
+      'nfe/pedidoNfe.ts',
+      'nfe/statusNfe.ts',
+      'nfe/tarefaNfe.ts',
+    ]);
+    for (const arquivo of nfe) {
+      expect(readFileSync(arquivo, 'utf8'), rel(arquivo)).not.toMatch(/process\s*\.\s*env/);
+    }
+  });
+
+  it('the write engine imports the write client from the package by VALUE, and nothing under nfe/ does', () => {
+    expect(importacoesDeValor(lerDoApp(CONSTRUTOR_DO_CLIENTE_DE_ESCRITA) ?? '')).toContain(
+      PACOTE_SP_API,
+    );
+    for (const arquivo of arquivosTs(join(RAIZ_LIB, 'nfe')).filter((p) => !ehTeste(p))) {
+      expect(nomeiaClienteDeEscrita(readFileSync(arquivo, 'utf8')), rel(arquivo)).toBe(false);
     }
   });
 });
@@ -2357,6 +2514,25 @@ describe('the guards, on synthetic source', () => {
       "// a test imports '../../lib/amazon/testing/fakeDb'\nconst z = 3;",
     ]) {
       expect(importaDoublesDeTeste(fonte), fonte).toBe(false);
+    }
+  });
+
+  it('the write-client scan finds every naming in code, and nothing alike (14-b)', () => {
+    for (const fonte of [
+      "import { criarClienteEscritaSpApi } from '@delfrance/integrations-amazon-sp-api';",
+      'const c = criarClienteEscritaSpApi({ obterCredencial });',
+      "export { criarClienteEscritaSpApi } from '@delfrance/integrations-amazon-sp-api';",
+      'const f = pacote.criarClienteEscritaSpApi;',
+    ]) {
+      expect(nomeiaClienteDeEscrita(fonte), fonte).toBe(true);
+    }
+    for (const fonte of [
+      '// criarClienteEscritaSpApi is the engine’s alone',
+      '/** criarClienteEscritaSpApi */ const x = 1;',
+      'const criarClienteEscritaSpApiFalso = 1;',
+      'const c = criarClienteSpApi({});',
+    ]) {
+      expect(nomeiaClienteDeEscrita(fonte), fonte).toBe(false);
     }
   });
 
