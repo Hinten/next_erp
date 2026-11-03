@@ -1,6 +1,8 @@
 /**
- * The producers and resolvers of the seven Amazon avisos, and the µs boundary of
- * this app:
+ * The producers and resolvers of the seven Amazon-only avisos, and the µs
+ * boundary of this app (the eighth tipo this channel raises, the shared
+ * `nfeUploadRejeitado`, is listed in {@link TIPOS_AVISO_AMAZON}; its producer
+ * arrives with step 14's wiring, PR 14-c):
  *
  * | tipo | key | severity | clock |
  * | --- | --- | --- | --- |
@@ -148,7 +150,12 @@ export const MOTIVO_AVISO_AMAZON = {
 } as const;
 export type MotivoAvisoAmazon = (typeof MOTIVO_AVISO_AMAZON)[keyof typeof MOTIVO_AVISO_AMAZON];
 
-/** The seven tipos of this channel. */
+/**
+ * The eight tipos this channel raises: its seven own, and the shared
+ * `nfeUploadRejeitado` (step 14). ⚠️ Never a member of
+ * {@link TIPOS_AVISO_AMAZON_POR_CONTA}: its key names a PEDIDO, which the orphan
+ * pass cannot compute for a listed conta.
+ */
 export const TIPOS_AVISO_AMAZON: ReadonlySet<string> = new Set([
   TIPO_AVISO.amazonReconexaoPendente,
   TIPO_AVISO.amazonReautorizacaoExpirando,
@@ -157,6 +164,7 @@ export const TIPOS_AVISO_AMAZON: ReadonlySet<string> = new Set([
   TIPO_AVISO.amazonImportacaoParada,
   TIPO_AVISO.amazonPedidoPrecisaAtencao,
   TIPO_AVISO.amazonContaPrecisaAtencao,
+  TIPO_AVISO.nfeUploadRejeitado,
 ]);
 
 /**

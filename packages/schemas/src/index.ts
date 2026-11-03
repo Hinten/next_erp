@@ -1306,6 +1306,8 @@ export {
   extractTpAmb,
   decideNfeUploadDispatch,
   decideNfeUploadTransition,
+  finalidadeDaNfeProc,
+  type FinalidadeDaNfeProc,
   type NfeUploadDispatch,
   type NfeUploadTransition,
 } from './nfeEnvioCanal';

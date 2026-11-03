@@ -75,8 +75,9 @@
  * Like everywhere under `lib/amazon`. {@link lerValvula} is pure and is THE first
  * statement of a write flow: it reads its two names ONCE, so every target of one
  * run gets the same decision. {@link registrarValvulaAmazon} writes the
- * run-start line, the second statement. No write flow exists yet: the write
- * engine (step 14, PR a) is the first caller.
+ * run-start line, the second statement. No write flow calls them yet: the write
+ * engine (`core/escrita.ts`, step 14, PR 14-b; first wired caller 14-c) is the
+ * first.
  */
 import type { AmbienteAmazon } from '../env';
 import { idDeContaValido } from './idConta';

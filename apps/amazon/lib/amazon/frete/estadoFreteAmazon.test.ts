@@ -8,6 +8,8 @@ import {
 } from '@delfrance/integrations-amazon-sp-api';
 import {
   ESTADO_FRETE,
+  ESTADOS_FRETE_NAO_POSTADO,
+  ESTADOS_FRETE_REMOVE_ESTOQUE,
   STATUS_PAGAMENTO,
   estadoFreteSchema,
   type EstadoFrete,
@@ -21,6 +23,7 @@ import { DETAILED_STATUS_REVERSAO, ehDetailedStatusReversao } from '../pedidos/p
 import { pacoteAmazon, pedidoAmazon, type OpcoesPacoteTeste } from '../testing/pedidoWireAmazon';
 import {
   ESCADA_FRETE_AMAZON,
+  ESTADOS_FRETE_CARIMBAVEIS_NFE_AMAZON,
   ESTADO_FRETE_DE_DETAILED_STATUS,
   FALHAS_FRETE_AMAZON,
   MERCADORIA_FORA_DO_STATUS_PACOTE_AMAZON,
@@ -32,6 +35,7 @@ import {
   dobrarPacotesAmazon,
   estadoDaLinhaAmazon,
   estadoFreteAmazonAplicavel,
+  estadoFreteAposAceiteNfeAmazon,
   estadoFreteEfetivoAmazon,
   estadoFreteParaMercadoriaForaAmazon,
   grupoFreteAmazon,
@@ -522,12 +526,10 @@ describe('the ladder and the verdict', () => {
   });
 
   it('★ a stored error (step 14’s stamp): a non-physical target is refused, a physical fact is written (the conservative arm only)', () => {
-    for (const para of [
-      'aguardandoAgendamento',
-      'aguardandoNFe',
-      'despachoNegado',
-      'cancelado',
-    ] as const) {
+    // `cancelado` left this list in step 14 (PR 14-b): gate 5 now writes it over
+    // the stamp, because a cancelled order ends the stamp's meaning (step-14
+    // plan §3 decision 12). Pinned in the gate-5 test below.
+    for (const para of ['aguardandoAgendamento', 'aguardandoNFe', 'despachoNegado'] as const) {
       expect(aplicavel(ESTADO_FRETE.error, para, { maisNovo: true }), para).toEqual({
         escrever: false,
         motivo: 'erro-preservado',
@@ -1747,6 +1749,115 @@ describe('purity', () => {
       /firebase-admin/,
     ]) {
       expect(fonte, String(proibido)).not.toMatch(proibido);
+    }
+  });
+});
+
+describe('step 14 (PR 14-b): the NF-e stamp, its clear, and gate 5', () => {
+  it('★ the carimbável set IS the derived expression — and exactly the eight pinned members', () => {
+    const derivado = [...ESTADOS_FRETE_NAO_POSTADO].filter(
+      (e) => !ESTADOS_FRETE_REMOVE_ESTOQUE.has(e) && !FALHAS_FRETE_AMAZON.has(e),
+    );
+    expect([...ESTADOS_FRETE_CARIMBAVEIS_NFE_AMAZON].sort()).toEqual(derivado.sort());
+    expect([...ESTADOS_FRETE_CARIMBAVEIS_NFE_AMAZON].sort()).toEqual(
+      [
+        'iniciado',
+        'aguardandoAutorizacao',
+        'aguardandoNFe',
+        'aguardandoValidacaoTransporadora',
+        'despachoAutorizado',
+        'emSeparacao',
+        'desconhecido',
+        'aguardandoAgendamento',
+      ].sort(),
+    );
+  });
+
+  it('★ NEAR-MISS: a stored aguardandoPostagem is NOT carimbável (goods about to leave), nor any goods-out rung, failure or the stamp itself', () => {
+    for (const e of [
+      'aguardandoPostagem',
+      'empacotado',
+      'checkFinalizado',
+      'postado',
+      'entregue',
+      'despachoNegado',
+      'cancelado',
+      'falhaNaEntrega',
+      'error',
+      'fulfillment',
+      'aguardandoRetirada',
+      'suspenso',
+    ] as const) {
+      expect(ESTADOS_FRETE_CARIMBAVEIS_NFE_AMAZON.has(e), e).toBe(false);
+    }
+  });
+
+  it('★ the clear after acceptance: aguardandoAgendamento ONLY from a stored error, and null from anything else', () => {
+    expect(estadoFreteAposAceiteNfeAmazon(ESTADO_FRETE.error)).toBe('aguardandoAgendamento');
+    for (const e of estadoFreteSchema.options.filter((x) => x !== 'error')) {
+      expect(estadoFreteAposAceiteNfeAmazon(e), e).toBeNull();
+    }
+    expect(estadoFreteAposAceiteNfeAmazon(null)).toBeNull();
+  });
+
+  it('the verdict REFUSES error → aguardandoAgendamento (gate 5): the importer’s order-level ACCEPTED never clears the stamp, only step 14’s own clear does', () => {
+    // Pinned so a reader of the clear knows the verdict says no here: gate 5
+    // protects the stamp from the IMPORTER's order-level ACCEPTED, and the
+    // clear (PR 14-c) is step 14's own acceptance, never the importer's.
+    expect(aplicavel(ESTADO_FRETE.error, ESTADO_FRETE.aguardandoAgendamento)).toEqual({
+      escrever: false,
+      motivo: 'erro-preservado',
+    });
+  });
+
+  it('★ gate 5: cancelado over a stored error is WRITTEN, on either clock', () => {
+    for (const maisNovo of [false, true]) {
+      expect(aplicavel(ESTADO_FRETE.error, ESTADO_FRETE.cancelado, { maisNovo })).toEqual({
+        escrever: true,
+        estado: 'cancelado',
+        ressuscitado: false,
+      });
+    }
+  });
+
+  it('★ gate 5 NEAR-MISS: despachoNegado, aguardandoAgendamento and aguardandoNFe over a stored error stay erro-preservado', () => {
+    for (const para of ['despachoNegado', 'aguardandoAgendamento', 'aguardandoNFe'] as const) {
+      for (const maisNovo of [false, true]) {
+        expect(aplicavel(ESTADO_FRETE.error, para, { maisNovo }), para).toEqual({
+          escrever: false,
+          motivo: 'erro-preservado',
+        });
+      }
+    }
+  });
+
+  it('★ gate 5 still writes every physical fact over a stored error', () => {
+    for (const para of ESTADOS_FRETE_REMOVE_ESTOQUE) {
+      expect(aplicavel(ESTADO_FRETE.error, para), para).toMatchObject({
+        escrever: true,
+        estado: para,
+      });
+    }
+  });
+
+  it('★ gate 8 still refuses an error stamp over every goods-out estado', () => {
+    for (const de of estadoFreteSchema.options) {
+      if (!MERCADORIA_FORA[de]) continue;
+      expect(aplicavel(de, ESTADO_FRETE.error, { maisNovo: true }), de).toMatchObject({
+        escrever: false,
+      });
+    }
+    // Anti-vacuity: the loop met goods-out estados.
+    expect(estadoFreteSchema.options.filter((e) => MERCADORIA_FORA[e]).length).toBeGreaterThan(5);
+  });
+
+  it('every carimbável estado accepts the stamp through the verdict (an MFN read)', () => {
+    for (const de of ESTADOS_FRETE_CARIMBAVEIS_NFE_AMAZON) {
+      expect(aplicavel(de, ESTADO_FRETE.error, { maisNovo: true }), de).toEqual({
+        escrever: true,
+        estado: 'error',
+        ressuscitado: false,
+      });
     }
   });
 });
