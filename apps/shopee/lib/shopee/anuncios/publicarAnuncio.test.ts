@@ -4616,7 +4616,8 @@ describe('publicarAnuncioShopee — o RASCUNHO sob a trava (#1911, D4/D15)', () 
 
         expect(err).toBeInstanceOf(ShopeePublishBlockedError);
         const problema = (err as ShopeePublishBlockedError).problemas[0];
-        expect(problema?.motivo).toBe(MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaJaVinculada);
+        // Round 4: its OWN slug — never `-ja-vinculada`'s acao-less row (a look-up that ran).
+        expect(problema?.motivo).toBe(MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaEncerrada);
         expect(problema).not.toHaveProperty('acao');
         expect(fake.ops).toEqual([]);
         expect(escritasNoRascunho(db)).toEqual([]);
@@ -4657,10 +4658,80 @@ describe('publicarAnuncioShopee — o RASCUNHO sob a trava (#1911, D4/D15)', () 
         );
 
         expect((err as ShopeePublishBlockedError).motivo).toBe(
-          MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaJaVinculada,
+          MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaEncerrada,
         );
         expect(fake.ops).not.toContain('add_item');
         expect(escritasNoRascunho(db)).toEqual([]);
+      });
+
+      /**
+       * Round 4 — Lucas §I4 (2026-11-03). Between the refusal the operator
+       * attested and the click, ANOTHER run adopted (or claimed) the draft:
+       * the link now records a listing. Before, the reservation's first read
+       * answered `nao-e-rascunho` and the publish went on as an `update_item`
+       * — neither the adoption nor the create that was confirmed. Now the
+       * loop's own 409 `JA_PUBLICADO`, with nothing sent and nothing written.
+       */
+      function adotadoPorOutraExecucao(db: FakeDb): void {
+        semearRascunho(db, { item_id: ITEM_ID, estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo });
+      }
+
+      it('⛔ (§I4) [L] ou [] num vínculo que outra execução ADOTOU/REIVINDICOU ⇒ 409 JA_PUBLICADO: ZERO chamadas à Shopee (nem update_item, nem add_item), ZERO escritas', async () => {
+        for (const esperado of [[ITEM_ID], []]) {
+          const db = new FakeDb();
+          semearCatalogo(db);
+          adotadoPorOutraExecucao(db);
+          const antes = doRascunho(db);
+          const fake = clienteFake({ addItem: () => ecoDeItem(), updateItem: () => ecoDeItem() });
+
+          const err = await falhaDe(
+            publicarAnuncioShopee(
+              depsDoRascunho(
+                db,
+                fake,
+                aoVivo({ confirmarCriacaoIncerta: true, criacaoIncertaAdota: esperado }),
+              ),
+              entrada({ linkDocId: RASCUNHO }),
+            ),
+          );
+
+          const caso = JSON.stringify(esperado);
+          expect(err, caso).toBeInstanceOf(ConflitoDeRascunhoShopeeError);
+          expect((err as ConflitoDeRascunhoShopeeError).code).toBe(
+            CODIGO_RASCUNHO_SHOPEE.jaPublicado,
+          );
+          expect((err as ConflitoDeRascunhoShopeeError).linkDocId).toBe(RASCUNHO);
+          expect(fake.ops, caso).toEqual([]);
+          expect(db.writes, caso).toEqual([]);
+          expect(doRascunho(db)).toEqual(antes);
+        }
+      });
+
+      it('⛔ quase-par (§I4): o MESMO vínculo com a flag NUA, ou sem flag nenhuma ⇒ a atualização de sempre — um update_item, nenhum add_item', async () => {
+        for (const controles of [
+          aoVivo({ confirmarCriacaoIncerta: true }),
+          aoVivo({ confirmarCriacaoIncerta: true, criacaoIncertaAdota: null }),
+          aoVivo(),
+        ]) {
+          const db = new FakeDb();
+          semearCatalogo(db);
+          adotadoPorOutraExecucao(db);
+          const fake = clienteFake({ addItem: () => ecoDeItem(), updateItem: () => ecoDeItem() });
+
+          const r = await publicarAnuncioShopee(
+            depsDoRascunho(db, fake, controles),
+            entrada({ linkDocId: RASCUNHO }),
+          );
+
+          const caso = JSON.stringify(controles);
+          expect(r?.ehAtualizacao, caso).toBe(true);
+          expect(
+            fake.ops.filter((o) => o === 'update_item'),
+            caso,
+          ).toHaveLength(1);
+          expect(fake.ops, caso).not.toContain('add_item');
+          expect(escritasNoRascunho(db).some((p) => 'publicacaoEmCurso' in p)).toBe(false);
+        }
       });
     });
 

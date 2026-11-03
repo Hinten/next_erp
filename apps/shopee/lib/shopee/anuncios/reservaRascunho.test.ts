@@ -1714,9 +1714,13 @@ describe('reservarRascunhoShopee — um rascunho INCERTO (P5: a busca antes de q
    * created nothing) runs no ENSURE: before this, the expectation was simply
    * dropped and the FIRST create ran — a listing created where an adoption was
    * promised. Decided on the reservation's OWN read, before its lock.
+   *
+   * Round 4 (VERIFY-0 round-2 residual #2): under its OWN motivo,
+   * `criacao-incerta-encerrada` — never `-ja-vinculada`'s acao-less row, which
+   * answers a look-up that DID run (ENSURE's no-candidate mismatch).
    */
   describe('(§I1) a expectativa num rascunho que NÃO lê incerta ⇒ recusa ANTES da trava', () => {
-    const MOTIVO = MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaJaVinculada;
+    const MOTIVO = MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaEncerrada;
 
     async function bloqueioDe(p: Promise<unknown>): Promise<ShopeePublishBlockedError> {
       const err = await p.then(
@@ -1848,7 +1852,7 @@ describe('reservarRascunhoShopee — um rascunho INCERTO (P5: a busca antes de q
       expect(doc(db)).toMatchObject({ item_id: null, criacaoIncertaDesde: null });
     });
 
-    it('a frase: diz o que era esperado e que nada foi enviado nem vinculado — sem afirmar busca, causa, retentativa ou a API', async () => {
+    it('a frase: diz o que era esperado, que nada foi enviado nem vinculado e que NENHUMA busca foi feita — sem afirmar o que uma busca achou, causa, retentativa ou a API', async () => {
       const frases: string[] = [];
       for (const esperado of [[ITEM_NOSSO], []]) {
         const db = comProduto(new FakeDb());
@@ -1864,11 +1868,144 @@ describe('reservarRascunhoShopee — um rascunho INCERTO (P5: a busca antes de q
       }
       for (const frase of frases) {
         expect(frase).toContain('nada foi enviado nem vinculado');
-        expect(frase).toContain('não registra criação incerta');
-        expect(frase).not.toMatch(/busca|tente de novo|add_item|falhou/i);
+        expect(frase).toContain('nenhuma busca foi feita');
+        // In the PAST of the read that decided: true even after another run
+        // records a NEW uncertain attempt on the draft.
+        expect(frase).toContain('já não registrava a criação incerta confirmada');
+        expect(frase).not.toMatch(/busca de agora|não acha|achou|tente de novo|add_item|falhou/i);
       }
       expect(frases[0]).toContain(`adotar o anúncio ${String(ITEM_NOSSO)}`);
       expect(frases[1]).toContain('criar um anúncio novo');
+    });
+  });
+
+  /**
+   * #1911 batch-B review round 4 — Lucas §I4 (2026-11-03). An attested publish
+   * whose EXPECTATION reaches a link that is no longer a draft on the
+   * reservation's FIRST read (another run adopted or claimed it, or the import
+   * adopted it, since the refusal the operator acted on) used to answer
+   * `nao-e-rascunho` — the run went on as an `update_item`, neither the
+   * adoption nor the create that was confirmed. Now: the loop's own 409
+   * `JA_PUBLICADO`, decided on THIS read, nothing written, nothing looked up.
+   */
+  describe('(§I4) a expectativa num vínculo que JÁ NÃO é rascunho ⇒ 409 JA_PUBLICADO na PRIMEIRA leitura', () => {
+    /** The draft as another run left it: adopted (or claimed) — a listing link now. */
+    function adotadoPorOutraExecucao(itemId = ITEM_NOSSO): Record<string, unknown> {
+      return rascunho({ item_id: itemId, estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo });
+    }
+
+    it('⛔ [L] e [] num vínculo adotado/reivindicado por outra execução ⇒ 409 JA_PUBLICADO: ZERO escritas, UMA leitura (nenhum irmão, nenhuma busca)', async () => {
+      for (const [itemId, esperado] of [
+        [ITEM_NOSSO, [ITEM_NOSSO]],
+        [ITEM_NOSSO, []],
+        [ITEM_OUTRO, [ITEM_NOSSO]],
+      ] as const) {
+        const db = new FakeDb();
+        db.seed(CAMINHO, adotadoPorOutraExecucao(itemId));
+        const antes = doc(db);
+
+        // `reservar`'s default look-up THROWS on any Shopee call.
+        const err = await conflitoDe(
+          reservar(
+            asDb(db),
+            ALVO,
+            controles({ confirmarCriacaoIncerta: true, criacaoIncertaAdota: esperado }),
+          ),
+        );
+
+        const caso = JSON.stringify({ itemId, esperado });
+        expect(err.code, caso).toBe(CODIGO_RASCUNHO_SHOPEE.jaPublicado);
+        expect(err.linkDocId).toBe(RASCUNHO);
+        expect(err.aguardarMs).toBeNull();
+        expect(err.vinculos).toBeNull();
+        expect(db.writes, caso).toEqual([]);
+        // Decided on the FIRST read and on nothing else: no sibling scan, no
+        // second read of the document, no look-up.
+        expect(db.opLog, caso).toEqual([{ op: 'get', path: CAMINHO }]);
+        expect(doc(db)).toEqual(antes);
+      }
+    });
+
+    it('⛔ todo estado que NÃO é rascunho recusa igual (item_id 0, item_id em texto, kitNativo sem item) — a expectativa só vale para um rascunho', async () => {
+      for (const corpo of [
+        { item_id: 0 },
+        { item_id: '123' },
+        { kitNativo: true, item_id: undefined },
+      ]) {
+        const db = new FakeDb();
+        db.seed(CAMINHO, rascunho(corpo));
+
+        const err = await conflitoDe(
+          reservar(
+            asDb(db),
+            ALVO,
+            controles({ confirmarCriacaoIncerta: true, criacaoIncertaAdota: [ITEM_NOSSO] }),
+          ),
+        );
+
+        expect(err.code, JSON.stringify(corpo)).toBe(CODIGO_RASCUNHO_SHOPEE.jaPublicado);
+        expect(db.writes).toEqual([]);
+      }
+    });
+
+    it('⛔ quase-par: o MESMO vínculo com a flag NUA (expectativa ausente ou null), sem a flag, ou SEM controles ⇒ nao-e-rascunho, como sempre — a republicação segue', async () => {
+      const casos: readonly (ControlesDaPublicacaoAoVivo | null)[] = [
+        controles({ confirmarCriacaoIncerta: true }),
+        controles({ confirmarCriacaoIncerta: true, criacaoIncertaAdota: null }),
+        controles(),
+        // The body reader 400s this pairing; the reservation reads it as no
+        // expectation, exactly as ENSURE does.
+        controles({ confirmarCriacaoIncerta: false, criacaoIncertaAdota: [ITEM_NOSSO] }),
+        null,
+      ];
+      for (const c of casos) {
+        const db = new FakeDb();
+        db.seed(CAMINHO, adotadoPorOutraExecucao());
+
+        expect(await reservar(asDb(db), ALVO, c), JSON.stringify(c)).toEqual({
+          tipo: 'nao-e-rascunho',
+        });
+        expect(db.writes).toEqual([]);
+      }
+    });
+
+    it('⛔ quase-par: a expectativa num RASCUNHO livre continua a recusa do round 2 (422 criacao-incerta-encerrada), nunca o 409 — os dois fatos ficam distintos', async () => {
+      const db = new FakeDb();
+      db.seed(CAMINHO, rascunho());
+
+      const err = await reservar(
+        asDb(db),
+        ALVO,
+        controles({ confirmarCriacaoIncerta: true, criacaoIncertaAdota: [ITEM_NOSSO] }),
+      ).then(
+        () => null,
+        (e: unknown) => e,
+      );
+
+      expect(err).toBeInstanceOf(ShopeePublishBlockedError);
+      expect(err).not.toBeInstanceOf(ConflitoDeRascunhoShopeeError);
+      expect((err as ShopeePublishBlockedError).motivo).toBe(
+        MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaEncerrada,
+      );
+    });
+
+    it('a frase do 409: o vínculo REGISTRA um anúncio (nunca «já existe na Shopee» — pode ter sido removido desde), a saída e que nada foi enviado', async () => {
+      const db = new FakeDb();
+      db.seed(CAMINHO, adotadoPorOutraExecucao());
+
+      const err = await conflitoDe(
+        reservar(
+          asDb(db),
+          ALVO,
+          controles({ confirmarCriacaoIncerta: true, criacaoIncertaAdota: [ITEM_NOSSO] }),
+        ),
+      );
+
+      expect(err.message).toContain(`o vínculo ${RASCUNHO} já não é um rascunho`);
+      expect(err.message).toContain('já registra um anúncio da Shopee');
+      expect(err.message).toContain('publique-o como atualização');
+      expect(err.message).toContain('Nada foi enviado agora.');
+      expect(err.message).not.toMatch(/já existe na Shopee|falhou|criado/);
     });
   });
 

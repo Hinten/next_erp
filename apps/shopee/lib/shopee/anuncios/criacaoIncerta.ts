@@ -207,10 +207,13 @@
  * or `-sem-sku`), nothing sent and nothing adopted. Absent ⇒ the bare flag's
  * meaning above, which is the CLI's. A draft that does not read `incerta`
  * runs no ENSURE, so there a present expectation refuses too — the
- * reservation, on its own read, with `problemaDaAtestacaoSemCriacaoIncerta`.
+ * reservation, on its own read, with `problemaDaAtestacaoSemCriacaoIncerta`
+ * (its own motivo, `criacao-incerta-encerrada`: no look-up ran).
  *
- * ⚠️ The seven motivos — ENSURE's four and, since P5b, the first create's three
- * (`anuncio-existente-sem-vinculo`, `anuncio-existente-de-outro-produto`,
+ * ⚠️ The eight motivos — ENSURE's four, the reservation's
+ * `criacao-incerta-encerrada` (built here, batch-B review round 4) and, since
+ * P5b, the first create's three (`anuncio-existente-sem-vinculo`,
+ * `anuncio-existente-de-outro-produto`,
  * `busca-de-anuncio-existente-incompleta`) — are spelled HERE and only here,
  * through `MOTIVO_PUBLICACAO_BLOQUEADA` — never quoted
  * (`anuncios/errosPublicacao.test.ts` O7 reads this folder as raw text and
@@ -1088,20 +1091,25 @@ function fraseDoEsperado(esperado: readonly number[]): string {
  * over THAT attempt (`[]`) the operator confirmed. Refused by the reservation
  * on ITS read, before its lock: nothing written, nothing sent.
  *
- * Under `criacao-incerta-ja-vinculada` with no `acao` — the attestation's
- * refusal shape ({@link problemaDaAtestacaoQueNaoConfere} with no candidate):
- * nothing was looked up, so there is nothing to import, and a row with no
- * attestation exit cannot loop. The sentence claims no look-up and no cause
- * it cannot know — true on any draft that does not read `incerta`.
+ * Under its OWN motivo, `criacao-incerta-encerrada` (batch-B review round 4)
+ * — never `criacao-incerta-ja-vinculada`'s acao-less row, which answers a
+ * look-up that DID run ({@link problemaDaAtestacaoQueNaoConfere} with no
+ * candidate): on one shared shape a client could only word the two apart by
+ * the draft's state when it renders, and another run may record a NEW
+ * uncertain attempt after this refusal. No `acao`: nothing was looked up, so
+ * there is nothing to import, and a row with no attestation exit cannot loop.
+ * The sentence is in the PAST of the read that decided — true however the
+ * draft moves afterwards — and claims no cause it cannot know.
  */
 export function problemaDaAtestacaoSemCriacaoIncerta(
   esperado: readonly number[],
 ): ProblemaDeBloqueio {
   return bloqueio(
-    MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaJaVinculada,
-    `a confirmação da criação incerta esperava ${fraseDoEsperado(esperado)}, mas este rascunho ` +
-      'não registra criação incerta agora — nada foi enviado nem vinculado. A confirmação vale só ' +
-      'para a recusa que a pediu: publique de novo sem ela, a partir do estado atual do rascunho',
+    MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaEncerrada,
+    `a confirmação da criação incerta esperava ${fraseDoEsperado(esperado)}, mas, quando esta ` +
+      'publicação leu o rascunho, ele já não registrava a criação incerta confirmada — nada foi ' +
+      'enviado nem vinculado, e nenhuma busca foi feita. A confirmação vale só para a recusa que ' +
+      'a pediu: publique de novo sem ela, a partir do estado atual do rascunho',
   );
 }
 

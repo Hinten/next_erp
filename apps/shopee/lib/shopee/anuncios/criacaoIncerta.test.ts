@@ -59,6 +59,7 @@ import {
   incertezaDocumentadaDeAddItem,
   localizarAnuncioIncerto,
   mensagemDoAnuncioIncerto,
+  problemaDaAtestacaoSemCriacaoIncerta,
   problemasDoAnuncioExistente,
   recusaDeterministicaDeAddItem,
   recusaDoAnuncioIncerto,
@@ -464,14 +465,15 @@ describe('as tabelas — fechadas, alcançáveis, sem motivo soletrado', () => {
     }
   });
 
-  it('o FONTE não soletra motivo algum entre aspas, e pela constante produz SÓ as quatro da busca (P5) e as três da primeira criação (P5b)', () => {
+  it('o FONTE não soletra motivo algum entre aspas, e pela constante produz SÓ as quatro da busca (P5), a da expectativa sem criação incerta (round 4) e as três da primeira criação (P5b)', () => {
     const fonte = readFileSync(
       fileURLToPath(new URL('./criacaoIncerta.ts', import.meta.url)),
       'utf8',
     );
     expect(fonte).toContain('RECUSAS_DETERMINISTICAS_ADD_ITEM');
-    // ENSURE's four refusals and the first create's three (P5b) — and nothing
-    // else of either vocabulary.
+    // ENSURE's four refusals, the reservation's `criacao-incerta-encerrada`
+    // (built here, batch-B review round 4) and the first create's three
+    // (P5b) — and nothing else of either vocabulary.
     const pelaConstante = [...fonte.matchAll(/MOTIVO_PUBLICACAO_BLOQUEADA\.(\w+)/g)]
       .map((m) => m[1])
       .sort();
@@ -481,6 +483,7 @@ describe('as tabelas — fechadas, alcançáveis, sem motivo soletrado', () => {
       'buscaDeAnuncioExistenteIncompleta',
       'buscaDeAnuncioIncompleta',
       'criacaoIncertaAmbigua',
+      'criacaoIncertaEncerrada',
       'criacaoIncertaJaVinculada',
       'criacaoIncertaSemSku',
     ]);
@@ -1814,6 +1817,44 @@ describe('localizarAnuncioIncerto — a busca que falha FECHADO (D5, K1-7, K1-11
         expect(await buscar(cliente({}).client, { confirmar: true, esperado: [] })).toMatchObject({
           tipo: 'prosseguir',
         });
+      });
+
+      /**
+       * Round 4 (VERIFY-0 round-2 residual #2). Two acao-less refusals answer an
+       * attestation's expectation, and they are DIFFERENT facts: this one — the
+       * scan RAN and its window is empty — and the reservation's, on a draft that
+       * no longer records the attempt, where NO look-up ran. On one shared slug a
+       * client could only tell them apart by the draft's state when it renders,
+       * and a NEW uncertain attempt recorded after the refusal would make it say
+       * «a busca de agora não acha…» about a search that never happened.
+       */
+      it('⛔ as duas recusas SEM acao ficam DISTINTAS: a busca que rodou e não achou (ja-vinculada) ⟷ a expectativa sem criação incerta, sem busca (encerrada)', async () => {
+        const rodou = recusa(
+          await buscar(cliente({}).client, { confirmar: true, esperado: [ITEM_A] }),
+        );
+        const semBusca = problemaDaAtestacaoSemCriacaoIncerta([ITEM_A]);
+
+        // Same shape — campo item_sku, no `acao` — and NOT the same motivo.
+        expect(rodou).toMatchObject({
+          campo: 'item_sku',
+          motivo: MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaJaVinculada,
+        });
+        expect(semBusca).toEqual({
+          campo: 'item_sku',
+          motivo: MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaEncerrada,
+          mensagem: semBusca.mensagem,
+        });
+        expect(rodou).not.toHaveProperty('acao');
+        expect(semBusca).not.toHaveProperty('acao');
+        expect(semBusca.motivo).not.toBe(rodou.motivo);
+        // Each sentence says what happened, and only that.
+        expect(rodou.mensagem).toContain('a busca de agora não confere');
+        expect(semBusca.mensagem).toContain('nenhuma busca foi feita');
+        expect(semBusca.mensagem).not.toMatch(/busca de agora|não confere|não acha/);
+        expect(semBusca.mensagem).toContain(`esperava adotar o anúncio ${String(ITEM_A)}`);
+        expect(problemaDaAtestacaoSemCriacaoIncerta([]).mensagem).toContain(
+          'esperava criar um anúncio novo',
+        );
       });
 
       it('⛔ só [] ou UM id conferem: [A, A] e [A, B] nunca adotam A', async () => {

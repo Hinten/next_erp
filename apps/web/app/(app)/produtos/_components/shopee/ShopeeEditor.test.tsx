@@ -54,6 +54,7 @@ import {
   FRASE_ATESTACAO_QUE_VARRE_SHOPEE,
   FRASE_ATESTACAO_SEM_BUSCA_SHOPEE,
   FRASE_ATESTACAO_SUPERADA_SHOPEE,
+  FRASE_ATESTACAO_DE_RASCUNHO_JA_PUBLICADO_SHOPEE,
   FRASE_PUBLICAR_PRODUTO_NAO_SALVO_SHOPEE,
   FRASE_PUBLICAR_SEM_FAIXAS_SHOPEE,
   MOTIVO_ANUNCIO_SHOPEE,
@@ -6727,6 +6728,70 @@ describe('ShopeeEditor — the P11 review fixes on the tab (#1911 batch-B review
       confirmarCriacaoIncerta: true,
       criacaoIncertaAdota: [],
     });
+  });
+
+  it('§I4 (review round 4): an ATTESTED publish answered 409 rascunhoJaPublicado (another run linked the draft) ⇒ its own sentence — the confirmation had no effect, nothing created or changed — with the confirmation closed, nothing re-sent and no exit left to offer the same attestation, also once the snapshot shows the listing ⟷ NEAR-MISS the block’s own (unattested) Publicar keeps today’s sentence', async () => {
+    const jaPublicado = () => recusaDoRascunho(409, CODIGO_FALHA_SHOPEE.rascunhoJaPublicado);
+    const publicar = vi
+      .fn<ShopeeClient['publicar']>()
+      .mockRejectedValueOnce(recusa422([MISTA]))
+      .mockRejectedValueOnce(jaPublicado());
+    const { rerender } = await recusadoCom(MISTA, {}, publicar);
+    const adota = saidaDe(MISTA, 'publicar-atestando');
+    act(() => desfechoDe('L-rasc').rascunho?.onSaida(adota));
+    confirmarPublicacao();
+    await waitFor(() => expect(publicar).toHaveBeenCalledTimes(2));
+    expect(publicar.mock.calls[1]?.[0]).toMatchObject({
+      confirmarCriacaoIncerta: true,
+      criacaoIncertaAdota: [1000012],
+    });
+    await waitFor(() =>
+      expect(desfechoDe('L-rasc').desfecho).toStrictEqual({
+        tipo: 'falha',
+        mensagem: FRASE_ATESTACAO_DE_RASCUNHO_JA_PUBLICADO_SHOPEE,
+      }),
+    );
+    // No stuck dialog, and the refusal rows (with their exits) are gone.
+    expect(semDialogoDePublicar()).toBeNull();
+    expect(formDe('L-rasc').confirmacaoDePublicacao).toBeNull();
+    const painelDoDesfecho = () => screen.getByTestId('shopee-desfecho-L-rasc');
+    expect(within(painelDoDesfecho()).queryAllByRole('button')).toEqual([]);
+    expect(painelDoDesfecho().textContent).toBe(FRASE_ATESTACAO_DE_RASCUNHO_JA_PUBLICADO_SHOPEE);
+    expect(painelDoDesfecho().textContent).not.toMatch(/falhou/i);
+    // The snapshot catches up: the link records the listing — the sentence
+    // stays, there is no draft context to act on, and nothing is ever re-sent.
+    h.links = [link('L-rasc', { item_id: 1000012 })];
+    rerenderEditor(rerender);
+    await waitFor(() => expect(desfechoDe('L-rasc').rascunho).toBeNull());
+    expect(desfechoDe('L-rasc').desfecho).toStrictEqual({
+      tipo: 'falha',
+      mensagem: FRASE_ATESTACAO_DE_RASCUNHO_JA_PUBLICADO_SHOPEE,
+    });
+    expect(semDialogoDePublicar()).toBeNull();
+    expect(publicar).toHaveBeenCalledTimes(2);
+  });
+
+  it('§I4 NEAR-MISS: the block’s OWN Publicar (no attestation) answered 409 rascunhoJaPublicado keeps today’s sentence — never the attested one', async () => {
+    const publicar = vi
+      .fn<ShopeeClient['publicar']>()
+      .mockRejectedValueOnce(recusaDoRascunho(409, CODIGO_FALHA_SHOPEE.rascunhoJaPublicado));
+    prontoParaPublicar(publicar);
+    h.links = [rascunhoPronto('L-rasc', INCERTA)];
+    await renderPronto();
+    fireEvent.click(publicarDo('L-rasc'));
+    confirmarPublicacao();
+    await waitFor(() => expect(publicar).toHaveBeenCalledTimes(1));
+    expect(publicar.mock.calls[0]?.[0]).not.toHaveProperty('confirmarCriacaoIncerta');
+    await waitFor(() =>
+      expect(desfechoDe('L-rasc').desfecho).toStrictEqual({
+        tipo: 'falha',
+        mensagem: FRASE_RASCUNHO_JA_PUBLICADO_SHOPEE,
+      }),
+    );
+    expect(semDialogoDePublicar()).toBeNull();
+    expect(screen.getByTestId('shopee-desfecho-L-rasc').textContent).not.toContain(
+      'A confirmação que você deu',
+    );
   });
 
   it('the outcome panel of a draft gets the SKU the uncertain attempt SENT (the schemas’ window reading) — the SKU-moved row names it ⟷ NEAR-MISS a record with no SKU hands `null` (unknown), never a guess', async () => {

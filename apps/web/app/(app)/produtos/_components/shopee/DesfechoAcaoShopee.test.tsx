@@ -10,6 +10,8 @@ import type { ObjectViewSections } from '@delfrance/ui';
 
 import { MantineTestProvider } from '@/lib/testing/mantine';
 import {
+  FRASE_ATESTACAO_SEM_CRIACAO_INCERTA_FORA_DO_RASCUNHO_SHOPEE,
+  FRASE_BUSCA_SEM_CANDIDATO_FORA_DO_RASCUNHO_SHOPEE,
   FRASE_ATESTACAO_SEM_CRIACAO_INCERTA_SHOPEE,
   FRASE_ATESTACAO_SUPERADA_SHOPEE,
   FRASE_CORRIGIR_NO_SELLER_CENTRE_SHOPEE,
@@ -1073,41 +1075,98 @@ describe('DesfechoAcaoShopee — a DRAFT row is worded by the block’s facts (R
     expect(linha().textContent).not.toContain(FRASE_ATESTACAO_SUPERADA_SHOPEE);
   });
 
-  it('review round 3 (VERIFY-0 round-2 #1, WC1/WI1): the acao-LESS ja-vinculada row of an attested publish is worded by the BLOCK’s reading the panel is handed — `livre` and a plain `em-andamento` ⇒ «já não registra a tentativa», never a search; `incerta` (and a run over a record) ⇒ the look-up wording', () => {
-    const semAcao = problema({
+  /** A run in flight OVER a recorded attempt (`em-andamento`, `aposIncerteza`). */
+  const SOBRE_REGISTRO = estadoPublicacaoRascunhoShopee(
+    { ...rascunhoTravado(AGORA - 10_000, AGORA + 60_000), criacaoIncertaDesde: AGORA - 600_000 },
+    AGORA,
+  );
+
+  it('review round 4: `criacao-incerta-encerrada` (the attestation refused before any look-up) is worded by its MOTIVO over EVERY reading the panel is handed — never a search, no exit ⟷ NEAR-MISS the acao-less ja-vinculada row (a look-up DID run) keeps the look-up wording over every reading too', () => {
+    expect(SOBRE_REGISTRO).toMatchObject({ tipo: 'em-andamento', aposIncerteza: true });
+    const encerrada = problema({
+      campo: 'item_sku',
+      motivo: MOTIVO_ANUNCIO_SHOPEE.criacaoIncertaEncerrada,
+      mensagem:
+        'a confirmação da criação incerta esperava adotar o anúncio 1000011, mas, quando esta ' +
+        'publicação leu o rascunho, ele já não registrava a criação incerta confirmada — nada foi ' +
+        'enviado nem vinculado, e nenhuma busca foi feita.',
+      acao: null,
+    });
+    const vinculada = problema({
       campo: 'item_sku',
       motivo: MOTIVO_ANUNCIO_SHOPEE.criacaoIncertaJaVinculada,
-      mensagem:
-        'a confirmação da criação incerta esperava adotar o anúncio 1000011, mas este rascunho não ' +
-        'registra criação incerta agora — nada foi enviado nem vinculado.',
+      mensagem: 'a busca de agora não confere — nada foi enviado nem vinculado.',
       acao: null,
     });
     const BUSCA =
       TEXTO_MOTIVO_ANUNCIO_SEM_ACAO_SHOPEE[MOTIVO_ANUNCIO_SHOPEE.criacaoIncertaJaVinculada];
     if (BUSCA === undefined) throw new Error('the map must word the acao-less ja-vinculada row');
+    const com = (p: ProblemaShopee, publicacao: EstadoPublicacaoRascunhoShopee) => ({
+      desfecho: recusado([p], { respondeAtestacao: true }),
+      rascunho: doRascunho({ publicacao }),
+    });
+    const r = show(com(encerrada, LIVRE));
+    for (const publicacao of [LIVRE, EM_ANDAMENTO, INCERTA, SOBRE_REGISTRO]) {
+      r.rerender(com(encerrada, publicacao));
+      expect(linha().textContent, publicacao.tipo).toBe(FRASE_ATESTACAO_SEM_CRIACAO_INCERTA_SHOPEE);
+      expect(linha().textContent).not.toMatch(/busca|não acha nenhum/);
+      expect(linha().textContent).not.toContain(FRASE_ATESTACAO_SUPERADA_SHOPEE);
+      // The server's sentence never shows; no button (no exit, no SKU route).
+      expect(linha().textContent).not.toContain('nenhuma busca foi feita');
+      expect(botoes()).toEqual([]);
+      // NEAR-MISS: the look-up's own row — round 1's wording, whatever the reading.
+      r.rerender(com(vinculada, publicacao));
+      expect(linha().textContent, publicacao.tipo).toBe(BUSCA);
+      expect(linha().textContent).not.toContain(FRASE_ATESTACAO_SEM_CRIACAO_INCERTA_SHOPEE);
+    }
+    // The link is no draft any more (the panel is handed `rascunho: null`):
+    // the same fact, and no draft «Publicar» to name.
+    r.rerender({ desfecho: recusado([encerrada], { respondeAtestacao: true }), rascunho: null });
+    expect(linha().textContent).toBe(FRASE_ATESTACAO_SEM_CRIACAO_INCERTA_FORA_DO_RASCUNHO_SHOPEE);
+    expect(linha().textContent).not.toContain('Publicar do rascunho');
+    expect(botoes()).toEqual([]);
+    // NEAR-MISS off a draft: the look-up's row keeps its fact, and on a block
+    // whose button is a Republicar it never says «publicar de novo cria».
+    r.rerender({ desfecho: recusado([vinculada], { respondeAtestacao: true }), rascunho: null });
+    expect(linha().textContent).toBe(FRASE_BUSCA_SEM_CANDIDATO_FORA_DO_RASCUNHO_SHOPEE);
+    expect(linha().textContent).not.toMatch(/cria um anúncio novo|Publicar do rascunho/);
+    expect(botoes()).toEqual([]);
+  });
+
+  it('review round 4 (the WC1 pin, retargeted): the panel hands the row the block’s CURRENT reading — #11 (`busca-de-anuncio-existente-incompleta`, no acao) words its exit by it: `livre` checks first, `incerta` the last attempt’s listing first, `em-andamento` waits — re-worded on every render', () => {
+    const onze = problema({
+      campo: 'item_sku',
+      motivo: MOTIVO_ANUNCIO_SHOPEE.buscaDeAnuncioExistenteIncompleta,
+      mensagem: 'A Shopee deixou de fora o anúncio 1000011.',
+      acao: null,
+    });
     const com = (publicacao: EstadoPublicacaoRascunhoShopee) => ({
-      desfecho: recusado([semAcao], { respondeAtestacao: true }),
+      desfecho: recusado([onze]),
       rascunho: doRascunho({ publicacao }),
     });
     const r = show(com(LIVRE));
-    expect(linha().textContent).toContain(FRASE_ATESTACAO_SEM_CRIACAO_INCERTA_SHOPEE);
-    expect(linha().textContent).not.toMatch(/não acha nenhum|busca de agora/);
-    r.rerender(com(EM_ANDAMENTO));
-    expect(linha().textContent).toContain(FRASE_ATESTACAO_SEM_CRIACAO_INCERTA_SHOPEE);
-    expect(linha().textContent).not.toContain(BUSCA);
-    // NEAR-MISS: the block's reading records the attempt — the look-up wording, never the other.
+    expect(linha().textContent).toContain('Procure o SKU deste produto no Seller Centre');
+    expect(linha().textContent).not.toContain('se o anúncio da última tentativa existe');
     r.rerender(com(INCERTA));
-    expect(linha().textContent).toContain(BUSCA);
-    expect(linha().textContent).not.toContain(FRASE_ATESTACAO_SEM_CRIACAO_INCERTA_SHOPEE);
-    // …and a run in flight OVER a record (`aposIncerteza`) still records it.
-    const sobreRegistro = estadoPublicacaoRascunhoShopee(
-      { ...rascunhoTravado(AGORA - 10_000, AGORA + 60_000), criacaoIncertaDesde: AGORA - 600_000 },
-      AGORA,
+    expect(linha().textContent).toContain(
+      'Confira no Seller Centre: se o anúncio da última tentativa existe',
     );
-    expect(sobreRegistro).toMatchObject({ tipo: 'em-andamento', aposIncerteza: true });
-    r.rerender(com(sobreRegistro));
-    expect(linha().textContent).toContain(BUSCA);
-    expect(linha().textContent).not.toContain(FRASE_ATESTACAO_SEM_CRIACAO_INCERTA_SHOPEE);
+    expect(linha().textContent).not.toContain('Procure o SKU deste produto');
+    expect(linha().textContent).not.toContain('crie-o lá');
+    r.rerender(com(EM_ANDAMENTO));
+    expect(linha().textContent).toContain('O rascunho ainda aparece em publicação');
+    expect(linha().textContent).not.toMatch(/Procure o SKU|se o anúncio da última tentativa/);
+    // Each reading's text is the lib's over THAT reading (one module, #1369).
+    for (const publicacao of [LIVRE, INCERTA, EM_ANDAMENTO]) {
+      r.rerender(com(publicacao));
+      expect(linha().textContent, publicacao.tipo).toBe(
+        textoDoProblemaShopee(onze, LINK, PRODUTO, {
+          publicacao,
+          skuEnviado: null,
+          respondeAtestacao: false,
+        }),
+      );
+    }
   });
 
   it('the SKU-moved row names the SKU the attempt SENT (`skuEnviado`) ⟷ NEAR-MISS unknown, it asks to restore nothing it cannot show', () => {

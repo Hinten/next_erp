@@ -93,6 +93,7 @@ import {
   existentesDosVinculosShopee,
   falhaDaPublicacaoDoRascunhoShopee,
   falhaDoRascunhoShopee,
+  fraseDoRascunhoJaPublicadoNaPublicacaoShopee,
   idDeCategoriaShopeeValido,
   idDeNovoRascunhoShopee,
   marcarRascunhoShopeeSalvo,
@@ -2047,6 +2048,9 @@ function EditorShopee({
    *  - a 409 `publicacaoExpirada` or a coded non-limit 502 — `parada`, held
    *    WITHOUT a sentence: the panel words it on every render over the block's
    *    CURRENT reading (`livre` and `incerta` need opposite exits, §I2);
+   *  - a 409 `rascunhoJaPublicado` — the link is no draft any more; worded by
+   *    whether THIS request was attested (§I4: the confirmation had no effect,
+   *    nothing was created or changed), never re-sent;
    *  - a definite answer about the draft (`falhaDaPublicacaoDoRascunhoShopee`),
    *    else the publish's own reading (`desfechoDaFalha`: the 422 rows, the
    *    quota pause, the channel's ladder) — so a draft's 404 never reads as a
@@ -2095,6 +2099,15 @@ function EditorShopee({
               case 'expirada':
               case 'interrompida':
                 return { tipo: 'parada', parada: falha };
+              case 'ja-publicado':
+                // Worded by what THIS request was (§I4): an attested one's
+                // confirmation had no effect. The confirmation is already
+                // closed and the refusal rows (with their exits) are replaced,
+                // so nothing offers the same attestation again.
+                return {
+                  tipo: 'falha',
+                  mensagem: fraseDoRascunhoJaPublicadoNaPublicacaoShopee(pedido.atestacao !== null),
+                };
               case 'mensagem':
                 return { tipo: 'falha', mensagem: falha.mensagem };
               default: {

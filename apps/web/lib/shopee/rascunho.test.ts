@@ -29,6 +29,7 @@ import {
   FRASE_RASCUNHO_EM_KIT_VIRTUAL_SHOPEE,
   FRASE_RASCUNHO_ID_EM_USO_SHOPEE,
   FRASE_RASCUNHO_INCERTO_SHOPEE,
+  FRASE_ATESTACAO_DE_RASCUNHO_JA_PUBLICADO_SHOPEE,
   FRASE_RASCUNHO_INEXISTENTE_SHOPEE,
   FRASE_RASCUNHO_JA_PUBLICADO_SHOPEE,
   FRASE_RASCUNHO_NOVO_SHOPEE,
@@ -99,6 +100,7 @@ import {
   segundoAnuncioNaContaShopee,
   corpoPublicarRascunhoShopee,
   falhaDaPublicacaoDoRascunhoShopee,
+  fraseDoRascunhoJaPublicadoNaPublicacaoShopee,
   publicacaoDoRascunhoShopee,
   rascunhosIrmaosIncertosShopee,
   rotuloDaSuperficieShopee,
@@ -2744,10 +2746,24 @@ describe('falhaDaPublicacaoDoRascunhoShopee — §C.2 for a DRAFT’s Publicar, 
       tipo: 'mensagem',
       mensagem: FRASE_PUBLICACAO_CRIACAO_INCERTA_SEM_JANELA_SHOPEE,
     });
-    expect(falhaDaPublicacaoDoRascunhoShopee(http(409, F.rascunhoJaPublicado))).toEqual({
-      tipo: 'mensagem',
-      mensagem: FRASE_RASCUNHO_JA_PUBLICADO_SHOPEE,
+    // JA_PUBLICADO holds no sentence: what the REQUEST was words it (below).
+    expect(falhaDaPublicacaoDoRascunhoShopee(http(409, F.rascunhoJaPublicado))).toStrictEqual({
+      tipo: 'ja-publicado',
     });
+  });
+
+  it('§I4 (review round 4): JA_PUBLICADO answering an ATTESTED publish says the confirmation had no effect and nothing was created or changed ⟷ NEAR-MISS the block’s own Publicar keeps the draft routes’ sentence', () => {
+    expect(fraseDoRascunhoJaPublicadoNaPublicacaoShopee(true)).toBe(
+      FRASE_ATESTACAO_DE_RASCUNHO_JA_PUBLICADO_SHOPEE,
+    );
+    expect(fraseDoRascunhoJaPublicadoNaPublicacaoShopee(true)).toContain('não teve efeito');
+    // NEAR-MISS: unattested ⇒ today's sentence, byte for byte.
+    expect(fraseDoRascunhoJaPublicadoNaPublicacaoShopee(false)).toBe(
+      FRASE_RASCUNHO_JA_PUBLICADO_SHOPEE,
+    );
+    expect(FRASE_ATESTACAO_DE_RASCUNHO_JA_PUBLICADO_SHOPEE).not.toBe(
+      FRASE_RASCUNHO_JA_PUBLICADO_SHOPEE,
+    );
   });
 
   it('K1-4: CONTA_JA_TEM_ANUNCIO re-asks the second-listing warning from `vinculos` (unreadable ⇒ [])', () => {
@@ -2973,6 +2989,15 @@ describe('saidasDoProblemaShopee — the Seller-Centre exits, keyed on the slug 
     }
   });
 
+  it('review round 4: `criacao-incerta-encerrada` (an attestation refused before any look-up) offers NO exit — its row only says what happened ⟷ NEAR-MISS `criacao-incerta-sem-sku`, the same acao-less shape, keeps its one exit', () => {
+    const encerrada = { campo: 'item_sku', motivo: M.criacaoIncertaEncerrada, acao: null };
+    expect(saidasDoProblemaShopee(encerrada, RASCUNHO)).toEqual([]);
+    expect(saidasDoProblemaShopee(encerrada, { ehRascunho: false })).toEqual([]);
+    expect(
+      saidasDoProblemaShopee({ motivo: M.criacaoIncertaSemSku, acao: null }, RASCUNHO),
+    ).toHaveLength(1);
+  });
+
   it('NEAR-MISS: a renamed or merely similar slug ⇒ no exit (never a prefix match)', () => {
     for (const motivo of [
       'criacao-incerta',
@@ -3095,6 +3120,7 @@ describe('superficieDoCampoShopee — campo → the surface that fixes it (D17, 
     for (const motivo of [
       M.criacaoIncertaSemSku,
       M.criacaoIncertaJaVinculada,
+      M.criacaoIncertaEncerrada,
       M.buscaDeAnuncioIncompleta,
       M.anuncioExistenteSemVinculo,
       M.buscaDeAnuncioExistenteIncompleta,

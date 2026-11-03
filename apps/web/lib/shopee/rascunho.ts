@@ -131,6 +131,7 @@ import {
   FRASE_RASCUNHO_EM_KIT_VIRTUAL_SHOPEE,
   FRASE_RASCUNHO_ID_EM_USO_SHOPEE,
   FRASE_RASCUNHO_INCERTO_SHOPEE,
+  FRASE_ATESTACAO_DE_RASCUNHO_JA_PUBLICADO_SHOPEE,
   FRASE_RASCUNHO_INEXISTENTE_SHOPEE,
   FRASE_RASCUNHO_JA_PUBLICADO_SHOPEE,
   FRASE_RASCUNHO_NOVO_SHOPEE,
@@ -1765,8 +1766,31 @@ export type FalhaDaPublicacaoDoRascunhoShopee =
    * needed. Worded at render like {@link expirada}'s, for the same reason.
    */
   | { readonly tipo: 'interrompida'; readonly mensagemDoServidor: string }
+  /**
+   * 409 `rascunhoJaPublicado` — the link stopped being a draft by another path
+   * before this publish could send; nothing it sent created or changed a
+   * listing. Holds NO sentence: what the REQUEST was decides it
+   * ({@link fraseDoRascunhoJaPublicadoNaPublicacaoShopee}) — an ATTESTED
+   * publish (§I4: the server refuses one on its first read) says its
+   * confirmation had no effect.
+   */
+  | { readonly tipo: 'ja-publicado' }
   /** A definite answer about the draft: show `mensagem`. */
   | { readonly tipo: 'mensagem'; readonly mensagem: string };
+
+/**
+ * The sentence of a {@link FalhaDaPublicacaoDoRascunhoShopee} `ja-publicado`:
+ * `atestada` ⇔ the refused request carried `confirmarCriacaoIncerta` (a
+ * refusal row's attestation exit). The block's own Publicar keeps the draft
+ * routes' sentence; an attested one says the confirmation had no effect and
+ * that nothing was created or changed — the operator asked for a create or an
+ * adoption, and «já virou anúncio» alone would read as theirs (review round 4).
+ */
+export function fraseDoRascunhoJaPublicadoNaPublicacaoShopee(atestada: boolean): string {
+  return atestada
+    ? FRASE_ATESTACAO_DE_RASCUNHO_JA_PUBLICADO_SHOPEE
+    : FRASE_RASCUNHO_JA_PUBLICADO_SHOPEE;
+}
 
 /** The two failures of a draft's Publicar the tab words at render. */
 export type PublicacaoParadaDoRascunhoShopee = Extract<
@@ -1815,7 +1839,7 @@ export function falhaDaPublicacaoDoRascunhoShopee(
         mensagem: fraseDaPublicacaoDoRascunhoEmAndamentoShopee(detalhes),
       };
     case CODIGO_FALHA_SHOPEE.rascunhoJaPublicado:
-      return { tipo: 'mensagem', mensagem: FRASE_RASCUNHO_JA_PUBLICADO_SHOPEE };
+      return JA_PUBLICADO;
     case CODIGO_FALHA_SHOPEE.publicacaoExpirada:
       return { tipo: 'expirada', mensagemDoServidor: err.message };
     case CODIGO_FALHA_SHOPEE.rascunhoContencao:
@@ -1847,6 +1871,7 @@ export function falhaDaPublicacaoDoRascunhoShopee(
 }
 
 const SEM_RESPOSTA: FalhaDaPublicacaoDoRascunhoShopee = { tipo: 'sem-resposta' };
+const JA_PUBLICADO: FalhaDaPublicacaoDoRascunhoShopee = { tipo: 'ja-publicado' };
 
 /* ---- The Seller-Centre attestation exits of a refusal row (§C #7, #8) ------ */
 

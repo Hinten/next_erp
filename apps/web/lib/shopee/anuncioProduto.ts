@@ -1109,6 +1109,7 @@ export const MOTIVO_ANUNCIO_SHOPEE = {
   buscaDeAnuncioIncompleta: 'busca-de-anuncio-incompleta',
   criacaoIncertaSemSku: 'criacao-incerta-sem-sku',
   criacaoIncertaJaVinculada: 'criacao-incerta-ja-vinculada',
+  criacaoIncertaEncerrada: 'criacao-incerta-encerrada',
   anuncioExistenteSemVinculo: 'anuncio-existente-sem-vinculo',
   anuncioExistenteDeOutroProduto: 'anuncio-existente-de-outro-produto',
   buscaDeAnuncioExistenteIncompleta: 'busca-de-anuncio-existente-incompleta',
@@ -1124,6 +1125,11 @@ const M = MOTIVO_ANUNCIO_SHOPEE;
  * BEFORE any Shopee write. A row of one answering an ATTESTED publish means
  * the situation moved since the refusal the operator checked (§I1,
  * {@link FRASE_ATESTACAO_SUPERADA_SHOPEE}).
+ *
+ * ⚠️ `criacao-incerta-encerrada` is deliberately NOT here (review round 4):
+ * the reservation refuses it BEFORE any look-up, so the opening's «Veja o que
+ * a busca encontrou agora» would be false — its row says what happened itself
+ * ({@link FRASE_ATESTACAO_SEM_CRIACAO_INCERTA_SHOPEE}).
  */
 const MOTIVOS_DA_BUSCA_DA_CRIACAO_INCERTA: ReadonlySet<string> = new Set([
   M.criacaoIncertaAmbigua,
@@ -1245,6 +1251,48 @@ function textoDoSkuMudouShopee(skuEnviado: string | null): string {
 }
 
 /**
+ * What a `criacao-incerta-encerrada` row STATES (§I1 completion; its own
+ * motivo since review round 4, apps/shopee's
+ * `problemaDaAtestacaoSemCriacaoIncerta`): an attested publish reached a draft
+ * that no longer recorded the uncertain attempt the confirmation was about,
+ * and the reservation refused it BEFORE any look-up or write. Worded in the
+ * PAST of that read — the server's own tense — so it stays true after another
+ * run records a NEW attempt (a present-tense «já não registra» would not).
+ * Never what a search found (none ran); names no API.
+ */
+const FATO_DA_ATESTACAO_SEM_CRIACAO_INCERTA_SHOPEE =
+  'Quando esta publicação leu o rascunho, ele já não registrava a tentativa que podia ter ' +
+  'criado o anúncio — a confirmação que você deu valia só para aquela recusa, e esta ' +
+  'publicação não enviou nada à Shopee nem vinculou anúncio.';
+
+/**
+ * The `criacao-incerta-encerrada` row on a DRAFT block — keyed on the MOTIVO,
+ * never on the block's publish reading now: the fact, then the exit the block
+ * offers in every reading — its own «Publicar», which sends no confirmation
+ * (while a run holds the lock, after it: «se for o caso»). Promises no outcome
+ * of that publish. The row has no `acao` and no exit button.
+ */
+export const FRASE_ATESTACAO_SEM_CRIACAO_INCERTA_SHOPEE =
+  `${FATO_DA_ATESTACAO_SEM_CRIACAO_INCERTA_SHOPEE} Confira no Seller Centre e, se for o caso, ` +
+  'publique de novo pelo Publicar do rascunho, sem confirmação.';
+
+/**
+ * The exit of a draft's refusal row shown once the link is NO LONGER a draft
+ * (the panel hands no draft context — another run or the import linked it
+ * since): no draft «Publicar» to name, and no «publicar de novo cria» — that
+ * block's own button is a Republicar, an UPDATE of what the link records.
+ */
+const SAIDA_FORA_DO_RASCUNHO_SHOPEE =
+  'Este vínculo não é mais um rascunho: confira neste bloco e no Seller Centre o anúncio que ' +
+  'ele registra agora antes de qualquer outra ação.';
+
+/**
+ * The same row once the link is NO LONGER a draft: the fact, then
+ * {@link SAIDA_FORA_DO_RASCUNHO_SHOPEE}.
+ */
+export const FRASE_ATESTACAO_SEM_CRIACAO_INCERTA_FORA_DO_RASCUNHO_SHOPEE = `${FATO_DA_ATESTACAO_SEM_CRIACAO_INCERTA_SHOPEE} ${SAIDA_FORA_DO_RASCUNHO_SHOPEE}`;
+
+/**
  * The tab's OWN copy for the refusal motivos of an ORDINARY listing's draft
  * (#1911) — read by {@link textoDoProblemaShopee} right after
  * {@link TEXTO_MOTIVO_KIT}. The two maps' keys never overlap (pinned), so the
@@ -1277,6 +1325,11 @@ function textoDoSkuMudouShopee(skuEnviado: string | null): string {
  *   `./rascunho.ts`'s;
  * - `criacao-incerta-ja-vinculada` — the ids (with their produto) follow; its
  *   two exits are `./rascunho.ts`'s;
+ * - `criacao-incerta-encerrada` (review round 4) — an attested publish whose
+ *   draft no longer recorded the attempt, refused before any look-up:
+ *   {@link FRASE_ATESTACAO_SEM_CRIACAO_INCERTA_SHOPEE}, by its motivo in every
+ *   reading of the block (no `acao`, no exit; off a draft,
+ *   {@link FRASE_ATESTACAO_SEM_CRIACAO_INCERTA_FORA_DO_RASCUNHO_SHOPEE});
  * - `anuncio-existente-sem-vinculo` / `anuncio-existente-de-outro-produto` —
  *   one 422 may hold both, as two rows. Not attestable;
  * - `busca-de-anuncio-existente-incompleta` — the look-up did not finish:
@@ -1314,6 +1367,7 @@ export const TEXTO_MOTIVO_ANUNCIO_SHOPEE: Readonly<Record<string, string>> = {
   [M.criacaoIncertaJaVinculada]:
     'Pode ser o anúncio da última tentativa, já vinculado no ERP por outro caminho. Confira no ' +
     'Seller Centre antes de publicar de novo.',
+  [M.criacaoIncertaEncerrada]: FRASE_ATESTACAO_SEM_CRIACAO_INCERTA_SHOPEE,
   [M.anuncioExistenteSemVinculo]:
     'Já existe nesta conta da Shopee um anúncio com o SKU deste produto, sem vínculo no ERP — ' +
     `não crie outro. Importe-o (${PORTA_DA_IMPORTACAO_SHOPEE}): ele é ligado a ESTE produto só ` +
@@ -1347,14 +1401,12 @@ export const TEXTO_MOTIVO_ANUNCIO_SHOPEE: Readonly<Record<string, string>> = {
  *   (that one always lists its linked candidates): the §I1 refusal of an
  *   attestation whose fresh look-up found NO candidate at all (it expected to
  *   adopt one). «Pode ser o anúncio da última tentativa, já vinculado» would
- *   name a listing the look-up did not find. ⚠️ The SAME acao-less row also
- *   answers an attestation that reached a draft no longer recording the
- *   uncertain attempt (§I1 completion, apps/shopee's
- *   `problemaDaAtestacaoSemCriacaoIncerta`): NO look-up ran there, so a draft
- *   row whose block reads no uncertain attempt now is worded by
- *   {@link FRASE_ATESTACAO_SEM_CRIACAO_INCERTA_SHOPEE} instead
- *   ({@link textoDoMotivoSemAcaoShopee}); this map's wording is the one for a
- *   draft that still records it.
+ *   name a listing the look-up did not find. A look-up DID run for this row,
+ *   so it is worded the same in every reading of the block (off a draft,
+ *   {@link FRASE_BUSCA_SEM_CANDIDATO_FORA_DO_RASCUNHO_SHOPEE}). (The refusal
+ *   that runs NO look-up — an attestation reaching a draft no longer
+ *   recording the attempt — has its own motivo since review round 4,
+ *   `criacao-incerta-encerrada`, worded in {@link TEXTO_MOTIVO_ANUNCIO_SHOPEE}.)
  */
 export const TEXTO_MOTIVO_ANUNCIO_SEM_ACAO_SHOPEE: Readonly<Record<string, string>> = {
   [M.criacaoIncertaAmbigua]: textoDoSkuMudouShopee(null),
@@ -1367,6 +1419,20 @@ export const TEXTO_MOTIVO_ANUNCIO_SEM_ACAO_SHOPEE: Readonly<Record<string, strin
 };
 
 /**
+ * The acao-less `criacao-incerta-ja-vinculada` row once the link is NO LONGER
+ * a draft (review round 4 — the panel hands no draft context: another run or
+ * the import linked it after this refusal). The map's «publique de novo … se
+ * não existe mais, publicar de novo cria um anúncio novo» is false there: the
+ * block's button is a Republicar, which UPDATES what the link records. The
+ * look-up's fact stays, in the past of the publish that ran it (the link has
+ * moved since), then {@link SAIDA_FORA_DO_RASCUNHO_SHOPEE}.
+ */
+export const FRASE_BUSCA_SEM_CANDIDATO_FORA_DO_RASCUNHO_SHOPEE =
+  'A busca desta publicação não achou nenhum anúncio com o SKU enviado, criado na janela da ' +
+  'última tentativa — esta publicação não enviou nada nem vinculou anúncio. ' +
+  SAIDA_FORA_DO_RASCUNHO_SHOPEE;
+
+/**
  * The `criacao-incerta-ja-vinculada` row whose candidates are ALL unlinked
  * (`vinculados: []`) — the §I1 refusal of an attestation that expected a
  * deliberate create while a free listing turned up: the listing may be the
@@ -1377,36 +1443,15 @@ const FRASE_JA_VINCULADA_SO_SEM_VINCULO_SHOPEE =
   'antes de publicar de novo.';
 
 /**
- * The acao-less `criacao-incerta-ja-vinculada` row on a draft that records NO
- * uncertain attempt now (§I1 completion): the server refuses an attested
- * publish whose draft does not read `incerta` BEFORE any look-up or write, so
- * this never says what a search found — and it is true of round 1's
- * no-candidate mismatch too, once the record is gone. Names no API and
- * promises no look-up (a SKU-less produto is never looked up).
- */
-export const FRASE_ATESTACAO_SEM_CRIACAO_INCERTA_SHOPEE =
-  'Este rascunho já não registra a tentativa que podia ter criado o anúncio — a confirmação ' +
-  'que você deu valia só para aquela recusa, e esta publicação não enviou nada à Shopee nem ' +
-  'vinculou anúncio. Confira no Seller Centre e, se for o caso, publique de novo pelo Publicar ' +
-  'do rascunho, sem confirmação.';
-
-/**
- * Does the block's reading NOW record an earlier create whose outcome is
- * unknown — `incerta`, or a run in flight over one (`aposIncerteza`)?
- */
-function registraCriacaoIncerta(publicacao: EstadoPublicacaoRascunhoShopee): boolean {
-  return (
-    publicacao.tipo === 'incerta' ||
-    (publicacao.tipo === 'em-andamento' && publicacao.aposIncerteza)
-  );
-}
-
-/**
  * An acao-less row's own copy, read BEFORE the motivo maps: the SKU-moved
- * row with the sent SKU, #11 with the CURRENT reading's exit, and the §I1
- * ja-vinculada refusal by whether the draft still records the uncertain
- * attempt — each only when the draft context gives them; else the maps'
- * wording.
+ * row with the sent SKU and #11 with the CURRENT reading's exit — each only
+ * when the draft context gives them — and `criacao-incerta-encerrada` and the
+ * acao-less `criacao-incerta-ja-vinculada` off a draft (no draft «Publicar»,
+ * and no «publicar de novo cria», on a block whose button is a Republicar);
+ * else the maps' wording. Since review round 4 no row here reads whether the
+ * draft still records the uncertain attempt: the refusal that ran no look-up
+ * has its own motivo, so the acao-less `ja-vinculada` row is the look-up's
+ * alone — keyed on draft vs live only, like every draft row (R8-copy#2).
  */
 function textoDoMotivoSemAcaoShopee(
   motivo: string,
@@ -1418,12 +1463,11 @@ function textoDoMotivoSemAcaoShopee(
   if (motivo === M.buscaDeAnuncioExistenteIncompleta && rascunho !== null) {
     return textoDaBuscaDoAnuncioExistenteIncompletaShopee(rascunho.publicacao);
   }
-  if (
-    motivo === M.criacaoIncertaJaVinculada &&
-    rascunho !== null &&
-    !registraCriacaoIncerta(rascunho.publicacao)
-  ) {
-    return FRASE_ATESTACAO_SEM_CRIACAO_INCERTA_SHOPEE;
+  if (motivo === M.criacaoIncertaEncerrada && rascunho === null) {
+    return FRASE_ATESTACAO_SEM_CRIACAO_INCERTA_FORA_DO_RASCUNHO_SHOPEE;
+  }
+  if (motivo === M.criacaoIncertaJaVinculada && rascunho === null) {
+    return FRASE_BUSCA_SEM_CANDIDATO_FORA_DO_RASCUNHO_SHOPEE;
   }
   return textoProprio(TEXTO_MOTIVO_ANUNCIO_SEM_ACAO_SHOPEE, motivo) ?? textoDoMotivoShopee(motivo);
 }
@@ -1727,6 +1771,24 @@ export function fraseDaPublicacaoEmAndamentoShopee(
 export const FRASE_RASCUNHO_JA_PUBLICADO_SHOPEE =
   'Este rascunho já virou anúncio na Shopee — recarregue a aba; o conteúdo de um anúncio ' +
   'publicado não é editado aqui.';
+
+/**
+ * 409 `rascunhoJaPublicado` answering an ATTESTED Publicar (§I4, review round
+ * 4): the link stopped being a draft by another path — another run's publish
+ * or adoption, or the import — before this publish could send. Every producer
+ * of that code refuses before any listing write (the I4 first read, the
+ * reservation loop, ENSURE's token-guarded writes, the pre-send re-read), so
+ * this publish created and changed no listing, and what the operator attested
+ * had no effect: said outright, because the operator asked for a create or an
+ * adoption, and «já virou anúncio» alone reads as theirs. Claims only what the
+ * link RECORDS — never that the listing still exists on Shopee (it may have
+ * been removed since), never «falhou», no retry.
+ */
+export const FRASE_ATESTACAO_DE_RASCUNHO_JA_PUBLICADO_SHOPEE =
+  'Este vínculo já não é um rascunho: outro caminho (outra publicação ou a importação) o ' +
+  'ligou a um anúncio da Shopee. A confirmação que você deu não teve efeito, e esta ' +
+  'publicação não criou nem alterou anúncio. Recarregue a aba e confira neste bloco e no ' +
+  'Seller Centre o anúncio que ele registra agora.';
 
 /** 409 `rascunhoConflito` with `conflitos: []`: the write lost every attempt to concurrent writes. */
 export function fraseDoConflitoDeConcorrenciaShopee(operacao: OperacaoRascunhoShopee): string {

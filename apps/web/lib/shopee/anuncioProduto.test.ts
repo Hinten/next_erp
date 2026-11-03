@@ -86,8 +86,12 @@ import {
   tituloDoSegundoAnuncioNaPublicacaoShopee,
   FRASE_ATESTACAO_QUE_VARRE_SHOPEE,
   FRASE_ATESTACAO_SEM_BUSCA_SHOPEE,
+  FRASE_ATESTACAO_SEM_CRIACAO_INCERTA_FORA_DO_RASCUNHO_SHOPEE,
+  FRASE_BUSCA_SEM_CANDIDATO_FORA_DO_RASCUNHO_SHOPEE,
   FRASE_ATESTACAO_SEM_CRIACAO_INCERTA_SHOPEE,
   FRASE_ATESTACAO_SUPERADA_SHOPEE,
+  FRASE_ATESTACAO_DE_RASCUNHO_JA_PUBLICADO_SHOPEE,
+  FRASE_RASCUNHO_JA_PUBLICADO_SHOPEE,
   FRASE_RECUSA_SEM_PASSO_RASCUNHO_SHOPEE,
   PORTA_DA_IMPORTACAO_SHOPEE,
   TITULO_SEGUNDO_ANUNCIO_NA_PUBLICACAO_SHOPEE,
@@ -874,9 +878,10 @@ describe('the uncertain-create store (lerIncerto / gravarIncerto)', () => {
 describe('TEXTO_MOTIVO_ANUNCIO_SHOPEE (#1911 P10)', () => {
   const T = TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE;
 
-  it('words exactly the three P10 draft motivos and the eight of P11 — one constant per notice it shares', () => {
-    // §C's map size: P10 3 keys + P11 8 keys = 11 (ambígua's second copy is
-    // TEXTO_MOTIVO_ANUNCIO_SEM_ACAO_SHOPEE's).
+  it('words exactly the three P10 draft motivos and the nine of P11 — one constant per notice it shares', () => {
+    // §C's map size: P10 3 keys + P11 9 keys = 12 (ambígua's second copy is
+    // TEXTO_MOTIVO_ANUNCIO_SEM_ACAO_SHOPEE's; `criacao-incerta-encerrada`
+    // joined in review round 4).
     expect(Object.keys(TEXTO_MOTIVO_ANUNCIO_SHOPEE).sort()).toEqual([
       'anuncio-existente-de-outro-produto',
       'anuncio-existente-sem-vinculo',
@@ -884,6 +889,7 @@ describe('TEXTO_MOTIVO_ANUNCIO_SHOPEE (#1911 P10)', () => {
       'busca-de-anuncio-existente-incompleta',
       'busca-de-anuncio-incompleta',
       'criacao-incerta-ambigua',
+      'criacao-incerta-encerrada',
       'criacao-incerta-ja-vinculada',
       'criacao-incerta-sem-sku',
       'marca-nao-escolhida',
@@ -1646,29 +1652,110 @@ describe('#1911 P11 — textoDoProblemaShopee: §C rows #4–#12', () => {
     const SERVIDOR =
       'a confirmação da criação incerta esperava adotar o anúncio 1000011, e a busca de agora ' +
       'não confere — nada foi enviado nem vinculado.';
-    for (const contexto of [
-      undefined,
-      contextoDeRascunho({ publicacao: { tipo: 'incerta', desdeMs: 1 }, respondeAtestacao: true }),
-    ]) {
+    for (const [contexto, esperado] of [
+      // Off a draft (review round 4): the link moved since — its own wording.
+      [undefined, FRASE_BUSCA_SEM_CANDIDATO_FORA_DO_RASCUNHO_SHOPEE],
+      [
+        contextoDeRascunho({
+          publicacao: { tipo: 'incerta', desdeMs: 1 },
+          respondeAtestacao: true,
+        }),
+        TEXTO_MOTIVO_ANUNCIO_SEM_ACAO_SHOPEE[M.criacaoIncertaJaVinculada],
+      ],
+    ] as const) {
       const texto = textoDoProblemaShopee(
         { motivo: M.criacaoIncertaJaVinculada, mensagem: SERVIDOR, acao: null },
         'R1',
         'p1',
         contexto,
       );
-      expect(texto).toBe(TEXTO_MOTIVO_ANUNCIO_SEM_ACAO_SHOPEE[M.criacaoIncertaJaVinculada]);
-      expect(texto).toContain('não acha nenhum anúncio');
+      expect(texto).toBe(esperado);
+      expect(texto).toMatch(/não acha nenhum anúncio|não achou nenhum anúncio/);
       expect(texto).toContain('não enviou nada');
       expect(texto).not.toMatch(/já vinculado|Pode ser o anúncio/);
     }
   });
 
-  it('§I1 completion: the SAME acao-less ja-vinculada row on a draft that records NO uncertain attempt now (the server refused before any look-up) never claims a search ⟷ NEAR-MISS a draft that still records it keeps the look-up wording', () => {
-    const SERVIDOR =
-      'a confirmação da criação incerta esperava adotar o anúncio 1000011, mas este rascunho não ' +
-      'registra criação incerta agora — nada foi enviado nem vinculado.';
-    const linha = { motivo: M.criacaoIncertaJaVinculada, mensagem: SERVIDOR, acao: null };
-    const semRegistro: ContextoDoRascunhoNoProblemaShopee['publicacao'][] = [
+  it('review round 4: the acao-less `ja-vinculada` row OFF a draft (the link was linked by another path after the refusal) keeps the look-up’s fact and never says «publicar de novo cria um anúncio novo» — that block’s button is a Republicar, an update ⟷ NEAR-MISS every draft reading keeps round 1’s wording byte for byte', () => {
+    const vinculada = {
+      motivo: M.criacaoIncertaJaVinculada,
+      mensagem: 'a busca de agora não confere — nada foi enviado nem vinculado.',
+      acao: null,
+    };
+    const BUSCA = TEXTO_MOTIVO_ANUNCIO_SEM_ACAO_SHOPEE[M.criacaoIncertaJaVinculada];
+    for (const fora of [undefined, null]) {
+      const texto = textoDoProblemaShopee(vinculada, 'R1', 'p1', fora);
+      expect(texto).toBe(FRASE_BUSCA_SEM_CANDIDATO_FORA_DO_RASCUNHO_SHOPEE);
+      // The look-up DID run: its fact stays (past — the link moved since).
+      expect(texto).toContain(
+        'A busca desta publicação não achou nenhum anúncio com o SKU enviado',
+      );
+      expect(texto).toContain('esta publicação não enviou nada nem vinculou anúncio');
+      expect(texto).toContain('Este vínculo não é mais um rascunho');
+      // No exit the live block does not offer, no create promise, no draft Publicar.
+      expect(texto).not.toMatch(/cria um anúncio novo|publique de novo|Publicar do rascunho/);
+      expect(texto).not.toMatch(TEXTO_DE_TERMINAL);
+      // Distinct from the refusal that ran NO look-up, off a draft too.
+      expect(texto).not.toBe(FRASE_ATESTACAO_SEM_CRIACAO_INCERTA_FORA_DO_RASCUNHO_SHOPEE);
+      expect(FRASE_ATESTACAO_SEM_CRIACAO_INCERTA_FORA_DO_RASCUNHO_SHOPEE).not.toMatch(/busca/);
+    }
+    // NEAR-MISS: on a draft, whatever the reading, round 1's wording — unchanged.
+    expect(BUSCA).toContain('se não existe mais, publicar de novo cria um anúncio novo.');
+    for (const publicacao of [
+      { tipo: 'livre' },
+      { tipo: 'incerta', desdeMs: 1 },
+    ] as const satisfies readonly ContextoDoRascunhoNoProblemaShopee['publicacao'][]) {
+      for (const respondeAtestacao of [true, false]) {
+        expect(
+          textoDoProblemaShopee(
+            vinculada,
+            'R1',
+            'p1',
+            contextoDeRascunho({ publicacao, respondeAtestacao }),
+          ),
+          `${publicacao.tipo} ${String(respondeAtestacao)}`,
+        ).toBe(BUSCA);
+      }
+    }
+    // NEAR-MISS: a ja-vinculada row WITH an acao off a draft is untouched.
+    const comAcao = textoDoProblemaShopee(
+      { ...vinculada, acao: importar([1000011], [{ itemId: 1000011, produtoId: 'p2' }]) },
+      'R1',
+      'p1',
+    );
+    expect(comAcao).not.toContain(FRASE_BUSCA_SEM_CANDIDATO_FORA_DO_RASCUNHO_SHOPEE);
+    expect(comAcao.startsWith(copia(M.criacaoIncertaJaVinculada))).toBe(true);
+  });
+
+  it('review round 4 (re-verify): round 1’s acao-less `ja-vinculada` sentence is pinned as a LITERAL — the routing pins around it compare against the map itself, so a rewording of the map would pass them all', () => {
+    expect(TEXTO_MOTIVO_ANUNCIO_SEM_ACAO_SHOPEE[M.criacaoIncertaJaVinculada]).toBe(
+      'A busca de agora não acha nenhum anúncio com o SKU enviado, criado na janela da última ' +
+        'tentativa — esta publicação não enviou nada nem vinculou anúncio. Confira no Seller Centre ' +
+        'o anúncio que a recusa anterior mostrou: se ele existe, confira o SKU dele (o ERP só o acha ' +
+        'pelo SKU que a última tentativa enviou) e publique de novo; se não existe mais, publicar de ' +
+        'novo cria um anúncio novo.',
+    );
+  });
+
+  it('§I1 completion (review round 4): `criacao-incerta-encerrada` — the refusal that ran NO look-up — reads its own sentence by its MOTIVO in EVERY reading of the block, never a search ⟷ NEAR-MISS the acao-less `ja-vinculada` row (a look-up DID run) keeps round 1’s «A busca de agora» wording in every reading too: one shape, two motivos, two sentences', () => {
+    const encerrada = {
+      motivo: M.criacaoIncertaEncerrada,
+      mensagem:
+        'a confirmação da criação incerta esperava adotar o anúncio 1000011, mas, quando esta ' +
+        'publicação leu o rascunho, ele já não registrava a criação incerta confirmada — nada foi ' +
+        'enviado nem vinculado, e nenhuma busca foi feita.',
+      acao: null,
+    };
+    const vinculada = {
+      motivo: M.criacaoIncertaJaVinculada,
+      mensagem:
+        'a confirmação da criação incerta esperava adotar o anúncio 1000011, e a busca de agora ' +
+        'não confere — nada foi enviado nem vinculado.',
+      acao: null,
+    };
+    const BUSCA = TEXTO_MOTIVO_ANUNCIO_SEM_ACAO_SHOPEE[M.criacaoIncertaJaVinculada];
+    // Every reading the block can hand: the row never asks it.
+    const leituras: ContextoDoRascunhoNoProblemaShopee['publicacao'][] = [
       { tipo: 'livre' },
       {
         tipo: 'em-andamento',
@@ -1678,28 +1765,6 @@ describe('#1911 P11 — textoDoProblemaShopee: §C rows #4–#12', () => {
         aposIncerteza: false,
         posExpiracao: false,
       },
-    ];
-    for (const publicacao of semRegistro) {
-      for (const respondeAtestacao of [true, false]) {
-        const texto = textoDoProblemaShopee(
-          linha,
-          'R1',
-          'p1',
-          contextoDeRascunho({ publicacao, respondeAtestacao }),
-        );
-        expect(texto, publicacao.tipo).toBe(FRASE_ATESTACAO_SEM_CRIACAO_INCERTA_SHOPEE);
-        expect(texto).toContain('não enviou nada');
-        // No look-up ran: never what a search found, never «o ERP procura».
-        expect(texto).not.toMatch(/busca|procur|não acha|já vinculado|Pode ser o anúncio/);
-        expect(texto).not.toContain(FRASE_ATESTACAO_SUPERADA_SHOPEE);
-        expect(texto).not.toMatch(TEXTO_DE_TERMINAL);
-      }
-    }
-    // NEAR-MISS: the draft still records the attempt (incerta, or a run in
-    // flight over one) — round 1's no-candidate mismatch, worded by the look-up.
-    const comRegistro: ContextoDoRascunhoNoProblemaShopee['publicacao'][] = [
-      { tipo: 'incerta', desdeMs: 1 },
-      { tipo: 'incerta', desdeMs: null },
       {
         tipo: 'em-andamento',
         desdeMs: 1,
@@ -1708,25 +1773,52 @@ describe('#1911 P11 — textoDoProblemaShopee: §C rows #4–#12', () => {
         aposIncerteza: true,
         posExpiracao: false,
       },
+      { tipo: 'incerta', desdeMs: 1 },
+      { tipo: 'incerta', desdeMs: null },
     ];
-    for (const publicacao of comRegistro) {
-      expect(
-        textoDoProblemaShopee(
-          linha,
-          'R1',
-          'p1',
-          contextoDeRascunho({ publicacao, respondeAtestacao: true }),
-        ),
-        publicacao.tipo,
-      ).toBe(TEXTO_MOTIVO_ANUNCIO_SEM_ACAO_SHOPEE[M.criacaoIncertaJaVinculada]);
+    for (const publicacao of leituras) {
+      for (const respondeAtestacao of [true, false]) {
+        const contexto = contextoDeRascunho({ publicacao, respondeAtestacao });
+        const rotulo = `${publicacao.tipo} atestada=${String(respondeAtestacao)}`;
+        const texto = textoDoProblemaShopee(encerrada, 'R1', 'p1', contexto);
+        expect(texto, rotulo).toBe(FRASE_ATESTACAO_SEM_CRIACAO_INCERTA_SHOPEE);
+        // No look-up ran: never what a search found, never «o ERP procura».
+        expect(texto).not.toMatch(/busca|procur|não acha|já vinculado|Pode ser o anúncio/);
+        expect(texto).not.toContain(FRASE_ATESTACAO_SUPERADA_SHOPEE);
+        expect(texto).not.toMatch(TEXTO_DE_TERMINAL);
+        // NEAR-MISS: the look-up's acao-less row — round 1's wording, whatever the reading.
+        const daBusca = textoDoProblemaShopee(vinculada, 'R1', 'p1', contexto);
+        expect(daBusca, rotulo).toBe(BUSCA);
+        expect(daBusca).not.toContain(FRASE_ATESTACAO_SEM_CRIACAO_INCERTA_SHOPEE);
+      }
     }
-    // NEAR-MISS: no draft context (a live block's row) keeps the map's wording.
-    expect(textoDoProblemaShopee(linha, 'R1', 'p1')).toBe(
-      TEXTO_MOTIVO_ANUNCIO_SEM_ACAO_SHOPEE[M.criacaoIncertaJaVinculada],
+    // The PAST of the read that decided — true after another run records a
+    // NEW attempt; never a present «já não registra», never a retry promise.
+    expect(FRASE_ATESTACAO_SEM_CRIACAO_INCERTA_SHOPEE).toContain(
+      'Quando esta publicação leu o rascunho, ele já não registrava a tentativa',
+    );
+    expect(FRASE_ATESTACAO_SEM_CRIACAO_INCERTA_SHOPEE).toContain('não enviou nada à Shopee');
+    expect(FRASE_ATESTACAO_SEM_CRIACAO_INCERTA_SHOPEE).toContain(
+      'publique de novo pelo Publicar do rascunho, sem confirmação',
+    );
+    expect(FRASE_ATESTACAO_SEM_CRIACAO_INCERTA_SHOPEE).not.toMatch(
+      /já não registra a|falhou|tente de novo|foi criado|anúncio criado/,
+    );
+    // Off a draft (the panel hands no context: the link is no draft any more)
+    // — the same fact, and no draft «Publicar» to name.
+    const fora = textoDoProblemaShopee(encerrada, 'R1', 'p1');
+    expect(fora).toBe(FRASE_ATESTACAO_SEM_CRIACAO_INCERTA_FORA_DO_RASCUNHO_SHOPEE);
+    expect(fora).not.toContain('Publicar do rascunho');
+    expect(fora).toContain('esta publicação não enviou nada à Shopee nem vinculou anúncio');
+    expect(fora).toContain('Este vínculo não é mais um rascunho');
+    // NEAR-MISS: the look-up's row off a draft keeps ITS fact (a search ran) —
+    // its own off-draft sentence, never this one.
+    expect(textoDoProblemaShopee(vinculada, 'R1', 'p1')).toBe(
+      FRASE_BUSCA_SEM_CANDIDATO_FORA_DO_RASCUNHO_SHOPEE,
     );
     // NEAR-MISS: a ja-vinculada row WITH an acao on a livre draft is untouched.
     const comAcao = textoDoProblemaShopee(
-      { ...linha, acao: importar([1000011], [{ itemId: 1000011, produtoId: 'p2' }]) },
+      { ...vinculada, acao: importar([1000011], [{ itemId: 1000011, produtoId: 'p2' }]) },
       'R1',
       'p1',
       contextoDeRascunho(),
@@ -2318,6 +2410,24 @@ describe('#1911 P11 — the answers of a draft’s Publicar (§C.2)', () => {
     expect(FRASE_RASCUNHO_INEXISTENTE_NA_PUBLICACAO_SHOPEE).toContain('não existe mais');
     // Never the live link's "this link is not this conta's".
     expect(FRASE_RASCUNHO_INEXISTENTE_NA_PUBLICACAO_SHOPEE).not.toContain('não pertence');
+  });
+
+  it('§I4 (review round 4): an ATTESTED publish’s 409 JA_PUBLICADO says the confirmation had no effect and nothing was created or changed — claiming only what the link RECORDS ⟷ NEAR-MISS the draft routes’ sentence (the block’s own Publicar) stays as it was', () => {
+    const t = FRASE_ATESTACAO_DE_RASCUNHO_JA_PUBLICADO_SHOPEE;
+    expect(t).toContain('já não é um rascunho');
+    expect(t).toContain('A confirmação que você deu não teve efeito');
+    expect(t).toContain('esta publicação não criou nem alterou anúncio');
+    expect(t).toContain('o anúncio que ele registra agora');
+    // Never that it exists on Shopee NOW (it may have been removed since), never
+    // «falhou» while a listing is linked, never a retry, never CLI text.
+    expect(t).not.toMatch(/existe na Shopee|falhou|tente de novo|publique de novo|foi criado/i);
+    expect(t).not.toMatch(TEXTO_DE_TERMINAL);
+    // NEAR-MISS: the plain sentence is untouched — and is NOT the attested one.
+    expect(FRASE_RASCUNHO_JA_PUBLICADO_SHOPEE).toBe(
+      'Este rascunho já virou anúncio na Shopee — recarregue a aba; o conteúdo de um anúncio ' +
+        'publicado não é editado aqui.',
+    );
+    expect(FRASE_RASCUNHO_JA_PUBLICADO_SHOPEE).not.toContain('confirmação');
   });
 
   it('a coded 502 on a `livre` draft: the server sentence + §I2’s CHECK-FIRST exit for a repeat — never a claim about what exists', () => {

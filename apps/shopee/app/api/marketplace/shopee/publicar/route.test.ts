@@ -1294,7 +1294,7 @@ describe('#1911 — publicar um RASCUNHO pela rota', () => {
       );
     });
 
-    it('ponta a ponta (round 2): um rascunho que voltou a LIVRE, atestado esperando ADOTAR ⇒ 422 ja-vinculada SEM acao — nada gravado', async () => {
+    it('ponta a ponta (round 2; motivo próprio no round 4): um rascunho que voltou a LIVRE, atestado esperando ADOTAR ⇒ 422 criacao-incerta-encerrada SEM acao — nada gravado', async () => {
       semearRascunho(RASCUNHO);
       const antes = { ...rascunhoArmazenado() };
 
@@ -1311,8 +1311,10 @@ describe('#1911 — publicar um RASCUNHO pela rota', () => {
 
       expect(res.status).toBe(422);
       const corpo = (await res.json()) as { problemas: Record<string, unknown>[] };
+      // Round 4: its OWN slug on the wire — never `-ja-vinculada`'s acao-less
+      // row, which answers a look-up that DID run.
       expect(corpo.problemas.map((p) => p.motivo)).toEqual([
-        MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaJaVinculada,
+        MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaEncerrada,
       ]);
       // No `acao` on the wire: nothing was looked up, so the web has no exit to loop on.
       expect(corpo.problemas[0]).not.toHaveProperty('acao');
@@ -1331,8 +1333,76 @@ describe('#1911 — publicar um RASCUNHO pela rota', () => {
       const corpo = (await res.json()) as { problemas: { motivo: string }[] };
       expect(corpo.problemas.map((p) => p.motivo)).toContain(MOTIVO_PUBLICACAO_BLOQUEADA.semFotos);
       expect(corpo.problemas.map((p) => p.motivo)).not.toContain(
-        MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaJaVinculada,
+        MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaEncerrada,
       );
+    });
+
+    /**
+     * Round 4 — Lucas §I4 (2026-11-03): the draft the attestation was read off
+     * was ADOPTED (or claimed) by another run since — the link records a
+     * listing now. The expectation is refused with the 409 the reservation's
+     * loop already answers for that fact; before, it ran as an update.
+     */
+    it('⛔ (§I4) um rascunho que outra execução ADOTOU, atestado com a expectativa ⇒ 409 JA_PUBLICADO {error, code, linkDocId} — nada gravado, nenhuma leitura da Shopee', async () => {
+      for (const esperado of [[ITEM_ID], []]) {
+        db = new FakeDb();
+        h.db.atual = asDb(db);
+        semearProduto(db);
+        semearRascunho(RASCUNHO, { item_id: ITEM_ID, estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo });
+        const antes = { ...rascunhoArmazenado() };
+
+        const res = await POST(
+          req(
+            corpoValido({
+              linkDocId: RASCUNHO,
+              confirmarCriacaoIncerta: true,
+              criacaoIncertaAdota: esperado,
+            }),
+            AUTORIZADO,
+          ),
+        );
+
+        const caso = JSON.stringify(esperado);
+        expect(res.status, caso).toBe(409);
+        const corpo = (await res.json()) as Record<string, unknown>;
+        expect(corpo, caso).toEqual({
+          error: expect.stringContaining(RASCUNHO) as unknown,
+          code: CODIGO_RASCUNHO_SHOPEE.jaPublicado,
+          linkDocId: RASCUNHO,
+        });
+        expect(rascunhoArmazenado()).toEqual(antes);
+        expect(
+          db.writes.filter((w) => w.path.includes('/prodshopee/')),
+          caso,
+        ).toEqual([]);
+        expect(db.writes, caso).toEqual([]);
+        // Refused at the reservation: the plan's taxonomy reads never ran.
+        expect(h.getCategory).not.toHaveBeenCalled();
+        expect(h.getChannelList).not.toHaveBeenCalled();
+      }
+    });
+
+    it('⛔ quase-par (§I4): o MESMO vínculo com a flag NUA, ou sem campo nenhum ⇒ a atualização de sempre (o plano então recusa sem-fotos, 422) — nenhum 409, nenhuma trava', async () => {
+      for (const extra of [{ confirmarCriacaoIncerta: true }, {}]) {
+        db = new FakeDb();
+        h.db.atual = asDb(db);
+        semearProduto(db);
+        semearRascunho(RASCUNHO, { item_id: ITEM_ID, estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo });
+
+        const res = await POST(req(corpoValido({ linkDocId: RASCUNHO, ...extra }), AUTORIZADO));
+
+        const caso = JSON.stringify(extra);
+        expect(res.status, caso).toBe(422);
+        const corpo = (await res.json()) as { problemas: { motivo: string }[] };
+        expect(
+          corpo.problemas.map((p) => p.motivo),
+          caso,
+        ).toContain(MOTIVO_PUBLICACAO_BLOQUEADA.semFotos);
+        expect(
+          db.writes.some((w) => 'publicacaoEmCurso' in w.patch),
+          caso,
+        ).toBe(false);
+      }
     });
 
     it('⛔ (round 3) a expectativa SEM linkDocId ⇒ 400 antes de qualquer leitura — nenhum rascunho cunhado, nada gravado', async () => {
@@ -1363,8 +1433,9 @@ describe('#1911 — publicar um RASCUNHO pela rota', () => {
       expect(res.status).toBe(422);
       const corpo = (await res.json()) as { problemas: { motivo: string }[] };
       expect(corpo.problemas.map((p) => p.motivo)).toContain(MOTIVO_PUBLICACAO_BLOQUEADA.semFotos);
+      // The reservation's refusal of an expectation (round 4: its own slug) never fires here.
       expect(corpo.problemas.map((p) => p.motivo)).not.toContain(
-        MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaJaVinculada,
+        MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaEncerrada,
       );
       // The CLI's mint, unchanged: ONE draft, the only document written; the
       // blocked plan handed its lock back, unstamped.
