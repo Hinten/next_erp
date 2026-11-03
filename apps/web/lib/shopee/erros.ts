@@ -61,7 +61,12 @@ export const CODIGO_FALHA_SHOPEE = {
   contaSemTabelaNormal: 'SHOPEE_CONTA_SEM_TABELA_NORMAL',
   /** 422 — the conta cannot take a price push (`detalhes.motivo` / `regiao`). */
   precoContaRecusada: 'SHOPEE_PRECO_CONTA_RECUSADA',
-  /** 422 — refused BEFORE any Shopee write (`detalhes.problemas`). */
+  /**
+   * 422 — the ERP's own refusal (`detalhes.problemas`). Usually decided before
+   * any Shopee write, but NOT always: on an UPDATE the model leg refuses AFTER
+   * `update_item`, and the body names no etapa that would tell the two apart —
+   * so never read it as "nothing was sent".
+   */
   publicacaoBloqueada: 'SHOPEE_PUBLISH_BLOCKED',
   /** 422 — Shopee refused a write mid-publish (`detalhes.etapa`, `detalhes.problemas`). */
   publicacaoRecusada: 'SHOPEE_PUBLISH_REJECTED',
@@ -84,7 +89,11 @@ export const CODIGO_FALHA_SHOPEE = {
    * not help), `detalhes.vinculos` when the holder is a sibling.
    */
   publicacaoEmAndamento: CODIGO_RASCUNHO_SHOPEE.publicacaoEmAndamento,
-  /** 409 — the named link is no longer a draft: a listing exists. */
+  /**
+   * 409 — the named link is no longer a draft: it RECORDS a listing (an
+   * `item_id`), which may have been removed on Shopee since — never proof that
+   * the listing exists there now.
+   */
   rascunhoJaPublicado: CODIGO_RASCUNHO_SHOPEE.jaPublicado,
   /**
    * 409, publish only — stopped BEFORE the create (the send gate, a look-up

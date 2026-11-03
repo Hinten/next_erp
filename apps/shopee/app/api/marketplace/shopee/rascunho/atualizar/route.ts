@@ -33,7 +33,9 @@
  * `attributes` beside a `category_id` patch without them,
  * `MSG_BASE_SEM_ATRIBUTOS_NA_TROCA_DE_CATEGORIA_RASCUNHO_SHOPEE`) · 401/403 ·
  * 404 `INEXISTENTE` (no such draft, or another
- * conta's) · 409 `JA_PUBLICADO {linkDocId}` (a listing exists — D8),
+ * conta's) · 409 `JA_PUBLICADO {linkDocId}` (the link is no longer a draft —
+ * `ehRascunhoShopee` false: it RECORDS a listing, which Seller Centre may have
+ * removed since; D8),
  * `EM_ANDAMENTO {aguardarMs}` (a publish holds the lock, its post-expiry grace
  * included), `CATEGORIA_TRAVADA` (a patch NAMING `category_id` — even the
  * stored value — while the last create is `incerta`: it may have made the

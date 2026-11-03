@@ -893,7 +893,49 @@ describe('portaoDeEnvio — agora() + MARGEM < min(expiraEm, prazoDaRequisicao)'
     };
     expect(msg(EXPIRA, AGORA + 1)).toContain('requisição');
     expect(msg(EXPIRA, null)).toContain('trava');
-    expect(msg(EXPIRA, null)).toContain('Nada foi enviado');
+    expect(msg(EXPIRA, null)).toContain('Esta tentativa não criou nenhum anúncio.');
+  });
+
+  /*
+   * #1911 batch-B review R6-docs#3. The gate guards EACH `add_item` leg, and the
+   * fiscal retry's second leg follows a first one that WAS sent and refused
+   * (all-or-nothing) — `publicarAnuncio.test.ts`'s «a segunda perna fiscal é
+   * barrada» drives exactly that order (`aquecer`, `add_item`, `aquecer`) into
+   * this throw. So the sentence may claim only what is true on every leg: THIS
+   * run created nothing.
+   */
+  it('(R6-docs#3) a frase INTEIRA: parou antes de terminar, a causa, e só o que vale em toda perna — esta tentativa não criou nenhum anúncio', () => {
+    let mensagem = '';
+    try {
+      portaoDeEnvio(RASCUNHO, trava, { agora: () => EXPIRA, prazoDaRequisicao: null });
+    } catch (err) {
+      if (!(err instanceof ConflitoDeRascunhoShopeeError)) throw err;
+      mensagem = err.message;
+    }
+    expect(mensagem).toBe(
+      `a publicação do rascunho ${RASCUNHO} parou antes de terminar: o tempo da trava acabaria ` +
+        'durante o envio. Esta tentativa não criou nenhum anúncio.',
+    );
+  });
+
+  it('⛔ quase-par (R6-docs#3): nunca «nada foi enviado» nem «ANTES do add_item» (falsos na segunda perna fiscal), nunca o «nenhum anúncio foi criado» solto nem um «tente de novo» — em nenhuma causa do portão', () => {
+    for (const prazo of [AGORA + 1, null]) {
+      let mensagem = '';
+      try {
+        portaoDeEnvio(RASCUNHO, trava, { agora: () => EXPIRA, prazoDaRequisicao: prazo });
+      } catch (err) {
+        if (!(err instanceof ConflitoDeRascunhoShopeeError)) throw err;
+        mensagem = err.message;
+      }
+      // Anchor: the gate really refused, so the negatives below are not vacuous.
+      expect(mensagem, String(prazo)).toMatch(
+        /^a publicação do rascunho .*parou antes de terminar/,
+      );
+      expect(mensagem, String(prazo)).not.toMatch(/nada foi enviado/i);
+      expect(mensagem, String(prazo)).not.toMatch(/ANTES do add_item/);
+      expect(mensagem, String(prazo)).not.toMatch(/nenhum anúncio foi criado/i);
+      expect(mensagem, String(prazo)).not.toMatch(/tente de novo/i);
+    }
   });
 
   it('⚠️ um relógio NaN RECUSA — nunca envia', () => {
@@ -989,7 +1031,7 @@ describe('buscaNoPrazoDoEnvio — a busca sob o prazo do portão (batch-A review
     expect(respostas).toEqual([true, true, false]);
   });
 
-  it('o CORTE da busca vira o 409 PUBLICACAO_EXPIRADA do portão — a frase diz qual prazo, e que nada foi enviado', async () => {
+  it('o CORTE da busca vira o 409 PUBLICACAO_EXPIRADA do portão — a frase diz qual prazo, e que esta tentativa não criou nenhum anúncio', async () => {
     const corte = (prazo: number | null): Promise<ConflitoDeRascunhoShopeeError> =>
       conflitoDe(
         buscaNoPrazoDoEnvio(RASCUNHO, trava, { agora: () => AGORA, prazoDaRequisicao: prazo }, () =>
@@ -1001,7 +1043,8 @@ describe('buscaNoPrazoDoEnvio — a busca sob o prazo do portão (batch-A review
     expect(daRota.linkDocId).toBe(RASCUNHO);
     expect(daRota.message).toContain('a busca não coube no tempo desta requisição');
     expect(daRota.message).toContain('pelo CLI');
-    expect(daRota.message).toContain('Nada foi enviado');
+    expect(daRota.message).toContain('Esta tentativa não criou nenhum anúncio.');
+    expect(daRota.message).not.toMatch(/nada foi enviado|tente de novo/i);
     const doCli = await corte(null);
     expect(doCli.code).toBe(CODIGO_RASCUNHO_SHOPEE.publicacaoExpirada);
     expect(doCli.message).toContain('a busca não coube no tempo da trava');
@@ -2014,7 +2057,7 @@ describe('reservarRascunhoShopee — um rascunho INCERTO (P5: a busca antes de q
    * `apps/web/lib/shopee/anuncioProduto.ts` cannot import this module, so its
    * `CAUSAS_DA_PUBLICACAO_EXPIRADA` matches the CAUSE clause of the 409
    * `PUBLICACAO_EXPIRADA` sentence by pattern and prints each in the tab's own
-   * words (never the server tail «…ANTES do add_item … tente de novo»). A
+   * words (never the server tail «Esta tentativa não criou nenhum anúncio»). A
    * server rewording would leave that cause unmatched — and the web falls back
    * to the guarded sentence, which hides it — with every suite green.
    *
@@ -2129,6 +2172,16 @@ describe('reservarRascunhoShopee — um rascunho INCERTO (P5: a busca antes de q
       expect(semCausaNaWeb(frases, causas), 'causa do servidor sem padrão na web').toEqual([]);
       const mortos = causas.filter((c) => !frases.some((f) => c.test(f))).map(String);
       expect(mortos, 'padrão da web que nenhuma frase do servidor carrega').toEqual([]);
+    });
+
+    it('(R6-docs#3) TODA frase da EXPIRADA, de todo produtor, termina no que vale em toda perna — e nenhuma diz «nada foi enviado», «ANTES do add_item» ou «tente de novo»', async () => {
+      const frases = await frasesDoServidor();
+      expect(frases).toHaveLength(7);
+      for (const f of frases) {
+        expect(f).toMatch(/^a publicação do rascunho \S+ parou antes de terminar: /);
+        expect(f.endsWith('. Esta tentativa não criou nenhum anúncio.'), f).toBe(true);
+        expect(f).not.toMatch(/nada foi enviado|ANTES do add_item|tente de novo/i);
+      }
     });
 
     it('⛔ quase-par: UMA causa reescrita no servidor é DENUNCIADA — o casamento não é vácuo', async () => {
@@ -2303,7 +2356,9 @@ describe('reservarRascunhoShopee — um rascunho INCERTO (P5: a busca antes de q
       const err = await conflitoDe(reservar(asDb(db), ALVO, c, busca));
       expect(err.code).toBe(CODIGO_RASCUNHO_SHOPEE.publicacaoExpirada);
       expect(err.message).toContain('a busca não coube no tempo desta requisição');
-      expect(err.message).toContain('Nada foi enviado');
+      // Scoped to THIS run: on an `incerta` draft the earlier attempt may have created it.
+      expect(err.message).toContain('Esta tentativa não criou nenhum anúncio.');
+      expect(err.message).not.toMatch(/nenhum anúncio foi criado/i);
       // The lock handed back, the RECORD kept: the draft still reads `incerta`.
       expect(doc(db)).toMatchObject({
         item_id: null,

@@ -1440,7 +1440,8 @@ The first WRITER of a listing. Reasoning: `anuncios/README.md`.
   (`anuncios/rascunho.ts`) create/edit/discard one; publish locks
   (`publicacaoEmCurso`) and claims it; a first create refuses a same-SKU listing
   not linked to the produto; an uncertain `add_item` is a 202, re-sought by the
-  SKU sent; the import adopts only a draft with attempt evidence.
+  SKU sent (an attestation's `criacaoIncertaAdota` must match ENSURE's verdict
+  or nothing is sent); the import adopts only a draft with attempt evidence.
 - An expired lock its run never stamped, on a draft with no record, reads
   `livre` at once. ENSURE and the first-create walk stop before the request
   deadline: 409 `PUBLICACAO_EXPIRADA`, nothing sent (the CLI has the lock's

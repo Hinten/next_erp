@@ -357,8 +357,10 @@ export function lerRecomendacaoCached(
  * ⚠️ Coarse ON PURPOSE. The primitive has no prefix scan, so a per-conta clear
  * would mean tracking every key this module ever wrote — state that can only
  * drift out of step with the caches themselves. The whole set is cheap to
- * rebuild (one call each, on demand), and step 3's `push 13` — Shopee telling us
- * a brand was approved — is where granularity earns its keep.
+ * rebuild (one call each, on demand). Nothing clears one on a brand or
+ * category change, and nothing in production calls this today: `push 13` (the
+ * brand-register result, approve or reject) is only acked
+ * (`notificacoes/notificacao.ts`).
  */
 export function limparTaxonomiaShopee(): void {
   categoriasCache.clear();

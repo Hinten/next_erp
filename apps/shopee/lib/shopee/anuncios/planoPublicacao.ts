@@ -323,9 +323,10 @@ export interface PlanoPublicacao {
   readonly relistagem: readonly OrdemDeRelistagem[] | null;
   readonly passos: readonly PassoPublicacao[];
   /**
-   * ⚠️ NON-EMPTY means BLOCKED: nothing is sent, and the applier throws
-   * `ShopeePublishBlockedError` before the first write. Hand it straight to
-   * `temProblemaDeBloqueio`.
+   * ⚠️ NON-EMPTY means BLOCKED: nothing of the listing is sent, and the applier
+   * throws `ShopeePublishBlockedError` as its first act, before any write (the
+   * photos may already be uploaded — consequence 1 of the module header). Hand
+   * it straight to `temProblemaDeBloqueio`.
    */
   readonly problemas: readonly ProblemaDeBloqueio[];
   /**

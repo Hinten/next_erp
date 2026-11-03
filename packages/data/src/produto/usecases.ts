@@ -719,6 +719,17 @@ export class ProdutoReferencedError extends Error {
  * (#136). We still fetch + probe the children here so a still-referenced child
  * blocks the parent delete before the server ever cascades it (the guard stays
  * client-side — ADR 0010; the allow-then-cleanup model of #135 is deferred).
+ *
+ * ⚠️ A Shopee listing DRAFT (#1911 — a `prodshopee` doc with no `item_id`) is
+ * one of those marketplace links, so it blocks the delete as «Shopee» although
+ * nothing was ever published. That is the safe direction, kept on purpose: a
+ * draft is the operator's work, and while its last publish is uncertain it is
+ * the ONLY record that a listing may exist on Shopee. The way out is the
+ * draft's own «Descartar» in the produto's Shopee tab (apps/shopee's draft
+ * route), never a delete from here — and that holds for a draft whose CONTA
+ * was deleted too: its tab reads «Conta … (não encontrada)» and offers an
+ * operator who may edit drafts «Descartar» alone, because the discard route
+ * reads no conta document.
  */
 export async function deleteProdutoCascade(
   port: ProdutoDataPort,

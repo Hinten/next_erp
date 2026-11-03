@@ -30,7 +30,17 @@ export interface ProdutoReferences {
  * operator's work, and while its last publish is uncertain it is the ONLY
  * record that a listing may exist on Shopee. The way out is the draft's own
  * "Descartar" in the produto's Shopee tab, which deletes it through
- * apps/shopee's draft route — never a delete from here.
+ * apps/shopee's draft route — never a delete from here. That holds also when
+ * the draft's CONTA was deleted (its tab reads «Conta <id> (não encontrada)»):
+ * the discard route reads only the link — no conta document, no Shopee call —
+ * so that block offers «Descartar» ALONE, read-only otherwise (`ShopeeEditor`'s
+ * `decidirBloco`, `contaApagada`). A tab with no readable conta id offers
+ * nothing, and the draft keeps blocking the delete.
+ *
+ * ⚠️ This copy serves `VariationManager`'s CHILD deletes only; a produto's own
+ * delete runs `deleteProdutoCascade`'s reference check in `@delfrance/data`.
+ * apps/shopee refuses to create a draft on a produto with a `paiId`, so a
+ * draft rarely reaches this copy at all.
  */
 export async function findProdutoReferences(
   db: Firestore,

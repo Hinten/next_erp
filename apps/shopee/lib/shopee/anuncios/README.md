@@ -335,7 +335,14 @@ nothing.
    `confirmarSegundoAnuncio` ⇒ release ours, 409 `CONTA_JA_TEM_ANUNCIO` with
    `vinculos`. Each reservation WRITES before it READS, so of two concurrent
    ones the later scanner sees the earlier lock: they can both abort, never both
-   pass.
+   pass. The web does not open a draft's «Publicar» that this scan would only
+   refuse (#1911 P11 review round 3): another STORED draft of the produto on
+   the conta whose document records an attempt that may have created a
+   listing (a record, a stamped lock or an unreadable one) holds the button
+   with the impediment `irmao-incerto` (`apps/web/lib/shopee/rascunho.ts`,
+   `rascunhosIrmaosIncertosShopee`). A sibling whose lock was never stamped
+   reads `livre` there, so while that lock lives the web may still open a
+   «Publicar» this 409 answers.
 3. **The pre-send re-read** (in `aplicarPublicacao`, right before `add_item`):
    the stored token must still be ours, else 409 `PUBLICACAO_EXPIRADA`, nothing
    sent, the foreign lock untouched. Since the batch-A review it also WRITES —
@@ -512,13 +519,16 @@ precondition.
   re-activate — and the next publish is a plain update, which never lists. The
   durable fix (a `relistagemPendente` marker the plan reads) waits on Lucas.
 - **(ix) A minted draft counts as a Shopee link for the produto delete guard**
-  (`findProdutoReferences`: "vinculado(a) a anúncio(s): Shopee") until it is
-  published (`--link`, or its block's «Publicar», #1911 P11) or discarded —
-  «Descartar» in its block on the produto's Shopee tab (P10; the guard's own
-  docblock in `apps/web/lib/produtos/references.ts` points there), or
+  (`deleteProdutoCascade` in `packages/data`, and `findProdutoReferences` for a
+  variation's child delete in `apps/web`: "vinculado(a) a anúncio(s): Shopee")
+  until it is published (`--link`, or its block's «Publicar», #1911 P11) or
+  discarded — «Descartar» in its block on the produto's Shopee tab (P10; both
+  guards' docblocks point there, the deleted-conta case included), or
   `POST …/rascunho/descartar` with `{integracaoId, produtoId, linkDocId, base}`
-  (`base` required). Until P10's web deploy (#1998) the route is the only
-  discard: do not run a no-link `publicar:anuncio --live` before it.
+  (`base` required). Until P10 is in the `apps/web` deployed on the project
+  you run against (staging: batch B's first staging web deploy; production:
+  #1998 step 4's web rebuild), the route is the only discard: do not run a
+  no-link `publicar:anuncio --live` there before it.
 - **(x) A padded or shared SKU** (`' X'`, or two produtos with `'X'`) declines
   the import's SKU rung, which then MINTS a produto for the attempt's listing.
   ENSURE no longer ignores that link (it refuses `-ja-vinculada`, naming the
@@ -685,12 +695,19 @@ then an own linked listing (unless attested), then the adoption.
 | the walk stopped early                           | `busca-de-anuncio-incompleta` (repeating helps only a bad cursor — residual (vii))                                                                                                                                                                                                                                                                                                               |
 | the request deadline cut the walk (batch-A)      | 409 `PUBLICACAO_EXPIRADA` — asked before every page and every base-info chunk; NO verdict on what was read (a definite hit included), the lock handed back, the record KEPT                                                                                                                                                                                                                      |
 | the SKU sent folds blank                         | `criacao-incerta-sem-sku` (no scan)                                                                                                                                                                                                                                                                                                                                                              |
+| the attestation's expectation is not met         | `criacao-incerta-ja-vinculada` built over THIS scan's classes (`acao` `importar{itemIds, vinculados}` when it found a candidate, none when it found nothing) — `criacao-incerta-sem-sku` when there was no scan; nothing sent, nothing adopted (`criacaoIncertaAdota`, below)                                                                                                                    |
+| an expectation, the draft reads `livre`          | `criacao-incerta-encerrada` (no `acao`) — the reservation, on its first read, BEFORE its lock: no look-up, nothing written or sent                                                                                                                                                                                                                                                               |
+| an expectation, the link is no longer a draft    | 409 `JA_PUBLICADO` (§I4) — the item arm's reservation on its first read, the kit arms at the publish entry: nothing written or sent                                                                                                                                                                                                                                                              |
 | a COMPLETE walk, zero definite, zero undecidable | token-guarded clear of `criacaoIncertaDesde` and `criacaoIncertaSku`, then `add_item`                                                                                                                                                                                                                                                                                                            |
 
-The four refusals are `ShopeePublishBlockedError`s: nothing was sent, and they
-are produced ONLY in `criacaoIncerta.ts`, through `MOTIVO_PUBLICACAO_BLOQUEADA`
-(`errosPublicacao.test.ts` and `montagemAnuncio.test.ts` pin the file and the
-spelling). **`confirmarCriacaoIncerta`** (publish body; CLI
+Every refusal row but the two 409s is a `ShopeePublishBlockedError` (a 422):
+nothing was sent, and its motivo — ENSURE's four, and the reservation's
+`criacao-incerta-encerrada` — is built ONLY in `criacaoIncerta.ts`, through
+`MOTIVO_PUBLICACAO_BLOQUEADA` (`errosPublicacao.test.ts` and
+`montagemAnuncio.test.ts` pin the file and the spelling;
+`readmeAnuncios.test.ts` pins that this README names every motivo that file
+builds).
+**`confirmarCriacaoIncerta`** (publish body; CLI
 `--confirmar-criacao-incerta`) is the operator's attestation that Seller Centre
 holds no listing this draft must become, and it is honoured for EXACTLY two verdicts —
 `criacao-incerta-sem-sku` and `criacao-incerta-ja-vinculada` (a deliberate
@@ -702,6 +719,46 @@ claim clears it. A complete zero-hit scan's clear MUST land before `add_item`
 — a lost one is 409 `CONTENCAO` / `PUBLICACAO_EXPIRADA`, lock released, nothing
 sent. ⚠️ The dry run does NOT run the scan yet: it takes no lock, so it prints
 the plan only (a read-only ENSURE in the dry run is a follow-up).
+
+**`criacaoIncertaAdota` — what the attestation expects** (publish body only;
+#1911 batch-B review, Lucas §I1–§I4). It is read off the refusal the operator
+acted on: `[L]` = adopt the unlinked listing `L`, `[]` = a deliberate create.
+The web's draft «Publicar» always sends it beside the flag; the CLI never does,
+and an ABSENT key keeps the bare flag's meaning above. `corpoPublicacao.ts`
+answers 400 at the parse — before the conta context loads, nothing read or
+written — when it comes without `confirmarCriacaoIncerta: true`, without a
+`linkDocId` (the draft it attests: unnamed, the publisher would mint a fresh
+draft that the reservation then refuses, and that draft would stay behind), as
+an explicit `null` (never read as absent: a client that serialised a forgotten
+expectation as `null` would otherwise publish unguarded), or as anything but a
+list of positive safe integers. Present, it is a guard, never a hint:
+
+- **ENSURE proceeds only when its FRESH verdict is exactly that** (`decidir`,
+  `atestacaoConfere`): `[L]` ⇒ only `adotar L`, `[]` ⇒ only `prosseguir`.
+  Anything else — `L` linked since the refusal, a listing freed, one appearing
+  in or leaving the window — is the 422 `criacao-incerta-ja-vinculada` built
+  over THIS scan's classes, so the exits are re-derived from the present,
+  never from the stale refusal; nothing is sent and nothing adopted. On a
+  SKU-less produto (no scan: the attested verdict is a create) anything but
+  `[]` is `criacao-incerta-sem-sku`. An ambiguous scan and an incomplete walk
+  still refuse first, whatever was expected.
+- **A draft that no longer reads `incerta`** at the reservation's FIRST read
+  (the record went after the refusal: another run's complete look-up cleared
+  it, and that run created nothing) runs no ENSURE, and the first create that
+  would follow is not what was attested: 422 `criacao-incerta-encerrada` (no
+  `acao`), decided BEFORE the lock — no look-up, nothing written, nothing
+  sent. A live lock still answers `EM_ANDAMENTO` first, as for any publish.
+- **A named link that is no longer a draft** (§I4, Lucas 2026-11-03: another
+  run, or the import, adopted or claimed it since the refusal) is 409
+  `JA_PUBLICADO`, never the update the bare flag would run — the item arm on
+  the reservation's FIRST read; the kit arms (a native kit's `kit-atualizar` /
+  `kit-recriar`, a live listing's `kit-converter`) at the publish entry
+  (`publicarShopee.ts`, `recusarAtestacaoNumBracoDeKit`), on the dispatcher's
+  read of the links, before any Shopee call, upload or write. Its sentence
+  (`conflitoDeRascunhoJaPublicado`) says only that the link RECORDS a listing.
+
+Rule 7: the last two write nothing; the first takes and hands back the lock
+like every ENSURE refusal (the token-guarded writes above), and keeps the record.
 
 **D15 runs BEFORE ENSURE.** The reservation's lock-then-scan of the conta's
 other links happens first, so a sibling's create in flight is a 409, never a
@@ -1377,8 +1434,9 @@ production passes no per-call override.
 
 Two classes, two moments, and both **PERSIST**.
 
-`ShopeePublishBlockedError` is OUR refusal: step 11's 22 motivos (57 today —
-steps 19 and #1911 added theirs; `errosPublicacao.test.ts` pins the count),
+`ShopeePublishBlockedError` is OUR refusal: step 11's 22 motivos (58 today —
+steps 19 and #1911 added theirs; `errosPublicacao.test.ts` pins the count,
+`readmeAnuncios.test.ts` this sentence),
 raised before any Shopee LISTING write for the produto (the model-leg
 exception is below), carrying `problemas` that is
 **non-empty by TYPE** — the guard

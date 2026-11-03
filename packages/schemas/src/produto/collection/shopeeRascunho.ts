@@ -181,15 +181,20 @@ export const CODIGO_RASCUNHO_SHOPEE = {
    * `aguardarMs`, plus `vinculos` when the holder is a sibling.
    */
   publicacaoEmAndamento: 'SHOPEE_PUBLICACAO_EM_ANDAMENTO',
-  /** 409 — the named link is no longer a draft: a listing exists. Detail: `linkDocId`. */
+  /**
+   * 409 — the named link is no longer a draft: it RECORDS a listing (which
+   * Seller Centre may have removed since — never "the listing exists").
+   * Detail: `linkDocId`.
+   */
   jaPublicado: 'SHOPEE_RASCUNHO_JA_PUBLICADO',
   /**
-   * 409 — the publish stopped BEFORE the create, and nothing was created on
-   * Shopee: the send gate saw the lock or the request running out mid-send,
-   * a look-up before it (ENSURE, the first create's SKU check) did not fit
-   * that time, or the lock was no longer this run's. On the fiscal retry's
-   * second leg the first `add_item` WAS sent and refused (all-or-nothing), so
-   * "nothing sent" would be false there.
+   * 409 — the publish stopped before it created the listing, and this run
+   * created nothing on Shopee: the send gate saw the lock or the request
+   * running out mid-send, a look-up before it (ENSURE, the first create's SKU
+   * check) did not fit that time, or the lock was no longer this run's. On
+   * the fiscal retry's second leg the first `add_item` WAS sent and refused
+   * (all-or-nothing), so "nothing sent" would be false there — and the
+   * server's sentence says only «esta tentativa não criou nenhum anúncio».
    */
   publicacaoExpirada: 'SHOPEE_PUBLICACAO_EXPIRADA',
   /** 409 — the lock was lost to concurrent writes on every attempt to take it. */
@@ -1016,8 +1021,11 @@ export interface ArgsPendenciasRascunhoShopee {
    * missing knowledge, exactly as an absent band bounds nothing in
    * `dentroDaFaixaShopee`. ⚠️ So a list computed without the bands is not the
    * whole list: a surface that GATES a publish on "no pendência" must hold the
-   * bands the publish reads — the category's, or the shop-wide answer
-   * (`limitesDoItem` without `categoryId`) when the draft has no category.
+   * category's bands, or have a pendência that already blocks without them —
+   * `categoria-ausente` for a draft with no category. The web editor relies on
+   * the latter and makes no shop-wide read (with no category the publish
+   * itself reads the shop-wide bands — `get_item_limit` without
+   * `category_id` — and refuses the missing category anyway).
    */
   readonly limites: Pick<
     LimitesDeItemDto,

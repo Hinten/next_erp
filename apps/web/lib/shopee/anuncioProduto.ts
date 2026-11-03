@@ -1055,7 +1055,7 @@ export function gravarIncerto(
 }
 
 /* -------------------------------------------------------------------------- */
-/*            #1911 P10 — the listing DRAFT (edited here, no Publicar)         */
+/*      #1911 P10 — the listing DRAFT's editor (its Publicar: P11 below)       */
 /* -------------------------------------------------------------------------- */
 
 /**
@@ -1694,6 +1694,14 @@ export const FRASE_CONFIRMAR_DESCARTE_LOCAL_SHOPEE =
  * (§C.2, R-K6). Cases (a) and (b) re-send the SAME discard with
  * `confirmarCriacaoIncerta: true`; case (c) is TEXT ONLY — discarding there
  * would lose the one record that lets the import adopt the listing.
+ *
+ * ⚠️ Case (c) says «Normalmente» (batch-B review R7-roundtrip#5, the server's
+ * discard sentence in step): the import adopts only a draft whose attempt
+ * window it can read (apps/shopee `veredictoDeAdocaoShopee`), and an
+ * unreadable lock or record reads `incerta` with NO window — a static dialog
+ * cannot tell the two apart. So it also names the other outcome's exit: a
+ * link apart makes this case (b), whose button it quotes («já está
+ * vinculado», pinned by `dialogoDescarteCriacaoIncerta.test.ts`).
  */
 export const DIALOGO_DESCARTE_CRIACAO_INCERTA_SHOPEE = {
   titulo: 'A última publicação pode ter criado o anúncio',
@@ -1705,7 +1713,9 @@ export const DIALOGO_DESCARTE_CRIACAO_INCERTA_SHOPEE = {
     'O anúncio existe e já está vinculado no ERP (é o da tentativa) — descartar este rascunho',
   existeSemVinculo:
     'O anúncio existe e não está vinculado: não descarte — dê a ele o mesmo SKU do produto e ' +
-    `importe-o (${PORTA_DA_IMPORTACAO_SHOPEE}); a importação adota este rascunho.`,
+    `importe-o (${PORTA_DA_IMPORTACAO_SHOPEE}). Normalmente a importação adota este rascunho; ` +
+    'se ela criar um vínculo à parte, o anúncio passa a estar vinculado no ERP e este rascunho ' +
+    'pode ser descartado pela opção «já está vinculado» acima.',
 } as const;
 
 /* ---- The conflict modal (409 rascunhoConflito with a field list) ---------- */

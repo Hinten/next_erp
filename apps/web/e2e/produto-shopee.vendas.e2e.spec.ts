@@ -306,8 +306,12 @@ function respostaDoStatus(corpo: Record<string, unknown> | null): AnuncioStatusS
 }
 
 /**
- * The publish route's 422 for a refusal decided BEFORE any Shopee write — the
- * keys `core/respond.ts`'s blocked arm builds by name. Two rows, each worded for
+ * The publish route's 422 `SHOPEE_PUBLISH_BLOCKED` on the live listing's
+ * Republicar — the keys `core/respond.ts`'s blocked arm builds by name. These
+ * two rows are refusals decided before any Shopee write; on an UPDATE the same
+ * code can also come from the model leg AFTER `update_item`, and the body
+ * names no etapa either way — which is why the tab's title claims only who
+ * refused ({@link TITULO_PUBLICACAO_BLOQUEADA}). Two rows, each worded for
  * the CLI as the server words them: a removed native kit whose next step is a
  * structured `acao` (recriar, on the link it names), and an `instabilidade-shopee`
  * with no `acao`, which the tab words by its MOTIVO.
@@ -485,8 +489,9 @@ function limitesDaFolhaE2e(
 }
 
 /**
- * The publish route's 422 for the ready draft: blocked BEFORE any Shopee write
- * on the produto's missing weight — the row `montagemAnuncio.ts` builds
+ * The publish route's 422 for the ready draft's FIRST create: blocked before
+ * any Shopee write (a plan refusal — no listing exists yet for a model leg to
+ * run on) on the produto's missing weight — the row `montagemAnuncio.ts` builds
  * (campo `weight`, motivo `sem-peso`, no `acao`), with the keys
  * `core/respond.ts`'s blocked arm sends; `itemId: null` (a first publish names
  * no listing). ⚠️ ONE row on purpose (design-DC-web §3): the real answer is the

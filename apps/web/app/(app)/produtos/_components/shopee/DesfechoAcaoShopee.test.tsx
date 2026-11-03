@@ -1031,6 +1031,28 @@ describe('DesfechoAcaoShopee — OUR 422’s title claims nothing about what was
     expect(screen.queryByText(TITULO_PUBLICACAO_RECUSADA_SHOPEE)).toBeNull();
   });
 
+  // #1911 P12 (fix wave TITLE): the vendas e2e asserts this title `exact` on
+  // BOTH its cases — a draft's FIRST create, blocked before any write
+  // (`recusaSemPeso`, `itemId: null`), and a live listing's Republicar — and
+  // that lane runs only on staging. So the literal is pinned HERE too, in
+  // `CI test`: a title that grows a claim back («— nada foi enviado à Shopee»)
+  // for the create alone reds this, not only the staging run. ⚠️ The panel
+  // holds no `itemId` and no etapa for a BLOCKED 422, so it has nothing to key
+  // a «nada foi enviado» on: one title for every case is the only true one
+  // here (fix-B-P12-TITLE.md).
+  it('the title is EXACTLY the e2e’s literal on a draft’s first create (pre-write) as on a live Republicar — the same title for both', () => {
+    expect(TITULO_PUBLICACAO_BLOQUEADA_SHOPEE).toBe('Publicação bloqueada pelo ERP');
+    const semPeso = recusado([problema({ campo: 'weight', motivo: 'sem-peso' })]);
+    const r = show({ desfecho: semPeso, rascunho: doRascunho() });
+    const titulo = () =>
+      within(painel()).getByText(TITULO_PUBLICACAO_BLOQUEADA_SHOPEE, { exact: true });
+    expect(titulo()).toBeTruthy();
+    expect(painel().textContent).not.toMatch(/nada foi enviado/i);
+    r.rerender({ desfecho: semPeso, rascunho: null });
+    expect(titulo()).toBeTruthy();
+    expect(painel().textContent).not.toMatch(/nada foi enviado/i);
+  });
+
   it('NEAR-MISS: Shopee’s own refusal (`SHOPEE_PUBLISH_REJECTED`) keeps «A Shopee recusou a publicação»', () => {
     show({
       desfecho: recusado([problema({ motivo: 'modelo-recusado' })], { bloqueadaPeloErp: false }),

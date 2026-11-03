@@ -809,6 +809,14 @@ export async function descartarRascunhoShopee(
 
     const incerta = estado.tipo === 'incerta';
     if (incerta && corpo.confirmarCriacaoIncerta !== true) {
+      // «Normalmente» (batch-B review R7-roundtrip#5): the import adopts ONLY a
+      // draft whose attempt window it can read, holding the listing's
+      // `create_time`, and only when exactly one draft qualifies and the SKU
+      // lands on one produto (`produtos/resolveProduto.ts`,
+      // `veredictoDeAdocaoShopee`). An `incerta` reading does not promise that
+      // — an unreadable lock or record reads `incerta` with NO window — so the
+      // sentence names the other outcome too: a link apart, after which this
+      // draft is case (b) and the confirmed discard is the exit.
       throw new RecusaDeRascunhoShopeeError({
         status: 409,
         code: CODIGO_RASCUNHO_SHOPEE.criacaoIncerta,
@@ -818,8 +826,9 @@ export async function descartarRascunhoShopee(
           'Shopee (resultado desconhecido), e o rascunho é o único registro dela. Confira no ' +
           'Seller Centre: se o anúncio NÃO existe, ou existe e já está vinculado no ERP, confirme ' +
           'para descartar; se existe SEM vínculo, não descarte — dê a ele o mesmo SKU do produto ' +
-          '(sem SKU, a importação cria outro produto) e importe-o, que a importação adota este ' +
-          'rascunho. Nada foi apagado.',
+          '(sem SKU, a importação cria outro produto) e importe-o. Normalmente a importação adota ' +
+          'este rascunho; se ela criar um vínculo à parte, o anúncio passa a estar vinculado no ' +
+          'ERP e este rascunho pode ser descartado com a confirmação. Nada foi apagado.',
       });
     }
 

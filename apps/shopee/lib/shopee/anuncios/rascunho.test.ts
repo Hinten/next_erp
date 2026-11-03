@@ -33,6 +33,8 @@ import {
   corpoAtualizarRascunhoShopeeSchema,
   corpoCriarRascunhoShopeeSchema,
   corpoDescartarRascunhoShopeeSchema,
+  estadoPublicacaoRascunhoShopee,
+  janelaDaCriacaoIncertaShopee,
   respostaAtualizarRascunhoShopeeSchema,
   respostaCriarRascunhoShopeeSchema,
   respostaDescartarRascunhoShopeeSchema,
@@ -40,6 +42,7 @@ import {
 } from '@delfrance/schemas';
 
 import { ShopeeContaNotConfiguredError } from '../core/shopee';
+import { veredictoDeAdocaoShopee } from '../produtos/resolveProduto';
 import { FakeDb, asDb, grpc } from '../testing/fakeDb';
 import {
   RecusaDeRascunhoShopeeError,
@@ -2133,6 +2136,39 @@ describe('descartarRascunhoShopee — base INTEIRA conferida + delete guardado',
       expect(err.message).toContain('Nada foi apagado.');
       // ⛔ quase-par: nunca o "importe-o" sozinho de antes, sem o passo do SKU.
       expect(err.message).not.toContain('se o anúncio existe, importe-o;');
+    });
+
+    /*
+     * Batch-B review R7-roundtrip#5. The import adopts a draft only when it can
+     * read the attempt window (and exactly one draft qualifies, and the SKU
+     * lands on one produto) — `veredictoDeAdocaoShopee`. A draft can read
+     * `incerta` with NO readable window (no lock, a malformed record), and the
+     * 409 is decided on `incerta` alone, so its sentence may not promise the
+     * adoption: it says «normalmente» and names the other outcome's exit.
+     */
+    it('(R7-roundtrip#5) a frase diz que a importação NORMALMENTE adota e dá a saída de um vínculo à parte — a mesma frase num incerta com janela legível e num SEM janela (que a importação não adota)', async () => {
+      const semJanela = rascunho({ criacaoIncertaDesde: '2026-10-01' });
+      // Anchors: both read `incerta`; only `raw` has a window the import can adopt by.
+      expect(estadoPublicacaoRascunhoShopee(raw, AGORA).tipo).toBe('incerta');
+      expect(estadoPublicacaoRascunhoShopee(semJanela, AGORA).tipo).toBe('incerta');
+      expect(janelaDaCriacaoIncertaShopee(raw)).not.toBeNull();
+      expect(janelaDaCriacaoIncertaShopee(semJanela)).toBeNull();
+      expect(veredictoDeAdocaoShopee(semJanela, INTEGRACAO, 1_757_000_000)).toBe('sem-tentativa');
+
+      for (const link of [raw, semJanela]) {
+        const db = new FakeDb();
+        db.seed(CAMINHO, link);
+        const err = await recusaDe(descartarRascunhoShopee(deps(db), corpoDescartar(vista(link))));
+        expect(err.code).toBe(CODIGO_RASCUNHO_SHOPEE.criacaoIncerta);
+        expect(err.message).toContain(
+          'e importe-o. Normalmente a importação adota este rascunho; se ela criar um vínculo à ' +
+            'parte, o anúncio passa a estar vinculado no ERP e este rascunho pode ser descartado ' +
+            'com a confirmação. Nada foi apagado.',
+        );
+        // ⛔ quase-par: never the unconditional promise P12 shipped.
+        expect(err.message).not.toContain('que a importação adota este rascunho');
+        expect(db.deletes).toEqual([]);
+      }
     });
 
     it('com confirmarCriacaoIncerta: true ⇒ apaga, criacaoIncerta: true', async () => {

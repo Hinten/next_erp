@@ -36,10 +36,23 @@
  * Each recipe is parsed by `componentesKitSchema` — the parse the publish's
  * context applies — and the warnings are `problemasDeEstruturaDaReceitaErp`
  * (`@delfrance/schemas`), the composition over the publish's own structural
- * check. WARNINGS ONLY, so no caller may disable a button on them: when one
- * warns, the publish refuses BEFORE any Shopee write (three are decided on the
- * ERP data alone; only `kit-componente-unico-quantidade` depends on the real
- * Shopee addresses, and the preview under-warns it, never over-warns).
+ * check. WARNINGS ONLY, so no caller may disable a button on them. What one
+ * means depends on the arm:
+ *
+ *  - a CREATE arm (the first publish, «Recriar kit», «Converter em kit»)
+ *    refuses BEFORE any Shopee write — the refusal is decided ahead of
+ *    `add_kit_item` (three on the ERP data alone; only
+ *    `kit-componente-unico-quantidade` depends on the real Shopee addresses,
+ *    and the preview under-warns it, never over-warns);
+ *  - the «Republicar» of a live native kit is NEVER refused by them: they
+ *    decide what it APPENDS, not whether it runs (apps/shopee
+ *    `planoKit.ts`'s phase A, §2.6). The `update_kit_item` goes out, a live
+ *    model whose recipe they flag is resent as Shopee holds it, a child they
+ *    flag is not appended, and the 200's avisos say so
+ *    (`republicarKit.test.ts`, «… ⇒ SÓ receita-nao-publicavel …»).
+ *
+ * The block's own sentence says the first half only («ao recriar ou
+ * converter, o ERP recusa …», `KitAnuncioShopee.tsx`).
  */
 
 import { useMemo } from 'react';

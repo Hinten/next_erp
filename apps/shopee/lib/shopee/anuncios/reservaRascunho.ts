@@ -195,9 +195,11 @@ export interface ControlesDaPublicacaoAoVivo {
    * is the fast path (one credential read), which `MARGEM_ENVIO_SHOPEE_MS`
    * covers.
    *
-   * REQUIRED, like `agora`. A throw means nothing was sent: the lock is handed
-   * back, unstamped — a Shopee error of the refresh is about the TOKEN, never
-   * the listing.
+   * REQUIRED, like `agora`. A throw means nothing is sent on THIS leg (on the
+   * fiscal retry's second leg the first `add_item` was already sent and
+   * refused, all-or-nothing — nothing was created either way): the lock is
+   * handed back, unstamped — a Shopee error of the refresh is about the TOKEN,
+   * never the listing.
    */
   readonly aquecerCredencial: () => Promise<void>;
   /**
@@ -414,13 +416,28 @@ export function conflitoDeRascunhoJaPublicado(linkDocId: string): ConflitoDeRasc
   });
 }
 
+/**
+ * The 409 `PUBLICACAO_EXPIRADA` sentence — the CLI prints it, the web keys on
+ * its CAUSE clause only (`CAUSAS_DA_PUBLICACAO_EXPIRADA`, pinned across the
+ * apps by `reservaRascunho.test.ts`). It says what is true on EVERY producer
+ * (#1911 batch-B review R6-docs#3):
+ *
+ * - never «nada foi enviado» / «ANTES do add_item»: the send gate also guards
+ *   the fiscal retry's SECOND leg, which follows a first `add_item` that WAS
+ *   sent and refused (all-or-nothing);
+ * - «esta tentativa não criou nenhum anúncio», scoped to THIS run — never a
+ *   bare «nenhum anúncio foi criado», which on an `incerta` draft reads as "the
+ *   earlier attempt created nothing";
+ * - no «tente de novo»: when the conta's look-up is what does not fit, every
+ *   retry re-walks it (the request-deadline cause names the CLI instead).
+ */
 function expirada(linkDocId: string, motivo: string): ConflitoDeRascunhoShopeeError {
   return new ConflitoDeRascunhoShopeeError({
     code: CODIGO_RASCUNHO_SHOPEE.publicacaoExpirada,
     linkDocId,
     mensagem:
-      `a publicação do rascunho ${linkDocId} parou ANTES do add_item: ${motivo}. Nada foi ` +
-      'enviado à Shopee; tente de novo.',
+      `a publicação do rascunho ${linkDocId} parou antes de terminar: ${motivo}. Esta ` +
+      'tentativa não criou nenhum anúncio.',
   });
 }
 
@@ -1030,7 +1047,9 @@ function prazoDaRequisicaoVenceAntes(
  * captured before the first leg: the fiscal retry's second `add_item` may start
  * long after the first, and it is gated by its own reading.
  *
- * @throws ConflitoDeRascunhoShopeeError `PUBLICACAO_EXPIRADA` — nothing sent.
+ * @throws ConflitoDeRascunhoShopeeError `PUBLICACAO_EXPIRADA` — nothing sent on
+ *   THIS leg, and nothing created (on the fiscal retry's second leg the first
+ *   `add_item` WAS sent, and refused all-or-nothing).
  */
 export function portaoDeEnvio(
   linkDocId: string,
