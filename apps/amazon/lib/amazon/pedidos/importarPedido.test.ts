@@ -2162,7 +2162,7 @@ describe('★ PR 5-f — a money shape the pagamento check cannot see ⇒ a pedi
 
 /* -------- PR 5-f: an order created PENDING without fulfilledBy, through the import -------- */
 
-describe('★ PR 5-f — fulfilledBy ausente na criação: a PENDING order created WITHOUT fulfilledBy, through the import (the provisional default a C1 capture will validate)', () => {
+describe('★ PR 5-f — fulfilledBy ausente na criação: a PENDING order created WITHOUT fulfilledBy, through the import (the defensive default: a real PENDING read carries MERCHANT, capture C1b)', () => {
   const DUAS = [
     linhaAmazon('L1', { qtd: 2, preco: '10.00' }),
     linhaAmazon('L2', { qtd: 1, preco: '5.00' }),

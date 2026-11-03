@@ -7,7 +7,7 @@
  * a real response's UNDECLARED leaves meet the schema: a `.strict()` order,
  * line, buyer or address would refuse every BR order, and park it, while every
  * package test stays green. Since PR 5-c1 the same check also runs over the
- * owner's capture C1: six REAL production bodies (sanitized) and one
+ * owner's captures C1 and C1b: eight REAL production bodies (sanitized) and one
  * `searchOrders` row.
  *
  * A test file, so the step-5 single-caller scan (production files only) never
@@ -83,61 +83,99 @@ describe.each<[string, () => unknown]>([
 });
 
 /**
- * The owner's capture C1 (PR 5-c1): six REAL production `getOrder` bodies,
- * sanitized (ids faked by key, personal text redacted; every structure, enum,
- * date and amount real). The model's example cannot show what production adds;
- * these can: a refused real order would be parked, not imported.
+ * The owner's captures C1 (PR 5-c1) and C1b (2026-11-03): eight REAL production
+ * `getOrder` bodies, sanitized (ids faked by key, personal text redacted; every
+ * structure, enum, date and amount real). The model's example cannot show what
+ * production adds; these can: a refused real order would be parked, not imported.
+ * Every read but one is SHIPPED or CANCELLED; `c1-pendente.json` is PENDING.
  */
-const GET_ORDER_C1 = [
+const GET_ORDER_C1_ENVIADOS = [
   'c1-busca-mesmo-pedido.json',
   'c1-cancelado-depois.json',
   'c1-dba-e-transito.json',
+  'c1-dba-f-entregue.json',
   'c1-devolvido.json',
   'c1-entregue-antigo.json',
   'c1-pix.json',
 ] as const;
 
-/** Undeclared leaves EVERY C1 read carries (the package's `types.ts` lists why each is unread). */
+/**
+ * Undeclared leaves every real read carries, whatever its status (the package's
+ * `types.ts` lists why each is unread).
+ */
 const NAO_DECLARADAS_C1: readonly Caminho[] = [
-  ['order', 'fulfillmentOrders'],
   ['order', 'proceeds', 'grandTotal'],
   ['order', 'salesChannel', 'marketplaceName'],
   ['order', 'fulfillment', 'fulfillmentServiceLevel'],
   ['order', 'orderItems', 0, 'product', 'asin'],
   ['order', 'orderItems', 0, 'product', 'condition'],
   ['order', 'orderItems', 0, 'proceeds', 'proceedsTotal'],
+];
+
+/**
+ * Undeclared leaves only a SHIPPED or CANCELLED read carries: the PENDING one
+ * has no package and no fulfillment order yet.
+ */
+const NAO_DECLARADAS_C1_ENVIADOS: readonly Caminho[] = [
+  ['order', 'fulfillmentOrders'],
   ['order', 'packages', 0, 'carrier'],
   ['order', 'packages', 0, 'shippingService'],
   ['order', 'packages', 0, 'shipTime'],
 ];
 
-describe.each(GET_ORDER_C1)('respostaGetOrderSchema over the REAL %s (capture C1)', (nome) => {
-  const corpo = () => corpoDe(nome);
+/** Undeclared leaves only the PENDING read carries. */
+const NAO_DECLARADAS_C1_PENDENTE: readonly Caminho[] = [
+  ['order', 'fulfillment', 'labelPrintingWindow'],
+];
 
-  it('parses, and the parse IS the body: no key stripped, no value transformed', () => {
-    const lida = respostaGetOrderSchema.safeParse(corpo());
-    expect(lida.success).toBe(true);
-    expect(lida.data).toStrictEqual(corpo());
-  });
+const LEITURAS_REAIS: readonly (readonly [string, readonly Caminho[]])[] = [
+  ...GET_ORDER_C1_ENVIADOS.map(
+    (nome) => [nome, [...NAO_DECLARADAS_C1, ...NAO_DECLARADAS_C1_ENVIADOS]] as const,
+  ),
+  ['c1-pendente.json', [...NAO_DECLARADAS_C1, ...NAO_DECLARADAS_C1_PENDENTE]],
+];
 
-  it.each(NAO_DECLARADAS_C1.map((c) => [c.join('.'), c] as const))(
-    'the undeclared %s reads back verbatim (passthrough)',
-    (_caminho, caminho) => {
-      const original = valorEm(corpo(), caminho);
-      // Anti-vacuity: the real body carries it.
-      expect(original).toBeDefined();
-      expect(valorEm(respostaGetOrderSchema.parse(corpo()), caminho)).toStrictEqual(original);
-    },
-  );
-
-  it('every model-example undeclared leaf this real body carries reads back verbatim', () => {
-    const presentes = NAO_DECLARADAS.filter((c) => valorEm(corpo(), c) !== undefined);
-    // Anti-vacuity: at least the ASIN is on every real line.
-    expect(presentes.map((c) => c.join('.'))).toContain('order.orderItems.0.product.asin');
-    const lida = respostaGetOrderSchema.parse(corpo());
-    for (const c of presentes) expect(valorEm(lida, c)).toStrictEqual(valorEm(corpo(), c));
-  });
+it('the per-status leaves are per status: the PENDING read carries none of the shipped-only ones, and no shipped read the PENDING-only one', () => {
+  for (const c of NAO_DECLARADAS_C1_ENVIADOS) {
+    expect(valorEm(corpoDe('c1-pendente.json'), c), c.join('.')).toBeUndefined();
+  }
+  for (const nome of GET_ORDER_C1_ENVIADOS) {
+    for (const c of NAO_DECLARADAS_C1_PENDENTE) {
+      expect(valorEm(corpoDe(nome), c), `${nome}: ${c.join('.')}`).toBeUndefined();
+    }
+  }
 });
+
+describe.each(LEITURAS_REAIS)(
+  'respostaGetOrderSchema over the REAL %s (captures C1, C1b)',
+  (nome, naoDeclaradas) => {
+    const corpo = () => corpoDe(nome);
+
+    it('parses, and the parse IS the body: no key stripped, no value transformed', () => {
+      const lida = respostaGetOrderSchema.safeParse(corpo());
+      expect(lida.success).toBe(true);
+      expect(lida.data).toStrictEqual(corpo());
+    });
+
+    it.each(naoDeclaradas.map((c) => [c.join('.'), c] as const))(
+      'the undeclared %s reads back verbatim (passthrough)',
+      (_caminho, caminho) => {
+        const original = valorEm(corpo(), caminho);
+        // Anti-vacuity: the real body carries it.
+        expect(original).toBeDefined();
+        expect(valorEm(respostaGetOrderSchema.parse(corpo()), caminho)).toStrictEqual(original);
+      },
+    );
+
+    it('every model-example undeclared leaf this real body carries reads back verbatim', () => {
+      const presentes = NAO_DECLARADAS.filter((c) => valorEm(corpo(), c) !== undefined);
+      // Anti-vacuity: at least the ASIN is on every real line.
+      expect(presentes.map((c) => c.join('.'))).toContain('order.orderItems.0.product.asin');
+      const lida = respostaGetOrderSchema.parse(corpo());
+      for (const c of presentes) expect(valorEm(lida, c)).toStrictEqual(valorEm(corpo(), c));
+    });
+  },
+);
 
 it('the searchOrders row of the same order (c1-busca.json) is one more real order the order schema keeps whole', () => {
   const pagina = corpoDe('c1-busca.json') as { orders: unknown[] };
