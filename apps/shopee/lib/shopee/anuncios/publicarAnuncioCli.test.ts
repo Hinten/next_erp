@@ -2129,7 +2129,28 @@ describe('a recusa da trava de um rascunho (#1911)', () => {
       const texto = linhas.join('\n');
       expect(texto).toContain(RASCUNHO);
       expect(texto).toContain(`frase de mecanismo do rascunho ${RASCUNHO}`);
+      // PUBLICACAO_EXPIRADA has its own closing line — the test below.
+      if (code === CODIGO_RASCUNHO_SHOPEE.publicacaoExpirada) continue;
       expect(texto).toContain('Nada foi enviado à Shopee por esta execução.');
+    }
+  });
+
+  it('(R6-docs#3) PUBLICACAO_EXPIRADA fecha com «Esta execução não criou nenhum anúncio.» — nunca «nada foi enviado»', () => {
+    // The send gate also guards the fiscal retry's SECOND add_item leg, after a
+    // first one that WAS sent and refused all-or-nothing (publicarAnuncio.test.ts,
+    // «a segunda perna fiscal é barrada», pins that path end to end).
+    const expirada = descreverConflitoDeRascunho(
+      conflito(CODIGO_RASCUNHO_SHOPEE.publicacaoExpirada),
+    );
+    expect(expirada.at(-1)).toBe('  Esta execução não criou nenhum anúncio.');
+    expect(expirada.join('\n')).not.toMatch(/nada foi enviado/i);
+    // ⛔ quase-pares: every OTHER draft code keeps the old closing line, byte for
+    // byte — the new one is EXPIRADA's alone.
+    for (const code of Object.values(CODIGO_RASCUNHO_SHOPEE)) {
+      if (code === CODIGO_RASCUNHO_SHOPEE.publicacaoExpirada) continue;
+      const linhas = descreverConflitoDeRascunho(conflito(code));
+      expect(linhas.at(-1), code).toBe('  Nada foi enviado à Shopee por esta execução.');
+      expect(linhas.join('\n'), code).not.toContain('Esta execução não criou nenhum anúncio.');
     }
   });
 

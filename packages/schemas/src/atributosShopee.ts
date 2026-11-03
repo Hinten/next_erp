@@ -959,10 +959,12 @@ export function validarAtributosShopee(
  * attributes, are dropped. Nowhere else: the draft ROUTE (`anuncios/rascunho.ts`)
  * makes zero Shopee calls and has no tree, so it writes the patch's list as
  * received, and the publisher sends what is stored. Until P13 nothing calls
- * this, and the web sends no attribute LIST: a new draft's create posts
- * `attributes: null` (none chosen), an edit's patch never names them, and the
- * draft route itself clears the stored list when a patch changes the category
- * (`anuncios/rascunho.ts`, K1-12).
+ * this, and the web WRITES no attribute list (it sends the stored one back only
+ * as a `base` precondition — on every discard, and on an update that changes
+ * the category): a new draft's create posts `attributes: null` (none chosen),
+ * an edit's patch never names them, and the draft route itself clears the
+ * stored list when a patch changes the category (`anuncios/rascunho.ts`,
+ * K1-12).
  *
  * ⚠️ On a TRUNCATED tree the stored attributes the walk does not show are KEPT
  * (appended, in stored order): they may sit below the cut, and a save never

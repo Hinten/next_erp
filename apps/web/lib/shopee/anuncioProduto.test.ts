@@ -1338,7 +1338,7 @@ describe('#1911 P11 — textoDoProblemaShopee: §C rows #4–#12', () => {
       expect(desconhecido).toBe(TEXTO_MOTIVO_ANUNCIO_SEM_ACAO_SHOPEE[M.criacaoIncertaAmbigua]);
       expect(desconhecido).not.toMatch(/volte o SKU|ao enviado|«/);
       expect(desconhecido).toContain(
-        'se não existe, descarte este rascunho (Descartar, confirmando)',
+        'Se o anúncio não existe, descarte este rascunho (Descartar, confirmando) e crie outro.',
       );
     }
     // The WITH-acao row never gains a SKU, whatever the context holds.
@@ -1587,7 +1587,8 @@ describe('#1911 P11 — textoDoProblemaShopee: §C rows #4–#12', () => {
     );
     expect(incerta).toContain(
       'Confira no Seller Centre: se o anúncio da última tentativa existe, importe-o ' +
-        `(${PORTA_DA_IMPORTACAO_SHOPEE}) — a importação adota este rascunho; se não existe, ` +
+        `(${PORTA_DA_IMPORTACAO_SHOPEE}) — normalmente a importação adota este rascunho; se ela ` +
+        'criar um vínculo à parte, descarte este rascunho depois. Se o anúncio não existe, ' +
         'descarte este rascunho. Não crie outro antes de conferir.',
     );
     expect(incerta).not.toMatch(/crie-o|crie o anúncio/);
@@ -2314,13 +2315,28 @@ describe('#1911 P11 — the answers of a draft’s Publicar (§C.2)', () => {
     ).not.toContain('Outro vínculo');
   });
 
-  /** apps/shopee's `expirada()` sentence AS IT IS TODAY — verbatim shape, one per cause. */
+  /**
+   * A FIXTURE in the shape of apps/shopee's `expirada()` sentence since #1911
+   * P12 (review R6-docs#3), one per cause — not a contract: the web keys on
+   * the CAUSE clause alone, and that clause is what is pinned across the apps
+   * (apps/shopee `reservaRascunho.test.ts` builds every producer's sentence
+   * and matches it against this module's causes). The tail around the cause
+   * may change shape on the server without a web change.
+   */
   const expiradaDoServidor = (causa: string) =>
+    `a publicação do rascunho R1 parou antes de terminar: ${causa}. Esta tentativa não criou ` +
+    'nenhum anúncio.';
+  /**
+   * The shape an apps/shopee build from BEFORE P12 answers — deploy skew (the
+   * two apps deploy apart). Its tail contradicts the tab: «Nada foi enviado» is
+   * false on the fiscal retry's second leg, «tente de novo» sits beside «não
+   * insista», `add_item` is the API's name.
+   */
+  const expiradaDoServidorAntesDoP12 = (causa: string) =>
     `a publicação do rascunho R1 parou ANTES do add_item: ${causa}. Nada foi enviado à Shopee; ` +
     'tente de novo.';
-  /** The same causes in the reshaped sentence the review proposed for the server (R8-copy#6). */
-  const expiradaReescrita = (causa: string) =>
-    `a publicação do rascunho parou antes de criar o anúncio: ${causa}. Nenhum anúncio foi criado.`;
+  /** The server's own tail, in either shape — never printed beside a KNOWN cause. */
+  const CAUDA_DO_SERVIDOR = /parou antes de terminar:|não criou nenhum anúncio|ANTES do add_item/i;
   const CAUSAS = [
     ['o tempo desta requisição acabaria durante o envio', 'o tempo desta requisição acabaria'],
     ['o tempo da trava acabaria durante o envio', 'o tempo reservado para a publicação acabaria'],
@@ -2336,9 +2352,9 @@ describe('#1911 P11 — the answers of a draft’s Publicar (§C.2)', () => {
   const CONTRADICAO =
     /nada foi enviado|tente de novo\b|add_item|ANTES do|nenhum anúncio foi criado/i;
 
-  it('§H Q3 / R8-copy#6: EXPIRADA prints the CAUSE in the tab’s words — never the server tail «ANTES do add_item … Nada foi enviado; tente de novo», on any cause, in either server shape', () => {
+  it('§H Q3 / R8-copy#6: EXPIRADA prints the CAUSE in the tab’s words — never the server’s own sentence, on any cause, in the shipped shape or a pre-P12 one («ANTES do add_item … Nada foi enviado; tente de novo»)', () => {
     for (const [causa, palavras] of CAUSAS) {
-      for (const servidor of [expiradaDoServidor(causa), expiradaReescrita(causa)]) {
+      for (const servidor of [expiradaDoServidor(causa), expiradaDoServidorAntesDoP12(causa)]) {
         for (const publicacao of [LIVRE_P, INCERTA_P]) {
           const texto = fraseDaPublicacaoExpiradaShopee(servidor, publicacao);
           const causaMostrada = /Causa: ([^.]*)\./.exec(texto)?.[1] ?? '';
@@ -2346,6 +2362,7 @@ describe('#1911 P11 — the answers of a draft’s Publicar (§C.2)', () => {
           expect(texto, causa).not.toContain('Detalhe:');
           expect(texto, causa).not.toMatch(TEXTO_DE_TERMINAL);
           expect(texto, causa).not.toContain('R1');
+          expect(texto, causa).not.toMatch(CAUDA_DO_SERVIDOR);
           // Only OUR livre opening may say «nenhum anúncio foi criado»; the server never adds one.
           expect(texto.replace(ABERTURA_LIVRE, ''), causa).not.toMatch(CONTRADICAO);
         }
@@ -2353,9 +2370,26 @@ describe('#1911 P11 — the answers of a draft’s Publicar (§C.2)', () => {
     }
   });
 
-  it('R8-copy#6 NEAR-MISS: a cause this build does not know shows the sentence as «Detalhe:» only when it contradicts nothing', () => {
+  it('R8-copy#6 NEAR-MISS: a cause this build does not know shows the sentence as «Detalhe:» only when it contradicts nothing — the shipped shape around it is shown, the SAME cause in the pre-P12 shape is not', () => {
     const neutra = 'a reserva não pôde ser confirmada';
     expect(fraseDaPublicacaoExpiradaShopee(neutra, LIVRE_P)).toContain(`Detalhe: ${neutra}.`);
+    // «Esta tentativa não criou nenhum anúncio» is scoped to THIS run: true beside the
+    // `livre` and the `incerta` copy alike, so the guard must not fold it away.
+    for (const publicacao of [LIVRE_P, INCERTA_P]) {
+      expect(
+        fraseDaPublicacaoExpiradaShopee(expiradaDoServidor(neutra), publicacao),
+        publicacao.tipo,
+      ).toContain(`Detalhe: ${expiradaDoServidor(neutra)}`);
+    }
+    // NEAR-MISS: the same unknown cause wrapped in the pre-P12 tail — hidden whole.
+    for (const publicacao of [LIVRE_P, INCERTA_P]) {
+      const texto = fraseDaPublicacaoExpiradaShopee(
+        expiradaDoServidorAntesDoP12(neutra),
+        publicacao,
+      );
+      expect(texto, publicacao.tipo).not.toMatch(/Detalhe:|Causa:/);
+      expect(texto, publicacao.tipo).not.toContain(neutra);
+    }
     for (const contraditoria of [
       `${neutra}. Nada foi enviado à Shopee`,
       `${neutra}; tente de novo`,
@@ -2386,8 +2420,9 @@ describe('#1911 P11 — the answers of a draft’s Publicar (§C.2)', () => {
     const texto = fraseDaPublicacaoExpiradaShopee(expiradaDoServidor(CAUSAS[4][0]), INCERTA_P);
     expect(texto).toContain(
       'Esta tentativa não criou nada. Confira no Seller Centre: se o anúncio da última tentativa ' +
-        `existe, importe-o (${PORTA_DA_IMPORTACAO_SHOPEE}) — a importação adota este rascunho; ` +
-        'se não existe, descarte este rascunho. Não crie outro antes de conferir.',
+        `existe, importe-o (${PORTA_DA_IMPORTACAO_SHOPEE}) — normalmente a importação adota este ` +
+        'rascunho; se ela criar um vínculo à parte, descarte este rascunho depois. Se o anúncio ' +
+        'não existe, descarte este rascunho. Não crie outro antes de conferir.',
     );
     expect(texto).not.toMatch(/crie-o|crie o anúncio|nenhum anúncio foi criado/i);
     expect(texto).not.toBe(
@@ -2587,5 +2622,97 @@ describe('#1911 P11 — the answers of a draft’s Publicar (§C.2)', () => {
     ]) {
       expect(t).not.toMatch(TEXTO_DE_TERMINAL);
     }
+  });
+});
+
+describe('#1911 P12 round 2 — R7-roundtrip#5 siblings: the import «normalmente» adopts, and a link apart has its exit', () => {
+  // apps/shopee `resolveProduto.ts` declines to adopt even over a READABLE
+  // window — two adoptable drafts of the produto, Shopee's `create_time`
+  // unknown, the SKU on two produtos — and creates a link apart. So no exit
+  // on this tab may promise the adoption flat.
+  const COM_JANELA = { tipo: 'incerta', desdeMs: 1_800_000_000_000 } as const;
+  const SEM_JANELA = { tipo: 'incerta', desdeMs: null } as const;
+  const SAIDA_DO_VINCULO_A_PARTE =
+    'se ela criar um vínculo à parte, descarte este rascunho depois. Se o anúncio não existe, ' +
+    'descarte este rascunho.';
+
+  /** Every «adota este rascunho» in `texto` sits right after «normalmente a importação (o vincula e )». */
+  function soPromessasComRessalva(texto: string): boolean {
+    const antes = texto.split('adota este rascunho').slice(0, -1);
+    return antes.every((trecho) => /normalmente a importação (o vincula e )?$/i.test(trecho));
+  }
+
+  const comJanela = () => [
+    fraseDaPublicacaoExpiradaShopee('x', COM_JANELA),
+    fraseDaPublicacaoInterrompidaShopee('x', COM_JANELA),
+    textoDoProblemaShopee(
+      {
+        motivo: MOTIVO_ANUNCIO_SHOPEE.buscaDeAnuncioExistenteIncompleta,
+        mensagem: 'A Shopee deixou de fora o anúncio 1000011.',
+        acao: null,
+      },
+      'R1',
+      'p1',
+      contextoDeRascunho({ publicacao: COM_JANELA }),
+    ),
+  ];
+
+  it('an `incerta` exit WITH a window: «normalmente a importação adota este rascunho», then the link-apart exit, then the not-there case naming the listing', () => {
+    for (const texto of comJanela()) {
+      expect(texto).toContain(
+        `importe-o (${PORTA_DA_IMPORTACAO_SHOPEE}) — normalmente a importação adota este ` +
+          `rascunho; ${SAIDA_DO_VINCULO_A_PARTE} Não crie outro antes de conferir.`,
+      );
+      expect(soPromessasComRessalva(texto)).toBe(true);
+      // NEAR-MISS: the flat promise P11 shipped is gone.
+      expect(texto).not.toContain('— a importação adota este rascunho');
+    }
+  });
+
+  it('the SKU-moved row (ENSURE’s, so it HAS a window): «normalmente … o vincula e adota», the attested discard for a link apart — for a named, an empty and an unknown sent SKU', () => {
+    const linha = {
+      motivo: MOTIVO_ANUNCIO_SHOPEE.criacaoIncertaAmbigua,
+      mensagem: 'x',
+      acao: null,
+    };
+    for (const skuEnviado of ['SKU-A', '', null]) {
+      const texto = textoDoProblemaShopee(
+        linha,
+        'R1',
+        'p1',
+        contextoDeRascunho({ publicacao: COM_JANELA, skuEnviado }),
+      );
+      expect(texto, String(skuEnviado)).toContain(
+        `importe-o (${PORTA_DA_IMPORTACAO_SHOPEE}) — normalmente a importação o vincula e adota ` +
+          'este rascunho; se ela criar um vínculo à parte, descarte este rascunho (Descartar, ' +
+          'confirmando). Se o anúncio não existe, ',
+      );
+      expect(soPromessasComRessalva(texto), String(skuEnviado)).toBe(true);
+      // NEAR-MISS: the flat «que o vincula e adota este rascunho» is gone.
+      expect(texto, String(skuEnviado)).not.toContain('que o vincula e adota');
+      expect(texto, String(skuEnviado)).not.toMatch(TEXTO_DE_TERMINAL);
+    }
+  });
+
+  it('NEAR-MISS: the exits that never promised the adoption keep their wording — no window (import, then discard) and `livre` (check first)', () => {
+    const semJanela = fraseDaPublicacaoExpiradaShopee('x', SEM_JANELA);
+    expect(semJanela).toContain(
+      'Confira no Seller Centre: se o anúncio da última tentativa existe, importe-o ' +
+        `(${PORTA_DA_IMPORTACAO_SHOPEE}, com o mesmo SKU do produto) e depois descarte este ` +
+        'rascunho; se não existe, descarte este rascunho. Não crie outro antes de conferir.',
+    );
+    expect(semJanela).not.toMatch(/adota|vínculo à parte/);
+    const livre = fraseDaPublicacaoExpiradaShopee('x', { tipo: 'livre' });
+    expect(livre).not.toMatch(/adota|vínculo à parte/);
+    // The helper itself: a flat promise is caught, a hedged one is not.
+    expect(soPromessasComRessalva('importe-o — a importação adota este rascunho')).toBe(false);
+    expect(soPromessasComRessalva('que o vincula e adota este rascunho')).toBe(false);
+    expect(soPromessasComRessalva('normalmente a importação adota este rascunho')).toBe(true);
+  });
+
+  it('the discard dialog’s case (c) carries the same hedge (round 1) — one wording for one fact', () => {
+    expect(soPromessasComRessalva(DIALOGO_DESCARTE_CRIACAO_INCERTA_SHOPEE.existeSemVinculo)).toBe(
+      true,
+    );
   });
 });

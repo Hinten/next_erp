@@ -62,6 +62,7 @@ import {
   type ResultadoFotosPublicacao,
 } from './fotosPublicacao';
 import { ORDEM_RELISTAGEM, planejarPublicacao, type PlanoPublicacao } from './planoPublicacao';
+import { descreverErroPublicacao } from './publicarAnuncioCli';
 import { publicarShopee } from './publicarShopee';
 import {
   ConflitoDeRascunhoShopeeError,
@@ -3726,6 +3727,14 @@ describe('publicarAnuncioShopee — o RASCUNHO sob a trava (#1911, D4/D15)', () 
         CODIGO_RASCUNHO_SHOPEE.publicacaoExpirada,
       );
       expect(travada.reserva.fase).toBe('travada');
+      // (R6-docs#3) One add_item WAS sent above (and refused): neither the
+      // refusal's sentence nor the CLI's description of it may say «nada foi
+      // enviado» — only that this run created nothing.
+      expect((err as Error).message).not.toMatch(/nada foi enviado/i);
+      expect((err as Error).message).toContain('Esta tentativa não criou nenhum anúncio.');
+      const tela = descreverErroPublicacao(err).join('\n');
+      expect(tela).not.toMatch(/nada foi enviado/i);
+      expect(tela).toContain('Esta execução não criou nenhum anúncio.');
     });
 
     it('⛔ (batch-A P3-F1) os controles sem `aquecerCredencial` NÃO compilam', () => {

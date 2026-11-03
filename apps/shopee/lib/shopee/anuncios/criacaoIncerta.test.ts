@@ -1095,6 +1095,28 @@ describe('o 202 de uma criação incerta — as peças', () => {
     expect(comSku).not.toContain('importar:anuncio');
   });
 
+  it('(R7-roundtrip#5, sem SKU) a importação NORMALMENTE adota — e a saída sem adoção é o descarte', () => {
+    const frase202 = mensagemDoAnuncioIncerto(false);
+    // The import links the listing APART on two adoptable drafts, an unknown
+    // create_time or a SKU on two produtos: never promised, and its exit named.
+    expect(frase202).toContain(
+      'importe-o (importar:anuncio), que normalmente adota este rascunho (sem adoção, descarte ' +
+        'este rascunho) — sem SKU a importação cria OUTRO produto',
+    );
+    // ⛔ quase-pares: the unconditional promise is gone; the not-exists exit (the
+    // attested re-publish) and the SKU-first order stay exactly as they were.
+    expect(frase202).not.toContain('que o vincula a este produto e adota este rascunho');
+    expect(frase202).not.toMatch(/(?<!normalmente )adota este rascunho/);
+    expect(frase202).toContain(
+      'se não existir, publique de novo o mesmo rascunho confirmando a criação incerta ' +
+        '(--confirmar-criacao-incerta)',
+    );
+    expect(frase202.indexOf('MESMO SKU')).toBeLessThan(frase202.indexOf('importar:anuncio'));
+    // The 202 never offers the discard as the not-exists exit: «sem adoção» is the
+    // ONLY place it appears, and that is the existing-listing branch.
+    expect(frase202.match(/descarte este rascunho/g)).toHaveLength(1);
+  });
+
   it('CriacaoDeAnuncioIncertaError é do APP — nunca um ShopeeError — e guarda a causa', () => {
     const causa = new ShopeeNetworkError('caiu');
     const err = new CriacaoDeAnuncioIncertaError(
@@ -1262,6 +1284,24 @@ describe('localizarAnuncioIncerto — a busca que falha FECHADO (D5, K1-7, K1-11
       expect(c.getItemList).not.toHaveBeenCalled();
       expect(v.resumo.varreu).toBe(false);
     }
+  });
+
+  it('(R7-roundtrip#5) a recusa sem SKU: «normalmente adota», a saída sem adoção, e INTEIRA nos 500', async () => {
+    const frase = recusa(await buscar(cliente({}).client, { sku: null })).mensagem;
+    expect(frase).toContain(
+      'que normalmente adota este rascunho (sem adoção, descarte este rascunho)',
+    );
+    // ⛔ quase-pares: no flat promise is left, while the not-exists exit — the
+    // attested re-publish, NOT the discard — still closes the sentence, whole.
+    expect(frase).not.toContain('que o vincula a este produto e adota este rascunho');
+    expect(frase).not.toMatch(/(?<!normalmente )adota este rascunho/);
+    expect(frase.length).toBeLessThanOrEqual(500);
+    expect(
+      frase.endsWith(
+        'se não existir, publique de novo confirmando a criação incerta ' +
+          '(--confirmar-criacao-incerta)',
+      ),
+    ).toBe(true);
   });
 
   it('(K1-11) sem SKU + confirmarCriacaoIncerta ⇒ prossegue SEM varrer (varreu: false — o registro fica)', async () => {
@@ -1466,6 +1506,26 @@ describe('localizarAnuncioIncerto — a busca que falha FECHADO (D5, K1-7, K1-11
       const v = await buscar(cliente({}).client, { sku: 'SKU-NOVO-123', enviado: 'SKU-VELHO-123' });
       expect(recusa(v).mensagem.length).toBeLessThanOrEqual(500);
       expect(recusa(v).mensagem).toContain('descarte este rascunho');
+    });
+
+    it('(R7-roundtrip#5) a importação NORMALMENTE adota — e a saída sem adoção é o descarte atestado', async () => {
+      const v = await buscar(cliente({}).client, { sku: 'SKU-NOVO-123', enviado: 'SKU-VELHO-123' });
+      const frase = recusa(v).mensagem;
+      // The import declines to adopt on two adoptable drafts, an unknown
+      // create_time or a SKU on two produtos: never promised, and its exit named.
+      expect(frase).toContain('importe-o (importar:anuncio), que normalmente adota este rascunho');
+      expect(frase).toContain(
+        'Sem adoção, ou sem anúncio, descarte este rascunho confirmando a criação incerta',
+      );
+      // ⛔ quase-pares: the unconditional promise is gone, while the SKU-back exit
+      // of a listing that does not exist stays exactly as it was.
+      expect(frase).not.toContain('que o vincula e adota este rascunho');
+      expect(frase).not.toMatch(/(?<!normalmente )adota este rascunho/);
+      expect(frase).toContain(
+        'se não existir, volte o SKU do produto ao enviado e publique de novo',
+      );
+      // Still whole: the tail (the exit) is never what the 500-character cap cuts.
+      expect(frase.endsWith('confirmando a criação incerta')).toBe(true);
     });
   });
 

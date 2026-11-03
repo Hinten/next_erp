@@ -50,12 +50,16 @@
  * ## Outcomes
  *
  * **409** `ConflitoDeRascunhoShopeeError` (#1911) — a DRAFT's publish refused by
- * its LOCK, nothing sent: `code` is one of `CODIGO_RASCUNHO_SHOPEE`'s six
- * (`EM_ANDAMENTO` with `aguardarMs` and/or `vinculos`, `JA_PUBLICADO`,
- * `PUBLICACAO_EXPIRADA`, `CONTENCAO`, `CRIACAO_INCERTA`, `CONTA_JA_TEM_ANUNCIO`
- * with `vinculos`), plus `linkDocId`. `JA_PUBLICADO` also answers a body
- * carrying `criacaoIncertaAdota` whose named link is no longer a draft (§I4):
- * on the item arm the reservation's first read refuses it, and on a KIT arm
+ * its LOCK, nothing created (every code refuses before any `add_item`, except
+ * `PUBLICACAO_EXPIRADA` on the fiscal retry's second leg, where the first
+ * `add_item` was sent and refused): `code` is one of
+ * `CODIGO_RASCUNHO_SHOPEE`'s six (`EM_ANDAMENTO` with `aguardarMs` and/or
+ * `vinculos`, `JA_PUBLICADO`, `PUBLICACAO_EXPIRADA`, `CONTENCAO`,
+ * `CRIACAO_INCERTA`, `CONTA_JA_TEM_ANUNCIO` with `vinculos`), plus
+ * `linkDocId`. `JA_PUBLICADO` also answers a body carrying
+ * `criacaoIncertaAdota` whose named link is no longer a draft (§I4): on the
+ * item arm whichever of the reservation's reads finds it refuses it (the
+ * first, or a re-read after a lost precondition), and on a KIT arm
  * (a native kit for `kit-atualizar`/`kit-recriar`, a live ordinary listing for
  * `kit-converter`) `publicarShopee` refuses it before the arm runs — the same
  * 409, nothing sent, nothing written. An app class, mapped with `instanceof`
@@ -365,7 +369,8 @@ export async function POST(req: Request): Promise<NextResponse> {
     return NextResponse.json(kit);
   } catch (err) {
     // ⚠️ BEFORE `isShopeeError`: the draft lock's refusal is OUR answer, never
-    // Shopee's, and nothing was sent.
+    // Shopee's, and nothing was created (on the fiscal retry's second leg a
+    // `PUBLICACAO_EXPIRADA` follows a first `add_item` that was sent and refused).
     if (err instanceof ConflitoDeRascunhoShopeeError) {
       return NextResponse.json(corpoDoConflito(err), { status: 409 });
     }

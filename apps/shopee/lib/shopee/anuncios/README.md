@@ -616,7 +616,10 @@ be refused `criacao-incerta-sem-sku`, whose sentence (and the 202's) never sends
 the operator to `importar:anuncio` ALONE — the import binds a SKU-less listing to
 a NEW produto (its SKU rung is the only one that reaches an existing produto),
 so the listing first gets, in Seller Centre, the SKU the produto gets in the
-ERP; then the import binds it to this produto and adopts the draft. Because the lock stays LIVE, every tab,
+ERP; then the import normally binds it to this produto and adopts the draft (it
+links the listing apart on two adoptable drafts, an unknown `create_time` or the
+SKU on two produtos, and both sentences name the discard for that). Because the
+lock stays LIVE, every tab,
 operator and the CLI hear 409 `EM_ANDAMENTO {aguardarMs}` until it lapses — the
 server enforces the wait, the web's countdown is a nicety.
 
@@ -696,8 +699,8 @@ then an own linked listing (unless attested), then the adoption.
 | the request deadline cut the walk (batch-A)      | 409 `PUBLICACAO_EXPIRADA` — asked before every page and every base-info chunk; NO verdict on what was read (a definite hit included), the lock handed back, the record KEPT                                                                                                                                                                                                                      |
 | the SKU sent folds blank                         | `criacao-incerta-sem-sku` (no scan)                                                                                                                                                                                                                                                                                                                                                              |
 | the attestation's expectation is not met         | `criacao-incerta-ja-vinculada` built over THIS scan's classes (`acao` `importar{itemIds, vinculados}` when it found a candidate, none when it found nothing) — `criacao-incerta-sem-sku` when there was no scan; nothing sent, nothing adopted (`criacaoIncertaAdota`, below)                                                                                                                    |
-| an expectation, the draft reads `livre`          | `criacao-incerta-encerrada` (no `acao`) — the reservation, on its first read, BEFORE its lock: no look-up, nothing written or sent                                                                                                                                                                                                                                                               |
-| an expectation, the link is no longer a draft    | 409 `JA_PUBLICADO` (§I4) — the item arm's reservation on its first read, the kit arms at the publish entry: nothing written or sent                                                                                                                                                                                                                                                              |
+| an expectation, the draft reads `livre`          | `criacao-incerta-encerrada` (no `acao`) — the reservation, on any read BEFORE its lock: no look-up, nothing written or sent                                                                                                                                                                                                                                                                      |
+| an expectation, the link is no longer a draft    | 409 `JA_PUBLICADO` (§I4) — the item arm's reservation on whichever read finds it, the kit arms at the publish entry (a link the dispatcher refuses outright answers its 422 first): nothing written or sent                                                                                                                                                                                      |
 | a COMPLETE walk, zero definite, zero undecidable | token-guarded clear of `criacaoIncertaDesde` and `criacaoIncertaSku`, then `add_item`                                                                                                                                                                                                                                                                                                            |
 
 Every refusal row but the two 409s is a `ShopeePublishBlockedError` (a 422):
@@ -742,20 +745,27 @@ list of positive safe integers. Present, it is a guard, never a hint:
   SKU-less produto (no scan: the attested verdict is a create) anything but
   `[]` is `criacao-incerta-sem-sku`. An ambiguous scan and an incomplete walk
   still refuse first, whatever was expected.
-- **A draft that no longer reads `incerta`** at the reservation's FIRST read
-  (the record went after the refusal: another run's complete look-up cleared
-  it, and that run created nothing) runs no ENSURE, and the first create that
-  would follow is not what was attested: 422 `criacao-incerta-encerrada` (no
-  `acao`), decided BEFORE the lock — no look-up, nothing written, nothing
-  sent. A live lock still answers `EM_ANDAMENTO` first, as for any publish.
+- **A draft that no longer reads `incerta`** on any read of the reservation's
+  attempt loop before its lock write — the first, or the re-read after a lost
+  precondition (the record went after the refusal: another run's complete
+  look-up cleared it, and that run created nothing) — runs no ENSURE, and the
+  first create that would follow is not what was attested: 422
+  `criacao-incerta-encerrada` (no `acao`), decided BEFORE the lock — no
+  look-up, nothing written, nothing sent. A live lock still answers
+  `EM_ANDAMENTO` first, as for any publish.
 - **A named link that is no longer a draft** (§I4, Lucas 2026-11-03: another
   run, or the import, adopted or claimed it since the refusal) is 409
   `JA_PUBLICADO`, never the update the bare flag would run — the item arm on
-  the reservation's FIRST read; the kit arms (a native kit's `kit-atualizar` /
-  `kit-recriar`, a live listing's `kit-converter`) at the publish entry
-  (`publicarShopee.ts`, `recusarAtestacaoNumBracoDeKit`), on the dispatcher's
-  read of the links, before any Shopee call, upload or write. Its sentence
-  (`conflitoDeRascunhoJaPublicado`) says only that the link RECORDS a listing.
+  whichever of the reservation's reads finds it; the kit arms (a native kit's
+  `kit-atualizar` / `kit-recriar`, a live listing's `kit-converter`) at the
+  publish entry (`publicarShopee.ts`, `recusarAtestacaoNumBracoDeKit`), on the
+  dispatcher's read of the links, before any Shopee call, upload or write. Its
+  sentence (`conflitoDeRascunhoJaPublicado`) says only that the link RECORDS a
+  listing. A link the DISPATCHER refuses outright never reaches either guard
+  and answers the dispatcher's 422 instead — a superseded link
+  (`vinculo-substituido`), a dead native kit without `recriar`
+  (`listagem-removida`), or any other refusal of `armaDePublicacao.ts`; zero
+  Shopee calls, nothing sent either way.
 
 Rule 7: the last two write nothing; the first takes and hands back the lock
 like every ENSURE refusal (the token-guarded writes above), and keeps the record.
@@ -969,8 +979,9 @@ stored legacy list that reads EQUAL is never rewritten (D9: no migration).
   of that attempt). Its sentence gives the three Seller-Centre cases the tab's
   «Descartar» dialog asks (P10): no listing, or one already linked in the ERP
   ⇒ confirm; one with NO link ⇒ keep the draft, give the listing the
-  produto's SKU and import it, which adopts the draft (a SKU-less import
-  makes another produto). The tab maps the code and never shows the sentence.
+  produto's SKU and import it, which normally adopts the draft — if it links
+  the listing apart instead, confirm then (a SKU-less import makes another
+  produto). The tab maps the code and never shows the sentence.
 
 Answers: create **201** `{linkDocId, criado: true}` / **200** `{linkDocId,
 criado: false}`; edit 200 `{linkDocId, gravados}` (`[]` = equal, NOTHING

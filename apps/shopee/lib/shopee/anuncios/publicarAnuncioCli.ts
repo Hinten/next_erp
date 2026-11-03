@@ -2434,7 +2434,8 @@ export function descreverRecusaPublicacao(err: ShopeePublishRejectedError): stri
     linhas.push(`    ${txt(p.campo).padEnd(18)} ${p.motivo.padEnd(28)} ${p.mensagem}`);
   }
   // #1911 (D15, K2-2): the row keeps Shopee's prose; OUR sentence lives here
-  // (and in the web's map), read by the constant — never spelled.
+  // (the web words its own, `TEXTO_MOTIVO_ANUNCIO_SHOPEE`), read by the
+  // constant — never spelled.
   if (
     err.problemas.some((p) => p.motivo === MOTIVO_PROBLEMA_PUBLICACAO.anuncioSemelhanteExistente)
   ) {
@@ -2526,8 +2527,13 @@ export function ehConflitoDeRascunho(err: unknown): err is ConflitoLido {
 /**
  * The refusal, for a terminal: the code, the draft, the wait and the sibling
  * links, then the sentence — ids, counts and enum tokens only, which is all the
- * error carries. Closes with what to do, by code; every one of them sent
- * NOTHING to Shopee.
+ * error carries. Closes with what to do, by code, and then with what this run
+ * did NOT do ({@link fechoDoConflito}): every code but `PUBLICACAO_EXPIRADA`
+ * is refused before any `add_item` leg, and says nothing was sent.
+ * ⚠️ `PUBLICACAO_EXPIRADA` can follow a SENT request: the send gate also
+ * guards the fiscal retry's SECOND `add_item` leg, after a first one that went
+ * out and was refused all-or-nothing — so its closing line says only that
+ * nothing was created (#1911 batch-B review, R6-docs#3).
  */
 export function descreverConflitoDeRascunho(err: ConflitoLido): string[] {
   const linhas = [
@@ -2552,6 +2558,19 @@ export function descreverConflitoDeRascunho(err: ConflitoLido): string[] {
         '(um SEGUNDO anúncio do mesmo produto nesta conta).',
     );
   }
-  linhas.push('  Nada foi enviado à Shopee por esta execução.');
+  linhas.push(`  ${fechoDoConflito(err.code)}`);
   return linhas;
+}
+
+/**
+ * The closing line of a draft refusal — what THIS run did not do. Only
+ * `PUBLICACAO_EXPIRADA` differs (see {@link descreverConflitoDeRascunho}): on
+ * the fiscal retry's second leg one `add_item` WAS sent, so «nada foi enviado»
+ * would be false there, while «não criou nenhum anúncio» holds on every one of
+ * its producers.
+ */
+function fechoDoConflito(code: ConflitoLido['code']): string {
+  return code === CODIGO_RASCUNHO_SHOPEE.publicacaoExpirada
+    ? 'Esta execução não criou nenhum anúncio.'
+    : 'Nada foi enviado à Shopee por esta execução.';
 }

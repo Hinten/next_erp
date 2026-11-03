@@ -281,9 +281,13 @@ const FAMILIAS: readonly FamiliaProblema[] = [
     // rides with it. It cannot shadow anything: no other row lists the code.
     //
     // ⚠️ Shopee's prose, NO `mensagem` override: the two fixed sentences are
-    // the size-chart rows' alone (pinned). OUR sentence — import it if it is
-    // this produto's listing; a second one must differ, or Shopee may treat
-    // it as spam — is the web's and the CLI's copy, keyed on the motivo.
+    // the size-chart rows' alone (pinned). Our copy lives outside this row,
+    // keyed on the motivo, and there are TWO, worded apart by design: the
+    // CLI's `FRASE_ANUNCIO_SEMELHANTE` (`publicarAnuncioCli.ts`) and the web's
+    // `TEXTO_MOTIVO_ANUNCIO_SHOPEE` row (`apps/web/lib/shopee/anuncioProduto.ts`;
+    // batch-B rev. 2a §C row 12 names no import there). Read each by its name,
+    // never restated here; this folder's README paragraph
+    // «`error_repeated_mtsku` (D15)» says what each one says.
     rotulo: 'anuncio-semelhante',
     codigos: ['error_repeated_mtsku'],
     campo: 'item_sku',

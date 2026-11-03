@@ -1148,10 +1148,15 @@ const MOTIVOS_DA_BUSCA_DA_CRIACAO_INCERTA: ReadonlySet<string> = new Set([
  * - `livre` — no attempt is on record: look for the SKU first; import what
  *   exists, create only what does not.
  * - `incerta` — the LAST attempt may have created the listing: that listing
- *   first, never another. «A importação adota este rascunho» only while the
- *   draft records a readable attempt window (`desdeMs` — the import adopts a
- *   draft only through it, review R7-roundtrip#5); without one, the import
- *   binds the listing and the draft is discarded after it.
+ *   first, never another. «Normalmente a importação adota este rascunho» only
+ *   while the draft records a readable attempt window (`desdeMs` — the import
+ *   adopts a draft only through it, review R7-roundtrip#5); without one, the
+ *   import binds the listing and the draft is discarded after it. ⚠️ Never the
+ *   flat «a importação adota este rascunho», window or not (P12 round 2):
+ *   apps/shopee `resolveProduto.ts` also declines with a readable window — two
+ *   adoptable drafts of the produto, Shopee's `create_time` unknown, the SKU on
+ *   two produtos — and creates a link apart; so the exit for that outcome
+ *   (discard the draft afterwards: the listing is then linked) is named too.
  * - `em-andamento` — a publish of this draft holds the lock (another tab, or
  *   this answer's own lock not yet gone from the snapshot): wait, then the
  *   reading this re-renders with says which exit.
@@ -1173,15 +1178,20 @@ function saidaPeloSellerCentreShopee(
         'crie-o lá com esse SKU e importe-o.'
       );
     case 'incerta': {
-      const importe =
+      // The windowed branch ends its own sentence: after the hedge's «se ela
+      // criar um vínculo à parte», a bare «; se não existe» would read as
+      // being about the link, so the listing is named again.
+      const importeENaoExiste =
         publicacao.desdeMs === null
           ? `importe-o (${PORTA_DA_IMPORTACAO_SHOPEE}, com o mesmo SKU do produto) e depois ` +
-            'descarte este rascunho'
-          : `importe-o (${PORTA_DA_IMPORTACAO_SHOPEE}) — a importação adota este rascunho`;
+            'descarte este rascunho; se não existe, descarte este rascunho'
+          : `importe-o (${PORTA_DA_IMPORTACAO_SHOPEE}) — normalmente a importação adota este ` +
+            'rascunho; se ela criar um vínculo à parte, descarte este rascunho depois. Se o ' +
+            'anúncio não existe, descarte este rascunho';
       return (
         (afirmaNadaCriado ? 'Esta tentativa não criou nada. ' : '') +
-        `Confira no Seller Centre: se o anúncio da última tentativa existe, ${importe}; se não ` +
-        'existe, descarte este rascunho. Não crie outro antes de conferir.'
+        `Confira no Seller Centre: se o anúncio da última tentativa existe, ${importeENaoExiste}. ` +
+        'Não crie outro antes de conferir.'
       );
     }
     case 'em-andamento':
@@ -1226,6 +1236,13 @@ function textoDaBuscaDoAnuncioExistenteIncompletaShopee(
  *
  * The produto's CURRENT SKU is not printed: the trim fold that compares the
  * two lives in apps/shopee (#1369), and «Abrir no produto» shows it.
+ *
+ * The import «normalmente» links and adopts (P12 round 2, R7-roundtrip#5's
+ * sibling): this row is ENSURE's, so the draft HAS a readable window, but
+ * apps/shopee `resolveProduto.ts` still declines with one — two adoptable
+ * drafts of the produto, Shopee's `create_time` unknown, the SKU on two
+ * produtos — and creates a link apart; the row names that outcome's exit
+ * (the draft's attested discard, the listing being linked by then).
  */
 function textoDoSkuMudouShopee(skuEnviado: string | null): string {
   const enviado =
@@ -1245,8 +1262,9 @@ function textoDoSkuMudouShopee(skuEnviado: string | null): string {
   return (
     'O SKU do produto mudou desde a tentativa incerta, e o ERP só procura o anúncio pelo SKU ' +
     `que foi enviado.${enviado} Confira no Seller Centre: se o anúncio existe, deixe o mesmo ` +
-    `SKU nele e no produto e importe-o (${PORTA_DA_IMPORTACAO_SHOPEE}), que o vincula e adota ` +
-    `este rascunho; se não existe, ${seNaoExiste}.`
+    `SKU nele e no produto e importe-o (${PORTA_DA_IMPORTACAO_SHOPEE}) — normalmente a ` +
+    'importação o vincula e adota este rascunho; se ela criar um vínculo à parte, descarte ' +
+    `este rascunho (Descartar, confirmando). Se o anúncio não existe, ${seNaoExiste}.`
   );
 }
 

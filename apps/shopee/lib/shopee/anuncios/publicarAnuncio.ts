@@ -2241,8 +2241,10 @@ async function enviarItem(
 /**
  * ONE `add_item` leg of a DRAFT's create, under its lock: nothing outstanding
  * → the credential warm (`controles.aquecerCredencial`) → the synchronous gate
- * (it throws `PUBLICACAO_EXPIRADA` with nothing sent) → `enviando` → the call
- * → `criada`.
+ * (it throws `PUBLICACAO_EXPIRADA` with nothing sent on THIS leg — on the
+ * fiscal retry's second leg the first `add_item` WAS sent and refused
+ * all-or-nothing, so the throw means only that nothing was created) →
+ * `enviando` → the call → `criada`.
  *
  * ⚠️ The warm comes FIRST, and that order is the point (batch-A review): the
  * only await between the gate and the request is the client's own token ask
@@ -2250,8 +2252,9 @@ async function enviarItem(
  * REFRESH with no deadline. Warmed before the gate, any refresh is paid while
  * nothing is outstanding, the gate reads the clock AFTER it, and the client's
  * ask is one credential read inside `MARGEM_ENVIO_SHOPEE_MS`. A warm that
- * throws leaves `fase` at `travada`: nothing was sent, and the caller hands the
- * lock back unstamped.
+ * throws leaves `fase` at `travada`: nothing was sent on THIS leg and nothing
+ * was created (a second leg's warm follows a first `add_item` that was sent
+ * and refused), and the caller hands the lock back unstamped.
  */
 async function enviarSobATrava(
   deps: PublicarAnuncioDeps,
