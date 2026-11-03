@@ -22,7 +22,11 @@ import { inteiroPositivoCanonicoLi } from './mapaFreteLojaIntegrada';
  *
  * ## Ids come from `id`, never from `resource_uri`
  * A resource URI is read only where the store gives nothing else: a category's parent
- * (`categoria_pai`) and an option's grade (`grade`). {@link idDoRecursoLi} is THE reader of one.
+ * (`categoria_pai`), an option's grade (`grade`), and — for the product import (step 9) — a
+ * product's children (`filhos`), its parent (`pai`), its categories and brand, and the two-id
+ * OPTION URIs of a variation (`variacoes`). The readers of all of them live here and nowhere
+ * else: {@link idDoRecursoLi} for a one-id resource URI, {@link opcaoDoRecursoLi} for the option
+ * form.
  *
  * Pure and total: no clock, no network, no Firestore, and no input throws.
  *
@@ -60,14 +64,18 @@ export const MAX_PAGINAS_CATALOGO_LI = 10;
 /**
  * The resources whose URI this contract reads. `grades` is PLURAL: an option's `grade` field is
  * `/api/v1/grades/<g>` (in the public document and in the store's captured answers alike), while
- * the option's own URI uses the singular `grade` (and two ids), which is not a grade URI.
+ * the option's own URI uses the singular `grade` (and two ids), which is not a grade URI — that
+ * form has its own reader, {@link opcaoDoRecursoLi}.
+ *
+ * `produto` (step 9): a parent's `filhos[]` and a child detail's `pai` name products by URI.
  */
-export const recursoUriLiSchema = z.enum(['categoria', 'marca', 'grades']);
+export const recursoUriLiSchema = z.enum(['categoria', 'marca', 'grades', 'produto']);
 export type RecursoUriLi = z.infer<typeof recursoUriLiSchema>;
 export const RECURSO_URI_LI = {
   categoria: 'categoria',
   marca: 'marca',
   grades: 'grades',
+  produto: 'produto',
 } as const satisfies Record<string, RecursoUriLi>;
 
 /** `/api/v1/<recurso>/<id>` or `/v1/<recurso>/<id>`, with at most ONE trailing slash. */
@@ -99,6 +107,39 @@ export function idDoRecursoLi(uri: unknown, recurso: RecursoUriLi): number | nul
   if (partes === null || partes[1] !== recurso) return null;
   const id = inteiroPositivoCanonicoLi(partes[2]);
   return id === null ? null : Number(id);
+}
+
+/** `/api/v1/grade/<g>/variacao/<v>` or `/v1/…`, with at most ONE trailing slash. */
+const FORMA_URI_OPCAO_LI = /^(?:\/api)?\/v1\/grade\/([^/?#]+)\/variacao\/([^/?#]+)\/?$/;
+
+/** One store OPTION, as a variation's option URI names it: the grade and the option inside it. */
+export interface OpcaoDoRecursoLi {
+  readonly gradeId: number;
+  readonly opcaoId: number;
+}
+
+/**
+ * THE reader of a Loja Integrada OPTION URI — a variation's `variacoes[]` entry — into the pair of
+ * positive safe-integer ids it names, else `null`. The option form is the only two-id URI the
+ * store answers: the SINGULAR `grade`, its id, `variacao`, the option's id. Like
+ * {@link idDoRecursoLi} it owns only the path SHAPE, and both ids go through
+ * `inteiroPositivoCanonicoLi`.
+ *
+ * Equal (⇒ `{ gradeId: 8946, opcaoId: 37097 }`): `/api/v1/grade/8946/variacao/37097` ≡
+ * `/api/v1/grade/8946/variacao/37097/` ≡ `/v1/grade/8946/variacao/37097`.
+ * Distinct (⇒ `null`): the PLURAL `grades` (that is a grade URI's resource, never an option's),
+ * the segments swapped (`/api/v1/variacao/37097/grade/8946`), a missing option id, a leading
+ * zero in either id, a query string, a fragment, `None` for either id, an absolute URL, an extra
+ * segment, two trailing slashes, another API version, `''`, and anything that is not a string.
+ */
+export function opcaoDoRecursoLi(uri: unknown): OpcaoDoRecursoLi | null {
+  if (typeof uri !== 'string') return null;
+  const partes = FORMA_URI_OPCAO_LI.exec(uri);
+  if (partes === null) return null;
+  const gradeId = inteiroPositivoCanonicoLi(partes[1]);
+  const opcaoId = inteiroPositivoCanonicoLi(partes[2]);
+  if (gradeId === null || opcaoId === null) return null;
+  return { gradeId: Number(gradeId), opcaoId: Number(opcaoId) };
 }
 
 /**

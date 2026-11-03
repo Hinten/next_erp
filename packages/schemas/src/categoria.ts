@@ -50,3 +50,49 @@ export const categoriaMeta: CollectionMetadata = {
 };
 
 export const categoria = { schema: categoriaSchema, meta: categoriaMeta };
+
+/* -------------------------------------------------------------------------- */
+/*                          The breadcrumb (`nomeCompleto`)                    */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * Two surfaces build a categoria's breadcrumb: the web's categoria screens and the Loja
+ * Integrada product import (master plan step 9), which creates a categoria under its ERP parent.
+ * `apps/web` has no dependency edge to any app, so the rule lives here once (root `CLAUDE.md`).
+ */
+
+/**
+ * Materialized breadcrumb for a categoria — same format as the ML import
+ * (`apps/mercado-livre/lib/marketplace/importacao/importCategoria.ts`): names joined with
+ * ` > ` (spaces around `>`). Root categories are just `nome`.
+ *
+ * Issue #554: derived on every save; never hand-edited in the UI.
+ */
+export function makeNomeCompleto(
+  nome: string,
+  parentNomeCompleto: string | null | undefined,
+): string {
+  const parent = parentNomeCompleto?.trim();
+  return parent ? `${parent} > ${nome}` : nome;
+}
+
+/**
+ * Resolve the breadcrumb string to prefix children with, from a parent doc.
+ * Prefer the parent's materialized `nomeCompleto`; fall back to `nome` when
+ * legacy/import docs still have a null breadcrumb.
+ */
+export function parentBreadcrumbFromDoc(
+  parent:
+    | {
+        nome?: string | null;
+        nomeCompleto?: string | null;
+      }
+    | null
+    | undefined,
+): string | null {
+  if (parent == null) return null;
+  const full = parent.nomeCompleto?.trim();
+  if (full) return full;
+  const nome = parent.nome?.trim();
+  return nome || null;
+}

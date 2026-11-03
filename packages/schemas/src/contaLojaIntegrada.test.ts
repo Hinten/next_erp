@@ -289,6 +289,37 @@ describe('CODIGO_ERRO_LI', () => {
     });
   });
 
+  it('the product import routes’ codes are pinned to their wire strings (step 9, #1820)', () => {
+    expect({
+      importacaoEmAndamento: CODIGO_ERRO_LI.importacaoEmAndamento,
+      importacaoNaoEncontrada: CODIGO_ERRO_LI.importacaoNaoEncontrada,
+      importacaoEncerrada: CODIGO_ERRO_LI.importacaoEncerrada,
+    }).toEqual({
+      importacaoEmAndamento: 'LI_IMPORTACAO_EM_ANDAMENTO',
+      importacaoNaoEncontrada: 'LI_IMPORTACAO_NAO_ENCONTRADA',
+      importacaoEncerrada: 'LI_IMPORTACAO_ENCERRADA',
+    });
+  });
+
+  it('⚠️ NEAR-MISS: a running import (attach to it) is not a finished one (nothing to cancel)', () => {
+    // Both are 409s from the import routes; the web attaches on the first and only reloads on
+    // the second.
+    expect(CODIGO_ERRO_LI.importacaoEmAndamento).not.toBe(CODIGO_ERRO_LI.importacaoEncerrada);
+  });
+
+  it('the envelope carries the running jobId, and an envelope without it still parses', () => {
+    expect(
+      erroContaLojaIntegradaSchema.parse({
+        error: 'x',
+        code: CODIGO_ERRO_LI.importacaoEmAndamento,
+        jobId: 'job1',
+      }).jobId,
+    ).toBe('job1');
+    expect(
+      erroContaLojaIntegradaSchema.parse({ error: 'x', code: CODIGO_ERRO_LI.corpoInvalido }).jobId,
+    ).toBeUndefined();
+  });
+
   it('⚠️ NEAR-MISS: a grade missing from the store is not an order missing from it', () => {
     // Both are 409s that point at the conta's credential, but the advice differs:
     // an order cannot vanish, a grade can be deleted in the painel.

@@ -114,6 +114,9 @@ export const TIPO_AVISO_LABELS = {
   lojaIntegradaPedidoPagoSemEndereco: 'Pedido pago da Loja Integrada sem endereço',
   lojaIntegradaReversaoComEtiqueta: 'Pedido da Loja Integrada revertido com etiqueta comprada',
   lojaIntegradaRastreioDivergente: 'Envio do pedido não refletido na Loja Integrada',
+  lojaIntegradaCategoriaSemVinculo: 'Categoria da Loja Integrada sem vínculo',
+  lojaIntegradaRevisaoFiscal: 'Produtos da Loja Integrada para revisão fiscal',
+  lojaIntegradaImportacaoComPendencias: 'Importação de produtos da Loja Integrada com pendências',
   amazonReconexaoPendente: 'Autorização da Amazon recusada',
   amazonReautorizacaoExpirando: 'Autorização da Amazon expirando',
   amazonSegredoLwaExpirando: 'Segredo do aplicativo da Amazon expirando',
@@ -1158,6 +1161,75 @@ export const TIPO_AVISO_LABELS = {
  *    created after that read keeps its row. A DEACTIVATED conta is still listed,
  *    so its rows stay open until it imports again or is deleted (a documented
  *    residue).
+ *
+ * ---
+ *
+ * **The three product-import tipos** (Loja Integrada step 9, #1820 — producer:
+ * the product import job of `apps/loja-integrada`). Shared by all three:
+ *
+ *  - **Severity `atencao`**, canal `lojaIntegrada`, in-app only: nothing stops,
+ *    and `critico` escalates out of the app.
+ *  - **`params.loja`** is the conta name.
+ *  - **Raised and resolved only by an `aplicar` job** — a Simular run raises
+ *    and resolves NOTHING (it changed nothing).
+ *  - **`relogioEvento`** = the job's END, in µs (its ms stamp, converted once
+ *    by the app's aviso module). A later job's end is later, so an older job can
+ *    neither reopen nor close a newer job's row. ⚠️ Never compare it with
+ *    another tipo's.
+ *  - **Route**: the conta page (`ROTAS_AVISO.canalLojaIntegrada`), where the
+ *    import's report lives. The detail (which product, which option) lives in
+ *    the job's report, never in the aviso.
+ *  - All three join the expiry sweep's orphan pass: a deleted conta's rows are
+ *    closed (`conta-removida`).
+ *
+ * **`lojaIntegradaCategoriaSemVinculo`** — an `aplicar` job imported at least
+ *    one product WITHOUT a category because this store category has no link
+ *    for the conta (and the run only links categories), or its chain was
+ *    refused (an unreadable or missing parent, a cycle, too deep). The
+ *    category is the NF-e tax cascade's third tier, so the copy says those
+ *    products need a tax review.
+ *
+ *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId, entidade: <store
+ *    category id> })` — one row per store category.
+ *  - **`params`**: `loja`, `caminho` (the category path as store ids, root
+ *    first, joined by ` > `), `produtos` (a NUMBER: the products imported
+ *    without it) and `motivo` — a {@link MOTIVO_CATEGORIA_SEM_VINCULO_LI} CODE.
+ *  - **Machine resolvers**: a later job's catalogue phase that finds the
+ *    category linked for the conta, or gone from the store's list; and the
+ *    orphan pass once the conta is gone. The products already imported without
+ *    it stay on the tax-review list (below) until reviewed.
+ *
+ * **`lojaIntegradaRevisaoFiscal`** — an `aplicar` job created a produto or a
+ *    categoria, left a produto without a category, or filled an EMPTY category:
+ *    each changes how the NF-e resolves that produto's taxes, and nothing
+ *    imported carries a tax setting.
+ *
+ *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId })` — one row per conta.
+ *  - **`params`**: `loja`, `abertos` (a NUMBER: the produtos still on the list)
+ *    and `job` (the newest job's id: its `revisao` subcollection is the list the
+ *    web shows).
+ *  - **The list is durable**: each `aplicar` job copies the still-open entries
+ *    of the conta's previous one, adds its own, and re-checks them all. Nothing
+ *    closes an entry but EVIDENCE — the produto has its own tax setting, its
+ *    category has one, or a tax rule names the produto or its category (the
+ *    resolver's own rule match).
+ *  - **Machine resolvers**: the end of a later `aplicar` job whose re-check
+ *    leaves the list empty; and the orphan pass once the conta is gone.
+ *
+ * **`lojaIntegradaImportacaoComPendencias`** — an `aplicar` job ended with at
+ *    least one ACTIONABLE pendência (`PENDENCIAS_ACIONAVEIS_LI`: something a
+ *    person can fix in the ERP or the store). A fact of the store alone — an
+ *    empty family, a hidden product not created, a picture the store serves
+ *    wrongly — is informational and never keeps it open.
+ *
+ *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId })` — one row per conta.
+ *  - **`params`**: `loja`, `acionaveis` (a NUMBER: the actionable pendências
+ *    in total), `job` (the job's id), and one NUMBER per actionable code that
+ *    occurred, keyed by the code itself.
+ *  - **Machine resolvers**: an `aplicar` job with `alvo: todos` that ends
+ *    `concluido` with ZERO actionable pendências; and the orphan pass once the
+ *    conta is gone. A `selecionados`, `naoNoErp` or `jaNoErp` job never
+ *    resolves it: its scope does not contain the raising job's.
  */
 export const tipoAvisoSchema = z
   .enum([
@@ -1187,6 +1259,9 @@ export const tipoAvisoSchema = z
     'lojaIntegradaPedidoPagoSemEndereco',
     'lojaIntegradaReversaoComEtiqueta',
     'lojaIntegradaRastreioDivergente',
+    'lojaIntegradaCategoriaSemVinculo',
+    'lojaIntegradaRevisaoFiscal',
+    'lojaIntegradaImportacaoComPendencias',
     'amazonReconexaoPendente',
     'amazonReautorizacaoExpirando',
     'amazonSegredoLwaExpirando',
@@ -1226,6 +1301,9 @@ export const TIPO_AVISO = {
   lojaIntegradaPedidoPagoSemEndereco: 'lojaIntegradaPedidoPagoSemEndereco',
   lojaIntegradaReversaoComEtiqueta: 'lojaIntegradaReversaoComEtiqueta',
   lojaIntegradaRastreioDivergente: 'lojaIntegradaRastreioDivergente',
+  lojaIntegradaCategoriaSemVinculo: 'lojaIntegradaCategoriaSemVinculo',
+  lojaIntegradaRevisaoFiscal: 'lojaIntegradaRevisaoFiscal',
+  lojaIntegradaImportacaoComPendencias: 'lojaIntegradaImportacaoComPendencias',
   amazonReconexaoPendente: 'amazonReconexaoPendente',
   amazonReautorizacaoExpirando: 'amazonReautorizacaoExpirando',
   amazonSegredoLwaExpirando: 'amazonSegredoLwaExpirando',
@@ -1614,6 +1692,43 @@ export const MOTIVO_RASTREIO_DIVERGENTE_LI = {
   deriva: 'deriva',
   tentativasEsgotadas: 'tentativas-esgotadas',
 } as const satisfies Record<string, MotivoRastreioDivergenteLi>;
+
+/**
+ * Why a store category left imported products without a category — the
+ * `lojaIntegradaCategoriaSemVinculo` aviso's `params.motivo`, a CODE the
+ * wording in `apps/web/lib/avisos/mensagens.ts` renders (a wording fix is
+ * retroactive):
+ *
+ *  - `sem-vinculo`: the category has no link for the conta, and the run only
+ *    links categories;
+ *  - the category's chain was refused (the product import's category tree,
+ *    `categoriaLojaIntegrada.ts`, decides it): `pai-ilegivel` (an ancestor's
+ *    parent does not read), `pai-ausente` (an ancestor's parent is not in the
+ *    store's list), `ciclo`, `profundidade` (deeper than the tree accepts),
+ *    `ausente` (the category itself is not in the store's list).
+ *
+ * Stored as an aviso PARAM, with the same fallback contract as
+ * {@link MOTIVO_PEDIDO_CONTESTADO_LI}.
+ */
+export const motivoCategoriaSemVinculoLiSchema = z.enum([
+  'sem-vinculo',
+  'pai-ilegivel',
+  'pai-ausente',
+  'ciclo',
+  'profundidade',
+  'ausente',
+]);
+export type MotivoCategoriaSemVinculoLi = z.infer<typeof motivoCategoriaSemVinculoLiSchema>;
+
+/** Named members of {@link motivoCategoriaSemVinculoLiSchema} — see `delfrance/prefer-schema-enum`. */
+export const MOTIVO_CATEGORIA_SEM_VINCULO_LI = {
+  semVinculo: 'sem-vinculo',
+  paiIlegivel: 'pai-ilegivel',
+  paiAusente: 'pai-ausente',
+  ciclo: 'ciclo',
+  profundidade: 'profundidade',
+  ausente: 'ausente',
+} as const satisfies Record<string, MotivoCategoriaSemVinculoLi>;
 
 /**
  * Why an `anuncioForaDaSincronizacao` anúncio is out of reach — the aviso's
