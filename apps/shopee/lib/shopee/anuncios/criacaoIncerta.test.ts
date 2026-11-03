@@ -68,7 +68,11 @@ import {
   type DesfechoDeCriacaoDeItem,
   type LinhaCriacaoDeItem,
 } from './criacaoIncerta';
-import { MOTIVO_PROBLEMA_PUBLICACAO, MOTIVO_PUBLICACAO_BLOQUEADA } from './errosPublicacao';
+import {
+  MOTIVO_PROBLEMA_PUBLICACAO,
+  MOTIVO_PUBLICACAO_BLOQUEADA,
+  ShopeePublishBlockedError,
+} from './errosPublicacao';
 import { FRASE_TABELA_MEDIDAS_FOTO_RECUSADA } from './problemasPublicacao';
 
 /* -------------------------------------------------------------------------- */
@@ -1524,8 +1528,60 @@ describe('localizarAnuncioIncerto — a busca que falha FECHADO (D5, K1-7, K1-11
       expect(frase).toContain(
         'se não existir, volte o SKU do produto ao enviado e publique de novo',
       );
-      // Still whole: the tail (the exit) is never what the 500-character cap cuts.
-      expect(frase.endsWith('confirmando a criação incerta')).toBe(true);
+      // Whole at this SHORT pair, and the two SKUs close it, AFTER every exit
+      // (round 3). What the 500-character cap does to a LONG pair: the next test.
+      expect(frase.endsWith('Enviado: «SKU-VELHO-123»; agora: «SKU-NOVO-123»')).toBe(true);
+    });
+
+    it('(R7-roundtrip#5, rodada 3) SKUs LONGOS: o corte dos 500 só alcança os SKUs do fim — as três saídas ficam INTEIRAS', async () => {
+      const SAIDAS = [
+        'se o anúncio existir, deixe o MESMO SKU nele e no produto e importe-o ' +
+          '(importar:anuncio), que normalmente adota este rascunho',
+        'se não existir, volte o SKU do produto ao enviado e publique de novo',
+        'Sem adoção, ou sem anúncio, descarte este rascunho confirmando a criação incerta.',
+      ] as const;
+      // What the 422 carries: ShopeePublishBlockedError caps every mensagem at
+      // 500 characters, cutting from the END (`limitarMensagemProblema`).
+      const no422 = async (enviado: string, sku: string) => {
+        const problema = recusa(await buscar(cliente({}).client, { sku, enviado }));
+        const err = new ShopeePublishBlockedError({
+          produtoId: PRODUTO,
+          itemId: null,
+          problemas: [problema],
+        });
+        return { bruta: problema.mensagem, enviada: err.problemas[0]?.mensagem ?? '' };
+      };
+
+      // A realistic long pair, 30 + 30: WHOLE, the SKUs included.
+      const enviado30 = 'CAMISETA-ALGODAO-PRETA-GG-0001';
+      const atual30 = 'CAMISETA-ALGODAO-PRETA-GG-0002';
+      expect([enviado30.length, atual30.length]).toEqual([30, 30]);
+      const trinta = await no422(enviado30, atual30);
+      expect(trinta.enviada).toBe(trinta.bruta);
+      expect(trinta.enviada.endsWith(`Enviado: «${enviado30}»; agora: «${atual30}»`)).toBe(true);
+      for (const saida of SAIDAS) expect(trinta.enviada).toContain(saida);
+
+      // ⛔ quase-pares: pairs the cap DOES cut — a 100-character pair (50 + 50)
+      // and the produto schema's maximum (255 + 255). The cut lands inside the
+      // SKUs; every exit survives whole, before the first SKU.
+      const enviado50 = 'KIT-CAMISETA-ALGODAO-PRETA-GG-ESTAMPA-FRENTE-V0001';
+      const atual50 = 'KIT-CAMISETA-ALGODAO-PRETA-GG-ESTAMPA-FRENTE-V0002';
+      expect([enviado50.length, atual50.length]).toEqual([50, 50]);
+      for (const [enviado, atual] of [
+        [enviado50, atual50],
+        ['E'.repeat(255), 'A'.repeat(255)],
+      ] as const) {
+        const r = await no422(enviado, atual);
+        expect(r.bruta.length).toBeGreaterThan(500);
+        expect(r.enviada).toHaveLength(500);
+        expect(r.enviada.endsWith('…')).toBe(true);
+        for (const saida of SAIDAS) expect(r.enviada).toContain(saida);
+        const primeiroSku = r.enviada.indexOf('Enviado: «');
+        expect(primeiroSku).toBeGreaterThan(-1);
+        for (const saida of SAIDAS) {
+          expect(r.enviada.indexOf(saida) + saida.length).toBeLessThan(primeiroSku);
+        }
+      }
     });
   });
 

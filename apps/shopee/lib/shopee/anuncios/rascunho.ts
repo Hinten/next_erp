@@ -703,6 +703,13 @@ export async function atualizarRascunhoShopee(
       throw emAndamento(linkDocId, estado.aguardarMs, estado.posExpiracao);
     }
     if (estado.tipo === 'incerta' && alterados.includes(CAMPO_RASCUNHO_SHOPEE.categoryId)) {
+      // The exit after the import (#1911 batch-B review, round 3): the import
+      // adopts this draft only with a readable window, one adoptable draft, a
+      // known `create_time` and one parent produto (`produtos/resolveProduto.ts`)
+      // — otherwise it links the listing apart, the draft stays `incerta` and
+      // its category stays locked. Any `incerta` reading lands here, window or
+      // not, so the sentence keys that exit on the draft still being there and
+      // promises no adoption (the web words its own, FRASE_CATEGORIA_TRAVADA_SHOPEE).
       throw new RecusaDeRascunhoShopeeError({
         status: 409,
         code: CODIGO_RASCUNHO_SHOPEE.categoriaTravada,
@@ -710,7 +717,9 @@ export async function atualizarRascunhoShopee(
         mensagem:
           `a última tentativa de publicar o rascunho ${linkDocId} pode ter criado o anúncio na ` +
           'Shopee, na categoria gravada: ela não muda até isso se resolver. Confira no Seller ' +
-          'Centre e importe o anúncio se ele existir. Nada foi gravado.',
+          'Centre e importe o anúncio se ele existir; se ele não existir, ou se este rascunho ' +
+          'continuar depois da importação, descarte este rascunho confirmando a criação ' +
+          'incerta. Nada foi gravado.',
       });
     }
 

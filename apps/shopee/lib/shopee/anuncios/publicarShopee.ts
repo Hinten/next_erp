@@ -275,7 +275,8 @@ export async function publicarShopee(
   if (despacho === null) return null;
   const arma = armaOuRecusa(entrada, despacho);
   // §I4 on the kit arms (round 5): BEFORE the arm — no Shopee call, no upload,
-  // no write. The item arm's equivalent is its reservation's first read.
+  // no write. The item arm's equivalent is its reservation's 409 `JA_PUBLICADO`,
+  // on whichever of its reads finds it.
   if (arma.arma !== 'item') recusarAtestacaoNumBracoDeKit(deps, entrada, arma);
 
   if (arma.arma === 'item') {

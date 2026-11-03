@@ -802,18 +802,26 @@ function skuNaFrase(sku: string): string {
  * Shopee leaves the listing's `create_time` unknown, or when the SKU the
  * operator sets names two parent produtos (`produtos/resolveProduto.ts`). It
  * then links the listing apart, and the exit is the discard with the
- * attestation — named here, inside `MAX_MENSAGEM_PROBLEMA` (pinned).
+ * attestation.
+ *
+ * ⚠️ The two SKUs CLOSE the sentence (#1911 batch-B review, round 3): they are
+ * the only variable part — up to 255 characters each (`produtoSchema.sku`) —
+ * and `ShopeePublishBlockedError` cuts every `mensagem` at
+ * `MAX_MENSAGEM_PROBLEMA`, from the END. Interpolated first (round 2), they let
+ * the cap cut into the last exit from a combined 48 characters on; written
+ * last, the cap can only ever reach the SKUs, never an exit. Pinned through
+ * the real class: a 30 + 30 pair stays whole, and a 50 + 50 pair and the
+ * 255 + 255 maximum are cut inside the SKUs with all three exits whole.
  */
 function problemaSkuMudou(enviado: string, atual: string): ProblemaDeBloqueio {
   return bloqueio(
     MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaAmbigua,
-    `a última tentativa foi enviada ${enviado === '' ? 'sem SKU' : `com o SKU ${skuNaFrase(enviado)}`} ` +
-      `e o produto agora está ${atual === '' ? 'sem SKU' : `com ${skuNaFrase(atual)}`} — o ERP só ` +
-      'procura o anúncio pelo SKU que a tentativa enviou, e não decide. Confira no Seller Centre: ' +
-      'se o anúncio existir, deixe o MESMO SKU nele e no produto e importe-o (importar:anuncio), ' +
-      'que normalmente adota este rascunho; se não existir, volte o SKU do produto ao enviado e ' +
-      'publique de novo. Sem adoção, ou sem anúncio, descarte este rascunho confirmando a ' +
-      'criação incerta',
+    'o SKU do produto mudou desde a última tentativa — o ERP só procura o anúncio pelo SKU ' +
+      'enviado, e não decide. Confira no Seller Centre: se o anúncio existir, deixe o MESMO SKU ' +
+      'nele e no produto e importe-o (importar:anuncio), que normalmente adota este rascunho; se ' +
+      'não existir, volte o SKU do produto ao enviado e publique de novo. Sem adoção, ou sem ' +
+      'anúncio, descarte este rascunho confirmando a criação incerta. Enviado: ' +
+      `${skuNaFrase(enviado)}; agora: ${skuNaFrase(atual)}`,
   );
 }
 

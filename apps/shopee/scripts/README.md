@@ -1151,8 +1151,9 @@ INCERTO (§12.7 — it prints the exact command to re-run). ⚠️ A
 DRAFT's lock refusal (`ConflitoDeRascunhoShopeeError`, #1911) exits `1` WITHOUT
 that tail: every one of them is thrown before an `add_item` that could create
 the listing is sent (on the fiscal retry's second leg, the first leg was
-Shopee's refusal), and its own block ends `Nada foi enviado à Shopee por esta
-execução` (§12.7).
+Shopee's refusal), and its own block ends with what the run did not do (`Nada
+foi enviado à Shopee por esta execução`, or `Esta execução não criou nenhum
+anúncio.` for `PUBLICACAO_EXPIRADA`; §12.7).
 
 ⚠️ **"Native kit" is the whole rule, and step 12 corrected the code to match
 this sentence.** `produto.ehKit` **never** refuses a publish: an ERP kit
@@ -1367,7 +1368,7 @@ that was sent and refused all-or-nothing; it exits `1`.
 | `SHOPEE_PUBLICACAO_EXPIRADA`           | the send gate refused an `add_item` leg (the fiscal retry's second one follows a first sent and refused all-or-nothing): the lock would expire during the send, or is no longer this run's — or a look-up under the lock (ENSURE, the first create's same-SKU scan) stopped before its next Shopee read because it would not fit (batch-A review); nothing decided, nothing created | re-run (here the bound is the lock's 300 s, not the route's 180 s)                                                    |
 | `SHOPEE_RASCUNHO_CONTENCAO`            | the lock write lost three times in a row to concurrent writes on the draft                                                                                                                                                                                                                                                                                                          | re-run                                                                                                                |
 | `SHOPEE_RASCUNHO_JA_PUBLICADO`         | the link is no longer a draft: the listing exists                                                                                                                                                                                                                                                                                                                                   | publish it as an update (the same command)                                                                            |
-| `SHOPEE_RASCUNHO_CRIACAO_INCERTA`      | the draft is uncertain and NO attempt window can be read from it (both the record and the old lock are unreadable) — since P5 the only way this code is still answered on a publish                                                                                                                                                                                                 | check Seller Centre; import the listing if it exists — nothing is ever re-sent without a window to search             |
+| `SHOPEE_RASCUNHO_CRIACAO_INCERTA`      | the draft is uncertain and NO attempt window can be read from it (both the record and the old lock are unreadable) — since P5 the only way this code is still answered on a publish                                                                                                                                                                                                 | check Seller Centre; import the listing if it exists, then discard the draft — nothing is re-sent without a window    |
 
 ⚠️ **An `add_item` whose outcome is unknown** (a network drop, an edge page,
 an unparseable answer, an `error_*` code the documented refusals do not hold)

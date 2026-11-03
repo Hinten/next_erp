@@ -1796,8 +1796,9 @@ class ColetorDeAviso {
  * controls it was taken with; `null` everywhere else, which is step 11's path
  * unchanged. With it, step 2 is preceded by the PRE-SEND re-read, every
  * `add_item` leg by the credential warm and then the synchronous send gate
- * (nothing sent yet ⇒ the error rethrown unstamped), step 3 is the CLAIM, and an
- * `add_item` failure is CLASSIFIED (`desfechoDeCriacaoDeItem`): `nao-criado` ⇒
+ * (nothing sent on THIS leg ⇒ the error rethrown unstamped; nothing created),
+ * step 3 is the CLAIM, and an `add_item` failure is CLASSIFIED
+ * (`desfechoDeCriacaoDeItem`): `nao-criado` ⇒
  * the stamp and the release in ONE token-guarded write; `incerto` ⇒ no stamp,
  * the lock KEPT, the raw error rethrown — never a "Shopee refused" for a create
  * that may exist. And unless the reservation's ENSURE already searched the
@@ -2447,11 +2448,13 @@ function registrarPublicacao(deps: PublicarAnuncioDeps, r: ResultadoPublicacao):
  * ⚠️ A NAMED link that is a DRAFT (#1911) is reserved FIRST — before `preparar`
  * reads the content the create will send, so no edit can change it underneath
  * (`reservaRascunho.ts`). A lock refusal throws `ConflitoDeRascunhoShopeeError`
- * (the route's 409) with nothing read beyond the links and nothing sent. Any
- * throw while nothing may have reached Shopee hands the lock back, unstamped
- * (a blocked plan, a photo or taxonomy read failure, the credential warm, the
- * send gate, a lost lock) — best-effort: a failed hand-back never replaces the
- * error being thrown; every other way out is `aplicarPublicacao`'s to decide.
+ * (the route's 409) with nothing sent — though an `incerta` draft's ENSURE may
+ * already have READ Shopee (its same-SKU walk) when a deadline or a lost lock
+ * refuses. Any throw while nothing may have reached Shopee hands the lock
+ * back, unstamped (a blocked plan, a photo or taxonomy read failure, the
+ * credential warm, the send gate, a lost lock) — best-effort: a failed
+ * hand-back never replaces the error being thrown; every other way out is
+ * `aplicarPublicacao`'s to decide.
  *
  * ⚠️ Before that, a live create of a produto the conta holds NO link of MINTS
  * its draft ({@link nomearCriacaoSemVinculo}, K1-5) and continues named. And a

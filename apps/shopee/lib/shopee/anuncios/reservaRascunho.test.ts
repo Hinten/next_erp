@@ -468,6 +468,35 @@ describe('reservarRascunhoShopee — a trava', () => {
     },
   );
 
+  it('(R7-roundtrip#5, rodada 3) SEM janela a importação nunca adota: a frase manda importar E DEPOIS descartar — nunca «adota»', async () => {
+    const db = new FakeDb();
+    db.seed(CAMINHO, rascunho({ publicacaoEmCurso: 'travado' }));
+
+    const err = await conflitoDe(reservar(asDb(db), ALVO, controles()));
+
+    expect(err.code).toBe(CODIGO_RASCUNHO_SHOPEE.criacaoIncerta);
+    expect(err.message).toBe(
+      `a última tentativa de publicar o rascunho ${RASCUNHO} pode ter criado o anúncio na ` +
+        'Shopee (resultado desconhecido). Confira no Seller Centre e importe o anúncio se ele ' +
+        'existir, e depois descarte este rascunho — publicar de novo poderia criar um segundo. ' +
+        'Nada foi enviado agora.',
+    );
+    expect(err.message).not.toMatch(/adota/);
+
+    // ⛔ quase-par: WITH a window (a readable record) the refusal is ENSURE's,
+    // whose import NORMALLY adopts — that wording stays as it was, no «depois».
+    const comJanela = new FakeDb();
+    comJanela.seed(
+      CAMINHO,
+      rascunho({ criacaoIncertaDesde: AGORA - 3_600_000, criacaoIncertaSku: 'SKU-1' }),
+    );
+    const recusa = await reservar(asDb(comJanela), ALVO, controles()).catch((e: unknown) => e);
+    expect(recusa).toBeInstanceOf(ShopeePublishBlockedError);
+    const frase = (recusa as ShopeePublishBlockedError).problemas[0]?.mensagem ?? '';
+    expect(frase).toContain('importe-o (importar:anuncio), que normalmente adota este rascunho');
+    expect(frase).not.toContain('e depois descarte este rascunho');
+  });
+
   it('⛔ quase-par: publicacaoEmCurso null e criacaoIncertaDesde null ⇒ LIVRE, reserva', async () => {
     const db = new FakeDb();
     db.seed(CAMINHO, rascunho({ publicacaoEmCurso: null, criacaoIncertaDesde: null }));

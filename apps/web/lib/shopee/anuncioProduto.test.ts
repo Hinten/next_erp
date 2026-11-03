@@ -2716,3 +2716,117 @@ describe('#1911 P12 round 2 — R7-roundtrip#5 siblings: the import «normalment
     );
   });
 });
+
+describe('#1911 P12 round 3 — VERIFY-1 NIT 2: the no-window publish 409 names the discard after the import', () => {
+  // With no readable attempt window the import NEVER adopts the draft (apps/shopee
+  // `resolveProduto.ts`, `sem-tentativa`): it links the listing apart and the
+  // draft stays `incerta`, so a second Publicar answers this same 409. The
+  // sentence must name the way out after the import — the discard, whose dialog
+  // offers «já está vinculado» — or the operator loops on «importe-o».
+  const PORTA = PORTA_DA_IMPORTACAO_SHOPEE;
+  const COM_JANELA = { tipo: 'incerta', desdeMs: 1_800_000_000_000 } as const;
+  const SEM_JANELA = { tipo: 'incerta', desdeMs: null } as const;
+  const LIVRE = { tipo: 'livre' } as const;
+  const DEPOIS_DA_IMPORTACAO = 'e depois descarte este rascunho';
+
+  it('the 409 sentence, byte for byte: import (with the produto’s SKU) THEN discard confirming; not there ⇒ discard confirming; never «adota»', () => {
+    const t = FRASE_PUBLICACAO_CRIACAO_INCERTA_SEM_JANELA_SHOPEE;
+    expect(t).toBe(
+      'A última tentativa pode ter criado o anúncio e o ERP não sabe quando. Confira no Seller ' +
+        `Centre: se existir, importe-o (${PORTA}), com o mesmo SKU do produto, e depois descarte ` +
+        'este rascunho confirmando; se não, descarte este rascunho confirmando.',
+    );
+    // The discard follows the import inside the «se existir» branch — before the «se não».
+    const importe = t.indexOf('importe-o');
+    const depois = t.indexOf(DEPOIS_DA_IMPORTACAO);
+    expect(importe).toBeGreaterThan(-1);
+    expect(depois).toBeGreaterThan(importe);
+    expect(depois).toBeLessThan(t.indexOf('; se não,'));
+    // No window to adopt through: no adoption, hedged or flat; no retry; no CLI text.
+    expect(t).not.toMatch(/adota|adoção|vínculo à parte/);
+    expect(t).not.toMatch(/publique de novo|tente de novo/i);
+    expect(t).not.toMatch(TEXTO_DE_TERMINAL);
+    // The exit it names is one the tab offers: the discard dialog’s linked case.
+    expect(DIALOGO_DESCARTE_CRIACAO_INCERTA_SHOPEE.existeVinculado).toContain(
+      'descartar este rascunho',
+    );
+  });
+
+  it('PAIR: the same reading words the same exit — the 409 and the no-window branch of the Seller-Centre exit both discard AFTER the import', () => {
+    for (const t of [
+      FRASE_PUBLICACAO_CRIACAO_INCERTA_SEM_JANELA_SHOPEE,
+      fraseDaPublicacaoExpiradaShopee('', SEM_JANELA),
+      fraseDaPublicacaoInterrompidaShopee('', SEM_JANELA),
+    ]) {
+      expect(t).toContain(DEPOIS_DA_IMPORTACAO);
+      expect(t).not.toContain('adota');
+    }
+  });
+
+  it('NEAR-MISS: the windowed, the livre and the no-window wordings of the Seller-Centre exit are byte-identical to round 2 — the clause is the 409’s alone', () => {
+    const exitComJanela =
+      'Confira no Seller Centre: se o anúncio da última tentativa existe, importe-o ' +
+      `(${PORTA}) — normalmente a importação adota este rascunho; se ela criar um vínculo à ` +
+      'parte, descarte este rascunho depois. Se o anúncio não existe, descarte este rascunho. ' +
+      'Não crie outro antes de conferir.';
+    const exitSemJanela =
+      'Confira no Seller Centre: se o anúncio da última tentativa existe, importe-o ' +
+      `(${PORTA}, com o mesmo SKU do produto) e depois descarte este rascunho; se não existe, ` +
+      'descarte este rascunho. Não crie outro antes de conferir.';
+    const exitLivre =
+      'Procure o SKU deste produto no Seller Centre: se já existe um anúncio com ele, importe-o ' +
+      `(${PORTA}) e descarte este rascunho; se não existe, crie-o lá com esse SKU e importe-o.`;
+    const interrompida = 'A publicação não terminou: a Shopee recusou uma consulta.';
+
+    expect(fraseDaPublicacaoExpiradaShopee('', COM_JANELA)).toBe(
+      `A publicação parou antes de terminar. Esta tentativa não criou nada. ${exitComJanela}`,
+    );
+    expect(fraseDaPublicacaoInterrompidaShopee('', COM_JANELA)).toBe(
+      `${interrompida} ${exitComJanela}`,
+    );
+    expect(fraseDaPublicacaoExpiradaShopee('', SEM_JANELA)).toBe(
+      `A publicação parou antes de terminar. Esta tentativa não criou nada. ${exitSemJanela}`,
+    );
+    expect(fraseDaPublicacaoExpiradaShopee('', LIVRE)).toBe(
+      'A publicação parou antes de criar o anúncio — nenhum anúncio foi criado. Tentar de novo ' +
+        `só ajuda se a demora foi passageira; se esta mensagem voltar, não insista. ${exitLivre}`,
+    );
+    expect(fraseDaPublicacaoInterrompidaShopee('', LIVRE)).toBe(
+      `${interrompida} Confira o estado do rascunho; se ele continua rascunho e isto se ` +
+        `repetir, não insista. ${exitLivre}`,
+    );
+    // Where the import normally ADOPTS the draft there is nothing to discard
+    // after it — only after a link apart. The 409’s clause must not leak here.
+    expect(fraseDaPublicacaoExpiradaShopee('', COM_JANELA)).not.toContain(DEPOIS_DA_IMPORTACAO);
+    expect(fraseDaPublicacaoInterrompidaShopee('', COM_JANELA)).not.toContain(DEPOIS_DA_IMPORTACAO);
+  });
+
+  it('the CATEGORIA_TRAVADA sibling: an import that leaves this draft here still has an exit — the confirmed discard — and nothing promises an adoption', () => {
+    // Shown for EVERY `incerta` reading (block and route 409), window or not,
+    // so the exit after the import is keyed on what the operator SEES.
+    const t = FRASE_CATEGORIA_TRAVADA_SHOPEE;
+    expect(t).toBe(
+      'A categoria não muda enquanto a última tentativa de publicar estiver incerta: ela pode ' +
+        'ter criado o anúncio na categoria gravada. Confira no Seller Centre: se o anúncio ' +
+        'existe, dê a ele o mesmo SKU do produto e importe-o; se não existe, ou se este ' +
+        'rascunho continuar aqui depois da importação, descarte este rascunho confirmando. ' +
+        'Nada é salvo enquanto a troca de categoria estiver pendente: para salvar o resto, use ' +
+        '«Desfazer alterações» (desfaz todas as alterações não salvas) e refaça as outras sem ' +
+        'trocar a categoria.',
+    );
+    const importe = t.indexOf('importe-o;');
+    const saida = t.indexOf('se este rascunho continuar aqui depois da importação');
+    expect(importe).toBeGreaterThan(-1);
+    expect(saida).toBeGreaterThan(importe);
+    expect(t.indexOf('descarte este rascunho confirmando')).toBeGreaterThan(saida);
+    expect(t).not.toMatch(/adota|adoção/);
+    expect(t).not.toMatch(/publique de novo|tente de novo/i);
+    // ⛔ quase-par: never the 409’s UNCONDITIONAL «e depois descarte» — with a
+    // window the import normally adopts the draft, and then nothing is left
+    // to discard; the clause is conditional on the draft still being here.
+    expect(t).not.toContain(DEPOIS_DA_IMPORTACAO);
+    expect(FRASE_PUBLICACAO_CRIACAO_INCERTA_SEM_JANELA_SHOPEE).not.toContain(
+      'continuar aqui depois da importação',
+    );
+  });
+});

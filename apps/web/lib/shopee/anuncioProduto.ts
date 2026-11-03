@@ -1859,14 +1859,23 @@ export const FRASE_DESCARTE_EM_CONFLITO_SHOPEE =
  * sentence: in both the block holds an unsaved category change, so «Desfazer
  * alterações» is offered). The way to save the OTHER edits is named: the
  * category change blocks every save until it is gone.
+ *
+ * ⚠️ The exit AFTER the import (P12 round 3, the CATEGORIA_TRAVADA sibling of
+ * VERIFY-1's NIT 2): the import adopts the draft only with a readable attempt
+ * window, one adoptable draft, a known `create_time` and one parent produto
+ * (apps/shopee `resolveProduto.ts`) — otherwise it links the listing apart and
+ * this draft stays `incerta`, its category still locked. This constant is
+ * shown for EVERY `incerta` reading, with or without a window, so it names
+ * that outcome by what the operator SEES (the draft still here) and promises
+ * no adoption either way; the discard is the dialog's «já está vinculado».
  */
 export const FRASE_CATEGORIA_TRAVADA_SHOPEE =
   'A categoria não muda enquanto a última tentativa de publicar estiver incerta: ela pode ter ' +
   'criado o anúncio na categoria gravada. Confira no Seller Centre: se o anúncio existe, dê a ' +
-  'ele o mesmo SKU do produto e importe-o; se não, descarte este rascunho confirmando. Nada ' +
-  'é salvo enquanto a troca de categoria estiver pendente: para salvar o resto, use ' +
-  '«Desfazer alterações» (desfaz todas as alterações não salvas) e refaça as outras sem ' +
-  'trocar a categoria.';
+  'ele o mesmo SKU do produto e importe-o; se não existe, ou se este rascunho continuar aqui ' +
+  'depois da importação, descarte este rascunho confirmando. Nada é salvo enquanto a troca ' +
+  'de categoria estiver pendente: para salvar o resto, use «Desfazer alterações» (desfaz ' +
+  'todas as alterações não salvas) e refaça as outras sem trocar a categoria.';
 
 /** The button that puts the HELD category back in `incerta` (`bloco.podeVoltarCategoria`). */
 export const ROTULO_VOLTAR_CATEGORIA_GRAVADA_SHOPEE = 'Voltar à categoria gravada';
@@ -2523,11 +2532,22 @@ export const FRASE_PUBLICACAO_CONTENCAO_SHOPEE =
   'Não foi possível reservar o rascunho para publicar (gravações concorrentes) — nada foi ' +
   'enviado à Shopee; tente de novo.';
 
-/** 409 `rascunhoCriacaoIncerta` on a publish: an uncertain create with NO readable window. */
+/**
+ * 409 `rascunhoCriacaoIncerta` on a publish: an uncertain create with NO
+ * readable window (the reservation refuses it before any lock or send).
+ *
+ * ⚠️ Without a window the import NEVER adopts this draft (apps/shopee
+ * `resolveProduto.ts`, `sem-tentativa` — review R7-roundtrip#5): it links the
+ * listing apart and the draft stays `incerta`, so a second Publicar answers
+ * this same 409. The import branch therefore ends in the discard too (P12
+ * round 3, VERIFY-1's NIT 2) — the dialog's «já está vinculado» case — the
+ * exit {@link saidaPeloSellerCentreShopee}'s no-window branch names for the
+ * same reading. Never «adota»: there is no window to adopt through.
+ */
 export const FRASE_PUBLICACAO_CRIACAO_INCERTA_SEM_JANELA_SHOPEE =
   'A última tentativa pode ter criado o anúncio e o ERP não sabe quando. Confira no Seller ' +
-  `Centre: se existir, importe-o (${PORTA_DA_IMPORTACAO_SHOPEE}), com o mesmo SKU do produto; ` +
-  'se não, descarte este rascunho confirmando.';
+  `Centre: se existir, importe-o (${PORTA_DA_IMPORTACAO_SHOPEE}), com o mesmo SKU do produto, ` +
+  'e depois descarte este rascunho confirmando; se não, descarte este rascunho confirmando.';
 
 /**
  * 404 `anuncioNaoEncontrado` on a DRAFT's Publicar: the draft was discarded

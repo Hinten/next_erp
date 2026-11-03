@@ -382,6 +382,15 @@ function emAndamento(
   });
 }
 
+/**
+ * The 409 `CRIACAO_INCERTA` of a draft with NO readable attempt window. ⚠️
+ * Without a window the import NEVER adopts the draft (`sem-tentativa`,
+ * `produtos/resolveProduto.ts`'s `veredictoDeAdocaoShopee`, over the same
+ * `janelaDaCriacaoIncertaShopee`) and every re-publish answers this same 409,
+ * so the sentence names the discard AFTER the import — never «adota», never a
+ * re-publish as an exit (#1911 batch-B review, round 3; the web words its own,
+ * `FRASE_PUBLICACAO_CRIACAO_INCERTA_SEM_JANELA_SHOPEE`).
+ */
 function criacaoIncerta(linkDocId: string): ConflitoDeRascunhoShopeeError {
   return new ConflitoDeRascunhoShopeeError({
     code: CODIGO_RASCUNHO_SHOPEE.criacaoIncerta,
@@ -389,7 +398,8 @@ function criacaoIncerta(linkDocId: string): ConflitoDeRascunhoShopeeError {
     mensagem:
       `a última tentativa de publicar o rascunho ${linkDocId} pode ter criado o anúncio na ` +
       'Shopee (resultado desconhecido). Confira no Seller Centre e importe o anúncio se ele ' +
-      'existir — publicar de novo poderia criar um segundo. Nada foi enviado agora.',
+      'existir, e depois descarte este rascunho — publicar de novo poderia criar um segundo. ' +
+      'Nada foi enviado agora.',
   });
 }
 
