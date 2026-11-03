@@ -142,6 +142,16 @@ export const MSG_OPCOES_DE_KIT_EXCLUSIVAS =
 export const MSG_RECRIAR_SEM_LINK =
   'recriar exige linkDocId — informe o vínculo do kit nativo que será recriado.';
 
+/**
+ * `criacaoIncertaAdota` with no `linkDocId` (#1911 batch-B review, §I1 round 3):
+ * the expectation qualifies the attestation of ONE draft's uncertain create, so
+ * it names that draft — the same "name your target" rule as
+ * {@link MSG_RECRIAR_SEM_LINK}.
+ */
+export const MSG_CRIACAO_INCERTA_ADOTA_SEM_LINK =
+  'criacaoIncertaAdota exige linkDocId — a confirmação da criação incerta vale para o ' +
+  'rascunho que ela atesta: informe o vínculo desse rascunho.';
+
 /* -------------------------------------------------------------------------- */
 /*  Primitive readers                                                          */
 /* -------------------------------------------------------------------------- */
@@ -235,8 +245,9 @@ export interface CorpoPublicar {
    * #1911 batch-B review (Lucas §I1): what the attestation EXPECTS the publish
    * to do — `[L]` = adopt the unlinked listing `L` the refusal showed, `[]` = a
    * deliberate create. `null` ⇔ ABSENT, which keeps the bare attestation's
-   * meaning (the CLI's). Valid only beside `confirmarCriacaoIncerta: true`.
-   * ENSURE (`criacaoIncerta.ts`) honours an attested verdict only when its
+   * meaning (the CLI's). Valid only beside `confirmarCriacaoIncerta: true` AND a
+   * `linkDocId` (the draft it attests — round 3: a body without one would mint
+   * a fresh draft the reservation then refuses). ENSURE (`criacaoIncerta.ts`) honours an attested verdict only when its
    * FRESH scan does exactly this; anything else refuses with nothing sent.
    */
   readonly criacaoIncertaAdota: readonly number[] | null;
@@ -363,6 +374,15 @@ export function lerCorpoPublicar(body: unknown): LeituraCorpo<CorpoPublicar> {
   if (recriar.valor && converterEmKit.valor) return erro(MSG_OPCOES_DE_KIT_EXCLUSIVAS);
   // A recriar always NAMES its target (S1F-02): every re-run is the same request.
   if (recriar.valor && linkDocId.valor === null) return erro(MSG_RECRIAR_SEM_LINK);
+  // So does an attestation's expectation (§I1, round 3). Without `linkDocId`
+  // the publisher MINTS a fresh draft for a produto with no link (K1-5); a
+  // fresh draft never reads `incerta`, so the reservation refuses the
+  // expectation AFTER that draft was written, and it stays behind. Refused
+  // here instead, before anything is read or written. Absent and `null` read
+  // alike: `lerIdOpcional` folds both into "no link named".
+  if (criacaoIncertaAdota.valor !== null && linkDocId.valor === null) {
+    return erro(MSG_CRIACAO_INCERTA_ADOTA_SEM_LINK);
+  }
 
   return ok({
     integracaoId: integracaoId.valor,

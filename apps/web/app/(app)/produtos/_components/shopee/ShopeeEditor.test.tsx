@@ -57,6 +57,7 @@ import {
   FRASE_PUBLICAR_PRODUTO_NAO_SALVO_SHOPEE,
   FRASE_PUBLICAR_SEM_FAIXAS_SHOPEE,
   MOTIVO_ANUNCIO_SHOPEE,
+  PORTA_DA_IMPORTACAO_SHOPEE,
   ROTULO_DESCARTAR_ANUNCIO_DA_TENTATIVA_SHOPEE,
   ROTULO_PUBLICAR_ATESTANDO_SEM_SKU_SHOPEE,
   ROTULO_PUBLICAR_SEGUNDO_DE_PROPOSITO_SHOPEE,
@@ -77,6 +78,7 @@ import {
   fraseDaPublicacaoExpiradaShopee,
   fraseDaPublicacaoInterrompidaShopee,
   fraseDoRascunhoEmAndamentoShopee,
+  fraseDosRascunhosIrmaosIncertosShopee,
   textoDaConfirmacaoDePublicacaoShopee,
   textoDoSegundoAnuncioNaPublicacaoShopee,
   textoDoSegundoAnuncioShopee,
@@ -5860,6 +5862,69 @@ describe('ShopeeEditor — «Publicar» on a draft (#1911 P11)', () => {
     },
   );
 
+  it('review round 3 (VERIFY-2 R8-copy#3): ANOTHER draft of the produto on this conta that may have created a listing holds «Publicar» back — `irmao-incerto`, its aviso naming that draft; no confirmation, nothing sent (the server would refuse it, confirmation or not)', async () => {
+    const publicar = vi.fn<ShopeeClient['publicar']>(async () => ITEM_REPUBLICADO);
+    prontoParaPublicar(publicar);
+    h.links = [
+      rascunhoPronto('L-rasc'),
+      rascunho('L-outro', { criacaoIncertaDesde: Date.now() - 600_000 }),
+    ];
+    renderEditor();
+    await waitFor(() =>
+      expect(formDe('L-rasc').decisaoDePublicar.impedimento).toBe('irmao-incerto'),
+    );
+    expect(formDe('L-rasc').decisaoDePublicar.aviso).toBe(
+      fraseDosRascunhosIrmaosIncertosShopee(['L-outro']),
+    );
+    expect(publicarDo('L-rasc').disabled).toBe(true);
+    // The gate, not just the button: the handler the form calls opens nothing.
+    act(() => formDe('L-rasc').onPublicar());
+    expect(semDialogoDePublicar()).toBeNull();
+    expect(publicar).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      'the sibling’s lock was NEVER stamped (it sent nothing — §H Q3, `livre` at the server)',
+      [
+        rascunhoPronto('L-rasc'),
+        rascunho('L-outro', {
+          publicacaoEmCurso: { desde: Date.now() - 400_000, expiraEm: Date.now() - 1, token: 't' },
+        }),
+      ],
+    ],
+    [
+      'THIS draft is the uncertain one (its publish is a real one, ENSURE first)',
+      [
+        rascunhoPronto('L-rasc', { criacaoIncertaDesde: Date.now() - 600_000 }),
+        rascunho('L-outro'),
+      ],
+    ],
+    [
+      'the uncertain draft is ANOTHER conta’s',
+      [
+        rascunhoPronto('L-rasc'),
+        rascunho('L-outro', {
+          contaProdutoShopeeOuterRef: 'integracao/int-2',
+          criacaoIncertaDesde: Date.now() - 600_000,
+        }),
+      ],
+    ],
+  ])(
+    'review round 3 NEAR-MISS: %s ⇒ «Publicar» acts — never `irmao-incerto`',
+    async (_caso, links) => {
+      const publicar = vi.fn<ShopeeClient['publicar']>(async () => ITEM_REPUBLICADO);
+      prontoParaPublicar(publicar);
+      h.links = links;
+      await renderPronto();
+      expect(formDe('L-rasc').decisaoDePublicar.impedimento).toBeNull();
+      fireEvent.click(publicarDo('L-rasc'));
+      expect(dialogoDePublicar()).toBeDefined();
+      confirmarPublicacao();
+      await waitFor(() => expect(publicar).toHaveBeenCalledTimes(1));
+    },
+  );
+
   it('a 409 rascunhoContaJaTemAnuncio re-asks with the SAME confirmation, counted from detalhes.vinculos, and re-sends the identical publish with the flag', async () => {
     const publicar = vi
       .fn<ShopeeClient['publicar']>()
@@ -6290,6 +6355,11 @@ describe('ShopeeEditor — «Publicar» on a draft (#1911 P11)', () => {
     // The plain confirmation (the operator already attested) — never the three-case dialog.
     const dialogo = screen.getByRole('dialog', { name: 'Descartar rascunho' });
     expect(within(dialogo).getByText(aviso)).toBeDefined();
+    // Review round 3 (VERIFY-1 mixed-row PARTIAL): the warning never points the
+    // free listing at the mass import — nowhere in the dialog.
+    expect(dialogo.textContent).toContain('continua na Shopee, sem vínculo no ERP');
+    expect(dialogo.textContent).not.toContain(PORTA_DA_IMPORTACAO_SHOPEE);
+    expect(dialogo.textContent).not.toMatch(/importe-o/i);
     expect(
       screen.queryByRole('dialog', { name: DIALOGO_DESCARTE_CRIACAO_INCERTA_SHOPEE.titulo }),
     ).toBeNull();

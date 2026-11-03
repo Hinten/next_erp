@@ -2094,14 +2094,55 @@ export function tituloDoSegundoAnuncioNaPublicacaoShopee(
 }
 
 /**
- * D15 beside drafts only, when a counted draft's last attempt is uncertain
- * (`rascunhosIncertos`): it may have created an unlinked listing of the
- * produto — and the server refuses this publish while it stays so (its
- * sibling scan), so the operator checks first.
+ * The exit while OTHER drafts of the produto on the conta hold this one's
+ * publish back (review round 3, R8-copy#3's sibling): the reservation's
+ * sibling scan (apps/shopee `reservaRascunho.ts`, `recusarSegundoAnuncio`)
+ * refuses EVERY publish of this draft — the D15 confirmation included — until
+ * each of them reads `livre` (or is no draft any more), so «confira e
+ * publique» would name an exit the server refuses. What clears it is THAT
+ * draft, on its own block: a run still going ends; then the Seller-Centre
+ * check — its listing exists ⇒ import it, then discard that draft if it is
+ * still one; it does not ⇒ its attested discard. ⚠️ Never «a importação
+ * adota aquele rascunho» flat: the import adopts a draft only through a
+ * readable attempt window (review R7-roundtrip#5), which an unreadable lock
+ * lacks — the «se continuar na aba, descarte-o» clause is true either way.
  */
-export const FRASE_RASCUNHO_IRMAO_INCERTO_SHOPEE =
-  'A última tentativa de publicar outro rascunho dele ficou incerta e pode ter criado um ' +
-  'anúncio na Shopee, ainda sem vínculo — confira no Seller Centre antes de publicar este.';
+function fraseParaResolverRascunhosIrmaosShopee(quantos: number): string {
+  return (
+    `${quantos > 1 ? 'Resolva cada um deles' : 'Resolva aquele rascunho'} no bloco dele: se a ` +
+    'publicação dele ainda estiver em andamento, aguarde-a terminar; depois confira no Seller ' +
+    'Centre — se o anúncio da tentativa dele existe, importe-o ' +
+    `(${PORTA_DA_IMPORTACAO_SHOPEE}, com o mesmo SKU do produto) e, se aquele rascunho continuar ` +
+    'na aba, descarte-o; se não existe, descarte aquele rascunho (Descartar, confirmando).'
+  );
+}
+
+/** Why the sibling drafts hold this publish back — `lista` names them (`null`: only counted). */
+function fraseDosIrmaosIncertosShopee(quantos: number, lista: string | null): string {
+  const quais = lista === null ? '' : ` (${lista})`;
+  const abertura =
+    quantos > 1
+      ? `Outros rascunhos deste produto nesta conta${quais} registram tentativas de publicar ` +
+        'que podem ter criado anúncios na Shopee — enquanto elas não forem resolvidas, o ERP ' +
+        'não publica este rascunho.'
+      : `Outro rascunho deste produto nesta conta${quais} registra uma tentativa de publicar ` +
+        'que pode ter criado um anúncio na Shopee — enquanto ela não for resolvida, o ERP não ' +
+        'publica este rascunho.';
+  return `${abertura} ${fraseParaResolverRascunhosIrmaosShopee(quantos)}`;
+}
+
+/**
+ * THE sentence under a draft's disabled «Publicar» for `irmao-incerto`
+ * (`./rascunho.ts`'s `publicacaoDoRascunhoShopee`): the OTHER drafts whose
+ * last attempt may have created a listing (`rascunhosIrmaosIncertosShopee`),
+ * named, and how to resolve them. The confirmation never opens meanwhile.
+ */
+export function fraseDosRascunhosIrmaosIncertosShopee(linkDocIds: readonly string[]): string {
+  const lista = linkDocIds
+    .map((linkDocId) => nomeDoVinculoShopee({ linkDocId, itemId: null, rascunho: true }))
+    .join(', ');
+  return fraseDosIrmaosIncertosShopee(linkDocIds.length, lista === '' ? null : lista);
+}
 
 /**
  * What the conta already holds, in words — never "já tem 0" (an unreadable 409
@@ -2147,13 +2188,20 @@ function contagemNaContaShopee(
  * - every counted vínculo a DRAFT (review R8-copy#3): this publish makes the
  *   conta's FIRST listing of the produto — the duplicate is the OTHER draft's
  *   later publish. ⚠️ «nenhum anúncio dele na Shopee» and a flat «Este será o
- *   primeiro» only when nothing on record says otherwise (review round 2): a
- *   counted draft whose last attempt is uncertain (`rascunhosIncertos`) may
- *   have created an unlinked listing — said, with «confira» — and this draft
- *   being uncertain itself keeps the adoption caveat the `cria` branch has;
- *   either way the links prove only «nenhum anúncio dele vinculado no ERP»;
+ *   primeiro» only when nothing on record says otherwise (review round 2):
+ *   this draft being uncertain itself keeps the adoption caveat the `cria`
+ *   branch has, and the links then prove only «nenhum anúncio dele vinculado
+ *   no ERP»;
  * - otherwise it creates ANOTHER listing — and on a plain `incerta` publish,
  *   unless the look-up finds the last attempt's listing and adopts it.
+ *
+ * ⚠️ A counted draft whose last attempt is uncertain (`rascunhosIncertos`,
+ * review round 3) comes FIRST, whatever the act: the server refuses this
+ * publish meanwhile (its sibling scan, confirmation or not), so no «cria»,
+ * «primeiro» or «vincula» is true — the text says the refusal and the exit
+ * ({@link fraseDosRascunhosIrmaosIncertosShopee}'s, counted). The «Publicar»
+ * gate's `irmao-incerto` keeps this confirmation from opening over one from
+ * the SAME snapshot, so this is the backstop's wording, never a promise.
  */
 export function textoDoSegundoAnuncioNaPublicacaoShopee(
   existentes: ContagemDoSegundoAnuncioShopee,
@@ -2167,6 +2215,7 @@ export function textoDoSegundoAnuncioNaPublicacaoShopee(
   // `livre` ⇔ nothing on record for THIS draft either (its reading in the SAME render).
   const semCriacaoIncerta = irmaosIncertos === 0 && publicacao.tipo === 'livre';
   const conta = contagemNaContaShopee(existentes, semCriacaoIncerta);
+  if (irmaosIncertos > 0) return `${conta} ${fraseDosIrmaosIncertosShopee(irmaosIncertos, null)}`;
   switch (atoDaPublicacaoShopee(existentes, atestacao)) {
     case 'adota': {
       // "One more listing" only when one is KNOWN to be on Shopee; with only
@@ -2193,10 +2242,7 @@ export function textoDoSegundoAnuncioNaPublicacaoShopee(
         atestacao === null && publicacao.tipo === 'incerta'
           ? ' — a menos que o ERP ache o anúncio da última tentativa deste rascunho e o adote —'
           : '';
-      return irmaosIncertos > 0
-        ? `${conta} ${FRASE_RASCUNHO_IRMAO_INCERTO_SHOPEE} Se nenhum foi criado, publicar este ` +
-            `rascunho cria o primeiro anúncio dele na loja${salvo}; ${depois}`
-        : `${conta} Publicar este rascunho cria o primeiro anúncio dele na loja${salvo}; ${depois}`;
+      return `${conta} Publicar este rascunho cria o primeiro anúncio dele na loja${salvo}; ${depois}`;
     }
     case 'cria': {
       const salvo =
@@ -2231,6 +2277,13 @@ function nomeDoVinculoShopee(v: VinculoConflitanteShopee): string {
  * does `aguardarMs` tell "being published" (a number) from "uncertain" (absent
  * — waiting does not help). No `vinculos` ⇒ the draft's OWN lock. Never
  * "aguarde 0 s".
+ *
+ * The uncertain sibling (review round 3): every holder a DRAFT ⇒ the refusal
+ * and THE exit the «Publicar» gate's `irmao-incerto` names
+ * (`fraseParaResolverRascunhosIrmaosShopee`) — «confira no Seller Centre
+ * antes de publicar» alone sent the operator to a check that changes nothing
+ * here: the server keeps refusing until that draft is resolved. A holder that
+ * is not a draft has no such exit, so that list keeps the plain sentence.
  */
 export function fraseDaPublicacaoDoRascunhoEmAndamentoShopee(detalhes: {
   readonly aguardarMs: number | null;
@@ -2241,11 +2294,18 @@ export function fraseDaPublicacaoDoRascunhoEmAndamentoShopee(detalhes: {
     aguardarMs !== null && aguardarMs > 0 ? `aguarde ${segundosDaEspera(aguardarMs)} s` : null;
   if (vinculos !== null && vinculos.length > 0) {
     const lista = vinculos.map(nomeDoVinculoShopee).join(', ');
-    return espera === null
-      ? `Outro vínculo deste produto nesta conta tem criação incerta (${lista}) — confira no ` +
-          'Seller Centre antes de publicar este rascunho.'
-      : `Outro vínculo deste produto nesta conta está sendo publicado agora (${lista}) — ` +
-          `${espera} e confira antes de publicar este rascunho.`;
+    if (espera !== null) {
+      return (
+        `Outro vínculo deste produto nesta conta está sendo publicado agora (${lista}) — ` +
+        `${espera} e confira antes de publicar este rascunho.`
+      );
+    }
+    return vinculos.every((v) => v.rascunho)
+      ? `Outro vínculo deste produto nesta conta tem criação incerta (${lista}) — enquanto ela ` +
+          'não for resolvida, o ERP não publica este rascunho. ' +
+          fraseParaResolverRascunhosIrmaosShopee(vinculos.length)
+      : `Outro vínculo deste produto nesta conta tem criação incerta (${lista}) — confira no ` +
+          'Seller Centre antes de publicar este rascunho.';
   }
   return (
     'O rascunho está sendo publicado agora (ou a publicação anterior ainda pode estar ' +
@@ -2559,11 +2619,24 @@ export function rotuloDaPublicacaoQueAdotaShopee(itemIds: readonly number[]): st
   );
 }
 
-/** The discard exit's warning when an UNLINKED candidate stays on Shopee. */
+/**
+ * The discard exit's warning when an UNLINKED candidate stays on Shopee —
+ * shown on the refusal row, before any click, and again in the discard
+ * dialog. Its only producer is the MIXED `criacao-incerta-ja-vinculada` row
+ * (`./rascunho.ts`'s `saidasDoProblemaShopee`: a free candidate beside a
+ * linked one; an all-linked row warns nothing and an all-free row offers no
+ * discard). ⚠️ So it never points the free listing at the mass import (review
+ * round 3, VERIFY-1's mixed-row PARTIAL) — the same rule as that row's own
+ * sentence ({@link textoDaLinhaShopee}'s `mista`): with the linked candidate
+ * another produto's, the SKU is shared, the import's SKU rung declines and
+ * MINTS a new produto holding the listing; and an import that links it
+ * before the click turns the row's adoption exit into a §I1 refusal. It says
+ * only what is true whatever the operator picks: the listing stays, unlinked.
+ */
 export function avisoDoDescarteComAnuncioSemVinculoShopee(itemIds: readonly number[]): string {
   return (
-    `O anúncio sem vínculo ${itemIds.map(String).join(', ')} continua na Shopee: se ele for ` +
-    `deste produto, importe-o (${PORTA_DA_IMPORTACAO_SHOPEE}).`
+    `O anúncio sem vínculo ${itemIds.map(String).join(', ')} continua na Shopee, sem vínculo ` +
+    'no ERP — o descarte não o vincula a nada.'
   );
 }
 

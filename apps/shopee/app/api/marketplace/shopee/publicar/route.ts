@@ -73,7 +73,9 @@
  * command to re-run (`comando`, the CLI's) and — since step 21 (#1529) — the
  * wait in MILLISECONDS (`aguardarMs`, the schemas' `AGUARDAR_KIT_INCERTO_SHOPEE_MS`)
  * the produto's Shopee tab holds its identical re-send for · 400 for a bad body
- * (both kit actions at once, or `recriar` with no `linkDocId`, included) · 404
+ * (both kit actions at once, or `recriar` or `criacaoIncertaAdota` with no
+ * `linkDocId`, included — refused at parse, before the conta context loads and
+ * before any write) · 404
  * `SHOPEE_ANUNCIO_NAO_ENCONTRADO` when the produto does not exist or the named
  * `linkDocId` is not this conta's · everything else goes to
  * `shopeeErrorResponse`, which holds the two per-produto publish arms (a

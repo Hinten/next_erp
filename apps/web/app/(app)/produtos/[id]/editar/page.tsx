@@ -200,6 +200,13 @@ export default function EditarProdutoPage() {
   const [variationRows, setVariationRows] = useState<VariationRow[]>([]);
   const [divergentVariationCount, setDivergentVariationCount] = useState(0);
   const [variationPriceDirty, setVariationPriceDirty] = useState(false);
+  // A per-variation kit composition staged in the Kit tab's grid
+  // («Componentes por variação»), reported by `KitVariacoesManager` and written
+  // onto the child only by `flushKitVariacoesRef` in `onAfterSave`. Outside
+  // this form like the variation price above, so it arms the same two things:
+  // the leave-guard (`extraDirty`) and a Shopee draft's «Publicar» gate
+  // (`produtoSujoForaDoFormularioShopee`, KNOWN #9 round 3).
+  const [kitVariacoesDirty, setKitVariacoesDirty] = useState(false);
   const childrenQuery = useMemo(
     () => buildQuery(produtoCollection.ref(db, {}), [whereEqual('paiId', params.id)]),
     [db, params.id],
@@ -240,7 +247,10 @@ export default function EditarProdutoPage() {
   // patch of a SAVED child — `VariationRow` carries no per-row dirty flag, so
   // that one is read by comparing the published row with the stored child
   // (`filhoSalvoDivergeDoGravado`). Read off the rows the VariationManager
-  // publishes (empty until it mounts — nothing is staged before that).
+  // publishes (empty until it mounts — nothing is staged before that). And a
+  // staged per-variation kit composition (`kitVariacoesDirty`, round 3): the
+  // publish derives each kit model's `seller_stock` from the STORED child
+  // composition, so an unsaved one would publish the old composition's stock.
   // Mercado Livre's edits are not threaded: the Shopee publish reads none of
   // them.
   const savedVariationRowsById = useMemo(
@@ -249,6 +259,7 @@ export default function EditarProdutoPage() {
   );
   const produtoSujoForaDoFormularioShopee =
     variationPriceDirty ||
+    kitVariacoesDirty ||
     variationRows.some(
       (r) =>
         r.id === null ||
@@ -524,7 +535,8 @@ export default function EditarProdutoPage() {
         // apps/shopee — so it registers NO flush and stays out of
         // `PRODUTO_PERSISTENT_SECTIONS`. Unsaved draft work reaches this page
         // through `onDirtyChange` alone (`shopeeDirty` above); the other way,
-        // the staged variation edits reach a draft's «Publicar» gate
+        // the staged variation edits (the Kit tab's per-variation
+        // compositions included) reach a draft's «Publicar» gate
         // (`produtoSujoForaDoFormularioShopee`, KNOWN #9). Behind
         // `ShopeeTab`, which defers the editor chunk until the tab is opened.
         renderInput: (p) => (
@@ -591,6 +603,7 @@ export default function EditarProdutoPage() {
               rows={effectiveVariationRows}
               disabled={p.disabled}
               flushRef={flushKitVariacoesRef}
+              onDirtyChange={setKitVariacoesDirty}
             />
           </Stack>
         ),
@@ -657,10 +670,10 @@ export default function EditarProdutoPage() {
       fields={fields}
       excludedFields={PRODUTO_EXCLUDED_FIELDS}
       transientFields={PRODUTO_TRANSIENT_FIELDS_EDITAR}
-      // Pending Mercado Livre, independent-variation-price and Shopee draft
-      // edits live outside this RHF form, so all three must arm the shared
-      // leave guard.
-      extraDirty={mlDirty || variationPriceDirty || shopeeDirty}
+      // Pending Mercado Livre, independent-variation-price, per-variation kit
+      // composition and Shopee draft edits live outside this RHF form, so all
+      // four must arm the shared leave guard.
+      extraDirty={mlDirty || variationPriceDirty || kitVariacoesDirty || shopeeDirty}
       transactionWrites={(id, values, context) =>
         buildProdutoTransactionWrites(db, id, values, 'editar', context)
       }

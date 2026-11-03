@@ -99,6 +99,7 @@ import {
   novaEdicaoRascunhoShopee,
   projecaoGuardadaDoRascunhoShopee,
   publicacaoDoRascunhoShopee,
+  rascunhosIrmaosIncertosShopee,
   rebasearEdicaoRascunhoShopee,
   segundoAnuncioNaContaShopee,
   type BlocoRascunhoShopee,
@@ -181,7 +182,10 @@ import type {
  * produto FORM clean as well (the route reads the stored produto, K2-7 — read
  * from the surrounding ObjectView form, plus the page's staged variation
  * edits it threads in, see {@link ShopeeEditor}), no
- * pendência, the bands loaded, and a reading that is not `em-andamento`. The
+ * pendência, the bands loaded, a reading that is not `em-andamento`, and no
+ * OTHER draft of the produto on the conta that may have created a listing
+ * (`irmao-incerto`, `rascunhosIrmaosIncertosShopee` over the same links
+ * snapshot — the server refuses every publish meanwhile). The
  * click opens a confirmation (with «Criar pausado») and sends nothing; that
  * confirmation carries the second-listing warning (D15) whenever
  * `segundoAnuncioNaContaShopee` — P10's ONE count, the draft itself left out —
@@ -389,7 +393,9 @@ export interface ShopeeEditorProps {
    * The produto PAGE holds unsaved edits the publish reads but the produto
    * form's `isDirty` cannot see (#1911 P11 review, KNOWN #9): an independent
    * variation price, a variation child staged (added, marked for deletion, or
-   * a saved child's nome/SKU/options patched) — each flushed only by the
+   * a saved child's nome/SKU/options patched), a per-variation kit
+   * composition staged in the Kit tab's grid (round 3: the publish derives a
+   * kit model's stock from the STORED composition) — each flushed only by the
    * produto's own save. ORed into the «Publicar»
    * gate's `produtoSujo` beside the form's `isDirty`: the publish reads the
    * STORED children, so a draft published over them would silently miss them.
@@ -663,7 +669,8 @@ function desfechoDaFalha(
  *
  * The form's `isDirty` is not every unsaved produto edit: the page threads
  * the ones that live OUTSIDE it (`produtoSujoForaDoFormulario` — staged
- * variation prices and children, KNOWN #9), ORed in here, never instead.
+ * variation prices and children, and the Kit tab's staged per-variation
+ * compositions, KNOWN #9), ORed in here, never instead.
  */
 export function ShopeeEditor(props: ShopeeEditorProps) {
   const form = useFormContext();
@@ -1514,6 +1521,13 @@ function EditorShopee({
         produtoSujo,
         textosDoProduto,
         limites: limitesDoBloco(entrada),
+        // The SAME links snapshot the D15 count reads (`abrirPublicacao`):
+        // another draft that may have created a listing holds this one back.
+        rascunhosIrmaosIncertos: rascunhosIrmaosIncertosShopee(
+          vinculosLidos ?? [],
+          entrada.contaId,
+          linkDocId,
+        ),
       }),
     );
   }

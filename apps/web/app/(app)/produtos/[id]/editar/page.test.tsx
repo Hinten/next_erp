@@ -1,4 +1,10 @@
-import type { MutableRefObject, ReactElement, ReactNode } from 'react';
+import {
+  Children,
+  isValidElement,
+  type MutableRefObject,
+  type ReactElement,
+  type ReactNode,
+} from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, render, screen } from '@testing-library/react';
 import { initializeApp } from 'firebase/app';
@@ -157,6 +163,7 @@ import EditarProdutoPage from './page';
 import { produtoCollection } from '@/lib/data/produtoCollection';
 import { SECTION_SHOPEE } from '../../_components/produtoFields';
 import type { VariationRow } from '../../_components/VariationManager';
+import { KitVariacoesManager } from '../../_components/KitVariacoesManager';
 
 /** Mounts the page; the returned function re-renders it (a new `h.filhos` emission reaches it). */
 function montar(): () => void {
@@ -633,6 +640,37 @@ function variationManager(): {
   return el.props;
 }
 
+/**
+ * The KitVariacoesManager element the page's «Componentes do kit» input builds
+ * (the second child of its `Stack`, beside the parent's `KitManager`) — its
+ * props, never rendered.
+ */
+function kitVariacoesManager(): { onDirtyChange?: (dirty: boolean) => void } {
+  const renderInput = capturado().fields?.componentesKit?.renderInput;
+  if (!renderInput) throw new Error('the page gives «Componentes do kit» no input');
+  const pilha = renderInput({
+    name: 'componentesKit',
+    label: 'Componentes do kit',
+    value: null,
+    onChange: vi.fn(),
+    onBlur: vi.fn(),
+    descriptor: {} as FieldRenderProps['descriptor'],
+  }) as ReactElement<{ children: ReactNode }>;
+  const grade = Children.toArray(pilha.props.children).find(
+    (c): c is ReactElement<{ onDirtyChange?: (dirty: boolean) => void }> =>
+      isValidElement(c) && c.type === KitVariacoesManager,
+  );
+  if (!grade) throw new Error('the Kit tab renders no KitVariacoesManager');
+  return grade.props;
+}
+
+/** What the grid does when a composition is staged / flushed: report, outside any render. */
+function reportarKitVariacoes(dirty: boolean): void {
+  const reporter = kitVariacoesManager().onDirtyChange;
+  if (typeof reporter !== 'function') throw new Error('the page gives the grid no onDirtyChange');
+  act(() => reporter(dirty));
+}
+
 describe('produtos/[id]/editar — staged variation edits reach a Shopee draft’s «Publicar» gate (#1911 P11 review, KNOWN #9)', () => {
   const salvo: VariationRow = {
     key: 'c1',
@@ -745,6 +783,39 @@ describe('produtos/[id]/editar — staged variation edits reach a Shopee draft�
     ];
     reRenderizar();
     expect(fora()).toBe(false);
+  });
+
+  // Round 3 (KNOWN #9 PARTIAL): the Kit tab's per-variation grid keeps each
+  // child's staged `componentesKit` in its own state, flushed only by the
+  // produto's save — and the publish derives each kit model's `seller_stock`
+  // from the STORED child composition.
+  it('a per-variation kit composition staged in the Kit tab ⇒ `true` and the leave-guard armed; the report clearing after the flush ⇒ both `false` again ⟷ NEAR-MISS nothing staged ⇒ `false`', () => {
+    // Nothing staged: never reported, then reported clean (the grid's mount).
+    expect(fora()).toBe(false);
+    expect(capturado().extraDirty).toBe(false);
+    reportarKitVariacoes(false);
+    expect(fora()).toBe(false);
+    expect(capturado().extraDirty).toBe(false);
+
+    reportarKitVariacoes(true);
+    expect(fora()).toBe(true);
+    expect(capturado().extraDirty).toBe(true);
+
+    // The save's flush wrote every staged map: the grid reports clean.
+    reportarKitVariacoes(false);
+    expect(fora()).toBe(false);
+    expect(capturado().extraDirty).toBe(false);
+  });
+
+  it('NEAR-MISS: the kit report is an OR — its clean report never reopens a gate another staged edit holds', () => {
+    act(() => variationManager().onPriceDirtyChange(true));
+    reportarKitVariacoes(true);
+    reportarKitVariacoes(false);
+    expect(fora()).toBe(true);
+    expect(capturado().extraDirty).toBe(true);
+    act(() => variationManager().onPriceDirtyChange(false));
+    expect(fora()).toBe(false);
+    expect(capturado().extraDirty).toBe(false);
   });
 
   it('NEAR-MISS: the Mercado Livre flag arms the leave-guard but is NOT handed to the Shopee gate (the Shopee publish reads no ML edit), nor is the tab’s own draft flag fed back', () => {

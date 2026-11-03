@@ -36,6 +36,7 @@ import {
   ROTULO_PUBLICAR_SEGUNDO_DE_PROPOSITO_SHOPEE,
   TITULO_PUBLICAR_RASCUNHO_SHOPEE,
   TITULO_SEGUNDO_ANUNCIO_NA_PUBLICACAO_SHOPEE,
+  fraseDosRascunhosIrmaosIncertosShopee,
   textoDaConfirmacaoDePublicacaoShopee,
   textoDoSegundoAnuncioNaPublicacaoShopee,
   tituloDoSegundoAnuncioNaPublicacaoShopee,
@@ -163,6 +164,7 @@ function decisao(
     produtoSujo: false,
     textosDoProduto: p.textosDoProduto,
     limites: p.limites,
+    rascunhosIrmaosIncertos: [],
     ...gate,
   });
 }
@@ -892,6 +894,24 @@ describe('RascunhoShopee — «Publicar» through the REAL gate (`publicacaoDoRa
     expect(screen.getByTestId(`${RAIZ}-publicar-aviso`).textContent).toBe(
       FRASE_PUBLICAR_SEM_FAIXAS_SHOPEE,
     );
+  });
+
+  it('review round 3 (VERIFY-2 R8-copy#3): an uncertain SIBLING draft ⇒ disabled with the sentence naming it and how to resolve it — the click cannot open the confirmation ⟷ NEAR-MISS none ⇒ enabled, no aviso', () => {
+    const b = bloco({ link: pronto() });
+    const base = { bloco: b, podeEditar: true, textosDoProduto: TEXTOS, limites: LIMITES };
+    const r = show({
+      ...base,
+      decisaoDePublicar: decisao(base, { rascunhosIrmaosIncertos: ['R2'] }),
+    });
+    expect(botao(ROTULO_PUBLICAR_RASCUNHO_SHOPEE).disabled).toBe(true);
+    expect(screen.getByTestId(`${RAIZ}-publicar-aviso`).textContent).toBe(
+      fraseDosRascunhosIrmaosIncertosShopee(['R2']),
+    );
+    fireEvent.click(botao(ROTULO_PUBLICAR_RASCUNHO_SHOPEE));
+    expect(r.onPublicar).not.toHaveBeenCalled();
+    r.rerender({ ...base, decisaoDePublicar: decisao(base) });
+    expect(botao(ROTULO_PUBLICAR_RASCUNHO_SHOPEE).disabled).toBe(false);
+    expect(screen.queryByTestId(`${RAIZ}-publicar-aviso`)).toBeNull();
   });
 
   it('`incerta` does NOT block: its publish is a real one (ENSURE first)', () => {

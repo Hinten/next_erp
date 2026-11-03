@@ -10,17 +10,20 @@ import type { ObjectViewSections } from '@delfrance/ui';
 
 import { MantineTestProvider } from '@/lib/testing/mantine';
 import {
+  FRASE_ATESTACAO_SEM_CRIACAO_INCERTA_SHOPEE,
   FRASE_ATESTACAO_SUPERADA_SHOPEE,
   FRASE_CORRIGIR_NO_SELLER_CENTRE_SHOPEE,
   FRASE_MARCA_PODE_NAO_VALER_SHOPEE,
   FRASE_RECUSA_SEM_PASSO_RASCUNHO_SHOPEE,
   FRASE_RECUSA_SEM_PASSO_SHOPEE,
   MOTIVO_ANUNCIO_SHOPEE,
+  PORTA_DA_IMPORTACAO_SHOPEE,
   ROTULO_ABRIR_TABELA_DE_MEDIDAS_SHOPEE,
   ROTULO_ABRIR_VARIACOES_SHOPEE,
   ROTULO_DESCARTAR_ANUNCIO_DA_TENTATIVA_SHOPEE,
   ROTULO_PUBLICAR_ATESTANDO_SEM_SKU_SHOPEE,
   ROTULO_PUBLICAR_SEGUNDO_DE_PROPOSITO_SHOPEE,
+  TEXTO_MOTIVO_ANUNCIO_SEM_ACAO_SHOPEE,
   TEXTO_MOTIVO_ANUNCIO_SHOPEE,
   TITULO_ANUNCIO_INCERTO_SHOPEE,
   TITULO_RASCUNHO_PUBLICADO_SHOPEE,
@@ -596,7 +599,14 @@ describe('DesfechoAcaoShopee — the Seller-Centre attestation exits (§C #7, #8
     const texto = linha().textContent;
     expect(texto).toContain('222 (sem vínculo)');
     expect(texto).toContain('111 (deste produto)');
-    expect(texto).toContain(avisoDoDescarteComAnuncioSemVinculoShopee([222]));
+    // Review round 3: the discard's warning says the free listing stays,
+    // unlinked — never «importe-o» (the shared SKU would mint another produto).
+    expect(texto).toContain(
+      'O anúncio sem vínculo 222 continua na Shopee, sem vínculo no ERP — o descarte não o ' +
+        'vincula a nada.',
+    );
+    expect(texto).not.toContain(PORTA_DA_IMPORTACAO_SHOPEE);
+    expect(texto).not.toMatch(/importe-o/i);
     const adota = rotuloDaPublicacaoQueAdotaShopee([222]);
     expect(botoes()).toEqual([ROTULO_DESCARTAR_ANUNCIO_DA_TENTATIVA_SHOPEE, adota]);
     expect(botoes()).not.toContain(ROTULO_PUBLICAR_SEGUNDO_DE_PROPOSITO_SHOPEE);
@@ -638,6 +648,33 @@ describe('DesfechoAcaoShopee — the Seller-Centre attestation exits (§C #7, #8
       rascunho: doRascunho({ publicacao: INCERTA }),
     });
     expect(botoes()).toEqual([ROTULO_DESCARTAR_ANUNCIO_DA_TENTATIVA_SHOPEE, adota]);
+  });
+
+  it('review round 3 (VERIFY-1 mixed-row PARTIAL): a MIXED row whose linked candidate is ANOTHER produto’s never shows the import door anywhere on the row — sentence nor discard warning ⟷ NEAR-MISS an all-linked row (a discard exit, no warning) keeps its text, and an all-free row keeps the door', () => {
+    const contexto = { publicacao: INCERTA, skuEnviado: null, respondeAtestacao: false };
+    const mista = jaVinculada([111, 222], [{ itemId: 111, produtoId: 'prod-9' }]);
+    const r = show({ desfecho: recusado([mista]), rascunho: doRascunho({ publicacao: INCERTA }) });
+    expect(linha().textContent).toContain('111 (do produto prod-9)');
+    expect(linha().textContent).toContain('222 (sem vínculo)');
+    expect(botoes()).toContain(ROTULO_DESCARTAR_ANUNCIO_DA_TENTATIVA_SHOPEE);
+    expect(linha().textContent).not.toContain(PORTA_DA_IMPORTACAO_SHOPEE);
+    expect(linha().textContent).not.toMatch(/importe-o/i);
+
+    // NEAR-MISS: every candidate linked — the discard exit is there, it warns
+    // nothing, and the row reads exactly the lib's sentence (today's text).
+    const ligada = jaVinculada([111], [{ itemId: 111, produtoId: 'prod-9' }]);
+    r.rerender({ desfecho: recusado([ligada]), rascunho: doRascunho({ publicacao: INCERTA }) });
+    expect(botoes()).toContain(ROTULO_DESCARTAR_ANUNCIO_DA_TENTATIVA_SHOPEE);
+    expect(linha().textContent).toBe(
+      `${textoDoProblemaShopee(ligada, LINK, PRODUTO, contexto)}` +
+        `${ROTULO_DESCARTAR_ANUNCIO_DA_TENTATIVA_SHOPEE}${ROTULO_PUBLICAR_SEGUNDO_DE_PROPOSITO_SHOPEE}`,
+    );
+    // NEAR-MISS: every candidate free — the import IS that row's door (no discard exit there).
+    r.rerender({
+      desfecho: recusado([jaVinculada([222], [])]),
+      rascunho: doRascunho({ publicacao: INCERTA }),
+    });
+    expect(linha().textContent).toContain(PORTA_DA_IMPORTACAO_SHOPEE);
   });
 
   it('NEAR-MISS: the discard exit is gated by `podeDescartar`, the publish one by `podePublicar`', () => {
@@ -1034,6 +1071,43 @@ describe('DesfechoAcaoShopee — a DRAFT row is worded by the block’s facts (R
   ])('NEAR-MISS: %s ⇒ no such opening', (_caso, respondeAtestacao, rascunho) => {
     show({ desfecho: recusado([vinculada], { respondeAtestacao }), rascunho });
     expect(linha().textContent).not.toContain(FRASE_ATESTACAO_SUPERADA_SHOPEE);
+  });
+
+  it('review round 3 (VERIFY-0 round-2 #1, WC1/WI1): the acao-LESS ja-vinculada row of an attested publish is worded by the BLOCK’s reading the panel is handed — `livre` and a plain `em-andamento` ⇒ «já não registra a tentativa», never a search; `incerta` (and a run over a record) ⇒ the look-up wording', () => {
+    const semAcao = problema({
+      campo: 'item_sku',
+      motivo: MOTIVO_ANUNCIO_SHOPEE.criacaoIncertaJaVinculada,
+      mensagem:
+        'a confirmação da criação incerta esperava adotar o anúncio 1000011, mas este rascunho não ' +
+        'registra criação incerta agora — nada foi enviado nem vinculado.',
+      acao: null,
+    });
+    const BUSCA =
+      TEXTO_MOTIVO_ANUNCIO_SEM_ACAO_SHOPEE[MOTIVO_ANUNCIO_SHOPEE.criacaoIncertaJaVinculada];
+    if (BUSCA === undefined) throw new Error('the map must word the acao-less ja-vinculada row');
+    const com = (publicacao: EstadoPublicacaoRascunhoShopee) => ({
+      desfecho: recusado([semAcao], { respondeAtestacao: true }),
+      rascunho: doRascunho({ publicacao }),
+    });
+    const r = show(com(LIVRE));
+    expect(linha().textContent).toContain(FRASE_ATESTACAO_SEM_CRIACAO_INCERTA_SHOPEE);
+    expect(linha().textContent).not.toMatch(/não acha nenhum|busca de agora/);
+    r.rerender(com(EM_ANDAMENTO));
+    expect(linha().textContent).toContain(FRASE_ATESTACAO_SEM_CRIACAO_INCERTA_SHOPEE);
+    expect(linha().textContent).not.toContain(BUSCA);
+    // NEAR-MISS: the block's reading records the attempt — the look-up wording, never the other.
+    r.rerender(com(INCERTA));
+    expect(linha().textContent).toContain(BUSCA);
+    expect(linha().textContent).not.toContain(FRASE_ATESTACAO_SEM_CRIACAO_INCERTA_SHOPEE);
+    // …and a run in flight OVER a record (`aposIncerteza`) still records it.
+    const sobreRegistro = estadoPublicacaoRascunhoShopee(
+      { ...rascunhoTravado(AGORA - 10_000, AGORA + 60_000), criacaoIncertaDesde: AGORA - 600_000 },
+      AGORA,
+    );
+    expect(sobreRegistro).toMatchObject({ tipo: 'em-andamento', aposIncerteza: true });
+    r.rerender(com(sobreRegistro));
+    expect(linha().textContent).toContain(BUSCA);
+    expect(linha().textContent).not.toContain(FRASE_ATESTACAO_SEM_CRIACAO_INCERTA_SHOPEE);
   });
 
   it('the SKU-moved row names the SKU the attempt SENT (`skuEnviado`) ⟷ NEAR-MISS unknown, it asks to restore nothing it cannot show', () => {

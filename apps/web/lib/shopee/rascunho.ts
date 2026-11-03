@@ -119,6 +119,7 @@ import {
   ROTULO_PUBLICAR_SEGUNDO_DE_PROPOSITO_SHOPEE,
   avisoDoDescarteComAnuncioSemVinculoShopee,
   fraseDaPublicacaoDoRascunhoEmAndamentoShopee,
+  fraseDosRascunhosIrmaosIncertosShopee,
   fraseDaPublicacaoExpiradaShopee,
   fraseDaPublicacaoInterrompidaShopee,
   rotuloDaPublicacaoQueAdotaShopee,
@@ -1062,6 +1063,58 @@ function registraCriacaoQuePodeExistir(data: Record<string, unknown>): boolean {
 }
 
 /**
+ * Of `vinculos` (a `vinculosQueExigemConfirmacaoShopee` set over `links`),
+ * the STORED drafts whose document records a create that may exist
+ * ({@link registraCriacaoQuePodeExistir}), in input order — THE one reading
+ * behind both the D15 count (`rascunhosIncertos`) and the «Publicar» gate's
+ * `irmao-incerto` ({@link rascunhosIrmaosIncertosShopee}).
+ */
+function rascunhosQuePodemTerCriado(
+  links: readonly { readonly id: string; readonly data: Record<string, unknown> }[],
+  vinculos: readonly VinculoConflitanteShopee[],
+): string[] {
+  const dados = new Map(links.map((l) => [l.id, l.data]));
+  return vinculos
+    .filter((v) => {
+      const data = v.rascunho ? dados.get(v.linkDocId) : undefined;
+      return data !== undefined && registraCriacaoQuePodeExistir(data);
+    })
+    .map((v) => v.linkDocId);
+}
+
+/**
+ * The OTHER drafts of this produto on `contaId` that hold a draft's «Publicar»
+ * back (#1911 P11 review round 3, R8-copy#3's sibling) — the stored drafts
+ * whose last attempt may have created a listing, read by THE same reading as
+ * the D15 count ({@link segundoAnuncioNaContaShopee}'s `rascunhosIncertos`),
+ * `linkDocId` itself left out.
+ *
+ * Why it gates: the reservation's sibling scan (apps/shopee
+ * `reservaRascunho.ts`, `recusarSegundoAnuncio`) refuses EVERY publish of a
+ * draft — the D15 confirmation included — while any other link of the
+ * produto on the conta does not read `livre` at the server's clock. Each
+ * draft counted here never reads `livre` there: a record or an unreadable
+ * lock is `incerta`, and a STAMPED lock (it may have sent) is `em-andamento`
+ * until its grace ends and `incerta` after. So a publish opened over one
+ * would only come back 409. ⚠️ The reverse does not hold, on purpose: a lock
+ * never STAMPED (its run never reached the send) reads `livre` here at once
+ * — §H Q3's rule, the schemas reader's own — so a sibling whose run is still
+ * before the send is not counted: the server may still refuse that one,
+ * briefly, and its 409 names the wait (`fraseDaPublicacaoDoRascunhoEmAndamentoShopee`).
+ * The gate never closes over a sibling the server would read `livre`.
+ */
+export function rascunhosIrmaosIncertosShopee(
+  links: readonly { readonly id: string; readonly data: Record<string, unknown> }[],
+  contaId: string,
+  linkDocId: string,
+): readonly string[] {
+  return rascunhosQuePodemTerCriado(
+    links,
+    vinculosQueExigemConfirmacaoShopee(links, contaId, linkDocId),
+  );
+}
+
+/**
  * Before "Novo anúncio" on `contaId`: what makes the new draft a SECOND
  * listing, or `null` when nothing does. The stored links are judged by
  * `vinculosQueExigemConfirmacaoShopee` — the SAME set the draft route's create
@@ -1099,12 +1152,8 @@ export function segundoAnuncioNaContaShopee(
   }
   if (vinculos.length === 0 && locais === 0) return null;
   const rascunhosGuardados = vinculos.filter((v) => v.rascunho).length;
-  const dados = new Map(links.map((l) => [l.id, l.data]));
   // A LOCAL draft was never sent: only stored ones can record an attempt.
-  const rascunhosIncertos = vinculos.filter((v) => {
-    const data = v.rascunho ? dados.get(v.linkDocId) : undefined;
-    return data !== undefined && registraCriacaoQuePodeExistir(data);
-  }).length;
+  const rascunhosIncertos = rascunhosQuePodemTerCriado(links, vinculos).length;
   return {
     quantidade: vinculos.length + locais,
     comRascunho: locais > 0 || rascunhosGuardados > 0,
@@ -1494,6 +1543,13 @@ export type ImpedimentoDaPublicacaoShopee =
   | 'carregando'
   /** A write of this tab is in flight. */
   | 'ocupado'
+  /**
+   * ANOTHER draft of the produto on the conta records an attempt that may
+   * have created a listing ({@link rascunhosIrmaosIncertosShopee}): the
+   * server refuses this publish, confirmation or not, until that draft is
+   * resolved on its own block — the `aviso` names it and how.
+   */
+  | 'irmao-incerto'
   /** The produto form has unsaved changes: the publish reads the STORED produto (K2-7). */
   | 'produto-nao-salvo'
   /** A pendência the publish would refuse ({@link PublicacaoDoRascunhoShopee.pendencias}). */
@@ -1535,6 +1591,13 @@ export interface EntradaDaPublicacaoDoRascunhoShopee {
    * `rascunho.test.ts`).
    */
   readonly limites: ArgsPendenciasRascunhoShopee['limites'];
+  /**
+   * The OTHER drafts of the produto on this conta whose last attempt may have
+   * created a listing — {@link rascunhosIrmaosIncertosShopee} over the SAME
+   * links snapshot the D15 count reads (review round 3). Non-empty ⇒
+   * `irmao-incerto`.
+   */
+  readonly rascunhosIrmaosIncertos: readonly string[];
 }
 
 /** Whether a draft's «Publicar» acts now, and why not. */
@@ -1562,8 +1625,12 @@ export interface PublicacaoDoRascunhoShopee {
  * saved ∧ clean (P10's plan empty, not a local draft) ∧ the produto form clean
  * ∧ server truth ∧ no pendência ∧ a held category that names one
  * ({@link idDeCategoriaShopeeValido}) ∧ the bands LOADED ∧ the publish reading
- * not `em-andamento`. `incerta` does NOT block: its publish is a real one —
- * ENSURE looks the listing up first, then adopts it, refuses (a 422 row), or
+ * not `em-andamento` ∧ no OTHER draft of the produto on the conta recording an
+ * attempt that may have created a listing (`irmao-incerto`, review round 3:
+ * the server's sibling scan refuses every publish meanwhile, so the
+ * confirmation never opens over a 409). THIS draft's own `incerta` does NOT
+ * block: its publish is a real one — ENSURE looks the listing up first, then
+ * adopts it, refuses (a 422 row), or
  * creates. A draft whose conta document is gone is not the operator's to
  * author (`podeEditar` false ⇒ `sem-permissao`): it offers «Descartar» alone
  * (P10's `permiteDescarte`), never «Publicar».
@@ -1602,6 +1669,13 @@ export function publicacaoDoRascunhoShopee(
   if (bloco.publicacao.tipo === 'em-andamento') return impedido('publicacao-em-andamento');
   if (!e.servidorConfirmado || e.textosDoProduto === null) return impedido('carregando');
   if (e.ocupado) return impedido('ocupado');
+  // After `carregando`: a cached snapshot may hold a sibling's stale reading.
+  if (e.rascunhosIrmaosIncertos.length > 0) {
+    return impedido(
+      'irmao-incerto',
+      fraseDosRascunhosIrmaosIncertosShopee(e.rascunhosIrmaosIncertos),
+    );
+  }
   if (e.produtoSujo) return impedido('produto-nao-salvo', FRASE_PUBLICAR_PRODUTO_NAO_SALVO_SHOPEE);
   if (pendencias.length > 0) return impedido('pendencias');
   // A held id that names no category (a legacy `0`) is no pendência and has no

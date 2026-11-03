@@ -35,6 +35,7 @@ import {
   MSG_CONFIRMAR_SEGUNDO_ANUNCIO_INVALIDO,
   MSG_CRIACAO_INCERTA_ADOTA_INVALIDO,
   MSG_CRIACAO_INCERTA_ADOTA_SEM_ATESTACAO,
+  MSG_CRIACAO_INCERTA_ADOTA_SEM_LINK,
   MSG_OPCOES_DE_KIT_EXCLUSIVAS,
   MSG_PRODUTO_ID_INVALIDO,
   MSG_RECRIAR_SEM_LINK,
@@ -1332,6 +1333,50 @@ describe('#1911 — publicar um RASCUNHO pela rota', () => {
       expect(corpo.problemas.map((p) => p.motivo)).not.toContain(
         MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaJaVinculada,
       );
+    });
+
+    it('⛔ (round 3) a expectativa SEM linkDocId ⇒ 400 antes de qualquer leitura — nenhum rascunho cunhado, nada gravado', async () => {
+      // A produto with NO link: before round 3 this body MINTED a draft (K1-5)
+      // and only then had the reservation refuse it — the draft stayed.
+      for (const extra of [
+        { linkDocId: null, criacaoIncertaAdota: [ITEM_ID] },
+        { linkDocId: null, criacaoIncertaAdota: [] },
+        { criacaoIncertaAdota: [ITEM_ID] },
+      ]) {
+        const res = await POST(
+          req(corpoValido({ confirmarCriacaoIncerta: true, ...extra }), AUTORIZADO),
+        );
+        expect(res.status, JSON.stringify(extra)).toBe(400);
+        await expect(res.json()).resolves.toEqual({ error: MSG_CRIACAO_INCERTA_ADOTA_SEM_LINK });
+      }
+      expect(h.loadCtx).not.toHaveBeenCalled();
+      expect(h.publicar).not.toHaveBeenCalled();
+      expect(db.writes).toEqual([]);
+      expect(db.idsEm(`produtos/${PRODUTO}/prodshopee`)).toEqual([]);
+    });
+
+    it('⛔ quase-par: linkDocId null com a flag NUA (a CLI) cunha o rascunho como antes — a reserva passa, o plano recusa sem-fotos', async () => {
+      const res = await POST(
+        req(corpoValido({ linkDocId: null, confirmarCriacaoIncerta: true }), AUTORIZADO),
+      );
+
+      expect(res.status).toBe(422);
+      const corpo = (await res.json()) as { problemas: { motivo: string }[] };
+      expect(corpo.problemas.map((p) => p.motivo)).toContain(MOTIVO_PUBLICACAO_BLOQUEADA.semFotos);
+      expect(corpo.problemas.map((p) => p.motivo)).not.toContain(
+        MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaJaVinculada,
+      );
+      // The CLI's mint, unchanged: ONE draft, the only document written; the
+      // blocked plan handed its lock back, unstamped.
+      const ids = db.idsEm(`produtos/${PRODUTO}/prodshopee`);
+      expect(ids).toHaveLength(1);
+      expect(db.store[`produtos/${PRODUTO}/prodshopee/${ids[0] ?? ''}`]?.data).toMatchObject({
+        item_id: null,
+        publicacaoEmCurso: null,
+      });
+      expect(
+        db.writes.filter((w) => !w.path.startsWith(`produtos/${PRODUTO}/prodshopee/`)),
+      ).toEqual([]);
     });
   });
 
