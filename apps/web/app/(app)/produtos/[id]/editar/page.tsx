@@ -97,6 +97,34 @@ const produtoEditarSchema = produtoObjectViewSchema.extend({
 /** The shared transient keys plus the Modificações tab anchor. */
 const PRODUTO_TRANSIENT_FIELDS_EDITAR = [...PRODUTO_TRANSIENT_FIELDS, 'modificacoes'];
 
+/**
+ * KNOWN #9 (#1911 P11 review, round 2): does a SAVED variation child, as the
+ * VariationManager publishes it (its staged patch merged over the stored doc),
+ * differ from the stored child (`gravado`, the page's own snapshot of the same
+ * `paiId` query) in a field this page's save writes onto it — `nome`, `sku`,
+ * `variacoesUid`? The Shopee publish reads the STORED child (`model_sku` from
+ * `sku`, the tier options from `variacoesUid`); `nome` it does not send, but it
+ * is an unsaved produto edit all the same, as any field the form's `isDirty`
+ * counts. EXACT comparison, no fold: a SKU `'CAM-P '` against `'CAM-P'` is an
+ * edit the flush writes verbatim, so it stays distinct; the same options in
+ * another order also read as diverging (the flush re-sorts them through
+ * `normalizeVariacoesUid`, which this does not re-derive — erring closed until
+ * the save). Both sides already read an absent stored `sku` as `''` and an
+ * absent `variacoesUid` as `[]`, so those compare equal. `gravado === undefined`
+ * (that id is not in the page's snapshot yet: one listener ahead of the other)
+ * reads as diverging — a lag only CLOSES the «Publicar» gate, for as long as it
+ * lasts.
+ */
+function filhoSalvoDivergeDoGravado(row: VariationRow, gravado: VariationRow | undefined): boolean {
+  if (gravado === undefined) return true;
+  return (
+    row.nome !== gravado.nome ||
+    row.sku !== gravado.sku ||
+    row.variacoesUid.length !== gravado.variacoesUid.length ||
+    row.variacoesUid.some((uid, i) => uid !== gravado.variacoesUid[i])
+  );
+}
+
 export default function EditarProdutoPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
@@ -203,6 +231,30 @@ export default function EditarProdutoPage() {
     ],
     [params.id, effectiveVariationRows],
   );
+  // KNOWN #9 (#1911 P11 review): unsaved produto edits OUTSIDE this form that a
+  // Shopee draft's «Publicar» would silently miss — the publish reads the
+  // STORED children (their prices, SKUs, the set itself), and the children are
+  // written only by this page's save (`flushChildrenRef`). An independent
+  // variation price (`variationPriceDirty`), a child staged as new (no doc
+  // yet: `id === null`) or marked for deletion, and a staged nome/SKU/options
+  // patch of a SAVED child — `VariationRow` carries no per-row dirty flag, so
+  // that one is read by comparing the published row with the stored child
+  // (`filhoSalvoDivergeDoGravado`). Read off the rows the VariationManager
+  // publishes (empty until it mounts — nothing is staged before that).
+  // Mercado Livre's edits are not threaded: the Shopee publish reads none of
+  // them.
+  const savedVariationRowsById = useMemo(
+    () => new Map(savedVariationRows.map((r) => [r.id, r])),
+    [savedVariationRows],
+  );
+  const produtoSujoForaDoFormularioShopee =
+    variationPriceDirty ||
+    variationRows.some(
+      (r) =>
+        r.id === null ||
+        r.deleteMark ||
+        filhoSalvoDivergeDoGravado(r, savedVariationRowsById.get(r.id)),
+    );
 
   // Live snapshot of this produto: feeds the parent-kit lookup below (`paiId`).
   // Neither precos/custo history (server-owned now) nor the kit-status sync
@@ -471,7 +523,9 @@ export default function EditarProdutoPage() {
         // editor. It reads only — every write, drafts included, goes through
         // apps/shopee — so it registers NO flush and stays out of
         // `PRODUTO_PERSISTENT_SECTIONS`. Unsaved draft work reaches this page
-        // through `onDirtyChange` alone (`shopeeDirty` above). Behind
+        // through `onDirtyChange` alone (`shopeeDirty` above); the other way,
+        // the staged variation edits reach a draft's «Publicar» gate
+        // (`produtoSujoForaDoFormularioShopee`, KNOWN #9). Behind
         // `ShopeeTab`, which defers the editor chunk until the tab is opened.
         renderInput: (p) => (
           <ShopeeTab
@@ -479,6 +533,7 @@ export default function EditarProdutoPage() {
             db={db}
             disabled={p.disabled}
             onDirtyChange={handleShopeeDirtyChange}
+            produtoSujoForaDoFormulario={produtoSujoForaDoFormularioShopee}
           />
         ),
       },
@@ -560,6 +615,7 @@ export default function EditarProdutoPage() {
       kitNativoShopee,
       handleMlDirtyChange,
       handleShopeeDirtyChange,
+      produtoSujoForaDoFormularioShopee,
     ],
   );
 

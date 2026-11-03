@@ -33,6 +33,8 @@ import { RecusaDeRascunhoShopeeError } from '@/lib/shopee/anuncios/rascunho';
 import {
   MSG_CONFIRMAR_CRIACAO_INCERTA_INVALIDO,
   MSG_CONFIRMAR_SEGUNDO_ANUNCIO_INVALIDO,
+  MSG_CRIACAO_INCERTA_ADOTA_INVALIDO,
+  MSG_CRIACAO_INCERTA_ADOTA_SEM_ATESTACAO,
   MSG_OPCOES_DE_KIT_EXCLUSIVAS,
   MSG_PRODUTO_ID_INVALIDO,
   MSG_RECRIAR_SEM_LINK,
@@ -1180,6 +1182,157 @@ describe('#1911 — publicar um RASCUNHO pela rota', () => {
     expect(res.status).toBe(400);
     await expect(res.json()).resolves.toEqual({ error: MSG_CONFIRMAR_CRIACAO_INCERTA_INVALIDO });
     expect(h.loadCtx).not.toHaveBeenCalled();
+  });
+
+  describe('(#1911 batch-B review, Lucas §I1) criacaoIncertaAdota — a expectativa da atestação', () => {
+    it('⛔ malformada, null, ou sem confirmarCriacaoIncerta: true ⇒ 400 com a frase do campo, antes de qualquer leitura', async () => {
+      for (const [extra, erro] of [
+        [
+          { confirmarCriacaoIncerta: true, criacaoIncertaAdota: null },
+          MSG_CRIACAO_INCERTA_ADOTA_INVALIDO,
+        ],
+        [
+          { confirmarCriacaoIncerta: true, criacaoIncertaAdota: [String(ITEM_ID)] },
+          MSG_CRIACAO_INCERTA_ADOTA_INVALIDO,
+        ],
+        [
+          { confirmarCriacaoIncerta: true, criacaoIncertaAdota: ITEM_ID },
+          MSG_CRIACAO_INCERTA_ADOTA_INVALIDO,
+        ],
+        [
+          { confirmarCriacaoIncerta: true, criacaoIncertaAdota: [0] },
+          MSG_CRIACAO_INCERTA_ADOTA_INVALIDO,
+        ],
+        [{ criacaoIncertaAdota: [ITEM_ID] }, MSG_CRIACAO_INCERTA_ADOTA_SEM_ATESTACAO],
+        [
+          { confirmarCriacaoIncerta: false, criacaoIncertaAdota: [] },
+          MSG_CRIACAO_INCERTA_ADOTA_SEM_ATESTACAO,
+        ],
+      ] as const) {
+        const res = await POST(req(corpoValido({ linkDocId: RASCUNHO, ...extra }), AUTORIZADO));
+        expect(res.status, JSON.stringify(extra)).toBe(400);
+        await expect(res.json()).resolves.toEqual({ error: erro });
+      }
+      expect(h.loadCtx).not.toHaveBeenCalled();
+    });
+
+    it('chega aos controles VERBATIM ao lado da atestação; AUSENTE chega null (o sentido de hoje)', async () => {
+      h.publicar.mockResolvedValue(resultadoDouble());
+      semearRascunho(RASCUNHO);
+
+      await POST(
+        req(
+          corpoValido({
+            linkDocId: RASCUNHO,
+            confirmarCriacaoIncerta: true,
+            criacaoIncertaAdota: [ITEM_ID],
+          }),
+          AUTORIZADO,
+        ),
+      );
+      await POST(
+        req(corpoValido({ linkDocId: RASCUNHO, confirmarCriacaoIncerta: true }), AUTORIZADO),
+      );
+
+      const com = h.publicar.mock.calls[0]?.[0] as PublicarAnuncioDeps;
+      expect(com.aoVivo?.confirmarCriacaoIncerta).toBe(true);
+      expect(com.aoVivo?.criacaoIncertaAdota).toEqual([ITEM_ID]);
+      // ⛔ quase-par: without the key the controls carry null — the bare flag.
+      const sem = h.publicar.mock.calls[1]?.[0] as PublicarAnuncioDeps;
+      expect(sem.aoVivo?.confirmarCriacaoIncerta).toBe(true);
+      expect(sem.aoVivo?.criacaoIncertaAdota).toBeNull();
+    });
+
+    it('ponta a ponta: um rascunho INCERTO sem SKU, atestado esperando ADOTAR ⇒ 422 sem-sku de agora — trava devolvida, registro mantido', async () => {
+      semearProduto(db, { sku: '   ' });
+      semearRascunho(RASCUNHO, { criacaoIncertaDesde: T0 - 600_000 });
+
+      const res = await POST(
+        req(
+          corpoValido({
+            linkDocId: RASCUNHO,
+            confirmarCriacaoIncerta: true,
+            criacaoIncertaAdota: [ITEM_ID],
+          }),
+          AUTORIZADO,
+        ),
+      );
+
+      expect(res.status).toBe(422);
+      const corpo = (await res.json()) as { problemas: { motivo: string }[] };
+      expect(corpo.problemas.map((p) => p.motivo)).toEqual([
+        MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaSemSku,
+      ]);
+      expect(rascunhoArmazenado()).toMatchObject({
+        item_id: null,
+        publicacaoEmCurso: null,
+        criacaoIncertaDesde: T0 - 600_000,
+      });
+    });
+
+    it('⛔ quase-par: o MESMO rascunho atestado esperando CRIAR ([]) passa a reserva (o plano então recusa sem-fotos)', async () => {
+      semearProduto(db, { sku: '   ' });
+      semearRascunho(RASCUNHO, { criacaoIncertaDesde: T0 - 600_000 });
+
+      const res = await POST(
+        req(
+          corpoValido({
+            linkDocId: RASCUNHO,
+            confirmarCriacaoIncerta: true,
+            criacaoIncertaAdota: [],
+          }),
+          AUTORIZADO,
+        ),
+      );
+
+      expect(res.status).toBe(422);
+      const corpo = (await res.json()) as { problemas: { motivo: string }[] };
+      expect(corpo.problemas.map((p) => p.motivo)).toContain(MOTIVO_PUBLICACAO_BLOQUEADA.semFotos);
+      expect(corpo.problemas.map((p) => p.motivo)).not.toContain(
+        MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaSemSku,
+      );
+    });
+
+    it('ponta a ponta (round 2): um rascunho que voltou a LIVRE, atestado esperando ADOTAR ⇒ 422 ja-vinculada SEM acao — nada gravado', async () => {
+      semearRascunho(RASCUNHO);
+      const antes = { ...rascunhoArmazenado() };
+
+      const res = await POST(
+        req(
+          corpoValido({
+            linkDocId: RASCUNHO,
+            confirmarCriacaoIncerta: true,
+            criacaoIncertaAdota: [ITEM_ID],
+          }),
+          AUTORIZADO,
+        ),
+      );
+
+      expect(res.status).toBe(422);
+      const corpo = (await res.json()) as { problemas: Record<string, unknown>[] };
+      expect(corpo.problemas.map((p) => p.motivo)).toEqual([
+        MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaJaVinculada,
+      ]);
+      // No `acao` on the wire: nothing was looked up, so the web has no exit to loop on.
+      expect(corpo.problemas[0]).not.toHaveProperty('acao');
+      expect(rascunhoArmazenado()).toEqual(antes);
+      expect(db.writes.filter((w) => w.path.includes('/prodshopee/'))).toEqual([]);
+    });
+
+    it('⛔ quase-par: o MESMO rascunho livre com a flag NUA passa a reserva (o plano então recusa sem-fotos)', async () => {
+      semearRascunho(RASCUNHO);
+
+      const res = await POST(
+        req(corpoValido({ linkDocId: RASCUNHO, confirmarCriacaoIncerta: true }), AUTORIZADO),
+      );
+
+      expect(res.status).toBe(422);
+      const corpo = (await res.json()) as { problemas: { motivo: string }[] };
+      expect(corpo.problemas.map((p) => p.motivo)).toContain(MOTIVO_PUBLICACAO_BLOQUEADA.semFotos);
+      expect(corpo.problemas.map((p) => p.motivo)).not.toContain(
+        MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaJaVinculada,
+      );
+    });
   });
 
   it('(D5) o add_item INCERTO ⇒ 202 com o envelope ÚNICO (respostaItemIncertoShopeeSchema) + a mensagem da CLI, por NOME', async () => {

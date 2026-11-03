@@ -10,8 +10,11 @@ import type { ObjectViewSections } from '@delfrance/ui';
 
 import { MantineTestProvider } from '@/lib/testing/mantine';
 import {
+  FRASE_ATESTACAO_SUPERADA_SHOPEE,
   FRASE_CORRIGIR_NO_SELLER_CENTRE_SHOPEE,
   FRASE_MARCA_PODE_NAO_VALER_SHOPEE,
+  FRASE_RECUSA_SEM_PASSO_RASCUNHO_SHOPEE,
+  FRASE_RECUSA_SEM_PASSO_SHOPEE,
   MOTIVO_ANUNCIO_SHOPEE,
   ROTULO_ABRIR_TABELA_DE_MEDIDAS_SHOPEE,
   ROTULO_ABRIR_VARIACOES_SHOPEE,
@@ -27,9 +30,13 @@ import {
   fraseDoAnuncioIncertoShopee,
   fraseDoRascunhoPublicadoShopee,
   rotuloDaPublicacaoQueAdotaShopee,
+  textoDaEtapaShopee,
   textoDoProblemaShopee,
 } from '@/lib/shopee/anuncioProduto';
-import type { SaidaDoProblemaShopee } from '@/lib/shopee/rascunho';
+import {
+  textoDaPublicacaoParadaDoRascunhoShopee,
+  type SaidaDoProblemaShopee,
+} from '@/lib/shopee/rascunho';
 import {
   respostaPublicarShopeeSchema,
   type ProblemaShopee,
@@ -57,6 +64,8 @@ vi.mock('@delfrance/ui', () => ({ useObjectViewSections: () => h.secoes }));
 const {
   DesfechoAcaoShopee,
   FRASE_INCERTO_DE_RASCUNHO_JA_PUBLICADO_SHOPEE,
+  TITULO_PUBLICACAO_BLOQUEADA_SHOPEE,
+  TITULO_PUBLICACAO_RECUSADA_SHOPEE,
   idDoCampoRascunhoShopee,
 } = await import('./DesfechoAcaoShopee');
 
@@ -112,6 +121,7 @@ function doRascunho(over: Partial<DesfechoDoRascunhoShopee> = {}): DesfechoDoRas
   return {
     publicacao: LIVRE,
     nowMs: AGORA,
+    skuEnviado: null,
     podePublicar: true,
     podeDescartar: true,
     onSaida: vi.fn(),
@@ -195,14 +205,19 @@ function problema(over: Partial<ProblemaShopee>): ProblemaShopee {
   return { campo: null, motivo: 'outro', mensagem: 'Sentença do servidor.', acao: null, ...over };
 }
 
-function recusado(problemas: readonly ProblemaShopee[]): Desfecho {
+function recusado(
+  problemas: readonly ProblemaShopee[],
+  over: Partial<Extract<Desfecho, { tipo: 'recusado' }>> = {},
+): Desfecho {
   return {
     tipo: 'recusado',
-    antesDaShopee: true,
+    bloqueadaPeloErp: true,
+    respondeAtestacao: false,
     etapa: null,
     problemas,
     mensagem: 'Publicação bloqueada.',
     pedidoKit: null,
+    ...over,
   };
 }
 
@@ -318,6 +333,9 @@ describe('DesfechoAcaoShopee — a draft’s Publicar with no answer (`sem-respo
     ).toBeTruthy();
     expect(aviso.textContent).toContain(formatarInstanteShopee(AGORA + 60_000)!);
     expect(painel().textContent).not.toMatch(/falhou/i);
+    // The title's «yellow», checked (R3-tests#3): never the red of a failure.
+    expect(aviso.getAttribute('style') ?? '').toContain(COR('yellow'));
+    expect(aviso.getAttribute('style') ?? '').not.toContain(COR('red'));
   });
 
   it('re-worded from the CURRENT reading: `incerta` ⇒ «confira», no wait', () => {
@@ -490,6 +508,8 @@ describe('DesfechoAcaoShopee — the Seller-Centre attestation exits (§C #7, #8
       tipo: 'publicar-atestando',
       rotulo: ROTULO_PUBLICAR_ATESTANDO_SEM_SKU_SHOPEE,
       adota: [],
+      // The server cannot look a SKU-less attempt up (KNOWN #12).
+      varre: false,
     });
     expect(acoes.republicar).not.toHaveBeenCalled();
     // The CLI sentence is never on screen.
@@ -563,6 +583,7 @@ describe('DesfechoAcaoShopee — the Seller-Centre attestation exits (§C #7, #8
       tipo: 'publicar-atestando',
       rotulo: ROTULO_PUBLICAR_SEGUNDO_DE_PROPOSITO_SHOPEE,
       adota: [],
+      varre: true,
     });
   });
 
@@ -584,6 +605,7 @@ describe('DesfechoAcaoShopee — the Seller-Centre attestation exits (§C #7, #8
       tipo: 'publicar-atestando',
       rotulo: adota,
       adota: [222],
+      varre: true,
     });
     fireEvent.click(
       within(painel()).getByRole('button', { name: ROTULO_DESCARTAR_ANUNCIO_DA_TENTATIVA_SHOPEE }),
@@ -593,6 +615,29 @@ describe('DesfechoAcaoShopee — the Seller-Centre attestation exits (§C #7, #8
       rotulo: ROTULO_DESCARTAR_ANUNCIO_DA_TENTATIVA_SHOPEE,
       aviso: avisoDoDescarteComAnuncioSemVinculoShopee([222]),
     });
+  });
+
+  it('R8-copy#1 (round 2): NO candidate linked (the §I1 refusal of a create that found a free listing) ⇒ the ADOPTION exit alone — never «É o anúncio da tentativa», whose dialog says «vinculado no ERP» ⟷ NEAR-MISS the same free id beside ONE linked candidate keeps both', () => {
+    const rascunho = doRascunho({ publicacao: INCERTA });
+    const adota = rotuloDaPublicacaoQueAdotaShopee([222]);
+    const r = show({ desfecho: recusado([jaVinculada([222], [])]), rascunho });
+    expect(botoes()).toEqual([adota]);
+    expect(linha().textContent).toContain('222 (sem vínculo)');
+    expect(linha().textContent).not.toContain(avisoDoDescarteComAnuncioSemVinculoShopee([222]));
+    fireEvent.click(within(painel()).getByRole('button', { name: adota }));
+    expect(rascunho.onSaida).toHaveBeenLastCalledWith({
+      tipo: 'publicar-atestando',
+      rotulo: adota,
+      adota: [222],
+      varre: true,
+    });
+    expect(rascunho.onSaida).toHaveBeenCalledTimes(1);
+
+    r.rerender({
+      desfecho: recusado([jaVinculada([111, 222], [{ itemId: 111, produtoId: PRODUTO }])]),
+      rascunho: doRascunho({ publicacao: INCERTA }),
+    });
+    expect(botoes()).toEqual([ROTULO_DESCARTAR_ANUNCIO_DA_TENTATIVA_SHOPEE, adota]);
   });
 
   it('NEAR-MISS: the discard exit is gated by `podeDescartar`, the publish one by `podePublicar`', () => {
@@ -860,5 +905,183 @@ describe('DesfechoAcaoShopee — campo → the surface that fixes it (D17, DC §
     expect(linha().textContent).toContain(
       TEXTO_MOTIVO_ANUNCIO_SHOPEE[MOTIVO_ANUNCIO_SHOPEE.anuncioSemelhanteExistente]!,
     );
+  });
+});
+
+/** The Alert root's inline style — Mantine's colour lands there as `--mantine-color-<cor>-…` variables. */
+function estiloDoAlerta(el: HTMLElement): string {
+  return el.closest('[role="alert"]')?.getAttribute('style') ?? '';
+}
+const COR = (cor: 'red' | 'yellow' | 'orange') => `--mantine-color-${cor}-`;
+
+describe('DesfechoAcaoShopee — the colour of each outcome (R3-tests#3: the titles that claim one now pin it)', () => {
+  it('the 202 is YELLOW, never red', () => {
+    show({
+      desfecho: { tipo: 'publicado', resposta: corpo202(), pedidoRascunho: { pausado: false } },
+      rascunho: doRascunho({ publicacao: EM_ANDAMENTO }),
+    });
+    const estilo = estiloDoAlerta(within(painel()).getByText(TITULO_ANUNCIO_INCERTO_SHOPEE));
+    expect(estilo).toContain(COR('yellow'));
+    expect(estilo).not.toContain(COR('red'));
+  });
+
+  it('`sem-resposta` is YELLOW, never red', () => {
+    show({
+      desfecho: { tipo: 'sem-resposta' },
+      rascunho: doRascunho({ publicacao: EM_ANDAMENTO }),
+    });
+    const estilo = screen.getByTestId(`${PAINEL}-sem-resposta`).getAttribute('style') ?? '';
+    expect(estilo).toContain(COR('yellow'));
+    expect(estilo).not.toContain(COR('red'));
+  });
+
+  it('NEAR-MISS: a definite `falha` is RED, never yellow (the pair stays two-sided)', () => {
+    show({ desfecho: { tipo: 'falha', mensagem: 'O rascunho não existe mais.' } });
+    const estilo = estiloDoAlerta(within(painel()).getByText('O rascunho não existe mais.'));
+    expect(estilo).toContain(COR('red'));
+    expect(estilo).not.toContain(COR('yellow'));
+  });
+});
+
+describe('DesfechoAcaoShopee — a draft’s Publicar the route STOPPED (`parada`, §I2 / R8-copy#0)', () => {
+  const expirada = { tipo: 'expirada', mensagemDoServidor: 'x' } as const;
+  const interrompida = {
+    tipo: 'interrompida',
+    mensagemDoServidor: 'offset fora do limite',
+  } as const;
+
+  it.each([
+    ['expirada', expirada],
+    ['interrompida', interrompida],
+  ] as const)(
+    '%s is worded from the CURRENT reading on every render — `livre` checks first, `incerta` never creates another — orange, never «falhou»',
+    (_caso, parada) => {
+      const r = show({ desfecho: { tipo: 'parada', parada }, rascunho: doRascunho() });
+      const aviso = () => screen.getByTestId(`${PAINEL}-parada`);
+      expect(aviso().textContent).toBe(textoDaPublicacaoParadaDoRascunhoShopee(parada, LIVRE));
+      expect(aviso().textContent).toContain('Procure o SKU deste produto no Seller Centre');
+      r.rerender({
+        desfecho: { tipo: 'parada', parada },
+        rascunho: doRascunho({ publicacao: INCERTA }),
+      });
+      expect(aviso().textContent).toBe(textoDaPublicacaoParadaDoRascunhoShopee(parada, INCERTA));
+      expect(aviso().textContent).not.toContain('crie-o lá');
+      expect(aviso().textContent).not.toMatch(/falhou/i);
+      const estilo = aviso().getAttribute('style') ?? '';
+      expect(estilo).toContain(COR('orange'));
+      expect(estilo).not.toContain(COR('red'));
+    },
+  );
+
+  it('NEAR-MISS: the link is no longer a draft ⇒ the neutral line, never a draft’s exit', () => {
+    show({ desfecho: { tipo: 'parada', parada: expirada }, rascunho: null });
+    expect(screen.getByTestId(`${PAINEL}-parada`).textContent).toBe(
+      FRASE_INCERTO_DE_RASCUNHO_JA_PUBLICADO_SHOPEE,
+    );
+  });
+});
+
+describe('DesfechoAcaoShopee — OUR 422’s title claims nothing about what was sent (R7-roundtrip#0, R2-drafts#4, R4-1369-fold#4, R6-docs#0, R8-copy#10)', () => {
+  it.each([
+    ['a live listing’s Republicar (an UPDATE: the model leg may refuse after `update_item`)', null],
+    ['a draft’s Publicar (an adopted draft is an update too)', doRascunho()],
+  ])('%s ⇒ «Publicação bloqueada pelo ERP», never «nada foi enviado»', (_caso, rascunho) => {
+    show({ desfecho: recusado([problema({ motivo: 'variacao-sem-vinculo' })]), rascunho });
+    expect(within(painel()).getByText(TITULO_PUBLICACAO_BLOQUEADA_SHOPEE)).toBeTruthy();
+    expect(painel().textContent).not.toMatch(/nada foi enviado/i);
+    expect(screen.queryByText(TITULO_PUBLICACAO_RECUSADA_SHOPEE)).toBeNull();
+  });
+
+  it('NEAR-MISS: Shopee’s own refusal (`SHOPEE_PUBLISH_REJECTED`) keeps «A Shopee recusou a publicação»', () => {
+    show({
+      desfecho: recusado([problema({ motivo: 'modelo-recusado' })], { bloqueadaPeloErp: false }),
+    });
+    expect(within(painel()).getByText(TITULO_PUBLICACAO_RECUSADA_SHOPEE)).toBeTruthy();
+    expect(screen.queryByText(TITULO_PUBLICACAO_BLOQUEADA_SHOPEE)).toBeNull();
+  });
+});
+
+describe('DesfechoAcaoShopee — a DRAFT row is worded by the block’s facts (R4-1369-fold#0 TAB side, R8-copy#2/#5)', () => {
+  const vinculada = problema({
+    motivo: MOTIVO_ANUNCIO_SHOPEE.criacaoIncertaJaVinculada,
+    acao: importar(
+      [111, 222],
+      [
+        { itemId: 111, produtoId: PRODUTO },
+        { itemId: 222, produtoId: 'prod-9' },
+      ],
+    ),
+  });
+
+  it('an ATTESTED publish’s look-up row opens with «A situação mudou» — the server refused the changed situation, nothing sent', () => {
+    show({
+      desfecho: recusado([vinculada], { respondeAtestacao: true }),
+      rascunho: doRascunho({ publicacao: INCERTA }),
+    });
+    expect(linha().textContent?.startsWith(FRASE_ATESTACAO_SUPERADA_SHOPEE)).toBe(true);
+    expect(linha().textContent).toContain(
+      textoDoProblemaShopee(vinculada, LINK, PRODUTO, {
+        publicacao: INCERTA,
+        skuEnviado: null,
+        respondeAtestacao: true,
+      }),
+    );
+  });
+
+  it.each([
+    ['the operator’s FIRST refusal (unattested)', false, doRascunho({ publicacao: INCERTA })],
+    ['a live listing’s row (no draft context)', true, null],
+  ])('NEAR-MISS: %s ⇒ no such opening', (_caso, respondeAtestacao, rascunho) => {
+    show({ desfecho: recusado([vinculada], { respondeAtestacao }), rascunho });
+    expect(linha().textContent).not.toContain(FRASE_ATESTACAO_SUPERADA_SHOPEE);
+  });
+
+  it('the SKU-moved row names the SKU the attempt SENT (`skuEnviado`) ⟷ NEAR-MISS unknown, it asks to restore nothing it cannot show', () => {
+    const skuMudou = problema({ motivo: MOTIVO_ANUNCIO_SHOPEE.criacaoIncertaAmbigua });
+    const r = show({
+      desfecho: recusado([skuMudou]),
+      rascunho: doRascunho({ publicacao: INCERTA, skuEnviado: 'SKU-A' }),
+    });
+    expect(linha().textContent).toContain('«SKU-A»');
+    r.rerender({
+      desfecho: recusado([skuMudou]),
+      rascunho: doRascunho({ publicacao: INCERTA, skuEnviado: null }),
+    });
+    expect(linha().textContent).not.toContain('«SKU-A»');
+    expect(linha().textContent).not.toMatch(/volte o SKU/);
+  });
+
+  it('a draft’s mid-publish etapa never names «Reverificar» (a draft block has none) ⟷ NEAR-MISS a live listing’s keeps it', () => {
+    const comEtapa = (r: DesfechoDoRascunhoShopee | null) =>
+      show({
+        desfecho: recusado([problema({})], { bloqueadaPeloErp: false, etapa: 'add_item' }),
+        rascunho: r,
+      });
+    const r = comEtapa(doRascunho());
+    expect(painel().textContent).toContain(textoDaEtapaShopee('add_item', { ehRascunho: true }));
+    expect(painel().textContent).not.toContain('Reverificar');
+    expect(painel().textContent).not.toContain('add_item');
+    r.rerender({
+      desfecho: recusado([problema({})], { bloqueadaPeloErp: false, etapa: 'add_item' }),
+      rascunho: null,
+    });
+    expect(painel().textContent).toContain(textoDaEtapaShopee('add_item', { ehRascunho: false }));
+    expect(painel().textContent).toContain('Reverificar');
+  });
+
+  it('a row-less refusal whose sentence is terminal text: a draft gets the stand-in that names no button ⟷ NEAR-MISS a live one names «Reverificar»', () => {
+    const semLinhas = (r: DesfechoDoRascunhoShopee | null) =>
+      show({
+        desfecho: recusado([], { mensagem: 'Rode publicar:anuncio --link de novo.' }),
+        rascunho: r,
+      });
+    const r = semLinhas(doRascunho());
+    expect(painel().textContent).toContain(FRASE_RECUSA_SEM_PASSO_RASCUNHO_SHOPEE);
+    expect(painel().textContent).not.toContain('publicar:anuncio');
+    r.rerender({
+      desfecho: recusado([], { mensagem: 'Rode publicar:anuncio --link de novo.' }),
+      rascunho: null,
+    });
+    expect(painel().textContent).toContain(FRASE_RECUSA_SEM_PASSO_SHOPEE);
   });
 });

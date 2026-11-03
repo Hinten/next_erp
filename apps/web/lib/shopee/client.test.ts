@@ -2030,6 +2030,62 @@ describe('step 21 — publicar sends exactly what the caller chose (C2)', () => 
     expect(Object.keys(corpo).sort()).toEqual(['integracaoId', 'linkDocId', 'produtoId']);
   });
 
+  it('§I1 (#1911 P11 review): `criacaoIncertaAdota` rides WITH the attestation flag — the adopted id(s), and `[]` (a deliberate create) is SENT, never dropped', async () => {
+    const adota = gravador(JSON.stringify(PUBLICAR_ITEM_200));
+    await adota.c.publicar({
+      integracaoId: 'int-1',
+      produtoId: 'prod-1',
+      linkDocId: 'R1',
+      confirmarCriacaoIncerta: true,
+      criacaoIncertaAdota: [1000011],
+    });
+    expect(corpoEnviado(adota.pedidos[0]?.init)).toStrictEqual({
+      integracaoId: 'int-1',
+      produtoId: 'prod-1',
+      linkDocId: 'R1',
+      confirmarCriacaoIncerta: true,
+      criacaoIncertaAdota: [1000011],
+    });
+
+    const cria = gravador(JSON.stringify(PUBLICAR_ITEM_200));
+    await cria.c.publicar({
+      integracaoId: 'int-1',
+      produtoId: 'prod-1',
+      linkDocId: 'R1',
+      confirmarCriacaoIncerta: true,
+      criacaoIncertaAdota: [],
+    });
+    expect(corpoEnviado(cria.pedidos[0]?.init)).toStrictEqual({
+      integracaoId: 'int-1',
+      produtoId: 'prod-1',
+      linkDocId: 'R1',
+      confirmarCriacaoIncerta: true,
+      criacaoIncertaAdota: [],
+    });
+  });
+
+  it('§I1 NEAR-MISS: an expectation WITHOUT the attestation flag never reaches the route; the flag alone keeps the CLI’s meaning (no expectation key)', async () => {
+    const semFlag = gravador(JSON.stringify(PUBLICAR_ITEM_200));
+    await semFlag.c.publicar({
+      integracaoId: 'int-1',
+      produtoId: 'prod-1',
+      linkDocId: 'R1',
+      criacaoIncertaAdota: [1000011],
+    });
+    const corpo = corpoEnviado(semFlag.pedidos[0]?.init) as Record<string, unknown>;
+    expect(corpo).not.toHaveProperty('criacaoIncertaAdota');
+    expect(Object.keys(corpo).sort()).toEqual(['integracaoId', 'linkDocId', 'produtoId']);
+
+    const soFlag = gravador(JSON.stringify(PUBLICAR_ITEM_200));
+    await soFlag.c.publicar({
+      integracaoId: 'int-1',
+      produtoId: 'prod-1',
+      linkDocId: 'R1',
+      confirmarCriacaoIncerta: true,
+    });
+    expect(corpoEnviado(soFlag.pedidos[0]?.init)).not.toHaveProperty('criacaoIncertaAdota');
+  });
+
   it('⭐ the item 202 resolves (any 2xx is an answer) as `tipo: item-incerto` — never a thrown failure', async () => {
     const { c } = gravador(
       JSON.stringify({

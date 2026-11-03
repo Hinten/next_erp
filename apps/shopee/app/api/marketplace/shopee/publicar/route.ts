@@ -2,8 +2,8 @@
  * `POST /api/marketplace/shopee/publicar` — publish (or re-publish) ONE ERP
  * produto as a Shopee listing. Body:
  * `{ integracaoId, produtoId, linkDocId?, status?, categoryId?, principal?,
- * recriar?, converterEmKit?, confirmarSegundoAnuncio?, confirmarCriacaoIncerta? }`.
- * Requires `PERM.integracao.write`.
+ * recriar?, converterEmKit?, confirmarSegundoAnuncio?, confirmarCriacaoIncerta?,
+ * criacaoIncertaAdota? }`. Requires `PERM.integracao.write`.
  *
  * Since step 19 (#1527) the produto may publish as a NATIVE Shopee kit. The
  * route does not decide that: `publicarShopee` (`anuncios/publicarShopee.ts`)
@@ -248,7 +248,8 @@ export async function POST(req: Request): Promise<NextResponse> {
   if (!corpo.ok) return NextResponse.json(corpoDeErro(corpo), { status: 400 });
   const { integracaoId, produtoId, linkDocId, status, categoryId, principal, recriar } =
     corpo.valor;
-  const { converterEmKit, confirmarSegundoAnuncio, confirmarCriacaoIncerta } = corpo.valor;
+  const { converterEmKit, confirmarSegundoAnuncio, confirmarCriacaoIncerta, criacaoIncertaAdota } =
+    corpo.valor;
 
   try {
     const db = getAdminFirestore();
@@ -300,6 +301,9 @@ export async function POST(req: Request): Promise<NextResponse> {
         },
         confirmarSegundoAnuncio,
         confirmarCriacaoIncerta,
+        // #1911 batch-B review (§I1): what the attestation expects — ENSURE
+        // decides on its own fresh scan; `null` (absent) keeps the bare flag.
+        criacaoIncertaAdota,
       },
     };
     // ⚠️ `hostEmulador` is deliberately OMITTED rather than passed as null:

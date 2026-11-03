@@ -118,6 +118,19 @@ export const MSG_CONFIRMAR_SEGUNDO_ANUNCIO_INVALIDO =
 export const MSG_CONFIRMAR_CRIACAO_INCERTA_INVALIDO =
   'confirmarCriacaoIncerta deve ser true ou false.';
 
+/**
+ * The sentence a `criacaoIncertaAdota` that is not a list of Shopee item ids
+ * gets (#1911 batch-B review, Lucas §I1) — `null` included: see
+ * {@link lerCriacaoIncertaAdota}.
+ */
+export const MSG_CRIACAO_INCERTA_ADOTA_INVALIDO =
+  'criacaoIncertaAdota deve ser uma lista de ids de anúncio da Shopee (inteiros positivos; ' +
+  '[] = criar um anúncio novo).';
+
+/** `criacaoIncertaAdota` without the attestation it qualifies (#1911 batch-B review, §I1). */
+export const MSG_CRIACAO_INCERTA_ADOTA_SEM_ATESTACAO =
+  'criacaoIncertaAdota só vale junto com confirmarCriacaoIncerta: true.';
+
 /** Both kit actions in one request (step 19, R-a): one action per publish. */
 export const MSG_OPCOES_DE_KIT_EXCLUSIVAS =
   'recriar e converterEmKit não podem ir juntos — uma ação de kit por pedido.';
@@ -177,7 +190,8 @@ function lerIdOpcional(src: Record<string, unknown>, nome: string): LeituraCorpo
 
 /**
  * `{ integracaoId, produtoId, linkDocId?, status?, categoryId?, principal?,
- * recriar?, converterEmKit?, confirmarSegundoAnuncio?, confirmarCriacaoIncerta? }`.
+ * recriar?, converterEmKit?, confirmarSegundoAnuncio?, confirmarCriacaoIncerta?,
+ * criacaoIncertaAdota? }`.
  */
 export interface CorpoPublicar {
   readonly integracaoId: string;
@@ -217,6 +231,15 @@ export interface CorpoPublicar {
    * SKU, and a publish that is not a draft's first create never reads it.
    */
   readonly confirmarCriacaoIncerta: boolean;
+  /**
+   * #1911 batch-B review (Lucas §I1): what the attestation EXPECTS the publish
+   * to do — `[L]` = adopt the unlinked listing `L` the refusal showed, `[]` = a
+   * deliberate create. `null` ⇔ ABSENT, which keeps the bare attestation's
+   * meaning (the CLI's). Valid only beside `confirmarCriacaoIncerta: true`.
+   * ENSURE (`criacaoIncerta.ts`) honours an attested verdict only when its
+   * FRESH scan does exactly this; anything else refuses with nothing sent.
+   */
+  readonly criacaoIncertaAdota: readonly number[] | null;
 }
 
 /**
@@ -270,6 +293,33 @@ function lerFlag(src: Record<string, unknown>, nome: string, msg: string): Leitu
   return ok(bruto);
 }
 
+/**
+ * `criacaoIncertaAdota` (#1911 batch-B review, Lucas §I1) — ABSENT ⇒ `null`,
+ * else an array (possibly empty) of positive safe integers, copied.
+ *
+ * ⚠️ An explicit `null` is REFUSED, never read as absent — the opposite of every
+ * optional field above, on purpose: absent means "the bare attestation", the
+ * one meaning WITHOUT the guard, so a client that serialised a forgotten
+ * expectation as `null` would silently publish unguarded. The safe direction
+ * is a 400 the client sees. A numeric STRING is refused like `categoryId`'s.
+ * Nothing is deduped or sorted: the guard compares the list as sent, and only
+ * `[]` or exactly one id can ever match (`criacaoIncerta.ts`).
+ */
+function lerCriacaoIncertaAdota(
+  src: Record<string, unknown>,
+): LeituraCorpo<readonly number[] | null> {
+  const bruto = src['criacaoIncertaAdota'];
+  // JSON has no `undefined`: this is the ABSENT key.
+  if (bruto === undefined) return ok(null);
+  if (
+    !Array.isArray(bruto) ||
+    bruto.some((id) => typeof id !== 'number' || !Number.isSafeInteger(id) || id <= 0)
+  ) {
+    return erro(MSG_CRIACAO_INCERTA_ADOTA_INVALIDO);
+  }
+  return ok([...(bruto as number[])]);
+}
+
 export function lerCorpoPublicar(body: unknown): LeituraCorpo<CorpoPublicar> {
   const src = objeto(body);
   if (!src.ok) return src;
@@ -302,6 +352,13 @@ export function lerCorpoPublicar(body: unknown): LeituraCorpo<CorpoPublicar> {
     MSG_CONFIRMAR_CRIACAO_INCERTA_INVALIDO,
   );
   if (!confirmarCriacaoIncerta.ok) return confirmarCriacaoIncerta;
+  const criacaoIncertaAdota = lerCriacaoIncertaAdota(src.valor);
+  if (!criacaoIncertaAdota.ok) return criacaoIncertaAdota;
+  // The expectation QUALIFIES an attestation (§I1): alone it would mean nothing
+  // the server checks, so it is refused rather than ignored.
+  if (criacaoIncertaAdota.valor !== null && !confirmarCriacaoIncerta.valor) {
+    return erro(MSG_CRIACAO_INCERTA_ADOTA_SEM_ATESTACAO);
+  }
   // ONE kit action per request (R-a): the dispatcher cannot pick between them.
   if (recriar.valor && converterEmKit.valor) return erro(MSG_OPCOES_DE_KIT_EXCLUSIVAS);
   // A recriar always NAMES its target (S1F-02): every re-run is the same request.
@@ -318,6 +375,7 @@ export function lerCorpoPublicar(body: unknown): LeituraCorpo<CorpoPublicar> {
     converterEmKit: converterEmKit.valor,
     confirmarSegundoAnuncio: confirmarSegundoAnuncio.valor,
     confirmarCriacaoIncerta: confirmarCriacaoIncerta.valor,
+    criacaoIncertaAdota: criacaoIncertaAdota.valor,
   });
 }
 

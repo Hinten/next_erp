@@ -3,7 +3,11 @@ import { render, screen, within } from '@testing-library/react';
 import type { ProdutoShopeeLink } from '@delfrance/schemas';
 
 import { MantineTestProvider } from '@/lib/testing/mantine';
-import { MOTIVO_ANUNCIO_SHOPEE, TEXTO_MOTIVO_ANUNCIO_SHOPEE } from '@/lib/shopee/anuncioProduto';
+import {
+  MOTIVO_ANUNCIO_SHOPEE,
+  TEXTO_MOTIVO_ANUNCIO_SHOPEE,
+  textoDaEtapaShopee,
+} from '@/lib/shopee/anuncioProduto';
 
 import { RecusasAnuncioShopee } from './RecusasAnuncioShopee';
 
@@ -113,5 +117,48 @@ describe('RecusasAnuncioShopee — a stored refusal row reads the motivo copy fi
     // (The provider's own <style> tags sit in the container: count the panel's alerts instead.)
     expect(container.querySelector('.mantine-Alert-root')).toBeNull();
     expect(screen.queryByText('A última publicação falhou')).toBeNull();
+  });
+});
+
+describe('RecusasAnuncioShopee — the stored etapa is worded, never printed raw (#1911 P11 review, R8-copy#15)', () => {
+  const alerta = () =>
+    screen.getByText('A última publicação falhou').closest('.mantine-Alert-root')!;
+  function comEtapa(etapa: unknown, itemId: number | null = null): ProdutoShopeeLink {
+    return {
+      item_id: itemId,
+      integracaoId: 'int-1',
+      falhaPublicacao: { em: AGORA - 60_000, etapa, mensagem: 'Recusado.', problemas: [] },
+    } as unknown as ProdutoShopeeLink;
+  }
+
+  it('a DRAFT’s refused `add_item` reads the outcome panel’s own draft wording — no raw code, no «Reverificar» (a draft has none)', () => {
+    show(comEtapa('add_item'));
+    expect(alerta().textContent).toContain(textoDaEtapaShopee('add_item', { ehRascunho: true }));
+    expect(alerta().textContent).not.toContain('add_item');
+    expect(alerta().textContent).not.toContain('Reverificar');
+  });
+
+  it('NEAR-MISS: a LIVE listing’s stored etapa keeps the live caution, «Reverificar» included', () => {
+    show(comEtapa('update_item', 1000001));
+    expect(alerta().textContent).toContain(
+      textoDaEtapaShopee('update_item', { ehRascunho: false }),
+    );
+    expect(alerta().textContent).toContain('Reverificar');
+    expect(alerta().textContent).not.toContain('update_item');
+  });
+
+  it.each(['etapa-nova', 'constructor'])(
+    'NEAR-MISS: an etapa this build does not know (%s) reads the neutral fallback, never the code',
+    (etapa) => {
+      show(comEtapa(etapa));
+      expect(alerta().textContent).toContain(textoDaEtapaShopee(etapa, { ehRascunho: true }));
+      expect(alerta().textContent).toContain('uma etapa que esta tela ainda não descreve');
+      expect(alerta().textContent).not.toContain(etapa);
+    },
+  );
+
+  it('no stored etapa ⇒ no etapa line at all', () => {
+    show(comEtapa(null));
+    expect(alerta().textContent).not.toContain('Recusada na etapa');
   });
 });

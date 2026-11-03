@@ -1106,3 +1106,90 @@ describe('O7 — todo membro do vocabulário tem um produtor fora de errosPublic
     expect(leitor).toContain(`MOTIVO_TAX_INFO_OMITIDO.${'semOperacao'}`);
   });
 });
+
+/**
+ * #1911 batch-B review R4-1369-fold#2 — the CROSS-APP pin. The browser cannot
+ * import this module, so `apps/web/lib/shopee/anuncioProduto.ts` SPELLS the
+ * motivos its Shopee tab keys copy, the attestation exits, the SKU routing and
+ * the brand aviso on (`MOTIVO_ANUNCIO_SHOPEE`), and the kit motivos it words
+ * itself (`TEXTO_MOTIVO_KIT`'s quoted keys). Nothing else compares those
+ * copies with this vocabulary: a server rename would leave the web keyed on a
+ * slug no answer carries any more — its exits gone (`criacao-incerta-sem-sku`
+ * would lose its only one) and its copy falling back to the wrong sentence —
+ * with every suite green. Test 1 above is where a rename starts, and this pin
+ * reds in the SAME run.
+ *
+ * Read as TEXT (the web's own path aliases do not resolve from this app), and
+ * checked against `MOTIVO_PROBLEMA_PUBLICACAO` — not the BLOCKED vocabulary:
+ * `anuncio-semelhante-existente` is wire-only, and so are two of the kit
+ * slugs. The counts are pinned so a slice that silently matches nothing can
+ * never pass, and a source with one slug altered must be REPORTED (the
+ * scanner's own near-miss).
+ */
+describe('o vocabulário que a WEB soletra (#1911 batch-B review, R4-1369-fold#2)', () => {
+  const FONTE_DA_WEB = new URL('../../../../web/lib/shopee/anuncioProduto.ts', import.meta.url);
+
+  /** The text between `abertura` and the first `fechamento` after it — `''` when either is missing. */
+  function bloco(fonte: string, abertura: string, fechamento: string): string {
+    const inicio = fonte.indexOf(abertura);
+    if (inicio < 0) return '';
+    const fim = fonte.indexOf(fechamento, inicio + abertura.length);
+    return fim < 0 ? '' : fonte.slice(inicio + abertura.length, fim);
+  }
+
+  /** `MOTIVO_ANUNCIO_SHOPEE`'s VALUES, one `chave: 'slug',` line each. */
+  function slugsDoMotivoDaWeb(fonte: string): string[] {
+    const corpo = bloco(fonte, 'export const MOTIVO_ANUNCIO_SHOPEE = {', '} as const');
+    return [...corpo.matchAll(/^\s*\w+:\s*'([^']*)',?\s*$/gm)].map((m) => m[1] ?? '');
+  }
+
+  /** `TEXTO_MOTIVO_KIT`'s quoted KEYS (a value line holds spaces, a key never does). */
+  function slugsDoKitDaWeb(fonte: string): string[] {
+    const corpo = bloco(
+      fonte,
+      'export const TEXTO_MOTIVO_KIT: Readonly<Record<string, string>> = {',
+      '\n};',
+    );
+    return [...corpo.matchAll(/^\s*'([^'\s]+)':/gm)].map((m) => m[1] ?? '');
+  }
+
+  const VOCABULARIO = new Set<string>(Object.values(MOTIVO_PROBLEMA_PUBLICACAO));
+
+  function foraDoVocabulario(slugs: readonly string[]): string[] {
+    return slugs.filter((s) => !VOCABULARIO.has(s));
+  }
+
+  it('os 11 de MOTIVO_ANUNCIO_SHOPEE e os 7 de TEXTO_MOTIVO_KIT são TODOS motivos do servidor', () => {
+    const fonte = readFileSync(fileURLToPath(FONTE_DA_WEB), 'utf8');
+    const motivos = slugsDoMotivoDaWeb(fonte);
+    const kit = slugsDoKitDaWeb(fonte);
+
+    // Âncoras anti-vacuidade: o arquivo foi lido e cada fatia achou o seu bloco.
+    expect(motivos).toHaveLength(11);
+    expect(kit).toHaveLength(7);
+    expect(new Set(motivos).size).toBe(11);
+    expect(motivos).toContain(MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaSemSku);
+    expect(motivos).toContain(MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaJaVinculada);
+
+    expect(foraDoVocabulario(motivos), 'MOTIVO_ANUNCIO_SHOPEE fora do vocabulário').toEqual([]);
+    expect(foraDoVocabulario(kit), 'TEXTO_MOTIVO_KIT fora do vocabulário').toEqual([]);
+  });
+
+  it('⛔ quase-par: UM slug alterado na fonte da web é DENUNCIADO — o leitor não é vácuo', () => {
+    const fonte = readFileSync(fileURLToPath(FONTE_DA_WEB), 'utf8');
+    const semSku = MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaSemSku;
+    const renomeado = fonte.replace(`'${semSku}'`, `'${semSku}-v2'`);
+    expect(renomeado).not.toBe(fonte);
+    expect(foraDoVocabulario(slugsDoMotivoDaWeb(renomeado))).toEqual([`${semSku}-v2`]);
+    expect(slugsDoMotivoDaWeb(renomeado)).toHaveLength(11);
+
+    const kitRenomeado = fonte.replace(
+      `'${MOTIVO_PUBLICACAO_BLOQUEADA.principalObrigatorio}':`,
+      `'${MOTIVO_PUBLICACAO_BLOQUEADA.principalObrigatorio}-v2':`,
+    );
+    expect(kitRenomeado).not.toBe(fonte);
+    expect(foraDoVocabulario(slugsDoKitDaWeb(kitRenomeado))).toEqual([
+      `${MOTIVO_PUBLICACAO_BLOQUEADA.principalObrigatorio}-v2`,
+    ]);
+  });
+});

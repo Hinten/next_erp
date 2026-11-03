@@ -341,15 +341,33 @@ export type ReclamacaoAcaoShopeeInput =
  *   of the produto on the conta (D15) before a draft's publish: without it the
  *   reservation refuses 409 `rascunhoContaJaTemAnuncio` with `detalhes.vinculos`.
  * - `confirmarCriacaoIncerta` (#1911) — the operator's Seller-Centre
- *   attestation that a draft's uncertain last create left nothing to adopt.
- *   The route honours it ONLY for the refusals `criacao-incerta-sem-sku` and
+ *   attestation about a draft's uncertain last create. The route honours it
+ *   ONLY for the refusals `criacao-incerta-sem-sku` and
  *   `criacao-incerta-ja-vinculada`, ignores it everywhere else, and it never
  *   skips the look-up.
+ * - `criacaoIncertaAdota` (#1911 P11 review, §I1) — what that attestation
+ *   EXPECTS the look-up to decide: the unlinked listing id(s) the publish
+ *   adopts, or `[]` for a deliberate create. The look-up honours the
+ *   attestation only when its FRESH verdict is that one, and otherwise refuses
+ *   with a fresh row, nothing sent. Sent ONLY beside
+ *   `confirmarCriacaoIncerta: true` (dropped from the body without it); the
+ *   flag alone keeps the CLI's meaning (no expectation, no guard) — the web's
+ *   draft publish never sends it alone (`corpoPublicarRascunhoShopee`).
  *
  * ⚠️ A DRAFT is published by its `linkDocId` alone — never `categoryId` (the
  * draft carries its own) and never a kit flag. The route's parser is not
- * strict: a backend older than the two flags ignores them, a non-boolean one
- * is a 400 — hence the literal `true`, omitted when absent.
+ * strict: a backend older than a key IGNORES it, a mistyped one is a 400 —
+ * hence the literal `true`, omitted when absent.
+ *
+ * ⚠️ **Deploy order (review R7-roundtrip#4).** Because an older backend
+ * ignores what it does not know, the web's draft Publicar is only as safe as
+ * the apps/shopee it reaches: the FIRST apps/web deploy carrying P10/P11 —
+ * whichever PR triggers it — goes out only after apps/shopee App Hosting (and
+ * the Shopee functions codebase, `firebase.shopee.deploy.json`) is live at
+ * batch A (#2048–#2054) or later, and P11's `criacaoIncertaAdota` needs the
+ * P11 server: a backend without the guard drops the expectation and honours
+ * the bare flag, so an exit labelled «adota … — não cria outro» could create.
+ * apps/shopee FIRST, then apps/web.
  */
 export interface PublicarShopeeInput {
   integracaoId: string;
@@ -362,6 +380,7 @@ export interface PublicarShopeeInput {
   converterEmKit?: true;
   confirmarSegundoAnuncio?: true;
   confirmarCriacaoIncerta?: true;
+  criacaoIncertaAdota?: readonly number[];
 }
 
 /**
@@ -997,7 +1016,9 @@ function corpoDaReclamacao(p: ReclamacaoAcaoShopeeInput): Record<string, unknown
  * The publish body, rebuilt BY NAME: the two ids, then each optional key only
  * when it is not `undefined` — OMITTED, never `null`-filled, so the body says
  * exactly what the caller chose and nothing else. A caller object carrying one
- * more field never reaches the route.
+ * more field never reaches the route. `criacaoIncertaAdota` rides ONLY with
+ * `confirmarCriacaoIncerta: true` (an expectation of no attestation is
+ * nothing), copied id by id.
  */
 function corpoDaPublicacao(p: PublicarShopeeInput): Record<string, unknown> {
   return {
@@ -1015,6 +1036,9 @@ function corpoDaPublicacao(p: PublicarShopeeInput): Record<string, unknown> {
     ...(p.confirmarCriacaoIncerta === undefined
       ? {}
       : { confirmarCriacaoIncerta: p.confirmarCriacaoIncerta }),
+    ...(p.confirmarCriacaoIncerta === true && p.criacaoIncertaAdota !== undefined
+      ? { criacaoIncertaAdota: p.criacaoIncertaAdota.map((id) => id) }
+      : {}),
   };
 }
 

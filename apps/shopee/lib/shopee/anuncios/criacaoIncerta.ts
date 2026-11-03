@@ -199,6 +199,16 @@
  * produto that HAS a SKU: an ambiguous (a moved SKU included) or incomplete
  * scan refuses whatever the flag says.
  *
+ * ⚠️ And when it carries its EXPECTATION (`criacaoIncertaAdota`, #1911
+ * batch-B review, Lucas §I1 — the web always sends one), the attested verdict
+ * stands only if it is exactly that: `[L]` ⇒ adopting `L`, `[]` ⇒ a create.
+ * Anything else — `L` linked since the refusal, a listing freed or appearing
+ * since — refuses (`criacao-incerta-ja-vinculada` over THIS scan's classes,
+ * or `-sem-sku`), nothing sent and nothing adopted. Absent ⇒ the bare flag's
+ * meaning above, which is the CLI's. A draft that does not read `incerta`
+ * runs no ENSURE, so there a present expectation refuses too — the
+ * reservation, on its own read, with `problemaDaAtestacaoSemCriacaoIncerta`.
+ *
  * ⚠️ The seven motivos — ENSURE's four and, since P5b, the first create's three
  * (`anuncio-existente-sem-vinculo`, `anuncio-existente-de-outro-produto`,
  * `busca-de-anuncio-existente-incompleta`) — are spelled HERE and only here,
@@ -678,6 +688,14 @@ export interface EntradaDaBuscaIncerta {
   /** The operator's attestation — honoured for `-sem-sku` and `-ja-vinculada` ONLY (K1-11). */
   readonly confirmarCriacaoIncerta: boolean;
   /**
+   * What the attestation EXPECTS (#1911 batch-B review, Lucas §I1): `[L]` =
+   * adopt `L`, `[]` = create. Present ⇒ an attested verdict stands ONLY when it
+   * is exactly that, else {@link problemaDaAtestacaoQueNaoConfere} (see
+   * `decidir`). Absent or `null` ⇒ the bare attestation (the CLI's meaning).
+   * Read only beside `confirmarCriacaoIncerta: true`.
+   */
+  readonly criacaoIncertaAdota?: readonly number[] | null;
+  /**
    * The deadline checkpoint (#1911 batch-A review) — asked before EACH
    * `get_item_list` page and EACH base-info chunk; `false` ⇒ the look-up stops
    * with NO verdict and throws `BuscaForaDoPrazoShopeeError`
@@ -904,9 +922,12 @@ export async function localizarAnuncioIncerto(
   }
   const sku = enviado ?? atual;
   if (sku === '') {
-    // ⚠️ Never scanned: a blank fold would "hit" every SKU-less listing.
-    return e.confirmarCriacaoIncerta
-      ? { tipo: 'prosseguir', resumo: semVarrer }
+    // ⚠️ Never scanned: a blank fold would "hit" every SKU-less listing. The
+    // attested verdict is a create, so an attestation expecting an ADOPTION
+    // does not match it (§I1) — refused with this verdict's own problem.
+    const atestado: VeredictoDaBuscaIncerta = { tipo: 'prosseguir', resumo: semVarrer };
+    return e.confirmarCriacaoIncerta && atestacaoConfere(atestado, e.criacaoIncertaAdota)
+      ? atestado
       : { tipo: 'recusar', problema: problemaSemSku(), resumo: semVarrer };
   }
   /** A REPORTED blank SKU is a doubt only while what the attempt sent is unknown. */
@@ -1008,6 +1029,8 @@ export async function localizarAnuncioIncerto(
     integracaoId: e.integracaoId,
     produtoId: e.produtoId,
     veredicto: veredicto.tipo === 'recusar' ? veredicto.problema.motivo : veredicto.tipo,
+    atestado: e.confirmarCriacaoIncerta,
+    esperado: e.criacaoIncertaAdota ?? null,
     definitivos,
     indecidiveis,
     vinculadas,
@@ -1017,9 +1040,119 @@ export async function localizarAnuncioIncerto(
   return veredicto;
 }
 
+/**
+ * Does an ATTESTED verdict do exactly what the attestation expected (#1911
+ * batch-B review, Lucas §I1)? Absent (`null`/`undefined`) ⇒ yes — the bare
+ * attestation, the CLI's meaning. `[]` matches only a create (`prosseguir`);
+ * `[L]` only adopting `L`. Never a set comparison: an adoption is ONE listing,
+ * so no longer list ever matches (fail closed), and `[L, L]` is not `[L]`.
+ */
+function atestacaoConfere(
+  veredicto: VeredictoDaBuscaIncerta,
+  esperado: readonly number[] | null | undefined,
+): boolean {
+  if (esperado === null || esperado === undefined) return true;
+  if (veredicto.tipo === 'adotar') return esperado.length === 1 && esperado[0] === veredicto.itemId;
+  if (veredicto.tipo === 'prosseguir') return esperado.length === 0;
+  return false;
+}
+
+/**
+ * What an attestation EXPECTS (#1911 batch-B review, Lucas §I1), or `null`
+ * for the bare one: the expectation counts only beside
+ * `confirmarCriacaoIncerta: true` — the pairing the route's body enforces
+ * (`corpoPublicacao.ts`, a 400 otherwise) and ENSURE reads (`decidir`).
+ */
+export function expectativaDaAtestacao(c: {
+  readonly confirmarCriacaoIncerta: boolean;
+  readonly criacaoIncertaAdota?: readonly number[] | null;
+}): readonly number[] | null {
+  return c.confirmarCriacaoIncerta ? (c.criacaoIncertaAdota ?? null) : null;
+}
+
+/** What an expectation promised, as the refusals word it. */
+function fraseDoEsperado(esperado: readonly number[]): string {
+  return esperado.length === 0
+    ? 'criar um anúncio novo'
+    : `adotar ${esperado.length === 1 ? 'o anúncio' : 'os anúncios'} ${listaDeIds(esperado)}`;
+}
+
+/**
+ * An attestation WITH its expectation that reached a draft whose reading is
+ * NOT `incerta` (#1911 batch-B review, Lucas §I1 — "anything else ⇒ refuse,
+ * nothing sent"): the expectation is honoured ONLY by ENSURE's fresh verdict,
+ * and such a draft runs no ENSURE. The record went after the refusal the
+ * operator attested (another run's COMPLETE look-up cleared it, then that
+ * run created nothing — refused, or stopped before the send), so what would
+ * follow — a FIRST create — is neither the adoption (`[L]`) nor the create
+ * over THAT attempt (`[]`) the operator confirmed. Refused by the reservation
+ * on ITS read, before its lock: nothing written, nothing sent.
+ *
+ * Under `criacao-incerta-ja-vinculada` with no `acao` — the attestation's
+ * refusal shape ({@link problemaDaAtestacaoQueNaoConfere} with no candidate):
+ * nothing was looked up, so there is nothing to import, and a row with no
+ * attestation exit cannot loop. The sentence claims no look-up and no cause
+ * it cannot know — true on any draft that does not read `incerta`.
+ */
+export function problemaDaAtestacaoSemCriacaoIncerta(
+  esperado: readonly number[],
+): ProblemaDeBloqueio {
+  return bloqueio(
+    MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaJaVinculada,
+    `a confirmação da criação incerta esperava ${fraseDoEsperado(esperado)}, mas este rascunho ` +
+      'não registra criação incerta agora — nada foi enviado nem vinculado. A confirmação vale só ' +
+      'para a recusa que a pediu: publique de novo sem ela, a partir do estado atual do rascunho',
+  );
+}
+
+/**
+ * An attested publish whose FRESH scan does not do what the attestation
+ * expected (#1911 batch-B review, Lucas §I1): the refusal the operator acted
+ * on is stale — a listing it showed unlinked is linked now, one it showed
+ * linked is free now, or one appeared or left the window. Nothing is sent and
+ * nothing adopted; the problem carries the classes THIS scan found (each
+ * candidate with its state, linked ones with their produto), so the exits are
+ * re-derived from the present, never from the stale refusal.
+ *
+ * Under `criacao-incerta-ja-vinculada`: the one attestable class of a scan
+ * that ran (the web's two exits key on it, `importar{itemIds, vinculados}`
+ * telling linked from free). With NO candidate at all `importar` cannot be
+ * built (its `itemIds` is never empty) and the row carries no `acao`. The
+ * remedy goes BEFORE the ids, so the 500-character cap trims ids only.
+ */
+function problemaDaAtestacaoQueNaoConfere(
+  esperado: readonly number[],
+  todos: readonly number[],
+  vinculados: readonly Vinculado[],
+  produtoId: string,
+): ProblemaDeBloqueio {
+  const dono = new Map(vinculados.map((v) => [v.itemId, v.produtoId]));
+  const nomeados = todos.slice(0, IDS_NA_FRASE).map((itemId) => {
+    const produto = dono.get(itemId);
+    if (produto === undefined) return `${String(itemId)} (sem vínculo)`;
+    return produto === produtoId
+      ? `${String(itemId)} (deste produto)`
+      : `${String(itemId)} (do produto ${produto})`;
+  });
+  const mais = todos.length > IDS_NA_FRASE ? ` e mais ${String(todos.length - IDS_NA_FRASE)}` : '';
+  const esperava = fraseDoEsperado(esperado);
+  const achados =
+    todos.length === 0
+      ? 'nenhum anúncio com o SKU enviado, criado na janela da última tentativa'
+      : `anúncio(s) com o SKU enviado, criados na janela da última tentativa: ` +
+        `${nomeados.join(', ')}${mais}`;
+  return bloqueio(
+    MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaJaVinculada,
+    `a confirmação da criação incerta esperava ${esperava}, e a busca de agora não confere — ` +
+      'nada foi enviado nem vinculado. Confira no Seller Centre e escolha de novo a partir do ' +
+      `que a busca acha agora: ${achados}`,
+    todos.length === 0 ? undefined : acaoImportar(todos, vinculados),
+  );
+}
+
 /** The verdict over a COMPLETE scan's three classes — see the module docblock. */
 function decidir(
-  e: Pick<EntradaDaBuscaIncerta, 'produtoId' | 'confirmarCriacaoIncerta'>,
+  e: Pick<EntradaDaBuscaIncerta, 'produtoId' | 'confirmarCriacaoIncerta' | 'criacaoIncertaAdota'>,
   resumo: ResumoDaBuscaIncerta,
   c: {
     readonly definitivos: readonly number[];
@@ -1041,8 +1174,28 @@ function decidir(
     };
   }
   const [unico] = c.definitivos;
-  if (unico !== undefined) return { tipo: 'adotar', itemId: unico, resumo };
-  return { tipo: 'prosseguir', resumo };
+  const veredicto: VeredictoDaBuscaIncerta =
+    unico === undefined
+      ? { tipo: 'prosseguir', resumo }
+      : { tipo: 'adotar', itemId: unico, resumo };
+  // ⚠️ §I1: an attestation states what it expects, and THIS scan — under the
+  // lock, never the refusal it was read off — must do exactly that, or nothing
+  // is sent: a listing linked since that refusal would otherwise turn a
+  // promised adoption into a second `add_item`, and one unlinked since would
+  // turn a deliberate create into overwriting it.
+  if (e.confirmarCriacaoIncerta && !atestacaoConfere(veredicto, e.criacaoIncertaAdota)) {
+    return {
+      tipo: 'recusar',
+      problema: problemaDaAtestacaoQueNaoConfere(
+        e.criacaoIncertaAdota ?? [],
+        todos,
+        c.vinculados,
+        e.produtoId,
+      ),
+      resumo,
+    };
+  }
+  return veredicto;
 }
 
 /* -------------------------------------------------------------------------- */

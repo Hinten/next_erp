@@ -18,6 +18,14 @@ export interface ShopeeTabProps {
    * hide: see `ShopeeEditor`.
    */
   onDirtyChange?: (dirty: boolean) => void;
+  /**
+   * The page holds unsaved produto edits OUTSIDE the produto form that a
+   * draft's «Publicar» would not see (staged variation prices / children —
+   * #1911 P11 review, KNOWN #9): handed to the editor, which ORs it into the
+   * Publicar gate's `produtoSujo` beside the form's `isDirty`. The editor's
+   * `ShopeeEditorProps.produtoSujoForaDoFormulario`.
+   */
+  produtoSujoForaDoFormulario?: boolean;
 }
 
 /**
