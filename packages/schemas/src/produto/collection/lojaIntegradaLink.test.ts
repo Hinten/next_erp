@@ -199,6 +199,16 @@ describe('vinculoLiConta — the anchor’s counts predicate', () => {
   ])('⚠️ NEAR-MISS: %s does not count', (_r, link) => {
     expect(vinculoLiConta(link)).toBe(false);
   });
+
+  it.each([
+    ['a text removido', { id: 182904918, removido: 'true' }],
+    ['a numeric removido', { id: 182904918, removido: 1 }],
+  ])(
+    'only removido === true is the trash: %s still counts (over-including is the safe side)',
+    (_r, link) => {
+      expect(vinculoLiConta(link)).toBe(true);
+    },
+  );
 });
 
 describe('vinculoLiDaContaEId — is this stored link THE link of (conta, store product)?', () => {
@@ -234,6 +244,26 @@ describe('vinculoLiDaContaEId — is this stored link THE link of (conta, store 
       RELACAO_VINCULO_LI.outraConta,
     );
     expect(vinculoLiDaContaEId(null, 'C1', 182904918)).toBe(RELACAO_VINCULO_LI.outraConta);
+  });
+
+  it('⚠️ NEAR-MISS: the conta id is not case-folded — c1 is another conta than C1', () => {
+    expect(
+      vinculoLiDaContaEId(
+        { id: 182904918, contaLojaIntegrada: 'documents/integracao/c1' },
+        'C1',
+        182904918,
+      ),
+    ).toBe(RELACAO_VINCULO_LI.outraConta);
+  });
+
+  it('⚠️ the conta is decided FIRST: another conta’s link with a text id ⇒ outra-conta, never id-ilegivel', () => {
+    expect(
+      vinculoLiDaContaEId(
+        { id: '182904918', contaLojaIntegrada: 'documents/integracao/C2' },
+        'C1',
+        182904918,
+      ),
+    ).toBe(RELACAO_VINCULO_LI.outraConta);
   });
 
   it.each([

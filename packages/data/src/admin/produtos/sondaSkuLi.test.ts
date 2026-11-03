@@ -124,6 +124,11 @@ describe('sondarSkusLi — the parecido forms', () => {
     });
   });
 
+  it('two near duplicates are both named, sorted', async () => {
+    const db = new FakeDb().seed('z', { sku: 'ABC' }).seed('a', { sku: 'ABC' });
+    expect((await sondar(db, ['abc'])).get('abc')).toEqual({ exatos: [], parecidos: ['a', 'z'] });
+  });
+
   it('each SKU is judged on its own: a produto exact for one is parecido for the other', async () => {
     const db = new FakeDb().seed('p', { sku: 'ABC' });
     const r = await sondar(db, ['abc', 'ABC']);
@@ -182,6 +187,20 @@ describe('sondarSkusLi — the query shape', () => {
       );
       expect(c.projecao).toEqual(['sku']);
     }
+  });
+
+  it('cuts the forms at EXACTLY 30 per query — Firestore’s ceiling on one `in` filter', async () => {
+    const skus = Array.from({ length: 6 }, (_, i) => ` Sku-${i} `);
+    const db = new FakeDb();
+    await sondar(db, skus);
+    expect(db.consultas.map((c) => (c.clausulas[0]![2] as string[]).length)).toEqual([30, 6]);
+  });
+
+  it('a form two SKUs share is probed once', async () => {
+    // `abc` and `ABC` have the same two forms: each is asked once, in first-seen order.
+    const db = new FakeDb();
+    await sondar(db, ['abc', 'ABC']);
+    expect(db.consultas.flatMap((c) => c.clausulas[0]![2] as string[])).toEqual(['abc', 'ABC']);
   });
 
   it('a repeated SKU is answered once and probed once', async () => {

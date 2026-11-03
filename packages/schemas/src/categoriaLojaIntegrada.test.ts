@@ -72,6 +72,10 @@ describe('idCategoriaLiDoVinculo — the store category a link names', () => {
   ])('⚠️ NEAR-MISS: %j ⇒ null (not an id)', (doc) => {
     expect(idCategoriaLiDoVinculo(doc)).toBeNull();
   });
+
+  it('⚠️ NEAR-MISS: an INHERITED id is not stored data ⇒ null', () => {
+    expect(idCategoriaLiDoVinculo(Object.create({ id: '7645875' }))).toBeNull();
+  });
 });
 
 describe('vinculoCategoriaServeAConta — which link serves this conta', () => {
@@ -116,6 +120,16 @@ describe('vinculoCategoriaServeAConta — which link serves this conta', () => {
       vinculoCategoriaServeAConta({ id: '7645875', contaLojaIntegrada: 'C1' }, 'C1', DA_LOJA),
     ).toBe(false);
     expect(vinculoCategoriaServeAConta({ id: '07645875' }, 'C1', new Set([7645875]))).toBe(false);
+  });
+
+  it('⚠️ NEAR-MISS: a doc of THIS conta whose id does not read serves nobody either', () => {
+    expect(
+      vinculoCategoriaServeAConta(
+        { id: '07645875', contaLojaIntegrada: 'documents/integracao/C1' },
+        'C1',
+        DA_LOJA,
+      ),
+    ).toBe(false);
   });
 });
 
@@ -184,6 +198,13 @@ describe('arvoreCategoriasLi — the chain of a category', () => {
       motivo: MOTIVO_CADEIA_CATEGORIA_LI.paiIlegivel,
     });
   });
+
+  it('⚠️ an id listed with two parents answers NO category — never its first row', () => {
+    const arvore = arvoreCategoriasLi([raiz(1), raiz(3), sob(2, 1), sob(2, 3)]);
+    expect(arvore.categoria(2)).toBeNull();
+    expect(arvore.categoria(1)).toEqual(raiz(1));
+    expect(arvore.categoria(99)).toBeNull();
+  });
 });
 
 describe('folhaDoProdutoLi — the linked-leaf rule', () => {
@@ -221,6 +242,22 @@ describe('folhaDoProdutoLi — the linked-leaf rule', () => {
     });
   });
 
+  it('⚠️ NEAR-MISS: two of three leaves linked ⇒ ambigua names the two LINKED ones, not every leaf', () => {
+    const tres = arvoreCategoriasLi([raiz(1), sob(2, 1), raiz(7), raiz(9)]);
+    expect(folhaDoProdutoLi([uri(2), uri(7), uri(9)], tres, (id) => id === 2 || id === 9)).toEqual({
+      tipo: 'ambigua',
+      ids: [2, 9],
+    });
+  });
+
+  it('EQUAL: one category in two URI forms is ONE category ⇒ its leaf, never ambigua with itself', () => {
+    expect(folhaDoProdutoLi([uri(3), '/api/v1/categoria/3/'], arvore, nenhuma)).toEqual({
+      tipo: 'folha',
+      id: 3,
+      vinculada: false,
+    });
+  });
+
   it('a linked ANCESTOR is not a leaf: the leaf below it is the answer', () => {
     expect(folhaDoProdutoLi([uri(1), uri(3)], arvore, (id) => id === 1)).toEqual({
       tipo: 'folha',
@@ -240,6 +277,13 @@ describe('folhaDoProdutoLi — the linked-leaf rule', () => {
     it('⚠️ NEAR-MISS: a category ON a cycle picks no leaf — never an empty ambigua', () => {
       expect(folhaDoProdutoLi([uri(1)], ciclica, nenhuma)).toEqual({ tipo: 'ciclo', ids: [1] });
       expect(folhaDoProdutoLi([uri(1), uri(2)], ciclica, nenhuma)).toEqual({
+        tipo: 'ciclo',
+        ids: [1, 2],
+      });
+    });
+
+    it('the cycle’s categories are named ascending, whatever the product’s order', () => {
+      expect(folhaDoProdutoLi([uri(2), uri(1)], ciclica, nenhuma)).toEqual({
         tipo: 'ciclo',
         ids: [1, 2],
       });

@@ -95,6 +95,24 @@ describe('lerProdutoLi — the ROW view', () => {
     expect(lido?.filhoIds).toEqual([1000002]);
   });
 
+  it('EQUAL: one option pair in two URI forms is ONE option; ⚠️ NEAR-MISS: one option id under two grades is TWO', () => {
+    // Keyed by the pair: the second grade's entry is kept for the resolver to judge, never
+    // dropped silently as a repeat of the first.
+    const lido = lerProdutoLi({
+      ...FILHO,
+      variacoes: [
+        '/api/v1/grade/3000001/variacao/4000001',
+        '/v1/grade/3000001/variacao/4000001/',
+        '/api/v1/grade/3000002/variacao/4000001',
+      ],
+    });
+    expect(lido?.opcoes).toEqual([
+      { gradeId: 3000001, opcaoId: 4000001 },
+      { gradeId: 3000002, opcaoId: 4000001 },
+    ]);
+    expect(lido?.ilegiveis.opcoes).toBe(0);
+  });
+
   it.each([
     ['normal', TIPO_PRODUTO_LI.normal],
     ['atributo', TIPO_PRODUTO_LI.atributo],
@@ -261,6 +279,8 @@ describe('medidaPositivaLi — weight and dimensions', () => {
     ['an exponent', '5e-1'],
     ['a sign', '-0.5'],
     ['a leading plus', '+1'],
+    ['a bare leading point', '.5'],
+    ['a bare trailing point', '5.'],
     ['a space', ' 0.5'],
     ['an empty string', ''],
     ['null', null],
@@ -307,6 +327,51 @@ describe('the images of a detail', () => {
     expect(lido?.imagens).toHaveLength(MAX_IMAGENS_PRODUTO_LI);
     expect(lido?.imagensDescartadas).toBe(12);
   });
+
+  it('with no imagem_principal, an imagens[] entry’s own principal flag puts it first', () => {
+    const lido = lerDetalheProdutoLi({
+      ...DETALHE_FILHO,
+      imagens: [imagem(1, '1'), imagem(2, '2', true)],
+    });
+    expect(lido?.imagens.map((i) => [i.id, i.principal])).toEqual([
+      [2, true],
+      [1, false],
+    ]);
+  });
+
+  it('an id repeated in imagens[] is ONE image, principal when any of its copies says so', () => {
+    const lido = lerDetalheProdutoLi({
+      ...DETALHE_FILHO,
+      imagens: [imagem(1, '1'), imagem(2, '2'), imagem(2, '2', true)],
+    });
+    expect(lido?.imagens.map((i) => [i.id, i.principal])).toEqual([
+      [2, true],
+      [1, false],
+    ]);
+    expect(lido?.imagensDescartadas).toBe(0);
+  });
+
+  it('EQUAL: an image id as canonical decimal text reads; ⚠️ NEAR-MISS: an edge space or a leading zero is discarded', () => {
+    const lido = lerDetalheProdutoLi({
+      ...DETALHE_FILHO,
+      imagens: [
+        { ...imagem(1, 1), id: '7' },
+        { ...imagem(2, 2), id: ' 8' },
+        { ...imagem(3, 3), id: '09' },
+      ],
+    });
+    expect(lido?.imagens.map((i) => i.id)).toEqual([7]);
+    expect(lido?.imagensDescartadas).toBe(2);
+  });
+
+  it('an image with no readable caminho is discarded and counted — never kept without an address', () => {
+    const lido = lerDetalheProdutoLi({
+      ...DETALHE_FILHO,
+      imagens: [imagem(1, 1), { id: 2, caminho: '', posicao: 2 }, { id: 3, posicao: 3 }],
+    });
+    expect(lido?.imagens.map((i) => i.id)).toEqual([1]);
+    expect(lido?.imagensDescartadas).toBe(2);
+  });
 });
 
 describe('mesmoSkuLi — the SKU identity is exact bytes', () => {
@@ -327,6 +392,11 @@ describe('mesmoSkuLi — the SKU identity is exact bytes', () => {
 
   it('⚠️ NEAR-MISS: a leading zero is another product', () => {
     expect(mesmoSkuLi('01', '1')).toBe(false);
+  });
+
+  it('⚠️ NEAR-MISS: a number is never the same SKU as its decimal text, on either side', () => {
+    expect(mesmoSkuLi('123', 123)).toBe(false);
+    expect(mesmoSkuLi(123, '123')).toBe(false);
   });
 
   it('an empty or non-string SKU is equal to nothing, not even itself', () => {

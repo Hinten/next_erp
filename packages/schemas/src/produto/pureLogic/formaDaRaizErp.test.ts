@@ -61,6 +61,15 @@ describe('formaDaRaizErp — one-child roots are told apart by the member', () =
     );
   });
 
+  it('EQUAL: an EMPTY pointer is no pointer — the child count decides, as for a null one', () => {
+    expect(formaDaRaizErp({ raiz: raiz(''), membro: null, contagemDeFilhos: 0 })).toBe(
+      FORMA_RAIZ_ERP.raizSimples,
+    );
+    expect(formaDaRaizErp({ raiz: raiz(''), membro: null, contagemDeFilhos: 2 })).toBe(
+      FORMA_RAIZ_ERP.familiaDeMuitas,
+    );
+  });
+
   it.each([
     ['a pointer naming no document', raiz('m1'), null, null],
     ['a pointer naming another document', raiz('m2'), membro(), null],
@@ -69,6 +78,7 @@ describe('formaDaRaizErp — one-child roots are told apart by the member', () =
     ['a pointer beside no child at all', raiz('m1'), membro(), 0],
     ['no pointer and no children read', raiz(), null, null],
     ['a "root" that is itself a child', { id: 'r1', paiId: 'p0', filhoUnicoId: null }, null, 0],
+    ['a root with an empty id', { id: '', paiId: null, filhoUnicoId: null }, null, 0],
   ] as const)('⚠️ drift — %s ⇒ forma-ilegivel', (_r, r, m, contagem) => {
     expect(formaDaRaizErp({ raiz: r, membro: m, contagemDeFilhos: contagem })).toBe(
       FORMA_RAIZ_ERP.formaIlegivel,

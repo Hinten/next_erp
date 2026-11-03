@@ -80,6 +80,26 @@ describe('resolverOpcoesDoFilhoLi — a variation’s options to ERP variantes',
     expect(r?.varianteIds).toEqual(['v1', 'v2']);
   });
 
+  it('EQUAL: an option repeated in the link naming the SAME variante ⇒ resolved (one variante, never ambigua)', () => {
+    // The repeat is the grupo's own finding (`conflitosLinksVariacoesLi`); it still names ONE variante.
+    const g = grupo(
+      'cor',
+      ['v1'],
+      [
+        entrada('C1', 8001, [
+          [30001, ['v1']],
+          [30001, ['v1']],
+        ]),
+      ],
+    );
+    const [r] = resolverOpcoesDoFilhoLi({
+      contaId: 'C1',
+      opcoesUris: [opcaoUri(8001, 30001)],
+      grupos: [g],
+    });
+    expect(r).toMatchObject({ tipo: TIPO_RESOLUCAO_OPCAO_LI.resolvida, varianteIds: ['v1'] });
+  });
+
   it('⚠️ NEAR-MISS: (C, g) linked in two grupos ⇒ grade-em-dois-grupos', () => {
     const outro = grupo('cor2', ['v9'], [entrada('C1', 8001, [[30002, ['v9']]])]);
     const [r] = resolverOpcoesDoFilhoLi({
@@ -210,6 +230,40 @@ describe('conflitosEntreGruposLi — one grade and one option per conta, in ONE 
     ];
     expect(conflitosEntreGruposLi(grupos, 'C1')).toEqual([]);
   });
+
+  it('an option repeated inside ONE grupo (under two of its grades) is that grupo’s own finding, not this one', () => {
+    const grupos = [
+      grupo(
+        'a',
+        ['v1', 'v2'],
+        [entrada('C1', 8001, [[30001, ['v1']]]), entrada('C1', 8002, [[30001, ['v2']]])],
+      ),
+    ];
+    expect(conflitosEntreGruposLi(grupos, 'C1')).toEqual([]);
+  });
+
+  it('grades first, then options, each by ASCENDING id whatever order the memo holds them in', () => {
+    const grupos = [
+      grupo(
+        'a',
+        ['v1'],
+        [entrada('C1', 8002, [[30002, ['v1']]]), entrada('C1', 8001, [[30001, ['v1']]])],
+      ),
+      grupo(
+        'b',
+        ['v2'],
+        [entrada('C1', 8001, [[30002, ['v2']]]), entrada('C1', 8002, [[30001, ['v2']]])],
+      ),
+    ];
+    expect(
+      conflitosEntreGruposLi(grupos, 'C1').map((c) => [c.tipo, c.gradeId ?? c.opcaoId]),
+    ).toEqual([
+      [TIPO_CONFLITO_ENTRE_GRUPOS_LI.gradeEmDoisGrupos, 8001],
+      [TIPO_CONFLITO_ENTRE_GRUPOS_LI.gradeEmDoisGrupos, 8002],
+      [TIPO_CONFLITO_ENTRE_GRUPOS_LI.opcaoEmDoisGrupos, 30001],
+      [TIPO_CONFLITO_ENTRE_GRUPOS_LI.opcaoEmDoisGrupos, 30002],
+    ]);
+  });
 });
 
 /* -------------------------------------------------------------------------- */
@@ -263,6 +317,25 @@ describe('fundirLinksVariacoesLi — the merge that never drops', () => {
       editadas: [0],
       array: [entrada('C1', 8001, [[30002, ['v2']]])],
     });
+  });
+
+  it('a new entry carries the grade and option labels it was learned with', () => {
+    const fusao = fundirLinksVariacoesLi(undefined, [
+      { ...APRENDIZADO, nomeGrade: 'Cor', nomeOpcao: 'Azul' },
+    ]);
+    const esperada = entrada('C1', 8001, [[30002, ['v2']]], { name: 'Cor' });
+    expect(fusao.ok && fusao.array).toEqual([
+      {
+        ...esperada,
+        variationOptions: esperada.variationOptions.map((o) => ({ ...o, li_option_name: 'Azul' })),
+      },
+    ]);
+  });
+
+  it('EQUAL: an ABSENT grade label is filled exactly like a null one', () => {
+    const semNome = { grade_id: 8001, integracaoLiId: 'C1', variationOptions: [] };
+    const fusao = fundirLinksVariacoesLi([semNome], [{ ...APRENDIZADO, nomeGrade: 'Cor' }]);
+    expect(fusao.ok && fusao.array[0]).toMatchObject({ name: 'Cor' });
   });
 
   it('⚠️ NEAR-MISS: an unparseable element is kept VERBATIM and in place', () => {
@@ -443,6 +516,75 @@ describe('decidirAprendizadoLi — learn only what the evidence proves', () => {
     expect(decisao.recusados[0]?.motivo).toBe(MOTIVO_RECUSA_APRENDIZADO_LI.gradeRepetida);
   });
 
+  it('⚠️ NEAR-MISS: an entry naming C with edge spaces also "holds" (fail closed)', () => {
+    const cor = grupo('cor', ['v1'], [entrada(' C1 ', 8001, [])]);
+    const decisao = decidirAprendizadoLi({
+      contaId: 'C1',
+      evidencias: [evidencia(8001, 30001, [['cor', 'v1']])],
+      grupos: [cor],
+    });
+    expect(decisao.recusados[0]?.motivo).toBe(MOTIVO_RECUSA_APRENDIZADO_LI.gradeRepetida);
+    expect(decisao.grupos).toEqual([]);
+  });
+
+  it('⚠️ NEAR-MISS: G holds the exact entry AND another naming C for g ⇒ grade-repetida, never extended', () => {
+    const cor = grupo(
+      'cor',
+      ['v1', 'v2'],
+      [entrada('C1', 8001, [[30001, ['v1']]]), entrada('documents/integracao/C1', 8001, [])],
+    );
+    const decisao = decidirAprendizadoLi({
+      contaId: 'C1',
+      evidencias: [evidencia(8001, 30002, [['cor', 'v2']])],
+      grupos: [cor],
+    });
+    expect(decisao.recusados).toEqual([
+      { gradeId: 8001, opcaoId: 30002, motivo: MOTIVO_RECUSA_APRENDIZADO_LI.gradeRepetida },
+    ]);
+    expect(decisao.grupos).toEqual([]);
+  });
+
+  it('⚠️ NEAR-MISS: an entry of C whose grade does not read "holds" every grade (fail closed)', () => {
+    for (const grade_id of [null, 'x', '']) {
+      const cor = grupo('cor', ['v1'], [{ grade_id, integracaoLiId: 'C1' }]);
+      const decisao = decidirAprendizadoLi({
+        contaId: 'C1',
+        evidencias: [evidencia(8001, 30001, [['cor', 'v1']])],
+        grupos: [cor],
+      });
+      expect(decisao.recusados[0]?.motivo, String(grade_id)).toBe(
+        MOTIVO_RECUSA_APRENDIZADO_LI.gradeRepetida,
+      );
+    }
+  });
+
+  it('EQUAL: an invalid entry of C naming ANOTHER grade as text holds nothing for g ⇒ a new entry', () => {
+    // The text `'8001'` holds 8001 (the near-miss above); `'9999'` names another grade.
+    const invalida = { grade_id: '9999', integracaoLiId: 'C1' };
+    const decisao = decidirAprendizadoLi({
+      contaId: 'C1',
+      evidencias: [evidencia(8001, 30001, [['cor', 'v1']])],
+      grupos: [grupo('cor', ['v1'], [invalida])],
+    });
+    expect(decisao.aprendidos).toEqual([
+      { gradeId: 8001, opcaoId: 30001, grupoId: 'cor', varianteId: 'v1', novaEntrada: true },
+    ]);
+    expect(decisao.grupos[0]?.linksVariacoesli[0]).toBe(invalida);
+  });
+
+  it('the claimed grupo’s OWN stored value not a list ⇒ formato-invalido (nothing can be merged into it)', () => {
+    const solta = { grade_id: 8001, integracaoLiId: 'C1', variationOptions: [] };
+    const decisao = decidirAprendizadoLi({
+      contaId: 'C1',
+      evidencias: [evidencia(8001, 30001, [['cor', 'v1']])],
+      grupos: [grupo('cor', ['v1'], solta)],
+    });
+    expect(decisao.recusados).toEqual([
+      { gradeId: 8001, opcaoId: 30001, motivo: MOTIVO_RECUSA_APRENDIZADO_LI.formatoInvalido },
+    ]);
+    expect(decisao.grupos).toEqual([]);
+  });
+
   it('⚠️ NEAR-MISS: (C, g) held by another grupo ⇒ refused, never a second grupo', () => {
     const g1 = grupo('g1', ['v1'], [entrada('C1', 8001, [[30001, ['v1']]])]);
     const g2 = grupo('g2', ['v2'], []);
@@ -462,6 +604,23 @@ describe('decidirAprendizadoLi — learn only what the evidence proves', () => {
       grupos: [cor],
     });
     expect(decisao.recusados[0]?.motivo).toBe(MOTIVO_RECUSA_APRENDIZADO_LI.eixosMultiplos);
+  });
+
+  it('⚠️ NEAR-MISS: a new grade needs EVERY claim single-axis — one multi-axis claim among single-axis ones refuses', () => {
+    const decisao = decidirAprendizadoLi({
+      contaId: 'C1',
+      evidencias: [
+        evidencia(8001, 30001, [
+          ['cor', 'v1', true],
+          ['cor', 'v1', false],
+        ]),
+      ],
+      grupos: [grupo('cor', ['v1'], [])],
+    });
+    expect(decisao.aprendidos).toEqual([]);
+    expect(decisao.recusados).toEqual([
+      { gradeId: 8001, opcaoId: 30001, motivo: MOTIVO_RECUSA_APRENDIZADO_LI.eixosMultiplos },
+    ]);
   });
 
   it('⚠️ NEAR-MISS: two options of the conta claiming ONE variante ⇒ both refused, whatever their ids', () => {
@@ -596,6 +755,23 @@ describe('decidirAprendizadoLi — learn only what the evidence proves', () => {
       grupos: [cor],
     });
     expect(decisao.recusados[0]?.motivo).toBe(MOTIVO_RECUSA_APRENDIZADO_LI.varianteEmOutraOpcao);
+  });
+
+  it('⚠️ NEAR-MISS: the variante held by the SAME option id under ANOTHER grade ⇒ variante-em-outra-opcao', () => {
+    // An option is the pair (grade, option): 30001 under 8002 is another option than under 8001.
+    const cor = grupo(
+      'cor',
+      ['v1'],
+      [entrada('C1', 8001, []), entrada('C1', 8002, [[30001, ['v1']]])],
+    );
+    const decisao = decidirAprendizadoLi({
+      contaId: 'C1',
+      evidencias: [evidencia(8001, 30001, [['cor', 'v1']])],
+      grupos: [cor],
+    });
+    expect(decisao.recusados).toEqual([
+      { gradeId: 8001, opcaoId: 30001, motivo: MOTIVO_RECUSA_APRENDIZADO_LI.varianteEmOutraOpcao },
+    ]);
   });
 
   it('⚠️ NEAR-MISS: the option already linked in another grupo ⇒ the cross-grupo check refuses', () => {
