@@ -206,6 +206,7 @@ describe('the class hierarchy', () => {
       'token-na-url',
       'maxPaginas',
       'limite',
+      'offset',
     ] as const) {
       const err = new LiConfigError(motivo, { operacao: 'op', refCredencial: null });
       expect(err.motivo).toBe(motivo);
