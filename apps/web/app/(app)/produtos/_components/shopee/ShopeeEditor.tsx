@@ -24,6 +24,7 @@ import {
   ehKitVirtualEfetivo,
   ehRascunhoShopee,
   idDoRef,
+  janelaDaCriacaoIncertaShopee,
   lerRefTabelaDeMedidas,
   naoDocId,
   vinculoShopeeEhDaConta,
@@ -55,6 +56,7 @@ import {
   ROTULO_CONFIRMAR_SEGUNDO_ANUNCIO_SHOPEE,
   TITULO_SEGUNDO_ANUNCIO_SHOPEE,
   criacaoDeKitIncerta,
+  ehFraseDeTerminal,
   esperaDoKitIncerto,
   formatarInstanteShopee,
   gravarIncerto,
@@ -91,12 +93,14 @@ import {
   existentesDosVinculosShopee,
   falhaDaPublicacaoDoRascunhoShopee,
   falhaDoRascunhoShopee,
+  fraseDoRascunhoJaPublicadoNaPublicacaoShopee,
   idDeCategoriaShopeeValido,
   idDeNovoRascunhoShopee,
   marcarRascunhoShopeeSalvo,
   novaEdicaoRascunhoShopee,
   projecaoGuardadaDoRascunhoShopee,
   publicacaoDoRascunhoShopee,
+  rascunhosIrmaosIncertosShopee,
   rebasearEdicaoRascunhoShopee,
   segundoAnuncioNaContaShopee,
   type BlocoRascunhoShopee,
@@ -138,6 +142,7 @@ import { KitNativoShopeeModal, type AlvoDoKitShopee } from './KitNativoShopeeMod
 import type {
   AcaoDoBlocoRascunhoShopee,
   ConfirmacaoDePublicacaoShopee,
+  FalhaDaLeituraDoRascunhoShopee,
   RascunhoShopeeProps,
   ResultadoDoRascunhoShopee,
   TextosDoProdutoRascunhoShopee,
@@ -176,8 +181,12 @@ import type {
  * `linkDocId` — never a `categoryId`, never a kit flag — under that lock too.
  * It acts only on `publicacaoDoRascunhoShopee`'s yes: saved, clean, the
  * produto FORM clean as well (the route reads the stored produto, K2-7 — read
- * from the surrounding ObjectView form, see {@link ShopeeEditor}), no
- * pendência, the bands loaded, and a reading that is not `em-andamento`. The
+ * from the surrounding ObjectView form, plus the page's staged variation
+ * edits it threads in, see {@link ShopeeEditor}), no
+ * pendência, the bands loaded, a reading that is not `em-andamento`, and no
+ * OTHER draft of the produto on the conta that may have created a listing
+ * (`irmao-incerto`, `rascunhosIrmaosIncertosShopee` over the same links
+ * snapshot — the server refuses every publish meanwhile). The
  * click opens a confirmation (with «Criar pausado») and sends nothing; that
  * confirmation carries the second-listing warning (D15) whenever
  * `segundoAnuncioNaContaShopee` — P10's ONE count, the draft itself left out —
@@ -381,6 +390,21 @@ export interface ShopeeEditorProps {
    * page's leave-guard while the typed draft is still there).
    */
   onDirtyChange?: (dirty: boolean) => void;
+  /**
+   * The produto PAGE holds unsaved edits the publish reads but the produto
+   * form's `isDirty` cannot see (#1911 P11 review, KNOWN #9): an independent
+   * variation price, a variation child staged (added, marked for deletion, or
+   * a saved child's nome/SKU/options patched), a per-variation kit
+   * composition staged in the Kit tab's grid (round 3: the publish derives a
+   * kit model's stock from the STORED composition) — each flushed only by the
+   * produto's own save. ORed into the «Publicar»
+   * gate's `produtoSujo` beside the form's `isDirty`: the publish reads the
+   * STORED children, so a draft published over them would silently miss them.
+   * Never this tab's own drafts (a dirty draft is its own impediment, and
+   * feeding the page's `shopeeDirty` back would read as "salve o produto").
+   * Absent ⇔ `false`.
+   */
+  produtoSujoForaDoFormulario?: boolean;
 }
 
 /** The pause being confirmed: a pause stops a live sale, so it is asked first. */
@@ -416,8 +440,9 @@ interface DescarteAberto {
   /**
    * The discard a refusal row's Seller-Centre exit asked for (#1911 P11 —
    * `saidasDoProblemaShopee`'s `descartar-atestando`): the operator already
-   * attested (the listing IS the attempt's), so the plain confirmation shows
-   * `aviso` (what stays on Shopee) and the confirm sends
+   * attested (the listing IS the attempt's), so the plain confirmation reads
+   * {@link FRASE_CONFIRMAR_DESCARTE_ATESTADO_SHOPEE} — never «Nada foi
+   * publicado» — shows `aviso` (what stays on Shopee) and the confirm sends
    * `confirmarCriacaoIncerta: true`. `null` for the block's own «Descartar».
    */
   readonly atestado: { readonly aviso: string | null } | null;
@@ -471,6 +496,39 @@ function chaveDeLimites(contaId: string, categoryId: number): string {
   return `${contaId}/${String(categoryId)}`;
 }
 
+/** One category's bands read: the slice, and — only when the read FAILED with nothing to show — why. */
+interface LeituraDosLimitesShopee {
+  readonly limites: RascunhoShopeeProps['limites'];
+  /** `descreverFalhaShopee`'s sentence of a FAILED read (never a pending one), else `null`. */
+  readonly falha: string | null;
+  readonly relendo: boolean;
+  readonly lerDeNovo: () => void;
+}
+
+/**
+ * «Publicar» waits on the category's bands and their read FAILED (review
+ * R7-roundtrip#3 / R8-copy#9): what the button says instead of the pending
+ * «Publicar fica disponível quando os limites … forem lidos», which nothing
+ * would make true. `causa` is `descreverFalhaShopee`'s sentence (it names its
+ * own exit — wait, reconnect, pick another category); terminal text is never
+ * printed.
+ */
+export function fraseDosLimitesNaoLidosShopee(causa: string): string {
+  const base =
+    'Publicar fica indisponível: os limites de título e descrição da categoria não puderam ser ' +
+    'lidos da Shopee.';
+  const texto = causa.trim();
+  return texto === '' || ehFraseDeTerminal(texto) ? base : `${base} ${texto}`;
+}
+
+/**
+ * «Publicar» waits on the stored produto description (the pendências read it)
+ * and its listener FAILED — a listener re-subscribes only when the page does.
+ */
+export const FRASE_DESCRICAO_DO_PRODUTO_NAO_LIDA_SHOPEE =
+  'Publicar fica indisponível: a descrição salva do produto (aba Descrição) não pôde ser lida — ' +
+  'recarregue a página.';
+
 /**
  * An uncertain kit create as this page holds it: the stored wait and body, plus
  * Shopee's refusal sentence when the 202 carried one (never stored — a reload
@@ -500,6 +558,23 @@ export function fraseDaSessaoShopee(err: FirebaseError): string {
     ? FRASE_SESSAO_SEM_CONEXAO_SHOPEE
     : FRASE_SESSAO_NAO_RENOVADA_SHOPEE;
 }
+
+/**
+ * The discard confirmation a refusal row's «É o anúncio da tentativa» exit
+ * opens (`saidasDoProblemaShopee`'s `descartar-atestando`, review R8-copy#1):
+ * the operator has just attested that the attempt's listing EXISTS and is the
+ * one already linked in the ERP — so never the plain `livre` sentence
+ * («Nada foi publicado na Shopee»), its opposite. True in both shapes that
+ * offer the exit — every candidate linked, or one linked beside an unlinked
+ * one, whose warning (the exit's `aviso`) follows it. A row with NO linked
+ * candidate (the §I1 refusal of a create that found a free listing) offers no
+ * such exit (`saidasDoProblemaShopee`, review round 2): there «vinculado no
+ * ERP» would be false, and the block's own Descartar keeps its three-case
+ * dialog. The discard route reads only the link, so nothing on Shopee changes.
+ */
+export const FRASE_CONFIRMAR_DESCARTE_ATESTADO_SHOPEE =
+  'O rascunho será excluído. O anúncio da tentativa continua na Shopee, vinculado no ERP — o ' +
+  'descarte não o altera.';
 
 /** A link that is not (or no longer) this conta's — the 404s of publish and re-verify. */
 const MENSAGEM_VINCULO_FORA_DA_CONTA =
@@ -531,7 +606,11 @@ function desfechoDaFalha(
       const arma = armaDoPedido(pedido);
       return {
         tipo: 'recusado',
-        antesDaShopee: code === CODIGO_FALHA_SHOPEE.publicacaoBloqueada,
+        // The ERP's own 422 — never "before any Shopee write": the model leg
+        // refuses on an update AFTER `update_item` (review R7-roundtrip#0).
+        bloqueadaPeloErp: code === CODIGO_FALHA_SHOPEE.publicacaoBloqueada,
+        // An attested publish's look-up rows answer a CHANGED situation (§I1).
+        respondeAtestacao: pedido?.confirmarCriacaoIncerta === true,
         etapa: detalhes.etapa,
         problemas: detalhes.problemas ?? [],
         mensagem: err.message,
@@ -588,15 +667,21 @@ function desfechoDaFalha(
  * reading `form.formState` — is what re-renders this when the produto form
  * turns dirty or clean. Inside the page the provider is always there, so the
  * tree under it never changes shape (the editor's state is never remounted).
+ *
+ * The form's `isDirty` is not every unsaved produto edit: the page threads
+ * the ones that live OUTSIDE it (`produtoSujoForaDoFormulario` — staged
+ * variation prices and children, and the Kit tab's staged per-variation
+ * compositions, KNOWN #9), ORed in here, never instead.
  */
 export function ShopeeEditor(props: ShopeeEditorProps) {
   const form = useFormContext();
   // `useFormContext` answers `null` outside a provider, whatever its type says.
   const control = form?.control;
-  if (!control) return <EditorShopee {...props} produtoSujo={false} />;
+  const sujoForaDoFormulario = props.produtoSujoForaDoFormulario === true;
+  if (!control) return <EditorShopee {...props} produtoSujo={sujoForaDoFormulario} />;
   return (
     <FormularioDoProdutoSujo control={control}>
-      {(sujo) => <EditorShopee {...props} produtoSujo={sujo} />}
+      {(sujo) => <EditorShopee {...props} produtoSujo={sujo || sujoForaDoFormulario} />}
     </FormularioDoProdutoSujo>
   );
 }
@@ -789,9 +874,13 @@ function EditorShopee({
       // ⚠️ A failed ID-token refresh: `getAuthToken()` is awaited OUTSIDE the
       // client's try (`client.ts`), so it is none of the client's classes, and
       // rethrown from these `void`-ed handlers it would end a confirmed pause in
-      // silence. Nothing was sent, so it is a definite answer — never uncertain.
+      // silence. Nothing was sent, so it is a definite answer — never uncertain
+      // — worded in pt-BR by its code (`fraseDaSessaoShopee`), never the SDK's
+      // English `err.message`: every arm that lands here (pause / reactivate,
+      // re-verify, republish, the kit arms, a draft's Publicar) reads the same
+      // sentence the draft writes' `falhaDeSessao` does (#1911 review G1).
       if (err instanceof FirebaseError) {
-        registrarDesfecho(linkDocId, { tipo: 'falha', mensagem: err.message });
+        registrarDesfecho(linkDocId, { tipo: 'falha', mensagem: fraseDaSessaoShopee(err) });
         return;
       }
       throw err;
@@ -1338,27 +1427,84 @@ function EditorShopee({
       retry: shopeeQueryRetry,
     })),
   });
-  const limitesPorChave = new Map<string, RascunhoShopeeProps['limites']>(
-    pedidosDeLimites.map(({ contaId, categoryId }, i) => [
-      chaveDeLimites(contaId, categoryId),
-      limitesLidos[i]?.data?.limites ?? null,
-    ]),
+  const leiturasDosLimites = new Map<string, LeituraDosLimitesShopee>(
+    pedidosDeLimites.map(({ contaId, categoryId }, i) => {
+      const q = limitesLidos[i];
+      return [
+        chaveDeLimites(contaId, categoryId),
+        {
+          limites: q?.data?.limites ?? null,
+          // FAILED with nothing to show — never while pending: a failed read is
+          // never left reading as "still loading" (review R7-roundtrip#3).
+          falha:
+            q !== undefined && q.isError && q.data === undefined
+              ? descreverFalhaShopee(q.error, { desconhecido: '' }).mensagem
+              : null,
+          relendo: q?.isFetching === true,
+          // `shopeeQueryRetry` never repeats a 502 and the app never refetches
+          // on focus: without this, only a reload would ask again.
+          lerDeNovo: () => {
+            void q?.refetch();
+          },
+        },
+      ];
+    }),
   );
   /**
-   * The bands one block is read against: its EDITED category's, or `null`
-   * while they load (or failed) — and for a draft with no category. That last
-   * `null` is deliberate (rev. 2a B.7(b): a draft with no category asks
-   * apps/shopee nothing on render): such a draft always carries the
-   * `categoria-ausente` pendência, which disables «Publicar» before unknown
-   * bands could, so the shop-wide bands would add list rows but never change
-   * the gate. «Publicar» is therefore never enabled on bands not loaded.
+   * The bands read of one block: its EDITED category's, or `null` for a draft
+   * with no category (or a legacy `0`). That `null` is deliberate (rev. 2a
+   * B.7(b): such a draft asks apps/shopee nothing on render): it always
+   * carries the `categoria-ausente` pendência (`categoria-inexistente` for the
+   * `0`), which disables «Publicar» before unknown bands could, so the
+   * shop-wide bands would add list rows but never change the gate. «Publicar»
+   * is therefore never enabled on bands not loaded.
    */
-  const limitesDoBloco = ({ contaId, bloco }: BlocoDoEditor): RascunhoShopeeProps['limites'] => {
+  const leituraDosLimitesDoBloco = ({
+    contaId,
+    bloco,
+  }: BlocoDoEditor): LeituraDosLimitesShopee | null => {
     const categoryId = bloco.valores.category_id;
     return categoryId === null
       ? null
-      : (limitesPorChave.get(chaveDeLimites(contaId, categoryId)) ?? null);
+      : (leiturasDosLimites.get(chaveDeLimites(contaId, categoryId)) ?? null);
   };
+  /** The bands one block is read against — `null` while they load, after a failed read, or with none asked. */
+  const limitesDoBloco = (entrada: BlocoDoEditor): RascunhoShopeeProps['limites'] =>
+    leituraDosLimitesDoBloco(entrada)?.limites ?? null;
+
+  /**
+   * The READ whose failure is why a block's «Publicar» waits, or `null`
+   * (review R7-roundtrip#3 / R8-copy#9 — every disabled state shows its TRUE
+   * reason; the gate itself stays the lib's and stays closed):
+   *
+   *  - `faixas-desconhecidas` after the bands read FAILED: the failure's own
+   *    sentence and «Ler de novo» — never the pending «Publicar fica
+   *    disponível quando os limites … forem lidos», a promise nothing keeps;
+   *  - `carregando` after the stored produto description's listener FAILED
+   *    (the pendências need it): the listener re-subscribes only on a reload.
+   */
+  function falhaDaLeituraDoBloco(
+    entrada: BlocoDoEditor,
+    decisao: PublicacaoDoRascunhoShopee,
+  ): FalhaDaLeituraDoRascunhoShopee | null {
+    if (decisao.impedimento === 'faixas-desconhecidas') {
+      const leitura = leituraDosLimitesDoBloco(entrada);
+      if (leitura === null || leitura.falha === null) return null;
+      return {
+        mensagem: fraseDosLimitesNaoLidosShopee(leitura.falha),
+        lerDeNovo: leitura.lerDeNovo,
+        relendo: leitura.relendo,
+      };
+    }
+    if (decisao.impedimento === 'carregando' && extraDataSnap.error != null) {
+      return {
+        mensagem: FRASE_DESCRICAO_DO_PRODUTO_NAO_LIDA_SHOPEE,
+        lerDeNovo: null,
+        relendo: false,
+      };
+    }
+    return null;
+  }
 
   // THE «Publicar» decision of every draft block, this render — the form's
   // button, the refusal rows' attestation exits and every handler below read
@@ -1376,6 +1522,13 @@ function EditorShopee({
         produtoSujo,
         textosDoProduto,
         limites: limitesDoBloco(entrada),
+        // The SAME links snapshot the D15 count reads (`abrirPublicacao`):
+        // another draft that may have created a listing holds this one back.
+        rascunhosIrmaosIncertos: rascunhosIrmaosIncertosShopee(
+          vinculosLidos ?? [],
+          entrada.contaId,
+          linkDocId,
+        ),
       }),
     );
   }
@@ -1877,8 +2030,13 @@ function EditorShopee({
   /**
    * Send ONE draft's publish under the one-write lock — by `linkDocId` alone
    * (`corpoPublicarRascunhoShopee`), each flag only because the operator gave
-   * it: `confirmarSegundoAnuncio` after the D15 warning, `confirmarCriacaoIncerta`
-   * after a Seller-Centre attestation. Every answer ends in exactly one of:
+   * it: `confirmarSegundoAnuncio` after the D15 warning, and — after a
+   * Seller-Centre attestation — the attestation ITSELF, so the body carries
+   * `confirmarCriacaoIncerta` WITH the outcome the exit promised
+   * (`criacaoIncertaAdota`: the listing it adopts, `[]` for a create — §I1):
+   * a look-up that sees otherwise now refuses with nothing sent, and its fresh
+   * row replaces this outcome (`respondeAtestacao` words it). Every answer
+   * ends in exactly one of:
    *
    *  - a 2xx — the 200 or the 202 — recorded with the REQUEST's «Criar
    *    pausado» (`pedidoRascunho`): once published the link is no draft, and a
@@ -1887,10 +2045,18 @@ function EditorShopee({
    *  - a 409 `rascunhoContaJaTemAnuncio` — the SAME confirmation again, its
    *    count from `detalhes.vinculos`, everything else as sent (K1-4);
    *  - no answer to trust — `sem-resposta`, never «falhou» (#15);
+   *  - a 409 `publicacaoExpirada` or a coded non-limit 502 — `parada`, held
+   *    WITHOUT a sentence: the panel words it on every render over the block's
+   *    CURRENT reading (`livre` and `incerta` need opposite exits, §I2);
+   *  - a 409 `rascunhoJaPublicado` — the link is no draft any more; worded by
+   *    whether THIS request was attested (§I4: the confirmation had no effect,
+   *    nothing was created or changed), never re-sent;
    *  - a definite answer about the draft (`falhaDaPublicacaoDoRascunhoShopee`),
    *    else the publish's own reading (`desfechoDaFalha`: the 422 rows, the
    *    quota pause, the channel's ladder) — so a draft's 404 never reads as a
    *    live link's «não pertence mais a esta conta».
+   *
+   * A failed ID-token refresh is `executar`'s pt-BR outcome (G1).
    */
   function enviarPublicacao(
     contaId: string,
@@ -1903,7 +2069,7 @@ function EditorShopee({
       linkDocId,
       pausado: pedido.pausado,
       confirmarSegundoAnuncio: pedido.segundoAnuncio !== null,
-      confirmarCriacaoIncerta: pedido.atestacao !== null,
+      atestacao: pedido.atestacao,
     });
     void executar(
       linkDocId,
@@ -1930,12 +2096,31 @@ function EditorShopee({
                 return null;
               case 'sem-resposta':
                 return { tipo: 'sem-resposta' };
+              case 'expirada':
+              case 'interrompida':
+                return { tipo: 'parada', parada: falha };
+              case 'ja-publicado':
+                // Worded by what THIS request was (§I4): an attested one's
+                // confirmation had no effect. The confirmation is already
+                // closed and the refusal rows (with their exits) are replaced,
+                // so nothing offers the same attestation again.
+                return {
+                  tipo: 'falha',
+                  mensagem: fraseDoRascunhoJaPublicadoNaPublicacaoShopee(pedido.atestacao !== null),
+                };
               case 'mensagem':
                 return { tipo: 'falha', mensagem: falha.mensagem };
+              default: {
+                // Exhaustive: a reading added to the lib is a TYPE error here,
+                // never a silent fall-through into `throw err` below.
+                const semLeitura: never = falha;
+                return semLeitura;
+              }
             }
           }
           // A `FirebaseError` (the ID token, refreshed before the request
-          // leaves) is `executar`'s definite outcome; anything else is not ours.
+          // leaves) is `executar`'s definite outcome, in pt-BR
+          // (`fraseDaSessaoShopee`); anything else is not ours.
           throw err;
         }
       },
@@ -1973,6 +2158,9 @@ function EditorShopee({
     return {
       publicacao: entrada.bloco.publicacao,
       nowMs: relogioRascunho,
+      // The SKU the uncertain attempt SENT — the schemas' reading, never the
+      // record's field read raw (`null` = unknown, `''` = sent with none).
+      skuEnviado: janelaDaCriacaoIncertaShopee(entrada.link)?.sku ?? null,
       podePublicar: podePublicarAgora(linkDocId),
       podeDescartar: entrada.bloco.podeDescartar,
       onSaida: (saida) => saidaDoProblema(linkDocId, saida),
@@ -2015,6 +2203,7 @@ function EditorShopee({
       onDesfazer: () => desfazerRascunho(linkDocId),
       onDescartar: (tipo) => pedirDescarte(linkDocId, tipo),
       decisaoDePublicar,
+      falhaDaLeitura: falhaDaLeituraDoBloco(entrada, decisaoDePublicar),
       onPublicar: () => abrirPublicacao(linkDocId, null),
       confirmacaoDePublicacao:
         publicacaoAberta?.linkDocId === linkDocId ? publicacaoAberta.confirmacao : null,
@@ -2320,7 +2509,9 @@ function EditorShopee({
               <Text size="sm">
                 {descarteNaTela.tipo === 'local'
                   ? FRASE_CONFIRMAR_DESCARTE_LOCAL_SHOPEE
-                  : FRASE_CONFIRMAR_DESCARTE_SHOPEE}
+                  : descarteNaTela.atestado !== null
+                    ? FRASE_CONFIRMAR_DESCARTE_ATESTADO_SHOPEE
+                    : FRASE_CONFIRMAR_DESCARTE_SHOPEE}
               </Text>
               {descarteNaTela.atestado?.aviso != null && (
                 <Alert color="orange" variant="light">

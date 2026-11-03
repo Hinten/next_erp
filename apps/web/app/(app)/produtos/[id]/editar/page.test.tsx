@@ -1,8 +1,15 @@
-import type { MutableRefObject, ReactNode } from 'react';
+import {
+  Children,
+  isValidElement,
+  type MutableRefObject,
+  type ReactElement,
+  type ReactNode,
+} from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, render, screen } from '@testing-library/react';
 import { initializeApp } from 'firebase/app';
-import { getFirestore } from 'firebase/firestore';
+import { getFirestore, queryEqual, type Query } from 'firebase/firestore';
+import { buildQuery, whereEqual } from '@delfrance/data';
 import { AfterSaveBlockedError, type FieldConfig, type FieldRenderProps } from '@delfrance/ui';
 import { MantineTestProvider } from '@/lib/testing/mantine';
 import { MENSAGEM_RASCUNHO_SHOPEE_PENDENTE } from '@/lib/produtos/rascunhoShopeePendente';
@@ -66,6 +73,12 @@ const h = vi.hoisted(() => ({
   shopeeTab: null as Record<string, unknown> | null,
   /** The props the page handed the (stubbed) Mercado Livre tab, last render. */
   mlTab: null as Record<string, unknown> | null,
+  /**
+   * The STORED variation children the page's `paiId == p1` query answers
+   * (KNOWN #9 round 2); every other live query answers `[]`. Replace the
+   * array (never mutate it) so the page's memo sees a new emission.
+   */
+  filhos: [] as { id: string; data: Record<string, unknown> }[],
 }));
 
 vi.mock('@delfrance/ui', async (importOriginal) => ({
@@ -89,7 +102,11 @@ vi.mock('@/lib/firebase/client', () => ({
 }));
 vi.mock('@delfrance/data/hooks', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@delfrance/data/hooks')>()),
-  useSnapshot: () => ({ data: [], loading: false, error: undefined }),
+  useSnapshot: (q: Query) => ({
+    data: queryEqual(q, consultaDosFilhos()) ? h.filhos : [],
+    loading: false,
+    error: undefined,
+  }),
   useDocSnapshot: (ref: { path: string } | null): Snap => {
     const data = ref ? h.docs.get(ref.path) : undefined;
     return {
@@ -138,17 +155,26 @@ const db = getFirestore(
   initializeApp({ projectId: 'demo-produto-editar' }, 'produto-editar'),
   'default',
 );
+/** The page's children query, built as the page builds it. */
+const consultaDosFilhos = () =>
+  buildQuery(produtoCollection.ref(db, {}), [whereEqual('paiId', 'p1')]);
 
 import EditarProdutoPage from './page';
+import { produtoCollection } from '@/lib/data/produtoCollection';
 import { SECTION_SHOPEE } from '../../_components/produtoFields';
+import type { VariationRow } from '../../_components/VariationManager';
+import { KitVariacoesManager } from '../../_components/KitVariacoesManager';
 
-function montar(): void {
+/** Mounts the page; the returned function re-renders it (a new `h.filhos` emission reaches it). */
+function montar(): () => void {
   h.captured = null;
-  render(
+  const arvore = () => (
     <MantineTestProvider>
       <EditarProdutoPage />
-    </MantineTestProvider>,
+    </MantineTestProvider>
   );
+  const { rerender } = render(arvore());
+  return () => rerender(arvore());
 }
 
 function capturado(): Capturado {
@@ -181,6 +207,7 @@ beforeEach(() => {
   h.falhasDePropagacao = 0;
   h.shopeeTab = null;
   h.mlTab = null;
+  h.filhos = [];
 });
 
 describe('produtos/[id]/editar — «É kit virtual» needs «É kit» (step 19, O-8, M159)', () => {
@@ -589,5 +616,214 @@ describe('produtos/[id]/editar — the Shopee drafts leave-guard (#1911 P10, DC 
     const anterior = capturado().onAfterSave!;
     reportarShopee(false);
     await expect(anterior('p1', {})).resolves.toBeUndefined();
+  });
+});
+
+/** The VariationManager element the page's «Variações» input builds — its callbacks, never rendered. */
+function variationManager(): {
+  onPriceDirtyChange: (dirty: boolean) => void;
+  onRowsChange: (rows: VariationRow[]) => void;
+} {
+  const renderInput = capturado().fields?.variacoesUid?.renderInput;
+  if (!renderInput) throw new Error('the page gives «Variações» no input');
+  const el = renderInput({
+    name: 'variacoesUid',
+    label: 'Variações',
+    value: null,
+    onChange: vi.fn(),
+    onBlur: vi.fn(),
+    descriptor: {} as FieldRenderProps['descriptor'],
+  }) as ReactElement<{
+    onPriceDirtyChange: (dirty: boolean) => void;
+    onRowsChange: (rows: VariationRow[]) => void;
+  }>;
+  return el.props;
+}
+
+/**
+ * The KitVariacoesManager element the page's «Componentes do kit» input builds
+ * (the second child of its `Stack`, beside the parent's `KitManager`) — its
+ * props, never rendered.
+ */
+function kitVariacoesManager(): { onDirtyChange?: (dirty: boolean) => void } {
+  const renderInput = capturado().fields?.componentesKit?.renderInput;
+  if (!renderInput) throw new Error('the page gives «Componentes do kit» no input');
+  const pilha = renderInput({
+    name: 'componentesKit',
+    label: 'Componentes do kit',
+    value: null,
+    onChange: vi.fn(),
+    onBlur: vi.fn(),
+    descriptor: {} as FieldRenderProps['descriptor'],
+  }) as ReactElement<{ children: ReactNode }>;
+  const grade = Children.toArray(pilha.props.children).find(
+    (c): c is ReactElement<{ onDirtyChange?: (dirty: boolean) => void }> =>
+      isValidElement(c) && c.type === KitVariacoesManager,
+  );
+  if (!grade) throw new Error('the Kit tab renders no KitVariacoesManager');
+  return grade.props;
+}
+
+/** What the grid does when a composition is staged / flushed: report, outside any render. */
+function reportarKitVariacoes(dirty: boolean): void {
+  const reporter = kitVariacoesManager().onDirtyChange;
+  if (typeof reporter !== 'function') throw new Error('the page gives the grid no onDirtyChange');
+  act(() => reporter(dirty));
+}
+
+describe('produtos/[id]/editar — staged variation edits reach a Shopee draft’s «Publicar» gate (#1911 P11 review, KNOWN #9)', () => {
+  const salvo: VariationRow = {
+    key: 'c1',
+    id: 'c1',
+    nome: 'Camiseta P',
+    sku: 'CAM-P',
+    variacoesUid: [],
+    precos: null,
+    deleteMark: false,
+  };
+  /** What the page handed the (stubbed) Shopee tab on its last render. */
+  const fora = () => {
+    renderAba('shopee');
+    return h.shopeeTab?.produtoSujoForaDoFormulario;
+  };
+  /** `salvo` as the page's `paiId` query stores it. */
+  const gravado = (dados: Partial<Record<'nome' | 'sku', string>> = {}) => ({
+    id: 'c1',
+    data: { nome: salvo.nome, sku: salvo.sku, paiId: 'p1', ordem: 0, precos: null, ...dados },
+  });
+  let reRenderizar: () => void;
+
+  beforeEach(() => {
+    h.docs.set('produtos/p1', { nome: 'Camiseta', paiId: null, ehKit: false });
+    h.filhos = [gravado()];
+    reRenderizar = montar();
+  });
+
+  it('a staged independent variation price ⇒ `true`; cleared again ⇒ `false`', () => {
+    expect(fora()).toBe(false);
+    act(() => variationManager().onPriceDirtyChange(true));
+    expect(fora()).toBe(true);
+    act(() => variationManager().onPriceDirtyChange(false));
+    expect(fora()).toBe(false);
+  });
+
+  it('a child staged as NEW (no document yet) or marked for deletion ⇒ `true` ⟷ NEAR-MISS the saved children alone ⇒ `false`', () => {
+    act(() => variationManager().onRowsChange([salvo]));
+    expect(fora()).toBe(false);
+    act(() => variationManager().onRowsChange([salvo, { ...salvo, key: 'n1', id: null }]));
+    expect(fora()).toBe(true);
+    act(() => variationManager().onRowsChange([{ ...salvo, deleteMark: true }]));
+    expect(fora()).toBe(true);
+    act(() => variationManager().onRowsChange([salvo]));
+    expect(fora()).toBe(false);
+  });
+
+  // Round 2 (KNOWN #9 PARTIAL): `VariationRow` has no per-row dirty flag, so a
+  // staged patch of a SAVED child is read by comparing the published row with
+  // the stored child. Exact, no fold: each patch below is something the flush
+  // WRITES, so each must hold the gate.
+  it.each<[string, Partial<VariationRow>]>([
+    ['its SKU', { sku: 'CAM-P-NOVO' }],
+    ['its SKU by a trailing space only', { sku: 'CAM-P ' }],
+    ['its name', { nome: 'Camiseta P (nova)' }],
+    ['its options', { variacoesUid: ['cor/azul'] }],
+  ])(
+    'a staged patch of a SAVED child — %s — ⇒ `true` ⟷ NEAR-MISS the same rows unchanged ⇒ `false`',
+    (_caso, patch) => {
+      act(() => variationManager().onRowsChange([salvo]));
+      expect(fora()).toBe(false);
+      act(() => variationManager().onRowsChange([{ ...salvo, ...patch }]));
+      expect(fora()).toBe(true);
+      // Undone in the editor: a NEW array of the same values, never the gate's own memo.
+      act(() => variationManager().onRowsChange([{ ...salvo }]));
+      expect(fora()).toBe(false);
+    },
+  );
+
+  it('NEAR-MISS: a stored child with no SKU and no options (`null`) reads as the published `""` / `[]` — no dirt', () => {
+    h.filhos = [{ ...gravado(), data: { ...gravado().data, sku: null, variacoesUid: null } }];
+    reRenderizar();
+    act(() => variationManager().onRowsChange([{ ...salvo, sku: '', variacoesUid: [] }]));
+    expect(fora()).toBe(false);
+    act(() => variationManager().onRowsChange([{ ...salvo, sku: 'CAM-P', variacoesUid: [] }]));
+    expect(fora()).toBe(true);
+  });
+
+  it('the same options in ANOTHER order hold the gate (no re-derived normalisation: it errs closed until the save) ⟷ NEAR-MISS the stored order ⇒ `false`', () => {
+    h.filhos = [{ ...gravado(), data: { ...gravado().data, variacoesUid: ['cor/azul', 'tam/p'] } }];
+    reRenderizar();
+    const comOpcoes = { ...salvo, variacoesUid: ['cor/azul', 'tam/p'] };
+    act(() => variationManager().onRowsChange([comOpcoes]));
+    expect(fora()).toBe(false);
+    act(() =>
+      variationManager().onRowsChange([{ ...comOpcoes, variacoesUid: ['tam/p', 'cor/azul'] }]),
+    );
+    expect(fora()).toBe(true);
+  });
+
+  it('a snapshot LAG only closes the gate: the stored child still old, or not there yet ⇒ `true`, then the echo alone reopens it', () => {
+    // After the save: the VariationManager already publishes the written SKU,
+    // the page's own listener still holds the old one.
+    act(() => variationManager().onRowsChange([{ ...salvo, sku: 'CAM-P-NOVO' }]));
+    expect(fora()).toBe(true);
+    h.filhos = [gravado({ sku: 'CAM-P-NOVO' })];
+    reRenderizar();
+    expect(fora()).toBe(false);
+    // A saved id the page's snapshot does not hold yet.
+    act(() =>
+      variationManager().onRowsChange([
+        { ...salvo, sku: 'CAM-P-NOVO' },
+        { ...salvo, key: 'c2', id: 'c2', sku: 'CAM-M' },
+      ]),
+    );
+    expect(fora()).toBe(true);
+    h.filhos = [
+      gravado({ sku: 'CAM-P-NOVO' }),
+      { id: 'c2', data: { nome: salvo.nome, sku: 'CAM-M', paiId: 'p1', ordem: 1, precos: null } },
+    ];
+    reRenderizar();
+    expect(fora()).toBe(false);
+  });
+
+  // Round 3 (KNOWN #9 PARTIAL): the Kit tab's per-variation grid keeps each
+  // child's staged `componentesKit` in its own state, flushed only by the
+  // produto's save — and the publish derives each kit model's `seller_stock`
+  // from the STORED child composition.
+  it('a per-variation kit composition staged in the Kit tab ⇒ `true` and the leave-guard armed; the report clearing after the flush ⇒ both `false` again ⟷ NEAR-MISS nothing staged ⇒ `false`', () => {
+    // Nothing staged: never reported, then reported clean (the grid's mount).
+    expect(fora()).toBe(false);
+    expect(capturado().extraDirty).toBe(false);
+    reportarKitVariacoes(false);
+    expect(fora()).toBe(false);
+    expect(capturado().extraDirty).toBe(false);
+
+    reportarKitVariacoes(true);
+    expect(fora()).toBe(true);
+    expect(capturado().extraDirty).toBe(true);
+
+    // The save's flush wrote every staged map: the grid reports clean.
+    reportarKitVariacoes(false);
+    expect(fora()).toBe(false);
+    expect(capturado().extraDirty).toBe(false);
+  });
+
+  it('NEAR-MISS: the kit report is an OR — its clean report never reopens a gate another staged edit holds', () => {
+    act(() => variationManager().onPriceDirtyChange(true));
+    reportarKitVariacoes(true);
+    reportarKitVariacoes(false);
+    expect(fora()).toBe(true);
+    expect(capturado().extraDirty).toBe(true);
+    act(() => variationManager().onPriceDirtyChange(false));
+    expect(fora()).toBe(false);
+    expect(capturado().extraDirty).toBe(false);
+  });
+
+  it('NEAR-MISS: the Mercado Livre flag arms the leave-guard but is NOT handed to the Shopee gate (the Shopee publish reads no ML edit), nor is the tab’s own draft flag fed back', () => {
+    renderAba('mercadoLivre');
+    act(() => (h.mlTab?.onDirtyChange as (dirty: boolean) => void)(true));
+    expect(capturado().extraDirty).toBe(true);
+    expect(fora()).toBe(false);
+    act(() => (h.shopeeTab?.onDirtyChange as (dirty: boolean) => void)(true));
+    expect(fora()).toBe(false);
   });
 });

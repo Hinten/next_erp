@@ -12,7 +12,9 @@
  *     content it will send — rule 7 tier 1: `update({publicacaoEmCurso},
  *     {lastUpdateTime})` against the snapshot that decided, ≤ 3 re-derives
  *     (never a re-apply). A live lock (incl. its post-expiry grace) ⇒ 409
- *     `EM_ANDAMENTO`; the document is no longer a draft ⇒ 409 `JA_PUBLICADO`;
+ *     `EM_ANDAMENTO`; the document is no longer a draft ⇒ 409 `JA_PUBLICADO`
+ *     (on the FIRST read too when the attestation states what it expects —
+ *     §I4; otherwise a first-read non-draft is a republish, no lock);
  *     gone ⇒ the route's 404. A lock past the grace, or a recorded uncertain
  *     create (`incerta`) is TAKEN OVER — and the takeover carries the attempt
  *     window's start (`janelaDaCriacaoIncertaShopee`, read from the document
@@ -44,8 +46,11 @@
  *     UPDATE; a COMPLETE scan that found nothing ⇒ clear the record
  *     (token-guarded, and it must land — else nothing is sent) and go on to
  *     `add_item`. An attested SKU-less produto goes on with the record KEPT
- *     (no scan proved anything). A `livre` draft runs no ENSURE: its FIRST
- *     create's same-SKU look-up (#1911 P5b, `verificarAnuncioExistenteShopee`)
+ *     (no scan proved anything). An attestation that states what it expects
+ *     (§I1) on a draft that does NOT read `incerta` is refused with a 422
+ *     before the lock — nothing written: only ENSURE's verdict can honour
+ *     it. A `livre` draft runs no ENSURE: its FIRST create's same-SKU
+ *     look-up (#1911 P5b, `verificarAnuncioExistenteShopee`)
  *     runs later, in `publicarAnuncio.ts`'s `aplicarPublicacao`, still under
  *     this lock, on the SKU the planned body sends — the reservation only
  *     reports the fold ENSURE searched ({@link DesfechoDaReserva}'s
@@ -145,7 +150,11 @@ import { isFailedPrecondition, isGrpcStatusError } from '@delfrance/data/admin/g
 
 import { BuscaForaDoPrazoShopeeError } from '../kits/localizarKitPorSku';
 import { aplicarLinkDaListagem } from '../produtos/links';
-import { localizarAnuncioIncerto } from './criacaoIncerta';
+import {
+  expectativaDaAtestacao,
+  localizarAnuncioIncerto,
+  problemaDaAtestacaoSemCriacaoIncerta,
+} from './criacaoIncerta';
 import { ShopeePublishBlockedError } from './errosPublicacao';
 import { lerVinculosDaConta, type VinculoLidoDaConta } from './linkAnuncio';
 
@@ -206,6 +215,21 @@ export interface ControlesDaPublicacaoAoVivo {
    * ambiguous or incomplete one.
    */
   readonly confirmarCriacaoIncerta: boolean;
+  /**
+   * What the attestation EXPECTS (#1911 batch-B review, Lucas §I1) — `[L]` =
+   * adopt the unlinked listing `L`, `[]` = a deliberate create — read off the
+   * refusal the operator acted on. ENSURE honours the attestation only when
+   * its FRESH verdict does exactly this; any other verdict refuses with
+   * nothing sent (`criacaoIncerta.ts`, `decidir`) — and so does a draft that
+   * does not read `incerta` at the reservation (no ENSURE, so no verdict:
+   * `problemaDaAtestacaoSemCriacaoIncerta`, before the lock), and a link that
+   * is no longer a draft at all (§I4: 409 `JA_PUBLICADO`, never the update
+   * the bare flag would run — nothing written, nothing sent). Absent or
+   * `null` ⇒ the bare attestation's meaning — the CLI's, which never sets
+   * it. Only the route sets it, and only beside
+   * `confirmarCriacaoIncerta: true` (`corpoPublicacao.ts`).
+   */
+  readonly criacaoIncertaAdota?: readonly number[] | null;
 }
 
 /**
@@ -367,13 +391,26 @@ function criacaoIncerta(linkDocId: string): ConflitoDeRascunhoShopeeError {
   });
 }
 
-function jaPublicado(linkDocId: string): ConflitoDeRascunhoShopeeError {
+/**
+ * 409 `JA_PUBLICADO` — the addressed document is no longer a draft. Its
+ * producers: the reservation (the draft stopped being one between two of its
+ * reads; or, §I4, an attestation's expectation reached a link that is not a
+ * draft on the FIRST read), ENSURE's token-guarded writes, the pre-send
+ * re-read — and, EXPORTED for it (round 5), the publish entry's guard on the
+ * KIT arms (`publicarShopee.ts`): an attestation's expectation whose named
+ * link the dispatcher routed to a kit arm never reaches this reservation, and
+ * is refused there with THIS 409, never a second sentence. The sentence
+ * claims only what the read showed — the document RECORDS a listing — never
+ * that the listing still exists on Shopee: an adopted or claimed link may
+ * have been removed in Seller Centre since.
+ */
+export function conflitoDeRascunhoJaPublicado(linkDocId: string): ConflitoDeRascunhoShopeeError {
   return new ConflitoDeRascunhoShopeeError({
     code: CODIGO_RASCUNHO_SHOPEE.jaPublicado,
     linkDocId,
     mensagem:
-      `o vínculo ${linkDocId} já não é um rascunho: o anúncio já existe na Shopee. Recarregue ` +
-      'e publique-o como atualização. Nada foi enviado agora.',
+      `o vínculo ${linkDocId} já não é um rascunho: ele já registra um anúncio da Shopee. ` +
+      'Recarregue e publique-o como atualização. Nada foi enviado agora.',
   });
 }
 
@@ -418,7 +455,10 @@ export const TENTATIVAS_DA_TRAVA = 3;
  * listing (D15) — see the module docblock, step 1.
  *
  * The FIRST read decides whether this is a draft at all: not a draft ⇒
- * `nao-e-rascunho` (a republish takes no lock, and needs no `controles`). A
+ * `nao-e-rascunho` (a republish takes no lock, and needs no `controles`) —
+ * unless the controls carry an attestation's EXPECTATION (§I4, Lucas
+ * 2026-11-03): that was read off a draft's refusal, so a link that is no
+ * longer one ⇒ 409 `JA_PUBLICADO`, decided on this read, nothing written. A
  * document that STOPS being a draft between two attempts (another run claimed
  * it) ⇒ 409 `JA_PUBLICADO`.
  *
@@ -429,7 +469,9 @@ export const TENTATIVAS_DA_TRAVA = 3;
  * @returns `adotada` when ENSURE recorded the earlier attempt's listing on the
  *   draft (the run goes on as an update, lock-free).
  * @throws ConflitoDeRascunhoShopeeError for every 409 above;
- *   ShopeePublishBlockedError for an ENSURE refusal (the 422; the record kept);
+ *   ShopeePublishBlockedError for an ENSURE refusal (the 422; the record kept),
+ *   and — before any write — for an attestation's expectation on a draft that
+ *   does not read `incerta` (§I1);
  *   any Shopee or Firestore failure of the look-up, with our lock handed back.
  */
 export async function reservarRascunhoShopee(
@@ -448,8 +490,23 @@ export async function reservarRascunhoShopee(
     if (!vinculoShopeeEhDaConta(raw, alvo.integracaoId)) return { tipo: 'inexistente' };
 
     if (!ehRascunhoShopee(raw)) {
-      if (tentativa === 1) return { tipo: 'nao-e-rascunho' };
-      throw jaPublicado(alvo.linkDocId);
+      if (tentativa > 1) throw conflitoDeRascunhoJaPublicado(alvo.linkDocId);
+      // ⚠️ §I4 (Lucas, 2026-11-03): an attestation that states what it
+      // expects was read off a DRAFT's refusal, and only ENSURE's verdict on
+      // that draft can honour it. A link that is no longer a draft on THIS
+      // first read (another run adopted or claimed it, or the import adopted
+      // it, since the refusal) runs no ENSURE: going on as an UPDATE would be
+      // neither the adoption nor the create the operator confirmed. Refused —
+      // the 409 the loop below answers for the same fact — with nothing
+      // written and nothing sent. The bare flag (the CLI), an absent field and
+      // a caller with no controls keep their republish.
+      const esperado = controles === null ? null : expectativaDaAtestacao(controles);
+      if (esperado === null) return { tipo: 'nao-e-rascunho' };
+      console.warn(
+        '[shopee/anuncios] atestação com expectativa num vínculo que já não é rascunho; nada enviado',
+        { produtoId: alvo.produtoId, linkDocId: alvo.linkDocId, esperado },
+      );
+      throw conflitoDeRascunhoJaPublicado(alvo.linkDocId);
     }
     if (controles === null) {
       throw new Error(
@@ -472,6 +529,27 @@ export async function reservarRascunhoShopee(
     if (estado.tipo === 'incerta') {
       janela = janelaDaCriacaoIncertaShopee(raw);
       if (janela === null) throw criacaoIncerta(alvo.linkDocId);
+    }
+    // ⚠️ §I1 (Lucas, 2026-10-29): an attestation that states what it expects is
+    // honoured ONLY by ENSURE's fresh verdict, and a draft that does not read
+    // `incerta` — decided on THIS read — runs no ENSURE: the FIRST create that
+    // would follow is not what the operator confirmed. Refused BEFORE the lock,
+    // so nothing is written and nothing sent; the bare flag (the CLI) goes on.
+    const esperado = expectativaDaAtestacao(controles);
+    if (estado.tipo !== 'incerta' && esperado !== null) {
+      console.warn(
+        '[shopee/anuncios] atestação com expectativa num rascunho sem criação incerta; nada enviado',
+        {
+          produtoId: alvo.produtoId,
+          linkDocId: alvo.linkDocId,
+          esperado,
+        },
+      );
+      throw new ShopeePublishBlockedError({
+        produtoId: alvo.produtoId,
+        itemId: null,
+        problemas: [problemaDaAtestacaoSemCriacaoIncerta(esperado)],
+      });
     }
 
     const reserva: ReservaDeRascunhoShopee = {
@@ -628,7 +706,9 @@ async function recusarSegundoAnuncio(
  * fold the look-up searched (`null`: it searched nothing, the attested
  * SKU-less produto), which the publish compares with the body's.
  *
- *  - `recusar` ⇒ `ShopeePublishBlockedError` with the look-up's ONE problema;
+ *  - `recusar` ⇒ `ShopeePublishBlockedError` with the look-up's ONE problema
+ *    — an attestation whose expectation (`criacaoIncertaAdota`) THIS scan does
+ *    not match included: no adoption is written and no `add_item` follows;
  *  - `adotar` ⇒ the token-guarded adoption on this document (`item_id`, the
  *    canonical conta ref, lock + record + failure stamp cleared) — the run is
  *    then an UPDATE of that listing;
@@ -665,6 +745,8 @@ async function garantirCriacaoIncerta(
         janela: a.janela,
         vinculosDoProduto: a.vinculos,
         confirmarCriacaoIncerta: a.controles.confirmarCriacaoIncerta,
+        // Decided on THIS scan, lock held — never on the refusal it was read off.
+        criacaoIncertaAdota: a.controles.criacaoIncertaAdota ?? null,
         podeContinuar,
       }),
   );
@@ -773,7 +855,7 @@ function perdeuATrava(
     linkDocId: reserva.linkDocId,
     desfecho,
   });
-  if (desfecho === 'recusada') return jaPublicado(reserva.linkDocId);
+  if (desfecho === 'recusada') return conflitoDeRascunhoJaPublicado(reserva.linkDocId);
   if (desfecho === 'contencao') {
     return new ConflitoDeRascunhoShopeeError({
       code: CODIGO_RASCUNHO_SHOPEE.contencao,
@@ -879,7 +961,7 @@ export async function conferirTravaAntesDoEnvio(
     const snap = await ref.get();
     const raw = snap.exists ? ((snap.data() ?? {}) as Record<string, unknown>) : null;
     if (raw !== null && itemIdEnderecavelShopee(raw.item_id) !== null) {
-      throw jaPublicado(reserva.linkDocId);
+      throw conflitoDeRascunhoJaPublicado(reserva.linkDocId);
     }
     const trava = raw === null ? null : travaLegivel(raw);
     if (trava === null || trava.token !== reserva.token) {

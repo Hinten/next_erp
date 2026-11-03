@@ -20,6 +20,7 @@ import {
   anuncioShopeeVivo,
   chaveAvisoReceitaKitShopee,
   estadoPublicacaoRascunhoShopee,
+  type EstadoPublicacaoRascunhoShopee,
   type ProdutoShopeeLink,
 } from '@delfrance/schemas';
 import { formatReais } from '@delfrance/core/money';
@@ -50,7 +51,17 @@ import {
   FRASE_RASCUNHO_SEM_MUDANCA_SHOPEE,
   FRASE_PUBLICACAO_CONTENCAO_SHOPEE,
   FRASE_RASCUNHO_INEXISTENTE_NA_PUBLICACAO_SHOPEE,
+  FRASE_ATESTACAO_QUE_VARRE_SHOPEE,
+  FRASE_ATESTACAO_SEM_BUSCA_SHOPEE,
+  FRASE_ATESTACAO_SUPERADA_SHOPEE,
+  FRASE_ATESTACAO_DE_RASCUNHO_JA_PUBLICADO_SHOPEE,
+  FRASE_PUBLICAR_PRODUTO_NAO_SALVO_SHOPEE,
+  FRASE_PUBLICAR_SEM_FAIXAS_SHOPEE,
   MOTIVO_ANUNCIO_SHOPEE,
+  PORTA_DA_IMPORTACAO_SHOPEE,
+  ROTULO_DESCARTAR_ANUNCIO_DA_TENTATIVA_SHOPEE,
+  ROTULO_PUBLICAR_ATESTANDO_SEM_SKU_SHOPEE,
+  ROTULO_PUBLICAR_SEGUNDO_DE_PROPOSITO_SHOPEE,
   ROTULO_CONFIRMAR_SEGUNDO_ANUNCIO_SHOPEE,
   ROTULO_PUBLICAR_RASCUNHO_SHOPEE,
   TITULO_PUBLICAR_RASCUNHO_SHOPEE,
@@ -66,14 +77,19 @@ import {
   fraseDoConflitoDeConcorrenciaShopee,
   fraseDoConflitoIlegivelShopee,
   fraseDaPublicacaoExpiradaShopee,
+  fraseDaPublicacaoInterrompidaShopee,
   fraseDoRascunhoEmAndamentoShopee,
+  fraseDosRascunhosIrmaosIncertosShopee,
+  textoDaConfirmacaoDePublicacaoShopee,
   textoDoSegundoAnuncioNaPublicacaoShopee,
   textoDoSegundoAnuncioShopee,
+  rotuloDaPublicacaoQueAdotaShopee,
 } from '@/lib/shopee/anuncioProduto';
-import { CODIGO_FALHA_SHOPEE } from '@/lib/shopee/erros';
+import { CODIGO_FALHA_SHOPEE, descreverFalhaShopee } from '@/lib/shopee/erros';
 import {
   marcaDaLinhaParaRascunhoShopee,
   saidasDoProblemaShopee,
+  type ExistentesNaContaShopee,
   type SaidaDoProblemaShopee,
 } from '@/lib/shopee/rascunho';
 import {
@@ -156,6 +172,8 @@ const h = vi.hoisted(() => ({
   fromCache: false as boolean | undefined,
   /** The produto's `extraData/singleton` document (`null` = none). */
   extraData: null as Record<string, unknown> | null,
+  /** The `extraData/singleton` LISTENER failed (`null` = it answers `extraData`). */
+  extraDataErro: null as Error | null,
   /** The LAST props each draft form received, by link doc id (the `RascunhoShopee` double). */
   rascunhos: new Map<string, RascunhoShopeeProps>(),
   /** The LAST props the conflict modal received (the `ConflitoRascunhoShopeeModal` double). */
@@ -199,6 +217,10 @@ vi.mock('@delfrance/data/hooks', () => ({
   useDocSnapshot: (ref: { __doc?: string; id?: string } | null) => {
     if (ref === null) return { data: undefined, loading: false, error: undefined };
     if (ref.__doc === 'aviso') h.avisosLidos.add(ref.id ?? '?');
+    // A failed listener, as the real hook reports it: no data, the error.
+    if (ref.__doc === 'extraData' && h.extraDataErro !== null) {
+      return { data: undefined, loading: false, error: h.extraDataErro };
+    }
     const data =
       ref.__doc === 'produto'
         ? h.produto
@@ -296,7 +318,10 @@ vi.mock('./RascunhoShopee', async () => {
       >
         {c.segundoAnuncio !== null && (
           <p data-testid="aviso-segundo-anuncio">
-            {copia.textoDoSegundoAnuncioNaPublicacaoShopee(c.segundoAnuncio)}
+            {copia.textoDoSegundoAnuncioNaPublicacaoShopee(c.segundoAnuncio, {
+              publicacao: p.bloco.publicacao,
+              atestacao: c.atestacao,
+            })}
           </p>
         )}
         {c.atestacao !== null && <p data-testid="atestacao">{c.atestacao.rotulo}</p>}
@@ -414,11 +439,16 @@ vi.mock('./ConflitoRascunhoShopeeModal', () => ({
 }));
 
 const {
+  FRASE_CONFIRMAR_DESCARTE_ATESTADO_SHOPEE,
+  FRASE_DESCRICAO_DO_PRODUTO_NAO_LIDA_SHOPEE,
   FRASE_SESSAO_NAO_RENOVADA_SHOPEE,
   FRASE_SESSAO_SEM_CONEXAO_SHOPEE,
   ShopeeEditor,
   fraseDaSessaoShopee,
+  fraseDosLimitesNaoLidosShopee,
 } = await import('./ShopeeEditor');
+const { TITULO_PUBLICACAO_BLOQUEADA_SHOPEE, TITULO_PUBLICACAO_RECUSADA_SHOPEE } =
+  await import('./DesfechoAcaoShopee');
 const { ROTULO_PUBLICACAO_EM_ANDAMENTO_SHOPEE, ROTULO_PUBLICACAO_INCERTA_SHOPEE } =
   await import('./StatusAnuncioShopee');
 const { AcoesAnuncioShopee } = await import('./AcoesAnuncioShopee');
@@ -443,7 +473,11 @@ const link = (id: string, extra: Record<string, unknown> = {}): Linha => ({
 });
 
 function renderEditor(
-  props: { disabled?: boolean; onDirtyChange?: (dirty: boolean) => void } = {},
+  props: {
+    disabled?: boolean;
+    onDirtyChange?: (dirty: boolean) => void;
+    produtoSujoForaDoFormulario?: boolean;
+  } = {},
 ) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const wrapper = ({ children }: { children: ReactNode }) => (
@@ -493,6 +527,7 @@ beforeEach(() => {
   h.avisosLidos = new Set();
   h.fromCache = false;
   h.extraData = null;
+  h.extraDataErro = null;
   h.rascunhos = new Map();
   h.conflito = null;
   h.desfechos = new Map();
@@ -1418,6 +1453,20 @@ function recusa422(
 /** CLI copy — a flag, a script name or the word — must never reach the page (lens 8). */
 const TEXTO_DE_TERMINAL = /(^|\s)--[a-z]|:anuncio|comando/i;
 
+/**
+ * A failed ID-token refresh as the SDK REALLY builds it — English and
+ * developer-shaped (`@firebase/util`'s `${service}: ${message} (${code}).`) —
+ * never a pt-BR fixture message a test could assert back (#1911 review G1).
+ */
+const SESSAO_SEM_REDE = new FirebaseError(
+  'auth/network-request-failed',
+  'Firebase: Error (auth/network-request-failed).',
+);
+const SESSAO_EXPIRADA = new FirebaseError(
+  'auth/user-token-expired',
+  'Firebase: Error (auth/user-token-expired).',
+);
+
 describe('ShopeeEditor — pause and reactivate (podeMoverAnuncioShopee)', () => {
   it('(c) offers Pausar on a never-folded listing (estadoAnuncio null) and no status control on a removed one', () => {
     comEscrita();
@@ -1468,9 +1517,7 @@ describe('ShopeeEditor — pause and reactivate (podeMoverAnuncioShopee)', () =>
     // `getAuthToken()` runs outside the client's try: the rejection is the raw
     // Firebase Auth error, none of the client's classes — and nothing was sent.
     const definirStatusAnuncios = vi.fn<ShopeeClient['definirStatusAnuncios']>(() =>
-      Promise.reject(
-        new FirebaseError('auth/network-request-failed', 'Falha ao renovar a sessão.'),
-      ),
+      Promise.reject(SESSAO_SEM_REDE),
     );
     h.client = shopeeClientFalso({ definirStatusAnuncios });
     h.links = [link('L1')];
@@ -1484,10 +1531,25 @@ describe('ShopeeEditor — pause and reactivate (podeMoverAnuncioShopee)', () =>
     );
 
     const desfecho = await waitFor(() => screen.getByTestId('shopee-desfecho-L1'));
-    expect(within(desfecho).getByText('Falha ao renovar a sessão.')).toBeDefined();
+    // pt-BR by its code (`fraseDaSessaoShopee`, the draft writes' sentence) —
+    // never the SDK's English `err.message` (#1911 review R8-copy#14 / G1).
+    expect(within(desfecho).getByText(FRASE_SESSAO_SEM_CONEXAO_SHOPEE)).toBeDefined();
+    expect(desfecho.textContent).not.toMatch(/Firebase/);
     expect(definirStatusAnuncios).toHaveBeenCalledTimes(1);
     // The lock is released: the operator can try again.
     expect(botao('L1', 'Pausar anúncio').hasAttribute('disabled')).toBe(false);
+  });
+
+  it('NEAR-MISS: any OTHER auth code on a re-verify asks for a new sign-in — never the «sem conexão» retry, never the SDK’s English', async () => {
+    comEscrita();
+    h.client = shopeeClientFalso({ reverificarAnuncio: () => Promise.reject(SESSAO_EXPIRADA) });
+    h.links = [link('L1')];
+    renderEditor();
+    fireEvent.click(botao('L1', 'Reverificar'));
+    const desfecho = await waitFor(() => screen.getByTestId('shopee-desfecho-L1'));
+    expect(within(desfecho).getByText(FRASE_SESSAO_NAO_RENOVADA_SHOPEE)).toBeDefined();
+    expect(within(desfecho).queryByText(FRASE_SESSAO_SEM_CONEXAO_SHOPEE)).toBeNull();
+    expect(desfecho.textContent).not.toMatch(/Firebase|user-token-expired/);
   });
 
   it('a pause confirmation cannot send once its link was rewritten with an id no listing has', () => {
@@ -1793,7 +1855,12 @@ describe('ShopeeEditor — republish an existing link, never a first publish', (
     fireEvent.click(botao('L1', 'Republicar'));
     const desfecho = await waitFor(() => screen.getByTestId('shopee-desfecho-L1'));
     const d = within(desfecho);
-    expect(d.getByText('Publicação bloqueada — nada foi enviado à Shopee')).toBeDefined();
+    // OUR 422 on a LIVE listing's Republicar — an UPDATE, whose model leg may
+    // refuse after `update_item`: the title says who refused, never «nada foi
+    // enviado» (review R7-roundtrip#0; the REJECTED near-miss is the it.each
+    // below, «A Shopee recusou a publicação»).
+    expect(d.getByText(TITULO_PUBLICACAO_BLOQUEADA_SHOPEE)).toBeDefined();
+    expect(desfecho.textContent).not.toMatch(/nada foi enviado/i);
     // The motivo's own copy (PR 8), then the id the `acao` names.
     expect(
       d.getByText(`${TEXTO_MOTIVO_KIT['vinculo-substituido'] ?? '?'} Vínculo: L2.`),
@@ -1903,8 +1970,9 @@ describe('ShopeeEditor — republish an existing link, never a first publish', (
       renderEditor();
       fireEvent.click(botao('L1', 'Republicar'));
       await waitFor(() =>
-        expect(within(bloco('L1')).getByText('A Shopee recusou a publicação')).toBeDefined(),
+        expect(within(bloco('L1')).getByText(TITULO_PUBLICACAO_RECUSADA_SHOPEE)).toBeDefined(),
       );
+      expect(TITULO_PUBLICACAO_RECUSADA_SHOPEE).toBe('A Shopee recusou a publicação');
       expect(
         within(bloco('L1')).getByText(
           `Recusada na etapa: ${rotulo}. Escritas anteriores podem já ter chegado à Shopee — use "Reverificar" antes de repetir.`,
@@ -2791,17 +2859,14 @@ describe('ShopeeEditor — recriar / converter em kit nativo', () => {
   it('a failed ID-token refresh on a kit create is DEFINITE: its outcome, no wait, the store as it was (R2-1)', async () => {
     comEscrita();
     comKit();
-    const publicar = vi.fn<ShopeeClient['publicar']>(() =>
-      Promise.reject(
-        new FirebaseError('auth/network-request-failed', 'Falha ao renovar a sessão.'),
-      ),
-    );
+    const publicar = vi.fn<ShopeeClient['publicar']>(() => Promise.reject(SESSAO_SEM_REDE));
     h.client = shopeeClientFalso({ publicar });
     h.links = [linkKit('L-kit')];
     renderEditor();
     confirmarKit('L-kit', 'Recriar kit', 'Recriar kit nativo');
     const desfecho = within(await waitFor(() => screen.getByTestId('shopee-desfecho-L-kit')));
-    expect(desfecho.getByText('Falha ao renovar a sessão.')).toBeDefined();
+    expect(desfecho.getByText(FRASE_SESSAO_SEM_CONEXAO_SHOPEE)).toBeDefined();
+    expect(desfecho.queryByText(/Firebase/)).toBeNull();
     // Nothing was sent: no uncertain wait, no Repetir, nothing left in the store.
     expect(screen.queryByTestId('shopee-kit-incerto-int-1')).toBeNull();
     expect(window.sessionStorage.getItem(chaveIncerto('int-1', 'prod-1'))).toBeNull();
@@ -2818,12 +2883,7 @@ describe('ShopeeEditor — recriar / converter em kit nativo', () => {
       corpo: { integracaoId: 'int-1', produtoId: 'prod-1', linkDocId: 'L-kit', recriar: true },
     };
     window.sessionStorage.setItem(chaveIncerto('int-1', 'prod-1'), JSON.stringify(anterior));
-    h.client = shopeeClientFalso({
-      publicar: () =>
-        Promise.reject(
-          new FirebaseError('auth/network-request-failed', 'Falha ao renovar a sessão.'),
-        ),
-    });
+    h.client = shopeeClientFalso({ publicar: () => Promise.reject(SESSAO_SEM_REDE) });
     h.links = [linkKit('L-kit')];
     renderEditor();
     fireEvent.click(within(incertoDaConta()).getByRole('button', { name: 'Repetir' }));
@@ -3366,7 +3426,11 @@ function recusaDoRascunho(
  */
 const rerenderEditor = (
   rerender: (ui: ReactNode) => void,
-  props: { disabled?: boolean; onDirtyChange?: (dirty: boolean) => void } = {},
+  props: {
+    disabled?: boolean;
+    onDirtyChange?: (dirty: boolean) => void;
+    produtoSujoForaDoFormulario?: boolean;
+  } = {},
 ) => rerender(<ShopeeEditor produtoId="prod-1" db={{} as Firestore} {...props} />);
 
 type RespostaCriar = Awaited<ReturnType<ShopeeClient['criarRascunho']>>;
@@ -5754,9 +5818,17 @@ describe('ShopeeEditor — «Publicar» on a draft (#1911 P11)', () => {
     expect(formDe('L-rasc').emVoo).toBeNull();
   });
 
-  it.each<[string, Linha[], { quantidade: number; comRascunho: boolean } | null]>([
-    ['a live listing', [link('L-vivo')], { quantidade: 1, comRascunho: false }],
-    ['another stored draft', [rascunho('L-outro')], { quantidade: 1, comRascunho: true }],
+  it.each<[string, Linha[], ExistentesNaContaShopee | null]>([
+    [
+      'a live listing',
+      [link('L-vivo')],
+      { quantidade: 1, comRascunho: false, naShopee: 1, rascunhos: 0 },
+    ],
+    [
+      'another stored draft',
+      [rascunho('L-outro')],
+      { quantidade: 1, comRascunho: true, naShopee: 0, rascunhos: 1 },
+    ],
     [
       'only a REMOVED listing',
       [link('L-rem', { estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.removido })],
@@ -5774,7 +5846,13 @@ describe('ShopeeEditor — «Publicar» on a draft (#1911 P11)', () => {
       expect(formDe('L-rasc').confirmacaoDePublicacao?.segundoAnuncio).toStrictEqual(esperado);
       const aviso = within(dialogoDePublicar()).queryByTestId('aviso-segundo-anuncio');
       if (esperado === null) expect(aviso).toBeNull();
-      else expect(aviso?.textContent).toBe(textoDoSegundoAnuncioNaPublicacaoShopee(esperado));
+      else
+        expect(aviso?.textContent).toBe(
+          textoDoSegundoAnuncioNaPublicacaoShopee(esperado, {
+            publicacao: { tipo: 'livre' },
+            atestacao: null,
+          }),
+        );
       confirmarPublicacao();
       await waitFor(() => expect(publicar).toHaveBeenCalledTimes(1));
       if (esperado === null) {
@@ -5782,6 +5860,69 @@ describe('ShopeeEditor — «Publicar» on a draft (#1911 P11)', () => {
       } else {
         expect(publicar.mock.calls[0]?.[0]).toMatchObject({ confirmarSegundoAnuncio: true });
       }
+    },
+  );
+
+  it('review round 3 (VERIFY-2 R8-copy#3): ANOTHER draft of the produto on this conta that may have created a listing holds «Publicar» back — `irmao-incerto`, its aviso naming that draft; no confirmation, nothing sent (the server would refuse it, confirmation or not)', async () => {
+    const publicar = vi.fn<ShopeeClient['publicar']>(async () => ITEM_REPUBLICADO);
+    prontoParaPublicar(publicar);
+    h.links = [
+      rascunhoPronto('L-rasc'),
+      rascunho('L-outro', { criacaoIncertaDesde: Date.now() - 600_000 }),
+    ];
+    renderEditor();
+    await waitFor(() =>
+      expect(formDe('L-rasc').decisaoDePublicar.impedimento).toBe('irmao-incerto'),
+    );
+    expect(formDe('L-rasc').decisaoDePublicar.aviso).toBe(
+      fraseDosRascunhosIrmaosIncertosShopee(['L-outro']),
+    );
+    expect(publicarDo('L-rasc').disabled).toBe(true);
+    // The gate, not just the button: the handler the form calls opens nothing.
+    act(() => formDe('L-rasc').onPublicar());
+    expect(semDialogoDePublicar()).toBeNull();
+    expect(publicar).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      'the sibling’s lock was NEVER stamped (it sent nothing — §H Q3, `livre` at the server)',
+      [
+        rascunhoPronto('L-rasc'),
+        rascunho('L-outro', {
+          publicacaoEmCurso: { desde: Date.now() - 400_000, expiraEm: Date.now() - 1, token: 't' },
+        }),
+      ],
+    ],
+    [
+      'THIS draft is the uncertain one (its publish is a real one, ENSURE first)',
+      [
+        rascunhoPronto('L-rasc', { criacaoIncertaDesde: Date.now() - 600_000 }),
+        rascunho('L-outro'),
+      ],
+    ],
+    [
+      'the uncertain draft is ANOTHER conta’s',
+      [
+        rascunhoPronto('L-rasc'),
+        rascunho('L-outro', {
+          contaProdutoShopeeOuterRef: 'integracao/int-2',
+          criacaoIncertaDesde: Date.now() - 600_000,
+        }),
+      ],
+    ],
+  ])(
+    'review round 3 NEAR-MISS: %s ⇒ «Publicar» acts — never `irmao-incerto`',
+    async (_caso, links) => {
+      const publicar = vi.fn<ShopeeClient['publicar']>(async () => ITEM_REPUBLICADO);
+      prontoParaPublicar(publicar);
+      h.links = links;
+      await renderPronto();
+      expect(formDe('L-rasc').decisaoDePublicar.impedimento).toBeNull();
+      fireEvent.click(publicarDo('L-rasc'));
+      expect(dialogoDePublicar()).toBeDefined();
+      confirmarPublicacao();
+      await waitFor(() => expect(publicar).toHaveBeenCalledTimes(1));
     },
   );
 
@@ -5802,9 +5943,12 @@ describe('ShopeeEditor — «Publicar» on a draft (#1911 P11)', () => {
     confirmarPublicacao();
 
     await waitFor(() => expect(dialogoDePublicar()).toBeDefined());
-    const existentes = { quantidade: 1, comRascunho: false };
+    const existentes = { quantidade: 1, comRascunho: false, naShopee: 1, rascunhos: 0 };
     expect(within(dialogoDePublicar()).getByTestId('aviso-segundo-anuncio').textContent).toBe(
-      textoDoSegundoAnuncioNaPublicacaoShopee(existentes),
+      textoDoSegundoAnuncioNaPublicacaoShopee(existentes, {
+        publicacao: { tipo: 'livre' },
+        atestacao: null,
+      }),
     );
     // Everything else as sent: «Criar pausado» stays ticked.
     expect(formDe('L-rasc').confirmacaoDePublicacao).toStrictEqual({
@@ -5910,7 +6054,8 @@ describe('ShopeeEditor — «Publicar» on a draft (#1911 P11)', () => {
     await waitFor(() =>
       expect(desfechoDe('L-rasc').desfecho).toMatchObject({
         tipo: 'recusado',
-        antesDaShopee: true,
+        bloqueadaPeloErp: true,
+        respondeAtestacao: false,
         problemas: [problema],
         pedidoKit: null,
       }),
@@ -5929,19 +6074,6 @@ describe('ShopeeEditor — «Publicar» on a draft (#1911 P11)', () => {
       () => recusaDoRascunho(409, CODIGO_FALHA_SHOPEE.rascunhoContencao),
       FRASE_PUBLICACAO_CONTENCAO_SHOPEE,
     ],
-    [
-      '409 publicacaoExpirada (the look-up did not fit the request)',
-      () =>
-        new ShopeeClientHttpError(
-          'A busca não coube no tempo desta requisição.',
-          409,
-          CODIGO_FALHA_SHOPEE.publicacaoExpirada,
-          null,
-          null,
-          DETALHES_ERRO_SHOPEE_VAZIOS,
-        ),
-      fraseDaPublicacaoExpiradaShopee('A busca não coube no tempo desta requisição.'),
-    ],
   ])(
     'a definite answer about the DRAFT (%s) is read by the draft’s reader first — never the live link’s «não pertence mais»',
     async (_caso, erro, mensagem) => {
@@ -5955,6 +6087,75 @@ describe('ShopeeEditor — «Publicar» on a draft (#1911 P11)', () => {
         expect(desfechoDe('L-rasc').desfecho).toStrictEqual({ tipo: 'falha', mensagem }),
       );
       expect(within(bloco('L-rasc')).queryByText(FORA_DA_CONTA)).toBeNull();
+    },
+  );
+
+  it.each<
+    [
+      string,
+      () => ShopeeClientHttpError,
+      (msg: string, pub: EstadoPublicacaoRascunhoShopee) => string,
+    ]
+  >([
+    [
+      '409 publicacaoExpirada (the look-up did not fit the request)',
+      () =>
+        new ShopeeClientHttpError(
+          'A busca não coube no tempo desta requisição.',
+          409,
+          CODIGO_FALHA_SHOPEE.publicacaoExpirada,
+          null,
+          null,
+          DETALHES_ERRO_SHOPEE_VAZIOS,
+        ),
+      fraseDaPublicacaoExpiradaShopee,
+    ],
+    [
+      'a CODED 502 that is no rate limit',
+      () =>
+        new ShopeeClientHttpError(
+          'offset fora do limite',
+          502,
+          'SHOPEE_HTTP_ERROR',
+          null,
+          'other',
+          DETALHES_ERRO_SHOPEE_VAZIOS,
+        ),
+      fraseDaPublicacaoInterrompidaShopee,
+    ],
+  ])(
+    '%s is `parada`, worded at RENDER over the block’s CURRENT reading — the `livre` exit, then the `incerta` one once the snapshot turns (§I2) — never a sentence frozen at the answer, never a throw',
+    async (_caso, erro, frase) => {
+      const publicar = vi.fn<ShopeeClient['publicar']>().mockRejectedValueOnce(erro());
+      prontoParaPublicar(publicar);
+      h.links = [rascunhoPronto('L-rasc')];
+      const { rerender } = await renderPronto();
+      fireEvent.click(publicarDo('L-rasc'));
+      confirmarPublicacao();
+      const mensagem = erro().message;
+      await waitFor(() =>
+        expect(desfechoDe('L-rasc').desfecho).toStrictEqual({
+          tipo: 'parada',
+          parada: {
+            tipo:
+              erro().code === CODIGO_FALHA_SHOPEE.publicacaoExpirada ? 'expirada' : 'interrompida',
+            mensagemDoServidor: mensagem,
+          },
+        }),
+      );
+      const parada = () => screen.getByTestId('shopee-desfecho-L-rasc-parada');
+      expect(parada().textContent).toBe(frase(mensagem, { tipo: 'livre' }));
+      expect(parada().textContent).toContain('Procure o SKU deste produto no Seller Centre');
+      // The SAME outcome, the snapshot now `incerta`: re-worded, never the
+      // `livre` «crie-o lá» exit.
+      h.links = [rascunhoPronto('L-rasc', { criacaoIncertaDesde: Date.now() - 600_000 })];
+      rerenderEditor(rerender);
+      const incerta = formDe('L-rasc').bloco.publicacao;
+      expect(incerta.tipo).toBe('incerta');
+      expect(parada().textContent).toBe(frase(mensagem, incerta));
+      expect(parada().textContent).not.toContain('crie-o lá');
+      expect(parada().textContent).not.toMatch(/falhou/i);
+      expect(formDe('L-rasc').emVoo).toBeNull();
     },
   );
 
@@ -5975,23 +6176,28 @@ describe('ShopeeEditor — «Publicar» on a draft (#1911 P11)', () => {
     );
   });
 
-  it('a failed ID-token refresh on a draft Publicar is a definite outcome — nothing was sent', async () => {
-    const publicar = vi
-      .fn<ShopeeClient['publicar']>()
-      .mockRejectedValueOnce(new FirebaseError('auth/network-request-failed', 'Sessão expirada.'));
-    prontoParaPublicar(publicar);
-    h.links = [rascunhoPronto('L-rasc')];
-    await renderPronto();
-    fireEvent.click(publicarDo('L-rasc'));
-    confirmarPublicacao();
-    await waitFor(() =>
-      expect(desfechoDe('L-rasc').desfecho).toStrictEqual({
-        tipo: 'falha',
-        mensagem: 'Sessão expirada.',
-      }),
-    );
-    expect(formDe('L-rasc').emVoo).toBeNull();
-  });
+  it.each<[string, FirebaseError, string]>([
+    ['no network to refresh it', SESSAO_SEM_REDE, FRASE_SESSAO_SEM_CONEXAO_SHOPEE],
+    // NEAR-MISS: any other auth code — a retry never helps, a sign-in does.
+    ['an expired session', SESSAO_EXPIRADA, FRASE_SESSAO_NAO_RENOVADA_SHOPEE],
+  ])(
+    'a failed ID-token refresh on a draft Publicar (%s) is a definite outcome in pt-BR — nothing was sent, never the SDK’s English (#1911 review G1)',
+    async (_caso, erro, frase) => {
+      const publicar = vi.fn<ShopeeClient['publicar']>().mockRejectedValueOnce(erro);
+      prontoParaPublicar(publicar);
+      h.links = [rascunhoPronto('L-rasc')];
+      await renderPronto();
+      fireEvent.click(publicarDo('L-rasc'));
+      confirmarPublicacao();
+      await waitFor(() =>
+        expect(desfechoDe('L-rasc').desfecho).toStrictEqual({ tipo: 'falha', mensagem: frase }),
+      );
+      // The SAME sentence the block's own draft writes give (`falhaDeSessao`).
+      expect(frase).toBe(fraseDaSessaoShopee(erro));
+      expect(bloco('L-rasc').textContent).not.toMatch(/Firebase/);
+      expect(formDe('L-rasc').emVoo).toBeNull();
+    },
+  );
 
   it('`publicar-atestando` (criacao-incerta-sem-sku) opens the SAME confirmation and gate — the exit itself sends nothing — and the confirm carries confirmarCriacaoIncerta', async () => {
     const problema: ProblemaShopee = {
@@ -6025,9 +6231,11 @@ describe('ShopeeEditor — «Publicar» on a draft (#1911 P11)', () => {
     confirmarPublicacao();
     await waitFor(() => expect(publicar).toHaveBeenCalledTimes(2));
     expect(publicar.mock.calls[0]?.[0]).not.toHaveProperty('confirmarCriacaoIncerta');
+    // §I1: the attestation travels WITH the exit's promise — `[]`, a create.
     expect(publicar.mock.calls[1]?.[0]).toStrictEqual({
       ...publicar.mock.calls[0]?.[0],
       confirmarCriacaoIncerta: true,
+      criacaoIncertaAdota: [],
     });
   });
 
@@ -6070,7 +6278,7 @@ describe('ShopeeEditor — «Publicar» on a draft (#1911 P11)', () => {
     );
     expect(within(dialogoDePublicar()).getByTestId('atestacao').textContent).toBe(saida.rotulo);
     expect(formDe('L-rasc').confirmacaoDePublicacao).toStrictEqual({
-      segundoAnuncio: { quantidade: 1, comRascunho: false },
+      segundoAnuncio: { quantidade: 1, comRascunho: false, naShopee: 1, rascunhos: 0 },
       pausado: false,
       atestacao: saida,
     });
@@ -6148,6 +6356,11 @@ describe('ShopeeEditor — «Publicar» on a draft (#1911 P11)', () => {
     // The plain confirmation (the operator already attested) — never the three-case dialog.
     const dialogo = screen.getByRole('dialog', { name: 'Descartar rascunho' });
     expect(within(dialogo).getByText(aviso)).toBeDefined();
+    // Review round 3 (VERIFY-1 mixed-row PARTIAL): the warning never points the
+    // free listing at the mass import — nowhere in the dialog.
+    expect(dialogo.textContent).toContain('continua na Shopee, sem vínculo no ERP');
+    expect(dialogo.textContent).not.toContain(PORTA_DA_IMPORTACAO_SHOPEE);
+    expect(dialogo.textContent).not.toMatch(/importe-o/i);
     expect(
       screen.queryByRole('dialog', { name: DIALOGO_DESCARTE_CRIACAO_INCERTA_SHOPEE.titulo }),
     ).toBeNull();
@@ -6408,5 +6621,559 @@ describe('ShopeeEditor — the Publicar gate reads P10’s review-fix block fiel
     expect(formDe('L-rasc').bloco.publicacao.tipo).toBe('em-andamento');
     expect(plano()).toBeNull();
     expect(descartarRascunho).not.toHaveBeenCalled();
+  });
+});
+
+describe('ShopeeEditor — the P11 review fixes on the tab (#1911 batch-B review, TAB wave)', () => {
+  /** `criacao-incerta-ja-vinculada` over two candidates; the ones not in `vinculados` are unlinked. */
+  const jaVinculada = (vinculados: { itemId: number; produtoId: string }[]): ProblemaShopee => ({
+    campo: null,
+    motivo: MOTIVO_ANUNCIO_SHOPEE.criacaoIncertaJaVinculada,
+    mensagem: 'Pode ser o anúncio da tentativa.',
+    acao: { tipo: TIPO.importar, itemIds: [1000011, 1000012], vinculados },
+  });
+  const MISTA = jaVinculada([{ itemId: 1000011, produtoId: 'prod-1' }]);
+  const TODAS_VINCULADAS = jaVinculada([
+    { itemId: 1000011, produtoId: 'prod-1' },
+    { itemId: 1000012, produtoId: 'prod-9' },
+  ]);
+  const INCERTA = { criacaoIncertaDesde: Date.now() - 600_000 };
+  const linhaDoDesfecho = () => screen.getByTestId('shopee-problema-L-rasc-0');
+
+  /** A refused first publish of an `incerta` draft: its row and exits on screen. */
+  async function recusadoCom(
+    problema: ProblemaShopee,
+    extra: Partial<ShopeeClient> = {},
+    publicar = vi.fn<ShopeeClient['publicar']>().mockRejectedValueOnce(recusa422([problema])),
+  ) {
+    prontoParaPublicar(publicar, extra);
+    h.links = [rascunhoPronto('L-rasc', INCERTA)];
+    const r = await renderPronto();
+    fireEvent.click(publicarDo('L-rasc'));
+    confirmarPublicacao();
+    await waitFor(() => expect(desfechoDe('L-rasc').desfecho.tipo).toBe('recusado'));
+    await waitFor(() => expect(desfechoDe('L-rasc').rascunho?.podePublicar).toBe(true));
+    return { ...r, publicar };
+  }
+  function saidaDe<T extends SaidaDoProblemaShopee['tipo']>(
+    problema: ProblemaShopee,
+    tipo: T,
+  ): Extract<SaidaDoProblemaShopee, { tipo: T }> {
+    const saida = saidasDoProblemaShopee(problema, { ehRascunho: true }).find(
+      (s): s is Extract<SaidaDoProblemaShopee, { tipo: T }> => s.tipo === tipo,
+    );
+    if (saida === undefined) throw new Error(`fixture must offer ${tipo}`);
+    return saida;
+  }
+
+  it('R4-1369-fold#0: an ADOPTING attestation sends its PROMISE (`criacaoIncertaAdota: [L]`), and the server’s mismatch refusal renders as the FRESH row — opened by «A situação mudou», its exits rebuilt from it ⟷ NEAR-MISS the first, unattested refusal has no such opening', async () => {
+    const publicar = vi
+      .fn<ShopeeClient['publicar']>()
+      .mockRejectedValueOnce(recusa422([MISTA]))
+      // L (1000012) was linked to ANOTHER produto since: the guard refuses, nothing sent.
+      .mockRejectedValueOnce(recusa422([TODAS_VINCULADAS]))
+      .mockResolvedValueOnce(ITEM_REPUBLICADO);
+    await recusadoCom(MISTA, {}, publicar);
+    // NEAR-MISS first: the operator's own first refusal is no "changed situation".
+    expect(desfechoDe('L-rasc').desfecho).toMatchObject({ respondeAtestacao: false });
+    expect(linhaDoDesfecho().textContent).not.toContain(FRASE_ATESTACAO_SUPERADA_SHOPEE);
+    const adota = saidaDe(MISTA, 'publicar-atestando');
+    expect(adota.adota).toStrictEqual([1000012]);
+    expect(
+      within(screen.getByTestId('shopee-desfecho-L-rasc')).getByRole('button', {
+        name: rotuloDaPublicacaoQueAdotaShopee([1000012]),
+      }),
+    ).toBeDefined();
+
+    act(() => desfechoDe('L-rasc').rascunho?.onSaida(adota));
+    confirmarPublicacao();
+    await waitFor(() => expect(publicar).toHaveBeenCalledTimes(2));
+    // The promise is IN the body: the server honours it or refuses (§I1).
+    expect(publicar.mock.calls[1]?.[0]).toStrictEqual({
+      integracaoId: 'int-1',
+      produtoId: 'prod-1',
+      linkDocId: 'L-rasc',
+      confirmarCriacaoIncerta: true,
+      criacaoIncertaAdota: [1000012],
+    });
+
+    // The mismatch refusal: the FRESH row, said to answer a changed situation.
+    await waitFor(() =>
+      expect(desfechoDe('L-rasc').desfecho).toMatchObject({
+        tipo: 'recusado',
+        respondeAtestacao: true,
+        problemas: [TODAS_VINCULADAS],
+      }),
+    );
+    expect(linhaDoDesfecho().textContent?.startsWith(FRASE_ATESTACAO_SUPERADA_SHOPEE)).toBe(true);
+    // Its exits are the FRESH row's: no adoption of a listing now linked elsewhere.
+    const painelDoDesfecho = within(screen.getByTestId('shopee-desfecho-L-rasc'));
+    expect(
+      painelDoDesfecho.queryByRole('button', { name: rotuloDaPublicacaoQueAdotaShopee([1000012]) }),
+    ).toBeNull();
+    expect(
+      painelDoDesfecho.getByRole('button', { name: ROTULO_PUBLICAR_SEGUNDO_DE_PROPOSITO_SHOPEE }),
+    ).toBeDefined();
+    expect(
+      painelDoDesfecho.getByRole('button', { name: ROTULO_DESCARTAR_ANUNCIO_DA_TENTATIVA_SHOPEE }),
+    ).toBeDefined();
+
+    // Taking the fresh exit sends ITS promise: a deliberate create, `[]`.
+    await waitFor(() => expect(desfechoDe('L-rasc').rascunho?.podePublicar).toBe(true));
+    const segundo = saidaDe(TODAS_VINCULADAS, 'publicar-atestando');
+    act(() => desfechoDe('L-rasc').rascunho?.onSaida(segundo));
+    confirmarPublicacao();
+    await waitFor(() => expect(publicar).toHaveBeenCalledTimes(3));
+    expect(publicar.mock.calls[2]?.[0]).toMatchObject({
+      confirmarCriacaoIncerta: true,
+      criacaoIncertaAdota: [],
+    });
+  });
+
+  it('§I4 (review round 4): an ATTESTED publish answered 409 rascunhoJaPublicado (another run linked the draft) ⇒ its own sentence — the confirmation had no effect, nothing created or changed — with the confirmation closed, nothing re-sent and no exit left to offer the same attestation, also once the snapshot shows the listing ⟷ NEAR-MISS the block’s own (unattested) Publicar keeps today’s sentence', async () => {
+    const jaPublicado = () => recusaDoRascunho(409, CODIGO_FALHA_SHOPEE.rascunhoJaPublicado);
+    const publicar = vi
+      .fn<ShopeeClient['publicar']>()
+      .mockRejectedValueOnce(recusa422([MISTA]))
+      .mockRejectedValueOnce(jaPublicado());
+    const { rerender } = await recusadoCom(MISTA, {}, publicar);
+    const adota = saidaDe(MISTA, 'publicar-atestando');
+    act(() => desfechoDe('L-rasc').rascunho?.onSaida(adota));
+    confirmarPublicacao();
+    await waitFor(() => expect(publicar).toHaveBeenCalledTimes(2));
+    expect(publicar.mock.calls[1]?.[0]).toMatchObject({
+      confirmarCriacaoIncerta: true,
+      criacaoIncertaAdota: [1000012],
+    });
+    await waitFor(() =>
+      expect(desfechoDe('L-rasc').desfecho).toStrictEqual({
+        tipo: 'falha',
+        mensagem: FRASE_ATESTACAO_DE_RASCUNHO_JA_PUBLICADO_SHOPEE,
+      }),
+    );
+    // No stuck dialog, and the refusal rows (with their exits) are gone.
+    expect(semDialogoDePublicar()).toBeNull();
+    expect(formDe('L-rasc').confirmacaoDePublicacao).toBeNull();
+    const painelDoDesfecho = () => screen.getByTestId('shopee-desfecho-L-rasc');
+    expect(within(painelDoDesfecho()).queryAllByRole('button')).toEqual([]);
+    expect(painelDoDesfecho().textContent).toBe(FRASE_ATESTACAO_DE_RASCUNHO_JA_PUBLICADO_SHOPEE);
+    expect(painelDoDesfecho().textContent).not.toMatch(/falhou/i);
+    // The snapshot catches up: the link records the listing — the sentence
+    // stays, there is no draft context to act on, and nothing is ever re-sent.
+    h.links = [link('L-rasc', { item_id: 1000012 })];
+    rerenderEditor(rerender);
+    await waitFor(() => expect(desfechoDe('L-rasc').rascunho).toBeNull());
+    expect(desfechoDe('L-rasc').desfecho).toStrictEqual({
+      tipo: 'falha',
+      mensagem: FRASE_ATESTACAO_DE_RASCUNHO_JA_PUBLICADO_SHOPEE,
+    });
+    expect(semDialogoDePublicar()).toBeNull();
+    expect(publicar).toHaveBeenCalledTimes(2);
+  });
+
+  it('§I4 NEAR-MISS: the block’s OWN Publicar (no attestation) answered 409 rascunhoJaPublicado keeps today’s sentence — never the attested one', async () => {
+    const publicar = vi
+      .fn<ShopeeClient['publicar']>()
+      .mockRejectedValueOnce(recusaDoRascunho(409, CODIGO_FALHA_SHOPEE.rascunhoJaPublicado));
+    prontoParaPublicar(publicar);
+    h.links = [rascunhoPronto('L-rasc', INCERTA)];
+    await renderPronto();
+    fireEvent.click(publicarDo('L-rasc'));
+    confirmarPublicacao();
+    await waitFor(() => expect(publicar).toHaveBeenCalledTimes(1));
+    expect(publicar.mock.calls[0]?.[0]).not.toHaveProperty('confirmarCriacaoIncerta');
+    await waitFor(() =>
+      expect(desfechoDe('L-rasc').desfecho).toStrictEqual({
+        tipo: 'falha',
+        mensagem: FRASE_RASCUNHO_JA_PUBLICADO_SHOPEE,
+      }),
+    );
+    expect(semDialogoDePublicar()).toBeNull();
+    expect(screen.getByTestId('shopee-desfecho-L-rasc').textContent).not.toContain(
+      'A confirmação que você deu',
+    );
+  });
+
+  it('the outcome panel of a draft gets the SKU the uncertain attempt SENT (the schemas’ window reading) — the SKU-moved row names it ⟷ NEAR-MISS a record with no SKU hands `null` (unknown), never a guess', async () => {
+    const skuMudou: ProblemaShopee = {
+      campo: 'item_sku',
+      motivo: MOTIVO_ANUNCIO_SHOPEE.criacaoIncertaAmbigua,
+      mensagem: 'O SKU mudou.',
+      acao: null,
+    };
+    for (const [extra, esperado] of [
+      [{ criacaoIncertaSku: 'SKU-A' }, 'SKU-A'],
+      [{}, null],
+    ] as const) {
+      prontoParaPublicar(
+        vi.fn<ShopeeClient['publicar']>().mockRejectedValueOnce(recusa422([skuMudou])),
+      );
+      h.links = [rascunhoPronto('L-rasc', { ...INCERTA, ...extra })];
+      const { unmount } = await renderPronto();
+      fireEvent.click(publicarDo('L-rasc'));
+      confirmarPublicacao();
+      await waitFor(() => expect(desfechoDe('L-rasc').desfecho.tipo).toBe('recusado'));
+      expect(desfechoDe('L-rasc').rascunho?.skuEnviado).toBe(esperado);
+      if (esperado === null) expect(linhaDoDesfecho().textContent).not.toMatch(/volte o SKU/);
+      else expect(linhaDoDesfecho().textContent).toContain(`«${esperado}»`);
+      unmount();
+    }
+  });
+
+  it('R8-copy#1: the ATTESTED discard («É o anúncio da tentativa») confirms with its own sentence, never «Nada foi publicado na Shopee» — mixed (with the warning) and all-linked (alone) ⟷ NEAR-MISS the block’s own Descartar on a `livre` draft keeps the plain sentence', async () => {
+    for (const [problema, comAviso] of [
+      [MISTA, true],
+      [TODAS_VINCULADAS, false],
+    ] as const) {
+      const descartarRascunho = vi.fn<ShopeeClient['descartarRascunho']>();
+      const { unmount } = await recusadoCom(problema, { descartarRascunho });
+      const saida = saidaDe(problema, 'descartar-atestando');
+      act(() => desfechoDe('L-rasc').rascunho?.onSaida(saida));
+      const dialogo = screen.getByRole('dialog', { name: 'Descartar rascunho' });
+      expect(within(dialogo).getByText(FRASE_CONFIRMAR_DESCARTE_ATESTADO_SHOPEE)).toBeDefined();
+      expect(within(dialogo).queryByText(FRASE_CONFIRMAR_DESCARTE_SHOPEE)).toBeNull();
+      expect(dialogo.textContent).not.toMatch(/Nada foi publicado/);
+      if (comAviso) expect(within(dialogo).getByText(saida.aviso ?? '?')).toBeDefined();
+      else expect(saida.aviso).toBeNull();
+      expect(descartarRascunho).not.toHaveBeenCalled();
+      unmount();
+    }
+    // NEAR-MISS: a `livre` draft's own «Descartar» — nothing was ever published.
+    comAutoria();
+    h.client = shopeeClientFalso({ descartarRascunho: vi.fn() });
+    h.links = [rascunho('L-livre')];
+    renderEditor();
+    fireEvent.click(botaoDoRascunho('L-livre', 'Descartar'));
+    const plano = screen.getByRole('dialog', { name: 'Descartar rascunho' });
+    expect(within(plano).getByText(FRASE_CONFIRMAR_DESCARTE_SHOPEE)).toBeDefined();
+    expect(within(plano).queryByText(FRASE_CONFIRMAR_DESCARTE_ATESTADO_SHOPEE)).toBeNull();
+  });
+
+  it('R8-copy#1 (round 2): a row with NO linked candidate (§I1’s third shape) offers no «É o anúncio da tentativa» — the attested sentence («vinculado no ERP») can never open over it; its one exit adopts, and the block’s own Descartar keeps the three-case dialog ⟷ NEAR-MISS the same free ids beside a linked one offer the discard', async () => {
+    const SEM_VINCULO = jaVinculada([]);
+    const descartarRascunho = vi.fn<ShopeeClient['descartarRascunho']>();
+    const { unmount } = await recusadoCom(SEM_VINCULO, { descartarRascunho });
+    const painelDoDesfecho = within(screen.getByTestId('shopee-desfecho-L-rasc'));
+    expect(
+      painelDoDesfecho.queryByRole('button', {
+        name: ROTULO_DESCARTAR_ANUNCIO_DA_TENTATIVA_SHOPEE,
+      }),
+    ).toBeNull();
+    const adota = rotuloDaPublicacaoQueAdotaShopee([1000011, 1000012]);
+    // The one exit is the adoption: it opens the PUBLISH confirmation, never a discard.
+    fireEvent.click(painelDoDesfecho.getByRole('button', { name: adota }));
+    expect(formDe('L-rasc').confirmacaoDePublicacao?.atestacao).toStrictEqual({
+      tipo: 'publicar-atestando',
+      rotulo: adota,
+      adota: [1000011, 1000012],
+      varre: true,
+    });
+    expect(screen.queryByRole('dialog', { name: 'Descartar rascunho' })).toBeNull();
+    expect(screen.queryByText(FRASE_CONFIRMAR_DESCARTE_ATESTADO_SHOPEE)).toBeNull();
+    act(() => formDe('L-rasc').onCancelarPublicacao());
+    // The block's own Descartar: the three-case dialog, whose (c) is the unlinked case.
+    fireEvent.click(botaoDoRascunho('L-rasc', 'Descartar'));
+    const tresCasos = screen.getByRole('dialog', {
+      name: DIALOGO_DESCARTE_CRIACAO_INCERTA_SHOPEE.titulo,
+    });
+    expect(
+      within(tresCasos).getByText(DIALOGO_DESCARTE_CRIACAO_INCERTA_SHOPEE.existeSemVinculo),
+    ).toBeDefined();
+    expect(screen.queryByText(FRASE_CONFIRMAR_DESCARTE_ATESTADO_SHOPEE)).toBeNull();
+    expect(descartarRascunho).not.toHaveBeenCalled();
+    unmount();
+
+    // NEAR-MISS: one candidate linked ⇒ the discard exit is there.
+    await recusadoCom(MISTA);
+    expect(
+      within(screen.getByTestId('shopee-desfecho-L-rasc')).getByRole('button', {
+        name: ROTULO_DESCARTAR_ANUNCIO_DA_TENTATIVA_SHOPEE,
+      }),
+    ).toBeDefined();
+  });
+
+  it('KNOWN #12 (tab half): the SKU-less exit reaches the confirmation AS ITSELF — `varre: false`, worded «não consegue procurar», never the change-guard ⟷ NEAR-MISS the «segundo de propósito» exit (the SAME `adota: []`) reaches it `varre: true`, with the change-guard', async () => {
+    const SEM_SKU: ProblemaShopee = {
+      campo: 'item_sku',
+      motivo: MOTIVO_ANUNCIO_SHOPEE.criacaoIncertaSemSku,
+      mensagem: 'Pode ter criado.',
+      acao: null,
+    };
+    const textoDoForm = () =>
+      textoDaConfirmacaoDePublicacaoShopee({
+        contaNome: formDe('L-rasc').contaNome,
+        publicacao: formDe('L-rasc').bloco.publicacao,
+        atestacao: formDe('L-rasc').confirmacaoDePublicacao?.atestacao ?? null,
+      });
+    for (const [problema, rotulo, varre] of [
+      [SEM_SKU, ROTULO_PUBLICAR_ATESTANDO_SEM_SKU_SHOPEE, false],
+      [TODAS_VINCULADAS, ROTULO_PUBLICAR_SEGUNDO_DE_PROPOSITO_SHOPEE, true],
+    ] as const) {
+      const { unmount } = await recusadoCom(problema);
+      fireEvent.click(
+        within(screen.getByTestId('shopee-desfecho-L-rasc')).getByRole('button', { name: rotulo }),
+      );
+      expect(formDe('L-rasc').confirmacaoDePublicacao?.atestacao).toStrictEqual({
+        tipo: 'publicar-atestando',
+        rotulo,
+        adota: [],
+        varre,
+      });
+      if (varre) {
+        expect(textoDoForm()).toContain(FRASE_ATESTACAO_QUE_VARRE_SHOPEE);
+        expect(textoDoForm()).not.toContain(FRASE_ATESTACAO_SEM_BUSCA_SHOPEE);
+      } else {
+        expect(textoDoForm()).toContain(FRASE_ATESTACAO_SEM_BUSCA_SHOPEE);
+        expect(textoDoForm()).not.toMatch(/nada é enviado|recusa volta|procura pelo SKU/);
+      }
+      unmount();
+    }
+  });
+
+  it('R3-tests#6 (P11 path): an ATTESTED discard confirmation whose draft was published — or discarded — elsewhere closes, and nothing is sent ⟷ NEAR-MISS a new emission that is still the draft keeps it open, its confirm enabled', async () => {
+    for (const depois of [() => [link('L-rasc', { item_id: 2000002 })], () => [] as Linha[]]) {
+      const descartarRascunho = vi.fn<ShopeeClient['descartarRascunho']>();
+      const { rerender, unmount } = await recusadoCom(MISTA, { descartarRascunho });
+      act(() => desfechoDe('L-rasc').rascunho?.onSaida(saidaDe(MISTA, 'descartar-atestando')));
+      const dialogo = () => screen.queryByRole('dialog', { name: 'Descartar rascunho' });
+      // NEAR-MISS first: still the same draft — open, the confirm enabled.
+      h.links = [rascunhoPronto('L-rasc', INCERTA)];
+      rerenderEditor(rerender);
+      const aberto = dialogo();
+      if (aberto === null) throw new Error('the attested discard must still be open');
+      const confirmar = within(aberto).getByRole('button', {
+        name: 'Descartar rascunho',
+      }) as HTMLButtonElement;
+      expect(confirmar.disabled).toBe(false);
+      // Published (or discarded) in another tab: no confirm left to click.
+      h.links = depois();
+      rerenderEditor(rerender);
+      expect(dialogo()).toBeNull();
+      expect(screen.queryByText(FRASE_CONFIRMAR_DESCARTE_ATESTADO_SHOPEE)).toBeNull();
+      expect(descartarRascunho).not.toHaveBeenCalled();
+      unmount();
+    }
+  });
+
+  it('R3-tests#5 (P11 half): the discard exit called while the block may NOT discard (a cache-served snapshot) opens nothing and sends nothing — the handler’s own re-check, past the disabled button ⟷ NEAR-MISS the same call under server truth opens it', async () => {
+    const descartarRascunho = vi.fn<ShopeeClient['descartarRascunho']>();
+    const { rerender } = await recusadoCom(MISTA, { descartarRascunho });
+    const saida = saidaDe(MISTA, 'descartar-atestando');
+    h.fromCache = true;
+    rerenderEditor(rerender);
+    expect(formDe('L-rasc').bloco.podeDescartar).toBe(false);
+    expect(desfechoDe('L-rasc').rascunho?.podeDescartar).toBe(false);
+    // The panel's button is disabled on the same decision…
+    expect(
+      (
+        within(screen.getByTestId('shopee-desfecho-L-rasc')).getByRole('button', {
+          name: ROTULO_DESCARTAR_ANUNCIO_DA_TENTATIVA_SHOPEE,
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(true);
+    // …and a call past it is refused by the handler itself.
+    act(() => desfechoDe('L-rasc').rascunho?.onSaida(saida));
+    expect(screen.queryByRole('dialog', { name: 'Descartar rascunho' })).toBeNull();
+    expect(descartarRascunho).not.toHaveBeenCalled();
+    // NEAR-MISS: server truth again — the same call opens the confirmation.
+    h.fromCache = false;
+    rerenderEditor(rerender);
+    act(() => desfechoDe('L-rasc').rascunho?.onSaida(saida));
+    expect(screen.getByRole('dialog', { name: 'Descartar rascunho' })).toBeDefined();
+  });
+
+  it('R7-roundtrip#3 / R8-copy#9: a FAILED bands read keeps Publicar closed but says so — its cause and «Ler de novo», never the pending «forem lidos» — and the re-read opens it', async () => {
+    const falhou = new ShopeeClientHttpError(
+      'A Shopee recusou a consulta dos limites.',
+      502,
+      'SHOPEE_HTTP_ERROR',
+      null,
+      'other',
+      DETALHES_ERRO_SHOPEE_VAZIOS,
+    );
+    const limites = vi
+      .fn<ShopeeClient['limitesDoItem']>()
+      .mockRejectedValueOnce(falhou)
+      .mockImplementation(async (input) => limitesDoItem(input.categoryId ?? null));
+    prontoParaPublicar(vi.fn<ShopeeClient['publicar']>(), { limitesDoItem: limites });
+    h.links = [rascunhoPronto('L-rasc')];
+    renderEditor();
+    await waitFor(() => expect(formDe('L-rasc').falhaDaLeitura).not.toBeNull());
+    // The gate stays the lib's and stays CLOSED.
+    expect(formDe('L-rasc').decisaoDePublicar).toMatchObject({
+      podePublicar: false,
+      impedimento: 'faixas-desconhecidas',
+    });
+    const falha = formDe('L-rasc').falhaDaLeitura;
+    if (falha === null) throw new Error('a failed read must be named');
+    expect(falha.mensagem).toBe(
+      fraseDosLimitesNaoLidosShopee(descreverFalhaShopee(falhou, { desconhecido: '' }).mensagem),
+    );
+    expect(falha.mensagem).toContain('A Shopee recusou a consulta dos limites.');
+    expect(falha.mensagem).not.toBe(FRASE_PUBLICAR_SEM_FAIXAS_SHOPEE);
+    expect(falha.mensagem).not.toMatch(/fica disponível quando/);
+    expect(limites).toHaveBeenCalledTimes(1);
+
+    act(() => falha.lerDeNovo?.());
+    await waitFor(() => expect(formDe('L-rasc').decisaoDePublicar.podePublicar).toBe(true));
+    expect(limites).toHaveBeenCalledTimes(2);
+    expect(formDe('L-rasc').falhaDaLeitura).toBeNull();
+  });
+
+  it('NEAR-MISS (R7-roundtrip#3): a rate-limited bands read names the limit and still offers «Ler de novo»; a PENDING read names no failure', async () => {
+    const limite = new ShopeeClientHttpError(
+      'burst',
+      502,
+      'SHOPEE_HTTP_ERROR',
+      null,
+      'burst',
+      DETALHES_ERRO_SHOPEE_VAZIOS,
+    );
+    prontoParaPublicar(vi.fn<ShopeeClient['publicar']>(), {
+      limitesDoItem: () => Promise.reject(limite),
+    });
+    h.links = [rascunhoPronto('L-rasc')];
+    const { unmount } = renderEditor();
+    await waitFor(() => expect(formDe('L-rasc').falhaDaLeitura).not.toBeNull());
+    expect(formDe('L-rasc').falhaDaLeitura?.mensagem).toContain(
+      descreverFalhaShopee(limite, { desconhecido: '' }).mensagem,
+    );
+    expect(formDe('L-rasc').falhaDaLeitura?.lerDeNovo).not.toBeNull();
+    unmount();
+
+    prontoParaPublicar(vi.fn<ShopeeClient['publicar']>(), {
+      limitesDoItem: () => new Promise(() => undefined),
+    });
+    renderEditor();
+    expect(formDe('L-rasc').decisaoDePublicar.impedimento).toBe('faixas-desconhecidas');
+    expect(formDe('L-rasc').decisaoDePublicar.aviso).toBe(FRASE_PUBLICAR_SEM_FAIXAS_SHOPEE);
+    expect(formDe('L-rasc').falhaDaLeitura).toBeNull();
+  });
+
+  // VERIFY-3 F3 (round 2): the failure is named ONLY while the failed read IS
+  // the gate's reason. An earlier, actionable impediment («Salve as
+  // alterações», «Salve o produto») keeps its own sentence; the red read
+  // failure must not take its place.
+  it('NEAR-MISS (R7-roundtrip#3, F3): a FAILED bands read under unsaved draft edits, or an unsaved produto, keeps that reason — never the read failure in its place ⟷ the same failure with nothing unsaved IS the reason', async () => {
+    const falhou = new ShopeeClientHttpError(
+      'A Shopee recusou a consulta dos limites.',
+      502,
+      'SHOPEE_HTTP_ERROR',
+      null,
+      'other',
+      DETALHES_ERRO_SHOPEE_VAZIOS,
+    );
+    prontoParaPublicar(vi.fn<ShopeeClient['publicar']>(), {
+      limitesDoItem: () => Promise.reject(falhou),
+    });
+    h.links = [rascunhoPronto('L-rasc')];
+    const { rerender } = renderEditor();
+    // Positive first: with nothing unsaved the failed read IS the reason.
+    await waitFor(() => expect(formDe('L-rasc').falhaDaLeitura).not.toBeNull());
+    expect(formDe('L-rasc').decisaoDePublicar.impedimento).toBe('faixas-desconhecidas');
+
+    // An unsaved produto (KNOWN #9's flag) speaks first.
+    rerenderEditor(rerender, { produtoSujoForaDoFormulario: true });
+    await waitFor(() =>
+      expect(formDe('L-rasc').decisaoDePublicar.impedimento).toBe('produto-nao-salvo'),
+    );
+    expect(formDe('L-rasc').decisaoDePublicar.aviso).toBe(FRASE_PUBLICAR_PRODUTO_NAO_SALVO_SHOPEE);
+    expect(formDe('L-rasc').falhaDaLeitura).toBeNull();
+    rerenderEditor(rerender, { produtoSujoForaDoFormulario: false });
+    await waitFor(() => expect(formDe('L-rasc').falhaDaLeitura).not.toBeNull());
+
+    // Unsaved draft edits speak first too.
+    digitarTitulo('L-rasc', 'Camiseta nova');
+    expect(formDe('L-rasc').decisaoDePublicar.impedimento).toBe('alteracoes-nao-salvas');
+    expect(formDe('L-rasc').falhaDaLeitura).toBeNull();
+  });
+
+  it('R8-copy#9 (b): the stored description’s listener FAILED — Publicar waits on `carregando` and says why (reload), never a silent disabled button ⟷ NEAR-MISS the description read ⇒ no failure', async () => {
+    prontoParaPublicar(vi.fn<ShopeeClient['publicar']>());
+    h.extraDataErro = new Error('permission-denied');
+    h.links = [rascunhoPronto('L-rasc')];
+    const { rerender } = renderEditor();
+    expect(formDe('L-rasc').decisaoDePublicar).toMatchObject({
+      podePublicar: false,
+      impedimento: 'carregando',
+      aviso: null,
+    });
+    expect(formDe('L-rasc').falhaDaLeitura).toStrictEqual({
+      mensagem: FRASE_DESCRICAO_DO_PRODUTO_NAO_LIDA_SHOPEE,
+      lerDeNovo: null,
+      relendo: false,
+    });
+    h.extraDataErro = null;
+    rerenderEditor(rerender);
+    await waitFor(() => expect(formDe('L-rasc').decisaoDePublicar.podePublicar).toBe(true));
+    expect(formDe('L-rasc').falhaDaLeitura).toBeNull();
+  });
+
+  // VERIFY-2 round 2 (F3's sibling, the SAME function's other arm): the failed
+  // description listener is named ONLY while `carregando` IS the gate's reason.
+  // An earlier, actionable impediment («Salve as alterações») keeps its own
+  // sentence; the reload sentence must not take its place.
+  it('NEAR-MISS (R8-copy#9 (b), F3 sibling): a FAILED description listener under unsaved draft edits keeps «alterações não salvas» — never the reload sentence in its place ⟷ with nothing unsaved the failure IS the reason', () => {
+    prontoParaPublicar(vi.fn<ShopeeClient['publicar']>());
+    h.extraDataErro = new Error('permission-denied');
+    h.links = [rascunhoPronto('L-rasc')];
+    renderEditor();
+    // Positive first: nothing unsaved ⇒ the failed listener IS the reason.
+    expect(formDe('L-rasc').decisaoDePublicar.impedimento).toBe('carregando');
+    expect(formDe('L-rasc').falhaDaLeitura?.mensagem).toBe(
+      FRASE_DESCRICAO_DO_PRODUTO_NAO_LIDA_SHOPEE,
+    );
+    // Unsaved draft edits speak first.
+    digitarTitulo('L-rasc', 'Camiseta nova');
+    expect(formDe('L-rasc').decisaoDePublicar.impedimento).toBe('alteracoes-nao-salvas');
+    expect(formDe('L-rasc').falhaDaLeitura).toBeNull();
+  });
+
+  it('KNOWN #9: unsaved produto edits OUTSIDE the form (staged variation prices / children) close Publicar as «salve o produto» — ORed with the form’s isDirty, never instead ⟷ NEAR-MISS without them it publishes', async () => {
+    const publicar = vi.fn<ShopeeClient['publicar']>(async () => ITEM_REPUBLICADO);
+    prontoParaPublicar(publicar);
+    h.links = [rascunhoPronto('L-rasc')];
+    // Outside any form provider (the prop alone).
+    const { rerender, unmount } = renderEditor({ produtoSujoForaDoFormulario: true });
+    await waitFor(() =>
+      expect(formDe('L-rasc').decisaoDePublicar.impedimento).toBe('produto-nao-salvo'),
+    );
+    expect(formDe('L-rasc').decisaoDePublicar.aviso).toBe(FRASE_PUBLICAR_PRODUTO_NAO_SALVO_SHOPEE);
+    expect(publicarDo('L-rasc').disabled).toBe(true);
+    act(() => formDe('L-rasc').onPublicar());
+    expect(semDialogoDePublicar()).toBeNull();
+    // NEAR-MISS: saved ⇒ open again.
+    rerenderEditor(rerender, { produtoSujoForaDoFormulario: false });
+    await waitFor(() => expect(formDe('L-rasc').decisaoDePublicar.podePublicar).toBe(true));
+    unmount();
+
+    // Inside a CLEAN produto form: the outside flag still closes it (an OR).
+    function ComOFormularioLimpo({ fora }: { fora: boolean }) {
+      const form = useForm({ defaultValues: { nome: 'Camiseta' } });
+      return (
+        <FormProvider {...form}>
+          <ShopeeEditor
+            produtoId="prod-1"
+            db={{} as Firestore}
+            produtoSujoForaDoFormulario={fora}
+          />
+        </FormProvider>
+      );
+    }
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const ui = (fora: boolean) => (
+      <MantineTestProvider>
+        <QueryClientProvider client={qc}>
+          <ComOFormularioLimpo fora={fora} />
+        </QueryClientProvider>
+      </MantineTestProvider>
+    );
+    const r = render(ui(true));
+    await waitFor(() =>
+      expect(formDe('L-rasc').decisaoDePublicar.impedimento).toBe('produto-nao-salvo'),
+    );
+    r.rerender(ui(false));
+    await waitFor(() => expect(formDe('L-rasc').decisaoDePublicar.podePublicar).toBe(true));
+    expect(publicar).not.toHaveBeenCalled();
   });
 });

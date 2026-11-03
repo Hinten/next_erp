@@ -42,7 +42,7 @@
  * ## The three vocabularies, and why there are three
  *
  * - {@link MOTIVO_PUBLICACAO_BLOQUEADA} — what the publisher may REFUSE with
- *   before writing. 57 members: step 11's 22, the nineteen native-kit
+ *   before writing. 58 members: step 11's 22, the nineteen native-kit
  *   refusals of step 19's kit core (`kits/planoKit.ts`, PR 5), the recriar's
  *   safety net `recriacao-sem-diferenca` (`kits/recriarKit.ts`, PR 6), the
  *   seven refusals only the publish dispatcher produces
@@ -52,9 +52,12 @@
  *   and #1911's four refusals of an UNCERTAIN first create (P5,
  *   `anuncios/criacaoIncerta.ts`) — decided by READING Shopee before any second
  *   `add_item`, never by writing — plus the same file's three refusals of a
- *   FIRST create over a listing the conta already holds with that SKU (P5b).
+ *   FIRST create over a listing the conta already holds with that SKU (P5b),
+ *   and its `criacao-incerta-encerrada` (batch-B review round 4): an
+ *   attestation's expectation on a draft that no longer records the attempt,
+ *   refused by the reservation before any look-up.
  * - {@link MOTIVO_PROBLEMA_PUBLICACAO} — what a `problemas[]` entry may carry:
- *   those 57 plus the thirteen only a WIRE rejection can produce (step 18 added
+ *   those 58 plus the thirteen only a WIRE rejection can produce (step 18 added
  *   the two size-chart refusals on `size_chart_info`; step 19 the seven
  *   native-kit refusals, whose ONE producer is `kits/recusaKit.ts`; #1911 P5 the
  *   duplicate-listing refusal `error_repeated_mtsku`, a row of
@@ -306,12 +309,13 @@ export type MotivoPublicacaoBloqueada =
    * ---- #1911 (P5, D5 + K1-7): an UNCERTAIN first create is re-found, never re-sent. ----
    * Produced ONLY by `anuncios/criacaoIncerta.ts` (the ENSURE scan a draft in
    * `incerta` runs under its lock, before any second `add_item`), spelled there
-   * through this constant. Each is decided by READING Shopee (`get_item_list`
-   * narrowed to the attempt's window, then the candidates' base info) and the
-   * conta's links — the scan FAILS CLOSED: nothing is sent unless it proved
-   * that the earlier attempt created nothing. `add_item` is not idempotent, so
-   * every one of these is "we will not risk a second listing", never "Shopee
-   * refused".
+   * through this constant. Each — but `criacao-incerta-encerrada`, which the
+   * reservation raises before any look-up — is decided by READING Shopee
+   * (`get_item_list` narrowed to the attempt's window, then the candidates'
+   * base info) and the conta's links — the scan FAILS CLOSED: nothing is sent
+   * unless it proved that the earlier attempt created nothing. `add_item` is
+   * not idempotent, so every one of these is "we will not risk a second
+   * listing", never "Shopee refused".
    */
   /**
    * The scan could not single the earlier attempt's listing out: two or more
@@ -344,6 +348,19 @@ export type MotivoPublicacaoBloqueada =
    * attempt's listing, the exit is discarding the draft, attesting.
    */
   | 'criacao-incerta-ja-vinculada'
+  /**
+   * An attestation that states what it EXPECTS (`criacaoIncertaAdota`, #1911
+   * batch-B review, Lucas §I1) reached a draft that no longer records the
+   * uncertain attempt it attested (the reservation read it `livre`): only
+   * ENSURE's verdict can honour an expectation, and such a draft runs none.
+   * Refused by the reservation on its own read, BEFORE its lock — nothing
+   * written, nothing sent, and NO look-up ran (neither ENSURE nor the first
+   * create's). No `acao`: nothing was found, so there is nothing to import.
+   * Its OWN slug (review round 4), never `-ja-vinculada`'s acao-less row —
+   * that one answers a look-up that DID run, and a client cannot word the
+   * two apart by the draft's state at render time.
+   */
+  | 'criacao-incerta-encerrada'
   /*
    * ---- #1911 (P5b — Lucas, 2026-10-26): a FIRST create never duplicates a listing. ----
    * Produced ONLY by `anuncios/criacaoIncerta.ts` (`problemasDoAnuncioExistente`,
@@ -433,6 +450,7 @@ export const MOTIVO_PUBLICACAO_BLOQUEADA = {
   buscaDeAnuncioIncompleta: 'busca-de-anuncio-incompleta',
   criacaoIncertaSemSku: 'criacao-incerta-sem-sku',
   criacaoIncertaJaVinculada: 'criacao-incerta-ja-vinculada',
+  criacaoIncertaEncerrada: 'criacao-incerta-encerrada',
   anuncioExistenteSemVinculo: 'anuncio-existente-sem-vinculo',
   anuncioExistenteDeOutroProduto: 'anuncio-existente-de-outro-produto',
   buscaDeAnuncioExistenteIncompleta: 'busca-de-anuncio-existente-incompleta',

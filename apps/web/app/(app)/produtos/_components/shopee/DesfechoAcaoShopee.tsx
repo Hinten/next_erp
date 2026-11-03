@@ -15,6 +15,7 @@ import { useObjectViewSections } from '@delfrance/ui';
 import {
   ehFraseDeTerminal,
   formatarInstanteShopee,
+  FRASE_RECUSA_SEM_PASSO_RASCUNHO_SHOPEE,
   FRASE_RECUSA_SEM_PASSO_SHOPEE,
   TITULO_ANUNCIO_INCERTO_SHOPEE,
   TITULO_RASCUNHO_PUBLICADO_SHOPEE,
@@ -30,7 +31,9 @@ import {
   rotuloDaSuperficieShopee,
   saidasDoProblemaShopee,
   superficieDoCampoShopee,
+  textoDaPublicacaoParadaDoRascunhoShopee,
   type CampoDoFormularioRascunhoShopee,
+  type PublicacaoParadaDoRascunhoShopee,
   type SaidaDoProblemaShopee,
   type SuperficieDoCampoShopee,
 } from '@/lib/shopee/rascunho';
@@ -100,11 +103,16 @@ export interface PedidoDoRascunhoShopee {
  *    republished, an `incerta` one may adopt) or its 202 (`tipo:
  *    'item-incerto'`, the ordinary listing's uncertain first create, never
  *    «falhou»);
- *  - `recusado` — the publish 422 (`SHOPEE_PUBLISH_BLOCKED` before any Shopee
- *    write, `SHOPEE_PUBLISH_REJECTED` after one), with its `problemas`;
+ *  - `recusado` — the publish 422 (`SHOPEE_PUBLISH_BLOCKED`, the ERP's own
+ *    refusal — usually before any Shopee write, but on an update the model
+ *    leg refuses AFTER `update_item`; `SHOPEE_PUBLISH_REJECTED`, Shopee's),
+ *    with its `problemas`;
  *  - `falha` — any other failure, already worded for the operator;
  *  - `sem-resposta` — a DRAFT's «Publicar» left without an answer the tab can
- *    trust (#1911 P11, rev. 2a #15).
+ *    trust (#1911 P11, rev. 2a #15);
+ *  - `parada` — a DRAFT's «Publicar» stopped by a 409 `publicacaoExpirada` or
+ *    a coded non-limit 502 (#1911 P11 review, §I2), worded on every render
+ *    over the block's CURRENT reading.
  *
  * A re-verify that succeeds leaves no outcome here: it answers with a toast,
  * and the live link document repaints the block. Neither does an UNCERTAIN kit
@@ -129,8 +137,22 @@ export type DesfechoAcaoShopee =
     }
   | {
       readonly tipo: 'recusado';
-      /** `true` for the 422 that refused BEFORE any Shopee write. */
-      readonly antesDaShopee: boolean;
+      /**
+       * `true` for OUR 422 (`SHOPEE_PUBLISH_BLOCKED`), `false` for Shopee's
+       * (`SHOPEE_PUBLISH_REJECTED`). ⚠️ NOT "nothing was sent": the model leg
+       * of an UPDATE (a live listing's Republicar, an adopted draft) refuses
+       * after `update_item`, and the body does not say which — so the title
+       * claims neither (review R7-roundtrip#0).
+       */
+      readonly bloqueadaPeloErp: boolean;
+      /**
+       * The refused request carried `confirmarCriacaoIncerta` (a refusal
+       * row's attestation exit): a row of the uncertain-create look-up then
+       * answers a situation that CHANGED since the refusal the operator
+       * checked — the server refused with nothing sent (§I1). Supplied by the
+       * editor from the body it sent.
+       */
+      readonly respondeAtestacao: boolean;
       /**
        * WHERE in the publish sequence a mid-publish refusal landed (apps/shopee's
        * `EtapaPublicacao`) — never a channel state, which depends on the arm
@@ -157,7 +179,18 @@ export type DesfechoAcaoShopee =
    * block's CURRENT reading ({@link DesfechoAcaoShopeeProps.rascunho}), so the
    * wait follows the snapshot. Supplied by the editor.
    */
-  | { readonly tipo: 'sem-resposta' };
+  | { readonly tipo: 'sem-resposta' }
+  /**
+   * A DRAFT's «Publicar» the route STOPPED — 409 `publicacaoExpirada` (before
+   * any send that could create) or a coded 502 that is not a rate limit
+   * (`falhaDaPublicacaoDoRascunhoShopee`'s `expirada` / `interrompida`). It
+   * holds no sentence: the panel words it on every render
+   * (`textoDaPublicacaoParadaDoRascunhoShopee`) from the block's CURRENT
+   * reading — a `livre` draft is checked first then created, an `incerta`
+   * one's last attempt is checked first and never repeated (§I2). Supplied by
+   * the editor.
+   */
+  | { readonly tipo: 'parada'; readonly parada: PublicacaoParadaDoRascunhoShopee };
 
 /**
  * Where a refusal row's `variacoes` / `medidas` surface
@@ -193,6 +226,13 @@ export interface DesfechoDoRascunhoShopee {
   readonly publicacao: EstadoPublicacaoRascunhoShopee;
   /** MILLISECONDS — the clock {@link publicacao} was read at (`relogioRascunho`); never `Date.now()` at render, never the tab's frozen `agoraMs`. */
   readonly nowMs: number;
+  /**
+   * The SKU the uncertain attempt SENT — `janelaDaCriacaoIncertaShopee(link)?.sku
+   * ?? null` (`@delfrance/schemas`): `''` ⇔ sent with none, `null` ⇔ unknown.
+   * The SKU-moved refusal row names it (review R8-copy#5). Supplied by the
+   * editor.
+   */
+  readonly skuEnviado: string | null;
   /** The draft's «Publicar» acts now — `publicacaoDoRascunhoShopee(…).podePublicar`, the SAME decision the form's button gets: a `publicar-atestando` exit is disabled otherwise. */
   readonly podePublicar: boolean;
   /** `bloco.podeDescartar`: a `descartar-atestando` exit is disabled otherwise. */
@@ -296,7 +336,7 @@ export function DesfechoAcaoShopee({
       )}
       {desfecho.tipo === 'falha' && (
         <Alert color="red" variant="light">
-          {semTerminal(desfecho.mensagem)}
+          {semTerminal(desfecho.mensagem, rascunho !== null)}
         </Alert>
       )}
       {desfecho.tipo === 'sem-resposta' && (
@@ -313,14 +353,45 @@ export function DesfechoAcaoShopee({
           </Text>
         </Alert>
       )}
+      {desfecho.tipo === 'parada' && (
+        // A definite stop (the route said so) — but WHAT exists is the block's
+        // current reading, re-worded on every render (§I2), and its copy is a
+        // check-first exit: orange, never the red of «falhou» (an `incerta`
+        // draft's last attempt, or a create the 502 followed, may exist).
+        <Alert color="orange" variant="light" data-testid={`shopee-desfecho-${linkDocId}-parada`}>
+          <Text size="sm">
+            {rascunho === null
+              ? FRASE_INCERTO_DE_RASCUNHO_JA_PUBLICADO_SHOPEE
+              : textoDaPublicacaoParadaDoRascunhoShopee(desfecho.parada, rascunho.publicacao)}
+          </Text>
+        </Alert>
+      )}
     </div>
   );
 }
 
-/** A backend sentence, unless it is CLI copy — then the neutral stand-in. */
-function semTerminal(texto: string): string {
-  return ehFraseDeTerminal(texto) ? FRASE_RECUSA_SEM_PASSO_SHOPEE : texto;
+/**
+ * A backend sentence, unless it is CLI copy — then the neutral stand-in: a
+ * live listing's names «Reverificar», a DRAFT block's names no button (it has
+ * none — review R8-copy#2).
+ */
+function semTerminal(texto: string, ehRascunho = false): string {
+  if (!ehFraseDeTerminal(texto)) return texto;
+  return ehRascunho ? FRASE_RECUSA_SEM_PASSO_RASCUNHO_SHOPEE : FRASE_RECUSA_SEM_PASSO_SHOPEE;
 }
+
+/**
+ * The title of OUR 422 (`SHOPEE_PUBLISH_BLOCKED`). ⚠️ Never «nada foi enviado
+ * à Shopee» (review R7-roundtrip#0 and siblings): on an UPDATE — a live
+ * listing's Republicar, an adopted draft, a draft published elsewhere
+ * meanwhile — the model leg refuses AFTER `update_item`, and the body names
+ * no etapa that would tell it apart from the (usual) refusal before any
+ * write. Who refused is all it claims; each row says what to fix.
+ */
+export const TITULO_PUBLICACAO_BLOQUEADA_SHOPEE = 'Publicação bloqueada pelo ERP';
+
+/** The title of Shopee's own refusal (`SHOPEE_PUBLISH_REJECTED`). */
+export const TITULO_PUBLICACAO_RECUSADA_SHOPEE = 'A Shopee recusou a publicação';
 
 /** `pausadoAte` (ISO-8601) in São Paulo, or `null` when absent or unreadable. */
 function instanteIso(iso: string | null): string | null {
@@ -749,24 +820,38 @@ function DesfechoRecusado({
   rascunho: DesfechoDoRascunhoShopee | null;
 }) {
   const ehRascunho = rascunho !== null;
+  // A DRAFT row is worded by the block's facts NOW (§I1 / §I2, R8-copy#2/#5);
+  // `null` ⇔ a live listing's row.
+  const contextoDoRascunho =
+    rascunho === null
+      ? null
+      : {
+          publicacao: rascunho.publicacao,
+          skuEnviado: rascunho.skuEnviado,
+          respondeAtestacao: desfecho.respondeAtestacao,
+        };
   return (
     <Alert
       color="red"
       variant="light"
       title={
-        desfecho.antesDaShopee
-          ? 'Publicação bloqueada — nada foi enviado à Shopee'
-          : 'A Shopee recusou a publicação'
+        desfecho.bloqueadaPeloErp
+          ? TITULO_PUBLICACAO_BLOQUEADA_SHOPEE
+          : TITULO_PUBLICACAO_RECUSADA_SHOPEE
       }
     >
       <Stack gap="xs">
-        {desfecho.etapa !== null && <Text size="sm">{textoDaEtapaShopee(desfecho.etapa)}</Text>}
+        {desfecho.etapa !== null && (
+          <Text size="sm">{textoDaEtapaShopee(desfecho.etapa, { ehRascunho })}</Text>
+        )}
         {desfecho.problemas.length === 0 ? (
-          <Text size="sm">{semTerminal(desfecho.mensagem)}</Text>
+          <Text size="sm">{semTerminal(desfecho.mensagem, ehRascunho)}</Text>
         ) : (
           desfecho.problemas.map((p, i) => (
             <Stack key={i} gap={4} data-testid={`shopee-problema-${linkDocId}-${String(i)}`}>
-              <Text size="sm">{textoDoProblemaShopee(p, linkDocId, produtoId)}</Text>
+              <Text size="sm">
+                {textoDoProblemaShopee(p, linkDocId, produtoId, contextoDoRascunho)}
+              </Text>
               <BotaoDoProblema
                 contaId={contaId}
                 linkDocId={linkDocId}

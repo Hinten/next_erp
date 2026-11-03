@@ -2,13 +2,18 @@
 
 import { Alert, List, Stack, Text } from '@mantine/core';
 import {
+  ehRascunhoShopee,
   mecanismosDaRecusaAnterior,
   recusaEstoqueDoAnuncioShopeeLegivel,
   recusaPrecoDoAnuncioShopeeLegivel,
   type ProdutoShopeeLink,
 } from '@delfrance/schemas';
 
-import { formatarInstanteShopee, textoDaRecusaGuardadaShopee } from '@/lib/shopee/anuncioProduto';
+import {
+  formatarInstanteShopee,
+  textoDaEtapaShopee,
+  textoDaRecusaGuardadaShopee,
+} from '@/lib/shopee/anuncioProduto';
 import { textoPreenchido } from './campos';
 
 export interface RecusasAnuncioShopeeProps {
@@ -55,14 +60,15 @@ export function RecusasAnuncioShopee({ link, agoraMs }: RecusasAnuncioShopeeProp
     <Stack gap="xs">
       {falha !== null && (
         <Alert color="red" variant="light" title="A última publicação falhou">
-          <Text size="sm">
-            {[
-              falha.em === null ? null : `Em ${falha.em}`,
-              falha.etapa === null ? null : `etapa ${falha.etapa}`,
-            ]
-              .filter((p): p is string => p !== null)
-              .join(', ')}
-          </Text>
+          {falha.em !== null && <Text size="sm">Em {falha.em}.</Text>}
+          {falha.etapa !== null && (
+            // Worded by the outcome panel's own reader — never the raw code
+            // (review R8-copy#15) — and by the block's kind: a DRAFT has no
+            // «Reverificar» to name (R8-copy#2).
+            <Text size="sm">
+              {textoDaEtapaShopee(falha.etapa, { ehRascunho: ehRascunhoShopee(link) })}
+            </Text>
+          )}
           {falha.problemas.length > 0 ? (
             <List size="sm" spacing={2}>
               {falha.problemas.map((p, i) => (
@@ -172,7 +178,10 @@ function sentencaDaRecusa(
  * `mensagem` only as the fallback: a draft's refused `add_item` is stamped
  * here, and Shopee's English prose (`anuncio-semelhante-existente`, its
  * `error_repeated_mtsku`) must not be what stays on screen once the outcome
- * panel is gone. A row with neither is dropped.
+ * panel is gone. A row with neither is dropped. The stored `etapa` is kept
+ * as the CODE here and worded at render by `textoDaEtapaShopee` (an
+ * own-property label lookup with a neutral fallback): the raw code — `add_item`,
+ * an etapa this build does not know, `constructor` — is never printed.
  */
 function lerFalhaPublicacao(valor: unknown): {
   em: string | null;

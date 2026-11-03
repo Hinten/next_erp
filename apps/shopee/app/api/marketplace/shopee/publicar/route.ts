@@ -2,8 +2,8 @@
  * `POST /api/marketplace/shopee/publicar` — publish (or re-publish) ONE ERP
  * produto as a Shopee listing. Body:
  * `{ integracaoId, produtoId, linkDocId?, status?, categoryId?, principal?,
- * recriar?, converterEmKit?, confirmarSegundoAnuncio?, confirmarCriacaoIncerta? }`.
- * Requires `PERM.integracao.write`.
+ * recriar?, converterEmKit?, confirmarSegundoAnuncio?, confirmarCriacaoIncerta?,
+ * criacaoIncertaAdota? }`. Requires `PERM.integracao.write`.
  *
  * Since step 19 (#1527) the produto may publish as a NATIVE Shopee kit. The
  * route does not decide that: `publicarShopee` (`anuncios/publicarShopee.ts`)
@@ -53,7 +53,12 @@
  * its LOCK, nothing sent: `code` is one of `CODIGO_RASCUNHO_SHOPEE`'s six
  * (`EM_ANDAMENTO` with `aguardarMs` and/or `vinculos`, `JA_PUBLICADO`,
  * `PUBLICACAO_EXPIRADA`, `CONTENCAO`, `CRIACAO_INCERTA`, `CONTA_JA_TEM_ANUNCIO`
- * with `vinculos`), plus `linkDocId`. An app class, mapped with `instanceof`
+ * with `vinculos`), plus `linkDocId`. `JA_PUBLICADO` also answers a body
+ * carrying `criacaoIncertaAdota` whose named link is no longer a draft (§I4):
+ * on the item arm the reservation's first read refuses it, and on a KIT arm
+ * (a native kit for `kit-atualizar`/`kit-recriar`, a live ordinary listing for
+ * `kit-converter`) `publicarShopee` refuses it before the arm runs — the same
+ * 409, nothing sent, nothing written. An app class, mapped with `instanceof`
  * BEFORE `isShopeeError` — it is not a Shopee answer and must never read as one ·
  * `RecusaDeRascunhoShopeeError` (#1911, K1-5), with the status it carries — a
  * live create with NO link mints its draft through the draft route's own
@@ -73,7 +78,9 @@
  * command to re-run (`comando`, the CLI's) and — since step 21 (#1529) — the
  * wait in MILLISECONDS (`aguardarMs`, the schemas' `AGUARDAR_KIT_INCERTO_SHOPEE_MS`)
  * the produto's Shopee tab holds its identical re-send for · 400 for a bad body
- * (both kit actions at once, or `recriar` with no `linkDocId`, included) · 404
+ * (both kit actions at once, or `recriar` or `criacaoIncertaAdota` with no
+ * `linkDocId`, included — refused at parse, before the conta context loads and
+ * before any write) · 404
  * `SHOPEE_ANUNCIO_NAO_ENCONTRADO` when the produto does not exist or the named
  * `linkDocId` is not this conta's · everything else goes to
  * `shopeeErrorResponse`, which holds the two per-produto publish arms (a
@@ -248,7 +255,8 @@ export async function POST(req: Request): Promise<NextResponse> {
   if (!corpo.ok) return NextResponse.json(corpoDeErro(corpo), { status: 400 });
   const { integracaoId, produtoId, linkDocId, status, categoryId, principal, recriar } =
     corpo.valor;
-  const { converterEmKit, confirmarSegundoAnuncio, confirmarCriacaoIncerta } = corpo.valor;
+  const { converterEmKit, confirmarSegundoAnuncio, confirmarCriacaoIncerta, criacaoIncertaAdota } =
+    corpo.valor;
 
   try {
     const db = getAdminFirestore();
@@ -300,6 +308,9 @@ export async function POST(req: Request): Promise<NextResponse> {
         },
         confirmarSegundoAnuncio,
         confirmarCriacaoIncerta,
+        // #1911 batch-B review (§I1): what the attestation expects — ENSURE
+        // decides on its own fresh scan; `null` (absent) keeps the bare flag.
+        criacaoIncertaAdota,
       },
     };
     // ⚠️ `hostEmulador` is deliberately OMITTED rather than passed as null:

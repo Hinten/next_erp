@@ -33,6 +33,9 @@ import { RecusaDeRascunhoShopeeError } from '@/lib/shopee/anuncios/rascunho';
 import {
   MSG_CONFIRMAR_CRIACAO_INCERTA_INVALIDO,
   MSG_CONFIRMAR_SEGUNDO_ANUNCIO_INVALIDO,
+  MSG_CRIACAO_INCERTA_ADOTA_INVALIDO,
+  MSG_CRIACAO_INCERTA_ADOTA_SEM_ATESTACAO,
+  MSG_CRIACAO_INCERTA_ADOTA_SEM_LINK,
   MSG_OPCOES_DE_KIT_EXCLUSIVAS,
   MSG_PRODUTO_ID_INVALIDO,
   MSG_RECRIAR_SEM_LINK,
@@ -1180,6 +1183,355 @@ describe('#1911 — publicar um RASCUNHO pela rota', () => {
     expect(res.status).toBe(400);
     await expect(res.json()).resolves.toEqual({ error: MSG_CONFIRMAR_CRIACAO_INCERTA_INVALIDO });
     expect(h.loadCtx).not.toHaveBeenCalled();
+  });
+
+  describe('(#1911 batch-B review, Lucas §I1) criacaoIncertaAdota — a expectativa da atestação', () => {
+    it('⛔ malformada, null, ou sem confirmarCriacaoIncerta: true ⇒ 400 com a frase do campo, antes de qualquer leitura', async () => {
+      for (const [extra, erro] of [
+        [
+          { confirmarCriacaoIncerta: true, criacaoIncertaAdota: null },
+          MSG_CRIACAO_INCERTA_ADOTA_INVALIDO,
+        ],
+        [
+          { confirmarCriacaoIncerta: true, criacaoIncertaAdota: [String(ITEM_ID)] },
+          MSG_CRIACAO_INCERTA_ADOTA_INVALIDO,
+        ],
+        [
+          { confirmarCriacaoIncerta: true, criacaoIncertaAdota: ITEM_ID },
+          MSG_CRIACAO_INCERTA_ADOTA_INVALIDO,
+        ],
+        [
+          { confirmarCriacaoIncerta: true, criacaoIncertaAdota: [0] },
+          MSG_CRIACAO_INCERTA_ADOTA_INVALIDO,
+        ],
+        [{ criacaoIncertaAdota: [ITEM_ID] }, MSG_CRIACAO_INCERTA_ADOTA_SEM_ATESTACAO],
+        [
+          { confirmarCriacaoIncerta: false, criacaoIncertaAdota: [] },
+          MSG_CRIACAO_INCERTA_ADOTA_SEM_ATESTACAO,
+        ],
+      ] as const) {
+        const res = await POST(req(corpoValido({ linkDocId: RASCUNHO, ...extra }), AUTORIZADO));
+        expect(res.status, JSON.stringify(extra)).toBe(400);
+        await expect(res.json()).resolves.toEqual({ error: erro });
+      }
+      expect(h.loadCtx).not.toHaveBeenCalled();
+    });
+
+    it('chega aos controles VERBATIM ao lado da atestação; AUSENTE chega null (o sentido de hoje)', async () => {
+      h.publicar.mockResolvedValue(resultadoDouble());
+      semearRascunho(RASCUNHO);
+
+      await POST(
+        req(
+          corpoValido({
+            linkDocId: RASCUNHO,
+            confirmarCriacaoIncerta: true,
+            criacaoIncertaAdota: [ITEM_ID],
+          }),
+          AUTORIZADO,
+        ),
+      );
+      await POST(
+        req(corpoValido({ linkDocId: RASCUNHO, confirmarCriacaoIncerta: true }), AUTORIZADO),
+      );
+
+      const com = h.publicar.mock.calls[0]?.[0] as PublicarAnuncioDeps;
+      expect(com.aoVivo?.confirmarCriacaoIncerta).toBe(true);
+      expect(com.aoVivo?.criacaoIncertaAdota).toEqual([ITEM_ID]);
+      // ⛔ quase-par: without the key the controls carry null — the bare flag.
+      const sem = h.publicar.mock.calls[1]?.[0] as PublicarAnuncioDeps;
+      expect(sem.aoVivo?.confirmarCriacaoIncerta).toBe(true);
+      expect(sem.aoVivo?.criacaoIncertaAdota).toBeNull();
+    });
+
+    it('ponta a ponta: um rascunho INCERTO sem SKU, atestado esperando ADOTAR ⇒ 422 sem-sku de agora — trava devolvida, registro mantido', async () => {
+      semearProduto(db, { sku: '   ' });
+      semearRascunho(RASCUNHO, { criacaoIncertaDesde: T0 - 600_000 });
+
+      const res = await POST(
+        req(
+          corpoValido({
+            linkDocId: RASCUNHO,
+            confirmarCriacaoIncerta: true,
+            criacaoIncertaAdota: [ITEM_ID],
+          }),
+          AUTORIZADO,
+        ),
+      );
+
+      expect(res.status).toBe(422);
+      const corpo = (await res.json()) as { problemas: { motivo: string }[] };
+      expect(corpo.problemas.map((p) => p.motivo)).toEqual([
+        MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaSemSku,
+      ]);
+      expect(rascunhoArmazenado()).toMatchObject({
+        item_id: null,
+        publicacaoEmCurso: null,
+        criacaoIncertaDesde: T0 - 600_000,
+      });
+    });
+
+    it('⛔ quase-par: o MESMO rascunho atestado esperando CRIAR ([]) passa a reserva (o plano então recusa sem-fotos)', async () => {
+      semearProduto(db, { sku: '   ' });
+      semearRascunho(RASCUNHO, { criacaoIncertaDesde: T0 - 600_000 });
+
+      const res = await POST(
+        req(
+          corpoValido({
+            linkDocId: RASCUNHO,
+            confirmarCriacaoIncerta: true,
+            criacaoIncertaAdota: [],
+          }),
+          AUTORIZADO,
+        ),
+      );
+
+      expect(res.status).toBe(422);
+      const corpo = (await res.json()) as { problemas: { motivo: string }[] };
+      expect(corpo.problemas.map((p) => p.motivo)).toContain(MOTIVO_PUBLICACAO_BLOQUEADA.semFotos);
+      expect(corpo.problemas.map((p) => p.motivo)).not.toContain(
+        MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaSemSku,
+      );
+    });
+
+    it('ponta a ponta (round 2; motivo próprio no round 4): um rascunho que voltou a LIVRE, atestado esperando ADOTAR ⇒ 422 criacao-incerta-encerrada SEM acao — nada gravado', async () => {
+      semearRascunho(RASCUNHO);
+      const antes = { ...rascunhoArmazenado() };
+
+      const res = await POST(
+        req(
+          corpoValido({
+            linkDocId: RASCUNHO,
+            confirmarCriacaoIncerta: true,
+            criacaoIncertaAdota: [ITEM_ID],
+          }),
+          AUTORIZADO,
+        ),
+      );
+
+      expect(res.status).toBe(422);
+      const corpo = (await res.json()) as { problemas: Record<string, unknown>[] };
+      // Round 4: its OWN slug on the wire — never `-ja-vinculada`'s acao-less
+      // row, which answers a look-up that DID run.
+      expect(corpo.problemas.map((p) => p.motivo)).toEqual([
+        MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaEncerrada,
+      ]);
+      // No `acao` on the wire: nothing was looked up, so the web has no exit to loop on.
+      expect(corpo.problemas[0]).not.toHaveProperty('acao');
+      expect(rascunhoArmazenado()).toEqual(antes);
+      expect(db.writes.filter((w) => w.path.includes('/prodshopee/'))).toEqual([]);
+    });
+
+    it('⛔ quase-par: o MESMO rascunho livre com a flag NUA passa a reserva (o plano então recusa sem-fotos)', async () => {
+      semearRascunho(RASCUNHO);
+
+      const res = await POST(
+        req(corpoValido({ linkDocId: RASCUNHO, confirmarCriacaoIncerta: true }), AUTORIZADO),
+      );
+
+      expect(res.status).toBe(422);
+      const corpo = (await res.json()) as { problemas: { motivo: string }[] };
+      expect(corpo.problemas.map((p) => p.motivo)).toContain(MOTIVO_PUBLICACAO_BLOQUEADA.semFotos);
+      expect(corpo.problemas.map((p) => p.motivo)).not.toContain(
+        MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaEncerrada,
+      );
+    });
+
+    /**
+     * Round 4 — Lucas §I4 (2026-11-03): the draft the attestation was read off
+     * was ADOPTED (or claimed) by another run since — the link records a
+     * listing now. The expectation is refused with the 409 the reservation's
+     * loop already answers for that fact; before, it ran as an update.
+     */
+    it('⛔ (§I4) um rascunho que outra execução ADOTOU, atestado com a expectativa ⇒ 409 JA_PUBLICADO {error, code, linkDocId} — nada gravado, nenhuma leitura da Shopee', async () => {
+      for (const esperado of [[ITEM_ID], []]) {
+        db = new FakeDb();
+        h.db.atual = asDb(db);
+        semearProduto(db);
+        semearRascunho(RASCUNHO, { item_id: ITEM_ID, estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo });
+        const antes = { ...rascunhoArmazenado() };
+
+        const res = await POST(
+          req(
+            corpoValido({
+              linkDocId: RASCUNHO,
+              confirmarCriacaoIncerta: true,
+              criacaoIncertaAdota: esperado,
+            }),
+            AUTORIZADO,
+          ),
+        );
+
+        const caso = JSON.stringify(esperado);
+        expect(res.status, caso).toBe(409);
+        const corpo = (await res.json()) as Record<string, unknown>;
+        expect(corpo, caso).toEqual({
+          error: expect.stringContaining(RASCUNHO) as unknown,
+          code: CODIGO_RASCUNHO_SHOPEE.jaPublicado,
+          linkDocId: RASCUNHO,
+        });
+        expect(rascunhoArmazenado()).toEqual(antes);
+        expect(
+          db.writes.filter((w) => w.path.includes('/prodshopee/')),
+          caso,
+        ).toEqual([]);
+        expect(db.writes, caso).toEqual([]);
+        // Refused at the reservation: the plan's taxonomy reads never ran.
+        expect(h.getCategory).not.toHaveBeenCalled();
+        expect(h.getChannelList).not.toHaveBeenCalled();
+      }
+    });
+
+    it('⛔ quase-par (§I4): o MESMO vínculo com a flag NUA, ou sem campo nenhum ⇒ a atualização de sempre (o plano então recusa sem-fotos, 422) — nenhum 409, nenhuma trava', async () => {
+      for (const extra of [{ confirmarCriacaoIncerta: true }, {}]) {
+        db = new FakeDb();
+        h.db.atual = asDb(db);
+        semearProduto(db);
+        semearRascunho(RASCUNHO, { item_id: ITEM_ID, estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo });
+
+        const res = await POST(req(corpoValido({ linkDocId: RASCUNHO, ...extra }), AUTORIZADO));
+
+        const caso = JSON.stringify(extra);
+        expect(res.status, caso).toBe(422);
+        const corpo = (await res.json()) as { problemas: { motivo: string }[] };
+        expect(
+          corpo.problemas.map((p) => p.motivo),
+          caso,
+        ).toContain(MOTIVO_PUBLICACAO_BLOQUEADA.semFotos);
+        expect(
+          db.writes.some((w) => 'publicacaoEmCurso' in w.patch),
+          caso,
+        ).toBe(false);
+      }
+    });
+
+    /**
+     * Round 5 — §I4 on the KIT arms: the dispatcher sends a named native kit
+     * to `kit-atualizar` / `kit-recriar`, which never reach the reservation.
+     * Before, the expectation was ignored there and the kit WRITE ran; now the
+     * entry refuses it with the SAME 409, before the arm.
+     */
+    function semearKitNativoVivo(): void {
+      db = new FakeDb();
+      h.db.atual = asDb(db);
+      semearProduto(db);
+      semearKit();
+      db.seed(`produtos/${KIT}/prodshopee/${VINCULO_KIT}`, {
+        contaProdutoShopeeOuterRef: REF_CONTA,
+        item_id: KIT_ITEM,
+        kitNativo: true,
+        estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo,
+      });
+    }
+
+    it('⛔ (§I4, round 5) um KIT NATIVO vivo nomeado, atestado com a expectativa ⇒ 409 JA_PUBLICADO {error, code, linkDocId} — nenhum braço de kit, nada gravado', async () => {
+      const casos = [
+        [[KIT_ITEM], {}],
+        [[], {}],
+        [[KIT_ITEM], { recriar: true }],
+      ] as const;
+      for (const [esperado, extra] of casos) {
+        semearKitNativoVivo();
+        const antes = { ...db.store[`produtos/${KIT}/prodshopee/${VINCULO_KIT}`]?.data };
+        h.publicarKit.mockClear();
+        h.publicar.mockClear();
+
+        const res = await POST(
+          req(
+            corpoValido({
+              produtoId: KIT,
+              linkDocId: VINCULO_KIT,
+              confirmarCriacaoIncerta: true,
+              criacaoIncertaAdota: esperado,
+              ...extra,
+            }),
+            AUTORIZADO,
+          ),
+        );
+
+        const caso = `${JSON.stringify(esperado)} ${JSON.stringify(extra)}`;
+        expect(res.status, caso).toBe(409);
+        await expect(res.json(), caso).resolves.toEqual({
+          error: expect.stringContaining(VINCULO_KIT) as unknown,
+          code: CODIGO_RASCUNHO_SHOPEE.jaPublicado,
+          linkDocId: VINCULO_KIT,
+        });
+        expect(h.publicarKit, caso).not.toHaveBeenCalled();
+        expect(h.publicar, caso).not.toHaveBeenCalled();
+        expect(
+          db.writes.filter((w) => w.path.includes('/prodshopee/')),
+          caso,
+        ).toEqual([]);
+        expect(db.writes, caso).toEqual([]);
+        expect(db.store[`produtos/${KIT}/prodshopee/${VINCULO_KIT}`]?.data, caso).toEqual(antes);
+        expect(h.getCategory, caso).not.toHaveBeenCalled();
+        expect(h.getChannelList, caso).not.toHaveBeenCalled();
+      }
+    });
+
+    it('⛔ quase-par (§I4, round 5): o MESMO kit nativo com a flag NUA, ou sem campo nenhum ⇒ o kit-atualizar de sempre (200) — nenhum 409', async () => {
+      for (const extra of [{ confirmarCriacaoIncerta: true }, {}]) {
+        semearKitNativoVivo();
+        h.publicarKit.mockClear();
+        h.publicarKit.mockResolvedValue(resultadoKitDouble({ arma: 'kit-atualizar' }));
+
+        const res = await POST(
+          req(corpoValido({ produtoId: KIT, linkDocId: VINCULO_KIT, ...extra }), AUTORIZADO),
+        );
+
+        const caso = JSON.stringify(extra);
+        expect(res.status, caso).toBe(200);
+        expect(
+          h.publicarKit.mock.calls.map((c) => c[2]),
+          caso,
+        ).toEqual([{ arma: 'kit-atualizar', linkDocId: VINCULO_KIT }]);
+      }
+    });
+
+    it('⛔ (round 3) a expectativa SEM linkDocId ⇒ 400 antes de qualquer leitura — nenhum rascunho cunhado, nada gravado', async () => {
+      // A produto with NO link: before round 3 this body MINTED a draft (K1-5)
+      // and only then had the reservation refuse it — the draft stayed.
+      for (const extra of [
+        { linkDocId: null, criacaoIncertaAdota: [ITEM_ID] },
+        { linkDocId: null, criacaoIncertaAdota: [] },
+        { criacaoIncertaAdota: [ITEM_ID] },
+      ]) {
+        const res = await POST(
+          req(corpoValido({ confirmarCriacaoIncerta: true, ...extra }), AUTORIZADO),
+        );
+        expect(res.status, JSON.stringify(extra)).toBe(400);
+        await expect(res.json()).resolves.toEqual({ error: MSG_CRIACAO_INCERTA_ADOTA_SEM_LINK });
+      }
+      expect(h.loadCtx).not.toHaveBeenCalled();
+      expect(h.publicar).not.toHaveBeenCalled();
+      expect(db.writes).toEqual([]);
+      expect(db.idsEm(`produtos/${PRODUTO}/prodshopee`)).toEqual([]);
+    });
+
+    it('⛔ quase-par: linkDocId null com a flag NUA (a CLI) cunha o rascunho como antes — a reserva passa, o plano recusa sem-fotos', async () => {
+      const res = await POST(
+        req(corpoValido({ linkDocId: null, confirmarCriacaoIncerta: true }), AUTORIZADO),
+      );
+
+      expect(res.status).toBe(422);
+      const corpo = (await res.json()) as { problemas: { motivo: string }[] };
+      expect(corpo.problemas.map((p) => p.motivo)).toContain(MOTIVO_PUBLICACAO_BLOQUEADA.semFotos);
+      // The reservation's refusal of an expectation (round 4: its own slug) never fires here.
+      expect(corpo.problemas.map((p) => p.motivo)).not.toContain(
+        MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaEncerrada,
+      );
+      // The CLI's mint, unchanged: ONE draft, the only document written; the
+      // blocked plan handed its lock back, unstamped.
+      const ids = db.idsEm(`produtos/${PRODUTO}/prodshopee`);
+      expect(ids).toHaveLength(1);
+      expect(db.store[`produtos/${PRODUTO}/prodshopee/${ids[0] ?? ''}`]?.data).toMatchObject({
+        item_id: null,
+        publicacaoEmCurso: null,
+      });
+      expect(
+        db.writes.filter((w) => !w.path.startsWith(`produtos/${PRODUTO}/prodshopee/`)),
+      ).toEqual([]);
+    });
   });
 
   it('(D5) o add_item INCERTO ⇒ 202 com o envelope ÚNICO (respostaItemIncertoShopeeSchema) + a mensagem da CLI, por NOME', async () => {

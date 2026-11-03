@@ -4408,7 +4408,8 @@ export async function seedEditorRascunhoShopee(
 /**
  * Fixture Shopee category of the READY draft {@link seedRascunhoProntoShopee}
  * seeds (the one the other seeded links carry) — the spec stubs that
- * category's tree node and bands, and only it.
+ * category's tree node and bands; its category-pick test also stubs the
+ * fixture root above it and one sibling leaf (fixture ids too).
  */
 export const SHOPEE_E2E_CATEGORIA = 100087;
 
@@ -4424,7 +4425,8 @@ export const SHOPEE_E2E_CATEGORIA = 100087;
  *    chosen") and a non-blank title; its description is `null`, so the
  *    produto's STORED Descrição (seeded here, through the schema) stands in.
  *    So it has no pendência once its category's bands are read — and those
- *    are a request to apps/shopee, which the spec stubs for that test alone.
+ *    are a request to apps/shopee, which the spec stubs, per test, for the
+ *    tests that open this produto alone.
  *  - Why a produto of its OWN: the Shopee tab reads the bands of every draft
  *    of ITS produto that has a category, on render — so a categorised draft
  *    beside {@link seedProdutoShopeeVinculado}'s links would add an apps/shopee
@@ -4433,8 +4435,17 @@ export const SHOPEE_E2E_CATEGORIA = 100087;
  *    (`vinculosQueExigemConfirmacaoShopee`, `@delfrance/schemas`, without the
  *    draft being published).
  *  - The produto has NO weight (neither `pesoBrutoKg` nor `pesoLiquidoKg`), so
- *    the refusal the spec's publish stub answers — `sem-peso` on campo
- *    `weight` — is the one the real route would give it.
+ *    `sem-peso` on campo `weight` — what the spec's publish stub answers — is
+ *    ONE of the refusals the listing assembly (`montarAnuncio`) raises for it,
+ *    and the FIRST row of its answer: the assembly checks the weight right
+ *    after the name, the description and the category, which this draft
+ *    passes under the spec's stubbed bands. It is not the only row: the real
+ *    422 is the UNION of every refusal found, and this produto also has no
+ *    dimensions (`sem-dimensoes`), no photos (`fotos: null` ⇒ `sem-fotos`)
+ *    and no price (`sem-preco`, a create's) — plus whatever the conta's stock
+ *    band and logistics add. The stub's one-row answer («1 problema») is a
+ *    deliberate simplification (design-DC-web §3), so the spec asserts row
+ *    `-0`, never the row count nor the header's total.
  *
  * Every id is deterministic. Teardown: the spec's `prodshopee` and `extraData`
  * sweeps of THIS produto (`cleanupProdutoSubcollection`) before

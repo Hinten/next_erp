@@ -12,6 +12,8 @@ import {
 
 import { MantineTestProvider } from '@/lib/testing/mantine';
 import {
+  FRASE_ATESTACAO_QUE_VARRE_SHOPEE,
+  FRASE_ATESTACAO_SEM_BUSCA_SHOPEE,
   FRASE_CATEGORIA_TRAVADA_SHOPEE,
   FRASE_LOGISTICA_RASCUNHO_SHOPEE,
   FRASE_MARCA_NAO_ESCOLHIDA_SHOPEE,
@@ -31,10 +33,13 @@ import {
   ROTULO_PUBLICAR_ATESTANDO_SEM_SKU_SHOPEE,
   ROTULO_PUBLICAR_RASCUNHO_SHOPEE,
   ROTULO_PUBLICAR_SEGUNDO_ANUNCIO_SHOPEE,
+  ROTULO_PUBLICAR_SEGUNDO_DE_PROPOSITO_SHOPEE,
   TITULO_PUBLICAR_RASCUNHO_SHOPEE,
   TITULO_SEGUNDO_ANUNCIO_NA_PUBLICACAO_SHOPEE,
+  fraseDosRascunhosIrmaosIncertosShopee,
   textoDaConfirmacaoDePublicacaoShopee,
   textoDoSegundoAnuncioNaPublicacaoShopee,
+  tituloDoSegundoAnuncioNaPublicacaoShopee,
 } from '@/lib/shopee/anuncioProduto';
 import {
   comCampoRascunhoShopee,
@@ -85,6 +90,7 @@ vi.mock('./MarcaRascunhoShopee', async (importOriginal) => ({
 const {
   FRASE_CAMPO_INVALIDO_RASCUNHO_SHOPEE,
   FRASE_TITULO_EM_BRANCO_RASCUNHO_SHOPEE,
+  ROTULO_LER_DE_NOVO_RASCUNHO_SHOPEE,
   RascunhoShopee,
   fraseDasDivergenciasDoRascunhoShopee,
 } = await import('./RascunhoShopee');
@@ -158,6 +164,7 @@ function decisao(
     produtoSujo: false,
     textosDoProduto: p.textosDoProduto,
     limites: p.limites,
+    rascunhosIrmaosIncertos: [],
     ...gate,
   });
 }
@@ -199,6 +206,7 @@ function elemento(
       emVoo={null}
       resultado={null}
       decisaoDePublicar={decisao(base)}
+      falhaDaLeitura={null}
       confirmacaoDePublicacao={null}
       onCampo={cb.onCampo}
       onSalvar={cb.onSalvar}
@@ -888,6 +896,24 @@ describe('RascunhoShopee — «Publicar» through the REAL gate (`publicacaoDoRa
     );
   });
 
+  it('review round 3 (VERIFY-2 R8-copy#3): an uncertain SIBLING draft ⇒ disabled with the sentence naming it and how to resolve it — the click cannot open the confirmation ⟷ NEAR-MISS none ⇒ enabled, no aviso', () => {
+    const b = bloco({ link: pronto() });
+    const base = { bloco: b, podeEditar: true, textosDoProduto: TEXTOS, limites: LIMITES };
+    const r = show({
+      ...base,
+      decisaoDePublicar: decisao(base, { rascunhosIrmaosIncertos: ['R2'] }),
+    });
+    expect(botao(ROTULO_PUBLICAR_RASCUNHO_SHOPEE).disabled).toBe(true);
+    expect(screen.getByTestId(`${RAIZ}-publicar-aviso`).textContent).toBe(
+      fraseDosRascunhosIrmaosIncertosShopee(['R2']),
+    );
+    fireEvent.click(botao(ROTULO_PUBLICAR_RASCUNHO_SHOPEE));
+    expect(r.onPublicar).not.toHaveBeenCalled();
+    r.rerender({ ...base, decisaoDePublicar: decisao(base) });
+    expect(botao(ROTULO_PUBLICAR_RASCUNHO_SHOPEE).disabled).toBe(false);
+    expect(screen.queryByTestId(`${RAIZ}-publicar-aviso`)).toBeNull();
+  });
+
   it('`incerta` does NOT block: its publish is a real one (ENSURE first)', () => {
     const link = pronto(travaCarimbada(AGORA - 1_000_000, AGORA - 500_000));
     show({ bloco: bloco({ link }), textosDoProduto: TEXTOS, limites: LIMITES });
@@ -920,6 +946,7 @@ describe('RascunhoShopee — the «Publicar» confirmation (controlled by the ed
     const texto = textoDaConfirmacaoDePublicacaoShopee({
       contaNome: 'Loja Principal',
       publicacao: b.publicacao,
+      atestacao: null,
     });
     expect(texto).toContain('«Loja Principal»');
     expect(dialogo().getByText(texto)).toBeTruthy();
@@ -981,7 +1008,10 @@ describe('RascunhoShopee — the «Publicar» confirmation (controlled by the ed
     expect(screen.getByText(TITULO_SEGUNDO_ANUNCIO_NA_PUBLICACAO_SHOPEE)).toBeTruthy();
     expect(screen.queryByText(TITULO_PUBLICAR_RASCUNHO_SHOPEE)).toBeNull();
     expect(screen.getByTestId(`shopee-rascunho-publicar-${LINK}-segundo-anuncio`).textContent).toBe(
-      textoDoSegundoAnuncioNaPublicacaoShopee(segundoAnuncio),
+      textoDoSegundoAnuncioNaPublicacaoShopee(segundoAnuncio, {
+        publicacao: bloco().publicacao,
+        atestacao: null,
+      }),
     );
     expect(dialogo().queryByRole('button', { name: ROTULO_PUBLICAR_RASCUNHO_SHOPEE })).toBeNull();
     fireEvent.click(confirmar(ROTULO_PUBLICAR_SEGUNDO_ANUNCIO_SHOPEE));
@@ -997,6 +1027,7 @@ describe('RascunhoShopee — the «Publicar» confirmation (controlled by the ed
           tipo: 'publicar-atestando',
           rotulo: ROTULO_PUBLICAR_ATESTANDO_SEM_SKU_SHOPEE,
           adota: [],
+          varre: false,
         },
       },
     });
@@ -1016,7 +1047,12 @@ describe('RascunhoShopee — the «Publicar» confirmation (controlled by the ed
       decisaoDePublicar: PRONTO,
       confirmacaoDePublicacao: {
         ...CONFIRMACAO,
-        atestacao: { tipo: 'publicar-atestando', rotulo: 'Publicar confirmando', adota: [222] },
+        atestacao: {
+          tipo: 'publicar-atestando',
+          rotulo: 'Publicar confirmando',
+          adota: [222],
+          varre: true,
+        },
       },
     });
     const texto = screen.getByTestId(`shopee-rascunho-publicar-${LINK}`).textContent ?? '';
@@ -1024,7 +1060,7 @@ describe('RascunhoShopee — the «Publicar» confirmation (controlled by the ed
       textoDaConfirmacaoDePublicacaoShopee({
         contaNome: 'Loja Principal',
         publicacao: b.publicacao,
-        adota: [222],
+        atestacao: { adota: [222], varre: true },
       }),
     );
     expect(texto).not.toContain('será criado');
@@ -1038,6 +1074,7 @@ describe('RascunhoShopee — the «Publicar» confirmation (controlled by the ed
     const texto = textoDaConfirmacaoDePublicacaoShopee({
       contaNome: 'Loja Principal',
       publicacao: b.publicacao,
+      atestacao: null,
     });
     expect(texto).toContain('«Criar pausado» não se aplica');
     expect(dialogo().getByText(texto)).toBeTruthy();
@@ -1218,5 +1255,189 @@ describe('RascunhoShopee — a draft whose conta document is gone (R2-drafts#2, 
     );
     expect(within(marca!).getByTestId('stub-marca')).toBeTruthy();
     expect(screen.queryByTestId(`shopee-rascunho-marca-${LINK}`)).toBeNull();
+  });
+});
+
+describe('RascunhoShopee — the confirmation is worded by what the publish DOES (#1911 P11 review: R4-1369-fold#0, KNOWN #11, #12 — the tab’s wiring of the lib)', () => {
+  const dialogoTexto = () =>
+    screen.getByTestId(`shopee-rascunho-publicar-${LINK}`).textContent ?? '';
+  const aviso = () =>
+    screen.getByTestId(`shopee-rascunho-publicar-${LINK}-segundo-anuncio`).textContent ?? '';
+  const ADOTA = {
+    tipo: 'publicar-atestando',
+    rotulo: 'Publicar confirmando',
+    adota: [222],
+    varre: true,
+  } as const;
+  /** The SKU-less attempt's exit: a create the server honours WITHOUT a scan. */
+  const CRIA = {
+    tipo: 'publicar-atestando',
+    rotulo: ROTULO_PUBLICAR_ATESTANDO_SEM_SKU_SHOPEE,
+    adota: [],
+    varre: false,
+  } as const;
+  /** The all-linked «segundo de propósito» exit: the SAME `adota: []`, but the look-up re-scans. */
+  const SEGUNDO = {
+    tipo: 'publicar-atestando',
+    rotulo: ROTULO_PUBLICAR_SEGUNDO_DE_PROPOSITO_SHOPEE,
+    adota: [],
+    varre: true,
+  } as const;
+  const NA_SHOPEE = { quantidade: 1, comRascunho: false, naShopee: 1, rascunhos: 0 };
+  const SO_RASCUNHOS = { quantidade: 1, comRascunho: true, naShopee: 0, rascunhos: 1 };
+
+  it('an ADOPTING attestation beside a listing on Shopee: titled and warned as a LINK — never «cria OUTRO», never the create title', () => {
+    const b = bloco();
+    show({
+      bloco: b,
+      decisaoDePublicar: PRONTO,
+      confirmacaoDePublicacao: { ...CONFIRMACAO, segundoAnuncio: NA_SHOPEE, atestacao: ADOTA },
+    });
+    expect(
+      screen.getByText(tituloDoSegundoAnuncioNaPublicacaoShopee(NA_SHOPEE, ADOTA)),
+    ).toBeTruthy();
+    expect(screen.queryByText(TITULO_SEGUNDO_ANUNCIO_NA_PUBLICACAO_SHOPEE)).toBeNull();
+    expect(aviso()).toBe(
+      textoDoSegundoAnuncioNaPublicacaoShopee(NA_SHOPEE, {
+        publicacao: b.publicacao,
+        atestacao: ADOTA,
+      }),
+    );
+    expect(aviso()).toContain('não cria anúncio');
+    expect(aviso()).not.toContain('cria OUTRO');
+  });
+
+  it('NEAR-MISS: the SAME count with no attestation keeps the create title and «cria OUTRO»', () => {
+    show({
+      decisaoDePublicar: PRONTO,
+      confirmacaoDePublicacao: { ...CONFIRMACAO, segundoAnuncio: NA_SHOPEE },
+    });
+    expect(screen.getByText(TITULO_SEGUNDO_ANUNCIO_NA_PUBLICACAO_SHOPEE)).toBeTruthy();
+    expect(aviso()).toContain('cria OUTRO');
+  });
+
+  it('only DRAFTS beside it: titled as such — the publish makes the conta’s FIRST listing, never «cria OUTRO»', () => {
+    show({
+      decisaoDePublicar: PRONTO,
+      confirmacaoDePublicacao: { ...CONFIRMACAO, segundoAnuncio: SO_RASCUNHOS },
+    });
+    expect(
+      screen.getByText(tituloDoSegundoAnuncioNaPublicacaoShopee(SO_RASCUNHOS, null)),
+    ).toBeTruthy();
+    expect(screen.queryByText(TITULO_SEGUNDO_ANUNCIO_NA_PUBLICACAO_SHOPEE)).toBeNull();
+    expect(aviso()).not.toContain('cria OUTRO');
+  });
+
+  it('KNOWN #12: a CREATE attestation (`adota: []`) on an `incerta` draft never promises the SKU look-up ⟷ NEAR-MISS the block’s own Publicar on the same draft keeps it', () => {
+    const link = rascunho(travaCarimbada(AGORA - 1_000_000, AGORA - 500_000));
+    const b = bloco({ link });
+    expect(b.publicacao.tipo).toBe('incerta');
+    const r = show({
+      bloco: b,
+      decisaoDePublicar: PRONTO,
+      confirmacaoDePublicacao: { ...CONFIRMACAO, atestacao: CRIA },
+    });
+    expect(dialogoTexto()).toContain(
+      textoDaConfirmacaoDePublicacaoShopee({
+        contaNome: 'Loja Principal',
+        publicacao: b.publicacao,
+        atestacao: CRIA,
+      }),
+    );
+    expect(dialogoTexto()).not.toContain('o ERP o procura pelo SKU');
+    r.rerender({ bloco: b, decisaoDePublicar: PRONTO, confirmacaoDePublicacao: CONFIRMACAO });
+    expect(dialogoTexto()).toContain('o ERP o procura pelo SKU');
+  });
+
+  // Review round 2 (KNOWN #12 PARTIAL): the sem-sku attested publish scans
+  // NOTHING, so its confirmation never promises the change-guard; the tab
+  // hands the exit itself, `varre` included, to the lib's wording.
+  it.each([
+    ['livre', bloco()],
+    ['incerta', bloco({ link: rascunho(travaCarimbada(AGORA - 1_000_000, AGORA - 500_000)) })],
+  ] as const)(
+    'KNOWN #12: the SKU-less attestation (`varre: false`) on a %s draft says the ERP cannot look it up — never «se algo mudou… nada é enviado» ⟷ NEAR-MISS the «segundo de propósito» exit, the SAME `adota: []`, keeps the change-guard',
+    (_leitura, b) => {
+      const r = show({
+        bloco: b,
+        decisaoDePublicar: PRONTO,
+        confirmacaoDePublicacao: { ...CONFIRMACAO, atestacao: CRIA },
+      });
+      expect(dialogoTexto()).toContain(FRASE_ATESTACAO_SEM_BUSCA_SHOPEE);
+      expect(dialogoTexto()).not.toContain(FRASE_ATESTACAO_QUE_VARRE_SHOPEE);
+      expect(dialogoTexto()).not.toMatch(/nada é enviado|recusa volta|procura pelo SKU/);
+      // The SKU is given BEFORE the import (§C rule 5).
+      expect(dialogoTexto().indexOf('MESMO SKU')).toBeLessThan(dialogoTexto().indexOf('importe-o'));
+      expect(
+        screen.getByTestId(`shopee-rascunho-publicar-${LINK}-atestacao`).textContent,
+      ).toContain(ROTULO_PUBLICAR_ATESTANDO_SEM_SKU_SHOPEE);
+
+      r.rerender({
+        bloco: b,
+        decisaoDePublicar: PRONTO,
+        confirmacaoDePublicacao: { ...CONFIRMACAO, atestacao: SEGUNDO },
+      });
+      expect(dialogoTexto()).toContain(FRASE_ATESTACAO_QUE_VARRE_SHOPEE);
+      expect(dialogoTexto()).not.toContain(FRASE_ATESTACAO_SEM_BUSCA_SHOPEE);
+      expect(
+        screen.getByTestId(`shopee-rascunho-publicar-${LINK}-atestacao`).textContent,
+      ).toContain(ROTULO_PUBLICAR_SEGUNDO_DE_PROPOSITO_SHOPEE);
+    },
+  );
+});
+
+describe('RascunhoShopee — a FAILED read is said as such (#1911 P11 review: R7-roundtrip#3, R8-copy#9)', () => {
+  const FAIXAS: PublicacaoDoRascunhoShopee = {
+    podePublicar: false,
+    impedimento: 'faixas-desconhecidas',
+    pendencias: [],
+    aviso: FRASE_PUBLICAR_SEM_FAIXAS_SHOPEE,
+  };
+  const FALHA = 'Publicar fica indisponível: os limites não puderam ser lidos. Tente em minutos.';
+
+  it('the failure REPLACES the pending aviso — red, its sentence — and «Ler de novo» asks the read again', () => {
+    const lerDeNovo = vi.fn();
+    show({
+      decisaoDePublicar: FAIXAS,
+      falhaDaLeitura: { mensagem: FALHA, lerDeNovo, relendo: false },
+    });
+    const falha = screen.getByTestId(`${RAIZ}-publicar-falha-leitura`);
+    expect(within(falha).getByText(FALHA)).toBeTruthy();
+    expect(screen.queryByText(FRASE_PUBLICAR_SEM_FAIXAS_SHOPEE)).toBeNull();
+    expect(screen.queryByTestId(`${RAIZ}-publicar-aviso`)).toBeNull();
+    expect(botao(ROTULO_PUBLICAR_RASCUNHO_SHOPEE).disabled).toBe(true);
+    fireEvent.click(
+      within(falha).getByRole('button', { name: ROTULO_LER_DE_NOVO_RASCUNHO_SHOPEE }),
+    );
+    expect(lerDeNovo).toHaveBeenCalledTimes(1);
+  });
+
+  it('NEAR-MISS: no failure (the read is pending) ⇒ the decision’s aviso, and no re-read button', () => {
+    show({ decisaoDePublicar: FAIXAS, falhaDaLeitura: null });
+    expect(screen.getByTestId(`${RAIZ}-publicar-aviso`).textContent).toBe(
+      FRASE_PUBLICAR_SEM_FAIXAS_SHOPEE,
+    );
+    expect(screen.queryByTestId(`${RAIZ}-publicar-falha-leitura`)).toBeNull();
+    expect(screen.queryByRole('button', { name: ROTULO_LER_DE_NOVO_RASCUNHO_SHOPEE })).toBeNull();
+  });
+
+  it('a listener failure has no re-read here (`lerDeNovo: null`) ⇒ the sentence alone', () => {
+    show({
+      decisaoDePublicar: { ...FAIXAS, impedimento: 'carregando', aviso: null },
+      falhaDaLeitura: { mensagem: FALHA, lerDeNovo: null, relendo: false },
+    });
+    expect(screen.getByTestId(`${RAIZ}-publicar-falha-leitura`).textContent).toBe(FALHA);
+    expect(screen.queryByRole('button', { name: ROTULO_LER_DE_NOVO_RASCUNHO_SHOPEE })).toBeNull();
+  });
+
+  it('the open confirmation says the failure too — never the pending promise', () => {
+    show({
+      decisaoDePublicar: FAIXAS,
+      falhaDaLeitura: { mensagem: FALHA, lerDeNovo: vi.fn(), relendo: false },
+      confirmacaoDePublicacao: CONFIRMACAO,
+    });
+    const dialogo = within(screen.getByTestId(`shopee-rascunho-publicar-${LINK}`));
+    expect(dialogo.getByText(FALHA)).toBeTruthy();
+    expect(dialogo.queryByText(FRASE_PUBLICAR_SEM_FAIXAS_SHOPEE)).toBeNull();
   });
 });
