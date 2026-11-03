@@ -308,7 +308,7 @@ describe('fundirLinksVariacoesLi — the merge that never drops', () => {
     });
   });
 
-  it('⚠️ NEAR-MISS: an arakene list is extended in the stored order, never reordered', () => {
+  it('⚠️ NEAR-MISS: a variante-id list is extended in the stored order, never reordered', () => {
     const armazenado = [entrada('C1', 8001, [[30002, ['v9', 'v3']]])];
     const fusao = fundirLinksVariacoesLi(armazenado, [APRENDIZADO]);
     expect(fusao.ok && fusao.array[0]).toMatchObject({
