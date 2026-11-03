@@ -53,7 +53,12 @@
  * its LOCK, nothing sent: `code` is one of `CODIGO_RASCUNHO_SHOPEE`'s six
  * (`EM_ANDAMENTO` with `aguardarMs` and/or `vinculos`, `JA_PUBLICADO`,
  * `PUBLICACAO_EXPIRADA`, `CONTENCAO`, `CRIACAO_INCERTA`, `CONTA_JA_TEM_ANUNCIO`
- * with `vinculos`), plus `linkDocId`. An app class, mapped with `instanceof`
+ * with `vinculos`), plus `linkDocId`. `JA_PUBLICADO` also answers a body
+ * carrying `criacaoIncertaAdota` whose named link is no longer a draft (§I4):
+ * on the item arm the reservation's first read refuses it, and on a KIT arm
+ * (a native kit for `kit-atualizar`/`kit-recriar`, a live ordinary listing for
+ * `kit-converter`) `publicarShopee` refuses it before the arm runs — the same
+ * 409, nothing sent, nothing written. An app class, mapped with `instanceof`
  * BEFORE `isShopeeError` — it is not a Shopee answer and must never read as one ·
  * `RecusaDeRascunhoShopeeError` (#1911, K1-5), with the status it carries — a
  * live create with NO link mints its draft through the draft route's own

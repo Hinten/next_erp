@@ -1405,6 +1405,89 @@ describe('#1911 — publicar um RASCUNHO pela rota', () => {
       }
     });
 
+    /**
+     * Round 5 — §I4 on the KIT arms: the dispatcher sends a named native kit
+     * to `kit-atualizar` / `kit-recriar`, which never reach the reservation.
+     * Before, the expectation was ignored there and the kit WRITE ran; now the
+     * entry refuses it with the SAME 409, before the arm.
+     */
+    function semearKitNativoVivo(): void {
+      db = new FakeDb();
+      h.db.atual = asDb(db);
+      semearProduto(db);
+      semearKit();
+      db.seed(`produtos/${KIT}/prodshopee/${VINCULO_KIT}`, {
+        contaProdutoShopeeOuterRef: REF_CONTA,
+        item_id: KIT_ITEM,
+        kitNativo: true,
+        estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo,
+      });
+    }
+
+    it('⛔ (§I4, round 5) um KIT NATIVO vivo nomeado, atestado com a expectativa ⇒ 409 JA_PUBLICADO {error, code, linkDocId} — nenhum braço de kit, nada gravado', async () => {
+      const casos = [
+        [[KIT_ITEM], {}],
+        [[], {}],
+        [[KIT_ITEM], { recriar: true }],
+      ] as const;
+      for (const [esperado, extra] of casos) {
+        semearKitNativoVivo();
+        const antes = { ...db.store[`produtos/${KIT}/prodshopee/${VINCULO_KIT}`]?.data };
+        h.publicarKit.mockClear();
+        h.publicar.mockClear();
+
+        const res = await POST(
+          req(
+            corpoValido({
+              produtoId: KIT,
+              linkDocId: VINCULO_KIT,
+              confirmarCriacaoIncerta: true,
+              criacaoIncertaAdota: esperado,
+              ...extra,
+            }),
+            AUTORIZADO,
+          ),
+        );
+
+        const caso = `${JSON.stringify(esperado)} ${JSON.stringify(extra)}`;
+        expect(res.status, caso).toBe(409);
+        await expect(res.json(), caso).resolves.toEqual({
+          error: expect.stringContaining(VINCULO_KIT) as unknown,
+          code: CODIGO_RASCUNHO_SHOPEE.jaPublicado,
+          linkDocId: VINCULO_KIT,
+        });
+        expect(h.publicarKit, caso).not.toHaveBeenCalled();
+        expect(h.publicar, caso).not.toHaveBeenCalled();
+        expect(
+          db.writes.filter((w) => w.path.includes('/prodshopee/')),
+          caso,
+        ).toEqual([]);
+        expect(db.writes, caso).toEqual([]);
+        expect(db.store[`produtos/${KIT}/prodshopee/${VINCULO_KIT}`]?.data, caso).toEqual(antes);
+        expect(h.getCategory, caso).not.toHaveBeenCalled();
+        expect(h.getChannelList, caso).not.toHaveBeenCalled();
+      }
+    });
+
+    it('⛔ quase-par (§I4, round 5): o MESMO kit nativo com a flag NUA, ou sem campo nenhum ⇒ o kit-atualizar de sempre (200) — nenhum 409', async () => {
+      for (const extra of [{ confirmarCriacaoIncerta: true }, {}]) {
+        semearKitNativoVivo();
+        h.publicarKit.mockClear();
+        h.publicarKit.mockResolvedValue(resultadoKitDouble({ arma: 'kit-atualizar' }));
+
+        const res = await POST(
+          req(corpoValido({ produtoId: KIT, linkDocId: VINCULO_KIT, ...extra }), AUTORIZADO),
+        );
+
+        const caso = JSON.stringify(extra);
+        expect(res.status, caso).toBe(200);
+        expect(
+          h.publicarKit.mock.calls.map((c) => c[2]),
+          caso,
+        ).toEqual([{ arma: 'kit-atualizar', linkDocId: VINCULO_KIT }]);
+      }
+    });
+
     it('⛔ (round 3) a expectativa SEM linkDocId ⇒ 400 antes de qualquer leitura — nenhum rascunho cunhado, nada gravado', async () => {
       // A produto with NO link: before round 3 this body MINTED a draft (K1-5)
       // and only then had the reservation refuse it — the draft stayed.

@@ -395,12 +395,16 @@ function criacaoIncerta(linkDocId: string): ConflitoDeRascunhoShopeeError {
  * 409 `JA_PUBLICADO` — the addressed document is no longer a draft. Its
  * producers: the reservation (the draft stopped being one between two of its
  * reads; or, §I4, an attestation's expectation reached a link that is not a
- * draft on the FIRST read), ENSURE's token-guarded writes and the pre-send
- * re-read. The sentence claims only what the read showed — the document
- * RECORDS a listing — never that the listing still exists on Shopee: an
- * adopted or claimed link may have been removed in Seller Centre since.
+ * draft on the FIRST read), ENSURE's token-guarded writes, the pre-send
+ * re-read — and, EXPORTED for it (round 5), the publish entry's guard on the
+ * KIT arms (`publicarShopee.ts`): an attestation's expectation whose named
+ * link the dispatcher routed to a kit arm never reaches this reservation, and
+ * is refused there with THIS 409, never a second sentence. The sentence
+ * claims only what the read showed — the document RECORDS a listing — never
+ * that the listing still exists on Shopee: an adopted or claimed link may
+ * have been removed in Seller Centre since.
  */
-function jaPublicado(linkDocId: string): ConflitoDeRascunhoShopeeError {
+export function conflitoDeRascunhoJaPublicado(linkDocId: string): ConflitoDeRascunhoShopeeError {
   return new ConflitoDeRascunhoShopeeError({
     code: CODIGO_RASCUNHO_SHOPEE.jaPublicado,
     linkDocId,
@@ -486,7 +490,7 @@ export async function reservarRascunhoShopee(
     if (!vinculoShopeeEhDaConta(raw, alvo.integracaoId)) return { tipo: 'inexistente' };
 
     if (!ehRascunhoShopee(raw)) {
-      if (tentativa > 1) throw jaPublicado(alvo.linkDocId);
+      if (tentativa > 1) throw conflitoDeRascunhoJaPublicado(alvo.linkDocId);
       // ⚠️ §I4 (Lucas, 2026-11-03): an attestation that states what it
       // expects was read off a DRAFT's refusal, and only ENSURE's verdict on
       // that draft can honour it. A link that is no longer a draft on THIS
@@ -502,7 +506,7 @@ export async function reservarRascunhoShopee(
         '[shopee/anuncios] atestação com expectativa num vínculo que já não é rascunho; nada enviado',
         { produtoId: alvo.produtoId, linkDocId: alvo.linkDocId, esperado },
       );
-      throw jaPublicado(alvo.linkDocId);
+      throw conflitoDeRascunhoJaPublicado(alvo.linkDocId);
     }
     if (controles === null) {
       throw new Error(
@@ -851,7 +855,7 @@ function perdeuATrava(
     linkDocId: reserva.linkDocId,
     desfecho,
   });
-  if (desfecho === 'recusada') return jaPublicado(reserva.linkDocId);
+  if (desfecho === 'recusada') return conflitoDeRascunhoJaPublicado(reserva.linkDocId);
   if (desfecho === 'contencao') {
     return new ConflitoDeRascunhoShopeeError({
       code: CODIGO_RASCUNHO_SHOPEE.contencao,
@@ -957,7 +961,7 @@ export async function conferirTravaAntesDoEnvio(
     const snap = await ref.get();
     const raw = snap.exists ? ((snap.data() ?? {}) as Record<string, unknown>) : null;
     if (raw !== null && itemIdEnderecavelShopee(raw.item_id) !== null) {
-      throw jaPublicado(reserva.linkDocId);
+      throw conflitoDeRascunhoJaPublicado(reserva.linkDocId);
     }
     const trava = raw === null ? null : travaLegivel(raw);
     if (trava === null || trava.token !== reserva.token) {
