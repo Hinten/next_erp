@@ -26,6 +26,7 @@ export { usuarioCollection } from './usuarioCollection';
 export { arquivoCollection } from './arquivoCollection';
 export { arquivoOrphanSweepStateCollection } from './arquivoOrphanSweepStateCollection';
 export { categoriaCollection } from './categoriaCollection';
+export { categoriaLojaIntegradaLinkCollection } from './categoriaLojaIntegradaLinkCollection';
 export { produtoCollection } from './produtoCollection';
 export { estoqueCollection } from './estoqueCollection';
 export { depositoCollection } from './depositoCollection';
@@ -70,6 +71,14 @@ export { produtoExtraDataCollection } from './produtoExtraDataCollection';
 export { notificacaoMercadoLivreCollection } from './notificacaoMercadoLivreCollection';
 export { importacaoMercadoLivreCollection } from './importacaoMercadoLivreCollection';
 export { importacaoShopeeCollection } from './importacaoShopeeCollection';
+export {
+  detalheImportacaoLiCollection,
+  evidenciaImportacaoLiCollection,
+  importacaoLojaIntegradaCollection,
+  itemImportacaoLiCollection,
+  paginaImportacaoLiCollection,
+  revisaoFiscalImportacaoLiCollection,
+} from './importacaoLojaIntegradaCollection';
 export { pedidoCollection } from './pedidoCollection';
 export {
   COMPRA_ETIQUETA_DOC_ID,

@@ -479,6 +479,20 @@
       ]
     },
     {
+      "collectionGroup": "importacoesLojaIntegrada",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "integracaoId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "iniciadoEmMs",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "enviosPrecoMercadoLivre",
       "queryScope": "COLLECTION",
       "fields": [
