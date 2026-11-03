@@ -464,6 +464,130 @@ describe('decidirAprendizadoLi — learn only what the evidence proves', () => {
     expect(decisao.recusados[0]?.motivo).toBe(MOTIVO_RECUSA_APRENDIZADO_LI.eixosMultiplos);
   });
 
+  it('⚠️ NEAR-MISS: two options of the conta claiming ONE variante ⇒ both refused, whatever their ids', () => {
+    // Nothing holds `v1` yet, so the per-option check against the memo cannot see the dispute:
+    // the claims themselves must, or the lower id would win.
+    for (const [a, b] of [
+      [30001, 30002],
+      [30002, 30001],
+    ] as const) {
+      const decisao = decidirAprendizadoLi({
+        contaId: 'C1',
+        evidencias: [evidencia(8001, a, [['cor', 'v1']]), evidencia(8001, b, [['cor', 'v1']])],
+        grupos: [grupo('cor', ['v1'], [])],
+      });
+      expect(decisao.aprendidos).toEqual([]);
+      expect(decisao.recusados).toEqual([
+        { gradeId: 8001, opcaoId: 30001, motivo: MOTIVO_RECUSA_APRENDIZADO_LI.varianteDisputada },
+        { gradeId: 8001, opcaoId: 30002, motivo: MOTIVO_RECUSA_APRENDIZADO_LI.varianteDisputada },
+      ]);
+      expect(decisao.grupos).toEqual([]);
+    }
+  });
+
+  it('⚠️ NEAR-MISS: a DIVERGENT option still disputes the variante it names (fail closed)', () => {
+    const decisao = decidirAprendizadoLi({
+      contaId: 'C1',
+      evidencias: [
+        evidencia(8001, 30001, [
+          ['cor', 'v1'],
+          ['cor', 'v2'],
+        ]),
+        evidencia(8001, 30002, [['cor', 'v1']]),
+      ],
+      grupos: [grupo('cor', ['v1', 'v2'], [entrada('C1', 8001, [])])],
+    });
+    expect(decisao.aprendidos).toEqual([]);
+    expect(decisao.recusados.map((r) => r.motivo)).toEqual([
+      MOTIVO_RECUSA_APRENDIZADO_LI.divergente,
+      MOTIVO_RECUSA_APRENDIZADO_LI.varianteDisputada,
+    ]);
+  });
+
+  it('an option already linked to the disputed variante stays linked; only the newcomer is refused', () => {
+    const decisao = decidirAprendizadoLi({
+      contaId: 'C1',
+      evidencias: [
+        evidencia(8001, 30001, [['cor', 'v1']]),
+        evidencia(8001, 30002, [['cor', 'v1']]),
+      ],
+      grupos: [grupo('cor', ['v1'], [entrada('C1', 8001, [[30001, ['v1']]])])],
+    });
+    expect(decisao.jaVinculadas).toEqual([{ gradeId: 8001, opcaoId: 30001 }]);
+    expect(decisao.recusados).toEqual([
+      { gradeId: 8001, opcaoId: 30002, motivo: MOTIVO_RECUSA_APRENDIZADO_LI.varianteDisputada },
+    ]);
+    expect(decisao.grupos).toEqual([]);
+  });
+
+  it('EQUAL: a grade G held at the START ⇒ a multi-axis claim extends it (the link names the axis)', () => {
+    const cor = grupo('cor', ['v1', 'v2'], [entrada('C1', 8001, [[30001, ['v1']]])]);
+    const decisao = decidirAprendizadoLi({
+      contaId: 'C1',
+      evidencias: [evidencia(8001, 30002, [['cor', 'v2', false]])],
+      grupos: [cor],
+    });
+    expect(decisao.aprendidos).toEqual([
+      { gradeId: 8001, opcaoId: 30002, grupoId: 'cor', varianteId: 'v2', novaEntrada: false },
+    ]);
+  });
+
+  it('⚠️ NEAR-MISS: a grade nothing held at the START refuses EVERY multi-axis option, whichever id comes first', () => {
+    // The single-axis option creates the entry; the multi-axis one must not ride on it.
+    const casos = [
+      { eixoUnico: 30001, eixos: 30002 },
+      { eixoUnico: 30002, eixos: 30001 },
+    ] as const;
+    for (const { eixoUnico, eixos } of casos) {
+      const decisao = decidirAprendizadoLi({
+        contaId: 'C1',
+        evidencias: [
+          evidencia(8001, eixoUnico, [['cor', 'v1', true]]),
+          evidencia(8001, eixos, [['cor', 'v2', false]]),
+        ],
+        grupos: [grupo('cor', ['v1', 'v2'], [])],
+      });
+      expect(decisao.aprendidos).toEqual([
+        { gradeId: 8001, opcaoId: eixoUnico, grupoId: 'cor', varianteId: 'v1', novaEntrada: true },
+      ]);
+      expect(decisao.recusados).toEqual([
+        { gradeId: 8001, opcaoId: eixos, motivo: MOTIVO_RECUSA_APRENDIZADO_LI.eixosMultiplos },
+      ]);
+    }
+  });
+
+  it('EQUAL: another grupo with NO stored value (null or absent) holds nothing ⇒ learned', () => {
+    for (const vazio of [null, undefined]) {
+      const decisao = decidirAprendizadoLi({
+        contaId: 'C1',
+        evidencias: [evidencia(8001, 30001, [['cor', 'v1']])],
+        grupos: [grupo('cor', ['v1'], []), grupo('outro', ['v9'], vazio)],
+      });
+      expect(decisao.aprendidos.map((a) => a.opcaoId)).toEqual([30001]);
+    }
+  });
+
+  it('⚠️ NEAR-MISS: another grupo whose stored value is NOT a list may hold (C, g) ⇒ refused (fail closed)', () => {
+    // An entry stored bare, outside a list: it cannot be read as a list, so nothing proves it
+    // does not hold the grade — neither a new entry nor an extension may be added beside it.
+    const solta = { grade_id: 8001, integracaoLiId: 'C1', variationOptions: [] };
+    for (const cor of [
+      grupo('cor', ['v1', 'v2'], []),
+      grupo('cor', ['v1', 'v2'], [entrada('C1', 8001, [[30009, ['v2']]])]),
+    ]) {
+      const decisao = decidirAprendizadoLi({
+        contaId: 'C1',
+        evidencias: [evidencia(8001, 30001, [['cor', 'v1']])],
+        grupos: [cor, grupo('outro', ['v9'], solta)],
+      });
+      expect(decisao.aprendidos).toEqual([]);
+      expect(decisao.recusados).toEqual([
+        { gradeId: 8001, opcaoId: 30001, motivo: MOTIVO_RECUSA_APRENDIZADO_LI.gradeEmOutroGrupo },
+      ]);
+      expect(decisao.grupos).toEqual([]);
+    }
+  });
+
   it('⚠️ NEAR-MISS: a variante already held by another option of the conta ⇒ refused', () => {
     const cor = grupo('cor', ['v1'], [entrada('C1', 8001, [[30001, ['v1']]])]);
     const decisao = decidirAprendizadoLi({

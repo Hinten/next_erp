@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { inteiroPositivoCanonicoLi } from '../../mapaFreteLojaIntegrada';
-import { outerRefSchema, parseRef, toOuterRefOrNull } from '../../shared/outerRef';
+import { contaIdFromRef, outerRefSchema } from '../../shared/outerRef';
 
 /**
  * Typed write-side schema for the Loja Integrada listing link doc —
@@ -114,25 +114,6 @@ function proprio(o: Record<string, unknown>, chave: string): unknown {
 }
 
 /**
- * The integração doc id a stored Loja Integrada conta ref points at, else `null`.
- *
- * Both stored forms read as the same conta: the canonical `documents/integracao/<id>` every
- * writer stores, and the bare `integracao/<id>` the readers accept defensively. The id is
- * compared exactly afterwards — no case or space fold — and a ref into any other collection, a
- * malformed path or a non-string reads as `null`, never as some conta.
- *
- * Equal (⇒ `'C1'`): `'documents/integracao/C1'` ≡ `'integracao/C1'`.
- * Distinct: `'documents/integracao/C2'` ⇒ `'C2'`; `'documents/categorias/C1'`, `'C1'` (a bare
- * id is not a ref), `''`, `null` ⇒ `null`.
- */
-export function contaDoRefLi(raw: unknown): string | null {
-  const ref = toOuterRefOrNull(raw);
-  if (ref === null) return null;
-  const { collection, id } = parseRef(ref);
-  return collection === 'integracao' && id !== '' ? id : null;
-}
-
-/**
  * The anchor's COUNTS predicate (master plan step 12's prerequisite): does this stored link keep
  * its conta in the produto's `integracoesComProduto`?
  *
@@ -171,7 +152,8 @@ export const RELACAO_VINCULO_LI = {
 /**
  * Is this stored link THE link of store product `idLi` under conta `contaId`?
  *
- *  - `outra-conta`: its `contaLojaIntegrada` does not read ({@link contaDoRefLi}) as `contaId` —
+ *  - `outra-conta`: its `contaLojaIntegrada` does not read ({@link contaIdFromRef}, the one conta
+ *    ref reader the anchor binding also uses) as `contaId` —
  *    another conta's link, a malformed ref, or not an object at all;
  *  - `id-ilegivel`: this conta's link, but its stored `id` is not a positive safe-integer NUMBER.
  *    A TEXT id (`'182904918'`) lands here, never in `mesmo`: Firestore equality is type-strict,
@@ -194,7 +176,7 @@ export function vinculoLiDaContaEId(
   idLi: number,
 ): RelacaoVinculoLi {
   if (!ehObjeto(link)) return RELACAO_VINCULO_LI.outraConta;
-  if (contaDoRefLi(proprio(link, 'contaLojaIntegrada')) !== contaId) {
+  if (contaIdFromRef(proprio(link, 'contaLojaIntegrada')) !== contaId) {
     return RELACAO_VINCULO_LI.outraConta;
   }
   const id = proprio(link, 'id');

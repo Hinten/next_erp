@@ -233,6 +233,38 @@ describe('folhaDoProdutoLi — the linked-leaf rule', () => {
     expect(folhaDoProdutoLi([], arvore, nenhuma)).toEqual({ tipo: 'nenhuma' });
   });
 
+  describe('a product category on a parent cycle', () => {
+    // 1 ↔ 2 cycle; 3 hangs BELOW the cycle (3 → 1); 9 is an ordinary root.
+    const ciclica = arvoreCategoriasLi([sob(1, 2), sob(2, 1), sob(3, 1), raiz(9)]);
+
+    it('⚠️ NEAR-MISS: a category ON a cycle picks no leaf — never an empty ambigua', () => {
+      expect(folhaDoProdutoLi([uri(1)], ciclica, nenhuma)).toEqual({ tipo: 'ciclo', ids: [1] });
+      expect(folhaDoProdutoLi([uri(1), uri(2)], ciclica, nenhuma)).toEqual({
+        tipo: 'ciclo',
+        ids: [1, 2],
+      });
+    });
+
+    it('⚠️ NEAR-MISS: a linked category on a cycle never hands the product the OTHER, unlinked branch', () => {
+      expect(folhaDoProdutoLi([uri(1), uri(9)], ciclica, (id) => id === 1)).toEqual({
+        tipo: 'ciclo',
+        ids: [1],
+      });
+    });
+
+    it('EQUAL: a category BELOW a cycle is not on it ⇒ it is the leaf (its chain read refuses it)', () => {
+      expect(folhaDoProdutoLi([uri(3)], ciclica, nenhuma)).toEqual({
+        tipo: 'folha',
+        id: 3,
+        vinculada: false,
+      });
+      expect(ciclica.cadeia(3)).toEqual({
+        tipo: 'recusada',
+        motivo: MOTIVO_CADEIA_CATEGORIA_LI.ciclo,
+      });
+    });
+  });
+
   it('⚠️ an unreadable URI picks no leaf: the leaf could be the unreadable one', () => {
     expect(folhaDoProdutoLi([uri(3), '/api/v1/categoria/None'], arvore, nenhuma)).toEqual({
       tipo: 'ilegivel',

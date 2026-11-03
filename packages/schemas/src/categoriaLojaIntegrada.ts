@@ -6,8 +6,7 @@ import {
   type CategoriaCatalogoLi,
 } from './catalogoLojaIntegrada';
 import { inteiroPositivoCanonicoLi } from './mapaFreteLojaIntegrada';
-import { contaDoRefLi } from './produto/collection/lojaIntegradaLink';
-import { outerRefSchema } from './shared/outerRef';
+import { contaIdFromRef, outerRefSchema } from './shared/outerRef';
 
 /**
  * The Loja Integrada CATEGORY link and the store's category tree, as the product import (master
@@ -95,7 +94,7 @@ export function vinculoCategoriaServeAConta(
   if (id === null || !ehObjeto(doc)) return false;
   const conta = proprio(doc, 'contaLojaIntegrada');
   if (conta === null || conta === undefined) return idsDaLoja.has(id);
-  return contaDoRefLi(conta) === contaId;
+  return contaIdFromRef(conta) === contaId;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -207,18 +206,26 @@ export type FolhaDoProdutoLi =
   | { readonly tipo: 'folha'; readonly id: number; readonly vinculada: boolean }
   | { readonly tipo: 'nenhuma' }
   | { readonly tipo: 'ambigua'; readonly ids: readonly number[] }
-  | { readonly tipo: 'ilegivel'; readonly uris: number };
+  | { readonly tipo: 'ilegivel'; readonly uris: number }
+  /** The product's categories that sit ON a parent cycle, ascending. */
+  | { readonly tipo: 'ciclo'; readonly ids: readonly number[] };
 
-/** The ancestors of `id` the tree can name (a refused chain still names those below the break). */
-function ancestrais(arvore: ArvoreCategoriasLi, id: number): Set<number> {
-  const saida = new Set<number>();
+/**
+ * The ancestors of `id` the tree can name (a refused chain still names those below the break),
+ * and whether the walk came back to `id` itself — `id` sits ON a parent cycle. `id` is never its
+ * own ancestor. Not bounded by depth: every step adds an id or stops, so it ends on any list, and a
+ * long cycle is still seen as one.
+ */
+function ancestrais(arvore: ArvoreCategoriasLi, id: number): { ids: Set<number>; ciclo: boolean } {
+  const ids = new Set<number>();
   let c = arvore.categoria(id);
-  for (let passos = 0; c !== null && passos <= PROFUNDIDADE_MAX_CATEGORIA_LI; passos += 1) {
-    if (c.pai.tipo !== TIPO_PAI_CATEGORIA_LI.id || saida.has(c.pai.id)) break;
-    saida.add(c.pai.id);
+  while (c !== null && c.pai.tipo === TIPO_PAI_CATEGORIA_LI.id) {
+    if (c.pai.id === id) return { ids, ciclo: true };
+    if (ids.has(c.pai.id)) break;
+    ids.add(c.pai.id);
     c = arvore.categoria(c.pai.id);
   }
-  return saida;
+  return { ids, ciclo: false };
 }
 
 /**
@@ -234,7 +241,12 @@ function ancestrais(arvore: ArvoreCategoriasLi, id: number): Set<number> {
  *    guess;
  *  - no category at all ⇒ `nenhuma`;
  *  - any URI that does not read as a category ⇒ `ilegivel`: the leaf could be the unreadable one,
- *    so no leaf is picked.
+ *    so no leaf is picked;
+ *  - any of the product's categories sitting ON a parent cycle ⇒ `ciclo`: such a category is
+ *    above and below its cycle-mates at once, so "no other's ancestor" cannot place it, and no
+ *    leaf is picked — not even a linked one elsewhere (the import refuses the category, motivo
+ *    `ciclo`). A category merely BELOW a cycle is not on it: it can be the leaf, and its chain
+ *    read refuses it.
  */
 export function folhaDoProdutoLi(
   uris: readonly unknown[],
@@ -252,7 +264,13 @@ export function folhaDoProdutoLi(
   if (ids.length === 0) return { tipo: 'nenhuma' };
 
   const deAlguem = new Set<number>();
-  for (const id of ids) for (const a of ancestrais(arvore, id)) deAlguem.add(a);
+  const emCiclo: number[] = [];
+  for (const id of ids) {
+    const subida = ancestrais(arvore, id);
+    if (subida.ciclo) emCiclo.push(id);
+    for (const a of subida.ids) deAlguem.add(a);
+  }
+  if (emCiclo.length > 0) return { tipo: 'ciclo', ids: emCiclo.sort((a, b) => a - b) };
   const folhas = ids.filter((id) => !deAlguem.has(id));
 
   const vinculadas = folhas.filter((id) => estaVinculada(id));

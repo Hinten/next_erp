@@ -178,7 +178,6 @@ const FRASE_MOTIVO_CATEGORIA_SEM_VINCULO_LI: Record<MotivoCategoriaSemVinculoLi,
     'uma categoria do caminho aponta para uma categoria-pai que a loja não lista',
   [MOTIVO_CATEGORIA_SEM_VINCULO_LI.ciclo]: 'as categorias do caminho apontam umas para as outras',
   [MOTIVO_CATEGORIA_SEM_VINCULO_LI.profundidade]: 'o caminho da categoria é longo demais',
-  [MOTIVO_CATEGORIA_SEM_VINCULO_LI.ausente]: 'a loja não lista mais essa categoria',
 };
 
 /** The motivo's sentence, or a neutral one — the {@link fraseMotivoImportacaoParada} contract. */

@@ -855,21 +855,29 @@ export interface EvidenciaAprendizadoLi {
 }
 
 /**
- * Why a learning was refused. The import reports `divergente` as `evidencia-divergente` and every
- * other motivo as `variacao-sem-vinculo`; the motivo itself is the diagnosis.
+ * Why a learning was refused. The import reports `divergente` and `variante-disputada` as
+ * `evidencia-divergente` and every other motivo as `variacao-sem-vinculo`; the motivo itself is the
+ * diagnosis.
  *
  *  - `divergente`: the claims for the option name two different `(grupo, variante)`;
+ *  - `variante-disputada`: claims of ANOTHER option of the conta name the same `(grupo,
+ *    variante)` — divergent claims included — so it is learned for no option (one variante, one
+ *    option per conta; an option already linked to it stays in `jaVinculadas`), and no
+ *    processing order picks a winner;
  *  - `grupo-desconhecido` / `variante-fora-do-grupo`: the claim names a grupo the memo lacks, or a
  *    variante that grupo does not have (stale evidence);
  *  - `formato-invalido`: the grupo's stored value is not a list (nothing can be merged into it);
- *  - `grade-em-outro-grupo`: another grupo already holds an entry for `(conta, grade)`;
+ *  - `grade-em-outro-grupo`: another grupo already holds an entry for `(conta, grade)`, or stores
+ *    a value that is not a list (it cannot be read, so it may hold one: fail closed);
  *  - `grade-repetida`: the grupo holds more than one entry for `(conta, grade)`, or one that is
  *    not the conta's VALID bare entry (fail closed: an invalid or non-bare entry naming the conta
  *    still "holds" the grade, so a second entry is never added beside it);
  *  - `grupos-divergentes-na-grade`: a NEW entry was proposed, but the claims for the grade's
  *    options name two grupos — none is created, so no processing order picks a winner;
- *  - `eixos-multiplos`: a NEW entry needs every claim to come from a family with ONE axis on both
- *    sides (several axes with no linked grade cannot tell which axis the grade is);
+ *  - `eixos-multiplos`: a grade nothing held when the pass started needs every claim of EACH of
+ *    its options to come from a family with ONE axis on both sides (several axes with no linked
+ *    grade cannot tell which axis the grade is) — the entry an earlier option of the same pass
+ *    created does not lift it;
  *  - `variante-em-outra-opcao`: the variante is already held by another option of the conta;
  *  - `conflito-no-grupo`: the merged grupo carries a blocking {@link conflitosLinksVariacoesLi}
  *    finding on an edited entry;
@@ -878,6 +886,7 @@ export interface EvidenciaAprendizadoLi {
  */
 export const motivoRecusaAprendizadoLiSchema = z.enum([
   'divergente',
+  'variante-disputada',
   'grupo-desconhecido',
   'variante-fora-do-grupo',
   'formato-invalido',
@@ -894,6 +903,7 @@ export type MotivoRecusaAprendizadoLi = z.infer<typeof motivoRecusaAprendizadoLi
 /** Named members of {@link motivoRecusaAprendizadoLiSchema} — see `delfrance/prefer-schema-enum`. */
 export const MOTIVO_RECUSA_APRENDIZADO_LI = {
   divergente: 'divergente',
+  varianteDisputada: 'variante-disputada',
   grupoDesconhecido: 'grupo-desconhecido',
   varianteForaDoGrupo: 'variante-fora-do-grupo',
   formatoInvalido: 'formato-invalido',
@@ -941,8 +951,10 @@ function podeSerGrade(valor: unknown, gradeId: number): boolean {
 
 /**
  * Every stored element, in every grupo, that HOLDS `(contaId, gradeId)` — failing CLOSED: an
- * element naming the conta in any form whose grade is that grade or does not read. `exata`: the
- * conta's VALID bare entry for exactly that grade, the only kind a learning may extend.
+ * element naming the conta in any form whose grade is that grade or does not read, and a grupo
+ * whose stored value is not a list at all (nothing in it can be read, so nothing proves it does
+ * not hold the grade). `exata`: the conta's VALID bare entry for exactly that grade, the only kind
+ * a learning may extend.
  */
 function detentoresDaGrade(
   grupos: readonly { readonly id: string; readonly links: unknown }[],
@@ -951,7 +963,10 @@ function detentoresDaGrade(
 ): { readonly grupoId: string; readonly exata: boolean }[] {
   const saida: { grupoId: string; exata: boolean }[] = [];
   for (const g of grupos) {
-    if (!Array.isArray(g.links)) continue;
+    if (!Array.isArray(g.links)) {
+      if (lerLinksVariacoesLi(g.links).formatoInvalido) saida.push({ grupoId: g.id, exata: false });
+      continue;
+    }
     const lista: readonly unknown[] = g.links;
     for (const elemento of lista) {
       if (!ehObjeto(elemento)) continue;
@@ -1005,22 +1020,27 @@ function varianteEmOutraOpcao(
  * A link `(conta, g, v) → (G, X)` is learned only when ALL of these hold:
  *  - every claim for `(g, v)` across the whole job names the same `(G, X)` (unanimity —
  *    otherwise `divergente`, and nothing is learned for it);
+ *  - no claim of ANOTHER option of the conta names `(G, X)` (otherwise `variante-disputada`);
  *  - X is a variante of G;
- *  - either G holds the conta's VALID bare entry for grade `g` and nothing else anywhere holds
- *    `(conta, g)` — then `v` is appended to it, unless already there (`jaVinculadas`) — or NOTHING
- *    in any grupo holds `(conta, g)` in any form, every claim for the grade's options names G, and
- *    every claim came from a family with one axis on both sides — then a new entry is created;
+ *  - either G held the conta's VALID bare entry for grade `g` when the pass started and nothing
+ *    else anywhere holds `(conta, g)` — then `v` is appended to it, unless already there
+ *    (`jaVinculadas`) — or NOTHING in any grupo held `(conta, g)` in any form when the pass
+ *    started, every claim for the grade's options names G, and every claim for THIS option came
+ *    from a family with one axis on both sides — then the grade's first learned option creates the
+ *    entry and the next ones extend it;
  *  - X is not held by another option of the conta in G;
  *  - with the merge applied, {@link conflitosLinksVariacoesLi} finds no blocking finding in G and
  *    {@link conflitosEntreGruposLi} over the WHOLE memo names neither `g` nor `v`.
  *
  * Decided in ascending `(gradeId, opcaoId)` order, each learning applied to the memo before the
- * next is decided; the per-grade grupo check is made over ALL claims first, so a new entry is
- * never won by whichever family came first.
+ * next is decided. Every check a learning could WIN by coming first is decided over the input
+ * instead: the per-grade grupo check and the per-variante dispute over ALL claims, and whether a
+ * grade is new over the grupos as passed in. So swapping two option ids never swaps an outcome.
  *
  * Equal (learned): two claims for `(C, g, v)` naming the same `(G, X)`.
- * Distinct (refused): claims naming two variantes; family A on G1 and family B on G2 both proposing
- * a new `(C, g)`; an invalid entry naming C for `g` in G (G "holds", no second entry is added).
+ * Distinct (refused): claims naming two variantes; two options claiming one variante; family A on
+ * G1 and family B on G2 both proposing a new `(C, g)`; an invalid entry naming C for `g` in G (G
+ * "holds", no second entry is added); another grupo storing a value that is not a list.
  */
 export function decidirAprendizadoLi(entrada: {
   readonly contaId: string;
@@ -1028,6 +1048,8 @@ export function decidirAprendizadoLi(entrada: {
   readonly grupos: readonly GrupoComLinksLi[];
 }): DecisaoAprendizadoLi {
   const { contaId } = entrada;
+  // The grupos as passed in: what a grade "held when the pass started" is read from.
+  const inicial = entrada.grupos.map((g) => ({ id: g.id, links: g.linksVariacoesli }));
   const memo = entrada.grupos.map((g) => ({ grupo: g, id: g.id, links: g.linksVariacoesli }));
   const fundidos = new Map<string, unknown[]>();
   const aprendidos: DecisaoAprendizadoLi['aprendidos'][number][] = [];
@@ -1037,10 +1059,18 @@ export function decidirAprendizadoLi(entrada: {
   const evidencias = [...entrada.evidencias].sort(
     (a, b) => a.gradeId - b.gradeId || a.opcaoId - b.opcaoId,
   );
-  // Every grupo ANY claim names for a grade, divergent claims included.
+  // Every grupo ANY claim names for a grade, and every option ANY claim names for a (grupo,
+  // variante) — divergent claims included in both.
   const gruposPorGrade = new Map<number, Set<string>>();
-  for (const ev of evidencias)
-    for (const a of ev.alegacoes) obter(gruposPorGrade, ev.gradeId, () => new Set()).add(a.grupoId);
+  const opcoesPorVariante = new Map<string, Set<string>>();
+  for (const ev of evidencias) {
+    for (const a of ev.alegacoes) {
+      obter(gruposPorGrade, ev.gradeId, () => new Set()).add(a.grupoId);
+      obter(opcoesPorVariante, JSON.stringify([a.grupoId, a.varianteId]), () => new Set()).add(
+        JSON.stringify([ev.gradeId, ev.opcaoId]),
+      );
+    }
+  }
 
   for (const ev of evidencias) {
     const { gradeId, opcaoId } = ev;
@@ -1055,7 +1085,7 @@ export function decidirAprendizadoLi(entrada: {
       recusar(MOTIVO_RECUSA_APRENDIZADO_LI.divergente);
       continue;
     }
-    const alegacoes = [...pares.values()][0]!;
+    const [chavePar, alegacoes] = [...pares][0]!;
     const { grupoId, varianteId } = alegacoes[0]!;
     const eixoUnico = alegacoes.every((a) => a.todasDeEixoUnico);
 
@@ -1073,9 +1103,9 @@ export function decidirAprendizadoLi(entrada: {
       continue;
     }
 
-    const detentores = detentoresDaGrade(memo, contaId, gradeId);
-    let novaEntrada: boolean;
-    if (detentores.length === 0) {
+    if (detentoresDaGrade(inicial, contaId, gradeId).length === 0) {
+      // A grade nothing held at the start: an entry an earlier option of this pass created lifts
+      // neither check, or the outcome would depend on which option id is lower.
       if ((gruposPorGrade.get(gradeId)?.size ?? 0) > 1) {
         recusar(MOTIVO_RECUSA_APRENDIZADO_LI.gruposDivergentesNaGrade);
         continue;
@@ -1084,6 +1114,10 @@ export function decidirAprendizadoLi(entrada: {
         recusar(MOTIVO_RECUSA_APRENDIZADO_LI.eixosMultiplos);
         continue;
       }
+    }
+    const detentores = detentoresDaGrade(memo, contaId, gradeId);
+    let novaEntrada: boolean;
+    if (detentores.length === 0) {
       novaEntrada = true;
     } else if (detentores.some((d) => d.grupoId !== grupoId)) {
       recusar(MOTIVO_RECUSA_APRENDIZADO_LI.gradeEmOutroGrupo);
@@ -1102,6 +1136,12 @@ export function decidirAprendizadoLi(entrada: {
       novaEntrada = false;
     }
 
+    // Decided over ALL claims, not the memo: a variante two options claim is learned for neither,
+    // or the lower id would win it. (An option already linked to it was answered above.)
+    if ((opcoesPorVariante.get(chavePar)?.size ?? 0) > 1) {
+      recusar(MOTIVO_RECUSA_APRENDIZADO_LI.varianteDisputada);
+      continue;
+    }
     if (varianteEmOutraOpcao(alvo.links, contaId, gradeId, opcaoId, varianteId)) {
       recusar(MOTIVO_RECUSA_APRENDIZADO_LI.varianteEmOutraOpcao);
       continue;

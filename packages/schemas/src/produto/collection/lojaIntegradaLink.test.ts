@@ -2,12 +2,12 @@ import { describe, expect, it } from 'vitest';
 import {
   ESTADO_PUBLICACAO_LI,
   RELACAO_VINCULO_LI,
-  contaDoRefLi,
   estadoPublicacaoLiSchema,
   produtoLojaIntegradaLinkSchema,
   vinculoLiConta,
   vinculoLiDaContaEId,
 } from './lojaIntegradaLink';
+import { contaIdFromRef } from '../../shared/outerRef';
 
 describe('produtoLojaIntegradaLinkSchema', () => {
   it('parses a legacy-shaped ProdutoIntegrada fixture doc (parent)', () => {
@@ -153,9 +153,9 @@ describe('produtoLojaIntegradaLinkSchema', () => {
   });
 });
 
-describe('contaDoRefLi — the conta a stored ref names', () => {
+describe('contaIdFromRef — the conta a stored ref names (the one reader the LI link shares)', () => {
   it.each([['documents/integracao/C1'], ['integracao/C1']])('EQUAL: %s ⇒ C1', (ref) => {
-    expect(contaDoRefLi(ref)).toBe('C1');
+    expect(contaIdFromRef(ref)).toBe('C1');
   });
 
   it.each([
@@ -166,12 +166,12 @@ describe('contaDoRefLi — the conta a stored ref names', () => {
     ['null', null, null],
     ['a number', 1, null],
   ])('⚠️ NEAR-MISS: %s ⇒ %j', (_r, ref, esperado) => {
-    expect(contaDoRefLi(ref)).toBe(esperado);
+    expect(contaIdFromRef(ref)).toBe(esperado);
   });
 
   it('⚠️ NEAR-MISS: the id is not folded — another case is another conta', () => {
-    expect(contaDoRefLi('documents/integracao/c1')).toBe('c1');
-    expect(contaDoRefLi('documents/integracao/c1')).not.toBe('C1');
+    expect(contaIdFromRef('documents/integracao/c1')).toBe('c1');
+    expect(contaIdFromRef('documents/integracao/c1')).not.toBe('C1');
   });
 });
 

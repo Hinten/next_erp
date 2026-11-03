@@ -74,6 +74,7 @@ export {
   idFromRef,
   idFromRefOrNull,
   parseRef,
+  contaIdFromRef,
   naoDocId,
   type OuterRef,
   type IdRef,

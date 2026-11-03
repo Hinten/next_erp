@@ -132,13 +132,20 @@ describe('the three product-import tipos (Loja Integrada step 9)', () => {
 });
 
 describe('MOTIVO_CATEGORIA_SEM_VINCULO_LI', () => {
-  it('covers "no link" and EVERY reason the category tree refuses a chain', () => {
+  it('covers "no link" and every reason the category tree refuses a chain but `ausente`', () => {
     expect(motivoCategoriaSemVinculoLiSchema.options).toContain('sem-vinculo');
-    for (const motivo of Object.values(MOTIVO_CADEIA_CATEGORIA_LI)) {
+    const recusas = Object.values(MOTIVO_CADEIA_CATEGORIA_LI).filter(
+      (motivo) => motivo !== MOTIVO_CADEIA_CATEGORIA_LI.ausente,
+    );
+    for (const motivo of recusas) {
       expect(motivoCategoriaSemVinculoLiSchema.safeParse(motivo).success, motivo).toBe(true);
     }
-    expect(motivoCategoriaSemVinculoLiSchema.options).toHaveLength(
-      Object.values(MOTIVO_CADEIA_CATEGORIA_LI).length + 1,
-    );
+    expect(motivoCategoriaSemVinculoLiSchema.options).toHaveLength(recusas.length + 1);
+  });
+
+  it('⚠️ never `ausente`: the row’s own "gone from the store" resolver would close it on the next run', () => {
+    expect(
+      motivoCategoriaSemVinculoLiSchema.safeParse(MOTIVO_CADEIA_CATEGORIA_LI.ausente).success,
+    ).toBe(false);
   });
 });

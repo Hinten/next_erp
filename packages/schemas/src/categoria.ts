@@ -56,15 +56,15 @@ export const categoria = { schema: categoriaSchema, meta: categoriaMeta };
 /* -------------------------------------------------------------------------- */
 
 /*
- * Two surfaces build a categoria's breadcrumb: the web's categoria screens and the Loja
- * Integrada product import (master plan step 9), which creates a categoria under its ERP parent.
- * `apps/web` has no dependency edge to any app, so the rule lives here once (root `CLAUDE.md`).
+ * Shared by the two callers that build a categoria's breadcrumb from its ERP parent: the web's
+ * categoria screens and the Loja Integrada product import (master plan step 9), which creates a
+ * categoria under its ERP parent. `apps/web` has no dependency edge to any app, so both call
+ * these helpers rather than keeping a copy each (root `CLAUDE.md`).
  */
 
 /**
- * Materialized breadcrumb for a categoria — same format as the ML import
- * (`apps/mercado-livre/lib/marketplace/importacao/importCategoria.ts`): names joined with
- * ` > ` (spaces around `>`). Root categories are just `nome`.
+ * Materialized breadcrumb for a categoria: names joined with ` > ` (spaces around `>`), after
+ * the parent's breadcrumb trimmed. Root categories are just `nome`.
  *
  * Issue #554: derived on every save; never hand-edited in the UI.
  */

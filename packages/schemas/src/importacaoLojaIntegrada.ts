@@ -89,9 +89,10 @@ export const MAX_PAUSAS_429_LI = 10;
 
 /**
  * The `limit` every product list page asks for (the listing and the trash list): 100. The owner's
- * read-only capture read `meta.limit` back as 100, and a `limit` of 200 or more was refused with a
- * 400, so 100 is the largest page the store answers. The client still reads `meta.limit` back
- * (stored as `limiteLido`). The catalogue lists keep their own 50.
+ * read-only capture read `meta.limit` back as 100, and a `limit` of 200, 500 or 1000 was refused
+ * with a 400, so the store's ceiling lies between 100 and 199 and the import asks for 100, the
+ * largest page measured to work. The client still reads `meta.limit` back (stored as
+ * `limiteLido`). The catalogue lists keep their own 50.
  */
 export const LIMITE_PAGINA_PRODUTOS_LI = 100;
 

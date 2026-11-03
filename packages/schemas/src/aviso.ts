@@ -1198,6 +1198,11 @@ export const TIPO_AVISO_LABELS = {
  *    category linked for the conta, or gone from the store's list; and the
  *    orphan pass once the conta is gone. The products already imported without
  *    it stay on the tax-review list (below) until reviewed.
+ *  - ⚠️ **Never raised for a category the store's list does not hold** (the
+ *    tree's `ausente`): there is nothing to link, and the "gone from the store's
+ *    list" resolver would close the row on the very next run while the products
+ *    still lack a category. Those products carry it on their own report item
+ *    and on the tax-review list instead.
  *
  * **`lojaIntegradaRevisaoFiscal`** — an `aplicar` job created a produto or a
  *    categoria, left a produto without a category, or filled an EMPTY category:
@@ -1704,8 +1709,11 @@ export const MOTIVO_RASTREIO_DIVERGENTE_LI = {
  *  - the category's chain was refused (the product import's category tree,
  *    `categoriaLojaIntegrada.ts`, decides it): `pai-ilegivel` (an ancestor's
  *    parent does not read), `pai-ausente` (an ancestor's parent is not in the
- *    store's list), `ciclo`, `profundidade` (deeper than the tree accepts),
- *    `ausente` (the category itself is not in the store's list).
+ *    store's list), `ciclo`, `profundidade` (deeper than the tree accepts).
+ *
+ * Every refusal of the tree EXCEPT its `ausente` (the category itself is not in
+ * the store's list): no row is raised for it, since the tipo's own "gone from
+ * the store's list" resolver would close it at once (see the tipo above).
  *
  * Stored as an aviso PARAM, with the same fallback contract as
  * {@link MOTIVO_PEDIDO_CONTESTADO_LI}.
@@ -1716,7 +1724,6 @@ export const motivoCategoriaSemVinculoLiSchema = z.enum([
   'pai-ausente',
   'ciclo',
   'profundidade',
-  'ausente',
 ]);
 export type MotivoCategoriaSemVinculoLi = z.infer<typeof motivoCategoriaSemVinculoLiSchema>;
 
@@ -1727,7 +1734,6 @@ export const MOTIVO_CATEGORIA_SEM_VINCULO_LI = {
   paiAusente: 'pai-ausente',
   ciclo: 'ciclo',
   profundidade: 'profundidade',
-  ausente: 'ausente',
 } as const satisfies Record<string, MotivoCategoriaSemVinculoLi>;
 
 /**
