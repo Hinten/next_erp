@@ -20,6 +20,23 @@ Master plan: `.master_plans/loja-integrada/loja-integrada-marketplace-integratio
 - Step 10 (the catalogue reads): four `GET`s in the conta route family (below), the core
   `lib/lojaIntegrada/catalogo/catalogo.ts` and its caches `catalogo/cache.ts`. The web's
   variation linker reads the grades; categories and brands wait for step 11's product tab.
+- Step 9 (the product import, in stacked PRs). PR 9-v, the anchor: the Firestore trigger
+  `functions/src/onProdutoLojaIntegradaLinkChanged.ts` on
+  `produtos/{produtoId}/produtolojaintegrada/{linkId}` keeps `produtos.integracoesComProduto`
+  (the stock and price sweeps' pre-filter) in step with the link docs, through the app's ONE
+  binding of the shared core, `lib/lojaIntegrada/produtos/integracoesComProdutoLi.ts`: the conta
+  from `contaLojaIntegrada` (`contaIdFromRef`, both stored forms), the counts predicate
+  `vinculoLiConta` (a store product id, not in the trash; hidden and blocked links count), an
+  UNFILTERED read of the produto's own links as the survivor reader (no index; the filter is the
+  plan's own two readers, in code). The decision comes from the event payload before `getDb()`,
+  so an edit that moves no membership costs zero reads (the test hands out a handle that throws).
+  Add tier 0 (`arrayUnion`), remove tier 1 inside the core's inventoried site: no transaction
+  call here, no inventory row. ⚠️ The add reads nothing, so one handled after its link's close
+  (Eventarc gives no order; a retried create can land late) leaves a conta listed with no
+  counting link, and nothing here removes it — accepted as the over-inclusive direction (one
+  skipped sweep row); the trigger's docblock says what closing it would cost. One trigger
+  serves parents and children (a child's link sits under the ERP child). `database`
+  `default`, `retry: true`, no secrets, no Loja Integrada call.
 
 ## Routes (`/api/marketplace/loja-integrada/conta/[id]…`)
 
@@ -659,7 +676,7 @@ verdicts, the live/mirror split) is `packages/schemas/src/conferenciaPagamentoLo
 - A re-import keeps the `externalOptionData` keys Loja Integrada does not own (`agency`).
 - `pedidos/importarPedido.firestore.test.ts` (emulator, CI below) pins the batch.
 
-## CI (steps 3, 5, 7 and 20)
+## CI (steps 3, 5, 7, 9 and 20)
 
 - Two homes, disjoint by filename suffix. `vitest.config.ts` (`pnpm test`, in `CI test`
   of `ci.yml`, unfiltered) EXCLUDES `*.firestore.test.ts` and `*.tasks.test.ts`;
@@ -705,6 +722,21 @@ verdicts, the live/mirror split) is `packages/schemas/src/conferenciaPagamentoLo
   seeds, and a suite whose writes fire the trigger awaits the trigger's last write before it
   ends. The step-3 suites seed contas with no filial and no `dataCadastro`, which the core
   plans as `incompleto` (reads only). Why one job anyway: `vitest.tasks.config.ts`.
+- The ANCHOR trigger (step 9) fires on EVERY suite's `produtos/*/produtolojaintegrada/*`
+  writes (today `pedidos/importarPedido.firestore.test.ts` and its own suite,
+  `functions/src/onProdutoLojaIntegradaLinkChanged.tasks.test.ts`): a counting link's create
+  writes its conta into the produto's `integracoesComProduto`. So a suite that writes link docs
+  uses produtos no other suite seeds, awaits the anchor's write on EACH seeded produto
+  UNCONDITIONALLY before it asserts on that produto or races a precondition on it (never "only
+  if it fails"), and ends by deleting its links and awaiting the anchor's last write (the conta
+  leaving the array) before its produtos go — `lib/lojaIntegrada/testing/ancoraLi.ts`. Its own
+  suite proves "never touches" by later positives (the other conta's add and removal are
+  observed writes). It does NOT prove "keeps": a check that keeps writes nothing, and the
+  functions emulator may run two invocations at once, so a later sentinel orders that check only
+  as far as the emulator serializes them. The keep verdict and the survivor read's fold of both
+  stored ref forms are pinned offline (`lib/lojaIntegrada/produtos/integracoesComProdutoLi.test.ts`);
+  the emulator case shows only that the real guarded write runs and that losing the last
+  counting link removes the conta.
 - The lane cannot prove: Cloud Scheduler firing (`onSchedule` is ignored),
   `scheduleDelaySeconds` (firebase-tools#8254), index declarations, rules, that the
   emulator honours `maxConcurrentDispatches` or the instance limits, named-task dedup

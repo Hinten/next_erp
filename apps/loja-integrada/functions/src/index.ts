@@ -56,6 +56,12 @@ import { getDb } from './lib/admin';
  * in-queue sweep (`varrerEscritasLojaIntegrada`, ./varrerEscritas). Until the
  * window the write valve is unset, so nothing is recorded or written.
  *
+ * Master plan step 9 (PR 9-v) adds the anchor trigger,
+ * `onProdutoLojaIntegradaLinkChanged` (./onProdutoLojaIntegradaLinkChanged): it
+ * keeps each produto's `integracoesComProduto` in step with that produto's Loja
+ * Integrada link documents, through the shared core, and makes no Loja
+ * Integrada call.
+ *
  * Every export below is a Cloud Function name, and the names are unique across
  * codebases (`functions-export-names.test.js`): keep the exports explicit and
  * named, never a wildcard. `index.test.ts` pins every trigger's options and
@@ -113,6 +119,12 @@ export { pollLojaIntegradaPedidos } from './pollPedidos';
  * conta (master plan step 20, ./onIntegracaoLojaIntegradaChanged).
  */
 export { onIntegracaoLojaIntegradaChanged } from './onIntegracaoLojaIntegradaChanged';
+
+/**
+ * The anchor trigger: each produto's `integracoesComProduto` follows its Loja
+ * Integrada link documents (master plan step 9, ./onProdutoLojaIntegradaLinkChanged).
+ */
+export { onProdutoLojaIntegradaLinkChanged } from './onProdutoLojaIntegradaLinkChanged';
 
 /**
  * Documents examined per lane on each tick of the reprocess sweep. NOT exported:

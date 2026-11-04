@@ -49,6 +49,17 @@ import { defineConfig } from 'vitest/config';
 //   - remembers that the writes queue's varredura re-runs EVERY `failed` and
 //     `deferred` row of that collection, not only its own.
 //
+// ⚠️ Since step 9 a THIRD one loads, the anchor `onProdutoLojaIntegradaLinkChanged`,
+// on every write of `produtos/*/produtolojaintegrada/*`: a counting link's create
+// writes its conta into the produto's `integracoesComProduto`, and losing the
+// last one removes it. Today `lib/lojaIntegrada/pedidos/importarPedido.firestore.test.ts`
+// and the anchor's own suite write link docs. A suite that does:
+//   - uses produtos no other suite seeds;
+//   - awaits the anchor's write on each seeded produto UNCONDITIONALLY before it
+//     asserts on that produto or races a precondition on it;
+//   - ends by deleting its links and awaiting the anchor's last write before its
+//     produtos go (`lib/lojaIntegrada/testing/ancoraLi.ts`).
+//
 // Each file's `beforeEach` deletes what it reads, because the files
 // share one emulator and run one at a time (`fileParallelism: false`).
 export default defineConfig({
