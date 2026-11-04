@@ -13,7 +13,7 @@ name: CI — Loja Integrada
 # behind its own gate. A skip of this lane therefore loses only the emulator
 # round trip, never the unit suites.
 #
-# ONE job, eight suite files today:
+# ONE job, nine suite files today:
 #   - `apps/loja-integrada/functions/src/filaLeitura.tasks.test.ts` — the reads
 #     round trip below;
 #   - `apps/loja-integrada/functions/src/filaEscrita.tasks.test.ts` — the
@@ -35,13 +35,21 @@ name: CI — Loja Integrada
 #   - `apps/loja-integrada/lib/lojaIntegrada/pedidos/importarPedido.firestore.test.ts`
 #     — the order import (steps 5–6) in-process against the real Firestore: the
 #     ONE batch of the pedido and its pagamentos, its preconditions, and the
-#     real cliente, endereço, link-doc and `mapa` writes.
+#     real cliente, endereço, link-doc and `mapa` writes;
+#   - `apps/loja-integrada/functions/src/onProdutoLojaIntegradaLinkChanged.tasks.test.ts`
+#     — the anchor trigger (step 9): a write to a `produtolojaintegrada` link →
+#     the real deployed `onDocumentWritten` → the shared `integracoesComProduto`
+#     core → the produto's anchor array, read back raw.
 # ⚠️ The triggers fire on EVERY suite's writes, not only their own: the
 # functions emulator loads the whole codebase. The conta trigger fires on every
-# `integracao` write, and the history trigger (`onHistoricoFreteLojaIntegrada`,
-# step 7) on every `pedidos/*/historicoFtIni/*` create. The rules that keep the
-# files apart (unique conta and pedido ids, the step-3 suites' incomplete seeds,
-# a trigger suite awaiting its own last effect) are in `vitest.tasks.config.ts`.
+# `integracao` write, the history trigger (`onHistoricoFreteLojaIntegrada`,
+# step 7) on every `pedidos/*/historicoFtIni/*` create, and the anchor trigger
+# (`onProdutoLojaIntegradaLinkChanged`, step 9) on every
+# `produtos/*/produtolojaintegrada/*` write — including the order import suite's
+# link docs, so that suite awaits the anchor's write on each seeded produto. The
+# rules that keep the files apart (unique conta, pedido and produto ids, the
+# step-3 suites' incomplete seeds, a trigger suite awaiting its own last effect)
+# are in `vitest.tasks.config.ts`.
 # Adding a file with the `.tasks.test.ts` or `.firestore.test.ts` suffix adds it
 # to THIS job — no new job, no new check name, no new row in the gate manifest.
 # Both suffixes share one config on purpose (`vitest.tasks.config.ts`).

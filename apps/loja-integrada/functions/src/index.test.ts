@@ -733,11 +733,15 @@ describe('the Firestore triggers (GATILHOS)', () => {
 
   it('every GATILHO declares retry: true', () => {
     // At-least-once redelivery for transient Firestore failures; without it the
-    // event is dropped on the first one. Safe because each handler is replay-safe:
-    // a redelivery replays the ORIGINAL before/after, and the conta reconcile
+    // event is dropped on the first one. A redelivery replays the ORIGINAL
+    // before/after, and every arm but one is safe under that: the conta reconcile
     // reads neither (it re-reads the conta itself), the history trigger enqueues a
-    // NAMED task, and the anchor's add is an `arrayUnion` while its remove
-    // re-derives from a guarded re-read of the links stored now.
+    // NAMED task, and the anchor's remove re-derives from a guarded re-read of the
+    // links stored now. ⚠️ The anchor's ADD is the exception: a blind `arrayUnion`
+    // handled after its link's close (Eventarc gives no order, and a retried create
+    // can land late) leaves a conta listed with no counting link, which nothing
+    // removes. Accepted as the over-inclusive direction; the trigger's docblock says
+    // why and what closing it would cost.
     for (const [nome, fn] of Object.entries(GATILHOS)) {
       expect(gatilhoDeEvento(fn).retry, nome).toBe(true);
     }

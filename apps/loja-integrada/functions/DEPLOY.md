@@ -115,10 +115,11 @@ exists — so nothing is ever written to Loja Integrada before the window.
   of the conta reference; without it Enterprise full-scans every produto's link
   docs on each line, and bills the scan.
 - **The migrated links' anchor census planned, and run before the stock and
-  price valves open** (master plan §5 item 6). The anchor trigger derives
-  `integracoesComProduto` from link WRITES, and the data import writes none it
-  sees, so a migrated link whose produto's array lacks the conta is invisible to
-  the stock and price sweeps — a silent outage, never an error. The trigger needs
+  price valves reach `on`** (master plan §5 item 6, before item 3's `on`). The
+  anchor trigger derives `integracoesComProduto` from link WRITES, and the data
+  import writes none it sees, so a migrated link whose produto's array lacks the
+  conta is invisible to the stock and price sweeps — a silent outage, never an
+  error. The trigger needs
   no index of its own: its survivor read takes the produto's whole
   `produtolojaintegrada` subcollection, a handful of documents, and filters in
   code.
@@ -256,7 +257,12 @@ is in `onProdutoChanged`'s history ignore list. When a produto is deleted,
 `apps/functions`' `onProdutoDeleted` cascade deletes its link docs AFTER it, and
 each delete fires this trigger: its remove finds the produto gone (`NOT_FOUND`,
 narrowed by the core) and writes nothing — a deleted produto is never
-re-created.
+re-created. One residual it does leave: its add reads nothing, and Eventarc
+guarantees no order, so an add handled AFTER its link's close (a late or retried
+create) lists a conta with no counting link, and nothing automatic removes it.
+That is the cheap direction — one skipped sweep row per run, never a silent
+outage — and only a hand fix clears it (the window's anchor census looks for
+the opposite gap, a counting link whose conta is missing).
 
 ⚠️ **The pacer.** Every Loja Integrada call made through a context waits 2,000 ms
 first, so one queue makes at most 30 calls a minute across task boundaries
@@ -749,22 +755,31 @@ of this section passes.
 
    Then prove both arms on ONE test produto created for this check (never a real
    one: once the stock and price flows exist, an anchored produto is one their
-   sweeps visit), with no Loja Integrada call involved — the trigger makes none:
+   sweeps visit), with no Loja Integrada call involved — the trigger makes none.
+   ⚠️ **Use a conta id that names NO conta** — an obviously fake one such as
+   `conta-teste-ancora`, with no `integracao` doc behind it. The trigger reads no
+   conta document, so a real id proves nothing more, and it costs something: by
+   now the order import may be running (items 5 and 6), and its link lookup
+   matches ANY link with that conta and `id` — this hand-written one included,
+   even once it is stored `removido: true`, since the lookup does not read
+   `removido`. Under a real conta, an order for a store product with that `id`
+   would bind its line to the test produto (deleted at the end of this check), or
+   come out `vinculo-ambiguo` beside a migrated link.
    - write one link by hand at
      `produtos/<test-produto>/produtolojaintegrada/<n>` carrying
-     `contaLojaIntegrada: 'documents/integracao/<conta-id>'`, a positive integer
-     `id`, a `sku` and `removido: false`; the produto's `integracoesComProduto`
-     gains `<conta-id>`, and the log shows
+     `contaLojaIntegrada: 'documents/integracao/<fake-conta-id>'`, a positive
+     integer `id`, a `sku` and `removido: false`; the produto's
+     `integracoesComProduto` gains `<fake-conta-id>`, and the log shows
      `[loja-integrada] onProdutoLojaIntegradaLinkChanged add` with `escrito: true`;
    - edit only that link's `nome`: NO line follows (the zero-read path);
-   - set `removido: true` on it (or delete it): `<conta-id>` leaves the array, and
-     the log shows the `check` line with `removido: true`;
+   - set `removido: true` on it (or delete it): `<fake-conta-id>` leaves the
+     array, and the log shows the `check` line with `removido: true`;
    - delete the test link and the test produto.
 
    The anchor census for the MIGRATED links (master plan §5 item 6) runs after
-   this check and before the stock and price valves leave `off`; its re-run
-   reports 0. Why the window: the production project exists only then, and the
-   imported corpus fired no trigger.
+   this check and before the stock and price valves reach `on` (master plan §5
+   item 3); its re-run reports 0. Why the window: the production project exists
+   only then, and the imported corpus fired no trigger.
 
 ## The status write-back in the window (master-plan step 7)
 

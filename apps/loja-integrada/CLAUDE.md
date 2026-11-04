@@ -31,8 +31,12 @@ Master plan: `.master_plans/loja-integrada/loja-integrada-marketplace-integratio
   plan's own two readers, in code). The decision comes from the event payload before `getDb()`,
   so an edit that moves no membership costs zero reads (the test hands out a handle that throws).
   Add tier 0 (`arrayUnion`), remove tier 1 inside the core's inventoried site: no transaction
-  call here, no inventory row. One trigger serves parents and children (a child's link sits under
-  the ERP child). `database` `default`, `retry: true`, no secrets, no Loja Integrada call.
+  call here, no inventory row. ⚠️ The add reads nothing, so one handled after its link's close
+  (Eventarc gives no order; a retried create can land late) leaves a conta listed with no
+  counting link, and nothing here removes it — accepted as the over-inclusive direction (one
+  skipped sweep row); the trigger's docblock says what closing it would cost. One trigger
+  serves parents and children (a child's link sits under the ERP child). `database`
+  `default`, `retry: true`, no secrets, no Loja Integrada call.
 
 ## Routes (`/api/marketplace/loja-integrada/conta/[id]…`)
 
@@ -726,7 +730,13 @@ verdicts, the live/mirror split) is `packages/schemas/src/conferenciaPagamentoLo
   UNCONDITIONALLY before it asserts on that produto or races a precondition on it (never "only
   if it fails"), and ends by deleting its links and awaiting the anchor's last write (the conta
   leaving the array) before its produtos go — `lib/lojaIntegrada/testing/ancoraLi.ts`. Its own
-  suite proves "keeps" and "never touches" by a later sentinel's positive.
+  suite proves "never touches" by later positives (the other conta's add and removal are
+  observed writes). It does NOT prove "keeps": a check that keeps writes nothing, and the
+  functions emulator may run two invocations at once, so a later sentinel orders that check only
+  as far as the emulator serializes them. The keep verdict and the survivor read's fold of both
+  stored ref forms are pinned offline (`lib/lojaIntegrada/produtos/integracoesComProdutoLi.test.ts`);
+  the emulator case shows only that the real guarded write runs and that losing the last
+  counting link removes the conta.
 - The lane cannot prove: Cloud Scheduler firing (`onSchedule` is ignored),
   `scheduleDelaySeconds` (firebase-tools#8254), index declarations, rules, that the
   emulator honours `maxConcurrentDispatches` or the instance limits, named-task dedup

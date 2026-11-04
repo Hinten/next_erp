@@ -90,11 +90,13 @@ export function contaDoLinkLi(link: Record<string, unknown>): string | null {
  * What a `produtolojaintegrada` write means for the array, decided from the event payload ALONE —
  * no read and no write on the common case.
  *
- * That fast path is load-bearing: the product import refreshes the link's mirror fields
- * (`ativo`, `bloqueado`, `nome`…) on every run, and the publish and sync flows of later steps
- * write the same documents again. None of those moves membership, and none of them may cost a
- * Firestore read. What does: a create or delete of a counting link, a `removido` flip, an `id`
- * that becomes (or stops being) a store product id, and a conta ref re-pointed.
+ * That fast path is load-bearing: link docs are rewritten for reasons that move nothing. The
+ * product import refreshes the mirror fields `ativo` and `bloqueado` on every run (its `removido`
+ * refresh is the one that can move membership, below); a `nome` filled once, or rewritten by a
+ * later flow, moves nothing; and the publish and sync flows of later steps write the same
+ * documents again. None of those may cost a Firestore read. What does move membership: a create
+ * or delete of a counting link, a `removido` flip, an `id` that becomes (or stops being) a store
+ * product id, and a conta ref re-pointed.
  *
  * `check` is "this conta may have lost its last counting link" — a candidate, never a decision.
  * Only the guarded write that re-reads the surviving links decides that.
@@ -151,8 +153,10 @@ export function sobrevivemVinculosDoProdutoLi(
 
 /**
  * Add a conta to the produto's array — the promoted tier-0 write, bound to this app's
- * `FieldValue`. `arrayUnion` is commutative and idempotent, so an Eventarc redelivery costs
- * nothing.
+ * `FieldValue`. `arrayUnion` is commutative and idempotent, so a redelivery handled while the
+ * link still counts costs nothing. ⚠️ It reads nothing, so one handled AFTER the link's close
+ * (Eventarc guarantees no order) lists a conta with no counting link, and nothing removes it —
+ * the accepted over-inclusive residual the trigger's docblock describes.
  *
  * `false` means the produto is gone (the cascade beat us); the core never re-creates it.
  */

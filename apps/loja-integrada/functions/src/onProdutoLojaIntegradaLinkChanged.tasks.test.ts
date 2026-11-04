@@ -16,8 +16,9 @@
  * Four behaviours, one case each:
  *   - a link create ADDS its conta to its produto's anchor;
  *   - `removido: true` on the ONLY link REMOVES it;
- *   - a second counting link of the same conta KEEPS it — that link stored in the bare ref form,
- *     so the real survivor read folds both forms;
+ *   - a second counting link of the same conta (stored in the bare ref form) is OBSERVED keeping
+ *     it, and losing that last one removes it through the real guarded write — see below for
+ *     how far the "keeps" half goes;
  *   - a link under ANOTHER conta never touches this one, on its add or on its removal.
  *
  * ⚠️ NOT covered here, and deliberately so:
@@ -28,17 +29,21 @@
  *     is not proven to fail here; `index.test.ts` pins `eventFilters.database` to exactly
  *     `'default'`. The positive existence read of each seeded produto is what stops a
  *     mis-targeted suite from passing on "not found".
- *   - Eventarc's ordering and redelivery. The add is commutative and the remove re-derives from
- *     what is stored, which is the argument (the core's suite covers the replay cases); the
- *     emulator delivers each write once.
+ *   - Eventarc's ordering and redelivery; the emulator delivers each write once. The remove
+ *     re-derives from what is stored, so it is order-proof; the add is NOT (an add handled after
+ *     its link's close leaves a stale entry — the accepted residual in the trigger's docblock).
  *
- * ⚠️ "Keeps" and "never touches" are absences, so each is proved by a LATER POSITIVE, never by
- * polling for nothing: the other conta's add and removal are writes this file observes before it
- * looks at the first conta, and a sentinel conta's add, written AFTER the flip, is observed
- * before the kept conta is checked. The emulator may run two invocations at once, so the
- * sentinel orders the flip's check only as far as the emulator serializes them; the DECISION is
- * pinned offline by the binding's survivor tests, and the closing removal of the second link
- * proves the real guarded remove ran on this produto.
+ * ⚠️ "Keeps" and "never touches" are absences, never polled for. "Never touches" IS proved by
+ * later positives: the other conta's add and removal are writes of the very invocations that
+ * could have touched the first conta, observed before it is looked at. "Keeps" is NOT proved
+ * here: a check that keeps writes nothing, so nothing marks when it ended, and the sentinel
+ * conta's add (written AFTER the flip) orders the flip's check before the look at the kept conta
+ * only as far as the functions emulator serializes the two invocations — which it need not. A
+ * broken survivor read (say, one narrowed to the canonical ref form) could therefore drop the
+ * conta after the look and still pass this file. The KEEP verdict and the survivor read's fold of
+ * both stored ref forms are pinned OFFLINE (`integracoesComProdutoLi.test.ts`: the survivor pairs
+ * and the whole-subcollection read); this case shows only that the real guarded write runs on
+ * this produto and that losing the LAST counting link removes the conta.
  *
  * ⚠️ This suite SHARES its emulators with every other `*.tasks.test.ts` / `*.firestore.test.ts`
  * file, and this trigger fires on THEIR link writes too (`pedidos/importarPedido.firestore.test.ts`
@@ -180,15 +185,17 @@ describe.skipIf(!EMULATED || !TASKS)(
       const produto = PRODUTO.manter;
       await semearProduto(produto);
       await linkRef(produto, 'vinculo-1').set(link(CONTA_A));
-      // The same conta in the BARE stored form, and another store product id: the survivor read
-      // must fold both forms, which a query on the canonical form alone would not.
+      // The same conta in the BARE stored form, and another store product id: the real survivor
+      // read sees it here, but the fold of both forms is PINNED offline (the docblock: this case
+      // cannot order a no-write check).
       await linkRef(produto, 'vinculo-2').set(
         link(CONTA_A, { contaLojaIntegrada: `integracao/${CONTA_A}`, id: ID_LI + 1 }),
       );
       await aguardarAncoraLi(db(), produto, comConta(CONTA_A), 'com a conta A');
 
       await linkRef(produto, 'vinculo-1').update({ removido: true });
-      // The LATER sentinel: a conta written after the flip, observed before A is checked.
+      // The LATER sentinel: a conta written after the flip, observed before A is looked at. It
+      // orders the flip's (no-write) check first only if the emulator serialized the two.
       await linkRef(produto, 'sentinela').set(link(SENTINELA, { id: ID_LI + 2 }));
       const comSentinela = await aguardarAncoraLi(
         db(),

@@ -39,9 +39,9 @@ import { getDb } from './lib/admin';
  * redelivery for ever.
  *
  * ---- Rule 7 ----
- * The add is tier 0 (`arrayUnion`: commutative and idempotent); the remove is tier 1, inside the
- * core's inventoried guarded write, re-derived from the unfiltered survivor read the binding
- * supplies. This codebase spells no multi-document atomic write (`lib/lojaIntegrada/estrutura.test.ts`),
+ * The add is tier 0 (`arrayUnion`: commutative and idempotent, but blind — see `retry` below for
+ * the one order it cannot survive); the remove is tier 1, inside the core's inventoried guarded
+ * write, re-derived from the unfiltered survivor read the binding supplies. This codebase spells no multi-document atomic write (`lib/lojaIntegrada/estrutura.test.ts`),
  * so the transaction inventory gains no row. The adds run before the checks: a delivery that
  * dies between the two leaves the over-inclusive state (the new conta in, the old not yet
  * checked) — the cheap direction — and the redelivery finishes the job.
@@ -54,9 +54,19 @@ import { getDb } from './lib/admin';
  * binding to exactly `'default'`.
  *
  * `retry: true` → Eventarc at-least-once, for TRANSIENT Firestore failures. A redelivery replays
- * the ORIGINAL before/after, which is safe on both arms only because of how each is written: the
- * add is an `arrayUnion`, and the remove re-derives its verdict from a guarded re-read of what is
- * stored NOW. So a replayed event can only reach the same conclusion or decline to act.
+ * the ORIGINAL before/after. The remove is safe under that: it re-derives its verdict from a
+ * guarded re-read of what is stored NOW. ⚠️ The add is NOT, because it reads nothing: Eventarc
+ * guarantees no order, so a link's create (or un-trash, or re-point) event — first delivered or
+ * retried — can be handled AFTER the same link's delete, `removido: true` flip or re-point. The
+ * close's check then found nothing to remove, the late `arrayUnion` lists a conta with no
+ * counting link, and nothing removes it: `planLinkChange`'s fast path ignores every later write
+ * to a link that no longer counts (the core's header says the same of its read-derived add), and
+ * this channel runs no audit that drops stale entries. Only a manual fix clears it (the window's
+ * anchor census looks for the opposite gap: a counting link whose conta is missing).
+ * Accepted (the core's event-derived tier-0 add, as Shopee's trigger makes it): it is the
+ * over-inclusive direction, one skipped sweep row per run, never the silent outage. Closing it
+ * would mean routing the event's add through the core's guarded `adicionarContaSeViva` — one
+ * more guarded write and survivor read per add that moves membership.
  *
  * No `region:` — `options.ts` sets it globally. NO `secrets:` — this trigger never calls Loja
  * Integrada (D17), and a needless binding is one more Secret Manager grant that can fail the
