@@ -178,7 +178,10 @@ import type {
  *    snapshot — a clean one is dropped (the snapshot is always current), a
  *    dirty one is kept over a concurrent write, a dirty one whose draft got
  *    published or discarded elsewhere is dropped WITH a notice the operator
- *    dismisses (never a silent drop).
+ *    dismisses (never a silent drop). A SILENT drop read on server truth is
+ *    final — the entry leaves the state in that render (no `setEdicoes` runs
+ *    in a transition, which React could rebase) — so a later write never
+ *    reconciles it again into a dirty entry nobody typed.
  *  - **After a 2xx** the entry shows what was saved, read-only, until THIS
  *    draft's echo: its document's stamp moves past the one it had when the
  *    request LEFT (a create: its document arrives) — another link's write is
@@ -199,7 +202,9 @@ import type {
  *    id a document could carry) is read-only and offers «Descartar» alone —
  *    the discard route reads only the link — so it never blocks the produto's
  *    delete for good; nothing is read for that conta (no tree, no bands, no
- *    brand shortlist).
+ *    brand shortlist). A LOCAL draft keeps such a tab too — no link names its
+ *    conta, so that conta is read by id from the entry — and its «Descartar»
+ *    drops it here: nothing was written, nothing is sent.
  *  - **Unsaved work** is reported through `onDirtyChange` with NO cleanup (see
  *    `ShopeeTab`) and marks the conta's tab; the page blocks its own save's
  *    navigation on it (`exigirRascunhosShopeeSalvos`).
@@ -334,6 +339,23 @@ async function lerContasPorId(
     }),
   );
   return new Map(lidas);
+}
+
+/**
+ * The contas the draft entries name whose document no row of `links` holds —
+ * a LOCAL draft (nothing written yet), a notice of one discarded elsewhere —
+ * sorted. No link names these contas, so the conta query alone gave them a
+ * tab: one deleted in another tab would leave its draft unreachable.
+ */
+function contasDasEdicoesSemLink(
+  edicoes: ReadonlyMap<string, EdicaoRascunhoShopee>,
+  links: readonly VinculoShopee[] | undefined,
+): string[] {
+  if (links === undefined) return [];
+  const listados = new Set(links.map((l) => l.id));
+  const ids = new Set<string>();
+  for (const [linkDocId, { contaId }] of edicoes) if (!listados.has(linkDocId)) ids.add(contaId);
+  return [...ids].sort();
 }
 
 export interface ShopeeEditorProps {
@@ -549,6 +571,18 @@ export function ShopeeEditor({ produtoId, db, disabled, onDirtyChange }: ShopeeE
   );
   const linksSnap = useSnapshot(linksQuery);
 
+  // R2: the drafts being edited (#1911 P10), by link doc id — declared here:
+  // the conta lookup below reads the contas they name.
+  const [edicoes, setEdicoes] = useState<ReadonlyMap<string, EdicaoRascunhoShopee>>(
+    () => new Map(),
+  );
+  // As ONE key, so a keystroke rebuilds neither the lookup nor the tabs.
+  const chaveDasContasSemLink = contasDasEdicoesSemLink(edicoes, linksSnap.data).join('/');
+  const contasSemLink = useMemo(
+    () => (chaveDasContasSemLink === '' ? [] : chaveDasContasSemLink.split('/')),
+    [chaveDasContasSemLink],
+  );
+
   // The conta ids the links name that the bounded contas query did not return —
   // sorted, so the lookup's key is the SET. Read only once both snapshots are in.
   const contasDaPagina = contasSnap.data;
@@ -561,8 +595,12 @@ export function ShopeeEditor({ produtoId, db, disabled, onDirtyChange }: ShopeeE
       const id = idDoRef(l.data.contaProdutoShopeeOuterRef);
       if (id !== null && !naPagina.has(id) && idDeContaLegivel(id)) ids.add(id);
     }
+    // …and the contas of the drafts no link holds. Each came from a conta
+    // document (a draft is authored only on a found conta), so it is an id a
+    // document can carry.
+    for (const id of contasSemLink) if (!naPagina.has(id)) ids.add(id);
     return [...ids].sort();
-  }, [contasDaPagina, vinculosLidos]);
+  }, [contasDaPagina, vinculosLidos, contasSemLink]);
   const contasForaQuery = useQuery({
     queryKey: ['shopee-contas-por-id', contaIdsFora],
     queryFn: contaIdsFora.length === 0 ? skipToken : () => lerContasPorId(db, contaIdsFora),
@@ -994,6 +1032,14 @@ export function ShopeeEditor({ produtoId, db, disabled, onDirtyChange }: ShopeeE
       if (daConta) daConta.push(l);
       else orfas.set(contaId, [l]);
     }
+    // A conta only a draft of THIS screen names (a LOCAL one, or the notice of
+    // one discarded elsewhere — no link holds it) keeps a tab once deleted in
+    // another tab, read like any orphan (Codex review of #2085): a local
+    // draft's unsaved work holds the produto's save, so its «Descartar» must
+    // stay reachable.
+    for (const contaId of contasSemLink) {
+      if (!conhecidas.has(contaId) && !orfas.has(contaId)) orfas.set(contaId, []);
+    }
     // Insertion order, except the unreadable-ref tab, which always goes last.
     const ultimaSemConta = (id: string) => (id === CHAVE_SEM_CONTA ? 1 : 0);
     const orfasOrdenadas = [...orfas].sort(([a], [b]) => ultimaSemConta(a) - ultimaSemConta(b));
@@ -1019,7 +1065,7 @@ export function ShopeeEditor({ produtoId, db, disabled, onDirtyChange }: ShopeeE
       });
     }
     return saida;
-  }, [contas, linksSnap.data, contasFora]);
+  }, [contas, linksSnap.data, contasFora, contasSemLink]);
 
   // ---- The listing DRAFTS (#1911 P10). Every rule is `@/lib/shopee/rascunho`'s.
   // Authoring one needs BOTH bits (D6) — the route enforces `integracao.write`,
@@ -1060,11 +1106,8 @@ export function ShopeeEditor({ produtoId, db, disabled, onDirtyChange }: ShopeeE
     };
   }, [produtoSnap.data, extraDataSnap.data]);
 
-  // R2: the drafts being edited (by link doc id), each one's last sentence,
-  // and the three draft confirmations — never inside a block.
-  const [edicoes, setEdicoes] = useState<ReadonlyMap<string, EdicaoRascunhoShopee>>(
-    () => new Map(),
-  );
+  // R2: each draft's last sentence and the three draft confirmations — never
+  // inside a block (the drafts being edited, `edicoes`, are declared above).
   const [resultadosRascunho, setResultadosRascunho] = useState<
     ReadonlyMap<string, ResultadoDoRascunhoShopee>
   >(() => new Map());
@@ -1092,6 +1135,7 @@ export function ShopeeEditor({ produtoId, db, disabled, onDirtyChange }: ShopeeE
   const efetivas = new Map<string, EdicaoRascunhoShopee>();
   const avisosSobreBloco = new Map<string, string>();
   const avisosSemBloco: (AvisoDeRascunhoShopee & { readonly contaId: string })[] = [];
+  const largadasEmSilencio = new Set<string>();
   for (const [linkDocId, edicao] of edicoes) {
     const link = vinculoPorId.get(linkDocId)?.data;
     const conciliacao = conciliarEdicaoRascunhoShopee(edicao, {
@@ -1108,7 +1152,21 @@ export function ShopeeEditor({ produtoId, db, disabled, onDirtyChange }: ShopeeE
       } else {
         avisosSobreBloco.set(linkDocId, conciliacao.aviso);
       }
+    } else if (servidorConfirmado) {
+      largadasEmSilencio.add(linkDocId);
     }
+  }
+  // A SILENT drop read on server truth is FINAL: the entry leaves `edicoes`
+  // in this very render — a render-phase update, applied to the state this
+  // render read before anything is painted (no effect, no stale frame). Only
+  // re-read, a later write by anyone could reconcile the same old entry as
+  // `manter` and bring already-saved text back, dirty, over a stale base
+  // (Codex review of #2085). A drop WITH a notice stays until dismissed; a
+  // cache-served read makes nothing final. "Final" holds while no
+  // `setEdicoes` runs in a transition (none does): React would rebase a
+  // pending lower-priority update onto a state that still holds the entry.
+  if (largadasEmSilencio.size > 0) {
+    setEdicoes((prev) => new Map([...prev].filter(([id]) => !largadasEmSilencio.has(id))));
   }
 
   // Every draft block of this render: the stored drafts of each tab, then the
