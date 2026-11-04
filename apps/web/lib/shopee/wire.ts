@@ -10,11 +10,17 @@
  * has exactly two options — share it, or write it twice. The field names here
  * are IDENTICAL to that module's, which is the whole point: a drift then shows
  * up in a diff instead of at runtime. The later blocks name their own twins
- * the same way — the label's `etiqueta/pendenteEtiqueta.ts`, the returns'
- * `devolucoes/estadoDevolucao.ts` (step 17), and the category / band answers of
- * `taxonomia/dto.ts` (read by step 18's size-chart tab). The size-chart
- * envelopes themselves are the exception: IMPORTED from `@delfrance/schemas`,
- * never mirrored.
+ * the same way — the label's `etiqueta/pendenteEtiqueta.ts` and the returns'
+ * `devolucoes/estadoDevolucao.ts` (step 17).
+ *
+ * The exceptions are IMPORTED from `@delfrance/schemas` — the package both apps
+ * reach — and never mirrored: one declaration, read by the route and by this
+ * browser, so there is no second copy to keep. They are re-exported here so
+ * browser code keeps importing every answer shape
+ * from this one file: the size-chart envelopes (step 18), the taxonomy answers
+ * (the category tree, the item bands whole and cut to the size-chart slice, and
+ * Shopee's category suggestion — #1911), and the listing-draft route's answers
+ * and error items (#1911).
  *
  * ⚠️ This header must not describe what the OTHER copy does beyond naming it.
  * A comment asserting the behaviour of a file the compiler cannot see is the
@@ -63,12 +69,14 @@ import {
   ACAO_STATUS_ANUNCIO,
   ESTADO_ANUNCIO_SHOPEE,
   acaoSugeridaPublicacaoShopeeSchema,
+  conflitoRascunhoShopeeSchema,
   envioPrecoFaseSchema,
   envioPrecoResultadoSchema,
   envioPrecoShopeeStatusSchema,
   estadoAnuncioShopeeSchema,
   importacaoShopeeStatusSchema,
   shopeeViolacaoSchema,
+  vinculoConflitanteShopeeSchema,
 } from '@delfrance/schemas';
 
 import { wireInt, wireNumber } from '@delfrance/core/wire';
@@ -425,99 +433,75 @@ export const shopeeReclamacaoAcaoRespostaSchema = z.object({
 export type ShopeeReclamacaoAcaoResposta = z.infer<typeof shopeeReclamacaoAcaoRespostaSchema>;
 
 /* ---------------------------------------------------------------------------
- * Size charts (#1526, step 18) — the category tree and the item bands the
- * `/medidas` Shopee tab reads (`GET …/taxonomia/{categorias,limites}`, step 10's
- * routes), and the two size-chart reads (`GET …/tabela-medidas/{lista,detalhe}`)
+ * The taxonomy reads (`GET …/taxonomia/{categorias,limites,recomendacao-categoria}`,
+ * step 10's routes — the `/medidas` Shopee tab since step 18, the listing-draft
+ * editor since #1911) and the two size-chart reads
+ * (`GET …/tabela-medidas/{lista,detalhe}`, #1526, step 18)
  * ------------------------------------------------------------------------- */
 
-// ⚠️ The same KNOWN duplication as the rest of this file, with two sources:
-// `apps/shopee/lib/shopee/taxonomia/dto.ts` (`categoriaResumoDtoSchema`,
-// `categoriaNoDtoSchema`) and `taxonomia/limites.ts` (`limitesDeItemDtoSchema`'s
-// `sizeChartLimit`) — step 10's answers, older than this tab. The NAMES below
-// are identical to those, so a rename shows up in a diff. This block owns what
-// the BROWSER accepts, nothing more.
+// ⚠️ Nothing in this block is MIRRORED. Every envelope below is IMPORTED from
+// `@delfrance/schemas` — the taxonomy answers from `taxonomiaShopeeDto.ts`
+// (#1911), the size-chart ones from `tabelaDeMedidasShopeeDto.ts` (step 18) —
+// the ONE declaration the routes and this browser share, so a renamed or added
+// key is a compile error on both sides of a deploy instead of a
+// `ShopeeClientRespostaInvalidaError` here. A hand-copied twin beside a comment
+// saying it matches is exactly the drift #1369 shipped — and this block held
+// one, for the category tree and the band answer, until #1911's web PR
+// replaced it with these imports.
 //
-// ⚠️ The two SIZE-CHART envelopes (`lista`, `detalhe`, with the projected chart
-// inside) are deliberately NOT mirrored: they are IMPORTED from
-// `@delfrance/schemas` — the package both apps can reach — so the route and this
-// browser parse the same bytes with the same schema objects. A hand-copied twin
-// beside a comment saying it matches is exactly the drift #1369 shipped.
-//
-// How this file's three rules land here:
-// - every number is OURS (rule 3): the ids were read through the package's
-//   tolerant wire readers before the backend projected them, so a string here is
-//   our serialisation bug and is loud — strict `z.number().int()`, never
-//   `wireInt()`;
-// - every field is required (rule 2): each route answers all of them on every
-//   200, and no deployed backend predates the size-chart routes (an older
-//   backend answers them with a 404, which is an HTTP error, never a parse);
-// - unknown keys are stripped (rule 1), and the limites answer declares ONLY the
-//   slice this browser reads — every other band of that body is dropped here, so
-//   a change to one of them can never cost this screen.
-
-/** One category as a picker row. `name` / `originalName` are Shopee's display / original names. */
-export const categoriaResumoDtoSchema = z.object({
-  categoryId: z.number().int(),
-  name: z.string().nullable(),
-  originalName: z.string().nullable(),
-  /** The backend's three-valued leaf gate, folded: only `folha` is `true`. */
-  isLeaf: z.boolean(),
-});
-export type CategoriaResumoDto = z.infer<typeof categoriaResumoDtoSchema>;
-
-/** One focused node: the row, its parent, its ancestors (root FIRST) and its direct children. */
-export const categoriaNoDtoSchema = categoriaResumoDtoSchema.extend({
-  /** `0` marks a root — a real value, never an absence. */
-  parentId: z.number().int(),
-  pathFromRoot: z.array(categoriaResumoDtoSchema),
-  children: z.array(categoriaResumoDtoSchema),
-});
-export type CategoriaNoDto = z.infer<typeof categoriaNoDtoSchema>;
+// Each one is re-exported under the name browser code already imports, so no
+// consumer of this file changed. The rules those schemas follow (strict numbers,
+// required keys, unknown keys stripped) are written down where they are
+// declared, in `taxonomiaShopeeDto.ts`'s header.
 
 /**
- * The body of `GET …/taxonomia/categorias?integracaoId=[&categoryId=]`: the
- * ROOTS when no id was asked (`no: null`), ONE node when one was
- * (`raizes: null`). An id the tree does not hold is a 404
- * (`SHOPEE_CATEGORIA_DESCONHECIDA`), never a 200.
- *
- * ⚠️ A body with NEITHER half answers no question at all — the browser would
- * render an empty picker that looks like a tree with no categories. It is
- * refused, so the operator reads a contract breach instead of a blank list.
+ * The category tree — `GET …/taxonomia/categorias?integracaoId=[&categoryId=]`:
+ * the ROOTS when no id was asked (`no: null`), ONE node when one was
+ * (`raizes: null`); a body with neither half is refused. One picker row, one
+ * focused node, and the envelope.
  */
-export const respostaCategoriasShopeeSchema = z
-  .object({
-    raizes: z.array(categoriaResumoDtoSchema).nullable(),
-    no: categoriaNoDtoSchema.nullable(),
-  })
-  .refine((r) => r.raizes !== null || r.no !== null, {
-    message: 'a resposta de categorias não trouxe nem as raízes nem o nó pedido',
-    path: ['no'],
-  });
-export type RespostaCategoriasShopee = z.infer<typeof respostaCategoriasShopeeSchema>;
+export {
+  categoriaNoDtoSchema,
+  categoriaResumoDtoSchema,
+  respostaCategoriasShopeeSchema,
+  type CategoriaNoDto,
+  type CategoriaResumoDto,
+  type RespostaCategoriasShopee,
+} from '@delfrance/schemas';
 
 /**
- * The body of `GET …/taxonomia/limites?integracaoId=&categoryId=`, cut to the
- * slice the size-chart tab reads: `size_chart_limit` (announcements 1010/1404).
+ * The item bands — `GET …/taxonomia/limites?integracaoId=[&categoryId=]` — read
+ * by TWO screens, so two schemas over ONE declaration:
  *
- * ⚠️ ADVICE, never a gate (reconcile L7): none of these three booleans may
- * disable a pick. Each is three-valued — `null` is "Shopee did not say", which
- * is NOT `false` — and the whole block is `null` when Shopee sent none.
+ * - `respostaLimitesShopeeSchema` is the size-chart tab's SLICE (`scope`,
+ *   `categoryId`, `limites.sizeChartLimit`): the shared
+ *   `respostaLimitesTabelaMedidasShopeeSchema`, re-exported under the name
+ *   `/medidas` and `client.limites` already import. Every other band is
+ *   stripped before it is read, so a change to one of them — even a malformed
+ *   one — can never cost that screen. ⚠️ ADVICE, never a gate: the three
+ *   size-chart flags are three-valued (`null` is "Shopee did not say", NOT
+ *   `false`) and the block is `null` when Shopee sent none.
+ * - `respostaLimitesDoItemShopeeSchema` is the WHOLE answer, every band
+ *   required (`client.limitesDoItem`, for the draft editor's bands). A
+ *   malformed band refuses it — the opposite tolerance, on purpose.
  */
-export const respostaLimitesShopeeSchema = z.object({
-  /** `'shop'` or `'category'` — a free string (rule 1's spirit: the browser only shows it). */
-  scope: z.string(),
-  categoryId: z.number().int().nullable(),
-  limites: z.object({
-    sizeChartLimit: z
-      .object({
-        sizeChartMandatory: z.boolean().nullable(),
-        supportImageSizeChart: z.boolean().nullable(),
-        supportTemplateSizeChart: z.boolean().nullable(),
-      })
-      .nullable(),
-  }),
-});
-export type RespostaLimitesShopee = z.infer<typeof respostaLimitesShopeeSchema>;
+export {
+  respostaLimitesDoItemShopeeSchema,
+  respostaLimitesTabelaMedidasShopeeSchema as respostaLimitesShopeeSchema,
+  type RespostaLimitesDoItemShopee,
+  type RespostaLimitesTabelaMedidasShopee as RespostaLimitesShopee,
+} from '@delfrance/schemas';
+
+/**
+ * Shopee's category SUGGESTIONS for a product name —
+ * `GET …/taxonomia/recomendacao-categoria?integracaoId=&nome=` (#1911, D14).
+ * OFFERED, never applied: `applied` is the LITERAL `false`, so a body claiming
+ * otherwise is refused (#799).
+ */
+export {
+  respostaRecomendacaoCategoriaShopeeSchema,
+  type RespostaRecomendacaoCategoriaShopee,
+} from '@delfrance/schemas';
 
 /**
  * The bodies of `GET …/tabela-medidas/lista?integracaoId=&categoryId=` and
@@ -544,6 +528,35 @@ export {
   type DetalheTabelaMedidasDto,
   type ListaTabelasMedidasDto,
   type TabelaMedidasLinhaDto,
+} from '@delfrance/schemas';
+
+/* ---------------------------------------------------------------------------
+ * Listing drafts (#1911) — the 2xx of `POST …/rascunho{,/atualizar,/descartar}`
+ * ------------------------------------------------------------------------- */
+
+/**
+ * The three draft-route answers — IMPORTED, never mirrored (the header's
+ * exceptions): the same schema objects `apps/shopee`'s draft module declares
+ * them with.
+ *
+ * - create: `{linkDocId, criado}` — **201** `criado: true` (made now) and **200**
+ *   `criado: false` (the same draft, same content, already there: a double
+ *   click) are BOTH a success;
+ * - edit: `{linkDocId, gravados}` — the fields WRITTEN, canonical order, `[]`
+ *   when the patch equalled what is stored. ⚠️ Not a subset of the patch: a
+ *   category change also reports the `attributes` it cleared;
+ * - discard: `{linkDocId, descartado: true, criacaoIncerta}`.
+ *
+ * Their refusals are error bodies: the codes are `CODIGO_FALHA_SHOPEE`'s
+ * (`./erros.ts`), the extras {@link detalhesErroShopeeSchema}'s.
+ */
+export {
+  respostaAtualizarRascunhoShopeeSchema,
+  respostaCriarRascunhoShopeeSchema,
+  respostaDescartarRascunhoShopeeSchema,
+  type RespostaAtualizarRascunhoShopee,
+  type RespostaCriarRascunhoShopee,
+  type RespostaDescartarRascunhoShopee,
 } from '@delfrance/schemas';
 
 /* ---------------------------------------------------------------------------
@@ -982,18 +995,63 @@ export const detalhesErroShopeeSchema = z.object({
   /** 400 `SHOPEE_SELECAO_EXCEDE_LIMITE` — the bound, and the deduped size asked for. */
   limite: z.number().int().nullable().catch(null),
   solicitados: z.number().int().nullable().catch(null),
-  /** 422 `SHOPEE_PRECO_CONTA_RECUSADA` / `SHOPEE_PUBLISH_BLOCKED`. */
+  /**
+   * A FREE string, one key for every 422 that carries a slug:
+   * `SHOPEE_PRECO_CONTA_RECUSADA`, `SHOPEE_PUBLISH_BLOCKED`,
+   * `SHOPEE_IMPORT_BLOCKED` and the draft create's `SHOPEE_RASCUNHO_PRODUTO_INVALIDO`
+   * (#1911).
+   *
+   * ⚠️ Never retyped to one producer's vocabulary: a closed enum here would
+   * `.catch(null)` every other producer's slug. The draft's two motivos are
+   * narrowed at the READ, under that one code, by `motivoRascunhoInvalido`
+   * (`./erros.ts`).
+   */
   motivo: z.string().nullable().catch(null),
   /** 422 `SHOPEE_PRECO_CONTA_RECUSADA` — the shop's region, when it was read. */
   regiao: z.string().nullable().catch(null),
   /** 422 `SHOPEE_PUBLISH_REJECTED` — what exists on Shopee NOW. */
   etapa: z.string().nullable().catch(null),
-  /** 409 `SHOPEE_ANUNCIO_NAO_PUBLICADO` — the link that has no listing yet. */
+  /**
+   * The link the refusal is about: 409 `SHOPEE_ANUNCIO_NAO_PUBLICADO` (the link
+   * that has no listing yet), every refusal of the draft routes and the publish
+   * route's draft-lock 409s (#1911) — the draft named.
+   */
   linkDocId: z.string().nullable().catch(null),
   /** 409 `…_RUNNING` — the job that is already running, to attach to. */
   jobId: z.string().nullable().catch(null),
   /** The two publish 422s — one row per refusal. */
   problemas: z.array(problemaShopeeSchema).nullable().catch(null),
+  /**
+   * 409 `SHOPEE_RASCUNHO_CONFLITO` (#1911) — each field whose STORED value is
+   * not what the operator saw, with that value (`atual`, display only). Three
+   * readings, never folded into one another:
+   *
+   * - a list — the fields that differ (a create retry can name fields the
+   *   operator never touched: the route compares every projected field);
+   * - `[]` — the write lost to concurrent writes on every attempt, and no field
+   *   is known to differ;
+   * - `null` — the key was absent, OR the list could not be read whole.
+   *
+   * ⚠️ The catch is on the WHOLE list, deliberately (deploy skew): `campo` is a
+   * closed enum, so one item naming a field this build does not know yet nulls
+   * the list. Filtering that item out instead would show a partial modal — and
+   * a list whose every item was unknown would read `[]`, which says "concurrent
+   * writes" about a real conflict.
+   */
+  conflitos: z.array(conflitoRascunhoShopeeSchema).nullable().catch(null),
+  /**
+   * 409 `SHOPEE_PUBLICACAO_EM_ANDAMENTO` (#1911) — MILLISECONDS to wait before
+   * the lock can clear. ABSENT (`null`) is "waiting does not help": a sibling
+   * link's create is uncertain. Never read `null` as `0`.
+   */
+  aguardarMs: z.number().int().nonnegative().nullable().catch(null),
+  /**
+   * The conta's OTHER links of this produto (#1911): 409
+   * `SHOPEE_RASCUNHO_CONTA_JA_TEM_ANUNCIO` (the second-listing confirmation
+   * names them) and 409 `SHOPEE_PUBLICACAO_EM_ANDAMENTO` when the holder is a
+   * SIBLING, not the draft itself. `null` on the draft's own lock.
+   */
+  vinculos: z.array(vinculoConflitanteShopeeSchema).nullable().catch(null),
 });
 export type DetalhesErroShopee = z.infer<typeof detalhesErroShopeeSchema>;
 
@@ -1008,4 +1066,7 @@ export const DETALHES_ERRO_SHOPEE_VAZIOS: DetalhesErroShopee = Object.freeze({
   linkDocId: null,
   jobId: null,
   problemas: null,
+  conflitos: null,
+  aguardarMs: null,
+  vinculos: null,
 });

@@ -173,8 +173,12 @@ export const CODIGO_RASCUNHO_SHOPEE = {
   /** 409 — the named link is no longer a draft: a listing exists. Detail: `linkDocId`. */
   jaPublicado: 'SHOPEE_RASCUNHO_JA_PUBLICADO',
   /**
-   * 409 — the send gate refused BEFORE the create: the lock or the request
-   * would have run out mid-send. Nothing was sent to Shopee.
+   * 409 — the publish stopped BEFORE the create, and nothing was created on
+   * Shopee: the send gate saw the lock or the request running out mid-send,
+   * a look-up before it (ENSURE, the first create's SKU check) did not fit
+   * that time, or the lock was no longer this run's. On the fiscal retry's
+   * second leg the first `add_item` WAS sent and refused (all-or-nothing), so
+   * "nothing sent" would be false there.
    */
   publicacaoExpirada: 'SHOPEE_PUBLICACAO_EXPIRADA',
   /** 409 — the lock was lost to concurrent writes on every attempt to take it. */

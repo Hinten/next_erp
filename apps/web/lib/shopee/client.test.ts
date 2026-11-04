@@ -1,7 +1,12 @@
 import { FirebaseError } from 'firebase/app';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { projetarTabelaShopee } from '@delfrance/schemas';
+import {
+  CAMPO_RASCUNHO_SHOPEE,
+  CODIGO_RASCUNHO_SHOPEE,
+  MSG_ITEM_NAME_EM_BRANCO_RASCUNHO_SHOPEE,
+  projetarTabelaShopee,
+} from '@delfrance/schemas';
 
 import { shopeeClientFalso } from '@/lib/testing/shopeeClientFalso';
 
@@ -11,6 +16,7 @@ import {
   ShopeeClientRespostaInvalidaError,
   createShopeeClient,
   shopeeHttpFallbackMessage,
+  type CamposDoCorpoRascunhoShopee,
   type ShopeeClient,
 } from './client';
 import {
@@ -2285,7 +2291,11 @@ describe('step 21 — shopeeClientFalso, the ONE test client literal (C14)', () 
     const falso = shopeeClientFalso();
     const nomes = Object.keys(falso) as (keyof ShopeeClient)[];
 
-    expect(nomes).toHaveLength(22);
+    // EXACTLY the real client's methods — re-derived from the client itself,
+    // never a literal count to bump: a method added to one and not the other
+    // is named by the diff.
+    const reais = Object.keys(client(async () => ok('{}')));
+    expect([...nomes].sort()).toEqual([...reais].sort());
     for (const nome of nomes) {
       const metodo = falso[nome] as () => Promise<unknown>;
       await expect(metodo()).rejects.toThrow(`ShopeeClient.${nome} não era esperado neste teste`);
@@ -2299,5 +2309,531 @@ describe('step 21 — shopeeClientFalso, the ONE test client literal (C14)', () 
     await expect(falso.conta('int-1')).resolves.toMatchObject({ connected: false });
     expect(conta).toHaveBeenCalledWith('int-1');
     await expect(falso.oauthStart('int-1')).rejects.toThrow('ShopeeClient.oauthStart');
+  });
+});
+
+/* ---------------------------------------------------------------------------
+ * #1911 (P8) — the three draft routes and the two taxonomy reads they add
+ * ------------------------------------------------------------------------- */
+
+// Fixture ids only: integração `int-1`, produto `prod-1`, draft id
+// `AbCdEfGhIjKlMnOpQrSt` (the create's 20-character shape), a legacy draft id
+// `rascunho-legado-1` (edits and discards take any id).
+const RASCUNHO_ID = 'AbCdEfGhIjKlMnOpQrSt';
+
+/** Every draft field, as a new draft's create names them (`attributes: null`). */
+const CAMPOS: CamposDoCorpoRascunhoShopee = {
+  item_name: 'Camiseta básica',
+  description: null,
+  category_id: 100087,
+  marca: { brand_id: 3001, original_brand_name: 'Marca Exemplo' },
+  attributes: null,
+};
+
+/** Two attributes in the REQUEST shape — a custom value, a listed one, a value with a unit. */
+const MATERIAL = {
+  attribute_id: 100001,
+  attribute_value_list: [{ value_id: 0, original_value_name: 'Algodão' }, { value_id: 7 }],
+};
+const COMPRIMENTO = {
+  attribute_id: 100002,
+  attribute_value_list: [{ value_id: 0, original_value_name: '30', value_unit: 'cm' }],
+};
+const ATRIBUTOS = [MATERIAL, COMPRIMENTO];
+
+const ALVO_RASCUNHO = { integracaoId: 'int-1', produtoId: 'prod-1' };
+
+/** A whole `taxonomia/limites` 200, every band present. */
+const LIMITES_DO_ITEM_200 = {
+  scope: 'category',
+  categoryId: 100087,
+  limites: {
+    priceLimit: { min: 0.5, max: 100_000 },
+    wholesalePriceThresholdPercentage: null,
+    stockLimit: { min: 0, max: 999_999 },
+    itemNameLengthLimit: { min: 1, max: 120 },
+    itemImageCountLimit: { min: 1, max: 9 },
+    itemDescriptionLengthLimit: { min: 20, max: 3000 },
+    tierVariationNameLengthLimit: { min: 1, max: 14 },
+    tierVariationOptionLengthLimit: { min: 1, max: 30 },
+    itemCountLimit: null,
+    extendedDescriptionLimit: null,
+    dtsLimit: { daysToShipLimit: { min: -1, max: 30 }, nonPreOrderDaysToShip: 2 },
+    weightLimit: { weightMandatory: true },
+    dimensionLimit: { dimensionMandatory: false },
+    sizeChartLimit: {
+      sizeChartMandatory: null,
+      supportImageSizeChart: null,
+      supportTemplateSizeChart: true,
+    },
+  },
+  gtinLimit: null,
+  supportsPreOrder: true,
+};
+
+const RECOMENDACAO_200 = {
+  recomendacoes: [
+    {
+      position: 1,
+      categoryId: 100087,
+      name: 'Camisetas',
+      isLeaf: true,
+      pathFromRoot: [{ categoryId: 100017, name: 'Moda', originalName: null, isLeaf: false }],
+    },
+  ],
+  unresolved: 0,
+  applied: false,
+};
+
+describe('#1911 — each draft and taxonomy method: its route, its verb, its body BY NAME', () => {
+  it.each([
+    [
+      'criarRascunho',
+      (c: ReturnType<typeof client>) =>
+        c.criarRascunho({ ...ALVO_RASCUNHO, linkDocId: RASCUNHO_ID, conteudo: CAMPOS }),
+      { linkDocId: RASCUNHO_ID, criado: true },
+      `${BASE}/rascunho`,
+      { ...ALVO_RASCUNHO, linkDocId: RASCUNHO_ID, conteudo: CAMPOS },
+    ],
+    [
+      'atualizarRascunho',
+      (c: ReturnType<typeof client>) =>
+        c.atualizarRascunho({
+          ...ALVO_RASCUNHO,
+          linkDocId: 'rascunho-legado-1',
+          base: { item_name: 'Camiseta' },
+          patch: { item_name: 'Camiseta básica' },
+        }),
+      { linkDocId: 'rascunho-legado-1', gravados: [CAMPO_RASCUNHO_SHOPEE.itemName] },
+      `${BASE}/rascunho/atualizar`,
+      {
+        ...ALVO_RASCUNHO,
+        linkDocId: 'rascunho-legado-1',
+        base: { item_name: 'Camiseta' },
+        patch: { item_name: 'Camiseta básica' },
+      },
+    ],
+    [
+      'descartarRascunho',
+      (c: ReturnType<typeof client>) =>
+        c.descartarRascunho({ ...ALVO_RASCUNHO, linkDocId: 'rascunho-legado-1', base: CAMPOS }),
+      { linkDocId: 'rascunho-legado-1', descartado: true, criacaoIncerta: false },
+      `${BASE}/rascunho/descartar`,
+      { ...ALVO_RASCUNHO, linkDocId: 'rascunho-legado-1', base: CAMPOS },
+    ],
+    [
+      'recomendacaoCategoria',
+      (c: ReturnType<typeof client>) =>
+        c.recomendacaoCategoria({ integracaoId: 'int/1 2&x', nome: 'Camiseta & Cia/branca' }),
+      RECOMENDACAO_200,
+      `${BASE}/taxonomia/recomendacao-categoria?integracaoId=int%2F1%202%26x&nome=Camiseta%20%26%20Cia%2Fbranca`,
+      undefined,
+    ],
+    [
+      'limitesDoItem (one category)',
+      (c: ReturnType<typeof client>) =>
+        c.limitesDoItem({ integracaoId: 'int/1 2&x', categoryId: 100087 }),
+      LIMITES_DO_ITEM_200,
+      `${BASE}/taxonomia/limites?integracaoId=int%2F1%202%26x&categoryId=100087`,
+      undefined,
+    ],
+    [
+      'limitesDoItem (shop-wide: the key OMITTED)',
+      (c: ReturnType<typeof client>) =>
+        c.limitesDoItem({ integracaoId: 'int-1', categoryId: null }),
+      { ...LIMITES_DO_ITEM_200, scope: 'shop', categoryId: null },
+      `${BASE}/taxonomia/limites?integracaoId=int-1`,
+      undefined,
+    ],
+  ] as const)('⭐ %s', async (_nome, chamar, resposta, url, corpo) => {
+    const { c, pedidos } = gravador(JSON.stringify(resposta));
+
+    await expect(chamar(c)).resolves.toEqual(resposta);
+
+    expect(pedidos).toHaveLength(1);
+    expect(pedidos[0]?.url).toBe(url);
+    // No `signal` on any of them: the draft writes are not the three pushes.
+    expect(pedidos[0]?.init !== undefined && 'signal' in pedidos[0].init).toBe(false);
+    if (corpo === undefined) {
+      expect(pedidos[0]?.init?.method).toBe('GET');
+      expect(pedidos[0]?.init).not.toHaveProperty('body');
+    } else {
+      expect(pedidos[0]?.init?.method).toBe('POST');
+      expect(pedidos[0]?.init?.headers).toEqual({
+        Authorization: 'Bearer token',
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      });
+      expect(corpoEnviado(pedidos[0]?.init)).toStrictEqual(corpo);
+    }
+  });
+
+  it('`limitesDoItem` with `categoryId: 0` SENDS it (the route refuses it) — only `null` is omitted', async () => {
+    const { c, pedidos } = gravador(JSON.stringify(LIMITES_DO_ITEM_200));
+
+    await c.limitesDoItem({ integracaoId: 'int-1', categoryId: 0 });
+
+    expect(pedidos[0]?.url).toBe(`${BASE}/taxonomia/limites?integracaoId=int-1&categoryId=0`);
+  });
+});
+
+describe('#1911 — the draft bodies are rebuilt BY NAME, down to each attribute value', () => {
+  it('⭐ a caller’s `conteudo` carrying `item_id` / `logistic_info` never puts them on the wire', async () => {
+    // Not a fresh literal: TypeScript lets the extra keys through, exactly as a
+    // component spreading a stored link into the call would.
+    const doLink = { ...CAMPOS, item_id: 1000001, logistic_info: [], estadoAnuncio: 'ativo' };
+    const { c, pedidos } = gravador(JSON.stringify({ linkDocId: RASCUNHO_ID, criado: true }));
+
+    await c.criarRascunho({ ...ALVO_RASCUNHO, linkDocId: RASCUNHO_ID, conteudo: doLink });
+
+    const conteudo = (corpoEnviado(pedidos[0]?.init) as { conteudo: Record<string, unknown> })
+      .conteudo;
+    expect(conteudo).not.toHaveProperty('item_id');
+    expect(conteudo).not.toHaveProperty('logistic_info');
+    expect(conteudo).not.toHaveProperty('estadoAnuncio');
+  });
+
+  it('NEAR-MISS: the same object WITHOUT the stray keys produces the IDENTICAL body', async () => {
+    const comLixo = gravador(JSON.stringify({ linkDocId: RASCUNHO_ID, criado: true }));
+    const limpo = gravador(JSON.stringify({ linkDocId: RASCUNHO_ID, criado: true }));
+
+    await comLixo.c.criarRascunho({
+      ...ALVO_RASCUNHO,
+      linkDocId: RASCUNHO_ID,
+      conteudo: { ...CAMPOS, item_id: 1000001 } as CamposDoCorpoRascunhoShopee,
+    });
+    await limpo.c.criarRascunho({ ...ALVO_RASCUNHO, linkDocId: RASCUNHO_ID, conteudo: CAMPOS });
+
+    expect(comLixo.pedidos[0]?.init?.body).toBe(limpo.pedidos[0]?.init?.body);
+  });
+
+  it('⭐ an edit’s `base` AND `patch` drop a stray `item_id` / `logistic_info` too — both are rebuilt', async () => {
+    const { c, pedidos } = gravador(
+      JSON.stringify({ linkDocId: 'rascunho-legado-1', gravados: [] }),
+    );
+
+    await c.atualizarRascunho({
+      ...ALVO_RASCUNHO,
+      linkDocId: 'rascunho-legado-1',
+      base: {
+        item_name: 'Camiseta',
+        item_id: null,
+        logistic_info: [],
+      } as Partial<CamposDoCorpoRascunhoShopee>,
+      patch: {
+        item_name: 'Camiseta básica',
+        item_id: 1000001,
+      } as Partial<CamposDoCorpoRascunhoShopee>,
+    });
+
+    expect(corpoEnviado(pedidos[0]?.init)).toStrictEqual({
+      ...ALVO_RASCUNHO,
+      linkDocId: 'rascunho-legado-1',
+      base: { item_name: 'Camiseta' },
+      patch: { item_name: 'Camiseta básica' },
+    });
+  });
+
+  it('a stray key inside `marca`, an attribute or a value is not forwarded either; the values ride VERBATIM', async () => {
+    const sujo = {
+      ...CAMPOS,
+      marca: { brand_id: 0, original_brand_name: null, displayBrandName: 'No Brand' },
+      attributes: [
+        {
+          ...MATERIAL,
+          nome: 'Material',
+          attribute_value_list: [
+            { value_id: 0, original_value_name: 'Algodão', origem: 'requisicao' },
+            { value_id: 7 },
+          ],
+        },
+        COMPRIMENTO,
+      ],
+    } as CamposDoCorpoRascunhoShopee;
+    const { c, pedidos } = gravador(
+      JSON.stringify({ linkDocId: 'rascunho-legado-1', descartado: true, criacaoIncerta: false }),
+    );
+
+    await c.descartarRascunho({ ...ALVO_RASCUNHO, linkDocId: 'rascunho-legado-1', base: sujo });
+
+    expect((corpoEnviado(pedidos[0]?.init) as { base: unknown }).base).toStrictEqual({
+      ...CAMPOS,
+      marca: { brand_id: 0, original_brand_name: null },
+      attributes: ATRIBUTOS,
+    });
+  });
+
+  it('⭐ nothing is normalised on the way: an untrimmed title and an EMPTY description travel as typed', async () => {
+    // A `base` is compared byte for byte against the stored projection — a
+    // client that trimmed or blank⇒null'd it would turn a legacy draft's every
+    // save into a conflict.
+    const legado = { ...CAMPOS, item_name: ' Camiseta ', description: '' };
+    const { c, pedidos } = gravador(
+      JSON.stringify({ linkDocId: 'rascunho-legado-1', descartado: true, criacaoIncerta: false }),
+    );
+
+    await c.descartarRascunho({ ...ALVO_RASCUNHO, linkDocId: 'rascunho-legado-1', base: legado });
+
+    expect((corpoEnviado(pedidos[0]?.init) as { base: unknown }).base).toStrictEqual(legado);
+  });
+
+  it('⭐ an edit sends EXACTLY the keys it was given: `null` is a value and is sent, `undefined` is "not named" and is not', async () => {
+    const { c, pedidos } = gravador(
+      JSON.stringify({ linkDocId: 'rascunho-legado-1', gravados: [] }),
+    );
+
+    await c.atualizarRascunho({
+      ...ALVO_RASCUNHO,
+      linkDocId: 'rascunho-legado-1',
+      base: { category_id: 100087, attributes: ATRIBUTOS, description: undefined },
+      patch: { category_id: null, marca: undefined },
+    });
+
+    const corpo = corpoEnviado(pedidos[0]?.init) as { base: object; patch: object };
+    expect(corpo.base).toStrictEqual({ category_id: 100087, attributes: ATRIBUTOS });
+    expect(corpo.patch).toStrictEqual({ category_id: null });
+  });
+
+  // The row above pins `null` for `category_id` alone, so the other four keys of
+  // the same builder could read `null` as "not named" and nothing would say so.
+  // Each `null` here is a real edit: a legacy draft stored with no title, the
+  // description handed back to the produto's own, the brand cleared, the
+  // attributes cleared. Dropped, the patch names nothing (a 400) or the base no
+  // longer names the patch's field (a 400) — the operator's edit never lands.
+  it.each<[string, Partial<CamposDoCorpoRascunhoShopee>, Partial<CamposDoCorpoRascunhoShopee>]>([
+    ['item_name (a `base` with no stored title)', { item_name: null }, { item_name: 'Camiseta' }],
+    [
+      'description (the produto’s own again)',
+      { description: 'Algodão penteado' },
+      { description: null },
+    ],
+    [
+      'category_id (`base` carrying the attributes it clears)',
+      { category_id: 100087, attributes: null },
+      { category_id: null },
+    ],
+    ['marca (cleared)', { marca: CAMPOS.marca }, { marca: null }],
+    ['attributes (cleared)', { attributes: ATRIBUTOS }, { attributes: null }],
+  ])(
+    '⭐ NEAR-MISS: an edit’s `null` %s is SENT — `null` is a value for every field, never "not named"',
+    async (_campo, base, patch) => {
+      const { c, pedidos } = gravador(
+        JSON.stringify({ linkDocId: 'rascunho-legado-1', gravados: [] }),
+      );
+
+      await c.atualizarRascunho({ ...ALVO_RASCUNHO, linkDocId: 'rascunho-legado-1', base, patch });
+
+      const corpo = corpoEnviado(pedidos[0]?.init) as { base: object; patch: object };
+      expect(corpo.base).toStrictEqual(base);
+      expect(corpo.patch).toStrictEqual(patch);
+    },
+  );
+
+  it('the edit’s `base` is never re-derived here — the key set the caller chose is the key set sent (the route judges it)', async () => {
+    const { c, pedidos } = gravador(
+      JSON.stringify({ linkDocId: 'rascunho-legado-1', gravados: [] }),
+    );
+
+    await c.atualizarRascunho({
+      ...ALVO_RASCUNHO,
+      linkDocId: 'rascunho-legado-1',
+      base: { category_id: 100087 },
+      patch: { category_id: 100088 },
+    });
+
+    expect((corpoEnviado(pedidos[0]?.init) as { base: object }).base).toStrictEqual({
+      category_id: 100087,
+    });
+  });
+
+  it.each([
+    [
+      'confirmarSegundoAnuncio on the create',
+      (c: ReturnType<typeof client>, flag?: true) =>
+        c.criarRascunho({
+          ...ALVO_RASCUNHO,
+          linkDocId: RASCUNHO_ID,
+          conteudo: CAMPOS,
+          confirmarSegundoAnuncio: flag,
+        }),
+      'confirmarSegundoAnuncio',
+      { linkDocId: RASCUNHO_ID, criado: true },
+    ],
+    [
+      'confirmarCriacaoIncerta on the discard',
+      (c: ReturnType<typeof client>, flag?: true) =>
+        c.descartarRascunho({
+          ...ALVO_RASCUNHO,
+          linkDocId: 'rascunho-legado-1',
+          base: CAMPOS,
+          confirmarCriacaoIncerta: flag,
+        }),
+      'confirmarCriacaoIncerta',
+      { linkDocId: 'rascunho-legado-1', descartado: true, criacaoIncerta: true },
+    ],
+  ] as const)(
+    '%s: sent as `true` when given, OMITTED when absent — never `false`, never `null`',
+    async (_n, chamar, chave, resposta) => {
+      const { c, pedidos } = gravador(JSON.stringify(resposta));
+
+      await chamar(c, true);
+      await chamar(c);
+
+      expect(corpoEnviado(pedidos[0]?.init)).toHaveProperty(chave, true);
+      expect(corpoEnviado(pedidos[1]?.init)).not.toHaveProperty(chave);
+    },
+  );
+});
+
+describe('#1911 — the draft answers an operator must read correctly', () => {
+  it.each([
+    [201, true],
+    [200, false],
+  ] as const)(
+    '⭐ the create’s %i (`criado: %s`) RESOLVES — a double click is a success, never an error',
+    async (status, criado) => {
+      const { c } = gravador(JSON.stringify({ linkDocId: RASCUNHO_ID, criado }), status);
+
+      await expect(
+        c.criarRascunho({ ...ALVO_RASCUNHO, linkDocId: RASCUNHO_ID, conteudo: CAMPOS }),
+      ).resolves.toEqual({ linkDocId: RASCUNHO_ID, criado });
+    },
+  );
+
+  it('NEAR-MISS: a 2xx that is not the create’s answer is a RespostaInvalida — never a draft that "exists"', async () => {
+    const { c } = gravador(JSON.stringify({ linkDocId: RASCUNHO_ID }), 201);
+
+    const err = await c
+      .criarRascunho({ ...ALVO_RASCUNHO, linkDocId: RASCUNHO_ID, conteudo: CAMPOS })
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(ShopeeClientRespostaInvalidaError);
+    expect((err as ShopeeClientRespostaInvalidaError).campos).toContain('criado');
+  });
+
+  it('⭐ a 409 CONFLITO off the wire: its code, its `linkDocId` and its `conflitos` ride on the error', async () => {
+    const conflitos = [{ campo: CAMPO_RASCUNHO_SHOPEE.itemName, atual: 'Camiseta' }];
+    const { c } = gravador(
+      JSON.stringify({
+        error: 'o rascunho r-1 mudou desde que foi aberto (item_name). Recarregue.',
+        code: CODIGO_RASCUNHO_SHOPEE.conflito,
+        linkDocId: 'rascunho-legado-1',
+        conflitos,
+      }),
+      409,
+    );
+
+    const err = (await c
+      .atualizarRascunho({
+        ...ALVO_RASCUNHO,
+        linkDocId: 'rascunho-legado-1',
+        base: { item_name: 'Camisa' },
+        patch: { item_name: 'Camiseta básica' },
+      })
+      .catch((e: unknown) => e)) as ShopeeClientHttpError;
+
+    expect(err).toBeInstanceOf(ShopeeClientHttpError);
+    expect(err.status).toBe(409);
+    expect(err.code).toBe(CODIGO_RASCUNHO_SHOPEE.conflito);
+    expect(err.detalhes).toMatchObject({ linkDocId: 'rascunho-legado-1', conflitos });
+  });
+
+  it('a 409 EM_ANDAMENTO held by a SIBLING carries `aguardarMs` and `vinculos`', async () => {
+    const vinculos = [{ linkDocId: 'link-2', itemId: null, rascunho: true }];
+    const { c } = gravador(
+      JSON.stringify({
+        error: 'outro vínculo deste produto nesta conta está sendo publicado (link-2 (rascunho)).',
+        code: CODIGO_RASCUNHO_SHOPEE.publicacaoEmAndamento,
+        linkDocId: 'rascunho-legado-1',
+        aguardarMs: 120_000,
+        vinculos,
+      }),
+      409,
+    );
+
+    const err = (await c
+      .descartarRascunho({ ...ALVO_RASCUNHO, linkDocId: 'rascunho-legado-1', base: CAMPOS })
+      .catch((e: unknown) => e)) as ShopeeClientHttpError;
+
+    expect(err.detalhes).toMatchObject({ aguardarMs: 120_000, vinculos });
+  });
+
+  it('⭐ a CODELESS 400 (a refused body) keeps the route’s sentence and `code: null` — never a draft code', async () => {
+    const { c } = gravador(
+      JSON.stringify({
+        error: MSG_ITEM_NAME_EM_BRANCO_RASCUNHO_SHOPEE,
+        linkDocId: RASCUNHO_ID,
+      }),
+      400,
+    );
+
+    const err = (await c
+      .criarRascunho({
+        ...ALVO_RASCUNHO,
+        linkDocId: RASCUNHO_ID,
+        conteudo: { ...CAMPOS, item_name: '   ' },
+      })
+      .catch((e: unknown) => e)) as ShopeeClientHttpError;
+
+    expect(err).toBeInstanceOf(ShopeeClientHttpError);
+    expect(err.code).toBeNull();
+    expect(err.message).toBe(MSG_ITEM_NAME_EM_BRANCO_RASCUNHO_SHOPEE);
+    expect(err.detalhes.linkDocId).toBe(RASCUNHO_ID);
+  });
+});
+
+describe('#1911 — the two taxonomy reads: the whole bands and the suggestion', () => {
+  it('⭐ `limitesDoItem` REFUSES a malformed band that `limites` (the slice) tolerates — on the SAME body', async () => {
+    const corpo = JSON.stringify({
+      ...LIMITES_DO_ITEM_200,
+      limites: { ...LIMITES_DO_ITEM_200.limites, stockLimit: 'quebrado' },
+    });
+
+    const inteiro = gravador(corpo);
+    const err = await inteiro.c
+      .limitesDoItem({ integracaoId: 'int-1', categoryId: 100087 })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ShopeeClientRespostaInvalidaError);
+    expect((err as ShopeeClientRespostaInvalidaError).campos).toContain('limites.stockLimit');
+
+    const fatia = gravador(corpo);
+    await expect(
+      fatia.c.limites({ integracaoId: 'int-1', categoryId: 100087 }),
+    ).resolves.toMatchObject({
+      limites: { sizeChartLimit: LIMITES_DO_ITEM_200.limites.sizeChartLimit },
+    });
+  });
+
+  it('`limitesDoItem` keeps every band; `limites` on the same body keeps ONLY the size-chart slice', async () => {
+    const inteiro = gravador(JSON.stringify(LIMITES_DO_ITEM_200));
+    const fatia = gravador(JSON.stringify(LIMITES_DO_ITEM_200));
+
+    const todos = await inteiro.c.limitesDoItem({ integracaoId: 'int-1', categoryId: 100087 });
+    const so = await fatia.c.limites({ integracaoId: 'int-1', categoryId: 100087 });
+
+    expect(todos.limites.itemNameLengthLimit).toEqual({ min: 1, max: 120 });
+    expect(todos.supportsPreOrder).toBe(true);
+    expect(so.limites).toStrictEqual({
+      sizeChartLimit: LIMITES_DO_ITEM_200.limites.sizeChartLimit,
+    });
+  });
+
+  it('⭐ a suggestion claiming `applied: true` is a RespostaInvalida — never offered as if chosen', async () => {
+    const { c } = gravador(JSON.stringify({ ...RECOMENDACAO_200, applied: true }));
+
+    const err = await c
+      .recomendacaoCategoria({ integracaoId: 'int-1', nome: 'Camiseta' })
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(ShopeeClientRespostaInvalidaError);
+    expect((err as ShopeeClientRespostaInvalidaError).campos).toContain('applied');
+  });
+
+  it('the suggestion GET never sends `imagemCapa` — the browser holds no Shopee image id', async () => {
+    const { c, pedidos } = gravador(JSON.stringify(RECOMENDACAO_200));
+
+    await c.recomendacaoCategoria({ integracaoId: 'int-1', nome: 'Camiseta' });
+
+    expect(pedidos[0]?.url).not.toContain('imagemCapa');
   });
 });
