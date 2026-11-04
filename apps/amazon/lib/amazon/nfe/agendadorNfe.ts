@@ -5,8 +5,9 @@
  *
  * The queue itself is bound by a COMPOSITION ROOT, never here: the functions
  * codebase's `functions/src/agendadorNfe.ts` (the trigger and the handler's
- * self re-enqueue) — and, in 14-d, the App Hosting root for the re-drive
- * route. Each root resolves the region, builds the path with
+ * self re-enqueue) and the App Hosting root `lib/firebase/filaLeitura.ts` (the
+ * re-drive route `POST /api/marketplace/amazon/enviar-nfe`, PR 14-d). Each
+ * root resolves the region, builds the path with
  * {@link caminhoDaFilaNfeAmazon}, reads the queue valve and passes both in as
  * {@link OpcoesAgendadorNfeAmazon}. Nothing here reads the process environment
  * or imports the Cloud Tasks SDK: the transport is STRUCTURAL
@@ -26,7 +27,7 @@
  *   redelivery converges through the task's status-first read (step-14 plan
  *   §5 risk 2).
  * - {@link AgendadorNfeAmazon.enfileirar} — everything else (the chain's
- *   re-enqueues, the 14-d re-drive): UNNAMED, the app's rule (step-14 plan §3
+ *   re-enqueues, the re-drive route): UNNAMED, the app's rule (step-14 plan §3
  *   decision 10). A Cloud Tasks tombstone on a name derived from the pedido or
  *   the rung would refuse the next rung or a legitimate human re-drive.
  *

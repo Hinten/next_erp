@@ -4,9 +4,12 @@
 # Firebase Admin init, the CORS proxy, the conta status route, the OAuth start
 # route and the public OAuth callback. Step 3 adds the public push receiver
 # (`POST /api/webhooks/amazon`, called by the AWS relay), which enqueues onto the
-# nested functions codebase's reads queue. The step-4 backstop poll runs in that
-# functions codebase, not here; the other Firestore-backed flows arrive in later
-# steps.
+# nested functions codebase's reads queue. Step 14 adds the NF-e re-drive route
+# (`POST /api/marketplace/amazon/enviar-nfe`, PR 14-d), which only enqueues onto
+# that codebase's NF-e queue `processAmazonNfeUpload` (no Amazon call, no
+# Firestore write). The step-4 backstop poll and the NF-e upload itself run in
+# that functions codebase, not here; the other Firestore-backed flows arrive in
+# later steps.
 runConfig:
   cpu: 1
   memoryMiB: 512
@@ -31,7 +34,7 @@ runConfig:
 # call by its LWA access token alone (no AWS IAM or SigV4 since 2023-10-02,
 # master plan step 1).
 #
-# Environment this backend reads (steps 2, 2b and 3). None of it gets an `env:` row below,
+# Environment this backend reads (steps 2, 2b, 3 and 14). None of it gets an `env:` row below,
 # on purpose: COMMENT ROWS ONLY, so nothing baked into the manifest can override
 # a console value during the window, and the list stays here so the next step
 # that reads a variable declares it in the same change:
@@ -70,8 +73,11 @@ runConfig:
 #                                lets this backend call Amazon. Anything else makes
 #                                the OAuth start answer 503 AMAZON_CHAMADAS_DESLIGADAS
 #                                and the callback redirect with `integracao_desligada`
-#                                without consuming the attempt. Set it on BOTH
-#                                surfaces (this console and the functions codebase).
+#                                without consuming the attempt; the NF-e re-drive
+#                                answers the same 503 and enqueues nothing (the
+#                                task it would enqueue reads the functions
+#                                codebase's copy). Set it on BOTH surfaces (this
+#                                console and the functions codebase).
 #   AMAZON_RELAY_SECRET          Secret Manager. The push receiver's relay key: what
 #                                the AWS relay sends in `x-erp-relay-key` (the SAME
 #                                value lives in AWS Secrets Manager). 32 to 512
@@ -82,15 +88,26 @@ runConfig:
 #                                confirmed sending the new one; then unset
 #                                (`infra/amazon-relay/README.md`). Each instance logs
 #                                one WARNING while it is set.
-#   AMAZON_TASKS_REGION          Console value. The region of the reads queue
-#                                (`filaLeituraAmazon`), equal to the functions
-#                                codebase's FUNCTIONS_REGION. Falls back to
+#   AMAZON_TASKS_REGION          Console value. The region of BOTH queues — the reads
+#                                queue (`filaLeituraAmazon`) and the NF-e queue
+#                                (`processAmazonNfeUpload`, step 14) — equal to the
+#                                functions codebase's FUNCTIONS_REGION. Falls back to
 #                                FUNCTIONS_REGION; with neither set the receiver
-#                                answers 503. NO default: a wrong region drops the
-#                                task silently (#1108).
-#   AMAZON_TASKS_DISABLED        OPTIONAL sweep-only valve: exactly `1` makes the
-#                                receiver persist each push as `failed` for the
-#                                reprocess sweep instead of enqueuing.
+#                                answers 503 and the NF-e re-drive fails (500, one
+#                                ERROR line) before any read. NO default: a wrong
+#                                region drops the task silently (#1108).
+#   AMAZON_TASKS_DISABLED        OPTIONAL queue valve of THIS backend's two
+#                                producers: exactly `1` makes the receiver persist
+#                                each push as `failed` for the reprocess sweep
+#                                instead of enqueuing, and makes the NF-e re-drive
+#                                answer 503 AMAZON_TAREFAS_DESLIGADAS having read
+#                                nothing and written NO aviso (the caller retries
+#                                once it is open). It does NOT stop the NF-e
+#                                trigger or the NF-e task's own re-enqueues: those
+#                                read the functions codebase's copy (set it there
+#                                and redeploy, `functions/DEPLOY.md`), and that copy
+#                                is what raises the `tarefas-desligadas` avisos that
+#                                make up the re-drive worklist.
 #   AMAZON_LWA_SEGREDO_EXPIRA_EM NOT read by this backend: the daily expiry sweep
 #                                runs in the nested functions codebase (step 3),
 #                                which reads it from its own deploy env. Listed so
@@ -102,10 +119,13 @@ runConfig:
 #                                `value: ''` row rejects the whole manifest.
 #
 # The write valves and canary lists (`lib/amazon/core/valvulas.ts`, step 2b). No
-# write flow reads them yet. Every one stays UNSET until the migration window
-# opens its flow (master plan §5, W8: `dry-run`, then a canary list, then `on`,
-# then `*`), and each is set ALIKE on both surfaces (this console and the
-# functions codebase), or the two disagree about what is written:
+# write flow of THIS backend reads them: the NF-e pair is read by the functions
+# codebase's NF-e task (step 14), and the NF-e re-drive route here deliberately
+# never reads it (the task is the one source of truth). Every one stays UNSET
+# until the migration window opens its flow (master plan §5, W8: `dry-run`, then
+# a canary list, then `on`, then `*`), and each is set ALIKE on both surfaces
+# (this console and the functions codebase), or the two disagree about what is
+# written:
 #
 #   AMAZON_MODO_ESTOQUE          The stock valve. Only the exact `on` writes and
 #                                only the exact `dry-run` diffs; anything else is off.

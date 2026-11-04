@@ -552,7 +552,11 @@ function importadoresDoSdkDeTarefas(fontes: readonly (readonly [string, string])
     .sort();
 }
 
-/** The App Hosting composition root of the reads queue (3-c): one of the app's three `getFunctions(` callers. */
+/**
+ * The App Hosting composition root of the reads queue (3-c) and, since step
+ * 14 (PR 14-d), of the NF-e queue's re-drive producer: one of the app's three
+ * `getFunctions(` callers.
+ */
 const ARQUIVO_RAIZ_DA_FILA = 'lib/firebase/filaLeitura.ts';
 
 /** The push receiver's route and body, relative to the app root (3-c). */
@@ -596,11 +600,14 @@ const ARQUIVO_RAIZ_DA_FILA_NFE = 'functions/src/agendadorNfe.ts';
 /**
  * Each composition root and the queue(s) it binds, by the path builders it
  * calls: a root that binds another root's queue — the NF-e producer added to
- * the reads queue's root, whose closure the NF-e trigger must never reach — is
- * a different file than this table says.
+ * the functions codebase's reads-queue root, whose closure the NF-e trigger
+ * must never reach — is a different file than this table says. The App
+ * Hosting root binds BOTH queues (since step 14, PR 14-d: the re-drive route's
+ * NF-e producer), behind its ONE `getFunctions(` call
+ * (`lib/firebase/filaLeitura.test.ts` pins the single call).
  */
 const FILAS_DE_CADA_RAIZ: Readonly<Record<string, readonly string[]>> = {
-  [ARQUIVO_RAIZ_DA_FILA]: ['caminhoDaFilaAmazon'],
+  [ARQUIVO_RAIZ_DA_FILA]: ['caminhoDaFilaAmazon', 'caminhoDaFilaNfeAmazon'],
   [ARQUIVO_RAIZ_DA_FILA_FUNCOES]: ['caminhoDaFilaAmazon'],
   [ARQUIVO_RAIZ_DA_FILA_NFE]: ['caminhoDaFilaNfeAmazon'],
 };
@@ -880,15 +887,35 @@ const resolverAliasDoApp =
     return [`${base}.ts`, `${base}.tsx`, `${base}/index.ts`].find((c) => ler(c) !== null) ?? base;
   };
 
-/** What the App Hosting closure may never reach (the importer and the seam that holds it). */
-const PROIBIDOS_NO_APP_HOSTING = [SEAM_DO_IMPORTADOR, 'lib/amazon/pedidos/importarPedido.ts'];
+/** The SP-API write engine (step 14, PR 14-b): the ONE builder of a write client. */
+const MOTOR_DE_ESCRITA = 'lib/amazon/core/escrita.ts';
+
+/**
+ * What the App Hosting closure may never reach: the importer and the seam that
+ * holds it (5-e), and — since the NF-e re-drive route joined the bundle (step
+ * 14, PR 14-d) — the write ENGINE: a route that can reach it can build a write
+ * client and bypass the task's valve and canary (step-14 plan §3 decision 20).
+ */
+const PROIBIDOS_NO_APP_HOSTING = [
+  SEAM_DO_IMPORTADOR,
+  'lib/amazon/pedidos/importarPedido.ts',
+  MOTOR_DE_ESCRITA,
+];
+
+/**
+ * `node:crypto` (any spelling): the NF-e body's MD5 lives in
+ * `nfe/conteudoNfe.ts`, the task's — an App Hosting file importing it is a
+ * route building an upload.
+ */
+const ehCriptoDoNode = (espec: string) => espec === 'node:crypto' || espec === 'crypto';
 
 /**
  * Why the App Hosting closure (a {@link fechoDeImportacoes} walk with the alias
  * resolver; type edges walked too, since {@link especificadores} reads every
- * `from '…'`) breaks plan §3 decisions 32 and 48; empty when it does not: it
- * reaches the seam or the importer, imports the ViaCEP module (by value or by
- * type), or holds an import the walk could not resolve (fail closed).
+ * `from '…'`) breaks plan §3 decisions 32 and 48 (or step-14 plan §3 decision
+ * 20); empty when it does not: it reaches the seam, the importer or the write
+ * engine, imports the ViaCEP module (by value or by type) or `node:crypto`, or
+ * holds an import the walk could not resolve (fail closed).
  */
 function violacoesDoAppHosting(fecho: {
   arquivos: readonly string[];
@@ -899,7 +926,7 @@ function violacoesDoAppHosting(fecho: {
     if (PROIBIDOS_NO_APP_HOSTING.includes(arquivo)) violacoes.push(`reaches ${arquivo}`);
   }
   for (const espec of fecho.externos) {
-    if (ehViaCep(espec)) violacoes.push(`imports ${espec}`);
+    if (ehViaCep(espec) || ehCriptoDoNode(espec)) violacoes.push(`imports ${espec}`);
     else if (espec.startsWith('?')) violacoes.push(`unresolved ${espec.slice(1)}`);
   }
   return violacoes;
@@ -1158,6 +1185,7 @@ describe('lib/amazon layout', () => {
         'nfe/motivosNfe.ts',
         'nfe/pedidoNfe.ts',
         'nfe/processarNfe.ts',
+        'nfe/reenvioNfe.ts',
         'nfe/statusNfe.ts',
         'nfe/tarefaNfe.ts',
         'notificacoes/agendador.ts',
@@ -1522,8 +1550,9 @@ describe('the step-3 intake guards', () => {
     () => {
       const lib = arquivosTs(RAIZ_LIB).filter((p) => !ehTeste(p));
       expect(lib.filter((p) => chamaGetFunctions(readFileSync(p, 'utf8'))).map(rel)).toEqual([]);
-      // The EXACT list of composition roots, app-wide: the App Hosting receiver's
-      // `lib/firebase/filaLeitura.ts` (3-c), the functions codebase's
+      // The EXACT list of composition roots, app-wide: the App Hosting
+      // `lib/firebase/filaLeitura.ts` (3-c: the receiver's; since step 14, PR
+      // 14-d, the re-drive route's NF-e producer too), the functions codebase's
       // `functions/src/agendador.ts` (3-d, the step-4 poll's) and its NF-e root
       // `functions/src/agendadorNfe.ts` (step 14, PR 14-c).
       // Every file the walk returns (`.ts`, `.tsx`, `.mjs`): a `.tsx` page is app code too.
@@ -1536,8 +1565,9 @@ describe('the step-3 intake guards', () => {
       expect(raizes).toEqual(
         [ARQUIVO_RAIZ_DA_FILA_FUNCOES, ARQUIVO_RAIZ_DA_FILA, ARQUIVO_RAIZ_DA_FILA_NFE].sort(),
       );
-      // ★ Each root's queue set: the NF-e producer added to the reads queue's
-      // root (whose closure reaches the context) is a different table.
+      // ★ Each root's queue set: the NF-e producer added to the functions
+      // codebase's reads-queue root (whose closure reaches the context) is a
+      // different table; the App Hosting root binds both.
       const filas = Object.fromEntries(
         raizes.map((r) => [r, filasDaRaiz(lerDoApp(r) ?? '')] as const),
       );
@@ -1851,7 +1881,7 @@ describe('the step-5 seam guards (5-e)', () => {
     },
   );
 
-  it('★ the App Hosting closure (the routes, the receiver, its producer and root) never reaches the seam or the importer, and no app file of it imports the ViaCEP module — type edges and the @/ alias walked', () => {
+  it('★ the App Hosting closure (the routes, the receiver, its producer and root) never reaches the seam, the importer or the write engine, and no app file of it imports the ViaCEP module or node:crypto — type edges and the @/ alias walked', () => {
     const fecho = fechoDeImportacoes(
       entradasDoAppHosting(),
       lerDoApp,
@@ -1860,11 +1890,16 @@ describe('the step-5 seam guards (5-e)', () => {
     expect(violacoesDoAppHosting(fecho)).toEqual([]);
     // Anti-vacuity: the walk entered the routes' aliased modules and reached the
     // pipeline the receiver persists through — and the step-5 modules it MAY
-    // reach (the error classes the classifier names, the D17 codes by type).
+    // reach (the error classes the classifier names, the D17 codes by type) —
+    // and, since step 14 (PR 14-d), the NF-e re-drive route, its body and the
+    // NF-e producer it enqueues through.
     expect(fecho.arquivos).toEqual(
       expect.arrayContaining([
+        'app/api/marketplace/amazon/enviar-nfe/route.ts',
         'app/api/webhooks/amazon/route.ts',
         'lib/amazon/core/respond.ts',
+        'lib/amazon/nfe/agendadorNfe.ts',
+        'lib/amazon/nfe/reenvioNfe.ts',
         'lib/amazon/notificacoes/notificacao.ts',
         'lib/amazon/notificacoes/receptor.ts',
         'lib/amazon/pedidos/erros.ts',
@@ -1873,6 +1908,19 @@ describe('the step-5 seam guards (5-e)', () => {
       ]),
     );
     expect(fecho.externos).toEqual(expect.arrayContaining(['@/lib/amazon/notificacoes/receptor']));
+    // ★ The step-14 task's own modules stay OUT of the bundle: the upload (the
+    // MD5 builder, the Delivery helpers' one caller) is the queue's alone.
+    for (const proibido of [
+      'lib/amazon/nfe/conteudoNfe.ts',
+      'lib/amazon/nfe/entregaAmazon.ts',
+      'lib/amazon/nfe/processarNfe.ts',
+      MOTOR_DE_ESCRITA,
+    ]) {
+      expect(fecho.arquivos, proibido).not.toContain(proibido);
+    }
+    // ★ …and no file of it names the SP-API write client (the engine is its only namer).
+    expect(fecho.arquivos.filter((a) => nomeiaClienteDeEscrita(lerDoApp(a) ?? ''))).toEqual([]);
+    expect(MOTOR_DE_ESCRITA).toBe(CONSTRUTOR_DO_CLIENTE_DE_ESCRITA);
   });
 
   it('the functions roots DO reach the importer through the seam (the fill is real, anti-vacuity of the guard above)', () => {
@@ -2001,6 +2049,7 @@ describe('the step-14 write engine guards (14-b)', () => {
       'nfe/motivosNfe.ts',
       'nfe/pedidoNfe.ts',
       'nfe/processarNfe.ts',
+      'nfe/reenvioNfe.ts',
       'nfe/statusNfe.ts',
       'nfe/tarefaNfe.ts',
     ]);
@@ -2105,6 +2154,98 @@ describe('the step-14 NF-e trigger guards (14-c, D11 by construction)', () => {
     expect(especificadores(lerDoApp(ARQUIVO_RAIZ_DA_FILA_FUNCOES) ?? '')).not.toContain(
       '../../lib/amazon/nfe/agendadorNfe',
     );
+  });
+});
+
+/** The NF-e re-drive route and its body (step 14, PR 14-d), relative to the APP root. */
+const ARQUIVOS_DO_REENVIO_NFE = [
+  'app/api/marketplace/amazon/enviar-nfe/route.ts',
+  'lib/amazon/nfe/reenvioNfe.ts',
+] as const;
+
+/**
+ * What the re-drive (route and body) may never NAME in code (comments aside):
+ * the write valve and its readers (step-14 plan §3 decision 20 — the task is
+ * the one source of truth), the transition predicate (a re-drive is for a
+ * document ALREADY ready), the trigger's named enqueue, and every way to reach
+ * Amazon (the context, the one `getOrder` caller, the Delivery helpers, the
+ * engine, a raw fetch).
+ */
+const PROIBIDOS_NO_REENVIO_NFE =
+  /\b(?:lerValvula|decidirAlvo|decidirLote|AMAZON_MODO_NFE|AMAZON_CANARIO_NFE|decideNfeUploadTransition|enfileirarDoGatilho|idDaTarefaDoGatilhoNfeAmazon|loadAmazonContext|lerPedidoAmazon|consultarStatusNotaFiscal|enviarNotaFiscal|executarEscritaAmazon|criarClienteSpApi|criarClienteEscritaSpApi|fetch)\b/g;
+
+/**
+ * A Firestore WRITE call — a raw ref's or a shared collection handle's (the
+ * body DOES hold two handles, `pedidoCollection` and `nfev4Collection`, whose
+ * `set`, `merge`, `mergeIfExists` and `add` all write) — or the aviso seam's
+ * writers: the re-drive writes nothing. A bare `.add(` is left out (the body's
+ * `Set` of issue paths uses it), so `add` is matched ON the two handles only;
+ * the fake db's write log in `reenvioNfe.test.ts` stays the behavioural pin.
+ */
+const ESCRITA_NO_REENVIO_NFE =
+  /\.\s*(?:set|update|create|delete|batch|merge|mergeIfExists)\s*\(|\b(?:pedidoCollection|nfev4Collection)\s*\.\s*add\s*\(|\b(?:escreverAviso|resolverAviso|avisarNfeAmazon|resolverNfeAmazon|carimbarFreteNfeAmazon)\b/g;
+
+describe('the step-14 NF-e re-drive route guards (14-d)', () => {
+  it('★ neither the route nor its body names the write valve, the transition predicate, the named enqueue or any way to reach Amazon', () => {
+    for (const arquivo of ARQUIVOS_DO_REENVIO_NFE) {
+      const codigo = semComentarios(lerDoApp(arquivo) ?? '');
+      expect(codigo, arquivo).not.toBe('');
+      expect(codigo.match(PROIBIDOS_NO_REENVIO_NFE) ?? [], arquivo).toEqual([]);
+    }
+    // Anti-vacuity: the body DOES read the switch and enqueue, by these names.
+    const corpo = semComentarios(lerDoApp(ARQUIVOS_DO_REENVIO_NFE[1]) ?? '');
+    expect(corpo).toContain('lerChaveDeChamadasAmazon(');
+    expect(corpo).toContain('.enfileirar(');
+    expect(corpo).toContain('tarefaInicialNfeAmazon(');
+  });
+
+  it('★ neither the route nor its body makes a Firestore write or an aviso write', () => {
+    for (const arquivo of ARQUIVOS_DO_REENVIO_NFE) {
+      const codigo = semComentarios(lerDoApp(arquivo) ?? '');
+      expect(codigo.match(ESCRITA_NO_REENVIO_NFE) ?? [], arquivo).toEqual([]);
+    }
+  });
+
+  it('the scans flag what they exist for, and nothing alike (near-misses)', () => {
+    expect('const v = lerValvula(FLUXO_AMAZON.nfe, a);'.match(PROIBIDOS_NO_REENVIO_NFE)).toEqual([
+      'lerValvula',
+    ]);
+    expect("a['AMAZON_MODO_NFE']".match(PROIBIDOS_NO_REENVIO_NFE)).toEqual(['AMAZON_MODO_NFE']);
+    expect('await fetch(url)'.match(PROIBIDOS_NO_REENVIO_NFE)).toEqual(['fetch']);
+    expect('await ref.update({ x: 1 })'.match(ESCRITA_NO_REENVIO_NFE)).toHaveLength(1);
+    // The shared handles' writes, every one.
+    for (const escrita of [
+      'await pedidoCollection.merge(db, {}, pedidoId, { x: 1 });',
+      'await pedidoCollection.mergeIfExists(db, {}, pedidoId, { x: 1 });',
+      'await nfev4Collection.set(db, { pedidoId }, nfeId, {});',
+      'await nfev4Collection.add(db, { pedidoId }, {});',
+      'await pedidoCollection .add(db, {}, {});',
+    ]) {
+      expect(escrita.match(ESCRITA_NO_REENVIO_NFE), escrita).toHaveLength(1);
+    }
+    // NEAR-MISS: a Set's `add`, a handle's ref builders and its reads are no writes.
+    expect(
+      'const c = new Set<string>(); c.add(x); caminhos.add(chave); pedidoCollection.docRef(db, {}, id); nfev4Collection.ref(db, { pedidoId });'.match(
+        ESCRITA_NO_REENVIO_NFE,
+      ),
+    ).toBeNull();
+    // NEAR-MISS: the enqueue, the switch reader and a read are not writes or valves.
+    expect(
+      'await deps.agendador().enfileirar(t); lerChaveDeChamadasAmazon(a); await ref.get();'.match(
+        PROIBIDOS_NO_REENVIO_NFE,
+      ),
+    ).toBeNull();
+    expect(
+      'await ref.get(); const lista = await col.get();'.match(ESCRITA_NO_REENVIO_NFE),
+    ).toBeNull();
+  });
+
+  it('the route verifies PERM.pedido.write — never the integracao bit — and is thin', () => {
+    const rota = semComentarios(lerDoApp(ARQUIVOS_DO_REENVIO_NFE[0]) ?? '');
+    expect(rota).toContain('verifyCaller(req, PERM.pedido.write)');
+    expect(rota).not.toMatch(/PERM\.integracao/);
+    expect(rota).toContain('reenviarNfeAmazon(');
+    expect(rota).toMatch(/export async function POST\(/);
   });
 });
 
@@ -2521,6 +2662,28 @@ describe('the guards, on synthetic source', () => {
       expect(
         violacoesDoAppHosting(fechoDeImportacoes([ROTA], ler, resolverAliasDoApp(ler))).sort(),
       ).toEqual([`reaches ${IMPORTADOR}`, `reaches ${SEAM_DO_IMPORTADOR}`].sort());
+    });
+
+    it('★ flags the write ENGINE reached from a route, and node:crypto imported by any of its files (step 14, PR 14-d)', () => {
+      expect(
+        violacoesDoAppHosting(
+          fechoCom("import { executarEscritaAmazon } from '../core/escrita';", {
+            [MOTOR_DE_ESCRITA]: 'export function executarEscritaAmazon() {}',
+          }),
+        ),
+      ).toEqual([`reaches ${MOTOR_DE_ESCRITA}`]);
+      for (const espec of ['node:crypto', 'crypto']) {
+        expect(
+          violacoesDoAppHosting(fechoCom(`import { createHash } from '${espec}';`)),
+          espec,
+        ).toEqual([`imports ${espec}`]);
+      }
+      // NEAR-MISS: the Web Crypto global and a longer module name are no edge to it.
+      expect(
+        violacoesDoAppHosting(
+          fechoCom("import { x } from 'crypto-js';\nconst d = globalThis.crypto;"),
+        ),
+      ).toEqual([]);
     });
 
     it('fails closed: an alias or a relative import that resolves to no file', () => {

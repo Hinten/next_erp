@@ -69,7 +69,16 @@ the order lives raises the aviso `nfe-cancelada`. The task itself then stops
 before any Amazon call while either switch below is off, and says so with an
 `nfeUploadRejeitado` aviso on the pedido (`envio-nao-ligado` at the valve,
 `chamadas-desligadas` at the read switch) — rows that ARE the re-drive worklist
-once the switches are on. ⚠️ **A SECOND switch gates every NF-e submit:** the
+once the switches are on (each pedido goes back through the App Hosting route
+`POST /api/marketplace/amazon/enviar-nfe` with `{ pedidoId }`, `PERM.pedido.write`;
+it only enqueues). `pedidoId` is the aviso row's `entidade` (the pedido document id,
+the one in the pedido page's URL), never its `params.pedido` (the Amazon order
+number, which the route answers 400). ⚠️ **Re-drive each pedido ONCE, after a 500
+too.** A re-drive writes nothing, so it does not clear the aviso row (the row
+changes only at the task's next outcome), and Amazon's invoice status lags a
+submit by up to ~3 minutes: a second re-drive of the same pedido inside that lag
+will most likely submit the NF-e again. Wait at least ~5 minutes, or until the
+aviso changes or resolves, before re-driving the same pedido. ⚠️ **A SECOND switch gates every NF-e submit:** the
 NF-e write valve `AMAZON_MODO_NFE` (exactly `on`) and its canary list
 `AMAZON_CANARIO_NFE` (a `<contaId>:<orderId>` entry, or exactly `*`). Both stay
 UNSET until W8 (below); `dry-run` reads Amazon's invoice status and logs what it
@@ -90,9 +99,12 @@ WOULD send, never sending it.
   WITH its function, by this deploy, in `FUNCTIONS_REGION` and nowhere else.
   Every enqueuer resolves its queue from `AMAZON_TASKS_REGION`, falling back to
   `FUNCTIONS_REGION`, with **no default**: the App Hosting receiver
-  (`apps/amazon/lib/firebase/filaLeitura.ts`) answers 503 without one, and the
-  two functions roots (`src/agendador.ts`, the step-4 poll's; `src/agendadorNfe.ts`,
-  the NF-e trigger's and the NF-e task's own re-enqueues) throw on the enqueue.
+  (`apps/amazon/lib/firebase/filaLeitura.ts`) answers 503 without one, the App
+  Hosting NF-e re-drive route (same root) checks it before any read and answers
+  500 with one ERROR line naming `AMAZON_TASKS_REGION` (so a smoke check with any
+  pedido, even a nonexistent one, shows it), and the two functions roots
+  (`src/agendador.ts`, the step-4 poll's; `src/agendadorNfe.ts`, the NF-e
+  trigger's and the NF-e task's own re-enqueues) throw on the enqueue.
   A mismatch is the #1108 failure: the task targets a queue that does not exist
   and is **silently dropped** while the caller sees success. Set the App
   Hosting backend's `AMAZON_TASKS_REGION` (console) to exactly the
@@ -255,8 +267,9 @@ maxDispatchesPerSecond: 1 }` — ⚠️ concurrency 1 is the ORDERING GUARD of o
   watermark first. `retryConfig` 4 attempts (`TENTATIVAS_NFE_AMAZON`), 10 s → 300 s,
   three doublings; `timeoutSeconds 300` (the 220-s worst-case Amazon budget of one
   dispatch, pinned in `src/index.test.ts`); `secrets: AMAZON_LWA_CLIENT_SECRET`. Enqueued
-  by the trigger below and by ITSELF (both the functions runtime SA), and from PR 14-d by
-  the App Hosting re-drive route.
+  by the trigger below and by ITSELF (both the functions runtime SA), and by the App
+  Hosting re-drive route `POST /api/marketplace/amazon/enviar-nfe` (PR 14-d; UNNAMED, the
+  App Hosting runtime SA).
 - **`onNfeAprovadaAmazon`** — `onDocumentWritten` (Firestore) on
   `pedidos/{pedidoId}/nfev4/{nfeId}`, master-plan step 14: the FOURTH function on that path
   (Mercado Livre's and Shopee's NF-e triggers, `apps/functions`' `onNfeDeleted`), so EVERY
@@ -415,7 +428,14 @@ below stays COMMENTED OUT until the window:**
 # ⚠️ Since step 14 it ALSO stops every NF-e upload, and there is NO NF-e sweep:
 # the trigger raises the aviso `tarefas-desligadas` on the pedido instead (and
 # so does a queued NF-e task whose next chain step it refuses before that task
-# submits), and that aviso list IS the re-drive worklist (the PR 14-d route). Strict
+# submits), and that aviso list IS the re-drive worklist (the App Hosting route
+# POST /api/marketplace/amazon/enviar-nfe, body { pedidoId } = the aviso row's
+# `entidade`, never its `params.pedido`). Re-drive each pedido ONCE, even after
+# a 500: the route does not clear the row, and a second re-drive inside Amazon's
+# ~3-minute status lag most likely submits the NF-e again — wait ~5 minutes, or
+# for the aviso to change. This copy stops THIS codebase's producers (the
+# trigger, the task's re-enqueues); the App Hosting copy stops only that
+# backend's (the receiver, the re-drive). Strict
 # `=== '1'`: unset, blank, `true` and `1 ` all leave enqueuing ON. Use it before
 # the queue IAM is granted.
 # AMAZON_TASKS_DISABLED=1
@@ -547,7 +567,10 @@ gcloud tasks queues add-iam-policy-binding filaLeituraAmazon \
 # ⚠ THE DEPLOY NEVER APPLIES THIS ONE: TASKS_INVOKER_SA covers grants 1 and 3
 # only. Without it every enqueue fails `permission-denied`, which the producer
 # rethrows untouched (the receiver persists it `failed` with an ERROR line; the
-# poll stops the conta's drain as `fila-indisponivel` and raises its aviso).
+# poll stops the conta's drain as `fila-indisponivel` and raises its aviso; the
+# NF-e re-drive route answers 500 after one ERROR line naming the SDK class and
+# code, the error sanitized of the answered body - only a pedido that passes
+# every check of the route reaches that enqueue).
 gcloud iam service-accounts add-iam-policy-binding <enqueuing-sa> \
   --project=<project-id> \
   --member="serviceAccount:<enqueuing-sa>" \

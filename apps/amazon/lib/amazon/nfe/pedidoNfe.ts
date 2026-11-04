@@ -41,6 +41,8 @@
  * A document is ELIGIBLE when the shared LEVEL predicate says it is ready —
  * never the transition one — and its proc is not a legible NON-sale note (an
  * illegible one stays eligible: the task judges it loudly, never silently).
+ * {@link motivoForaDoEnvioNfeAmazon} is that one rule, and every reader below
+ * (and the re-drive route's explicit `nfeId`) goes through it.
  *
  * - {@link escolherNfeParaEnvioAmazon} — the slot rule of a caller with a
  *   pedido but no NF-e id (the re-drive route; the trigger and the task always
@@ -281,9 +283,12 @@ const PROFUNDIDADE_DA_FALTA: Readonly<Record<MotivoSemNfeParaEnvioAmazon, number
 /**
  * Why this document is NOT eligible, or `null` when it is (module header):
  * the level predicate's skip reason, else `nfe-nao-e-de-venda` for a legible
- * non-sale proc.
+ * non-sale proc. EXPORTED for the re-drive route's explicit `nfeId`
+ * (`reenvioNfe.ts`, PR 14-d), so a document the body names is judged by the
+ * very rule the slot reader applies to a listing — one eligibility, never a
+ * second copy of it.
  */
-function motivoDeFicarDeFora(
+export function motivoForaDoEnvioNfeAmazon(
   raw: Readonly<Record<string, unknown>>,
 ): MotivoSemNfeParaEnvioAmazon | null {
   const pronta = decideNfeUploadDispatch(undefined, raw);
@@ -310,7 +315,7 @@ export function escolherNfeParaEnvioAmazon(docs: readonly DocumentoNfeAmazon[]):
   let melhor: { readonly id: string; readonly autorizadaMs: number | null } | null = null;
   let falta: MotivoSemNfeParaEnvioAmazon = SEM_NFE_APROVADA_AMAZON;
   for (const doc of docs) {
-    const motivo = motivoDeFicarDeFora(doc.raw);
+    const motivo = motivoForaDoEnvioNfeAmazon(doc.raw);
     if (motivo !== null) {
       if (PROFUNDIDADE_DA_FALTA[motivo] > PROFUNDIDADE_DA_FALTA[falta]) falta = motivo;
       continue;
@@ -342,7 +347,7 @@ export function irmaosDaNfeAmazon(
   let irmaCancelada = false;
   for (const doc of docs) {
     if (doc.id === nfeId) continue;
-    if (motivoDeFicarDeFora(doc.raw) === null) outraElegivel = true;
+    if (motivoForaDoEnvioNfeAmazon(doc.raw) === null) outraElegivel = true;
     if (doc.raw.estado === ESTADO_NFE.cancelada) {
       const xml = doc.raw.xml_nfe_proc;
       if (typeof xml !== 'string' || finalidadeDaNfeProc(xml) !== 'outra') irmaCancelada = true;
@@ -363,5 +368,5 @@ export function cancelamentoDeNfeAprovadaAmazon(
   after: Readonly<Record<string, unknown>> | undefined,
 ): boolean {
   if (before === undefined || after === undefined) return false;
-  return motivoDeFicarDeFora(before) === null && after.estado === ESTADO_NFE.cancelada;
+  return motivoForaDoEnvioNfeAmazon(before) === null && after.estado === ESTADO_NFE.cancelada;
 }

@@ -12,9 +12,10 @@ import { NextResponse, type NextRequest } from 'next/server';
 // the matcher. So does the push receiver (/api/webhooks/amazon): a
 // server-to-server POST from the AWS relay, authenticated by its relay key.
 //
-// The methods are the conta routes' verbs: GET (status) and POST (OAuth start).
-// POST is CORS-safelisted, but a Bearer header preflights it anyway, so it is
-// listed explicitly.
+// The methods are the marketplace routes' verbs: GET (conta status) and POST
+// (OAuth start; since step 14, PR 14-d, also the NF-e re-drive
+// `/api/marketplace/amazon/enviar-nfe`). POST is CORS-safelisted, but a Bearer
+// header preflights it anyway, so it is listed explicitly.
 //
 // Every answer here also carries `Referrer-Policy: no-referrer` (step-2 plan §3
 // decision 7): `next.config.ts` sets it site-wide, and this explicit copy is
