@@ -1,8 +1,12 @@
 import { logger } from 'firebase-functions/v2';
 import { onTaskDispatched } from 'firebase-functions/v2/tasks';
 
-import { TIPO_TAREFA_LI } from '@delfrance/schemas';
+import { TIPO_TAREFA_IMPORTACAO_LI, TIPO_TAREFA_LI } from '@delfrance/schemas';
 
+import {
+  camposDoRegistroDaImportacaoLi,
+  despacharImportacaoLi,
+} from '../../lib/lojaIntegrada/importacao/despacho';
 import {
   FILA_LEITURA_LI,
   type ResultadoTarefaLi,
@@ -10,6 +14,7 @@ import {
   camposDoRegistroDaTarefaLi,
   tratarTarefaLeituraLi,
 } from '../../lib/lojaIntegrada/notificacoes/notificacao';
+import { depsDeImportacaoLi } from './depsImportacao';
 import { depsDeLeituraLi } from './depsLeitura';
 import { getDb } from './lib/admin';
 import { tasksInvokerOptions } from './tasksInvoker';
@@ -33,33 +38,59 @@ function tipoDaTarefa(dados: unknown): unknown {
   return Reflect.get(dados, 'tipo');
 }
 
+/** The fields of a dispatch's ONE log line. */
+type CamposDoRegistroLi = Readonly<Record<string, string | number | null>>;
+
+/** One `pedido` or unknown-`tipo` dispatch, as its log line's fields. */
+async function despacharNotificacao(
+  dados: unknown,
+  retryCount: number,
+  idTarefa: string | null,
+): Promise<CamposDoRegistroLi> {
+  const r: ResultadoTarefaLi =
+    tipoDaTarefa(dados) === TIPO_TAREFA_LI.pedido
+      ? await tratarTarefaLeituraLi(
+          getDb(),
+          dados,
+          retryCount,
+          depsDeLeituraLi({ fluxo: 'intake', tentativa: retryCount, idTarefa }),
+        )
+      : { outcome: 'dropped', kind: null, detail: DETALHE_TIPO_DESCONHECIDO_LI };
+  return camposDoRegistroDaTarefaLi(r, dados);
+}
+
 /**
- * One dispatch, by `tipo`. `pedido` runs one notification through the channel's
- * pipeline (context, importer seam, disposition); any other `tipo` — a payload
- * with none, or one a later step will add — is dropped.
+ * One dispatch, by the RAW `tipo`. `pedido` runs one notification through the
+ * channel's pipeline (context, importer seam, disposition); `importacao` runs one
+ * slice of a product import (master plan step 9, `importacao/despacho.ts`),
+ * whose budget is measured from `inicioMs`; any other `tipo` — a payload with
+ * none, or one a later step will add — is dropped.
  */
 async function despachar(
   dados: unknown,
   retryCount: number,
   idTarefa: string | null,
-): Promise<ResultadoTarefaLi> {
-  if (tipoDaTarefa(dados) === TIPO_TAREFA_LI.pedido) {
-    return tratarTarefaLeituraLi(
+  inicioMs: number,
+): Promise<CamposDoRegistroLi> {
+  if (tipoDaTarefa(dados) === TIPO_TAREFA_IMPORTACAO_LI) {
+    const r = await despacharImportacaoLi(
       getDb(),
       dados,
-      retryCount,
-      depsDeLeituraLi({ fluxo: 'intake', tentativa: retryCount, idTarefa }),
+      depsDeImportacaoLi({ tentativa: retryCount, idTarefa, inicioMs }),
     );
+    return camposDoRegistroDaImportacaoLi(r, dados);
   }
-  return { outcome: 'dropped', kind: null, detail: DETALHE_TIPO_DESCONHECIDO_LI };
+  return despacharNotificacao(dados, retryCount, idTarefa);
 }
 
 /**
  * The Loja Integrada READS queue (master plan step 3): ONE function — and so
  * ONE Cloud Tasks queue, auto-provisioned and named after it — for every read
- * task, dispatching on the task's `tipo`. Order intake today; the import-job and
- * reconcile reads join it later. The order poller enqueues onto it now, the
- * inbound webhook from step 4.
+ * task, dispatching on the task's `tipo`: order intake (`pedido`) and, since
+ * master plan step 9, the product import (`importacao`, one time-boxed slice of
+ * a job per task); the reconcile reads join it later. The order poller enqueues
+ * onto it now, the import's job-creation trigger and each import slice's named
+ * continuation too, the inbound webhook from step 4.
  *
  * ⚠️ The export name IS the deployed function AND queue name, and it must equal
  * `FILA_LEITURA_LI` — the producer targets that string. `index.ts` asserts the
@@ -84,7 +115,9 @@ async function despachar(
  * - `timeoutSeconds: 300`: one order import re-fetches through the paced
  *   client. The whole ladder — 3 × 300 s plus 2 backoffs of ≤ 300 s, 1 500 s —
  *   closes well inside the hot reprocess sweep's one-hour window
- *   (`index.test.ts` pins the arithmetic).
+ *   (`index.test.ts` pins the arithmetic) — and still within half of it when
+ *   every attempt first waits behind one import slice (100 s at most: its 70 s
+ *   budget plus its 30 s tail, `importacao/orcamento.ts`).
  * - NO `secrets:`. The Loja Integrada token lives per conta in Firestore, and a
  *   declared secret missing from Secret Manager fails the whole deploy.
  * - `...tasksInvokerOptions()`: `roles/run.invoker` on this service and
@@ -96,6 +129,9 @@ async function despachar(
  * DEFERS (`adiado/chamadas-desligadas`). The importer seam is filled since step
  * 5, so the switch is the only gate: once the window sets it, a run imports.
  * (An empty seam parks as `importador-ausente`; the table is no longer empty.)
+ * An `importacao` slice stops at the same switch, first: the job ends
+ * `falhou/chamadas-desligadas` with zero calls, and an operator restarts it once
+ * the window has set the switch.
  */
 // ⚠️ No type argument on the call: `tasks-invoker-inventory.test.js` discovers
 // task functions by the literal call text, which a `<T>` between the name and
@@ -113,16 +149,19 @@ export const filaLeituraLojaIntegrada = onTaskDispatched(
     rateLimits: { maxConcurrentDispatches: 1, maxDispatchesPerSecond: 1 },
   },
   async (req) => {
+    // FIRST: the dispatch's start, which an import slice's time budget is measured from.
+    const inicioMs = Date.now();
     const dados: unknown = req.data;
     const tentativa = req.retryCount ?? 0;
-    const r = await despachar(dados, tentativa, req.id ?? null);
     // ONE line per dispatch (a transient failure that rethrows for the queue's
     // retry writes none: the runtime logs the throw). The ids are read off the
     // RAW data one by one, as short strings or `null` — never a spread of the
-    // data, which no reviewer has vetted for what it may carry. `detail` is set
-    // only on the arms that leave no document (`done`, `dropped`); a park, a
-    // defer or a failure writes its reason on the row.
-    const campos = camposDoRegistroDaTarefaLi(r, dados);
+    // data, which no reviewer has vetted for what it may carry. For a `pedido`,
+    // `detail` is set only on the arms that leave no document (`done`,
+    // `dropped`); a park, a defer or a failure writes its reason on the row. For
+    // an `importacao`, `kind` is how the slice ended and `detail` its `falhou`
+    // motivo; the job document carries the rest.
+    const campos = await despachar(dados, tentativa, req.id ?? null, inicioMs);
     logger.info('[loja-integrada] tarefa da fila de leitura', {
       fila: FILA_LEITURA_LI,
       ...campos,

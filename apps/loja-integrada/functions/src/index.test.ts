@@ -7,10 +7,15 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vites
 import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
 import {
   historicoFreteInicialCollection,
+  importacaoLojaIntegradaCollection,
   integracaoCollection,
 } from '@delfrance/data/admin/collections';
 import { MAX_TENTATIVAS_DEFERRED, TASK_MAX_ATTEMPTS } from '@delfrance/data/admin/notifications';
 import { PRAZO_LI_MS } from '@delfrance/integrations-loja-integrada';
+import {
+  CAUDA_DESPACHO_IMPORTACAO_LI_MS,
+  ORCAMENTO_DESPACHO_IMPORTACAO_LI_MS,
+} from '@delfrance/schemas';
 
 import { __setRelogioDoCacheParaTestes } from '../../lib/lojaIntegrada/core/contaCache';
 import { PRAZO_ULTIMA_ESCRITA_MS } from '../../lib/lojaIntegrada/core/escrita';
@@ -101,6 +106,7 @@ const {
   filaEscritaLojaIntegrada,
   filaLeituraLojaIntegrada,
   onHistoricoFreteLojaIntegrada,
+  onImportacaoLojaIntegradaCriada,
   onIntegracaoLojaIntegradaChanged,
   pollLojaIntegradaPedidos,
   reprocessLojaIntegradaNotifications,
@@ -154,9 +160,14 @@ const FILAS = { filaLeituraLojaIntegrada, filaEscritaLojaIntegrada } as const;
  * `(default)` sentinel, or with no `database` at all, deploys fine and never
  * fires, with nothing anywhere to say so. Master plan step 20 added the first
  * (`onIntegracaoLojaIntegradaChanged`); the `every GATILHO…` tests below walk
- * the MAP, never a named trigger, so a second one lands covered.
+ * the MAP, never a named trigger, so a second one (step 7's history trigger)
+ * and a third (step 9's job-creation trigger) landed covered.
  */
-const GATILHOS = { onIntegracaoLojaIntegradaChanged, onHistoricoFreteLojaIntegrada } as const;
+const GATILHOS = {
+  onIntegracaoLojaIntegradaChanged,
+  onHistoricoFreteLojaIntegrada,
+  onImportacaoLojaIntegradaCriada,
+} as const;
 
 /**
  * The document path each trigger must listen on — derived from the HANDLE,
@@ -174,6 +185,11 @@ const CAMINHOS_DOS_GATILHOS = {
     colecao: historicoFreteInicialCollection.resolvePath({ pedidoId: '{pedidoId}' }),
     ancora: 'pedidos/{pedidoId}/historicoFtIni',
     folha: '{historicoId}',
+  },
+  onImportacaoLojaIntegradaCriada: {
+    colecao: importacaoLojaIntegradaCollection.resolvePath({}),
+    ancora: 'importacoesLojaIntegrada',
+    folha: '{jobId}',
   },
 } as const satisfies Record<
   keyof typeof GATILHOS,
@@ -603,10 +619,13 @@ describe('filaLeituraLojaIntegrada — the declared options', () => {
     const tentativas = fila.retryConfig.maxAttempts ?? 0;
     const execucao = endpointOf(filaLeituraLojaIntegrada).timeoutSeconds as number;
     const backoff = fila.retryConfig.maxBackoffSeconds ?? 0;
-    const despachoDaImportacaoS = DURACAO_MAXIMA_DESPACHO_IMPORTACAO_LI_MS / 1000;
+    const despachoDaImportacaoS =
+      (ORCAMENTO_DESPACHO_IMPORTACAO_LI_MS + CAUDA_DESPACHO_IMPORTACAO_LI_MS) / 1000;
     const escadaSegundos =
       tentativas * (execucao + despachoDaImportacaoS) + Math.max(tentativas - 1, 0) * backoff;
     expect(despachoDaImportacaoS).toBe(100);
+    // The dispatch's own ceiling IS that sum (the budget module derives it, never a third number).
+    expect(DURACAO_MAXIMA_DESPACHO_IMPORTACAO_LI_MS).toBe(despachoDaImportacaoS * 1000);
     expect(escadaSegundos).toBe(1800);
     expect(escadaSegundos).toBeLessThanOrEqual(1800);
     // And a dispatch fits the queue's own timeout, with room for the platform's start-up.
@@ -813,13 +832,14 @@ describe('every trigger of the codebase', () => {
     ]);
   });
 
-  it('every event-trigger export is in GATILHOS — exactly {onHistoricoFreteLojaIntegrada, onIntegracaoLojaIntegradaChanged}', () => {
+  it('every event-trigger export is in GATILHOS — exactly {onHistoricoFreteLojaIntegrada, onImportacaoLojaIntegradaCriada, onIntegracaoLojaIntegradaChanged}', () => {
     // The third exhaustiveness twin: the two above filter on `scheduleTrigger`
     // and `taskQueueTrigger`, so an `onDocument*` export would otherwise have its
     // `database`, region, secrets and `retry` read by nothing.
     expect(exportadosCom('eventTrigger')).toEqual(Object.keys(GATILHOS).sort());
     expect(exportadosCom('eventTrigger')).toEqual([
       'onHistoricoFreteLojaIntegrada',
+      'onImportacaoLojaIntegradaCriada',
       'onIntegracaoLojaIntegradaChanged',
     ]);
   });

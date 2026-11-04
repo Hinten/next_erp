@@ -56,6 +56,13 @@ import { getDb } from './lib/admin';
  * in-queue sweep (`varrerEscritasLojaIntegrada`, ./varrerEscritas). Until the
  * window the write valve is unset, so nothing is recorded or written.
  *
+ * Master plan step 9 adds the product import: a Firestore trigger on the job
+ * document's creation (`onImportacaoLojaIntegradaCriada`,
+ * ./onImportacaoLojaIntegradaCriada) enqueues the job's first slice onto the
+ * READS queue, which runs each slice (`tipo: importacao`) and enqueues the next
+ * one by name. Until the window the read switch stops every slice at its first
+ * act, so no import reads the store.
+ *
  * Every export below is a Cloud Function name, and the names are unique across
  * codebases (`functions-export-names.test.js`): keep the exports explicit and
  * named, never a wildcard. `index.test.ts` pins every trigger's options and
@@ -113,6 +120,12 @@ export { pollLojaIntegradaPedidos } from './pollPedidos';
  * conta (master plan step 20, ./onIntegracaoLojaIntegradaChanged).
  */
 export { onIntegracaoLojaIntegradaChanged } from './onIntegracaoLojaIntegradaChanged';
+
+/**
+ * The product import's job-creation trigger: a job created `pendente` ⇒ ONE
+ * named task (its first slice) on the reads queue (master plan step 9).
+ */
+export { onImportacaoLojaIntegradaCriada } from './onImportacaoLojaIntegradaCriada';
 
 /**
  * Documents examined per lane on each tick of the reprocess sweep. NOT exported:

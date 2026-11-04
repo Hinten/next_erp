@@ -18,6 +18,7 @@ import {
   seedConta,
   seedCredencial,
 } from '../../lib/lojaIntegrada/testing/fixtures';
+import { caminhoJobLi, seedJobLi } from '../../lib/lojaIntegrada/testing/importacaoLi';
 
 /**
  * The reads queue's BODY: the `tipo` dispatch, the drop of an unknown `tipo`,
@@ -56,8 +57,15 @@ vi.mock('../../lib/lojaIntegrada/notificacoes/notificacao', async (importOrigina
   };
 });
 
+vi.mock('../../lib/lojaIntegrada/importacao/despacho', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../../lib/lojaIntegrada/importacao/despacho')>();
+  return { ...real, despacharImportacaoLi: vi.fn(real.despacharImportacaoLi) };
+});
+
 const { DETALHE_TIPO_DESCONHECIDO_LI, filaLeituraLojaIntegrada } = await import('./filaLeitura');
 const notificacao = await import('../../lib/lojaIntegrada/notificacoes/notificacao');
+const despacho = await import('../../lib/lojaIntegrada/importacao/despacho');
+const { criarAgendadorImportacaoLiDoAmbiente } = await import('./agendador');
 
 afterAll(() => {
   if (originalFunctionsRegion === undefined) delete process.env.FUNCTIONS_REGION;
@@ -305,9 +313,103 @@ describe('the importer binding', () => {
   });
 });
 
+describe('an `importacao` task (master plan step 9)', () => {
+  const JOB = 'job-fila-leitura';
+  const importacao = { tipo: 'importacao', contaId: ID, jobId: JOB, seq: 0 };
+
+  it('runs ONE slice of the import — never the notification pipeline: with the read switch off the job ends falhou/chamadas-desligadas, zero calls', async () => {
+    seedJobLi(fake, JOB, ID, { status: 'pendente' });
+
+    await rodar({ data: importacao, retryCount: 0, id: 'tarefa-8' });
+
+    expect(notificacao.tratarTarefaLeituraLi).not.toHaveBeenCalled();
+    expect(despacho.despacharImportacaoLi).toHaveBeenCalledTimes(1);
+    // The job read, then the switch: the conta is never read.
+    expect(fake.leituras).toEqual([caminhoJobLi(JOB)]);
+    expect(fake.ler(caminhoJobLi(JOB))).toMatchObject({
+      status: 'falhou',
+      motivo: 'chamadas-desligadas',
+    });
+    expect(linhasBloqueadas()).toEqual([
+      expect.objectContaining({
+        conta: ID,
+        fluxo: 'importacao',
+        tentativa: 0,
+        idTarefa: 'tarefa-8',
+      }),
+    ]);
+    expect(linhaUnica()).toEqual({
+      fila: 'filaLeituraLojaIntegrada',
+      outcome: 'done',
+      kind: 'falhou',
+      detail: 'chamadas-desligadas',
+      tipo: 'importacao',
+      contaId: ID,
+      jobId: JOB,
+      seq: 0,
+      fase: 'catalogo',
+      unidades: 0,
+      chamadas: 0,
+      tentativa: 0,
+    });
+  });
+
+  it('hands the slice the attempt, the task id, the live environment, a start stamp taken FIRST, a real clock, increment and sleep, and the producer root', async () => {
+    const antes = Date.now();
+    await rodar({ data: importacao, retryCount: 2, id: 'tarefa-9' });
+
+    const chamada = vi.mocked(despacho.despacharImportacaoLi).mock.calls[0];
+    expect(chamada).toBeDefined();
+    const [db, dados, deps] = chamada ?? [];
+    expect(db).toBe(h.db);
+    expect(dados).toEqual(importacao);
+    expect(deps?.tentativa).toBe(2);
+    expect(deps?.idTarefa).toBe('tarefa-9');
+    expect(deps?.ambiente).toBe(process.env);
+    expect(deps?.logger).toBe(logger);
+    expect(deps?.fetch).toBeUndefined();
+    expect(deps?.agendador).toBe(criarAgendadorImportacaoLiDoAmbiente);
+    expect(deps?.inicioMs).toBeGreaterThanOrEqual(antes);
+    expect(deps?.inicioMs).toBeLessThanOrEqual(deps?.agoraMs() ?? 0);
+
+    const incremento = deps?.increment(2);
+    expect(incremento).toBeInstanceOf(FieldValue);
+    expect((incremento as FieldValue).isEqual(FieldValue.increment(2))).toBe(true);
+
+    vi.useFakeTimers();
+    try {
+      let acordou = false;
+      const espera = deps?.esperar(2_000).then(() => {
+        acordou = true;
+      });
+      await vi.advanceTimersByTimeAsync(1_999);
+      expect(acordou).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await espera;
+      expect(acordou).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('an `importacao` payload that does not parse is DROPPED: no read, no write, one line', async () => {
+    await rodar({ data: { ...importacao, jobId: 'id/com/barras' }, retryCount: 0 });
+
+    expect(fake.leituras).toEqual([]);
+    expect(fake.escritas).toEqual([]);
+    expect(linhaUnica()).toMatchObject({
+      outcome: 'dropped',
+      kind: 'payload-invalido',
+      detail: null,
+      tipo: 'importacao',
+      jobId: 'id/com/barras',
+    });
+  });
+});
+
 describe('any other `tipo`', () => {
   it.each<[string, unknown]>([
-    ['an unknown tipo', { ...pedido(), tipo: 'importacao' }],
+    ['an unknown tipo', { ...pedido(), tipo: 'reconciliacao' }],
     ['no tipo at all', { contaId: ID, numero: '1234', origem: 'poll', dataModificacaoLi: null }],
     ['a tipo that is not a string', { ...pedido(), tipo: ['pedido'] }],
     ['a null payload', null],
@@ -333,7 +435,7 @@ describe('any other `tipo`', () => {
   it('the drop line names the raw ids it can, and never a value it cannot vouch for', async () => {
     await rodar({
       data: {
-        tipo: 'importacao',
+        tipo: 'reconciliacao',
         contaId: ID,
         numero: '1234',
         origem: 'poll',
@@ -348,7 +450,7 @@ describe('any other `tipo`', () => {
       outcome: 'dropped',
       kind: null,
       detail: 'tipo-desconhecido',
-      tipo: 'importacao',
+      tipo: 'reconciliacao',
       contaId: ID,
       numero: '1234',
       origem: 'poll',

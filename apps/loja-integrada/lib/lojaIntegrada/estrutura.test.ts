@@ -439,6 +439,21 @@ const ROTAS_SEM_CHAMADA_LI: readonly (readonly [string, string])[] = [
   [`${PASTA_DAS_IMPORTACOES}/[jobId]/itens/route.ts`, NUCLEO_DO_JOB],
 ];
 
+/** The product import's dispatch (step 9): one slice of a job, run by the reads queue. */
+const DESPACHO_DA_IMPORTACAO = 'lib/lojaIntegrada/importacao/despacho.ts';
+
+/**
+ * The product import's TASK path (step 9): the job-creation trigger, the one binding of a
+ * dispatch's deps, and the dispatch itself. No route reaches them, so the read routes' walk never
+ * sees them; this list is walked with the SAME rules — Loja Integrada through the context loader
+ * only, whose first act is the read switch.
+ */
+const CAMINHO_DA_TAREFA_DA_IMPORTACAO = [
+  'functions/src/depsImportacao.ts',
+  'functions/src/onImportacaoLojaIntegradaCriada.ts',
+  DESPACHO_DA_IMPORTACAO,
+] as const;
+
 /** The one module of a read route's closure allowed to build a Loja Integrada client. */
 const CONSTRUTOR_DO_CLIENTE = 'lib/lojaIntegrada/core/contexto.ts';
 
@@ -695,6 +710,7 @@ describe('lib/lojaIntegrada layout', () => {
         'fixtures/piiScan.ts',
         'fixtures/wireCorpus.ts',
         'importacao/agendadorImportacao.ts',
+        'importacao/despacho.ts',
         'importacao/inicio.ts',
         'importacao/job.ts',
         'importacao/orcamento.ts',
@@ -729,6 +745,7 @@ describe('lib/lojaIntegrada layout', () => {
         ...ROTAS_SEM_CHAMADA_LI.map(([rota]) => rota),
         NUCLEO_DO_CATALOGO,
         NUCLEO_DO_JOB,
+        ...CAMINHO_DA_TAREFA_DA_IMPORTACAO,
         MODULO_DO_CONTEXTO_DE_ESCRITA,
         'proxy.ts',
       ]),
@@ -882,6 +899,37 @@ describe('lib/lojaIntegrada layout', () => {
       expect(lerDoApp(CONSTRUTOR_DO_CLIENTE)).toContain('criarClienteLeituraLi({');
     },
   );
+
+  it('the import task path (trigger, deps, dispatch) reaches Loja Integrada only through the context loader: no fetch, and no client, validating GET or CDN reader of its own, in its run-time closure', () => {
+    for (const entrada of CAMINHO_DA_TAREFA_DA_IMPORTACAO) {
+      expect(lerDoApp(entrada), entrada).not.toBeNull();
+    }
+    expect(violacoesDaRotaDeLeitura(CAMINHO_DA_TAREFA_DA_IMPORTACAO, lerDoApp)).toEqual([]);
+    // Anti-vacuity: the walk entered the dispatch, its phases and the context loader through the
+    // functions codebase's relative imports, and saw the package the context reads through.
+    const ler: LeitorDeFonte = (c) => {
+      const texto = lerDoApp(c);
+      return texto === null ? null : semImportacoesDeTipo(texto);
+    };
+    const fecho = fechoDeImportacoes(CAMINHO_DA_TAREFA_DA_IMPORTACAO, ler, resolverAliasDoApp(ler));
+    expect(fecho.arquivos).toEqual(
+      expect.arrayContaining([
+        ...CAMINHO_DA_TAREFA_DA_IMPORTACAO,
+        CONSTRUTOR_DO_CLIENTE,
+        'functions/src/agendador.ts',
+        'lib/lojaIntegrada/importacao/agendadorImportacao.ts',
+        'lib/lojaIntegrada/importacao/catalogoDoJob.ts',
+        'lib/lojaIntegrada/importacao/listagem.ts',
+        'lib/lojaIntegrada/importacao/detalhes.ts',
+        'lib/lojaIntegrada/importacao/familiaDoJob.ts',
+        'lib/lojaIntegrada/importacao/vinculos.ts',
+      ]),
+    );
+    expect(fecho.externos).toContain('@delfrance/integrations-loja-integrada');
+    // The dispatch loads the context ONCE, and names no package client of its own.
+    const despacho = lerDoApp(DESPACHO_DA_IMPORTACAO) ?? '';
+    expect(despacho.split('loadLojaIntegradaContext(')).toHaveLength(2);
+  });
 
   it('every route file under the conta folder is in ROTAS_DE_LEITURA_LI, ROTAS_SEM_CHAMADA_LI or one of the credential routes (a new route cannot skip the walk)', () => {
     const naPasta = arquivosTs(RAIZ_APP)

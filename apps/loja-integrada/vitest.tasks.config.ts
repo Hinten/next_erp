@@ -49,6 +49,15 @@ import { defineConfig } from 'vitest/config';
 //   - remembers that the writes queue's varredura re-runs EVERY `failed` and
 //     `deferred` row of that collection, not only its own.
 //
+// ⚠️ Since step 9 a THIRD Firestore trigger loads,
+// `onImportacaoLojaIntegradaCriada`, on every CREATE of
+// `importacoesLojaIntegrada/*` — and it enqueues a dispatch onto the READS queue
+// for a job created `pendente` (the dispatch then stops at the read switch and
+// stamps the job `falhou/chamadas-desligadas`). So a suite seeds its jobs
+// `executando` (or ended), which the trigger ignores with zero reads, unless that
+// dispatch is what it awaits — as `functions/src/importacao.tasks.test.ts` does,
+// with job ids no other suite uses, awaiting each one's stamp before it ends.
+//
 // Each file's `beforeEach` deletes what it reads, because the files
 // share one emulator and run one at a time (`fileParallelism: false`).
 export default defineConfig({
