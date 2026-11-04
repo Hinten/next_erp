@@ -203,6 +203,7 @@ describe('onProdutoLojaIntegradaLinkChanged — the zero-read fast path', () => 
     ['with no store product id', { id: null }],
     ["with a non-canonical id ('07')", { id: '07' }],
     ['with a malformed conta ref', { contaLojaIntegrada: 'documents/categorias/C1' }],
+    ['with its conta ref inside an array', { contaLojaIntegrada: [`documents/integracao/${C1}`] }],
     ['with another channel’s field', { contaLojaIntegrada: undefined, contaOuterRef: 'x' }],
   ])('a link created %s counts nothing: ZERO reads', async (_caso, over) => {
     const corpo = Object.fromEntries(Object.entries(link(over)).filter(([, v]) => v !== undefined));

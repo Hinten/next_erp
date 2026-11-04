@@ -122,6 +122,9 @@ describe('contaDoLinkLi', () => {
     ['an empty string', ''],
     ['null', null],
     ['a number', 42],
+    // NEAR-MISS for a coercing reader: `String([ref])` is the ref itself, so a reader that
+    // stringifies before it parses would read this array as C1.
+    ['the ref inside an array', [`documents/integracao/${C1}`]],
   ])('a malformed ref (%s) reads null — never C1', (_caso, ref) => {
     expect(contaDoLinkLi(link({ contaLojaIntegrada: ref }))).toBeNull();
   });
@@ -278,6 +281,7 @@ describe('sobrevivemVinculosDoProdutoLi', () => {
     ["with id '07'", { id: '07' }],
     ['with id null', { id: null }],
     ['with a malformed conta ref', { contaLojaIntegrada: 'documents/categorias/C1' }],
+    ['with its conta ref inside an array', { contaLojaIntegrada: [`documents/integracao/${C1}`] }],
   ])('NEAR-MISS: a sibling %s does not survive', async (_caso, over) => {
     const db = new FakeDb();
     semearLink(db, 'l1', over);
@@ -295,6 +299,42 @@ describe('sobrevivemVinculosDoProdutoLi', () => {
 
     await expect(sobrevive(db)).resolves.toBe(false);
     await expect(sobrevive(db, C1, OUTRO_PRODUTO)).resolves.toBe(true);
+  });
+
+  it('⛔ the verdict is the TRANSACTION’s read, never a read beside it', async () => {
+    // Rule 7: only a read inside the guarded write's read set is a guard. A plain `get()` beside
+    // it would miss a counting link written between that read and the commit, and drop a live
+    // conta. So the transaction here answers the OPPOSITE of what is stored, both ways, and the
+    // verdict must follow the transaction each time.
+    const db = new FakeDb();
+    const alvos: { get: () => Promise<unknown> }[] = [];
+    const txQueVe = (docs: DocData[]): Transaction =>
+      ({
+        get: async (alvo: { get: () => Promise<unknown> }) => {
+          alvos.push(alvo);
+          return { docs: docs.map((d) => ({ data: () => d })) };
+        },
+      }) as unknown as Transaction;
+
+    // Nothing stored, a counting link in the transaction's snapshot ⇒ it survives.
+    await expect(
+      sobrevivemVinculosDoProdutoLi(asDb(db), PRODUTO, C1)(txQueVe([link()])),
+    ).resolves.toBe(true);
+    // A counting link stored, none in the transaction's snapshot ⇒ nothing survives.
+    semearLink(db, 'l1');
+    await expect(sobrevivemVinculosDoProdutoLi(asDb(db), PRODUTO, C1)(txQueVe([]))).resolves.toBe(
+      false,
+    );
+
+    // Nothing was read beside the transaction...
+    expect(db.consultas).toEqual([]);
+    // ...and what it was handed is this produto's own link collection.
+    expect(alvos).toHaveLength(2);
+    for (const alvo of alvos) await alvo.get();
+    expect(db.consultas.map((c) => c.colecao)).toEqual([
+      `produtos/${PRODUTO}/produtolojaintegrada`,
+      `produtos/${PRODUTO}/produtolojaintegrada`,
+    ]);
   });
 
   it('reads the produto’s WHOLE subcollection: no where, no order, no limit', async () => {
