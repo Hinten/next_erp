@@ -23,9 +23,10 @@
  *    refreshed where it is, never duplicated): read it, derive the patch from THAT read, then
  *    `update(patch, { lastUpdateTime: <the read's updateTime> })`. The patch:
  *    - the mirror — `ativo`, `bloqueado`, `removido` — set to the store's when it DIFFERS from the
- *      stored value as the link schema reads it (an absent `ativo` reads `true`, an absent
- *      `bloqueado` or `removido` `false`), so a link stored `removido: true` whose product is
- *      listed again becomes `false` and the anchor counts it again;
+ *      stored value as the link schema's own field reads it (its default for an absent one), or
+ *      when that field REFUSES the stored value (`null`, a string): so a link stored `removido:
+ *      true` whose product is listed again becomes `false` and the anchor counts it again, and a
+ *      value no reader of the link can parse is repaired, never left beside an equal default;
  *    - every other planned field only where the stored one is `null` or absent
  *      (`paiProdutoIntegradaId` included); a field with a value is never touched,
  *      `estadoPublicacao` included;
@@ -39,6 +40,15 @@
  * ⚠️ Accepted residual (the plan's row 11): a link of this conta written at an AUTO id by another
  * writer between our scan and our create leaves two links of one conta on the produto; the next
  * scan sees it, and publishing refuses a produto with two links of one conta.
+ *
+ * ⚠️ Accepted residual of Simular's parity: TWO store roots of one job that the cascade places on
+ * the SAME ERP produto (one by its root SKU, the other through the sole-member hop, say). Under
+ * `aplicar` the first creates its link and the second's scan finds it — `vinculado-a-outro`.
+ * Under Simular nothing is written, so the second's scan finds nothing and both items say
+ * `vincular`: picking the second in "Importar selecionados" then meets the refusal at `aplicar`
+ * time, and nothing is written for it. Closing it needs an overlay of the links a Simular would
+ * create, kept across dispatches; it would cost a read and a write per planned link of every
+ * Simular to cover a store whose two products map to one ERP produto.
  *
  * ## A family ({@link vincularFamiliaLi})
  *
@@ -69,6 +79,7 @@ import {
   type ModoImportacaoLi,
   PENDENCIA_IMPORTACAO_LI,
   RELACAO_VINCULO_LI,
+  produtoLojaIntegradaLinkSchema,
   vinculoLiDaContaEId,
 } from '@delfrance/schemas';
 
@@ -146,11 +157,23 @@ export function vinculoConfirmadoLi(desfecho: DesfechoDoVinculoLi): boolean {
 /*                                  The patch                                  */
 /* -------------------------------------------------------------------------- */
 
-/** How the link schema reads an absent or non-boolean mirror field (its `.default()`s). */
-const ESPELHO_PADRAO = { ativo: true, bloqueado: false, removido: false } as const;
+/**
+ * A stored mirror field read by the LINK SCHEMA's own field (its `.default()` for an absent one),
+ * never a copy of its defaults here; `null` when the schema refuses the stored value (`null`, a
+ * string, a number): there is no value to compare, so the live one is written over it.
+ */
+function espelhoArmazenado(
+  armazenado: Readonly<Record<string, unknown>>,
+  chave: 'ativo' | 'bloqueado' | 'removido',
+): boolean | null {
+  const bruto = Object.hasOwn(armazenado, chave) ? armazenado[chave] : undefined;
+  const lido = produtoLojaIntegradaLinkSchema.shape[chave].safeParse(bruto);
+  return lido.success ? lido.data : null;
+}
 
 /**
- * The refresh patch of ONE stored link (module header): the mirror where it differs, every other
+ * The refresh patch of ONE stored link (module header): the mirror where it differs from the
+ * stored value as the link schema reads it — or where the schema cannot read one —, every other
  * planned field where the stored one is `null` or absent. Pure.
  */
 export function patchDoVinculoLi(
@@ -161,9 +184,7 @@ export function patchDoVinculoLi(
   for (const chave of ['ativo', 'bloqueado', 'removido'] as const) {
     const vivo = vinculo.espelho[chave];
     if (vivo === undefined) continue;
-    const bruto = Object.hasOwn(armazenado, chave) ? armazenado[chave] : undefined;
-    const lido = typeof bruto === 'boolean' ? bruto : ESPELHO_PADRAO[chave];
-    if (lido !== vivo) patch[chave] = vivo;
+    if (espelhoArmazenado(armazenado, chave) !== vivo) patch[chave] = vivo;
   }
   for (const [chave, valor] of Object.entries(vinculo.preencher)) {
     if (valor === undefined) continue;

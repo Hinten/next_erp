@@ -33,9 +33,9 @@
  *    row with no usable `id` is dropped and counted (`linhasSemId`).
  *  - `removido` is re-checked on EVERY row: a row of the live list that says `removido: true` is
  *    skipped, and so is a row of the trash list that does not say exactly `true` (counted
- *    `foraDoFiltro`, for the dispatch's log line). Requiring an explicit `true` in the trash fails
- *    safe: an unexplained variation only costs a detail read, while a live product read as trashed
- *    would never be imported.
+ *    `foraDoFiltro`, for the dispatch's WARN line when above zero). Requiring an explicit `true` in
+ *    the trash fails safe: an unexplained variation only costs a detail read, while a live product
+ *    read as trashed would never be imported.
  *  - The page is written WHOLE to `paginas/{tipo}-{offset}` (root rule 7, tier 0: a deterministic
  *    id and a single writer — the job's own dispatches, one at a time — so a retried unit
  *    overwrites its own earlier attempt). A page holds at most 100 compact views, far under
@@ -99,7 +99,7 @@ export interface ListagemDeps {
   readonly sinal?: AbortSignal;
 }
 
-/** What one page held, for the dispatch's log line. */
+/** What one page held, for the dispatch's WARN line when a row was skipped. */
 export interface ContagemDaPaginaLi {
   /** Rows kept (written as views). */
   readonly linhas: number;

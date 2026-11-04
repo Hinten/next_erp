@@ -10,8 +10,11 @@
  *
  * `familiaNoAlvoLi` (the cascade's): `todos` takes every family, `selecionados` the roots the start
  * body named, `jaNoErp` a root the cascade matched to one ERP produto, `naoNoErp` an `ausente` one.
- * A family outside the target is planned as `noAlvo: false` with no link and no create — the
- * caller writes no report item for it.
+ * A family outside the target is planned as `noAlvo: false` with no link and no create, and the
+ * caller writes no report item for it — except a family in CONFLICT (two owners, two SKU hits, a
+ * shape mismatch, no SKU, a SKU the store repeats): it belongs to no target but `todos` and
+ * `selecionados`, and under `jaNoErp` and `naoNoErp` it is still REPORTED (`relatar`), with its
+ * conflict and no link, so a run of either never reads as "everything on this side is done".
  *
  * ## The links (`raizVinculo`, `filhosVinculos`)
  *
@@ -37,11 +40,10 @@
  *    store sent a boolean;
  *  - `estadoPublicacao`: `p` when the store says `ativo: true`, `pa` when `false`, nothing when it
  *    sent no boolean. Nothing in the import decides on it;
- *  - `destaque` and `usado` ONLY from a detail this job read: a list row has neither, so a link
- *    written from a row alone leaves them ABSENT — never an invented `false` or `null`;
- *  - never `descricao_html` (the ERP's own description is what publishing sends), never `marca`
- *    (the detail view carries only the brand's id, and the stored field's form is the publish
- *    step's to settle), never `error`.
+ *  - `destaque`, `usado` and `marca` (the brand URI, verbatim like the row's URIs) ONLY from a
+ *    detail this job read: a list row has none of them, so a link written from a row alone leaves
+ *    them ABSENT — never an invented `false` or `null`;
+ *  - never `descricao_html` (the ERP's own description is what publishing sends), never `error`.
  *
  * ## The create ({@link CriacaoPlanejadaLi}) — "complete" only
  *
@@ -65,19 +67,23 @@
  * The assembly's (`orfao`, `na-lixeira`, `familia-vazia`), the root's conflict (with the ERP ids
  * involved), the variations' (each with its store id), the link and create refusals above. An
  * option the variation could not resolve whose claims the learning refused reads as the learning's
- * verdict instead (`evidencia-divergente` when the claims disagree, `variacao-sem-vinculo`
- * otherwise): what the person must look at is the disagreement, not the missing link. Exact
- * duplicates are dropped. Whether a code is actionable is the report's (`relatorio.ts`).
+ * verdict instead (`evidencia-divergente` when the claims disagree, `conflito-de-escrita` when its
+ * grupo write was lost twice, `variacao-sem-vinculo` otherwise): what the person must look at is
+ * the disagreement, not the missing link. The verdict is reported on EVERY resolved variation that
+ * carries such an option — the ones matched by their link or their exact SKU included, which leave
+ * no pendência for an unlinked option of their own: those are exactly the variations whose claims
+ * the evidence pass recorded, so every family involved in a disagreement says so. Exact duplicates
+ * are dropped. Whether a code is actionable is the report's (`relatorio.ts`).
  *
  * ⚠️ Never name the Admin SDK's multi-document read-and-write call here — not even in a comment
  * (`estrutura.test.ts`).
  */
 import {
   ACAO_IMPORTACAO_LI,
+  ALVO_IMPORTACAO_LI,
   ESTADO_PUBLICACAO_LI,
   type EstadoPublicacaoLi,
   type ImportacaoLojaIntegrada,
-  type MotivoRecusaAprendizadoLi,
   PENDENCIA_IMPORTACAO_LI,
   type PendenciaImportacaoLi,
   type ProdutoLiDetalhado,
@@ -85,6 +91,8 @@ import {
   SITUACAO_ERP_ITEM_LI,
   type SituacaoErpItemLi,
   TIPO_PRODUTO_LI,
+  TIPO_RESOLUCAO_OPCAO_LI,
+  type TipoResolucaoOpcaoLi,
   idEvidenciaImportacaoLi,
   produtoLojaIntegradaLinkSchema,
   produtoSchema,
@@ -92,10 +100,11 @@ import {
 } from '@delfrance/schemas';
 
 import type { FamiliaLi, FilhoDaFamiliaLi } from './familias';
-import { pendenciaDaRecusaLi } from './gruposLi';
+import { type RecusaNoRelatorioLi, pendenciaDaRecusaLi } from './gruposLi';
 import {
   type PendenciaDaResolucaoLi,
   type ResolucaoDaRaizLi,
+  type ResolucaoDoFilhoLi,
   type ResolucaoDosFilhosLi,
   SITUACAO_DO_FILHO_LI,
   familiaNoAlvoLi,
@@ -137,6 +146,7 @@ export interface PreenchimentoDoVinculoLi {
   readonly categorias?: readonly string[];
   readonly destaque?: boolean;
   readonly usado?: boolean;
+  readonly marca?: string;
   readonly estadoPublicacao?: EstadoPublicacaoLi;
   readonly paiProdutoIntegradaId?: number;
 }
@@ -176,7 +186,10 @@ export interface CriacaoPlanejadaLi {
 export interface PlanoDaFamiliaLi {
   /** The family's root store id (its report item's id). */
   readonly liId: number;
+  /** In the job's target (`familiaNoAlvoLi`): only then can a link or a create be planned. */
   readonly noAlvo: boolean;
+  /** The caller writes its report item: in the target, or in conflict under `jaNoErp`/`naoNoErp`. */
+  readonly relatar: boolean;
   readonly situacaoErp: SituacaoErpItemLi;
   /** The matched ERP root, when the cascade matched one. */
   readonly erpId: string | null;
@@ -202,7 +215,7 @@ export interface EntradaDoPlanoLi {
   /** SKUs two store rows carry (`skusRepetidosNaLojaLi`): never created. */
   readonly skusRepetidos: ReadonlySet<string>;
   /** Why each claimed option stays unlearned (`recusasDoAprendizadoLi`), keyed `<g>_<v>`. */
-  readonly recusasDoAprendizado: ReadonlyMap<string, MotivoRecusaAprendizadoLi>;
+  readonly recusasDoAprendizado: ReadonlyMap<string, RecusaNoRelatorioLi>;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -254,6 +267,7 @@ function planejarVinculo(
   if (categorias !== undefined) campos.categorias = categorias;
   if (typeof detalhe?.destaque === 'boolean') campos.destaque = detalhe.destaque;
   if (typeof detalhe?.usado === 'boolean') campos.usado = detalhe.usado;
+  if (typeof detalhe?.marca === 'string') campos.marca = detalhe.marca;
   const estado = estadoPublicacaoDe(linha.ativo);
   if (estado !== undefined) campos.estadoPublicacao = estado;
   if (paiLiId !== null) campos.paiProdutoIntegradaId = paiLiId;
@@ -390,12 +404,42 @@ function idDaEvidencia(referencia: string | undefined): string | null {
 /** A cascade pendência, read through the learning's verdict on its option. */
 function comVeredictoDoAprendizado(
   p: PendenciaDaResolucaoLi,
-  recusas: ReadonlyMap<string, MotivoRecusaAprendizadoLi>,
+  recusas: ReadonlyMap<string, RecusaNoRelatorioLi>,
 ): PendenciaDoPlanoLi {
   if (!CODIGOS_DE_OPCAO_SEM_VINCULO.has(p.codigo)) return p;
   const id = idDaEvidencia(p.referencias[0]);
   const motivo = id === null ? undefined : recusas.get(id);
   return motivo === undefined ? p : { ...p, codigo: pendenciaDaRecusaLi(motivo) };
+}
+
+/** The option verdicts the learning could have changed (the ones it replaces, above). */
+const OPCOES_SEM_VINCULO: ReadonlySet<TipoResolucaoOpcaoLi> = new Set([
+  TIPO_RESOLUCAO_OPCAO_LI.gradeSemVinculo,
+  TIPO_RESOLUCAO_OPCAO_LI.opcaoSemVinculo,
+]);
+
+/**
+ * The learning's verdict on each unlinked option of ONE resolved variation, whatever its rung (module
+ * header, "The pendências"). A variation matched by its link or by its SKU leaves no pendência for
+ * an unlinked option — the link needs none — yet THAT is the variation whose claim the evidence
+ * pass recorded: without this, claims that disagree would show on no family at all.
+ */
+function veredictosDasOpcoes(
+  r: ResolucaoDoFilhoLi,
+  recusas: ReadonlyMap<string, RecusaNoRelatorioLi>,
+): PendenciaDoPlanoLi[] {
+  const pendencias: PendenciaDoPlanoLi[] = [];
+  for (const o of r.opcoes) {
+    if (!OPCOES_SEM_VINCULO.has(o.tipo) || o.gradeId === null || o.opcaoId === null) continue;
+    const motivo = recusas.get(idEvidenciaImportacaoLi(o.gradeId, o.opcaoId));
+    if (motivo === undefined) continue;
+    pendencias.push({
+      codigo: pendenciaDaRecusaLi(motivo),
+      liId: r.liId,
+      referencias: [`${String(o.gradeId)}/${String(o.opcaoId)}`],
+    });
+  }
+  return pendencias;
 }
 
 /** Exact duplicates dropped, first occurrence kept. */
@@ -423,9 +467,15 @@ export function planejarFamiliaLi(e: EntradaDoPlanoLi): PlanoDaFamiliaLi {
     referencias: [],
   }));
   const noAlvo = familiaNoAlvoLi(job, raiz.id, res);
+  // A family in conflict is in no target but todos/selecionados, and reported under the other two.
+  const relatar =
+    noAlvo ||
+    (res.tipo === SITUACAO_ERP_ITEM_LI.conflito &&
+      (job.alvo === ALVO_IMPORTACAO_LI.jaNoErp || job.alvo === ALVO_IMPORTACAO_LI.naoNoErp));
   const base = {
     liId: raiz.id,
     noAlvo,
+    relatar,
     situacaoErp: res.tipo,
     erpId:
       res.tipo === SITUACAO_ERP_ITEM_LI.vinculado || res.tipo === SITUACAO_ERP_ITEM_LI.encontrado
@@ -434,7 +484,7 @@ export function planejarFamiliaLi(e: EntradaDoPlanoLi): PlanoDaFamiliaLi {
   };
   const vazio = { raizVinculo: null, filhosVinculos: [], criacao: null };
 
-  if (!noAlvo) return { ...base, ...vazio, pendencias: semRepetir(pendencias) };
+  if (!relatar) return { ...base, ...vazio, pendencias: semRepetir(pendencias) };
 
   if (res.tipo === SITUACAO_ERP_ITEM_LI.conflito) {
     pendencias.push({ codigo: res.pendencia, liId: null, referencias: [...res.erpIds] });
@@ -482,6 +532,8 @@ export function planejarFamiliaLi(e: EntradaDoPlanoLi): PlanoDaFamiliaLi {
       for (const p of r.pendencias) {
         pendencias.push(comVeredictoDoAprendizado(p, e.recusasDoAprendizado));
       }
+      // The same verdict for an option the rung left silent (an exact duplicate is dropped below).
+      pendencias.push(...veredictosDasOpcoes(r, e.recusasDoAprendizado));
       const filho = porId.get(r.liId);
       if (r.situacao !== SITUACAO_DO_FILHO_LI.casado || r.erp === null || filho === undefined) {
         continue;

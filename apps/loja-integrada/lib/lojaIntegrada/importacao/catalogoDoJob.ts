@@ -111,7 +111,7 @@ export interface CatalogoDoJobDeps {
   readonly sinal?: AbortSignal;
 }
 
-/** What the category-link read found, for the dispatch's log line. */
+/** What the category-link read found, for the dispatch's WARN line when a link was ignored. */
 export interface ContagemVinculosCategoriaLi {
   readonly vinculadas: number;
   readonly ambiguas: number;

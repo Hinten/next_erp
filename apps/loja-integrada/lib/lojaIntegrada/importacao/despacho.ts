@@ -34,10 +34,10 @@
  * | --- | --- | --- | --- |
  * | `catalogo` | a category or brand page; then the category-link read | a call; then none | `catalogoDoJob.ts` |
  * | `listagem`, `lixeira` | one product page; then the closing count | a call; then none | `listagem.ts` |
- * | `orfaos` | one unexplained variation's detail; then the phase's end | a call; then none | `familias.ts` |
+ * | `orfaos` | one detail the assembly needs (an unexplained variation, or a claimed id never listed); then the phase's end | a call; then none | `familias.ts` |
  * | `evidencias` | one family's exact-SKU claims | none | `evidencias.ts` |
  * | `aprendizado` | every claim decided at once | none | `gruposLi.ts` |
- * | `familias` | a claimed variation never listed (its detail); one family: cascade, plan, links, item; then the `nao-listado` items | a call; none; none | `familias.ts`, `familiaDoJob.ts` |
+ * | `familias` | one family: cascade, plan, links, item; then the closing unit (the `nao-listado` and loose-row items) | none; none | `familias.ts`, `familiaDoJob.ts` |
  * | `fim` | the summary aviso (`aplicar`), then `concluido` | none | `avisosImportacao.ts`, `job.ts` |
  *
  * At the catalogue phase's end an `aplicar` job also resolves the per-category avisos whose store
@@ -63,10 +63,17 @@
  *
  * ## Simular writes only the job
  *
- * Under `simular` every phase decides exactly as `aplicar` does and writes only the job document
- * and its own subcollections: no link, no grupo (the learnings ride the job as an overlay later
- * families resolve against), no aviso. The modules below each hold that rule; the dispatch adds no
- * write of its own outside the job.
+ * Under `simular` every phase decides exactly as `aplicar` does (one stated residual: two store roots
+ * placed on ONE ERP produto, `vinculos.ts`) and writes only the job document and its own
+ * subcollections: no link, no grupo (the learnings ride the job as an overlay later families
+ * resolve against), no aviso of the import's. The modules below each hold that rule; the dispatch
+ * adds no write of its own outside the job.
+ *
+ * ⚠️ The ONE exception is not the import's decision: a 401/403 parks the conta exactly as every
+ * reader parks it (`tratarFalhaDeAutenticacao`: the conta's credential document and its reconexão
+ * aviso), whatever the mode. The store refused the CREDENTIAL — a fact about the conta, not a
+ * simulated outcome — and until the window no other flow reads the store, so a Simular is the one
+ * reader that could notice a revoked token.
  *
  * ## Failures (root rule 6) — each narrowed to its class
  *
@@ -79,9 +86,11 @@
  *    rethrown and the queue's retry runs with the token now stored.
  *  - **The conta's refusals mid-run** (the credential getter re-reads it before every call: a park
  *    by another flow, a credential removed) ⇒ `falhou/conta-indisponivel`.
- *  - **A detail body off its schema** (`LiSchemaError` on ONE product) ⇒ that product has no usable
- *    detail, logged with its id and the field paths: one bad product never stops the job. A LIST
- *    page off its schema is not one product, and propagates.
+ *  - **A detail body off its schema** (`LiSchemaError` `formato` on ONE product) ⇒ that product has
+ *    no usable detail, logged with its id and the field paths: one bad product never stops the job.
+ *    An EMPTY or non-JSON 200 (`vazio`, `nao-json`: a gateway's answer, not the product's) is
+ *    rethrown like any transient failure, and the retry reads the detail again. A LIST page off its
+ *    schema is not one product, and propagates.
  *  - **Tasks switched off** on the continuation (`LiTarefasDesligadasError`) ⇒
  *    `falhou/tarefas-desligadas`: never a job left `executando` with nothing queued.
  *  - **Everything else is rethrown**, and Cloud Tasks retries the same task: before its last
@@ -89,9 +98,13 @@
  *    re-enqueues the successor. On the queue's LAST attempt ({@link TASK_MAX_ATTEMPTS}) a failure of
  *    a class a retry could have changed — Loja Integrada's answers, the network, a page or a body
  *    off its schema, Cloud Tasks, Firestore, a stored document off its schema, the park's
- *    contention — stamps `falhou/tentativas-esgotadas` instead. A concurrent dispatch of the same
- *    `seq` (`LiImportacaoConcorrenteError`) is not stamped over: it still carries the job. Our own
- *    misconfiguration and coding bugs stay loud on every attempt.
+ *    contention, another writer of the same `seq` (`LiImportacaoConcorrenteError`) — stamps
+ *    `falhou/tentativas-esgotadas` instead, and only on a job that still runs at that `seq`. The
+ *    other writer of the same `seq` is an earlier attempt of this very task (the task is named per
+ *    `seq`, and the queue runs one at a time) that the queue already gave up on: no retry of the
+ *    task follows the last attempt, so leaving the job `executando` would leave it with nothing to
+ *    carry it. Our own write found stored after a lost reply is never such a writer (`job.ts`,
+ *    "Is it our write?"). Our own misconfiguration and coding bugs stay loud on every attempt.
  *
  * ## The summary aviso
  *
@@ -100,6 +113,14 @@
  * of a stamp that failed re-syncs it. The refusals of the infrastructure (the switch, the conta,
  * the tasks valve, the last attempt) stamp the job only: its report stays on its card, and the
  * conta's next `aplicar` run raises what is still open.
+ *
+ * The decision to sync is the job's, so it is taken on a FRESH read: after the items are counted,
+ * the job is re-read, and only one still running at this `seq` syncs — the stamp is then chained
+ * from that read (a cancel during the count stops the dispatch with the aviso untouched).
+ * ⚠️ Accepted residual: a Cancelar landing between that read and the stamp — the aviso's own few
+ * writes — leaves the aviso synced by a job that then reads `cancelado` (the stamp loses its
+ * precondition and writes nothing). Closing it would need the stamp first and the aviso after it,
+ * with a flag a retried task could still act on once the job is terminal.
  *
  * ⚠️ Never name the Admin SDK's multi-document read-and-write call here — not even in a comment
  * (`estrutura.test.ts`). The task path's run-time closure is walked with the read routes' rules:
@@ -176,12 +197,11 @@ import {
   type FamiliaLi,
   type IndiceDoSnapshotLi,
   type MontagemLi,
-  filhosSemLinhaLi,
+  idsADetalharLi,
   indexarSnapshotLi,
   lerSnapshotDoJobLi,
   montarFamiliasLi,
   naoListadosLi,
-  orfaosAExplicarLi,
   proximoOrfaoLi,
   unidadeDosOrfaosLi,
 } from './familias';
@@ -217,6 +237,7 @@ import {
   contadoresDoItemLi,
   contarPendenciasAcionaveisLi,
   gravarItemLi,
+  itemAvulsoLi,
   itemNaoListadoLi,
   somarContadoresLi,
 } from './relatorio';
@@ -271,8 +292,6 @@ export type DesfechoDespachoImportacaoLi =
   | 'continuacao'
   /** Nothing to do: a stale `seq`, a finished or cancelled job, no job, another conta's job. */
   | 'nada'
-  /** The LAST attempt lost to a concurrent dispatch of the same `seq`, which still runs the job. */
-  | 'concorrente'
   /** A payload the task schema refuses: dropped, nothing read. */
   | 'payload-invalido';
 
@@ -285,7 +304,6 @@ export const DESFECHO_DESPACHO_IMPORTACAO_LI = {
   parado: 'parado',
   continuacao: 'continuacao',
   nada: 'nada',
-  concorrente: 'concorrente',
   payloadInvalido: 'payload-invalido',
 } as const satisfies Record<string, DesfechoDespachoImportacaoLi>;
 
@@ -333,6 +351,9 @@ function ehContaIndisponivel(err: unknown): boolean {
  */
 function esgotaAsTentativas(err: unknown): boolean {
   return (
+    // Another writer of the same `seq`: on the LAST attempt no retry of this task follows, and that
+    // writer is an earlier attempt the queue already gave up on — nothing is left to carry the job.
+    err instanceof LiImportacaoConcorrenteError ||
     err instanceof LiHttpError ||
     err instanceof LiNetworkError ||
     err instanceof LiSchemaError ||
@@ -439,7 +460,8 @@ class DespachoImportacaoLi {
 
   // Read once per dispatch, lazily (module header).
   private indice: IndiceDoSnapshotLi | null = null;
-  private orfaos: readonly number[] | null = null;
+  /** Every id the assembly needs a detail of: the `orfaos` phase's list (`idsADetalharLi`). */
+  private aDetalhar: readonly number[] | null = null;
   private detalhes: Map<number, DetalheImportacaoLi> | null = null;
   private montagem: MontagemLi | null = null;
   private skusRepetidos: ReadonlySet<string> | null = null;
@@ -647,9 +669,6 @@ class DespachoImportacaoLi {
    * overwritten); anything else is rethrown.
    */
   async naUltimaTentativa(err: unknown): Promise<ResultadoDespachoImportacaoLi> {
-    if (err instanceof LiImportacaoConcorrenteError) {
-      return this.resultado(DESFECHO_DESPACHO_IMPORTACAO_LI.concorrente);
-    }
     if (!esgotaAsTentativas(err) || this.alvo === null) throw err;
     const r = await encerrarImportacaoLi(
       this.db,
@@ -678,7 +697,10 @@ class DespachoImportacaoLi {
 
   /**
    * Stamp the job (module header): `concluido`, or `falhou` with its motivo. `aviso` syncs the
-   * summary aviso FIRST (an `aplicar` job ended by the phase machine itself).
+   * summary aviso FIRST (an `aplicar` job ended by the phase machine itself) — and only on a job
+   * the dispatch has just RE-READ still running at its `seq`, the stamp then chained from that very
+   * read: a cancel that landed while the items were counted is seen there, and the job raises and
+   * resolves nothing (module header, "The summary aviso").
    */
   private async encerrar(
     desfecho: DesfechoImportacaoLi,
@@ -688,6 +710,12 @@ class DespachoImportacaoLi {
     const agora = this.deps.agoraMs();
     if (aviso && job.modo === MODO_IMPORTACAO_LI.aplicar) {
       const contagem = await contarPendenciasAcionaveisLi(this.db, this.tarefa.jobId);
+      const alvo = this.alvoAtual();
+      const lido = await lerJobLi(this.db, alvo.jobId);
+      if (lido === null || decidirDespachoLi(lido.job, alvo.seq) !== DECISAO_DESPACHO_LI.executar) {
+        return this.resultado(DESFECHO_DESPACHO_IMPORTACAO_LI.parado);
+      }
+      this.alvo = { ...alvo, versao: lido.versao };
       await sincronizarAvisoDePendenciasLi(
         this.db,
         {
@@ -773,19 +801,20 @@ class DespachoImportacaoLi {
     return this.indice;
   }
 
-  private async orfaosDoSnapshot(): Promise<readonly number[]> {
-    if (this.orfaos === null) this.orfaos = orfaosAExplicarLi(await this.indiceDoSnapshot());
-    return this.orfaos;
+  private async aDetalharDoSnapshot(): Promise<readonly number[]> {
+    this.aDetalhar ??= idsADetalharLi(await this.indiceDoSnapshot());
+    return this.aDetalhar;
   }
 
   /** The assembly, from the snapshot and the stored details; rebuilt after a detail read here. */
   private async montagemDoJob(): Promise<MontagemLi> {
     const indice = await this.indiceDoSnapshot();
     if (this.detalhes === null) {
-      this.detalhes = await lerDetalhesGravadosLi(this.db, this.tarefa.jobId, [
-        ...(await this.orfaosDoSnapshot()),
-        ...filhosSemLinhaLi(indice),
-      ]);
+      this.detalhes = await lerDetalhesGravadosLi(
+        this.db,
+        this.tarefa.jobId,
+        await this.aDetalharDoSnapshot(),
+      );
       this.montagem = null;
     }
     if (this.montagem === null) {
@@ -826,13 +855,16 @@ class DespachoImportacaoLi {
 
   /**
    * One product's detail, with a body off its schema CONTAINED (module header, "Failures"): the
-   * product has no usable detail, logged; `null` stands for it.
+   * product has no usable detail, logged; `null` stands for it. Only a body that ANSWERED and is
+   * off the schema (`formato`) is one bad product: an empty or non-JSON 200 is the transport's (a
+   * gateway's page), rethrown so the queue's retry reads the detail again — never "no usable
+   * detail" for the rest of the job.
    */
   private async lerDetalheContido(liId: number): Promise<ResultadoDetalheLi | null> {
     try {
       return await lerDetalheParaOJobLi(this.depsDosDetalhes(), liId);
     } catch (err) {
-      if (!(err instanceof LiSchemaError)) throw err;
+      if (!(err instanceof LiSchemaError) || err.motivo !== 'formato') throw err;
       this.deps.logger.warn(
         '[loja-integrada] importação: detalhe fora do formato; produto sem detalhe utilizável',
         {
@@ -845,6 +877,24 @@ class DespachoImportacaoLi {
       );
       return null;
     }
+  }
+
+  /**
+   * ONE WARN line when a read unit SKIPPED something (`contagens` holds a count above zero): rows with
+   * no usable id, rows whose own `removido` contradicts their list, category rows the projection
+   * could not read, category links whose owner is gone or is not a categoria. Ids and counts only;
+   * a read that skipped nothing logs nothing.
+   */
+  private avisarSeSaltou(
+    leitura: string,
+    contagens: Readonly<Record<string, string | number>>,
+  ): void {
+    if (!Object.values(contagens).some((n) => typeof n === 'number' && n > 0)) return;
+    this.deps.logger.warn('[loja-integrada] importação: leitura com linhas ignoradas', {
+      jobId: this.tarefa.jobId,
+      leitura,
+      ...contagens,
+    });
   }
 
   /* ------------------------------ the next unit ------------------------------ */
@@ -899,7 +949,18 @@ class DespachoImportacaoLi {
             desfecho: { status: STATUS_IMPORTACAO_LI.falhou, motivo: passo.motivo },
           };
         }
-        if (passo.tipo === 'pagina') return progresso({ ...passo.estado });
+        if (passo.tipo === 'pagina') {
+          this.avisarSeSaltou('catalogo', {
+            recurso: passo.recurso,
+            correlationId: passo.correlationId,
+            ...passo.naoLidas,
+          });
+          return progresso({ ...passo.estado });
+        }
+        this.avisarSeSaltou('vinculos-de-categoria', {
+          donosAusentes: passo.vinculos.donosAusentes,
+          foraDeCategorias: passo.vinculos.foraDeCategorias,
+        });
         // The catalogue is whole: an `aplicar` job resolves the per-category avisos it can.
         await resolverCategoriasSemVinculoLi(
           this.db,
@@ -932,7 +993,14 @@ class DespachoImportacaoLi {
           cursor,
         );
         const campo = lixeira ? { lixeira: passo.cursor } : { listagem: passo.cursor };
-        if (passo.tipo === 'pagina') return progresso(campo);
+        if (passo.tipo === 'pagina') {
+          this.avisarSeSaltou(tipo, {
+            correlationId: passo.correlationId,
+            semId: passo.contagem.semId,
+            foraDoFiltro: passo.contagem.foraDoFiltro,
+          });
+          return progresso(campo);
+        }
         return progresso({
           ...campo,
           fase: lixeira ? FASE_IMPORTACAO_LI.orfaos : FASE_IMPORTACAO_LI.lixeira,
@@ -942,15 +1010,19 @@ class DespachoImportacaoLi {
   }
 
   private unidadeDosOrfaos(job: ImportacaoLojaIntegrada): UnidadeDoDespachoLi {
-    // The cost needs the orphan list; the list needs the snapshot — read lazily in `executar`,
-    // and budgeted as a call until known (the worst case of either answer).
-    const orfaos = this.orfaos;
+    // The cost needs the list; the list needs the snapshot — read lazily in `executar`, and
+    // budgeted as a call until known (the worst case of either answer). The list is every id the
+    // assembly needs a detail of — the orphans AND the claimed ids never listed — so every family
+    // is matched over a whole assembly (`idsADetalharLi`).
+    const aDetalhar = this.aDetalhar;
     const unidade =
-      orfaos === null ? UNIDADE_IMPORTACAO_LI.chamada : unidadeDosOrfaosLi(orfaos, job.orfaos);
+      aDetalhar === null
+        ? UNIDADE_IMPORTACAO_LI.chamada
+        : unidadeDosOrfaosLi(aDetalhar, job.orfaos);
     return {
       unidade,
       executar: async () => {
-        const lista = await this.orfaosDoSnapshot();
+        const lista = await this.aDetalharDoSnapshot();
         const liId = proximoOrfaoLi(lista, job.orfaos);
         if (liId === null) {
           return progresso({ fase: FASE_IMPORTACAO_LI.evidencias, familias: FAMILIAS_DO_INICIO });
@@ -997,6 +1069,19 @@ class DespachoImportacaoLi {
         );
         // The memo carries this phase's writes (their writeTimes) for the rest of the dispatch.
         this.memo = r.memo;
+        // A learning whose grupo write was lost twice: one line, ids and counts only. The job's
+        // cursor carries the claim ids, so every family with that option reports the conflict.
+        if (r.aprendizado.conflitos.length > 0) {
+          this.deps.logger.warn(
+            '[loja-integrada] importação: aprendizado perdeu a escrita duas vezes',
+            {
+              jobId: this.tarefa.jobId,
+              conflitos: r.aprendizado.conflitos,
+              aprendidos: r.aprendidos.length,
+              gruposGravados: r.gruposGravados,
+            },
+          );
+        }
         return progresso({
           aprendizado: r.aprendizado,
           aprendizadosSimulados: [...r.aprendizadosSimulados],
@@ -1021,6 +1106,7 @@ class DespachoImportacaoLi {
       job.integracaoId,
       await lerEvidenciasDoJobLi(this.db, this.tarefa.jobId),
       grupos,
+      job.aprendizado.conflitos,
     );
     return {
       job,
@@ -1031,35 +1117,19 @@ class DespachoImportacaoLi {
   }
 
   private unidadeDasFamilias(job: ImportacaoLojaIntegrada): UnidadeDoDespachoLi {
-    const { cursorPaiId, filhosLidos } = job.familias;
-    const lidos = new Set(filhosLidos);
-    // The cost is known only from the assembly: budgeted as a call until it is (worst case).
-    const montagem = this.montagem;
+    const { cursorPaiId } = job.familias;
     const proximaDe = (m: MontagemLi): FamiliaLi | null =>
       this.familiasDoAlvo(job, m).find((f) => cursorPaiId === null || f.raiz.id > cursorPaiId) ??
       null;
-    const pendenteDe = (f: FamiliaLi | null): number | null =>
-      f?.semDetalhe.find((id) => !lidos.has(id)) ?? null;
-    const unidade =
-      montagem !== null && pendenteDe(proximaDe(montagem)) === null
-        ? UNIDADE_IMPORTACAO_LI.familia
-        : UNIDADE_IMPORTACAO_LI.chamada;
 
+    // Every detail the assembly needs was read in the `orfaos` phase: a family calls nothing.
+    // ⚠️ The complete step's seam: its per-family detail reads (`familias.filhosLidos`).
     return {
-      unidade,
+      unidade: UNIDADE_IMPORTACAO_LI.familia,
       executar: async () => {
         const m = await this.montagemDoJob();
         const familia = proximaDe(m);
         if (familia === null) return this.fecharFamilias(job, m);
-
-        // A claimed variation never listed is detail-read first, one per unit (a call).
-        const pendente = pendenteDe(familia);
-        if (pendente !== null) {
-          this.registrarDetalhe(pendente, await this.lerDetalheContido(pendente));
-          return progresso({
-            familias: { cursorPaiId, filhosLidos: [...filhosLidos, pendente] },
-          });
-        }
 
         const r = await executarFamiliaLi(
           { db: this.db, jobId: this.tarefa.jobId, agoraMs: this.deps.agoraMs },
@@ -1077,18 +1147,30 @@ class DespachoImportacaoLi {
   }
 
   /**
-   * The `familias` phase's closing unit: one `nao-listado` item per selected id the store no longer
-   * lists as a family (written whole, tier 0), their counters added in the same checkpoint.
+   * The `familias` phase's closing unit (written whole, tier 0, their counters added in the same
+   * checkpoint): one `nao-listado` item per selected id the store no longer lists as a family, and
+   * — under every target but `selecionados`, whose report is its selection — one `avulso` item per
+   * LOOSE row (an orphan, a variation of a trashed parent, an unknown `tipo`), so the report accounts
+   * for every row the store listed. The assembly's own counts go to one WARN line when any is set.
    */
   private async fecharFamilias(
     job: ImportacaoLojaIntegrada,
     montagem: MontagemLi,
   ): Promise<PassoDoDespachoLi> {
     const agora = this.deps.agoraMs();
-    const itens = naoListadosLi(montagem, job.selecionados).map((id) =>
-      itemNaoListadoLi(id, agora),
-    );
+    const avulsos = job.alvo === ALVO_IMPORTACAO_LI.selecionados ? [] : montagem.avulsos;
+    const itens = [
+      ...naoListadosLi(montagem, job.selecionados).map((id) => itemNaoListadoLi(id, agora)),
+      ...avulsos.map((a) => itemAvulsoLi(a, agora)),
+    ];
     await Promise.all(itens.map((item) => gravarItemLi(this.db, this.tarefa.jobId, item)));
+    const { contagens } = montagem;
+    if (Object.values(contagens).some((n) => n > 0)) {
+      this.deps.logger.warn('[loja-integrada] importação: montagem com reivindicações ignoradas', {
+        jobId: this.tarefa.jobId,
+        ...contagens,
+      });
+    }
     const contadores = itens.reduce(
       (soma, item) => somarContadoresLi(soma, contadoresDoItemLi(item, null)),
       job.contadores,

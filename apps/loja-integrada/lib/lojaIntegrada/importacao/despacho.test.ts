@@ -24,7 +24,10 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
-import { importacaoLojaIntegradaCollection } from '@delfrance/data/admin/collections';
+import {
+  grupoDeVariacoesCollection,
+  importacaoLojaIntegradaCollection,
+} from '@delfrance/data/admin/collections';
 import {
   CAMINHO_CATEGORIAS_LI,
   CAMINHO_MARCAS_LI,
@@ -671,6 +674,117 @@ describe('Simular and aplicar', () => {
   });
 });
 
+/**
+ * Two ERP families whose variations the store's option 2 claims by EXACT SKU: `cam-vd` is green,
+ * `can-x` is `varianteDeCan`. Option 1 (blue) is already linked for this conta.
+ */
+function seedErpDuasFamilias(varianteDeCan: string): void {
+  db.seed('grupoDeVariacoes/cor', {
+    nome: 'Cor',
+    variacoes: [
+      { id: 'v-azul', nome: 'Azul' },
+      { id: 'v-verde', nome: 'Verde' },
+      { id: 'v-roxo', nome: 'Roxo' },
+    ],
+    linksVariacoesli: [
+      {
+        name: null,
+        grade_id: COR,
+        integracaoLiId: CONTA,
+        variationOptions: [
+          { li_option_id: 1, li_option_name: null, arakene_variation_id: ['v-azul'] },
+        ],
+      },
+    ],
+  });
+  for (const [raiz, filhos] of [
+    [
+      'cam',
+      [
+        ['cam-az', 'CAM-AZ', 'v-azul'],
+        ['cam-vd', 'CAM-VD', 'v-verde'],
+      ],
+    ],
+    [
+      'can',
+      [
+        ['can-az', 'CAN-AZ', 'v-azul'],
+        ['can-x', 'CAN-X', varianteDeCan],
+      ],
+    ],
+  ] as const) {
+    db.seed(`produtos/${raiz}`, { nome: raiz, sku: raiz.toUpperCase(), paiId: null });
+    for (const [id, sku, variante] of filhos) {
+      db.seed(`produtos/${id}`, { nome: id, sku, paiId: raiz, ...taxonomia(variante) });
+    }
+  }
+}
+
+const LOJA_DUAS_FAMILIAS: LojaDeProdutosLi = {
+  ativos: [
+    paiLi(100, [101, 102], { sku: 'CAM' }),
+    filhoLi(101, { sku: 'CAM-AZ', variacoes: [uriOpcaoLi(COR, 1)] }),
+    filhoLi(102, { sku: 'CAM-VD', variacoes: [uriOpcaoLi(COR, 2)] }),
+    paiLi(200, [201, 202], { sku: 'CAN' }),
+    filhoLi(201, { sku: 'CAN-AZ', variacoes: [uriOpcaoLi(COR, 1)] }),
+    filhoLi(202, { sku: 'CAN-X', variacoes: [uriOpcaoLi(COR, 2)] }),
+  ],
+};
+
+describe('claims that disagree', () => {
+  it('⚠️ EQUAL: two families whose variations were matched by EXACT SKU and claim option 2 as different variantes BOTH report evidencia-divergente — nothing learned', async () => {
+    seedErpDuasFamilias('v-roxo');
+    seedJobLi(db, JOB, CONTA, { status: 'pendente', modo: 'aplicar' });
+    const { resultados } = await rodarAteOFim({ responder: lojaCompleta(LOJA_DUAS_FAMILIAS) });
+    expect(resultados.at(-1)?.desfecho).toBe('concluido');
+    const divergente = (liId: number) => ({
+      codigo: 'evidencia-divergente',
+      acionavel: true,
+      liId,
+      referencias: [`${String(COR)}/2`],
+    });
+    expect(itens().get(100)?.pendencias).toEqual([divergente(102)]);
+    expect(itens().get(200)?.pendencias).toEqual([divergente(202)]);
+    // Linked by SKU all the same; the grupo learned nothing.
+    expect(itens().get(100)).toMatchObject({ situacaoErp: 'encontrado', acao: 'vincular' });
+    expect(db.escritasEm('grupoDeVariacoes/cor')).toEqual([]);
+  });
+
+  it('⚠️ NEAR-MISS: the same two families claiming the SAME variante ⇒ learned, and no pendência anywhere', async () => {
+    seedErpDuasFamilias('v-verde');
+    seedJobLi(db, JOB, CONTA, { status: 'pendente', modo: 'aplicar' });
+    await rodarAteOFim({ responder: lojaCompleta(LOJA_DUAS_FAMILIAS) });
+    expect(itens().get(100)?.pendencias).toEqual([]);
+    expect(itens().get(200)?.pendencias).toEqual([]);
+    expect(db.escritasEm('grupoDeVariacoes/cor')).toHaveLength(1);
+  });
+
+  it('a learning whose grupo write is lost TWICE is reported conflito-de-escrita on every family carrying the option — never as a mere missing link', async () => {
+    seedErpDuasFamilias('v-verde');
+    seedJobLi(db, JOB, CONTA, { status: 'pendente', modo: 'aplicar' });
+    // An operator saves the grupo right before each of our two writes.
+    const editar = (n: number) =>
+      db.antesDaProximaEscrita('grupoDeVariacoes/cor', async () => {
+        await grupoDeVariacoesCollection
+          .docRef(asDb(db), {}, 'cor')
+          .update({ nome: `Cor ${String(n)}` });
+        if (n === 1) editar(2);
+      });
+    editar(1);
+    const { resultados } = await rodarAteOFim({ responder: lojaCompleta(LOJA_DUAS_FAMILIAS) });
+    expect(resultados.at(-1)?.desfecho).toBe('concluido');
+    expect(jobGravado().aprendizado.conflitos).toEqual([`${String(COR)}_2`]);
+    const conflito = (liId: number) => ({
+      codigo: 'conflito-de-escrita',
+      acionavel: true,
+      liId,
+      referencias: [`${String(COR)}/2`],
+    });
+    expect(itens().get(100)?.pendencias).toEqual([conflito(102)]);
+    expect(itens().get(200)?.pendencias).toEqual([conflito(202)]);
+  });
+});
+
 /* --------------------------------- the budget -------------------------------- */
 
 describe('the time budget', () => {
@@ -946,10 +1060,10 @@ describe('the queue’s last attempt', () => {
     expect(jobGravado()).toMatchObject({ status: 'executando', seq: 1 });
   });
 
-  it('a concurrent dispatch of the SAME seq is never stamped over: thrown before the last attempt, `concorrente` on it', async () => {
+  it('another writer of the SAME seq: thrown before the last attempt; on it the job is stamped tentativas-esgotadas — never left executando with no task to carry it', async () => {
     for (const [tentativa, esperado] of [
       [0, 'throws'],
-      [2, 'concorrente'],
+      [2, 'falhou'],
     ] as const) {
       db = new FakeDb();
       seedConta(db, CONTA);
@@ -962,15 +1076,66 @@ describe('the queue’s last attempt', () => {
           .docRef(asDb(db), {}, JOB)
           .update({ atualizadoEmMs: 1 });
       });
-      const { deps } = montarDeps({ tentativa });
+      const { deps, t } = montarDeps({ tentativa });
       const execucao = despacharImportacaoLi(asDb(db), tarefa(0), deps);
       if (esperado === 'throws') {
         await expect(execucao).rejects.toMatchObject({ name: 'LiImportacaoConcorrenteError' });
+        expect(jobGravado(), String(tentativa)).toMatchObject({ status: 'executando', seq: 0 });
       } else {
-        expect((await execucao).desfecho).toBe('concorrente');
+        // The queue's last attempt: no retry of this task follows, and the other writer was an
+        // earlier attempt of it the queue already gave up on.
+        expect(await execucao).toMatchObject({
+          desfecho: 'falhou',
+          motivo: 'tentativas-esgotadas',
+        });
+        expect(jobGravado()).toMatchObject({
+          status: 'falhou',
+          motivo: 'tentativas-esgotadas',
+          seq: 0,
+        });
       }
-      expect(jobGravado(), String(tentativa)).toMatchObject({ status: 'executando', seq: 0 });
+      expect(t.envios).toEqual([]);
     }
+  });
+
+  it('⚠️ NEAR-MISS: on the last attempt, a job the other writer already moved past this seq is never stamped', async () => {
+    seedSnapshotDeFamilias([10, 20]);
+    // Another dispatch of seq 0 ENDS its slice (seq 1) while this one runs family 10.
+    db.antesDaProximaEscrita(caminhoItemLi(JOB, '10'), async () => {
+      await importacaoLojaIntegradaCollection
+        .docRef(asDb(db), {}, JOB)
+        .update({ atualizadoEmMs: 1, seq: 1 });
+    });
+    const { deps } = montarDeps({ tentativa: 2 });
+    expect((await despacharImportacaoLi(asDb(db), tarefa(0), deps)).desfecho).toBe('parado');
+    expect(jobGravado()).toMatchObject({ status: 'executando', seq: 1 });
+  });
+});
+
+/* ------------------------------ a lost reply ------------------------------ */
+
+describe('a checkpoint whose reply was lost (the SDK retried a commit that had landed)', () => {
+  it('⚠️ the END-of-dispatch checkpoint still hands off: the named successor is enqueued and the chain goes on', async () => {
+    seedSnapshotDeFamilias([10, 20, 30]);
+    db.respostaPerdidaNaProximaEscrita(caminhoJobLi(JOB));
+    const t = transporte();
+    // No unit fits: the end-of-dispatch checkpoint is the dispatch's first write.
+    const { deps } = montarDeps({ t, jaDecorridoMs: 61_000 });
+    const r = await despacharImportacaoLi(asDb(db), tarefa(0), deps);
+    expect(r.desfecho).toBe('continuado');
+    expect(jobGravado()).toMatchObject({ status: 'executando', seq: 1 });
+    expect(t.envios.map((e) => e.opcoes.id)).toEqual([`li-importacao-${JOB}-1`]);
+    const { resultados } = await rodarAteOFim({ t }, 1);
+    expect(resultados.at(-1)?.desfecho).toBe('concluido');
+  });
+
+  it('a UNIT checkpoint goes on to the next unit on the stored stamp: no throw, no retry', async () => {
+    seedSnapshotDeFamilias([10, 20, 30]);
+    db.respostaPerdidaNaProximaEscrita(caminhoJobLi(JOB));
+    const { deps } = montarDeps();
+    const r = await despacharImportacaoLi(asDb(db), tarefa(0), deps);
+    expect(r.desfecho).toBe('concluido');
+    expect([...itens().keys()]).toEqual([10, 20, 30]);
   });
 });
 
@@ -992,6 +1157,35 @@ describe('a cancel', () => {
       familias: { cursorPaiId: null, filhosLidos: [] },
     });
     expect(t.envios).toEqual([]);
+  });
+
+  it('⚠️ landing while the job’s END counts its pendências: the summary aviso is NOT synced — a cancelled job never raises or resolves it', async () => {
+    const chave = chaveDeAviso({
+      tipo: TIPO_AVISO.lojaIntegradaImportacaoComPendencias,
+      conta: CONTA,
+    });
+    seedJobLi(db, JOB, CONTA, { status: 'pendente', modo: 'aplicar' });
+    // The count pages the job's own items: the operator's Cancelar lands right then.
+    db.antesDaProximaConsulta(`${caminhoJobLi(JOB)}/itens`, async () => {
+      await cancelarImportacaoLi(asDb(db), CONTA, JOB, AGORA_MS);
+    });
+    const semSku: LojaDeProdutosLi = { ativos: [linhaProdutoLi(10, { sku: '' })] };
+    const { resultados } = await rodarAteOFim({ responder: lojaCompleta(semSku) });
+    expect(resultados.at(-1)?.desfecho).toBe('parado');
+    expect(jobGravado().status).toBe('cancelado');
+    expect(db.ler(caminhoAviso(chave))).toBeUndefined();
+  });
+
+  it('⚠️ NEAR-MISS: the same job with no cancel raises the summary aviso at its end', async () => {
+    const chave = chaveDeAviso({
+      tipo: TIPO_AVISO.lojaIntegradaImportacaoComPendencias,
+      conta: CONTA,
+    });
+    seedJobLi(db, JOB, CONTA, { status: 'pendente', modo: 'aplicar' });
+    const semSku: LojaDeProdutosLi = { ativos: [linhaProdutoLi(10, { sku: '' })] };
+    const { resultados } = await rodarAteOFim({ responder: lojaCompleta(semSku) });
+    expect(resultados.at(-1)?.desfecho).toBe('concluido');
+    expect(db.ler(caminhoAviso(chave))).toMatchObject({ resolvidoEm: null });
   });
 
   it('between two DISPATCHES, before the successor reads the job: the successor reads the cancel and does nothing', async () => {
@@ -1028,26 +1222,36 @@ describe('a cancel', () => {
 
 /* ---------------------------- a family's own calls ---------------------------- */
 
+/** A job whose listing and trash list are read, over one page of `linhas` (row views). */
+function seedSnapshotLido(linhas: readonly DocData[], fase: string): void {
+  seedJobLi(db, JOB, CONTA, {
+    status: 'executando',
+    fase,
+    listagem: { proximoOffset: null, paginas: 1, linhas: linhas.length, totalLi: linhas.length },
+    lixeira: { proximoOffset: null, paginas: 1, linhas: 0, totalLi: 0 },
+  });
+  db.seed(
+    `${caminhoJobLi(JOB)}/paginas/${idPaginaImportacaoLi(TIPO_PAGINA_IMPORTACAO_LI.listagem, 0)}`,
+    {
+      tipo: 'listagem',
+      offset: 0,
+      linhas: linhas.map((l) => vistaLi(l)),
+      linhasSemId: 0,
+      limiteLido: 100,
+      totalLi: linhas.length,
+      lidaEmMs: AGORA_MS,
+    },
+  );
+}
+
 describe('a variation a parent claims that was never a row', () => {
-  it('is detail-read as its OWN unit (a call), checkpointed in `filhosLidos`, and the next dispatch plans the family without reading it again', async () => {
+  it('is detail-read in the `orfaos` phase as its OWN unit (a call), BEFORE any family is matched, and its family is planned with it without reading it again', async () => {
     // Parent 10 claims 11, which no list carried: only its detail can say what it is.
-    seedJobLi(db, JOB, CONTA, { status: 'executando', fase: 'familias' });
-    db.seed(
-      `${caminhoJobLi(JOB)}/paginas/${idPaginaImportacaoLi(TIPO_PAGINA_IMPORTACAO_LI.listagem, 0)}`,
-      {
-        tipo: 'listagem',
-        offset: 0,
-        linhas: [vistaLi(paiLi(10, [11], { sku: 'LI-10' }))],
-        linhasSemId: 0,
-        limiteLido: 100,
-        totalLi: 1,
-        lidaEmMs: AGORA_MS,
-      },
-    );
+    seedSnapshotLido([paiLi(10, [11], { sku: 'LI-10' })], 'orfaos');
     const relogio = { agora: AGORA_MS };
     const filho = filhoLi(11, { sku: 'LI-11' });
     const loja = lojaCompleta({ ativos: [], detalhes: new Map([[11, detalheLi(filho, 10)]]) });
-    // The detail takes 60 s on the scripted clock: no family fits after it.
+    // The detail takes 60 s on the scripted clock: no other unit fits after it.
     const responder = (c: ChamadaCatalogoLi): RespostaCatalogoLi => {
       relogio.agora += 60_000;
       return loja(c);
@@ -1056,9 +1260,9 @@ describe('a variation a parent claims that was never a row', () => {
 
     const um = montarDeps({ responder, relogio, t });
     const r1 = await despacharImportacaoLi(asDb(db), tarefa(0), um.deps);
-    expect(r1).toMatchObject({ desfecho: 'continuado', unidades: 1, chamadas: 1 });
+    expect(r1).toMatchObject({ desfecho: 'continuado', fase: 'orfaos', unidades: 1, chamadas: 1 });
     expect(um.chamadas.map((c) => c.caminho)).toEqual(['/v1/produto/11/']);
-    expect(jobGravado().familias).toEqual({ cursorPaiId: null, filhosLidos: [11] });
+    expect(jobGravado().orfaos).toEqual({ cursorLiId: 11 });
     expect(itens().size).toBe(0);
 
     const dois = montarDeps({ responder, relogio, t });
@@ -1067,24 +1271,118 @@ describe('a variation a parent claims that was never a row', () => {
     expect(dois.chamadas).toEqual([]);
     // The family was planned WITH the variation its detail attached.
     expect(itens().get(10)).toMatchObject({ liId: 10, filhos: 1, situacaoErp: 'ausente' });
+    // The family phase never reads a detail of its own in this build.
+    expect(jobGravado().familias.filhosLidos).toEqual([]);
+  });
+
+  it.each([
+    ['the simple product first (id 10 < the parent 20)', 10],
+    ['the parent first (id 20 < the simple product 30)', 30],
+  ])(
+    '⚠️ a SKU the never-listed variation repeats is known before ANY family is matched — %s gives the same verdict',
+    async (_ordem, simplesId) => {
+      // A simple product with SKU `X`, and a parent claiming 21 — never listed — whose detail
+      // carries `X` too. The ERP has a root `X`: the store repeats the SKU, so neither row may be
+      // matched by it, whichever is processed first.
+      db.seed('produtos/erp-x', { nome: 'X', sku: 'X', paiId: null });
+      seedJobLi(db, JOB, CONTA, { status: 'pendente', modo: 'aplicar' });
+      const loja: LojaDeProdutosLi = {
+        ativos: [linhaProdutoLi(simplesId, { sku: 'X' }), paiLi(20, [21], { sku: 'P-20' })],
+        detalhes: new Map([[21, detalheLi(filhoLi(21, { sku: 'X' }), 20)]]),
+      };
+      const { resultados } = await rodarAteOFim({ responder: lojaCompleta(loja) });
+      expect(resultados.at(-1)?.desfecho).toBe('concluido');
+      expect(itens().get(simplesId)).toMatchObject({
+        situacaoErp: 'conflito',
+        erpId: null,
+        acao: 'nenhuma',
+        pendencias: [{ codigo: 'sku-repetido-na-loja', acionavel: true }],
+      });
+      // No link of it was written under the ERP root.
+      expect(db.idsEm('produtos/erp-x/produtolojaintegrada')).toEqual([]);
+    },
+  );
+});
+
+/**
+ * A store with one family (20 ⊃ 22) and three LOOSE rows: 21, a variation no parent claims whose
+ * detail names none; 31, a variation of the trashed parent 30; 40, a row of a `tipo` this build
+ * does not know.
+ */
+const LOJA_COM_AVULSOS: LojaDeProdutosLi = {
+  ativos: [
+    paiLi(20, [22], { sku: 'P-20' }),
+    filhoLi(21, { sku: 'F-21' }),
+    filhoLi(22, { sku: 'F-22' }),
+    filhoLi(31, { sku: 'F-31' }),
+    linhaProdutoLi(40, { sku: 'K-40', tipo: 'kit' }),
+  ],
+  lixeira: [paiLi(30, [31], { sku: 'P-30', removido: true })],
+  detalhes: new Map([[21, detalheLi(filhoLi(21, { sku: 'F-21' }), null)]]),
+};
+
+describe('rows a read skips', () => {
+  it('a live-list row that says `removido: true` is skipped — and ONE warn line says how many, ids and counts only', async () => {
+    seedJobLi(db, JOB, CONTA, { status: 'pendente' });
+    const loja: LojaDeProdutosLi = {
+      ativos: [linhaProdutoLi(10, { sku: 'LI-10' }), linhaProdutoLi(15, { removido: true })],
+    };
+    const { deps, warn } = montarDeps({ responder: lojaCompleta(loja) });
+    expect((await despacharImportacaoLi(asDb(db), tarefa(0), deps)).desfecho).toBe('concluido');
+    expect([...itens().keys()]).toEqual([10]);
+    expect(warn).toHaveBeenCalledWith(
+      '[loja-integrada] importação: leitura com linhas ignoradas',
+      expect.objectContaining({ jobId: JOB, leitura: 'listagem', foraDoFiltro: 1, semId: 0 }),
+    );
+  });
+
+  it('⚠️ NEAR-MISS: a store whose reads skip nothing logs no such line', async () => {
+    seedJobLi(db, JOB, CONTA, { status: 'pendente' });
+    const { deps, warn } = montarDeps();
+    expect((await despacharImportacaoLi(asDb(db), tarefa(0), deps)).desfecho).toBe('concluido');
+    expect(warn).not.toHaveBeenCalled();
+  });
+});
+
+describe('loose rows — no family, never matched', () => {
+  it.each([MODO_IMPORTACAO_LI.simular, MODO_IMPORTACAO_LI.aplicar])(
+    '⚠️ each reaches the report as its own `avulso` item with its informational code (%s, alvo todos) — never a silent drop',
+    async (modo) => {
+      seedJobLi(db, JOB, CONTA, { status: 'pendente', modo });
+      const { resultados } = await rodarAteOFim({ responder: lojaCompleta(LOJA_COM_AVULSOS) });
+      expect(resultados.at(-1)?.desfecho).toBe('concluido');
+      const avulso = (liId: number, tipo: string, codigo: string) => ({
+        liId,
+        tipo,
+        situacaoErp: 'avulso',
+        erpId: null,
+        acao: 'nenhuma',
+        aplicada: false,
+        pendencias: [{ codigo, acionavel: false, liId: null, referencias: [] }],
+      });
+      expect(itens().get(21)).toMatchObject(avulso(21, 'atributo_opcao', 'orfao'));
+      expect(itens().get(31)).toMatchObject(avulso(31, 'atributo_opcao', 'na-lixeira'));
+      expect(itens().get(40)).toMatchObject(avulso(40, 'desconhecido', 'tipo-desconhecido'));
+      expect([...itens().keys()].sort((a, b) => a - b)).toEqual([20, 21, 31, 40]);
+      // Counted as what they are: informational pendências, never families.
+      expect(jobGravado().contadores).toMatchObject({
+        familias: 1,
+        pendenciasInformativas: 3,
+        pendenciasAcionaveis: 0,
+      });
+    },
+  );
+
+  it('⚠️ NEAR-MISS: a `selecionados` job reports only its selection — no loose row joins it', async () => {
+    seedJobLi(db, JOB, CONTA, { status: 'pendente', alvo: 'selecionados', selecionados: [20] });
+    await rodarAteOFim({ responder: lojaCompleta(LOJA_COM_AVULSOS) });
+    expect([...itens().keys()]).toEqual([20]);
   });
 });
 
 describe('a variation read in the SAME dispatch as its family', () => {
   it('joins the family as it was stored — the dispatch never plans from a stale assembly', async () => {
-    seedJobLi(db, JOB, CONTA, { status: 'executando', fase: 'familias' });
-    db.seed(
-      `${caminhoJobLi(JOB)}/paginas/${idPaginaImportacaoLi(TIPO_PAGINA_IMPORTACAO_LI.listagem, 0)}`,
-      {
-        tipo: 'listagem',
-        offset: 0,
-        linhas: [vistaLi(paiLi(10, [11], { sku: 'LI-10' }))],
-        linhasSemId: 0,
-        limiteLido: 100,
-        totalLi: 1,
-        lidaEmMs: AGORA_MS,
-      },
-    );
+    seedSnapshotLido([paiLi(10, [11], { sku: 'LI-10' })], 'orfaos');
     const filho = filhoLi(11, { sku: 'LI-11' });
     const { deps, chamadas } = montarDeps({
       responder: lojaCompleta({ ativos: [], detalhes: new Map([[11, detalheLi(filho, 10)]]) }),
@@ -1117,15 +1415,18 @@ describe('the complete step’s seam', () => {
 /* -------------------------------- other failures ------------------------------- */
 
 describe('failures a dispatch answers itself', () => {
-  it('a 401 parks the conta like every reader, and ends the job falhou/conta-indisponivel', async () => {
-    seedJobLi(db, JOB, CONTA, { status: 'pendente', modo: 'aplicar' });
-    const { deps, t } = montarDeps({ responder: () => ({ status: 401, corpo: { erro: 'x' } }) });
-    const r = await despacharImportacaoLi(asDb(db), tarefa(0), deps);
-    // The refused request is the one call: nothing is sent after it.
-    expect(r).toMatchObject({ desfecho: 'falhou', motivo: 'conta-indisponivel', chamadas: 1 });
-    expect(db.ler(caminhoCredencial(CONTA))?.reconexaoPendente).toMatchObject({ status: 401 });
-    expect(t.envios).toEqual([]);
-  });
+  it.each([MODO_IMPORTACAO_LI.aplicar, MODO_IMPORTACAO_LI.simular])(
+    'a 401 parks the conta like every reader — under %s too, the one write a Simular makes outside its job — and ends the job falhou/conta-indisponivel',
+    async (modo) => {
+      seedJobLi(db, JOB, CONTA, { status: 'pendente', modo });
+      const { deps, t } = montarDeps({ responder: () => ({ status: 401, corpo: { erro: 'x' } }) });
+      const r = await despacharImportacaoLi(asDb(db), tarefa(0), deps);
+      // The refused request is the one call: nothing is sent after it.
+      expect(r).toMatchObject({ desfecho: 'falhou', motivo: 'conta-indisponivel', chamadas: 1 });
+      expect(db.ler(caminhoCredencial(CONTA))?.reconexaoPendente).toMatchObject({ status: 401 });
+      expect(t.envios).toEqual([]);
+    },
+  );
 
   it('a product detail OFF ITS SCHEMA is contained: logged, the product has no usable detail, and the job goes on', async () => {
     // Variation 21 is claimed by no listed parent: the `orfaos` phase reads its detail, whose
@@ -1145,6 +1446,41 @@ describe('failures a dispatch answers itself', () => {
     expect(db.ler(`${caminhoJobLi(JOB)}/detalhes/21`)).toBeUndefined();
     expect(jobGravado().orfaos).toEqual({ cursorLiId: 21 });
   });
+
+  it.each([
+    ['an EMPTY 200', ''],
+    ['an HTML 200 (a gateway page)', '<html>gateway</html>'],
+  ])(
+    '⚠️ NEAR-MISS: %s for a detail is a TRANSPORT failure — rethrown and retried, never "no usable detail": the retry attaches the variation to its family',
+    async (_caso, corpo) => {
+      const loja: LojaDeProdutosLi = {
+        ativos: [paiLi(20, [22]), filhoLi(21), filhoLi(22)],
+        detalhes: new Map([[21, detalheLi(filhoLi(21), 20)]]),
+      };
+      seedJobLi(db, JOB, CONTA, { status: 'pendente' });
+      let falhas = 1;
+      const base = lojaCompleta(loja);
+      const responder = (c: ChamadaCatalogoLi): RespostaCatalogoLi => {
+        if (c.caminho === '/v1/produto/21/' && falhas > 0) {
+          falhas -= 1;
+          return { status: 200, corpo: null, texto: corpo };
+        }
+        return base(c);
+      };
+      const t = transporte();
+      const um = montarDeps({ responder, t });
+      await expect(despacharImportacaoLi(asDb(db), tarefa(0), um.deps)).rejects.toMatchObject({
+        name: 'LiSchemaError',
+      });
+      // Nothing moved past the variation: the retry reads it again.
+      expect(jobGravado().orfaos).toEqual({ cursorLiId: null });
+
+      const { resultados } = await rodarAteOFim({ responder, t, tentativa: 1 });
+      expect(resultados.at(-1)?.desfecho).toBe('concluido');
+      expect(itens().get(20)).toMatchObject({ filhos: 2, pendencias: [] });
+      expect(itens().get(21)).toBeUndefined();
+    },
+  );
 });
 
 /* -------------------------------- the log line -------------------------------- */

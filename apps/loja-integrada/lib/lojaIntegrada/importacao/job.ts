@@ -48,6 +48,12 @@
  * A checkpoint's patch is derived from the dispatch's progress, which started from its job read. On
  * a lost precondition the job is re-read and the patch is DROPPED, never written over the winner:
  *
+ *  - the stored job holds the patch AS WRITTEN — every one of its fields — ⇒ it is OUR write
+ *    ({@link guardaOPatchLi}), and the checkpoint counts as `gravado` on the stored stamp. The
+ *    Admin SDK retries a commit on its own (ABORTED, UNAVAILABLE, RESOURCE_EXHAUSTED) with the same
+ *    precondition: when the first commit landed and only its reply was lost, the retry meets the
+ *    stamp of its own write and answers 9. Read as a lost race, the end-of-dispatch checkpoint
+ *    would stop with nothing queued and the job would sit `executando` at `seq + 1`;
  *  - the job no longer runs at this `seq` (cancelled, ended, gone, or its `seq` moved) ⇒ `parar`;
  *  - it still runs at this `seq` — another dispatch of the same `seq` wrote it (a cut dispatch the
  *    platform kept alive, say) ⇒ {@link LiImportacaoConcorrenteError}. The task THROWS, and Cloud
@@ -56,6 +62,16 @@
  * A terminal stamp is different: its cause (the switch, the conta, the attempts, the valve, the end
  * of the work) does not come from the job's progress, so a lost one re-reads and re-decides — and
  * stamps only a job that still runs at its `seq` (at most {@link MAX_TENTATIVAS_ESCRITA_JOB_LI}).
+ * A stamp or a cancel whose own write is found stored counts as written, the same way.
+ *
+ * ## Is it our write? ({@link guardaOPatchLi}) — the fold
+ *
+ * The RAW stored document against the patch, field by field, through the app's one JSON comparator
+ * (`core/igualdadeJsonLi.ts`), which folds key order and nothing else. Equal: every patch field
+ * stored with the same value (the progress, `status`, the ms stamps, `seq`). Distinct: any one field
+ * differing — another writer's stamp one millisecond apart, a cursor one unit further, `1` vs
+ * `'1'`. Every patch carries the writer's own ms stamp, so another writer's patch matches ours
+ * only when it is ours in every byte; adopting such a write changes nothing.
  *
  * ## Units
  *
@@ -102,6 +118,8 @@ import {
   respostaItensImportacaoLiSchema,
   statusImportacaoLiSchema,
 } from '@delfrance/schemas';
+
+import { deepEqual } from '../core/igualdadeJsonLi';
 
 /** The flow every call and switch line of an import carries (`jsonPayload.fluxo`). */
 export const FLUXO_IMPORTACAO_LI = 'importacao';
@@ -177,6 +195,29 @@ function jobDoSnapshot(jobId: string, snap: DocumentSnapshot): JobLidoLi | null 
 export async function lerJobLi(db: Firestore, jobId: string): Promise<JobLidoLi | null> {
   const snap = await importacaoLojaIntegradaCollection.docRef(db, {}, jobId).get();
   return jobDoSnapshot(jobId, snap);
+}
+
+/** A re-read after a lost write: the job, and its RAW stored fields ({@link guardaOPatchLi}). */
+interface ReleituraLi {
+  readonly lido: JobLidoLi;
+  readonly dados: unknown;
+}
+
+async function relerJob(db: Firestore, jobId: string): Promise<ReleituraLi | null> {
+  const snap = await importacaoLojaIntegradaCollection.docRef(db, {}, jobId).get();
+  const lido = jobDoSnapshot(jobId, snap);
+  return lido === null ? null : { lido, dados: snap.data() };
+}
+
+/**
+ * Whether the RAW stored job holds every field of `patch` with the value written (module header,
+ * "Is it our write?"): the lost write was our own, stored before its reply was lost. Pure.
+ */
+export function guardaOPatchLi(dados: unknown, patch: Readonly<Record<string, unknown>>): boolean {
+  if (typeof dados !== 'object' || dados === null) return false;
+  return Object.entries(patch).every(
+    ([chave, valor]) => Object.hasOwn(dados, chave) && deepEqual(Reflect.get(dados, chave), valor),
+  );
 }
 
 /**
@@ -431,10 +472,12 @@ async function gravarCheckpoint(
     if (!isFailedPrecondition(err) && !isNotFound(err)) throw err;
   }
   // Lost: re-read, and NEVER re-apply this patch (module header).
-  const lido = await lerJobLi(db, alvo.jobId);
-  if (lido === null) return { tipo: 'parar', job: null };
-  if (decidirDespachoLi(lido.job, alvo.seq) !== DECISAO_DESPACHO_LI.executar) {
-    return { tipo: 'parar', job: lido.job };
+  const relido = await relerJob(db, alvo.jobId);
+  if (relido === null) return { tipo: 'parar', job: null };
+  // Our own write, stored before its reply was lost: written, on the stored stamp.
+  if (guardaOPatchLi(relido.dados, patch)) return { tipo: 'gravado', versao: relido.lido.versao };
+  if (decidirDespachoLi(relido.lido.job, alvo.seq) !== DECISAO_DESPACHO_LI.executar) {
+    return { tipo: 'parar', job: relido.lido.job };
   }
   throw new LiImportacaoConcorrenteError(alvo.jobId, alvo.seq);
 }
@@ -512,15 +555,24 @@ export async function encerrarImportacaoLi(
   });
   const ref = importacaoLojaIntegradaCollection.docRef(db, {}, alvo.jobId);
   let versao = alvo.versao;
-  for (let tentativa = 0; tentativa < MAX_TENTATIVAS_ESCRITA_JOB_LI; tentativa += 1) {
+  let escritas = 0;
+  for (;;) {
     if (versao === null) {
-      const lido = await lerJobLi(db, alvo.jobId);
-      if (lido === null) return { tipo: 'ja-encerrado', job: null };
-      if (decidirDespachoLi(lido.job, alvo.seq) !== DECISAO_DESPACHO_LI.executar) {
-        return { tipo: 'ja-encerrado', job: lido.job };
+      const relido = await relerJob(db, alvo.jobId);
+      if (relido === null) return { tipo: 'ja-encerrado', job: null };
+      // After a lost write: our own stamp, stored before its reply was lost (module header).
+      if (escritas > 0 && guardaOPatchLi(relido.dados, patch)) {
+        return { tipo: 'encerrado', versao: relido.lido.versao };
       }
-      versao = lido.versao;
+      if (decidirDespachoLi(relido.lido.job, alvo.seq) !== DECISAO_DESPACHO_LI.executar) {
+        return { tipo: 'ja-encerrado', job: relido.lido.job };
+      }
+      if (escritas >= MAX_TENTATIVAS_ESCRITA_JOB_LI) {
+        throw new LiImportacaoConcorrenteError(alvo.jobId, alvo.seq);
+      }
+      versao = relido.lido.versao;
     }
+    escritas += 1;
     try {
       const { writeTime } = await ref.update(patch, { lastUpdateTime: versao });
       return { tipo: 'encerrado', versao: writeTime };
@@ -530,7 +582,6 @@ export async function encerrarImportacaoLi(
       versao = null;
     }
   }
-  throw new LiImportacaoConcorrenteError(alvo.jobId, alvo.seq);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -562,20 +613,26 @@ export async function cancelarImportacaoLi(
   agoraMs: number,
 ): Promise<ResultadoCancelamentoLi> {
   const ref = importacaoLojaIntegradaCollection.docRef(db, {}, jobId);
-  for (let tentativa = 0; tentativa < MAX_TENTATIVAS_ESCRITA_JOB_LI; tentativa += 1) {
+  const patch = importacaoLojaIntegradaCollection.parseMerge({
+    status: STATUS_IMPORTACAO_LI.cancelado,
+    atualizadoEmMs: agoraMs,
+    concluidoEmMs: agoraMs,
+  });
+  let escritas = 0;
+  for (;;) {
     // Every decision below is derived from THIS attempt's read.
-    const lido = await lerJobDaContaLi(db, contaId, jobId);
+    const relido = await relerJob(db, jobId);
+    const lido = relido !== null && relido.lido.job.integracaoId === contaId ? relido.lido : null;
     if (lido === null) return { tipo: 'nao-encontrada' };
+    // After a lost write: our own cancel, stored before its reply was lost (module header).
+    if (escritas > 0 && guardaOPatchLi(relido?.dados, patch)) {
+      return { tipo: 'cancelado', resposta: projetarImportacaoLi(jobId, lido.job) };
+    }
     if (!STATUS_EM_CURSO_IMPORTACAO_LI.has(lido.job.status)) return { tipo: 'encerrada' };
-    const patch = {
-      status: STATUS_IMPORTACAO_LI.cancelado,
-      atualizadoEmMs: agoraMs,
-      concluidoEmMs: agoraMs,
-    };
+    if (escritas >= MAX_TENTATIVAS_ESCRITA_JOB_LI) throw new LiCancelamentoEmConflitoError(jobId);
+    escritas += 1;
     try {
-      await ref.update(importacaoLojaIntegradaCollection.parseMerge(patch), {
-        lastUpdateTime: lido.versao,
-      });
+      await ref.update(patch, { lastUpdateTime: lido.versao });
       return {
         tipo: 'cancelado',
         resposta: projetarImportacaoLi(jobId, { ...lido.job, ...patch }),
@@ -585,5 +642,4 @@ export async function cancelarImportacaoLi(
       if (!isFailedPrecondition(err) && !isNotFound(err)) throw err;
     }
   }
-  throw new LiCancelamentoEmConflitoError(jobId);
 }

@@ -567,8 +567,10 @@ export type EvidenciaOpcaoLi = z.infer<typeof evidenciaOpcaoLiSchema>;
 /**
  * Where a store product stands against the ERP: `vinculado` (its link for this conta exists),
  * `encontrado` (found by exactly one SKU, not linked yet), `ausente` (not in the ERP), `conflito`
- * (two owners, two SKU hits or a shape mismatch: in no target but `todos`/`selecionados`),
- * `nao-listado` (a selected id the store's listing lacks).
+ * (two owners, two SKU hits or a shape mismatch: in no target but `todos`/`selecionados`, and
+ * reported under every target), `nao-listado` (a selected id the store's listing lacks), `avulso`
+ * (a live row that belongs to no family — an orphan variation, a variation of a trashed parent, a
+ * row of an unknown `tipo` — never matched against the ERP, reported with its informational code).
  */
 export const situacaoErpItemLiSchema = z.enum([
   'vinculado',
@@ -576,6 +578,7 @@ export const situacaoErpItemLiSchema = z.enum([
   'ausente',
   'conflito',
   'nao-listado',
+  'avulso',
 ]);
 export type SituacaoErpItemLi = z.infer<typeof situacaoErpItemLiSchema>;
 /** Named members of {@link situacaoErpItemLiSchema} — see `delfrance/prefer-schema-enum`. */
@@ -585,6 +588,7 @@ export const SITUACAO_ERP_ITEM_LI = {
   ausente: 'ausente',
   conflito: 'conflito',
   naoListado: 'nao-listado',
+  avulso: 'avulso',
 } as const satisfies Record<string, SituacaoErpItemLi>;
 
 /** What the run did — or, under Simular, would do — for an item. */
@@ -611,7 +615,10 @@ export const pendenciaItemLiSchema = z.object({
 });
 export type PendenciaItemLi = z.infer<typeof pendenciaItemLiSchema>;
 
-/** `itens/{liId}` — the report row of one store parent or simple product. */
+/**
+ * `itens/{liId}` — the report row of one store parent or simple product, of a selected id the
+ * listing lacks (`nao-listado`), or of a loose row (`avulso`).
+ */
 export const itemImportacaoLiSchema = z.object({
   liId: idLiSchema,
   tipo: tipoProdutoLiSchema,
@@ -796,10 +803,17 @@ export const importacaoLojaIntegradaSchema = z.object({
       filhosLidos: z.array(idLiSchema).default(() => []),
     })
     .default(() => ({ cursorPaiId: null, filhosLidos: [] })),
-  /** The `aprendizado` phase's cursor: the last evidence document decided (key order). */
+  /**
+   * The `aprendizado` phase's cursor: the last evidence document decided (key order), and the claim
+   * document ids (`<gradeId>_<opcaoId>`) whose learning lost its grupo write TWICE — reported
+   * `conflito-de-escrita` by the families that carry the option, never forced.
+   */
   aprendizado: z
-    .object({ cursorEvidenciaId: z.string().nullable().default(null) })
-    .default(() => ({ cursorEvidenciaId: null })),
+    .object({
+      cursorEvidenciaId: z.string().nullable().default(null),
+      conflitos: z.array(z.string().min(1)).default(() => []),
+    })
+    .default(() => ({ cursorEvidenciaId: null, conflitos: [] })),
   /** The `revisao` phase's cursor, and the previous `aplicar` job its list was carried from. */
   revisao: z
     .object({

@@ -38,11 +38,17 @@
  *    `update({ linksVariacoesli: <the decision's whole merged array>, ultimaModificacao },
  *    { lastUpdateTime: <the memo's stamp> })`, and the memo takes the write's `writeTime`. A lost
  *    precondition (9; a deleted grupo fails it too, and 5 is read the same way) re-reads THAT grupo
- *    and re-decides ONCE over the memo as it now stands — the decision re-runs every check against
+ *    and re-decides over the memo as it now stands — the decision re-runs every check against
  *    what the other writer left (the variation screen's link-by-link merge keeps both sides) — and
- *    writes that grupo's new entry, if any, on the fresh stamp. A second loss reports the grupo's
- *    learnings as `conflito-de-escrita` and the job goes on: an option left unlearned is only
- *    reported, and the next run re-collects its claims. No delete, no re-point, nothing dropped.
+ *    writes that grupo's new entry, if any, on the fresh stamp. From then on EVERY grupo still to
+ *    write is written from the re-run decision, never from the first: the other writer's edit can
+ *    refuse a later grupo's learning too (a `(conta, grade)` entry it added to the grupo we lost on
+ *    makes a new entry of that grade elsewhere `grade-em-outro-grupo`), and the refusal is reported.
+ *    A second loss on one grupo reports its learnings as `conflito-de-escrita`, and their claim ids
+ *    ride the job's cursor (`aprendizado.conflitos`), so the families carrying those options say so
+ *    (a re-run of the decision would read them as merely unlinked). The job goes on: an option left
+ *    unlearned is only reported, and the next run re-collects its claims. No delete, no re-point,
+ *    nothing dropped.
  *
  * ⚠️ Accepted residual: a dispatch that dies AFTER some grupo writes landed and BEFORE its
  * checkpoint re-runs the phase over a memo that already holds them. Those learnings then read as
@@ -55,8 +61,9 @@
  * ## For the report ({@link recusasDoAprendizadoLi}, {@link pendenciaDaRecusaLi})
  *
  * Why an option stays unlearned is the decision re-run over the grupos as they stand (the memo, plus
- * the overlay under Simular). `divergente` and `variante-disputada` read as `evidencia-divergente`
- * (the claims disagree), every other motivo as `variacao-sem-vinculo`.
+ * the overlay under Simular), with the job's `aprendizado.conflitos` over it. `divergente` and
+ * `variante-disputada` read as `evidencia-divergente` (the claims disagree), a write lost twice as
+ * `conflito-de-escrita`, every other motivo as `variacao-sem-vinculo`.
  *
  * ## The reads, against the indexes (root rule 1)
  *
@@ -215,32 +222,42 @@ export function evidenciasParaAprenderLi(
   }));
 }
 
+/** Why an option stays unlearned, as the report reads it: the decision's motivo, or a write lost twice. */
+export type RecusaNoRelatorioLi = RecusaDoAprendizadoLi['motivo'];
+
 /**
  * Why each option of the job's evidence stays unlearned, keyed by its claim document id
  * (`<gradeId>_<opcaoId>`): the decision re-run over `grupos` as they stand (module header, "For the
- * report"). An option absent from the map is learned, already linked, or has no claim. Pure.
+ * report"), and — over it — the claim ids whose learning lost its write twice (`conflitos`, the
+ * job's `aprendizado.conflitos`): the re-run would read those as learnable, not as the conflict
+ * they met. An option absent from the map is learned, already linked, or has no claim. Pure.
  */
 export function recusasDoAprendizadoLi(
   contaId: string,
   evidencias: readonly EvidenciaDoJobLi[],
   grupos: readonly GrupoComLinksLi[],
-): ReadonlyMap<string, MotivoRecusaAprendizadoLi> {
+  conflitos: readonly string[] = [],
+): ReadonlyMap<string, RecusaNoRelatorioLi> {
   const decisao = decidirAprendizadoLi({
     contaId,
     evidencias: evidenciasParaAprenderLi(evidencias),
     grupos,
   });
-  return new Map(
+  const recusas = new Map<string, RecusaNoRelatorioLi>(
     decisao.recusados.map((r) => [idEvidenciaImportacaoLi(r.gradeId, r.opcaoId), r.motivo]),
   );
+  for (const id of conflitos) recusas.set(id, PENDENCIA_IMPORTACAO_LI.conflitoDeEscrita);
+  return recusas;
 }
 
 /** The report's pendência for a refused learning (module header, "For the report"). Pure. */
 export function pendenciaDaRecusaLi(
-  motivo: MotivoRecusaAprendizadoLi,
+  motivo: RecusaNoRelatorioLi,
 ):
   | typeof PENDENCIA_IMPORTACAO_LI.evidenciaDivergente
-  | typeof PENDENCIA_IMPORTACAO_LI.variacaoSemVinculo {
+  | typeof PENDENCIA_IMPORTACAO_LI.variacaoSemVinculo
+  | typeof PENDENCIA_IMPORTACAO_LI.conflitoDeEscrita {
+  if (motivo === PENDENCIA_IMPORTACAO_LI.conflitoDeEscrita) return motivo;
   return motivo === MOTIVO_RECUSA_APRENDIZADO_LI.divergente ||
     motivo === MOTIVO_RECUSA_APRENDIZADO_LI.varianteDisputada
     ? PENDENCIA_IMPORTACAO_LI.evidenciaDivergente
@@ -329,7 +346,7 @@ export async function executarAprendizadoLi(
 ): Promise<ResultadoDoAprendizadoLi> {
   const lidas = await lerEvidenciasDoJobLi(deps.db, deps.jobId);
   const evidencias = evidenciasParaAprenderLi(lidas);
-  const aprendizado = { cursorEvidenciaId: lidas.at(-1)?.id ?? null };
+  const aprendizado = { cursorEvidenciaId: lidas.at(-1)?.id ?? null, conflitos: [] };
   const decidir = (grupos: MemoDeGruposLi): DecisaoAprendizadoLi =>
     decidirAprendizadoLi({ contaId: deps.contaId, evidencias, grupos });
   const primeira = decidir(memo);
@@ -354,36 +371,54 @@ export async function executarAprendizadoLi(
   }
 
   let atual = memo;
+  // The decision every remaining grupo is written from: the first one, until a write is lost —
+  // then the one re-run over the memo with the fresh grupo in it (module header).
+  let vigente = primeira;
   const aprendidos: AprendidoLi[] = [];
   const recusados: RecusaDoAprendizadoLi[] = [...primeira.recusados];
   const gruposGravados: string[] = [];
-  for (const { grupoId, linksVariacoesli } of primeira.grupos) {
+  /** Refusals by `vigente` of what `primeira` meant to learn into `grupoId`, if they changed. */
+  const recusasNovas = (grupoId: string): void => {
+    if (vigente === primeira) return;
+    for (const a of doGrupo(primeira, grupoId)) {
+      const r = vigente.recusados.find((x) => x.gradeId === a.gradeId && x.opcaoId === a.opcaoId);
+      if (r !== undefined) recusados.push(r);
+    }
+  };
+
+  for (const { grupoId } of primeira.grupos) {
+    const entrada = vigente.grupos.find((g) => g.grupoId === grupoId);
     const grupo = atual.find((g) => g.id === grupoId);
-    if (grupo === undefined) continue; // the decision only changes grupos of the memo
-    const versao = await gravarGrupo(deps, grupo, linksVariacoesli);
+    if (entrada === undefined || grupo === undefined) {
+      // The current decision no longer changes this grupo: what it meant to learn is reported.
+      recusasNovas(grupoId);
+      continue;
+    }
+    const versao = await gravarGrupo(deps, grupo, entrada.linksVariacoesli);
     if (versao !== null) {
-      atual = trocarNoMemo(atual, grupoId, { ...grupo, linksVariacoesli, versao });
-      aprendidos.push(...doGrupo(primeira, grupoId));
+      atual = trocarNoMemo(atual, grupoId, {
+        ...grupo,
+        linksVariacoesli: entrada.linksVariacoesli,
+        versao,
+      });
+      recusasNovas(grupoId);
+      aprendidos.push(...doGrupo(vigente, grupoId));
       gruposGravados.push(grupoId);
       continue;
     }
 
-    // Lost: re-read THIS grupo and re-decide once over the memo as it now stands.
+    // Lost: re-read THIS grupo and re-decide once over the memo as it now stands. Every grupo
+    // still to write is written from THIS decision from now on, never from the stale one.
     const fresco = await lerGrupoLi(deps.db, grupoId);
     atual = trocarNoMemo(atual, grupoId, fresco);
-    const segunda = decidir(atual);
-    for (const r of segunda.recusados) {
-      const eraDesteGrupo = doGrupo(primeira, grupoId).some(
-        (a) => a.gradeId === r.gradeId && a.opcaoId === r.opcaoId,
-      );
-      if (eraDesteGrupo) recusados.push(r);
-    }
-    const entrada = segunda.grupos.find((g) => g.grupoId === grupoId);
-    if (fresco === null || entrada === undefined) continue;
-    const versao2 = await gravarGrupo(deps, fresco, entrada.linksVariacoesli);
+    vigente = decidir(atual);
+    recusasNovas(grupoId);
+    const segunda = vigente.grupos.find((g) => g.grupoId === grupoId);
+    if (fresco === null || segunda === undefined) continue;
+    const versao2 = await gravarGrupo(deps, fresco, segunda.linksVariacoesli);
     if (versao2 === null) {
-      // A second loss: reported, never forced. The next dispatch re-reads the memo.
-      for (const a of doGrupo(segunda, grupoId)) {
+      // A second loss: reported, never forced. The next run re-reads the memo.
+      for (const a of doGrupo(vigente, grupoId)) {
         recusados.push({
           gradeId: a.gradeId,
           opcaoId: a.opcaoId,
@@ -394,15 +429,20 @@ export async function executarAprendizadoLi(
     }
     atual = trocarNoMemo(atual, grupoId, {
       ...fresco,
-      linksVariacoesli: entrada.linksVariacoesli,
+      linksVariacoesli: segunda.linksVariacoesli,
       versao: versao2,
     });
-    aprendidos.push(...doGrupo(segunda, grupoId));
+    aprendidos.push(...doGrupo(vigente, grupoId));
     gruposGravados.push(grupoId);
   }
 
   return {
-    aprendizado,
+    aprendizado: {
+      ...aprendizado,
+      conflitos: recusados
+        .filter((r) => r.motivo === PENDENCIA_IMPORTACAO_LI.conflitoDeEscrita)
+        .map((r) => idEvidenciaImportacaoLi(r.gradeId, r.opcaoId)),
+    },
     aprendizadosSimulados: [],
     memo: atual,
     aprendidos,

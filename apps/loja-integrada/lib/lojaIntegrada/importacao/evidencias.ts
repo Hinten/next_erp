@@ -36,8 +36,9 @@
  *     holding one entry per DISTINCT `(grupo, variante)` claimed, never one per variation, so a
  *     popular option cannot grow its document without bound.
  *
- * A variation never seen as a row and not detail-read yet (`semDetalhe`) has no view and gives no
- * claim; the owner's capture listed every variation a parent claims as a row.
+ * A variation never seen as a row was detail-read in the `orfaos` phase, before this one, and
+ * claims through that detail; one whose detail was unusable (`semDetalhe`) has no view and gives no
+ * claim. The owner's capture listed every variation a parent claims as a row.
  *
  * ## The writes (root rule 7, tier 0)
  *

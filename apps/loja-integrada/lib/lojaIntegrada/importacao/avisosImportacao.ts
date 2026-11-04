@@ -9,7 +9,8 @@
  *    with `alvo: todos` that ends `concluido` with ZERO actionable pendências: a job of a narrower
  *    target (`selecionados`, `naoNoErp`, `jaNoErp`) never resolves it — its scope does not contain
  *    the raising job's — and neither does a job that failed or was cancelled. Informational codes
- *    never keep it open.
+ *    never keep it open. The caller decides on a FRESH read of its job (`despacho.ts`, "The summary
+ *    aviso"); a Cancelar landing between that read and the job's stamp is its stated residual.
  *  - **`lojaIntegradaCategoriaSemVinculo`** (one per store category): raised by the complete step
  *    ({@link avisarCategoriaSemVinculoLi}) for a product imported without a category; resolved by a
  *    later `aplicar` job's catalogue phase ({@link resolverCategoriasSemVinculoLi}) once the category

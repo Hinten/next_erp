@@ -34,6 +34,12 @@
  *    `create` refusals (`undefined`, and neither sentinel is modelled in it),
  *    and its log entry carries `sobrescrita: true`;
  *  - every write resolves `{ writeTime }`;
+ *  - a LOST REPLY ({@link FakeDb.respostaPerdidaNaProximaEscrita}, step 9): the next guarded
+ *    `update` on a path LANDS and then rejects gRPC 9 — what the Admin SDK reports when a commit
+ *    landed, its reply was lost (UNAVAILABLE), and the SDK's own retry of the same commit met the
+ *    stamp of its own write. The caller sees a lost precondition for a write that is stored;
+ *  - a hook BEFORE a query is answered ({@link FakeDb.antesDaProximaConsulta}, step 9): the
+ *    one-shot window a concurrent writer lands in while a reader pages a collection;
  *  - the `{ __increment: n }` sentinel ({@link increment}), APPLIED on write,
  *    because `escreverAviso` writes `deps.increment(1)`;
  *  - the `{ __arrayUnion: [...] }` sentinel ({@link arrayUnion}), APPLIED on
@@ -505,6 +511,8 @@ export class FakeDb {
   private readonly falhasDeLeitura = new Map<string, Error>();
   private readonly falhasDeEscrita = new Map<string, Error>();
   private readonly falhasDeConsulta = new Map<string, Error>();
+  private readonly respostasPerdidas = new Set<string>();
+  private readonly ganchosDeConsulta = new Map<string, (() => Promise<void> | void)[]>();
   private lotes = 0;
   private idsAutomaticos = 0;
 
@@ -562,6 +570,15 @@ export class FakeDb {
     else this.falhasDeLeitura.set(caminho, err);
   }
 
+  /**
+   * Run `fn` right before the NEXT query on `colecao` is answered (one-shot; queue several to
+   * intercept several): the window a concurrent writer lands in while a reader pages a collection.
+   * `fn` may write through this same fake.
+   */
+  antesDaProximaConsulta(colecao: string, fn: () => Promise<void> | void): void {
+    this.ganchosDeConsulta.set(colecao, [...(this.ganchosDeConsulta.get(colecao) ?? []), fn]);
+  }
+
   /** Every query on `colecao` rejects with `err` until cleared with `null`. */
   falharConsulta(colecao: string, err: Error | null): void {
     if (err === null) this.falhasDeConsulta.delete(colecao);
@@ -572,6 +589,15 @@ export class FakeDb {
   falharEscrita(caminho: string, err: Error | null): void {
     if (err === null) this.falhasDeEscrita.delete(caminho);
     else this.falhasDeEscrita.set(caminho, err);
+  }
+
+  /**
+   * The NEXT guarded `update` on `caminho` (one with a `lastUpdateTime`) lands, and then rejects
+   * gRPC 9 (one-shot; module header, "a LOST REPLY"): the SDK retried a commit whose reply was lost,
+   * and the retry met its own write's stamp. Any other write on the path is not affected.
+   */
+  respostaPerdidaNaProximaEscrita(caminho: string): void {
+    this.respostasPerdidas.add(caminho);
   }
 
   private proximoCarimbo(): CarimboFake {
@@ -665,6 +691,10 @@ export class FakeDb {
         if (recusa !== null || atual === undefined) throw recusa ?? grpc(5, 'NOT_FOUND');
         const writeTime = this.registrar('update', caminho, patch);
         this.store.set(caminho, { data: this.aplicar(atual.data, patch), updateTime: writeTime });
+        if (precondicao?.lastUpdateTime !== undefined && this.respostasPerdidas.delete(caminho)) {
+          // Stored, and the SDK's retry of the same commit met its own stamp (module header).
+          throw grpc(9, 'FAILED_PRECONDITION');
+        }
         return { writeTime };
       },
       delete: async (precondicao?: unknown) => {
@@ -901,7 +931,13 @@ export class FakeDb {
         }
         return derivar({ apos: { id: doc.id, data: structuredClone(data ?? {}) } });
       },
-      get: () => this.buscar(colecao, grupo, estado),
+      get: async () => {
+        const fila = this.ganchosDeConsulta.get(colecao);
+        const gancho = fila?.shift();
+        if (fila !== undefined && fila.length === 0) this.ganchosDeConsulta.delete(colecao);
+        if (gancho !== undefined) await gancho();
+        return this.buscar(colecao, grupo, estado);
+      },
     };
   }
 

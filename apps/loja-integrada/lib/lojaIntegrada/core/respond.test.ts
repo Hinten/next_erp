@@ -246,12 +246,13 @@ describe('the fixed answers', () => {
     expect(corpoEncerrada).toMatchObject({ code: CODIGO_ERRO_LI.importacaoEncerrada });
     // Near-miss: only the running-import answers carry a jobId.
     expect(corpoEncerrada).not.toHaveProperty('jobId');
-    const conflito = respostaCancelamentoEmConflito('job-vivo');
+    const conflito = respostaCancelamentoEmConflito();
     expect(conflito.status).toBe(503);
-    expect(await conflito.json()).toMatchObject({
-      code: CODIGO_ERRO_LI.importacaoEmAndamento,
-      jobId: 'job-vivo',
-    });
+    const corpoConflito = (await conflito.json()) as Record<string, unknown>;
+    expect(corpoConflito).toMatchObject({ code: CODIGO_ERRO_LI.importacaoEmConflito });
+    // ⚠️ NEAR-MISS: never the start route's "attach to it" code, and no jobId.
+    expect(corpoConflito.code).not.toBe(CODIGO_ERRO_LI.importacaoEmAndamento);
+    expect(corpoConflito).not.toHaveProperty('jobId');
   });
 
   it('every refusal parses as the shared error envelope', async () => {
@@ -264,7 +265,7 @@ describe('the fixed answers', () => {
       respostaImportacaoNaoEncontrada(),
       respostaImportacaoEmAndamento('job-vivo'),
       respostaImportacaoEncerrada(),
-      respostaCancelamentoEmConflito('job-vivo'),
+      respostaCancelamentoEmConflito(),
       respostaChamadasDesligadas(),
       respostaTokenNaRef(),
       respostaTokenDeOutraConta(),

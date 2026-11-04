@@ -9,7 +9,8 @@
  *
  *  1. The root through the cascade (`resolverRaizLi`).
  *  2. The target (`familiaNoAlvoLi`): a family outside it stops here — no variation resolved, no
- *     link, no item.
+ *     link, no item — unless it is in CONFLICT under `jaNoErp`/`naoNoErp`, which is reported with
+ *     its conflict and no link (`plano.ts`, "The target").
  *  3. A matched parent's variations (`resolverFilhosLi`), resolved against the grupos the caller
  *     passes: the dispatch's memo, plus, under Simular, the overlay of what the job would have
  *     learned (`gruposParaResolverLi`), so a Simular verdict equals an `aplicar` one.
@@ -31,12 +32,12 @@ import {
   type GrupoComLinksLi,
   type ImportacaoLojaIntegrada,
   type ItemImportacaoLi,
-  type MotivoRecusaAprendizadoLi,
   SITUACAO_ERP_ITEM_LI,
   TIPO_PRODUTO_LI,
 } from '@delfrance/schemas';
 
 import type { FamiliaLi } from './familias';
+import type { RecusaNoRelatorioLi } from './gruposLi';
 import { type PlanoDaFamiliaLi, planejarFamiliaLi } from './plano';
 import { contadoresDoItemLi, gravarItemLi, montarItemDaFamiliaLi } from './relatorio';
 import {
@@ -64,13 +65,13 @@ export interface ContextoDasFamiliasLi {
   readonly skusRepetidos: ReadonlySet<string>;
   /** What options resolve against: `gruposParaResolverLi(memo, job)`. */
   readonly grupos: readonly GrupoComLinksLi[];
-  /** `recusasDoAprendizadoLi` over the job's evidence and the same grupos. */
-  readonly recusasDoAprendizado: ReadonlyMap<string, MotivoRecusaAprendizadoLi>;
+  /** `recusasDoAprendizadoLi` over the job's evidence, the same grupos and its write conflicts. */
+  readonly recusasDoAprendizado: ReadonlyMap<string, RecusaNoRelatorioLi>;
 }
 
 /** How one family unit ended. */
 export type ResultadoDaFamiliaLi =
-  /** Outside the job's target: nothing resolved past the root, nothing written. */
+  /** Outside the job's target and not reported: nothing resolved past the root, nothing written. */
   | { readonly tipo: 'fora-do-alvo'; readonly plano: PlanoDaFamiliaLi }
   /** Planned, linked (or decided) and reported; `contadores` is the item's delta. */
   | {
@@ -111,7 +112,7 @@ export async function executarFamiliaLi(
     skusRepetidos: ctx.skusRepetidos,
     recusasDoAprendizado: ctx.recusasDoAprendizado,
   });
-  if (!plano.noAlvo) return { tipo: 'fora-do-alvo', plano };
+  if (!plano.relatar) return { tipo: 'fora-do-alvo', plano };
 
   const vinculos = await vincularFamiliaLi({ ...resolucao, modo: ctx.job.modo }, plano);
   const item = montarItemDaFamiliaLi({

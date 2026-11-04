@@ -158,10 +158,10 @@ describe('POST …/cancelar', () => {
     instalar();
     const res = await post();
     expect(res.status).toBe(503);
-    expect(erroContaLojaIntegradaSchema.parse(await res.json())).toMatchObject({
-      code: CODIGO_ERRO_LI.importacaoEmAndamento,
-      jobId: JOB,
-    });
+    const corpo = erroContaLojaIntegradaSchema.parse(await res.json());
+    expect(corpo.code).toBe(CODIGO_ERRO_LI.importacaoEmConflito);
+    // ⚠️ NEAR-MISS: never the start route's "attach to the running job" answer.
+    expect(corpo.jobId).toBeUndefined();
     expect(db.ler(caminhoJobLi(JOB))).toMatchObject({
       status: 'executando',
       pausas429: MAX_TENTATIVAS_ESCRITA_JOB_LI,

@@ -24,8 +24,9 @@
  *
  *  - {@link ATRASO_CONTINUACAO_IMPORTACAO_LI_S} (2 s) for an ordinary hand-off: an order-intake
  *    task already waiting on the queue is then strictly OLDER than the import's next dispatch, so
- *    it runs first (Cloud Tasks orders by schedule time, best effort) and waits at most one import
- *    dispatch;
+ *    it runs first (Cloud Tasks orders by schedule time, best effort) and waits at most one
+ *    dispatch PER IMPORT RUNNING AT ONCE — the one running when it arrived, and each other conta's
+ *    continuation scheduled before it (`functions/src/index.test.ts` pins the ladder per count);
  *  - {@link ATRASO_PAUSA_429_IMPORTACAO_LI_S} (60 s) after Loja Integrada answered 429: the next
  *    dispatch starts in a fresh minute of the store's rate window.
  *

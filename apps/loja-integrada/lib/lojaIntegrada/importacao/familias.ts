@@ -36,10 +36,11 @@
  * ## A parent's claims that are not rows
  *
  * A `filhos` id never seen as a row: in the trash list ⇒ a `na-lixeira` pendência on the family;
- * otherwise its detail decides — not read yet (or read and unusable) ⇒ `semDetalhe`, for the
- * family phase to read (its `filhosLidos` cursor tells the two apart); a 404, a detail of another
- * `tipo`, or a `pai` naming another product ⇒ an `orfao` pendência; a detail saying `removido` ⇒
- * `na-lixeira`; otherwise the detail is the variation. A claimed row that is not a variation (a
+ * otherwise its detail decides — the `orfaos` phase reads it with the orphans, before any family is
+ * matched ({@link idsADetalharLi}); read and unusable (a divergent answer, a body off its schema) ⇒
+ * `semDetalhe`, a family the plan cannot complete; a 404, a detail of another `tipo`, or a `pai`
+ * naming another product ⇒ an `orfao` pendência; a detail saying `removido` ⇒ `na-lixeira`;
+ * otherwise the detail is the variation. A claimed row that is not a variation (a
  * parent, a simple product, an unknown `tipo`) is never attached: the claim is ignored and
  * counted, and the row stands on its own.
  *
@@ -54,11 +55,11 @@
  *
  * ## The `orfaos` phase — one detail per unit
  *
- * {@link unidadeDosOrfaosLi} and {@link executarUnidadeDosOrfaosLi}: the next orphan above the
- * cursor (`orfaos.cursorLiId`, ascending), one detail read and its document, the cursor moved to
- * it; with none left, a unit with no call that only concludes the phase. The orphan list is
- * recomputed from the snapshot (the dispatch reads it once), so a retried unit re-reads the same
- * orphan. The `selecionados` an operator picked that the store no longer lists as a family are
+ * {@link unidadeDosOrfaosLi} and {@link executarUnidadeDosOrfaosLi}: the next id above the
+ * cursor (`orfaos.cursorLiId`, ascending) of {@link idsADetalharLi} — an orphan, or a claimed id
+ * never listed — one detail read and its document, the cursor moved to it; with none left, a unit
+ * with no call that only concludes the phase. The list is recomputed from the snapshot (the
+ * dispatch reads it once), so a retried unit re-reads the same id. The `selecionados` an operator picked that the store no longer lists as a family are
  * {@link naoListadosLi}.
  *
  * ## The reads, against the indexes (root rule 1)
@@ -191,6 +192,17 @@ export function filhosSemLinhaLi(indice: IndiceDoSnapshotLi): number[] {
   return [...ids].sort(crescente);
 }
 
+/**
+ * EVERY id the assembly needs a detail of, ascending: the orphans to explain
+ * ({@link orfaosAExplicarLi}, live rows) and the claimed ids never listed ({@link filhosSemLinhaLi},
+ * not rows) — two disjoint lists. The `orfaos` phase reads them all before any family is matched,
+ * so the assembly — and the SKUs the store repeats, which a never-listed variation can carry — is
+ * whole before the first match: processing order never picks a winner.
+ */
+export function idsADetalharLi(indice: IndiceDoSnapshotLi): number[] {
+  return [...orfaosAExplicarLi(indice), ...filhosSemLinhaLi(indice)].sort(crescente);
+}
+
 /* -------------------------------------------------------------------------- */
 /*                                 The assembly                                */
 /* -------------------------------------------------------------------------- */
@@ -239,8 +251,9 @@ export interface FamiliaLi {
   /** Its variations, ascending id. Always empty for a simple product. */
   readonly filhos: readonly FilhoDaFamiliaLi[];
   /**
-   * Claimed ids never seen as rows with no usable stored detail, ascending: not read yet, or read
-   * and unusable (a divergent answer) — the family phase's `filhosLidos` tells which.
+   * Claimed ids never seen as rows with no usable stored detail, ascending: read in the `orfaos`
+   * phase and unusable (a divergent answer, a body off its schema), or — in an assembly built
+   * before that phase ran — not read yet.
    */
   readonly semDetalhe: readonly number[];
   readonly pendencias: readonly PendenciaDaMontagemLi[];
@@ -423,10 +436,7 @@ export async function montarFamiliasDoJobLi(
   jobId: string,
 ): Promise<{ readonly indice: IndiceDoSnapshotLi; readonly montagem: MontagemLi }> {
   const indice = indexarSnapshotLi(await lerSnapshotDoJobLi(db, jobId));
-  const detalhes = await lerDetalhesGravadosLi(db, jobId, [
-    ...orfaosAExplicarLi(indice),
-    ...filhosSemLinhaLi(indice),
-  ]);
+  const detalhes = await lerDetalhesGravadosLi(db, jobId, idsADetalharLi(indice));
   return { indice, montagem: montarFamiliasLi(indice, detalhes) };
 }
 

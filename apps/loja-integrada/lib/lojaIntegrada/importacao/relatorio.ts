@@ -19,12 +19,17 @@
  *
  * A selected store id the listing lacks as a family root is its own item,
  * {@link itemNaoListadoLi}: `situacaoErp: nao-listado`, one informational `nao-listado` pendência.
+ * A LOOSE row — a live row that belongs to no family (an orphan variation, a variation of a trashed
+ * parent, a row of an unknown `tipo`) — is its own item too, {@link itemAvulsoLi}: `situacaoErp:
+ * avulso`, never matched, one informational pendência with the assembly's code (`orfao`,
+ * `na-lixeira`, `tipo-desconhecido`), so the report accounts for every row the store listed.
  *
  * ## The counters ({@link contadoresDoItemLi}, {@link somarContadoresLi})
  *
- * Per item: `familias` + 1 (not for a `nao-listado` item); `vinculados` + the links created (or
- * that would be); `semMudanca` + 1 when the item changed nothing and would change nothing (no link
- * created or refreshed, no create); the pendências by half. The dispatch adds an item's delta to
+ * Per item: `familias` + 1 (not for a `nao-listado` or `avulso` item: neither is a family);
+ * `vinculados` + the links created (or that would be); `semMudanca` + 1 when a family's item changed
+ * nothing and would change nothing (no link created or refreshed, no create); the pendências by
+ * half. The dispatch adds an item's delta to
  * the job's counters in the SAME checkpoint that moves the family cursor past it, so a retried
  * unit recomputes the same delta from the same base and counts nothing twice.
  *
@@ -60,7 +65,7 @@ import {
   itemImportacaoLiSchema,
 } from '@delfrance/schemas';
 
-import type { FamiliaLi } from './familias';
+import type { AvulsoLi, FamiliaLi } from './familias';
 import { lerItensDaImportacaoLi } from './job';
 import type { PendenciaDoPlanoLi, PlanoDaFamiliaLi } from './plano';
 import {
@@ -179,6 +184,21 @@ export function itemNaoListadoLi(liId: number, agoraMs: number): ItemImportacaoL
   });
 }
 
+/** A loose row: no family, never matched, its one informational code (module header). */
+export function itemAvulsoLi(avulso: AvulsoLi, agoraMs: number): ItemImportacaoLi {
+  const { linha, codigo } = avulso;
+  return itemImportacaoLiSchema.parse({
+    liId: linha.id,
+    tipo: linha.tipo,
+    sku: linha.sku,
+    nome: linha.nome,
+    situacaoErp: SITUACAO_ERP_ITEM_LI.avulso,
+    acao: ACAO_ITEM_IMPORTACAO_LI.nenhuma,
+    pendencias: [paraItem({ codigo, liId: null, referencias: [] })],
+    atualizadoEmMs: agoraMs,
+  });
+}
+
 /* -------------------------------------------------------------------------- */
 /*                                 The counters                                */
 /* -------------------------------------------------------------------------- */
@@ -197,7 +217,10 @@ export function contadoresDoItemLi(
   vinculos: ResultadoDosVinculosLi | null,
 ): ContadoresImportacaoLi {
   const acionaveis = item.pendencias.filter((p) => p.acionavel).length;
-  const naoListado = item.situacaoErp === SITUACAO_ERP_ITEM_LI.naoListado;
+  // Neither a selected id the listing lacks nor a loose row is a family.
+  const semFamilia =
+    item.situacaoErp === SITUACAO_ERP_ITEM_LI.naoListado ||
+    item.situacaoErp === SITUACAO_ERP_ITEM_LI.avulso;
   const todos = vinculos === null ? [] : todosOsVinculos(vinculos);
   const mudou =
     item.acao !== ACAO_ITEM_IMPORTACAO_LI.nenhuma ||
@@ -208,9 +231,9 @@ export function contadoresDoItemLi(
     ) ||
     item.camposPreenchidos.length > 0;
   return contadoresImportacaoLiSchema.parse({
-    familias: naoListado ? 0 : 1,
+    familias: semFamilia ? 0 : 1,
     vinculados: vinculos === null ? 0 : vinculosCriados(vinculos),
-    semMudanca: naoListado || mudou ? 0 : 1,
+    semMudanca: semFamilia || mudou ? 0 : 1,
     pendenciasAcionaveis: acionaveis,
     pendenciasInformativas: item.pendencias.length - acionaveis,
   });

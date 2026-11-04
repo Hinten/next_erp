@@ -2,9 +2,10 @@
  * The product import's DETAIL reads (master plan step 9): one `GET /v1/produto/{id}/` per unit,
  * stored as `detalhes/{liId}` on the job, and the stored details read back by id.
  *
- * Who reads a detail: the `orfaos` phase, for a listed variation no listed parent claims and the
- * trash does not explain (its `pai` attaches it, `familias.ts`); a family whose parent names a
- * variation never seen as a row; and "complete", for a field only the detail carries. Every caller
+ * Who reads a detail: the `orfaos` phase, before any family is matched, for a listed variation no
+ * listed parent claims and the trash does not explain (its `pai` attaches it, `familias.ts`) and for
+ * a variation a parent names that was never seen as a row; and "complete", for a field only the
+ * detail carries. Every caller
  * reads through {@link lerDetalheParaOJobLi}, one call per unit (the dispatch budgets it as one
  * call, `orcamento.ts`).
  *

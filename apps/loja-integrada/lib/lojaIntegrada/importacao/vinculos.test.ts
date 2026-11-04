@@ -364,6 +364,18 @@ describe('patchDoVinculoLi — what a refresh changes (pairs)', () => {
     ).toEqual({});
   });
 
+  it('⚠️ a stored mirror value the link schema REFUSES (null, a string) is not the store’s value: rewritten with the live boolean', () => {
+    const base = { id: 10, sku: 's', nome: 'x', estadoPublicacao: 'p' };
+    // `removido: null` while the store lists it live (false): the schema reads no value there.
+    expect(patchDoVinculoLi({ ...base, removido: null }, v)).toEqual({ removido: false });
+    expect(patchDoVinculoLi({ ...base, ativo: 'true' }, v)).toEqual({ ativo: true });
+    expect(patchDoVinculoLi({ ...base, bloqueado: 0 }, v)).toEqual({ bloqueado: false });
+    // EQUAL: the same values stored as booleans, or absent (the schema's defaults), change nothing.
+    expect(
+      patchDoVinculoLi({ ...base, removido: false, ativo: true, bloqueado: false }, v),
+    ).toEqual({});
+  });
+
   it('near-miss: the store now says hidden ⇒ ativo: false; blocked ⇒ bloqueado: true', () => {
     const oculto = vinculoSimples(10, 'p10', { ativo: false, bloqueado: true });
     expect(

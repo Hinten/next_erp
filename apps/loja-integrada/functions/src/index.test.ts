@@ -611,11 +611,12 @@ describe('filaLeituraLojaIntegrada — the declared options', () => {
     expect(escadaSegundos).toBeLessThanOrEqual(1800);
   });
 
-  it('closes the SAME ladder with the product import as a co-tenant: each attempt may wait one import dispatch', () => {
+  it('closes the SAME ladder with ONE product import as a co-tenant: each attempt may wait one import dispatch', () => {
     // The import (master plan step 9) rides this queue at concurrency 1, so an order-intake
     // attempt may first wait for one import dispatch — at most its budget plus its tail
     // (`importacao/orcamento.ts`). With that wait on every attempt, the ladder still fits half
-    // the hot sweep's hour: 3 × (300 + 100) + 2 × 300 = 1 800.
+    // the hot sweep's hour: 3 × (300 + 100) + 2 × 300 = 1 800. That is K = 1 import running:
+    // the next test states what K imports at once cost.
     const tentativas = fila.retryConfig.maxAttempts ?? 0;
     const execucao = endpointOf(filaLeituraLojaIntegrada).timeoutSeconds as number;
     const backoff = fila.retryConfig.maxBackoffSeconds ?? 0;
@@ -630,6 +631,33 @@ describe('filaLeituraLojaIntegrada — the declared options', () => {
     expect(escadaSegundos).toBeLessThanOrEqual(1800);
     // And a dispatch fits the queue's own timeout, with room for the platform's start-up.
     expect(despachoDaImportacaoS).toBeLessThan(execucao);
+  });
+
+  it('with K imports running at once (one per conta), each attempt may wait K dispatches: half the hour holds for K = 1 only, the whole hour up to K = 7', () => {
+    // The start guard allows one running import PER CONTA, and every conta's chain rides this one
+    // queue. An intake task waits for the dispatch running when it arrived and for every chain's
+    // continuation scheduled before it (each chain has at most one queued at a time): K
+    // dispatches, so the ladder is 3 × (300 + K × 100) + 2 × 300. Two contas importing at once
+    // (2 100 s) no longer fit half the hot sweep's hour — the margin, not the bound: a ladder that
+    // fits the hour still closes before the hot sweep re-drives the row.
+    const tentativas = fila.retryConfig.maxAttempts ?? 0;
+    const execucao = endpointOf(filaLeituraLojaIntegrada).timeoutSeconds as number;
+    const backoff = fila.retryConfig.maxBackoffSeconds ?? 0;
+    const despachoS = DURACAO_MAXIMA_DESPACHO_IMPORTACAO_LI_MS / 1000;
+    const escada = (k: number): number =>
+      tentativas * (execucao + k * despachoS) + Math.max(tentativas - 1, 0) * backoff;
+    const MEIA_HORA = 1800;
+    const HORA_DO_SWEEP_QUENTE = 3600;
+    expect(escada(1)).toBe(1800);
+    expect(escada(1)).toBeLessThanOrEqual(MEIA_HORA);
+    // ⚠️ NEAR-MISS: one more import at once breaks the half-hour margin.
+    expect(escada(2)).toBe(2100);
+    expect(escada(2)).toBeGreaterThan(MEIA_HORA);
+    // The largest K whose ladder still closes inside the hot sweep's hour.
+    const kMaximo = Math.max(
+      ...[1, 2, 3, 4, 5, 6, 7, 8, 9].filter((k) => escada(k) <= HORA_DO_SWEEP_QUENTE),
+    );
+    expect(kMaximo).toBe(7);
   });
 
   it('declares the invoker, the leg whose absence fails invisibly (#1133)', () => {

@@ -15,6 +15,7 @@ import {
   type MotivoRecusaAprendizadoLi,
   PENDENCIA_IMPORTACAO_LI,
   SITUACAO_ERP_ITEM_LI,
+  TIPO_RESOLUCAO_OPCAO_LI,
   FORMA_RAIZ_ERP,
   produtoLojaIntegradaLinkSchema,
 } from '@delfrance/schemas';
@@ -30,6 +31,7 @@ import {
   vistaLi,
 } from '../testing/produtosLi';
 import { type FamiliaLi, ORIGEM_DO_FILHO_LI, type PendenciaDaMontagemLi } from './familias';
+import type { RecusaNoRelatorioLi } from './gruposLi';
 import {
   type EntradaDoPlanoLi,
   MAX_NOME_PRODUTO_LI,
@@ -203,6 +205,44 @@ describe('planejarFamiliaLi — the target', () => {
       { codigo: PENDENCIA_IMPORTACAO_LI.skuAmbiguo, liId: null, referencias: ['a', 'b'] },
     ]);
   });
+
+  const CONFLITO: ResolucaoDaRaizLi = {
+    tipo: SITUACAO_ERP_ITEM_LI.conflito,
+    pendencia: PENDENCIA_IMPORTACAO_LI.skuAmbiguo,
+    erpIds: ['a', 'b'],
+  };
+
+  it.each([ALVO_IMPORTACAO_LI.jaNoErp, ALVO_IMPORTACAO_LI.naoNoErp])(
+    '⚠️ a root in conflict is in no target but todos/selecionados — and under %s it is still REPORTED, with no link',
+    (alvo) => {
+      const p = planejar({
+        job: job({ alvo }),
+        familia: familia(linhaProdutoLi(10)),
+        raiz: CONFLITO,
+      });
+      expect(p).toMatchObject({ noAlvo: false, relatar: true, raizVinculo: null, criacao: null });
+      expect(p.pendencias).toEqual([
+        { codigo: PENDENCIA_IMPORTACAO_LI.skuAmbiguo, liId: null, referencias: ['a', 'b'] },
+      ]);
+    },
+  );
+
+  it('⚠️ NEAR-MISS: a cleanly classified root outside the target, and a conflict outside a SELECTION, are not reported', () => {
+    expect(
+      planejar({
+        job: job({ alvo: ALVO_IMPORTACAO_LI.jaNoErp }),
+        familia: familia(linhaProdutoLi(10)),
+        raiz: AUSENTE,
+      }),
+    ).toMatchObject({ noAlvo: false, relatar: false, pendencias: [] });
+    expect(
+      planejar({
+        job: job({ alvo: ALVO_IMPORTACAO_LI.selecionados, selecionados: [11] }),
+        familia: familia(linhaProdutoLi(10)),
+        raiz: CONFLITO,
+      }),
+    ).toMatchObject({ noAlvo: false, relatar: false });
+  });
 });
 
 /* ---------------------------------- links -------------------------------- */
@@ -281,15 +321,29 @@ describe('planejarFamiliaLi — the link documents', () => {
     expect(Object.hasOwn(semBooleano.raizVinculo?.doc ?? {}, 'estadoPublicacao')).toBe(false);
   });
 
-  it('destaque and usado come only from a detail this job read', () => {
+  it('destaque, usado and marca (the brand URI, verbatim) come only from a detail this job read', () => {
     const linha = linhaProdutoLi(10);
     const p = planejar({
       familia: familia(linha, [], {
-        detalheDaRaiz: vistaDetalhadaLi(detalheLi(linha, null, { destaque: true, usado: false })),
+        detalheDaRaiz: vistaDetalhadaLi(
+          detalheLi(linha, null, { destaque: true, usado: false, marca: '/api/v1/marca/5000001/' }),
+        ),
       }),
       raiz: ENCONTRADO('p10'),
     });
-    expect(p.raizVinculo?.doc).toMatchObject({ destaque: true, usado: false });
+    expect(p.raizVinculo?.doc).toMatchObject({
+      destaque: true,
+      usado: false,
+      marca: '/api/v1/marca/5000001/',
+    });
+    // ⚠️ NEAR-MISS: a detail whose brand does not read as a brand URI writes no marca at all.
+    const semMarca = planejar({
+      familia: familia(linha, [], {
+        detalheDaRaiz: vistaDetalhadaLi(detalheLi(linha, null, { marca: 'Marca Livre' })),
+      }),
+      raiz: ENCONTRADO('p10'),
+    });
+    expect(Object.hasOwn(semMarca.raizVinculo?.doc ?? {}, 'marca')).toBe(false);
   });
 
   it('a store product with no SKU has no creatable document (refresh only), and no pendência yet', () => {
@@ -552,6 +606,79 @@ describe('planejarFamiliaLi — an unlinked option reads through the learning ve
       plano('8946/37', new Map([['8946_38', MOTIVO_RECUSA_APRENDIZADO_LI.divergente]])),
     ).toEqual([
       { codigo: PENDENCIA_IMPORTACAO_LI.opcaoSemVinculo, liId: 501, referencias: ['8946/37'] },
+    ]);
+  });
+
+  /** A variation matched by its EXACT SKU (no pendência) whose option `(8946, v)` is unlinked. */
+  function casadoComOpcaoSemVinculo(liId: number, erpId: string, opcaoId: number) {
+    return {
+      ...casado(liId, erpId),
+      opcoes: [
+        {
+          tipo: TIPO_RESOLUCAO_OPCAO_LI.opcaoSemVinculo,
+          gradeId: 8946,
+          opcaoId,
+          grupoIds: [],
+          varianteIds: [],
+        },
+      ],
+    };
+  }
+
+  function pendenciasDe(
+    paiId: number,
+    filhoId: number,
+    recusas: ReadonlyMap<string, RecusaNoRelatorioLi>,
+  ) {
+    return planejar({
+      familia: familia(paiLi(paiId, [filhoId]), [filhoLi(filhoId)]),
+      raiz: VINCULADO(`erp-${String(paiId)}`),
+      filhos: filhosRes([casadoComOpcaoSemVinculo(filhoId, `erp-${String(filhoId)}`, 37)]),
+      recusasDoAprendizado: recusas,
+    }).pendencias;
+  }
+
+  it('⚠️ EQUAL: claims that disagree show on BOTH families whose variations were matched by exact SKU — never on none', () => {
+    const recusas = new Map([['8946_37', MOTIVO_RECUSA_APRENDIZADO_LI.divergente]]);
+    expect(pendenciasDe(500, 501, recusas)).toEqual([
+      { codigo: PENDENCIA_IMPORTACAO_LI.evidenciaDivergente, liId: 501, referencias: ['8946/37'] },
+    ]);
+    expect(pendenciasDe(600, 601, recusas)).toEqual([
+      { codigo: PENDENCIA_IMPORTACAO_LI.evidenciaDivergente, liId: 601, referencias: ['8946/37'] },
+    ]);
+    // A learning that lost its write twice reads as the conflict it met.
+    expect(
+      pendenciasDe(500, 501, new Map([['8946_37', PENDENCIA_IMPORTACAO_LI.conflitoDeEscrita]])),
+    ).toEqual([
+      { codigo: PENDENCIA_IMPORTACAO_LI.conflitoDeEscrita, liId: 501, referencias: ['8946/37'] },
+    ]);
+  });
+
+  it('⚠️ NEAR-MISS: claims that AGREE (no refusal), or a refusal of another option, add nothing to a matched variation', () => {
+    expect(pendenciasDe(500, 501, new Map())).toEqual([]);
+    expect(
+      pendenciasDe(500, 501, new Map([['8946_38', MOTIVO_RECUSA_APRENDIZADO_LI.divergente]])),
+    ).toEqual([]);
+  });
+
+  it('an unlinked option the cascade already reported is reported ONCE, through the verdict', () => {
+    const r: ResolucaoDoFilhoLi = {
+      ...casadoComOpcaoSemVinculo(501, 'erp-501', 37),
+      situacao: SITUACAO_DO_FILHO_LI.ausente,
+      erp: null,
+      via: null,
+      pendencias: [
+        { codigo: PENDENCIA_IMPORTACAO_LI.opcaoSemVinculo, liId: 501, referencias: ['8946/37'] },
+      ],
+    };
+    const p = planejar({
+      familia: familia(paiLi(500, [501]), [filhoLi(501)]),
+      raiz: VINCULADO('pai'),
+      filhos: filhosRes([r]),
+      recusasDoAprendizado: new Map([['8946_37', MOTIVO_RECUSA_APRENDIZADO_LI.divergente]]),
+    });
+    expect(p.pendencias).toEqual([
+      { codigo: PENDENCIA_IMPORTACAO_LI.evidenciaDivergente, liId: 501, referencias: ['8946/37'] },
     ]);
   });
 

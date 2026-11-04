@@ -117,6 +117,56 @@ describe('FakeDb', () => {
     expect(db.ler('integracao/a')).toEqual({ x: 99 });
   });
 
+  it('respostaPerdidaNaProximaEscrita: the guarded update LANDS, then rejects 9 — once, and never a plain update', async () => {
+    const db = new FakeDb();
+    const ref = refDe(db, 'a');
+    await ref.create({ x: 1 });
+    const lido = await ref.get();
+    db.respostaPerdidaNaProximaEscrita('integracao/a');
+    // A plain update is not the one the facility models: it lands and answers as usual.
+    await ref.update({ y: 1 });
+    const relido = await ref.get();
+    await expect(ref.update({ x: 2 }, { lastUpdateTime: relido.updateTime })).rejects.toSatisfy(
+      isFailedPrecondition,
+    );
+    // Stored all the same: the write the caller saw fail is there.
+    expect(db.ler('integracao/a')).toEqual({ x: 2, y: 1 });
+    expect(db.escritasEm('integracao/a').map((e) => e.verbo)).toEqual([
+      'create',
+      'update',
+      'update',
+    ]);
+    // One-shot: the next guarded update answers normally.
+    const depois = await ref.get();
+    await expect(
+      ref.update({ x: 3 }, { lastUpdateTime: depois.updateTime }),
+    ).resolves.toBeDefined();
+    // ⚠️ NEAR-MISS: a stale stamp is still refused WITHOUT landing.
+    await expect(ref.update({ x: 4 }, { lastUpdateTime: lido.updateTime })).rejects.toSatisfy(
+      isFailedPrecondition,
+    );
+    expect(db.ler('integracao/a')).toEqual({ x: 3, y: 1 });
+  });
+
+  it('antesDaProximaConsulta runs ONCE before the next query on that collection, and the query sees its write', async () => {
+    const db = new FakeDb();
+    db.seed('integracao/a', { tipo: 3 });
+    db.antesDaProximaConsulta('integracao', async () => {
+      await refDe(db, 'b').create({ tipo: 3 });
+    });
+    const q = integracaoCollection.ref(asDb(db), {}).where('tipo', '==', 3);
+    expect((await q.get()).docs.map((d) => d.id)).toEqual(['a', 'b']);
+    // One-shot: the next query runs no hook (a second create would throw 6).
+    expect((await q.get()).size).toBe(2);
+    // ⚠️ NEAR-MISS: a query on ANOTHER collection never runs it.
+    db.antesDaProximaConsulta('integracao', () => {
+      throw new Error('não deveria rodar');
+    });
+    await expect(
+      importacaoLojaIntegradaCollection.ref(asDb(db), {}).limit(1).get(),
+    ).resolves.toBeDefined();
+  });
+
   it('query: == filter (absent never matches), orderBy, limit and a doc cursor', async () => {
     const db = new FakeDb();
     db.seed('integracao/c', { tipo: 3, nome: 'C' });

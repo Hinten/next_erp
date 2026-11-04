@@ -294,11 +294,18 @@ describe('CODIGO_ERRO_LI', () => {
       importacaoEmAndamento: CODIGO_ERRO_LI.importacaoEmAndamento,
       importacaoNaoEncontrada: CODIGO_ERRO_LI.importacaoNaoEncontrada,
       importacaoEncerrada: CODIGO_ERRO_LI.importacaoEncerrada,
+      importacaoEmConflito: CODIGO_ERRO_LI.importacaoEmConflito,
     }).toEqual({
       importacaoEmAndamento: 'LI_IMPORTACAO_EM_ANDAMENTO',
       importacaoNaoEncontrada: 'LI_IMPORTACAO_NAO_ENCONTRADA',
       importacaoEncerrada: 'LI_IMPORTACAO_ENCERRADA',
+      importacaoEmConflito: 'LI_IMPORTACAO_EM_CONFLITO',
     });
+  });
+
+  it('⚠️ NEAR-MISS: a cancel that lost its write (retry the cancel) is not a colliding START (attach to the running job)', () => {
+    expect(CODIGO_ERRO_LI.importacaoEmConflito).not.toBe(CODIGO_ERRO_LI.importacaoEmAndamento);
+    expect(CODIGO_ERRO_LI.importacaoEmConflito).not.toBe(CODIGO_ERRO_LI.rotaEmConflito);
   });
 
   it('⚠️ NEAR-MISS: a running import (attach to it) is not a finished one (nothing to cancel)', () => {

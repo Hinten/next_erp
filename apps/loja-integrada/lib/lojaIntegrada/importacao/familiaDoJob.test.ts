@@ -337,6 +337,32 @@ describe('the target, and one bad product', () => {
     expect(db.escritas).toEqual([]);
   });
 
+  it.each([ALVO_IMPORTACAO_LI.jaNoErp, ALVO_IMPORTACAO_LI.naoNoErp])(
+    '⚠️ a family in CONFLICT under %s is reported — its item, its conflict, no link',
+    async (alvo) => {
+      const db = new FakeDb();
+      seedErp(db);
+      // A second ERP root with the store's SKU: two hits, `sku-ambiguo`.
+      db.seed('produtos/caneca-2', { nome: 'Caneca 2', sku: 'CAN', paiId: null });
+      const r = await executarFamiliaLi(
+        { db: asDb(db), jobId: 'job-1', agoraMs: () => AGORA_MS },
+        contexto(MODO_IMPORTACAO_LI.aplicar, { alvo }),
+        familia(linhaProdutoLi(20, { sku: 'CAN' })),
+      );
+      expect(r.tipo).toBe('relatado');
+      if (r.tipo !== 'relatado') throw new Error('not reported');
+      expect(r.item).toMatchObject({
+        situacaoErp: 'conflito',
+        acao: 'nenhuma',
+        pendencias: [{ codigo: 'sku-ambiguo', acionavel: true }],
+      });
+      // The item only: no link anywhere.
+      expect(db.escritas.map((e) => e.caminho)).toEqual([
+        'importacoesLojaIntegrada/job-1/itens/20',
+      ]);
+    },
+  );
+
   it('completar: a simple product with nome null ⇒ dado-invalido(nome); the NEXT family is still processed', async () => {
     const db = new FakeDb();
     seedErp(db);

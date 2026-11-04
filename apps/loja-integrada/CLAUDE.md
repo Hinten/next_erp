@@ -112,13 +112,19 @@ carries the continuation `seq`, the cursors or the selection's ids.
 - **Every job write is tier 1** (`importacao/job.ts`, its header's table): checkpoints chained from
   each write's `writeTime`, only the end-of-dispatch one bumps `seq`; a lost checkpoint is never
   re-applied (stop when the job no longer runs at that `seq`, else `LiImportacaoConcorrenteError`
-  and the task retries). The cancel is one guarded update on the route's read, at most 3 attempts:
-  a finished job is 409 `LI_IMPORTACAO_ENCERRADA`, a cancel that lost every attempt 503
-  `LI_IMPORTACAO_EM_ANDAMENTO` with the `jobId`.
+  and the task retries). ⚠️ The Admin SDK retries a commit on its own with the same precondition,
+  so a write that LANDED and lost only its reply comes back as a 9: every job write re-reads and
+  counts it as written when the stored job holds its whole patch (`guardaOPatchLi`, the app's
+  `deepEqual`) — read as a lost race, the end-of-dispatch checkpoint would stop with nothing
+  queued. The fake models it (`respostaPerdidaNaProximaEscrita`). The cancel is one guarded update
+  on the route's read, at most 3 attempts: a finished job is 409 `LI_IMPORTACAO_ENCERRADA`, a
+  cancel that lost every attempt 503 `LI_IMPORTACAO_EM_CONFLITO` (retry; never the start's
+  "attach to it" code).
 - **The dispatch's budget** (`importacao/orcamento.ts`): a unit starts only while its WORST case
   ends inside 70 s (a call = pacer + read deadline = 22 s; a family with no call = 10 s), plus a
-  30 s tail — 100 s, which keeps an order-intake attempt on the shared reads queue waiting at most
-  one dispatch (`functions/src/index.test.ts` pins the ladder). The producer
+  30 s tail — 100 s. An order-intake attempt on the shared reads queue waits at most one dispatch
+  PER IMPORT RUNNING AT ONCE (one per conta): its ladder fits half the hot sweep's hour for one,
+  the whole hour up to seven (`functions/src/index.test.ts` pins both). The producer
   (`importacao/agendadorImportacao.ts`) NAMES every task `idTarefaImportacaoLi(jobId, seq)`, an
   answered already-exists is success, delays 0 / 2 / 60 s only.
 - The context exposes `cdn`, the package's photo reader, built only in `core/contexto.ts` after
@@ -130,9 +136,14 @@ carries the continuation `seq`, the cursors or the selection's ids.
   (`paginas/{tipo}-{offset}`) and details (`detalhes/{liId}`), whole, at deterministic ids (tier 0:
   a retried unit overwrites its own attempt; the fake models that plain `set`). The listing reads
   at `limit` 100, then the TRASH list once; nothing relies on list order (rows de-duplicated by id,
-  the distinct count against the first page's `total_count`). A variation no listed parent claims
-  and a trashed parent claims is `na-lixeira` with no detail read; only the rest are detail-read,
-  and their `pai` places them. An orphan is never imported as a simple product.
+  the distinct count against the first page's `total_count`; a skipped row — no id, or a
+  `removido` its list contradicts — is one WARN line of counts). A variation no listed parent
+  claims and a trashed parent claims is `na-lixeira` with no detail read; the `orfaos` phase then
+  reads EVERY other detail the assembly needs — the unexplained variations (their `pai` places
+  them) and the ids a parent claims that no list carried — before any family is matched, so the
+  SKUs the store repeats are known whole and processing order never picks a winner. An orphan is
+  never imported as a simple product; a LOOSE row (an orphan, a variation of a trashed parent, an
+  unknown `tipo`) is its own `avulso` report item under every target but `selecionados`.
 - **The match is the import's own cascade** (`importacao/resolucao.ts`), never the order import's
   SKU stage (that one answers the sellable unit; a link sits on the ROOT): this conta's link
   (`vinculoDoProdutoLi`, the only shared piece), a root by exact SKU, then any produto by exact SKU
@@ -148,20 +159,27 @@ carries the continuation `seq`, the cursors or the selection's ids.
   per store option, never one per variation); `importacao/gruposLi.ts` then decides them all at
   once with the shared `decidirAprendizadoLi` (unanimity, fail-closed "holds") and writes each
   changed grupo ONCE, tier 1 on the memo's stamp, through the never-drop merge — a lost
-  precondition re-reads that grupo and re-decides once, a second loss is reported. Simular writes
+  precondition re-reads that grupo and re-decides, and EVERY grupo still to write is written from
+  the re-run decision (never the stale one); a second loss is `conflito-de-escrita`, its claim id
+  carried on the job (`aprendizado.conflitos`) to the families with that option. A refused learning
+  shows on every resolved variation carrying the option, the ones matched by link or exact SKU
+  included (those made the claims). Simular writes
   no grupo: its learnings ride the job (`aprendizadosSimulados`) as an overlay later resolutions
-  read through the same merge, so its verdicts equal an `aplicar` run's. No grupo or variante is
-  ever created.
+  read through the same merge, so its verdicts equal an `aplicar` run's (one stated residual: two
+  store roots placed on ONE ERP produto, `vinculos.ts`). No grupo or variante is ever created.
 - **One family of the `familias` phase** (`importacao/familiaDoJob.ts`): cascade → plan
   (`plano.ts`, pure: the target, the planned link documents `safeParse`d through the link schema,
   the "complete" create classification — a hidden or blocked store product is never created, a
   hidden variation is left out — and every pendência; a refusal is a pendência, never a throw) →
   links (`vinculos.ts`) → report item (`relatorio.ts`, `itens/{liId}`, whole). A link is created at
   the store id's doc id (tier 0, `ALREADY_EXISTS` re-read and judged by `vinculoLiDaContaEId`) or
-  its mirror (`ativo`, `bloqueado`, `removido`) refreshed tier 1 on its own read; a field with a
-  value is never touched, a row-only link leaves `destaque`/`usado`/`marca` ABSENT, and a
-  variation is linked only beside its parent's confirmed link. "Only link" writes link documents
-  and the job's items, nothing else; a second run over an unchanged store writes no link.
+  its mirror (`ativo`, `bloqueado`, `removido`) refreshed tier 1 on its own read — compared as the
+  link schema's own fields read them, so a stored value they refuse (`null`) is repaired; a field
+  with a value is never touched, a row-only link leaves `destaque`/`usado`/`marca` ABSENT (a
+  detail-backed one carries them, `marca` as the brand URI verbatim), and a variation is linked
+  only beside its parent's confirmed link. A family in CONFLICT is reported under `jaNoErp` and
+  `naoNoErp` too, with no link. "Only link" writes link documents and the job's items, nothing
+  else; a second run over an unchanged store writes no link.
 - **The first dispatch is a TRIGGER's** (`functions/src/onImportacaoLojaIntegradaCriada.ts`,
   CREATE of `importacoesLojaIntegrada/{jobId}`): ONLY a job created `pendente` enqueues the named
   task `li-importacao-<jobId>-0` on the READS queue (zero reads; anything else returns with no
@@ -178,12 +196,16 @@ carries the continuation `seq`, the cursors or the selection's ids.
   (`seq + 1`) and the named continuation 2 s later. Families of a `selecionados` job are the
   selection only. A 429 PAUSES (end checkpoint with `pausas429 + 1`, the continuation 60 s later,
   no attempt consumed; past `MAX_PAUSAS_429_LI` ⇒ `limite-de-chamadas`); a 401 parks the conta
-  like every reader; a detail off its schema is ONE product without a usable detail (logged), never
-  the job; the valve closed at a hand-off ⇒ `tarefas-desligadas`; anything else rethrows, and on
-  the queue's LAST attempt a failure a retry could have changed stamps `tentativas-esgotadas`
-  (never over a concurrent dispatch of the same `seq`; a coding bug stays loud). It reads the
-  snapshot, its details, the grupo memo and the claims at most once per dispatch, lazily. The
-  summary aviso is synced before the phase machine's own terminal stamps (`aplicar` only).
+  like every reader — under Simular too, the ONE write a Simular makes outside its job; a detail
+  ANSWERED off its schema (`formato`) is ONE product without a usable detail (logged), never the
+  job, while an empty or non-JSON 200 is the transport's and retries; the valve closed at a
+  hand-off ⇒ `tarefas-desligadas`; anything else rethrows, and on the queue's LAST attempt a
+  failure a retry could have changed — another writer of the same `seq` included, an earlier
+  attempt the queue gave up on — stamps `tentativas-esgotadas` on a job still running at that
+  `seq` (a coding bug stays loud). It reads the snapshot, its details, the grupo memo and the
+  claims at most once per dispatch, lazily. The summary aviso is synced before the phase machine's
+  own terminal stamps (`aplicar` only), on a FRESH read of the job that still runs at its `seq`,
+  the stamp chained from that read (a cancel landing in between the two is the stated residual).
   ⚠️ The complete step's seams: its units inside a family, and the `revisao` phase after
   `familias` (`faseDepoisDasFamiliasLi`); in this build `revisao` is never entered.
 - **The import's avisos** (`importacao/avisosImportacao.ts`): Simular raises and resolves nothing;

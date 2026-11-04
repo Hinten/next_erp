@@ -375,6 +375,66 @@ describe('the checkpoints: tier 1, chained from each write’s writeTime', () =>
     expect(db.ler(caminhoJobLi(JOB))?.fase).toBe('catalogo');
   });
 
+  it('⚠️ EQUAL: a unit checkpoint whose REPLY was lost (the SDK’s retry met its own write) is recognised as written — the stored stamp, nothing written twice', async () => {
+    const db = new FakeDb();
+    const carimbo = seedJobLi(db, JOB, CONTA, { seq: 1 });
+    db.respostaPerdidaNaProximaEscrita(caminhoJobLi(JOB));
+    const r = await gravarCheckpointDaUnidadeLi(
+      asDb(db),
+      { jobId: JOB, seq: 1, versao: v(carimbo) },
+      progresso,
+      AGORA_MS + 4,
+    );
+    expect(r).toEqual({ tipo: 'gravado', versao: db.carimboDe(caminhoJobLi(JOB)) });
+    expect(db.escritasEm(caminhoJobLi(JOB))).toHaveLength(1);
+    if (r.tipo !== 'gravado') throw new Error('lost');
+    // The chain goes on from the stored stamp.
+    const r2 = await gravarCheckpointDaUnidadeLi(
+      asDb(db),
+      { jobId: JOB, seq: 1, versao: r.versao },
+      { fase: FASE_IMPORTACAO_LI.familias },
+      AGORA_MS + 5,
+    );
+    expect(r2.tipo).toBe('gravado');
+  });
+
+  it('⚠️ NEAR-MISS: another write of the same seq that differs from ours in ONE field (its stamp, 1 ms apart) is NOT ours — the concurrent error, never adopted', async () => {
+    const db = new FakeDb();
+    const carimbo = seedJobLi(db, JOB, CONTA, { seq: 1 });
+    db.antesDaProximaEscrita(caminhoJobLi(JOB), async () => {
+      await gravarCheckpointDaUnidadeLi(
+        asDb(db),
+        { jobId: JOB, seq: 1, versao: v(carimbo) },
+        progresso,
+        AGORA_MS + 3,
+      );
+    });
+    await expect(
+      gravarCheckpointDaUnidadeLi(
+        asDb(db),
+        { jobId: JOB, seq: 1, versao: v(carimbo) },
+        progresso,
+        AGORA_MS + 4,
+      ),
+    ).rejects.toBeInstanceOf(LiImportacaoConcorrenteError);
+    expect(db.ler(caminhoJobLi(JOB))?.atualizadoEmMs).toBe(AGORA_MS + 3);
+  });
+
+  it('⚠️ the END-of-dispatch checkpoint whose reply was lost is recognised as written: gravado at seq + 1, never a stop with nothing queued', async () => {
+    const db = new FakeDb();
+    const carimbo = seedJobLi(db, JOB, CONTA, { seq: 4 });
+    db.respostaPerdidaNaProximaEscrita(caminhoJobLi(JOB));
+    const r = await gravarCheckpointDoFimDoDespachoLi(
+      asDb(db),
+      { jobId: JOB, seq: 4, versao: v(carimbo) },
+      { pausas429: 1 },
+      AGORA_MS,
+    );
+    expect(r).toEqual({ tipo: 'gravado', versao: db.carimboDe(caminhoJobLi(JOB)) });
+    expect(db.ler(caminhoJobLi(JOB))).toMatchObject({ seq: 5, pausas429: 1 });
+    expect(db.escritasEm(caminhoJobLi(JOB))).toHaveLength(1);
+  });
+
   it('the job is gone: STOP with no job (the stamp fails with 9, as on the server)', async () => {
     const db = new FakeDb();
     const carimbo = seedJobLi(db, JOB, CONTA);
@@ -494,6 +554,20 @@ describe('the terminal stamps', () => {
     );
     expect(r).toMatchObject({ tipo: 'ja-encerrado', job: { status: 'cancelado' } });
     expect(db.ler(caminhoJobLi(JOB))?.status).toBe('cancelado');
+  });
+
+  it('a stamp whose REPLY was lost is recognised as written: encerrado, never ja-encerrado', async () => {
+    const db = new FakeDb();
+    const carimbo = seedJobLi(db, JOB, CONTA, { seq: 3 });
+    db.respostaPerdidaNaProximaEscrita(caminhoJobLi(JOB));
+    const r = await encerrarImportacaoLi(
+      asDb(db),
+      { jobId: JOB, seq: 3, versao: v(carimbo) },
+      { status: STATUS_IMPORTACAO_LI.concluido },
+      AGORA_MS + 9,
+    );
+    expect(r).toEqual({ tipo: 'encerrado', versao: db.carimboDe(caminhoJobLi(JOB)) });
+    expect(db.escritasEm(caminhoJobLi(JOB))).toHaveLength(1);
   });
 
   it('a write of the same seq landing first: the stamp re-reads and lands on the fresh read', async () => {
@@ -622,6 +696,30 @@ describe('the cancel: tier 1 on the route’s own read', () => {
     const r = await cancelarImportacaoLi(asDb(db), CONTA, JOB, AGORA_MS + 1);
     expect(r.tipo).toBe('cancelado');
     expect(db.ler(caminhoJobLi(JOB))).toMatchObject({ status: 'cancelado', fase: 'listagem' });
+  });
+
+  it('⚠️ a cancel whose REPLY was lost is recognised as written: cancelado, never encerrada for a cancel that landed', async () => {
+    const db = new FakeDb();
+    seedJobLi(db, JOB, CONTA, { status: 'executando', seq: 2 });
+    db.respostaPerdidaNaProximaEscrita(caminhoJobLi(JOB));
+    const r = await cancelarImportacaoLi(asDb(db), CONTA, JOB, AGORA_MS + 7);
+    expect(r).toMatchObject({
+      tipo: 'cancelado',
+      resposta: { jobId: JOB, status: 'cancelado', concluidoEmMs: AGORA_MS + 7 },
+    });
+    expect(db.escritasEm(caminhoJobLi(JOB))).toHaveLength(1);
+  });
+
+  it('⚠️ NEAR-MISS: a cancel by ANOTHER request landing first (its own instant) is not ours — encerrada', async () => {
+    const db = new FakeDb();
+    seedJobLi(db, JOB, CONTA, { status: 'executando', seq: 2 });
+    db.antesDaProximaEscrita(caminhoJobLi(JOB), async () => {
+      await cancelarImportacaoLi(asDb(db), CONTA, JOB, AGORA_MS + 6);
+    });
+    expect(await cancelarImportacaoLi(asDb(db), CONTA, JOB, AGORA_MS + 7)).toEqual({
+      tipo: 'encerrada',
+    });
+    expect(db.ler(caminhoJobLi(JOB))?.concluidoEmMs).toBe(AGORA_MS + 6);
   });
 
   it('the job ENDING between the read and the write: re-read ⇒ encerrada, never relabelled', async () => {

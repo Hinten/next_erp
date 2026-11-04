@@ -25,6 +25,7 @@ import {
   contadoresZeradosLi,
   contarPendenciasAcionaveisLi,
   gravarItemLi,
+  itemAvulsoLi,
   itemNaoListadoLi,
   montarItemDaFamiliaLi,
   somarContadoresLi,
@@ -69,6 +70,7 @@ function plano(over: Partial<PlanoDaFamiliaLi> = {}): PlanoDaFamiliaLi {
   return {
     liId: 10,
     noAlvo: true,
+    relatar: true,
     situacaoErp: SITUACAO_ERP_ITEM_LI.encontrado,
     erpId: 'p10',
     raizVinculo: vinculo('raiz', 10),
@@ -221,6 +223,31 @@ describe('montarItemDaFamiliaLi — the pendências', () => {
       ],
     });
   });
+
+  it('a LOOSE row is its own avulso item: its tipo, SKU and name, never matched, its one informational code', () => {
+    const linha = vistaLi(linhaProdutoLi(31, { tipo: 'atributo_opcao', sku: 'F-31', nome: null }));
+    expect(itemAvulsoLi({ linha, codigo: PENDENCIA_IMPORTACAO_LI.naLixeira }, AGORA_MS)).toEqual({
+      liId: 31,
+      tipo: 'atributo_opcao',
+      sku: 'F-31',
+      nome: null,
+      filhos: 0,
+      situacaoErp: SITUACAO_ERP_ITEM_LI.avulso,
+      erpId: null,
+      acao: ACAO_ITEM_IMPORTACAO_LI.nenhuma,
+      aplicada: false,
+      camposPreenchidos: [],
+      pendencias: [
+        {
+          codigo: PENDENCIA_IMPORTACAO_LI.naLixeira,
+          acionavel: false,
+          liId: null,
+          referencias: [],
+        },
+      ],
+      atualizadoEmMs: AGORA_MS,
+    });
+  });
 });
 
 describe('the counters', () => {
@@ -255,6 +282,23 @@ describe('the counters', () => {
       ...contadoresZeradosLi(),
       pendenciasInformativas: 1,
     });
+  });
+
+  it('an avulso item counts its pendência, not a family — ⚠️ NEAR-MISS: a family item that changed nothing counts one family and one semMudanca', () => {
+    const avulso = itemAvulsoLi(
+      {
+        linha: vistaLi(linhaProdutoLi(88, { tipo: 'kit' })),
+        codigo: PENDENCIA_IMPORTACAO_LI.tipoDesconhecido,
+      },
+      AGORA_MS,
+    );
+    expect(contadoresDoItemLi(avulso, null)).toEqual({
+      ...contadoresZeradosLi(),
+      pendenciasInformativas: 1,
+    });
+    expect(
+      contadoresDoItemLi({ ...avulso, situacaoErp: SITUACAO_ERP_ITEM_LI.ausente }, null),
+    ).toEqual({ ...contadoresZeradosLi(), familias: 1, semMudanca: 1, pendenciasInformativas: 1 });
   });
 
   it('somarContadoresLi adds counter by counter', () => {

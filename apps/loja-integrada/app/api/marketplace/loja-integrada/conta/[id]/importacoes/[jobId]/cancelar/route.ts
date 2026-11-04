@@ -14,9 +14,9 @@
  * - 404 `LI_IMPORTACAO_NAO_ENCONTRADA` for a missing job AND for another conta's (one answer).
  * - 409 `LI_IMPORTACAO_ENCERRADA` for a job already `concluido`, `falhou` or `cancelado`: nothing
  *   written, a finished job is never relabelled.
- * - 503 `LI_IMPORTACAO_EM_ANDAMENTO` (with its `jobId`) when the job wrote its progress between the
- *   read and the write on every attempt: nothing written, still running; a retry re-decides. ONE
- *   warn line, ids only.
+ * - 503 `LI_IMPORTACAO_EM_CONFLITO` when the job wrote its progress between the read and the write
+ *   on every attempt: nothing written, still running; a retry re-decides. ONE warn line, ids only.
+ *   Never the start route's `LI_IMPORTACAO_EM_ANDAMENTO` ("attach to the running job").
  * - Anything else (Firestore, a stored job that no longer parses) is rethrown: a 500 (root rule 6).
  *
  * ⚠️ It calls nothing outside the ERP (`estrutura.test.ts` walks its closure with the label routing
@@ -72,7 +72,7 @@ export async function POST(
         jobId,
         uid: auth.caller.uid,
       });
-      return respostaCancelamentoEmConflito(jobId);
+      return respostaCancelamentoEmConflito();
     }
     throw err;
   }

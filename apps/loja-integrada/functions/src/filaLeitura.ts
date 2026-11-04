@@ -117,7 +117,9 @@ async function despachar(
  *   closes well inside the hot reprocess sweep's one-hour window
  *   (`index.test.ts` pins the arithmetic) — and still within half of it when
  *   every attempt first waits behind one import slice (100 s at most: its 70 s
- *   budget plus its 30 s tail, `importacao/orcamento.ts`).
+ *   budget plus its 30 s tail, `importacao/orcamento.ts`). With K contas
+ *   importing at once an attempt may wait K slices: 3 × (300 + K × 100) +
+ *   600, inside half the hour for K = 1 only and the whole hour up to K = 7.
  * - NO `secrets:`. The Loja Integrada token lives per conta in Firestore, and a
  *   declared secret missing from Secret Manager fails the whole deploy.
  * - `...tasksInvokerOptions()`: `roles/run.invoker` on this service and

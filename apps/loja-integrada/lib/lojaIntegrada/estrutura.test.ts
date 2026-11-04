@@ -442,13 +442,19 @@ const ROTAS_SEM_CHAMADA_LI: readonly (readonly [string, string])[] = [
 /** The product import's dispatch (step 9): one slice of a job, run by the reads queue. */
 const DESPACHO_DA_IMPORTACAO = 'lib/lojaIntegrada/importacao/despacho.ts';
 
+/** The reads queue's handler: it routes `tipo: importacao` to the dispatch and hands it its deps. */
+const FILA_DE_LEITURA = 'functions/src/filaLeitura.ts';
+
 /**
- * The product import's TASK path (step 9): the job-creation trigger, the one binding of a
- * dispatch's deps, and the dispatch itself. No route reaches them, so the read routes' walk never
- * sees them; this list is walked with the SAME rules — Loja Integrada through the context loader
- * only, whose first act is the read switch.
+ * The product import's TASK path (step 9): the reads queue's handler that routes an import task,
+ * the job-creation trigger, the one binding of a dispatch's deps, and the dispatch itself. No route
+ * reaches them, so the read routes' walk never sees them; this list is walked with the SAME rules —
+ * Loja Integrada through the context loader only, whose first act is the read switch. The handler
+ * is an ENTRY of its own: walking forward from the deps binding and the dispatch never reaches the
+ * file that imports them, so a client or a `fetch` written there would go unseen.
  */
 const CAMINHO_DA_TAREFA_DA_IMPORTACAO = [
+  FILA_DE_LEITURA,
   'functions/src/depsImportacao.ts',
   'functions/src/onImportacaoLojaIntegradaCriada.ts',
   DESPACHO_DA_IMPORTACAO,
@@ -900,7 +906,7 @@ describe('lib/lojaIntegrada layout', () => {
     },
   );
 
-  it('the import task path (trigger, deps, dispatch) reaches Loja Integrada only through the context loader: no fetch, and no client, validating GET or CDN reader of its own, in its run-time closure', () => {
+  it('the import task path (the queue handler, trigger, deps, dispatch) reaches Loja Integrada only through the context loader: no fetch, and no client, validating GET or CDN reader of its own, in its run-time closure', () => {
     for (const entrada of CAMINHO_DA_TAREFA_DA_IMPORTACAO) {
       expect(lerDoApp(entrada), entrada).not.toBeNull();
     }
@@ -916,6 +922,10 @@ describe('lib/lojaIntegrada layout', () => {
       expect.arrayContaining([
         ...CAMINHO_DA_TAREFA_DA_IMPORTACAO,
         CONSTRUTOR_DO_CLIENTE,
+        // The handler's OWN imports were walked too: the reads queue's other lane (order intake)
+        // rides the same closure and is held to the same rules.
+        'functions/src/depsLeitura.ts',
+        'lib/lojaIntegrada/notificacoes/notificacao.ts',
         'functions/src/agendador.ts',
         'lib/lojaIntegrada/importacao/agendadorImportacao.ts',
         'lib/lojaIntegrada/importacao/catalogoDoJob.ts',

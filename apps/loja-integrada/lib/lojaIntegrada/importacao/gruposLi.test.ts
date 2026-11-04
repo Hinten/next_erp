@@ -236,7 +236,7 @@ describe('executarAprendizadoLi — aplicar: one tier-1 write per grupo the deci
     seedEvidencia(db, 9, 1, ['tam', 'v-p']);
     seedEvidencia(db, 10, 1, ['tam', 'v-p']);
     const r = await aprender(db);
-    expect(r.aprendizado).toEqual({ cursorEvidenciaId: '9_1' });
+    expect(r.aprendizado).toEqual({ cursorEvidenciaId: '9_1', conflitos: [] });
   });
 
   it('every unit of the phase is a no-call unit', () => {
@@ -299,8 +299,52 @@ describe('executarAprendizadoLi — aplicar: a lost precondition (root rule 7, t
     expect(r.recusados).toEqual([
       { gradeId: TAM, opcaoId: 1, motivo: PENDENCIA_IMPORTACAO_LI.conflitoDeEscrita },
     ]);
+    // Carried on the job's cursor: the families report it, the decision re-run cannot.
+    expect(r.aprendizado.conflitos).toEqual([`${String(TAM)}_1`]);
     expect(r.gruposGravados).toEqual([]);
     expect(db.ler(caminho)?.linksVariacoesli).toEqual([entrada(TAM, {})]);
+  });
+
+  it('⚠️ a loss re-decides EVERY grupo still to write: an edit of the first grupo that refuses the second grupo’s learning ⇒ ZERO writes on the second', async () => {
+    const db = new FakeDb();
+    // g1 holds this conta's grade TAM; nothing holds grade COR, so a single-axis claim of it would
+    // create a new (conta, COR) entry in g2.
+    seedGrupo(db, 'g1', ['v-x'], [entrada(TAM, {})]);
+    seedGrupo(db, 'g2', ['v-y']);
+    seedEvidencia(db, TAM, 10, ['g1', 'v-x']);
+    seedEvidencia(db, COR, 20, ['g2', 'v-y']);
+    // Before our g1 write, an operator saves g1 with a (conta, COR) entry of its own.
+    db.antesDaProximaEscrita(CAMINHO_GRUPO('g1'), async () => {
+      await refGrupo(db, 'g1').update({ linksVariacoesli: [entrada(TAM, {}), entrada(COR, {})] });
+    });
+
+    const r = await aprender(db);
+
+    // g2 is never written: (conta, COR) now lives in g1, and a second entry would make COR resolve
+    // `grade-em-dois-grupos` for every product of it.
+    expect(db.escritasEm(CAMINHO_GRUPO('g2'))).toEqual([]);
+    expect(db.ler(CAMINHO_GRUPO('g2'))?.linksVariacoesli).toBeUndefined();
+    expect(r.recusados).toEqual([
+      { gradeId: COR, opcaoId: 20, motivo: MOTIVO_RECUSA_APRENDIZADO_LI.gradeEmOutroGrupo },
+    ]);
+    // g1's own learning still lands, on the fresh read, beside the operator's entry.
+    expect(r.gruposGravados).toEqual(['g1']);
+    expect(db.ler(CAMINHO_GRUPO('g1'))?.linksVariacoesli).toEqual([
+      entrada(TAM, { 10: ['v-x'] }),
+      entrada(COR, {}),
+    ]);
+  });
+
+  it('⚠️ NEAR-MISS: the same two grupos with NO edit ⇒ both written from the one decision', async () => {
+    const db = new FakeDb();
+    seedGrupo(db, 'g1', ['v-x'], [entrada(TAM, {})]);
+    seedGrupo(db, 'g2', ['v-y']);
+    seedEvidencia(db, TAM, 10, ['g1', 'v-x']);
+    seedEvidencia(db, COR, 20, ['g2', 'v-y']);
+    const r = await aprender(db);
+    expect(r.gruposGravados).toEqual(['g1', 'g2']);
+    expect(r.recusados).toEqual([]);
+    expect(db.ler(CAMINHO_GRUPO('g2'))?.linksVariacoesli).toEqual([entrada(COR, { 20: ['v-y'] })]);
   });
 
   it('a grupo deleted meanwhile ⇒ refused (9), re-read as gone, learned nowhere', async () => {

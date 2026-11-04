@@ -225,17 +225,17 @@ export function respostaImportacaoEncerrada(): NextResponse {
 }
 
 /**
- * 503 — the cancel lost its precondition on every attempt (`LiCancelamentoEmConflitoError`,
- * `importacao/job.ts`): the job kept writing its progress between the read and the write. The job
- * is still running (hence the running-import code, with its `jobId`); nothing was written, and a
- * retry re-decides from a fresh read.
+ * 503 `LI_IMPORTACAO_EM_CONFLITO` — the cancel lost its precondition on every attempt
+ * (`LiCancelamentoEmConflitoError`, `importacao/job.ts`): the job kept writing its progress between
+ * the read and the write. Nothing was written and the job still runs; a retry re-decides from a
+ * fresh read. Never the start route's `LI_IMPORTACAO_EM_ANDAMENTO`, whose meaning is "attach to the
+ * running job", and no `jobId`: the caller named the job in the path.
  */
-export function respostaCancelamentoEmConflito(jobId: string): NextResponse {
+export function respostaCancelamentoEmConflito(): NextResponse {
   return respostaLi(
     503,
-    CODIGO_ERRO_LI.importacaoEmAndamento,
+    CODIGO_ERRO_LI.importacaoEmConflito,
     'A importação gravou um avanço a cada tentativa de cancelar. Nada foi gravado; tente de novo.',
-    { jobId },
   );
 }
 

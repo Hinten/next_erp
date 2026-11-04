@@ -7,11 +7,13 @@
  *
  * The import rides the conta's READS queue (`filaLeituraLojaIntegrada`), which runs ONE dispatch
  * at a time and is shared with order intake. Every order-intake attempt may wait behind one import
- * dispatch, so a dispatch is held to {@link DURACAO_MAXIMA_DESPACHO_IMPORTACAO_LI_MS} (100 s):
+ * dispatch per import running at once (one per conta), so a dispatch is held to
+ * {@link DURACAO_MAXIMA_DESPACHO_IMPORTACAO_LI_MS} (100 s):
  * `ORCAMENTO_DESPACHO_IMPORTACAO_LI_MS` (70 s) of units, then `CAUDA_DESPACHO_IMPORTACAO_LI_MS`
  * (30 s) for the last unit's writes, the end-of-dispatch checkpoint and the continuation's
  * enqueue. The intake ladder's arithmetic with that co-tenant is pinned beside the queue's own
- * options (`functions/src/index.test.ts`).
+ * options (`functions/src/index.test.ts`): inside half the hot sweep's hour with one import
+ * running, inside the whole hour with up to seven at once.
  *
  * ## A unit starts only when its WORST case still fits
  *
