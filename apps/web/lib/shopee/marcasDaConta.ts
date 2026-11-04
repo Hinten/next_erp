@@ -10,10 +10,11 @@ import {
   type MarcaDaContaShopee,
   type MarcaDto,
 } from '@delfrance/schemas';
-import type {
-  TransactionDocumentGuard,
-  TransactionWrite,
-  TransactionWriteContext,
+import {
+  valuesEqual,
+  type TransactionDocumentGuard,
+  type TransactionWrite,
+  type TransactionWriteContext,
 } from '@delfrance/ui';
 
 import { marcaShopeeCollection } from '@/lib/data/marcaShopeeCollection';
@@ -62,7 +63,17 @@ import { marcaShopeeCollection } from '@/lib/data/marcaShopeeCollection';
  *   silence (#1911 batch-B review R1-rule7#1). It is guarded only because the
  *   section CLEARS that path's baseline to "absent" when server truth stops
  *   listing it ({@link ajustesDasBaselinesMarcasShopee}) — so the re-add's
- *   `set` is guarded by `null`, and lands, or conflicts if a doc is back.
+ *   `set` is guarded by `null`, and lands, or conflicts if a doc is back — and
+ *   because the section stages only from the reading those baselines were
+ *   moved by: the last SERVER truth, never a later cached emission (#2084
+ *   review F1).
+ *   ⚠️ "Salvar mesmo assim" over a row EXACTLY equal to what this `set` writes
+ *   (another operator registered the brand with the same names) leaves
+ *   nothing to write: `saveRecord` skips such a `set` unread and, uncommitted,
+ *   never projects it off the delta, so the add would stay staged forever.
+ *   The section drops it from the delta the moment the registry holds that row
+ *   ({@link cadastrosJaGravadosMarcasShopee}) — before the save reads the form
+ *   (#2084 review F2).
  * - **Removing a brand** — one `delete` PER document of the brand (the legacy
  *   app let several auto-id docs name one brand; deleting only one would bring
  *   the brand back on the next read), each guarded by the baseline the section
@@ -460,25 +471,73 @@ export function escritasMarcasDaContaShopee(
     }
   }
 
-  for (const dto of alteracoes.adicionar) {
-    const linha = linhaDeMarcaParaGravarShopee(dto);
-    // The delta's schema refuses an add with no row, so this is an invariant
-    // breach — never an add silently skipped while the form still shows it.
-    if (linha === null) throw new TypeError(`marca não registrável: ${String(dto.brandId)}`);
-    const ref = refDoRegistro(db, integracaoId, linha.docId);
-    const guard: TransactionDocumentGuard = {
-      baseline: baselineDoCadastro(context.getBaseline(ref.path), linha.docId, dto.brandId),
-      label: `Marca «${dto.originalBrandName}» (id ${String(dto.brandId)})`,
-      formField: CAMPO_MARCAS_SHOPEE,
-      toFormValue: (_atual, valor) => desfazerAdicaoMarcaShopee(valor, dto.brandId),
-    };
-    escritas.push({
-      type: 'set',
-      ref,
-      data: { ...linha.data },
-      guard,
-    });
-  }
+  for (const dto of alteracoes.adicionar)
+    escritas.push(escritaDoCadastro(db, integracaoId, dto, context));
 
   return escritas;
+}
+
+/** The guarded `set` that registers `dto` — the one builder, for the save and for {@link cadastrosJaGravadosMarcasShopee}. */
+function escritaDoCadastro(
+  db: Firestore,
+  integracaoId: string,
+  dto: MarcaDto,
+  context: TransactionWriteContext,
+): TransactionWrite & {
+  type: 'set';
+  data: Record<string, unknown>;
+  guard: TransactionDocumentGuard;
+} {
+  const linha = linhaDeMarcaParaGravarShopee(dto);
+  // The delta's schema refuses an add with no row, so this is an invariant
+  // breach — never an add silently skipped while the form still shows it.
+  if (linha === null) throw new TypeError(`marca não registrável: ${String(dto.brandId)}`);
+  const ref = refDoRegistro(db, integracaoId, linha.docId);
+  const guard: TransactionDocumentGuard = {
+    baseline: baselineDoCadastro(context.getBaseline(ref.path), linha.docId, dto.brandId),
+    label: `Marca «${dto.originalBrandName}» (id ${String(dto.brandId)})`,
+    formField: CAMPO_MARCAS_SHOPEE,
+    toFormValue: (_atual, valor) => desfazerAdicaoMarcaShopee(valor, dto.brandId),
+  };
+  return { type: 'set', ref, data: { ...linha.data }, guard };
+}
+
+/**
+ * The staged registrations that are already SATISFIED — the brand ids whose
+ * `set` ({@link escritasMarcasDaContaShopee}) is guarded by a baseline equal
+ * to the very row it writes. Pure.
+ *
+ * The only way there (root `CLAUDE.md` rule 7, tier 3): the conflict modal's
+ * "Salvar mesmo assim" over a row another operator registered for the same
+ * brand with the same names — the section never gives a staged registration's
+ * path a row itself ({@link ajustesDasBaselinesMarcasShopee}), and a commit or
+ * "Recarregar do servidor" projects the add off the delta anyway. What that
+ * operator accepted IS the registration, so nothing is left to write: and
+ * `saveRecord` skips such a `set` unread and, not having committed it, never
+ * runs its `toFormValue` — the add would stay staged, every later save
+ * «Nenhuma alteração para salvar» over a dirty form, or a reset form still
+ * holding it (#2084 review F2). The section drops these from the delta the
+ * moment the registry holds the row.
+ *
+ * Equal is `valuesEqual` over the WHOLE row — the same key set, the same
+ * values, nothing folded: a stored row differing only in a display name, in
+ * case or spacing, or in one extra key is NOT satisfied, and its `set` still
+ * writes (or conflicts). Matching too little is the safe direction: a row this
+ * misses stays staged, visibly; one it matched wrongly would be a registration
+ * dropped without a write.
+ */
+export function cadastrosJaGravadosMarcasShopee(
+  db: Firestore,
+  integracaoId: string,
+  alteracoes: AlteracoesMarcasShopee | null,
+  context: TransactionWriteContext,
+): number[] {
+  if (alteracoes === null) return [];
+  return alteracoes.adicionar
+    .filter((dto) => {
+      const escrita = escritaDoCadastro(db, integracaoId, dto, context);
+      const guardada = escrita.guard.baseline;
+      return guardada !== null && guardada !== undefined && valuesEqual(guardada, escrita.data);
+    })
+    .map((dto) => dto.brandId);
 }

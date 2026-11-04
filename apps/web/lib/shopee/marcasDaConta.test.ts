@@ -60,6 +60,7 @@ const {
   adicionarMarcasShopee,
   ajustesDasBaselinesMarcasShopee,
   alteracoesMarcasShopeeSchema,
+  cadastrosJaGravadosMarcasShopee,
   caminhoDoRegistroMarcaShopee,
   ocupantesDosRegistrosMarcasShopee,
   recusaDoCadastroMarcaShopee,
@@ -69,7 +70,7 @@ const {
   lerAlteracoesMarcasShopee,
   removerMarcaShopee,
 } = await import('./marcasDaConta');
-const { MissingTransactionBaselineError, RecordConflictError, saveRecord } =
+const { MissingTransactionBaselineError, NothingChangedError, RecordConflictError, saveRecord } =
   await import('@delfrance/ui/src/object/saveRecord');
 
 const db = {} as never;
@@ -530,6 +531,30 @@ describe('escritasMarcasDaContaShopee × saveRecord — what reaches the store',
     expect(h.docs.get(caminho('3001'))).toStrictEqual(ROW_NOVA);
   });
 
+  it('⭐ (#2084 F2) «Salvar mesmo assim» over THEIR row EQUAL to ours: the save skips the `set` unread and commits nothing — so the delta must drop it (cadastrosJaGravadosMarcasShopee) ⟷ NEAR-MISS: a row differing by a display name is WRITTEN', async () => {
+    const delta = adicionarMarcasShopee(null, [NOVA]);
+    h.docs.set(caminho('3001'), structuredClone(ROW_NOVA));
+    const igual = contexto({ [caminho('3001')]: ROW_NOVA });
+    // What leaves the stage is exactly what this save would not write.
+    expect(
+      cadastrosJaGravadosMarcasShopee(db, INT, lerAlteracoesMarcasShopee(delta), igual),
+    ).toEqual([3001]);
+    const err = await salvar(delta, igual).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(NothingChangedError);
+    expect(commits()).toBe(0);
+    expect(h.docs.get(caminho('3001'))).toStrictEqual(ROW_NOVA);
+
+    const deles: Doc = { ...ROW_NOVA, display_brand_name: 'Deles' };
+    h.docs.set(caminho('3001'), structuredClone(deles));
+    const diferente = contexto({ [caminho('3001')]: deles });
+    expect(
+      cadastrosJaGravadosMarcasShopee(db, INT, lerAlteracoesMarcasShopee(delta), diferente),
+    ).toEqual([]);
+    await salvar(delta, diferente);
+    expect(commits()).toBe(1);
+    expect(h.docs.get(caminho('3001'))).toStrictEqual(ROW_NOVA);
+  });
+
   it('⭐ NEAR-MISS: an UNREADABLE doc at that path is never overwritten — not even after «Salvar mesmo assim»', async () => {
     const estranho: Doc = { brand_id: '3001', original_brand_name: 'Quoted' };
     h.docs.set(caminho('3001'), estranho);
@@ -763,5 +788,70 @@ describe('ocupantesDosRegistrosMarcasShopee — EVERY doc id, with what holds it
       semMarca00000000000001: { tipo: 'sem-marca' },
       ilegivel0000000000001: { tipo: 'ilegivel' },
     });
+  });
+});
+
+describe('cadastrosJaGravadosMarcasShopee — a staged registration held as stored EXACTLY (#2084 review F2)', () => {
+  const OUTRA: MarcaDto = { brandId: 4002, originalBrandName: 'Outra', displayBrandName: null };
+  const ROW_OUTRA: Doc = { brand_id: 4002, original_brand_name: 'Outra', display_brand_name: null };
+  const delta = lerAlteracoesMarcasShopee(adicionarMarcasShopee(null, [NOVA, OUTRA]));
+
+  it('EQUAL pair: held as EXACTLY the row its `set` writes ⇒ satisfied; the key ORDER is not a difference', () => {
+    expect(
+      cadastrosJaGravadosMarcasShopee(db, INT, delta, contexto({ [caminho('3001')]: ROW_NOVA })),
+    ).toEqual([3001]);
+    const reordenada: Doc = {
+      display_brand_name: null,
+      original_brand_name: 'Marca Exemplo',
+      brand_id: 3001,
+    };
+    expect(
+      cadastrosJaGravadosMarcasShopee(db, INT, delta, contexto({ [caminho('3001')]: reordenada })),
+    ).toEqual([3001]);
+  });
+
+  it.each<[string, Doc]>([
+    ['another display name', { ...ROW_NOVA, display_brand_name: 'Deles' }],
+    ['the name in another case', { ...ROW_NOVA, original_brand_name: 'MARCA EXEMPLO' }],
+    ['the name with a trailing space', { ...ROW_NOVA, original_brand_name: 'Marca Exemplo ' }],
+    ['one extra key', { ...ROW_NOVA, timestamp: 1_700_000_000_000 }],
+    [
+      'the display name ABSENT instead of null',
+      { brand_id: 3001, original_brand_name: 'Marca Exemplo' },
+    ],
+    ['the id as a STRING', { ...ROW_NOVA, brand_id: '3001' }],
+  ])(
+    '⭐ NEAR-MISS: held with %s ⇒ NOT satisfied — its `set` still writes or conflicts',
+    (_, row) => {
+      expect(
+        cadastrosJaGravadosMarcasShopee(db, INT, delta, contexto({ [caminho('3001')]: row })),
+      ).toEqual([]);
+    },
+  );
+
+  it('NEAR-MISS: held absent, never held, or the equal row held at ANOTHER id ⇒ not satisfied', () => {
+    for (const ctx of [
+      contexto({ [caminho('3001')]: null }),
+      contexto({}),
+      contexto({ [caminho(LEGADO_9)]: ROW_NOVA }),
+    ]) {
+      expect(cadastrosJaGravadosMarcasShopee(db, INT, delta, ctx)).toEqual([]);
+    }
+  });
+
+  it('only the satisfied ones, in the delta’s order; a staged removal is never one; nothing staged ⇒ none', () => {
+    const comRemocao = lerAlteracoesMarcasShopee(
+      adicionarMarcasShopee(removerMarcaShopee(null, marca({ [LEGADO_9]: ROW_9 }, 9)), [
+        NOVA,
+        OUTRA,
+      ]),
+    );
+    const ctx = contexto({
+      [caminho('3001')]: { ...ROW_NOVA, display_brand_name: 'Deles' },
+      [caminho('4002')]: ROW_OUTRA,
+      [caminho(LEGADO_9)]: null,
+    });
+    expect(cadastrosJaGravadosMarcasShopee(db, INT, comRemocao, ctx)).toEqual([4002]);
+    expect(cadastrosJaGravadosMarcasShopee(db, INT, null, ctx)).toEqual([]);
   });
 });

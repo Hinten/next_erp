@@ -1,18 +1,19 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Badge, Button, Group, Loader, Paper, Stack, Text } from '@mantine/core';
 import { IconPlus } from '@tabler/icons-react';
 import type { Firestore } from 'firebase/firestore';
 import { ZodError } from 'zod';
 import { docIdDaMarcaShopee, type MarcaDaContaShopee, type MarcaDto } from '@delfrance/schemas';
 import { useObjectViewTransactionDocuments } from '@delfrance/ui';
-import { useMarcasShopee } from '@/lib/shopee/marcas';
+import { useMarcasShopee, type MarcasShopeeLidas } from '@/lib/shopee/marcas';
 import {
   CAMPO_MARCAS_SHOPEE,
   FRASE_MARCAS_CARREGANDO_SHOPEE,
   adicionarMarcasShopee,
   ajustesDasBaselinesMarcasShopee,
+  cadastrosJaGravadosMarcasShopee,
   caminhoDoRegistroMarcaShopee,
   desfazerAdicaoMarcaShopee,
   desfazerRemocaoMarcaShopee,
@@ -66,7 +67,18 @@ import { AdicionarMarcasShopeeModal } from './AdicionarMarcasShopeeModal';
  *
  * Until the first server snapshot has been read the section is read-only, and
  * says why: a change staged from a cached list would have nothing to be guarded
- * by.
+ * by. After it, the section LISTS and STAGES from the last server snapshot —
+ * the one its baselines were moved by — never from a later cached emission: a
+ * cached list that dropped a brand would offer it for a re-add the save skips
+ * unread (its baseline still that brand's row), and one that shows a doc
+ * re-created where this tab deleted one would offer a removal the save skips
+ * as "already gone" (#2084 review F1). A cached emission therefore changes
+ * nothing here; the next server one does.
+ *
+ * A staged registration that the registry comes to hold as stored EXACTLY
+ * (the conflict modal's "Salvar mesmo assim" over another operator's identical
+ * row) is satisfied and leaves the delta at once, before the save reads the
+ * form (`cadastrosJaGravadosMarcasShopee`, #2084 review F2).
  *
  * ## Identity is the integer `brand_id`
  *
@@ -129,6 +141,32 @@ export function MarcasShopeeManager({
   const documents = useObjectViewTransactionDocuments();
   const [modalAberto, setModalAberto] = useState(false);
 
+  // The last SERVER-truth reading of THIS conta (`fromCache === false`, no
+  // pending writes): what the baselines are moved by, so what the section
+  // lists and stages from. Kept across a later cached emission, which is never
+  // a reason to move a baseline — so never one to stage from either (#2084
+  // review F1). Remembered here, as React's "state from the previous render":
+  // `useMarcasShopee` hands back ONE reading per emission, so this updates
+  // once per server emission.
+  const daServidor =
+    lista.documentos !== undefined && lista.fromCache === false && !lista.hasPendingWrites;
+  const [ultimaDoServidor, setUltimaDoServidor] = useState<{
+    readonly integracaoId: string;
+    readonly lida: MarcasShopeeLidas;
+  } | null>(null);
+  if (
+    daServidor &&
+    (ultimaDoServidor?.lida !== lista || ultimaDoServidor.integracaoId !== integracaoId)
+  )
+    setUltimaDoServidor({ integracaoId, lida: lista });
+  const servidor: MarcasShopeeLidas | undefined = daServidor
+    ? lista
+    : ultimaDoServidor?.integracaoId === integracaoId
+      ? ultimaDoServidor.lida
+      : undefined;
+  /** What the section shows: server truth once read; before it, the cached list, read-only. */
+  const exibida = servidor ?? lista;
+
   const { alteracoes, invalida } = lerDelta(value);
   const adicionadas = alteracoes?.adicionar ?? [];
   const remocoes = alteracoes?.remover ?? [];
@@ -149,10 +187,12 @@ export function MarcasShopeeManager({
   // update; unseeded, the save raises the conflict instead. Once the
   // registration leaves the stage (undone, or dropped by the conflict's
   // "Recarregar"), the next run seeds it like any other row — hence `value`
-  // in the deps: unstaging a change re-runs this against the latest snapshot.
-  const { documentos, fromCache, hasPendingWrites, error } = lista;
+  // in the deps: unstaging a change re-runs this against the last SERVER
+  // snapshot, even while the latest emission is a cached one (#2084 review F1).
+  const { error } = lista;
+  const listadosNoServidor = servidor?.documentos;
   useEffect(() => {
-    if (!documents || error || documentos === undefined) return;
+    if (!documents || error || listadosNoServidor === undefined) return;
     const delta = lerDelta(value).alteracoes;
     const caminho = (docId: string) => caminhoDoRegistroMarcaShopee(db, integracaoId, docId);
     const caminhosAdicionados = new Set(
@@ -160,10 +200,9 @@ export function MarcasShopeeManager({
     );
     const caminhosRemovidos = new Set((delta?.remover ?? []).flatMap((r) => r.docIds.map(caminho)));
     for (const path of caminhosAdicionados) conhecidos.current.add(path);
-    if (fromCache !== false || hasPendingWrites) return;
-    for (const doc of documentos) conhecidos.current.add(doc.path);
+    for (const doc of listadosNoServidor) conhecidos.current.add(doc.path);
     const ajustes = ajustesDasBaselinesMarcasShopee({
-      listados: documentos,
+      listados: listadosNoServidor,
       conhecidos: conhecidos.current,
       guardada: (path) => documents.getBaseline(path),
       caminhosAdicionados,
@@ -175,26 +214,66 @@ export function MarcasShopeeManager({
     }
     // The section's "server truth read" mark — nothing is staged at load.
     documents.seedFormField(CAMPO_MARCAS_SHOPEE, null);
-  }, [db, integracaoId, documents, error, documentos, fromCache, hasPendingWrites, value]);
+  }, [db, integracaoId, documents, error, listadosNoServidor, value]);
+
+  // A staged registration the registry comes to hold as stored EXACTLY is
+  // satisfied, and leaves the delta (#2084 review F2). It must leave INSIDE
+  // the registry's notify: "Salvar mesmo assim" rebases the contested path and
+  // saves in the same click, and `saveRecord` would skip that `set` unread and
+  // never project it off the form — so an effect after the render would come
+  // too late, after the save had read (and, with another edit, reset the form
+  // to) the delta still holding it. The subscription is live while another tab
+  // is shown only because the page keeps this tab mounted
+  // (`persistentSections`): a hidden `<Activity>` would unmount it, and the
+  // "Salvar mesmo assim" clicked from «Dados gerais» would drop nothing.
+  // `atuais` carries the latest props into
+  // that callback, which runs outside render. It is refreshed in a LAYOUT
+  // effect, which runs before every passive effect of the same commit: the
+  // seeding run above moves a baseline (and so notifies) in a passive effect,
+  // in the very commit that swapped a staged registration for a staged
+  // removal of that brand («Remover» on its listed row), and read against the
+  // previous render's delta that notify would hand the form the old delta
+  // minus the registration — the removal gone, nothing said.
+  const atuais = useRef({ db, integracaoId, value, onChange });
+  useLayoutEffect(() => {
+    atuais.current = { db, integracaoId, value, onChange };
+  });
+  useEffect(() => {
+    if (!documents) return;
+    return documents.subscribe(() => {
+      const delta = lerDelta(atuais.current.value).alteracoes;
+      const satisfeitos = cadastrosJaGravadosMarcasShopee(
+        atuais.current.db,
+        atuais.current.integracaoId,
+        delta,
+        documents,
+      );
+      if (satisfeitos.length === 0) return;
+      let proximo: AlteracoesMarcasShopee | null = delta;
+      for (const brandId of satisfeitos) proximo = desfazerAdicaoMarcaShopee(proximo, brandId);
+      atuais.current = { ...atuais.current, value: proximo };
+      atuais.current.onChange(proximo);
+    });
+  }, [documents]);
 
   const semeada =
     documents === null || documents.getFormBaseline(CAMPO_MARCAS_SHOPEE) !== undefined;
   const bloqueada = disabled || !semeada;
 
-  const marcas = useMemo(() => lista.leitura?.marcas ?? [], [lista.leitura]);
+  const marcas = useMemo(() => exibida.leitura?.marcas ?? [], [exibida.leitura]);
   const porBrandId = useMemo(() => new Map(marcas.map((m) => [m.brandId, m])), [marcas]);
   const porRemocao = new Map(remocoes.map((r) => [r.brandId, r]));
   const removidasForaDaLista = remocoes.filter((r) => !porBrandId.has(r.brandId));
 
   const ocupantes = useMemo(
     () =>
-      lista.leitura === undefined
+      exibida.leitura === undefined
         ? new Map<string, OcupanteDoRegistroMarcaShopee>()
-        : ocupantesDosRegistrosMarcasShopee(lista.leitura, rotuloDaMarcaCadastrada),
-    [lista.leitura],
+        : ocupantesDosRegistrosMarcasShopee(exibida.leitura, rotuloDaMarcaCadastrada),
+    [exibida.leitura],
   );
   const outrosRegistros =
-    (lista.leitura?.semMarca.length ?? 0) + (lista.leitura?.ilegiveis.length ?? 0);
+    (exibida.leitura?.semMarca.length ?? 0) + (exibida.leitura?.ilegiveis.length ?? 0);
 
   const adicionar = (dtos: MarcaDto[]) => {
     onChange(adicionarMarcasShopee(value, dtos));
@@ -230,10 +309,10 @@ export function MarcasShopeeManager({
         As marcas cadastradas aqui são as oferecidas na escolha de marca dos anúncios desta conta (a
         Shopee demora para listar marcas). «Sem marca» está sempre disponível no anúncio.
       </Text>
-      {lista.truncada && (
+      {exibida.truncada && (
         <Alert color="yellow" variant="light" data-testid="shopee-marcas-truncada">
           <Text size="sm">
-            {`Mostrando os primeiros ${String(lista.documentos?.length ?? 0)} registros de marca — pode haver marcas cadastradas que não aparecem aqui.`}
+            {`Mostrando os primeiros ${String(exibida.documentos?.length ?? 0)} registros de marca — pode haver marcas cadastradas que não aparecem aqui.`}
           </Text>
         </Alert>
       )}
@@ -248,7 +327,7 @@ export function MarcasShopeeManager({
         </Text>
       )}
 
-      {lista.leitura === undefined ? (
+      {exibida.leitura === undefined ? (
         <Group justify="center" p="md">
           <Loader size="sm" />
         </Group>
