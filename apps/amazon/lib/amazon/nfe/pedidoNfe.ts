@@ -59,19 +59,20 @@
  *
  * A write that takes an ELIGIBLE document (above) to `'c'`: an approved sale
  * NF-e cancelled at SEFAZ. Nothing can be sent to Amazon (the Delivery API has
- * no cancel), so the trigger (14-c) tells the operator instead
+ * no cancel), so the trigger (`gatilhoNfe.ts`) tells the operator instead
  * (`nfe-cancelada`, step-14 plan §3 decision 17(b), "an aprovada sale NF-e").
  *
- * ⚠️ LIGHT on purpose: the NF-e trigger (14-c) imports this module, and its
- * import closure is pinned (`estrutura.test.ts`, type edges walked) to hold no
- * SP-API value import and nothing of `pedidos/` but `orderIds.ts` (the
- * digest). So it spells the two stored Amazon values it reads here — pinned
- * EQUAL to the importer's constants by its test.
+ * ⚠️ LIGHT on purpose: the NF-e trigger imports this module, and the trigger's
+ * import closure is pinned file by file (`estrutura.test.ts`'s NF-e D11 guard,
+ * type edges walked) to hold no SP-API value import and nothing of `pedidos/`
+ * but `orderIds.ts` (the digest). So it spells the two stored Amazon values it
+ * reads here — pinned EQUAL to the importer's constants by its test.
  */
 import { coerceToMicros, coerceToMillis } from '@delfrance/core/datetime';
 import {
   CONTA_ID_AMAZON_REGEX,
   ESTADO_NFE,
+  ESTADO_PEDIDO,
   MARKETPLACE_PEDIDO_TIPO,
   PEDIDO_AMAZON_REGEX,
   decideNfeUploadDispatch,
@@ -123,6 +124,28 @@ export function provaDeIdentidadeAmazon(
   return makePedidoIdAmazon(contaId, orderId) === pedidoId ? { contaId, orderId } : null;
 }
 
+/**
+ * The pedido estados of a CANCELLED SALE (step 14, PR 14-c): the importer's
+ * terminal pair (`pedidos/estadoPedidoAmazon.ts`'s `ESTADOS_TERMINAIS_AMAZON`,
+ * spelled here so this module stays out of `pedidos/` — its test pins the two
+ * EQUAL). `cancelado` is the CANCELLED predicate's target without a pagamento
+ * (and an operator's own cancel); `estornadoIntegralmente` is its target for an
+ * APPROVED, paid order — exactly the orders that carry an NF-e. Reading
+ * `cancelado` alone would miss nearly every cancelled sale with an authorized
+ * note.
+ */
+export const ESTADOS_VENDA_CANCELADA_AMAZON: ReadonlySet<string> = new Set<string>([
+  ESTADO_PEDIDO.cancelado,
+  ESTADO_PEDIDO.estornadoIntegralmente,
+]);
+
+/** Whether the stored pedido is a cancelled sale ({@link ESTADOS_VENDA_CANCELADA_AMAZON}). */
+export function vendaCanceladaAmazon(raw: Readonly<Record<string, unknown>> | null): boolean {
+  return (
+    raw !== null && typeof raw.estado === 'string' && ESTADOS_VENDA_CANCELADA_AMAZON.has(raw.estado)
+  );
+}
+
 /** An object field of a raw document, or `null`. */
 function objeto(valor: unknown): Readonly<Record<string, unknown>> | null {
   return typeof valor === 'object' && valor !== null && !Array.isArray(valor)
@@ -158,21 +181,51 @@ export type AvaliacaoPedidoNfeAmazon =
         | typeof MOTIVO_NFE_AMAZON.naoDba;
     };
 
+/** The task's verdict: the proof and the emission block — never the stored pre-filter. */
+export type AvaliacaoPedidoTarefaNfeAmazon =
+  | ({ readonly ok: true } & IdentidadePedidoAmazon)
+  | {
+      readonly ok: false;
+      readonly motivo:
+        | typeof MOTIVO_NFE_AMAZON.naoAmazon
+        | typeof MOTIVO_NFE_AMAZON.emissaoBloqueada;
+    };
+
 /**
- * May this pedido's NF-e go to Amazon? The proof, then the emission block,
- * then the stored pre-filter (module header). A missing pedido is not proved.
+ * The NF-e TASK's verdict (step 14, PR 14-c, its P3): the proof, then the
+ * emission block — and NOT the stored pre-filter: the task decides Delivery by
+ * Amazon LIVE, from its own `getOrder` read (step-14 plan §3 decision 3), and
+ * the re-drive route bypasses the trigger's pre-filter on purpose. A missing
+ * pedido is not proved.
  */
-export function avaliarPedidoParaNfeAmazon(
+export function avaliarPedidoParaTarefaNfeAmazon(
   pedidoId: string,
   raw: Readonly<Record<string, unknown>> | null,
-): AvaliacaoPedidoNfeAmazon {
+): AvaliacaoPedidoTarefaNfeAmazon {
   const prova = provaDeIdentidadeAmazon(pedidoId, raw);
   if (prova === null || raw === null) return { ok: false, motivo: MOTIVO_NFE_AMAZON.naoAmazon };
   if (raw.bloquearEmissaoNFe === true) {
     return { ok: false, motivo: MOTIVO_NFE_AMAZON.emissaoBloqueada };
   }
-  if (armazenadoDizNaoDba(raw)) return { ok: false, motivo: MOTIVO_NFE_AMAZON.naoDba };
   return { ok: true, contaId: prova.contaId, orderId: prova.orderId };
+}
+
+/**
+ * May this pedido's NF-e go to Amazon? The task's verdict
+ * ({@link avaliarPedidoParaTarefaNfeAmazon}: the proof, then the emission
+ * block), then the TRIGGER's stored pre-filter (module header). A missing
+ * pedido is not proved.
+ */
+export function avaliarPedidoParaNfeAmazon(
+  pedidoId: string,
+  raw: Readonly<Record<string, unknown>> | null,
+): AvaliacaoPedidoNfeAmazon {
+  const daTarefa = avaliarPedidoParaTarefaNfeAmazon(pedidoId, raw);
+  if (!daTarefa.ok) return daTarefa;
+  if (raw !== null && armazenadoDizNaoDba(raw)) {
+    return { ok: false, motivo: MOTIVO_NFE_AMAZON.naoDba };
+  }
+  return daTarefa;
 }
 
 /**

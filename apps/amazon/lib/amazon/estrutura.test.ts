@@ -37,10 +37,23 @@
  *  - (step 14, PR 14-b) the package's write-client constructor is named by ONE
  *    production file, the write engine `core/escrita.ts`, across the WHOLE app
  *    (all of `lib/`, `app/`, `functions/`, `scripts/` and `proxy.ts`); `nfe/`
- *    reads no process environment; `nfe/tarefaNfe.ts`, `nfe/motivosNfe.ts` and
- *    `nfe/pedidoNfe.ts` stay LIGHT (no SP-API value import, nothing of
- *    `pedidos/` but `orderIds.ts`, type edges walked); and `node:crypto` (the
- *    NF-e digest's) stays out of the logger's import closure;
+ *    reads no process environment; and `node:crypto` (the NF-e digest's) stays
+ *    out of the logger's import closure;
+ *  - (step 14, PR 14-c) D11 by construction on the NF-e trigger, which runs on
+ *    EVERY `nfev4` write of the project: its closure with its composition root
+ *    (type edges walked) is pinned file by file and checked against its OWN
+ *    forbidden list — no context, conta read, credential, park, valve, env
+ *    reader, write engine, intake, other root, NF-e task module or `pedidos/`
+ *    module but the digest, and the SP-API package as TYPES only. It supersedes
+ *    14-b's LIGHT check of `nfe/tarefaNfe.ts`, `nfe/motivosNfe.ts` and
+ *    `nfe/pedidoNfe.ts`, which sit in that closure. The task-SDK helpers live in
+ *    `core/filaTarefas.ts`, the one production importer of the Cloud Tasks SDK
+ *    under `lib/amazon`, and the app has exactly THREE `getFunctions(` roots,
+ *    each pinned to the queue it binds; and each of the two Delivery calls
+ *    (`getInvoiceStatus`, `submitInvoice`) has exactly ONE caller module,
+ *    `nfe/entregaAmazon.ts`, across `lib/`, `app/`, `functions/src` and
+ *    `scripts/` (tests exempt by construction: they name the helpers to drive
+ *    a recording client or an injected fetch);
  *  - (step 2b) no `.message` inside a logger call (any `.info|warn|error(`, or
  *    any non-call line writer), no `console.` anywhere, no `catch` in the
  *    logger or the redactor (they are total by construction), and only the
@@ -518,8 +531,12 @@ function sellersLogados(arquivo: string, texto: string): string[] {
   return achados;
 }
 
-/** The ONE production module under `lib/amazon` that may import the Cloud Tasks SDK. */
-const IMPORTADOR_DO_SDK_DE_TAREFAS = 'notificacoes/agendador.ts';
+/**
+ * The ONE production module under `lib/amazon` that may import the Cloud Tasks
+ * SDK: the shared task-SDK helpers (step 14, PR 14-c — moved there out of the
+ * reads-queue producer `notificacoes/agendador.ts`, which re-exports them).
+ */
+const IMPORTADOR_DO_SDK_DE_TAREFAS = 'core/filaTarefas.ts';
 
 /**
  * Of `fontes` (paths relative to `lib/amazon`, with their text), the PRODUCTION
@@ -535,7 +552,7 @@ function importadoresDoSdkDeTarefas(fontes: readonly (readonly [string, string])
     .sort();
 }
 
-/** The App Hosting composition root of the reads queue (3-c): one of the app's two `getFunctions(` callers. */
+/** The App Hosting composition root of the reads queue (3-c): one of the app's three `getFunctions(` callers. */
 const ARQUIVO_RAIZ_DA_FILA = 'lib/firebase/filaLeitura.ts';
 
 /** The push receiver's route and body, relative to the app root (3-c). */
@@ -570,8 +587,31 @@ function importacoesProibidasNoReceptor(arquivo: string, texto: string): string[
 /** A CALL of the Admin SDK's `getFunctions` (comments aside): only a composition root binds the queue. */
 const chamaGetFunctions = (texto: string) => /\bgetFunctions\s*\(/.test(semComentarios(texto));
 
-/** The functions codebase's composition root of the reads queue (3-d): the app's other `getFunctions(` caller. */
+/** The functions codebase's composition root of the reads queue (3-d): a second `getFunctions(` caller. */
 const ARQUIVO_RAIZ_DA_FILA_FUNCOES = 'functions/src/agendador.ts';
+
+/** The functions codebase's composition root of the NF-e queue (step 14, PR 14-c): the THIRD caller. */
+const ARQUIVO_RAIZ_DA_FILA_NFE = 'functions/src/agendadorNfe.ts';
+
+/**
+ * Each composition root and the queue(s) it binds, by the path builders it
+ * calls: a root that binds another root's queue — the NF-e producer added to
+ * the reads queue's root, whose closure the NF-e trigger must never reach — is
+ * a different file than this table says.
+ */
+const FILAS_DE_CADA_RAIZ: Readonly<Record<string, readonly string[]>> = {
+  [ARQUIVO_RAIZ_DA_FILA]: ['caminhoDaFilaAmazon'],
+  [ARQUIVO_RAIZ_DA_FILA_FUNCOES]: ['caminhoDaFilaAmazon'],
+  [ARQUIVO_RAIZ_DA_FILA_NFE]: ['caminhoDaFilaNfeAmazon'],
+};
+
+/** The queue-path builders a source CALLS (comments aside), sorted and deduplicated. */
+function filasDaRaiz(texto: string): string[] {
+  const nomes = [...semComentarios(texto).matchAll(/\b(caminhoDaFila\w*)\s*\(/g)].map(
+    (m) => m[1] ?? '',
+  );
+  return [...new Set(nomes)].sort();
+}
 
 /* --------------------- step 3 (3-d): the functions codebase --------------------- */
 
@@ -735,6 +775,36 @@ const CHAMADA_DE_GET_ORDER =
   /\bbuscarPedido\b|\bcaminhoGetOrder\b|\bOPERACAO_GET_ORDER\b|\brespostaGetOrderSchema\b|['"`]getOrder['"`]/;
 
 const nomeiaGetOrder = (texto: string) => CHAMADA_DE_GET_ORDER.test(semComentarios(texto));
+
+/* -------------- step 14 (14-c): the Delivery calls' single caller -------------- */
+
+/**
+ * The ONE module that may call `getInvoiceStatus` and `submitInvoice` (step-14
+ * plan §2.2: a W10 verification script can spend none of the Delivery budget,
+ * and a second submit path would bypass status-first).
+ */
+const CHAMADOR_DA_ENTREGA = 'lib/amazon/nfe/entregaAmazon.ts';
+
+/**
+ * Production files that NAME a Delivery operation without calling it: the log
+ * and fixture redactor keys its allow-list tables by the operation (its closure
+ * is pinned to `zod` and `@delfrance/core/*`). Tests are exempt by construction
+ * (the scan reads no test file): `nfe/conteudoNfe.test.ts`, `core/escrita.test.ts`
+ * and the package-shaped fixture tests name the helpers to drive a recording
+ * client or an injected fetch, and call nothing real.
+ */
+const NOMEIAM_A_ENTREGA_SEM_CHAMAR = ['lib/amazon/core/redacao.ts'];
+
+/** A `getInvoiceStatus` call site, in comment-free code (the getOrder scan's shape). */
+const CHAMADA_DE_STATUS_DA_NFE =
+  /\bconsultarStatusNotaFiscal\b|\bCAMINHO_STATUS_NOTA_FISCAL\b|\bOPERACAO_GET_INVOICE_STATUS\b|\brespostaStatusNotaFiscalSchema\b|['"`]getInvoiceStatus['"`]/;
+
+/** A `submitInvoice` call site, in comment-free code. */
+const CHAMADA_DE_ENVIO_DA_NFE =
+  /\benviarNotaFiscal\b|\bCAMINHO_NOTA_FISCAL\b|\bOPERACAO_SUBMIT_INVOICE\b|\brespostaEnvioNotaFiscalSchema\b|['"`]submitInvoice['"`]/;
+
+const nomeiaStatusDaNfe = (texto: string) => CHAMADA_DE_STATUS_DA_NFE.test(semComentarios(texto));
+const nomeiaEnvioDaNfe = (texto: string) => CHAMADA_DE_ENVIO_DA_NFE.test(semComentarios(texto));
 
 /** The ONE module that may open a `WriteBatch` (plan §3 decision 1). */
 const LOTE_DO_IMPORTADOR = 'lib/amazon/pedidos/escritaPedido.ts';
@@ -924,10 +994,12 @@ function importacoesDeValor(texto: string): string[] {
 }
 
 /**
- * Why the trigger's closure (a {@link fechoDeImportacoes} walk from app-root
- * paths) could reach Amazon; empty when it cannot:
+ * Why a trigger's closure (a {@link fechoDeImportacoes} walk from app-root
+ * paths) could reach Amazon; empty when it cannot. `proibidos` is the
+ * trigger's OWN list — {@link PROIBIDOS_NO_GATILHO} for the conta trigger,
+ * {@link PROIBIDOS_NO_GATILHO_NFE} for the NF-e one:
  *
- * - every reached file whose RESOLVED path is in {@link PROIBIDOS_NO_GATILHO};
+ * - every reached file whose RESOLVED path is in `proibidos`;
  * - every VALUE import of the SP-API package, or any subpath, in any reached
  *   file ({@link importacoesDeValor}) — a type import is fine, and is what
  *   `core/log.ts` does; a dynamic import of a computed name too (fail closed);
@@ -946,6 +1018,7 @@ function importacoesDeValor(texto: string): string[] {
 function violacoesD11(
   fecho: { arquivos: readonly string[]; externos: readonly string[] },
   ler: LeitorDeFonte,
+  proibidos: readonly RegExp[],
 ): string[] {
   const violacoes: string[] = [];
   const externos = new Set(fecho.externos);
@@ -956,7 +1029,7 @@ function violacoesD11(
     return fecho.arquivos.includes(alvo) || externos.has(`?${alvo}`);
   };
   for (const arquivo of fecho.arquivos) {
-    if (PROIBIDOS_NO_GATILHO.some((re) => re.test(arquivo))) violacoes.push(`reaches ${arquivo}`);
+    if (proibidos.some((re) => re.test(arquivo))) violacoes.push(`reaches ${arquivo}`);
     for (const espec of importacoesDeValor(ler(arquivo) ?? '')) {
       if (ehDoPacoteSpApi(espec)) violacoes.push(`${arquivo} imports ${espec} as a value`);
       else if (espec === '<dinamico>') violacoes.push(`${arquivo} imports a computed module`);
@@ -981,9 +1054,48 @@ const CLIENTE_DE_ESCRITA = /\bcriarClienteEscritaSpApi\b/;
 /** Whether a source names the write-client constructor in CODE (comments aside). */
 const nomeiaClienteDeEscrita = (texto: string) => CLIENTE_DE_ESCRITA.test(semComentarios(texto));
 
+/* --------------------- step 14 (PR 14-c): the NF-e trigger, D11 by construction --------------------- */
+
+/** The NF-e trigger and its composition root, relative to the APP root. */
+const ENTRADAS_DO_GATILHO_NFE = [
+  'functions/src/onNfeAprovadaAmazon.ts',
+  'functions/src/agendadorNfe.ts',
+];
+
 /**
- * The NF-e modules 14-c's trigger closure will reach, kept LIGHT now (their
- * headers and `apps/amazon/CLAUDE.md` say so): relative to the APP root.
+ * The app files (relative to the APP root) the NF-e trigger's closure may never
+ * reach — designed for THIS trigger, which runs on EVERY `nfev4` write of the
+ * project: the conta context and every module that reads a conta, a credential,
+ * the park, a valve or the environment, and the write engine; the intake and the
+ * conta flows; the App Hosting composition roots; every `pedidos/` module but
+ * the importer's digest (`orderIds.ts`, the ownership proof's); the NF-e
+ * task's own modules (the handler, the Amazon calls, the stamp, the content
+ * digest, the decision tables, the status reader, the live gates); and the
+ * functions codebase's other roots (`options.ts` included: the trigger carries
+ * no region of its own).
+ *
+ * ⚠️ This is why the NF-e root is a separate file and why the task-SDK helpers
+ * moved to `core/filaTarefas.ts`: `functions/src/agendador.ts` →
+ * `notificacoes/agendador.ts` → `./notificacao` (by VALUE) → the context, the
+ * conta reads and the SP-API error classes.
+ */
+const PROIBIDOS_NO_GATILHO_NFE = [
+  /^lib\/amazon\/core\/(?:contexto|contas|valvulas|estacionamento|credentialStore|renovacaoUnica|agente|contaCache|escrita)\.ts$/,
+  /^lib\/amazon\/env\.ts$/,
+  /^lib\/amazon\/(?:notificacoes|conta)\//,
+  /^lib\/firebase\//,
+  /^lib\/amazon\/pedidos\/(?!orderIds\.ts$)/,
+  /^lib\/amazon\/nfe\/(?:processarNfe|entregaAmazon|carimboFreteNfe|conteudoNfe|decisaoNfe|statusNfe|gatesPedidoNfe)\.ts$/,
+  /^functions\/src\/(?:depsLeitura|agendador|filaLeitura|filaNfe|pollPedidos|options)\.ts$/,
+];
+
+/**
+ * The three NF-e modules 14-b shipped LIGHT for this trigger (their headers
+ * say so). Their old dedicated guard is SUPERSEDED by the trigger's: they sit
+ * in its EXACT closure, and every check that guard made — a value or computed
+ * import of the SP-API package, any `pedidos/` module but the digest, an
+ * unresolved relative import, an `@/` one — is a check of {@link violacoesD11}
+ * under {@link PROIBIDOS_NO_GATILHO_NFE}, over a superset of their closure.
  */
 const MODULOS_LEVES_DA_NFE = [
   'lib/amazon/nfe/tarefaNfe.ts',
@@ -991,36 +1103,8 @@ const MODULOS_LEVES_DA_NFE = [
   'lib/amazon/nfe/pedidoNfe.ts',
 ];
 
-/** The ONE `pedidos/` module the light NF-e modules may reach: the importer's digest. */
+/** The ONE `pedidos/` module the NF-e trigger may reach: the importer's digest. */
 const ORDER_IDS_DA_NFE = 'lib/amazon/pedidos/orderIds.ts';
-
-/**
- * Why the light NF-e modules' closure is not light; empty when it is: a reached
- * `pedidos/` file other than the digest, a VALUE import of the SP-API package
- * (or a computed one) in any reached file, an unresolved relative import or an
- * `@/` one (fail closed). A narrower cousin of {@link violacoesD11}; 14-c's
- * trigger guard walks the whole trigger and supersedes it.
- */
-function violacoesDosModulosLevesDaNfe(
-  fecho: { arquivos: readonly string[]; externos: readonly string[] },
-  ler: LeitorDeFonte,
-): string[] {
-  const violacoes: string[] = [];
-  for (const arquivo of fecho.arquivos) {
-    if (arquivo.startsWith('lib/amazon/pedidos/') && arquivo !== ORDER_IDS_DA_NFE) {
-      violacoes.push(`reaches ${arquivo}`);
-    }
-    for (const espec of importacoesDeValor(ler(arquivo) ?? '')) {
-      if (ehDoPacoteSpApi(espec)) violacoes.push(`${arquivo} imports ${espec} as a value`);
-      else if (espec === '<dinamico>') violacoes.push(`${arquivo} imports a computed module`);
-    }
-  }
-  for (const espec of fecho.externos) {
-    if (espec.startsWith('?')) violacoes.push(`unresolved ${espec.slice(1)}`);
-    else if (espec.startsWith('@/')) violacoes.push(`imports ${espec} (the alias is not walked)`);
-  }
-  return violacoes;
-}
 
 /* -------------------------------- the pinned lines -------------------------------- */
 
@@ -1049,6 +1133,7 @@ describe('lib/amazon layout', () => {
         'core/contexto.ts',
         'core/credentialStore.ts',
         'core/erros.ts',
+        'core/filaTarefas.ts',
         'core/estacionamento.ts',
         'core/formatoDaRef.ts',
         'core/idConta.ts',
@@ -1061,11 +1146,18 @@ describe('lib/amazon layout', () => {
         'core/valvulas.ts',
         'frete/estadoFreteAmazon.ts',
         'frete/intFrete.ts',
+        'nfe/agendadorNfe.ts',
+        'nfe/avisoNfe.ts',
+        'nfe/carimboFreteNfe.ts',
         'nfe/conteudoNfe.ts',
         'nfe/decisaoNfe.ts',
+        'nfe/destinoAceite.ts',
+        'nfe/entregaAmazon.ts',
         'nfe/gatesPedidoNfe.ts',
+        'nfe/gatilhoNfe.ts',
         'nfe/motivosNfe.ts',
         'nfe/pedidoNfe.ts',
+        'nfe/processarNfe.ts',
         'nfe/statusNfe.ts',
         'nfe/tarefaNfe.ts',
         'notificacoes/agendador.ts',
@@ -1425,23 +1517,31 @@ describe('the step-3 intake guards', () => {
 
   // An app-wide parse (≈ 0.2–0.4 s locally, more on a CI runner): CI headroom, not a budget.
   it(
-    'no file under lib/amazon calls getFunctions(, and the two composition roots are the app’s only callers',
+    'no file under lib/amazon calls getFunctions(, and the THREE composition roots are the app’s only callers, each binding its own queue',
     { timeout: 30_000 },
     () => {
       const lib = arquivosTs(RAIZ_LIB).filter((p) => !ehTeste(p));
       expect(lib.filter((p) => chamaGetFunctions(readFileSync(p, 'utf8'))).map(rel)).toEqual([]);
       // The EXACT list of composition roots, app-wide: the App Hosting receiver's
-      // `lib/firebase/filaLeitura.ts` (3-c) and the functions codebase's
-      // `functions/src/agendador.ts` (3-d, the step-4 poll's).
+      // `lib/firebase/filaLeitura.ts` (3-c), the functions codebase's
+      // `functions/src/agendador.ts` (3-d, the step-4 poll's) and its NF-e root
+      // `functions/src/agendadorNfe.ts` (step 14, PR 14-c).
       // Every file the walk returns (`.ts`, `.tsx`, `.mjs`): a `.tsx` page is app code too.
       const app = arquivosTs(RAIZ_APP).filter((p) => !ehTeste(p));
       expect(app.length).toBeGreaterThan(40);
-      expect(
-        app
-          .filter((p) => chamaGetFunctions(readFileSync(p, 'utf8')))
-          .map(relApp)
-          .sort(),
-      ).toEqual([ARQUIVO_RAIZ_DA_FILA_FUNCOES, ARQUIVO_RAIZ_DA_FILA].sort());
+      const raizes = app
+        .filter((p) => chamaGetFunctions(readFileSync(p, 'utf8')))
+        .map(relApp)
+        .sort();
+      expect(raizes).toEqual(
+        [ARQUIVO_RAIZ_DA_FILA_FUNCOES, ARQUIVO_RAIZ_DA_FILA, ARQUIVO_RAIZ_DA_FILA_NFE].sort(),
+      );
+      // ★ Each root's queue set: the NF-e producer added to the reads queue's
+      // root (whose closure reaches the context) is a different table.
+      const filas = Object.fromEntries(
+        raizes.map((r) => [r, filasDaRaiz(lerDoApp(r) ?? '')] as const),
+      );
+      expect(filas).toEqual(FILAS_DE_CADA_RAIZ);
     },
   );
 
@@ -1588,11 +1688,64 @@ describe('the step-4 backstop poll guards (4-a)', () => {
     const texto = lerDoApp(CHAMADOR_DE_SEARCH_ORDERS) ?? '';
     expect(semComentarios(texto)).toMatch(/\behFalhaDoSdkDeTarefasAmazon\(/);
     const especs = especificadores(texto);
-    // The Cloud Tasks SDK's two error modules: the narrowing lives in agendador.ts.
+    // The Cloud Tasks SDK's two error modules: the narrowing lives in
+    // core/filaTarefas.ts, re-exported by agendador.ts (step 14, PR 14-c).
     expect(
       especs.filter((e) => e === 'firebase-admin/functions' || e === 'firebase-admin/app'),
     ).toEqual([]);
     expect(especs).toContain('../notificacoes/agendador');
+  });
+});
+
+describe('the step-14 Delivery calls’ single caller (14-c)', () => {
+  // App-wide parses: CI headroom, not a budget.
+  it.each<[string, (texto: string) => boolean]>([
+    ['getInvoiceStatus', nomeiaStatusDaNfe],
+    ['submitInvoice', nomeiaEnvioDaNfe],
+  ])(
+    `%s has exactly ONE caller module under lib/amazon, app/, functions/src and scripts/: ${CHAMADOR_DA_ENTREGA}`,
+    { timeout: 30_000 },
+    (_operacao, nomeia) => {
+      const nomeiam = fontesDoChamadorDeSearchOrders()
+        .filter((p) => nomeia(readFileSync(p, 'utf8')))
+        .map(relApp)
+        .sort();
+      expect(nomeiam.filter((p) => !NOMEIAM_A_ENTREGA_SEM_CHAMAR.includes(p))).toEqual([
+        CHAMADOR_DA_ENTREGA,
+      ]);
+      // Anti-vacuity: the scan sees the exempt mentions, by name.
+      expect(nomeiam).toEqual(expect.arrayContaining(NOMEIAM_A_ENTREGA_SEM_CHAMAR));
+    },
+  );
+
+  it('the Delivery scans find every call shape, and nothing alike', () => {
+    for (const fonte of [
+      'await consultarStatusNotaFiscal(contexto.cliente, orderId);',
+      'cliente.get({ operacao: OPERACAO_GET_INVOICE_STATUS, caminho: c, schema });',
+      'cliente.get({ operacao: op, caminho: CAMINHO_STATUS_NOTA_FISCAL, schema });',
+      "cliente.get({ operacao: 'getInvoiceStatus', caminho: c, schema: respostaStatusNotaFiscalSchema });",
+    ]) {
+      expect(nomeiaStatusDaNfe(fonte), fonte).toBe(true);
+    }
+    for (const fonte of [
+      'await enviarNotaFiscal(escritor, entrada);',
+      'escritor.post({ operacao: OPERACAO_SUBMIT_INVOICE, caminho: c, corpo, schema });',
+      'escritor.post({ operacao: op, caminho: CAMINHO_NOTA_FISCAL, corpo, schema });',
+      'escritor.post({ operacao: `submitInvoice`, caminho: c, corpo, schema });',
+    ]) {
+      expect(nomeiaEnvioDaNfe(fonte), fonte).toBe(true);
+    }
+    for (const fonte of [
+      '// consultarStatusNotaFiscal(cliente, id)',
+      '/* enviarNotaFiscal(escritor, e) */',
+      '/** the ONE `submitInvoice` of the stored proc */ const y = 1;',
+      'const x = enviarNotaFiscalAmazon;',
+      "const nome = 'getInvoiceStatuses';",
+      'lerStatusNfeNaAmazon(contexto, orderId);',
+      'enviarNfeNaAmazon(escritor, orderId, conteudo);',
+    ]) {
+      expect(nomeiaStatusDaNfe(fonte) || nomeiaEnvioDaNfe(fonte), fonte).toBe(false);
+    }
   });
 });
 
@@ -1735,6 +1888,7 @@ describe('the step-5 seam guards (5-e)', () => {
   // step-20 block below; the seam fill adds no edge to it (that exact list is
   // unchanged), and `PROIBIDOS_NO_GATILHO` already refuses every
   // `notificacoes/` and `pedidos/` module and `functions/src/depsLeitura.ts`.
+  // (The NF-e trigger's closure has its own block, step 14 PR 14-c.)
   it('the conta trigger’s closure reaches neither the seam nor the importer nor the ViaCEP module', () => {
     const fecho = fechoDeImportacoes(ENTRADAS_DO_GATILHO, lerDoApp);
     expect(violacoesDoAppHosting(fecho)).toEqual([]);
@@ -1745,7 +1899,7 @@ describe('the step-5 seam guards (5-e)', () => {
 describe('the step-20 conta trigger guards (D11 by construction)', () => {
   it('the trigger’s import closure reaches no Amazon client, context, credential, park, valve or env reader — transitively, type edges walked', () => {
     const fecho = fechoDeImportacoes(ENTRADAS_DO_GATILHO, lerDoApp);
-    expect(violacoesD11(fecho, lerDoApp)).toEqual([]);
+    expect(violacoesD11(fecho, lerDoApp, PROIBIDOS_NO_GATILHO)).toEqual([]);
     // EXACT, both lists: anti-vacuity AND a review gate. A new edge out of the
     // trigger, the binding or the logger reds this test until a reviewer reads
     // it — the trigger runs on EVERY conta write of every channel, so an
@@ -1785,8 +1939,10 @@ describe('the step-20 conta trigger guards (D11 by construction)', () => {
     );
   });
 
-  it('neither package edge the walk leaves unwalked depends on the SP-API package', () => {
-    for (const pacote of ['schemas', 'data']) {
+  it('no package edge the walks leave unwalked depends on the SP-API package (both triggers)', () => {
+    // `core` too since step 14 (PR 14-c): the NF-e trigger reaches its region,
+    // datetime, wire and documents subpaths.
+    for (const pacote of ['schemas', 'data', 'core']) {
       const manifesto = z
         .object({
           dependencies: z.record(z.string(), z.string()).optional(),
@@ -1830,46 +1986,21 @@ describe('the step-14 write engine guards (14-b)', () => {
     },
   );
 
-  it('★ nfe/tarefaNfe.ts, nfe/motivosNfe.ts and nfe/pedidoNfe.ts stay LIGHT: their closure (type edges walked) holds no SP-API value import and nothing of pedidos/ but orderIds.ts', () => {
-    const fecho = fechoDeImportacoes(MODULOS_LEVES_DA_NFE, lerDoApp);
-    expect(violacoesDosModulosLevesDaNfe(fecho, lerDoApp)).toEqual([]);
-    // Anti-vacuity: the walk read the three modules and reached the digest.
-    expect(fecho.arquivos).toEqual(
-      expect.arrayContaining([...MODULOS_LEVES_DA_NFE, ORDER_IDS_DA_NFE]),
-    );
-  });
-
-  it('the LIGHT check refuses a value import of the SP-API package and any other pedidos/ module, and allows a type import', () => {
-    const TAREFA = 'lib/amazon/nfe/tarefaNfe.ts';
-    const comFonte =
-      (corpo: string): LeitorDeFonte =>
-      (caminho) =>
-        caminho === TAREFA ? corpo : lerDoApp(caminho);
-    const violacoes = (corpo: string) => {
-      const ler = comFonte(corpo);
-      return violacoesDosModulosLevesDaNfe(fechoDeImportacoes([TAREFA], ler), ler);
-    };
-    expect(violacoes(`import { criarClienteSpApi } from '${PACOTE_SP_API}';`)).toEqual([
-      `${TAREFA} imports ${PACOTE_SP_API} as a value`,
-    ]);
-    expect(violacoes("import { importarPedidoAmazon } from '../pedidos/importarPedido';")).toEqual(
-      expect.arrayContaining(['reaches lib/amazon/pedidos/importarPedido.ts']),
-    );
-    expect(violacoes("import { x } from '../pedidos/naoExiste';")).toEqual(
-      expect.arrayContaining(['unresolved lib/amazon/pedidos/naoExiste']),
-    );
-    expect(violacoes(`import type { CredencialSpApi } from '${PACOTE_SP_API}';`)).toEqual([]);
-    expect(violacoes("import { makePedidoIdAmazon } from '../pedidos/orderIds';")).toEqual([]);
-  });
-
   it('nfe/ reads no process environment: the environment is the deps’ `ambiente`', () => {
     const nfe = arquivosTs(join(RAIZ_LIB, 'nfe')).filter((p) => !ehTeste(p));
     expect(nfe.map(rel).sort()).toEqual([
+      'nfe/agendadorNfe.ts',
+      'nfe/avisoNfe.ts',
+      'nfe/carimboFreteNfe.ts',
       'nfe/conteudoNfe.ts',
       'nfe/decisaoNfe.ts',
+      'nfe/destinoAceite.ts',
+      'nfe/entregaAmazon.ts',
       'nfe/gatesPedidoNfe.ts',
+      'nfe/gatilhoNfe.ts',
       'nfe/motivosNfe.ts',
       'nfe/pedidoNfe.ts',
+      'nfe/processarNfe.ts',
       'nfe/statusNfe.ts',
       'nfe/tarefaNfe.ts',
     ]);
@@ -1885,6 +2016,95 @@ describe('the step-14 write engine guards (14-b)', () => {
     for (const arquivo of arquivosTs(join(RAIZ_LIB, 'nfe')).filter((p) => !ehTeste(p))) {
       expect(nomeiaClienteDeEscrita(readFileSync(arquivo, 'utf8')), rel(arquivo)).toBe(false);
     }
+  });
+});
+
+describe('the step-14 NF-e trigger guards (14-c, D11 by construction)', () => {
+  it('★ the NF-e trigger’s import closure reaches no context, conta read, credential, park, valve, env reader, write engine, intake, other root, NF-e task module or pedidos/ module but the digest — transitively, type edges walked', () => {
+    const fecho = fechoDeImportacoes(ENTRADAS_DO_GATILHO_NFE, lerDoApp);
+    expect(violacoesD11(fecho, lerDoApp, PROIBIDOS_NO_GATILHO_NFE)).toEqual([]);
+    // EXACT, both lists: anti-vacuity AND a review gate. The trigger runs on
+    // EVERY `nfev4` write of the project, so a new edge out of it — or out of
+    // anything it reaches — reds this test until a reviewer reads it.
+    expect(fecho.arquivos).toEqual([
+      'functions/src/agendadorNfe.ts',
+      'functions/src/lib/admin.ts',
+      'functions/src/onNfeAprovadaAmazon.ts',
+      'lib/amazon/avisos/avisos.ts',
+      'lib/amazon/core/filaTarefas.ts',
+      'lib/amazon/core/formatoDaRef.ts',
+      'lib/amazon/core/idConta.ts',
+      'lib/amazon/core/log.ts',
+      'lib/amazon/core/redacao.ts',
+      'lib/amazon/nfe/agendadorNfe.ts',
+      'lib/amazon/nfe/avisoNfe.ts',
+      'lib/amazon/nfe/gatilhoNfe.ts',
+      'lib/amazon/nfe/motivosNfe.ts',
+      'lib/amazon/nfe/pedidoNfe.ts',
+      'lib/amazon/nfe/tarefaNfe.ts',
+      ORDER_IDS_DA_NFE,
+    ]);
+    // `@delfrance/schemas`, `@delfrance/data` and `@delfrance/core` do not depend
+    // on the SP-API package (their manifests, pinned below), so those package
+    // edges are not walked.
+    expect(fecho.externos).toEqual(
+      [
+        '@delfrance/core/datetime',
+        '@delfrance/core/documents',
+        '@delfrance/core/region',
+        '@delfrance/core/wire',
+        '@delfrance/data/admin',
+        '@delfrance/data/admin/avisos',
+        '@delfrance/data/admin/collections',
+        '@delfrance/schemas',
+        'firebase-admin/app',
+        'firebase-admin/firestore',
+        'firebase-admin/functions',
+        'firebase-functions/v2/firestore',
+        'zod',
+        // TYPE-only, from `core/log.ts` — accepted by the value check above.
+        PACOTE_SP_API,
+      ].sort(),
+    );
+  });
+
+  it('★ the three LIGHT modules of 14-b sit in that closure — the trigger’s guard is theirs now', () => {
+    const fecho = fechoDeImportacoes(ENTRADAS_DO_GATILHO_NFE, lerDoApp);
+    expect(fecho.arquivos).toEqual(
+      expect.arrayContaining([...MODULOS_LEVES_DA_NFE, ORDER_IDS_DA_NFE]),
+    );
+    // …and their own closure is a SUBSET of it, so every check the old guard
+    // made on them is made here.
+    const proprio = fechoDeImportacoes(MODULOS_LEVES_DA_NFE, lerDoApp);
+    expect(proprio.arquivos.filter((a) => !fecho.arquivos.includes(a))).toEqual([]);
+    expect(proprio.externos.filter((e) => !fecho.externos.includes(e))).toEqual([]);
+  });
+
+  it('the list is the NF-e trigger’s OWN: under the conta trigger’s, its closure would fail (it reaches the digest), and the reads root’s closure fails the NF-e list', () => {
+    const fechoNfe = fechoDeImportacoes(ENTRADAS_DO_GATILHO_NFE, lerDoApp);
+    expect(violacoesD11(fechoNfe, lerDoApp, PROIBIDOS_NO_GATILHO)).toEqual(
+      expect.arrayContaining([`reaches ${ORDER_IDS_DA_NFE}`]),
+    );
+    // Anti-vacuity of the split: the reads-queue root really does reach the
+    // context, the conta reads and the SP-API error classes by value.
+    const fechoLeitura = fechoDeImportacoes([ARQUIVO_RAIZ_DA_FILA_FUNCOES], lerDoApp);
+    const violacoes = violacoesD11(fechoLeitura, lerDoApp, PROIBIDOS_NO_GATILHO_NFE);
+    expect(violacoes).toEqual(
+      expect.arrayContaining([
+        `reaches ${ARQUIVO_RAIZ_DA_FILA_FUNCOES}`,
+        'reaches lib/amazon/notificacoes/notificacao.ts',
+        'reaches lib/amazon/core/contexto.ts',
+      ]),
+    );
+  });
+
+  it('the NF-e root binds the NF-e queue and nothing of the reads queue’s producer', () => {
+    const raiz = lerDoApp(ARQUIVO_RAIZ_DA_FILA_NFE) ?? '';
+    expect(chamaGetFunctions(raiz)).toBe(true);
+    expect(especificadores(raiz)).not.toContain('../../lib/amazon/notificacoes/agendador');
+    expect(especificadores(lerDoApp(ARQUIVO_RAIZ_DA_FILA_FUNCOES) ?? '')).not.toContain(
+      '../../lib/amazon/nfe/agendadorNfe',
+    );
   });
 });
 
@@ -2673,7 +2893,7 @@ describe('the guards, on synthetic source', () => {
   /** The trigger's closure on synthetic source: the guard's verdict. */
   const d11 = (arquivos: Readonly<Record<string, string>>): string[] => {
     const ler = leitor(arquivos);
-    return violacoesD11(fechoDeImportacoes([GATILHO], ler), ler);
+    return violacoesD11(fechoDeImportacoes([GATILHO], ler), ler, PROIBIDOS_NO_GATILHO);
   };
 
   it.each([
@@ -2858,5 +3078,103 @@ describe('the guards, on synthetic source', () => {
         'lib/amazon/core/contexto.ts': 'export const loadAmazonContext = 1;',
       }),
     ).toEqual([]);
+  });
+
+  /* ------------------- step 14 (14-c): the NF-e trigger's D11 guard ------------------- */
+
+  const GATILHO_NFE = 'functions/src/onNfeAprovadaAmazon.ts';
+  /** The relative specifier the NF-e trigger would write for an app-root path. */
+  const especDoGatilhoNfePara = (alvo: string): string => {
+    const relativo = posix.relative(posix.dirname(GATILHO_NFE), alvo.replace(/\.ts$/, ''));
+    return relativo.startsWith('.') ? relativo : `./${relativo}`;
+  };
+  /** The NF-e trigger's closure on synthetic source: its guard's verdict. */
+  const d11Nfe = (arquivos: Readonly<Record<string, string>>): string[] => {
+    const ler = leitor(arquivos);
+    return violacoesD11(fechoDeImportacoes([GATILHO_NFE], ler), ler, PROIBIDOS_NO_GATILHO_NFE);
+  };
+
+  it.each([
+    'lib/amazon/core/contexto.ts',
+    'lib/amazon/core/contas.ts',
+    'lib/amazon/core/valvulas.ts',
+    'lib/amazon/core/estacionamento.ts',
+    'lib/amazon/core/credentialStore.ts',
+    'lib/amazon/core/renovacaoUnica.ts',
+    'lib/amazon/core/agente.ts',
+    'lib/amazon/core/contaCache.ts',
+    'lib/amazon/core/escrita.ts',
+    'lib/amazon/env.ts',
+    'lib/amazon/notificacoes/agendador.ts',
+    'lib/amazon/notificacoes/notificacao.ts',
+    'lib/amazon/conta/conectar.ts',
+    'lib/firebase/filaLeitura.ts',
+    'lib/amazon/pedidos/importarPedido.ts',
+    'lib/amazon/pedidos/lerPedidoAmazon.ts',
+    'lib/amazon/pedidos/orderIdsX.ts',
+    'lib/amazon/nfe/processarNfe.ts',
+    'lib/amazon/nfe/entregaAmazon.ts',
+    'lib/amazon/nfe/carimboFreteNfe.ts',
+    'lib/amazon/nfe/conteudoNfe.ts',
+    'lib/amazon/nfe/decisaoNfe.ts',
+    'lib/amazon/nfe/statusNfe.ts',
+    'lib/amazon/nfe/gatesPedidoNfe.ts',
+    'functions/src/depsLeitura.ts',
+    'functions/src/agendador.ts',
+    'functions/src/filaLeitura.ts',
+    'functions/src/filaNfe.ts',
+    'functions/src/pollPedidos.ts',
+    'functions/src/options.ts',
+  ])('the NF-e D11 guard forbids reaching %s', (alvo) => {
+    const espec = especDoGatilhoNfePara(alvo);
+    expect(
+      d11Nfe({ [GATILHO_NFE]: `import { x } from '${espec}';`, [alvo]: 'export const x = 1;' }),
+    ).toEqual([`reaches ${alvo}`]);
+  });
+
+  it.each([
+    'lib/amazon/pedidos/orderIds.ts',
+    'lib/amazon/core/filaTarefas.ts',
+    'lib/amazon/core/log.ts',
+    'lib/amazon/avisos/avisos.ts',
+    'lib/amazon/nfe/gatilhoNfe.ts',
+    'lib/amazon/nfe/tarefaNfe.ts',
+    'functions/src/agendadorNfe.ts',
+    'functions/src/lib/admin.ts',
+  ])('NEAR-MISS: the NF-e D11 guard lets the closure reach %s', (alvo) => {
+    const espec = especDoGatilhoNfePara(alvo);
+    expect(
+      d11Nfe({ [GATILHO_NFE]: `import { x } from '${espec}';`, [alvo]: 'export const x = 1;' }),
+    ).toEqual([]);
+  });
+
+  // The intent of 14-b's LIGHT check, now the trigger guard's: a light module
+  // (`tarefaNfe.ts`) reached through the trigger, with its source substituted.
+  it('★ the NF-e guard refuses, ONE hop past the trigger, a value import of the SP-API package, another pedidos/ module, an unresolved import and an `@/` one — and allows a type import and the digest', () => {
+    const TAREFA = 'lib/amazon/nfe/tarefaNfe.ts';
+    const viaTarefa = (corpo: string) =>
+      d11Nfe({
+        [GATILHO_NFE]: `import { x } from '${especDoGatilhoNfePara(TAREFA)}';`,
+        [TAREFA]: corpo,
+        'lib/amazon/pedidos/orderIds.ts': 'export const makePedidoIdAmazon = 1;',
+        'lib/amazon/pedidos/importarPedido.ts': 'export const importarPedidoAmazon = 1;',
+      });
+    expect(viaTarefa(`import { criarClienteSpApi } from '${PACOTE_SP_API}';`)).toEqual([
+      `${TAREFA} imports ${PACOTE_SP_API} as a value`,
+    ]);
+    expect(viaTarefa('const m = await import(nome);')).toEqual([
+      `${TAREFA} imports a computed module`,
+    ]);
+    expect(viaTarefa("import { importarPedidoAmazon } from '../pedidos/importarPedido';")).toEqual([
+      'reaches lib/amazon/pedidos/importarPedido.ts',
+    ]);
+    expect(viaTarefa("import { x } from '../pedidos/naoExiste';")).toEqual([
+      'unresolved lib/amazon/pedidos/naoExiste',
+    ]);
+    expect(viaTarefa("import { x } from '@/lib/amazon/core/contexto';")).toEqual([
+      'imports @/lib/amazon/core/contexto (the alias is not walked)',
+    ]);
+    expect(viaTarefa(`import type { CredencialSpApi } from '${PACOTE_SP_API}';`)).toEqual([]);
+    expect(viaTarefa("import { makePedidoIdAmazon } from '../pedidos/orderIds';")).toEqual([]);
   });
 });

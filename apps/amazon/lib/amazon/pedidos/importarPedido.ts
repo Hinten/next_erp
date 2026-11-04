@@ -76,6 +76,28 @@
  *     commit `writeTime` (`importado`) or the winning snapshot's `readTime`
  *     (`sem-mudanca`); per-conta avisos by the conta read's `readTime` (plan §3
  *     decision 40).
+ *  8b. **The NF-e transitions** (step 14, PR 14-c; {@link transicoesNfeDoPedidoAmazon}),
+ *     on a TRANSITION the winning batch WROTE, and nothing else: INTO a
+ *     cancelled sale (`ESTADOS_TERMINAIS_AMAZON`: `cancelado`, or
+ *     `estornadoIntegralmente` — the CANCELLED predicate's target for a paid
+ *     order) ⇒ the clocked resolve `pedido-cancelado` of the pedido's
+ *     `nfeUploadRejeitado` row (`nfe/avisoNfe.ts`'s `resolverNfeDoPedidoAmazon`,
+ *     which ALWAYS seeds, so an absent row becomes a resolved tombstone that
+ *     drops a later stale raise of the NF-e task), plus ONE unfiltered read of
+ *     `pedidos/{id}/nfev4` — an authorized sale NF-e there ⇒ the incidente
+ *     `amz-nfe-pedido-cancelado`; freight INTO `ESTADOS_FRETE_REMOVE_ESTOQUE`
+ *     (the goods are out: the stamp is obsolete) ⇒ the clocked resolve
+ *     `frete-despachado`. Both clocked by the batch's `writeTime`. On a
+ *     REDELIVERY (`registro.tentativa` not 0: a queue retry, or a sweep's
+ *     re-drive) 8b runs on the CONDITIONS the pedido holds instead
+ *     ({@link condicoesNfeDoPedidoAmazon}), clocked like step 8's rows (the
+ *     commit's `writeTime`, else the winning snapshot's `readTime`): the
+ *     attempt that wrote the transition may have died after its commit, and
+ *     every 8b write is idempotent (an equal or older clock writes nothing; the
+ *     incidente `create` swallows ALREADY_EXISTS). Every other FIRST attempt
+ *     reads no `nfev4` and no `nfeUploadRejeitado` row (plan §3 decision 8's
+ *     hot path), and these rows never join the `getAll` of the per-pedido sync,
+ *     which resolves only existing rows.
  *  9. **The result**, with the counts for the task line.
  *
  * Steps 4–6 may write (the cliente, the endereço) before a lost race at step 7
@@ -98,6 +120,7 @@ import {
   enderecoCollection,
   integracaoCollection,
   intFreteCollection,
+  nfev4Collection,
 } from '@delfrance/data/admin/collections';
 import {
   ClienteSemIdentidadeForteError,
@@ -106,9 +129,12 @@ import {
 import { ensureEndereco } from '@delfrance/data/admin/enderecos';
 import type { PedidoWireAmazon } from '@delfrance/integrations-amazon-sp-api';
 import {
+  ESTADOS_FRETE_REMOVE_ESTOQUE,
   MOTIVO_CONTA_AMAZON,
   MOTIVO_PEDIDO_AMAZON,
+  ORIGEM_NOTIFICACAO_AMAZON,
   buildEnderecoForcado,
+  estadoFreteSchema,
   idFromRef,
   recoverEnderecoFromCep,
   toOuterRef,
@@ -121,6 +147,7 @@ import {
 } from '@delfrance/schemas';
 
 import {
+  MOTIVO_AVISO_AMAZON,
   agoraUsDe,
   sincronizarAvisosDaContaAmazon,
   sincronizarAvisosDoPedidoAmazon,
@@ -130,6 +157,8 @@ import type { ContextoAmazon } from '../core/contexto';
 import { ContaAmazonNaoEncontradaError } from '../core/erros';
 import { registrarEventoAmazon, type CamposLogAmazon, type SeveridadeAmazon } from '../core/log';
 import { syncIntFreteAmazon } from '../frete/intFrete';
+import { resolverNfeDoPedidoAmazon } from '../nfe/avisoNfe';
+import { escolherNfeParaEnvioAmazon } from '../nfe/pedidoNfe';
 import type {
   DepsImportadorAmazon,
   DetalheImportacaoAmazon,
@@ -163,6 +192,7 @@ import {
   lerResumoArmazenadoAmazon,
 } from './estadoPedidoAmazon';
 import {
+  registrarIncidenteNfePedidoCanceladoAmazon,
   registrarIncidentesDoPedidoAmazon,
   type LinhaSemProdutoAmazon,
 } from './incidentesPedidoAmazon';
@@ -389,6 +419,91 @@ function clienteFinal(gravacao: Extract<GravacaoPedidoAmazon, { escrita: unknown
   return armazenado?.clientePedidoOuterRef;
 }
 
+/** The freight estado a winning UPDATE writes, or `null` when it writes no freight block. */
+function freteEscrito(gravacao: Extract<GravacaoPedidoAmazon, { escrita: unknown }>): unknown {
+  const e = gravacao.escrita;
+  if (e.tipo !== 'atualizar' || !Object.hasOwn(e.patch, 'freteInicial')) return null;
+  const bloco = e.patch.freteInicial;
+  return typeof bloco === 'object' && bloco !== null && !Array.isArray(bloco)
+    ? (bloco as Readonly<Record<string, unknown>>).estado
+    : null;
+}
+
+/**
+ * The two NF-e TRANSITIONS one import made (module header, step 8b; step 14,
+ * PR 14-c): a winning batch that UPDATED the pedido (never a create: an NF-e is
+ * emitted from a pedido that already exists) and moved
+ *
+ * - its estado INTO a cancelled sale (`ESTADOS_TERMINAIS_AMAZON`: `cancelado`
+ *   or `estornadoIntegralmente`) from outside that pair (`vendaCancelada`);
+ * - its freight estado INTO `ESTADOS_FRETE_REMOVE_ESTOQUE` from outside it — an
+ *   unreadable stored estado counts as outside (`freteDespachado`).
+ *
+ * PURE: decided from the winning attempt's snapshot and its write, never from
+ * `S`. A `sem-mudanca`, an `obsoleto` and a skip are no transition.
+ */
+export function transicoesNfeDoPedidoAmazon(gravacao: GravacaoPedidoAmazon): {
+  readonly vendaCancelada: boolean;
+  readonly freteDespachado: boolean;
+} {
+  if (
+    gravacao.tipo !== 'gravado' ||
+    gravacao.escrita.tipo !== 'atualizar' ||
+    gravacao.armazenado === null
+  ) {
+    return { vendaCancelada: false, freteDespachado: false };
+  }
+  const antes = lerResumoArmazenadoAmazon(gravacao.armazenado);
+  const escrito = gravacao.escrita.decisao.estadoEscrito;
+  const vendaCancelada =
+    escrito !== null &&
+    ESTADOS_TERMINAIS_AMAZON.has(escrito) &&
+    (antes.estado === null || !ESTADOS_TERMINAIS_AMAZON.has(antes.estado));
+  const depois = estadoFreteSchema.safeParse(freteEscrito(gravacao));
+  const freteDespachado =
+    depois.success &&
+    ESTADOS_FRETE_REMOVE_ESTOQUE.has(depois.data) &&
+    (antes.freteEstado === null || !ESTADOS_FRETE_REMOVE_ESTOQUE.has(antes.freteEstado));
+  return { vendaCancelada, freteDespachado };
+}
+
+/**
+ * The same two NF-e conditions read off the pedido this import LEAVES (step 8b
+ * on a REDELIVERY; step 14, PR 14-c): its estado is a cancelled sale
+ * (`ESTADOS_TERMINAIS_AMAZON`), its freight is in `ESTADOS_FRETE_REMOVE_ESTOQUE`
+ * — the winning attempt's write where it wrote one, the stored value
+ * otherwise. A create is never one (an NF-e is emitted from a pedido that
+ * already exists, as for {@link transicoesNfeDoPedidoAmazon}).
+ *
+ * Why it exists: a transition is consumed by the attempt whose batch WROTE it,
+ * and 8b runs after that commit. When anything after the commit throws (step
+ * 8's incidentes or syncs, 8b's own resolve or listing), the retry of the SAME
+ * delivery reads the pedido already moved and answers `sem-mudanca` — so 8b,
+ * keyed on the edge, would never run again, and the cancelled-sale incidente
+ * (the only producer when no upload is in flight) would be lost silently.
+ * PURE.
+ */
+export function condicoesNfeDoPedidoAmazon(gravacao: GravacaoPedidoAmazon): {
+  readonly vendaCancelada: boolean;
+  readonly freteDespachado: boolean;
+} {
+  if (
+    (gravacao.tipo !== 'gravado' && gravacao.tipo !== 'sem-mudanca') ||
+    gravacao.armazenado === null
+  ) {
+    return { vendaCancelada: false, freteDespachado: false };
+  }
+  const antes = lerResumoArmazenadoAmazon(gravacao.armazenado);
+  const estado = gravacao.escrita.decisao.estadoEscrito ?? antes.estado;
+  const escrito = freteEscrito(gravacao);
+  const lido = escrito === null ? null : estadoFreteSchema.safeParse(escrito);
+  const frete = lido === null ? antes.freteEstado : lido.success ? lido.data : null;
+  return {
+    vendaCancelada: estado !== null && ESTADOS_TERMINAIS_AMAZON.has(estado),
+    freteDespachado: frete !== null && ESTADOS_FRETE_REMOVE_ESTOQUE.has(frete),
+  };
+}
+
 /* -------------------------------------------------------------------------- */
 /*                                   logs                                     */
 /* -------------------------------------------------------------------------- */
@@ -592,7 +707,16 @@ export async function importarPedidoAmazon(
   const contaId = contexto.integracaoId;
 
   // 1. The read.
-  const leitura = await lerPedidoAmazon(contexto, payload, deps.registro);
+  // A poll payload carries the search's order clock, the floor of the read; a
+  // push carries none and is never a data source (D5).
+  const leitura = await lerPedidoAmazon(
+    contexto,
+    {
+      amazonOrderId: payload.amazonOrderId,
+      pisoUs: payload.origem === ORIGEM_NOTIFICACAO_AMAZON.poll ? payload.lastUpdatedUs : null,
+    },
+    deps.registro,
+  );
   if (leitura.tipo === 'marketplace-estrangeiro') return { kind: 'marketplace-estrangeiro' };
   const { order, watermarkUs } = leitura;
   const orderId = order.orderId;
@@ -756,6 +880,46 @@ export async function importarPedidoAmazon(
     resolver: motivosDaConta.resolver,
     relogio: contaLida.readTime,
   });
+
+  // 8b. The NF-e transitions (step 14) — on a transition the batch WROTE; on a
+  // REDELIVERY (a queue retry, a sweep's re-drive), on the conditions the pedido
+  // holds, because the attempt that wrote the transition may have died after
+  // its commit. Clocked like step 8's per-pedido rows.
+  const redelivery = deps.registro.tentativa !== 0;
+  const transicoes = redelivery
+    ? condicoesNfeDoPedidoAmazon(gravacao)
+    : transicoesNfeDoPedidoAmazon(gravacao);
+  if (transicoes.vendaCancelada || transicoes.freteDespachado) {
+    const doPedido = {
+      integracaoId: contaId,
+      pedidoId,
+      numero: orderId,
+      relogio: gravacao.writeTime ?? gravacao.leitura.pedido.readTime,
+    };
+    if (transicoes.vendaCancelada) {
+      await resolverNfeDoPedidoAmazon(
+        db,
+        { nowMs },
+        { ...doPedido, motivo: MOTIVO_AVISO_AMAZON.pedidoCancelado },
+      );
+      const nfes = await nfev4Collection.ref(db, { pedidoId }).get();
+      const escolha = escolherNfeParaEnvioAmazon(
+        nfes.docs.map((d) => ({ id: d.id, raw: (d.data() ?? {}) as Record<string, unknown> })),
+      );
+      // An authorized sale NF-e on a cancelled sale: nothing reaches Amazon,
+      // the operator cancels it at SEFAZ or issues the devolução.
+      if ('nfeId' in escolha) {
+        await registrarIncidenteNfePedidoCanceladoAmazon(db, { pedidoId, orderId, nowUs });
+      }
+    }
+    if (transicoes.freteDespachado) {
+      await resolverNfeDoPedidoAmazon(
+        db,
+        { nowMs },
+        { ...doPedido, motivo: MOTIVO_AVISO_AMAZON.freteDespachado },
+      );
+    }
+  }
 
   // 9. The result.
   const detalhe: DetalheImportacaoAmazon = {

@@ -3,8 +3,8 @@
  * where the push receiver's producer is bound to the real Cloud Tasks
  * transport. Outside `lib/amazon` on purpose — it reads `process.env` and calls
  * `getFunctions(`, and `lib/amazon` does neither (`estrutura.test.ts`, which
- * also pins this file and the functions codebase's `functions/src/agendador.ts`
- * as the app's only `getFunctions(` callers).
+ * also pins this file as one of the app's three `getFunctions(` roots, each
+ * pinned to its queue set by `FILAS_DE_CADA_RAIZ`).
  *
  * - The region: `AMAZON_TASKS_REGION`, then `FUNCTIONS_REGION`, NO default
  *   (`requireRegion` throws `MissingRegionError`; #1108). Read as STATIC

@@ -11,17 +11,20 @@ import { ESTADO_NFE, MARKETPLACE_PEDIDO_TIPO } from '@delfrance/schemas';
 import { describe, expect, it } from 'vitest';
 
 import { makePedidoIdAmazon } from '../pedidos/orderIds';
-import { FULFILLED_BY_AMAZON } from '../pedidos/estadoPedidoAmazon';
+import { ESTADOS_TERMINAIS_AMAZON, FULFILLED_BY_AMAZON } from '../pedidos/estadoPedidoAmazon';
 import {
   ATENDIDO_PELA_AMAZON,
   PROGRAMA_DBA_AMAZON,
   SEM_NFE_APROVADA_AMAZON,
+  ESTADOS_VENDA_CANCELADA_AMAZON,
   avaliarPedidoParaNfeAmazon,
+  avaliarPedidoParaTarefaNfeAmazon,
   cancelamentoDeNfeAprovadaAmazon,
   escolherNfeParaEnvioAmazon,
   irmaosDaNfeAmazon,
   pisoDoPedidoAmazon,
   provaDeIdentidadeAmazon,
+  vendaCanceladaAmazon,
 } from './pedidoNfe';
 
 const AQUI = fileURLToPath(new URL('.', import.meta.url));
@@ -170,6 +173,40 @@ describe('avaliarPedidoParaNfeAmazon', () => {
         }),
       ),
     ).toEqual({ ok: false, motivo: 'emissao-bloqueada' });
+  });
+
+  it('★ (14-c) the TASK’s verdict is the proof and the block, NEVER the stored pre-filter (DBA is decided live)', () => {
+    const naoDba = pedido({ marketplace: { tipo: 'amazon', fulfilledBy: 'AMAZON' } });
+    // The trigger's verdict drops it; the task's lets the live gate decide.
+    expect(avaliarPedidoParaNfeAmazon(PEDIDO_ID, naoDba)).toEqual({ ok: false, motivo: 'nao-dba' });
+    expect(avaliarPedidoParaTarefaNfeAmazon(PEDIDO_ID, naoDba)).toEqual({
+      ok: true,
+      contaId: CONTA,
+      orderId: ORDER,
+    });
+    expect(avaliarPedidoParaTarefaNfeAmazon(PEDIDO_ID, null)).toEqual({
+      ok: false,
+      motivo: 'nao-amazon',
+    });
+    expect(
+      avaliarPedidoParaTarefaNfeAmazon(PEDIDO_ID, pedido({ bloquearEmissaoNFe: true })),
+    ).toEqual({ ok: false, motivo: 'emissao-bloqueada' });
+  });
+
+  it('★ (14-c) the cancelled-sale set is EQUAL to the importer’s terminal pair; vendaCanceladaAmazon reads it exactly', () => {
+    expect([...ESTADOS_VENDA_CANCELADA_AMAZON].sort()).toEqual(
+      [...ESTADOS_TERMINAIS_AMAZON].sort(),
+    );
+    expect([...ESTADOS_VENDA_CANCELADA_AMAZON].sort()).toEqual([
+      'cancelado',
+      'estornadoIntegralmente',
+    ]);
+    expect(vendaCanceladaAmazon(pedido({ estado: 'cancelado' }))).toBe(true);
+    expect(vendaCanceladaAmazon(pedido({ estado: 'estornadoIntegralmente' }))).toBe(true);
+    // NEAR-MISSES: a live estado, another spelling, an absent pedido.
+    expect(vendaCanceladaAmazon(pedido({ estado: 'pago' }))).toBe(false);
+    expect(vendaCanceladaAmazon(pedido({ estado: 'Cancelado' }))).toBe(false);
+    expect(vendaCanceladaAmazon(null)).toBe(false);
   });
 
   it('the two stored values this module spells equal the importer’s constants (kept out of pedidos/ on purpose)', () => {
