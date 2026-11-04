@@ -59,30 +59,51 @@ project, it writes that project's `int_frete` on every Amazon conta save that
 moves a mirrored field: create, patch or deactivate. That is why this deploy
 waits for the window's `int_frete` adoption pass (Prerequisites below).
 
+⚠️ **The NF-e trigger stands outside the switch too** (master-plan step 14).
+`onNfeAprovadaAmazon` makes no Amazon call, so the read switch does not gate it:
+deployed into a project, it fires on EVERY `pedidos/{pedidoId}/nfev4/{nfeId}`
+write of that project and, for an approved SALE NF-e of a pedido it can PROVE
+is an Amazon order (the id recomputes from the stored conta and order number),
+enqueues ONE task onto `processAmazonNfeUpload`; an approved one cancelled while
+the order lives raises the aviso `nfe-cancelada`. The task itself then stops
+before any Amazon call while either switch below is off, and says so with an
+`nfeUploadRejeitado` aviso on the pedido (`envio-nao-ligado` at the valve,
+`chamadas-desligadas` at the read switch) — rows that ARE the re-drive worklist
+once the switches are on. ⚠️ **A SECOND switch gates every NF-e submit:** the
+NF-e write valve `AMAZON_MODO_NFE` (exactly `on`) and its canary list
+`AMAZON_CANARIO_NFE` (a `<contaId>:<orderId>` entry, or exactly `*`). Both stay
+UNSET until W8 (below); `dry-run` reads Amazon's invoice status and logs what it
+WOULD send, never sending it.
+
 ## Prerequisites
 
 - `pnpm install` at the repo root (the junction needs `apps/amazon/node_modules`).
 - **`AMAZON_LWA_CLIENT_SECRET` exists in the project's Secret Manager** (window
   item W1, before this deploy). `filaLeituraAmazon`,
-  `reprocessAmazonNotifications` and `pollAmazonOrders` declare it as
-  `secrets:`, and **a declared secret that is missing fails the WHOLE deploy**,
-  every function of the codebase included. `sweepAmazonExpirations` and
-  `onIntegracaoAmazonChanged` declare none: neither calls Amazon.
-- **Region match: `FUNCTIONS_REGION` equals `AMAZON_TASKS_REGION`.** The queue is
-  created WITH its function, by this deploy, in `FUNCTIONS_REGION` and nowhere
-  else. Every enqueuer resolves the queue from `AMAZON_TASKS_REGION`, falling
-  back to `FUNCTIONS_REGION`, with **no default**: the App Hosting receiver
+  `reprocessAmazonNotifications`, `pollAmazonOrders` and (step 14)
+  `processAmazonNfeUpload` declare it as `secrets:`, and **a declared secret that
+  is missing fails the WHOLE deploy**, every function of the codebase included.
+  `sweepAmazonExpirations`, `onIntegracaoAmazonChanged` and `onNfeAprovadaAmazon`
+  declare none: none of them calls Amazon.
+- **Region match: `FUNCTIONS_REGION` equals `AMAZON_TASKS_REGION`.** Each queue
+  (`filaLeituraAmazon`, and since step 14 `processAmazonNfeUpload`) is created
+  WITH its function, by this deploy, in `FUNCTIONS_REGION` and nowhere else.
+  Every enqueuer resolves its queue from `AMAZON_TASKS_REGION`, falling back to
+  `FUNCTIONS_REGION`, with **no default**: the App Hosting receiver
   (`apps/amazon/lib/firebase/filaLeitura.ts`) answers 503 without one, and the
-  functions root (`src/agendador.ts`, the step-4 poll's) throws on the enqueue.
+  two functions roots (`src/agendador.ts`, the step-4 poll's; `src/agendadorNfe.ts`,
+  the NF-e trigger's and the NF-e task's own re-enqueues) throw on the enqueue.
   A mismatch is the #1108 failure: the task targets a queue that does not exist
   and is **silently dropped** while the caller sees success. Set the App
   Hosting backend's `AMAZON_TASKS_REGION` (console) to exactly the
   `FUNCTIONS_REGION` this deploy exports; the preflight prints that reminder.
 - **The database is the NAMED `default`**, never the `(default)` sentinel, which
   fails every operation with `5 NOT_FOUND`. The conta trigger
-  `onIntegracaoAmazonChanged` listens on `integracao/{integracaoId}` in that
-  database: a trigger bound to `(default)` deploys fine and never fires, and only
-  `src/index.test.ts`'s offline pin guards it (the emulator serves any database).
+  `onIntegracaoAmazonChanged` listens on `integracao/{integracaoId}` and the NF-e
+  trigger `onNfeAprovadaAmazon` on `pedidos/{pedidoId}/nfev4/{nfeId}`, both in
+  that database: a trigger bound to `(default)` deploys fine and never fires, and
+  only `src/index.test.ts`'s offline pin guards it (the emulator serves any
+  database).
   `build.mjs` inlines `FIREBASE_DATABASE_ID` (unset or blank → `default`) and the
   preflight prints the value it baked; leave it unset in the BUILD environment
   (the deploy shell and the repo-root `.env.functions`), or set it to exactly
@@ -116,6 +137,14 @@ waits for the window's `int_frete` adoption pass (Prerequisites below).
   `amz-<integracaoId>` beside a migrated doc whose back-ref is not canonical; the
   pass STOPs on exactly that.
 
+- **Step 14's order (W9): `functions:amazon` BEFORE the `apps/amazon` App
+  Hosting rollout.** This deploy auto-provisions the NF-e queue
+  `processAmazonNfeUpload` and the trigger `onNfeAprovadaAmazon`; the App Hosting
+  re-drive route (`POST /api/marketplace/amazon/enviar-nfe`, PR 14-d) only
+  enqueues onto that queue, so it must exist first. And at the freeze (W4), the
+  legacy integration's NF-e upload AND its pickup-scheduling queue are PAUSED
+  before this codebase can submit anything: two writers submitting to one order
+  is a race neither side guards.
 - **One-time IAM** (below) — required before the first enqueue. The queue-level
   grants can only be made once the deploy has created the queue, and with
   `TASKS_INVOKER_SA` set the deploy makes two of them itself; the act-as grant is
@@ -209,11 +238,46 @@ are local builds; neither deploys anything.
   `invoker`, no Amazon call, no per-function `region:`. ⚠️ Outside both INERT switches
   (above).
 
+- **`processAmazonNfeUpload`** — `onTaskDispatched` (Cloud Tasks queue), master-plan step
+  14: the NF-e upload of a Delivery-by-Amazon order, one dispatch per step of an upload
+  (`lib/amazon/nfe/processarNfe.ts`, P0–P12): the NF-e valve read and logged first; the
+  `nfev4` document through the LEVEL predicate; the pedido's ownership proof and emission
+  block; the sale gate; the sibling NF-e of the pedido; in fase `envio` the valve's target
+  (`off` ⇒ aviso `envio-nao-ligado`, no Amazon read); the context (the read switch first);
+  the LIVE order (`getOrder`, on every dispatch, floored by the stored watermark); then
+  Amazon's invoice status FIRST and — under `on` and in the canary — at most ONE
+  `submitInvoice` of the stored proc, followed by an UNNAMED verification chain
+  (`scheduleDelaySeconds` 60 s … 8 h, ten rungs, at most one automatic resubmit). Amazon's
+  acceptance clears step 14's own freight stamp; a refusal of THIS NF-e raises the aviso
+  and stamps `freteInicial.estado = error`. `rateLimits { maxConcurrentDispatches: 1,
+maxDispatchesPerSecond: 1 }` — ⚠️ concurrency 1 is the ORDERING GUARD of one order's own
+  writes (the stamp, the clear, the avisos); never raise it without an event-clock
+  watermark first. `retryConfig` 4 attempts (`TENTATIVAS_NFE_AMAZON`), 10 s → 300 s,
+  three doublings; `timeoutSeconds 300` (the 220-s worst-case Amazon budget of one
+  dispatch, pinned in `src/index.test.ts`); `secrets: AMAZON_LWA_CLIENT_SECRET`. Enqueued
+  by the trigger below and by ITSELF (both the functions runtime SA), and from PR 14-d by
+  the App Hosting re-drive route.
+- **`onNfeAprovadaAmazon`** — `onDocumentWritten` (Firestore) on
+  `pedidos/{pedidoId}/nfev4/{nfeId}`, master-plan step 14: the FOURTH function on that path
+  (Mercado Livre's and Shopee's NF-e triggers, `apps/functions`' `onNfeDeleted`), so EVERY
+  `nfev4` write of the project fires it; outside its two EDGES it reads nothing and logs
+  nothing. The upload edge (a document becoming approved, with a proc, in produção): a
+  legible non-sale note is one INFO line; then ONE pedido read; another channel's pedido,
+  an emission block or stored evidence that the order is NOT Delivery by Amazon end in one
+  line; otherwise ONE task, NAMED after the CloudEvent (`sha256(event.id)`), so an Eventarc
+  redelivery enqueues nothing new. The a→c edge (an approved sale NF-e cancelled at SEFAZ):
+  the aviso `nfe-cancelada` on a live pedido — nothing can be sent to Amazon, the Delivery
+  API has no cancel — and nothing on a stored cancelled sale (the incidente path's).
+  `AMAZON_TASKS_DISABLED=1` makes it raise `tarefas-desligadas` instead of enqueuing.
+  `database` **`default`**, `retry: true`, **no secrets**, no `invoker`, no Amazon call, no
+  per-function `region:`. ⚠️ Outside the read switch (above).
+
 ⚠️ **The export name IS the queue name.** Firebase binds one function per queue
-and names the queue after the function, so renaming `filaLeituraAmazon` creates
-a NEW queue and strands whatever the old one held. The name is fixed at the
-first deploy. `src/index.ts` carries a rename-safety assertion tying the export
-key to the `FILA_LEITURA_AMAZON` constant every enqueuer targets.
+and names the queue after the function, so renaming `filaLeituraAmazon` or
+`processAmazonNfeUpload` creates a NEW queue and strands whatever the old one
+held. Each name is fixed at its first deploy. `src/index.ts` carries a
+rename-safety assertion per queue, tying the export key to the constant every
+enqueuer targets (`FILA_LEITURA_AMAZON`, `FILA_NFE_AMAZON`).
 
 ⚠️ **One logger.** Every line is one JSON line on stdout through
 `LOGGER_STDOUT_AMAZON` (`severity` + `message`): one `evento: 'tarefa'` line per
@@ -225,7 +289,12 @@ line (`[amazon] poll de pedidos`, the counters flattened), and one
 closed code each, the order id and counts) and its `getOrder` call lines, and the
 dispatch line carries the import's report: `acao`, `itens` and the counts
 `linhasPreservadas`, `linhasDivergentes`, `linhasSemProduto` (null on every arm
-without one). No line carries a seller id, a token, a buyer datum, a price or an
+without one). The NF-e upload (step 14) writes `evento: 'nfe'` lines: one per
+trigger fire on an edge, the write engine's dry-run diff (`acao: enviaria`,
+`statusAmazon`), and ONE dispatch line per NF-e task run (`fila:
+processAmazonNfeUpload`, `acao`, the closed `motivo`, `statusAmazon`, `envio`,
+Amazon's error codes through the closed set) — never the XML, its base64, its
+digest or the access key. No line carries a seller id, a token, a buyer datum, a price or an
 error message; a failed sweep row is named by its document id only (the row
 holds the reason).
 ⚠️ Two declared exceptions, both from `packages/data`, both on stderr outside
@@ -253,6 +322,18 @@ itself):
   order no key can be built from (another order id than the one asked for, a
   `lastUpdatedTime` without an offset, two lines with one `orderItemId`). It parks
   on the first attempt (a retry reads the same body), so a person must look.
+
+- **(step 14) WARNING NF-e dispatch line `motivo: pos-envio-falhou`**: a write
+  AFTER a submit was lost (`escritaPerdida`: the aviso, the stamp, the
+  verification enqueue …; `erro`: its class). The task never throws there (a
+  retry would resubmit inside Amazon's read-after-write lag), so this line is the
+  only trace; when the lost write was the verification enqueue, the aviso
+  `aceite-nao-confirmado` / `envio-nao-confirmado` was raised if it could be, and
+  when it was the pause after a 429 on the submit (not processed: the NF-e is
+  not at Amazon), `amazon-indisponivel` (`tarefas-desligadas` for the valve). A
+  chain step lost BEFORE any submit is never thrown away either: the queue valve
+  answers `tarefas-desligadas` on any attempt, and any other loss is retried by
+  the queue and answered with an aviso on its last attempt.
 
 Watch in the first hours after W5 (W7: the look-back re-lists migrated, in-flight
 orders through the importer):
@@ -321,16 +402,22 @@ below stays COMMENTED OUT until the window:**
 # refresh. The client SECRET is NOT here — it is a Secret Manager binding.
 # AMAZON_LWA_CLIENT_ID=
 
-# The region of the reads queue (both surfaces). LEAVE IT UNSET here: blank or
+# The region of BOTH queues — the reads queue and (step 14) the NF-e queue
+# `processAmazonNfeUpload` (both surfaces). LEAVE IT UNSET here: blank or
 # unset = the FUNCTIONS_REGION inlined into the bundle (a blank value counts as
 # unset, #1108). If you set it at all, set it to exactly the FUNCTIONS_REGION the
 # deploying shell exported — any other value names a queue that does not exist.
 # AMAZON_TASKS_REGION=
 
-# Sweep-only mode (both surfaces). Exactly `1` makes every enqueue throw, so each
-# notification is persisted `failed` and the 30-minute reprocess sweep drains it
-# (never a silent drop). Strict `=== '1'`: unset, blank, `true` and `1 ` all
-# leave enqueuing ON. Use it before the queue IAM is granted.
+# The queue valve (both surfaces). Exactly `1` makes every enqueue throw. For
+# the READS queue that is sweep-only mode: each notification is persisted
+# `failed` and the 30-minute reprocess sweep drains it (never a silent drop).
+# ⚠️ Since step 14 it ALSO stops every NF-e upload, and there is NO NF-e sweep:
+# the trigger raises the aviso `tarefas-desligadas` on the pedido instead (and
+# so does a queued NF-e task whose next chain step it refuses before that task
+# submits), and that aviso list IS the re-drive worklist (the PR 14-d route). Strict
+# `=== '1'`: unset, blank, `true` and `1 ` all leave enqueuing ON. Use it before
+# the queue IAM is granted.
 # AMAZON_TASKS_DISABLED=1
 
 # The LWA client secret's expiry date, exact YYYY-MM-DD, read by the expiry sweep
@@ -352,7 +439,9 @@ below stays COMMENTED OUT until the window:**
 # AMAZON_POLL_LOOKBACK_H=
 
 # ---- The WRITE VALVES and CANARY LISTS (both surfaces; read from the write
-# engine onward). Nothing in this codebase reads one yet. A valve is
+# engine onward). Since step 14 the NF-e pair is READ by `processAmazonNfeUpload`
+# on every dispatch (the valve line, then the target of a planned submit; a
+# verification never consults it). The other six are read by nothing yet. A valve is
 # off | dry-run | on: only the exact `on` writes, only the exact `dry-run`
 # diffs, anything else is off. A list: unset/blank = NO target, exactly `*` =
 # every target, else `<contaId>:<sku>` (stock, price) or `<contaId>:<orderId>`
@@ -429,7 +518,17 @@ Two identities enqueue onto `filaLeituraAmazon`:
   (`pollAmazonOrders`, through `src/agendador.ts`), by default the project's
   Compute Engine default service account.
 
-**Every** enqueuing identity needs **three** grants:
+And the same two onto `processAmazonNfeUpload` (step 14):
+
+- the **functions runtime service account** — the trigger `onNfeAprovadaAmazon`
+  and the task's OWN re-enqueues (the verification ladder, the one resubmit, the
+  429 pause), both through `src/agendadorNfe.ts`;
+- the **App Hosting runtime service account** — the re-drive route
+  `POST /api/marketplace/amazon/enviar-nfe` (PR 14-d).
+
+**Every** enqueuing identity needs **three** grants **per queue** (run grant 1
+and grant 3 once with `filaLeituraAmazon` and once with
+`processAmazonNfeUpload`; grant 2 is per identity, not per queue):
 
 ```bash
 # 1 - permission to CREATE the task. Queue-level, so it can only run once the
@@ -545,8 +644,10 @@ gcloud tasks queues add-iam-policy-binding filaLeituraAmazon \
 
 then re-run the SAME deploy: the policy now has a `bindings` array, so the
 deploy re-applies `TASKS_INVOKER_SA` authoritatively and finishes clean. This
-codebase has ONE queue, so a first deploy into a project pays it once per
-identity — **production's included**: it is a separate project, so put the
+codebase has TWO queues since step 14 (`filaLeituraAmazon`,
+`processAmazonNfeUpload`), so a first deploy into a project pays it once per
+identity PER QUEUE — and the NF-e queue is new even where the reads queue
+already exists — **production's included**: it is a separate project, so put the
 grants in the window's runbook.
 
 ## Verifying a first deploy
@@ -555,10 +656,12 @@ Do these in the window, in this order, after the deploy and before any switch is
 flipped:
 
 1. Cloud Tasks lists the queue `filaLeituraAmazon` with concurrency 1 and 0.5
-   dispatches per second, and Cloud Scheduler lists the three schedule functions.
-2. `gcloud run services get-iam-policy filaLeituraAmazon` and
-   `gcloud tasks queues get-iam-policy filaLeituraAmazon` both name every identity
-   in `TASKS_INVOKER_SA`, and each enqueuing identity holds
+   dispatches per second, and (step 14) `processAmazonNfeUpload` with concurrency
+   1 and 1 dispatch per second; Cloud Scheduler lists the three schedule
+   functions.
+2. For EACH of the two queues, `gcloud run services get-iam-policy <queue>` and
+   `gcloud tasks queues get-iam-policy <queue>` both name every identity in
+   `TASKS_INVOKER_SA`, and each enqueuing identity holds
    `roles/iam.serviceAccountUser` on itself (grant 2, which no deploy makes).
 3. The Firestore index `notificacoesAmazon (status, processedAt)` is READY.
 4. A reprocess tick logs two `evento: 'varredura'` lines (`lane: hot` and

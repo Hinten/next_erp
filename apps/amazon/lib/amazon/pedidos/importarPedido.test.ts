@@ -33,9 +33,11 @@ import {
   relogioDoDocumentoUs,
 } from '../avisos/avisos';
 import { __setRelogioDoCacheParaTestes } from '../core/contaCache';
+import { avisarNfeAmazon, chaveAvisoNfeAmazon } from '../nfe/avisoNfe';
+import { carimbarFreteNfeAmazon } from '../nfe/carimboFreteNfe';
 import type { DepsImportadorAmazon } from '../notificacoes/notificacao';
 import { gerarCnpj, gerarCpf } from '../testing/documentos';
-import { asDb, increment } from '../testing/fakeDb';
+import { asDb, grpc, increment } from '../testing/fakeDb';
 import { AGORA_MS, caminhoAviso, caminhoConta } from '../testing/fixtures';
 import {
   CONTA_IMPORTADOR,
@@ -68,11 +70,14 @@ import {
   JANELA_CANCELAMENTO_RECENTE_AMAZON_US,
   MOTIVOS_PEDIDO_DO_IMPORTADOR_AMAZON,
   clienteDoEnderecoAmazon,
+  condicoesNfeDoPedidoAmazon,
   importarPedidoAmazon,
   motivosDaContaAmazon,
   motivosDoPedidoAmazon,
   parClienteEnderecoAmazon,
+  transicoesNfeDoPedidoAmazon,
 } from './importarPedido';
+import { ID_INCIDENTE_NFE_PEDIDO_CANCELADO_AMAZON } from './incidentesPedidoAmazon';
 import { makePedidoIdAmazon } from './orderIds';
 
 const m = vi.hoisted(() => ({ findOrCreateCliente: vi.fn(), ensureEndereco: vi.fn() }));
@@ -2348,5 +2353,429 @@ describe('★ PR 5-f — fulfilledBy ausente na criação: a PENDING order creat
         });
       }
     }
+  });
+});
+
+/* ------------- step 14 (14-c): the NF-e transitions of the import ------------- */
+
+describe('★ step 14 (14-c) — the import’s two NF-e TRANSITIONS', () => {
+  /** The approved buyer, with the order's invoice status beside the BUYER registration. */
+  function comNota(invoiceStatus: string): Record<string, unknown> {
+    const c = comprador();
+    return {
+      ...c,
+      tax: { ...(c.tax as Record<string, unknown>), taxInvoicing: { invoiceStatus } },
+    };
+  }
+  const CHAVE_NFE = chaveAvisoNfeAmazon(CONTA_IMPORTADOR, PEDIDO_ID);
+  const avisoNfe = (ex: Execucao) => ex.h.db.ler(caminhoAviso(CHAVE_NFE));
+  const frete = (ex: Execucao) => ex.h.db.ler(CAMINHO)?.freteInicial as Record<string, unknown>;
+  /** A synthetic approved SALE proc (tpAmb 1); no party, no access key. */
+  const PROC =
+    '<nfeProc><NFe><infNFe><ide><tpAmb>1</tpAmb><tpNF>1</tpNF><finNFe>1</finNFe></ide>' +
+    '</infNFe></NFe></nfeProc>';
+  /** The NF-e stamp, as the task leaves it. */
+  function carimbar(ex: Execucao) {
+    const doc = ex.h.db.ler(CAMINHO) ?? {};
+    ex.h.db.seed(CAMINHO, {
+      ...doc,
+      freteInicial: { ...(doc.freteInicial as Record<string, unknown>), estado: 'error' },
+    });
+  }
+  /** What one import read or queried of the NF-e side: the subcollection and the NF-e row. */
+  function tocouNfe(ex: Execucao, leiturasAntes: number, consultasAntes: number) {
+    return {
+      leituras: ex.h.db.leituras
+        .slice(leiturasAntes)
+        .filter((c) => c.includes('/nfev4') || c.endsWith(CHAVE_NFE)),
+      consultas: ex.h.db.consultas.slice(consultasAntes).filter((c) => c.colecao.includes('nfev4')),
+    };
+  }
+
+  it('★ INTO a cancelled sale ⇒ the clocked pedido-cancelado resolve even with NO row (a resolved tombstone, clocked by the batch writeTime); a stale task raise is then DROPPED', async () => {
+    const ex = montar();
+    await ex.importar(pedido({ status: 'UNSHIPPED', extra: comprador() }));
+    expect(avisoNfe(ex)).toBeUndefined();
+    const escritasAntes = ex.h.db.escritas.length;
+    await ex.importar(
+      pedido({ status: 'CANCELLED', atualizadoEm: depois(60), extra: comprador() }),
+    );
+    // A PAID order: the CANCELLED predicate's target is estornadoIntegralmente.
+    expect(ex.h.db.ler(CAMINHO)?.estado).toBe('estornadoIntegralmente');
+    const lote = ex.h.db.escritas.slice(escritasAntes).find((e) => e.lote !== undefined);
+    const tumulo = avisoNfe(ex);
+    expect(tumulo).toMatchObject({
+      tipo: TIPO_AVISO.nfeUploadRejeitado,
+      resolucaoMotivo: 'pedido-cancelado',
+      relogioEvento: relogioDoDocumentoUs(lote?.writeTime ?? { seconds: 0, nanoseconds: 0 }),
+    });
+    expect(tumulo?.resolvidoEm).not.toBeNull();
+    // A task that read the pedido BEFORE the import raises after it: dropped.
+    const r = await avisarNfeAmazon(
+      asDb(ex.h.db),
+      { increment, nowMs: AGORA_MS },
+      {
+        integracaoId: CONTA_IMPORTADOR,
+        pedidoId: PEDIDO_ID,
+        numero: ORDER_ID_TESTE,
+        motivo: 'nfe-recusada',
+        relogio: { seconds: 0, nanoseconds: 0 },
+      },
+    );
+    expect(r).toBe('ignorado');
+    expect(avisoNfe(ex)?.resolvidoEm).not.toBeNull();
+  });
+
+  it('★ INTO a cancelled sale with an AUTHORIZED sale nfev4 ⇒ amz-nfe-pedido-cancelado, ONCE (the next cancelled import is no transition and reads no nfev4)', async () => {
+    const ex = montar();
+    await ex.importar(pedido({ status: 'UNSHIPPED', extra: comprador() }));
+    ex.h.db.seed(`${CAMINHO}/nfev4/s1`, { estado: 'a', xml_nfe_proc: PROC });
+    await ex.importar(
+      pedido({ status: 'CANCELLED', atualizadoEm: depois(60), extra: comprador() }),
+    );
+    expect(incidente(ex, ID_INCIDENTE_NFE_PEDIDO_CANCELADO_AMAZON)).toMatchObject({
+      subtipo: ID_INCIDENTE_NFE_PEDIDO_CANCELADO_AMAZON,
+      origem: ORIGEM_INCIDENTE.outros,
+      tipo: TIPO_INCIDENTE.outros,
+    });
+    expect(
+      ex.h.db.escritasEm(`${CAMINHO}/incidentes/${ID_INCIDENTE_NFE_PEDIDO_CANCELADO_AMAZON}`),
+    ).toHaveLength(1);
+    const leituras = ex.h.db.leituras.length;
+    const consultas = ex.h.db.consultas.length;
+    await ex.importar(
+      pedido({ status: 'CANCELLED', atualizadoEm: depois(120), extra: comprador() }),
+    );
+    expect(tocouNfe(ex, leituras, consultas)).toEqual({ leituras: [], consultas: [] });
+    expect(
+      ex.h.db.escritasEm(`${CAMINHO}/incidentes/${ID_INCIDENTE_NFE_PEDIDO_CANCELADO_AMAZON}`),
+    ).toHaveLength(1);
+  });
+
+  it('NEAR-MISS: INTO a cancelled sale with only a CANCELLED or a homologação nfev4 ⇒ no incidente (the listing ran, ONCE)', async () => {
+    const ex = montar();
+    await ex.importar(pedido({ status: 'UNSHIPPED', extra: comprador() }));
+    ex.h.db.seed(`${CAMINHO}/nfev4/s1`, { estado: 'c', xml_nfe_proc: PROC });
+    ex.h.db.seed(`${CAMINHO}/nfev4/s9`, {
+      estado: 'a',
+      xml_nfe_proc: PROC.replace('<tpAmb>1</tpAmb>', '<tpAmb>2</tpAmb>'),
+    });
+    const consultas = ex.h.db.consultas.length;
+    await ex.importar(
+      pedido({ status: 'CANCELLED', atualizadoEm: depois(60), extra: comprador() }),
+    );
+    expect(incidente(ex, ID_INCIDENTE_NFE_PEDIDO_CANCELADO_AMAZON)).toBeUndefined();
+    expect(
+      ex.h.db.consultas.slice(consultas).filter((c) => c.colecao === `${CAMINHO}/nfev4`),
+    ).toHaveLength(1);
+  });
+
+  it('★ the next import of the UNCHANGED order after the REAL stamp ⇒ sem-mudanca, ZERO writes (the nested order clock was carried)', async () => {
+    const ex = montar();
+    const corpo = pedido({ status: 'UNSHIPPED', extra: comNota('NOT_FOUND') });
+    await ex.importar(corpo);
+    const antes = frete(ex);
+    expect(antes.estado).toBe('aguardandoNFe');
+    expect(
+      await carimbarFreteNfeAmazon(asDb(ex.h.db), PEDIDO_ID, AGORA_MS * 1000 + 1_000_000),
+    ).toBe('carimbado');
+    expect(frete(ex)).toMatchObject({
+      estado: 'error',
+      ultimaModificacao: antes.ultimaModificacao,
+    });
+    const escritas = ex.h.db.escritas.length;
+    expect(await ex.importar(corpo)).toMatchObject({ kind: 'sem-mudanca' });
+    expect(ex.h.db.escritas.slice(escritas).filter((e) => e.caminho === CAMINHO)).toEqual([]);
+    expect(frete(ex).estado).toBe('error');
+  });
+
+  it('★ a PENDING_PICK_UP import OVERWRITES the NF-e stamp and resolves frete-despachado (clocked by the batch writeTime)', async () => {
+    const ex = montar();
+    await ex.importar(pedido({ status: 'UNSHIPPED', extra: comNota('NOT_FOUND') }));
+    expect(frete(ex).estado).toBe('aguardandoNFe');
+    carimbar(ex);
+    const escritasAntes = ex.h.db.escritas.length;
+    await ex.importar(
+      pedido({
+        status: 'UNSHIPPED',
+        atualizadoEm: depois(60),
+        extra: comNota('ACCEPTED'),
+        pacotesBrutos: [pacoteAmazon('PKG-1', 'PENDING_PICK_UP')],
+      }),
+    );
+    expect(frete(ex).estado).toBe('aguardandoPostagem');
+    const lote = ex.h.db.escritas.slice(escritasAntes).find((e) => e.lote !== undefined);
+    expect(avisoNfe(ex)).toMatchObject({
+      resolucaoMotivo: 'frete-despachado',
+      relogioEvento: relogioDoDocumentoUs(lote?.writeTime ?? { seconds: 0, nanoseconds: 0 }),
+    });
+    expect(avisoNfe(ex)?.resolvidoEm).not.toBeNull();
+  });
+
+  it('★ NEAR-MISS (mutation 12): a PENDING_SCHEDULE + ACCEPTED import KEEPS the stamp — the order-level ACCEPTED never clears it — and touches no NF-e row', async () => {
+    const ex = montar();
+    await ex.importar(pedido({ status: 'UNSHIPPED', extra: comNota('NOT_FOUND') }));
+    carimbar(ex);
+    const leituras = ex.h.db.leituras.length;
+    const consultas = ex.h.db.consultas.length;
+    await ex.importar(
+      pedido({
+        status: 'UNSHIPPED',
+        atualizadoEm: depois(60),
+        extra: comNota('ACCEPTED'),
+        pacotesBrutos: [pacoteAmazon('PKG-1', 'PENDING_SCHEDULE')],
+      }),
+    );
+    expect(frete(ex).estado).toBe('error');
+    expect(tocouNfe(ex, leituras, consultas)).toEqual({ leituras: [], consultas: [] });
+    expect(avisoNfe(ex)).toBeUndefined();
+  });
+
+  it('★ (mutation 13) an import that is NOT one of the two transitions reads no nfev4 and no nfeUploadRejeitado row — a create, an update, a redelivery, a later rung', async () => {
+    const ex = montar();
+    ex.h.db.seed(`${CAMINHO}/nfev4/s1`, { estado: 'a', xml_nfe_proc: PROC });
+    const corpos = [
+      pedido({ status: 'UNSHIPPED', extra: comNota('NOT_FOUND') }),
+      pedido({ status: 'UNSHIPPED', atualizadoEm: depois(60), extra: comNota('ACCEPTED') }),
+      pedido({ status: 'UNSHIPPED', atualizadoEm: depois(60), extra: comNota('ACCEPTED') }),
+      pedido({
+        status: 'SHIPPED',
+        atualizadoEm: depois(120),
+        extra: comNota('ACCEPTED'),
+        pacotesBrutos: [pacoteAmazon('PKG-1', 'PICKED_UP')],
+      }),
+      pedido({
+        status: 'SHIPPED',
+        atualizadoEm: depois(180),
+        extra: comNota('ACCEPTED'),
+        pacotesBrutos: [pacoteAmazon('PKG-1', 'DELIVERED')],
+      }),
+    ];
+    const tocou: ReturnType<typeof tocouNfe>[] = [];
+    for (const [i, corpo] of corpos.entries()) {
+      const leituras = ex.h.db.leituras.length;
+      const consultas = ex.h.db.consultas.length;
+      await ex.importar(corpo);
+      // The 4th import moves the freight INTO the removal set: the one transition here.
+      if (i !== 3) tocou.push(tocouNfe(ex, leituras, consultas));
+    }
+    expect(tocou).toEqual(Array.from({ length: 4 }, () => ({ leituras: [], consultas: [] })));
+    // ÂNCORA: the 4th really was the transition, and still read no nfev4 (a frete one).
+    expect(avisoNfe(ex)?.resolucaoMotivo).toBe('frete-despachado');
+    expect(ex.h.db.leituras.filter((c) => c.includes('/nfev4'))).toEqual([]);
+    expect(ex.h.db.consultas.filter((c) => c.colecao.includes('nfev4'))).toEqual([]);
+  });
+
+  it('the pure reader: an update INTO a cancelled sale (either estado) / INTO the removal set; NEAR-MISS a create, a sem-mudanca, a write that stays', () => {
+    const base = {
+      tipo: 'gravado',
+      leitura: {} as never,
+      writeTime: null,
+      portador: false,
+      portadorPagamento: false,
+      tentativas: 1,
+    } as const;
+    const decisao = (estadoEscrito: string | null) => ({ estadoEscrito }) as never;
+    const atualizar = (estadoEscrito: string | null, patch: Record<string, unknown>) =>
+      ({ tipo: 'atualizar', patch, grupos: [], decisao: decisao(estadoEscrito) }) as never;
+    const t = (g: Record<string, unknown>) =>
+      transicoesNfeDoPedidoAmazon({ ...base, ...g } as never);
+    const pago = { estado: 'pago', freteInicial: { estado: 'error' } };
+    for (const terminal of ['cancelado', 'estornadoIntegralmente']) {
+      expect(t({ armazenado: pago, escrita: atualizar(terminal, {}) }), terminal).toEqual({
+        vendaCancelada: true,
+        freteDespachado: false,
+      });
+    }
+    expect(
+      t({
+        armazenado: pago,
+        escrita: atualizar(null, { freteInicial: { estado: 'aguardandoPostagem' } }),
+      }),
+    ).toEqual({ vendaCancelada: false, freteDespachado: true });
+    // NEAR-MISSES: from one terminal to the other is no transition INTO the pair.
+    expect(
+      t({ armazenado: { estado: 'cancelado' }, escrita: atualizar('estornadoIntegralmente', {}) }),
+    ).toEqual({ vendaCancelada: false, freteDespachado: false });
+    expect(
+      t({
+        armazenado: { estado: 'pago', freteInicial: { estado: 'postado' } },
+        escrita: atualizar(null, { freteInicial: { estado: 'entregue' } }),
+      }),
+    ).toEqual({ vendaCancelada: false, freteDespachado: false });
+    expect(
+      t({
+        armazenado: null,
+        escrita: { tipo: 'criar', corpo: {}, decisao: decisao('cancelado') } as never,
+      }),
+    ).toEqual({ vendaCancelada: false, freteDespachado: false });
+    expect(
+      t({ tipo: 'sem-mudanca', armazenado: pago, escrita: atualizar('cancelado', {}) }),
+    ).toEqual({ vendaCancelada: false, freteDespachado: false });
+    expect(
+      t({
+        armazenado: pago,
+        escrita: atualizar(null, { freteInicial: { estado: 'aguardandoAgendamento' } }),
+      }),
+    ).toEqual({ vendaCancelada: false, freteDespachado: false });
+    expect(t({ armazenado: pago, escrita: atualizar('pago', {}) })).toEqual({
+      vendaCancelada: false,
+      freteDespachado: false,
+    });
+  });
+
+  /* -- a REDELIVERY recovers 8b: the attempt that wrote the transition died after its commit -- */
+
+  const ID_INC = ID_INCIDENTE_NFE_PEDIDO_CANCELADO_AMAZON;
+
+  it('★ the cancel transition loses its nfev4 LISTING after the commit ⇒ the delivery throws; its retry (tentativa 1) answers sem-mudanca and STILL files the incidente — while a FIRST attempt of the same cancelled order reads no nfev4', async () => {
+    const ex = montar();
+    await ex.importar(pedido({ status: 'UNSHIPPED', extra: comprador() }));
+    ex.h.db.seed(`${CAMINHO}/nfev4/s1`, { estado: 'a', xml_nfe_proc: PROC });
+    const cancelado = pedido({ status: 'CANCELLED', atualizadoEm: depois(60), extra: comprador() });
+    ex.h.db.falharConsulta(`${CAMINHO}/nfev4`, grpc(14, 'UNAVAILABLE'));
+    await expect(ex.importar(cancelado)).rejects.toMatchObject({ code: 14 });
+    ex.h.db.falharConsulta(`${CAMINHO}/nfev4`, null);
+    expect(ex.h.db.ler(CAMINHO)?.estado).toBe('estornadoIntegralmente');
+    expect(incidente(ex, ID_INC)).toBeUndefined();
+    // NEAR-MISS (decision 8's hot path): a NEW delivery's first attempt is no transition.
+    const leituras = ex.h.db.leituras.length;
+    const consultas = ex.h.db.consultas.length;
+    expect(await ex.importar(cancelado)).toMatchObject({ kind: 'sem-mudanca' });
+    expect(tocouNfe(ex, leituras, consultas)).toEqual({ leituras: [], consultas: [] });
+    expect(incidente(ex, ID_INC)).toBeUndefined();
+    // The queue's retry of the failed delivery: 8b from the conditions the pedido holds.
+    expect(await ex.importar(cancelado, { tentativa: 1 })).toMatchObject({ kind: 'sem-mudanca' });
+    expect(incidente(ex, ID_INC)).toMatchObject({ subtipo: ID_INC });
+    expect(avisoNfe(ex)).toMatchObject({ resolucaoMotivo: 'pedido-cancelado' });
+    expect(avisoNfe(ex)?.resolvidoEm).not.toBeNull();
+    // Idempotent: a second retry files nothing new.
+    await ex.importar(cancelado, { tentativa: 2 });
+    expect(ex.h.db.escritasEm(`${CAMINHO}/incidentes/${ID_INC}`)).toHaveLength(1);
+  });
+
+  it('★ the cancel transition loses its TOMBSTONE write after the commit ⇒ a sweep re-drive (tentativa null) writes the clocked resolve and files the incidente; a stale task raise is then dropped', async () => {
+    const ex = montar();
+    await ex.importar(pedido({ status: 'UNSHIPPED', extra: comprador() }));
+    ex.h.db.seed(`${CAMINHO}/nfev4/s1`, { estado: 'a', xml_nfe_proc: PROC });
+    const cancelado = pedido({ status: 'CANCELLED', atualizadoEm: depois(60), extra: comprador() });
+    ex.h.db.falharEscrita(caminhoAviso(CHAVE_NFE), grpc(14, 'UNAVAILABLE'));
+    await expect(ex.importar(cancelado)).rejects.toMatchObject({ code: 14 });
+    ex.h.db.falharEscrita(caminhoAviso(CHAVE_NFE), null);
+    expect(avisoNfe(ex)).toBeUndefined();
+    expect(await ex.importar(cancelado, { tentativa: null })).toMatchObject({
+      kind: 'sem-mudanca',
+    });
+    const tumulo = avisoNfe(ex);
+    expect(tumulo).toMatchObject({ resolucaoMotivo: 'pedido-cancelado' });
+    expect(tumulo?.resolvidoEm).not.toBeNull();
+    expect(incidente(ex, ID_INC)).toMatchObject({ subtipo: ID_INC });
+    const r = await avisarNfeAmazon(
+      asDb(ex.h.db),
+      { increment, nowMs: AGORA_MS },
+      {
+        integracaoId: CONTA_IMPORTADOR,
+        pedidoId: PEDIDO_ID,
+        numero: ORDER_ID_TESTE,
+        motivo: 'nfe-recusada',
+        relogio: { seconds: 0, nanoseconds: 0 },
+      },
+    );
+    expect(r).toBe('ignorado');
+  });
+
+  it('★ the freight transition loses its frete-despachado resolve after the commit ⇒ the retry resolves it from the stored goods-out estado', async () => {
+    const ex = montar();
+    await ex.importar(pedido({ status: 'UNSHIPPED', extra: comNota('NOT_FOUND') }));
+    carimbar(ex);
+    ex.h.db.seed(caminhoAviso(CHAVE_NFE), {
+      tipo: TIPO_AVISO.nfeUploadRejeitado,
+      conta: CONTA_IMPORTADOR,
+      entidade: PEDIDO_ID,
+      severidade: 'atencao',
+      canal: 'amazon',
+      params: { pedido: ORDER_ID_TESTE, erro: 'x' },
+      motivo: 'nfe-recusada',
+      urlInterna: { rota: '/pedidos/x', campo: null },
+      relogioEvento: 1,
+      criadoEm: 1,
+      atualizadoEm: 1,
+      ocorrencias: 1,
+      resolvidoEm: null,
+      resolucaoMotivo: null,
+    });
+    const coleta = pedido({
+      status: 'UNSHIPPED',
+      atualizadoEm: depois(60),
+      extra: comNota('ACCEPTED'),
+      pacotesBrutos: [pacoteAmazon('PKG-1', 'PENDING_PICK_UP')],
+    });
+    ex.h.db.falharEscrita(caminhoAviso(CHAVE_NFE), grpc(14, 'UNAVAILABLE'));
+    await expect(ex.importar(coleta)).rejects.toMatchObject({ code: 14 });
+    ex.h.db.falharEscrita(caminhoAviso(CHAVE_NFE), null);
+    expect(frete(ex).estado).toBe('aguardandoPostagem');
+    expect(avisoNfe(ex)?.resolvidoEm).toBeNull();
+    expect(await ex.importar(coleta, { tentativa: 1 })).toMatchObject({ kind: 'sem-mudanca' });
+    expect(avisoNfe(ex)).toMatchObject({ resolucaoMotivo: 'frete-despachado' });
+    expect(avisoNfe(ex)?.resolvidoEm).not.toBeNull();
+  });
+
+  it('NEAR-MISS: a retry of an order that is neither a cancelled sale nor goods-out reads no nfev4 and no NF-e row', async () => {
+    const ex = montar();
+    ex.h.db.seed(`${CAMINHO}/nfev4/s1`, { estado: 'a', xml_nfe_proc: PROC });
+    const corpo = pedido({ status: 'UNSHIPPED', extra: comNota('NOT_FOUND') });
+    await ex.importar(corpo);
+    const leituras = ex.h.db.leituras.length;
+    const consultas = ex.h.db.consultas.length;
+    expect(await ex.importar(corpo, { tentativa: 3 })).toMatchObject({ kind: 'sem-mudanca' });
+    expect(tocouNfe(ex, leituras, consultas)).toEqual({ leituras: [], consultas: [] });
+  });
+
+  it('the pure CONDITIONS reader: what the pedido is LEFT holding — the write where one was made, the stored value otherwise; never a create', () => {
+    const base = {
+      leitura: {} as never,
+      writeTime: null,
+      portador: false,
+      portadorPagamento: false,
+      tentativas: 1,
+    } as const;
+    const decisao = (estadoEscrito: string | null) => ({ estadoEscrito }) as never;
+    const nenhuma = { tipo: 'nenhuma', decisao: decisao(null) } as never;
+    const atualizar = (estadoEscrito: string | null, patch: Record<string, unknown>) =>
+      ({ tipo: 'atualizar', patch, grupos: [], decisao: decisao(estadoEscrito) }) as never;
+    const c = (g: Record<string, unknown>) =>
+      condicoesNfeDoPedidoAmazon({ ...base, ...g } as never);
+    for (const estado of ['cancelado', 'estornadoIntegralmente']) {
+      expect(
+        c({
+          tipo: 'sem-mudanca',
+          armazenado: { estado, freteInicial: { estado: 'aguardandoPostagem' } },
+          escrita: nenhuma,
+        }),
+        estado,
+      ).toEqual({ vendaCancelada: true, freteDespachado: true });
+    }
+    // NEAR-MISSES: a live sale whose goods are in; a written goods-in estado over a stored goods-out one.
+    expect(
+      c({
+        tipo: 'sem-mudanca',
+        armazenado: { estado: 'pago', freteInicial: { estado: 'aguardandoNFe' } },
+        escrita: nenhuma,
+      }),
+    ).toEqual({ vendaCancelada: false, freteDespachado: false });
+    expect(
+      c({
+        tipo: 'gravado',
+        armazenado: { estado: 'pago', freteInicial: { estado: 'aguardandoPostagem' } },
+        escrita: atualizar(null, { freteInicial: { estado: 'error' } }),
+      }),
+    ).toEqual({ vendaCancelada: false, freteDespachado: false });
+    expect(
+      c({
+        tipo: 'gravado',
+        armazenado: null,
+        escrita: { tipo: 'criar', corpo: {}, decisao: decisao('cancelado') } as never,
+      }),
+    ).toEqual({ vendaCancelada: false, freteDespachado: false });
   });
 });

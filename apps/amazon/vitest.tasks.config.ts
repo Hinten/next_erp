@@ -26,7 +26,7 @@ import { defineConfig } from 'vitest/config';
 // costs a second `emulators:exec`, a check name and a gate-manifest row, and
 // only the `.firestore.` suites could move there — `*.tasks.test.ts` needs the
 // functions emulator, which loads the whole codebase, trigger included.
-// Sharing stays safe under three rules:
+// Sharing stays safe under four rules (the fourth since step 14):
 //   - a suite that writes `integracao` docs uses conta ids NO other suite seeds;
 //   - the step-3/4 suites seed Amazon contas with no filial and no
 //     `dataCadastro`, which the shared core plans as `incompleto`: the trigger
@@ -37,7 +37,22 @@ import { defineConfig } from 'vitest/config';
 //     before it ends: every case polls for its expected positive state, and the
 //     teardown waits for the deactivation its conta delete causes
 //     (`functions/src/onIntegracaoAmazonChanged.tasks.test.ts`), so no
-//     reconcile spills into the next file.
+//     reconcile spills into the next file;
+//   - (step 14, PR 14-c) the functions emulator also loads the NF-e trigger
+//     `onNfeAprovadaAmazon`, which fires on EVERY `pedidos/{id}/nfev4` write.
+//     A suite that writes a READY sale `nfev4` under a PROVED pedido starts a
+//     real trigger → `processAmazonNfeUpload` → aviso chain on that pedido's
+//     `nfeUploadRejeitado` row. So a suite that writes a ready `nfev4` seeds its
+//     pedido FIRST with stored evidence that says NO — a `marketplace` block of
+//     `tipo: 'amazon'` with `fulfilledBy: 'AMAZON'`, or with a `programs` list
+//     that lacks `DELIVERY_BY_AMAZON` — so the trigger stops READ-ONLY at T3
+//     (`nao-dba`): deterministic, no enqueue, no race — and keeps that evidence
+//     for as long as the document can fire (`lib/amazon/nfe/processarNfe.firestore.test.ts`,
+//     whose in-process task decides DBA LIVE from its own scripted `getOrder`).
+//     ONLY `functions/src/onNfeAprovadaAmazon.tasks.test.ts` seeds a pedido the
+//     trigger passes, and it is a trigger suite: it awaits the dispatched task's
+//     aviso row before it ends. A delete of an `nfev4` document is no edge (zero
+//     reads), so every suite's teardown is safe.
 //
 // Each file's `beforeEach` deletes what it reads, because the files share one
 // emulator and run one at a time (`fileParallelism: false`).

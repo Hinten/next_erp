@@ -190,9 +190,11 @@ const ALLOWED_STRICT = {
   // and they are strict Zod schemas — but over STRINGS only, with no
   // `z.number()` to keep strict, so there is nothing here for strictness to
   // protect. A later write step whose body holds a number brings its first entry.
-  // No `amazon-sp-api` entry either. Its only outbound body, the LWA token
-  // POST, is a form-encoded `URLSearchParams` of strings, not a Zod schema; if
-  // a later write step brings a Zod request body, that step adds its first entry.
+  // No `amazon-sp-api` entry either. It has a GET client and ONE write client
+  // (Delivery only), and neither outbound body is a Zod schema: the LWA token
+  // POST is a form-encoded `URLSearchParams` of strings, and `submitInvoice`'s
+  // body is a `JSON.stringify` of five NAMED string keys (`entrega.ts`); if a
+  // later write step brings a Zod request body, that step adds its first entry.
 };
 
 /**

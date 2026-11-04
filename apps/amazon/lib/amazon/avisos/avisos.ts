@@ -2,7 +2,9 @@
  * The producers and resolvers of the seven Amazon-only avisos, and the µs
  * boundary of this app (the eighth tipo this channel raises, the shared
  * `nfeUploadRejeitado`, is listed in {@link TIPOS_AVISO_AMAZON}; its producer
- * arrives with step 14's wiring, PR 14-c):
+ * and resolvers are step 14's `nfe/avisoNfe.ts`, which converts nothing itself:
+ * it writes through {@link depsDeEscrita} and clocks through
+ * {@link relogioDoDocumentoUs}, both here):
  *
  * | tipo | key | severity | clock |
  * | --- | --- | --- | --- |
@@ -147,6 +149,17 @@ export const MOTIVO_AVISO_AMAZON = {
    * (per-conta rows) saw the condition END (step 5).
    */
   condicaoEncerrada: 'condicao-encerrada',
+  /**
+   * `nfeUploadRejeitado` (step 14): the SHARED tipo's three resolve motivos,
+   * spelled as `packages/schemas/src/aviso.ts`'s docblock names them. The order
+   * was cancelled — the NF-e task's pre-read, or the order import's transition
+   * INTO a cancelled sale (`cancelado` or `estornadoIntegralmente`).
+   */
+  pedidoCancelado: 'pedido-cancelado',
+  /** The order import's freight transition INTO the stock-removal set: the parcel moved (step 14). */
+  freteDespachado: 'frete-despachado',
+  /** The NF-e task read Amazon's acceptance of the pedido's invoices (step 14). */
+  nfeValidada: 'nfe-validada',
 } as const;
 export type MotivoAvisoAmazon = (typeof MOTIVO_AVISO_AMAZON)[keyof typeof MOTIVO_AVISO_AMAZON];
 
@@ -257,8 +270,11 @@ export function chaveSegredoRecusado(): string {
  * The shared writer's deps. Its `logger` is typed `Record<string, unknown>` and
  * logs a Firestore message untyped, so the app's `warn` crosses into it only
  * through `warnNaoTipado`, which narrows every campo at run time.
+ *
+ * Exported for the producers outside this module (step 14's `nfe/avisoNfe.ts`):
+ * "now" still crosses into µs HERE, through {@link agoraUsDe}.
  */
-function depsDeEscrita(deps: AvisoDepsAmazon): {
+export function depsDeEscrita(deps: AvisoDepsAmazon): {
   increment: (by: number) => unknown;
   agoraUs: number;
   logger?: ReturnType<typeof warnNaoTipado>;
