@@ -120,6 +120,24 @@ describe('ShopeeTab', () => {
     expect(onDirtyChange).toHaveBeenCalledWith(true);
   });
 
+  it('hands the page’s unsaved produto edits OUTSIDE the form to the editor’s Publicar gate (KNOWN #9) — NEAR-MISS: absent ⇒ none handed', async () => {
+    const { rerender } = render(
+      <MantineTestProvider>
+        <ShopeeTab produtoId="prod-1" db={{} as Firestore} produtoSujoForaDoFormulario />
+      </MantineTestProvider>,
+    );
+    await screen.findByTestId('shopee-editor-stub');
+    expect(h.editorRenders).toHaveBeenLastCalledWith(
+      expect.objectContaining({ produtoId: 'prod-1', produtoSujoForaDoFormulario: true }),
+    );
+    rerender(
+      <MantineTestProvider>
+        <ShopeeTab produtoId="prod-1" db={{} as Firestore} />
+      </MantineTestProvider>,
+    );
+    expect(h.editorRenders.mock.lastCall?.[0]).not.toHaveProperty('produtoSujoForaDoFormulario');
+  });
+
   it('keys the editor by the produto id: another produto REMOUNTS it — NEAR-MISS: a re-render of the same one does not', async () => {
     const tela = (produtoId: string, disabled: boolean) => (
       <MantineTestProvider>

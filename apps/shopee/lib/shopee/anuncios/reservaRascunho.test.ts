@@ -6,6 +6,8 @@
  * Fixture ids only: conta `int-1`, invented produto / link ids, Shopee's own
  * doc-sample item ids.
  */
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   SHOPEE_ITEM_BASE_INFO_MAX_IDS,
@@ -1589,6 +1591,564 @@ describe('reservarRascunhoShopee — um rascunho INCERTO (P5: a busca antes de q
 
     expect(err.code).toBe(CODIGO_RASCUNHO_SHOPEE.publicacaoExpirada);
     expect(doc(db)).toMatchObject({ item_id: null, publicacaoEmCurso: alheia });
+  });
+
+  /**
+   * #1911 batch-B review R4-1369-fold#0 (Lucas §I1): the attestation carries
+   * what it expects, the controls carry it into ENSURE, and the reservation
+   * acts only on a FRESH verdict that matches — a mismatch writes neither an
+   * adoption nor the record's clear.
+   */
+  describe('(§I1) a expectativa da atestação chega à busca pelos controles', () => {
+    const OUTRO_PRODUTO = 'prod-outro';
+
+    /** ITEM_NOSSO linked, in this conta, to ANOTHER produto (the group query finds it). */
+    function vinculadoAOutro(db: FakeDb): FakeDb {
+      db.seed(`produtos/${OUTRO_PRODUTO}/prodshopee/link-outro`, {
+        contaProdutoShopeeOuterRef: REF_CONTA,
+        item_id: ITEM_NOSSO,
+      });
+      return db;
+    }
+
+    it('⛔ adoção esperada [ITEM_NOSSO], mas ele foi vinculado a outro produto ⇒ 422: NADA adotado, trava devolvida, registro FICA', async () => {
+      const db = vinculadoAOutro(comProduto(new FakeDb()));
+      db.seed(CAMINHO, incerto());
+      const loja = lojaCom(baseDe(ITEM_NOSSO));
+
+      const err = await reservar(
+        asDb(db),
+        ALVO,
+        controles({ confirmarCriacaoIncerta: true, criacaoIncertaAdota: [ITEM_NOSSO] }),
+        loja.busca,
+      ).catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(ShopeePublishBlockedError);
+      expect((err as ShopeePublishBlockedError).motivo).toBe(
+        MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaJaVinculada,
+      );
+      expect(doc(db)).toMatchObject({
+        item_id: null,
+        publicacaoEmCurso: null,
+        criacaoIncertaDesde: DESDE_VELHO,
+      });
+      // The takeover, then the hand-back — no adoption, no clear of the record.
+      const escritas = escritasEm(db);
+      expect(escritas).toHaveLength(2);
+      expect(escritas.some((w) => 'item_id' in w)).toBe(false);
+      expect(escritas.some((w) => w.criacaoIncertaDesde === null)).toBe(false);
+    });
+
+    it('⛔ quase-par: a MESMA busca sem a expectativa (a CLI) passa por cima — travada, registro LIMPO', async () => {
+      const db = vinculadoAOutro(comProduto(new FakeDb()));
+      db.seed(CAMINHO, incerto());
+
+      const r = await reservar(
+        asDb(db),
+        ALVO,
+        controles({ confirmarCriacaoIncerta: true }),
+        lojaCom(baseDe(ITEM_NOSSO)).busca,
+      );
+
+      expect(r).toMatchObject({ tipo: 'travada', skuBuscadoNaReserva: SKU });
+      expect(doc(db)?.criacaoIncertaDesde).toBeNull();
+    });
+
+    it('criação esperada [] e o anúncio ainda vinculado a outro ⇒ travada (o add_item segue), registro limpo', async () => {
+      const db = vinculadoAOutro(comProduto(new FakeDb()));
+      db.seed(CAMINHO, incerto());
+
+      const r = await reservar(
+        asDb(db),
+        ALVO,
+        controles({ confirmarCriacaoIncerta: true, criacaoIncertaAdota: [] }),
+        lojaCom(baseDe(ITEM_NOSSO)).busca,
+      );
+
+      expect(r.tipo).toBe('travada');
+      expect(doc(db)?.criacaoIncertaDesde).toBeNull();
+    });
+
+    it('⛔ criação esperada [], mas o anúncio está LIVRE agora ⇒ 422, NADA adotado (nunca sobrescreve o anúncio)', async () => {
+      const db = comProduto(new FakeDb());
+      db.seed(CAMINHO, incerto());
+
+      const err = await reservar(
+        asDb(db),
+        ALVO,
+        controles({ confirmarCriacaoIncerta: true, criacaoIncertaAdota: [] }),
+        lojaCom(baseDe(ITEM_NOSSO)).busca,
+      ).catch((e: unknown) => e);
+
+      expect((err as ShopeePublishBlockedError).motivo).toBe(
+        MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaJaVinculada,
+      );
+      expect(doc(db)).toMatchObject({
+        item_id: null,
+        publicacaoEmCurso: null,
+        criacaoIncertaDesde: DESDE_VELHO,
+      });
+    });
+
+    it('adoção esperada [ITEM_NOSSO] e ele ainda livre ⇒ ADOTADO', async () => {
+      const db = comProduto(new FakeDb());
+      db.seed(CAMINHO, incerto());
+
+      const r = await reservar(
+        asDb(db),
+        ALVO,
+        controles({ confirmarCriacaoIncerta: true, criacaoIncertaAdota: [ITEM_NOSSO] }),
+        lojaCom(baseDe(ITEM_NOSSO)).busca,
+      );
+
+      expect(r).toEqual({ tipo: 'adotada', itemId: ITEM_NOSSO });
+      expect(doc(db)).toMatchObject({ item_id: ITEM_NOSSO, criacaoIncertaDesde: null });
+    });
+  });
+
+  /**
+   * #1911 batch-B review, round 2 (Lucas §I1: the attested publish goes on ONLY
+   * when the fresh verdict is what was sent — anything else refuses, nothing
+   * sent). A draft whose reading went back to `livre` after the refusal the
+   * operator attested (another run's complete look-up cleared the record, then
+   * created nothing) runs no ENSURE: before this, the expectation was simply
+   * dropped and the FIRST create ran — a listing created where an adoption was
+   * promised. Decided on the reservation's OWN read, before its lock.
+   *
+   * Round 4 (VERIFY-0 round-2 residual #2): under its OWN motivo,
+   * `criacao-incerta-encerrada` — never `-ja-vinculada`'s acao-less row, which
+   * answers a look-up that DID run (ENSURE's no-candidate mismatch).
+   */
+  describe('(§I1) a expectativa num rascunho que NÃO lê incerta ⇒ recusa ANTES da trava', () => {
+    const MOTIVO = MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaEncerrada;
+
+    async function bloqueioDe(p: Promise<unknown>): Promise<ShopeePublishBlockedError> {
+      const err = await p.then(
+        () => null,
+        (e: unknown) => e,
+      );
+      if (!(err instanceof ShopeePublishBlockedError)) {
+        throw new Error(`esperava ShopeePublishBlockedError, veio ${String(err)}`);
+      }
+      return err;
+    }
+
+    it('⛔ adoção esperada [ITEM_NOSSO] num rascunho LIVRE ⇒ 422 sem acao: ZERO escritas, ZERO chamadas à Shopee', async () => {
+      const db = comProduto(new FakeDb());
+      db.seed(CAMINHO, rascunho());
+      expect(estadoPublicacaoRascunhoShopee(doc(db) ?? null, AGORA).tipo).toBe('livre');
+
+      // `reservar`'s default look-up THROWS on any Shopee call.
+      const err = await bloqueioDe(
+        reservar(
+          asDb(db),
+          ALVO,
+          controles({ confirmarCriacaoIncerta: true, criacaoIncertaAdota: [ITEM_NOSSO] }),
+        ),
+      );
+
+      expect(err.motivo).toBe(MOTIVO);
+      expect(err.produtoId).toBe(PRODUTO);
+      expect(err.itemId).toBeNull();
+      expect(err.problemas).toHaveLength(1);
+      // No `acao`: nothing was looked up, so there is nothing to import — and no
+      // attestation exit the web could loop on.
+      expect(err.problemas[0]).not.toHaveProperty('acao');
+      expect(err.problemas[0]?.mensagem).toContain(`adotar o anúncio ${String(ITEM_NOSSO)}`);
+      expect(db.writes).toEqual([]);
+      expect(doc(db)).toEqual(rascunho());
+    });
+
+    it('⛔ quase-par: o MESMO rascunho livre com a flag NUA (a CLI — expectativa ausente ou null) ⇒ travada: a primeira criação segue, como sempre', async () => {
+      for (const sem of [{}, { criacaoIncertaAdota: null }]) {
+        const db = comProduto(new FakeDb());
+        db.seed(CAMINHO, rascunho());
+
+        const r = await reservar(
+          asDb(db),
+          ALVO,
+          controles({ confirmarCriacaoIncerta: true, ...sem }),
+        );
+
+        expect(r, JSON.stringify(sem)).toMatchObject({
+          tipo: 'travada',
+          skuBuscadoNaReserva: null,
+        });
+        expect(escritasEm(db)).toHaveLength(1);
+      }
+    });
+
+    it('⛔ quase-par: a expectativa SEM a flag (a rota a recusa com 400) não decide nada — travada, como a busca a ignora', async () => {
+      const db = comProduto(new FakeDb());
+      db.seed(CAMINHO, rascunho());
+
+      const r = await reservar(
+        asDb(db),
+        ALVO,
+        controles({ confirmarCriacaoIncerta: false, criacaoIncertaAdota: [ITEM_NOSSO] }),
+      );
+
+      expect(r.tipo).toBe('travada');
+    });
+
+    it('⛔ criação esperada [] num rascunho LIVRE ⇒ recusada TAMBÉM: a criação confirmada era sobre uma tentativa que já não existe', async () => {
+      const db = comProduto(new FakeDb());
+      db.seed(CAMINHO, rascunho());
+
+      const err = await bloqueioDe(
+        reservar(
+          asDb(db),
+          ALVO,
+          controles({ confirmarCriacaoIncerta: true, criacaoIncertaAdota: [] }),
+        ),
+      );
+
+      expect(err.motivo).toBe(MOTIVO);
+      expect(err.problemas[0]).not.toHaveProperty('acao');
+      expect(err.problemas[0]?.mensagem).toContain('criar um anúncio novo');
+      expect(db.writes).toEqual([]);
+    });
+
+    it('a trava VENCIDA sem carimbo e sem registro (lê livre, §H Q3) ⇒ recusa ANTES de substituí-la: a trava velha fica como está', async () => {
+      const db = comProduto(new FakeDb());
+      const velha = travaAlheia(AGORA - 1);
+      db.seed(CAMINHO, rascunho({ publicacaoEmCurso: velha }));
+      expect(estadoPublicacaoRascunhoShopee(doc(db) ?? null, AGORA).tipo).toBe('livre');
+
+      const err = await bloqueioDe(
+        reservar(
+          asDb(db),
+          ALVO,
+          controles({ confirmarCriacaoIncerta: true, criacaoIncertaAdota: [ITEM_NOSSO] }),
+        ),
+      );
+
+      expect(err.motivo).toBe(MOTIVO);
+      expect(db.writes).toEqual([]);
+      expect(doc(db)?.publicacaoEmCurso).toEqual(velha);
+    });
+
+    it('(regra 7) decidido na leitura DESTA reserva: o registro limpo entre a 1ª leitura e a trava ⇒ a releitura recusa — nada adotado, nenhuma busca', async () => {
+      const db = comProduto(new FakeDb());
+      db.seed(CAMINHO, incerto());
+      // After the FIRST read (incerta — the takeover would scan), another run
+      // clears the record: our lock write loses its precondition, and the
+      // re-read — livre — is what decides.
+      const corrida = comEscritaConcorrente(db, CAMINHO, () => {
+        db.seed(CAMINHO, { ...doc(db), criacaoIncertaDesde: null });
+      });
+
+      const err = await bloqueioDe(
+        reservar(
+          asDb(corrida),
+          ALVO,
+          controles({ confirmarCriacaoIncerta: true, criacaoIncertaAdota: [ITEM_NOSSO] }),
+        ),
+      );
+
+      expect(err.motivo).toBe(MOTIVO);
+      expect(err.problemas[0]).not.toHaveProperty('acao');
+      expect(db.writes).toEqual([]);
+      expect(doc(db)).toMatchObject({ item_id: null, criacaoIncertaDesde: null });
+    });
+
+    it('a frase: diz o que era esperado, que nada foi enviado nem vinculado e que NENHUMA busca foi feita — sem afirmar o que uma busca achou, causa, retentativa ou a API', async () => {
+      const frases: string[] = [];
+      for (const esperado of [[ITEM_NOSSO], []]) {
+        const db = comProduto(new FakeDb());
+        db.seed(CAMINHO, rascunho());
+        const err = await bloqueioDe(
+          reservar(
+            asDb(db),
+            ALVO,
+            controles({ confirmarCriacaoIncerta: true, criacaoIncertaAdota: esperado }),
+          ),
+        );
+        frases.push(err.problemas[0]?.mensagem ?? '');
+      }
+      for (const frase of frases) {
+        expect(frase).toContain('nada foi enviado nem vinculado');
+        expect(frase).toContain('nenhuma busca foi feita');
+        // In the PAST of the read that decided: true even after another run
+        // records a NEW uncertain attempt on the draft.
+        expect(frase).toContain('já não registrava a criação incerta confirmada');
+        expect(frase).not.toMatch(/busca de agora|não acha|achou|tente de novo|add_item|falhou/i);
+      }
+      expect(frases[0]).toContain(`adotar o anúncio ${String(ITEM_NOSSO)}`);
+      expect(frases[1]).toContain('criar um anúncio novo');
+    });
+  });
+
+  /**
+   * #1911 batch-B review round 4 — Lucas §I4 (2026-11-03). An attested publish
+   * whose EXPECTATION reaches a link that is no longer a draft on the
+   * reservation's FIRST read (another run adopted or claimed it, or the import
+   * adopted it, since the refusal the operator acted on) used to answer
+   * `nao-e-rascunho` — the run went on as an `update_item`, neither the
+   * adoption nor the create that was confirmed. Now: the loop's own 409
+   * `JA_PUBLICADO`, decided on THIS read, nothing written, nothing looked up.
+   */
+  describe('(§I4) a expectativa num vínculo que JÁ NÃO é rascunho ⇒ 409 JA_PUBLICADO na PRIMEIRA leitura', () => {
+    /** The draft as another run left it: adopted (or claimed) — a listing link now. */
+    function adotadoPorOutraExecucao(itemId = ITEM_NOSSO): Record<string, unknown> {
+      return rascunho({ item_id: itemId, estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo });
+    }
+
+    it('⛔ [L] e [] num vínculo adotado/reivindicado por outra execução ⇒ 409 JA_PUBLICADO: ZERO escritas, UMA leitura (nenhum irmão, nenhuma busca)', async () => {
+      for (const [itemId, esperado] of [
+        [ITEM_NOSSO, [ITEM_NOSSO]],
+        [ITEM_NOSSO, []],
+        [ITEM_OUTRO, [ITEM_NOSSO]],
+      ] as const) {
+        const db = new FakeDb();
+        db.seed(CAMINHO, adotadoPorOutraExecucao(itemId));
+        const antes = doc(db);
+
+        // `reservar`'s default look-up THROWS on any Shopee call.
+        const err = await conflitoDe(
+          reservar(
+            asDb(db),
+            ALVO,
+            controles({ confirmarCriacaoIncerta: true, criacaoIncertaAdota: esperado }),
+          ),
+        );
+
+        const caso = JSON.stringify({ itemId, esperado });
+        expect(err.code, caso).toBe(CODIGO_RASCUNHO_SHOPEE.jaPublicado);
+        expect(err.linkDocId).toBe(RASCUNHO);
+        expect(err.aguardarMs).toBeNull();
+        expect(err.vinculos).toBeNull();
+        expect(db.writes, caso).toEqual([]);
+        // Decided on the FIRST read and on nothing else: no sibling scan, no
+        // second read of the document, no look-up.
+        expect(db.opLog, caso).toEqual([{ op: 'get', path: CAMINHO }]);
+        expect(doc(db)).toEqual(antes);
+      }
+    });
+
+    it('⛔ todo estado que NÃO é rascunho recusa igual (item_id 0, item_id em texto, kitNativo sem item) — a expectativa só vale para um rascunho', async () => {
+      for (const corpo of [
+        { item_id: 0 },
+        { item_id: '123' },
+        { kitNativo: true, item_id: undefined },
+      ]) {
+        const db = new FakeDb();
+        db.seed(CAMINHO, rascunho(corpo));
+
+        const err = await conflitoDe(
+          reservar(
+            asDb(db),
+            ALVO,
+            controles({ confirmarCriacaoIncerta: true, criacaoIncertaAdota: [ITEM_NOSSO] }),
+          ),
+        );
+
+        expect(err.code, JSON.stringify(corpo)).toBe(CODIGO_RASCUNHO_SHOPEE.jaPublicado);
+        expect(db.writes).toEqual([]);
+      }
+    });
+
+    it('⛔ quase-par: o MESMO vínculo com a flag NUA (expectativa ausente ou null), sem a flag, ou SEM controles ⇒ nao-e-rascunho, como sempre — a republicação segue', async () => {
+      const casos: readonly (ControlesDaPublicacaoAoVivo | null)[] = [
+        controles({ confirmarCriacaoIncerta: true }),
+        controles({ confirmarCriacaoIncerta: true, criacaoIncertaAdota: null }),
+        controles(),
+        // The body reader 400s this pairing; the reservation reads it as no
+        // expectation, exactly as ENSURE does.
+        controles({ confirmarCriacaoIncerta: false, criacaoIncertaAdota: [ITEM_NOSSO] }),
+        null,
+      ];
+      for (const c of casos) {
+        const db = new FakeDb();
+        db.seed(CAMINHO, adotadoPorOutraExecucao());
+
+        expect(await reservar(asDb(db), ALVO, c), JSON.stringify(c)).toEqual({
+          tipo: 'nao-e-rascunho',
+        });
+        expect(db.writes).toEqual([]);
+      }
+    });
+
+    it('⛔ quase-par: a expectativa num RASCUNHO livre continua a recusa do round 2 (422 criacao-incerta-encerrada), nunca o 409 — os dois fatos ficam distintos', async () => {
+      const db = new FakeDb();
+      db.seed(CAMINHO, rascunho());
+
+      const err = await reservar(
+        asDb(db),
+        ALVO,
+        controles({ confirmarCriacaoIncerta: true, criacaoIncertaAdota: [ITEM_NOSSO] }),
+      ).then(
+        () => null,
+        (e: unknown) => e,
+      );
+
+      expect(err).toBeInstanceOf(ShopeePublishBlockedError);
+      expect(err).not.toBeInstanceOf(ConflitoDeRascunhoShopeeError);
+      expect((err as ShopeePublishBlockedError).motivo).toBe(
+        MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaEncerrada,
+      );
+    });
+
+    it('a frase do 409: o vínculo REGISTRA um anúncio (nunca «já existe na Shopee» — pode ter sido removido desde), a saída e que nada foi enviado', async () => {
+      const db = new FakeDb();
+      db.seed(CAMINHO, adotadoPorOutraExecucao());
+
+      const err = await conflitoDe(
+        reservar(
+          asDb(db),
+          ALVO,
+          controles({ confirmarCriacaoIncerta: true, criacaoIncertaAdota: [ITEM_NOSSO] }),
+        ),
+      );
+
+      expect(err.message).toContain(`o vínculo ${RASCUNHO} já não é um rascunho`);
+      expect(err.message).toContain('já registra um anúncio da Shopee');
+      expect(err.message).toContain('publique-o como atualização');
+      expect(err.message).toContain('Nada foi enviado agora.');
+      expect(err.message).not.toMatch(/já existe na Shopee|falhou|criado/);
+    });
+  });
+
+  /**
+   * #1911 batch-B review R8-copy#6 — the CROSS-APP pin of the EXPIRADA causes.
+   * `apps/web/lib/shopee/anuncioProduto.ts` cannot import this module, so its
+   * `CAUSAS_DA_PUBLICACAO_EXPIRADA` matches the CAUSE clause of the 409
+   * `PUBLICACAO_EXPIRADA` sentence by pattern and prints each in the tab's own
+   * words (never the server tail «…ANTES do add_item … tente de novo»). A
+   * server rewording would leave that cause unmatched — and the web falls back
+   * to the guarded sentence, which hides it — with every suite green.
+   *
+   * The sentences here come from the REAL producers (the send gate, the
+   * look-ups' deadline, the pre-send re-read, the two token-guarded writes of
+   * ENSURE), never retyped, so a reworded cause reds HERE. Read as TEXT (the
+   * web's own path aliases do not resolve from this app), with counts pinned
+   * on both sides: an empty slice cannot pass, and a new `expirada(` call
+   * site reds until its cause joins this list.
+   */
+  describe('(R8-copy#6) as causas da EXPIRADA que a WEB reconhece', () => {
+    const FONTE_DA_WEB = new URL('../../../../web/lib/shopee/anuncioProduto.ts', import.meta.url);
+    const FONTE_DO_SERVIDOR = new URL('./reservaRascunho.ts', import.meta.url);
+
+    /** `CAUSAS_DA_PUBLICACAO_EXPIRADA`'s patterns, compiled — `[]` when the block is missing. */
+    function causasDaWeb(fonte: string): RegExp[] {
+      const inicio = fonte.indexOf('const CAUSAS_DA_PUBLICACAO_EXPIRADA');
+      if (inicio < 0) return [];
+      const fim = fonte.indexOf('\n];', inicio);
+      if (fim < 0) return [];
+      const corpo = fonte.slice(inicio, fim);
+      return [...corpo.matchAll(/(?:^|\[)\s*\/((?:[^/\\\n]|\\.)+)\/([a-z]*)\s*,/gm)].map(
+        (m) => new RegExp(m[1] ?? '', m[2] ?? ''),
+      );
+    }
+
+    function doPortao(agora: number, prazo: number | null): string {
+      try {
+        portaoDeEnvio(
+          RASCUNHO,
+          { expiraEm: AGORA + PUBLICACAO_EM_CURSO_SHOPEE_TTL_MS },
+          { agora: () => agora, prazoDaRequisicao: prazo },
+        );
+      } catch (err) {
+        if (err instanceof ConflitoDeRascunhoShopeeError) return err.message;
+        throw err;
+      }
+      throw new Error('fixture: o portão deixou passar');
+    }
+
+    async function daBuscaCortada(prazo: number | null): Promise<string> {
+      const err = await conflitoDe(
+        buscaNoPrazoDoEnvio(
+          RASCUNHO,
+          { expiraEm: AGORA + PUBLICACAO_EM_CURSO_SHOPEE_TTL_MS },
+          { agora: () => AGORA, prazoDaRequisicao: prazo },
+          () => Promise.reject(new BuscaForaDoPrazoShopeeError('get_item_list')),
+        ),
+      );
+      return err.message;
+    }
+
+    /** ENSURE's token-guarded write (`leitura` 2 of the draft) finds another run's lock. */
+    async function daGravacaoSobATrava(bases: readonly Json[]): Promise<string> {
+      const db = comProduto(new FakeDb());
+      db.seed(CAMINHO, incerto());
+      const alheia = travaAlheia(AGORA + 250_000);
+      const corrida = comEscritaConcorrente(
+        db,
+        CAMINHO,
+        (leitura) => {
+          if (leitura === 2) db.seed(CAMINHO, { ...doc(db), publicacaoEmCurso: alheia });
+        },
+        true,
+      );
+      const err = await conflitoDe(
+        reservar(asDb(corrida), ALVO, controles(), lojaCom(...bases).busca),
+      );
+      return err.message;
+    }
+
+    /** Every sentence `expirada()` builds, one per cause, from its producers. */
+    async function frasesDoServidor(): Promise<string[]> {
+      const expira = AGORA + PUBLICACAO_EM_CURSO_SHOPEE_TTL_MS;
+      const alheio = new FakeDb();
+      alheio.seed(CAMINHO, rascunho({ publicacaoEmCurso: travaAlheia(AGORA + 100_000) }));
+      const frases = [
+        // the send gate — the request's ceiling first, then the lock's
+        doPortao(expira, AGORA + 1),
+        doPortao(expira, null),
+        // the look-ups under that deadline — the route (it names the CLI), then the CLI
+        await daBuscaCortada(AGORA + 180_000),
+        await daBuscaCortada(null),
+        // the pre-send re-read: the lock is another run's
+        (await conflitoDe(conferirTravaAntesDoEnvio(asDb(alheio), reservaDe(), 'SKU-1'))).message,
+        // ENSURE's two token-guarded writes: the adoption, and the record's clear
+        await daGravacaoSobATrava([baseDe(ITEM_NOSSO)]),
+        await daGravacaoSobATrava([]),
+      ];
+      return frases;
+    }
+
+    function semCausaNaWeb(frases: readonly string[], causas: readonly RegExp[]): string[] {
+      return frases.filter((f) => !causas.some((c) => c.test(f)));
+    }
+
+    it('cada causa que expirada() carrega é reconhecida por CAUSAS_DA_PUBLICACAO_EXPIRADA — e nenhum padrão da web é morto', async () => {
+      const causas = causasDaWeb(readFileSync(fileURLToPath(FONTE_DA_WEB), 'utf8'));
+      const frases = await frasesDoServidor();
+
+      // Anti-vacuity anchors: the web block was found and sliced whole, and the
+      // producers really answered the EXPIRADA sentence, one distinct per cause.
+      expect(causas).toHaveLength(5);
+      expect(frases).toHaveLength(7);
+      expect(new Set(frases).size).toBe(7);
+      for (const f of frases) expect(f).toMatch(/^a publicação do rascunho /);
+      // Every `expirada(` of the server is the definition or one of the four
+      // call sites the producers above reach (two of them pick between two causes).
+      const servidor = readFileSync(fileURLToPath(FONTE_DO_SERVIDOR), 'utf8');
+      expect(servidor.match(/\bexpirada\(/g)).toHaveLength(5);
+
+      expect(semCausaNaWeb(frases, causas), 'causa do servidor sem padrão na web').toEqual([]);
+      const mortos = causas.filter((c) => !frases.some((f) => c.test(f))).map(String);
+      expect(mortos, 'padrão da web que nenhuma frase do servidor carrega').toEqual([]);
+    });
+
+    it('⛔ quase-par: UMA causa reescrita no servidor é DENUNCIADA — o casamento não é vácuo', async () => {
+      const fonte = readFileSync(fileURLToPath(FONTE_DA_WEB), 'utf8');
+      const causas = causasDaWeb(fonte);
+      const [portao] = await frasesDoServidor();
+      const reescrita = (portao ?? '').replace(
+        'acabaria durante o envio',
+        'terminaria durante o envio',
+      );
+      expect(reescrita).not.toBe(portao);
+      expect(semCausaNaWeb([reescrita], causas)).toEqual([reescrita]);
+      // ⛔ and a web block renamed slices NOTHING — which the count anchor above reds.
+      const renomeada = fonte.replace(
+        'const CAUSAS_DA_PUBLICACAO_EXPIRADA:',
+        'const CAUSAS_RENOMEADAS:',
+      );
+      expect(renomeada).not.toBe(fonte);
+      expect(causasDaWeb(renomeada)).toEqual([]);
+    });
   });
 
   describe('o SKU que a tentativa ENVIOU decide a busca — nunca o do produto agora (batch-A review)', () => {

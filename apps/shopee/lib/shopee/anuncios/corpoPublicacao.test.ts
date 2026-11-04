@@ -14,6 +14,9 @@ import {
   MSG_CONFIRMAR_CRIACAO_INCERTA_INVALIDO,
   MSG_CONFIRMAR_SEGUNDO_ANUNCIO_INVALIDO,
   MSG_CONVERTER_INVALIDO,
+  MSG_CRIACAO_INCERTA_ADOTA_INVALIDO,
+  MSG_CRIACAO_INCERTA_ADOTA_SEM_ATESTACAO,
+  MSG_CRIACAO_INCERTA_ADOTA_SEM_LINK,
   MSG_LINK_EXIGE_UM_PRODUTO,
   MSG_OPCOES_DE_KIT_EXCLUSIVAS,
   MSG_PRODUTO_ID_INVALIDO,
@@ -77,6 +80,8 @@ describe('lerCorpoPublicar', () => {
       converterEmKit: false,
       confirmarSegundoAnuncio: false,
       confirmarCriacaoIncerta: false,
+      // #1911 batch-B review (§I1): ABSENT ⇒ null — the bare attestation.
+      criacaoIncertaAdota: null,
     });
   });
 
@@ -327,6 +332,138 @@ describe('lerCorpoPublicar — confirmarCriacaoIncerta (#1911, D5)', () => {
     if (!sem.ok || !incerta.ok || !segundo.ok) throw new Error('esperava os três corpos válidos');
     expect(incerta.valor).toEqual({ ...sem.valor, confirmarCriacaoIncerta: true });
     expect(segundo.valor).toEqual({ ...sem.valor, confirmarSegundoAnuncio: true });
+  });
+});
+
+describe('lerCorpoPublicar — criacaoIncertaAdota (#1911 batch-B review, Lucas §I1)', () => {
+  const atestado = { integracaoId: INT_A, produtoId: PRODUTO, linkDocId: LINK };
+  const comFlag = { ...atestado, confirmarCriacaoIncerta: true };
+
+  it('a expectativa passa VERBATIM ao lado da atestação: [] (criar), [L] (adotar L) e uma lista longa', () => {
+    for (const v of [[], [2500139861], [2500139861, 2500139862], [1, Number.MAX_SAFE_INTEGER]]) {
+      const lido = lerCorpoPublicar({ ...comFlag, criacaoIncertaAdota: v });
+      expect(lido, JSON.stringify(v)).toMatchObject({
+        ok: true,
+        valor: { confirmarCriacaoIncerta: true, criacaoIncertaAdota: v },
+      });
+    }
+  });
+
+  it('⛔ quase-par: AUSENTE ⇒ null — o sentido de hoje (a CLI), com ou sem a atestação', () => {
+    expect(lerCorpoPublicar(comFlag)).toMatchObject({
+      ok: true,
+      valor: { confirmarCriacaoIncerta: true, criacaoIncertaAdota: null },
+    });
+    expect(lerCorpoPublicar(atestado)).toMatchObject({
+      ok: true,
+      valor: { confirmarCriacaoIncerta: false, criacaoIncertaAdota: null },
+    });
+  });
+
+  it('nada é deduplicado nem reordenado: o guarda compara a lista como veio', () => {
+    const lido = lerCorpoPublicar({ ...comFlag, criacaoIncertaAdota: [9, 3, 9] });
+    expect(lido).toMatchObject({ ok: true, valor: { criacaoIncertaAdota: [9, 3, 9] } });
+  });
+
+  it('⛔ não é lista de inteiros positivos ⇒ 400 com a frase do campo — null INCLUÍDO (nunca lido como ausente)', () => {
+    for (const v of [
+      null,
+      2500139861,
+      '2500139861',
+      ['2500139861'],
+      [0],
+      [-1],
+      [1.5],
+      [Number.MAX_SAFE_INTEGER + 1],
+      [Number.NaN],
+      [1, null],
+      {},
+      true,
+    ]) {
+      expect(
+        lerCorpoPublicar({ ...comFlag, criacaoIncertaAdota: v }),
+        JSON.stringify(v) ?? String(v),
+      ).toEqual({ ok: false, erro: MSG_CRIACAO_INCERTA_ADOTA_INVALIDO });
+    }
+    expect(MSG_CRIACAO_INCERTA_ADOTA_INVALIDO).toContain('criacaoIncertaAdota');
+  });
+
+  it('⛔ a expectativa SEM confirmarCriacaoIncerta: true ⇒ 400 — ausente, null e false', () => {
+    for (const flag of [undefined, null, false]) {
+      const corpo = {
+        ...atestado,
+        ...(flag === undefined ? {} : { confirmarCriacaoIncerta: flag }),
+        criacaoIncertaAdota: [],
+      };
+      expect(lerCorpoPublicar(corpo), String(flag)).toEqual({
+        ok: false,
+        erro: MSG_CRIACAO_INCERTA_ADOTA_SEM_ATESTACAO,
+      });
+    }
+    expect(MSG_CRIACAO_INCERTA_ADOTA_SEM_ATESTACAO).toContain('confirmarCriacaoIncerta');
+  });
+
+  it('⛔ quase-par: a expectativa não liga a outra confirmação nem muda outro campo', () => {
+    const sem = lerCorpoPublicar(comFlag);
+    const com = lerCorpoPublicar({ ...comFlag, criacaoIncertaAdota: [7] });
+    if (!sem.ok || !com.ok) throw new Error('esperava os dois corpos válidos');
+    expect(com.valor).toEqual({ ...sem.valor, criacaoIncertaAdota: [7] });
+    expect(com.valor.confirmarSegundoAnuncio).toBe(false);
+  });
+
+  describe('(round 3) a expectativa NOMEIA o rascunho que atesta — linkDocId obrigatório', () => {
+    // The same attested body with NO link named: absent and `null` alike.
+    const semLink = { integracaoId: INT_A, produtoId: PRODUTO, confirmarCriacaoIncerta: true };
+    const SEM_VINCULO = [{}, { linkDocId: null }] as const;
+
+    it('⛔ a expectativa SEM linkDocId ⇒ 400 — ausente e null, [] e [L]', () => {
+      for (const link of SEM_VINCULO) {
+        for (const adota of [[], [2500139861]]) {
+          expect(
+            lerCorpoPublicar({ ...semLink, ...link, criacaoIncertaAdota: adota }),
+            JSON.stringify({ ...link, adota }),
+          ).toEqual({ ok: false, erro: MSG_CRIACAO_INCERTA_ADOTA_SEM_LINK });
+        }
+      }
+      // The sentence names the field to send and what it must point at.
+      expect(MSG_CRIACAO_INCERTA_ADOTA_SEM_LINK).toContain('linkDocId');
+      expect(MSG_CRIACAO_INCERTA_ADOTA_SEM_LINK).toContain('rascunho que ela atesta');
+    });
+
+    it('⛔ quase-par: SEM a expectativa, linkDocId ausente/null segue valendo — a atestação NUA da CLI', () => {
+      for (const link of SEM_VINCULO) {
+        expect(lerCorpoPublicar({ ...semLink, ...link }), JSON.stringify(link)).toMatchObject({
+          ok: true,
+          valor: { linkDocId: null, confirmarCriacaoIncerta: true, criacaoIncertaAdota: null },
+        });
+      }
+    });
+
+    it('⛔ quase-par: COM linkDocId a mesma expectativa passa — [] e [L]', () => {
+      for (const adota of [[], [2500139861]]) {
+        expect(
+          lerCorpoPublicar({ ...semLink, linkDocId: LINK, criacaoIncertaAdota: adota }),
+          JSON.stringify(adota),
+        ).toMatchObject({
+          ok: true,
+          valor: { linkDocId: LINK, confirmarCriacaoIncerta: true, criacaoIncertaAdota: adota },
+        });
+      }
+    });
+
+    it('os sentidos das rodadas 1–2 ficam: null explícito é a frase do campo; sem a atestação, a do par; recriar sem link, a do recriar', () => {
+      expect(lerCorpoPublicar({ ...semLink, criacaoIncertaAdota: null })).toEqual({
+        ok: false,
+        erro: MSG_CRIACAO_INCERTA_ADOTA_INVALIDO,
+      });
+      expect(
+        lerCorpoPublicar({ integracaoId: INT_A, produtoId: PRODUTO, criacaoIncertaAdota: [] }),
+      ).toEqual({ ok: false, erro: MSG_CRIACAO_INCERTA_ADOTA_SEM_ATESTACAO });
+      expect(lerCorpoPublicar({ ...semLink, recriar: true, criacaoIncertaAdota: [] })).toEqual({
+        ok: false,
+        erro: MSG_RECRIAR_SEM_LINK,
+      });
+    });
   });
 });
 

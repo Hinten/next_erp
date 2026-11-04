@@ -272,13 +272,20 @@ function inexistente(linkDocId: string): RecusaDeRascunhoShopeeError {
   });
 }
 
+/**
+ * 409 `JA_PUBLICADO` of the draft SAVE and DISCARD routes — the stored
+ * document is no longer a draft. The sentence claims only what the read
+ * showed — the document RECORDS a listing — never that the listing still
+ * exists on Shopee: an adopted or claimed link may have been removed in Seller
+ * Centre since (#1911 batch-B review round 5, the reservation's round-4 fix).
+ */
 function jaPublicado(linkDocId: string): RecusaDeRascunhoShopeeError {
   return new RecusaDeRascunhoShopeeError({
     status: 409,
     code: CODIGO_RASCUNHO_SHOPEE.jaPublicado,
     linkDocId,
     mensagem:
-      `o vínculo ${linkDocId} já não é um rascunho: o anúncio já existe na Shopee, e o ` +
+      `o vínculo ${linkDocId} já não é um rascunho: ele já registra um anúncio da Shopee, e o ` +
       'conteúdo de um anúncio publicado não é editado aqui. Recarregue a aba. Nada foi gravado.',
   });
 }

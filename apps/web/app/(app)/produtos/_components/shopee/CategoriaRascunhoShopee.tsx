@@ -20,6 +20,7 @@ import {
   ROTULO_VOLTAR_CATEGORIA_GRAVADA_SHOPEE,
 } from '@/lib/shopee/anuncioProduto';
 import { useShopeeClient, type ShopeeClient } from '@/lib/shopee/client';
+import { idDeCategoriaShopeeValido } from '@/lib/shopee/rascunho';
 import {
   CODIGO_FALHA_SHOPEE,
   MENSAGEM_CATEGORIA_DESCONHECIDA,
@@ -55,14 +56,11 @@ export const TITULO_ESCOLHA_CATEGORIA_SHOPEE = 'Categoria na Shopee';
 export const FRASE_SEM_CATEGORIA_RASCUNHO_SHOPEE = 'Nenhuma categoria escolhida.';
 
 /**
- * Whether a held `category_id` can name a Shopee category at all: a POSITIVE
- * id. A legacy `0` (or a negative) names none — no tree read, no bands read,
- * and the picker opens at the roots. THE one test, for this label and the
- * tab's bands request alike.
+ * THE one test of whether a held `category_id` names a Shopee category — it
+ * lives with the block decisions (`@/lib/shopee/rascunho`), since the draft's
+ * «Publicar» gate reads it too; re-exported for this label's callers.
  */
-export function idDeCategoriaShopeeValido(categoryId: number | null): categoryId is number {
-  return categoryId !== null && categoryId > 0;
-}
+export { idDeCategoriaShopeeValido };
 
 /**
  * A held `category_id` that names no Shopee category (a legacy `0`): said

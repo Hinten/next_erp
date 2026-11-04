@@ -16,15 +16,16 @@ import {
   type IncertoKitShopee,
 } from '@/lib/shopee/anuncioProduto';
 import type { DesfechoAcaoShopee } from './DesfechoAcaoShopee';
-import type { AcaoDoRascunhoShopee } from './RascunhoShopee';
+import type { AcaoDoBlocoRascunhoShopee } from './RascunhoShopee';
 
 /** The two native-kit CREATE arms of a publish — each makes a NEW kit on Shopee. */
 export type ArmaKitShopee = 'recriar' | 'converter';
 
 /**
  * The writes a listing block can start — each one an apps/shopee route. A
- * DRAFT's two writes (#1911 P10: «Salvar rascunho», «Descartar») ride the SAME
- * one-write-at-a-time lock, so they are members too.
+ * DRAFT's writes (#1911 P10: «Salvar rascunho», «Descartar»; P11: its
+ * «Publicar», which IS `'publicar'` — the same route, by `linkDocId`) ride the
+ * SAME one-write-at-a-time lock, so they are members too.
  */
 export type AcaoDoAnuncioShopee =
   | 'pausar'
@@ -32,7 +33,7 @@ export type AcaoDoAnuncioShopee =
   | 'reverificar'
   | 'publicar'
   | ArmaKitShopee
-  | AcaoDoRascunhoShopee;
+  | AcaoDoBlocoRascunhoShopee;
 
 /**
  * A kit create the server could not confirm, as the tab shows it: the stored

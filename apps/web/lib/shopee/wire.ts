@@ -19,8 +19,9 @@
  * browser code keeps importing every answer shape
  * from this one file: the size-chart envelopes (step 18), the taxonomy answers
  * (the category tree, the item bands whole and cut to the size-chart slice,
- * Shopee's category suggestion, and a category's page of brands — #1911), and
- * the listing-draft route's answers and error items (#1911).
+ * Shopee's category suggestion, and a category's page of brands — #1911), the
+ * listing-draft route's answers and error items, and the publish's 202 for a
+ * draft's uncertain first create (#1911).
  *
  * ⚠️ This header must not describe what the OTHER copy does beyond naming it.
  * A comment asserting the behaviour of a file the compiler cannot see is the
@@ -75,6 +76,7 @@ import {
   envioPrecoShopeeStatusSchema,
   estadoAnuncioShopeeSchema,
   importacaoShopeeStatusSchema,
+  respostaItemIncertoShopeeSchema,
   shopeeViolacaoSchema,
   vinculoConflitanteShopeeSchema,
 } from '@delfrance/schemas';
@@ -579,6 +581,21 @@ export {
   type RespostaDescartarRascunhoShopee,
 } from '@delfrance/schemas';
 
+/**
+ * The publish's **202** for a draft's FIRST create whose outcome nobody can
+ * know (#1911, D5) — IMPORTED, never mirrored: the object `apps/shopee`'s
+ * publish route answers with. Shopee may or may not have created the listing:
+ * never "falhou". `reenvioVerificaSku` says whether the next publish of the
+ * same draft can look the listing up by the SKU it sent; `recusa` is Shopee's
+ * own `codigo` / sentence when it answered at all. The CLI's `mensagem` is
+ * sent and not declared (the kit 202's precedent). Read as one arm of
+ * {@link respostaPublicarShopeeSchema}, tagged `tipo: 'item-incerto'`.
+ */
+export {
+  respostaItemIncertoShopeeSchema,
+  type RespostaItemIncertoShopee,
+} from '@delfrance/schemas';
+
 /* ---------------------------------------------------------------------------
  * Step 21 (#1529, sub-step 21-1) — the three on-demand pushes, the publish and
  * re-verify answers, the two account-wide jobs, and the extras an error body
@@ -826,14 +843,25 @@ const kitPublicadoShopeeSchema = z.object({
 export type KitPublicadoShopee = z.infer<typeof kitPublicadoShopeeSchema>;
 
 /**
- * The body of `POST …/publicar`, tagged by arm.
+ * The body of `POST …/publicar`, tagged by arm — three of them, tried IN THIS
+ * ORDER:
  *
- * ⚠️ The KIT arm is tried FIRST: it is the one with a discriminating key
- * (`arma`). Each transform stamps `tipo` AFTER the parse, so a `tipo` key a
- * backend might send can never override it.
+ * 1. `tipo: 'kit'` — the native-kit 200 / 202 ({@link kitPublicadoShopeeSchema}).
+ *    First: its `arma` is a strict `kit-*` enum, so it never takes an item body.
+ * 2. `tipo: 'item-incerto'` — the ordinary listing's **202** (#1911): a draft's
+ *    first create with an unknown outcome (`respostaItemIncertoShopeeSchema`,
+ *    `@delfrance/schemas` — imported, never mirrored). Tagged by
+ *    `arma: 'item'` + `desfecho: 'incerto'`; ⚠️ tried BEFORE the item 200,
+ *    whose object strips unknown keys: a 202 that also carried the 200's keys
+ *    must still read as uncertain, never as a listing created.
+ * 3. `tipo: 'item'` — the ordinary listing's 200 (no `arma`).
+ *
+ * Each transform stamps `tipo` AFTER the parse, so a `tipo` key a backend
+ * might send can never override it.
  */
 export const respostaPublicarShopeeSchema = z.union([
   kitPublicadoShopeeSchema.transform((k) => ({ tipo: 'kit' as const, ...k })),
+  respostaItemIncertoShopeeSchema.transform((i) => ({ tipo: 'item-incerto' as const, ...i })),
   itemPublicadoShopeeSchema.transform((i) => ({ tipo: 'item' as const, ...i })),
 ]);
 export type RespostaPublicarShopee = z.infer<typeof respostaPublicarShopeeSchema>;
