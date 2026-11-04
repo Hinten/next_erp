@@ -25,8 +25,14 @@
  *  - `doc.delete()` — idempotent, like the real one;
  *  - `doc.set(data, { merge: true })` — an upsert of FLAT fields (step 3: the
  *    shared notification store's `mark` is a merge-set). Exactly that option:
- *    a plain `set` still throws, and so does a nested map in the patch, whose
+ *    any other option throws, and so does a nested map in the patch, whose
  *    field-by-field deep merge this fake does not model;
+ *  - `doc.set(data)` with NO options — a whole-document overwrite, creating
+ *    the document when absent (step 9: the import job's snapshot pages and
+ *    detail docs, written at deterministic ids by their only writer, so a
+ *    retried unit overwrites its own earlier attempt). Its payload meets the
+ *    `create` refusals (`undefined`, and neither sentinel is modelled in it),
+ *    and its log entry carries `sobrescrita: true`;
  *  - every write resolves `{ writeTime }`;
  *  - the `{ __increment: n }` sentinel ({@link increment}), APPLIED on write,
  *    because `escreverAviso` writes `deps.increment(1)`;
@@ -56,7 +62,7 @@
  *  - `batch()` (step 5: the pedido and its pagamentos in ONE commit) — see
  *    "The batch" below.
  *
- * Everything else — a plain `set`, any other operator, a dotted update key, an
+ * Everything else — a `set` with any other option, any other operator, a dotted update key, an
  * `undefined` value, a precondition that is not a stamp, an `orderBy` over a
  * value that is not null/boolean/number/string, an `orderBy` over a `FieldPath`
  * other than the document key, a `startAfter` VALUE on any other ordering —
@@ -312,7 +318,7 @@ function ehChaveDoDocumento(campo: unknown): boolean {
 
 /** One write, as {@link FakeDb.escritas} records it. */
 export interface EscritaFake {
-  /** `set` is only ever the merge form (`set(data, { merge: true })`). */
+  /** `set` is the merge form (`set(data, { merge: true })`) or, with `sobrescrita`, the overwrite. */
   readonly verbo: 'create' | 'update' | 'delete' | 'set';
   readonly caminho: string;
   /** The payload as handed over (`null` for a delete). */
@@ -320,6 +326,8 @@ export interface EscritaFake {
   readonly writeTime: CarimboFake;
   /** The batch it landed in (1, 2, … per fake); absent on a single-document write. */
   readonly lote?: number;
+  /** A plain `set(data)`: the whole document replaced. Absent on every other write. */
+  readonly sobrescrita?: true;
 }
 
 /** One query, as {@link FakeDb.consultas} records it. */
@@ -590,6 +598,7 @@ export class FakeDb {
     caminho: string,
     dados: DocData | null,
     noLote?: { readonly writeTime: CarimboFake; readonly lote: number },
+    sobrescrita?: true,
   ): CarimboFake {
     const writeTime = noLote?.writeTime ?? this.proximoCarimbo();
     this.escritas.push({
@@ -598,6 +607,7 @@ export class FakeDb {
       dados: dados === null ? null : structuredClone(dados),
       writeTime,
       ...(noLote === undefined ? {} : { lote: noLote.lote }),
+      ...(sobrescrita === undefined ? {} : { sobrescrita }),
     });
     return writeTime;
   }
@@ -669,6 +679,17 @@ export class FakeDb {
       // NOT async on purpose: an unmodelled call throws synchronously, before
       // anything could be mistaken for a write that landed.
       set: (data: DocData, opcoes?: unknown) => {
+        if (opcoes === undefined) {
+          // The whole-document overwrite (module header): the `create` refusals, then it lands
+          // whether or not the document exists, replacing every field.
+          validarCriacao(caminho, data);
+          return (async () => {
+            await this.antesDeEscrever(caminho);
+            const writeTime = this.registrar('set', caminho, data, undefined, true);
+            this.store.set(caminho, { data: structuredClone(data), updateTime: writeTime });
+            return { writeTime };
+          })();
+        }
         const chaves =
           typeof opcoes === 'object' && opcoes !== null ? Object.keys(opcoes as object) : [];
         const ehMerge =
@@ -677,8 +698,8 @@ export class FakeDb {
           (opcoes as { merge: unknown }).merge === true;
         if (!ehMerge) {
           throw new Error(
-            'FakeDb: set() não é modelado — nada neste app sobrescreve um documento inteiro ' +
-              '(só set(…, { merge: true }), o mark do pipeline compartilhado)',
+            'FakeDb: set() com estas opções não é modelado — só set(data), a sobrescrita ' +
+              'inteira, e set(…, { merge: true }), o mark do pipeline compartilhado',
           );
         }
         recusarIndefinido(data, caminho);

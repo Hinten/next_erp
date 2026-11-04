@@ -22,7 +22,7 @@
  * | Unit | Worst case |
  * | --- | --- |
  * | `chamada` — one Loja Integrada call: a listing page, a trash-list page, a catalogue page, a product detail | `RITMO_LEITURA_LI_MS` (the pacer's wait, OUTSIDE the call's deadline) + `PRAZO_LI_MS.leitura` = 2 s + 20 s = 22 s |
- * | `familia` — one family with no Loja Integrada call (its Firestore reads and writes) | 10 s, nominal |
+ * | `familia` — one family with no Loja Integrada call (its Firestore reads and writes), and every other unit that calls nothing: the catalogue phase's category-link read, a product list's closing count, a phase's last step that only concludes it | 10 s, nominal |
  *
  * The family row is a budget, not a measurement: Firestore calls carry the SDK's own deadlines,
  * the queue's 300 s function timeout is the hard ceiling above all of it, and a dispatch the
@@ -58,7 +58,10 @@ export const UNIDADE_IMPORTACAO_LI = {
   familia: 'familia',
 } as const satisfies Record<string, UnidadeImportacaoLi>;
 
-/** A family with no Loja Integrada call: its Firestore reads and writes. Nominal (module header). */
+/**
+ * A family with no Loja Integrada call — or any other unit that calls nothing: its Firestore reads
+ * and writes. Nominal (module header).
+ */
 export const PIOR_CASO_FAMILIA_SEM_CHAMADA_LI_MS = 10_000;
 
 /**

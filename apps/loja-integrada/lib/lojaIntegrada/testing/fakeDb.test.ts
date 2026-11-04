@@ -82,10 +82,10 @@ describe('FakeDb', () => {
     expect(db.ler('integracao/a')).toEqual({ n: 3 });
   });
 
-  it('throws on what it does not model: set, undefined, a dotted key, another operator', async () => {
+  it('throws on what it does not model: a set option, undefined, a dotted key, another operator', async () => {
     const db = new FakeDb();
     const ref = refDe(db, 'a');
-    expect(() => ref.set({ x: 1 })).toThrow(/set\(\) não é modelado/);
+    expect(() => ref.set({ x: 1 }, { merge: false })).toThrow(/set\(\) com estas opções/);
     await expect(ref.create({ x: undefined })).rejects.toThrow(/undefined/);
     await ref.create({ x: 1 });
     await expect(ref.update({ 'a.b': 1 })).rejects.toThrow(/ponto/);
@@ -331,12 +331,53 @@ describe('FakeDb — what the shared notification store needs (step 3)', () => {
     expect((await ref.get()).updateTime?.isEqual(w.writeTime)).toBe(true);
   });
 
+  it('set(data) overwrites the WHOLE document, creating it when absent, and logs the overwrite', async () => {
+    const db = new FakeDb();
+    const ref = refDe(db, 'a');
+    const w1 = await ref.set({ x: 1, m: { a: 1 } });
+    expect(db.ler('integracao/a')).toEqual({ x: 1, m: { a: 1 } });
+    await ref.set({ y: 2 });
+    // Every field of the previous version is gone — never merged.
+    expect(db.ler('integracao/a')).toEqual({ y: 2 });
+    expect(db.escritasEm('integracao/a').map((e) => [e.verbo, e.sobrescrita])).toEqual([
+      ['set', true],
+      ['set', true],
+    ]);
+    expect((await ref.get()).updateTime?.isEqual(w1.writeTime)).toBe(false);
+  });
+
+  it('a merge-set is never logged as an overwrite', async () => {
+    const db = new FakeDb();
+    await refDe(db, 'a').set({ x: 1 }, { merge: true });
+    expect(db.escritasEm('integracao/a')[0]).not.toHaveProperty('sobrescrita');
+  });
+
+  it('set(data) refuses what create refuses — synchronously, before anything lands', () => {
+    const db = new FakeDb();
+    const ref = refDe(db, 'a');
+    expect(() => ref.set({ x: undefined })).toThrow(/undefined/);
+    expect(() => ref.set({ n: increment(1) })).toThrow(/increment/);
+    expect(() => ref.set({ l: arrayUnion('a') })).toThrow(/arrayUnion/);
+    expect(db.escritas).toEqual([]);
+  });
+
+  it('set(data) meets an interleaved write and lands LAST, replacing it', async () => {
+    const db = new FakeDb();
+    const ref = refDe(db, 'a');
+    await ref.create({ x: 1 });
+    db.antesDaProximaEscrita('integracao/a', async () => {
+      await ref.update({ y: 9 });
+    });
+    await ref.set({ x: 2 });
+    expect(db.ler('integracao/a')).toEqual({ x: 2 });
+  });
+
   it('set refuses every form it does not model — synchronously, before anything lands', () => {
     const db = new FakeDb();
     const ref = refDe(db, 'a');
-    expect(() => ref.set({ x: 1 })).toThrow(/set\(\) não é modelado/);
-    expect(() => ref.set({ x: 1 }, { merge: false })).toThrow(/set\(\) não é modelado/);
-    expect(() => ref.set({ x: 1 }, { mergeFields: ['x'] })).toThrow(/set\(\) não é modelado/);
+    expect(() => ref.set({ x: 1 }, { merge: false })).toThrow(/set\(\) com estas opções/);
+    expect(() => ref.set({ x: 1 }, { mergeFields: ['x'] })).toThrow(/set\(\) com estas opções/);
+    expect(() => ref.set({ x: 1 }, {})).toThrow(/set\(\) com estas opções/);
     expect(() => ref.set({ m: { a: 1 } }, { merge: true })).toThrow(/mapa aninhado/);
     expect(() => ref.set({ 'a.b': 1 }, { merge: true })).toThrow(/ponto/);
     expect(() => ref.set({ x: undefined }, { merge: true })).toThrow(/undefined/);

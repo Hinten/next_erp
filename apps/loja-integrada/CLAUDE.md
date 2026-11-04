@@ -22,7 +22,8 @@ Master plan: `.master_plans/loja-integrada/loja-integrada-marketplace-integratio
   variation linker reads the grades; categories and brands wait for step 11's product tab.
 - Step 9 (the product import, in stacked PRs): the job routes `conta/[id]/importacoes…` (below)
   and `lib/lojaIntegrada/importacao/` — the start core, the job lifecycle, the dispatch's time
-  budget and its named-task producer so far.
+  budget, its named-task producer and the read phases (catalogue, listing and trash list, detail
+  reads, family assembly) so far.
 
 ## Routes (`/api/marketplace/loja-integrada/conta/[id]…`)
 
@@ -119,6 +120,16 @@ carries the continuation `seq`, the cursors or the selection's ids.
   answered already-exists is success, delays 0 / 2 / 60 s only.
 - The context exposes `cdn`, the package's photo reader, built only in `core/contexto.ts` after
   every refusal (`estrutura.test.ts` scans the whole app for its factory).
+- **The read phases are one unit at a time, state in, state out** (`importacao/catalogoDoJob.ts`,
+  `listagem.ts`, `detalhes.ts`, `familias.ts`): each exposes the cost of its next unit (one call,
+  or none) and runs it from the job as last checkpointed through the context's client, returning
+  the new cursor for the dispatch's checkpoint. Their only writes are the job's own snapshot pages
+  (`paginas/{tipo}-{offset}`) and details (`detalhes/{liId}`), whole, at deterministic ids (tier 0:
+  a retried unit overwrites its own attempt; the fake models that plain `set`). The listing reads
+  at `limit` 100, then the TRASH list once; nothing relies on list order (rows de-duplicated by id,
+  the distinct count against the first page's `total_count`). A variation no listed parent claims
+  and a trashed parent claims is `na-lixeira` with no detail read; only the rest are detail-read,
+  and their `pai` places them. An orphan is never imported as a simple product.
 
 ## Routes (`/api/marketplace/loja-integrada/pedidos/[pedidoId]…`, step 15)
 
