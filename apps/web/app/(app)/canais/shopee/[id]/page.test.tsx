@@ -24,7 +24,12 @@ import type { AdicionarMarcasShopeeModalProps } from '../_components/AdicionarMa
  * a test says another writer moved the store), `runTransaction`, the two
  * collection handles (their `get` runs the converter's soft parse), and the
  * unrelated pickers and panels. The add modal is a stub (its own suite) that
- * stages {@link PUMA}.
+ * stages `h.adicionar` (usually {@link PUMA}) minus the brands it is handed as
+ * already registered or already selected — the real modal refuses those.
+ *
+ * The shortlist listener emits as server truth unless `h.colecaoEmCache` says
+ * the emission came FROM CACHE (a remote change Watch delivered before
+ * CURRENT), and hands back one state per emission, as the real hook does.
  */
 
 type Doc = Record<string, unknown>;
@@ -39,6 +44,10 @@ const h = vi.hoisted(() => ({
   toasts: [] as string[],
   props: null as ObjectViewProps<never> | null,
   adicionar: [] as unknown[],
+  /** The add modal's props, as last rendered. */
+  modal: null as AdicionarMarcasShopeeModalProps | null,
+  /** The shortlist listener's next emissions come FROM CACHE. */
+  colecaoEmCache: false,
 }));
 
 function refFalso(path: string) {
@@ -97,24 +106,36 @@ vi.mock('@delfrance/data/hooks', async (importActual) => ({
       documentPath: ref.path,
     };
   },
-  useSnapshot: (q: { __col?: string } | null) => {
-    const col = q?.__col;
-    if (col === undefined) return { data: [], loading: false, error: undefined };
-    const linhas = [...h.servido.entries()]
-      .filter(([path]) => path.startsWith(`${col}/`))
-      .map(([path, s]) => ({
-        id: path.slice(path.lastIndexOf('/') + 1),
-        path,
-        data: h.ler(path, structuredClone(s.raw)),
-      }));
-    return {
-      data: linhas,
-      loading: false,
-      error: undefined,
-      fromCache: false,
-      hasPendingWrites: false,
+  useSnapshot: (() => {
+    // One state per EMISSION, as the real hook holds it (set once per
+    // snapshot): a re-render that is not an emission hands back the SAME
+    // object, so nothing downstream can ride a fresh one.
+    const vazio = { data: [], loading: false, error: undefined };
+    const ultimos = new Map<string, { chave: string; estado: unknown }>();
+    return (q: { __col?: string } | null) => {
+      const col = q?.__col;
+      if (col === undefined) return vazio;
+      const linhas = [...h.servido.entries()]
+        .filter(([path]) => path.startsWith(`${col}/`))
+        .map(([path, s]) => ({
+          id: path.slice(path.lastIndexOf('/') + 1),
+          path,
+          data: h.ler(path, structuredClone(s.raw)),
+        }));
+      const estado = {
+        data: linhas,
+        loading: false,
+        error: undefined,
+        fromCache: h.colecaoEmCache,
+        hasPendingWrites: false,
+      };
+      const chave = JSON.stringify(estado);
+      const ultimo = ultimos.get(col);
+      if (ultimo?.chave === chave) return ultimo.estado;
+      ultimos.set(col, { chave, estado });
+      return estado;
     };
-  },
+  })(),
 }));
 
 vi.mock('firebase/firestore', async (importActual) => ({
@@ -153,11 +174,17 @@ vi.mock('@/app/(app)/canais/_components/RecalcularPrecosCanalAction', () => ({
   RecalcularPrecosCanalAction: () => null,
 }));
 vi.mock('@/app/(app)/canais/shopee/_components/AdicionarMarcasShopeeModal', () => ({
-  AdicionarMarcasShopeeModal: (props: AdicionarMarcasShopeeModalProps) => (
-    <button type="button" onClick={() => props.onAdicionar(h.adicionar as MarcaDto[])}>
-      stub adicionar
-    </button>
-  ),
+  AdicionarMarcasShopeeModal: (props: AdicionarMarcasShopeeModalProps) => {
+    h.modal = props;
+    const oferecidas = (h.adicionar as MarcaDto[]).filter(
+      (m) => !props.cadastradas.has(m.brandId) && !props.jaSelecionadas.has(m.brandId),
+    );
+    return (
+      <button type="button" onClick={() => props.onAdicionar(oferecidas)}>
+        stub adicionar
+      </button>
+    );
+  },
 }));
 vi.mock('@/components/pickers/FilialPicker', () => ({ filialRefRenderInput: () => () => null }));
 vi.mock('@/components/collection-select/refRenderInput', () => ({
@@ -301,6 +328,8 @@ beforeEach(() => {
   h.replace.mockReset();
   h.props = null;
   h.adicionar = [];
+  h.modal = null;
+  h.colecaoEmCache = false;
   escritas.length = 0;
   semear(CONTA_PATH, conta());
   semear(marcaPath(ID_NIKE), legado(1001, 'Nike'));
@@ -703,5 +732,196 @@ describe('a doc this page seeded and another tab deleted or re-created: the writ
     expect(conflito()).toBeTruthy();
     expect(commits()).toBe(1);
     expect(h.docs.get(marcaPath('3003'))).toEqual(linhaPuma('Puma BR'));
+  });
+});
+
+describe('a CACHED emission after the first server snapshot: nothing is staged from it (#2084 review F1)', () => {
+  /** A NEW-style row, exactly what this section's registration of {@link PUMA} writes. */
+  const linhaPuma = (display_brand_name: string | null = null): Doc => ({
+    brand_id: 3003,
+    original_brand_name: 'Puma',
+    display_brand_name,
+  });
+
+  /**
+   * Puma at its deterministic id, seeded here from server truth; then another
+   * tab deletes it, and this page's listener delivers that FROM CACHE (Watch
+   * sent the delete before CURRENT).
+   */
+  async function pumaRemovidaVistaSoDoCache() {
+    semear(marcaPath('3003'), linhaPuma());
+    await renderPage();
+    await abrirAba('Marcas');
+    expect(linhaDaMarca(3003)).toBeTruthy();
+    h.colecaoEmCache = true;
+    escritaConcorrente(marcaPath('3003'), null);
+    await act(async () => rerenderPage());
+  }
+
+  it('one that drops a seeded brand leaves it listed and registered: the modal refuses it, nothing is staged — never a re-add the save would skip', async () => {
+    await pumaRemovidaVistaSoDoCache();
+    // The modal and the list still read the last SERVER truth — the one the
+    // save baselines hold — so the brand is not offered while its baseline is
+    // still its row (a re-add equal to it would be skipped unread).
+    await adicionarPuma();
+    expect(h.modal?.cadastradas.has(3003)).toBe(true);
+    expect(screen.queryByTestId('shopee-marca-nova-3003')).toBeNull();
+    expect(saidaBloqueada()).toBe(false);
+    expect(linhaDaMarca(3003)).toBeTruthy();
+  });
+
+  it('near-miss: SERVER truth of the same deletion offers it again, and the re-add is WRITTEN with a conta field in ONE commit', async () => {
+    await pumaRemovidaVistaSoDoCache();
+    h.colecaoEmCache = false;
+    await act(async () => rerenderPage());
+    expect(screen.queryByTestId('shopee-marca-3003')).toBeNull();
+    await abrirAba('Dados gerais');
+    await act(async () => {
+      fireEvent.change(screen.getByLabelText('Nome'), { target: { value: 'Loja renomeada' } });
+    });
+    await abrirAba('Marcas');
+    await adicionarPuma();
+    expect(h.modal?.cadastradas.has(3003)).toBe(false);
+    expect(screen.getByTestId('shopee-marca-nova-3003')).toBeTruthy();
+    await salvar('Salvar alterações');
+    expect(conflito()).toBeNull();
+    expect(commits()).toBe(1);
+    expect([...escritas].sort()).toEqual(
+      [`set ${marcaPath('3003')}`, `update ${CONTA_PATH}`].sort(),
+    );
+    expect(h.docs.get(marcaPath('3003'))).toEqual(linhaPuma());
+    expect(h.replace).toHaveBeenCalledWith('/canais/shopee');
+  });
+
+  it('near-miss: a cached emission that changes nothing changes nothing here — Remover still deletes the brand, guarded', async () => {
+    semear(marcaPath('3003'), linhaPuma());
+    await renderPage();
+    await abrirAba('Marcas');
+    h.colecaoEmCache = true;
+    await act(async () => rerenderPage());
+    await clicar('Remover', linhaDaMarca(3003));
+    await salvar();
+    expect(conflito()).toBeNull();
+    expect(escritas).toEqual([`delete ${marcaPath('3003')}`]);
+    expect(h.docs.has(marcaPath('3003'))).toBe(false);
+  });
+
+  it('the removal mirror: a doc re-created where this page deleted one, seen only FROM CACHE, is not offered for removal — server truth then lets the removal delete it', async () => {
+    semear(marcaPath('3003'), linhaPuma());
+    await renderPage();
+    await abrirAba('Marcas');
+    await clicar('Remover', linhaDaMarca(3003));
+    await salvar();
+    expect(escritas).toEqual([`delete ${marcaPath('3003')}`]);
+    ecoDoListener();
+    await act(async () => rerenderPage());
+    escritas.length = 0;
+    // Another tab registers it again; this page hears it from cache first.
+    h.colecaoEmCache = true;
+    escritaConcorrente(marcaPath('3003'), linhaPuma());
+    await act(async () => rerenderPage());
+    // Held "absent" (this page's own delete), a removal of it would be skipped unread.
+    expect(screen.queryByTestId('shopee-marca-3003')).toBeNull();
+    h.colecaoEmCache = false;
+    await act(async () => rerenderPage());
+    await clicar('Remover', linhaDaMarca(3003));
+    await salvar();
+    expect(conflito()).toBeNull();
+    expect(escritas).toEqual([`delete ${marcaPath('3003')}`]);
+    expect(h.docs.has(marcaPath('3003'))).toBe(false);
+  });
+});
+
+describe('«Salvar mesmo assim» over a row IDENTICAL to the staged registration: it is satisfied, and leaves the stage (#2084 review F2)', () => {
+  const linhaPuma = (display_brand_name: string | null = null): Doc => ({
+    brand_id: 3003,
+    original_brand_name: 'Puma',
+    display_brand_name,
+  });
+  const FILA: MarcaDto = { brandId: 4004, originalBrandName: 'Fila', displayBrandName: null };
+
+  it('brand only: nothing to write, and the form comes back pristine — never «Nenhuma alteração para salvar» over a staged add', async () => {
+    await renderPage();
+    await abrirAba('Marcas');
+    await adicionarPuma();
+    // Another operator registered the same brand with the same names; not yet seen here.
+    escritaConcorrente(marcaPath('3003'), linhaPuma(), { listener: false });
+    await salvar();
+    expect(conflito()).toBeTruthy();
+    expect(commits()).toBe(0);
+    await clicar('Salvar mesmo assim');
+    expect(conflito()).toBeNull();
+    // Theirs IS ours: there is nothing left to write.
+    expect(commits()).toBe(0);
+    expect(h.docs.get(marcaPath('3003'))).toEqual(linhaPuma());
+    expect(screen.queryByTestId('shopee-marca-nova-3003')).toBeNull();
+    expect(saidaBloqueada()).toBe(false);
+    // The listener catches up: their row is listed, and nothing is staged.
+    ecoDoListener();
+    await act(async () => rerenderPage());
+    expect(linhaDaMarca(3003)).toBeTruthy();
+    expect(screen.queryByTestId('shopee-marca-nova-3003')).toBeNull();
+  });
+
+  it('with a conta field, «Salvar e continuar» commits the conta ALONE and leaves no staged add behind in the reset form', async () => {
+    await renderPage();
+    await act(async () => {
+      fireEvent.change(screen.getByLabelText('Nome'), { target: { value: 'Loja renomeada' } });
+    });
+    await abrirAba('Marcas');
+    await adicionarPuma();
+    // Seen here this time: their row is already listed when this page saves.
+    escritaConcorrente(marcaPath('3003'), linhaPuma());
+    await act(async () => rerenderPage());
+    await salvar();
+    expect(conflito()).toBeTruthy();
+    await clicar('Salvar mesmo assim');
+    expect(conflito()).toBeNull();
+    expect(commits()).toBe(1);
+    expect(escritas).toEqual([`update ${CONTA_PATH}`]);
+    expect(h.docs.get(CONTA_PATH)?.nome).toBe('Loja renomeada');
+    expect(h.docs.get(marcaPath('3003'))).toEqual(linhaPuma());
+    expect(screen.queryByTestId('shopee-marca-nova-3003')).toBeNull();
+    expect(saidaBloqueada()).toBe(false);
+    expect(h.toasts.at(-1)).toBe('Salvo.');
+  });
+
+  it('near-miss: their row differs from ours by the display name alone — «Salvar mesmo assim» still WRITES ours, never cleared as satisfied', async () => {
+    await renderPage();
+    await abrirAba('Marcas');
+    await adicionarPuma();
+    escritaConcorrente(marcaPath('3003'), linhaPuma('Puma BR'), { listener: false });
+    await salvar();
+    expect(conflito()).toBeTruthy();
+    await clicar('Salvar mesmo assim');
+    expect(conflito()).toBeNull();
+    expect(commits()).toBe(1);
+    expect(escritas).toEqual([`set ${marcaPath('3003')}`]);
+    expect(h.docs.get(marcaPath('3003'))).toEqual(linhaPuma());
+    expect(saidaBloqueada()).toBe(false);
+  });
+
+  it('near-miss: only the satisfied registration leaves — another staged beside it is WRITTEN by the same save', async () => {
+    await renderPage();
+    await abrirAba('Marcas');
+    h.adicionar = [PUMA, FILA];
+    await clicar('Adicionar marcas');
+    await clicar('stub adicionar');
+    escritaConcorrente(marcaPath('3003'), linhaPuma(), { listener: false });
+    await salvar();
+    expect(conflito()).toBeTruthy();
+    expect(commits()).toBe(0);
+    await clicar('Salvar mesmo assim');
+    expect(conflito()).toBeNull();
+    expect(commits()).toBe(1);
+    expect(escritas).toEqual([`set ${marcaPath('4004')}`]);
+    expect(h.docs.get(marcaPath('4004'))).toEqual({
+      brand_id: 4004,
+      original_brand_name: 'Fila',
+      display_brand_name: null,
+    });
+    expect(screen.queryByTestId('shopee-marca-nova-3003')).toBeNull();
+    expect(screen.queryByTestId('shopee-marca-nova-4004')).toBeNull();
+    expect(saidaBloqueada()).toBe(false);
   });
 });
