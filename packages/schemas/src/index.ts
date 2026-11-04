@@ -74,6 +74,7 @@ export {
   idFromRef,
   idFromRefOrNull,
   parseRef,
+  contaIdFromRef,
   naoDocId,
   type OuterRef,
   type IdRef,
@@ -180,7 +181,14 @@ export {
 // references (grupoDeVariacoes, listaDePrecos, deposito, categoria, …) stay below.
 export * from './produto';
 
-export { categoria, categoriaSchema, categoriaMeta, type Categoria } from './categoria';
+export {
+  categoria,
+  categoriaSchema,
+  categoriaMeta,
+  makeNomeCompleto,
+  parentBreadcrumbFromDoc,
+  type Categoria,
+} from './categoria';
 
 export {
   ESTADO_FRETE,
@@ -482,6 +490,17 @@ export {
 // to register. A star export on purpose: the fold-inventory scan greps raw text,
 // so a listed barrel would need a row.
 export * from './catalogoLojaIntegrada';
+
+// The Loja Integrada product import (step 9, #1820): the one reader of a store
+// product into the row and detail views the import stores and decides on, the
+// SKU identity and its create-guard probe forms; the store-category link and
+// its tree helpers; the import job's contract (the job document, its five
+// subcollections, the start body, the task payload and the route answers).
+// Bare consts, nothing to register (the job collection is admin-only and stays
+// out of `ALL_DOMAINS`). Star exports, for the reason above.
+export * from './produtoImportacaoLi';
+export * from './categoriaLojaIntegrada';
+export * from './importacaoLojaIntegrada';
 
 // THE Loja Integrada situação table (master plan step 5, #1817): codigo →
 // create estado and payment status, the capture sets, the contest motivo — the
@@ -1306,6 +1325,8 @@ export {
   extractTpAmb,
   decideNfeUploadDispatch,
   decideNfeUploadTransition,
+  finalidadeDaNfeProc,
+  type FinalidadeDaNfeProc,
   type NfeUploadDispatch,
   type NfeUploadTransition,
 } from './nfeEnvioCanal';
@@ -1735,6 +1756,8 @@ export {
   MOTIVO_REVERSAO_COM_ETIQUETA_LI,
   motivoRastreioDivergenteLiSchema,
   MOTIVO_RASTREIO_DIVERGENTE_LI,
+  motivoCategoriaSemVinculoLiSchema,
+  MOTIVO_CATEGORIA_SEM_VINCULO_LI,
   situacaoAnuncioForaDaSincronizacaoSchema,
   SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO,
   chaveDeAviso,
@@ -1760,6 +1783,7 @@ export {
   type MotivoFreteNaoSuportadoLi,
   type MotivoReversaoComEtiquetaLi,
   type MotivoRastreioDivergenteLi,
+  type MotivoCategoriaSemVinculoLi,
   type SituacaoAnuncioForaDaSincronizacao,
 } from './aviso';
 export * from './shared/inicio';

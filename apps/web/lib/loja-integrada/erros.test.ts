@@ -250,10 +250,24 @@ describe('descreverFalhaCredencialLi — every code the credential routes answer
     CODIGO_ERRO_LI.recursoNaoPermitido,
   ]);
 
+  /**
+   * The codes only the product import routes answer (step 9: start, status,
+   * cancel). The credential panel never calls those routes; their copy belongs
+   * to the import screen's own describer, keyed on the same codes.
+   */
+  const SO_DAS_ROTAS_DA_IMPORTACAO = new Set<string>([
+    CODIGO_ERRO_LI.importacaoEmAndamento,
+    CODIGO_ERRO_LI.importacaoNaoEncontrada,
+    CODIGO_ERRO_LI.importacaoEncerrada,
+  ]);
+
   it.each(
     Object.values(CODIGO_ERRO_LI).filter(
       (c) =>
-        !SO_DOS_FLUXOS.has(c) && !SO_DAS_ROTAS_DE_PEDIDO.has(c) && !SO_DAS_ROTAS_DO_CATALOGO.has(c),
+        !SO_DOS_FLUXOS.has(c) &&
+        !SO_DAS_ROTAS_DE_PEDIDO.has(c) &&
+        !SO_DAS_ROTAS_DO_CATALOGO.has(c) &&
+        !SO_DAS_ROTAS_DA_IMPORTACAO.has(c),
     ),
   )('%s is described by its code, never by the backend sentence', (code) => {
     // The status is one no branch keys on, so only the code can pick the copy.

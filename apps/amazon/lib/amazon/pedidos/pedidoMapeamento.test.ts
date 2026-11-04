@@ -4420,3 +4420,42 @@ describe('★ PR 5-f — a money shape the pagamento check cannot see files its 
     }
   });
 });
+
+// Step 14 (PR 14-b): gate 5 of the freight verdict now writes `cancelado` over
+// step 14's `error` stamp (step-14 plan §3 decision 12) — the one importer
+// behaviour 14-b changes. Pinned end to end through the importer's own write.
+describe('step 14 (PR 14-b): the importer over a stored NF-e error stamp', () => {
+  const comErro = (): Doc => {
+    const doc = criado({ linhas: DUAS, invoiceStatus: 'ACCEPTED' });
+    return { ...doc, freteInicial: { ...(doc.freteInicial as Doc), estado: ESTADO_FRETE.error } };
+  };
+  const freteDo = (r: EscritaPedidoAmazon): Doc | null =>
+    r.tipo === 'atualizar' && Object.hasOwn(r.patch, 'freteInicial')
+      ? (r.patch.freteInicial as Doc)
+      : null;
+
+  it('★ a CANCELLED read over a stored error writes the freight cancelado (a cancelled order ends the stamp)', () => {
+    const r = montar(comErro(), { status: 'CANCELLED', linhas: DUAS, atualizadoEm: depois(120) });
+    expect(freteDo(r)?.estado).toBe(ESTADO_FRETE.cancelado);
+  });
+
+  it('★ NEAR-MISS: a PENDING_SCHEDULE read with the order-level ACCEPTED keeps the stamp (never a clear)', () => {
+    const r = montar(comErro(), {
+      linhas: DUAS,
+      invoiceStatus: 'ACCEPTED',
+      pacotesBrutos: [pacoteAmazon('PKG-1', 'PENDING_SCHEDULE')],
+      atualizadoEm: depois(120),
+    });
+    expect(freteDo(r)?.estado ?? ESTADO_FRETE.error).toBe(ESTADO_FRETE.error);
+  });
+
+  it('★ NEAR-MISS: a physical fact (PICKED_UP) over a stored error is written, as before', () => {
+    const r = montar(comErro(), {
+      status: 'SHIPPED',
+      linhas: DUAS,
+      pacotesBrutos: [pacoteAmazon('PKG-1', 'PICKED_UP')],
+      atualizadoEm: depois(120),
+    });
+    expect(freteDo(r)?.estado).toBe(ESTADO_FRETE.postado);
+  });
+});

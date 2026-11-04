@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import { opcaoDoRecursoLi } from '../../catalogoLojaIntegrada';
+import { idFromRefOrNull } from '../../shared/outerRef';
 
 /**
  * The `grupoDeVariacoes.linksVariacoesli[]` element: the typed contract of one Loja Integrada
@@ -456,4 +458,742 @@ export function conflitosLinksVariacoesLi(
     inexistentes,
     avisos,
   ].flatMap((grupo) => [...grupo].sort(porPrimeiroIndice));
+}
+
+/* -------------------------------------------------------------------------- */
+/*            The product import's helpers (step 9): resolve, learn            */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * The product import (step 9) reads these links in three ways, each below:
+ *  - it RESOLVES a variation's store options to ERP variantes ({@link resolverOpcoesDoFilhoLi});
+ *  - it LEARNS a missing option link only from unanimous exact-SKU evidence
+ *    ({@link decidirAprendizadoLi}), written through a merge that never drops anything
+ *    ({@link fundirLinksVariacoesLi});
+ *  - it refuses a `(conta, grade)` or `(conta, option)` linked in two grupos
+ *    ({@link conflitosEntreGruposLi}, shared with the publish pre-flight of step 11).
+ *
+ * It never creates a grupo or a variante: a store option the ERP does not have yet is linked by
+ * the operator in the variation screen, and the next import run picks it up.
+ */
+
+/** One grupo of the import's memo: its id, its variante ids, and its RAW `linksVariacoesli`. */
+export interface GrupoComLinksLi {
+  readonly id: string;
+  readonly variantesIds: readonly string[];
+  readonly linksVariacoesli: unknown;
+}
+
+/** The VALID entries of a grupo that belong to conta `contaId` (bare id, exact). */
+function validasDaConta(grupo: GrupoComLinksLi, contaId: string): LinkVariacoesLi[] {
+  const saida: LinkVariacoesLi[] = [];
+  for (const e of lerLinksVariacoesLi(grupo.linksVariacoesli).entradas)
+    if (e.tipo === TIPO_ENTRADA_LINK_LI.valida && e.link.integracaoLiId === contaId)
+      saida.push(e.link);
+  return saida;
+}
+
+/** What became of one store option of a variation — see {@link resolverOpcoesDoFilhoLi}. */
+export const tipoResolucaoOpcaoLiSchema = z.enum([
+  'resolvida',
+  'ilegivel',
+  'grade-sem-vinculo',
+  'grade-em-dois-grupos',
+  'opcao-sem-vinculo',
+  'opcao-em-dois-grupos',
+  'variacao-ambigua',
+]);
+export type TipoResolucaoOpcaoLi = z.infer<typeof tipoResolucaoOpcaoLiSchema>;
+
+/** Named members of {@link tipoResolucaoOpcaoLiSchema} — see `delfrance/prefer-schema-enum`. */
+export const TIPO_RESOLUCAO_OPCAO_LI = {
+  resolvida: 'resolvida',
+  ilegivel: 'ilegivel',
+  gradeSemVinculo: 'grade-sem-vinculo',
+  gradeEmDoisGrupos: 'grade-em-dois-grupos',
+  opcaoSemVinculo: 'opcao-sem-vinculo',
+  opcaoEmDoisGrupos: 'opcao-em-dois-grupos',
+  variacaoAmbigua: 'variacao-ambigua',
+} as const satisfies Record<string, TipoResolucaoOpcaoLi>;
+
+/**
+ * One option's verdict. `gradeId`/`opcaoId` are `null` only for `ilegivel` (the URI did not read).
+ * `grupoIds` names the grupo(s) involved and `varianteIds` the variante(s) the link names: exactly
+ * one of each for `resolvida`.
+ */
+export interface ResolucaoOpcaoLi {
+  readonly tipo: TipoResolucaoOpcaoLi;
+  readonly gradeId: number | null;
+  readonly opcaoId: number | null;
+  readonly grupoIds: readonly string[];
+  readonly varianteIds: readonly string[];
+}
+
+/**
+ * Resolve each store option of a variation (its `variacoes` URIs, read by `opcaoDoRecursoLi`) to
+ * ONE ERP variante, for conta `contaId`, over every grupo of the memo. Per option `(g, v)`:
+ *
+ *  - the VALID links of the conta (`integracaoLiId === contaId`, exact and bare) for grade `g`:
+ *    none ⇒ `grade-sem-vinculo`; more than one — in two grupos, or repeated inside one —
+ *    ⇒ `grade-em-dois-grupos` (the grade is linked more than once for this conta);
+ *  - in that one link, the options with `li_option_id === v`: none ⇒ `opcao-sem-vinculo`; `v`
+ *    also linked in ANOTHER grupo of the conta ⇒ `opcao-em-dois-grupos`;
+ *  - the variante ids they hold that name a variante OF THAT GRUPO: exactly one ⇒ `resolvida`;
+ *    several ⇒ `variacao-ambigua` (the store option stands for several ERP variantes, and the
+ *    import never guesses which one is meant); none — or only stale ids ⇒ `opcao-sem-vinculo`.
+ *
+ * An INVALID stored entry resolves nothing (and is never dropped by anything here). A URI that is
+ * not an option URI ⇒ `ilegivel`.
+ *
+ * Equal (resolved): one option, one variante, one grupo.
+ * Distinct (not resolved): two variantes; `(C, g)` in two grupos; `(C, v)` in two grupos; the same
+ * `(g, v)` linked for another conta only; a stored `integracaoLiId: 'documents/integracao/C1'`
+ * (not the bare id) for conta `C1`.
+ */
+export function resolverOpcoesDoFilhoLi(entrada: {
+  readonly contaId: string;
+  readonly opcoesUris: readonly unknown[];
+  readonly grupos: readonly GrupoComLinksLi[];
+}): ResolucaoOpcaoLi[] {
+  const lidos = entrada.grupos.map((grupo) => ({
+    grupo,
+    validas: validasDaConta(grupo, entrada.contaId),
+  }));
+  const veredito = (
+    tipo: TipoResolucaoOpcaoLi,
+    gradeId: number | null,
+    opcaoId: number | null,
+    grupoIds: readonly string[] = [],
+    varianteIds: readonly string[] = [],
+  ): ResolucaoOpcaoLi => ({ tipo, gradeId, opcaoId, grupoIds, varianteIds });
+
+  return entrada.opcoesUris.map((uri) => {
+    const opcao = opcaoDoRecursoLi(uri);
+    if (opcao === null) return veredito(TIPO_RESOLUCAO_OPCAO_LI.ilegivel, null, null);
+    const { gradeId, opcaoId } = opcao;
+
+    const daGrade = lidos.flatMap(({ grupo, validas }) =>
+      validas.filter((l) => l.grade_id === gradeId).map((link) => ({ grupo, link })),
+    );
+    if (daGrade.length === 0) {
+      return veredito(TIPO_RESOLUCAO_OPCAO_LI.gradeSemVinculo, gradeId, opcaoId);
+    }
+    if (daGrade.length > 1) {
+      const grupoIds = [...new Set(daGrade.map((d) => d.grupo.id))];
+      return veredito(TIPO_RESOLUCAO_OPCAO_LI.gradeEmDoisGrupos, gradeId, opcaoId, grupoIds);
+    }
+    const { grupo, link } = daGrade[0]!;
+
+    const opcoes = link.variationOptions.filter((o) => o.li_option_id === opcaoId);
+    if (opcoes.length === 0) {
+      return veredito(TIPO_RESOLUCAO_OPCAO_LI.opcaoSemVinculo, gradeId, opcaoId, [grupo.id]);
+    }
+    const outros = lidos
+      .filter(
+        (l) =>
+          l.grupo.id !== grupo.id &&
+          l.validas.some((v) => v.variationOptions.some((o) => o.li_option_id === opcaoId)),
+      )
+      .map((l) => l.grupo.id);
+    if (outros.length > 0) {
+      return veredito(TIPO_RESOLUCAO_OPCAO_LI.opcaoEmDoisGrupos, gradeId, opcaoId, [
+        grupo.id,
+        ...outros,
+      ]);
+    }
+
+    const doGrupo = new Set(grupo.variantesIds);
+    const variantes = [...new Set(opcoes.flatMap((o) => o.arakene_variation_id))].filter((id) =>
+      doGrupo.has(id),
+    );
+    if (variantes.length === 1) {
+      return veredito(TIPO_RESOLUCAO_OPCAO_LI.resolvida, gradeId, opcaoId, [grupo.id], variantes);
+    }
+    if (variantes.length > 1) {
+      return veredito(
+        TIPO_RESOLUCAO_OPCAO_LI.variacaoAmbigua,
+        gradeId,
+        opcaoId,
+        [grupo.id],
+        variantes,
+      );
+    }
+    return veredito(TIPO_RESOLUCAO_OPCAO_LI.opcaoSemVinculo, gradeId, opcaoId, [grupo.id]);
+  });
+}
+
+/** A cross-grupo finding of one conta — see {@link conflitosEntreGruposLi}. */
+export const tipoConflitoEntreGruposLiSchema = z.enum([
+  'grade-em-dois-grupos',
+  'opcao-em-dois-grupos',
+]);
+export type TipoConflitoEntreGruposLi = z.infer<typeof tipoConflitoEntreGruposLiSchema>;
+
+/** Named members of {@link tipoConflitoEntreGruposLiSchema} — see `delfrance/prefer-schema-enum`. */
+export const TIPO_CONFLITO_ENTRE_GRUPOS_LI = {
+  gradeEmDoisGrupos: 'grade-em-dois-grupos',
+  opcaoEmDoisGrupos: 'opcao-em-dois-grupos',
+} as const satisfies Record<string, TipoConflitoEntreGruposLi>;
+
+export interface ConflitoEntreGruposLi {
+  readonly tipo: TipoConflitoEntreGruposLi;
+  /** The grade (`grade-em-dois-grupos`) or `null`. */
+  readonly gradeId: number | null;
+  /** The option (`opcao-em-dois-grupos`) or `null`. */
+  readonly opcaoId: number | null;
+  /** The grupos holding it, in memo order, without repeats (at least two). */
+  readonly grupoIds: readonly string[];
+}
+
+/**
+ * The CROSS-GRUPO rule {@link conflitosLinksVariacoesLi} cannot see, since it reads one grupo: per
+ * conta, one grade is linked in ONE grupo, and one option in ONE grupo. Returns every
+ * `(contaId, grade)` and every `(contaId, option)` held by valid links of two or more grupos —
+ * grades first, then options, each by ascending id.
+ *
+ * An option is keyed by its `li_option_id` ALONE, whatever grade the link names: the store's
+ * option ids are its own ids, and keying on the pair would let the same option hide under two
+ * grades in two grupos. Only VALID entries of `contaId` (bare, exact) take part. A grade or
+ * option repeated inside ONE grupo is that grupo's own finding, not this one.
+ *
+ * Shared by the import's learning (run over the WHOLE memo with the merge applied, before every
+ * write) and the publish pre-flight of step 11.
+ */
+export function conflitosEntreGruposLi(
+  grupos: readonly GrupoComLinksLi[],
+  contaId: string,
+): ConflitoEntreGruposLi[] {
+  const porGrade = new Map<number, string[]>();
+  const porOpcao = new Map<number, string[]>();
+  for (const grupo of grupos) {
+    for (const link of validasDaConta(grupo, contaId)) {
+      const g = obter(porGrade, link.grade_id, () => []);
+      if (!g.includes(grupo.id)) g.push(grupo.id);
+      for (const opcao of link.variationOptions) {
+        const o = obter(porOpcao, opcao.li_option_id, () => []);
+        if (!o.includes(grupo.id)) o.push(grupo.id);
+      }
+    }
+  }
+  const saida: ConflitoEntreGruposLi[] = [];
+  for (const [gradeId, grupoIds] of [...porGrade].sort((a, b) => a[0] - b[0]))
+    if (grupoIds.length > 1)
+      saida.push({
+        tipo: TIPO_CONFLITO_ENTRE_GRUPOS_LI.gradeEmDoisGrupos,
+        gradeId,
+        opcaoId: null,
+        grupoIds,
+      });
+  for (const [opcaoId, grupoIds] of [...porOpcao].sort((a, b) => a[0] - b[0]))
+    if (grupoIds.length > 1)
+      saida.push({
+        tipo: TIPO_CONFLITO_ENTRE_GRUPOS_LI.opcaoEmDoisGrupos,
+        gradeId: null,
+        opcaoId,
+        grupoIds,
+      });
+  return saida;
+}
+
+/** One option link the import learned: `(conta, grade, option) → variante`. */
+export interface AprendizadoLinkLi {
+  /** The BARE conta id, written verbatim. */
+  readonly integracaoLiId: string;
+  readonly gradeId: number;
+  readonly opcaoId: number;
+  readonly varianteId: string;
+  /** Labels, when known: written only where the stored one is `null` or absent. */
+  readonly nomeGrade?: string | null;
+  readonly nomeOpcao?: string | null;
+}
+
+/** {@link fundirLinksVariacoesLi}'s answer. */
+export type FusaoLinksVariacoesLi =
+  /** The stored value is neither absent nor a list: nothing can be merged into it without dropping it. */
+  | { readonly ok: false }
+  | {
+      readonly ok: true;
+      /** The whole array to write. */
+      readonly array: unknown[];
+      /** `false` ⇒ nothing changed: write nothing. */
+      readonly mudou: boolean;
+      /** The indices this merge created or changed, ascending. */
+      readonly editadas: readonly number[];
+    };
+
+/** The stored option with the learning folded in (its label, its variante list), or `null`. */
+function fundirOpcao(
+  opcao: Record<string, unknown>,
+  a: AprendizadoLinkLi,
+): Record<string, unknown> | null {
+  const mudancas: Record<string, unknown> = {};
+  const atuais = proprio(opcao, 'arakene_variation_id');
+  const lista: readonly unknown[] = Array.isArray(atuais) ? atuais : [];
+  if (!lista.includes(a.varianteId)) mudancas.arakene_variation_id = [...lista, a.varianteId];
+  const nome = proprio(opcao, 'li_option_name');
+  if ((nome === null || nome === undefined) && a.nomeOpcao != null) {
+    mudancas.li_option_name = a.nomeOpcao;
+  }
+  return Object.keys(mudancas).length === 0 ? null : { ...opcao, ...mudancas };
+}
+
+/** The stored entry with one learning folded in, or `null` when nothing changes. */
+function fundirEntrada(
+  bruto: Record<string, unknown>,
+  a: AprendizadoLinkLi,
+): Record<string, unknown> | null {
+  const mudancas: Record<string, unknown> = {};
+  const nome = proprio(bruto, 'name');
+  if ((nome === null || nome === undefined) && a.nomeGrade != null) mudancas.name = a.nomeGrade;
+
+  const valor = proprio(bruto, 'variationOptions');
+  const armazenadas: readonly unknown[] = Array.isArray(valor) ? valor : [];
+  const opcoes: unknown[] = [...armazenadas];
+  const indice = opcoes.findIndex((o) => ehObjeto(o) && proprio(o, 'li_option_id') === a.opcaoId);
+  if (indice === -1) {
+    opcoes.push({
+      li_option_id: a.opcaoId,
+      li_option_name: a.nomeOpcao ?? null,
+      arakene_variation_id: [a.varianteId],
+    });
+    mudancas.variationOptions = opcoes;
+  } else {
+    const atual = opcoes[indice];
+    const fundida = ehObjeto(atual) ? fundirOpcao(atual, a) : null;
+    if (fundida !== null) {
+      opcoes[indice] = fundida;
+      mudancas.variationOptions = opcoes;
+    }
+  }
+  return Object.keys(mudancas).length === 0 ? null : { ...bruto, ...mudancas };
+}
+
+/**
+ * Merge the import's learned option links into a grupo's stored `linksVariacoesli` WITHOUT
+ * dropping anything (the Shopee importer's never-drop rule, with this channel's key):
+ *
+ *  - a stored element that fails {@link linkVariacoesLiSchema} is kept VERBATIM, in place;
+ *  - an element of another conta, and every element no learning touches, is kept as the SAME
+ *    value — byte for byte;
+ *  - the touched element is keyed by the EXACT `(integracaoLiId, grade_id)` of a VALID entry (no
+ *    ref fold: a stored `documents/integracao/<id>` is another key, and the learning refuses
+ *    before reaching here when one exists); its `name` and an option's `li_option_name` are filled
+ *    only when `null` or absent; a new option is appended; an option's variante list is
+ *    extended only by union, in the stored order;
+ *  - no matching entry ⇒ a new entry is appended;
+ *  - nothing changed ⇒ `mudou: false`, and the caller writes nothing.
+ *
+ * Several learnings are applied in order. The merge itself checks no rule: the caller runs
+ * {@link conflitosLinksVariacoesLi} on the result (the indices in `editadas`) and
+ * {@link conflitosEntreGruposLi} over the memo before writing.
+ */
+export function fundirLinksVariacoesLi(
+  armazenado: unknown,
+  aprendizados: readonly AprendizadoLinkLi[],
+): FusaoLinksVariacoesLi {
+  if (armazenado !== null && armazenado !== undefined && !Array.isArray(armazenado)) {
+    return { ok: false };
+  }
+  const lista: readonly unknown[] = Array.isArray(armazenado) ? armazenado : [];
+  const saida: unknown[] = [...lista];
+  const editadas = new Set<number>();
+  for (const a of aprendizados) {
+    const indice = saida.findIndex((elemento) => {
+      const lido = linkVariacoesLiSchema.safeParse(elemento);
+      return (
+        lido.success &&
+        lido.data.integracaoLiId === a.integracaoLiId &&
+        lido.data.grade_id === a.gradeId
+      );
+    });
+    if (indice === -1) {
+      saida.push({
+        name: a.nomeGrade ?? null,
+        grade_id: a.gradeId,
+        integracaoLiId: a.integracaoLiId,
+        variationOptions: [
+          {
+            li_option_id: a.opcaoId,
+            li_option_name: a.nomeOpcao ?? null,
+            arakene_variation_id: [a.varianteId],
+          },
+        ],
+      });
+      editadas.add(saida.length - 1);
+      continue;
+    }
+    const atual = saida[indice];
+    const fundida = ehObjeto(atual) ? fundirEntrada(atual, a) : null;
+    if (fundida !== null) {
+      saida[indice] = fundida;
+      editadas.add(indice);
+    }
+  }
+  return {
+    ok: true,
+    array: saida,
+    mudou: editadas.size > 0,
+    editadas: [...editadas].sort((x, y) => x - y),
+  };
+}
+
+/** One distinct claim of the evidence pass: "option `(g, v)` of the conta = variante X of grupo G". */
+export interface AlegacaoAprendizadoLi {
+  readonly grupoId: string;
+  readonly varianteId: string;
+  /** Every claim of this pair came from a family with ONE axis on both sides. */
+  readonly todasDeEixoUnico: boolean;
+}
+
+/** Every claim the whole job collected for one store option. */
+export interface EvidenciaAprendizadoLi {
+  readonly gradeId: number;
+  readonly opcaoId: number;
+  readonly alegacoes: readonly AlegacaoAprendizadoLi[];
+  readonly nomeGrade?: string | null;
+  readonly nomeOpcao?: string | null;
+}
+
+/**
+ * Why a learning was refused. The import reports `divergente` and `variante-disputada` as
+ * `evidencia-divergente` and every other motivo as `variacao-sem-vinculo`; the motivo itself is the
+ * diagnosis.
+ *
+ *  - `divergente`: the claims for the option name two different `(grupo, variante)`;
+ *  - `variante-disputada`: claims of ANOTHER option of the conta name the same `(grupo,
+ *    variante)` — divergent claims included — so it is learned for no option (one variante, one
+ *    option per conta; an option already linked to it stays in `jaVinculadas`), and no
+ *    processing order picks a winner;
+ *  - `grupo-desconhecido` / `variante-fora-do-grupo`: the claim names a grupo the memo lacks, or a
+ *    variante that grupo does not have (stale evidence);
+ *  - `formato-invalido`: the grupo's stored value is not a list (nothing can be merged into it);
+ *  - `grade-em-outro-grupo`: another grupo already holds an entry for `(conta, grade)`, or stores
+ *    a value that is not a list (it cannot be read, so it may hold one: fail closed);
+ *  - `grade-repetida`: the grupo holds more than one entry for `(conta, grade)`, or one that is
+ *    not the conta's VALID bare entry (fail closed: an invalid or non-bare entry naming the conta
+ *    still "holds" the grade, so a second entry is never added beside it);
+ *  - `grupos-divergentes-na-grade`: a NEW entry was proposed, but the claims for the grade's
+ *    options name two grupos — none is created, so no processing order picks a winner;
+ *  - `eixos-multiplos`: a grade nothing held when the pass started needs every claim of EACH of
+ *    its options to come from a family with ONE axis on both sides (several axes with no linked
+ *    grade cannot tell which axis the grade is) — the entry an earlier option of the same pass
+ *    created does not lift it;
+ *  - `variante-em-outra-opcao`: the variante is already held by another option of the conta;
+ *  - `conflito-no-grupo`: the merged grupo carries a blocking {@link conflitosLinksVariacoesLi}
+ *    finding on an edited entry;
+ *  - `conflito-entre-grupos`: with the merge applied, {@link conflitosEntreGruposLi} names this
+ *    grade or option.
+ */
+export const motivoRecusaAprendizadoLiSchema = z.enum([
+  'divergente',
+  'variante-disputada',
+  'grupo-desconhecido',
+  'variante-fora-do-grupo',
+  'formato-invalido',
+  'grade-em-outro-grupo',
+  'grade-repetida',
+  'grupos-divergentes-na-grade',
+  'eixos-multiplos',
+  'variante-em-outra-opcao',
+  'conflito-no-grupo',
+  'conflito-entre-grupos',
+]);
+export type MotivoRecusaAprendizadoLi = z.infer<typeof motivoRecusaAprendizadoLiSchema>;
+
+/** Named members of {@link motivoRecusaAprendizadoLiSchema} — see `delfrance/prefer-schema-enum`. */
+export const MOTIVO_RECUSA_APRENDIZADO_LI = {
+  divergente: 'divergente',
+  varianteDisputada: 'variante-disputada',
+  grupoDesconhecido: 'grupo-desconhecido',
+  varianteForaDoGrupo: 'variante-fora-do-grupo',
+  formatoInvalido: 'formato-invalido',
+  gradeEmOutroGrupo: 'grade-em-outro-grupo',
+  gradeRepetida: 'grade-repetida',
+  gruposDivergentesNaGrade: 'grupos-divergentes-na-grade',
+  eixosMultiplos: 'eixos-multiplos',
+  varianteEmOutraOpcao: 'variante-em-outra-opcao',
+  conflitoNoGrupo: 'conflito-no-grupo',
+  conflitoEntreGrupos: 'conflito-entre-grupos',
+} as const satisfies Record<string, MotivoRecusaAprendizadoLi>;
+
+export interface DecisaoAprendizadoLi {
+  /** The learnings to write, in decision order. */
+  readonly aprendidos: readonly {
+    readonly gradeId: number;
+    readonly opcaoId: number;
+    readonly grupoId: string;
+    readonly varianteId: string;
+    /** A new `(conta, grade)` entry was created for it. */
+    readonly novaEntrada: boolean;
+  }[];
+  readonly recusados: readonly {
+    readonly gradeId: number;
+    readonly opcaoId: number;
+    readonly motivo: MotivoRecusaAprendizadoLi;
+  }[];
+  /** Options already linked in the grupo the claims name: nothing to learn. */
+  readonly jaVinculadas: readonly { readonly gradeId: number; readonly opcaoId: number }[];
+  /** Each grupo the learnings change, with its whole merged array to write, in memo order. */
+  readonly grupos: readonly { readonly grupoId: string; readonly linksVariacoesli: unknown[] }[];
+}
+
+/** Does a stored `integracaoLiId` name conta `contaId` in ANY form (bare, a path, edge spaces)? */
+function nomeiaConta(valor: unknown, contaId: string): boolean {
+  return typeof valor === 'string' && idFromRefOrNull(valor.trim()) === contaId;
+}
+
+/** Does a stored `grade_id` name grade `gradeId`, or not read at all (fail closed)? */
+function podeSerGrade(valor: unknown, gradeId: number): boolean {
+  if (typeof valor === 'number') return valor === gradeId;
+  if (typeof valor === 'string' && /^[0-9]+$/.test(valor)) return Number(valor) === gradeId;
+  return true;
+}
+
+/**
+ * Every stored element, in every grupo, that HOLDS `(contaId, gradeId)` — failing CLOSED: an
+ * element naming the conta in any form whose grade is that grade or does not read, and a grupo
+ * whose stored value is not a list at all (nothing in it can be read, so nothing proves it does
+ * not hold the grade). `exata`: the conta's VALID bare entry for exactly that grade, the only kind
+ * a learning may extend.
+ */
+function detentoresDaGrade(
+  grupos: readonly { readonly id: string; readonly links: unknown }[],
+  contaId: string,
+  gradeId: number,
+): { readonly grupoId: string; readonly exata: boolean }[] {
+  const saida: { grupoId: string; exata: boolean }[] = [];
+  for (const g of grupos) {
+    if (!Array.isArray(g.links)) {
+      if (lerLinksVariacoesLi(g.links).formatoInvalido) saida.push({ grupoId: g.id, exata: false });
+      continue;
+    }
+    const lista: readonly unknown[] = g.links;
+    for (const elemento of lista) {
+      if (!ehObjeto(elemento)) continue;
+      if (!nomeiaConta(proprio(elemento, 'integracaoLiId'), contaId)) continue;
+      if (!podeSerGrade(proprio(elemento, 'grade_id'), gradeId)) continue;
+      const lido = linkVariacoesLiSchema.safeParse(elemento);
+      saida.push({
+        grupoId: g.id,
+        exata:
+          lido.success && lido.data.integracaoLiId === contaId && lido.data.grade_id === gradeId,
+      });
+    }
+  }
+  return saida;
+}
+
+/** Is variante `varianteId` held by an option of the conta (any form) other than `(g, v)`? */
+function varianteEmOutraOpcao(
+  links: unknown,
+  contaId: string,
+  gradeId: number,
+  opcaoId: number,
+  varianteId: string,
+): boolean {
+  if (!Array.isArray(links)) return false;
+  const lista: readonly unknown[] = links;
+  for (const elemento of lista) {
+    if (!ehObjeto(elemento) || !nomeiaConta(proprio(elemento, 'integracaoLiId'), contaId)) continue;
+    const mesmaGrade = proprio(elemento, 'grade_id') === gradeId;
+    const valorOpcoes = proprio(elemento, 'variationOptions');
+    if (!Array.isArray(valorOpcoes)) continue;
+    const opcoes: readonly unknown[] = valorOpcoes;
+    for (const opcao of opcoes) {
+      if (!ehObjeto(opcao)) continue;
+      if (mesmaGrade && proprio(opcao, 'li_option_id') === opcaoId) continue;
+      const valorVariantes = proprio(opcao, 'arakene_variation_id');
+      if (!Array.isArray(valorVariantes)) continue;
+      const variantes: readonly unknown[] = valorVariantes;
+      if (variantes.includes(varianteId)) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * The LEARNING pass of the product import (step 9): which missing option links the job's evidence
+ * proves, merged into which grupos. It changes no product and no variante; it only records links.
+ * Pure: the caller writes `grupos` (tier 1, on its own read of each), or — under Simular — keeps
+ * the same decisions as an overlay and writes nothing.
+ *
+ * A link `(conta, g, v) → (G, X)` is learned only when ALL of these hold:
+ *  - every claim for `(g, v)` across the whole job names the same `(G, X)` (unanimity —
+ *    otherwise `divergente`, and nothing is learned for it);
+ *  - no claim of ANOTHER option of the conta names `(G, X)` (otherwise `variante-disputada`);
+ *  - X is a variante of G;
+ *  - either G held the conta's VALID bare entry for grade `g` when the pass started and nothing
+ *    else anywhere holds `(conta, g)` — then `v` is appended to it, unless already there
+ *    (`jaVinculadas`) — or NOTHING in any grupo held `(conta, g)` in any form when the pass
+ *    started, every claim for the grade's options names G, and every claim for THIS option came
+ *    from a family with one axis on both sides — then the grade's first learned option creates the
+ *    entry and the next ones extend it;
+ *  - X is not held by another option of the conta in G;
+ *  - with the merge applied, {@link conflitosLinksVariacoesLi} finds no blocking finding in G and
+ *    {@link conflitosEntreGruposLi} over the WHOLE memo names neither `g` nor `v`.
+ *
+ * Decided in ascending `(gradeId, opcaoId)` order, each learning applied to the memo before the
+ * next is decided. Every check a learning could WIN by coming first is decided over the input
+ * instead: the per-grade grupo check and the per-variante dispute over ALL claims, and whether a
+ * grade is new over the grupos as passed in. So swapping two option ids never swaps an outcome.
+ *
+ * Equal (learned): two claims for `(C, g, v)` naming the same `(G, X)`.
+ * Distinct (refused): claims naming two variantes; two options claiming one variante; family A on
+ * G1 and family B on G2 both proposing a new `(C, g)`; an invalid entry naming C for `g` in G (G
+ * "holds", no second entry is added); another grupo storing a value that is not a list.
+ */
+export function decidirAprendizadoLi(entrada: {
+  readonly contaId: string;
+  readonly evidencias: readonly EvidenciaAprendizadoLi[];
+  readonly grupos: readonly GrupoComLinksLi[];
+}): DecisaoAprendizadoLi {
+  const { contaId } = entrada;
+  // The grupos as passed in: what a grade "held when the pass started" is read from.
+  const inicial = entrada.grupos.map((g) => ({ id: g.id, links: g.linksVariacoesli }));
+  const memo = entrada.grupos.map((g) => ({ grupo: g, id: g.id, links: g.linksVariacoesli }));
+  const fundidos = new Map<string, unknown[]>();
+  const aprendidos: DecisaoAprendizadoLi['aprendidos'][number][] = [];
+  const recusados: DecisaoAprendizadoLi['recusados'][number][] = [];
+  const jaVinculadas: { gradeId: number; opcaoId: number }[] = [];
+
+  const evidencias = [...entrada.evidencias].sort(
+    (a, b) => a.gradeId - b.gradeId || a.opcaoId - b.opcaoId,
+  );
+  // Every grupo ANY claim names for a grade, and every option ANY claim names for a (grupo,
+  // variante) — divergent claims included in both.
+  const gruposPorGrade = new Map<number, Set<string>>();
+  const opcoesPorVariante = new Map<string, Set<string>>();
+  for (const ev of evidencias) {
+    for (const a of ev.alegacoes) {
+      obter(gruposPorGrade, ev.gradeId, () => new Set()).add(a.grupoId);
+      obter(opcoesPorVariante, JSON.stringify([a.grupoId, a.varianteId]), () => new Set()).add(
+        JSON.stringify([ev.gradeId, ev.opcaoId]),
+      );
+    }
+  }
+
+  for (const ev of evidencias) {
+    const { gradeId, opcaoId } = ev;
+    const recusar = (motivo: MotivoRecusaAprendizadoLi): void => {
+      recusados.push({ gradeId, opcaoId, motivo });
+    };
+    const pares = new Map<string, AlegacaoAprendizadoLi[]>();
+    for (const a of ev.alegacoes)
+      obter(pares, JSON.stringify([a.grupoId, a.varianteId]), () => []).push(a);
+    if (pares.size === 0) continue;
+    if (pares.size > 1) {
+      recusar(MOTIVO_RECUSA_APRENDIZADO_LI.divergente);
+      continue;
+    }
+    const [chavePar, alegacoes] = [...pares][0]!;
+    const { grupoId, varianteId } = alegacoes[0]!;
+    const eixoUnico = alegacoes.every((a) => a.todasDeEixoUnico);
+
+    const alvo = memo.find((m) => m.id === grupoId);
+    if (alvo === undefined) {
+      recusar(MOTIVO_RECUSA_APRENDIZADO_LI.grupoDesconhecido);
+      continue;
+    }
+    if (!alvo.grupo.variantesIds.includes(varianteId)) {
+      recusar(MOTIVO_RECUSA_APRENDIZADO_LI.varianteForaDoGrupo);
+      continue;
+    }
+    if (lerLinksVariacoesLi(alvo.links).formatoInvalido) {
+      recusar(MOTIVO_RECUSA_APRENDIZADO_LI.formatoInvalido);
+      continue;
+    }
+
+    if (detentoresDaGrade(inicial, contaId, gradeId).length === 0) {
+      // A grade nothing held at the start: an entry an earlier option of this pass created lifts
+      // neither check, or the outcome would depend on which option id is lower.
+      if ((gruposPorGrade.get(gradeId)?.size ?? 0) > 1) {
+        recusar(MOTIVO_RECUSA_APRENDIZADO_LI.gruposDivergentesNaGrade);
+        continue;
+      }
+      if (!eixoUnico) {
+        recusar(MOTIVO_RECUSA_APRENDIZADO_LI.eixosMultiplos);
+        continue;
+      }
+    }
+    const detentores = detentoresDaGrade(memo, contaId, gradeId);
+    let novaEntrada: boolean;
+    if (detentores.length === 0) {
+      novaEntrada = true;
+    } else if (detentores.some((d) => d.grupoId !== grupoId)) {
+      recusar(MOTIVO_RECUSA_APRENDIZADO_LI.gradeEmOutroGrupo);
+      continue;
+    } else if (detentores.length > 1 || !detentores[0]!.exata) {
+      recusar(MOTIVO_RECUSA_APRENDIZADO_LI.gradeRepetida);
+      continue;
+    } else {
+      const link = validasDaConta({ ...alvo.grupo, linksVariacoesli: alvo.links }, contaId).find(
+        (l) => l.grade_id === gradeId,
+      );
+      if (link?.variationOptions.some((o) => o.li_option_id === opcaoId) === true) {
+        jaVinculadas.push({ gradeId, opcaoId });
+        continue;
+      }
+      novaEntrada = false;
+    }
+
+    // Decided over ALL claims, not the memo: a variante two options claim is learned for neither,
+    // or the lower id would win it. (An option already linked to it was answered above.)
+    if ((opcoesPorVariante.get(chavePar)?.size ?? 0) > 1) {
+      recusar(MOTIVO_RECUSA_APRENDIZADO_LI.varianteDisputada);
+      continue;
+    }
+    if (varianteEmOutraOpcao(alvo.links, contaId, gradeId, opcaoId, varianteId)) {
+      recusar(MOTIVO_RECUSA_APRENDIZADO_LI.varianteEmOutraOpcao);
+      continue;
+    }
+
+    const fusao = fundirLinksVariacoesLi(alvo.links, [
+      {
+        integracaoLiId: contaId,
+        gradeId,
+        opcaoId,
+        varianteId,
+        nomeGrade: ev.nomeGrade ?? null,
+        nomeOpcao: ev.nomeOpcao ?? null,
+      },
+    ]);
+    if (!fusao.ok) {
+      recusar(MOTIVO_RECUSA_APRENDIZADO_LI.formatoInvalido);
+      continue;
+    }
+    const achados = conflitosLinksVariacoesLi({
+      variantesIds: alvo.grupo.variantesIds,
+      variantesRemovidasNestaGravacao: [],
+      entradas: lerLinksVariacoesLi(fusao.array).entradas,
+      editadas: new Set(fusao.editadas),
+    });
+    if (achados.some((a) => a.bloqueia)) {
+      recusar(MOTIVO_RECUSA_APRENDIZADO_LI.conflitoNoGrupo);
+      continue;
+    }
+    const comFusao = memo.map((m) => ({
+      id: m.id,
+      variantesIds: m.grupo.variantesIds,
+      linksVariacoesli: m.id === grupoId ? fusao.array : m.links,
+    }));
+    const cruzados = conflitosEntreGruposLi(comFusao, contaId);
+    if (cruzados.some((c) => c.gradeId === gradeId || c.opcaoId === opcaoId)) {
+      recusar(MOTIVO_RECUSA_APRENDIZADO_LI.conflitoEntreGrupos);
+      continue;
+    }
+
+    alvo.links = fusao.array;
+    fundidos.set(grupoId, fusao.array);
+    aprendidos.push({ gradeId, opcaoId, grupoId, varianteId, novaEntrada });
+  }
+
+  return {
+    aprendidos,
+    recusados,
+    jaVinculadas,
+    grupos: memo.flatMap((m) => {
+      const array = fundidos.get(m.id);
+      return array === undefined ? [] : [{ grupoId: m.id, linksVariacoesli: array }];
+    }),
+  };
 }

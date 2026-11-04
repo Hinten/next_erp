@@ -1,5 +1,6 @@
 import {
   ESTADO_RASTREIO_LI,
+  MOTIVO_CATEGORIA_SEM_VINCULO_LI,
   MOTIVO_CONTA_AMAZON,
   MOTIVO_FRETE_NAO_SUPORTADO_LI,
   MOTIVO_RASTREIO_DIVERGENTE_LI,
@@ -11,6 +12,7 @@ import {
   PENDENCIA_RECLAMACAO,
   SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO,
   TIPO_AVISO,
+  motivoCategoriaSemVinculoLiSchema,
   motivoContaAmazonSchema,
   motivoFreteNaoSuportadoLiSchema,
   motivoImportacaoParadaAmazonSchema,
@@ -26,6 +28,7 @@ import {
   type Aviso,
   type EstadoRastreioLi,
   type MotivoRastreioDivergenteLi,
+  type MotivoCategoriaSemVinculoLi,
   type MotivoContaAmazon,
   type MotivoFreteNaoSuportadoLi,
   type MotivoImportacaoParadaAmazon,
@@ -159,6 +162,30 @@ function fraseMotivoImportacaoParada(valor: Aviso['params'][string] | undefined)
   return codigo.success
     ? FRASE_MOTIVO_IMPORTACAO_PARADA_LI[codigo.data]
     : 'confira o registro da varredura de pedidos';
+}
+
+/**
+ * pt-BR of why a store category left imported products without a category — TOTAL over the
+ * code (`params.motivo`, a {@link MOTIVO_CATEGORIA_SEM_VINCULO_LI}). The producer (the product
+ * import) stores the CODE, never the sentence.
+ */
+const FRASE_MOTIVO_CATEGORIA_SEM_VINCULO_LI: Record<MotivoCategoriaSemVinculoLi, string> = {
+  [MOTIVO_CATEGORIA_SEM_VINCULO_LI.semVinculo]:
+    'a categoria não está vinculada a uma categoria do ERP e a importação só vincula categorias',
+  [MOTIVO_CATEGORIA_SEM_VINCULO_LI.paiIlegivel]:
+    'a categoria-pai de uma categoria do caminho não pôde ser lida na Loja Integrada',
+  [MOTIVO_CATEGORIA_SEM_VINCULO_LI.paiAusente]:
+    'uma categoria do caminho aponta para uma categoria-pai que a loja não lista',
+  [MOTIVO_CATEGORIA_SEM_VINCULO_LI.ciclo]: 'as categorias do caminho apontam umas para as outras',
+  [MOTIVO_CATEGORIA_SEM_VINCULO_LI.profundidade]: 'o caminho da categoria é longo demais',
+};
+
+/** The motivo's sentence, or a neutral one — the {@link fraseMotivoImportacaoParada} contract. */
+function fraseMotivoCategoriaSemVinculo(valor: Aviso['params'][string] | undefined): string {
+  const codigo = motivoCategoriaSemVinculoLiSchema.safeParse(valor);
+  return codigo.success
+    ? FRASE_MOTIVO_CATEGORIA_SEM_VINCULO_LI[codigo.data]
+    : 'confira o relatório da importação de produtos';
 }
 
 /**
@@ -972,6 +999,38 @@ export const MENSAGENS_POR_TIPO: Record<TipoAviso, MensagemAviso> = {
   [TIPO_AVISO.lojaIntegradaRastreioDivergente]: {
     titulo: 'Envio do pedido não refletido na Loja Integrada',
     corpo: corpoRastreioDivergenteLi,
+  },
+  // The three avisos of the product import (step 9), all `atencao`, all on the conta page,
+  // where the import's report lists every product behind them. No `runbook`: the fixes are in
+  // the app (the category and variation screens, a product's tax settings) or in the store's
+  // panel, and each sentence says which.
+  [TIPO_AVISO.lojaIntegradaCategoriaSemVinculo]: {
+    titulo: 'Categoria da Loja Integrada sem vínculo',
+    corpo: (params) =>
+      `A categoria ${p(params, 'caminho')} da loja ${p(params, 'loja')} ficou sem categoria no ` +
+      `ERP na importação de produtos: ${fraseMotivoCategoriaSemVinculo(params.motivo)}. ` +
+      `${p(params, 'produtos')} produto(s) foram importados sem categoria e precisam de revisão ` +
+      'fiscal. Vincule a categoria (ou corrija-a no painel da Loja Integrada) e importe de novo; ' +
+      'o aviso se encerra quando a importação encontrar a categoria vinculada.',
+  },
+  [TIPO_AVISO.lojaIntegradaRevisaoFiscal]: {
+    titulo: 'Produtos da Loja Integrada para revisão fiscal',
+    corpo: (params) =>
+      `A importação de produtos da loja ${p(params, 'loja')} criou ou mudou produtos e ` +
+      `categorias de um jeito que muda o cálculo de impostos da NF-e: ${p(params, 'abertos')} ` +
+      'produto(s) aguardam revisão fiscal. A lista está no relatório da última importação; um ' +
+      'produto sai dela quando ele, a categoria dele ou uma regra de imposto que o cite tiver a ' +
+      'configuração fiscal. O aviso se encerra quando a lista ficar vazia.',
+  },
+  [TIPO_AVISO.lojaIntegradaImportacaoComPendencias]: {
+    titulo: 'Importação de produtos da Loja Integrada com pendências',
+    corpo: (params) =>
+      `A importação de produtos da loja ${p(params, 'loja')} terminou com ` +
+      `${p(params, 'acionaveis')} pendência(s) que precisam de alguém (SKU ausente ou parecido, ` +
+      'vínculo em conflito, variação ou categoria sem vínculo, dado inválido). Confira o ' +
+      'relatório da importação na tela da conta, corrija no ERP ou no painel da Loja Integrada e ' +
+      'rode a importação de novo com "Todos"; o aviso se encerra quando uma importação completa ' +
+      'terminar sem pendências.',
   },
   // Sem `runbook` nos dois avisos por CONTA da Amazon: o conserto está no app —
   // uma nova autorização pelo painel de conexão da conta (o link do aviso).

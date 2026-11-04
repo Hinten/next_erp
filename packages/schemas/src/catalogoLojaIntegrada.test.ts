@@ -10,6 +10,7 @@ import {
   gradeIdDaRotaLi,
   idDoRecursoLi,
   mesmaGradeLi,
+  opcaoDoRecursoLi,
   projetarCategoriasLi,
   projetarGradeLi,
   projetarGradesLi,
@@ -156,6 +157,80 @@ describe('mesmaGradeLi — is the detail the grade the route asked for?', () => 
     [8946.5, '8946'],
   ])('⚠️ NEAR-MISS: (%j, %j) is never the same grade', (detalhe, rota) => {
     expect(mesmaGradeLi(detalhe, rota)).toBe(false);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*          The product resource and the option URI reader (step 9)            */
+/* -------------------------------------------------------------------------- */
+
+describe('idDoRecursoLi — the product resource (step 9: `filhos[]` and `pai`)', () => {
+  it.each([
+    ['/api/v1/produto/182904918'],
+    ['/api/v1/produto/182904918/'],
+    ['/v1/produto/182904918'],
+    ['/v1/produto/182904918/'],
+  ])('EQUAL: %s ⇒ 182904918', (uri) => {
+    expect(idDoRecursoLi(uri, RECURSO_URI_LI.produto)).toBe(182904918);
+  });
+
+  it.each([
+    ['our own external id (a query string)', '/api/v1/produto/73849275?id_externo=1'],
+    ['the literal None', '/api/v1/produto/None'],
+    ['another resource read as produto', '/api/v1/seo/None'],
+    ['a category URI read as produto', '/api/v1/categoria/1'],
+    ['a leading zero', '/api/v1/produto/0182904918'],
+    ['the plural form', '/api/v1/produtos/182904918'],
+    ['an option URI', '/api/v1/grade/8946/variacao/37097'],
+  ])('⚠️ NEAR-MISS: %s ⇒ null', (_rotulo, uri) => {
+    expect(idDoRecursoLi(uri, RECURSO_URI_LI.produto)).toBeNull();
+  });
+
+  it('⚠️ NEAR-MISS: a product URI is never read as a category', () => {
+    expect(idDoRecursoLi('/api/v1/produto/1', RECURSO_URI_LI.categoria)).toBeNull();
+  });
+});
+
+describe('opcaoDoRecursoLi — the one reader of a variation’s option URI', () => {
+  it.each([
+    ['/api/v1/grade/8946/variacao/37097'],
+    ['/api/v1/grade/8946/variacao/37097/'],
+    ['/v1/grade/8946/variacao/37097'],
+    ['/v1/grade/8946/variacao/37097/'],
+  ])('EQUAL: %s ⇒ { gradeId: 8946, opcaoId: 37097 }', (uri) => {
+    expect(opcaoDoRecursoLi(uri)).toEqual({ gradeId: 8946, opcaoId: 37097 });
+  });
+
+  it.each([
+    ['the PLURAL grades (a grade URI’s resource)', '/api/v1/grades/8946/variacao/37097'],
+    ['the segments swapped', '/api/v1/variacao/37097/grade/8946'],
+    ['a missing option id', '/api/v1/grade/8946/variacao/'],
+    ['a missing option segment', '/api/v1/grade/8946'],
+    ['a leading zero in the grade', '/api/v1/grade/08946/variacao/37097'],
+    ['a leading zero in the option', '/api/v1/grade/8946/variacao/037097'],
+    ['a query string', '/api/v1/grade/8946/variacao/37097?id_externo=1'],
+    ['a fragment', '/api/v1/grade/8946/variacao/37097#x'],
+    ['None for the grade', '/api/v1/grade/None/variacao/1'],
+    ['None for the option', '/api/v1/grade/1/variacao/None'],
+    ['a zero option', '/api/v1/grade/8946/variacao/0'],
+    ['an absolute URL', 'https://loja.invalid/api/v1/grade/8946/variacao/37097'],
+    ['an extra segment', '/api/v1/grade/8946/variacao/37097/1'],
+    ['two trailing slashes', '/api/v1/grade/8946/variacao/37097//'],
+    ['another API version', '/api/v2/grade/8946/variacao/37097'],
+    ['an empty string', ''],
+  ])('⚠️ NEAR-MISS: %s ⇒ null', (_rotulo, uri) => {
+    expect(opcaoDoRecursoLi(uri)).toBeNull();
+  });
+
+  it.each([[null], [undefined], [37097], [{ grade: 8946, variacao: 37097 }]])(
+    'a non-string %j ⇒ null, never an exception',
+    (valor) => {
+      expect(opcaoDoRecursoLi(valor)).toBeNull();
+    },
+  );
+
+  it('⚠️ NEAR-MISS: a one-id grade URI is never an option', () => {
+    expect(opcaoDoRecursoLi('/api/v1/grades/8946')).toBeNull();
   });
 });
 

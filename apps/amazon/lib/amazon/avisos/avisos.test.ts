@@ -133,6 +133,8 @@ describe('the keys', () => {
         TIPO_AVISO.amazonImportacaoParada,
         TIPO_AVISO.amazonPedidoPrecisaAtencao,
         TIPO_AVISO.amazonContaPrecisaAtencao,
+        // Step 14: the shared NF-e tipo, raised per pedido.
+        TIPO_AVISO.nfeUploadRejeitado,
       ].sort(),
     );
     // The orphan pass's tipos: every PER-CONTA one, the import-stopped row
@@ -148,9 +150,11 @@ describe('the keys', () => {
     );
   });
 
-  it('★ the per-PEDIDO tipo is never an orphan-pass tipo: its key names an order the pass cannot compute', () => {
-    expect(TIPOS_AVISO_AMAZON.has(TIPO_AVISO.amazonPedidoPrecisaAtencao)).toBe(true);
-    expect(TIPOS_AVISO_AMAZON_POR_CONTA.has(TIPO_AVISO.amazonPedidoPrecisaAtencao)).toBe(false);
+  it('★ the per-PEDIDO tipos are never orphan-pass tipos: their keys name an order the pass cannot compute', () => {
+    for (const tipo of [TIPO_AVISO.amazonPedidoPrecisaAtencao, TIPO_AVISO.nfeUploadRejeitado]) {
+      expect(TIPOS_AVISO_AMAZON.has(tipo), tipo).toBe(true);
+      expect(TIPOS_AVISO_AMAZON_POR_CONTA.has(tipo), tipo).toBe(false);
+    }
   });
 
   it("per (conta, motivo) for the order import's conta tipo: one key per motivo, no entidade", () => {

@@ -75,7 +75,7 @@
  */
 
 import type { Firestore } from 'firebase-admin/firestore';
-import { parseRef, toOuterRef, toOuterRefOrNull } from '@delfrance/schemas';
+import { contaIdFromRef, toOuterRef } from '@delfrance/schemas';
 
 import { produtoCollection } from '../collections';
 import { isNotFound } from '../grpcErrors';
@@ -116,23 +116,14 @@ export interface SentinelasDeArray {
  * The integração doc id a stored conta ref points at, or `null`.
  *
  * The array stores BARE doc ids while the link docs store REF strings — an
- * asymmetry every reader depends on (`arrayContains(integracaoId)`), so this is
- * the one place the two representations meet. Tolerates both stored ref forms:
- * the canonical `documents/integracao/<id>` every app writes, and the bare
- * `integracao/<id>` readers accept defensively.
- *
- * Non-throwing by construction (`toOuterRefOrNull`): a permanently malformed
- * ref must degrade to "conta not resolvable" and not ride the Eventarc retry
- * forever. The collection check keeps a ref pointing somewhere else from being
- * read as a conta.
+ * asymmetry every reader depends on (`arrayContains(integracaoId)`), and this
+ * reader is the one place the two representations meet. It lives in
+ * `packages/schemas/src/shared/outerRef.ts` (with its contract) since the Loja
+ * Integrada product import's pure link and category decisions read the same
+ * field; re-exported here so every channel binding keeps importing it from this
+ * module, and there is one copy.
  */
-export function contaIdFromRef(raw: unknown): string | null {
-  const ref = toOuterRefOrNull(raw);
-  if (ref == null) return null;
-  const { collection, id } = parseRef(ref);
-  if (collection !== 'integracao' || id.length === 0) return null;
-  return id;
-}
+export { contaIdFromRef };
 
 /** Both accepted stored forms of a conta ref — `endsWith` is not a Firestore predicate. */
 export function contaRefForms(integracaoId: string): [string, string] {

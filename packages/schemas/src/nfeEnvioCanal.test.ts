@@ -5,6 +5,7 @@ import {
   decideNfeUploadDispatch,
   decideNfeUploadTransition,
   extractTpAmb,
+  finalidadeDaNfeProc,
   type NfeUploadDispatch,
   type NfeUploadTransition,
 } from './nfeEnvioCanal';
@@ -197,5 +198,83 @@ describe('the two unions stay apart', () => {
     // @ts-expect-error — 'ja-pronta' must never join NfeUploadDispatch (tsc enforces this line).
     const nivel: NfeUploadDispatch = { action: 'skip', reason: 'ja-pronta' };
     expect(transicao).toEqual(nivel);
+  });
+});
+
+/* ------------------------------- the sale gate ------------------------------ */
+
+interface OpcoesDoProcDeVenda {
+  /** `null` ⇒ the element is ABSENT. */
+  readonly tpNF?: string | null;
+  /** `null` ⇒ the element is ABSENT. */
+  readonly finNFe?: string | null;
+  /** A namespace prefix on every element (`nfe`). */
+  readonly ns?: string;
+}
+
+/**
+ * A minimal synthetic `nfeProc` for the sale gate — no access key, no CNPJ, no
+ * real party; the shape Shopee's own table is pinned on.
+ */
+function procDeVenda(o: OpcoesDoProcDeVenda = {}): string {
+  const p = o.ns === undefined ? '' : `${o.ns}:`;
+  const tpNF = o.tpNF === undefined ? '1' : o.tpNF;
+  const finNFe = o.finNFe === undefined ? '1' : o.finNFe;
+  return [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    `<${p}nfeProc versao="4.00" xmlns="http://www.portalfiscal.inf.br/nfe">`,
+    `<${p}NFe><${p}infNFe versao="4.00"><${p}ide><${p}cUF>99</${p}cUF><${p}mod>55</${p}mod>`,
+    tpNF === null ? '' : `<${p}tpNF>${tpNF}</${p}tpNF>`,
+    finNFe === null ? '' : `<${p}finNFe>${finNFe}</${p}finNFe>`,
+    `</${p}ide><${p}emit><${p}xNome>TESTE SINTETICO SEM VALOR FISCAL</${p}xNome></${p}emit>`,
+    `</${p}infNFe></${p}NFe>`,
+    `<${p}protNFe versao="4.00"><${p}infProt><${p}tpAmb>1</${p}tpAmb>`,
+    `<${p}cStat>100</${p}cStat></${p}infProt></${p}protNFe></${p}nfeProc>`,
+  ].join('');
+}
+
+// The SAME table as Shopee's `finalidadeDoProc` (its `notaNaShopee.test.ts`):
+// the function was copied here unchanged, and until Shopee re-points at this
+// one, the two copies agree only as long as both tables do.
+describe('finalidadeDaNfeProc — only the SALE note goes to a channel', () => {
+  it('`tpNF 1` + `finNFe 1` is venda', () => {
+    expect(finalidadeDaNfeProc(procDeVenda())).toBe('venda');
+  });
+
+  it('a DEVOLUÇÃO (`finNFe 4`) and an ENTRADA (`tpNF 0`) are outra', () => {
+    expect(finalidadeDaNfeProc(procDeVenda({ finNFe: '4' }))).toBe('outra');
+    expect(finalidadeDaNfeProc(procDeVenda({ tpNF: '0' }))).toBe('outra');
+  });
+
+  it.each(['2', '3', '5', '6', '9'])(
+    'NEAR-MISS: a legible, non-normal `finNFe %s` is outra (never venda)',
+    (finNFe) => {
+      expect(finalidadeDaNfeProc(procDeVenda({ finNFe }))).toBe('outra');
+    },
+  );
+
+  it.each([
+    ['no `tpNF`', procDeVenda({ tpNF: null })],
+    ['no `finNFe`', procDeVenda({ finNFe: null })],
+    ['an empty `tpNF`', procDeVenda({ tpNF: '' })],
+    ['a letter in `finNFe`', procDeVenda({ finNFe: 'x' })],
+    ['`tpNF` `01` (two digits — never read as `1`)', procDeVenda({ tpNF: '01' })],
+    ['`finNFe` `11`', procDeVenda({ finNFe: '11' })],
+    ['text that is not XML', 'nada aqui'],
+  ])('NEAR-MISS: %s ⇒ ilegivel', (_rotulo, xml) => {
+    expect(finalidadeDaNfeProc(xml)).toBe('ilegivel');
+  });
+
+  it('PAIR: whitespace around the digit changes nothing; neither does a namespace prefix', () => {
+    expect(finalidadeDaNfeProc(procDeVenda({ tpNF: ' 1 ', finNFe: '\n1\n' }))).toBe('venda');
+    expect(finalidadeDaNfeProc(procDeVenda({ ns: 'nfe' }))).toBe('venda');
+  });
+
+  it('the FIRST element of each wins: a later `tpNF 0` changes nothing', () => {
+    const xml = procDeVenda().replace(
+      '</nfeProc>',
+      '<extra><tpNF>0</tpNF><finNFe>4</finNFe></extra></nfeProc>',
+    );
+    expect(finalidadeDaNfeProc(xml)).toBe('venda');
   });
 });

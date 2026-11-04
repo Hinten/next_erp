@@ -71,7 +71,7 @@ const INVENTORY = {
 
   // ---- codebase `loja-integrada` -------------------------------------------
   'apps/loja-integrada/functions/src/filaLeitura.ts':
-    'The Loja Integrada reads queue (filaLeituraLojaIntegrada, order intake). Enqueued by the order poller (functions runtime SA); the App Hosting runtime SA joins in step 4 (the inbound webhook), and the credential routes only re-drive Firestore rows.',
+    'The Loja Integrada reads queue (filaLeituraLojaIntegrada, order intake and, from master-plan step 9, the product import). Enqueued by the order poller (functions runtime SA); the product import adds two producers under the SAME functions runtime SA — the onImportacaoLojaIntegradaCriada Firestore trigger (the first named task of a job) and the import dispatch ITSELF (one named self-continuation per slice, and the rate-limit pause through scheduleDelaySeconds). The App Hosting runtime SA joins in step 4 (the inbound webhook); the import start route only creates the job document and never enqueues, and the credential routes only re-drive Firestore rows.',
   'apps/loja-integrada/functions/src/filaEscrita.ts':
     'The Loja Integrada writes queue (filaEscritaLojaIntegrada, master-plan step 7: the status write-back and its in-queue varredura). Enqueued by the onHistoricoFreteLojaIntegrada Firestore trigger (one named rastreio task per freight history row) and by the varrerEscritasLojaIntegrada onSchedule timer (one named varredura task per tick) — both the functions runtime SA, and nothing else; the varredura re-runs rows inside the queue and never enqueues.',
 

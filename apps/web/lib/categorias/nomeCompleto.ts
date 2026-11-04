@@ -1,40 +1,17 @@
-import { toOuterRef, type OuterRef } from '@delfrance/schemas';
+import {
+  makeNomeCompleto,
+  parentBreadcrumbFromDoc,
+  toOuterRef,
+  type OuterRef,
+} from '@delfrance/schemas';
 
 /**
- * Materialized breadcrumb for a categoria — same format as the ML import
- * (`apps/mercado-livre/lib/marketplace/importacao/importCategoria.ts`): names joined with
- * ` > ` (spaces around `>`). Root categories are just `nome`.
- *
- * Issue #554: derived on every save; never hand-edited in the UI.
+ * `makeNomeCompleto` and `parentBreadcrumbFromDoc` moved to `@delfrance/schemas` (`categoria.ts`):
+ * the Loja Integrada product import builds the same breadcrumb on the server, and a rule two
+ * surfaces need is shared, never written twice. Re-exported here so every web caller (and this
+ * folder's tests) keeps importing from one place.
  */
-export function makeNomeCompleto(
-  nome: string,
-  parentNomeCompleto: string | null | undefined,
-): string {
-  const parent = parentNomeCompleto?.trim();
-  return parent ? `${parent} > ${nome}` : nome;
-}
-
-/**
- * Resolve the breadcrumb string to prefix children with, from a parent doc.
- * Prefer the parent's materialized `nomeCompleto`; fall back to `nome` when
- * legacy/import docs still have a null breadcrumb.
- */
-export function parentBreadcrumbFromDoc(
-  parent:
-    | {
-        nome?: string | null;
-        nomeCompleto?: string | null;
-      }
-    | null
-    | undefined,
-): string | null {
-  if (parent == null) return null;
-  const full = parent.nomeCompleto?.trim();
-  if (full) return full;
-  const nome = parent.nome?.trim();
-  return nome || null;
-}
+export { makeNomeCompleto, parentBreadcrumbFromDoc };
 
 /** Canonical `documents/categorias/<id>` outer-ref for a categoria doc id. */
 export function outerRefForCategoriaId(id: string): OuterRef {
