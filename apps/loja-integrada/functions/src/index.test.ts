@@ -8,6 +8,7 @@ import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
 import {
   historicoFreteInicialCollection,
   integracaoCollection,
+  produtoLojaIntegradaLinkCollection,
 } from '@delfrance/data/admin/collections';
 import { MAX_TENTATIVAS_DEFERRED, TASK_MAX_ATTEMPTS } from '@delfrance/data/admin/notifications';
 import { PRAZO_LI_MS } from '@delfrance/integrations-loja-integrada';
@@ -101,6 +102,7 @@ const {
   filaLeituraLojaIntegrada,
   onHistoricoFreteLojaIntegrada,
   onIntegracaoLojaIntegradaChanged,
+  onProdutoLojaIntegradaLinkChanged,
   pollLojaIntegradaPedidos,
   reprocessLojaIntegradaNotifications,
   sweepLojaIntegradaTokenExpiry,
@@ -152,10 +154,15 @@ const FILAS = { filaLeituraLojaIntegrada, filaEscritaLojaIntegrada } as const;
  * The failure it guards is the silent one: an `onDocument*` bound to the
  * `(default)` sentinel, or with no `database` at all, deploys fine and never
  * fires, with nothing anywhere to say so. Master plan step 20 added the first
- * (`onIntegracaoLojaIntegradaChanged`); the `every GATILHO…` tests below walk
- * the MAP, never a named trigger, so a second one lands covered.
+ * (`onIntegracaoLojaIntegradaChanged`), step 7 the second and step 9 the third
+ * (`onProdutoLojaIntegradaLinkChanged`, the anchor); the `every GATILHO…` tests
+ * below walk the MAP, never a named trigger, so each one lands covered.
  */
-const GATILHOS = { onIntegracaoLojaIntegradaChanged, onHistoricoFreteLojaIntegrada } as const;
+const GATILHOS = {
+  onIntegracaoLojaIntegradaChanged,
+  onHistoricoFreteLojaIntegrada,
+  onProdutoLojaIntegradaLinkChanged,
+} as const;
 
 /**
  * The document path each trigger must listen on — derived from the HANDLE,
@@ -173,6 +180,11 @@ const CAMINHOS_DOS_GATILHOS = {
     colecao: historicoFreteInicialCollection.resolvePath({ pedidoId: '{pedidoId}' }),
     ancora: 'pedidos/{pedidoId}/historicoFtIni',
     folha: '{historicoId}',
+  },
+  onProdutoLojaIntegradaLinkChanged: {
+    colecao: produtoLojaIntegradaLinkCollection.resolvePath({ produtoId: '{produtoId}' }),
+    ancora: 'produtos/{produtoId}/produtolojaintegrada',
+    folha: '{linkId}',
   },
 } as const satisfies Record<
   keyof typeof GATILHOS,
@@ -721,9 +733,11 @@ describe('the Firestore triggers (GATILHOS)', () => {
 
   it('every GATILHO declares retry: true', () => {
     // At-least-once redelivery for transient Firestore failures; without it the
-    // event is dropped on the first one. Safe because the reconcile is
-    // state-driven: a redelivery replays the ORIGINAL before/after, and the
-    // reconcile reads neither — it re-reads the conta itself.
+    // event is dropped on the first one. Safe because each handler is replay-safe:
+    // a redelivery replays the ORIGINAL before/after, and the conta reconcile
+    // reads neither (it re-reads the conta itself), the history trigger enqueues a
+    // NAMED task, and the anchor's add is an `arrayUnion` while its remove
+    // re-derives from a guarded re-read of the links stored now.
     for (const [nome, fn] of Object.entries(GATILHOS)) {
       expect(gatilhoDeEvento(fn).retry, nome).toBe(true);
     }
@@ -794,7 +808,7 @@ describe('every trigger of the codebase', () => {
     ]);
   });
 
-  it('every event-trigger export is in GATILHOS — exactly {onHistoricoFreteLojaIntegrada, onIntegracaoLojaIntegradaChanged}', () => {
+  it('every event-trigger export is in GATILHOS — exactly {onHistoricoFreteLojaIntegrada, onIntegracaoLojaIntegradaChanged, onProdutoLojaIntegradaLinkChanged}', () => {
     // The third exhaustiveness twin: the two above filter on `scheduleTrigger`
     // and `taskQueueTrigger`, so an `onDocument*` export would otherwise have its
     // `database`, region, secrets and `retry` read by nothing.
@@ -802,6 +816,7 @@ describe('every trigger of the codebase', () => {
     expect(exportadosCom('eventTrigger')).toEqual([
       'onHistoricoFreteLojaIntegrada',
       'onIntegracaoLojaIntegradaChanged',
+      'onProdutoLojaIntegradaLinkChanged',
     ]);
   });
 
