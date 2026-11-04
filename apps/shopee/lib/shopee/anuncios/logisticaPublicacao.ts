@@ -8,19 +8,44 @@
  * RECONCILER between three things — what the shop offers, what the operator
  * already chose on the live listing, and what this parcel physically is.
  *
- * ## The two paths, and why the stored one wins
+ * ## The two paths, and when the stored one wins
  *
- * On a REPUBLISH the link document carries `logistic_info`, the last read-back
- * of the live listing. That list is the operator's own Seller Centre choices,
- * and it carries two values the ERP cannot produce at all: the `size_id` of a
+ * On a REPUBLISH the link document may carry `logistic_info`. When THIS app
+ * wrote it — Shopee's read-back of the live listing, an import's reading, or
+ * the list a publish sent — it holds the operator's own Seller Centre choices,
+ * including two values the ERP cannot produce at all: the `size_id` of a
  * `SIZE_SELECTION` channel and the `shipping_fee` of a `CUSTOM_PRICE` one.
- * Rebuilding from scratch on every publish would silently overwrite both — which
- * is exactly what the legacy exporter did (it read `get_channel_list` every time
- * and ignored the stored list entirely). So the stored list is re-validated
- * against the live channel list and, when anything survives, it WINS.
+ * Rebuilding from scratch on every publish would silently overwrite both. So a
+ * TRUSTED stored list is re-validated against the live channel list and, when
+ * anything survives, it WINS.
  *
- * On a FIRST publish (or when nothing stored survives) every shop-enabled
+ * ⚠️ **The stored list is trusted only when this app wrote it (#2015).** The
+ * legacy exporter rebuilt its own list from `get_channel_list` on every save,
+ * sent THAT, and wrote back only `{item_id, item_status}` — so the
+ * `logistic_info` a migrated link carries is whatever a legacy import or a
+ * legacy screen last stored, not what the listing was given, and re-sending it
+ * would put a stale `is_free`, fee or channel set back on a live listing.
+ * Trust is the caller's {@link ArgsLogistica.armazenadoConfiavel}, which it
+ * computes from the RAW link with `logisticaGravadaPeloErpShopee`
+ * (`@delfrance/schemas`) — the provenance stamp `logisticaGravadaEm` that every
+ * writer of the list in this app writes in the same patch. A DISTRUSTED list
+ * never reaches the stored pass: the full pass runs, and only its own skips
+ * are reported.
+ *
+ * On a FIRST publish (or when nothing trusted survives) every shop-enabled
  * channel the parcel fits is enabled.
+ *
+ * ## The one refusal a distrusted list adds
+ *
+ * The full pass has no `size_id` or `shipping_fee` to send, so it skips every
+ * `SIZE_SELECTION` / `CUSTOM_PRICE` channel. On an ordinary channel that is a
+ * skip and nothing more. On a COMPULSORY one it is a refusal — and when the
+ * distrusted list holds a readable value for exactly the field that channel
+ * lacked, and there is a listing an import would re-read
+ * ({@link ArgsLogistica.itemIdImportavel}), the refusal is
+ * `logistica-nao-confirmada`, naming that listing. Everything else — a draft, a
+ * removido link, a trusted list, an absent or unreadable value, a parcel that
+ * does not fit — keeps `logistica-sem-canal`'s sentence unchanged.
  *
  * ## What "re-validated" means, and why it is not a Zod parse
  *
@@ -79,6 +104,11 @@ import {
   limitarMensagemProblema,
 } from './errosPublicacao';
 
+/** The two refusals this module produces, and nothing else. */
+type MotivoDeLogistica =
+  | typeof MOTIVO_PUBLICACAO_BLOQUEADA.logisticaSemCanal
+  | typeof MOTIVO_PUBLICACAO_BLOQUEADA.logisticaNaoConfirmada;
+
 /**
  * Every length unit `item_max_dimension.unit` may carry that we can convert,
  * and its factor to centimetres.
@@ -116,15 +146,19 @@ export type MotivoCanalPulado =
   /** `item_max_dimension.unit` is not in {@link UNIDADES_PARA_CM}. */
   | 'unidade-desconhecida'
   /**
-   * A `SIZE_SELECTION` channel with no usable stored `size_id`.
+   * A `SIZE_SELECTION` channel with no usable stored `size_id` — and, since
+   * #2015, every one the full pass meets after a DISTRUSTED list, whose sizes
+   * are never read for sending.
    *
    * ⚠️ An ABSENT size and an UNREADABLE one are one verdict on purpose: in both
    * cases there is no size we may send, the operator's action is the same (pick
    * one in Seller Centre) and inventing an eighth member would put a distinction
-   * in a log line that nobody can act on differently.
+   * in a log line that nobody can act on differently. The distrusted case is not
+   * an eighth member either: it is what the refusal tells apart, on a
+   * compulsory channel only (`logistica-nao-confirmada`).
    */
   | 'size-selection-sem-size-id'
-  /** A `CUSTOM_PRICE` channel with no usable stored `shipping_fee`. */
+  /** A `CUSTOM_PRICE` channel with no usable stored `shipping_fee` (same #2015 note). */
   | 'custom-price-sem-tarifa';
 
 /** One channel we did not send, and why. */
@@ -155,8 +189,30 @@ export interface ResultadoLogistica {
 export interface ArgsLogistica {
   /** `get_channel_list.logistics_channel_list`, unreadable rows already dropped. */
   readonly canais: readonly ShopeeLogisticsChannel[];
-  /** `link.logistic_info` exactly as stored — unvalidated. */
+  /**
+   * `link.logistic_info` exactly as stored — unvalidated. Re-sent only when
+   * {@link armazenadoConfiavel}; a distrusted list is still handed over,
+   * because the refusal reads it to say whether a value was there at all.
+   */
   readonly armazenado: readonly unknown[] | null;
+  /**
+   * Whether THIS app wrote {@link armazenado} (#2015) — the caller's
+   * `logisticaGravadaPeloErpShopee` (`@delfrance/schemas`) over the RAW link,
+   * never re-derived here or from a projected field. `false` skips the stored
+   * pass entirely: the full pass runs, `is_free` comes from the produto flag,
+   * and no stored `size_id` / `shipping_fee` is sent.
+   *
+   * ⚠️ REQUIRED, so every caller decides: an absent flag cannot quietly read as
+   * "trusted" and re-send a legacy list.
+   */
+  readonly armazenadoConfiavel: boolean;
+  /**
+   * The listing an import would re-read to replace a distrusted list — the
+   * link's live `item_id` (the kit converter's: its PREDECESSOR's). `null` for
+   * a draft, a first publish, a kit create and a `removido` link: there is
+   * nothing to import, so the refusal keeps `logistica-sem-canal`'s sentence.
+   */
+  readonly itemIdImportavel: number | null;
   readonly pesoKg: number | null;
   /** The WIRE triple, already in centimetres. Never the produto fields. */
   readonly dimensaoCm: ShopeeDimensionRequest | null;
@@ -331,8 +387,9 @@ type Tentativa =
  * Build the `logistic_info` entry for ONE channel.
  *
  * `sizeId` / `shippingFee` / `isFreeArmazenado` are what the STORED entry said,
- * or `null` on a first publish — the two fee types that need them have no other
- * source.
+ * or `null` on a first publish and on the full pass — which is also the only
+ * pass a distrusted list gets (#2015). The two fee types that need them have no
+ * other source.
  */
 function construirEntrada(
   canal: ShopeeLogisticsChannel,
@@ -375,13 +432,74 @@ function construirEntrada(
 
 const SEM_ARMAZENADO = { sizeId: null, shippingFee: null, isFree: null } as const;
 
-/** One problema naming the logistics refusal. */
-function problemaDeLogistica(mensagem: string): ProblemaDeBloqueio {
+/**
+ * One problema naming the logistics refusal — `logistica-sem-canal` unless the
+ * caller names the other member this module produces. Always campo
+ * `logistic_info`, never an `acao`.
+ */
+function problemaDeLogistica(
+  mensagem: string,
+  motivo: MotivoDeLogistica = MOTIVO_PUBLICACAO_BLOQUEADA.logisticaSemCanal,
+): ProblemaDeBloqueio {
   return {
     campo: 'logistic_info',
-    motivo: MOTIVO_PUBLICACAO_BLOQUEADA.logisticaSemCanal,
+    motivo,
     mensagem: limitarMensagemProblema(mensagem),
   };
+}
+
+/** What the `logistica-nao-confirmada` sentence names (#2015). */
+interface FaltaNaoConfirmada {
+  /** The value the compulsory channel lacked, worded for the sentence. */
+  readonly falta: 'um tamanho' | 'uma tarifa de frete';
+  /** {@link ArgsLogistica.itemIdImportavel}, never `null` here. */
+  readonly itemId: number;
+}
+
+/**
+ * What a lost compulsory channel lacked, when a DISTRUSTED stored list held a
+ * readable value for exactly that, plus the listing to import — or `null`,
+ * which keeps the `logistica-sem-canal` sentence (#2015).
+ *
+ * All four conditions, each one a near-miss test:
+ * 1. the list is distrusted (a trusted one already had its stored pass);
+ * 2. there is a listing to import — a draft or a `removido` link has none;
+ * 3. the channel was skipped for the missing VALUE (`size-selection-sem-size-id`
+ *    / `custom-price-sem-tarifa`), never for a fit or a shop-level reason —
+ *    {@link construirEntrada} checks those first, so this motivo also proves the
+ *    channel is enabled and the parcel fits;
+ * 4. a stored entry for that channel holds that value READABLY — through the
+ *    same {@link paraInteiroWire} / {@link paraNumeroWire} the stored pass uses,
+ *    so the sentence's "not re-sent" is exactly what a trusted copy would have
+ *    sent. A size where a fee was missing (or the reverse) does not count.
+ */
+function faltaNaoConfirmada(
+  args: ArgsLogistica,
+  pulados: readonly CanalPulado[],
+  logisticId: number,
+): FaltaNaoConfirmada | null {
+  if (args.armazenadoConfiavel) return null;
+  const itemId = args.itemIdImportavel;
+  if (itemId === null) return null;
+  const doCanal = (args.armazenado ?? []).filter(
+    (bruto) => paraInteiroWire(campo(bruto, 'logistic_id')) === logisticId,
+  );
+  for (const pulado of pulados) {
+    if (pulado.logisticId !== logisticId) continue;
+    if (
+      pulado.motivo === 'size-selection-sem-size-id' &&
+      doCanal.some((bruto) => paraInteiroWire(campo(bruto, 'size_id')) !== null)
+    ) {
+      return { falta: 'um tamanho', itemId };
+    }
+    if (
+      pulado.motivo === 'custom-price-sem-tarifa' &&
+      doCanal.some((bruto) => paraNumeroWire(campo(bruto, 'shipping_fee')) !== null)
+    ) {
+      return { falta: 'uma tarifa de frete', itemId };
+    }
+  }
+  return null;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -452,10 +570,13 @@ function passagemCompleta(
 /**
  * Build the item's `logistic_info`.
  *
- * The stored list wins when anything in it still validates; otherwise every
- * shop-enabled channel the parcel fits is enabled. An empty result is a
- * `logistica-sem-canal` refusal — `logistic_info` is REQUIRED on `add_item`, so
- * there is no such thing as publishing with none.
+ * A TRUSTED stored list ({@link ArgsLogistica.armazenadoConfiavel}) wins when
+ * anything in it still validates; otherwise — a distrusted list, none at all,
+ * or nothing that survives — every shop-enabled channel the parcel fits is
+ * enabled. An empty result is a `logistica-sem-canal` refusal — `logistic_info`
+ * is REQUIRED on `add_item`, so there is no such thing as publishing with none.
+ * A lost compulsory channel is `logistica-sem-canal` too, except the one case
+ * {@link faltaNaoConfirmada} names (`logistica-nao-confirmada`).
  */
 export function construirLogistica(args: ArgsLogistica): ResultadoLogistica {
   const canais = args.canais.filter((c): c is ShopeeLogisticsChannel => c != null);
@@ -464,8 +585,10 @@ export function construirLogistica(args: ArgsLogistica): ResultadoLogistica {
 
   // ⚠️ When the stored list validates to EMPTY its `pulados` are discarded with
   // it: the full pass below walks the same channels and reports its own reasons,
-  // and keeping both would list every channel twice.
-  const armazenada = passagemArmazenada(args, porId);
+  // and keeping both would list every channel twice. A DISTRUSTED list (#2015)
+  // never runs the stored pass at all — an empty pass stands in for it, so the
+  // full pass runs and reports only its own reasons.
+  const armazenada = args.armazenadoConfiavel ? passagemArmazenada(args, porId) : novaPassagem();
   const passagem = armazenada.entradas.length > 0 ? armazenada : passagemCompleta(args, canais);
 
   const canaisHabilitados: number[] = [];
@@ -484,6 +607,25 @@ export function construirLogistica(args: ArgsLogistica): ResultadoLogistica {
 
   const problemas: ProblemaDeBloqueio[] = [];
   for (const logisticId of passagem.inescapaveisPerdidos) {
+    const naoConfirmada = faltaNaoConfirmada(args, passagem.pulados, logisticId);
+    if (naoConfirmada !== null) {
+      // ⚠️ The claim is "no RECORD", never "not read / not sent": a missing
+      // stamp proves only that nothing in this app vouches for the list. A
+      // legacy import DID read it from Shopee, and a link this app wrote before
+      // #2015 WAS sent by it. The web's copy makes the same claim, and shows
+      // this sentence beside it as «Detalhe:».
+      problemas.push(
+        problemaDeLogistica(
+          `O canal obrigatório ${String(logisticId)} precisa de ${naoConfirmada.falta}, ` +
+            `e o ERP não tem registro de ter lido da Shopee nem de ter enviado a ela o ` +
+            `valor gravado neste vínculo, então esse valor não é reenviado. Importe o ` +
+            `anúncio ${String(naoConfirmada.itemId)} para gravar os valores atuais da ` +
+            `Shopee e publique de novo.`,
+          MOTIVO_PUBLICACAO_BLOQUEADA.logisticaNaoConfirmada,
+        ),
+      );
+      continue;
+    }
     problemas.push(
       problemaDeLogistica(
         `O canal obrigatório ${String(logisticId)} não pôde ser habilitado: ` +

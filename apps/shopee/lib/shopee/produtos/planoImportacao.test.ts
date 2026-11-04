@@ -7,11 +7,16 @@ import {
   shopeeModelSchema,
   type ShopeeModel,
 } from '@delfrance/integrations-shopee';
-import { importacaoShopeeOptionsSchema, type ImportacaoShopeeOptions } from '@delfrance/schemas';
+import {
+  importacaoShopeeOptionsSchema,
+  logisticaGravadaPeloErpShopee,
+  type ImportacaoShopeeOptions,
+} from '@delfrance/schemas';
 
 import { ShopeeImportBlockedError } from './errosImportacao';
 import type { ItemLido } from './itemLido';
 import {
+  CAMPOS_LIMPOS_NA_ADOCAO_SHOPEE,
   idCategoriaShopee,
   planejarImportacaoShopee,
   type PreparoFilhoShopee,
@@ -684,5 +689,72 @@ describe('planejarImportacaoShopee — a adoção de um rascunho (#1911)', () =>
     expect(plano.filhos[0]?.link?.dados.produtoShopeeOuterRef).toBe(
       `documents/produtos/${plano.produtoId}/prodshopee/rasc-1`,
     );
+  });
+});
+
+/* ------- #2015 — o carimbo de procedência da lista, nos três ramos do vínculo ------- */
+
+describe('planejarImportacaoShopee — `logisticaGravadaEm` no vínculo do pai (#2015)', () => {
+  const DESDE_MS = 1_756_999_000_000;
+  /** A lista que a Shopee responde AGORA. */
+  const LISTA_LIDA = [{ logistic_id: 1, is_free: false, size_id: 7 }];
+  /** Um rascunho LEGADO: a lista que o legado gravou, e o `null` que nenhum escritor nosso pôs. */
+  const RASCUNHO_LEGADO = {
+    item_id: null,
+    contaProdutoShopeeOuterRef: `documents/integracao/${INTEGRACAO}`,
+    logistic_info: [{ logistic_id: 99, is_free: true, shipping_fee: 12.9 }],
+    logisticaGravadaEm: null,
+    publicacaoEmCurso: { desde: DESDE_MS, expiraEm: DESDE_MS + 300_000, token: 'tok' },
+    criacaoIncertaDesde: DESDE_MS,
+  };
+
+  function plano(linkPai: PreparoImportacaoShopee['linkPai']) {
+    return planejarImportacaoShopee(
+      preparo({
+        entrada: item({ price_info: PRECO_BRL, logistic_info: LISTA_LIDA }),
+        linkPai,
+      }),
+    );
+  }
+
+  it('a ADOÇÃO de um rascunho legado: os `dados` carregam a lista da Shopee E o carimbo `nowMs`', () => {
+    const p = plano({ id: 'rasc-1', raw: RASCUNHO_LEGADO, rascunhoAdotado: true });
+    if (p.linkPai.acao !== 'adotar') throw new Error('esperava uma adoção');
+    expect(p.linkPai.dados).toHaveProperty('logisticaGravadaEm', AGORA);
+    expect(p.linkPai.dados.logistic_info).toEqual([
+      expect.objectContaining({ logistic_id: 1, is_free: false, size_id: 7 }),
+    ]);
+  });
+
+  it('⛔ o carimbo NÃO é de primeira vez nem é limpo: fora de `seAusentes` e fora da `limpeza`', () => {
+    const p = plano({ id: 'rasc-1', raw: RASCUNHO_LEGADO, rascunhoAdotado: true });
+    if (p.linkPai.acao !== 'adotar') throw new Error('esperava uma adoção');
+    // `seAusentes` só escreve sobre um armazenado vazio — um carimbo ali NÃO
+    // substituiria um carimbo anterior; a `limpeza` é espalhada DEPOIS dos
+    // `dados` pelo escritor, então um `null` ali apagaria o carimbo.
+    expect(p.linkPai.seAusentes).not.toHaveProperty('logisticaGravadaEm');
+    expect(p.linkPai.limpeza).not.toHaveProperty('logisticaGravadaEm');
+    expect(p.linkPai.seAusentes).toEqual({ dataCadastro: AGORA });
+    // O documento que o update guardado deixa (a ordem de `links.ts`): confiável.
+    const depois = { ...RASCUNHO_LEGADO, ...p.linkPai.dados, ...p.linkPai.limpeza };
+    expect(logisticaGravadaPeloErpShopee(depois)).toBe(true);
+  });
+
+  it('⛔ `CAMPOS_LIMPOS_NA_ADOCAO_SHOPEE` não nomeia o carimbo — nem a lista que ele atesta', () => {
+    expect(Object.keys(CAMPOS_LIMPOS_NA_ADOCAO_SHOPEE)).not.toContain('logisticaGravadaEm');
+    expect(Object.keys(CAMPOS_LIMPOS_NA_ADOCAO_SHOPEE)).not.toContain('logistic_info');
+  });
+
+  it('PAR: o MESMO documento sem a marca de adoção (o `merge` com spread) e o `add` também saem carimbados', () => {
+    const merge = plano({ id: 'rasc-1', raw: RASCUNHO_LEGADO });
+    expect(merge.linkPai.acao).toBe('merge');
+    expect(merge.linkPai.dados).toMatchObject({
+      logisticaGravadaEm: AGORA,
+      logistic_info: [expect.objectContaining({ logistic_id: 1 })],
+    });
+
+    const add = plano(null);
+    expect(add.linkPai.acao).toBe('add');
+    expect(add.linkPai.dados).toHaveProperty('logisticaGravadaEm', AGORA);
   });
 });

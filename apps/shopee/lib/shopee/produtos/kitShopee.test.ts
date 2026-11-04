@@ -18,6 +18,7 @@ import {
   chaveAvisoReceitaKitShopee,
   chaveReceitaKitErp,
   importacaoShopeeOptionsSchema,
+  logisticaGravadaPeloErpShopee,
   productArquivoId,
   toOuterRef,
   type ImportacaoShopeeOptions,
@@ -824,6 +825,57 @@ describe('importarKitShopee — `kitNativo` no vínculo da listagem', () => {
     // passo 13 não pula mais um kit nativo desde o passo 19: ele o planeja e
     // envia o preço por `update_kit_item` — `precos/kitNativoImportado.test.ts`.)
     expect(kitNativoDoAnuncio(vinculo, { ehKitVirtual: false })).toBe(true);
+  });
+});
+
+/* ------------- 4c. #2015 — a lista do kit e o seu carimbo de procedência ------------- */
+
+describe('importarKitShopee — `logisticaGravadaEm` no vínculo do kit (#2015)', () => {
+  /** O vínculo DETERMINÍSTICO do kit — o `add` do plano vira `merge` nele. */
+  const CAMINHO_DO_VINCULO = `produtos/${PAI_ID}/prodshopee/${idDoVinculoDeKit(INTEGRACAO, ITEM_ID)}`;
+  const LISTA_DO_KIT = [{ logistic_id: 1, is_free: false, size_id: 7 }];
+  const LISTA_LEGADA = [{ logistic_id: 99, is_free: true, shipping_fee: 12.9 }];
+  const kitComLista = () => entradaDeKit(kit({ logistic_info: LISTA_DO_KIT }));
+
+  it('o vínculo do pai (id DERIVADO, merge) carrega a lista da página do kit E o carimbo `nowMs`', async () => {
+    const db = new FakeDb();
+    semearComponentePorListagem(db, 'comp-a', COMPONENTE_A);
+
+    await importarKitShopee(deps(db), kitComLista());
+
+    expect(vinculosDoPai(db).map((v) => v.caminho)).toEqual([CAMINHO_DO_VINCULO]);
+    const escritas = db.writes.filter((w) => w.path === CAMINHO_DO_VINCULO);
+    expect(escritas).toHaveLength(1);
+    expect(escritas[0]?.patch).toHaveProperty('logisticaGravadaEm', AGORA);
+    const dados = vinculosDoPai(db)[0]?.dados ?? {};
+    expect(dados.logistic_info).toEqual([
+      expect.objectContaining({ logistic_id: 1, is_free: false, size_id: 7 }),
+    ]);
+    expect(logisticaGravadaPeloErpShopee(dados)).toBe(true);
+  });
+
+  it('⛔ NEAR-MISS: um re-import sobre um vínculo com a lista LEGADA e `logisticaGravadaEm: null` regrava os DOIS — o carimbo é o `nowMs` do re-import', async () => {
+    const db = new FakeDb();
+    semearComponentePorListagem(db, 'comp-a', COMPONENTE_A);
+    await importarKitShopee(deps(db), kitComLista());
+    const [vinculo] = vinculosDoPai(db);
+    db.seed(CAMINHO_DO_VINCULO, {
+      ...vinculo?.dados,
+      logistic_info: LISTA_LEGADA,
+      logisticaGravadaEm: null,
+    });
+    expect(logisticaGravadaPeloErpShopee(vinculosDoPai(db)[0]?.dados ?? {})).toBe(false);
+    const depois = AGORA + 3_600_000;
+
+    await importarKitShopee(deps(db, { nowMs: depois }), kitComLista());
+
+    const vinculos = vinculosDoPai(db);
+    expect(vinculos.map((v) => v.caminho)).toEqual([CAMINHO_DO_VINCULO]);
+    expect(vinculos[0]?.dados.logisticaGravadaEm).toBe(depois);
+    expect(vinculos[0]?.dados.logistic_info).toEqual([
+      expect.objectContaining({ logistic_id: 1, is_free: false }),
+    ]);
+    expect(logisticaGravadaPeloErpShopee(vinculos[0]?.dados ?? {})).toBe(true);
   });
 });
 

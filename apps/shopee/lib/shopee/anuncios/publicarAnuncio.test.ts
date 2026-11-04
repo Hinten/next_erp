@@ -34,6 +34,7 @@ import {
   TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE,
   entradaTabelaShopeeSchema,
   inicioDaJanelaDaCriacaoShopeeS,
+  logisticaGravadaPeloErpShopee,
   varianteFakePath,
 } from '@delfrance/schemas';
 
@@ -72,6 +73,7 @@ import {
 import {
   aplicarPublicacao,
   criarResolvedorDePublicacao,
+  dadosDoWriteBack1,
   prepararPublicacao,
   publicarAnuncioShopee,
   resolverFotosDaPublicacao,
@@ -1601,6 +1603,150 @@ describe('aplicarPublicacao — kitNativo no write-back #2 (passo 19, R-1)', () 
 
   it('⚠️ NEAR-MISS: a MESMA leitura com tag.kit true grava true — o valor vem da leitura, não de uma constante', async () => {
     expect(await kitNativoGravado({ kit: true })).toBe(true);
+  });
+});
+
+/* ========================================================================== */
+/*  (5c) #2015 — the provenance stamp of logistic_info                          */
+/* ========================================================================== */
+
+describe('aplicarPublicacao — o carimbo de proveniência da logística (#2015)', () => {
+  /** A list the LEGACY app left: `is_free: true` the produto flag (false) never asked for. */
+  const LISTA_LEGADA = [{ logistic_id: CANAL, enabled: true, is_free: true }] as const;
+
+  /** The ONE `update_item` / `add_item` body the fake received. */
+  function corpoDoItem(fake: ClienteFake): Record<string, unknown> {
+    const corpo = fake.corpos.find((c) => 'logistic_info' in c);
+    if (corpo === undefined) throw new Error('fixture: nenhum corpo de item foi enviado');
+    return corpo;
+  }
+
+  it('um UPDATE (merge) de um vínculo LEGADO sem carimbo: a passagem COMPLETA vai, o write-back #1 grava a lista ENVIADA + o carimbo, o #2 a LIDA + o carimbo', async () => {
+    const db = new FakeDb();
+    semearCatalogo(db);
+    semearLink(db, { logistic_info: LISTA_LEGADA });
+    const fake = clienteFake({
+      updateItem: () => ecoDeItem(),
+      getItemBaseInfo: () => baseInfo([linhaDeLeitura({ has_model: false })]),
+    });
+
+    const { plano } = await planejar(db, fake);
+    await aplicarPublicacao(deps(db, fake), plano);
+
+    // Distrusted ⇒ the full pass: is_free from the produto flag (false), never the legacy `true`.
+    const enviada = corpoDoItem(fake).logistic_info;
+    expect(enviada).toEqual([{ logistic_id: CANAL, enabled: true, is_free: false }]);
+    const [wb1, wb2, ...resto] = patchesDoLink(db);
+    expect(resto).toEqual([]);
+    // Write-back #1: the list AS SENT and the stamp, in the same patch.
+    expect(wb1).toMatchObject({ logistic_info: enviada, logisticaGravadaEm: AGORA });
+    // Write-back #2: the list AS READ and the stamp, in the same patch.
+    expect(wb2?.logisticaGravadaEm).toBe(AGORA);
+    expect(wb2?.logistic_info).toEqual([expect.objectContaining({ logistic_id: CANAL })]);
+    // The next publish trusts what this one wrote.
+    expect(logisticaGravadaPeloErpShopee(db.store[CAMINHO_LINK]?.data ?? null)).toBe(true);
+  });
+
+  it('⛔ PAR: o MESMO vínculo JÁ carimbado reenvia a lista gravada (is_free true) — a projeção leva o carimbo até o plano', async () => {
+    const db = new FakeDb();
+    semearCatalogo(db);
+    semearLink(db, { logistic_info: LISTA_LEGADA, logisticaGravadaEm: AGORA - 86_400_000 });
+    const fake = clienteFake({
+      updateItem: () => ecoDeItem(),
+      getItemBaseInfo: () => baseInfo([linhaDeLeitura({ has_model: false })]),
+    });
+
+    const { plano, contexto } = await planejar(db, fake);
+    expect(contexto.link?.logisticaConfiavel).toBe(true);
+    await aplicarPublicacao(deps(db, fake), plano);
+
+    expect(corpoDoItem(fake).logistic_info).toEqual([
+      { logistic_id: CANAL, enabled: true, is_free: true },
+    ]);
+    // Re-stamped with THIS run's clock — the stored stamp is never carried.
+    expect(patchesDoLink(db)[0]).toMatchObject({ logisticaGravadaEm: AGORA });
+  });
+
+  it('um CREATE (add): o write-back #1 cria o vínculo com a lista ENVIADA e o carimbo', async () => {
+    const db = new FakeDb();
+    semearCatalogo(db);
+    const fake = clienteFake({ addItem: () => ecoDeItem() });
+
+    const { plano } = await planejar(db, fake);
+    await aplicarPublicacao(deps(db, fake), plano);
+
+    expect(db.writes[0]?.path).toBe(`produtos/${PAI}/prodshopee/auto-1`);
+    expect(db.writes[0]?.patch).toMatchObject({
+      logistic_info: corpoDoItem(fake).logistic_info,
+      logisticaGravadaEm: AGORA,
+    });
+  });
+
+  it('a leitura de volta que não acha o item (item null) PULA o #2 — e o carimbo do #1 FICA no vínculo', async () => {
+    const db = new FakeDb();
+    semearCatalogo(db);
+    semearLink(db, { logistic_info: LISTA_LEGADA });
+    const fake = clienteFake({
+      updateItem: () => ecoDeItem(),
+      getItemBaseInfo: () => {
+        throw erroApi(
+          'error_item_not_found',
+          'Shopee respondeu error_item_not_found',
+          '/api/v2/product/get_item_base_info',
+        );
+      },
+    });
+
+    const { plano } = await planejar(db, fake);
+    const r = await aplicarPublicacao(deps(db, fake), plano);
+
+    expect(r.leituraDeVolta).toBe(false);
+    const patches = patchesDoLink(db);
+    expect(patches).toHaveLength(1);
+    expect(patches[0]).toMatchObject({
+      logistic_info: corpoDoItem(fake).logistic_info,
+      logisticaGravadaEm: AGORA,
+    });
+    expect(db.store[CAMINHO_LINK]?.data).toMatchObject({
+      logistic_info: [{ logistic_id: CANAL, enabled: true, is_free: false }],
+      logisticaGravadaEm: AGORA,
+    });
+  });
+});
+
+describe('dadosDoWriteBack1 — o carimbo vai na MESMA condição da lista (#2015)', () => {
+  type Corpo = Parameters<typeof dadosDoWriteBack1>[1]['corpo'];
+  const D = { integracaoId: INTEGRACAO, nowMs: AGORA };
+  const ARGS = { itemId: ITEM_ID, etapa: ETAPA_PUBLICACAO.updateItem, taxInfoOmitido: null };
+  const LISTA = [{ logistic_id: CANAL, enabled: true, is_free: false }];
+
+  it('um corpo COM a lista grava as DUAS chaves — o carimbo é deps.nowMs, nunca o gravado', () => {
+    const dados = dadosDoWriteBack1(
+      D,
+      { ...ARGS, corpo: { item_id: ITEM_ID, logistic_info: LISTA } as unknown as Corpo },
+      { logistic_info: [{ logistic_id: 1 }], logisticaGravadaEm: 1 },
+    );
+
+    expect(dados.logistic_info).toBe(LISTA);
+    expect(dados.logisticaGravadaEm).toBe(AGORA);
+  });
+
+  it('⛔ quase-par: um corpo SEM a lista não grava NENHUMA das duas — enquanto o ultimaPublicacao (incondicional) é gravado', () => {
+    const dados = dadosDoWriteBack1(
+      D,
+      { ...ARGS, corpo: { item_id: ITEM_ID, item_name: 'Camiseta' } as unknown as Corpo },
+      {},
+    );
+
+    expect(dados).not.toHaveProperty('logistic_info');
+    expect(dados).not.toHaveProperty('logisticaGravadaEm');
+    // The unconditional neighbour is still written — the stamp is not its sibling.
+    expect(dados.ultimaPublicacao).toEqual({
+      em: AGORA,
+      etapa: ETAPA_PUBLICACAO.updateItem,
+      itemId: ITEM_ID,
+    });
+    expect(dados.item_name).toBe('Camiseta');
   });
 });
 
@@ -5868,6 +6014,169 @@ describe('publicarAnuncioShopee — o RASCUNHO sob a trava (#1911, D4/D15)', () 
 
       expect(contexto?.link?.marcaNaoEscolhida).toBe(esperado);
       expect(db.writes).toEqual([]);
+    });
+  });
+
+  describe('logisticaConfiavel (#2015, Lucas D1) — o preparar lê o CARIMBO no documento CRU', () => {
+    const LISTA = [{ logistic_id: CANAL, enabled: true, is_free: true }];
+    /** What ENSURE's adoption leaves (`reservaRascunho.ts`): an item_id, the legacy list kept. */
+    const ADOTADO = {
+      item_id: ITEM_ID,
+      logistic_info: LISTA,
+      publicacaoEmCurso: null,
+      criacaoIncertaDesde: null,
+      criacaoIncertaSku: null,
+      falhaPublicacao: null,
+      ultimaModificacao: AGORA,
+    };
+
+    it.each([
+      ['anúncio com a lista E o carimbo', { item_id: ITEM_ID, logisticaGravadaEm: AGORA }, true],
+      [
+        'carimbo 0 — a PRESENÇA decide, nunca a idade',
+        { item_id: ITEM_ID, logisticaGravadaEm: 0 },
+        true,
+      ],
+      ['rascunho CARIMBADO', { item_id: null, logisticaGravadaEm: AGORA }, true],
+      ['anúncio LEGADO: a lista sem carimbo', { item_id: ITEM_ID }, false],
+      ['carimbo null', { item_id: ITEM_ID, logisticaGravadaEm: null }, false],
+      ['carimbo em TEXTO', { item_id: ITEM_ID, logisticaGravadaEm: String(AGORA) }, false],
+      ['rascunho LEGADO com a lista, sem carimbo', { item_id: null }, false],
+      ['ADOTADO pelo ENSURE: item_id + a lista legada, sem carimbo', ADOTADO, false],
+      ['⛔ PAR: o MESMO adotado, carimbado', { ...ADOTADO, logisticaGravadaEm: AGORA }, true],
+      [
+        'ultimaPublicacao SEM carimbo (D1: não é sinal de confiança)',
+        {
+          item_id: ITEM_ID,
+          ultimaPublicacao: { em: AGORA, etapa: ETAPA_PUBLICACAO.updateItem, itemId: ITEM_ID },
+        },
+        false,
+      ],
+    ])('%s ⇒ %s', async (_nome, corpo, esperado) => {
+      const db = new FakeDb();
+      semearCatalogo(db);
+      semearRascunho(db, { logistic_info: LISTA, ...corpo });
+      const fake = clienteFake();
+
+      const contexto = await prepararPublicacao(
+        deps(db, fake),
+        entrada({ linkDocId: RASCUNHO }),
+        resolvedorQueRecusa(),
+      );
+
+      expect(contexto?.link?.logisticaConfiavel).toBe(esperado);
+      // Projected either way: a distrusted list is never re-sent, but its
+      // refusal reads it.
+      expect(contexto?.link?.logistic_info).toEqual(LISTA);
+      expect(db.writes).toEqual([]);
+    });
+  });
+
+  describe('o carimbo da logística (#2015) — a reivindicação e a adoção', () => {
+    const LISTA_LEGADA = [{ logistic_id: CANAL, enabled: true, is_free: true }];
+
+    /** The `logistic_info` of the ONE item body sent — by `op`, the only item write of the run. */
+    function corpoEnviado(fake: ClienteFake, op: 'add_item' | 'update_item'): unknown {
+      expect(
+        fake.ops.filter((o) => o === op),
+        op,
+      ).toHaveLength(1);
+      const corpos = fake.corpos.filter((c) => 'logistic_info' in c);
+      expect(corpos, op).toHaveLength(1);
+      return corpos[0]?.logistic_info;
+    }
+
+    it('a reivindicação GUARDADA (ainda rascunho) grava a lista ENVIADA e o carimbo no MESMO update', async () => {
+      const db = new FakeDb();
+      semearCatalogo(db);
+      semearRascunho(db);
+      const fake = clienteFake({ addItem: () => ecoDeItem() });
+
+      await publicarAnuncioShopee(depsDoRascunho(db, fake), entrada({ linkDocId: RASCUNHO }));
+
+      const reivindicacao = db.patches.find(
+        (p) => p.path === CAMINHO_RASCUNHO && p.patch.item_id === ITEM_ID,
+      )?.patch;
+      expect(reivindicacao).toMatchObject({
+        publicacaoEmCurso: null,
+        logistic_info: corpoEnviado(fake, 'add_item'),
+        logisticaGravadaEm: AGORA,
+      });
+      expect(logisticaGravadaPeloErpShopee(doRascunho(db) ?? null)).toBe(true);
+    });
+
+    it('a reivindicação BIFURCADA (o rascunho foi de OUTRO item) carimba o vínculo NOVO; o do outro fica como estava', async () => {
+      const db = new FakeDb();
+      semearCatalogo(db);
+      semearRascunho(db, { logistic_info: LISTA_LEGADA });
+      const fake = clienteFake({
+        addItem: () => {
+          db.seed(CAMINHO_RASCUNHO, {
+            ...doRascunho(db),
+            item_id: ITEM_ALHEIO,
+            publicacaoEmCurso: null,
+          });
+          return ecoDeItem();
+        },
+        getItemBaseInfo: () => baseInfo([linhaDeLeitura({ has_model: false })]),
+      });
+
+      const r = await publicarAnuncioShopee(
+        depsDoRascunho(db, fake),
+        entrada({ linkDocId: RASCUNHO }),
+      );
+
+      expect(r?.linkDocId).not.toBe(RASCUNHO);
+      const novo = `${COLECAO}/${String(r?.linkDocId)}`;
+      expect(db.writes.find((w) => w.path === novo)?.patch).toMatchObject({
+        item_id: ITEM_ID,
+        logistic_info: corpoEnviado(fake, 'add_item'),
+        logisticaGravadaEm: AGORA,
+      });
+      // The other run's document: its legacy list and its absent stamp untouched.
+      expect(doRascunho(db)).not.toHaveProperty('logisticaGravadaEm');
+      expect(doRascunho(db)?.logistic_info).toEqual(LISTA_LEGADA);
+    });
+
+    it('(carry-forward) a ADOÇÃO do ENSURE não carimba: o update_item retomado manda a passagem COMPLETA, nunca o is_free true LEGADO — ⛔ PAR: o MESMO rascunho carimbado reenvia a lista', async () => {
+      for (const [carimbo, isFreeEnviado] of [
+        [null, false],
+        [AGORA - 86_400_000, true],
+      ] as const) {
+        const rotulo = carimbo === null ? 'legado' : 'carimbado';
+        const db = new FakeDb();
+        semearCatalogo(db);
+        semearRascunho(db, {
+          criacaoIncertaDesde: AGORA - 600_000,
+          logistic_info: LISTA_LEGADA,
+          ...(carimbo === null ? {} : { logisticaGravadaEm: carimbo }),
+        });
+        const fake = clienteFake({
+          getItemList: () => listaDaJanela([ITEM_ID]),
+          getItemBaseInfo: (p) =>
+            baseInfo(p.itemIds.map((id) => achadoNaJanela(id, { has_model: false }))),
+          updateItem: () => ecoDeItem(),
+        });
+
+        const r = await publicarAnuncioShopee(
+          depsDoRascunho(db, fake),
+          entrada({ linkDocId: RASCUNHO }),
+        );
+
+        expect(r, rotulo).toMatchObject({ itemId: ITEM_ID, ehAtualizacao: true });
+        expect(fake.ops, rotulo).not.toContain('add_item');
+        expect(corpoEnviado(fake, 'update_item'), rotulo).toEqual([
+          { logistic_id: CANAL, enabled: true, is_free: isFreeEnviado },
+        ]);
+        // The adoption itself (ENSURE's tier-1 update) wrote no stamp…
+        const adocao = db.patches.find(
+          (p) => p.path === CAMINHO_RASCUNHO && p.patch.item_id === ITEM_ID,
+        )?.patch;
+        expect(adocao, rotulo).toMatchObject({ criacaoIncertaDesde: null });
+        expect(adocao, rotulo).not.toHaveProperty('logisticaGravadaEm');
+        // …and the resumed update's own write-backs did, with THIS run's clock.
+        expect(doRascunho(db)?.logisticaGravadaEm, rotulo).toBe(AGORA);
+      }
     });
   });
 

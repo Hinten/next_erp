@@ -48,7 +48,7 @@
  * operator can never give a listing a marketplace-optimised name of its own).
  * The produto is the fallback, which is what a first publish uses.
  *
- * ## The vocabulary this file PRODUCES (nineteen of thirty-one)
+ * ## The vocabulary this file PRODUCES (nineteen of thirty-two)
  *
  * `sem-nome`, `nome-fora-da-faixa`, `sem-descricao`, `descricao-fora-da-faixa`,
  * `sem-preco`, `filho-sem-preco`, `preco-fora-da-faixa`, `sem-peso`,
@@ -60,9 +60,11 @@
  * `ehAtualizacao` like the five create-only members: a draft has no `item_id`,
  * so it only ever reaches the create body, and the flag alone decides.
  *
- * The other twelve are produced ELSEWHERE and are listed here so a reader does not
- * hunt for them in this file: `variacao-sem-vinculo`, `combinacao-duplicada` and
- * `opcoes-demais` are `anuncios/tiersPublicacao.ts`'s; `logistica-sem-canal` is
+ * The other thirteen are produced ELSEWHERE and are listed here so a reader does
+ * not hunt for them in this file: `variacao-sem-vinculo`, `combinacao-duplicada`
+ * and `opcoes-demais` are `anuncios/tiersPublicacao.ts`'s; `logistica-sem-canal`
+ * and, since #2015, `logistica-nao-confirmada` (a compulsory channel whose size
+ * or fee only a stored list this app did not write holds) are
  * `anuncios/logisticaPublicacao.ts`'s, and this module RELAYS that module's
  * `problemas[]` rather than re-deciding it; and, since #1911 (P5, D5),
  * `criacao-incerta-ambigua`, `busca-de-anuncio-incompleta`,
@@ -211,12 +213,16 @@ export interface ProdutoParaPublicar {
 }
 
 /**
- * The stored `prodshopee` fields the ITEM payload reads.
+ * The stored `prodshopee` fields the ITEM payload reads, as projected by the ONE
+ * builder, `linkListagemLido` in `publicarAnuncio.ts`.
  *
- * Structurally a subset of `produtoShopeeLinkSchema`'s inferred type, so a parsed
- * link document is assignable without a projection step. `logistic_info` is
- * carried for the CALLER's benefit — it is what `construirLogistica` takes as its
- * `armazenado` — and is not read here.
+ * Most members mirror `produtoShopeeLinkSchema`'s fields; three are readings of
+ * the RAW document that only that builder computes — {@link ehRascunho}
+ * (optional), {@link marcaNaoEscolhida} and {@link logisticaConfiavel} (both
+ * REQUIRED, so a builder that forgets one fails to compile). `logistic_info` and {@link logisticaConfiavel} are carried
+ * for the CALLER's benefit — the plan hands them to `construirLogistica` as its
+ * `armazenado` and `armazenadoConfiavel` — and are not read here. The list is
+ * projected even when it is distrusted, because the refusal reads it (#2015).
  */
 export interface LinkListagemLido {
   readonly item_id: number | null;
@@ -279,6 +285,25 @@ export interface LinkListagemLido {
    * keeps today's cascade (D10 leaves every non-draft link untouched).
    */
   readonly marcaNaoEscolhida: boolean;
+  /**
+   * Whether THIS app wrote the stored {@link logistic_info} (#2015) —
+   * `logisticaGravadaPeloErpShopee` (`@delfrance/schemas`, THE one predicate,
+   * keyed on the provenance stamp `logisticaGravadaEm` ALONE) over the RAW
+   * document. Set by the ONE builder, `linkListagemLido` in
+   * `publicarAnuncio.ts`; read by `planoPublicacao.ts` alone, which hands it to
+   * `construirLogistica` as `armazenadoConfiavel`. Not read here.
+   *
+   * ⚠️ **Never re-derived from `item_id`, {@link ehRascunho}, `estadoAnuncio` or
+   * `ultimaPublicacao`** (Lucas D1): ENSURE's adoption turns a legacy draft into
+   * a listing that keeps its legacy list, and `ultimaPublicacao` is stamped
+   * whether or not a list was sent — none of them says who wrote the list.
+   *
+   * ⚠️ **REQUIRED, like {@link marcaNaoEscolhida}.** A builder that forgot it
+   * must fail to compile: an absent flag cannot be allowed to read as
+   * "trusted" and re-send a legacy list. `false` is the safe direction — the
+   * full pass runs.
+   */
+  readonly logisticaConfiavel: boolean;
 }
 
 /**

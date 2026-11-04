@@ -386,8 +386,8 @@ export const FRASE_RECUSA_SEM_PASSO_RASCUNHO_SHOPEE =
  *    unless it reads as a terminal instruction, which becomes
  *    {@link FRASE_RECUSA_SEM_PASSO_SHOPEE}. A worded motivo whose sentence
  *    carries a fact the copy cannot (`busca-de-anuncio-existente-incompleta`:
- *    WHICH listings Shopee left out) shows it beside the copy, when it is not
- *    terminal text.
+ *    WHICH listings Shopee left out; `logistica-nao-confirmada`: which channel,
+ *    which listing) shows it beside the copy, when it is not terminal text.
  *  - `importar` (#1911 P11): an ordinary-listing motivo of
  *    {@link TEXTO_MOTIVO_ANUNCIO_SHOPEE} reads ITS copy and then every id with
  *    its state — «(sem vínculo)», «(deste produto)», «(do produto X)»
@@ -1085,18 +1085,20 @@ export const FRASE_MARCA_NAO_ESCOLHIDA_SHOPEE =
   'Escolha a marca deste rascunho (ou «Sem marca») antes de publicar.';
 
 /**
- * The ordinary listing's refusal motivos the tab words or BRANCHES on (#1911)
- * — apps/shopee's vocabulary (`anuncios/errosPublicacao.ts`'s
- * `MOTIVO_PUBLICACAO_BLOQUEADA` and the wire-only `anuncio-semelhante-existente`),
- * which the browser cannot import, so spelled ONCE, here. Every reader — the
- * copy maps below, the Seller-Centre attestation exits and the SKU routing
- * allow-list (`./rascunho.ts`) — keys on these.
+ * The ordinary listing's refusal motivos the tab words or BRANCHES on (#1911;
+ * `logistica-nao-confirmada` since #2015) — apps/shopee's vocabulary
+ * (`anuncios/errosPublicacao.ts`'s `MOTIVO_PUBLICACAO_BLOQUEADA` and the
+ * wire-only `anuncio-semelhante-existente`), which the browser cannot import,
+ * so spelled ONCE, here. Every reader — the copy maps below, the Seller-Centre
+ * attestation exits, the SKU routing allow-list and the logistics row's
+ * weight-button exclusion (`./rascunho.ts`) — keys on these.
  *
  * ⚠️ A server rename fails closed only for BUTTONS and ROUTES (K2-14): the
  * row loses its exit and its field route. The COPY does not fail safe — the
  * four `importar` rows fall back to `textoDoImportar`, which opens with the KIT
  * sentence, and a renamed `marca-nao-escolhida` ADDS the «a marca pode não
- * valer» aviso (`superficieDoCampoShopee` is a deny-list). So a rename is
+ * valer» aviso (`superficieDoCampoShopee` is a deny-list), as a renamed
+ * `logistica-nao-confirmada` gets back the weight button. So a rename is
  * caught by apps/shopee's cross-app pin (`anuncios/errosPublicacao.test.ts`
  * reads this block as text — keep its header line byte-identical). Never a
  * prefix match.
@@ -1114,6 +1116,7 @@ export const MOTIVO_ANUNCIO_SHOPEE = {
   anuncioExistenteDeOutroProduto: 'anuncio-existente-de-outro-produto',
   buscaDeAnuncioExistenteIncompleta: 'busca-de-anuncio-existente-incompleta',
   anuncioSemelhanteExistente: 'anuncio-semelhante-existente',
+  logisticaNaoConfirmada: 'logistica-nao-confirmada',
 } as const satisfies Record<string, string>;
 export type MotivoAnuncioShopee =
   (typeof MOTIVO_ANUNCIO_SHOPEE)[keyof typeof MOTIVO_ANUNCIO_SHOPEE];
@@ -1360,6 +1363,19 @@ export const FRASE_ATESTACAO_SEM_CRIACAO_INCERTA_FORA_DO_RASCUNHO_SHOPEE = `${FA
  * - `anuncio-semelhante-existente` — Shopee's `error_repeated_mtsku`, a WIRE
  *   refusal (its sentence is Shopee's English); also stamped on the link, so
  *   the stored row reads it too ({@link textoDaRecusaGuardadaShopee}).
+ *
+ * #2015 — the logistics provenance refusal (Lucas D3):
+ * - `logistica-nao-confirmada` — a compulsory channel needs a size or a fee
+ *   that only the link's stored `logistic_info` holds, and nothing records
+ *   that THIS app wrote that list (`logisticaGravadaEm` absent: the legacy
+ *   app's, or written before the stamp existed), so publish does not re-send
+ *   it. The server emits it only for a listing an import can re-read. The
+ *   remedy is that import, and the one web door that re-reads an ALREADY
+ *   LINKED listing is the mass import with «Atualizar anúncios já
+ *   cadastrados» ticked (off, it skips every linked listing) — never a weight
+ *   button (`./rascunho.ts`). Worded as "no record", never "this ERP never
+ *   wrote it": true on any link the stamp does not vouch for. The server's
+ *   sentence follows as «Detalhe:» ({@link MOTIVOS_COM_A_FRASE_DO_SERVIDOR}).
  */
 export const TEXTO_MOTIVO_ANUNCIO_SHOPEE: Readonly<Record<string, string>> = {
   [M.rascunhoEmKitVirtual]: FRASE_RASCUNHO_EM_KIT_VIRTUAL_SHOPEE,
@@ -1402,6 +1418,13 @@ export const TEXTO_MOTIVO_ANUNCIO_SHOPEE: Readonly<Record<string, string>> = {
   [M.anuncioSemelhanteExistente]:
     'A Shopee considera este anúncio parecido demais com outro já publicado nesta loja. Ela ' +
     'pode tratá-lo como duplicata: confira no Seller Centre antes de tentar de novo.',
+  [M.logisticaNaoConfirmada]:
+    'Um canal obrigatório da loja precisa de um tamanho ou de uma tarifa de frete. O valor ' +
+    'gravado neste vínculo não é usado: o ERP não tem registro de tê-lo lido da Shopee nem de ' +
+    'tê-lo enviado a ela. Importe o anúncio para gravar os valores atuais da Shopee e publique ' +
+    `de novo. Para importá-lo, use a importação em massa (${PORTA_DA_IMPORTACAO_SHOPEE}) com ` +
+    '«Atualizar anúncios já cadastrados» marcado — sem essa opção um anúncio já vinculado é ' +
+    'pulado.',
 };
 
 /**
@@ -1493,10 +1516,12 @@ function textoDoMotivoSemAcaoShopee(
 /**
  * Worded motivos whose server sentence ALSO shows, after the copy (when it is
  * not terminal text): it carries a fact the copy cannot — which listings
- * Shopee left out of the look-up, or how far the walk got (§H).
+ * Shopee left out of the look-up, or how far the walk got (§H); which
+ * compulsory channel lacks what, and which listing to import (#2015).
  */
 const MOTIVOS_COM_A_FRASE_DO_SERVIDOR: ReadonlySet<string> = new Set([
   M.buscaDeAnuncioExistenteIncompleta,
+  M.logisticaNaoConfirmada,
 ]);
 
 /**

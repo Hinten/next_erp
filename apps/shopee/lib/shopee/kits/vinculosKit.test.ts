@@ -1,7 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { ShopeeAddKitItemRequest } from '@delfrance/integrations-shopee';
-import { produtoShopeeLinkSchema, variacaoShopeeLinkSchema } from '@delfrance/schemas';
+import {
+  logisticaGravadaPeloErpShopee,
+  produtoShopeeLinkSchema,
+  variacaoShopeeLinkSchema,
+} from '@delfrance/schemas';
 
 import {
   FIXTURE_ITEM_BASE_INFO_SG_KIT,
@@ -88,6 +92,8 @@ describe('escreverVinculoDoKit — the ONE link write after add_kit_item (R-k ti
       item_name: 'Kit de teste',
       description: 'Descrição do kit de teste',
       logistic_info: [{ logistic_id: 90003, enabled: true }],
+      // #2015: the provenance stamp of the list above.
+      logisticaGravadaEm: AGORA,
       ultimaPublicacao: { em: AGORA, etapa: 'add_kit_item', itemId: KIT },
       ultimaModificacao: AGORA,
       publicadoEm: AGORA,
@@ -115,6 +121,80 @@ describe('escreverVinculoDoKit — the ONE link write after add_kit_item (R-k ti
       item_status: 'NORMAL',
       estadoAnuncio: 'ativo',
       kitNativo: true,
+    });
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*     #2015 — the kit create is a STAMPING writer of logistic_info; #2 is not  */
+/* -------------------------------------------------------------------------- */
+
+describe('#2015 — logisticaGravadaEm rides the kit create, never #2', () => {
+  const ID = idDoVinculoDeKit('int-1', KIT);
+  const CAMINHO = `produtos/${K}/prodshopee/${ID}`;
+  /** What a migrated kit link carries: a legacy list, no stamp (the legacy app never wrote one). */
+  const LEGADO = {
+    contaProdutoShopeeOuterRef: CONTA_REF,
+    item_id: KIT,
+    item_name: 'Kit legado',
+    kitNativo: true,
+    logistic_info: [{ logistic_id: 90003, enabled: true, is_free: true }],
+  };
+
+  it('the create writes the list AND the stamp in ONE patch, and the ONE predicate reads the doc as trusted', async () => {
+    const db = new FakeDb();
+    await escreverVinculoDoKit(deps(db), { produtoId: K, itemId: KIT, corpo: CORPO });
+    const comLista = db.writes.filter((w) => 'logistic_info' in w.patch);
+    expect(comLista).toHaveLength(1);
+    expect(comLista[0]?.patch).toMatchObject({
+      logistic_info: CORPO.item_setting.logistic_info,
+      logisticaGravadaEm: AGORA,
+    });
+    // Same patch, same condition: no write stamps without the list.
+    expect(db.writes.filter((w) => 'logisticaGravadaEm' in w.patch)).toEqual(comLista);
+    expect(logisticaGravadaPeloErpShopee(db.store[CAMINHO]?.data ?? null)).toBe(true);
+  });
+
+  it('PAIR: a create over a migrated (unstamped) doc stamps it — the list is now the one Shopee accepted', async () => {
+    const db = new FakeDb();
+    db.seed(CAMINHO, LEGADO);
+    expect(logisticaGravadaPeloErpShopee(db.store[CAMINHO]?.data ?? null)).toBe(false);
+    await escreverVinculoDoKit(deps(db), { produtoId: K, itemId: KIT, corpo: CORPO });
+    expect(db.store[CAMINHO]?.data).toMatchObject({
+      logistic_info: CORPO.item_setting.logistic_info,
+      logisticaGravadaEm: AGORA,
+    });
+    expect(logisticaGravadaPeloErpShopee(db.store[CAMINHO]?.data ?? null)).toBe(true);
+  });
+
+  it('⛔ NEAR-MISS: #2 over the SAME migrated doc writes no stamp and leaves the legacy list byte-identical', async () => {
+    const db = new FakeDb();
+    db.seed(CAMINHO, LEGADO);
+    await escreverLeituraDoKit(deps(db), {
+      produtoId: K,
+      linkDocId: ID,
+      leitura: { kind: 'item', item: lido() },
+    });
+    const ultima = db.writes.at(-1);
+    expect(ultima?.path).toBe(CAMINHO);
+    expect(ultima?.patch).not.toHaveProperty('logisticaGravadaEm');
+    expect(ultima?.patch).not.toHaveProperty('logistic_info');
+    const doc = db.store[CAMINHO]?.data;
+    expect(doc).not.toHaveProperty('logisticaGravadaEm');
+    expect(doc?.logistic_info).toEqual(LEGADO.logistic_info);
+    expect(logisticaGravadaPeloErpShopee(doc ?? null)).toBe(false);
+  });
+
+  it('⛔ NEAR-MISS: #2 after a create keeps the create stamp — it neither re-stamps nor clears it', async () => {
+    const db = new FakeDb();
+    await escreverVinculoDoKit(deps(db), { produtoId: K, itemId: KIT, corpo: CORPO });
+    await escreverLeituraDoKit(
+      { db: asDb(db), nowMs: AGORA + 60_000 },
+      { produtoId: K, linkDocId: ID, leitura: { kind: 'item', item: lido() } },
+    );
+    expect(db.store[CAMINHO]?.data).toMatchObject({
+      logisticaGravadaEm: AGORA,
+      ultimaModificacao: AGORA + 60_000,
     });
   });
 });

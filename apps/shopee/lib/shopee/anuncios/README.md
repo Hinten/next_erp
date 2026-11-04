@@ -136,12 +136,15 @@ Consequence, stated in `planoPublicacao.ts`'s header and in the CLI's caveats: a
 11. **parent write-back #2**, from the read-back alone
 
 Write-back #1 stores what was **SENT** (`item_id`, `category_id`, `item_name`,
-`description`, `condition`, `attributes`, `logistic_info`, `brand_id`,
-`taxInfoOmitido`, `publicadoEm` on the first success, `ultimaPublicacao`);
-write-back #2 stores what was **READ** (`item_status`, `estadoAnuncio`,
-`deboost`, `original_brand_name`, the refreshed `logistic_info`, and
-`falhaPublicacao: null`). Both go through `aplicarLinkDaListagem` (merge/add —
-a first publish must CREATE the link).
+`description`, `condition`, `attributes`, `logistic_info` with its provenance
+stamp `logisticaGravadaEm` in the same spread — no list sent, neither key —,
+`brand_id`, `taxInfoOmitido`, `publicadoEm` on the first success,
+`ultimaPublicacao`); write-back #2 stores what was **READ** (`item_status`,
+`estadoAnuncio`, `deboost`, `original_brand_name`, the refreshed
+`logistic_info`), plus two values that are not a reading of Shopee: the list's
+stamp `logisticaGravadaEm` and `falhaPublicacao: null`. Both go through
+`aplicarLinkDaListagem` (merge/add — a first publish must CREATE the link). The
+stamp is what lets a later publish re-send the list — "Logistics", below.
 
 **Landing each write-back the instant its call confirms is what makes a
 half-failed publish RESUME.** A link document holding an `item_id` and no models
@@ -1265,13 +1268,67 @@ every child as missing and then mint a SECOND link document beside it, so
 once, and a raw-text test asserts no local `sincronizar*` exists in this folder
 (C10 — the function has one home).
 
-### Logistics: the stored list first, `get_channel_list` on a first publish
+### Logistics: a stored list is re-sent only when THIS app wrote it, `get_channel_list` otherwise
 
-`construirLogistica` re-validates the link's stored `logistic_info` entry by
-entry. If at least ONE entry survives, the stored list wins and the full build
-never runs; only when it validates to EMPTY does the channel list become the
-source. `pulados` always describes the pass that actually produced
+`construirLogistica` has two passes. The STORED pass re-validates the link's
+`logistic_info` entry by entry against the live `get_channel_list`; if at least
+ONE entry survives, the stored list wins and the full build never runs. The
+FULL pass enables every shop-enabled channel the parcel fits, `enabled: true`,
+with `is_free` from the produto's `ofereceFreteGratis` (masked by
+`block_seller_cover_shipping_fee`) — and, having no `size_id` or
+`shipping_fee` to send, it skips every `SIZE_SELECTION` / `CUSTOM_PRICE`
+channel. It runs when there is no trusted list, or when the trusted one
+validates to EMPTY. `pulados` always describes the pass that actually produced
 `logistic_info`, so the two can never disagree.
+
+⚠️ **The stored pass runs only for a list this app wrote (#2015).** The legacy
+exporter rebuilt its list from `get_channel_list` on every save (with a blanket
+`is_free: false`), sent THAT, and wrote back only `{item_id, item_status}`
+(`exportar.dart`) — so the `logistic_info` a migrated link carries is whatever
+the legacy app last stored there, at best its import's reading, and never what
+the listing was last given. Re-sending it would put a stale `is_free`, fee or
+channel set back on a live listing. So every writer of the list in this app
+stamps `logisticaGravadaEm` (MILLISECONDS; only its PRESENCE is ever read) in
+the SAME patch and under the SAME condition as the list:
+
+| writer                                                                          | where                                             | when the stamp is written                                                             |
+| ------------------------------------------------------------------------------- | ------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| write-back #1, the draft claim's three branches included                        | `publicarAnuncio.ts` (`dadosDoWriteBack1`)        | inside the list's own conditional spread — a body with no list writes neither key     |
+| write-back #2                                                                   | `publicarAnuncio.ts` (`escreverWriteBack2`)       | always: the read-back's list is an array or `null`, never absent                      |
+| the import builder — item, kit and mass import, and the import's draft adoption | `../produtos/mapeamento.ts` (`dadosLinkListagem`) | always, AFTER the `...existente` spread, so a stored `null` stamp never rides forward |
+| the kit create                                                                  | `../kits/vinculosKit.ts` (`escreverVinculoDoKit`) | always: the list is required on that body                                             |
+
+Trust is ONE predicate, `logisticaGravadaPeloErpShopee` (`@delfrance/schemas`),
+over the RAW link: a safe non-negative integer stamp, and nothing else — never
+`item_id`, `ehRascunho`, `estadoAnuncio` or `ultimaPublicacao` (Lucas, D1).
+ENSURE's ADOPT (its whole patch is in the ENSURE verdict table) turns a legacy DRAFT
+into a listing that keeps its legacy list and resumes as an UPDATE, so "it has
+an `item_id`" vouches for nothing. The item plan reads the predicate through
+the projection — `LinkListagemLido.logisticaConfiavel`, REQUIRED and set only
+in `linkListagemLido` — and the kit plan over `ctx.alvo.raw` (the target kit's
+link, or the converter's ordinary PREDECESSOR; `../kits/README.md` §5).
+`logisticaProveniencia.test.ts` pins that shape on the source: both readers
+call the predicate, no file outside a test reads the field raw, and only the
+four writers above write it.
+
+Nothing else stamps. The draft create writes `logistic_info: null` with no
+stamp on a NEW document (a null list takes the full pass anyway); a draft edit
+or discard, every lock and ENSURE write, the failure stamp, pause, re-verify,
+stock, price, kit #2 and the superseded pointer are key-scoped merges or
+updates that leave both the list and the stamp alone. A
+DISTRUSTED list still reaches `construirLogistica`, because the refusal below
+reads it, but never its stored pass: the full pass runs and only ITS `pulados`
+are reported.
+
+⚠️ **No backfill, so the first Republicar of a migrated listing sends the FULL
+pass.** The legacy app never wrote the stamp: the migrated corpus arrives
+unstamped by construction, and each row heals at its first successful publish
+or import. Until then a publish enables every fitting channel with `is_free`
+from the produto flag, and a Seller Centre change made after the last legacy
+export survives only if the listing is IMPORTED first (whether `update_item`
+disables a channel the request omits is UNVERIFIED). A staging link this app
+wrote before #2015 carries no stamp either and takes one full pass at its next
+item publish.
 
 A stored `size_id` that is not a safe positive integer **refuses** rather than
 coercing (C32): the package's own `wireInt()` would coerce, and a coerced size
@@ -1281,7 +1338,21 @@ and never a factor of `1`. `canaisHabilitados` is REPORTING — it unions the li
 and in `pulados`: the first says "on anyway", the second says "not sent by us".
 Seven `MotivoCanalPulado` members, all producible, all pinned in
 `logisticaPublicacao.test.ts`. An empty `logistic_info`, or a compulsory channel
-we cannot satisfy, is the blocked motivo `logistica-sem-canal`.
+we cannot satisfy, is the blocked motivo `logistica-sem-canal` — with ONE
+exception since #2015. A compulsory `SIZE_SELECTION` / `CUSTOM_PRICE` channel
+the full pass skipped for its missing value refuses
+**`logistica-nao-confirmada`** instead when the distrusted list holds a
+READABLE value for exactly that field (through the same readers the stored pass
+uses) AND there is a listing an import would re-read — `itemIdImportavel`: the
+link's live `item_id`, on the kit converter its predecessor's. Campo
+`logistic_info`, no `acao`; the sentence names that `item_id`: import the
+listing, then publish again. A draft, a `removido` link, kit-criar, a trusted
+list, an absent or unreadable value and a parcel that does not fit keep
+`logistica-sem-canal`'s sentence word for word, and so do the two shop-wide
+sentences (no compulsory channel enabled, no channel at all), which may stand
+beside the new one. The web words it with its own copy and points at the one
+web door that re-reads a LINKED listing: the mass import with «Atualizar
+anúncios já cadastrados» ticked.
 
 ⚠️ `update_item`'s request table omits `logistic_info` while every code sample,
 its own error list and `announcement 1395` carry it. It is sent, and write-back
@@ -1445,8 +1516,8 @@ production passes no per-call override.
 
 Two classes, two moments, and both **PERSIST**.
 
-`ShopeePublishBlockedError` is OUR refusal: step 11's 22 motivos (58 today —
-steps 19 and #1911 added theirs; `errosPublicacao.test.ts` pins the count,
+`ShopeePublishBlockedError` is OUR refusal: step 11's 22 motivos (59 today —
+steps 19, #1911 and #2015 added theirs; `errosPublicacao.test.ts` pins the count,
 `readmeAnuncios.test.ts` this sentence),
 raised before any Shopee LISTING write for the produto (the model-leg
 exception is below), carrying `problemas` that is

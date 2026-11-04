@@ -878,10 +878,10 @@ describe('the uncertain-create store (lerIncerto / gravarIncerto)', () => {
 describe('TEXTO_MOTIVO_ANUNCIO_SHOPEE (#1911 P10)', () => {
   const T = TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE;
 
-  it('words exactly the three P10 draft motivos and the nine of P11 — one constant per notice it shares', () => {
+  it('words exactly the three P10 draft motivos, the nine of P11 and #2015’s logistics refusal — one constant per notice it shares', () => {
     // §C's map size: P10 3 keys + P11 9 keys = 12 (ambígua's second copy is
     // TEXTO_MOTIVO_ANUNCIO_SEM_ACAO_SHOPEE's; `criacao-incerta-encerrada`
-    // joined in review round 4).
+    // joined in review round 4), + #2015's `logistica-nao-confirmada` = 13.
     expect(Object.keys(TEXTO_MOTIVO_ANUNCIO_SHOPEE).sort()).toEqual([
       'anuncio-existente-de-outro-produto',
       'anuncio-existente-sem-vinculo',
@@ -892,6 +892,7 @@ describe('TEXTO_MOTIVO_ANUNCIO_SHOPEE (#1911 P10)', () => {
       'criacao-incerta-encerrada',
       'criacao-incerta-ja-vinculada',
       'criacao-incerta-sem-sku',
+      'logistica-nao-confirmada',
       'marca-nao-escolhida',
       'rascunho-em-kit-virtual',
       'rascunho-nao-nomeado',
@@ -2828,5 +2829,136 @@ describe('#1911 P12 round 3 — VERIFY-1 NIT 2: the no-window publish 409 names 
     expect(FRASE_PUBLICACAO_CRIACAO_INCERTA_SEM_JANELA_SHOPEE).not.toContain(
       'continuar aqui depois da importação',
     );
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*          #2015 — `logistica-nao-confirmada` (Lucas D2 + D3)                 */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * #2015: a compulsory channel needs a size or a fee that only a stored list
+ * THIS app has no record of writing holds, so publish does not re-send it. The
+ * server's sentence (N1, apps/shopee `anuncios/logisticaPublicacao.ts`) names
+ * the channel and the listing; the tab's copy names the remedy and the one web
+ * door that re-reads a LINKED listing. The browser cannot import apps/shopee,
+ * so N1 is spelled here from the server's template (the slug itself is pinned
+ * cross-app by `anuncios/errosPublicacao.test.ts`, «o vocabulário que a WEB
+ * soletra»).
+ */
+describe('#2015 — logistica-nao-confirmada: the copy, then the server’s channel and listing as «Detalhe:»', () => {
+  const M = MOTIVO_ANUNCIO_SHOPEE;
+  const n1 = (canal: number, falta: 'um tamanho' | 'uma tarifa de frete', itemId: number) =>
+    `O canal obrigatório ${String(canal)} precisa de ${falta}, e o ERP não tem registro de ter ` +
+    'lido da Shopee nem de ter enviado a ela o valor gravado neste vínculo, então esse valor ' +
+    `não é reenviado. Importe o anúncio ${String(itemId)} para gravar os valores atuais da ` +
+    'Shopee e publique de novo.';
+  /** apps/shopee's sentences (1) and (2) — `logistica-sem-canal`, unchanged by #2015. */
+  const FRASE_1 =
+    'O canal obrigatório 80003 não pôde ser habilitado: falta um valor que só o Seller Centre ' +
+    'define (tamanho ou tarifa), ou o item não cabe nos limites do canal.';
+  const FRASE_2 = 'Nenhum canal obrigatório da loja pôde ser habilitado para este item.';
+  const KIT = 'Já existe na Shopee um kit com o SKU deste produto';
+  const TERMINAL = 'rode importar:anuncio --item 1000123 e publique de novo';
+  const copia = TEXTO_MOTIVO_ANUNCIO_SHOPEE['logistica-nao-confirmada'] ?? '?';
+
+  it('the slug is spelled as the server’s, and the tab words it', () => {
+    expect(M.logisticaNaoConfirmada).toBe('logistica-nao-confirmada');
+    expect(copia).not.toBe('?');
+  });
+
+  it('a LIVE row: the copy, then N1 verbatim as «Detalhe:» — the channel and the listing reach the screen, for a size and for a fee', () => {
+    for (const falta of ['um tamanho', 'uma tarifa de frete'] as const) {
+      const frase = n1(80003, falta, 1000123);
+      // N1 is not terminal text, so the reader shows it (never swaps it out).
+      expect(ehFraseDeTerminal(frase)).toBe(false);
+      const texto = textoDoProblemaShopee(
+        { motivo: M.logisticaNaoConfirmada, mensagem: frase, acao: null },
+        'L1',
+        'p1',
+      );
+      expect(texto).toBe(`${copia} Detalhe: ${frase}`);
+      expect(texto).toContain('80003');
+      expect(texto).toContain('1000123');
+      expect(texto).toContain(falta);
+    }
+  });
+
+  it('the copy: the import is the remedy, through the ONE web door that re-reads a LINKED listing — and it claims only "no record"', () => {
+    expect(copia).toContain('Importe o anúncio para gravar os valores atuais da Shopee');
+    expect(copia).toContain(`importação em massa (${PORTA_DA_IMPORTACAO_SHOPEE})`);
+    expect(copia).toContain('«Atualizar anúncios já cadastrados» marcado');
+    // The mass import skips a linked listing unless the option is ticked.
+    expect(copia).toContain('sem essa opção um anúncio já vinculado é pulado');
+    // True on ANY link the stamp does not vouch for — never "this ERP never wrote it".
+    expect(copia).toContain('o ERP não tem registro de');
+    expect(copia).not.toMatch(/nunca (foi )?(lido|enviado)|não foi lido/);
+    expect(copia).not.toMatch(TEXTO_DE_TERMINAL);
+    // Not the produto's weight or size: no field of the produto is the fix.
+    expect(copia).not.toMatch(/peso|dimens/i);
+  });
+
+  it('never the kit sentence nor «sem próximo passo» — live or draft, attested or not, whatever the sentence', () => {
+    for (const mensagem of [n1(80003, 'um tamanho', 1000123), TERMINAL]) {
+      for (const rascunho of [
+        undefined,
+        null,
+        contextoDeRascunho(),
+        contextoDeRascunho({ respondeAtestacao: true }),
+      ]) {
+        const t = textoDoProblemaShopee(
+          { motivo: M.logisticaNaoConfirmada, mensagem, acao: null },
+          'L1',
+          'p1',
+          rascunho,
+        );
+        expect(t.startsWith(copia), mensagem).toBe(true);
+        expect(t).not.toContain(KIT);
+        expect(t).not.toContain(FRASE_RECUSA_SEM_PASSO_SHOPEE);
+        expect(t).not.toContain(FRASE_RECUSA_SEM_PASSO_RASCUNHO_SHOPEE);
+        // Not a look-up refusal: an attested publish gets no «a situação mudou».
+        expect(t).not.toContain(FRASE_ATESTACAO_SUPERADA_SHOPEE);
+      }
+    }
+  });
+
+  it('NEAR-MISS: a terminal-worded sentence under the SAME motivo is not shown beside the copy', () => {
+    expect(
+      textoDoProblemaShopee({ motivo: M.logisticaNaoConfirmada, mensagem: TERMINAL, acao: null }),
+    ).toBe(copia);
+  });
+
+  it('NEAR-MISS: `logistica-sem-canal` keeps the server sentence VERBATIM — no copy, no «Detalhe:»', () => {
+    for (const frase of [FRASE_1, FRASE_2]) {
+      for (const rascunho of [undefined, contextoDeRascunho()]) {
+        expect(
+          textoDoProblemaShopee(
+            { motivo: 'logistica-sem-canal', mensagem: frase, acao: null },
+            'L1',
+            'p1',
+            rascunho,
+          ),
+        ).toBe(frase);
+      }
+    }
+  });
+
+  it('the «Detalhe:» set is EXACTLY #11 and this row — every other worded motivo shows its copy alone', () => {
+    const neutra = 'frase neutra do servidor';
+    const comDetalhe = Object.values(M).filter((motivo) =>
+      textoDoProblemaShopee({ motivo, mensagem: neutra, acao: null }).includes(
+        `Detalhe: ${neutra}.`,
+      ),
+    );
+    expect(comDetalhe.sort()).toEqual(
+      [M.buscaDeAnuncioExistenteIncompleta, M.logisticaNaoConfirmada].sort(),
+    );
+  });
+
+  it('a STORED row reads the copy by its motivo ⟷ NEAR-MISS a stored `logistica-sem-canal` keeps its sentence', () => {
+    expect(textoDaRecusaGuardadaShopee(M.logisticaNaoConfirmada, n1(80003, 'um tamanho', 1))).toBe(
+      copia,
+    );
+    expect(textoDaRecusaGuardadaShopee('logistica-sem-canal', FRASE_1)).toBe(FRASE_1);
   });
 });
