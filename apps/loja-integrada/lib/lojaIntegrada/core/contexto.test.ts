@@ -678,3 +678,69 @@ describe('the credential VERSION: on the context, and reported per request', () 
     expect(espiao.pedidos).toEqual([]);
   });
 });
+
+describe('the CDN reader: built here, behind the switch, with no credential', () => {
+  /** The first bytes of a PNG: what the reader sniffs as a picture. */
+  const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0]);
+
+  it('downloads through the context’s fetch seam, from the pinned host, with NO header at all', async () => {
+    const db = new FakeDb();
+    seedConta(db, ID);
+    seedCredencial(db, ID);
+    const pedidos: { url: string; init: RequestInit | undefined }[] = [];
+    const fetch: typeof globalThis.fetch = (input, init) => {
+      pedidos.push({ url: String(input), init });
+      return Promise.resolve(new Response(PNG, { status: 200 }));
+    };
+    const { ritmo, esperas } = ritmoFalso();
+    const ctx = await loadLojaIntegradaContext(asDb(db), ID, {
+      ambiente: AMBIENTE_LIGADO,
+      ritmo,
+      fetch,
+    });
+    const leiturasAntes = db.leituras.length;
+
+    const desfecho = await ctx.cdn.baixarImagemLi('1000/1000001/produto/1/foto.png', {
+      forma: 'original',
+    });
+
+    expect(desfecho).toMatchObject({ resultado: 'ok', tipo: 'image/png' });
+    expect(pedidos.map((p) => p.url)).toEqual([
+      'https://cdn.awsli.com.br/1000/1000001/produto/1/foto.png',
+    ]);
+    // No credential travels to the CDN: no Authorization, no header of any kind.
+    expect(new Headers(pedidos[0]?.init?.headers).has('authorization')).toBe(false);
+    expect([...new Headers(pedidos[0]?.init?.headers).keys()]).toEqual([]);
+    expect(JSON.stringify(pedidos)).not.toContain(TOKEN_A);
+    // Not the API client: no credential re-read and no pacer wait for a photo.
+    expect(db.leituras.length).toBe(leiturasAntes);
+    expect(esperas).toEqual([]);
+  });
+
+  it('⚠️ NEAR-MISS: with the switch off there is no context — so no CDN reader, and nothing fetched', async () => {
+    const db = new FakeDb();
+    seedConta(db, ID);
+    seedCredencial(db, ID);
+    const espiao = fetchEspiao();
+    const err: unknown = await loadLojaIntegradaContext(asDb(db), ID, {
+      ambiente: {},
+      ritmo: ritmoFalso().ritmo,
+      fetch: espiao.fetch,
+      registro: { escrever: gravadorDeLog().escrever },
+    }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(LiChamadasDesligadasError);
+    expect(espiao.pedidos).toEqual([]);
+    expect(db.leituras).toEqual([]);
+  });
+
+  it('a parked conta gets no context either: the reader is built after every refusal', async () => {
+    const db = new FakeDb();
+    seedConta(db, ID);
+    seedCredencial(db, ID, {
+      reconexaoPendente: { desdeMs: AGORA_MS - 10, status: 401, refCredencial: 'a.1' },
+    });
+    await expect(loadLojaIntegradaContext(asDb(db), ID, depsLigado())).rejects.toBeInstanceOf(
+      LiContaParadaError,
+    );
+  });
+});

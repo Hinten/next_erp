@@ -4,9 +4,12 @@
  * stale precondition would make every race test vacuous.
  */
 import { describe, expect, it } from 'vitest';
+import { FieldPath } from 'firebase-admin/firestore';
 import {
   avisoCollection,
+  importacaoLojaIntegradaCollection,
   integracaoCollection,
+  itemImportacaoLiCollection,
   produtoLojaIntegradaLinkCollection,
 } from '@delfrance/data/admin/collections';
 import {
@@ -219,6 +222,66 @@ describe('FakeDb', () => {
     if (semNome === undefined || comNome === undefined) throw new Error('fixture');
     expect(() => col.orderBy('nome').startAfter(semNome)).toThrow(/não tem o campo 'nome'/);
     expect(() => col.startAfter(comNome).orderBy('nome')).toThrow(/orderBy\(\) depois/);
+  });
+});
+
+describe('FakeDb — document-key order and auto ids (step 9, the product import)', () => {
+  const itens = (db: FakeDb) => itemImportacaoLiCollection.ref(asDb(db), { jobId: 'j1' });
+
+  it('orderBy(FieldPath.documentId()) orders by the KEY and keeps a doc with no fields of note', async () => {
+    const db = new FakeDb();
+    // Key order is TEXT order: '10' sorts before '9'.
+    for (const id of ['9', '10', '200', '3'])
+      db.seed(`importacoesLojaIntegrada/j1/itens/${id}`, {});
+    db.seed('importacoesLojaIntegrada/j2/itens/1', {});
+    const ids = (await itens(db).orderBy(FieldPath.documentId()).get()).docs.map((d) => d.id);
+    expect(ids).toEqual(['10', '200', '3', '9']);
+    const desc = await itens(db).orderBy(FieldPath.documentId(), 'desc').get();
+    expect(desc.docs.map((d) => d.id)).toEqual(['9', '3', '200', '10']);
+    expect(db.consultas.at(-1)?.ordens).toEqual([['__name__', 'desc']]);
+  });
+
+  it('startAfter(<id>) on a key ordering seeks past the id — whether or not that doc exists', async () => {
+    const db = new FakeDb();
+    for (const id of ['a', 'b', 'c', 'd']) db.seed(`importacoesLojaIntegrada/j1/itens/${id}`, {});
+    const q = itens(db).orderBy(FieldPath.documentId());
+    expect((await q.startAfter('b').limit(1).get()).docs.map((d) => d.id)).toEqual(['c']);
+    // A cursor id that names no document still pages on, by key.
+    expect((await q.startAfter('bb').get()).docs.map((d) => d.id)).toEqual(['c', 'd']);
+    expect((await q.startAfter('d').get()).docs).toEqual([]);
+    expect(db.consultas.at(-1)).toMatchObject({ ordens: [['__name__', 'asc']], apos: 'd' });
+  });
+
+  it('⚠️ NEAR-MISS: a value cursor on a FIELD ordering, on a mixed one or with no ordering throws', () => {
+    const db = new FakeDb();
+    expect(() => itens(db).orderBy('nome').startAfter('b')).toThrow(/startAfter\(<valor>\)/);
+    expect(() => itens(db).orderBy('nome').orderBy(FieldPath.documentId()).startAfter('b')).toThrow(
+      /startAfter\(<valor>\)/,
+    );
+    expect(() => itens(db).startAfter('b')).toThrow(/startAfter\(<valor>\)/);
+  });
+
+  it('a key cursor that is empty or carries a slash throws, as the SDK does', () => {
+    const db = new FakeDb();
+    const q = itens(db).orderBy(FieldPath.documentId());
+    expect(() => q.startAfter('')).toThrow(/id simples/);
+    expect(() => q.startAfter('a/b')).toThrow(/id simples/);
+  });
+
+  it('an orderBy over any other FieldPath throws', () => {
+    const db = new FakeDb();
+    expect(() => itens(db).orderBy(new FieldPath('a', 'b'))).toThrow(/não é a chave/);
+  });
+
+  it('collection().doc() with no id (the handle’s newDocId) mints a fresh 20-character id; an empty id still throws', async () => {
+    const db = new FakeDb();
+    const a = importacaoLojaIntegradaCollection.newDocId(asDb(db), {});
+    const b = importacaoLojaIntegradaCollection.newDocId(asDb(db), {});
+    expect(a).toMatch(/^[A-Za-z0-9]{20}$/);
+    expect(b).not.toBe(a);
+    await importacaoLojaIntegradaCollection.docRef(asDb(db), {}, a).create({ x: 1 });
+    expect(db.ler(`importacoesLojaIntegrada/${a}`)).toEqual({ x: 1 });
+    expect(() => importacaoLojaIntegradaCollection.docRef(asDb(db), {}, '')).toThrow(/vazio/);
   });
 });
 

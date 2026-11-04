@@ -20,14 +20,18 @@ Master plan: `.master_plans/loja-integrada/loja-integrada-marketplace-integratio
 - Step 10 (the catalogue reads): four `GET`s in the conta route family (below), the core
   `lib/lojaIntegrada/catalogo/catalogo.ts` and its caches `catalogo/cache.ts`. The web's
   variation linker reads the grades; categories and brands wait for step 11's product tab.
+- Step 9 (the product import, in stacked PRs): the job routes `conta/[id]/importacoes…` (below)
+  and `lib/lojaIntegrada/importacao/` — the start core, the job lifecycle, the dispatch's time
+  budget and its named-task producer so far.
 
 ## Routes (`/api/marketplace/loja-integrada/conta/[id]…`)
 
 `GET` status (`PERM.integracao.read`); `PUT …/credencial` save, `PUT …/credencial/validade`
-renew the expiry date, `DELETE …/credencial` remove (all `PERM.integracao.write`); and the four
-catalogue `GET`s (step 10, "The catalogue reads" below). Every route exports its verb as `export async function GET|PUT|DELETE` (never a
-re-export: `cors-proxy-covers-routes.test.js` cannot read one), and every verb must
-be listed in the literal `Access-Control-Allow-Methods` in `proxy.ts`. The status and
+renew the expiry date, `DELETE …/credencial` remove (all `PERM.integracao.write`); the four
+catalogue `GET`s (step 10, "The catalogue reads" below); and the product import's routes (step 9,
+"The product import" below). Every route exports its verb as `export async function
+GET|POST|PUT|DELETE` (never a re-export: `cors-proxy-covers-routes.test.js` cannot read one), and
+every verb must be listed in the literal `Access-Control-Allow-Methods` in `proxy.ts`. The status and
 credential routes read the conta uncached and require only `tipo === 3`, so a parked or
 inactive conta can still be fixed. Only the context loader refuses those.
 
@@ -82,6 +86,39 @@ work is `lib/lojaIntegrada/catalogo/catalogo.ts`.
 - Log lines: the context's carry `fluxo: catalogo`; the core's own WARN lines are prefixed
   `[loja-integrada/catalogo]` with ids and counts only (rows the projection could not read,
   once per load). No write of its own (only the park's), no ruleset, index or env change.
+
+### The product import (step 9)
+
+`POST …/importacoes` start (`PERM.integracao.write`), `GET …/importacoes` the conta's newest 10,
+`GET …/importacoes/[jobId]` one job, `POST …/importacoes/[jobId]/cancelar`, `GET
+…/importacoes/[jobId]/itens?depois=` one page of the report (the reads `PERM.integracao.read`). The
+wire contract (the strict start body, the non-strict answers, the job document, the task) is
+`packages/schemas/src/importacaoLojaIntegrada.ts`; every answer is built through it and never
+carries the continuation `seq`, the cursors or the selection's ids.
+
+- **The start makes no Loja Integrada call and touches no queue.** Id, strict body, then
+  `importacao/inicio.ts`: the context loader FIRST (switch off ⇒ 503 `LI_CHAMADAS_DESLIGADAS`, zero
+  Firestore reads, no job), the guard (a `pendente`/`executando` job of the conta ⇒ 409
+  `LI_IMPORTACAO_EM_ANDAMENTO` with its `jobId`), then ONE `create` at an auto id, `pendente`.
+  The first dispatch is the functions codebase's (a trigger on the job's creation).
+- **The other routes call nothing outside the ERP** (`estrutura.test.ts`'s `ROTAS_SEM_CHAMADA_LI`,
+  walked with the label routing route's rules): a missing job and another conta's job are the same
+  404 `LI_IMPORTACAO_NAO_ENCONTRADA`; the report pages its job's own `itens` in document-key order
+  (500 + 1 read, `?depois=` an item id).
+- **Every job write is tier 1** (`importacao/job.ts`, its header's table): checkpoints chained from
+  each write's `writeTime`, only the end-of-dispatch one bumps `seq`; a lost checkpoint is never
+  re-applied (stop when the job no longer runs at that `seq`, else `LiImportacaoConcorrenteError`
+  and the task retries). The cancel is one guarded update on the route's read, at most 3 attempts:
+  a finished job is 409 `LI_IMPORTACAO_ENCERRADA`, a cancel that lost every attempt 503
+  `LI_IMPORTACAO_EM_ANDAMENTO` with the `jobId`.
+- **The dispatch's budget** (`importacao/orcamento.ts`): a unit starts only while its WORST case
+  ends inside 70 s (a call = pacer + read deadline = 22 s; a family with no call = 10 s), plus a
+  30 s tail — 100 s, which keeps an order-intake attempt on the shared reads queue waiting at most
+  one dispatch (`functions/src/index.test.ts` pins the ladder). The producer
+  (`importacao/agendadorImportacao.ts`) NAMES every task `idTarefaImportacaoLi(jobId, seq)`, an
+  answered already-exists is success, delays 0 / 2 / 60 s only.
+- The context exposes `cdn`, the package's photo reader, built only in `core/contexto.ts` after
+  every refusal (`estrutura.test.ts` scans the whole app for its factory).
 
 ## Routes (`/api/marketplace/loja-integrada/pedidos/[pedidoId]…`, step 15)
 

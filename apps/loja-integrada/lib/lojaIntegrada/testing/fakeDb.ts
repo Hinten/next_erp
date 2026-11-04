@@ -45,6 +45,11 @@
  *    `limit`, `startAfter(doc)` and `get()` → `{ docs, empty, size, readTime }`
  *    — see "Queries" below. Each result doc carries its `ref`, whose
  *    `parent.parent` is the owning document (`ref.parent.parent.id`);
+ *  - `orderBy(FieldPath.documentId())` and, on a query ordered by it ALONE,
+ *    `startAfter('<a plain document id>')` (step 9: the product import's report
+ *    pages its job's items in document-key order) — see "Queries" below;
+ *  - `collection().doc()` with NO id (step 9: the import job's auto id): a fresh
+ *    id from a per-fake counter, 20 letters and digits like the SDK's;
  *  - `collectionGroup(id)` (step 5: the link docs under every produto): the
  *    same query builder over every stored document whose LAST collection
  *    segment is `id`, at any depth;
@@ -53,7 +58,9 @@
  *
  * Everything else — a plain `set`, any other operator, a dotted update key, an
  * `undefined` value, a precondition that is not a stamp, an `orderBy` over a
- * value that is not null/boolean/number/string — throws. That is the Shopee
+ * value that is not null/boolean/number/string, an `orderBy` over a `FieldPath`
+ * other than the document key, a `startAfter` VALUE on any other ordering —
+ * throws. That is the Shopee
  * step-8 lesson: a double that silently answers "matches nothing" or "wrote it"
  * for a call it does not model lets every suite read green. The only atomic
  * multi-document write modelled is the batch below; the multi-document
@@ -101,6 +108,12 @@
  *    (a resolved aviso, a deleted row) pages on exactly as it does in
  *    production. A snapshot missing an `orderBy` field, and an `orderBy` after
  *    a cursor, throw, as the SDK does.
+ *  - **`orderBy(FieldPath.documentId())` orders by the document KEY** (the id in
+ *    a collection, the full path in a group), never filters for existence, and
+ *    a query ordered by it alone takes `startAfter('<id>')`: a plain id, seeking
+ *    past it whether or not a document of that id exists. A value with a `/`,
+ *    an empty one, or a value cursor on any other ordering throws, as the SDK
+ *    does for the first two.
  *
  * ## Read times
  *
@@ -275,6 +288,26 @@ function satisfaz(armazenado: unknown, f: Filtro): boolean {
 interface Ordem {
   campo: string;
   direcao: 'asc' | 'desc';
+  /** `orderBy(FieldPath.documentId())`: the document KEY, never a stored field. */
+  chave?: true;
+}
+
+/** How a key ordering is recorded in {@link ConsultaFake.ordens}: the SDK's own name for it. */
+const CAMPO_DA_CHAVE = '__name__';
+
+/**
+ * Whether `campo` is the SDK's "the document key": a `FieldPath` (an object with `isEqual`) whose
+ * formatted name is `__name__` — exactly what `FieldPath.documentId()` is, and what the SDK itself
+ * treats as equal to it. Read by shape, never by importing the class: several route suites mock the
+ * SDK's Firestore module, and this fake must not depend on what they keep.
+ */
+function ehChaveDoDocumento(campo: unknown): boolean {
+  return (
+    typeof campo === 'object' &&
+    campo !== null &&
+    typeof (campo as { isEqual?: unknown }).isEqual === 'function' &&
+    String(campo) === CAMPO_DA_CHAVE
+  );
 }
 
 /** One write, as {@link FakeDb.escritas} records it. */
@@ -321,6 +354,11 @@ function compararValores(a: unknown, b: unknown, campo: string): number {
   return (a as boolean | number | string) < (b as boolean | number | string) ? -1 : 1;
 }
 
+/** Two document keys, in key order. */
+function compararIds(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
 /** A row as the ordering sees it: an id and the values of its fields. */
 interface Posicao {
   readonly id: string;
@@ -332,11 +370,14 @@ interface Posicao {
  * direction of the LAST `orderBy` (ascending when there is none).
  */
 function compararPosicoes(a: Posicao, b: Posicao, ordens: readonly Ordem[]): number {
-  for (const { campo, direcao } of ordens) {
-    const c = compararValores(a.data[campo], b.data[campo], campo);
+  for (const { campo, direcao, chave } of ordens) {
+    const c =
+      chave === true
+        ? compararIds(a.id, b.id)
+        : compararValores(a.data[campo], b.data[campo], campo);
     if (c !== 0) return direcao === 'desc' ? -c : c;
   }
-  const c = a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+  const c = compararIds(a.id, b.id);
   return (ordens.at(-1)?.direcao ?? 'asc') === 'desc' ? -c : c;
 }
 
@@ -457,6 +498,7 @@ export class FakeDb {
   private readonly falhasDeEscrita = new Map<string, Error>();
   private readonly falhasDeConsulta = new Map<string, Error>();
   private lotes = 0;
+  private idsAutomaticos = 0;
 
   /** Every write that LANDED, in order. A refused write is not here. */
   readonly escritas: EscritaFake[] = [];
@@ -681,8 +723,14 @@ export class FakeDb {
     return {
       ...raiz,
       doc: (id?: string) => {
+        if (id === undefined) {
+          // The SDK's auto id is 20 letters and digits; this one is too, from a counter.
+          this.idsAutomaticos += 1;
+          const automatico = `fakeauto${String(this.idsAutomaticos).padStart(12, '0')}`;
+          return this.docRef(`${colecao}/${automatico}`, automatico);
+        }
         if (typeof id !== 'string' || id === '') {
-          throw new Error('FakeDb: doc() sem id não é modelado');
+          throw new Error('FakeDb: doc() com um id vazio ou que não é texto não é modelado');
         }
         return this.docRef(`${colecao}/${id}`, id);
       },
@@ -782,16 +830,38 @@ export class FakeDb {
         }
         return derivar({ filtros: [...estado.filtros, { campo, op, valor }] });
       },
-      orderBy: (campo: string, direcao: 'asc' | 'desc' = 'asc') => {
+      orderBy: (campo: unknown, direcao: 'asc' | 'desc' = 'asc') => {
         if (estado.apos !== null) {
           // The SDK freezes a cursor's values against the orderBy known when it
           // was set, and refuses a later one.
           throw new Error('FakeDb: orderBy() depois de startAfter() — o SDK recusa');
         }
+        if (ehChaveDoDocumento(campo)) {
+          return derivar({
+            ordens: [...estado.ordens, { campo: CAMPO_DA_CHAVE, direcao, chave: true }],
+          });
+        }
+        if (typeof campo !== 'string') {
+          throw new Error('FakeDb: orderBy() por um FieldPath que não é a chave não é modelado');
+        }
         return derivar({ ordens: [...estado.ordens, { campo, direcao }] });
       },
       limit: (n: number) => derivar({ limite: n }),
-      startAfter: (doc: { id: string; data: () => DocData | undefined }) => {
+      startAfter: (doc: string | { id: string; data: () => DocData | undefined }) => {
+        if (typeof doc === 'string') {
+          // A VALUE cursor: modelled only on a query ordered by the document key alone.
+          const [ordem, ...outras] = estado.ordens;
+          if (ordem?.chave !== true || outras.length > 0) {
+            throw new Error(
+              'FakeDb: startAfter(<valor>) só é modelado sobre orderBy(FieldPath.documentId()) sozinho',
+            );
+          }
+          if (doc === '' || doc.includes('/')) {
+            // The SDK: the value must be a plain document id of the queried collection.
+            throw new Error(`FakeDb: startAfter('${doc}') — o SDK exige um id simples`);
+          }
+          return derivar({ apos: { id: doc, data: {} } });
+        }
         if (
           typeof doc !== 'object' ||
           doc === null ||
@@ -801,8 +871,8 @@ export class FakeDb {
           throw new Error('FakeDb: startAfter só aceita um snapshot de documento');
         }
         const data = doc.data();
-        for (const { campo } of estado.ordens) {
-          if (data?.[campo] === undefined) {
+        for (const { campo, chave } of estado.ordens) {
+          if (chave !== true && data?.[campo] === undefined) {
             throw new Error(
               `FakeDb: startAfter — o snapshot '${doc.id}' não tem o campo '${campo}' do orderBy`,
             );
@@ -840,7 +910,8 @@ export class FakeDb {
       .filter(([, s]) => filtros.every((f) => satisfaz(s.data[f.campo], f)))
       // `orderBy` filters for existence: a document lacking the field is
       // dropped, while a stored `null` is kept.
-      .filter(([, s]) => ordens.every((o) => s.data[o.campo] !== undefined))
+      // The document KEY always exists: a key ordering filters nothing.
+      .filter(([, s]) => ordens.every((o) => o.chave === true || s.data[o.campo] !== undefined))
       // A group query ties on the FULL path (the server's order); a collection on the id.
       .map(([p, stored]) => ({
         id: grupo ? p : p.slice(prefixo.length),

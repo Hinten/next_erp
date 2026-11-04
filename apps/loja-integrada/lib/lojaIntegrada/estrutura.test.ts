@@ -31,18 +31,23 @@
  *    import is on a short allow-list;
  *  - the committed fixture corpus keeps its `.prettierignore` and `.gitattributes`
  *    lines, so a re-run over an unchanged capture writes identical bytes;
- *  - the label routing route (`PUT …/pedidos/[pedidoId]/rota-etiqueta`, step 15) calls
- *    nothing outside the ERP: the run-time import closure of its route file — the app's
+ *  - every route that CALLS NOTHING (`ROTAS_SEM_CHAMADA_LI`: the label routing route,
+ *    `PUT …/pedidos/[pedidoId]/rota-etiqueta`, step 15, and the product import's status,
+ *    cancel and report routes, `…/conta/[id]/importacoes/[jobId]{,/cancelar,/itens}`, step 9)
+ *    calls nothing outside the ERP: the run-time import closure of its route file — the app's
  *    `@/` modules walked too, type-only imports set aside because they load nothing —
  *    reaches no package client, no credential module, no context loader, no pacer, no
  *    read switch, no network module and no text that calls `fetch`;
- *  - every READ route — the paid re-check (`GET …/pedidos/[pedidoId]/pagamento`, step 15) and
+ *  - every READ route — the paid re-check (`GET …/pedidos/[pedidoId]/pagamento`, step 15),
  *    the four catalogue reads (`GET …/conta/[id]/{categorias,marcas,grades,grades/[gradeId]}`,
- *    step 10) — reaches Loja Integrada only through the context loader, whose first act is the
- *    read switch: in each one's run-time closure no file calls `fetch`, and only
- *    `core/contexto.ts` builds a client;
- *  - none of those routes, nor the label routing route, can reach the WRITE context
- *    (`core/contextoEscrita.ts`) or name its factory, with no exemption;
+ *    step 10) and the product import's start (`…/conta/[id]/importacoes`, step 9) — reaches
+ *    Loja Integrada only through the context loader, whose first act is the read switch: in
+ *    each one's run-time closure no file calls `fetch`, and only `core/contexto.ts` builds a
+ *    client, a validating GET or the CDN photo reader;
+ *  - in the WHOLE app's non-test source, only `core/contexto.ts` names the CDN reader's factory,
+ *    so no photo is downloaded but behind the switch;
+ *  - none of those routes can reach the WRITE context (`core/contextoEscrita.ts`) or name its
+ *    factory, with no exemption;
  *  - the write chokepoint (the write engine's requirement 9, step 7), matched by FULL path in
  *    non-test source: only `core/contextoEscrita.ts` builds a write client; only
  *    `core/escrita.ts` names a package write operation or a write-client method; the write
@@ -302,14 +307,14 @@ function violacoesDoSanitizador(
   return violacoes;
 }
 
-/* ---------------------------- the routing route ---------------------------- */
+/* --------------------------- the routes that call nothing --------------------------- */
 
 /** The label routing route (step 15): ERP reads and one guarded pedido write, nothing else. */
 const ROTA_ETIQUETA =
   'app/api/marketplace/loja-integrada/pedidos/[pedidoId]/rota-etiqueta/route.ts';
 
 /**
- * What the routing route's closure may never reach: the modules that hold a Loja Integrada
+ * What a call-free route's closure may never reach: the modules that hold a Loja Integrada
  * client's inputs (the credential, the context loader), the pacer and the read switch. A route
  * that calls nothing has no use for any of them.
  */
@@ -356,11 +361,11 @@ function resolverAliasDoApp(ler: LeitorDeFonte): ResolvedorDePacote {
 }
 
 /**
- * Why the run-time closure from `entradas` (app-relative paths) lets the routing route reach
+ * Why the run-time closure from `entradas` (app-relative paths) lets a call-free route reach
  * outside the ERP; empty when it does not. The files are scanned RAW for a `fetch` call: a comment
  * that spells one fails too.
  */
-function violacoesDaRotaEtiqueta(entradas: readonly string[], lerBruto: LeitorDeFonte): string[] {
+function violacoesDaRotaSemChamada(entradas: readonly string[], lerBruto: LeitorDeFonte): string[] {
   const ler: LeitorDeFonte = (caminho) => {
     const texto = lerBruto(caminho);
     return texto === null ? null : semImportacoesDeTipo(texto);
@@ -401,9 +406,17 @@ const PASTA_DA_CONTA = 'app/api/marketplace/loja-integrada/conta/[id]';
 /** The catalogue core every catalogue route delegates to. */
 const NUCLEO_DO_CATALOGO = 'lib/lojaIntegrada/catalogo/catalogo.ts';
 
+/** The product import's job routes' folder (step 9). */
+const PASTA_DAS_IMPORTACOES = `${PASTA_DA_CONTA}/importacoes`;
+
+/** The product import's lifecycle module: the ONE core of its three call-free routes. */
+const NUCLEO_DO_JOB = 'lib/lojaIntegrada/importacao/job.ts';
+
 /**
  * Every route that READS Loja Integrada, with the core it delegates to: each must reach the store
  * through the context loader only. A new read route joins this list, or its closure goes unwalked.
+ * The import's start makes no call at all, but it loads the context (the switch FIRST), so its
+ * closure reaches the client's builder and is walked by these rules.
  */
 const ROTAS_DE_LEITURA_LI: readonly (readonly [string, string])[] = [
   [ROTA_PAGAMENTO, 'lib/lojaIntegrada/pedidos/conferenciaPagamento.ts'],
@@ -411,16 +424,35 @@ const ROTAS_DE_LEITURA_LI: readonly (readonly [string, string])[] = [
   [`${PASTA_DA_CONTA}/marcas/route.ts`, NUCLEO_DO_CATALOGO],
   [`${PASTA_DA_CONTA}/grades/route.ts`, NUCLEO_DO_CATALOGO],
   [`${PASTA_DA_CONTA}/grades/[gradeId]/route.ts`, NUCLEO_DO_CATALOGO],
+  [`${PASTA_DAS_IMPORTACOES}/route.ts`, 'lib/lojaIntegrada/importacao/inicio.ts'],
+];
+
+/**
+ * Every route that calls NOTHING outside the ERP, with the core it delegates to, walked with the
+ * label routing route's rules (no client input, no context, no pacer, no switch, no `fetch`). A new
+ * call-free route joins this list, or its closure goes unwalked.
+ */
+const ROTAS_SEM_CHAMADA_LI: readonly (readonly [string, string])[] = [
+  [ROTA_ETIQUETA, 'lib/lojaIntegrada/pedidos/rotaEtiqueta.ts'],
+  [`${PASTA_DAS_IMPORTACOES}/[jobId]/route.ts`, NUCLEO_DO_JOB],
+  [`${PASTA_DAS_IMPORTACOES}/[jobId]/cancelar/route.ts`, NUCLEO_DO_JOB],
+  [`${PASTA_DAS_IMPORTACOES}/[jobId]/itens/route.ts`, NUCLEO_DO_JOB],
 ];
 
 /** The one module of a read route's closure allowed to build a Loja Integrada client. */
 const CONSTRUTOR_DO_CLIENTE = 'lib/lojaIntegrada/core/contexto.ts';
 
+/** What only {@link CONSTRUTOR_DO_CLIENTE} may name: the API client, the validating GET, the CDN reader. */
+const CONSTRUTORES_DA_LOJA = /\b(criarClienteLeituraLi|validarPersonalToken|criarLeitorCdnLi)\b/;
+
+/** The CDN photo reader's factory: named by {@link CONSTRUTOR_DO_CLIENTE} alone, app-wide. */
+const FABRICA_DO_CDN = /\bcriarLeitorCdnLi\b/;
+
 /**
  * Why the run-time closure from `entradas` lets a read route reach Loja Integrada other than
  * through the context loader (whose first act is the read switch); empty when it does not. The
- * files are scanned RAW: a `fetch` call anywhere, or a client or a validating GET named outside
- * `core/contexto.ts`, fails — a comment that spells one too.
+ * files are scanned RAW: a `fetch` call anywhere, or a client, a validating GET or the CDN reader
+ * named outside `core/contexto.ts`, fails — a comment that spells one too.
  */
 function violacoesDaRotaDeLeitura(entradas: readonly string[], lerBruto: LeitorDeFonte): string[] {
   const ler: LeitorDeFonte = (caminho) => {
@@ -438,10 +470,7 @@ function violacoesDaRotaDeLeitura(entradas: readonly string[], lerBruto: LeitorD
   for (const arquivo of fecho.arquivos) {
     const texto = lerBruto(arquivo) ?? '';
     if (/\bfetch\s*\(/.test(texto)) violacoes.push(`${arquivo} calls fetch`);
-    if (
-      arquivo !== CONSTRUTOR_DO_CLIENTE &&
-      /\b(criarClienteLeituraLi|validarPersonalToken)\b/.test(texto)
-    ) {
+    if (arquivo !== CONSTRUTOR_DO_CLIENTE && CONSTRUTORES_DA_LOJA.test(texto)) {
       violacoes.push(`${arquivo} reaches Loja Integrada outside the context loader`);
     }
     // No exemption: not even the read context loader may reach or name the write one.
@@ -665,6 +694,10 @@ describe('lib/lojaIntegrada layout', () => {
         'sanitizacao/sistemaNode.ts',
         'fixtures/piiScan.ts',
         'fixtures/wireCorpus.ts',
+        'importacao/agendadorImportacao.ts',
+        'importacao/inicio.ts',
+        'importacao/job.ts',
+        'importacao/orcamento.ts',
       ]),
     );
   });
@@ -693,7 +726,9 @@ describe('lib/lojaIntegrada layout', () => {
       expect.arrayContaining([
         'functions/src/index.ts',
         ...ROTAS_DE_LEITURA_LI.map(([rota]) => rota),
+        ...ROTAS_SEM_CHAMADA_LI.map(([rota]) => rota),
         NUCLEO_DO_CATALOGO,
+        NUCLEO_DO_JOB,
         MODULO_DO_CONTEXTO_DE_ESCRITA,
         'proxy.ts',
       ]),
@@ -782,35 +817,51 @@ describe('lib/lojaIntegrada layout', () => {
     expect(fecho.externos).toEqual(expect.arrayContaining(['node:fs', 'zod']));
   });
 
-  it('the label routing route calls nothing outside the ERP: no package client, credential, context, pacer, read switch or fetch in its run-time closure', () => {
-    expect(violacoesDaRotaEtiqueta([ROTA_ETIQUETA], lerDoApp)).toEqual([]);
-    // Anti-vacuity: the walk entered the route's own modules through the alias, and saw the
-    // data layer it does use.
-    const ler: LeitorDeFonte = (c) => {
-      const texto = lerDoApp(c);
-      return texto === null ? null : semImportacoesDeTipo(texto);
-    };
-    const fecho = fechoDeImportacoes([ROTA_ETIQUETA], ler, resolverAliasDoApp(ler));
-    expect(fecho.arquivos).toEqual(
-      expect.arrayContaining([
-        ROTA_ETIQUETA,
-        'lib/lojaIntegrada/pedidos/rotaEtiqueta.ts',
-        'lib/lojaIntegrada/core/respond.ts',
-        'lib/lojaIntegrada/core/erros.ts',
-        'lib/auth/verifyCaller.ts',
-      ]),
-    );
-    expect(fecho.externos).toEqual(
-      expect.arrayContaining([
-        '@delfrance/schemas',
-        '@delfrance/data/admin/collections',
-        '@delfrance/data/admin/grpcErrors',
-      ]),
-    );
-    // The type-only import of the package in `core/respond.ts` is real, and set aside.
+  it.each(ROTAS_SEM_CHAMADA_LI)(
+    'the call-free route %s reaches nothing outside the ERP: no package client, credential, context, pacer, read switch or fetch in its run-time closure',
+    (rota, nucleo) => {
+      expect(lerDoApp(rota), rota).not.toBeNull();
+      expect(violacoesDaRotaSemChamada([rota], lerDoApp)).toEqual([]);
+      // Anti-vacuity: the walk entered the route's own modules through the alias, and saw the
+      // data layer it does use.
+      const ler: LeitorDeFonte = (c) => {
+        const texto = lerDoApp(c);
+        return texto === null ? null : semImportacoesDeTipo(texto);
+      };
+      const fecho = fechoDeImportacoes([rota], ler, resolverAliasDoApp(ler));
+      expect(fecho.arquivos).toEqual(
+        expect.arrayContaining([
+          rota,
+          nucleo,
+          'lib/lojaIntegrada/core/respond.ts',
+          'lib/lojaIntegrada/core/erros.ts',
+          'lib/auth/verifyCaller.ts',
+        ]),
+      );
+      expect(fecho.externos).toEqual(
+        expect.arrayContaining([
+          '@delfrance/schemas',
+          '@delfrance/data/admin/collections',
+          '@delfrance/data/admin/grpcErrors',
+        ]),
+      );
+    },
+  );
+
+  it('the type-only import of the package in core/respond.ts is real, and set aside by every call-free walk', () => {
     expect(lerDoApp('lib/lojaIntegrada/core/respond.ts')).toContain(
       "import type { ValidacaoTokenLi } from '@delfrance/integrations-loja-integrada';",
     );
+  });
+
+  it('only core/contexto.ts names the CDN reader’s factory, in the WHOLE app’s non-test source', () => {
+    const fontesDoApp = arquivosTs(RAIZ_APP)
+      .map(relApp)
+      .filter((p) => !ehTeste(p));
+    const nomeiam = fontesDoApp.filter((p) => FABRICA_DO_CDN.test(lerDoApp(p) ?? ''));
+    expect(nomeiam).toEqual([CONSTRUTOR_DO_CLIENTE]);
+    // Anti-vacuity: the loader really builds it, after its refusals.
+    expect(lerDoApp(CONSTRUTOR_DO_CLIENTE)).toContain('criarLeitorCdnLi({');
   });
 
   it.each(ROTAS_DE_LEITURA_LI)(
@@ -832,11 +883,12 @@ describe('lib/lojaIntegrada layout', () => {
     },
   );
 
-  it('every route file under the conta folder is in ROTAS_DE_LEITURA_LI or one of the credential routes (a new read route cannot skip the walk)', () => {
+  it('every route file under the conta folder is in ROTAS_DE_LEITURA_LI, ROTAS_SEM_CHAMADA_LI or one of the credential routes (a new route cannot skip the walk)', () => {
     const naPasta = arquivosTs(RAIZ_APP)
       .map(relApp)
       .filter((p) => p.startsWith(`${PASTA_DA_CONTA}/`) && p.endsWith('/route.ts'));
     const listadas = new Set(ROTAS_DE_LEITURA_LI.map(([rota]) => rota));
+    const semChamada = new Set(ROTAS_SEM_CHAMADA_LI.map(([rota]) => rota));
     // The status route calls nothing, and the credential routes read the conta uncached and
     // validate a candidate token: each has its own guard (`prazos.test.ts`), and none goes
     // through the context loader.
@@ -845,9 +897,13 @@ describe('lib/lojaIntegrada layout', () => {
       `${PASTA_DA_CONTA}/credencial/route.ts`,
       `${PASTA_DA_CONTA}/credencial/validade/route.ts`,
     ]);
-    expect(naPasta.filter((p) => !listadas.has(p) && !daCredencial.has(p))).toEqual([]);
-    // Anti-vacuity: the scan found the four catalogue routes and the three credential ones.
-    expect(naPasta.filter((p) => listadas.has(p))).toHaveLength(4);
+    expect(
+      naPasta.filter((p) => !listadas.has(p) && !semChamada.has(p) && !daCredencial.has(p)),
+    ).toEqual([]);
+    // Anti-vacuity: the scan found the four catalogue routes and the import's start, the import's
+    // three job routes, and the three credential ones.
+    expect(naPasta.filter((p) => listadas.has(p))).toHaveLength(5);
+    expect(naPasta.filter((p) => semChamada.has(p))).toHaveLength(3);
     expect(naPasta.filter((p) => daCredencial.has(p))).toHaveLength(3);
   });
 
@@ -1123,7 +1179,7 @@ describe('the guards, on synthetic source', () => {
       "import type { LiError } from '@delfrance/integrations-loja-integrada';\n" +
       "export type { LiAuthError } from '@delfrance/integrations-loja-integrada';\n" +
       "import { E } from '../core/erros';";
-    expect(violacoesDaRotaEtiqueta([ROTA], daRota(nucleo))).toEqual([]);
+    expect(violacoesDaRotaSemChamada([ROTA], daRota(nucleo))).toEqual([]);
   });
 
   it.each([
@@ -1150,12 +1206,15 @@ describe('the guards, on synthetic source', () => {
     ['a network module', "import { request } from 'node:https';"],
     ['undici', "import { request } from 'undici';"],
   ])('routing route closure flags, one module deep, %s', (_caso, nucleo) => {
-    expect(violacoesDaRotaEtiqueta([ROTA], daRota(nucleo)).length).toBeGreaterThan(0);
+    expect(violacoesDaRotaSemChamada([ROTA], daRota(nucleo)).length).toBeGreaterThan(0);
   });
 
   it('routing route closure flags an alias that resolves to no file (fail closed)', () => {
     expect(
-      violacoesDaRotaEtiqueta([ROTA], daRota('', "import { f } from '@/lib/lojaIntegrada/sumiu';")),
+      violacoesDaRotaSemChamada(
+        [ROTA],
+        daRota('', "import { f } from '@/lib/lojaIntegrada/sumiu';"),
+      ),
     ).toEqual(['imports ?lib/lojaIntegrada/sumiu']);
   });
 
@@ -1178,6 +1237,11 @@ describe('the guards, on synthetic source', () => {
       "import { c } from '../core/contexto';\n" +
       'export const f = () => buscarPedidoLi(c(), 1);';
     expect(violacoesDaRotaDeLeitura([LEITURA], daRotaDeLeitura(nucleo))).toEqual([]);
+    // The loader building the CDN reader too is its own business.
+    const construtor =
+      "import { criarClienteLeituraLi, criarLeitorCdnLi } from '@delfrance/integrations-loja-integrada';\n" +
+      'export const c = () => ({ cliente: criarClienteLeituraLi({}), cdn: criarLeitorCdnLi() });';
+    expect(violacoesDaRotaDeLeitura([LEITURA], daRotaDeLeitura(nucleo, construtor))).toEqual([]);
   });
 
   it.each([
@@ -1188,6 +1252,11 @@ describe('the guards, on synthetic source', () => {
     [
       'a validating GET',
       "import { validarPersonalToken } from '@delfrance/integrations-loja-integrada';",
+    ],
+    [
+      'a CDN reader built outside the context loader',
+      "import { criarLeitorCdnLi } from '@delfrance/integrations-loja-integrada';\n" +
+        'export const cdn = criarLeitorCdnLi();',
     ],
     ['a fetch call', "export const f = () => fetch('https://x.invalid');"],
     ['a network module', "import { request } from 'node:https';"],

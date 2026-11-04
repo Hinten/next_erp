@@ -16,7 +16,10 @@
  *    not exist, and the label routing's write losing its precondition on every
  *    attempt;
  *  - the catalogue routes' own (step 10): a malformed grade id, and the envelope
- *    of a read that gave no answer (the shared read-failure mapper's).
+ *    of a read that gave no answer (the shared read-failure mapper's);
+ *  - the product import routes' own (step 9): a malformed job id, a job that is
+ *    not this conta's, a running import (with its `jobId`), a job already ended,
+ *    and a cancel that kept losing its precondition.
  *
  * ⚠️ The ONE module under `lib/lojaIntegrada/` that imports `next/server`, and
  * therefore the one module step 3's functions bundle must never reach. Nothing
@@ -121,6 +124,8 @@ export interface ExtrasDoEnvelopeLi {
   readonly status?: number | null;
   /** The validation call's correlation id. */
   readonly correlationId?: string;
+  /** The RUNNING product import, on `LI_IMPORTACAO_EM_ANDAMENTO` only. */
+  readonly jobId?: string;
 }
 
 /** One envelope. Every refusal below goes through here. */
@@ -137,6 +142,7 @@ export function respostaLi(
       ...(extras.issues === undefined ? {} : { issues: [...extras.issues] }),
       ...(extras.status === undefined ? {} : { status: extras.status }),
       ...(extras.correlationId === undefined ? {} : { correlationId: extras.correlationId }),
+      ...(extras.jobId === undefined ? {} : { jobId: extras.jobId }),
     },
     { status: httpStatus },
   );
@@ -168,6 +174,69 @@ export function respostaDeFalhaDeLeituraLi(falha: FalhaDeLeituraLi): NextRespons
   return falha.tipo === 'conta'
     ? respostaDeErroLi(falha.erro)
     : respostaLi(falha.status, falha.code, falha.mensagem);
+}
+
+/**
+ * 400 — the `[jobId]` segment of a product-import route is not a job id
+ * (`ID_IMPORTACAO_LI_REGEX`). Answered before anything is read.
+ */
+export function respostaIdDeImportacaoInvalido(): NextResponse {
+  return respostaLi(400, CODIGO_ERRO_LI.idInvalido, 'Id de importação inválido.');
+}
+
+/**
+ * 400 — the items route's `?depois=` is not a report item's id, or is given twice. Answered before
+ * anything is read.
+ */
+export function respostaCursorDeItensInvalido(): NextResponse {
+  return respostaLi(400, CODIGO_ERRO_LI.idInvalido, 'Cursor de página inválido (depois).', {
+    issues: ['depois'],
+  });
+}
+
+/**
+ * 404 — no product import with this id FOR THIS CONTA: a missing job and another conta's job get
+ * this one answer, so a caller cannot probe ids across contas. Nothing was written.
+ */
+export function respostaImportacaoNaoEncontrada(): NextResponse {
+  return respostaLi(404, CODIGO_ERRO_LI.importacaoNaoEncontrada, 'Importação não encontrada.');
+}
+
+/**
+ * 409 — the conta already has a product import running (`pendente` or `executando`); `jobId` names
+ * it, so the web attaches to it instead of starting another. Nothing was written.
+ */
+export function respostaImportacaoEmAndamento(jobId: string): NextResponse {
+  return respostaLi(
+    409,
+    CODIGO_ERRO_LI.importacaoEmAndamento,
+    'Esta conta já tem uma importação de produtos em andamento.',
+    { jobId },
+  );
+}
+
+/** 409 — the product import already ended; cancelling it changes nothing, and nothing was written. */
+export function respostaImportacaoEncerrada(): NextResponse {
+  return respostaLi(
+    409,
+    CODIGO_ERRO_LI.importacaoEncerrada,
+    'Esta importação já terminou. Nada foi alterado.',
+  );
+}
+
+/**
+ * 503 — the cancel lost its precondition on every attempt (`LiCancelamentoEmConflitoError`,
+ * `importacao/job.ts`): the job kept writing its progress between the read and the write. The job
+ * is still running (hence the running-import code, with its `jobId`); nothing was written, and a
+ * retry re-decides from a fresh read.
+ */
+export function respostaCancelamentoEmConflito(jobId: string): NextResponse {
+  return respostaLi(
+    503,
+    CODIGO_ERRO_LI.importacaoEmAndamento,
+    'A importação gravou um avanço a cada tentativa de cancelar. Nada foi gravado; tente de novo.',
+    { jobId },
+  );
 }
 
 /** 404 — no pedido with this id. Nothing was written. */

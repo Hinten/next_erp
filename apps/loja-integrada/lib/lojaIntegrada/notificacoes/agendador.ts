@@ -155,6 +155,26 @@ export class LiTarefasTransitoriasError extends Error {
   }
 }
 
+/** The SDK's code for a named task Cloud Tasks already holds (an answered 409). */
+const CODIGO_TAREFA_JA_EXISTE = 'functions/task-already-exists';
+
+/**
+ * Whether `err` is the SDK's ANSWERED "a task with this id already exists" — the success of a
+ * producer that NAMES its tasks (the writes producer, `rastreio/agendadorEscrita.ts`, and the
+ * product import's, `importacao/agendadorImportacao.ts`): the task it meant to queue is there.
+ * The same code with NO `httpResponse` was never answered by Cloud Tasks, so it is not a dedup.
+ *
+ * ⚠️ This module's own producer ({@link criarAgendadorLi}) never names a task, so for it the code
+ * cannot happen, and it keeps rethrowing it.
+ */
+export function tarefaJaExisteLi(err: unknown): boolean {
+  return (
+    err instanceof FirebaseFunctionsError &&
+    err.code === CODIGO_TAREFA_JA_EXISTE &&
+    err.httpResponse !== undefined
+  );
+}
+
 /**
  * Run ONE transport enqueue and name its transient failure as
  * {@link LiTarefasTransitoriasError}; anything else — a deploy-shaped code, a

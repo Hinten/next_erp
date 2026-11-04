@@ -14,6 +14,7 @@ import { PRAZO_LI_MS } from '@delfrance/integrations-loja-integrada';
 
 import { __setRelogioDoCacheParaTestes } from '../../lib/lojaIntegrada/core/contaCache';
 import { PRAZO_ULTIMA_ESCRITA_MS } from '../../lib/lojaIntegrada/core/escrita';
+import { DURACAO_MAXIMA_DESPACHO_IMPORTACAO_LI_MS } from '../../lib/lojaIntegrada/importacao/orcamento';
 import type { ImportadorPedidoLi } from '../../lib/lojaIntegrada/notificacoes/notificacao';
 import { importarPedidoLi } from '../../lib/lojaIntegrada/pedidos/importarPedido';
 import {
@@ -592,6 +593,24 @@ describe('filaLeituraLojaIntegrada — the declared options', () => {
     const escadaSegundos = tentativas * execucao + Math.max(tentativas - 1, 0) * backoff;
     expect(escadaSegundos).toBe(1500);
     expect(escadaSegundos).toBeLessThanOrEqual(1800);
+  });
+
+  it('closes the SAME ladder with the product import as a co-tenant: each attempt may wait one import dispatch', () => {
+    // The import (master plan step 9) rides this queue at concurrency 1, so an order-intake
+    // attempt may first wait for one import dispatch — at most its budget plus its tail
+    // (`importacao/orcamento.ts`). With that wait on every attempt, the ladder still fits half
+    // the hot sweep's hour: 3 × (300 + 100) + 2 × 300 = 1 800.
+    const tentativas = fila.retryConfig.maxAttempts ?? 0;
+    const execucao = endpointOf(filaLeituraLojaIntegrada).timeoutSeconds as number;
+    const backoff = fila.retryConfig.maxBackoffSeconds ?? 0;
+    const despachoDaImportacaoS = DURACAO_MAXIMA_DESPACHO_IMPORTACAO_LI_MS / 1000;
+    const escadaSegundos =
+      tentativas * (execucao + despachoDaImportacaoS) + Math.max(tentativas - 1, 0) * backoff;
+    expect(despachoDaImportacaoS).toBe(100);
+    expect(escadaSegundos).toBe(1800);
+    expect(escadaSegundos).toBeLessThanOrEqual(1800);
+    // And a dispatch fits the queue's own timeout, with room for the platform's start-up.
+    expect(despachoDaImportacaoS).toBeLessThan(execucao);
   });
 
   it('declares the invoker, the leg whose absence fails invisibly (#1133)', () => {

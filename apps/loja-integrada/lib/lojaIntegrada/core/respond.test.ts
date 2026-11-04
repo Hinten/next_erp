@@ -21,11 +21,16 @@ import {
   isLiAppError,
   lerCorpoLi,
   respostaCancelada,
+  respostaCancelamentoEmConflito,
   respostaChamadasDesligadas,
   respostaDeErroLi,
   respostaDeVeredito,
+  respostaIdDeImportacaoInvalido,
   respostaIdDePedidoInvalido,
   respostaIdInvalido,
+  respostaImportacaoEmAndamento,
+  respostaImportacaoEncerrada,
+  respostaImportacaoNaoEncontrada,
   respostaLi,
   respostaPedidoNaoEncontrado,
   respostaRotaEmConflito,
@@ -219,12 +224,47 @@ describe('the fixed answers', () => {
     expect(CODIGO_ERRO_LI.rotaEmConflito).not.toBe(CODIGO_ERRO_LI.chamadasDesligadas);
   });
 
+  it('the product import routes: 400 id, 404 not this conta’s, 409 running WITH its jobId, 409 ended, 503 a cancel that kept losing', async () => {
+    const id = respostaIdDeImportacaoInvalido();
+    expect(id.status).toBe(400);
+    expect(await id.json()).toEqual({
+      error: 'Id de importação inválido.',
+      code: CODIGO_ERRO_LI.idInvalido,
+    });
+    const ausente = respostaImportacaoNaoEncontrada();
+    expect(ausente.status).toBe(404);
+    expect(await ausente.json()).toMatchObject({ code: CODIGO_ERRO_LI.importacaoNaoEncontrada });
+    const emCurso = respostaImportacaoEmAndamento('job-vivo');
+    expect(emCurso.status).toBe(409);
+    expect(await emCurso.json()).toMatchObject({
+      code: CODIGO_ERRO_LI.importacaoEmAndamento,
+      jobId: 'job-vivo',
+    });
+    const encerrada = respostaImportacaoEncerrada();
+    expect(encerrada.status).toBe(409);
+    const corpoEncerrada = (await encerrada.json()) as Record<string, unknown>;
+    expect(corpoEncerrada).toMatchObject({ code: CODIGO_ERRO_LI.importacaoEncerrada });
+    // Near-miss: only the running-import answers carry a jobId.
+    expect(corpoEncerrada).not.toHaveProperty('jobId');
+    const conflito = respostaCancelamentoEmConflito('job-vivo');
+    expect(conflito.status).toBe(503);
+    expect(await conflito.json()).toMatchObject({
+      code: CODIGO_ERRO_LI.importacaoEmAndamento,
+      jobId: 'job-vivo',
+    });
+  });
+
   it('every refusal parses as the shared error envelope', async () => {
     for (const res of [
       respostaIdInvalido(),
       respostaIdDePedidoInvalido(),
       respostaPedidoNaoEncontrado(),
       respostaRotaEmConflito(),
+      respostaIdDeImportacaoInvalido(),
+      respostaImportacaoNaoEncontrada(),
+      respostaImportacaoEmAndamento('job-vivo'),
+      respostaImportacaoEncerrada(),
+      respostaCancelamentoEmConflito('job-vivo'),
       respostaChamadasDesligadas(),
       respostaTokenNaRef(),
       respostaTokenDeOutraConta(),
