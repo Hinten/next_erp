@@ -672,6 +672,30 @@ describe('Simular and aplicar', () => {
       params: expect.objectContaining({ 'sem-sku': 1, acionaveis: 1, job: JOB }),
     });
   });
+
+  it('⚠️ a Simular job’s END reads none of its items: counting the pendências serves only the summary aviso, which Simular never syncs', async () => {
+    const semSku: LojaDeProdutosLi = { ativos: [linhaProdutoLi(10, { sku: '' })] };
+    // The count pages the job's WHOLE report: on a full store, thousands of documents read for an
+    // answer nothing uses.
+    const consultasDosItens = () =>
+      db.consultas.filter((c) => c.colecao === `${caminhoJobLi(JOB)}/itens`).length;
+
+    seedJobLi(db, JOB, CONTA, { status: 'pendente', modo: 'simular' });
+    const simular = await rodarAteOFim({ responder: lojaCompleta(semSku) });
+    expect(simular.resultados.at(-1)?.desfecho).toBe('concluido');
+    expect(
+      itens()
+        .get(10)
+        ?.pendencias.map((p) => p.codigo),
+    ).toEqual(['sem-sku']);
+    expect(consultasDosItens()).toBe(0);
+
+    // NEAR-MISS: the same store under `aplicar` counts them — ONE page — before its stamp.
+    seedJobLi(db, JOB, CONTA, { status: 'pendente', modo: 'aplicar' });
+    const aplicar = await rodarAteOFim({ responder: lojaCompleta(semSku) });
+    expect(aplicar.resultados.at(-1)?.desfecho).toBe('concluido');
+    expect(consultasDosItens()).toBe(1);
+  });
 });
 
 /**
