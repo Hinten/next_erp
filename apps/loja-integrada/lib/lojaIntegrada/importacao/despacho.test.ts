@@ -65,7 +65,7 @@ import {
   paginaCatalogoLi,
   plataformaCatalogoLi,
 } from '../testing/catalogoLi';
-import { type DocData, FakeDb, asDb, increment } from '../testing/fakeDb';
+import { type DocData, FakeDb, asDb, grpc, increment } from '../testing/fakeDb';
 import { falhaDoFunctions } from '../testing/falhaDeEnfileiramento';
 import {
   AGORA_MS,
@@ -1122,17 +1122,76 @@ describe('the queue’s last attempt', () => {
     }
   });
 
-  it('⚠️ NEAR-MISS: on the last attempt, a job the other writer already moved past this seq is never stamped', async () => {
-    seedSnapshotDeFamilias([10, 20]);
-    // Another dispatch of seq 0 ENDS its slice (seq 1) while this one runs family 10.
-    db.antesDaProximaEscrita(caminhoItemLi(JOB, '10'), async () => {
-      await importacaoLojaIntegradaCollection
-        .docRef(asDb(db), {}, JOB)
-        .update({ atualizadoEmMs: 1, seq: 1 });
+  it('⚠️ NEAR-MISS: a job the other writer already moved past this seq is never stamped — its NAMED successor is handed off, on the last attempt and before it', async () => {
+    for (const tentativa of [0, 2]) {
+      db = new FakeDb();
+      seedConta(db, CONTA);
+      seedCredencial(db, CONTA);
+      __resetAllReadCaches();
+      seedSnapshotDeFamilias([10, 20]);
+      // Another dispatch of seq 0 ENDS its slice (seq 1) while this one runs family 10 — and may
+      // never hand off (the queue gave up on it): this stop is the only one left to.
+      db.antesDaProximaEscrita(caminhoItemLi(JOB, '10'), async () => {
+        await importacaoLojaIntegradaCollection
+          .docRef(asDb(db), {}, JOB)
+          .update({ atualizadoEmMs: 1, seq: 1 });
+      });
+      const { deps, t } = montarDeps({ tentativa });
+      const r = await despacharImportacaoLi(asDb(db), tarefa(0), deps);
+      expect(r.desfecho, String(tentativa)).toBe('continuacao');
+      expect(jobGravado(), String(tentativa)).toMatchObject({ status: 'executando', seq: 1 });
+      expect(t.envios, String(tentativa)).toEqual([
+        { tarefa: tarefa(1), opcoes: { id: `li-importacao-${JOB}-1`, scheduleDelaySeconds: 2 } },
+      ]);
+    }
+  });
+
+  it('⚠️ the END-of-dispatch checkpoint LANDED but the call failed DEADLINE_EXCEEDED, on the last attempt: the named successor is handed off, the job never stamped', async () => {
+    seedSnapshotDeFamilias([10, 20, 30]);
+    db.respostaPerdidaNaProximaEscrita(caminhoJobLi(JOB), grpc(4, 'DEADLINE_EXCEEDED'));
+    const t = transporte();
+    // No unit fits: the end-of-dispatch checkpoint is the dispatch's first write.
+    const { deps } = montarDeps({ t, tentativa: 2, jaDecorridoMs: 61_000 });
+    const r = await despacharImportacaoLi(asDb(db), tarefa(0), deps);
+    expect(r.desfecho).toBe('continuacao');
+    expect(jobGravado()).toMatchObject({ status: 'executando', seq: 1, motivo: null });
+    expect(t.envios.map((e) => e.tarefa)).toEqual([tarefa(1)]);
+    expect(t.envios.map((e) => e.opcoes.id)).toEqual([`li-importacao-${JOB}-1`]);
+    // The chain goes on from the successor.
+    const { resultados } = await rodarAteOFim({ t }, 1);
+    expect(resultados.at(-1)?.desfecho).toBe('concluido');
+  });
+
+  it('⚠️ the END-of-dispatch checkpoint LANDED, came back 9 and its re-read failed UNAVAILABLE, on the last attempt: the named successor is handed off, the job never stamped', async () => {
+    seedSnapshotDeFamilias([10, 20, 30]);
+    db.respostaPerdidaNaProximaEscrita(caminhoJobLi(JOB));
+    const t = transporte();
+    const { deps } = montarDeps({ t, tentativa: 2, jaDecorridoMs: 61_000 });
+    // The dispatch's own job read goes first: let it through, then fail the checkpoint's re-read.
+    db.antesDaProximaEscrita(caminhoJobLi(JOB), () => {
+      db.falharProximaLeitura(caminhoJobLi(JOB), grpc(14, 'UNAVAILABLE'));
     });
-    const { deps } = montarDeps({ tentativa: 2 });
-    expect((await despacharImportacaoLi(asDb(db), tarefa(0), deps)).desfecho).toBe('parado');
-    expect(jobGravado()).toMatchObject({ status: 'executando', seq: 1 });
+    const r = await despacharImportacaoLi(asDb(db), tarefa(0), deps);
+    expect(r.desfecho).toBe('continuacao');
+    expect(jobGravado()).toMatchObject({ status: 'executando', seq: 1, motivo: null });
+    expect(t.envios.map((e) => e.opcoes.id)).toEqual([`li-importacao-${JOB}-1`]);
+  });
+
+  it('NEAR-MISS: the END-of-dispatch checkpoint did NOT land (DEADLINE_EXCEEDED before it), on the last attempt: stamped tentativas-esgotadas at the SAME seq, nothing handed off', async () => {
+    seedSnapshotDeFamilias([10, 20, 30]);
+    db.antesDaProximaEscrita(caminhoJobLi(JOB), () => {
+      throw grpc(4, 'DEADLINE_EXCEEDED');
+    });
+    const t = transporte();
+    const { deps } = montarDeps({ t, tentativa: 2, jaDecorridoMs: 61_000 });
+    const r = await despacharImportacaoLi(asDb(db), tarefa(0), deps);
+    expect(r).toMatchObject({ desfecho: 'falhou', motivo: 'tentativas-esgotadas' });
+    expect(jobGravado()).toMatchObject({
+      status: 'falhou',
+      motivo: 'tentativas-esgotadas',
+      seq: 0,
+    });
+    expect(t.envios).toEqual([]);
   });
 });
 

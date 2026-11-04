@@ -148,6 +148,34 @@ describe('FakeDb', () => {
     expect(db.ler('integracao/a')).toEqual({ x: 3, y: 1 });
   });
 
+  it('respostaPerdidaNaProximaEscrita with an error: the guarded update LANDS, then rejects with THAT error — once', async () => {
+    const db = new FakeDb();
+    const ref = refDe(db, 'a');
+    await ref.create({ x: 1 });
+    const prazo = grpc(4, 'DEADLINE_EXCEEDED');
+    db.respostaPerdidaNaProximaEscrita('integracao/a', prazo);
+    const lido = await ref.get();
+    await expect(ref.update({ x: 2 }, { lastUpdateTime: lido.updateTime })).rejects.toBe(prazo);
+    expect(db.ler('integracao/a')).toEqual({ x: 2 });
+    // One-shot: the next guarded update answers normally.
+    const depois = await ref.get();
+    await expect(
+      ref.update({ x: 3 }, { lastUpdateTime: depois.updateTime }),
+    ).resolves.toBeDefined();
+  });
+
+  it('falharProximaLeitura: the NEXT get rejects with the error, the one after it reads normally', async () => {
+    const db = new FakeDb();
+    db.seed('integracao/a', { x: 1 });
+    const fora = grpc(14, 'UNAVAILABLE');
+    db.falharProximaLeitura('integracao/a', fora);
+    // ⚠️ NEAR-MISS: another path is not affected.
+    db.seed('integracao/b', { x: 2 });
+    expect((await refDe(db, 'b').get()).data()).toEqual({ x: 2 });
+    await expect(refDe(db, 'a').get()).rejects.toBe(fora);
+    expect((await refDe(db, 'a').get()).data()).toEqual({ x: 1 });
+  });
+
   it('antesDaProximaConsulta runs ONCE before the next query on that collection, and the query sees its write', async () => {
     const db = new FakeDb();
     db.seed('integracao/a', { tipo: 3 });

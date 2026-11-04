@@ -201,8 +201,11 @@ carries the continuation `seq`, the cursors or the selection's ids.
   job, while an empty or non-JSON 200 is the transport's and retries; the valve closed at a
   hand-off ⇒ `tarefas-desligadas`; anything else rethrows, and on the queue's LAST attempt a
   failure a retry could have changed — another writer of the same `seq` included, an earlier
-  attempt the queue gave up on — stamps `tentativas-esgotadas` on a job still running at that
-  `seq` (a coding bug stays loud). It reads the snapshot, its details, the grupo memo and the
+  attempt the queue gave up on — RE-READS the job: still running at that `seq` ⇒ stamped
+  `tentativas-esgotadas`; ONE `seq` ahead and `executando` (an end checkpoint that LANDED behind a
+  DEADLINE_EXCEEDED, or a 9 whose re-read failed) ⇒ its named successor is handed off as the
+  continuation check does, never stamped (a coding bug stays loud). A checkpoint that stops on a
+  job one `seq` ahead hands off the same way, on every attempt. It reads the snapshot, its details, the grupo memo and the
   claims at most once per dispatch, lazily. The summary aviso is synced before the phase machine's
   own terminal stamps (`aplicar` only), on a FRESH read of the job that still runs at its `seq`,
   the stamp chained from that read (a cancel landing in between the two is the stated residual).

@@ -447,7 +447,7 @@ describe('the checkpoints: tier 1, chained from each write’s writeTime', () =>
       progresso,
       AGORA_MS,
     );
-    expect(r).toEqual({ tipo: 'parar', job: null });
+    expect(r).toEqual({ tipo: 'parar', job: null, versao: null });
     expect(db.ler(caminhoJobLi(JOB))).toBeUndefined();
   });
 

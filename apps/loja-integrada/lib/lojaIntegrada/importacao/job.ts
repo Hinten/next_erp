@@ -41,7 +41,9 @@
  *
  * A unit checkpoint keeps `seq`; only the end-of-dispatch checkpoint writes `seq + 1`, so a dispatch
  * retried before its last checkpoint resumes from its last unit checkpoint, and one retried after it
- * finds `stored − 1` and only hands off.
+ * finds `stored − 1` and only hands off. The queue's LAST attempt has no retry to do that: it
+ * re-reads the job itself, and one found at `stored − 1` — an end-of-dispatch checkpoint that LANDED
+ * while its call surfaced an error — is handed off there, never stamped (`despacho.ts`).
  *
  * ## A lost checkpoint is never re-applied
  *
@@ -54,7 +56,10 @@
  *    precondition: when the first commit landed and only its reply was lost, the retry meets the
  *    stamp of its own write and answers 9. Read as a lost race, the end-of-dispatch checkpoint
  *    would stop with nothing queued and the job would sit `executando` at `seq + 1`;
- *  - the job no longer runs at this `seq` (cancelled, ended, gone, or its `seq` moved) ⇒ `parar`;
+ *  - the job no longer runs at this `seq` (cancelled, ended, gone, or its `seq` moved) ⇒ `parar`,
+ *    with the fresh read and its stamp: a job found ONE `seq` ahead and still `executando` (another
+ *    dispatch of this `seq` ended its slice, and may never hand off) is handed off by the dispatch
+ *    from that read, exactly as the continuation check does (`despacho.ts`), never stamped;
  *  - it still runs at this `seq` — another dispatch of the same `seq` wrote it (a cut dispatch the
  *    platform kept alive, say) ⇒ {@link LiImportacaoConcorrenteError}. The task THROWS, and Cloud
  *    Tasks' retry resumes from whatever is stored.
@@ -442,9 +447,14 @@ export type ResultadoCheckpointLi =
   | { readonly tipo: 'gravado'; readonly versao: Timestamp }
   /**
    * Not written, and the dispatch STOPS: the job is cancelled, ended, gone (`job: null`) or runs at
-   * another `seq`. `job` is the fresh read, for the log line.
+   * another `seq`. `job` is the fresh read and `versao` its `updateTime` (both `null` when gone):
+   * a job found one `seq` ahead, still `executando`, is handed off from that read (`despacho.ts`).
    */
-  | { readonly tipo: 'parar'; readonly job: ImportacaoLojaIntegrada | null };
+  | {
+      readonly tipo: 'parar';
+      readonly job: ImportacaoLojaIntegrada | null;
+      readonly versao: Timestamp | null;
+    };
 
 async function gravarCheckpoint(
   db: Firestore,
@@ -473,11 +483,11 @@ async function gravarCheckpoint(
   }
   // Lost: re-read, and NEVER re-apply this patch (module header).
   const relido = await relerJob(db, alvo.jobId);
-  if (relido === null) return { tipo: 'parar', job: null };
+  if (relido === null) return { tipo: 'parar', job: null, versao: null };
   // Our own write, stored before its reply was lost: written, on the stored stamp.
   if (guardaOPatchLi(relido.dados, patch)) return { tipo: 'gravado', versao: relido.lido.versao };
   if (decidirDespachoLi(relido.lido.job, alvo.seq) !== DECISAO_DESPACHO_LI.executar) {
-    return { tipo: 'parar', job: relido.lido.job };
+    return { tipo: 'parar', job: relido.lido.job, versao: relido.lido.versao };
   }
   throw new LiImportacaoConcorrenteError(alvo.jobId, alvo.seq);
 }

@@ -76,8 +76,10 @@ export const ORCAMENTO_DESPACHO_IMPORTACAO_LI_MS = 70_000;
 
 /**
  * The tail after the budget: the last writes, the end-of-dispatch checkpoint and the continuation
- * enqueue. Budget + tail = 100 s, which is what keeps an order-intake task sharing the reads queue
- * waiting at most one dispatch.
+ * enqueue. Budget + tail = 100 s: an order-intake task sharing the reads queue waits at most one
+ * such dispatch PER IMPORT RUNNING AT ONCE (one per conta) — its retry ladder fits half the hot
+ * sweep's hour with one import, the whole hour with up to seven (`importacao/orcamento.ts` and
+ * `functions/src/index.test.ts` in `apps/loja-integrada`).
  */
 export const CAUDA_DESPACHO_IMPORTACAO_LI_MS = 30_000;
 

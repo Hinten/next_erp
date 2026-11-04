@@ -37,7 +37,11 @@
  *  - a LOST REPLY ({@link FakeDb.respostaPerdidaNaProximaEscrita}, step 9): the next guarded
  *    `update` on a path LANDS and then rejects gRPC 9 — what the Admin SDK reports when a commit
  *    landed, its reply was lost (UNAVAILABLE), and the SDK's own retry of the same commit met the
- *    stamp of its own write. The caller sees a lost precondition for a write that is stored;
+ *    stamp of its own write. The caller sees a lost precondition for a write that is stored. Given
+ *    an error, it rejects with THAT one instead: a commit that landed while the call surfaced a
+ *    DEADLINE_EXCEEDED, or an UNAVAILABLE after the SDK's retries;
+ *  - a ONE-SHOT read failure ({@link FakeDb.falharProximaLeitura}, step 9): the next `get()` on a
+ *    path rejects, the one after it reads normally — a re-read that failed transiently once;
  *  - a hook BEFORE a query is answered ({@link FakeDb.antesDaProximaConsulta}, step 9): the
  *    one-shot window a concurrent writer lands in while a reader pages a collection;
  *  - the `{ __increment: n }` sentinel ({@link increment}), APPLIED on write,
@@ -511,7 +515,8 @@ export class FakeDb {
   private readonly falhasDeLeitura = new Map<string, Error>();
   private readonly falhasDeEscrita = new Map<string, Error>();
   private readonly falhasDeConsulta = new Map<string, Error>();
-  private readonly respostasPerdidas = new Set<string>();
+  private readonly respostasPerdidas = new Map<string, Error>();
+  private readonly falhasDeLeituraUnicas = new Map<string, Error[]>();
   private readonly ganchosDeConsulta = new Map<string, (() => Promise<void> | void)[]>();
   private lotes = 0;
   private idsAutomaticos = 0;
@@ -570,6 +575,14 @@ export class FakeDb {
     else this.falhasDeLeitura.set(caminho, err);
   }
 
+  /** The NEXT `get()` on `caminho` rejects with `err` (one-shot; queue several to fail several). */
+  falharProximaLeitura(caminho: string, err: Error): void {
+    this.falhasDeLeituraUnicas.set(caminho, [
+      ...(this.falhasDeLeituraUnicas.get(caminho) ?? []),
+      err,
+    ]);
+  }
+
   /**
    * Run `fn` right before the NEXT query on `colecao` is answered (one-shot; queue several to
    * intercept several): the window a concurrent writer lands in while a reader pages a collection.
@@ -594,10 +607,15 @@ export class FakeDb {
   /**
    * The NEXT guarded `update` on `caminho` (one with a `lastUpdateTime`) lands, and then rejects
    * gRPC 9 (one-shot; module header, "a LOST REPLY"): the SDK retried a commit whose reply was lost,
-   * and the retry met its own write's stamp. Any other write on the path is not affected.
+   * and the retry met its own write's stamp. With `erro`, it rejects with that error instead (a
+   * DEADLINE_EXCEEDED surfaced for a commit that landed). Any other write on the path is not
+   * affected.
    */
-  respostaPerdidaNaProximaEscrita(caminho: string): void {
-    this.respostasPerdidas.add(caminho);
+  respostaPerdidaNaProximaEscrita(
+    caminho: string,
+    erro: Error = grpc(9, 'FAILED_PRECONDITION'),
+  ): void {
+    this.respostasPerdidas.set(caminho, erro);
   }
 
   private proximoCarimbo(): CarimboFake {
@@ -662,6 +680,11 @@ export class FakeDb {
         this.leituras.push(caminho);
         const falha = this.falhasDeLeitura.get(caminho);
         if (falha) return Promise.reject(falha);
+        const unica = this.falhasDeLeituraUnicas.get(caminho)?.shift();
+        if (this.falhasDeLeituraUnicas.get(caminho)?.length === 0) {
+          this.falhasDeLeituraUnicas.delete(caminho);
+        }
+        if (unica !== undefined) return Promise.reject(unica);
         const atual = this.store.get(caminho);
         const dados = atual === undefined ? undefined : structuredClone(atual.data);
         return Promise.resolve({
@@ -691,9 +714,12 @@ export class FakeDb {
         if (recusa !== null || atual === undefined) throw recusa ?? grpc(5, 'NOT_FOUND');
         const writeTime = this.registrar('update', caminho, patch);
         this.store.set(caminho, { data: this.aplicar(atual.data, patch), updateTime: writeTime });
-        if (precondicao?.lastUpdateTime !== undefined && this.respostasPerdidas.delete(caminho)) {
-          // Stored, and the SDK's retry of the same commit met its own stamp (module header).
-          throw grpc(9, 'FAILED_PRECONDITION');
+        const perdida = this.respostasPerdidas.get(caminho);
+        if (precondicao?.lastUpdateTime !== undefined && perdida !== undefined) {
+          this.respostasPerdidas.delete(caminho);
+          // Stored, and the SDK's retry of the same commit met its own stamp (module header) — or
+          // the call surfaced another error for a commit that landed all the same.
+          throw perdida;
         }
         return { writeTime };
       },
