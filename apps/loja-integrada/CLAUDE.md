@@ -23,7 +23,8 @@ Master plan: `.master_plans/loja-integrada/loja-integrada-marketplace-integratio
 - Step 9 (the product import, in stacked PRs): the job routes `conta/[id]/importacoes…` (below)
   and `lib/lojaIntegrada/importacao/` — the start core, the job lifecycle, the dispatch's time
   budget, its named-task producer, the read phases (catalogue, listing and trash list, detail
-  reads, family assembly), the match cascade, the evidence pass and the option learning so far.
+  reads, family assembly), the match cascade, the evidence pass, the option learning, and one
+  family's plan, link writes, report item and the import's avisos so far.
 
 ## Routes (`/api/marketplace/loja-integrada/conta/[id]…`)
 
@@ -149,6 +150,21 @@ carries the continuation `seq`, the cursors or the selection's ids.
   no grupo: its learnings ride the job (`aprendizadosSimulados`) as an overlay later resolutions
   read through the same merge, so its verdicts equal an `aplicar` run's. No grupo or variante is
   ever created.
+- **One family of the `familias` phase** (`importacao/familiaDoJob.ts`): cascade → plan
+  (`plano.ts`, pure: the target, the planned link documents `safeParse`d through the link schema,
+  the "complete" create classification — a hidden or blocked store product is never created, a
+  hidden variation is left out — and every pendência; a refusal is a pendência, never a throw) →
+  links (`vinculos.ts`) → report item (`relatorio.ts`, `itens/{liId}`, whole). A link is created at
+  the store id's doc id (tier 0, `ALREADY_EXISTS` re-read and judged by `vinculoLiDaContaEId`) or
+  its mirror (`ativo`, `bloqueado`, `removido`) refreshed tier 1 on its own read; a field with a
+  value is never touched, a row-only link leaves `destaque`/`usado`/`marca` ABSENT, and a
+  variation is linked only beside its parent's confirmed link. "Only link" writes link documents
+  and the job's items, nothing else; a second run over an unchanged store writes no link.
+- **The import's avisos** (`importacao/avisosImportacao.ts`): Simular raises and resolves nothing;
+  the summary aviso closes only after an `alvo: todos` job that ends `concluido` with no actionable
+  pendência. The three tipos join the expiry sweep's orphan pass (`avisos/avisos.ts`): the
+  per-category one is matched by key prefix, the two per-conta keys are a listed conta's, and a row
+  written after the conta list was read is left for the next tick.
 
 ## Routes (`/api/marketplace/loja-integrada/pedidos/[pedidoId]…`, step 15)
 

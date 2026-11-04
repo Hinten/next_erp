@@ -4,7 +4,8 @@
  * `lojaIntegradaImportacaoParada`, raised and resolved by the order poller
  * (`pedidos/pollPedidos.ts`) — the channel's tipo list the sweep's orphan pass
  * reads (the order-import tipos of step 5 included; their producer is
- * `pedidos/avisosPedidoLi.ts`), and the µs boundary of this app.
+ * `pedidos/avisosPedidoLi.ts`; and the product import's three of step 9, whose
+ * producer is `importacao/avisosImportacao.ts`), and the µs boundary of this app.
  *
  * ## ⚠️ The ONE module in `apps/loja-integrada` that speaks MICROSECONDS
  *
@@ -128,6 +129,15 @@ export function agoraUsDe(deps: { nowMs: number }): number {
   return millisToMicros(deps.nowMs);
 }
 
+/**
+ * A product import job's stamp (ms: its start or its end) → the µs `relogioEvento` of the
+ * import's avisos (step 9, `importacao/avisosImportacao.ts`). Through {@link agoraUsDe}, so this
+ * module still converts at exactly its two sites.
+ */
+export function relogioDaImportacaoUs(ms: number): number {
+  return agoraUsDe({ nowMs: ms });
+}
+
 /** A stored expiry (ms) → the aviso's `prazo` (µs). Copied, never computed. */
 export function prazoUsDe(ms: number): number {
   return millisToMicros(ms);
@@ -226,36 +236,80 @@ export const TIPOS_AVISO_PEDIDO_LI: ReadonlySet<TipoAviso> = new Set<TipoAviso>(
 ]);
 
 /**
+ * The product import's tipos (step 9, producer `importacao/avisosImportacao.ts`):
+ * one row per store CATEGORY (`lojaIntegradaCategoriaSemVinculo`, keyed by the
+ * store category id) and two per conta (`lojaIntegradaRevisaoFiscal`,
+ * `lojaIntegradaImportacaoComPendencias`). All three are clocked by a JOB's own
+ * stamp, which the conta enumeration's `readTime` can never be compared with.
+ */
+export const TIPOS_AVISO_IMPORTACAO_PRODUTOS_LI: ReadonlySet<TipoAviso> = new Set<TipoAviso>([
+  TIPO_AVISO.lojaIntegradaCategoriaSemVinculo,
+  TIPO_AVISO.lojaIntegradaRevisaoFiscal,
+  TIPO_AVISO.lojaIntegradaImportacaoComPendencias,
+]);
+
+/**
+ * The tipos that hold MANY rows per conta, one per entity — the order-import ones
+ * (a pedido, a shipping-method key) and the product import's per-category one —
+ * so the orphan pass matches a row to a listed conta by its key PREFIX
+ * ({@link prefixoDaContaNoAvisoLi}), never by one chave per conta.
+ */
+export const TIPOS_AVISO_POR_ENTIDADE_LI: ReadonlySet<TipoAviso> = new Set<TipoAviso>([
+  ...TIPOS_AVISO_PEDIDO_LI,
+  TIPO_AVISO.lojaIntegradaCategoriaSemVinculo,
+]);
+
+/**
  * Every tipo of this channel — what the sweep's orphan pass filters on.
  * `lojaIntegradaImportacaoParada` (step 3) is listed beside the two step-2 tipos
- * this module raises, and the order-import tipos (step 5) beside them, so a
- * gone conta's rows of every tipo are closed too.
+ * this module raises, the order-import tipos (step 5) and the product import's
+ * (step 9) beside them, so a gone conta's rows of every tipo are closed too.
  */
 export const TIPOS_AVISO_LI: ReadonlySet<string> = new Set([
   TIPO_AVISO.lojaIntegradaTokenExpirando,
   TIPO_AVISO.lojaIntegradaReconexaoPendente,
   TIPO_AVISO.lojaIntegradaImportacaoParada,
   ...TIPOS_AVISO_PEDIDO_LI,
+  ...TIPOS_AVISO_IMPORTACAO_PRODUTOS_LI,
 ]);
 
 /**
- * The conta part of an order-import row's key: `chaveDeAviso({ tipo, conta })`,
+ * The dedup identity of the product import's tax-review aviso (step 9): one row
+ * per conta. The orphan pass needs it, so a LISTED conta's open row is never
+ * mistaken for an orphan.
+ */
+export function chaveRevisaoFiscalLi(integracaoId: string): string {
+  return chaveDeAviso({ tipo: TIPO_AVISO.lojaIntegradaRevisaoFiscal, conta: integracaoId });
+}
+
+/** The dedup identity of the product import's summary aviso (step 9): one row per conta. */
+export function chaveImportacaoComPendenciasLi(integracaoId: string): string {
+  return chaveDeAviso({
+    tipo: TIPO_AVISO.lojaIntegradaImportacaoComPendencias,
+    conta: integracaoId,
+  });
+}
+
+/**
+ * The conta part of a per-entity row's key: `chaveDeAviso({ tipo, conta })`,
  * which every such row's id starts with, followed by `:` and its entity (a
- * pedido id or a key digest, neither carrying a `:`). RECOMPUTED for a listed
- * conta and compared whole, never split out of a row's id — the key fold could
- * map two conta ids onto one segment, and a split would hand back the wrong one.
+ * pedido id, a key digest or a store category id, none carrying a `:`).
+ * RECOMPUTED for a listed conta and compared whole, never split out of a row's
+ * id — the key fold could map two conta ids onto one segment, and a split would
+ * hand back the wrong one.
  */
 export function prefixoDaContaNoAvisoLi(tipo: TipoAviso, integracaoId: string): string {
   return chaveDeAviso({ tipo, conta: integracaoId });
 }
 
 /**
- * The part of an order-import row's id before its entity (everything before the
+ * The part of a per-entity row's id before its entity (everything before the
  * LAST `:`), to look up among the listed contas' {@link prefixoDaContaNoAvisoLi}
- * — or `null` for a row of any other tipo, or an id with no entity.
+ * — or `null` for a row of any other tipo ({@link TIPOS_AVISO_POR_ENTIDADE_LI}),
+ * or an id with no entity.
  */
-export function prefixoDoAvisoDePedidoLi(tipo: string, chave: string): string | null {
-  if (!(TIPOS_AVISO_PEDIDO_LI as ReadonlySet<string>).has(tipo)) return null;
+export function prefixoDoAvisoPorEntidadeLi(tipo: string, chave: string): string | null {
+  if (!(TIPOS_AVISO_POR_ENTIDADE_LI as ReadonlySet<string>).has(tipo)) return null;
   const fim = chave.lastIndexOf(':');
   return fim > 0 ? chave.slice(0, fim) : null;
 }
@@ -303,11 +357,12 @@ function contaDaChaveComRelogio(
  *    next sweep re-raises it if the conta turns out to exist.
  *  - A clocked-tipo id no producer here could have computed has no write to
  *    race, so it is resolved clockless too.
- *  - An order-import row (step 5) is resolved clockless: its clock is the
- *    order's Loja Integrada stamp, a domain `relogioListaUs` can never be
- *    compared with. The sweep therefore hands this only rows last written NO
- *    LATER than the enumeration's read: a row written after it may belong to a
- *    conta created after the list was read (`conta/expiracaoSweep.ts`).
+ *  - An order-import row (step 5) and a product-import row (step 9) are resolved
+ *    clockless: their clocks are the order's Loja Integrada stamp and a job's
+ *    own stamp, domains `relogioListaUs` can never be compared with. The sweep
+ *    therefore hands this only rows last written NO LATER than the
+ *    enumeration's read: a row written after it may belong to a conta created
+ *    after the list was read (`conta/expiracaoSweep.ts`).
  */
 export function resolverAvisoDeContaRemovida(
   db: Firestore,
