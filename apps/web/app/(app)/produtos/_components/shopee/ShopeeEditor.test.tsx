@@ -454,6 +454,7 @@ const { ROTULO_PUBLICACAO_EM_ANDAMENTO_SHOPEE, ROTULO_PUBLICACAO_INCERTA_SHOPEE 
 const { AcoesAnuncioShopee } = await import('./AcoesAnuncioShopee');
 const { MAX_MODELOS_POR_FILHO } = await import('./ModelosAnuncioShopee');
 const { convertivel } = await import('./KitAnuncioShopee');
+const { startTransition } = await import('react');
 
 const conta = (id: string, nome: string, extra: Record<string, unknown> = {}): Linha => ({
   id,
@@ -4279,8 +4280,12 @@ describe('ShopeeEditor — a draft write that loses (#1911 P10, rule 7 tier 3)',
       ],
     ];
 
-    /** The uncertain save, then the echo storing `tituloGuardado`. */
-    async function salvarSemResposta(erro: () => Error, tituloGuardado: string) {
+    /** The uncertain save, then the echo storing `tituloGuardado` (cache-served when `ecoDoCache`). */
+    async function salvarSemResposta(
+      erro: () => Error,
+      tituloGuardado: string,
+      ecoDoCache = false,
+    ) {
       comAutoria();
       const onDirtyChange = vi.fn();
       const atualizarRascunho = vi.fn<ShopeeClient['atualizarRascunho']>(() =>
@@ -4293,9 +4298,21 @@ describe('ShopeeEditor — a draft write that loses (#1911 P10, rule 7 tier 3)',
       fireEvent.click(botaoDoRascunho('L-rasc', 'Salvar rascunho'));
       await waitFor(() => expect(screen.getByTestId('resultado-L-rasc')).toBeDefined());
       expect(onDirtyChange).toHaveBeenLastCalledWith(true);
+      h.fromCache = ecoDoCache;
       h.links = [rascunho('L-rasc', { item_name: tituloGuardado })];
       rerenderEditor(rerender, { onDirtyChange });
-      return { onDirtyChange, atualizarRascunho };
+      return { onDirtyChange, atualizarRascunho, rerender };
+    }
+
+    /** ANOTHER operator saves the draft afterwards (a server-truth emission). */
+    function outraAbaSalva(
+      rerender: (ui: ReactNode) => void,
+      onDirtyChange: (dirty: boolean) => void,
+      campos: Record<string, unknown>,
+    ) {
+      h.fromCache = false;
+      h.links = [rascunho('L-rasc', campos)];
+      rerenderEditor(rerender, { onDirtyChange });
     }
 
     it.each(falhas)(
@@ -4324,6 +4341,127 @@ describe('ShopeeEditor — a draft write that loses (#1911 P10, rule 7 tier 3)',
         expect(formDe('L-rasc').bloco.sujo).toBe(true);
       },
     );
+
+    // Codex review of #2085, F1: the silent drop above used to be recomputed
+    // on every render, so the NEXT write by anyone reconciled the same old
+    // entry as `manter` and brought the already-saved text back, dirty.
+    it.each(falhas)(
+      'Codex F1: %s, the echo holds the TYPED title, then ANOTHER operator saves the draft ⇒ the dropped entry stays gone — their title shown, no divergence, the guard clean, nothing to send',
+      async (_c, erro) => {
+        const { onDirtyChange, atualizarRascunho, rerender } = await salvarSemResposta(
+          erro,
+          'Camiseta azul marinho',
+        );
+        // Positive first: the echo dropped it.
+        expect(formDe('L-rasc').bloco.sujo).toBe(false);
+        outraAbaSalva(rerender, onDirtyChange, { item_name: 'Título de outra aba' });
+        expect(tituloDo('L-rasc').value).toBe('Título de outra aba');
+        expect(formDe('L-rasc').divergencias).toEqual([]);
+        expect(formDe('L-rasc').bloco.sujo).toBe(false);
+        expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+        expect(botaoDoRascunho('L-rasc', 'Salvar rascunho').disabled).toBe(true);
+        expect(atualizarRascunho).toHaveBeenCalledTimes(1);
+      },
+    );
+
+    it.each(falhas)(
+      'NEAR-MISS (Codex F1): %s, an entry KEPT over another tab’s title is never removed — a further write still finds the operator’s text, dirty',
+      async (_c, erro) => {
+        const { onDirtyChange, rerender } = await salvarSemResposta(erro, 'Título de outra aba');
+        outraAbaSalva(rerender, onDirtyChange, {
+          item_name: 'Título de outra aba',
+          description: 'Descrição de outra aba',
+        });
+        expect(tituloDo('L-rasc').value).toBe('Camiseta azul marinho');
+        expect(formDe('L-rasc').bloco.sujo).toBe(true);
+        expect(formDe('L-rasc').divergencias).toEqual(['item_name']);
+        expect(onDirtyChange).toHaveBeenLastCalledWith(true);
+      },
+    );
+
+    it.each(falhas)(
+      'NEAR-MISS (Codex F1): %s, a CACHE-served echo holding the typed title is no server truth — nothing typed is forgotten on its word: the server then holding another tab’s title shows the operator’s text WITH the divergence (tier 3), never a silent drop',
+      async (_c, erro) => {
+        const { onDirtyChange, rerender } = await salvarSemResposta(
+          erro,
+          'Camiseta azul marinho',
+          true,
+        );
+        outraAbaSalva(rerender, onDirtyChange, { item_name: 'Título de outra aba' });
+        expect(tituloDo('L-rasc').value).toBe('Camiseta azul marinho');
+        expect(formDe('L-rasc').divergencias).toEqual(['item_name']);
+        expect(onDirtyChange).toHaveBeenLastCalledWith(true);
+      },
+    );
+
+    // The drop is a RENDER-PHASE update: it acts on the state the dropping
+    // render read. A removal applied after the commit instead (an effect, by
+    // id) would land on whatever the id holds by then — here an edit queued at
+    // a lower priority before the echo, rendered after it.
+    it('NEAR-MISS (Codex F1): the final drop removes only what its render READ — an edit queued at a lower priority before the echo survives it, dirty', async () => {
+      comAutoria();
+      const onDirtyChange = vi.fn();
+      h.client = shopeeClientFalso({
+        atualizarRascunho: () =>
+          Promise.reject(new ShopeeClientNetworkError('Failed to fetch', new TypeError('x'))),
+      });
+      h.links = [rascunho('L-rasc')];
+      const { rerender } = renderEditor({ onDirtyChange });
+      digitarTitulo('L-rasc', 'Camiseta azul marinho');
+      fireEvent.click(botaoDoRascunho('L-rasc', 'Salvar rascunho'));
+      await waitFor(() => expect(screen.getByTestId('resultado-L-rasc')).toBeDefined());
+      const { onCampo } = formDe('L-rasc');
+      const vistos: unknown[] = [];
+      const registrar = h.rascunhos.set.bind(h.rascunhos);
+      h.rascunhos.set = (k: string, v: RascunhoShopeeProps) => {
+        vistos.push([v.bloco.valores.item_name, v.bloco.sujo]);
+        return registrar(k, v);
+      };
+      // Queued OUTSIDE act (a transition): the echo's render below skips it.
+      startTransition(() => onCampo('item_name', 'Camiseta verde'));
+      h.links = [rascunho('L-rasc', { item_name: 'Camiseta azul marinho' })];
+      rerenderEditor(rerender, { onDirtyChange });
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 0));
+      });
+      // Positive first: the echo rendered BEFORE the edit — the entry dropped.
+      expect(vistos[0]).toEqual(['Camiseta azul marinho', false]);
+      expect(tituloDo('L-rasc').value).toBe('Camiseta verde');
+      expect(formDe('L-rasc').bloco.sujo).toBe(true);
+      expect(onDirtyChange).toHaveBeenLastCalledWith(true);
+    });
+  });
+
+  it('NEAR-MISS (Codex F1): a drop WITH a notice is not forgotten by later writes — both notices outlive a further server snapshot until dismissed, and the guard stays clean', () => {
+    comAutoria();
+    const onDirtyChange = vi.fn();
+    h.links = [rascunho('L-a'), rascunho('L-b', { item_name: 'Outra' })];
+    const { rerender } = renderEditor({ onDirtyChange });
+    digitarTitulo('L-a', 'Editando A');
+    digitarTitulo('L-b', 'Editando B');
+    h.links = [link('L-a', { item_id: 1000005 })];
+    rerenderEditor(rerender, { onDirtyChange });
+    // A further write lands (the published listing renamed): a NEW emission.
+    h.links = [link('L-a', { item_id: 1000005, item_name: 'Renomeado na Shopee' })];
+    rerenderEditor(rerender, { onDirtyChange });
+    expect(
+      within(bloco('L-a')).getByText(FRASE_RASCUNHO_PUBLICADO_DURANTE_EDICAO_SHOPEE),
+    ).toBeDefined();
+    expect(
+      within(screen.getByTestId('shopee-rascunho-aviso-L-b')).getByText(
+        FRASE_RASCUNHO_DESCARTADO_DURANTE_EDICAO_SHOPEE,
+      ),
+    ).toBeDefined();
+    expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+    fireEvent.click(
+      within(screen.getByTestId('shopee-rascunho-aviso-L-b')).getByRole('button', {
+        name: 'Dispensar aviso',
+      }),
+    );
+    expect(screen.queryByTestId('shopee-rascunho-aviso-L-b')).toBeNull();
+    expect(
+      within(bloco('L-a')).getByText(FRASE_RASCUNHO_PUBLICADO_DURANTE_EDICAO_SHOPEE),
+    ).toBeDefined();
   });
 
   it('a dirty entry whose draft got PUBLISHED is dropped with a notice on its block; one DISCARDED elsewhere with a notice on the conta — a cache-served snapshot proves nothing gone', () => {
@@ -4974,6 +5112,94 @@ describe('ShopeeEditor — who may author a draft (#1911 P10, D6)', () => {
     // …and a call past the missing button opens nothing.
     act(() => formDe('L9').onDescartar('confirmar'));
     expect(screen.queryByRole('dialog', { name: 'Descartar rascunho' })).toBeNull();
+  });
+});
+
+describe('ShopeeEditor — a LOCAL draft whose conta is deleted elsewhere (#1911 P10, Codex review of #2085, F2)', () => {
+  const lojaA = () => conta('int-1', 'Loja A');
+  const lojaB = () => conta('int-2', 'Loja B');
+
+  /** A local draft opened on int-2 (no stored link names that conta), the tab selected first. */
+  function rascunhoLocalNaLojaB(contas: Linha[]) {
+    comAutoria();
+    const descartarRascunho = vi.fn<ShopeeClient['descartarRascunho']>();
+    const criarRascunho = vi.fn<ShopeeClient['criarRascunho']>();
+    h.client = shopeeClientFalso({ descartarRascunho, criarRascunho });
+    h.contas = contas;
+    const onDirtyChange = vi.fn();
+    const { rerender } = renderEditor({ onDirtyChange });
+    fireEvent.click(screen.getByRole('tab', { name: /Loja B/ }));
+    novoAnuncio('int-2');
+    const [id] = idsLocais();
+    expect(onDirtyChange).toHaveBeenLastCalledWith(true);
+    return { id: id!, descartarRascunho, criarRascunho, onDirtyChange, rerender };
+  }
+
+  it.each([
+    ['another conta remains', () => [lojaA(), lojaB()], () => [lojaA()]],
+    ['it was the ONLY conta', () => [lojaB()], (): Linha[] => []],
+  ])(
+    '%s: the draft keeps a «não encontrada» tab, marked unsaved, with «Descartar» ALONE — a LOCAL drop, no request — and the guard clears',
+    async (_caso, antes, depois) => {
+      const { id, descartarRascunho, criarRascunho, onDirtyChange, rerender } =
+        rascunhoLocalNaLojaB(antes());
+      // Deleted in another tab: the live query drops it, and its by-id read finds nothing.
+      h.contas = depois();
+      rerenderEditor(rerender, { onDirtyChange });
+      const aba = await screen.findByRole('tab', { name: /Conta int-2 \(não encontrada\)/ });
+      expect(aba.getAttribute('data-dirty')).toBe('true');
+      expect(h.getDoc).toHaveBeenCalledWith({ __doc: 'integracao', id: 'int-2' });
+      fireEvent.click(aba);
+      expect(screen.getByTestId(`shopee-novo-rascunho-${id}`)).toBeDefined();
+      expect(tituloDo(id).readOnly).toBe(true);
+      expect(
+        within(raizDoRascunho(id))
+          .getAllByRole('button')
+          .map((b) => b.textContent),
+      ).toEqual(['Descartar']);
+      expect(formDe(id).podeEditar).toBe(false);
+      expect(formDe(id).contaId).toBeNull();
+      expect(screen.queryByTestId('shopee-novo-anuncio-int-2')).toBeNull();
+      expect(onDirtyChange).toHaveBeenLastCalledWith(true);
+
+      fireEvent.click(botaoDoRascunho(id, 'Descartar'));
+      const dialogo = screen.getByRole('dialog', { name: 'Descartar rascunho' });
+      expect(within(dialogo).getByText(FRASE_CONFIRMAR_DESCARTE_LOCAL_SHOPEE)).toBeDefined();
+      fireEvent.click(within(dialogo).getByRole('button', { name: 'Descartar rascunho' }));
+      expect(screen.queryByTestId(`shopee-novo-rascunho-${id}`)).toBeNull();
+      expect(descartarRascunho).not.toHaveBeenCalled();
+      expect(criarRascunho).not.toHaveBeenCalled();
+      expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+      // Nothing holds that tab any more.
+      expect(screen.queryByRole('tab', { name: /Conta int-2/ })).toBeNull();
+    },
+  );
+
+  it('NEAR-MISS: a conta that still EXISTS, merely past the bounded query, is read by id — its real tab and every button, never «não encontrada»', async () => {
+    const { id, onDirtyChange, rerender } = rascunhoLocalNaLojaB([lojaA(), lojaB()]);
+    h.contasPorId.set('int-2', lojaB().data);
+    h.contas = [lojaA()];
+    rerenderEditor(rerender, { onDirtyChange });
+    await waitFor(() => expect(formDe(id).podeEditar).toBe(true));
+    expect(screen.getAllByRole('tab').map((t) => t.textContent)).toEqual([
+      expect.stringContaining('Loja A'),
+      expect.stringContaining('Loja B'),
+    ]);
+    expect(screen.queryByRole('tab', { name: /não encontrada|carregando/ })).toBeNull();
+    expect(tituloDo(id).readOnly).toBe(false);
+    expect(formDe(id).contaId).toBe('int-2');
+    expect(botaoDoRascunho(id, 'Salvar rascunho').disabled).toBe(false);
+    expect(screen.getByTestId('shopee-novo-anuncio-int-2')).toBeDefined();
+  });
+
+  it('NEAR-MISS: a conta still in the query keeps today’s ONE tab — never a second one for its local draft, and nothing read by id', () => {
+    const { id, onDirtyChange, rerender } = rascunhoLocalNaLojaB([lojaA(), lojaB()]);
+    h.contas = [lojaA(), lojaB()];
+    rerenderEditor(rerender, { onDirtyChange });
+    expect(screen.getAllByRole('tab')).toHaveLength(2);
+    expect(h.getDoc).not.toHaveBeenCalled();
+    expect(formDe(id).podeEditar).toBe(true);
+    expect(formDe(id).contaId).toBe('int-2');
   });
 });
 
