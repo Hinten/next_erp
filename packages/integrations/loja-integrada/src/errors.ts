@@ -206,8 +206,8 @@ export type MotivoConfigLi =
  *   integer, or an `offset` slipped into its extra query (the page's offset is
  *   the caller's `offset` option, never a second value).
  * - `'prazo'` — the CDN reader's deadline (`cdn.ts`) is not a positive safe
- *   integer of milliseconds, or is above `PRAZO_CDN_LI_MS`, the worst case a
- *   caller budgets a photo for.
+ *   integer of milliseconds, or is above `PRAZO_CDN_LI_MS`, the bound of one
+ *   download of one form.
  * - `'maxBytes'` — the CDN reader's byte cap is not a positive safe integer, or
  *   is above `MAX_BYTES_IMAGEM_LI`.
  * - `'forma'` — a photo asked for in a form that is neither the original nor

@@ -363,16 +363,16 @@ describe('lerPaginaLi and paginarLi judge `next` by ONE copy of the rules', () =
 
 /**
  * Step 10's catalogue lists read one page at a time through `lerPaginaLi`, with
- * step 10's own paths and row schemas. Its page size,
- * `LIMITE_PAGINA_CATALOGO_LI`, is declared in `@delfrance/schemas`, which this
- * package does not depend on, so its value (50) is written here.
+ * step 10's own paths and row schemas. The page size is the caller's to pass;
+ * this test asks for one of its own, which says nothing about the size the app
+ * uses (any positive safe integer takes the same path here).
  */
 describe.each([
   ['categorias', CAMINHO_CATEGORIAS_LI, liCategoriaSchema, categoriaPagina1, [7645875, 7645904]],
   ['marcas', CAMINHO_MARCAS_LI, liMarcaSchema, marcaPaginaExemplo, [2875259, 2875261]],
   ['grades', CAMINHO_GRADES_LI, liGradeSchema, gradesPaginaExemplo, [32769, 8945]],
 ] as const)('lerPaginaLi over the %s list', (nome, caminho, esquema, corpo, primeiros) => {
-  const LIMITE_DO_CATALOGO = 50;
+  const LIMITE_DO_TESTE = 50;
 
   function catalogo(f: typeof globalThis.fetch, offset: number) {
     return lerPaginaLi(cliente(f), {
@@ -380,7 +380,7 @@ describe.each([
       caminho,
       esquema: esquema as z.ZodType<{ readonly id: number }>,
       offset,
-      limite: LIMITE_DO_CATALOGO,
+      limite: LIMITE_DO_TESTE,
     });
   }
 
@@ -784,7 +784,7 @@ describe('buscarProdutoLi', () => {
 
   it.each([
     ['a boolean', true],
-    ['an object', { kg: 1 }],
+    ['an object', { valor: 1 }],
   ])('near-miss: `peso` as %s refuses the detail at `peso`', async (_caso, peso) => {
     const f = sequencia(json({ ...produtoDetalheExemplo, peso }));
     const err = await falha(buscarProdutoLi(cliente(f), ID_DETALHE));
@@ -819,6 +819,49 @@ describe('buscarProdutoLi', () => {
       [138518698, null, null],
     ]);
   });
+
+  it('an image leaf of the wrong type is carried RAW: the detail and its other images still return', async () => {
+    const [primeira, segunda] = produtoDetalheExemplo.imagens;
+    const f = sequencia(
+      json({
+        ...produtoDetalheExemplo,
+        imagem_principal: { ...primeira, id: { n: 1 } },
+        imagens: [
+          primeira,
+          { ...segunda, id: 'abc' },
+          { ...segunda, id: 1.5 },
+          { ...segunda, caminho: 5 },
+          { ...segunda, mime: 3 },
+          { ...segunda, posicao: true },
+        ],
+      }),
+    );
+    const { dados } = await buscarProdutoLi(cliente(f), ID_DETALHE);
+    expect(dados.imagem_principal?.id).toEqual({ n: 1 });
+    expect(dados.imagens.map((i) => [i.id, i.caminho, i.posicao, i.mime])).toEqual([
+      [143127013, '1000/1000001/produto/imagem-exemplo-1.jpg', '0', 'image/jpeg'],
+      ['abc', '1000/1000001/produto/imagem-exemplo-2.png', null, null],
+      [1.5, '1000/1000001/produto/imagem-exemplo-2.png', null, null],
+      [138518698, 5, null, null],
+      [138518698, '1000/1000001/produto/imagem-exemplo-2.png', null, 3],
+      [138518698, '1000/1000001/produto/imagem-exemplo-2.png', true, null],
+    ]);
+  });
+
+  it.each([
+    ['a string', 'imagem'],
+    ['a number', 7],
+    ['a list', [1]],
+  ])(
+    'near-miss: an `imagens` element that is %s, not an image, refuses the detail at `imagens[]`',
+    async (_caso, elemento) => {
+      const [primeira] = produtoDetalheExemplo.imagens;
+      const f = sequencia(json({ ...produtoDetalheExemplo, imagens: [primeira, elemento] }));
+      const err = await falha(buscarProdutoLi(cliente(f), ID_DETALHE));
+      expect(err).toBeInstanceOf(LiSchemaError);
+      expect((err as LiSchemaError).campos).toEqual(['imagens[]']);
+    },
+  );
 
   it('a CHILD (the document’s created variation): its `pai`, its options, its own weight and sizes, no image or category', async () => {
     const f = sequencia(json(produtoFilhoCriadoExemplo));

@@ -242,12 +242,11 @@ function listaOuVazia<T extends z.ZodType>(item: T) {
 
 /**
  * A leaf kept AS SENT, a string or a number: `peso` (a decimal STRING,
- * `"0.200"`, sometimes with float noise, `"0.450000000000000011…"`) and an
- * image's `posicao` (`"0"`, `"1"`…). A string is never converted here: what it
- * means (a plain decimal, a comma decimal, noise) is the reader's call, made in
- * one place, so the text reaches it verbatim. A number must be one
- * (`wireNumber()`), `''` reads as `null`, anything else (an object, a boolean)
- * refuses the body.
+ * `"0.200"`, sometimes with float noise, `"0.450000000000000011…"`). A string is
+ * never converted here: what it means (a plain decimal, a comma decimal, noise)
+ * is the reader's call, made in one place, so the text reaches it verbatim. A
+ * number must be one (`wireNumber()`), `''` reads as `null`, anything else (an
+ * object, a boolean) refuses the body.
  */
 function textoOuNumeroComoVeio() {
   return vazioComoNulo(z.union([z.string(), wireNumber()]));
@@ -255,27 +254,34 @@ function textoOuNumeroComoVeio() {
 
 /**
  * One image of a produto detail (`imagem_principal`, `imagens[]`). Every leaf
- * is optional, so one odd image never costs its product: what an image without
- * a readable `id` or `caminho` is worth is the reader's call.
+ * is a leaf the reader JUDGES (the header's rule), so every one is carried RAW
+ * (`z.unknown()`, `''` read as `null`), whatever its type: an image whose `id`
+ * is not an integer or whose `caminho` is not text still parses, and what it is
+ * worth (kept, or discarded and counted) is the reader's call. One odd image
+ * never costs its product, nor the other images beside it.
+ *
+ * ⚠️ That tolerance is per LEAF: an element of `imagens` that is not an object
+ * at all (a string, a number, a list) is a drift of the list itself and still
+ * refuses the body, at `imagens[]` (`listaOuVazia`).
  *
  *  - `id`: the image's own id; `imagem_id` (another one) is unread.
  *  - `caminho`: the CDN path, RELATIVE — the only address a photo is ever
- *    fetched from, under the pinned CDN host. The absolute URLs beside it
- *    (`grande`, `media`, `pequena`, `icone`) are never read: a host named in a
- *    body is not one this package contacts.
- *  - `principal`: carried raw and judged by the reader (the brand's `ativo`
- *    rule).
+ *    fetched from, under the pinned CDN host (`cdn.ts` checks it again before
+ *    any fetch). The absolute URLs beside it (`grande`, `media`, `pequena`,
+ *    `icone`) are never read: a host named in a body is not one this package
+ *    contacts.
+ *  - `principal`: judged by the reader (the brand's `ativo` rule).
  *  - `posicao`: as sent (`"0"`, or `null` in the document's second image).
- *  - `mime`: `"image/jpeg"`, `"image/png"` or `null`. Informational only: a
- *    fetched photo's type is decided from its bytes.
+ *  - `mime`: `"image/jpeg"`, `"image/png"` or `null` in the document.
+ *    Informational only: a fetched photo's type is decided from its bytes.
  */
 export const liImagemProdutoSchema = z
   .object({
-    id: inteiroOpcional(),
-    caminho: vazioComoNulo(z.string()),
+    id: vazioComoNulo(z.unknown()),
+    caminho: vazioComoNulo(z.unknown()),
     principal: vazioComoNulo(z.unknown()),
-    posicao: textoOuNumeroComoVeio(),
-    mime: vazioComoNulo(z.string()),
+    posicao: vazioComoNulo(z.unknown()),
+    mime: vazioComoNulo(z.unknown()),
   })
   .passthrough();
 
@@ -324,16 +330,20 @@ export const liProdutoLinhaSchema = z
  * `marca`, its `grades` and its images.
  *
  *  - `pai`, `marca`: a resource URI, or `null`.
- *  - `peso`: kg, as sent (`textoOuNumeroComoVeio`): a decimal STRING in the
+ *  - `peso`: as sent (`textoOuNumeroComoVeio`): a decimal STRING in the
  *    document and in C10, possibly with float noise; a number parses too.
- *  - `altura`, `largura`, `profundidade`: cm, integers in both sources, read
- *    with `numeroOpcional()` so a quoted or fractional size still parses.
+ *  - `altura`, `largura`, `profundidade`: integers in both sources, read with
+ *    `numeroOpcional()` so a quoted or fractional size still parses.
  *  - `destaque`, `usado`: carried raw, like the row's flags.
  *  - `descricao_completa`: the HTML description; `''` reads as `null`. The
  *    plain GET carries it (C10: the `descricao_completa=1` flag changed no
  *    byte), so the flag is never sent.
  *  - `imagem_principal` (one image or `null`) and `imagens` (a list, `[]` on a
  *    child): `liImagemProdutoSchema`.
+ *
+ * ⚠️ The document states no unit for the weight or the sizes, and this package
+ * assumes none: it carries both as sent. Which unit the store means is still to
+ * be confirmed, and converting either is the reader's call.
  *
  * ⚠️ Price and stock (`preco_*`, `estoque_*`) are deliberately NOT declared:
  * the import never reads either, and the read returns a projection without them

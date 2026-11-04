@@ -111,10 +111,18 @@
  * ## The deadline
  *
  * {@link PRAZO_CDN_LI_MS} per download, the body included, and a caller may only
- * shorten it: it is the worst case the import budgets a photo for, so a longer
- * one is refused rather than silently breaking that budget. The constant is a
- * plain scalar with no `longo` tier, so `http-client-timeout-ceiling.test.js`
- * has no row for it (that registry holds clients of OUR backends).
+ * shorten it: it bounds ONE download of ONE form, the unit a caller budgets on,
+ * so a longer one is refused rather than silently breaking that bound. The
+ * constant is a plain scalar with no `longo` tier, so
+ * `http-client-timeout-ceiling.test.js` has no row for it (that registry holds
+ * clients of OUR backends).
+ *
+ * ⚠️ It is NOT a photo's whole cost. An original that comes back `muito-grande`
+ * and is then asked for as `800x800` is TWO downloads, each with its own
+ * deadline, and an original sent without a `Content-Length` is read up to the
+ * cap before that answer comes. Fitting both (and whatever the caller does with
+ * the bytes) into its own time budget is the caller's: it counts the fallback
+ * as a download of its own, or passes a shorter `prazoMs` per form.
  */
 import { abrirPrazo } from '@delfrance/core/wire';
 
