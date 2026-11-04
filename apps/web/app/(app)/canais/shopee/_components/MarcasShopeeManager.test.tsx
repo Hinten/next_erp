@@ -517,22 +517,29 @@ describe('the save baselines: one per DOCUMENT, from server truth only', () => {
 
   it('a staged registration’s path held as a row no snapshot lists is cleared too ⟷ a listed one is kept', () => {
     const PUMA: MarcaDto = { brandId: 3003, originalBrandName: 'Puma', displayBrandName: null };
-    const linhaPuma = { brand_id: 3003, original_brand_name: 'Puma', display_brand_name: null };
+    // Their row of the brand, NOT equal to ours (an equal one satisfies the
+    // registration, which then leaves the stage — see the F2 block below).
+    const linhaDeles = {
+      brand_id: 3003,
+      original_brand_name: 'PUMA',
+      display_brand_name: 'Puma BR',
+    };
     const { documents, reemitir } = show({ inicial: { adicionar: [PUMA], remover: [] } });
-    // A row held for it (as a commit or "Salvar mesmo assim" leaves one), and
-    // the next server snapshot does not list it: `null` fails closed at save.
-    act(() => documents!.rebase(caminho('3003'), linhaPuma));
+    // A row held for it (as "Salvar mesmo assim" over their row leaves one),
+    // and the next server snapshot does not list it: `null` fails closed at save.
+    act(() => documents!.rebase(caminho('3003'), linhaDeles));
     act(() => reemitir());
     // A re-render is not a snapshot: nothing moves until one arrives.
-    expect(documents!.getBaseline(caminho('3003'))).toEqual(linhaPuma);
+    expect(documents!.getBaseline(caminho('3003'))).toEqual(linhaDeles);
     emitir(linhasPadrao());
     act(() => reemitir());
     expect(documents!.getBaseline(caminho('3003'))).toBeNull();
 
-    act(() => documents!.rebase(caminho('3003'), linhaPuma));
-    emitir([...linhasPadrao(), linha('3003', linhaPuma)]);
+    act(() => documents!.rebase(caminho('3003'), linhaDeles));
+    emitir([...linhasPadrao(), linha('3003', linhaDeles)]);
     act(() => reemitir());
-    expect(documents!.getBaseline(caminho('3003'))).toEqual(linhaPuma);
+    expect(documents!.getBaseline(caminho('3003'))).toEqual(linhaDeles);
+    expect(ultimaMudanca()).toBeUndefined();
   });
 
   it('a CACHED emission moves nothing: a deleted doc stays held as its row until server truth says so', () => {
@@ -567,5 +574,124 @@ describe('the save baselines: one per DOCUMENT, from server truth only', () => {
   it('outside an ObjectView there is nothing to seed and the section is not held read-only', () => {
     show({ documents: null });
     expect(botao('Remover', linhaDaMarca(1001)).disabled).toBe(false);
+  });
+});
+
+describe('after the first server snapshot, the section lists and stages from SERVER truth only (#2084 review F1)', () => {
+  it('a CACHED emission that drops a brand changes nothing: listed, handed to the modal as registered, its baseline kept ⟷ the SERVER one drops it, offers it, and clears the baseline', () => {
+    const { documents, reemitir } = show();
+    emitir(
+      linhasPadrao().filter((l) => l.id !== ID_NIKE),
+      { fromCache: true },
+    );
+    act(() => reemitir());
+    fireEvent.click(botao('Adicionar marcas'));
+    expect(h.modal!.cadastradas.has(1001)).toBe(true);
+    expect(h.modal!.ocupantes.has(ID_NIKE)).toBe(true);
+    fireEvent.click(botao('stub fechar'));
+    expect(linhaDaMarca(1001)).toBeTruthy();
+    expect(documents!.getBaseline(caminho(ID_NIKE))).toEqual(legado(1001, 'Nike'));
+
+    emitir(linhasPadrao().filter((l) => l.id !== ID_NIKE));
+    act(() => reemitir());
+    expect(screen.queryByTestId('shopee-marca-1001')).toBeNull();
+    fireEvent.click(botao('Adicionar marcas'));
+    expect(h.modal!.cadastradas.has(1001)).toBe(false);
+    expect(h.modal!.ocupantes.has(ID_NIKE)).toBe(false);
+    expect(documents!.getBaseline(caminho(ID_NIKE))).toBeNull();
+  });
+
+  it('NEAR-MISS: a CACHED emission showing a doc server truth has not shows nothing new and seeds nothing ⟷ the SERVER one lists it with its own baseline', () => {
+    const { documents, reemitir } = show();
+    const nova = linha('a0000000000000000099', legado(4004, 'Fila'));
+    emitir([...linhasPadrao(), nova], { fromCache: true });
+    act(() => reemitir());
+    expect(screen.queryByTestId('shopee-marca-4004')).toBeNull();
+    expect(documents!.getBaseline(nova.path)).toBeUndefined();
+    emitir([...linhasPadrao(), nova]);
+    act(() => reemitir());
+    expect(within(linhaDaMarca(4004)).getByText('Fila · id 4004')).toBeTruthy();
+    expect(documents!.getBaseline(nova.path)).toEqual(nova.data);
+  });
+
+  it('undoing a staged removal while the latest emission is CACHED moves the baselines by the last SERVER snapshot', () => {
+    const { documents, reemitir } = show();
+    fireEvent.click(botao('Remover', linhaDaMarca(1001)));
+    // Server truth: another tab deleted Nike — the staged removal keeps its row.
+    emitir(linhasPadrao().filter((l) => l.id !== ID_NIKE));
+    act(() => reemitir());
+    expect(documents!.getBaseline(caminho(ID_NIKE))).toEqual(legado(1001, 'Nike'));
+    emitir(
+      linhasPadrao().filter((l) => l.id !== ID_NIKE),
+      { fromCache: true },
+    );
+    act(() => reemitir());
+    fireEvent.click(botao('Desfazer', screen.getByTestId('shopee-marca-removida-fora-1001')));
+    expect(ultimaMudanca()).toBeNull();
+    // Held as its row, a re-add equal to it would be skipped by the save unread.
+    expect(documents!.getBaseline(caminho(ID_NIKE))).toBeNull();
+  });
+});
+
+describe('a staged registration held as stored EXACTLY is satisfied, and leaves the delta at once (#2084 review F2)', () => {
+  const PUMA: MarcaDto = { brandId: 3003, originalBrandName: 'Puma', displayBrandName: null };
+  const FILA: MarcaDto = { brandId: 4004, originalBrandName: 'Fila', displayBrandName: null };
+  const linhaPuma = { brand_id: 3003, original_brand_name: 'Puma', display_brand_name: null };
+
+  it('⭐ the registry’s rebase to the very row it writes drops it — INSIDE the rebase, before anything reads the form — and only it', () => {
+    const { documents } = show({ inicial: { adicionar: [PUMA, FILA], remover: [] } });
+    act(() => {
+      documents!.rebase(caminho('3003'), linhaPuma);
+      // Synchronous: "Salvar mesmo assim" saves right after this rebase.
+      expect(ultimaMudanca()).toEqual({ adicionar: [FILA], remover: [] });
+    });
+    expect(screen.queryByTestId('shopee-marca-nova-3003')).toBeNull();
+    expect(screen.getByTestId('shopee-marca-nova-4004')).toBeTruthy();
+  });
+
+  it('⭐ NEAR-MISS: a held row of the brand that differs at all — a display name, a case, one extra key — or the same row at ANOTHER id, keeps it staged', () => {
+    const { documents } = show({ inicial: { adicionar: [PUMA], remover: [] } });
+    for (const deles of [
+      { ...linhaPuma, display_brand_name: 'Puma BR' },
+      { ...linhaPuma, original_brand_name: 'PUMA' },
+      { ...linhaPuma, timestamp: 1_700_000_000_000 },
+    ]) {
+      act(() => documents!.rebase(caminho('3003'), deles));
+    }
+    act(() => documents!.rebase(caminho('a0000000000000000098'), linhaPuma));
+    act(() => documents!.rebase(caminho('3003'), null));
+    expect(mudancas).toEqual([]);
+    expect(screen.getByTestId('shopee-marca-nova-3003')).toBeTruthy();
+  });
+
+  // The drop reads the delta as the section's LATEST render has it. The click
+  // below swaps the staged Puma registration for a staged removal, and the
+  // seeding run that follows it in the same commit gives Puma's path its
+  // listed row — the very row the old registration wrote. Read against the
+  // delta of the render BEFORE the click, that rebase drops "the satisfied
+  // add" from a delta that no longer holds it, and hands the form that stale
+  // delta: the operator's removal vanishes with nothing said.
+  it('⭐ «Remover» on a staged brand another operator registered identically stages the REMOVAL — the drop never reads the delta of an earlier render', () => {
+    const { reemitir } = show({ inicial: { adicionar: [PUMA], remover: [] } });
+    emitir([...linhasPadrao(), linha('3003', linhaPuma)]);
+    act(() => reemitir());
+    expect(screen.getByTestId('shopee-marca-nova-3003')).toBeTruthy();
+    fireEvent.click(botao('Remover', linhaDaMarca(3003)));
+    expect(ultimaMudanca()).toEqual({
+      adicionar: [],
+      remover: [{ brandId: 3003, docIds: ['3003'] }],
+    });
+    expect(within(linhaDaMarca(3003)).getByText('Será removida')).toBeTruthy();
+    expect(screen.queryByTestId('shopee-marca-nova-3003')).toBeNull();
+  });
+
+  it('NEAR-MISS: «Desfazer» on that staged registration leaves nothing staged, and the brand listed', () => {
+    const { reemitir } = show({ inicial: { adicionar: [PUMA], remover: [] } });
+    emitir([...linhasPadrao(), linha('3003', linhaPuma)]);
+    act(() => reemitir());
+    fireEvent.click(botao('Desfazer', screen.getByTestId('shopee-marca-nova-3003')));
+    expect(ultimaMudanca()).toBeNull();
+    expect(screen.queryByTestId('shopee-marca-nova-3003')).toBeNull();
+    expect(within(linhaDaMarca(3003)).queryByText('Será removida')).toBeNull();
   });
 });
