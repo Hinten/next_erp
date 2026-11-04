@@ -1,5 +1,6 @@
 /**
- * Tastypie offset paging over the GET-only client: `paginarLi`.
+ * Tastypie offset paging over the GET-only client: `paginarLi`, and the ONE
+ * copy of its next-page rules, `proximaPaginaLi`.
  *
  * Loja Integrada lists answer `{ meta: { limit, offset, next, … }, objects }`,
  * where `next` is a RELATIVE link under `/api/v1/…` (note the `/api` prefix the
@@ -44,6 +45,16 @@
  *    silently: a reconcile that read half a catalogue would act on the half.
  *  - the caller's `sinal` aborts — checked before every page and passed to every
  *    request, so the caller gets its own abort back and no further fetch happens.
+ *
+ * ## One copy of these rules
+ *
+ * Every rule above that reads `meta.next` (the offset from `next` alone, the
+ * caller's keys re-added, every other key and any host ignored, a repeated
+ * caller key refused, the offset strictly past both the page's `meta.offset`
+ * and the offset sent) lives in {@link proximaPaginaLi}. `paginarLi` calls it
+ * between two pages; the one-page reader `lerPaginaLi` (`produtos.ts`), which a
+ * resumable job calls once per checkpoint, calls it on the page it read. Only
+ * the page cap is `paginarLi`'s own: a one-page read has no ceiling to reach.
  *
  * Rows are yielded in the order received, with no sorting or de-duplication.
  * Offset paging under concurrent edits can skip or repeat a row, so consumers
@@ -100,17 +111,48 @@ function lerOffset(bruto: string | undefined): number | null {
   return Number.isSafeInteger(offset) ? offset : null;
 }
 
+/** The page just read, as {@link proximaPaginaLi} judges its `meta.next`. */
+export interface ContextoProximaPaginaLi extends ContextoRequisicaoLi {
+  /** The page's HTTP status, carried by the `LiSchemaError` a malformed `next` raises. */
+  readonly status: number;
+  /** The page's own `meta.offset`. */
+  readonly offsetDaPagina: number;
+  /**
+   * The offset this page was REQUESTED at; `null` when the caller's own value was
+   * not plain digits, and then only `offsetDaPagina` can be compared.
+   */
+  readonly offsetEnviado: number | null;
+  /** Pages read so far, this one included (1-based), for `LiPaginacaoError.paginas`. */
+  readonly paginas: number;
+}
+
+/** The validated next page: its offset, and the query that requests it. */
+export interface ProximaPaginaLi {
+  /** `offset` (from `next` alone) plus every key the caller sent. */
+  readonly query: Record<string, string>;
+  readonly offset: number;
+}
+
 /**
- * The next page's query, or a `LiSchemaError` when `meta.next` cannot be
- * followed safely.
+ * The next page of a list whose `meta.next` is `next` (non-null), by the rules
+ * in the module header, or an error when it cannot be followed safely:
+ *
+ *  - `LiSchemaError` (`'formato'`, `campos: ['meta.next']`): `next` empty,
+ *    unparseable, repeating `offset` or a key the caller sent, or without an
+ *    `offset` of plain digits within the safe-integer range;
+ *  - `LiPaginacaoError('offset-nao-avanca')`: its offset not STRICTLY past both
+ *    `pagina.offsetDaPagina` and `pagina.offsetEnviado`.
+ *
+ * `original` holds the keys the caller sent, values as sent (`String(v)`).
  */
-function proximaPagina(
+export function proximaPaginaLi(
   next: string,
   original: ReadonlyMap<string, string>,
-  ctx: ContextoRequisicaoLi & { readonly status: number },
-): { readonly query: Record<string, string>; readonly offset: number } {
+  pagina: ContextoProximaPaginaLi,
+): ProximaPaginaLi {
+  const { status, offsetDaPagina, offsetEnviado, paginas, ...ctx } = pagina;
   const malFormado = (): LiSchemaError =>
-    new LiSchemaError({ ...ctx, motivo: 'formato', campos: ['meta.next'] });
+    new LiSchemaError({ ...ctx, status, motivo: 'formato', campos: ['meta.next'] });
 
   if (next === '') throw malFormado();
   let url: URL;
@@ -137,6 +179,12 @@ function proximaPagina(
   // would be followed instead of refused.
   const offset = lerOffset(lidas.get('offset'));
   if (offset === null) throw malFormado();
+
+  // Past BOTH offsets: why one is not enough is in the module header ("When it stops").
+  const naoAvanca = offset <= offsetDaPagina || (offsetEnviado !== null && offset <= offsetEnviado);
+  if (naoAvanca) {
+    throw new LiPaginacaoError({ ...ctx, motivo: 'offset-nao-avanca', paginas });
+  }
 
   // `offset` is in `lidas` by now, so the merge can never re-add the caller's.
   const query = new Map(lidas);
@@ -181,12 +229,13 @@ export async function* paginarLi<S extends z.ZodType>(
       refCredencial: resposta.refCredencial,
       metodo: 'GET' as const,
     };
-    const proxima = proximaPagina(meta.next, original, { ...ctx, status: resposta.status });
-    const naoAvanca =
-      proxima.offset <= meta.offset || (offsetEnviado !== null && proxima.offset <= offsetEnviado);
-    if (naoAvanca) {
-      throw new LiPaginacaoError({ ...ctx, motivo: 'offset-nao-avanca', paginas: numero });
-    }
+    const proxima = proximaPaginaLi(meta.next, original, {
+      ...ctx,
+      status: resposta.status,
+      offsetDaPagina: meta.offset,
+      offsetEnviado,
+      paginas: numero,
+    });
     if (numero >= maxPaginas) {
       throw new LiPaginacaoError({ ...ctx, motivo: 'limite-de-paginas', paginas: numero });
     }

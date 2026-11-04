@@ -1,9 +1,10 @@
 /**
  * Loja Integrada REST v1 wire schemas — RESPONSE shapes only, and only the ones
  * something consumes: the Tastypie paging envelope, the pedido search row (the
- * order poller, master-plan step 3) and the catalogue rows the catalogue reads
+ * order poller, master-plan step 3), the catalogue rows the catalogue reads
  * parse (`catalogo.ts`, master-plan step 10): categoria, marca, grade, and a
- * grade's detail with its options.
+ * grade's detail with its options; and the produto list row, detail and image
+ * the product import reads (`produtos.ts`, master-plan step 9).
  *
  * The catalogue rows were written against the leaf shapes of the owner's
  * catalogue capture C9 (every list and both kinds of grade detail answered 200
@@ -23,10 +24,14 @@
  *    URI nothing reads (`resource_uri`) is not declared at all: passthrough
  *    keeps it, and declaring it would only add a way to refuse a row.
  *
- * Every other resource (the produto, estoque, preço, imagem, envio) arrives
- * with its first consumer, written against captured responses rather than the
- * public document's examples (the pedido detail and situação are in
- * `pedidoTipos.ts`).
+ * The produto schemas, at the end of this file, follow the same rules. They were
+ * written against the public document's examples and checked against the
+ * shapes of the owner's produto capture C10 (the list with and without
+ * `removido`, its trash, a parent's and a child's detail).
+ *
+ * Every other resource (estoque, preço, imagem, envio) arrives with its first
+ * consumer, written against captured responses rather than the public
+ * document's examples (the pedido detail and situação are in `pedidoTipos.ts`).
  *
  * ## Passthrough
  *
@@ -46,10 +51,10 @@
  * ⚠️ Keep each anchored field on its own short line, so Prettier never wraps it
  * out of the guard's line-based scan.
  */
-import { wireInt } from '@delfrance/core/wire';
+import { wireInt, wireNumber } from '@delfrance/core/wire';
 import { z } from 'zod';
 
-import { inteiroOpcional, vazioComoNulo } from './vazio';
+import { inteiroOpcional, numeroOpcional, vazioComoNulo } from './vazio';
 
 /**
  * Tastypie's `meta` block.
@@ -220,3 +225,140 @@ export const liPedidoBuscaLinhaSchema = z
   .passthrough();
 
 export type PedidoBuscaLinhaLi = z.infer<typeof liPedidoBuscaLinhaSchema>;
+
+/* -------------------------------------------------------------------------- */
+/*                   The produto (master-plan step 9, `produtos.ts`)          */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * A list leaf the import reads as a list: absent, `null` and `''` are the
+ * provider's three spellings of "none", and all read as `[]` (a child row
+ * carries no `filhos` and no `grades` key at all). An element that is not an
+ * `item` still refuses the body.
+ */
+function listaOuVazia<T extends z.ZodType>(item: T) {
+  return vazioComoNulo(z.array(item)).transform((v) => v ?? []);
+}
+
+/**
+ * A leaf kept AS SENT, a string or a number: `peso` (a decimal STRING,
+ * `"0.200"`, sometimes with float noise, `"0.450000000000000011…"`). A string is
+ * never converted here: what it means (a plain decimal, a comma decimal, noise)
+ * is the reader's call, made in one place, so the text reaches it verbatim. A
+ * number must be one (`wireNumber()`), `''` reads as `null`, anything else (an
+ * object, a boolean) refuses the body.
+ */
+function textoOuNumeroComoVeio() {
+  return vazioComoNulo(z.union([z.string(), wireNumber()]));
+}
+
+/**
+ * One image of a produto detail (`imagem_principal`, `imagens[]`). Every leaf
+ * is a leaf the reader JUDGES (the header's rule), so every one is carried RAW
+ * (`z.unknown()`, `''` read as `null`), whatever its type: an image whose `id`
+ * is not an integer or whose `caminho` is not text still parses, and what it is
+ * worth (kept, or discarded and counted) is the reader's call. One odd image
+ * never costs its product, nor the other images beside it.
+ *
+ * ⚠️ That tolerance is per LEAF: an element of `imagens` that is not an object
+ * at all (a string, a number, a list) is a drift of the list itself and still
+ * refuses the body, at `imagens[]` (`listaOuVazia`).
+ *
+ *  - `id`: the image's own id; `imagem_id` (another one) is unread.
+ *  - `caminho`: the CDN path, RELATIVE — the only address a photo is ever
+ *    fetched from, under the pinned CDN host (`cdn.ts` checks it again before
+ *    any fetch). The absolute URLs beside it (`grande`, `media`, `pequena`,
+ *    `icone`) are never read: a host named in a body is not one this package
+ *    contacts.
+ *  - `principal`: judged by the reader (the brand's `ativo` rule).
+ *  - `posicao`: as sent (`"0"`, or `null` in the document's second image).
+ *  - `mime`: `"image/jpeg"`, `"image/png"` or `null` in the document.
+ *    Informational only: a fetched photo's type is decided from its bytes.
+ */
+export const liImagemProdutoSchema = z
+  .object({
+    id: vazioComoNulo(z.unknown()),
+    caminho: vazioComoNulo(z.unknown()),
+    principal: vazioComoNulo(z.unknown()),
+    posicao: vazioComoNulo(z.unknown()),
+    mime: vazioComoNulo(z.unknown()),
+  })
+  .passthrough();
+
+/**
+ * One row of `GET /v1/produto/`: the live list (`removido=false`) and the trash
+ * (`removido=true`) alike. Variations ARE rows (`tipo: atributo_opcao`),
+ * between their parents (`atributo`) and simple products (`normal`), in an
+ * order nothing relies on; a parent names its children in `filhos`, a child
+ * names its options in `variacoes` and carries no `pai`.
+ *
+ *  - `id`: `wireInt()`, so a quoted id never costs a page.
+ *  - `tipo`: a plain string, never an enum. A value this package does not know
+ *    still parses: what it means is the importer's call, never a refused page.
+ *  - `sku`, `nome`, `gtin`: text kept VERBATIM (`' X '` stays `' X '`: the SKU
+ *    is an identity); `''` reads as `null` (`nome` is `null` on many children).
+ *  - `ativo`, `bloqueado`, `removido`: carried raw and judged by the reader, as
+ *    the brand's `ativo` is: one odd flag never hides a page of products.
+ *  - `filhos`, `categorias`, `grades`, `variacoes`: resource URIs, each carried
+ *    verbatim (`listaOuVazia`); which resource one names is the reader's call.
+ *
+ * `seo`, `url`, `tags`, `apelido`, `descricao_completa` and the rest ride
+ * `.passthrough()`; the produto reads return a PROJECTION that leaves them
+ * behind (`produtos.ts`).
+ */
+export const liProdutoLinhaSchema = z
+  .object({
+    id: wireInt(),
+    tipo: z.string(),
+    sku: vazioComoNulo(z.string()),
+    nome: vazioComoNulo(z.string()),
+    gtin: vazioComoNulo(z.string()),
+    ativo: vazioComoNulo(z.unknown()),
+    bloqueado: vazioComoNulo(z.unknown()),
+    removido: vazioComoNulo(z.unknown()),
+    filhos: listaOuVazia(z.string()),
+    categorias: listaOuVazia(z.string()),
+    grades: listaOuVazia(z.string()),
+    variacoes: listaOuVazia(z.string()),
+  })
+  .passthrough();
+
+/**
+ * One produto, `GET /v1/produto/{id}/`: the row's leaves plus what only a
+ * detail carries. A child's detail carries its own `peso` and dimensions, its
+ * `pai` and its option URIs, and no images and no categories; a parent's, its
+ * `marca`, its `grades` and its images.
+ *
+ *  - `pai`, `marca`: a resource URI, or `null`.
+ *  - `peso`: as sent (`textoOuNumeroComoVeio`): a decimal STRING in the
+ *    document and in C10, possibly with float noise; a number parses too.
+ *  - `altura`, `largura`, `profundidade`: integers in both sources, read with
+ *    `numeroOpcional()` so a quoted or fractional size still parses.
+ *  - `destaque`, `usado`: carried raw, like the row's flags.
+ *  - `descricao_completa`: the HTML description; `''` reads as `null`. The
+ *    plain GET carries it (C10: the `descricao_completa=1` flag changed no
+ *    byte), so the flag is never sent.
+ *  - `imagem_principal` (one image or `null`) and `imagens` (a list, `[]` on a
+ *    child): `liImagemProdutoSchema`.
+ *
+ * ⚠️ The document states no unit for the weight or the sizes, and this package
+ * assumes none: it carries both as sent. Which unit the store means is still to
+ * be confirmed, and converting either is the reader's call.
+ *
+ * ⚠️ Price and stock (`preco_*`, `estoque_*`) are deliberately NOT declared:
+ * the import never reads either, and the read returns a projection without them
+ * (`produtos.ts`).
+ */
+export const liProdutoDetalheSchema = liProdutoLinhaSchema.extend({
+  pai: vazioComoNulo(z.string()),
+  marca: vazioComoNulo(z.string()),
+  destaque: vazioComoNulo(z.unknown()),
+  usado: vazioComoNulo(z.unknown()),
+  peso: textoOuNumeroComoVeio(),
+  altura: numeroOpcional(),
+  largura: numeroOpcional(),
+  profundidade: numeroOpcional(),
+  descricao_completa: vazioComoNulo(z.string()),
+  imagem_principal: vazioComoNulo(liImagemProdutoSchema),
+  imagens: listaOuVazia(liImagemProdutoSchema),
+});

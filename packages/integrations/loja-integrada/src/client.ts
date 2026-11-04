@@ -11,7 +11,8 @@
  * writer is `escrita.ts`, a different factory with different method names, so a
  * read client handed to some code can never write.
  *
- * ⚠️ `executarLi` and its helpers are exported for `escrita.ts` ONLY. Two things
+ * ⚠️ `executarLi` and its helpers are exported for `escrita.ts` ONLY (and
+ * `SEPARADOR_CODIFICADO` for `cdn.ts`, whose path check shares it). Two things
  * keep them inside the package: the barrel (`index.ts`) names this module's
  * public exports one by one and leaves them out, and the package manifest's
  * `exports` map publishes the root alone, so a deep import of this file
@@ -117,9 +118,9 @@ const PREFIXO_CAMINHO = /^\/v1\//;
  * A percent-encoded `.`, `/` or `\`. None of the three ever NEEDS encoding in a
  * path, so the encoded form has no use but to slip a parent segment or a
  * separator past a literal check (a server that decodes `%2e%2e%5c` may still
- * walk up).
+ * walk up). Shared with the CDN reader's path check (`cdn.ts`).
  */
-const SEPARADOR_CODIFICADO = /%(?:2e|2f|5c)/i;
+export const SEPARADOR_CODIFICADO = /%(?:2e|2f|5c)/i;
 
 /** The deadline class of each verb: a `GET` is a read, a `PUT` a write. */
 const CLASSE_DO_METODO = {

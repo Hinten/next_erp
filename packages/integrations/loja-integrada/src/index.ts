@@ -5,8 +5,13 @@
  *
  * The modules that ship here (transport, typed errors, Tastypie paging, the
  * response schemas, the token validator, the order import's reads, the status
- * write-back's two writes and the four catalogue reads — categories, brands,
- * grades and one grade's options) are exported from this barrel as they land.
+ * write-back's two writes, the four catalogue reads — categories, brands,
+ * grades and one grade's options — and the product import's reads — one page
+ * of any list, one page of the produto list or its trash, and one product's
+ * detail, both produto reads returning a projection without price or stock —
+ * and the CDN reader for product photos, which sends no credential, follows no
+ * redirect, caps the bytes and reads the picture type from them) are exported
+ * from this barrel as they land.
  * Everything stateful (the credential store, the connect route, the sweeps and
  * the write engine) is driven by the App Hosting backend `apps/loja-integrada`
  * and its functions, which hold the Firestore/Admin-SDK dependency.
@@ -72,3 +77,5 @@ export * from './pedidoTipos';
 export * from './pedidos';
 export * from './pedidosEscrita';
 export * from './catalogo';
+export * from './produtos';
+export * from './cdn';
