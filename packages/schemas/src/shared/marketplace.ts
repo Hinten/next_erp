@@ -18,7 +18,7 @@ import type { OrigemConversa } from '../conversa';
  */
 
 /**
- * ⚠️ **Three-valued on purpose.** Three of the six rows below are channels nobody
+ * ⚠️ **Three-valued on purpose.** Two of the six rows below are channels nobody
  * has researched, and a `boolean` cannot say *"nobody has checked"* — it can only
  * say `false`, which reads as an answer. Putting an unverified claim into a type
  * is exactly the failure #815 exists to undo, so the honest default for an
@@ -54,8 +54,20 @@ export type EstoqueProtocolo =
 
 export interface EstoqueCapabilities {
   readonly suporte: Suporte;
+  /**
+   * ⚠️ A channel that offers BOTH a per-listing write and a feed (Amazon: one
+   * patch per SKU for sale-driven deltas, `JSON_LISTINGS_FEED` for bulk pushes)
+   * records the FEED here — the protocol that needs machinery no other channel
+   * has (a submission record plus a result poll) — and documents the
+   * per-listing path in its row comment. Which path a given push takes is the
+   * stock step's decision, not this table's: nothing selects a fan-out from
+   * this field.
+   */
   readonly protocolo: EstoqueProtocolo;
-  /** Max SKUs per call/feed. `null` when not applicable or not yet known. */
+  /**
+   * Max SKUs per call — or, for `'feed-assincrono'`, messages per feed
+   * document. `null` when not applicable or not yet known.
+   */
   readonly loteMax: number | null;
   /** Per-depósito / per-warehouse stock rather than one pooled quantity. */
   readonly multiDeposito: Suporte;
@@ -63,9 +75,20 @@ export interface EstoqueCapabilities {
 
 export interface MarketplaceCapabilities {
   /* ---- facts about THIS repo — exact, never 'desconhecido' ---- */
-  /** Backend segment for `/api/marketplace/<channel>/*`, or `null` with no app. */
+  /**
+   * Backend segment for `/api/marketplace/<channel>/*`. Set once the channel's
+   * master plan names its backend — the Loja Integrada and Amazon rows name
+   * theirs while `implementado` is still false — and `null` while no plan does.
+   * ⚠️ Whether the channel is BUILT is {@link implementado}, never this field:
+   * read `channel` only behind `implementado` (as `StatusCanalBadge` does).
+   */
   readonly channel: string | null;
-  /** Is there a deployed `apps/<channel>` backend today? */
+  /**
+   * Is the channel BUILT — `apps/<channel>` exists and `apps/web` dispatches its
+   * row actions to it? A fact about this repo's code, never about a deployment:
+   * no channel of this app reaches production before the cutover (root
+   * `CLAUDE.md` rule 8).
+   */
   readonly implementado: boolean;
 
   /* ---- facts about the PROVIDER — tri-state ---- */
@@ -79,12 +102,17 @@ export interface MarketplaceCapabilities {
    * fails OPEN. Do not copy that posture: on `'sim'` the receiver must fail
    * **CLOSED** (secret unset ⇒ 503).
    *
-   * `'sim'` covers two mechanisms, and the row's comment says which one:
+   * `'sim'` covers three mechanisms, and the row's comment says which one:
    * - a body SIGNATURE — Shopee's HMAC over the callback URL + raw body;
    * - a static secret the provider ECHOES — Loja Integrada sends back the token
    *   we chose at registration as `Authorization: Bearer <token>`. That is
    *   authenticated, NOT signed: compare the secret in constant time, and never
-   *   write an HMAC verifier for it.
+   *   write an HMAC verifier for it;
+   * - a secret OUR OWN RELAY adds — Amazon sends nothing verifiable at all: it
+   *   writes to a queue in our AWS account, and our EventBridge Connection adds
+   *   an API-key header on the way to the receiver. Compare that key in constant
+   *   time AND require the payload's `ApplicationId` to be ours, because the
+   *   queue policy admits Amazon's principal without making it the only writer.
    */
   readonly assinaWebhook: Suporte;
 
@@ -116,7 +144,13 @@ export interface MarketplaceCapabilities {
   readonly importarPagamento: Suporte;
   /** Several orders consolidated into one shipment/pedido (ML packs). */
   readonly consolidaPacote: Suporte;
-  /** The buyer's fiscal identity needs a second, gated call (not inline). */
+  /**
+   * The buyer's fiscal identity is NOT freely inline on the order: either it
+   * needs a second call (ML `billing_info`), or it arrives on the same call only
+   * once a gate opens — an order status, an app role or a whitelist (Shopee,
+   * Amazon). Either way the first read can lack it, so the importer must read
+   * again once the gate opens. `'nao'` = inline and ungated (Loja Integrada).
+   */
   readonly dadosFiscaisSeparados: Suporte;
 
   /** `'fetch'` = the marketplace mints it and we download; `'emit'` = we mint it. */
@@ -182,7 +216,7 @@ const NAO_INVESTIGADO = {
  */
 export const MARKETPLACE_TIPO_CAPS: Record<MarketplaceTipo, MarketplaceCapabilities> = {
   /**
-   * The one implemented channel. Every value here is observed from the running
+   * The first implemented channel. Every value here is observed from the running
    * integration (`apps/mercado-livre`), not read off documentation.
    */
   [INTEGRACAO_TIPO.mercadoLivre]: {
@@ -234,22 +268,13 @@ export const MARKETPLACE_TIPO_CAPS: Record<MarketplaceTipo, MarketplaceCapabilit
   },
 
   /**
-   * ⚠️ Everything below is UNBUILT — which is NOT the same as unresearched.
-   * Shopee's and Loja Integrada's rows are completed Phase 0 surveys with
-   * `implementado: false`; the other three are still all `'desconhecido'`. A
-   * `'desconhecido'` is not a gap
-   * in this file — it is the honest state of the question, and Phase 0 of the
-   * skill is what closes it. Only values with a citation are set.
-   */
-  /**
    * The Shopee Phase 0 survey (`.master_plans/shopee/shopee-marketplace-integration.md`
-   * §1). Every field below is cited — `implementado` stays `false` until step 22
-   * of that plan ships the App Hosting backend; `channel` is named now because
-   * the backend segment is a fact about THIS repo's layout, not about Shopee.
+   * §1). Every field below is cited. `implementado` flipped at that plan's step
+   * 22 (#1530): `apps/shopee` serves every row action `apps/web` dispatches.
    */
   [INTEGRACAO_TIPO.shopee]: {
-    channel: 'shopee', // apps/shopee, :3009 (next free port)
-    implementado: false,
+    channel: 'shopee', // apps/shopee, :3009
+    implementado: true,
     // Authorization-code-SHAPED, not RFC 6749: no client_secret (HMAC `sign` with
     // the partner_key instead), no scope (fixed by the immutable App Category),
     // no PKCE. guide 20, guide 16.
@@ -284,7 +309,8 @@ export const MARKETPLACE_TIPO_CAPS: Record<MarketplaceTipo, MarketplaceCapabilit
     // ⚠️ Only HALF settled. The Shopee PRE-LAUNCH UNLIST — the state that actually
     // answers `error_set_normal_unlisted_item` — cannot be produced on that shop,
     // and an SG sandbox answer is evidence about the API, never about BR.
-    // `implementado` stays `false` until step 22 regardless.
+    // `implementado` flipped at step 22 with this still open (plan register 83
+    // names what settles it); the flip opened no re-list path — bulk only pauses.
     pausarAnuncio: 'sim',
     // Measured live on the SG SANDBOX shop, 2026-09-21, through the shipped step-12
     // package ops, with Lucas’s explicit go and a `delete_item` cleanup. Every
@@ -316,7 +342,6 @@ export const MARKETPLACE_TIPO_CAPS: Record<MarketplaceTipo, MarketplaceCapabilit
     // ⚠️ An SG sandbox answer is evidence about the API, never about BR: the
     //    promotion regime and multi-warehouse are not rehearsable there. Kits ARE
     //    rehearsable on the SG sandbox (probe 2026-10-06/07, step 19).
-    // `implementado` stays `false` until step 22.
     estoque: {
       suporte: 'sim',
       // One item per call (api v2.product.update_stock); the item's models ride
@@ -357,7 +382,7 @@ export const MARKETPLACE_TIPO_CAPS: Record<MarketplaceTipo, MarketplaceCapabilit
     //     module, no BR shop). MODEL_UNAVAILABLE — NAO MEDIDO (P14 not run).
     // update_price: one item, ≤ 50 models, 2 decimals. Locked by MOST promotion types
     // from SCHEDULED on (faq 140) — not wholesale, selling price, add-on main, PwP,
-    // the gift. `implementado` stays `false` until step 22.
+    // the gift.
     enviarPreco: 'sim',
     importarPedido: 'sim',
     // No payment push, and no gateway-shaped payment resource — but a BR
@@ -395,10 +420,133 @@ export const MARKETPLACE_TIPO_CAPS: Record<MarketplaceTipo, MarketplaceCapabilit
     reclamacoes: 'sim', // v2.returns.* + push 32
     origensConversa: [], // filled by step 16 only if the chat grant lands
   },
+  /**
+   * ⚠️ Everything below is UNBUILT — which is NOT the same as unresearched.
+   * Amazon's and Loja Integrada's rows are Phase 0 surveys with
+   * `implementado: false` (Amazon's keeps one honest `'desconhecido'`); the
+   * other two are still all `'desconhecido'`. A `'desconhecido'` is not a gap
+   * in this file — it is the honest state of the question, and Phase 0 of the
+   * skill is what closes it. Only values with a citation are set.
+   */
+  /**
+   * The Amazon (SP-API) Phase 0 survey
+   * (`.master_plans/amazon/amazon-marketplace-integration.md` §1), verified
+   * field by field in `evidence/caps-verify-result.md` beside it. Read off
+   * Amazon's own documentation and OpenAPI models: "D:<slug>" cites
+   * developer-docs.amazon/sp-api/docs/<slug>, "M:<file>" a file in
+   * amzn/selling-partner-api-models, and "CL:<slug>" a changelog entry.
+   * `implementado` stays `false` until step 22 of that plan, and it cannot flip
+   * while `reclamacoes` is `'desconhecido'`.
+   */
   [INTEGRACAO_TIPO.amazon]: {
-    ...NAO_INVESTIGADO,
-    channel: null,
+    channel: 'amazon', // apps/amazon, :3011 (next free port)
     implementado: false,
+    // Login with Amazon: POST https://api.amazon.com/auth/o2/token, grant_type=refresh_token
+    // → a 1 h access token (D:connecting-to-the-selling-partner-api). The app is a Public
+    // app in Draft: the website authorization workflow with version=beta
+    // (D:website-authorization-workflow). Reauthorize every 365 days; rotate the client
+    // secret every 180 days (D:rotating-your-apps-lwa-credentials).
+    auth: 'oauth2',
+    // No code_challenge/code_verifier in the consent URI or the code exchange
+    // (D:website-authorization-workflow).
+    pkce: 'nao',
+    // Destinations are sqs | eventBridge only (M:notifications.json
+    // DestinationResourceSpecification): no HTTPS webhook. ORDER_CHANGE is SQS-ONLY
+    // (D:notification-type-values); EventBridge carries 7 listing/product types
+    // (D:set-up-notifications-with-amazon-eventbridge). So orders travel SQS →
+    // EventBridge Pipe → API destination → our receiver, and Amazon recommends a
+    // fallback fetch (D:notifications-api): the searchOrders backstop.
+    notificacoes: 'push',
+    // ⚠️ NOT SIGNED. NotificationMetadata carries only ApplicationId, SubscriptionId,
+    // PublishTime and NotificationId (M:OrderChangeNotification.json). Authenticated by
+    // AWS IAM (Amazon's principal writes to OUR queue,
+    // D:tutorial-grant-permission-to-sqs-queue) plus the API-key header OUR EventBridge
+    // Connection adds (docs.aws eb-target-connection-auth). The receiver compares that
+    // key in constant time, requires ApplicationId === ours, and must fail CLOSED:
+    // key unset ⇒ 503, mismatch ⇒ 401. Never write an HMAC verifier for it.
+    assinaWebhook: 'sim',
+    // putListingsItem, the payload validated against the Product Type Definitions JSON
+    // schema (D:create-a-listing).
+    publicarAnuncio: 'sim',
+    // GET_MERCHANT_LISTINGS_ALL_DATA + getListingsItem / searchListingsItems
+    // (≤ 1,000 results).
+    importarAnuncio: 'sim',
+    // A FAMILY: parentage_level + child_parent_sku_relationship + variation_theme, with a
+    // non-buyable parent (D:building-listings-management-workflows-guide).
+    variacoes: 'sim',
+    // Product Type Definitions v2020-09-01, locale pt_BR
+    // (M:definitionsProductTypes_2020-09-01.json).
+    categoriasEAtributos: 'sim',
+    tabelaDeMedidas: 'nao', // no size-chart resource in any model; sizes are listing attributes
+    // No bundle/kit resource in any model; package_contains_sku is a unit/case/pallet
+    // pack. An ERP kit goes out as an ordinary SKU whose quantity the ERP computes.
+    kitVirtual: 'nao',
+    // purchasable_offer end_at in the past ("soft-close", D:manage-purchasable-offer), or
+    // quantity 0; reopened by re-offering or restocking.
+    pausarAnuncio: 'sim',
+    estoque: {
+      // fulfillment_availability [{fulfillment_channel_code: 'DEFAULT' (= MFN), quantity,
+      // lead_time_to_ship_max_days}] through patchListingsItem op 'merge'
+      // (D:merge-a-listing). FBA (AMAZON_*) quantity is Amazon's and never written.
+      suporte: 'sim',
+      // ~20,000 SKUs on the one conta ⇒ the BULK path is JSON_LISTINGS_FEED: ≤ 25,000
+      // messages and ≤ 10 MB per feed, 5 feeds / 5 min, the result in a processing
+      // report up to 8 h later (D:feeds-api-faq; "use the feed for operations that
+      // involve more than 1,500 items", D:building-listings-management-workflows-guide).
+      // Sale-driven DELTAS still go out as one synchronous patchListingsItem per SKU
+      // (5 rps, burst 5, D:listings-items-api-rate-limits). The feed needs a submission
+      // record plus a result poll (master-plan step 12a).
+      protocolo: 'feed-assincrono',
+      loteMax: 25000, // messages per JSON_LISTINGS_FEED document
+      multiDeposito: 'nao', // Multi-Location Inventory is US-only (D:mli-integration-guide)
+    },
+    // purchasable_offer merge: our_price and minimum/maximum_seller_allowed_price
+    // (D:manage-purchasable-offer).
+    enviarPreco: 'sim',
+    // Orders v2026-01-01: searchOrders (0.0056 rps, burst 20) + getOrder (0.5 rps,
+    // burst 30) (M:orders_2026-01-01.json). v0 reads are removed on 2027-03-27.
+    importarPedido: 'sim',
+    // includedData=PAYMENT → paymentExecutions[] {paymentMethod (an OPEN string),
+    // paymentAmount, and the BR-only acquirerId / cardBrand / authorizationCode}
+    // (M:orders_2026-01-01.json PaymentExecution). No installments field.
+    importarPagamento: 'sim',
+    // No pack id; PackageItem = {orderItemId, quantity}, and every shipment call takes
+    // ONE orderId.
+    consolidaPacote: 'nao',
+    // Same call (getOrder includedData=BUYER,RECIPIENT,TAX), but ROLE- and STATUS-gated:
+    // the buyer CPF/CNPJ come only with Tax Invoicing or Tax Remittance (Restricted),
+    // not with Direct-to-Consumer Shipping (D:get-tax-information, D:access-orders-pii);
+    // the buyer name and address lines only from UNSHIPPED on. The MERCHANT/MARKETPLACE
+    // registrations are the reverse: present only while PENDING/UNSHIPPED. The importer
+    // reads again on the ORDER_CHANGE that opens the gate.
+    dadosFiscaisSeparados: 'sim',
+    // Amazon mints it. BR Easy Ship / DBA: createScheduledPackageBulk returns a
+    // printableDocumentsUrl (a zip holding ZPL or PDF). That flow is described for BR
+    // only on Amazon's retired LATAM documentation site, and the global Easy Ship store
+    // table omits BR (master plan evidence/latam-dba-review.md).
+    etiqueta: 'fetch',
+    // ORDER_CHANGE fires on order status changes, buyer cancellation requests and tip
+    // changes only; Easy Ship events are listed as a possible future addition
+    // (D:tutorial-subscribe-to-order-change-notification). Read packages[] through
+    // getOrder includedData=PACKAGES. SHIPMENT_TRACKING_MILESTONE_CHANGED shares its scope
+    // and version with the Tracking API, which is US-only (D:tracking-api).
+    // ⚠️ 'pull' is the SAFE value, not proof that no push exists:
+    // EXTERNAL_FULFILLMENT_SHIPMENT_STATUS_CHANGE pushes shipped/delivered IF a BR DBA
+    // order runs through External Fulfillment, which no document says.
+    rastreio: 'pull',
+    // Delivery by Amazon submitInvoice / getInvoiceStatus v2022-07-01: BR-only, Tax
+    // Invoicing (Restricted) (D:delivery-by-amazon-api).
+    enviarNfe: 'sim',
+    perguntas: 'nao', // no buyer Q&A resource in any model
+    // Messaging API v1 is send-only: no operation or notification delivers a buyer
+    // message.
+    mensagensPosVenda: 'nao',
+    // The External Fulfillment Returns API v2024-09-11 (listReturns / getReturn,
+    // read-only) exists, but no document confirms it for a plain amazon.com.br MFN
+    // seller, and A-to-z claims exist only as report columns. Settled by owner capture
+    // C6 before step 22; until then `implementado` cannot flip.
+    reclamacoes: 'desconhecido',
+    origensConversa: [],
   },
   [INTEGRACAO_TIPO.magalu]: {
     ...NAO_INVESTIGADO,

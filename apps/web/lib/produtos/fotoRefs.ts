@@ -1,4 +1,4 @@
-import type { Foto, Produto } from '@delfrance/schemas';
+import { idFromRefOrNull, type Foto, type Produto } from '@delfrance/schemas';
 
 /**
  * Pure resolution of which `arquivos` documents a produto's photo can be
@@ -10,10 +10,7 @@ import type { Foto, Produto } from '@delfrance/schemas';
 
 /** Bare `<id>` from a `Foto` ref string (`arquivos/<id>` or `documents/arquivos/<id>`). */
 export function arquivoIdFromRef(ref: string | null | undefined): string | null {
-  if (!ref) return null;
-  const segs = ref.split('/').filter(Boolean);
-  const last = segs[segs.length - 1];
-  return last !== undefined && last.length > 0 ? last : null;
+  return idFromRefOrNull(ref);
 }
 
 /** The four `arquivos` documents a single `Foto` can point at. */

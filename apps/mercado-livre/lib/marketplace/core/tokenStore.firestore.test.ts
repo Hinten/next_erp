@@ -26,7 +26,14 @@ import { randomUUID } from 'node:crypto';
 import type { MercadoLivreOAuthConfig, TokenResponse } from '@delfrance/integrations-mercado-livre';
 import { MercadoLivreReauthRequiredError } from '@delfrance/integrations-mercado-livre';
 import type { TokenDuravel } from '@delfrance/schemas';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
+import {
+  __setAccessTokenCacheClockForTests,
+  accessTokenScope,
+  getCachedAccessToken,
+  invalidateCachedAccessToken,
+} from './accessTokenCache';
 
 import { getAdminFirestore } from '@/lib/firebase/admin';
 
@@ -90,6 +97,11 @@ function newIntegracaoId(): string {
 function rawColl(integracaoId: string) {
   return getAdminFirestore().collection('integracao').doc(integracaoId).collection('tokenDuravel');
 }
+
+afterEach(() => {
+  __resetAllReadCaches();
+  __setAccessTokenCacheClockForTests();
+});
 
 describe.skipIf(!EMULATED)('createTokenDuravelStore (Firestore emulator)', () => {
   it('A1: successive saves collapse onto the single `current` doc', async () => {
@@ -337,5 +349,32 @@ describe.skipIf(!EMULATED)('createTokenDuravelStore (Firestore emulator)', () =>
     const snap = await rawColl(integracaoId).get();
     expect(snap.docs.map((d) => d.id)).toEqual(['current']);
     expect(['AT-a', 'AT-b']).toContain(snap.docs[0]?.data().access_token);
+  });
+
+  it('A9: cached tokens follow committed reconnects and credential deletion', async () => {
+    __setAccessTokenCacheClockForTests(() => NOW);
+    const integracaoId = newIntegracaoId();
+    const db = getAdminFirestore();
+    const scope = accessTokenScope(db, config.clientId, integracaoId);
+    const store = createTokenDuravelStore(db, integracaoId, {
+      onCredentialsChanged: () => invalidateCachedAccessToken(scope),
+    });
+    const loadValid = vi.spyOn(store, 'loadValid');
+    await store.save(tok({ access_token: 'before-reconnect' }));
+    expect(await getCachedAccessToken(scope, store, config)).toBe('before-reconnect');
+    expect(await getCachedAccessToken(scope, store, config)).toBe('before-reconnect');
+    expect(loadValid).toHaveBeenCalledTimes(1);
+
+    await store.save(tok({ access_token: 'after-reconnect' }));
+    expect(await getCachedAccessToken(scope, store, config)).toBe('after-reconnect');
+    expect(loadValid).toHaveBeenCalledTimes(2);
+    expect((await rawColl(integracaoId).doc('current').get()).data()?.access_token).toBe(
+      'after-reconnect',
+    );
+
+    expect(await store.deleteAll()).toBe(1);
+    await expect(getCachedAccessToken(scope, store, config)).rejects.toBeInstanceOf(
+      MercadoLivreReauthRequiredError,
+    );
   });
 });

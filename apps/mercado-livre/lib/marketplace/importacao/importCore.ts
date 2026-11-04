@@ -38,6 +38,7 @@ import {
   CONDICAO_PRODUTO,
   type MedidasDoPacote,
   type MlModeracao,
+  idFromRefOrNull,
   makeEstoqueUid,
   marcaArmazenadaDe,
   reservaEfetiva,
@@ -393,7 +394,7 @@ export function assembleImportPlan(args: ImportAssembleArgs): ImportPlan {
   // import options. See `assembleVariationChildPlan` for the per-child equivalent.
   let estoque: { docId: string; data: Record<string, unknown> } | null = null;
   if (!args.hasVariations) {
-    const depositoId = args.depositoOuterRef ? lastSegment(args.depositoOuterRef) : null;
+    const depositoId = idFromRefOrNull(args.depositoOuterRef);
     const exists = args.existingEstoqueQty != null;
     const writeStock =
       args.depositoOuterRef != null &&
@@ -487,11 +488,6 @@ export function assembleImportPlan(args: ImportAssembleArgs): ImportPlan {
     estoque,
     link,
   };
-}
-
-function lastSegment(ref: string): string {
-  const parts = ref.split('/').filter(Boolean);
-  return parts[parts.length - 1] ?? ref;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -759,7 +755,7 @@ export function assembleVariationChildPlan(args: VariationChildAssembleArgs): Va
   // and quantity. The `reservaEfetiva` floor is required here for the same reason
   // it is required there (#931); this arm is not a lesser copy of it.
   let estoque: { docId: string; data: Record<string, unknown> } | null = null;
-  const depositoId = args.depositoOuterRef ? lastSegment(args.depositoOuterRef) : null;
+  const depositoId = idFromRefOrNull(args.depositoOuterRef);
   const exists = args.existingEstoqueQty != null;
   const writeStock =
     args.depositoOuterRef != null &&

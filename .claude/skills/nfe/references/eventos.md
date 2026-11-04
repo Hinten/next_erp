@@ -66,10 +66,47 @@ by NF-e pendentes de retorno that were never authorized).
   número homologado" → success, with `nProt`.
 - Inutilização is **not** for numbers that were actually authorized — for those
   use cancelamento.
+- ⛔ **Ended in AC, BA and SP from 01/11/2026.** Ajuste SINIEF nº 40/2026
+  (CONFAZ, signed 04/09/2026, DOU 14/09/2026) adds § 6º to cláusula décima
+  quarta of Ajuste SINIEF 7/05: "O Pedido de Inutilização de Número da NF-e
+  previsto no 'caput' não se aplica aos Estados do Acre, Bahia e São Paulo."
+  Ajuste SINIEF 38/2026 does the same for NFC-e. SEFAZ-SP switched homologação
+  off ahead of that date: from 2026-10-22 every request gets **cStat 998
+  "Rejeição: Serviço Desativado"** (#2030). Expect the same in produção from
+  01/11. Inutilização still exists in the other UFs. Primary source:
+  `confaz.fazenda.gov.br/legislacao/ajustes/2026/AJ040_26`.
+- **NT 2023.002 v1.02 (Out/2026), pp. 4, 6 e 10:** cronograma técnico de
+  desligamento em AC/BA/SP até 11/11/2026 (homologação) e em 11/11/2026
+  (produção), podendo retornar HTTP 404 ou 998. Isso não altera o guarda
+  legal de 01/11 já implementado. A SEFAZ-BA anunciou desligamento em 03/11;
+  conciliar o comunicado da UF antes de inferir disponibilidade. Ver
+  [a referência e suas fontes](nt-2023-002-v1.02.md#inutilização-distinguir-prazo-legal-e-desligamento-do-serviço).
+- ⚠️ A **rejection** may carry `<dhRecbto>0001-01-01T00:00:00+00:00</dhRecbto>`
+  (.NET `DateTime.MinValue`), first seen from SEFAZ-SP homologação on 2026-10-22.
+  MOC 7.0 Tabela 5-10 says dhRecbto/nProt "não serão preenchidos em caso de
+  erro", but `retInutNFe_v4.00.xsd` keeps dhRecbto required and its pattern
+  rejects year 0001. `validateRetInutNFe` (`src/xsd/index.ts`) tolerates exactly
+  that: cStat ≠ 102, the sentinel value, and an otherwise XSD-valid reply. Any
+  other bad value, or the sentinel on a 102, still throws.
+- Rejections the MOC lists (Tabela 5-12): 241 (a número in the faixa was already
+  used, also by an EPEC), 256 (faixa overlaps an earlier inutilização), 563
+  (identical pedido already exists), 201 (more than 10,000 números), 240
+  (irregularidade fiscal do emitente), 453/454 (ano out of bounds).
 
 ## Phase mapping
 
 The vertical slice (Phase A) implements **autorização only**. Cancelamento and
 inutilização are Phase B; CC-e is Phase C. This file is the reference for those
 later phases — and for the recovery loop, which must *inutilizar* truly-unused
-numbers it finds while reconciling pendentes de retorno.
+numbers it finds while reconciling pendentes de retorno. ⛔ Except in AC, BA and
+SP from 01/11/2026 (Ajuste SINIEF nº 40/2026, above): there a truly-unused
+número is left as a gap, with nothing to send. The Ajuste is a waiver; no other
+event replaces the pedido. Precedent: when CT-e lost inutilização (Ajuste SINIEF
+31/2022), SEFAZ-SP answered that a gap needs no additional procedure as long as
+the documents before and after it keep the sequence (RC 28386/2023,
+RC 28214/2023). An AUTHORIZED NF-e still needs cancelamento. One pure rule
+decides it — `inutilizacaoSeAplica(uf, instanteMs)` in `@delfrance/schemas` —
+and both `apps/nfe`'s `inutilizarNumeracao` (refuses before any SEFAZ call,
+HTTP 422 `INUTILIZACAO_NAO_SE_APLICA`) and the `apps/web` inutilização screen
+read it. No code path inutilizes automatically today; the only caller is the
+operator's `POST /api/nfe/inutilizar`.

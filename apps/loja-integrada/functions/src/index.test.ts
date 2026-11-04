@@ -1,12 +1,25 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { FieldValue } from 'firebase-admin/firestore';
 import { logger } from 'firebase-functions/v2';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
-import { TASK_MAX_ATTEMPTS } from '@delfrance/data/admin/notifications';
+import {
+  historicoFreteInicialCollection,
+  integracaoCollection,
+} from '@delfrance/data/admin/collections';
+import { MAX_TENTATIVAS_DEFERRED, TASK_MAX_ATTEMPTS } from '@delfrance/data/admin/notifications';
+import { PRAZO_LI_MS } from '@delfrance/integrations-loja-integrada';
 
 import { __setRelogioDoCacheParaTestes } from '../../lib/lojaIntegrada/core/contaCache';
+import { PRAZO_ULTIMA_ESCRITA_MS } from '../../lib/lojaIntegrada/core/escrita';
 import type { ImportadorPedidoLi } from '../../lib/lojaIntegrada/notificacoes/notificacao';
+import { importarPedidoLi } from '../../lib/lojaIntegrada/pedidos/importarPedido';
+import {
+  PIOR_EXECUCAO_RASTREIO_LI_MS,
+  PIOR_TENTATIVA_RECUSADA_RASTREIO_LI_MS,
+} from '../../lib/lojaIntegrada/rastreio/processarRastreio';
 import { FakeDb, asDb } from '../../lib/lojaIntegrada/testing/fakeDb';
 import { espiarStdout, seedConta, seedCredencial } from '../../lib/lojaIntegrada/testing/fixtures';
 import { seedNotificacaoLi } from '../../lib/lojaIntegrada/testing/notificacoes';
@@ -23,10 +36,10 @@ import { seedNotificacaoLi } from '../../lib/lojaIntegrada/testing/notificacoes'
  * Cloud Scheduler), and the queue's rate and retry ladder are honoured by the
  * real Cloud Tasks only — an assertion here is the only place either can fail.
  *
- * ⚠️ Three maps — {@link AGENDAMENTOS}, {@link FILAS} and the empty set of
- * event triggers — and an exhaustiveness test for each, so a trigger added later
- * lands covered or reds this file. Shopee's codebase learned that one family at
- * a time.
+ * ⚠️ Three maps — {@link AGENDAMENTOS}, {@link FILAS} and {@link GATILHOS} (the
+ * Firestore triggers, with their paths in {@link CAMINHOS_DOS_GATILHOS}) — and
+ * an exhaustiveness test for each, so a trigger added later lands covered or
+ * reds this file. Shopee's codebase learned that one family at a time.
  *
  * `FUNCTIONS_REGION` is normally inlined at build time (esbuild `define` in
  * build.mjs); here it is stubbed BEFORE the import so `options.ts` does not
@@ -84,12 +97,18 @@ vi.mock('../../lib/lojaIntegrada/conta/expiracaoSweep', async (importOriginal) =
 // carries no hook timeout, and `./index` is the heaviest module here.
 const modulo = await import('./index');
 const {
+  filaEscritaLojaIntegrada,
   filaLeituraLojaIntegrada,
+  onHistoricoFreteLojaIntegrada,
+  onIntegracaoLojaIntegradaChanged,
   pollLojaIntegradaPedidos,
   reprocessLojaIntegradaNotifications,
   sweepLojaIntegradaTokenExpiry,
+  varrerEscritasLojaIntegrada,
 } = modulo;
 const notificacao = await import('../../lib/lojaIntegrada/notificacoes/notificacao');
+const notificacaoEscrita = await import('../../lib/lojaIntegrada/rastreio/notificacaoEscrita');
+const { VARREDURA_ESCRITA_ORCAMENTO_MS } = await import('./filaEscrita');
 const expiracao = await import('../../lib/lojaIntegrada/conta/expiracaoSweep');
 
 afterAll(() => {
@@ -110,15 +129,55 @@ const AGENDAMENTOS = {
   pollLojaIntegradaPedidos,
   reprocessLojaIntegradaNotifications,
   sweepLojaIntegradaTokenExpiry,
+  varrerEscritasLojaIntegrada,
 } as const;
 
 /**
- * Every TASK-QUEUE trigger: exactly ONE. The channel has one reads queue that
- * dispatches on `tipo` (Firebase binds one function per queue), and no writes
- * queue before step 7 — a second `onTaskDispatched` here is a defect, not a
- * feature, until that step says otherwise.
+ * Every TASK-QUEUE trigger: exactly TWO — the reads queue and the writes queue
+ * (master plan step 7), each dispatching on `tipo` (Firebase binds one function
+ * per queue). A third `onTaskDispatched` here is a defect, not a feature: every
+ * later write kind joins the writes queue, so the channel's writes stay
+ * single-file.
  */
-const FILAS = { filaLeituraLojaIntegrada } as const;
+const FILAS = { filaLeituraLojaIntegrada, filaEscritaLojaIntegrada } as const;
+
+/**
+ * Every FIRESTORE-TRIGGER export — the third sibling of {@link AGENDAMENTOS}
+ * and {@link FILAS}, and it exists for the same reason. A gen2 Firestore
+ * trigger carries `eventTrigger`, so the two exhaustiveness tests that filter
+ * on `scheduleTrigger` / `taskQueueTrigger` enumerate it in NEITHER: without
+ * this map its region, its `database`, its secrets and its `retry` would be read
+ * by nothing.
+ *
+ * The failure it guards is the silent one: an `onDocument*` bound to the
+ * `(default)` sentinel, or with no `database` at all, deploys fine and never
+ * fires, with nothing anywhere to say so. Master plan step 20 added the first
+ * (`onIntegracaoLojaIntegradaChanged`); the `every GATILHO…` tests below walk
+ * the MAP, never a named trigger, so a second one lands covered.
+ */
+const GATILHOS = { onIntegracaoLojaIntegradaChanged, onHistoricoFreteLojaIntegrada } as const;
+
+/**
+ * The document path each trigger must listen on — derived from the HANDLE,
+ * never a second literal, plus an ANCHOR literal so the comparison can never be
+ * two `undefined`s agreeing. `satisfies` over the {@link GATILHOS} keys: a
+ * trigger with no row here does not compile.
+ */
+const CAMINHOS_DOS_GATILHOS = {
+  onIntegracaoLojaIntegradaChanged: {
+    colecao: integracaoCollection.resolvePath({}),
+    ancora: 'integracao',
+    folha: '{integracaoId}',
+  },
+  onHistoricoFreteLojaIntegrada: {
+    colecao: historicoFreteInicialCollection.resolvePath({ pedidoId: '{pedidoId}' }),
+    ancora: 'pedidos/{pedidoId}/historicoFtIni',
+    folha: '{historicoId}',
+  },
+} as const satisfies Record<
+  keyof typeof GATILHOS,
+  { colecao: string; ancora: string; folha: string }
+>;
 
 type Endpoint = Record<string, unknown>;
 
@@ -143,6 +202,16 @@ interface GatilhoDeFila {
 
 function filaDe(fn: unknown): GatilhoDeFila {
   return endpointOf(fn).taskQueueTrigger as GatilhoDeFila;
+}
+
+interface GatilhoDeEvento {
+  eventFilters?: { database?: string };
+  eventFilterPathPatterns?: { document?: string };
+  retry?: boolean;
+}
+
+function gatilhoDeEvento(fn: unknown): GatilhoDeEvento {
+  return endpointOf(fn).eventTrigger as GatilhoDeEvento;
 }
 
 /** The module's exports that carry an endpoint with `chave`. */
@@ -235,12 +304,24 @@ describe('reprocessLojaIntegradaNotifications — what the run binds', () => {
     expect(depsQuente?.registro).toEqual({ fluxo: 'intake', tentativa: null, idTarefa: null });
     // The environment passed WHOLE and live — the context reads the switch.
     expect(depsQuente?.ambiente).toBe(process.env);
+
+    // The importer's `mapa` union: the union sentinel, every element passed through.
+    const uniao = depsQuente?.arrayUnion('x', 'y');
+    expect(uniao).toBeInstanceOf(FieldValue);
+    expect((uniao as FieldValue).isEqual(FieldValue.arrayUnion('x', 'y'))).toBe(true);
+    expect((uniao as FieldValue).isEqual(FieldValue.arrayRemove('x', 'y'))).toBe(false);
+
+    // ONE process-wide CEP client across runs (its memo and in-flight dedup).
+    await rodarAgendamento(reprocessLojaIntegradaNotifications);
+    const proxima = quente.mock.calls[1]?.[2];
+    expect(depsQuente?.viaCep).toBeDefined();
+    expect(proxima?.viaCep).toBe(depsQuente?.viaCep);
   });
 
   it('binds the importer from the REAL seam table, read per run', async () => {
     // A sentinel the seam hands back: the root must pass exactly it. A root that
-    // hard-coded `null` (or cached the table at load) would pass this test's
-    // sibling and fail this one.
+    // hard-coded the order import (or cached the table at load) would pass this
+    // test's sibling and fail this one.
     const sentinela: ImportadorPedidoLi = () => Promise.resolve({ kind: 'importado' });
     vi.mocked(notificacao.importadorPedidoLi).mockReturnValueOnce(sentinela);
 
@@ -251,15 +332,17 @@ describe('reprocessLojaIntegradaNotifications — what the run binds', () => {
     expect(deps?.importador).toBe(sentinela);
   });
 
-  it('and with the seam untouched it is the table itself — empty in step 3', async () => {
+  it('and with the seam untouched it is the table itself — the step-5 order import', async () => {
     await rodarAgendamento(reprocessLojaIntegradaNotifications);
 
     const deps = vi.mocked(notificacao.reprocessarNotificacoesLi).mock.calls[0]?.[2];
     expect(deps?.importador).toBe(notificacao.DESTINO_TIPO_LI.pedido);
-    expect(deps?.importador).toBeNull();
+    expect(deps?.importador).toBe(importarPedidoLi);
+    // ONE set of read deps: the deferred lane runs the same importer.
+    expect(vi.mocked(notificacao.reprocessarAdiadasLi).mock.calls[0]?.[2]).toBe(deps);
   });
 
-  it('runs the real pipeline: with the switch off a failed row MIGRATES to deferred, and a deferred one stays', async () => {
+  it('D17: runs the real pipeline, the step-5 importer bound: with the switch off a failed row MIGRATES to deferred, and a deferred one stays', async () => {
     const stdout = espiarStdout();
     try {
       const falhou = seedNotificacaoLi(fake, 'conta-li-1', '1001', 'failed');
@@ -267,6 +350,11 @@ describe('reprocessLojaIntegradaNotifications — what the run binds', () => {
 
       await rodarAgendamento(reprocessLojaIntegradaNotifications);
 
+      // The seam is FILLED, and still nothing reached it: the switch refused
+      // first, before any Firestore read of the conta.
+      const deps = vi.mocked(notificacao.reprocessarNotificacoesLi).mock.calls[0]?.[2];
+      expect(deps?.importador).toBe(importarPedidoLi);
+      expect(fake.leituras.filter((c) => !c.startsWith('notificacoesLojaIntegrada/'))).toEqual([]);
       expect(fake.ler(falhou)).toMatchObject({
         status: 'deferred',
         tentativas: 0,
@@ -295,6 +383,37 @@ describe('reprocessLojaIntegradaNotifications — what the run binds', () => {
         });
       }
     } finally {
+      stdout.restaurar();
+    }
+  });
+
+  it('D17: with the switch off, a deferred row’s LAST pass parks through the real pipeline, and the bound exhaustion signal stays silent — no ERROR line, no aviso', async () => {
+    const stdout = espiarStdout();
+    const erro = vi.spyOn(logger, 'error').mockImplementation(() => {});
+    const erroConsole = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const adiada = seedNotificacaoLi(fake, 'conta-li-1', '1003', 'deferred', {
+        tentativas: MAX_TENTATIVAS_DEFERRED - 1,
+      });
+
+      await rodarAgendamento(reprocessLojaIntegradaNotifications);
+
+      // The switch refused before any conta read: a RETURNED defer, parked at
+      // the deferred cap, whose `erro` is the record.
+      expect(fake.ler(adiada)).toMatchObject({
+        status: 'parked',
+        tentativas: MAX_TENTATIVAS_DEFERRED,
+        erro: 'adiado/chamadas-desligadas',
+      });
+      expect(fake.leituras.filter((c) => !c.startsWith('notificacoesLojaIntegrada/'))).toEqual([]);
+      // `onRetriesExhausted` is bound (step 5), but it answers a THROWN
+      // park only: neither ERROR line, and the one write is the park's mark.
+      expect(erro).not.toHaveBeenCalled();
+      expect(erroConsole).not.toHaveBeenCalled();
+      expect(fake.escritas.map((e) => e.caminho)).toEqual([adiada]);
+    } finally {
+      erro.mockRestore();
+      erroConsole.mockRestore();
       stdout.restaurar();
     }
   });
@@ -344,11 +463,20 @@ describe('reprocessLojaIntegradaNotifications — what the run binds', () => {
     seedConta(fake, 'conta-li-1');
     seedCredencial(fake, 'conta-li-1');
     const falhou = seedNotificacaoLi(fake, 'conta-li-1', '1001', 'failed');
+    // The switch is ON here, so the real importer would call the platform: a
+    // sentinel that reads nothing takes its place, and the lanes stay real.
+    const importados: string[] = [];
+    vi.mocked(notificacao.importadorPedidoLi).mockReturnValueOnce((_db, _ctx, payload) => {
+      importados.push(payload.numero);
+      return Promise.resolve({ kind: 'sem-mudanca' });
+    });
 
     await rodarAgendamento(reprocessLojaIntegradaNotifications);
 
-    // Anti-vacuity: the hot lane really ran its row through the context.
-    expect(fake.ler(falhou)).toMatchObject({ status: 'parked', erro: 'importador-ausente' });
+    // Anti-vacuity: the hot lane really ran its row through the context and the
+    // importer, and the resolved row is gone.
+    expect(importados).toEqual(['1001']);
+    expect(fake.ler(falhou)).toBeUndefined();
     expect(info).toHaveBeenNthCalledWith(
       1,
       '[loja-integrada] reprocess sweep (quente)',
@@ -474,31 +602,232 @@ describe('filaLeituraLojaIntegrada — the declared options', () => {
   });
 });
 
+/**
+ * The WRITES queue (master plan step 7). Every Loja Integrada write runs here,
+ * its sweep included, and the rule-7 argument of the status write-back rests on
+ * these numbers: one dispatch at a time, one instance serving one request, and
+ * a retry that can only start after an abandoned attempt can no longer write.
+ * The real Cloud Tasks honours them; no emulator lane can — so this block is
+ * the only place a change to them fails.
+ */
+describe('filaEscritaLojaIntegrada — the declared options', () => {
+  const fila = filaDe(filaEscritaLojaIntegrada);
+  const endpoint = endpointOf(filaEscritaLojaIntegrada);
+  const timeoutMs = (endpoint.timeoutSeconds as number) * 1000;
+
+  it('dispatches ONE task at a time, one per second — exactly the reads queue’s rate', () => {
+    expect(fila.rateLimits).toEqual({ maxConcurrentDispatches: 1, maxDispatchesPerSecond: 1 });
+  });
+
+  it('runs on ONE instance serving ONE request: an abandoned dispatch cannot run beside the next on a SECOND instance', () => {
+    // NEAR-MISS of the codebase default (`maxInstances: 10`, options.ts) and of
+    // the gen2 default concurrency (80 when CPU >= 1). This NARROWS the overlap,
+    // it does not close it: a still-running abandoned handler and a duplicate
+    // delivery remain, logged as `escrita-duplicada` by the history check.
+    expect(endpoint.maxInstances).toBe(1);
+    expect(endpoint.concurrency).toBe(1);
+  });
+
+  it('gives up exactly when the pipeline starts to persist: maxAttempts IS TASK_MAX_ATTEMPTS', () => {
+    expect(fila.retryConfig.maxAttempts).toBe(TASK_MAX_ATTEMPTS);
+    expect(TASK_MAX_ATTEMPTS).toBe(3);
+  });
+
+  it('backs off a FLAT 300 s (no doubling): +5 and +10 minutes', () => {
+    expect(fila.retryConfig.minBackoffSeconds).toBe(300);
+    expect(fila.retryConfig.maxBackoffSeconds).toBe(300);
+    expect(fila.retryConfig.maxDoublings).toBe(0);
+  });
+
+  it('a retry starts only after the abandoned attempt can no longer write: minBackoff ≥ the last PUT start + one PUT deadline', () => {
+    // No write starts later than PRAZO_ULTIMA_ESCRITA_MS after the dispatch
+    // began, and a write that starts is cut by PRAZO_LI_MS.escrita.
+    expect(PRAZO_ULTIMA_ESCRITA_MS).toBe(260_000);
+    expect(PRAZO_LI_MS.escrita).toBe(20_000);
+    expect((fila.retryConfig.minBackoffSeconds ?? 0) * 1000).toBeGreaterThanOrEqual(
+      PRAZO_ULTIMA_ESCRITA_MS + PRAZO_LI_MS.escrita,
+    );
+    // …and the last write can end before the platform cuts the attempt.
+    expect(PRAZO_ULTIMA_ESCRITA_MS + PRAZO_LI_MS.escrita).toBeLessThanOrEqual(timeoutMs);
+  });
+
+  it('has timeoutSeconds 300, and the worst run (134 s) plus the varredura budget (140 s) fits in it', () => {
+    expect(endpoint.timeoutSeconds).toBe(300);
+    // The worst run and the worst try that throws for a retry are MEASURED on
+    // the flow's real call and wait sequence (every call at its full deadline):
+    // `processarRastreio.test.ts` pins that no run of its one-write grid is
+    // slower than these constants and that the grid reaches each one exactly.
+    // ÂNCORA: the values the plan states.
+    expect(PIOR_EXECUCAO_RASTREIO_LI_MS).toBe(134_000);
+    expect(PIOR_TENTATIVA_RECUSADA_RASTREIO_LI_MS).toBe(68_000);
+    expect(PIOR_TENTATIVA_RECUSADA_RASTREIO_LI_MS).toBeLessThanOrEqual(
+      PIOR_EXECUCAO_RASTREIO_LI_MS,
+    );
+    // A row the varredura starts just inside its budget still ends in time.
+    expect(VARREDURA_ESCRITA_ORCAMENTO_MS).toBe(140_000);
+    expect(VARREDURA_ESCRITA_ORCAMENTO_MS + PIOR_EXECUCAO_RASTREIO_LI_MS).toBeLessThanOrEqual(
+      timeoutMs,
+    );
+  });
+
+  it('closes its whole retry ladder inside the hot sweep window: 3 × 300 + 2 × 300 = 1 500 ≤ 1 800', () => {
+    const tentativas = fila.retryConfig.maxAttempts ?? 0;
+    const execucao = endpoint.timeoutSeconds as number;
+    const backoff = fila.retryConfig.maxBackoffSeconds ?? 0;
+    const escadaSegundos = tentativas * execucao + Math.max(tentativas - 1, 0) * backoff;
+    expect(escadaSegundos).toBe(1500);
+    expect(escadaSegundos).toBeLessThanOrEqual(1800);
+  });
+
+  it('declares the invoker, the leg whose absence fails invisibly (#1133)', () => {
+    expect(fila.invoker).toEqual([
+      'apphosting@p.iam.gserviceaccount.com',
+      '1-compute@developer.gserviceaccount.com',
+    ]);
+  });
+});
+
+describe('varrerEscritasLojaIntegrada — the options', () => {
+  it('ticks at :15 and :45 America/Sao_Paulo, offset from the reads sweep, with a 60 s timeout (it only enqueues)', () => {
+    expect(gatilhoDe(varrerEscritasLojaIntegrada).schedule).toBe('15,45 * * * *');
+    expect(gatilhoDe(varrerEscritasLojaIntegrada).timeZone).toBe('America/Sao_Paulo');
+    expect(endpointOf(varrerEscritasLojaIntegrada).timeoutSeconds).toBe(60);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                            The Firestore triggers                          */
+/* -------------------------------------------------------------------------- */
+
+describe('the Firestore triggers (GATILHOS)', () => {
+  it("every GATILHO binds the NAMED 'default' database — never '(default)', never an absent one", () => {
+    // THE load-bearing assertion of this block, and it MUST be an exact equality
+    // on the parsed field — never a `JSON.stringify(...).toContain('default')`:
+    // the serialized endpoint always carries `"namespace":"(default)"`, and an
+    // OMITTED `database` defaults to `"(default)"` too, so a substring check
+    // passes in every case and guards nothing. Firestore Enterprise names this
+    // project's database literally `default`; a trigger bound to `(default)`
+    // deploys fine and never fires. This offline pin, not the emulator lane,
+    // guards the binding: the emulator auto-creates any database it is asked
+    // for, so a wrong one is not proven to fail there.
+    for (const [nome, fn] of Object.entries(GATILHOS)) {
+      const banco = gatilhoDeEvento(fn).eventFilters?.database;
+      expect(banco, nome).toBe('default');
+      // NEAR-MISS: the sentinel spelling and the absent value, both refused.
+      expect(banco, nome).toBeDefined();
+      expect(banco, nome).not.toBe('(default)');
+    }
+  });
+
+  it('every GATILHO declares retry: true', () => {
+    // At-least-once redelivery for transient Firestore failures; without it the
+    // event is dropped on the first one. Safe because the reconcile is
+    // state-driven: a redelivery replays the ORIGINAL before/after, and the
+    // reconcile reads neither — it re-reads the conta itself.
+    for (const [nome, fn] of Object.entries(GATILHOS)) {
+      expect(gatilhoDeEvento(fn).retry, nome).toBe(true);
+    }
+  });
+
+  it('every GATILHO listens on the path of its CAMINHOS_DOS_GATILHOS row — and no two on the same one', () => {
+    // A guessed collection name deploys fine and never fires, exactly like a
+    // wrong `database`. Distinctness catches a whole trigger copy-pasted with the
+    // first one's `document:` kept.
+    const caminhos: string[] = [];
+    for (const [nome, fn] of Object.entries(GATILHOS)) {
+      const esperado = CAMINHOS_DOS_GATILHOS[nome as keyof typeof GATILHOS];
+      const caminho = gatilhoDeEvento(fn).eventFilterPathPatterns?.document;
+      expect(caminho, nome).toBe(`${esperado.colecao}/${esperado.folha}`);
+      // ÂNCORA: the handle really resolved the collection.
+      expect(esperado.colecao, nome).toBe(esperado.ancora);
+      caminhos.push(caminho ?? '');
+    }
+    expect(new Set(caminhos).size).toBe(caminhos.length);
+    expect(Object.keys(CAMINHOS_DOS_GATILHOS).sort()).toEqual(Object.keys(GATILHOS).sort());
+  });
+
+  it('⚠️ build.mjs DEFINES the database id the triggers bind', () => {
+    // A SOURCE assertion, because no runtime assertion can see it: unbundled,
+    // `process.env.FIREBASE_DATABASE_ID ?? 'default'` answers `'default'` with
+    // or without a define, so the exact-equality test above stays green over a
+    // build that dropped it. The define does not change the answer for an UNSET
+    // variable (the source's `??` already yields `default`, as `src/lib/admin.ts`
+    // does unbundled); what it adds is narrower — `||` turns a BLANK export into
+    // `default` (under `??` a blank reaches firebase-functions as `''`, which it
+    // binds as `(default)`), the preflight table prints what the build baked
+    // (`tools/deploy-env/preflight.test.js` fails a define that table omits), and
+    // in the bundle it replaces `admin.ts`'s read too, so the binding and
+    // `getDb()` share the build-time value. Remove the define and THIS test is
+    // what goes red.
+    const build = readFileSync(fileURLToPath(new URL('../build.mjs', import.meta.url)), 'utf8');
+
+    expect(build).toContain("'process.env.FIREBASE_DATABASE_ID': JSON.stringify(databaseId)");
+    expect(build).toContain("process.env.FIREBASE_DATABASE_ID || 'default'");
+    // ÂNCORA: the file really was read and really is this codebase's build.
+    expect(build).toContain("'process.env.FUNCTIONS_REGION': JSON.stringify(region)");
+  });
+});
+
 /* -------------------------------------------------------------------------- */
 /*                         Across every exported trigger                      */
 /* -------------------------------------------------------------------------- */
 
 describe('every trigger of the codebase', () => {
-  const TODOS = { ...AGENDAMENTOS, ...FILAS };
+  const TODOS = { ...AGENDAMENTOS, ...FILAS, ...GATILHOS };
 
-  it('every onSchedule export is in AGENDAMENTOS — and there are exactly three', () => {
+  it('every onSchedule export is in AGENDAMENTOS — and there are exactly four', () => {
     expect(exportadosCom('scheduleTrigger')).toEqual(Object.keys(AGENDAMENTOS).sort());
-    expect(Object.keys(AGENDAMENTOS)).toHaveLength(3);
+    expect(Object.keys(AGENDAMENTOS)).toHaveLength(4);
     expect(exportadosCom('scheduleTrigger')).toEqual([
       'pollLojaIntegradaPedidos',
       'reprocessLojaIntegradaNotifications',
       'sweepLojaIntegradaTokenExpiry',
+      'varrerEscritasLojaIntegrada',
     ]);
   });
 
-  it('the task exports are EXACTLY {filaLeituraLojaIntegrada}', () => {
-    expect(exportadosCom('taskQueueTrigger')).toEqual(['filaLeituraLojaIntegrada']);
+  it('the task exports are EXACTLY {filaEscritaLojaIntegrada, filaLeituraLojaIntegrada}', () => {
+    expect(exportadosCom('taskQueueTrigger')).toEqual(Object.keys(FILAS).sort());
+    expect(exportadosCom('taskQueueTrigger')).toEqual([
+      'filaEscritaLojaIntegrada',
+      'filaLeituraLojaIntegrada',
+    ]);
   });
 
-  it('there is no event, HTTPS or callable trigger', () => {
-    expect(exportadosCom('eventTrigger')).toEqual([]);
+  it('every event-trigger export is in GATILHOS — exactly {onHistoricoFreteLojaIntegrada, onIntegracaoLojaIntegradaChanged}', () => {
+    // The third exhaustiveness twin: the two above filter on `scheduleTrigger`
+    // and `taskQueueTrigger`, so an `onDocument*` export would otherwise have its
+    // `database`, region, secrets and `retry` read by nothing.
+    expect(exportadosCom('eventTrigger')).toEqual(Object.keys(GATILHOS).sort());
+    expect(exportadosCom('eventTrigger')).toEqual([
+      'onHistoricoFreteLojaIntegrada',
+      'onIntegracaoLojaIntegradaChanged',
+    ]);
+  });
+
+  it('there is no HTTPS or callable trigger', () => {
     expect(exportadosCom('httpsTrigger')).toEqual([]);
     expect(exportadosCom('callableTrigger')).toEqual([]);
+  });
+
+  it('the THREE families are DISJOINT — nothing is a schedule, a queue and a trigger at once', () => {
+    // An export in two maps would satisfy both exhaustiveness tests and have its
+    // options read by the wrong set. All THREE pairs: with three families there
+    // are three ways to duplicate, and two of them would pass a check written
+    // for two.
+    const familias = { AGENDAMENTOS, FILAS, GATILHOS };
+    const pares = [
+      ['AGENDAMENTOS', 'FILAS'],
+      ['AGENDAMENTOS', 'GATILHOS'],
+      ['FILAS', 'GATILHOS'],
+    ] as const;
+
+    for (const [a, b] of pares) {
+      const naPrimeira = new Set(Object.keys(familias[a]));
+      for (const nome of Object.keys(familias[b])) {
+        expect(naPrimeira.has(nome), `${nome} is in ${a} AND in ${b}`).toBe(false);
+      }
+    }
   });
 
   it('every runtime export IS a trigger — a constant exported here would read as a function name', () => {
@@ -528,7 +857,25 @@ describe('every trigger of the codebase', () => {
     }
   });
 
-  it('declares NO secret anywhere — the token lives per conta in Firestore', () => {
+  it('the WRITES queue export key is exactly FILA_ESCRITA_LI — the writes producer’s target', () => {
+    expect(notificacaoEscrita.FILA_ESCRITA_LI in modulo).toBe(true);
+    expect(notificacaoEscrita.FILA_ESCRITA_LI).toBe('filaEscritaLojaIntegrada');
+  });
+
+  it('and its own module-load assertion fires on a half-rename of the writes queue', async () => {
+    vi.resetModules();
+    vi.doMock('./filaEscrita', () => ({ filaEscritaRenomeada: {} }));
+    try {
+      await expect(import('./index')).rejects.toThrow(
+        "function-name drift: functions/src/filaEscrita.ts must export a handler named 'filaEscritaLojaIntegrada'",
+      );
+    } finally {
+      vi.doUnmock('./filaEscrita');
+      vi.resetModules();
+    }
+  });
+
+  it('declares NO secret anywhere — the token lives per conta in Firestore, and the conta trigger never calls the platform', () => {
     // A declared secret missing from Secret Manager fails the whole deploy.
     for (const [nome, fn] of Object.entries(TODOS)) {
       expect(endpointOf(fn).secretEnvironmentVariables ?? [], nome).toEqual([]);
@@ -541,9 +888,10 @@ describe('every trigger of the codebase', () => {
     }
   });
 
-  it('caps instances at 10', () => {
+  it('caps instances at 10 — except the writes queue, held to ONE', () => {
     for (const [nome, fn] of Object.entries(TODOS)) {
-      expect(endpointOf(fn).maxInstances, nome).toBe(10);
+      const esperado = nome === 'filaEscritaLojaIntegrada' ? 1 : 10;
+      expect(endpointOf(fn).maxInstances, nome).toBe(esperado);
     }
   });
 

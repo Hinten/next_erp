@@ -16,6 +16,13 @@ import { EtiquetaComprarModal } from '@/app/(app)/pedidos/_components/EtiquetaCo
  * provider's redundant `openUrl` is skipped and nothing re-prints the wrong
  * pedido. Wiring a "bought" outcome back through the modal (so the provider can
  * chain a print) is a PR-6 reliability follow-up — see the QUESTIONS in the PR.
+ *
+ * ⚠️ The modal gets the screen's pedido with the provider's LIVE frete
+ * (`input.frete`) over its `freteInicial`, never the screen's copy alone: the
+ * screen loaded the pedido before the save, and the post-save chain can have
+ * re-pointed the freight since (a Loja Integrada pedido routed to its Melhor
+ * Envio target, master plan step 15). The modal builds the cart from the
+ * pedido it is given, so a stale copy would quote the conta's old freight doc.
  */
 export interface ComprarEtiquetaBridge {
   comprarEtiqueta: (input: ComprarEtiquetaInput) => Promise<ComprarEtiquetaOutcome>;
@@ -60,10 +67,17 @@ export function useComprarEtiquetaBridge(pedido: Pedido | null): ComprarEtiqueta
     <EtiquetaComprarModal
       opened
       onClose={close}
-      pedido={pending.pedido}
+      pedido={{ ...pending.pedido, freteInicial: pending.input.frete }}
       pedidoId={pending.input.pedidoId}
       intFreteId={pending.input.intFreteId}
       needsPostedConfirm={pending.input.needsPostedConfirm}
+      // The Loja Integrada paid re-check before the buy (step 15): a `pago` the
+      // checkout's own gate received is reused under 120 s, and a block says
+      // the checkout and the NF-e are already saved.
+      {...(pending.input.conferenciaLi === undefined
+        ? {}
+        : { conferenciaLi: pending.input.conferenciaLi })}
+      gateConferenciaLi="cadeia"
     />
   ) : null;
 

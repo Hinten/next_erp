@@ -1,5 +1,6 @@
 'use client';
 
+import { idFromRefOrNull } from '@delfrance/schemas';
 import type { IntegracaoRow, IntegracoesStatus } from '@/lib/data/useIntegracoes';
 import { integracaoCollection } from '@/lib/data/integracaoCollection';
 
@@ -38,8 +39,7 @@ export function integracaoOuterRef(id: string): string {
 /** The trailing document id of an outer-ref path, or the value itself if it has none. */
 export function integracaoIdFromOuterRef(value: unknown): string {
   const raw = String(value);
-  const slash = raw.lastIndexOf('/');
-  return slash < 0 ? raw : raw.slice(slash + 1);
+  return idFromRefOrNull(raw) ?? raw;
 }
 
 /** What the chip says for a Canal filter matching pedidos with no integração. */

@@ -44,6 +44,7 @@ import {
   mlSizeChartsForConta,
   parseFakePath,
   precisaConsultarModeracao,
+  refMatchesIntegracao,
   toOuterRef,
 } from '@delfrance/schemas';
 import {
@@ -489,6 +490,7 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
       // `id` is the family id for a UP family and would PUT into a 4xx.
       itemId: typeof existingVar?.raw.itemId === 'string' ? existingVar.raw.itemId : null,
       raw: existingVar?.raw ?? {},
+      updateTime: existingVar?.updateTime,
       sku: typeof existingVar?.raw.sku === 'string' ? existingVar.raw.sku : null,
       // #1400 — does THIS member's ML item already carry the parent-sku
       // characteristic? The família-wide answer is the OR of these, and asking
@@ -1209,16 +1211,6 @@ function motivoDaResolucao(
 }
 
 /**
- * The old app always STORES `documents/integracao/<id>` (`pathWithDocuments`,
- * `OuterRefField.toJson`) — that's also what this module writes. The bare
- * `integracao/<id>` form is tolerated on READ only, defensively.
- */
-function refMatchesIntegracao(ref: string | undefined, integracaoId: string): boolean {
-  if (!ref) return false;
-  return ref === `integracao/${integracaoId}` || ref.endsWith(`/integracao/${integracaoId}`);
-}
-
-/**
  * This variante's Mercado Livre `value_id`, or null.
  *
  * `externalVariacaoLinks[].externalId` holds `value_id ?? value_name`
@@ -1350,14 +1342,24 @@ async function findVariacaoLink(
   db: Firestore,
   childId: string,
   parentLinkDocId: string,
-): Promise<{ docId: string; mlId: number | null; raw: Record<string, unknown> } | null> {
+): Promise<{
+  docId: string;
+  mlId: number | null;
+  raw: Record<string, unknown>;
+  updateTime?: import('firebase-admin/firestore').Timestamp;
+} | null> {
   const snap = await variacaoMercadoLivreLinkCollection.ref(db, { produtoId: childId }).get();
   for (const d of snap.docs) {
     const data = d.data() as Record<string, unknown>;
     const parentRef =
       typeof data.produtoMercadoLivreOuterRef === 'string' ? data.produtoMercadoLivreOuterRef : '';
     if (parentRef.endsWith(`/produtoMercadoLivre/${parentLinkDocId}`)) {
-      return { docId: d.id, mlId: typeof data.id === 'number' ? data.id : null, raw: data };
+      return {
+        docId: d.id,
+        mlId: typeof data.id === 'number' ? data.id : null,
+        raw: data,
+        updateTime: d.updateTime,
+      };
     }
   }
   return null;

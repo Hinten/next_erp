@@ -28,8 +28,12 @@ import type { CategoriaResumoDto, RespostaCategoriasShopee } from '@/lib/shopee/
 /**
  * A drill-down over ONE Shopee conta's category tree, through the backend's
  * `taxonomia/categorias` route — the first Shopee category UI in this app,
- * written to be reused (step 21's produto tab, #1432): it knows nothing about
- * size charts.
+ * written to be reused, and it is: by the size-chart picker
+ * (`/medidas`'s `EscolherTabelaShopeeModal`), the conta's brand shortlist
+ * (`/canais/shopee/[id]`'s `AdicionarMarcasShopeeModal`) and the produto tab's
+ * draft editor (`CategoriaRascunhoShopee`, #1911), each through the props
+ * below. It knows nothing about size charts, brands or drafts — what a pick
+ * means is the consumer's business.
  *
  * - **Leaf-only pick.** Only an `isLeaf` row offers "Escolher"; a non-leaf row
  *   drills in. The backend decides `isLeaf` with its one leaf gate — this file

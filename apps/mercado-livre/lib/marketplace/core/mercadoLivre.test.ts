@@ -11,7 +11,8 @@ const h = vi.hoisted(() => ({
   parseRead: vi.fn(),
   merge: vi.fn(),
   createTokenDuravelStore: vi.fn(),
-  getOrRefreshAccessToken: vi.fn(),
+  getCachedAccessToken: vi.fn(),
+  invalidateCachedAccessToken: vi.fn(),
   exchangeCode: vi.fn(),
 }));
 
@@ -26,7 +27,6 @@ vi.mock('@delfrance/data/admin/collections', () => ({
 
 vi.mock('./tokenStore', () => ({
   createTokenDuravelStore: (...args: unknown[]) => h.createTokenDuravelStore(...args),
-  getOrRefreshAccessToken: (...args: unknown[]) => h.getOrRefreshAccessToken(...args),
   tokenDuravelFromResponse: (resp: { access_token: string }, now: number) => ({
     access_token: resp.access_token,
     refresh_token: 'RT',
@@ -36,6 +36,17 @@ vi.mock('./tokenStore', () => ({
     user_id: null,
     expired: null,
   }),
+}));
+
+vi.mock('./accessTokenCache', () => ({
+  accessTokenScope: (_db: unknown, clientId: string, id: string) => [
+    'project',
+    'default',
+    clientId,
+    id,
+  ],
+  getCachedAccessToken: (...args: unknown[]) => h.getCachedAccessToken(...args),
+  invalidateCachedAccessToken: (...args: unknown[]) => h.invalidateCachedAccessToken(...args),
 }));
 
 vi.mock('@delfrance/integrations-mercado-livre', async (importActual) => {
@@ -62,7 +73,7 @@ beforeEach(() => {
   // so without this the first test's absent-document entry serves the rest.
   __resetAllReadCaches();
   h.createTokenDuravelStore.mockReturnValue({ save: vi.fn() });
-  h.getOrRefreshAccessToken.mockResolvedValue('AT');
+  h.getCachedAccessToken.mockResolvedValue('AT');
   vi.stubEnv('MERCADO_LIVRE_CLIENT_ID', 'cid');
   vi.stubEnv('MERCADO_LIVRE_CLIENT_SECRET', 'csecret');
   vi.stubEnv('MERCADO_LIVRE_PUBLIC_URL', 'http://localhost:3006');
@@ -158,16 +169,21 @@ describe('loadMercadoLivreContext', () => {
     // — that is what catches `shop_id` leaking into the bag. Comparing the
     // whole object would need the function listed too, and
     // `expect.any(Function)` would quietly accept a new stray field beside it.
-    const { getAccessToken, ...dados } = channelCtx;
+    const { getAccessToken, invalidateAccessToken, ...dados } = channelCtx;
 
     expect(dados).toEqual({
       integracaoId: 'int-1',
       accessToken: 'AT',
       account: { user_id: 7 },
     });
-    // The thunk is the half that survives a long-running job (#815 amendment 4):
-    // `accessToken` froze at `now = 1_000`, this re-reads the store per call.
+    // The live getter checks the cache and expiry again for each operation.
     expect(await getAccessToken()).toBe('AT');
+    expect(h.getCachedAccessToken).toHaveBeenCalledTimes(2);
+    invalidateAccessToken('AT');
+    expect(h.invalidateCachedAccessToken).toHaveBeenCalledWith(
+      ['project', 'default', 'cid', 'int-1'],
+      'AT',
+    );
   });
 
   it('exchangeAndPersist denormalizes user_id onto the integração doc', async () => {

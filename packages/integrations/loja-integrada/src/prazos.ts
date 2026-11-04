@@ -12,14 +12,22 @@
  *
  * The question a budget answers is "what does a cut HERE leave behind?". Melhor
  * Envio budgets per method because its methods differ in exactly that — a cut
- * checkout may have spent money (`freight-br/src/melhor-envio/prazos.ts`). Every
- * call this package can make today is a cheap, idempotent `GET`: a cut one leaves
- * nothing behind, and repeating it is harmless. So there is one class,
- * `'leitura'`, and one budget.
+ * checkout may have spent money (`freight-br/src/melhor-envio/prazos.ts`). This
+ * package has two classes:
  *
- * ⚠️ The first write step adds `'escrita'` to {@link ClasseOperacaoLi}, and
- * `satisfies Record<ClasseOperacaoLi, number>` then makes the missing budget a
- * compile error until someone decides what a cut write leaves behind.
+ *  - `'leitura'` — every `GET`, the write client's pre-write read included. A cut
+ *    one leaves nothing behind, and repeating it is harmless.
+ *  - `'escrita'` — every `PUT` (`escrita.ts`). ⚠️ **A cut write may have
+ *    landed.** Loja Integrada's writes take no version and no idempotency key,
+ *    so nothing on the wire says whether it did. The caller therefore re-derives
+ *    from a FRESH read before deciding anything, and never assumes either
+ *    outcome: a retry that skips that read could write twice (and each status
+ *    write may e-mail the buyer). The deadline covers the echo's body read too —
+ *    a 2xx whose body is then cut still resolves, reported as such.
+ *
+ * Both are 20 s. They are separate rows so that changing one is a decision about
+ * that class alone, and `satisfies Record<ClasseOperacaoLi, number>` makes a
+ * class added later a compile error until its budget is decided.
  *
  * ⚠️ There is no `{ curto, longo }` pair and no row in
  * `http-client-timeout-ceiling.test.js`: that registry holds clients of OUR
@@ -29,10 +37,11 @@
  * makes them (precedent: `apps/melhor-envio/lib/freight/prazos.test.ts`).
  */
 
-/** The idempotency class of a call. Only reads exist today. */
-export type ClasseOperacaoLi = 'leitura';
+/** The idempotency class of a call: a read, or a write that may have landed when cut. */
+export type ClasseOperacaoLi = 'leitura' | 'escrita';
 
 /** Milliseconds per call, by class. */
 export const PRAZO_LI_MS = {
   leitura: 20_000,
+  escrita: 20_000,
 } as const satisfies Record<ClasseOperacaoLi, number>;

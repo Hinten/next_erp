@@ -16,25 +16,47 @@ export function parsePinnedPnpm(packageManager) {
   return match[1];
 }
 
-export function setupCommand(packageJson) {
+export function setupCommand(
+  packageJson,
+  { repoRoot = REPO_ROOT, platform = process.platform, environment = process.env } = {},
+) {
   const version = parsePinnedPnpm(packageJson.packageManager);
+  const cacheRoot = resolve(repoRoot, 'out', 'codex-sandbox-cache');
+  const cacheSettings = {
+    npm_config_cache: resolve(cacheRoot, 'npm'),
+    pnpm_config_store_dir: resolve(cacheRoot, 'pnpm-store'),
+    pnpm_config_cache_dir: resolve(cacheRoot, 'pnpm-cache'),
+    pnpm_config_state_dir: resolve(cacheRoot, 'state'),
+  };
+  // Windows environment names are case-insensitive. Replace every inherited
+  // spelling so npm and pnpm receive one absolute value for each cache.
+  const env = {
+    ...Object.fromEntries(
+      Object.entries(environment).filter(
+        ([key]) => !Object.hasOwn(cacheSettings, key.toLowerCase()),
+      ),
+    ),
+    ...cacheSettings,
+  };
   const pnpmArgs = ['--yes', `pnpm@${version}`, 'install', '--frozen-lockfile'];
-  if (process.platform === 'win32') {
+  if (platform === 'win32') {
     return {
-      executable: process.env.ComSpec ?? 'cmd.exe',
+      executable: environment.ComSpec ?? environment.COMSPEC ?? 'cmd.exe',
       args: ['/d', '/s', '/c', 'npx.cmd', ...pnpmArgs],
+      env,
     };
   }
   return {
     executable: 'npx',
     args: pnpmArgs,
+    env,
   };
 }
 
 export function runSetup() {
   const packageJson = JSON.parse(readFileSync(resolve(REPO_ROOT, 'package.json'), 'utf8'));
-  const { executable, args } = setupCommand(packageJson);
-  const result = spawnSync(executable, args, { cwd: REPO_ROOT, stdio: 'inherit' });
+  const { executable, args, env } = setupCommand(packageJson);
+  const result = spawnSync(executable, args, { cwd: REPO_ROOT, env, stdio: 'inherit' });
   if (result.error) throw result.error;
   if (result.status !== 0) process.exit(result.status ?? 1);
 }

@@ -3,7 +3,7 @@ name: Main health alert
 # `main` going red has always been DETECTED. It has never been REPORTED.
 #
 # Every lane below re-verifies the trunk after each merge — `ci.yml` unfiltered
-# over the whole graph, the five `ci-*` lanes over their own scope — and on
+# over the whole graph, each `ci-*` lane over its own scope — and on
 # 2026-08-20 `ci.yml` caught the #1109/#1114 merge-skew break within four minutes
 # (run 32373838109, `Lint`, 13:21 UTC). Nobody saw it: `ci.yml`'s `report-failure`
 # job is gated on `github.event_name == 'pull_request'`, so it reported `skipped`
@@ -27,6 +27,7 @@ on:
   workflow_run:
     workflows:
       - 'CI'
+      - 'CI — Amazon'
       - 'CI — Freight'
       - 'CI — Loja Integrada'
       - 'CI — Mercado Livre (Firestore emulator)'

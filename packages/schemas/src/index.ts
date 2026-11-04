@@ -72,7 +72,10 @@ export {
   toOuterRefOrNull,
   toDocPathOrNull,
   idFromRef,
+  idFromRefOrNull,
   parseRef,
+  contaIdFromRef,
+  naoDocId,
   type OuterRef,
   type IdRef,
   type DocId,
@@ -178,7 +181,14 @@ export {
 // references (grupoDeVariacoes, listaDePrecos, deposito, categoria, …) stay below.
 export * from './produto';
 
-export { categoria, categoriaSchema, categoriaMeta, type Categoria } from './categoria';
+export {
+  categoria,
+  categoriaSchema,
+  categoriaMeta,
+  makeNomeCompleto,
+  parentBreadcrumbFromDoc,
+  type Categoria,
+} from './categoria';
 
 export {
   ESTADO_FRETE,
@@ -188,21 +198,27 @@ export {
   // Enumerating a channel-local copy instead is the two-copies-drift-toward-
   // plausible shape (#1369): the copy reads correct and the shared set moves.
   ESTADOS_FRETE_IGNORAR_REMOCAO,
+  // The goods-out table (#2042 review): the Amazon CANCELLED read and the web
+  // checkout must agree on it — one copy, for the same #1369 reason.
+  ESTADOS_FRETE_MERCADORIA_FORA,
   ESTADOS_FRETE_NAO_POSTADO,
   ESTADOS_FRETE_PRE_AUTORIZACAO,
   ESTADOS_FRETE_REMOVE_ESTOQUE,
   FREIGHT_TIPO_CAPS,
   INTEGRACAO_FRETE,
   INTEGRACAO_FRETE_LABELS,
+  MERCADORIA_FORA_POR_ESTADO_FRETE,
   MODALIDADE_FRETE,
   MODALIDADE_FRETE_LABELS,
   dimensoesSchema,
+  ehFreteRoteado,
   estadoFreteSchema,
   freightCapsFor,
   freteDoPedidoSchema,
   integracoesFreteSchema,
   isFreteJaPostado,
   isFreteMarketplaceOwned,
+  isFreteSelecionavelManualmente,
   modalidadeFreteSchema,
   pacoteFreteSchema,
   podeAutorizarDespacho,
@@ -349,6 +365,7 @@ export {
 export {
   integracao,
   integracaoSchema,
+  refMatchesIntegracao,
   integracaoMeta,
   integracaoTipoSchema,
   INTEGRACAO_TIPO,
@@ -465,6 +482,124 @@ export {
   type StatusContaLojaIntegrada,
 } from './contaLojaIntegrada';
 
+// The Loja Integrada catalogue contract (step 10, #1821): the four read-only
+// route answers (categories, brands, grades, one grade's options), the one
+// resource-URI reader, the route-segment and grade-identity checks, and the pure
+// projections the backend builds the answers with — `apps/loja-integrada` and
+// the web linker must agree on them (#1369). Not a collection: no meta, nothing
+// to register. A star export on purpose: the fold-inventory scan greps raw text,
+// so a listed barrel would need a row.
+export * from './catalogoLojaIntegrada';
+
+// The Loja Integrada product import (step 9, #1820): the one reader of a store
+// product into the row and detail views the import stores and decides on, the
+// SKU identity and its create-guard probe forms; the store-category link and
+// its tree helpers; the import job's contract (the job document, its five
+// subcollections, the start body, the task payload and the route answers).
+// Bare consts, nothing to register (the job collection is admin-only and stays
+// out of `ALL_DOMAINS`). Star exports, for the reason above.
+export * from './produtoImportacaoLi';
+export * from './categoriaLojaIntegrada';
+export * from './importacaoLojaIntegrada';
+
+// THE Loja Integrada situação table (master plan step 5, #1817): codigo →
+// create estado and payment status, the capture sets, the contest motivo — the
+// order importer, the label step's paid re-check and the web all read it
+// (#1369). Not a collection: no meta, nothing to register; outside `pedido/`,
+// so no NF-e live run.
+export {
+  CODIGO_LI_CANCELADO,
+  CODIGO_LI_CANCELAMENTO_SOLICITADO,
+  CODIGO_LI_EM_DISPUTA,
+  CODIGO_SITUACAO_LI,
+  CODIGOS_LI_CAPTURADO,
+  CODIGOS_LI_ESTORNO,
+  CODIGOS_LI_PAGO,
+  SITUACOES_LI,
+  alvoDeCriacaoLi,
+  codigoSituacaoLiSchema,
+  situacaoLi,
+  type AlvoDeCriacaoLi,
+  type CodigoSituacaoLi,
+  type PorCapturaLi,
+  type SituacaoLi,
+} from './situacaoPedidoLojaIntegrada';
+// The typed Amazon shape of the GENERIC `integracao/{id}/credenciais/current`
+// document (LWA tokens). Not a collection of its own: the path is
+// `credenciaisIntegracaoMeta`'s (admin-only, default-deny, outside ALL_DOMAINS),
+// so there is no meta here and nothing to register. ⚠️ Never export a combined
+// `{ schema, meta }` object for it — see `credenciaisLojaIntegrada` above.
+export {
+  CREDENCIAL_AMAZON_DOC_ID,
+  MAX_REF_CREDENCIAL_AMAZON,
+  credenciaisAmazonSchema,
+  reconexaoPendenteAmazonSchema,
+  type CredenciaisAmazon,
+} from './credenciaisAmazon';
+
+// The Amazon conta wire contract — the reauthorization arithmetic, the seller-id
+// and routing predicates, the error codes, the status and start answers and the
+// closed OAuth-return reasons that `apps/amazon` and `apps/web` must agree on.
+// Not a collection: no meta, nothing to register.
+export {
+  CHAVE_RETORNO_OAUTH_AMAZON,
+  CODIGO_ERRO_AMAZON,
+  LIMIAR_AVISO_AMAZON_DIAS,
+  MAX_SELLING_PARTNER_ID,
+  MOTIVO_RETORNO_OAUTH_AMAZON,
+  VALIDADE_AUTORIZACAO_AMAZON_DIAS,
+  contaAmazonRoteavel,
+  diasAteDataCivilAmazon,
+  diasParaReautorizarAmazon,
+  erroContaAmazonSchema,
+  motivoRetornoOAuthAmazonSchema,
+  reautorizarAteAmazon,
+  respostaInicioOAuthAmazonSchema,
+  sellingPartnerIdValido,
+  statusContaAmazonSchema,
+  type CodigoErroAmazon,
+  type ErroContaAmazon,
+  type MotivoRetornoOAuthAmazon,
+  type RespostaInicioOAuthAmazon,
+  type StatusContaAmazon,
+} from './contaAmazon';
+
+// The Amazon relay ⇄ receiver wire contract (step 3): the key header, the
+// input-template wrapper and the receiver path that `infra/amazon-relay` (the
+// CDK app) and the `apps/amazon` receiver must agree on. Pure constants, not a
+// collection: no meta, nothing to register.
+export {
+  CABECALHO_CHAVE_RELAY_AMAZON,
+  CAMINHO_RECEPTOR_AMAZON,
+  CAMPO_CORPO_RELAY_AMAZON,
+  MODELO_ENTRADA_RELAY_AMAZON,
+} from './relayAmazon';
+
+// Admin-only / default-deny (NOT in ALL_DOMAINS) — the failures-only backlog of
+// the Amazon reads queue (master plan step 3, PR 3-b): an ids-only task payload
+// (push | poll) and its stripped failure document. Bare: a combined
+// `{ schema, meta }` export would trip `registry.test.ts`.
+export {
+  CONTA_ID_AMAZON_REGEX,
+  NOTIFICATION_ID_AMAZON_REGEX,
+  ORIGEM_NOTIFICACAO_AMAZON,
+  PEDIDO_AMAZON_REGEX,
+  TIPO_TAREFA_AMAZON,
+  camposNotificacaoAmazon,
+  contaIdAmazonSchema,
+  notificacaoAmazonSchema,
+  notificationIdAmazonSchema,
+  origemNotificacaoAmazonSchema,
+  pedidoAmazonSchema,
+  sellerIdAmazonSchema,
+  tarefaAmazonSchema,
+  tipoTarefaAmazonSchema,
+  type NotificacaoAmazon,
+  type OrigemNotificacaoAmazon,
+  type TarefaAmazon,
+  type TipoTarefaAmazon,
+} from './notificacaoAmazon';
+
 // The per-attempt OAuth connect record (#821, #1034) — ONE shape shared by
 // Mercado Livre, Melhor Envio and Mercado Pago. Admin-only and default-deny like
 // `credenciaisIntegracao`: not DomainSchemas, not in ALL_DOMAINS; only the
@@ -576,6 +711,18 @@ export {
 } from './pollPedidosLojaIntegrada';
 
 export {
+  // Admin-only / default-deny (NOT in ALL_DOMAINS) — the per-conta cursor,
+  // resumable drain, dedup and lease state of the Amazon backstop poll (master
+  // plan step 4, PR 4-a). Bare: no Meta, never a combined `{ schema, meta }`.
+  LAST_UPDATED_AFTER_POLL_AMAZON_REGEX,
+  MARKETPLACE_IDS_POLL_AMAZON_REGEX,
+  pendentePollAmazonSchema,
+  pollPedidosAmazonSchema,
+  type PendentePollAmazon,
+  type PollPedidosAmazon,
+} from './pollPedidosAmazon';
+
+export {
   // Admin-only / default-deny (NOT in ALL_DOMAINS) — the "Importar todos os
   // anúncios" mass-import job/checkpoint doc (#621).
   importacaoMercadoLivreStatusSchema,
@@ -669,12 +816,14 @@ export {
 } from './liquidacaoShopee';
 
 export {
-  // Admin-only / default-deny (NOT in ALL_DOMAINS) — the per-conta health doc
-  // for the flag-gated `missed_feeds` backstop sweep (#812). Bare schema+meta
+  // Admin-only / default-deny (NOT in ALL_DOMAINS) — application health
+  // for the flag-gated `missed_feeds` backstop sweep (#812 / #1292). Bare schema+meta
   // (perms 0n), not a DomainSchema — see the NOTE at the bottom of
   // missedFeedsMercadoLivre.ts. Carries no cursor by design: ML's feed has no
   // time filter, so retention vs schedule period is what guarantees coverage.
   missedFeedsMercadoLivreSchema,
+  missedFeedsStreamSchema,
+  type MissedFeedsStream,
   missedFeedsMercadoLivreMeta,
   type MissedFeedsMercadoLivre,
 } from './missedFeedsMercadoLivre';
@@ -848,6 +997,8 @@ export {
   tabelaDeMedidas,
   tabelaDeMedidasSchema,
   tabelaDeMedidasMeta,
+  lerRefTabelaDeMedidas,
+  type RefTabelaDeMedidas,
   type TabelaDeMedidas,
 } from './tabelaDeMedidas';
 
@@ -919,6 +1070,118 @@ export {
   type ListaTabelasMedidasDto,
   type DetalheTabelaMedidasDto,
 } from './tabelaDeMedidasShopeeDto';
+
+// The Shopee TAXONOMY route envelopes (#1911, P2), declared once like the
+// size-chart ones above: the `apps/shopee` taxonomy routes build their 200s
+// against them, for `apps/web` to parse with — including the `/medidas` slice
+// of the limits answer, DERIVED from the whole one. Not a collection, so no
+// `registry.ts` entry.
+export {
+  categoriaResumoDtoSchema,
+  categoriaNoDtoSchema,
+  respostaCategoriasShopeeSchema,
+  atributoInfoDtoSchema,
+  atributoValorDtoSchema,
+  atributoDtoSchema,
+  respostaAtributosShopeeSchema,
+  faixaDtoSchema,
+  gtinLimitDtoSchema,
+  limitesDescricaoEstendidaDtoSchema,
+  limitesDeItemDtoSchema,
+  limitesDeKitDtoSchema,
+  respostaLimitesDoItemShopeeSchema,
+  respostaLimitesTabelaMedidasShopeeSchema,
+  marcaDtoSchema,
+  respostaMarcasShopeeSchema,
+  variacaoOpcaoDtoSchema,
+  variacaoGrupoDtoSchema,
+  variacaoDtoSchema,
+  respostaVariacoesShopeeSchema,
+  recomendacaoDtoSchema,
+  respostaRecomendacaoCategoriaShopeeSchema,
+  type CategoriaResumoDto,
+  type CategoriaNoDto,
+  type RespostaCategoriasShopee,
+  type AtributoInfoDto,
+  type AtributoValorDto,
+  type AtributoDto,
+  type RespostaAtributosShopee,
+  type FaixaDto,
+  type GtinLimitDto,
+  type LimitesDescricaoEstendidaDto,
+  type LimitesDeItemDto,
+  type LimitesDeKitDto,
+  type RespostaLimitesDoItemShopee,
+  type RespostaLimitesTabelaMedidasShopee,
+  type MarcaDto,
+  type RespostaMarcasShopee,
+  type VariacaoOpcaoDto,
+  type VariacaoGrupoDto,
+  type VariacaoDto,
+  type RespostaVariacoesShopee,
+  type RecomendacaoDto,
+  type RespostaRecomendacaoCategoriaShopee,
+} from './taxonomiaShopeeDto';
+
+// …and THE band check + text resolution the publisher applies to a listing's
+// name and description — the draft editor's counter and pendências call the
+// same functions (#1369 — one copy).
+export {
+  textoUtilizavelShopee,
+  dentroDaFaixaShopee,
+  descreverFaixaShopee,
+  textoNaFaixaShopee,
+  tituloDoAnuncioShopee,
+  descricaoDoAnuncioShopee,
+  type TextoNaFaixaShopee,
+} from './faixaShopee';
+
+// …and THE listing-attribute rules (#1911, D9, P6): one decoder for the three
+// stored shapes (always answering the request shape), the draft write's
+// schema, the visible-given-values walk and the validator the publisher and
+// the draft editor both decide with (#1369 — one copy), and what a publish
+// SENDS (a read-form date converted through the one date convention).
+export {
+  lerAtributosArmazenadosShopee,
+  atributosParaRequisicaoShopee,
+  atributoShopeeRequisicaoSchema,
+  atributosShopeeRequisicaoSchema,
+  tipoDeEntradaShopee,
+  atributosVisiveisShopee,
+  validarAtributosShopee,
+  atributosParaGravarShopee,
+  atributosParaEnvioShopee,
+  lerDataDeAtributoShopee,
+  timestampDeDataShopee,
+  origemValorAtributoShopeeSchema,
+  ORIGEM_VALOR_ATRIBUTO_SHOPEE,
+  motivoDescarteAtributoShopeeSchema,
+  MOTIVO_DESCARTE_ATRIBUTO_SHOPEE,
+  tipoProblemaAtributoShopeeSchema,
+  TIPO_PROBLEMA_ATRIBUTO_SHOPEE,
+  INPUT_TYPE_ATRIBUTO_SHOPEE,
+  INPUT_VALIDATION_TYPE_ATRIBUTO_SHOPEE,
+  FORMAT_TYPE_COM_UNIDADE_SHOPEE,
+  DATE_FORMAT_TYPE_ATRIBUTO_SHOPEE,
+  MSG_PERSONALIZADO_SEM_NOME_ATRIBUTO_SHOPEE,
+  MSG_NOME_EM_VALOR_DA_LISTA_ATRIBUTO_SHOPEE,
+  MSG_ATRIBUTO_REPETIDO_SHOPEE,
+  type ValorAtributoShopee,
+  type AtributoShopeeRequisicao,
+  type OrigemValorAtributoShopee,
+  type ValorAtributoLidoShopee,
+  type AtributoLidoShopee,
+  type MotivoDescarteAtributoShopee,
+  type DescarteAtributoShopee,
+  type AtributosLidosShopee,
+  type EntradaAtributoShopee,
+  type ArvoreAtributosShopee,
+  type AtributoVisivelShopee,
+  type DataDeAtributoShopee,
+  type TipoProblemaAtributoShopee,
+  type ProblemaAtributoShopee,
+} from './atributosShopee';
+export * from './marcaShopee'; // #1911 P9: typed brandshopee rows + THE reader (rules: integracao.ts)
 
 export {
   listaDePrecos,
@@ -1002,7 +1265,16 @@ export {
   BANDEIRA_LABELS,
   type BandeiraCartao,
   type Bandeira,
+  bandeiraDoNomeDaMarca,
+  type BandeiraDaMarca,
 } from './bandeiraCartao';
+export {
+  FORMAS_COM_CARTAO_MARKETPLACE,
+  cartaoMarketplace,
+  cnpjInstituicaoUtilizavel,
+  type CartaoMarketplace,
+  type EntradaCartaoMarketplace,
+} from './cartaoMarketplace';
 
 export * from './simplesNacional';
 export {
@@ -1054,6 +1326,8 @@ export {
   extractTpAmb,
   decideNfeUploadDispatch,
   decideNfeUploadTransition,
+  finalidadeDaNfeProc,
+  type FinalidadeDaNfeProc,
   type NfeUploadDispatch,
   type NfeUploadTransition,
 } from './nfeEnvioCanal';
@@ -1087,6 +1361,8 @@ export {
   inutNumeracao,
   inutNumeracaoSchema,
   inutNumeracaoMeta,
+  inutilizacaoSeAplica,
+  motivoInutilizacaoNaoSeAplica,
   type InutNumeracao,
 } from './inutilizacaoNumeracao';
 
@@ -1467,6 +1743,22 @@ export {
   PENDENCIA_RECLAMACAO,
   motivoImportacaoParadaLiSchema,
   MOTIVO_IMPORTACAO_PARADA_LI,
+  motivoImportacaoParadaAmazonSchema,
+  MOTIVO_IMPORTACAO_PARADA_AMAZON,
+  motivoPedidoAmazonSchema,
+  MOTIVO_PEDIDO_AMAZON,
+  motivoContaAmazonSchema,
+  MOTIVO_CONTA_AMAZON,
+  motivoPedidoContestadoLiSchema,
+  MOTIVO_PEDIDO_CONTESTADO_LI,
+  motivoFreteNaoSuportadoLiSchema,
+  MOTIVO_FRETE_NAO_SUPORTADO_LI,
+  motivoReversaoComEtiquetaLiSchema,
+  MOTIVO_REVERSAO_COM_ETIQUETA_LI,
+  motivoRastreioDivergenteLiSchema,
+  MOTIVO_RASTREIO_DIVERGENTE_LI,
+  motivoCategoriaSemVinculoLiSchema,
+  MOTIVO_CATEGORIA_SEM_VINCULO_LI,
   situacaoAnuncioForaDaSincronizacaoSchema,
   SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO,
   chaveDeAviso,
@@ -1485,6 +1777,14 @@ export {
   type RotaAvisoKey,
   type PendenciaReclamacao,
   type MotivoImportacaoParadaLi,
+  type MotivoImportacaoParadaAmazon,
+  type MotivoPedidoAmazon,
+  type MotivoContaAmazon,
+  type MotivoPedidoContestadoLi,
+  type MotivoFreteNaoSuportadoLi,
+  type MotivoReversaoComEtiquetaLi,
+  type MotivoRastreioDivergenteLi,
+  type MotivoCategoriaSemVinculoLi,
   type SituacaoAnuncioForaDaSincronizacao,
 } from './aviso';
 export * from './shared/inicio';
@@ -1508,7 +1808,31 @@ export * from './receitaKitShopee';
 // The Loja Integrada freight `mapa` rules (step 20, #1826): the shipping-method
 // key, the "mapped" target id, the raw presence read, the appended row and the
 // target tipos — the importer, the conta screen and the window pass all call
-// them (#1369). Not a collection, so no `registry.ts` entry. A star export on
+// them (#1369). Since step 15 (#1825) also the label half of the route resolver
+// and its guards. Not a collection, so no `registry.ts` entry. A star export on
 // purpose: the fold-inventory scan greps raw text, so a listed barrel would need
 // a row.
 export * from './mapaFreteLojaIntegrada';
+
+// The Loja Integrada label step (step 15, #1825): the paid re-check's verdict,
+// wire contract, situação labels and order-id preimage; the label routing route's
+// wire contract; and the checkout's retirada hand-off rule, shared by phase 2 and
+// that route. Not collections, so no `registry.ts` entry; outside `pedido/` and
+// `shared/frete.ts`, so no NF-e live run. Star exports, for the same raw-text
+// reason as above.
+export * from './conferenciaPagamentoLojaIntegrada';
+export * from './rotaEtiquetaLojaIntegrada';
+export * from './faseRetirada';
+
+// Admin-only / default-deny (NOT in ALL_DOMAINS) — the failures-only backlog of
+// the Loja Integrada WRITES queue (master plan step 7: the status write-back).
+// Bare: no Meta, never a combined `{ schema, meta }`, so `registry.test.ts` sees
+// nothing to register.
+export * from './notificacaoEscritaLojaIntegrada';
+
+// The machine-readable next step of a Shopee publish refusal (step 21, #1529):
+// the refusal sites in `apps/shopee` produce it, the web's wire parses it per row
+// and maps it to a button — one vocabulary, never a second copy (#1369). Also the
+// ONE copy of the wait an uncertain kit create asks for. Not a collection, so no
+// `registry.ts` entry.
+export * from './shopeeAcaoSugerida';

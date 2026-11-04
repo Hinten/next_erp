@@ -1,4 +1,5 @@
 import { freightErrorMessage } from '@/lib/freight/errorMessage';
+import { conferirAntesDeImprimirLi } from '@/lib/loja-integrada/conferenciaPagamento';
 
 import type { CheckoutEtiquetaProvider, EtiquetaOutcome, EtiquetaProviderInput } from '../types';
 
@@ -15,12 +16,17 @@ import type { CheckoutEtiquetaProvider, EtiquetaOutcome, EtiquetaProviderInput }
  *
  * ME can't produce ZPL2, so a ZPL2 request toasts and falls back to PDF —
  * exactly what the label URL already is (legacy showed the same snackbar).
+ *
+ * The Loja Integrada paid re-check (master plan step 15): the REPRINT of a
+ * bought label goes through the soft gate (`conferirAntesDeImprimirLi`) before
+ * its URL is fetched; the BUY never does here — the buy modal's own gate owns
+ * it, and this provider only forwards the chain's carried verdict to it.
  */
 export const melhorEnviosProvider: CheckoutEtiquetaProvider = {
   tipos: ['melhorEnvios'],
 
   async emitirOuImprimir(input: EtiquetaProviderInput): Promise<EtiquetaOutcome> {
-    const { pedidoId, frete, formato, deps, ui } = input;
+    const { pedido, pedidoId, frete, formato, deps, ui } = input;
 
     // ME needs its `int_frete` ACCOUNT — the id is what `imprimir` and the buy
     // modal route on. A `'bloco'` integration has no document, so there is no
@@ -49,8 +55,19 @@ export const melhorEnviosProvider: CheckoutEtiquetaProvider = {
     }
     const freightClient = deps.freightClient;
 
-    // 1. Label already bought → just fetch its URL and open it.
+    // 1. Label already bought → just fetch its URL and open it — after the
+    //    soft gate, which a Loja Integrada order with no confirmed payment
+    //    passes only once the operator acknowledges the risk.
     if (frete.printLabelId != null) {
+      const conferencia = await conferirAntesDeImprimirLi({
+        client: deps.lojaIntegradaClient,
+        pedidoId,
+        pedido,
+        conferenciaLi: input.conferenciaLi,
+        ui,
+        ato: 'reimpressao',
+      });
+      if (conferencia === 'cancelado') return { status: 'skipped' };
       try {
         const result = await freightClient.imprimir(intFrete.id, frete.printLabelId);
         ui.openUrl(result.url);
@@ -71,6 +88,9 @@ export const melhorEnviosProvider: CheckoutEtiquetaProvider = {
         // The gates already risk-confirmed a posted reprint; the modal shows its
         // own ack only when it independently detects a posted frete.
         needsPostedConfirm: false,
+        // The buy's paid check is the modal's (a hard gate); a verdict this
+        // chain already holds rides along so a recent `pago` is not asked twice.
+        ...(input.conferenciaLi === undefined ? {} : { conferenciaLi: input.conferenciaLi }),
       });
       if (outcome.status === 'bought' && outcome.printUrl != null) {
         ui.openUrl(outcome.printUrl);

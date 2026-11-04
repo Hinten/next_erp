@@ -1,23 +1,13 @@
 'use client';
 
 import type { FieldConfig } from '@delfrance/ui';
-import { stripMarkedForDeletion } from '@delfrance/ui';
 import { enderecoNestedFields } from '@/components/inputs/enderecoFields';
 import { prepareForSaveTelefone, TelefoneField } from '@/components/inputs/TelefoneInput';
 import { filialRefRenderInput } from '@/components/pickers/FilialPicker';
+import { stripThenNullIfEmpty } from '@/lib/freight/stripThenNullIfEmpty';
 import { FaixaCepEditor } from './FaixaCepEditor';
 import { HorarioCorteEditor } from './HorarioCorteEditor';
 import { SECTION } from './slices';
-
-/**
- * Drop staged-deletion marks, then collapse an emptied list to `null` — the
- * shape Flutter writes when a list is unset (its `fromJson` helpers accept
- * both, but `null` keeps new docs closest to legacy ones).
- */
-function stripThenNullIfEmpty(value: unknown): unknown {
-  const stripped = stripMarkedForDeletion(value);
-  return Array.isArray(stripped) && stripped.length === 0 ? null : stripped;
-}
 
 /**
  * Freight origin reuses the shared embedded-endereço field config but

@@ -149,7 +149,10 @@ export async function GET(req: Request): Promise<NextResponse> {
       );
     }
     const channelCtx = await ctx.resolveChannelContext();
-    const api = createMercadoLivreApi({ getAccessToken: async () => channelCtx.accessToken });
+    const api = createMercadoLivreApi({
+      getAccessToken: channelCtx.getAccessToken,
+      onAccessTokenRejected: channelCtx.invalidateAccessToken,
+    });
 
     // NO shipment-status precheck (legacy parity): fire the labels GET and map
     // ML's refusal in the catch — a precheck would double the ML round-trips.

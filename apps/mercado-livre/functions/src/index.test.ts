@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
+import { logger } from 'firebase-functions';
 
 // #778: the reprocess sweep must bind the ML app credentials + a budget that
 // fits its worst-case sequential ML-API-bound drain — exactly like every
@@ -27,6 +28,17 @@ const originalFunctionsRegion = process.env.FUNCTIONS_REGION;
 process.env.FUNCTIONS_REGION = 'us-central1';
 const originalMlTasksRegion = process.env.MERCADO_LIVRE_TASKS_REGION;
 process.env.MERCADO_LIVRE_TASKS_REGION = 'us-central1';
+
+const missedFeeds = vi.hoisted(() => ({ run: vi.fn() }));
+vi.mock('../../lib/marketplace/notificacoes/missedFeedsSweep', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../lib/marketplace/notificacoes/missedFeedsSweep')>()),
+  runMissedFeedsSweep: missedFeeds.run,
+}));
+vi.mock('./lib/admin', () => ({ getDb: () => ({}) }));
+afterEach(() => {
+  vi.restoreAllMocks();
+  missedFeeds.run.mockReset();
+});
 
 // ⚠️ Keep this import at the TOP LEVEL — do NOT move it into a `beforeAll`.
 // `./index` is the heaviest module in this codebase (firebase-functions v2 plus
@@ -67,8 +79,42 @@ describe('reprocessMercadoLivreNotifications (#778)', () => {
 });
 
 describe('sweepMercadoLivreMissedFeeds (#812)', () => {
+  const invoke = () =>
+    (
+      sweepMercadoLivreMissedFeeds as unknown as {
+        run: (event: Record<string, unknown>) => Promise<void>;
+      }
+    ).run({});
+
+  it('fails incomplete coverage and logs the application-level outcome', async () => {
+    const result = {
+      enabled: true,
+      configured: true,
+      complete: false,
+      appId: '42',
+      selectedIntegracaoId: null,
+      errors: ['NO_FEED_ACCESS'],
+    };
+    missedFeeds.run.mockResolvedValue(result);
+    const log = vi.spyOn(logger, 'error').mockImplementation(() => {});
+    await expect(invoke()).rejects.toThrow('coverage is incomplete');
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('incomplete'), result);
+  });
+
+  it('reports a complete empty feed as success and disabled runs as no-op', async () => {
+    const log = vi.spyOn(logger, 'info').mockImplementation(() => {});
+    missedFeeds.run.mockResolvedValue({ enabled: true, complete: true, appId: '42' });
+    await expect(invoke()).resolves.toBeUndefined();
+    expect(log).toHaveBeenCalledWith(
+      expect.stringContaining('complete'),
+      expect.objectContaining({ complete: true }),
+    );
+    missedFeeds.run.mockResolvedValue({ enabled: false, complete: false });
+    await expect(invoke()).resolves.toBeUndefined();
+  });
+
   it('binds both ML app secrets and sets timeoutSeconds to 540', () => {
-    // CLIENT_ID does double duty here: the per-conta token refresh AND the
+    // CLIENT_ID does double duty here: selected-account token refresh AND the
     // `app_id` query param `GET /missed_feeds` requires. Without the secrets
     // bound, every conta throws `MercadoLivreConfigError` and the backstop is
     // silently inert.

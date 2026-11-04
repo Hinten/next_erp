@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
+import {
+  CHAVE_DE_TESTE_HEX,
+  OUTRA_CHAVE_DE_TESTE_HEX,
+  chaveDeTeste,
+  colisaoDePseudonimo,
+} from '../testing/chaveDeFixtures';
 import { gerarCpf } from '../testing/especificacaoPii';
 import {
   ErroDeUsoSanitizacao,
@@ -28,14 +34,23 @@ interface Disco {
   readonly outros?: Readonly<Record<string, string | Uint8Array>>;
 }
 
-function disco(d: Disco = {}): SistemaDeArquivosDaSanitizacao & { readonly lidos: string[] } {
+function disco(d: Disco = {}): SistemaDeArquivosDaSanitizacao & {
+  readonly lidos: string[];
+  /** Every `criarChave` call, as `<pasta>|<nome>`. */
+  readonly chavesCriadas: string[];
+} {
   const arquivos: Readonly<Record<string, string | Uint8Array>> = {
     'nomes-proibidos.txt': NOMES,
     ...d.arquivos,
   };
   const lidos: string[] = [];
+  const chavesCriadas: string[] = [];
   return {
     lidos,
+    chavesCriadas,
+    criarChave: (pasta, nome) => {
+      chavesCriadas.push(`${pasta}|${nome}`);
+    },
     pastaReal: (caminho) => (caminho === PASTA || caminho === 'li-capturas' ? PASTA : null),
     existe: (caminho) => (d.git ?? []).includes(caminho),
     listar: (pasta) =>
@@ -281,6 +296,227 @@ describe('executarSanitizacao — the folder', () => {
     expect(saida.toLowerCase()).not.toContain('exemplo');
     // Anti-vacuity: the dry run did print the tables.
     expect(saida).toContain('objects.*.itens.*.sku : string → falsificado (1)');
+  });
+});
+
+describe('executarSanitizacao — catalogue pseudonyms and the key file', () => {
+  const ARQUIVO_CHAVE = '.chave-fixtures';
+  const COM_CHAVE = { [ARQUIVO_CHAVE]: `${CHAVE_DE_TESTE_HEX}\n` };
+  const f = (id: number) => chaveDeTeste().pseudonimo(String(id));
+  const CATEGORIAS = par('GET /v1/categoria/?limit=50 200', {
+    meta: { limit: 50, offset: 0, total_count: 2, next: null, previous: null },
+    objects: [
+      { id: 4101, categoria_pai: null, resource_uri: '/v1/categoria/4101' },
+      { id: 4102, categoria_pai: '/v1/categoria/4101', resource_uri: '/v1/categoria/4102' },
+    ],
+  });
+  const GRADE = par('GET /v1/grades/6062/ 200', {
+    id: 6062,
+    resource_uri: '/api/v1/grades/6062',
+    variacoes: [
+      { grade: '/api/v1/grades/6062', id: 31, resource_uri: '/api/v1/grade/6062/variacao/31' },
+    ],
+  });
+  /** Every text the run produced: its output and each fixture it would write. */
+  const textos = (r: ReturnType<typeof rodar>) => [r.saida, ...r.escritas.map((e) => e.texto)];
+
+  it('no key: a catalogue pair refuses the run, names the remedy, and writes nothing', () => {
+    const r = rodar(
+      ['--entrada', PASTA],
+      disco({ arquivos: pares({ cat: CATEGORIAS, a: LIMPO }) }),
+    );
+    expect(r).toMatchObject({ codigo: 1, escritas: [] });
+    expect(r.saida).toContain('  cat .chave-fixtures :: sem-chave-de-fixtures\n');
+    expect(r.saida).toContain('--gerar-chave');
+    // Near-miss: a run with no catalogue pair needs no key.
+    expect(rodar(['--entrada', PASTA], disco({ arquivos: pares({ a: LIMPO }) })).codigo).toBe(0);
+  });
+
+  it('no key: the dry run prints the request line with its ids blanked, never a real one', () => {
+    const grade = par('GET /v1/grades/7777/ 200', {
+      id: 7777,
+      resource_uri: '/api/v1/grades/7777',
+    });
+    const r = rodar(['--entrada', PASTA, '--dry-run'], disco({ arquivos: pares({ grade }) }));
+    expect(r.codigo).toBe(1);
+    expect(r.saida).toContain('  request: GET /v1/grades/<id>/\n');
+    expect(r.saida).not.toContain('7777');
+  });
+
+  it('the refusals of catalogue data the mapping cannot reach name their remedy', () => {
+    const r = rodar(
+      ['--entrada', PASTA],
+      disco({
+        arquivos: {
+          ...pares({
+            erro: par('GET /v1/grades/7777/ 404', { id: 7777 }),
+            sub: par('GET /v1/grades/7777/variacoes/ 200', { objects: [] }),
+          }),
+          ...COM_CHAVE,
+        },
+      }),
+    );
+    expect(r).toMatchObject({ codigo: 1, escritas: [] });
+    expect(r.saida).toContain('  erro resposta.corpo.id :: numero-em-erro-do-catalogo\n');
+    expect(r.saida).toContain('  sub .txt:1 :: catalogo-fora-da-classe\n');
+    expect(r.saida).toContain('hint (numero-em-erro-do-catalogo):');
+    expect(r.saida).toContain('hint (catalogo-fora-da-classe):');
+    expect(r.saida).not.toContain('7777');
+  });
+
+  it('a key that is not a regular file is no key', () => {
+    const r = rodar(
+      ['--entrada', PASTA],
+      disco({ arquivos: pares({ cat: CATEGORIAS }), naoArquivos: [ARQUIVO_CHAVE] }),
+    );
+    expect(r).toMatchObject({ codigo: 1, escritas: [] });
+    expect(r.saida).toContain('cat .chave-fixtures :: sem-chave-de-fixtures');
+  });
+
+  it('with the key: the ids are pseudonyms, and the key file is neither a pair nor an other file', () => {
+    const r = rodar(
+      ['--entrada', PASTA],
+      disco({ arquivos: { ...pares({ cat: CATEGORIAS, grade: GRADE }), ...COM_CHAVE } }),
+    );
+    expect(r.codigo).toBe(0);
+    expect(r.saida).toContain('sanitizar: 2 pair(s), 0 other file(s) ignored.');
+    const cat = r.escritas.find((e) => e.nome === 'cat')?.texto ?? '';
+    expect(cat).toContain(`"id": ${String(f(4101))}`);
+    expect(cat).toContain(`"categoria_pai": "/v1/categoria/${String(f(4101))}"`);
+    const grade = r.escritas.find((e) => e.nome === 'grade')?.texto ?? '';
+    expect(grade).toContain(`"caminho": "/v1/grades/${String(f(6062))}/"`);
+    for (const texto of [cat, grade]) expect(texto).not.toMatch(/\b(?:4101|4102|6062|31)\b/);
+  });
+
+  it('EQUAL: the same key and captures give identical bytes, and a --so run the same ids as a full run', () => {
+    const d = () =>
+      disco({ arquivos: { ...pares({ cat: CATEGORIAS, grade: GRADE, a: LIMPO }), ...COM_CHAVE } });
+    const cheio = rodar(['--entrada', PASTA], d());
+    const deNovo = rodar(['--entrada', PASTA], d());
+    const so = rodar(['--entrada', PASTA, '--so', 'grade'], d());
+    expect(deNovo.escritas).toEqual(cheio.escritas);
+    expect(so.escritas).toEqual(cheio.escritas.filter((e) => e.nome === 'grade'));
+  });
+
+  it('NEAR-MISS: another key gives other ids; the configuracao pair is byte-identical', () => {
+    const com = (hex: string) =>
+      rodar(
+        ['--entrada', PASTA],
+        disco({ arquivos: { ...pares({ cat: CATEGORIAS, a: LIMPO }), [ARQUIVO_CHAVE]: hex } }),
+      ).escritas;
+    const [um, outro] = [com(CHAVE_DE_TESTE_HEX), com(OUTRA_CHAVE_DE_TESTE_HEX)];
+    expect(um.find((e) => e.nome === 'cat')).not.toEqual(outro.find((e) => e.nome === 'cat'));
+    expect(um.find((e) => e.nome === 'a')).toEqual(outro.find((e) => e.nome === 'a'));
+  });
+
+  it('the dry run prints the pseudonymized request line and the `pseudonimizado` leaves', () => {
+    const r = rodar(
+      ['--entrada', PASTA, '--dry-run'],
+      disco({ arquivos: { ...pares({ grade: GRADE }), ...COM_CHAVE } }),
+    );
+    expect(r.codigo).toBe(0);
+    expect(r.saida).toContain(`  request: GET /v1/grades/${String(f(6062))}/\n`);
+    expect(r.saida).toContain('    id : number → pseudonimizado (1)\n');
+    expect(r.saida).toContain('    variacoes.*.resource_uri : string → pseudonimizado (1)\n');
+  });
+
+  it('a collision across two pairs refuses the run', () => {
+    const [a, b2] = colisaoDePseudonimo();
+    const marca = (id: number) =>
+      par('GET /v1/marca/ 200', { objects: [{ id, resource_uri: `/api/v1/marca/${String(id)}` }] });
+    const r = rodar(
+      ['--entrada', PASTA],
+      disco({ arquivos: { ...pares({ m1: marca(a), m2: marca(b2) }), ...COM_CHAVE } }),
+    );
+    expect(r).toMatchObject({ codigo: 1, escritas: [] });
+    expect(r.saida).toContain('  m2 pseudonimos :: colisao-de-pseudonimo\n');
+    expect(r.saida).toContain('re-run every catalogue pair');
+    // Near-miss: each pair alone is clean.
+    for (const nome of ['m1', 'm2']) {
+      expect(
+        rodar(
+          ['--entrada', PASTA, '--so', nome],
+          disco({ arquivos: { ...pares({ m1: marca(a), m2: marca(b2) }), ...COM_CHAVE } }),
+        ).codigo,
+      ).toBe(0);
+    }
+  });
+
+  it('a key file that is not 64 hexadecimal digits is a usage error that never quotes it', () => {
+    const d = disco({ arquivos: { ...pares({ cat: CATEGORIAS }), [ARQUIVO_CHAVE]: SENTINELA } });
+    expect(() => rodar(['--entrada', PASTA], d)).toThrow(/\.chave-fixtures/);
+    expect(() => rodar(['--entrada', PASTA], d)).not.toThrow(SENTINELA);
+  });
+
+  it('SENTINEL: the key never reaches the output or a fixture, clean, dry or refused', () => {
+    const d = () =>
+      disco({
+        arquivos: { ...pares({ cat: CATEGORIAS, grade: GRADE, b: COM_CPF_NO_SKU }), ...COM_CHAVE },
+      });
+    const limpo = () =>
+      disco({ arquivos: { ...pares({ cat: CATEGORIAS, grade: GRADE }), ...COM_CHAVE } });
+    const todos = [
+      rodar(['--entrada', PASTA], d()),
+      rodar(['--entrada', PASTA, '--dry-run'], d()),
+      rodar(['--entrada', PASTA], limpo()),
+      rodar(['--entrada', PASTA, '--dry-run'], limpo()),
+    ].flatMap(textos);
+    for (const texto of todos) {
+      expect(texto).not.toContain(CHAVE_DE_TESTE_HEX);
+      expect(texto).not.toContain('7e57');
+    }
+    // Anti-vacuity: the clean run did write the catalogue fixtures.
+    expect(rodar(['--entrada', PASTA], limpo()).escritas).toHaveLength(2);
+  });
+});
+
+describe('--gerar-chave', () => {
+  const ARQUIVO_CHAVE = '.chave-fixtures';
+
+  it('creates the key file in the capture folder, through the injected writer, and prints no key', () => {
+    const d = disco({ arquivos: pares({ a: LIMPO }) });
+    const r = rodar(['--entrada', PASTA, '--gerar-chave'], d);
+    expect(r).toMatchObject({ codigo: 0, escritas: [] });
+    expect(d.chavesCriadas).toEqual([`${PASTA}|${ARQUIVO_CHAVE}`]);
+    expect(r.saida).toContain('.chave-fixtures');
+    expect(r.saida).not.toMatch(/[0-9a-f]{16}/);
+    // The key outlives the captures: deleting merged pairs must not take it along.
+    expect(r.saida).toContain('outlives the captures');
+    // It reads nothing: not even the store-name list.
+    expect(d.lidos).toEqual([]);
+  });
+
+  it('refuses to replace a key that exists, as a file or as any other entry', () => {
+    for (const d of [
+      disco({ arquivos: { [ARQUIVO_CHAVE]: `${CHAVE_DE_TESTE_HEX}\n` } }),
+      disco({ naoArquivos: [ARQUIVO_CHAVE] }),
+    ]) {
+      const r = rodar(['--entrada', PASTA, '--gerar-chave'], d);
+      expect(r).toMatchObject({ codigo: 1, escritas: [] });
+      expect(r.saida).toContain('pasta .chave-fixtures :: chave-existente');
+      expect(r.saida).toContain('changes every catalogue id');
+      expect(d.chavesCriadas).toEqual([]);
+      expect(d.lidos).toEqual([]);
+    }
+  });
+
+  it.each([
+    ['with --dry-run', ['--entrada', PASTA, '--gerar-chave', '--dry-run']],
+    ['with --so', ['--entrada', PASTA, '--gerar-chave', '--so', 'a']],
+    ['with --sobrescrever', ['--entrada', PASTA, '--gerar-chave', '--sobrescrever']],
+    ['with --verificar', ['--entrada', PASTA, '--gerar-chave', '--verificar', 'x.md']],
+    ['given twice', ['--entrada', PASTA, '--gerar-chave', '--gerar-chave']],
+    ['without --entrada', ['--gerar-chave']],
+  ])('is a usage error %s', (_caso, argv) => {
+    const d = disco({ arquivos: pares({ a: LIMPO }) });
+    expect(() => rodar(argv, d)).toThrow(ErroDeUsoSanitizacao);
+    expect(d.chavesCriadas).toEqual([]);
+  });
+
+  it('refuses a folder inside a git checkout, like every run', () => {
+    const d = disco({ git: ['/home/fulano/.git'] });
+    expect(() => rodar(['--entrada', PASTA, '--gerar-chave'], d)).toThrow(/inside a git checkout/);
+    expect(d.chavesCriadas).toEqual([]);
   });
 });
 
@@ -580,9 +816,21 @@ describe('lerArgumentos', () => {
   it('parses every flag', () => {
     expect(
       lerArgumentos(['--entrada', 'p', '--so', 'a', '--so', 'b', '--dry-run', '--sobrescrever']),
-    ).toEqual({ entrada: 'p', so: ['a', 'b'], dryRun: true, sobrescrever: true, verificar: null });
+    ).toEqual({
+      entrada: 'p',
+      so: ['a', 'b'],
+      dryRun: true,
+      sobrescrever: true,
+      verificar: null,
+      gerarChave: false,
+    });
     expect(lerArgumentos(['--verificar', 'x.md', 'y.md', '--entrada', 'p'])).toMatchObject({
       verificar: ['x.md', 'y.md'],
+      gerarChave: false,
+    });
+    expect(lerArgumentos(['--gerar-chave', '--entrada', 'p'])).toMatchObject({
+      entrada: 'p',
+      gerarChave: true,
     });
   });
 });

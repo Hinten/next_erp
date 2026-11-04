@@ -392,15 +392,17 @@ describe('(5) o job e o primeiro despacho', () => {
     expect((expiraEm as Date).getTime()).toBe(AGORA_MS + 180 * DIA_MS);
   });
 
-  it('um job VIVO da conta ⇒ 409 SHOPEE_PRICE_SYNC_RUNNING, sem job novo e sem enfileirar', async () => {
+  it('um job VIVO da conta ⇒ 409 SHOPEE_PRICE_SYNC_RUNNING com o jobId DELE, sem job novo e sem enfileirar', async () => {
     semearJob(db, 'job-vivo');
 
     const res = await POST(req({ integracaoId: INT }, AUTORIZADO));
 
     expect(res.status).toBe(409);
+    // O id do job vivo — é a ele que a web se anexa (acompanhar e cancelar).
     await expect(res.json()).resolves.toEqual({
       error: MSG_ENVIO_PRECO_EM_ANDAMENTO,
       code: CODIGO_ENVIO_PRECO_EM_ANDAMENTO,
+      jobId: 'job-vivo',
     });
     expect(jobs(db)).toEqual(['job-vivo']);
     expect(h.enqueue).not.toHaveBeenCalled();
@@ -412,12 +414,17 @@ describe('(5) o job e o primeiro despacho', () => {
     const res = await POST(req({ integracaoId: INT }, AUTORIZADO));
 
     expect(res.status).toBe(202);
+    // QUASE-IGUAL do 409: o órfão reclamado não é "o job em andamento" — o 202
+    // entrega o id do job NOVO, nunca o do órfão.
+    const { jobId } = (await res.json()) as { jobId: string };
+    expect(jobId).not.toBe('job-orfao');
+    expect(doc(db, `${COL}/${jobId}`)).toMatchObject({ status: 'running' });
     expect(doc(db, `${COL}/job-orfao`)).toMatchObject({ status: 'failed' });
     expect(jobs(db)).toHaveLength(2);
   });
 
   it('⛔ o braço genérico responderia 500 ao 409: é o braço explícito que dá o status', async () => {
-    const err = new ShopeeEnvioPrecoEmAndamentoError('em andamento');
+    const err = new ShopeeEnvioPrecoEmAndamentoError('em andamento', 'job-vivo');
 
     expect(isShopeeError(err)).toBe(true);
     expect(shopeeErrorResponse(err).status).toBe(500);

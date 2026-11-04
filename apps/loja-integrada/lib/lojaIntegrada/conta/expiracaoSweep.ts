@@ -49,13 +49,22 @@
  * `criadoEm desc` — the collection's declared `(resolvidoEm ASC, criadoEm DESC)`
  * composite, no new index — at {@link PAGINA_AVISOS_ABERTOS} rows a page and at
  * most {@link MAX_PAGINAS_AVISOS_ABERTOS} pages, with a `truncado` flag. The
- * canal and the channel's three tipos (`TIPOS_AVISO_LI`) are filtered in CODE
+ * canal and every tipo of the channel (`TIPOS_AVISO_LI`) are filtered in CODE
  * (no index can express them), and a row whose id is not one of the LISTED
- * contas' chaves is resolved as `conta-removida` — an expiry row clockless; a
- * reconexão row and a step-3 import-stopped row CLOCKED by the conta
- * enumeration's `readTime` (`resolverAvisoDeContaRemovida`): a conta created
- * after that list was read, and then parked or failing to import, raised at a
- * later clock and is left open for the next tick, which lists it. Rows of
+ * contas' chaves — for the order-import tipos of step 5, which hold many
+ * rows per conta, whose id does not start with a listed conta's key prefix
+ * (`prefixoDaContaNoAvisoLi`) — is resolved as `conta-removida`: an expiry row
+ * clockless; a reconexão row and a step-3 import-stopped row CLOCKED by the
+ * conta enumeration's `readTime` (`resolverAvisoDeContaRemovida`): a conta
+ * created after that list was read, and then parked or failing to import,
+ * raised at a later clock and is left open for the next tick, which lists it.
+ * An order-import row is clocked by the ORDER's Loja Integrada stamp, which
+ * the enumeration's `readTime` can never be compared with, so it is resolved
+ * clockless — and only when its document was last written NO LATER than that
+ * `readTime`. A row written after it may belong to a conta created after the
+ * list was read, and is left for the next tick, which lists that conta: a
+ * clockless close keeps the row's clock, so an equal-stamp re-raise of an order
+ * whose stamp never moves again would be dropped behind it for good. Rows of
  * existing contas are never touched here: the expiry and reconexão rows are
  * pass (a)'s, and the import-stopped row belongs to the order poller (step-3
  * PR 3-e), so its chave is in the existing set too — otherwise this pass would
@@ -86,10 +95,14 @@ import { CANAL_AVISO } from '@delfrance/schemas';
 import {
   MOTIVO_AVISO_LI,
   TIPOS_AVISO_LI,
+  TIPOS_AVISO_PEDIDO_LI,
   avisarReconexaoPendente,
   chaveExpiracao,
   chaveImportacaoParada,
   chaveReconexao,
+  prefixoDaContaNoAvisoLi,
+  prefixoDoAvisoDePedidoLi,
+  relogioDoDocumentoUs,
   resolverAvisoDeContaRemovida,
   resolverExpiracaoToken,
   resolverReconexaoPendente,
@@ -277,10 +290,16 @@ export async function sweepLojaIntegradaTokenExpiry(
   // Every chave a LISTED conta may hold — the import-stopped one too, whose
   // producer is the order poller, not this sweep (module header).
   const chavesExistentes = new Set<string>();
+  // The order-import tipos (step 5) hold MANY rows per conta: matched by the
+  // conta's key prefix, recomputed per listed conta (`prefixoDaContaNoAvisoLi`).
+  const prefixosExistentes = new Set<string>();
   for (const conta of contas) {
     chavesExistentes.add(chaveExpiracao(conta.integracaoId));
     chavesExistentes.add(chaveReconexao(conta.integracaoId));
     chavesExistentes.add(chaveImportacaoParada(conta.integracaoId));
+    for (const tipo of TIPOS_AVISO_PEDIDO_LI) {
+      prefixosExistentes.add(prefixoDaContaNoAvisoLi(tipo, conta.integracaoId));
+    }
   }
 
   let lidos = 0;
@@ -319,6 +338,11 @@ export async function sweepLojaIntegradaTokenExpiry(
       if (row?.canal !== CANAL_AVISO.lojaIntegrada) continue;
       if (typeof row.tipo !== 'string' || !TIPOS_AVISO_LI.has(row.tipo)) continue;
       if (chavesExistentes.has(doc.id)) continue;
+      const prefixo = prefixoDoAvisoDePedidoLi(row.tipo, doc.id);
+      if (prefixo !== null && prefixosExistentes.has(prefixo)) continue;
+      // An order-import row written AFTER the list was read may belong to a conta created after
+      // it: the next tick, which lists that conta, decides (module header).
+      if (prefixo !== null && relogioDoDocumentoUs(doc.updateTime) > listaLidaEmUs) continue;
       try {
         if (await resolverAvisoDeContaRemovida(db, doc.id, listaLidaEmUs, avisoDeps)) {
           orfaosResolvidos += 1;

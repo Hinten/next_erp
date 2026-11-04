@@ -15,13 +15,22 @@
 import { type ShopeeTaxonomiaCtx, lerMarcasCached } from './cache';
 import { type MarcaDto, projetarMarcas } from './dto';
 
-/** One page, as the route answers it. */
+/**
+ * One page, as the route answers it: the route spreads it beside `leaf` and
+ * checks the result against `respostaMarcasShopeeSchema` (`@delfrance/schemas`,
+ * #1911 P2). ⚠️ `satisfies` does not flag an EXCESS key that arrives through a
+ * spread, so a key added here and not there is caught by the route test's
+ * key-set pin instead, never by the compiler.
+ *
+ * ⚠️ `marcas` is a plain array, not a `readonly` one: the envelope's INPUT type
+ * has mutable arrays, and a readonly array is not assignable to a mutable one.
+ */
 export interface PaginaDeMarcas {
   readonly categoryId: number;
   readonly status: number;
   readonly offset: number;
   readonly pageSize: number;
-  readonly marcas: readonly MarcaDto[];
+  readonly marcas: MarcaDto[];
   readonly hasNextPage: boolean;
   /**
    * Shopee's cursor, echoed verbatim — feed it back as the next call's

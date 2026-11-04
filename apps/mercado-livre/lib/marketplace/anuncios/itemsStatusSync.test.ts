@@ -2165,3 +2165,31 @@ describe('syncItemStatus — the category of a User-Products family (#847)', () 
     expect(escritasDeCategoriaNoPai(db)).toHaveLength(1);
   });
 });
+
+describe('member stock re-arm (#1285)', () => {
+  it('a healthy sibling cannot clear another member; an unchanged own webhook DOES', async () => {
+    const db = new FakeDb();
+    seedFamily(db, [
+      { itemId: MEMBER_A, child: 'a' },
+      { itemId: MEMBER_B, child: 'b' },
+    ]);
+    db.seed(memberVarPath('a'), 'v-a', {
+      ...db.docData(memberVarPath('a'), 'v-a'),
+      estado: 'E',
+      errors: ['refused'],
+      causas: [],
+    });
+    await syncItemStatus(asDb(db), CONTA, MEMBER_B, resolverFor({ status: 'active' }));
+    expect(db.docData(memberVarPath('a'), 'v-a')).toMatchObject({
+      estado: 'E',
+      errors: ['refused'],
+    });
+    await syncItemStatus(asDb(db), CONTA, MEMBER_A, resolverFor({ status: 'active' }));
+    expect(db.docData(memberVarPath('a'), 'v-a')).toMatchObject({
+      estado: null,
+      errors: [],
+      causas: [],
+      status: 'active',
+    });
+  });
+});

@@ -235,13 +235,14 @@ export type EstoqueAplicado = z.infer<typeof estoqueAplicadoSchema>;
  * string literal.
  */
 export const marketplacePedidoTipoSchema = z
-  .enum(['shopee'])
-  .meta({ labels: { shopee: 'Shopee' } });
+  .enum(['shopee', 'amazon'])
+  .meta({ labels: { shopee: 'Shopee', amazon: 'Amazon' } });
 export type MarketplacePedidoTipo = z.infer<typeof marketplacePedidoTipoSchema>;
 
 /** Named members of {@link marketplacePedidoTipoSchema}. */
 export const MARKETPLACE_PEDIDO_TIPO = {
   shopee: 'shopee',
+  amazon: 'amazon',
 } as const satisfies Record<string, MarketplacePedidoTipo>;
 
 /**
@@ -284,6 +285,30 @@ export const marketplacePedidoSchema = z.strictObject({
   completedScenario: z.string().nullable().default(null),
   cancelReason: z.string().nullable().default(null),
   cancelBy: z.string().nullable().default(null),
+  /*
+   * The three Amazon-only keys (Amazon step 5). Each is `.nullable().optional()`,
+   * NEVER `.nullable().default(null)`: a default would make every block another
+   * importer writes gain three `null` keys on its next parse, so a block that
+   * never carried them must come back without them (absent stays absent).
+   * Each is Amazon's own value, VERBATIM — open strings, for the `status`
+   * reason above.
+   *
+   * ⚠️ An Amazon block (`tipo: 'amazon'`) never carries an Amazon value in
+   * `cancelReason`, `pendingTerms` or `completedScenario`: the defaults above
+   * store them as `null` on every write, so a comparator must read them as
+   * `null`, never as absent. Amazon's cancellation reason is free text a buyer
+   * may type, so it is not stored at all. `cancelBy` carries who cancelled,
+   * verbatim.
+   */
+  /**
+   * Amazon's `tax.taxInvoicing.invoiceStatus`: where the order stands on the
+   * invoice Amazon expects for it. The freight and NF-e steps read it here.
+   */
+  invoiceStatus: z.string().nullable().optional(),
+  /** Amazon's `fulfillment.fulfilledBy` (who ships the order). */
+  fulfilledBy: z.string().nullable().optional(),
+  /** Amazon's `programs[]`, in Amazon's order. */
+  programs: z.array(z.string()).nullable().optional(),
 });
 export type MarketplacePedido = z.infer<typeof marketplacePedidoSchema>;
 

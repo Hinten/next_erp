@@ -12,7 +12,7 @@ the shared `../push/` rail, beside stock (#819) and price (#804).
   entry point `definirStatusParaIntegracao` (which runs the `ativo === false`
   gate).
 - `pausarAnunciosRun.ts` — the thin binding onto `../push/run.ts`.
-- `providers/*` — one file per channel. Only Mercado Livre today; the rest fall
+- `providers/*` — one file per channel: Mercado Livre and Shopee. The rest fall
   through to `unsupportedChannel`, which says so per produto.
 
 ## Why this exists
@@ -79,9 +79,13 @@ everything else → null), not a fallthrough. As a deny-list it read `'am'`,
 ## Adding a channel
 
 One row in `MARKETPLACE_TIPO_CAPS` answering `pausarAnuncio`, one provider file,
-one backend route (`POST /api/marketplace/<canal>/anuncio-status` answering the
-same envelope), one row in `buildProviderMap`. You never touch `../push/run.ts`,
-the dialog, the produtos page or the other channels.
+one backend route (`POST /api/marketplace/<canal>/anuncio-status` answering
+`{ listings[], produtosSemAnuncio[], pausadoAte }` — the per-listing extras are
+the channel's own, and its provider maps them: Shopee's rows carry no member
+tally, so its provider writes `membros: null`. Each channel owns its envelope
+schema in `lib/<canal>/wire.ts`), one row in `buildProviderMap`. You never touch
+`../push/run.ts`, the produtos page or the other channels; the dialog only gains
+the new client in its `deps` (`PushDeps` fields are REQUIRED).
 
 ⚠️ `pausarAnuncio` is its OWN capability, not an inference off
 `publicarAnuncio`: several marketplaces expose only a terminal close. Deriving
@@ -112,4 +116,6 @@ no pause endpoint at all.
 ⚠️ `caps/registriesAlinhadas.test.ts` asserts the table and this registry agree
 for **every** tipo. If a channel legitimately lands in the middle — backend
 shipped, this screen not wired yet — say so there with a named exception; do not
-delete the assertion.
+delete the assertion. The produto's channel tabs (Mercado Livre, Shopee) name ONE
+listing by `linkDocId` and call their client directly; this registry is the
+selection-wide bulk path.

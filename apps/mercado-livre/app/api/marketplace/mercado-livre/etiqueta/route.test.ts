@@ -14,7 +14,10 @@ const h = vi.hoisted(() => ({
   docPaths: [] as string[],
   loadCtx: vi.fn(),
   getLabels: vi.fn(),
-  apiConfigs: [] as Array<{ getAccessToken: () => Promise<string> }>,
+  apiConfigs: [] as Array<{
+    getAccessToken: () => Promise<string>;
+    onAccessTokenRejected?: (token: string) => void;
+  }>,
 }));
 
 // Fake Firestore exposing only the collection().doc().get() chain the route
@@ -49,7 +52,10 @@ vi.mock('@delfrance/integrations-mercado-livre', async (importActual) => {
   const actual = await importActual<typeof import('@delfrance/integrations-mercado-livre')>();
   return {
     ...actual,
-    createMercadoLivreApi: (config: { getAccessToken: () => Promise<string> }) => {
+    createMercadoLivreApi: (config: {
+      getAccessToken: () => Promise<string>;
+      onAccessTokenRejected?: (token: string) => void;
+    }) => {
       h.apiConfigs.push(config);
       return { getShipmentLabels: h.getLabels };
     },
@@ -196,6 +202,8 @@ function mlContext(over: Record<string, unknown> = {}): Record<string, unknown> 
     resolveChannelContext: async () => ({
       integracaoId: 'conta-A',
       accessToken: 'tok',
+      getAccessToken: async () => 'tok',
+      invalidateAccessToken: vi.fn(),
       account: {},
     }),
     ...over,
@@ -317,6 +325,30 @@ describe('GET /api/marketplace/mercado-livre/etiqueta', () => {
     expect(h.loadCtx).toHaveBeenCalledWith(expect.anything(), 'conta-A');
     expect(h.getLabels).toHaveBeenCalledWith(SHIPMENT_ID, 'pdf');
     expect(await h.apiConfigs[0]?.getAccessToken()).toBe('tok');
+  });
+
+  it('forwards the live token getter and rejected-token invalidation callback', async () => {
+    const getAccessToken = vi
+      .fn()
+      .mockResolvedValueOnce('current')
+      .mockResolvedValueOnce('renewed');
+    const invalidateAccessToken = vi.fn();
+    h.loadCtx.mockResolvedValue(
+      mlContext({
+        resolveChannelContext: async () => ({
+          accessToken: 'stale-snapshot',
+          getAccessToken,
+          invalidateAccessToken,
+        }),
+      }),
+    );
+
+    expect((await GET(req(QUERY))).status).toBe(200);
+    const config = h.apiConfigs[0]!;
+    expect(await config.getAccessToken()).toBe('current');
+    expect(await config.getAccessToken()).toBe('renewed');
+    config.onAccessTokenRejected?.('current');
+    expect(invalidateAccessToken).toHaveBeenCalledWith('current');
   });
 
   it('falls back to the pedidoId in the filename when the pedido has no numero', async () => {

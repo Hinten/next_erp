@@ -5,17 +5,19 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vites
 import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
 
 import { __setRelogioDoCacheParaTestes } from '../../lib/lojaIntegrada/core/contaCache';
-import type { ImportadorPedidoLi } from '../../lib/lojaIntegrada/notificacoes/notificacao';
+import { importarPedidoLi } from '../../lib/lojaIntegrada/pedidos/importarPedido';
 import { FakeDb, asDb } from '../../lib/lojaIntegrada/testing/fakeDb';
 import { AGORA_MS, espiarStdout, seedConta } from '../../lib/lojaIntegrada/testing/fixtures';
 
 /**
  * The order poller's COMPOSITION ROOT: its declared schedule, and what it binds
- * into the tick — above all the importer seam, which only the roots read.
+ * into the tick — above all the importer seam, which only the roots read, and
+ * which step 5 filled: the tick passes the importer gate and, with the read
+ * switch unset as it stays until the window, stops at the switch.
  *
  * The tick runs REAL (`lib/lojaIntegrada/pedidos/pollPedidos.ts`) against the
  * fake Firestore; only `importadorPedidoLi` is spied through, so a test can hand
- * the root a sentinel importer, and the producer root is replaced by a recording
+ * the root an empty seam, and the producer root is replaced by a recording
  * double (nothing here enqueues). No network is reachable.
  *
  * `FUNCTIONS_REGION` is stubbed before the import, as the build would inline it.
@@ -100,10 +102,19 @@ afterEach(() => {
 
 /** The `evento: 'poll'` lines the tick wrote to stdout. */
 function linhasDoPoll(): Record<string, unknown>[] {
+  return linhasDoEvento('poll');
+}
+
+/** The `chamada-bloqueada` lines: the read switch's refusal. */
+function linhasBloqueadas(): Record<string, unknown>[] {
+  return linhasDoEvento('chamada-bloqueada');
+}
+
+function linhasDoEvento(evento: string): Record<string, unknown>[] {
   return stdout
     .escritas()
     .map((linha) => JSON.parse(linha) as Record<string, unknown>)
-    .filter((linha) => linha.evento === 'poll');
+    .filter((linha) => linha.evento === evento);
 }
 
 describe('pollLojaIntegradaPedidos — the options', () => {
@@ -122,24 +133,25 @@ describe('pollLojaIntegradaPedidos — the options', () => {
 });
 
 describe('pollLojaIntegradaPedidos — the importer gate the root binds', () => {
-  it('with the step-3 EMPTY seam the tick does ZERO reads — even with the read switch on', async () => {
-    // The switch ON on purpose: a root that bound `importadorPresente: true`
-    // would get past the gate here and list the contas.
-    vi.stubEnv('LOJA_INTEGRADA_CHAMADAS', 'on');
+  it('D17: the step-5 seam PASSES the importer gate, and the switch left unset stops the tick there — zero reads', async () => {
+    // The switch as it stays everywhere until the window: unset (beforeEach).
     seedConta(fake, 'conta-li-1');
 
     await rodar();
 
+    // The REAL table, untouched: the order import, so the gate is open.
     expect(notificacao.importadorPedidoLi).toHaveBeenCalledTimes(1);
-    expect(notificacao.DESTINO_TIPO_LI.pedido).toBeNull();
+    expect(notificacao.DESTINO_TIPO_LI.pedido).toBe(importarPedidoLi);
+    // …and the read switch is what stops it: no conta listed, nothing written.
     expect(fake.leituras).toEqual([]);
     expect(fake.consultas).toEqual([]);
     expect(fake.escritas).toEqual([]);
-    expect(linhasDoPoll()).toEqual([
-      expect.objectContaining({ conta: null, fluxo: 'poll', desfecho: 'importador-ausente' }),
+    expect(linhasDoPoll()).toEqual([]);
+    expect(linhasBloqueadas()).toEqual([
+      expect.objectContaining({ conta: null, fluxo: 'poll', operacao: 'pollPedidos' }),
     ]);
     expect(info).toHaveBeenCalledExactlyOnceWith('[loja-integrada] order poller tick', {
-      portao: 'importador-ausente',
+      portao: 'chamadas-desligadas',
       contas: 0,
       desfechos: {},
       enfileiradas: 0,
@@ -147,14 +159,13 @@ describe('pollLojaIntegradaPedidos — the importer gate the root binds', () => 
     });
   });
 
-  it('a filled seam opens the gate: the tick walks the contas (a conta with no token is RECORDED, nothing called)', async () => {
-    const sentinela: ImportadorPedidoLi = () => Promise.resolve({ kind: 'importado' });
-    vi.mocked(notificacao.importadorPedidoLi).mockReturnValueOnce(sentinela);
+  it('the step-5 seam with the switch ON walks the contas (a conta with no token is RECORDED, nothing called)', async () => {
     vi.stubEnv('LOJA_INTEGRADA_CHAMADAS', 'on');
     seedConta(fake, 'conta-li-1');
 
     await rodar();
 
+    expect(notificacao.importadorPedidoLi).toHaveBeenCalledTimes(1);
     expect(fake.consultas.map((c) => c.colecao)).toEqual(['integracao']);
     expect(fake.ler('pollPedidosLojaIntegrada/conta-li-1')).toMatchObject({
       falhasSeguidas: 1,
@@ -167,23 +178,26 @@ describe('pollLojaIntegradaPedidos — the importer gate the root binds', () => 
     );
   });
 
-  it('a filled seam with the switch OFF stops at the switch: one chamada-bloqueada line, zero reads', async () => {
-    vi.mocked(notificacao.importadorPedidoLi).mockReturnValueOnce(() =>
-      Promise.resolve({ kind: 'importado' }),
-    );
+  it('the root reads the table PER TICK: a seam that hands back null stops the tick at the importer gate, even with the switch on', async () => {
+    // The switch ON on purpose: a root that hard-coded `importadorPresente:
+    // true`, or cached the table at load, would get past the gate here and list
+    // the contas.
+    vi.mocked(notificacao.importadorPedidoLi).mockReturnValueOnce(null);
+    vi.stubEnv('LOJA_INTEGRADA_CHAMADAS', 'on');
     seedConta(fake, 'conta-li-1');
 
     await rodar();
 
     expect(fake.leituras).toEqual([]);
     expect(fake.consultas).toEqual([]);
-    const bloqueadas = stdout
-      .escritas()
-      .map((linha) => JSON.parse(linha) as Record<string, unknown>)
-      .filter((linha) => linha.evento === 'chamada-bloqueada');
-    expect(bloqueadas).toEqual([
-      expect.objectContaining({ conta: null, fluxo: 'poll', operacao: 'pollPedidos' }),
+    expect(fake.escritas).toEqual([]);
+    expect(linhasDoPoll()).toEqual([
+      expect.objectContaining({ conta: null, fluxo: 'poll', desfecho: 'importador-ausente' }),
     ]);
+    expect(info).toHaveBeenCalledExactlyOnceWith(
+      '[loja-integrada] order poller tick',
+      expect.objectContaining({ portao: 'importador-ausente', contas: 0 }),
+    );
   });
 });
 
@@ -200,7 +214,8 @@ describe('depsDoPollLi — what the root binds', () => {
     // NEAR-MISS: the step is passed through, not fixed at 1.
     expect((incremento as FieldValue).isEqual(FieldValue.increment(1))).toBe(false);
     expect(deps.logger).toBe(logger);
-    expect(deps.importadorPresente).toBe(false);
+    // The step-5 seam is filled, so the root opens the importer gate.
+    expect(deps.importadorPresente).toBe(true);
   });
 
   it('a fresh lease owner per run, and the real clock', () => {

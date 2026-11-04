@@ -25,7 +25,9 @@ import {
   reprocessarAdiadasLi,
   reprocessarNotificacoesLi,
 } from '../../lib/lojaIntegrada/notificacoes/notificacao';
+import { FILA_ESCRITA_LI } from '../../lib/lojaIntegrada/rastreio/notificacaoEscrita';
 import { depsDeLeituraLi } from './depsLeitura';
+import * as filaEscrita from './filaEscrita';
 import * as filaLeitura from './filaLeitura';
 import { getDb } from './lib/admin';
 
@@ -40,6 +42,19 @@ import { getDb } from './lib/admin';
  * (`filaLeituraLojaIntegrada`, ./filaLeitura) dispatching on the task's `tipo`,
  * the 5-minute order poller that is its first producer (./pollPedidos), the
  * 30-minute reprocess sweep over both lanes, and the daily token-expiry sweep.
+ *
+ * Master plan step 20 adds the codebase's FIRST Firestore trigger,
+ * `onIntegracaoLojaIntegradaChanged` (./onIntegracaoLojaIntegradaChanged): it
+ * keeps each Loja Integrada conta's `int_frete` doc in step with the conta,
+ * through the shared core, and makes no Loja Integrada call.
+ *
+ * Master plan step 7 adds the status write-back: the WRITES queue
+ * (`filaEscritaLojaIntegrada`, ./filaEscrita) — one dispatch at a time, one
+ * instance, every write of the channel and its own sweep — its producer, the
+ * freight-history trigger (`onHistoricoFreteLojaIntegrada`,
+ * ./onHistoricoFreteLojaIntegrada), and the 30-minute timer that enqueues the
+ * in-queue sweep (`varrerEscritasLojaIntegrada`, ./varrerEscritas). Until the
+ * window the write valve is unset, so nothing is recorded or written.
  *
  * Every export below is a Cloud Function name, and the names are unique across
  * codebases (`functions-export-names.test.js`): keep the exports explicit and
@@ -62,11 +77,42 @@ if (!(FILA_LEITURA_LI in filaLeitura)) {
   );
 }
 
+// The same assertion for the WRITES queue: the trigger and the varredura timer
+// enqueue against `FILA_ESCRITA_LI`.
+if (!(FILA_ESCRITA_LI in filaEscrita)) {
+  throw new Error(
+    '[loja-integrada] function-name drift: functions/src/filaEscrita.ts must export a ' +
+      `handler named '${FILA_ESCRITA_LI}' (the enqueue target). ` +
+      'Rename the export and the FILA_ESCRITA_LI constant together.',
+  );
+}
+
 /** The ONE reads queue (rate-limited to one dispatch at a time, retry with backoff). */
 export { filaLeituraLojaIntegrada } from './filaLeitura';
 
+/**
+ * The ONE writes queue (master plan step 7): one dispatch at a time on one
+ * instance, every write to Loja Integrada and its own sweep (./filaEscrita).
+ */
+export { filaEscritaLojaIntegrada } from './filaEscrita';
+
+/**
+ * The status write-back trigger: a freight history row of an imported Loja
+ * Integrada order ⇒ one named task on the writes queue (master plan step 7).
+ */
+export { onHistoricoFreteLojaIntegrada } from './onHistoricoFreteLojaIntegrada';
+
+/** The writes queue's backstop timer: one in-queue `varredura` task per tick (master plan step 7). */
+export { varrerEscritasLojaIntegrada } from './varrerEscritas';
+
 /** The 5-minute order poller: the queue's first producer (./pollPedidos). */
 export { pollLojaIntegradaPedidos } from './pollPedidos';
+
+/**
+ * The conta trigger: each Loja Integrada conta's `int_frete` doc follows the
+ * conta (master plan step 20, ./onIntegracaoLojaIntegradaChanged).
+ */
+export { onIntegracaoLojaIntegradaChanged } from './onIntegracaoLojaIntegradaChanged';
 
 /**
  * Documents examined per lane on each tick of the reprocess sweep. NOT exported:
@@ -125,9 +171,12 @@ function registrarRaia(
  * reconnection"), and a sum would hide a growing deferred backlog inside a
  * healthy `processed`.
  *
- * 540 s: up to twenty rows processed SEQUENTIALLY, each of which may make a
- * paced Loja Integrada round trip (2 000 ms before every call) once the read
- * switch and the importer are on — the gen2 60 s default cannot absorb that.
+ * 540 s: up to twenty rows processed SEQUENTIALLY once the read switch is on,
+ * and each import (bound since step 5) makes ≥ 2 paced calls — the detail and
+ * the history pages, plus one per line that falls back to `id_externo` — with
+ * 2 000 ms before each: ≥ 80 s of pacing alone for twenty rows, which the gen2
+ * 60 s default cannot absorb. A sweep the timeout cuts short loses nothing:
+ * the rows it never reached stay unmarked and re-run on the next tick.
  */
 export const reprocessLojaIntegradaNotifications = onSchedule(
   {

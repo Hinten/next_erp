@@ -216,9 +216,10 @@ describe('repository function entrypoints (#1707)', () => {
     expect(
       entrypoints.length,
       `Only ${entrypoints.length} Functions entrypoints discovered`,
-    ).toBeGreaterThanOrEqual(8);
+    ).toBeGreaterThanOrEqual(9);
     expect(entrypoints.map(({ codebase }) => codebase)).toEqual(
       expect.arrayContaining([
+        'amazon',
         'storage',
         'nfe',
         'mercado-livre',

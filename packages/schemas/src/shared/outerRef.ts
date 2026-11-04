@@ -120,6 +120,16 @@ export function idFromRef(raw: string): string {
   return segs[segs.length - 1] ?? '';
 }
 
+/**
+ * Nullable ID extraction over untrusted input. Like {@link idFromRef}, accepts
+ * bare IDs and paths of any depth, ignoring empty separators and the leading
+ * `documents` marker. Preserves case and whitespace; this is NOT document-path
+ * validation (use {@link toDocPathOrNull} when a complete path is required).
+ */
+export function idFromRefOrNull(raw: unknown): string | null {
+  return typeof raw === 'string' ? idFromRef(raw) || null : null;
+}
+
 /** The collection (segment before the id) and id of any ref form. */
 export function parseRef(raw: string): { collection: string; id: string } {
   const segs = segments(raw);
@@ -127,4 +137,54 @@ export function parseRef(raw: string): { collection: string; id: string } {
     collection: segs[segs.length - 2] ?? '',
     id: segs[segs.length - 1] ?? '',
   };
+}
+
+/**
+ * The integração doc id a stored conta ref points at, or `null` — THE reader of a channel link's
+ * conta ref (the `integracoesComProduto` anchor of every channel, the Mercado Livre category
+ * anúncio, and the Loja Integrada product import's link and category decisions).
+ *
+ * Tolerates both stored ref forms: the canonical `documents/integracao/<id>` every app writes, and
+ * the bare `integracao/<id>` readers accept defensively. The id is returned as stored — no case or
+ * space fold, so `c1` is another conta than `C1`. Moved here from
+ * `packages/data/src/admin/produtos/integracoesComProduto.ts` (which re-exports it) when a pure
+ * schema decision needed it too, so there is one copy.
+ *
+ * Non-throwing by construction ({@link toOuterRefOrNull}): a permanently malformed ref must
+ * degrade to "conta not resolvable" and not ride the Eventarc retry forever. The collection check
+ * keeps a ref pointing somewhere else from being read as a conta.
+ *
+ * Equal (⇒ `'C1'`): `'documents/integracao/C1'` ≡ `'integracao/C1'`.
+ * Distinct: `'documents/integracao/C2'` ⇒ `'C2'`; `'documents/categorias/C1'`, `'C1'` (a bare id
+ * is not a ref), `'integracao'`, `''`, `null`, a number ⇒ `null`.
+ */
+export function contaIdFromRef(raw: unknown): string | null {
+  const ref = toOuterRefOrNull(raw);
+  if (ref === null) return null;
+  const { collection, id } = parseRef(ref);
+  return collection === 'integracao' && id !== '' ? id : null;
+}
+
+/** Firestore reserves both relative-path names; either one addresses elsewhere. */
+const NOMES_RELATIVOS = new Set(['.', '..']);
+
+/**
+ * Is this untrusted value unusable as a Firestore **document id**?
+ *
+ * `.doc()` validates the resulting PATH, not the id, and it does so outside any
+ * `try` the caller owns. Measured against a real `firebase-admin` Firestore:
+ * `''` throws ("Path must be a non-empty string"), `'a/b'` throws ("must point
+ * to a document"), and `'a/b/c'` does NOT throw — it resolves to a document two
+ * levels below the collection meant, which comes back as a puzzling miss. This
+ * refuses all three with one condition, plus the two relative-path names
+ * Firestore reserves.
+ *
+ * TYPE-checked and never truthiness-checked: a non-string that happens to be
+ * truthy sails past a `!value` guard and then throws deep inside `.doc(id)`.
+ * (Moved here from `apps/shopee`'s `corpoPublicacao.ts`, which re-exports it,
+ * so `lerRefTabelaDeMedidas` (`tabelaDeMedidas.ts`) and the Shopee
+ * request-body readers share ONE predicate.)
+ */
+export function naoDocId(v: unknown): boolean {
+  return typeof v !== 'string' || v === '' || v.includes('/') || NOMES_RELATIVOS.has(v);
 }

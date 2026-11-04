@@ -32,7 +32,7 @@ vi.mock('@/lib/shopee/produtos/shopeeMassImportTasks', () => ({
   createShopeeMassImportScheduler: () => ({ enqueue: h.enqueue }),
 }));
 
-const { POST } = await import('./route');
+const { POST, MSG_IMPORTACAO_EM_ANDAMENTO } = await import('./route');
 
 const INT_A = 'int-1';
 const COL = 'importacoesShopee';
@@ -164,13 +164,19 @@ describe('uma importação por conta de cada vez', () => {
     });
   }
 
-  it('um job em andamento responde 409 SHOPEE_MASS_IMPORT_RUNNING', async () => {
+  it('um job em andamento responde 409 SHOPEE_MASS_IMPORT_RUNNING com o jobId DELE', async () => {
     semearRunning();
 
     const res = await POST(req({ integracaoId: INT_A }, AUTORIZADO));
 
     expect(res.status).toBe(409);
-    await expect(res.json()).resolves.toMatchObject({ code: 'SHOPEE_MASS_IMPORT_RUNNING' });
+    // A frase do operador, nunca `err.message` (que nomeia a integração), e o id
+    // do job que está rodando — é a ele que a web se anexa.
+    await expect(res.json()).resolves.toEqual({
+      error: MSG_IMPORTACAO_EM_ANDAMENTO,
+      code: 'SHOPEE_MASS_IMPORT_RUNNING',
+      jobId: 'job-antigo',
+    });
     expect(jobs(db)).toEqual(['job-antigo']);
     expect(h.enqueue).not.toHaveBeenCalled();
   });
@@ -179,7 +185,10 @@ describe('uma importação por conta de cada vez', () => {
     // `ShopeeImportacaoEmAndamentoError` estende `ShopeeError` e `respond.ts`
     // não o conhece, então sem o catch explícito da rota uma condição
     // perfeitamente normal sairia como uma indisponibilidade NOSSA.
-    const err = new ShopeeImportacaoEmAndamentoError('já existe uma importação em andamento');
+    const err = new ShopeeImportacaoEmAndamentoError(
+      'já existe uma importação em andamento',
+      'job-antigo',
+    );
 
     expect(isShopeeError(err)).toBe(true);
     const generico = shopeeErrorResponse(err);

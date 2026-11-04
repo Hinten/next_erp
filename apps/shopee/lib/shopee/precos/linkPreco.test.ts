@@ -93,8 +93,9 @@ function armazenado(db: FakeDb, caminho: string): Record<string, unknown> {
 }
 
 /**
- * The READER's rule for a model row, as the schema's docblock pins it: legible
- * while `precoRecusaEm >= (precoEnviadoEm ?? 0)`, compared on the SAME doc.
+ * The model row's OWN-stamp half of the reader rule (`precoRecusaEm >=
+ * (precoEnviadoEm ?? 0)` on the SAME doc) — what this writer's stamps must make
+ * true; `recusaPrecoDoModeloShopeeLegivel` adds the item anchor.
  */
 function recusaDoModeloLegivel(doc: Record<string, unknown>): boolean {
   const recusa = doc.precoRecusaEm;

@@ -1,8 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { z } from 'zod';
 import { PERM } from '@delfrance/auth';
 import { READ_CACHE_DISABLED_ENV, __resetAllReadCaches } from '@delfrance/data/admin/cache';
 import { SHOPEE_ERROR_KIND, ShopeeApiError } from '@delfrance/integrations-shopee';
+import {
+  atributoDtoSchema as atributoCompartilhado,
+  respostaAtributosShopeeSchema,
+} from '@delfrance/schemas';
 
 import { ShopeeContaNotConfiguredError } from '@/lib/shopee/core/shopee';
 import { __setShopeeTaxonomiaClockForTests } from '@/lib/shopee/taxonomia/cache';
@@ -31,13 +34,13 @@ const { GET } = await import('./route');
 const READER = { uid: 'u1', permissions: PERM.integracao.read.toString() };
 const AUTORIZADO = { authorization: 'Bearer t' };
 
-const corpoSchema = z.object({
-  leaf: z.boolean(),
-  categoryId: z.number().int(),
-  warning: z.string().nullable(),
-  truncated: z.boolean(),
-  atributos: z.array(atributoDtoSchema),
-});
+/**
+ * The SHARED envelope (#1911 P2) — declared once in `@delfrance/schemas` for
+ * this route and its browser readers — never a test-local twin. Bound to the old
+ * local name so every case below is byte-unedited: P2 is behaviour-neutral, and
+ * those cases staying green UNCHANGED is the proof.
+ */
+const corpoSchema = respostaAtributosShopeeSchema;
 
 function categoria(category_id: number, parent_category_id: number, has_children: boolean) {
   return {
@@ -252,5 +255,76 @@ describe('os erros', () => {
     await expect(
       GET(req({ integracaoId: 'int-1', categoryId: '100182' }, AUTORIZADO)),
     ).rejects.toBeInstanceOf(TypeError);
+  });
+});
+
+describe('o contrato compartilhado com apps/web (#1911 P2)', () => {
+  /**
+   * Uma árvore com TODO nível preenchido: `attribute_info` inteiro, uma unidade,
+   * e um valor que destrava um atributo filho. Um parse que só visse a raiz
+   * deixaria uma chave renomeada lá embaixo passar.
+   */
+  function atributoProfundo() {
+    return {
+      ...atributo(9),
+      attribute_info: {
+        input_type: 1,
+        input_validation_type: 2,
+        format_type: 1,
+        date_format_type: null,
+        attribute_unit_list: ['cm'],
+        max_value_count: 3,
+        introduction: 'Material principal',
+        is_oem: false,
+        support_search_value: true,
+      },
+      attribute_value_list: [
+        {
+          value_id: 55,
+          name: 'Algodão',
+          value_unit: 'cm',
+          child_attribute_list: [atributo(10, false)],
+          multi_lang: [],
+        },
+      ],
+    };
+  }
+
+  it('o atributo que este app re-exporta É o de @delfrance/schemas — nunca uma cópia', () => {
+    expect(atributoDtoSchema).toBe(atributoCompartilhado);
+  });
+
+  it.each([
+    ['uma folha com a árvore inteira', '100182'],
+    ['uma categoria do meio', '100100'],
+  ])(
+    'o 200 de %s volta IGUAL do schema compartilhado — nenhuma chave descartada',
+    async (_c, id) => {
+      h.getAttributeTree.mockResolvedValue({
+        list: [{ category_id: 100182, warning: null, attribute_tree: [atributoProfundo()] }],
+      });
+      const res = await GET(req({ integracaoId: 'int-1', categoryId: id }, AUTORIZADO));
+      const body = (await res.json()) as Record<string, unknown>;
+
+      expect(res.status).toBe(200);
+      expect(respostaAtributosShopeeSchema.parse(body)).toEqual(body);
+      expect(Object.keys(body).sort()).toEqual(
+        Object.keys(respostaAtributosShopeeSchema.shape).sort(),
+      );
+    },
+  );
+
+  it('o parse acima não é vazio: ele chegou ao atributo FILHO e ao attribute_info', async () => {
+    h.getAttributeTree.mockResolvedValue({
+      list: [{ category_id: 100182, warning: null, attribute_tree: [atributoProfundo()] }],
+    });
+    const res = await GET(req({ integracaoId: 'int-1', categoryId: '100182' }, AUTORIZADO));
+    const lido = respostaAtributosShopeeSchema.parse(await res.json());
+
+    expect(lido.atributos[0]?.attributeInfo).toMatchObject({ maxValueCount: 3, isOem: false });
+    expect(lido.atributos[0]?.attributeValueList[0]?.childAttributeList[0]).toMatchObject({
+      attributeId: 10,
+      mandatory: false,
+    });
   });
 });

@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -5,12 +8,17 @@ import {
   shopeeModelSchema,
   type ShopeeModel,
 } from '@delfrance/integrations-shopee';
-import { TIPO_VARIACAO, type LinkVariacoesShopee } from '@delfrance/schemas';
+import {
+  TIPO_VARIACAO,
+  resolverEntradaShopeeDoGrupo,
+  type LinkVariacoesShopee,
+} from '@delfrance/schemas';
 
 import type { GrupoMemo } from './itemLido';
 import { nomesDasOpcoesDoModelo } from './mapeamento';
 import {
   fundirLinksVariacoesShopee,
+  nomeDeTierShopee,
   normalizarParaSlug,
   planejarTaxonomia,
   tiersDoItem,
@@ -169,6 +177,39 @@ describe('tiersDoItem', () => {
       padronizados: [],
     });
     expect(lista).toEqual([]);
+  });
+
+  it('lê cada nome de tier e de opção pela dobra COMPARTILHADA — as pontas, nunca a caixa nem o espaço de dentro', () => {
+    const lista = tiersDoItem({
+      tiers: [
+        {
+          name: ' Cor\u00a0',
+          option_list: [{ option: ' Azul ' }, { option: 'azul' }, { option: 'Azul  Claro' }],
+        },
+      ] as never,
+      padronizados: [],
+    });
+    expect(lista[0]?.nome).toBe('Cor');
+    expect(lista[0]?.opcoes.map((o) => o.nome)).toEqual(['Azul', 'azul', 'Azul  Claro']);
+  });
+});
+
+describe('nomeDeTierShopee — a ÚNICA dobra de nome de tier/opção (#1911 batch-A: o leitor E o publicador)', () => {
+  it('nomeDeTierShopee — IGUAL: as pontas; DISTINTO: a caixa e o espaço de dentro', () => {
+    // PAR: the ends go — ASCII space, tab, NBSP — so what the publisher sends
+    // and what this reader reads back are one string.
+    for (const nome of ['Azul', 'Azul ', ' Azul', '\tAzul\n', '\u00a0Azul\u00a0']) {
+      expect(nomeDeTierShopee(nome), JSON.stringify(nome)).toBe('Azul');
+    }
+    // ⛔ NEAR-MISS: case and inner whitespace are KEPT — Shopee keeps both.
+    expect(nomeDeTierShopee('azul')).not.toBe(nomeDeTierShopee('Azul'));
+    expect(nomeDeTierShopee('AZUL')).not.toBe(nomeDeTierShopee('Azul'));
+    expect(nomeDeTierShopee('Azul  Claro')).not.toBe(nomeDeTierShopee('Azul Claro'));
+    expect(nomeDeTierShopee(' Azul  Claro ')).toBe('Azul  Claro');
+    // Absent and non-string read as the blank name.
+    for (const nada of [null, undefined, 42 as never, '', '   ']) {
+      expect(nomeDeTierShopee(nada)).toBe('');
+    }
   });
 });
 
@@ -897,5 +938,304 @@ describe('fundirLinksVariacoesShopee', () => {
     const r = fundirLinksVariacoesShopee(null, entrada());
     expect((r.array[0] as LinkVariacoesShopee).integracaoShopeeId).toBe('int-1');
     expect(JSON.stringify(r.array)).not.toContain('documents/integracao');
+  });
+});
+
+/* ---------------- 7. a chave de vínculo COMPARTILHADA (#1911) -------------- */
+
+/*
+ * A importação e a publicação respondem "qual elemento é A entrada do par
+ * (conta, categoria folha)" pela MESMA função de `@delfrance/schemas`
+ * (`ehEntradaShopeeDaChave` / `resolverEntradaShopeeDoGrupo`). Antes do #1911 a
+ * importação comparava o id da conta byte a byte e a publicação dobrava o
+ * último segmento: uma entrada em forma de caminho era o vínculo para uma e uma
+ * estranha para a outra, e a fusão anexava um GÊMEO que a publicação nunca lia.
+ * Cada par IGUAL abaixo tem o seu gêmeo DISTINTO.
+ */
+describe('a chave de vínculo compartilhada — fusão, variante e grupo', () => {
+  const FORMA_CAMINHO = `documents/integracao/${INTEGRACAO}`;
+
+  describe('fundirLinksVariacoesShopee', () => {
+    const opcaoDoOperador = {
+      shopee_option_id: 5001,
+      shopee_option_name: 'Azul',
+      arakene_variation_id: ['v-do-op'],
+    };
+    const nossaOpcao = {
+      shopee_option_id: 5001,
+      shopee_option_name: 'Azul',
+      arakene_variation_id: ['v-nosso'],
+    };
+
+    it('IGUAL: uma entrada armazenada em forma de caminho é fundida, nunca gêmea', () => {
+      const armazenado = [
+        { ...entrada({ integracaoShopeeId: FORMA_CAMINHO, variationOptions: [opcaoDoOperador] }) },
+      ];
+      const r = fundirLinksVariacoesShopee(armazenado, entrada({ variationOptions: [nossaOpcao] }));
+      expect(r.array).toHaveLength(1);
+      expect(r.mudou).toBe(true);
+      const fundida = r.array[0] as LinkVariacoesShopee;
+      // O id armazenado é preservado VERBATIM — a dobra lê, nunca reescreve.
+      expect(fundida.integracaoShopeeId).toBe(FORMA_CAMINHO);
+      expect(fundida.variationOptions[0]?.arakene_variation_id).toEqual(['v-do-op', 'v-nosso']);
+    });
+
+    it('IGUAL: as outras formas de caminho do mesmo id também são a entrada', () => {
+      for (const forma of ['integracao/int-1', 'int-1/', '/documents/integracao/int-1/']) {
+        const r = fundirLinksVariacoesShopee(
+          [{ ...entrada({ integracaoShopeeId: forma }) }],
+          entrada(),
+        );
+        expect(r.array, forma).toHaveLength(1);
+        expect(r.mudou, forma).toBe(false);
+      }
+    });
+
+    it('⛔ NEAR-MISS: `int-12` armazenado NÃO é `int-1` — fica intacto e a nossa é anexada', () => {
+      const alheia = {
+        ...entrada({ integracaoShopeeId: 'int-12', variationOptions: [opcaoDoOperador] }),
+      };
+      const r = fundirLinksVariacoesShopee([alheia], entrada({ variationOptions: [nossaOpcao] }));
+      expect(r.array).toHaveLength(2);
+      expect(r.array[0]).toBe(alheia);
+      expect((r.array[1] as LinkVariacoesShopee).integracaoShopeeId).toBe(INTEGRACAO);
+    });
+
+    it('⛔ NEAR-MISS: e no sentido inverso — `int-1` armazenado não é a entrada de `int-12`', () => {
+      const doInt1 = { ...entrada() };
+      const r = fundirLinksVariacoesShopee([doInt1], entrada({ integracaoShopeeId: 'int-12' }));
+      expect(r.array).toHaveLength(2);
+      expect(r.array[0]).toBe(doInt1);
+    });
+
+    it('⛔ NEAR-MISS: o caminho de OUTRA conta (`documents/integracao/int-12`) não é `int-1`', () => {
+      const alheia = { ...entrada({ integracaoShopeeId: 'documents/integracao/int-12' }) };
+      const r = fundirLinksVariacoesShopee([alheia], entrada());
+      expect(r.array).toHaveLength(2);
+      expect(r.array[0]).toBe(alheia);
+    });
+
+    it('⛔ NEAR-MISS: caixa e espaço continuam distinguindo a conta', () => {
+      for (const forma of ['INT-1', ' int-1', 'int-1 ']) {
+        const r = fundirLinksVariacoesShopee(
+          [{ ...entrada({ integracaoShopeeId: forma }) }],
+          entrada(),
+        );
+        expect(r.array, JSON.stringify(forma)).toHaveLength(2);
+      }
+    });
+
+    it('um gêmeo de uma importação antiga é fundido JUNTO — os dois ficam em dia', () => {
+      // [a entrada que a publicação lê (forma caminho, primeira), o gêmeo nu
+      // que a importação anterior anexou]. Toda entrada legível do par é
+      // fundida, como antes; nenhuma terceira é anexada.
+      const armazenado = [
+        { ...entrada({ integracaoShopeeId: FORMA_CAMINHO, variationOptions: [opcaoDoOperador] }) },
+        { ...entrada({ variationOptions: [opcaoDoOperador] }) },
+      ];
+      const r = fundirLinksVariacoesShopee(armazenado, entrada({ variationOptions: [nossaOpcao] }));
+      expect(r.array).toHaveLength(2);
+      for (const e of r.array as LinkVariacoesShopee[]) {
+        expect(e.variationOptions[0]?.arakene_variation_id).toEqual(['v-do-op', 'v-nosso']);
+      }
+    });
+
+    it('⛔ um elemento ILEGÍVEL que nomeia o par fica VERBATIM e a nossa é anexada', () => {
+      // `variation_group_list` é um escalar; uma lista é o vínculo do operador
+      // gravado quebrado. A fusão nunca escreve DENTRO dele.
+      const quebrado = { ...entrada(), variation_group_list: [1, 2] };
+      const r = fundirLinksVariacoesShopee([quebrado], entrada({ variationOptions: [nossaOpcao] }));
+      expect(r.array).toHaveLength(2);
+      expect(r.array[0]).toBe(quebrado);
+      expect(r.mudou).toBe(true);
+    });
+  });
+
+  describe('a cascata de VARIANTE, rung 1 — a mesma entrada que a publicação lê', () => {
+    const base = {
+      modelos: [] as ShopeeModel[],
+      integracaoId: INTEGRACAO,
+      categoryId: CATEGORIA,
+      nomeCategoria: 'Camisetas',
+      nowMs: AGORA,
+    };
+    const opcao = { nome: 'Azul Celeste', optionId: 5001, indice: 0 };
+    const mapeamento = (varianteId: string) => [
+      {
+        shopee_option_id: 5001,
+        shopee_option_name: 'qualquer',
+        arakene_variation_id: [varianteId],
+      },
+    ];
+    const grupoCom = (links: unknown[]) =>
+      memo([
+        {
+          id: 'g-cor',
+          raw: {
+            nome: 'Cor',
+            variacoes: [
+              { id: 'v-a', nome: 'Nome A' },
+              { id: 'v-b', nome: 'Nome B' },
+            ],
+            linksVariacoesShopee: links,
+          },
+        },
+      ]);
+
+    it('IGUAL: o mapeamento de opção de uma entrada em forma de caminho vence', () => {
+      const plano = planejarTaxonomia({
+        ...base,
+        tiers: [tier({ nome: 'Cor', opcoes: [opcao] })],
+        candidatos: grupoCom([
+          entrada({ integracaoShopeeId: FORMA_CAMINHO, variationOptions: mapeamento('v-a') }),
+        ]),
+      });
+      expect(plano.grupos[0]?.varianteIds).toEqual(['v-a']);
+    });
+
+    it('⛔ NEAR-MISS: o mapeamento de `int-12` NÃO é lido — a opção cai para a criação', () => {
+      const plano = planejarTaxonomia({
+        ...base,
+        tiers: [tier({ nome: 'Cor', opcoes: [opcao] })],
+        candidatos: grupoCom([
+          entrada({ integracaoShopeeId: 'int-12', variationOptions: mapeamento('v-a') }),
+        ]),
+      });
+      expect(plano.grupos[0]?.varianteIds).toEqual(['shopee-5001']);
+    });
+
+    it('a primeira entrada legível vence — exatamente a `armazenada` do resolvedor', () => {
+      const links = [
+        entrada({ integracaoShopeeId: FORMA_CAMINHO, variationOptions: mapeamento('v-a') }),
+        entrada({ variationOptions: mapeamento('v-b') }),
+      ];
+      const plano = planejarTaxonomia({
+        ...base,
+        tiers: [tier({ nome: 'Cor', opcoes: [opcao] })],
+        candidatos: grupoCom(links),
+      });
+      const resolucao = resolverEntradaShopeeDoGrupo(links, INTEGRACAO, CATEGORIA);
+      expect(resolucao.tipo).toBe('armazenada');
+      const daPublicacao =
+        resolucao.tipo === 'armazenada'
+          ? resolucao.entrada.variationOptions[0]?.arakene_variation_id[0]
+          : null;
+      expect(daPublicacao).toBe('v-a');
+      expect(plano.grupos[0]?.varianteIds).toEqual([daPublicacao]);
+    });
+
+    it('e na ordem inversa a entrada nua, agora primeira, é a lida', () => {
+      const plano = planejarTaxonomia({
+        ...base,
+        tiers: [tier({ nome: 'Cor', opcoes: [opcao] })],
+        candidatos: grupoCom([
+          entrada({ variationOptions: mapeamento('v-b') }),
+          entrada({ integracaoShopeeId: FORMA_CAMINHO, variationOptions: mapeamento('v-a') }),
+        ]),
+      });
+      expect(plano.grupos[0]?.varianteIds).toEqual(['v-b']);
+    });
+
+    it('um elemento ilegível ANTES da entrada legível não a esconde', () => {
+      const plano = planejarTaxonomia({
+        ...base,
+        tiers: [tier({ nome: 'Cor', opcoes: [opcao] })],
+        candidatos: grupoCom([
+          { ...entrada({ variationOptions: mapeamento('v-b') }), variation_group_list: [1, 2] },
+          entrada({ integracaoShopeeId: FORMA_CAMINHO, variationOptions: mapeamento('v-a') }),
+        ]),
+      });
+      expect(plano.grupos[0]?.varianteIds).toEqual(['v-a']);
+    });
+
+    it('⛔ uma entrada só ILEGÍVEL não tem mapeamento: a importação cria, não recusa — e guarda o elemento', () => {
+      const quebrado = {
+        ...entrada({ variationOptions: mapeamento('v-a') }),
+        variation_group_list: [1, 2],
+      };
+      const plano = planejarTaxonomia({
+        ...base,
+        tiers: [tier({ nome: 'Cor', opcoes: [opcao] })],
+        candidatos: grupoCom([quebrado]),
+      });
+      expect(plano.grupos[0]?.varianteIds).toEqual(['shopee-5001']);
+      const links = (plano.grupos[0]?.patch?.linksVariacoesShopee ?? []) as unknown[];
+      expect(links).toHaveLength(2);
+      expect(links[0]).toBe(quebrado);
+    });
+  });
+
+  describe('a cascata de GRUPO, rung 1(b) — a metade-conta é a mesma dobra', () => {
+    const base = {
+      modelos: [] as ShopeeModel[],
+      categoryId: CATEGORIA,
+      nomeCategoria: 'Camisetas',
+      nowMs: AGORA,
+    };
+    const candidatosCom = (integracaoShopeeId: string) =>
+      memo([
+        {
+          id: 'g-operador',
+          raw: {
+            nome: 'Cor do Operador',
+            linksVariacoesShopee: [{ integracaoShopeeId, category_id: 999, variation_id: 100015 }],
+          },
+        },
+      ]);
+    const tierPadrao = tier({ nome: 'Qualquer Coisa', variationId: 100015 });
+
+    it('IGUAL: um vínculo em forma de caminho casa o grupo do operador', () => {
+      const plano = planejarTaxonomia({
+        ...base,
+        integracaoId: INTEGRACAO,
+        tiers: [tierPadrao],
+        candidatos: candidatosCom(FORMA_CAMINHO),
+      });
+      expect(plano.grupos[0]?.grupoId).toBe('g-operador');
+      expect(plano.grupos[0]?.criar).toBe(false);
+    });
+
+    it('⛔ NEAR-MISS: `int-12` armazenado não casa `int-1` — e o inverso também não', () => {
+      const a = planejarTaxonomia({
+        ...base,
+        integracaoId: INTEGRACAO,
+        tiers: [tierPadrao],
+        candidatos: candidatosCom('int-12'),
+      });
+      expect(a.grupos[0]?.grupoId).toBe('shopee-100015');
+      expect(a.grupos[0]?.criar).toBe(true);
+
+      const b = planejarTaxonomia({
+        ...base,
+        integracaoId: 'int-12',
+        tiers: [tierPadrao],
+        candidatos: candidatosCom(INTEGRACAO),
+      });
+      expect(b.grupos[0]?.grupoId).toBe('shopee-100015');
+    });
+
+    it('⛔ NEAR-MISS: caixa diferente (`INT-1`) não é a mesma conta', () => {
+      const plano = planejarTaxonomia({
+        ...base,
+        integracaoId: INTEGRACAO,
+        tiers: [tierPadrao],
+        candidatos: candidatosCom('INT-1'),
+      });
+      expect(plano.grupos[0]?.grupoId).toBe('shopee-100015');
+    });
+  });
+
+  it('#1369: o módulo não soletra a chave uma segunda vez', () => {
+    // O comportamento está fixado pelos pares acima; isto só pega uma
+    // RE-soletração local — a forma que fez as duas cópias divergirem.
+    const fonte = readFileSync(
+      fileURLToPath(new URL('./taxonomiaShopeeCore.ts', import.meta.url)),
+      'utf8',
+    );
+    expect(fonte.length).toBeGreaterThan(1_000);
+    expect(/\.integracaoShopeeId\s*[!=]==/.test(fonte)).toBe(false);
+    expect(/\.category_id\s*[!=]==/.test(fonte)).toBe(false);
+    expect(/split\(['"]\/['"]\)/.test(fonte)).toBe(false);
+    expect(fonte.includes(['chave', 'DaEntrada'].join(''))).toBe(false);
   });
 });

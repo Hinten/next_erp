@@ -12,6 +12,8 @@
     "./pipeline-queries": "./src/pipeline-queries.ts",
     "./server": "./src/server/index.ts",
     "./admin": "./src/admin/index.ts",
+    "./admin/auth": "./src/admin/auth/index.ts",
+    "./admin/signatures": "./src/admin/signatures/index.ts",
     "./admin/cargo-claims": "./src/admin/cargoClaims/index.ts",
     "./admin/cache": "./src/admin/cache/index.ts",
     "./admin/avisos": "./src/admin/avisos/index.ts",

@@ -15,6 +15,7 @@
  * `Produto`-prefixed, and renaming it would churn unrelated call sites.
  */
 import type { ComponentesKit } from '../collection/embedded/kit';
+import { idFromRefOrNull } from '../../shared/outerRef';
 
 /** A box, in centimetres, on the `Dimensoes` wire axes. */
 export interface DimensoesCm {
@@ -67,9 +68,7 @@ export interface ItemDimensoes {
  * the 1kg/unit default.
  */
 export function normalizeProdutoId(raw: string | null | undefined): string | null {
-  if (!raw) return null;
-  const id = raw.includes('/') ? (raw.split('/').pop() ?? raw) : raw;
-  return id || null;
+  return idFromRefOrNull(raw);
 }
 
 /**

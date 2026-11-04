@@ -43,7 +43,13 @@ import {
 // Database: FIREBASE_DATABASE_ID ?? 'default'.
 //
 // Exit code: 1 when any walk FAILS, 2 when none fails but some collection is
-// empty (no rows ⇒ no plan ⇒ unverified), 0 only when every walk is proven.
+// empty (no rows ⇒ no plan ⇒ unverified), 0 only when every probed walk is proven.
+//
+// A row with `parent` is a per-parent SUBCOLLECTION walk (`<parent>/{id}/<collection>`,
+// COLLECTION scope). The probe below builds a ROOT `collection(<collection>)`,
+// which for such a row is empty and says nothing about the walk, so the row is
+// listed as NOT PROBED, counts toward no exit code, and its index is confirmed
+// READY in the project's index list instead (amazon-tokenoaut-legado.README.md).
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 
@@ -97,8 +103,17 @@ const db = getFirestore(app, process.env.FIREBASE_DATABASE_ID?.trim() || 'defaul
 const { walks } = JSON.parse(readFileSync(new URL('../key-walks.json', import.meta.url), 'utf8'));
 /** Distinct (collection, scope), with the scripts that walk it. */
 const alvos = new Map();
+/** Per-parent subcollection walks (`parent` set): listed, never probed (see the header). */
+const naoSondadas = new Map();
 for (const w of walks) {
   if (only != null && w.collection !== only) continue;
+  if (w.parent != null) {
+    const rotulo = `${w.parent}/{id}/${w.collection}`;
+    const n = naoSondadas.get(rotulo) ?? { rotulo, collection: w.collection, scripts: [] };
+    n.scripts.push(w.script);
+    naoSondadas.set(rotulo, n);
+    continue;
+  }
   const k = `${w.scope} ${w.collection}`;
   const alvo = alvos.get(k) ?? { collection: w.collection, scope: w.scope, scripts: [] };
   alvo.scripts.push(w.script);
@@ -188,8 +203,18 @@ for (const alvo of alvos.values()) {
   }
 }
 
+for (const n of naoSondadas.values()) {
+  console.warn(
+    `NOT PROBED collection(${n.rotulo}): a per-parent subcollection walk; a root ` +
+      `collection(${n.collection}) plans nothing for it. Confirm ${n.collection}(__name__ ASC) ` +
+      `shows READY in the project's index list (walked by ${n.scripts.join(', ')})`,
+  );
+}
+const semSonda = [...naoSondadas.keys()];
+
 console.log(
-  `\n${alvos.size} walked collection(s); ${falhas.length} failing page(s); ${vazias.length} empty.`,
+  `\n${alvos.size} walked collection(s); ${falhas.length} failing page(s); ${vazias.length} empty; ` +
+    `${semSonda.length} per-parent subcollection walk(s) not probed.`,
 );
 if (falhas.length > 0) {
   console.error(`❌ ${falhas.join('; ')}`);
@@ -199,5 +224,9 @@ if (vazias.length > 0) {
   console.warn(`⚠️  no failure, but unverified (empty): ${vazias.join('; ')}`);
   process.exit(2);
 }
-console.log('✅ every migration key walk rides its key index');
+console.log(
+  semSonda.length === 0
+    ? '✅ every migration key walk rides its key index'
+    : `✅ every probed migration key walk rides its key index; confirm READY by hand for: ${semSonda.join('; ')}`,
+);
 process.exit(0);

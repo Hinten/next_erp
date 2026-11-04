@@ -708,7 +708,7 @@ describe('os dois erros e os dois motivos do job', () => {
   });
 
   it('o 409 do "já em andamento" é um ShopeeError com código e status próprios', () => {
-    const err = new ShopeeEnvioPrecoEmAndamentoError('x');
+    const err = new ShopeeEnvioPrecoEmAndamentoError('x', 'job-vivo');
     expect(err).toBeInstanceOf(ShopeeError);
     expect(err.status).toBe(409);
     expect(err.code).toBe('SHOPEE_PRICE_SYNC_RUNNING');
@@ -835,7 +835,10 @@ describe('iniciarEnvioPrecoShopee', () => {
   it('um job VIVO da conta ⇒ 409, nenhum documento novo — e a consulta é (integracaoId, status) com limite 1', async () => {
     const m = mundo();
     semearJob(m, { updatedAt: T0 - HORA_MS });
-    await expect(iniciar(m)).rejects.toBeInstanceOf(ShopeeEnvioPrecoEmAndamentoError);
+    const inicio = iniciar(m);
+    await expect(inicio).rejects.toBeInstanceOf(ShopeeEnvioPrecoEmAndamentoError);
+    // O id do job VIVO — o 409 o entrega à web para ela se anexar a ele.
+    await expect(inicio).rejects.toMatchObject({ jobId: JOB });
     expect(m.db.idsEm('enviosPrecoShopee')).toEqual([JOB]);
     expect(m.db.consultasCompletas).toEqual([
       {
@@ -884,7 +887,10 @@ describe('iniciarEnvioPrecoShopee', () => {
   it('M28: 7 h parado mas ESTACIONADO com `retomarEm` à frente ⇒ 409, não é reclamado', async () => {
     const m = mundo();
     semearJob(m, { updatedAt: T0 - 7 * HORA_MS, retomarEm: T0 + 5 * HORA_MS });
-    await expect(iniciar(m)).rejects.toBeInstanceOf(ShopeeEnvioPrecoEmAndamentoError);
+    const inicio = iniciar(m);
+    await expect(inicio).rejects.toBeInstanceOf(ShopeeEnvioPrecoEmAndamentoError);
+    // Estacionado ainda é vivo: o 409 nomeia ESTE job, como o de um job ativo.
+    await expect(inicio).rejects.toMatchObject({ jobId: JOB });
     expect(jobNoBanco(m).status).toBe('running');
   });
 

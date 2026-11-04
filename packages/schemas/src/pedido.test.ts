@@ -7,6 +7,7 @@ import {
   estoqueAplicadoSchema,
   itemDoPedidoSchema,
   itemSubtotal,
+  marketplacePedidoTipoSchema,
   pedidoMeta,
   pedidoSchema,
   pedidoTotal,
@@ -175,6 +176,111 @@ describe('marketplacePedidoSchema', () => {
         marketplace: { tipo: MARKETPLACE_PEDIDO_TIPO.shopee, status: 'READY_TO_SHIP', extra: 1 },
       }).success,
     ).toBe(false);
+  });
+});
+
+describe('marketplacePedidoSchema — the three Amazon keys (Amazon step 5)', () => {
+  /** What the Shopee importer writes: none of the Amazon keys. */
+  const BLOCO_SHOPEE = {
+    tipo: MARKETPLACE_PEDIDO_TIPO.shopee,
+    status: 'READY_TO_SHIP',
+    statusEm: 1_788_973_354_000_000,
+    pendingTerms: [],
+    completedScenario: null,
+    cancelReason: null,
+    cancelBy: null,
+  };
+
+  /**
+   * What the Amazon importer hands the parse (the plan's shape): no
+   * `cancelReason`, which the schema default then stores as `null`.
+   */
+  const BLOCO_AMAZON = {
+    tipo: MARKETPLACE_PEDIDO_TIPO.amazon,
+    status: 'UNSHIPPED',
+    statusEm: 1_788_973_354_000_000,
+    cancelBy: null,
+    invoiceStatus: 'PENDING',
+    fulfilledBy: 'MERCHANT',
+    programs: ['DELIVERY_BY_AMAZON', 'PRIME'],
+  };
+
+  it('names the Amazon member (the prefer-schema-enum companion) and labels it', () => {
+    expect(MARKETPLACE_PEDIDO_TIPO.amazon).toBe('amazon');
+    expect(marketplacePedidoTipoSchema.options).toEqual(['shopee', 'amazon']);
+    expect(marketplacePedidoTipoSchema.meta()?.labels).toEqual({
+      shopee: 'Shopee',
+      amazon: 'Amazon',
+    });
+  });
+
+  it('★ a Shopee block with no Amazon key comes back WITHOUT one — absent stays absent', () => {
+    // This pins the Zod SCHEMA: the read parse and a strict re-parse of its own
+    // output both come back without the Amazon keys, so a key defaulted to
+    // `null` would land in every Shopee re-write. The write path itself
+    // (`parseForWrite` and `parseMergePatch`, `packages/data/src/zodParse.ts`)
+    // is pinned on the pedido handle, in
+    // `packages/data/src/admin/collections/pedidoCollection.marketplace.test.ts`.
+    const lido = pedidoSchema.parse({ ...baseInput, marketplace: BLOCO_SHOPEE });
+    const escrito = pedidoSchema.strict().parse({ ...baseInput, marketplace: lido.marketplace });
+    for (const out of [lido, escrito]) {
+      expect(out.marketplace).toEqual(BLOCO_SHOPEE);
+      for (const chave of ['invoiceStatus', 'fulfilledBy', 'programs']) {
+        expect(Object.hasOwn(out.marketplace ?? {}, chave), chave).toBe(false);
+      }
+    }
+  });
+
+  it('★ an Amazon block with the three keys round-trips verbatim, and leaves `cancelReason` null', () => {
+    const lido = pedidoSchema.parse({ ...baseInput, marketplace: BLOCO_AMAZON });
+    expect(lido.marketplace).toMatchObject(BLOCO_AMAZON);
+    // `programs` keeps Amazon's ORDER (a reordered list is a different value).
+    expect(lido.marketplace?.programs).toEqual(['DELIVERY_BY_AMAZON', 'PRIME']);
+    // The Amazon keys are their own: nothing of Amazon's rides `cancelReason`.
+    expect(lido.marketplace?.cancelReason).toBeNull();
+    const reescrito = pedidoSchema.strict().parse({ ...baseInput, marketplace: lido.marketplace });
+    expect(reescrito.marketplace).toEqual(lido.marketplace);
+  });
+
+  it('keeps an explicit `null` apart from an absent key (null is stored, absent is not)', () => {
+    const out = pedidoSchema.parse({
+      ...baseInput,
+      marketplace: { tipo: MARKETPLACE_PEDIDO_TIPO.amazon, invoiceStatus: null, programs: [] },
+    });
+    expect(out.marketplace?.invoiceStatus).toBeNull();
+    expect(out.marketplace?.programs).toEqual([]);
+    expect(Object.hasOwn(out.marketplace ?? {}, 'fulfilledBy')).toBe(false);
+  });
+
+  it('★ `programs` refuses a non-array; the two strings refuse a non-string', () => {
+    for (const marketplace of [
+      { tipo: MARKETPLACE_PEDIDO_TIPO.amazon, programs: 'PRIME' },
+      { tipo: MARKETPLACE_PEDIDO_TIPO.amazon, programs: [1] },
+      { tipo: MARKETPLACE_PEDIDO_TIPO.amazon, invoiceStatus: 1 },
+      { tipo: MARKETPLACE_PEDIDO_TIPO.amazon, fulfilledBy: ['MERCHANT'] },
+    ]) {
+      expect(
+        pedidoSchema.safeParse({ ...baseInput, marketplace }).success,
+        JSON.stringify(marketplace),
+      ).toBe(false);
+    }
+  });
+
+  it('keeps every Amazon value an OPEN string — a status Amazon invents still parses', () => {
+    const out = pedidoSchema.parse({
+      ...baseInput,
+      marketplace: {
+        tipo: MARKETPLACE_PEDIDO_TIPO.amazon,
+        status: 'INVOICE_UNCONFIRMED',
+        invoiceStatus: 'UM_STATUS_NOVO',
+        fulfilledBy: 'OUTRO',
+      },
+    });
+    expect(out.marketplace).toMatchObject({
+      status: 'INVOICE_UNCONFIRMED',
+      invoiceStatus: 'UM_STATUS_NOVO',
+      fulfilledBy: 'OUTRO',
+    });
   });
 });
 

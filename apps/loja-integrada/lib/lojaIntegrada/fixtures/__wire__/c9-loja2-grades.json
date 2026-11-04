@@ -1,0 +1,113 @@
+{
+  "versao": 1,
+  "perfil": "fixture",
+  "credencial": "personal-token",
+  "capturadoEm": "2026-10-28",
+  "requisicao": {
+    "metodo": "GET",
+    "caminho": "/v1/grades/",
+    "query": [
+      [
+        "limit",
+        "50"
+      ]
+    ]
+  },
+  "resposta": {
+    "status": 200,
+    "politica": "catalogo",
+    "forma": "json",
+    "bytes": 1526,
+    "corpo": {
+      "meta": {
+        "limit": 50,
+        "offset": 0,
+        "total_count": 10,
+        "previous": null,
+        "next": null
+      },
+      "objects": [
+        {
+          "id": 235615708,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "nome_visivel": "REDACTED",
+          "specification_id": null,
+          "resource_uri": "/api/v1/grades/235615708"
+        },
+        {
+          "id": 605007075,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "nome_visivel": "REDACTED",
+          "specification_id": null,
+          "resource_uri": "/api/v1/grades/605007075"
+        },
+        {
+          "id": 196129578,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "nome_visivel": "REDACTED",
+          "specification_id": null,
+          "resource_uri": "/api/v1/grades/196129578"
+        },
+        {
+          "id": 974247799,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "nome_visivel": "REDACTED",
+          "specification_id": null,
+          "resource_uri": "/api/v1/grades/974247799"
+        },
+        {
+          "id": 749025946,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "nome_visivel": "REDACTED",
+          "specification_id": null,
+          "resource_uri": "/api/v1/grades/749025946"
+        },
+        {
+          "id": 302108206,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "nome_visivel": "REDACTED",
+          "specification_id": null,
+          "resource_uri": "/api/v1/grades/302108206"
+        },
+        {
+          "id": 920590139,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "nome_visivel": "REDACTED",
+          "specification_id": null,
+          "resource_uri": "/api/v1/grades/920590139"
+        },
+        {
+          "id": 809090580,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "nome_visivel": "REDACTED",
+          "specification_id": null,
+          "resource_uri": "/api/v1/grades/809090580"
+        },
+        {
+          "id": 748429889,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "nome_visivel": "REDACTED",
+          "specification_id": null,
+          "resource_uri": "/api/v1/grades/748429889"
+        },
+        {
+          "id": 371385839,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "nome_visivel": "REDACTED",
+          "specification_id": null,
+          "resource_uri": "/api/v1/grades/371385839"
+        }
+      ]
+    }
+  }
+}

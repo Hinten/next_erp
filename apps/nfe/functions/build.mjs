@@ -10,6 +10,17 @@ import { loadBuildEnv, requireBuildRegion } from '../../../tools/deploy-env/buil
 //   - xmllint-wasm — ships a ~3 MB WASM asset loaded at runtime relative to its
 //     own dir; bundling it breaks that lookup, so it stays an installed dep (the
 //     minimal deploy package.json lists it).
+//   - @google-cloud/firestore — the Simples apuração runner
+//     (src/apuracaoSimples.ts → lib/nfe/handlers/fetchReceitaSimples.ts) imports
+//     pipeline builders from `@google-cloud/firestore/pipelines`. Two reasons it
+//     must never be bundled: (1) a bundled copy is a SECOND instance beside
+//     firebase-admin's, and the Pipelines API overloads every stage on
+//     `instanceof`, so a cross-copy expression is silently reinterpreted as an
+//     options object (the ML precedent in apps/mercado-livre/functions/build.mjs);
+//     (2) inlining it drags in google-gax, which reads `__dirname` at module load
+//     — undefined in ESM, so the bundle throws on import and firebase-tools'
+//     trigger analysis fails before deploying anything. The minimal deploy
+//     package.json already lists it.
 // Everything else — @delfrance/* + soap / node-forge / xml-crypto / @xmldom/xmldom
 // — is inlined. The SEFAZ ca/*.pem chains + MOC XSD schemas are NOT bundled (they
 // are read from disk); prepare-deploy.mjs copies them next to the bundle and
@@ -48,6 +59,8 @@ export async function bundle(outfile) {
       'firebase-admin/*',
       'firebase-functions',
       'firebase-functions/*',
+      '@google-cloud/firestore',
+      '@google-cloud/firestore/*',
       'xmllint-wasm',
     ],
     define: {

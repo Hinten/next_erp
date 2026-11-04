@@ -25,6 +25,7 @@ import {
   classificarRecusaTabelaMedidas,
 } from '../tabelaMedidas/recusaTabelaMedidas';
 import { FRASE_TAX_INFO_INCOMPLETO } from './constantesAnuncio';
+import { desfechoDeCriacaoDeItem } from './criacaoIncerta';
 import { MOTIVO_PROBLEMA_PUBLICACAO, type MotivoProblemaPublicacao } from './errosPublicacao';
 import {
   FRASE_TABELA_MEDIDAS_FOTO_RECUSADA,
@@ -237,6 +238,14 @@ const TABELA: readonly Linha[] = [
     motivo: 'listagem-removida',
   },
   {
+    // #1911 (P5, D15) — the documented sentence of BOTH write pages, verbatim.
+    rotulo: 'anúncio semelhante já existe na loja (D15) — a prosa da Shopee, sem frase nossa',
+    code: 'product.error_repeated_mtsku',
+    message: 'A similar product has already been uploaded',
+    campo: 'item_sku',
+    motivo: 'anuncio-semelhante-existente',
+  },
+  {
     rotulo: 'nenhuma família — a prosa da Shopee é tudo que o operador recebe',
     code: 'product.error_param',
     message: 'something we have never seen',
@@ -254,7 +263,7 @@ describe('problemaDeErroShopee — a tabela de famílias', () => {
     });
   });
 
-  it('a tabela exercita os dezenove campos do desenho, mais a linha sem campo', () => {
+  it('a tabela exercita os vinte campos do desenho, mais a linha sem campo', () => {
     const campos = new Set(TABELA.map((l) => l.campo));
     expect(campos.has(null)).toBe(true);
     const nomeados = [...campos].filter((c): c is string => c !== null).sort();
@@ -268,6 +277,7 @@ describe('problemaDeErroShopee — a tabela de famílias', () => {
       'image',
       'item_id',
       'item_name',
+      'item_sku',
       'logistic_info',
       'model_list',
       'original_price',
@@ -632,6 +642,87 @@ describe('tabela de medidas (passo 18)', () => {
     );
     expect(MENSAGEM_TABELA_MEDIDAS_FOTO_NAO_ENVIADA).not.toContain('Shopee');
   });
+});
+
+/* -------------------------------------------------------------------------- */
+/*        (1c) o anúncio SEMELHANTE — `error_repeated_mtsku` (#1911, P5)       */
+/* -------------------------------------------------------------------------- */
+
+/** A frase documentada nas DUAS páginas de escrita (`add_item`, `update_item`). */
+const FRASE_DO_MTSKU = 'A similar product has already been uploaded';
+
+describe('o anúncio semelhante (#1911, P5, D15)', () => {
+  it('PAR: o erro REAL de add_item E de update_item ⇒ item_sku / anuncio-semelhante-existente, com a prosa da Shopee', () => {
+    for (const path of [SHOPEE_ADD_ITEM_PATH, SHOPEE_UPDATE_ITEM_PATH]) {
+      const err = doEnvelope('product.error_repeated_mtsku', FRASE_DO_MTSKU, path);
+      expect(problemasDeErroShopee(err), path).toStrictEqual([
+        {
+          campo: 'item_sku',
+          motivo: MOTIVO_PROBLEMA_PUBLICACAO.anuncioSemelhanteExistente,
+          // A prosa da Shopee, verbatim — a frase NOSSA (importe / spam) é da
+          // web e da CLI, nunca desta linha (K2-2).
+          mensagem: err.message,
+        },
+      ]);
+      expect(err.message, path).toContain(FRASE_DO_MTSKU);
+    }
+  });
+
+  it('⛔ UMA recusa, DUAS leituras que concordam: o campo é item_sku E o desfecho da criação é `nao-criado`', () => {
+    // A linha desta tabela e a do classificador da criação (`criacaoIncerta.ts`)
+    // leem o MESMO código, sozinho. Se uma dissesse "anúncio semelhante" e a
+    // outra "talvez criado", o operador ouviria que a Shopee recusou enquanto a
+    // trava esperava uma busca — ou o contrário.
+    const err = doEnvelope('product.error_repeated_mtsku', FRASE_DO_MTSKU, SHOPEE_ADD_ITEM_PATH);
+    expect(problemasDeErroShopee(err)[0]?.motivo).toBe('anuncio-semelhante-existente');
+    expect(desfechoDeCriacaoDeItem(err)).toBe('nao-criado');
+
+    // ⛔ QUASE-PAR: um código IRMÃO não publicado não é nenhuma das duas coisas —
+    // nem um campo aqui (a linha não tem prefixo), nem uma recusa lá (`incerto`).
+    const irmao = doEnvelope(
+      'product.error_repeated_mtsku_v2',
+      FRASE_DO_MTSKU,
+      SHOPEE_ADD_ITEM_PATH,
+    );
+    expect(problemasDeErroShopee(irmao)).toStrictEqual([
+      { campo: null, motivo: 'desconhecido', mensagem: irmao.message },
+    ]);
+    expect(desfechoDeCriacaoDeItem(irmao)).toBe('incerto');
+  });
+
+  it('⛔ QUASE-PAR: a frase documentada sob OUTRO código não é a família — a linha é só de CÓDIGO', () => {
+    // A frase sob `error_param` é uma combinação que ninguém mediu; casá-la
+    // chamaria de duplicata uma recusa que pode ser de outro campo.
+    expect(problemaDeErroShopee('product.error_param', FRASE_DO_MTSKU)).toStrictEqual({
+      campo: null,
+      motivo: 'desconhecido',
+      mensagem: FRASE_DO_MTSKU,
+    });
+    // PAR: com ou sem o prefixo de módulo, o código é o mesmo.
+    expect(problemaDeErroShopee('error_repeated_mtsku', FRASE_DO_MTSKU)).toStrictEqual(
+      problemaDeErroShopee('product.error_repeated_mtsku', FRASE_DO_MTSKU),
+    );
+  });
+
+  it.each([
+    ['categoria', 'can not set category'],
+    ['logística', 'Invalid logistic info'],
+    ['imagens', 'Image not exist.'],
+    ['foto da tabela de medidas', FRASE_TABELA_MEDIDAS_FOTO_RECUSADA],
+    ['estoque abaixo do mínimo', 'Stock should be within 2-1000000 for model'],
+    ['imposto', 'invalid additional information'],
+  ])(
+    'o CÓDIGO decide qualquer que seja a frase — mesmo carregando a frase de %s',
+    (_familia, frase) => {
+      // A linha é a SEGUNDA da tabela: abaixo de uma linha de frase, aquela frase
+      // a venceria, e o mesmo erro teria um campo aqui e outro desfecho lá.
+      expect(problemaDeErroShopee('product.error_repeated_mtsku', frase)).toStrictEqual({
+        campo: 'item_sku',
+        motivo: 'anuncio-semelhante-existente',
+        mensagem: frase,
+      });
+    },
+  );
 });
 
 /* -------------------------------------------------------------------------- */

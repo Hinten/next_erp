@@ -20,10 +20,23 @@
  * a permanent duplicate bought for a transient conflict.
  *
  * An `update` masking at the top-level KEY is why this is safer than a
- * whole-document rewrite: every key we do not name — including the ones the
- * Flutter app still authors and `grupoDeVariacoesSchema` does not model —
- * survives untouched, with no raw spread at all. This module opens no
- * multi-document atomic write and files no entry in the transaction inventory.
+ * whole-document rewrite: every key we do not name — including any key a
+ * migrated legacy grupo carries that `grupoDeVariacoesSchema` does not model,
+ * which a parse would strip — survives untouched, with no raw spread at all.
+ * This module opens no multi-document atomic write and files no entry in the
+ * transaction inventory.
+ *
+ * ## ⚠️ The `linksVariacoesShopee` key is NOT spelled here
+ *
+ * Which element is THE entry of a (conta, LEAF category) pair is one answer in
+ * `@delfrance/schemas` — `ehEntradaShopeeDaChave` and
+ * `resolverEntradaShopeeDoGrupo` (#1911) — and the step-11 publisher
+ * (`anuncios/tiersPublicacao.ts`) reads the same one. Before #1911 this module
+ * keyed byte-exact while the publisher folded the conta, so a stored
+ * `documents/integracao/<id>` was a binding for the publisher and a stranger
+ * here: the merge appended a TWIN entry the publisher never read (first match
+ * wins), and rung 1 of the variante cascade ignored the operator's option
+ * mapping. A bare stored id behaves exactly as before.
  *
  * ## ⚠️ Where the tier names and ids come from, and why NAMES are the floor
  *
@@ -53,7 +66,10 @@ import type {
 import {
   INTEGRACAO_TIPO,
   TIPO_VARIACAO,
+  ehEntradaShopeeDaChave,
+  idDoRef,
   linkVariacoesShopeeSchema,
+  resolverEntradaShopeeDoGrupo,
   varianteFakePath,
   type ExternalVariacaoLink,
   type LinkVariacaoOpcaoShopee,
@@ -183,6 +199,40 @@ function inteiroOuZero(v: number | null | undefined): number {
 }
 
 /**
+ * THE fold of a Shopee tier NAME or tier-option NAME: the ends trimmed
+ * (`String.prototype.trim`, so an NBSP too) and nothing else. ONE function for
+ * both sides of the wire (#1911 batch-A, the #1369 shape):
+ *
+ * - the READER: {@link tiersDoItem} reads every live tier and option name
+ *   through it, so a listing's names always arrive trimmed;
+ * - the PUBLISHER: `anuncios/tiersPublicacao.ts` folds every name it SENDS
+ *   (`variation_name` and `variation_option_name`, on the create, the init and
+ *   the update) and BOTH sides of every name it PAIRS (a grupo with a live
+ *   custom tier; a variante, or a stored `shopee_option_name`, with a live
+ *   option).
+ *
+ * So the string sent, the string read back and the string compared are one.
+ * Before this, the reader trimmed while the publisher sent and compared
+ * `grupo.nome` / `variante.nome` verbatim: a grupo `'Cor '` was refused on every
+ * update of the listing its own create had made, and a variante `'Azul '`
+ * appended a ghost option on every republish.
+ *
+ * EQUAL: `'Azul '` ≡ `' Azul'` ≡ `'Azul'`; `null`, absent and a non-string ≡
+ * `''`. DISTINCT: case (`'Azul'` vs `'azul'`) and inner whitespace
+ * (`'Azul Claro'` vs `'Azul  Claro'`). Pinned by "nomeDeTierShopee — IGUAL: as
+ * pontas; DISTINTO: a caixa e o espaço de dentro" here and by the `(2d)` pairs
+ * and near-misses of `tiersPublicacao.test.ts`.
+ *
+ * ⚠️ Not the import's cascades: {@link planejarTaxonomia}'s rung 2 compares a
+ * STORED ERP grupo/variante name verbatim against this fold's output (`'Cor '`
+ * ≠ `'Cor'` is pinned there), and {@link mesmaOpcao} compares two stored option
+ * names byte-exact. Those are step 9's decisions; #1911 did not change them.
+ */
+export function nomeDeTierShopee(nome: string | null | undefined): string {
+  return typeof nome === 'string' ? nome.trim() : '';
+}
+
+/**
  * The tier list of one listing — names from `tier_variation`, ids from
  * `standardise_tier_variation`.
  *
@@ -206,7 +256,7 @@ export function tiersDoItem(entrada: {
 
   for (const [i, tier] of tiers.entries()) {
     const padrao = pareia ? padronizados[i] : undefined;
-    const nome = (tier.name ?? padrao?.variation_name ?? '').trim();
+    const nome = nomeDeTierShopee(tier.name ?? padrao?.variation_name);
     const variationId = inteiroOuZero(padrao?.variation_id);
     if (nome.length === 0 && variationId === 0) continue;
 
@@ -215,7 +265,7 @@ export function tiersDoItem(entrada: {
     const opcoes: OpcaoDeTierShopee[] = [];
     for (const [j, opcao] of tier.option_list.entries()) {
       const padraoOpcao = pareiaOpcoes ? opcoesPadrao[j] : undefined;
-      const nomeOpcao = (opcao.option ?? padraoOpcao?.variation_option_name ?? '').trim();
+      const nomeOpcao = nomeDeTierShopee(opcao.option ?? padraoOpcao?.variation_option_name);
       const optionId = inteiroOuZero(padraoOpcao?.variation_option_id);
       if (nomeOpcao.length === 0 && optionId === 0) continue;
       opcoes.push({ nome: nomeOpcao, optionId, indice: j });
@@ -243,11 +293,6 @@ function inteiro(v: unknown): number {
   return typeof v === 'number' && Number.isFinite(v) ? v : 0;
 }
 
-/** `(integracaoShopeeId, category_id)` — the entry identity. */
-function chaveDaEntrada(integracaoShopeeId: string, categoryId: number): string {
-  return `${integracaoShopeeId}\x00${String(categoryId)}`;
-}
-
 /**
  * Union two `arakene_variation_id` lists, preserving the STORED order and
  * appending only what is new.
@@ -273,11 +318,12 @@ function unirVariantes(
  * The option identity, for the merge.
  *
  * Equal: the same NON-ZERO `shopee_option_id`, whatever the names say — the
- * operator bound that id deliberately and the export reads it back.
+ * operator bound that id deliberately and the publisher reads it back.
  * Equal: both ids `0` and byte-identical names.
  * ⛔ Distinct: both ids `0` with names `'Azul'` and `'azul'` — TWO options, not
- * one. The name is sent back to Shopee verbatim on export, so a case fold here
- * would merge two real options into one and silently drop the other's mapping.
+ * one. The publisher sends the name back with its case intact (only the ends
+ * trimmed, {@link nomeDeTierShopee}), so a case fold here would merge two real
+ * options into one and silently drop the other's mapping.
  * ⛔ Distinct: two different custom options never both match "the id-0 entry".
  */
 function mesmaOpcao(a: LinkVariacaoOpcaoShopee, b: LinkVariacaoOpcaoShopee): boolean {
@@ -295,10 +341,20 @@ function mesmaOpcao(a: LinkVariacaoOpcaoShopee, b: LinkVariacaoOpcaoShopee): boo
  * `linksVariacoesShopee` array.
  *
  * ⚠️ **Nothing is ever removed** — not an entry, not an option, not an
- * `arakene_variation_id`. The Flutter form authored this array, it is what step
- * 11's export reads, and an element our schema does not understand is still the
- * operator's work: a stored element that fails `safeParse` is kept **VERBATIM**
- * and skipped, never dropped.
+ * `arakene_variation_id`. The legacy Flutter form authored this array in the
+ * migrated corpus, the step-11 publisher reads it, and an element our schema
+ * does not understand is still the operator's work: a stored element that
+ * fails `safeParse` is kept **VERBATIM** and skipped, never dropped.
+ *
+ * **Which stored element is ours** is `ehEntradaShopeeDaChave(e,
+ * nosso.integracaoShopeeId, nosso.category_id)` — the shared binding key, the
+ * one the publisher resolves the pair by. It folds the STORED conta through
+ * `idDoRef`, so `documents/integracao/int-1` is merged INTO for `int-1` and
+ * never twinned, while `int-12` stays another conta's entry, untouched. Our own
+ * `integracaoShopeeId` is the bare doc id the planner writes, which is the side
+ * the predicate compares as given. Every readable element naming the pair is
+ * merged, as before: a twin an older import appended stays in step with the
+ * entry the publisher reads.
  *
  * Field-by-field, on a matching entry:
  *  - `variation_id` / `variation_group_list`: take OURS **only** when theirs is
@@ -315,7 +371,6 @@ export function fundirLinksVariacoesShopee(
   nosso: LinkVariacoesShopee,
 ): { readonly array: unknown[]; readonly mudou: boolean } {
   const entrada = armazenado ?? [];
-  const chaveNossa = chaveDaEntrada(nosso.integracaoShopeeId, nosso.category_id);
   const saida: unknown[] = [];
   let mudou = false;
   let encontrou = false;
@@ -328,7 +383,7 @@ export function fundirLinksVariacoesShopee(
       continue;
     }
     const atual = analisado.data;
-    if (chaveDaEntrada(atual.integracaoShopeeId, atual.category_id) !== chaveNossa) {
+    if (!ehEntradaShopeeDaChave(atual, nosso.integracaoShopeeId, nosso.category_id)) {
       saida.push(elemento);
       continue;
     }
@@ -440,34 +495,54 @@ function lerVariante(elemento: unknown): VarianteLida | null {
  *
  * This is rung 1(b) of the grupo cascade and it exists because Firestore cannot
  * query INSIDE an array of objects (`array-contains` needs exact element
- * equality), so the operator-authored mapping — the very thing step 11's export
- * reads — is only findable by scanning the per-dispatch memo in memory.
+ * equality), so the operator-authored mapping — the very thing the step-11
+ * publisher reads — is only findable by scanning the per-dispatch memo in
+ * memory.
+ *
+ * It asks about a (conta, variation) pair in ANY category, so it is not the
+ * (conta, category) binding key and does not call `ehEntradaShopeeDaChave`.
+ * Its conta half is the same fold, though: `idDoRef` of the stored
+ * `integracaoShopeeId`, compared exactly. So `documents/integracao/int-1`
+ * names `int-1` here exactly as it does in the publisher's binding key, and
+ * `int-12` does not. A byte-exact compare would miss the grupo the publisher
+ * binds, and could mint a duplicate beside it. The element is read RAW, as
+ * before: a stored element the strict schema refuses still names its conta and
+ * variation.
  */
 function linkDoGrupoCasa(grupo: GrupoLido, integracaoId: string, variationId: number): boolean {
   if (variationId === 0) return false;
   for (const elemento of grupo.linksVariacoesShopee ?? []) {
     const o = objetoOuNulo(elemento);
     if (o === null) continue;
-    if (texto(o.integracaoShopeeId) === integracaoId && inteiro(o.variation_id) === variationId) {
+    if (idDoRef(o.integracaoShopeeId) === integracaoId && inteiro(o.variation_id) === variationId) {
       return true;
     }
   }
   return false;
 }
 
-/** The stored `(integração, category)` entry of this grupo, if there is one. */
+/**
+ * The stored `(integração, category)` entry of this grupo, if there is one —
+ * `resolverEntradaShopeeDoGrupo`'s `armazenada`, which is the entry the
+ * publisher builds this tier from.
+ *
+ * The other two answers both read as "no entry" here, as they did before #1911:
+ * rung 1 of the variante cascade needs an option mapping to READ, and neither an
+ * `ilegivel` element (the operator's binding, stored broken) nor a
+ * `personalizada-implicita` pair has one. The import does not refuse on
+ * `ilegivel` — the publisher does — and the merge keeps that element verbatim.
+ */
 function entradaDoGrupo(
   grupo: GrupoLido,
   integracaoId: string,
   categoryId: number,
 ): LinkVariacoesShopee | null {
-  for (const elemento of grupo.linksVariacoesShopee ?? []) {
-    const analisado = linkVariacoesShopeeSchema.safeParse(elemento);
-    if (!analisado.success) continue;
-    const e = analisado.data;
-    if (e.integracaoShopeeId === integracaoId && e.category_id === categoryId) return e;
-  }
-  return null;
+  const resolucao = resolverEntradaShopeeDoGrupo(
+    grupo.linksVariacoesShopee,
+    integracaoId,
+    categoryId,
+  );
+  return resolucao.tipo === 'armazenada' ? resolucao.entrada : null;
 }
 
 /** The grupo one tier resolved to, and how. */
@@ -548,7 +623,8 @@ export interface ArgsPlanejarTaxonomia {
  *  4. create, at `shopee-<variation_id>` (non-zero) or `n-<slug(nome)>`.
  *
  * **Variante cascade**, in order, over the grupo's embedded `variacoes`:
- *  1. the grupo's stored `(integração, category)` entry, its `variationOptions`
+ *  1. the grupo's stored `(integração, category)` entry — the one the shared
+ *     binding key resolves, the same the publisher reads — its `variationOptions`
  *     row whose **non-zero** `shopee_option_id` equals ours ⇒
  *     `arakene_variation_id[0]` (the FIRST, matching the legacy export's own
  *     `.first`) — accepted only if that variante still exists;
@@ -686,8 +762,10 @@ export function planejarTaxonomia(args: ArgsPlanejarTaxonomia): PlanoDeTaxonomia
       // gave none, which is the normal answer outside Fashion.
       variation_group_list: 0,
       // ⚠️ A BARE doc id, NOT a `documents/integracao/<id>` outer-ref — unlike
-      // every other conta reference in the Shopee models. Normalising it would
-      // orphan every operator-authored entry.
+      // every other conta reference in the Shopee models (trap 2 of the
+      // schema: the legacy corpus stores it bare). The shared key FOLDS a stored
+      // path, so one is still found, but this writer never produces one — and it
+      // is also the bare value `fundirLinksVariacoesShopee` asks the key with.
       integracaoShopeeId: integracaoId,
       variationOptions: opcoesDoLink,
     };
@@ -789,9 +867,10 @@ function montarOpcaoDoLink(opcao: OpcaoDeTierShopee, varianteId: string): LinkVa
   return {
     shopee_option_id: opcao.optionId,
     shopee_option_name: opcao.nome,
-    // ⚠️ A LIST: one Shopee option may map to several ERP variantes, and the
-    // export takes `.first` of the matching options. We contribute exactly one
-    // and the merge unions it with whatever the operator already bound.
+    // ⚠️ A LIST: one Shopee option may map to several ERP variantes (the legacy
+    // export took `.first` of the matching options; the publisher matches a
+    // variante by membership). We contribute exactly one and the merge unions it
+    // with whatever the operator already bound.
     arakene_variation_id: [varianteId],
   };
 }

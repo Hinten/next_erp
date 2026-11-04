@@ -18,6 +18,7 @@ function makeInput(notify: EtiquetaProviderInput['ui']['notify']): EtiquetaProvi
       nfeClient: null,
       mercadoLivreClient: null,
       shopeeClient: null,
+      lojaIntegradaClient: null,
       printJob: vi.fn(),
     },
     ui: {
@@ -26,17 +27,20 @@ function makeInput(notify: EtiquetaProviderInput['ui']['notify']): EtiquetaProvi
       openUrl: vi.fn(),
       comprarEtiqueta: vi.fn(),
       escolherEnvio: vi.fn(),
+      confirmarCiente: vi.fn(),
     },
   };
 }
 
 describe('unsupportedMarketplaceProvider', () => {
-  it('registers the three not-yet-ported marketplace tipos (mercadoLivre and shopee graduated)', () => {
+  it('registers the two not-yet-ported marketplace tipos (mercadoLivre and shopee graduated, lojaIntegrada is routed)', () => {
     // W2: `shopee` here as well as in `providers/shopee.ts` would make the
     // registry throw at load (a tipo claimed twice); gone from both, the Shopee
-    // row would fall back to this placeholder — see `registry.test.ts`.
-    expect(unsupportedMarketplaceProvider.tipos).toEqual(['lojaIntegrada', 'amz', 'magalu']);
+    // row would fall back to this placeholder — see `registry.test.ts`. The
+    // same holds for `lojaIntegrada` and the router provider.
+    expect(unsupportedMarketplaceProvider.tipos).toEqual(['amz', 'magalu']);
     expect(unsupportedMarketplaceProvider.tipos).not.toContain(INTEGRACAO_FRETE.shopee);
+    expect(unsupportedMarketplaceProvider.tipos).not.toContain(INTEGRACAO_FRETE.lojaIntegrada);
   });
 
   it('notifies and returns an unsupported outcome carrying the tipo', async () => {

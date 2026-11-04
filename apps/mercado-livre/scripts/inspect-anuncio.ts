@@ -237,7 +237,10 @@ async function main(): Promise<void> {
   const db = getAdminFirestore();
   const ctx = await loadMercadoLivreContext(db, integracaoId);
   const channelCtx = await ctx.resolveChannelContext();
-  const api = createMercadoLivreApi({ getAccessToken: async () => channelCtx.accessToken });
+  const api = createMercadoLivreApi({
+    getAccessToken: channelCtx.getAccessToken,
+    onAccessTokenRejected: channelCtx.invalidateAccessToken,
+  });
   const sellerUserId =
     typeof ctx.conta.user_id === 'number' && Number.isFinite(ctx.conta.user_id)
       ? ctx.conta.user_id

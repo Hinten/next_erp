@@ -1,0 +1,55 @@
+{
+  "versao": 1,
+  "perfil": "fixture",
+  "credencial": "modelo-sandbox",
+  "papeis": [
+    "nao-se-aplica"
+  ],
+  "capturadoEm": "2026-10-19",
+  "limiteTaxa": null,
+  "requisicao": {
+    "tipo": "http",
+    "metodo": "GET",
+    "caminho": "/delivery/2022-07-01/invoice/status",
+    "query": [
+      [
+        "orderId",
+        "000-0000000-0000000"
+      ],
+      [
+        "marketplaceId",
+        "A2Q3Y263D00KWC"
+      ],
+      [
+        "invoiceType",
+        "Outbound"
+      ],
+      [
+        "programType",
+        "EasyShip"
+      ]
+    ],
+    "corpo": null
+  },
+  "resposta": {
+    "status": 200,
+    "politica": "estrutural",
+    "forma": "json",
+    "bytes": 222,
+    "corpo": {
+      "amazonShipmentId": "SHP-Z6379d2d6",
+      "amazonOrderId": "000-0000000-0000000",
+      "invoiceStatus": "Accepted",
+      "orderInvoicingStatus": "Accepted",
+      "invoices": [
+        {
+          "id": "00000000000000000000550008557443800000000000",
+          "status": "Accepted"
+        }
+      ]
+    }
+  },
+  "anexos": {
+    "zip": null
+  }
+}

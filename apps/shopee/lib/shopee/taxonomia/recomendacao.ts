@@ -12,25 +12,29 @@
  * a root-to-leaf path. So `position` is the index it arrived at (1-based) and
  * nothing more: this module does not decide what the order means.
  */
+import type { RecomendacaoDto } from '@delfrance/schemas';
+
 import { type ShopeeTaxonomiaCtx, lerIndiceDeCategorias, lerRecomendacaoCached } from './cache';
 import { caminhoDaCategoria, ehFolha } from './categorias';
-import { type CategoriaResumoDto, projetarCategoria } from './dto';
+import { projetarCategoria } from './dto';
 
-/** One suggested category, resolved against the cached tree where possible. */
-export interface RecomendacaoDto {
-  /** 1-based, the order Shopee sent. See the module header. */
-  readonly position: number;
-  readonly categoryId: number;
-  /** `null` when the id is not in this shop's tree. */
-  readonly name: string | null;
-  /** `null` — not `false` — when the id could not be resolved. */
-  readonly isLeaf: boolean | null;
-  readonly pathFromRoot: readonly CategoriaResumoDto[];
-}
+/**
+ * One suggested category, resolved against the cached tree where possible.
+ * Declared in `@delfrance/schemas` (`recomendacaoDtoSchema`, #1911 P2) beside
+ * the route's envelope the browser parses, and re-exported here so this
+ * module's name for it is unchanged.
+ */
+export type { RecomendacaoDto } from '@delfrance/schemas';
 
-/** What {@link lerRecomendacaoDeCategoria} answers. */
+/**
+ * What {@link lerRecomendacaoDeCategoria} answers.
+ *
+ * ⚠️ `recomendacoes` is a plain array, not a `readonly` one: the route builds its
+ * 200 `satisfies` the envelope's INPUT type, whose arrays are mutable, and a
+ * readonly array is not assignable to a mutable one.
+ */
 export interface RecomendacaoLida {
-  readonly recomendacoes: readonly RecomendacaoDto[];
+  readonly recomendacoes: RecomendacaoDto[];
   /** How many suggested ids were absent from this shop's category tree. */
   readonly unresolved: number;
 }
@@ -66,7 +70,7 @@ export async function lerRecomendacaoDeCategoria(
 
   const indice = await lerIndiceDeCategorias(ctx);
   let unresolved = 0;
-  const recomendacoes = ids.map((categoryId, i) => {
+  const recomendacoes = ids.map((categoryId, i): RecomendacaoDto => {
     const no = indice.porId.get(categoryId);
     if (no === undefined) {
       unresolved += 1;

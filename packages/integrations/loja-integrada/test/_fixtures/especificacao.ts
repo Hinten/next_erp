@@ -4,8 +4,8 @@
  *
  * ## Provenance
  *
- * The first five come from Loja Integrada's PUBLIC OpenAPI document (the one
- * `li-doc.mjs` reads), redacted:
+ * The ones above "Synthetic" come from Loja Integrada's PUBLIC OpenAPI document
+ * (the one `li-doc.mjs` reads), redacted:
  *
  *  - `categoriaPagina1` — the `GET /v1/categoria` 200 example, trimmed to three
  *    of its rows, with the demo storefront's URLs replaced by
@@ -20,6 +20,17 @@
  *    document's own).
  *  - `corpo409Bruto` — the document's only `/v1` error example (a `409` on a
  *    produto alias), which is a bare JSON STRING, not an object.
+ *  - `marcaPaginaExemplo` — the `GET /v1/marca` 200 example, trimmed to three of
+ *    its rows. Every brand name and `apelido` slug is replaced by a neutral fake
+ *    (`Marca Exemplo A`, `marca-exemplo-a`); the ids, the `meta` and the first
+ *    row's `descricao: "null"` (a STRING, sic) are the document's own.
+ *  - `gradesPaginaExemplo` — the `GET /v1/grades` 200 example, trimmed to five
+ *    of its rows: four platform grades with a generic name, and one whose
+ *    `nome_visivel` is the empty string, as several of the document's rows are.
+ *  - `gradeDetalheExemplo` — the `GET /v1/grades/{grade_id}` 200 example (grade
+ *    `8946`), trimmed to three of its six options. Note the two URI forms the
+ *    document gives an option: `grade` is `/api/v1/grades/<g>` (plural) and
+ *    `resource_uri` is `/api/v1/grade/<g>/variacao/<v>` (singular).
  *
  * ⚠️ Everything under "Synthetic" is INVENTED: the document shows no 401, 403,
  * 429 or 5xx body at all. They exist to drive the classifier through the shapes
@@ -165,6 +176,127 @@ export const pedidoBuscaExemplo = {
 
 /** The raw body text, exactly as the document shows it: a JSON string literal. */
 export const corpo409Bruto = '"Slug already in use."';
+
+export const marcaPaginaExemplo = {
+  meta: {
+    limit: 20,
+    next: '/api/v1/marca?limit=20&offset=20',
+    offset: 0,
+    previous: null,
+    total_count: 39,
+  },
+  objects: [
+    {
+      apelido: 'marca-exemplo-a',
+      ativo: true,
+      // Sic: the document's example is the STRING "null", not a JSON null.
+      descricao: 'null',
+      id: 2875259,
+      id_externo: null,
+      imagem: null,
+      nome: 'Marca Exemplo A',
+      resource_uri: '/api/v1/marca/2875259',
+    },
+    {
+      apelido: 'marca-exemplo-b',
+      ativo: true,
+      descricao: null,
+      id: 2875261,
+      id_externo: null,
+      imagem: null,
+      nome: 'Marca Exemplo B',
+      resource_uri: '/api/v1/marca/2875261',
+    },
+    {
+      apelido: 'marca-exemplo-c',
+      ativo: true,
+      descricao: null,
+      id: 3012488,
+      id_externo: null,
+      imagem: null,
+      nome: 'Marca Exemplo C',
+      resource_uri: '/api/v1/marca/3012488',
+    },
+  ],
+} as const;
+
+export const gradesPaginaExemplo = {
+  meta: {
+    limit: 20,
+    next: '/api/v1/grades?limit=20&offset=20',
+    offset: 0,
+    previous: null,
+    total_count: 32,
+  },
+  objects: [
+    {
+      id: 32769,
+      id_externo: null,
+      nome: 'Gênero',
+      nome_visivel: 'Gênero',
+      resource_uri: '/api/v1/grades/32769',
+    },
+    {
+      id: 8945,
+      id_externo: null,
+      nome: 'Produto com uma cor',
+      nome_visivel: 'Cor',
+      resource_uri: '/api/v1/grades/8945',
+    },
+    {
+      id: 8946,
+      id_externo: null,
+      nome: 'Tamanho de capacete',
+      nome_visivel: 'Tamanho',
+      resource_uri: '/api/v1/grades/8946',
+    },
+    {
+      id: 8949,
+      id_externo: null,
+      nome: 'Voltagem',
+      nome_visivel: 'Voltagem',
+      resource_uri: '/api/v1/grades/8949',
+    },
+    {
+      id: 2047707,
+      id_externo: null,
+      nome: 'Medidas',
+      nome_visivel: '',
+      resource_uri: '/api/v1/grades/2047707',
+    },
+  ],
+} as const;
+
+export const gradeDetalheExemplo = {
+  id: 8946,
+  id_externo: null,
+  nome: 'Tamanho de capacete',
+  nome_visivel: 'Tamanho',
+  resource_uri: '/api/v1/grades/8946',
+  variacoes: [
+    {
+      grade: '/api/v1/grades/8946',
+      id: 37097,
+      id_externo: null,
+      nome: '53-54',
+      resource_uri: '/api/v1/grade/8946/variacao/37097',
+    },
+    {
+      grade: '/api/v1/grades/8946',
+      id: 37098,
+      id_externo: null,
+      nome: '55-56',
+      resource_uri: '/api/v1/grade/8946/variacao/37098',
+    },
+    {
+      grade: '/api/v1/grades/8946',
+      id: 37099,
+      id_externo: null,
+      nome: '57-58',
+      resource_uri: '/api/v1/grade/8946/variacao/37099',
+    },
+  ],
+} as const;
 
 /* -------------------------------------------------------------------------- */
 /*                     Synthetic — NOT from the document                      */

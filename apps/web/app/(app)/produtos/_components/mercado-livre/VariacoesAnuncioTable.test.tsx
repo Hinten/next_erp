@@ -90,6 +90,34 @@ beforeEach(() => {
 /* ---------------------------------- tests ---------------------------------- */
 
 describe('VariacoesAnuncioTable', () => {
+  it('shows a member stock refusal beside its actual ML status and keeps its moderation visible', () => {
+    renderTable([
+      {
+        id: 'a',
+        data: membro({
+          estado: 'E',
+          errors: ['Quantidade recusada'],
+          moderacoes: [
+            {
+              nome: 'PHOTO',
+              dataCriacao: null,
+              motivo: 'Foto ruim',
+              remedio: null,
+              secoes: [],
+              evidencias: [],
+            },
+          ],
+        }),
+      },
+      { id: 'b', data: membro({ itemId: 'MLB222', sku: 'IRMÃO', estado: null }) },
+    ]);
+    expect(screen.getAllByText('Ativo')).toHaveLength(2);
+    expect(screen.getAllByText('Envio de estoque bloqueado')).toHaveLength(1);
+    expect(screen.getByText(/Quantidade recusada/)).toBeDefined();
+    expect(screen.getByText('Foto ruim')).toBeDefined();
+    expect(screen.getByText(/Corrija a causa e use Reverificar anúncio/)).toBeDefined();
+  });
+
   it('gives each variation its own row, labelled by its ML attributes', () => {
     renderTable([
       { id: 'v1', data: membro({ itemId: 'MLB-A', sku: 'CAM-AZ-M' }) },

@@ -1,17 +1,13 @@
 /**
- * Setup for the Shopee Cloud Tasks round-trip suite.
+ * Setup for the Shopee emulator suites (`*.tasks.test.ts`, `*.firestore.test.ts`).
  *
- * ⚠️ ONE file on purpose. Mercado Livre splits this into
- * `vitest.firestore.setup.ts` + `vitest.tasks.setup.ts` because it HAS two
- * emulator lanes; Shopee's Firestore-only lane is step 22's (#1530). Splitting
- * early would mean the gate messages below naming a config file that does not
- * exist — the least useful thing an error can do to someone whose lane just went
- * red.
- *
- * TODO(step 22, #1530): when the Firestore-only lane and
- * `firebase.shopee.json` land, split (2) and (3) below into
- * `vitest.firestore.setup.ts`, have this file import it, and re-aim the
- * Firestore gate's message at that config.
+ * ⚠️ ONE file, ONE config (`vitest.tasks.config.ts`). The Firestore-only suites
+ * share the round-trip job's emulators, so there is no second setup to split
+ * these gates into: `setupFiles` bind to a config, never to a file. Gate (2)
+ * therefore guards a Firestore-only file too — inside a job that always boots
+ * the tasks emulator it can fire only on a misconfigured job, and there red is
+ * right. Locally both gates stay silent without `CI`/`REQUIRE_EMULATOR`, so
+ * `emulators:exec --only firestore` is enough to run a `*.firestore.test.ts`.
  *
  * Four jobs, each guarding a way this lane could report GREEN while proving
  * nothing.
@@ -105,6 +101,8 @@ if (EMULATED) {
  * `error_sign` instead of burning anything. A `*.tasks.test.ts` that drives a
  * conta arm (code 12 signs `get_shops_by_partner`) would make a real outbound
  * request from the runner; pick a push code that needs no Shopee call.
+ * A `*.firestore.test.ts` runs wholly in THIS process, so the switch covers it
+ * end to end — inject the provider call (the token store's `refresh`).
  *
  * Scoped to non-local hosts so the Admin SDK's own emulator traffic is
  * untouched, and so a test may still stub `fetch` itself (vi.stubGlobal) for a

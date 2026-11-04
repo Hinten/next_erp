@@ -31,8 +31,9 @@ import type { Firestore } from 'firebase/firestore';
 import type { FirebaseStorage } from 'firebase/storage';
 import { arquivoCollection, StorageUploadError, uploadProductVideo } from '@delfrance/storage';
 import {
-  VIDEO_FORMATO,
   ARQUIVOS_COLLECTION,
+  VIDEO_FORMATO,
+  idFromRefOrNull,
   type Video,
   type VideoFormato,
 } from '@delfrance/schemas';
@@ -41,17 +42,9 @@ import { DELETE_MARK } from '@delfrance/ui';
 
 const VIDEO_MIME = ['video/mp4', 'video/quicktime', 'video/mpeg', 'video/x-msvideo'];
 const MAX_VIDEO_BYTES = 30 * 1024 * 1024;
-const ARQUIVOS_PREFIX = `${ARQUIVOS_COLLECTION}/`;
 
 /** A `Video` plus the transient staged-deletion marker (keyed by `DELETE_MARK`). */
 type EditableVideo = Video & { [DELETE_MARK]?: boolean };
-
-/** `arquivos/<id>` → `<id>` (or `null` for an absent ref). */
-function idFromRef(ref: string | null | undefined): string | null {
-  if (!ref) return null;
-  const id = ref.startsWith(ARQUIVOS_PREFIX) ? ref.slice(ARQUIVOS_PREFIX.length) : ref;
-  return id || null;
-}
 
 interface VideoMeta {
   formato: VideoFormato;
@@ -274,7 +267,7 @@ function SortableVideo({ video, db, marked, disabled, onToggleDelete }: Sortable
   };
 
   const ref = useMemo(() => {
-    const id = idFromRef(video.arquivoOuterRef);
+    const id = idFromRefOrNull(video.arquivoOuterRef);
     return id ? arquivoCollection.docRef(db, {}, id) : null;
   }, [db, video.arquivoOuterRef]);
   const snap = useDocSnapshot(ref);

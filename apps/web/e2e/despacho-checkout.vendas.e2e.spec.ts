@@ -1,5 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import { db } from '@delfrance/test-fixtures';
+import { installRouteStubs } from './_helpers/route-stubs';
 import { cleanupCheckoutFixtures, e2ePrefix, seedCheckoutFixtures } from './_helpers/seed-data';
 import { warmRoutes } from './helpers/warmup';
 
@@ -20,9 +21,10 @@ import { warmRoutes } from './helpers/warmup';
  *                          LAST so a failure here never skips tests 2-5
  *                          (describe.serial skips everything after a failure).
  *
- * Network is stubbed (below): the local print agent, the Melhor Envio `/imprimir`
- * route, and every `/api/nfe/**` call — so post-save never reaches real SEFAZ
- * (the A1 cert is expired) and a save's success never depends on a printer.
+ * Network is stubbed (`installRouteStubs`, `_helpers/route-stubs.ts`): the local
+ * print agent, the Melhor Envio `/imprimir` route, and every `/api/nfe/**` call —
+ * so post-save never reaches real SEFAZ (the A1 cert is expired) and a save's
+ * success never depends on a printer.
  *
  * These run against STAGING and stay red until the PR-1 checkout rules + indexes
  * are deployed (collection-group `checkout` reads are otherwise default-denied);
@@ -30,56 +32,6 @@ import { warmRoutes } from './helpers/warmup';
  */
 
 const SCAN_PLACEHOLDER = /^Bipe o código/;
-
-interface RouteStubs {
-  /** every `/api/freight/melhor-envio/imprimir` payload, in call order. */
-  freightImprimir: Array<{ intFreteId: string; printLabelId: string }>;
-  /** every local-print-agent POST body, in call order. */
-  printJobs: Array<Record<string, unknown>>;
-}
-
-/**
- * Register the network stubs the save/reprint paths hit. MUST run BEFORE
- * `page.goto`: an unhandled print-agent route (or a non-200) makes `printJob`
- * fall back to a browser download with no POST to observe, and an unstubbed NF-e
- * call would reach staging SEFAZ.
- */
-async function installRouteStubs(page: Page): Promise<RouteStubs> {
-  const stubs: RouteStubs = { freightImprimir: [], printJobs: [] };
-
-  // Local print agent — collect the body, then 200 so `printJob` reports success.
-  await page.route('http://localhost:8888/**', async (route) => {
-    const body = route.request().postData() ?? '{}';
-    try {
-      stubs.printJobs.push(JSON.parse(body) as Record<string, unknown>);
-    } catch (err) {
-      if (!(err instanceof SyntaxError)) throw err;
-    }
-    await route.fulfill({ status: 200, body: 'ok' });
-  });
-
-  // Melhor Envio label print — capture `{ intFreteId, printLabelId }` and return
-  // a label URL. This is the payload the wrong-label regression asserts on.
-  await page.route('**/api/freight/melhor-envio/imprimir', async (route) => {
-    stubs.freightImprimir.push(
-      route.request().postDataJSON() as { intFreteId: string; printLabelId: string },
-    );
-    await route.fulfill({ json: { url: 'https://example.invalid/label.pdf' } });
-  });
-
-  // NF-e — never reach staging SEFAZ. A non-2xx makes `ensureNfeAprovada` narrow
-  // to a typed NF-e error the post-save flow handles with a toast; the checkout
-  // is already committed by then, so this can't fail a save.
-  await page.route('**/api/nfe/**', async (route) => {
-    await route.fulfill({
-      status: 503,
-      contentType: 'application/json',
-      body: JSON.stringify({ error: 'nfe stubbed in e2e' }),
-    });
-  });
-
-  return stubs;
-}
 
 /** Deep-link to a pedido and wait for it to load (header link is unique per número). */
 async function loadPedido(page: Page, numero: string): Promise<void> {

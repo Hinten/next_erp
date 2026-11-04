@@ -417,6 +417,71 @@ describe('createReadCache — invalidate / clear / stats', () => {
     expect(calls).toHaveLength(3);
   });
 
+  it('a late rejection evicts its matching value but preserves a newer settled value', async () => {
+    const cache = createReadCache<string, string>({
+      name: 'inv-matching-value',
+      ttlMs: 60_000,
+      maxEntries: 4,
+      now: clock.now,
+    });
+    const { calls, load } = countingLoad(() => 'token-b');
+
+    await cache.get('account', async () => 'token-a');
+    cache.invalidate('account', (value) => value === 'token-a');
+    expect(await cache.get('account', load)).toBe('token-b');
+    expect(calls).toHaveLength(1);
+
+    // An older request still using A fails after B has already been loaded.
+    cache.invalidate('account', (value) => value === 'token-a');
+    expect(await cache.get('account', load)).toBe('token-b');
+    expect(calls).toHaveLength(1);
+  });
+
+  it('predicate invalidation preserves a replacement load that is still pending', async () => {
+    let release!: (value: string) => void;
+    const replacement = new Promise<string>((resolve) => {
+      release = resolve;
+    });
+    const cache = createReadCache<string, string>({
+      name: 'inv-pending-value',
+      ttlMs: 60_000,
+      maxEntries: 4,
+      now: clock.now,
+    });
+    const predicate = vi.fn(() => true);
+    const load = vi.fn(async () => 'unexpected');
+
+    const first = cache.get('account', () => replacement);
+    cache.invalidate('account', predicate);
+    const second = cache.get('account', load);
+    expect(predicate).not.toHaveBeenCalled();
+    expect(load).not.toHaveBeenCalled();
+    expect(cache.stats()).toMatchObject({ size: 1, inFlight: 1 });
+
+    release('token-b');
+    await expect(Promise.all([first, second])).resolves.toEqual(['token-b', 'token-b']);
+    expect(await cache.get('account', load)).toBe('token-b');
+    expect(load).not.toHaveBeenCalled();
+  });
+
+  it('predicate invalidation sees settled null and ignores an absent key', async () => {
+    const cache = createReadCache<string, string | null>({
+      name: 'inv-null-value',
+      ttlMs: 60_000,
+      maxEntries: 4,
+      now: clock.now,
+    });
+    const predicate = vi.fn((value: string | null) => value == null);
+
+    cache.invalidate('missing', predicate);
+    expect(predicate).not.toHaveBeenCalled();
+
+    await cache.get('account', async () => null);
+    cache.invalidate('account', predicate);
+    expect(predicate).toHaveBeenCalledExactlyOnceWith(null);
+    expect(await cache.get('account', async () => 'connected')).toBe('connected');
+  });
+
   it('clear drops every entry but keeps the cumulative counters', async () => {
     const { load } = countingLoad(() => 'v');
     const cache = createReadCache<string, string>({

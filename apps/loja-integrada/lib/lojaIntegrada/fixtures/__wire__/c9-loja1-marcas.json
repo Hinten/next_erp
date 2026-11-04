@@ -1,0 +1,55 @@
+{
+  "versao": 1,
+  "perfil": "fixture",
+  "credencial": "personal-token",
+  "capturadoEm": "2026-10-28",
+  "requisicao": {
+    "metodo": "GET",
+    "caminho": "/v1/marca/",
+    "query": [
+      [
+        "limit",
+        "50"
+      ]
+    ]
+  },
+  "resposta": {
+    "status": 200,
+    "politica": "catalogo",
+    "forma": "json",
+    "bytes": 552,
+    "corpo": {
+      "meta": {
+        "limit": 50,
+        "offset": 0,
+        "total_count": 2,
+        "previous": null,
+        "next": null
+      },
+      "objects": [
+        {
+          "id": 127435428,
+          "ativo": true,
+          "id_externo": null,
+          "apelido": "REDACTED",
+          "descricao": null,
+          "nome": "REDACTED",
+          "destaque": false,
+          "resource_uri": "/api/v1/marca/127435428",
+          "imagem": null
+        },
+        {
+          "id": 564840611,
+          "ativo": true,
+          "id_externo": null,
+          "apelido": "REDACTED",
+          "descricao": "REDACTED",
+          "nome": "REDACTED",
+          "destaque": false,
+          "resource_uri": "/api/v1/marca/564840611",
+          "imagem": "REDACTED"
+        }
+      ]
+    }
+  }
+}

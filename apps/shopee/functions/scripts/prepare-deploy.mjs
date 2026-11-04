@@ -10,8 +10,8 @@ import { copyDeployEnv } from '../../../../tools/deploy-env/env-files.mjs';
 // DIRECTLY by .github/workflows/ci-shopee.yml, which serves the artifact to the
 // functions emulator (predeploy hooks do not run under `emulators:exec`).
 // ⚠️ `firebase.shopee.deploy.json` ships INERT with step 3 and already lists
-// this script as its second `predeploy` entry; what is still step 22's (#1530)
-// is RUNNING the deploy, not authoring the config. Same mechanics as
+// this script as its second `predeploy` entry; RUNNING the deploy is a human's
+// (production: the migration window, #1998). Same mechanics as
 // apps/mercado-pago/functions (esbuild bundle + minimal package.json +
 // node_modules junction).
 

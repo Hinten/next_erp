@@ -59,17 +59,20 @@ example — it needed every step below.
    `canFetchLabel`, and `etiquetaRowState` tests `canPrint` first, so a pedido
    carrying a `printLabelId` would route "Imprimir" to Melhor Envio.
 4. **A new client is a REQUIRED `EtiquetaProviderDeps` member** (Shopee:
-   `shopeeClient`), never an optional one — an optional member compiles at a
-   site that forgot it and answers "cliente indisponível" there. Thread it
-   through the three entry points (`postSave.ts`, `reprintCheckout.ts`, the
-   `/pedidos` row action `EtiquetaRowAction.tsx`) and the checkout screens that
-   feed them (`CheckoutScreen`, `CheckoutSidebar`, `OutrosCheckoutsPane`,
+   `shopeeClient`; Loja Integrada: `lojaIntegradaClient`), never an optional
+   one — an optional member compiles at a site that forgot it and answers
+   "cliente indisponível" there. Thread it through the three entry points
+   (`postSave.ts`, `reprintCheckout.ts`, the `/pedidos` row action
+   `EtiquetaRowAction.tsx`) and the checkout screens that feed them
+   (`CheckoutScreen`, `CheckoutSidebar`, `OutrosCheckoutsPane`,
    `OutroCheckoutModal`).
 5. **A new operator question is a REQUIRED `EtiquetaProviderUi` member**
-   (Shopee: `escolherEnvio`), implemented by every screen that builds a `ui`:
-   the checkout screen; the reprint modal, with the dialog element OUTSIDE its
-   `<Modal>` (the #1096 wedge); and, on `/pedidos`, `EtiquetaAcaoHost`, which
-   serves the page's dialogs so a flow outlives the row's HoverCard.
+   (Shopee: `escolherEnvio`; the Loja Integrada paid re-check:
+   `confirmarCiente`, the "Estou ciente do risco" warning), implemented by
+   every screen that builds a `ui`: the checkout screen; the reprint modal,
+   with the dialog element OUTSIDE its `<Modal>` (the #1096 wedge); and, on
+   `/pedidos`, `EtiquetaAcaoHost`, which serves the page's dialogs so a flow
+   outlives the row's HoverCard.
 6. **The row action's client-presence branch**: `EtiquetaRowAction.tsx` decides
    per tipo whether a fetch button is live (`mercadoLivre` → `mlClient`,
    `shopee` → `shopeeClient`, anything else → disabled). A new fetch provider
@@ -80,7 +83,86 @@ example — it needed every step below.
 `resolveEtiquetaProvider` falls back on its own: a tipo with no exact provider
 that is `marketplaceOwned` → `unsupportedMarketplace`; anything else → the
 generic label. So the fallbacks stay correct even before you register a new
-marketplace provider.
+marketplace provider — except for a ROUTER (below), which is not
+marketplace-owned and MUST have its exact row, or it gets the generic label.
+
+## Router provider
+
+A **router** tipo (`labelMode: 'roteado'`) is not a carrier: its `int_frete`
+doc holds a `mapa` from a channel's shipping methods to the carriers the ERP
+drives, and a pedido still pointing at it has no carrier yet. Loja Integrada is
+the one router (master plan step 15): the store mints no label, so the label is
+that of the carrier the conta's `mapa` (or the operator) routes the pedido to.
+
+- **The caps** set `labelMode: 'roteado'`, `marketplaceOwned: false`, a null
+  `channel` and every `can*` false. Each `can*` would claim for the router doc
+  a capability only its target has (`canPrint` would send a `printLabelId` to
+  Melhor Envio), and `marketplaceOwned` would lock a Frete tab that must stay
+  reachable. Two predicates read it: `ehFreteRoteado(tipo)`, and
+  `isFreteSelecionavelManualmente(tipo)` — the manual pickers' filter, which
+  excludes a router as well as an owned tipo (`!isFreteMarketplaceOwned` alone
+  would offer the router doc as a carrier).
+- **The provider** (`providers/lojaIntegrada.ts`) routes, then delegates. It
+  calls the `apps/loja-integrada` backend's
+  `PUT …/pedidos/[pedidoId]/rota-etiqueta` through `deps.lojaIntegradaClient`
+  (`lib/loja-integrada/rotaEtiqueta.ts`), with no `escolha` at checkout. The
+  route re-points the pedido server-side with a guarded write and answers the
+  routing fields only — never the target document, which may hold
+  credentials. The provider lays those fields over the freight
+  (`aplicarRotaLi`, which the `/pedidos` host reuses for a registered route),
+  reads the target through `resolverIntFrete` under the
+  operator's own permission, and hands the target's provider the routed
+  freight. The shared gates already ran under the router, so it calls the
+  target's `emitirOuImprimir`, never the registry's entry point. The target
+  provider comes from an INJECTED resolver (the registry's own
+  `resolveEtiquetaProvider`), so the provider file does not import the
+  registry.
+- **Its answers**: `roteado` and `ja-roteado` delegate — `ja-roteado` with no
+  second call; a refusal is notified with its copy and returns `unsupported`,
+  and where the operator's own pick could route what this call could not (a
+  method the `mapa` does not map, a missing or unusable target, no endereço,
+  an invalid override — never a guard on the pedido or on the Loja Integrada
+  doc: "Definir transportadora" repeats this very call), the copy adds the hint to
+  use "Escolher transportadora…" on `/pedidos`; a call that decided nothing (no
+  client, the network, a 403, a conflict) is an `error` with its own copy,
+  never the raw message. Every routing field is taken as answered, a `null`
+  option included: the caller's freight still names the Loja Integrada doc, so
+  its option belongs to that ref, and a target with no usable option quotes
+  first rather than buying a service nobody chose for it.
+- **The `/pedidos` row** offers `'rotear'` for a pedido on the router doc
+  (`etiquetaRowState`, placed after every capability and before
+  `'unsupported'`): "Definir transportadora" routes by the stored override or
+  the `mapa`; "Escolher transportadora…" asks the host's picker first (the
+  shared targets query, preselecting what "Definir" would pick). It ROUTES
+  ONLY — the label is a separate click on the next hover — and registers the
+  answer with the host (`registrarRota`), because the route writes no
+  `ultimaModificacao` and the list may never repaint. Both buttons are off
+  without the client (fail closed); the picker's is also off while its targets
+  load, and when they could not be read (it says so, rather than offering an
+  empty list). A pedido routed to a pickup or recipient-paid carrier
+  (`labelMode 'none'`) then says its label is printed at the checkout.
+- **The Frete tab** renders a read-only router panel for a pedido on the router
+  doc, while its header and integração picker follow the estado lock: a
+  duplicated pedido (back at `iniciado`, still on the doc) is re-pointed there
+  by hand; a paid one is not.
+- **The drift guard** (`registry.test.ts`, rule 4): `labelMode 'roteado'` ⇔
+  the tipo resolves to the router, and a router is never marketplace-owned and
+  sets no `can*`. The cross-table test in
+  `packages/schemas/src/shared/marketplace.test.ts` pins the other side:
+  `MARKETPLACE_TIPO_CAPS.etiqueta 'emit'` ⇔ `labelMode 'roteado'`.
+
+The router checklist, then — in ONE change, since the guard reds any half:
+
+1. the caps row;
+2. the provider and its registry row;
+3. the client, threaded as a REQUIRED dep (step 4 above);
+4. the operator questions the TARGETS ask (step 5 above) — the router itself
+   asks nothing, and its carrier picker is a `/pedidos` host member, not a
+   provider capability;
+5. the row's routing branch, `FreteCell`'s HoverCard, the host key, the
+   pickers, the Frete tab and the checkout's buy bridge (which opens the modal
+   with the live, routed freight);
+6. the drift-guard rule.
 
 ## Reachability: the integração a Shopee pedido may have none of
 
@@ -184,33 +266,36 @@ None is retried automatically — the re-click is the retry, and it is safe
   does not exist yet.
 
 The remaining marketplace carriers route to `unsupportedMarketplace` (a toast +
-an `'unsupported'` outcome). When their fetch flows land (Phase 5/6), each
-should reproduce the corresponding legacy call from `emitirOuImprimirFrete.dart`
+an `'unsupported'` outcome). When their fetch flows land, each should
+reproduce the corresponding legacy call from `emitirOuImprimirFrete.dart`
 (`tipoEtiqueta` is the PDF-vs-ZPL2 selection; `zpl2` below is
 `tipoEtiqueta == FORMATO_ETIQUETA.zpl2`):
 
-| Tipo (`IntegracaoFrete`) | Legacy call                                                    | Notes                                                |
-| ------------------------ | -------------------------------------------------------------- | ---------------------------------------------------- |
-| `amz` (Amazon)           | `gerarEtiquetaDBAAmazon(contaUid: pedido.integracao_id, zpl2)` | Amazon DBA label.                                    |
-| `magalu`                 | `gerarEtiquetaMagalu(contaUid: pedido.integracao_id, zpl2)`    | Account is the pedido's `integracao_id`.             |
-| `lojaIntegrada`          | **target resolution first** (below), then the mapped provider  | LI never emits directly; it maps to another carrier. |
+| Tipo (`IntegracaoFrete`) | Legacy call                                                    | Notes                                    |
+| ------------------------ | -------------------------------------------------------------- | ---------------------------------------- |
+| `amz` (Amazon)           | `gerarEtiquetaDBAAmazon(contaUid: pedido.integracao_id, zpl2)` | Amazon DBA label.                        |
+| `magalu`                 | `gerarEtiquetaMagalu(contaUid: pedido.integracao_id, zpl2)`    | Account is the pedido's `integracao_id`. |
 
-### Loja Integrada target resolution (legacy 184-224)
+### Loja Integrada: how the route is resolved
 
-`lojaIntegrada` resolves a **target** carrier before emitting:
+`lojaIntegrada` is not a fetch channel: it is the router above. Which carrier a
+pedido is routed to is decided by ONE pure resolver in `@delfrance/schemas`
+(`mapaFreteLojaIntegrada.ts`), which the backend route and the web's read-only
+preview (`preverRotaEtiquetaLi`) both call:
 
-1. If `freteInicial.integracaoTargetOuterRef` is set → read it; `tipo` = the
-   target integration's tipo, and its doc id is the target account.
-2. Else map `externalOptionData['id'].split('---')[0]` through
-   `integracaoFrete.mapa`, matching on
-   `element.idOriginal.split('---')[0]`. The matched `MapaDeIntegracoes` gives
-   `targetTipoIntegracao` + `integracaoUid`; when the target is
-   `melhorEnvios`, also `melhorEnviosServiceId = mapeamento.targetData['id']`.
-3. No mapping found → abort with "Este frete não possui mapeamento com
-   transportadora."
+1. an operator's choice ("Escolher transportadora…") names the target;
+2. else a stored per-pedido override (`freteInicial.integracaoTargetOuterRef`)
+   does — and an override that names no valid target is REFUSED, never
+   replaced by the `mapa`;
+3. else the conta's `mapa` row whose key is the pedido's FULL shipping-method
+   key (`<id>---<code>`, from `externalOptionData`) does, when that row is
+   mapped (decided by its `integracaoUid`, never by its denormalised tipo).
 
-The resolved target tipo is then dispatched exactly like a first-class carrier
-(a mapped `melhorEnvios` target runs the Melhor Envio buy/print, etc.).
+The target must be an active doc of one of the five label tipos
+(`TIPOS_ALVO_MAPA_FRETE_LI`). A Melhor Envio target needs a service: the
+stored one beside its own ref, else the method's own Melhor Envio row's, else
+the route refuses (`alvo-sem-servico`). Every refusal has its operator copy in
+`lib/loja-integrada/rotaEtiqueta.ts`.
 
 ## What the shared gates guarantee (providers may assume these already ran)
 

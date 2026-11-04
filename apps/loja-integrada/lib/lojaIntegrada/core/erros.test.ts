@@ -12,6 +12,7 @@ import { LiError } from '@delfrance/integrations-loja-integrada';
 
 import * as erros from './erros';
 import {
+  EscritaRecusadaLiError,
   LiAppError,
   LiChamadasDesligadasError,
   LiContaInativaError,
@@ -20,6 +21,7 @@ import {
   LiCredencialAlteradaError,
   LiCredencialAusenteError,
   LiCredencialInvalidaError,
+  LiCredencialTrocadaError,
   LiEstacionamentoEmConflitoError,
 } from './erros';
 
@@ -35,14 +37,15 @@ const INSTANCIAS: readonly LiAppError[] = [
   new LiContaParadaError(ID, 401, 1),
   new LiEstacionamentoEmConflitoError(ID, 3),
   new LiChamadasDesligadasError(ID),
+  new LiCredencialTrocadaError(ID),
 ];
 
 describe('the app errors are NOT LiError', () => {
-  it('every exported subclass of LiAppError is instantiated here (8 of them)', () => {
+  it('every exported subclass of LiAppError is instantiated here (9 of them)', () => {
     const subclasses = Object.values(erros).filter(
       (v) => typeof v === 'function' && v.prototype instanceof LiAppError,
     );
-    expect(subclasses).toHaveLength(8);
+    expect(subclasses).toHaveLength(9);
     for (const classe of subclasses) {
       expect(
         INSTANCIAS.some((e) => e.constructor === classe),
@@ -64,5 +67,27 @@ describe('the app errors are NOT LiError', () => {
   it('near-miss: the package class is not an app error either', () => {
     expect(LiError.prototype instanceof LiAppError).toBe(false);
     expect(LiAppError.prototype instanceof LiError).toBe(false);
+  });
+
+  it('the write-back retry signal is neither a LiError nor an app error about a conta, and carries the status only', () => {
+    const err = new EscritaRecusadaLiError(ID, 'objeto-envio', 403);
+    expect(err.name).toBe('EscritaRecusadaLiError');
+    expect(err).toBeInstanceOf(Error);
+    expect(err).not.toBeInstanceOf(LiError);
+    expect(err).not.toBeInstanceOf(LiAppError);
+    expect(err.status).toBe(403);
+    expect(err.tipo).toBe('objeto-envio');
+    expect(err.message).toContain('HTTP 403');
+    expect(err.message).toContain(ID);
+  });
+
+  it('the credential pin refusal names the conta, never a ref or a token, and is not the panel conflict', () => {
+    const err = new LiCredencialTrocadaError(ID);
+    expect(err.name).toBe('LiCredencialTrocadaError');
+    expect(err.message).toContain(ID);
+    expect(err.message).toMatch(/nada foi enviado/i);
+    // A different class from the credential panel's lost race: a catch for one
+    // must never handle the other.
+    expect(err).not.toBeInstanceOf(LiCredencialAlteradaError);
   });
 });

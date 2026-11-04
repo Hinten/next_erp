@@ -45,8 +45,18 @@ vi.mock('@delfrance/data/hooks', async () => {
 
 vi.mock('next/navigation', () => ({ useSearchParams: () => new URLSearchParams() }));
 
+const { saveRecordMock } = vi.hoisted(() => ({ saveRecordMock: vi.fn() }));
+
+// PARTIAL mock — `RecordConflictError` must stay the real class, or the
+// `instanceof` in ObjectView's catch would never match.
+vi.mock('./saveRecord', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./saveRecord')>()),
+  saveRecord: (input: unknown) => saveRecordMock(input),
+}));
+
 import { ObjectView } from './ObjectView';
 import { useObjectViewSections } from './ObjectViewSectionsContext';
+import { RecordConflictError } from './saveRecord';
 
 const schema = z.object({
   nome: z.string().nullable().optional().describe('Nome'),
@@ -140,5 +150,64 @@ describe('staging a value into another tab', () => {
     });
 
     expect(nomeInput().value).toBe('restaurado');
+  });
+});
+
+/*
+ * The same trap, met by a field that MERGES on a conflict (`rebaseOnConflict`)
+ * and collided on "Salvar mesmo assim": the form takes the operator to that
+ * field's tab — and must do so BEFORE the merged value is written, or they land
+ * there still reading their own lost value while the form holds the other one.
+ */
+describe('a collided merge on a field in a HIDDEN tab', () => {
+  function renderComMescla() {
+    return render(
+      <MantineProvider>
+        <ObjectView
+          schema={schema}
+          collection={fakeCollection()}
+          db={{} as never}
+          currentUserUid="u1"
+          recordId="EXISTING"
+          sections={['Dados', 'Ferramentas']}
+          fields={{
+            nome: {
+              section: 'Dados',
+              rebaseOnConflict: {
+                label: 'mescla',
+                merge: ({ server }) => ({ value: server, collided: true }),
+              },
+            },
+            atalho: { section: 'Ferramentas' },
+          }}
+        />
+      </MantineProvider>,
+    );
+  }
+
+  it('lands on the field’s tab SHOWING the merged value, and saves nothing', async () => {
+    saveRecordMock.mockReset();
+    saveRecordMock.mockRejectedValueOnce(
+      new RecordConflictError({ nome: 'do outro', atalho: null }, ['nome']),
+    );
+    renderComMescla();
+    await act(async () => {
+      fireEvent.change(nomeInput(), { target: { value: 'meu' } });
+    });
+    // Saved from the OTHER tab: the field's panel is hidden when the merge lands.
+    await act(async () => {
+      fireEvent.click(screen.getByRole('tab', { name: 'Ferramentas' }));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Salvar' }));
+    });
+    const forcar = await screen.findByRole('button', { name: 'Salvar mesmo assim' });
+    await act(async () => {
+      fireEvent.click(forcar);
+    });
+
+    expect(screen.getByRole('tab', { name: 'Dados' }).getAttribute('aria-selected')).toBe('true');
+    expect(nomeInput().value).toBe('do outro');
+    expect(saveRecordMock).toHaveBeenCalledOnce();
   });
 });

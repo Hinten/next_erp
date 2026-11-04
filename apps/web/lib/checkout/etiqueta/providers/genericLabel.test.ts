@@ -13,9 +13,15 @@ vi.mock('@/lib/etiqueta-generica', () => ({
   renderEtiquetaGenericaZpl: renderZplMock,
 }));
 
-import { INTEGRACAO_FRETE } from '@delfrance/schemas';
+import { createHash } from 'node:crypto';
+import {
+  CODIGO_SITUACAO_LI,
+  INTEGRACAO_FRETE,
+  type RespostaConferenciaPagamentoLi,
+} from '@delfrance/schemas';
 
 import { printJob as realPrintJob, type PrintAgentRequest } from '@/lib/print-agent/printJob';
+import { lojaIntegradaClientFalso } from '@/lib/testing/lojaIntegradaClientFalso';
 
 import { genericLabelProvider } from './genericLabel';
 import type { EtiquetaProviderInput } from '../types';
@@ -25,11 +31,17 @@ function makeInput(over: {
   printJob?: EtiquetaProviderInput['deps']['printJob'];
   notify?: EtiquetaProviderInput['ui']['notify'];
   intFrete?: EtiquetaProviderInput['intFrete'];
+  pedido?: EtiquetaProviderInput['pedido'];
+  pedidoId?: string;
+  lojaIntegradaClient?: EtiquetaProviderInput['deps']['lojaIntegradaClient'];
+  confirmRisk?: EtiquetaProviderInput['ui']['confirmRisk'];
+  confirmarCiente?: EtiquetaProviderInput['ui']['confirmarCiente'];
+  conferenciaLi?: EtiquetaProviderInput['conferenciaLi'];
 }): EtiquetaProviderInput {
   return {
     db: {} as never,
-    pedido: { numero: '1234' } as never,
-    pedidoId: 'p1',
+    pedido: over.pedido ?? ({ numero: '1234' } as never),
+    pedidoId: over.pedidoId ?? 'p1',
     frete: {} as never,
     intFrete: over.intFrete ?? {
       fonte: 'doc',
@@ -43,15 +55,18 @@ function makeInput(over: {
       nfeClient: null,
       mercadoLivreClient: null,
       shopeeClient: null,
+      lojaIntegradaClient: over.lojaIntegradaClient ?? lojaIntegradaClientFalso(),
       printJob: over.printJob ?? (vi.fn(async () => 'printed') as never),
     },
     ui: {
-      confirmRisk: vi.fn(async () => true),
+      confirmRisk: over.confirmRisk ?? vi.fn(async () => true),
       notify: over.notify ?? vi.fn(),
       openUrl: vi.fn(),
       comprarEtiqueta: vi.fn(),
       escolherEnvio: vi.fn(),
+      confirmarCiente: over.confirmarCiente ?? vi.fn(async () => true),
     },
+    ...(over.conferenciaLi === undefined ? {} : { conferenciaLi: over.conferenciaLi }),
   };
 }
 
@@ -247,5 +262,112 @@ describe('genericLabelProvider', () => {
       expect.objectContaining({ fonte: 'doc', id: 'int-1' }),
     );
     expect(printJob).toHaveBeenCalledOnce();
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*            The Loja Integrada paid re-check's soft gate (step 15)          */
+/* -------------------------------------------------------------------------- */
+
+describe('genericLabelProvider — the Loja Integrada soft gate', () => {
+  const ID_LI = createHash('sha256').update('lojaIntegradaCONTA1-165').digest('hex');
+  const PEDIDO_LI = {
+    numero: '165',
+    integracaoPedidoOuterRef: 'documents/integracao/CONTA1',
+  } as never;
+  const resposta = (veredito: 'pago' | 'nao-pago'): RespostaConferenciaPagamentoLi => ({
+    aplicavel: true,
+    fonte: 'loja',
+    veredito,
+    codigo:
+      veredito === 'pago' ? CODIGO_SITUACAO_LI.pedidoPago : CODIGO_SITUACAO_LI.aguardandoPagamento,
+    motivoContestacao: null,
+    conferidoEmMs: 0,
+    correlationId: null,
+  });
+
+  function cenario(veredito: 'pago' | 'nao-pago', ciente: boolean) {
+    const conferirPagamento = vi.fn(async () => resposta(veredito));
+    const confirmarCiente = vi.fn(async () => ciente);
+    const confirmRisk = vi.fn(async () => true);
+    const printJob = vi.fn(async () => 'printed' as const);
+    const input = makeInput({
+      pedido: PEDIDO_LI,
+      pedidoId: ID_LI,
+      lojaIntegradaClient: lojaIntegradaClientFalso({ conferirPagamento }),
+      confirmarCiente,
+      confirmRisk,
+      printJob,
+    });
+    return { input, conferirPagamento, confirmarCiente, confirmRisk, printJob };
+  }
+
+  beforeEach(() => {
+    buildModelMock.mockReset().mockResolvedValue({ title: 'Pedido 165' });
+    renderPdfMock.mockReset().mockResolvedValue(new Blob(['%PDF-1.3']));
+  });
+
+  it('`nao-pago` + Cancelar ⇒ skipped, and NOTHING is built or printed', async () => {
+    const s = cenario('nao-pago', false);
+
+    await expect(genericLabelProvider.emitirOuImprimir(s.input)).resolves.toEqual({
+      status: 'skipped',
+    });
+
+    expect(s.confirmarCiente).toHaveBeenCalledTimes(1);
+    expect(buildModelMock).not.toHaveBeenCalled();
+    expect(s.printJob).not.toHaveBeenCalled();
+  });
+
+  it('`nao-pago` + "Estou ciente do risco" ⇒ printed', async () => {
+    const s = cenario('nao-pago', true);
+
+    await expect(genericLabelProvider.emitirOuImprimir(s.input)).resolves.toEqual({
+      status: 'printed',
+    });
+
+    expect(s.confirmRisk).not.toHaveBeenCalled();
+    expect(s.printJob).toHaveBeenCalledOnce();
+  });
+
+  it('`pago` ⇒ no dialog, printed', async () => {
+    const s = cenario('pago', false);
+
+    await expect(genericLabelProvider.emitirOuImprimir(s.input)).resolves.toEqual({
+      status: 'printed',
+    });
+
+    expect(s.conferirPagamento).toHaveBeenCalledOnce();
+    expect(s.conferirPagamento).toHaveBeenCalledWith(ID_LI, undefined);
+    expect(s.confirmarCiente).not.toHaveBeenCalled();
+  });
+
+  it('⚠️ NEAR-MISS: a carried `pago` under 120 s spares the call', async () => {
+    const s = cenario('nao-pago', false);
+    const input = {
+      ...s.input,
+      conferenciaLi: {
+        tipo: 'resposta' as const,
+        pedidoId: ID_LI,
+        resposta: resposta('pago'),
+        recebidoEm: performance.now(),
+      },
+    };
+
+    await expect(genericLabelProvider.emitirOuImprimir(input)).resolves.toEqual({
+      status: 'printed',
+    });
+
+    expect(s.conferirPagamento).not.toHaveBeenCalled();
+  });
+
+  it('a pedido that is not an imported order never calls (the default pedido of this suite)', async () => {
+    const conferirPagamento = vi.fn();
+    const out = await genericLabelProvider.emitirOuImprimir(
+      makeInput({ lojaIntegradaClient: lojaIntegradaClientFalso({ conferirPagamento }) }),
+    );
+
+    expect(out).toEqual({ status: 'printed' });
+    expect(conferirPagamento).not.toHaveBeenCalled();
   });
 });

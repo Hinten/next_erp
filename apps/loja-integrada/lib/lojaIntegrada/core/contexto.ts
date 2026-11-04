@@ -29,8 +29,12 @@
  * interval. The package awaits the getter outside the request deadline, so the
  * wait never eats the call's own budget.
  *
- * The routes do NOT come through here: they must be able to fix a parked or
- * inactive conta, so they read it uncached and require only `tipo === 3`.
+ * The credential routes and the label routing route do NOT come through here:
+ * the credential routes must be able to fix a parked or inactive conta, so they
+ * read it uncached and require only `tipo === 3`, and the routing route calls
+ * nothing. The paid re-check route (`GET …/pedidos/[pedidoId]/pagamento`,
+ * `pedidos/conferenciaPagamento.ts`) DOES: its one read is a flow's read like
+ * any other — switched, refused on a parked or inactive conta, and paced.
  *
  * ## The credential is re-read on EVERY request
  *
@@ -46,6 +50,23 @@
  * The getter hands the package `{ token, ref: refDaCredencial(doc) }`, so every
  * `LiAuthError` names the exact credential version it refused — the park's
  * guard input.
+ *
+ * ## The credential VERSION, never the ref
+ *
+ * `versaoCredencial` is the version of the credential the loader read to fail
+ * fast (step 3 above): the ref's version suffix, read through
+ * `core/refCredencial.ts` — the save's own millisecond stamp, so a token saved
+ * again, even the same one, is a new version. `null` when the stamp has no
+ * version form. It is what a caller keys anything held per credential on, and
+ * it costs no read of its own.
+ *
+ * `deps.aoUsarCredencial`, when given, is called inside the getter with the
+ * VERSION of the credential each request is about to carry — after the re-read,
+ * before the request is built — so a caller can tell whether every request of a
+ * multi-request load ran under the version it started with (a token saved
+ * midway is picked up by the next request). Only the version, never the ref, the
+ * fingerprint or the token. Whatever it throws is what that call throws, and the
+ * request is never sent; a request the getter refuses (a park) reports nothing.
  *
  * There is no local expiry refusal: `tokenExpiraEmMs` is advisory (a renewal in
  * the painel keeps the token alive past it), and Loja Integrada's 401 is the
@@ -72,6 +93,7 @@ import { INTEGRACAO_TIPO, type Integracao } from '@delfrance/schemas';
 import { lerContaEmCache } from './contaCache';
 import { refDaCredencial } from './credencial';
 import { type CredencialLida, lerCredencial } from './credentialStore';
+import { versaoDaRef } from './refCredencial';
 import {
   LiChamadasDesligadasError,
   LiContaInativaError,
@@ -96,6 +118,12 @@ export interface ContextoLojaIntegrada {
   readonly integracaoId: string;
   readonly conta: Integracao;
   readonly cliente: LiLeituraClient;
+  /**
+   * The VERSION of the credential this context was loaded with (module header):
+   * the save's stamp as digits, never the ref or the fingerprint; `null` when the
+   * stamp has no version form.
+   */
+  readonly versaoCredencial: string | null;
 }
 
 /** The operation name the read switch's refusal line carries. */
@@ -116,6 +144,13 @@ export interface ContextoDeps {
    * (tests). `conta` is not among them: it is always this context's id.
    */
   readonly registro?: Omit<OpcoesObservadorLi, 'conta'>;
+  /**
+   * Told the VERSION of the credential each request is about to carry (module
+   * header): after the getter's re-read, before the request is built. `null`
+   * when that stamp has no version form. Never the ref, the fingerprint or the
+   * token. What it throws, the call throws, with no request sent.
+   */
+  readonly aoUsarCredencial?: (versao: string | null) => void;
   /** Test seams, forwarded as-is. */
   readonly fetch?: typeof globalThis.fetch;
   readonly gerarCorrelationId?: () => string;
@@ -123,10 +158,16 @@ export interface ContextoDeps {
 
 /**
  * A credential usable for a request right now: present, parseable, not parked.
+ * Shared with the WRITE context (`core/contextoEscrita.ts`), which reuses this
+ * loader's refusals in this loader's order; this module never imports that one,
+ * so no read route's closure can reach the write factory.
  *
  * @throws {LiCredencialAusenteError | LiCredencialInvalidaError | LiContaParadaError}
  */
-async function credencialUtilizavel(db: Firestore, integracaoId: string): Promise<CredencialLida> {
+export async function credencialUtilizavel(
+  db: Firestore,
+  integracaoId: string,
+): Promise<CredencialLida> {
   const lida = await lerCredencial(db, integracaoId);
   if (lida === null) throw new LiCredencialAusenteError(integracaoId);
   const parada = lida.credencial.reconexaoPendente;
@@ -155,10 +196,12 @@ export async function loadLojaIntegradaContext(
   }
   if (conta.ativo === false) throw new LiContaInativaError(integracaoId);
 
-  // Fail fast: a flow that cannot make a single request should not start.
-  await credencialUtilizavel(db, integracaoId);
+  // Fail fast: a flow that cannot make a single request should not start. The
+  // same read gives the context its credential version (no read of its own).
+  const lida = await credencialUtilizavel(db, integracaoId);
+  const versaoCredencial = versaoDaRef(refDaCredencial(lida.credencial));
 
-  const { ritmo } = deps;
+  const { ritmo, aoUsarCredencial } = deps;
   const cliente = criarClienteLeituraLi({
     obterCredencial: async (): Promise<CredencialLi> => {
       // The pacer FIRST, then the read: a park or a save that lands during the
@@ -166,7 +209,10 @@ export async function loadLojaIntegradaContext(
       await ritmo.esperar(ritmo.intervaloMs);
       // Re-read every time — never the copy read above (module header).
       const { credencial } = await credencialUtilizavel(db, integracaoId);
-      return { token: credencial.personalToken, ref: refDaCredencial(credencial) };
+      const ref = refDaCredencial(credencial);
+      // The VERSION only, before the request is built (module header).
+      aoUsarCredencial?.(versaoDaRef(ref));
+      return { token: credencial.personalToken, ref };
     },
     enviarCorrelationId: ENVIAR_CORRELATION_ID_LI,
     // `conta` LAST: whatever the options carry, the line names this conta.
@@ -175,5 +221,5 @@ export async function loadLojaIntegradaContext(
     gerarCorrelationId: deps.gerarCorrelationId,
   });
 
-  return { integracaoId, conta, cliente };
+  return { integracaoId, conta, cliente, versaoCredencial };
 }

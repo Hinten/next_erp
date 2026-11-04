@@ -6,6 +6,7 @@ import {
 
 import { runEtiquetaGates } from './gates';
 import { genericLabelProvider } from './providers/genericLabel';
+import { createLojaIntegradaRouterProvider } from './providers/lojaIntegrada';
 import { melhorEnviosProvider } from './providers/melhorEnvios';
 import { mercadoLivreProvider } from './providers/mercadoLivre';
 import { shopeeProvider } from './providers/shopee';
@@ -24,8 +25,21 @@ import type { CheckoutEtiquetaProvider, EtiquetaOutcome, EtiquetaProviderInput }
  * points and the checkout screens, a NEW operator question as a REQUIRED `ui`
  * member served on `/pedidos` by `EtiquetaAcaoHost`, the row action's
  * client-presence branch, and the drift guard in `registry.test.ts`. The full
- * list is in `README.md` ("Adding a provider").
+ * list is in `README.md` ("Adding a provider"). A ROUTER (Loja Integrada,
+ * master plan step 15) is the other shape: it prints nothing itself, so it is
+ * built over this registry's own resolution — see the README's "Router
+ * provider".
  */
+
+/**
+ * The Loja Integrada router: it routes the pedido, then delegates to the
+ * provider of the carrier it was routed to — resolved by THIS module's
+ * `resolveEtiquetaProvider`, injected as a closure so the provider file needs
+ * no import of the registry (no cycle). The closure is only ever called at
+ * dispatch time, long after `PROVIDERS` below is built.
+ */
+export const lojaIntegradaRouterProvider: CheckoutEtiquetaProvider =
+  createLojaIntegradaRouterProvider((tipo, caps) => resolveEtiquetaProvider(tipo, caps));
 
 /** Registered providers, indexed by every tipo each one claims via `.tipos`. */
 export const PROVIDERS: Readonly<Partial<Record<IntegracaoFrete, CheckoutEtiquetaProvider>>> =
@@ -33,6 +47,7 @@ export const PROVIDERS: Readonly<Partial<Record<IntegracaoFrete, CheckoutEtiquet
     melhorEnviosProvider,
     mercadoLivreProvider,
     shopeeProvider,
+    lojaIntegradaRouterProvider,
     unsupportedMarketplaceProvider,
     genericLabelProvider,
   ]);
@@ -56,7 +71,9 @@ function buildProviderMap(
 
 /**
  * Resolve the provider for a freight tipo:
- *   - an exact tipo match in `PROVIDERS` wins;
+ *   - an exact tipo match in `PROVIDERS` wins (a router tipo — `labelMode
+ *     'roteado'` — has one: it is not marketplace-owned, so the fallbacks
+ *     below would hand it the GENERIC label);
  *   - else a `marketplaceOwned` tipo (a marketplace with no registered provider
  *     yet) → the unsupported-marketplace placeholder;
  *   - else → the generic label (motoboy / fob / outros / any unknown tipo).

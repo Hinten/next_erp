@@ -349,6 +349,30 @@ describe('resumoDoPlano — o que o ensaio mostra', () => {
     expect(r.estoqueIgnorado).toBe('sem-deposito');
     expect(renderResumoImportacao(r).join('\n')).toContain('moeda-nao-brl');
   });
+
+  it('(#1911 P5) um RASCUNHO adotado é ADOTAR RASCUNHO — nunca MERGE ⟷ o mesmo doc sem a marca é MERGE', () => {
+    const linhaDoPai = (r: ReturnType<typeof resumoDoPlano>): string | undefined =>
+      renderResumoImportacao(r).find((l) => l.trimStart().startsWith('prodshopee'));
+
+    const adotado = resumoDoPlano(
+      planejarImportacaoShopee(
+        preparo({ linkPai: { id: 'rasc-1', raw: { item_id: null }, rascunhoAdotado: true } }),
+      ),
+      item(),
+    );
+    expect(adotado.links.pai).toBe('adotar');
+    expect(linhaDoPai(adotado)).toContain('ADOTAR RASCUNHO');
+    expect(linhaDoPai(adotado)).not.toContain('MERGE');
+
+    // ⛔ near-miss: the SAME document read by rung 1 (no marker) is today's merge.
+    const lido = resumoDoPlano(
+      planejarImportacaoShopee(preparo({ linkPai: { id: 'rasc-1', raw: { item_id: null } } })),
+      item(),
+    );
+    expect(lido.links.pai).toBe('merge');
+    expect(linhaDoPai(lido)).toContain('MERGE');
+    expect(linhaDoPai(lido)).not.toContain('ADOTAR');
+  });
 });
 
 /* -------------------------------------------------------------------------- */

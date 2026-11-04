@@ -8,6 +8,7 @@ import { FirebaseError } from 'firebase/app';
 import { getDoc } from 'firebase/firestore';
 import { useFormContext } from 'react-hook-form';
 import { DELETE_MARK } from '@delfrance/ui';
+import { idFromRefOrNull } from '@delfrance/schemas';
 import { CollectionSelect } from '@/components/collection-select/CollectionSelect';
 import { categoriaCollection } from '@/lib/data/categoriaCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
@@ -57,13 +58,6 @@ function toRecord(value: unknown): CategoriaRecord {
     : {};
 }
 
-/** Trailing id segment of a `documents/categorias/<id>` doc-path string. */
-function idFromRef(raw: unknown): string | null {
-  if (typeof raw !== 'string') return null;
-  const id = raw.split('/').filter(Boolean).pop();
-  return id ?? null;
-}
-
 export interface FormulasPorCategoriaEditorProps {
   label?: string;
   hint?: string;
@@ -100,7 +94,7 @@ export function FormulasPorCategoriaEditor({
 
   const handleAdd = async (raw: unknown) => {
     setPickerValue(null);
-    const id = idFromRef(raw);
+    const id = idFromRefOrNull(raw);
     if (!id) return;
     const existing = record[id];
     if (existing) {

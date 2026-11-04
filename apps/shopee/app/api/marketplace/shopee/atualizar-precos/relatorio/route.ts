@@ -23,7 +23,8 @@
  * produto that PRICED the row — `variacaoProdutoId ?? produtoId` — so a
  * per-model row names its variation. A missing produto (or a run's synthetic
  * `job-*` row, whose id names the conta) reads back as blank columns, never as
- * a failed page.
+ * a failed page. The join itself is `lerNomesDosProdutos`
+ * (`lib/shopee/precos/nomesDosProdutos.ts`), shared with the manual push.
  *
  * ⚠️ The job is read through a `fieldMask` ({@link CAMPOS_JOB}): a run that
  * stopped short keeps its whole `fila`, and every page of a download would
@@ -32,11 +33,9 @@
  * one that does not exist.
  */
 import { FieldPath } from 'firebase-admin/firestore';
-import type { Firestore } from 'firebase-admin/firestore';
 import { NextResponse } from 'next/server';
 import {
   envioPrecoShopeeCollection,
-  produtoCollection,
   relatorioEnvioPrecoShopeeCollection,
 } from '@delfrance/data/admin/collections';
 import type { LinhaRelatorioEnvioPreco } from '@delfrance/schemas';
@@ -45,6 +44,7 @@ import { PERM, verifyCaller } from '@/lib/auth/verifyCaller';
 import { getAdminFirestore } from '@/lib/firebase/admin';
 import { naoDocId } from '@/lib/shopee/anuncios/corpoPublicacao';
 import { mensagemDoMotivoDePreco } from '@/lib/shopee/precos/errosPreco';
+import { lerNomesDosProdutos } from '@/lib/shopee/precos/nomesDosProdutos';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -54,9 +54,6 @@ export const runtime = 'nodejs';
  * inside one App Hosting request's heap share with room to spare.
  */
 export const SHARDS_POR_PAGINA = 4;
-
-/** `getAll` is unbounded but a request is not; the name join is chunked. */
-const PRODUTOS_POR_LOTE = 300;
 
 /** A shard id as `relatorioEnvioPrecoShardId` mints them — `String(i).padStart(4, '0')`. */
 const SHARD_ID = /^\d{4,}$/;
@@ -130,7 +127,7 @@ export async function GET(req: Request): Promise<NextResponse> {
     linhas.push(...Object.values(shard.linhas));
   }
 
-  const nomes = await lerNomes(db, linhas.map(chaveDoNome));
+  const nomes = await lerNomesDosProdutos(db, linhas.map(chaveDoNome));
 
   return NextResponse.json({
     // Built BY NAME: a key a newer writer adds to a stored row must not leave
@@ -165,33 +162,4 @@ export async function GET(req: Request): Promise<NextResponse> {
 /** The produto whose name and SKU a row shows — the one that priced it. */
 function chaveDoNome(l: LinhaRelatorioEnvioPreco): string {
   return l.variacaoProdutoId ?? l.produtoId;
-}
-
-/**
- * Batched `nome` / `sku` for the distinct produtos on this page, a field mask
- * per read. A family contributes a row per model, so the distinct set is far
- * smaller than the row count.
- */
-async function lerNomes(
-  db: Firestore,
-  produtoIds: readonly string[],
-): Promise<Map<string, { nome: string | null; sku: string | null }>> {
-  const distintos = [...new Set(produtoIds)];
-  const saida = new Map<string, { nome: string | null; sku: string | null }>();
-  for (let i = 0; i < distintos.length; i += PRODUTOS_POR_LOTE) {
-    const lote = distintos.slice(i, i + PRODUTOS_POR_LOTE);
-    const snaps = await db.getAll(...lote.map((id) => produtoCollection.docRef(db, {}, id)), {
-      fieldMask: ['nome', 'sku'],
-    });
-    for (const s of snaps) {
-      // ⚠️ A missing produto is DATA, not an error: it reads back as blanks.
-      if (!s.exists) continue;
-      const bruto = (s.data() ?? {}) as { nome?: unknown; sku?: unknown };
-      saida.set(s.id, {
-        nome: typeof bruto.nome === 'string' ? bruto.nome : null,
-        sku: typeof bruto.sku === 'string' ? bruto.sku : null,
-      });
-    }
-  }
-  return saida;
 }

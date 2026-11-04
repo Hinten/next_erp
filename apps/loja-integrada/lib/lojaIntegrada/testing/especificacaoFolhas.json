@@ -602,6 +602,34 @@
         ["variacoes.*.nome",["string"],["exemplo","schema"]],
         ["variacoes.*.resource_uri",["string"],["exemplo","schema"]]
       ]
+    },
+    {
+      "metodo": "PUT",
+      "caminho": "/v1/pedido_envio/{pedido_envio_id}",
+      "folhas": [
+        ["data_criacao",["string"],["exemplo","schema"]],
+        ["data_modificacao",["string"],["exemplo","schema"]],
+        ["id",["integer"],["exemplo","schema"]],
+        ["objeto",["string"],["exemplo","schema"]],
+        ["prazo",["integer"],["exemplo","schema"]],
+        ["valor",["string"],["exemplo","schema"]]
+      ]
+    },
+    {
+      "metodo": "PUT",
+      "caminho": "/v1/situacao/pedido/{pedido_id}",
+      "folhas": [
+        ["aprovado",["boolean"],["exemplo","schema"]],
+        ["cancelado",["boolean"],["exemplo","schema"]],
+        ["codigo",["string"],["exemplo","schema"]],
+        ["final",["boolean"],["exemplo","schema"]],
+        ["id",["integer"],["exemplo","schema"]],
+        ["nome",["string"],["exemplo","schema"]],
+        ["notificar_comprador",["boolean"],["exemplo","schema"]],
+        ["padrao",["boolean"],["exemplo","schema"]],
+        ["pedido",["string"],["exemplo","schema"]],
+        ["resource_uri",["string"],["exemplo","schema"]]
+      ]
     }
   ]
 }

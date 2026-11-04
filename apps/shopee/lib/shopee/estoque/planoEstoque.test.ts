@@ -215,6 +215,119 @@ describe('planoEstoque — atribuição do vínculo à conta', () => {
 });
 
 /* -------------------------------------------------------------------------- */
+/*            (1b) o RASCUNHO não é anúncio (#1911 D3) — nada a enviar          */
+/* -------------------------------------------------------------------------- */
+
+const RASCUNHO_DOC = 'link-0-rascunho';
+
+/**
+ * A draft as the discovery projection hands it: this conta, its own doc id, and
+ * `item_id` either `null` or ABSENT (a projection omits a key the document does
+ * not hold). The checks inside make the fixture prove its own claim.
+ */
+function rascunho(semItemId: 'nulo' | 'ausente', extra: LinkShopeeCru = {}): LinkShopeeCru {
+  const base: LinkShopeeCru = {
+    contaProdutoShopeeOuterRef: refConta(INTEGRACAO),
+    linkDocId: RASCUNHO_DOC,
+    ...(semItemId === 'nulo' ? { item_id: null } : {}),
+    ...extra,
+  };
+  expect('item_id' in base).toBe(semItemId === 'nulo');
+  return base;
+}
+
+describe('planoEstoque — o rascunho nunca é anúncio (#1911 D3)', () => {
+  it.each(['nulo', 'ausente'] as const)(
+    'PAR — rascunho (`item_id` %s) AO LADO de um anúncio vivo ⇒ só o vivo é planejado, e o rascunho não deixa linha',
+    (semItemId) => {
+      const resultado = montar(
+        familia({ links: [rascunho(semItemId), link()] }),
+        new Map([[ANCORA, 7]]),
+      );
+
+      expect(resultado.tarefas).toHaveLength(1);
+      expect(resultado.tarefas[0]).toMatchObject({ linkDocId: LINK_DOC, itemId: ITEM_ID });
+      // Before #1911: a `sem-item-id` line advising a re-import of a listing
+      // that never existed.
+      expect(resultado.pulos).toEqual([]);
+    },
+  );
+
+  it.each(['nulo', 'ausente'] as const)(
+    'um produto SÓ com rascunho (`item_id` %s) responde `sem-link` ("importe ou publique"), nunca `sem-item-id`',
+    (semItemId) => {
+      const resultado = montar(familia({ links: [rascunho(semItemId)] }), new Map([[ANCORA, 7]]));
+
+      expect(resultado.tarefas).toHaveLength(0);
+      expect(resultado.pulos).toEqual([
+        {
+          produtoId: ANCORA,
+          linkDocId: null,
+          itemId: null,
+          modelId: null,
+          modelosAfetados: null,
+          motivo: MOTIVO_ESTOQUE_SHOPEE.semLink,
+          mensagem: MENSAGEM_POR_MOTIVO[MOTIVO_ESTOQUE_SHOPEE.semLink],
+        },
+      ]);
+    },
+  );
+
+  it('dois rascunhos e nada mais ⇒ UMA linha `sem-link`', () => {
+    const resultado = montar(
+      familia({
+        links: [rascunho('nulo'), rascunho('ausente', { linkDocId: 'link-0-rascunho-b' })],
+      }),
+      new Map([[ANCORA, 7]]),
+    );
+
+    expect(resultado.tarefas).toHaveLength(0);
+    expect(motivos(resultado)).toEqual([MOTIVO_ESTOQUE_SHOPEE.semLink]);
+  });
+
+  it('QUASE-IGUAL — `kitNativo` falso, nulo ou o texto "true" NÃO tiram o rascunho da classe (só `true` tira)', () => {
+    for (const kitNativo of [false, null, 'true']) {
+      const resultado = montar(
+        familia({ links: [rascunho('nulo', { kitNativo }), link()] }),
+        new Map([[ANCORA, 7]]),
+      );
+      expect(resultado.tarefas).toHaveLength(1);
+      expect(resultado.pulos).toEqual([]);
+    }
+  });
+
+  it('⚠️ NEAR-MISS — um `item_id` CORROMPIDO (`0`, `-1`, "123") NÃO é rascunho: continua `sem-item-id`, com o vínculo nomeado', () => {
+    for (const corrompido of [0, -1, String(ITEM_ID)]) {
+      const resultado = montar(
+        familia({ links: [link({ linkDocId: RASCUNHO_DOC, item_id: corrompido }), link()] }),
+        new Map([[ANCORA, 7]]),
+      );
+
+      expect(resultado.tarefas).toHaveLength(1);
+      expect(resultado.pulos).toEqual([
+        expect.objectContaining({
+          linkDocId: RASCUNHO_DOC,
+          itemId: null,
+          motivo: MOTIVO_ESTOQUE_SHOPEE.semItemId,
+        }),
+      ]);
+    }
+  });
+
+  it('⚠️ NEAR-MISS — `kitNativo: true` sem `item_id` é RESÍDUO de kit, não rascunho: continua `sem-item-id`', () => {
+    const resultado = montar(
+      familia({ links: [rascunho('nulo', { kitNativo: true })] }),
+      new Map([[ANCORA, 7]]),
+    );
+
+    expect(resultado.tarefas).toHaveLength(0);
+    expect(resultado.pulos).toEqual([
+      expect.objectContaining({ linkDocId: RASCUNHO_DOC, motivo: MOTIVO_ESTOQUE_SHOPEE.semItemId }),
+    ]);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
 /*                    (2) o anúncio SEM modelos — `model_id: 0`               */
 /* -------------------------------------------------------------------------- */
 

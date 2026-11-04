@@ -856,7 +856,10 @@ export async function runStockSweep(
       );
       const ctx = buildMercadoLivreContext(db, integracaoId, conta);
       const channelCtx = await ctx.resolveChannelContext(nowMs);
-      const api = createMercadoLivreApi({ getAccessToken: async () => channelCtx.accessToken });
+      const api = createMercadoLivreApi({
+        getAccessToken: channelCtx.getAccessToken,
+        onAccessTokenRejected: channelCtx.invalidateAccessToken,
+      });
       const user = await getMe(api);
       // #706: the same one probe now ROUTES instead of only refusing. A
       // `warehouse_management` conta without `multiwarehouse` manages exactly one

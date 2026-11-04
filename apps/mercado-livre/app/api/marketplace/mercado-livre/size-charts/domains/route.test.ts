@@ -42,7 +42,13 @@ const req = (qs: string) =>
 beforeEach(() => {
   vi.clearAllMocks();
   h.verifyCaller.mockResolvedValue({ uid: 'u1' });
-  h.resolveChannelContext.mockResolvedValue({ integracaoId: 'i', accessToken: 'AT', account: {} });
+  h.resolveChannelContext.mockResolvedValue({
+    integracaoId: 'i',
+    accessToken: 'AT',
+    getAccessToken: async () => 'AT',
+    invalidateAccessToken: vi.fn(),
+    account: {},
+  });
   h.loadCtx.mockResolvedValue({ resolveChannelContext: h.resolveChannelContext });
   h.getActiveChartDomains.mockResolvedValue({
     domains: [{ domain_id: 'MLB-PANTS' }, { domain_id: 'MLB-T_SHIRTS' }],

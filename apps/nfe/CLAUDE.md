@@ -193,7 +193,9 @@ app/
       emitir-lote/route.ts         POST — batch emit (async chunks hand off)
       consultar/route.ts           GET  — consSitNFe by chave
       cancelar/route.ts            POST — cancelamento evento (tpEvento 110111)
-      inutilizar/route.ts          POST — burn an unused número range (sync, cStat 102)
+      inutilizar/route.ts          POST — burn an unused número range (sync, cStat 102); 422
+                                   INUTILIZACAO_NAO_SE_APLICA for AC/BA/SP from 01/11/2026
+                                   (Ajuste SINIEF 40/2026, `inutilizacaoSeAplica`)
       carta-correcao/route.ts      POST — CC-e evento (tpEvento 110110); 136 → async re-check
       carta-correcao/danfe/route.ts GET — CC-e PDF from the persisted procNFe + record
       danfe/route.ts               GET  — DANFE simplificado / retrato / paisagem / zpl2

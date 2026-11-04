@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { millisSinceEpoch } from './shared/datetime';
-import { idRefSchema } from './shared/outerRef';
+import { idFromRefOrNull, idRefSchema } from './shared/outerRef';
 import { indEscalaField, nveField, taxConfigFields } from './imposto/tribute';
 import type { CollectionMetadata } from './types';
 
@@ -69,8 +69,7 @@ export type ImpostoProduto = z.infer<typeof impostoProdutoSchema>;
 
 /** Operação id from an `operacao/<id>` (or `documents/operacao/<id>`) scope ref. */
 export function operacaoIdFromImpostoRef(ref: string | null | undefined): string | null {
-  if (!ref) return null;
-  return ref.split('/').filter(Boolean).pop() ?? null;
+  return idFromRefOrNull(ref);
 }
 
 export const impostoProdutoMeta: CollectionMetadata = {

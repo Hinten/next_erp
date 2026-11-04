@@ -3,7 +3,7 @@
  * Functions codebase is bundled and shipped.
  *
  * Sibling of `env-files.mjs`, which owns the same question for FILES. Both are
- * shared by all eight `prepare-deploy.mjs`, and both fail the predeploy hook
+ * shared by all nine `prepare-deploy.mjs`, and both fail the predeploy hook
  * outright rather than degrading — for the same reason: a deploy artifact is
  * uploaded and run, and a wrong one is discovered in production or not at all.
  *
@@ -31,7 +31,7 @@
  *
  * ## WHERE IT RUNS, AND WHY THAT PLACEMENT
  *
- * From the `predeploy` ARRAY of the eight `firebase.*.deploy.json`, ahead of
+ * From the `predeploy` ARRAY of the nine `firebase.*.deploy.json`, ahead of
  * `prepare-deploy.mjs`. The deploy config is what defines a deploy, so the guard
  * fires exactly when deploying and needs no opt-out flag:
  *
@@ -152,8 +152,9 @@ const CODEBASES = {
   },
   shopee: {
     // ⚠️ Step 3 (#1511) ships the codebase AND `firebase.shopee.deploy.json`, but
-    // shipping the config is not shipping the deploy: nobody has run it, the
-    // ROLLOUT is step 22's (#1530), and the deploy itself is a manual coordinated
+    // shipping the config is not shipping the deploy: a human ran it on staging
+    // (2026-09-24, 2026-10-15), production's first deploy is a migration-window
+    // step (#1998), and the deploy itself is a manual coordinated
     // human step (root `CLAUDE.md` rule 8). So this row is wired as a real
     // predeploy hook while still earning its keep offline through
     // `bundle-inlining.test.js`, which builds every CODEBASES `build.mjs` and
@@ -173,6 +174,10 @@ const CODEBASES = {
     tasksRegionVar: 'FUNCTIONS_REGION',
     backendVar: 'SHOPEE_TASKS_REGION',
     backendManifest: 'apps/shopee/apphosting.yaml',
+    // ⚠️ Console-ONLY: that manifest deliberately has NO SHOPEE_TASKS_REGION row
+    // (a value there reaches EVERY project's backend; unset is the safe state),
+    // so `crossCheckNote` must not tell the operator to add one.
+    backendConsoleOnly: true,
     // Step 12 (#1520) gave this codebase its first `onTaskDispatched.rateLimits`,
     // so it joins `mercado-livre` above in the deploy-shell family: these two are
     // read from the DEPLOYING shell and baked into the queue by firebase-tools'
@@ -196,16 +201,22 @@ const CODEBASES = {
     // wired as a real predeploy hook while still earning its keep offline
     // through `bundle-inlining.test.js`, which builds every CODEBASES
     // `build.mjs` and proves the region actually reaches the bundle. Same MP
-    // shape: one region, inherited by the task/schedule functions through
-    // `setGlobalOptions`.
+    // shape: one region, inherited by every function of the codebase — the
+    // task, schedule and Firestore triggers alike — through `setGlobalOptions`.
     deployConfig: 'firebase.loja-integrada.deploy.json',
     buildScript: 'apps/loja-integrada/functions/build.mjs',
     deployDoc: 'apps/loja-integrada/functions/DEPLOY.md',
-    // No FIREBASE_DATABASE_ID: this codebase has no Firestore trigger, which is
-    // the only thing that reads the database id during codebase analysis. The
-    // day one arrives, `build.mjs` defines it AND this list gains it — the
-    // `lists EVERY build.mjs default` test fails the one-sided edit.
-    inlined: { FUNCTIONS_REGION: null },
+    // FIREBASE_DATABASE_ID arrived with master-plan step 20, which gave this
+    // codebase its FIRST Firestore trigger (`onIntegracaoLojaIntegradaChanged`,
+    // bound to the named `default` database). The trigger's own `?? 'default'`
+    // already resolves an UNSET variable correctly, so the define changes no
+    // value there; `build.mjs` builds it with `||`, which also turns a BLANK
+    // export into `default` (under `??` a blank would bind the `(default)`
+    // sentinel), and listing it here is what makes this table print the value
+    // the build bakes — for the trigger AND for `getDb()`, whose read the define
+    // replaces too. The `lists EVERY build.mjs default` test fails a define this
+    // list omits, and the drift test a listed key the build does not define.
+    inlined: { FUNCTIONS_REGION: null, FIREBASE_DATABASE_ID: 'default' },
     tasksRegionVar: 'FUNCTIONS_REGION',
     // ⚠️ `null` until the App Hosting enqueuer exists (step 4). In step 3 only
     // the functions themselves enqueue (the order poller), so there is no
@@ -216,10 +227,48 @@ const CODEBASES = {
     // `preflight.test.js`.
     backendVar: null,
     backendManifest: null,
-    // The reads queue's `rateLimits` are LITERALS (concurrency 1 is a
-    // correctness property, not a tunable), so there is no deploy-shell knob.
+    // Both queues' `rateLimits` are LITERALS — the reads queue and, since
+    // master-plan step 7, the writes queue with its instance limits
+    // (concurrency 1 is a correctness property, not a tunable) — so there is
+    // no deploy-shell knob.
     deployShell: {},
     runtimeOverrides: ['LOJA_INTEGRADA_TASKS_REGION'],
+  },
+  amazon: {
+    // ⚠️ Master-plan step 3 (PR 3-d) ships the codebase AND
+    // `firebase.amazon.deploy.json` INERT: nobody has run it, and the deploy
+    // itself is a manual coordinated human step in the migration window (window
+    // item W9, root `CLAUDE.md` rule 8). The row is wired as a real predeploy hook
+    // while still earning its keep offline through `bundle-inlining.test.js` and
+    // `bundle-loads.test.js`, which build every CODEBASES `build.mjs`. Same MP
+    // shape: one region, inherited by every function of the codebase through
+    // `setGlobalOptions`.
+    deployConfig: 'firebase.amazon.deploy.json',
+    buildScript: 'apps/amazon/functions/build.mjs',
+    deployDoc: 'apps/amazon/functions/DEPLOY.md',
+    // FIREBASE_DATABASE_ID: master-plan step 20 gave the codebase its first
+    // Firestore trigger (`onIntegracaoAmazonChanged`, bound to the named
+    // `default` database). The trigger's own `?? 'default'` already resolves an
+    // UNSET variable correctly, so the define changes no value there;
+    // `build.mjs` builds it with `||`, which also turns a BLANK export into
+    // `default` (under `??` a blank would bind the `(default)` sentinel, which
+    // deploys and never fires), and listing it here is what makes this table
+    // print the value the build bakes — for the trigger AND for `getDb()`, whose
+    // read the define replaces too. The `lists EVERY build.mjs default` test
+    // fails a define this list omits.
+    inlined: { FUNCTIONS_REGION: null, FIREBASE_DATABASE_ID: 'default' },
+    tasksRegionVar: 'FUNCTIONS_REGION',
+    // The Shopee shape: the push RECEIVER enqueues from the App Hosting backend
+    // (`apps/amazon/lib/firebase/filaLeitura.ts`), so its region variable must
+    // equal the queue's, and `crossCheckNote` says so on every deploy. The
+    // functions themselves enqueue too from step 4 (the backstop poll), through
+    // the runtime override below.
+    backendVar: 'AMAZON_TASKS_REGION',
+    backendManifest: 'apps/amazon/apphosting.yaml',
+    // The reads queue's `rateLimits` are LITERALS (getOrder's rate), so there is
+    // no deploy-shell knob.
+    deployShell: {},
+    runtimeOverrides: ['AMAZON_TASKS_REGION'],
   },
   nfe: {
     deployConfig: 'firebase.nfe.deploy.json',
@@ -431,6 +480,13 @@ export function formatRows(rows) {
 export function crossCheckNote(codebase, tasksRegion) {
   const spec = CODEBASES[codebase];
   if (!spec?.backendVar) return null;
+  const whereToSet = spec.backendConsoleOnly
+    ? [
+        "    Set it in THIS project's App Hosting console (backend → Environment),",
+        `    never in ${spec.backendManifest} — a value there reaches EVERY`,
+        "    project's backend. Then redeploy the",
+      ]
+    : [`    Set it in ${spec.backendManifest} (or the console), then redeploy the`];
   return [
     `⚠️  The queue/schedule functions are being created in ${tasksRegion}.`,
     `    The App Hosting BACKEND enqueues against ${spec.backendVar}, and it must`,
@@ -438,7 +494,7 @@ export function crossCheckNote(codebase, tasksRegion) {
     '    us-central1 and the task is silently dropped, with the route reporting',
     '    success (#1108).',
     '',
-    `    Set it in ${spec.backendManifest} (or the console), then redeploy the`,
+    ...whereToSet,
     `    backend:  ${spec.backendVar}=${tasksRegion}`,
   ].join('\n');
 }

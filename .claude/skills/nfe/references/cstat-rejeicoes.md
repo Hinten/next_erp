@@ -103,14 +103,25 @@ something to query.
 
 | cStat | Meaning |
 |---|---|
+| **129** | **A autorização deve ser solicitada de forma síncrona** — NT 2023.002 v1.02, GAP03a-6, modelos 55/65; homologação até 01/02/2027, produção 05/04/2027. |
 | 215 | Falha no schema XML da mensagem |
 | 225 | Falha no schema XML do lote |
 | 252 | Ambiente informado diverge do ambiente de recebimento |
 | 280 / 281 / 286 | Certificado de transmissão inválido / vencido / sem cadeia |
 | 290–298 | Certificado/assinatura de assinatura inválidos (conjunto exato de strings — `'0290'` não é 290) |
 | 416 | Falha na descompactação da área de dados (Zip) |
-| **452** | **Rejeição: Solicitada resposta assíncrona para Lote com somente 1 (uma) NF-e** (NT 2025.001 RV GAP03a-3, produção 13/10/2025) |
+| **452** | **Rejeição: Solicitada resposta assíncrona para Lote com somente 1 (uma) NF-e** (NT 2025.001 RV GAP03a-3, produção 03/11/2025) |
 | 656 | Consumo Indevido — **ban path, see below** |
+| **764** | **Solicitada resposta síncrona para Lote com mais de uma NF-e** — GAP03a-1 existente, distinta da antiga 776. |
+| **998** | **Serviço Desativado** — inutilização em AC/BA/SP, NT 2023.002 v1.02; também pode ocorrer HTTP 404. Ver `eventos.md` para as datas legais e operacionais. |
+
+### 129 / 764 — transição para autorização síncrona
+
+Após a aplicação da NT 2023.002 v1.02, enviar uma NF-e por requisição,
+com `indSinc=1`. Não repetir o mesmo lote assíncrono após 129 nem trocar
+somente o indicador de um lote com várias notas (764). O ERP pode manter
+uma ação coletiva com tarefas individuais. Ver
+[nt-2023-002-v1.02.md](nt-2023-002-v1.02.md) e o PDF primário, p. 7.
 
 ### 452 — async com lote de 1 NF-e (NT 2025.001)
 

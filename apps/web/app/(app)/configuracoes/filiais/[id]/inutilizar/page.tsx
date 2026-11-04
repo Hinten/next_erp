@@ -45,7 +45,7 @@ function InutilizarContent() {
         </Anchor>
       </Group>
 
-      <InutilizarForm filialId={filialId} />
+      <InutilizarForm filialId={filialId} uf={filial?.sede.estado} />
     </Stack>
   );
 }

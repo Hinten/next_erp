@@ -1,5 +1,6 @@
 import type { IntegracaoTipo } from '@delfrance/schemas';
 import type { MercadoLivreClient } from '@/lib/mercado-livre/client';
+import type { ShopeeClient } from '@/lib/shopee/client';
 
 /**
  * What every produto-scoped marketplace push shares, whatever it is pushing.
@@ -54,10 +55,14 @@ export interface PushAlvo {
   produtoId: string;
   produtoNome: string;
   /**
-   * The conta ids this produto is linked to. Used ONLY to decide which
-   * unsupported channels are worth warning about — never to decide what to
-   * send: the channel backend is authoritative about its own links, and this
-   * denorm is known to drift (#804 S7).
+   * The conta ids this produto is linked to — and the ONLY source of which contas a
+   * run calls at all: `run.ts` dispatches to the union of these ids across the
+   * selection (a supported conta then receives the WHOLE selection, an unsupported
+   * one only the produtos naming it). A conta no selected produto names is never
+   * called. Once called, the channel's backend is authoritative about its own links
+   * and reports the produtos it has none for — but a drifted array makes a run skip a
+   * conta silently (#804 S7). Each channel's link trigger keeps it: Mercado Livre on
+   * parent and variação links, Shopee on the parent link only.
    */
   integracoesComProduto: readonly string[];
 }
@@ -70,10 +75,19 @@ export interface PushIntegracao {
   ativo: boolean;
 }
 
-/** Clients a provider may reach for. One field per channel, added as they land. */
+/**
+ * Clients a provider may reach for. One field per channel, added as they land.
+ *
+ * ⚠️ Every field is REQUIRED, never optional: with an optional one, a `deps`
+ * literal that forgot a channel would still compile and hand a LOGGED-IN
+ * operator that channel's "Você não está logado." rows. A caller that
+ * dispatches to one channel only says so with an explicit `null`.
+ */
 export interface PushDeps {
   /** Null while logged out — a provider returns an error row, never throws. */
   mercadoLivre: MercadoLivreClient | null;
+  /** Null while logged out — same contract (#1529, step 21). */
+  shopee: ShopeeClient | null;
 }
 
 /**

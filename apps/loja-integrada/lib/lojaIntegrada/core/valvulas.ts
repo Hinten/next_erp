@@ -46,7 +46,11 @@
  * it reads the environment once, so every target of one run gets the same
  * decision. {@link registrarValvulaLi} writes the run-start line.
  *
- * ⚠️ No caller of the write valves exists yet: the first is step 7.
+ * The write valves' caller is the write engine (`core/escrita.ts`): its
+ * `iniciarEscritaLi` makes {@link lerValvula} and {@link registrarValvulaLi}
+ * the first two statements of every write run, and its write decides each
+ * target with {@link decidirAlvo}. The first flow on it is the status
+ * write-back (`rastreio`, master-plan step 7).
  */
 import {
   type CampoLogLi,

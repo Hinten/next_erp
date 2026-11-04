@@ -47,6 +47,7 @@ export const CANAL_AVISO_LABELS = {
   whatsapp: 'WhatsApp',
   melhorEnvio: 'Melhor Envio',
   lojaIntegrada: 'Loja Integrada',
+  amazon: 'Amazon',
   nfe: 'NF-e',
   estoque: 'Estoque',
   sistema: 'Sistema',
@@ -64,6 +65,7 @@ export const canalAvisoSchema = z
     'whatsapp',
     'melhorEnvio',
     'lojaIntegrada',
+    'amazon',
     'nfe',
     'estoque',
     'sistema',
@@ -79,6 +81,7 @@ export const CANAL_AVISO = {
   whatsapp: 'whatsapp',
   melhorEnvio: 'melhorEnvio',
   lojaIntegrada: 'lojaIntegrada',
+  amazon: 'amazon',
   nfe: 'nfe',
   estoque: 'estoque',
   sistema: 'sistema',
@@ -104,6 +107,23 @@ export const TIPO_AVISO_LABELS = {
   lojaIntegradaTokenExpirando: 'Token da Loja Integrada expirando',
   lojaIntegradaReconexaoPendente: 'Token da Loja Integrada recusado',
   lojaIntegradaImportacaoParada: 'Importação de pedidos da Loja Integrada parada',
+  lojaIntegradaSituacaoDesconhecida: 'Situação desconhecida em pedido da Loja Integrada',
+  lojaIntegradaPedidoContestado: 'Pedido da Loja Integrada contestado',
+  lojaIntegradaPedidoHub: 'Pedido da Loja Integrada vindo de um hub',
+  lojaIntegradaFreteNaoSuportado: 'Forma de envio da Loja Integrada sem frete utilizável',
+  lojaIntegradaPedidoPagoSemEndereco: 'Pedido pago da Loja Integrada sem endereço',
+  lojaIntegradaReversaoComEtiqueta: 'Pedido da Loja Integrada revertido com etiqueta comprada',
+  lojaIntegradaRastreioDivergente: 'Envio do pedido não refletido na Loja Integrada',
+  lojaIntegradaCategoriaSemVinculo: 'Categoria da Loja Integrada sem vínculo',
+  lojaIntegradaRevisaoFiscal: 'Produtos da Loja Integrada para revisão fiscal',
+  lojaIntegradaImportacaoComPendencias: 'Importação de produtos da Loja Integrada com pendências',
+  amazonReconexaoPendente: 'Autorização da Amazon recusada',
+  amazonReautorizacaoExpirando: 'Autorização da Amazon expirando',
+  amazonSegredoLwaExpirando: 'Segredo do aplicativo da Amazon expirando',
+  amazonSegredoLwaRecusado: 'Segredo do aplicativo da Amazon recusado',
+  amazonImportacaoParada: 'Importação de pedidos da Amazon parada',
+  amazonPedidoPrecisaAtencao: 'Pedido da Amazon precisa de atenção',
+  amazonContaPrecisaAtencao: 'Conta da Amazon precisa de atenção',
 } as const;
 
 /**
@@ -584,6 +604,637 @@ export const TIPO_AVISO_LABELS = {
  *    enumeration's read time, so a conta created after that read keeps its row).
  *    A row left open when the conta is deactivated stays open until the conta
  *    is reactivated and polls cleanly, or is deleted (a documented residue).
+ *
+ * ---
+ *
+ * **The four order-import tipos** (Loja Integrada steps 5 and 6, #1817 and
+ * #1818 — producer: the order importer of `apps/loja-integrada`, PR 5-c). Shared
+ * by all four:
+ *
+ *  - **Severity `atencao`**, canal `lojaIntegrada`, in-app only: each one is
+ *    about one order or one shipping method, the order intake keeps running,
+ *    and `critico` escalates out of the app.
+ *  - **`params.loja`** is the conta name.
+ *  - Raised on an import that WROTE the order and on one that found nothing to
+ *    change alike — never on one that read an older observation than the
+ *    pedido already holds. A retry after a crash between the pedido write and
+ *    the avisos therefore still raises them.
+ *
+ * **`lojaIntegradaSituacaoDesconhecida`** — an order arrived with a situação
+ * codigo the shared table (`SITUACOES_LI`, `situacaoPedidoLojaIntegrada.ts`)
+ * does not know. The order is still imported, marked with the importer's own
+ * error text (a new pedido at `error`, an existing one keeping its estado), so
+ * nothing is lost while a developer adds the codigo to the table.
+ *
+ *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId, entidade: pedidoId })`
+ *    — one row per pedido; `pedidoId` is the deterministic digest.
+ *  - **`params` are exactly `loja`, `pedido`** (the order's numero, as text)
+ *    **and `codigo`** (the unknown codigo, as received).
+ *  - **`relogioEvento`** = the order's modification stamp in µs, as the import
+ *    converted it, so a late import of an older observation can neither reopen
+ *    nor close the row. ⚠️ Per-order µs: never compare it with another tipo's.
+ *  - **Route**: the pedido (`ROTAS_AVISO.pedido`).
+ *  - **Machine resolver**: the next import of that order with a KNOWN codigo,
+ *    clocked by its stamp. Residue: a table that learns the codigo in a later
+ *    release does not resolve a row by itself — the order's next change does;
+ *    an order that never changes again keeps its row until retention.
+ *
+ * **`lojaIntegradaPedidoContestado`** — Loja Integrada shows the order's
+ * payment contested: a dispute (`pagamento_em_disputa`), or a refund-type
+ * codigo on a pedido whose stock removal was already applied —
+ * `pedido_chargeback` and `pagamento_devolvido_sem_retorno` always, and
+ * `pagamento_devolvido` only when the payment was CAPTURED (an uncaptured one
+ * is a cancellation: the table's `cancelado`, which raises nothing).
+ *
+ *  - ⚠️ **What it holds is the paid re-check's, not the dispute overlay's.**
+ *    The overlay blocks only for the incident origins listed as marketplace
+ *    ones, and Loja Integrada is not among them. The re-check reads the
+ *    order's live situação and, when it cannot, falls back to THIS row by id:
+ *    while it is open, the checkout and the Melhor Envio label buy are
+ *    REFUSED, and a label reprint or a generic label goes on only after the
+ *    operator acknowledges the risk. The wording names those four actions, so
+ *    nobody reads the row as a hold it is not — nor misses the one it is.
+ *  - What the import did: on a dispute the pedido stays `pago` and its payment
+ *    `em_disputa` (a hold, still counted as paid). On a refund-type codigo
+ *    after a removal it KEPT the stored estado and payment status, because the
+ *    goods may not have come back: an estado that reverts the removal would
+ *    restock them. The row is where that refund is recorded. WITHOUT an applied
+ *    removal the same codigo reverses the sale through the table and raises
+ *    nothing.
+ *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId, entidade: pedidoId })`
+ *    — one row per pedido; a later observation replaces `params`.
+ *  - **`params` are exactly `loja`, `pedido` and `motivo`** — a
+ *    {@link MOTIVO_PEDIDO_CONTESTADO_LI} CODE, never a sentence. `motivo` (the
+ *    field) carries the same code.
+ *  - **`relogioEvento`**: the order's modification stamp in µs, as above.
+ *  - **Route**: the pedido.
+ *  - **Machine resolver**: ANY later import of that order that does not raise
+ *    this tipo resolves it, whatever its codigo, clocked by its stamp (an
+ *    `obsoleto` import writes nothing, so it never resolves). That covers a
+ *    dispute closed back to a paid codigo, a cancellation, and ⚠️ a refund-type
+ *    codigo WITHOUT an applied removal: that import reverses the sale and raises
+ *    nothing, so it closes an open `disputa` row, which must never stand beside
+ *    a reversed pedido. So "still contested" is never
+ *    `SituacaoLi.motivoContestacao !== null` — that field names the motivo a
+ *    codigo raises WHEN it raises, and is non-null on the refund-type codigos
+ *    either way. An import that raises again (a refund after a removal,
+ *    following a dispute) replaces the row's `params` instead.
+ *    Residue, accepted: a row raised BY a refund-type codigo after a removal
+ *    stands until retention, because those codigos are FINAL in Loja Integrada,
+ *    unless the situação is changed in the painel.
+ *
+ * **`lojaIntegradaPedidoHub`** — an order carries a hub marker (an
+ * `id_anymarket`, a `PAGAMENTOEXTERNO` payment form, or the webhook receiver's
+ * hint): it was injected through the platform's marketplace hub, and this
+ * integration imports only the storefront's own orders (D5). No pedido and no
+ * pagamento are written for it. Never expected; the row exists so a hub
+ * switched on in the painel is seen instead of silently skipped.
+ *
+ *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId, entidade: pedidoId })`
+ *    — the digest the pedido WOULD have; no pedido document exists.
+ *  - **`params` are exactly `loja` and `pedido`** (the numero).
+ *  - **`relogioEvento`**: the order's modification stamp in µs, as above.
+ *  - **Route**: the conta page (`ROTAS_AVISO.canalLojaIntegrada`): there is no
+ *    pedido page to open.
+ *  - **Machine resolver**: the next import of that order without a marker
+ *    (which then imports it), or one that finds it in a dead-sale codigo
+ *    (cancelled or refunded: nothing is left to import), clocked by its stamp.
+ *
+ * **`lojaIntegradaFreteNaoSuportado`** — an order's shipping method is MAPPED
+ * in the conta's `int_frete.mapa`, but to a target the import cannot route to:
+ * the target document is missing or inactive, its tipo is not one the import
+ * routes (Melhor Envio, motoboy, retirada na loja), or a Melhor Envio target
+ * names no service. The order still imports, its freight on the conta's own
+ * Loja Integrada `int_frete`, and the label step resolves it later. ⚠️ Raised
+ * for neither a DELIBERATE `fob` or `outros` mapping (the label step routes
+ * those) nor an UNMAPPED method (its `mapa` row is already the operator's
+ * to-do).
+ *
+ *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId, entidade:
+ *    sha256Hex(chave) })` — one row per shipping method, where `chave` is its
+ *    full `'<id>---<code>'` registration key, DIGESTED: {@link chaveDeAviso}
+ *    folds `.`, `/`, `\`, `:`, `#`, brackets and whitespace into `_` while the
+ *    `mapa` keeps the code verbatim, so two distinct keys would share one row,
+ *    and a long code would overflow the document id.
+ *  - **`params` are exactly `loja`, `formaEnvio`** (the `mapa` row's display
+ *    name), **`chave`** (the raw key, so the operator can find the row)
+ *    **and `motivo`** — a {@link MOTIVO_FRETE_NAO_SUPORTADO_LI} CODE.
+ *  - **`relogioEvento`** = the µs `readTime` of the read the routing decided
+ *    from: the target document's read when one was made (every raise has one —
+ *    a missing target is a read too), else the conta's `int_frete` read, whose
+ *    `mapa` held the key unmapped or did not hold it. This row records an
+ *    observation of the mapping's and the target's STATE, not an order event.
+ *    ⚠️ Never compare it with the order-clocked tipos above.
+ *  - **Route**: the conta page, whose "Mapeamento do Frete" tab holds the row.
+ *  - **Machine resolver**: the next import of an order with that key whose
+ *    routing raises no aviso — routed to its target, mapped to `fob` or
+ *    `outros`, or unmapped (a method with no usable key has no row to resolve)
+ *    — clocked as above. ⚠️ NEVER clockless: the reprocess sweep runs inline
+ *    beside the serial queue, so an import that read the `mapa` before the
+ *    operator re-mapped the key could otherwise close the row a newer target
+ *    read had just raised. So an import that finds NO Loja Integrada
+ *    `int_frete` for the conta reads nothing by id, has no clock, and leaves
+ *    the row alone.
+ *    Residue, accepted: one observation spans two reads and carries the newer
+ *    one's clock, so a raise whose `mapa` read predates a concurrent re-map
+ *    stands until the key's next import; a row whose conta has lost its Loja
+ *    Integrada `int_frete` stands until an import routes the key again; a key
+ *    no later order uses stands until retention.
+ *
+ * ---
+ *
+ * **`lojaIntegradaPedidoPagoSemEndereco`** (Loja Integrada step 5, PR 5-c,
+ * owner decisions 2026-10-19 and 2026-10-20) — a PAID Loja Integrada order (a
+ * codigo the label step's paid re-check accepts) with a shipment arrived
+ * carrying NO CEP at all (no delivery block, or a CEP absent, empty, blank or
+ * the `-` placeholder for "nothing was sent"), is not a pickup, and the pedido
+ * holds no endereço of its own. Such an import is REFUSED with a retryable
+ * error — the platform may still fill the address — so the queue's backoff
+ * and the reprocess sweep retry it; this row is raised only when those
+ * attempts RAN OUT, from the notification pipeline's signal for a thrown
+ * failure parked at its cap, beside an ERROR log line. Nothing of a refused
+ * order was written: no pedido (or no update of it), no pagamento, no
+ * cliente, no endereço. A present but INVALID CEP — a masked one included —
+ * is never this tipo: the customer typed it and waiting never fixes it, so
+ * that order is not refused — it imports without an endereço (its freight
+ * amount, no carrier route) and raises nothing here, nor closes a row already
+ * open (the resolver below).
+ *
+ *  - **Severity `critico`**, canal `lojaIntegrada`, raised WITHOUT escalation:
+ *    in-app only, like the other two critical tipos of this channel. A paid
+ *    sale with no address to ship to is one nobody ships.
+ *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId, entidade: pedidoId })`
+ *    — one row per pedido; `pedidoId` is the deterministic digest (the pedido
+ *    may not exist yet).
+ *  - **`params` are exactly `loja` and `pedido`** (the order's numero, as
+ *    text).
+ *  - **`relogioEvento`** = the order's modification stamp in µs, as the
+ *    exhausted run's import converted it — per-order µs, the clock of the
+ *    order-keyed tipos above: never compare it with another tipo's.
+ *  - **Route**: the conta page (`ROTAS_AVISO.canalLojaIntegrada`): on a first
+ *    import there is no pedido page to open.
+ *  - **Machine resolver**: the next import of that order after which the
+ *    pedido has a delivery endereço (one it already stores, never
+ *    overwritten, or one the import stored from a readable CEP under the
+ *    pedido's cliente), or its shipping method now maps to a pickup, or the
+ *    order is no longer paid (owner decision, 2026-10-20) — decided from the
+ *    snapshot the import's winning write decided from, and clocked by its
+ *    stamp, so a late import of an older observation can neither close nor
+ *    reopen the row. ⚠️ Nothing else closes it. A CEP the endereço builder
+ *    cannot read gets past the no-CEP check but stores no endereço: that
+ *    import leaves the row OPEN, with no write to it — the pedido imports
+ *    with no endereço and no carrier route, and the operator still has an
+ *    address to fix. So do a readable CEP whose buyer has no valid document
+ *    (no cliente to store the endereço under, so none is stored) and an
+ *    observation that carries no shipment. The wording says the row closes
+ *    once the pedido has its delivery endereço, becomes a pickup or is no
+ *    longer paid, and the runbook says to check that the CEP has 8 digits
+ *    while it stays open.
+ *    ⚠️ UNVERIFIED (D17: no capture shows it): that filling the address in the
+ *    painel bumps the order's modification stamp, so the poller picks the
+ *    order up again. The parked row is terminal, so if it does not, nothing
+ *    re-imports the order; the wording says "should" and names the fallback (a
+ *    developer checks the parked notification). Residue, accepted: an order
+ *    nobody edits again keeps its row until retention.
+ *
+ * ---
+ *
+ * **`lojaIntegradaReversaoComEtiqueta`** (Loja Integrada step 5, PR 5-c, owner
+ * decision 2026-10-19) — Loja Integrada REVERSED an order (a cancellation, a
+ * refund, a chargeback or a refund without return) whose pedido already holds
+ * a bought label (`freteInicial.printLabelId`). The import applies the
+ * situação exactly as the table says — the reversal (and the stock sync's
+ * restock) for a cancellation, the "keep both" arm with the contestado row for
+ * a refund after an applied removal — and neither the label nor an NF-e is
+ * cancelled by it: this row tells the operator to cancel both before the
+ * parcel ships.
+ *
+ *  - **Severity `atencao`**, canal `lojaIntegrada`, in-app only: it is about
+ *    one order, and the intake keeps running.
+ *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId, entidade: pedidoId })`
+ *    — one row per pedido, apart from the `lojaIntegradaPedidoContestado` row
+ *    the same refund may raise.
+ *  - **`params` are exactly `loja`, `pedido` and `motivo`** — a
+ *    {@link MOTIVO_REVERSAO_COM_ETIQUETA_LI} CODE naming the reversal, never a
+ *    sentence. `motivo` (the field) carries the same code.
+ *  - **`relogioEvento`**: the order's modification stamp in µs, per-order like
+ *    the order-keyed tipos above.
+ *  - **Route**: the pedido (`ROTAS_AVISO.pedido`), where the label is.
+ *  - **Machine resolver**: ANY later import of that order that does not raise
+ *    this tipo — the platform reopened the sale, or the pedido no longer holds
+ *    a label — clocked by its stamp (an `obsoleto` import writes nothing).
+ *    Residue, accepted and said in the wording: the reversal codigos are FINAL
+ *    in Loja Integrada, so a row usually stands until retention unless the
+ *    situação is changed in the painel; no import observes the label being
+ *    cancelled.
+ *
+ * ---
+ *
+ * **`lojaIntegradaRastreioDivergente`** (Loja Integrada step 7 — producer:
+ * `apps/loja-integrada/lib/lojaIntegrada/rastreio/avisosRastreio.ts`, raised by
+ * the status write-back run) — a freight transition the ERP recorded (a posting,
+ * a delivery, a pickup awaiting the buyer) was NOT reflected in Loja Integrada as
+ * it should have been, or was reflected over something a person must look at:
+ * the order is unpaid, stopped or in an unknown situação there, LI is ahead or
+ * sideways, LI already holds another tracking code, the ERP's code or envio
+ * cannot be sent, the write was refused or read back different, or a status set
+ * in the instant before ours was overwritten.
+ *
+ *  - **Severity `atencao`**, canal `lojaIntegrada`, in-app only — except two
+ *    `critico` cases. `situacao-sobrescrita` over a codigo the write-back never
+ *    writes onto (a dispute, a cancellation request, a cancellation, a refund, a
+ *    chargeback): the buyer's request or the provider's hold was erased and the
+ *    buyer may already have the "sent" e-mail. That motivo is raised only when
+ *    the write-back's own table would have REFUSED the overwritten codigo; a
+ *    compatible intermediate step is a log line, not an aviso. And
+ *    `situacao-bloqueada` at `cancelamento_solicitado` (1019): the buyer asked
+ *    to cancel an order the ERP already shipped or delivered, and the parcel
+ *    may still be stopped. Every other blocked or unpaid situação stays
+ *    `atencao`.
+ *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId, entidade: pedidoId })` —
+ *    one row per pedido, whatever the motivo.
+ *  - **`params` are `loja`, `pedido` (the order `numero`) and `motivo`** — a
+ *    {@link MOTIVO_RASTREIO_DIVERGENTE_LI} CODE, never a sentence — plus
+ *    `situacao` (a situação CODIGO, rendered through `ROTULO_SITUACAO_LI`) for
+ *    the five situação motivos, `estado` (the ERP freight estado) for
+ *    `transicao-lateral` and `situacao-nao-paga`, and `status` (the HTTP status,
+ *    a NUMBER) for `escrita-recusada`. `motivo` (the field) carries the code too.
+ *  - **`relogioEvento`**: the freight EVENT's own clock in µs (the source row's
+ *    ms stamp, converted once): an older event can neither reopen nor close a
+ *    newer row. ⚠️ Per-pedido µs: never compare it with another tipo's.
+ *  - **Raised only by a run whose write decision was `on`** — never under
+ *    dry-run, outside the canary list or with the valve off: the window's
+ *    replay raises it then, or writes.
+ *  - **Route**: the pedido (`ROTAS_AVISO.pedido`).
+ *  - **Machine resolvers**: a later CLEAN run for the same pedido under `on`
+ *    (the write landed and was read back, or Loja Integrada already showed
+ *    everything), clocked by its event — so a `transicao-lateral` raised because
+ *    LI was ahead closes itself at the ERP's own later delivery run; and the
+ *    expiry sweep's orphan pass once the conta is gone. Residue, accepted: a row
+ *    whose pedido has no later event stands until an operator resolves it.
+ *
+ * ---
+ *
+ * **`amazonReconexaoPendente`** (Amazon step 2, #1926 — producers in
+ * `apps/amazon/lib/amazon/avisos/avisos.ts`) — the Login with Amazon (LWA)
+ * token endpoint refused the conta's CURRENT refresh token (`invalid_grant`, or
+ * a 401/403 with no LWA code) and the conta was PARKED: its flows stop until an
+ * operator reconnects it.
+ *
+ *  - **Channel-specific, never `canalSemCredencial`**: the remedy is the
+ *    channel's own — a new consent through the conta's connect panel in the
+ *    ERP; Seller Central's own reauthorize button is not supported — the
+ *    `lojaIntegradaReconexaoPendente` choice.
+ *  - **Never raised for an app-secret refusal** (`invalid_client`,
+ *    `unauthorized_client`): that is `amazonSegredoLwaRecusado`, which parks
+ *    nothing.
+ *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId })`.
+ *  - **Severity `critico`**, canal `amazon`, raised WITHOUT escalation: in-app
+ *    only.
+ *  - **`params` are exactly `loja`** (the conta name) **and `status`** (the
+ *    refusing HTTP status, a NUMBER); `motivo` = the LWA code (`invalid_grant`),
+ *    or `null` when the refusal carried none.
+ *  - **`relogioEvento`** = the commit time of the credential document, in µs
+ *    (the park's `writeTime`, or the document's `updateTime`). Commit times on
+ *    one document rise strictly, so a late raise from a park that lost to a
+ *    newer consent is dropped with no wall clock involved. ⚠️ Per-document µs:
+ *    never compare it with another tipo's.
+ *  - **Machine resolvers**: a consent (the OAuth callback, clocked by its
+ *    credential write's `writeTime`); the daily sweep when the conta is not
+ *    parked (clocked by the document's `updateTime`) or holds no credential
+ *    (clocked by the snapshot's `readTime` — ⚠️ never clockless, or a park
+ *    committed after that read would lose its open row for good); and the
+ *    sweep's orphan pass when the conta no longer exists as an Amazon conta.
+ *
+ * ---
+ *
+ * **`amazonReautorizacaoExpirando`** (Amazon step 2, #1926 — the same module) —
+ * the seller's authorization of the app nears its 365-day limit
+ * (`reautorizarAteAmazon`, in `contaAmazon.ts`: São Paulo civil days from OUR
+ * callback's code exchange). Past it, Amazon refuses the conta's refresh token.
+ *
+ *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId })` — deliberately **no
+ *    `janela`**: a reconnect moves the date, and the new date must refresh the
+ *    SAME row, never mint a second one (the Shopee authorization-expiry rule).
+ *  - **Severity `atencao`**, canal `amazon`. In-app only.
+ *  - **`params` are exactly `loja`** (the conta name), **`dias`** (a NUMBER of
+ *    São Paulo civil days: `0` on the date, negative once it has passed) **and
+ *    `expiraEm`** (`YYYY-MM-DD`, the São Paulo civil date). A repeat replaces
+ *    them, which is how `dias` stays current.
+ *  - **`prazo`** = that date, in µs. ⚠️ The one COMPUTED deadline among the
+ *    `prazo`s: nothing this integration reads from Amazon carries the expiry,
+ *    only the documented rule, so the producer applies the rule to our own
+ *    authorization clock. Calendar days only — no business-day rule to guess.
+ *  - **`relogioEvento`: none.** Clockless, like the Shopee expiry sweep: the
+ *    event is time passing, which no document write records.
+ *  - **Raised for every Amazon conta holding a credential, active or not**:
+ *    deactivating a conta in the ERP does not stop Amazon's clock.
+ *  - **Machine resolvers**: a consent (the new date is 365 days away); the daily
+ *    sweep when more than 30 days remain or the conta holds no credential; and
+ *    the sweep's orphan pass when the conta no longer exists.
+ *
+ * ---
+ *
+ * **`amazonSegredoLwaExpirando`** (Amazon step 2, #1926 — the same module) — the
+ * APPLICATION's LWA client secret nears the rotation deadline the operator
+ * recorded (`AMAZON_LWA_SEGREDO_EXPIRA_EM`, a São Paulo `YYYY-MM-DD`, set at the
+ * same rollout that installs each new secret). Amazon expires the secret on a
+ * 180-day rotation, and an expired secret stops every conta's exchanges.
+ *
+ *  - **Per APPLICATION, not per conta**: the secret is the app's. Key
+ *    `chaveDeAviso({ tipo })` — ONE row for the whole channel, no `conta`.
+ *  - **Severity `atencao`**, canal `amazon`. In-app only.
+ *  - **`params` are `dias` and `expiraEm`**, the shapes of
+ *    `amazonReautorizacaoExpirando` — **both ABSENT when the date is unrecorded
+ *    or invalid**: the aviso is still raised then, saying the deadline is
+ *    unknown, because an unknown deadline is the riskier state.
+ *  - **`prazo`** = the recorded date, in µs (copied from the environment, never
+ *    computed); `null` when unrecorded.
+ *  - **`relogioEvento`: none** (clockless: time passing).
+ *  - **Route**: the conta LIST (`ROTAS_AVISO.canalAmazonLista`): no conta page
+ *    owns it. The remedy is a deploy (the wording's `runbook`), not an in-app
+ *    action.
+ *  - **Evaluated only while the read switch is `on`** (`AMAZON_CHAMADAS`):
+ *    before the cutover the legacy app owns the secret, and its deadline is
+ *    tracked by hand.
+ *  - **Machine resolver**: the daily sweep when more than 30 days remain.
+ *    A row left open when the read switch goes back off (an incident or a
+ *    rollback) is neither refreshed nor resolved — the sweep skips the secret
+ *    while the switch is off — so its `dias` stays frozen at the last sweep's
+ *    value until the switch is `on` again and the sweep re-evaluates it (a
+ *    documented residue).
+ *
+ * ---
+ *
+ * **`amazonSegredoLwaRecusado`** (Amazon step 2, #1926 — the same module) — the
+ * LWA token endpoint refused OUR application's credentials (`invalid_client` or
+ * `unauthorized_client`): a wrong, expired or rotated client secret, or a client
+ * id that does not match it. Every conta's exchange fails the same way until the
+ * secret is fixed.
+ *
+ *  - **Never parks**: the fault is the application's, not a seller's. Parking
+ *    would stop every conta for a fix that needs no reconnect, and staying
+ *    silent would hide an outage — which is why this tipo exists.
+ *  - **Per APPLICATION**: key `chaveDeAviso({ tipo })`, no `conta`.
+ *  - **Severity `critico`**, canal `amazon`, raised WITHOUT escalation: in-app
+ *    only.
+ *  - **`params`: none.** `motivo` = the LWA code (`invalid_client` |
+ *    `unauthorized_client`).
+ *  - **`relogioEvento`: none** — deliberately clockless: the refusal repeats on
+ *    every exchange, so a lost race in either direction heals at the next one.
+ *  - **Route**: the conta LIST (`ROTAS_AVISO.canalAmazonLista`).
+ *  - **Machine resolver**: any successful LWA exchange — the callback's code
+ *    exchange or an access-token refresh: the secret just worked. No exchange
+ *    happens while the read switch is off or while no Amazon conta exists, so
+ *    a row raised before either stays open until the next accepted exchange (a
+ *    documented residue: without an exchange the refusal cannot be re-checked).
+ *
+ * ---
+ *
+ * **`amazonImportacaoParada`** (Amazon step 4, #1929 — producer: the 15-minute
+ * backstop poll of `apps/amazon`, `lib/amazon/pedidos/pollPedidos.ts`) — the
+ * poll could not list a conta's changed orders, repeatedly or in a way that
+ * will not heal by itself. The push path may still deliver orders, but the poll
+ * is the GUARANTEED intake path: whatever push misses no longer reaches the
+ * ERP.
+ *
+ *  - **Channel-specific**: the motivos and their remedies are this poll's own
+ *    (a missing order-role grant, two contas on one seller, a look-back the
+ *    window sets), the `lojaIntegradaImportacaoParada` choice.
+ *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId })` — one row per conta.
+ *  - **Route**: the conta page (`ROTAS_AVISO.canalAmazon`), where the reconnect
+ *    panel lives; per conta, unlike the two per-app tipos routed to the list.
+ *  - **Severity `critico`**, canal `amazon`, raised WITHOUT escalation: in-app
+ *    only.
+ *  - **`params` are exactly `loja`** (the conta name) **and `motivo`** — a
+ *    {@link MOTIVO_IMPORTACAO_PARADA_AMAZON} CODE, never a sentence, so a
+ *    wording fix in `mensagens.ts` is retroactive.
+ *  - **`relogioEvento`** = the µs commit time of the poll run's FIRST write to
+ *    its poll document (the lease, or the refusal record). Every write there is
+ *    preconditioned, so these clocks rise strictly across runs, and a late raise
+ *    from a run whose lease was taken over is dropped. ⚠️ Per-document µs:
+ *    never compare it with another tipo's.
+ *  - **Raised only once the write that stored its count LANDED**, at a per-motivo
+ *    threshold of consecutive counted failures (1 for what never heals by
+ *    itself, 2 for a malformed answer, 4 — one hour — for what may).
+ *  - **Never raised** for a parked conta (`amazonReconexaoPendente` says that),
+ *    an app-secret refusal (`amazonSegredoLwaRecusado`), an inactive or
+ *    unconnected conta, the read switch off, a busy lease or an absent
+ *    importer.
+ *  - **Machine resolvers**: the poll, on a clean run after a stored failure
+ *    (clocked by that run's lease); the daily expiry sweep's orphan pass when
+ *    the conta no longer exists (`conta-removida`, CLOCKED by the conta
+ *    enumeration's read time, so a conta created after that read keeps its
+ *    row). A row left open when the conta is deactivated stays open until the
+ *    conta is reactivated and polls cleanly, or is deleted (a documented
+ *    residue: the enumeration lists inactive contas, and the poll skips them).
+ *
+ * ---
+ *
+ * **`amazonPedidoPrecisaAtencao`** (Amazon steps 5 and 7, #1931 and #1933 —
+ * producer in `apps/amazon/lib/amazon/avisos/avisos.ts`, called by the order
+ * import) — one Amazon order needs a person, for one of the
+ * {@link MOTIVO_PEDIDO_AMAZON} reasons. Only a reason a later import can see END
+ * is a member: a permanent fact of an order (fulfilled by Amazon, a zero value,
+ * a cancellation after shipment, a split or divergent payment, a possible
+ * refund) is a pedido INCIDENTE instead, on the pedido's Incidentes tab, because
+ * this collection has no dismiss button and such a row would stand until
+ * retention.
+ *
+ *  - **Channel-specific**: the motivos and their remedies (Seller Central, the
+ *    pedido's lines, the pickup) are this import's own.
+ *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId, entidade: orderId,
+ *    janela: motivo })` — ONE row per (order, motivo): two motivos of one order
+ *    are two rows, each closed by its own resolver. `entidade` is Amazon's order
+ *    id (digits and dashes, which the segment fold leaves alone); `janela` is the
+ *    MOTIVO, a finite set the resolver recomputes, never a time window.
+ *  - **Severity per motivo** (per call site, as {@link severidadeAvisoSchema}
+ *    allows), canal `amazon`, every raise WITHOUT escalation (in-app only, the
+ *    channel's convention): listed with each motivo below.
+ *  - **`params` are exactly `pedido`** (Amazon's order id — the ONE value the
+ *    wording prints) **and `motivo`** — a {@link MOTIVO_PEDIDO_AMAZON} CODE,
+ *    never a sentence, so a wording fix in `mensagens.ts` is retroactive. The
+ *    `motivo` field carries the same code. No buyer datum, no price.
+ *  - **`relogioEvento`** = a FIRESTORE commit or read time in µs, never the
+ *    order's own clock: the commit time of the import's pedido write, or the
+ *    read time of the snapshot an import that wrote nothing decided from. The
+ *    import re-derives an order on an EQUAL order clock, and `escreverAviso` /
+ *    `resolverAviso` drop an equal clock, so an order-clocked resolve would be
+ *    lost. ⚠️ Per-pedido timeline: never compare it with another tipo's.
+ *  - **Route**: the pedido (`ROTAS_AVISO.pedido`).
+ *  - **Never raised or resolved** by an import that read an older observation
+ *    than the pedido already holds: that import writes nothing at all.
+ *  - **Machine resolvers** — per motivo, the import of that order that sees the
+ *    condition END, clocked as above — with each motivo's severity and residue:
+ *     - `divergencia-itens` — **critico**. The lines or the order money Amazon
+ *       sends differ from those of an approved pedido, or a line was cancelled
+ *       on an order still to ship: the import kept the stored lines and blocked
+ *       the pedido. Resolver: the import that finds the lines agreeing again,
+ *       or the lines `congelado` (an operator edited them). Residue: the
+ *       operator's edit is seen only at the order's next import, so an order
+ *       Amazon never updates again keeps its row until retention.
+ *     - `logistica-desconhecida` — **critico**. Amazon sent no usable
+ *       `fulfilledBy`, so the import cannot tell who ships the order. Resolver:
+ *       the import that reads one, or one that reads the order `CANCELLED` (a
+ *       cancelled order needs no shipper). Residue: an order Amazon never updates again
+ *       keeps its row until retention.
+ *     - `aceitar-cancelamento` — **critico**. A PRINTED pedido was moved to
+ *       `cancelado` by a buyer cancellation request: the operator must accept
+ *       the cancellation in Seller Central. Later also raised by the NF-e upload
+ *       and the label steps when they refuse an order with an open request.
+ *       Resolver: the cancellation executed (Amazon `CANCELLED`), no request
+ *       left, or Amazon `SHIPPED` (the order left; nothing remains to accept).
+ *       Residue: an order Amazon never updates again keeps its row until
+ *       retention.
+ *     - `cancelado-so-no-erp` — **critico**. The stored pedido is `cancelado`
+ *       while Amazon's order is still to ship (`UNSHIPPED` /
+ *       `PARTIALLY_SHIPPED`) with no open request: the seller declined the
+ *       request, or the ERP cancelled on its own. The operator reopens the
+ *       pedido or cancels the order in Seller Central — never the import, whose
+ *       ladder never moves a `cancelado` back. Resolver: Amazon `CANCELLED` or
+ *       `SHIPPED`, or an import that finds the stored estado no longer
+ *       `cancelado`. Residue: a reopen is seen only at the order's next import,
+ *       so an order Amazon never updates again keeps its row until retention.
+ *     - `status-desconhecido` — **atencao**. A fulfillment status the import
+ *       does not know: a new pedido is created at the import's own error, an
+ *       existing one keeps its estado. Resolver: the import that reads a known
+ *       status. Residue: a status a later release learns does not resolve the
+ *       row by itself — the order's next import does; an order Amazon never
+ *       updates again keeps its row until retention.
+ *     - `cancelamento-solicitado` — **atencao**. The buyer asked to cancel a
+ *       pedido not yet printed; its estado is unchanged, and the seller decides
+ *       in Seller Central. Resolver: no request left, the cancellation
+ *       executed, or an import that finds the pedido printed while the request
+ *       is open (it raises `aceitar-cancelamento` instead). Residue: an order Amazon never updates again keeps its row
+ *       until retention.
+ *     - `pacote-status-desconhecido` — **atencao**. A package status the freight
+ *       import does not know, or a package without a reference: its freight
+ *       estado was not moved. Resolver: every package token known and keyed.
+ *       Residue: an order Amazon never updates again keeps its row until
+ *       retention.
+ *     - `coleta-cancelada` — **atencao**. The carrier pickup was cancelled — the
+ *       pickup, not the order. Resolver: no package `LABEL_CANCELLED` left, or
+ *       the order `CANCELLED`. Residue: an order Amazon never updates again
+ *       keeps its row until retention.
+ *  - **The conta-wide residue**: a DELETED conta's per-pedido rows have no
+ *    resolver at all. The expiry sweep's orphan pass closes per-CONTA tipos
+ *    only, and this tipo is deliberately NOT among them: the pass resolves every
+ *    open row of a listed tipo whose id it does not compute, so listing this one
+ *    would close every live pedido's row every day.
+ *
+ * ---
+ *
+ * **`amazonContaPrecisaAtencao`** (Amazon step 5, #1931 — producer in
+ * `apps/amazon/lib/amazon/avisos/avisos.ts`, called by the order import) — an
+ * Amazon conta's own setup needs a person, as seen while importing its orders.
+ * One of the {@link MOTIVO_CONTA_AMAZON} reasons.
+ *
+ *  - **A tipo of its own, apart from `amazonPedidoPrecisaAtencao`**: this one IS
+ *    in the expiry sweep's orphan pass, and its keys name no order, so the pass
+ *    computes both of them for every listed conta (`conta/expiracaoSweep.ts`).
+ *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId, janela: motivo })` — no
+ *    `entidade`; ONE row per (conta, motivo).
+ *  - **Severity `atencao`** for both motivos, canal `amazon`, in-app only: the
+ *    orders keep importing.
+ *  - **`params` are exactly `motivo`** — a {@link MOTIVO_CONTA_AMAZON} CODE; the
+ *    `motivo` field carries the same code. The route names the conta, so the
+ *    wording prints no value.
+ *  - **`relogioEvento`** = the µs read time of the import's UNCACHED conta read
+ *    — the server timeline the orphan pass's conta enumeration shares — never an
+ *    order's clock: one row gathers observations from many orders, whose clocks
+ *    do not compare. ⚠️ Never compare it with another tipo's.
+ *  - **Route**: the conta page (`ROTAS_AVISO.canalAmazon`).
+ *  - **Machine resolvers** — per motivo, clocked as above — with each motivo's
+ *    severity and residue:
+ *     - `conta-sem-operacao` — **atencao**. The conta names no operação, so its
+ *       pedidos import without one (the import fills it once the conta has
+ *       one). Resolver: the next import whose conta read finds an operação.
+ *       Residue: a conta that imports no order after the fix keeps its row until
+ *       its next import.
+ *     - `intermediador-divergente` — **atencao**. The marketplace document
+ *       Amazon names on an order does not match the conta's own document.
+ *       Resolver: the next import whose verdict clears it. Residue: Amazon drops
+ *       that document once an order ships, so a conta whose later orders carry
+ *       none keeps its row until one does.
+ *  - **Both motivos, once the conta is gone**: the expiry sweep's orphan pass
+ *    (`conta-removida`), CLOCKED by the conta enumeration's read time, so a conta
+ *    created after that read keeps its row. A DEACTIVATED conta is still listed,
+ *    so its rows stay open until it imports again or is deleted (a documented
+ *    residue).
+ *
+ * ---
+ *
+ * **The three product-import tipos** (Loja Integrada step 9, #1820 — producer:
+ * the product import job of `apps/loja-integrada`). Shared by all three:
+ *
+ *  - **Severity `atencao`**, canal `lojaIntegrada`, in-app only: nothing stops,
+ *    and `critico` escalates out of the app.
+ *  - **`params.loja`** is the conta name.
+ *  - **Raised and resolved only by an `aplicar` job** — a Simular run raises
+ *    and resolves NOTHING (it changed nothing).
+ *  - **`relogioEvento`** = the job's END, in µs (its ms stamp, converted once
+ *    by the app's aviso module). A later job's end is later, so an older job can
+ *    neither reopen nor close a newer job's row. ⚠️ Never compare it with
+ *    another tipo's.
+ *  - **Route**: the conta page (`ROTAS_AVISO.canalLojaIntegrada`), where the
+ *    import's report lives. The detail (which product, which option) lives in
+ *    the job's report, never in the aviso.
+ *  - All three join the expiry sweep's orphan pass: a deleted conta's rows are
+ *    closed (`conta-removida`).
+ *
+ * **`lojaIntegradaCategoriaSemVinculo`** — an `aplicar` job imported at least
+ *    one product WITHOUT a category because this store category has no link
+ *    for the conta (and the run only links categories), or its chain was
+ *    refused (an unreadable or missing parent, a cycle, too deep). The
+ *    category is the NF-e tax cascade's third tier, so the copy says those
+ *    products need a tax review.
+ *
+ *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId, entidade: <store
+ *    category id> })` — one row per store category.
+ *  - **`params`**: `loja`, `caminho` (the category path as store ids, root
+ *    first, joined by ` > `), `produtos` (a NUMBER: the products imported
+ *    without it) and `motivo` — a {@link MOTIVO_CATEGORIA_SEM_VINCULO_LI} CODE.
+ *  - **Machine resolvers**: a later job's catalogue phase that finds the
+ *    category linked for the conta, or gone from the store's list; and the
+ *    orphan pass once the conta is gone. The products already imported without
+ *    it stay on the tax-review list (below) until reviewed.
+ *  - ⚠️ **Never raised for a category the store's list does not hold** (the
+ *    tree's `ausente`): there is nothing to link, and the "gone from the store's
+ *    list" resolver would close the row on the very next run while the products
+ *    still lack a category. Those products carry it on their own report item
+ *    and on the tax-review list instead.
+ *
+ * **`lojaIntegradaRevisaoFiscal`** — an `aplicar` job created a produto or a
+ *    categoria, left a produto without a category, or filled an EMPTY category:
+ *    each changes how the NF-e resolves that produto's taxes, and nothing
+ *    imported carries a tax setting.
+ *
+ *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId })` — one row per conta.
+ *  - **`params`**: `loja`, `abertos` (a NUMBER: the produtos still on the list)
+ *    and `job` (the newest job's id: its `revisao` subcollection is the list the
+ *    web shows).
+ *  - **The list is durable**: each `aplicar` job copies the still-open entries
+ *    of the conta's previous one, adds its own, and re-checks them all. Nothing
+ *    closes an entry but EVIDENCE — the produto has its own tax setting, its
+ *    category has one, or a tax rule names the produto or its category (the
+ *    resolver's own rule match).
+ *  - **Machine resolvers**: the end of a later `aplicar` job whose re-check
+ *    leaves the list empty; and the orphan pass once the conta is gone.
+ *
+ * **`lojaIntegradaImportacaoComPendencias`** — an `aplicar` job ended with at
+ *    least one ACTIONABLE pendência (`PENDENCIAS_ACIONAVEIS_LI`: something a
+ *    person can fix in the ERP or the store). A fact of the store alone — an
+ *    empty family, a hidden product not created, a picture the store serves
+ *    wrongly — is informational and never keeps it open.
+ *
+ *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId })` — one row per conta.
+ *  - **`params`**: `loja`, `acionaveis` (a NUMBER: the actionable pendências
+ *    in total), `job` (the job's id), and one NUMBER per actionable code that
+ *    occurred, keyed by the code itself.
+ *  - **Machine resolvers**: an `aplicar` job with `alvo: todos` that ends
+ *    `concluido` with ZERO actionable pendências; and the orphan pass once the
+ *    conta is gone. A `selecionados`, `naoNoErp` or `jaNoErp` job never
+ *    resolves it: its scope does not contain the raising job's.
  */
 export const tipoAvisoSchema = z
   .enum([
@@ -606,6 +1257,23 @@ export const tipoAvisoSchema = z
     'lojaIntegradaTokenExpirando',
     'lojaIntegradaReconexaoPendente',
     'lojaIntegradaImportacaoParada',
+    'lojaIntegradaSituacaoDesconhecida',
+    'lojaIntegradaPedidoContestado',
+    'lojaIntegradaPedidoHub',
+    'lojaIntegradaFreteNaoSuportado',
+    'lojaIntegradaPedidoPagoSemEndereco',
+    'lojaIntegradaReversaoComEtiqueta',
+    'lojaIntegradaRastreioDivergente',
+    'lojaIntegradaCategoriaSemVinculo',
+    'lojaIntegradaRevisaoFiscal',
+    'lojaIntegradaImportacaoComPendencias',
+    'amazonReconexaoPendente',
+    'amazonReautorizacaoExpirando',
+    'amazonSegredoLwaExpirando',
+    'amazonSegredoLwaRecusado',
+    'amazonImportacaoParada',
+    'amazonPedidoPrecisaAtencao',
+    'amazonContaPrecisaAtencao',
   ])
   .meta({ labels: TIPO_AVISO_LABELS });
 export type TipoAviso = z.infer<typeof tipoAvisoSchema>;
@@ -631,6 +1299,23 @@ export const TIPO_AVISO = {
   lojaIntegradaTokenExpirando: 'lojaIntegradaTokenExpirando',
   lojaIntegradaReconexaoPendente: 'lojaIntegradaReconexaoPendente',
   lojaIntegradaImportacaoParada: 'lojaIntegradaImportacaoParada',
+  lojaIntegradaSituacaoDesconhecida: 'lojaIntegradaSituacaoDesconhecida',
+  lojaIntegradaPedidoContestado: 'lojaIntegradaPedidoContestado',
+  lojaIntegradaPedidoHub: 'lojaIntegradaPedidoHub',
+  lojaIntegradaFreteNaoSuportado: 'lojaIntegradaFreteNaoSuportado',
+  lojaIntegradaPedidoPagoSemEndereco: 'lojaIntegradaPedidoPagoSemEndereco',
+  lojaIntegradaReversaoComEtiqueta: 'lojaIntegradaReversaoComEtiqueta',
+  lojaIntegradaRastreioDivergente: 'lojaIntegradaRastreioDivergente',
+  lojaIntegradaCategoriaSemVinculo: 'lojaIntegradaCategoriaSemVinculo',
+  lojaIntegradaRevisaoFiscal: 'lojaIntegradaRevisaoFiscal',
+  lojaIntegradaImportacaoComPendencias: 'lojaIntegradaImportacaoComPendencias',
+  amazonReconexaoPendente: 'amazonReconexaoPendente',
+  amazonReautorizacaoExpirando: 'amazonReautorizacaoExpirando',
+  amazonSegredoLwaExpirando: 'amazonSegredoLwaExpirando',
+  amazonSegredoLwaRecusado: 'amazonSegredoLwaRecusado',
+  amazonImportacaoParada: 'amazonImportacaoParada',
+  amazonPedidoPrecisaAtencao: 'amazonPedidoPrecisaAtencao',
+  amazonContaPrecisaAtencao: 'amazonContaPrecisaAtencao',
 } as const satisfies Record<string, TipoAviso>;
 
 /**
@@ -722,6 +1407,336 @@ export const MOTIVO_IMPORTACAO_PARADA_LI = {
 } as const satisfies Record<string, MotivoImportacaoParadaLi>;
 
 /**
+ * Why the Amazon backstop poll stopped importing a conta — the
+ * `amazonImportacaoParada` aviso's `params.motivo`, a CODE the wording in
+ * `apps/web/lib/avisos/mensagens.ts` renders (the {@link PENDENCIA_RECLAMACAO}
+ * shape: a wording fix is retroactive), and the poll document's `ultimoErro`
+ * (`pollPedidosAmazon.ts`). Only COUNTED failures are members:
+ *
+ *  - a refusal before any read: `id-de-conta-invalido`, `credencial-ausente`,
+ *    `credencial-invalida` (the conta is connected but its credential is
+ *    missing or unreadable), `vendedor-duplicado` (two active contas hold one
+ *    seller: neither is polled, or every order would import twice),
+ *    `vendedor-invalido` (the seller id stored on the conta is outside its
+ *    grammar — the callback never writes one, so a hand edit or a legacy row;
+ *    a reconnect rewrites it),
+ *    `lookback-invalido` (the bootstrap look-back the window sets is not a valid
+ *    number of hours);
+ *  - an answer from Amazon: `sem-permissao` (a 401/403 that a forced token
+ *    refresh did not cure — a role grant), `limite-de-taxa` (429),
+ *    `requisicao-recusada` (a 4xx on a request this poll built),
+ *    `falha-transitoria` (5xx, network, timeout), `resposta-invalida` (a page or
+ *    a row outside its shape);
+ *  - this side: `fila-indisponivel` (the reads queue refused the enqueue the way
+ *    a broken deploy does), `orcamento-esgotado` (the run's deadline arrived
+ *    mid-drain).
+ *
+ * ⚠️ NOT members, on purpose: a parked conta, an app-secret refusal and an
+ * expired pagination token — none is counted, so none can raise this aviso.
+ *
+ * Stored as an aviso PARAM, so the aviso schema itself does not validate it: a
+ * code newer than the web build reaches the reader as a plain string, and
+ * `mensagens.ts` falls back rather than printing `undefined`.
+ */
+export const motivoImportacaoParadaAmazonSchema = z.enum([
+  'id-de-conta-invalido',
+  'credencial-ausente',
+  'credencial-invalida',
+  'vendedor-duplicado',
+  'vendedor-invalido',
+  'lookback-invalido',
+  'sem-permissao',
+  'limite-de-taxa',
+  'requisicao-recusada',
+  'falha-transitoria',
+  'resposta-invalida',
+  'fila-indisponivel',
+  'orcamento-esgotado',
+]);
+export type MotivoImportacaoParadaAmazon = z.infer<typeof motivoImportacaoParadaAmazonSchema>;
+
+/** Named members of {@link motivoImportacaoParadaAmazonSchema} — see `delfrance/prefer-schema-enum`. */
+export const MOTIVO_IMPORTACAO_PARADA_AMAZON = {
+  idDeContaInvalido: 'id-de-conta-invalido',
+  credencialAusente: 'credencial-ausente',
+  credencialInvalida: 'credencial-invalida',
+  vendedorDuplicado: 'vendedor-duplicado',
+  vendedorInvalido: 'vendedor-invalido',
+  lookbackInvalido: 'lookback-invalido',
+  semPermissao: 'sem-permissao',
+  limiteDeTaxa: 'limite-de-taxa',
+  requisicaoRecusada: 'requisicao-recusada',
+  falhaTransitoria: 'falha-transitoria',
+  respostaInvalida: 'resposta-invalida',
+  filaIndisponivel: 'fila-indisponivel',
+  orcamentoEsgotado: 'orcamento-esgotado',
+} as const satisfies Record<string, MotivoImportacaoParadaAmazon>;
+
+/**
+ * Why one Amazon order needs a person — the `amazonPedidoPrecisaAtencao`
+ * aviso's `params.motivo` AND its key's `janela`, a CODE the wording in
+ * `apps/web/lib/avisos/mensagens.ts` renders (the {@link PENDENCIA_RECLAMACAO}
+ * shape: a wording fix is retroactive). Eight members, each with its severity,
+ * its machine resolver and its residue in the tipo's docblock entry above:
+ *
+ *  - **critico**: `divergencia-itens`, `logistica-desconhecida`,
+ *    `aceitar-cancelamento`, `cancelado-so-no-erp`;
+ *  - **atencao**: `status-desconhecido`, `cancelamento-solicitado`,
+ *    `pacote-status-desconhecido`, `coleta-cancelada`.
+ *
+ * ⚠️ Only a reason a later import can see END is a member. A permanent fact of
+ * an order is a pedido incidente, never a member here: this aviso has no dismiss
+ * button, so a row nothing resolves stands until retention.
+ *
+ * Stored as an aviso PARAM, so the aviso schema itself does not validate it: a
+ * code newer than the web build reaches the reader as a plain string, and
+ * `mensagens.ts` falls back rather than printing `undefined`.
+ */
+export const motivoPedidoAmazonSchema = z.enum([
+  'divergencia-itens',
+  'logistica-desconhecida',
+  'aceitar-cancelamento',
+  'cancelado-so-no-erp',
+  'status-desconhecido',
+  'cancelamento-solicitado',
+  'pacote-status-desconhecido',
+  'coleta-cancelada',
+]);
+export type MotivoPedidoAmazon = z.infer<typeof motivoPedidoAmazonSchema>;
+
+/** Named members of {@link motivoPedidoAmazonSchema} — see `delfrance/prefer-schema-enum`. */
+export const MOTIVO_PEDIDO_AMAZON = {
+  divergenciaItens: 'divergencia-itens',
+  logisticaDesconhecida: 'logistica-desconhecida',
+  aceitarCancelamento: 'aceitar-cancelamento',
+  canceladoSoNoErp: 'cancelado-so-no-erp',
+  statusDesconhecido: 'status-desconhecido',
+  cancelamentoSolicitado: 'cancelamento-solicitado',
+  pacoteStatusDesconhecido: 'pacote-status-desconhecido',
+  coletaCancelada: 'coleta-cancelada',
+} as const satisfies Record<string, MotivoPedidoAmazon>;
+
+/**
+ * Why an Amazon conta's own setup needs a person — the
+ * `amazonContaPrecisaAtencao` aviso's `params.motivo` AND its key's `janela`, a
+ * CODE the wording in `apps/web/lib/avisos/mensagens.ts` renders. Two members,
+ * both **atencao**, each with its machine resolver and its residue in the tipo's
+ * docblock entry above: `conta-sem-operacao` (the conta names no operação) and
+ * `intermediador-divergente` (the marketplace document on an order does not
+ * match the conta's).
+ *
+ * Stored as an aviso PARAM, with the same fallback contract as
+ * {@link MOTIVO_PEDIDO_AMAZON}.
+ */
+export const motivoContaAmazonSchema = z.enum(['conta-sem-operacao', 'intermediador-divergente']);
+export type MotivoContaAmazon = z.infer<typeof motivoContaAmazonSchema>;
+
+/** Named members of {@link motivoContaAmazonSchema} — see `delfrance/prefer-schema-enum`. */
+export const MOTIVO_CONTA_AMAZON = {
+  contaSemOperacao: 'conta-sem-operacao',
+  intermediadorDivergente: 'intermediador-divergente',
+} as const satisfies Record<string, MotivoContaAmazon>;
+
+/**
+ * Why a Loja Integrada order is contested — the `lojaIntegradaPedidoContestado`
+ * aviso's `params.motivo`, a CODE the wording in
+ * `apps/web/lib/avisos/mensagens.ts` renders (the {@link PENDENCIA_RECLAMACAO}
+ * shape: a wording fix is retroactive). One member per contesting situação
+ * codigo, named by `situacaoPedidoLojaIntegrada.ts`'s table:
+ *
+ *  - `disputa` — `pagamento_em_disputa`: a HOLD; the payment still counts as
+ *    paid, and the codigo may move on;
+ *  - `chargeback` — `pedido_chargeback`; `devolvido` — `pagamento_devolvido`;
+ *    `devolvido-sem-retorno` — `pagamento_devolvido_sem_retorno`: refunds,
+ *    FINAL in Loja Integrada, raised only when the pedido's stock removal was
+ *    already applied — and `devolvido` only when the payment was also captured
+ *    (otherwise the import reverses or cancels the sale on its own).
+ *
+ * Stored as an aviso PARAM, so the aviso schema itself does not validate it: a
+ * code newer than the web build reaches the reader as a plain string, and
+ * `mensagens.ts` falls back rather than printing `undefined`.
+ */
+export const motivoPedidoContestadoLiSchema = z.enum([
+  'disputa',
+  'chargeback',
+  'devolvido',
+  'devolvido-sem-retorno',
+]);
+export type MotivoPedidoContestadoLi = z.infer<typeof motivoPedidoContestadoLiSchema>;
+
+/** Named members of {@link motivoPedidoContestadoLiSchema} — see `delfrance/prefer-schema-enum`. */
+export const MOTIVO_PEDIDO_CONTESTADO_LI = {
+  disputa: 'disputa',
+  chargeback: 'chargeback',
+  devolvido: 'devolvido',
+  devolvidoSemRetorno: 'devolvido-sem-retorno',
+} as const satisfies Record<string, MotivoPedidoContestadoLi>;
+
+/**
+ * Which reversal landed on a Loja Integrada pedido whose label was already
+ * bought — the `lojaIntegradaReversaoComEtiqueta` aviso's `params.motivo`, a
+ * CODE the wording in `apps/web/lib/avisos/mensagens.ts` renders. One member
+ * per reversal codigo of `situacaoPedidoLojaIntegrada.ts`'s table:
+ *
+ *  - `cancelado` — `pedido_cancelado`;
+ *  - `devolvido` — `pagamento_devolvido`;
+ *  - `chargeback` — `pedido_chargeback`;
+ *  - `devolvido-sem-retorno` — `pagamento_devolvido_sem_retorno`.
+ *
+ * A cancellation REQUEST (`cancelamento_solicitado`) and a dispute
+ * (`pagamento_em_disputa`) are no reversal: neither has a member. Stored as an
+ * aviso PARAM, with the same fallback contract as
+ * {@link MOTIVO_PEDIDO_CONTESTADO_LI}.
+ */
+export const motivoReversaoComEtiquetaLiSchema = z.enum([
+  'cancelado',
+  'devolvido',
+  'chargeback',
+  'devolvido-sem-retorno',
+]);
+export type MotivoReversaoComEtiquetaLi = z.infer<typeof motivoReversaoComEtiquetaLiSchema>;
+
+/** Named members of {@link motivoReversaoComEtiquetaLiSchema} — see `delfrance/prefer-schema-enum`. */
+export const MOTIVO_REVERSAO_COM_ETIQUETA_LI = {
+  cancelado: 'cancelado',
+  devolvido: 'devolvido',
+  chargeback: 'chargeback',
+  devolvidoSemRetorno: 'devolvido-sem-retorno',
+} as const satisfies Record<string, MotivoReversaoComEtiquetaLi>;
+
+/**
+ * Why a mapped Loja Integrada shipping method cannot route an order — the
+ * `lojaIntegradaFreteNaoSuportado` aviso's `params.motivo`, a CODE the wording
+ * in `apps/web/lib/avisos/mensagens.ts` renders. One member per remedy:
+ *
+ *  - `alvo-ausente` — the mapped `int_frete` document does not exist (re-map);
+ *  - `alvo-inativo` — it exists but is inactive (re-activate or re-map);
+ *  - `tipo-nao-suportado` — its tipo is not one the import routes (Melhor
+ *    Envio, motoboy, retirada na loja), nor a deliberate `fob` / `outros`;
+ *  - `alvo-sem-servico` — a Melhor Envio target that names no service.
+ *
+ * Stored as an aviso PARAM, with the same fallback contract as
+ * {@link MOTIVO_PEDIDO_CONTESTADO_LI}.
+ */
+export const motivoFreteNaoSuportadoLiSchema = z.enum([
+  'alvo-ausente',
+  'alvo-inativo',
+  'tipo-nao-suportado',
+  'alvo-sem-servico',
+]);
+export type MotivoFreteNaoSuportadoLi = z.infer<typeof motivoFreteNaoSuportadoLiSchema>;
+
+/** Named members of {@link motivoFreteNaoSuportadoLiSchema} — see `delfrance/prefer-schema-enum`. */
+export const MOTIVO_FRETE_NAO_SUPORTADO_LI = {
+  alvoAusente: 'alvo-ausente',
+  alvoInativo: 'alvo-inativo',
+  tipoNaoSuportado: 'tipo-nao-suportado',
+  alvoSemServico: 'alvo-sem-servico',
+} as const satisfies Record<string, MotivoFreteNaoSuportadoLi>;
+
+/**
+ * Why a Loja Integrada status write-back was not reflected as it should have
+ * been — the `lojaIntegradaRastreioDivergente` aviso's `params.motivo`, a CODE
+ * the wording in `apps/web/lib/avisos/mensagens.ts` renders (a wording fix is
+ * retroactive). One member per thing a person must look at:
+ *
+ *  - the situação Loja Integrada shows forbids the write: `situacao-bloqueada`
+ *    (stopped: a dispute, a cancellation request, a cancellation, a refund, a
+ *    chargeback), `situacao-nao-paga` (not paid yet), `situacao-desconhecida`
+ *    (a codigo the shared table does not know), `transicao-lateral` (Loja
+ *    Integrada is ahead or sideways: never moved back, never crossed between a
+ *    pickup and a shipment);
+ *  - `situacao-sobrescrita` — a status set in the instant before our write was
+ *    overwritten by it;
+ *  - the tracking code: `objeto-divergente` (Loja Integrada holds another one),
+ *    `objeto-invalido` (the ERP's code cannot be sent as stored), and
+ *    `envio-divergente` (the pedido stores no Loja Integrada envio);
+ *  - the identity and the read: `pedido-divergente` (the live envio is not the
+ *    pedido's), `pedido-ausente` (the order is not found), and
+ *    `restauracao-indisponivel` (no copy could be logged before the write, so it
+ *    was not made);
+ *  - the write itself: `escrita-recusada` (Loja Integrada refused it), `deriva`
+ *    (it landed but reads back different), `tentativas-esgotadas` (it kept
+ *    failing).
+ *
+ * Stored as an aviso PARAM, with the same fallback contract as
+ * {@link MOTIVO_PEDIDO_CONTESTADO_LI}.
+ */
+export const motivoRastreioDivergenteLiSchema = z.enum([
+  'situacao-bloqueada',
+  'situacao-nao-paga',
+  'situacao-desconhecida',
+  'transicao-lateral',
+  'situacao-sobrescrita',
+  'objeto-divergente',
+  'objeto-invalido',
+  'envio-divergente',
+  'pedido-divergente',
+  'pedido-ausente',
+  'restauracao-indisponivel',
+  'escrita-recusada',
+  'deriva',
+  'tentativas-esgotadas',
+]);
+export type MotivoRastreioDivergenteLi = z.infer<typeof motivoRastreioDivergenteLiSchema>;
+
+/** Named members of {@link motivoRastreioDivergenteLiSchema} — see `delfrance/prefer-schema-enum`. */
+export const MOTIVO_RASTREIO_DIVERGENTE_LI = {
+  situacaoBloqueada: 'situacao-bloqueada',
+  situacaoNaoPaga: 'situacao-nao-paga',
+  situacaoDesconhecida: 'situacao-desconhecida',
+  transicaoLateral: 'transicao-lateral',
+  situacaoSobrescrita: 'situacao-sobrescrita',
+  objetoDivergente: 'objeto-divergente',
+  objetoInvalido: 'objeto-invalido',
+  envioDivergente: 'envio-divergente',
+  pedidoDivergente: 'pedido-divergente',
+  pedidoAusente: 'pedido-ausente',
+  restauracaoIndisponivel: 'restauracao-indisponivel',
+  escritaRecusada: 'escrita-recusada',
+  deriva: 'deriva',
+  tentativasEsgotadas: 'tentativas-esgotadas',
+} as const satisfies Record<string, MotivoRastreioDivergenteLi>;
+
+/**
+ * Why a store category left imported products without a category — the
+ * `lojaIntegradaCategoriaSemVinculo` aviso's `params.motivo`, a CODE the
+ * wording in `apps/web/lib/avisos/mensagens.ts` renders (a wording fix is
+ * retroactive):
+ *
+ *  - `sem-vinculo`: the category has no link for the conta, and the run only
+ *    links categories;
+ *  - the category's chain was refused (the product import's category tree,
+ *    `categoriaLojaIntegrada.ts`, decides it): `pai-ilegivel` (an ancestor's
+ *    parent does not read), `pai-ausente` (an ancestor's parent is not in the
+ *    store's list), `ciclo`, `profundidade` (deeper than the tree accepts).
+ *
+ * Every refusal of the tree EXCEPT its `ausente` (the category itself is not in
+ * the store's list): no row is raised for it, since the tipo's own "gone from
+ * the store's list" resolver would close it at once (see the tipo above).
+ *
+ * Stored as an aviso PARAM, with the same fallback contract as
+ * {@link MOTIVO_PEDIDO_CONTESTADO_LI}.
+ */
+export const motivoCategoriaSemVinculoLiSchema = z.enum([
+  'sem-vinculo',
+  'pai-ilegivel',
+  'pai-ausente',
+  'ciclo',
+  'profundidade',
+]);
+export type MotivoCategoriaSemVinculoLi = z.infer<typeof motivoCategoriaSemVinculoLiSchema>;
+
+/** Named members of {@link motivoCategoriaSemVinculoLiSchema} — see `delfrance/prefer-schema-enum`. */
+export const MOTIVO_CATEGORIA_SEM_VINCULO_LI = {
+  semVinculo: 'sem-vinculo',
+  paiIlegivel: 'pai-ilegivel',
+  paiAusente: 'pai-ausente',
+  ciclo: 'ciclo',
+  profundidade: 'profundidade',
+} as const satisfies Record<string, MotivoCategoriaSemVinculoLi>;
+
+/**
  * Why an `anuncioForaDaSincronizacao` anúncio is out of reach — the aviso's
  * `params.situacao` (and its `motivo`), a CODE the wording in
  * `apps/web/lib/avisos/mensagens.ts` renders, so a wording fix is retroactive.
@@ -796,6 +1811,16 @@ export const ROTAS_AVISO = {
   canalLojaIntegrada: {
     padrao: '/canais/loja-integrada/[id]',
     build: (integracaoId: string) => `/canais/loja-integrada/${integracaoId}`,
+  },
+  canalAmazon: {
+    padrao: '/canais/amazon/[id]',
+    build: (integracaoId: string) => `/canais/amazon/${integracaoId}`,
+  },
+  // The conta LIST, for the two per-APPLICATION Amazon avisos (the LWA app
+  // secret): they belong to no conta, so there is no `[id]` page to open.
+  canalAmazonLista: {
+    padrao: '/canais/amazon',
+    build: () => '/canais/amazon',
   },
   // ⚠️ `/pedidos/[id]` is NOT navigable — it is a bare directory holding
   // `editar/` and `nfe/`, with no page of its own. The whole app links to

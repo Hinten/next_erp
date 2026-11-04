@@ -2,7 +2,12 @@ import type { Firestore } from 'firebase-admin/firestore';
 
 import { enviNfeMsgCollection, nfev4Collection } from '@delfrance/data/admin/collections';
 import { cancelarNFe, type SefazCall, type TpEmis } from '@delfrance/integrations-nfe';
-import { ESTADO_ENVI_NFE_MSG, ESTADO_NFE, type NotaFiscalEletronica } from '@delfrance/schemas';
+import {
+  ESTADO_ENVI_NFE_MSG,
+  ESTADO_NFE,
+  idFromRef,
+  type NotaFiscalEletronica,
+} from '@delfrance/schemas';
 
 import type { NFeBaseRuntime } from '../runtime';
 import { resolveFilialRuntime } from '../filial-cert';
@@ -120,7 +125,7 @@ export async function cancelarNFeService(
         `integracao '${integracaoPath}': filialIntegracaoPedidoOuterRef missing.`,
       );
     }
-    filialId = filialPath.split('/').pop()!;
+    filialId = idFromRef(filialPath);
   }
 
   // mTLS for the cancelamento evento must present this filial's cert (or the

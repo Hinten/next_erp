@@ -58,8 +58,12 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
  * Directories scanned for workspace manifests. Mirrors `pnpm-workspace.yaml`'s
  * `packages:` globs. `packages/integrations` is listed separately because the
  * channel packages are one level deeper than everything else in `packages/`.
+ *
+ * ⚠️ A glob missing here makes every path under it belong to NO workspace, and
+ * an unattributable path runs EVERY lane (`decide()`), the staging E2E lanes
+ * included. `e2e-affected.test.js` asserts the mirror both ways.
  */
-export const WORKSPACE_GLOB_ROOTS = ['apps', 'packages', 'packages/integrations', 'tools'];
+export const WORKSPACE_GLOB_ROOTS = ['apps', 'infra', 'packages', 'packages/integrations', 'tools'];
 
 /**
  * Paths that cannot affect a Playwright run, checked BEFORE workspace attribution

@@ -694,7 +694,10 @@ function asNumberOrNull(v: unknown): number | null {
 const runUptinMigration: MigrationRunner = async (db, integracaoId, itemId, sourceLink) => {
   const ctx = await loadMercadoLivreContext(db, integracaoId);
   const channelCtx = await ctx.resolveChannelContext();
-  const api = createMercadoLivreApi({ getAccessToken: async () => channelCtx.accessToken });
+  const api = createMercadoLivreApi({
+    getAccessToken: channelCtx.getAccessToken,
+    onAccessTokenRejected: channelCtx.invalidateAccessToken,
+  });
   await handleUptinMigration(
     {
       db,
@@ -736,7 +739,10 @@ export type OrderImportRunner = (
 const runOrderImport: OrderImportRunner = async (db, integracaoId, resourceId) => {
   const ctx = await loadMercadoLivreContext(db, integracaoId);
   const channelCtx = await ctx.resolveChannelContext();
-  const api = createMercadoLivreApi({ getAccessToken: async () => channelCtx.accessToken });
+  const api = createMercadoLivreApi({
+    getAccessToken: channelCtx.getAccessToken,
+    onAccessTokenRejected: channelCtx.invalidateAccessToken,
+  });
   const nowMs = Date.now();
   const nowUs = millisToMicros(nowMs);
   return importPedidoMercadoLivre({ db, api, integracaoId, nowUs, nowMs }, resourceId);
@@ -766,7 +772,10 @@ export type PaymentImportRunner = (
 const runPaymentImport: PaymentImportRunner = async (db, integracaoId, resourceId) => {
   const ctx = await loadMercadoLivreContext(db, integracaoId);
   const channelCtx = await ctx.resolveChannelContext();
-  const api = createMercadoLivreApi({ getAccessToken: async () => channelCtx.accessToken });
+  const api = createMercadoLivreApi({
+    getAccessToken: channelCtx.getAccessToken,
+    onAccessTokenRejected: channelCtx.invalidateAccessToken,
+  });
   const nowMs = Date.now();
   const nowUs = millisToMicros(nowMs);
   return importPagamentoMercadoLivre({ db, api, contaId: integracaoId, nowUs }, resourceId);
@@ -817,7 +826,10 @@ export type ShipmentImportRunner = (
 const runShipmentImport: ShipmentImportRunner = async (db, integracaoId, resourceId) => {
   const ctx = await loadMercadoLivreContext(db, integracaoId);
   const channelCtx = await ctx.resolveChannelContext();
-  const api = createMercadoLivreApi({ getAccessToken: async () => channelCtx.accessToken });
+  const api = createMercadoLivreApi({
+    getAccessToken: channelCtx.getAccessToken,
+    onAccessTokenRejected: channelCtx.invalidateAccessToken,
+  });
   const nowMs = Date.now();
   const nowUs = millisToMicros(nowMs);
   return importShipmentMercadoLivre({ db, api, integracaoId, nowUs }, resourceId);
@@ -892,7 +904,10 @@ const runOrderMessageImport: OrderMessageImportRunner = async (
 ) => {
   const ctx = await loadMercadoLivreContext(db, integracaoId);
   const channelCtx = await ctx.resolveChannelContext();
-  const api = createMercadoLivreApi({ getAccessToken: async () => channelCtx.accessToken });
+  const api = createMercadoLivreApi({
+    getAccessToken: channelCtx.getAccessToken,
+    onAccessTokenRejected: channelCtx.invalidateAccessToken,
+  });
   return importOrderMessageMercadoLivre(
     {
       db,
@@ -915,7 +930,10 @@ const runOrderMessageImport: OrderMessageImportRunner = async (
 const runQuestionImport: QuestionImportRunner = async (db, integracaoId, resourceId, enviadaMs) => {
   const ctx = await loadMercadoLivreContext(db, integracaoId);
   const channelCtx = await ctx.resolveChannelContext();
-  const api = createMercadoLivreApi({ getAccessToken: async () => channelCtx.accessToken });
+  const api = createMercadoLivreApi({
+    getAccessToken: channelCtx.getAccessToken,
+    onAccessTokenRejected: channelCtx.invalidateAccessToken,
+  });
   return importQuestionMercadoLivre(
     {
       db,
@@ -935,7 +953,10 @@ const runQuestionImport: QuestionImportRunner = async (db, integracaoId, resourc
 const runClaimImport: ClaimImportRunner = async (db, integracaoId, resourceId) => {
   const ctx = await loadMercadoLivreContext(db, integracaoId);
   const channelCtx = await ctx.resolveChannelContext();
-  const api = createMercadoLivreApi({ getAccessToken: async () => channelCtx.accessToken });
+  const api = createMercadoLivreApi({
+    getAccessToken: channelCtx.getAccessToken,
+    onAccessTokenRejected: channelCtx.invalidateAccessToken,
+  });
   const nowMs = Date.now();
   const nowUs = millisToMicros(nowMs);
   return importClaimMercadoLivre(

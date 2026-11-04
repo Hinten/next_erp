@@ -1,6 +1,6 @@
 import type { FieldConfig } from '@delfrance/ui';
 import { enderecoNestedFields } from '@/components/inputs/enderecoFields';
-import { CnpjInput } from './CnpjInput';
+import { CnpjInput } from '@/components/inputs/CnpjInput';
 
 /**
  * `fields` overrides shared by the Filial create and edit `ObjectView`s.

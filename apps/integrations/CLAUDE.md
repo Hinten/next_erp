@@ -2,7 +2,7 @@
 
 **Shared webhook/OAuth scaffolding only** — not a home for channel-specific routes.
 
-This app provides the **authentication/verification layers** that every webhook/OAuth flow needs: `withSignature` HOF for HMAC-verified webhooks, `verifyCaller` for Cloud Function admittance. It also hosts the health-check endpoint and the admin user-management callable endpoints that `apps/web` consumes (user creation, custom-claims refresh).
+This app hosts the health-check endpoint and the admin user-management endpoints that `apps/web` consumes (user creation, custom-claims refresh). Admin endpoints use the coordinated access guard. The retained `verifyCaller` and HMAC compatibility modules delegate to `@delfrance/data/admin/auth` and `@delfrance/data/admin/signatures`; Firebase initialization, logs, and response adapters remain local (#1431).
 
 **Every marketplace/channel has its own app** — see root `CLAUDE.md` rule on channel-specific routes. A new receiver does NOT go in `apps/integrations`; it goes in its own `apps/<channel>` backend with its own Cloud Functions codebase and deployment manifest.
 
@@ -25,10 +25,10 @@ app/
 lib/
   firebase/admin.ts       Singletons via firebase-admin SDK
   signatures/
-    hmac.ts               Constant-time HMAC verify
+    hmac.ts               Re-export of the shared constant-time HMAC verifier
     withSignature.ts      HOF that wraps a handler: verify HMAC, parse JSON, call handler
   auth/
-    verifyCaller.ts       Admin SDK token + auth verification for Cloud Function callables
+    verifyCaller.ts       Adapter for the shared Firebase user-token verifier
 ```
 
 > **Melhor Envio freight lives in its own app** — `apps/melhor-envio` (`:3005`), split out for isolated logs/deploy. Its webhook receiver, OAuth flow, and Cloud Functions codebase all live there.

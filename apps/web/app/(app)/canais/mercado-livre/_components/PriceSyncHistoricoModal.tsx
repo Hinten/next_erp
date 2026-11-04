@@ -23,7 +23,8 @@ import {
 import { describeMercadoLivreFailure, mercadoLivreQueryRetry } from '@/lib/mercado-livre/errors';
 import { queryRetry } from '@/lib/query/queryRetry';
 import { RetryAlert } from '@/components/feedback/RetryAlert';
-import { BaixarRelatorioButton, PriceSyncEntryList } from './MercadoLivreJobCards';
+import { BaixarRelatorioButton } from '@/components/contaJobs/BaixarRelatorioButton';
+import { PriceSyncEntryList } from '@/components/contaJobs/PriceSyncEntryList';
 import { useBaixarRelatorioPreco } from './useBaixarRelatorioPreco';
 import type { ContaRef } from '@/lib/marketplace/contaJobs/types';
 

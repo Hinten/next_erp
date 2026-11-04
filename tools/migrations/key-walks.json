@@ -1,5 +1,5 @@
 {
-  "$comment": "Every collection a tools/migrations script walks page by page with orderBy(FieldPath.documentId()) (#1895). Firestore Enterprise has NO implicit document-key index: without a declared `__name__ ASC` index each page scans the whole collection (#1874 measured 313 index rows per page of 100), so a walk costs N²/page instead of N. Each (collection, scope) here has exactly one `__name__ ASC` entry in firestore.indexes.json; src/keyWalks.indexes.test.ts pins the pairing both ways and that every key-walking script is listed. scripts/check-key-walks.mjs proves on a live project that each walk rides its index. These indexes are MIGRATION-ONLY: delete them after the cutover (#1896).",
+  "$comment": "Every collection a tools/migrations script walks page by page with orderBy(FieldPath.documentId()) (#1895). Firestore Enterprise has NO implicit document-key index: without a declared `__name__ ASC` index each page scans the whole collection (#1874 measured 313 index rows per page of 100), so a walk costs N²/page instead of N. Each (collection, scope) here has exactly one `__name__ ASC` entry in firestore.indexes.json; src/keyWalks.indexes.test.ts pins the pairing both ways and that every key-walking script is listed. scripts/check-key-walks.mjs proves on a live project that each walk rides its index, except a row with `parent`: that is a per-parent SUBCOLLECTION walk (`<parent>/{id}/<collection>`, COLLECTION scope), which the checker's root `collection(<collection>)` probe cannot plan, so it lists the row as NOT PROBED and its index is confirmed READY instead (amazon-tokenoaut-legado.README.md). These indexes are MIGRATION-ONLY: delete them after the cutover (#1896).",
   "walks": [
     { "script": "2026-06-pedido-pagamento-micros", "collection": "pedidos", "scope": "COLLECTION" },
     {
@@ -111,6 +111,12 @@
       "script": "2026-09-whatsapp-contato-cliente",
       "collection": "whatsappMensagens",
       "scope": "COLLECTION"
+    },
+    {
+      "script": "2026-10-amazon-tokenoaut-legado",
+      "collection": "tokenoaut",
+      "scope": "COLLECTION",
+      "parent": "integracao"
     },
     { "script": "2026-10-kit-virtual-contagem", "collection": "produtos", "scope": "COLLECTION" },
     { "script": "2026-10-li-token-legado", "collection": "integracao", "scope": "COLLECTION" }

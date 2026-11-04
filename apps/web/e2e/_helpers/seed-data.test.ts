@@ -2,7 +2,13 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { e2ePrefix, filialSeedCnpj, fixtureClienteCnpj } from './seed-data';
+import {
+  corpoPedidoConferenciaLiE2e,
+  e2ePrefix,
+  filialSeedCnpj,
+  fixtureClienteCnpj,
+} from './seed-data';
+import { E2E_FIXTURE_TARGETS } from './stale-sweep';
 
 /**
  * Backstop for the fixture-namespace shape (`e2e-<runId>-w<worker>-<tag>`).
@@ -306,5 +312,41 @@ describe('fixtureClienteCnpj', () => {
       const cnpj = cnpjFor(w);
       expect(isValidCnpj(cnpj), `${String(w)} -> ${cnpj}`).toBe(true);
     }
+  });
+});
+
+describe('the Loja Integrada paid-check pedido (step 15) — a cancelled run can reclaim it', () => {
+  // Its id is a sha256 and its `numero` a bare integer, so neither the sweep's
+  // id range nor its `numero` range can find it. `cancel-in-progress` kills a
+  // run before its afterAll, so without a prefix in a field the sweep reads,
+  // every cancelled vendas run would leave this `pago` pedido on staging.
+  const corpo = (prefix: string): Record<string, unknown> =>
+    corpoPedidoConferenciaLiE2e({
+      prefix,
+      numero: '123456789012345',
+      contaId: `${prefix}-li-001`,
+      clienteId: `${prefix}-cli-001`,
+      motoboyId: `${prefix}-mot-001`,
+      enderecoPath: `clientes/${prefix}-cli-001/enderecos/${prefix}-end-001`,
+    });
+
+  it('carries its prefix in a field the stale sweep queries for pedidos', () => {
+    const prefix = prefixFor('3', 'eli');
+    const doc = corpo(prefix);
+    const alvo = E2E_FIXTURE_TARGETS.find((t) => t.collection === 'pedidos');
+
+    const campos = (alvo?.fields ?? []).filter((f) => {
+      const valor = doc[f];
+      return typeof valor === 'string' && valor.startsWith(prefix);
+    });
+    expect(campos.length).toBeGreaterThan(0);
+  });
+
+  it('⚠️ NEAR-MISS: the prefix never touches the identity — numero and conta ref stay what the id is derived from', () => {
+    const prefix = prefixFor('3', 'eli');
+    const doc = corpo(prefix);
+
+    expect(doc.numero).toBe('123456789012345');
+    expect(doc.integracaoPedidoOuterRef).toBe(`documents/integracao/${prefix}-li-001`);
   });
 });

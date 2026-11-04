@@ -17,11 +17,35 @@
  *
  * ⚠️ The dialogs and the in-flight flag live in the PAGE host
  * (`EtiquetaAcaoHost`), not here: this component is unmounted by the HoverCard
- * on the first mouse move, and a flow it owned would die with it.
+ * on the first mouse move, and a flow it owned would die with it. So does the
+ * freight a Loja Integrada routing call wrote (master plan step 15): the row
+ * reads `freteComRotaConhecida(pedido.freteInicial, host.rotaConhecida(pedidoId))`,
+ * so a routed pedido shows its target's action on the next hover whatever the
+ * list transport delivered — and the list's own copy again once it catches up.
+ *
+ * The Loja Integrada paid re-check's SOFT gate runs before every print this row
+ * makes: inside the registry for the generic label, and here, before the Melhor
+ * Envio reprint (`onImprimir`), which calls the freight client directly.
+ * Rastrear and the buy never run it here — the buy modal owns its own check.
+ *
+ * A pedido still on its conta's Loja Integrada doc (a ROUTER tipo) gets the
+ * `'rotear'` action instead of a label: "Definir transportadora" routes it by
+ * the stored override or the conta's `mapa`, "Escolher transportadora…" by the
+ * operator's pick (the host's picker). Both call the `apps/loja-integrada`
+ * backend's `rota-etiqueta` route through `host.executar` and register its
+ * answer with the host — and stop there: the label is a separate, deliberate
+ * click on the next hover (a Melhor Envio buy shows its saldo first). They
+ * print nothing, so no paid re-check runs on them.
  */
 import { useMemo, useState } from 'react';
 import { Button, Stack, Text } from '@mantine/core';
-import { IconPrinter, IconShoppingCart, IconTruckDelivery } from '@tabler/icons-react';
+import {
+  IconListDetails,
+  IconPrinter,
+  IconRoute,
+  IconShoppingCart,
+  IconTruckDelivery,
+} from '@tabler/icons-react';
 import { FirebaseError } from 'firebase/app';
 import { type DocumentReference, getDoc } from 'firebase/firestore';
 import { useQuery } from '@tanstack/react-query';
@@ -38,6 +62,10 @@ import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { useFreightClient } from '@/lib/freight/client';
 import { freightErrorMessage } from '@/lib/freight/errorMessage';
+import { useLojaIntegradaClient } from '@/lib/loja-integrada/client';
+import { conferirAntesDeImprimirLi } from '@/lib/loja-integrada/conferenciaPagamento';
+import { preverRotaEtiquetaLi, rotearEtiquetaLi } from '@/lib/loja-integrada/rotaEtiqueta';
+import { useAlvosMapaFreteLi } from '@/lib/loja-integrada/useAlvosMapaFreteLi';
 import { useMercadoLivreClient } from '@/lib/mercado-livre/client';
 import {
   showCopyableNotification,
@@ -51,13 +79,45 @@ import { useShopeeClient } from '@/lib/shopee/client';
 import { etiquetaMismatch, etiquetaRowState } from './etiquetaActions';
 import { EtiquetaComprarModal } from './EtiquetaComprarModal';
 import { MercadoLivreRastrearAction } from './MercadoLivreRastrearAction';
-import { useEtiquetaAcao, useEtiquetaAcaoValor, type EtiquetaAcaoChave } from './EtiquetaAcaoHost';
+import {
+  freteComRotaConhecida,
+  useEtiquetaAcao,
+  useEtiquetaAcaoValor,
+  type EtiquetaAcaoChave,
+} from './EtiquetaAcaoHost';
 
-export function EtiquetaRowAction({ pedido, pedidoId }: { pedido: Pedido; pedidoId: string }) {
+export function EtiquetaRowAction({
+  pedido: pedidoDaLista,
+  pedidoId,
+}: {
+  pedido: Pedido;
+  pedidoId: string;
+}) {
   const db = getFirebaseFirestore();
   const client = useFreightClient();
   const mlClient = useMercadoLivreClient();
   const shopeeClient = useShopeeClient();
+  const lojaIntegradaClient = useLojaIntegradaClient();
+
+  // The page host when there is one; otherwise this row's own instance, whose
+  // dialogs it then renders itself (hooks stay unconditional).
+  const host = useEtiquetaAcao();
+  const local = useEtiquetaAcaoValor();
+  const acao = host ?? local.valor;
+  const dialogosLocais = host === null ? local.elementos : null;
+
+  // A route a routing call registered stands in for the list's copy while that
+  // copy is still stale — the route's write may never reach it (see
+  // `EtiquetaAcaoHost`) — and the list wins again the moment it catches up.
+  // Every action below reads THIS pedido, so the buy modal and the providers
+  // see the same freight.
+  const rotaConhecida = acao.rotaConhecida(pedidoId);
+  const pedido = useMemo(() => {
+    const frete = freteComRotaConhecida(pedidoDaLista.freteInicial, rotaConhecida);
+    return frete === pedidoDaLista.freteInicial
+      ? pedidoDaLista
+      : { ...pedidoDaLista, freteInicial: frete };
+  }, [pedidoDaLista, rotaConhecida]);
   const frete = pedido.freteInicial;
   const blocoTipo = frete?.externalOptionIntegracao ?? null;
 
@@ -82,12 +142,6 @@ export function EtiquetaRowAction({ pedido, pedidoId }: { pedido: Pedido; pedido
   });
   const tipo = tipoDeDespacho(docTipo, blocoTipo);
 
-  // The page host when there is one; otherwise this row's own instance, whose
-  // dialogs it then renders itself (hooks stay unconditional).
-  const host = useEtiquetaAcao();
-  const local = useEtiquetaAcaoValor();
-  const acao = host ?? local.valor;
-  const dialogosLocais = host === null ? local.elementos : null;
   const emAndamento = acao.emAndamento(pedidoId);
   const [comprarOpen, setComprarOpen] = useState(false);
 
@@ -105,6 +159,15 @@ export function EtiquetaRowAction({ pedido, pedidoId }: { pedido: Pedido; pedido
     estado: frete?.estado,
   });
 
+  // The carrier picker's targets: the ONE shared query the conta screen's
+  // "Mapeamento do Frete" tab reads too (page-cached under one key), enabled
+  // only on a row that can route.
+  const {
+    alvos: alvosLi,
+    carregando: carregandoAlvosLi,
+    erro: erroAlvosLi,
+  } = useAlvosMapaFreteLi(db, [], action === 'rotear');
+
   // A fetch-label button is live when the client of THE provider it reaches is
   // — never another marketplace's (#1523 W15: a Shopee row used to be disabled
   // on the Mercado Livre client).
@@ -120,6 +183,29 @@ export function EtiquetaRowAction({ pedido, pedidoId }: { pedido: Pedido; pedido
   // Legacy pre-print confirm: a reverse label on a saída (or a non-reverse one
   // on an entrada) is usually a mistake — ask before printing.
   const mismatch = etiquetaMismatch(frete?.ehReverso, pedido.ehSaida);
+
+  /**
+   * The two risk questions every print path asks through the host: the A1
+   * "Continuar?" confirm, and the acknowledged-risk warning with its required
+   * "Estou ciente do risco" tick.
+   */
+  const perguntasDeRisco: Pick<EtiquetaProviderUi, 'confirmRisk' | 'confirmarCiente'> = {
+    confirmRisk: (msg) =>
+      acao.confirm({
+        title: 'Atenção',
+        message: msg,
+        confirmLabel: 'Continuar',
+        cancelLabel: 'Cancelar',
+      }),
+    confirmarCiente: ({ titulo, mensagem }) =>
+      acao.confirm({
+        title: titulo,
+        message: mensagem,
+        confirmLabel: 'Continuar',
+        cancelLabel: 'Cancelar',
+        ciencia: true,
+      }),
+  };
 
   /** Run the direction-mismatch confirm; true = proceed (or no mismatch). */
   async function confirmMismatch(): Promise<boolean> {
@@ -181,13 +267,7 @@ export function EtiquetaRowAction({ pedido, pedidoId }: { pedido: Pedido; pedido
         return;
       }
       const ui: EtiquetaProviderUi = {
-        confirmRisk: (msg) =>
-          acao.confirm({
-            title: 'Atenção',
-            message: msg,
-            confirmLabel: 'Continuar',
-            cancelLabel: 'Cancelar',
-          }),
+        ...perguntasDeRisco,
         notify: (n) =>
           showCopyableNotification({
             title: n.title,
@@ -219,6 +299,7 @@ export function EtiquetaRowAction({ pedido, pedidoId }: { pedido: Pedido; pedido
           nfeClient: null,
           mercadoLivreClient: mlClient,
           shopeeClient,
+          lojaIntegradaClient,
           printJob,
         },
         ui,
@@ -249,11 +330,79 @@ export function EtiquetaRowAction({ pedido, pedidoId }: { pedido: Pedido; pedido
     void acao.executar(pedidoId, chave, fn);
   }
 
+  /**
+   * The carrier the picker opens on: the one "Definir transportadora" would
+   * route to (the read-only preview of the same route — the stored override,
+   * else the conta's `mapa` row), or none when the route would refuse or the
+   * preview cannot read. A suggestion only: the dialog offers it only when it
+   * is among the routable targets, and the route re-decides everything.
+   */
+  async function transportadoraPreSelecionada(): Promise<string | null> {
+    try {
+      const previsao = await preverRotaEtiquetaLi(db, pedido);
+      return previsao.tipo === 'rota' ? previsao.alvoId : null;
+    } catch (err) {
+      if (err instanceof FirebaseError) return null;
+      throw err;
+    }
+  }
+
+  /**
+   * Route this pedido (master plan step 15): `escolher` first asks the host's
+   * picker, and a cancel routes nothing. The answer is toasted with its copy;
+   * a route the backend wrote or found is registered with the host, so the next
+   * hover shows the target's action whatever the list transport delivers.
+   */
+  async function rotear(escolher: boolean) {
+    if (!frete) return;
+    let escolha: string | null = null;
+    if (escolher) {
+      const preselecionado = await transportadoraPreSelecionada();
+      escolha = await acao.escolherTransportadora({
+        pedidoRotulo: pedido.numero?.trim() ? pedido.numero : null,
+        alvos: alvosLi,
+        preselecionado,
+      });
+      if (escolha === null) return;
+    }
+    const resultado = await rotearEtiquetaLi(lojaIntegradaClient, pedidoId, escolha);
+    if (resultado.tipo === 'erro') {
+      showErrorNotification({ title: 'Transportadora', message: resultado.mensagem });
+      return;
+    }
+    if (resultado.tipo === 'recusado') {
+      showCopyableNotification({
+        title: 'Transportadora',
+        message: resultado.mensagem,
+        color: 'yellow',
+      });
+      return;
+    }
+    // The routing fields exactly as answered — a `null` option included: this
+    // freight still names the Loja Integrada doc, so its option belongs to
+    // that ref and never to the target (`aplicarRotaLi`).
+    acao.registrarRota(pedidoId, {
+      refAnterior: frete.integracaoFreteOuterRef,
+      rota: resultado.rota,
+    });
+    showCopyableNotification({
+      title: 'Transportadora',
+      message: resultado.mensagem,
+      color: 'green',
+    });
+  }
+
   if (action === 'none') return null;
   if (action === 'unsupported') {
+    // A pickup or recipient-paid carrier (`labelMode 'none'`) is not unsupported:
+    // its label is the checkout's generic one. A row that shows it at all — a
+    // pedido routed here from the Loja Integrada doc while the list copy still
+    // names that doc — says so, instead of contradicting the routing toast.
     return (
       <Text size="xs" c="dimmed">
-        Emissão de etiqueta para esta transportadora ainda não suportada.
+        {tipo != null && freightCapsFor(tipo).labelMode === 'none'
+          ? 'A etiqueta deste frete é impressa no checkout.'
+          : 'Emissão de etiqueta para esta transportadora ainda não suportada.'}
       </Text>
     );
   }
@@ -262,6 +411,46 @@ export function EtiquetaRowAction({ pedido, pedidoId }: { pedido: Pedido; pedido
       <Text size="xs" c="dimmed">
         Cote e selecione um frete no pedido para comprar a etiqueta.
       </Text>
+    );
+  }
+
+  if (action === 'rotear') {
+    // FAIL CLOSED, like the fetch buttons: without the backend client there is
+    // no route to ask, so neither button is live. The picker also waits for
+    // its targets, and stays off when they could not be read — an empty list
+    // would otherwise read as "no carrier exists".
+    const semCliente = lojaIntegradaClient === null;
+    return (
+      <Stack gap="xs">
+        {dialogosLocais}
+        <Text size="xs" c="dimmed">
+          Pedido da Loja Integrada sem transportadora definida.
+        </Text>
+        <Button
+          size="xs"
+          leftSection={<IconRoute size={14} />}
+          onClick={() => iniciar('rotear', () => rotear(false))}
+          loading={emAndamento === 'rotear'}
+          disabled={semCliente || emAndamento !== null}
+        >
+          Definir transportadora
+        </Button>
+        <Button
+          size="xs"
+          variant="light"
+          leftSection={<IconListDetails size={14} />}
+          onClick={() => iniciar('escolher-transportadora', () => rotear(true))}
+          loading={emAndamento === 'escolher-transportadora'}
+          disabled={semCliente || carregandoAlvosLi || erroAlvosLi !== null || emAndamento !== null}
+        >
+          Escolher transportadora…
+        </Button>
+        {erroAlvosLi !== null && (
+          <Text size="xs" c="red">
+            Não foi possível carregar as transportadoras. Recarregue a página para escolher uma.
+          </Text>
+        )}
+      </Stack>
     );
   }
 
@@ -365,9 +554,19 @@ export function EtiquetaRowAction({ pedido, pedidoId }: { pedido: Pedido; pedido
     );
   }
 
-  // Gate the print behind the direction-mismatch confirm when needed.
+  // Gate the print behind the direction-mismatch confirm when needed, then the
+  // Loja Integrada soft gate: this reprint calls the freight client directly,
+  // so it never passes through the provider that would otherwise ask.
   async function onImprimir() {
     if (!(await confirmMismatch())) return;
+    const conferencia = await conferirAntesDeImprimirLi({
+      client: lojaIntegradaClient,
+      pedidoId,
+      pedido,
+      ui: perguntasDeRisco,
+      ato: 'reimpressao',
+    });
+    if (conferencia === 'cancelado') return;
     await run('imprimir');
   }
 

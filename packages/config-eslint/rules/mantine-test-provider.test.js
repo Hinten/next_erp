@@ -34,7 +34,7 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '
 
 /**
  * Only `*.test.ts(x)`. Scoping by FILENAME is what keeps this guard off
- * `apps/web/app/(app)/produtos/_components/mercado-livre/MercadoLivreTab.tsx` — a
+ * `apps/web/app/(app)/produtos/_components/marketplace/ContaTabs.tsx` — a
  * PRODUCTION module whose JSDoc quotes the literal string `MantineProvider
  * env="test"` while explaining what the prop does to `<Activity>`, and which the
  * grep published in #1150 would have flagged — and off the two `mantine.tsx`
@@ -80,7 +80,7 @@ const UI_PROBE = 'packages/ui/src/testing/mantine-transitions.test.tsx';
  *   at all, so both halves of that assertion would pass vacuously. Every OTHER
  *   ObjectView test keeps the helper.
  * - `ContaTabs.persistence.test.tsx`: same mechanism, other direction. The
- *   Mercado Livre account tabs opt OUT of `<Activity>` with
+ *   marketplace account tabs (ML and Shopee) opt OUT of `<Activity>` with
  *   `keepMountedMode="display-none"`, because an off-screen account whose
  *   effects unmount silently drops its listings from the editor's flush
  *   registry. Under `env="test"` the two modes are indistinguishable, so the
@@ -96,7 +96,7 @@ const ALLOWED_BARE_PROVIDER = new Set([
   UI_PROBE,
   'packages/ui/src/object/SectionTabs.persistence.test.tsx',
   'packages/ui/src/object/ObjectView.sections.activity.test.tsx',
-  'apps/web/app/(app)/produtos/_components/mercado-livre/ContaTabs.persistence.test.tsx',
+  'apps/web/app/(app)/produtos/_components/marketplace/ContaTabs.persistence.test.tsx',
 ]);
 
 /**

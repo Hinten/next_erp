@@ -64,7 +64,12 @@ beforeEach(() => {
   h.verifyCaller.mockResolvedValue({ uid: 'u1' });
   h.loadCtx.mockResolvedValue({
     conta: { nome: 'Loja' },
-    resolveChannelContext: () => Promise.resolve({ accessToken: 'tok' }),
+    resolveChannelContext: () =>
+      Promise.resolve({
+        accessToken: 'tok',
+        getAccessToken: async () => 'tok',
+        invalidateAccessToken: vi.fn(),
+      }),
   });
   h.createApi.mockReturnValue({ updateItem: vi.fn() });
   h.definirStatusAnunciosManual.mockResolvedValue(RESPOSTA_VAZIA);

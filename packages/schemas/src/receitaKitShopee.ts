@@ -517,6 +517,78 @@ export function problemasDeEstruturaDoKit(a: {
   return problemas;
 }
 
+/** The structural verdicts that need no Shopee address and no served band (step 21). */
+export type MotivoEstruturaLocalKit = Exclude<MotivoEstruturaKit, 'componentes-fora-da-faixa'>;
+
+/**
+ * The 4 LOCAL structural verdicts of {@link problemasDeEstruturaDoKit} over the
+ * ERP recipe, before any Shopee address exists — the produto's Shopee tab
+ * previews them (step 21, #1529) while the kit is still being composed.
+ *
+ * IMPLEMENTED AS A COMPOSITION, never a re-implementation: {@link componentesShopeeDoKit}
+ * with a synthetic resolution — every DISTINCT ERP component produtoId, in
+ * first-seen order across the units, resolves to its own address
+ * `{ itemId: i + 1, modelId: null }` — then {@link problemasDeEstruturaDoKit}
+ * with `faixaDeComponentes: null`. One unit = one kit model: a family kit passes
+ * one unit per child, a kit without variations ONE unit.
+ *
+ * Why the synthetic answer equals the one a real resolution would give, verdict
+ * by verdict (pinned in `receitaKitShopee.test.ts`):
+ * - a real resolution can only MERGE components (two ERP keys onto one Shopee
+ *   address), never split one — so it yields FEWER rows with LARGER sums;
+ * - `kit-componente-unico-quantidade` fires on 1 synthetic row ⇔ 1 real row of
+ *   the same sum, and with ≥ 2 synthetic rows it fires on neither: a merge of
+ *   ≥ 2 rows of positive quantities sums to ≥ 2;
+ * - `kit-sem-unidade-vendavel` (no unit), `kit-variacoes-demais` (more than
+ *   {@link SHOPEE_KIT_MAX_MODELOS} units) and `kit-sem-componentes` (an empty
+ *   recipe) never look at an address.
+ * The band (`componentes-fora-da-faixa`) is excluded: it needs Shopee's served
+ * limits, so it is never answered here. ⚠️ The one edge where the two differ is
+ * a NON-positive quantity (legacy rows only; `kitSchema` is `int().min(1)`): two
+ * ERP rows `1 + 0` stay two synthetic rows and warn nothing, while a real merge
+ * onto one address would read one row of 1. It under-warns, never over-warns.
+ *
+ * WARNINGS ONLY — never a reason to disable a button: the publish re-decides
+ * every one of them against the real addresses.
+ */
+export function problemasDeEstruturaDaReceitaErp(
+  unidades: readonly {
+    readonly filhoId: string;
+    readonly componentesKit: Readonly<
+      Record<string, { readonly quantidade: number; readonly limitarEstoque?: boolean }>
+    > | null;
+  }[],
+): readonly {
+  readonly motivo: MotivoEstruturaLocalKit;
+  readonly filhoId: string | null;
+  readonly detalhe: string;
+}[] {
+  const resolucao = new Map<string, ResolucaoComponenteKit>();
+  for (const unidade of unidades) {
+    for (const produtoId of Object.keys(unidade.componentesKit ?? {})) {
+      if (resolucao.has(produtoId)) continue;
+      resolucao.set(produtoId, {
+        ok: true,
+        endereco: { itemId: resolucao.size + 1, modelId: null },
+      });
+    }
+  }
+  const problemas = problemasDeEstruturaDoKit({
+    modelos: unidades.map((u) => ({
+      filhoId: u.filhoId,
+      linhas: componentesShopeeDoKit(u.componentesKit, resolucao).linhas,
+    })),
+    faixaDeComponentes: null,
+  });
+  const locais: { motivo: MotivoEstruturaLocalKit; filhoId: string | null; detalhe: string }[] = [];
+  for (const p of problemas) {
+    // Unreachable with `faixaDeComponentes: null`; the narrow is for the type.
+    if (p.motivo === 'componentes-fora-da-faixa') continue;
+    locais.push({ motivo: p.motivo, filhoId: p.filhoId, detalhe: p.detalhe });
+  }
+  return locais;
+}
+
 /* -------------------------------------------------------------------------- */
 /*                                 The L4 aviso                               */
 /* -------------------------------------------------------------------------- */

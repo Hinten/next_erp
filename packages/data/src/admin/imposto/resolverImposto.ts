@@ -37,6 +37,7 @@
  * inputs change.
  */
 import {
+  idFromRefOrNull,
   impostoSchema,
   normalizeNCM,
   type Imposto,
@@ -179,12 +180,7 @@ export function createImpostoResolver(deps: ImpostoResolverDeps): ImpostoResolve
     // categoria) over the produto doc's own NCM — Flutter parity.
     const ncm = candidateNcm ?? normalizeNCM(parseNCM(produto));
     for (const regra of deps.bundle.regrasImposto) {
-      const matches =
-        regra.produtos.some((p) => trailingSegment(p) === produtoUid) ||
-        (categoriaUid != null &&
-          regra.categorias.some((c) => trailingSegment(c) === categoriaUid)) ||
-        (ncm != null && regra.ncms.some((n) => normalizeNCM(n) === ncm));
-      if (!matches) continue;
+      if (!regraImpostoCasaComProduto(regra, { produtoUid, categoriaUid, ncm })) continue;
       // Legacy `regras` docs carry an UPPERCASE `CFOP` — fold it into the
       // engine's lowercase `cfop` (a lowercase value, when present, wins).
       const parsed = impostoSchema.safeParse({ ...regra, cfop: regra.cfop ?? regra.CFOP });
@@ -228,6 +224,40 @@ export function createImpostoResolver(deps: ImpostoResolverDeps): ImpostoResolve
   return { resolve: resolveImpl };
 }
 
+/** What tier 4 matches a `regraImposto` against. */
+export interface AlvoRegraImposto {
+  /** The produto doc id. */
+  readonly produtoUid: string;
+  /** The produto's categoria id ({@link parseCategoriaUid}), or `null`: no category arm. */
+  readonly categoriaUid: string | null;
+  /** The NCM compared, already digits-only (`normalizeNCM`), or `null`: no NCM arm. */
+  readonly ncm: string | null;
+}
+
+/**
+ * Tier 4's MATCH: does this `regraImposto` name the produto, its category or its NCM? The three
+ * arrays are OR-ed. A `produtos`/`categorias` entry names its id by trailing path segment, so a
+ * bare `p1`, `produtos/p1` and `documents/produtos/p1` all name `p1`, while `p1/x` names `x`,
+ * never `p1` (#398); an NCM entry is compared digits-only, so a formatted `6109.10.00` names
+ * `61091000`.
+ *
+ * Only the match: whether the matched rule then RESOLVES (it must parse as an engine `Imposto`)
+ * is the cascade's business. Pure and total. Exported so a caller that asks "does a tax rule
+ * cover this produto?" (the Loja Integrada import's tax-review re-check) answers with the
+ * resolver's own rule, never a copy.
+ */
+export function regraImpostoCasaComProduto(
+  regra: Pick<RegraImposto, 'produtos' | 'categorias' | 'ncms'>,
+  alvo: AlvoRegraImposto,
+): boolean {
+  const { produtoUid, categoriaUid, ncm } = alvo;
+  return (
+    regra.produtos.some((p) => idFromRefOrNull(p) === produtoUid) ||
+    (categoriaUid != null && regra.categorias.some((c) => idFromRefOrNull(c) === categoriaUid)) ||
+    (ncm != null && regra.ncms.some((n) => normalizeNCM(n) === ncm))
+  );
+}
+
 /**
  * Pick the imposto whose scope matches the active operação.
  *
@@ -249,23 +279,9 @@ function pickByOperacao<T>(
   const exact = docs.find((d) => {
     const ref = scopeOf(d);
     if (ref == null) return false;
-    return trailingSegment(ref) === operacaoId;
+    return idFromRefOrNull(ref) === operacaoId;
   });
   return exact ?? docs.find((d) => scopeOf(d) == null);
-}
-
-/**
- * Last non-empty segment of a path-or-id — `documents/produtos/p1`,
- * `produtos/p1` and `p1` all yield `p1`. The legacy Flutter writers stored
- * ids in all three shapes (#398), so every id comparison in the cascade
- * goes through here.
- */
-function trailingSegment(pathOrId: string): string | null {
-  const seg = pathOrId
-    .replace(/^\/+|\/+$/g, '')
-    .split('/')
-    .pop();
-  return seg != null && seg.length > 0 ? seg : null;
 }
 
 /** First zod issue as a `path message` fragment for single-line logs. */
@@ -285,15 +301,23 @@ function readNCM(blob: unknown): string | null {
   return null;
 }
 
-function parseCategoriaUid(produto: Record<string, unknown> | null): string | null {
+/**
+ * The categoria id a produto doc names in `categoriaProdutoOuterRef`, or `null`: the id tier 3
+ * reads `categorias/{id}/imposto` under and tier 4 matches against a rule's `categorias`.
+ * Accepts a bare id, either path form (trailing segment) and a legacy `{ path }` object.
+ *
+ * Exported so a caller that asks "does a tax rule cover this produto's category?" reads the
+ * category exactly as the resolver does, never through a second copy.
+ */
+export function parseCategoriaUid(produto: Record<string, unknown> | null): string | null {
   if (!produto) return null;
   const ref = produto.categoriaProdutoOuterRef;
   if (typeof ref === 'string') {
-    return ref.split('/').pop() ?? null;
+    return idFromRefOrNull(ref);
   }
   if (ref && typeof ref === 'object' && 'path' in ref) {
     const p = (ref as { path?: unknown }).path;
-    return typeof p === 'string' ? (p.split('/').pop() ?? null) : null;
+    return idFromRefOrNull(p);
   }
   return null;
 }

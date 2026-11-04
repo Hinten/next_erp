@@ -1,0 +1,223 @@
+{
+  "versao": 1,
+  "perfil": "fixture",
+  "credencial": "personal-token",
+  "capturadoEm": "2026-10-28",
+  "requisicao": {
+    "metodo": "GET",
+    "caminho": "/v1/grades/881691653/",
+    "query": []
+  },
+  "resposta": {
+    "status": 200,
+    "politica": "catalogo",
+    "forma": "json",
+    "bytes": 3930,
+    "corpo": {
+      "id": 881691653,
+      "id_externo": null,
+      "nome": "REDACTED",
+      "nome_visivel": "REDACTED",
+      "specification_id": null,
+      "resource_uri": "/api/v1/grades/881691653",
+      "variacoes": [
+        {
+          "grade": "/api/v1/grades/881691653",
+          "id": 774824833,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/grade/881691653/variacao/774824833"
+        },
+        {
+          "grade": "/api/v1/grades/881691653",
+          "id": 825602740,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/grade/881691653/variacao/825602740"
+        },
+        {
+          "grade": "/api/v1/grades/881691653",
+          "id": 477785166,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/grade/881691653/variacao/477785166"
+        },
+        {
+          "grade": "/api/v1/grades/881691653",
+          "id": 467206971,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/grade/881691653/variacao/467206971"
+        },
+        {
+          "grade": "/api/v1/grades/881691653",
+          "id": 612595717,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/grade/881691653/variacao/612595717"
+        },
+        {
+          "grade": "/api/v1/grades/881691653",
+          "id": 510989572,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/grade/881691653/variacao/510989572"
+        },
+        {
+          "grade": "/api/v1/grades/881691653",
+          "id": 138504414,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/grade/881691653/variacao/138504414"
+        },
+        {
+          "grade": "/api/v1/grades/881691653",
+          "id": 161526509,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/grade/881691653/variacao/161526509"
+        },
+        {
+          "grade": "/api/v1/grades/881691653",
+          "id": 947690358,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/grade/881691653/variacao/947690358"
+        },
+        {
+          "grade": "/api/v1/grades/881691653",
+          "id": 952663777,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/grade/881691653/variacao/952663777"
+        },
+        {
+          "grade": "/api/v1/grades/881691653",
+          "id": 365827108,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/grade/881691653/variacao/365827108"
+        },
+        {
+          "grade": "/api/v1/grades/881691653",
+          "id": 285213956,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/grade/881691653/variacao/285213956"
+        },
+        {
+          "grade": "/api/v1/grades/881691653",
+          "id": 845840655,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/grade/881691653/variacao/845840655"
+        },
+        {
+          "grade": "/api/v1/grades/881691653",
+          "id": 679988646,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/grade/881691653/variacao/679988646"
+        },
+        {
+          "grade": "/api/v1/grades/881691653",
+          "id": 803650675,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/grade/881691653/variacao/803650675"
+        },
+        {
+          "grade": "/api/v1/grades/881691653",
+          "id": 794610787,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/grade/881691653/variacao/794610787"
+        },
+        {
+          "grade": "/api/v1/grades/881691653",
+          "id": 241603883,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/grade/881691653/variacao/241603883"
+        },
+        {
+          "grade": "/api/v1/grades/881691653",
+          "id": 376943573,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/grade/881691653/variacao/376943573"
+        },
+        {
+          "grade": "/api/v1/grades/881691653",
+          "id": 199412806,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/grade/881691653/variacao/199412806"
+        },
+        {
+          "grade": "/api/v1/grades/881691653",
+          "id": 481023639,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/grade/881691653/variacao/481023639"
+        },
+        {
+          "grade": "/api/v1/grades/881691653",
+          "id": 176903072,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/grade/881691653/variacao/176903072"
+        },
+        {
+          "grade": "/api/v1/grades/881691653",
+          "id": 408390542,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/grade/881691653/variacao/408390542"
+        },
+        {
+          "grade": "/api/v1/grades/881691653",
+          "id": 175785183,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/grade/881691653/variacao/175785183"
+        },
+        {
+          "grade": "/api/v1/grades/881691653",
+          "id": 512823968,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/grade/881691653/variacao/512823968"
+        },
+        {
+          "grade": "/api/v1/grades/881691653",
+          "id": 503816021,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/grade/881691653/variacao/503816021"
+        },
+        {
+          "grade": "/api/v1/grades/881691653",
+          "id": 941754754,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/grade/881691653/variacao/941754754"
+        },
+        {
+          "grade": "/api/v1/grades/881691653",
+          "id": 829432202,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/grade/881691653/variacao/829432202"
+        },
+        {
+          "grade": "/api/v1/grades/881691653",
+          "id": 100518193,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/grade/881691653/variacao/100518193"
+        }
+      ]
+    }
+  }
+}

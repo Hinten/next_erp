@@ -12,9 +12,17 @@
  * Cloud-Functions-graph module importing the cascade must not drag the
  * notifications, cache, pipelines and reconcile modules in behind it. The
  * `@delfrance/data/admin` barrel does not re-export any of this.
+ *
+ * Tier 4's match (`regraImpostoCasaComProduto`) and the produto's category
+ * reader (`parseCategoriaUid`) are exported on their own as well: the Loja
+ * Integrada product import re-checks whether a tax rule covers a produto it
+ * created or re-categorised, and must answer with the cascade's own rule.
  */
 export {
   createImpostoResolver,
+  parseCategoriaUid,
+  regraImpostoCasaComProduto,
+  type AlvoRegraImposto,
   type ImpostoResolver,
   type ImpostoResolverDeps,
   type ResolverBundle,

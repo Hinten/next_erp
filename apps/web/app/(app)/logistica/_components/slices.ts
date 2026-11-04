@@ -7,14 +7,16 @@ import { INTEGRACAO_FRETE } from '@delfrance/schemas';
  * `integracao`). Each slice pins its `tipo` on create and scopes the list
  * query; the form differences are just which schema fields are shown.
  *
- * `mapa` (marketplace → internal routing) is excluded everywhere — it has no
- * UI yet (marketplace freight is read-only for now); existing values survive
- * untouched because ObjectView only writes dirty fields.
+ * `mapa` (marketplace → internal routing) is excluded everywhere — it is
+ * edited on the Loja Integrada conta screen (`/canais/loja-integrada/[id]`,
+ * "Mapeamento do Frete", #1826), never here; existing values survive untouched
+ * because ObjectView only writes dirty fields.
  *
- * `contaMercadoLivreMercadoEnviosOuterRef`, `contaShopeeFreteOuterRef` and
- * `contaLojaIntegradaEnviosOuterRef` are excluded for a different reason: each is
- * **server-owned** (its channel's `onIntegracao…Changed` trigger keeps the freight
- * doc in sync with its conta — #782, #1528, #1826) and only ever set on its
+ * `contaMercadoLivreMercadoEnviosOuterRef`, `contaShopeeFreteOuterRef`,
+ * `contaLojaIntegradaEnviosOuterRef` and `contaAmazonContaFreteAmazonOuterRef` are
+ * excluded for a different reason: each is **server-owned** (its channel's
+ * `onIntegracao…Changed` trigger keeps the freight doc in sync with its conta —
+ * #782, #1528, #1826, #1930) and only ever set on its
  * marketplace `tipo`, which has no slice here at all. Since `intFreteSchema` is shared by all four slices and this
  * filter is an EXCLUDE-list, leaving one out would render it as an editable
  * text input on every screen below — `slices.test.ts` pins every back-ref
@@ -44,6 +46,7 @@ export const SHARED_EXCLUDED = [
   'contaMercadoLivreMercadoEnviosOuterRef',
   'contaShopeeFreteOuterRef',
   'contaLojaIntegradaEnviosOuterRef',
+  'contaAmazonContaFreteAmazonOuterRef',
 ] as const;
 
 /** Tab names — `intFreteFields` assigns the special editors to them; every

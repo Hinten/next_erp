@@ -360,7 +360,8 @@ export function KitManager({
   const ehKit = ehKitProp ?? form?.watch('ehKit') === true;
 
   /**
-   * One-way "this tab has been opened" latch, same shape as `MercadoLivreTab`.
+   * One-way "this tab has been opened" latch, same shape as the one the ML and
+   * Shopee tabs share in `marketplace/AbaDeCanal.tsx`.
    *
    * The Kit section is persistent — `KitVariacoesManager` owns a flush the edit
    * page calls in `onAfterSave`, and `<Activity mode="hidden">` would tear that

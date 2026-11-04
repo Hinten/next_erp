@@ -9,7 +9,8 @@ description: >-
   createCachedDocReader, READ_CACHE_TTL, cacheKeyOf / queryCacheKey, isFresh,
   DATA_READ_CACHE_DISABLED, __resetAllReadCaches, readCacheStatsSnapshot — and
   the three reads that must NEVER be cached (transactional tx.get, read-modify-
-  write, OAuth tokens). Triggers on work in the channel context loaders
+  write, OAuth refresh credentials), plus the narrow access-token-only exception.
+  Triggers on work in the channel context loaders
   (loadMercadoLivreContext, loadWhatsappContext, loadMelhorEnvioContext,
   loadMercadoPagoContext, resolveIntegracaoByUserId) and on any "this document
   never changes, why are we reading it every time" question.
@@ -51,14 +52,22 @@ These are hard exclusions, not guidelines. Each has a live instance in this repo
    `lastUpdateTime` precondition on the follow-up write (ADR 0011 tier 1), and a
    cached read would carry a stale `updateTime` that fails that guard forever.
 
-3. **OAuth credentials / tokens.** `apps/mercado-livre/lib/marketplace/core/tokenStore.ts`
-   picks the newest valid token by query, and all three of its reads are load-bearing
-   *because* they are fresh: the re-check honours a refresh that landed mid-flight,
-   and the loser fallback exists to observe a write another process — a
-   concurrent function instance, a Cloud Tasks retry — made microseconds
-   earlier. ML refresh tokens are
-   single-use and rotate, so a cached read resurrects a rotated-out token and turns a
-   survivable race into a hard `invalid_grant`.
+3. **OAuth refresh credentials and refresh-decision queries.** Mercado Livre refresh
+   tokens rotate: the newest-token query, the pre-refresh re-check and the loser
+   fallback in `apps/mercado-livre/lib/marketplace/core/tokenStore.ts` must remain
+   fresh Firestore reads. A stale refresh credential turns a survivable race into
+   `invalid_grant`.
+
+   **Access-token-only exception:** cache only the usable access token and its
+   absolute expiry, never the refresh token or the token document. Use
+   `READ_CACHE_TTL.volatile` (60 s) to bound cross-instance staleness, validate
+   expiry with the existing safety margin on every use, and invalidate an expired
+   token before loading/refreshing through the fresh store. On provider rejection,
+   invalidate only the exact rejected access token via `invalidate(key, predicate)`:
+   a late response must preserve a newer settled token or pending replacement.
+   Keep local refresh single-flight and every cross-instance refresh recovery read.
+   Never cache failures or absence. No cached access-token result may supply
+   credentials or replace a read used to decide a refresh.
 
 Then the positive test: **is this read repeated, and is it read-only?** "Repeated"
 means repeated *within one warm instance's TTL window* — a once-a-day sweep gains
@@ -246,7 +255,8 @@ The TTL boundary is **exclusive**: at exactly `expiresAt` the entry is expired.
 
 ## 9. Adoption checklist
 
-- [ ] Not a transactional read, not read-modify-write, not a token (§1).
+- [ ] Not a transactional read, not read-modify-write, not refresh credentials or a
+      refresh-decision query; access-token caching meets the narrow exception (§1).
 - [ ] The repeat is named: which loop, sweep or fan-out re-reads this?
 - [ ] `ttlMs` is a `READ_CACHE_TTL` tier, or a literal with a comment saying why.
 - [ ] `negativeTtlMs: 0` if an absent value drives an irreversible decision (§3).

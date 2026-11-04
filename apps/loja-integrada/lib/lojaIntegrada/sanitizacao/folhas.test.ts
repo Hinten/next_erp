@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { type ValorJsonLi, redigirCorpo } from '../core/redacao';
+import { type ValorJsonLi, redigirCorpo, tabelaDoCaminho } from '../core/redacao';
 import { criarListaDeNomes } from '../fixtures/piiScan';
+import { chaveDeTeste } from '../testing/chaveDeFixtures';
 import { formatarFolhas, tabelaDeFolhas } from './folhas';
+import { PseudonimosLi, pseudonimizarCorpoLi } from './pseudonimo';
 
 const LISTA = criarListaDeNomes(['Loja Exemplo']);
 
@@ -86,5 +88,72 @@ describe('tabelaDeFolhas', () => {
     // Anti-vacuity: the kept values WERE kept — the table just never prints them.
     expect(texto).toContain('objects.*.numero : number → mantido (1)');
     expect(texto).toContain('objects.*.itens.*.sku : string → mantido (1)');
+  });
+});
+
+describe('tabelaDeFolhas — the pseudonymized catalogue ids', () => {
+  const CATEGORIAS = {
+    meta: { limit: 50, offset: 0, total_count: 2, previous: null, next: null },
+    objects: [
+      { id: 41, nome: 'Camisetas', categoria_pai: null, resource_uri: '/v1/categoria/41' },
+      {
+        id: 42,
+        nome: 'Regatas',
+        categoria_pai: '/v1/categoria/41',
+        resource_uri: '/v1/categoria/42',
+      },
+    ],
+  };
+
+  /** The profile's output (`antes`), then the pseudonym mapping over it (`depois`). */
+  function mapear(caminho: string, corpo: unknown) {
+    const antes = sanitizar(caminho, corpo);
+    const depois = pseudonimizarCorpoLi(
+      corpo,
+      antes,
+      tabelaDoCaminho(caminho),
+      new PseudonimosLi(chaveDeTeste()),
+    );
+    return { antes, depois };
+  }
+
+  const tabelaPseudonimizada = (caminho: string, corpo: unknown) => {
+    const { antes, depois } = mapear(caminho, corpo);
+    return formatarFolhas(tabelaDeFolhas(corpo, depois, LISTA, antes));
+  };
+
+  it('a leaf changed only by the mapping reads `pseudonimizado`; the others keep their treatment', () => {
+    expect(tabelaPseudonimizada('/v1/categoria/', CATEGORIAS)).toEqual([
+      'meta.limit : number → mantido (1)',
+      'meta.offset : number → mantido (1)',
+      'meta.total_count : number → mantido (1)',
+      'meta.previous : null → mantido (1)',
+      'meta.next : null → mantido (1)',
+      'objects.*.id : number → pseudonimizado (2)',
+      'objects.*.nome : string → falsificado (2)',
+      'objects.*.categoria_pai : null → mantido (1)',
+      'objects.*.resource_uri : string → pseudonimizado (2)',
+      'objects.*.categoria_pai : string → pseudonimizado (1)',
+    ]);
+  });
+
+  it('NEAR-MISS: without the profile output beside it, a mapped leaf reads as a fake', () => {
+    const { depois } = mapear('/v1/categoria/', CATEGORIAS);
+    const linhas = formatarFolhas(tabelaDeFolhas(CATEGORIAS, depois, LISTA));
+    expect(linhas).toContain('objects.*.id : number → falsificado (2)');
+    expect(linhas.join('\n')).not.toContain('pseudonimizado');
+  });
+
+  it('NEAR-MISS: a leaf the profile faked stays `falsificado`', () => {
+    const corpo = { objects: [{ id: 7.5, resource_uri: 'https://x.invalid/v1/categoria/7' }] };
+    expect(tabelaPseudonimizada('/v1/categoria/', corpo)).toEqual([
+      'objects.*.id : number → falsificado (1)',
+      'objects.*.resource_uri : string → falsificado (1)',
+    ]);
+  });
+
+  it('SENTINEL: neither a real id nor its pseudonym is printed', () => {
+    const texto = tabelaPseudonimizada('/v1/categoria/', CATEGORIAS).join('\n');
+    expect(texto).not.toMatch(/\d{2,}/);
   });
 });

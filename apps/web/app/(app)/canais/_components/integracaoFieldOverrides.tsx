@@ -1,11 +1,14 @@
 'use client';
 
-import type { FieldConfig } from '@delfrance/ui';
+import { TextInput } from '@mantine/core';
+import { validateCNPJ } from '@delfrance/core/documents';
+import type { FieldConfig, FieldRenderProps, ValidationIssue } from '@delfrance/ui';
 import { depositoCollection } from '@/lib/data/depositoCollection';
 import { listaDePrecosCollection } from '@/lib/data/listaDePrecosCollection';
 import { operacaoCollection } from '@/lib/data/operacaoCollection';
 import { refRenderInput } from '@/components/collection-select/refRenderInput';
 import { filialRefRenderInput } from '@/components/pickers/FilialPicker';
+import { CnpjInput } from '@/components/inputs/CnpjInput';
 import { CorInput } from '@/components/inputs/CorInput';
 
 /**
@@ -160,10 +163,171 @@ export const CAMPOS_POR_CANAL = {
 export type CanalComCampos = keyof typeof CAMPOS_POR_CANAL;
 
 /**
- * Never user-pickable on any channel form:
+ * The NF-e intermediador pair: the `<infIntermed>` `CNPJ` and `idCadIntTran`
+ * that `buildInfIntermed` (`apps/nfe`) reads off the conta, and throws without,
+ * whenever the operação flags `indIntermed = '1'`. Both sit in
+ * `integracaoCamposDeSistema` — hidden by default — and a channel form opts in
+ * to them with `integracaoExcludedFields(…, …, { intermediador: true })`.
+ */
+export const CAMPOS_INTERMEDIADOR = ['cpf_cnpj', 'idCadIntTran'] as const;
+
+/** `integracaoSchema.idCadIntTran` is `max(60)`; the input stops typing there. */
+export const MAX_ID_CAD_INT_TRAN = 60;
+
+/**
+ * The NF-e XSD types `idCadIntTran` as `TString` with `minLength 2`
+ * (`leiauteNFe_v4.00.xsd`); `integracaoSchema` carries no minimum, so the
+ * form's `validarIntermediador` holds it.
+ */
+export const MIN_ID_CAD_INT_TRAN = 2;
+
+/**
+ * The XSD's `TString` pattern, verbatim (`tiposBasico_v4.00.xsd`:
+ * `[!-ÿ]{1}[ -ÿ]{0,}[!-ÿ]{1}|[!-ÿ]{1}`): U+0021–U+00FF at both edges and
+ * U+0020–U+00FF inside. Latin-1 letters (`ç`, `ã`) pass; an en dash, a curly
+ * quote, an emoji or a control character does not, and `buildInfIntermed`
+ * copies the stored value into `<idCadIntTran>` unchanged — so without this
+ * check such a value saves cleanly and fails the pre-send XSD gate. Matched on
+ * UTF-16 code units (no `u` flag): an emoji's surrogate halves are above
+ * U+00FF, so it is refused too.
+ */
+export const PADRAO_TSTRING = /^(?:[!-ÿ][ -ÿ]*[!-ÿ]|[!-ÿ])$/;
+
+/**
+ * Plain text input for `idCadIntTran`, capped at `MAX_ID_CAD_INT_TRAN`. The
+ * default `ObjectView` string input has no length cap, so a 61st character
+ * would only surface as a validation error on save; here it is never typed.
+ *
+ * Keystrokes pass through untouched — trimming on every keystroke would eat
+ * the space an operator is typing between two words. The edges are trimmed on
+ * SAVE instead, by `aparaIdCadIntTran`.
+ */
+function IdCadIntTranInput({
+  value,
+  onChange,
+  onBlur,
+  error,
+  label,
+  hint,
+  disabled,
+}: FieldRenderProps) {
+  return (
+    <TextInput
+      label={label}
+      description={hint}
+      value={(value as string | null | undefined) ?? ''}
+      onChange={(e) => onChange(e.currentTarget.value)}
+      onBlur={onBlur}
+      error={error}
+      disabled={disabled}
+      maxLength={MAX_ID_CAD_INT_TRAN}
+    />
+  );
+}
+
+/**
+ * `prepareForSave` for `idCadIntTran`: trims the edges, and a value that is
+ * blank once trimmed is saved as `null`, never `''`.
+ *
+ * ⚠️ Not tidiness. The XSD's `TString` pattern refuses leading and trailing
+ * whitespace, and the NF-e serializer copies the value verbatim, so an
+ * identifier pasted with a trailing space would save cleanly here and only
+ * fail at emission, as an XSD error. `ObjectView` applies this before
+ * validation as well as before the write, so `validarIntermediador` sees the
+ * value that will be stored.
+ */
+export function aparaIdCadIntTran(v: unknown): unknown {
+  if (typeof v !== 'string') return v;
+  const aparado = v.trim();
+  return aparado === '' ? null : aparado;
+}
+
+/**
+ * The field config for the intermediador pair, for the channel forms that opt
+ * in to it. A FACTORY like `integracaoFieldsCompartilhados`, for the same
+ * reason: every consumer gets the same `renderInput`, and none can drop it by
+ * spreading an override over it.
+ *
+ * `cpf_cnpj` goes through `CnpjInput`, which stores the cleaned value
+ * (`[0-9A-Z]`, uppercase, at most 14 characters) — the shape
+ * `integracaoSchema.cpf_cnpj`'s regex accepts for an alphanumeric CNPJ.
+ *
+ * ⚠️ A form that opts in must ALSO pass `validarIntermediador` as its
+ * `ObjectView` `validate`: neither the input nor the schema refuses a value
+ * that is not a CNPJ (see there).
+ */
+export function integracaoFieldsIntermediador(): Record<string, FieldConfig> {
+  return {
+    cpf_cnpj: { label: 'CNPJ do intermediador', renderInput: CnpjInput },
+    idCadIntTran: {
+      label: 'Identificador no intermediador',
+      renderInput: IdCadIntTranInput,
+      prepareForSave: aparaIdCadIntTran,
+    },
+  };
+}
+
+/**
+ * The `ObjectView` `validate` for a form that opts in to the intermediador
+ * pair. Both fields stay optional — `buildInfIntermed` requires them only when
+ * the operação flags `indIntermed = '1'` — but a value that IS filled must be
+ * one the NF-e can carry:
+ *
+ * - `cpf_cnpj` must be a valid CNPJ (`validateCNPJ`: 14 characters,
+ *   `[0-9A-Z]{12}` + 2 digits, check digits verified — the alphanumeric CNPJ
+ *   included). Neither guard upstream says so: `integracaoSchema.cpf_cnpj`'s
+ *   regex accepts ANY run of digits (`\d*`), and `CnpjInput` caps the length
+ *   but sets no minimum. So a CNPJ missing one digit, an 11-digit CPF or a
+ *   wrong check digit would all save, and `buildInfIntermed` — which checks
+ *   only that the value is truthy — would hand it to the XSD's `TCnpj` at
+ *   emission.
+ * - `idCadIntTran` must have at least `MIN_ID_CAD_INT_TRAN` characters once
+ *   trimmed, and match the XSD's `TString` (`PADRAO_TSTRING`).
+ *
+ * Form-only on purpose, like `filialFormSchema`'s checksum: the read schema
+ * stays tolerant of whatever a migrated conta carries. The trade-off is the
+ * same one the filial form accepts — a conta that arrives with an invalid
+ * stored CNPJ cannot be saved until the operator corrects it, which is the
+ * moment to find out rather than at emission. Pure: values in, issues out.
+ */
+export function validarIntermediador(values: Record<string, unknown>): ValidationIssue[] {
+  const issues: ValidationIssue[] = [];
+  const cnpj = values.cpf_cnpj;
+  if (typeof cnpj === 'string' && cnpj !== '' && !validateCNPJ(cnpj)) {
+    issues.push({
+      path: 'cpf_cnpj',
+      message: 'CNPJ inválido (14 caracteres; pode conter letras maiúsculas).',
+    });
+  }
+  const id = values.idCadIntTran;
+  if (typeof id === 'string') {
+    const aparado = id.trim();
+    if (aparado !== '' && aparado.length < MIN_ID_CAD_INT_TRAN) {
+      issues.push({
+        path: 'idCadIntTran',
+        message: `O identificador tem no mínimo ${MIN_ID_CAD_INT_TRAN} caracteres.`,
+      });
+    } else if (aparado !== '' && !PADRAO_TSTRING.test(aparado)) {
+      issues.push({
+        path: 'idCadIntTran',
+        message:
+          'O identificador tem um caractere que a NF-e não aceita (travessão, aspas ' +
+          'curvas, emoji ou caractere de controle). Digite-o sem esses caracteres.',
+      });
+    }
+  }
+  return issues;
+}
+
+/**
+ * Never user-pickable on a channel form unless the channel opts in:
  *  - `tipo` is pinned per screen in `defaultValues`.
- *  - `cpf_cnpj`, `idCadIntTran`, `modalidadeFreteImportacao` stay out until the
- *    milestone that consumes them surfaces them.
+ *  - `cpf_cnpj`, `idCadIntTran` (`CAMPOS_INTERMEDIADOR`) stay out unless the
+ *    form passes `{ intermediador: true }` to `integracaoExcludedFields`. Amazon
+ *    is the first consumer (master plan step 21-conta): the migrated conta
+ *    carries both, and its NF-e needs them.
+ *  - `modalidadeFreteImportacao` stays out until the milestone that consumes it
+ *    surfaces it (no channel opts in to it).
  *  - `dataCadastro` / `ultimaModificacao` are stamped by `saveRecord`.
  */
 export const integracaoCamposDeSistema: readonly string[] = [
@@ -175,6 +339,15 @@ export const integracaoCamposDeSistema: readonly string[] = [
   'ultimaModificacao',
 ];
 
+/** Opt-ins on top of the default exclusion list. */
+export interface ExclusaoIntegracaoOpts {
+  /**
+   * Keep `CAMPOS_INTERMEDIADOR` on the form. Only those two: every other
+   * system field, `modalidadeFreteImportacao` included, stays excluded.
+   */
+  readonly intermediador?: boolean;
+}
+
 /**
  * The exclusion list for one channel's form: the system stamps, every OTHER
  * channel's account fields, and whatever `extra` the channel hides of its own
@@ -183,7 +356,8 @@ export const integracaoCamposDeSistema: readonly string[] = [
  * Cloud API verification flow).
  *
  * `dono: null` means "owns no per-channel field" (Balcão), so every channel's
- * fields are excluded.
+ * fields are excluded. `opts.intermediador` keeps the intermediador pair
+ * visible; `extra` is applied last, so it can still hide either of them.
  *
  * The result is de-duplicated; order carries no meaning — `ObjectView` filters
  * with `.includes`.
@@ -191,8 +365,10 @@ export const integracaoCamposDeSistema: readonly string[] = [
 export function integracaoExcludedFields(
   dono: CanalComCampos | null,
   extra: readonly string[] = [],
+  opts: ExclusaoIntegracaoOpts = {},
 ): string[] {
-  const excluidos = new Set<string>(integracaoCamposDeSistema);
+  const visiveis = new Set<string>(opts.intermediador === true ? CAMPOS_INTERMEDIADOR : []);
+  const excluidos = new Set<string>(integracaoCamposDeSistema.filter((c) => !visiveis.has(c)));
   for (const [canal, campos] of Object.entries(CAMPOS_POR_CANAL)) {
     if (canal === dono) continue;
     for (const campo of campos) excluidos.add(campo);

@@ -80,7 +80,10 @@ export const onAnuncioCategoriaAlterada = onDocumentWritten(
         resolverApi: async (integracaoId) => {
           const ctx = await loadMercadoLivreContext(db, integracaoId);
           const channelCtx = await ctx.resolveChannelContext();
-          return createMercadoLivreApi({ getAccessToken: async () => channelCtx.accessToken });
+          return createMercadoLivreApi({
+            getAccessToken: channelCtx.getAccessToken,
+            onAccessTokenRejected: channelCtx.invalidateAccessToken,
+          });
         },
       },
     );

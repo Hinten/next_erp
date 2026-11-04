@@ -19,7 +19,12 @@ import {
 import { FirebaseError } from 'firebase/app';
 import { addDoc, deleteDoc, setDoc } from 'firebase/firestore';
 import { ZodError } from 'zod';
-import { normalizeNCM, problemasDeEmissaoDoImposto, type RegraImposto } from '@delfrance/schemas';
+import {
+  idFromRefOrNull,
+  normalizeNCM,
+  problemasDeEmissaoDoImposto,
+  type RegraImposto,
+} from '@delfrance/schemas';
 import { buildQuery, limit, orderByField } from '@delfrance/data';
 import { useSnapshot } from '@delfrance/data/hooks';
 import { nowMillis } from '@delfrance/core/datetime';
@@ -36,12 +41,6 @@ export interface MacrosTabProps {
   /** Absent in create mode — there is no subcollection yet. */
   operacaoId?: string;
   disabled?: boolean;
-}
-
-/** Bare doc id from a `documents/<col>/<id>` ref (or a plain id). */
-function bareId(ref: unknown): string | null {
-  if (typeof ref !== 'string' || ref.length === 0) return null;
-  return ref.split('/').filter(Boolean).pop() ?? null;
 }
 
 export function MacrosTab({ operacaoId, disabled }: MacrosTabProps) {
@@ -197,7 +196,7 @@ function MacrosManager({ operacaoId, disabled }: { operacaoId: string; disabled?
   }
 
   function addProduto(ref: unknown) {
-    const id = bareId(ref);
+    const id = idFromRefOrNull(ref);
     setProdutoPickerKey((k) => k + 1);
     if (id && !form.produtos.includes(id)) {
       setForm((f) => ({ ...f, produtos: [...f.produtos, id] }));

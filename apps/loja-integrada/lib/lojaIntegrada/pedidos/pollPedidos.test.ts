@@ -114,11 +114,12 @@ interface RespostaLi {
  * Loja Integrada's paging over `paginas`, served by the requested `offset`:
  * `meta.next` in the document's `/api/v1` form, WITHOUT the date filter (the
  * client must re-add it). `total` omitted = the row count; `null` = no
- * `total_count` key at all.
+ * `total_count` key at all; a string is sent as is (the provider's empty `''`,
+ * or a near-miss).
  */
 function paginado(
   paginas: readonly (readonly LinhaLi[])[],
-  opts: { readonly limit?: number; readonly total?: number | null } = {},
+  opts: { readonly limit?: number; readonly total?: number | string | null } = {},
 ): (url: URL) => RespostaLi {
   const limit = opts.limit ?? 15;
   const total = opts.total === undefined ? paginas.flat().length : opts.total;
@@ -290,6 +291,27 @@ describe('the gates: ZERO reads before them', () => {
     contaPronta(h);
 
     const r = await h.tick({ importadorPresente: false });
+
+    expect(r).toEqual({ portao: 'importador-ausente', contas: [] });
+    expect(h.fake.leituras).toEqual([]);
+    expect(h.fake.consultas).toEqual([]);
+    expect(h.fake.escritas).toEqual([]);
+    expect(h.urls).toEqual([]);
+    expect(h.gravador.linhas).toHaveLength(1);
+    expect(h.gravador.linhas[0]).toMatchObject({
+      severidade: 'INFO',
+      campos: { evento: 'poll', conta: null, fluxo: 'poll', desfecho: 'importador-ausente' },
+    });
+  });
+
+  it('BOTH gates closed → the importer gate answers first: its INFO line, never a chamada-bloqueada one', async () => {
+    // The header's order (1, then 2): with no importer the switch is never
+    // consulted, so the tick names the gate that would still stop it once the
+    // window sets the switch.
+    const h = montar();
+    contaPronta(h);
+
+    const r = await h.tick({ importadorPresente: false, ambiente: {} });
 
     expect(r).toEqual({ portao: 'importador-ausente', contas: [] });
     expect(h.fake.leituras).toEqual([]);
@@ -963,6 +985,30 @@ describe('the fail-safes', () => {
 
     expect(r.desfecho).toBe('sucesso');
     expect(h.linhasDoPoll().filter((l) => l.campos.alerta === 'sem-total')).toHaveLength(1);
+  });
+
+  it("an EMPTY total_count ('') is no total: the row is enqueued, the check skipped, the run advances", async () => {
+    const h = montar();
+    contaPronta(h);
+    h.responder = paginado([[linha(1001, '2027-01-15T10:30:00')]], { total: '' });
+
+    const r = await h.umTick();
+
+    expect(r).toMatchObject({ desfecho: 'sucesso', cursorAvancou: true });
+    expect(h.enfileirados).toHaveLength(1);
+    expect(h.linhasDoPoll().filter((l) => l.campos.alerta === 'sem-total')).toHaveLength(1);
+  });
+
+  it("near-miss: a total_count that is not one integer ('abc') is resposta-invalida and keeps the cursor", async () => {
+    const h = montar();
+    contaPronta(h);
+    h.responder = paginado([[linha(1001, '2027-01-15T10:30:00')]], { total: 'abc' });
+
+    const r = await h.umTick();
+
+    expect(r).toMatchObject({ desfecho: 'falha', motivo: 'resposta-invalida' });
+    expect(h.enfileirados).toHaveLength(0);
+    expect(h.poll()).toMatchObject({ cursor: CURSOR, falhasSeguidas: 1 });
   });
 
   it('paginacao-invalida: a next offset that does not advance', async () => {

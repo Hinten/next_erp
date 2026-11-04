@@ -27,6 +27,7 @@ import type { DepsEnvioPreco, LinhaModeloPreco, ResultadoEnvioPreco } from './en
 import {
   CHAVES_DA_LISTAGEM_PRECO,
   CHAVES_DO_ENVELOPE_PRECO,
+  CHAVES_DO_NOME_DA_VARIACAO_PRECO,
   CHAVES_DO_RESUMO_PRECO,
   CHAVES_SEM_ENVIO_PRECO,
   conferirContabilidadeDePreco,
@@ -1246,8 +1247,12 @@ describe('enviarPrecoManualShopee — o envelope', () => {
 
     expect(Object.keys(r).sort()).toEqual([...CHAVES_DO_ENVELOPE_PRECO].sort());
     expect(Object.keys(r.resumo).sort()).toEqual([...CHAVES_DO_RESUMO_PRECO].sort());
-    for (const l of r.listings)
-      expect(Object.keys(l).sort()).toEqual([...CHAVES_DA_LISTAGEM_PRECO].sort());
+    // The run's rows are the WIRE row minus the two keys the ROUTE joins after
+    // it (#1529) — the run reads no child's name.
+    const daRota: readonly string[] = CHAVES_DO_NOME_DA_VARIACAO_PRECO;
+    const doRun = CHAVES_DA_LISTAGEM_PRECO.filter((c) => !daRota.includes(c));
+    expect(doRun).toHaveLength(CHAVES_DA_LISTAGEM_PRECO.length - 2);
+    for (const l of r.listings) expect(Object.keys(l).sort()).toEqual([...doRun].sort());
     expect(Object.keys(r.produtosSemEnvio[0] ?? {}).sort()).toEqual(
       [...CHAVES_SEM_ENVIO_PRECO].sort(),
     );

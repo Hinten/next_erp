@@ -336,8 +336,9 @@ export default function ProdutosPage() {
         // channel screen — see `lib/marketplace/push/README.md`.
         //
         // ⚠️ "Pausar anúncios" is pause-only on purpose. Reactivating lives in
-        // the produto's Mercado Livre tab, where the operator sees the listing
-        // they are putting back on air — see `usePausarAnunciosAction`.
+        // the produto's channel tabs (Mercado Livre, Shopee), where the
+        // operator sees the listing they are putting back on air — see
+        // `usePausarAnunciosAction`.
         //
         // "Duplicar" is gated on `produto.write` (it creates a new produto),
         // independently of the other three's `integracao.write` gate.

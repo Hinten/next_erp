@@ -35,6 +35,7 @@ import { PrecoCustoManager, stripPrecosForSave } from '../_components/PrecoCusto
 import { VideoManager } from '../_components/VideoManager';
 import { VariationManager } from '../_components/VariationManager';
 import { MercadoLivreTab } from '../_components/mercado-livre/MercadoLivreTab';
+import { ShopeeTab } from '../_components/shopee/ShopeeTab';
 import {
   PRODUTO_CREATE_DEFAULTS,
   PRODUTO_EXCLUDED_FIELDS,
@@ -43,6 +44,7 @@ import {
   PRODUTO_TRANSIENT_FIELDS,
   SECTION_KIT,
   SECTION_MERCADO_LIVRE,
+  SECTION_SHOPEE,
   SECTION_VARIACOES,
   produtoFieldOverrides,
   produtoObjectViewSchema,
@@ -210,6 +212,14 @@ export default function NovoProdutoPage() {
             disabled={p.disabled}
           />
         ),
+      },
+      shopee: {
+        label: 'Shopee',
+        section: SECTION_SHOPEE,
+        // Shown with "Salve o produto para continuar", like Mercado Livre below:
+        // every Shopee link is keyed on a produto that exists, and the tab keeps
+        // its place when the produto is saved.
+        renderInput: () => <ShopeeTab produtoId={null} db={db} />,
       },
       mercadoLivre: {
         label: 'Mercado Livre',

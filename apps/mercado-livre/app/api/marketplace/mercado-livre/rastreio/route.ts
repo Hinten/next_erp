@@ -80,7 +80,10 @@ export async function GET(req: Request): Promise<NextResponse> {
       );
     }
     const channelCtx = await ctx.resolveChannelContext();
-    const api = createMercadoLivreApi({ getAccessToken: async () => channelCtx.accessToken });
+    const api = createMercadoLivreApi({
+      getAccessToken: channelCtx.getAccessToken,
+      onAccessTokenRejected: channelCtx.invalidateAccessToken,
+    });
     // Narrow the 404 to THIS resource; an account/token lookup 404 is an error.
     const carrier = await api.getShipmentCarrier(shipmentId).catch((err: unknown) => {
       if (err instanceof MercadoLivreHttpError && err.status === 404) return null;

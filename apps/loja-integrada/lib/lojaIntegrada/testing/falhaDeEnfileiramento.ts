@@ -1,6 +1,6 @@
 /**
  * The REAL Cloud Tasks enqueue failures of the pinned `firebase-admin`
- * (14.2.0), built with the SDK's own exported classes — **for tests only**, the
+ * (14.5.0), built with the SDK's own exported classes — **for tests only**, the
  * same rule as `fakeDb.ts`: nothing outside a `*.test.ts` imports this.
  *
  * It ships in the app tree rather than beside one suite because every producer

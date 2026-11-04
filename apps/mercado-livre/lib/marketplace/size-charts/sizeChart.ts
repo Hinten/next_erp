@@ -26,6 +26,7 @@
  * The reason travels out with the chart; the MATCHING RULES below are unchanged.
  */
 import type { MlAttributeWire, MlSizeChart } from '@delfrance/schemas';
+import { idFromRefOrNull } from '@delfrance/schemas';
 
 /**
  * ⚠️ `resolveSizeChart` and its result types now live in `@delfrance/schemas`
@@ -53,20 +54,15 @@ export interface ResolvedSizeChart {
   rowByChildId: Record<string, SizeChartRowBinding>;
 }
 
-/** Last path segment of a (fake or doc) path — the legacy join key. */
-function lastSegment(path: string): string {
-  const segs = path.split('/').filter(Boolean);
-  return segs[segs.length - 1] ?? '';
-}
-
 export function findChartRow(
   chart: MlSizeChart,
   variacoesUid: readonly string[],
 ): SizeChartRowBinding | null {
-  const childVariantIds = new Set(variacoesUid.map(lastSegment));
+  const childVariantIds = new Set(variacoesUid.map(idFromRefOrNull).filter((id) => id !== null));
   for (const row of chart.rows ?? []) {
     if (row.id == null || row.id === '' || row.varianteUid == null) continue;
-    if (childVariantIds.has(lastSegment(row.varianteUid))) {
+    const variantId = idFromRefOrNull(row.varianteUid);
+    if (variantId !== null && childVariantIds.has(variantId)) {
       // `sizeCalculado` first: ML COMPUTES each row's SIZE from the chart's
       // main attribute, and on a footwear chart (main attribute `EU_SIZE`,
       // `M_US_SIZE`, …) the row carries no SIZE of its own, so ML's computed

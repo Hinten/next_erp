@@ -1,0 +1,258 @@
+{
+  "versao": 1,
+  "perfil": "fixture",
+  "credencial": "personal-token",
+  "capturadoEm": "2026-10-28",
+  "requisicao": {
+    "metodo": "GET",
+    "caminho": "/v1/grades/920590139/",
+    "query": []
+  },
+  "resposta": {
+    "status": 200,
+    "politica": "catalogo",
+    "forma": "json",
+    "bytes": 4252,
+    "corpo": {
+      "id": 920590139,
+      "id_externo": null,
+      "nome": "REDACTED",
+      "nome_visivel": "REDACTED",
+      "specification_id": null,
+      "resource_uri": "/api/v1/grades/920590139",
+      "variacoes": [
+        {
+          "grade": "/api/v1/grades/920590139",
+          "id": 721052901,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/grade/920590139/variacao/721052901"
+        },
+        {
+          "grade": "/api/v1/grades/920590139",
+          "id": 338083728,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/grade/920590139/variacao/338083728"
+        },
+        {
+          "grade": "/api/v1/grades/920590139",
+          "id": 726730369,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/grade/920590139/variacao/726730369"
+        },
+        {
+          "grade": "/api/v1/grades/920590139",
+          "id": 905736021,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/grade/920590139/variacao/905736021"
+        },
+        {
+          "grade": "/api/v1/grades/920590139",
+          "id": 575727112,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/grade/920590139/variacao/575727112"
+        },
+        {
+          "grade": "/api/v1/grades/920590139",
+          "id": 519195643,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/grade/920590139/variacao/519195643"
+        },
+        {
+          "grade": "/api/v1/grades/920590139",
+          "id": 110322013,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/grade/920590139/variacao/110322013"
+        },
+        {
+          "grade": "/api/v1/grades/920590139",
+          "id": 408810818,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/grade/920590139/variacao/408810818"
+        },
+        {
+          "grade": "/api/v1/grades/920590139",
+          "id": 854242979,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/grade/920590139/variacao/854242979"
+        },
+        {
+          "grade": "/api/v1/grades/920590139",
+          "id": 452205803,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/grade/920590139/variacao/452205803"
+        },
+        {
+          "grade": "/api/v1/grades/920590139",
+          "id": 420817583,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/grade/920590139/variacao/420817583"
+        },
+        {
+          "grade": "/api/v1/grades/920590139",
+          "id": 609381115,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/grade/920590139/variacao/609381115"
+        },
+        {
+          "grade": "/api/v1/grades/920590139",
+          "id": 132007296,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/grade/920590139/variacao/132007296"
+        },
+        {
+          "grade": "/api/v1/grades/920590139",
+          "id": 798735178,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/grade/920590139/variacao/798735178"
+        },
+        {
+          "grade": "/api/v1/grades/920590139",
+          "id": 935178113,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/grade/920590139/variacao/935178113"
+        },
+        {
+          "grade": "/api/v1/grades/920590139",
+          "id": 267283164,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/grade/920590139/variacao/267283164"
+        },
+        {
+          "grade": "/api/v1/grades/920590139",
+          "id": 567098526,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/grade/920590139/variacao/567098526"
+        },
+        {
+          "grade": "/api/v1/grades/920590139",
+          "id": 110618156,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/grade/920590139/variacao/110618156"
+        },
+        {
+          "grade": "/api/v1/grades/920590139",
+          "id": 365702160,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/grade/920590139/variacao/365702160"
+        },
+        {
+          "grade": "/api/v1/grades/920590139",
+          "id": 697230397,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/grade/920590139/variacao/697230397"
+        },
+        {
+          "grade": "/api/v1/grades/920590139",
+          "id": 542785729,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/grade/920590139/variacao/542785729"
+        },
+        {
+          "grade": "/api/v1/grades/920590139",
+          "id": 708387484,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/grade/920590139/variacao/708387484"
+        },
+        {
+          "grade": "/api/v1/grades/920590139",
+          "id": 154587580,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/grade/920590139/variacao/154587580"
+        },
+        {
+          "grade": "/api/v1/grades/920590139",
+          "id": 523896484,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/grade/920590139/variacao/523896484"
+        },
+        {
+          "grade": "/api/v1/grades/920590139",
+          "id": 712432714,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/grade/920590139/variacao/712432714"
+        },
+        {
+          "grade": "/api/v1/grades/920590139",
+          "id": 179535528,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/grade/920590139/variacao/179535528"
+        },
+        {
+          "grade": "/api/v1/grades/920590139",
+          "id": 412862675,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/grade/920590139/variacao/412862675"
+        },
+        {
+          "grade": "/api/v1/grades/920590139",
+          "id": 897939293,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/grade/920590139/variacao/897939293"
+        },
+        {
+          "grade": "/api/v1/grades/920590139",
+          "id": 573874357,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/grade/920590139/variacao/573874357"
+        },
+        {
+          "grade": "/api/v1/grades/920590139",
+          "id": 625237561,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/grade/920590139/variacao/625237561"
+        },
+        {
+          "grade": "/api/v1/grades/920590139",
+          "id": 878777276,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/grade/920590139/variacao/878777276"
+        },
+        {
+          "grade": "/api/v1/grades/920590139",
+          "id": 506246312,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/grade/920590139/variacao/506246312"
+        },
+        {
+          "grade": "/api/v1/grades/920590139",
+          "id": 891050328,
+          "id_externo": null,
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/grade/920590139/variacao/891050328"
+        }
+      ]
+    }
+  }
+}

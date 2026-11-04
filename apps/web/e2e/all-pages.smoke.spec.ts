@@ -59,6 +59,7 @@ const STATIC_ROUTES: string[] = [
   '/clientes/novo',
   '/canais',
   '/canais/amazon',
+  '/canais/amazon/novo',
   '/canais/balcao',
   '/canais/balcao/novo',
   '/canais/facebook',

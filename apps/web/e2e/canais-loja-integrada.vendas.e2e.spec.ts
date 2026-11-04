@@ -209,12 +209,13 @@ test.describe.serial('Canais Loja Integrada e2e — TableView / ObjectView', () 
     await expectRowHidden(page, `${outroPrefix}-001`);
   });
 
-  test('says honestly that the channel only stores the conta and its token', async ({ page }) => {
+  test('explains what the channel screen does today', async ({ page }) => {
     await page.goto('/canais/loja-integrada');
     await expect(page.getByText('O que esta tela faz hoje')).toBeVisible();
     await expect(
       page.getByText('validado na Loja Integrada no momento em que é salvo', { exact: false }),
     ).toBeVisible();
+    await expect(page.getByText('mapeamento do frete', { exact: false })).toBeVisible();
     await expect(page.getByText('nada é sincronizado', { exact: false })).toBeVisible();
   });
 

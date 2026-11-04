@@ -570,3 +570,17 @@ describe('sobrevivemVariacoesDoProduto', () => {
     await expect(rodar(f)).resolves.toBe(false);
   });
 });
+
+describe('member stock failures do not change membership (#1285)', () => {
+  it.each(['E', null])('estado=%s requires no fan-out or membership lookup', (estado) => {
+    const before = {
+      itemId: 'MLB1',
+      contaOuterRef: 'documents/integracao/A',
+      produtoMercadoLivreOuterRef: 'documents/produtos/P/produtoMercadoLivre/L',
+    };
+    const after = { ...before, estado, errors: ['refused'], causas: [] };
+    expect(variacaoLinkHasListing(after)).toBe(true);
+    expect(variacaoPodeMudarMembership(before, after)).toBe(false);
+    expect(variacaoPodeMudarMembership(after, { ...before, estado: null, errors: [] })).toBe(false);
+  });
+});

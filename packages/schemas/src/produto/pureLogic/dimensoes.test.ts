@@ -36,6 +36,21 @@ const somaDe = (d: { altura: number; largura: number; comprimento: number }) =>
   d.altura + d.largura + d.comprimento;
 
 describe('dimensoesPedido — nothing to measure', () => {
+  it('resolves legacy product paths with trailing separators without folding different IDs', () => {
+    const products = { p1: caixa(20, 30, 40) };
+    const expected = dimensoesPedido([{ produtoUid: 'p1', quantidade: 1 }], products);
+    for (const produtoUid of [
+      'produtos/p1/',
+      'documents/produtos/p1/',
+      '//documents//produtos//p1//',
+    ]) {
+      expect(dimensoesPedido([{ produtoUid, quantidade: 1 }], products)).toEqual(expected);
+    }
+    expect(
+      dimensoesPedido([{ produtoUid: 'documents/produtos/p10/', quantidade: 1 }], products).aviso,
+    ).toBe('semDimensoes');
+  });
+
   it('no items → the default box, flagged', () => {
     const r = dimensoesPedido([], {});
     expect(r.dimensoes).toEqual(DIMENSOES_PADRAO);

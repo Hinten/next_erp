@@ -1,0 +1,32 @@
+{
+  "versao": 1,
+  "perfil": "fixture",
+  "credencial": "modelo-sandbox",
+  "papeis": [
+    "nao-se-aplica"
+  ],
+  "capturadoEm": "2026-11-03",
+  "limiteTaxa": null,
+  "requisicao": {
+    "tipo": "http",
+    "metodo": "POST",
+    "caminho": "/delivery/2022-07-01/invoice",
+    "query": [
+      [
+        "orderId",
+        "000-0000000-0000000"
+      ]
+    ],
+    "corpo": null
+  },
+  "resposta": {
+    "status": 200,
+    "politica": "estrutural",
+    "forma": "json",
+    "bytes": 2,
+    "corpo": {}
+  },
+  "anexos": {
+    "zip": null
+  }
+}

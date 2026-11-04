@@ -53,6 +53,7 @@ import {
   cartesianVariations,
   compareSortKeys,
   findDuplicateSkus,
+  idFromRefOrNull,
   normalizeVariacoesUid,
   espelhoDoMembroUnico,
   montarMembroUnico,
@@ -231,7 +232,9 @@ function flushAbort(message: string): ZodError {
 
 /** Bare group ids referenced by a parent doc + its current variant selection. */
 function impliedGroupIds(parent: Produto | undefined, uids: string[]): string[] {
-  const fromDoc = (parent?.grupoDeVariacoesUid ?? []).map((u) => u.split('/').pop()!);
+  const fromDoc = (parent?.grupoDeVariacoesUid ?? [])
+    .map(idFromRefOrNull)
+    .filter((id): id is string => id !== null);
   const fromUids = uids
     .map((u) => parseFakePath(u)?.grupoId)
     .filter((g): g is string => g !== undefined);

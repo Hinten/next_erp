@@ -6,7 +6,16 @@
  * ```
  * sanitizar --entrada <pasta> [--so <nome>]… [--dry-run] [--sobrescrever]
  * sanitizar --entrada <pasta> --verificar <arquivo>…
+ * sanitizar --entrada <pasta> --gerar-chave
  * ```
+ *
+ * **The pseudonym key.** A catalogue pair has its kept ids replaced by keyed
+ * pseudonyms (`pseudonimo.ts`); the key is `.chave-fixtures` in the capture
+ * folder, read here and handed to each pair as data. `--gerar-chave` creates it
+ * (through the injected `criarChave`) and refuses when it exists: a new key
+ * changes every catalogue id. The key is never printed, never put in a finding
+ * and never written anywhere else. Two different ids on one pseudonym, across
+ * the run's pairs, refuse the run (`colisao-de-pseudonimo`).
  *
  * **All or nothing.** Any finding in any pair (or an unpaired capture, or a name
  * outside the grammar, or an existing fixture with different bytes and no
@@ -42,12 +51,14 @@ import {
 import { formatarFolhas } from './folhas';
 import { dentroDeCheckout } from './local';
 import {
+  ARQUIVO_CHAVE_FIXTURES,
   ARQUIVO_NOMES_PROIBIDOS,
   ErroDeUsoSanitizacao,
   lerNomesProibidos,
   montarLote,
   temHar,
 } from './lote';
+import { ChaveDeFixturesLi } from './pseudonimo';
 import { decodificarUtf8 } from './requisicao';
 
 export { ErroDeUsoSanitizacao };
@@ -63,6 +74,8 @@ export interface OpcoesDaSanitizacao {
   readonly sobrescrever: boolean;
   /** `--verificar`'s files, or `null` in a conversion run. */
   readonly verificar: readonly string[] | null;
+  /** `--gerar-chave`: create the pseudonym key, and nothing else. */
+  readonly gerarChave: boolean;
 }
 
 /** Parses the arguments after the script path. Usage errors throw, naming positions only. */
@@ -72,6 +85,7 @@ export function lerArgumentos(argv: readonly string[]): OpcoesDaSanitizacao {
   let dryRun = false;
   let sobrescrever = false;
   let verificar: string[] | null = null;
+  let gerarChave = false;
 
   const repetida = (flag: string) => new ErroDeUsoSanitizacao(`${flag} is given twice`);
   const valor = (i: number, flag: string): string => {
@@ -109,6 +123,10 @@ export function lerArgumentos(argv: readonly string[]): OpcoesDaSanitizacao {
         if (sobrescrever) throw repetida(arg);
         sobrescrever = true;
         break;
+      case '--gerar-chave':
+        if (gerarChave) throw repetida(arg);
+        gerarChave = true;
+        break;
       case '--verificar': {
         if (verificar !== null) throw repetida(arg);
         const arquivos: string[] = [];
@@ -140,12 +158,15 @@ export function lerArgumentos(argv: readonly string[]): OpcoesDaSanitizacao {
       '--entrada is required: the capture folder, outside every git checkout',
     );
   }
+  if (gerarChave && (so.length > 0 || dryRun || sobrescrever || verificar !== null)) {
+    throw new ErroDeUsoSanitizacao('--gerar-chave takes only --entrada (the capture folder)');
+  }
   if (verificar !== null && (so.length > 0 || dryRun || sobrescrever)) {
     throw new ErroDeUsoSanitizacao(
       '--verificar takes only --entrada (for the store-name list) and its files',
     );
   }
-  return { entrada, so, dryRun, sobrescrever, verificar };
+  return { entrada, so, dryRun, sobrescrever, verificar, gerarChave };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -173,6 +194,12 @@ export interface SistemaDeArquivosDaSanitizacao {
   readonly fixtureExistente: (nome: string) => string | null;
   /** A `--verificar` file (relative to the working directory, or absolute); `null` when missing. */
   readonly lerArquivo: (caminho: string) => Uint8Array | null;
+  /**
+   * Creates the new pseudonym key file `nome` in `pasta` (32 random bytes as
+   * hex). Called only when the listing has no entry of that name; the binding
+   * still refuses to overwrite (it creates exclusively) and prints nothing.
+   */
+  readonly criarChave: (pasta: string, nome: string) => void;
 }
 
 export interface EscritaDeFixtureLi {
@@ -227,6 +254,13 @@ const DICAS: Readonly<Record<string, string>> = {
   'sem-corpo': 'a sidecar with no <nome>.json beside it: add the body, or move the sidecar out',
   'nome-fora-da-gramatica':
     'capture names are lowercase letters, digits and -, at most 40, ending .json or .txt',
+  'sem-chave-de-fixtures': `a catalogue pair needs the pseudonym key ${ARQUIVO_CHAVE_FIXTURES} (a regular file in the capture folder): restore it if committed catalogue fixtures were made with it, else create it once with --gerar-chave; keep it as long as any catalogue fixture exists (it outlives the captures), and re-run`,
+  'colisao-de-pseudonimo': `two different ids got one pseudonym: move ${ARQUIVO_CHAVE_FIXTURES} out, create a new key with --gerar-chave, and re-run every catalogue pair (a new key changes every catalogue id)`,
+  'chave-existente': `${ARQUIVO_CHAVE_FIXTURES} already exists and is never replaced: a new key changes every catalogue id, so every catalogue pair would have to be re-run`,
+  'numero-em-erro-do-catalogo':
+    'a catalogue error body keeps a number, which may echo a resource id, and a pseudonym cannot replace it there: capture an error whose body holds no number other than its status, or leave the pair out',
+  'catalogo-fora-da-classe':
+    'a catalogue resource on a path the catalogue class does not admit would keep its real ids: admit the path in ehCatalogo (core/redacao.ts) in a reviewed change, or leave the pair out',
 };
 
 const fim = (linhas: readonly string[]) => `${linhas.join('\n')}\n`;
@@ -270,6 +304,7 @@ export function executarSanitizacao(
   }
 
   const entradas = fs.listar(pasta);
+  if (opcoes.gerarChave) return gerarChave(pasta, entradas, fs);
   if (temHar(entradas.map((e) => e.nome))) {
     return {
       saida: fim([
@@ -289,6 +324,7 @@ export function executarSanitizacao(
   );
 
   if (opcoes.verificar !== null) return verificar(opcoes.verificar, fs, lista);
+  const chave = lerChave(pasta, arquivos, fs);
 
   const lote = montarLote(
     arquivos,
@@ -345,9 +381,30 @@ export function executarSanitizacao(
         corpoModificadoEmMs: fs.modificadoEmMs(pasta, `${nome}.json`),
       },
       lista,
+      chave,
     );
     resultados.set(nome, resultado);
     if (!resultado.ok) registrar(rotulo, resultado.achados, nome);
+  }
+
+  // Pseudonym collisions ACROSS pairs (each pair checks its own): one pseudonym,
+  // two different real ids. Reported on the later pair; the ids are never printed.
+  const pseudonimosDoLote = new Map<number, string>();
+  for (const [nome, resultado] of resultados) {
+    if (!resultado.ok) continue;
+    let colidiu = false;
+    for (const [falso, real] of resultado.pseudonimos) {
+      const anterior = pseudonimosDoLote.get(falso);
+      if (anterior === undefined) pseudonimosDoLote.set(falso, real);
+      else if (anterior !== real) colidiu = true;
+    }
+    if (colidiu) {
+      registrar(
+        rotulos.get(nome) ?? nome,
+        [{ onde: 'pseudonimos', tipo: 'colisao-de-pseudonimo' }],
+        nome,
+      );
+    }
   }
 
   // Collisions: identical bytes are a no-op; different bytes need --sobrescrever.
@@ -416,6 +473,59 @@ export function executarSanitizacao(
     `done: ${String(escritas.length)} written, ${String(estados.size - escritas.length)} unchanged, in lib/lojaIntegrada/fixtures/__wire__/.`,
   );
   return { saida: fim(linhas), escritas, codigo: 0 };
+}
+
+/* -------------------------------------------------------------------------- */
+/*                              The pseudonym key                             */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The capture folder's key, or `null` when it has none as a regular file (a
+ * catalogue pair is then refused, by `capturaParaFixture`). A file that is not a
+ * key is a usage error that never quotes it.
+ */
+function lerChave(
+  pasta: string,
+  arquivos: readonly string[],
+  fs: SistemaDeArquivosDaSanitizacao,
+): ChaveDeFixturesLi | null {
+  if (!arquivos.includes(ARQUIVO_CHAVE_FIXTURES)) return null;
+  const texto = decodificarUtf8(fs.ler(pasta, ARQUIVO_CHAVE_FIXTURES));
+  const chave = texto.ok ? ChaveDeFixturesLi.deTexto(texto.texto) : null;
+  if (chave === null) {
+    throw new ErroDeUsoSanitizacao(
+      `${ARQUIVO_CHAVE_FIXTURES} is not a key (64 hexadecimal digits, UTF-8): restore it from where the captures are kept; a new key changes every catalogue id`,
+    );
+  }
+  return chave;
+}
+
+/** `--gerar-chave`: creates the key unless an entry of that name exists. Reads nothing. */
+function gerarChave(
+  pasta: string,
+  entradas: readonly EntradaDaPastaLi[],
+  fs: SistemaDeArquivosDaSanitizacao,
+): ResultadoDaSanitizacao {
+  if (entradas.some((e) => e.nome === ARQUIVO_CHAVE_FIXTURES)) {
+    return {
+      saida: fim([
+        'sanitizar --gerar-chave: REFUSED, nothing was written.',
+        `  pasta ${ARQUIVO_CHAVE_FIXTURES} :: chave-existente`,
+        ...dicasPara(['chave-existente']),
+      ]),
+      escritas: [],
+      codigo: 1,
+    };
+  }
+  fs.criarChave(pasta, ARQUIVO_CHAVE_FIXTURES);
+  return {
+    saida: fim([
+      `sanitizar --gerar-chave: created ${ARQUIVO_CHAVE_FIXTURES} in the capture folder (32 random bytes; never printed).`,
+      '  Never commit it, and keep it for as long as any catalogue fixture exists: it outlives the captures (deleting merged pairs never deletes it). A new key changes every catalogue id, so every catalogue fixture would have to be re-captured and re-run in one change.',
+    ]),
+    escritas: [],
+    codigo: 0,
+  };
 }
 
 /* -------------------------------------------------------------------------- */

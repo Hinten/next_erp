@@ -59,6 +59,7 @@ import { REPO_ROOT, gitLsFiles } from './lib/repo-scan.js';
  * keying on the config file.
  */
 const KNOWN_APPHOSTING_APPS = [
+  'apps/amazon',
   'apps/integrations',
   'apps/legal',
   'apps/loja-integrada',

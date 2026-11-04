@@ -83,6 +83,20 @@ describe('fake paths', () => {
 });
 
 describe('sortGrupoUids', () => {
+  it('retains trailing-separator IDs, deduplicates equivalent forms and drops empty IDs', () => {
+    expect(
+      sortGrupoUids(
+        ['documents/grupoDeVariacoes/CORES/', 'grupoDeVariacoes/TAM/', 'CORES', '/', 'documents'],
+        fixtures(),
+      ),
+    ).toEqual(['TAM', 'CORES']);
+    expect(sortGrupoUids(['CORES', 'cores', 'CORES2'], fixtures())).toEqual([
+      'CORES',
+      'cores',
+      'CORES2',
+    ]);
+  });
+
   it('bares, dedups and sorts by grupo.ordem', () => {
     expect(sortGrupoUids(['CORES', 'grupoDeVariacoes/TAM', 'CORES'], fixtures())).toEqual([
       'TAM',

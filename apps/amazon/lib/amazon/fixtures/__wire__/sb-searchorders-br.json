@@ -1,0 +1,195 @@
+{
+  "versao": 1,
+  "perfil": "fixture",
+  "credencial": "modelo-sandbox",
+  "papeis": [
+    "nao-se-aplica"
+  ],
+  "capturadoEm": "2026-10-19",
+  "limiteTaxa": null,
+  "requisicao": {
+    "tipo": "http",
+    "metodo": "GET",
+    "caminho": "/orders/2026-01-01/orders",
+    "query": [
+      [
+        "createdAfter",
+        "2024-12-20T00:00:00Z"
+      ],
+      [
+        "marketplaceIds",
+        "A2Q3Y263D00KWC"
+      ],
+      [
+        "includedData",
+        "BUYER,RECIPIENT,PROCEEDS,FULFILLMENT,TAX,PAYMENT"
+      ]
+    ],
+    "corpo": null
+  },
+  "resposta": {
+    "status": 200,
+    "politica": "estrutural",
+    "forma": "json",
+    "bytes": 2640,
+    "corpo": {
+      "orders": [
+        {
+          "orderId": "000-0000000-5134188",
+          "orderAliases": [
+            {
+              "aliasId": "ALIAS-Z9032a839",
+              "aliasType": "SELLER_ORDER_ID"
+            }
+          ],
+          "createdTime": "2024-12-22T15:30:00Z",
+          "lastUpdatedTime": "2024-12-23T10:00:00Z",
+          "programs": [
+            "AMAZON_BUSINESS",
+            "DELIVERY_BY_AMAZON"
+          ],
+          "salesChannel": {
+            "channelName": "AMAZON",
+            "marketplaceId": "A2Q3Y263D00KWC",
+            "marketplaceName": "Amazon.com.br"
+          },
+          "buyer": {
+            "buyerName": "REDACTED",
+            "buyerEmail": "redacted@example.invalid",
+            "buyerCompanyName": "REDACTED",
+            "buyerPurchaseOrderNumber": "REDACTED"
+          },
+          "recipient": {
+            "deliveryAddress": {
+              "name": "REDACTED",
+              "companyName": "REDACTED",
+              "addressLine1": "REDACTED",
+              "addressLine2": "REDACTED",
+              "city": "REDACTED",
+              "stateOrRegion": "REDACTED",
+              "postalCode": "00000-000",
+              "countryCode": "REDACTED",
+              "phone": "+00 00 0000-0000",
+              "extendedFields": {
+                "streetName": "REDACTED",
+                "streetNumber": "REDACTED",
+                "complement": "REDACTED",
+                "neighborhood": "REDACTED"
+              },
+              "addressType": "REDACTED"
+            }
+          },
+          "proceeds": {
+            "grandTotal": {
+              "amount": "1599.90",
+              "currencyCode": "BRL"
+            }
+          },
+          "tax": {
+            "taxRegistrations": [
+              {
+                "entityType": "BUYER",
+                "legalName": "REDACTED",
+                "taxRegistrationType": "VAT",
+                "taxRegistrationNumber": "0000000000"
+              },
+              {
+                "entityType": "MARKETPLACE",
+                "taxRegistrationType": "CNPJ",
+                "taxRegistrationNumber": "11222333"
+              },
+              {
+                "entityType": "MERCHANT",
+                "legalName": "REDACTED"
+              }
+            ],
+            "taxInvoicing": {
+              "invoiceStatus": "PROCESSING"
+            }
+          },
+          "payment": {
+            "paymentExecutions": [
+              {
+                "paymentMethod": "CreditCard",
+                "paymentAmount": {
+                  "amount": "1599.90",
+                  "currencyCode": "BRL"
+                },
+                "acquirerId": "11.222.333/0001-81",
+                "cardBrand": "Visa",
+                "authorizationCode": "REDACTED"
+              }
+            ]
+          },
+          "fulfillment": {
+            "fulfillmentStatus": "UNSHIPPED",
+            "fulfilledBy": "MERCHANT",
+            "fulfillmentServiceLevel": "STANDARD",
+            "shipByWindow": {
+              "earliestDateTime": "2024-12-23T00:00:00Z",
+              "latestDateTime": "2024-12-24T23:59:59Z"
+            },
+            "deliverByWindow": {
+              "earliestDateTime": "2024-12-26T00:00:00Z",
+              "latestDateTime": "2024-12-30T23:59:59Z"
+            },
+            "promiseCalculationInputs": {
+              "transitTime": {
+                "details": {
+                  "carrier": "REDACTED",
+                  "shippingService": "REDACTED"
+                },
+                "dataSource": "THIRD_PARTY_INTEGRATOR"
+              }
+            }
+          },
+          "orderItems": [
+            {
+              "orderItemId": "00000155299304",
+              "quantityOrdered": 1,
+              "product": {
+                "asin": "B0ZZENYUNL",
+                "title": "REDACTED",
+                "sellerSku": "SKU-Z7e89ff42",
+                "condition": {
+                  "conditionType": "NEW",
+                  "conditionSubtype": "NEW"
+                },
+                "price": {
+                  "unitPrice": {
+                    "amount": "1599.90",
+                    "currencyCode": "BRL"
+                  },
+                  "priceDesignation": "BUSINESS_PRICE"
+                }
+              },
+              "proceeds": {
+                "proceedsTotal": {
+                  "amount": "1599.90",
+                  "currencyCode": "BRL"
+                },
+                "breakdowns": [
+                  {
+                    "type": "ITEM",
+                    "subtotal": {
+                      "amount": "1599.90",
+                      "currencyCode": "BRL"
+                    }
+                  }
+                ]
+              },
+              "fulfillment": {
+                "quantityFulfilled": 0,
+                "quantityUnfulfilled": 1
+              }
+            }
+          ]
+        }
+      ],
+      "createdBefore": "2024-12-22T16:00:00Z"
+    }
+  },
+  "anexos": {
+    "zip": null
+  }
+}

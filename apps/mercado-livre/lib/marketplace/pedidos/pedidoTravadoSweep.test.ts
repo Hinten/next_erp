@@ -185,7 +185,12 @@ function fakeScheduler() {
 function armApi(result: MlOrder | Error): void {
   h.loadMercadoLivreContext.mockResolvedValue({
     conta: { user_id: 55 },
-    resolveChannelContext: async () => ({ accessToken: 'AT', account: {} }),
+    resolveChannelContext: async () => ({
+      accessToken: 'AT',
+      getAccessToken: async () => 'AT',
+      invalidateAccessToken: vi.fn(),
+      account: {},
+    }),
   });
   h.createMercadoLivreApi.mockReturnValue({
     getOrder: async () => {
@@ -614,6 +619,13 @@ describe('constants and bounds', () => {
     expect(integracaoIdDoPedido({ integracaoPedidoOuterRef: '' })).toBeNull();
   });
 
+  it.each(['/', '///', 'documents', null, 42])(
+    'ignores an integração ref without an id: %s',
+    (integracaoPedidoOuterRef) => {
+      expect(integracaoIdDoPedido({ integracaoPedidoOuterRef })).toBeNull();
+    },
+  );
+
   it('a fresh pedido is never a candidate', async () => {
     const db = new FakeDb();
     seedPedidoTravado(db, 'ped-novo', { timestamp: NOW_US - 1 * DIA_US });
@@ -638,7 +650,12 @@ describe('failure isolation', () => {
       }
       return {
         conta: { user_id: 55 },
-        resolveChannelContext: async () => ({ accessToken: 'AT', account: {} }),
+        resolveChannelContext: async () => ({
+          accessToken: 'AT',
+          getAccessToken: async () => 'AT',
+          invalidateAccessToken: vi.fn(),
+          account: {},
+        }),
       };
     });
     h.createMercadoLivreApi.mockReturnValue({ getOrder: async () => order({ status: 'paid' }) });

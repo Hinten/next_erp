@@ -6,11 +6,26 @@
       "apiScope": "ANY_API",
       "density": "SPARSE_ANY",
       "fields": [
-        { "fieldPath": "vendedorPedidoOuterRef", "order": "ASCENDING" },
-        { "fieldPath": "ehSaida", "order": "ASCENDING" },
-        { "fieldPath": "estado", "order": "ASCENDING" },
-        { "fieldPath": "timestamp", "order": "DESCENDING" },
-        { "fieldPath": "valorCobrado", "order": "ASCENDING" }
+        {
+          "fieldPath": "vendedorPedidoOuterRef",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "ehSaida",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "estado",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "timestamp",
+          "order": "DESCENDING"
+        },
+        {
+          "fieldPath": "valorCobrado",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
@@ -19,12 +34,30 @@
       "apiScope": "ANY_API",
       "density": "SPARSE_ANY",
       "fields": [
-        { "fieldPath": "ehSaida", "order": "ASCENDING" },
-        { "fieldPath": "integracaoPedidoOuterRef", "order": "ASCENDING" },
-        { "fieldPath": "estado", "order": "ASCENDING" },
-        { "fieldPath": "freteInicial.estado", "order": "ASCENDING" },
-        { "fieldPath": "freteInicial.prazoDespacho", "order": "DESCENDING" },
-        { "fieldPath": "foiImpresso", "order": "ASCENDING" }
+        {
+          "fieldPath": "ehSaida",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "integracaoPedidoOuterRef",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "estado",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "freteInicial.estado",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "freteInicial.prazoDespacho",
+          "order": "DESCENDING"
+        },
+        {
+          "fieldPath": "foiImpresso",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
@@ -33,12 +66,30 @@
       "apiScope": "ANY_API",
       "density": "SPARSE_ANY",
       "fields": [
-        { "fieldPath": "ehSaida", "order": "ASCENDING" },
-        { "fieldPath": "integracaoPedidoOuterRef", "order": "ASCENDING" },
-        { "fieldPath": "estado", "order": "ASCENDING" },
-        { "fieldPath": "freteInicial.estado", "order": "ASCENDING" },
-        { "fieldPath": "foiImpresso", "order": "ASCENDING" },
-        { "fieldPath": "freteInicial.prazoDespacho", "order": "DESCENDING" }
+        {
+          "fieldPath": "ehSaida",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "integracaoPedidoOuterRef",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "estado",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "freteInicial.estado",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "foiImpresso",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "freteInicial.prazoDespacho",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
@@ -111,6 +162,24 @@
         },
         {
           "fieldPath": "shop_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "ativo",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "integracao",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "tipo",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "selling_partner_id",
           "order": "ASCENDING"
         },
         {
@@ -199,6 +268,34 @@
         },
         {
           "fieldPath": "contaId",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "notificacoesEscritaLojaIntegrada",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "processedAt",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "notificacoesAmazon",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "processedAt",
           "order": "ASCENDING"
         }
       ]
@@ -382,6 +479,20 @@
       ]
     },
     {
+      "collectionGroup": "importacoesLojaIntegrada",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "integracaoId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "iniciadoEmMs",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "enviosPrecoMercadoLivre",
       "queryScope": "COLLECTION",
       "fields": [
@@ -525,6 +636,34 @@
         },
         {
           "fieldPath": "contaProdutoShopeeOuterRef",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "produtolojaintegrada",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        {
+          "fieldPath": "contaLojaIntegrada",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "id",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "prodAmazon",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        {
+          "fieldPath": "contaAmazonOuterRef",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "sku",
           "order": "ASCENDING"
         }
       ]
@@ -1198,6 +1337,28 @@
       ]
     },
     {
+      "collectionGroup": "int_frete",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "tipo",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "contaAmazonContaFreteAmazonOuterRef",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "ativo",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "dataCadastro",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "metodo_pgto",
       "queryScope": "COLLECTION",
       "fields": [
@@ -1473,6 +1634,16 @@
     },
     {
       "collectionGroup": "produtos",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "tokenoaut",
       "queryScope": "COLLECTION",
       "fields": [
         {
@@ -2391,6 +2562,28 @@
         },
         {
           "fieldPath": "integracaoPedidoOuterRef",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "timestamp",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "pedidos",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "ehSaida",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "integracaoPedidoOuterRef",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "estado",
           "order": "ASCENDING"
         },
         {

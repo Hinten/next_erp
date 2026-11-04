@@ -328,7 +328,12 @@ export interface ResumoImportacaoShopee {
     readonly aCriar: number;
   };
   readonly links: {
-    readonly pai: 'add' | 'merge';
+    /**
+     * `adotar` (#1911 P5): the parent link is a DRAFT this listing's uncertain
+     * create made — the write re-derives the evidence and forks to an `add`
+     * when it no longer holds (`produtos/links.ts`).
+     */
+    readonly pai: 'add' | 'merge' | 'adotar';
     readonly paiRefPendente: boolean;
     readonly filhosAdd: number;
     readonly filhosMerge: number;
@@ -552,6 +557,13 @@ function lista(v: readonly string[]): string {
   return v.length === 0 ? '(nenhum)' : v.join(', ');
 }
 
+/** Exhaustive by construction: a fourth parent-link action stops compiling here. */
+const ROTULO_DO_LINK_PAI: Record<ResumoImportacaoShopee['links']['pai'], string> = {
+  add: 'CRIAR',
+  merge: 'MERGE',
+  adotar: 'ADOTAR RASCUNHO',
+};
+
 /** The human rendering of one plan — Design-P §12's printout. */
 export function renderResumoImportacao(r: ResumoImportacaoShopee): string[] {
   const linhas: string[] = [];
@@ -626,7 +638,7 @@ export function renderResumoImportacao(r: ResumoImportacaoShopee): string[] {
   );
   linhas.push(`  docs de categoria ....... ${String(r.categorias.aCriar)} a criar se ausentes`);
   linhas.push(
-    `  prodshopee .............. ${r.links.pai === 'add' ? 'CRIAR' : 'MERGE'}${r.links.paiRefPendente ? '  (a ref do pai é carimbada depois do add)' : ''}`,
+    `  prodshopee .............. ${ROTULO_DO_LINK_PAI[r.links.pai]}${r.links.paiRefPendente ? '  (a ref do pai é carimbada depois do add)' : ''}`,
   );
   linhas.push(
     `  variashopee ............. ${String(r.links.filhosMerge)} MERGE · ${String(r.links.filhosAdd)} CRIAR · ${String(r.links.filhosSemLink)} sem vínculo`,

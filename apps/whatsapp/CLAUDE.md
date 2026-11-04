@@ -75,8 +75,9 @@ consent URL / code exchange / refresh here (no `oauth` routes, no `state.ts`).
   `WA_REAUTH_REQUIRED`; code 133016 (register cap) → 429 `WA_RATE_LIMIT`; upstream
   400 → 400 with `error_user_msg ?? message`; other HTTP → 502 `WA_GRAPH_ERROR`;
   network → 502.
-- `lib/{auth,firebase}` — per-app copies of the shared helpers (each backend keeps
-  its own so they deploy + log independently).
+- `lib/auth` binds the shared verifier in `@delfrance/data/admin/auth`;
+  `lib/firebase` owns this backend's SDK initialization. Shared primitives keep
+  deployments and logs independent without copying security decisions (#1431).
 - `functions/` — the nested Cloud Functions codebase (deploy-artifact sub-build; see
   `functions/DEPLOY.md`). Covered by this app's typecheck/lint/test tasks. Mirrors
   `apps/mercado-pago/functions`.

@@ -1,6 +1,6 @@
 # Amazon (SP-API): master plan for the marketplace integration
 
-Date: 2026-10-14 · Method: `marketplace-integration` skill, Phases 0–2 · Tracker: not opened yet (D14).
+Date: 2026-10-14 · Method: `marketplace-integration` skill, Phases 0–2 · Tracker: #1923 (opened 2026-10-15 with one issue per pre-cutover step, #1924–#1941; D14).
 Evidence: the official SP-API documentation (developer-docs.amazon; developer-docs.amazon.com redirects there; pages dated through 2026-10-13), the official OpenAPI models (github.com/amzn/selling-partner-api-models, commits through 2026-09-30), docs.aws.amazon.com for the AWS relay, and one retired Amazon LATAM page reviewed claim by claim (`evidence/latam-dba-review.md`). Research steps:
 - 6 documentation surveys (A auth/roles/sandbox · B notifications/AWS · C Orders v2026 · D NF-e/Easy Ship · E listings/stock · F price/payments/messaging);
 - 2 gap investigations (BR Easy Ship; seller id and the authorization flow);
@@ -167,13 +167,13 @@ The row lands with a whole-row assertion in `marketplace.test.ts`, replacing the
 ### 1.2 Unknowns only a live call settles
 
 Under D11 these split into three kinds:
-- **CAPTURABLE:** a read-only production response the owner captures himself; the step-2b sanitizer turns it into a fixture before the dependent step merges.
+- **CAPTURABLE:** a read-only production response the owner captures by hand; the step-2b sanitizer turns it into a fixture before the dependent step merges.
 - **WRITE-ONLY:** settled defensively in code now, and confirmed on a canary in the window.
 - **GATE:** stops a step if the answer is unfavourable.
 
-1. **BR buyer identity format (C1):** is it CPF/CNPJ or `VAT`/`BUSINESS` for business buyers? Digits only or punctuated? Is IE ever present (none is documented)? Is the MARKETPLACE CNPJ an 8-digit root or 14 digits? CAPTURABLE.
+1. **BR buyer identity format (C1):** is it CPF/CNPJ or `VAT`/`BUSINESS` for business buyers? Digits only or punctuated? Is IE ever present (none is documented)? Is the MARKETPLACE CNPJ an 8-digit root or 14 digits? CAPTURABLE. (MARKETPLACE CNPJ: 14 bare digits on a real PENDING read, 2026-11-03.)
 2. **`paymentMethod` strings** for Pix, card and boleto, and whether split payments appear as several executions (C1). CAPTURABLE. The importer treats the field as an open string with a fallback to `99`.
-3. **Does `programs[]` carry `AMAZON_EASY_SHIP`, `DELIVERY_BY_AMAZON` or both for a BR DBA order? Are `packages[]` and `fulfillmentOrders[]` filled? Does `lastUpdatedTime` move on package events?** (C1). CAPTURABLE. It decides whether step 7 needs its in-transit refresh sweep.
+3. **Does `programs[]` carry `AMAZON_EASY_SHIP`, `DELIVERY_BY_AMAZON` or both for a BR DBA order? Are `packages[]` and `fulfillmentOrders[]` filled? Does `lastUpdatedTime` move on package events?** (C1). CAPTURABLE. It decides whether step 7 needs its in-transit refresh sweep. (`lastUpdatedTime` moved on the one package change observed, a delivery, n=1, capture C1b of 2026-11-03: no sweep, see step 7.)
 4. **Is the ITEM proceeds amount tax-inclusive for BR, and how are discounts signed?** (C1). CAPTURABLE.
 4b. **Exactly which fields Amazon zeroes or drops on a cancelled order** (`quantityOrdered`, `product.price.unitPrice`, `proceeds.breakdowns`, `proceeds.grandTotal`, `payment.paymentExecutions[].paymentAmount`), whether a partial cancellation lowers the quantity instead of zeroing it, whether `orderItems` comes back empty or short, and what a refunded or returned (still `SHIPPED`) order looks like: zeroed proceeds, a `cancellation` block, a package status (suspected by Lucas, not yet observed). The zeroing itself is known from production **[operator]** (D17); the models do not document it. CAPTURABLE (C1: one order captured before and after its cancellation).
 5. **Invoice status response keys** (`invoiceStatus` vs `orderInvoicingStatus` vs `invoices[]`) (C2). CAPTURABLE.
@@ -527,7 +527,7 @@ Every step gets a Phase-3 step plan that Lucas approves before code is written (
   - `CI gate (amazon)` registered in `ci-lane-gates.test.js` and `main-red-alert.yml`;
   - the lane and pinnable-check counts and the rule-4 emulator carve-out updated in root `CLAUDE.md`.
 - **Firestore:** `notificacoesAmazon`; index `(status ASC, processedAt ASC)`; both rulesets regenerated (a new bare collection).
-- **Env:** `AMAZON_RELAY_KEY` (secret), `AMAZON_APPLICATION_ID`, `AMAZON_TASKS_DISABLED`, `AMAZON_TASKS_REGION`.
+- **Env:** `AMAZON_RELAY_SECRET` (secret; plus the optional `AMAZON_RELAY_PREVIOUS_SECRET` during a rotation), `AMAZON_APPLICATION_ID`, `AMAZON_TASKS_DISABLED`, `AMAZON_TASKS_REGION`. *(Amended in step 3, PR 3-c: renamed from `AMAZON_RELAY_KEY` so the `_SECRET` suffix puts it in `.env.secrets.example`; step-3 plan §3 decision 13.)*
 - **Rule 7:** the receiver writes nothing on the happy path; idempotency is the importer's (deterministic ids).
 - **Verification:**
   - a 503/401/200 table;
@@ -546,10 +546,10 @@ Every step gets a Phase-3 step plan that Lucas approves before code is written (
   - The token expires after 24 h and every other parameter must stay identical between pages.
   - `lastUpdatedBefore` is omitted; Amazon requires a 2-minute gap from now.
   - Rate 0.0056 rps / burst 20 ⇒ 96 calls/day, well inside the bucket.
-- **Cursor** `pollPedidosAmazon/{contaId}` (bare constant, outside `ALL_DOMAINS`): `cursor` (ISO, Amazon's own `lastUpdatedTime` of a fully drained window), `emExecucaoAteMs` (lease), `ultimaVarreduraEmMs`, `ultimoErro`. It advances only after every row is enqueued.
-- **Rule 7:** single-flight lease plus an advance-only cursor, both tier 1 (`update(…, {lastUpdatedTime})`).
+- **Cursor** `pollPedidosAmazon/{contaId}` (bare constant, outside `ALL_DOMAINS`): `cursorMs` (ms, per §4.ii's cursor units: Amazon's own `lastUpdatedTime` of a fully drained window, capped at the drain's start − 5 min), `pendente` (a stopped drain to resume), `vistos` (orderId → µs, the overlap's dedup), `emExecucaoAteMs` (lease), `ultimaVarreduraEmMs`, `ultimoErro`, `falhasSeguidas`. It advances only after every row is enqueued. *(Amended at step 4 implementation: the ISO `cursor` became `cursorMs`; step-3/4 plan §3 decision 20.)*
+- **Rule 7:** single-flight lease plus an advance-only cursor, both tier 1 (`update(…, {lastUpdateTime})`, the Admin SDK precondition; not the order field `lastUpdatedTime`).
 - **Bootstrap:** no cursor ⇒ `now − AMAZON_POLL_LOOKBACK_H`. The window sets it (W7).
-- **Firestore:** the cursor doc; both rulesets regenerated. **Env:** `AMAZON_POLL_LOOKBACK_H`.
+- **Firestore:** the cursor doc (bare and Meta-less, so no ruleset change: both `gen:rules` checks stay up to date). **Env:** `AMAZON_POLL_LOOKBACK_H` (functions only).
 - **Verification:** fixture-driven sweep tests: empty page; several pages; truncated window ⇒ cursor unchanged; a stale run never moves the cursor back; a held lease exits.
 - **Does NOT:** map anything (the task re-fetches); replace push.
 
@@ -560,7 +560,7 @@ Every step gets a Phase-3 step plan that Lucas approves before code is written (
 - **Ids:** the §3 digests. A migrated pedido is found by id; its items match by `OrderItemId`.
 - **Mapping:**
   - The §3 estado table, monotonic: never overwrites ERP-owned progress or fields the operator owns.
-  - `pedido.marketplace {tipo: 'amazon', status: <fulfillmentStatus verbatim>, statusEm}`; `MARKETPLACE_PEDIDO_TIPO` gains `amazon`.
+  - `pedido.marketplace {tipo: 'amazon', status: <fulfillmentStatus verbatim>, statusEm}`; `MARKETPLACE_PEDIDO_TIPO` gains `amazon`. On an update, a status the code does not know (a token outside the v2026 enum such as `INVOICE_UNCONFIRMED`, blank, `null`, or no `fulfillment`) never replaces a stored known one: the last known status stays, because D17's approval lock and the resurrection rule read it (PR 5-f).
   - Items through link docs; unmatched lines flagged.
   - Money from `proceeds.breakdowns` (ITEM, SHIPPING, DISCOUNT, TAX), with tax inclusion settled by capture C1.
   - `freteInicial` seeded with `seedFreteInicial`: `externalOptionIntegracao = INTEGRACAO_FRETE.amazon`, `integracaoFreteOuterRef` = the conta's `'amz'` int_frete (step 20), `prazoDespacho = shipByWindow.latestDateTime` (µs), `modalidade` from the conta.
@@ -601,12 +601,42 @@ Every step gets a Phase-3 step plan that Lucas approves before code is written (
 
   Captures C1 settle §1.2 items 1–4b before merge.
 - **Does NOT:** keep an order mirror; map the notification body; create produtos.
+- **Amendment (2026-10-27, steps 5–7 built: PRs 5-a … 5-e, 6, 7):**
+  - **Rule 7 is a precondition batch, not a transaction.** The pedido and its pagamento land in ONE `WriteBatch`, each write under its own precondition: `create`, or `update(…, { lastUpdateTime })` on the snapshot the decision was derived from. A lost precondition writes nothing and re-derives everything from a fresh read (at most three attempts, then a retryable error). The watermark (`lastMarketplaceUpdate`, µs from `lastUpdatedTime`) is compared on that same snapshot: a strictly OLDER incoming stamp is dropped on a pedido this importer wrote, and an EQUAL stamp re-derives (an unchanged redelivery yields an empty patch and writes nothing; a package-only change that did not move the clock still lands). It is the same tier-2 guarantee with the optimistic check made explicit; no transaction is opened in `apps/amazon`, so the transaction inventory gains no row and the "class B" line above no longer applies. A pedido this importer never wrote is never treated as newer than the incoming read on its stored stamp alone; the estado and freight ladders still refuse any regression.
+  - **The index is declared here, not in step 9:** `prodAmazon (contaAmazonOuterRef ASC, sku ASC)`, COLLECTION_GROUP, READY before `functions:amazon` (W9). This supersedes "No new index expected".
+  - **Cliente and endereço:** the IBGE code is NOT resolved or stored at import (the NF-e path resolves it for every channel). The document comes from the `BUYER` tax registration, decided by its digits (11 ⇒ CPF, 14 ⇒ CNPJ, check digits verified), never by its type label; never from the recipient, the phone or the e-mail. The address prefers `extendedFields`, and `addressLine2` is never used as the number or appended to the complement. The `MARKETPLACE` registration check is root-aware (an 8-digit root or 14 digits; absent is never a mismatch) and a mismatch raises a per-conta aviso. A real PENDING read (2026-11-03) carries it as 14 bare digits, so the full-equality arm is the one in use.
+  - **`pedido.marketplace`** also carries `invoiceStatus`, `fulfilledBy` and `programs`, verbatim (step 15 reads `invoiceStatus` there). `cancelReason` is never stored (free text a buyer may type).
+  - **AFN and unknown logistics:** on CREATE, an order fulfilled by Amazon, or one whose `fulfilledBy` is absent or unknown, is created at estado `error` (no stock effect). On UPDATE a logistics signal never flips a stored estado that has a stock effect: `error` only from a pre-approval estado, otherwise the estado is kept. An Amazon-fulfilled order files a pedido incidente; an unknown `fulfilledBy` raises an aviso. This replaces "AFN: flagged, no stock effect, aviso". Tests pin the lifecycle of a PENDING order created without `fulfilledBy`, the provisional default capture C1 validates (PR 5-f): it is created at `error`, so nothing is reserved while it waits for payment; the first read with an approved status is the approval moment for the lines even when it still lacks `fulfilledBy` (the lines are mirrored there and locked after it); an approved `MERCHANT` read moves it to `pago`, creates the pagamento and resolves the aviso, and while every read lacks `fulfilledBy` it stays at `error` with the aviso open. Settled 2026-11-03: a real PENDING read carries `fulfilledBy: MERCHANT`, so it is created through the status table (`aguardandoConfirmacaoDePagamento`, reserving) and the create arm stays; the default above is only the defensive path for a read without the field.
+  - **Items → produto through the conta's link docs only** (the conta's `prodAmazon` docs by exact `sku`; a read that reaches its limit, or two owners, is ambiguous and binds nothing). No SKU match and no ASIN match until the listings discussion (D18) decides it: an unlinked line stays unbound with an incidente and no stock effect, and is bound when Amazon re-sends the order after a link doc exists.
+  - **Money:** the per-line price is `orderItems[].product.price.unitPrice`; the order discount goes to `descontoTotal` (the line discount stays 0); the freight money is SHIPPING minus its discount, `null` when absent (never 0); the pedido total is derived by the shared `derivePedidoFreteTotals`. This replaces "Money from `proceeds.breakdowns`" for the line price (the breakdowns still give the discount and the freight). Two proceeds shapes are never guessed into a split (PR 5-f), because the payment cross-check proves only the total and cannot see either: a DISCOUNT whose shipping part is not stated, on a line that also charges SHIPPING (no `SHIPPING` detail, and no documented non-shipping details adding up to the whole discount: the whole discount goes to the goods and the freight stays gross, so under FOB the note's total is understated with every total agreeing), and a TAX breakdown that is not exactly 0, counted on the lines and on the order level only when no line counts, since that level aggregates the lines (Amazon shows the tax apart, so its other amounts may be tax-exclusive while the line price is read as tax-inclusive). A read Amazon approved that carries either files a pedido incidente asking a person to check the NF-e's values before emission, plus one countable log line per read; the money itself is unchanged and the incidente does not block emission. Capture C1 (CP4) settles whether either shape occurs in BR.
+  - **D17, as built:**
+    - "or a pedido already invoiced" is NOT read: the pedido does not record an accepted NF-e, the `SHIPPED` and package signals cover a shipped order, and an invoiced, unshipped order that arrives zeroed without a cancellation signal takes the blocking arm, the conservative one;
+    - the "approved" lock is decided from the STORED pedido: the read that first sees approval mirrors Amazon, and the lock starts with the next one;
+    - an executed line cancellation on an order Amazon still has to ship BLOCKS (estado at our `[amazon]` error unless the goods are out or the freight removes stock, see below; a crítico aviso; one countable log event), at the approval moment too; before approval the line is mirrored with its stored positive values protected;
+    - a cancellation REQUEST alone only protects stored values, then branches on the pedido's print stamp: not printed ⇒ an aviso; printed ⇒ estado `cancelado` and a crítico aviso to accept the cancellation in Seller Central. A pedido cancelled on the ERP side is never reopened by an import (an aviso while Amazon still has it to ship);
+    - a FIRST-SEEN order that is already reversed (CANCELLED, a returned, refused or lost package, an executed line cancellation after shipment, a zeroed or emptied `SHIPPED`) is NOT imported at all, after the bounded wait of step 8 below; it is never created at `pago`;
+    - the order money (`descontoTotal`, the freight money and the derived total) is ONE group, kept or written as a unit;
+    - the CANCELLED estado comes from one predicate over the stored pedido, its stored pagamento and the freight: goods already out ⇒ the estado is kept (an incidente); a stored approved or refunded pagamento ⇒ `estornadoIntegralmente`; no pagamento, or one an operator moved off Amazon's ladder ⇒ `cancelado` (the latter with an incidente);
+    - a divergence over an estado the operator owns (`finalizado`, …) keeps it and only raises the aviso; lines an operator edited (`hasUserInteraction`) are never compared;
+    - a block never puts goods that left back on sale (PR 5-f): while the goods are out, or while the freight estado the pedido holds once the import lands is one that removes stock (packed, pickup scheduled, or later), the estado stays where the table puts it (`pago`) instead of our `[amazon]` error, and the crítico aviso and the log event are the block's signal. The lines stay locked all the same (the pedido is approved, and the block is re-derived on every read), and no pagamento is written. The stock sync reads only the freight estado beside the pedido's, so with the goods out and the freight still outside the removal set, `pago` HOLDS the reservation of units already gone instead of releasing it: a deliberate exception to "a divergence error releases the reservation". A pedido already held at our block error leaves it for `pago` as soon as that holds, on a read whose status or logistics is unknown too, or a `PENDING` one (never a `CANCELLED` one: its own rule decides). With the goods in and no removal, our error still releases the reservation, so other channels can sell those units while a person fixes the order;
+    - the block's lock survives a known pre-approval status (PR 5-f): our block error counts as approved whatever status a later read stores, and an approved pedido held at our error never moves back to `aguardandoConfirmacaoDePagamento`, so a `PENDING` read after a block (which Amazon does not document) keeps the error, and the next approved read compares instead of mirroring;
+    - the block's crítico aviso resolves only on an import that judges the lines and finds them agreeing (written or mirrored as they arrive, or compared equal, a shipped order included), or finds them edited by an operator (PR 5-f). An import that moves the estado without judging the lines (a shipped order that still shows the line cancellation, a regression, an unknown status, a cancellation) leaves it open, even when it takes the pedido from our error to `pago`.
+  - **Avisos and incidentes:** two aviso tipos, each with a `motivo` enum holding only motivos a later transition resolves: `amazonPedidoPrecisaAtencao` (per pedido: `divergencia-itens`, `logistica-desconhecida`, `aceitar-cancelamento`, `cancelado-so-no-erp`, `status-desconhecido`, `cancelamento-solicitado`, `pacote-status-desconhecido`, `coleta-cancelada`) and `amazonContaPrecisaAtencao` (per conta: `conta-sem-operacao`, `intermediador-divergente`). The informational motivos are pedido INCIDENTES, created once at a deterministic id: `logistica-amazon`, `valor-zerado`, `possivel-reembolso`, `cancelado-apos-envio`, `forma-pagamento-desconhecida`, `pagamento-divergente`, `pagamento-dividido`, and (PR 5-f) `desconto-nao-detalhado` and `imposto-destacado`. So D17's "raises an aviso" for a zeroed `SHIPPED` order is the `possivel-reembolso` incidente, and a first import's zero quantity or price is the `valor-zerado` incidente.
+  - **Observability:** the two `detail` values above are carried verbatim in the dispatch line's `itens` campo, beside `linhasPreservadas`, `linhasDivergentes` and `linhasSemProduto`; a dispatch that BLOCKED an order logs at WARNING.
+  - **Wiring:** the importer seam is filled by the step's last PR (5-e), in a table only the functions codebase imports. The backstop poll's importer gate is therefore permanently open, and the read switch `AMAZON_CHAMADAS` is the only gate left until W5.
+  - **Captures C1 (supersedes "Captures C1 settle §1.2 items 1–4b before merge"):** by the owner's decision of 2026-10-27 the stack merges WITHOUT the captures. Every rule that depends on them ships with a provisional, capture-dependent default (taken on the fail-safe side where a wrong guess would be dangerous), each with a named test to flip if the evidence disagrees. Validating those defaults against real responses (a read-only call the owner makes, never repository code, D11) is deferred and tracked on the tracker #1923, before the window.
+  - **Capture C1b (2026-11-03):** two more `getOrder` reads, kept apart from capture C1's: one order still PENDING when read, and the delivered re-read of C1's in-transit order (`capturasC1b.test.ts`). Where this plan says "capture C1", it means the 2026-10-28 reads only.
 
 ### Step 6: Payment → pagamento — PRE (same task as step 5)
 
 - **Wire:** `payment.paymentExecutions[]` (PAYMENT). **Id:** the same digest as the pedido.
-- **Mapping:** the §3 payment-form table; `valor` = the sum of the executions (reconciled against `proceeds.grandTotal`, which is what the seller receives); approved from UNSHIPPED; cancelled → the cancel/refund status. D17 applies: on a reversed sale (cancellation, return, refund) a zeroed payment amount changes the status but keeps the stored `valor`; on an approved order not yet shipped a changed amount is part of the blocking divergence.
+- **Mapping:** the §3 payment-form table; `valor` = the sum of the executions (reconciled against `proceeds.grandTotal`, which the model calls the seller's proceeds; on every capture-C1 read it equals the executions' sum, no fee deducted); approved from UNSHIPPED; cancelled → the cancel/refund status. D17 applies: on a reversed sale (cancellation, return, refund) a zeroed payment amount changes the status but keeps the stored `valor`; on an approved order not yet shipped a changed amount is part of the blocking divergence.
 - **Does NOT:** record Amazon fees (Finances, P3) or installments (not exposed).
+- **Amendment (2026-10-27, PR 6):**
+  - **`valor` is what the NF-e states, never `proceeds.grandTotal`** (the model's seller proceeds; capture C1 shows it equal to what the buyer paid, so it is never read in place of the executions). The executions' sum, minus the freight the buyer paid Amazon under any freight modalidade other than CIF (the owner's answer for FOB), is cross-checked against the pedido's derived total: equal ⇒ that sum; short or unreadable ⇒ the derived total plus the `pagamento-divergente` incidente (a short `valor` would let the Pagamentos tab relabel a paid pedido); above ⇒ the sum plus the same incidente. This replaces "reconciled against `proceeds.grandTotal`".
+  - **The forma is an EXACT `paymentMethod` match** (`CreditCard`, `Pix`, `Boleto`); anything else is `99` with the NF-e's `xPag` and the `forma-pagamento-desconhecida` incidente, and a `99` never overwrites a known stored forma. The card block comes from the shared marketplace card rule (`@delfrance/schemas`): a block on every card or Pix, the brand on cards only, the acquirer CNPJ validated to 14 characters.
+  - **Split payments:** ONE pagamento at the pedido's digest; the forma is the largest leg's (ties broken by a content key, never the array index) plus the `pagamento-dividido` incidente.
+  - **Status, paired with the pedido estado** and decided in the same batch: `aprovado` ⇔ `pago`, `estornado` ⇔ `estornadoIntegralmente`; a pagamento is created only at `aprovado` (never on a PENDING order, never on a reversal), and an approved read that is a possible reversal but leaves the pedido `pago` with no pagamento stored files `pagamento-divergente`, so a reversal never leaves an approved pedido without a money record in silence (PR 5-f; a block that keeps `pago` has its crítico aviso instead, and the first read after it ends creates the pagamento); a status an operator set is never walked; `estornado` → `aprovado` only on a strictly newer order clock.
 - **Verification:** each `paymentMethod` with a fallback; card/Pix carry the acquirer CNPJ + authorization code into the NF-e payment group.
 
 ### Step 7: Easy Ship status → `freteInicial` — PRE
@@ -629,10 +659,23 @@ Every step gets a Phase-3 step plan that Lucas approves before code is written (
 
 - **Rule 7:** state-preserving merge under the step-5 watermark; transitions only forward along the table.
 - **Does NOT:** write tracking back to Amazon (Amazon owns DBA tracking).
+- **Amendment (2026-10-27, PR 7):**
+  - **The ladder**, enumerated and forward only: `iniciado` < `aguardandoAutorizacao` < `aguardandoNFe` < `aguardandoValidacaoTransporadora` < `aguardandoAgendamento` < `despachoAutorizado` < `emSeparacao` < `empacotado` < `aguardandoPostagem` < `checkFinalizado` < `postado` < `recebidoPelaTransportadora` < `aCaminho` < `tentandoRealizarEntrega` < `entregue`, with the failures and the return leg beside it. A live state after a failure or a terminal one is written only on a STRICTLY newer order clock. Every later writer of the Amazon freight estado (steps 14 and 15) goes through the same verdict.
+  - **The intents above, as `freteInicial.estado`:** `PENDING_SCHEDULE` ⇒ `aguardandoNFe` or `aguardandoAgendamento` by `invoiceStatus` (absent ⇒ no change); `PENDING_PICK_UP`/`PENDING_DROP_OFF` ⇒ `aguardandoPostagem`; `PICKED_UP`/`DROPPED_OFF` ⇒ `postado`; `AT_ORIGIN_FC` ⇒ `recebidoPelaTransportadora`; `AT_DESTINATION_FC` ⇒ `aCaminho`; `OUT_FOR_DELIVERY` ⇒ `tentandoRealizarEntrega`; `DELIVERED` ⇒ `entregue`; the failure and return tokens ⇒ `falhaNaEntrega`, `enderecoNaoEncontrado`, `aCaminhoDoRemetente`, `devolvido`, `objetoExtraviado`. Exact match only; an unknown token changes nothing and raises the `pacote-status-desconhecido` aviso.
+  - **`LABEL_CANCELLED` ⇒ `despachoNegado` plus the `coleta-cancelada` aviso**, not "needs rescheduling": rescheduling stays in Seller Central (§7 q3), and a rescheduled package arrives as a newer read.
+  - **Several packages:** the least-advanced live package decides (the pedido leaves as a whole); one unknown or unkeyed package blocks the fold. The fold is computed before the CANCELLED decision, so goods already out keep a cancelled order's estado.
+  - **Goods out never reads back as goods in (review follow-up on #2042):** a stored estado where the goods have left (posted and later, a loss or failed delivery, the migrated residue) never moves to an estado where they are in, on any clock: a late `LABEL_CANCELLED` after the pickup keeps the stored estado (its diary row and the `coleta-cancelada` aviso still land), and a lost or failed package no longer resurrects into a waiting rung. A package diary row that once said the goods left keeps saying so, and the CANCELLED decision also reads the stored rows of the Amazon block, so a picked-up package behind a still-waiting sibling keeps a cancelled order from restocking. A package without a usable reference id leaves no row, so its evidence lasts only for the read that carries it (documented residual).
+  - **An unreadable package whose status says it left is goods out (PR 5-f):** the model requires only `packageStatus.status`, so a package can arrive without a `detailedStatus`, or with an undocumented one. For such a package alone, the closed `status` answers the CANCELLED decision's goods-out question: `IN_TRANSIT`, `SHIPPED`, `DELIVERED` and `UNDELIVERABLE` mean the goods left, so a cancelled order is kept with `cancelado-apos-envio` instead of restocking units the carrier holds; `PENDING`, `CANCELLED` or no status still release. A known `detailedStatus` always decides on its own. The package diary row records the status verbatim, so a later cancelled read without packages reads the same answer. This never sets the freight estado (no status-only floor): the fold stays blocked and the aviso stays raised. Documented residual: once a later read names the same package with a pre-pickup reading, its row no longer says the goods left, and an equal-clock stale re-derive does the same.
+  - **A migrated `fulfillment` block is goods out under a read without `fulfilledBy` too (PR 5-f):** `fulfilledBy` is optional in the v2026 model; every real read captured so far carries it (PENDING included, 2026-11-03), but the model does not promise it. A migrated pedido whose freight block holds `fulfillment` (the legacy residue: the package at the carrier's facility) counted as goods out only under a `MERCHANT` read, so a cancelled read without `fulfilledBy` released it and restocked units the carrier held. The CANCELLED decision now reads that block as goods out under such a read as well (kept, `cancelado-apos-envio`), unless the stored pedido is held at our own AFN error, the state an AFN create writes beside its own `fulfillment` seed. An AFN read still releases it, and the freight ladder still never walks the block under a read without `fulfilledBy`. Through step 5's block rule (a block never puts goods that left back on sale), a D17 block on such a read now keeps `pago` instead of our error. If the captures show that reads always carry `fulfilledBy`, this path is never taken.
+  - **The clock:** the freight group rides step 5's batch and applies on an EQUAL order clock, so a package-only change survives a clock that did not move; an empty diff writes nothing.
+  - **Moved to the steps that consume them:** the "already scheduled" set moves to step 15, and whether an accepted invoice clears step 14's freight error stamp is the step-14 plan's decision.
+  - **No in-transit refresh (verdict, 2026-11-03).** Capture C1b shows `lastUpdatedTime` moving on a package-only change, on one observation (n=1): the in-transit order, read again once delivered, has a later clock and differs, as far as the sanitized reads show, only in its package. The pickup is only inferred, and the other package statuses were never observed. That refutes "frozen on package events", so no refresh is built; the backstop poll (`lastUpdatedAfter`) would have re-listed this order once delivered (`capturasC1b.test.ts`). The equal-clock rule above stays the defence for a package event that does not move the clock.
 
 ### Step 8: DROPPED (template stuck-reservation release)
 
 Amazon cancels orders whose payment fails. `ORDER_CHANGE` (`OrderStatusChange` to CANCELLED) or the backstop poll carries the change to step 5, whose table releases the reservation.
+
+- **Amendment (2026-10-27, step 5):** step 8 stays dropped. Its one race is closed by a bounded retry: a first-seen order already CANCELLED (or otherwise reversed) is skipped with zero writes, a decision no precondition can guard, so while its change is younger than 15 minutes the import throws a retryable error (every retry re-fetches the order and re-reads the pedido), and the skip happens only once no importer can still hold an older read. Fifteen minutes is above the longest function timeout that runs the import (the reprocess sweep's 540 s; the queue's 120 s) plus a margin, pinned offline against the deployed options.
 
 ### Step 9 + 9b: Listing link (read-only) + the anchor trigger — PRE
 
@@ -741,9 +784,9 @@ The template's `'feed-assincrono'` warning applies: the notification pipeline ha
 - **Docs:** D:delivery-by-amazon-api; D:submit-an-invoice-delivery-by-amazon-order; D:check-the-invoice-status-for-a-delivery-by-amazon-order; release notes 2026-09-30.
 - **Wire:**
   1. `GET /delivery/2022-07-01/invoice/status?orderId&marketplaceId&invoiceType=Outbound&programType=EasyShip` **first**: idempotency is the live provider state.
-  2. If `NOT_FOUND`/`ERRORED`: `POST /delivery/2022-07-01/invoice?orderId=` `{invoiceContent: base64(nfeProc XML), contentMD5Value: base64(md5(xml bytes)), invoiceType: 'Outbound', programType: 'EasyShip', marketplaceId}`.
-  3. Enqueue the status check with backoff (1, 2, 5, 10, 30 min…, deadline 24 h), reading `orderInvoicingStatus` / `invoiceStatus` / `invoices[]`.
-  4. `ACCEPTED` ⇒ enqueue step 15.
+  2. If `NotFound`/`Errored`: `POST /delivery/2022-07-01/invoice?orderId=` `{invoiceContent: base64(nfeProc XML), contentMD5Value: base64(md5(xml bytes)), invoiceType: 'Outbound', programType: 'EasyShip', marketplaceId}`. ⚠️ This API answers in **PascalCase** (capture C2, `c2-status-aceita.json`: `orderInvoicingStatus`, `invoiceStatus` and `invoices[].status` all `Accepted`), while the order-level `tax.taxInvoicing.invoiceStatus` of the SAME order reads `ACCEPTED`: step 14 gets its own constant and never compares with the order-level `INVOICE_STATUS_AMAZON` (`frete/estadoFreteAmazon.ts`), which would match nothing.
+  3. Enqueue the status check with backoff (1, 2, 5, 10, 30 min…, deadline 24 h), reading `orderInvoicingStatus` first, then `invoiceStatus` / `invoices[].status` per invoice. The real body (C2) carries NO `amazonShipmentId` (the sandbox model does) and its `invoices[].id` is not a bare 44-digit NF-e chave: plan on neither.
+  4. `Accepted` ⇒ enqueue step 15.
   5. `Errored`/`Rejected`/`NotFound` after submit ⇒ aviso `nfeUploadRejeitado` + `freteInicial.estado = error` (deterministic failure, watermarked) and **never schedule**.
 - **Re-drive:** `POST /api/marketplace/amazon/enviar-nfe` (`PERM.pedido.write`).
 - **Firestore:** the failure stamp only; the happy path writes nothing (ML zero-write model).
@@ -788,6 +831,13 @@ The template's `'feed-assincrono'` warning applies: the notification pipeline ha
 - A conta trigger materialises or deactivates the conta's `'amz'` `int_frete` via `intFreteContaSync`.
 - A one-shot adoption script (`tools/migrations`, in the shape of Shopee's `migrate:shopee-int-frete`) adopts the migrated docs (W12).
 - **Firestore:** `int_frete` + its index. **Verification:** adoption dry run reports zero duplicates.
+- **Amendment (2026-10-20, PR 20-a):**
+  - The trigger is `onIntegracaoAmazonChanged` in the `amazon` functions codebase (its first Firestore trigger, the fourth `onDocumentWritten` on `integracao/{integracaoId}`), reconciling through the app's one binding `syncIntFreteAmazon` (`apps/amazon/lib/amazon/frete/intFrete.ts`, zero options). It makes no Amazon call and binds no secret.
+  - The index is `int_frete (tipo, contaAmazonContaFreteAmazonOuterRef, ativo, dataCadastro DESC)`, the twins' 4-field shape.
+  - A newly materialised doc is `amz-<integracaoId>` (rule 7 tier 0); a migrated doc keeps its legacy id and is adopted by the back-ref.
+  - No ruleset change: `int_frete` is outside rules-gen's validator whitelist, and both generators leave both rulesets and snapshots unchanged.
+  - Order in the window: W12 runs after the import and once the index is READY, and `functions:amazon` deploys only after W12's clean second dry run.
+- **Amendment (2026-10-21, PR 20-b):** the W12 pass is `migrate:amazon-int-frete` (`tools/migrations/src/2026-10-amazon-int-frete/`, the shared `intFreteAdocao` pass bound to the Amazon row with zero options, no `mapa` audit); runbook `tools/migrations/amazon-int-frete.README.md`.
 
 ### Step 21: `apps/web` — PRE, piecewise
 
@@ -800,10 +850,8 @@ The template's `'feed-assincrono'` warning applies: the notification pipeline ha
 
 ### Step 22: Deploy isolation, rosters, settle `reclamacoes`, flip `implementado` — PRE
 
-- `firebase.amazon.deploy.json` + `prepare-deploy.mjs` (`tools/deploy-env`).
-- The nested functions manifest pins `firebase-admin 14.2.0` / `firebase-functions 7.3.2` exactly (`runtime-deps-pinned.test.js`).
-- The `tasks-invoker-inventory` codebase count.
-- Root `CLAUDE.md` counts (App Hosting apps, codebases, lanes).
+- *(Amended in step 3, PR 3-d: the deploy plumbing — `firebase.amazon.deploy.json`, `prepare-deploy.mjs` and the `tools/deploy-env` preflight row — the codebase rosters (`tasks-invoker-inventory`, `runtime-deps-pinned`, `functions-export-names`) and the root `CLAUDE.md` manifest counts shipped with the functions codebase in step 3. The nested manifest's `firebase-admin` / `firebase-functions` pins follow the catalog exactly (14.5.0 / 7.4.0 today, the root `CLAUDE.md` exact-pin bump rule), never the 14.2.0 / 7.3.2 this step named before.)*
+- What stays here: the App Hosting rosters and the remaining root `CLAUDE.md` counts (App Hosting apps, codebases, lanes).
 - Capture C6 settles `reclamacoes`, then `implementado: true` and `registriesAlinhadas.test.ts`.
 
 ### P1–P3: POST-cutover
@@ -871,7 +919,7 @@ The template's `'feed-assincrono'` warning applies: the notification pipeline ha
 4. **Steps 2 + 2b + 21-conta.**
 5. **Steps 3 + 4** (receiver, pipeline, backstop, CI lane).
 6. **Step 20.**
-7. **Steps 5 + 6 + 7** (captures C1 first).
+7. **Steps 5 + 6 + 7** (captures C1 first). *(Amended 2026-10-27: built and merged without the captures; the capture-dependent defaults are validated later, tracked on #1923; see step 5's amendment.)*
 8. **⏸ The listings discussion (D18)**, then **steps 9 + 9b + 21-link** (order items need links).
 9. **Step 14 → step 15 + 21-etiqueta** (captures C2, C3 first).
 10. **Step 12a** (feed infrastructure), then **step 12 + 21-estoque.**
@@ -901,7 +949,7 @@ Each item below becomes an issue **only after Lucas says yes to opening it**. Th
 
 1. **W1: secrets + redirect URI.**
    - **Phase:** 0.
-   - **Action:** in the new project's Secret Manager, put the LWA client id and secret, `AMAZON_RELAY_KEY` and `AMAZON_OAUTH_STATE_SECRET`. Register the new redirect URI (custom domain) on the app.
+   - **Action:** in the new project's Secret Manager, put the LWA client id and secret, `AMAZON_RELAY_SECRET` (the same value also goes to AWS Secrets Manager for the relay; `AMAZON_RELAY_PREVIOUS_SECRET` only during a rotation) and `AMAZON_OAUTH_STATE_SECRET`. Register the new redirect URI (custom domain) on the app.
    - **Verify:** the routes boot.
    - **Why:** the backend cannot start without them, and the redirect URI must exist before W5.
 2. **W2: the AWS relay stack.**
@@ -950,7 +998,14 @@ Each item below becomes an issue **only after Lucas says yes to opening it**. Th
     - **Why:** an import fires no triggers.
 12. **W12: `int_frete` adoption pass** (step-20 script).
     - **Phase:** 2, before the functions deploy.
-    - **Action:** dry run, apply, dry run again.
+    - **Order:** after the import; after `int_frete (tipo, contaAmazonContaFreteAmazonOuterRef, ativo, dataCadastro DESC)` is READY (W9's index phase); before `functions:amazon`, which waits for this item's clean second dry run.
+    - **Action:** report-only, dry run, `--apply`, dry run again (runbook `tools/migrations/amazon-int-frete.README.md`):
+      - `pnpm --filter @delfrance/migrations migrate:amazon-int-frete --project <new> --report-only`
+      - `pnpm --filter @delfrance/migrations migrate:amazon-int-frete --project <new>`
+      - `pnpm --filter @delfrance/migrations migrate:amazon-int-frete --project <new> --apply`
+      - `pnpm --filter @delfrance/migrations migrate:amazon-int-frete --project <new>`
+    - **Verify:** the second dry run reports **0 contas com escrita planejada** and no `duplicados` / `nao-canonico` / `compartilhado` row; one active `amz` doc carries each active Amazon conta's canonical back-ref.
+    - **Why:** an import fires no trigger, so no imported conta reaches `onIntegracaoAmazonChanged`; the trigger has no tolerant scan; an earlier run is superseded by the legacy app's own later writes. A `duplicados` STOP is resolved by a person (the runbook's procedure: keep the doc the pedidos reference, else the lowest doc id; null the back-ref AND set `ativo: false` on every other twin; never delete).
 13. **W13: rotate the LWA client secret.**
     - **Phase:** 4, after the new integration's calls succeed.
     - **Action:** rotate in Developer Central; update the new project's secret.

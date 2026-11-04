@@ -39,11 +39,15 @@
  *
  * ## Callers
  *
- * The routes never import this module (a route test pins it). The first
- * production caller is step 3's notification classifier
+ * The credential routes never import this module (their route tests pin it).
+ * The first production caller is step 3's notification classifier
  * (`notificacoes/notificacao.ts`, a `LiAuthError` from the importer), through
- * {@link tratarFalhaDeAutenticacao}; the order poller (step-3 PR 3-e) is the
- * second.
+ * {@link tratarFalhaDeAutenticacao}; the order poller is the second; the paid
+ * re-check route (`GET …/pedidos/[pedidoId]/pagamento`, through
+ * `pedidos/conferenciaPagamento.ts` and the shared read-failure mapper
+ * `core/falhaDeLeituraLi.ts`, step 15) is the third — a 401/403 on its one read
+ * parks the conta and raises the reconexão aviso like any flow's. Whether a 403
+ * parks is each read route's choice there; a 401 always does.
  */
 import type { Firestore } from 'firebase-admin/firestore';
 import { credenciaisLojaIntegradaCollection } from '@delfrance/data/admin/collections';

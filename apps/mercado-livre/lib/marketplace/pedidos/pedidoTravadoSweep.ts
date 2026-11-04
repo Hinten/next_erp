@@ -96,6 +96,7 @@ import {
   STATUS_PAGAMENTO,
   TIPO_INCIDENTE,
   type EstadoPedido,
+  idFromRefOrNull,
 } from '@delfrance/schemas';
 import { millisToMicros } from '@delfrance/core/datetime';
 import {
@@ -232,10 +233,7 @@ function algumAprovado(docs: ReadonlyArray<{ data: () => unknown }>): boolean {
 
 /** `integracaoPedidoOuterRef` → the integração doc id, or null. */
 export function integracaoIdDoPedido(raw: Record<string, unknown>): string | null {
-  const ref = raw.integracaoPedidoOuterRef;
-  if (typeof ref !== 'string' || ref.length === 0) return null;
-  const id = ref.split('/').filter(Boolean).pop() ?? null;
-  return id != null && id.length > 0 ? id : null;
+  return idFromRefOrNull(raw.integracaoPedidoOuterRef);
 }
 
 /**
@@ -439,7 +437,8 @@ export async function runPedidoTravadoSweep(
         userId = typeof ctx.conta.user_id === 'number' ? ctx.conta.user_id : null;
         const channelCtx = await ctx.resolveChannelContext();
         const api = createMercadoLivreApi({
-          getAccessToken: async () => channelCtx.accessToken,
+          getAccessToken: channelCtx.getAccessToken,
+          onAccessTokenRejected: channelCtx.invalidateAccessToken,
         });
         order = await api.getOrder(orderId);
       } catch (err) {

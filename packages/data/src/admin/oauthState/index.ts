@@ -3,8 +3,11 @@
  * the per-attempt record that makes it single-use, and the PKCE helpers
  * (#821, #1034).
  *
- * ⚠️ One implementation for Mercado Livre, Melhor Envio and Mercado Pago. Before
- * this, all three carried hand-copied siblings and the drift was silent and real:
+ * ⚠️ One implementation for Mercado Livre, Melhor Envio and Mercado Pago — and,
+ * since, for Shopee (#1481) and Amazon (step 2 of its master plan,
+ * `apps/amazon/lib/amazon/conta/oauthState.ts`; no PKCE, so its `codeVerifier` is
+ * permanently `null`). Before this, the first three carried hand-copied siblings
+ * and the drift was silent and real:
  * `MAX_FUTURE_SKEW_MS` sat in Mercado Pago's copy alone for months (Mercado Livre
  * gained one in #998, Melhor Envio only in #1034), and the missing `nonce` store
  * left a captured `state` replayable for a full 10 minutes on all three — #998

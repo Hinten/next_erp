@@ -238,11 +238,21 @@ class FakeDb {
         get: async () => ({
           docs: [...col.entries()]
             .filter(([, d]) => d[field] === value)
-            .map(([docId, d]) => ({ id: docId, data: () => d, exists: true })),
+            .map(([docId, d]) => ({
+              id: docId,
+              data: () => d,
+              exists: true,
+              updateTime: self.versionOf(`${path}/${docId}`),
+            })),
         }),
       }),
       get: async () => ({
-        docs: [...col.entries()].map(([docId, d]) => ({ id: docId, data: () => d, exists: true })),
+        docs: [...col.entries()].map(([docId, d]) => ({
+          id: docId,
+          data: () => d,
+          exists: true,
+          updateTime: self.versionOf(`${path}/${docId}`),
+        })),
         empty: col.size === 0,
       }),
     };
@@ -1489,6 +1499,31 @@ describe('publishProduto — User-Products model resolution (#798)', () => {
       });
     });
   }
+
+  it.each([false, true])(
+    'publishing clears only an unchanged member failure (concurrent=%s)',
+    async (concurrent) => {
+      const db = new FakeDb();
+      seedFamily(db);
+      seedPublishedFamily(db, ['child-1']);
+      const path = 'produtos/child-1/variacaoMercadoLivre';
+      const id = 'var-child-1';
+      db.seed(path, id, { ...db.docs(path).get(id), estado: 'E', errors: ['old'], causas: [] });
+      const { api } = upApi();
+      if (concurrent) {
+        const original = vi.mocked(api.updateItem).getMockImplementation()!;
+        vi.mocked(api.updateItem).mockImplementation(async (itemId, body) => {
+          db.seed(path, id, { ...db.docs(path).get(id), estado: 'E', errors: ['newer'] });
+          return original(itemId, body);
+        });
+        await expect(publishProduto(makeDeps(db, api), PROD)).rejects.toMatchObject({ code: 9 });
+        expect(db.docs(path).get(id)).toMatchObject({ estado: 'E', errors: ['newer'] });
+      } else {
+        await publishProduto(makeDeps(db, api), PROD);
+        expect(db.docs(path).get(id)).toMatchObject({ estado: null, errors: [], causas: [] });
+      }
+    },
+  );
 
   describe('the parent-sku characteristic survives a half-failed fan-out (#1400)', () => {
     const carregaSkuPai = (payload: unknown): boolean =>

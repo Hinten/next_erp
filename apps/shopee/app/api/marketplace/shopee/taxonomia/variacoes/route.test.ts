@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { z } from 'zod';
 import { PERM } from '@delfrance/auth';
 import { READ_CACHE_DISABLED_ENV, __resetAllReadCaches } from '@delfrance/data/admin/cache';
 import {
@@ -7,6 +6,10 @@ import {
   SHOPEE_GET_VARIATION_TREE_PATH_ALT,
   ShopeeNetworkError,
 } from '@delfrance/integrations-shopee';
+import {
+  respostaVariacoesShopeeSchema,
+  variacaoDtoSchema as variacaoCompartilhada,
+} from '@delfrance/schemas';
 
 import { ShopeeContaNotConfiguredError } from '@/lib/shopee/core/shopee';
 import { __setShopeeTaxonomiaClockForTests } from '@/lib/shopee/taxonomia/cache';
@@ -35,12 +38,13 @@ const { GET } = await import('./route');
 const READER = { uid: 'u1', permissions: PERM.integracao.read.toString() };
 const AUTORIZADO = { authorization: 'Bearer t' };
 
-const corpoSchema = z.object({
-  leaf: z.boolean(),
-  categoryId: z.number().int(),
-  standardiseVariationList: z.array(variacaoDtoSchema),
-  pathUsed: z.string(),
-});
+/**
+ * The SHARED envelope (#1911 P2) — declared once in `@delfrance/schemas` for
+ * this route and its browser readers — never a test-local twin. Bound to the old
+ * local name so every case below is byte-unedited: P2 is behaviour-neutral, and
+ * those cases staying green UNCHANGED is the proof.
+ */
+const corpoSchema = respostaVariacoesShopeeSchema;
 
 function categoria(category_id: number, parent_category_id: number, has_children: boolean) {
   return {
@@ -246,5 +250,47 @@ describe('os erros', () => {
     await expect(
       GET(req({ integracaoId: 'int-1', categoryId: '100182' }, AUTORIZADO)),
     ).rejects.toBeInstanceOf(TypeError);
+  });
+});
+
+describe('o contrato compartilhado com apps/web (#1911 P2)', () => {
+  it('a variação que este app re-exporta É a de @delfrance/schemas — nunca uma cópia', () => {
+    expect(variacaoDtoSchema).toBe(variacaoCompartilhada);
+  });
+
+  it.each([
+    ['uma folha', '100182'],
+    ['uma categoria do meio', '100100'],
+  ])(
+    'o 200 de %s volta IGUAL do schema compartilhado — nenhuma chave descartada',
+    async (_c, id) => {
+      const res = await GET(req({ integracaoId: 'int-1', categoryId: id }, AUTORIZADO));
+      const body = (await res.json()) as Record<string, unknown>;
+
+      expect(res.status).toBe(200);
+      expect(respostaVariacoesShopeeSchema.parse(body)).toEqual(body);
+      expect(Object.keys(body).sort()).toEqual(
+        Object.keys(respostaVariacoesShopeeSchema.shape).sort(),
+      );
+    },
+  );
+
+  it('a folha chega ao schema com a árvore inteira — o parse acima não é vazio', async () => {
+    const res = await GET(req({ integracaoId: 'int-1', categoryId: '100182' }, AUTORIZADO));
+    const lido = respostaVariacoesShopeeSchema.parse(await res.json());
+
+    expect(lido.standardiseVariationList).toEqual([
+      {
+        variationId: 100012345678901,
+        variationName: 'Tamanho',
+        variationGroupList: [
+          {
+            variationGroupId: 200000000000001,
+            variationGroupName: 'Numérico',
+            variationOptionList: [{ variationOptionId: 0, variationOptionName: 'Personalizado' }],
+          },
+        ],
+      },
+    ]);
   });
 });

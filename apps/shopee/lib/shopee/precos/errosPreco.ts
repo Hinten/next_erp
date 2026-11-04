@@ -453,12 +453,20 @@ export const CODIGO_ENVIO_PRECO_EM_ANDAMENTO = 'SHOPEE_PRICE_SYNC_RUNNING';
  * ⚠️ It EXTENDS `ShopeeError`, the step-9 twin's position, so the start route
  * must narrow it BEFORE its generic Shopee arm — which would otherwise answer
  * a busy conta as a generic failure instead of 409.
+ *
+ * `jobId` is the LIVE run's id — the guard query's own hit, so it costs no
+ * read — and the 409 carries it so the web can attach to that run (poll and
+ * cancel it) instead of answering a busy conta with a dead button. REQUIRED:
+ * the compiler finds every throw. A reclaimed orphan never reaches this class.
  */
 export class ShopeeEnvioPrecoEmAndamentoError extends ShopeeError {
   readonly code = CODIGO_ENVIO_PRECO_EM_ANDAMENTO;
   readonly status = 409;
 
-  constructor(message: string) {
+  constructor(
+    message: string,
+    readonly jobId: string,
+  ) {
     super(message);
     this.name = 'ShopeeEnvioPrecoEmAndamentoError';
   }

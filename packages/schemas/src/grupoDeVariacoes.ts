@@ -65,8 +65,18 @@ export type Variante = z.infer<typeof varianteSchema>;
 /**
  * GrupoDeVariacoes — collection of variation groups (Tamanho, Cor, etc).
  * Mirrors `GrupoDeVariacoes` in `packages/produtos/lib/src/models.dart`.
- * Shopee links are typed. Loja Integrada and Amazon remain legacy JSON until
- * those channels define their own contracts.
+ *
+ * The marketplace link arrays:
+ *  - Shopee links are typed here, field and element.
+ *  - Loja Integrada's contract is the ELEMENT schema, its tolerant reader and its
+ *    uniqueness validator in `produto/collection/lojaIntegradaLinkVariacoes.ts`,
+ *    enforced where a link is WRITTEN (the web linker, the product import) and
+ *    checked by the publish pre-flight, which writes no link. The field below
+ *    stays `z.array(z.json())` ON PURPOSE: the form validates the whole document
+ *    on every save, so a typed field would let one half-made stored link block
+ *    renaming the grupo or adding a size — the trap the Loja Integrada conta
+ *    screen already hit. Read it only through `lerLinksVariacoesLi`.
+ *  - Amazon remains legacy JSON until that channel defines its own contract.
  */
 export const grupoDeVariacoesSchema = z.object({
   nome: z.string().min(1),

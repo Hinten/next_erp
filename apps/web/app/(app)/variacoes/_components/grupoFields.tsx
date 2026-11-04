@@ -2,28 +2,59 @@
 
 import { Select } from '@mantine/core';
 import { type FieldConfig, stripMarkedForDeletion } from '@delfrance/ui';
-import { TIPO_VARIACAO_LABELS, type Variante } from '@delfrance/schemas';
+import {
+  INTEGRACAO_TIPO,
+  TIPO_VARIACAO_LABELS,
+  marketplaceCapsFor,
+  type Variante,
+} from '@delfrance/schemas';
 import { VarianteEditor } from './VarianteEditor';
+import { VinculadorLojaIntegrada } from './VinculadorLojaIntegrada';
+import { prepararVinculosLi, rebaseVinculosLi } from './vinculadorLi';
 
 /**
  * Shared ObjectView configuration for the `grupoDeVariacoes` create (`novo`)
  * and edit (`[id]`) screens, so labels, tabs and the custom inputs stay in sync.
  */
 
+/** The tab of the Loja Integrada variation links (master plan step 10). */
+export const SECAO_LOJA_INTEGRADA = 'Loja Integrada';
+
+/**
+ * Whether the grupo screens carry the Loja Integrada tab: the channel's
+ * capability row says it has variations. Deliberately NOT gated on the channel
+ * being switched on — the links are ERP data, and the backend refuses every
+ * store read by itself until the cutover.
+ */
+export const VINCULADOR_LI_VISIVEL =
+  marketplaceCapsFor(INTEGRACAO_TIPO.lojaIntegrada).variacoes === 'sim';
+
 /** Tab order for the grupo ObjectView. */
-export const GRUPO_SECTIONS: string[] = ['Dados gerais', 'Variantes'];
+export const GRUPO_SECTIONS: string[] = VINCULADOR_LI_VISIVEL
+  ? ['Dados gerais', 'Variantes', SECAO_LOJA_INTEGRADA]
+  : ['Dados gerais', 'Variantes'];
+
+/**
+ * Tabs kept FULLY mounted while hidden: the Loja Integrada tab publishes the
+ * form's seed to the page's `validate` from an effect, which must run even when
+ * the tab was never opened (it reads the store only while it is the active tab).
+ */
+export const GRUPO_PERSISTENT_SECTIONS: readonly string[] = VINCULADOR_LI_VISIVEL
+  ? [SECAO_LOJA_INTEGRADA]
+  : [];
 
 /**
  * Fields hidden from the grupo ObjectView: audit stamps, the denormalized id
  * list (`variacoesIds` is derived on save), and the marketplace link arrays
- * (Shopee / Loja Integrada / Amazon) that only the legacy app ever authored.
+ * that only the legacy app ever authored (Shopee, Amazon). The Loja Integrada
+ * array is authored by its tab.
  */
 export const GRUPO_EXCLUDED_FIELDS: string[] = [
   'timestamp',
   'ultimaModificacao',
   'variacoesIds',
   'linksVariacoesShopee',
-  'linksVariacoesli',
+  ...(VINCULADOR_LI_VISIVEL ? [] : ['linksVariacoesli']),
   'linksVariacoesAmazon',
 ];
 
@@ -42,6 +73,20 @@ export function deriveVariacoesIds(values: Record<string, unknown>): { variacoes
   return { variacoesIds: [...new Set(variacoes.map((v) => v.id))] };
 }
 
+/**
+ * The `novo` page's `transformCopiedValues`: a copy ("copiar" on the list)
+ * starts with NO Loja Integrada links. A create writes every field, so a copied
+ * link would be created by that save while counting as untouched (it is the
+ * form's seed) and skipping every check a new link must pass; and a valid one
+ * would put the same store grade and options in two grupos, which publishing
+ * and importing treat as ambiguous for both. The operator links the copy.
+ */
+export function copiarGrupoSemVinculosLi(
+  origem: Readonly<Record<string, unknown>>,
+): Record<string, unknown> {
+  return { ...origem, linksVariacoesli: null };
+}
+
 const TIPO_OPTIONS = Object.entries(TIPO_VARIACAO_LABELS).map(([value, label]) => ({
   value,
   label,
@@ -51,7 +96,10 @@ const TIPO_OPTIONS = Object.entries(TIPO_VARIACAO_LABELS).map(([value, label]) =
  * Per-field overrides. `tipo` is an int-coded enum (0/1/2) the schema models as
  * a union of number literals, so it renders through a custom Select that maps
  * to/from strings; `variacoes` renders the {@link VarianteEditor} and stages
- * deletions via `stripMarkedForDeletion`.
+ * deletions via `stripMarkedForDeletion`; `linksVariacoesli` renders the Loja
+ * Integrada tab, writes back every entry it did not touch as stored (its
+ * `prepareForSave` only drops staged removals and strips the tab's marks), and
+ * merges link by link on a conflicting save.
  */
 export const grupoFields: Record<string, FieldConfig> = {
   nome: { label: 'Nome', section: 'Dados gerais' },
@@ -90,6 +138,20 @@ export const grupoFields: Record<string, FieldConfig> = {
     renderInput: (p) => (
       <VarianteEditor
         value={(p.value as Variante[] | null) ?? null}
+        onChange={p.onChange}
+        disabled={p.disabled}
+        error={p.error}
+      />
+    ),
+  },
+  linksVariacoesli: {
+    label: 'Vínculos da Loja Integrada',
+    section: SECAO_LOJA_INTEGRADA,
+    prepareForSave: prepararVinculosLi,
+    rebaseOnConflict: { label: 'mescla por vínculo', merge: rebaseVinculosLi },
+    renderInput: (p) => (
+      <VinculadorLojaIntegrada
+        value={p.value}
         onChange={p.onChange}
         disabled={p.disabled}
         error={p.error}

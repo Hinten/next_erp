@@ -13,6 +13,7 @@ import {
   LiCredencialAlteradaError,
   LiCredencialAusenteError,
   LiCredencialInvalidaError,
+  LiCredencialTrocadaError,
   LiEstacionamentoEmConflitoError,
 } from './erros';
 import {
@@ -23,8 +24,11 @@ import {
   respostaChamadasDesligadas,
   respostaDeErroLi,
   respostaDeVeredito,
+  respostaIdDePedidoInvalido,
   respostaIdInvalido,
   respostaLi,
+  respostaPedidoNaoEncontrado,
+  respostaRotaEmConflito,
   respostaTokenDeOutraConta,
   respostaTokenNaRef,
   respostaValidadeRecusada,
@@ -41,6 +45,9 @@ describe('respostaDeErroLi', () => {
     [new LiContaParadaError(ID, 401, 1), 409, CODIGO_ERRO_LI.reconexaoPendente],
     [new LiEstacionamentoEmConflitoError(ID, 3), 503, CODIGO_ERRO_LI.estacionamentoEmConflito],
     [new LiChamadasDesligadasError(ID), 503, CODIGO_ERRO_LI.chamadasDesligadas],
+    // Raised only by the write context (a functions run), never by a route; mapped
+    // anyway so the mapper stays total over every app class.
+    [new LiCredencialTrocadaError(ID), 409, CODIGO_ERRO_LI.credencialAlterada],
   ] as const;
 
   for (const [err, status, code] of casos) {
@@ -193,9 +200,31 @@ describe('the fixed answers', () => {
     expect(CODIGO_ERRO_LI.chamadasDesligadas).not.toBe(CODIGO_ERRO_LI.estacionamentoEmConflito);
   });
 
+  it('the pedidos routes: a bad pedido id is 400, a missing pedido 404, a routing write that kept losing 503 — each with its own code', async () => {
+    const id = respostaIdDePedidoInvalido();
+    expect(id.status).toBe(400);
+    expect(await id.json()).toEqual({
+      error: 'Id de pedido inválido.',
+      code: CODIGO_ERRO_LI.idInvalido,
+    });
+    const ausente = respostaPedidoNaoEncontrado();
+    expect(ausente.status).toBe(404);
+    expect(await ausente.json()).toMatchObject({ code: CODIGO_ERRO_LI.pedidoNaoEncontrado });
+    const conflito = respostaRotaEmConflito();
+    expect(conflito.status).toBe(503);
+    expect(await conflito.json()).toMatchObject({ code: CODIGO_ERRO_LI.rotaEmConflito });
+    // Near-miss: the routing conflict shares its status with the park's and the switch's, never
+    // their code — the web keys its advice on the code.
+    expect(CODIGO_ERRO_LI.rotaEmConflito).not.toBe(CODIGO_ERRO_LI.estacionamentoEmConflito);
+    expect(CODIGO_ERRO_LI.rotaEmConflito).not.toBe(CODIGO_ERRO_LI.chamadasDesligadas);
+  });
+
   it('every refusal parses as the shared error envelope', async () => {
     for (const res of [
       respostaIdInvalido(),
+      respostaIdDePedidoInvalido(),
+      respostaPedidoNaoEncontrado(),
+      respostaRotaEmConflito(),
       respostaChamadasDesligadas(),
       respostaTokenNaRef(),
       respostaTokenDeOutraConta(),

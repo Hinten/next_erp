@@ -22,9 +22,13 @@ import { type MercadoLivreOAuthConfig, exchangeCode } from '@delfrance/integrati
 
 import { invalidateConta, readConta } from './contaCache';
 import {
+  accessTokenScope,
+  getCachedAccessToken,
+  invalidateCachedAccessToken,
+} from './accessTokenCache';
+import {
   type TokenDuravelStore,
   createTokenDuravelStore,
-  getOrRefreshAccessToken,
   tokenDuravelFromResponse,
 } from './tokenStore';
 
@@ -100,6 +104,11 @@ export function mercadoLivreOAuthConfig(): MercadoLivreOAuthConfig {
   return { clientId, clientSecret, redirectUri: mercadoLivreRedirectUri() };
 }
 
+export interface MercadoLivreChannelContext extends ChannelContext {
+  /** Evict only the access token rejected by a provider response. */
+  invalidateAccessToken(rejectedToken: string): void;
+}
+
 export interface MercadoLivreContext {
   readonly integracaoId: string;
   /** The parsed integração doc (tabelas/depósito refs ride through). */
@@ -110,7 +119,7 @@ export interface MercadoLivreContext {
    * it, concurrency-safe) and packs the per-account `account` bag. Throws
    * `MercadoLivreReauthRequiredError` when the account must reconnect via OAuth.
    */
-  resolveChannelContext(now?: number): Promise<ChannelContext>;
+  resolveChannelContext(now?: number): Promise<MercadoLivreChannelContext>;
   /**
    * Exchange an authorization code and persist the resulting credential.
    * `codeVerifier` is the PKCE proof (RFC 7636) minted by the connect route and
@@ -171,7 +180,10 @@ export function buildMercadoLivreContext(
   conta: Integracao,
 ): MercadoLivreContext {
   const oauthConfig = mercadoLivreOAuthConfig();
-  const store = createTokenDuravelStore(db, integracaoId);
+  const tokenScope = accessTokenScope(db, oauthConfig.clientId, integracaoId);
+  const store = createTokenDuravelStore(db, integracaoId, {
+    onCredentialsChanged: () => invalidateCachedAccessToken(tokenScope),
+  });
 
   // The per-account singularity (ML `user_id`) is a typed field on
   // `integracaoSchema` (#289) rather than opaque passthrough. Pass the parsed
@@ -182,17 +194,14 @@ export function buildMercadoLivreContext(
     integracaoId,
     conta,
     store,
-    async resolveChannelContext(now: number = Date.now()): Promise<ChannelContext> {
-      const accessToken = await getOrRefreshAccessToken(store, oauthConfig, { now });
+    async resolveChannelContext(now: number = Date.now()): Promise<MercadoLivreChannelContext> {
+      const accessToken = await getCachedAccessToken(tokenScope, store, oauthConfig, { now });
       return {
         integracaoId,
         accessToken,
-        // ⚠️ The thunk re-reads the clock and the store on every call; the
-        // `accessToken` beside it is a SNAPSHOT of this moment. They differ for
-        // anything long-running — a sweep page, a mass-import dispatch, a
-        // resumable job can all outlive the grant the snapshot captured. New
-        // code takes the thunk; the field stays because ~25 call sites read it.
-        getAccessToken: () => getOrRefreshAccessToken(store, oauthConfig, { now: Date.now() }),
+        // The getter checks expiry before every operation, including long jobs.
+        getAccessToken: () => getCachedAccessToken(tokenScope, store, oauthConfig),
+        invalidateAccessToken: (token) => invalidateCachedAccessToken(tokenScope, token),
         account,
       };
     },

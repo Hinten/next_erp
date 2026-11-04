@@ -20,16 +20,26 @@ import {
   INTEGRACAO_FRETE,
   integracaoSchema,
   INTEGRACAO_TIPO,
+  ESTADO_ANUNCIO_SHOPEE,
+  linhaDeMarcaParaGravarShopee,
+  motivoRecusaMarcaShopee,
+  PRODUTO_EXTRA_DATA_DOC_ID,
+  produtoExtraDataSchema,
+  produtoShopeeLinkSchema,
+  SHOPEE_ITEM_STATUS,
   MODALIDADE_FRETE,
   MODO_LINK_PAGAMENTO,
+  preimagemPedidoLi,
   seedFreteInicial,
   SEVERIDADE_AVISO,
   STATUS_LINK_PAGAMENTO,
   STATUS_PAGAMENTO,
   TIPO_AVISO,
+  type MarcaDto,
   type MlSizeChart,
   type Mensagem,
   TIPO_INTEGRACAO_PGTO,
+  VINCULO_INT_FRETE_CONTA,
   whatsappIdentidadeSchema,
 } from '@delfrance/schemas';
 import { millisToMicros } from '@delfrance/core/datetime';
@@ -954,6 +964,40 @@ export async function seedLojaIntegradaFixtures(
 }
 
 /**
+ * The SP-API models' sandbox placeholder for a seller id — never a real seller.
+ * The value the Amazon OAuth callback would write, shaped like one.
+ */
+const SELLING_PARTNER_ID_E2E = 'AXXXXXXXXXXXXX';
+
+/**
+ * Amazon (tipo 8) fixture set — see `seedIntegracaoFixtures` — whose FIRST conta
+ * is bound to a seller. Its writer is the OAuth callback, through the Admin SDK
+ * (the form shows it read-only), so the seed writes it the same way, never
+ * through the UI.
+ */
+export async function seedAmazonFixtures(
+  prefix: string,
+  n: number,
+): Promise<{
+  filialId: string;
+  listaId: string;
+  depositoId: string;
+  contaComVendedorId: string;
+  sellingPartnerId: string;
+}> {
+  if (n < 1) {
+    throw new Error('seedAmazonFixtures: n must be >= 1 — the first conta carries the seller');
+  }
+  const refs = await seedIntegracaoFixtures(prefix, n, 8);
+  const contaComVendedorId = `${prefix}-${pad(1)}`;
+  await db()
+    .collection('integracao')
+    .doc(contaComVendedorId)
+    .update({ selling_partner_id: SELLING_PARTNER_ID_E2E });
+  return { ...refs, contaComVendedorId, sellingPartnerId: SELLING_PARTNER_ID_E2E };
+}
+
+/**
  * WhatsApp (tipo 6) fixture set — see `seedIntegracaoFixtures`, then patches
  * each doc with the flat WhatsApp fields (#528) the `/canais/whatsapp`
  * screen reads: `numero` (the TableView column) and `wa_id`/`phoneNumberId`
@@ -1007,14 +1051,302 @@ export async function cleanupMercadoLivreFixtures(prefix: string): Promise<void>
   await cleanupIntegracaoFixtures(prefix);
 }
 
-/** Teardown for `seedShopeeFixtures`. */
+/**
+ * Every `brandshopee` row (the conta's brand shortlist, #1911 P9) under each
+ * Shopee conta the prefix sweep is about to delete. A SUBCOLLECTION: deleting
+ * the conta never cascades to it, and the sweep finds contas by `nome` — so
+ * the rows must go BEFORE their conta does, or nothing would find them again.
+ */
+async function cleanupMarcasShopeeDasContas(prefix: string): Promise<void> {
+  const contas = await db()
+    .collection('integracao')
+    .where('nome', '>=', prefix)
+    .where('nome', '<', `${prefix}${PREFIX_MAX}`)
+    .select()
+    .get();
+  await Promise.all(
+    contas.docs.map(async (conta) => {
+      const marcas = await conta.ref.collection('brandshopee').get();
+      if (marcas.empty) return;
+      const batch = db().batch();
+      marcas.docs.forEach((d) => batch.delete(d.ref));
+      await batch.commit();
+    }),
+  );
+}
+
+/**
+ * Teardown for `seedShopeeFixtures`, the contas' `brandshopee` rows first (see
+ * {@link cleanupMarcasShopeeDasContas}). Only here: the sweep shared by every
+ * channel stays parents-only.
+ */
 export async function cleanupShopeeFixtures(prefix: string): Promise<void> {
+  await cleanupMarcasShopeeDasContas(prefix);
   await cleanupIntegracaoFixtures(prefix);
+}
+
+/**
+ * Register ONE brand on a Shopee conta's shortlist,
+ * `integracao/{integracaoId}/brandshopee` (#1911 P9), the way the conta's
+ * Marcas section writes it: through `linhaDeMarcaParaGravarShopee`
+ * (`@delfrance/schemas`, that section's writer rule), so the row sits at
+ * `String(brand_id)` with exactly the three fields a new row stores, and a
+ * fixture cannot drift from what a draft's brand picker (P10) reads. Throws
+ * for a brand that rule refuses: a seed never holds a row the section could
+ * not have written. Answers the row's doc id.
+ *
+ * Call it once `seedShopeeFixtures` has made the conta:
+ * `cleanupShopeeFixtures` finds the rows THROUGH their conta (Firestore never
+ * cascades), so a row under a conta that was never made is swept by nothing.
+ */
+export async function seedMarcaShopee(integracaoId: string, marca: MarcaDto): Promise<string> {
+  const linha = linhaDeMarcaParaGravarShopee(marca);
+  if (linha === null) {
+    throw new Error(
+      `seedMarcaShopee: brand ${String(marca.brandId)} refused (${String(motivoRecusaMarcaShopee(marca))})`,
+    );
+  }
+  await db()
+    .collection('integracao')
+    .doc(integracaoId)
+    .collection('brandshopee')
+    .doc(linha.docId)
+    .set(linha.data);
+  return linha.docId;
 }
 
 /** Teardown for `seedLojaIntegradaFixtures`. */
 export async function cleanupLojaIntegradaFixtures(prefix: string): Promise<void> {
   await cleanupIntegracaoFixtures(prefix);
+}
+
+/** Teardown for `seedAmazonFixtures`. */
+export async function cleanupAmazonFixtures(prefix: string): Promise<void> {
+  await cleanupIntegracaoFixtures(prefix);
+}
+
+/** Full data of the `integracao` doc `id`, or null (an Admin read — strongly consistent). */
+export async function getIntegracaoById(id: string): Promise<Record<string, unknown> | null> {
+  const data = (await db().collection('integracao').doc(id).get()).data();
+  return data ? (data as Record<string, unknown>) : null;
+}
+
+/**
+ * The `mapa` every conta of {@link seedLojaIntegradaFreteFixtures} starts with:
+ * three schema-COMPLETE rows (all seven keys), so a save that rewrites the
+ * array can be compared row by row — a row the operator did not touch must
+ * come back byte-identical.
+ */
+export function mapaFreteLiE2e(): Record<string, unknown>[] {
+  const linha = (n: number, code: string): Record<string, unknown> => ({
+    nomeOriginal: `Forma ${n}`,
+    idOriginal: `${1000 + n}---${code}`,
+    observacao: `Origem: Pedido ${n}`,
+    nomeTarget: null,
+    targetData: null,
+    integracaoUid: null,
+    targetTipoIntegracao: INTEGRACAO_FRETE.outros,
+  });
+  return [linha(1, 'A'), linha(2, 'B'), linha(3, 'null')];
+}
+
+/** The deterministic id the server core gives a Loja Integrada conta's freight doc. */
+export function intFreteIdDaContaLi(contaId: string): string {
+  return `${VINCULO_INT_FRETE_CONTA.lojaIntegrada.prefixoDocId}-${contaId}`;
+}
+
+/**
+ * Loja Integrada contas WITH their freight doc (step 20, #1826), for the conta
+ * screen's "Mapeamento do Frete" / "Horário de Corte" tabs, plus the two
+ * freight integrations a `mapa` row can be pointed at: a Motoboy and a Melhor
+ * Envio account.
+ *
+ * ⚠️ The freight doc is written FIRST, at the server core's deterministic id,
+ * with the canonical back-ref and the conta's mirrored values (`nome`, `ativo`,
+ * filial, `dataCadastro`); only THEN is the conta written. So the suite holds
+ * whether or not the conta trigger runs on the target project: a trigger finds
+ * this doc by its back-ref, plans it in sync, and writes nothing — it never
+ * creates a second one.
+ */
+export async function seedLojaIntegradaFreteFixtures(
+  prefix: string,
+  n: number,
+): Promise<{ contaIds: string[]; motoboyId: string; melhorEnvioId: string }> {
+  const filialId = `${prefix}-ref-filial`;
+  const filialRef = `documents/filiais/${filialId}`;
+  const dataCadastro = Date.now();
+  const vinculo = VINCULO_INT_FRETE_CONTA.lojaIntegrada;
+
+  await db()
+    .collection('filiais')
+    .doc(filialId)
+    .set({
+      razaoSocial: `${prefix}-ref-filial`,
+      fantasia: null,
+      cnae: null,
+      cnpj: '99999999999962',
+      ie: '999999999',
+      iest: null,
+      imun: null,
+      sede: {
+        idExterno: null,
+        logradouro: 'Av. Teste',
+        numero: '1',
+        bairro: 'Centro',
+        complemento: null,
+        cep: '01310100',
+        codigoMunicipio: null,
+        cidade: 'São Paulo',
+        estado: 'SP',
+        cPais: null,
+        pais: null,
+        nome: null,
+        cpf_cnpj: null,
+        rg: null,
+        ie: null,
+        imun: null,
+        email: null,
+        telefone: null,
+      },
+      timestamp: dataCadastro,
+    });
+
+  const intFreteBase = {
+    ativo: true,
+    filialIntegracaoFreteOuterRef: filialRef,
+    contaMercadoLivreMercadoEnviosOuterRef: null,
+    contaShopeeFreteOuterRef: null,
+    contaLojaIntegradaEnviosOuterRef: null,
+    contaAmazonContaFreteAmazonOuterRef: null,
+    enderecoDeOrigem: null,
+    dataCadastro,
+    ultimaModificacao: dataCadastro,
+    mapa: null,
+    faixaCep: null,
+    horarioDeCorte: null,
+    prazoExtra: 0,
+    client_id: null,
+    client_secret: null,
+  };
+  const motoboyId = `${prefix}-motoboy`;
+  const melhorEnvioId = `${prefix}-me`;
+  const alvos = db().batch();
+  alvos.set(db().collection('int_frete').doc(motoboyId), {
+    ...intFreteBase,
+    tipo: INTEGRACAO_FRETE.motoboy,
+    nome: motoboyId,
+  });
+  alvos.set(db().collection('int_frete').doc(melhorEnvioId), {
+    ...intFreteBase,
+    tipo: INTEGRACAO_FRETE.melhorEnvios,
+    nome: melhorEnvioId,
+  });
+  await alvos.commit();
+
+  const contaIds = Array.from({ length: n }, (_, i) => `${prefix}-${pad(i + 1)}`);
+  const fretes = db().batch();
+  for (const contaId of contaIds) {
+    fretes.set(db().collection('int_frete').doc(intFreteIdDaContaLi(contaId)), {
+      ...intFreteBase,
+      tipo: vinculo.tipoFrete,
+      nome: contaId,
+      [vinculo.campoBackRef]: `documents/integracao/${contaId}`,
+      mapa: mapaFreteLiE2e(),
+    });
+  }
+  await fretes.commit();
+
+  const contas = db().batch();
+  for (const contaId of contaIds) {
+    contas.set(db().collection('integracao').doc(contaId), {
+      tipo: vinculo.tipoConta,
+      padrao: false,
+      nome: contaId,
+      cpf_cnpj: null,
+      idCadIntTran: null,
+      ativo: true,
+      cor: null,
+      modalidadeFreteImportacao: null,
+      filialIntegracaoPedidoOuterRef: filialRef,
+      tabelaNormalOuterRef: null,
+      tabelaPromocionalOuterRef: null,
+      operacaoOuterRef: null,
+      operacaoDevolucaoOuterRef: null,
+      depositoOuterRef: null,
+      dataCadastro,
+    });
+  }
+  await contas.commit();
+
+  return { contaIds, motoboyId, melhorEnvioId };
+}
+
+/** Teardown for `seedLojaIntegradaFreteFixtures` — every doc it wrote is named by the prefix. */
+export async function cleanupLojaIntegradaFreteFixtures(prefix: string): Promise<void> {
+  await Promise.all([
+    cleanupByNamePrefix('integracao', prefix),
+    cleanupByNamePrefix('int_frete', prefix),
+    cleanupByFieldPrefix('filiais', 'razaoSocial', prefix),
+  ]);
+}
+
+/** The raw stored `int_frete` doc `id`, or null. */
+export async function getIntFreteDoc(id: string): Promise<Record<string, unknown> | null> {
+  const snap = await db().collection('int_frete').doc(id).get();
+  return (snap.data() as Record<string, unknown> | undefined) ?? null;
+}
+
+/**
+ * Append one `mapa` row to an `int_frete` doc the way the order importer does
+ * (an `arrayUnion`): another writer landing while a screen has the doc open.
+ */
+export async function appendMapaFreteRow(id: string, row: Record<string, unknown>): Promise<void> {
+  await db()
+    .collection('int_frete')
+    .doc(id)
+    .update({ mapa: FieldValue.arrayUnion(row) });
+}
+
+/**
+ * The Loja Integrada routing action on the `/pedidos` row (master plan step
+ * 15): {@link seedPedidoEtiquetaConferenciaLiFixtures}'s conta, Motoboy target
+ * and `pago` pedido at its deterministic id — but with the pedido still on the
+ * conta's Loja Integrada freight doc, NOT routed at import, and that doc's
+ * `mapa` routing the pedido's shipping method (`1001---A`) to the Motoboy
+ * target. Torn down by `cleanupPedidoEtiquetaConferenciaLiFixtures`.
+ *
+ * The route itself lives on the `apps/loja-integrada` backend, which the e2e
+ * build does not have: the spec stubs it, so this pedido is never re-pointed
+ * in Firestore — the row shows the routed carrier from the answer alone.
+ */
+export async function seedPedidoRoteamentoLiFixtures(
+  prefix: string,
+): Promise<
+  Awaited<ReturnType<typeof seedPedidoEtiquetaConferenciaLiFixtures>> & { docLiId: string }
+> {
+  const base = await seedPedidoEtiquetaConferenciaLiFixtures(prefix);
+  const docLiId = intFreteIdDaContaLi(base.contaId);
+  await db()
+    .collection('int_frete')
+    .doc(docLiId)
+    .update({
+      mapa: [
+        {
+          nomeOriginal: 'Forma 1',
+          idOriginal: '1001---A',
+          observacao: 'Origem: Pedido 1',
+          nomeTarget: base.frete.motoboyNome,
+          targetData: null,
+          integracaoUid: base.frete.motoboyId,
+          targetTipoIntegracao: INTEGRACAO_FRETE.motoboy,
+        },
+      ],
+    });
+  await db()
+    .collection('pedidos')
+    .doc(base.pedidoId)
+    .update({ 'freteInicial.integracaoFreteOuterRef': `documents/int_frete/${docLiId}` });
+  return { ...base, docLiId };
 }
 
 /** Teardown for `seedWhatsappFixtures`. */
@@ -2582,6 +2914,202 @@ export async function cleanupPedidoFreteFixtures(prefix: string): Promise<void> 
 }
 
 /**
+ * A canonical positive integer `numero` (15 digits, no leading zero) unique to
+ * `prefix`. An imported Loja Integrada order's `numero` is the store's own order
+ * number, so it cannot carry the run prefix the other fixtures put there; it is
+ * derived from the prefix instead, so a retry (a new worker, a new prefix) gets
+ * a new order — and a new deterministic pedido id.
+ */
+export function numeroPedidoLiE2e(prefix: string): string {
+  const n = BigInt(`0x${createHash('sha256').update(prefix).digest('hex').slice(0, 13)}`);
+  return String(100_000_000_000_000n + (n % 900_000_000_000_000n));
+}
+
+/**
+ * The deterministic id an imported Loja Integrada pedido carries: the sha256
+ * (lowercase hex, node's `crypto`) of the shared preimage `preimagemPedidoLi`
+ * — the id the web's paid re-check recognises an imported order by. Throws for
+ * values no imported order can carry, so a fixture can never seed an id the
+ * app would read as "not imported".
+ */
+export function idPedidoLojaIntegradaE2e(contaId: string, numero: string): string {
+  const preimagem = preimagemPedidoLi(contaId, numero);
+  if (preimagem === null) {
+    throw new Error(`idPedidoLojaIntegradaE2e: no preimage for (${contaId}, ${numero})`);
+  }
+  return createHash('sha256').update(preimagem).digest('hex');
+}
+
+/**
+ * The Loja Integrada paid re-check on the `/pedidos` row (master plan step 15):
+ * {@link seedPedidoFreteFixtures}'s cliente, endereço and Motoboy target, plus
+ * ONE Loja Integrada conta and ONE `pago` pedido imported from it and already
+ * routed at import to that Motoboy target — so its label is the generic one,
+ * and nothing depends on the routing step.
+ *
+ * The pedido is written at its deterministic id
+ * ({@link idPedidoLojaIntegradaE2e}), with the `numero` and the conta ref the id
+ * is derived from: that identity is what makes the row run the paid re-check at
+ * all. Its `numero` cannot carry the prefix ({@link numeroPedidoLiE2e}), so its
+ * teardown deletes it BY ID, and the prefix rides `observacoesInternas` for the
+ * stale sweep ({@link corpoPedidoConferenciaLiE2e}).
+ *
+ * The conta's own Loja Integrada freight doc is written FIRST, at the server
+ * core's deterministic id with the canonical back-ref (the
+ * {@link seedLojaIntegradaFreteFixtures} order), so a conta trigger on the
+ * target project finds it in sync and writes nothing.
+ */
+export async function seedPedidoEtiquetaConferenciaLiFixtures(prefix: string): Promise<{
+  frete: Awaited<ReturnType<typeof seedPedidoFreteFixtures>>;
+  contaId: string;
+  pedidoId: string;
+  numero: string;
+}> {
+  const frete = await seedPedidoFreteFixtures(prefix);
+  const vinculo = VINCULO_INT_FRETE_CONTA.lojaIntegrada;
+  const contaId = `${prefix}-li-001`;
+  const numero = numeroPedidoLiE2e(prefix);
+  const pedidoId = idPedidoLojaIntegradaE2e(contaId, numero);
+  const filialRef = `documents/filiais/${prefix}-fil-001`;
+  const dataCadastro = Date.now();
+
+  await db()
+    .collection('int_frete')
+    .doc(intFreteIdDaContaLi(contaId))
+    .set({
+      ativo: true,
+      tipo: vinculo.tipoFrete,
+      nome: contaId,
+      filialIntegracaoFreteOuterRef: filialRef,
+      contaMercadoLivreMercadoEnviosOuterRef: null,
+      contaShopeeFreteOuterRef: null,
+      [vinculo.campoBackRef]: `documents/integracao/${contaId}`,
+      enderecoDeOrigem: null,
+      dataCadastro,
+      ultimaModificacao: dataCadastro,
+      mapa: null,
+      faixaCep: null,
+      horarioDeCorte: null,
+      prazoExtra: 0,
+      client_id: null,
+      client_secret: null,
+    });
+  await db().collection('integracao').doc(contaId).set({
+    tipo: vinculo.tipoConta,
+    padrao: false,
+    nome: contaId,
+    cpf_cnpj: null,
+    idCadIntTran: null,
+    ativo: true,
+    cor: null,
+    modalidadeFreteImportacao: null,
+    filialIntegracaoPedidoOuterRef: filialRef,
+    tabelaNormalOuterRef: null,
+    tabelaPromocionalOuterRef: null,
+    operacaoOuterRef: null,
+    operacaoDevolucaoOuterRef: null,
+    depositoOuterRef: null,
+    dataCadastro,
+  });
+  await db()
+    .collection('pedidos')
+    .doc(pedidoId)
+    .set(
+      corpoPedidoConferenciaLiE2e({
+        prefix,
+        numero,
+        contaId,
+        clienteId: frete.clienteId,
+        motoboyId: frete.motoboyId,
+        enderecoPath: frete.enderecoPath,
+      }),
+    );
+
+  return { frete, contaId, pedidoId, numero };
+}
+
+/**
+ * The body of {@link seedPedidoEtiquetaConferenciaLiFixtures}'s pedido: `pago`,
+ * imported from `contaId` as order `numero`, routed at import to the Motoboy
+ * target.
+ *
+ * ⚠️ Its id (a sha256) and its `numero` (a bare integer) carry no prefix, so
+ * the stale sweep could reach it by neither — and `cancel-in-progress` kills a
+ * run before its afterAll, the dominant orphan source. So the prefix rides
+ * `observacoesInternas`, a field the sweep queries for pedidos and one neither
+ * the identity (conta ref + numero) nor the label reads.
+ */
+export function corpoPedidoConferenciaLiE2e(p: {
+  readonly prefix: string;
+  readonly numero: string;
+  readonly contaId: string;
+  readonly clienteId: string;
+  readonly motoboyId: string;
+  readonly enderecoPath: string;
+}): Record<string, unknown> {
+  return {
+    ehSaida: true,
+    estado: ESTADO_PEDIDO.pago,
+    numero: p.numero,
+    observacoesInternas: `${p.prefix} conferência de pagamento Loja Integrada`,
+    itens: {},
+    itensIds: [],
+    descontoTotal: 0,
+    timestamp: millisToMicros(Date.now()),
+    clientePedidoOuterRef: `documents/clientes/${p.clienteId}`,
+    integracaoPedidoOuterRef: `documents/integracao/${p.contaId}`,
+    freteInicial: {
+      externalId: null,
+      externalOptionId: null,
+      externalOptionIntegracao: null,
+      // The shipping method the store sent — the conta mapa's key.
+      externalOptionData: { id: 1001, code: 'A' },
+      estado: ESTADO_FRETE.iniciado,
+      // Routed at import: the Motoboy target, not the conta's freight doc.
+      integracaoFreteOuterRef: `documents/int_frete/${p.motoboyId}`,
+      modalidade: MODALIDADE_FRETE.cif,
+      codRastreio: null,
+      valorCobrado: 15,
+      custoCalculado: null,
+      custoFinal: null,
+      ehReverso: false,
+      prazoExtra: 0,
+      prazoDespacho: null,
+      dataEntrega: null,
+      dataPrevisaoEntrega: null,
+      valor_assegurado: null,
+      transportadora: null,
+      veiculo: null,
+      reboques: null,
+      vagao: null,
+      balsa: null,
+      volumes: null,
+      integracao_path: null,
+      clienteRecebedorOuterReference: null,
+      enderecoFreteOuterReference: `documents/${p.enderecoPath}`,
+      ultimaModificacao: null,
+    },
+  };
+}
+
+/**
+ * Teardown for {@link seedPedidoEtiquetaConferenciaLiFixtures}: the Loja
+ * Integrada pedido BY ID (its `numero` carries no prefix) with the trails the
+ * `onPedidoChanged` trigger writes under it, then everything the prefix names.
+ */
+export async function cleanupPedidoEtiquetaConferenciaLiFixtures(
+  prefix: string,
+  pedidoId: string | null,
+): Promise<void> {
+  if (pedidoId !== null) {
+    await cleanupPedidoSubcollection(pedidoId, 'historicoFtIni');
+    await cleanupPedidoSubcollection(pedidoId, 'historicoEstadoPedido');
+    await db().collection('pedidos').doc(pedidoId).delete();
+  }
+  await cleanupPedidoFreteFixtures(prefix);
+}
+
+/**
  * Fixture for the Shopee etiqueta row action (#1523, step 15): ONE pedido
  * (`<prefix>-ped-001`) whose `freteInicial` is the block the Shopee order
  * import writes, and nothing else — the label route it reaches is stubbed by
@@ -3051,6 +3579,107 @@ export async function seedGruposDeVariacao(prefix: string): Promise<{
   });
   await batch.commit();
   return { tamanhosId, coresId };
+}
+
+/** The Loja Integrada linker fixtures (step 10): what the spec reads back. */
+export interface VinculadorLojaIntegradaFixtures {
+  readonly grupoId: string;
+  /** The ACTIVE tipo-3 conta: the tab has one block for it. */
+  readonly contaAtivaId: string;
+  /** An INACTIVE tipo-3 conta: its stored link is listed apart. */
+  readonly contaInativaId: string;
+  /** The grupo's stored `linksVariacoesli`, in order. */
+  readonly links: Record<string, unknown>[];
+}
+
+/**
+ * The variation linker's fixtures (master plan step 10): two Loja Integrada
+ * contas from `seedLojaIntegradaFixtures` (the first active, the second
+ * inactive) and a grupo `Tamanhos` with three variantes (P/M/G) whose
+ * `linksVariacoesli` holds three stored entries, in this order:
+ *  1. a legacy-shaped valid link of the ACTIVE conta to grade 8946, options
+ *     37097 → P, 37098 → M, 37099 → (none);
+ *  2. a half-made entry of the active conta (no grade): invalid, carried back;
+ *  3. a link of the INACTIVE conta, carried back.
+ * Every id is a fake one; nothing here names a real store.
+ */
+export async function seedVinculadorLojaIntegradaFixtures(
+  prefix: string,
+): Promise<VinculadorLojaIntegradaFixtures> {
+  await seedLojaIntegradaFixtures(prefix, 2);
+  const contaAtivaId = `${prefix}-${pad(1)}`;
+  const contaInativaId = `${prefix}-${pad(2)}`;
+  const opcao = (id: number, nome: string, variantes: string[]) => ({
+    li_option_id: id,
+    li_option_name: nome,
+    arakene_variation_id: variantes,
+  });
+  const links: Record<string, unknown>[] = [
+    {
+      name: 'Tamanho',
+      grade_id: 8946,
+      integracaoLiId: contaAtivaId,
+      variationOptions: [opcao(37097, 'P', ['p']), opcao(37098, 'M', ['m']), opcao(37099, 'G', [])],
+    },
+    { integracaoLiId: contaAtivaId },
+    {
+      name: 'Cor',
+      grade_id: 9001,
+      integracaoLiId: contaInativaId,
+      variationOptions: [opcao(1, 'Azul', ['g'])],
+    },
+  ];
+  const grupoId = `${prefix}-grupo-li`;
+  // grupoDeVariacoes datetimes are millisecondsSinceEpoch INT (#484/#486).
+  const now = Date.now();
+  await db()
+    .collection('grupoDeVariacoes')
+    .doc(grupoId)
+    .set({
+      nome: `${prefix}-Tamanhos`,
+      codigo: null,
+      ordem: 1,
+      tipo: 1,
+      permiteFotos: false,
+      variacoesIds: ['p', 'm', 'g'],
+      variacoes: [
+        { id: 'p', nome: 'P', codigo: 'P', timestamp: now },
+        { id: 'm', nome: 'M', codigo: 'M', timestamp: now },
+        { id: 'g', nome: 'G', codigo: 'G', timestamp: now },
+      ],
+      linksVariacoesli: links,
+      timestamp: now,
+      ultimaModificacao: now,
+    });
+  return { grupoId, contaAtivaId, contaInativaId, links };
+}
+
+/** Teardown for `seedVinculadorLojaIntegradaFixtures`. */
+export async function cleanupVinculadorLojaIntegradaFixtures(prefix: string): Promise<void> {
+  await Promise.all([
+    cleanupLojaIntegradaFixtures(prefix),
+    cleanupByNamePrefix('grupoDeVariacoes', prefix),
+  ]);
+}
+
+/** Full data of the `grupoDeVariacoes` doc `id`, or null (an Admin read — strongly consistent). */
+export async function getGrupoDeVariacoesDoc(id: string): Promise<Record<string, unknown> | null> {
+  const data = (await db().collection('grupoDeVariacoes').doc(id).get()).data();
+  return data ? (data as Record<string, unknown>) : null;
+}
+
+/**
+ * Another operator's save of the grupo's Loja Integrada links, landing while a
+ * page has it open: the whole array replaced, the last-modified stamp moved.
+ */
+export async function escreverLinksVariacoesLiConcorrente(
+  id: string,
+  links: Record<string, unknown>[],
+): Promise<void> {
+  await db()
+    .collection('grupoDeVariacoes')
+    .doc(id)
+    .update({ linksVariacoesli: links, ultimaModificacao: Date.now() });
 }
 
 /**
@@ -3581,6 +4210,290 @@ export async function seedProdutoMlFamilia(
   }
   await batch.commit();
   return { produtoId, familyId, membros: membros.map((m) => ({ itemId: m.itemId, cor: m.cor })) };
+}
+
+/**
+ * Fixture ids of the Shopee produto suite — never a real shop or listing. The
+ * shop id is what the storefront link is built from, so the spec asserts it.
+ */
+export const SHOPEE_E2E_SHOP_ID = 987654;
+export const SHOPEE_E2E_ITEM_ATIVO = 1000001;
+export const SHOPEE_E2E_ITEM_KIT_REMOVIDO = 1000002;
+
+/**
+ * Seed one plain produto holding THREE Shopee listing links on one conta, in
+ * the `prodshopee` shape apps/shopee writes (parsed through the one write
+ * schema, `produtoShopeeLinkSchema`, so a fixture cannot drift from it), so the
+ * produto editor's Shopee tab has each reading to render with no apps/shopee
+ * running:
+ *
+ *  - `ativo` — live and deboosted, with one deboost violation and a CURRENT
+ *    price refusal (its refusal stamp is newer than its clean-send stamp);
+ *  - `kitRemovido` — a native kit Shopee removed (`removido`, `SELLER_DELETE`);
+ *  - `rascunho` — a draft never published (`item_id: null`), with NO category
+ *    and NO brand chosen (`brand_id: null`) and no publish lock (it reads
+ *    `livre`). Two consequences the Shopee tab's draft editor (#1911 P10)
+ *    relies on: its `categoria-ausente` and `marca-nao-escolhida` pendências
+ *    show in EVERY test that opens the conta, and it makes NO apps/shopee
+ *    request on render — a category's bands are read only once a category
+ *    exists — so a spec that renders it needs no taxonomy stub.
+ *
+ * Also stamps the conta's `shop_id` with {@link SHOPEE_E2E_SHOP_ID}: the
+ * fixture conta `seedShopeeFixtures` writes carries none, and without it no
+ * storefront link can be built.
+ *
+ * Every id is deterministic (`${prefix}-prod`, `${prefix}-ativo`, …) so
+ * `afterAll` can sweep the link subcollection even when `beforeAll` dies
+ * mid-way. ⚠️ A seeded `prodshopee` fires the staging link trigger, which only
+ * stamps the produto's `integracoesComProduto` (it never calls Shopee); the
+ * produto carries no kit recipe, so no recipe aviso is opened for it.
+ */
+export async function seedProdutoShopeeVinculado(
+  prefix: string,
+  integracaoId: string,
+): Promise<{
+  produtoId: string;
+  links: { ativo: string; kitRemovido: string; rascunho: string };
+}> {
+  const produtoId = `${prefix}-prod`;
+  const links = {
+    ativo: `${prefix}-ativo`,
+    kitRemovido: `${prefix}-kit-removido`,
+    rascunho: `${prefix}-rascunho`,
+  };
+  const now = Date.now();
+  const contaRef = `documents/integracao/${integracaoId}`;
+  const batch = db().batch();
+  batch.update(db().collection('integracao').doc(integracaoId), { shop_id: SHOPEE_E2E_SHOP_ID });
+  batch.set(db().collection('produtos').doc(produtoId), {
+    ultimaModificacao: now,
+    nome: produtoId,
+    sku: `${prefix.toUpperCase().replace(/-/g, '_')}_SHP`,
+    publicado: true,
+    ehKit: false,
+    ehKitVirtual: false,
+    ofereceFreteGratis: false,
+    permiteVendaSemEstoque: false,
+    fotos: null,
+    videos: null,
+    paiId: null,
+    ordem: null,
+    timestamp: new Date().toISOString(),
+    integracoesComProduto: [integracaoId],
+  });
+  const linksCol = db().collection('produtos').doc(produtoId).collection('prodshopee');
+  batch.set(
+    linksCol.doc(links.ativo),
+    produtoShopeeLinkSchema.parse({
+      contaProdutoShopeeOuterRef: contaRef,
+      item_name: `${prefix}-ativo`,
+      item_id: SHOPEE_E2E_ITEM_ATIVO,
+      category_id: 100087,
+      item_status: SHOPEE_ITEM_STATUS.normal,
+      estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo,
+      deboost: true,
+      publicadoEm: now - 86_400_000,
+      violacoesLidasEm: now,
+      violations: [
+        {
+          kind: 'deboost',
+          violation_type: 'Imagem de baixa qualidade (e2e)',
+          violation_reason: 'A foto principal semeada pelo e2e está desfocada.',
+          suggestion: 'Envie uma foto nítida.',
+          fix_deadline_time: now + 7 * 86_400_000,
+          update_time: now,
+          suggested_category: null,
+          days_to_fix: null,
+        },
+      ],
+      precoEnviadoEm: now - 3_600_000,
+      precoRecusaEm: now,
+      precoRecusaCodigo: 'erp:fixture-e2e',
+      precoRecusaMotivo: 'fixture-e2e',
+      precoRecusaMensagem: 'Recusa de preço semeada pelo e2e.',
+    }),
+  );
+  batch.set(
+    linksCol.doc(links.kitRemovido),
+    produtoShopeeLinkSchema.parse({
+      contaProdutoShopeeOuterRef: contaRef,
+      item_name: `${prefix}-kit`,
+      item_id: SHOPEE_E2E_ITEM_KIT_REMOVIDO,
+      category_id: 100087,
+      item_status: SHOPEE_ITEM_STATUS.sellerDelete,
+      estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.removido,
+      kitNativo: true,
+      publicadoEm: now - 2 * 86_400_000,
+    }),
+  );
+  batch.set(
+    linksCol.doc(links.rascunho),
+    produtoShopeeLinkSchema.parse({
+      contaProdutoShopeeOuterRef: contaRef,
+      item_name: `${prefix}-rascunho`,
+      item_id: null,
+      category_id: null,
+      brand_id: null,
+    }),
+  );
+  await batch.commit();
+  return { produtoId, links };
+}
+
+/** Fixture item id of the ONE listing {@link seedEditorRascunhoShopee} seeds on its second conta — never a real one. */
+const SHOPEE_E2E_ITEM_REMOVIDO = 1000003;
+
+/** The stored Descrição (`produtos/<id>/extraData/singleton.descricao`) {@link seedEditorRascunhoShopee} gives the produto. */
+const DESCRICAO_PRODUTO_SHOPEE_E2E = 'Descrição do produto semeada pelo e2e da Shopee.';
+
+/**
+ * What the produto editor's Shopee DRAFT editor (#1911 P10) needs on top of
+ * {@link seedProdutoShopeeVinculado} — call it AFTER that seed (same `prefix`)
+ * and after `seedShopeeFixtures(prefix, 2)`:
+ *
+ *  - **a second conta, `contaSoRemovido`, holding ONE `removido` listing** of
+ *    the produto (`${prefix}-removido`, an ordinary listing — not a kit). Two
+ *    reasons. The tab lists contas through an UNORDERED, bounded query and
+ *    reads by id only the contas a link of this produto names, so on a shared
+ *    staging project with many Shopee contas a conta holding nothing of this
+ *    produto might get no tab at all; the link makes its tab certain. And a
+ *    `removido` listing is exactly what the second-listing confirmation
+ *    IGNORES (`vinculosQueExigemConfirmacaoShopee`, `@delfrance/schemas` — the
+ *    set the draft route's create refuses with too — counts only a live
+ *    listing, a superseded one still on Shopee, or a draft), so "Novo
+ *    anúncio" there opens the new draft with NO confirmation — the near-miss
+ *    of conta 1, whose live listing and draft ask first. The conta is also
+ *    made ACTIVE (`seedShopeeFixtures` seeds every even conta inactive):
+ *    whether a draft may start on an inactive conta is not what that case
+ *    is about.
+ *  - **the produto's stored Descrição** (`extraData/singleton`, through the
+ *    schema), so a draft with no description of its own has no `sem-descricao`
+ *    pendência: the pendências read the STORED produto documents the publish
+ *    reads, never the form.
+ *
+ * Every id is deterministic. Teardown: the spec's `prodshopee` and
+ * `extraData` subcollection sweeps (`cleanupProdutoSubcollection`) BEFORE the
+ * produto's, then `cleanupShopeeFixtures` — Firestore never cascades.
+ */
+export async function seedEditorRascunhoShopee(
+  prefix: string,
+  contaSoRemovido: string,
+): Promise<{ removido: string }> {
+  const produtoId = `${prefix}-prod`;
+  const removido = `${prefix}-removido`;
+  const now = Date.now();
+  const produtoRef = db().collection('produtos').doc(produtoId);
+  const batch = db().batch();
+  batch.update(db().collection('integracao').doc(contaSoRemovido), { ativo: true });
+  batch.set(
+    produtoRef.collection('prodshopee').doc(removido),
+    produtoShopeeLinkSchema.parse({
+      contaProdutoShopeeOuterRef: `documents/integracao/${contaSoRemovido}`,
+      item_name: `${prefix}-removido`,
+      item_id: SHOPEE_E2E_ITEM_REMOVIDO,
+      category_id: 100087,
+      item_status: SHOPEE_ITEM_STATUS.sellerDelete,
+      estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.removido,
+      publicadoEm: now - 3 * 86_400_000,
+    }),
+  );
+  batch.set(
+    produtoRef.collection('extraData').doc(PRODUTO_EXTRA_DATA_DOC_ID),
+    produtoExtraDataSchema.parse({ descricao: DESCRICAO_PRODUTO_SHOPEE_E2E }),
+  );
+  await batch.commit();
+  return { removido };
+}
+
+/**
+ * Fixture Shopee category of the READY draft {@link seedRascunhoProntoShopee}
+ * seeds (the one the other seeded links carry) — the spec stubs that
+ * category's tree node and bands; its category-pick test also stubs the
+ * fixture root above it and one sibling leaf (fixture ids too).
+ */
+export const SHOPEE_E2E_CATEGORIA = 100087;
+
+/**
+ * A SECOND produto, `${prefix}-pronto`, holding ONE Shopee draft READY to
+ * publish on `integracaoId` — what the produto editor's «Publicar» on a draft
+ * (#1911 P11) needs. Call it AFTER {@link seedProdutoShopeeVinculado} (same
+ * `prefix` and conta): that seed stamps the conta's `shop_id`.
+ *
+ *  - The draft `${prefix}-pronto-rascunho` — `item_id: null`, no publish lock
+ *    (it reads `livre`) — has a category ({@link SHOPEE_E2E_CATEGORIA}),
+ *    «Sem marca» (`brand_id: 0`: a CHOSEN brand, never the `null` of "not
+ *    chosen") and a non-blank title; its description is `null`, so the
+ *    produto's STORED Descrição (seeded here, through the schema) stands in.
+ *    So it has no pendência once its category's bands are read — and those
+ *    are a request to apps/shopee, which the spec stubs, per test, for the
+ *    tests that open this produto alone.
+ *  - Why a produto of its OWN: the Shopee tab reads the bands of every draft
+ *    of ITS produto that has a category, on render — so a categorised draft
+ *    beside {@link seedProdutoShopeeVinculado}'s links would add an apps/shopee
+ *    read to every test of the spec. And the conta holds nothing else of this
+ *    produto, so its Publicar confirmation carries no second-listing warning
+ *    (`vinculosQueExigemConfirmacaoShopee`, `@delfrance/schemas`, without the
+ *    draft being published).
+ *  - The produto has NO weight (neither `pesoBrutoKg` nor `pesoLiquidoKg`), so
+ *    `sem-peso` on campo `weight` — what the spec's publish stub answers — is
+ *    ONE of the refusals the listing assembly (`montarAnuncio`) raises for it,
+ *    and the FIRST row of its answer: the assembly checks the weight right
+ *    after the name, the description and the category, which this draft
+ *    passes under the spec's stubbed bands. It is not the only row: the real
+ *    422 is the UNION of every refusal found, and this produto also has no
+ *    dimensions (`sem-dimensoes`), no photos (`fotos: null` ⇒ `sem-fotos`)
+ *    and no price (`sem-preco`, a create's) — plus whatever the conta's stock
+ *    band and logistics add. The stub's one-row answer («1 problema») is a
+ *    deliberate simplification (design-DC-web §3), so the spec asserts row
+ *    `-0`, never the row count nor the header's total.
+ *
+ * Every id is deterministic. Teardown: the spec's `prodshopee` and `extraData`
+ * sweeps of THIS produto (`cleanupProdutoSubcollection`) before
+ * `cleanupByNamePrefix('produtos', prefix)` — its `nome` carries the prefix —
+ * since Firestore never cascades.
+ */
+export async function seedRascunhoProntoShopee(
+  prefix: string,
+  integracaoId: string,
+): Promise<{ produtoId: string; rascunho: string }> {
+  const produtoId = `${prefix}-pronto`;
+  const rascunho = `${prefix}-pronto-rascunho`;
+  const produtoRef = db().collection('produtos').doc(produtoId);
+  const batch = db().batch();
+  batch.set(produtoRef, {
+    ultimaModificacao: Date.now(),
+    nome: produtoId,
+    sku: `${prefix.toUpperCase().replace(/-/g, '_')}_SHP_PRONTO`,
+    publicado: true,
+    ehKit: false,
+    ehKitVirtual: false,
+    ofereceFreteGratis: false,
+    permiteVendaSemEstoque: false,
+    fotos: null,
+    videos: null,
+    paiId: null,
+    ordem: null,
+    timestamp: new Date().toISOString(),
+    integracoesComProduto: [integracaoId],
+  });
+  batch.set(
+    produtoRef.collection('prodshopee').doc(rascunho),
+    produtoShopeeLinkSchema.parse({
+      contaProdutoShopeeOuterRef: `documents/integracao/${integracaoId}`,
+      item_name: `${prefix}-pronto`,
+      item_id: null,
+      category_id: SHOPEE_E2E_CATEGORIA,
+      brand_id: 0,
+      original_brand_name: null,
+      description: null,
+    }),
+  );
+  batch.set(
+    produtoRef.collection('extraData').doc(PRODUTO_EXTRA_DATA_DOC_ID),
+    produtoExtraDataSchema.parse({ descricao: DESCRICAO_PRODUTO_SHOPEE_E2E }),
+  );
+  await batch.commit();
+  return { produtoId, rascunho };
 }
 
 /**
@@ -4378,6 +5291,50 @@ export async function cleanupCheckoutFixtures(prefix: string, pedidoIds: string[
     ]),
   );
   await Promise.all([cleanupPedidoFixtures(prefix), cleanupIntFreteFixtures(prefix)]);
+}
+
+/**
+ * The Loja Integrada paid re-check at the checkout save (master plan step 15,
+ * `despacho-checkout-loja-integrada.vendas`):
+ * {@link seedPedidoEtiquetaConferenciaLiFixtures}'s imported `pago` pedido — at
+ * its deterministic id, routed at import to a Motoboy target, so its post-save
+ * label is the generic one and nothing depends on the routing step — made
+ * ready for a checkout: ONE line of a prefixed produto (the scan code is its
+ * SKU), and its frete in an estado the save accepts without a confirm
+ * (`emSeparacao`).
+ */
+export async function seedCheckoutConferenciaLiFixtures(prefix: string): Promise<{
+  pedidoId: string;
+  numero: string;
+  sku: string;
+}> {
+  const li = await seedPedidoEtiquetaConferenciaLiFixtures(prefix);
+  const produtoId = `${prefix}-pro-li`;
+  const sku = `${prefix.toUpperCase().replace(/-/g, '_')}_LI`;
+  await db().collection('produtos').doc(produtoId).set(checkoutProdutoDoc(produtoId, sku));
+  await db()
+    .collection('pedidos')
+    .doc(li.pedidoId)
+    .update({
+      itens: { [produtoId]: [checkoutItem(produtoId, sku, produtoId, 1)] },
+      itensIds: [produtoId],
+      'freteInicial.estado': ESTADO_FRETE.emSeparacao,
+    });
+  return { pedidoId: li.pedidoId, numero: li.numero, sku };
+}
+
+/**
+ * Teardown for {@link seedCheckoutConferenciaLiFixtures}: the pedido's
+ * `checkout` docs (a save writes one), then everything
+ * {@link cleanupPedidoEtiquetaConferenciaLiFixtures} sweeps — the pedido by id
+ * with its trigger trails, and the prefixed produto, conta and freight docs.
+ */
+export async function cleanupCheckoutConferenciaLiFixtures(
+  prefix: string,
+  pedidoId: string | null,
+): Promise<void> {
+  if (pedidoId !== null) await cleanupPedidoSubcollection(pedidoId, 'checkout');
+  await cleanupPedidoEtiquetaConferenciaLiFixtures(prefix, pedidoId);
 }
 
 /* -------------------------------------------------------------------------- */

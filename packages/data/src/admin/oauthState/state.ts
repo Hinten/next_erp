@@ -1,6 +1,7 @@
 /**
  * Signed OAuth `state` shared by every channel that runs an authorization-code
- * connect flow — Mercado Livre, Melhor Envio, Mercado Pago (#821, #1034).
+ * connect flow — Mercado Livre, Melhor Envio, Mercado Pago (#821, #1034), Shopee
+ * (#1481) and Amazon (step 2 of its master plan).
  *
  * `state` is `base64url(payload).base64url(HMAC-SHA256(payload))` keyed by that
  * channel's own `*_STATE_SECRET`; the public callback verifies the signature +

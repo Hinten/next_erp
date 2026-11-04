@@ -59,8 +59,18 @@ export function useOAuthCallbackToast(config: OAuthCallbackToastConfig): void {
   const searchParams = useSearchParams();
   const { chave, sucesso, tituloErro, mensagens } = config;
 
+  // ⚠️ Read in render and keyed on the VALUES, never on `searchParams` itself.
+  // Every URL change hands back a NEW params object, and the list pages that
+  // mount this hook also mount a TableView, which mirrors its sort / filter /
+  // page into the query string while keeping every foreign key — so
+  // `?ml=error&reason=bad_state` became `…&sort=nome` and an effect keyed on
+  // the object re-showed the same failure on the first sort click, and on every
+  // one after it. Two strings compare by value, so the toast re-fires only when
+  // the callback result itself changes.
+  const estado = searchParams.get(chave);
+  const reason = searchParams.get('reason');
+
   useEffect(() => {
-    const estado = searchParams.get(chave);
     if (estado === 'connected') {
       notifications.show({ color: 'green', message: sucesso });
       return;
@@ -69,7 +79,7 @@ export function useOAuthCallbackToast(config: OAuthCallbackToastConfig): void {
     notifications.show({
       color: 'red',
       title: tituloErro,
-      message: oauthCallbackMessage(searchParams.get('reason'), mensagens),
+      message: oauthCallbackMessage(reason, mensagens),
     });
-  }, [searchParams, chave, sucesso, tituloErro, mensagens]);
+  }, [estado, reason, sucesso, tituloErro, mensagens]);
 }

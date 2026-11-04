@@ -5,16 +5,7 @@
  * `contaOuterRef` matching + path parsing stay identical across both.
  */
 
-/**
- * True when a stored `contaOuterRef` points at `integracaoId`. Tolerates both
- * the canonical `documents/integracao/<id>` form the migrated corpus stores —
- * the Flutter writer is gone, the stored refs remain — and a
- * bare `integracao/<id>`.
- */
-export function refMatchesIntegracao(ref: unknown, integracaoId: string): boolean {
-  if (typeof ref !== 'string') return false;
-  return ref === `integracao/${integracaoId}` || ref.endsWith(`/integracao/${integracaoId}`);
-}
+export { refMatchesIntegracao } from '@delfrance/schemas';
 
 /**
  * Is this request-body value unusable as a Firestore **document id**?
@@ -45,12 +36,9 @@ export function naoDocId(v: unknown): boolean {
 /**
  * Split a `produtoMercadoLivreOuterRef` into the parent produto + link doc ids.
  * Tolerates both the canonical `documents/produtos/<id>/produtoMercadoLivre/<docId>`
- * and a bare `produtos/...`; returns null for anything else, including a ref
- * whose third segment is not the literal `produtoMercadoLivre` leaf.
- *
- * ⚠️ `import.ts`, `importMigration.ts` and `orderProdutoResolve.ts` each carry a
- * private copy that predates this one. They are byte-identical; collapsing them
- * onto this export is mechanical follow-up, deliberately not bundled with #920.
+ * and a bare `produtos/...`. Preserves the legacy parser's tolerance for extra
+ * prefix/suffix segments and repeated separators; the first `produtos` segment
+ * must be followed by a produto id, the `produtoMercadoLivre` leaf and a link id.
  */
 export function parsePmlOuterRef(ref: string): { produtoId: string; linkId: string } | null {
   const segs = ref.split('/').filter(Boolean);
@@ -87,10 +75,10 @@ export function isFamilyId(id: string): boolean {
   return /^\d+$/.test(id);
 }
 
-/** Last non-empty path segment of a `documents/<col>/<id>` (or bare) ref. */
-export function lastSegment(ref: string): string {
-  const parts = ref.split('/').filter(Boolean);
-  return parts[parts.length - 1] ?? ref;
+/** Last non-empty segment of an ML notification resource, including bare ids. */
+export function lastSegment(resource: string): string {
+  const parts = resource.split('/').filter(Boolean);
+  return parts[parts.length - 1] ?? resource;
 }
 
 /**

@@ -104,20 +104,26 @@ The per-surface notes below stay the authority on behaviour.
   WHOLE resource because `<topic>:<last segment>` would collide `/orders/7` with
   `/shipments/7`. The doc's `id` FIELD stays null — the derived value keys the document, it
   is not a claim ML issued one.
-- `lib/marketplace/notificacoes/missedFeedsSweep.ts` — **#812**: the daily 05:00 `missed_feeds`
-  backstop. Everything else in this channel can only re-drive a notification that was
-  RECEIVED; this asks ML what it failed to deliver (`GET /missed_feeds` — filed only
-  after its ~8 retries over ~1h, retained 2 days) and replays each entry onto the same
-  queue a webhook feeds. It is the mitigation that makes `minInstances: 0` defensible
-  (a blown ack is recovered next morning, at up to ~24h latency — the decision and its
-  cost are recorded in `apphosting.yaml`). ⚠️ It keeps **NO cursor**, deliberately: the
-  feed has no time filter, and an entry is filed ~1h AFTER ML gives up, so a `sent`-based
-  cursor advanced at 05:00 would permanently skip one sent at 04:55. Coverage rests on
-  `period × 2 ≤ 48h retention` instead — stretching the cron silently deletes the
-  backstop (`functions/src/index.test.ts` asserts the literal). Unknown topics are
-  skipped and counted, never enqueued, so a replay cannot park a fresh doc every morning
-  (#813); `request`/`response` are stripped from every entry (the callback URL is a leak
-  surface, #811). Flag-gated OFF behind `MERCADO_LIVRE_MISSED_FEEDS_ENABLED`.
+- `lib/marketplace/notificacoes/missedFeedsSweep.ts` — **#812 / #1292**: the daily
+  05:00 application-wide missed-delivery backstop. `missedFeedsAccess.ts` enumerates
+  active ML integrations in document-ID order and selects the first refreshable
+  token that can read `items` for the first configured site. Seller-only 401/403s
+  are skipped without revoking grants; outages are failures, never "no account".
+  It pages the feed ONCE per app, preserving each entry's `user_id` for the existing
+  queue's seller routing and deferred lane. `items` is always read per site
+  (`MERCADO_LIVRE_MISSED_FEEDS_SITE_IDS`, default MLB); an unfiltered stream adds
+  the other topics. Only an explicit missing-site 400 switches that stream to
+  separate non-ignored known-topic streams. Unknown topics and ignored topics
+  are counted separately. `actions` survives; `request`/`response` do not.
+  No cursor: late-filed entries and 48h retention require daily complete drains.
+  All streams share in-tick dedup; failed enqueues do not consume a dedup key.
+  Health is `missedFeedsMercadoLivre/app-<appId>`, protected against older
+  overlapping runs, with `lastSuccessAtUs` advanced only on complete coverage.
+  Missing access, stream errors, page caps and time exhaustion fail the scheduled
+  invocation. Ships OFF behind `MERCADO_LIVRE_MISSED_FEEDS_ENABLED`.
+  `probe:missed-feeds --project <id>` reports sanitized live contract evidence
+  without enqueueing; token refresh may persist a fresh credential. Live provider
+  verification remains required before acceptance; agents do not deploy.
 - `lib/marketplace/core/mercadoLivre.ts` — resolves an `integracao` account into a
   `ChannelContext` (newest valid token or a concurrency-safe refresh) + the plugin channel.
 - `lib/marketplace/core/tokenStore.ts` — the durable-token store over the admin-only
@@ -364,8 +370,9 @@ The per-surface notes below stay the authority on behaviour.
   bug the claims path had to fix. `bucket: null` degrades to skip-all with ONE warn
   per message: losing the customer’s message because Storage was unavailable would
   be far worse than losing the photo.
-- `lib/{auth,firebase,signatures}` — per-app copies of the shared helpers (each backend
-  keeps its own so they deploy + log independently).
+- `lib/auth` binds the shared verifier in `@delfrance/data/admin/auth`;
+  `lib/firebase` owns this backend's SDK initialization. Shared primitives keep
+  deployments and logs independent without copying security decisions (#1431).
 - `functions/` — the nested Cloud Functions codebase (deploy-artifact sub-build; see
   `functions/DEPLOY.md`). Covered by this app's typecheck/lint/test tasks.
 
@@ -711,10 +718,17 @@ path never reaches `applyItemStatusToLink` at all — so the denorm can never be
 keyed on a member id. A member whose link cannot be resolved takes the
 conservative `estado 'E'` stop instead, which is loud and bounded; `estado 'c'`
 from one member is not an option.
-The residual: a HEALTHY member whose payload ML refused still latches the whole
-family at `'E'`, because `estado` lives only on the parent link. It is visible and
-self-clearing (an `items` webhook or "Reverificar anúncio"), and the log names the
-offending member — but it does stop the siblings until then.
+#1285 narrows the healthy-member payload latch to the member's own nullable
+`estado` (`E` or null), with `errors`/`causas` beside it. After the queue's three
+attempts it verifies the member and, when sendable, tries ONE last time. Network,
+408, 429, version conflicts and unavailable verification never create this latch.
+The pipeline projects only `estado`; neither membership nor the lifecycle fold
+reads it. A successful ordinary task gains ZERO reads, writes or ML calls.
+Healthy `items` refreshes clear only their own member, even with unchanged status;
+manual re-verification clears only observed, version-matched members. Publish and
+import clear with a native snapshot precondition. Already queued tasks may finish;
+the gate prevents new drafts, not dispatches. A sibling's success cannot erase a
+member's diagnosis.
 
 ⚠️ **"Reverificar anúncio" on a family re-reads it MEMBER BY MEMBER, and the
 naive version of that button was a silent catalogue outage (#1142).** The route

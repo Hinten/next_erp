@@ -244,8 +244,15 @@ function toResponse(err: KnownError): NextResponse {
     // well-formed and may be retried unchanged once the cause is fixed (a weight
     // filled in, a mandatory attribute answered).
     //
-    // ⚠️ NOTHING was sent to Shopee for this produto — that is the contract this
-    // class carries, and it is what lets the caller retry from a clean state.
+    // ⚠️ No LISTING write was sent for this produto — EXCEPT the model leg's
+    // fresh-tree refusals on an UPDATE, which follow `update_item`
+    // (`anuncios/modelosPublicacao.ts`; `anuncios/README.md` «The model-leg
+    // exception»; pinned by `publicarAnuncio.test.ts`'s «ÁRVORE FRESCA» and
+    // «recusado DEPOIS do update_item» cases). Shopee READS may precede any of
+    // them (the plan's, ENSURE, the first create's same-SKU walk), and so may a
+    // photo upload. A retry is still safe: a listing that exists makes the next
+    // publish an update that re-runs the leg. `itemId` is never `null` on the
+    // model leg's refusal.
     // `problemas[].mensagem` is a MECHANISM sentence, capped at construction
     // (see the class docblock); the body says nothing the error does not.
     return NextResponse.json(

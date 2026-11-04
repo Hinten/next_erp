@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  CAMPOS_INDICE_VINCULO_AMAZON,
   produtoAmazonLinkSchema,
   amazonSubmitStatusSchema,
   amazonListingStatusSchema,
@@ -122,5 +123,25 @@ describe('produtoAmazonLinkSchema', () => {
       _futureAmazonField: 'whatever',
     });
     expect((parsed as Record<string, unknown>)._futureAmazonField).toBe('whatever');
+  });
+});
+
+describe('CAMPOS_INDICE_VINCULO_AMAZON (Amazon step 5)', () => {
+  it('is the link query key in index order: the conta ref, then the SKU', () => {
+    expect(CAMPOS_INDICE_VINCULO_AMAZON).toEqual(['contaAmazonOuterRef', 'sku']);
+  });
+
+  it('names fields the link schema really has, both REQUIRED (a doc without one is no link)', () => {
+    const campos = Object.keys(produtoAmazonLinkSchema.shape);
+    for (const campo of CAMPOS_INDICE_VINCULO_AMAZON) {
+      expect(campos, campo).toContain(campo);
+      const semCampo: Record<string, unknown> = {
+        contaAmazonOuterRef: 'documents/integracao/int1',
+        name: 'X',
+        sku: 'Y',
+      };
+      delete semCampo[campo];
+      expect(produtoAmazonLinkSchema.safeParse(semCampo).success, campo).toBe(false);
+    }
   });
 });

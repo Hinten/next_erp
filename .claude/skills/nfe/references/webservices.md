@@ -1,5 +1,13 @@
 # SEFAZ Web Services
 
+> **Transição de autorização — NT 2023.002 v1.02:** homologação até
+> **01/02/2027**, produção **05/04/2027**. `indSinc=0` passa a ser rejeitado
+> com **129**; síncrono com várias NF-e já é rejeitado com **764**.
+> Enviar **uma NF-e por requisição** após a aplicação. Os lotes assíncronos
+> abaixo descrevem o contrato atual/pré-transição e a recuperação histórica.
+> O helper e o lote do ERP ainda precisam de adaptação; ver
+> [nt-2023-002-v1.02.md](nt-2023-002-v1.02.md).
+
 ## Preferred API: `src/operations/` (the typed layer)
 
 **Default to the typed helpers in
@@ -12,7 +20,7 @@ entry points for every SEFAZ call:
 | `consultarSituacaoNFe(call, { chave })` | NfeConsultaProtocolo4 — query one NF-e by chave (the **recovery** call) |
 | `consultarSituacaoNFeComXml(call, { chave })` | The same call, also returning the reply's raw XML (`retConsSitXml`) — for `extrairEventosNFe`, which must keep SEFAZ's signed `procEventoNFe` bytes |
 | `consultarLote(call, { nRec })` | NFeRetAutorizacao4 — poll a lote by nRec (async path only) |
-| `autorizarLote(call, { idLote, NFe })` | NFeAutorizacao4 — submit a lote. **The helper computes `indSinc` from `NFe.length`** (lote=1 → 1; lote 2–50 → 0). Do not pass `indSinc` manually. |
+| `autorizarLote(call, { idLote, NFe })` | NFeAutorizacao4 — current helper defaults `indSinc` from `NFe.length` (1 → 1; 2–50 → 0), with an override. Needs one-NF-e enforcement for NT 2023.002 v1.02; overriding a multi-NF-e lote to 1 causes 764. |
 
 Each helper accepts a typed object, builds the request XML via
 `serialize(...)` (Zod-validated at the object boundary), runs it through
@@ -55,7 +63,7 @@ and the production-safety guard — they're not unsafe, just unergonomic.
 
 | Service | Method | Process | Purpose |
 |---|---|---|---|
-| `NfeAutorizacao4` | `nfeAutorizacaoLote` | **sync (lote=1)** or async (lote 2–50) | Send an NF-e lote |
+| `NfeAutorizacao4` | `nfeAutorizacaoLote` | **sync (lote=1)**; async multi-NF-e only before NT 2023.002 v1.02 applies | Send NF-e for authorization |
 | `NfeRetAutorizacao4` | `nfeRetAutorizacao` | async only | Poll a lote by `nRec` (sync path skips this) |
 | `NfeConsultaProtocolo4` | `nfeConsultaNF` | sync | Query one NF-e by chave |
 | `NfeStatusServico4` | `nfeStatusServicoNF` | sync | Service availability |
@@ -76,7 +84,8 @@ and the production-safety guard — they're not unsafe, just unergonomic.
 - **`indSinc=1` é obrigatório quando lote tem exatamente 1 NF-e** (NT 2025.001
   RV GAP03a-3, em produção desde 03/11/2025). Enviar `indSinc=0` com
   `len(NFe)=1` retorna **cStat=452**. Vide `sincrono-vs-assincrono.md`.
-- `indSinc=0` é o caminho normal para lote ≥ 2.
+- `indSinc=0` é o caminho pré-transição para lote ≥ 2. Após a aplicação da
+  NT 2023.002 v1.02, uma nota por envio com `indSinc=1`; `0` retorna 129.
 
 ### Receive — `retEnviNFe` (schema `retEnviNFe_v2.00.xsd` desde NT 2025.002)
 

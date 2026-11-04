@@ -13,8 +13,9 @@
  *
  *  1. **Importer gate.** No importer in the seam (`importadorPresente`, bound by
  *     the root to `importadorPedidoLi() !== null`) ⇒ one INFO line, ZERO reads.
- *     Every notification would park as `importador-ausente`, so polling now
+ *     Every notification would park as `importador-ausente`, so polling then
  *     would only mint one terminal row per order (the Shopee backfill guard).
+ *     Step 5 filled the seam, so a tick passes this gate and stops at the next.
  *  2. **Read switch.** Not exactly `on` ⇒ one `chamada-bloqueada` line, zero
  *     reads. The context checks it again (defence in depth).
  *  3. **Enumerate** with `listarContasLojaIntegrada` — inactive contas are

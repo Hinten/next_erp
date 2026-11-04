@@ -195,7 +195,14 @@ const DECIMAL_TEXTO = /^-?\d{1,12}(\.\d{1,4})?$/;
 const DATA_TEXTO =
   /^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2}(\.\d{1,6})?)?)?(Z|[+-]\d{2}:?\d{2})?$/;
 const TOKEN_TEXTO = /^[A-Za-z0-9_.-]{1,64}$/;
-const URI_RECURSO = /^\/api\/v1\/[a-z_]+(\/[a-z_]+)?\/\d+\/?$/;
+/**
+ * An LI resource URI, holding digits and lowercase resource names only:
+ * `<prefixo>/<recurso>[/<recurso>]/<id>` and the grade option's two-id form
+ * `<prefixo>/grade/<g>/variacao/<v>`, where `<prefixo>` is `/api/v1` (the public
+ * document's form) or `/v1`, each with at most one trailing slash. No host, no
+ * query string, no fragment, nothing but digits in an id position.
+ */
+const URI_RECURSO = /^(?:\/api)?\/v1\/(?:[a-z_]+(?:\/[a-z_]+)?\/\d+|grade\/\d+\/variacao\/\d+)\/?$/;
 const SKU_TEXTO = /^[\x21-\x7E]{1,64}$/;
 const RASTREIO_CORREIOS = /^[A-Z]{2}\d{9}[A-Z]{2}$/;
 const RASTREIO_GERAL = /^[A-Za-z0-9-]{6,40}$/;
@@ -482,8 +489,13 @@ export interface RequisicaoParaRedigirLi {
   readonly query: readonly (readonly [string, string])[];
 }
 
-/** Decoded the way `URLSearchParams` decodes (`+` is a space); never throws. */
-function decodificar(bruto: string): string {
+/**
+ * A raw query value decoded the way `URLSearchParams` decodes (`+` is a space);
+ * never throws. The predicates test THIS, while a kept value keeps its raw
+ * spelling, so anything that reads a kept value as an id (the sanitizer's
+ * pseudonyms) must decode it the same way first.
+ */
+export function decodificarValorDaQueryLi(bruto: string): string {
   return new URLSearchParams(`v=${bruto}`).get('v') ?? '';
 }
 
@@ -566,7 +578,7 @@ export function redigirCaminhoEQuery(
       const igual = parBruto.indexOf('=');
       const chave = igual === -1 ? parBruto : parBruto.slice(0, igual);
       const valor = igual === -1 ? '' : parBruto.slice(igual + 1);
-      somar(redigirPar(chave, valor, decodificar(valor), perfil));
+      somar(redigirPar(chave, valor, decodificarValorDaQueryLi(valor), perfil));
     }
   }
   return { caminho: `${origem}${redigirSegmentos(caminho)}`, query: pares, mascarados };
@@ -968,6 +980,14 @@ const TABELA_DO_CATALOGO: ReadonlyMap<string, TabelaRedacaoLi> = new Map([
   ['grades', TABELAS_LI.grade],
   ['grade', TABELAS_LI.grade],
 ]);
+
+/**
+ * The catalogue resource names (`recursoDoCaminho`). A path naming one that
+ * `classificarCaminho` does not admit as `catalogo` (a sub-resource no step reads
+ * yet) falls to `estrutural`; the capture sanitizer refuses it, since only the
+ * catalogue class pseudonymizes the ids it keeps.
+ */
+export const RECURSOS_DO_CATALOGO_LI: ReadonlySet<string> = new Set(TABELA_DO_CATALOGO.keys());
 
 /** The table a 2xx body of this path is walked with, or `null` (webhook). */
 export function tabelaDoCaminho(caminho: string): TabelaRedacaoLi | null {
@@ -1578,6 +1598,45 @@ export function redigirCorpo(
   perfil: PerfilRedacaoLi,
 ): CorpoParaLogLi | CorpoParaFixtureLi {
   return perfil === 'log' ? corpoParaLog(e) : corpoParaFixture(e);
+}
+
+/* -------------------------------------------------------------------------- */
+/*            The restore snapshot body (the write engine, step 7)            */
+/* -------------------------------------------------------------------------- */
+
+/** The read a write is decided on: the request path, the status, the token-scrubbed text. */
+export interface EntradaRestauracaoLi {
+  readonly caminho: string;
+  readonly status: number;
+  readonly texto: string;
+}
+
+/**
+ * The body of the write engine's restore snapshot (`core/escrita.ts`): what the
+ * deciding read showed, as far as a log line may carry it — or `null` when no
+ * faithful snapshot can be made, and then the write is not made at all.
+ *
+ * - **`estrutural`** (the order, its envios, its situação): the full keep-list
+ *   walk of the `log` profile, with NO 2 KB cut (the line's own size is capped
+ *   by the logger). Only the table's leaves survive: `situacao.*`, `envios.*.id`
+ *   and `envios.*.objeto` among them; the buyer is `<redacted>`.
+ * - **`catalogo`**: `null` until the first catalogue write builds its
+ *   byte-faithful branch (master plan steps 11–13), so a catalogue write cannot
+ *   run before it has one.
+ * - **`webhook`**, **`configuracao`**: `null` — no write of either restores from here.
+ * - A non-2xx answer, an empty or non-JSON body, a body over
+ *   `LIMITE_ANALISE_BYTES.log` or nested deeper than `PROFUNDIDADE_MAXIMA_JSON`:
+ *   `null`.
+ *
+ * Pure and total, like the rest of this module.
+ */
+export function corpoDeRestauracaoLi(e: EntradaRestauracaoLi): ValorJsonLi | null {
+  const politica = classificarCaminho(e.caminho);
+  if (politica !== 'estrutural' || !ehSucesso(e.status)) return null;
+  const analise = analisar(e.texto, bytesUtf8(e.texto), LIMITE_ANALISE_BYTES.log);
+  if (analise.forma !== 'json') return null;
+  const ctx = percurso('log', tabelaDoCaminho(e.caminho), politica, false);
+  return percorrer2xx(analise.valor, '', null, 0, ctx);
 }
 
 /* -------------------------------------------------------------------------- */

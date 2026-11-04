@@ -1,23 +1,14 @@
 ---
 name: nfe
 description: >-
-  Domain reference for Brazilian NF-e (Nota Fiscal Eletrônica, model 55, layout
-  4.00) on **MOC 7.0** as amended by Notas Técnicas through **NT 2025.001**
-  (sync mode when lote=1), **NT 2025.002** (Reforma Tributária — IBS/CBS/IS,
-  mandatory in produção since 03/08/2026) and **NT 2026.007** (LCC-RFB cadastral
-  validation of every CNPJ in the document — cStat 178–186). Use when implementing, debugging or
-  reviewing NF-e generation, XML digital signing, SEFAZ SOAP transmission,
-  síncrono vs assíncrono response handling, the NF-e state machine,
-  contingency, cancelamento / inutilização / carta de correção, the chave de
-  acesso, the new RTC tax groups (IBS, CBS, IS), or DANFE. Triggers on work
-  in `apps/nfe` or `packages/integrations/nfe`, and on terms like infNFe,
-  enviNFe, retEnviNFe, consReciNFe, consSitNFe, indSinc, SEFAZ, cStat, nRec,
-  duplicidade, protNFe, procNFe, tpEmis, certificado A1, ICP-Brasil, IBS, CBS,
-  IS, RTC, Reforma Tributária, gIBSCBS, cClassTrib, NT 2025.001, NT 2025.002,
-  NT 2026.007, LCC-RFB, cStat 178, cStat 181, "não cadastrado na Receita
-  Federal", situação cadastral, 02-Ativa, cSitCNPJ,
-  DANFE, DANFE Simplificado, retrato, paisagem, etiqueta, canhoto, Code128,
-  bwip-js, pdfkit, ZPL, ZPL2, Zebra.
+  Domain reference for Brazilian NF-e model 55, layout 4.00, MOC 7.0 and
+  subsequent Notas Técnicas. Use when implementing, debugging or reviewing
+  apps/nfe or packages/integrations/nfe: XML generation/signing, A1 certificates,
+  SEFAZ SOAP, cStat/duplicidade recovery, synchronous/asynchronous authorization,
+  contingency, cancelamento, inutilização, CC-e, RTC taxes (IBS/CBS/IS),
+  LCC-RFB validation, DANFE and ZPL. Includes NT 2023.002 v1.02's sync-only
+  transition (homologação by 01/02/2027, produção 05/04/2027), NT 2025.001,
+  NT 2025.002 and NT 2026.007. Not a general NFC-e model-65 implementation guide.
 ---
 
 # NF-e — Nota Fiscal Eletrônica (modelo 55, layout 4.00)
@@ -28,6 +19,15 @@ the SEFAZ **MOC 7.0** baseline and the Notas Técnicas that amended it through
 **NT 2025.001** (sync mode) and **NT 2025.002 v1.51** (Reforma Tributária — XSD pack PL_010f_v1.04),
 so NF-e code can be written without re-reading thousands of PDF pages.
 
+**Upcoming authorization transition — NT 2023.002 v1.02 (Oct/2026):**
+homologação by **01/02/2027**, produção **05/04/2027**. GAP03a-6 rejects
+`indSinc=0` with **cStat 129** for models 55/65. Combined with existing
+GAP03a-1 (**764**, multiple NF-e with `indSinc=1`), this means **one NF-e per
+authorization request**, while the ERP can retain a queued bulk action.
+Read [the transition reference](references/nt-2023-002-v1.02.md) before changing
+bulk emission. This is a published requirement; the current implementation
+still sends multi-NF-e asynchronous batches and needs adaptation.
+
 Original SEFAZ PDFs are committed under `references/sources/` for provenance
 (the agent sandbox blocks `*.fazenda.gov.br`; in-tree copies are the only
 re-readable source).
@@ -37,9 +37,10 @@ re-readable source).
 ```
 1. GENERATE   build infNFe XML from order data; compute the 44-char chave
 2. SIGN       enveloped XMLDSig over <infNFe> with the A1 certificate
-3. SEND       SOAP to NfeAutorizacao — enviNFe lote (1–50 NF-e)
+3. SEND       SOAP to NfeAutorizacao — current/pre-transition flow:
                  lote = 1  → indSinc=1 (mandatory since 03/11/2025; NT 2025.001)
-                 lote ≥ 2  → indSinc=0 (async, returns nRec)
+                 lote 2–50 → indSinc=0 (async, until NT 2023.002 v1.02 applies)
+              After transition: one NF-e per request, always indSinc=1.
 4. PARSE      sync: <protNFe> inline. async: <infRec>/nRec, then poll
               consReciNFe by nRec until cStat=104
 5. PROCESS    read protNFe; cStat=100 → authorized; assemble procNFe
@@ -70,7 +71,10 @@ re-readable source).
 - **Lote de 1 NF-e exige `indSinc=1`** (NT 2025.001, RV GAP03a-3). Enviar
   `indSinc=0` com lote de 1 retorna **cStat=452** — rejeição. Cliente precisa
   parsear ambos os envelopes de resposta (sync com `protNFe` inline vs async
-  com `infRec/nRec`). See `references/sincrono-vs-assincrono.md`.
+  com `infRec/nRec`) durante a transição e na recuperação do histórico.
+  **NT 2023.002 v1.02 elimina o envio assíncrono** nas datas acima; não basta
+  mudar o indicador de um lote com várias NF-e. See
+  `references/sincrono-vs-assincrono.md`.
 - **`cStat` agora é 3-4 dígitos** (NT 2025.002 §5.1). Os códigos novos da
   RTC ocupam a faixa de 4 dígitos. Regex de parsing precisa aceitar ambos
   os tamanhos. `nProt` foi para 15 ou 17 dígitos (NFC-e em algumas UFs).
@@ -98,7 +102,8 @@ re-readable source).
 | `references/chave-acesso.md` | 44-char key composition + módulo-11 DV (alfa at 6–17) |
 | `references/assinatura.md` | XMLDSig signing rules, certificate, A1/A3 |
 | `references/webservices.md` | SOAP services, sync/async lote flow, leiautes |
-| `references/sincrono-vs-assincrono.md` | NT 2025.001 sync-when-lote-1 in depth |
+| `references/nt-2023-002-v1.02.md` | Sync-only deadlines, one-NF-e requests, bulk adaptation and inutilização shutdown |
+| `references/sincrono-vs-assincrono.md` | Current response formats and transition from NT 2025.001 to NT 2023.002 v1.02 |
 | `references/cstat-rejeicoes.md` | cStat codes, duplicidade & recovery rules |
 | `references/contingencia.md` | tpEmis modes, EPEC, SVC, pendentes de retorno |
 | `references/eventos.md` | cancelamento, carta de correção, inutilização |

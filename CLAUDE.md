@@ -12,7 +12,7 @@ single cutover (rule 8) and never runs beside it. The Flutter app is a separate
 repo; a read-only copy sits at `.old/` (gitignored, present only in local
 checkouts) and is the **parity reference for ports**.
 
-CI — the eleven lanes in `.github/workflows/` run **concurrently**, gated on
+CI — the twelve lanes in `.github/workflows/` run **concurrently**, gated on
 nothing. **"CI green" means "the suite passed."** Each lane derives its own scope
 from the workspace dependency graph and reports through one unskippable check;
 `ci.yml` excludes the nfe/freight/storage/functions/mercado-livre tests, which
@@ -29,9 +29,9 @@ Five rules you must not break without reading it first:
    not a skip, *nothing* — and a job skipped by `if:` publishes `skipped`, which
    GitHub counts as **satisfying** a required check. Both are silent passes.
 2. ⚠️ **A check-run name carries no workflow prefix**, so every name must be
-   unique repo-wide. The seventeen pinnable ones are
+   unique repo-wide. The eighteen pinnable ones are
    `E2E gate (cadastros|vendas|emulator)`,
-   `CI gate (nfe|freight|mercado-livre|storage|rules|shopee|loja-integrada)` and — since
+   `CI gate (nfe|freight|mercado-livre|storage|rules|shopee|loja-integrada|amazon)` and — since
    `ci.yml` split its single `lint-typecheck-test` job into seven concurrent
    ones —
    `CI typecheck`, `CI lint`, `CI format check`, `CI test`,
@@ -132,7 +132,7 @@ not "deduplicate" them without changing how required checks are published.
    meets a real Firestore; and `firebase.mercado-livre.tasks.json`,
    firestore+functions+tasks, which serves the ML functions artifact so
    `*.tasks.test.ts` can drive receiver → enqueue → the real `onTaskDispatched`
-   → Firestore), `ci-shopee.yml`/`ci-loja-integrada.yml`
+   → Firestore), `ci-shopee.yml`/`ci-loja-integrada.yml`/`ci-amazon.yml`
    (`firebase.<canal>.tasks.json`, the same round trip), and `e2e-emulator.yml`
    (`firebase.e2e.json`, auth+firestore+storage+functions), which runs **every**
    `*.emulator.e2e.spec.ts`, including catalog flows whose pipeline shapes are
@@ -153,7 +153,7 @@ not "deduplicate" them without changing how required checks are published.
    exception. ESLint blocks the mechanical part (`no-empty` + two
    `no-restricted-syntax` selectors); which class sits on the RHS is convention.
    ⚠️ Flat config **replaces** a rule by name instead of merging, so a workspace
-   that redeclares `no-restricted-syntax` drops the base selectors. Seven apps
+   that redeclares `no-restricted-syntax` drops the base selectors. Eight apps
    re-spread them; **`apps/nfe`** and **`packages/integrations/nfe`**
    deliberately opt out (the nfe package via an explicit `'no-restricted-syntax': 'off'`
    block) — there the catch rule is OFF and the convention is on you, which is
@@ -250,12 +250,13 @@ not "deduplicate" them without changing how required checks are published.
   it, so the rest of it had silently drifted out of sync with the schemas. A
   replacement is planned.
 - `nfe` (:3004) · `melhor-envio` (:3005) · `mercado-livre` (:3006) ·
-  `mercado-pago` (:3007) · `whatsapp` (:3008) · `shopee` (:3009) · `loja-integrada` (:3010) — API-only App
+  `mercado-pago` (:3007) · `whatsapp` (:3008) · `shopee` (:3009) ·
+  `loja-integrada` (:3010) · `amazon` (:3011) — API-only App
   Hosting backends, **one deployable per channel**, each importing its logic
   from the matching `packages/integrations/<channel>`.
 - `functions` — **not** a Next app: gen2 Cloud Functions, codebase `storage`.
 
-`apps/{nfe,mercado-livre,mercado-pago,whatsapp}/functions/` are **nested**
+The seven `apps/*/functions/` are **nested**
 Functions codebases deployed via `firebase.<name>.deploy.json`. They are **not**
 pnpm workspace members — the parent app's tsconfig/eslint/vitest cover them.
 
@@ -267,12 +268,12 @@ truth) · `data` (`defineCollection<T>`, cascade) · `ui` (Mantine theme +
 `apps/web` reaches it transitively, so `@google/genai` and `firebase-admin` may
 be imported only behind `./admin`; enforced by
 `packages/config-eslint/rules/ai-root-entry-browser-safe.test.js`, because
-breaking it fails nothing) · `integrations/<channel>` — **seven packages, all
+breaking it fails nothing) · `integrations/<channel>` — **eight packages, all
 implemented**: nfe, mercado-livre, mercado-pago, freight-br, whatsapp-cloud-api,
-shopee, loja-integrada (read client only so far). ⚠️ The five throw-only marketplace scaffolds (shopee, magalu,
+shopee, loja-integrada (a GET-only read client and a separate write client), amazon-sp-api (LWA + GET client + ONE write client, Delivery only). ⚠️ The five throw-only marketplace scaffolds (shopee, magalu,
 amazon-sp-api, facebook, loja-integrada) were **deleted** in #815: they existed
 only to typecheck against `MarketplaceChannel`, and had no importer anywhere.
-**Three of the five stay deleted**; `shopee` and `loja-integrada` were **re-created** as
+**Two of the five stay deleted**; `shopee`, `loja-integrada` and `amazon-sp-api` were **re-created** as
 real fetch-only packages — they declare no `MarketplaceChannel` and have no
 plugin registry, only the provider's wire protocol.
 **That contract is gone too** — a marketplace is declared by `MARKETPLACE_TIPO_CAPS`
@@ -298,11 +299,12 @@ re-adding an interface fails nothing.
 **tools/** — `test-fixtures` (Admin SDK seed/teardown, `create-super-user`) ·
 `migrations` · `cmun-table` (moves the legacy `CMUN` CEP-faixa → IBGE table
 between projects, #785) · `deploy-env` (**the** source of truth for which `.env*`
-files a Functions deploy artifact may contain — shared by all five
+files a Functions deploy artifact may contain — shared by all eight
 `prepare-deploy.mjs`, and what keeps `.env.secrets` out of `gcf-sources-*`).
 Firebase configs: `firebase.json` (prod), `firebase.staging.json`,
 emulator-only `firebase.{functions,rules,e2e}.json` plus
-`firebase.mercado-livre{,.tasks}.json`, and five deploy-isolated
+`firebase.mercado-livre{,.tasks}.json` and
+`firebase.{shopee,loja-integrada}.tasks.json`, and eight deploy-isolated
 `firebase.<codebase>.deploy.json`. ⚠️ **Three** `firebase.mercado-livre*.json`
 now sit one dot apart, and only one of them deploys:
 `firebase.mercado-livre.json` (emulator, firestore only) and
@@ -319,7 +321,7 @@ can push nothing.
 ```bash
 pnpm install                                # per worktree too; apps read ../../.env.local
 pnpm --filter @delfrance/web dev            # ONE app — prefer this
-pnpm dev                                    # WARNING: 11 dev servers, :3000-:3010
+pnpm dev                                    # WARNING: 12 dev servers, :3000-:3011
 pnpm turbo run lint typecheck               # before commits
 pnpm format:check                           # a CI gate; `pnpm format` fixes
 pnpm turbo run test
@@ -358,7 +360,10 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
 - **Repeated read of a slow-changing doc/query** on a server surface →
   `@delfrance/data/admin/cache` (`createReadCache` / `createCachedDocReader`)
   via the `firestore-read-cache` skill; TTL is mandatory and *is* the staleness
-  bound. **Never** cache a `tx.get()`, an OAuth token, or a value you write back.
+  bound. **Never** cache a `tx.get()`, OAuth refresh credentials or queries used
+  to decide/recover a refresh, or a value you write back. Access-token-only caches
+  may hold the token + absolute expiry with a short TTL, validate expiry on every
+  use, and evict only the exact rejected token; see the skill's narrow exception.
 - **Data that should expire → a Firestore TTL policy**, a `fieldOverrides` entry
   (`"ttl": true`) in `firestore.indexes.json` that deploys with the indexes
   (verified on Enterprise, #1639). The field is always a NEW `expiraEm:
@@ -485,8 +490,8 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
 ## Key fixed decisions
 
 - Firebase backend stays. Node >= 22. Zod is the schema source of truth.
-- **firebase-admin and firebase-functions are pinned EXACT — `14.2.0` and
-  `7.3.2` — in the catalog AND in all five deploy-artifact manifests, and do not
+- **firebase-admin and firebase-functions are pinned EXACT — `14.5.0` and
+  `7.4.0` — in the catalog AND in all nine deploy-artifact manifests, and do not
   lower either below admin v14 / functions 7.3.0.** `apps/functions` needs the v8
   Pipelines API + `FieldValue.maximum/minimum` (a downgrade fails typecheck), and
   7.3.0 is the first firebase-functions whose peer range admits
@@ -500,8 +505,8 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   `firebase-functions@7.3.2` moved `express` from `^4.21.0` to `^5.2.1` (an
   Express **major**, for CVE remediation) in a **patch** release, so under the old
   `^7.3.0` every function deployed after 2026-07-28 ran Express 5 in production
-  while CI still tested Express 4, with no signal anywhere. A bump is now six
-  deliberate edits — the catalog plus the five manifests — and
+  while CI still tested Express 4, with no signal anywhere. A bump is now ten
+  deliberate edits — the catalog plus the nine manifests — and
   `packages/config-eslint/rules/runtime-deps-pinned.test.js` fails if they drift
   apart or if either spec regains a range. ⚠️ The `^14` **peerDependencies** in
   `packages/data` and `packages/storage` stay broad; libraries do not pin.
@@ -510,7 +515,7 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   core, `./react` adds the `react-hooks` warns (plugin supplied by
   `eslint-config-next`, or registered locally as in `packages/ui`), and
   `typeAware(...)` layers the async-correctness rules scoped to the workspace's
-  tsconfig `include`. The 10 Next apps spread base + react + `eslint-config-next`
+  tsconfig `include`. The 11 Next apps spread base + react + `eslint-config-next`
   + `typeAware(...)` with `prettier` LAST; libraries spread base + `typeAware(scoped)`
   + `prettier`. Only `apps/docs` (Astro) and `packages/config-tsconfig` (JSON-only)
   are not linted.
@@ -519,7 +524,7 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   `noUnusedLocals` in `packages/config-tsconfig/base.json`, with core
   `no-unused-vars` re-enabled for `.js`/`.mjs` only — `typeAware`'s glob is
   TS-only, which would silently exclude every rule and backstop in
-  `packages/config-eslint/rules` and the five `prepare-deploy.mjs`. Before #1445
+  `packages/config-eslint/rules` and the eight `prepare-deploy.mjs`. Before #1445
   all three mechanisms were off at once and a dead import was invisible
   repo-wide: #1442 orphaned a `useQuery` import that survived typecheck 28/28,
   lint 30/30 and 3013 web tests. ⚠️ The severity is not cosmetic — **no lint
@@ -600,7 +605,7 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   type — never by the member set, which is not an identity: `'1' | '2'` is both
   `IndIncentivo` and the NF-e engine's `TpAmb`, and matching on the set once
   rewrote `tpImp: '1'` (DANFE layout) to `MOD_BCST.listaNegativa`.
-- Firebase App Hosting deploys **every** Next app — 10 `apphosting.yaml` files, 10
+- Firebase App Hosting deploys **every** Next app — 11 `apphosting.yaml` files, 11
   Next apps, no exception since `webchat` (the one static export, served by
   `firebase.json` hosting) was dropped on 2026-09-07; `firebase.json` no longer
   has a `hosting` key at all. Heavy work goes to Cloud Functions. Public legal
@@ -614,12 +619,12 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   cataloged and referenced as `catalog:`; single-consumer deps stay literal.
   `catalogMode: strict` routes `pnpm add` through the catalog. **Five** things
   NEVER use `catalog:`, and all five are ONE rule — an **external resolver
-  reads the manifest without our lockfile or workspace context**: the 4 nested
+  reads the manifest without our lockfile or workspace context**: the 7 nested
   `apps/*/functions` manifests (not workspace members), `apps/functions`'
   runtime `dependencies` (every `prepare-deploy.mjs` copies `dependencies`
   verbatim into an artifact that plain cloud `npm install` must resolve), all
   `peerDependencies` (libraries keep broad ranges), `workspace:*` specs, and
-  **`next` in the 10 `apps/*/package.json` that have an `apphosting.yaml`** —
+  **`next` in the 11 `apps/*/package.json` that have an `apphosting.yaml`** —
   an exact literal there, never `catalog:` and never a `^` range. The App
   Hosting buildpack `google.nodejs.firebasenextjs` derives `FRAMEWORK_VERSION`
   from a lockfile it cannot read (`pnpm-lock.yaml`), silently falls back to the
@@ -634,21 +639,21 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   fixed this once (with `^16.2.6`); the catalog migration silently undid it and
   nothing failed until a human tried to deploy months later —
   `packages/config-eslint/rules/apphosting-next-pinned.test.js` is that missing
-  signal. ⚠️ Those five artifact
+  signal. ⚠️ Those eight artifact
   `dependencies` blocks are literal **and**, for `firebase-admin` +
   `firebase-functions`, **exact** — no lockfile reaches the cloud, so a range
   there ships an untested version (see the firebase pins above);
   `packages/config-eslint/rules/runtime-deps-pinned.test.js` enforces it.
   Three high-blast-radius deps stay pinned **exact** in the catalog for the same
-  "one deliberate edit" reason — `next` (`16.2.6`), `firebase-admin` (`14.2.0`)
-  and `firebase-functions` (`7.3.2`). ⚠️ `next` propagates by **copy**, not by
-  reference: the catalog is still where a bump *starts*, but it is **11
-  deliberate edits** — the catalog plus the 10 App Hosting app manifests — and
+  "one deliberate edit" reason — `next` (`16.2.6`), `firebase-admin` (`14.5.0`)
+  and `firebase-functions` (`7.4.0`). ⚠️ `next` propagates by **copy**, not by
+  reference: the catalog is still where a bump *starts*, but it is **12
+  deliberate edits** — the catalog plus the 11 App Hosting app manifests — and
   the guard above fails on drift. ⚠️ `packages/ui`'s devDependency is now its
   **SOLE** remaining `catalog:` consumer — `apps/webchat` was the other, deleted
   with the webchat widget — which makes that one spec load-bearing: literalise it
   and `cleanupUnusedCatalogs: true` deletes `next: 16.2.6` from the catalog on the
-  next install, leaving the 10 app pins agreeing with nothing. There is no margin
+  next install, leaving the 11 app pins agreeing with nothing. There is no margin
   left; a change that must touch it adds a replacement keeper in the same commit. Do not bump it with `pnpm add` — under `catalogMode: strict`
   that rewrites the spec back to `catalog:`, the exact string that blocks the
   deploy. **`packageManager` is the sole authority for pnpm *in CI*** — corepack

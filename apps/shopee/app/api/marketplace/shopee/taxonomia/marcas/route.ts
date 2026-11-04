@@ -3,12 +3,17 @@
  *
  * ONE page of a leaf category's brands, straight from Shopee.
  *
- * ⚠️ **This route does not feed the produto's brand dropdown.** That dropdown
- * reads `integracao/{id}/brandshopee` — the operator-curated shortlist — because
- * Shopee's brand API is extremely slow. This route serves the REGISTRATION
- * picker where an operator adds a brand to that shortlist, and step 10 writes
- * nothing: the shortlist is maintained from the conta screen (step 21) and
- * re-validated at publish (step 11).
+ * ⚠️ **This route does not feed a produto brand dropdown.** That dropdown —
+ * the draft editor's brand picker (`apps/web` `MarcaRascunhoShopee`, #1911
+ * P10) — reads `integracao/{id}/brandshopee`, the operator-curated shortlist,
+ * because Shopee's brand API is extremely slow. This route serves the
+ * REGISTRATION picker of the shortlist's editor, the Marcas section of the
+ * conta page (`apps/web` `/canais/shopee/[id]`, #1911 P9), where an operator
+ * adds a brand to that shortlist. Step 10 writes nothing — the page saves the
+ * rows to Firestore itself — and publish re-validates NOTHING against the
+ * shortlist: it sends the `brand_id` + `original_brand_name` pair the draft
+ * stored, and its own bounded `get_brand_list` walk only names a stored id
+ * that has no name (`anuncios/publicarAnuncio.ts`, `resolverMarcaDoAnuncio`).
  *
  * ⚠️ **No paging loop.** One page per request, `nextOffset` echoed verbatim, and
  * the caller decides whether to ask for another. `next_offset` is Shopee's own
@@ -20,10 +25,19 @@
  * one. `brand_id: 0` ("No Brand") comes back as the value it is on the pages
  * that do have brands.
  *
+ * Both 200s are built `satisfies` the input type of their envelope,
+ * `respostaMarcasShopeeSchema` — declared ONCE in `@delfrance/schemas` (#1911
+ * P2) for this route and its browser readers, never mirrored. ⚠️ The page
+ * arrives through a SPREAD, and `satisfies` checks no excess key on one: a key
+ * `PaginaDeMarcas` gains that the envelope lacks is the route test's key-set
+ * pin to catch.
+ *
  * Requires `PERM.integracao.read`.
  */
 import { NextResponse } from 'next/server';
 import { SHOPEE_BRAND_MAX_PAGE_SIZE, SHOPEE_BRAND_STATUS } from '@delfrance/integrations-shopee';
+import type { respostaMarcasShopeeSchema } from '@delfrance/schemas';
+import type { z } from 'zod';
 
 import { PERM, verifyCaller } from '@/lib/auth/verifyCaller';
 import { getAdminFirestore } from '@/lib/firebase/admin';
@@ -95,10 +109,16 @@ export async function GET(req: Request): Promise<NextResponse> {
       );
     }
     if (veredicto === 'nao-folha') {
-      return NextResponse.json({ leaf: false, ...paginaDeMarcasVazia(pedido) });
+      return NextResponse.json({
+        leaf: false,
+        ...paginaDeMarcasVazia(pedido),
+      } satisfies z.input<typeof respostaMarcasShopeeSchema>);
     }
 
-    return NextResponse.json({ leaf: true, ...(await lerPaginaDeMarcas(ctx, pedido)) });
+    return NextResponse.json({
+      leaf: true,
+      ...(await lerPaginaDeMarcas(ctx, pedido)),
+    } satisfies z.input<typeof respostaMarcasShopeeSchema>);
   } catch (err) {
     if (isShopeeError(err)) return shopeeErrorResponse(err);
     throw err;

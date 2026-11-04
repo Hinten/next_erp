@@ -348,15 +348,18 @@ describe('MarketplaceChannel stays deleted (#815)', () => {
     expect(read(CORE_BARREL)).toMatch(/export \* from '\.\/money';/);
   });
 
-  it('the three remaining throw-only channel scaffolds stay deleted', () => {
+  it('the two remaining throw-only channel scaffolds stay deleted', () => {
     // They existed only to typecheck against the removed contract, and had no
     // importer anywhere. Recreating one is how the contract comes back.
     //
-    // ⚠️ `shopee` and `loja-integrada` LEFT this list, and only this list. Each
-    // is a real package again — `shopee`: fetch-only signing/hosts/wire
-    // schemas/typed errors for the Shopee Open Platform, paired with
-    // `apps/shopee`; `loja-integrada`: a fetch-only, GET-only client with typed
-    // errors and paging, paired with `apps/loja-integrada` — which is the
+    // ⚠️ `shopee`, `loja-integrada` and `amazon-sp-api` LEFT this list, and only
+    // this list. Each is a real package again — `shopee`: fetch-only
+    // signing/hosts/wire schemas/typed errors for the Shopee Open Platform,
+    // paired with `apps/shopee`; `loja-integrada`: a fetch-only library — a
+    // GET-only read client and a separate write client — with typed errors and
+    // paging, paired with `apps/loja-integrada`;
+    // `amazon-sp-api`: the two Login with Amazon token exchanges and a GET-only
+    // SP-API client with typed errors, paired with `apps/amazon` — which is the
     // ADR-0015 shape, the opposite of the throw-only scaffold that was deleted.
     // Shrinking the list alone would have reopened the hole this guard exists
     // for, so the shape they graduated INTO is asserted by the sibling test below.
@@ -365,7 +368,7 @@ describe('MarketplaceChannel stays deleted (#815)', () => {
     // leave an empty `node_modules/` behind in an existing checkout, which would
     // make a directory check red locally and green on a fresh CI clone — the
     // worst kind of guard. `package.json` is what makes it a package.
-    for (const pkg of ['magalu', 'amazon-sp-api', 'facebook']) {
+    for (const pkg of ['magalu', 'facebook']) {
       expect(
         existsSync(resolve(repoRoot, `packages/integrations/${pkg}/package.json`)),
         `packages/integrations/${pkg} was recreated — see ADR 0015`,
@@ -373,7 +376,7 @@ describe('MarketplaceChannel stays deleted (#815)', () => {
     }
   });
 
-  it.each(['shopee', 'loja-integrada'])(
+  it.each(['shopee', 'loja-integrada', 'amazon-sp-api'])(
     'the re-created %s package is a library, not a channel plugin',
     (pkg) => {
       // The replacement for the rows these packages left in the list above. A
@@ -561,10 +564,41 @@ describe('the plugin system itself stays deleted (#1444)', () => {
 describe('MARKETPLACE_TIPO_CAPS stays wired to reality', () => {
   const capsSrc = read(CAPS);
 
+  /**
+   * Every caps row's `channel` / `implementado` pair — a trailing line comment
+   * after the channel is legal (the Shopee and Loja Integrada rows carry one).
+   *
+   * ⚠️ The regex this replaced required a NEWLINE right after `channel: '…',`, so
+   * it never read a commented row: the existence check below would have skipped
+   * Shopee's flip without a word. The coverage test pins that every row is read.
+   */
+  const PAR_DE_LINHA =
+    /channel:\s*(?:'([^']+)'|null),[ \t]*(?:\/\/[^\n]*)?\n\s*implementado:\s*(true|false),/g;
+  const pares = [...capsSrc.matchAll(PAR_DE_LINHA)].map((m) => ({
+    channel: m[1] ?? null,
+    implementado: m[2] === 'true',
+  }));
   /** Rows whose `channel` is named and whose `implementado` is true. */
-  const implementedChannels = [
-    ...capsSrc.matchAll(/channel:\s*'([^']+)',\s*\n\s*implementado:\s*true/g),
-  ].map((m) => m[1]);
+  const implementedChannels = pares
+    .filter((p) => p.implementado && p.channel !== null)
+    .map((p) => p.channel);
+
+  it('parses EVERY row of the table (guards the assertions below)', () => {
+    // Each row-level `implementado:` line must belong to a pair the regex read — a
+    // row the regex cannot read would be skipped by the existence check below
+    // without a word.
+    const linhas = capsSrc.match(/^\s*implementado:\s*(?:true|false),\s*$/gm) ?? [];
+    expect(linhas.length).toBeGreaterThan(0);
+    expect(pares.length).toBe(linhas.length);
+    expect(pares.map((p) => p.channel)).toEqual(
+      expect.arrayContaining(['mercado-livre', 'shopee', 'loja-integrada']),
+    );
+  });
+
+  it('reads a trailing comment after the channel (the Shopee row shape)', () => {
+    const src = "    channel: 'x', // apps/x\n    implementado: true,\n";
+    expect([...src.matchAll(PAR_DE_LINHA)].map((m) => m[1])).toEqual(['x']);
+  });
 
   it('finds at least one implemented row (guards the assertions below)', () => {
     expect(implementedChannels).toContain('mercado-livre');

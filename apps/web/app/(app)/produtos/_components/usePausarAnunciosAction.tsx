@@ -17,7 +17,7 @@ import type { PausarAnuncioAlvo } from '@/lib/marketplace/anuncioStatus/pausarAn
  * takes both directions and the machinery is symmetric, so this is a product
  * decision rather than a limitation: putting listings back on air is the
  * direction where the operator most needs to see WHICH anúncio they are acting
- * on, and that view is the produto's Mercado Livre tab. A bulk reactivate is one
+ * on, and that view is the produto's channel tabs (Mercado Livre, Shopee). A bulk reactivate is one
  * `acao` away if it is ever wanted.
  *
  * A pure "open the dialog" action, the `useEnviarEstoqueAction` shape:

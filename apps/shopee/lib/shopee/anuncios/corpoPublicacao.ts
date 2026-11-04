@@ -39,9 +39,22 @@ import {
   SHOPEE_UNLIST_MAX_ITEMS,
   type ShopeeItemStatusWritable,
 } from '@delfrance/integrations-shopee';
-import { ACAO_STATUS_ANUNCIO, type AcaoStatusAnuncio } from '@delfrance/schemas';
+import { ACAO_STATUS_ANUNCIO, naoDocId, type AcaoStatusAnuncio } from '@delfrance/schemas';
 
 import { MSG_BODY_INVALIDO, type LeituraCorpo } from '../produtos/corpoImportacao';
+
+/**
+ * Is this request-body value unusable as a Firestore **document id**? The
+ * mechanism is spelled out in the module docblock: `.doc()` validates the PATH
+ * and does it outside our `try`, so a separator either throws a 500 or silently
+ * addresses a document the caller had no business naming.
+ *
+ * Re-exported from `@delfrance/schemas` — the predicate's one home since the
+ * produto's Shopee tab and `lerTabelaMedidasDoProduto` started resolving the
+ * size-chart ref through `lerRefTabelaDeMedidas`, which needs it too. Every
+ * reader in this folder keeps importing it from here.
+ */
+export { naoDocId };
 
 /* -------------------------------------------------------------------------- */
 /*  Codes and messages                                                         */
@@ -91,6 +104,33 @@ export const MSG_RECRIAR_INVALIDO = 'recriar deve ser true ou false.';
 /** The sentence a `converterEmKit` that is not a JSON boolean gets (step 19, R-a). */
 export const MSG_CONVERTER_INVALIDO = 'converterEmKit deve ser true ou false.';
 
+/**
+ * The sentence a `confirmarSegundoAnuncio` that is not a JSON boolean gets
+ * (#1911, D15).
+ */
+export const MSG_CONFIRMAR_SEGUNDO_ANUNCIO_INVALIDO =
+  'confirmarSegundoAnuncio deve ser true ou false.';
+
+/**
+ * The sentence a `confirmarCriacaoIncerta` that is not a JSON boolean gets
+ * (#1911, D5).
+ */
+export const MSG_CONFIRMAR_CRIACAO_INCERTA_INVALIDO =
+  'confirmarCriacaoIncerta deve ser true ou false.';
+
+/**
+ * The sentence a `criacaoIncertaAdota` that is not a list of Shopee item ids
+ * gets (#1911 batch-B review, Lucas §I1) — `null` included: see
+ * {@link lerCriacaoIncertaAdota}.
+ */
+export const MSG_CRIACAO_INCERTA_ADOTA_INVALIDO =
+  'criacaoIncertaAdota deve ser uma lista de ids de anúncio da Shopee (inteiros positivos; ' +
+  '[] = criar um anúncio novo).';
+
+/** `criacaoIncertaAdota` without the attestation it qualifies (#1911 batch-B review, §I1). */
+export const MSG_CRIACAO_INCERTA_ADOTA_SEM_ATESTACAO =
+  'criacaoIncertaAdota só vale junto com confirmarCriacaoIncerta: true.';
+
 /** Both kit actions in one request (step 19, R-a): one action per publish. */
 export const MSG_OPCOES_DE_KIT_EXCLUSIVAS =
   'recriar e converterEmKit não podem ir juntos — uma ação de kit por pedido.';
@@ -101,6 +141,16 @@ export const MSG_OPCOES_DE_KIT_EXCLUSIVAS =
  */
 export const MSG_RECRIAR_SEM_LINK =
   'recriar exige linkDocId — informe o vínculo do kit nativo que será recriado.';
+
+/**
+ * `criacaoIncertaAdota` with no `linkDocId` (#1911 batch-B review, §I1 round 3):
+ * the expectation qualifies the attestation of ONE draft's uncertain create, so
+ * it names that draft — the same "name your target" rule as
+ * {@link MSG_RECRIAR_SEM_LINK}.
+ */
+export const MSG_CRIACAO_INCERTA_ADOTA_SEM_LINK =
+  'criacaoIncertaAdota exige linkDocId — a confirmação da criação incerta vale para o ' +
+  'rascunho que ela atesta: informe o vínculo desse rascunho.';
 
 /* -------------------------------------------------------------------------- */
 /*  Primitive readers                                                          */
@@ -122,27 +172,6 @@ function objeto(body: unknown): LeituraCorpo<Record<string, unknown>> {
     return erro(MSG_BODY_INVALIDO);
   }
   return ok(body as Record<string, unknown>);
-}
-
-/** Firestore reserves both relative-path names; either one addresses elsewhere. */
-const NOMES_RELATIVOS = new Set(['.', '..']);
-
-/**
- * Is this request-body value unusable as a Firestore **document id**?
- *
- * The mechanism is spelled out in the module docblock: `.doc()` validates the
- * PATH and does it outside our `try`, so a separator either throws a 500 or
- * silently addresses a document the caller had no business naming. TYPE-checked
- * and never truthiness-checked — a non-string that happens to be truthy sails
- * past a `!value` guard and then throws deep inside `.doc(id)`.
- *
- * ⚠️ Other apps carry their own copy of this rule. `apps/*` has no dependency
- * edge to another `apps/*` and none is possible, so a shared one would have to
- * be promoted to a package; that is a follow-up this step does not carry.
- * Nothing here asserts what any other copy does.
- */
-export function naoDocId(v: unknown): boolean {
-  return typeof v !== 'string' || v === '' || v.includes('/') || NOMES_RELATIVOS.has(v);
 }
 
 /** A REQUIRED document id. */
@@ -171,7 +200,8 @@ function lerIdOpcional(src: Record<string, unknown>, nome: string): LeituraCorpo
 
 /**
  * `{ integracaoId, produtoId, linkDocId?, status?, categoryId?, principal?,
- * recriar?, converterEmKit? }`.
+ * recriar?, converterEmKit?, confirmarSegundoAnuncio?, confirmarCriacaoIncerta?,
+ * criacaoIncertaAdota? }`.
  */
 export interface CorpoPublicar {
   readonly integracaoId: string;
@@ -194,6 +224,33 @@ export interface CorpoPublicar {
   readonly recriar: boolean;
   /** Step 19 (L8): convert the ordinary listing into a native kit. Absent/`null` ⇒ `false`. */
   readonly converterEmKit: boolean;
+  /**
+   * #1911 (D15): the operator confirmed that publishing this DRAFT may create a
+   * SECOND listing of the produto on the conta. Absent/`null` ⇒ `false`.
+   * Re-checked by the draft's reservation, where the duplicate actually
+   * happens — it never overrides a sibling that is being published, and a
+   * publish that is not a draft's first create never reads it.
+   */
+  readonly confirmarSegundoAnuncio: boolean;
+  /**
+   * #1911 (D5): the operator attested in Seller Centre that the earlier,
+   * UNCERTAIN create of this DRAFT made nothing to import. Absent/`null` ⇒
+   * `false`. Honoured by the draft's look-up for exactly two verdicts —
+   * `criacao-incerta-sem-sku` and `criacao-incerta-ja-vinculada` (K1-11) — and
+   * ignored everywhere else: it never skips the look-up of a produto that has a
+   * SKU, and a publish that is not a draft's first create never reads it.
+   */
+  readonly confirmarCriacaoIncerta: boolean;
+  /**
+   * #1911 batch-B review (Lucas §I1): what the attestation EXPECTS the publish
+   * to do — `[L]` = adopt the unlinked listing `L` the refusal showed, `[]` = a
+   * deliberate create. `null` ⇔ ABSENT, which keeps the bare attestation's
+   * meaning (the CLI's). Valid only beside `confirmarCriacaoIncerta: true` AND a
+   * `linkDocId` (the draft it attests — round 3: a body without one would mint
+   * a fresh draft the reservation then refuses). ENSURE (`criacaoIncerta.ts`) honours an attested verdict only when its
+   * FRESH scan does exactly this; anything else refuses with nothing sent.
+   */
+  readonly criacaoIncertaAdota: readonly number[] | null;
 }
 
 /**
@@ -247,6 +304,33 @@ function lerFlag(src: Record<string, unknown>, nome: string, msg: string): Leitu
   return ok(bruto);
 }
 
+/**
+ * `criacaoIncertaAdota` (#1911 batch-B review, Lucas §I1) — ABSENT ⇒ `null`,
+ * else an array (possibly empty) of positive safe integers, copied.
+ *
+ * ⚠️ An explicit `null` is REFUSED, never read as absent — the opposite of every
+ * optional field above, on purpose: absent means "the bare attestation", the
+ * one meaning WITHOUT the guard, so a client that serialised a forgotten
+ * expectation as `null` would silently publish unguarded. The safe direction
+ * is a 400 the client sees. A numeric STRING is refused like `categoryId`'s.
+ * Nothing is deduped or sorted: the guard compares the list as sent, and only
+ * `[]` or exactly one id can ever match (`criacaoIncerta.ts`).
+ */
+function lerCriacaoIncertaAdota(
+  src: Record<string, unknown>,
+): LeituraCorpo<readonly number[] | null> {
+  const bruto = src['criacaoIncertaAdota'];
+  // JSON has no `undefined`: this is the ABSENT key.
+  if (bruto === undefined) return ok(null);
+  if (
+    !Array.isArray(bruto) ||
+    bruto.some((id) => typeof id !== 'number' || !Number.isSafeInteger(id) || id <= 0)
+  ) {
+    return erro(MSG_CRIACAO_INCERTA_ADOTA_INVALIDO);
+  }
+  return ok([...(bruto as number[])]);
+}
+
 export function lerCorpoPublicar(body: unknown): LeituraCorpo<CorpoPublicar> {
   const src = objeto(body);
   if (!src.ok) return src;
@@ -267,10 +351,38 @@ export function lerCorpoPublicar(body: unknown): LeituraCorpo<CorpoPublicar> {
   if (!recriar.ok) return recriar;
   const converterEmKit = lerFlag(src.valor, 'converterEmKit', MSG_CONVERTER_INVALIDO);
   if (!converterEmKit.ok) return converterEmKit;
+  const confirmarSegundoAnuncio = lerFlag(
+    src.valor,
+    'confirmarSegundoAnuncio',
+    MSG_CONFIRMAR_SEGUNDO_ANUNCIO_INVALIDO,
+  );
+  if (!confirmarSegundoAnuncio.ok) return confirmarSegundoAnuncio;
+  const confirmarCriacaoIncerta = lerFlag(
+    src.valor,
+    'confirmarCriacaoIncerta',
+    MSG_CONFIRMAR_CRIACAO_INCERTA_INVALIDO,
+  );
+  if (!confirmarCriacaoIncerta.ok) return confirmarCriacaoIncerta;
+  const criacaoIncertaAdota = lerCriacaoIncertaAdota(src.valor);
+  if (!criacaoIncertaAdota.ok) return criacaoIncertaAdota;
+  // The expectation QUALIFIES an attestation (§I1): alone it would mean nothing
+  // the server checks, so it is refused rather than ignored.
+  if (criacaoIncertaAdota.valor !== null && !confirmarCriacaoIncerta.valor) {
+    return erro(MSG_CRIACAO_INCERTA_ADOTA_SEM_ATESTACAO);
+  }
   // ONE kit action per request (R-a): the dispatcher cannot pick between them.
   if (recriar.valor && converterEmKit.valor) return erro(MSG_OPCOES_DE_KIT_EXCLUSIVAS);
   // A recriar always NAMES its target (S1F-02): every re-run is the same request.
   if (recriar.valor && linkDocId.valor === null) return erro(MSG_RECRIAR_SEM_LINK);
+  // So does an attestation's expectation (§I1, round 3). Without `linkDocId`
+  // the publisher MINTS a fresh draft for a produto with no link (K1-5); a
+  // fresh draft never reads `incerta`, so the reservation refuses the
+  // expectation AFTER that draft was written, and it stays behind. Refused
+  // here instead, before anything is read or written. Absent and `null` read
+  // alike: `lerIdOpcional` folds both into "no link named".
+  if (criacaoIncertaAdota.valor !== null && linkDocId.valor === null) {
+    return erro(MSG_CRIACAO_INCERTA_ADOTA_SEM_LINK);
+  }
 
   return ok({
     integracaoId: integracaoId.valor,
@@ -281,6 +393,9 @@ export function lerCorpoPublicar(body: unknown): LeituraCorpo<CorpoPublicar> {
     principal: principal.valor,
     recriar: recriar.valor,
     converterEmKit: converterEmKit.valor,
+    confirmarSegundoAnuncio: confirmarSegundoAnuncio.valor,
+    confirmarCriacaoIncerta: confirmarCriacaoIncerta.valor,
+    criacaoIncertaAdota: criacaoIncertaAdota.valor,
   });
 }
 

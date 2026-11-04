@@ -560,13 +560,16 @@ describe('montarPlanoDeEnvio', () => {
     );
   });
 
-  it('PAR/QUASE: só um documento INEXISTENTE é produto-nao-encontrado — uma VARIAÇÃO volta como linha e o planejador a recusa por outro motivo', () => {
+  it('PAR/QUASE: só um documento INEXISTENTE é produto-nao-encontrado — uma linha SEM conta ou SEM vínculo volta e o planejador a recusa por outro motivo', () => {
     // A frase de `produto-nao-encontrado` diz só "não foi encontrado no ERP", e
-    // é isto que a torna verdadeira: o leitor por ids não aplica predicado de
-    // âncora, então o id de uma variação existente VOLTA como linha e cai num
-    // degrau do planejador REAL — `conta-fora-do-produto` quando a variação não
-    // carrega a conta (o gatilho da Shopee só carimba o produto do vínculo, a
-    // âncora), `sem-link` quando carrega mas não tem vínculo próprio.
+    // é isto que a torna verdadeira: uma linha que VOLTOU do leitor cai num
+    // degrau do planejador REAL — `conta-fora-do-produto` quando ela não carrega
+    // a conta, `sem-link` quando carrega mas não tem vínculo próprio.
+    //
+    // ⚠️ Desde a revisão do PR #1948 o dry-run não produz mais esta linha para
+    // uma VARIAÇÃO: o plano compartilhado (`planejarEnvioEstoque.ts`) resolve a
+    // variação na âncora antes de ler. O que se fixa aqui é só o render dos
+    // dois degraus; a resolução está em `planejarEnvioEstoque.test.ts`.
     const opcoes = {
       integracaoId: INTEGRACAO,
       sweepId: 'ensaio-1',
@@ -824,11 +827,19 @@ describe('scripts/enviar-estoque.ts', () => {
     expect(FONTE_SCRIPT.match(/await enviarEstoqueManualShopee\(/g)).toHaveLength(1);
   });
 
-  it('⛔ o ramo do dry-run nomeia o PLANEJADOR e NENHUM remetente', () => {
+  it('⛔ o ramo do dry-run nomeia o PLANO COMPARTILHADO e NENHUM remetente', () => {
     expect(RAMO_DRY.length).toBeGreaterThan(0);
-    expect(RAMO_DRY).toContain('montarTarefasDeEstoqueShopee(');
-    expect(RAMO_DRY).toContain('buscarFamiliasShopeePorIds(');
+    expect(RAMO_DRY).toContain('planejarEnvioEstoqueShopee(');
+    expect(RAMO_DRY).toContain('montarPlanoDoEnsaio(');
     expect(RAMO_DRY).toContain('getItemPromotion(');
+    // ⚠️ PR #1948: o dry-run NÃO planeja por conta própria. A sua cópia do
+    // prefixo lia os ids COMO DIGITADOS e planejava um filho como a própria
+    // âncora ("nada seria enviado") enquanto o --live, resolvendo a âncora,
+    // enviava a família inteira. Reintroduzir qualquer um destes três nomes
+    // aqui é reabrir aquela segunda cópia.
+    expect(RAMO_DRY).not.toContain('buscarFamiliasShopeePorIds(');
+    expect(RAMO_DRY).not.toContain('montarTarefasDeEstoqueShopee(');
+    expect(RAMO_DRY).not.toContain('resolverAnchorsShopee(');
     expect(RAMO_DRY).not.toContain('enviarEstoqueManualShopee');
     expect(RAMO_DRY).not.toContain('processShopeeStockSendTask');
     expect(RAMO_DRY).not.toContain('updateStock(');

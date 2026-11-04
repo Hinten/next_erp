@@ -10,59 +10,28 @@
  * of them sends listing B's models to listing A. Pure: no clock, no Firestore,
  * no Shopee.
  *
- * ## The three folds, and their scope
+ * ## Where each fold lives (step 21, #1529)
  *
- * 1. **Which conta a `prodshopee` belongs to** — the stored
- *    `contaProdutoShopeeOuterRef` compared to the integração id by its LAST
- *    path segment. EQUAL: the two stored ref encodings of one integração
- *    (`documents/integracoes/<id>` and the bare `integracoes/<id>`), because the
- *    migrated corpus carries both. DISTINCT: any other id. ⚠️ Recorded
- *    widening: only the last segment is compared, so a ref into a DIFFERENT
- *    collection whose document id happened to equal the integração id would
- *    match. Nothing writes such a value — every producer writes
- *    `integracaoCollection.docPath` — and the alternative (comparing the
- *    collection segment too) would refuse a legacy encoding this fold exists to
- *    accept.
- * 2. **Which LISTING a `variashopee` belongs to** — the stored
- *    `produtoShopeeOuterRef` compared to the `prodshopee` document id, by the
- *    same last-segment rule. ⚠️ This one is load-bearing rather than defensive:
- *    **two `prodshopee` documents under one produto are LEGAL**, so a child
- *    model must be attributed to its parent LINK and never to its parent
- *    PRODUTO. Attributing by produto would hand listing A the models of listing
- *    B, and `update_stock` would answer 200 having written the wrong numbers.
+ * Folds (1) and (2) — which CONTA a `prodshopee` belongs to, and which LISTING
+ * a `variashopee` belongs to — MOVED to `@delfrance/schemas`
+ * (`produto/collection/vinculosShopee.ts`, with their scope tables and their
+ * pair/near-miss suite), because the produto's Shopee tab in `apps/web` must
+ * attribute rows through the SAME two functions and `apps/web` cannot import
+ * this app. They are re-exported below, so none of their importers changed.
+ *
+ * Fold (3) stays here — the planners are its only readers:
+ *
  * 3. **Which `model_id` readings mean "no usable model"** — `0` (Shopee's
  *    no-variation sentinel), absent, non-numeric and non-integer all fold to
  *    ONE outcome: the row is not a model this planner can address. DISTINCT:
  *    every positive integer, including two ids one digit apart.
  *
- * Fold (1) is {@link idDoRef} compared by the caller; fold (2) is
- * {@link varLinksDoAnuncio}; fold (3) is {@link modelosUtilizaveis}.
+ * Fold (1) is `idDoRef` compared by the caller; fold (2) is `varLinksDoAnuncio`;
+ * fold (3) is {@link modelosUtilizaveis}.
  */
-import { idFromRef } from '@delfrance/schemas';
+import type { VarLinkShopeeCru } from '@delfrance/schemas';
 
-/**
- * One `variashopee` document as a discovery projection returns it —
- * unvalidated, every field `unknown`.
- */
-export interface VarLinkShopeeCru {
-  /** Which conta owns this model link. Carried; attribution uses the LINK ref. */
-  contaVariacaoShopeeOuterRef?: unknown;
-  /**
-   * ⚠️ **Load-bearing.** The `prodshopee` document this model belongs to. Two
-   * `prodshopee` docs under one produto are LEGAL, so this — not the produto —
-   * is what binds a model to a listing. See fold (2) in the module header.
-   */
-  produtoShopeeOuterRef?: unknown;
-  /** Shopee's model id. `0`, absent and unreadable all mean "no usable model". */
-  model_id?: unknown;
-  model_status?: unknown;
-  tier_index?: unknown;
-  /** MILLISECONDS — set while a model list stopped reporting this model. */
-  modeloAusenteEm?: unknown;
-  /** The `variashopee` document's own id, projected by the query. */
-  varLinkDocId?: unknown;
-  [k: string]: unknown;
-}
+export { idDoRef, varLinksDoAnuncio, type VarLinkShopeeCru } from '@delfrance/schemas';
 
 /** One attributed `variashopee`, reduced to what a planner addresses. */
 export interface ModeloCandidato {
@@ -91,42 +60,6 @@ function inteiroPositivo(bruto: unknown): number | null {
 /* -------------------------------------------------------------------------- */
 /*                                  THE FOLDS                                 */
 /* -------------------------------------------------------------------------- */
-
-/**
- * The document id a stored ref names — both encodings, or null.
- *
- * See folds (1) and (2) in the module header for what this treats as equal and
- * what it keeps distinct.
- */
-export function idDoRef(bruto: unknown): string | null {
-  const bruta = textoNaoVazio(bruto);
-  if (bruta == null) return null;
-  return textoNaoVazio(idFromRef(bruta));
-}
-
-/**
- * Every `variashopee` of the family that names THIS listing — before any
- * filtering, because "no rows at all" and "rows that were all dropped" are
- * different listings and get different lines.
- *
- * Structural in the child: anything carrying a `produtoId` and its `varLinks`
- * qualifies, so the stock family's child and the price family's child both
- * pass, and each gets its OWN type back on `filho`.
- */
-export function varLinksDoAnuncio<
-  F extends { readonly produtoId: string; readonly varLinks: readonly VarLinkShopeeCru[] },
->(
-  children: readonly F[],
-  linkDocId: string,
-): { readonly filho: F; readonly varLink: VarLinkShopeeCru }[] {
-  const saida: { filho: F; varLink: VarLinkShopeeCru }[] = [];
-  for (const filho of children) {
-    for (const varLink of filho.varLinks) {
-      if (idDoRef(varLink.produtoShopeeOuterRef) === linkDocId) saida.push({ filho, varLink });
-    }
-  }
-  return saida;
-}
 
 /**
  * The attributed rows a planner can address, in discovery order.

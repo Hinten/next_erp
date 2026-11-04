@@ -151,6 +151,73 @@ export async function validateXsd(rootKey: XsdRootKey, xml: string): Promise<voi
   throw new NFeXsdValidationError(rootKey, errors);
 }
 
+/**
+ * .NET's `DateTime.MinValue`, as a SEFAZ backend serializes a REQUIRED
+ * `xs:dateTime` it never filled. The date-time is fixed; the offset follows the
+ * server's zone, so any offset counts. `0001-01-01T00:00:01` does not.
+ */
+const DOTNET_DATETIME_MIN = /^0001-01-01T00:00:00(?:Z|[+-]\d{2}:\d{2})$/;
+
+/** A value `TDateTimeUTC` accepts — stands in for the sentinel in the re-check copy only. */
+const DH_RECBTO_STAND_IN = '2000-01-01T00:00:00+00:00';
+
+/** `cStat` of a homologada inutilização — the one reply that must carry a real `dhRecbto`. */
+const CSTAT_INUTILIZACAO_HOMOLOGADA = '102';
+
+/**
+ * Validate a `retInutNFe` (inutilização reply): {@link validateXsd} with ONE
+ * tolerance, for a rejection whose `dhRecbto` SEFAZ left unfilled.
+ *
+ * MOC 7.0 §5.3.2 (Tabela 5-10) says of this reply that "os campos de dhRecbto e
+ * nProt não serão preenchidos em caso de erro", yet `retInutNFe_v4.00.xsd` keeps
+ * `dhRecbto` REQUIRED. Since 2026-10-22 SEFAZ-SP homologação settles that
+ * contradiction by sending `DateTime.MinValue` (`0001-01-01T00:00:00+00:00`),
+ * which the `TDateTimeUTC` pattern rejects — so the gate threw before anyone
+ * read the cStat, and `apps/nfe` never persisted the rejection record it keeps
+ * for every inutilização.
+ *
+ * The tolerance is exactly as wide as that reading: the reply must be a
+ * REJECTION (`cStat` ≠ 102 — a homologada inutilização still needs a real
+ * `dhRecbto`), the value must be exactly the sentinel, and the reply must pass
+ * the XSD in full once a valid stand-in replaces it, so a truncated body, a
+ * missing field or any other bad value still throws the ORIGINAL error. The XML
+ * itself is never rewritten: the audit copy and the parsed `dhRecbto` both keep
+ * the sentinel. Throws `NFeXsdValidationError` (`rootKey: 'retInutNFe'`).
+ */
+export async function validateRetInutNFe(xml: string): Promise<void> {
+  try {
+    await validateXsd('retInutNFe', xml);
+  } catch (err) {
+    if (err instanceof NFeXsdValidationError && (await isRejeicaoSemDhRecbto(xml))) return;
+    throw err;
+  }
+}
+
+/**
+ * `<name>text</name>`, with or without a namespace prefix (`<nfe:name>`): the
+ * XSD and `parse` both read the local name, so a prefixed reply is the same
+ * reply. Group 1 is the qualified name (closing tag must match it), group 2 the text.
+ */
+function elementoSimples(localName: string): RegExp {
+  return new RegExp(`<((?:[A-Za-z_][\\w.-]*:)?${localName})>([^<]*)</\\1>`);
+}
+
+async function isRejeicaoSemDhRecbto(xml: string): Promise<boolean> {
+  const dhRecbto = elementoSimples('dhRecbto').exec(xml);
+  if (!dhRecbto || !DOTNET_DATETIME_MIN.test(dhRecbto[2]!)) return false;
+  const cStat = elementoSimples('cStat').exec(xml)?.[2];
+  if (cStat === undefined || cStat === CSTAT_INUTILIZACAO_HOMOLOGADA) return false;
+  const qName = dhRecbto[1]!;
+  const standIn = xml.replace(dhRecbto[0], `<${qName}>${DH_RECBTO_STAND_IN}</${qName}>`);
+  try {
+    await validateXsd('retInutNFe', standIn);
+    return true;
+  } catch (err) {
+    if (err instanceof NFeXsdValidationError) return false;
+    throw err;
+  }
+}
+
 /** Test helper — list the roots wired to an XSD today. */
 export function supportedRoots(): ReadonlyArray<XsdRootKey> {
   return Object.keys(XSD_BY_ROOT) as XsdRootKey[];

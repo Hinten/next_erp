@@ -35,7 +35,7 @@
  * documented — never to a guess.
  *
  * ⚠️ A BLANK value does NOT throw, and that is why `filter(Boolean)` below is
- * load-bearing rather than tidiness. Measured against firebase-functions@7.3.2's
+ * load-bearing rather than tidiness. Measured against firebase-functions@7.4.0's
  * `convertInvoker`:
  *
  *   absent          no `invoker` key          <- what this returns when unset

@@ -5,7 +5,14 @@ import { MOTIVO_RESOLUCAO_RECEITA_KIT } from './receitaKitShopee';
 import {
   CANAL_AVISO,
   CANAL_AVISO_LABELS,
+  MOTIVO_CONTA_AMAZON,
+  MOTIVO_FRETE_NAO_SUPORTADO_LI,
+  MOTIVO_IMPORTACAO_PARADA_AMAZON,
   MOTIVO_IMPORTACAO_PARADA_LI,
+  MOTIVO_PEDIDO_AMAZON,
+  MOTIVO_PEDIDO_CONTESTADO_LI,
+  MOTIVO_RASTREIO_DIVERGENTE_LI,
+  MOTIVO_REVERSAO_COM_ETIQUETA_LI,
   PENDENCIA_RECLAMACAO,
   ROTAS_AVISO,
   SEVERIDADE_AVISO,
@@ -19,7 +26,14 @@ import {
   chaveDeAviso,
   entradaDeLeitura,
   marcarTodosComoLidos,
+  motivoContaAmazonSchema,
+  motivoFreteNaoSuportadoLiSchema,
+  motivoImportacaoParadaAmazonSchema,
   motivoImportacaoParadaLiSchema,
+  motivoPedidoAmazonSchema,
+  motivoPedidoContestadoLiSchema,
+  motivoRastreioDivergenteLiSchema,
+  motivoReversaoComEtiquetaLiSchema,
   pendenciaReclamacaoSchema,
   rotaInternaSegura,
   situacaoAnuncioForaDaSincronizacaoSchema,
@@ -27,6 +41,7 @@ import {
   urlExternaSegura,
   type Aviso,
   type AvisosLeitura,
+  type TipoAviso,
 } from './aviso';
 
 const AGORA_US = 1_760_000_000_000_000;
@@ -190,6 +205,349 @@ describe('TIPO_AVISO_LABELS', () => {
     });
     expect(parsed.urlInterna?.rota).toBe('/canais/loja-integrada/int-1');
   });
+
+  it('names and labels the four Amazon tipos (step 2)', () => {
+    expect(TIPO_AVISO.amazonReconexaoPendente).toBe('amazonReconexaoPendente');
+    expect(TIPO_AVISO.amazonReautorizacaoExpirando).toBe('amazonReautorizacaoExpirando');
+    expect(TIPO_AVISO.amazonSegredoLwaExpirando).toBe('amazonSegredoLwaExpirando');
+    expect(TIPO_AVISO.amazonSegredoLwaRecusado).toBe('amazonSegredoLwaRecusado');
+    expect(TIPO_AVISO_LABELS.amazonReconexaoPendente).toBe('Autorização da Amazon recusada');
+    expect(TIPO_AVISO_LABELS.amazonReautorizacaoExpirando).toBe('Autorização da Amazon expirando');
+    expect(TIPO_AVISO_LABELS.amazonSegredoLwaExpirando).toBe(
+      'Segredo do aplicativo da Amazon expirando',
+    );
+    expect(TIPO_AVISO_LABELS.amazonSegredoLwaRecusado).toBe(
+      'Segredo do aplicativo da Amazon recusado',
+    );
+    // Near-miss spellings are other tipos — refused by the enum, never folded.
+    for (const quase of [
+      'amazonReconexaoPendentes',
+      'AmazonReconexaoPendente',
+      'amazonSegredoLWAExpirando',
+      'amazonSegredoExpirando',
+    ]) {
+      expect(tipoAvisoSchema.safeParse(quase).success, quase).toBe(false);
+    }
+  });
+
+  it('names a machine resolver for every Amazon tipo in its docblock', () => {
+    // `avisos` is `serverOwned` — an aviso nothing resolves stands until
+    // retention — so each tipo's docblock entry must exist and say what closes it.
+    const FONTE = readFileSync(join(import.meta.dirname, 'aviso.ts'), 'utf8');
+    const fim = FONTE.indexOf('export const tipoAvisoSchema');
+    for (const tipo of [
+      'amazonReconexaoPendente',
+      'amazonReautorizacaoExpirando',
+      'amazonSegredoLwaExpirando',
+      'amazonSegredoLwaRecusado',
+      'amazonImportacaoParada',
+      'amazonPedidoPrecisaAtencao',
+      'amazonContaPrecisaAtencao',
+    ]) {
+      const inicio = FONTE.indexOf(`**\`${tipo}\`**`);
+      expect(inicio, tipo).toBeGreaterThan(-1);
+      expect(inicio, tipo).toBeLessThan(fim);
+      const proximo = FONTE.indexOf(' * ---', inicio);
+      const bloco = FONTE.slice(inicio, proximo === -1 || proximo > fim ? fim : proximo);
+      expect(bloco, tipo).toMatch(/\*\*Machine resolvers?\*\*/);
+    }
+  });
+
+  it('parses the Amazon planos as stored: per-conta on the conta page, per-app on the list', () => {
+    const reconexao = umAviso({
+      tipo: TIPO_AVISO.amazonReconexaoPendente,
+      severidade: SEVERIDADE_AVISO.critico,
+      canal: CANAL_AVISO.amazon,
+      params: { loja: 'Conta A', status: 400 },
+      motivo: 'invalid_grant',
+      urlInterna: { rota: ROTAS_AVISO.canalAmazon.build('int-1'), campo: null },
+      relogioEvento: 1_800_000_000_123_456,
+    });
+    expect(reconexao).toMatchObject({
+      canal: 'amazon',
+      severidade: 'critico',
+      params: { loja: 'Conta A', status: 400 },
+      motivo: 'invalid_grant',
+      relogioEvento: 1_800_000_000_123_456,
+    });
+    expect(reconexao.urlInterna?.rota).toBe('/canais/amazon/int-1');
+
+    // The app secret, its date unrecorded: no params at all, routed to the list.
+    const segredo = umAviso({
+      tipo: TIPO_AVISO.amazonSegredoLwaExpirando,
+      severidade: SEVERIDADE_AVISO.atencao,
+      canal: CANAL_AVISO.amazon,
+      urlInterna: { rota: ROTAS_AVISO.canalAmazonLista.build(), campo: null },
+    });
+    expect(segredo.params).toEqual({});
+    expect(segredo.prazo).toBeNull();
+    expect(segredo.urlInterna?.rota).toBe('/canais/amazon');
+  });
+});
+
+describe('amazonImportacaoParada (Amazon step 4)', () => {
+  it('names and labels the tipo; near-miss spellings are other tipos', () => {
+    expect(TIPO_AVISO.amazonImportacaoParada).toBe('amazonImportacaoParada');
+    expect(TIPO_AVISO_LABELS.amazonImportacaoParada).toBe('Importação de pedidos da Amazon parada');
+    for (const quase of [
+      'amazonImportacaoParado',
+      'AmazonImportacaoParada',
+      'amazonImportacaoPausada',
+      'lojaIntegradaImportacaoParada ',
+    ]) {
+      expect(tipoAvisoSchema.safeParse(quase).success, quase).toBe(false);
+    }
+  });
+
+  it('parses the producer plano as stored: critico, the conta route, a µs clock', () => {
+    const parsed = umAviso({
+      tipo: TIPO_AVISO.amazonImportacaoParada,
+      severidade: SEVERIDADE_AVISO.critico,
+      canal: CANAL_AVISO.amazon,
+      params: { loja: 'Conta A', motivo: MOTIVO_IMPORTACAO_PARADA_AMAZON.vendedorDuplicado },
+      urlInterna: { rota: ROTAS_AVISO.canalAmazon.build('int-1'), campo: null },
+      relogioEvento: 1_800_000_000_654_321,
+    });
+    expect(parsed).toMatchObject({
+      tipo: 'amazonImportacaoParada',
+      severidade: 'critico',
+      canal: 'amazon',
+      params: { loja: 'Conta A', motivo: 'vendedor-duplicado' },
+      relogioEvento: 1_800_000_000_654_321,
+    });
+    expect(parsed.urlInterna?.rota).toBe('/canais/amazon/int-1');
+  });
+
+  it('keys one row per conta, apart from every other Amazon tipo and from Loja Integrada’s', () => {
+    const chave = (tipo: TipoAviso, conta: string) => chaveDeAviso({ tipo, conta });
+    expect(chave(TIPO_AVISO.amazonImportacaoParada, 'int-1')).toBe('amazonImportacaoParada:int-1');
+    const chaves = [
+      chave(TIPO_AVISO.amazonImportacaoParada, 'int-1'),
+      chave(TIPO_AVISO.amazonImportacaoParada, 'int-2'),
+      chave(TIPO_AVISO.amazonReconexaoPendente, 'int-1'),
+      chave(TIPO_AVISO.lojaIntegradaImportacaoParada, 'int-1'),
+    ];
+    expect(new Set(chaves).size).toBe(chaves.length);
+  });
+});
+
+describe('MOTIVO_IMPORTACAO_PARADA_AMAZON', () => {
+  it('keeps the named-member constant in step with the enum, member for member', () => {
+    expect(Object.values(MOTIVO_IMPORTACAO_PARADA_AMAZON).sort()).toEqual(
+      [...motivoImportacaoParadaAmazonSchema.options].sort(),
+    );
+    expect(motivoImportacaoParadaAmazonSchema.options).toHaveLength(13);
+  });
+
+  it('near-miss: the UNCOUNTED outcomes are not motivos — they never raise this aviso', () => {
+    for (const quase of [
+      'conta-parada',
+      'segredo-recusado',
+      'paginacao-expirada',
+      'chamadas-desligadas',
+      'lease-ocupado',
+      'Limite-de-taxa',
+      // Loja Integrada's own motivos are not Amazon's.
+      'janela-instavel',
+      'filtro-ignorado',
+    ]) {
+      expect(motivoImportacaoParadaAmazonSchema.safeParse(quase).success, quase).toBe(false);
+    }
+  });
+});
+
+describe('the two Amazon order-import tipos (Amazon steps 5 and 7)', () => {
+  const FONTE = readFileSync(join(import.meta.dirname, 'aviso.ts'), 'utf8');
+
+  /** One tipo's docblock entry: from its bold heading to the next ` * ---`. */
+  function blocoDoTipo(tipo: TipoAviso): string {
+    const fim = FONTE.indexOf('export const tipoAvisoSchema');
+    const inicio = FONTE.indexOf(`**\`${tipo}\`**`);
+    expect(inicio, tipo).toBeGreaterThan(-1);
+    expect(inicio, tipo).toBeLessThan(fim);
+    const proximo = FONTE.indexOf(' * ---', inicio);
+    return FONTE.slice(inicio, proximo === -1 || proximo > fim ? fim : proximo);
+  }
+
+  /** One motivo's bullet inside a tipo's entry, up to the next bullet at either level. */
+  function bulletDoMotivo(bloco: string, motivo: string): string {
+    const inicio = bloco.indexOf(`- \`${motivo}\` — `);
+    expect(inicio, motivo).toBeGreaterThan(-1);
+    const fins = [bloco.indexOf('\n *     - ', inicio + 1), bloco.indexOf('\n *  - ', inicio + 1)];
+    const validos = fins.filter((i) => i !== -1);
+    return bloco.slice(inicio, validos.length === 0 ? bloco.length : Math.min(...validos));
+  }
+
+  it('names and labels both tipos; near-miss spellings are other tipos', () => {
+    expect(TIPO_AVISO.amazonPedidoPrecisaAtencao).toBe('amazonPedidoPrecisaAtencao');
+    expect(TIPO_AVISO.amazonContaPrecisaAtencao).toBe('amazonContaPrecisaAtencao');
+    expect(TIPO_AVISO_LABELS.amazonPedidoPrecisaAtencao).toBe(
+      'Pedido da Amazon precisa de atenção',
+    );
+    expect(TIPO_AVISO_LABELS.amazonContaPrecisaAtencao).toBe('Conta da Amazon precisa de atenção');
+    for (const quase of [
+      'amazonPedidoPrecisaDeAtencao',
+      'AmazonPedidoPrecisaAtencao',
+      'amazonPrecisaAtencao',
+      'amazonContaPrecisaAtencao ',
+    ]) {
+      expect(tipoAvisoSchema.safeParse(quase).success, quase).toBe(false);
+    }
+  });
+
+  it('★ MOTIVO_PEDIDO_AMAZON has exactly the eight motivos, its constant member for member', () => {
+    expect([...motivoPedidoAmazonSchema.options].sort()).toEqual(
+      [
+        'aceitar-cancelamento',
+        'cancelado-so-no-erp',
+        'cancelamento-solicitado',
+        'coleta-cancelada',
+        'divergencia-itens',
+        'logistica-desconhecida',
+        'pacote-status-desconhecido',
+        'status-desconhecido',
+      ].sort(),
+    );
+    expect(Object.values(MOTIVO_PEDIDO_AMAZON).sort()).toEqual(
+      [...motivoPedidoAmazonSchema.options].sort(),
+    );
+  });
+
+  it('★ MOTIVO_CONTA_AMAZON has exactly the two motivos, its constant member for member', () => {
+    expect([...motivoContaAmazonSchema.options].sort()).toEqual(
+      ['conta-sem-operacao', 'intermediador-divergente'].sort(),
+    );
+    expect(Object.values(MOTIVO_CONTA_AMAZON).sort()).toEqual(
+      [...motivoContaAmazonSchema.options].sort(),
+    );
+  });
+
+  it('near-miss: the informational reasons are pedido INCIDENTES, never aviso motivos', () => {
+    // A permanent fact of an order has no transition to resolve it: as an aviso
+    // it would stand until retention (no dismiss button).
+    for (const quase of [
+      'logistica-amazon',
+      'valor-zerado',
+      'possivel-reembolso',
+      'cancelado-apos-envio',
+      'forma-pagamento-desconhecida',
+      'pagamento-divergente',
+      'pagamento-dividido',
+      // A per-conta motivo is not a per-pedido one.
+      MOTIVO_CONTA_AMAZON.contaSemOperacao,
+      'Divergencia-itens',
+    ]) {
+      expect(motivoPedidoAmazonSchema.safeParse(quase).success, quase).toBe(false);
+    }
+    for (const quase of [MOTIVO_PEDIDO_AMAZON.divergenciaItens, 'conta-sem-operação']) {
+      expect(motivoContaAmazonSchema.safeParse(quase).success, quase).toBe(false);
+    }
+  });
+
+  it.each([
+    ['divergencia-itens', 'critico'],
+    ['logistica-desconhecida', 'critico'],
+    ['aceitar-cancelamento', 'critico'],
+    ['cancelado-so-no-erp', 'critico'],
+    ['status-desconhecido', 'atencao'],
+    ['cancelamento-solicitado', 'atencao'],
+    ['pacote-status-desconhecido', 'atencao'],
+    ['coleta-cancelada', 'atencao'],
+  ])(
+    '★ the per-pedido docblock gives `%s` its severity (%s), a resolver and a residue',
+    (motivo, severidade) => {
+      const bullet = bulletDoMotivo(blocoDoTipo(TIPO_AVISO.amazonPedidoPrecisaAtencao), motivo);
+      expect(bullet).toContain(`**${severidade}**`);
+      expect(bullet).toContain('Resolver:');
+      expect(bullet).toContain('Residue:');
+    },
+  );
+
+  it.each([['conta-sem-operacao'], ['intermediador-divergente']])(
+    '★ the per-conta docblock gives `%s` its severity (atencao), a resolver and a residue',
+    (motivo) => {
+      const bullet = bulletDoMotivo(blocoDoTipo(TIPO_AVISO.amazonContaPrecisaAtencao), motivo);
+      expect(bullet).toContain('**atencao**');
+      expect(bullet).toContain('Resolver:');
+      expect(bullet).toContain('Residue:');
+    },
+  );
+
+  it('each docblock entry covers its whole enum: every motivo has a bullet', () => {
+    const pedido = blocoDoTipo(TIPO_AVISO.amazonPedidoPrecisaAtencao);
+    for (const motivo of motivoPedidoAmazonSchema.options) {
+      expect(pedido, motivo).toContain(`- \`${motivo}\` — `);
+    }
+    const conta = blocoDoTipo(TIPO_AVISO.amazonContaPrecisaAtencao);
+    for (const motivo of motivoContaAmazonSchema.options) {
+      expect(conta, motivo).toContain(`- \`${motivo}\` — `);
+    }
+  });
+
+  it('keys one row per (order, motivo) and one per (conta, motivo), apart from every other Amazon key', () => {
+    const ORDER = '171-9876543-2109876';
+    const porPedido = (motivo: string, conta = 'int-1', order = ORDER) =>
+      chaveDeAviso({
+        tipo: TIPO_AVISO.amazonPedidoPrecisaAtencao,
+        conta,
+        entidade: order,
+        janela: motivo,
+      });
+    const porConta = (motivo: string, conta = 'int-1') =>
+      chaveDeAviso({ tipo: TIPO_AVISO.amazonContaPrecisaAtencao, conta, janela: motivo });
+    // The order id's dashes survive the segment fold.
+    expect(porPedido(MOTIVO_PEDIDO_AMAZON.divergenciaItens)).toBe(
+      `amazonPedidoPrecisaAtencao:int-1:${ORDER}:divergencia-itens`,
+    );
+    expect(porConta(MOTIVO_CONTA_AMAZON.contaSemOperacao)).toBe(
+      'amazonContaPrecisaAtencao:int-1::conta-sem-operacao',
+    );
+    const chaves = [
+      ...motivoPedidoAmazonSchema.options.map((m) => porPedido(m)),
+      porPedido(MOTIVO_PEDIDO_AMAZON.divergenciaItens, 'int-2'),
+      porPedido(MOTIVO_PEDIDO_AMAZON.divergenciaItens, 'int-1', '171-9876543-2109877'),
+      ...motivoContaAmazonSchema.options.map((m) => porConta(m)),
+      porConta(MOTIVO_CONTA_AMAZON.contaSemOperacao, 'int-2'),
+      chaveDeAviso({ tipo: TIPO_AVISO.amazonImportacaoParada, conta: 'int-1' }),
+      chaveDeAviso({ tipo: TIPO_AVISO.amazonReconexaoPendente, conta: 'int-1' }),
+    ];
+    expect(new Set(chaves).size).toBe(chaves.length);
+  });
+
+  it('parses both planos as stored: the pedido route with the order id, the conta route with none', () => {
+    const PEDIDO_ID = 'cea5a8005dad3e8c4cfaed862694599e29c817e4600493ad90819a41310c5b0b';
+    const pedido = umAviso({
+      tipo: TIPO_AVISO.amazonPedidoPrecisaAtencao,
+      severidade: SEVERIDADE_AVISO.critico,
+      canal: CANAL_AVISO.amazon,
+      params: {
+        pedido: '171-9876543-2109876',
+        motivo: MOTIVO_PEDIDO_AMAZON.aceitarCancelamento,
+      },
+      motivo: MOTIVO_PEDIDO_AMAZON.aceitarCancelamento,
+      urlInterna: { rota: ROTAS_AVISO.pedido.build(PEDIDO_ID), campo: null },
+      relogioEvento: 1_800_000_000_654_321,
+    });
+    expect(pedido).toMatchObject({
+      tipo: 'amazonPedidoPrecisaAtencao',
+      severidade: 'critico',
+      canal: 'amazon',
+      params: { pedido: '171-9876543-2109876', motivo: 'aceitar-cancelamento' },
+      motivo: 'aceitar-cancelamento',
+    });
+    expect(pedido.urlInterna?.rota).toBe(`/pedidos/${PEDIDO_ID}/editar`);
+
+    const conta = umAviso({
+      tipo: TIPO_AVISO.amazonContaPrecisaAtencao,
+      severidade: SEVERIDADE_AVISO.atencao,
+      canal: CANAL_AVISO.amazon,
+      params: { motivo: MOTIVO_CONTA_AMAZON.intermediadorDivergente },
+      motivo: MOTIVO_CONTA_AMAZON.intermediadorDivergente,
+      urlInterna: { rota: ROTAS_AVISO.canalAmazon.build('int-1'), campo: null },
+    });
+    expect(conta.params).toEqual({ motivo: 'intermediador-divergente' });
+    expect(conta.urlInterna?.rota).toBe('/canais/amazon/int-1');
+  });
 });
 
 describe('MOTIVO_IMPORTACAO_PARADA_LI', () => {
@@ -212,6 +570,316 @@ describe('MOTIVO_IMPORTACAO_PARADA_LI', () => {
   });
 });
 
+describe('the four Loja Integrada order-import tipos (steps 5–6)', () => {
+  const PEDIDO_ID = '0123456789abcdef'.repeat(4);
+
+  it('names and labels each one', () => {
+    expect(TIPO_AVISO.lojaIntegradaSituacaoDesconhecida).toBe('lojaIntegradaSituacaoDesconhecida');
+    expect(TIPO_AVISO.lojaIntegradaPedidoContestado).toBe('lojaIntegradaPedidoContestado');
+    expect(TIPO_AVISO.lojaIntegradaPedidoHub).toBe('lojaIntegradaPedidoHub');
+    expect(TIPO_AVISO.lojaIntegradaFreteNaoSuportado).toBe('lojaIntegradaFreteNaoSuportado');
+    expect(TIPO_AVISO_LABELS.lojaIntegradaSituacaoDesconhecida).toBe(
+      'Situação desconhecida em pedido da Loja Integrada',
+    );
+    expect(TIPO_AVISO_LABELS.lojaIntegradaPedidoContestado).toBe(
+      'Pedido da Loja Integrada contestado',
+    );
+    expect(TIPO_AVISO_LABELS.lojaIntegradaPedidoHub).toBe(
+      'Pedido da Loja Integrada vindo de um hub',
+    );
+    expect(TIPO_AVISO_LABELS.lojaIntegradaFreteNaoSuportado).toBe(
+      'Forma de envio da Loja Integrada sem frete utilizável',
+    );
+  });
+
+  it('near-miss: a multi-shipment order is NOT a tipo — it is a non-blocking incidente', () => {
+    // The master plan once listed a multi-shipment aviso; it became an incidente
+    // on the pedido (multi-shipment orders are not expected at all).
+    for (const quase of ['lojaIntegradaMultiEnvio', 'lojaIntegradaPedidoContestada']) {
+      expect(tipoAvisoSchema.safeParse(quase).success, quase).toBe(false);
+    }
+  });
+
+  it('the three order-keyed tipos never share a row for one pedido, nor across contas', () => {
+    const chave = (tipo: (typeof TIPO_AVISO)[keyof typeof TIPO_AVISO], conta: string) =>
+      chaveDeAviso({ tipo, conta, entidade: PEDIDO_ID });
+    const tipos = [
+      TIPO_AVISO.lojaIntegradaSituacaoDesconhecida,
+      TIPO_AVISO.lojaIntegradaPedidoContestado,
+      TIPO_AVISO.lojaIntegradaPedidoHub,
+    ];
+    expect(new Set(tipos.map((t) => chave(t, 'int-1'))).size).toBe(3);
+    expect(chave(TIPO_AVISO.lojaIntegradaPedidoContestado, 'int-1')).toBe(
+      `lojaIntegradaPedidoContestado:int-1:${PEDIDO_ID}`,
+    );
+    expect(chave(TIPO_AVISO.lojaIntegradaPedidoContestado, 'int-1')).not.toBe(
+      chave(TIPO_AVISO.lojaIntegradaPedidoContestado, 'int-2'),
+    );
+  });
+
+  it('why the freight key is a DIGEST: the raw key folds two shipping methods into one row', () => {
+    // `.` and `_` are one character to the aviso key, while the mapa keeps the
+    // code verbatim — so `1---PAC.X` and `1---PAC_X` (two mapa rows) would
+    // collide here. The producer digests the key instead.
+    const crua = (chave: string) =>
+      chaveDeAviso({
+        tipo: TIPO_AVISO.lojaIntegradaFreteNaoSuportado,
+        conta: 'int-1',
+        entidade: chave,
+      });
+    expect(crua('1---PAC.X')).toBe(crua('1---PAC_X'));
+  });
+
+  it('parses each plano as stored: atencao, the route, an order clock', () => {
+    const contestado = umAviso({
+      tipo: TIPO_AVISO.lojaIntegradaPedidoContestado,
+      severidade: SEVERIDADE_AVISO.atencao,
+      canal: CANAL_AVISO.lojaIntegrada,
+      params: { loja: 'Conta A', pedido: '165', motivo: MOTIVO_PEDIDO_CONTESTADO_LI.disputa },
+      motivo: MOTIVO_PEDIDO_CONTESTADO_LI.disputa,
+      urlInterna: { rota: ROTAS_AVISO.pedido.build(PEDIDO_ID), campo: null },
+      relogioEvento: 1_789_000_000_123_456,
+    });
+    expect(contestado).toMatchObject({
+      tipo: 'lojaIntegradaPedidoContestado',
+      canal: 'lojaIntegrada',
+      params: { loja: 'Conta A', pedido: '165', motivo: 'disputa' },
+      motivo: 'disputa',
+      relogioEvento: 1_789_000_000_123_456,
+    });
+    const frete = umAviso({
+      tipo: TIPO_AVISO.lojaIntegradaFreteNaoSuportado,
+      severidade: SEVERIDADE_AVISO.atencao,
+      canal: CANAL_AVISO.lojaIntegrada,
+      params: {
+        loja: 'Conta A',
+        formaEnvio: 'Envio X - pac',
+        chave: '1---PAC',
+        motivo: MOTIVO_FRETE_NAO_SUPORTADO_LI.alvoInativo,
+      },
+      urlInterna: { rota: ROTAS_AVISO.canalLojaIntegrada.build('int-1'), campo: null },
+    });
+    expect(frete.urlInterna?.rota).toBe('/canais/loja-integrada/int-1');
+    expect(frete.params.motivo).toBe('alvo-inativo');
+  });
+});
+
+describe('lojaIntegradaPedidoPagoSemEndereco: a paid order whose retries ran out without an address', () => {
+  const PEDIDO_ID = '0123456789abcdef'.repeat(4);
+
+  it('is a tipo, named and labelled', () => {
+    expect(TIPO_AVISO.lojaIntegradaPedidoPagoSemEndereco).toBe(
+      'lojaIntegradaPedidoPagoSemEndereco',
+    );
+    expect(tipoAvisoSchema.safeParse('lojaIntegradaPedidoPagoSemEndereco').success).toBe(true);
+    expect(TIPO_AVISO_LABELS.lojaIntegradaPedidoPagoSemEndereco).toBe(
+      'Pedido pago da Loja Integrada sem endereço',
+    );
+  });
+
+  it('near-miss: a near spelling is no tipo', () => {
+    for (const quase of ['lojaIntegradaPedidoSemEndereco', 'lojaIntegradaPedidoPagoSemEndereço']) {
+      expect(tipoAvisoSchema.safeParse(quase).success, quase).toBe(false);
+    }
+  });
+
+  it('one row per pedido of the conta, apart from the other order-keyed tipos', () => {
+    const chave = (tipo: (typeof TIPO_AVISO)[keyof typeof TIPO_AVISO], conta: string) =>
+      chaveDeAviso({ tipo, conta, entidade: PEDIDO_ID });
+    expect(chave(TIPO_AVISO.lojaIntegradaPedidoPagoSemEndereco, 'int-1')).toBe(
+      `lojaIntegradaPedidoPagoSemEndereco:int-1:${PEDIDO_ID}`,
+    );
+    expect(chave(TIPO_AVISO.lojaIntegradaPedidoPagoSemEndereco, 'int-1')).not.toBe(
+      chave(TIPO_AVISO.lojaIntegradaPedidoHub, 'int-1'),
+    );
+  });
+
+  it('parses as stored: critico, the conta page, an order clock', () => {
+    const aviso = umAviso({
+      tipo: TIPO_AVISO.lojaIntegradaPedidoPagoSemEndereco,
+      severidade: SEVERIDADE_AVISO.critico,
+      canal: CANAL_AVISO.lojaIntegrada,
+      params: { loja: 'Conta A', pedido: '165' },
+      urlInterna: { rota: ROTAS_AVISO.canalLojaIntegrada.build('int-1'), campo: null },
+      relogioEvento: 1_789_000_000_123_456,
+    });
+    expect(aviso).toMatchObject({
+      tipo: 'lojaIntegradaPedidoPagoSemEndereco',
+      severidade: 'critico',
+      params: { loja: 'Conta A', pedido: '165' },
+      relogioEvento: 1_789_000_000_123_456,
+    });
+  });
+});
+
+describe('lojaIntegradaReversaoComEtiqueta: a reversal landing on a pedido whose label was bought', () => {
+  const PEDIDO_ID = '0123456789abcdef'.repeat(4);
+
+  it('is a tipo, named and labelled', () => {
+    expect(TIPO_AVISO.lojaIntegradaReversaoComEtiqueta).toBe('lojaIntegradaReversaoComEtiqueta');
+    expect(TIPO_AVISO_LABELS.lojaIntegradaReversaoComEtiqueta).toBe(
+      'Pedido da Loja Integrada revertido com etiqueta comprada',
+    );
+  });
+
+  it('one row per pedido, apart from the contestado row the same refund may raise', () => {
+    const chave = (tipo: (typeof TIPO_AVISO)[keyof typeof TIPO_AVISO]) =>
+      chaveDeAviso({ tipo, conta: 'int-1', entidade: PEDIDO_ID });
+    expect(chave(TIPO_AVISO.lojaIntegradaReversaoComEtiqueta)).toBe(
+      `lojaIntegradaReversaoComEtiqueta:int-1:${PEDIDO_ID}`,
+    );
+    expect(chave(TIPO_AVISO.lojaIntegradaReversaoComEtiqueta)).not.toBe(
+      chave(TIPO_AVISO.lojaIntegradaPedidoContestado),
+    );
+  });
+
+  it('its motivo codes: one per reversal codigo, the constant in step with the enum', () => {
+    expect(motivoReversaoComEtiquetaLiSchema.options).toEqual([
+      'cancelado',
+      'devolvido',
+      'chargeback',
+      'devolvido-sem-retorno',
+    ]);
+    expect(Object.values(MOTIVO_REVERSAO_COM_ETIQUETA_LI).sort()).toEqual(
+      [...motivoReversaoComEtiquetaLiSchema.options].sort(),
+    );
+  });
+
+  it('NEAR-MISS: a cancellation REQUEST or a dispute is no reversal; the wire codigos are not the codes', () => {
+    for (const quase of ['cancelamento-solicitado', 'disputa', 'pedido_cancelado', 'Cancelado']) {
+      expect(motivoReversaoComEtiquetaLiSchema.safeParse(quase).success, quase).toBe(false);
+    }
+  });
+
+  it('parses as stored: atencao, the pedido page, an order clock', () => {
+    const aviso = umAviso({
+      tipo: TIPO_AVISO.lojaIntegradaReversaoComEtiqueta,
+      severidade: SEVERIDADE_AVISO.atencao,
+      canal: CANAL_AVISO.lojaIntegrada,
+      params: { loja: 'Conta A', pedido: '165', motivo: MOTIVO_REVERSAO_COM_ETIQUETA_LI.cancelado },
+      motivo: MOTIVO_REVERSAO_COM_ETIQUETA_LI.cancelado,
+      urlInterna: { rota: ROTAS_AVISO.pedido.build(PEDIDO_ID), campo: null },
+      relogioEvento: 1_789_000_000_123_456,
+    });
+    expect(aviso).toMatchObject({
+      tipo: 'lojaIntegradaReversaoComEtiqueta',
+      params: { loja: 'Conta A', pedido: '165', motivo: 'cancelado' },
+      motivo: 'cancelado',
+    });
+  });
+});
+
+describe('lojaIntegradaRastreioDivergente: a write-back the ERP could not, or would not, reflect in Loja Integrada', () => {
+  const PEDIDO_ID = '0123456789abcdef'.repeat(4);
+
+  it('is a tipo, named and labelled', () => {
+    expect(TIPO_AVISO.lojaIntegradaRastreioDivergente).toBe('lojaIntegradaRastreioDivergente');
+    expect(TIPO_AVISO_LABELS.lojaIntegradaRastreioDivergente).toBe(
+      'Envio do pedido não refletido na Loja Integrada',
+    );
+  });
+
+  it('one row per pedido, apart from the order-import rows of the same pedido', () => {
+    const chave = (tipo: (typeof TIPO_AVISO)[keyof typeof TIPO_AVISO]) =>
+      chaveDeAviso({ tipo, conta: 'int-1', entidade: PEDIDO_ID });
+    expect(chave(TIPO_AVISO.lojaIntegradaRastreioDivergente)).toBe(
+      `lojaIntegradaRastreioDivergente:int-1:${PEDIDO_ID}`,
+    );
+    expect(chave(TIPO_AVISO.lojaIntegradaRastreioDivergente)).not.toBe(
+      chave(TIPO_AVISO.lojaIntegradaPedidoContestado),
+    );
+  });
+
+  it('its motivo codes: the fourteen the write-back names, the constant in step with the enum', () => {
+    expect(motivoRastreioDivergenteLiSchema.options).toEqual([
+      'situacao-bloqueada',
+      'situacao-nao-paga',
+      'situacao-desconhecida',
+      'transicao-lateral',
+      'situacao-sobrescrita',
+      'objeto-divergente',
+      'objeto-invalido',
+      'envio-divergente',
+      'pedido-divergente',
+      'pedido-ausente',
+      'restauracao-indisponivel',
+      'escrita-recusada',
+      'deriva',
+      'tentativas-esgotadas',
+    ]);
+    expect(Object.values(MOTIVO_RASTREIO_DIVERGENTE_LI).sort()).toEqual(
+      [...motivoRastreioDivergenteLiSchema.options].sort(),
+    );
+  });
+
+  it('NEAR-MISS: a situação codigo, a dry-run reason and another case are not motivo codes', () => {
+    for (const quase of ['pedido_cancelado', 'dry-run', 'Deriva', 'deriva ', 'superado']) {
+      expect(motivoRastreioDivergenteLiSchema.safeParse(quase).success, quase).toBe(false);
+    }
+  });
+
+  it('parses as stored: the pedido page, an event clock, atencao or critico', () => {
+    for (const severidade of [SEVERIDADE_AVISO.atencao, SEVERIDADE_AVISO.critico]) {
+      const aviso = umAviso({
+        tipo: TIPO_AVISO.lojaIntegradaRastreioDivergente,
+        severidade,
+        canal: CANAL_AVISO.lojaIntegrada,
+        params: {
+          loja: 'Conta A',
+          pedido: '165',
+          motivo: MOTIVO_RASTREIO_DIVERGENTE_LI.situacaoSobrescrita,
+          situacao: 'cancelamento_solicitado',
+        },
+        motivo: MOTIVO_RASTREIO_DIVERGENTE_LI.situacaoSobrescrita,
+        urlInterna: { rota: ROTAS_AVISO.pedido.build(PEDIDO_ID), campo: null },
+        relogioEvento: 1_789_000_000_123_000,
+      });
+      expect(aviso).toMatchObject({
+        tipo: 'lojaIntegradaRastreioDivergente',
+        severidade,
+        params: { motivo: 'situacao-sobrescrita', situacao: 'cancelamento_solicitado' },
+      });
+    }
+  });
+});
+
+describe('MOTIVO_PEDIDO_CONTESTADO_LI', () => {
+  it('keeps the named-member constant in step with the enum, member for member', () => {
+    expect(Object.values(MOTIVO_PEDIDO_CONTESTADO_LI).sort()).toEqual(
+      [...motivoPedidoContestadoLiSchema.options].sort(),
+    );
+    expect(motivoPedidoContestadoLiSchema.options).toEqual([
+      'disputa',
+      'chargeback',
+      'devolvido',
+      'devolvido-sem-retorno',
+    ]);
+  });
+
+  it('near-miss: a cancellation is NOT a contest, and the wire codigos are not the codes', () => {
+    for (const quase of ['cancelado', 'pedido_chargeback', 'devolvido_sem_retorno', 'Disputa']) {
+      expect(motivoPedidoContestadoLiSchema.safeParse(quase).success, quase).toBe(false);
+    }
+  });
+});
+
+describe('MOTIVO_FRETE_NAO_SUPORTADO_LI', () => {
+  it('keeps the named-member constant in step with the enum, member for member', () => {
+    expect(Object.values(MOTIVO_FRETE_NAO_SUPORTADO_LI).sort()).toEqual(
+      [...motivoFreteNaoSuportadoLiSchema.options].sort(),
+    );
+    expect(motivoFreteNaoSuportadoLiSchema.options).toHaveLength(4);
+  });
+
+  it('near-miss: an unmapped method and a deliberate fob/outros mapping are NOT motivos', () => {
+    // Neither raises this aviso: the unmapped row is already the operator's to-do,
+    // and fob/outros route at label time.
+    for (const quase of ['nao-mapeado', 'fob', 'outros', 'sem-int-frete']) {
+      expect(motivoFreteNaoSuportadoLiSchema.safeParse(quase).success, quase).toBe(false);
+    }
+  });
+});
+
 describe('CANAL_AVISO', () => {
   it('keeps the named-member constant and the labels in step with the enum', () => {
     // `escreverAviso` full-parses on create, so a canal the enum lacks is a
@@ -225,6 +893,14 @@ describe('CANAL_AVISO', () => {
     expect(CANAL_AVISO.lojaIntegrada).toBe('lojaIntegrada');
     expect(CANAL_AVISO_LABELS.lojaIntegrada).toBe('Loja Integrada');
     for (const quase of ['loja-integrada', 'lojaintegrada', 'LojaIntegrada', 'loja_integrada']) {
+      expect(canalAvisoSchema.safeParse(quase).success, quase).toBe(false);
+    }
+  });
+
+  it('carries Amazon, spelled exactly — near-miss spellings stay refused', () => {
+    expect(CANAL_AVISO.amazon).toBe('amazon');
+    expect(CANAL_AVISO_LABELS.amazon).toBe('Amazon');
+    for (const quase of ['Amazon', 'amazonSpApi', 'amazon-sp-api', 'amazon_br']) {
       expect(canalAvisoSchema.safeParse(quase).success, quase).toBe(false);
     }
   });
@@ -604,6 +1280,57 @@ describe('chaveDeAviso — the two Loja Integrada tipos (step 2)', () => {
   });
 });
 
+describe('chaveDeAviso — the four Amazon tipos (step 2)', () => {
+  // Producers and resolvers recompute these keys from the integração id alone
+  // (per conta) or from nothing at all (per application); a key they could not
+  // recompute would be a row nothing ever closes.
+  const porConta = (tipo: TipoAviso, conta: string) => chaveDeAviso({ tipo, conta });
+
+  it('keys the reconexão and the reauthorization on the conta alone — no janela', () => {
+    expect(porConta(TIPO_AVISO.amazonReconexaoPendente, 'int-1')).toBe(
+      'amazonReconexaoPendente:int-1',
+    );
+    expect(porConta(TIPO_AVISO.amazonReautorizacaoExpirando, 'int-1')).toBe(
+      'amazonReautorizacaoExpirando:int-1',
+    );
+    // A reconnect moves the date; the row must stay the same one.
+    expect(porConta(TIPO_AVISO.amazonReautorizacaoExpirando, 'int-1')).toBe(
+      chaveDeAviso({
+        tipo: TIPO_AVISO.amazonReautorizacaoExpirando,
+        conta: 'int-1',
+        entidade: null,
+        janela: null,
+      }),
+    );
+  });
+
+  it('keys the two app-secret tipos on the tipo alone — one row per application', () => {
+    expect(chaveDeAviso({ tipo: TIPO_AVISO.amazonSegredoLwaExpirando })).toBe(
+      'amazonSegredoLwaExpirando',
+    );
+    expect(chaveDeAviso({ tipo: TIPO_AVISO.amazonSegredoLwaRecusado })).toBe(
+      'amazonSegredoLwaRecusado',
+    );
+    expect(chaveDeAviso({ tipo: TIPO_AVISO.amazonSegredoLwaRecusado, conta: null })).toBe(
+      'amazonSegredoLwaRecusado',
+    );
+  });
+
+  it('separates two contas, and every Amazon tipo from the others', () => {
+    expect(porConta(TIPO_AVISO.amazonReconexaoPendente, 'int-1')).not.toBe(
+      porConta(TIPO_AVISO.amazonReconexaoPendente, 'int-2'),
+    );
+    const chaves = [
+      porConta(TIPO_AVISO.amazonReconexaoPendente, 'int-1'),
+      porConta(TIPO_AVISO.amazonReautorizacaoExpirando, 'int-1'),
+      chaveDeAviso({ tipo: TIPO_AVISO.amazonSegredoLwaExpirando }),
+      chaveDeAviso({ tipo: TIPO_AVISO.amazonSegredoLwaRecusado }),
+      porConta(TIPO_AVISO.lojaIntegradaReconexaoPendente, 'int-1'),
+    ];
+    expect(new Set(chaves).size).toBe(chaves.length);
+  });
+});
+
 describe('avisoNaoLido', () => {
   const semLeitura: AvisosLeitura = avisosLeituraSchema.parse({});
 
@@ -758,6 +1485,16 @@ describe('ROTAS_AVISO', () => {
     expect(rotaInternaSegura(ROTAS_AVISO.canalLojaIntegrada.build('abc'))).toBe(
       '/canais/loja-integrada/abc',
     );
+  });
+
+  it('builds the Amazon conta route and the Amazon conta LIST route', () => {
+    expect(ROTAS_AVISO.canalAmazon.padrao).toBe('/canais/amazon/[id]');
+    expect(ROTAS_AVISO.canalAmazon.build('abc')).toBe('/canais/amazon/abc');
+    expect(rotaInternaSegura(ROTAS_AVISO.canalAmazon.build('abc'))).toBe('/canais/amazon/abc');
+    // The per-application avisos (the LWA app secret) belong to no conta.
+    expect(ROTAS_AVISO.canalAmazonLista.padrao).toBe('/canais/amazon');
+    expect(ROTAS_AVISO.canalAmazonLista.build()).toBe('/canais/amazon');
+    expect(rotaInternaSegura(ROTAS_AVISO.canalAmazonLista.build())).toBe('/canais/amazon');
   });
 
   it('lands a dispatch aviso on the checkout, with the pedido id as `?pedido=`', () => {

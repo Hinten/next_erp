@@ -21,12 +21,14 @@
  *
  * ## The two modes
  *
- * **`--dry-run` (the DEFAULT)** reads the families, computes the quantities,
- * runs the PLANNER and reads each planned listing's promotion so the `piso`
- * column is real — then prints the plan. It writes nothing to Firestore and
- * calls no write operation, and that is STRUCTURAL rather than a promise: the
- * sender module is not even imported on this path, and the planner reaches no
- * writer at all.
+ * **`--dry-run` (the DEFAULT)** calls `planejarEnvioEstoqueShopee` — the SAME
+ * write-free resolve-and-plan prefix `enviarEstoqueManualShopee` sends from, so
+ * a variation child is planned as its ANCHOR's family exactly as `--live` would
+ * send it — reads each planned listing's promotion so the `piso` column is real,
+ * then prints the plan. It writes nothing to Firestore and calls no write
+ * operation, and that is STRUCTURAL rather than a promise: the sender module is
+ * not even imported on this path, and the planning module imports no writer at
+ * all (`planejarEnvioEstoque.test.ts` reads it as text).
  *
  * **`--live`** calls `enviarEstoqueManualShopee` exactly as the route does —
  * the same single clock read, the same injected elapsed clock, the same
@@ -75,15 +77,15 @@
  */
 import {
   USO_ENVIAR_ESTOQUE,
+  anunciosParaPiso,
   descreverErroEnvio,
   ehRecusaAntesDaShopee,
   lerArgsEnviarEstoque,
-  montarPlanoDeEnvio,
+  montarPlanoDoEnsaio,
   renderizarPlanoDeEnvio,
   renderizarResultadoEnvio,
   resumoDoEnvio,
   resumoDoPlano,
-  type EntradaDoPlano,
 } from '../lib/shopee/estoque/enviarEstoqueCli';
 
 /** stdout — the report. */
@@ -128,7 +130,6 @@ async function main(): Promise<void> {
   const { getAdminApp, getAdminFirestore } = await import('../lib/firebase/admin');
   const { SHOPEE_ITEM_PROMOTION_MAX_IDS } = await import('@delfrance/integrations-shopee');
   const { idFromRef } = await import('@delfrance/schemas');
-  const { produtoCollection } = await import('@delfrance/data/admin/collections');
   const { loadShopeeContext } = await import('../lib/shopee/core/shopee');
   const { SHOPEE_STOCK_SYNC_FLAG_ENV } = await import('../lib/shopee/estoque/constantesEstoque');
   const {
@@ -231,59 +232,31 @@ async function main(): Promise<void> {
   /* --------------------------------- dry-run -------------------------------- */
 
   if (!live) {
-    const { buscarFamiliasShopeePorIds } = await import('../lib/shopee/estoque/descobertaEstoque');
-    const { montarTarefasDeEstoqueShopee } = await import('../lib/shopee/estoque/planoEstoque');
-    const { quantidadesDaFamiliaShopee } = await import('../lib/shopee/estoque/quantidadeEstoque');
+    const { planejarEnvioEstoqueShopee } =
+      await import('../lib/shopee/estoque/planejarEnvioEstoque');
     const { pisoPorModelo } = await import('../lib/shopee/estoque/reservaPromocao');
 
-    const nomes = new Map<string, string | null>(
-      await Promise.all(
-        produtoIds.map(async (produtoId): Promise<[string, string | null]> => {
-          const snap = await produtoCollection.docRef(db, {}, produtoId).get();
-          const bruto = (snap.data() ?? {}) as Record<string, unknown>;
-          const nome = bruto['nome'];
-          return [produtoId, typeof nome === 'string' && nome.trim() !== '' ? nome : null];
-        }),
-      ),
+    // ⚠️ The SAME write-free resolve-and-plan prefix `--live` sends from — each
+    // id resolved to its family anchor, the families read over the anchors, the
+    // planner per anchor, every "no listing" verdict. A variation child is
+    // planned as its anchor's family, exactly as `--live` would send it; reading
+    // the ids as typed here made the rehearsal print "nothing to send" for a
+    // child whose `--live` run pushed the whole family (review of PR #1948).
+    const planejado = await planejarEnvioEstoqueShopee(
+      db,
+      { integracaoId, depositoId, produtoIds, reenviarComErro },
+      { nowMs },
     );
-
-    // The by-ids reader carries NO conta term on purpose: that absence is what
-    // makes the planner's `conta-fora-do-produto` and `sem-link` rungs fire with
-    // an operator-visible line instead of the row silently not coming back.
-    const rows = await buscarFamiliasShopeePorIds(db, { integracaoId, depositoId, produtoIds });
-    const rowPorAnchor = new Map(rows.map((r) => [r.anchorId, r]));
-
-    const entradas: EntradaDoPlano[] = produtoIds.map((produtoId): EntradaDoPlano => {
-      const row = rowPorAnchor.get(produtoId) ?? null;
-      return {
-        produtoId,
-        produtoNome: nomes.get(produtoId) ?? null,
-        row,
-        plano:
-          row === null
-            ? null
-            : montarTarefasDeEstoqueShopee(row, quantidadesDaFamiliaShopee(row), {
-                integracaoId,
-                sweepId: `ensaio-${integracaoId}-${String(nowMs)}`,
-                sweepComputadoEmMs: nowMs,
-                nowMs,
-                ignorarRecusa: reenviarComErro,
-              }),
-      };
-    });
 
     // The ONE Shopee READ of the dry run, and the only one: the reserved floor,
     // for the `piso` column. Nothing on this path writes.
-    const itemIds = [
-      ...new Set(entradas.flatMap((e) => (e.plano?.tarefas ?? []).map((t) => t.itemId))),
-    ];
     const pisoPorItem = new Map<number, ReadonlyMap<number, number>>();
-    for (const lote of lotes(itemIds, SHOPEE_ITEM_PROMOTION_MAX_IDS)) {
+    for (const lote of lotes(anunciosParaPiso(planejado), SHOPEE_ITEM_PROMOTION_MAX_IDS)) {
       const promocoes = await client.getItemPromotion({ itemIds: lote });
       for (const itemId of lote) pisoPorItem.set(itemId, pisoPorModelo(promocoes, itemId));
     }
 
-    const plano = montarPlanoDeEnvio(entradas, { integracaoId, pisoPorItem });
+    const plano = montarPlanoDoEnsaio(planejado, { integracaoId, pisoPorItem });
 
     if (json) {
       log(JSON.stringify({ modo: 'dry-run', integracaoId, plano: resumoDoPlano(plano) }, null, 2));

@@ -61,16 +61,16 @@ per produto with `ehKitVirtual === true`. Each line is the runner's shape:
 - `from` — `null` (nothing is ever written);
 - `to` — the row.
 
-| `to` field        | What it says                                                                                                                         |
-| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `produtoId`       | the produto                                                                                                                          |
-| `paiId`           | `null` for a root; the parent's id for a child (a família-de-um member mirrors the parent's flag and is never published on its own)  |
-| `ehKit`           | `ehKit === true`, strictly                                                                                                           |
-| `temComponentes`  | `componentesKit` has at least one component                                                                                          |
-| `comMercadoLivre` | `mlNoProduto` OR `mlNosFilhos`                                                                                                       |
-| `mlNoProduto`     | an ML link doc in the produto's OWN subcollections — `produtoMercadoLivre` or `variacaoMercadoLivre`                                 |
-| `mlNosFilhos`     | ANY child holds a `variacaoMercadoLivre` doc — every child is asked; one child alone does not decide                                 |
-| `comShopee`       | a Shopee link doc (`prodshopee` or `variashopee`) in the produto's own subcollections, whatever its estado or conta — a fact to read |
+| `to` field        | What it says                                                                                                                                                                                                   |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `produtoId`       | the produto                                                                                                                                                                                                    |
+| `paiId`           | `null` for a root; the parent's id for a child (a família-de-um member mirrors the parent's flag and is never published on its own)                                                                            |
+| `ehKit`           | `ehKit === true`, strictly                                                                                                                                                                                     |
+| `temComponentes`  | `componentesKit` has at least one component                                                                                                                                                                    |
+| `comMercadoLivre` | `mlNoProduto` OR `mlNosFilhos`                                                                                                                                                                                 |
+| `mlNoProduto`     | an ML link doc in the produto's OWN subcollections — `produtoMercadoLivre` or `variacaoMercadoLivre`                                                                                                           |
+| `mlNosFilhos`     | ANY child holds a `variacaoMercadoLivre` doc — every child is asked; one child alone does not decide                                                                                                           |
+| `comShopee`       | a Shopee link doc (`prodshopee` or `variashopee`) in the produto's own subcollections, whatever its estado or conta — a #1911 listing DRAFT (a `prodshopee` doc with no `item_id`) counts too — a fact to read |
 
 On stdout:
 
@@ -83,7 +83,8 @@ On stdout:
 A row `comMercadoLivre: true` is most likely a legacy User Products kit: the flag
 was set for ML, not for Shopee. A root row with `ehKit: true`, no Shopee link and
 `comMercadoLivre: false` is the one a first Shopee publish would turn into a
-native kit.
+native kit — and so is one whose only Shopee link is a draft (`comShopee: true`):
+an unnamed publish of a kit-virtual produto ignores its drafts.
 
 ## Verify
 

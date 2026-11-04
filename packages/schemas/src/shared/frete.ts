@@ -239,6 +239,71 @@ export const ESTADOS_FRETE_IGNORAR_REMOCAO: ReadonlySet<EstadoFrete> = new Set<E
   ESTADO_FRETE.error,
 ]);
 
+/**
+ * Whether the goods have LEFT the warehouse (or their whereabouts are the
+ * carrier's) at each freight estado — an EXPLICIT, EXHAUSTIVE table, never
+ * "`postado` or later": the enum order is not the lifecycle (`cancelado`,
+ * `desconhecido` and `aguardandoRetirada` sit after the carrier tail).
+ *
+ * `true`: posted and everything after it, the delivery failures, the return
+ * leg, `suspenso` and `aguardandoRetirada` — the units are not on the shelf, a
+ * lost or in-transit parcel included. `false`: everything up to
+ * `checkFinalizado` (packed, still in the warehouse), `despachoNegado`,
+ * `cancelado`, `desconhecido`, `error`, and `fulfillment` (the marketplace
+ * warehouses the goods — never this ERP's stock).
+ *
+ * ⚠️ It is shared because a goods-in estado written OVER a goods-out one undoes
+ * the protection of every reader at once. The Amazon importer decides from it
+ * whether a CANCELLED order restocks (it must not while the carrier holds the
+ * units); the web checkout decides from it whether to leave the stored estado
+ * alone instead of writing `checkFinalizado` (the #2042 review). One table, so
+ * the two can never disagree (#1369). It moved here from
+ * `apps/amazon/lib/amazon/pedidos/freteAmazon.ts`, which still names it
+ * `MERCADORIA_FORA` for its ladder.
+ *
+ * INVARIANT: every `true` estado is in {@link ESTADOS_FRETE_REMOVE_ESTOQUE} —
+ * goods out of the warehouse are goods whose stock already left (asserted in
+ * the unit tests). The `Record` makes a missing member a compile error; to ask
+ * about a value read from outside, use its true set
+ * {@link ESTADOS_FRETE_MERCADORIA_FORA}, since indexing a plain object with a
+ * string outside the enum reaches `Object.prototype`.
+ */
+export const MERCADORIA_FORA_POR_ESTADO_FRETE: Readonly<Record<EstadoFrete, boolean>> =
+  Object.freeze({
+    fulfillment: false,
+    iniciado: false,
+    aguardandoAutorizacao: false,
+    aguardandoNFe: false,
+    aguardandoValidacaoTransporadora: false,
+    despachoAutorizado: false,
+    aguardandoAgendamento: false,
+    despachoNegado: false,
+    emSeparacao: false,
+    empacotado: false,
+    aguardandoPostagem: false,
+    checkFinalizado: false,
+    postado: true,
+    recebidoPelaTransportadora: true,
+    aCaminho: true,
+    tentandoRealizarEntrega: true,
+    entregue: true,
+    falhaNaEntrega: true,
+    suspenso: true,
+    enderecoNaoEncontrado: true,
+    aCaminhoDoRemetente: true,
+    devolvido: true,
+    objetoExtraviado: true,
+    cancelado: false,
+    desconhecido: false,
+    error: false,
+    aguardandoRetirada: true,
+  });
+
+/** The estados {@link MERCADORIA_FORA_POR_ESTADO_FRETE} marks `true` — the goods-out set. */
+export const ESTADOS_FRETE_MERCADORIA_FORA: ReadonlySet<EstadoFrete> = new Set<EstadoFrete>(
+  estadoFreteSchema.options.filter((estado) => MERCADORIA_FORA_POR_ESTADO_FRETE[estado]),
+);
+
 /* -------------------------------------------------------------------------- */
 /*                         modalidadeFrete enum (modFrete)                    */
 /* -------------------------------------------------------------------------- */
@@ -348,11 +413,18 @@ export const INTEGRACAO_FRETE = {
  *                   (NOT a freight webhook). Live for Mercado Livre and Shopee
  *                   (their `canFetchLabel`); the other marketplaces are not
  *                   implemented yet.
- *   - `'generic'` — no carrier API; render a generic PDF on demand (a deferred
- *                   follow-up for motoboy / outros).
- *   - `'none'`    — nothing to print (retirada na loja / fob).
+ *   - `'generic'` — no carrier API; the app renders a generic label on demand
+ *                   (motoboy / outros).
+ *   - `'none'`    — nothing to print from the `/pedidos` row (retirada na loja /
+ *                   fob); the checkout still prints them the generic label.
+ *   - `'roteado'` — the tipo is a ROUTER, not a carrier: its doc holds a `mapa`
+ *                   from the channel's shipping methods to carriers, and a
+ *                   pedido still pointing at it is first re-pointed at the
+ *                   carrier its method (or the operator) names — whose own
+ *                   mode then prints the label. Loja Integrada (master plan
+ *                   step 15): the store mints no label of its own.
  */
-export type FreightLabelMode = 'emit' | 'fetch' | 'generic' | 'none';
+export type FreightLabelMode = 'emit' | 'fetch' | 'generic' | 'none' | 'roteado';
 
 /**
  * Per-tipo freight capabilities — the single source of truth that replaces the
@@ -368,9 +440,13 @@ export type FreightLabelMode = 'emit' | 'fetch' | 'generic' | 'none';
  * (`motoboy`/`outros`) are the other exception: `canPrint` is true for them
  * too, but `etiquetaRowState` never gates it on `printLabelId` (there is no
  * buy step) — it dispatches to the on-demand generic PDF instead of the
- * Melhor Envio reprint. `labelMode` is **descriptive** (documents intended
- * Phase-5/6 marketplace behavior and today's generic/none split); it does NOT
- * drive the dispatch by itself. Do not flip a marketplace `canPrint` to true,
+ * Melhor Envio reprint. `labelMode` drives the dispatch for two values only:
+ * `'generic'` (the row's on-demand label) and `'roteado'` (the row's routing
+ * action, and the checkout's router provider) — for the rest it describes the
+ * category, and the `can*` flags decide. A `'roteado'` tipo is the third
+ * exception to "every `can*` is a capability": it sets NONE, and is not
+ * marketplace-owned either — its label is the target carrier's, reached by
+ * routing first (see {@link ehFreteRoteado}). Do not flip a marketplace `canPrint` to true,
  * not even once its fetch flow + client route exist — that flow IS
  * `canFetchLabel`, and `etiquetaRowState` tests `canPrint` BEFORE it, so a
  * marketplace pedido carrying a `printLabelId` would wrongly route "Imprimir"
@@ -393,7 +469,10 @@ export interface FreightTipoCapabilities {
   readonly canFetchLabel: boolean;
   /** The app receives status updates (webhook or order-sync) for this tipo. */
   readonly canTrack: boolean;
-  /** Label semantics — DESCRIPTIVE (skill / future), does not drive dispatch. */
+  /**
+   * Label semantics. Drives the dispatch for `'generic'` and `'roteado'`; for
+   * the other values it describes the category (the `can*` flags decide).
+   */
   readonly labelMode: FreightLabelMode;
   /**
    * Backend channel segment for the freight HTTP client (`/api/freight/<channel>/*`),
@@ -425,9 +504,9 @@ export const FREIGHT_TIPO_CAPS: Record<IntegracaoFrete, FreightTipoCapabilities>
     channel: 'melhor-envio',
   },
   // Marketplace-managed (fetch-only, read-only tab). Mercado Livre and Shopee
-  // are the live fetch providers (`canFetchLabel`, and no other `can*`); the
-  // rest are Phase-5/6 stubs, so every `can*` stays false (→ `'unsupported'`
-  // in the row action).
+  // are the live fetch providers (`canFetchLabel`, and no other `can*`);
+  // Amazon and Magalu are not ported yet, so every `can*` stays false (→
+  // `'unsupported'` in the row action).
   mercadoLivre: {
     marketplaceOwned: true,
     canQuote: false,
@@ -438,14 +517,24 @@ export const FREIGHT_TIPO_CAPS: Record<IntegracaoFrete, FreightTipoCapabilities>
     labelMode: 'fetch',
     channel: null,
   },
+  // A ROUTER (master plan step 15), not a marketplace: the store mints no
+  // label, and the conta's `int_frete` doc holds the `mapa` from its shipping
+  // methods to the carriers the ERP drives. A pedido still on that doc is
+  // re-pointed at its carrier first — the `/pedidos` row's "Definir
+  // transportadora", or the checkout's router provider — and its label is
+  // then that carrier's. So it owns nothing (the Frete tab keeps its header
+  // under the estado lock alone) and sets no `can*`: each one would claim a
+  // capability of the doc that only its target has (`canPrint` would send a
+  // `printLabelId` to Melhor Envio). `registry.test.ts`'s drift guard pins
+  // this row and the router provider together.
   lojaIntegrada: {
-    marketplaceOwned: true,
+    marketplaceOwned: false,
     canQuote: false,
     canBuy: false,
     canPrint: false,
     canFetchLabel: false,
     canTrack: false,
-    labelMode: 'fetch',
+    labelMode: 'roteado',
     channel: null,
   },
   amz: {
@@ -570,6 +659,30 @@ export function isFreteMarketplaceOwned(tipo: string | null | undefined): boolea
   return freightCapsFor(tipo).marketplaceOwned;
 }
 
+/**
+ * The freight `tipo` is a ROUTER (`labelMode: 'roteado'`, Loja Integrada): a
+ * pedido pointing at its doc has no carrier yet, and is routed to one before
+ * any label. Tolerant like {@link freightCapsFor}: unknown / null → `false`.
+ */
+export function ehFreteRoteado(tipo: string | null | undefined): boolean {
+  return freightCapsFor(tipo).labelMode === 'roteado';
+}
+
+/**
+ * Whether an operator may pick this freight `tipo` by hand — the predicate of
+ * the manual pickers (the Frete tab's integração Select and the generic
+ * body's "Integração da opção externa"): neither a marketplace's own freight
+ * ({@link isFreteMarketplaceOwned}, whose lock the pick would trigger) nor a
+ * router ({@link ehFreteRoteado}, which prints nothing by itself). Tolerant:
+ * an unknown / null `tipo` stays selectable, as the pickers kept it before.
+ *
+ * ⚠️ Not `!isFreteMarketplaceOwned`: a router is NOT marketplace-owned, so that
+ * predicate alone would offer the router doc as a carrier.
+ */
+export function isFreteSelecionavelManualmente(tipo: string | null | undefined): boolean {
+  return !isFreteMarketplaceOwned(tipo) && !ehFreteRoteado(tipo);
+}
+
 /* -------------------------------------------------------------------------- */
 /*           Nested entity schemas — Transportadora, Veiculo, etc.            */
 /*                                                                            */
@@ -675,6 +788,19 @@ export type Volume = z.infer<typeof volumeSchema>;
  * only the raw token would make the diary unreadable without the table. Two
  * fields, ONE fact, one direction of derivation (#1369).
  *
+ * ⚠️ One declared exception, in ONE direction only: a channel's fold may KEEP a
+ * stored row's `estado` where the goods are out (posted, with the carrier,
+ * delivered, failed, lost, returned) when a later projection of the same
+ * package reads the goods as in — a pickup cancelled after it happened, an
+ * unknown token. That row can be the only durable record of a package that
+ * left while the pedido's single `estado`, folded to the least-advanced
+ * sibling, still says "waiting", and a cancelled order must not restock goods
+ * that left. So a correction to the channel's token table re-derives every
+ * row EXCEPT one it would move from goods out to goods in; `estadoMarketplace`
+ * still takes the provider's token verbatim. Amazon does this
+ * (`apps/amazon/lib/amazon/frete/estadoFreteAmazon.ts`, the row gate of
+ * `dobrarPacotesAmazon`).
+ *
  * ⚠️ `fonte` is a FREE STRING, and must stay one. The set of sources is
  * per-channel (Shopee's are `get_package_detail` / `get_order_detail`; a later
  * channel's are its own), so the closed set lives in the channel's own module
@@ -690,7 +816,11 @@ export const pacoteFreteSchema = z
   .object({
     /** The provider's package identifier — the ROW IDENTITY. Never empty. */
     numero: z.string().min(1).max(60).describe('Número do pacote'),
-    /** DERIVED from `estadoMarketplace`; never authored. */
+    /**
+     * DERIVED from `estadoMarketplace`; never authored. A channel may keep a
+     * stored goods-out value over a later goods-in projection (the one-direction
+     * exception above).
+     */
     estado: estadoFreteSchema.nullable().default(null).describe('Estado do pacote'),
     /** The provider's own status token, VERBATIM — never normalized. */
     estadoMarketplace: z

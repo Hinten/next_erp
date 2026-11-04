@@ -223,9 +223,10 @@ export interface ImportedAddress {
 /**
  * NF-e-grade fiscal identity of the buyer (destinatário) — the authoritative
  * identity, distinct from the lightweight `ImportedOrderBuyer` that rides with
- * the order possibly masked. Often behind a gated/separate call (Amazon RDT
- * `getOrderBuyerInfo.buyerTaxInfo`, Mercado Livre `get_billing_info`, Shopee
- * post-invoice unmask).
+ * the order possibly masked. Often behind a separate call (Mercado Livre
+ * `get_billing_info`) or a gate on the same call (Amazon Orders v2026-01-01
+ * `getOrder` `includedData=BUYER,TAX`: app role + order status, no RDT;
+ * Shopee post-invoice unmask).
  */
 export interface ImportedFiscalIdentity {
   taxId?: string | null; // opaque tax-id digits (e.g. CPF/CNPJ in BR, or a foreign id)
@@ -304,7 +305,8 @@ export interface ImportedOrder {
   reportedItemCount: number;
   // Canonical home for the fiscal/fulfilment data. Populated INLINE when the bulk
   // pull returns it (Loja Integrada, Magalu); left undefined when the channel
-  // gates/masks it (Amazon RDT, Shopee pre-invoice) → fill with a second call.
+  // gates/masks it (Amazon by role/status, Shopee pre-invoice) → fill on a later
+  // read once the gate opens, or with a second call (Mercado Livre).
   buyerFiscal?: ImportedFiscalIdentity; // dados fiscais do cliente
   shippingAddress?: ImportedAddress; // endereço de entrega
   fiscalAddress?: ImportedAddress; // endereço fiscal (defaults to shippingAddress)

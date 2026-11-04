@@ -647,6 +647,12 @@ export type ProdutoMercadoLivreLink = z.infer<typeof produtoMercadoLivreLinkSche
  */
 export const variacaoMercadoLivreLinkSchema = z
   .object({
+    /** Local stock-send failure only (#1285). Null/absent delegates to ML status.
+     * Never a membership signal or an input to the family's lifecycle fold.
+     */
+    estado: estadoPublicacaoMlSchema.nullable().default(null),
+    errors: z.array(z.string()).nullable().default(null),
+    causas: z.array(mlCausaSchema).nullable().default(null),
     /** ML variation id (legacy model) — null until published. */
     id: z.number().int().nullable().default(null),
     /** ML item id (User-Products model) — each variation is its own item. */
@@ -743,10 +749,9 @@ export const variacaoMercadoLivreLinkSchema = z
      * Null means never observed, which is NOT the same as closed: a null must
      * never be able to push a family to `cancelado`.
      *
-     * ⚠️ Still no `estado` here, and the asymmetry with the parent link is the
-     * same one {@link variacaoLinkHasListing} documents — these are raw
-     * observations, not a membership signal, so `variacaoLinkHasListing` ignores
-     * them and `onVariacaoMercadoLivreLinkChanged` gains no fan-out.
+     * These observations and the local stock-error `estado` are deliberately
+     * ignored by `variacaoLinkHasListing`: neither changes membership or adds
+     * fan-out to `onVariacaoMercadoLivreLinkChanged` (#1285).
      *
      * Additive/nullable, and the generated ruleset covers this collection through
      * the loose pass-through domain in `subcollections.ts` (gated by the parent
@@ -952,13 +957,9 @@ export function acaoStatusAnuncio(
  * identifier — `id` in the legacy `variations[]` model, `itemId` in the
  * User-Products one, where each member child is its own item.
  *
- * ⚠️ `estado` is deliberately NOT consulted, and the asymmetry with
- * {@link linkHasLiveListing} is the point: `estado` lives only on the parent
- * link, so honouring it here would force the parent trigger to fan out to every
- * child on every estado transition — for a field NO new-app reader consumes on
- * children (both sweeps filter `paiId == null`). It also matches the behaviour
- * being replaced: `updateParentDenorm` only ever touched the link's own produto,
- * so a cancel dropped the conta from the parent and left the children alone.
+ * ⚠️ Lifecycle and local stock-error states do not affect this predicate. A
+ * parent lifecycle change must not fan out to its children, and a member's
+ * stock refusal must not remove a live listing from either sweep (#1285).
  *
  * The legacy `id` is an int, but tolerate a stringified one — Flutter-written
  * rows predate the typed schema.

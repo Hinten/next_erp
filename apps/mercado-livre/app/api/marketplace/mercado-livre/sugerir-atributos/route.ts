@@ -169,7 +169,10 @@ export async function POST(req: Request): Promise<NextResponse> {
     return await runSingleFlight(`atributos:${auth.caller.uid}`, async () => {
       const ctx = await loadMercadoLivreContext(db, integracaoId);
       const channelCtx = await ctx.resolveChannelContext();
-      const api = createMercadoLivreApi({ getAccessToken: async () => channelCtx.accessToken });
+      const api = createMercadoLivreApi({
+        getAccessToken: channelCtx.getAccessToken,
+        onAccessTokenRejected: channelCtx.invalidateAccessToken,
+      });
 
       const result = await suggestAttributes(
         {

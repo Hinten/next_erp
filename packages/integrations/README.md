@@ -4,15 +4,16 @@ Platform-neutral integration libraries: fetch-only, no Firestore, no Admin SDK. 
 is its own workspace package (`@delfrance/integrations-<channel>`), paired with an app
 under `apps/` that holds the stateful half.
 
-| Package              | Paired app            | Holds                                                                                                |
-| -------------------- | --------------------- | ---------------------------------------------------------------------------------------------------- |
-| `nfe`                | `apps/nfe`            | NF-e 4.00 generation, XML signing, SEFAZ transport, DANFE. XSD→TS types are generated (ADR 0004)     |
-| `mercado-livre`      | `apps/mercado-livre`  | OAuth, the 62-operation REST client, Zod wire schemas, the error taxonomy, pure ML↔ERP mappers       |
-| `mercado-pago`       | `apps/mercado-pago`   | OAuth, the REST client, response schemas, the `mpPaymentToPagamento` mapper                          |
-| `whatsapp-cloud-api` | `apps/whatsapp`       | Typed Graph client + webhook envelope schemas                                                        |
-| `freight-br`         | `apps/melhor-envio`   | Melhor Envio: OAuth, quote, cart→checkout, label print, tracking                                     |
-| `shopee`             | `apps/shopee`         | Shopee Open Platform: the HMAC request signature, hosts, consent URL + token endpoints, wire schemas |
-| `loja-integrada`     | `apps/loja-integrada` | Loja Integrada REST v1: Personal Token header, GET client, Tastypie paging, typed errors             |
+| Package              | Paired app            | Holds                                                                                                                     |
+| -------------------- | --------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `nfe`                | `apps/nfe`            | NF-e 4.00 generation, XML signing, SEFAZ transport, DANFE. XSD→TS types are generated (ADR 0004)                          |
+| `mercado-livre`      | `apps/mercado-livre`  | OAuth, the 62-operation REST client, Zod wire schemas, the error taxonomy, pure ML↔ERP mappers                            |
+| `mercado-pago`       | `apps/mercado-pago`   | OAuth, the REST client, response schemas, the `mpPaymentToPagamento` mapper                                               |
+| `whatsapp-cloud-api` | `apps/whatsapp`       | Typed Graph client + webhook envelope schemas                                                                             |
+| `freight-br`         | `apps/melhor-envio`   | Melhor Envio: OAuth, quote, cart→checkout, label print, tracking                                                          |
+| `shopee`             | `apps/shopee`         | Shopee Open Platform: the HMAC request signature, hosts, consent URL + token endpoints, wire schemas                      |
+| `loja-integrada`     | `apps/loja-integrada` | Loja Integrada REST v1: Personal Token header, GET-only read client, separate write client, Tastypie paging, typed errors |
+| `amazon-sp-api`      | `apps/amazon`         | Amazon SP-API (NA host, BR marketplace): LWA token exchanges, GET-only read client, a Delivery write client, typed errors |
 
 ## ⚠️ These are libraries, not plugins
 
@@ -31,12 +32,12 @@ deleted on the way:
   `amazon-sp-api`, `facebook`, `loja-integrada`) with no importer anywhere; they were
   deleted with it. What a marketplace supports is now declared in
   `MARKETPLACE_TIPO_CAPS` (`@delfrance/schemas`).
-  ⚠️ **Three of those five stay deleted; `shopee` and `loja-integrada` came back as
-  REAL packages.** They are the rows in the table above — fetch-only libraries
-  describing the provider's wire protocol, with no `MarketplaceChannel`, no plugin
-  registration and no Firestore. That is the ADR-0015 shape, and the opposite of the
-  scaffold that was deleted. `removed-plugin-contracts.test.js` asserts the absence of
-  the other three and the SHAPE of these two.
+  ⚠️ **Two of those five stay deleted; `shopee`, `loja-integrada` and `amazon-sp-api`
+  came back as REAL packages.** They are the rows in the table above — fetch-only
+  libraries describing the provider's wire protocol, with no `MarketplaceChannel`, no
+  plugin registration and no Firestore. That is the ADR-0015 shape, and the opposite
+  of the scaffold that was deleted. `removed-plugin-contracts.test.js` asserts the
+  absence of the other two and the SHAPE of these three.
 - **`PaymentGateway`** (#1429) — all three members threw, `registerPayment` had one
   caller (its own unit test), and the one live consumer was a permanently disabled
   button. Its `webhook` had already shipped OUTSIDE the contract, in

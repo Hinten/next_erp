@@ -19,14 +19,49 @@ Use the connected GitHub plugin as the source of truth for server-side GitHub st
 - Use local Git for working-tree state, local diffs, commits, and branches. Do not invoke the plugin for a purely local Git request.
 - Do not repeat a successful connector lookup through a second source unless verification is materially necessary.
 
-## Windows connection troubleshooting
+## Publish authorized project changes
 
-On this Windows host, if the GitHub plugin becomes unavailable or fails with
-`error decoding response body`, remind the user to recheck Norton's HTTPS scanning
-and the `https://chatgpt.com` exclusion. This exception followed by a normal Codex
-restart restored access on 2026-10-01 while Codex remained non-elevated. Verify
-recovery with an actual GitHub plugin call; a new failure alone does not confirm
-Norton as the cause.
+This project's `.codex/config.toml` permits publication through the connected
+GitHub plugin for the authorized task. Shell hooks do not run for connector
+writes: check the exact repository and `codex/*` task branch in the tool
+arguments, publish only the reviewed local changes on the intended parent tree,
+and use the expected remote head when updating an existing ref. Keep unrelated
+refs and files unchanged. Use the guarded exact command in the project config
+when publishing through native Git.
+
+## WSL execution and Windows desktop troubleshooting
+
+The desktop app can run on Windows while this repository's agent executes in
+WSL. Use native Linux tools and paths for local Git in that case. A failed local
+command does not establish that the GitHub plugin connection is unavailable;
+check the connector separately before falling back.
+
+For Node-based local checks in this project's WSL environment, use
+`/bin/bash --login -c` as required by `.codex/config.toml`. Native Git publication
+uses the exact authorized command documented there, run on its own. Check the native
+Git version and the failing subcommand before adding compatibility workarounds;
+`git worktree list --porcelain -z` requires support from the installed Git.
+A worktree's `.git` pointer and its shared Git directory need separate filesystem
+grants. A more specific read-only mount for the worktree metadata can still
+block writes beneath a writable common directory; use bounded approval for the
+authorized Git writes instead of broadening filesystem grants. The host access
+procedure is documented in `.codex/README.md`.
+
+A registry-only network profile can allow the GitHub plugin while blocking
+native Git transport to `github.com`. Use the authorized connector path in that
+case. A local transport denial does not require expanding the sandbox's network
+allowlist for connector publication.
+
+Do not assume Windows PowerShell interop is available inside a sandboxed WSL
+process. If a host repair requires external Windows PowerShell, prepare the
+reviewable repair and follow the documented host procedure.
+
+If the GitHub plugin itself fails while the desktop runs on Windows, the known
+`error decoding response body` failure may warrant rechecking Norton's HTTPS
+scanning and the `https://chatgpt.com` exclusion. This exception followed by a
+normal Codex restart restored access on 2026-10-01 while Codex remained
+non-elevated. Verify recovery with an actual GitHub plugin call; local WSL shell,
+Git, or permission failures alone do not implicate Norton.
 
 ## Complete pull requests created by Codex
 

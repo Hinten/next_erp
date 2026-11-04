@@ -885,6 +885,51 @@ describe('dadosLinkListagem', () => {
     expect(doc.violations).toEqual([{ violation_reason: 'x' }]);
   });
 
+  describe('a marca é um PAR — `brand_id` e `original_brand_name` da MESMA leitura (#1911, C9)', () => {
+    const MARCA_A = { brand_id: 77, original_brand_name: 'Marca A' };
+
+    it('PAR: re-importar {77, Marca A} → {88, Marca B} move as DUAS chaves juntas', () => {
+      const doc = dadosLinkListagem(
+        item({ brand: { brand_id: 88, original_brand_name: 'Marca B' } }),
+        { ...MARCA_A, dataCadastro: 111 },
+        INTEGRACAO,
+        AGORA,
+      );
+      expect(doc.brand_id).toBe(88);
+      expect(doc.original_brand_name).toBe('Marca B');
+    });
+
+    it('PAR: `brand_id: 0` ("No brand") grava o nome que a Shopee reportou, verbatim', () => {
+      const doc = dadosLinkListagem(entradaCompleta, null, INTEGRACAO, AGORA);
+      expect(doc.brand_id).toBe(0);
+      expect(doc.original_brand_name).toBe('No brand');
+    });
+
+    it('⛔ NEAR-MISS: `brand` AUSENTE na leitura grava as DUAS chaves null — o nome armazenado não sobrevive ao spread', () => {
+      for (const entrada of [item(), item({ brand: null })]) {
+        const doc = dadosLinkListagem(entrada, MARCA_A, INTEGRACAO, AGORA);
+        expect(doc).toHaveProperty('brand_id', null);
+        expect(doc).toHaveProperty('original_brand_name', null);
+      }
+    });
+
+    it('⛔ NEAR-MISS: o id novo com o nome AUSENTE na leitura grava nome null — nunca o nome VELHO ao lado do id novo', () => {
+      const doc = dadosLinkListagem(item({ brand: { brand_id: 88 } }), MARCA_A, INTEGRACAO, AGORA);
+      expect(doc.brand_id).toBe(88);
+      expect(doc.original_brand_name).toBeNull();
+    });
+
+    it('⛔ NEAR-MISS: o nome é o da Shopee VERBATIM — sem trim nem dobra (a publicação o lê por textoUtilizavel)', () => {
+      const doc = dadosLinkListagem(
+        item({ brand: { brand_id: 88, original_brand_name: ' Marca B ' } }),
+        null,
+        INTEGRACAO,
+        AGORA,
+      );
+      expect(doc.original_brand_name).toBe(' Marca B ');
+    });
+  });
+
   describe('`kitNativo` — o que a SHOPEE diz (`tag.kit`), carimbado sempre', () => {
     it('PAR: `tag.kit` true carimba true; `tag.kit` false carimba false', () => {
       expect(

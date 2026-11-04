@@ -16,8 +16,8 @@
  * the sender arrives with a raw snapshot body — a migrated Flutter link, a
  * half-written one, a row whose `item_id` came back as a string — and this
  * function has to answer a verdict for every one of them. It is
- * `anuncioShopeeVivo`'s rule verbatim (`../anuncios/statusAnuncio.ts`), and it
- * is why nothing is parsed here.
+ * `anuncioShopeeVivo`'s rule verbatim (`@delfrance/schemas`, re-exported by
+ * `../anuncios/statusAnuncio.ts`), and it is why nothing is parsed here.
  *
  * ## ⚠️ The clock is a PARAMETER
  *
@@ -93,7 +93,8 @@
  *
  * ## The skip set — TWO mechanisms, one fold
  *
- * See {@link pularPorRecusaAnterior}. `||` between the mechanisms, `&&`
+ * See {@link pularPorRecusaAnterior} (`@delfrance/schemas`, re-exported
+ * below). `||` between the mechanisms, `&&`
  * between the two fingerprint halves: **either half moving LIFTS the skip** —
  * and the STATE half only arms at all when at least ONE of the two RECORDED
  * readings is non-null, so a stamp that wrote down no state cannot latch a
@@ -121,39 +122,36 @@
  *
  * No inventoried equivalence helper is reachable from here: the fingerprint is
  * a hand-rolled identity comparison after one absence normalisation, so the
- * #1372 obligation is discharged by the pair and the near-miss named in this
- * module's suite.
+ * #1372 obligation is discharged by the pair and the near-miss named in
+ * `packages/schemas/src/produto/collection/shopeeLinkLeitura.test.ts`, which
+ * moved with the function, and still asserted through this gate's rung 4 in
+ * this module's suite.
  */
-import { ESTADO_ANUNCIO_SHOPEE } from '@delfrance/schemas';
+import {
+  ESTADO_ANUNCIO_SHOPEE,
+  pularPorRecusaAnterior,
+  type LeituraRecusaEstoqueShopee,
+} from '@delfrance/schemas';
 
 import { MOTIVO_ESTOQUE_SHOPEE, type MotivoEstoqueShopee } from './errosEstoque';
 
 /**
+ * The skip set itself lives in `@delfrance/schemas` (`shopeeLinkLeitura.ts`)
+ * since step 21 (#1529), so the produto's Shopee tab reads the SAME skip this
+ * gate applies; re-exported here so the sweep and every other importer keep
+ * importing it from this module.
+ */
+export { pularPorRecusaAnterior };
+
+/**
  * A stored `prodshopee` link, as read — never as parsed.
  *
- * Only the eight fields this gate reads are named; the index signature is what
- * lets a caller hand over the whole document (or a discovery row carrying
+ * Only the eight fields this gate reads are named (they are declared, with
+ * their units, on {@link LeituraRecusaEstoqueShopee}); the index signature is
+ * what lets a caller hand over the whole document (or a discovery row carrying
  * twenty more columns) without shaping it first.
  */
-export interface LinkParaEstoque {
-  /** The Shopee listing id. A positive finite NUMBER, or there is no listing to address. */
-  item_id?: unknown;
-  /** This app's folded reading of the listing — `EstadoAnuncioShopee`, or `null` when never folded. */
-  estadoAnuncio?: unknown;
-  /** Shopee's RAW `item_status` string — the other half of the refusal fingerprint. */
-  item_status?: unknown;
-  /** Whether SHOPEE reports this listing as a kit item. Three-valued; only `true` refuses. */
-  kitNativo?: unknown;
-  /** MILLISECONDS — when the last refusal landed. The STATE mechanism's trigger. */
-  estoqueRecusaEm?: unknown;
-  /** MILLISECONDS — an expiry the sender stamps for a refusal no reading will ever lift. */
-  estoqueRecusaAte?: unknown;
-  /** The folded `estadoAnuncio` at refusal time. */
-  estoqueRecusaEstado?: unknown;
-  /** The raw `item_status` at refusal time. */
-  estoqueRecusaItemStatus?: unknown;
-  [k: string]: unknown;
-}
+export interface LinkParaEstoque extends LeituraRecusaEstoqueShopee {}
 
 /** The verdict. A discriminated union so a caller cannot read a motivo off a send. */
 export type VereditoEnvioEstoque =
@@ -223,90 +221,4 @@ export function podeEnviarEstoqueShopee(
   // own `failure_list` is the authority and it refuses things this function
   // cannot see (a promotion locking the listing, above all).
   return { enviar: true };
-}
-
-/**
- * The skip set — *"have we already been refused with this listing in exactly
- * this state?"*. Exported because the sweep asks it directly and because a
- * fold this consequential is pinned by its own tests.
- *
- * ```
- * pular = (typeof estoqueRecusaAte === 'number' && nowMs < estoqueRecusaAte)   // TIME
- *      || (typeof estoqueRecusaEm  === 'number'                                // STATE
- *          && (estoqueRecusaEstado !== null || estoqueRecusaItemStatus !== null)
- *          && estoqueRecusaEstado      === estadoAnuncio
- *          && estoqueRecusaItemStatus  === item_status)
- * ```
- *
- * ⚠️ **`||` between the two mechanisms, `&&` between the two fingerprint
- * halves.** Either half moving lifts the skip — that is the whole design, and
- * an `||` there would latch a listing until BOTH halves moved, which for a
- * refusal caused by the state itself is "for ever".
- *
- * ⚠️ **A fingerprint whose two RECORDED halves are BOTH null arms nothing.**
- * That clause is not a tidy-up: without it the STATE mechanism fires on a
- * comparison nobody made. `estoqueRecusaEm` alone is stamped by writers that
- * record no reading at all (`registrarEnvioParcial`), and `undefined` folds to
- * `null` on both sides — so on a link whose `estadoAnuncio` and `item_status`
- * are both absent (every link a clean send has just cleared, and every step-9
- * import that folded an unknown status) `null === null` twice over and the
- * listing would latch INDEFINITELY, because neither half can ever move to lift
- * it. Requiring one recorded reading makes the mechanism mean what its name
- * says: *this* listing was refused in *this* observed state. The cost is the
- * FALSE-NEGATIVE direction — a terminal refusal taken on a link with no
- * readings at all re-sends once per tick until a reading appears — which is one
- * call per listing per tick, visible in the per-motivo counters, against a
- * silent permanent stop.
- *
- * ⚠️ **Strictly `<` on the TIME half.** At exactly `estoqueRecusaAte` the wait
- * is over; `<=` would hold the listing for one more tick at the only instant
- * anyone ever tests.
- *
- * The TIME mechanism exists because a promotion ENDING moves no `item_status`
- * and no `estadoAnuncio` — so a promotion refusal fingerprinted against the
- * state would latch for ever. It is stamped only by the arm that knows the
- * refusal will outlive the reading.
- *
- * ## ⚠️ The absence normalisation, and what it treats as EQUAL
- *
- * `undefined` is folded to `null` on BOTH sides before either half is
- * compared. **EQUAL:** a link whose `estadoAnuncio` key was never written and a
- * stamp recorded as `null` — they are the same state, and a document that
- * simply omits a nullable field is what every `.nullable().default(null)`
- * column looks like before its first write. **DISTINCT:** everything else,
- * including `null` vs the string `'null'`, `null` vs `''`, and two different
- * readings such as `pausado` vs `ativo`. Nothing is trimmed, lower-cased or
- * coerced: these are two RECORDED READINGS being compared for identity, not
- * two spellings of one value.
- *
- * ⚠️ The fold is what makes absence comparable; the non-null clause above is
- * what stops it comparing TWO absences. Both are needed and neither implies the
- * other: a recorded `('ativo', null)` against a link reading `('ativo',
- * absent)` still skips, because one recorded reading is real.
- */
-export function pularPorRecusaAnterior(link: LinkParaEstoque, nowMs: number): boolean {
-  // ⚠️ No `Number.isFinite` guard, deliberately: a `NaN` expiry falls out of
-  // the comparison itself (`nowMs < NaN` is `false`), and a redundant guard
-  // would read as though the comparison needed help.
-  const ate = link.estoqueRecusaAte;
-  if (typeof ate === 'number' && nowMs < ate) return true;
-
-  if (typeof link.estoqueRecusaEm !== 'number') return false;
-
-  // ⚠️ At least ONE reading must actually have been recorded. A stamp with two
-  // null halves is a refusal whose state nobody wrote down — see the docblock:
-  // comparing it would latch on `null === null` and nothing could ever lift it.
-  const estadoGravado = ouNulo(link.estoqueRecusaEstado);
-  const statusGravado = ouNulo(link.estoqueRecusaItemStatus);
-  if (estadoGravado === null && statusGravado === null) return false;
-
-  return estadoGravado === ouNulo(link.estadoAnuncio) && statusGravado === ouNulo(link.item_status);
-}
-
-/**
- * `undefined` ⇒ `null`; every other value is returned untouched. The one
- * normalisation the fingerprint applies — see {@link pularPorRecusaAnterior}.
- */
-function ouNulo(valor: unknown): unknown {
-  return valor === undefined ? null : valor;
 }

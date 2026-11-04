@@ -11,6 +11,7 @@ import {
   encodeHorarioMs,
   integracaoMeta,
   integracaoSchema,
+  refMatchesIntegracao,
   MODO_ENVIO_MERCADO_LIVRE,
   MODO_ENVIO_MERCADO_LIVRE_LABELS,
   modoEnvioMercadoLivreSchema,
@@ -25,6 +26,36 @@ import {
   usuarioTesteRoleSchema,
 } from './integracao';
 import { ALL_DOMAINS } from './registry';
+
+describe('refMatchesIntegracao', () => {
+  it('preserves canonical, bare and legacy suffix matching', () => {
+    for (const ref of [
+      'integracao/account-1',
+      'documents/integracao/account-1',
+      'unrelated/root/integracao/account-1',
+    ]) {
+      expect(refMatchesIntegracao(ref, 'account-1'), ref).toBe(true);
+    }
+  });
+
+  it('keeps different IDs, case, whitespace and missing values distinct', () => {
+    for (const ref of [
+      null,
+      undefined,
+      42,
+      {},
+      '',
+      '/',
+      'integracao/account-10',
+      'integracao/ACCOUNT-1',
+      'integracao/account-1 ',
+      'integracao/account-1/child',
+      'other/account-1',
+    ]) {
+      expect(refMatchesIntegracao(ref, 'account-1'), String(ref)).toBe(false);
+    }
+  });
+});
 
 /* -------------------------------------------------------------------------- */
 /*                          CredenciaisIntegracao                             */
@@ -553,11 +584,12 @@ describe('integracao metas', () => {
     ]);
   });
 
-  it('makes user_id server-owned — it is the webhook routing key (#821/T4)', () => {
-    // `resolveIntegracaoByUserId` finds an account by this field, so a client
-    // able to write it could repoint another seller's notification stream. Its
-    // only legitimate writer is the OAuth exchange, via the Admin SDK.
-    expect(integracaoMeta.serverOwnedFields).toEqual(['user_id']);
+  it('makes the webhook routing keys server-owned — user_id (#821/T4) and selling_partner_id (Amazon)', () => {
+    // `resolveIntegracaoByUserId` finds an account by `user_id`, and Amazon's
+    // step-3 routing finds its conta by `selling_partner_id`, so a client able
+    // to write either could repoint another seller's notification stream. Their
+    // only legitimate writers are the OAuth exchanges, via the Admin SDK.
+    expect(integracaoMeta.serverOwnedFields).toEqual(['user_id', 'selling_partner_id']);
   });
 
   it('credenciaisIntegracaoMeta targets the subcollection', () => {

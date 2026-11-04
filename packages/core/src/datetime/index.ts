@@ -297,6 +297,80 @@ export function formatIsoNoFuso(ms: MillisSinceEpoch, timeZone: string): string 
 }
 
 /**
+ * A NAIVE date-time, exactly `AAAA-MM-DDTHH:MM:SS` with an optional `.f` of one
+ * to six digits — no offset, no `Z`, no zone annotation, no space for the `T`,
+ * no comma decimal separator, nothing around it. The seconds field stops at
+ * `59`; see {@link microsDeDataHoraNoFuso} for why that is checked here.
+ */
+const DATA_HORA_INGENUA = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:[0-5]\d(?:\.\d{1,6})?$/;
+
+/**
+ * A NAIVE date-time — a wall-clock reading with no offset — read as the instant
+ * that wall clock showed in `timeZone`, in microseconds since epoch. `null` when
+ * `texto` is not exactly `AAAA-MM-DDTHH:MM:SS[.f{1,6}]` or names a moment the
+ * calendar does not have (`2026-02-30`, hour `24`), or the instant falls outside
+ * the safe-integer range.
+ *
+ * This is the reader for a provider that writes its stamps as local wall time
+ * without saying whose (a Django REST service with `USE_TZ=False`). The zone is
+ * the CALLER's claim about that provider, so it is a parameter: nothing here
+ * reads the ambient process timezone, and it never falls back to UTC the way
+ * {@link parseIsoToMicros} does for an offset-less string.
+ *
+ * ## The fold — what it equates and what it keeps apart
+ *
+ * Equal: a stamp without a fraction and the same second with `.000000`; a short
+ * fraction and its zero-padded form (`.5` ≡ `.500000`). Distinct: two wall
+ * times one microsecond apart; the same wall time in two zones (São Paulo and
+ * UTC are three hours apart). Refused (`null`): an offset or a `Z`, more than
+ * six fraction digits, a second `60`, surrounding whitespace, a date alone.
+ * Pinned by `datetime.test.ts`.
+ *
+ * ## Why the shape is checked BEFORE Temporal sees the string
+ *
+ * `Temporal.PlainDateTime.from` is far more permissive than this contract, and
+ * each permissiveness is a silent wrong answer here:
+ *
+ *  - it ACCEPTS `…T10:00:00-03:00` and DISCARDS the offset — a stamp that
+ *    carried its own zone would be re-read in `timeZone` instead;
+ *  - it reads a second `60` as `59`, so a leap-second stamp would collide with
+ *    the real `:59` one and a freshness guard could not order them;
+ *  - it truncates a seventh fraction digit, folding two distinct stamps.
+ *
+ * ## Wall times the zone skips or repeats
+ *
+ * Resolved with Temporal's default `'compatible'` disambiguation: a wall time
+ * inside a spring-forward GAP is moved FORWARD by the gap's length (02:30 on a
+ * New York spring-forward day is 03:30 EDT), and a REPEATED one (a fall-back)
+ * takes the EARLIER instant. São Paulo has observed no daylight saving since
+ * 2019, so a current São Paulo stamp is never ambiguous; an older one can be.
+ *
+ * @throws RangeError when `timeZone` is not a known IANA zone id — a
+ *   programming error, deliberately not swallowed (see the section note above).
+ */
+export function microsDeDataHoraNoFuso(texto: string, timeZone: string): MicrosSinceEpoch | null {
+  // The zone is checked FIRST, against a fixed instant (no clock is read), so a
+  // bad zone id throws whatever the stamp: were it checked only after a stamp
+  // parsed, a caller fed nothing but malformed stamps would never see its own
+  // programming error.
+  Temporal.Instant.fromEpochMilliseconds(0).toZonedDateTimeISO(timeZone);
+  if (!DATA_HORA_INGENUA.test(texto)) return null;
+  let parede: Temporal.PlainDateTime;
+  try {
+    parede = Temporal.PlainDateTime.from(texto, { overflow: 'reject' });
+  } catch (err) {
+    // "Not a real calendar moment" (February 30th, hour 24) is a RangeError;
+    // anything else is a real fault.
+    if (!(err instanceof RangeError)) throw err;
+    return null;
+  }
+  const zoned = parede.toZonedDateTime(timeZone, { disambiguation: 'compatible' });
+  // Every 4-digit year is inside Temporal's range, but not inside the µs
+  // safe-integer range (roughly 1685–2255): outside it, `null`, never a lossy number.
+  return nsToUnit(zoned.epochNanoseconds, 1_000n);
+}
+
+/**
  * The instant, as epoch milliseconds, of `23:59:59.000` on the civil day
  * `dataCivil` (`YYYY-MM-DD`) in `timeZone` — the "valid until the end of that day"
  * deadline of a payment link. `null` when `dataCivil` is not a real calendar date

@@ -5,11 +5,19 @@ import { espiarStdout, gravadorDeLog } from '../testing/fixtures';
 import {
   CHAVES_DA_LINHA,
   type CampoLogLi,
+  MAX_LINHA_RESTAURACAO_BYTES,
   MAX_TRECHO_CORPO_BYTES,
+  SEVERIDADE_DA_ESCRITA_LI,
   criarObservadorLi,
   escritorPadrao,
   linhaDaChamada,
+  linhaSerializadaLi,
+  registrarDerivaLi,
+  registrarDiffLi,
+  registrarEscritaLi,
   registrarEventoLi,
+  registrarRestauracaoLi,
+  serializarValorLi,
   severidadeDaChamada,
 } from './log';
 import { bytesUtf8 } from './redacao';
@@ -453,6 +461,380 @@ describe('the observer never throws', () => {
       expect(bytesUtf8(String(l.campos.trechoCorpo ?? ''))).toBeLessThanOrEqual(
         MAX_TRECHO_CORPO_BYTES,
       );
+    }
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                  The write engine's lines (step 7, PR 7-b)                 */
+/* -------------------------------------------------------------------------- */
+
+describe('serializarValorLi — the ONE way a structured value reaches a line, total', () => {
+  it('EQUAL pair: a JSON value serialises exactly as JSON.stringify does', () => {
+    const valores: readonly unknown[] = [
+      null,
+      true,
+      0,
+      -12.5,
+      'PJ1BR',
+      '',
+      'aspas " e \\ barra',
+      [],
+      {},
+      [1, 'a', null, { b: [true] }],
+      { situacao: { codigo: 'pedido_pago' }, envios: [{ id: 801, objeto: null }] },
+    ];
+    for (const v of valores) expect(serializarValorLi(v)).toBe(JSON.stringify(v));
+  });
+
+  it('⚠️ NEAR-MISS: null, an empty string and an absent value stay distinct on the line', () => {
+    expect(serializarValorLi(null)).toBe('null');
+    expect(serializarValorLi('')).toBe('""');
+    expect(serializarValorLi(undefined)).toBe('<ausente>');
+    expect(serializarValorLi(1)).not.toBe(serializarValorLi('1'));
+  });
+
+  it('never throws: a cycle, a bigint, a function, a symbol, a non-finite number, depth 40, an accessor', () => {
+    const ciclo: Record<string, unknown> = { a: 1 };
+    ciclo.eu = ciclo;
+    const lista: unknown[] = [1];
+    lista.push(lista);
+    let fundo: unknown = 'folha';
+    for (let i = 0; i < 40; i++) fundo = { n: fundo };
+    const comGetter = Object.defineProperty({}, 'x', {
+      enumerable: true,
+      get: () => {
+        throw new TypeError('um getter nunca é chamado');
+      },
+    });
+    expect(serializarValorLi(ciclo)).toBe('{"a":1,"eu":"<ciclo>"}');
+    expect(serializarValorLi(lista)).toBe('[1,"<ciclo>"]');
+    expect(serializarValorLi(10n)).toBe('<bigint>');
+    expect(serializarValorLi({ x: 10n })).toBe('{"x":"<bigint>"}');
+    expect(serializarValorLi(() => 1)).toBe('<nao-serializavel>');
+    expect(serializarValorLi(Symbol('s'))).toBe('<nao-serializavel>');
+    expect(serializarValorLi({ n: Number.NaN, i: Infinity })).toBe(
+      '{"n":"<nao-serializavel>","i":"<nao-serializavel>"}',
+    );
+    expect(serializarValorLi(comGetter)).toBe('{"x":"<nao-serializavel>"}');
+    expect(() => serializarValorLi(fundo)).not.toThrow();
+    expect(serializarValorLi(fundo)).toContain('"<fundo>"');
+    // The same object twice, side by side, is not a cycle.
+    const comum = { c: 1 };
+    expect(serializarValorLi([comum, comum])).toBe('[{"c":1},{"c":1}]');
+  });
+
+  it('a value inside an array that is absent is marked, never read as null', () => {
+    expect(serializarValorLi([undefined, null])).toBe('["<ausente>",null]');
+    // A key whose value is absent is absent, as in JSON.
+    expect(serializarValorLi({ a: undefined, b: 1 })).toBe('{"b":1}');
+  });
+});
+
+describe('linhaSerializadaLi — the exact text of a line, shared by the sink and the size check', () => {
+  it('is what the default sink writes, minus the newline', () => {
+    const stdout = espiarStdout();
+    try {
+      const campos = { a: 1, b: 'x', severity: 'INFO', message: 'outra' };
+      escritorPadrao('WARNING', 'mensagem', campos);
+      expect(stdout.escritas()).toEqual([`${linhaSerializadaLi('WARNING', 'mensagem', campos)}\n`]);
+      expect(linhaSerializadaLi('WARNING', 'mensagem', campos)).toBe(
+        '{"severity":"WARNING","message":"mensagem","a":1,"b":"x"}',
+      );
+    } finally {
+      stdout.restaurar();
+    }
+  });
+});
+
+const REGISTRO = { conta: 'conta-li-1', fluxo: 'rastreio', tentativa: 2, idTarefa: 't-7' };
+
+describe('registrarRestauracaoLi — the restore snapshot, capped on the EXACT line', () => {
+  const restauracao = (chave: string) => ({
+    recurso: 165,
+    caminho: '/v1/pedido/165/',
+    status: 200,
+    corpo: { numero: 165, [chave]: null },
+  });
+
+  function bytesDaLinha(chave: string): number {
+    const gravador = gravadorDeLog();
+    registrarRestauracaoLi(restauracao(chave), { ...REGISTRO, escrever: gravador.escrever });
+    const l = gravador.linhas[0];
+    if (l === undefined) throw new TypeError('nenhuma linha');
+    return bytesUtf8(linhaSerializadaLi(l.severidade, l.mensagem, l.campos));
+  }
+
+  it('one INFO line: the envelope, then the redacted path, the status and the serialised body', () => {
+    const gravador = gravadorDeLog();
+    const r = registrarRestauracaoLi(restauracao('extra'), {
+      ...REGISTRO,
+      escrever: gravador.escrever,
+    });
+    expect(r.escrita).toBe(true);
+    expect(gravador.linhas).toEqual([
+      {
+        severidade: 'INFO',
+        mensagem: '[loja-integrada] restauracao',
+        campos: {
+          evento: 'restauracao',
+          conta: 'conta-li-1',
+          fluxo: 'rastreio',
+          tentativa: 2,
+          idTarefa: 't-7',
+          idNotificacao: null,
+          recurso: 165,
+          caminho: '/v1/pedido/165/',
+          status: 200,
+          politica: 'estrutural',
+          corpo: '{"numero":165,"extra":null}',
+        },
+      },
+    ]);
+    expect(r.bytes).toBe(bytesDaLinha('extra'));
+  });
+
+  it('EQUAL pair: a line of EXACTLY 200 KB (UTF-8, the line as the sink writes it) is written', () => {
+    const base = bytesDaLinha('');
+    const chave = 'a'.repeat(MAX_LINHA_RESTAURACAO_BYTES - base);
+    expect(bytesDaLinha(chave)).toBe(MAX_LINHA_RESTAURACAO_BYTES);
+    const gravador = gravadorDeLog();
+    const r = registrarRestauracaoLi(restauracao(chave), {
+      ...REGISTRO,
+      escrever: gravador.escrever,
+    });
+    expect(r).toEqual({ escrita: true, bytes: MAX_LINHA_RESTAURACAO_BYTES });
+    expect(gravador.linhas).toHaveLength(1);
+  });
+
+  it('⚠️ NEAR-MISS: one byte more is NOT written — never truncated, nothing at all', () => {
+    expect(MAX_LINHA_RESTAURACAO_BYTES).toBe(200 * 1024);
+    const base = bytesDaLinha('');
+    const chave = 'a'.repeat(MAX_LINHA_RESTAURACAO_BYTES - base + 1);
+    const gravador = gravadorDeLog();
+    const r = registrarRestauracaoLi(restauracao(chave), {
+      ...REGISTRO,
+      escrever: gravador.escrever,
+    });
+    expect(r).toEqual({ escrita: false, bytes: MAX_LINHA_RESTAURACAO_BYTES + 1 });
+    expect(gravador.linhas).toEqual([]);
+  });
+
+  it('⚠️ NEAR-MISS: a multi-byte character counts its UTF-8 bytes, not its UTF-16 units', () => {
+    const base = bytesDaLinha('');
+    // `ã` is ONE UTF-16 unit and TWO UTF-8 bytes: half as many fill the line.
+    const chave = 'ã'.repeat(Math.floor((MAX_LINHA_RESTAURACAO_BYTES - base) / 2) + 1);
+    expect(chave.length).toBeLessThan(MAX_LINHA_RESTAURACAO_BYTES - base);
+    const gravador = gravadorDeLog();
+    expect(
+      registrarRestauracaoLi(restauracao(chave), { ...REGISTRO, escrever: gravador.escrever })
+        .escrita,
+    ).toBe(false);
+    expect(gravador.linhas).toEqual([]);
+  });
+});
+
+describe('registrarDiffLi — one line per field, and a so-mudou field never logs its value', () => {
+  it('`valor`: before and after through the serialiser, with the decision motivo', () => {
+    const gravador = gravadorDeLog();
+    registrarDiffLi(
+      {
+        recurso: 165,
+        tipo: 'objeto-envio',
+        campo: 'objeto',
+        politica: 'valor',
+        antes: null,
+        depois: 'PJ1BR',
+        mudou: true,
+        motivo: 'fora-do-canario',
+      },
+      { ...REGISTRO, escrever: gravador.escrever },
+    );
+    expect(gravador.linhas).toEqual([
+      {
+        severidade: 'INFO',
+        mensagem: '[loja-integrada] diff',
+        campos: {
+          evento: 'diff',
+          conta: 'conta-li-1',
+          fluxo: 'rastreio',
+          tentativa: 2,
+          idTarefa: 't-7',
+          idNotificacao: null,
+          recurso: 165,
+          tipo: 'objeto-envio',
+          campo: 'objeto',
+          politica: 'valor',
+          antes: 'null',
+          depois: '"PJ1BR"',
+          mudou: true,
+          motivo: 'fora-do-canario',
+        },
+      },
+    ]);
+  });
+
+  it('`valor`: an ABSENT before is `<ausente>`, never `null`', () => {
+    const gravador = gravadorDeLog();
+    registrarDiffLi(
+      {
+        recurso: 165,
+        tipo: 'objeto-envio',
+        campo: 'objeto',
+        politica: 'valor',
+        antes: undefined,
+        depois: 'PJ1BR',
+        mudou: true,
+        motivo: 'valvula',
+      },
+      { ...REGISTRO, escrever: gravador.escrever },
+    );
+    expect(gravador.linhas[0]?.campos.antes).toBe('<ausente>');
+  });
+
+  it('`so-mudou`: no value on the line, only whether it changed', () => {
+    const gravador = gravadorDeLog();
+    registrarDiffLi(
+      {
+        recurso: 165,
+        tipo: 'teste',
+        campo: 'token',
+        politica: 'so-mudou',
+        antes: 'SEGREDO-ANTES',
+        depois: 'SEGREDO-DEPOIS',
+        mudou: true,
+        motivo: 'valvula',
+      },
+      { ...REGISTRO, escrever: gravador.escrever },
+    );
+    expect(JSON.stringify(gravador.linhas)).not.toContain('SEGREDO');
+    expect(gravador.linhas[0]?.campos).toMatchObject({
+      antes: null,
+      depois: null,
+      mudou: true,
+      politica: 'so-mudou',
+    });
+  });
+});
+
+describe('registrarEscritaLi and registrarDerivaLi', () => {
+  it('each sequence outcome has its severity: WARNING for a write without its effect or a retried refusal', () => {
+    expect(SEVERIDADE_DA_ESCRITA_LI).toEqual({
+      aplicada: 'INFO',
+      pendente: 'INFO',
+      'efeito-observado': 'INFO',
+      'efeito-pendente': 'INFO',
+      'objeto-sem-efeito': 'WARNING',
+      'objeto-nao-enviado': 'INFO',
+      'recusada-retentativa': 'WARNING',
+    });
+  });
+
+  it('an escrita line carries ids, the outcome and the status — never an echo body', () => {
+    const gravador = gravadorDeLog();
+    registrarEscritaLi(
+      {
+        recurso: 165,
+        tipo: 'situacao-pedido',
+        campo: 'codigo',
+        resultado: 'recusada-retentativa',
+        status: 403,
+        aplicada: null,
+        leituraEco: null,
+      },
+      { ...REGISTRO, escrever: gravador.escrever },
+    );
+    expect(gravador.linhas).toEqual([
+      {
+        severidade: 'WARNING',
+        mensagem: '[loja-integrada] escrita',
+        campos: {
+          evento: 'escrita',
+          conta: 'conta-li-1',
+          fluxo: 'rastreio',
+          tentativa: 2,
+          idTarefa: 't-7',
+          idNotificacao: null,
+          recurso: 165,
+          tipo: 'situacao-pedido',
+          campo: 'codigo',
+          resultado: 'recusada-retentativa',
+          status: 403,
+          aplicada: null,
+          leituraEco: null,
+        },
+      },
+    ]);
+  });
+
+  it('a deriva line is a WARNING with what was written and what was read back', () => {
+    const gravador = gravadorDeLog();
+    registrarDerivaLi(
+      {
+        recurso: 165,
+        tipo: 'objeto-envio',
+        campo: 'objeto',
+        politica: 'valor',
+        escrito: 'PJ1BR',
+        lido: 'OUTRO1BR',
+      },
+      { ...REGISTRO, escrever: gravador.escrever },
+    );
+    expect(gravador.linhas[0]).toMatchObject({
+      severidade: 'WARNING',
+      mensagem: '[loja-integrada] deriva',
+      campos: { evento: 'deriva', escrito: '"PJ1BR"', lido: '"OUTRO1BR"', campo: 'objeto' },
+    });
+    const soMudou = gravadorDeLog();
+    registrarDerivaLi(
+      {
+        recurso: 165,
+        tipo: 'teste',
+        campo: 'token',
+        politica: 'so-mudou',
+        escrito: 'SEGREDO-A',
+        lido: 'SEGREDO-B',
+      },
+      { ...REGISTRO, escrever: soMudou.escrever },
+    );
+    expect(JSON.stringify(soMudou.linhas)).not.toContain('SEGREDO');
+  });
+});
+
+describe('the observer never throws on a WRITE (PUT) event', () => {
+  // A write client's observer runs after the outcome is known: a throw would
+  // reject a write that LANDED (the package's `escrita.ts`). So it must be total
+  // on every PUT answer the package can report.
+  const casos: readonly [string, Partial<ChamadaLi>][] = [
+    [
+      'a 2xx echo',
+      { status: 200, resultado: 'ok', corpo: '{"id":801,"objeto":"PJ258408772BR","prazo":5}' },
+    ],
+    ['a 2xx with an EMPTY echo', { status: 204, resultado: 'ok', corpo: '' }],
+    ['a 202 with an HTML echo', { status: 202, resultado: 'ok', corpo: '<html>aceito</html>' }],
+    ['a malformed echo', { status: 200, resultado: 'ok', corpo: '{"id": 8' }],
+    [
+      'a 2xx whose echo was CUT by the deadline',
+      { status: 200, resultado: 'tempo-esgotado', corpo: null },
+    ],
+    [
+      'a 2xx whose echo was cut by a dropped connection',
+      { status: 200, resultado: 'rede', corpo: null },
+    ],
+    ['a 403 refusal', { status: 403, resultado: 'auth', corpo: '{"error":"forbidden"}' }],
+    ['a 302', { status: 302, resultado: 'http', corpo: '' }],
+  ];
+  const caminhos = ['/v1/pedido_envio/801', '/v1/situacao/pedido/165'];
+
+  it.each(casos)('%s: exactly one line, labelled PUT', (_caso, over) => {
+    for (const caminho of caminhos) {
+      const gravador = gravadorDeLog();
+      const observar = criarObservadorLi({ ...OPCOES, escrever: gravador.escrever });
+      expect(() =>
+        observar(evento({ ...over, metodo: 'PUT', operacao: 'escrita', caminho, query: [] })),
+      ).not.toThrow();
+      expect(gravador.linhas).toHaveLength(1);
+      expect(gravador.linhas[0]?.campos).toMatchObject({ metodo: 'PUT', caminho });
     }
   });
 });

@@ -26,11 +26,18 @@ function of two facts so it can be exercised exhaustively:
 `vereditoCanal` adds the fourth: caps clear it but no provider claims the tipo →
 `canal-sem-provider`, a wiring gap rather than a capability one.
 
-⚠️ Arms 1 and 3 are **unreachable through the live table today** — the one
-implemented channel answers `'sim'` to all three actions and every unbuilt one
-answers `'desconhecido'`. That is exactly why the rule is extracted: a branch
-you cannot reach from the data is a branch nobody has checked, and Phase 0 on a
-second channel makes both reachable at once.
+⚠️ Arm 1 is **unreachable through the live table today** for these three actions —
+no surveyed channel answered `'nao'` to any of them. Arm 3 IS reachable: Loja
+Integrada answers all three `'sim'` with `implementado: false`. A branch you cannot
+reach from the data is a branch nobody has checked, which is why the rule is
+extracted and pinned through `motivoDaCapacidade`.
+
+## Rows before the flip
+
+A channel may register its providers before its caps row says `implementado`
+(Shopee did, step 21 → step 22, #1529 → #1530). The drift test then needs a named,
+one-member exception that pins the middle state exactly, so the flip reds it and
+deletes it — see `registriesAlinhadas.test.ts`. Never delete the assertion instead.
 
 ## What replaced what
 

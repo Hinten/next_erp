@@ -296,7 +296,10 @@ async function main(): Promise<void> {
   const db = getAdminFirestore();
   const ctx = await loadMercadoLivreContext(db, args.integracaoId);
   const channelCtx = await ctx.resolveChannelContext();
-  const api = createMercadoLivreApi({ getAccessToken: async () => channelCtx.accessToken });
+  const api = createMercadoLivreApi({
+    getAccessToken: channelCtx.getAccessToken,
+    onAccessTokenRejected: channelCtx.invalidateAccessToken,
+  });
 
   // ⛔ The nickname comes from `getMe()`, NOT from the conta document.
   //

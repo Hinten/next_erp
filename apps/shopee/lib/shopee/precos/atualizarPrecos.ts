@@ -533,7 +533,8 @@ export interface ArgsInicioEnvioPreco {
  * docblock; a test pins it.
  *
  * @throws ShopeePriceSyncTasksDisabledError when `SHOPEE_TASKS_DISABLED` is `'1'`.
- * @throws ShopeeEnvioPrecoEmAndamentoError when a live run exists for the conta.
+ * @throws ShopeeEnvioPrecoEmAndamentoError when a live run exists for the conta,
+ *   carrying that run's `jobId`.
  */
 export async function iniciarEnvioPrecoShopee(
   db: Firestore,
@@ -554,6 +555,7 @@ export async function iniciarEnvioPrecoShopee(
     if (!ehJobOrfao({ updatedAt: dados['updatedAt'], retomarEm: dados['retomarEm'] }, args.nowMs)) {
       throw new ShopeeEnvioPrecoEmAndamentoError(
         `já existe um envio de preços em andamento para a integração ${integracaoId}`,
+        existente.id,
       );
     }
     // The orphan is reclaimed THROUGH the transaction, like every terminal

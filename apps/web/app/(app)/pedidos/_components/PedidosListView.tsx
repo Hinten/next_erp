@@ -216,7 +216,11 @@ export function pedidoVirtualColumns(
       label: 'Frete',
       // `ehSaida` feeds the etiqueta direction-mismatch confirm (EtiquetaRowAction)
       // — Pipeline projection would otherwise strip it from `row.data`.
-      dependsOn: ['freteInicial', 'ehSaida'],
+      // `integracaoPedidoOuterRef` + `numero` are the Loja Integrada identity
+      // the paid re-check hashes (master plan step 15): stripped with the Canal
+      // or Número column hidden, every LI pedido would read as "not imported"
+      // and print with no check at all.
+      dependsOn: ['freteInicial', 'ehSaida', 'integracaoPedidoOuterRef', 'numero'],
       renderCell: (r) => <FreteCell pedido={r.data} pedidoId={r.id} />,
       sortField: 'freteInicial.estado',
       filter: {

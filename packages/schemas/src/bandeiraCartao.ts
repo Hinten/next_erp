@@ -58,6 +58,75 @@ export const BANDEIRA = {
 
 export const BANDEIRA_LABELS: Record<Bandeira, string> = BANDEIRA_LABEL_MAP;
 
+/** What {@link bandeiraDoNomeDaMarca} answers. */
+export interface BandeiraDaMarca {
+  /** The NF-e `tBand` catalogue code, or `null` when no brand arrived. */
+  readonly bandeira: Bandeira | null;
+  /**
+   * A non-blank brand arrived that this fold does not know, so `bandeira` is
+   * `outros` by default. ⚠️ Distinct from an EXPLICIT `outros`, which answers
+   * the same code with `desconhecida: false`: only the unknown one is worth a
+   * count at the caller.
+   */
+  readonly desconhecida: boolean;
+}
+
+/**
+ * The brand spellings a marketplace sends that are not {@link BANDEIRA} member
+ * names. ALIASES, not renames: `BANDEIRA` keys on the legacy enum member names
+ * (`mastercard`, `american_express`, `diners`), and a marketplace writes the
+ * brand as a person reads it. Lower-case, single spaces; the table grows from
+ * observed values, never from a guess.
+ */
+const APELIDOS_DA_MARCA: Readonly<Record<string, Bandeira>> = {
+  master: BANDEIRA.mastercard,
+  amex: BANDEIRA.american_express,
+  'american express': BANDEIRA.american_express,
+  'diners club': BANDEIRA.diners,
+};
+
+/**
+ * A card brand NAME, as a marketplace sends it → the NF-e `tBand` code. The one
+ * shared fold for every channel that receives a brand by name (Amazon first).
+ *
+ * The fold is exactly: surrounding whitespace dropped, then lower-cased. Then,
+ * in order, a {@link BANDEIRA} member name (`visa`, `mastercard`,
+ * `american_express`, `sorocred`, `diners`, `elo`, `hipercard`, `aura`, `cabal`,
+ * `outros`), then {@link APELIDOS_DA_MARCA}. Nothing else is folded: inner
+ * spacing, a longer word containing a brand (`visa electron`) and a plural
+ * (`visas`) are UNKNOWN, never the brand they contain — a substring match would
+ * tell the NF-e a brand the buyer did not use.
+ *
+ *  - an unknown non-blank brand ⇒ `{ bandeira: '99', desconhecida: true }`;
+ *  - an explicit `outros` ⇒ `{ bandeira: '99', desconhecida: false }`;
+ *  - blank, absent or a non-string ⇒ `{ bandeira: null, desconhecida: false }`:
+ *    no brand is NOT `outros`, or a Pix leg would tell the NF-e the buyer used an
+ *    unlisted CARD brand.
+ *
+ * ⚠️ Both lookups go through `Object.hasOwn`: the tables are plain objects, so a
+ * raw `constructor` or `toString` would otherwise find an inherited FUNCTION.
+ *
+ * A SUPERSET of the per-channel fold the Shopee importer carries (the member
+ * names and the `master` / `amex` aliases, with the same unknown flag): every
+ * spelling that fold knows keeps its code and flag here. This one also knows
+ * `american express` and `diners club`, which that fold files as an unknown
+ * `99`, so moving that caller onto this one turns exactly those two from
+ * unknown into known (`bandeiraCartao.test.ts` pins the delta). It logs
+ * nothing: the caller counts `desconhecida`.
+ */
+export function bandeiraDoNomeDaMarca(raw: unknown): BandeiraDaMarca {
+  if (typeof raw !== 'string') return { bandeira: null, desconhecida: false };
+  const chave = raw.trim().toLowerCase();
+  if (chave === '') return { bandeira: null, desconhecida: false };
+  if (Object.hasOwn(BANDEIRA, chave)) {
+    return { bandeira: BANDEIRA[chave as keyof typeof BANDEIRA], desconhecida: false };
+  }
+  if (Object.hasOwn(APELIDOS_DA_MARCA, chave)) {
+    return { bandeira: APELIDOS_DA_MARCA[chave]!, desconhecida: false };
+  }
+  return { bandeira: BANDEIRA.outros, desconhecida: true };
+}
+
 /**
  * BandeiraCartao — bandeira de cartão aceita pela loja (Visa, Master, Elo…).
  * Mirrors `BandeiraCartao` em `.old/packages/pedido/lib/src/models.dart`.

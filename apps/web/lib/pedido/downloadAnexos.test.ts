@@ -49,14 +49,42 @@ describe('arquivoIdFromOuterRef', () => {
     expect(arquivoIdFromOuterRef('arquivos/abc123')).toBe('abc123');
   });
 
+  it('accepts the canonical encoding and preserves existing whitespace trimming', () => {
+    expect(arquivoIdFromOuterRef('documents/arquivos/abc123')).toBe('abc123');
+    expect(arquivoIdFromOuterRef('arquivos/ abc123 ')).toBe('abc123');
+  });
+
   it('rejects bad shapes', () => {
-    expect(arquivoIdFromOuterRef('documents/arquivos/x')).toBeNull();
+    expect(arquivoIdFromOuterRef('documents/produtos/x')).toBeNull();
+    expect(arquivoIdFromOuterRef('arquivos/x/extra')).toBeNull();
+    expect(arquivoIdFromOuterRef('documents/arquivos/x/sub/doc')).toBeNull();
+    expect(arquivoIdFromOuterRef('x')).toBeNull();
     expect(arquivoIdFromOuterRef('arquivos/')).toBeNull();
     expect(arquivoIdFromOuterRef('')).toBeNull();
   });
 });
 
 describe('collectDistinctArquivoIds', () => {
+  it('deduplicates both ref encodings after resolving legacy item and parent paths', () => {
+    const map = new Map<string, Produto>([
+      ['child', produto({ paiId: 'documents/produtos/parent/' })],
+      [
+        'parent',
+        produto({
+          anexos: [
+            { arquivoOuterRef: 'documents/arquivos/shared' },
+            { arquivoOuterRef: 'arquivos/shared' },
+          ],
+        }),
+      ],
+    ]);
+    const result = collectDistinctArquivoIds(
+      [pedido({ child: [{ produtoUid: 'documents/produtos/child/' } as never] })],
+      map,
+    );
+    expect(result).toEqual({ arquivoIds: ['shared'], productIdsTouched: ['parent'] });
+  });
+
   it('uses the parent produto anexos when the line item is a variation', () => {
     const parent = produto({
       anexos: [{ arquivoOuterRef: 'arquivos/a1' }],
@@ -122,6 +150,20 @@ describe('fileNamesForBatch', () => {
 });
 
 describe('productIdsFromPedidos / parentIdsMissing', () => {
+  it('loads the same bare ids from canonical and trailing-slash paths', () => {
+    expect(
+      productIdsFromPedidos([
+        pedido({ child: [{ produtoUid: 'documents/produtos/child/' } as never] }),
+      ]),
+    ).toEqual(['child']);
+    expect(
+      parentIdsMissing(
+        new Map([['child', produto({ paiId: 'documents/produtos/parent/' })]]),
+        new Set(['child']),
+      ),
+    ).toEqual(['parent']);
+  });
+
   it('collects item product ids', () => {
     const ids = productIdsFromPedidos([
       pedido({
@@ -144,6 +186,49 @@ describe('productIdsFromPedidos / parentIdsMissing', () => {
 
 describe('downloadAnexos orchestrator', () => {
   const db = {} as Firestore;
+
+  it('downloads a parent attachment once when canonical and bare refs name the same file', async () => {
+    const save = vi.fn();
+    const loadProdutos = vi.fn(
+      async (ids: ReadonlyArray<string>) =>
+        new Map(
+          ids.map((id) => [
+            id,
+            id === 'child'
+              ? produto({ paiId: 'documents/produtos/parent/' })
+              : produto({
+                  anexos: [
+                    { arquivoOuterRef: 'documents/arquivos/shared' },
+                    { arquivoOuterRef: 'arquivos/shared' },
+                  ],
+                }),
+          ]),
+        ),
+    );
+    const loadArquivos = vi.fn(
+      async () => new Map([['shared', arquivo({ filename: 'manual.pdf' })]]),
+    );
+    const result = await downloadAnexos(db, ['pedido'], {
+      cache: createMemoryArquivoCache(),
+      save,
+      delayMs: 0,
+      fetchImpl: async () => new Response(new Uint8Array([1]).buffer),
+      loadPedidos: async () =>
+        new Map([
+          ['pedido', pedido({ child: [{ produtoUid: 'documents/produtos/child/' } as never] })],
+        ]),
+      loadProdutos,
+      loadArquivos,
+    });
+
+    expect(loadProdutos).toHaveBeenNthCalledWith(1, ['child']);
+    expect(loadProdutos).toHaveBeenNthCalledWith(2, ['parent']);
+    expect(loadArquivos).toHaveBeenCalledWith(['shared']);
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(result.downloaded).toBe(1);
+    expect(result.noneFound).toBe(false);
+    expect(result.errors).toEqual([]);
+  });
 
   it('returns noneFound when no anexos exist', async () => {
     const result = await downloadAnexos(db, ['ped-1'], {

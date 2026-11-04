@@ -8,6 +8,8 @@
  *   401  no/invalid token
  *   403  insufficient perm
  *   409  aborted: a número in the range belongs to an authorized NF-e (consumo indevido)
+ *   422  code INUTILIZACAO_NAO_SE_APLICA — the filial is in AC/BA/SP and the date is
+ *        01/11/2026 or later (Ajuste SINIEF nº 40/2026); nothing was sent to SEFAZ
  *   422  SEFAZ rejected the inutilização
  *   500  signer / transport error
  */
@@ -22,6 +24,7 @@ import { safeLog } from '@/lib/nfe/log';
 import {
   inutilizarNumeracao,
   NFeInutilizacaoAbortedError,
+  NFeInutilizacaoNaoSeAplicaError,
   NFeOrchestratorError,
 } from '@/lib/nfe/orchestrator';
 import { getNFeRuntime, isNFeRuntimeMisconfig } from '@/lib/nfe/runtime';
@@ -84,6 +87,11 @@ export async function POST(req: Request): Promise<NextResponse> {
   } catch (e) {
     if (e instanceof NFeInutilizacaoAbortedError) {
       return authError(409, { error: e.message, code: 'INUTILIZACAO_ABORTED' });
+    }
+    if (e instanceof NFeInutilizacaoNaoSeAplicaError) {
+      // Pre-send refusal — the `code` keeps the client from reading it as a
+      // SEFAZ rejection (the generic 422 mapping).
+      return authError(422, { error: e.message, code: 'INUTILIZACAO_NAO_SE_APLICA' });
     }
     if (e instanceof NFeInutilizacaoError) {
       return authError(422, { error: e.message });

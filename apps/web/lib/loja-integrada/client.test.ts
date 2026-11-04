@@ -34,6 +34,9 @@ const {
   LojaIntegradaClientHttpError,
   LojaIntegradaClientNetworkError,
   LojaIntegradaClientRespostaInvalidaError,
+  LojaIntegradaClientTempoEsgotadoError,
+  PRAZO_CONFERENCIA_PAGAMENTO_LI_MS,
+  PRAZO_ROTA_ETIQUETA_LI_MS,
   createLojaIntegradaClient,
   resolverBackendLojaIntegrada,
   useBackendLojaIntegrada,
@@ -543,5 +546,338 @@ describe('useLojaIntegradaClient — the hook applies the rule to the real page'
       client: null,
       indisponivel: null,
     });
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*            The pedidos routes (step 15): label routing, paid check          */
+/* -------------------------------------------------------------------------- */
+
+const ROTA = {
+  integracaoFreteOuterRef: 'documents/int_frete/mot-1',
+  externalOptionId: null,
+  integracaoTargetOuterRef: null,
+  estado: 'iniciado',
+} as const;
+
+const ROTEADO = {
+  tipo: 'roteado',
+  alvo: { id: 'mot-1', tipo: 'motoboy', nome: 'Motoboy Centro' },
+  rota: ROTA,
+} as const;
+
+const PAGO_LIVE = {
+  aplicavel: true,
+  fonte: 'loja',
+  veredito: 'pago',
+  codigo: 'pedido_pago',
+  motivoContestacao: null,
+  conferidoEmMs: 1_790_000_000_000,
+  correlationId: 'corr-1',
+} as const;
+
+/**
+ * A fetch that never answers on its own: it rejects with the signal's abort
+ * (an `AbortError`, as a browser does) the moment its signal aborts. Without a
+ * signal it would hang forever — so a call that sent none fails the test by
+ * timing out, never by passing.
+ */
+function fetchQueSoAborta(chamadas: Chamada[]) {
+  return vi.fn(
+    (input: RequestInfo | URL, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        chamadas.push({ url: String(input), init: init ?? {} });
+        const sinal = init?.signal;
+        if (!sinal) return;
+        if (sinal.aborted) {
+          reject(new DOMException('The operation was aborted.', 'AbortError'));
+          return;
+        }
+        sinal.addEventListener('abort', () => {
+          reject(new DOMException('The operation was aborted.', 'AbortError'));
+        });
+      }),
+  );
+}
+
+function clienteCom(fetchImpl: typeof globalThis.fetch) {
+  return createLojaIntegradaClient({
+    baseUrl: BASE,
+    getAuthToken: async () => 'id-token-firebase',
+    fetch: fetchImpl,
+  });
+}
+
+describe('rotearEtiqueta — PUT …/pedidos/<id>/rota-etiqueta', () => {
+  it('sends EXACTLY {escolha} as JSON, the ID token as Bearer, and reads the shared contract', async () => {
+    const { c, chamadas } = cliente(() => json(200, ROTEADO));
+
+    await expect(c.rotearEtiqueta('ped-1', { escolha: null })).resolves.toEqual(ROTEADO);
+
+    expect(chamadas).toHaveLength(1);
+    expect(chamadas[0]!.url).toBe(
+      `${BASE}/api/marketplace/loja-integrada/pedidos/ped-1/rota-etiqueta`,
+    );
+    expect(chamadas[0]!.init.method).toBe('PUT');
+    expect(corpoEnviado(chamadas[0]!)).toEqual({ escolha: null });
+    expect(cabecalhos(chamadas[0]!)).toMatchObject({
+      Authorization: 'Bearer id-token-firebase',
+      'Content-Type': 'application/json',
+    });
+  });
+
+  it('rebuilds the body BY NAME — a caller object carrying one more key never reaches the strict route', async () => {
+    const { c, chamadas } = cliente(() => json(200, ROTEADO));
+
+    await c.rotearEtiqueta('ped-1', { escolha: 'mot-1', extra: 'x' } as never);
+
+    expect(corpoEnviado(chamadas[0]!)).toEqual({ escolha: 'mot-1' });
+  });
+
+  it('percent-encodes the pedido id — a slash can never reach another route', async () => {
+    const { c, chamadas } = cliente(() => json(200, ROTEADO));
+
+    await c.rotearEtiqueta('a/b c', { escolha: null });
+
+    expect(chamadas[0]!.url).toBe(
+      `${BASE}/api/marketplace/loja-integrada/pedidos/a%2Fb%20c/rota-etiqueta`,
+    );
+  });
+
+  it('strips what the contract does not name — the target document never rides along', async () => {
+    const { c } = cliente(() =>
+      json(200, {
+        ...ROTEADO,
+        alvo: { ...ROTEADO.alvo, client_secret: 'segredo' },
+        intFrete: { tokenMelEnv: 'segredo' },
+      }),
+    );
+
+    const resposta = await c.rotearEtiqueta('ped-1', { escolha: null });
+
+    expect(JSON.stringify(resposta)).not.toContain('segredo');
+  });
+
+  it('a refusal is a 200 decision, read as one', async () => {
+    const { c } = cliente(() => json(200, { tipo: 'recusado', motivo: 'sem-mapeamento' }));
+
+    await expect(c.rotearEtiqueta('ped-1', { escolha: null })).resolves.toEqual({
+      tipo: 'recusado',
+      motivo: 'sem-mapeamento',
+    });
+  });
+
+  it('a routed answer whose ref is not a documents/ ref is RESPOSTA_INVALIDA, never a route', async () => {
+    const { c } = cliente(() =>
+      json(200, { ...ROTEADO, rota: { ...ROTA, integracaoFreteOuterRef: 'int_frete/mot-1' } }),
+    );
+
+    await expect(c.rotearEtiqueta('ped-1', { escolha: null })).rejects.toBeInstanceOf(
+      LojaIntegradaClientRespostaInvalidaError,
+    );
+  });
+
+  it('the envelope code of a lost race reaches the caller', async () => {
+    const { c } = cliente(() =>
+      json(503, { error: 'Conflito', code: CODIGO_ERRO_LI.rotaEmConflito }),
+    );
+
+    const err = (await c
+      .rotearEtiqueta('ped-1', { escolha: null })
+      .catch((e: unknown) => e)) as InstanceType<typeof LojaIntegradaClientHttpError>;
+
+    expect(err).toBeInstanceOf(LojaIntegradaClientHttpError);
+    expect(err.status).toBe(503);
+    expect(err.code).toBe(CODIGO_ERRO_LI.rotaEmConflito);
+  });
+});
+
+describe('conferirPagamento — GET …/pedidos/<id>/pagamento', () => {
+  it('GETs the route with no body and reads a live verdict', async () => {
+    const { c, chamadas } = cliente(() => json(200, PAGO_LIVE));
+
+    await expect(c.conferirPagamento('ped-1')).resolves.toEqual(PAGO_LIVE);
+
+    expect(chamadas[0]!.url).toBe(`${BASE}/api/marketplace/loja-integrada/pedidos/ped-1/pagamento`);
+    expect(chamadas[0]!.init.method).toBe('GET');
+    expect(chamadas[0]!.init.body).toBeUndefined();
+  });
+
+  it('reads the "not applicable" and the ERP-mirror arms', async () => {
+    const naoAplicavel = { aplicavel: false, motivo: 'nao-importado' };
+    const espelho = {
+      aplicavel: true,
+      fonte: 'erp',
+      veredito: 'contestado',
+      codigo: null,
+      motivoContestacao: 'disputa',
+      conferidoEmMs: null,
+      correlationId: null,
+    };
+    const respostas = [naoAplicavel, espelho];
+    const { c } = cliente(() => json(200, respostas.shift()));
+
+    await expect(c.conferirPagamento('ped-1')).resolves.toEqual(naoAplicavel);
+    await expect(c.conferirPagamento('ped-1')).resolves.toEqual(espelho);
+  });
+
+  it('⭐ a mirror claiming `pago` does not parse — nothing verified it', async () => {
+    const { c } = cliente(() =>
+      json(200, {
+        aplicavel: true,
+        fonte: 'erp',
+        veredito: 'pago',
+        codigo: null,
+        motivoContestacao: null,
+        conferidoEmMs: null,
+        correlationId: null,
+      }),
+    );
+
+    await expect(c.conferirPagamento('ped-1')).rejects.toBeInstanceOf(
+      LojaIntegradaClientRespostaInvalidaError,
+    );
+  });
+
+  it('a 404 WITHOUT an envelope (a backend older than the route) is an HTTP error with no code, not a crash', async () => {
+    const { c } = cliente(
+      () =>
+        new Response('<!DOCTYPE html><html>404</html>', {
+          status: 404,
+          headers: { 'content-type': 'text/html' },
+        }),
+    );
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    const err = (await c.conferirPagamento('ped-1').catch((e: unknown) => e)) as InstanceType<
+      typeof LojaIntegradaClientHttpError
+    >;
+
+    expect(err).toBeInstanceOf(LojaIntegradaClientHttpError);
+    expect(err).not.toBeInstanceOf(LojaIntegradaClientRespostaInvalidaError);
+    expect(err.status).toBe(404);
+    expect(err.code).toBeNull();
+  });
+
+  it('the near miss: a 404 WITH the envelope carries its code', async () => {
+    const { c } = cliente(() =>
+      json(404, { error: 'Pedido não encontrado.', code: CODIGO_ERRO_LI.pedidoNaoEncontrado }),
+    );
+
+    const err = (await c.conferirPagamento('ped-1').catch((e: unknown) => e)) as InstanceType<
+      typeof LojaIntegradaClientHttpError
+    >;
+
+    expect(err.code).toBe(CODIGO_ERRO_LI.pedidoNaoEncontrado);
+  });
+});
+
+describe('the deadlines and the caller signal (step 15)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('conferirPagamento gives up at PRAZO_CONFERENCIA_PAGAMENTO_LI_MS — a TempoEsgotado, which IS a network error', async () => {
+    expect(PRAZO_CONFERENCIA_PAGAMENTO_LI_MS).toBe(45_000);
+    const chamadas: Chamada[] = [];
+    const c = clienteCom(fetchQueSoAborta(chamadas));
+
+    const resultado = c.conferirPagamento('ped-1').catch((e: unknown) => e);
+    await vi.advanceTimersByTimeAsync(PRAZO_CONFERENCIA_PAGAMENTO_LI_MS - 1);
+    expect(chamadas[0]!.init.signal?.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+
+    const err = await resultado;
+    expect(chamadas[0]!.init.signal?.aborted).toBe(true);
+    expect(err).toBeInstanceOf(LojaIntegradaClientTempoEsgotadoError);
+    expect(err).toBeInstanceOf(LojaIntegradaClientNetworkError);
+  });
+
+  it('rotearEtiqueta gives up at its own, shorter PRAZO_ROTA_ETIQUETA_LI_MS', async () => {
+    expect(PRAZO_ROTA_ETIQUETA_LI_MS).toBeLessThan(PRAZO_CONFERENCIA_PAGAMENTO_LI_MS);
+    const chamadas: Chamada[] = [];
+    const c = clienteCom(fetchQueSoAborta(chamadas));
+
+    const resultado = c.rotearEtiqueta('ped-1', { escolha: null }).catch((e: unknown) => e);
+    await vi.advanceTimersByTimeAsync(PRAZO_ROTA_ETIQUETA_LI_MS - 1);
+    expect(chamadas[0]!.init.signal?.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+
+    await expect(resultado).resolves.toBeInstanceOf(LojaIntegradaClientTempoEsgotadoError);
+  });
+
+  it('a body that stalls past the deadline is a TempoEsgotado too, never a bare AbortError', async () => {
+    let sinalDaChamada: AbortSignal | undefined;
+    const c = clienteCom(
+      vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        sinalDaChamada = init?.signal ?? undefined;
+        const res = new Response('{}', { status: 200 });
+        vi.spyOn(res, 'text').mockImplementation(
+          () =>
+            new Promise<string>((_resolve, reject) => {
+              sinalDaChamada?.addEventListener('abort', () => {
+                reject(new DOMException('The operation was aborted.', 'AbortError'));
+              });
+            }),
+        );
+        return res;
+      }),
+    );
+
+    const resultado = c.conferirPagamento('ped-1').catch((e: unknown) => e);
+    await vi.advanceTimersByTimeAsync(PRAZO_CONFERENCIA_PAGAMENTO_LI_MS);
+
+    await expect(resultado).resolves.toBeInstanceOf(LojaIntegradaClientTempoEsgotadoError);
+  });
+
+  it("the CALLER's abort reaches the fetch and comes back as the abort itself, never relabelled", async () => {
+    const chamadas: Chamada[] = [];
+    const c = clienteCom(fetchQueSoAborta(chamadas));
+    const controle = new AbortController();
+
+    const resultado = c
+      .conferirPagamento('ped-1', { sinal: controle.signal })
+      .catch((e: unknown) => e);
+    await vi.advanceTimersByTimeAsync(10);
+    controle.abort();
+
+    const err = await resultado;
+    expect(chamadas[0]!.init.signal?.aborted).toBe(true);
+    expect(err).toBeInstanceOf(DOMException);
+    expect(err).not.toBeInstanceOf(LojaIntegradaClientNetworkError);
+  });
+
+  it('a caller signal ALREADY aborted never waits for the deadline', async () => {
+    const chamadas: Chamada[] = [];
+    const c = clienteCom(fetchQueSoAborta(chamadas));
+    const controle = new AbortController();
+    controle.abort();
+
+    const err = await c
+      .conferirPagamento('ped-1', { sinal: controle.signal })
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(DOMException);
+  });
+
+  it('an answer in time clears the deadline — no timer outlives the call', async () => {
+    const { c } = cliente((ch) => json(200, ch.url.endsWith('/pagamento') ? PAGO_LIVE : ROTEADO));
+
+    await c.conferirPagamento('ped-1');
+    await c.rotearEtiqueta('ped-1', { escolha: null });
+
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('the near miss: the conta routes keep their unbounded, signal-free call', async () => {
+    const { c, chamadas } = cliente(() => json(200, STATUS));
+
+    await c.conta('conta-1');
+
+    expect(chamadas[0]!.init.signal).toBeUndefined();
+    expect(vi.getTimerCount()).toBe(0);
   });
 });

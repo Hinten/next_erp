@@ -56,7 +56,7 @@ name: CI — Mercado Livre (Firestore emulator)
 # at all, then that the emulator rejected our region-qualified queue name
 # (firebase-admin-node#2725). BOTH were wrong: a `tasks` emulator exists, and
 # that issue was closed 2024-10-11 and fixed in firebase-admin 12.7.0 — this repo
-# pins 14.2.0. `locations/<region>/functions/<queue>` is therefore both the
+# pins 14.5.0. `locations/<region>/functions/<queue>` is therefore both the
 # production-correct and the emulator-correct form, and NO production code
 # changed to make the round trip testable.
 #

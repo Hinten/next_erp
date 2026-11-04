@@ -305,7 +305,10 @@ async function defaultResolveApi(db: Firestore, integracaoId: string): Promise<M
   const ctx = await loadMercadoLivreContext(db, integracaoId);
   if (ctx.conta.ativo === false) throw new MercadoLivreContaInativaError(integracaoId);
   const channelCtx = await ctx.resolveChannelContext();
-  return createMercadoLivreApi({ getAccessToken: async () => channelCtx.accessToken });
+  return createMercadoLivreApi({
+    getAccessToken: channelCtx.getAccessToken,
+    onAccessTokenRejected: channelCtx.invalidateAccessToken,
+  });
 }
 
 /**

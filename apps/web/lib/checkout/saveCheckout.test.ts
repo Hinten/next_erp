@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
+  ESTADO_FRETE_LABELS,
   ESTADO_PEDIDO,
+  ESTADOS_FRETE_MERCADORIA_FORA,
   freteDoPedidoSchema,
   itemDoPedidoSchema,
   type EngineProduto,
@@ -198,6 +200,42 @@ describe('evaluatePreSave — gates in order', () => {
       ok: true,
       estadoContinuar: 'checkFinalizado',
     });
+  });
+
+  const comFrete = (estado: string): EvaluatePreSaveInput => {
+    const f = frete(estado);
+    return {
+      ...base(),
+      loaded: { estado: ESTADO_PEDIDO.pago, itens: [], freteInicial: f },
+      fresh: { ...base().fresh!, freteInicial: f },
+    };
+  };
+
+  it('9. a goods-out frete estado: the confirm says the estado will be kept', () => {
+    for (const estado of ESTADOS_FRETE_MERCADORIA_FORA) {
+      const r = evaluatePreSave(comFrete(estado));
+      expect(r, estado).toMatchObject({ decision: 'confirm', kind: 'frete-estado' });
+      expect((r as { message: string }).message, estado).toContain(
+        `"${ESTADO_FRETE_LABELS[estado]}": a mercadoria já saiu do depósito`,
+      );
+      expect((r as { message: string }).message, estado).toContain('não será alterado');
+    }
+    // Confirming it still lets the save through, carrying the estado to the tx.
+    expect(
+      evaluatePreSave({ ...comFrete('postado'), confirmed: new Set(['frete-estado']) }),
+    ).toEqual({ ok: true, estadoContinuar: 'postado' });
+  });
+
+  it('⚠️ NEAR-MISS 9. a goods-in out-of-set estado keeps the plain confirm', () => {
+    for (const estado of ['checkFinalizado', 'empacotado', 'aguardandoPostagem', 'iniciado']) {
+      const r = evaluatePreSave(comFrete(estado));
+      expect(r, estado).toMatchObject({
+        decision: 'confirm',
+        kind: 'frete-estado',
+        message:
+          'Este pedido não está no estado "Despacho autorizado" ou "Em separação". Deseja continuar?',
+      });
+    }
   });
 
   it('12. blocks a non-Pago pedido (estado unchanged since load)', () => {

@@ -8,10 +8,14 @@
  * Rung 1 of the grupo cascade has to find an OPERATOR-authored mapping stored in
  * `grupoDeVariacoes.linksVariacoesShopee[]` — an array of objects. Firestore
  * cannot query inside one (`array-contains` needs exact element equality, and
- * the field is `z.array(z.unknown())` anyway), so the only way to find that
- * mapping is to scan it in memory. Failing to find it mints a DUPLICATE grupo
- * and breaks a future publish, because step 11's export reads exactly that
- * mapping with a non-null assertion.
+ * we know two fields of the element we look for, never the whole of it), so the
+ * only way to find that mapping is to scan it in memory. Failing to find it
+ * mints a DUPLICATE grupo beside the operator's: the listing's variantes split
+ * across two grupos, and the operator's option mapping is never consulted.
+ * (The legacy Flutter export read that mapping with a non-null assertion. The
+ * step-11 publisher reads it through the shared key in `@delfrance/schemas`,
+ * `resolverEntradaShopeeDoGrupo`, and builds a CUSTOM tier named after the
+ * grupo when the pair has no entry — #1911.)
  *
  * So: ONE full read of the collection per dispatch, performed LAZILY on the
  * first item that has models, reused by every later item and every rung. Cost is
@@ -41,10 +45,10 @@
  * it beats the obvious alternative here:
  *
  *  1. **It cannot strip.** `grupoDeVariacoesSchema` has no `.passthrough()`, so a
- *     full-document write of a re-parsed doc would DELETE every key the Flutter
- *     app still authors and this repo does not model. An `update` masks at the
- *     top-level key: everything unnamed survives untouched, with no raw spread
- *     and no delta splice.
+ *     full-document write of a re-parsed doc would DELETE every key a migrated
+ *     legacy grupo carries and this repo does not model. An `update` masks at
+ *     the top-level key: everything unnamed survives untouched, with no raw
+ *     spread and no delta splice.
  *  2. **A lost race is a FAILED_PRECONDITION, never a silent lost update.** The
  *     patch is derived from the memo's copy of the document and asserts THAT
  *     read's stamp.
@@ -111,9 +115,12 @@ async function lerTodosOsGrupos(db: Firestore): Promise<GrupoMemo> {
   const snap = await grupoDeVariacoesCollection.ref(db, {}).get();
   const docs: DocumentoDeGrupo[] = snap.docs.map((d) => ({
     id: d.id,
-    // ⚠️ RAW, never `parseRead`: the cascade reads `linksVariacoesShopee`, which
-    // the schema types as `z.array(z.unknown())`, and a parse would also spend
-    // validation on every operator-authored grupo in the database.
+    // ⚠️ RAW, never `parseRead`: the grupo schema types `linksVariacoesShopee`
+    // STRICTLY (`linkVariacoesShopeeSchema`), so ONE stored element it refuses
+    // would fail the whole document's parse and hide every readable entry
+    // beside it. The cascade reads that array element by element instead, and
+    // keeps an unreadable element verbatim. A parse would also spend validation
+    // on every operator-authored grupo in the database.
     raw: (d.data() ?? {}) as Record<string, unknown>,
     updateTime: d.updateTime,
   }));
@@ -244,7 +251,8 @@ async function aplicarUmaVez(
 
     // ⚠️ `ultimaModificacao` is added HERE, not in the pure core: the core plans
     // the CONTENT and this layer stamps the write. The patch names four keys and
-    // nothing else, so every key the Flutter app owns survives.
+    // nothing else, so every other key — the operator's, and any a migrated
+    // legacy grupo carries — survives.
     const patch = { ...grupo.patch, ultimaModificacao: nowMs };
     const ref = grupoDeVariacoesCollection.docRef(db, {}, grupo.grupoId);
     const lastUpdateTime = carimbos.get(grupo.grupoId);

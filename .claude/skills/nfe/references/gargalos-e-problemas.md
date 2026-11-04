@@ -195,7 +195,7 @@ auditoria fiscal apontando "NF-e em contingência sem regularização".
 | Rejeição em SEFAZ (não-duplicidade) | **Reusar o número** — SEFAZ rejeitou, não armazenou. |
 | NF-e autorizada e a operação caiu/cancelou no business | **Cancelamento por Evento** (110111). Limite: até 24h após autorização. |
 | NF-e autorizada >24h e operação caiu | **Não cancela. Estorno fiscal.** Emitir NF-e de devolução/ajuste. |
-| Número pulado por bug (gap) | **Inutilização do range** (NfeInutilizacao4). Documenta para o fisco que o número não será usado. |
+| Número pulado por bug (gap) | **Inutilização do range** (NfeInutilizacao4). Documenta para o fisco que o número não será usado. ⛔ **Em AC, BA e SP a partir de 01/11/2026 não existe mais** (Ajuste SINIEF nº 40/2026): a lacuna fica como está, sem pedido à SEFAZ (que responde cStat 998). |
 | NF-e em contingência rejeitada após retorno do normal | Para `tpEmis=1` (normal): **novo número**. Para contingência: mesmo número/série. |
 
 A regra **mais errada na prática**: cancelar NF-e fora do prazo (24h).

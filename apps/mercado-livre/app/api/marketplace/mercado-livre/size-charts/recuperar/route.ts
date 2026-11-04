@@ -29,7 +29,14 @@ export async function POST(req: Request): Promise<NextResponse> {
     const account = await context.resolveChannelContext();
     return NextResponse.json(
       await recoverSizeChart(
-        { db, api: createChartApi(account.accessToken), integracaoId: body.integracaoId },
+        {
+          db,
+          api: createChartApi({
+            getAccessToken: account.getAccessToken,
+            onAccessTokenRejected: account.invalidateAccessToken,
+          }),
+          integracaoId: body.integracaoId,
+        },
         body.tabMediId,
         body,
       ),

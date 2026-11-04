@@ -36,6 +36,7 @@ import {
   type ShopeeUpdateKitItemRequest,
 } from '@delfrance/integrations-shopee';
 import {
+  TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE,
   chaveAvisoReceitaKitShopee,
   chaveReceitaKitErp,
   importacaoShopeeOptionsSchema,
@@ -1464,6 +1465,7 @@ describe('o que recusa a republicação — só linhas que NÃO são receita (§
         mensagem:
           `o kit nativo ${String(KIT_ITEM)} foi excluído na Shopee — publique com --link ` +
           `${VINCULO} --recriar para criar um novo`,
+        acao: { tipo: TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.recriar, linkDocId: VINCULO },
       },
     ]);
     expect(doc(db, `produtos/${K}/prodshopee/${VINCULO}`)?.estadoAnuncio).toBe('removido');

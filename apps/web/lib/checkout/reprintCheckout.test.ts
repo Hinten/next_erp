@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { EtiquetaProviderUi } from './etiqueta/types';
 
@@ -29,6 +30,7 @@ const ui: EtiquetaProviderUi = {
   openUrl: vi.fn(),
   comprarEtiqueta: vi.fn(),
   escolherEnvio: vi.fn(),
+  confirmarCiente: vi.fn(),
 };
 
 beforeEach(() => {
@@ -62,6 +64,7 @@ describe('reprintCheckoutEtiqueta — targets the row.pedidoId, its OWN live fre
       nfeClient: null,
       mercadoLivreClient: mlClient,
       shopeeClient: null,
+      lojaIntegradaClient: null,
       formato: 'pdf',
       ui,
     });
@@ -98,6 +101,7 @@ describe('reprintCheckoutEtiqueta — targets the row.pedidoId, its OWN live fre
       nfeClient: null,
       mercadoLivreClient: null,
       shopeeClient: null,
+      lojaIntegradaClient: null,
       formato: 'pdf',
       ui,
     });
@@ -115,6 +119,7 @@ describe('reprintCheckoutEtiqueta — targets the row.pedidoId, its OWN live fre
         nfeClient: null,
         mercadoLivreClient: null,
         shopeeClient: null,
+        lojaIntegradaClient: null,
         formato: 'pdf',
         ui,
       }),
@@ -135,6 +140,7 @@ describe('reprintCheckoutEtiqueta — targets the row.pedidoId, its OWN live fre
         nfeClient: null,
         mercadoLivreClient: null,
         shopeeClient: null,
+        lojaIntegradaClient: null,
         formato: 'pdf',
         ui,
       }),
@@ -155,6 +161,7 @@ describe('reprintCheckoutEtiqueta — targets the row.pedidoId, its OWN live fre
     h.dereferenceOuterRef.mockReturnValue(null);
     h.emitirOuImprimirEtiqueta.mockResolvedValue({ status: 'printed' });
     const shopeeClient = { __shopee: true } as never;
+    const lojaIntegradaClient = { __lojaIntegrada: true } as never;
 
     const res = await reprintCheckoutEtiqueta({
       db,
@@ -163,6 +170,7 @@ describe('reprintCheckoutEtiqueta — targets the row.pedidoId, its OWN live fre
       nfeClient: null,
       mercadoLivreClient: null,
       shopeeClient,
+      lojaIntegradaClient,
       formato: 'zpl2',
       ui,
     });
@@ -173,11 +181,67 @@ describe('reprintCheckoutEtiqueta — targets the row.pedidoId, its OWN live fre
     const input = h.emitirOuImprimirEtiqueta.mock.calls[0]![0] as {
       frete: unknown;
       intFrete: unknown;
-      deps: { shopeeClient: unknown };
+      deps: { shopeeClient: unknown; lojaIntegradaClient: unknown };
     };
     expect(input.frete).toBe(freteShopee);
     expect(input.intFrete).toEqual({ fonte: 'bloco', id: null, tipo: 'shopee', data: null });
     expect(input.deps.shopeeClient).toBe(shopeeClient);
+    // The Loja Integrada client threads through too: the soft gates ask it (step 15).
+    expect(input.deps.lojaIntegradaClient).toBe(lojaIntegradaClient);
+  });
+});
+
+describe('reprintCheckoutEtiqueta — why an imported Loja Integrada order has no carrier', () => {
+  const sha256 = (s: string) => createHash('sha256').update(s).digest('hex');
+  const ID_LI = sha256('lojaIntegradaCONTA1-165');
+  const args = (pedidoId: string) => ({
+    db,
+    pedidoId,
+    freightClient: {} as never,
+    nfeClient: null,
+    mercadoLivreClient: null,
+    shopeeClient: null,
+    lojaIntegradaClient: null,
+    formato: 'pdf' as const,
+    ui,
+  });
+  const pedidoSemRef = (enderecoFreteOuterReference: string | null) => ({
+    exists: () => true,
+    data: () => ({
+      numero: '165',
+      integracaoPedidoOuterRef: 'documents/integracao/CONTA1',
+      freteInicial: {
+        integracaoFreteOuterRef: null,
+        enderecoFreteOuterReference,
+        modalidade: '0',
+        estado: 'checkFinalizado',
+      },
+    }),
+  });
+
+  it('no endereço, or an endereço with no Loja Integrada freight — each says so', async () => {
+    h.dereferenceOuterRef.mockReturnValue(null);
+    h.getDoc.mockResolvedValueOnce(pedidoSemRef(null));
+    expect(await reprintCheckoutEtiqueta(args(ID_LI))).toEqual({
+      status: 'no-integration',
+      mensagem: 'Pedido sem endereço de entrega: não há transportadora para gerar a etiqueta.',
+    });
+
+    h.getDoc.mockResolvedValueOnce(pedidoSemRef('documents/clientes/c1/enderecos/e1'));
+    expect(await reprintCheckoutEtiqueta(args(ID_LI))).toEqual({
+      status: 'no-integration',
+      mensagem:
+        'A conta Loja Integrada não tem integração de frete: não há transportadora para gerar a ' +
+        'etiqueta.',
+    });
+  });
+
+  it('⚠️ NEAR-MISS: the same pedido read as another channel’s order keeps the plain no-integration', async () => {
+    h.dereferenceOuterRef.mockReturnValue(null);
+    h.getDoc.mockResolvedValueOnce(pedidoSemRef(null));
+    expect(await reprintCheckoutEtiqueta(args(sha256('mercadoLivreCONTA1-165')))).toEqual({
+      status: 'no-integration',
+    });
   });
 });
 
@@ -202,6 +266,7 @@ describe('reprintCheckoutEtiqueta — a stalled stage becomes a reported failure
         nfeClient: null,
         mercadoLivreClient: null,
         shopeeClient: null,
+        lojaIntegradaClient: null,
         formato: 'pdf',
         ui,
         timeoutMs: 30_000,
@@ -246,6 +311,7 @@ describe('reprintCheckoutEtiqueta — a stalled stage becomes a reported failure
         nfeClient: null,
         mercadoLivreClient: null,
         shopeeClient: null,
+        lojaIntegradaClient: null,
         formato: 'pdf',
         ui,
         timeoutMs: 30_000,

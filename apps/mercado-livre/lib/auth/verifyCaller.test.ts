@@ -3,10 +3,10 @@ import { AppErrorCode, FirebaseAppError } from 'firebase-admin/app';
 import { AuthErrorCode, FirebaseAuthError } from 'firebase-admin/auth';
 import { PERM } from '@delfrance/auth';
 
-const h = vi.hoisted(() => ({ verifyIdToken: vi.fn() }));
+const h = vi.hoisted(() => ({ verifyIdToken: vi.fn(), getAdminAuth: vi.fn() }));
 
 vi.mock('@/lib/firebase/admin', () => ({
-  getAdminAuth: () => ({ verifyIdToken: h.verifyIdToken }),
+  getAdminAuth: h.getAdminAuth,
 }));
 
 const { verifyCaller } = await import('./verifyCaller');
@@ -25,6 +25,8 @@ function expectError(result: Awaited<ReturnType<typeof verifyCaller>>) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  h.verifyIdToken.mockReset();
+  h.getAdminAuth.mockReset().mockReturnValue({ verifyIdToken: h.verifyIdToken });
   vi.spyOn(console, 'warn').mockImplementation(() => undefined);
   vi.spyOn(console, 'error').mockImplementation(() => undefined);
 });
@@ -94,6 +96,48 @@ describe('verifyCaller', () => {
     h.verifyIdToken.mockRejectedValue(impostor);
     await expect(verifyCaller(req({ authorization: 'Bearer t' }), REQUIRED)).rejects.toThrow(
       'impostor',
+    );
+  });
+
+  it('does not initialize Admin when the Authorization header is missing', async () => {
+    await verifyCaller(req(), REQUIRED);
+    expect(h.getAdminAuth).not.toHaveBeenCalled();
+  });
+
+  it('maps a synchronous FirebaseAppError from the local Admin getter to 500', async () => {
+    const failure = new FirebaseAppError({
+      code: AppErrorCode.INVALID_CREDENTIAL,
+      message: 'getter failed',
+    });
+    h.getAdminAuth.mockImplementation(() => {
+      throw failure;
+    });
+    const error = expectError(await verifyCaller(req({ authorization: 'Bearer t' }), REQUIRED));
+    expect(error.status).toBe(500);
+    expect(await error.json()).toEqual({
+      error: 'Falha ao inicializar Firebase Admin (app/invalid-credential).',
+      code: 'app/invalid-credential',
+    });
+    expect(h.verifyIdToken).not.toHaveBeenCalled();
+  });
+
+  it('rethrows an unexpected error from the local Admin getter unchanged', async () => {
+    const failure = new TypeError('getter failed');
+    h.getAdminAuth.mockImplementation(() => {
+      throw failure;
+    });
+    await expect(verifyCaller(req({ authorization: 'Bearer t' }), REQUIRED)).rejects.toBe(failure);
+  });
+
+  it('keeps the app-specific token rejection log', async () => {
+    const failure = new FirebaseAuthError({
+      code: AuthErrorCode.ID_TOKEN_EXPIRED,
+      message: 'expired token',
+    });
+    h.verifyIdToken.mockRejectedValue(failure);
+    await verifyCaller(req({ authorization: 'Bearer t' }), REQUIRED);
+    expect(console.warn).toHaveBeenCalledExactlyOnceWith(
+      '[mercado-livre/auth] verifyIdToken rejected: auth/id-token-expired',
     );
   });
 });

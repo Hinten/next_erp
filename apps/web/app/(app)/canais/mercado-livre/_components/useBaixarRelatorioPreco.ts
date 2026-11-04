@@ -19,13 +19,11 @@ import {
 } from '@/lib/mercado-livre/client';
 import { describeMercadoLivreFailure } from '@/lib/mercado-livre/errors';
 import { saveBlob } from '@/lib/nfe/saveBlob';
-import { buildEnvioPrecoCsv, envioPrecoCsvFilename } from './envioPrecoCsv';
-
-/**
- * Bound on the loop. A report past this is truncated AND SAYS SO in the trailer
- * — a silent cap is the failure this whole area keeps guarding against.
- */
-const MAX_PAGINAS = 100;
+import {
+  buildEnvioPrecoCsv,
+  envioPrecoCsvFilename,
+  MAX_PAGINAS_RELATORIO_PRECO,
+} from '@/lib/marketplace/contaJobs/envioPrecoCsv';
 
 export interface BaixarRelatorioAlvo {
   jobId: string;
@@ -79,7 +77,7 @@ export function useBaixarRelatorioPreco() {
           depois = p.proximoDepois;
           paginas += 1;
           setPagina(paginas);
-        } while (depois !== null && paginas < MAX_PAGINAS);
+        } while (depois !== null && paginas < MAX_PAGINAS_RELATORIO_PRECO);
 
         if (ultima === null) return;
 

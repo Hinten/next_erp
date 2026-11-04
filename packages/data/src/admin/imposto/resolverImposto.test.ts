@@ -12,6 +12,8 @@ import {
 
 import {
   createImpostoResolver,
+  parseCategoriaUid,
+  regraImpostoCasaComProduto,
   type ImpostoResolverDeps,
   type ResolverBundle,
 } from './resolverImposto';
@@ -240,6 +242,33 @@ describe('pickByOperacao — o fold do escopo da operação (#222)', () => {
 });
 
 describe('trailingSegment — o fold do último segmento (#398)', () => {
+  it('resolves string and legacy object category paths with trailing separators', async () => {
+    for (const categoriaProdutoOuterRef of [
+      'cat-7',
+      'categorias/cat-7/',
+      'documents/categorias/cat-7/',
+      { path: 'documents/categorias/cat-7/' },
+    ]) {
+      const deps = makeDeps({
+        readProduto: vi.fn().mockResolvedValue({ categoriaProdutoOuterRef }),
+        readImpostoCategoriaSubcoll: vi.fn().mockResolvedValue([impostoCategoriaDoc(BLOB_400)]),
+      });
+      const out = await createImpostoResolver(deps).resolve('p1', null);
+      expect(out?.configuracaoICMS?.csosn).toBe('400');
+      expect(deps.readImpostoCategoriaSubcoll).toHaveBeenCalledWith('cat-7');
+    }
+  });
+
+  it('never looks up a category for a missing segment or nonstring object path', async () => {
+    for (const categoriaProdutoOuterRef of ['/', 'documents', { path: 42 }]) {
+      const deps = makeDeps({
+        readProduto: vi.fn().mockResolvedValue({ categoriaProdutoOuterRef }),
+      });
+      expect(await createImpostoResolver(deps).resolve('p1', null)).toBeNull();
+      expect(deps.readImpostoCategoriaSubcoll).not.toHaveBeenCalled();
+    }
+  });
+
   it('PAR: "p1", "produtos/p1" e "documents/produtos/p1" casam o MESMO produto', async () => {
     for (const entrada of ['p1', 'produtos/p1', 'documents/produtos/p1']) {
       const deps = makeDeps({
@@ -292,5 +321,83 @@ describe('o memo por produto', () => {
     const b = await resolver.resolve('p1', { NCM: '22222222' });
     expect(a?.configuracaoICMS?.csosn).toBe('102');
     expect(b?.configuracaoICMS?.csosn).toBe('400');
+  });
+});
+
+describe('regraImpostoCasaComProduto — tier 4 match, exported for callers outside the cascade', () => {
+  // The cascade above runs through this function; these cases pin it directly, so a caller that
+  // asks "does a tax rule cover this produto?" (the Loja Integrada import's tax review) answers
+  // exactly what tier 4 answers.
+  const alvo = { produtoUid: 'p1', categoriaUid: 'cat-7', ncm: '61091000' };
+
+  it('EQUAL pair: a bare id and both path forms name the SAME produto and the SAME categoria', () => {
+    for (const entrada of ['p1', 'produtos/p1', 'documents/produtos/p1']) {
+      expect(regraImpostoCasaComProduto(regraDoc({ produtos: [entrada] }), alvo), entrada).toBe(
+        true,
+      );
+    }
+    for (const entrada of ['cat-7', 'categorias/cat-7', 'documents/categorias/cat-7']) {
+      expect(regraImpostoCasaComProduto(regraDoc({ categorias: [entrada] }), alvo), entrada).toBe(
+        true,
+      );
+    }
+  });
+
+  it('EQUAL pair: a formatted NCM entry names the digits-only NCM', () => {
+    expect(regraImpostoCasaComProduto(regraDoc({ ncms: ['6109.10.00'] }), alvo)).toBe(true);
+  });
+
+  it('⛔ NEAR-MISS: another id, a longer id, or the id in a non-trailing segment names nothing', () => {
+    for (const entrada of ['p2', 'p11', 'xp1', 'p1/x', 'produtos/p1x', 'produtos/xp1']) {
+      expect(regraImpostoCasaComProduto(regraDoc({ produtos: [entrada] }), alvo), entrada).toBe(
+        false,
+      );
+    }
+    for (const entrada of ['cat-70', 'xcat-7', 'cat-7/sub']) {
+      expect(regraImpostoCasaComProduto(regraDoc({ categorias: [entrada] }), alvo), entrada).toBe(
+        false,
+      );
+    }
+    expect(regraImpostoCasaComProduto(regraDoc({ ncms: ['61091001'] }), alvo)).toBe(false);
+  });
+
+  it('⛔ NEAR-MISS: a null categoria or NCM switches that arm OFF — it never matches an empty entry', () => {
+    const semCategoriaNemNcm = { produtoUid: 'p1', categoriaUid: null, ncm: null };
+    expect(
+      regraImpostoCasaComProduto(
+        regraDoc({ categorias: ['cat-7', ''], ncms: ['61091000', ''] }),
+        semCategoriaNemNcm,
+      ),
+    ).toBe(false);
+    // The produto arm still answers on its own.
+    expect(regraImpostoCasaComProduto(regraDoc({ produtos: ['p1'] }), semCategoriaNemNcm)).toBe(
+      true,
+    );
+  });
+
+  it('a rule with three empty arrays names nothing', () => {
+    expect(regraImpostoCasaComProduto(regraDoc(), alvo)).toBe(false);
+  });
+});
+
+describe('parseCategoriaUid — the category the cascade reads off a produto', () => {
+  it('EQUAL pair: a bare id, both path forms, a trailing slash and a legacy { path } give the SAME id', () => {
+    for (const categoriaProdutoOuterRef of [
+      'cat-7',
+      'categorias/cat-7',
+      'documents/categorias/cat-7/',
+      { path: 'documents/categorias/cat-7/' },
+    ]) {
+      expect(parseCategoriaUid({ categoriaProdutoOuterRef })).toBe('cat-7');
+    }
+  });
+
+  it('⛔ NEAR-MISS: no produto, no ref, a ref with no segment or a non-string path ⇒ null', () => {
+    expect(parseCategoriaUid(null)).toBeNull();
+    expect(parseCategoriaUid({})).toBeNull();
+    expect(parseCategoriaUid({ categoriaProdutoOuterRef: null })).toBeNull();
+    for (const categoriaProdutoOuterRef of ['/', { path: 42 }]) {
+      expect(parseCategoriaUid({ categoriaProdutoOuterRef })).toBeNull();
+    }
   });
 });

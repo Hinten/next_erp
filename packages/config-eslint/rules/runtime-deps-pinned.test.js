@@ -49,6 +49,7 @@ const PINNED = ['firebase-admin', 'firebase-functions'];
  * passing over an empty set.
  */
 const KNOWN_ARTIFACT_MANIFESTS = [
+  'apps/amazon/functions/package.json',
   'apps/functions/package.json',
   'apps/loja-integrada/functions/package.json',
   'apps/mercado-livre/functions/package.json',
@@ -72,7 +73,7 @@ const EXACT_SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
  * ⚠️ The `:(glob)` prefix is load-bearing, and so is `**` rather than `*`. Git has
  * TWO pathspec dialects and they disagree about `/`:
  *   - **default** (no magic) matches with wildmatch WITHOUT `WM_PATHNAME`, so a bare
- *     `*` DOES cross `/` — `*functions/package.json` finds all eight.
+ *     `*` DOES cross `/` — `*functions/package.json` finds all nine.
  *   - **`:(glob)`** sets `WM_PATHNAME`, so `*` stops at `/` and only `**` crosses it.
  * Both dialects can express this correctly, but each is a trap in the other's terms:
  * `:(glob)*functions/package.json` matches NOTHING, and the plausible-looking
@@ -86,7 +87,7 @@ const EXACT_SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
  * `:(glob)apps/**` + `/functions/package.json` therefore matches
  * `apps/functions/package.json` AND every `apps/<channel>/functions/package.json`,
  * and nothing else in the repo. If you change this, re-check it against BOTH the
- * eight-manifest anchor test below and a deliberately renamed codebase.
+ * nine-manifest anchor test below and a deliberately renamed codebase.
  */
 function findArtifactManifests() {
   return gitLsFiles(':(glob)apps/**/functions/package.json');

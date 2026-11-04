@@ -24,7 +24,7 @@ import {
 } from '@/lib/shopee/estoque/enviarEstoqueManual';
 import { CODIGO_GUARDA_ENVIO, MOTIVO_ESTOQUE_SHOPEE } from '@/lib/shopee/estoque/errosEstoque';
 import type { LinhaDeFamiliaShopee } from '@/lib/shopee/estoque/planoEstoque';
-import { FakeDb, asDb } from '@/lib/shopee/testing/fakeDb';
+import { type DocData, FakeDb, asDb } from '@/lib/shopee/testing/fakeDb';
 
 type ModuloManual = typeof import('@/lib/shopee/estoque/enviarEstoqueManual');
 
@@ -213,11 +213,42 @@ function comRemetente(resultado: unknown) {
   };
 }
 
+/** The same double as the price route suite: `getAll(...refs, { fieldMask })` with a real mask. */
+class FakeDbComLote extends FakeDb {
+  getAll(...args: unknown[]) {
+    const ultimo = args[args.length - 1];
+    const opcoes =
+      typeof ultimo === 'object' && ultimo !== null && 'fieldMask' in ultimo
+        ? (ultimo as { fieldMask: string[] })
+        : null;
+    const refs = (opcoes === null ? args : args.slice(0, -1)) as {
+      id: string;
+      get: () => Promise<{ exists: boolean; data: () => DocData | undefined }>;
+    }[];
+    return Promise.all(
+      refs.map(async (ref) => {
+        const snap = await ref.get();
+        const dados = snap.data();
+        return {
+          id: ref.id,
+          exists: snap.exists,
+          data: () => {
+            if (!snap.exists || dados === undefined || opcoes === null) return dados;
+            const saida: DocData = {};
+            for (const c of opcoes.fieldMask) if (Object.hasOwn(dados, c)) saida[c] = dados[c];
+            return saida;
+          },
+        };
+      }),
+    );
+  }
+}
+
 let db: FakeDb;
 
 beforeEach(() => {
   vi.clearAllMocks();
-  db = new FakeDb();
+  db = new FakeDbComLote();
   h.db.atual = asDb(db);
   h.verifyIdToken.mockResolvedValue(ESCRITOR);
   h.loadCtx.mockResolvedValue(ctxDouble());
@@ -449,6 +480,31 @@ describe('(4) o envelope — R-12 a R-15', () => {
       ...body.produtosSemEnvio.map((p) => p.produtoId),
     ].sort();
     expect(cobertos).toEqual([PRODUTO, 'prod-2']);
+  });
+
+  it('⚠️ (MUT-1) só o FILHO pedido ⇒ a linha nomeia a âncora COM o nome da âncora, nunca null', async () => {
+    semearProdutoELink(db);
+    db.seed('produtos/prod-filho', { nome: 'Camiseta P', paiId: PRODUTO });
+    h.enviar.mockImplementation(
+      comRemetente({
+        outcome: 'enviado',
+        motivo: null,
+        codigo: null,
+        modelos: [],
+        quantidadeEnviada: 7,
+        chamadasShopee: 1,
+        pausadoAte: null,
+      }),
+    );
+
+    const res = await POST(req(corpoValido({ produtoIds: ['prod-filho'] }), AUTORIZADO));
+    const body = (await res.json()) as EnvioEstoqueResponse;
+
+    // A null here is the web dialog's 'Produto desconhecido' for a push that worked.
+    expect(body.listings.map((l) => [l.produtoId, l.produtoNome])).toEqual([
+      [PRODUTO, `Camiseta ${PRODUTO}`],
+    ]);
+    expect(body.produtosSemEnvio).toEqual([]);
   });
 });
 

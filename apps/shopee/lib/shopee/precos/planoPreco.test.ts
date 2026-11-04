@@ -166,6 +166,112 @@ describe('montarItensDePreco — rung 0: só os vínculos DESTA conta', () => {
 });
 
 /* -------------------------------------------------------------------------- */
+/*          rung 0 — o RASCUNHO não é anúncio (#1911 D3): nada a precificar     */
+/* -------------------------------------------------------------------------- */
+
+const LINK_RASCUNHO = 'link-0-rascunho';
+
+/**
+ * A draft as the discovery projects it: this conta, its doc id, and `item_id`
+ * `null` or ABSENT (the projection copies only present keys). The check inside
+ * makes the fixture prove its own claim.
+ */
+function rascunho(semItemId: 'nulo' | 'ausente', extra: LinkPrecoCru = {}): LinkPrecoCru {
+  const base: LinkPrecoCru = {
+    contaProdutoShopeeOuterRef: `integracoes/${INTEGRACAO}`,
+    linkDocId: LINK_RASCUNHO,
+    ...(semItemId === 'nulo' ? { item_id: null } : {}),
+    ...extra,
+  };
+  expect('item_id' in base).toBe(semItemId === 'nulo');
+  return base;
+}
+
+describe('montarItensDePreco — rung 0: o RASCUNHO não é anúncio (#1911 D3)', () => {
+  it.each(['nulo', 'ausente'] as const)(
+    'PAR — rascunho (`item_id` %s) AO LADO de um anúncio vivo ⇒ só o vivo é planejado, e o rascunho não deixa linha',
+    (semItemId) => {
+      const plano = montarItensDePreco(
+        familia({ links: [rascunho(semItemId), link()] }),
+        INTEGRACAO,
+      );
+
+      expect(plano.itens).toEqual([
+        { produtoId: ANCORA, linkDocId: LINK_A, itemId: ITEM_A, modelos: [] },
+      ]);
+      // Before #1911: a `sem-item-id` line ("reimporte o anúncio") for a listing
+      // that never existed.
+      expect(plano.pulos).toEqual([]);
+    },
+  );
+
+  it.each(['nulo', 'ausente'] as const)(
+    'uma família SÓ com rascunho (`item_id` %s) responde UM `sem-link`, nunca `sem-item-id`',
+    (semItemId) => {
+      const plano = montarItensDePreco(familia({ links: [rascunho(semItemId)] }), INTEGRACAO);
+
+      expect(plano.itens).toEqual([]);
+      expect(plano.pulos).toEqual([
+        {
+          produtoId: ANCORA,
+          linkDocId: null,
+          itemId: null,
+          motivo: MOTIVO_PRECO_SHOPEE.semLink,
+          modelos: [],
+        },
+      ]);
+    },
+  );
+
+  it('um rascunho com vínculos de MODELO apontando para ele não é planejado, e o vivo leva só os SEUS modelos', () => {
+    const plano = montarItensDePreco(
+      familia({
+        links: [rascunho('nulo'), link()],
+        children: [
+          filho('filho-r', [varLink(LINK_RASCUNHO, MODELO + 1, 'var-r')]),
+          filho('filho-a', [varLink(LINK_A, MODELO, 'var-a')]),
+        ],
+      }),
+      INTEGRACAO,
+    );
+
+    expect(plano.pulos).toEqual([]);
+    expect(plano.itens.map((i) => [i.linkDocId, i.modelos.map((m) => m.modelId)])).toEqual([
+      [LINK_A, [MODELO]],
+    ]);
+  });
+
+  it('QUASE-IGUAL — `kitNativo` falso, nulo ou o texto "true" NÃO tiram o rascunho da classe (só `true` tira)', () => {
+    for (const kitNativo of [false, null, 'true']) {
+      const plano = montarItensDePreco(
+        familia({ links: [rascunho('nulo', { kitNativo }), link()] }),
+        INTEGRACAO,
+      );
+      expect(plano.itens.map((i) => i.linkDocId)).toEqual([LINK_A]);
+      expect(plano.pulos).toEqual([]);
+    }
+  });
+
+  it('⚠️ NEAR-MISS — `kitNativo: true` sem `item_id` é RESÍDUO de kit, não rascunho: continua `sem-item-id`, com o vínculo nomeado', () => {
+    const plano = montarItensDePreco(
+      familia({ links: [rascunho('nulo', { kitNativo: true })] }),
+      INTEGRACAO,
+    );
+
+    expect(plano.itens).toEqual([]);
+    expect(plano.pulos).toEqual([
+      {
+        produtoId: ANCORA,
+        linkDocId: LINK_RASCUNHO,
+        itemId: null,
+        motivo: MOTIVO_PRECO_SHOPEE.semItemId,
+        modelos: [],
+      },
+    ]);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
 /*                            rung 2 — the item id                             */
 /* -------------------------------------------------------------------------- */
 
@@ -176,8 +282,10 @@ describe('montarItensDePreco — rung 2: `sem-item-id`', () => {
     expect(typeof item?.itemId).toBe('number');
   });
 
-  it('QUASE-IGUAL — `0`, negativo, fracionário, TEXTO numérico, `null` e ausente são todos `sem-item-id`', () => {
-    for (const bruto of [0, -1, 1.5, String(ITEM_A), null, undefined, Number.NaN]) {
+  it('QUASE-IGUAL — `0`, negativo, fracionário, TEXTO numérico e NaN são todos `sem-item-id` (um id CORROMPIDO não é rascunho)', () => {
+    // ⚠️ `null` and ABSENT left this list with #1911: that is a DRAFT, dropped
+    // at rung 0 — see the draft block below.
+    for (const bruto of [0, -1, 1.5, String(ITEM_A), Number.NaN]) {
       const plano = montarItensDePreco(familia({ links: [link({ item_id: bruto })] }), INTEGRACAO);
       expect(plano.itens).toEqual([]);
       expect(plano.pulos).toEqual([

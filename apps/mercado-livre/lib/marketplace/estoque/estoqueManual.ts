@@ -218,6 +218,8 @@ export const MENSAGEM_POR_MOTIVO: Record<string, string> = {
   'sem-anuncio': 'Este produto não tem anúncio nesta conta.',
   'sem-id-externo': 'O anúncio ainda não foi publicado no Mercado Livre.',
   'aguardando-migracao': 'Anúncio em migração para User Products — envio suspenso.',
+  'membro-com-falha-estoque':
+    'O envio de estoque desta variação está bloqueado. Corrija a causa e use Reverificar anúncio ou reenviar com erro.',
   'anuncio-em-erro':
     'Pulado: o anúncio está marcado com erro. O Mercado Livre confirmou que o anúncio está ' +
     'saudável, então foi o envio anterior que ele recusou. Marque "Reenviar anúncios com erro" ' +
@@ -302,6 +304,7 @@ export const MOTIVO_POR_SKIP: Record<SendSkipReason, string> = {
   'sem-item-id': 'sem-id-externo',
   'aguardando-migracao': 'aguardando-migracao',
   'anuncio-em-erro': 'anuncio-em-erro',
+  'membro-com-falha-estoque': 'membro-com-falha-estoque',
   'status-nao-enviavel': 'status-nao-enviavel',
   'kit-virtual': 'kit-virtual',
   'conta-fora-do-produto': 'conta-fora-do-produto',
@@ -463,6 +466,7 @@ function aplicarMembros(
       if (varLink.produtoMercadoLivreOuterRef !== parentRef) continue;
       const lido = typeof varLink.itemId === 'string' ? porItemId.get(varLink.itemId) : undefined;
       if (!lido) continue;
+      if (lido.estado !== undefined) varLink.estado = lido.estado;
       varLink.status = lido.status;
       varLink.sub_status = lido.subStatus ?? [];
     }
@@ -577,10 +581,23 @@ export async function enviarEstoqueManual(
     let orcamento = manualRearmMaxGets();
     for (const row of rows) {
       for (const link of row.links) {
-        if (!estaLatched(link)) continue;
         const linkDocId = typeof link.linkDocId === 'string' ? link.linkDocId : null;
         const itemId = typeof link.id === 'string' && link.id !== '' ? link.id : null;
         if (linkDocId == null || itemId == null) continue;
+        const parentRef = toOuterRef(
+          produtoMercadoLivreLinkCollection.docPath({ produtoId: row.anchorId }, linkDocId),
+        );
+        if (
+          !estaLatched(link) &&
+          !row.children.some((child) =>
+            child.varLinks.some(
+              (v) =>
+                v.estado === ESTADO_PUBLICACAO_ML.erro &&
+                v.produtoMercadoLivreOuterRef === parentRef,
+            ),
+          )
+        )
+          continue;
         if (orcamento <= 0) {
           rearmePorLink.set(linkDocId, { executado: false, estado: null, enviavel: false });
           continue;

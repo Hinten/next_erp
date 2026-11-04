@@ -7,7 +7,7 @@
  * (`lib/whatsapp/client.ts`): `null` while logged out, so the panel can disable
  * its buttons, and `() => user.getIdToken()` so a refreshed ID token propagates.
  *
- * Four calls, one per route (`apps/loja-integrada/app/api/marketplace/loja-integrada/conta/[id]/…`):
+ * Eight calls, one per route (`apps/loja-integrada/app/api/marketplace/loja-integrada/…`):
  *
  * | call | route | answer |
  * | --- | --- | --- |
@@ -15,10 +15,44 @@
  * | `salvarCredencial(id, corpo)` | `PUT …/conta/[id]/credencial` | `respostaCredencialLojaIntegradaSchema` |
  * | `renovarValidade(id, corpo)` | `PUT …/conta/[id]/credencial/validade` | `respostaCredencialLojaIntegradaSchema` |
  * | `removerCredencial(id)` | `DELETE …/conta/[id]/credencial` | `respostaRemocaoCredencialLiSchema` |
+ * | `grades(id, opcoes)` | `GET …/conta/[id]/grades` | `respostaGradesLiSchema` |
+ * | `grade(id, gradeId, opcoes)` | `GET …/conta/[id]/grades/[gradeId]` | `respostaGradeLiSchema` |
+ * | `rotearEtiqueta(pedidoId, corpo)` | `PUT …/pedidos/[pedidoId]/rota-etiqueta` | `respostaRotaEtiquetaLiSchema` |
+ * | `conferirPagamento(pedidoId, opcoes)` | `GET …/pedidos/[pedidoId]/pagamento` | `respostaConferenciaPagamentoLiSchema` |
  *
  * Every answer — the 2xx bodies AND the error envelope — is read against the ONE
- * shared contract in `@delfrance/schemas` (`contaLojaIntegrada.ts`), the same
- * module the routes build their answers with. Nothing here is cast.
+ * shared contract in `@delfrance/schemas` (`contaLojaIntegrada.ts`,
+ * `catalogoLojaIntegrada.ts`, `rotaEtiquetaLojaIntegrada.ts`,
+ * `conferenciaPagamentoLojaIntegrada.ts`), the same modules the routes build
+ * their answers with. Nothing here is cast.
+ *
+ * ## The two catalogue reads (master plan step 10)
+ *
+ * The variation linker's grade list and one grade's options. Both are READS
+ * behind the backend's switch and its 15-minute cache, each bounded by its own
+ * deadline ({@link PRAZO_CATALOGO_LI_MS}, {@link PRAZO_GRADE_LI_MS}) and by the
+ * caller's signal (a cancelled query). `atualizar: true` asks the backend for a
+ * fresh read (`?atualizar=1`). A backend older than these routes answers 404
+ * without the envelope — an HTTP error with no `code`, which the linker reads as
+ * "not offered yet".
+ *
+ * ## The two pedidos routes (master plan step 15)
+ *
+ * Neither reaches Loja Integrada from here: the browser only ever talks to the
+ * deployed `apps/loja-integrada` backend, which decides whether anything goes
+ * further. Both carry a DEADLINE, unlike the conta routes:
+ *
+ * - `rotearEtiqueta` — {@link PRAZO_ROTA_ETIQUETA_LI_MS}. The route makes no
+ *   call to Loja Integrada (ERP reads plus one guarded pedido write), and it is
+ *   idempotent: a re-click after a timeout answers `ja-roteado`, so giving up
+ *   early can never route a pedido twice.
+ * - `conferirPagamento` — {@link PRAZO_CONFERENCIA_PAGAMENTO_LI_MS}, a read: a
+ *   timeout is "não verificável", the gates' own answer for a backend that
+ *   cannot say. The caller's `sinal` is honoured too.
+ *
+ * A deadline that fires is a {@link LojaIntegradaClientTempoEsgotadoError} — a
+ * SUBCLASS of the network error, so a catch written for the network still
+ * catches it. An abort the CALLER asked for comes back as the abort itself.
  *
  * ## The Personal Token
  *
@@ -46,13 +80,22 @@ import { useMemo } from 'react';
 import type { z } from 'zod';
 import {
   type CorpoRenovarValidadeLi,
+  type CorpoRotaEtiquetaLi,
   type CorpoSalvarCredencialLi,
+  type RespostaConferenciaPagamentoLi,
   type RespostaCredencialLojaIntegrada,
+  type RespostaGradeLi,
+  type RespostaGradesLi,
   type RespostaRemocaoCredencialLi,
+  type RespostaRotaEtiquetaLi,
   type StatusContaLojaIntegrada,
   erroContaLojaIntegradaSchema,
+  respostaConferenciaPagamentoLiSchema,
   respostaCredencialLojaIntegradaSchema,
+  respostaGradeLiSchema,
+  respostaGradesLiSchema,
   respostaRemocaoCredencialLiSchema,
+  respostaRotaEtiquetaLiSchema,
   statusContaLojaIntegradaSchema,
 } from '@delfrance/schemas';
 import { lerRespostaJson, resumirCampos } from '@delfrance/core/wire';
@@ -64,6 +107,41 @@ export const DEFAULT_LOJA_INTEGRADA_URL = 'http://localhost:3010';
 
 /** Every conta route hangs off this prefix (`apps/loja-integrada/proxy.ts` allows `/api/marketplace/*`). */
 const CONTA_PATH = '/api/marketplace/loja-integrada/conta';
+
+/** The pedidos route family (master plan step 15): label routing and the paid re-check. */
+const PEDIDOS_PATH = '/api/marketplace/loja-integrada/pedidos';
+
+/**
+ * How long the label routing call may take, in ms. The route reads the ERP and
+ * writes the pedido once (up to three attempts on a lost race), and calls
+ * nothing outside — so this only has to cover a cold start of the
+ * scale-to-zero backend plus the CORS preflight. A timeout is safe to retry: the
+ * route is idempotent, and a second call on a routed pedido answers
+ * `ja-roteado` without writing.
+ */
+export const PRAZO_ROTA_ETIQUETA_LI_MS = 30_000;
+
+/**
+ * How long the paid re-check may take, in ms: a cold start, the backend's 2 s
+ * pacer before the one Loja Integrada read, that read's own 20 s deadline, and
+ * margin. A READ: when it fires, the gates read the outcome as "não
+ * verificável", never as a verdict.
+ */
+export const PRAZO_CONFERENCIA_PAGAMENTO_LI_MS = 45_000;
+
+/**
+ * How long the grade LIST may take, in ms: the route's own worst case — every
+ * page it may read (`MAX_PAGINAS_CATALOGO_LI`), each the 2 s pacer plus its 20 s
+ * deadline, plus its margin: 250 s — and 10 s of slack for a cold start. A list
+ * normally answers in a few seconds (one page, or the backend's cached copy).
+ */
+export const PRAZO_CATALOGO_LI_MS = 260_000;
+
+/**
+ * How long ONE grade's options may take, in ms: one paced call (2 s), its 20 s
+ * deadline, and 30 s of margin for a cold start.
+ */
+export const PRAZO_GRADE_LI_MS = 60_000;
 
 /** Optional detail an error envelope may carry beyond `error` and `code`. */
 export interface DetalhesErroLojaIntegrada {
@@ -139,9 +217,55 @@ export class LojaIntegradaClientNetworkError extends Error {
   }
 }
 
+/**
+ * A pedidos route did not answer within its deadline
+ * ({@link PRAZO_ROTA_ETIQUETA_LI_MS}, {@link PRAZO_CONFERENCIA_PAGAMENTO_LI_MS}).
+ *
+ * ⚠️ A SUBCLASS of {@link LojaIntegradaClientNetworkError}: as far as a caller
+ * that only knows "the network failed" is concerned, it did. Narrow it FIRST
+ * where the two need different copy. The message is fixed, like its parent's.
+ */
+export class LojaIntegradaClientTempoEsgotadoError extends LojaIntegradaClientNetworkError {
+  constructor(cause?: unknown) {
+    super(cause);
+    this.message = 'O backend da Loja Integrada não respondeu a tempo.';
+    this.name = 'LojaIntegradaClientTempoEsgotadoError';
+  }
+}
+
+/** Options of the paid re-check call. */
+export interface OpcoesConferenciaPagamentoLi {
+  /**
+   * Aborts the call (a dialog the operator closed). The abort comes back as
+   * the abort itself — the caller already knows it asked for it.
+   */
+  readonly sinal?: AbortSignal;
+}
+
+/** Options of the two catalogue reads. */
+export interface OpcoesCatalogoLi {
+  /**
+   * Ask the backend for a FRESH read (`?atualizar=1`): its cached copy is
+   * evicted first. The operator's "Atualizar", never a background refresh.
+   */
+  readonly atualizar?: boolean;
+  /** Aborts the call (a cancelled query); the abort comes back as itself. */
+  readonly sinal?: AbortSignal;
+}
+
 export interface LojaIntegradaClient {
   /** The conta's credential status (`PERM.integracao.read`). Never the token. */
   conta(integracaoId: string): Promise<StatusContaLojaIntegrada>;
+  /**
+   * The store's grades, its own and the platform's (`PERM.integracao.read`).
+   * Bounded by {@link PRAZO_CATALOGO_LI_MS}.
+   */
+  grades(integracaoId: string, opcoes?: OpcoesCatalogoLi): Promise<RespostaGradesLi>;
+  /**
+   * One grade and the options it offers (`PERM.integracao.read`). Bounded by
+   * {@link PRAZO_GRADE_LI_MS}.
+   */
+  grade(integracaoId: string, gradeId: number, opcoes?: OpcoesCatalogoLi): Promise<RespostaGradeLi>;
   /**
    * Validate a Personal Token against Loja Integrada and store it
    * (`PERM.integracao.write`). The body is sent exactly as given, rebuilt by
@@ -158,6 +282,24 @@ export interface LojaIntegradaClient {
   ): Promise<RespostaCredencialLojaIntegrada>;
   /** Remove the stored token — idempotent and unconditional (`PERM.integracao.write`). */
   removerCredencial(integracaoId: string): Promise<RespostaRemocaoCredencialLi>;
+  /**
+   * Route a pedido still on its conta's Loja Integrada freight doc to its label
+   * target (`PERM.frete.write`): `escolha` is the operator's pick, `null` lets the
+   * stored override or the conta's `mapa` decide. A refusal is a 200
+   * (`tipo: 'recusado'`), never an error. Bounded by
+   * {@link PRAZO_ROTA_ETIQUETA_LI_MS}.
+   */
+  rotearEtiqueta(pedidoId: string, corpo: CorpoRotaEtiquetaLi): Promise<RespostaRotaEtiquetaLi>;
+  /**
+   * The paid re-check of one pedido (`PERM.pedido.read`): the order's current
+   * Loja Integrada situação as a verdict, the ERP's contested mirror when it
+   * cannot be read, or `aplicavel: false` for a pedido that is not an imported
+   * order. Bounded by {@link PRAZO_CONFERENCIA_PAGAMENTO_LI_MS}.
+   */
+  conferirPagamento(
+    pedidoId: string,
+    opcoes?: OpcoesConferenciaPagamentoLi,
+  ): Promise<RespostaConferenciaPagamentoLi>;
 }
 
 /**
@@ -193,17 +335,74 @@ function logarCorpoNaoJson(path: string, status: number, corpo: string): void {
   console.error(`[loja-integrada] resposta não-JSON em ${path} (HTTP ${String(status)})`, corpo);
 }
 
+/** Who aborted a bounded call, read when a transport step rejects. */
+interface Interrupcao {
+  /** Our own deadline fired. */
+  readonly estourou: () => boolean;
+  /** The caller's signal aborted. */
+  readonly cancelada: () => boolean;
+}
+
+const SEM_INTERRUPCAO: Interrupcao = { estourou: () => false, cancelada: () => false };
+
 /**
  * Read the body, turning a socket that drops MID-BODY into a network error: a
  * bare `TypeError` there would sail past every `instanceof` in the panel.
+ *
+ * A bounded call's abort rejects the body read too, with the abort itself (an
+ * `AbortError`, not a `TypeError`): our deadline becomes the
+ * {@link LojaIntegradaClientTempoEsgotadoError} the caller narrows on, and the
+ * caller's own abort comes back untouched.
  */
-async function lerCorpo(res: Response): Promise<string> {
+async function lerCorpo(res: Response, interrupcao: Interrupcao): Promise<string> {
   try {
     return await res.text();
   } catch (err) {
+    if (interrupcao.estourou()) throw new LojaIntegradaClientTempoEsgotadoError(err);
+    if (interrupcao.cancelada()) throw err;
     if (err instanceof TypeError) throw new LojaIntegradaClientNetworkError(err);
     throw err;
   }
+}
+
+/**
+ * The deadline and the caller's signal folded into ONE signal for `fetch`, plus
+ * who fired it. `null` when the call is unbounded (the conta routes), so those
+ * keep sending no signal at all. `encerrar()` must run however the call ends:
+ * it clears the timer and unhooks the caller's signal.
+ */
+function controlarChamada(
+  prazoMs: number | undefined,
+  sinal: AbortSignal | undefined,
+): {
+  readonly sinal: AbortSignal;
+  readonly interrupcao: Interrupcao;
+  readonly encerrar: () => void;
+} | null {
+  if (prazoMs === undefined && sinal === undefined) return null;
+  const controle = new AbortController();
+  let estourou = false;
+  const repassar = () => controle.abort(sinal?.reason);
+  if (sinal?.aborted === true) repassar();
+  else sinal?.addEventListener('abort', repassar, { once: true });
+  const prazo =
+    prazoMs === undefined
+      ? undefined
+      : setTimeout(() => {
+          estourou = true;
+          controle.abort();
+        }, prazoMs);
+  return {
+    sinal: controle.signal,
+    interrupcao: {
+      estourou: () => estourou,
+      cancelada: () => !estourou && sinal?.aborted === true,
+    },
+    encerrar: () => {
+      if (prazo !== undefined) clearTimeout(prazo);
+      sinal?.removeEventListener('abort', repassar);
+    },
+  };
 }
 
 /** A non-2xx body, read as the shared error envelope. */
@@ -284,37 +483,74 @@ export function createLojaIntegradaClient(config: {
     path: string,
     schema: S,
     corpo?: Readonly<Record<string, unknown>>,
+    limites?: { readonly prazoMs?: number; readonly sinal?: AbortSignal },
   ): Promise<z.infer<S>> {
     const idToken = await config.getAuthToken();
     const levouToken = corpo !== undefined && 'token' in corpo;
-    let res: Response;
+    // Started AFTER the token, so a slow session refresh never eats the
+    // route's budget — and never turns into a "tempo esgotado".
+    const controle = controlarChamada(limites?.prazoMs, limites?.sinal);
+    const interrupcao = controle?.interrupcao ?? SEM_INTERRUPCAO;
     try {
-      res = await doFetch(`${baseUrl}${path}`, {
-        method,
-        headers: {
-          Authorization: `Bearer ${idToken}`,
-          Accept: 'application/json',
-          ...(corpo === undefined ? {} : { 'Content-Type': 'application/json' }),
-        },
-        ...(corpo === undefined ? {} : { body: JSON.stringify(corpo) }),
-      });
-    } catch (err) {
-      // `cause` keeps the transport's own error for a debugger; the message is
-      // fixed (see the class).
-      throw new LojaIntegradaClientNetworkError(err);
-    }
+      let res: Response;
+      try {
+        res = await doFetch(`${baseUrl}${path}`, {
+          method,
+          headers: {
+            Authorization: `Bearer ${idToken}`,
+            Accept: 'application/json',
+            ...(corpo === undefined ? {} : { 'Content-Type': 'application/json' }),
+          },
+          ...(corpo === undefined ? {} : { body: JSON.stringify(corpo) }),
+          ...(controle === null ? {} : { signal: controle.sinal }),
+        });
+      } catch (err) {
+        if (interrupcao.estourou()) throw new LojaIntegradaClientTempoEsgotadoError(err);
+        if (interrupcao.cancelada()) throw err;
+        // `cause` keeps the transport's own error for a debugger; the message is
+        // fixed (see the class).
+        throw new LojaIntegradaClientNetworkError(err);
+      }
 
-    const texto = await lerCorpo(res);
-    if (!res.ok) throw erroHttp(path, res.status, texto, levouToken);
-    return lerCorpoJson(path, res.status, texto, schema, levouToken);
+      const texto = await lerCorpo(res, interrupcao);
+      if (!res.ok) throw erroHttp(path, res.status, texto, levouToken);
+      return lerCorpoJson(path, res.status, texto, schema, levouToken);
+    } finally {
+      controle?.encerrar();
+    }
   }
 
   const caminhoDaConta = (integracaoId: string) =>
     `${CONTA_PATH}/${encodeURIComponent(integracaoId)}`;
+  const caminhoDoPedido = (pedidoId: string) => `${PEDIDOS_PATH}/${encodeURIComponent(pedidoId)}`;
+  /** The fresh-read flag, spelled exactly as the route reads it. */
+  const consultaDoCatalogo = (opcoes: OpcoesCatalogoLi | undefined) =>
+    opcoes?.atualizar === true ? '?atualizar=1' : '';
+  const limitesDoCatalogo = (prazoMs: number, opcoes: OpcoesCatalogoLi | undefined) => ({
+    prazoMs,
+    ...(opcoes?.sinal === undefined ? {} : { sinal: opcoes.sinal }),
+  });
 
   return {
     conta: (integracaoId) =>
       call('GET', caminhoDaConta(integracaoId), statusContaLojaIntegradaSchema),
+    grades: (integracaoId, opcoes) =>
+      call(
+        'GET',
+        `${caminhoDaConta(integracaoId)}/grades${consultaDoCatalogo(opcoes)}`,
+        respostaGradesLiSchema,
+        undefined,
+        limitesDoCatalogo(PRAZO_CATALOGO_LI_MS, opcoes),
+      ),
+    grade: (integracaoId, gradeId, opcoes) =>
+      call(
+        'GET',
+        `${caminhoDaConta(integracaoId)}/grades/${encodeURIComponent(String(gradeId))}` +
+          consultaDoCatalogo(opcoes),
+        respostaGradeLiSchema,
+        undefined,
+        limitesDoCatalogo(PRAZO_GRADE_LI_MS, opcoes),
+      ),
     // Both bodies are rebuilt BY NAME: the routes' schemas are strict (an
     // unknown key is a 400), so a caller object carrying one more field must
     // not reach them.
@@ -337,6 +573,27 @@ export function createLojaIntegradaClient(config: {
         'DELETE',
         `${caminhoDaConta(integracaoId)}/credencial`,
         respostaRemocaoCredencialLiSchema,
+      ),
+    // Rebuilt BY NAME for the same reason as the credential bodies: the
+    // route's body schema is strict.
+    rotearEtiqueta: (pedidoId, corpo) =>
+      call(
+        'PUT',
+        `${caminhoDoPedido(pedidoId)}/rota-etiqueta`,
+        respostaRotaEtiquetaLiSchema,
+        { escolha: corpo.escolha },
+        { prazoMs: PRAZO_ROTA_ETIQUETA_LI_MS },
+      ),
+    conferirPagamento: (pedidoId, opcoes) =>
+      call(
+        'GET',
+        `${caminhoDoPedido(pedidoId)}/pagamento`,
+        respostaConferenciaPagamentoLiSchema,
+        undefined,
+        {
+          prazoMs: PRAZO_CONFERENCIA_PAGAMENTO_LI_MS,
+          ...(opcoes?.sinal === undefined ? {} : { sinal: opcoes.sinal }),
+        },
       ),
   };
 }

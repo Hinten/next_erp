@@ -1,13 +1,20 @@
+import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import {
   FreightNetworkError,
   FreightReauthRequiredError,
 } from '@delfrance/integrations-freight-br/http-client';
 
-import { INTEGRACAO_FRETE } from '@delfrance/schemas';
+import {
+  CODIGO_SITUACAO_LI,
+  INTEGRACAO_FRETE,
+  type RespostaConferenciaPagamentoLi,
+} from '@delfrance/schemas';
+
+import { lojaIntegradaClientFalso } from '@/lib/testing/lojaIntegradaClientFalso';
 
 import { melhorEnviosProvider } from './melhorEnvios';
-import type { ComprarEtiquetaOutcome, EtiquetaProviderInput } from '../types';
+import type { ComprarEtiquetaInput, ComprarEtiquetaOutcome, EtiquetaProviderInput } from '../types';
 
 /* -------------------------------- fixtures -------------------------------- */
 
@@ -18,6 +25,7 @@ function makeUi(over: Partial<EtiquetaProviderInput['ui']> = {}): EtiquetaProvid
     openUrl: vi.fn(),
     comprarEtiqueta: vi.fn(async (): Promise<ComprarEtiquetaOutcome> => ({ status: 'cancelled' })),
     escolherEnvio: vi.fn(),
+    confirmarCiente: vi.fn(async () => true),
     ...over,
   };
 }
@@ -28,12 +36,15 @@ function makeInput(over: {
   freightClient?: unknown;
   ui?: EtiquetaProviderInput['ui'];
   intFrete?: EtiquetaProviderInput['intFrete'];
+  pedido?: EtiquetaProviderInput['pedido'];
+  pedidoId?: string;
+  lojaIntegradaClient?: EtiquetaProviderInput['deps']['lojaIntegradaClient'];
 }): EtiquetaProviderInput {
   const frete = { printLabelId: null, externalOptionId: null, ...over.frete };
   return {
     db: {} as never,
-    pedido: {} as never,
-    pedidoId: 'p1',
+    pedido: over.pedido ?? ({} as never),
+    pedidoId: over.pedidoId ?? 'p1',
     frete: frete as never,
     intFrete: over.intFrete ?? {
       fonte: 'doc',
@@ -47,6 +58,7 @@ function makeInput(over: {
       nfeClient: null,
       mercadoLivreClient: null,
       shopeeClient: null,
+      lojaIntegradaClient: over.lojaIntegradaClient ?? lojaIntegradaClientFalso(),
       printJob: vi.fn(),
     },
     ui: over.ui ?? makeUi(),
@@ -190,5 +202,120 @@ describe('melhorEnviosProvider', () => {
     );
     expect(out).toEqual({ status: 'error', message: 'Integração de frete não encontrada.' });
     expect(ui.notify).not.toHaveBeenCalled();
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*            The Loja Integrada paid re-check's soft gate (step 15)          */
+/* -------------------------------------------------------------------------- */
+
+describe('melhorEnviosProvider — the Loja Integrada soft gate', () => {
+  const ID_LI = createHash('sha256').update('lojaIntegradaCONTA1-165').digest('hex');
+  const PEDIDO_LI = {
+    numero: '165',
+    integracaoPedidoOuterRef: 'documents/integracao/CONTA1',
+  } as never;
+  const resposta = (veredito: 'pago' | 'nao-pago'): RespostaConferenciaPagamentoLi => ({
+    aplicavel: true,
+    fonte: 'loja',
+    veredito,
+    codigo:
+      veredito === 'pago' ? CODIGO_SITUACAO_LI.pedidoPago : CODIGO_SITUACAO_LI.pedidoCancelado,
+    motivoContestacao: null,
+    conferidoEmMs: 0,
+    correlationId: null,
+  });
+
+  function cenario(
+    frete: Partial<{ printLabelId: string | null; externalOptionId: string | null }>,
+    veredito: 'pago' | 'nao-pago',
+    ciente: boolean,
+  ) {
+    const conferirPagamento = vi.fn(async () => resposta(veredito));
+    const confirmarCiente = vi.fn(async (_p: { titulo: string; mensagem: string }) => ciente);
+    const imprimir = vi.fn(async () => ({ url: 'https://me/label.pdf' }));
+    const comprarEtiqueta = vi.fn(
+      async (_i: ComprarEtiquetaInput): Promise<ComprarEtiquetaOutcome> => ({
+        status: 'cancelled',
+      }),
+    );
+    const ui = makeUi({ confirmarCiente, comprarEtiqueta });
+    const input = makeInput({
+      frete,
+      freightClient: { imprimir },
+      ui,
+      pedido: PEDIDO_LI,
+      pedidoId: ID_LI,
+      lojaIntegradaClient: lojaIntegradaClientFalso({ conferirPagamento }),
+    });
+    return { input, ui, conferirPagamento, confirmarCiente, imprimir, comprarEtiqueta };
+  }
+
+  it('a REPRINT with `nao-pago` + Cancelar ⇒ skipped, and the label URL is never fetched', async () => {
+    const s = cenario({ printLabelId: 'lbl-1' }, 'nao-pago', false);
+
+    await expect(melhorEnviosProvider.emitirOuImprimir(s.input)).resolves.toEqual({
+      status: 'skipped',
+    });
+
+    expect(s.confirmarCiente).toHaveBeenCalledTimes(1);
+    expect(s.confirmarCiente.mock.calls[0]?.[0].mensagem).toContain(
+      'Reimprimir a etiqueta deste pedido',
+    );
+    expect(s.imprimir).not.toHaveBeenCalled();
+    expect(s.ui.openUrl).not.toHaveBeenCalled();
+  });
+
+  it('a REPRINT with `nao-pago` + "Estou ciente do risco" ⇒ opened', async () => {
+    const s = cenario({ printLabelId: 'lbl-1' }, 'nao-pago', true);
+
+    await expect(melhorEnviosProvider.emitirOuImprimir(s.input)).resolves.toEqual({
+      status: 'opened',
+    });
+
+    expect(s.imprimir).toHaveBeenCalledOnce();
+  });
+
+  it('a REPRINT with `pago` ⇒ no dialog, opened', async () => {
+    const s = cenario({ printLabelId: 'lbl-1' }, 'pago', false);
+
+    await expect(melhorEnviosProvider.emitirOuImprimir(s.input)).resolves.toEqual({
+      status: 'opened',
+    });
+
+    expect(s.conferirPagamento).toHaveBeenCalledOnce();
+    expect(s.confirmarCiente).not.toHaveBeenCalled();
+  });
+
+  it('⭐ the BUY branch never runs the soft gate — the modal owns its own check', async () => {
+    const s = cenario({ externalOptionId: '1' }, 'nao-pago', false);
+
+    await melhorEnviosProvider.emitirOuImprimir(s.input);
+
+    expect(s.conferirPagamento).not.toHaveBeenCalled();
+    expect(s.confirmarCiente).not.toHaveBeenCalled();
+    expect(s.comprarEtiqueta).toHaveBeenCalledOnce();
+  });
+
+  it("the BUY branch forwards the chain's carried verdict to the modal", async () => {
+    const s = cenario({ externalOptionId: '1' }, 'pago', false);
+    const conferenciaLi = {
+      tipo: 'resposta' as const,
+      pedidoId: ID_LI,
+      resposta: resposta('pago'),
+      recebidoEm: 7,
+    };
+
+    await melhorEnviosProvider.emitirOuImprimir({ ...s.input, conferenciaLi });
+
+    expect(s.comprarEtiqueta).toHaveBeenCalledWith(expect.objectContaining({ conferenciaLi }));
+  });
+
+  it('⚠️ NEAR-MISS: with nothing carried, the buy input carries no verdict at all', async () => {
+    const s = cenario({ externalOptionId: '1' }, 'pago', false);
+
+    await melhorEnviosProvider.emitirOuImprimir(s.input);
+
+    expect(s.comprarEtiqueta.mock.calls[0]?.[0]).not.toHaveProperty('conferenciaLi');
   });
 });

@@ -46,6 +46,7 @@ export {
   NFeDanfeUnavailableError,
   NFeHttpError,
   NFeInutilizacaoAbortedError,
+  NFeInutilizacaoNaoSeAplicaError,
   NFeNetworkError,
   NFePedidoNotFoundError,
   NFeRejectedError,

@@ -6,7 +6,7 @@
  * emulator does exist, and the URI-format bug that would have blocked us
  * (`firebase-admin-node#2725`, where the emulator 404'd
  * `locations/<region>/functions/<name>`) was fixed in firebase-admin 12.7.0. This
- * repo pins 14.2.0, so the region-qualified name that production requires is also
+ * repo pins 14.5.0, so the region-qualified name that production requires is also
  * the one the emulator resolves. No production code changed for this test.
  *
  * What runs for real here, with nothing mocked:

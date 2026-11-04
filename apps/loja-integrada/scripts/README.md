@@ -9,12 +9,14 @@ this script turns them into committed fixtures under
 ## What it reads and writes
 
 - It reads the capture pairs in the folder given by `--entrada`, plus that folder's
-  `nomes-proibidos.txt`. With `--verificar`, it reads the text files it is given.
+  `nomes-proibidos.txt` and `.chave-fixtures` (the pseudonym key, below). With
+  `--verificar`, it reads the text files it is given.
 - It writes `lib/lojaIntegrada/fixtures/__wire__/<nome>.json`, one per pair, and
   nothing else, and only when every pair is clean: **any finding refuses the whole
   run and writes nothing**. Every fixture goes to a temporary file first and is
   renamed into place only once all of them are written, so a failed write replaces
-  none; a rename that fails part-way is reported, naming the fixtures written.
+  none; a rename that fails part-way is reported, naming the fixtures written. With
+  `--gerar-chave` it writes only the new `.chave-fixtures`, in the capture folder.
 - It never calls the network, never reads a token or an environment variable, and
   never starts a process. `lib/lojaIntegrada/estrutura.test.ts` walks its import
   closure to prove it. All the logic lives in `lib/lojaIntegrada/sanitizacao/`; the
@@ -22,13 +24,20 @@ this script turns them into committed fixtures under
 - It never prints a value from a capture: only request lines after redaction (and
   only when they trip no personal-data pattern and no listed name; otherwise
   `<omitted: it trips <kind>>`), leaf paths with their JSON types and treatments,
-  and findings as `<nome> <where> :: <kind>`.
+  and findings as `<nome> <where> :: <kind>`. It never prints the pseudonym key.
+- A leaf's treatment is `mantido` (kept), `falsificado` (a fake of the same JSON
+  type), `redigido` (a fake of another type) or `pseudonimizado` (a catalogue id
+  the profile kept and the key then mapped):
+  `objects.*.id : number → pseudonimizado (50)`.
 
 ## Commands
 
 `pnpm --filter` runs the script from `apps/loja-integrada`, so pass absolute paths.
 
 ```bash
+# Once per capture folder: create the pseudonym key (refuses when one exists).
+pnpm --filter @delfrance/loja-integrada-app sanitizar --entrada "$HOME/li-capturas" --gerar-chave
+
 # What would be written: request lines, classes, leaf tables, findings. Writes nothing.
 pnpm --filter @delfrance/loja-integrada-app sanitizar --entrada "$HOME/li-capturas" --dry-run
 
@@ -49,9 +58,10 @@ pnpm --filter @delfrance/loja-integrada-app sanitizar --entrada "$HOME/li-captur
   is refused whole as `<file> :: utf8-invalido`.
 - `--sobrescrever` replaces an existing fixture whose bytes differ; identical bytes are
   always a no-op.
-- Exit codes: 0 done (or a clean dry run or check), 1 refused (nothing written),
-  2 usage error, 70 unexpected error (only the error's class and code are printed,
-  plus which fixtures were written when it struck while writing).
+- `--gerar-chave` takes only `--entrada`.
+- Exit codes: 0 done (or a clean dry run or check, or a key created), 1 refused
+  (nothing written), 2 usage error, 70 unexpected error (only the error's class and
+  code are printed, plus which fixtures were written when it struck while writing).
 
 ## Who runs it
 
@@ -73,7 +83,62 @@ public, so a pushed branch is published.
   sanitizer refuses to run without it, refuses any fixture where a listed name
   survives, and never prints a term. It never enters the repository.
 - The raw captures hold real personal data. They never leave this machine, are never
-  pasted into a chat, and are deleted once their fixtures are merged.
+  pasted into a chat, and are deleted once their fixtures are merged. **The key
+  `.chave-fixtures` is not deleted with them** (below): it outlives every capture.
+
+### The pseudonym key
+
+The fixture profile keeps Loja Integrada's own numeric ids on the catalogue class
+(categories, brands, grades and their options, products), and those are the stores'
+real resource ids. So the sanitizer replaces each one with a keyed pseudonym:
+
+```text
+fake = 100000000 + (first 6 bytes of HMAC-SHA256(key, "li-fixture-id:" + id)) mod 900000000
+```
+
+- **What is mapped**, on catalogue pairs only: every kept number (or digit-only
+  string) under a key named `id` or ending in `_id` (`imagem_id`), the id segments of
+  every kept resource URI (`/v1/categoria/<id>`, `/api/v1/grades/<id>`,
+  `/api/v1/grade/<g>/variacao/<v>`), the id segments of the request path
+  (`/v1/grades/<id>/`, `/v1/categoria/set/<id>;<id>/`), the `produto=` query value,
+  and the same id positions inside `meta.next`/`meta.previous`. Never
+  `meta.limit`/`offset`/`total_count`, nor any other query value (`limit`, `offset`).
+  Configuration and order captures are not touched.
+- **What is refused instead**, because the mapping cannot reach it: a catalogue error
+  body that keeps a number other than its status (`numero-em-erro-do-catalogo`: the
+  error walk keeps small integers under any key, which may echo a resource id, and a
+  9-digit pseudonym cannot live there), and a catalogue resource on a path the
+  catalogue class does not admit, such as a grade's sub-resource
+  (`catalogo-fora-da-classe`: it would fall to the strictest class, whose generic table
+  keeps `id` and `resource_uri` as they are). Only the paths `ehCatalogo` in
+  `core/redacao.ts` admits are pseudonymized.
+- With no key, a catalogue pair's request line is printed with each id position as
+  `<id>`, never a real id.
+- **One namespace**: the same real id always gives the same 9-digit pseudonym, in
+  every file and both stores, so a category row and every `categoria_pai` naming it,
+  or a grade's id, list row and option URIs, still agree. The same key over the same
+  capture writes the same bytes, and a `--so` run gives the same ids as a full run.
+- **The key** is `.chave-fixtures` in the capture folder: 32 random bytes as 64
+  hexadecimal digits, created once with `--gerar-chave`, which refuses to replace an
+  existing one. It is never printed, never in a finding and never written anywhere
+  else. Never commit it: without it a pseudonym says nothing about the id behind it.
+- **The key outlives the captures.** Keep it in the capture folder for as long as any
+  catalogue fixture is committed, and back it up beside `nomes-proibidos.txt`: when
+  merged raw pairs are deleted, `.chave-fixtures` stays. A later capture (a product
+  naming a category, a brand or a grade) must be converted under the SAME key, or its
+  ids stop matching the committed fixtures with every check green.
+- A catalogue pair with no key is refused (`sem-chave-de-fixtures`), naming
+  `--gerar-chave`. Restore the key first if committed catalogue fixtures were made with
+  it; `--gerar-chave` is for a corpus with no catalogue fixture yet. A malformed key
+  file stops the run (exit 2) without quoting it.
+- **A new key changes every catalogue id**, so every committed catalogue fixture must
+  be regenerated under it (`--sobrescrever`) in one change, which needs its raw pair:
+  losing the key after the raw pairs are deleted means recapturing every catalogue
+  fixture. Never mix keys in the corpus.
+- Two different ids that land on one pseudonym, in one pair or across the run's pairs,
+  refuse the run (`colisao-de-pseudonimo`, about one in 900 million per pair of ids):
+  move the old key out, create a new one, and re-run every catalogue pair. A `--so`
+  run checks only the pairs it converts, so the authoritative check is a full run.
 
 ### A capture is a pair
 

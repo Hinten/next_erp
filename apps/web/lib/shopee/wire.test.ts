@@ -1,26 +1,68 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  CAMPO_RASCUNHO_SHOPEE,
+  CODIGO_RASCUNHO_SHOPEE,
+  ESTADO_ANUNCIO_SHOPEE,
+  MOTIVO_RASCUNHO_INVALIDO_SHOPEE,
   PROBLEMA_TABELA_SHOPEE,
+  TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE,
   TIPO_CELULA_TABELA_SHOPEE,
+  categoriaNoDtoSchema as noCompartilhadoSchema,
+  categoriaResumoDtoSchema as resumoCompartilhadoSchema,
   detalheTabelaMedidasDtoSchema as detalheCompartilhadoSchema,
   listaTabelasMedidasDtoSchema as listaCompartilhadaSchema,
+  marcaDtoSchema as marcaCompartilhadaSchema,
   projetarTabelaShopee,
+  respostaAtualizarRascunhoShopeeSchema as atualizarCompartilhadoSchema,
+  respostaCategoriasShopeeSchema as categoriasCompartilhadaSchema,
+  respostaCriarRascunhoShopeeSchema as criarCompartilhadoSchema,
+  respostaDescartarRascunhoShopeeSchema as descartarCompartilhadoSchema,
+  respostaItemIncertoShopeeSchema as itemIncertoCompartilhadoSchema,
+  respostaLimitesDoItemShopeeSchema as limitesDoItemCompartilhadoSchema,
+  respostaLimitesTabelaMedidasShopeeSchema,
+  respostaMarcasShopeeSchema as marcasCompartilhadaSchema,
+  respostaRecomendacaoCategoriaShopeeSchema as recomendacaoCompartilhadaSchema,
   tabelaMedidasLinhaDtoSchema as linhaCompartilhadaSchema,
   tabelaShopeeProjetadaSchema,
   type DetalheTabelaShopeeEntrada,
 } from '@delfrance/schemas';
 
+import { ShopeeClientRespostaInvalidaError, createShopeeClient } from './client';
 import {
   ACAO_RECLAMACAO_SHOPEE,
+  DETALHES_ERRO_SHOPEE_VAZIOS,
   SOLUCAO_DEVOLUCAO_SHOPEE,
   acaoReclamacaoShopeeSchema,
+  anuncioStatusShopeeListingSchema,
+  anuncioStatusShopeeSchema,
+  canceladoShopeeSchema,
   categoriaNoDtoSchema,
+  categoriaResumoDtoSchema,
   detalheTabelaMedidasDtoSchema,
+  detalhesErroShopeeSchema,
+  envioEstoqueManualShopeeSchema,
+  envioPrecoManualShopeeSchema,
+  jobIdShopeeSchema,
   listaTabelasMedidasDtoSchema,
+  marcaDtoSchema,
+  massImportStatusShopeeSchema,
   oauthStartResponseSchema,
+  priceSyncHistoricoShopeeSchema,
+  priceSyncRelatorioPaginaShopeeSchema,
+  priceSyncStatusShopeeSchema,
+  problemaShopeeSchema,
+  respostaAtualizarRascunhoShopeeSchema,
   respostaCategoriasShopeeSchema,
+  respostaCriarRascunhoShopeeSchema,
+  respostaDescartarRascunhoShopeeSchema,
+  respostaItemIncertoShopeeSchema,
+  respostaLimitesDoItemShopeeSchema,
   respostaLimitesShopeeSchema,
+  respostaMarcasShopeeSchema,
+  respostaPublicarShopeeSchema,
+  respostaRecomendacaoCategoriaShopeeSchema,
+  respostaReverificarShopeeSchema,
   shopeeContaStatusSchema,
   shopeeEtiquetaPendenteSchema,
   shopeeLojaSchema,
@@ -1235,5 +1277,1098 @@ describe('the tabela-medidas detalhe answer — ONE schema for the chart', () =>
         .success,
     ).toBe(false);
     expect(detalheTabelaMedidasDtoSchema.safeParse(tabela).success).toBe(false);
+  });
+});
+
+/* ---------------------------------------------------------------------------
+ * Step 21 (#1529, sub-step 21-1) — the pushes, publish, re-verify, the jobs and
+ * the error extras
+ * ------------------------------------------------------------------------- */
+
+// Fixture ids only: integração `int-1`, produtos `prod-1`/`prod-2`, link
+// `link-1`, item 1000001, job `job-1`. Each body below carries EVERY key its
+// route builds by name (`apps/shopee/app/api/marketplace/shopee/<route>/route.ts`),
+// the stripped ones included — the parse is checked against the real envelope.
+
+/** A price-push row as `enviar-precos/route.ts` builds it (its `CHAVES_DA_LISTAGEM_PRECO`). */
+const LINHA_PRECO = {
+  produtoId: 'prod-1',
+  produtoNome: 'Camiseta',
+  variacaoProdutoId: 'prod-2',
+  anuncioId: '1000001',
+  linkDocId: 'link-1',
+  outcome: 'enviado',
+  motivo: null,
+  mensagem: 'Preço enviado.',
+  preco: 99.9,
+  precoAnterior: 89.9,
+  variacoes: null,
+  codigo: null,
+};
+
+const ENVELOPE_PRECO = {
+  canal: 'shopee',
+  integracaoId: 'int-1',
+  contaNome: 'Conta Teste',
+  solicitados: 1,
+  familias: 1,
+  resumo: { enviados: 1, pulados: 0, falhas: 0, naoTentados: 0 },
+  listings: [LINHA_PRECO],
+  produtosSemEnvio: [],
+  pausadoAte: null,
+};
+
+const LINHA_STATUS = {
+  produtoId: 'prod-1',
+  produtoNome: 'Camiseta',
+  anuncioId: '1000001',
+  linkDocId: 'link-1',
+  outcome: 'enviado',
+  motivo: null,
+  mensagem: 'Anúncio pausado.',
+  statusFinal: 'UNLIST',
+  estadoAnuncio: 'pausado',
+  membros: null,
+};
+
+/** The item 200 as `publicar/route.ts`'s `corpoDoItem` builds it. */
+const ITEM_200 = {
+  itemId: 1000001,
+  estadoAnuncio: 'ativo',
+  itemStatus: 'NORMAL',
+  modelos: { total: 2, criados: 0, atualizados: 2, semFilho: 0 },
+  fotos: { reutilizadas: 3, enviadas: 0, falhas: 0 },
+  avisoShopee: null,
+  taxInfoOmitido: null,
+  tabelaDeMedidas: {
+    sizeChartId: 700024641,
+    fonte: 'modelo',
+    motivo: null,
+    fotoOmitida: null,
+    avisoObrigatoria: false,
+  },
+};
+
+/** The kit 202 as `publicar/route.ts` builds it: `corpoDoKit` + `mensagem` (+ `aguardarMs` once PR 5 lands). */
+const KIT_202 = {
+  arma: 'kit-recriar',
+  desfecho: 'incerto',
+  itemId: null,
+  linkDocId: null,
+  estadoAnuncio: null,
+  itemStatus: null,
+  kitNativo: null,
+  modelos: { vinculados: 0, anexados: 0, semFilho: 0 },
+  antecessor: null,
+  avisos: [],
+  avisosResolvidos: 0,
+  recusa: { codigo: 'error_busy', fraseShopee: 'System busy', motivo: 'instabilidade-shopee' },
+  comando: 'pnpm --filter @delfrance/shopee-app publicar:anuncio --integracao int-1 --recriar',
+  mensagem: 'A Shopee pode ter criado o kit. Aguarde 4 minutos e rode exatamente o mesmo comando.',
+  aguardarMs: 240_000,
+};
+
+/**
+ * The ordinary listing's 202 (#1911 P11) as `publicar/route.ts`'s
+ * `corpoDoItemIncerto` builds it — the declared keys, then the CLI's `mensagem`.
+ */
+const ITEM_202 = {
+  arma: 'item',
+  desfecho: 'incerto',
+  linkDocId: 'AbCdEfGhIj0123456789',
+  aguardarMs: 240_000,
+  reenvioVerificaSku: true,
+  recusa: { codigo: 'error_inner', fraseShopee: 'taking some time to respond' },
+  mensagem:
+    'a Shopee pode ter criado o anúncio — aguarde 4 minutos e publique de novo o MESMO rascunho',
+};
+
+/** One violation row as `shopeeViolacaoSchema` stores it — the re-verify answers the ROW LIST. */
+const VIOLACAO = {
+  violation_type: 'deboost',
+  violation_reason: 'Categoria incorreta',
+  suggestion: 'Mude a categoria',
+  fix_deadline_time: 1_790_000_000_000,
+  update_time: 1_789_000_000_000,
+  suggested_category: [{ category_id: 100087, category_name: 'Camisetas' }],
+  kind: 'deboost',
+  days_to_fix: null,
+};
+
+const REVERIFICAR = {
+  acao: 'atualizado',
+  estadoAnuncio: 'ativo',
+  itemStatus: 'NORMAL',
+  deboost: true,
+  violacoes: [VIOLACAO],
+  violacoesLidas: true,
+  modelos: { total: 2, atualizados: 1, ausentes: 0 },
+  avisoResolvido: false,
+  avisoReceitaKit: null,
+  chamadasShopee: 3,
+};
+
+/** `importar-todos/status/route.ts`'s 200, by name. */
+const MASS_STATUS = {
+  status: 'running',
+  scanned: 10,
+  imported: 4,
+  created: 2,
+  skipped: 1,
+  kits: 1,
+  failureCount: 1,
+  failures: [{ itemId: 1000002, motivo: 'sem-nome', mensagem: 'O anúncio não tem nome.' }],
+  restante: 5,
+  varreduraExaurida: false,
+  startedAt: 1_790_000_000_000,
+  updatedAt: 1_790_000_060_000,
+  finishedAt: null,
+  erro: null,
+};
+
+const CONTADORES = {
+  status: 'running',
+  baixarPreco: false,
+  planejados: 3,
+  enviados: 1,
+  pulados: 1,
+  falhas: 1,
+  pausas: 0,
+  parques: 2,
+  retomarEm: 1_790_003_600_000,
+  filaRestante: 4,
+  relatorioCompleto: false,
+  relatorioShards: 1,
+  startedAt: 1_790_000_000_000,
+  updatedAt: 1_790_000_060_000,
+  finishedAt: null,
+  erro: null,
+};
+
+const PULO = {
+  itemId: '1000001',
+  produtoId: 'prod-1',
+  code: 'sem-link',
+  linkDocId: 'link-1',
+  precoAnterior: null,
+  mensagem: 'O produto não tem anúncio nesta conta.',
+};
+
+/** `atualizar-precos/status/route.ts`'s 200, by name. */
+const PRICE_STATUS = {
+  jobId: 'job-1',
+  ...CONTADORES,
+  skips: [PULO],
+  failures: [{ ...PULO, code: 'preco-recusado', error: 'error_update_price_fail' }],
+};
+
+/** `atualizar-precos/historico/route.ts`'s 200, by name — no samples. */
+const ENVIO_HISTORICO = { jobId: 'job-1', integracaoId: 'int-1', ...CONTADORES };
+const HISTORICO = { envios: [ENVIO_HISTORICO] };
+
+/** One `relatorio/route.ts` row — the 13 keys it sends, NO `variacoes`. */
+const LINHA_RELATORIO = {
+  produtoId: 'prod-1',
+  variacaoProdutoId: 'prod-2',
+  anuncioId: '1000001',
+  linkDocId: 'link-1',
+  resultado: 'enviado',
+  fase: 'envio',
+  motivo: null,
+  mensagem: 'Preço enviado.',
+  erro: null,
+  preco: 99.9,
+  precoAnterior: 89.9,
+  produtoNome: 'Camiseta P',
+  sku: 'CAM-P',
+};
+const RELATORIO = {
+  linhas: [LINHA_RELATORIO],
+  proximoDepois: null,
+  status: 'completed',
+  relatorioCompleto: true,
+  filaRestante: 0,
+};
+
+/** The extras of a 422 publish refusal (`core/respond.ts`'s BLOCKED arm). */
+const PROBLEMA_COM_ACAO = {
+  campo: null,
+  motivo: 'listagem-removida',
+  mensagem: 'O kit foi removido da Shopee.',
+  acao: { tipo: TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.recriar, linkDocId: 'link-1' },
+};
+
+describe('step 21 — every route body parses here (the control)', () => {
+  it.each([
+    ['enviar-precos', envioPrecoManualShopeeSchema, ENVELOPE_PRECO],
+    ['publicar (item)', respostaPublicarShopeeSchema, ITEM_200],
+    ['publicar (kit 202)', respostaPublicarShopeeSchema, KIT_202],
+    ['publicar (item 202, #1911 P11)', respostaPublicarShopeeSchema, ITEM_202],
+    ['reverificar-anuncio', respostaReverificarShopeeSchema, REVERIFICAR],
+    ['importar-todos/status', massImportStatusShopeeSchema, MASS_STATUS],
+    ['atualizar-precos/status', priceSyncStatusShopeeSchema, PRICE_STATUS],
+    ['atualizar-precos/historico', priceSyncHistoricoShopeeSchema, HISTORICO],
+    ['atualizar-precos/relatorio', priceSyncRelatorioPaginaShopeeSchema, RELATORIO],
+  ] as const)('%s (the stock envelope has its own block below)', (_rota, schema, corpo) => {
+    expect(schema.safeParse(corpo).success).toBe(true);
+  });
+
+  it('the status run parses, and its rows keep their reading', () => {
+    const r = anuncioStatusShopeeSchema.parse({
+      canal: 'shopee',
+      integracaoId: 'int-1',
+      acao: 'pausar',
+      solicitados: 1,
+      familias: 1,
+      resumo: { aplicados: 1, pulados: 0, falhas: 0, naoTentados: 0 },
+      listings: [LINHA_STATUS],
+      produtosSemAnuncio: [],
+      pausadoAte: null,
+    });
+
+    expect(r.listings[0]?.estadoAnuncio).toBe(ESTADO_ANUNCIO_SHOPEE.pausado);
+    expect(r.listings[0]).not.toHaveProperty('membros');
+  });
+
+  it('a pause/reactivate direction outside the shared two is refused', () => {
+    expect(
+      anuncioStatusShopeeSchema.safeParse({
+        canal: 'shopee',
+        integracaoId: 'int-1',
+        acao: 'excluir',
+        listings: [],
+        produtosSemAnuncio: [],
+        pausadoAte: null,
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe('step 21 — the stock envelope declares the SLICE the dialog reads', () => {
+  const ESTOQUE = {
+    canal: 'shopee',
+    integracaoId: 'int-1',
+    contaNome: 'Conta Teste',
+    solicitados: 1,
+    familias: 1,
+    resumo: { enviados: 1, pulados: 0, falhas: 0, naoTentados: 0 },
+    listings: [
+      {
+        produtoId: 'prod-1',
+        produtoNome: 'Camiseta',
+        variacaoProdutoId: null,
+        anuncioId: '1000001',
+        linkDocId: 'link-1',
+        outcome: 'enviado',
+        // A clamped SUCCESS still carries a motivo — `outcome` is the verdict.
+        motivo: 'clampado-promocao',
+        mensagem: 'Estoque enviado (elevado ao piso da promoção).',
+        quantidade: 7,
+        variacoes: [{ modelId: 2000458821, resultado: 'enviado' }],
+        modelosRecusados: 0,
+        clampados: 1,
+        rearme: null,
+      },
+    ],
+    produtosSemEnvio: [
+      { produtoId: 'prod-2', produtoNome: null, motivo: 'sem-link', mensagem: 'Sem anúncio.' },
+    ],
+    pausadoAte: null,
+  };
+
+  it('parses, keeps the success with its motivo, and drops the keys it names as stripped', () => {
+    const r = envioEstoqueManualShopeeSchema.parse(ESTOQUE);
+
+    expect(r.listings[0]).toMatchObject({ outcome: 'enviado', motivo: 'clampado-promocao' });
+    expect(r.listings[0]).not.toHaveProperty('variacoes');
+    expect(r.listings[0]).not.toHaveProperty('rearme');
+    expect(r).not.toHaveProperty('resumo');
+  });
+
+  it('⚠️ NEAR MISS: an outcome outside the four is refused — never read as a fifth success', () => {
+    const corpo = { ...ESTOQUE, listings: [{ ...ESTOQUE.listings[0], outcome: 'parcial' }] };
+    expect(envioEstoqueManualShopeeSchema.safeParse(corpo).success).toBe(false);
+  });
+});
+
+describe('step 21 — price rows: tolerant where Shopee’s, strict where ours (C9)', () => {
+  it('⭐ a QUOTED `precoAnterior` (read off Shopee) parses to its number', () => {
+    const r = envioPrecoManualShopeeSchema.parse({
+      ...ENVELOPE_PRECO,
+      listings: [{ ...LINHA_PRECO, precoAnterior: '89.9' }],
+    });
+
+    expect(r.listings[0]?.precoAnterior).toBe(89.9);
+  });
+
+  it('⚠️ NEAR MISS: the same quoted value on `preco` (OURS) is refused — the two tolerances never swap', () => {
+    expect(
+      envioPrecoManualShopeeSchema.safeParse({
+        ...ENVELOPE_PRECO,
+        listings: [{ ...LINHA_PRECO, preco: '89.9' }],
+      }).success,
+    ).toBe(false);
+  });
+
+  it('⭐ RT5: an OLDER backend’s row without the child label reads `variacaoNome`/`variacaoSku` as null', () => {
+    const r = envioPrecoManualShopeeSchema.parse(ENVELOPE_PRECO);
+
+    expect(r.listings[0]?.variacaoNome).toBeNull();
+    expect(r.listings[0]?.variacaoSku).toBeNull();
+  });
+
+  it('a NEWER backend’s label rides through', () => {
+    const r = envioPrecoManualShopeeSchema.parse({
+      ...ENVELOPE_PRECO,
+      listings: [{ ...LINHA_PRECO, variacaoNome: 'Camiseta P', variacaoSku: 'CAM-P' }],
+    });
+
+    expect(r.listings[0]).toMatchObject({ variacaoNome: 'Camiseta P', variacaoSku: 'CAM-P' });
+  });
+
+  it('NEAR MISS: a non-string label is refused — the default covers ABSENCE only', () => {
+    expect(
+      envioPrecoManualShopeeSchema.safeParse({
+        ...ENVELOPE_PRECO,
+        listings: [{ ...LINHA_PRECO, variacaoNome: 42 }],
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe('step 21 — publish: the arms are tagged, the kit FIRST (C10, C18)', () => {
+  it('⭐ the kit 202 is `tipo: kit`, `desfecho: incerto`, with its `aguardarMs`', () => {
+    const r = respostaPublicarShopeeSchema.parse(KIT_202);
+
+    expect(r.tipo).toBe('kit');
+    if (r.tipo !== 'kit') return;
+    expect(r.desfecho).toBe('incerto');
+    expect(r.aguardarMs).toBe(240_000);
+  });
+
+  it('⭐ the item 200 is `tipo: item`', () => {
+    const r = respostaPublicarShopeeSchema.parse(ITEM_200);
+
+    expect(r.tipo).toBe('item');
+    if (r.tipo !== 'item') return;
+    expect(r.itemId).toBe(1000001);
+    expect(r.tabelaDeMedidas.fonte).toBe('modelo');
+  });
+
+  it('a kit body is NEVER typed `item`, whatever the union tries — the item keys are absent from it', () => {
+    expect(respostaPublicarShopeeSchema.parse({ ...KIT_202, desfecho: 'criado' }).tipo).toBe('kit');
+    // And a kit body missing its arm is not silently an item.
+    const { arma: _semArma, ...kitSemArma } = KIT_202;
+    expect(respostaPublicarShopeeSchema.safeParse(kitSemArma).success).toBe(false);
+  });
+
+  it('a `tipo` key the backend might send never overrides the tag', () => {
+    expect(respostaPublicarShopeeSchema.parse({ ...ITEM_200, tipo: 'kit' }).tipo).toBe('item');
+  });
+
+  it('⭐ C18: the kit 202 carries `comando` and `mensagem` (CLI text) — the parse exposes NEITHER', () => {
+    const r = respostaPublicarShopeeSchema.parse(KIT_202);
+
+    expect(r).not.toHaveProperty('comando');
+    expect(r).not.toHaveProperty('mensagem');
+  });
+
+  it('a backend older than `aguardarMs` still parses — the caller then waits the shared constant', () => {
+    const { aguardarMs: _drop, ...semAguardar } = KIT_202;
+    const r = respostaPublicarShopeeSchema.parse(semAguardar);
+
+    expect(r.tipo).toBe('kit');
+    expect(r).not.toHaveProperty('aguardarMs');
+  });
+
+  it('NEAR MISS: a zero or fractional `aguardarMs` is refused, never waited', () => {
+    expect(respostaPublicarShopeeSchema.safeParse({ ...KIT_202, aguardarMs: 0 }).success).toBe(
+      false,
+    );
+    expect(respostaPublicarShopeeSchema.safeParse({ ...KIT_202, aguardarMs: 1.5 }).success).toBe(
+      false,
+    );
+  });
+
+  it('a `desfecho` this build does not know is refused — the tab branches on it', () => {
+    expect(
+      respostaPublicarShopeeSchema.safeParse({ ...KIT_202, desfecho: 'parcial' }).success,
+    ).toBe(false);
+  });
+
+  it('`fotoOmitida` is a CODE, never a boolean', () => {
+    expect(
+      respostaPublicarShopeeSchema.safeParse({
+        ...ITEM_200,
+        tabelaDeMedidas: { ...ITEM_200.tabelaDeMedidas, fotoOmitida: true },
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe('#1911 P11 — the ordinary listing’s 202: a THIRD arm, between the kit and the item 200 (B.4)', () => {
+  it('⭐ the item 202 is `tipo: item-incerto` with the four facts the tab reads — and never the CLI’s `mensagem`', () => {
+    const r = respostaPublicarShopeeSchema.parse(ITEM_202);
+
+    expect(r).toEqual({
+      tipo: 'item-incerto',
+      arma: 'item',
+      desfecho: 'incerto',
+      linkDocId: 'AbCdEfGhIj0123456789',
+      aguardarMs: 240_000,
+      reenvioVerificaSku: true,
+      recusa: { codigo: 'error_inner', fraseShopee: 'taking some time to respond' },
+    });
+    expect(r).not.toHaveProperty('mensagem');
+  });
+
+  it('⭐ UNION ORDER: a body carrying the 202’s tag AND every key of the item 200 reads UNCERTAIN, never a listing', () => {
+    // The item 200's object strips unknown keys, so it WOULD accept this body:
+    // only the arm order keeps an uncertain create from reading as published.
+    const ambos = { ...ITEM_200, ...ITEM_202 };
+    expect(respostaPublicarShopeeSchema.parse(ambos).tipo).toBe('item-incerto');
+    // NEAR-MISS: the same body with any other `desfecho` is no 202 — the item 200 then reads it.
+    expect(respostaPublicarShopeeSchema.parse({ ...ambos, desfecho: 'criado' }).tipo).toBe('item');
+  });
+
+  it('the kit arm stays FIRST and disjoint: a kit body is `kit`, an item 202 is never `kit`', () => {
+    expect(respostaPublicarShopeeSchema.parse(KIT_202).tipo).toBe('kit');
+    // A kit `arma` on the item 202: neither the kit arm (keys missing) nor the 202 (literal `item`).
+    expect(respostaPublicarShopeeSchema.safeParse({ ...ITEM_202, arma: 'kit-criar' }).success).toBe(
+      false,
+    );
+    // `arma: 'item'` on a kit 202: the kit enum refuses it, and its `linkDocId: null` is no 202.
+    expect(respostaPublicarShopeeSchema.safeParse({ ...KIT_202, arma: 'item' }).success).toBe(
+      false,
+    );
+  });
+
+  it('a `tipo` key the backend might send never overrides the tag', () => {
+    expect(respostaPublicarShopeeSchema.parse({ ...ITEM_202, tipo: 'item' }).tipo).toBe(
+      'item-incerto',
+    );
+  });
+
+  it('`recusa` is null when no answer arrived at all, and its sentence may be null', () => {
+    expect(respostaPublicarShopeeSchema.parse({ ...ITEM_202, recusa: null })).toMatchObject({
+      tipo: 'item-incerto',
+      recusa: null,
+    });
+    expect(
+      respostaPublicarShopeeSchema.parse({
+        ...ITEM_202,
+        recusa: { codigo: 'error_inner', fraseShopee: null },
+      }),
+    ).toMatchObject({ recusa: { codigo: 'error_inner', fraseShopee: null } });
+  });
+
+  it('NEAR-MISS: a 202 the tab could not wait on or re-send is refused, never read', () => {
+    for (const ruim of [
+      { ...ITEM_202, aguardarMs: 0 },
+      { ...ITEM_202, aguardarMs: 1.5 },
+      { ...ITEM_202, linkDocId: null },
+      { ...ITEM_202, linkDocId: '' },
+      { ...ITEM_202, reenvioVerificaSku: 'sim' },
+    ]) {
+      expect(respostaPublicarShopeeSchema.safeParse(ruim).success, JSON.stringify(ruim)).toBe(
+        false,
+      );
+    }
+    const { reenvioVerificaSku: _sem, ...semReenvio } = ITEM_202;
+    expect(respostaPublicarShopeeSchema.safeParse(semReenvio).success).toBe(false);
+  });
+});
+
+describe('step 21 — the jobs: Shopee’s shapes, not Mercado Livre’s (C11, C12)', () => {
+  it('⭐ C11: a mass-import failure row carries Shopee’s NUMERIC itemId', () => {
+    const r = massImportStatusShopeeSchema.parse(MASS_STATUS);
+
+    expect(r.failures[0]).toEqual({
+      itemId: 1000002,
+      motivo: 'sem-nome',
+      mensagem: 'O anúncio não tem nome.',
+    });
+  });
+
+  it('⚠️ NEAR MISS (C11): a QUOTED itemId (ML’s failure shape) is refused', () => {
+    expect(
+      massImportStatusShopeeSchema.safeParse({
+        ...MASS_STATUS,
+        failures: [{ ...MASS_STATUS.failures[0], itemId: '1000002' }],
+      }).success,
+    ).toBe(false);
+  });
+
+  it('⭐ C12: the price status KEEPS `retomarEm`, `parques` and `filaRestante` — never silently stripped', () => {
+    const r = priceSyncStatusShopeeSchema.parse(PRICE_STATUS);
+
+    expect(r).toMatchObject({ retomarEm: 1_790_003_600_000, parques: 2, filaRestante: 4 });
+    expect(r.failures[0]?.error).toBe('error_update_price_fail');
+  });
+
+  it('⭐ C12: a report page whose rows carry NO `variacoes` parses — the key is Mercado Livre’s', () => {
+    const r = priceSyncRelatorioPaginaShopeeSchema.parse(RELATORIO);
+
+    expect(r.linhas[0]).toMatchObject({ produtoNome: 'Camiseta P', sku: 'CAM-P' });
+    expect(r.linhas[0]).not.toHaveProperty('variacoes');
+  });
+
+  it('a job status this build does not know is refused (the shared enum)', () => {
+    expect(
+      massImportStatusShopeeSchema.safeParse({ ...MASS_STATUS, status: 'paused' }).success,
+    ).toBe(false);
+  });
+
+  it('`jobIdShopeeSchema` refuses an EMPTY id — a poll of nothing', () => {
+    expect(jobIdShopeeSchema.safeParse({ jobId: '' }).success).toBe(false);
+    expect(jobIdShopeeSchema.parse({ jobId: 'job-1' })).toEqual({ jobId: 'job-1' });
+  });
+
+  it('`canceladoShopeeSchema` accepts only `cancelled`', () => {
+    expect(canceladoShopeeSchema.safeParse({ status: 'cancelled' }).success).toBe(true);
+    expect(canceladoShopeeSchema.safeParse({ status: 'running' }).success).toBe(false);
+  });
+});
+
+describe('step 21 — `estadoAnuncio` degrades ONE field, never the answer (C13)', () => {
+  it.each([
+    ['a member a newer backend adds', 'novo-estado'],
+    ['a number', 7],
+  ])('⭐ %s reads as `desconhecido` on a status row', (_n, estadoAnuncio) => {
+    const r = anuncioStatusShopeeListingSchema.parse({ ...LINHA_STATUS, estadoAnuncio });
+
+    expect(r.estadoAnuncio).toBe(ESTADO_ANUNCIO_SHOPEE.desconhecido);
+  });
+
+  it('`null` stays `null` — "nothing read" is not "unknown"', () => {
+    expect(
+      anuncioStatusShopeeListingSchema.parse({ ...LINHA_STATUS, estadoAnuncio: null })
+        .estadoAnuncio,
+    ).toBeNull();
+  });
+
+  it('⚠️ NEAR MISS: the catch is SCOPED — a malformed sibling still rejects the row', () => {
+    expect(
+      anuncioStatusShopeeListingSchema.safeParse({
+        ...LINHA_STATUS,
+        estadoAnuncio: 'novo-estado',
+        outcome: 'parcial',
+      }).success,
+    ).toBe(false);
+  });
+
+  it('the same tolerance on the publish arms and on the re-verify', () => {
+    const item = respostaPublicarShopeeSchema.parse({ ...ITEM_200, estadoAnuncio: 'novo-estado' });
+    const reverificado = respostaReverificarShopeeSchema.parse({
+      ...REVERIFICAR,
+      estadoAnuncio: 'novo-estado',
+    });
+
+    // #1911 P11: the 202 arm carries no `estadoAnuncio`, so the read is narrowed first.
+    expect(item.tipo).toBe('item');
+    expect(item.tipo === 'item' ? item.estadoAnuncio : null).toBe(
+      ESTADO_ANUNCIO_SHOPEE.desconhecido,
+    );
+    expect(reverificado.estadoAnuncio).toBe(ESTADO_ANUNCIO_SHOPEE.desconhecido);
+  });
+});
+
+describe('step 21 — unknown keys strip, and where the strip STOPS (C15)', () => {
+  it('⭐ an unknown top-level key on a price skip sample, a report row and a violation row is ABSENT', () => {
+    const status = priceSyncStatusShopeeSchema.parse({
+      ...PRICE_STATUS,
+      skips: [{ ...PULO, chaveNova: 'x' }],
+    });
+    const pagina = priceSyncRelatorioPaginaShopeeSchema.parse({
+      ...RELATORIO,
+      linhas: [{ ...LINHA_RELATORIO, chaveNova: 'x' }],
+    });
+    const reverificado = respostaReverificarShopeeSchema.parse({
+      ...REVERIFICAR,
+      violacoes: [{ ...VIOLACAO, chaveNova: 'x' }],
+    });
+
+    expect(status.skips[0]).not.toHaveProperty('chaveNova');
+    expect(pagina.linhas[0]).not.toHaveProperty('chaveNova');
+    expect(reverificado.violacoes[0]).not.toHaveProperty('chaveNova');
+  });
+
+  it('⚠️ NEAR MISS: an unknown key INSIDE a `suggested_category[]` item SURVIVES — `.strip()` is shallow (documented)', () => {
+    const reverificado = respostaReverificarShopeeSchema.parse({
+      ...REVERIFICAR,
+      violacoes: [
+        {
+          ...VIOLACAO,
+          suggested_category: [{ category_id: 100087, category_name: 'Camisetas', novo: 1 }],
+        },
+      ],
+    });
+
+    expect(reverificado.violacoes[0]?.suggested_category?.[0]).toHaveProperty('novo', 1);
+  });
+
+  it('a violation row keeps its eight modelled keys', () => {
+    const r = respostaReverificarShopeeSchema.parse(REVERIFICAR);
+
+    expect(r.violacoes[0]).toEqual(VIOLACAO);
+    expect(r).not.toHaveProperty('chamadasShopee');
+  });
+});
+
+describe('step 21 — `problemas[].acao` is caught PER ROW (C17)', () => {
+  it('⭐ an `acao` with an unknown `tipo` keeps its row (acao `null`); the sibling’s valid acao SURVIVES', () => {
+    const detalhes = detalhesErroShopeeSchema.parse({
+      error: 'Publicação bloqueada.',
+      code: 'SHOPEE_PUBLISH_BLOCKED',
+      problemas: [{ ...PROBLEMA_COM_ACAO, acao: { tipo: 'novo-tipo' } }, PROBLEMA_COM_ACAO],
+    });
+
+    expect(detalhes.problemas).toHaveLength(2);
+    expect(detalhes.problemas?.[0]).toMatchObject({
+      motivo: 'listagem-removida',
+      mensagem: 'O kit foi removido da Shopee.',
+      acao: null,
+    });
+    expect(detalhes.problemas?.[1]?.acao).toEqual(PROBLEMA_COM_ACAO.acao);
+  });
+
+  it('RT2: every `tipo` the shared vocabulary declares parses on a row', () => {
+    const acoes = [
+      { tipo: TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.recriar, linkDocId: 'link-1' },
+      { tipo: TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.republicar, linkDocId: null },
+      { tipo: TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.semOpcoesDeKit },
+      { tipo: TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.informarPrincipal },
+      { tipo: TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.importar, itemIds: [1000001] },
+      {
+        tipo: TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.escolherVinculo,
+        linkDocIds: ['link-1', 'link-2'],
+      },
+    ];
+    for (const acao of acoes) {
+      expect(problemaShopeeSchema.parse({ ...PROBLEMA_COM_ACAO, acao }).acao).toEqual(acao);
+    }
+  });
+
+  it('a row with no `acao` at all (step-11 refusals, an older backend) reads `acao: null`', () => {
+    const { acao: _drop, ...semAcao } = PROBLEMA_COM_ACAO;
+    expect(problemaShopeeSchema.parse(semAcao).acao).toBeNull();
+  });
+
+  it('NEAR MISS: a row missing its `motivo` is not a refusal — the list reads as absent, the error still constructs', () => {
+    const { motivo: _drop, ...semMotivo } = PROBLEMA_COM_ACAO;
+    const detalhes = detalhesErroShopeeSchema.parse({ problemas: [semMotivo] });
+
+    expect(detalhes.problemas).toBeNull();
+  });
+});
+
+describe('step 21 — the error extras: every field on its own', () => {
+  it('an empty body reads exactly the all-absent constant', () => {
+    expect(detalhesErroShopeeSchema.parse({})).toEqual(DETALHES_ERRO_SHOPEE_VAZIOS);
+  });
+
+  it('each field read independently — a wrong type nulls only itself', () => {
+    expect(
+      detalhesErroShopeeSchema.parse({ jobId: 7, linkDocId: 'link-1', solicitados: 'x' }),
+    ).toMatchObject({ jobId: null, linkDocId: 'link-1', solicitados: null });
+  });
+});
+
+describe('step 21 — a stored-doc default is NOT a wire tolerance: a missing key is loud (C19)', () => {
+  function clienteQueResponde(corpo: unknown) {
+    return createShopeeClient({
+      baseUrl: 'http://localhost:3009',
+      getAuthToken: async () => 'token',
+      fetch: async () =>
+        new Response(JSON.stringify(corpo), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+    });
+  }
+
+  /** `obj` without `chave` — the key ABSENT, not `undefined`. */
+  function sem(obj: Readonly<Record<string, unknown>>, chave: string): Record<string, unknown> {
+    return Object.fromEntries(Object.entries(obj).filter(([k]) => k !== chave));
+  }
+
+  const JOB = { integracaoId: 'int-1', jobId: 'job-1' };
+
+  it.each([
+    [
+      'a mass-import status without `failures`',
+      'failures',
+      (c: ReturnType<typeof clienteQueResponde>) => c.massImportStatus(JOB),
+      sem(MASS_STATUS, 'failures'),
+    ],
+    [
+      'a mass-import status without `scanned`',
+      'scanned',
+      (c: ReturnType<typeof clienteQueResponde>) => c.massImportStatus(JOB),
+      sem(MASS_STATUS, 'scanned'),
+    ],
+    [
+      'a price status without `parques`',
+      'parques',
+      (c: ReturnType<typeof clienteQueResponde>) => c.priceSyncStatus(JOB),
+      sem(PRICE_STATUS, 'parques'),
+    ],
+    [
+      'a historico row without `falhas`',
+      'envios[].falhas',
+      (c: ReturnType<typeof clienteQueResponde>) => c.priceSyncHistorico({ integracaoId: 'int-1' }),
+      { envios: [sem(ENVIO_HISTORICO, 'falhas')] },
+    ],
+    [
+      'a report row without `mensagem`',
+      'linhas[].mensagem',
+      (c: ReturnType<typeof clienteQueResponde>) => c.priceSyncRelatorio(JOB),
+      { ...RELATORIO, linhas: [sem(LINHA_RELATORIO, 'mensagem')] },
+    ],
+  ] as const)(
+    '⭐ %s ⇒ ShopeeClientRespostaInvalidaError naming it — never a 0 or a []',
+    async (_n, campo, chamar, corpo) => {
+      const c = clienteQueResponde(corpo);
+
+      const err = await chamar(c).catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(ShopeeClientRespostaInvalidaError);
+      expect((err as ShopeeClientRespostaInvalidaError).campos).toContain(campo);
+    },
+  );
+});
+
+/* ---------------------------------------------------------------------------
+ * #1911 (P8) — the taxonomy answers, the draft answers and the draft refusals
+ * ------------------------------------------------------------------------- */
+
+describe('#1911 — every taxonomy and draft answer here IS the shared schema object (#1369)', () => {
+  // The neutrality proof of the categorias/limites move is the UNEDITED blocks
+  // above ("the categorias answer", "the limites answer — only the size-chart
+  // slice"); this pins WHY they still pass: there is no browser copy left to
+  // drift, only a re-export.
+  it.each([
+    ['categoriaResumoDtoSchema', categoriaResumoDtoSchema, resumoCompartilhadoSchema],
+    ['categoriaNoDtoSchema', categoriaNoDtoSchema, noCompartilhadoSchema],
+    [
+      'respostaCategoriasShopeeSchema',
+      respostaCategoriasShopeeSchema,
+      categoriasCompartilhadaSchema,
+    ],
+    [
+      'respostaLimitesShopeeSchema (the SLICE)',
+      respostaLimitesShopeeSchema,
+      respostaLimitesTabelaMedidasShopeeSchema,
+    ],
+    [
+      'respostaLimitesDoItemShopeeSchema (the WHOLE answer)',
+      respostaLimitesDoItemShopeeSchema,
+      limitesDoItemCompartilhadoSchema,
+    ],
+    [
+      'respostaRecomendacaoCategoriaShopeeSchema',
+      respostaRecomendacaoCategoriaShopeeSchema,
+      recomendacaoCompartilhadaSchema,
+    ],
+    ['marcaDtoSchema (P9)', marcaDtoSchema, marcaCompartilhadaSchema],
+    ['respostaMarcasShopeeSchema (P9)', respostaMarcasShopeeSchema, marcasCompartilhadaSchema],
+    [
+      'respostaCriarRascunhoShopeeSchema',
+      respostaCriarRascunhoShopeeSchema,
+      criarCompartilhadoSchema,
+    ],
+    [
+      'respostaAtualizarRascunhoShopeeSchema',
+      respostaAtualizarRascunhoShopeeSchema,
+      atualizarCompartilhadoSchema,
+    ],
+    [
+      'respostaDescartarRascunhoShopeeSchema',
+      respostaDescartarRascunhoShopeeSchema,
+      descartarCompartilhadoSchema,
+    ],
+    [
+      'respostaItemIncertoShopeeSchema (P11)',
+      respostaItemIncertoShopeeSchema,
+      itemIncertoCompartilhadoSchema,
+    ],
+  ] as const)('%s', (_nome, daqui, compartilhado) => {
+    expect(daqui).toBe(compartilhado);
+  });
+
+  it('NEAR-MISS: the SLICE is not the whole answer — two schemas, two readers', () => {
+    expect(respostaLimitesShopeeSchema).not.toBe(respostaLimitesDoItemShopeeSchema);
+  });
+});
+
+/** A whole `taxonomia/limites` 200 with EVERY band present, as the route answers it. */
+const LIMITES_DO_ITEM = {
+  scope: 'category',
+  categoryId: 100087,
+  limites: {
+    priceLimit: { min: 0.5, max: 100_000 },
+    wholesalePriceThresholdPercentage: { min: 1, max: 90 },
+    stockLimit: { min: 0, max: 999_999 },
+    itemNameLengthLimit: { min: 1, max: 120 },
+    itemImageCountLimit: { min: 1, max: 9 },
+    itemDescriptionLengthLimit: { min: 20, max: 3000 },
+    tierVariationNameLengthLimit: { min: 1, max: 14 },
+    tierVariationOptionLengthLimit: { min: 1, max: 30 },
+    itemCountLimit: { min: 0, max: 5000 },
+    extendedDescriptionLimit: null,
+    dtsLimit: { daysToShipLimit: { min: -1, max: 30 }, nonPreOrderDaysToShip: 2 },
+    weightLimit: { weightMandatory: true },
+    dimensionLimit: { dimensionMandatory: false },
+    sizeChartLimit: {
+      sizeChartMandatory: true,
+      supportImageSizeChart: false,
+      supportTemplateSizeChart: null,
+    },
+  },
+  gtinLimit: { gtinValidationRule: 'Optional' },
+  supportsPreOrder: true,
+};
+
+describe('#1911 — the WHOLE item bands (`limitesDoItem`): the opposite tolerance of the slice', () => {
+  it('the control: every band parses and is KEPT — `-1` on daysToShipLimit included', () => {
+    expect(respostaLimitesDoItemShopeeSchema.parse(LIMITES_DO_ITEM)).toEqual(LIMITES_DO_ITEM);
+  });
+
+  it('⭐ a malformed band REFUSES the whole answer — where the slice, on the SAME body, drops it unread', () => {
+    const corpo = {
+      ...LIMITES_DO_ITEM,
+      limites: { ...LIMITES_DO_ITEM.limites, priceLimit: 'quebrado' },
+    };
+
+    expect(respostaLimitesDoItemShopeeSchema.safeParse(corpo).success).toBe(false);
+    expect(respostaLimitesShopeeSchema.safeParse(corpo).success).toBe(true);
+  });
+
+  it.each([
+    ['a missing band (rule 2)', { ...LIMITES_DO_ITEM, limites: { sizeChartLimit: null } }],
+    ['a missing `supportsPreOrder`', { ...LIMITES_DO_ITEM, supportsPreOrder: undefined }],
+    ['a quoted number (rule 3)', { ...LIMITES_DO_ITEM, categoryId: '100087' }],
+  ])('NEAR-MISS: %s is refused', (_n, corpo) => {
+    expect(respostaLimitesDoItemShopeeSchema.safeParse(corpo).success).toBe(false);
+  });
+
+  it('the shop-wide answer (`categoryId: null`) parses — `null` is "every category", a value', () => {
+    expect(
+      respostaLimitesDoItemShopeeSchema.parse({
+        ...LIMITES_DO_ITEM,
+        scope: 'shop',
+        categoryId: null,
+      }).categoryId,
+    ).toBeNull();
+  });
+});
+
+describe('#1911 — the category suggestion is OFFERED, never applied (#799)', () => {
+  const RECOMENDACAO = {
+    recomendacoes: [
+      {
+        position: 1,
+        categoryId: 100087,
+        name: 'Camisetas',
+        isLeaf: true,
+        pathFromRoot: [{ categoryId: 100017, name: 'Moda', originalName: null, isLeaf: false }],
+      },
+      { position: 2, categoryId: 999_999, name: null, isLeaf: null, pathFromRoot: [] },
+    ],
+    unresolved: 1,
+    applied: false,
+  };
+
+  it('the control: an answer with an unresolved row parses — `isLeaf: null` is "unknown", kept', () => {
+    const r = respostaRecomendacaoCategoriaShopeeSchema.parse(RECOMENDACAO);
+
+    expect(r.recomendacoes[1]?.isLeaf).toBeNull();
+    expect(r.unresolved).toBe(1);
+  });
+
+  it('⭐ NEAR-MISS: `applied: true` is refused — a suggestion applied with no human is the defect', () => {
+    expect(
+      respostaRecomendacaoCategoriaShopeeSchema.safeParse({ ...RECOMENDACAO, applied: true })
+        .success,
+    ).toBe(false);
+  });
+});
+
+describe('#1911 — the three draft answers', () => {
+  it.each([true, false])(
+    'the create’s `criado: %s` parses — 201 and 200 are both a success',
+    (criado) => {
+      expect(
+        respostaCriarRascunhoShopeeSchema.parse({ linkDocId: 'AbCdEfGhIjKlMnOpQrSt', criado }),
+      ).toEqual({ linkDocId: 'AbCdEfGhIjKlMnOpQrSt', criado });
+    },
+  );
+
+  it('the edit’s `gravados: []` ("nothing differed") parses as `[]`; a written list keeps its order', () => {
+    expect(
+      respostaAtualizarRascunhoShopeeSchema.parse({ linkDocId: 'r-1', gravados: [] }).gravados,
+    ).toEqual([]);
+    expect(
+      respostaAtualizarRascunhoShopeeSchema.parse({
+        linkDocId: 'r-1',
+        gravados: [CAMPO_RASCUNHO_SHOPEE.categoryId, CAMPO_RASCUNHO_SHOPEE.attributes],
+      }).gravados,
+    ).toEqual([CAMPO_RASCUNHO_SHOPEE.categoryId, CAMPO_RASCUNHO_SHOPEE.attributes]);
+  });
+
+  it('NEAR-MISS: a discard that did not say `descartado: true` is not a discard', () => {
+    const corpo = { linkDocId: 'r-1', descartado: true, criacaoIncerta: false };
+    expect(respostaDescartarRascunhoShopeeSchema.safeParse(corpo).success).toBe(true);
+    expect(
+      respostaDescartarRascunhoShopeeSchema.safeParse({ ...corpo, descartado: false }).success,
+    ).toBe(false);
+  });
+});
+
+/** A 409 CONFLITO body exactly as `corpoDaRecusaDeRascunhoShopee` builds it. */
+const CONFLITO = {
+  error: 'o rascunho r-1 mudou desde que foi aberto (item_name, marca). Recarregue.',
+  code: CODIGO_RASCUNHO_SHOPEE.conflito,
+  linkDocId: 'r-1',
+  conflitos: [
+    { campo: CAMPO_RASCUNHO_SHOPEE.itemName, atual: 'Camiseta' },
+    { campo: CAMPO_RASCUNHO_SHOPEE.marca, atual: { brand_id: 0, original_brand_name: null } },
+  ],
+};
+
+const IRMAO = { linkDocId: 'link-2', itemId: 1000001, rascunho: false };
+
+describe('#1911 — the draft refusals’ extras: `conflitos`, `aguardarMs`, `vinculos` (each on its own)', () => {
+  it('⭐ a CONFLITO list reads WHOLE — `atual` verbatim, an object included', () => {
+    expect(detalhesErroShopeeSchema.parse(CONFLITO)).toMatchObject({
+      linkDocId: 'r-1',
+      conflitos: CONFLITO.conflitos,
+    });
+  });
+
+  it('⭐ `conflitos: []` (three lost writes) reads `[]` ⟷ an ABSENT key reads `null` — never folded', () => {
+    expect(detalhesErroShopeeSchema.parse({ ...CONFLITO, conflitos: [] }).conflitos).toEqual([]);
+    expect(
+      detalhesErroShopeeSchema.parse({ code: CODIGO_RASCUNHO_SHOPEE.conflito, linkDocId: 'r-1' })
+        .conflitos,
+    ).toBeNull();
+  });
+
+  it('⭐ DEPLOY SKEW (pinned choice): one item naming a campo this build lacks nulls the WHOLE list — never a partial modal, never `[]`', () => {
+    const r = detalhesErroShopeeSchema.parse({
+      ...CONFLITO,
+      conflitos: [...CONFLITO.conflitos, { campo: 'campo-de-um-backend-novo', atual: 1 }],
+    });
+
+    expect(r.conflitos).toBeNull();
+    // …and only itself: its siblings survive.
+    expect(r.linkDocId).toBe('r-1');
+  });
+
+  it('NEAR-MISS: the same list with every campo known reads whole — the catch fires only on the unknown', () => {
+    const todos = Object.values(CAMPO_RASCUNHO_SHOPEE).map((campo) => ({ campo, atual: null }));
+    expect(detalhesErroShopeeSchema.parse({ ...CONFLITO, conflitos: todos }).conflitos).toEqual(
+      todos,
+    );
+  });
+
+  it('⭐ `aguardarMs` present ⇒ the number, `0` included ⟷ ABSENT ⇒ `null` (a sibling’s uncertain create: waiting does not help)', () => {
+    const andamento = { code: CODIGO_RASCUNHO_SHOPEE.publicacaoEmAndamento, linkDocId: 'r-1' };
+
+    expect(detalhesErroShopeeSchema.parse({ ...andamento, aguardarMs: 240_000 }).aguardarMs).toBe(
+      240_000,
+    );
+    expect(detalhesErroShopeeSchema.parse({ ...andamento, aguardarMs: 0 }).aguardarMs).toBe(0);
+    expect(detalhesErroShopeeSchema.parse({ ...andamento, vinculos: [IRMAO] })).toMatchObject({
+      aguardarMs: null,
+      vinculos: [IRMAO],
+    });
+  });
+
+  it.each([
+    ['negative', -1],
+    ['fractional', 1.5],
+    ['quoted', '240000'],
+  ])('NEAR-MISS: a %s `aguardarMs` nulls ONLY itself', (_n, aguardarMs) => {
+    const r = detalhesErroShopeeSchema.parse({
+      code: CODIGO_RASCUNHO_SHOPEE.publicacaoEmAndamento,
+      linkDocId: 'r-1',
+      aguardarMs,
+      vinculos: [IRMAO],
+    });
+
+    expect(r.aguardarMs).toBeNull();
+    expect(r.vinculos).toEqual([IRMAO]);
+    expect(r.linkDocId).toBe('r-1');
+  });
+
+  it('`vinculos` reads a sibling listing AND a sibling draft; a malformed list nulls only itself', () => {
+    const rascunho = { linkDocId: 'link-3', itemId: null, rascunho: true };
+    expect(
+      detalhesErroShopeeSchema.parse({
+        code: CODIGO_RASCUNHO_SHOPEE.contaJaTemAnuncio,
+        linkDocId: 'r-1',
+        vinculos: [IRMAO, rascunho],
+      }).vinculos,
+    ).toEqual([IRMAO, rascunho]);
+
+    const quebrado = detalhesErroShopeeSchema.parse({
+      code: CODIGO_RASCUNHO_SHOPEE.contaJaTemAnuncio,
+      linkDocId: 'r-1',
+      vinculos: [{ ...IRMAO, itemId: '1000001' }],
+    });
+    expect(quebrado.vinculos).toBeNull();
+    expect(quebrado.linkDocId).toBe('r-1');
+  });
+
+  it('⭐ `motivo` stays a FREE string: the draft’s slug AND a price slug read verbatim (never retyped to one vocabulary)', () => {
+    expect(
+      detalhesErroShopeeSchema.parse({
+        code: CODIGO_RASCUNHO_SHOPEE.produtoInvalido,
+        linkDocId: 'r-1',
+        motivo: MOTIVO_RASCUNHO_INVALIDO_SHOPEE.filho,
+      }).motivo,
+    ).toBe(MOTIVO_RASCUNHO_INVALIDO_SHOPEE.filho);
+    expect(
+      detalhesErroShopeeSchema.parse({
+        code: 'SHOPEE_PRECO_CONTA_RECUSADA',
+        motivo: 'regiao-nao-suportada',
+      }).motivo,
+    ).toBe('regiao-nao-suportada');
+  });
+
+  it('the all-absent constant carries the three new keys as `null`', () => {
+    expect(DETALHES_ERRO_SHOPEE_VAZIOS).toMatchObject({
+      conflitos: null,
+      aguardarMs: null,
+      vinculos: null,
+    });
+  });
+});
+
+describe('#1911 (P9) — a category’s page of brands', () => {
+  const PAGINA = {
+    leaf: true,
+    categoryId: 100087,
+    status: 1,
+    offset: 0,
+    pageSize: 100,
+    marcas: [{ brandId: 0, originalBrandName: 'No Brand', displayBrandName: null }],
+    hasNextPage: false,
+    nextOffset: null,
+    isMandatory: true,
+    inputType: null,
+  };
+
+  it('the control: «No Brand» (`brandId: 0`) and a `null` cursor parse — both are values', () => {
+    expect(respostaMarcasShopeeSchema.parse(PAGINA)).toEqual(PAGINA);
+  });
+
+  it.each([
+    ['a quoted nextOffset (rule 3: ours, strict)', { nextOffset: '37' }],
+    ['a missing hasNextPage (rule 2: every key required)', { hasNextPage: undefined }],
+    ['a row with a fractional brandId', { marcas: [{ ...PAGINA.marcas[0], brandId: 1.5 }] }],
+  ])('NEAR-MISS: %s is refused', (_n, estrago) => {
+    expect(respostaMarcasShopeeSchema.safeParse({ ...PAGINA, ...estrago }).success).toBe(false);
   });
 });

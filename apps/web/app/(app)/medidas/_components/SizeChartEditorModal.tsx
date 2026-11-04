@@ -22,7 +22,7 @@ import {
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { FirebaseError } from 'firebase/app';
-import type { MlSizeChart } from '@delfrance/schemas';
+import { idFromRefOrNull, type MlSizeChart } from '@delfrance/schemas';
 
 import {
   SIZE_CHART_MOTIVOS,
@@ -1203,7 +1203,5 @@ function seedTemplateValues(chart: MlSizeChart | null): Record<string, ChartSpec
 
 /** The bare grupo id behind the stored `documents/grupoDeVariacoes/<id>` path. */
 function grupoIdOf(chart: MlSizeChart | null): string | null {
-  const uid = chart?.grupoDeVariacoesUid;
-  if (uid == null || uid === '') return null;
-  return uid.split('/').filter(Boolean).pop() ?? null;
+  return idFromRefOrNull(chart?.grupoDeVariacoesUid);
 }

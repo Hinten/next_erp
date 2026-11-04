@@ -144,6 +144,9 @@ const NAO_REPORTAVEIS: Readonly<Record<string, string>> = {
     '`nextNumeracaoBulk` has no caller in apps/nfe — the batch allocates inside its own transaction',
   'orchestrator/errors:NFeInutilizacaoAbortedError':
     'a precondition of `POST /inutilizar` (409) — never raised by emit, reconcile or the sweep',
+  'orchestrator/errors:NFeInutilizacaoNaoSeAplicaError':
+    'a precondition of `POST /inutilizar` (422, Ajuste SINIEF 40/2026) — never raised by emit, ' +
+    'reconcile or the sweep',
   'orchestrator/errors:NFeDanfeError':
     'a presentation precondition of the DANFE routes (422) — never raised by emit, reconcile or the sweep',
   'orchestrator/errors:NFeCancelamentoError':

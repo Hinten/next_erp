@@ -28,8 +28,10 @@ import {
   type TabelaRedacaoLi,
   bytesUtf8,
   classificarCaminho,
+  corpoDeRestauracaoLi,
   cortarUtf8,
   mascararTexto,
+  passaPredicadoLi,
   profundidadeJson,
   recursoDoCaminho,
   redigirCaminhoEQuery,
@@ -104,7 +106,8 @@ const inventarioSchema = z.object({
   }),
   operacoes: z.array(
     z.object({
-      metodo: z.literal('GET'),
+      // A PUT's leaves are those of its 2xx ECHO, walked by the same tables.
+      metodo: z.enum(['GET', 'PUT']),
       caminho: z.string().startsWith('/v1/'),
       folhas: z.array(
         z.tuple([
@@ -145,6 +148,9 @@ const OPERACOES_DO_PLANO = [
   'GET /v1/produto/{produto_id}',
   'GET /v1/produto_estoque/{produto_id}',
   'GET /v1/produto_preco/{produto_id}',
+  // The status write-back's two writes (master plan step 7): their ECHOES.
+  'PUT /v1/pedido_envio/{pedido_envio_id}',
+  'PUT /v1/situacao/pedido/{pedido_id}',
 ];
 
 describe('spec coverage — against the committed leaf inventory', () => {
@@ -154,6 +160,18 @@ describe('spec coverage — against the committed leaf inventory', () => {
     const nomes = ops.map((o) => `${o.metodo} ${o.caminho}`);
     expect(nomes).toEqual(expect.arrayContaining(OPERACOES_DO_PLANO));
     expect(ops.flatMap((o) => o.folhas).length).toBeGreaterThan(400);
+  });
+
+  it('the two write echoes are walked by their own estrutural tables, and each has leaves', () => {
+    const tabelaDe = (metodo: string, caminho: string) => {
+      const op = ops.find((o) => o.metodo === metodo && o.caminho === caminho);
+      expect(op?.folhas.length ?? 0, caminho).toBeGreaterThan(0);
+      return tabelaDoCaminho(concreto(caminho));
+    };
+    expect(tabelaDe('PUT', '/v1/pedido_envio/{pedido_envio_id}')).toBe(TABELAS_LI.pedidoEnvio);
+    expect(tabelaDe('PUT', '/v1/situacao/pedido/{pedido_id}')).toBe(TABELAS_LI.situacaoPedido);
+    expect(classificarCaminho(concreto('/v1/pedido_envio/{pedido_envio_id}'))).toBe('estrutural');
+    expect(classificarCaminho(concreto('/v1/situacao/pedido/{pedido_id}'))).toBe('estrutural');
   });
 
   it('every terminal leaf is classified EXACTLY once: allowed, denied or redacted on purpose', () => {
@@ -2499,5 +2517,277 @@ describe('near-miss pairs the mutation run found missing', () => {
       transacao_id: REDIGIDO,
       codigo: valor,
     });
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*        uriRecurso: the /v1/ form and the grade option form (step 10)        */
+/* -------------------------------------------------------------------------- */
+
+describe('uriRecurso — the /v1/ form and the grade option form (step 10)', () => {
+  const uri = (v: string) => passaPredicadoLi('uriRecurso', v);
+  const CPF_PONTUADO = `${CPF.slice(0, 3)}.${CPF.slice(3, 6)}.${CPF.slice(6, 9)}-${CPF.slice(9)}`;
+  const CNPJ_PONTUADO = `${CNPJ.slice(0, 2)}.${CNPJ.slice(2, 5)}.${CNPJ.slice(5, 8)}/${CNPJ.slice(8, 12)}-${CNPJ.slice(12)}`;
+
+  const recusadas = (valores: readonly string[]) => {
+    for (const v of valores) expect(uri(v), JSON.stringify(v)).toBe(false);
+  };
+
+  it('kept: /api/v1/ and /v1/, each with or without one trailing slash, and the option form under both', () => {
+    for (const v of [
+      '/api/v1/categoria/7645875',
+      '/api/v1/categoria/7645875/',
+      '/v1/categoria/7645875',
+      '/v1/categoria/7645875/',
+      '/api/v1/grades/6062',
+      '/v1/grades/6062/',
+      '/api/v1/situacao/pedido/165',
+      '/v1/situacao/pedido/165',
+      '/api/v1/grade/6062/variacao/37097',
+      '/api/v1/grade/6062/variacao/37097/',
+      '/v1/grade/6062/variacao/37097',
+      '/v1/grade/6062/variacao/37097/',
+    ]) {
+      expect(uri(v), v).toBe(true);
+    }
+  });
+
+  it('refused: a letter, a sign, a space or nothing where an id goes', () => {
+    recusadas([
+      '/v1/categoria/abc',
+      '/v1/categoria/12a',
+      '/v1/categoria/None',
+      '/v1/categoria/-1',
+      '/v1/categoria/1.5',
+      '/v1/categoria/ 1',
+      '/v1/categoria/1 ',
+      '/v1/categoria/',
+      '/v1/categoria',
+      '/v1/grade/6062/variacao/3709x',
+      '/v1/grade/x/variacao/37097',
+      '/v1/grade/6062/variacao/',
+      '/v1/grade//variacao/37097',
+      '/api/v1/grade/6062/variacao/None',
+    ]);
+  });
+
+  it('refused: an e-mail or a name anywhere in the path', () => {
+    recusadas([
+      `/v1/categoria/${PII_FALSA.email}`,
+      `/v1/${PII_FALSA.email}/1`,
+      `/api/v1/categoria/1/${PII_FALSA.email}`,
+      `/v1/grade/1/variacao/${PII_FALSA.email}`,
+      `/v1/categoria/${PII_FALSA.nome}`,
+      `/v1/${PII_FALSA.nome}/1`,
+      `/v1/categoria/${encodeURIComponent(PII_FALSA.nome)}`,
+      `/v1/grade/1/${encodeURIComponent(PII_FALSA.nome)}/2`,
+      '/v1/Fulano/1',
+      '/v1/joão/1',
+      '/v1/fulano-de-tal/1',
+      '/v1/fulano.tal/1',
+    ]);
+  });
+
+  it('refused: a CPF or a CNPJ written with its punctuation, and a letter-bearing CNPJ', () => {
+    recusadas([
+      `/v1/categoria/${CPF_PONTUADO}`,
+      `/v1/categoria/${CNPJ_PONTUADO}`,
+      `/v1/categoria/${CNPJ_LETRA}`,
+      `/v1/grade/1/variacao/${CPF_PONTUADO}`,
+      `/v1/grade/${CNPJ_PONTUADO}/variacao/1`,
+      `/api/v1/grade/1/variacao/${CNPJ_LETRA}`,
+    ]);
+  });
+
+  it('refused: a query string or a fragment, on either prefix and on the option form', () => {
+    recusadas([
+      '/v1/categoria/1?id_externo=1',
+      `/v1/categoria/1/?email=${PII_FALSA.email}`,
+      '/api/v1/categoria/1?limit=1',
+      '/v1/categoria/1?',
+      '/v1/categoria/1#x',
+      '/v1/grade/1/variacao/2?x=1',
+      '/api/v1/grade/1/variacao/2/?id_externo=1',
+    ]);
+  });
+
+  it('refused: a host, a scheme or a protocol-relative URL, even the Loja Integrada origin', () => {
+    recusadas([
+      `${ORIGEM_LI}/v1/categoria/1`,
+      `${ORIGEM_LI}/api/v1/categoria/1`,
+      `${ORIGEM_LI}/api/v1/grade/1/variacao/2`,
+      'https://loja.invalid/v1/categoria/1',
+      '//loja.invalid/v1/categoria/1',
+      'loja.invalid/v1/categoria/1',
+      'http://loja.invalid/v1/grade/1/variacao/2',
+    ]);
+  });
+
+  it('refused: the shape near-misses (version, prefix, doubled or extra segments, the option form spelled otherwise)', () => {
+    recusadas([
+      '/v2/categoria/1',
+      '/api/v2/categoria/1',
+      '/api/categoria/1',
+      'v1/categoria/1',
+      'api/v1/categoria/1',
+      '/api/api/v1/categoria/1',
+      '/api/v1/categoria//1',
+      '/v1//categoria/1',
+      '/v1/categoria/1//',
+      '/v1/categoria/1/2',
+      '/v1/../categoria/1',
+      '/V1/categoria/1',
+      '/v1/Categoria/1',
+      '/v1/categoria/1\n',
+      '/v1/grades/1/variacao/2',
+      '/v1/grade/1/variacoes/2',
+      '/v1/categoria/1/variacao/2',
+      '/v1/variacao/2/grade/1',
+      '/v1/grade/1/variacao/2/3',
+      '/v1/grade/1/2',
+    ]);
+  });
+
+  it('refused: another word before /v1/, and the option form with either word misspelled', () => {
+    recusadas([
+      '/apix/v1/categoria/1',
+      '/loja/v1/categoria/1',
+      '/fulano/v1/categoria/1',
+      '/x/v1/grade/1/variacao/2',
+      '/v1/grade/1/variacaoes/2',
+      '/v1/grade/1/variacaox/2',
+      '/v1/grade/1/variaca/2',
+      '/api/v1/grade/1/opcao/2',
+      '/v1/gradex/1/variacao/2',
+      '/v1/grad/1/variacao/2',
+    ]);
+  });
+
+  it('the fixture profile keeps the /v1/ and option URIs of a catalogue body, and fakes each near-miss', () => {
+    expect(
+      fixtureJson('/v1/categoria/', 200, {
+        objects: [
+          { id: 7, resource_uri: '/v1/categoria/7', categoria_pai: '/v1/categoria/3/' },
+          {
+            id: 8,
+            resource_uri: '/v1/categoria/8?id_externo=1',
+            categoria_pai: `/v1/categoria/${PII_FALSA.email}`,
+          },
+        ],
+      }),
+    ).toEqual({
+      objects: [
+        { id: 7, resource_uri: '/v1/categoria/7', categoria_pai: '/v1/categoria/3/' },
+        { id: 8, resource_uri: FALSO_LI.texto, categoria_pai: FALSO_LI.texto },
+      ],
+    });
+    expect(
+      fixtureJson('/v1/grades/6062/', 200, {
+        id: 6062,
+        resource_uri: '/api/v1/grades/6062',
+        variacoes: [
+          { id: 1, grade: '/api/v1/grades/6062', resource_uri: '/api/v1/grade/6062/variacao/1' },
+          { id: 2, grade: '/v1/grades/6062/', resource_uri: '/v1/grade/6062/variacao/2/' },
+          { id: 3, grade: '/api/v1/grades/89x6', resource_uri: '/api/v1/grade/6062/variacao/3x' },
+        ],
+      }),
+    ).toEqual({
+      id: 6062,
+      resource_uri: '/api/v1/grades/6062',
+      variacoes: [
+        { id: 1, grade: '/api/v1/grades/6062', resource_uri: '/api/v1/grade/6062/variacao/1' },
+        { id: 2, grade: '/v1/grades/6062/', resource_uri: '/v1/grade/6062/variacao/2/' },
+        { id: 3, grade: FALSO_LI.texto, resource_uri: FALSO_LI.texto },
+      ],
+    });
+  });
+
+  it('the log profile keeps an estrutural /v1/ resource_uri and redacts its query-string near-miss', () => {
+    expect(logJson('/v1/pedido/165', 200, { resource_uri: '/v1/pedido/165' })).toEqual({
+      resource_uri: '/v1/pedido/165',
+    });
+    expect(
+      logJson('/v1/pedido/165', 200, { resource_uri: `/v1/pedido/165?email=${PII_FALSA.email}` }),
+    ).toEqual({ resource_uri: REDIGIDO });
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*            The restore snapshot body (the write engine, step 7)            */
+/* -------------------------------------------------------------------------- */
+
+describe('corpoDeRestauracaoLi — the estrutural walk, whole; null wherever it cannot be faithful', () => {
+  const EMAIL_ALVO = 'comprador@exemplo.invalid';
+  const PEDIDO_165 = {
+    numero: 165,
+    situacao: { codigo: 'pedido_pago', id: 4, nome: 'Pedido pago' },
+    data_modificacao: '2026-10-13T16:30:32.706',
+    cliente: { nome: 'Comprador de Teste', email: EMAIL_ALVO, cpf: CPF },
+    endereco_entrega: { endereco: 'Rua de Teste', cep: '01310-100' },
+    envios: [{ id: 801, objeto: 'PJ258408772BR', prazo: 5 }],
+  };
+  const restauracao = (corpo: unknown, caminho = '/v1/pedido/165/', status = 200) =>
+    corpoDeRestauracaoLi({ caminho, status, texto: JSON.stringify(corpo) });
+
+  it('a pedido: situação, envio ids and tracking codes survive; the buyer does not', () => {
+    const corpo = restauracao(PEDIDO_165);
+    expect(corpo).toMatchObject({
+      numero: 165,
+      situacao: { codigo: 'pedido_pago', id: 4, nome: REDIGIDO },
+      envios: [{ id: 801, objeto: 'PJ258408772BR', prazo: 5 }],
+      cliente: { nome: REDIGIDO, email: REDIGIDO, cpf: REDIGIDO },
+      endereco_entrega: { endereco: REDIGIDO, cep: REDIGIDO },
+    });
+    expect(JSON.stringify(corpo)).not.toContain('Comprador');
+    expect(JSON.stringify(corpo)).not.toContain(CPF);
+  });
+
+  it('EQUAL pair: it is the log walk itself — the same JSON the call line would show, before any cut', () => {
+    const texto = JSON.stringify(PEDIDO_165);
+    const linha = redigirCorpo({ caminho: '/v1/pedido/165/', status: 200, corpo: texto }, 'log');
+    expect(JSON.stringify(restauracao(PEDIDO_165))).toBe(linha.trecho);
+  });
+
+  it('⚠️ NEAR-MISS: never cut at 2 KB — a body the call line truncates comes back WHOLE', () => {
+    const envios = Array.from({ length: 200 }, (_, i) => ({
+      id: 1000 + i,
+      objeto: `PJ${String(i)}BR`,
+    }));
+    const corpo = restauracao({ ...PEDIDO_165, envios });
+    expect(bytesUtf8(JSON.stringify(corpo))).toBeGreaterThan(2048);
+    expect((corpo as { envios: unknown[] }).envios).toHaveLength(200);
+  });
+
+  it.each([
+    ['a catalogue path (no byte-faithful branch until its first consumer)', '/v1/produto/1', 200],
+    ['a configuration path', '/v1/situacao', 200],
+    ['a webhook path', '/webhooks/v1/pedido', 200],
+    ['a non-2xx answer', '/v1/pedido/165/', 404],
+  ])('⚠️ NEAR-MISS: %s ⇒ null', (_caso, caminho, status) => {
+    expect(restauracao(PEDIDO_165, caminho, status)).toBeNull();
+  });
+
+  it('⚠️ NEAR-MISS: nesting deeper than 256, a body over the log cap, an empty or non-JSON body ⇒ null', () => {
+    let fundo: unknown = 1;
+    for (let i = 0; i < 257; i++) fundo = [fundo];
+    expect(restauracao({ ...PEDIDO_165, x: fundo })).toBeNull();
+    // 256 deep still parses (the walk itself redacts below its own cap).
+    let raso: unknown = 1;
+    for (let i = 0; i < 255; i++) raso = [raso];
+    expect(restauracao({ x: raso })).not.toBeNull();
+    const grande = { ...PEDIDO_165, x: 'a'.repeat(LIMITE_ANALISE_BYTES.log) };
+    expect(restauracao(grande)).toBeNull();
+    expect(corpoDeRestauracaoLi({ caminho: '/v1/pedido/165/', status: 200, texto: '' })).toBeNull();
+    expect(
+      corpoDeRestauracaoLi({ caminho: '/v1/pedido/165/', status: 200, texto: '<html>x</html>' }),
+    ).toBeNull();
+  });
+
+  it('is total: odd JSON never throws', () => {
+    for (const texto of ['null', '"x"', '[]', '{}', '1', 'true', `"${'x'.repeat(10_000)}"`]) {
+      expect(() =>
+        corpoDeRestauracaoLi({ caminho: '/v1/pedido/165/', status: 200, texto }),
+      ).not.toThrow();
+    }
   });
 });

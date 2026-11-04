@@ -252,6 +252,93 @@ describe('CODIGO_ERRO_LI', () => {
     expect(CODIGO_ERRO_LI.chamadasDesligadas).toBe('LI_CHAMADAS_DESLIGADAS');
     expect(CODIGO_ERRO_LI.chamadasDesligadas).not.toBe(CODIGO_ERRO_LI.estacionamentoEmConflito);
   });
+
+  it('the pedidos routes’ codes are pinned to their wire strings (step 15, #1825)', () => {
+    // The web's two decision tables key on these strings — a block, a confirm or a
+    // retry each — so a rename here changes what an operator is allowed to do.
+    expect({
+      pedidoNaoEncontrado: CODIGO_ERRO_LI.pedidoNaoEncontrado,
+      pedidoAusenteNaLoja: CODIGO_ERRO_LI.pedidoAusenteNaLoja,
+      pedidoDivergente: CODIGO_ERRO_LI.pedidoDivergente,
+      limiteDeChamadas: CODIGO_ERRO_LI.limiteDeChamadas,
+      tempoEsgotadoLoja: CODIGO_ERRO_LI.tempoEsgotadoLoja,
+      lojaIndisponivel: CODIGO_ERRO_LI.lojaIndisponivel,
+      rotaEmConflito: CODIGO_ERRO_LI.rotaEmConflito,
+    }).toEqual({
+      pedidoNaoEncontrado: 'LI_PEDIDO_NAO_ENCONTRADO',
+      pedidoAusenteNaLoja: 'LI_PEDIDO_AUSENTE_NA_LOJA',
+      pedidoDivergente: 'LI_PEDIDO_DIVERGENTE',
+      limiteDeChamadas: 'LI_LIMITE_DE_CHAMADAS',
+      tempoEsgotadoLoja: 'LI_TEMPO_ESGOTADO_LOJA',
+      lojaIndisponivel: 'LI_LOJA_INDISPONIVEL',
+      rotaEmConflito: 'LI_ROTA_EM_CONFLITO',
+    });
+  });
+
+  it('the catalogue routes’ codes are pinned to their wire strings (step 10, #1821)', () => {
+    // The web keys its tables and the linker's copy on these strings; a rename
+    // here changes what an operator is told.
+    expect({
+      gradeAusenteNaLoja: CODIGO_ERRO_LI.gradeAusenteNaLoja,
+      catalogoExcedeLimite: CODIGO_ERRO_LI.catalogoExcedeLimite,
+      recursoNaoPermitido: CODIGO_ERRO_LI.recursoNaoPermitido,
+    }).toEqual({
+      gradeAusenteNaLoja: 'LI_GRADE_AUSENTE_NA_LOJA',
+      catalogoExcedeLimite: 'LI_CATALOGO_EXCEDE_LIMITE',
+      recursoNaoPermitido: 'LI_RECURSO_NAO_PERMITIDO',
+    });
+  });
+
+  it('the product import routes’ codes are pinned to their wire strings (step 9, #1820)', () => {
+    expect({
+      importacaoEmAndamento: CODIGO_ERRO_LI.importacaoEmAndamento,
+      importacaoNaoEncontrada: CODIGO_ERRO_LI.importacaoNaoEncontrada,
+      importacaoEncerrada: CODIGO_ERRO_LI.importacaoEncerrada,
+    }).toEqual({
+      importacaoEmAndamento: 'LI_IMPORTACAO_EM_ANDAMENTO',
+      importacaoNaoEncontrada: 'LI_IMPORTACAO_NAO_ENCONTRADA',
+      importacaoEncerrada: 'LI_IMPORTACAO_ENCERRADA',
+    });
+  });
+
+  it('⚠️ NEAR-MISS: a running import (attach to it) is not a finished one (nothing to cancel)', () => {
+    // Both are 409s from the import routes; the web attaches on the first and only reloads on
+    // the second.
+    expect(CODIGO_ERRO_LI.importacaoEmAndamento).not.toBe(CODIGO_ERRO_LI.importacaoEncerrada);
+  });
+
+  it('the envelope carries the running jobId, and an envelope without it still parses', () => {
+    expect(
+      erroContaLojaIntegradaSchema.parse({
+        error: 'x',
+        code: CODIGO_ERRO_LI.importacaoEmAndamento,
+        jobId: 'job1',
+      }).jobId,
+    ).toBe('job1');
+    expect(
+      erroContaLojaIntegradaSchema.parse({ error: 'x', code: CODIGO_ERRO_LI.corpoInvalido }).jobId,
+    ).toBeUndefined();
+  });
+
+  it('⚠️ NEAR-MISS: a grade missing from the store is not an order missing from it', () => {
+    // Both are 409s that point at the conta's credential, but the advice differs:
+    // an order cannot vanish, a grade can be deleted in the painel.
+    expect(CODIGO_ERRO_LI.gradeAusenteNaLoja).not.toBe(CODIGO_ERRO_LI.pedidoAusenteNaLoja);
+    // A refused list parks nothing; a refused token does.
+    expect(CODIGO_ERRO_LI.recursoNaoPermitido).not.toBe(CODIGO_ERRO_LI.reconexaoPendente);
+    // A list longer than the ceiling is never "the store is down".
+    expect(CODIGO_ERRO_LI.catalogoExcedeLimite).not.toBe(CODIGO_ERRO_LI.lojaIndisponivel);
+  });
+
+  it('⚠️ NEAR-MISS: the three 503s stay distinct — a retry, a retry, and "off until the cutover"', () => {
+    const tresCodigos = [
+      CODIGO_ERRO_LI.rotaEmConflito,
+      CODIGO_ERRO_LI.limiteDeChamadas,
+      CODIGO_ERRO_LI.chamadasDesligadas,
+    ];
+    expect(new Set(tresCodigos).size).toBe(3);
+    expect(CODIGO_ERRO_LI.rotaEmConflito).not.toBe(CODIGO_ERRO_LI.estacionamentoEmConflito);
+  });
 });
 
 describe('barrel', () => {

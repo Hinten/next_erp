@@ -1,3 +1,5 @@
+import { motivoInutilizacaoNaoSeAplica, type UF } from '@delfrance/schemas';
+
 export class NFePedidoNotFoundError extends Error {
   constructor(pedidoId: string) {
     super(`Pedido '${pedidoId}' not found.`);
@@ -48,6 +50,21 @@ export class NFeInutilizacaoAbortedError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'NFeInutilizacaoAbortedError';
+  }
+}
+/**
+ * The filial's UF no longer has a Pedido de Inutilização: Ajuste SINIEF nº
+ * 40/2026 ends it in AC, BA and SP from 01/11/2026 (`inutilizacaoSeAplica` in
+ * `@delfrance/schemas`). Raised before any cert, scan or SEFAZ call — SEFAZ would
+ * only answer cStat 998 "Serviço Desativado". The route maps this to **422**
+ * with `code: 'INUTILIZACAO_NAO_SE_APLICA'`.
+ */
+export class NFeInutilizacaoNaoSeAplicaError extends Error {
+  readonly uf: UF;
+  constructor(uf: UF) {
+    super(motivoInutilizacaoNaoSeAplica(uf));
+    this.name = 'NFeInutilizacaoNaoSeAplicaError';
+    this.uf = uf;
   }
 }
 export class NFeMissingImpostoError extends Error {

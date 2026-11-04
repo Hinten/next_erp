@@ -1,4 +1,5 @@
 import type { ComponentesKit } from '../collection/embedded/kit';
+import { idFromRefOrNull } from '../../shared/outerRef';
 import { type GrupoComId, parseFakePath } from './variacoes';
 
 /**
@@ -70,14 +71,9 @@ export interface GenerateKitVariacoesResult {
   errors: string[];
 }
 
-/** Trailing variant id of a fake path (Flutter `.split('/').last`). */
-function lastId(path: string): string {
-  return (
-    path
-      .split('/')
-      .filter((p) => p.length > 0)
-      .pop() ?? path
-  );
+/** Missing IDs must never become overlap/superset keys. */
+function variantIds(paths: readonly string[]): string[] {
+  return paths.map(idFromRefOrNull).filter((id) => id !== null);
 }
 
 /** Resolve a variant (by its fake path) to its linked-variant ids + nome, via the grupos. */
@@ -112,7 +108,7 @@ export function generateKitForVariacoes(
     // `vinculadoUtilizado` consumes one linked-variant slot per successful
     // substitution; it persists across this kit-variation's components.
     let vinculadoUtilizado = 0;
-    const outerVariantIds = variacao.variacoesUid.map(lastId);
+    const outerVariantIds = variantIds(variacao.variacoesUid);
 
     for (const componente of input.componentes) {
       const variacoesTarget = input.componentVariacoesByComponentId[componente.produtoId] ?? [];
@@ -130,9 +126,9 @@ export function generateKitForVariacoes(
 
       // C — several variation children.
       const overlaps = (target: ComVariacoesUid, ids: string[]) =>
-        target.variacoesUid.map(lastId).some((id) => ids.includes(id));
+        variantIds(target.variacoesUid).some((id) => ids.includes(id));
       const isSuperset = (target: ComVariacoesUid, ids: string[]) => {
-        const targetIds = target.variacoesUid.map(lastId);
+        const targetIds = variantIds(target.variacoesUid);
         return ids.every((e) => targetIds.includes(e));
       };
 
@@ -161,10 +157,10 @@ export function generateKitForVariacoes(
           continue;
         }
         // Substitute the variant `p` with its `vinculadoUtilizado`-th linked variant.
-        const linkedIds = [
-          lastId(variante.variantesVinculadasIds[vinculadoUtilizado]!),
-          ...variacao.variacoesUid.filter((x) => x !== p).map(lastId),
-        ];
+        const linkedIds = variantIds([
+          variante.variantesVinculadasIds[vinculadoUtilizado]!,
+          ...variacao.variacoesUid.filter((x) => x !== p),
+        ]);
         const linkedTargets = variacoesTarget.filter((t) => overlaps(t, linkedIds));
         if (linkedTargets.length === 1) {
           addEntry(variacao.id, linkedTargets[0]!.id, componente);
@@ -186,7 +182,7 @@ export function generateKitForVariacoes(
         let best = outerTargets[0]!;
         let hits = 0;
         for (const t of outerTargets) {
-          const ids = t.variacoesUid.map(lastId);
+          const ids = variantIds(t.variacoesUid);
           const h = outerVariantIds.filter((e) => ids.includes(e)).length;
           if (h > hits) {
             best = t;

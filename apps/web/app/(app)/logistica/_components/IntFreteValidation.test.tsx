@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { MantineTestProvider } from '@/lib/testing/mantine';
 import { intFreteSchema, UF_SIGLA, type Endereco } from '@delfrance/schemas';
 import type { CollectionHandle } from '@delfrance/data';
@@ -201,6 +201,74 @@ describe('logistica create form — invalid submit from a non-first tab', () => 
       expect(txSet).not.toHaveBeenCalled();
     },
   );
+});
+
+describe('logistica form — a stored row the schema refuses as a whole', () => {
+  /**
+   * The issue for a row that is not an object sits on the ROW (`faixaCep.0`),
+   * with no key under it — so an editor that reads only `[i][key]` and the
+   * array's own message shows nothing, and the operator gets the tab toast
+   * with no reason anywhere on the tab it opened.
+   */
+  it.each([
+    ['Faixas de CEP', 'faixaCep'],
+    ['Horários de corte', 'horarioDeCorte'],
+  ] as const)('shows the row-level issue inside the %s editor', async (legend, campo) => {
+    const slice = LOGISTICA_SLICES.motoboy;
+    const listas: Record<string, unknown[]> = {
+      faixaCep: [{ cepInicial: '01000000', cepFinal: '01999999', custo: 1, valor: 2, prazo: 1 }],
+      horarioDeCorte: [
+        {
+          diaDaSemana: 1,
+          horaDeCorte: 14,
+          minutosDeCorte: 0,
+          prazoDePostagem: 0,
+          horaPostagem: 18,
+          minutosPostagem: 0,
+        },
+      ],
+    };
+    // A text row ahead of a valid one: the issue is `<campo>.0`.
+    listas[campo] = ['texto', ...(listas[campo] ?? [])];
+    // The document as stored — typed past the schema on purpose, since a shape
+    // the schema does not model is exactly what this case feeds the form.
+    const armazenado = {
+      tipo: slice.tipo,
+      ativo: true,
+      prazoExtra: 0,
+      dataCadastro: 1718000000000,
+      nome: 'Motoboy',
+      filialIntegracaoFreteOuterRef: 'documents/filiais/f1',
+      ...listas,
+    } as never;
+    render(
+      <Wrap>
+        <ObjectView
+          schema={intFreteSchema}
+          collection={fakeCollection() as never}
+          db={{} as never}
+          currentUserUid="u1"
+          sections={[...slice.sections]}
+          fields={intFreteFields}
+          excludedFields={[...SHARED_EXCLUDED, ...slice.extraExcluded]}
+          defaultValues={armazenado}
+          saveLabel="Criar"
+          showSaveAndContinue={false}
+        />
+      </Wrap>,
+    );
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Criar' }));
+    });
+
+    expect(txSet).not.toHaveBeenCalled();
+    const editor = screen.getByRole('group', { name: legend });
+    // Exactly once: on the refused row, and not on the valid row after it.
+    expect(
+      within(editor).getAllByText('Tipo inválido: esperado object, recebido string'),
+    ).toHaveLength(1);
+  });
 });
 
 describe('logistica create form — freight-origin telefone', () => {

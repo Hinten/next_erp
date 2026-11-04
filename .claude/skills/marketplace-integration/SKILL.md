@@ -23,8 +23,9 @@ description: >-
 
 **One App Hosting backend per channel.** `apps/<channel>` holds every stateful
 flow; `packages/integrations/<channel>` holds the platform-neutral half (fetch-only:
-OAuth, the REST client, wire schemas, pure mappers). Mercado Livre is the only
-implemented channel and the reference for both halves.
+OAuth, the REST client, wire schemas, pure mappers). Mercado Livre is the first
+implemented channel (Shopee, since its step 22, is the second) and the reference
+for both halves.
 
 ⚠️ **There is no `MarketplaceChannel` interface, and you must not create one.** It
 existed, one channel was built against it, and that channel implemented three of its

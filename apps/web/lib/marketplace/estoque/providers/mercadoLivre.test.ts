@@ -22,6 +22,7 @@ function input(
     deps: {
       mercadoLivre:
         enviarEstoque == null ? null : ({ enviarEstoque } as unknown as MercadoLivreClient),
+      shopee: null,
     },
     ...over,
   };

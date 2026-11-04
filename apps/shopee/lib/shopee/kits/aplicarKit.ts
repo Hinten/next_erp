@@ -106,10 +106,10 @@ import { agoraUsDe } from '../avisos/autorizacao';
 import { ehKitDe, temModelosDe, type ItemLido } from '../produtos/itemLido';
 import { lerAnuncioShopee } from '../produtos/lerAnuncio';
 import { itensDosComponentesDoKit } from '../produtos/temModelosDosComponentes';
-import { STATUS_BUSCA_KIT } from './constantesKit';
 import {
   chaveReceitaArmazenadaDoFilho,
   opcaoDoTierKit,
+  situacaoDoKitNosso,
   vinculosNativosDoKit,
   type PlanoKit,
 } from './planoKit';
@@ -557,9 +557,10 @@ export interface GarantiaCumprida {
  * `ShopeePublishBlockedError` with every miss (the plan's and the scan's).
  *
  * Before acting it writes the ONE fact a create-arm run may write before
- * `add_kit_item` (S2C-02): a linked native kit the scan did not list and whose
- * batched base-info status says it is gone gets `removido` on its link — a fact
- * READ, not progress. On `incerto` it writes nothing else and returns at once:
+ * `add_kit_item` (S2C-02): a linked native kit the complete scan did not list and
+ * whose batched base-info read says it is gone (`situacaoDoKitNosso` →
+ * `apagado`, #2065) gets `removido` on its link — a fact READ, not progress. On
+ * `incerto` it writes nothing else and returns at once:
  * every applier stops there (V2R2-04).
  */
 export async function garantirKitNovo(
@@ -641,23 +642,25 @@ export async function garantirKitNovo(
 }
 
 /**
- * S2C-02: every `nossos` link the scan did not list whose batched status is
- * not one a live kit carries (`STATUS_BUSCA_KIT`) — deleted, or absent — is
- * written `removido` before the run acts, so the dispatcher stops counting it.
+ * S2C-02: every `nossos` link whose kit reads `apagado` — not listed by the
+ * complete walk, and a deleted status or no row at all on a link that is not
+ * `recente` (#2065) — is written `removido` before the run acts, so the
+ * dispatcher stops counting it. A `recente` one is a doubt the plan refuses on:
+ * nothing is written about it.
  */
 async function escreverNossosApagados(deps: KitDeps, ctx: ContextoKit): Promise<void> {
   if (ctx.nossosVivos.size === 0) return;
-  const vivos: ReadonlySet<string> = new Set(STATUS_BUSCA_KIT);
-  // The SAME `nossos` the plan's `decidirKitNovo` read — one definition.
+  // The SAME `nossos` and the SAME reading the plan's `decidirKitNovo` used —
+  // one definition (#2065).
   const { nossos } = vinculosNativosDoKit(ctx.vinculos, ctx.alvo?.linkDocId ?? null);
-  for (const [itemId, status] of ctx.nossosVivos) {
-    if (status !== null && vivos.has(status)) continue;
+  for (const [itemId, leitura] of ctx.nossosVivos) {
+    if (situacaoDoKitNosso(leitura) !== 'apagado') continue;
     const linkDocId = nossos.get(itemId);
     if (linkDocId === undefined) continue;
     await escreverLeituraDoKit(deps, {
       produtoId: ctx.produto.id,
       linkDocId,
-      leitura: { kind: 'status', itemStatus: status },
+      leitura: { kind: 'status', itemStatus: leitura.itemStatus },
     });
   }
 }

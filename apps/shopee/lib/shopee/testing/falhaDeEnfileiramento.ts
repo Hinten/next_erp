@@ -1,6 +1,6 @@
 /**
  * The REAL Cloud Tasks enqueue failures of the pinned `firebase-admin`
- * (14.2.0), built with the SDK's own exported classes — **for tests only**.
+ * (14.5.0), built with the SDK's own exported classes — **for tests only**.
  *
  * ⚠️ Nothing under `lib/shopee/**` outside a `*.test.ts` may import this module
  * (the `fakeDb.ts` / `fakeBucket.ts` precedent). It ships in the app tree rather

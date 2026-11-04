@@ -26,6 +26,7 @@ export { usuarioCollection } from './usuarioCollection';
 export { arquivoCollection } from './arquivoCollection';
 export { arquivoOrphanSweepStateCollection } from './arquivoOrphanSweepStateCollection';
 export { categoriaCollection } from './categoriaCollection';
+export { categoriaLojaIntegradaLinkCollection } from './categoriaLojaIntegradaLinkCollection';
 export { produtoCollection } from './produtoCollection';
 export { estoqueCollection } from './estoqueCollection';
 export { depositoCollection } from './depositoCollection';
@@ -63,11 +64,21 @@ export {
   produtoShopeeLinkCollection,
   variacaoShopeeLinkCollection,
 } from './produtoShopeeLinkCollection';
+export { produtoAmazonLinkCollection } from './produtoAmazonLinkCollection';
+export { produtoLojaIntegradaLinkCollection } from './produtoLojaIntegradaLinkCollection';
 export { grupoDeVariacoesCollection } from './grupoDeVariacoesCollection';
 export { produtoExtraDataCollection } from './produtoExtraDataCollection';
 export { notificacaoMercadoLivreCollection } from './notificacaoMercadoLivreCollection';
 export { importacaoMercadoLivreCollection } from './importacaoMercadoLivreCollection';
 export { importacaoShopeeCollection } from './importacaoShopeeCollection';
+export {
+  detalheImportacaoLiCollection,
+  evidenciaImportacaoLiCollection,
+  importacaoLojaIntegradaCollection,
+  itemImportacaoLiCollection,
+  paginaImportacaoLiCollection,
+  revisaoFiscalImportacaoLiCollection,
+} from './importacaoLojaIntegradaCollection';
 export { pedidoCollection } from './pedidoCollection';
 export {
   COMPRA_ETIQUETA_DOC_ID,
@@ -92,7 +103,10 @@ export { notificacaoMercadoPagoCollection } from './notificacaoMercadoPagoCollec
 export { notificacaoMelhorEnvioCollection } from './notificacaoMelhorEnvioCollection';
 export { notificacaoShopeeCollection } from './notificacaoShopeeCollection';
 export { notificacaoLojaIntegradaCollection } from './notificacaoLojaIntegradaCollection';
+export { notificacaoEscritaLojaIntegradaCollection } from './notificacaoEscritaLojaIntegradaCollection';
 export { pollPedidosLojaIntegradaCollection } from './pollPedidosLojaIntegradaCollection';
+export { notificacaoAmazonCollection } from './notificacaoAmazonCollection';
+export { pollPedidosAmazonCollection } from './pollPedidosAmazonCollection';
 export { clienteCollection } from './clienteCollection';
 export { clienteIdentidadeCollection } from './clienteIdentidadeCollection';
 export { conversaCollection } from './conversaCollection';

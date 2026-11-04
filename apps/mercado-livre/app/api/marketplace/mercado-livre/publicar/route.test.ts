@@ -68,6 +68,8 @@ beforeEach(() => {
   h.resolveChannelContext.mockResolvedValue({
     integracaoId: 'int-1',
     accessToken: 'AT',
+    getAccessToken: async () => 'AT',
+    invalidateAccessToken: vi.fn(),
     account: {},
   });
   h.loadCtx.mockResolvedValue({

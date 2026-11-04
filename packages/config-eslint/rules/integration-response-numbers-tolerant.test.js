@@ -108,6 +108,7 @@ const PATHSPECS = [
   ':(glob)packages/integrations/freight-br/src/**/*.ts',
   ':(glob)packages/integrations/shopee/src/**/*.ts',
   ':(glob)packages/integrations/loja-integrada/src/**/*.ts',
+  ':(glob)packages/integrations/amazon-sp-api/src/**/*.ts',
 ];
 
 /** Both bans in ONE spawn — `git grep` ORs its `-e` patterns. */
@@ -184,9 +185,14 @@ const ALLOWED_STRICT = {
   // so there is nothing there for which strictness would be the right direction.
   // ⚠️ Step 11 kept that true: its `Shopee*Request` bodies are plain TypeScript
   // interfaces in `api.ts`, so a Zod one would need an entry here to stay strict.
-  // No `loja-integrada` entry either, for the same reason: GET-only, response
-  // shapes only. Its first write step brings its first request body — and, if
-  // that body is a Zod schema, its first entry here.
+  // No `loja-integrada` entry either. Its write client does send request
+  // bodies (the status write-back's `{objeto}` and `{codigo}`, `rotasEscrita.ts`),
+  // and they are strict Zod schemas — but over STRINGS only, with no
+  // `z.number()` to keep strict, so there is nothing here for strictness to
+  // protect. A later write step whose body holds a number brings its first entry.
+  // No `amazon-sp-api` entry either. Its only outbound body, the LWA token
+  // POST, is a form-encoded `URLSearchParams` of strings, not a Zod schema; if
+  // a later write step brings a Zod request body, that step adds its first entry.
 };
 
 /**
@@ -248,10 +254,10 @@ const KNOWN_TOLERANT_LINES = {
     'shop_id: wireInt(),',
     'auth_time: wireInt(),',
   ],
-  // Loja Integrada. ⚠️ Same reason as Shopee: no `ALLOWED_STRICT` entry, because
-  // the package declares response shapes only (it is GET-only, so there is no
-  // request body to keep strict), and the staleness test therefore has nothing
-  // to say about it. These three lines are what keep a mistyped
+  // Loja Integrada. ⚠️ No `ALLOWED_STRICT` entry: the package's request bodies
+  // (its write client's two, `rotasEscrita.ts`) hold strings only, so no Zod
+  // number in it needs to stay strict, and the staleness test therefore has
+  // nothing to say about it. These three lines are what keep a mistyped
   // `loja-integrada` pathspec from leaving the "no bare z.number()" assertion
   // running over an empty set. ⚠️ The pathspec reaches EVERY file under `src/`,
   // not only `types.ts` — the package keeps Zod numbers out of the rest
@@ -262,6 +268,16 @@ const KNOWN_TOLERANT_LINES = {
     'offset: wireInt(),',
     'id: wireInt(),',
   ],
+  // Amazon SP-API. ⚠️ Same reason as Shopee and Loja Integrada: no
+  // `ALLOWED_STRICT` entry (response shapes only), so this line is what keeps a
+  // mistyped `amazon-sp-api` pathspec from leaving the "no bare z.number()"
+  // assertion running over an empty set. It is the package's only Zod number —
+  // the rate-limit header is read with `parseWireDecimal`, never Zod — and the
+  // pathspec reaches EVERY file under `src/`, so any hit elsewhere is a real
+  // offender. ⚠️ The text differs from ML/MP/ME's `expires_in: wireNumber(),`
+  // (LWA's lifetime is whole seconds, so `wireInt`); the per-path KEY is what
+  // makes it this package's anchor either way.
+  'packages/integrations/amazon-sp-api/src/types.ts': ['expires_in: wireInt(),'],
 };
 
 /** Well below the 75 + 13 + 10 the three sweeps converted — a rot detector, not a spec. */

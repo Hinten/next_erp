@@ -76,6 +76,16 @@ describe('pedidos list column set', () => {
     expect(declared).toContain(PEDIDO_ROW_LINK_COLUMN);
   });
 
+  it('Frete column projects the Loja Integrada identity the paid re-check hashes (step 15)', () => {
+    // The etiqueta row reads both through the Frete cell alone: with the Canal
+    // or Número column hidden, a projection without them would hand the soft
+    // gate a pedido with no conta and no numero — "not imported", no check.
+    const frete = columns.find((c) => c.key === 'frete');
+    expect(frete?.dependsOn).toEqual(
+      expect.arrayContaining(['freteInicial', 'ehSaida', 'integracaoPedidoOuterRef', 'numero']),
+    );
+  });
+
   it('NF column projects the cliente ref AND hands it to NFCell (#852)', () => {
     // NFCell's prop is OPTIONAL — so its 19 test renders compile unchanged —
     // which means dropping this wiring would fail nothing else: the 805

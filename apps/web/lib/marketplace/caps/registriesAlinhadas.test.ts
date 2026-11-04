@@ -4,7 +4,7 @@ import { INTEGRACAO_TIPO, type IntegracaoTipo } from '@delfrance/schemas';
 import { PROVIDERS as PROVIDERS_ANUNCIO_STATUS } from '../anuncioStatus/registry';
 import { PROVIDERS as PROVIDERS_ESTOQUE } from '../estoque/registry';
 import { PROVIDERS as PROVIDERS_PRECO } from '../preco/registry';
-import { type AcaoCanal, capsPermitem } from './suporteCanal';
+import { type AcaoCanal, capsPermitem, vereditoCanal } from './suporteCanal';
 
 /**
  * The drift test — what makes `MARKETPLACE_TIPO_CAPS` load-bearing rather than
@@ -26,7 +26,10 @@ import { type AcaoCanal, capsPermitem } from './suporteCanal';
  * screen not wired yet), the fix is to SAY SO here with a named exception and a
  * comment — not to delete the assertion. The second arm above is exactly the
  * `'canal-sem-provider'` verdict, which exists so that state is at least
- * reported honestly at runtime.
+ * reported honestly at runtime. Shopee went the other way round — provider rows
+ * in step 21 (#1529) ahead of its caps flip in step 22 (#1530) — behind a
+ * one-member exception set that pinned the middle state and was deleted with the
+ * flip; `git log -S LINHAS_ANTES_DO_FLIP` shows the shape to copy.
  */
 
 const REGISTRIES: ReadonlyArray<readonly [AcaoCanal, Partial<Record<IntegracaoTipo, unknown>>]> = [
@@ -46,6 +49,17 @@ describe('the caps table and the apps/web registries agree', () => {
       ).toBe(providers[tipo] !== undefined);
     }
   });
+
+  it.each(REGISTRIES)(
+    '%s: Shopee is supported — caps implemented AND a provider row',
+    (acao, providers) => {
+      // The deleted middle-state pin, inverted: the same call that answered
+      // `canal-nao-implementado` through step 21 now answers supported, which is
+      // what lets a /produtos selection reach a Shopee conta at all.
+      expect(providers[INTEGRACAO_TIPO.shopee], 'the Shopee provider row').toBeDefined();
+      expect(vereditoCanal(acao, INTEGRACAO_TIPO.shopee, providers)).toEqual({ suportado: true });
+    },
+  );
 
   it('is comparing against registries that really have a provider', () => {
     // Guards the assertion above from passing vacuously if every row were empty

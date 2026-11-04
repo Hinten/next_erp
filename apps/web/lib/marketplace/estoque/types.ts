@@ -46,7 +46,7 @@ export type StockPushDeps = PushDeps;
 
 export interface StockPushInput {
   integracao: StockPushIntegracao;
-  /** Family anchors (or any produto — the backend resolves to the anchor). */
+  /** Family anchors or variation children — every registered channel's backend resolves a child one `paiId` hop to its anchor, and its rows name the ANCHOR. */
   produtoIds: readonly string[];
   /** Names for the report, so a skip row can still say which produto it was. */
   nomePorProdutoId: ReadonlyMap<string, string>;

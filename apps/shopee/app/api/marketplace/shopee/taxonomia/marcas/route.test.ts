@@ -1,8 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { z } from 'zod';
 import { PERM } from '@delfrance/auth';
 import { READ_CACHE_DISABLED_ENV, __resetAllReadCaches } from '@delfrance/data/admin/cache';
 import { ShopeeNetworkError } from '@delfrance/integrations-shopee';
+import {
+  marcaDtoSchema as marcaCompartilhada,
+  respostaMarcasShopeeSchema,
+} from '@delfrance/schemas';
 
 import { ShopeeContaNotConfiguredError } from '@/lib/shopee/core/shopee';
 import { __setShopeeTaxonomiaClockForTests } from '@/lib/shopee/taxonomia/cache';
@@ -31,18 +34,13 @@ const { GET } = await import('./route');
 const READER = { uid: 'u1', permissions: PERM.integracao.read.toString() };
 const AUTORIZADO = { authorization: 'Bearer t' };
 
-const corpoSchema = z.object({
-  leaf: z.boolean(),
-  categoryId: z.number().int(),
-  status: z.number().int(),
-  offset: z.number().int(),
-  pageSize: z.number().int(),
-  marcas: z.array(marcaDtoSchema),
-  hasNextPage: z.boolean(),
-  nextOffset: z.number().int().nullable(),
-  isMandatory: z.boolean().nullable(),
-  inputType: z.string().nullable(),
-});
+/**
+ * The SHARED envelope (#1911 P2) — declared once in `@delfrance/schemas` for
+ * this route and its browser readers — never a test-local twin. Bound to the old
+ * local name so every case below is byte-unedited: P2 is behaviour-neutral, and
+ * those cases staying green UNCHANGED is the proof.
+ */
+const corpoSchema = respostaMarcasShopeeSchema;
 
 function categoria(category_id: number, parent_category_id: number, has_children: boolean) {
   return {
@@ -263,4 +261,30 @@ describe('os erros', () => {
       GET(req({ integracaoId: 'int-1', categoryId: '100182' }, AUTORIZADO)),
     ).rejects.toBeInstanceOf(TypeError);
   });
+});
+
+describe('o contrato compartilhado com apps/web (#1911 P2)', () => {
+  it('a marca que este app re-exporta É a de @delfrance/schemas — nunca uma cópia', () => {
+    expect(marcaDtoSchema).toBe(marcaCompartilhada);
+  });
+
+  it.each([
+    ['uma folha', '100182'],
+    ['uma categoria do meio', '100100'],
+  ])(
+    'o 200 de %s volta IGUAL do schema compartilhado — nenhuma chave descartada',
+    async (_c, id) => {
+      // ⚠️ A página chega à rota por SPREAD, e `satisfies` não acusa chave a MAIS
+      // num spread: uma chave nova em `PaginaDeMarcas` que o envelope não tem é
+      // este pino que pega, nunca o compilador.
+      const res = await GET(req({ integracaoId: 'int-1', categoryId: id }, AUTORIZADO));
+      const body = (await res.json()) as Record<string, unknown>;
+
+      expect(res.status).toBe(200);
+      expect(respostaMarcasShopeeSchema.parse(body)).toEqual(body);
+      expect(Object.keys(body).sort()).toEqual(
+        Object.keys(respostaMarcasShopeeSchema.shape).sort(),
+      );
+    },
+  );
 });

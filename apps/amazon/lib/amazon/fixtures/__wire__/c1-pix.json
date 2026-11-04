@@ -1,0 +1,186 @@
+{
+  "versao": 1,
+  "perfil": "fixture",
+  "credencial": "token-legado-curl",
+  "papeis": [
+    "dtc",
+    "tax-invoicing"
+  ],
+  "capturadoEm": "2026-10-28",
+  "limiteTaxa": 0.5,
+  "requisicao": {
+    "tipo": "http",
+    "metodo": "GET",
+    "caminho": "/orders/2026-01-01/orders/000-0000000-0486035",
+    "query": [
+      [
+        "includedData",
+        "BUYER,RECIPIENT,TAX,PAYMENT,PROCEEDS,FULFILLMENT,PACKAGES,CANCELLATION,FULFILLMENT_ORDERS,EXPENSE,PROMOTION"
+      ]
+    ],
+    "corpo": null
+  },
+  "resposta": {
+    "status": 200,
+    "politica": "estrutural",
+    "forma": "json",
+    "bytes": 2523,
+    "corpo": {
+      "order": {
+        "orderId": "000-0000000-0486035",
+        "tax": {
+          "taxRegistrations": [
+            {
+              "entityType": "BUYER",
+              "taxRegistrationType": "CPF",
+              "taxRegistrationNumber": "00000000191"
+            }
+          ],
+          "taxInvoicing": {
+            "invoiceStatus": "ACCEPTED"
+          }
+        },
+        "salesChannel": {
+          "marketplaceId": "A2Q3Y263D00KWC",
+          "marketplaceName": "Amazon.com.br",
+          "channelName": "AMAZON"
+        },
+        "packages": [
+          {
+            "carrier": "AMZBR",
+            "packageItems": [
+              {
+                "quantity": 1,
+                "orderItemId": "000004698989636"
+              }
+            ],
+            "packageReferenceId": "PKG-Z083ac5df",
+            "shipTime": "2026-07-30T21:00:00Z",
+            "shippingService": "Std EZ Local",
+            "packageStatus": {
+              "detailedStatus": "DELIVERED",
+              "status": "DELIVERED"
+            },
+            "trackingNumber": "TRKZ5965211427"
+          }
+        ],
+        "orderItems": [
+          {
+            "product": {
+              "condition": {
+                "conditionSubtype": "NEW",
+                "conditionType": "NEW"
+              },
+              "price": {
+                "unitPrice": {
+                  "amount": "39.91",
+                  "currencyCode": "BRL"
+                }
+              },
+              "asin": "B0ZZE5UA2Z",
+              "sellerSku": "SKU-Z6a8e6dce",
+              "title": "REDACTED"
+            },
+            "proceeds": {
+              "breakdowns": [
+                {
+                  "subtotal": {
+                    "amount": "39.91",
+                    "currencyCode": "BRL"
+                  },
+                  "type": "ITEM"
+                }
+              ],
+              "proceedsTotal": {
+                "amount": "39.91",
+                "currencyCode": "BRL"
+              }
+            },
+            "orderItemId": "000004698989636",
+            "quantityOrdered": 1,
+            "fulfillment": {
+              "quantityUnfulfilled": 0,
+              "quantityFulfilled": 1
+            }
+          }
+        ],
+        "buyer": {
+          "buyerEmail": "redacted@example.invalid",
+          "buyerName": "REDACTED"
+        },
+        "proceeds": {
+          "grandTotal": {
+            "amount": "39.91",
+            "currencyCode": "BRL"
+          },
+          "breakdowns": [
+            {
+              "subtotal": {
+                "amount": "39.91",
+                "currencyCode": "BRL"
+              },
+              "type": "ITEM"
+            }
+          ]
+        },
+        "fulfillmentOrders": [
+          {
+            "fulfillmentOrderId": "REDACTED"
+          }
+        ],
+        "recipient": {
+          "deliveryAddress": {
+            "stateOrRegion": "REDACTED",
+            "city": "REDACTED",
+            "countryCode": "REDACTED",
+            "addressType": "REDACTED",
+            "postalCode": "00000-000",
+            "name": "REDACTED",
+            "addressLine1": "REDACTED",
+            "addressLine2": "REDACTED",
+            "extendedFields": {
+              "streetName": "REDACTED",
+              "streetNumber": "REDACTED",
+              "neighborhood": "REDACTED",
+              "complement": "REDACTED"
+            }
+          }
+        },
+        "createdTime": "2026-07-30T07:01:35.556Z",
+        "lastUpdatedTime": "2026-07-31T15:44:13.576Z",
+        "payment": {
+          "paymentExecutions": [
+            {
+              "authorizationCode": "REDACTED",
+              "paymentMethod": "Pix",
+              "acquirerId": "11222333000181",
+              "paymentAmount": {
+                "amount": "39.91",
+                "currencyCode": "BRL"
+              }
+            }
+          ]
+        },
+        "programs": [
+          "DELIVERY_BY_AMAZON"
+        ],
+        "fulfillment": {
+          "shipByWindow": {
+            "latestDateTime": "2026-07-31T02:59:59Z",
+            "earliestDateTime": "2026-07-30T03:00:00Z"
+          },
+          "fulfilledBy": "MERCHANT",
+          "deliverByWindow": {
+            "latestDateTime": "2026-08-01T02:59:59Z",
+            "earliestDateTime": "2026-07-31T03:00:00Z"
+          },
+          "fulfillmentStatus": "SHIPPED",
+          "fulfillmentServiceLevel": "STANDARD"
+        }
+      }
+    }
+  },
+  "anexos": {
+    "zip": null
+  }
+}

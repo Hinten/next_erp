@@ -1,0 +1,8 @@
+{
+  "app": "node --import tsx bin/relay.ts",
+  "notices": false,
+  "versionReporting": false,
+  "context": {
+    "cli-telemetry": false
+  }
+}

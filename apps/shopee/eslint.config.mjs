@@ -85,8 +85,8 @@ const config = [
     // read back was written by a DIFFERENT process (the function running inside
     // the emulator), which is exactly when you want the raw bytes. Scoped to the
     // two suffixes, so production code and the offline unit tests stay covered.
-    // ⚠️ `*.firestore.test.ts` is listed before any such suite exists: that lane
-    // is step 22's (#1530), and the block must not have to be remembered then.
+    // ⚠️ `*.firestore.test.ts` rides the same job (vitest.tasks.config.ts includes
+    // both suffixes, #1530); `lib/shopee/core/tokenStore.firestore.test.ts` is the first.
     files: ['**/*.firestore.test.ts', '**/*.tasks.test.ts'],
     rules: {
       'no-restricted-syntax': ['error', ...baseRestrictedSyntax],

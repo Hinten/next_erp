@@ -23,6 +23,20 @@ const looseSchema = z.object({ nome: z.string().min(1) }).passthrough();
 const looseHandle = defineAdminCollection({ path: 'loose', schema: looseSchema });
 
 describe('defineAdminCollection', () => {
+  it('extracts collection-group IDs from top-level and nested collection templates', () => {
+    for (const [path, expected] of [
+      ['things', 'things'],
+      ['things/{thingId}/sub', 'sub'],
+      ['documents', 'documents'],
+    ]) {
+      const group = {};
+      const collectionGroup = vi.fn(() => group);
+      const h = defineAdminCollection({ path: path!, schema });
+      expect(h.groupQuery({ collectionGroup } as never)).toBe(group);
+      expect(collectionGroup).toHaveBeenCalledWith(expected);
+    }
+  });
+
   describe('parse (full write)', () => {
     it('throws on a missing required field', () => {
       expect(() => handle.parse({ cStat: null })).toThrow();

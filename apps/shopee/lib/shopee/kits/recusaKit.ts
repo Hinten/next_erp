@@ -48,6 +48,7 @@ import {
   ShopeeRateLimitError,
   ShopeeReauthRequiredError,
 } from '@delfrance/integrations-shopee';
+import { AGUARDAR_KIT_INCERTO_SHOPEE_MS } from '@delfrance/schemas';
 
 import {
   MOTIVO_PROBLEMA_PUBLICACAO,
@@ -183,8 +184,10 @@ export const MOTIVO_RECUSA_KIT_TRANSITORIO: ReadonlySet<MotivoRecusaKit> = new S
 const MENSAGEM_DA_RECUSA_KIT = {
   [MOTIVO_PROBLEMA_PUBLICACAO.operacaoInvalidaParaKit]:
     "a Shopee recusou esta operação em um kit ('Invalid product setting')",
-  [MOTIVO_PROBLEMA_PUBLICACAO.instabilidadeShopee]:
-    "a Shopee respondeu com instabilidade ('Too many connections'); a operação pode ter sido feita — rode exatamente o mesmo comando de novo daqui a 4 minutos",
+  // The wait is the schemas' ONE copy (step 21, #1529), the same one
+  // `MENSAGEM_KIT_INCERTO` and the 202's `aguardarMs` read. The CLI wording stays:
+  // the produto's Shopee tab renders its own text for this motivo, never this one.
+  [MOTIVO_PROBLEMA_PUBLICACAO.instabilidadeShopee]: `a Shopee respondeu com instabilidade ('Too many connections'); a operação pode ter sido feita — rode exatamente o mesmo comando de novo daqui a ${String(AGUARDAR_KIT_INCERTO_SHOPEE_MS / 60_000)} minutos`,
   [MOTIVO_PROBLEMA_PUBLICACAO.imagemDeKitDesligada]:
     'a geração de imagem de kit está desligada nesta loja',
   [MOTIVO_PROBLEMA_PUBLICACAO.kitInexistente]: 'a Shopee não encontrou este kit',

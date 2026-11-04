@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  ARQUIVO_CHAVE_FIXTURES,
   ARQUIVO_NOMES_PROIBIDOS,
   ErroDeUsoSanitizacao,
   lerNomesProibidos,
@@ -43,6 +44,21 @@ describe('montarLote', () => {
       [],
     );
     expect(lote).toEqual({ pares: ['a'], ignorados: 2, problemas: [] });
+  });
+
+  it('the pseudonym key is neither a pair nor an other file, as a file or as any other entry', () => {
+    expect(montarLote(['a.json', 'a.txt', ARQUIVO_CHAVE_FIXTURES], [])).toEqual({
+      pares: ['a'],
+      ignorados: 0,
+      problemas: [],
+    });
+    expect(montarLote(['a.json', 'a.txt'], [], [ARQUIVO_CHAVE_FIXTURES])).toEqual({
+      pares: ['a'],
+      ignorados: 0,
+      problemas: [],
+    });
+    // Near-miss: a name one character away is an ordinary other file.
+    expect(montarLote(['a.json', 'a.txt', '.chave-fixture'], []).ignorados).toBe(1);
   });
 
   it('`--so` keeps only the named pairs, and the rest of the folder is not judged', () => {

@@ -6,6 +6,11 @@ import {
   ShopeeApiError,
   ShopeeNetworkError,
 } from '@delfrance/integrations-shopee';
+import {
+  limitesDeItemDtoSchema as limitesDeItemCompartilhado,
+  respostaLimitesDoItemShopeeSchema,
+  respostaLimitesTabelaMedidasShopeeSchema,
+} from '@delfrance/schemas';
 
 import { ShopeeContaNotConfiguredError } from '@/lib/shopee/core/shopee';
 import { __setShopeeTaxonomiaClockForTests } from '@/lib/shopee/taxonomia/cache';
@@ -257,5 +262,86 @@ describe('uma falha SOBE — nunca limites nulos', () => {
   it('deixa um erro alheio subir (regra 6)', async () => {
     h.getItemLimit.mockRejectedValue(new TypeError('bug nosso'));
     await expect(GET(req({ integracaoId: 'int-1' }, AUTORIZADO))).rejects.toBeInstanceOf(TypeError);
+  });
+});
+
+describe('o contrato compartilhado com apps/web (#1911 P2)', () => {
+  /** `get_item_limit` com TODA banda preenchida — nenhum `null` esconde uma chave. */
+  function todasAsBandas() {
+    return {
+      response: {
+        price_limit: banda(1.5, 9999.99),
+        wholesale_price_threshold_percentage: banda(1, 80),
+        stock_limit: banda(0, 999),
+        item_name_length_limit: banda(20, 120),
+        item_image_count_limit: banda(1, 9),
+        item_description_length_limit: banda(100, 5000),
+        tier_variation_name_length_limit: banda(1, 14),
+        tier_variation_option_length_limit: banda(1, 20),
+        item_count_limit: banda(null, 1000),
+        extended_description_limit: {
+          description_text_length_min: 25,
+          description_text_length_max: 5000,
+          description_image_num_min: 0,
+          description_image_num_max: 12,
+          description_image_width_min: 300,
+          description_image_height_min: 300,
+          description_image_aspect_ratio_min: 0.5,
+          description_image_aspect_ratio_max: 2,
+        },
+        dts_limit: { days_to_ship_limit: banda(7, 30), non_pre_order_days_to_ship: 2 },
+        weight_limit: { weight_mandatory: true },
+        dimension_limit: { dimension_mandatory: false },
+        size_chart_limit: {
+          size_chart_mandatory: true,
+          support_image_size_chart: false,
+          support_template_size_chart: null,
+        },
+        gtin_limit: { gtin_validation_rule: 'MANDATORY' },
+      },
+      gtin_limit: null,
+    };
+  }
+
+  it('as bandas que este app re-exporta SÃO as de @delfrance/schemas — nunca uma cópia', () => {
+    expect(limitesDeItemDtoSchema).toBe(limitesDeItemCompartilhado);
+  });
+
+  it.each([
+    ['da loja inteira', {}],
+    ['de uma categoria', { categoryId: '100100' }],
+  ])('o 200 %s volta IGUAL do envelope INTEIRO — nenhuma chave descartada', async (_c, q) => {
+    h.getItemLimit.mockResolvedValue(todasAsBandas());
+    const res = await GET(req({ integracaoId: 'int-1', ...q }, AUTORIZADO));
+    const body = (await res.json()) as { limites: Record<string, unknown> };
+
+    expect(res.status).toBe(200);
+    expect(respostaLimitesDoItemShopeeSchema.parse(body)).toEqual(body);
+    expect(Object.keys(body).sort()).toEqual(
+      Object.keys(respostaLimitesDoItemShopeeSchema.shape).sort(),
+    );
+    expect(Object.keys(body.limites).sort()).toEqual(
+      Object.keys(limitesDeItemCompartilhado.shape).sort(),
+    );
+    // Não vazio: com tudo preenchido, nenhuma banda do corpo é `null`.
+    expect(Object.values(body.limites).filter((v) => v === null)).toEqual([]);
+  });
+
+  it('a fatia de /medidas lida do MESMO 200 é só scope, categoryId e sizeChartLimit', async () => {
+    h.getItemLimit.mockResolvedValue(todasAsBandas());
+    const res = await GET(req({ integracaoId: 'int-1', categoryId: '100100' }, AUTORIZADO));
+    const body = (await res.json()) as Record<string, unknown>;
+
+    expect(respostaLimitesTabelaMedidasShopeeSchema.parse(body)).toEqual({
+      scope: 'category',
+      categoryId: 100100,
+      limites: {
+        sizeChartLimit: {
+          sizeChartMandatory: true,
+          supportImageSizeChart: false,
+          supportTemplateSizeChart: null,
+        },
+      },
+    });
   });
 });

@@ -1,0 +1,168 @@
+{
+  "versao": 1,
+  "perfil": "fixture",
+  "credencial": "token-legado-curl",
+  "papeis": [
+    "dtc",
+    "tax-invoicing"
+  ],
+  "capturadoEm": "2026-10-28",
+  "limiteTaxa": 0.5,
+  "requisicao": {
+    "tipo": "http",
+    "metodo": "GET",
+    "caminho": "/orders/2026-01-01/orders/000-0000000-7983970",
+    "query": [
+      [
+        "includedData",
+        "BUYER,RECIPIENT,TAX,PAYMENT,PROCEEDS,FULFILLMENT,PACKAGES,CANCELLATION,FULFILLMENT_ORDERS,EXPENSE,PROMOTION"
+      ]
+    ],
+    "corpo": null
+  },
+  "resposta": {
+    "status": 200,
+    "politica": "estrutural",
+    "forma": "json",
+    "bytes": 2047,
+    "corpo": {
+      "order": {
+        "proceeds": {
+          "grandTotal": {
+            "amount": "82.85",
+            "currencyCode": "BRL"
+          },
+          "breakdowns": [
+            {
+              "subtotal": {
+                "amount": "82.85",
+                "currencyCode": "BRL"
+              },
+              "type": "ITEM"
+            }
+          ]
+        },
+        "fulfillmentOrders": [
+          {
+            "fulfillmentOrderId": "REDACTED"
+          }
+        ],
+        "orderId": "000-0000000-7983970",
+        "createdTime": "2026-10-24T13:55:10.415Z",
+        "lastUpdatedTime": "2026-10-27T12:25:20.510Z",
+        "tax": {
+          "taxRegistrations": [
+            {
+              "entityType": "BUYER",
+              "taxRegistrationType": "CPF",
+              "taxRegistrationNumber": "00000000191"
+            }
+          ],
+          "taxInvoicing": {
+            "invoiceStatus": "ACCEPTED"
+          }
+        },
+        "payment": {
+          "paymentExecutions": [
+            {
+              "authorizationCode": "REDACTED",
+              "paymentMethod": "CreditCard",
+              "acquirerId": "11222333000181",
+              "cardBrand": "Visa",
+              "paymentAmount": {
+                "amount": "82.85",
+                "currencyCode": "BRL"
+              }
+            }
+          ]
+        },
+        "programs": [
+          "DELIVERY_BY_AMAZON"
+        ],
+        "fulfillment": {
+          "shipByWindow": {
+            "latestDateTime": "2026-10-29T02:59:59Z",
+            "earliestDateTime": "2026-10-28T03:00:00Z"
+          },
+          "fulfilledBy": "MERCHANT",
+          "fulfillmentStatus": "CANCELLED",
+          "fulfillmentServiceLevel": "STANDARD"
+        },
+        "salesChannel": {
+          "marketplaceId": "A2Q3Y263D00KWC",
+          "marketplaceName": "Amazon.com.br",
+          "channelName": "AMAZON"
+        },
+        "packages": [
+          {
+            "carrier": "AMZBR",
+            "packageItems": [
+              {
+                "quantity": 1,
+                "orderItemId": "000009963942682"
+              }
+            ],
+            "packageReferenceId": "PKG-Zd3468d35",
+            "shipTime": "2026-10-28T21:00:00Z",
+            "shippingService": "Std EZ Regional",
+            "packageStatus": {
+              "detailedStatus": "LABEL_CANCELLED",
+              "status": "CANCELLED"
+            },
+            "trackingNumber": "TRKZ9183873595"
+          }
+        ],
+        "orderItems": [
+          {
+            "product": {
+              "condition": {
+                "conditionNote": "REDACTED",
+                "conditionSubtype": "NEW",
+                "conditionType": "NEW"
+              },
+              "price": {
+                "unitPrice": {
+                  "amount": "82.85",
+                  "currencyCode": "BRL"
+                }
+              },
+              "asin": "B0ZZLW2BPW",
+              "sellerSku": "SKU-Z2d4ba531",
+              "title": "REDACTED"
+            },
+            "proceeds": {
+              "breakdowns": [
+                {
+                  "subtotal": {
+                    "amount": "82.85",
+                    "currencyCode": "BRL"
+                  },
+                  "type": "ITEM"
+                }
+              ],
+              "proceedsTotal": {
+                "amount": "82.85",
+                "currencyCode": "BRL"
+              }
+            },
+            "cancellation": {
+              "cancellationExecution": {
+                "cancelledBy": "MERCHANT",
+                "cancelReason": "REDACTED"
+              }
+            },
+            "orderItemId": "000009963942682",
+            "quantityOrdered": 0,
+            "fulfillment": {
+              "quantityUnfulfilled": 0,
+              "quantityFulfilled": 0
+            }
+          }
+        ]
+      }
+    }
+  },
+  "anexos": {
+    "zip": null
+  }
+}

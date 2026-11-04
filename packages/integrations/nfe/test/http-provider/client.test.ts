@@ -14,6 +14,7 @@ import {
   NFeCertificateError,
   NFeDanfeUnavailableError,
   NFeInutilizacaoAbortedError,
+  NFeInutilizacaoNaoSeAplicaError,
   NFeNetworkError,
   NFePedidoNotFoundError,
   NFeRejectedError,
@@ -494,6 +495,30 @@ describe('createNFeHttpClient — inutilizar', () => {
         xJust: 'Inutilizacao de faixa nao utilizada teste',
       }),
     ).rejects.toBeInstanceOf(NFeInutilizacaoAbortedError);
+  });
+
+  it('maps 422 + code=INUTILIZACAO_NAO_SE_APLICA → NFeInutilizacaoNaoSeAplicaError, not a SEFAZ rejection', async () => {
+    const motivo =
+      'A inutilização de numeração não se aplica às filiais de São Paulo desde 01/11/2026 ' +
+      '(Ajuste SINIEF nº 40/2026).';
+    const fetch = mockFetch({
+      status: 422,
+      body: { error: motivo, code: 'INUTILIZACAO_NAO_SE_APLICA' },
+    });
+    const err = await makeClient(fetch)
+      .inutilizar({
+        filialId: 'F-1',
+        serie: 9,
+        nNFIni: 5,
+        nNFFin: 12,
+        xJust: 'Inutilizacao de faixa nao utilizada teste',
+      })
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(NFeInutilizacaoNaoSeAplicaError);
+    expect(err).not.toBeInstanceOf(NFeRejectedError);
+    expect((err as Error).message).toBe(motivo);
+    expect(isRetryableNFeHttpError(err)).toBe(false);
   });
 
   it('maps 422 → NFeRejectedError (SEFAZ rejected the inutilização)', async () => {

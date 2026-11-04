@@ -1,0 +1,207 @@
+{
+  "versao": 1,
+  "perfil": "fixture",
+  "credencial": "personal-token",
+  "capturadoEm": "2026-10-28",
+  "requisicao": {
+    "metodo": "GET",
+    "caminho": "/v1/categoria/",
+    "query": [
+      [
+        "limit",
+        "50"
+      ],
+      [
+        "offset",
+        "50"
+      ]
+    ]
+  },
+  "resposta": {
+    "status": 200,
+    "politica": "catalogo",
+    "forma": "json",
+    "bytes": 4027,
+    "corpo": {
+      "meta": {
+        "limit": 50,
+        "offset": 50,
+        "total_count": 67,
+        "previous": "/api/v1/categoria?limit=50&offset=0",
+        "next": null
+      },
+      "objects": [
+        {
+          "id": 920594595,
+          "id_externo": null,
+          "categoria_pai": "/v1/categoria/443230475",
+          "descricao": "REDACTED",
+          "nome": "REDACTED",
+          "resource_uri": "/v1/categoria/920594595",
+          "seo": "REDACTED",
+          "url": "https://redacted.invalid/"
+        },
+        {
+          "id": 637883645,
+          "id_externo": null,
+          "categoria_pai": "/v1/categoria/415378231",
+          "descricao": "REDACTED",
+          "nome": "REDACTED",
+          "resource_uri": "/v1/categoria/637883645",
+          "seo": "REDACTED",
+          "url": "https://redacted.invalid/"
+        },
+        {
+          "id": 665281695,
+          "id_externo": null,
+          "categoria_pai": "/v1/categoria/415378231",
+          "descricao": "REDACTED",
+          "nome": "REDACTED",
+          "resource_uri": "/v1/categoria/665281695",
+          "seo": "REDACTED",
+          "url": "https://redacted.invalid/"
+        },
+        {
+          "id": 681788599,
+          "id_externo": null,
+          "categoria_pai": "/v1/categoria/415378231",
+          "descricao": "REDACTED",
+          "nome": "REDACTED",
+          "resource_uri": "/v1/categoria/681788599",
+          "seo": "REDACTED",
+          "url": "https://redacted.invalid/"
+        },
+        {
+          "id": 522819733,
+          "id_externo": null,
+          "categoria_pai": "/v1/categoria/415378231",
+          "descricao": "REDACTED",
+          "nome": "REDACTED",
+          "resource_uri": "/v1/categoria/522819733",
+          "seo": "REDACTED",
+          "url": "https://redacted.invalid/"
+        },
+        {
+          "id": 128045256,
+          "id_externo": null,
+          "categoria_pai": "/v1/categoria/415378231",
+          "descricao": "REDACTED",
+          "nome": "REDACTED",
+          "resource_uri": "/v1/categoria/128045256",
+          "seo": "REDACTED",
+          "url": "https://redacted.invalid/"
+        },
+        {
+          "id": 939140646,
+          "id_externo": null,
+          "categoria_pai": "/v1/categoria/522819733",
+          "descricao": "REDACTED",
+          "nome": "REDACTED",
+          "resource_uri": "/v1/categoria/939140646",
+          "seo": "REDACTED",
+          "url": "https://redacted.invalid/"
+        },
+        {
+          "id": 153413207,
+          "id_externo": null,
+          "categoria_pai": "/v1/categoria/656990965",
+          "descricao": "REDACTED",
+          "nome": "REDACTED",
+          "resource_uri": "/v1/categoria/153413207",
+          "seo": "REDACTED",
+          "url": "https://redacted.invalid/"
+        },
+        {
+          "id": 822853912,
+          "id_externo": null,
+          "categoria_pai": "/v1/categoria/656990965",
+          "descricao": "REDACTED",
+          "nome": "REDACTED",
+          "resource_uri": "/v1/categoria/822853912",
+          "seo": "REDACTED",
+          "url": "https://redacted.invalid/"
+        },
+        {
+          "id": 130062858,
+          "id_externo": null,
+          "categoria_pai": "/v1/categoria/656990965",
+          "descricao": "REDACTED",
+          "nome": "REDACTED",
+          "resource_uri": "/v1/categoria/130062858",
+          "seo": "REDACTED",
+          "url": "https://redacted.invalid/"
+        },
+        {
+          "id": 886045951,
+          "id_externo": null,
+          "categoria_pai": "/v1/categoria/656990965",
+          "descricao": "REDACTED",
+          "nome": "REDACTED",
+          "resource_uri": "/v1/categoria/886045951",
+          "seo": "REDACTED",
+          "url": "https://redacted.invalid/"
+        },
+        {
+          "id": 134776422,
+          "id_externo": null,
+          "categoria_pai": "/v1/categoria/886045951",
+          "descricao": "REDACTED",
+          "nome": "REDACTED",
+          "resource_uri": "/v1/categoria/134776422",
+          "seo": "REDACTED",
+          "url": "https://redacted.invalid/"
+        },
+        {
+          "id": 605292578,
+          "id_externo": null,
+          "categoria_pai": "/v1/categoria/886045951",
+          "descricao": "REDACTED",
+          "nome": "REDACTED",
+          "resource_uri": "/v1/categoria/605292578",
+          "seo": "REDACTED",
+          "url": "https://redacted.invalid/"
+        },
+        {
+          "id": 795923521,
+          "id_externo": null,
+          "categoria_pai": "/v1/categoria/268069604",
+          "descricao": null,
+          "nome": "REDACTED",
+          "resource_uri": "/v1/categoria/795923521",
+          "seo": null,
+          "url": "https://redacted.invalid/"
+        },
+        {
+          "id": 207263730,
+          "id_externo": null,
+          "categoria_pai": "/v1/categoria/795923521",
+          "descricao": null,
+          "nome": "REDACTED",
+          "resource_uri": "/v1/categoria/207263730",
+          "seo": null,
+          "url": "https://redacted.invalid/"
+        },
+        {
+          "id": 130236095,
+          "id_externo": null,
+          "categoria_pai": "/v1/categoria/312088313",
+          "descricao": null,
+          "nome": "REDACTED",
+          "resource_uri": "/v1/categoria/130236095",
+          "seo": null,
+          "url": "https://redacted.invalid/"
+        },
+        {
+          "id": 270252767,
+          "id_externo": null,
+          "categoria_pai": "/v1/categoria/130236095",
+          "descricao": null,
+          "nome": "REDACTED",
+          "resource_uri": "/v1/categoria/270252767",
+          "seo": null,
+          "url": "https://redacted.invalid/"
+        }
+      ]
+    }
+  }
+}

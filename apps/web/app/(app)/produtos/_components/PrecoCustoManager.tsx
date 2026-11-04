@@ -13,6 +13,7 @@ import {
   type PrecosMap,
   calcularPreco,
   custoDoKit,
+  idFromRefOrNull,
   temFormulas,
 } from '@delfrance/schemas';
 import { getDocsByIds } from '@/lib/data/getDocsByIds';
@@ -125,8 +126,7 @@ export function PrecoCustoManager({
     const custo = form?.getValues('custo') as number | null | undefined;
     const pesoKg = (form?.getValues('pesoLiquidoKg') as number | null | undefined) ?? 0.25;
     const categoriaRef = form?.getValues('categoriaProdutoOuterRef') as unknown;
-    const idCategoria =
-      typeof categoriaRef === 'string' ? (categoriaRef.split('/').pop() ?? null) : null;
+    const idCategoria = idFromRefOrNull(categoriaRef);
     return { custo: custo ?? null, pesoKg, idCategoria };
   }
 

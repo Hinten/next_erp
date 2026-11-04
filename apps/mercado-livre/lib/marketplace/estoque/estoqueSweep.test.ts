@@ -209,6 +209,8 @@ function wireCtx(getMe: () => Promise<MlUser> = async () => ({ id: 1, tags: [] }
       resolveChannelContext: async () => ({
         integracaoId,
         accessToken: `tok-${integracaoId}`,
+        getAccessToken: async () => `tok-${integracaoId}`,
+        invalidateAccessToken: vi.fn(),
         account: {},
       }),
       exchangeAndPersist: async () => {},

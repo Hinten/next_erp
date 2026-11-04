@@ -373,6 +373,60 @@ describe('pass (b): open rows of contas that no longer exist', () => {
     expect(Number(fechado?.relogioEvento)).toBeGreaterThan(6);
   });
 
+  it('⚠️ the order-import tipos (many rows per conta): a LISTED conta’s rows stay open, an unlisted one’s are resolved', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'viva');
+    seedCredencial(db, 'viva', { tokenExpiraEmMs: expiraEm(60) });
+    const pedidoAviso = (conta: string, pedidoId: string) =>
+      escreverAviso(
+        asDb(db),
+        {
+          tipo: TIPO_AVISO.lojaIntegradaSituacaoDesconhecida,
+          conta,
+          entidade: pedidoId,
+          severidade: SEVERIDADE_AVISO.atencao,
+          canal: CANAL_AVISO.lojaIntegrada,
+          params: { loja: conta, pedido: '1', codigo: 'x' },
+          urlInterna: { rota: ROTAS_AVISO.pedido.build(pedidoId), campo: null },
+          relogioEvento: 7,
+        },
+        { increment, agoraUs: agoraUsDe({ nowMs: AGORA_MS - DIA_MS }) },
+      );
+    const freteAviso = (conta: string) =>
+      escreverAviso(
+        asDb(db),
+        {
+          tipo: TIPO_AVISO.lojaIntegradaFreteNaoSuportado,
+          conta,
+          entidade: 'a'.repeat(64),
+          severidade: SEVERIDADE_AVISO.atencao,
+          canal: CANAL_AVISO.lojaIntegrada,
+          params: { loja: conta, formaEnvio: 'x', chave: '1---X', motivo: 'alvo-ausente' },
+          urlInterna: { rota: ROTAS_AVISO.canalLojaIntegrada.build(conta), campo: null },
+          relogioEvento: 7,
+        },
+        { increment, agoraUs: agoraUsDe({ nowMs: AGORA_MS - DIA_MS }) },
+      );
+    const vivos = [
+      (await pedidoAviso('viva', 'p-1')).chave,
+      (await pedidoAviso('viva', 'p-2')).chave,
+      (await freteAviso('viva')).chave,
+    ];
+    // A conta id that EXTENDS the live one is another conta: its prefix differs.
+    const orfaos = [
+      (await pedidoAviso('apagada', 'p-3')).chave,
+      (await pedidoAviso('viva2', 'p-4')).chave,
+      (await freteAviso('apagada')).chave,
+    ];
+
+    const r = await sweep(db);
+    expect(r.orfaos.resolvidos).toBe(orfaos.length);
+    for (const chave of vivos) expect(aviso(db, chave)?.resolvidoEm, chave).toBeNull();
+    for (const chave of orfaos) {
+      expect(aviso(db, chave), chave).toMatchObject({ resolucaoMotivo: 'conta-removida' });
+    }
+  });
+
   it('⚠️ an import-stopped row raised AFTER the list was read (a brand-new conta) stays open', async () => {
     const db = new FakeDb();
     seedConta(db, 'viva');
@@ -393,6 +447,68 @@ describe('pass (b): open rows of contas that no longer exist', () => {
       resolvidoEm: null,
       relogioEvento: relogioDaCorrida,
     });
+  });
+
+  it('⚠️ an order-import row raised AFTER the list was read (a brand-new conta) stays open until a tick that lists its conta', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'viva');
+    seedCredencial(db, 'viva', { tokenExpiraEmMs: expiraEm(20) });
+    // The order's own clock: a Loja Integrada stamp, a domain the list's readTime never meets.
+    const relogioDoPedido = 7;
+    const plano = {
+      tipo: TIPO_AVISO.lojaIntegradaPedidoContestado,
+      conta: 'nova',
+      entidade: 'p-nova',
+      severidade: SEVERIDADE_AVISO.atencao,
+      canal: CANAL_AVISO.lojaIntegrada,
+      params: { loja: 'Loja Nova', pedido: '1', motivo: 'devolvido-sem-retorno' },
+      motivo: 'devolvido-sem-retorno',
+      urlInterna: { rota: ROTAS_AVISO.pedido.build('p-nova'), campo: null },
+      relogioEvento: relogioDoPedido,
+    } as const;
+    let chave = '';
+    // Pass (a)'s raise on `viva` is the write the new conta's import lands right before.
+    db.antesDaProximaEscrita(caminhoAviso(chaveExpiracao('viva')), async () => {
+      seedConta(db, 'nova', { nome: 'Loja Nova' });
+      ({ chave } = await escreverAviso(asDb(db), plano, {
+        increment,
+        agoraUs: agoraUsDe({ nowMs: AGORA_MS }),
+      }));
+    });
+
+    const r = await sweep(db);
+    expect(r.contas).toBe(1);
+    expect(r.orfaos.resolvidos).toBe(0);
+    expect(aviso(db, chave)).toMatchObject({ resolvidoEm: null, relogioEvento: relogioDoPedido });
+
+    // The next tick lists the conta: the row is its own and stays open. A clockless close would
+    // have kept the order's clock, and every equal-stamp re-raise would be dropped behind it.
+    const r2 = await sweep(db);
+    expect(r2.orfaos.resolvidos).toBe(0);
+    expect(aviso(db, chave)?.resolvidoEm).toBeNull();
+  });
+
+  it('near-miss: a gone conta’s order-import row written BEFORE the list was read is resolved', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'viva');
+    seedCredencial(db, 'viva', { tokenExpiraEmMs: expiraEm(60) });
+    const { chave } = await escreverAviso(
+      asDb(db),
+      {
+        tipo: TIPO_AVISO.lojaIntegradaPedidoHub,
+        conta: 'apagada',
+        entidade: 'p-1',
+        severidade: SEVERIDADE_AVISO.atencao,
+        canal: CANAL_AVISO.lojaIntegrada,
+        params: { loja: 'x', pedido: '1' },
+        urlInterna: { rota: ROTAS_AVISO.canalLojaIntegrada.build('apagada'), campo: null },
+        relogioEvento: 7,
+      },
+      { increment, agoraUs: agoraUsDe({ nowMs: AGORA_MS - DIA_MS }) },
+    );
+    const r = await sweep(db);
+    expect(r.orfaos.resolvidos).toBe(1);
+    expect(aviso(db, chave)).toMatchObject({ resolucaoMotivo: 'conta-removida' });
   });
 
   it('a page boundary on an orphan it just RESOLVED: paging continues past it', async () => {

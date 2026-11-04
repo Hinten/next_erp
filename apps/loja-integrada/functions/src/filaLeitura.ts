@@ -91,9 +91,11 @@ async function despachar(
  *   `roles/cloudtasks.enqueuer` on its queue, applied at deploy time from
  *   `TASKS_INVOKER_SA` (#1133). Absent when unset.
  *
- * In step 3 a `pedido` run makes NO Loja Integrada call: the read switch is off
- * until the window (it defers), and once on, the importer seam is still empty
- * (it parks as `importador-ausente`).
+ * Until the window a `pedido` run makes NO Loja Integrada call: the read switch
+ * stays unset, so the context refuses before any Firestore read and the run
+ * DEFERS (`adiado/chamadas-desligadas`). The importer seam is filled since step
+ * 5, so the switch is the only gate: once the window sets it, a run imports.
+ * (An empty seam parks as `importador-ausente`; the table is no longer empty.)
  */
 // ⚠️ No type argument on the call: `tasks-invoker-inventory.test.js` discovers
 // task functions by the literal call text, which a `<T>` between the name and

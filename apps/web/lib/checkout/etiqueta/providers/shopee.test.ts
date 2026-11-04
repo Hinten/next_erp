@@ -11,6 +11,7 @@ import {
   type ShopeeEtiquetaResposta,
 } from '@/lib/shopee/client';
 import type { EnderecoDeColeta, Progresso } from '@/lib/shopee/wire';
+import { shopeeClientFalso } from '@/lib/testing/shopeeClientFalso';
 
 import {
   SHOPEE_ETIQUETA_LIMITES,
@@ -120,17 +121,7 @@ function fakeClient(passos: Passo[]) {
       return passo;
     },
   );
-  const client: ShopeeClient = {
-    oauthStart: vi.fn(),
-    conta: vi.fn(),
-    etiqueta,
-    reclamacaoEstado: vi.fn(),
-    reclamacaoAcao: vi.fn(),
-    categorias: vi.fn(),
-    limites: vi.fn(),
-    tabelaMedidasLista: vi.fn(),
-    tabelaMedidasDetalhe: vi.fn(),
-  };
+  const client = shopeeClientFalso({ etiqueta });
   return { client, etiqueta };
 }
 
@@ -161,6 +152,7 @@ function makeInput(over: {
       nfeClient: null,
       mercadoLivreClient: null,
       shopeeClient: over.client,
+      lojaIntegradaClient: null,
       printJob: over.printJob ?? vi.fn(async () => 'printed' as const),
       sleep: over.sleep ?? vi.fn(async () => undefined),
     },
@@ -170,6 +162,7 @@ function makeInput(over: {
       openUrl: vi.fn(),
       comprarEtiqueta: vi.fn(),
       escolherEnvio: vi.fn(async () => null),
+      confirmarCiente: vi.fn(),
       ...over.ui,
     },
   };
@@ -662,17 +655,7 @@ describe('shopeeProvider — the budget contract (Q2-F2, Q2-F5)', () => {
             });
           }),
       );
-      const client: ShopeeClient = {
-        oauthStart: vi.fn(),
-        conta: vi.fn(),
-        etiqueta,
-        reclamacaoEstado: vi.fn(),
-        reclamacaoAcao: vi.fn(),
-        categorias: vi.fn(),
-        limites: vi.fn(),
-        tabelaMedidasLista: vi.fn(),
-        tabelaMedidasDetalhe: vi.fn(),
-      };
+      const client = shopeeClientFalso({ etiqueta });
       const escolherEnvio = vi.fn(async () => {
         await new Promise((resolve) => setTimeout(resolve, DIALOGO_MS));
         estado.dialogoMs += DIALOGO_MS;

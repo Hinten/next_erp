@@ -5,11 +5,13 @@ import {
   type NFeHttpClient,
 } from '@delfrance/integrations-nfe/http-provider';
 import type { FreightHttpClient } from '@delfrance/integrations-freight-br/http-client';
+import type { LojaIntegradaClient } from '../loja-integrada/client';
 import type { MercadoLivreClient } from '../mercado-livre/client';
 import type { ShopeeClient } from '../shopee/client';
 import { pedidoCollection } from '../data/pedidoCollection';
 import { notificationForNFeError, type NotificationShape } from '../nfe/errors';
 import { ensureNfeAprovada, printDanfeForCheckout, type CheckoutDanfeFormat } from './nfeFlow';
+import { motivoSemTransportadoraLi } from './conferenciaLojaIntegrada';
 import { resolverIntFrete } from './etiqueta/intFrete';
 import { emitirOuImprimirEtiqueta } from './etiqueta/registry';
 import type { EtiquetaOutcome, EtiquetaProviderUi } from './etiqueta/types';
@@ -37,7 +39,12 @@ export type ReprintEtiquetaResult =
   | EtiquetaOutcome
   | { status: 'no-pedido' }
   | { status: 'no-frete' }
-  | { status: 'no-integration' }
+  /**
+   * No carrier to dispatch on. `mensagem` says WHY for an imported Loja
+   * Integrada order (no endereço, or no Loja Integrada freight on the conta);
+   * absent for every other pedido, which keeps the generic line.
+   */
+  | { status: 'no-integration'; mensagem?: string }
   /**
    * A stage outlived its deadline. `stage` names WHICH await hung, so the toast
    * and any bug report point at one link in the chain instead of "it froze".
@@ -59,14 +66,25 @@ export async function reprintCheckoutEtiqueta(args: {
   mercadoLivreClient: MercadoLivreClient | null;
   /** Required like the provider dep it feeds — a screen must say which client it threads. */
   shopeeClient: ShopeeClient | null;
+  /** Required like `shopeeClient`: the Loja Integrada paid re-check's soft gates ask it. */
+  lojaIntegradaClient: LojaIntegradaClient | null;
   formato: 'pdf' | 'zpl2';
   ui: EtiquetaProviderUi;
   printJobFn?: typeof printJob;
   /** Per-stage deadline; defaults to {@link REPRINT_STAGE_TIMEOUT_MS}. */
   timeoutMs?: number;
 }): Promise<ReprintEtiquetaResult> {
-  const { db, pedidoId, freightClient, nfeClient, mercadoLivreClient, shopeeClient, formato, ui } =
-    args;
+  const {
+    db,
+    pedidoId,
+    freightClient,
+    nfeClient,
+    mercadoLivreClient,
+    shopeeClient,
+    lojaIntegradaClient,
+    formato,
+    ui,
+  } = args;
   const timeoutMs = args.timeoutMs ?? REPRINT_STAGE_TIMEOUT_MS;
 
   // Every await here is bounded and NAMED. Before this, a stall in any one of
@@ -88,7 +106,13 @@ export async function reprintCheckoutEtiqueta(args: {
       resolverIntFrete(db, frete),
       timeoutMs,
     );
-    if (intFrete === null) return { status: 'no-integration' };
+    if (intFrete === null) {
+      // A local digest, no I/O: nothing here to bound.
+      const mensagem = await motivoSemTransportadoraLi(pedidoId, pedido, frete);
+      return mensagem === null
+        ? { status: 'no-integration' }
+        : { status: 'no-integration', mensagem };
+    }
 
     // ⚠️ NOT bounded, for two independent reasons — either alone is sufficient.
     // (1) The registry can legitimately await the OPERATOR: the already-posted
@@ -108,6 +132,9 @@ export async function reprintCheckoutEtiqueta(args: {
     // The Shopee provider bounds its OWN calls (`SHOPEE_ETIQUETA_LIMITES` in
     // `etiqueta/providers/shopee.ts`: machine time, dialogs excluded) — safe
     // there because its route is resumable and never ships a package twice.
+    // The Loja Integrada paid re-check a soft gate makes before a reprint is
+    // bounded by its own client deadline (a read, which prints nothing), and
+    // its acknowledged-risk dialog is one more operator wait, reason (1).
     // ⚠️ The Mercado Livre client and the print agent this registry also reaches
     // are NOT bounded yet (#1678) — a stall there still spins until a reload.
     return await emitirOuImprimirEtiqueta({
@@ -122,6 +149,7 @@ export async function reprintCheckoutEtiqueta(args: {
         nfeClient,
         mercadoLivreClient,
         shopeeClient,
+        lojaIntegradaClient,
         printJob: args.printJobFn ?? printJob,
       },
       ui,

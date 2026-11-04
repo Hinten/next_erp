@@ -9,9 +9,14 @@
  * before and an after:
  *
  * - {@link ShopeePublishBlockedError} — **pre-write.** The publisher read the
- *   produto, the link and the conta and decided the body cannot be built. No
- *   Shopee call was made for this produto, so nothing on the channel changed and
- *   the operator may retry the identical request once the cause is fixed.
+ *   produto, the link and the conta and decided the body cannot be built. It is
+ *   raised before any Shopee LISTING write for this produto — Shopee READS may
+ *   precede it (ENSURE, the first create's same-SKU walk, the kit scan), and so
+ *   may the photo uploads — EXCEPT the model leg's fresh-tree refusals on an
+ *   UPDATE, which follow `update_item` (`modelosPublicacao.ts`; this folder's
+ *   README, «The model-leg exception»). Either way the operator may retry the
+ *   identical request once the cause is fixed: a listing that exists makes the
+ *   next publish an update that re-runs the leg.
  * - {@link ShopeePublishRejectedError} — **post-write.** A Shopee call was made
  *   and refused, and the refusal was classified onto a REQUEST field. It carries
  *   the {@link EtapaPublicacao} it died on, so "the listing exists but has no
@@ -42,17 +47,30 @@
  * ## The three vocabularies, and why there are three
  *
  * - {@link MOTIVO_PUBLICACAO_BLOQUEADA} — what the publisher may REFUSE with
- *   before writing. 47 members: step 11's 22, the nineteen native-kit
+ *   before writing the listing (the model leg's update-path refusals of
+ *   `variacao-sem-vinculo` / `opcoes-demais` aside). 58 members: step 11's
+ *   22, the nineteen native-kit
  *   refusals of step 19's kit core (`kits/planoKit.ts`, PR 5), the recriar's
- *   safety net `recriacao-sem-diferenca` (`kits/recriarKit.ts`, PR 6) and the
- *   five refusals only the publish dispatcher produces
- *   (`kits/armaDePublicacao.ts`, PR 7).
+ *   safety net `recriacao-sem-diferenca` (`kits/recriarKit.ts`, PR 6), the
+ *   seven refusals only the publish dispatcher produces
+ *   (`kits/armaDePublicacao.ts`: five from step 19's PR 7, and #1911's two draft
+ *   refusals, `rascunho-em-kit-virtual` and `rascunho-nao-nomeado`), #1911's
+ *   draft-brand refusal `marca-nao-escolhida` (P3, `anuncios/montagemAnuncio.ts`)
+ *   and #1911's four refusals of an UNCERTAIN first create (P5,
+ *   `anuncios/criacaoIncerta.ts`) — decided by READING Shopee before any second
+ *   `add_item`, never by writing — plus the same file's three refusals of a
+ *   FIRST create over a listing the conta already holds with that SKU (P5b),
+ *   and its `criacao-incerta-encerrada` (batch-B review round 4): an
+ *   attestation's expectation on a draft that no longer records the attempt,
+ *   refused by the reservation before any look-up.
  * - {@link MOTIVO_PROBLEMA_PUBLICACAO} — what a `problemas[]` entry may carry:
- *   those 47 plus the twelve only a WIRE rejection can produce (step 18 added the
- *   two size-chart refusals on `size_chart_info`; step 19 the seven native-kit
- *   refusals, whose ONE producer is `kits/recusaKit.ts`). A problema is a
- *   field-level observation, and after the first Shopee call there are causes no
- *   pre-write check could have seen.
+ *   those 58 plus the thirteen only a WIRE rejection can produce (step 18 added
+ *   the two size-chart refusals on `size_chart_info`; step 19 the seven
+ *   native-kit refusals, whose ONE producer is `kits/recusaKit.ts`; #1911 P5 the
+ *   duplicate-listing refusal `error_repeated_mtsku`, a row of
+ *   `anuncios/problemasPublicacao.ts`). A problema is a field-level observation,
+ *   and after the first Shopee call there are causes no pre-write check could
+ *   have seen.
  * - {@link ETAPA_PUBLICACAO} — where in the `aplicar` sequence a rejection
  *   landed. Not a reason at all; the answer to "what exists on the channel now".
  *
@@ -70,11 +88,15 @@
  * a member is cheap; renaming one orphans every row already written.
  */
 import { ShopeeError } from '@delfrance/integrations-shopee';
+import type { AcaoSugeridaPublicacaoShopee } from '@delfrance/schemas';
 
 import { MAX_MENSAGEM_PROBLEMA } from './constantesAnuncio';
 
 /**
- * Why the publisher refused ONE produto, before any Shopee call for it.
+ * Why the publisher refused ONE produto, before any Shopee LISTING write for it
+ * — Shopee reads (the plan's, ENSURE, the first create's same-SKU walk, the kit
+ * scan) and photo uploads may precede it, and the model leg's update-path
+ * refusals follow `update_item` (the module docblock).
  *
  * Each member is a mechanism, not a sentence — the sentence is the matching
  * {@link ProblemaPublicacao.mensagem}.
@@ -116,7 +138,16 @@ export type MotivoPublicacaoBloqueada =
    * instead, so this is a create-only refusal.
    */
   | 'marca-sem-nome'
-  /** A variação with no `tier_index` binding — the model could not be placed. */
+  /**
+   * A variação the tier authoring cannot place (`tiersPublicacao.ts`): it has
+   * no position in a grupo's tier (the model cannot be placed), its grupo's
+   * binding entry is unreadable, a variante is bound to no option of the
+   * standardised variation, a live option position cannot be read back, or
+   * (#1911 P7) an unpaired custom tier would be re-coded in place on an
+   * update — the last two raised by the model leg after `update_item`. The
+   * kit arm (`kits/planoKit.ts`) raises it for a child with no variante in the
+   * kit's grupo.
+   */
   | 'variacao-sem-vinculo'
   /**
    * Two variantes resolve to the SAME tier combination. `arakene_variation_id`
@@ -124,7 +155,12 @@ export type MotivoPublicacaoBloqueada =
    * exactly how two of them end up claiming one model.
    */
   | 'combinacao-duplicada'
-  /** More options in one tier than the wire accepts. */
+  /**
+   * The tier authoring breaks a wire limit (`tiersPublicacao.ts`): more tier
+   * levels, more options in one tier or more models per item than Shopee
+   * accepts, or (#1911 batch A) a tier or option NAME blank or outside its
+   * band — the kit's tier and option names too (`kits/planoKit.ts`).
+   */
   | 'opcoes-demais'
   /**
    * An item- or model-level available stock below the shop's
@@ -244,7 +280,131 @@ export type MotivoPublicacaoBloqueada =
   /** `--converter-em-kit` re-run after the conversion finished: exactly ONE live native kit, no ordinary listing. */
   | 'ja-e-kit-nativo'
   /** `--principal`, `--recriar` or `--converter-em-kit` on a publish the dispatcher routed to step 11's item arm. */
-  | 'opcao-de-kit-em-anuncio-comum';
+  | 'opcao-de-kit-em-anuncio-comum'
+  /*
+   * ---- #1911 (P1, D3): a draft is never live. ----
+   * Produced ONLY by `kits/armaDePublicacao.ts`, spelled there through this
+   * constant, like the five above. A DRAFT is a `prodshopee` doc Shopee never
+   * answered for (`ehRascunhoShopee`, `@delfrance/schemas`): reachable only by a
+   * named `linkDocId`, never picked by a resolver.
+   */
+  /**
+   * A named DRAFT on a produto that publishes as a NATIVE kit
+   * (`ehKitVirtualEfetivo`): the draft is an ordinary listing's intention and
+   * does not apply — the kit is published without it (`kit-criar`).
+   */
+  | 'rascunho-em-kit-virtual'
+  /**
+   * An unnamed publish whose conta holds ONLY drafts of the produto: a draft is
+   * never picked on its own, so the operator names one (`--link`).
+   */
+  | 'rascunho-nao-nomeado'
+  /*
+   * ---- #1911 (P3, D10): the draft's brand is a CHOICE. ----
+   * Produced ONLY by `anuncios/montagemAnuncio.ts`, spelled there through this
+   * constant, from the projection's `marcaNaoEscolhida` (which the ONE builder
+   * fills with `rascunhoSemMarcaShopee`, `@delfrance/schemas`).
+   */
+  /**
+   * A DRAFT whose `brand_id` is not a safe non-negative integer — `null`,
+   * absent, `-1`, `'77'`, `1.5`… (fail-closed since P5, `rascunhoSemMarcaShopee`)
+   * — "not chosen", which is NOT
+   * Shopee's "No Brand" (`brand_id: 0`, the explicit «Sem marca»). The brand
+   * cascade would otherwise answer `0` and publish "No Brand" on the operator's
+   * behalf; a legacy draft (whose `null` meant either "Nenhuma" or "never
+   * touched") needs one explicit pick. A listing's link is never refused for it.
+   */
+  | 'marca-nao-escolhida'
+  /*
+   * ---- #1911 (P5, D5 + K1-7): an UNCERTAIN first create is re-found, never re-sent. ----
+   * Produced ONLY by `anuncios/criacaoIncerta.ts` (the ENSURE scan a draft in
+   * `incerta` runs under its lock, before any second `add_item`), spelled there
+   * through this constant. Each — but `criacao-incerta-encerrada`, which the
+   * reservation raises before any look-up — is decided by READING Shopee
+   * (`get_item_list` narrowed to the attempt's window, then the candidates'
+   * base info) and the conta's links — the scan FAILS CLOSED: nothing is sent
+   * unless it proved that the earlier attempt created nothing. `add_item` is
+   * not idempotent, so every one of these is "we will not risk a second
+   * listing", never "Shopee refused".
+   */
+  /**
+   * The scan could not single the earlier attempt's listing out: two or more
+   * unlinked items with the SKU the attempt SENT created inside the window, or
+   * one whose SKU or `create_time` Shopee answered `null` (undecidable, linked
+   * or not). The operator imports the right one (`acao` `importar{itemIds}`).
+   * Also — never scanned, no `acao` — the produto's SKU MOVED since the attempt
+   * (batch-A review): the look-up can only ask for what was sent.
+   */
+  | 'criacao-incerta-ambigua'
+  /**
+   * The scan did not complete (its page ceiling, or a cursor it could not
+   * follow): a listing it never saw may exist, so nothing was created.
+   */
+  | 'busca-de-anuncio-incompleta'
+  /**
+   * The SKU the attempt sent folds blank (the import's SKU fold — trim only;
+   * the produto's own when what was sent is unknown), so there is nothing to compare — never scanned, because a blank fold would
+   * "hit" every SKU-less listing. Overridable by `confirmarCriacaoIncerta` (the operator checked
+   * Seller Centre) — when the attestation also sends its expectation
+   * (`criacaoIncertaAdota`, Lucas §I1), only while it matches: here `[]`, a
+   * deliberate create (`criacaoIncerta.ts`, `atestacaoConfere`).
+   */
+  | 'criacao-incerta-sem-sku'
+  /**
+   * A listing ALREADY LINKED in the conta — to this produto or (batch-A review)
+   * to another — with the SKU the attempt sent, created inside the window (or
+   * with an unknown `create_time`): it may be the earlier attempt's own
+   * listing, linked by another path. `acao` `importar{itemIds, vinculados}`,
+   * each linked id with its produto; overridable by `confirmarCriacaoIncerta`
+   * (a deliberate second listing created minutes before) — when the
+   * attestation also sends its expectation (`criacaoIncertaAdota`, Lucas §I1),
+   * only while ENSURE's FRESH verdict does exactly what it states (`[L]` ⇒
+   * adopt `L`, `[]` ⇒ create; `criacaoIncerta.ts`, `atestacaoConfere`), else a
+   * fresh refusal with nothing sent. When it IS the attempt's listing, the
+   * exit is discarding the draft, attesting.
+   */
+  | 'criacao-incerta-ja-vinculada'
+  /**
+   * An attestation that states what it EXPECTS (`criacaoIncertaAdota`, #1911
+   * batch-B review, Lucas §I1) reached a draft that no longer records the
+   * uncertain attempt it attested (the reservation read it `livre`): only
+   * ENSURE's verdict can honour an expectation, and such a draft runs none.
+   * Refused by the reservation on its own read, BEFORE its lock — nothing
+   * written, nothing sent, and NO look-up ran (neither ENSURE nor the first
+   * create's). No `acao`: nothing was found, so there is nothing to import.
+   * Its OWN slug (review round 4), never `-ja-vinculada`'s acao-less row —
+   * that one answers a look-up that DID run, and a client cannot word the
+   * two apart by the draft's state at render time.
+   */
+  | 'criacao-incerta-encerrada'
+  /*
+   * ---- #1911 (P5b — Lucas, 2026-10-26): a FIRST create never duplicates a listing. ----
+   * Produced ONLY by `anuncios/criacaoIncerta.ts` (`problemasDoAnuncioExistente`,
+   * the look-up a `livre` draft's first `add_item` runs under its lock, after
+   * D15), spelled there through this constant. Each is decided by READING
+   * Shopee — the kit arm's same-SKU scan mirrored for ORDINARY listings
+   * (`kits/localizarKitPorSku.ts`: un-narrowed, 100 pages, the import's SKU
+   * fold) — and the conta's links. None is attestable.
+   */
+  /**
+   * The conta already holds a listing with the SKU the create would send, and
+   * NO produto of the ERP links it: import it (`acao` `importar{itemIds}`)
+   * instead of creating a second one.
+   */
+  | 'anuncio-existente-sem-vinculo'
+  /**
+   * The conta already holds a listing with that SKU, linked to ANOTHER produto:
+   * two produtos share one SKU, so step 9's SKU rung could not land a new
+   * listing on either (`acao` `importar{itemIds, vinculados}`, each with its
+   * produto). A listing linked to THIS produto is D15's, never this one.
+   */
+  | 'anuncio-existente-de-outro-produto'
+  /**
+   * That scan did not complete (the kit's 100-page ceiling — 10 000 listings —
+   * or a cursor it could not follow): a listing it never saw may exist, so
+   * nothing was created. The item twin of `busca-de-kit-incompleta`.
+   */
+  | 'busca-de-anuncio-existente-incompleta';
 
 /**
  * The closed set, for iteration and for a route's own validation.
@@ -299,16 +459,27 @@ export const MOTIVO_PUBLICACAO_BLOQUEADA = {
   converterSemKit: 'converter-sem-kit',
   jaEKitNativo: 'ja-e-kit-nativo',
   opcaoDeKitEmAnuncioComum: 'opcao-de-kit-em-anuncio-comum',
+  rascunhoEmKitVirtual: 'rascunho-em-kit-virtual',
+  rascunhoNaoNomeado: 'rascunho-nao-nomeado',
+  marcaNaoEscolhida: 'marca-nao-escolhida',
+  criacaoIncertaAmbigua: 'criacao-incerta-ambigua',
+  buscaDeAnuncioIncompleta: 'busca-de-anuncio-incompleta',
+  criacaoIncertaSemSku: 'criacao-incerta-sem-sku',
+  criacaoIncertaJaVinculada: 'criacao-incerta-ja-vinculada',
+  criacaoIncertaEncerrada: 'criacao-incerta-encerrada',
+  anuncioExistenteSemVinculo: 'anuncio-existente-sem-vinculo',
+  anuncioExistenteDeOutroProduto: 'anuncio-existente-de-outro-produto',
+  buscaDeAnuncioExistenteIncompleta: 'busca-de-anuncio-existente-incompleta',
 } as const satisfies Record<string, MotivoPublicacaoBloqueada>;
 
 /**
  * Everything a `problemas[]` entry may carry: every pre-write refusal, plus the
- * twelve only a WIRE rejection (or, for the size-chart photo, a failed upload of
- * it) can produce.
+ * thirteen only a WIRE rejection (or, for the size-chart photo, a failed upload
+ * of it) can produce.
  *
  * The same superset relationship `MOTIVO_FALHA_JOB` has to
  * `MOTIVO_IMPORT_BLOQUEADO` on the import side, and for the same reason: a
- * {@link ShopeePublishBlockedError} may never carry one of the extra twelve,
+ * {@link ShopeePublishBlockedError} may never carry one of the extra thirteen,
  * because none of them is a decision reached by READING the produto.
  *
  * ⚠️ The seven native-kit members (step 19) are classified by SENTENCE AND code
@@ -387,6 +558,21 @@ export type MotivoProblemaPublicacao =
    */
   | 'kit-principal-duplicado'
   /**
+   * #1911 (P5, D15) — `error_repeated_mtsku`, "A similar product has already
+   * been uploaded" (the `add_item` AND `update_item` error lists): Shopee
+   * refused a listing it judges a duplicate of one the shop already has, on
+   * `item_sku`. Matched by the CODE alone, in step with `criacaoIncerta.ts`,
+   * whose closed table reads the same code as `nao-criado` — so a refused create
+   * is "nothing was created", never an uncertain one. The problema carries
+   * Shopee's prose; our copy lives outside this row, keyed on the motivo, and
+   * there are TWO, worded apart by design: the CLI's `FRASE_ANUNCIO_SEMELHANTE`
+   * (`publicarAnuncioCli.ts`) and the web's `TEXTO_MOTIVO_ANUNCIO_SHOPEE` row
+   * (`apps/web/lib/shopee/anuncioProduto.ts`; batch-B rev. 2a §C row 12 names
+   * no import there). Read each by its name — never restate one here; this
+   * folder's README («`error_repeated_mtsku` (D15)») says what each one says.
+   */
+  | 'anuncio-semelhante-existente'
+  /**
    * A refusal the classifier could not attribute to any request field. The
    * entry's `campo` is `null` and its `mensagem` carries Shopee's own prose —
    * the one place provider text is allowed, because dropping it would leave the
@@ -408,6 +594,7 @@ export const MOTIVO_PROBLEMA_PUBLICACAO = {
   kitBloqueadoPelaShopee: 'kit-bloqueado-pela-shopee',
   faixaDeComponentes: 'faixa-de-componentes',
   kitPrincipalDuplicado: 'kit-principal-duplicado',
+  anuncioSemelhanteExistente: 'anuncio-semelhante-existente',
   desconhecido: 'desconhecido',
 } as const satisfies Record<string, MotivoProblemaPublicacao>;
 
@@ -428,6 +615,15 @@ export interface ProblemaPublicacao {
   readonly motivo: MotivoProblemaPublicacao;
   /** At most {@link MAX_MENSAGEM_PROBLEMA} characters — normalised by the classes. */
   readonly mensagem: string;
+  /**
+   * The machine-readable NEXT STEP (step 21, #1529), for the web: present on
+   * every kit/dispatcher refusal whose `mensagem` names a CLI flag or command,
+   * ABSENT everywhere else — never `undefined`-valued, so a body or a stored row
+   * without it is byte-identical to before. The CLI keeps printing `mensagem`;
+   * the produto's Shopee tab maps this to a button and never parses the
+   * sentence. It rides the 422 because both constructors spread each entry.
+   */
+  readonly acao?: AcaoSugeridaPublicacaoShopee;
 }
 
 /**
@@ -474,7 +670,12 @@ export function temProblemaDeBloqueio(
   return problemas.length > 0;
 }
 
-/** Nothing was sent to Shopee: the body could not be built. */
+/**
+ * OUR refusal: the body could not be built — raised before any Shopee LISTING
+ * write, EXCEPT the model leg's fresh-tree refusals on an update, which follow
+ * `update_item` (`modelosPublicacao.ts`; this folder's README, «The model-leg
+ * exception»). Shopee reads and photo uploads may precede any of them.
+ */
 export class ShopeePublishBlockedError extends ShopeeError {
   /**
    * The FIRST problema's motivo — the headline reason, not a summary.
@@ -486,7 +687,16 @@ export class ShopeePublishBlockedError extends ShopeeError {
   readonly motivo: MotivoPublicacaoBloqueada;
   /** Always known — the produto is what the caller asked to publish. */
   readonly produtoId: string;
-  /** `null` on a FIRST publish: there is no listing yet. */
+  /**
+   * The listing the refusal is about, or `null` when it names none: a FIRST
+   * publish (no listing yet), and the refusals that never carry the link's
+   * `item_id` (the dispatcher's, the produto checks, the draft reservation's,
+   * the first create's same-SKU walk). Every `null` producer runs before any
+   * listing write; the model leg — the one producer AFTER a listing write (in
+   * practice an update's: a create's leg sees `viva: null`, as the plan did) —
+   * always carries the confirmed id. A non-`null` id does not say a write
+   * happened (the plan's own refusals on an update carry it too).
+   */
   readonly itemId: number | null;
   readonly problemas: readonly ProblemaDeBloqueio[];
 

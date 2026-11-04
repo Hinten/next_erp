@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { Firestore } from 'firebase-admin/firestore';
 import {
   CAMPOS_ESCRITOS,
   CAMPOS_OBSERVADOS,
@@ -7,7 +8,88 @@ import {
   incidenteReconstrucaoLegado,
   mudouCampoObservado,
   sintetizarAplicadoLegado,
+  sincronizarEstoquePedido,
 } from './sincronizarEstoquePedido';
+
+describe('sincronizarEstoquePedido — config refs', () => {
+  // The real transaction callback resolves the pedido's configuration. Empty
+  // items produce no stock deltas, so this fake needs only document reads: an
+  // unexpected write or network dependency fails rather than being mocked away.
+  function configDb(pedido: Record<string, unknown>, integracao: Record<string, unknown> = {}) {
+    const docs: Record<string, Record<string, unknown>> = {
+      'pedidos/pedido-1': { estado: 'pago', itens: {}, ...pedido },
+      'integracao/int1': { depositoOuterRef: 'depositos/dep1', ...integracao },
+      'operacao/op1': { movimentaEstoque: true, movimentaIndisponivelEstoque: true },
+    };
+    const reads: string[] = [];
+    const ref = (path: string) => ({ path });
+    const tx = {
+      get: async ({ path }: { path: string }) => {
+        reads.push(path);
+        return { exists: docs[path] != null, data: () => docs[path] };
+      },
+    };
+    const db = {
+      doc: ref,
+      collection: (path: string) => ({ doc: (id: string) => ref(`${path}/${id}`) }),
+      runTransaction: async <T>(callback: (transaction: typeof tx) => Promise<T>) => callback(tx),
+    } as unknown as Firestore;
+    return { db, reads };
+  }
+
+  it.each([
+    ['documents/integracao/int1', 'documents/operacao/op1', 'documents/depositos/dep1'],
+    ['integracao/int1', 'operacao/op1', 'depositos/dep1'],
+    ['int1', 'op1', 'dep1'],
+  ])('resolves the stored configuração refs %s / %s / %s', async (conta, operacao, deposito) => {
+    const { db, reads } = configDb(
+      { integracaoPedidoOuterRef: conta, operacaoPedidoOuterRef: operacao },
+      { depositoOuterRef: deposito },
+    );
+    await expect(sincronizarEstoquePedido(db, 'pedido-1')).resolves.toEqual({
+      status: 'nada-a-fazer',
+    });
+    expect(reads).toEqual(['pedidos/pedido-1', 'integracao/int1', 'operacao/op1']);
+  });
+
+  it('uses the integração operação when the pedido has no resolvable operação', async () => {
+    const { db, reads } = configDb(
+      { integracaoPedidoOuterRef: 'integracao/int1', operacaoPedidoOuterRef: 'documents' },
+      { operacaoOuterRef: 'documents/operacao/op1' },
+    );
+    await expect(sincronizarEstoquePedido(db, 'pedido-1')).resolves.toEqual({
+      status: 'nada-a-fazer',
+    });
+    expect(reads).toEqual(['pedidos/pedido-1', 'integracao/int1', 'operacao/op1']);
+  });
+
+  it.each(['', '/', 'documents', null, 42])(
+    'skips a pedido whose integração ref has no id: %s',
+    async (integracaoPedidoOuterRef) => {
+      const { db, reads } = configDb({ integracaoPedidoOuterRef });
+      await expect(sincronizarEstoquePedido(db, 'pedido-1')).resolves.toEqual({
+        status: 'ignorado',
+        motivo: 'pedido sem integração',
+      });
+      expect(reads).toEqual(['pedidos/pedido-1']);
+    },
+  );
+
+  it.each(['', '/', 'documents', null, 42])(
+    'skips the effect when the integração depósito ref has no id: %s',
+    async (depositoOuterRef) => {
+      const { db, reads } = configDb(
+        { integracaoPedidoOuterRef: 'documents/integracao/int1' },
+        { depositoOuterRef },
+      );
+      await expect(sincronizarEstoquePedido(db, 'pedido-1')).resolves.toEqual({
+        status: 'ignorado',
+        motivo: 'integração int1 sem depósito',
+      });
+      expect(reads).toEqual(['pedidos/pedido-1', 'integracao/int1']);
+    },
+  );
+});
 
 describe('loop guard 1 — observed/written field sets', () => {
   it('CAMPOS_OBSERVADOS and CAMPOS_ESCRITOS are disjoint (no self-retrigger, ever)', () => {

@@ -2,7 +2,7 @@
 
 API-only Next.js app for the **Shopee Open Platform** sales channel. One App
 Hosting backend per channel (ADR 0015), so its logs and deploy are isolated.
-Runs on `:3009` in dev. Steps 1–20 (16 deferred) of
+Runs on `:3009` in dev. Steps 1–22 (16 deferred) of
 `.master_plans/shopee/shopee-marketplace-integration.md` — **OAuth connect,
 conta status, the access-token refresh, the cached taxonomy reads, the inbound
 push receiver with its Cloud Tasks queue, nested functions codebase, weekly
@@ -48,7 +48,7 @@ a page of the 3-day queue irreversibly.
 - `lib/shopee/taxonomia/` — the layer behind those routes: `cache.ts` (seven
   `createReadCache`s + `taxonomiaCtx`), `categorias.ts` (the tree index and the
   three-valued leaf gate), `params.ts` (hand-rolled query readers → pt-BR 400s),
-  `dto.ts` (the answer shapes and their projections), and one reader per
+  `dto.ts` (projections; shapes in `@delfrance/schemas`), and one reader per
   operation (`atributos`, `marcas`, `limites`, `variacoes`, `recomendacao`).
 - `app/api/health/route.ts` — `{ service: 'shopee' }`.
 - `lib/shopee/env.ts` — the one place this app reads its **Shopee**
@@ -205,9 +205,11 @@ a page of the 3-day queue irreversibly.
   a time, 300 s, a 3-attempt ladder); enqueued by TWO identities because it
   re-enqueues itself.
 - `app/api/marketplace/shopee/publicar/route.ts` — step 11's publish
-  (`PERM.integracao.write`): 200 with the summary built BY NAME, 400 for a bad
-  body, 404 `SHOPEE_ANUNCIO_NAO_ENCONTRADO`; it is the composition root for the
-  clock, the wait and the partner client, because `anuncios/` builds none.
+  (`PERM.integracao.write`): 200 with the summary built BY NAME, 202 when a
+  create's outcome is unknown, 400 for a bad body, 404
+  `SHOPEE_ANUNCIO_NAO_ENCONTRADO`, 409 for a draft; it is the composition root
+  for the clock, the wait and the partner client, because `anuncios/` builds none.
+- `app/api/marketplace/shopee/rascunho/**` — #1911's draft routes (**Publish**).
 - `app/api/marketplace/shopee/enviar-estoque/route.ts` — step 12's manual stock
   push (`PERM.integracao.write`): **200 even when every listing failed** (a
   per-listing refusal is DATA), 409 `SHOPEE_CONTA_PAUSADA` before any provider
@@ -447,12 +449,12 @@ a page of the 3-day queue irreversibly.
   `avisos/autorizacao.ts`, which stays the one module on the AVISOS path that
   knows the unit (the three pedido seams above are the others).
 - `lib/shopee/testing/fakeDb.ts` — the shared in-memory Firestore double
-  **111** suites in this app name (109 drive it), and since step 8 it has a
+  **120** suites in this app name (118 drive it), and since step 8 it has a
   suite of its OWN. ⚠️ Re-derive the number, never increment it:
   `git grep -l "testing/fakeDb" -- "apps/shopee/**/*.test.ts" | wc -l` (after
   step 8: 20, 9: 34, 12: 57, 13: 73, 14: 81, 15: 84, 15b: 87, 17: 93, 18: 95,
-  19: 108, 20: 111 — the two `*.tasks.test.ts` suites it counts name the double
-  in a docblock only).
+  19: 108, 20: 111, 21: 114, #1911: 120 — the two `*.tasks.test.ts` suites it
+  counts name the double in a docblock only).
   Step 9 extended the double ADDITIVELY: an
   `__arrayUnion` sentinel applied on write, **dotted-path** expansion on
   `update` (the price patch writes `precos.<tabelaId>`), and a real `updateTime`
@@ -1393,11 +1395,10 @@ kit declares `support_pre_order` and `component_count_limit_of_single_model`.
 cursor, echoed verbatim (it is not `offset + pageSize`), and the caller asks for
 the next one.
 
-**`brandshopee` is untouched, and stays the curated shortlist.** Shopee's brand
-API is extremely slow, so the supported brands are registered once and read from
-our own database — the produto's brand dropdown reads `integracao/{id}/brandshopee`,
-the `marcas` route serves only the REGISTRATION picker, and the shortlist is
-maintained from the conta screen (step 21) and re-validated at publish (step 11).
+**`brandshopee` is the curated shortlist** (the brand API is slow):
+`marcaShopee.ts` in schemas, deduped by `brand_id`, edited on the conta screen;
+a draft stores the `brand_id` + `original_brand_name` pair picked from it.
+Publish never reads it.
 
 **Recommendations are OFFERED, never applied** (`applied: false`, #799), and a
 suggested id absent from the tree degrades that ROW (`unresolved`, one log line)
@@ -1409,12 +1410,9 @@ serve `get_kit_item_limit` — step 19's gateway 404
 (`ShopeeOperacaoNaoServidaError`), cached as the VALUE `indisponivel` and
 answered 200 with `indisponivel: true`.
 
-`limparTaxonomiaShopee()` clears all seven caches at once, coarse on purpose:
-the primitive has no prefix scan. ⚠️ **Correction (step 3):** an earlier revision
-said `push 13` was where granularity would earn its keep. It is not — `push 13`
-is the brand-register RESULT and the dispatch table `ack`s it, invalidating
-nothing. Nothing in step 3 clears a taxonomy cache; whichever step first reacts
-to a brand or category change is where the question comes back.
+`limparTaxonomiaShopee()` clears all seven caches at once (the primitive has no
+prefix scan). Nothing clears one on a brand or category change; `push 13` (the
+brand-register result) is only `ack`ed.
 
 ## Publish (`lib/shopee/anuncios/`, step 11)
 
@@ -1429,14 +1427,26 @@ The first WRITER of a listing. Reasoning: `anuncios/README.md`.
   `get_model_list`; a model with no ERP child is KEPT; no link doc is deleted.
 - `tax_info` is whole or absent; the three seller constants are NOT sent, and
   one all-or-nothing refusal retries the same call once without the block.
-- Refusals throw `ShopeePublishBlockedError` BEFORE any Shopee write; a
-  rejection is a `problema` on the field that fixes it. Both vocabularies
-  PERSIST.
+- Refusals throw `ShopeePublishBlockedError` BEFORE any listing write
+  (model-leg exceptions: `anuncios/README.md`); a rejection is a `problema` on
+  the field that fixes it. Both vocabularies PERSIST.
 - `item_status` comes from the READ-BACK, never the request.
 - `size_chart_info` (step 18) rides create AND update: the tabela's template for
   the listing's resolved category (`categoriaDoAnuncio`), else its FIRST photo,
   else nothing — never the `0`/`''` detach. A refusal is a 422 on
   `size_chart_info`, never retried without it.
+- **Drafts (#1911)**: `item_id: null` (`ehRascunhoShopee`), never live, reached
+  only by a named `linkDocId`. `rascunho/{,atualizar,descartar}`
+  (`anuncios/rascunho.ts`) create/edit/discard one; publish locks
+  (`publicacaoEmCurso`) and claims it; a first create refuses a same-SKU listing
+  not linked to the produto; an uncertain `add_item` is a 202, re-sought by the
+  SKU sent (an attestation's `criacaoIncertaAdota` must match ENSURE's verdict
+  or nothing is sent); the import adopts only a draft with attempt evidence.
+- An expired lock its run never stamped, on a draft with no record, reads
+  `livre` at once. ENSURE and the first-create walk stop before the request
+  deadline: 409 `PUBLICACAO_EXPIRADA`, nothing sent (the CLI has the lock's
+  time). Follow-ups #2064 (narrow the walk), #2061 (ENSURE's fallback).
+  Registers 307–313: `anuncios/README.md`.
 
 ## Stock sync (`lib/shopee/estoque/`, step 12)
 
@@ -1623,7 +1633,8 @@ the pick (see **Publish**). Depth and register rows 248–269:
 
 - Same `publicar` route/CLI; `escolherArmaDePublicacao` picks item vs kit from
   the conta's links. A first publish is a kit only when `ehKitVirtualEfetivo`;
-  `ehKitVirtual` without `ehKit` is REFUSED. Once linked, the LINK decides.
+  `ehKitVirtual` without `ehKit` is REFUSED. Once live-linked, the LINK decides
+  (never a draft).
 - ONE recipe module: `receitaKitShopee.ts` in `@delfrance/schemas` (the
   default-model rule, the fold, the fingerprint). Never a second copy here, in
   `apps/functions` or in `apps/web`.
@@ -1652,6 +1663,9 @@ the pick (see **Publish**). Depth and register rows 248–269:
   `update_kit_item`. A recipe edit opens `shopeeKitReceitaDivergente` (the
   `apps/functions` trigger vs `receitaKitConferida`). Depth + register rows
   270–306: `kits/README.md`.
+- A refusal that names a CLI flag also carries `acao` (`@delfrance/schemas`
+  `shopeeAcaoSugerida.ts`) and the 202 carries `aguardarMs`: the web tab keys
+  on those, never on a sentence (`exigirAcaoSeHaComando` pins it).
 
 ## Rules specific to this app
 
@@ -1772,20 +1786,12 @@ read by nothing.
 ## CI
 
 `ci-shopee.yml` carries exactly ONE suite job, `Shopee Cloud Tasks round trip`,
-behind the unskippable `CI gate (shopee)`. It builds the functions artifact and
-runs `*.tasks.test.ts` against firestore + functions + tasks emulators
-(`firebase.shopee.tasks.json`, ports 8084/5003/9500). Since step 17 that job runs
-**eight suite FILES and sixteen tests**
-(`app/api/webhooks/shopee/route.tasks.test.ts` ×3,
-`lib/shopee/produtos/importacaoMassa.tasks.test.ts` ×2,
-`lib/shopee/notificacoes/pushAnuncio.tasks.test.ts` ×1,
-`lib/shopee/estoque/enviarEstoque.tasks.test.ts` ×1,
-`lib/shopee/precos/atualizarPrecos.tasks.test.ts` ×3,
-`lib/shopee/nfe/enviarNfe.tasks.test.ts` ×1,
-`lib/shopee/pedidos/arranjoAutomatico.tasks.test.ts` ×1,
-`lib/shopee/devolucoes/devolucao.tasks.test.ts` ×4) — still one job, still
-one check name, no new gate-manifest row. The lane's header carries the same
-pair of numbers.
+behind the unskippable `CI gate (shopee)` — a REQUIRED check on `protect-main`
+since 2026-10-19, so a red round trip blocks the merge. It builds the functions
+artifact and runs `*.tasks.test.ts` and `*.firestore.test.ts` against firestore +
+functions + tasks emulators (`firebase.shopee.tasks.json`, ports 8084/5003/9500).
+The lane's header lists every suite file and what each hop proves; a new file
+with either suffix joins THIS job — no new job, check name or gate-manifest row.
 
 Five **push deliveries** go through the receiver hop: an unknown push code
 (→ `parked`); since step 5 a **code 3**, since step 7 a **code 4**, since
@@ -1836,6 +1842,8 @@ scheduler sets `scheduleDelaySeconds` there, the emulator ignores it
 `importacaoMassa.test.ts`. The same holds for step 14's SERPRO wait and
 recheck delay, pinned offline in the `nfe/` suites. ⚠️ The emulator dispatches in FILE order with
 `fileParallelism: false`; each file's `beforeEach` wipe is the ONLY isolation.
+The functions emulator also loads the codebase's three Firestore triggers;
+`vitest.tasks.config.ts`'s header says how a suite seeds around them.
 
 ⚠️ The lane's `push: paths:` grew with step 5 (`packages/schemas/src/pedido/**`,
 the cliente/endereço/`intFrete` schemas, `packages/data/src/admin/{clientes,produtos,enderecos}/**`
@@ -1864,7 +1872,8 @@ reuses and `shared/ttl.ts`. **Step 14 grew it by exactly two** —
 `packages/schemas/src/nfe.ts` (`ESTADO_NFE`, `CHAVE_NFE_REGEX`, the trigger's
 `nfeMeta`). **Step 17 grew it by exactly one** —
 `packages/schemas/src/devolucaoShopee.ts` (`ehReturnSnShopee`); **step 20** by
-`packages/data/src/admin/frete/**` — for a closure of **52** entries today.
+`packages/data/src/admin/frete/**`, **step 22** by `packages/data/src/zodParse.ts`,
+**#1911** by five schema files — for a closure of **58** entries today.
 `pull_request:` still has **no** `paths:` and
 never may — the `changes` job derives that closure from the workspace graph.
 
@@ -1874,11 +1883,11 @@ in `CI test` — unfiltered, no `if:`. So a skip here loses the emulator round t
 and nothing else. Do not add a `ci.yml` filter for this workspace without moving
 the offline job into this lane in the same commit; an exclusion is a promise.
 
-⚠️ **The suites are disjoint BY GLOB.** `vitest.config.ts` excludes
-`**/*.tasks.test.ts` and `**/*.firestore.test.ts`; `vitest.tasks.config.ts`
-includes only the first. A file matching NEITHER runs in NO job. The
-`*.firestore.test.ts` half is listed before that lane exists — it is step 22's
-(#1530) — precisely so nobody has to remember it then.
+⚠️ **The suites are disjoint BY GLOB, and a test pins it.** `vitest.config.ts`
+excludes `**/*.tasks.test.ts` and `**/*.firestore.test.ts`;
+`vitest.tasks.config.ts` includes both (Loja Integrada's fold: no second emulator
+config, job or check). `packages/config-eslint/rules/vitest-config-partition.test.js`
+reds a file matching no config, or two.
 
 The lane is offline by construction: `vitest.tasks.setup.ts` throws when
 `FIRESTORE_EMULATOR_HOST` or `CLOUD_TASKS_EMULATOR_HOST` is missing under
@@ -1943,7 +1952,7 @@ across **every** active conta by default, `--integracao <id>` to scope it to one
 the fifth (step 9) imports ONE named anúncio through the real step-9 path —
 the dry run prints the PLAN, `--live` writes it; the sixth (step 11) plans the
 publication of ONE produto; and the seventh (step 12) plans the stock push for
-up to 50 named produtos, `--produto` repeated, one flag per anchor; the eighth
+up to 50 named produtos, `--produto` repeated, one flag per produto or variação; the eighth
 (step 13) does the same for prices (`--baixar-preco` allows a decrease); and
 the ninth (step 14) uploads the approved NF-e of up to 50 pedidos in process,
 enqueuing nothing — each pedido proves its own conta; the tenth (step 15)
@@ -1966,10 +1975,9 @@ Firebase console / Secret Manager. The nested Cloud Functions codebase
 three IAM roles the receiver needs before it can enqueue. Since step 20 it
 holds **twenty** functions: twelve `onSchedule`s, five queues and three
 Firestore triggers.
-`firebase.shopee.deploy.json` shipped with step 3 and is **inert**: a config file
-deploys nothing, running it is a manual coordinated human step (root CLAUDE.md
-rule 8), and the ROLLOUT — plus `firebase.shopee.json`, `vpcAccess`, the real
-`SHOPEE_TASKS_REGION` and flipping `implementado` — is still step 22 / #1530.
+`firebase.shopee.deploy.json` is **inert**: a config file deploys nothing, and
+running it is a manual coordinated human step (root CLAUDE.md rule 8) — the
+production rollout is a migration-window step (#1998).
 
 ⚠️ An **ERP System** Shopee app has no console "Authorize" button, so
 `oauth/start` (or the script above) is the only way to reach the consent page,
@@ -1978,6 +1986,5 @@ and the redirect URL's **domain** is registered per app in the Shopee console �
 
 ⚠️ **Static egress is a prerequisite, not a step here.** Shopee's IP allow-list
 (master plan P2, option D: a VPC connector, a subnet, a firewall rule, a reserved
-IP and a proxy VM) is migration-window infrastructure (root CLAUDE.md rule 8) —
-see #1208 when that window is scheduled. `apphosting.yaml` carries no
-`vpcAccess`, deliberately.
+IP and a proxy VM) is migration-window infrastructure (root CLAUDE.md rule 8,
+#1531); `apphosting.yaml` gains no `vpcAccess` before it exists.

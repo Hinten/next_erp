@@ -20,6 +20,8 @@ import {
   shopeeErrorFromEnvelope,
 } from '@delfrance/integrations-shopee';
 
+import { AGUARDAR_KIT_INCERTO_SHOPEE_MS } from '@delfrance/schemas';
+
 import { MOTIVO_PROBLEMA_PUBLICACAO } from '../anuncios/errosPublicacao';
 import { problemasDeErroShopee } from '../anuncios/problemasPublicacao';
 import { fraseCanonicaShopee } from '../core/recusaShopee';
@@ -713,5 +715,49 @@ describe('problemasDaRecusaKit — UMA entrada, com o campo e a frase pt-BR VERB
     expect(
       problemasDaRecusaKit(doEnvelope('product.error_param', 'Item name is too long')),
     ).toBeNull();
+  });
+});
+
+/* ------------------- K4 (step 21) — the wait is the ONE copy ---------------- */
+
+describe('K4 (passo 21) — a espera da instabilidade é a constante compartilhada', () => {
+  function instabilidade(
+    pkg: Pick<typeof import('@delfrance/integrations-shopee'), 'shopeeErrorFromEnvelope'>,
+  ) {
+    return pkg.shopeeErrorFromEnvelope(
+      {
+        error: 'product.error_busi',
+        message: 'Error 1040: Too many connections',
+        request_id: null,
+        warning: null,
+      },
+      { path: SHOPEE_ADD_KIT_ITEM_PATH, httpStatus: 200, surface: SHOPEE_SURFACE.business },
+    );
+  }
+
+  it('a frase traz os minutos de AGUARDAR_KIT_INCERTO_SHOPEE_MS (fact 14)', () => {
+    const [p] = problemasDaRecusaKit(instabilidade({ shopeeErrorFromEnvelope })) ?? [];
+    expect(p?.motivo).toBe(M.instabilidadeShopee);
+    expect(p?.mensagem).toContain(
+      `daqui a ${String(AGUARDAR_KIT_INCERTO_SHOPEE_MS / 60_000)} minutos`,
+    );
+  });
+
+  it('⚠️ é INTERPOLADA, nunca um literal que concorda por sorte: outra espera ⇒ outro número', async () => {
+    vi.resetModules();
+    vi.doMock('@delfrance/schemas', async (importOriginal) => ({
+      ...(await importOriginal<typeof import('@delfrance/schemas')>()),
+      AGUARDAR_KIT_INCERTO_SHOPEE_MS: 300_000,
+    }));
+    try {
+      const pkg = await import('@delfrance/integrations-shopee');
+      const { problemasDaRecusaKit: daRecusa } = await import('./recusaKit');
+      const [p] = daRecusa(instabilidade(pkg)) ?? [];
+      expect(p?.mensagem).toContain('daqui a 5 minutos');
+      expect(p?.mensagem).not.toContain('4 minutos');
+    } finally {
+      vi.doUnmock('@delfrance/schemas');
+      vi.resetModules();
+    }
   });
 });

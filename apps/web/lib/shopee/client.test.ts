@@ -1,7 +1,14 @@
 import { FirebaseError } from 'firebase/app';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { projetarTabelaShopee } from '@delfrance/schemas';
+import {
+  CAMPO_RASCUNHO_SHOPEE,
+  CODIGO_RASCUNHO_SHOPEE,
+  MSG_ITEM_NAME_EM_BRANCO_RASCUNHO_SHOPEE,
+  projetarTabelaShopee,
+} from '@delfrance/schemas';
+
+import { shopeeClientFalso } from '@/lib/testing/shopeeClientFalso';
 
 import {
   ShopeeClientHttpError,
@@ -9,8 +16,15 @@ import {
   ShopeeClientRespostaInvalidaError,
   createShopeeClient,
   shopeeHttpFallbackMessage,
+  type CamposDoCorpoRascunhoShopee,
+  type ShopeeClient,
 } from './client';
-import { ACAO_RECLAMACAO_SHOPEE, SOLUCAO_DEVOLUCAO_SHOPEE } from './wire';
+import {
+  ACAO_RECLAMACAO_SHOPEE,
+  DETALHES_ERRO_SHOPEE_VAZIOS,
+  SOLUCAO_DEVOLUCAO_SHOPEE,
+  type ShopeeContaStatus,
+} from './wire';
 
 /**
  * The regressions these pin are the ones both sibling clients paid for before
@@ -1547,5 +1561,1559 @@ describe('`kind` on ShopeeClientHttpError (R-c)', () => {
   it('the constructor defaults `kind` to null — the RespostaInvalida subclass included', () => {
     expect(new ShopeeClientHttpError('m', 500, null).kind).toBeNull();
     expect(new ShopeeClientRespostaInvalidaError('m', 200, []).kind).toBeNull();
+  });
+});
+
+/* ---------------------------------------------------------------------------
+ * Step 21 (#1529, sub-step 21-1) — the thirteen new methods
+ * ------------------------------------------------------------------------- */
+
+// Fixture ids only: integração `int-1`, produtos `prod-1`/`prod-2`, link `link-1`,
+// item 1000001, job `job-1`. Each 2xx below carries every key its route sends BY
+// NAME (`apps/shopee/app/api/marketplace/shopee/<route>/route.ts`), the stripped
+// ones included, so the parse is exercised against the real envelope.
+
+const ESTOQUE_200 = {
+  canal: 'shopee',
+  integracaoId: 'int-1',
+  contaNome: 'Conta Teste',
+  solicitados: 1,
+  familias: 1,
+  resumo: { enviados: 1, pulados: 0, falhas: 0, naoTentados: 0 },
+  listings: [
+    {
+      produtoId: 'prod-1',
+      produtoNome: 'Camiseta',
+      variacaoProdutoId: null,
+      anuncioId: '1000001',
+      linkDocId: 'link-1',
+      outcome: 'enviado',
+      motivo: null,
+      mensagem: 'Estoque enviado.',
+      quantidade: 5,
+      variacoes: [],
+      modelosRecusados: 0,
+      clampados: 0,
+      rearme: null,
+    },
+  ],
+  produtosSemEnvio: [],
+  pausadoAte: null,
+};
+
+const PRECOS_200 = {
+  canal: 'shopee',
+  integracaoId: 'int-1',
+  contaNome: 'Conta Teste',
+  solicitados: 1,
+  familias: 1,
+  resumo: { enviados: 1, pulados: 0, falhas: 0, naoTentados: 0 },
+  listings: [
+    {
+      produtoId: 'prod-1',
+      produtoNome: 'Camiseta',
+      variacaoProdutoId: null,
+      anuncioId: '1000001',
+      linkDocId: 'link-1',
+      outcome: 'enviado',
+      motivo: null,
+      mensagem: 'Preço enviado.',
+      preco: 99.9,
+      precoAnterior: 89.9,
+      variacoes: null,
+      codigo: null,
+    },
+  ],
+  produtosSemEnvio: [],
+  pausadoAte: null,
+};
+
+const STATUS_200 = {
+  canal: 'shopee',
+  integracaoId: 'int-1',
+  acao: 'pausar',
+  solicitados: 1,
+  familias: 1,
+  resumo: { aplicados: 1, pulados: 0, falhas: 0, naoTentados: 0 },
+  listings: [
+    {
+      produtoId: 'prod-1',
+      produtoNome: 'Camiseta',
+      anuncioId: '1000001',
+      linkDocId: 'link-1',
+      outcome: 'enviado',
+      motivo: null,
+      mensagem: 'Anúncio pausado.',
+      statusFinal: 'UNLIST',
+      estadoAnuncio: 'pausado',
+      membros: null,
+    },
+  ],
+  produtosSemAnuncio: [],
+  pausadoAte: null,
+};
+
+const PUBLICAR_ITEM_200 = {
+  itemId: 1000001,
+  estadoAnuncio: 'ativo',
+  itemStatus: 'NORMAL',
+  modelos: { total: 0, criados: 0, atualizados: 0, semFilho: 0 },
+  fotos: { reutilizadas: 2, enviadas: 0, falhas: 0 },
+  avisoShopee: null,
+  taxInfoOmitido: null,
+  tabelaDeMedidas: {
+    sizeChartId: null,
+    fonte: 'nenhuma',
+    motivo: 'sem-tabela',
+    fotoOmitida: null,
+    avisoObrigatoria: false,
+  },
+};
+
+const REVERIFICAR_200 = {
+  acao: 'atualizado',
+  estadoAnuncio: 'ativo',
+  itemStatus: 'NORMAL',
+  deboost: false,
+  violacoes: [],
+  violacoesLidas: true,
+  modelos: null,
+  avisoResolvido: false,
+  avisoReceitaKit: null,
+  chamadasShopee: 2,
+};
+
+const MASS_STATUS_200 = {
+  status: 'running',
+  scanned: 10,
+  imported: 4,
+  created: 2,
+  skipped: 1,
+  kits: 0,
+  failureCount: 0,
+  failures: [],
+  restante: 5,
+  varreduraExaurida: false,
+  startedAt: 1_790_000_000_000,
+  updatedAt: 1_790_000_060_000,
+  finishedAt: null,
+  erro: null,
+};
+
+const CONTADORES_PRECO = {
+  status: 'running',
+  baixarPreco: false,
+  planejados: 3,
+  enviados: 1,
+  pulados: 0,
+  falhas: 0,
+  pausas: 0,
+  parques: 0,
+  retomarEm: null,
+  filaRestante: 2,
+  relatorioCompleto: false,
+  relatorioShards: 1,
+  startedAt: 1_790_000_000_000,
+  updatedAt: 1_790_000_060_000,
+  finishedAt: null,
+  erro: null,
+};
+const PRICE_STATUS_200 = { jobId: 'job-1', ...CONTADORES_PRECO, skips: [], failures: [] };
+const HISTORICO_200 = { envios: [{ jobId: 'job-1', integracaoId: 'int-1', ...CONTADORES_PRECO }] };
+const RELATORIO_200 = {
+  linhas: [],
+  proximoDepois: null,
+  status: 'completed',
+  relatorioCompleto: true,
+  filaRestante: 0,
+};
+
+const BASE = 'http://localhost:3009/api/marketplace/shopee';
+
+describe('step 21 — each method: its route, its verb, its body BY NAME (C1)', () => {
+  it.each([
+    [
+      'enviarEstoque',
+      (c: ReturnType<typeof client>) =>
+        c.enviarEstoque({ integracaoId: 'int-1', produtoIds: ['prod-1', 'prod-2'] }),
+      ESTOQUE_200,
+      `${BASE}/enviar-estoque`,
+      { integracaoId: 'int-1', produtoIds: ['prod-1', 'prod-2'], reenviarComErro: false },
+    ],
+    [
+      'enviarPrecos',
+      (c: ReturnType<typeof client>) =>
+        c.enviarPrecos({ integracaoId: 'int-1', produtoIds: ['prod-1'], baixarPreco: true }),
+      PRECOS_200,
+      `${BASE}/enviar-precos`,
+      { integracaoId: 'int-1', produtoIds: ['prod-1'], baixarPreco: true },
+    ],
+    [
+      'definirStatusAnuncios',
+      (c: ReturnType<typeof client>) =>
+        c.definirStatusAnuncios({ integracaoId: 'int-1', produtoIds: ['prod-1'], acao: 'pausar' }),
+      STATUS_200,
+      `${BASE}/anuncio-status`,
+      { integracaoId: 'int-1', produtoIds: ['prod-1'], acao: 'pausar' },
+    ],
+    [
+      'publicar',
+      (c: ReturnType<typeof client>) => c.publicar({ integracaoId: 'int-1', produtoId: 'prod-1' }),
+      PUBLICAR_ITEM_200,
+      `${BASE}/publicar`,
+      { integracaoId: 'int-1', produtoId: 'prod-1' },
+    ],
+    [
+      'reverificarAnuncio',
+      (c: ReturnType<typeof client>) =>
+        c.reverificarAnuncio({ integracaoId: 'int-1', produtoId: 'prod-1', linkDocId: 'link-1' }),
+      REVERIFICAR_200,
+      `${BASE}/reverificar-anuncio`,
+      { integracaoId: 'int-1', produtoId: 'prod-1', linkDocId: 'link-1' },
+    ],
+    [
+      'startMassImport',
+      (c: ReturnType<typeof client>) => c.startMassImport({ integracaoId: 'int-1' }),
+      { jobId: 'job-1' },
+      `${BASE}/importar-todos`,
+      { integracaoId: 'int-1' },
+    ],
+    [
+      'massImportStatus',
+      (c: ReturnType<typeof client>) =>
+        c.massImportStatus({ integracaoId: 'int/1 2&x', jobId: 'job&1' }),
+      MASS_STATUS_200,
+      `${BASE}/importar-todos/status?integracaoId=int%2F1%202%26x&jobId=job%261`,
+      undefined,
+    ],
+    [
+      'cancelMassImport',
+      (c: ReturnType<typeof client>) =>
+        c.cancelMassImport({ integracaoId: 'int-1', jobId: 'job-1' }),
+      { status: 'cancelled' },
+      `${BASE}/importar-todos/cancelar`,
+      { integracaoId: 'int-1', jobId: 'job-1' },
+    ],
+    [
+      'startPriceSync',
+      (c: ReturnType<typeof client>) => c.startPriceSync({ integracaoId: 'int-1' }),
+      { jobId: 'job-1' },
+      `${BASE}/atualizar-precos`,
+      { integracaoId: 'int-1', baixarPreco: false },
+    ],
+    [
+      'priceSyncStatus',
+      (c: ReturnType<typeof client>) =>
+        c.priceSyncStatus({ integracaoId: 'int/1 2&x', jobId: 'job&1' }),
+      PRICE_STATUS_200,
+      `${BASE}/atualizar-precos/status?integracaoId=int%2F1%202%26x&jobId=job%261`,
+      undefined,
+    ],
+    [
+      'cancelPriceSync',
+      (c: ReturnType<typeof client>) =>
+        c.cancelPriceSync({ integracaoId: 'int-1', jobId: 'job-1' }),
+      { status: 'cancelled' },
+      `${BASE}/atualizar-precos/cancelar`,
+      { integracaoId: 'int-1', jobId: 'job-1' },
+    ],
+    [
+      'priceSyncHistorico',
+      (c: ReturnType<typeof client>) => c.priceSyncHistorico({ integracaoId: 'int-1' }),
+      HISTORICO_200,
+      `${BASE}/atualizar-precos/historico?integracaoId=int-1`,
+      undefined,
+    ],
+    [
+      'priceSyncRelatorio',
+      (c: ReturnType<typeof client>) =>
+        c.priceSyncRelatorio({ integracaoId: 'int-1', jobId: 'job-1', depois: null }),
+      RELATORIO_200,
+      `${BASE}/atualizar-precos/relatorio?integracaoId=int-1&jobId=job-1`,
+      undefined,
+    ],
+  ] as const)('⭐ %s', async (_nome, chamar, resposta, url, corpo) => {
+    const { c, pedidos } = gravador(JSON.stringify(resposta));
+
+    await chamar(c);
+
+    expect(pedidos).toHaveLength(1);
+    expect(pedidos[0]?.url).toBe(url);
+    if (corpo === undefined) {
+      expect(pedidos[0]?.init?.method).toBe('GET');
+      expect(pedidos[0]?.init).not.toHaveProperty('body');
+    } else {
+      expect(pedidos[0]?.init?.method).toBe('POST');
+      expect(pedidos[0]?.init?.headers).toEqual({
+        Authorization: 'Bearer token',
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      });
+      // `toStrictEqual` on the parsed body: the key SET is exact, nothing
+      // `undefined`-valued or `null`-filled rides along.
+      expect(corpoEnviado(pedidos[0]?.init)).toStrictEqual(corpo);
+    }
+  });
+
+  it('⚠️ a stray key on the caller’s object never reaches a route — every body is rebuilt by name', async () => {
+    // Not a fresh literal, so TypeScript lets the extra keys through — exactly
+    // what a component spreading its own state into the call would do.
+    const entradaEstoque = { integracaoId: 'int-1', produtoIds: ['prod-1'], extra: 1 };
+    const entradaJob = { integracaoId: 'int-1', jobId: 'job-1', extra: 1 };
+    const { c, pedidos } = gravador(JSON.stringify(ESTOQUE_200));
+    await c.enviarEstoque(entradaEstoque);
+    const job = gravador(JSON.stringify({ status: 'cancelled' }));
+    await job.c.cancelPriceSync(entradaJob);
+
+    expect(corpoEnviado(pedidos[0]?.init)).not.toHaveProperty('extra');
+    expect(corpoEnviado(job.pedidos[0]?.init)).not.toHaveProperty('extra');
+  });
+
+  it('the optional keys go out when given: `reenviarComErro`, `linkDocId`, `options`, `limite`, `depois`', async () => {
+    const estoque = gravador(JSON.stringify(ESTOQUE_200));
+    await estoque.c.enviarEstoque({
+      integracaoId: 'int-1',
+      produtoIds: ['prod-1'],
+      reenviarComErro: true,
+    });
+    expect(corpoEnviado(estoque.pedidos[0]?.init)).toMatchObject({ reenviarComErro: true });
+
+    const status = gravador(JSON.stringify(STATUS_200));
+    await status.c.definirStatusAnuncios({
+      integracaoId: 'int-1',
+      produtoIds: ['prod-1'],
+      acao: 'reativar',
+      linkDocId: 'link-1',
+    });
+    expect(corpoEnviado(status.pedidos[0]?.init)).toStrictEqual({
+      integracaoId: 'int-1',
+      produtoIds: ['prod-1'],
+      acao: 'reativar',
+      linkDocId: 'link-1',
+    });
+
+    const reverificar = gravador(JSON.stringify(REVERIFICAR_200));
+    await reverificar.c.reverificarAnuncio({ integracaoId: 'int-1', produtoId: 'prod-1' });
+    expect(corpoEnviado(reverificar.pedidos[0]?.init)).toStrictEqual({
+      integracaoId: 'int-1',
+      produtoId: 'prod-1',
+    });
+
+    const importacao = gravador(JSON.stringify({ jobId: 'job-1' }));
+    await importacao.c.startMassImport({
+      integracaoId: 'int-1',
+      options: { importarFotos: false },
+    });
+    expect(corpoEnviado(importacao.pedidos[0]?.init)).toStrictEqual({
+      integracaoId: 'int-1',
+      options: { importarFotos: false },
+    });
+
+    const historico = gravador(JSON.stringify(HISTORICO_200));
+    await historico.c.priceSyncHistorico({ integracaoId: 'int-1', limite: 20 });
+    expect(historico.pedidos[0]?.url).toBe(
+      `${BASE}/atualizar-precos/historico?integracaoId=int-1&limite=20`,
+    );
+
+    const relatorio = gravador(JSON.stringify(RELATORIO_200));
+    await relatorio.c.priceSyncRelatorio({ integracaoId: 'int-1', jobId: 'job-1', depois: '0004' });
+    expect(relatorio.pedidos[0]?.url).toBe(
+      `${BASE}/atualizar-precos/relatorio?integracaoId=int-1&jobId=job-1&depois=0004`,
+    );
+  });
+});
+
+describe('step 21 — publicar sends exactly what the caller chose (C2)', () => {
+  it('⭐ only `{ integracaoId, produtoId }` → exactly those two keys, nothing null-filled', async () => {
+    const { c, pedidos } = gravador(JSON.stringify(PUBLICAR_ITEM_200));
+
+    await c.publicar({ integracaoId: 'int-1', produtoId: 'prod-1' });
+
+    expect(Object.keys(corpoEnviado(pedidos[0]?.init) as object).sort()).toEqual([
+      'integracaoId',
+      'produtoId',
+    ]);
+  });
+
+  it('every optional key goes out when given — and `categoryId: 0` is SENT (the route judges it), never dropped', async () => {
+    const { c, pedidos } = gravador(JSON.stringify(PUBLICAR_ITEM_200));
+
+    await c.publicar({
+      integracaoId: 'int-1',
+      produtoId: 'prod-1',
+      linkDocId: 'link-1',
+      status: 'UNLIST',
+      categoryId: 0,
+      principal: 'prod-2',
+      recriar: true,
+    });
+
+    expect(corpoEnviado(pedidos[0]?.init)).toStrictEqual({
+      integracaoId: 'int-1',
+      produtoId: 'prod-1',
+      linkDocId: 'link-1',
+      status: 'UNLIST',
+      categoryId: 0,
+      principal: 'prod-2',
+      recriar: true,
+    });
+  });
+
+  it('`converterEmKit` goes out on its own', async () => {
+    const { c, pedidos } = gravador(JSON.stringify(PUBLICAR_ITEM_200));
+
+    await c.publicar({ integracaoId: 'int-1', produtoId: 'prod-1', converterEmKit: true });
+
+    expect(corpoEnviado(pedidos[0]?.init)).toStrictEqual({
+      integracaoId: 'int-1',
+      produtoId: 'prod-1',
+      converterEmKit: true,
+    });
+  });
+
+  it('#1911 P11: a DRAFT’s publish sends its link and each confirmation flag only when given', async () => {
+    const ambos = gravador(JSON.stringify(PUBLICAR_ITEM_200));
+    await ambos.c.publicar({
+      integracaoId: 'int-1',
+      produtoId: 'prod-1',
+      linkDocId: 'AbCdEfGhIj0123456789',
+      status: 'UNLIST',
+      confirmarSegundoAnuncio: true,
+      confirmarCriacaoIncerta: true,
+    });
+    expect(corpoEnviado(ambos.pedidos[0]?.init)).toStrictEqual({
+      integracaoId: 'int-1',
+      produtoId: 'prod-1',
+      linkDocId: 'AbCdEfGhIj0123456789',
+      status: 'UNLIST',
+      confirmarSegundoAnuncio: true,
+      confirmarCriacaoIncerta: true,
+    });
+
+    // Each flag on its own — the other is OMITTED, never `false` or `null`.
+    const segundo = gravador(JSON.stringify(PUBLICAR_ITEM_200));
+    await segundo.c.publicar({
+      integracaoId: 'int-1',
+      produtoId: 'prod-1',
+      linkDocId: 'R1',
+      confirmarSegundoAnuncio: true,
+    });
+    expect(corpoEnviado(segundo.pedidos[0]?.init)).toStrictEqual({
+      integracaoId: 'int-1',
+      produtoId: 'prod-1',
+      linkDocId: 'R1',
+      confirmarSegundoAnuncio: true,
+    });
+    const atestado = gravador(JSON.stringify(PUBLICAR_ITEM_200));
+    await atestado.c.publicar({
+      integracaoId: 'int-1',
+      produtoId: 'prod-1',
+      linkDocId: 'R1',
+      confirmarCriacaoIncerta: true,
+    });
+    expect(corpoEnviado(atestado.pedidos[0]?.init)).toStrictEqual({
+      integracaoId: 'int-1',
+      produtoId: 'prod-1',
+      linkDocId: 'R1',
+      confirmarCriacaoIncerta: true,
+    });
+  });
+
+  it('NEAR-MISS: with neither flag the body names neither key — what every publish before #1911 sent', async () => {
+    const { c, pedidos } = gravador(JSON.stringify(PUBLICAR_ITEM_200));
+
+    await c.publicar({ integracaoId: 'int-1', produtoId: 'prod-1', linkDocId: 'R1' });
+
+    const corpo = corpoEnviado(pedidos[0]?.init) as Record<string, unknown>;
+    expect(corpo).not.toHaveProperty('confirmarSegundoAnuncio');
+    expect(corpo).not.toHaveProperty('confirmarCriacaoIncerta');
+    expect(Object.keys(corpo).sort()).toEqual(['integracaoId', 'linkDocId', 'produtoId']);
+  });
+
+  it('§I1 (#1911 P11 review): `criacaoIncertaAdota` rides WITH the attestation flag — the adopted id(s), and `[]` (a deliberate create) is SENT, never dropped', async () => {
+    const adota = gravador(JSON.stringify(PUBLICAR_ITEM_200));
+    await adota.c.publicar({
+      integracaoId: 'int-1',
+      produtoId: 'prod-1',
+      linkDocId: 'R1',
+      confirmarCriacaoIncerta: true,
+      criacaoIncertaAdota: [1000011],
+    });
+    expect(corpoEnviado(adota.pedidos[0]?.init)).toStrictEqual({
+      integracaoId: 'int-1',
+      produtoId: 'prod-1',
+      linkDocId: 'R1',
+      confirmarCriacaoIncerta: true,
+      criacaoIncertaAdota: [1000011],
+    });
+
+    const cria = gravador(JSON.stringify(PUBLICAR_ITEM_200));
+    await cria.c.publicar({
+      integracaoId: 'int-1',
+      produtoId: 'prod-1',
+      linkDocId: 'R1',
+      confirmarCriacaoIncerta: true,
+      criacaoIncertaAdota: [],
+    });
+    expect(corpoEnviado(cria.pedidos[0]?.init)).toStrictEqual({
+      integracaoId: 'int-1',
+      produtoId: 'prod-1',
+      linkDocId: 'R1',
+      confirmarCriacaoIncerta: true,
+      criacaoIncertaAdota: [],
+    });
+  });
+
+  it('§I1 NEAR-MISS: an expectation WITHOUT the attestation flag never reaches the route; the flag alone keeps the CLI’s meaning (no expectation key)', async () => {
+    const semFlag = gravador(JSON.stringify(PUBLICAR_ITEM_200));
+    await semFlag.c.publicar({
+      integracaoId: 'int-1',
+      produtoId: 'prod-1',
+      linkDocId: 'R1',
+      criacaoIncertaAdota: [1000011],
+    });
+    const corpo = corpoEnviado(semFlag.pedidos[0]?.init) as Record<string, unknown>;
+    expect(corpo).not.toHaveProperty('criacaoIncertaAdota');
+    expect(Object.keys(corpo).sort()).toEqual(['integracaoId', 'linkDocId', 'produtoId']);
+
+    const soFlag = gravador(JSON.stringify(PUBLICAR_ITEM_200));
+    await soFlag.c.publicar({
+      integracaoId: 'int-1',
+      produtoId: 'prod-1',
+      linkDocId: 'R1',
+      confirmarCriacaoIncerta: true,
+    });
+    expect(corpoEnviado(soFlag.pedidos[0]?.init)).not.toHaveProperty('criacaoIncertaAdota');
+  });
+
+  it('⭐ the item 202 resolves (any 2xx is an answer) as `tipo: item-incerto` — never a thrown failure', async () => {
+    const { c } = gravador(
+      JSON.stringify({
+        arma: 'item',
+        desfecho: 'incerto',
+        linkDocId: 'R1',
+        aguardarMs: 240_000,
+        reenvioVerificaSku: false,
+        recusa: null,
+        mensagem: 'a Shopee pode ter criado o anúncio (--confirmar-criacao-incerta)',
+      }),
+      202,
+    );
+
+    const r = await c.publicar({ integracaoId: 'int-1', produtoId: 'prod-1', linkDocId: 'R1' });
+
+    expect(r).toEqual({
+      tipo: 'item-incerto',
+      arma: 'item',
+      desfecho: 'incerto',
+      linkDocId: 'R1',
+      aguardarMs: 240_000,
+      reenvioVerificaSku: false,
+      recusa: null,
+    });
+  });
+});
+
+describe('step 21 — enviarPrecos is NOT Mercado Livre’s (C3)', () => {
+  it('⭐ an absent `baixarPreco` is `false`, and `incluirNaoPublicados` is never sent', async () => {
+    const { c, pedidos } = gravador(JSON.stringify(PRECOS_200));
+
+    await c.enviarPrecos({ integracaoId: 'int-1', produtoIds: ['prod-1'] });
+
+    expect(corpoEnviado(pedidos[0]?.init)).toStrictEqual({
+      integracaoId: 'int-1',
+      produtoIds: ['prod-1'],
+      baixarPreco: false,
+    });
+  });
+
+  it('⚠️ NEAR MISS: a caller object CARRYING `incluirNaoPublicados` (ML’s shape) still does not forward it', async () => {
+    const comoNoMercadoLivre = {
+      integracaoId: 'int-1',
+      produtoIds: ['prod-1'],
+      incluirNaoPublicados: true,
+    };
+    const { c, pedidos } = gravador(JSON.stringify(PRECOS_200));
+
+    await c.enviarPrecos(comoNoMercadoLivre);
+
+    expect(corpoEnviado(pedidos[0]?.init)).not.toHaveProperty('incluirNaoPublicados');
+  });
+});
+
+describe('step 21 — the three pushes forward the signal, and only them (C4, C5)', () => {
+  const PUSHES = [
+    [
+      'enviarEstoque',
+      (c: ReturnType<typeof client>, signal?: AbortSignal) =>
+        c.enviarEstoque({ integracaoId: 'int-1', produtoIds: ['prod-1'], signal }),
+      ESTOQUE_200,
+    ],
+    [
+      'enviarPrecos',
+      (c: ReturnType<typeof client>, signal?: AbortSignal) =>
+        c.enviarPrecos({ integracaoId: 'int-1', produtoIds: ['prod-1'], signal }),
+      PRECOS_200,
+    ],
+    [
+      'definirStatusAnuncios',
+      (c: ReturnType<typeof client>, signal?: AbortSignal) =>
+        c.definirStatusAnuncios({
+          integracaoId: 'int-1',
+          produtoIds: ['prod-1'],
+          acao: 'pausar',
+          signal,
+        }),
+      STATUS_200,
+    ],
+  ] as const;
+
+  it.each(PUSHES)(
+    '⭐ %s hands `init.signal === signal` — and sends no signal key, nor a body key, when given none',
+    async (_nome, chamar, resposta) => {
+      const ctrl = new AbortController();
+      const { c, pedidos } = gravador(JSON.stringify(resposta));
+
+      await chamar(c, ctrl.signal);
+      await chamar(c);
+
+      expect(pedidos[0]?.init?.signal).toBe(ctrl.signal);
+      expect(pedidos[1]?.init !== undefined && 'signal' in pedidos[1].init).toBe(false);
+      // The signal is a transport option, never a field of the request body.
+      expect(corpoEnviado(pedidos[0]?.init)).not.toHaveProperty('signal');
+    },
+  );
+
+  it.each(PUSHES)(
+    '⭐ %s: an ALREADY-aborted signal rejects a NetworkError whose cause is the AbortError (the pinned convention)',
+    async (_nome, chamar, resposta) => {
+      // A fetch that honours the signal, as the browser's does.
+      const c = client(async (_u, init) => {
+        if (init?.signal?.aborted === true) {
+          throw new DOMException('The operation was aborted.', 'AbortError');
+        }
+        return ok(JSON.stringify(resposta));
+      });
+      const ctrl = new AbortController();
+      ctrl.abort();
+
+      const err = await chamar(c, ctrl.signal).catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(ShopeeClientNetworkError);
+      const causa = (err as ShopeeClientNetworkError).cause;
+      expect(causa).toBeInstanceOf(DOMException);
+      expect((causa as DOMException).name).toBe('AbortError');
+    },
+  );
+
+  it('near-miss — an abort during the BODY read rethrows the DOMException itself', async () => {
+    const ctrl = new AbortController();
+    const abortado = new DOMException('The operation was aborted.', 'AbortError');
+    const c = client(async () => {
+      ctrl.abort();
+      return new RespostaQueCaiNoCorpo(200, { 'content-type': 'application/json' }, abortado);
+    });
+
+    const err = await c
+      .enviarEstoque({ integracaoId: 'int-1', produtoIds: ['prod-1'], signal: ctrl.signal })
+      .catch((e: unknown) => e);
+
+    expect(err).toBe(abortado);
+  });
+
+  it('`publicar` takes no signal — the request carries none', async () => {
+    const { c, pedidos } = gravador(JSON.stringify(PUBLICAR_ITEM_200));
+
+    await c.publicar({ integracaoId: 'int-1', produtoId: 'prod-1' });
+
+    expect(pedidos[0]?.init !== undefined && 'signal' in pedidos[0].init).toBe(false);
+  });
+});
+
+describe('step 21 — an error body’s extras ride on `detalhes` (C6, C7, C16)', () => {
+  async function erroDe(corpo: unknown, status: number): Promise<ShopeeClientHttpError> {
+    const { c } = gravador(JSON.stringify(corpo), status);
+    const err = await c
+      .enviarEstoque({ integracaoId: 'int-1', produtoIds: ['prod-1'] })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ShopeeClientHttpError);
+    return err as ShopeeClientHttpError;
+  }
+
+  it('⭐ a 409 SHOPEE_CONTA_PAUSADA carries `pausadoAte`, the message and code untouched', async () => {
+    const err = await erroDe(
+      {
+        error: 'Conta pausada pela cota diária da Shopee.',
+        code: 'SHOPEE_CONTA_PAUSADA',
+        pausadoAte: '2026-10-15T16:00:00.000Z',
+      },
+      409,
+    );
+
+    expect(err.detalhes.pausadoAte).toBe('2026-10-15T16:00:00.000Z');
+    expect(err.code).toBe('SHOPEE_CONTA_PAUSADA');
+    expect(err.message).toBe('Conta pausada pela cota diária da Shopee.');
+  });
+
+  it('a 400 SHOPEE_SELECAO_EXCEDE_LIMITE carries `limite` and `solicitados`', async () => {
+    const err = await erroDe(
+      {
+        error: 'Selecione no máximo 50 produtos para enviar o estoque.',
+        code: 'SHOPEE_SELECAO_EXCEDE_LIMITE',
+        limite: 50,
+        solicitados: 51,
+      },
+      400,
+    );
+
+    expect(err.detalhes).toMatchObject({ limite: 50, solicitados: 51 });
+  });
+
+  it('a 422 SHOPEE_PRECO_CONTA_RECUSADA carries `motivo` and `regiao`', async () => {
+    const err = await erroDe(
+      {
+        error: 'A conta não aceita envio de preço.',
+        code: 'SHOPEE_PRECO_CONTA_RECUSADA',
+        motivo: 'regiao-nao-suportada',
+        regiao: 'SG',
+      },
+      422,
+    );
+
+    expect(err.detalhes).toMatchObject({ motivo: 'regiao-nao-suportada', regiao: 'SG' });
+  });
+
+  it('⭐ a 422 SHOPEE_PUBLISH_BLOCKED carries its `problemas`, each with its `acao`', async () => {
+    const { c } = gravador(
+      JSON.stringify({
+        error: 'Publicação bloqueada.',
+        code: 'SHOPEE_PUBLISH_BLOCKED',
+        motivo: 'kit-invalido',
+        produtoId: 'prod-1',
+        itemId: null,
+        problemas: [
+          {
+            campo: null,
+            motivo: 'listagem-removida',
+            mensagem: 'O kit foi removido da Shopee.',
+            acao: { tipo: 'recriar', linkDocId: 'link-1' },
+          },
+          { campo: 'attribute_list', motivo: 'atributo-obrigatorio', mensagem: 'Falta a marca.' },
+        ],
+      }),
+      422,
+    );
+
+    const err = (await c
+      .publicar({ integracaoId: 'int-1', produtoId: 'prod-1' })
+      .catch((e: unknown) => e)) as ShopeeClientHttpError;
+
+    expect(err.detalhes.problemas).toHaveLength(2);
+    expect(err.detalhes.problemas?.[0]?.acao).toEqual({ tipo: 'recriar', linkDocId: 'link-1' });
+    // An older backend's row with no `acao` reads as "no next step".
+    expect(err.detalhes.problemas?.[1]?.acao).toBeNull();
+    expect(err.detalhes.motivo).toBe('kit-invalido');
+  });
+
+  it('a 409 SHOPEE_ANUNCIO_NAO_PUBLICADO carries the `linkDocId` to publish', async () => {
+    const { c } = gravador(
+      JSON.stringify({
+        error: 'O vínculo link-1 do produto prod-1 ainda não foi publicado na Shopee.',
+        code: 'SHOPEE_ANUNCIO_NAO_PUBLICADO',
+        linkDocId: 'link-1',
+      }),
+      409,
+    );
+
+    const err = (await c
+      .reverificarAnuncio({ integracaoId: 'int-1', produtoId: 'prod-1' })
+      .catch((e: unknown) => e)) as ShopeeClientHttpError;
+
+    expect(err.detalhes.linkDocId).toBe('link-1');
+  });
+
+  it('⚠️ NEAR MISS (C7): one malformed extra nulls ONLY itself — its sibling and the message survive', async () => {
+    const err = await erroDe(
+      {
+        error: 'Selecione no máximo 50 produtos para enviar o estoque.',
+        code: 'SHOPEE_SELECAO_EXCEDE_LIMITE',
+        pausadoAte: 42,
+        limite: 50,
+      },
+      400,
+    );
+
+    expect(err.detalhes.pausadoAte).toBeNull();
+    expect(err.detalhes.limite).toBe(50);
+    expect(err.message).toBe('Selecione no máximo 50 produtos para enviar o estoque.');
+  });
+
+  it('⭐ (C16) a 409 SHOPEE_MASS_IMPORT_RUNNING with `jobId` exposes it to attach to', async () => {
+    const { c } = gravador(
+      JSON.stringify({
+        error: 'Já existe uma importação em massa em andamento para esta conta.',
+        code: 'SHOPEE_MASS_IMPORT_RUNNING',
+        jobId: 'job-vivo',
+      }),
+      409,
+    );
+
+    const err = (await c
+      .startMassImport({ integracaoId: 'int-1' })
+      .catch((e: unknown) => e)) as ShopeeClientHttpError;
+
+    expect(err.code).toBe('SHOPEE_MASS_IMPORT_RUNNING');
+    expect(err.detalhes.jobId).toBe('job-vivo');
+  });
+
+  it('⚠️ NEAR MISS (C16): the SAME 409 from an older backend, without `jobId`, still constructs — `null`, message intact', async () => {
+    const { c } = gravador(
+      JSON.stringify({
+        error: 'Já existe uma importação em massa em andamento para esta conta.',
+        code: 'SHOPEE_MASS_IMPORT_RUNNING',
+      }),
+      409,
+    );
+
+    const err = (await c
+      .startMassImport({ integracaoId: 'int-1' })
+      .catch((e: unknown) => e)) as ShopeeClientHttpError;
+
+    expect(err).toBeInstanceOf(ShopeeClientHttpError);
+    expect(err.detalhes.jobId).toBeNull();
+    expect(err.message).toBe('Já existe uma importação em massa em andamento para esta conta.');
+  });
+
+  it.each([
+    ['a non-JSON page', NEXT_404],
+    ['an empty body', ''],
+    ['a JSON array', '[1,2]'],
+  ])('a body that is not an object (%s) reads every extra as absent', async (_n, corpo) => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { c } = gravador(corpo, 502);
+
+    const err = (await c
+      .startPriceSync({ integracaoId: 'int-1' })
+      .catch((e: unknown) => e)) as ShopeeClientHttpError;
+
+    expect(err.detalhes).toEqual(DETALHES_ERRO_SHOPEE_VAZIOS);
+  });
+
+  it('every existing construction compiles unchanged and defaults `detalhes` to all-absent', () => {
+    expect(new ShopeeClientHttpError('m', 500, null).detalhes).toEqual(DETALHES_ERRO_SHOPEE_VAZIOS);
+    expect(new ShopeeClientRespostaInvalidaError('m', 200, []).detalhes).toEqual(
+      DETALHES_ERRO_SHOPEE_VAZIOS,
+    );
+  });
+});
+
+describe('step 21 — `canal` is a literal: another channel’s envelope is not Shopee’s (C8)', () => {
+  it('⭐ a stock envelope saying `mercado-livre` is a RespostaInvalida naming `canal`', async () => {
+    const { c } = gravador(JSON.stringify({ ...ESTOQUE_200, canal: 'mercado-livre' }));
+
+    const err = await c
+      .enviarEstoque({ integracaoId: 'int-1', produtoIds: ['prod-1'] })
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(ShopeeClientRespostaInvalidaError);
+    expect((err as ShopeeClientRespostaInvalidaError).campos).toContain('canal');
+  });
+
+  it('the control: the same envelope saying `shopee` resolves', async () => {
+    const { c } = gravador(JSON.stringify(ESTOQUE_200));
+
+    await expect(
+      c.enviarEstoque({ integracaoId: 'int-1', produtoIds: ['prod-1'] }),
+    ).resolves.toMatchObject({ canal: 'shopee' });
+  });
+});
+
+describe('step 21 — shopeeClientFalso, the ONE test client literal (C14)', () => {
+  it('⭐ every method it was not given REJECTS, naming itself — none resolves silently', async () => {
+    const falso = shopeeClientFalso();
+    const nomes = Object.keys(falso) as (keyof ShopeeClient)[];
+
+    // EXACTLY the real client's methods — re-derived from the client itself,
+    // never a literal count to bump: a method added to one and not the other
+    // is named by the diff.
+    const reais = Object.keys(client(async () => ok('{}')));
+    expect([...nomes].sort()).toEqual([...reais].sort());
+    for (const nome of nomes) {
+      const metodo = falso[nome] as () => Promise<unknown>;
+      await expect(metodo()).rejects.toThrow(`ShopeeClient.${nome} não era esperado neste teste`);
+    }
+  });
+
+  it('a method the test supplies WINS, and the rest still reject', async () => {
+    const conta = vi.fn(async () => ({ ...CONTA, connected: false }) as ShopeeContaStatus);
+    const falso = shopeeClientFalso({ conta });
+
+    await expect(falso.conta('int-1')).resolves.toMatchObject({ connected: false });
+    expect(conta).toHaveBeenCalledWith('int-1');
+    await expect(falso.oauthStart('int-1')).rejects.toThrow('ShopeeClient.oauthStart');
+  });
+});
+
+/* ---------------------------------------------------------------------------
+ * #1911 (P8) — the three draft routes and the two taxonomy reads they add
+ * ------------------------------------------------------------------------- */
+
+// Fixture ids only: integração `int-1`, produto `prod-1`, draft id
+// `AbCdEfGhIjKlMnOpQrSt` (the create's 20-character shape), a legacy draft id
+// `rascunho-legado-1` (edits and discards take any id).
+const RASCUNHO_ID = 'AbCdEfGhIjKlMnOpQrSt';
+
+/** Every draft field, as a new draft's create names them (`attributes: null`). */
+const CAMPOS: CamposDoCorpoRascunhoShopee = {
+  item_name: 'Camiseta básica',
+  description: null,
+  category_id: 100087,
+  marca: { brand_id: 3001, original_brand_name: 'Marca Exemplo' },
+  attributes: null,
+};
+
+/** Two attributes in the REQUEST shape — a custom value, a listed one, a value with a unit. */
+const MATERIAL = {
+  attribute_id: 100001,
+  attribute_value_list: [{ value_id: 0, original_value_name: 'Algodão' }, { value_id: 7 }],
+};
+const COMPRIMENTO = {
+  attribute_id: 100002,
+  attribute_value_list: [{ value_id: 0, original_value_name: '30', value_unit: 'cm' }],
+};
+const ATRIBUTOS = [MATERIAL, COMPRIMENTO];
+
+const ALVO_RASCUNHO = { integracaoId: 'int-1', produtoId: 'prod-1' };
+
+/** A whole `taxonomia/limites` 200, every band present. */
+const LIMITES_DO_ITEM_200 = {
+  scope: 'category',
+  categoryId: 100087,
+  limites: {
+    priceLimit: { min: 0.5, max: 100_000 },
+    wholesalePriceThresholdPercentage: null,
+    stockLimit: { min: 0, max: 999_999 },
+    itemNameLengthLimit: { min: 1, max: 120 },
+    itemImageCountLimit: { min: 1, max: 9 },
+    itemDescriptionLengthLimit: { min: 20, max: 3000 },
+    tierVariationNameLengthLimit: { min: 1, max: 14 },
+    tierVariationOptionLengthLimit: { min: 1, max: 30 },
+    itemCountLimit: null,
+    extendedDescriptionLimit: null,
+    dtsLimit: { daysToShipLimit: { min: -1, max: 30 }, nonPreOrderDaysToShip: 2 },
+    weightLimit: { weightMandatory: true },
+    dimensionLimit: { dimensionMandatory: false },
+    sizeChartLimit: {
+      sizeChartMandatory: null,
+      supportImageSizeChart: null,
+      supportTemplateSizeChart: true,
+    },
+  },
+  gtinLimit: null,
+  supportsPreOrder: true,
+};
+
+const RECOMENDACAO_200 = {
+  recomendacoes: [
+    {
+      position: 1,
+      categoryId: 100087,
+      name: 'Camisetas',
+      isLeaf: true,
+      pathFromRoot: [{ categoryId: 100017, name: 'Moda', originalName: null, isLeaf: false }],
+    },
+  ],
+  unresolved: 0,
+  applied: false,
+};
+
+describe('#1911 — each draft and taxonomy method: its route, its verb, its body BY NAME', () => {
+  it.each([
+    [
+      'criarRascunho',
+      (c: ReturnType<typeof client>) =>
+        c.criarRascunho({ ...ALVO_RASCUNHO, linkDocId: RASCUNHO_ID, conteudo: CAMPOS }),
+      { linkDocId: RASCUNHO_ID, criado: true },
+      `${BASE}/rascunho`,
+      { ...ALVO_RASCUNHO, linkDocId: RASCUNHO_ID, conteudo: CAMPOS },
+    ],
+    [
+      'atualizarRascunho',
+      (c: ReturnType<typeof client>) =>
+        c.atualizarRascunho({
+          ...ALVO_RASCUNHO,
+          linkDocId: 'rascunho-legado-1',
+          base: { item_name: 'Camiseta' },
+          patch: { item_name: 'Camiseta básica' },
+        }),
+      { linkDocId: 'rascunho-legado-1', gravados: [CAMPO_RASCUNHO_SHOPEE.itemName] },
+      `${BASE}/rascunho/atualizar`,
+      {
+        ...ALVO_RASCUNHO,
+        linkDocId: 'rascunho-legado-1',
+        base: { item_name: 'Camiseta' },
+        patch: { item_name: 'Camiseta básica' },
+      },
+    ],
+    [
+      'descartarRascunho',
+      (c: ReturnType<typeof client>) =>
+        c.descartarRascunho({ ...ALVO_RASCUNHO, linkDocId: 'rascunho-legado-1', base: CAMPOS }),
+      { linkDocId: 'rascunho-legado-1', descartado: true, criacaoIncerta: false },
+      `${BASE}/rascunho/descartar`,
+      { ...ALVO_RASCUNHO, linkDocId: 'rascunho-legado-1', base: CAMPOS },
+    ],
+    [
+      'recomendacaoCategoria',
+      (c: ReturnType<typeof client>) =>
+        c.recomendacaoCategoria({ integracaoId: 'int/1 2&x', nome: 'Camiseta & Cia/branca' }),
+      RECOMENDACAO_200,
+      `${BASE}/taxonomia/recomendacao-categoria?integracaoId=int%2F1%202%26x&nome=Camiseta%20%26%20Cia%2Fbranca`,
+      undefined,
+    ],
+    [
+      'limitesDoItem (one category)',
+      (c: ReturnType<typeof client>) =>
+        c.limitesDoItem({ integracaoId: 'int/1 2&x', categoryId: 100087 }),
+      LIMITES_DO_ITEM_200,
+      `${BASE}/taxonomia/limites?integracaoId=int%2F1%202%26x&categoryId=100087`,
+      undefined,
+    ],
+    [
+      'limitesDoItem (shop-wide: the key OMITTED)',
+      (c: ReturnType<typeof client>) =>
+        c.limitesDoItem({ integracaoId: 'int-1', categoryId: null }),
+      { ...LIMITES_DO_ITEM_200, scope: 'shop', categoryId: null },
+      `${BASE}/taxonomia/limites?integracaoId=int-1`,
+      undefined,
+    ],
+  ] as const)('⭐ %s', async (_nome, chamar, resposta, url, corpo) => {
+    const { c, pedidos } = gravador(JSON.stringify(resposta));
+
+    await expect(chamar(c)).resolves.toEqual(resposta);
+
+    expect(pedidos).toHaveLength(1);
+    expect(pedidos[0]?.url).toBe(url);
+    // No `signal` on any of them: the draft writes are not the three pushes.
+    expect(pedidos[0]?.init !== undefined && 'signal' in pedidos[0].init).toBe(false);
+    if (corpo === undefined) {
+      expect(pedidos[0]?.init?.method).toBe('GET');
+      expect(pedidos[0]?.init).not.toHaveProperty('body');
+    } else {
+      expect(pedidos[0]?.init?.method).toBe('POST');
+      expect(pedidos[0]?.init?.headers).toEqual({
+        Authorization: 'Bearer token',
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      });
+      expect(corpoEnviado(pedidos[0]?.init)).toStrictEqual(corpo);
+    }
+  });
+
+  it('`limitesDoItem` with `categoryId: 0` SENDS it (the route refuses it) — only `null` is omitted', async () => {
+    const { c, pedidos } = gravador(JSON.stringify(LIMITES_DO_ITEM_200));
+
+    await c.limitesDoItem({ integracaoId: 'int-1', categoryId: 0 });
+
+    expect(pedidos[0]?.url).toBe(`${BASE}/taxonomia/limites?integracaoId=int-1&categoryId=0`);
+  });
+});
+
+describe('#1911 — the draft bodies are rebuilt BY NAME, down to each attribute value', () => {
+  it('⭐ a caller’s `conteudo` carrying `item_id` / `logistic_info` never puts them on the wire', async () => {
+    // Not a fresh literal: TypeScript lets the extra keys through, exactly as a
+    // component spreading a stored link into the call would.
+    const doLink = { ...CAMPOS, item_id: 1000001, logistic_info: [], estadoAnuncio: 'ativo' };
+    const { c, pedidos } = gravador(JSON.stringify({ linkDocId: RASCUNHO_ID, criado: true }));
+
+    await c.criarRascunho({ ...ALVO_RASCUNHO, linkDocId: RASCUNHO_ID, conteudo: doLink });
+
+    const conteudo = (corpoEnviado(pedidos[0]?.init) as { conteudo: Record<string, unknown> })
+      .conteudo;
+    expect(conteudo).not.toHaveProperty('item_id');
+    expect(conteudo).not.toHaveProperty('logistic_info');
+    expect(conteudo).not.toHaveProperty('estadoAnuncio');
+  });
+
+  it('NEAR-MISS: the same object WITHOUT the stray keys produces the IDENTICAL body', async () => {
+    const comLixo = gravador(JSON.stringify({ linkDocId: RASCUNHO_ID, criado: true }));
+    const limpo = gravador(JSON.stringify({ linkDocId: RASCUNHO_ID, criado: true }));
+
+    await comLixo.c.criarRascunho({
+      ...ALVO_RASCUNHO,
+      linkDocId: RASCUNHO_ID,
+      conteudo: { ...CAMPOS, item_id: 1000001 } as CamposDoCorpoRascunhoShopee,
+    });
+    await limpo.c.criarRascunho({ ...ALVO_RASCUNHO, linkDocId: RASCUNHO_ID, conteudo: CAMPOS });
+
+    expect(comLixo.pedidos[0]?.init?.body).toBe(limpo.pedidos[0]?.init?.body);
+  });
+
+  it('⭐ an edit’s `base` AND `patch` drop a stray `item_id` / `logistic_info` too — both are rebuilt', async () => {
+    const { c, pedidos } = gravador(
+      JSON.stringify({ linkDocId: 'rascunho-legado-1', gravados: [] }),
+    );
+
+    await c.atualizarRascunho({
+      ...ALVO_RASCUNHO,
+      linkDocId: 'rascunho-legado-1',
+      base: {
+        item_name: 'Camiseta',
+        item_id: null,
+        logistic_info: [],
+      } as Partial<CamposDoCorpoRascunhoShopee>,
+      patch: {
+        item_name: 'Camiseta básica',
+        item_id: 1000001,
+      } as Partial<CamposDoCorpoRascunhoShopee>,
+    });
+
+    expect(corpoEnviado(pedidos[0]?.init)).toStrictEqual({
+      ...ALVO_RASCUNHO,
+      linkDocId: 'rascunho-legado-1',
+      base: { item_name: 'Camiseta' },
+      patch: { item_name: 'Camiseta básica' },
+    });
+  });
+
+  it('a stray key inside `marca`, an attribute or a value is not forwarded either; the values ride VERBATIM', async () => {
+    const sujo = {
+      ...CAMPOS,
+      marca: { brand_id: 0, original_brand_name: null, displayBrandName: 'No Brand' },
+      attributes: [
+        {
+          ...MATERIAL,
+          nome: 'Material',
+          attribute_value_list: [
+            { value_id: 0, original_value_name: 'Algodão', origem: 'requisicao' },
+            { value_id: 7 },
+          ],
+        },
+        COMPRIMENTO,
+      ],
+    } as CamposDoCorpoRascunhoShopee;
+    const { c, pedidos } = gravador(
+      JSON.stringify({ linkDocId: 'rascunho-legado-1', descartado: true, criacaoIncerta: false }),
+    );
+
+    await c.descartarRascunho({ ...ALVO_RASCUNHO, linkDocId: 'rascunho-legado-1', base: sujo });
+
+    expect((corpoEnviado(pedidos[0]?.init) as { base: unknown }).base).toStrictEqual({
+      ...CAMPOS,
+      marca: { brand_id: 0, original_brand_name: null },
+      attributes: ATRIBUTOS,
+    });
+  });
+
+  it('⭐ nothing is normalised on the way: an untrimmed title and an EMPTY description travel as typed', async () => {
+    // A `base` is compared byte for byte against the stored projection — a
+    // client that trimmed or blank⇒null'd it would turn a legacy draft's every
+    // save into a conflict.
+    const legado = { ...CAMPOS, item_name: ' Camiseta ', description: '' };
+    const { c, pedidos } = gravador(
+      JSON.stringify({ linkDocId: 'rascunho-legado-1', descartado: true, criacaoIncerta: false }),
+    );
+
+    await c.descartarRascunho({ ...ALVO_RASCUNHO, linkDocId: 'rascunho-legado-1', base: legado });
+
+    expect((corpoEnviado(pedidos[0]?.init) as { base: unknown }).base).toStrictEqual(legado);
+  });
+
+  it('⭐ an edit sends EXACTLY the keys it was given: `null` is a value and is sent, `undefined` is "not named" and is not', async () => {
+    const { c, pedidos } = gravador(
+      JSON.stringify({ linkDocId: 'rascunho-legado-1', gravados: [] }),
+    );
+
+    await c.atualizarRascunho({
+      ...ALVO_RASCUNHO,
+      linkDocId: 'rascunho-legado-1',
+      base: { category_id: 100087, attributes: ATRIBUTOS, description: undefined },
+      patch: { category_id: null, marca: undefined },
+    });
+
+    const corpo = corpoEnviado(pedidos[0]?.init) as { base: object; patch: object };
+    expect(corpo.base).toStrictEqual({ category_id: 100087, attributes: ATRIBUTOS });
+    expect(corpo.patch).toStrictEqual({ category_id: null });
+  });
+
+  // The row above pins `null` for `category_id` alone, so the other four keys of
+  // the same builder could read `null` as "not named" and nothing would say so.
+  // Each `null` here is a real edit: a legacy draft stored with no title, the
+  // description handed back to the produto's own, the brand cleared, the
+  // attributes cleared. Dropped, the patch names nothing (a 400) or the base no
+  // longer names the patch's field (a 400) — the operator's edit never lands.
+  it.each<[string, Partial<CamposDoCorpoRascunhoShopee>, Partial<CamposDoCorpoRascunhoShopee>]>([
+    ['item_name (a `base` with no stored title)', { item_name: null }, { item_name: 'Camiseta' }],
+    [
+      'description (the produto’s own again)',
+      { description: 'Algodão penteado' },
+      { description: null },
+    ],
+    [
+      'category_id (`base` carrying the attributes it clears)',
+      { category_id: 100087, attributes: null },
+      { category_id: null },
+    ],
+    ['marca (cleared)', { marca: CAMPOS.marca }, { marca: null }],
+    ['attributes (cleared)', { attributes: ATRIBUTOS }, { attributes: null }],
+  ])(
+    '⭐ NEAR-MISS: an edit’s `null` %s is SENT — `null` is a value for every field, never "not named"',
+    async (_campo, base, patch) => {
+      const { c, pedidos } = gravador(
+        JSON.stringify({ linkDocId: 'rascunho-legado-1', gravados: [] }),
+      );
+
+      await c.atualizarRascunho({ ...ALVO_RASCUNHO, linkDocId: 'rascunho-legado-1', base, patch });
+
+      const corpo = corpoEnviado(pedidos[0]?.init) as { base: object; patch: object };
+      expect(corpo.base).toStrictEqual(base);
+      expect(corpo.patch).toStrictEqual(patch);
+    },
+  );
+
+  it('the edit’s `base` is never re-derived here — the key set the caller chose is the key set sent (the route judges it)', async () => {
+    const { c, pedidos } = gravador(
+      JSON.stringify({ linkDocId: 'rascunho-legado-1', gravados: [] }),
+    );
+
+    await c.atualizarRascunho({
+      ...ALVO_RASCUNHO,
+      linkDocId: 'rascunho-legado-1',
+      base: { category_id: 100087 },
+      patch: { category_id: 100088 },
+    });
+
+    expect((corpoEnviado(pedidos[0]?.init) as { base: object }).base).toStrictEqual({
+      category_id: 100087,
+    });
+  });
+
+  it.each([
+    [
+      'confirmarSegundoAnuncio on the create',
+      (c: ReturnType<typeof client>, flag?: true) =>
+        c.criarRascunho({
+          ...ALVO_RASCUNHO,
+          linkDocId: RASCUNHO_ID,
+          conteudo: CAMPOS,
+          confirmarSegundoAnuncio: flag,
+        }),
+      'confirmarSegundoAnuncio',
+      { linkDocId: RASCUNHO_ID, criado: true },
+    ],
+    [
+      'confirmarCriacaoIncerta on the discard',
+      (c: ReturnType<typeof client>, flag?: true) =>
+        c.descartarRascunho({
+          ...ALVO_RASCUNHO,
+          linkDocId: 'rascunho-legado-1',
+          base: CAMPOS,
+          confirmarCriacaoIncerta: flag,
+        }),
+      'confirmarCriacaoIncerta',
+      { linkDocId: 'rascunho-legado-1', descartado: true, criacaoIncerta: true },
+    ],
+  ] as const)(
+    '%s: sent as `true` when given, OMITTED when absent — never `false`, never `null`',
+    async (_n, chamar, chave, resposta) => {
+      const { c, pedidos } = gravador(JSON.stringify(resposta));
+
+      await chamar(c, true);
+      await chamar(c);
+
+      expect(corpoEnviado(pedidos[0]?.init)).toHaveProperty(chave, true);
+      expect(corpoEnviado(pedidos[1]?.init)).not.toHaveProperty(chave);
+    },
+  );
+});
+
+describe('#1911 — the draft answers an operator must read correctly', () => {
+  it.each([
+    [201, true],
+    [200, false],
+  ] as const)(
+    '⭐ the create’s %i (`criado: %s`) RESOLVES — a double click is a success, never an error',
+    async (status, criado) => {
+      const { c } = gravador(JSON.stringify({ linkDocId: RASCUNHO_ID, criado }), status);
+
+      await expect(
+        c.criarRascunho({ ...ALVO_RASCUNHO, linkDocId: RASCUNHO_ID, conteudo: CAMPOS }),
+      ).resolves.toEqual({ linkDocId: RASCUNHO_ID, criado });
+    },
+  );
+
+  it('NEAR-MISS: a 2xx that is not the create’s answer is a RespostaInvalida — never a draft that "exists"', async () => {
+    const { c } = gravador(JSON.stringify({ linkDocId: RASCUNHO_ID }), 201);
+
+    const err = await c
+      .criarRascunho({ ...ALVO_RASCUNHO, linkDocId: RASCUNHO_ID, conteudo: CAMPOS })
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(ShopeeClientRespostaInvalidaError);
+    expect((err as ShopeeClientRespostaInvalidaError).campos).toContain('criado');
+  });
+
+  it('⭐ a 409 CONFLITO off the wire: its code, its `linkDocId` and its `conflitos` ride on the error', async () => {
+    const conflitos = [{ campo: CAMPO_RASCUNHO_SHOPEE.itemName, atual: 'Camiseta' }];
+    const { c } = gravador(
+      JSON.stringify({
+        error: 'o rascunho r-1 mudou desde que foi aberto (item_name). Recarregue.',
+        code: CODIGO_RASCUNHO_SHOPEE.conflito,
+        linkDocId: 'rascunho-legado-1',
+        conflitos,
+      }),
+      409,
+    );
+
+    const err = (await c
+      .atualizarRascunho({
+        ...ALVO_RASCUNHO,
+        linkDocId: 'rascunho-legado-1',
+        base: { item_name: 'Camisa' },
+        patch: { item_name: 'Camiseta básica' },
+      })
+      .catch((e: unknown) => e)) as ShopeeClientHttpError;
+
+    expect(err).toBeInstanceOf(ShopeeClientHttpError);
+    expect(err.status).toBe(409);
+    expect(err.code).toBe(CODIGO_RASCUNHO_SHOPEE.conflito);
+    expect(err.detalhes).toMatchObject({ linkDocId: 'rascunho-legado-1', conflitos });
+  });
+
+  it('a 409 EM_ANDAMENTO held by a SIBLING carries `aguardarMs` and `vinculos`', async () => {
+    const vinculos = [{ linkDocId: 'link-2', itemId: null, rascunho: true }];
+    const { c } = gravador(
+      JSON.stringify({
+        error: 'outro vínculo deste produto nesta conta está sendo publicado (link-2 (rascunho)).',
+        code: CODIGO_RASCUNHO_SHOPEE.publicacaoEmAndamento,
+        linkDocId: 'rascunho-legado-1',
+        aguardarMs: 120_000,
+        vinculos,
+      }),
+      409,
+    );
+
+    const err = (await c
+      .descartarRascunho({ ...ALVO_RASCUNHO, linkDocId: 'rascunho-legado-1', base: CAMPOS })
+      .catch((e: unknown) => e)) as ShopeeClientHttpError;
+
+    expect(err.detalhes).toMatchObject({ aguardarMs: 120_000, vinculos });
+  });
+
+  it('⭐ a CODELESS 400 (a refused body) keeps the route’s sentence and `code: null` — never a draft code', async () => {
+    const { c } = gravador(
+      JSON.stringify({
+        error: MSG_ITEM_NAME_EM_BRANCO_RASCUNHO_SHOPEE,
+        linkDocId: RASCUNHO_ID,
+      }),
+      400,
+    );
+
+    const err = (await c
+      .criarRascunho({
+        ...ALVO_RASCUNHO,
+        linkDocId: RASCUNHO_ID,
+        conteudo: { ...CAMPOS, item_name: '   ' },
+      })
+      .catch((e: unknown) => e)) as ShopeeClientHttpError;
+
+    expect(err).toBeInstanceOf(ShopeeClientHttpError);
+    expect(err.code).toBeNull();
+    expect(err.message).toBe(MSG_ITEM_NAME_EM_BRANCO_RASCUNHO_SHOPEE);
+    expect(err.detalhes.linkDocId).toBe(RASCUNHO_ID);
+  });
+});
+
+describe('#1911 — the two taxonomy reads: the whole bands and the suggestion', () => {
+  it('⭐ `limitesDoItem` REFUSES a malformed band that `limites` (the slice) tolerates — on the SAME body', async () => {
+    const corpo = JSON.stringify({
+      ...LIMITES_DO_ITEM_200,
+      limites: { ...LIMITES_DO_ITEM_200.limites, stockLimit: 'quebrado' },
+    });
+
+    const inteiro = gravador(corpo);
+    const err = await inteiro.c
+      .limitesDoItem({ integracaoId: 'int-1', categoryId: 100087 })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ShopeeClientRespostaInvalidaError);
+    expect((err as ShopeeClientRespostaInvalidaError).campos).toContain('limites.stockLimit');
+
+    const fatia = gravador(corpo);
+    await expect(
+      fatia.c.limites({ integracaoId: 'int-1', categoryId: 100087 }),
+    ).resolves.toMatchObject({
+      limites: { sizeChartLimit: LIMITES_DO_ITEM_200.limites.sizeChartLimit },
+    });
+  });
+
+  it('`limitesDoItem` keeps every band; `limites` on the same body keeps ONLY the size-chart slice', async () => {
+    const inteiro = gravador(JSON.stringify(LIMITES_DO_ITEM_200));
+    const fatia = gravador(JSON.stringify(LIMITES_DO_ITEM_200));
+
+    const todos = await inteiro.c.limitesDoItem({ integracaoId: 'int-1', categoryId: 100087 });
+    const so = await fatia.c.limites({ integracaoId: 'int-1', categoryId: 100087 });
+
+    expect(todos.limites.itemNameLengthLimit).toEqual({ min: 1, max: 120 });
+    expect(todos.supportsPreOrder).toBe(true);
+    expect(so.limites).toStrictEqual({
+      sizeChartLimit: LIMITES_DO_ITEM_200.limites.sizeChartLimit,
+    });
+  });
+
+  it('⭐ a suggestion claiming `applied: true` is a RespostaInvalida — never offered as if chosen', async () => {
+    const { c } = gravador(JSON.stringify({ ...RECOMENDACAO_200, applied: true }));
+
+    const err = await c
+      .recomendacaoCategoria({ integracaoId: 'int-1', nome: 'Camiseta' })
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(ShopeeClientRespostaInvalidaError);
+    expect((err as ShopeeClientRespostaInvalidaError).campos).toContain('applied');
+  });
+
+  it('the suggestion GET never sends `imagemCapa` — the browser holds no Shopee image id', async () => {
+    const { c, pedidos } = gravador(JSON.stringify(RECOMENDACAO_200));
+
+    await c.recomendacaoCategoria({ integracaoId: 'int-1', nome: 'Camiseta' });
+
+    expect(pedidos[0]?.url).not.toContain('imagemCapa');
+  });
+});
+
+/* ---------------------------------------------------------------------------
+ * #1911 (P9) — `marcas`: one page of a category's brands, for the Marcas section
+ * ------------------------------------------------------------------------- */
+
+/** A `taxonomia/marcas` 200: one leaf page, «No Brand» included, more pages to come. */
+const MARCAS_200 = {
+  leaf: true,
+  categoryId: 100087,
+  status: 1,
+  offset: 0,
+  pageSize: 100,
+  marcas: [
+    { brandId: 0, originalBrandName: 'No Brand', displayBrandName: null },
+    { brandId: 3001, originalBrandName: 'Marca Exemplo', displayBrandName: 'Marca Exemplo BR' },
+  ],
+  hasNextPage: true,
+  nextOffset: 37,
+  isMandatory: false,
+  inputType: 'DROP_DOWN',
+};
+
+describe('#1911 — `marcas`: one page of a category’s brands', () => {
+  it('⭐ a GET with EVERY parameter percent-encoded, no body, no signal — parsed whole', async () => {
+    const { c, pedidos } = gravador(JSON.stringify(MARCAS_200));
+
+    await expect(
+      c.marcas({
+        integracaoId: 'int/1 2&x',
+        categoryId: 100087,
+        offset: 37,
+        pageSize: 50,
+        status: 2,
+      }),
+    ).resolves.toEqual(MARCAS_200);
+
+    expect(pedidos).toHaveLength(1);
+    expect(pedidos[0]?.url).toBe(
+      `${BASE}/taxonomia/marcas?integracaoId=int%2F1%202%26x&categoryId=100087&offset=37&pageSize=50&status=2`,
+    );
+    expect(pedidos[0]?.init?.method).toBe('GET');
+    expect(pedidos[0]?.init).not.toHaveProperty('body');
+    expect(pedidos[0]?.init !== undefined && 'signal' in pedidos[0].init).toBe(false);
+  });
+
+  it('each optional key OMITTED when absent — the route’s defaults apply', async () => {
+    const { c, pedidos } = gravador(JSON.stringify(MARCAS_200));
+
+    await c.marcas({ integracaoId: 'int-1', categoryId: 100087 });
+
+    expect(pedidos[0]?.url).toBe(`${BASE}/taxonomia/marcas?integracaoId=int-1&categoryId=100087`);
+  });
+
+  it('NEAR-MISS: `offset: 0` is SENT — only an absent key is omitted', async () => {
+    const { c, pedidos } = gravador(JSON.stringify(MARCAS_200));
+
+    await c.marcas({ integracaoId: 'int-1', categoryId: 100087, offset: 0 });
+
+    expect(pedidos[0]?.url).toBe(
+      `${BASE}/taxonomia/marcas?integracaoId=int-1&categoryId=100087&offset=0`,
+    );
+  });
+
+  it('⭐ `nextOffset` is Shopee’s cursor VERBATIM — never recomputed as offset + pageSize', async () => {
+    const { c } = gravador(JSON.stringify(MARCAS_200));
+
+    const pagina = await c.marcas({ integracaoId: 'int-1', categoryId: 100087 });
+
+    expect(pagina.nextOffset).toBe(37);
+    expect(pagina.nextOffset).not.toBe(pagina.offset + pagina.pageSize);
+    // «No Brand» is a row of the page, a value — the picker decides, not the client.
+    expect(pagina.marcas[0]?.brandId).toBe(0);
+  });
+
+  it('a non-leaf answers the same shape, empty — and parses', async () => {
+    const vazia = {
+      ...MARCAS_200,
+      leaf: false,
+      marcas: [],
+      hasNextPage: false,
+      nextOffset: null,
+      isMandatory: null,
+      inputType: null,
+    };
+    const { c } = gravador(JSON.stringify(vazia));
+
+    await expect(c.marcas({ integracaoId: 'int-1', categoryId: 100017 })).resolves.toEqual(vazia);
+  });
+
+  it.each([
+    ['a quoted brandId (our serialisation, strict)', { brandId: '3001' }, 'marcas[].brandId'],
+    [
+      'a missing displayBrandName (every key required)',
+      { displayBrandName: undefined },
+      'marcas[].displayBrandName',
+    ],
+  ])('⭐ NEAR-MISS: %s is a RespostaInvalida, never a page', async (_n, estrago, campo) => {
+    const corpo = {
+      ...MARCAS_200,
+      marcas: [{ ...MARCAS_200.marcas[1], ...estrago }],
+    };
+    const { c } = gravador(JSON.stringify(corpo));
+
+    const err = await c
+      .marcas({ integracaoId: 'int-1', categoryId: 100087 })
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(ShopeeClientRespostaInvalidaError);
+    expect((err as ShopeeClientRespostaInvalidaError).campos).toContain(campo);
+  });
+
+  it('an unknown key STRIPS — a newer route never costs an older browser', async () => {
+    const { c } = gravador(JSON.stringify({ ...MARCAS_200, campoDoFuturo: 1 }));
+
+    const pagina = await c.marcas({ integracaoId: 'int-1', categoryId: 100087 });
+
+    expect('campoDoFuturo' in pagina).toBe(false);
+  });
+
+  it('an unknown category is the 404 with its code — the backend’s sentence', async () => {
+    const { c } = gravador(
+      JSON.stringify({
+        error: 'Categoria 999 não existe na árvore desta conta.',
+        code: 'SHOPEE_CATEGORIA_DESCONHECIDA',
+      }),
+      404,
+    );
+
+    const err = await c.marcas({ integracaoId: 'int-1', categoryId: 999 }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(ShopeeClientHttpError);
+    expect((err as ShopeeClientHttpError).status).toBe(404);
+    expect((err as ShopeeClientHttpError).code).toBe('SHOPEE_CATEGORIA_DESCONHECIDA');
+    expect((err as ShopeeClientHttpError).message).toBe(
+      'Categoria 999 não existe na árvore desta conta.',
+    );
   });
 });

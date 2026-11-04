@@ -206,6 +206,27 @@ describe('findChartRow', () => {
     expect(findChartRow(c, ['documents/grupoDeVariacoes/g-tam/variacoes/v-gg'])).toBeNull();
   });
 
+  it.each(['', '/', '///', 'documents', '/documents///'])(
+    'never binds two missing variant ids together: %s',
+    (varianteUid) => {
+      const malformed = chart({ rows: [{ varianteUid, id: '100:bad', attributes: [] }] });
+      expect(findChartRow(malformed, [varianteUid])).toBeNull();
+      expect(
+        findChartRow(malformed, ['documents/grupoDeVariacoes/g-tam/variacoes/v-m']),
+      ).toBeNull();
+      expect(findChartRow(c, [varianteUid])).toBeNull();
+    },
+  );
+
+  it('skips a missing variant id and still finds a later valid row', () => {
+    const withMalformedRow = chart({
+      rows: [{ varianteUid: '/', id: '100:bad', attributes: [] }, ...(c.rows ?? [])],
+    });
+    expect(
+      findChartRow(withMalformedRow, ['/', 'grupoDeVariacoes/g-tam/variacoes/v-m'])?.rowId,
+    ).toBe('100:2');
+  });
+
   it("prefers ML's computed sizeCalculado — the only size a footwear chart has", () => {
     // A footwear chart's main attribute is EU_SIZE, so the row carries no SIZE
     // of its own; ML derives one and `applyChartResponse` caches it.

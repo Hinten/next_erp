@@ -29,7 +29,7 @@ import { ZodError, type z, type ZodObject, type ZodRawShape, type ZodTypeAny } f
 import type { CollectionHandle, PathContext } from '@delfrance/data';
 import { useDocSnapshot } from '@delfrance/data/hooks';
 import { buildEmptyDefaults, extractFieldsFromSchema } from '../schema/derive';
-import type { FieldConfig, FieldDescriptor } from '../schema/types';
+import type { ConflictRebase, FieldConfig, FieldDescriptor } from '../schema/types';
 import { AfterSaveBlockedError } from './afterSaveBlocked';
 import { ConflictModal } from './ConflictModal';
 import { buildConflictFields, labelFromShape } from './conflictFields';
@@ -49,6 +49,8 @@ import {
   NothingChangedError,
   MissingTransactionBaselineError,
   RecordConflictError,
+  acknowledgedSiblingBaseline,
+  formProjections,
   saveRecord,
   type DeriveTransactionPatch,
   type TransactionWrite,
@@ -151,8 +153,19 @@ export interface ObjectViewProps<S extends ZodObject<ZodRawShape>, C extends Zod
    * `section` in `fields`). The hook reads what's about to be saved plus any
    * page-held state the closure captures (e.g. subcollection editors), so the
    * whole page model can validate in one place. Must be pure; a real shape
-   * error on a key always wins over a cross-document one. */
-  validate?: (values: Record<string, unknown>) => readonly ValidationIssue[];
+   * error on a key always wins over a cross-document one.
+   *
+   * `context` is the SAME read-only registry `transactionWrites` receives, so a
+   * rule about a transient field can ask what the save would do with it — e.g.
+   * judge a value seeded from a sibling document only when it differs from the
+   * baseline it was seeded from, the comparison that decides whether it is
+   * written at all. A value nobody changed is not written, so a rule that
+   * refused it would block the save over data the save never touches.
+   */
+  validate?: (
+    values: Record<string, unknown>,
+    context: TransactionWriteContext,
+  ) => readonly ValidationIssue[];
 
   /**
    * Top-level form keys that are validated + rendered like any field but are
@@ -424,6 +437,11 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
   // so this walk runs once per config, not once per keystroke.
   const preparedTransforms = useMemo(() => collectPrepareForSave(fieldOverrides), [fieldOverrides]);
 
+  // The sibling-document registry (see `transactionWrites`): created here,
+  // ahead of the resolver, because `validate` reads it too. A different record
+  // gets a new registry; the first create/save retains it.
+  const transactionDocuments = useMemo(createTransactionDocuments, [recordId]);
+
   // Validate what will be SAVED, not the raw editor state: apply each
   // field's `prepareForSave` before delegating to zodResolver. Staged
   // deletions are the motivating case — a schema-invalid row marked with
@@ -442,7 +460,7 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
       // Merge cross-document issues at each path's first segment. A real shape
       // error already on that key wins (don't clobber); otherwise the issue
       // blocks the save and routes to the key's tab via the section map.
-      const issues = validate(prepared);
+      const issues = validate(prepared, transactionDocuments);
       if (issues.length === 0) return result;
       const errors: Record<string, unknown> = { ...(result.errors as Record<string, unknown>) };
       const rootMessages: string[] = [];
@@ -472,7 +490,7 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
       return { ...result, errors } as typeof result;
     };
     return wrapped;
-  }, [schema, preparedTransforms, validate]);
+  }, [schema, preparedTransforms, validate, transactionDocuments]);
 
   const form = useForm<FieldValues>({
     resolver,
@@ -504,8 +522,6 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
   // would fire on every save and operators would learn to click through it. That
   // is not hypothetical: it is the bug #791 fixed for `lastMarketplaceUpdate`.
   const baseline = useRef<Record<string, unknown> | null>(null);
-  // A different record gets a new registry; the first create/save retains it.
-  const transactionDocuments = useMemo(createTransactionDocuments, [recordId]);
   useServerTruthSeed({
     id: docSnap.data?.id,
     fromCache: docSnap.fromCache,
@@ -578,6 +594,13 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
     documents: TransactionDocumentConflict[];
     continueEditing: boolean;
   } | null>(null);
+  // "Salvar mesmo assim" over a MERGED field does not save from the click: it
+  // queues a resubmit through `handleSubmit` (validation included) and the effect
+  // below runs it once the merged value has rendered — after the editors' own
+  // effects, which see the field's new form default first. A ref plus a render
+  // request, so no effect has to set state.
+  const pendingResubmit = useRef<{ continueEditing: boolean } | null>(null);
+  const [, requestResubmit] = useState(0);
   // Delete confirmation modal: the user must type "excluir" to enable the
   // destructive button — guards against accidental clicks.
   const [deleteOpen, setDeleteOpen] = useState(false);
@@ -595,6 +618,81 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
    * `ZodTypeAny` prop type does not say so.
    */
   const labelShape = (schema as unknown as { shape?: Record<string, ZodTypeAny> }).shape ?? {};
+
+  /** A top-level field's {@link FieldConfig.rebaseOnConflict}, own keys only. */
+  function rebaseOf(field: string): ConflictRebase | undefined {
+    return Object.hasOwn(fieldOverrides, field)
+      ? fieldOverrides[field]?.rebaseOnConflict
+      : undefined;
+  }
+
+  /**
+   * Every COLLIDED field that merges (`rebaseOnConflict`), merged: what the
+   * conflict was raised against (`loaded`), the server's version, and the
+   * operator's value from `mine`. A field that did not collide is never merged —
+   * the operator's edit to it is kept as is, like any uncontested edit.
+   */
+  function mergeCollidedFields(
+    raised: NonNullable<typeof conflict>,
+    mine: Record<string, unknown>,
+  ): Array<{ field: string; value: unknown; collided: boolean }> {
+    const merged: Array<{ field: string; value: unknown; collided: boolean }> = [];
+    for (const field of raised.fields) {
+      const rebase = rebaseOf(field);
+      if (!rebase) continue;
+      const result = rebase.merge({
+        loaded: raised.loaded[field],
+        server: raised.current[field],
+        mine: mine[field],
+      });
+      merged.push({ field, value: result.value, collided: result.collided });
+    }
+    return merged;
+  }
+
+  /**
+   * How the conflict modal names a field. A field that MERGES is named as the
+   * form names it — its override label first, then the schema's — because its
+   * row stands for an editor, not a value. Every other row keeps the schema's
+   * label, exactly as before the hook existed.
+   */
+  function conflictLabel(field: string): string {
+    const override = rebaseOf(field) ? fieldOverrides[field]?.label : undefined;
+    return override ?? labelFromShape(labelShape, field);
+  }
+
+  /**
+   * A merge that COLLIDED saves nothing: say so, and take the operator to the
+   * tab holding the first such field (in tab order), so what collided is on
+   * screen before any other save. Called BEFORE the merged value is written
+   * into the form: a hidden panel's inputs do not re-sync when they show again
+   * (see `goToSection`), so the tab is committed first. `nothingSaved`: the
+   * operator had asked to save ("Salvar mesmo assim"), and this click did not.
+   */
+  function revealCollidedMerge(
+    merged: ReadonlyArray<{ field: string; collided: boolean }>,
+    nothingSaved: boolean,
+  ): void {
+    const fields = merged.filter((m) => m.collided).map((m) => m.field);
+    if (fields.length === 0) return;
+    // The first tab (in tab order) holding one of them, placed as `grouped`
+    // places a field: its override's `section`, else the first tab. Every
+    // collided field here has an override (`rebaseOnConflict` is one).
+    const tabOf = (f: string) => fieldOverrides[f]?.section ?? sections?.[0];
+    const section = sections?.find((s) => fields.some((f) => tabOf(f) === s));
+    if (section !== undefined) flushSync(() => setActiveSection(section));
+    const labels = fields.map((f) => `“${conflictLabel(f)}”`).join(', ');
+    const changed = fields.length === 1 ? 'foi alterado' : 'foram alterados';
+    const where = section === undefined ? '' : ` na aba "${section}"`;
+    notifications.show({
+      color: 'yellow',
+      message: nothingSaved
+        ? `Nada foi salvo: ${labels} ${changed} por outra pessoa ao mesmo tempo que você. ` +
+          `Revise o que ficou marcado${where} e salve de novo.`
+        : `${labels} ${changed} por outra pessoa ao mesmo tempo que você: revise o que ficou ` +
+          `marcado${where} antes de salvar.`,
+    });
+  }
 
   /**
    * "Recarregar do servidor" — take the server's version for the fields that
@@ -616,10 +714,12 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
         transactionDocuments.getFormBaseline(key) ?? form.formState.defaultValues?.[key] ?? null;
     }
     try {
+      // EVERY form field showing the document: its baseline moves whole below.
       for (const doc of conflict.documents) {
-        const { formField, toFormValue } = doc.guard;
-        defaults[formField] = toFormValue(doc.current, defaults[formField]);
-        keep[formField] = toFormValue(doc.current, keep[formField]);
+        for (const { formField, toFormValue } of formProjections(doc.guard)) {
+          defaults[formField] = toFormValue(doc.current, defaults[formField]);
+          keep[formField] = toFormValue(doc.current, keep[formField]);
+        }
       }
     } catch (err) {
       if (err instanceof ZodError) {
@@ -632,12 +732,19 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
     }
     for (const doc of conflict.documents) {
       transactionDocuments.rebase(doc.path, doc.current);
-      transactionDocuments.rebaseFormField(doc.guard.formField, defaults[doc.guard.formField]);
+      for (const { formField } of formProjections(doc.guard))
+        transactionDocuments.rebaseFormField(formField, defaults[formField]);
     }
     const retained = { ...defaults };
     for (const key of Object.keys(dirtyNow)) {
       if (!collided.has(key)) retained[key] = keep[key];
     }
+    // A collided field that merges takes the merge instead of the server's value:
+    // re-applied below like any retained edit (dirty), and NOT saved — the
+    // operator sees it, and whatever collided inside it, first.
+    const merged = mergeCollidedFields(conflict, keep);
+    for (const { field, value } of merged) retained[field] = value;
+    revealCollidedMerge(merged, false);
     // Preserve loaded transient values even when their Controller was suspended.
     for (const key of transientFields) retained[key] = keep[key];
     baseline.current = conflict.current;
@@ -738,8 +845,11 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
       const committedValues = { ...values, ...result.patch };
       for (const doc of result.documents ?? []) {
         transactionDocuments.rebase(doc.path, doc.data);
-        const { formField, toFormValue } = doc.guard;
-        committedValues[formField] = toFormValue(doc.data, committedValues[formField]);
+        // `doc.data` is the stored document — the fields this save did not write
+        // included — so every form field showing it is re-projected, not only
+        // the guard's first one.
+        for (const { formField, toFormValue } of formProjections(doc.guard))
+          committedValues[formField] = toFormValue(doc.data, committedValues[formField]);
       }
       for (const key of transientFields) {
         if (
@@ -1051,6 +1161,15 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
   const submitDefault = form.handleSubmit(() => doSave(false), onInvalid);
   const submitContinue = form.handleSubmit(() => doSave(true), onInvalid);
 
+  // The queued resubmit of a merged override (see `pendingResubmit`). Runs after
+  // every render, and does something only on the one that follows the click.
+  useEffect(() => {
+    const pending = pendingResubmit.current;
+    if (pending === null) return;
+    pendingResubmit.current = null;
+    void (pending.continueEditing ? submitContinue() : submitDefault());
+  }, [submitContinue, submitDefault]);
+
   function fieldsBlock(descs: FieldDescriptor[]) {
     return (
       <Stack>
@@ -1241,10 +1360,14 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
                           conflict.current,
                           conflict.fields,
                           // Every listed field is one this save writes — that is how
-                          // `saveRecord` picked them — so all of them overwrite.
+                          // `saveRecord` picked them — so all of them overwrite…
                           new Set(conflict.fields),
-                          { labelFor: (f) => labelFromShape(labelShape, f) },
-                        ),
+                          { labelFor: conflictLabel },
+                        ).map((row) => {
+                          // …except a field that merges: it says so instead.
+                          const rebase = rebaseOf(row.field);
+                          return rebase ? { ...row, overwritten: false, merge: rebase.label } : row;
+                        }),
                         ...conflict.documents.flatMap((doc) =>
                           doc.fields.map((field) => ({
                             field: `${doc.path}:${field}`,
@@ -1267,16 +1390,46 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
                 }
                 saving={form.formState.isSubmitting}
                 onForceSave={() => {
-                  const { continueEditing } = conflict!;
+                  const raised = conflict!;
+                  const { continueEditing } = raised;
                   // Acknowledge only the displayed collisions; keep all guards armed.
                   if (baseline.current) {
                     baseline.current = { ...baseline.current };
-                    for (const field of conflict!.fields)
-                      baseline.current[field] = conflict!.current[field];
+                    for (const field of raised.fields)
+                      baseline.current[field] = raised.current[field];
                   }
-                  for (const doc of conflict!.documents)
-                    transactionDocuments.rebase(doc.path, doc.current);
+                  // A sibling likewise moves only its displayed fields: the form
+                  // is not re-projected here, so accepting a change the modal did
+                  // not show would make the next save write the old value back.
+                  for (const doc of raised.documents)
+                    transactionDocuments.rebase(doc.path, acknowledgedSiblingBaseline(doc));
+                  // A collided field that merges is NOT written wholesale: its
+                  // merge goes into the form, over the server's version as the
+                  // field's new default — the version this click accepts, so the
+                  // form's "what changed" now means "changed against it".
+                  const merged = mergeCollidedFields(raised, form.getValues());
+                  // When something collided this click saves nothing: say so, on
+                  // the field's tab, before the merge lands in the form.
+                  revealCollidedMerge(merged, true);
+                  const serverDefaults: Record<string, unknown> = {
+                    ...emptyDefaults,
+                    ...raised.current,
+                  };
+                  for (const { field, value } of merged) {
+                    form.resetField(field, { defaultValue: serverDefaults[field] ?? null });
+                    form.setValue(field, value as never, { shouldDirty: true });
+                  }
                   setConflict(null);
+                  if (merged.length > 0) {
+                    // Saved only when every merge re-applied everything, and
+                    // through validation (the merged value is a new value); when
+                    // something collided, the operator looks first.
+                    if (merged.every((m) => !m.collided)) {
+                      pendingResubmit.current = { continueEditing };
+                      requestResubmit((n) => n + 1);
+                    }
+                    return;
+                  }
                   // Plain re-save. `baseline.current` was re-based onto the version
                   // shown when the conflict was caught, so the guard still runs: if
                   // nothing moved since, this commits; if a third writer landed

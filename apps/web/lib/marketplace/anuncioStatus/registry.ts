@@ -4,6 +4,7 @@ import { type VereditoCanal, vereditoCanal } from '@/lib/marketplace/caps/suport
 
 import { buildProviderMap } from '../push/types';
 import { mercadoLivreAnuncioStatusProvider } from './providers/mercadoLivre';
+import { shopeeAnuncioStatusProvider } from './providers/shopee';
 import { criarUnsupportedChannelAnuncioStatusProvider } from './providers/unsupportedChannel';
 import type {
   AnuncioStatusChannelResult,
@@ -18,7 +19,10 @@ import type {
  * stay untouched.
  */
 export const PROVIDERS: Readonly<Partial<Record<IntegracaoTipo, AnuncioStatusProvider>>> =
-  buildProviderMap([mercadoLivreAnuncioStatusProvider], 'Anúncio status');
+  buildProviderMap(
+    [mercadoLivreAnuncioStatusProvider, shopeeAnuncioStatusProvider],
+    'Anúncio status',
+  );
 
 /**
  * What `MARKETPLACE_TIPO_CAPS.pausarAnuncio` says about this channel, and — when

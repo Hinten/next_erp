@@ -410,6 +410,7 @@ const childrenSub = () => ({
               // and `varLinkDocId` is where its lazy stamp lands.
               args: [
                 'itemId',
+                'estado',
                 'id',
                 'produtoMercadoLivreOuterRef',
                 'status',

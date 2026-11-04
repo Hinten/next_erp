@@ -24,11 +24,11 @@
  *    makes "never delete a model by omission" structural instead of a promise;
  *    when the union breaches a wire cap the publish is REFUSED, because refusing
  *    is recoverable and a dropped live model is not.
- * 3. **The identity fold is EXACT** — {@link mesmoModelo}, the only fold in this
- *    folder. A trim-and-lowercase rung would merge two different models and
- *    rewrite the wrong child's link document.
+ * 3. **The MODEL identity fold is EXACT** — {@link mesmoModelo}. A
+ *    trim-and-lowercase rung would merge two different models and rewrite the
+ *    wrong child's link document.
  *
- * ## ⚠️ The fold's SCOPE (root CLAUDE.md, #1372) — and why there is no inventory entry
+ * ## ⚠️ The model fold's SCOPE (root CLAUDE.md, #1372)
  *
  * {@link mesmoModelo} decides that a STORED child link and a LIVE Shopee model
  * are the same model. What it treats as EQUAL: the same `model_id` however much
@@ -41,13 +41,82 @@
  * (rung 2 is byte-exact — no trim, no case fold), two EMPTY skus (emptiness is
  * not an identity), and `tier_index` `[0,1]` vs `[1,0]` (rung 3 is
  * element-wise and ORDERED, never a sorted or set comparison). The pair and the
- * three near-misses are the tests titled `⚠️ PAR` / `⚠️ QUASE` in
- * `tiersPublicacao.test.ts`.
+ * three near-misses are the tests titled `⚠️ PAR` / `⚠️ QUASE` in the
+ * `mesmoModelo` describe of `tiersPublicacao.test.ts`.
  *
- * The fold is hand-rolled on purpose and files **no**
- * `equivalence-fold-inventory` entry: that guard matches a closed list of shared
- * helper names, none of which appears here, and an entry for a file naming none
- * of them reds the guard's own staleness assertion (C33).
+ * That fold is hand-rolled on purpose, and the `equivalence-fold-inventory`
+ * guard cannot see it (it matches a closed list of shared helper names). This
+ * file IS inventoried there since #1911's batch-A review, for the two SHARED
+ * folds it calls: the binding key (`resolverEntradaShopeeDoGrupo`, below) and
+ * the tier NAME fold (`nomeDeTierShopee`, below); its entry names the pairs and
+ * near-misses that pin both.
+ *
+ * ## ⚠️ The NAME fold: one string sent, read back and compared (#1911 batch-A)
+ *
+ * Every tier and option NAME this module SENDS (`variation_name`,
+ * `variation_option_name` — the create, the init and the update alike) and both
+ * sides of every name it PAIRS go through `nomeDeTierShopee`
+ * (`../produtos/taxonomiaShopeeCore.ts`), the fold `tiersDoItem` reads the live
+ * tree with: the ENDS trimmed, nothing else. Case and inner whitespace stay
+ * distinct (`'Cor'` ≠ `'cor'`, `'Azul Claro'` ≠ `'Azul  Claro'`). Before it, the
+ * reader trimmed while this module sent and compared `grupo.nome` /
+ * `variante.nome` verbatim: a grupo `'Cor '` was refused on every update of the
+ * listing its own create had made, and a variante `'Azul '` never re-paired with
+ * the option it had created — the live option was kept as a model-less orphan
+ * and a twin appended, on every republish. The fold is applied HERE, not in the
+ * publisher's projection, because `GrupoParaTier` is a public input (the plan,
+ * the model leg and the tests build it).
+ *
+ * ## ⚠️ The name BANDS (#1911 batch-A)
+ *
+ * `get_item_limit`'s `tier_variation_name_length_limit` /
+ * `tier_variation_option_length_limit` reach {@link ArgsMontarTiers} as
+ * `bandaNomeDoTier` / `bandaNomeDaOpcao`. Every name this publish AUTHORS — a
+ * custom tier's `variation_name` the live tree does not already hold, a custom
+ * option name no live option of its tier already holds — is checked with the
+ * shared `textoNaFaixaShopee` (the `item_name` check's function), measured AS
+ * SENT, and refused `opcoes-demais` (the motivo Shopee's own
+ * `error_tier_*_too_long` maps to) — never truncated. A blank name is refused
+ * whatever the band, because our client's `assertTextoNaoVazio` would refuse it
+ * only after the listing exists. A `null` band checks no length. A name the
+ * listing already holds is never checked: Shopee accepted it, and renaming a
+ * held option is not a fix this module can offer. (`viva: null` holds nothing,
+ * so the plan — which has no live tree — checks only on a CREATE; on an update
+ * `planoPublicacao.ts` withholds the bands and the model leg checks, against the
+ * fresh reading.)
+ *
+ * ## The binding entry, the custom fallback and the re-code guard (#1911, D12)
+ *
+ * Which `linksVariacoesShopee` element is a grupo's entry for (conta, LEAF
+ * category) is NOT decided here: it is `resolverEntradaShopeeDoGrupo` in
+ * `@delfrance/schemas`, the ONE key the import's merge reads too (#1369 — the
+ * two used to spell it twice and disagree on a path-form stored conta id). It
+ * has three answers, and each authors a tier differently:
+ *
+ * - `armazenada` — the stored entry, as before #1911;
+ * - `ilegivel` — an element names the pair but its schema refuses it: the
+ *   operator's binding, stored broken. REFUSED (`variacao-sem-vinculo`), never
+ *   the fallback below, which would silently swap the operator's STANDARD
+ *   variation for a custom one;
+ * - `personalizada-implicita` — nothing names the pair: a CUSTOM tier
+ *   (`variation_id: 0`) named `grupo.nome`, one option per variante named
+ *   `variante.nome` (both through the name fold above), every option id `0`.
+ *   Outside Fashion every Shopee tier is custom, so this is the common case,
+ *   not a degraded one; before #1911 it refused `variacao-sem-vinculo`.
+ *
+ * ⚠️ A custom tier has NO identity but its name, so on an UPDATE it pairs with
+ * a live tier only by NAME — `grupo.nome` and the live name, both through the
+ * name fold. When the model leg updates in
+ * place (the live tree has the depth we author and addressable models), a custom
+ * grupo that pairs with NO live tier is REFUSED: it would be rebuilt from the
+ * ERP alone while every live model keeps its old `tier_index`, so each would
+ * silently point at ANOTHER option — wrong stock and price per variant, and
+ * nothing to detect it afterwards. That covers the implicit fallback AND a
+ * STORED `variation_id: 0` entry (the import writes those, and the legacy export
+ * named its custom tiers by `tipo`, so a migrated listing hits it on its first
+ * republish). A depth change is not guarded: it is `init_tier_variation`, which
+ * re-creates every model. The refusal lands after `update_item`, in the model
+ * leg, where it is stamped and recoverable.
  *
  * ## ⚠️ No local copy of a wire bound
  *
@@ -68,14 +137,17 @@ import {
   type ShopeeTierVariation,
 } from '@delfrance/integrations-shopee';
 import {
-  linkVariacoesShopeeSchema,
+  descreverFaixaShopee,
   parseFakePath,
+  resolverEntradaShopeeDoGrupo,
+  textoNaFaixaShopee,
   varianteFakePath,
+  type FaixaDto,
   type Foto,
-  type LinkVariacoesShopee,
+  type LinkVariacaoOpcaoShopee,
 } from '@delfrance/schemas';
 
-import { tiersDoItem, type TierShopee } from '../produtos/taxonomiaShopeeCore';
+import { nomeDeTierShopee, tiersDoItem, type TierShopee } from '../produtos/taxonomiaShopeeCore';
 
 import {
   MOTIVO_PUBLICACAO_BLOQUEADA,
@@ -97,11 +169,15 @@ export interface VarianteDoTier {
 /**
  * One ERP `grupoDeVariacoes`, as the publisher reads it.
  *
- * `linksVariacoesShopee` stays `readonly unknown[] | null` because
- * `grupoDeVariacoesSchema` deliberately declares it as `z.array(z.unknown())` —
- * typing it in place would move a generated validator and both rules-gen
- * snapshots. It is parsed here, entry by entry, through
- * `linkVariacoesShopeeSchema`.
+ * `linksVariacoesShopee` stays `readonly unknown[] | null` although
+ * `grupoDeVariacoesSchema` types it strictly (every element through the strict
+ * binding schema, since the strict schema audit `927eed738`): the publisher
+ * reads the grupo document RAW, through an unconverted `docRef`, and no rules
+ * validator checks the field (`grupoDeVariacoes` has none), so a stored element
+ * the schema refuses still arrives here. It must: `resolverEntradaShopeeDoGrupo`
+ * parses the array element by element and tells such an element (`ilegivel`,
+ * refused) apart from an absent one (the custom fallback). A typed array would
+ * hide the difference.
  */
 export interface GrupoParaTier {
   readonly grupoId: string;
@@ -172,13 +248,26 @@ export interface ArvoreVivaDoItem {
 
 /** Everything {@link montarTiers} needs. */
 export interface ArgsMontarTiers {
-  /** The conta's BARE doc id — what `linkVariacoesShopee.integracaoShopeeId` holds. */
+  /**
+   * The conta's BARE doc id. The shared key compares it, as given, against the
+   * stored `integracaoShopeeId` read through `idDoRef` — so a stored
+   * `documents/integracao/<id>` still binds, and `int-12` never binds `int-1`.
+   */
   readonly integracaoId: string;
   /** The item's LEAF category, which selects the grupo's binding entry. */
   readonly categoryId: number;
   readonly grupos: readonly GrupoParaTier[];
   readonly filhos: readonly FilhoParaPublicar[];
   readonly bandaDeEstoque: BandaDeEstoque | null;
+  /**
+   * `get_item_limit`'s `tier_variation_name_length_limit`: the band every
+   * custom `variation_name` this publish AUTHORS is checked against, as sent
+   * (module header, "The name BANDS"). `null` = no length check — a blank name
+   * is still refused. REQUIRED, so a caller cannot forget it into a silent pass.
+   */
+  readonly bandaNomeDoTier: FaixaDto | null;
+  /** `tier_variation_option_length_limit`: the same, for each custom option name. */
+  readonly bandaNomeDaOpcao: FaixaDto | null;
   /** The FRESH `get_model_list` reading; `null`/absent = a first publish. */
   readonly viva?: ArvoreVivaDoItem | null;
   /**
@@ -308,7 +397,7 @@ export interface PlanoDeModelos {
 }
 
 /* -------------------------------------------------------------------------- */
-/*  Small exact helpers — no shared fold helper reaches this folder            */
+/*  Small exact helpers                                                        */
 /* -------------------------------------------------------------------------- */
 
 /** Plain code-unit comparison. ⚠️ Never `localeCompare`: it is locale-dependent. */
@@ -325,19 +414,6 @@ function mesmoTierIndex(a: readonly number[], b: readonly number[]): boolean {
   return true;
 }
 
-/**
- * The last non-empty path segment.
- *
- * ⚠️ `linkVariacoesShopee.integracaoShopeeId` is a BARE doc id (trap 2 of its
- * schema), but that schema deliberately stores whatever it is given — so a
- * migrated entry may still hold `documents/integracao/<id>`. Both forms must
- * bind, and normalising the stored value would need a migration.
- */
-function ultimoSegmento(valor: string): string {
-  const partes = valor.split('/').filter((p) => p.length > 0);
-  return partes.length > 0 ? partes[partes.length - 1]! : '';
-}
-
 function problema(
   campo: string,
   motivo: ProblemaDeBloqueio['motivo'],
@@ -346,21 +422,35 @@ function problema(
   return { campo, motivo, mensagem: limitarMensagemProblema(mensagem) };
 }
 
-/** The `(integração, category)` binding entry of one grupo, or `null`. */
-function entradaDoGrupo(
-  grupo: GrupoParaTier,
-  integracaoId: string,
-  categoryId: number,
-): LinkVariacoesShopee | null {
-  for (const bruto of grupo.linksVariacoesShopee ?? []) {
-    const lido = linkVariacoesShopeeSchema.safeParse(bruto);
-    if (!lido.success) continue;
-    if (lido.data.category_id !== categoryId) continue;
-    if (ultimoSegmento(lido.data.integracaoShopeeId) !== integracaoId) continue;
-    return lido.data;
-  }
-  return null;
+/**
+ * The three fields of a binding entry a tier is authored from. A STORED
+ * `LinkVariacoesShopee` is one; {@link ENTRADA_PERSONALIZADA_IMPLICITA} is the
+ * other.
+ */
+interface EntradaDeTier {
+  /** `0` = a CUSTOM variation — a VALUE, never an absence. */
+  readonly variation_id: number;
+  /** A SCALAR group id; `0` = none, and then nothing is sent. */
+  readonly variation_group_list: number;
+  readonly variationOptions: readonly LinkVariacaoOpcaoShopee[];
 }
+
+/**
+ * What a grupo with NO entry for the pair publishes (D12): a CUSTOM tier with
+ * no option binding, so every option is `{ 0, variante.nome }` on a create, and
+ * the tier itself is named `grupo.nome` (`variation_name`, sent because the id
+ * is `0`) — both names through `nomeDeTierShopee`. On an update a live option
+ * maps back to its variante by the same name, folded on BOTH sides: the create
+ * sends the folded name, the reader folds what comes back, and the pairing folds
+ * the variante's — so the create and the update agree by construction only
+ * because all three are the one fold (#1911 batch-A: before it, a `'Azul '` was
+ * sent verbatim, read back as `'Azul'` and never re-paired).
+ */
+const ENTRADA_PERSONALIZADA_IMPLICITA: EntradaDeTier = Object.freeze({
+  variation_id: 0,
+  variation_group_list: 0,
+  variationOptions: Object.freeze([]),
+});
 
 /** The child's variante id inside one grupo, or `null`. */
 function varianteDoFilho(filho: FilhoParaPublicar, grupoId: string): string | null {
@@ -442,10 +532,20 @@ function parearTiers(
     const casado = grupos.find((grupo) => {
       if (!restantes.has(grupo.grupoId)) return false;
       if (tierVivo.variationId !== 0) {
-        const entrada = entradaDoGrupo(grupo, viva.integracaoId, viva.categoryId);
-        return entrada != null && entrada.variation_id === tierVivo.variationId;
+        // A STANDARD live tier is claimed only by a STORED entry carrying its id;
+        // the implicit custom fallback has no id to offer.
+        const resolucao = resolverEntradaShopeeDoGrupo(
+          grupo.linksVariacoesShopee,
+          viva.integracaoId,
+          viva.categoryId,
+        );
+        return (
+          resolucao.tipo === 'armazenada' && resolucao.entrada.variation_id === tierVivo.variationId
+        );
       }
-      return grupo.nome === tierVivo.nome;
+      // A CUSTOM live tier has no identity but its name — compared through the
+      // ONE name fold on both sides (ends trimmed; case and inner spaces kept).
+      return nomeDeTierShopee(grupo.nome) === nomeDeTierShopee(tierVivo.nome);
     });
     if (!casado) continue;
     restantes.delete(casado.grupoId);
@@ -465,9 +565,12 @@ function parearTiers(
  * {@link ordemDeCriacao}.
  *
  * **On an UPDATE the order is NOT re-derived** — it is read off the LIVE
- * listing: each live tier claims the grupo whose binding entry carries its
- * non-zero `variation_id`, else the grupo whose NAME is byte-equal to the live
- * tier's; a grupo matching nothing is APPENDED in create order.
+ * listing: a STANDARD live tier claims the grupo whose STORED binding entry
+ * carries its non-zero `variation_id`; a CUSTOM one claims the grupo whose NAME
+ * equals the live tier's through `nomeDeTierShopee` (the ends trimmed, case and
+ * inner spaces kept); a grupo matching nothing is APPENDED in
+ * create order (and, when it is custom and the depth is unchanged,
+ * {@link montarTiers} refuses it — the module header says why).
  * `update_tier_variation` may be used only "without changing the tier
  * structure", so re-deriving would permute `tier_index` for every model the day
  * an operator edits `ordem`.
@@ -559,8 +662,12 @@ function opcoesVivasPorIndice(tier: TierShopee): {
   return { lista, buraco };
 }
 
-/** The variante (if any) an authored option binds, and the wire identity to send. */
-function opcaoDaVariante(variante: VarianteDoTier, entrada: LinkVariacoesShopee): OpcaoCrua | null {
+/**
+ * The variante (if any) an authored option binds, and the wire identity to send.
+ * The NAME sent is always through `nomeDeTierShopee` (module header) — a stored
+ * `shopee_option_name` too, since an operator may have typed it.
+ */
+function opcaoDaVariante(variante: VarianteDoTier, entrada: EntradaDeTier): OpcaoCrua | null {
   const ligada = entrada.variationOptions.find((o) =>
     o.arakene_variation_id.includes(variante.varianteId),
   );
@@ -568,24 +675,28 @@ function opcaoDaVariante(variante: VarianteDoTier, entrada: LinkVariacoesShopee)
     return {
       varianteId: variante.varianteId,
       variation_option_id: ligada.shopee_option_id,
-      variation_option_name: ligada.shopee_option_name,
+      variation_option_name: nomeDeTierShopee(ligada.shopee_option_name),
     };
   }
   if (entrada.variation_id === 0) {
     return {
       varianteId: variante.varianteId,
       variation_option_id: 0,
-      variation_option_name: variante.nome,
+      variation_option_name: nomeDeTierShopee(variante.nome),
     };
   }
   return null;
 }
 
-/** Which of our variantes a LIVE option already stands for, if any. */
+/**
+ * Which of our variantes a LIVE option already stands for, if any. A custom
+ * live option (id `0`) pairs by NAME, folded on BOTH sides by `nomeDeTierShopee`
+ * — the stored `shopee_option_name` first, then the variante's own name.
+ */
 function varianteDaOpcaoViva(
   viva: TierShopee['opcoes'][number],
   grupo: GrupoParaTier,
-  entrada: LinkVariacoesShopee,
+  entrada: EntradaDeTier,
 ): VarianteDoTier | null {
   if (viva.optionId !== 0) {
     const ligada = entrada.variationOptions.find((o) => o.shopee_option_id === viva.optionId);
@@ -597,8 +708,9 @@ function varianteDaOpcaoViva(
     }
     return null;
   }
+  const nomeVivo = nomeDeTierShopee(viva.nome);
   const porNomeNaEntrada = entrada.variationOptions.find(
-    (o) => o.shopee_option_id === 0 && o.shopee_option_name === viva.nome,
+    (o) => o.shopee_option_id === 0 && nomeDeTierShopee(o.shopee_option_name) === nomeVivo,
   );
   if (porNomeNaEntrada) {
     const casada = grupo.variacoes.find((v) =>
@@ -606,7 +718,30 @@ function varianteDaOpcaoViva(
     );
     if (casada) return casada;
   }
-  return grupo.variacoes.find((v) => v.nome === viva.nome) ?? null;
+  return grupo.variacoes.find((v) => nomeDeTierShopee(v.nome) === nomeVivo) ?? null;
+}
+
+/**
+ * The refusal of ONE name this publish authors, against its band — `null` when
+ * it may be sent (module header, "The name BANDS"). `enviado` is the name AS
+ * SENT (already folded); `textoNaFaixaShopee` measures exactly that string.
+ */
+function recusaDoNome(
+  enviado: string,
+  banda: FaixaDto | null,
+  emBranco: string,
+  rotulo: string,
+): ProblemaDeBloqueio | null {
+  const veredito = textoNaFaixaShopee(enviado, banda);
+  if (veredito.estado === 'ok') return null;
+  return problema(
+    'standardise_tier_variation',
+    MOTIVO_PUBLICACAO_BLOQUEADA.opcoesDemais,
+    veredito.estado === 'ausente'
+      ? emBranco
+      : `${rotulo} tem ${String(veredito.comprimento)} caracteres, fora da faixa da categoria ` +
+          `(${descreverFaixaShopee(banda)}) — nunca truncado; encurte o nome em Variações.`,
+  );
 }
 
 /**
@@ -621,17 +756,32 @@ function varianteDaOpcaoViva(
  *
  * Every refusal is collected; the caller aggregates them into ONE
  * `ShopeePublishBlockedError`.
+ *
+ * The grupo's entry comes from `resolverEntradaShopeeDoGrupo` (module header):
+ * a stored entry as before, a refusal when it is stored unreadable, the
+ * implicit CUSTOM tier when there is none. On an update that rewrites the tiers
+ * in place, a custom grupo that paired with no live tier is refused before any
+ * option is authored — the re-code guard. Every custom name the live tree does
+ * not already hold is then checked against its band (`opcoes-demais`, module
+ * header) — on a create that is BEFORE `add_item`, because the plan runs this.
  */
 export function montarTiers(args: ArgsMontarTiers): ResultadoMontarTiers {
   const problemas: ProblemaDeBloqueio[] = [];
-  /** ⚠️ `model_id <= 0` binds nothing, so it occupies no position either. */
-  const vivos = (args.viva?.model ?? []).filter((m) => m.model_id > 0);
+  const viva = args.viva ?? null;
+  const vivos = modelosVivosDe(viva);
   const pares = parearTiers(args.grupos, {
-    tiers: tiersVivosDe(args.viva ?? null),
+    tiers: tiersVivosDe(viva),
     integracaoId: args.integracaoId,
     categoryId: args.categoryId,
   });
   const usadas = variantesUsadas(args.filhos);
+  /**
+   * The model leg will `update_tier_variation` IN PLACE, keeping every live
+   * model's `tier_index` — the ONE predicate `reconciliarModelos` decides
+   * `init` with, asked of the depth we author. Only then can an unpaired tier
+   * re-code a live model; `init` re-creates them all.
+   */
+  const reescreveNoLugar = !reconstroiAEstrutura(viva, args.grupos.length);
 
   /* ---- the tiers, option by option -------------------------------------- */
 
@@ -640,13 +790,30 @@ export function montarTiers(args: ArgsMontarTiers): ResultadoMontarTiers {
 
   for (const par of pares) {
     const { grupo } = par;
-    const entrada = entradaDoGrupo(grupo, args.integracaoId, args.categoryId);
-    if (!entrada) {
+    const resolucao = resolverEntradaShopeeDoGrupo(
+      grupo.linksVariacoesShopee,
+      args.integracaoId,
+      args.categoryId,
+    );
+    if (resolucao.tipo === 'ilegivel') {
       problemas.push(
         problema(
           'standardise_tier_variation',
           MOTIVO_PUBLICACAO_BLOQUEADA.variacaoSemVinculo,
-          `O grupo de variações "${grupo.nome}" não tem vínculo com esta conta para a categoria ${String(args.categoryId)}.`,
+          `O vínculo do grupo "${grupo.nome}" com esta conta para a categoria ${String(args.categoryId)} existe mas não pôde ser lido — corrija-o em Variações.`,
+        ),
+      );
+      continue;
+    }
+    const entrada: EntradaDeTier =
+      resolucao.tipo === 'armazenada' ? resolucao.entrada : ENTRADA_PERSONALIZADA_IMPLICITA;
+
+    if (par.vivo === null && reescreveNoLugar && entrada.variation_id === 0) {
+      problemas.push(
+        problema(
+          'standardise_tier_variation',
+          MOTIVO_PUBLICACAO_BLOQUEADA.variacaoSemVinculo,
+          `O tier "${grupo.nome}" não casa pelo nome com nenhum tier do anúncio (grupo renomeado, ou anúncio exportado pelo app antigo) — republicar reescreveria as opções. Importe o anúncio ou ajuste o nome do grupo.`,
         ),
       );
       continue;
@@ -673,7 +840,7 @@ export function montarTiers(args: ArgsMontarTiers): ResultadoMontarTiers {
         opcoes.push({
           varianteId: casada?.varianteId ?? null,
           variation_option_id: viva.optionId,
-          variation_option_name: casada?.nome ?? viva.nome,
+          variation_option_name: nomeDeTierShopee(casada ? casada.nome : viva.nome),
         });
         if (casada) jaAutoradas.add(casada.varianteId);
       }
@@ -719,11 +886,41 @@ export function montarTiers(args: ArgsMontarTiers): ResultadoMontarTiers {
       chaves.set(chave, opcao.varianteId);
     }
 
+    /* ---- the names we AUTHOR, against the shop's bands (#1911 batch-A) ---- */
+
+    const variationName = entrada.variation_id === 0 ? nomeDeTierShopee(grupo.nome) : null;
+    // A paired custom tier already HOLDS this name (it paired by it), so only a
+    // tier the live tree lacks — a create, or an `init` at a new depth — is new.
+    if (variationName !== null && par.vivo === null) {
+      const recusa = recusaDoNome(
+        variationName,
+        args.bandaNomeDoTier,
+        `O grupo ${grupo.grupoId} não tem nome, e um tier personalizado leva o nome do grupo — dê um nome a ele em Variações.`,
+        `O nome do tier "${variationName}"`,
+      );
+      if (recusa) problemas.push(recusa);
+    }
+    const nomesVivos = new Set((par.vivo?.opcoes ?? []).map((o) => nomeDeTierShopee(o.nome)));
+    for (const opcao of opcoes) {
+      // A STANDARD option's name is Shopee's, and a position a live model holds
+      // (`varianteId: null`) or a name a live option already carries was
+      // accepted once — none of them is ours to rename, so none is checked.
+      if (opcao.varianteId === null || opcao.variation_option_id !== 0) continue;
+      if (nomesVivos.has(opcao.variation_option_name)) continue;
+      const recusa = recusaDoNome(
+        opcao.variation_option_name,
+        args.bandaNomeDaOpcao,
+        `A variante ${opcao.varianteId} do grupo "${grupo.nome}" não tem nome, e uma opção personalizada leva o nome da variante — dê um nome a ela em Variações.`,
+        `A opção "${opcao.variation_option_name}" do grupo "${grupo.nome}"`,
+      );
+      if (recusa) problemas.push(recusa);
+    }
+
     tiersParciais.push({
       grupoId: grupo.grupoId,
       variation_id: entrada.variation_id,
       variation_group_id: entrada.variation_group_list !== 0 ? entrada.variation_group_list : null,
-      variation_name: entrada.variation_id === 0 ? grupo.nome : null,
+      variation_name: variationName,
     });
     cruas.push({ grupo, opcoes });
   }
@@ -959,6 +1156,30 @@ function profundidadeViva(viva: ArvoreVivaDoItem | null): number {
   return Math.max(viva.tier_variation?.length ?? 0, viva.standardise_tier_variation?.length ?? 0);
 }
 
+/** ⚠️ `model_id <= 0` binds nothing, so it occupies no position either. */
+function modelosVivosDe(viva: ArvoreVivaDoItem | null): readonly ShopeeModel[] {
+  return (viva?.model ?? []).filter((m) => m.model_id > 0);
+}
+
+/** A live depth was read and it is not the one we author. */
+function profundidadeMudou(viva: ArvoreVivaDoItem | null, profundidadeNossa: number): boolean {
+  const profundidade = profundidadeViva(viva);
+  return profundidade > 0 && profundidade !== profundidadeNossa;
+}
+
+/**
+ * Does the model leg RE-CREATE the tier structure (`init_tier_variation`, every
+ * model re-made) rather than rewrite it in place? Yes when no live model is
+ * addressable, or when the depth changed.
+ *
+ * ONE predicate, two readers: {@link reconciliarModelos} plans `init` with it,
+ * and {@link montarTiers}'s re-code guard fires only when it says no — so the
+ * guard cannot drift from the leg it protects.
+ */
+function reconstroiAEstrutura(viva: ArvoreVivaDoItem | null, profundidadeNossa: number): boolean {
+  return modelosVivosDe(viva).length === 0 || profundidadeMudou(viva, profundidadeNossa);
+}
+
 /**
  * What to send on the tier/model leg, as DATA.
  *
@@ -984,11 +1205,10 @@ function profundidadeViva(viva: ArvoreVivaDoItem | null): number {
  * child-link reader's.
  */
 export function reconciliarModelos(args: ArgsReconciliar): PlanoDeModelos {
-  const vivos = (args.viva?.model ?? []).filter((m) => m.model_id > 0);
-  const profundidade = profundidadeViva(args.viva);
-  const mudouProfundidade = profundidade > 0 && profundidade !== args.profundidadeNossa;
+  const vivos = modelosVivosDe(args.viva);
+  const mudouProfundidade = profundidadeMudou(args.viva, args.profundidadeNossa);
 
-  if (vivos.length === 0 || mudouProfundidade) {
+  if (reconstroiAEstrutura(args.viva, args.profundidadeNossa)) {
     const acao: PlanoDeModelos['acao'] =
       args.montados.length === 0 && vivos.length === 0 ? 'nenhuma' : 'init';
     return {

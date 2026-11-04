@@ -16,8 +16,8 @@ import { StatusCanalBadge } from './StatusCanalBadge';
  * `MARKETPLACE_TIPO_CAPS` row (#1430).
  *
  * It replaces `PlaceholderPage`'s generic "Em construção" alert on the unbuilt
- * channel screens (five when it landed; three now: Amazon, Facebook and
- * Magalu, since Shopee and Loja Integrada got TableView screens of their own).
+ * channel screens (five when it landed; two now: Facebook and Magalu, since
+ * Shopee, Loja Integrada and Amazon got TableView screens of their own).
  * The alert said the same nothing for every one of them; the row says which
  * questions have been answered, which answers are `'nao'`, and — the point of
  * the tri-state — which nobody has asked yet.
@@ -96,8 +96,10 @@ export const CAMPOS_CAPS: Record<CampoCaps, DescritorCampo> = {
   importarPedido: { rotulo: 'Importar pedido', ler: (c) => c.importarPedido },
   importarPagamento: { rotulo: 'Importar pagamento', ler: (c) => c.importarPagamento },
   consolidaPacote: { rotulo: 'Consolida pacote', ler: (c) => c.consolidaPacote },
+  // Not only "a separate call": Shopee and Amazon send it on the same call, but
+  // only once a status, role or whitelist gate opens. See the field docstring.
   dadosFiscaisSeparados: {
-    rotulo: 'Dados fiscais em chamada separada',
+    rotulo: 'Dados fiscais em chamada separada ou restritos',
     ler: (c) => c.dadosFiscaisSeparados,
   },
 

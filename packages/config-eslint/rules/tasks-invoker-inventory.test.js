@@ -71,7 +71,13 @@ const INVENTORY = {
 
   // ---- codebase `loja-integrada` -------------------------------------------
   'apps/loja-integrada/functions/src/filaLeitura.ts':
-    'The Loja Integrada reads queue (filaLeituraLojaIntegrada, order intake). Enqueued by the order poller (functions runtime SA); the App Hosting runtime SA joins in step 4 (the inbound webhook), and the credential routes only re-drive Firestore rows.',
+    'The Loja Integrada reads queue (filaLeituraLojaIntegrada, order intake and, from master-plan step 9, the product import). Enqueued by the order poller (functions runtime SA); the product import adds two producers under the SAME functions runtime SA — the onImportacaoLojaIntegradaCriada Firestore trigger (the first named task of a job) and the import dispatch ITSELF (one named self-continuation per slice, and the rate-limit pause through scheduleDelaySeconds). The App Hosting runtime SA joins in step 4 (the inbound webhook); the import start route only creates the job document and never enqueues, and the credential routes only re-drive Firestore rows.',
+  'apps/loja-integrada/functions/src/filaEscrita.ts':
+    'The Loja Integrada writes queue (filaEscritaLojaIntegrada, master-plan step 7: the status write-back and its in-queue varredura). Enqueued by the onHistoricoFreteLojaIntegrada Firestore trigger (one named rastreio task per freight history row) and by the varrerEscritasLojaIntegrada onSchedule timer (one named varredura task per tick) — both the functions runtime SA, and nothing else; the varredura re-runs rows inside the queue and never enqueues.',
+
+  // ---- codebase `amazon` --------------------------------------------------
+  'apps/amazon/functions/src/filaLeitura.ts':
+    'The Amazon reads queue (filaLeituraAmazon, order intake). Enqueued by the push receiver route (App Hosting runtime SA) and by the 15-minute backstop poll pollAmazonOrders (functions runtime SA, through functions/src/agendador.ts). The reprocess sweep re-drives rows inline and never enqueues.',
 
   // ---- codebase `nfe` -----------------------------------------------------
   'apps/nfe/functions/src/reconciliar.ts':
@@ -131,8 +137,8 @@ const TASK_CALL_RE = /\bonTaskDispatched\s*(?:<[\s\S]*?>)?\s*\(/;
  * having checked NOTHING — the "green job that ran zero tests" shape. These are
  * a floor, not an inventory: they only ever need raising.
  */
-const MIN_TASK_FILES = 18;
-const MIN_CODEBASES = 8;
+const MIN_TASK_FILES = 20;
+const MIN_CODEBASES = 9;
 
 function read(file) {
   return readFileSync(resolve(REPO_ROOT, file), 'utf8');

@@ -30,7 +30,27 @@
  *    reaches a global by a computed name — and every external module it does
  *    import is on a short allow-list;
  *  - the committed fixture corpus keeps its `.prettierignore` and `.gitattributes`
- *    lines, so a re-run over an unchanged capture writes identical bytes.
+ *    lines, so a re-run over an unchanged capture writes identical bytes;
+ *  - the label routing route (`PUT …/pedidos/[pedidoId]/rota-etiqueta`, step 15) calls
+ *    nothing outside the ERP: the run-time import closure of its route file — the app's
+ *    `@/` modules walked too, type-only imports set aside because they load nothing —
+ *    reaches no package client, no credential module, no context loader, no pacer, no
+ *    read switch, no network module and no text that calls `fetch`;
+ *  - every READ route — the paid re-check (`GET …/pedidos/[pedidoId]/pagamento`, step 15) and
+ *    the four catalogue reads (`GET …/conta/[id]/{categorias,marcas,grades,grades/[gradeId]}`,
+ *    step 10) — reaches Loja Integrada only through the context loader, whose first act is the
+ *    read switch: in each one's run-time closure no file calls `fetch`, and only
+ *    `core/contexto.ts` builds a client;
+ *  - none of those routes, nor the label routing route, can reach the WRITE context
+ *    (`core/contextoEscrita.ts`) or name its factory, with no exemption;
+ *  - the write chokepoint (the write engine's requirement 9, step 7), matched by FULL path in
+ *    non-test source: only `core/contextoEscrita.ts` builds a write client; only
+ *    `core/escrita.ts` names a package write operation or a write-client method; the write
+ *    client's type is named in those two files only; no source names the package's request
+ *    core; and no source imports a subpath of the package or reaches its files by a relative
+ *    path (its manifest publishes the root alone, and a deep import is how its request core
+ *    would be reached). The chokepoint exempts `testing/**`, so nothing in the WHOLE app but a
+ *    test may import `testing/`.
  */
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, posix, relative, sep } from 'node:path';
@@ -187,6 +207,9 @@ const EXTERNOS_DO_SANITIZADOR = new Set([
   'node:fs',
   'node:path',
   'node:url',
+  // The catalogue-id pseudonyms (`sanitizacao/pseudonimo.ts`): an HMAC, and the
+  // random bytes of a new key. Computation only; it opens nothing.
+  'node:crypto',
 ]);
 
 /** The modules that hold the credential, the context or Firestore handles. */
@@ -274,6 +297,223 @@ function violacoesDoSanitizador(
     const texto = ler(arquivo) ?? '';
     for (const re of CHAMADAS_PROIBIDAS) {
       if (re.test(texto)) violacoes.push(`${arquivo} matches ${re.source}`);
+    }
+  }
+  return violacoes;
+}
+
+/* ---------------------------- the routing route ---------------------------- */
+
+/** The label routing route (step 15): ERP reads and one guarded pedido write, nothing else. */
+const ROTA_ETIQUETA =
+  'app/api/marketplace/loja-integrada/pedidos/[pedidoId]/rota-etiqueta/route.ts';
+
+/**
+ * What the routing route's closure may never reach: the modules that hold a Loja Integrada
+ * client's inputs (the credential, the context loader), the pacer and the read switch. A route
+ * that calls nothing has no use for any of them.
+ */
+const MODULOS_FORA_DA_ROTA_ETIQUETA = [
+  ...MODULOS_DE_CREDENCIAL,
+  'lib/lojaIntegrada/core/valvulas.ts',
+  'lib/lojaIntegrada/core/ritmo.ts',
+  'lib/lojaIntegrada/core/contextoEscrita.ts',
+];
+
+/** The write context: no step-15 route may reach it, or name its factory or its loader. */
+const MODULO_DO_CONTEXTO_DE_ESCRITA = 'lib/lojaIntegrada/core/contextoEscrita.ts';
+const NOMES_DO_CONTEXTO_DE_ESCRITA = /\b(criarClienteEscritaLi|loadLojaIntegradaContextoEscrita)\b/;
+
+/**
+ * `texto` without its type-only imports and re-exports (`import type …`, `export type … from`):
+ * they are erased at emit and load nothing at run time. Anything else stays — an inline
+ * `import { type A } from 'x'` too, which keeps the module load under `verbatimModuleSyntax` —
+ * so the walk follows every module the code can load.
+ */
+function semImportacoesDeTipo(texto: string): string {
+  const fonte = ts.createSourceFile('x.ts', texto, ts.ScriptTarget.Latest, false, ts.ScriptKind.TS);
+  let saida = texto;
+  for (const s of [...fonte.statements].reverse()) {
+    const soDeTipo =
+      (ts.isImportDeclaration(s) && s.importClause?.isTypeOnly === true) ||
+      (ts.isExportDeclaration(s) && s.isTypeOnly);
+    if (soDeTipo) saida = saida.slice(0, s.getStart(fonte)) + saida.slice(s.getEnd());
+  }
+  return saida;
+}
+
+/**
+ * `@/x` → the app-relative source file it names, so the walk enters the app's own aliased
+ * modules instead of stopping at them. A name that resolves to no file is returned as is, and
+ * the walk reports it as `?<path>` — fail closed.
+ */
+function resolverAliasDoApp(ler: LeitorDeFonte): ResolvedorDePacote {
+  return (espec) => {
+    if (!espec.startsWith('@/')) return null;
+    const base = espec.slice(2);
+    return [`${base}.ts`, `${base}.tsx`, `${base}/index.ts`].find((c) => ler(c) !== null) ?? base;
+  };
+}
+
+/**
+ * Why the run-time closure from `entradas` (app-relative paths) lets the routing route reach
+ * outside the ERP; empty when it does not. The files are scanned RAW for a `fetch` call: a comment
+ * that spells one fails too.
+ */
+function violacoesDaRotaEtiqueta(entradas: readonly string[], lerBruto: LeitorDeFonte): string[] {
+  const ler: LeitorDeFonte = (caminho) => {
+    const texto = lerBruto(caminho);
+    return texto === null ? null : semImportacoesDeTipo(texto);
+  };
+  const fecho = fechoDeImportacoes(entradas, ler, resolverAliasDoApp(ler));
+  const violacoes: string[] = [];
+  for (const espec of fecho.externos) {
+    const modulo = espec.replace(/^node:/, '').split('/')[0] ?? '';
+    if (
+      espec.startsWith('?') ||
+      espec === '@delfrance/integrations-loja-integrada' ||
+      espec.startsWith('@delfrance/integrations-loja-integrada/') ||
+      espec === 'undici' ||
+      MODULOS_DE_REDE_OU_PROCESSO.has(modulo)
+    ) {
+      violacoes.push(`imports ${espec}`);
+    }
+  }
+  for (const arquivo of fecho.arquivos) {
+    if (MODULOS_FORA_DA_ROTA_ETIQUETA.includes(arquivo)) violacoes.push(`reaches ${arquivo}`);
+    const texto = lerBruto(arquivo) ?? '';
+    if (/\bfetch\s*\(/.test(texto)) violacoes.push(`${arquivo} calls fetch`);
+    if (NOMES_DO_CONTEXTO_DE_ESCRITA.test(texto)) {
+      violacoes.push(`${arquivo} names the write context`);
+    }
+  }
+  return violacoes;
+}
+
+/* ------------------------------ the read routes ----------------------------- */
+
+/** The paid re-check route (step 15): ERP reads, then ONE read through the context loader. */
+const ROTA_PAGAMENTO = 'app/api/marketplace/loja-integrada/pedidos/[pedidoId]/pagamento/route.ts';
+
+/** The conta route family's folder: the credential routes and the catalogue reads (step 10). */
+const PASTA_DA_CONTA = 'app/api/marketplace/loja-integrada/conta/[id]';
+
+/** The catalogue core every catalogue route delegates to. */
+const NUCLEO_DO_CATALOGO = 'lib/lojaIntegrada/catalogo/catalogo.ts';
+
+/**
+ * Every route that READS Loja Integrada, with the core it delegates to: each must reach the store
+ * through the context loader only. A new read route joins this list, or its closure goes unwalked.
+ */
+const ROTAS_DE_LEITURA_LI: readonly (readonly [string, string])[] = [
+  [ROTA_PAGAMENTO, 'lib/lojaIntegrada/pedidos/conferenciaPagamento.ts'],
+  [`${PASTA_DA_CONTA}/categorias/route.ts`, NUCLEO_DO_CATALOGO],
+  [`${PASTA_DA_CONTA}/marcas/route.ts`, NUCLEO_DO_CATALOGO],
+  [`${PASTA_DA_CONTA}/grades/route.ts`, NUCLEO_DO_CATALOGO],
+  [`${PASTA_DA_CONTA}/grades/[gradeId]/route.ts`, NUCLEO_DO_CATALOGO],
+];
+
+/** The one module of a read route's closure allowed to build a Loja Integrada client. */
+const CONSTRUTOR_DO_CLIENTE = 'lib/lojaIntegrada/core/contexto.ts';
+
+/**
+ * Why the run-time closure from `entradas` lets a read route reach Loja Integrada other than
+ * through the context loader (whose first act is the read switch); empty when it does not. The
+ * files are scanned RAW: a `fetch` call anywhere, or a client or a validating GET named outside
+ * `core/contexto.ts`, fails — a comment that spells one too.
+ */
+function violacoesDaRotaDeLeitura(entradas: readonly string[], lerBruto: LeitorDeFonte): string[] {
+  const ler: LeitorDeFonte = (caminho) => {
+    const texto = lerBruto(caminho);
+    return texto === null ? null : semImportacoesDeTipo(texto);
+  };
+  const fecho = fechoDeImportacoes(entradas, ler, resolverAliasDoApp(ler));
+  const violacoes: string[] = [];
+  for (const espec of fecho.externos) {
+    const modulo = espec.replace(/^node:/, '').split('/')[0] ?? '';
+    if (espec.startsWith('?') || espec === 'undici' || MODULOS_DE_REDE_OU_PROCESSO.has(modulo)) {
+      violacoes.push(`imports ${espec}`);
+    }
+  }
+  for (const arquivo of fecho.arquivos) {
+    const texto = lerBruto(arquivo) ?? '';
+    if (/\bfetch\s*\(/.test(texto)) violacoes.push(`${arquivo} calls fetch`);
+    if (
+      arquivo !== CONSTRUTOR_DO_CLIENTE &&
+      /\b(criarClienteLeituraLi|validarPersonalToken)\b/.test(texto)
+    ) {
+      violacoes.push(`${arquivo} reaches Loja Integrada outside the context loader`);
+    }
+    // No exemption: not even the read context loader may reach or name the write one.
+    if (arquivo === MODULO_DO_CONTEXTO_DE_ESCRITA) violacoes.push(`reaches ${arquivo}`);
+    if (NOMES_DO_CONTEXTO_DE_ESCRITA.test(texto)) {
+      violacoes.push(`${arquivo} names the write context`);
+    }
+  }
+  return violacoes;
+}
+
+/* --------------------------- the write chokepoint -------------------------- */
+
+/** The write engine: the ONE module that sends a write (requirement 9). */
+const ARQUIVO_DO_MOTOR = 'lib/lojaIntegrada/core/escrita.ts';
+
+/**
+ * Who may NAME each write identifier, by full app-relative path — never by basename: the app
+ * already has `sanitizacao/escrita.ts`, `pedidos/escritaPedido.ts` and `pedidos/escritaPagamento.ts`.
+ * Word-bounded, and read raw (a comment that names one counts): an aliased import or a method
+ * reference names it too, while a longer name built on it does not.
+ */
+const DONOS_DA_ESCRITA: readonly { readonly nome: RegExp; readonly donos: readonly string[] }[] = [
+  { nome: /\bcriarClienteEscritaLi\b/, donos: [MODULO_DO_CONTEXTO_DE_ESCRITA] },
+  {
+    nome: /\b(?:atualizarObjetoEnvioLi|alterarSituacaoPedidoLi|lerAntesDeEscreverLi|enviarEscritaLi)\b/,
+    donos: [ARQUIVO_DO_MOTOR],
+  },
+  { nome: /\bLiEscritaClient\b/, donos: [MODULO_DO_CONTEXTO_DE_ESCRITA, ARQUIVO_DO_MOTOR] },
+  // The package's request core sends a write without the write client: nobody here names it.
+  { nome: /\bexecutarLi\b/, donos: [] },
+];
+
+/** The package, whose manifest publishes its root alone. */
+const PACOTE_LI = '@delfrance/integrations-loja-integrada';
+
+/**
+ * A specifier that reaches the package's files by PATH (a relative `…/integrations/loja-integrada/src/…`):
+ * it bypasses the manifest, and so the root's surface, exactly as a subpath would.
+ */
+const CAMINHO_DO_PACOTE_LI = /(?:^|\/)integrations\/loja-integrada(?:\/|$)/;
+
+/** The chokepoint scans non-test source: a test and `lib/lojaIntegrada/testing/**` name the fakes. */
+const ehFonteDaEscrita = (arquivo: string) =>
+  !ehTeste(arquivo) && !arquivo.startsWith('lib/lojaIntegrada/testing/');
+
+/**
+ * App source that is neither a test, the shared test doubles, nor the test runner's own
+ * config and setup files (`vitest.*` at the app root): what must never import `testing/`.
+ */
+const ehFonteQueNaoTesta = (arquivo: string) =>
+  ehFonteDaEscrita(arquivo) && !/^vitest\.[^/]+$/.test(arquivo);
+
+/** The `testing/` imports of a source text (`arquivo` relative to the app root): relative, aliased or deep. */
+function importacoesDeTesting(arquivo: string, texto: string): string[] {
+  return especificadores(texto)
+    .filter((espec) => /(?:^|\/)testing\//.test(espec))
+    .map((espec) => `${arquivo} imports ${espec}`);
+}
+
+/** Why a source text (`arquivo` relative to the app root) breaks the write chokepoint; empty when it does not. */
+function violacoesDaEscrita(arquivo: string, texto: string): string[] {
+  const violacoes: string[] = [];
+  for (const { nome, donos } of DONOS_DA_ESCRITA) {
+    const achado = nome.exec(texto);
+    if (achado !== null && !donos.includes(arquivo)) {
+      violacoes.push(`${arquivo} names ${achado[0]}`);
+    }
+  }
+  for (const espec of especificadores(texto)) {
+    if (espec.startsWith(`${PACOTE_LI}/`) || CAMINHO_DO_PACOTE_LI.test(espec)) {
+      violacoes.push(`${arquivo} imports ${espec}`);
     }
   }
   return violacoes;
@@ -391,12 +631,17 @@ describe('lib/lojaIntegrada layout', () => {
     expect(fontes.map(rel)).toEqual(
       expect.arrayContaining([
         'avisos/avisos.ts',
+        'catalogo/cache.ts',
+        'catalogo/catalogo.ts',
         'conta/expiracaoSweep.ts',
         'conta/status.ts',
         'conta/validade.ts',
         'core/credentialStore.ts',
         'core/estacionamento.ts',
         'core/contexto.ts',
+        'core/contextoEscrita.ts',
+        'core/escrita.ts',
+        'core/igualdadeJsonLi.ts',
         'core/respond.ts',
         'core/log.ts',
         'core/redacao.ts',
@@ -408,6 +653,7 @@ describe('lib/lojaIntegrada layout', () => {
         'pedidos/janelaPoll.ts',
         'pedidos/orcamentoPoll.ts',
         'pedidos/pollPedidos.ts',
+        'pedidos/rotaEtiqueta.ts',
         'sanitizacao/requisicao.ts',
         'sanitizacao/local.ts',
         'sanitizacao/lote.ts',
@@ -415,6 +661,8 @@ describe('lib/lojaIntegrada layout', () => {
         'sanitizacao/folhas.ts',
         'sanitizacao/executar.ts',
         'sanitizacao/escrita.ts',
+        'sanitizacao/pseudonimo.ts',
+        'sanitizacao/sistemaNode.ts',
         'fixtures/piiScan.ts',
         'fixtures/wireCorpus.ts',
       ]),
@@ -436,11 +684,21 @@ describe('lib/lojaIntegrada layout', () => {
     }
   });
 
-  it('testing/ is imported by tests only', () => {
-    for (const arquivo of fontes) {
-      if (rel(arquivo).startsWith('testing/')) continue;
-      expect(readFileSync(arquivo, 'utf8'), rel(arquivo)).not.toMatch(/from '[^']*testing\//);
-    }
+  it('testing/ is imported by tests only — anywhere in the app (the chokepoint exempts testing/, so nothing else may reach it)', () => {
+    const fontesDoApp = arquivosTs(RAIZ_APP).map(relApp).filter(ehFonteQueNaoTesta);
+    const violacoes = fontesDoApp.flatMap((p) => importacoesDeTesting(p, lerDoApp(p) ?? ''));
+    expect(violacoes).toEqual([]);
+    // Anti-vacuity: the scan reached the app's other roots, not only this tree.
+    expect(fontesDoApp).toEqual(
+      expect.arrayContaining([
+        'functions/src/index.ts',
+        ...ROTAS_DE_LEITURA_LI.map(([rota]) => rota),
+        NUCLEO_DO_CATALOGO,
+        MODULO_DO_CONTEXTO_DE_ESCRITA,
+        'proxy.ts',
+      ]),
+    );
+    expect(fontesDoApp.some((p) => p.startsWith('lib/lojaIntegrada/testing/'))).toBe(false);
   });
 
   it('core/redacao.ts and core/refCredencial.ts import only zod and @delfrance/core/*', () => {
@@ -459,6 +717,13 @@ describe('lib/lojaIntegrada layout', () => {
     );
   });
 
+  it('core/igualdadeJsonLi.ts is a LEAF: it imports nothing, so every closure that embeds it stays as it is', () => {
+    const texto = lerDoDisco('core/igualdadeJsonLi.ts');
+    expect(texto).not.toBeNull();
+    expect(texto).toContain('export function deepEqual(');
+    expect(especificadores(texto ?? '')).toEqual([]);
+  });
+
   it("the logger's and the valves' import closure reaches no Admin SDK, admin data layer, Next or @/ alias", () => {
     const fecho = fechoDeImportacoes(ENTRADAS_DO_FECHO, lerDoDisco);
     expect(fecho.arquivos).toEqual(ENTRADAS_DO_FECHO.slice().sort());
@@ -469,13 +734,17 @@ describe('lib/lojaIntegrada layout', () => {
     const fontes = arquivosTs(RAIZ_APP).filter((p) => !ehTeste(p));
     const violacoes = fontes.flatMap((p) => violacoesDoSeam(relApp(p), readFileSync(p, 'utf8')));
     expect(violacoes).toEqual([]);
-    // Anti-vacuity: the three wired sites exist, and the logger itself is exempt.
+    // Anti-vacuity: the four wired sites exist, and the logger itself is exempt.
     const sites = fontes.filter((p) => readFileSync(p, 'utf8').includes(SEAM_OK)).map(relApp);
     expect(sites.sort()).toEqual([
       'app/api/marketplace/loja-integrada/conta/[id]/credencial/route.ts',
       'app/api/marketplace/loja-integrada/conta/[id]/credencial/validade/route.ts',
       'lib/lojaIntegrada/core/contexto.ts',
+      'lib/lojaIntegrada/core/contextoEscrita.ts',
     ]);
+    // The write context builds TWO clients, each with its own inline observer (never a shared const).
+    const doContextoDeEscrita = lerDoApp(MODULO_DO_CONTEXTO_DE_ESCRITA) ?? '';
+    expect(doContextoDeEscrita.split(SEAM_OK)).toHaveLength(3);
     expect(fontes.map(relApp)).toContain(ARQUIVO_DO_LOGGER);
   });
 
@@ -498,8 +767,12 @@ describe('lib/lojaIntegrada layout', () => {
         'scripts/sanitizar.ts',
         'lib/lojaIntegrada/sanitizacao/executar.ts',
         'lib/lojaIntegrada/sanitizacao/escrita.ts',
+        'lib/lojaIntegrada/sanitizacao/pseudonimo.ts',
+        'lib/lojaIntegrada/sanitizacao/sistemaNode.ts',
         'lib/lojaIntegrada/fixtures/piiScan.ts',
         'lib/lojaIntegrada/core/redacao.ts',
+        // The shared comparator leaf, which imports nothing.
+        'lib/lojaIntegrada/core/igualdadeJsonLi.ts',
         // The allow-listed workspace packages are walked too, not trusted.
         '../../packages/core/src/wire/index.ts',
         '../../packages/core/src/wire/prazo.ts',
@@ -507,6 +780,95 @@ describe('lib/lojaIntegrada layout', () => {
       ]),
     );
     expect(fecho.externos).toEqual(expect.arrayContaining(['node:fs', 'zod']));
+  });
+
+  it('the label routing route calls nothing outside the ERP: no package client, credential, context, pacer, read switch or fetch in its run-time closure', () => {
+    expect(violacoesDaRotaEtiqueta([ROTA_ETIQUETA], lerDoApp)).toEqual([]);
+    // Anti-vacuity: the walk entered the route's own modules through the alias, and saw the
+    // data layer it does use.
+    const ler: LeitorDeFonte = (c) => {
+      const texto = lerDoApp(c);
+      return texto === null ? null : semImportacoesDeTipo(texto);
+    };
+    const fecho = fechoDeImportacoes([ROTA_ETIQUETA], ler, resolverAliasDoApp(ler));
+    expect(fecho.arquivos).toEqual(
+      expect.arrayContaining([
+        ROTA_ETIQUETA,
+        'lib/lojaIntegrada/pedidos/rotaEtiqueta.ts',
+        'lib/lojaIntegrada/core/respond.ts',
+        'lib/lojaIntegrada/core/erros.ts',
+        'lib/auth/verifyCaller.ts',
+      ]),
+    );
+    expect(fecho.externos).toEqual(
+      expect.arrayContaining([
+        '@delfrance/schemas',
+        '@delfrance/data/admin/collections',
+        '@delfrance/data/admin/grpcErrors',
+      ]),
+    );
+    // The type-only import of the package in `core/respond.ts` is real, and set aside.
+    expect(lerDoApp('lib/lojaIntegrada/core/respond.ts')).toContain(
+      "import type { ValidacaoTokenLi } from '@delfrance/integrations-loja-integrada';",
+    );
+  });
+
+  it.each(ROTAS_DE_LEITURA_LI)(
+    'the read route %s reaches Loja Integrada only through the context loader: no fetch, and no client or validating GET of its own, in its run-time closure',
+    (rota, nucleo) => {
+      expect(lerDoApp(rota), rota).not.toBeNull();
+      expect(violacoesDaRotaDeLeitura([rota], lerDoApp)).toEqual([]);
+      // Anti-vacuity: the walk entered the core and the context loader, and the exemption is real.
+      const ler: LeitorDeFonte = (c) => {
+        const texto = lerDoApp(c);
+        return texto === null ? null : semImportacoesDeTipo(texto);
+      };
+      const fecho = fechoDeImportacoes([rota], ler, resolverAliasDoApp(ler));
+      expect(fecho.arquivos).toEqual(
+        expect.arrayContaining([rota, nucleo, CONSTRUTOR_DO_CLIENTE, 'lib/auth/verifyCaller.ts']),
+      );
+      expect(fecho.externos).toContain('@delfrance/integrations-loja-integrada');
+      expect(lerDoApp(CONSTRUTOR_DO_CLIENTE)).toContain('criarClienteLeituraLi({');
+    },
+  );
+
+  it('every route file under the conta folder is in ROTAS_DE_LEITURA_LI or one of the credential routes (a new read route cannot skip the walk)', () => {
+    const naPasta = arquivosTs(RAIZ_APP)
+      .map(relApp)
+      .filter((p) => p.startsWith(`${PASTA_DA_CONTA}/`) && p.endsWith('/route.ts'));
+    const listadas = new Set(ROTAS_DE_LEITURA_LI.map(([rota]) => rota));
+    // The status route calls nothing, and the credential routes read the conta uncached and
+    // validate a candidate token: each has its own guard (`prazos.test.ts`), and none goes
+    // through the context loader.
+    const daCredencial = new Set([
+      `${PASTA_DA_CONTA}/route.ts`,
+      `${PASTA_DA_CONTA}/credencial/route.ts`,
+      `${PASTA_DA_CONTA}/credencial/validade/route.ts`,
+    ]);
+    expect(naPasta.filter((p) => !listadas.has(p) && !daCredencial.has(p))).toEqual([]);
+    // Anti-vacuity: the scan found the four catalogue routes and the three credential ones.
+    expect(naPasta.filter((p) => listadas.has(p))).toHaveLength(4);
+    expect(naPasta.filter((p) => daCredencial.has(p))).toHaveLength(3);
+  });
+
+  it('the write chokepoint: only core/contextoEscrita.ts builds a write client, only core/escrita.ts calls a write operation or method, no source imports a package subpath', () => {
+    const fontes = arquivosTs(RAIZ_APP).map(relApp).filter(ehFonteDaEscrita);
+    const violacoes = fontes.flatMap((p) => violacoesDaEscrita(p, lerDoApp(p) ?? ''));
+    expect(violacoes).toEqual([]);
+    // Anti-vacuity: the scan reached the owners, and they really hold the calls.
+    expect(fontes).toEqual(
+      expect.arrayContaining([
+        ARQUIVO_DO_MOTOR,
+        MODULO_DO_CONTEXTO_DE_ESCRITA,
+        ROTA_PAGAMENTO,
+        NUCLEO_DO_CATALOGO,
+      ]),
+    );
+    const motor = lerDoApp(ARQUIVO_DO_MOTOR) ?? '';
+    expect(motor).toContain('atualizarObjetoEnvioLi(');
+    expect(motor).toContain('alterarSituacaoPedidoLi(');
+    expect(motor).toContain('.lerAntesDeEscreverLi(');
+    expect(lerDoApp(MODULO_DO_CONTEXTO_DE_ESCRITA)).toContain('criarClienteEscritaLi({');
   });
 
   it('scripts/ is typechecked and linted: the tsconfig includes **/*.ts, the ESLint config ignores nothing of it', () => {
@@ -740,6 +1102,269 @@ describe('the guards, on synthetic source', () => {
     expect(
       violacoesDoSanitizador([SANITIZADOR], comPacote(fonte, extras), resolver).length,
     ).toBeGreaterThan(0);
+  });
+
+  const ROTA = 'app/x/route.ts';
+  const NUCLEO = 'lib/lojaIntegrada/pedidos/x.ts';
+  const daRota = (nucleo: string, rota = "import { f } from '@/lib/lojaIntegrada/pedidos/x';") =>
+    leitor({
+      [ROTA]: rota,
+      [NUCLEO]: nucleo,
+      'lib/lojaIntegrada/core/contexto.ts':
+        "import { x } from '@delfrance/integrations-loja-integrada';",
+      'lib/lojaIntegrada/core/valvulas.ts': 'export const v = 1;',
+      'lib/lojaIntegrada/core/erros.ts': 'export class E extends Error {}',
+      [MODULO_DO_CONTEXTO_DE_ESCRITA]: "import { y } from '../core/erros';",
+    });
+
+  it('routing route closure: the data layer, an app error and a TYPE-only import of the package are accepted', () => {
+    const nucleo =
+      "import { pedidoCollection } from '@delfrance/data/admin/collections';\n" +
+      "import type { LiError } from '@delfrance/integrations-loja-integrada';\n" +
+      "export type { LiAuthError } from '@delfrance/integrations-loja-integrada';\n" +
+      "import { E } from '../core/erros';";
+    expect(violacoesDaRotaEtiqueta([ROTA], daRota(nucleo))).toEqual([]);
+  });
+
+  it.each([
+    [
+      'the package client',
+      "import { criarClienteLeituraLi } from '@delfrance/integrations-loja-integrada';",
+    ],
+    ['a package subpath', "import { x } from '@delfrance/integrations-loja-integrada/pedidos';"],
+    [
+      'an INLINE type specifier (the module still loads)',
+      "import { type LiError } from '@delfrance/integrations-loja-integrada';",
+    ],
+    ['the context loader', "import { loadLojaIntegradaContext } from '../core/contexto';"],
+    [
+      'the WRITE context (a module that itself names nothing forbidden)',
+      "import { y } from '../core/contextoEscrita';",
+    ],
+    [
+      'the write context’s loader, by name',
+      'export const z = (c: { loadLojaIntegradaContextoEscrita: unknown }) => c;',
+    ],
+    ['the read switch', "import { lerChamadasLi } from '../core/valvulas';"],
+    ['a fetch call', "export const f = () => fetch('https://x.invalid');"],
+    ['a network module', "import { request } from 'node:https';"],
+    ['undici', "import { request } from 'undici';"],
+  ])('routing route closure flags, one module deep, %s', (_caso, nucleo) => {
+    expect(violacoesDaRotaEtiqueta([ROTA], daRota(nucleo)).length).toBeGreaterThan(0);
+  });
+
+  it('routing route closure flags an alias that resolves to no file (fail closed)', () => {
+    expect(
+      violacoesDaRotaEtiqueta([ROTA], daRota('', "import { f } from '@/lib/lojaIntegrada/sumiu';")),
+    ).toEqual(['imports ?lib/lojaIntegrada/sumiu']);
+  });
+
+  const LEITURA = 'app/y/route.ts';
+  const daRotaDeLeitura = (
+    nucleo: string,
+    construtor = "import { criarClienteLeituraLi } from '@delfrance/integrations-loja-integrada';\n" +
+      'export const c = () => criarClienteLeituraLi({});',
+  ) =>
+    leitor({
+      [LEITURA]: "import { f } from '@/lib/lojaIntegrada/pedidos/y';",
+      'lib/lojaIntegrada/pedidos/y.ts': nucleo,
+      [CONSTRUTOR_DO_CLIENTE]: construtor,
+      [MODULO_DO_CONTEXTO_DE_ESCRITA]: 'export const w = 1;',
+    });
+
+  it('read route closure: the context loader building the client, and the package read through it, are accepted', () => {
+    const nucleo =
+      "import { buscarPedidoLi } from '@delfrance/integrations-loja-integrada';\n" +
+      "import { c } from '../core/contexto';\n" +
+      'export const f = () => buscarPedidoLi(c(), 1);';
+    expect(violacoesDaRotaDeLeitura([LEITURA], daRotaDeLeitura(nucleo))).toEqual([]);
+  });
+
+  it.each([
+    [
+      'a client built outside the context loader',
+      "import { criarClienteLeituraLi } from '@delfrance/integrations-loja-integrada';",
+    ],
+    [
+      'a validating GET',
+      "import { validarPersonalToken } from '@delfrance/integrations-loja-integrada';",
+    ],
+    ['a fetch call', "export const f = () => fetch('https://x.invalid');"],
+    ['a network module', "import { request } from 'node:https';"],
+    ['an alias that resolves to no file', "import { f } from '@/lib/lojaIntegrada/sumiu';"],
+  ])('read route closure flags, one module deep, %s', (_caso, nucleo) => {
+    expect(violacoesDaRotaDeLeitura([LEITURA], daRotaDeLeitura(nucleo)).length).toBeGreaterThan(0);
+  });
+
+  it.each([
+    ['the write context module', "import { w } from '../core/contextoEscrita';"],
+    [
+      'the write client factory, even imported for its type position',
+      "import { criarClienteEscritaLi } from '@delfrance/integrations-loja-integrada';",
+    ],
+    ['the write context loader, by name', 'export const n = "loadLojaIntegradaContextoEscrita";'],
+  ])('read route closure flags the write side: %s', (_caso, nucleo) => {
+    expect(violacoesDaRotaDeLeitura([LEITURA], daRotaDeLeitura(nucleo)).length).toBeGreaterThan(0);
+  });
+
+  it('read route closure: the read context loader has NO exemption for the write factory', () => {
+    const construtor =
+      "import { criarClienteLeituraLi, criarClienteEscritaLi } from '@delfrance/integrations-loja-integrada';\n" +
+      'export const c = () => criarClienteLeituraLi({});';
+    const nucleo = "import { c } from '../core/contexto';\n" + 'export const f = () => c();';
+    expect(violacoesDaRotaDeLeitura([LEITURA], daRotaDeLeitura(nucleo, construtor))).toEqual([
+      `${CONSTRUTOR_DO_CLIENTE} names the write context`,
+    ]);
+  });
+
+  /* The write chokepoint (requirement 9), on synthetic source. */
+  const OUTRO = 'lib/lojaIntegrada/rastreio/x.ts';
+
+  it.each([
+    [
+      'a second caller of an operation',
+      OUTRO,
+      "import { atualizarObjetoEnvioLi } from '@delfrance/integrations-loja-integrada';\n" +
+        "await atualizarObjetoEnvioLi(c, 801, 'X');",
+    ],
+    [
+      'an aliased import',
+      OUTRO,
+      "import { alterarSituacaoPedidoLi as mudar } from '@delfrance/integrations-loja-integrada';\n" +
+        "await mudar(c, 1, 'pedido_enviado');",
+    ],
+    ['a method reference', OUTRO, 'const ler = contexto.escrita.lerAntesDeEscreverLi;'],
+    ['a destructured method', OUTRO, 'const { enviarEscritaLi } = contexto.escrita;'],
+    [
+      'the write client built outside the write context',
+      CONSTRUTOR_DO_CLIENTE,
+      "import { criarClienteEscritaLi } from '@delfrance/integrations-loja-integrada';",
+    ],
+    [
+      'the engine building its own client',
+      ARQUIVO_DO_MOTOR,
+      'criarClienteEscritaLi({ obterCredencial })',
+    ],
+    [
+      'the write context calling an operation itself',
+      MODULO_DO_CONTEXTO_DE_ESCRITA,
+      "await alterarSituacaoPedidoLi(escrita, 1, 'pedido_enviado');",
+    ],
+    [
+      'a file named like the engine elsewhere (matched by FULL path)',
+      'lib/lojaIntegrada/sanitizacao/escrita.ts',
+      "await atualizarObjetoEnvioLi(c, 801, 'X');",
+    ],
+    [
+      'the client type named elsewhere',
+      OUTRO,
+      "import type { LiEscritaClient } from '@delfrance/integrations-loja-integrada';",
+    ],
+    ['a comment that names a write method', OUTRO, '// then call enviarEscritaLi on the client'],
+    [
+      'a package subpath import',
+      OUTRO,
+      "import { executarLi } from '@delfrance/integrations-loja-integrada/src/client';",
+    ],
+    [
+      'a package subpath re-export',
+      'app/x/route.ts',
+      "export { rotaDeEscritaLi } from '@delfrance/integrations-loja-integrada/src/rotasEscrita';",
+    ],
+    [
+      'a RELATIVE import into the package source',
+      OUTRO,
+      "import { lerComSchemaLi } from '../../../../packages/integrations/loja-integrada/src/client';",
+    ],
+    [
+      'a relative import of the package directory itself',
+      'functions/src/x.ts',
+      "import * as li from '../../../../packages/integrations/loja-integrada';",
+    ],
+    ['the request core named anywhere', OUTRO, 'await executarLi(opcoes, pedido);'],
+  ])('chokepoint flags %s', (_caso, arquivo, fonte) => {
+    expect(violacoesDaEscrita(arquivo, fonte).length).toBeGreaterThan(0);
+  });
+
+  it('chokepoint passes the owners, a bare `.ler(` on another receiver, longer names and the package root', () => {
+    expect(
+      violacoesDaEscrita(
+        ARQUIVO_DO_MOTOR,
+        "await atualizarObjetoEnvioLi(c, 801, 'X');\n" +
+          "await alterarSituacaoPedidoLi(c, 1, 'pedido_enviado');\n" +
+          'await contexto.escrita.lerAntesDeEscreverLi(p);\n' +
+          'type C = LiEscritaClient;',
+      ),
+    ).toEqual([]);
+    expect(
+      violacoesDaEscrita(
+        MODULO_DO_CONTEXTO_DE_ESCRITA,
+        'const escrita: LiEscritaClient = criarClienteEscritaLi({ obterCredencial });',
+      ),
+    ).toEqual([]);
+    // The positive control: the sanitizer's own file-system `ler` is not a write method.
+    expect(
+      violacoesDaEscrita(
+        'lib/lojaIntegrada/sanitizacao/executar.ts',
+        'const texto = fs.ler(caminho);',
+      ),
+    ).toEqual([]);
+    expect(
+      violacoesDaEscrita(OUTRO, 'const v = lerAntesDeEscreverLiV2(); enviarEscritaLista();'),
+    ).toEqual([]);
+    expect(
+      violacoesDaEscrita(
+        OUTRO,
+        "import { buscarPedidoLi } from '@delfrance/integrations-loja-integrada';",
+      ),
+    ).toEqual([]);
+    // A path that merely names the channel is not the package's source.
+    expect(
+      violacoesDaEscrita(
+        OUTRO,
+        "import { x } from '../../../../web/lib/loja-integrada/rotaEtiqueta';\n" +
+          'const y = executarLista();',
+      ),
+    ).toEqual([]);
+    // Test sources and the shared test doubles are exempt; source is not.
+    expect(ehFonteDaEscrita('lib/lojaIntegrada/core/escrita.test.ts')).toBe(false);
+    expect(ehFonteDaEscrita('lib/lojaIntegrada/testing/fakeDb.ts')).toBe(false);
+    expect(ehFonteDaEscrita(OUTRO)).toBe(true);
+  });
+
+  it.each([
+    [
+      'a functions source, through the alias',
+      'functions/src/x.ts',
+      "import { FakeDb } from '@/lib/lojaIntegrada/testing/fakeDb';",
+    ],
+    [
+      'a route, relatively',
+      'app/x/route.ts',
+      "import { f } from '../../lib/lojaIntegrada/testing/fixtures';",
+    ],
+    ['a lib source, dynamically', OUTRO, "const m = await import('../testing/pedidosLi');"],
+    [
+      'a re-export',
+      'proxy.ts',
+      "export { seedConta } from './lib/lojaIntegrada/testing/fixtures';",
+    ],
+  ])('testing/ guard flags %s', (_caso, arquivo, fonte) => {
+    expect(ehFonteQueNaoTesta(arquivo)).toBe(true);
+    expect(importacoesDeTesting(arquivo, fonte)).toHaveLength(1);
+  });
+
+  it('testing/ guard passes a package whose NAME ends in testing, a comment, and the test runner’s own files', () => {
+    expect(
+      importacoesDeTesting(
+        OUTRO,
+        "import { x } from '@firebase/rules-unit-testing';\n// testing/fakeDb.ts builds the SDK's classes",
+      ),
+    ).toEqual([]);
+    expect(ehFonteQueNaoTesta('vitest.setup.ts')).toBe(false);
+    expect(ehFonteQueNaoTesta('vitest.tasks.setup.ts')).toBe(false);
+    expect(ehFonteQueNaoTesta('functions/src/vitest.x.ts')).toBe(true);
+    expect(ehFonteQueNaoTesta('lib/lojaIntegrada/testing/fakeDb.ts')).toBe(false);
   });
 
   it('seam accepts criarObservadorLi(…) imported from the logger, and exempts the logger itself', () => {

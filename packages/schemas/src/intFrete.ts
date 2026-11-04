@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { parseWireDecimal } from '@delfrance/core/wire';
 import type { CollectionMetadata } from './types';
 import { millisSinceEpoch } from './shared/datetime';
 import { outerRefSchema } from './shared/outerRef';
@@ -154,8 +155,9 @@ export type HorarioDeCorte = z.infer<typeof horarioDeCorteSchema>;
  * at `.old/packages/integracao_frete/lib/src/models.dart:233`: translates a
  * marketplace shipping option (`nomeOriginal` / `idOriginal`) into a target
  * internal integration (`integracaoUid` + `targetTipoIntegracao` +
- * provider-specific `targetData`). Not surfaced in the UI yet — kept for
- * read/write parity with Flutter-authored docs.
+ * provider-specific `targetData`). Edited on the Loja Integrada conta screen's
+ * "Mapeamento do Frete" tab (`/canais/loja-integrada/[id]`, #1826), which maps
+ * each row and never adds or removes one; hidden on every `/logistica` slice.
  */
 export const mapaDeIntegracoesSchema = z
   .object({
@@ -230,6 +232,22 @@ export const intFreteSchema = z
       .nullable()
       .default(null)
       .describe('Conta Loja Integrada'),
+    /**
+     * Back-reference to the Amazon conta (`integracao`, tipo amazon) this freight doc belongs to —
+     * `documents/integracao/<id>`. Legacy `ContaFreteAmazon.contaAmazonContaFreteAmazonOuterRef`
+     * (`.old/packages/canais_de_venda/amazon/lib/src/models.dart:144-151`, `fromConta`), a plain
+     * string the legacy ODM always wrote in the canonical `documents/…` form — so the migrated docs
+     * are ADOPTED by this key, never duplicated.
+     *
+     * **Server-owned** (#1930): the sole writers are the `onIntegracaoAmazonChanged` trigger
+     * (`amazon` functions codebase) and the window pass, both through `@delfrance/data/admin/frete`.
+     * Protected by convention, like its three twins above — hidden from every `/logistica` slice by
+     * `SHARED_EXCLUDED`, not by a rule. Null on every other `tipo`.
+     */
+    contaAmazonContaFreteAmazonOuterRef: outerRefSchema
+      .nullable()
+      .default(null)
+      .describe('Conta Amazon'),
     enderecoDeOrigem: enderecoSchema
       .passthrough()
       .nullable()
@@ -285,7 +303,7 @@ export type IntFrete = z.infer<typeof intFreteSchema>;
 
 /**
  * The `int_frete` keys that hold a channel's conta back-reference — derived from the SCHEMA's own
- * keys, so a misspelled `campoBackRef` fails `tsc`, and a third channel's field joins the union by
+ * keys, so a misspelled `campoBackRef` fails `tsc`, and a new channel's field joins the union by
  * itself (`intFrete.vinculo.test.ts` then demands its row below).
  */
 export type CampoBackRefIntFrete = Extract<
@@ -336,6 +354,15 @@ export const VINCULO_INT_FRETE_CONTA = {
     campoBackRef: 'contaLojaIntegradaEnviosOuterRef',
     rotuloLog: '[loja-integrada]',
     prefixoDocId: INTEGRACAO_FRETE.lojaIntegrada,
+  },
+  amazon: {
+    tipoConta: INTEGRACAO_TIPO.amazon,
+    // The on-disk spelling `'amz'`, never `'amazon'` (`INTEGRACAO_FRETE`).
+    tipoFrete: INTEGRACAO_FRETE.amazon,
+    campoBackRef: 'contaAmazonContaFreteAmazonOuterRef',
+    rotuloLog: '[amazon]',
+    // ⇒ `amz-<integracaoId>`.
+    prefixoDocId: INTEGRACAO_FRETE.amazon,
   },
 } as const satisfies Record<string, VinculoIntFreteConta>;
 
@@ -511,6 +538,98 @@ export interface PrazoDespachoCivil {
   readonly minuto: number;
 }
 
+/** One cut-off row as the rule reads it: integers or absent, nothing else. */
+interface LinhaDeCorte {
+  readonly diaDaSemana: number;
+  readonly horaDeCorte: number | null;
+  readonly minutosDeCorte: number | null;
+  readonly prazoDePostagem: number | null;
+  readonly horaPostagem: number | null;
+  readonly minutosPostagem: number | null;
+}
+
+/** A stored field the rule cannot read as an integer — it drops the whole row. */
+const ILEGIVEL = Symbol('ilegivel');
+
+/**
+ * One stored field as the rule reads it: absent (`null`/`undefined`, the null
+ * default the rule already treats as 0), an integer, or text that spells
+ * exactly one integer under the shared wire grammar ({@link parseWireDecimal}
+ * — `'16'`, `' 16 '`, `'16.0'`; never `'16h'`, `'0x10'`, `'1.6e1'`, `''`).
+ * Anything else is {@link ILEGIVEL}.
+ */
+function lerCampo(valor: unknown): number | null | typeof ILEGIVEL {
+  if (valor === null || valor === undefined) return null;
+  const numero = typeof valor === 'string' ? parseWireDecimal(valor) : valor;
+  return Number.isInteger(numero) ? (numero as number) : ILEGIVEL;
+}
+
+/** One stored row as the rule reads it, or `null` when the row cannot answer. */
+function lerLinha(campos: Record<string, unknown>): LinhaDeCorte | null {
+  const diaDaSemana = lerCampo(campos.diaDaSemana);
+  const horaDeCorte = lerCampo(campos.horaDeCorte);
+  const minutosDeCorte = lerCampo(campos.minutosDeCorte);
+  const prazoDePostagem = lerCampo(campos.prazoDePostagem);
+  const horaPostagem = lerCampo(campos.horaPostagem);
+  const minutosPostagem = lerCampo(campos.minutosPostagem);
+  if (
+    diaDaSemana === null ||
+    diaDaSemana === ILEGIVEL ||
+    horaDeCorte === ILEGIVEL ||
+    minutosDeCorte === ILEGIVEL ||
+    prazoDePostagem === ILEGIVEL ||
+    horaPostagem === ILEGIVEL ||
+    minutosPostagem === ILEGIVEL
+  ) {
+    return null;
+  }
+  return {
+    diaDaSemana,
+    horaDeCorte,
+    minutosDeCorte,
+    prazoDePostagem,
+    horaPostagem,
+    minutosPostagem,
+  };
+}
+
+/**
+ * The rows of a STORED schedule the rule can read, in stored order.
+ *
+ * The typed parameter is a promise the data does not keep: the web freight
+ * tabs read `int_frete` through a soft read, which hands back the raw document
+ * when the parse fails, so the imported corpus reaches the rule unvalidated.
+ * So, deliberately:
+ *
+ *   - a stored value that is not a list has no rows (a map keyed by weekday, a
+ *     bare row), and neither does a row that is not an object (`null`, text);
+ *   - a field that is an integer, or text that spells one, reads as that
+ *     integer. Before this, text reached JS arithmetic RAW: `<` and the `Date`
+ *     constructor coerced `'16'` correctly, but `+` concatenated
+ *     (`1 + '2'` is `'12'`) and `===` never matched, so a text
+ *     `prazoDePostagem` silently answered nothing;
+ *   - a field that is PRESENT but no integer (`'16h'`, `16.5`, NaN, `true`)
+ *     drops the whole row, exactly like a row with no weekday. Reading it as
+ *     absent would keep the row answering with an invented 0 — a `horaPostagem`
+ *     of 00:00, i.e. a deadline before `agora`. A dropped row neither answers
+ *     for its day nor shadows a readable row behind it;
+ *   - an ABSENT field (`null`, missing) stays the legacy null default, 0;
+ *   - RANGE is not checked. An hour of 25 is read as stored, exactly as Flutter
+ *     computed with it — the `/logistica` editor's schema is where it is fixed.
+ *
+ * A valid schedule passes through unchanged.
+ */
+function linhasDeCorte(horarios: unknown): LinhaDeCorte[] {
+  if (!Array.isArray(horarios)) return [];
+  const linhas: LinhaDeCorte[] = [];
+  for (const linha of horarios as unknown[]) {
+    if (linha === null || typeof linha !== 'object') continue;
+    const lida = lerLinha(linha as Record<string, unknown>);
+    if (lida !== null) linhas.push(lida);
+  }
+  return linhas;
+}
+
 /**
  * The cut-off rule itself: pure, zone-free, over civil components.
  *
@@ -528,6 +647,10 @@ export interface PrazoDespachoCivil {
  *   - The result is `agora + (c + prazoDePostagem) days` at
  *     `horaPostagem:minutosPostagem` (defaulting 00:00).
  *
+ * It reads only the rows {@link linhasDeCorte} can read — a stored row the
+ * schema does not model is skipped rather than thrown on, where Flutter's whole
+ * document failed to load.
+ *
  * ⚠️ Extracted from {@link getPrazoDespacho} rather than copied. The rule now
  * runs on two surfaces — an operator's browser (their own zone, correct) and a
  * server importing a marketplace order (`America/Sao_Paulo`, explicit) — and a
@@ -538,20 +661,21 @@ export function calcularPrazoDespachoCivil(
   horarios: ReadonlyArray<HorarioDeCorte> | null | undefined,
   agora: PartesCivis,
 ): PrazoDespachoCivil | null {
-  if (!horarios || horarios.length === 0) return null;
+  const linhas = linhasDeCorte(horarios);
+  if (linhas.length === 0) return null;
 
-  let encontrado: HorarioDeCorte | null = null;
+  let encontrado: LinhaDeCorte | null = null;
   let c = 0;
   const max = 7;
   let currentDia = agora.diaDaSemana;
-  const diaDeHoje = horarios.find((h) => h.diaDaSemana === currentDia);
+  const diaDeHoje = linhas.find((h) => h.diaDaSemana === currentDia);
   const prazoDePostagem = diaDeHoje?.prazoDePostagem ?? 0;
 
   while (encontrado === null && c < max) {
     const cIter = c;
     const diaIter = currentDia;
     encontrado =
-      horarios.find((h) => {
+      linhas.find((h) => {
         let targetDia = diaIter + prazoDePostagem;
         if (targetDia > 7) targetDia = targetDia - 7;
         return (

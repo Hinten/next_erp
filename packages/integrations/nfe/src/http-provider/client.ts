@@ -30,6 +30,7 @@ import {
   NFeDanfeUnavailableError,
   type NFeHttpError,
   NFeInutilizacaoAbortedError,
+  NFeInutilizacaoNaoSeAplicaError,
   NFeNetworkError,
   NFePedidoNotFoundError,
   NFeRejectedError,
@@ -575,6 +576,13 @@ function errorFromResponse(
   // `NFeServerError`, and a retried Consulta Cadastro re-POSTs to SEFAZ.
   if (bodyCode === 'NFeXsdValidationError') {
     return new NFeXsdValidationFailedError(message, status, body);
+  }
+
+  // Ajuste SINIEF 40/2026: `POST /inutilizar` refused the filial's UF before any
+  // SEFAZ call. Map it BEFORE the 422 branch, which would read it as a SEFAZ
+  // rejection with an unknown cStat.
+  if (bodyCode === 'INUTILIZACAO_NAO_SE_APLICA') {
+    return new NFeInutilizacaoNaoSeAplicaError(message, status, body);
   }
 
   if (status === 400) return new NFeBadRequestError(message, body);

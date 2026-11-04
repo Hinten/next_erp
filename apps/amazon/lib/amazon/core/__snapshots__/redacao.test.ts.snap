@@ -1,0 +1,568 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`the BR sandbox order (§3 decision 11) > both profiles, snapshotted 1`] = `
+{
+  "getOrder": {
+    "fixture": {
+      "order": {
+        "buyer": {
+          "buyerEmail": "redacted@example.invalid",
+          "buyerName": "REDACTED",
+        },
+        "createdTime": "2024-12-24T20:30:00Z",
+        "fulfillment": {
+          "deliverByWindow": {
+            "earliestDateTime": "2024-12-28T00:00:00Z",
+            "latestDateTime": "2024-12-31T23:59:59Z",
+          },
+          "fulfilledBy": "MERCHANT",
+          "fulfillmentServiceLevel": "STANDARD",
+          "fulfillmentStatus": "UNSHIPPED",
+          "labelPrintingWindow": {
+            "earliestDateTime": "2024-12-26T17:00:00Z",
+          },
+          "shipByWindow": {
+            "earliestDateTime": "2024-12-26T00:00:00Z",
+            "latestDateTime": "2024-12-27T23:59:59Z",
+          },
+        },
+        "lastUpdatedTime": "2024-12-25T08:15:00Z",
+        "orderAliases": [
+          {
+            "aliasId": "ALIAS-Z00000002",
+            "aliasType": "SELLER_ORDER_ID",
+          },
+        ],
+        "orderId": "000-0000000-0000001",
+        "orderItems": [
+          {
+            "fulfillment": {
+              "packing": {
+                "giftOption": {
+                  "giftMessage": "REDACTED",
+                  "giftWrapLevel": "REDACTED",
+                },
+              },
+              "quantityFulfilled": 0,
+              "quantityUnfulfilled": 1,
+            },
+            "orderItemId": "00000000000003",
+            "proceeds": {
+              "breakdowns": [
+                {
+                  "subtotal": {
+                    "amount": "299.90",
+                    "currencyCode": "BRL",
+                  },
+                  "type": "ITEM",
+                },
+              ],
+              "proceedsTotal": {
+                "amount": "299.90",
+                "currencyCode": "BRL",
+              },
+            },
+            "product": {
+              "asin": "B0ZZ000004",
+              "condition": {
+                "conditionNote": "",
+                "conditionSubtype": "NEW",
+                "conditionType": "NEW",
+              },
+              "price": {
+                "unitPrice": {
+                  "amount": "299.90",
+                  "currencyCode": "BRL",
+                },
+              },
+              "sellerSku": "SKU-Z00000005",
+              "title": "REDACTED",
+            },
+            "promotion": {
+              "breakdowns": [
+                {
+                  "promotionId": "PROMO-Z00000006",
+                },
+              ],
+            },
+            "quantityOrdered": 1,
+          },
+        ],
+        "proceeds": {
+          "grandTotal": {
+            "amount": "299.90",
+            "currencyCode": "BRL",
+          },
+        },
+        "programs": [
+          "PRIME",
+        ],
+        "recipient": {
+          "deliveryAddress": {
+            "addressLine1": "REDACTED",
+            "addressLine2": "REDACTED",
+            "addressLine3": "",
+            "addressType": "REDACTED",
+            "city": "REDACTED",
+            "countryCode": "REDACTED",
+            "districtOrCounty": "",
+            "extendedFields": {
+              "complement": "REDACTED",
+              "neighborhood": "REDACTED",
+              "streetName": "REDACTED",
+              "streetNumber": "REDACTED",
+            },
+            "municipality": "",
+            "name": "REDACTED",
+            "phone": "+00 00 0000-0000",
+            "postalCode": "00000-000",
+            "stateOrRegion": "REDACTED",
+          },
+        },
+        "salesChannel": {
+          "channelName": "AMAZON",
+          "marketplaceId": "A2Q3Y263D00KWC",
+          "marketplaceName": "Amazon.com.br",
+        },
+      },
+    },
+    "log": {
+      "order": {
+        "buyer": {
+          "buyerEmail": "<redacted>",
+          "buyerName": "<redacted>",
+        },
+        "createdTime": "2024-12-24T20:30:00Z",
+        "fulfillment": {
+          "deliverByWindow": {
+            "earliestDateTime": "2024-12-28T00:00:00Z",
+            "latestDateTime": "2024-12-31T23:59:59Z",
+          },
+          "fulfilledBy": "MERCHANT",
+          "fulfillmentServiceLevel": "STANDARD",
+          "fulfillmentStatus": "UNSHIPPED",
+          "labelPrintingWindow": {
+            "earliestDateTime": "2024-12-26T17:00:00Z",
+          },
+          "shipByWindow": {
+            "earliestDateTime": "2024-12-26T00:00:00Z",
+            "latestDateTime": "2024-12-27T23:59:59Z",
+          },
+        },
+        "lastUpdatedTime": "2024-12-25T08:15:00Z",
+        "orderAliases": [
+          {
+            "aliasId": "BR-PEDIDO-TESTE-0003",
+            "aliasType": "SELLER_ORDER_ID",
+          },
+        ],
+        "orderId": "123-4567890-1234567",
+        "orderItems": [
+          {
+            "fulfillment": {
+              "packing": {
+                "giftOption": {
+                  "giftMessage": "<redacted>",
+                  "giftWrapLevel": "<redacted>",
+                },
+              },
+              "quantityFulfilled": 0,
+              "quantityUnfulfilled": 1,
+            },
+            "orderItemId": "10000000000001",
+            "proceeds": {
+              "breakdowns": [
+                {
+                  "subtotal": {
+                    "amount": "299.90",
+                    "currencyCode": "BRL",
+                  },
+                  "type": "ITEM",
+                },
+              ],
+              "proceedsTotal": {
+                "amount": "299.90",
+                "currencyCode": "BRL",
+              },
+            },
+            "product": {
+              "asin": "B0TESTE001",
+              "condition": {
+                "conditionNote": "",
+                "conditionSubtype": "NEW",
+                "conditionType": "NEW",
+              },
+              "price": {
+                "unitPrice": {
+                  "amount": "299.90",
+                  "currencyCode": "BRL",
+                },
+              },
+              "sellerSku": "SKU-TESTE-0001",
+              "title": "<redacted>",
+            },
+            "promotion": {
+              "breakdowns": [
+                {
+                  "promotionId": "BR-PROMO-TESTE-01",
+                },
+              ],
+            },
+            "quantityOrdered": 1,
+          },
+        ],
+        "proceeds": {
+          "grandTotal": {
+            "amount": "299.90",
+            "currencyCode": "BRL",
+          },
+        },
+        "programs": [
+          "PRIME",
+        ],
+        "recipient": {
+          "deliveryAddress": {
+            "addressLine1": "<redacted>",
+            "addressLine2": "<redacted>",
+            "addressLine3": "",
+            "addressType": "<redacted>",
+            "city": "<redacted>",
+            "countryCode": "<redacted>",
+            "districtOrCounty": "",
+            "extendedFields": {
+              "complement": "<redacted>",
+              "neighborhood": "<redacted>",
+              "streetName": "<redacted>",
+              "streetNumber": "<redacted>",
+            },
+            "municipality": "",
+            "name": "<redacted>",
+            "phone": "<redacted>",
+            "postalCode": "<redacted>",
+            "stateOrRegion": "<redacted>",
+          },
+        },
+        "salesChannel": {
+          "channelName": "AMAZON",
+          "marketplaceId": "A2Q3Y263D00KWC",
+          "marketplaceName": "Amazon.com.br",
+        },
+      },
+    },
+  },
+  "searchOrders": {
+    "fixture": {
+      "createdBefore": "2024-12-22T16:00:00Z",
+      "orders": [
+        {
+          "buyer": {
+            "buyerCompanyName": "REDACTED",
+            "buyerEmail": "redacted@example.invalid",
+            "buyerName": "REDACTED",
+            "buyerPurchaseOrderNumber": "REDACTED",
+          },
+          "createdTime": "2024-12-22T15:30:00Z",
+          "fulfillment": {
+            "deliverByWindow": {
+              "earliestDateTime": "2024-12-26T00:00:00Z",
+              "latestDateTime": "2024-12-30T23:59:59Z",
+            },
+            "fulfilledBy": "MERCHANT",
+            "fulfillmentServiceLevel": "STANDARD",
+            "fulfillmentStatus": "UNSHIPPED",
+            "promiseCalculationInputs": {
+              "transitTime": {
+                "dataSource": "THIRD_PARTY_INTEGRATOR",
+                "details": {
+                  "carrier": "REDACTED",
+                  "shippingService": "REDACTED",
+                },
+              },
+            },
+            "shipByWindow": {
+              "earliestDateTime": "2024-12-23T00:00:00Z",
+              "latestDateTime": "2024-12-24T23:59:59Z",
+            },
+          },
+          "lastUpdatedTime": "2024-12-23T10:00:00Z",
+          "orderAliases": [
+            {
+              "aliasId": "ALIAS-Z00000002",
+              "aliasType": "SELLER_ORDER_ID",
+            },
+          ],
+          "orderId": "000-0000000-0000001",
+          "orderItems": [
+            {
+              "fulfillment": {
+                "quantityFulfilled": 0,
+                "quantityUnfulfilled": 1,
+              },
+              "orderItemId": "00000000000003",
+              "proceeds": {
+                "breakdowns": [
+                  {
+                    "subtotal": {
+                      "amount": "1599.90",
+                      "currencyCode": "BRL",
+                    },
+                    "type": "ITEM",
+                  },
+                ],
+                "proceedsTotal": {
+                  "amount": "1599.90",
+                  "currencyCode": "BRL",
+                },
+              },
+              "product": {
+                "asin": "B0ZZ000004",
+                "condition": {
+                  "conditionSubtype": "NEW",
+                  "conditionType": "NEW",
+                },
+                "price": {
+                  "priceDesignation": "BUSINESS_PRICE",
+                  "unitPrice": {
+                    "amount": "1599.90",
+                    "currencyCode": "BRL",
+                  },
+                },
+                "sellerSku": "SKU-Z00000005",
+                "title": "REDACTED",
+              },
+              "quantityOrdered": 1,
+            },
+          ],
+          "payment": {
+            "paymentExecutions": [
+              {
+                "acquirerId": "11.222.333/0001-81",
+                "authorizationCode": "REDACTED",
+                "cardBrand": "Visa",
+                "paymentAmount": {
+                  "amount": "1599.90",
+                  "currencyCode": "BRL",
+                },
+                "paymentMethod": "CreditCard",
+              },
+            ],
+          },
+          "proceeds": {
+            "grandTotal": {
+              "amount": "1599.90",
+              "currencyCode": "BRL",
+            },
+          },
+          "programs": [
+            "AMAZON_BUSINESS",
+            "DELIVERY_BY_AMAZON",
+          ],
+          "recipient": {
+            "deliveryAddress": {
+              "addressLine1": "REDACTED",
+              "addressLine2": "REDACTED",
+              "addressType": "REDACTED",
+              "city": "REDACTED",
+              "companyName": "REDACTED",
+              "countryCode": "REDACTED",
+              "extendedFields": {
+                "complement": "REDACTED",
+                "neighborhood": "REDACTED",
+                "streetName": "REDACTED",
+                "streetNumber": "REDACTED",
+              },
+              "name": "REDACTED",
+              "phone": "+00 00 0000-0000",
+              "postalCode": "00000-000",
+              "stateOrRegion": "REDACTED",
+            },
+          },
+          "salesChannel": {
+            "channelName": "AMAZON",
+            "marketplaceId": "A2Q3Y263D00KWC",
+            "marketplaceName": "Amazon.com.br",
+          },
+          "tax": {
+            "taxInvoicing": {
+              "invoiceStatus": "PROCESSING",
+            },
+            "taxRegistrations": [
+              {
+                "entityType": "BUYER",
+                "legalName": "REDACTED",
+                "taxRegistrationNumber": "0000000000",
+                "taxRegistrationType": "VAT",
+              },
+              {
+                "entityType": "MARKETPLACE",
+                "taxRegistrationNumber": "11222333",
+                "taxRegistrationType": "CNPJ",
+              },
+              {
+                "entityType": "MERCHANT",
+                "legalName": "REDACTED",
+              },
+            ],
+          },
+        },
+      ],
+    },
+    "log": {
+      "createdBefore": "2024-12-22T16:00:00Z",
+      "orders": [
+        {
+          "buyer": {
+            "buyerCompanyName": "<redacted>",
+            "buyerEmail": "<redacted>",
+            "buyerName": "<redacted>",
+            "buyerPurchaseOrderNumber": "<redacted>",
+          },
+          "createdTime": "2024-12-22T15:30:00Z",
+          "fulfillment": {
+            "deliverByWindow": {
+              "earliestDateTime": "2024-12-26T00:00:00Z",
+              "latestDateTime": "2024-12-30T23:59:59Z",
+            },
+            "fulfilledBy": "MERCHANT",
+            "fulfillmentServiceLevel": "STANDARD",
+            "fulfillmentStatus": "UNSHIPPED",
+            "promiseCalculationInputs": {
+              "transitTime": {
+                "dataSource": "THIRD_PARTY_INTEGRATOR",
+                "details": {
+                  "carrier": "<redacted>",
+                  "shippingService": "<redacted>",
+                },
+              },
+            },
+            "shipByWindow": {
+              "earliestDateTime": "2024-12-23T00:00:00Z",
+              "latestDateTime": "2024-12-24T23:59:59Z",
+            },
+          },
+          "lastUpdatedTime": "2024-12-23T10:00:00Z",
+          "orderAliases": [
+            {
+              "aliasId": "BR-PEDIDO-TESTE-0001",
+              "aliasType": "SELLER_ORDER_ID",
+            },
+          ],
+          "orderId": "123-4567890-7654321",
+          "orderItems": [
+            {
+              "fulfillment": {
+                "quantityFulfilled": 0,
+                "quantityUnfulfilled": 1,
+              },
+              "orderItemId": "10000000000002",
+              "proceeds": {
+                "breakdowns": [
+                  {
+                    "subtotal": {
+                      "amount": "1599.90",
+                      "currencyCode": "BRL",
+                    },
+                    "type": "ITEM",
+                  },
+                ],
+                "proceedsTotal": {
+                  "amount": "1599.90",
+                  "currencyCode": "BRL",
+                },
+              },
+              "product": {
+                "asin": "B0TESTE002",
+                "condition": {
+                  "conditionSubtype": "NEW",
+                  "conditionType": "NEW",
+                },
+                "price": {
+                  "priceDesignation": "BUSINESS_PRICE",
+                  "unitPrice": {
+                    "amount": "1599.90",
+                    "currencyCode": "BRL",
+                  },
+                },
+                "sellerSku": "SKU-TESTE-0002",
+                "title": "<redacted>",
+              },
+              "quantityOrdered": 1,
+            },
+          ],
+          "payment": {
+            "paymentExecutions": [
+              {
+                "acquirerId": "<redacted>",
+                "authorizationCode": "<redacted>",
+                "cardBrand": "Visa",
+                "paymentAmount": {
+                  "amount": "1599.90",
+                  "currencyCode": "BRL",
+                },
+                "paymentMethod": "CreditCard",
+              },
+            ],
+          },
+          "proceeds": {
+            "grandTotal": {
+              "amount": "1599.90",
+              "currencyCode": "BRL",
+            },
+          },
+          "programs": [
+            "AMAZON_BUSINESS",
+            "DELIVERY_BY_AMAZON",
+          ],
+          "recipient": {
+            "deliveryAddress": {
+              "addressLine1": "<redacted>",
+              "addressLine2": "<redacted>",
+              "addressType": "<redacted>",
+              "city": "<redacted>",
+              "companyName": "<redacted>",
+              "countryCode": "<redacted>",
+              "extendedFields": {
+                "complement": "<redacted>",
+                "neighborhood": "<redacted>",
+                "streetName": "<redacted>",
+                "streetNumber": "<redacted>",
+              },
+              "name": "<redacted>",
+              "phone": "<redacted>",
+              "postalCode": "<redacted>",
+              "stateOrRegion": "<redacted>",
+            },
+          },
+          "salesChannel": {
+            "channelName": "AMAZON",
+            "marketplaceId": "A2Q3Y263D00KWC",
+            "marketplaceName": "Amazon.com.br",
+          },
+          "tax": {
+            "taxInvoicing": {
+              "invoiceStatus": "PROCESSING",
+            },
+            "taxRegistrations": [
+              {
+                "entityType": "BUYER",
+                "legalName": "<redacted>",
+                "taxRegistrationNumber": "<redacted>",
+                "taxRegistrationType": "VAT",
+              },
+              {
+                "entityType": "MARKETPLACE",
+                "taxRegistrationNumber": "<redacted>",
+                "taxRegistrationType": "CNPJ",
+              },
+              {
+                "entityType": "MERCHANT",
+                "legalName": "<redacted>",
+              },
+            ],
+          },
+        },
+      ],
+    },
+  },
+}
+`;

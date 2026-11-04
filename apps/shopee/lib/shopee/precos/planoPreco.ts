@@ -35,10 +35,10 @@
  *
  * | # | condition | outcome |
  * |---|---|---|
- * | 0 | the link's conta is not this integração | ignored, in SILENCE (another conta's business) |
- * | 0b | the family has no link of this conta | ONE `sem-link` |
+ * | 0 | the link's conta is not this integração, or the link is a DRAFT (`ehRascunhoShopee`, #1911) | ignored, in SILENCE (another conta's business / no listing yet) |
+ * | 0b | the family has no non-draft link of this conta | ONE `sem-link` |
  * | 1 | no `linkDocId` (projection drift, defensive) | `sem-link` for that link |
- * | 2 | `item_id` not a positive integer | `sem-item-id` |
+ * | 2 | `item_id` not a positive integer — a corrupt id, or a `kitNativo: true` residue with none (a draft never gets here) | `sem-item-id` |
  * | 3 | the link says native Shopee kit (`kitNativo === true`) | native kit ⇒ planned; transport `update_kit_item` chosen at G9 |
  * | 4 | stored lifecycle says DELETED | `anuncio-removido` |
  * | 5 | a child carries > 1 usable model of THIS listing | `forma-de-modelo-divergente` |
@@ -113,6 +113,7 @@ import { SHOPEE_UPDATE_PRICE_MAX_MODELS } from '@delfrance/integrations-shopee';
 import {
   ESTADO_ANUNCIO_SHOPEE,
   SHOPEE_ITEM_STATUS,
+  ehRascunhoShopee,
   precoDaTabela,
   precoDoFilhoNaTabela,
   propagaPrecoAosFilhos,
@@ -385,9 +386,16 @@ export function montarItensDePreco(f: FamiliaDePreco, integracaoId: string): Pla
   };
 
   // Rung 0 — another conta's listing is not this push's business, and a line
-  // for it would be noise on every run for every multi-conta produto.
+  // for it would be noise on every run for every multi-conta produto. ⚠️ Nor is
+  // a DRAFT (#1911 D3, `ehRascunhoShopee` — the ONE shared predicate, read off
+  // the projected `item_id` + `kitNativo`): a listing Shopee never created has
+  // no price to receive, so it is dropped in the same SILENCE rather than
+  // answering rung 2's `sem-item-id` ("reimporte o anúncio") beside a live
+  // listing. A produto holding ONLY drafts answers rung 0b's `sem-link`.
+  // NEAR-MISS kept: a CORRUPT `item_id` (`0`, `-1`, `'123'`) is not a draft and
+  // still reaches rung 2.
   const daConta = f.links.filter(
-    (link) => idDoRef(link.contaProdutoShopeeOuterRef) === integracaoId,
+    (link) => idDoRef(link.contaProdutoShopeeOuterRef) === integracaoId && !ehRascunhoShopee(link),
   );
   if (daConta.length === 0) {
     pular(MOTIVO_PRECO_SHOPEE.semLink);

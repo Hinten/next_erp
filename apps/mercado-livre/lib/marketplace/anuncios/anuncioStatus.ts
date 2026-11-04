@@ -278,6 +278,8 @@ async function definirStatusFamilia(
     observados.push({
       memberProdutoId: membro.memberProdutoId,
       memberDocId: membro.memberDocId,
+      expectedUpdateTime: membro.updateTime,
+      expectedItemId: membro.itemId,
       status: item.status ?? null,
       subStatus: item.sub_status ?? null,
       // The "holds a fresh status" rule: `[]` when ML's own reading reports no

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { millisSinceEpoch } from './shared/datetime';
+import { naoDocId, parseRef } from './shared/outerRef';
 import { fotoSchema } from './storage/foto';
 import type { CollectionMetadata } from './types';
 
@@ -79,3 +80,37 @@ export const tabelaDeMedidas = {
   schema: tabelaDeMedidasSchema,
   meta: tabelaDeMedidasMeta,
 };
+
+/** What a produto's `tabelaDeMedidasModaUid` names — {@link lerRefTabelaDeMedidas}. */
+export type RefTabelaDeMedidas =
+  | { readonly tipo: 'sem-tabela' }
+  | { readonly tipo: 'ref-invalida'; readonly ref: string }
+  | { readonly tipo: 'tabela'; readonly id: string };
+
+/**
+ * Which `tabMedi` document a produto's RAW `tabelaDeMedidasModaUid` names — the
+ * ONE rule the Shopee publish (`lerTabelaMedidasDoProduto` in `apps/shopee`)
+ * and the produto's Shopee tab resolve that ref with (#1369).
+ *
+ * - `sem-tabela` — not a string, or blank: the produto names no tabela.
+ * - `ref-invalida` — a non-blank value that does not point INTO `tabMedi` (a
+ *   ref into another collection, a bare id, a subcollection below a tabela),
+ *   or whose id is not a usable document id ({@link naoDocId}).
+ * - `tabela` — the id to read. The canonical `documents/tabMedi/<id>` and the
+ *   bare `tabMedi/<id>` both resolve.
+ *
+ * ⚠️ The COLLECTION is checked on purpose: the corpus spells this ref as a path
+ * (the Flutter `documents/tabMedi/<id>`), so a ref naming another collection is
+ * a stray value — reading `tabMedi/<its last segment>` would attach some OTHER
+ * tabela's chart to the listing.
+ *
+ * Pure and total over untrusted input: no read, no throw.
+ */
+export function lerRefTabelaDeMedidas(ref: unknown): RefTabelaDeMedidas {
+  if (typeof ref !== 'string' || ref.trim() === '') return { tipo: 'sem-tabela' };
+  const { collection, id } = parseRef(ref);
+  if (collection !== tabelaDeMedidasMeta.collectionPath || naoDocId(id)) {
+    return { tipo: 'ref-invalida', ref };
+  }
+  return { tipo: 'tabela', id };
+}

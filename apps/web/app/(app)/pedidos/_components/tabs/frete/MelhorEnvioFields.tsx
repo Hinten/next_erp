@@ -271,7 +271,9 @@ export function MelhorEnvioFields({
         <FreteSwitchField form={form} name="ehReverso" label="Frete reverso" disabled={disabled} />
       </Group>
 
-      {pedidoId && <EtiquetaMelhorEnvioPanel form={form} intFreteId={intFreteId} />}
+      {pedidoId && (
+        <EtiquetaMelhorEnvioPanel form={form} intFreteId={intFreteId} pedidoId={pedidoId} />
+      )}
     </Stack>
   );
 }

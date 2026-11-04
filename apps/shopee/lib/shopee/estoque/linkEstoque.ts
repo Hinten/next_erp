@@ -27,10 +27,15 @@
  * `estoqueEnviadoEm` means "the last time this listing was FULLY in sync", and
  * it is also the anchor a child row's visibility is compared against: a
  * per-model refusal is legible exactly while
- * `child.estoqueRecusaEm >= (parent.estoqueEnviadoEm ?? 0)`. Stamping it on a
- * partial would hide the very diagnosis the partial just produced — every child
- * row would read as stale the instant it was written, and the operator would be
- * told "refused" with no way to learn which of up to fifty models.
+ * `child.estoqueRecusaEm >= (parent.estoqueEnviadoEm ?? 0)`. That listing
+ * anchor is the model's WHOLE rule — a `variashopee` has no stock success stamp
+ * of its own — and the item's own stock refusal is held to the same stamp: the
+ * readers are `recusaEstoqueDoModeloShopeeLegivel` and
+ * `recusaEstoqueDoAnuncioShopeeLegivel` (`@delfrance/schemas`
+ * `shopeeLinkLeitura.ts`, register 177; a tie shows the refusal). Stamping it
+ * on a partial would hide the very diagnosis the partial just produced — every
+ * child row would read as stale the instant it was written, and the operator
+ * would be told "refused" with no way to learn which of up to fifty models.
  *
  * ## ⚠️ The child rows self-expire — there are ZERO clearing writes for them
  *

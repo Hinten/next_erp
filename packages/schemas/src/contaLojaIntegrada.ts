@@ -114,13 +114,22 @@ export function situacaoValidadeTokenLi(dias: number): SituacaoValidadeTokenLi {
 }
 
 /**
- * The `code` of every error envelope (`{ error, code, issues? }`) the conta
- * routes answer with. The panel keys its copy on `code`, never on the status
- * alone: a 422 can mean "refused by Loja Integrada" or "malformed, never sent",
- * and the two need opposite advice.
+ * The `code` of every error envelope (`{ error, code, issues? }`) the routes of
+ * `apps/loja-integrada` answer with: the conta routes (`…/conta/[id]…`), among
+ * them the catalogue reads (`GET …/conta/[id]/{categorias,marcas,grades}` and
+ * `GET …/conta/[id]/grades/[gradeId]`, step 10), and the pedidos routes
+ * (`PUT …/pedidos/[pedidoId]/rota-etiqueta`, the label routing, and
+ * `GET …/pedidos/[pedidoId]/pagamento`, the paid re-check), and the product
+ * import routes (`…/conta/[id]/importacoes…`, step 9). The web keys its
+ * copy and its decisions on `code`, never on the status alone: a 422 can mean
+ * "refused by Loja Integrada" or "malformed, never sent", and a 503 can mean
+ * "retry" or "switched off until the cutover" — each needs its own advice.
  */
 export const CODIGO_ERRO_LI = {
-  /** 400 — an empty id, or one carrying `/`, `.` or `..`. */
+  /**
+   * 400 — the id cannot be a document id: empty, containing `/`, or exactly `.`
+   * or `..` (`naoDocId`); a conta id additionally refuses any `.`.
+   */
   idInvalido: 'LI_ID_INVALIDO',
   /** 400 — the body is not JSON, or not the expected shape (paths only). */
   corpoInvalido: 'LI_CORPO_INVALIDO',
@@ -159,6 +168,62 @@ export const CODIGO_ERRO_LI = {
    * the answer to a mis-set value (`ON`, ` on`, `true`); retrying does not help.
    */
   chamadasDesligadas: 'LI_CHAMADAS_DESLIGADAS',
+  /** 404 — no pedido with this id (the pedidos routes). */
+  pedidoNaoEncontrado: 'LI_PEDIDO_NAO_ENCONTRADO',
+  /**
+   * 409 — Loja Integrada answered 404 for an order the ERP imported from it. Imported
+   * orders do not disappear from the store, so this points at the conta's credential
+   * (another store's token), never at a vanished order. Blocks the paid re-check.
+   */
+  pedidoAusenteNaLoja: 'LI_PEDIDO_AUSENTE_NA_LOJA',
+  /**
+   * 502 — Loja Integrada answered with ANOTHER order: its `numero`, or its shipment
+   * id, differs from the pedido's. Like the 409 above, a credential problem; blocks
+   * the paid re-check.
+   */
+  pedidoDivergente: 'LI_PEDIDO_DIVERGENTE',
+  /**
+   * 503 — Loja Integrada throttled the call (429). The route does not retry; the
+   * caller may, a little later.
+   */
+  limiteDeChamadas: 'LI_LIMITE_DE_CHAMADAS',
+  /** 504 — Loja Integrada did not answer before the request deadline. */
+  tempoEsgotadoLoja: 'LI_TEMPO_ESGOTADO_LOJA',
+  /**
+   * 502 — Loja Integrada is unreachable, answered 5xx, or answered a body that
+   * does not parse. Transient as far as the caller is concerned.
+   */
+  lojaIndisponivel: 'LI_LOJA_INDISPONIVEL',
+  /**
+   * 503 — the label routing's pedido write lost its precondition three times in a
+   * row (another writer kept changing the pedido); nothing was written. Retry.
+   */
+  rotaEmConflito: 'LI_ROTA_EM_CONFLITO',
+  /**
+   * 409 — Loja Integrada answered 404 for the grade the catalogue route asked for:
+   * deleted in the painel, or the conta's token is another store's. Never cached.
+   */
+  gradeAusenteNaLoja: 'LI_GRADE_AUSENTE_NA_LOJA',
+  /**
+   * 502 — a catalogue list needs more pages than the route may read
+   * (`MAX_PAGINAS_CATALOGO_LI`). The list is refused whole, never truncated.
+   */
+  catalogoExcedeLimite: 'LI_CATALOGO_EXCEDE_LIMITE',
+  /**
+   * 502 — Loja Integrada refused (403) a catalogue read other than the category
+   * list. Only that list fails: the conta is NOT parked, so its orders keep flowing.
+   */
+  recursoNaoPermitido: 'LI_RECURSO_NAO_PERMITIDO',
+  /**
+   * 409 — the conta already has a product import running (`pendente` or
+   * `executando`); the envelope's `jobId` names it, so the web attaches to it.
+   * Only the import's start route answers it.
+   */
+  importacaoEmAndamento: 'LI_IMPORTACAO_EM_ANDAMENTO',
+  /** 404 — no product import with this id for this conta (another conta's job reads the same). */
+  importacaoNaoEncontrada: 'LI_IMPORTACAO_NAO_ENCONTRADA',
+  /** 409 — the product import already ended (cancelling it again changes nothing). */
+  importacaoEncerrada: 'LI_IMPORTACAO_ENCERRADA',
 } as const;
 export type CodigoErroLi = (typeof CODIGO_ERRO_LI)[keyof typeof CODIGO_ERRO_LI];
 
@@ -268,13 +333,16 @@ export const respostaRemocaoCredencialLiSchema = z.object({ ok: z.literal(true) 
 export type RespostaRemocaoCredencialLi = z.infer<typeof respostaRemocaoCredencialLiSchema>;
 
 /**
- * Every non-2xx body of the conta routes: the repo's `{ error, code, issues? }`
- * envelope, plus two fields only the validation outcomes carry.
+ * Every non-2xx body of the conta routes and the pedidos routes: the repo's
+ * `{ error, code, issues? }` envelope, plus the fields only some outcomes
+ * carry.
  *
  * - `issues` — field PATHS only, never a value;
  * - `status` — the HTTP status Loja Integrada answered, on a refused or
  *   inconclusive validation (`null` when there was none);
- * - `correlationId` — the validation call's id, to find it in the logs.
+ * - `correlationId` — the validation call's id, to find it in the logs;
+ * - `jobId` — the RUNNING product import, on `LI_IMPORTACAO_EM_ANDAMENTO`
+ *   only, so the web attaches to it instead of starting another.
  *
  * `code` is a plain string rather than {@link CODIGO_ERRO_LI}'s union: a code a
  * newer backend adds must still parse in an older browser.
@@ -287,5 +355,6 @@ export const erroContaLojaIntegradaSchema = z.object({
   issues: z.array(z.string()).nullable().optional(),
   status: z.number().int().nullable().optional(),
   correlationId: z.string().nullable().optional(),
+  jobId: z.string().nullable().optional(),
 });
 export type ErroContaLojaIntegrada = z.infer<typeof erroContaLojaIntegradaSchema>;

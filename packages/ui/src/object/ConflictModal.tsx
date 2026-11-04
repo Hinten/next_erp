@@ -54,6 +54,10 @@ function formatValue(v: unknown): string {
  * way (each click re-baselines and retries), so skipping the check buys nothing
  * and costs the guarantee.
  *
+ * A row with `merge` set is a field that MERGES instead of overwriting
+ * (`FieldConfig.rebaseOnConflict`): both buttons re-apply the operator's own
+ * changes over the server's version, and its cell names how.
+ *
  * Never a silent drop: "silently discarding what someone typed is never the
  * answer" (ADR 0011). Generalized out of `apps/web`'s `PedidoConflictModal`
  * for #824 so every conflicting save in the ERP looks and behaves the same.
@@ -69,6 +73,7 @@ export function ConflictModal({
   onCancel,
 }: ConflictModalProps) {
   const anyOverwritten = fields.some((f) => f.overwritten);
+  const anyMerged = fields.some((f) => f.merge !== undefined);
 
   return (
     <Modal opened={opened} onClose={onCancel} title={title} centered size="lg">
@@ -78,6 +83,10 @@ export function ConflictModal({
           {anyOverwritten
             ? 'Salvar vai SOBRESCREVER as alterações marcadas abaixo.'
             : 'Suas alterações não sobrescrevem as mudanças abaixo.'}
+          {anyMerged &&
+            ' Nos campos marcados “mescla”, as suas alterações são reaplicadas sobre a versão do ' +
+              'servidor; o que os dois lados mudaram ao mesmo tempo fica com a versão do servidor, ' +
+              'marcado para você revisar, e nesse caso nada é salvo até você salvar de novo.'}
         </Alert>
 
         {fields.length > 0 && (
@@ -101,7 +110,11 @@ export function ConflictModal({
                     {f.complex ? <Text c="dimmed">alterado</Text> : formatValue(f.server)}
                   </Table.Td>
                   <Table.Td>
-                    {f.overwritten ? (
+                    {f.merge !== undefined ? (
+                      <Badge color="blue" variant="light">
+                        {f.merge}
+                      </Badge>
+                    ) : f.overwritten ? (
                       <Badge color="red" variant="light">
                         Sobrescreve
                       </Badge>

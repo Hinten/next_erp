@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { Button, Group, SegmentedControl, Stack, Text } from '@mantine/core';
 import type { ColumnFilterValue } from '@delfrance/ui';
+import { idFromRefOrNull } from '@delfrance/schemas';
 
 import { CollectionSelect } from '@/components/collection-select/CollectionSelect';
 import { clienteCollection } from '@/lib/data/clienteCollection';
@@ -56,8 +57,7 @@ type ClienteFilterMode = 'cliente' | 'anonimo';
 export function formatClienteFilterValue(value: ColumnFilterValue['value']): string {
   if (value === null) return ANONIMO_LABEL;
   const raw = String(value);
-  const slash = raw.lastIndexOf('/');
-  return slash < 0 ? raw : raw.slice(slash + 1);
+  return idFromRefOrNull(raw) ?? raw;
 }
 
 export interface ClienteColumnFilterProps {

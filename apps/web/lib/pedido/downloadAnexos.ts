@@ -13,6 +13,8 @@ import type { Firestore } from 'firebase/firestore';
 import {
   ARQUIVOS_COLLECTION,
   flattenPedidoItens,
+  idFromRefOrNull,
+  toDocPathOrNull,
   type Arquivo,
   type Pedido,
   type Produto,
@@ -60,14 +62,16 @@ function defaultSleep(ms: number): Promise<void> {
 }
 
 /**
- * Parse a bare `arquivos/<id>` outer ref into the doc id. Returns null when the
- * shape is wrong (skip that anexo).
+ * Resolve either stored encoding of a top-level arquivo ref. Wrong collections
+ * and descendant document paths are skipped rather than read from `arquivos`.
  */
 export function arquivoIdFromOuterRef(ref: string): string | null {
+  const path = toDocPathOrNull(ref);
   const prefix = `${ARQUIVOS_COLLECTION}/`;
-  if (!ref.startsWith(prefix)) return null;
-  const id = ref.slice(prefix.length).trim();
-  return id.length > 0 ? id : null;
+  if (path === null || !path.startsWith(prefix) || path.slice(prefix.length).includes('/')) {
+    return null;
+  }
+  return idFromRefOrNull(path)?.trim() || null;
 }
 
 /**
@@ -91,15 +95,15 @@ export function collectDistinctArquivoIds(
       const rawUid = item.produtoUid;
       if (!rawUid) continue;
       // Wire sometimes stores a path; normalize to doc id.
-      const produtoId = rawUid.includes('/') ? (rawUid.split('/').pop() ?? rawUid) : rawUid;
+      const produtoId = idFromRefOrNull(rawUid);
+      if (!produtoId) continue;
       const produto = produtosById.get(produtoId);
       if (!produto) continue;
 
       let owner = produto;
       if (produto.paiId) {
-        const parentId = produto.paiId.includes('/')
-          ? (produto.paiId.split('/').pop() ?? produto.paiId)
-          : produto.paiId;
+        const parentId = idFromRefOrNull(produto.paiId);
+        if (!parentId) continue;
         const parent = produtosById.get(parentId);
         if (!parent) continue;
         owner = parent;
@@ -159,7 +163,7 @@ export function productIdsFromPedidos(pedidos: ReadonlyArray<Pedido>): string[] 
     for (const item of flattenPedidoItens(pedido.itens ?? {})) {
       const raw = item.produtoUid;
       if (!raw) continue;
-      const id = raw.includes('/') ? (raw.split('/').pop() ?? raw) : raw;
+      const id = idFromRefOrNull(raw);
       if (id) ids.add(id);
     }
   }
@@ -173,7 +177,7 @@ export function parentIdsMissing(
   const out: string[] = [];
   for (const p of produtos.values()) {
     if (!p.paiId) continue;
-    const parentId = p.paiId.includes('/') ? (p.paiId.split('/').pop() ?? p.paiId) : p.paiId;
+    const parentId = idFromRefOrNull(p.paiId);
     if (parentId && !already.has(parentId)) out.push(parentId);
   }
   return out;

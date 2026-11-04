@@ -47,6 +47,30 @@ export interface KitVariacoesManagerProps {
   disabled?: boolean;
   /** Registered with the page; invoked in `onAfterSave` (after the children flush). */
   flushRef: RefObject<KitVariacoesFlush | null>;
+  /**
+   * Publishes whether a per-variation composition is STAGED — held here, not
+   * yet written onto its child by the flush (`temComposicaoPendente`, the
+   * flush's own "nothing to write" test). Same shape and timing as
+   * `VariationManager`'s `onPriceDirtyChange`: an effect on the derived flag,
+   * no cleanup, so pass a stable setter. The page ORs it into the leave-guard
+   * (`extraDirty`) and into a Shopee draft's «Publicar» gate — the publish
+   * derives a kit model's stock from the STORED child composition (#1911 P11
+   * review, KNOWN #9 round 3). It turns `false` once the flush wrote or
+   * dropped every entry; an `unresolved` one stays staged, and so does the
+   * flag.
+   */
+  onDirtyChange?: (dirty: boolean) => void;
+}
+
+/**
+ * Is anything staged for the flush to write? The ONE test both the flush and
+ * the dirty report read, so the report can never say "clean" while the next
+ * save would still write (or say "dirty" while it would write nothing). By
+ * key, not by value: a map edited back to what is stored is still written by
+ * the flush (a full overwrite), so it stays pending.
+ */
+function temComposicaoPendente(staged: Record<string, ComponentesKit | null>): boolean {
+  return Object.keys(staged).length > 0;
 }
 
 /**
@@ -69,6 +93,7 @@ export function KitVariacoesManager({
   rows,
   disabled,
   flushRef,
+  onDirtyChange,
 }: KitVariacoesManagerProps) {
   const form = useFormContext();
   const ehKit = form?.watch('ehKit') === true;
@@ -99,10 +124,21 @@ export function KitVariacoesManager({
   const [staged, setStaged] = useState<Record<string, ComponentesKit | null>>({});
   const [gerando, setGerando] = useState(false);
 
+  // Report the staged state to the page (`onDirtyChange`). Above the early
+  // `return null` below, so a grid hidden by «É kit» off still reports. No
+  // cleanup, like `VariationManager`'s reporters: the Kit tab is a persistent
+  // section today, but were it ever hidden under `<Activity>` (which unmounts
+  // effects and KEEPS state), a cleanup reporting `false` would open the
+  // page's gates while the staged maps are still here, waiting for the save.
+  const pendente = temComposicaoPendente(staged);
+  useEffect(() => {
+    onDirtyChange?.(pendente);
+  }, [pendente, onDirtyChange]);
+
   // Register the flush; re-registers when staged/rows change so the closure is fresh.
   useEffect(() => {
     flushRef.current = async (parentId, reusedByKey) => {
-      if (Object.keys(staged).length === 0) return;
+      if (!temComposicaoPendente(staged)) return;
       // Children now exist (created in the variation flush) — re-read to learn
       // which ids are live; `reusedByKey` covers the rows written under another id.
       const byParent = await getVariationChildrenByParent(db, [parentId]);

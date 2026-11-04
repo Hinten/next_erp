@@ -93,6 +93,28 @@ export class LiCredencialAlteradaError extends LiAppError {
 }
 
 /**
+ * The credential PIN of a write run (`core/contextoEscrita.ts`): the stored
+ * credential is no longer the one the run's deciding read used — a token saved,
+ * renewed or re-saved since. The write client refuses BEFORE any request, so
+ * nothing was sent: a write and its confirming read are made with the deciding
+ * read's credential or not at all, and a token swapped between two contas can
+ * never write onto the other store's order of the same numero.
+ *
+ * Transient: the next attempt decides afresh, from a fresh read with the new
+ * token. Not {@link LiCredencialAlteradaError}, the credential panel's lost race.
+ */
+export class LiCredencialTrocadaError extends LiAppError {
+  constructor(integracaoId: string) {
+    super(
+      `A credencial da conta da Loja Integrada ${integracaoId} mudou depois da leitura que ` +
+        'decidiu a escrita. Nada foi enviado; a próxima tentativa decide de novo.',
+      integracaoId,
+    );
+    this.name = 'LiCredencialTrocadaError';
+  }
+}
+
+/**
  * Loja Integrada refused the stored token (HTTP 401/403) and the conta is
  * parked: its flows stop until a valid token is saved.
  */
@@ -129,6 +151,38 @@ export class LiEstacionamentoEmConflitoError extends LiAppError {
     );
     this.name = 'LiEstacionamentoEmConflitoError';
     this.tentativas = tentativas;
+  }
+}
+
+/**
+ * A Loja Integrada WRITE refused with 401/403 while the SAME, pinned credential
+ * still READS (the confirming read succeeded): the status write-back's retry
+ * signal (master plan step 7). The conta is NOT parked — the token reads, so the
+ * refusal may be a gateway blip or a write-only refusal — and the whole job is
+ * retried on the queue's existing ladder, each try from a fresh guard read; only
+ * the hot lane's last pass concludes, with an aviso, instead of throwing this.
+ *
+ * Transient. ⚠️ A plain `Error`, NOT a {@link LiAppError}: it is never answered
+ * by a route (`respond.ts` maps conta refusals only), and a `catch` written for a
+ * conta's refusal must not swallow it. Not a package `LiError` either. Its
+ * message carries the conta, the write kind and the status — never a body, a
+ * path or a token.
+ */
+export class EscritaRecusadaLiError extends Error {
+  readonly integracaoId: string;
+  /** The write kind that was refused (`objeto-envio`, `situacao-pedido`). */
+  readonly tipo: string;
+  readonly status: number;
+
+  constructor(integracaoId: string, tipo: string, status: number) {
+    super(
+      `A Loja Integrada recusou a escrita ${tipo} da conta ${integracaoId} (HTTP ${String(status)}), ` +
+        'mas o token ainda lê pedidos: a tarefa será tentada de novo.',
+    );
+    this.name = 'EscritaRecusadaLiError';
+    this.integracaoId = integracaoId;
+    this.tipo = tipo;
+    this.status = status;
   }
 }
 

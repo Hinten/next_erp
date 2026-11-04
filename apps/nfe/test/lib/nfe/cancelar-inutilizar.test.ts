@@ -36,6 +36,7 @@ import {
   inutilizarNumeracao,
   NFeCancelamentoError,
   NFeInutilizacaoAbortedError,
+  NFeInutilizacaoNaoSeAplicaError,
   NFeOrchestratorError,
   NFePedidoNotFoundError,
 } from '../../../lib/nfe/orchestrator';
@@ -762,6 +763,27 @@ describe('cancelarNFeService', () => {
     expect(writes.some((w) => w.path.startsWith('filiais/F-1/enviNfe/'))).toBe(false);
   });
 
+  it.each([
+    ['integracao/I-1', 'filiais/F-1'],
+    ['documents/integracao/I-1', 'documents/filiais/F-1'],
+    ['documents/integracao/I-1', 'filiais/F-1'],
+    ['integracao/I-1', 'documents/filiais/F-1'],
+  ])('audits a legacy NF-e under the filial resolved from %s / %s', async (contaRef, filialRef) => {
+    const events: string[] = [];
+    const { fs, writes, docs } = fakeFirestore({ events, nfev4: aprovadaNfev4() });
+    docs['pedidos/PED-1']!.integracaoPedidoOuterRef = contaRef;
+    docs['integracao/I-1']!.filialIntegracaoPedidoOuterRef = filialRef;
+    vi.mocked(cancelarNFe).mockResolvedValue(cancelResult('135') as never);
+
+    const result = await cancelarNFeService(fs, fakeRuntime(), 'PED-1', 's1', XJUST);
+
+    expect(result.estado).toBe(ESTADO_NFE.cancelada);
+    expect(writes.filter((w) => w.path.startsWith('filiais/')).map((w) => w.path)).toEqual([
+      expect.stringMatching(/^filiais\/F-1\/enviNfe\/[^/]+$/),
+    ]);
+    expect(cancelarNFe).toHaveBeenCalledOnce();
+  });
+
   it('legacy doc without filialId + pedido gone → NFePedidoNotFoundError (→ 404)', async () => {
     const events: string[] = [];
     // No `filialId` on the doc AND the pedido doc is absent → the legacy fallback
@@ -803,6 +825,17 @@ describe('cancelarNFeService', () => {
 });
 
 describe('inutilizarNumeracao (orchestrator)', () => {
+  // The fixture filial is in SP, where Ajuste SINIEF 40/2026 ends the pedido
+  // from 01/11/2026 00:00 −03:00. Pin the clock before that so these cases keep
+  // exercising the send path; the Ajuste cases below move it.
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-15T12:00:00.000Z'));
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('cStat 102 → returns the protocol + records the inutilização + does NOT touch the counter', async () => {
     const events: string[] = [];
     const { fs, writes } = fakeFirestore({ events });
@@ -1047,5 +1080,58 @@ describe('inutilizarNumeracao (orchestrator)', () => {
       }),
     ).rejects.toBeInstanceOf(NFeOrchestratorError);
     expect(inutilizarNumeracaoSefaz).not.toHaveBeenCalled();
+  });
+
+  describe('Ajuste SINIEF nº 40/2026 (AC/BA/SP from 01/11/2026)', () => {
+    const ARGS = {
+      filialId: 'F-1',
+      serie: 9,
+      nNFIni: 5,
+      nNFFin: 12,
+      xJust: 'Inutilizacao de faixa nao utilizada teste',
+    };
+
+    it('an SP filial from 01/11/2026 00:00 −03:00 is refused before the cert, the scan or SEFAZ', async () => {
+      vi.setSystemTime(new Date('2026-11-01T03:00:00.000Z'));
+      const events: string[] = [];
+      const { fs, writes } = fakeFirestore({ events });
+      const groupScan = vi.spyOn(fs, 'collectionGroup');
+
+      const err = await inutilizarNumeracao(fs, fakeRuntime(), ARGS).catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(NFeInutilizacaoNaoSeAplicaError);
+      expect((err as NFeInutilizacaoNaoSeAplicaError).uf).toBe('SP');
+      expect((err as Error).message).toContain('Ajuste SINIEF nº 40/2026');
+      expect(inutilizarNumeracaoSefaz).not.toHaveBeenCalled();
+      expect(groupScan).not.toHaveBeenCalled();
+      // No inutilização record: nothing was attempted at SEFAZ.
+      expect(writes).toHaveLength(0);
+    });
+
+    it('the same SP filial one millisecond earlier (31/10 23:59:59.999 −03:00) still sends', async () => {
+      vi.setSystemTime(new Date('2026-11-01T02:59:59.999Z'));
+      const events: string[] = [];
+      const { fs } = fakeFirestore({ events });
+      vi.mocked(inutilizarNumeracaoSefaz).mockResolvedValue(inutResult('102') as never);
+
+      const result = await inutilizarNumeracao(fs, fakeRuntime(), ARGS);
+
+      expect(result.aprovada).toBe(true);
+      expect(inutilizarNumeracaoSefaz).toHaveBeenCalledTimes(1);
+    });
+
+    it('a filial in a UF outside the Ajuste (MG) still sends after the date', async () => {
+      vi.setSystemTime(new Date('2027-03-01T12:00:00.000Z'));
+      const events: string[] = [];
+      const { fs, docs } = fakeFirestore({ events });
+      const filial = docs['filiais/F-1'] as { sede: { estado: string } };
+      filial.sede.estado = 'MG';
+      vi.mocked(inutilizarNumeracaoSefaz).mockResolvedValue(inutResult('102') as never);
+
+      const result = await inutilizarNumeracao(fs, fakeRuntime(), ARGS);
+
+      expect(result.aprovada).toBe(true);
+      expect(inutilizarNumeracaoSefaz).toHaveBeenCalledTimes(1);
+    });
   });
 });

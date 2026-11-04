@@ -1,0 +1,11 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "extends": ["//"],
+  "tasks": {
+    "test": {
+      "description": "NOT CACHEABLE, deliberately — the packages/config-eslint precedent. These suites read files that are inputs of NO task of this workspace: bundle-inlining and bundle-loads BUILD and LOAD every functions codebase's bundle (apps/*/functions/src/**, the lib/ trees they import, each app's node_modules), and preflight.test.js reads every build.mjs, firebase.*.deploy.json and DEPLOY.md it names. Turbo hashes a task's declared inputs, not the repo, so under the root `test` definition this suite replays a cached green after the very files it builds change — a new codebase's bundle would never be built locally. An `inputs` list naming every codebase would rot with the next one, so cache:false is the only true declaration. CI is unaffected either way (no workflow restores a .turbo cache or sets a remote-cache token), but the LOCAL green is what an implementer trusts before pushing. dependsOn is restated because a Package Configuration overrides the root task per key.",
+      "dependsOn": ["^build"],
+      "cache": false
+    }
+  }
+}

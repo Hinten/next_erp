@@ -97,8 +97,13 @@ function linhaBase(
  * entire `integracao` collection on every run.
  *
  * Each SUPPORTED conta is called once with the whole selection — the channel
- * filters to the produtos it actually has listings for and reports the rest, so
- * the drifting `integracoesComProduto` denorm never decides what gets sent.
+ * filters to the produtos it actually has listings for and reports the rest.
+ * ⚠️ WHICH contas are called comes from the selection's `integracoesComProduto`
+ * (the `contaIds` union below): a conta no selected produto names is never
+ * called, so that array's completeness bounds the run (see `PushAlvo`).
+ *
+ * A cancel that lands during the LAST dispatch is reported after the loop: a
+ * provider answers an abort with no rows and relies on the run to say so.
  */
 export async function enviarParaMarketplaces<Row extends PushRowBase>(
   alvos: readonly PushAlvo[],
