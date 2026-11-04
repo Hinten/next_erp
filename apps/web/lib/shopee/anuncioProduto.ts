@@ -1055,7 +1055,7 @@ export function gravarIncerto(
 }
 
 /* -------------------------------------------------------------------------- */
-/*            #1911 P10 — the listing DRAFT (edited here, no Publicar)         */
+/*      #1911 P10 — the listing DRAFT's editor (its Publicar: P11 below)       */
 /* -------------------------------------------------------------------------- */
 
 /**
@@ -1148,10 +1148,15 @@ const MOTIVOS_DA_BUSCA_DA_CRIACAO_INCERTA: ReadonlySet<string> = new Set([
  * - `livre` — no attempt is on record: look for the SKU first; import what
  *   exists, create only what does not.
  * - `incerta` — the LAST attempt may have created the listing: that listing
- *   first, never another. «A importação adota este rascunho» only while the
- *   draft records a readable attempt window (`desdeMs` — the import adopts a
- *   draft only through it, review R7-roundtrip#5); without one, the import
- *   binds the listing and the draft is discarded after it.
+ *   first, never another. «Normalmente a importação adota este rascunho» only
+ *   while the draft records a readable attempt window (`desdeMs` — the import
+ *   adopts a draft only through it, review R7-roundtrip#5); without one, the
+ *   import binds the listing and the draft is discarded after it. ⚠️ Never the
+ *   flat «a importação adota este rascunho», window or not (P12 round 2):
+ *   apps/shopee `resolveProduto.ts` also declines with a readable window — two
+ *   adoptable drafts of the produto, Shopee's `create_time` unknown, the SKU on
+ *   two produtos — and creates a link apart; so the exit for that outcome
+ *   (discard the draft afterwards: the listing is then linked) is named too.
  * - `em-andamento` — a publish of this draft holds the lock (another tab, or
  *   this answer's own lock not yet gone from the snapshot): wait, then the
  *   reading this re-renders with says which exit.
@@ -1173,15 +1178,20 @@ function saidaPeloSellerCentreShopee(
         'crie-o lá com esse SKU e importe-o.'
       );
     case 'incerta': {
-      const importe =
+      // The windowed branch ends its own sentence: after the hedge's «se ela
+      // criar um vínculo à parte», a bare «; se não existe» would read as
+      // being about the link, so the listing is named again.
+      const importeENaoExiste =
         publicacao.desdeMs === null
           ? `importe-o (${PORTA_DA_IMPORTACAO_SHOPEE}, com o mesmo SKU do produto) e depois ` +
-            'descarte este rascunho'
-          : `importe-o (${PORTA_DA_IMPORTACAO_SHOPEE}) — a importação adota este rascunho`;
+            'descarte este rascunho; se não existe, descarte este rascunho'
+          : `importe-o (${PORTA_DA_IMPORTACAO_SHOPEE}) — normalmente a importação adota este ` +
+            'rascunho; se ela criar um vínculo à parte, descarte este rascunho depois. Se o ' +
+            'anúncio não existe, descarte este rascunho';
       return (
         (afirmaNadaCriado ? 'Esta tentativa não criou nada. ' : '') +
-        `Confira no Seller Centre: se o anúncio da última tentativa existe, ${importe}; se não ` +
-        'existe, descarte este rascunho. Não crie outro antes de conferir.'
+        `Confira no Seller Centre: se o anúncio da última tentativa existe, ${importeENaoExiste}. ` +
+        'Não crie outro antes de conferir.'
       );
     }
     case 'em-andamento':
@@ -1226,6 +1236,13 @@ function textoDaBuscaDoAnuncioExistenteIncompletaShopee(
  *
  * The produto's CURRENT SKU is not printed: the trim fold that compares the
  * two lives in apps/shopee (#1369), and «Abrir no produto» shows it.
+ *
+ * The import «normalmente» links and adopts (P12 round 2, R7-roundtrip#5's
+ * sibling): this row is ENSURE's, so the draft HAS a readable window, but
+ * apps/shopee `resolveProduto.ts` still declines with one — two adoptable
+ * drafts of the produto, Shopee's `create_time` unknown, the SKU on two
+ * produtos — and creates a link apart; the row names that outcome's exit
+ * (the draft's attested discard, the listing being linked by then).
  */
 function textoDoSkuMudouShopee(skuEnviado: string | null): string {
   const enviado =
@@ -1245,8 +1262,9 @@ function textoDoSkuMudouShopee(skuEnviado: string | null): string {
   return (
     'O SKU do produto mudou desde a tentativa incerta, e o ERP só procura o anúncio pelo SKU ' +
     `que foi enviado.${enviado} Confira no Seller Centre: se o anúncio existe, deixe o mesmo ` +
-    `SKU nele e no produto e importe-o (${PORTA_DA_IMPORTACAO_SHOPEE}), que o vincula e adota ` +
-    `este rascunho; se não existe, ${seNaoExiste}.`
+    `SKU nele e no produto e importe-o (${PORTA_DA_IMPORTACAO_SHOPEE}) — normalmente a ` +
+    'importação o vincula e adota este rascunho; se ela criar um vínculo à parte, descarte ' +
+    `este rascunho (Descartar, confirmando). Se o anúncio não existe, ${seNaoExiste}.`
   );
 }
 
@@ -1694,6 +1712,14 @@ export const FRASE_CONFIRMAR_DESCARTE_LOCAL_SHOPEE =
  * (§C.2, R-K6). Cases (a) and (b) re-send the SAME discard with
  * `confirmarCriacaoIncerta: true`; case (c) is TEXT ONLY — discarding there
  * would lose the one record that lets the import adopt the listing.
+ *
+ * ⚠️ Case (c) says «Normalmente» (batch-B review R7-roundtrip#5, the server's
+ * discard sentence in step): the import adopts only a draft whose attempt
+ * window it can read (apps/shopee `veredictoDeAdocaoShopee`), and an
+ * unreadable lock or record reads `incerta` with NO window — a static dialog
+ * cannot tell the two apart. So it also names the other outcome's exit: a
+ * link apart makes this case (b), whose button it quotes («já está
+ * vinculado», pinned by `dialogoDescarteCriacaoIncerta.test.ts`).
  */
 export const DIALOGO_DESCARTE_CRIACAO_INCERTA_SHOPEE = {
   titulo: 'A última publicação pode ter criado o anúncio',
@@ -1705,7 +1731,9 @@ export const DIALOGO_DESCARTE_CRIACAO_INCERTA_SHOPEE = {
     'O anúncio existe e já está vinculado no ERP (é o da tentativa) — descartar este rascunho',
   existeSemVinculo:
     'O anúncio existe e não está vinculado: não descarte — dê a ele o mesmo SKU do produto e ' +
-    `importe-o (${PORTA_DA_IMPORTACAO_SHOPEE}); a importação adota este rascunho.`,
+    `importe-o (${PORTA_DA_IMPORTACAO_SHOPEE}). Normalmente a importação adota este rascunho; ` +
+    'se ela criar um vínculo à parte, o anúncio passa a estar vinculado no ERP e este rascunho ' +
+    'pode ser descartado pela opção «já está vinculado» acima.',
 } as const;
 
 /* ---- The conflict modal (409 rascunhoConflito with a field list) ---------- */
@@ -1831,14 +1859,23 @@ export const FRASE_DESCARTE_EM_CONFLITO_SHOPEE =
  * sentence: in both the block holds an unsaved category change, so «Desfazer
  * alterações» is offered). The way to save the OTHER edits is named: the
  * category change blocks every save until it is gone.
+ *
+ * ⚠️ The exit AFTER the import (P12 round 3, the CATEGORIA_TRAVADA sibling of
+ * VERIFY-1's NIT 2): the import adopts the draft only with a readable attempt
+ * window, one adoptable draft, a known `create_time` and one parent produto
+ * (apps/shopee `resolveProduto.ts`) — otherwise it links the listing apart and
+ * this draft stays `incerta`, its category still locked. This constant is
+ * shown for EVERY `incerta` reading, with or without a window, so it names
+ * that outcome by what the operator SEES (the draft still here) and promises
+ * no adoption either way; the discard is the dialog's «já está vinculado».
  */
 export const FRASE_CATEGORIA_TRAVADA_SHOPEE =
   'A categoria não muda enquanto a última tentativa de publicar estiver incerta: ela pode ter ' +
   'criado o anúncio na categoria gravada. Confira no Seller Centre: se o anúncio existe, dê a ' +
-  'ele o mesmo SKU do produto e importe-o; se não, descarte este rascunho confirmando. Nada ' +
-  'é salvo enquanto a troca de categoria estiver pendente: para salvar o resto, use ' +
-  '«Desfazer alterações» (desfaz todas as alterações não salvas) e refaça as outras sem ' +
-  'trocar a categoria.';
+  'ele o mesmo SKU do produto e importe-o; se não existe, ou se este rascunho continuar aqui ' +
+  'depois da importação, descarte este rascunho confirmando. Nada é salvo enquanto a troca ' +
+  'de categoria estiver pendente: para salvar o resto, use «Desfazer alterações» (desfaz ' +
+  'todas as alterações não salvas) e refaça as outras sem trocar a categoria.';
 
 /** The button that puts the HELD category back in `incerta` (`bloco.podeVoltarCategoria`). */
 export const ROTULO_VOLTAR_CATEGORIA_GRAVADA_SHOPEE = 'Voltar à categoria gravada';
@@ -2495,11 +2532,22 @@ export const FRASE_PUBLICACAO_CONTENCAO_SHOPEE =
   'Não foi possível reservar o rascunho para publicar (gravações concorrentes) — nada foi ' +
   'enviado à Shopee; tente de novo.';
 
-/** 409 `rascunhoCriacaoIncerta` on a publish: an uncertain create with NO readable window. */
+/**
+ * 409 `rascunhoCriacaoIncerta` on a publish: an uncertain create with NO
+ * readable window (the reservation refuses it before any lock or send).
+ *
+ * ⚠️ Without a window the import NEVER adopts this draft (apps/shopee
+ * `resolveProduto.ts`, `sem-tentativa` — review R7-roundtrip#5): it links the
+ * listing apart and the draft stays `incerta`, so a second Publicar answers
+ * this same 409. The import branch therefore ends in the discard too (P12
+ * round 3, VERIFY-1's NIT 2) — the dialog's «já está vinculado» case — the
+ * exit {@link saidaPeloSellerCentreShopee}'s no-window branch names for the
+ * same reading. Never «adota»: there is no window to adopt through.
+ */
 export const FRASE_PUBLICACAO_CRIACAO_INCERTA_SEM_JANELA_SHOPEE =
   'A última tentativa pode ter criado o anúncio e o ERP não sabe quando. Confira no Seller ' +
-  `Centre: se existir, importe-o (${PORTA_DA_IMPORTACAO_SHOPEE}), com o mesmo SKU do produto; ` +
-  'se não, descarte este rascunho confirmando.';
+  `Centre: se existir, importe-o (${PORTA_DA_IMPORTACAO_SHOPEE}), com o mesmo SKU do produto, ` +
+  'e depois descarte este rascunho confirmando; se não, descarte este rascunho confirmando.';
 
 /**
  * 404 `anuncioNaoEncontrado` on a DRAFT's Publicar: the draft was discarded

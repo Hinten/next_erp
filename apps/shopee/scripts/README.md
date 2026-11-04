@@ -1151,8 +1151,9 @@ INCERTO (§12.7 — it prints the exact command to re-run). ⚠️ A
 DRAFT's lock refusal (`ConflitoDeRascunhoShopeeError`, #1911) exits `1` WITHOUT
 that tail: every one of them is thrown before an `add_item` that could create
 the listing is sent (on the fiscal retry's second leg, the first leg was
-Shopee's refusal), and its own block ends `Nada foi enviado à Shopee por esta
-execução` (§12.7).
+Shopee's refusal), and its own block ends with what the run did not do (`Nada
+foi enviado à Shopee por esta execução`, or `Esta execução não criou nenhum
+anúncio.` for `PUBLICACAO_EXPIRADA`; §12.7).
 
 ⚠️ **"Native kit" is the whole rule, and step 12 corrected the code to match
 this sentence.** `produto.ehKit` **never** refuses a publish: an ERP kit
@@ -1266,13 +1267,18 @@ under its lock, so an uncertain outcome has a document to live on. The dry run
 mints nothing. A refusal before the send leaves the draft behind, and the next
 unnamed run answers `rascunho-nao-nomeado`: name it with `--link`. ⚠️ Until
 then the leftover draft counts as a Shopee link for the produto delete guard
-(`findProdutoReferences`: "vinculado(a) a anúncio(s): Shopee"); until P10's
-Descartar ships, discarding it is `POST …/rascunho/descartar` with
-`{integracaoId, produtoId, linkDocId, base}` (`base` required) — so do not run a
-no-link `--live` between batch A and P10's web deploy. The draft also FIXES the
-title and category it was minted with: a later `--categoria` or a renamed
-produto does not change them (the CLI says so beside a `categoria-invalida` /
-`nome-fora-da-faixa` refusal); edit it through `…/rascunho/atualizar`. If a link
+(`deleteProdutoCascade` in `packages/data`, and `findProdutoReferences` for a
+variation's child delete in `apps/web`: "vinculado(a) a anúncio(s): Shopee").
+Discard it with «Descartar» in its block on the produto's Shopee tab (#1911
+P10), or `POST …/rascunho/descartar` with
+`{integracaoId, produtoId, linkDocId, base}` (`base` required); until P10 is in
+the `apps/web` deployed on the project you run against (staging: batch B's
+first staging web deploy; production: #1998 step 4's web rebuild) the route is
+the only discard, so do not run a no-link `--live` there before it. The draft
+also FIXES the title and category it was minted with: a later `--categoria` or
+a renamed produto does not change them (the CLI says so beside a `categoria-invalida` /
+`nome-fora-da-faixa` refusal); edit it in the draft's editor on that tab, or
+through `…/rascunho/atualizar`. If a link
 of the produto appears between the dispatcher's read and the mint's (another
 run, the import), the run answers 409 `SHOPEE_RASCUNHO_CONTENCAO` with nothing
 sent — run it again. A produto missing, with no usable `nome`, or refused by the
@@ -1280,14 +1286,20 @@ dispatcher (a child, a native kit) mints nothing — its own refusal comes first
 
 **This CLI publishes a draft; it never edits or discards one (#1911, P4).**
 Those belong to the draft route — `POST …/rascunho`, `…/rascunho/atualizar`,
-`…/rascunho/descartar`, all `PERM.integracao.write`, zero Shopee calls — whose
+`…/rascunho/descartar`, all `PERM.integracao.write`, zero Shopee calls, and the
+routes the produto's Shopee tab calls (#1911 P10) — whose
 every answer is in `lib/shopee/anuncios/README.md` ("A draft is created, edited
 and discarded through the draft route"). Its discard is this app's ONE
 `prodshopee` delete, of a draft only, so §11.3's "nothing is ever deleted" still
 holds for every link the import touches. A draft that answers
 `SHOPEE_RASCUNHO_CRIACAO_INCERTA` (§12.7) is discarded only on the operator's
 attestation (`confirmarCriacaoIncerta: true`) that Seller Centre holds no such
-listing — if it does, import it instead.
+listing, or holds it already linked in the ERP — one with NO link is imported
+instead (give it the produto's SKU first), which normally adopts the draft; if
+the import makes a separate link instead (no readable attempt window, two
+adoptable drafts, an unknown `create_time`, the SKU on two produtos), the
+listing is then linked in the ERP and the draft is discarded with the
+attestation.
 
 **The kit dry run** prints `## O que um kit nativo faria (produto …, arma …)`:
 the target link and its live `item_status`, `item_sku`, the variations and
@@ -1343,17 +1355,20 @@ A refusal prints `❌ ConflitoDeRascunhoShopeeError (<code>)` — or
 `❌ RecusaDeRascunhoShopeeError (<code>)` when the no-link mint itself was
 refused (same codes; e.g. a racing draft ⇒ `CONTA_JA_TEM_ANUNCIO`) — then `rascunho`,
 `código`, `aguardar … s` when waiting can help, `vínculos (N):` when a sibling
-link is the cause, the sentence, and `Nada foi enviado à Shopee por esta
-execução.`; it exits `1`.
+link is the cause, the sentence, and a closing line — `Nada foi enviado à
+Shopee por esta execução.` for every code but `SHOPEE_PUBLICACAO_EXPIRADA`,
+which closes with `Esta execução não criou nenhum anúncio.` instead: the send
+gate also guards the fiscal retry's SECOND `add_item` leg, after a first one
+that was sent and refused all-or-nothing; it exits `1`.
 
-| code                                   | what happened                                                                                                                                                                                                                                                                                                                  | what to do                                                                                                            |
-| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------- |
-| `SHOPEE_PUBLICACAO_EM_ANDAMENTO`       | another run (the tab, or another terminal) holds this draft's lock — or held it and may still be finishing (the 240 s after it expired, only for a lock that run STAMPED before its send: one that never reached the send frees the draft the instant it expires) — or a sibling link of the conta is mid-publish or uncertain | wait `aguardar`, look at the listing, then re-run                                                                     |
-| `SHOPEE_RASCUNHO_CONTA_JA_TEM_ANUNCIO` | the conta already holds a live listing or another draft of this produto (`vínculos`)                                                                                                                                                                                                                                           | re-run with `--confirmar-segundo-anuncio` only if a SECOND listing is intended — Shopee may treat a duplicate as spam |
-| `SHOPEE_PUBLICACAO_EXPIRADA`           | the send gate refused before `add_item`: the lock would expire during the send, or is no longer this run's — or a look-up under the lock (ENSURE, the first create's same-SKU scan) stopped before its next Shopee read because it would not fit (batch-A review); nothing decided                                             | re-run (here the bound is the lock's 300 s, not the route's 180 s)                                                    |
-| `SHOPEE_RASCUNHO_CONTENCAO`            | the lock write lost three times in a row to concurrent writes on the draft                                                                                                                                                                                                                                                     | re-run                                                                                                                |
-| `SHOPEE_RASCUNHO_JA_PUBLICADO`         | the link is no longer a draft: the listing exists                                                                                                                                                                                                                                                                              | publish it as an update (the same command)                                                                            |
-| `SHOPEE_RASCUNHO_CRIACAO_INCERTA`      | the draft is uncertain and NO attempt window can be read from it (both the record and the old lock are unreadable) — since P5 the only way this code is still answered on a publish                                                                                                                                            | check Seller Centre; import the listing if it exists — nothing is ever re-sent without a window to search             |
+| code                                   | what happened                                                                                                                                                                                                                                                                                                                                                                       | what to do                                                                                                            |
+| -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `SHOPEE_PUBLICACAO_EM_ANDAMENTO`       | another run (the tab, or another terminal) holds this draft's lock — or held it and may still be finishing (the 240 s after it expired, only for a lock that run STAMPED before its send: one that never reached the send frees the draft the instant it expires) — or a sibling link of the conta is mid-publish or uncertain                                                      | wait `aguardar`, look at the listing, then re-run                                                                     |
+| `SHOPEE_RASCUNHO_CONTA_JA_TEM_ANUNCIO` | the conta already holds a live listing or another draft of this produto (`vínculos`)                                                                                                                                                                                                                                                                                                | re-run with `--confirmar-segundo-anuncio` only if a SECOND listing is intended — Shopee may treat a duplicate as spam |
+| `SHOPEE_PUBLICACAO_EXPIRADA`           | the send gate refused an `add_item` leg (the fiscal retry's second one follows a first sent and refused all-or-nothing): the lock would expire during the send, or is no longer this run's — or a look-up under the lock (ENSURE, the first create's same-SKU scan) stopped before its next Shopee read because it would not fit (batch-A review); nothing decided, nothing created | re-run (here the bound is the lock's 300 s, not the route's 180 s)                                                    |
+| `SHOPEE_RASCUNHO_CONTENCAO`            | the lock write lost three times in a row to concurrent writes on the draft                                                                                                                                                                                                                                                                                                          | re-run                                                                                                                |
+| `SHOPEE_RASCUNHO_JA_PUBLICADO`         | the link is no longer a draft: the listing exists                                                                                                                                                                                                                                                                                                                                   | publish it as an update (the same command)                                                                            |
+| `SHOPEE_RASCUNHO_CRIACAO_INCERTA`      | the draft is uncertain and NO attempt window can be read from it (both the record and the old lock are unreadable) — since P5 the only way this code is still answered on a publish                                                                                                                                                                                                 | check Seller Centre; import the listing if it exists, then discard the draft — nothing is re-sent without a window    |
 
 ⚠️ **An `add_item` whose outcome is unknown** (a network drop, an edge page,
 an unparseable answer, an `error_*` code the documented refusals do not hold)
@@ -1383,7 +1398,7 @@ or refuses with one of four problems (exit `1`, nothing sent):
 | `criacao-incerta-ambigua`      | two or more candidates, or one the search cannot decide (`item_sku` or `create_time` unreported): `importar:anuncio` the right one. Or the produto's SKU MOVED since the attempt (the sentence names both): put ONE SKU on the listing and the produto and import it, or — the listing does not exist — restore the sent SKU and re-run, or discard the draft with the attestation |
 | `criacao-incerta-ja-vinculada` | a listing with the sent SKU is already linked in the ERP (to this produto or, named, another): if it IS the attempt's, discard THIS draft with the attestation (`…/rascunho/descartar` + `confirmarCriacaoIncerta`) and never publish it again; if a second listing is intended, `--confirmar-criacao-incerta`                                                                     |
 | `busca-de-anuncio-incompleta`  | the walk stopped before its last page (the 20-page ceiling, or a cursor that did not advance). Re-running helps only a cursor that failed — the window never shrinks. Check Seller Centre: import the listing if it exists; if not, discard the draft with the attestation and create a new one                                                                                    |
-| `criacao-incerta-sem-sku`      | the attempt was sent with no SKU, so there is nothing to search by. Check Seller Centre: if the listing exists, give it there the SAME SKU you give the produto, THEN `importar:anuncio` (it binds it to this produto and adopts the draft — imported without a SKU it lands on a NEW produto); if not, `--confirmar-criacao-incerta`                                              |
+| `criacao-incerta-sem-sku`      | the attempt was sent with no SKU, so there is nothing to search by. Check Seller Centre: if the listing exists, give it there the SAME SKU you give the produto, THEN `importar:anuncio` (it normally adopts the draft — if it links the listing apart instead, discard the draft; imported without a SKU it lands on a NEW produto); if not, `--confirmar-criacao-incerta`        |
 
 A documented refusal (`criacaoIncerta.ts`'s closed table) releases the lock and
 stamps the failure, exactly as a non-draft publish does; so does a token-step

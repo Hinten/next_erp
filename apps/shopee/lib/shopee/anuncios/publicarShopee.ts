@@ -252,7 +252,9 @@ function entradaDoKit(entrada: EntradaDePublicacaoShopee): EntradaDeKit {
  *   exist, or a named `linkDocId` is not this conta's (decided by the
  *   dispatcher, whatever kit option came with it, before any arm runs) — the
  *   route's **404**. Every refusal is a throw: `ShopeePublishBlockedError`
- *   before any Shopee write (the dispatcher's own included),
+ *   before any Shopee LISTING write (the dispatcher's own included; reads and
+ *   photo uploads may precede it) — EXCEPT the item arm's model-leg refusals
+ *   on an UPDATE, which follow `update_item` (`modelosPublicacao.ts`),
  *   `ShopeePublishRejectedError` for a wire refusal, and the draft lock's
  *   `ConflitoDeRascunhoShopeeError` (the 409) — the item arm's reservation's,
  *   or, for an attestation's expectation that the dispatcher routed to a KIT
@@ -273,7 +275,8 @@ export async function publicarShopee(
   if (despacho === null) return null;
   const arma = armaOuRecusa(entrada, despacho);
   // §I4 on the kit arms (round 5): BEFORE the arm — no Shopee call, no upload,
-  // no write. The item arm's equivalent is its reservation's first read.
+  // no write. The item arm's equivalent is its reservation's 409 `JA_PUBLICADO`,
+  // on whichever of its reads finds it.
   if (arma.arma !== 'item') recusarAtestacaoNumBracoDeKit(deps, entrada, arma);
 
   if (arma.arma === 'item') {

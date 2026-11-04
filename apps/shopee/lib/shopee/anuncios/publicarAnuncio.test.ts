@@ -62,6 +62,7 @@ import {
   type ResultadoFotosPublicacao,
 } from './fotosPublicacao';
 import { ORDEM_RELISTAGEM, planejarPublicacao, type PlanoPublicacao } from './planoPublicacao';
+import { descreverErroPublicacao } from './publicarAnuncioCli';
 import { publicarShopee } from './publicarShopee';
 import {
   ConflitoDeRascunhoShopeeError,
@@ -1672,7 +1673,8 @@ describe('prepararPublicacao — a cascata de marca', () => {
     const { plano, contexto } = await planejar(db, fake);
     expect(contexto.marca).toEqual({ brandId: 0, nome: null });
     // ⚠️ Nenhum get_brand_list e — acima de tudo — nenhuma leitura de
-    // `brandshopee`, que é uma lista curada sem leitor e sem schema tipado.
+    // `brandshopee`, a lista curada da conta: só o `apps/web` a lê (#1911 P9),
+    // e a publicação lê o par de marca gravado no vínculo.
     expect(fake.ops).not.toContain('get_brand_list');
     expect(db.caminhos.some((c) => c.includes('brandshopee'))).toBe(false);
     // O nome de wire é do mapeador, e é o único lugar em que a literal existe.
@@ -3725,6 +3727,14 @@ describe('publicarAnuncioShopee — o RASCUNHO sob a trava (#1911, D4/D15)', () 
         CODIGO_RASCUNHO_SHOPEE.publicacaoExpirada,
       );
       expect(travada.reserva.fase).toBe('travada');
+      // (R6-docs#3) One add_item WAS sent above (and refused): neither the
+      // refusal's sentence nor the CLI's description of it may say «nada foi
+      // enviado» — only that this run created nothing.
+      expect((err as Error).message).not.toMatch(/nada foi enviado/i);
+      expect((err as Error).message).toContain('Esta tentativa não criou nenhum anúncio.');
+      const tela = descreverErroPublicacao(err).join('\n');
+      expect(tela).not.toMatch(/nada foi enviado/i);
+      expect(tela).toContain('Esta execução não criou nenhum anúncio.');
     });
 
     it('⛔ (batch-A P3-F1) os controles sem `aquecerCredencial` NÃO compilam', () => {

@@ -1118,9 +1118,11 @@ function idDeRef(ref: string | null): string | null {
  *     and OMITS the whole `brand` object on an update, which destroys nothing
  *     because `update_item` is field-wise.
  *
- * ⚠️ `integracao/{id}/brandshopee` is NEVER read: its schema is
- * `z.object({}).passthrough()`, so a name taken out of it is an undeclared key,
- * and it stays the curated registration shortlist with no reader.
+ * ⚠️ `integracao/{id}/brandshopee` is NEVER read here. It is the conta's
+ * curated shortlist, typed in `@delfrance/schemas` (`marcaShopee.ts`, #1911
+ * P9) and read by `apps/web` only: the draft editor's brand picker stores the
+ * picked `brand_id` + `original_brand_name` pair on the link (through the
+ * draft route), and rung 2 above reads that stored name.
  */
 async function resolverMarcaDoAnuncio(
   deps: PrepararPublicacaoDeps,
@@ -1794,8 +1796,9 @@ class ColetorDeAviso {
  * controls it was taken with; `null` everywhere else, which is step 11's path
  * unchanged. With it, step 2 is preceded by the PRE-SEND re-read, every
  * `add_item` leg by the credential warm and then the synchronous send gate
- * (nothing sent yet ⇒ the error rethrown unstamped), step 3 is the CLAIM, and an
- * `add_item` failure is CLASSIFIED (`desfechoDeCriacaoDeItem`): `nao-criado` ⇒
+ * (nothing sent on THIS leg ⇒ the error rethrown unstamped; nothing created),
+ * step 3 is the CLAIM, and an `add_item` failure is CLASSIFIED
+ * (`desfechoDeCriacaoDeItem`): `nao-criado` ⇒
  * the stamp and the release in ONE token-guarded write; `incerto` ⇒ no stamp,
  * the lock KEPT, the raw error rethrown — never a "Shopee refused" for a create
  * that may exist. And unless the reservation's ENSURE already searched the
@@ -2239,8 +2242,10 @@ async function enviarItem(
 /**
  * ONE `add_item` leg of a DRAFT's create, under its lock: nothing outstanding
  * → the credential warm (`controles.aquecerCredencial`) → the synchronous gate
- * (it throws `PUBLICACAO_EXPIRADA` with nothing sent) → `enviando` → the call
- * → `criada`.
+ * (it throws `PUBLICACAO_EXPIRADA` with nothing sent on THIS leg — on the
+ * fiscal retry's second leg the first `add_item` WAS sent and refused
+ * all-or-nothing, so the throw means only that nothing was created) →
+ * `enviando` → the call → `criada`.
  *
  * ⚠️ The warm comes FIRST, and that order is the point (batch-A review): the
  * only await between the gate and the request is the client's own token ask
@@ -2248,8 +2253,9 @@ async function enviarItem(
  * REFRESH with no deadline. Warmed before the gate, any refresh is paid while
  * nothing is outstanding, the gate reads the clock AFTER it, and the client's
  * ask is one credential read inside `MARGEM_ENVIO_SHOPEE_MS`. A warm that
- * throws leaves `fase` at `travada`: nothing was sent, and the caller hands the
- * lock back unstamped.
+ * throws leaves `fase` at `travada`: nothing was sent on THIS leg and nothing
+ * was created (a second leg's warm follows a first `add_item` that was sent
+ * and refused), and the caller hands the lock back unstamped.
  */
 async function enviarSobATrava(
   deps: PublicarAnuncioDeps,
@@ -2442,11 +2448,13 @@ function registrarPublicacao(deps: PublicarAnuncioDeps, r: ResultadoPublicacao):
  * ⚠️ A NAMED link that is a DRAFT (#1911) is reserved FIRST — before `preparar`
  * reads the content the create will send, so no edit can change it underneath
  * (`reservaRascunho.ts`). A lock refusal throws `ConflitoDeRascunhoShopeeError`
- * (the route's 409) with nothing read beyond the links and nothing sent. Any
- * throw while nothing may have reached Shopee hands the lock back, unstamped
- * (a blocked plan, a photo or taxonomy read failure, the credential warm, the
- * send gate, a lost lock) — best-effort: a failed hand-back never replaces the
- * error being thrown; every other way out is `aplicarPublicacao`'s to decide.
+ * (the route's 409) with nothing sent — though an `incerta` draft's ENSURE may
+ * already have READ Shopee (its same-SKU walk) when a deadline or a lost lock
+ * refuses. Any throw while nothing may have reached Shopee hands the lock
+ * back, unstamped (a blocked plan, a photo or taxonomy read failure, the
+ * credential warm, the send gate, a lost lock) — best-effort: a failed
+ * hand-back never replaces the error being thrown; every other way out is
+ * `aplicarPublicacao`'s to decide.
  *
  * ⚠️ Before that, a live create of a produto the conta holds NO link of MINTS
  * its draft ({@link nomearCriacaoSemVinculo}, K1-5) and continues named. And a
@@ -2457,7 +2465,9 @@ function registrarPublicacao(deps: PublicarAnuncioDeps, r: ResultadoPublicacao):
  *
  * @returns `null` when this conta has nothing to publish onto (the produto does
  *   not exist, or a named `linkDocId` is not this conta's) — the route's **404**.
- *   Every refusal is a throw: `ShopeePublishBlockedError` before the first write,
+ *   Every refusal is a throw: `ShopeePublishBlockedError` before the first
+ *   listing write — except the model leg's fresh-tree refusals on an update,
+ *   which follow `update_item` (`modelosPublicacao.ts`, `anuncios/README.md`) —,
  *   `ShopeePublishRejectedError` for a wire refusal after writes began; the
  *   draft route's own `RecusaDeRascunhoShopeeError` when the mint is refused.
  */

@@ -2340,8 +2340,9 @@ const LINHAS_DO_BLOQUEIO = [
   '  No --dry-run a recusa é anterior a qualquer escrita: nada foi enviado à Shopee e nenhum ' +
     'vínculo foi gravado.',
   '  ⚠️ No --live ela pode vir DEPOIS de escritas: um kit nativo grava antes no ERP o que leu ' +
-    'da Shopee (o vínculo, as variações do kit, o aviso de composição), e a atualização de um ' +
-    'anúncio comum pode já ter enviado o update_item. Releia com --dry-run antes de repetir.',
+    'da Shopee (o vínculo, as variações do kit, o aviso de composição), a atualização de um ' +
+    'anúncio comum pode já ter enviado o update_item, e um --live sem --link pode ter criado o ' +
+    'rascunho do produto (ele fica). Releia com --dry-run antes de repetir.',
 ] as const;
 
 /**
@@ -2352,7 +2353,8 @@ const LINHAS_DO_BLOQUEIO = [
  * plan exists — since step 19 above all the dispatcher's
  * (`escolherArmaDePublicacao`: `produto-e-filho`, `vinculos-ambiguos`,
  * `vinculo-substituido`, `kit-virtual-sem-kit`, the converter refusals,
- * `opcao-de-kit-em-anuncio-comum`, all with ZERO Shopee calls), a kit create
+ * `opcao-de-kit-em-anuncio-comum` and #1911's `rascunho-nao-nomeado` /
+ * `rascunho-em-kit-virtual`, all with ZERO Shopee calls), a kit create
  * arm's phase-A refusal (Firestore-only, before the first Shopee read) and
  * `prepararPublicacao`'s defensive `produto-e-kit` — and, under `--live`, the
  * appliers' own throws, which can FOLLOW writes ({@link LINHAS_DO_BLOQUEIO}).
@@ -2388,8 +2390,8 @@ export function descreverBloqueioPublicacao(err: ShopeePublishBlockedError): str
  * `item_name` and `category_id` — the no-link `--live` mint writes the
  * produto's `nome` and `--categoria` into it — and the publish reads the
  * STORED values first, so neither a renamed produto nor a new `--categoria`
- * changes them. Until the tab's editor (P10), the draft route edits or
- * discards it.
+ * changes them. The draft's editor in the produto's Shopee tab (#1911 P10)
+ * edits it or discards it («Descartar»); without the tab, the draft route does.
  */
 const MOTIVOS_FIXADOS_NO_RASCUNHO: ReadonlySet<string> = new Set([
   MOTIVO_PUBLICACAO_BLOQUEADA.categoriaInvalida,
@@ -2398,9 +2400,9 @@ const MOTIVOS_FIXADOS_NO_RASCUNHO: ReadonlySet<string> = new Set([
 
 const LINHA_DO_RASCUNHO_FIXADO =
   '  ⚠️ Se o vínculo é um RASCUNHO (o --live sem --link cria um), a categoria e o título dele ' +
-  'são os GRAVADOS no rascunho: --categoria e renomear o produto não os mudam. Edite ou descarte ' +
-  'o rascunho (POST …/rascunho/atualizar ou …/rascunho/descartar; a aba Shopee, quando tiver o ' +
-  'editor).';
+  'são os GRAVADOS no rascunho: --categoria e renomear o produto não os mudam. Edite-os no ' +
+  'editor do rascunho, na aba Shopee do produto, ou descarte-o lá (Descartar); sem a aba, ' +
+  'POST …/rascunho/atualizar ou …/rascunho/descartar.';
 
 /**
  * A Shopee refusal AFTER the first write — the other half of the pair, and the
@@ -2432,7 +2434,8 @@ export function descreverRecusaPublicacao(err: ShopeePublishRejectedError): stri
     linhas.push(`    ${txt(p.campo).padEnd(18)} ${p.motivo.padEnd(28)} ${p.mensagem}`);
   }
   // #1911 (D15, K2-2): the row keeps Shopee's prose; OUR sentence lives here
-  // (and in the web's map), read by the constant — never spelled.
+  // (the web words its own, `TEXTO_MOTIVO_ANUNCIO_SHOPEE`), read by the
+  // constant — never spelled.
   if (
     err.problemas.some((p) => p.motivo === MOTIVO_PROBLEMA_PUBLICACAO.anuncioSemelhanteExistente)
   ) {
@@ -2524,8 +2527,13 @@ export function ehConflitoDeRascunho(err: unknown): err is ConflitoLido {
 /**
  * The refusal, for a terminal: the code, the draft, the wait and the sibling
  * links, then the sentence — ids, counts and enum tokens only, which is all the
- * error carries. Closes with what to do, by code; every one of them sent
- * NOTHING to Shopee.
+ * error carries. Closes with what to do, by code, and then with what this run
+ * did NOT do ({@link fechoDoConflito}): every code but `PUBLICACAO_EXPIRADA`
+ * is refused before any `add_item` leg, and says nothing was sent.
+ * ⚠️ `PUBLICACAO_EXPIRADA` can follow a SENT request: the send gate also
+ * guards the fiscal retry's SECOND `add_item` leg, after a first one that went
+ * out and was refused all-or-nothing — so its closing line says only that
+ * nothing was created (#1911 batch-B review, R6-docs#3).
  */
 export function descreverConflitoDeRascunho(err: ConflitoLido): string[] {
   const linhas = [
@@ -2550,6 +2558,19 @@ export function descreverConflitoDeRascunho(err: ConflitoLido): string[] {
         '(um SEGUNDO anúncio do mesmo produto nesta conta).',
     );
   }
-  linhas.push('  Nada foi enviado à Shopee por esta execução.');
+  linhas.push(`  ${fechoDoConflito(err.code)}`);
   return linhas;
+}
+
+/**
+ * The closing line of a draft refusal — what THIS run did not do. Only
+ * `PUBLICACAO_EXPIRADA` differs (see {@link descreverConflitoDeRascunho}): on
+ * the fiscal retry's second leg one `add_item` WAS sent, so «nada foi enviado»
+ * would be false there, while «não criou nenhum anúncio» holds on every one of
+ * its producers.
+ */
+function fechoDoConflito(code: ConflitoLido['code']): string {
+  return code === CODIGO_RASCUNHO_SHOPEE.publicacaoExpirada
+    ? 'Esta execução não criou nenhum anúncio.'
+    : 'Nada foi enviado à Shopee por esta execução.';
 }

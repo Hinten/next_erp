@@ -602,12 +602,21 @@ export interface ResultadoItemIncerto {
  * listing is imported onto a NEW produto, this draft is never adopted, and
  * every exit left is a duplicate listing or a false attestation. The listing
  * first gets, in Seller Centre, the SKU the produto gets in the ERP; then the
- * import's SKU rung binds it to THIS produto and adopts this draft.
+ * import's SKU rung NORMALLY binds it to THIS produto and adopts this draft.
+ *
+ * ⚠️ «normalmente adota», never a flat promise (#1911 batch-B review,
+ * R7-roundtrip#5's sibling — the {@link problemaSkuMudou} reasoning): the import
+ * still links the listing APART when two drafts of the produto are adoptable,
+ * when Shopee leaves `create_time` unknown, or when the SKU names two parent
+ * produtos (`produtos/resolveProduto.ts`), so the exit for that outcome — the
+ * discard, whose own 409 asks for the attestation — is named. It sits in
+ * {@link problemaSemSku}'s fixed 487 characters, under `MAX_MENSAGEM_PROBLEMA`
+ * (pinned).
  */
 const SE_EXISTIR_SEM_SKU =
   'se o anúncio existir, dê a ele no Seller Centre o MESMO SKU que você cadastrar neste ' +
-  'produto e só então importe-o (importar:anuncio), que o vincula a este produto e adota este ' +
-  'rascunho — sem SKU a importação cria OUTRO produto';
+  'produto e só então importe-o (importar:anuncio), que normalmente adota este rascunho ' +
+  '(sem adoção, descarte este rascunho) — sem SKU a importação cria OUTRO produto';
 
 /**
  * The sentence of an uncertain create — what to do next, in the order the
@@ -785,16 +794,34 @@ function skuNaFrase(sku: string): string {
  * neither does a scan by the sent one, whose hit would then be ADOPTED under a
  * SKU the produto no longer has. NOT attestable (K1-11): the operator puts one
  * SKU on both sides.
+ *
+ * ⚠️ «NORMALMENTE adota» (#1911 batch-B review, R7-roundtrip#5's sibling): this
+ * refusal is ENSURE's, so the draft HAS a readable attempt window (the
+ * reservation refuses `CRIACAO_INCERTA` without one) — but the import still
+ * declines to adopt it when two drafts of the produto are adoptable, when
+ * Shopee leaves the listing's `create_time` unknown, or when the SKU the
+ * operator sets names two parent produtos (`produtos/resolveProduto.ts`). It
+ * then links the listing apart, and the exit is the discard with the
+ * attestation.
+ *
+ * ⚠️ The two SKUs CLOSE the sentence (#1911 batch-B review, round 3): they are
+ * the only variable part — up to 255 characters each (`produtoSchema.sku`) —
+ * and `ShopeePublishBlockedError` cuts every `mensagem` at
+ * `MAX_MENSAGEM_PROBLEMA`, from the END. Interpolated first (round 2), they let
+ * the cap cut into the last exit from a combined 48 characters on; written
+ * last, the cap can only ever reach the SKUs, never an exit. Pinned through
+ * the real class: a 30 + 30 pair stays whole, and a 50 + 50 pair and the
+ * 255 + 255 maximum are cut inside the SKUs with all three exits whole.
  */
 function problemaSkuMudou(enviado: string, atual: string): ProblemaDeBloqueio {
   return bloqueio(
     MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaAmbigua,
-    `a última tentativa foi enviada ${enviado === '' ? 'sem SKU' : `com o SKU ${skuNaFrase(enviado)}`} ` +
-      `e o produto agora está ${atual === '' ? 'sem SKU' : `com ${skuNaFrase(atual)}`} — o ERP só ` +
-      'procura o anúncio pelo SKU que a tentativa enviou, e não decide. Confira no Seller Centre: ' +
-      'se o anúncio existir, deixe o MESMO SKU nele e no produto e importe-o (importar:anuncio), ' +
-      'que o vincula e adota este rascunho; se não existir, volte o SKU do produto ao enviado e ' +
-      'publique de novo, ou descarte este rascunho confirmando a criação incerta',
+    'o SKU do produto mudou desde a última tentativa — o ERP só procura o anúncio pelo SKU ' +
+      'enviado, e não decide. Confira no Seller Centre: se o anúncio existir, deixe o MESMO SKU ' +
+      'nele e no produto e importe-o (importar:anuncio), que normalmente adota este rascunho; se ' +
+      'não existir, volte o SKU do produto ao enviado e publique de novo. Sem adoção, ou sem ' +
+      'anúncio, descarte este rascunho confirmando a criação incerta. Enviado: ' +
+      `${skuNaFrase(enviado)}; agora: ${skuNaFrase(atual)}`,
   );
 }
 
