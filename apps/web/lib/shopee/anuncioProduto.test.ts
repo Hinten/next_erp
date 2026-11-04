@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   AGUARDAR_KIT_INCERTO_SHOPEE_MS,
   ESTADO_ANUNCIO_SHOPEE,
+  campoRascunhoShopeeSchema,
   TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE,
   estadoAnuncioShopeeSchema,
   tipoAcaoSugeridaPublicacaoShopeeSchema,
@@ -9,7 +10,7 @@ import {
 
 import {
   COR_ESTADO_ANUNCIO_SHOPEE,
-  FRASE_PRIMEIRA_PUBLICACAO_SHOPEE,
+  FRASE_ITEM_ID_INVALIDO_SHOPEE,
   FRASE_RECUSA_SEM_PASSO_SHOPEE,
   ROTULO_ESTADO_ANUNCIO_SHOPEE,
   TEXTO_ACAO_SUGERIDA,
@@ -32,6 +33,31 @@ import {
   textoDoProblemaShopee,
   urlDoAnuncioShopee,
   vinculoSubstituidoAlheio,
+  DIALOGO_DESCARTE_CRIACAO_INCERTA_SHOPEE,
+  FRASE_MARCA_NAO_ESCOLHIDA_SHOPEE,
+  FRASE_RASCUNHO_EM_KIT_VIRTUAL_SHOPEE,
+  FRASE_RASCUNHO_INCERTO_SHOPEE,
+  ROTULO_CAMPO_RASCUNHO_SHOPEE,
+  TEXTO_MOTIVO_ANUNCIO_SHOPEE,
+  fraseDaPublicacaoEmAndamentoShopee,
+  fraseDaRespostaIlegivelDoRascunhoShopee,
+  fraseDaRespostaIncertaDoRascunhoShopee,
+  fraseDoConflitoDeConcorrenciaShopee,
+  fraseDoConflitoIlegivelShopee,
+  fraseDoRascunhoEmAndamentoShopee,
+  fraseDoTextoForaDaFaixaShopee,
+  textoDaPendenciaRascunhoShopee,
+  textoDoSegundoAnuncioShopee,
+  FRASE_PENDENCIA_CATEGORIA_AUSENTE_SHOPEE,
+  FRASE_PENDENCIA_SEM_DESCRICAO_SHOPEE,
+  FRASE_PENDENCIA_SEM_NOME_SHOPEE,
+  FRASE_PRODUTO_INEXISTENTE_SHOPEE,
+  FRASE_CATEGORIA_TRAVADA_SHOPEE,
+  FRASE_DESCARTE_EM_CONFLITO_SHOPEE,
+  FRASE_RASCUNHO_DE_KIT_VIRTUAL_SHOPEE,
+  FRASE_RASCUNHO_DESCARTADO_INCERTO_SHOPEE,
+  FRASE_RASCUNHO_DESCARTADO_SHOPEE,
+  FRASE_RASCUNHO_INEXISTENTE_SHOPEE,
   type IncertoKitShopee,
 } from './anuncioProduto';
 import {
@@ -236,7 +262,7 @@ describe('TEXTO_ACAO_SUGERIDA', () => {
   it('never carries CLI text (lens 8)', () => {
     for (const texto of [
       ...Object.values(TEXTO_ACAO_SUGERIDA),
-      FRASE_PRIMEIRA_PUBLICACAO_SHOPEE,
+      FRASE_ITEM_ID_INVALIDO_SHOPEE,
       FRASE_RECUSA_SEM_PASSO_SHOPEE,
     ]) {
       expect(texto).not.toMatch(TEXTO_DE_TERMINAL);
@@ -758,5 +784,332 @@ describe('the uncertain-create store (lerIncerto / gravarIncerto)', () => {
       throw new TypeError('bug');
     });
     expect(() => lerIncerto('int-1', 'prod-1')).toThrow(TypeError);
+  });
+});
+
+/**
+ * #1911 P10 — the listing DRAFT's copy. `TEXTO_MOTIVO_ANUNCIO_SHOPEE` is read
+ * by the one refusal reader right after `TEXTO_MOTIVO_KIT`, with DISJOINT keys
+ * (so the lookup order decides nothing); the answer sentences never claim more
+ * than the answer says (an unreadable 2xx MAY have saved; a wait is never
+ * "0 s"; an `em-andamento` notice never promises the draft comes back free).
+ */
+describe('TEXTO_MOTIVO_ANUNCIO_SHOPEE (#1911 P10)', () => {
+  const T = TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE;
+
+  it('words exactly the three P10 draft motivos — one constant per notice it shares', () => {
+    expect(Object.keys(TEXTO_MOTIVO_ANUNCIO_SHOPEE).sort()).toEqual([
+      'marca-nao-escolhida',
+      'rascunho-em-kit-virtual',
+      'rascunho-nao-nomeado',
+    ]);
+    // §C #1 / #3: the block's notice and the pendência ARE these rows.
+    expect(TEXTO_MOTIVO_ANUNCIO_SHOPEE['rascunho-em-kit-virtual']).toBe(
+      FRASE_RASCUNHO_EM_KIT_VIRTUAL_SHOPEE,
+    );
+    expect(TEXTO_MOTIVO_ANUNCIO_SHOPEE['marca-nao-escolhida']).toBe(
+      FRASE_MARCA_NAO_ESCOLHIDA_SHOPEE,
+    );
+    for (const texto of Object.values(TEXTO_MOTIVO_ANUNCIO_SHOPEE)) {
+      expect(texto).not.toMatch(TEXTO_DE_TERMINAL);
+    }
+  });
+
+  it('shares NO key with TEXTO_MOTIVO_KIT, so which map answers never depends on order', () => {
+    const kit = new Set(Object.keys(TEXTO_MOTIVO_KIT));
+    for (const chave of Object.keys(TEXTO_MOTIVO_ANUNCIO_SHOPEE))
+      expect(kit.has(chave)).toBe(false);
+  });
+
+  it('is read by textoDoProblemaShopee — the CLI sentence never shows, the acao ids still follow', () => {
+    expect(
+      textoDoProblemaShopee({
+        motivo: 'rascunho-em-kit-virtual',
+        mensagem: 'descarte o rascunho e publique o kit pelo comando de kit',
+        acao: null,
+      }),
+    ).toBe(FRASE_RASCUNHO_EM_KIT_VIRTUAL_SHOPEE);
+    expect(
+      textoDoProblemaShopee({
+        motivo: 'marca-nao-escolhida',
+        mensagem: 'O rascunho não tem marca escolhida.',
+        acao: null,
+      }),
+    ).toBe(FRASE_MARCA_NAO_ESCOLHIDA_SHOPEE);
+    const naoNomeado = TEXTO_MOTIVO_ANUNCIO_SHOPEE['rascunho-nao-nomeado'] ?? '?';
+    expect(
+      textoDoProblemaShopee({
+        motivo: 'rascunho-nao-nomeado',
+        mensagem: 'publique com --link R1',
+        acao: { tipo: T.republicar, linkDocId: 'R1' },
+      }),
+    ).toBe(`${naoNomeado} Vínculo: R1.`);
+    expect(
+      textoDoProblemaShopee({
+        motivo: 'rascunho-nao-nomeado',
+        mensagem: 'publique com --link R1 ou --link R2',
+        acao: { tipo: T.escolherVinculo, linkDocIds: ['R1', 'R2'] },
+      }),
+    ).toBe(`${naoNomeado} Vínculos: R1, R2.`);
+  });
+
+  it('NEAR-MISS: the same acao under a KIT motivo keeps the kit copy; a motivo in neither map keeps its sentence', () => {
+    // `vinculo-substituido` shares `republicar` with `rascunho-nao-nomeado`.
+    expect(
+      textoDoProblemaShopee({
+        motivo: 'vinculo-substituido',
+        mensagem: 'publique sem --link (ou com --link L2)',
+        acao: { tipo: T.republicar, linkDocId: 'L2' },
+      }),
+    ).toBe(`${TEXTO_MOTIVO_KIT['vinculo-substituido'] ?? '?'} Vínculo: L2.`);
+    // `kit-virtual-sem-kit` (ehKitVirtual without ehKit) is in NO map.
+    const frase = 'O produto marca kit virtual mas não é kit: corrija o cadastro.';
+    expect(
+      textoDoProblemaShopee({ motivo: 'kit-virtual-sem-kit', mensagem: frase, acao: null }),
+    ).toBe(frase);
+  });
+});
+
+describe('ROTULO_CAMPO_RASCUNHO_SHOPEE', () => {
+  it('names every draft field of the shared vocabulary, and nothing else', () => {
+    expect(Object.keys(ROTULO_CAMPO_RASCUNHO_SHOPEE).sort()).toEqual(
+      [...campoRascunhoShopeeSchema.options].sort(),
+    );
+  });
+});
+
+describe('the draft block’s notices (#1911 P10)', () => {
+  const nowMs = Date.UTC(2026, 9, 28, 15, 0, 0);
+
+  it('em-andamento: "até" is nowMs + aguardarMs, before and after expiry — never a promise of "livre"', () => {
+    const vivo = fraseDoRascunhoEmAndamentoShopee(
+      {
+        tipo: 'em-andamento',
+        desdeMs: nowMs - 60_000,
+        expiraEmMs: nowMs + 240_000,
+        aguardarMs: 240_000,
+        aposIncerteza: false,
+        posExpiracao: false,
+      },
+      nowMs,
+    );
+    expect(vivo).toContain(`até ${formatarInstanteShopee(nowMs + 240_000) ?? '?'}`);
+    expect(vivo).toContain(`desde ${formatarInstanteShopee(nowMs - 60_000) ?? '?'}`);
+    const graca = fraseDoRascunhoEmAndamentoShopee(
+      {
+        tipo: 'em-andamento',
+        desdeMs: nowMs - 400_000,
+        expiraEmMs: nowMs - 100_000,
+        aguardarMs: 140_000,
+        aposIncerteza: false,
+        posExpiracao: true,
+      },
+      nowMs,
+    );
+    expect(graca).toContain('expirou, mas ainda pode estar terminando');
+    expect(graca).toContain(`até ${formatarInstanteShopee(nowMs + 140_000) ?? '?'}`);
+    for (const t of [vivo, graca]) {
+      expect(t).not.toMatch(/dispon[ií]vel|livre/i);
+      expect(t).not.toContain('SKU');
+    }
+  });
+
+  it('em-andamento after an uncertain attempt adds the SKU advice ⟷ without one it does not', () => {
+    const apos = fraseDoRascunhoEmAndamentoShopee(
+      {
+        tipo: 'em-andamento',
+        desdeMs: nowMs,
+        expiraEmMs: nowMs + 1_000,
+        aguardarMs: 1_000,
+        aposIncerteza: true,
+        posExpiracao: false,
+      },
+      nowMs,
+    );
+    expect(apos).toContain('SKU enviado');
+    expect(apos).toContain('não mude o SKU do produto');
+  });
+
+  it('incerta: the SKU the search uses (sent, else the current one) and the locked category', () => {
+    expect(FRASE_RASCUNHO_INCERTO_SHOPEE).toContain('pelo SKU enviado');
+    expect(FRASE_RASCUNHO_INCERTO_SHOPEE).toContain('pelo SKU atual do produto');
+    expect(FRASE_RASCUNHO_INCERTO_SHOPEE).toContain('A categoria fica travada');
+  });
+
+  it('a band refusal names the measured length and the schemas’ band description', () => {
+    expect(fraseDoTextoForaDaFaixaShopee('titulo', 130, { min: 25, max: 120 })).toBe(
+      'O título tem 130 caracteres; esta categoria aceita 25..120.',
+    );
+    expect(fraseDoTextoForaDaFaixaShopee('descricao', 10, { min: 100, max: null })).toBe(
+      'A descrição tem 10 caracteres; esta categoria aceita 100..—.',
+    );
+  });
+});
+
+describe('the second-listing confirmation (D15)', () => {
+  it('counts what the conta holds and names the duplicate risk; a draft adds the "continue it" line', () => {
+    const comRascunho = textoDoSegundoAnuncioShopee({ quantidade: 2, comRascunho: true });
+    expect(comRascunho).toContain('já tem 2 anúncio(s) deste produto, incluindo um rascunho.');
+    expect(comRascunho).toContain('duplicado (spam)');
+    expect(comRascunho).toContain('edite-o em vez de criar outro');
+    const soAnuncio = textoDoSegundoAnuncioShopee({ quantidade: 1, comRascunho: false });
+    expect(soAnuncio).toContain('já tem 1 anúncio(s) deste produto.');
+    expect(soAnuncio).not.toContain('rascunho');
+  });
+
+  it('NEAR-MISS: an unreadable vinculos list (0) never reads "já tem 0"', () => {
+    const t = textoDoSegundoAnuncioShopee({ quantidade: 0, comRascunho: false });
+    expect(t).toContain('Esta conta já tem anúncio(s) deste produto.');
+    expect(t).not.toMatch(/\b0\b/);
+  });
+
+  it('§I3: says ONLY that Shopee may treat it as a duplicate (spam) and to create it only if really different — never a penalty claim', () => {
+    for (const existentes of [
+      { quantidade: 2, comRascunho: true },
+      { quantidade: 1, comRascunho: false },
+      { quantidade: 0, comRascunho: false },
+    ]) {
+      const t = textoDoSegundoAnuncioShopee(existentes);
+      expect(t).not.toMatch(/penalidade|pontos/i);
+      expect(t).toContain('pode ser tratado pela Shopee como anúncio duplicado (spam).');
+      expect(t).toContain('Crie outro apenas se ele for realmente diferente');
+    }
+  });
+});
+
+describe('the draft sentences name only exits this tab offers (#1911 P10 review)', () => {
+  it('R8-copy#11: the kit-virtual notice and 422 never say "publique" — the tab has no first native-kit publish — and say where it is done', () => {
+    for (const frase of [
+      FRASE_RASCUNHO_EM_KIT_VIRTUAL_SHOPEE,
+      FRASE_RASCUNHO_DE_KIT_VIRTUAL_SHOPEE,
+    ]) {
+      expect(frase).not.toMatch(/publique/i);
+      expect(frase).toContain('não é feita por esta tela');
+      expect(frase).toContain('terminal');
+      expect(frase).not.toMatch(TEXTO_DE_TERMINAL);
+    }
+    // The notice still says what to do with THIS draft.
+    expect(FRASE_RASCUNHO_EM_KIT_VIRTUAL_SHOPEE).toContain('descarte este rascunho');
+  });
+
+  it('R1-rule7#4 / R8-copy#7: a discard conflict names «Desfazer alterações» as the way to the current version — CONDITIONALLY (a clean block shows it already, its Desfazer disabled)', () => {
+    expect(FRASE_DESCARTE_EM_CONFLITO_SHOPEE).toContain('nada foi descartado');
+    expect(FRASE_DESCARTE_EM_CONFLITO_SHOPEE).toContain(
+      'se este rascunho tem alterações não salvas, use antes «Desfazer alterações»',
+    );
+    // NEAR-MISS: never the unconditional order (wrong when the snapshot lagged
+    // and the block, with no entry, already shows the current version).
+    expect(FRASE_DESCARTE_EM_CONFLITO_SHOPEE).not.toContain('Use «Desfazer alterações»');
+    expect(FRASE_DESCARTE_EM_CONFLITO_SHOPEE).not.toMatch(/tente de novo/i);
+  });
+
+  it('R1-rule7#5: the locked-category sentence names how to save the OTHER edits — «Desfazer alterações», offered whenever it shows', () => {
+    expect(FRASE_CATEGORIA_TRAVADA_SHOPEE).toContain('Nada é salvo enquanto a troca de categoria');
+    expect(FRASE_CATEGORIA_TRAVADA_SHOPEE).toContain('«Desfazer alterações»');
+  });
+});
+
+describe('the draft routes’ answers (§C.2)', () => {
+  it('publicacaoEmAndamento: whole seconds rounded UP — never "0 s" — and what was NOT done, per route', () => {
+    expect(fraseDaPublicacaoEmAndamentoShopee(1_500, 'atualizar')).toContain('aguarde 2 s');
+    expect(fraseDaPublicacaoEmAndamentoShopee(1_000, 'atualizar')).toContain('aguarde 1 s');
+    expect(fraseDaPublicacaoEmAndamentoShopee(1_000, 'atualizar')).toContain('Nada foi gravado.');
+    expect(fraseDaPublicacaoEmAndamentoShopee(1_000, 'descartar')).toContain(
+      'Nada foi descartado.',
+    );
+    for (const sem of [null, 0]) {
+      const t = fraseDaPublicacaoEmAndamentoShopee(sem, 'atualizar');
+      expect(t).toContain('aguarde e confira');
+      expect(t).not.toMatch(/\d+ s\b/);
+    }
+  });
+
+  it('an unreadable 2xx MAY have happened — never a success, never "nada foi"', () => {
+    for (const op of ['criar', 'atualizar', 'descartar'] as const) {
+      const t = fraseDaRespostaIlegivelDoRascunhoShopee(op);
+      expect(t).toMatch(/PODE|PODEM/);
+      expect(t).toContain('Recarregue a aba');
+      expect(t).not.toMatch(/nada foi/i);
+    }
+    expect(fraseDaRespostaIlegivelDoRascunhoShopee('criar')).toContain('criado');
+    expect(fraseDaRespostaIlegivelDoRascunhoShopee('atualizar')).toContain('salvas');
+    expect(fraseDaRespostaIlegivelDoRascunhoShopee('descartar')).toContain('descartado');
+  });
+
+  it('no trustworthy answer: a create may be re-sent as is; an edit or a discard is checked first', () => {
+    expect(fraseDaRespostaIncertaDoRascunhoShopee('criar')).toContain('nunca é criado duas vezes');
+    expect(fraseDaRespostaIncertaDoRascunhoShopee('atualizar')).toContain('confira antes');
+    for (const op of ['criar', 'atualizar', 'descartar'] as const) {
+      expect(fraseDaRespostaIncertaDoRascunhoShopee(op)).not.toMatch(/nada foi/i);
+    }
+  });
+
+  it('a conflict nobody can show field by field says nothing was done, per route', () => {
+    expect(fraseDoConflitoDeConcorrenciaShopee('atualizar')).toContain('Nada foi gravado.');
+    expect(fraseDoConflitoDeConcorrenciaShopee('descartar')).toContain('Nada foi descartado.');
+    expect(fraseDoConflitoIlegivelShopee('atualizar')).toContain('Recarregue a aba');
+    expect(fraseDoConflitoIlegivelShopee('descartar')).toContain('Nada foi descartado.');
+  });
+
+  it('an ATTESTED discard (`criacaoIncerta: true`) says what to do if the listing shows up ⟷ a plain discard does not', () => {
+    expect(
+      FRASE_RASCUNHO_DESCARTADO_INCERTO_SHOPEE.startsWith(`${FRASE_RASCUNHO_DESCARTADO_SHOPEE} `),
+    ).toBe(true);
+    expect(FRASE_RASCUNHO_DESCARTADO_INCERTO_SHOPEE).toContain('importe-o — não crie outro');
+    expect(FRASE_RASCUNHO_DESCARTADO_SHOPEE).not.toMatch(/import/i);
+  });
+
+  it('INEXISTENTE reads by ROUTE: the create’s names the PRODUTO ⟷ the edit/discard’s names the DRAFT and says reload', () => {
+    expect(FRASE_PRODUTO_INEXISTENTE_SHOPEE).toMatch(/produto/);
+    expect(FRASE_PRODUTO_INEXISTENTE_SHOPEE).not.toMatch(/rascunho/i);
+    expect(FRASE_RASCUNHO_INEXISTENTE_SHOPEE).toMatch(/^O rascunho não existe mais/);
+    expect(FRASE_RASCUNHO_INEXISTENTE_SHOPEE).toContain('recarregue a aba');
+  });
+
+  it('the CRIACAO_INCERTA dialog: case (c) is "do not discard" — the import adopts the draft', () => {
+    expect(DIALOGO_DESCARTE_CRIACAO_INCERTA_SHOPEE.existeSemVinculo).toMatch(
+      /^O anúncio existe e não está vinculado: não descarte/,
+    );
+    expect(DIALOGO_DESCARTE_CRIACAO_INCERTA_SHOPEE.existeSemVinculo).toContain('mesmo SKU');
+    for (const texto of Object.values(DIALOGO_DESCARTE_CRIACAO_INCERTA_SHOPEE)) {
+      expect(texto).not.toMatch(TEXTO_DE_TERMINAL);
+    }
+  });
+});
+
+describe('textoDaPendenciaRascunhoShopee — one sentence per pendência kind', () => {
+  it('words every kind; the brand one IS the marca-nao-escolhida copy (one constant)', () => {
+    expect(textoDaPendenciaRascunhoShopee({ tipo: 'sem-nome' })).toBe(
+      FRASE_PENDENCIA_SEM_NOME_SHOPEE,
+    );
+    expect(textoDaPendenciaRascunhoShopee({ tipo: 'sem-descricao' })).toBe(
+      FRASE_PENDENCIA_SEM_DESCRICAO_SHOPEE,
+    );
+    expect(textoDaPendenciaRascunhoShopee({ tipo: 'categoria-ausente' })).toBe(
+      FRASE_PENDENCIA_CATEGORIA_AUSENTE_SHOPEE,
+    );
+    expect(textoDaPendenciaRascunhoShopee({ tipo: 'marca-nao-escolhida' })).toBe(
+      TEXTO_MOTIVO_ANUNCIO_SHOPEE['marca-nao-escolhida'],
+    );
+    expect(
+      textoDaPendenciaRascunhoShopee({
+        tipo: 'titulo-fora-da-faixa',
+        comprimento: 130,
+        faixa: { min: 25, max: 120 },
+      }),
+    ).toBe('O título tem 130 caracteres; esta categoria aceita 25..120.');
+    expect(
+      textoDaPendenciaRascunhoShopee({
+        tipo: 'descricao-fora-da-faixa',
+        comprimento: 5,
+        faixa: { min: 100, max: 3000 },
+      }),
+    ).toBe('A descrição tem 5 caracteres; esta categoria aceita 100..3000.');
+    expect(
+      textoDaPendenciaRascunhoShopee({
+        tipo: 'atributo-obrigatorio',
+        nomes: ['Marca', 'Material'],
+      }),
+    ).toBe('Preencha os atributos obrigatórios: Marca, Material.');
   });
 });

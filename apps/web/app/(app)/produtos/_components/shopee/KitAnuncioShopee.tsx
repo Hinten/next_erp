@@ -52,12 +52,14 @@ export function recriavel(link: ProdutoShopeeLink): boolean {
  *
  * On the NAMED link the tab always sends, it pre-empts the dispatcher's
  * refusals `converter-sem-kit` (the produto is not a kit),
- * `converter-sem-anuncio-comum` (a native or removed link) and
+ * `converter-sem-anuncio-comum` (a native, removed or DRAFT link) and
  * `vinculo-substituido` (a superseded link). `ja-e-kit-nativo` answers only an
- * UNNAMED converter, which the tab never sends. The `item_id` rung is the tab's
- * OWN deliberate restriction (no first publish of a draft in this step, Q4):
- * the server would convert a draft link, and here it gets no button — nor does
- * a link whose stored id is present but addresses no listing.
+ * UNNAMED converter, which the tab never sends. The `item_id` rung pre-empts
+ * the draft case: a named DRAFT with `converterEmKit` is refused server-side
+ * (`converter-sem-anuncio-comum` — a draft is no ordinary listing yet), so a
+ * draft gets no button here, and its first publish is the draft block's own
+ * Publicar (#1911 P11) — never a kit arm. Nor does a link whose stored id is
+ * present but addresses no listing get one.
  */
 export function convertivel(link: ProdutoShopeeLink, produtoEhKit: boolean): boolean {
   return (

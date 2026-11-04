@@ -1,10 +1,11 @@
-import type { ReactNode } from 'react';
+import type { MutableRefObject, ReactNode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { act, render, screen } from '@testing-library/react';
 import { initializeApp } from 'firebase/app';
 import { getFirestore } from 'firebase/firestore';
-import type { FieldConfig, FieldRenderProps } from '@delfrance/ui';
+import { AfterSaveBlockedError, type FieldConfig, type FieldRenderProps } from '@delfrance/ui';
 import { MantineTestProvider } from '@/lib/testing/mantine';
+import { MENSAGEM_RASCUNHO_SHOPEE_PENDENTE } from '@/lib/produtos/rascunhoShopeePendente';
 
 /**
  * `/produtos/[id]/editar` — step 19's two web pieces (#1527, reconcile §2.10):
@@ -19,11 +20,17 @@ import { MantineTestProvider } from '@/lib/testing/mantine';
  *     `useKitNativoShopee` over the kit ROOT (`paiId ?? id`) — the link decides,
  *     never the produto's `ehKitVirtual` (R-v; M160's page half).
  *
+ * Plus #1911's leave-guard for the Shopee DRAFTS (P10, DC §2.8): the tab's
+ * `onDirtyChange` arms `extraDirty`, and `onAfterSave` stops the navigation
+ * AFTER the Mercado Livre flush — never flushing a draft.
+ *
  * `ObjectView` is stubbed to capture its props; only the I/O edges are doubled
- * (the snapshot hooks, the kit-status use-case, the Shopee link hook).
+ * (the snapshot hooks, the kit-status use-case, the Shopee link hook, the two
+ * channel tabs).
  */
 
 interface Capturado {
+  extraDirty?: boolean;
   fields?: Record<string, FieldConfig>;
   deriveOnSave?: (values: Record<string, unknown>) => Record<string, unknown>;
   deriveTransactionPatch?: (
@@ -57,6 +64,8 @@ const h = vi.hoisted(() => ({
   falhasDePropagacao: 0,
   /** The props the page handed the (stubbed) Shopee tab, last render. */
   shopeeTab: null as Record<string, unknown> | null,
+  /** The props the page handed the (stubbed) Mercado Livre tab, last render. */
+  mlTab: null as Record<string, unknown> | null,
 }));
 
 vi.mock('@delfrance/ui', async (importOriginal) => ({
@@ -112,6 +121,12 @@ vi.mock('../../_components/shopee/ShopeeTab', () => ({
     return <div data-testid="shopee-tab-stub" />;
   },
 }));
+vi.mock('../../_components/mercado-livre/MercadoLivreTab', () => ({
+  MercadoLivreTab: (props: Record<string, unknown>) => {
+    h.mlTab = props;
+    return <div data-testid="ml-tab-stub" />;
+  },
+}));
 vi.mock('@/lib/shopee/kitNativo', () => ({
   useKitNativoShopee: (_db: unknown, raiz: string | null) => {
     h.raizes.push(raiz);
@@ -165,6 +180,7 @@ beforeEach(() => {
   h.propagacoes.length = 0;
   h.falhasDePropagacao = 0;
   h.shopeeTab = null;
+  h.mlTab = null;
 });
 
 describe('produtos/[id]/editar — «É kit virtual» needs «É kit» (step 19, O-8, M159)', () => {
@@ -396,28 +412,182 @@ describe('produtos/[id]/editar — the Shopee native-kit notice (step 19, R-v, M
   });
 });
 
-describe('produtos/[id]/editar — the Shopee tab (step 21, #1529)', () => {
-  it('renders the read-only tab for THIS produto, with no flush and no dirty reporter', () => {
+/** Render one of the page's self-contained tabs as ObjectView would. */
+function renderAba(nome: 'shopee' | 'mercadoLivre', disabled = false): void {
+  const renderInput = capturado().fields?.[nome]?.renderInput;
+  if (!renderInput) throw new Error(`the page gives the ${nome} tab no input`);
+  const props: FieldRenderProps = {
+    name: nome,
+    label: nome,
+    value: null,
+    onChange: vi.fn(),
+    onBlur: vi.fn(),
+    descriptor: {} as FieldRenderProps['descriptor'],
+    disabled,
+  };
+  render(<MantineTestProvider>{renderInput(props) as ReactNode}</MantineTestProvider>);
+}
+
+/** The Shopee tab's dirty reporter, as the (stubbed) tab received it on its last render. */
+function reporterShopee(): (dirty: boolean) => void {
+  const reporter = h.shopeeTab?.onDirtyChange;
+  if (typeof reporter !== 'function') throw new Error('the Shopee tab got no onDirtyChange');
+  return reporter as (dirty: boolean) => void;
+}
+
+/** What the Shopee editor does on a keystroke / after a save: report, outside any render. */
+function reportarShopee(dirty: boolean): void {
+  act(() => reporterShopee()(dirty));
+}
+
+/**
+ * Registers `flush` as the Mercado Livre tab's flush, the way the real tab
+ * fills the page's `flushRef` once it has been opened.
+ */
+function registrarFlushMl(flush: () => Promise<void>): void {
+  renderAba('mercadoLivre');
+  const ref = h.mlTab?.flushRef as MutableRefObject<(() => Promise<void>) | null> | undefined;
+  if (!ref) throw new Error('the page gives the Mercado Livre tab no flushRef');
+  ref.current = flush;
+}
+
+/** Settles `p` into an observable state without awaiting it. */
+function observar(p: Promise<void>): { estado: 'pendente' | 'ok' | 'erro'; erro: unknown } {
+  const obs = { estado: 'pendente' as 'pendente' | 'ok' | 'erro', erro: undefined as unknown };
+  void p.then(
+    () => {
+      obs.estado = 'ok';
+    },
+    (err: unknown) => {
+      obs.estado = 'erro';
+      obs.erro = err;
+    },
+  );
+  return obs;
+}
+
+/** Lets every already-queued microtask (and the next macrotask) run. */
+const drenar = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+describe('produtos/[id]/editar — the Shopee tab (step 21, #1529; drafts #1911)', () => {
+  it('renders the tab for THIS produto with a dirty reporter and still no flush', () => {
     montar();
-    const shopee = capturado().fields?.shopee;
-    expect(shopee?.section).toBe(SECTION_SHOPEE);
-    const renderInput = shopee?.renderInput;
-    if (!renderInput) throw new Error('the page gives the Shopee tab no input');
-    const props: FieldRenderProps = {
-      name: 'shopee',
-      label: 'Shopee',
-      value: null,
-      onChange: vi.fn(),
-      onBlur: vi.fn(),
-      descriptor: {} as FieldRenderProps['descriptor'],
-      disabled: true,
-    };
-    render(<MantineTestProvider>{renderInput(props) as ReactNode}</MantineTestProvider>);
+    expect(capturado().fields?.shopee?.section).toBe(SECTION_SHOPEE);
+    renderAba('shopee', true);
     expect(screen.getByTestId('shopee-tab-stub')).toBeDefined();
     expect(h.shopeeTab).toMatchObject({ produtoId: 'p1', disabled: true });
-    // It holds no drafts: a flush or a dirty reporter here would be a fourth
-    // registration the persistent-section backstop does not know about.
+    // #1911 P10 inverts the dirty-reporter half ON PURPOSE (DC §2.8): the tab
+    // now holds unsaved drafts the leave-guard must see. A flush stays absent —
+    // drafts are written only by their own «Salvar rascunho», and a flush here
+    // would be a fourth registration the persistent-section backstop
+    // (`produtoFields.test.ts`) does not know about.
     expect(h.shopeeTab).not.toHaveProperty('flushRef');
-    expect(h.shopeeTab).not.toHaveProperty('onDirtyChange');
+    expect(h.shopeeTab).toHaveProperty('onDirtyChange');
+    expect(typeof h.shopeeTab?.onDirtyChange).toBe('function');
+  });
+});
+
+describe('produtos/[id]/editar — the Shopee drafts leave-guard (#1911 P10, DC §2.8)', () => {
+  beforeEach(() => {
+    h.docs.set('produtos/p1', { nome: 'Camiseta', paiId: null, ehKit: false });
+    montar();
+    renderAba('shopee');
+  });
+
+  it('a dirty report arms ObjectView’s extraDirty, and a clean one disarms it', () => {
+    expect(capturado().extraDirty).toBe(false);
+    reportarShopee(true);
+    expect(capturado().extraDirty).toBe(true);
+    reportarShopee(false);
+    expect(capturado().extraDirty).toBe(false);
+  });
+
+  it('NEAR-MISS: the Mercado Livre flag still arms the guard on its own (an OR, not a replacement)', () => {
+    renderAba('mercadoLivre');
+    const ml = h.mlTab?.onDirtyChange as (dirty: boolean) => void;
+    act(() => ml(true));
+    expect(capturado().extraDirty).toBe(true);
+    // …and a clean Shopee report never clears another tab's pending work.
+    reportarShopee(false);
+    expect(capturado().extraDirty).toBe(true);
+  });
+
+  it('the reporter keeps ONE identity across page renders (the editor’s report effect depends on it)', () => {
+    const antes = reporterShopee();
+    reportarShopee(true);
+    renderAba('shopee');
+    expect(reporterShopee()).toBe(antes);
+  });
+
+  it('dirty ⇒ onAfterSave rejects with AfterSaveBlockedError only AFTER the Mercado Livre flush settled', async () => {
+    let liberarMl!: () => void;
+    const flushMl = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          liberarMl = resolve;
+        }),
+    );
+    registrarFlushMl(flushMl);
+    reportarShopee(true);
+
+    // The "nothing changed" path (no `committed`): ObjectView runs it too.
+    const obs = observar(capturado().onAfterSave!('p1', {}));
+    await drenar();
+    // The ML flush was reached and is still running: the Shopee check has not
+    // fired before it (blocking first would skip the ML writes).
+    expect(flushMl).toHaveBeenCalledTimes(1);
+    expect(obs.estado).toBe('pendente');
+
+    liberarMl();
+    await drenar();
+    expect(obs.estado).toBe('erro');
+    expect(obs.erro).toBeInstanceOf(AfterSaveBlockedError);
+    expect((obs.erro as Error).message).toBe(MENSAGEM_RASCUNHO_SHOPEE_PENDENTE);
+  });
+
+  it('dirty ⇒ the block holds on a save that WROTE the produto too (committed present)', async () => {
+    const flushMl = vi.fn(async () => {});
+    registrarFlushMl(flushMl);
+    reportarShopee(true);
+    await expect(
+      capturado().onAfterSave!(
+        'p1',
+        { nome: 'Camiseta nova' },
+        { before: { nome: 'Camiseta', ehKit: false }, patch: { nome: 'Camiseta nova' } },
+      ),
+    ).rejects.toBeInstanceOf(AfterSaveBlockedError);
+    expect(flushMl).toHaveBeenCalledTimes(1);
+  });
+
+  it('NEAR-MISS: clean ⇒ onAfterSave resolves (the navigation goes ahead) after the same ML flush', async () => {
+    const flushMl = vi.fn(async () => {});
+    registrarFlushMl(flushMl);
+    reportarShopee(true);
+    reportarShopee(false);
+    await expect(capturado().onAfterSave!('p1', {})).resolves.toBeUndefined();
+    expect(flushMl).toHaveBeenCalledTimes(1);
+  });
+
+  it('a Mercado Livre block keeps its OWN message — the Shopee check sits after it', async () => {
+    registrarFlushMl(async () => {
+      throw new AfterSaveBlockedError('Mercado Livre: conflito');
+    });
+    reportarShopee(true);
+    await expect(capturado().onAfterSave!('p1', {})).rejects.toThrow('Mercado Livre: conflito');
+  });
+
+  it('the check reads the flag WHEN IT RUNS: a closure taken while clean still blocks once the tab turns dirty', async () => {
+    // ObjectView may hold the `onAfterSave` of an earlier render while its save
+    // transaction is in flight; the operator can type in the tab meanwhile.
+    const anterior = capturado().onAfterSave!;
+    reportarShopee(true);
+    await expect(anterior('p1', {})).rejects.toBeInstanceOf(AfterSaveBlockedError);
+  });
+
+  it('NEAR-MISS: a closure taken while dirty lets the save navigate once the draft was saved', async () => {
+    reportarShopee(true);
+    const anterior = capturado().onAfterSave!;
+    reportarShopee(false);
+    await expect(anterior('p1', {})).resolves.toBeUndefined();
   });
 });

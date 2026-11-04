@@ -160,12 +160,17 @@ export const produtoObjectViewSchema = produtoPageBaseSchema.extend({
  * the bugs above. `produtoFields.test.ts` is the backstop; one import beats one
  * omission.
  *
- * ⚠️ **Shopee is deliberately ABSENT.** Its tab holds no drafts and registers no
- * flush — it only READS the listing links, every write coming from apps/shopee —
- * so the `<Activity>` suspension costs it nothing but a re-listen, which its
- * editor survives by design (`ShopeeEditor`, rules R1/R2). Persisting it would
- * keep its listeners alive while another tab shows, with no registration to
- * guard.
+ * ⚠️ **Shopee is deliberately ABSENT.** Its tab registers no flush — it only
+ * READS the listing links, and every write, its drafts included (#1911), goes
+ * through apps/shopee's routes, a draft only by its own «Salvar rascunho» — so
+ * the `<Activity>` suspension costs it nothing but a re-listen, which its editor
+ * survives by design (`ShopeeEditor`, rules R1/R2). The unsaved drafts survive
+ * the hide too: they live at the editor's top level, which React keeps, and
+ * their dirty flag reaches the edit page through `onDirtyChange`, reported with
+ * no effect cleanup and held in the page's own state — the page is always
+ * mounted, so the leave-guard (`extraDirty`) and the `onAfterSave` stop stay
+ * armed while another tab shows. Persisting it would keep its listeners alive
+ * with no registration to guard.
  */
 export const PRODUTO_PERSISTENT_SECTIONS: string[] = [
   SECTION_MERCADO_LIVRE,

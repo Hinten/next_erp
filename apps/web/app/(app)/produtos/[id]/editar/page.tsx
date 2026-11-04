@@ -39,6 +39,7 @@ import { produtoCollection } from '@/lib/data/produtoCollection';
 import { grupoDeVariacoesCollection } from '@/lib/data/grupoDeVariacoesCollection';
 import { listaDePrecosCollection } from '@/lib/data/listaDePrecosCollection';
 import { buildProdutoTransactionWrites, createClientProdutoPort } from '@/lib/produtos/clientPort';
+import { exigirRascunhosShopeeSalvos } from '@/lib/produtos/rascunhoShopeePendente';
 import { getFirebaseFirestore, getFirebaseStorage } from '@/lib/firebase/client';
 import { useAuth, usePermission } from '@/lib/auth';
 import { useKitNativoShopee } from '@/lib/shopee/kitNativo';
@@ -145,6 +146,22 @@ export default function EditarProdutoPage() {
   const flushMercadoLivreRef = useRef<(() => Promise<void>) | null>(null);
   const [mlDirty, setMlDirty] = useState(false);
   const handleMlDirtyChange = useCallback((dirty: boolean) => setMlDirty(dirty), []);
+  // The Shopee tab's DRAFTS (#1911) are outside this form too, but unlike
+  // Mercado Livre they are never flushed by this save: each is written only by
+  // its own «Salvar rascunho» through apps/shopee's draft route, whose answer
+  // can be a 409 that the tab resolves with the operator (D7). So the flag arms
+  // the leave-guard (`extraDirty`) and, through the ref, stops the post-save
+  // navigation in `onAfterSave` below. The ref is read when that check runs,
+  // not when the save started: a draft saved meanwhile no longer blocks. The
+  // editor reports with no effect cleanup, so while `<Activity>` hides the tab
+  // (it is not a persistent section) its last report stays here, in a
+  // component that is always mounted.
+  const [shopeeDirty, setShopeeDirty] = useState(false);
+  const shopeeDirtyRef = useRef(false);
+  const handleShopeeDirtyChange = useCallback((dirty: boolean) => {
+    shopeeDirtyRef.current = dirty;
+    setShopeeDirty(dirty);
+  }, []);
   // The variation set the Kit tab consumes (the per-variation grid + the
   // component-picker exclusion: a kit can't contain itself or its variations).
   // VariationManager publishes the LIVE set (saved + staged) once its tab has
@@ -449,12 +466,21 @@ export default function EditarProdutoPage() {
       shopee: {
         label: 'Shopee',
         section: SECTION_SHOPEE,
-        // Self-contained, READ-ONLY tab (#1529): the live state of every Shopee
-        // listing of this produto, from its link docs. No `flushRef` and no
-        // `onDirtyChange` — it holds no drafts, so it is not in
-        // `PRODUTO_PERSISTENT_SECTIONS` and `extraDirty` ignores it. Behind
+        // Self-contained tab (#1529, drafts #1911): the live state of every
+        // Shopee listing of this produto, from its link docs, plus the draft
+        // editor. It reads only — every write, drafts included, goes through
+        // apps/shopee — so it registers NO flush and stays out of
+        // `PRODUTO_PERSISTENT_SECTIONS`. Unsaved draft work reaches this page
+        // through `onDirtyChange` alone (`shopeeDirty` above). Behind
         // `ShopeeTab`, which defers the editor chunk until the tab is opened.
-        renderInput: (p) => <ShopeeTab produtoId={params.id} db={db} disabled={p.disabled} />,
+        renderInput: (p) => (
+          <ShopeeTab
+            produtoId={params.id}
+            db={db}
+            disabled={p.disabled}
+            onDirtyChange={handleShopeeDirtyChange}
+          />
+        ),
       },
       mercadoLivre: {
         label: 'Mercado Livre',
@@ -533,6 +559,7 @@ export default function EditarProdutoPage() {
       referencedBySnap.loading,
       kitNativoShopee,
       handleMlDirtyChange,
+      handleShopeeDirtyChange,
     ],
   );
 
@@ -574,9 +601,10 @@ export default function EditarProdutoPage() {
       fields={fields}
       excludedFields={PRODUTO_EXCLUDED_FIELDS}
       transientFields={PRODUTO_TRANSIENT_FIELDS_EDITAR}
-      // Pending Mercado Livre and independent-variation-price edits live
-      // outside this RHF form, so both must arm the shared leave guard.
-      extraDirty={mlDirty || variationPriceDirty}
+      // Pending Mercado Livre, independent-variation-price and Shopee draft
+      // edits live outside this RHF form, so all three must arm the shared
+      // leave guard.
+      extraDirty={mlDirty || variationPriceDirty || shopeeDirty}
       transactionWrites={(id, values, context) =>
         buildProdutoTransactionWrites(db, id, values, 'editar', context)
       }
@@ -722,11 +750,19 @@ export default function EditarProdutoPage() {
         // both awaits run in one microtask, so nothing re-renders in between.
         await flushKitVariacoesRef.current?.(id, children?.reusedByKey ?? {});
 
-        // Mercado Livre last: its link docs have six writers, so a save here
-        // can lose a race and raise `AfterSaveBlockedError` (tier 3). Running
-        // it after the child flushes means that pause never costs the produto
-        // its own sibling writes — they are already committed.
+        // Mercado Livre is the last WRITE: its link docs have six writers, so a
+        // save here can lose a race and raise `AfterSaveBlockedError` (tier 3).
+        // Running it after the child flushes means that pause never costs the
+        // produto its own sibling writes — they are already committed.
         await flushMercadoLivreRef.current?.();
+
+        // Then the Shopee drafts (#1911, DC §2.8) — never flushed, only checked,
+        // so after every write: the produto and each sibling above are
+        // committed by now. Unsaved draft work stops the navigation with
+        // `AfterSaveBlockedError` (ObjectView shows it and skips `onSaved`),
+        // because the leave-guard does not see `onSaved`'s programmatic
+        // `router.replace`. An ML block above wins with its own message.
+        exigirRascunhosShopeeSalvos(shopeeDirtyRef.current);
       }}
       saveLabel="Salvar alterações"
       canEdit={canWrite}
