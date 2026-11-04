@@ -13,6 +13,8 @@
  * Nothing reaches the network (D17): the GLOBAL `fetch` is stubbed to throw for the whole file.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { Timestamp } from 'firebase-admin/firestore';
+import { produtoLojaIntegradaLinkCollection } from '@delfrance/data/admin/collections';
 import {
   ACAO_IMPORTACAO_LI,
   ACAO_ITEM_IMPORTACAO_LI,
@@ -24,11 +26,16 @@ import {
   SITUACAO_ERP_ITEM_LI,
 } from '@delfrance/schemas';
 
-import { type DocData, FakeDb, asDb } from '../testing/fakeDb';
+import { type DocData, FakeDb, asDb, grpc } from '../testing/fakeDb';
 import { AGORA_MS } from '../testing/fixtures';
-import { caminhoItemLi, caminhoJobLi } from '../testing/importacaoLi';
+import { caminhoItemLi, caminhoJobLi, seedJobLi } from '../testing/importacaoLi';
 import { filhoLi, linhaProdutoLi, paiLi, vistaLi } from '../testing/produtosLi';
-import { type ContextoDasFamiliasLi, executarFamiliaLi } from './familiaDoJob';
+import {
+  type ContextoDasFamiliasLi,
+  type DepsFamiliaLi,
+  type ResultadoDaFamiliaLi,
+  executarFamiliaLi,
+} from './familiaDoJob';
 import { type FamiliaLi, ORIGEM_DO_FILHO_LI } from './familias';
 
 const CONTA = 'conta-li-familia-job';
@@ -138,15 +145,22 @@ function contexto(
   };
 }
 
+/** A job's deps: its document is seeded NOW, so its createTime precedes every write of the run. */
+function depsDoJob(db: FakeDb, jobId: string): DepsFamiliaLi {
+  const criacaoDoJob = seedJobLi(db, jobId, CONTA) as unknown as Timestamp;
+  return { db: asDb(db), jobId, criacaoDoJob, agoraMs: () => AGORA_MS };
+}
+
 async function rodar(
   db: FakeDb,
   jobId: string,
   ctx: ContextoDasFamiliasLi,
   familias: readonly FamiliaLi[] = loja(),
 ): Promise<Map<number, ItemImportacaoLi>> {
+  const deps = depsDoJob(db, jobId);
   const itens = new Map<number, ItemImportacaoLi>();
   for (const f of familias) {
-    const r = await executarFamiliaLi({ db: asDb(db), jobId, agoraMs: () => AGORA_MS }, ctx, f);
+    const r = await executarFamiliaLi(deps, ctx, f);
     if (r.tipo === 'relatado') itens.set(r.item.liId, r.item);
   }
   return itens;
@@ -322,6 +336,132 @@ describe('Simular', () => {
   });
 });
 
+/* ------------------------------ a retried family ----------------------------- */
+
+describe('a retried family — the links its own job created still count', () => {
+  const CAMISETA = 0;
+  const CANECA = 1;
+  const { aplicar, simular } = MODO_IMPORTACAO_LI;
+
+  function relatado(r: ResultadoDaFamiliaLi) {
+    if (r.tipo !== 'relatado') throw new Error('familiaDoJob.test: a família não foi relatada');
+    return r;
+  }
+
+  function daLoja(indice: number): FamiliaLi {
+    const f = loja()[indice];
+    if (f === undefined) throw new Error('familiaDoJob.test: família inexistente');
+    return f;
+  }
+
+  /** One family through an UNINTERRUPTED unit, on a fresh ERP. */
+  async function semFalha(modo: ModoImportacaoLi, indice: number) {
+    const db = new FakeDb();
+    seedErp(db);
+    const r = await executarFamiliaLi(depsDoJob(db, 'job-ref'), contexto(modo), daLoja(indice));
+    return { db, r: relatado(r) };
+  }
+
+  const semAplicada = ({ aplicada: _aplicada, ...resto }: ItemImportacaoLi) => resto;
+
+  it.each([
+    ['the parent and its two variations', CAMISETA, 3],
+    ['a simple product', CANECA, 1],
+  ])(
+    '%s: the item write fails AFTER the links landed and the SAME job re-runs the unit ⇒ the first attempt’s item and counters, and Simular’s verdict',
+    async (_nome, indice, criados) => {
+      const db = new FakeDb();
+      seedErp(db);
+      const familia = daLoja(indice);
+      const deps = depsDoJob(db, 'job-1');
+      const ctx = contexto(aplicar);
+      const item = caminhoItemLi('job-1', String(familia.raiz.id));
+      db.falharEscrita(item, grpc(14, 'UNAVAILABLE'));
+      await expect(executarFamiliaLi(deps, ctx, familia)).rejects.toMatchObject({ code: 14 });
+      db.falharEscrita(item, null);
+      const marca = db.escritas.length;
+      const retentativa = relatado(await executarFamiliaLi(deps, ctx, familia));
+      // The retry writes its item only: no link twice.
+      expect(db.escritas.slice(marca).map((e) => e.caminho)).toEqual([item]);
+
+      const { r: primeira } = await semFalha(aplicar, indice);
+      expect(retentativa.item).toEqual(primeira.item);
+      expect(retentativa.contadores).toEqual(primeira.contadores);
+      expect(retentativa.item).toMatchObject({
+        situacaoErp: SITUACAO_ERP_ITEM_LI.encontrado,
+        acao: ACAO_ITEM_IMPORTACAO_LI.vincular,
+        aplicada: true,
+        pendencias: [],
+      });
+      expect(retentativa.contadores).toMatchObject({
+        familias: 1,
+        vinculados: criados,
+        semMudanca: 0,
+      });
+
+      const { r: simulado } = await semFalha(simular, indice);
+      expect(semAplicada(retentativa.item)).toEqual(semAplicada(simulado.item));
+      expect(retentativa.contadores).toEqual(simulado.contadores);
+    },
+  );
+
+  it('a lost reply on the create (ALREADY_EXISTS on our own landed link) ⇒ the same item and counters', async () => {
+    const { db: referencia, r: primeira } = await semFalha(aplicar, CANECA);
+    const planejado = referencia.ler(vinculo('caneca', '20'));
+    if (planejado === undefined) throw new Error('familiaDoJob.test: sem o vínculo planejado');
+    const db = new FakeDb();
+    seedErp(db);
+    const deps = depsDoJob(db, 'job-1');
+    // The first commit lands; the SDK's retry of the same create meets it.
+    db.antesDaProximaEscrita(vinculo('caneca', '20'), async () => {
+      await produtoLojaIntegradaLinkCollection
+        .docRef(asDb(db), { produtoId: 'caneca' }, '20')
+        .create(planejado);
+    });
+    const r = relatado(await executarFamiliaLi(deps, contexto(aplicar), daLoja(CANECA)));
+    expect(r.item).toEqual(primeira.item);
+    expect(r.contadores).toEqual(primeira.contadores);
+  });
+
+  it('⚠️ NEAR-MISS: the same link created BEFORE this job started ⇒ vinculado, nenhuma, semMudanca 1 — a second run counts nothing', async () => {
+    const { db: referencia } = await semFalha(aplicar, CANECA);
+    const planejado = referencia.ler(vinculo('caneca', '20'));
+    if (planejado === undefined) throw new Error('familiaDoJob.test: sem o vínculo planejado');
+    const db = new FakeDb();
+    seedErp(db);
+    db.seed(vinculo('caneca', '20'), planejado);
+    const r = relatado(
+      await executarFamiliaLi(depsDoJob(db, 'job-1'), contexto(aplicar), daLoja(CANECA)),
+    );
+    expect(r.item).toMatchObject({
+      situacaoErp: SITUACAO_ERP_ITEM_LI.vinculado,
+      acao: ACAO_ITEM_IMPORTACAO_LI.nenhuma,
+      pendencias: [],
+    });
+    expect(r.contadores).toMatchObject({ familias: 1, vinculados: 0, semMudanca: 1 });
+  });
+
+  it('⚠️ NEAR-MISS: ANOTHER conta’s identical link at our doc id, created during this job, never counts', async () => {
+    const { db: referencia } = await semFalha(aplicar, CANECA);
+    const planejado = referencia.ler(vinculo('caneca', '20'));
+    if (planejado === undefined) throw new Error('familiaDoJob.test: sem o vínculo planejado');
+    const db = new FakeDb();
+    seedErp(db);
+    const deps = depsDoJob(db, 'job-1');
+    db.seed(vinculo('caneca', '20'), {
+      ...planejado,
+      contaLojaIntegrada: 'documents/integracao/outra-conta',
+    });
+    const r = relatado(await executarFamiliaLi(deps, contexto(aplicar), daLoja(CANECA)));
+    expect(r.item).toMatchObject({
+      situacaoErp: SITUACAO_ERP_ITEM_LI.encontrado,
+      acao: ACAO_ITEM_IMPORTACAO_LI.nenhuma,
+      pendencias: [{ codigo: PENDENCIA_IMPORTACAO_LI.vinculoAmbiguo }],
+    });
+    expect(r.contadores).toMatchObject({ vinculados: 0, semMudanca: 1 });
+  });
+});
+
 /* --------------------------- target and bad data ---------------------------- */
 
 describe('the target, and one bad product', () => {
@@ -329,7 +469,7 @@ describe('the target, and one bad product', () => {
     const db = new FakeDb();
     seedErp(db);
     const r = await executarFamiliaLi(
-      { db: asDb(db), jobId: 'job-1', agoraMs: () => AGORA_MS },
+      depsDoJob(db, 'job-1'),
       contexto(MODO_IMPORTACAO_LI.aplicar, { alvo: ALVO_IMPORTACAO_LI.jaNoErp }),
       familia(linhaProdutoLi(50, { sku: 'NOVO' })),
     );
@@ -345,7 +485,7 @@ describe('the target, and one bad product', () => {
       // A second ERP root with the store's SKU: two hits, `sku-ambiguo`.
       db.seed('produtos/caneca-2', { nome: 'Caneca 2', sku: 'CAN', paiId: null });
       const r = await executarFamiliaLi(
-        { db: asDb(db), jobId: 'job-1', agoraMs: () => AGORA_MS },
+        depsDoJob(db, 'job-1'),
         contexto(MODO_IMPORTACAO_LI.aplicar, { alvo }),
         familia(linhaProdutoLi(20, { sku: 'CAN' })),
       );

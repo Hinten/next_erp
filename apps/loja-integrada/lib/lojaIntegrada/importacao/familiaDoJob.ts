@@ -3,7 +3,8 @@
  * plan, the links, the report item — composed in that order for one store family, with no Loja
  * Integrada call. The dispatch runs it once per unit (a `familia` unit of the time budget) and
  * checkpoints what it returns: the family cursor moved past the family and the counters plus the
- * item's delta, in ONE write, so a retried unit redoes the same family from the same base.
+ * item's delta, in ONE write, so a retried unit redoes the same family from the same base (and,
+ * past links it already created, reports the same delta: "A retried family").
  *
  * ## Order
  *
@@ -23,10 +24,26 @@
  * arquivo document — completing the ERP side is the complete step's, and option learning is the
  * `aprendizado` phase's.
  *
+ * ## A retried family
+ *
+ * The links land BEFORE the item and the checkpoint, so a unit that fails after a create landed
+ * re-runs over this job's own links: the cascade's rung 1 now answers the root `vinculado` and
+ * every link reads unchanged. `vinculos.ts` tells a link this job created from one it found by the
+ * link's `createTime` against the job document's ({@link DepsFamiliaLi.criacaoDoJob}, from the
+ * dispatch's job read) and reports it `criado` again; the report maps a root `vinculado` only
+ * through such a link back to `encontrado` (`relatorio.ts`). So the retry's item and counter delta
+ * equal the first attempt's — and Simular's for the same store — with the residuals
+ * `vinculos.ts` states, and one of the cascade's own: a VARIATION the first attempt matched by its
+ * option combination (or under a SKU the store repeats) is matched by its link on the retry, so
+ * the informational `sku-diferente` / `sku-repetido-na-loja` that attempt reported for it is not
+ * reported again (one informational pendência fewer; the link, the action and every other counter
+ * agree). Closing it means rung 1 recognising this job's link and falling through to the SKU and
+ * combination rungs, which read nothing new for a variation.
+ *
  * ⚠️ Never name the Admin SDK's multi-document read-and-write call here — not even in a comment
  * (`estrutura.test.ts`). Next-free; `db` is a parameter.
  */
-import type { Firestore } from 'firebase-admin/firestore';
+import type { Firestore, Timestamp } from 'firebase-admin/firestore';
 import {
   type ContadoresImportacaoLi,
   type GrupoComLinksLi,
@@ -51,6 +68,11 @@ import { type ResultadoDosVinculosLi, vincularFamiliaLi } from './vinculos';
 export interface DepsFamiliaLi {
   readonly db: Firestore;
   readonly jobId: string;
+  /**
+   * The job document's own `createTime`, from the dispatch's job read: what tells a link this job
+   * created from one it found (module header, "A retried family").
+   */
+  readonly criacaoDoJob: Timestamp;
   /** The item's `atualizadoEmMs`. */
   readonly agoraMs: () => number;
 }
@@ -114,7 +136,10 @@ export async function executarFamiliaLi(
   });
   if (!plano.relatar) return { tipo: 'fora-do-alvo', plano };
 
-  const vinculos = await vincularFamiliaLi({ ...resolucao, modo: ctx.job.modo }, plano);
+  const vinculos = await vincularFamiliaLi(
+    { ...resolucao, modo: ctx.job.modo, criacaoDoJob: deps.criacaoDoJob },
+    plano,
+  );
   const item = montarItemDaFamiliaLi({
     familia,
     plano,

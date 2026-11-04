@@ -31,11 +31,41 @@
  *      (`paiProdutoIntegradaId` included); a field with a value is never touched,
  *      `estadoPublicacao` included;
  *    - nothing to change ⇒ no write (`sem-mudanca`): a second run over an unchanged store writes
- *      nothing.
+ *      and counts nothing — unless the link is the one THIS job created (below).
  *
  * A lost precondition (9; 5, a document deleted meanwhile, reads the same) or a document that
  * vanished between the 6 and its re-read re-plans the WHOLE link once, from a fresh scan; a second
  * loss ⇒ `conflito-de-escrita`, reported, never forced ({@link MAX_TENTATIVAS_VINCULO_LI}).
+ *
+ * ## A link this job created — `criado`, `retomado`
+ *
+ * A create can land and the unit still fail after it: the report item's write, the checkpoint, the
+ * instance killed — the task re-runs the family from the old cursor — or the create's own reply
+ * lost, whose SDK retry meets our document as `ALREADY_EXISTS`. Either way the attempt now finds
+ * this conta's link (the re-run's scan says `proprio`; the 6 adopts it) equal to the plan, which
+ * would read `sem-mudanca`: the link counted nowhere, the item saying the family changed nothing.
+ * So when the refresh's ONLY document is the one at the store id's doc id, there is nothing to
+ * change, and its snapshot's `createTime` is at or after the job document's own `createTime`
+ * ({@link DepsVinculosLi.criacaoDoJob}), the outcome is that creation: `criado` with `retomado`,
+ * counted and reported as on the first attempt. Both stamps are commit times of the one server
+ * clock (never the App Hosting clock `iniciadoEmMs` was read from, which skews against it and is
+ * stamped BEFORE the job's commit), both read on snapshots this module and the dispatch already
+ * take: no read is added. The start guard allows one running import per conta and links are per
+ * conta, so a link of this conta born after the job's start is this job's — up to the residuals
+ * below. A link created BEFORE the job started stays `sem-mudanca` (a second job counts nothing);
+ * Simular, which creates nothing, never reads one as its own.
+ *
+ * ⚠️ Accepted residuals of "born after the start ⇒ ours":
+ *  - two jobs of one conta running at once — the start guard is a query, then a create, so two
+ *    starts in the same instant both pass it — each counts the links the other created after its
+ *    own start;
+ *  - a link of this conta created at the store id's doc id during the run by ANOTHER writer (a
+ *    person, a later publisher, the in-flight unit of a job cancelled just before this one
+ *    started) and equal to the plan is counted as this job's creation;
+ *  - a link this job created that another writer then CHANGED is refreshed as usual
+ *    (`atualizado`): its creation is counted nowhere;
+ *  - a refresh of TWO documents (ours, plus an auto-id link of this conta another writer added —
+ *    row 11's residual) is never read as a creation.
  *
  * ⚠️ Accepted residual (the plan's row 11): a link of this conta written at an AUTO id by another
  * writer between our scan and our create leaves two links of one conta on the produto; the next
@@ -53,7 +83,8 @@
  * ## A family ({@link vincularFamiliaLi})
  *
  * The root's link first. Only when it is CONFIRMED — created, refreshed, or already as the store
- * says (under Simular: would be) — are the variations' links written, one after another; a root
+ * says (under Simular: would be) — are the variations' links written, one after another, each
+ * judged by the same "a link this job created" rule as the root's; a root
  * refused (`vinculado-a-outro`, `vinculo-ambiguo`, `vinculo-ilegivel`, `conflito-de-escrita`,
  * `sem-sku`) refuses every variation with `vinculo-pai-ausente`, with ZERO reads or writes for
  * them: every store link's root is anchored, so steps 12 and 13 never meet a variation linked
@@ -67,7 +98,7 @@
  * ⚠️ Never name the Admin SDK's multi-document read-and-write call here — not even in a comment
  * (`estrutura.test.ts`). Next-free; `db` is a parameter.
  */
-import type { DocumentSnapshot } from 'firebase-admin/firestore';
+import type { DocumentSnapshot, Timestamp } from 'firebase-admin/firestore';
 import { produtoLojaIntegradaLinkCollection } from '@delfrance/data/admin/collections';
 import {
   isAlreadyExists,
@@ -96,6 +127,11 @@ export const MAX_TENTATIVAS_VINCULO_LI = 2;
 export interface DepsVinculosLi extends DepsResolucaoLi {
   /** Simular reads and decides exactly as `aplicar` does, and writes nothing. */
   readonly modo: ModoImportacaoLi;
+  /**
+   * The job document's own `createTime` (module header, "A link this job created"): a link of this
+   * conta created at or after it was created by this job, up to the stated residuals.
+   */
+  readonly criacaoDoJob: Timestamp;
 }
 
 /** Why a link was not written. */
@@ -109,8 +145,11 @@ export type CodigoDeRecusaDoVinculoLi =
 
 /** How one link ended (under Simular: would end). */
 export type DesfechoDoVinculoLi =
-  /** Created at the store id's doc id. */
-  | { readonly tipo: 'criado'; readonly docId: string }
+  /**
+   * Created at the store id's doc id — by this attempt, or (`retomado`) by an earlier attempt of
+   * this job whose create landed: a retried unit, or a reply lost (module header).
+   */
+  | { readonly tipo: 'criado'; readonly docId: string; readonly retomado?: true }
   /** This conta's link existed; `campos` were refreshed or filled. */
   | {
       readonly tipo: 'atualizado';
@@ -137,7 +176,10 @@ export const DESFECHO_DO_VINCULO_LI = {
 export interface ResultadoDoVinculoLi {
   readonly vinculo: VinculoPlanejadoLi;
   readonly desfecho: DesfechoDoVinculoLi;
-  /** A write landed (`aplicar` only; always `false` under Simular and for a refusal). */
+  /**
+   * A write of this job landed for it (`aplicar` only; always `false` under Simular and for a
+   * refusal): `true` for a `retomado` creation too, whose create landed in an earlier attempt.
+   */
   readonly gravado: boolean;
 }
 
@@ -229,9 +271,24 @@ function dadosDe(snap: DocumentSnapshot): Record<string, unknown> {
 }
 
 /**
+ * Whether a link document read in this attempt was created by THIS job (module header, "A link
+ * this job created"): its own `createTime` at or after the job document's — two commit stamps of
+ * the one server clock, compared to the nanosecond through the SDK's own ordering primitive
+ * (`Timestamp.valueOf()`: a fixed-width `<seconds>.<nanoseconds>` text whose lexicographic order is
+ * the stamps' order). Nothing is converted. Never under Simular, which creates nothing.
+ */
+function criadoPorEsteJob(deps: DepsVinculosLi, snap: DocumentSnapshot): boolean {
+  if (deps.modo === MODO_IMPORTACAO_LI.simular) return false;
+  const criado = snap.createTime;
+  if (criado === undefined) return false;
+  return criado.valueOf() >= deps.criacaoDoJob.valueOf();
+}
+
+/**
  * Refresh this conta's link documents `docIds` (module header): each read, re-judged, patched on
  * its own read. A document that is no longer this conta's link for the store id, or a lost write,
- * loses the attempt.
+ * loses the attempt. A refresh whose ONLY document is the one at the store id's doc id, created
+ * by this job and with nothing to change, is that creation (`retomado`), not `sem-mudanca`.
  */
 async function refrescar(
   deps: DepsVinculosLi,
@@ -240,7 +297,9 @@ async function refrescar(
   lidos: ReadonlyMap<string, DocumentSnapshot> = new Map(),
 ): Promise<Tentativa> {
   const campos = new Set<string>();
+  const nossoDocId = String(vinculo.liId);
   let gravado = false;
+  let retomado = false;
   for (const docId of docIds) {
     const snap = lidos.get(docId) ?? (await refDoVinculo(deps, vinculo, docId).get());
     if (!snap.exists || snap.updateTime === undefined) return PERDEU;
@@ -250,7 +309,10 @@ async function refrescar(
     }
     const patch = patchDoVinculoLi(dados, vinculo);
     const chaves = Object.keys(patch);
-    if (chaves.length === 0) continue;
+    if (chaves.length === 0) {
+      retomado = docIds.length === 1 && docId === nossoDocId && criadoPorEsteJob(deps, snap);
+      continue;
+    }
     for (const c of chaves) campos.add(c);
     if (deps.modo === MODO_IMPORTACAO_LI.simular) continue;
     try {
@@ -260,6 +322,13 @@ async function refrescar(
       if (!isFailedPrecondition(err) && !isNotFound(err)) throw err;
       return PERDEU;
     }
+  }
+  if (campos.size === 0 && retomado) {
+    return {
+      tipo: 'fim',
+      desfecho: { tipo: DESFECHO_DO_VINCULO_LI.criado, docId: nossoDocId, retomado: true },
+      gravado: true,
+    };
   }
   const desfecho: DesfechoDoVinculoLi =
     campos.size === 0

@@ -13,7 +13,8 @@
  *
  * ## Exactly what it supports — and it THROWS on anything else
  *
- *  - `doc.get()` → `{ exists, id, updateTime, readTime, data() }`;
+ *  - `doc.get()` → `{ exists, id, createTime, updateTime, readTime, data() }` — see "The
+ *    stamps" below for `createTime`;
  *  - `doc.create(data)` — rejects gRPC 6 (ALREADY_EXISTS) on an existing doc;
  *  - `doc.update(patch)` — rejects gRPC 5 (NOT_FOUND) on a missing doc;
  *  - `doc.update(patch, { lastUpdateTime })` — rejects gRPC 9
@@ -149,7 +150,18 @@
  *
  * ⚠️ An object, not a number: two reads of one real `Timestamp` are two
  * instances, so `a.updateTime === b.updateTime` is false for equal real stamps.
- * The precondition here compares through `isEqual`, never by reference.
+ * The precondition here compares through `isEqual`, never by reference. Its
+ * `valueOf()` is the SDK's ordering text byte for byte — `<seconds - MIN_SECONDS>`
+ * padded to 12, a dot, the nanoseconds padded to 9 — so a fake stamp orders
+ * against a real `Timestamp` as two real ones do (`fakeDb.test.ts` pins both).
+ *
+ * Every snapshot of an existing document — `get()`, a query's docs — also carries
+ * `createTime`, as the server keeps it (step 9: a retried import unit recognises
+ * the links its own job created): the stamp of the write that brought the
+ * document into being (a `create`, a `set` or merge-`set` on an absent path, a
+ * batch `create`, a `seed` of a new path), KEPT by every later write to it
+ * (updates, both `set`s, a re-`seed`), and new again only after a delete. An
+ * absent document has none.
  *
  * ## Interleavings
  *
@@ -168,10 +180,15 @@ export interface CarimboFake {
   readonly nanoseconds: number;
   isEqual(outro: unknown): boolean;
   toMillis(): number;
+  /** The SDK's ordering text, byte for byte (header, "The stamps"). */
+  valueOf(): string;
 }
 
 /** The first stamp's epoch, in µs: 2027-01-15T08:00:00Z. */
 const INICIO_US = 1_800_000_000_000_000;
+
+/** The SDK's `MIN_SECONDS` (0001-01-01T00:00:00Z), which its `valueOf()` offsets seconds by. */
+const MIN_SECONDS_DO_SDK = -62_135_596_800;
 
 function carimbo(us: number): CarimboFake {
   const seconds = Math.floor(us / 1_000_000);
@@ -182,6 +199,8 @@ function carimbo(us: number): CarimboFake {
     isEqual: (outro: unknown) =>
       ehCarimbo(outro) && outro.seconds === seconds && outro.nanoseconds === nanoseconds,
     toMillis: () => seconds * 1000 + Math.floor(nanoseconds / 1_000_000),
+    valueOf: () =>
+      `${String(seconds - MIN_SECONDS_DO_SDK).padStart(12, '0')}.${String(nanoseconds).padStart(9, '0')}`,
   };
 }
 
@@ -277,6 +296,8 @@ function recusarIndefinido(valor: unknown, caminho: string): void {
 interface Stored {
   data: DocData;
   updateTime: CarimboFake;
+  /** The stamp of the write that created the document; kept by every later write (header). */
+  createTime: CarimboFake;
 }
 
 /** The operators this fake models (module header). */
@@ -532,8 +553,14 @@ export class FakeDb {
   seed(caminho: string, data: DocData): CarimboFake {
     recusarIndefinido(data, caminho);
     const updateTime = this.proximoCarimbo();
-    this.store.set(caminho, { data: structuredClone(data), updateTime });
+    this.guardar(caminho, structuredClone(data), updateTime);
     return updateTime;
+  }
+
+  /** Store `data` at `caminho` under `updateTime`, keeping a stored `createTime` (module header). */
+  private guardar(caminho: string, data: DocData, updateTime: CarimboFake): void {
+    const createTime = this.store.get(caminho)?.createTime ?? updateTime;
+    this.store.set(caminho, { data, updateTime, createTime });
   }
 
   /** The stored document, or `undefined`. A copy: mutating it changes nothing. */
@@ -690,6 +717,7 @@ export class FakeDb {
         return Promise.resolve({
           id,
           exists: atual !== undefined,
+          createTime: atual?.createTime,
           updateTime: atual?.updateTime,
           readTime: this.carimboDeLeitura(),
           data: () => dados,
@@ -701,7 +729,7 @@ export class FakeDb {
         if (this.store.has(caminho)) throw grpc(6, 'ALREADY_EXISTS');
         validarCriacao(caminho, data);
         const writeTime = this.registrar('create', caminho, data);
-        this.store.set(caminho, { data: structuredClone(data), updateTime: writeTime });
+        this.guardar(caminho, structuredClone(data), writeTime);
         return { writeTime };
       },
       update: async (patch: DocData, precondicao?: PrecondicaoFake) => {
@@ -713,7 +741,7 @@ export class FakeDb {
         const recusa = recusaDeAtualizacao(atual, precondicao);
         if (recusa !== null || atual === undefined) throw recusa ?? grpc(5, 'NOT_FOUND');
         const writeTime = this.registrar('update', caminho, patch);
-        this.store.set(caminho, { data: this.aplicar(atual.data, patch), updateTime: writeTime });
+        this.guardar(caminho, this.aplicar(atual.data, patch), writeTime);
         const perdida = this.respostasPerdidas.get(caminho);
         if (precondicao?.lastUpdateTime !== undefined && perdida !== undefined) {
           this.respostasPerdidas.delete(caminho);
@@ -742,7 +770,7 @@ export class FakeDb {
           return (async () => {
             await this.antesDeEscrever(caminho);
             const writeTime = this.registrar('set', caminho, data, undefined, true);
-            this.store.set(caminho, { data: structuredClone(data), updateTime: writeTime });
+            this.guardar(caminho, structuredClone(data), writeTime);
             return { writeTime };
           })();
         }
@@ -783,7 +811,7 @@ export class FakeDb {
           await this.antesDeEscrever(caminho);
           const atual = this.store.get(caminho);
           const writeTime = this.registrar('set', caminho, data);
-          this.store.set(caminho, { data: this.aplicar(atual?.data, data), updateTime: writeTime });
+          this.guardar(caminho, this.aplicar(atual?.data, data), writeTime);
           return { writeTime };
         })();
       },
@@ -876,7 +904,7 @@ export class FakeDb {
           const anterior = e.verbo === 'create' ? undefined : this.store.get(e.caminho)?.data;
           const dados =
             e.verbo === 'create' ? structuredClone(e.dados) : this.aplicar(anterior, e.dados);
-          this.store.set(e.caminho, { data: dados, updateTime: noLote.writeTime });
+          this.guardar(e.caminho, dados, noLote.writeTime);
         }
         return fila.map(() => ({ writeTime: noLote.writeTime }));
       },
@@ -1021,6 +1049,7 @@ export class FakeDb {
         id,
         ref: this.docRef(caminho, id),
         exists: true,
+        createTime: stored.createTime,
         updateTime: stored.updateTime,
         data: () => dados,
       };

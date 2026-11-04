@@ -115,6 +115,38 @@ function item(
   });
 }
 
+describe('montarItemDaFamiliaLi — situacaoErp after a retried unit', () => {
+  const RETOMADO: DesfechoDoVinculoLi = {
+    tipo: DESFECHO_DO_VINCULO_LI.criado,
+    docId: '10',
+    retomado: true,
+  };
+  const vinculado = { plano: plano({ situacaoErp: SITUACAO_ERP_ITEM_LI.vinculado }) };
+
+  it('a root vinculado only through the link THIS job created (retomado) ⇒ encontrado, vincular, +1 vinculado', () => {
+    const i = item(vinculos(RETOMADO), vinculado);
+    expect(i).toMatchObject({
+      situacaoErp: SITUACAO_ERP_ITEM_LI.encontrado,
+      acao: ACAO_ITEM_IMPORTACAO_LI.vincular,
+    });
+    expect(contadoresDoItemLi(i, vinculos(RETOMADO))).toMatchObject({
+      vinculados: 1,
+      semMudanca: 0,
+    });
+  });
+
+  it('NEAR-MISS: vinculado with a link found unchanged, or created by THIS attempt ⇒ vinculado stays', () => {
+    expect(item(vinculos(SEM_MUDANCA), vinculado).situacaoErp).toBe(SITUACAO_ERP_ITEM_LI.vinculado);
+    expect(item(vinculos(CRIADO), vinculado).situacaoErp).toBe(SITUACAO_ERP_ITEM_LI.vinculado);
+  });
+
+  it('NEAR-MISS: only a VARIATION link retomado leaves the root’s situacaoErp alone', () => {
+    expect(item(vinculos(SEM_MUDANCA, RETOMADO), vinculado).situacaoErp).toBe(
+      SITUACAO_ERP_ITEM_LI.vinculado,
+    );
+  });
+});
+
 describe('montarItemDaFamiliaLi — the action', () => {
   it('a link created ⇒ vincular, applied; nothing created ⇒ nenhuma', () => {
     expect(item(vinculos(CRIADO))).toMatchObject({

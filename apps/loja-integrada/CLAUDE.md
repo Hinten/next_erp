@@ -179,7 +179,14 @@ carries the continuation `seq`, the cursors or the selection's ids.
   detail-backed one carries them, `marca` as the brand URI verbatim), and a variation is linked
   only beside its parent's confirmed link. A family in CONFLICT is reported under `jaNoErp` and
   `naoNoErp` too, with no link. "Only link" writes link documents and the job's items, nothing
-  else; a second run over an unchanged store writes no link.
+  else; a second run over an unchanged store writes no link. A RETRIED unit whose links already
+  landed (the item write or checkpoint failed after them, or a create's reply was lost) still
+  reports and counts them as created: a link of this conta at the store id's doc id, equal to the
+  plan, whose snapshot `createTime` is at or after the job document's own `createTime` (the
+  dispatch's job read; server clock, never `iniciadoEmMs`) reads `criado`/`retomado`, and a root
+  `vinculado` only through it reports `encontrado`. Residuals in `vinculos.ts` (two jobs of one conta
+  at once, another writer's identical link during the run) and `familiaDoJob.ts` (a variation first
+  matched by combination loses its informational `sku-diferente` on the retry).
 - **The first dispatch is a TRIGGER's** (`functions/src/onImportacaoLojaIntegradaCriada.ts`,
   CREATE of `importacoesLojaIntegrada/{jobId}`): ONLY a job created `pendente` enqueues the named
   task `li-importacao-<jobId>-0` on the READS queue (zero reads; anything else returns with no

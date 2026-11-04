@@ -35,6 +35,7 @@ import {
 } from '@delfrance/integrations-loja-integrada';
 import {
   ACAO_IMPORTACAO_LI,
+  ACAO_ITEM_IMPORTACAO_LI,
   FASE_IMPORTACAO_LI,
   type ImportacaoLojaIntegrada,
   type ItemImportacaoLi,
@@ -44,6 +45,7 @@ import {
   MOTIVO_CATEGORIA_SEM_VINCULO_LI,
   MOTIVO_FALHA_IMPORTACAO_LI,
   type ModoImportacaoLi,
+  SITUACAO_ERP_ITEM_LI,
   TIPO_AVISO,
   TIPO_PAGINA_IMPORTACAO_LI,
   type TarefaImportacaoLi,
@@ -1196,6 +1198,62 @@ describe('the queue’s last attempt', () => {
 });
 
 /* ------------------------------ a lost reply ------------------------------ */
+
+describe('a family unit retried after its link LANDED (its item write failed)', () => {
+  const LINK_20 = 'produtos/p20/produtolojaintegrada/20';
+
+  /**
+   * A whole job of `modo` over `LOJA_SIMPLES`, whose product 20 the ERP has by SKU. With `falhar`,
+   * the first dispatch's write of item 20 fails transiently AFTER its link landed (the queue
+   * retries the SAME task from the last checkpoint).
+   */
+  async function rodarLoja(modo: ModoImportacaoLi, falhar: boolean) {
+    db = new FakeDb();
+    seedConta(db, CONTA);
+    seedCredencial(db, CONTA);
+    db.seed('produtos/p20', { nome: 'P20', sku: 'LI-20', paiId: null, filhoUnicoId: null });
+    seedJobLi(db, JOB, CONTA, { status: 'pendente', modo });
+    __resetAllReadCaches();
+    if (falhar) {
+      db.falharEscrita(caminhoItemLi(JOB, '20'), grpc(14, 'UNAVAILABLE'));
+      await expect(
+        despacharImportacaoLi(asDb(db), tarefa(0), montarDeps().deps),
+      ).rejects.toMatchObject({ code: 14 });
+      db.falharEscrita(caminhoItemLi(JOB, '20'), null);
+      expect(db.escritasEm(LINK_20).map((e) => e.verbo)).toEqual(['create']);
+    }
+    const { resultados } = await rodarAteOFim({ tentativa: falhar ? 1 : 0 });
+    return { fim: resultados.at(-1)?.desfecho, itens: itens(), job: jobGravado() };
+  }
+
+  it('⚠️ the retry reports and counts the link its job created: the uninterrupted run’s items and counters, and Simular’s', async () => {
+    const limpo = await rodarLoja(MODO_IMPORTACAO_LI.aplicar, false);
+    const simulado = await rodarLoja(MODO_IMPORTACAO_LI.simular, false);
+    const retentado = await rodarLoja(MODO_IMPORTACAO_LI.aplicar, true);
+
+    expect(retentado.fim).toBe('concluido');
+    // The link was created ONCE, by the first attempt.
+    expect(db.escritasEm(LINK_20).map((e) => e.verbo)).toEqual(['create']);
+    expect(retentado.itens.get(20)).toMatchObject({
+      situacaoErp: SITUACAO_ERP_ITEM_LI.encontrado,
+      acao: ACAO_ITEM_IMPORTACAO_LI.vincular,
+      aplicada: true,
+    });
+    expect(retentado.job.contadores).toMatchObject({ familias: 3, vinculados: 1, semMudanca: 2 });
+    expect(retentado.job.contadores).toEqual(limpo.job.contadores);
+    expect(retentado.job.contadores).toEqual(simulado.job.contadores);
+    expect([...retentado.itens.keys()]).toEqual([...limpo.itens.keys()]);
+    for (const id of limpo.itens.keys()) {
+      // `aplicada` included: only WHEN the retry wrote it differs.
+      const { atualizadoEmMs: _quando, ...doRetentado } = retentado.itens.get(id) ?? {};
+      const { atualizadoEmMs: _quandoLimpo, ...doLimpo } = limpo.itens.get(id) ?? {};
+      expect(doRetentado, String(id)).toEqual(doLimpo);
+      expect(veredito(retentado.itens.get(id)), String(id)).toEqual(
+        veredito(simulado.itens.get(id)),
+      );
+    }
+  });
+});
 
 describe('a checkpoint whose reply was lost (the SDK retried a commit that had landed)', () => {
   it('⚠️ the END-of-dispatch checkpoint still hands off: the named successor is enqueued and the chain goes on', async () => {

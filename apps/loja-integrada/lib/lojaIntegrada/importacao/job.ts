@@ -182,17 +182,23 @@ export interface JobLidoLi {
   readonly jobId: string;
   readonly job: ImportacaoLojaIntegrada;
   readonly versao: Timestamp;
+  /**
+   * The document's own `createTime`: the job's start on the SERVER's clock, which a link's
+   * `createTime` is compared against (`vinculos.ts`, "A link this job created").
+   */
+  readonly criacao: Timestamp;
 }
 
 /** A read snapshot as a {@link JobLidoLi}, or `null` when the document is absent. */
 function jobDoSnapshot(jobId: string, snap: DocumentSnapshot): JobLidoLi | null {
-  if (!snap.exists || snap.updateTime === undefined) return null;
+  if (!snap.exists || snap.updateTime === undefined || snap.createTime === undefined) return null;
   // STRICT: the job is written only through its own schema, so a document that does not parse is
   // corruption, never a shape to tolerate — the `ZodError` surfaces (a 500, or a task retry).
   return {
     jobId,
     job: importacaoLojaIntegradaSchema.parse(snap.data()),
     versao: snap.updateTime,
+    criacao: snap.createTime,
   };
 }
 

@@ -6,10 +6,18 @@
  * ## One item ({@link montarItemDaFamiliaLi})
  *
  * Built from the family, its plan (`plano.ts`) and its links' outcomes (`vinculos.ts`):
- *  - `situacaoErp` and `erpId`: the cascade's verdict on the root;
+ *  - `situacaoErp` and `erpId`: the cascade's verdict on the root — except a root `vinculado` only
+ *    through the link THIS job created (`criado` + `retomado`: a retried unit reading its own
+ *    landed create, `vinculos.ts`), which reports `encontrado`. Such a link was created because the
+ *    one-per-conta scan found the produto free of this conta's links, so the attempt that created
+ *    it had no live link owner at rung 1 and matched by SKU (rungs 2–3). A migrated auto-id link is
+ *    never one: the scan refreshes it and nothing is created. ⚠️ Residual: a root the cascade
+ *    found by a link someone deleted before the scan, whose link this job then re-created, reads
+ *    `encontrado` on a retry;
  *  - `acao`: `criar` when the plan's create is viable (the complete step creates it); otherwise
- *    `vincular` when at least one link was created — or, under Simular, would be; otherwise
- *    `nenhuma` (already linked, refreshed, refused, or nothing to do);
+ *    `vincular` when at least one link was created — by this attempt or, `retomado`, by an earlier
+ *    attempt of this job — or, under Simular, would be; otherwise `nenhuma` (already linked,
+ *    refreshed, refused, or nothing to do);
  *  - `aplicada`: `false` under Simular (the action is what an `aplicar` run would do), and for a
  *    `criar` the complete step has not carried out; `true` otherwise;
  *  - `pendencias`: the plan's, then each link refusal (the root's with `liId: null`, a
@@ -31,7 +39,11 @@
  * nothing and would change nothing (no link created or refreshed, no create); the pendências by
  * half. The dispatch adds an item's delta to
  * the job's counters in the SAME checkpoint that moves the family cursor past it, so a retried
- * unit recomputes the same delta from the same base and counts nothing twice.
+ * unit recomputes its delta from the same base and counts nothing twice — and, because a link its
+ * own job created still reads `criado` (`vinculos.ts`), the SAME delta: never `vinculados + 0,
+ * semMudanca + 1` for the links the failed attempt landed. Residuals: `vinculos.ts`'s, and the
+ * cascade's informational `sku-diferente` / `sku-repetido-na-loja` on a variation first matched by
+ * combination (`familiaDoJob.ts`, "A retried family").
  *
  * ## The write ({@link gravarItemLi}) — tier 0
  *
@@ -139,6 +151,20 @@ function vinculosCriados(vinculos: ResultadoDosVinculosLi): number {
     .length;
 }
 
+/**
+ * The item's `situacaoErp` (module header, "One item"): the cascade's, except a root `vinculado`
+ * only through the link this job itself created — read back by a retried unit — which the attempt
+ * that created it found by SKU (`encontrado`).
+ */
+function situacaoErpDoItem(plano: PlanoDaFamiliaLi, vinculos: ResultadoDosVinculosLi) {
+  const raiz = vinculos.raiz?.desfecho;
+  return plano.situacaoErp === SITUACAO_ERP_ITEM_LI.vinculado &&
+    raiz?.tipo === DESFECHO_DO_VINCULO_LI.criado &&
+    raiz.retomado === true
+    ? SITUACAO_ERP_ITEM_LI.encontrado
+    : plano.situacaoErp;
+}
+
 /** The report item of one family (module header, "One item"). Parsed through the item schema. */
 export function montarItemDaFamiliaLi(e: EntradaDoItemLi): ItemImportacaoLi {
   const { familia, plano, vinculos } = e;
@@ -160,7 +186,7 @@ export function montarItemDaFamiliaLi(e: EntradaDoItemLi): ItemImportacaoLi {
     sku: familia.raiz.sku,
     nome: familia.raiz.nome,
     filhos: familia.filhos.length,
-    situacaoErp: plano.situacaoErp,
+    situacaoErp: situacaoErpDoItem(plano, vinculos),
     erpId: plano.erpId,
     acao,
     aplicada,

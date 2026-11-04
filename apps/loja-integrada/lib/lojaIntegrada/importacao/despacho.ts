@@ -137,7 +137,7 @@
  * (`estrutura.test.ts`). The task path's run-time closure is walked with the read routes' rules:
  * Loja Integrada is reached through the context loader only.
  */
-import type { Firestore } from 'firebase-admin/firestore';
+import type { Firestore, Timestamp } from 'firebase-admin/firestore';
 import { isGrpcStatusError } from '@delfrance/data/admin/grpcErrors';
 import { TASK_MAX_ATTEMPTS } from '@delfrance/data/admin/notifications';
 import {
@@ -468,6 +468,8 @@ export async function despacharImportacaoLi(
 class DespachoImportacaoLi {
   private readonly orcamento: OrcamentoDespachoLi;
   private job: ImportacaoLojaIntegrada | null = null;
+  /** The job document's own `createTime`, from the dispatch's first job read (never re-derived). */
+  private criacaoDoJob: Timestamp | null = null;
   /** Where this dispatch writes: the job's CURRENT `seq` and the last write's stamp. */
   private alvo: AlvoDoDespachoLi | null = null;
   private contexto: ContextoLojaIntegrada | null = null;
@@ -513,6 +515,7 @@ class DespachoImportacaoLi {
       return this.resultado(DESFECHO_DESPACHO_IMPORTACAO_LI.nada);
     }
     this.job = lido.job;
+    this.criacaoDoJob = lido.criacao;
     const decisao = decidirDespachoLi(lido.job, this.tarefa.seq);
     if (decisao === DECISAO_DESPACHO_LI.nada) {
       return this.resultado(DESFECHO_DESPACHO_IMPORTACAO_LI.nada);
@@ -606,6 +609,11 @@ class DespachoImportacaoLi {
   private jobAtual(): ImportacaoLojaIntegrada {
     if (this.job === null) throw new TypeError('despacho: o job ainda não foi lido');
     return this.job;
+  }
+
+  private criacaoDoJobAtual(): Timestamp {
+    if (this.criacaoDoJob === null) throw new TypeError('despacho: o job ainda não foi lido');
+    return this.criacaoDoJob;
   }
 
   private alvoAtual(): AlvoDoDespachoLi {
@@ -1211,7 +1219,12 @@ class DespachoImportacaoLi {
         if (familia === null) return this.fecharFamilias(job, m);
 
         const r = await executarFamiliaLi(
-          { db: this.db, jobId: this.tarefa.jobId, agoraMs: this.deps.agoraMs },
+          {
+            db: this.db,
+            jobId: this.tarefa.jobId,
+            criacaoDoJob: this.criacaoDoJobAtual(),
+            agoraMs: this.deps.agoraMs,
+          },
           await this.contextoDasFamilias(job),
           familia,
         );

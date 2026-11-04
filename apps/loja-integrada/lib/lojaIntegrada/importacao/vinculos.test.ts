@@ -8,6 +8,7 @@
  * reaches the network (D17): the GLOBAL `fetch` is stubbed to throw for the whole file.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { Timestamp } from 'firebase-admin/firestore';
 import { produtoLojaIntegradaLinkCollection } from '@delfrance/data/admin/collections';
 import {
   ALVO_IMPORTACAO_LI,
@@ -20,6 +21,7 @@ import {
 } from '@delfrance/schemas';
 
 import { type DocData, FakeDb, asDb, grpc } from '../testing/fakeDb';
+import { seedJobLi } from '../testing/importacaoLi';
 import { filhoLi, linhaProdutoLi, paiLi, vistaLi } from '../testing/produtosLi';
 import { type FamiliaLi, ORIGEM_DO_FILHO_LI } from './familias';
 import { type PlanoDaFamiliaLi, type VinculoPlanejadoLi, planejarFamiliaLi } from './plano';
@@ -53,8 +55,17 @@ afterEach(() => {
 
 /* ------------------------------- fixtures --------------------------------- */
 
+let jobs = 0;
+
+/**
+ * One JOB's deps: its document is seeded NOW, so its createTime follows every write made before
+ * and precedes every write made after. Two calls are two jobs; one deps object reused is one job
+ * re-running a unit.
+ */
 function deps(db: FakeDb, modo: ModoImportacaoLi = MODO_IMPORTACAO_LI.aplicar): DepsVinculosLi {
-  return { db: asDb(db), contaId: CONTA, modo };
+  jobs += 1;
+  const criacaoDoJob = seedJobLi(db, `job-vinculos-${String(jobs)}`, CONTA);
+  return { db: asDb(db), contaId: CONTA, modo, criacaoDoJob: criacaoDoJob as unknown as Timestamp };
 }
 
 const caminho = (produtoId: string, docId: string) =>
@@ -352,6 +363,154 @@ describe('vincularProdutoLi — the mirror refresh (tier 1 on its own read)', ()
       gravado: false,
     });
     expect(db.escritas).toEqual([]);
+  });
+});
+
+/* ------------------------ the links THIS job created ------------------------ */
+
+describe('vincularProdutoLi — a link THIS job already created is still its creation', () => {
+  const linkRef = (db: FakeDb) =>
+    produtoLojaIntegradaLinkCollection.docRef(asDb(db), { produtoId: 'p10' }, '10');
+
+  it('a retried unit (the create LANDED, what followed it failed) ⇒ criado again, retomado — ZERO writes', async () => {
+    const db = new FakeDb();
+    const v = vinculoSimples(10, 'p10');
+    const job = deps(db);
+    await vincularProdutoLi(job, v);
+    const antes = db.escritas.length;
+    // The SAME job re-runs the unit from its old cursor.
+    const r = await vincularProdutoLi(job, v);
+    expect(r).toEqual({
+      vinculo: v,
+      desfecho: { tipo: DESFECHO_DO_VINCULO_LI.criado, docId: '10', retomado: true },
+      gravado: true,
+    });
+    expect(db.escritas).toHaveLength(antes);
+  });
+
+  it('a lost reply (ALREADY_EXISTS on OUR landed create) ⇒ criado, retomado — the one create is all that landed', async () => {
+    const db = new FakeDb();
+    const v = vinculoSimples(10, 'p10');
+    const job = deps(db);
+    // The first commit lands; the SDK's retry of the same create meets it.
+    db.antesDaProximaEscrita(caminho('p10', '10'), async () => {
+      await linkRef(db).create({ ...v.doc });
+    });
+    const r = await vincularProdutoLi(job, v);
+    expect(r.desfecho).toEqual({
+      tipo: DESFECHO_DO_VINCULO_LI.criado,
+      docId: '10',
+      retomado: true,
+    });
+    expect(db.escritas.map((e) => [e.verbo, e.caminho])).toEqual([
+      ['create', caminho('p10', '10')],
+    ]);
+  });
+
+  it('"at or after the job’s createTime", seconds first, then nanoseconds — and a link one tick EARLIER is not this job’s', async () => {
+    const db = new FakeDb();
+    const v = vinculoSimples(10, 'p10');
+    await vincularProdutoLi(deps(db), v);
+    const criado = (await linkRef(db).get()).createTime;
+    if (criado === undefined) throw new Error('vinculos.test: sem createTime');
+    const jobEm = (seconds: number, nanoseconds: number): DepsVinculosLi => ({
+      ...deps(db),
+      criacaoDoJob: new Timestamp(seconds, nanoseconds),
+    });
+    const tipo = async (d: DepsVinculosLi) => (await vincularProdutoLi(d, v)).desfecho.tipo;
+    const { seconds: s, nanoseconds: n } = criado;
+    // EQUAL: the same instant; an earlier second whatever its nanoseconds.
+    expect(await tipo(jobEm(s, n))).toBe(DESFECHO_DO_VINCULO_LI.criado);
+    expect(await tipo(jobEm(s - 1, 999_999_999))).toBe(DESFECHO_DO_VINCULO_LI.criado);
+    // NEAR-MISS: one nanosecond later; a later second whatever its nanoseconds.
+    expect(await tipo(jobEm(s, n + 1))).toBe(DESFECHO_DO_VINCULO_LI.semMudanca);
+    expect(await tipo(jobEm(s + 1, 0))).toBe(DESFECHO_DO_VINCULO_LI.semMudanca);
+  });
+
+  it('NEAR-MISS: this conta’s link created BEFORE this job started, identical to the plan ⇒ sem-mudanca (a second job counts nothing)', async () => {
+    const db = new FakeDb();
+    const v = vinculoSimples(10, 'p10');
+    await vincularProdutoLi(deps(db), v);
+    const r = await vincularProdutoLi(deps(db), v);
+    expect(r).toEqual({
+      vinculo: v,
+      desfecho: { tipo: DESFECHO_DO_VINCULO_LI.semMudanca, docIds: ['10'] },
+      gravado: false,
+    });
+  });
+
+  it('NEAR-MISS: this conta’s link at an AUTO id, created during this job by another writer ⇒ sem-mudanca — this job creates only at the store id', async () => {
+    const db = new FakeDb();
+    const v = vinculoSimples(10, 'p10');
+    const job = deps(db);
+    await produtoLojaIntegradaLinkCollection
+      .docRef(asDb(db), { produtoId: 'p10' }, 'aUtO1d')
+      .create({ ...v.doc });
+    const r = await vincularProdutoLi(job, v);
+    expect(r.desfecho).toEqual({ tipo: DESFECHO_DO_VINCULO_LI.semMudanca, docIds: ['aUtO1d'] });
+  });
+
+  it('NEAR-MISS: ANOTHER conta’s document at our doc id, created during this job ⇒ vinculo-ambiguo, never counted', async () => {
+    const db = new FakeDb();
+    const job = deps(db);
+    seedLink(db, 'p10', '10', {
+      ...vinculoSimples(10, 'p10').doc,
+      contaLojaIntegrada: REF(OUTRA),
+    });
+    const r = await vincularProdutoLi(job, vinculoSimples(10, 'p10'));
+    expect(r.desfecho).toMatchObject({
+      tipo: DESFECHO_DO_VINCULO_LI.recusado,
+      codigo: PENDENCIA_IMPORTACAO_LI.vinculoAmbiguo,
+    });
+    expect(db.escritas).toEqual([]);
+  });
+
+  it('NEAR-MISS: a link this job created that ANOTHER writer has since changed ⇒ atualizado (the refresh it makes)', async () => {
+    const db = new FakeDb();
+    const v = vinculoSimples(10, 'p10');
+    const job = deps(db);
+    await vincularProdutoLi(job, v);
+    await linkRef(db).update({ removido: true });
+    const r = await vincularProdutoLi(job, v);
+    expect(r.desfecho).toEqual({
+      tipo: DESFECHO_DO_VINCULO_LI.atualizado,
+      docIds: ['10'],
+      campos: ['removido'],
+    });
+  });
+
+  it('NEAR-MISS: Simular creates nothing, so a link of this conta created during it is never "its" creation ⇒ sem-mudanca', async () => {
+    const db = new FakeDb();
+    const v = vinculoSimples(10, 'p10');
+    const simular = deps(db, MODO_IMPORTACAO_LI.simular);
+    await linkRef(db).create({ ...v.doc });
+    const r = await vincularProdutoLi(simular, v);
+    expect(r.desfecho).toEqual({ tipo: DESFECHO_DO_VINCULO_LI.semMudanca, docIds: ['10'] });
+  });
+
+  it('a retried FAMILY: the root and every variation link it created read criado again', async () => {
+    const db = new FakeDb();
+    const p = plano(
+      paiLi(500, [501, 502]),
+      'pai',
+      [filhoLi(501, { sku: 'A' }), filhoLi(502, { sku: 'B' })],
+      { 501: 'f1', 502: 'f2' },
+    );
+    const job = deps(db);
+    const primeira = await vincularFamiliaLi(job, p);
+    const antes = db.escritas.length;
+    const segunda = await vincularFamiliaLi(job, p);
+    expect(db.escritas).toHaveLength(antes);
+    const tipos = (r: typeof primeira) =>
+      [r.raiz, ...r.filhos].map((x) => x?.desfecho.tipo ?? null);
+    expect(tipos(primeira)).toEqual(['criado', 'criado', 'criado']);
+    expect(tipos(segunda)).toEqual(tipos(primeira));
+    // NEAR-MISS: a later job over the same links counts none of them.
+    expect(tipos(await vincularFamiliaLi(deps(db), p))).toEqual([
+      'sem-mudanca',
+      'sem-mudanca',
+      'sem-mudanca',
+    ]);
   });
 });
 

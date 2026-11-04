@@ -4,7 +4,7 @@
  * stale precondition would make every race test vacuous.
  */
 import { describe, expect, it } from 'vitest';
-import { FieldPath } from 'firebase-admin/firestore';
+import { FieldPath, Timestamp } from 'firebase-admin/firestore';
 import {
   avisoCollection,
   importacaoLojaIntegradaCollection,
@@ -737,5 +737,80 @@ describe('FakeDb — collection groups and `in` (step 5, the link docs)', () => 
         Array.from({ length: 31 }, (_, i) => i),
       ),
     ).toThrow(/1 a 30/);
+  });
+});
+
+describe('FakeDb — createTime (step 9: a retried import unit recognises the links it created)', () => {
+  const us = (t: { seconds: number; nanoseconds: number } | undefined) =>
+    t === undefined ? undefined : t.seconds * 1_000_000 + t.nanoseconds / 1000;
+
+  it('create sets it to its own commit stamp; every LATER write keeps it — update, guarded update, both sets', async () => {
+    const db = new FakeDb();
+    const ref = refDe(db, 'a');
+    const { writeTime } = await ref.create({ x: 1 });
+    await ref.update({ x: 2 });
+    const lido = await ref.get();
+    await ref.update({ x: 3 }, { lastUpdateTime: lido.updateTime });
+    await ref.set({ x: 4, y: 1 }, { merge: true });
+    await ref.set({ x: 5 });
+    const depois = await ref.get();
+    expect(us(depois.createTime)).toBe(us(writeTime));
+    // NEAR-MISS: the update stamp moved with every write; the create stamp did not.
+    expect(us(depois.updateTime)).toBe(us(writeTime)! + 4);
+  });
+
+  it('a document that does not exist has none; one born of a set or a merge-set takes that write’s stamp', async () => {
+    const db = new FakeDb();
+    expect((await refDe(db, 'nada').get()).createTime).toBeUndefined();
+    const s = await refDe(db, 's').set({ x: 1 });
+    const m = await refDe(db, 'm').set({ x: 1 }, { merge: true });
+    expect(us((await refDe(db, 's').get()).createTime)).toBe(us(s.writeTime));
+    expect(us((await refDe(db, 'm').get()).createTime)).toBe(us(m.writeTime));
+  });
+
+  it('⚠️ NEAR-MISS: deleted and created again, it is a NEW document with a new createTime', async () => {
+    const db = new FakeDb();
+    const ref = refDe(db, 'a');
+    const primeiro = await ref.create({ x: 1 });
+    await ref.delete();
+    const segundo = await ref.create({ x: 1 });
+    expect(us((await ref.get()).createTime)).toBe(us(segundo.writeTime));
+    expect(us(segundo.writeTime)).not.toBe(us(primeiro.writeTime));
+  });
+
+  it('seed: a new path takes the seed’s stamp, a seeded EXISTING path keeps its createTime', async () => {
+    const db = new FakeDb();
+    const c1 = db.seed('integracao/a', { x: 1 });
+    db.seed('integracao/a', { x: 2 });
+    expect(us((await refDe(db, 'a').get()).createTime)).toBe(us(c1));
+  });
+
+  it('valueOf() is the real Timestamp’s ordering text byte for byte, so fake and real stamps order together', async () => {
+    const db = new FakeDb();
+    const { writeTime } = await refDe(db, 'a').create({ x: 1 });
+    const real = new Timestamp(writeTime.seconds, writeTime.nanoseconds);
+    expect(writeTime.valueOf()).toBe(real.valueOf());
+    // NEAR-MISS: one nanosecond either way, and a second boundary, order as the real ones do.
+    const antes = new Timestamp(writeTime.seconds, writeTime.nanoseconds - 1);
+    const depois = new Timestamp(writeTime.seconds - 1, 999_999_999);
+    expect(writeTime.valueOf() > antes.valueOf()).toBe(true);
+    expect(writeTime.valueOf() > depois.valueOf()).toBe(true);
+    expect(writeTime.valueOf() < new Timestamp(writeTime.seconds + 1, 0).valueOf()).toBe(true);
+  });
+
+  it('a query result and a batch carry it the same way', async () => {
+    const db = new FakeDb();
+    const criado = db.seed('integracao/a', { tipo: 3 });
+    await asDb(db)
+      .batch()
+      .update(refDe(db, 'a'), { tipo: 3, n: 1 })
+      .create(refDe(db, 'b'), { tipo: 3 })
+      .commit();
+    const b = await refDe(db, 'b').get();
+    const snap = await integracaoCollection.ref(asDb(db), {}).where('tipo', '==', 3).get();
+    const porId = new Map(snap.docs.map((d) => [d.id, us(d.createTime)]));
+    expect(porId.get('a')).toBe(us(criado));
+    expect(porId.get('b')).toBe(us(b.createTime));
+    expect(us(b.createTime)).toBe(us(b.updateTime));
   });
 });
