@@ -12,7 +12,9 @@ import { getAdminApp } from './lib/admin';
 /**
  * The COMPOSITION ROOT of the NF-e queue's producer for this functions
  * codebase (step 14, PR 14-c) — the app's THIRD `getFunctions(` caller, beside
- * the reads queue's two (`./agendador`, `lib/firebase/filaLeitura.ts`). The
+ * `./agendador` (the reads queue, for the poll) and the App Hosting
+ * `lib/firebase/filaLeitura.ts` (the reads queue for the receiver and, since PR
+ * 14-d, this same NF-e queue for the re-drive route, behind its one call). The
  * trigger `onNfeAprovadaAmazon` enqueues through it, and so does the task
  * handler's self re-enqueue. What a rejection means, the one named enqueue and
  * the transient naming are the pure module's (`lib/amazon/nfe/agendadorNfe.ts`);

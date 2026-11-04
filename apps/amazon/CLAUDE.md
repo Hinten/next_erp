@@ -18,7 +18,7 @@ API-only App Hosting backend for the Amazon (SP-API) marketplace channel, port 3
   suffixes and only lets them build raw Firestore refs.
 - `next` is an exact literal in `package.json`, never `catalog:` or a range.
 
-## Routes (steps 2 and 3)
+## Routes (steps 2, 3 and 14)
 
 | Method | Path | Permission | Read switch | Answers |
 | --- | --- | --- | --- | --- |
@@ -26,11 +26,15 @@ API-only App Hosting backend for the Amazon (SP-API) marketplace channel, port 3
 | POST | `/api/marketplace/amazon/conta/[id]/oauth/start` | `PERM.integracao.write` | 503 `AMAZON_CHAMADAS_DESLIGADAS`, no Firestore read | 200 `{ authorizeUrl }` · 400 · 404 · 500 `AMAZON_CONFIG_AUSENTE` (names only) |
 | GET | `/api/oauth/amazon/callback` | public (outside the CORS matcher) | redirect `integracao_desligada`, nothing consumed | redirect to `${WEB_APP_URL}/canais/amazon[/<id>]?amazon=connected` or `?amazon=error&reason=<motivo>` |
 | POST | `/api/webhooks/amazon` | public; the relay key (outside the CORS matcher) | not gated (no Amazon call) | EMPTY body: 503 config · 401 key · 500 failure not persisted · 200 everything else, every drop included |
+| POST | `/api/marketplace/amazon/enviar-nfe` (step 14, PR 14-d) | `PERM.pedido.write` | 503 `AMAZON_CHAMADAS_DESLIGADAS`, no Firestore read (no Amazon call either way) | body `{ pedidoId, nfeId? }`, strict (`pedidoId` = the ERP pedido document id) · 202 `{ enfileirado: true, pedidoId, nfeId }` · 400 `AMAZON_CORPO_INVALIDO` (field paths) · 503 `AMAZON_TAREFAS_DESLIGADAS` (queue valve, no read) · 404 `AMAZON_PEDIDO_NAO_ENCONTRADO` / `AMAZON_NFE_NAO_ENCONTRADA` · 409 `AMAZON_NFE_NAO_ELEGIVEL` + `motivo` · a missing or malformed queue region (checked before any read) or an enqueue failure other than the valve PROPAGATES (500, one ERROR line; a raw SDK failure leaves sanitized) |
 
 Every answer carries `Cache-Control: no-store` and `Referrer-Policy: no-referrer`
 (`lib/amazon/core/respond.ts`, `proxy.ts`, and site-wide in `next.config.ts`).
 The callback's fifteen ordered steps live in `lib/amazon/conta/conectar.ts`; the
-route is thin. `proxy.ts` allows `GET, POST, OPTIONS`.
+route is thin. `proxy.ts` allows `GET, POST, OPTIONS`. The re-drive's codes are their own
+closed set, `CODIGO_ERRO_NFE_AMAZON` (`@delfrance/schemas`), never a widening of
+`CODIGO_ERRO_AMAZON`: `apps/web` keeps an exhaustive copy `Record` and a literal pin over that
+one (step-14 plan §3 decision 21; the button and its copy are step 21's).
 
 ## Receiver (step 3)
 
@@ -69,7 +73,10 @@ route is thin. `proxy.ts` allows `GET, POST, OPTIONS`.
 - ⚠️ The App Hosting closure (every route, the receptor, its producer `notificacoes/agendador.ts`,
   `lib/firebase/filaLeitura.ts`, the proxy) NEVER reaches the step-5 importer or its seam, and no
   app file in it names `@delfrance/core/cep` or builds a ViaCEP client — walked by
-  `estrutura.test.ts` with the `@/` alias and type edges followed. The walk proves APP files
+  `estrutura.test.ts` with the `@/` alias and type edges followed. Since step 14 (PR 14-d: the
+  re-drive route joined it) the same walk also refuses the write ENGINE (`core/escrita.ts`, the
+  one builder of a write client) and any `node:crypto` import (the NF-e body's MD5 is the
+  task's, `nfe/conteudoNfe.ts`). The walk proves APP files
   only: it leaves packages external, and the ViaCEP module itself is still loaded, inert,
   through the `@delfrance/schemas` barrel (`enderecoBuilder.ts` imports `ViaCepError` from it).
   That is why the seam table lives in `notificacoes/destinos.ts` (imported only by the functions
@@ -125,8 +132,9 @@ route is thin. `proxy.ts` allows `GET, POST, OPTIONS`.
   which the order import meets in the cliente resolver — see "Logging (step 2b)".)
 - THREE composition roots are the app's only `getFunctions(` callers, each pinned to the
   queue(s) it binds (`FILAS_DE_CADA_RAIZ` in `estrutura.test.ts`): `lib/firebase/filaLeitura.ts`
-  (App Hosting, the receiver; the reads queue — 14-d adds the NF-e queue there for the
-  re-drive route), `functions/src/agendador.ts` (the step-4 poll; the reads queue) and
+  (App Hosting: the reads queue for the receiver and, since step 14's PR 14-d, the NF-e
+  queue for the re-drive route — BOTH behind its ONE `getFunctions(` call, pinned by
+  `filaLeitura.test.ts`), `functions/src/agendador.ts` (the step-4 poll; the reads queue) and
   `functions/src/agendadorNfe.ts` (step 14, PR 14-c: the NF-e queue, for the trigger and the
   task's own re-enqueues). Each reads the region as an object literal of STATIC `process.env`
   reads (esbuild's `define`). ⚠️ `functions/src/agendador.ts` was deliberately NOT given the
@@ -303,7 +311,7 @@ route is thin. `proxy.ts` allows `GET, POST, OPTIONS`.
   verification enqueue keeps `aceite-nao-confirmado` / `envio-nao-confirmado`, the valve
   included); P12 aviso → re-enqueue → stamp → resolve; `aceita`: the
   clear → `nfe-validada` → the step-15 seam (`nfe/destinoAceite.ts`, NULL, pinned). Only the
-  trigger NAMES a task; the chain (and 14-d's route) enqueue UNNAMED. ONE `evento: 'nfe'`
+  trigger NAMES a task; the chain (and the re-drive route) enqueue UNNAMED. ONE `evento: 'nfe'`
   dispatch line per run (`registrarDespachoNfeAmazon`), never the XML, its base64, the digest
   or a 44-digit run.
 - `rateLimits { maxConcurrentDispatches: 1, maxDispatchesPerSecond: 1 }`: concurrency 1 is the
@@ -320,6 +328,38 @@ route is thin. `proxy.ts` allows `GET, POST, OPTIONS`.
   snapshot's `readTime`): the attempt that wrote the transition may have died after its commit,
   and every one of those writes is idempotent. Every other FIRST attempt reads no `nfev4` and
   no `nfeUploadRejeitado` row.
+- **The re-drive route** `POST /api/marketplace/amazon/enviar-nfe` (PR 14-d; body
+  `lib/amazon/nfe/reenvioNfe.ts`, the route is thin): `PERM.pedido.write`; the body STRICTLY
+  `{ pedidoId, nfeId? }` (a `fase` or a counter is a 400, never ignored) → the read switch
+  (503, nothing read) → the queue valve (503 `AMAZON_TAREFAS_DESLIGADAS`, nothing read) → the
+  queue's region (missing or malformed ⇒ one ERROR line, 500, nothing read — the receiver's
+  check, so a broken deploy shows whatever the pedido) → the RAW pedido (404) → the TASK's
+  verdict (`avaliarPedidoParaTarefaNfeAmazon`: the proof, the emission block — never the
+  trigger's stored pre-filter) → the slot: an explicit `nfeId` judged by
+  `motivoForaDoEnvioNfeAmazon` (the LEVEL predicate + the sale gate — never the transition
+  one), else ONE unfiltered listing and `escolherNfeParaEnvioAmazon` (the closest miss in the
+  409's `motivo`) → ONE UNNAMED enqueue of `tarefaInicialNfeAmazon` → 202. Its ONLY side
+  effect is that enqueue: no Amazon call, no Firestore write, and it never reads
+  `AMAZON_MODO_NFE` / `AMAZON_CANARIO_NFE` (step-14 plan §3 decision 20: the task is the one
+  source of truth for a write). Enqueued ON PURPOSE, for the task to answer: an illegible proc
+  (the task avisa and stamps it), a stored cancelled sale (the task's P3 incidente
+  `amz-nfe-pedido-cancelado`, zero Amazon calls) and a pedido with TWO eligible sale notes
+  (the slot rule names one, or the body did — the explicit arm reads no listing; the task
+  raises `nfe-ambigua` at P5, before any Amazon call). Some
+  task outcomes are log-only (`SO_LOG`): a 202 followed by no aviso change is read in that
+  pedido's `evento: 'nfe'` lines. Only `AmazonNfeTarefasDesligadasError` is answered at the
+  enqueue; a Cloud Tasks transient, a region error or a raw SDK failure PROPAGATES (500)
+  after ONE ERROR line (`resultado: 'falhou'`, the class only), the raw SDK one rethrown as
+  `AmazonNfeEnfileiramentoFalhouError` (no `cause`, no `httpResponse`: the SDK error carries
+  the answered body as its own properties): a transient enqueue may have landed, so no coded
+  answer claims "nothing enqueued". ⚠️ A second re-drive of the same pedido inside Amazon's
+  read-after-write lag (≈ 3 min, `ULTIMO_DEGRAU_DO_ATRASO_NFE_AMAZON`) will most likely SUBMIT
+  THE NF-e AGAIN — the status-first read does not stop it inside the lag — and a re-drive does
+  not clear the pedido's aviso row: re-drive each pedido ONCE (after a 500 too) and wait ~5 min
+  or for the aviso to change. One line per answer (`evento: 'nfe'`, `rota: 'enviar-nfe'`; the
+  switch's is the shared `chamada-bloqueada`). "Reenvio" in `reenvioNfe.ts` is this HUMAN
+  re-drive (a fresh chain); `tarefaNfe.ts`'s `reenvioNfeAmazon` / `reenvios` is the chain's
+  one automatic resubmit.
 - **Avisos** (`nfe/avisoNfe.ts`): key `chaveDeAviso(nfeUploadRejeitado, integracaoId,
   pedidoId)` — ONE row per pedido; `params` exactly `pedido` and `erro`; a motivo outside set A
   is a `RangeError`, nothing written. `MOTIVO_AVISO_AMAZON` gained `pedidoCancelado`,
@@ -471,7 +511,14 @@ by `requireRegion`) and `AMAZON_TASKS_DISABLED` (exactly `1`). Both also serve t
 `processAmazonNfeUpload` (step 14) from the functions root `src/agendadorNfe.ts`; there
 `AMAZON_TASKS_DISABLED=1` STOPS every NF-e upload with NO sweep behind it — the trigger, and a
 task whose next chain step the valve refuses (before its own submit), raise the aviso
-`tarefas-desligadas` on the pedido, and that aviso list is the re-drive worklist. Every other
+`tarefas-desligadas` on the pedido, and that aviso list is the re-drive worklist: each pedido
+goes back through `POST /api/marketplace/amazon/enviar-nfe` with `{ pedidoId }` once the valve
+is open — `pedidoId` is the aviso row's `entidade` (the pedido document id, the one in the
+pedido page's URL), never its `params.pedido` (the Amazon order number); ONCE per pedido, see
+the re-drive bullet under "NF-e upload (step 14)". In App Hosting the same variable makes that
+route answer 503 `AMAZON_TAREFAS_DESLIGADAS` (and writes no aviso: it closes only that
+backend's producers, never the NF-e trigger or the task's re-enqueues), and the same region
+serves its enqueue. Every other
 read above is blank-guarded (blank = unset) and never trimmed; the valves and lists below are NOT
 (only unset and `''` are empty). `apphosting.yaml` lists them as COMMENT rows only —
 no `env:` block.
@@ -502,6 +549,8 @@ no `env:` block.
   `processAmazonNfeUpload` reads the NF-e pair on every dispatch, before any read, and runs a
   planned submit through the write engine (`core/escrita.ts`). A verification dispatch never
   consults the valve (it writes nothing to Amazon): a flip never ends a chain that submitted.
+  The re-drive route (PR 14-d) never reads the pair either: it only enqueues, and the task
+  decides on the functions surface's values at run time.
 - W8 (the window, never before it), per flow: `dry-run` → a canary list → `on` → `*`, set ALIKE
   on both surfaces. Check the run-start line, then the dry-run diffs, then clean read-backs.
 
@@ -540,6 +589,7 @@ no `env:` block.
 | `nfeUploadRejeitado` raise / resolve (step 14) | seam, tier 2 on the Firestore timeline | `escreverAviso` / `resolverAviso`: the task's rows clocked by its P3 pedido `readTime`, the trigger's by T2's; the task's resolve READS first and writes nothing when there is no row; the importer's transition resolve ALWAYS seeds (a resolved tombstone drops a later stale raise) |
 | `amazonPedidoPrecisaAtencao` `aceitar-cancelamento` from the NF-e task (step 14) | seam, tier 2 | the existing per-pedido key, clocked by the task's P3 `readTime`; the live read is floored by the stored watermark |
 | Incidente `amz-nfe-pedido-cancelado` (step 14) | 0 | `create` at the deterministic id, only ALREADY_EXISTS swallowed (the task and the importer's cancel transition) |
+| NF-e re-drive route (step 14, PR 14-d) | — | no write: ONE UNNAMED enqueue is the whole effect. A double re-drive is two tasks, and the status-first read does NOT dedupe them inside Amazon's read-after-write lag (≈ 3 min): the second most likely submits again (step-14 plan §5 risk 2, accepted) — hence the operator rule, one re-drive per pedido, then wait |
 
 This app adds **ONE** multi-document atomic-write site: the order import's batch
 (`pedidos/escritaPedido.ts`), each write under its own precondition. It opens **no** transaction

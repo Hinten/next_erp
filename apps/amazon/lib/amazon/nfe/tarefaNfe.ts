@@ -88,8 +88,9 @@ export const LEITURA_ANTES_NFE_AMAZON = {
 
 /**
  * The verification ladder: the delay, in SECONDS, before rung N's read. Σ
- * 85,680 s ≈ 23.8 h per submit — the "24 h" of the master plan is this RUNG
- * COUNT, not a wall clock (step-14 plan §3 decision 26).
+ * 85,680 s ≈ 23.8 h per submit — the master plan's "10-rung ladder (≈ 23.8 h)
+ * per submit" (formerly its "deadline 24 h") is this RUNG COUNT, not a wall
+ * clock (step-14 plan §3 decision 26).
  */
 export const ESCADA_VERIFICACAO_NFE_AMAZON_S = [
   60, 120, 300, 600, 1800, 3600, 7200, 14400, 28800, 28800,

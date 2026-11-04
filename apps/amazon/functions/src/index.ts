@@ -89,7 +89,7 @@ if (!(FILA_LEITURA_AMAZON in filaLeitura)) {
 }
 
 // The same assertion for the NF-e queue (step 14, PR 14-c): every NF-e producer
-// — the trigger's root, the handler's own re-enqueues, the 14-d route — targets
+// — the trigger's root, the handler's own re-enqueues, the re-drive route — targets
 // `FILA_NFE_AMAZON`.
 if (!(FILA_NFE_AMAZON in filaNfe)) {
   throw new Error(

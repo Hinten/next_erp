@@ -104,8 +104,11 @@ export interface LoggerAmazon {
  * import (step 5: its own WARNING lines — a stale read accepted, a lost
  * precondition, a recent-cancel wait, the decision's closed log codes — ids,
  * counts and closed codes only) or the NF-e upload (step 14: the write engine's
- * dry-run line, and the NF-e task's own lines — ids, closed codes and Amazon's
- * status constants only, never the XML, its digest or the access key).
+ * dry-run line, the NF-e task's own lines, and — PR 14-d, request-time on App
+ * Hosting — the re-drive route's one line per answer: `rota: 'enviar-nfe'`,
+ * `resultado` a code, `enfileirado` or `falhou`, a closed `motivo`, the ids —
+ * ids, closed codes and Amazon's status constants only, never the XML, its
+ * digest or the access key).
  */
 export type EventoAmazon =
   | 'chamada'

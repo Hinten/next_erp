@@ -58,8 +58,9 @@ export function depsDoEnvioNfeAmazon(registro: RegistroNfeAmazon): DepsProcessar
  * after it — for the upload of an Amazon Delivery-by-Amazon order's NF-e. Its
  * producers: the trigger `onNfeAprovadaAmazon` (one NAMED task per CloudEvent),
  * this handler's own re-enqueues (the verification ladder, the one resubmit, the
- * 429 pause — UNNAMED), and, in 14-d, the re-drive route. The body is
- * `lib/amazon/nfe/processarNfe.ts` (P0–P12).
+ * 429 pause — UNNAMED), and the App Hosting re-drive route
+ * `POST /api/marketplace/amazon/enviar-nfe` (PR 14-d; UNNAMED too). The body
+ * is `lib/amazon/nfe/processarNfe.ts` (P0–P12).
  *
  * ⚠️ The export name IS the deployed function AND queue name, and it must equal
  * `FILA_NFE_AMAZON` — the producers target that string. `index.ts` asserts the
@@ -89,7 +90,7 @@ export function depsDoEnvioNfeAmazon(registro: RegistroNfeAmazon): DepsProcessar
  * - `...tasksInvokerOptions()`: `roles/run.invoker` on this service and
  *   `roles/cloudtasks.enqueuer` on its queue, from `TASKS_INVOKER_SA` — which
  *   must name BOTH runtime SAs (the functions one: the trigger and the
- *   self-re-enqueues; the App Hosting one: the 14-d re-drive route).
+ *   self-re-enqueues; the App Hosting one: the re-drive route).
  *
  * ONE `evento: 'nfe'` dispatch line per run that returns
  * (`registrarDespachoNfeAmazon`); a throw for the queue's retry writes none (the
