@@ -41,7 +41,15 @@ import {
   produtoFilhoCriadoExemplo,
   produtoPaginaExemplo,
 } from './_fixtures/especificacao';
-import { json, mockFetch, requisicao, TOKEN, texto, verificarSoGet } from './_helpers/mockFetch';
+import {
+  type FetchArgs,
+  json,
+  mockFetch,
+  requisicao,
+  TOKEN,
+  texto,
+  verificarSoGet,
+} from './_helpers/mockFetch';
 
 /**
  * The product import's reads. Every body is the public document's own example
@@ -545,6 +553,51 @@ describe('lerPaginaProdutosLi', () => {
     expect(linhas.find((l) => l.id === 198219152)?.gtin).toBeNull();
   });
 
+  // The SKU is an identity: a fold here would make two products one before any
+  // reader could tell them apart.
+  it.each(['sku', 'gtin', 'nome'] as const)(
+    "`%s` EQUAL side: the text as sent; NEAR-MISS: edge spaces and a lone space stay, only the exact `''` reads as null",
+    async (campo) => {
+      const [primeira] = LINHAS;
+      const f = sequencia(
+        json(
+          paginaProdutos(
+            0,
+            null,
+            ['SKU-EXEMPLO-1', ' SKU-EXEMPLO-1 ', 'SKU-EXEMPLO-1 ', ' ', ''].map((valor) => ({
+              ...primeira,
+              [campo]: valor,
+            })),
+          ),
+        ),
+      );
+      expect((await produtos(f)).linhas.map((l) => l[campo])).toEqual([
+        'SKU-EXEMPLO-1',
+        ' SKU-EXEMPLO-1 ',
+        'SKU-EXEMPLO-1 ',
+        ' ',
+        null,
+      ]);
+    },
+  );
+
+  it("a flag's `''` is the provider's \"none\" and reads as null; NEAR-MISS: `' '`, `'0'` and `false` are kept as sent", async () => {
+    const [primeira] = LINHAS;
+    const f = sequencia(
+      json(
+        paginaProdutos(0, null, [
+          { ...primeira, ativo: '', bloqueado: '', removido: '' },
+          { ...primeira, ativo: ' ', bloqueado: '0', removido: false },
+        ]),
+      ),
+    );
+    const flags = (await produtos(f)).linhas.map((l) => [l.ativo, l.bloqueado, l.removido]);
+    expect(flags).toEqual([
+      [null, null, null],
+      [' ', '0', false],
+    ]);
+  });
+
   it('the filtered examples parse too (this package never sends either filter)', async () => {
     const f = sequencia(json(produtoFiltroSkuExemplo), json(produtoFiltroDataExemplo));
     const porSku = await produtos(f);
@@ -899,6 +952,31 @@ describe('buscarProdutoLi', () => {
     expect(dados.descricao_completa).toBeNull();
   });
 
+  it("`''` reads as null on the detail's raw leaves and on every image leaf; NEAR-MISS: `' '` and `'0'` are kept as sent", async () => {
+    const [primeira] = produtoDetalheExemplo.imagens;
+    const f = sequencia(
+      json({
+        ...produtoDetalheExemplo,
+        pai: '',
+        marca: '',
+        destaque: '',
+        usado: '',
+        imagem_principal: { ...primeira, principal: '', posicao: '', mime: '' },
+        imagens: [
+          { ...primeira, id: '', principal: '', posicao: '', mime: '' },
+          { ...primeira, principal: ' ', posicao: '0', mime: ' ' },
+        ],
+      }),
+    );
+    const { dados } = await buscarProdutoLi(cliente(f), ID_DETALHE);
+    expect([dados.pai, dados.marca, dados.destaque, dados.usado]).toEqual([null, null, null, null]);
+    expect(dados.imagem_principal).toMatchObject({ principal: null, posicao: null, mime: null });
+    expect(dados.imagens.map((i) => [i.id, i.principal, i.posicao, i.mime])).toEqual([
+      [null, null, null, null],
+      [143127013, ' ', '0', ' '],
+    ]);
+  });
+
   it('a 404 (an unknown id answers it with an empty body) is the client’s LiNotFoundError, rethrown as-is', async () => {
     const f = sequencia(texto('', 404));
     await expect(buscarProdutoLi(cliente(f), ID_DETALHE)).rejects.toBeInstanceOf(LiNotFoundError);
@@ -921,4 +999,39 @@ describe('buscarProdutoLi', () => {
     expect(err).toBe(motivo);
     expect(f).not.toHaveBeenCalled();
   });
+});
+
+/* -------------------------------------------------------------------------- */
+
+describe('the caller’s signal reaches the request in flight', () => {
+  const LEITURAS: readonly (readonly [
+    string,
+    (f: typeof globalThis.fetch, sinal: AbortSignal) => Promise<unknown>,
+    unknown,
+  ])[] = [
+    ['lerPaginaLi', (f, sinal) => umaPagina(f, { sinal }), produtoPaginaExemplo],
+    ['lerPaginaProdutosLi', (f, sinal) => produtos(f, { sinal }), produtoPaginaExemplo],
+    [
+      'buscarProdutoLi',
+      (f, sinal) => buscarProdutoLi(cliente(f), ID_DETALHE, { sinal }),
+      produtoDetalheExemplo,
+    ],
+  ];
+
+  // The pre-send checks cannot see this abort: it lands while `fetch` runs, so
+  // only a signal handed down to the request can stop it.
+  it.each(LEITURAS)(
+    '%s: an abort DURING the request aborts it, and the caller gets its own reason back',
+    async (_nome, ler, corpo) => {
+      const controller = new AbortController();
+      const motivo = new DOMException('saiu', 'AbortError');
+      const f = mockFetch((...[, init]: FetchArgs) => {
+        controller.abort(motivo);
+        const sinal = init?.signal;
+        return sinal?.aborted === true ? Promise.reject(sinal.reason) : json(corpo);
+      });
+      expect(await falha(ler(f, controller.signal))).toBe(motivo);
+      expect(f).toHaveBeenCalledTimes(1);
+    },
+  );
 });

@@ -355,6 +355,22 @@ describe('redirects are never followed', () => {
     expect(await baixar(leitor(quebrado))).toMatchObject({ host: null });
   });
 
+  it.each([
+    [299, 'nao-e-imagem'],
+    [300, 'redirecionamento'],
+    [399, 'redirecionamento'],
+    [400, 'http'],
+  ] as const)(
+    'the 3xx band is 300 to 399 inclusive, at both edges: %d with a `Location` ⇒ %s',
+    async (status, resultado) => {
+      const f = servir(
+        () => new Response(null, { status, headers: { location: 'https://outro.invalid/x' } }),
+      );
+      expect(await baixar(leitor(f))).toMatchObject({ resultado, status });
+      expect(f).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it('a browser’s opaque redirect (status 0, no headers) is `redirecionamento` too', async () => {
     const f = servir(() => {
       const res = new Response(null, { status: 302 });
