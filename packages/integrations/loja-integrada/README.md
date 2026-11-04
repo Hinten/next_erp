@@ -17,6 +17,7 @@ What ships here:
 | `pedidos.ts`        | The order import's reads: `buscarPedidoLi`, `listarHistoricoSituacaoLi` (every page) and `buscarProdutoPorIdExternoLi`                                                                            |
 | `catalogo.ts`       | The four catalogue reads: `listarCategoriasLi`, `listarMarcasLi`, `listarGradesLi` (every page, the caller's `limite` and `maxPaginas` both required) and `buscarGradeLi` (one grade's options)   |
 | `produtos.ts`       | The product import's reads: `lerPaginaLi` (one page of any list, its next offset validated), `lerPaginaProdutosLi` (live or trash) and `buscarProdutoLi`, both projected: no price or stock       |
+| `cdn.ts`            | The photo reader, `criarLeitorCdnLi`: the pinned CDN host, no credential, no redirect, `PRAZO_CDN_LI_MS`, a byte cap, the type from the bytes; original or `800x800`                              |
 | `pedidosEscrita.ts` | The status write-back's two writes: `atualizarObjetoEnvioLi` (the tracking code) and `alterarSituacaoPedidoLi` (only the three write-back codigos)                                                |
 | `pedidoTipos.ts`    | The order detail, situação, situação-history row and produto-identity response schemas, written against captures; the two write echoes, every field optional                                      |
 | `prazos.ts`         | `PRAZO_LI_MS`, the per-call deadline keyed on the operation class (`leitura`, `escrita`)                                                                                                          |
@@ -111,6 +112,15 @@ token **raw** after `Basic ` (not base64-encoded by us).
   rows a page (the API answers 400 from 200 up), with `removido` sent on every page;
   the detail is the plain GET (no `descricao_completa` flag: it changed nothing).
   Neither sends `id_externo`, `sku`, `ativo` or a date filter.
+- **No credential on the CDN, and no URL from a body.** `cdn.ts` reads a photo from
+  the pinned CDN host (`URL_BASE_CDN_LI`) by its `caminho` alone, never from a
+  body's absolute URL, with no header at all, so the Personal Token never leaves
+  the API host. A refused picture (a malformed `caminho`, a 3xx, a 404 or another
+  status, over the byte cap, not a JPEG, PNG, WebP or GIF by its bytes) is a typed
+  outcome the importer reports per photo; over the cap is its own outcome, the
+  cue to ask for the `800x800` form instead. A CDN 401, 403 or 429 is never the
+  API's auth or throttle error. The deadline and a dropped connection throw the
+  same transport errors as any read.
 - **No decision about an order.** `pedidos.ts` reads and parses; mapping a
   situação, a payment or a line is the app's (`apps/loja-integrada`), through the
   shared situação table in `@delfrance/schemas`.

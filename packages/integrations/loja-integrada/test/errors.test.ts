@@ -207,6 +207,9 @@ describe('the class hierarchy', () => {
       'maxPaginas',
       'limite',
       'offset',
+      'prazo',
+      'maxBytes',
+      'forma',
     ] as const) {
       const err = new LiConfigError(motivo, { operacao: 'op', refCredencial: null });
       expect(err.motivo).toBe(motivo);

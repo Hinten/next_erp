@@ -26,8 +26,9 @@
  * `refCredencial` is the opaque, non-secret label the caller handed in with the
  * token (`CredencialLi.ref`), echoed so the app can tell WHICH credential a 401
  * belonged to. It is `null` only when the error was raised before the
- * credential getter resolved, or when echoing it is unsafe (a rejected token or
- * a rejected `ref`).
+ * credential getter resolved, when echoing it is unsafe (a rejected token or
+ * a rejected `ref`), or when the request carried no credential at all: the CDN
+ * reader's (`cdn.ts`), which sends the token nowhere.
  */
 import { resumirCampos } from '@delfrance/core/wire';
 
@@ -129,7 +130,11 @@ export interface ContextoRequisicaoLi {
   /** The path only — never the query, which may carry filter values. */
   readonly caminho: string;
   readonly correlationId: string;
-  readonly refCredencial: string;
+  /**
+   * The `ref` of the credential the request carried; `null` on a request that
+   * carried none (the CDN reader, `cdn.ts`).
+   */
+  readonly refCredencial: string | null;
   /**
    * The verb, printed in every message. The package fills it on every request
    * it builds; ABSENT reads as `'GET'`.
@@ -172,6 +177,9 @@ export type MotivoConfigLi =
   | 'maxPaginas'
   | 'limite'
   | 'offset'
+  | 'prazo'
+  | 'maxBytes'
+  | 'forma'
   | 'corpo'
   | 'token-no-corpo'
   | 'codigo-nao-permitido'
@@ -197,6 +205,13 @@ export type MotivoConfigLi =
  * - `'offset'` — a one-page read's offset that is not a non-negative safe
  *   integer, or an `offset` slipped into its extra query (the page's offset is
  *   the caller's `offset` option, never a second value).
+ * - `'prazo'` — the CDN reader's deadline (`cdn.ts`) is not a positive safe
+ *   integer of milliseconds, or is above `PRAZO_CDN_LI_MS`, the worst case a
+ *   caller budgets a photo for.
+ * - `'maxBytes'` — the CDN reader's byte cap is not a positive safe integer, or
+ *   is above `MAX_BYTES_IMAGEM_LI`.
+ * - `'forma'` — a photo asked for in a form that is neither the original nor
+ *   `800x800`.
  * - `'rota-nao-permitida'` — a write's path is not one of the package's write
  *   routes (`rotasEscrita.ts`): another resource, or a route's path in another
  *   form (a trailing slash, a non-canonical id). Raised BEFORE the credential
@@ -249,6 +264,12 @@ function mensagemDeConfig(motivo: MotivoConfigLi, operacao: string): string {
       return `${prefixo} o limite de linhas por página precisa ser um inteiro positivo, dentro do teto da lista, e só pode vir na opção limite. Nada foi enviado.`;
     case 'offset':
       return `${prefixo} o offset da página precisa ser um inteiro não negativo e só pode vir na opção offset. Nada foi enviado.`;
+    case 'prazo':
+      return `${prefixo} o prazo da chamada precisa ser um número inteiro e positivo de milissegundos, até o teto do leitor. Nada foi enviado.`;
+    case 'maxBytes':
+      return `${prefixo} o limite de bytes precisa ser um número inteiro e positivo, até o teto do leitor. Nada foi enviado.`;
+    case 'forma':
+      return `${prefixo} a forma da imagem precisa ser a original ou a 800x800. Nada foi enviado.`;
     case 'corpo':
       return `${prefixo} o corpo da escrita não passou no seu schema (campo ausente, vazio, fora do formato ou a mais). Nada foi enviado.`;
     case 'token-no-corpo':
@@ -480,8 +501,9 @@ export class LiNetworkError extends LiError {
 }
 
 /**
- * The per-call deadline (`PRAZO_LI_MS`) passed. The outcome is unknown — the
- * request may have been served — which for a GET only means "try again".
+ * The per-call deadline (`PRAZO_LI_MS`, or the CDN reader's `PRAZO_CDN_LI_MS`)
+ * passed. The outcome is unknown — the request may have been served — which
+ * for a GET only means "try again".
  * ⚠️ For a write it means the write MAY HAVE LANDED: the caller re-derives
  * from a fresh read before deciding anything, and never assumes either
  * outcome. Subclasses {@link LiNetworkError}, as `MelhorEnvioTimeoutError`
