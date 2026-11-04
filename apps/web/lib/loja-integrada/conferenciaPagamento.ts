@@ -284,6 +284,9 @@ export const ACAO_HARD_DO_CODIGO_LI = {
   [E.gradeAusenteNaLoja]: 'confirmar-transitorio',
   [E.catalogoExcedeLimite]: 'confirmar-transitorio',
   [E.recursoNaoPermitido]: 'confirmar-transitorio',
+  [E.importacaoEmAndamento]: 'confirmar-transitorio',
+  [E.importacaoNaoEncontrada]: 'confirmar-transitorio',
+  [E.importacaoEncerrada]: 'confirmar-transitorio',
 } as const satisfies Record<CodigoErroLi, AcaoHardDoCodigoLi>;
 
 /**
@@ -319,6 +322,9 @@ export const ACAO_IMPRESSAO_DO_CODIGO_LI = {
   [E.gradeAusenteNaLoja]: 'confirmar-transitorio',
   [E.catalogoExcedeLimite]: 'confirmar-transitorio',
   [E.recursoNaoPermitido]: 'confirmar-transitorio',
+  [E.importacaoEmAndamento]: 'confirmar-transitorio',
+  [E.importacaoNaoEncontrada]: 'confirmar-transitorio',
+  [E.importacaoEncerrada]: 'confirmar-transitorio',
 } as const satisfies Record<CodigoErroLi, AcaoImpressaoDoCodigoLi>;
 
 /**
@@ -354,6 +360,9 @@ const LINHA_DO_CODIGO_LI: Readonly<Record<CodigoErroLi, string>> = {
   [E.gradeAusenteNaLoja]: 'resposta inesperada do backend',
   [E.catalogoExcedeLimite]: 'resposta inesperada do backend',
   [E.recursoNaoPermitido]: 'resposta inesperada do backend',
+  [E.importacaoEmAndamento]: 'resposta inesperada do backend',
+  [E.importacaoNaoEncontrada]: 'resposta inesperada do backend',
+  [E.importacaoEncerrada]: 'resposta inesperada do backend',
 };
 
 /** The `<causa>` of every non-code failure, by its class. */

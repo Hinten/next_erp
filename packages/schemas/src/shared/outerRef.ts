@@ -139,6 +139,32 @@ export function parseRef(raw: string): { collection: string; id: string } {
   };
 }
 
+/**
+ * The integração doc id a stored conta ref points at, or `null` — THE reader of a channel link's
+ * conta ref (the `integracoesComProduto` anchor of every channel, the Mercado Livre category
+ * anúncio, and the Loja Integrada product import's link and category decisions).
+ *
+ * Tolerates both stored ref forms: the canonical `documents/integracao/<id>` every app writes, and
+ * the bare `integracao/<id>` readers accept defensively. The id is returned as stored — no case or
+ * space fold, so `c1` is another conta than `C1`. Moved here from
+ * `packages/data/src/admin/produtos/integracoesComProduto.ts` (which re-exports it) when a pure
+ * schema decision needed it too, so there is one copy.
+ *
+ * Non-throwing by construction ({@link toOuterRefOrNull}): a permanently malformed ref must
+ * degrade to "conta not resolvable" and not ride the Eventarc retry forever. The collection check
+ * keeps a ref pointing somewhere else from being read as a conta.
+ *
+ * Equal (⇒ `'C1'`): `'documents/integracao/C1'` ≡ `'integracao/C1'`.
+ * Distinct: `'documents/integracao/C2'` ⇒ `'C2'`; `'documents/categorias/C1'`, `'C1'` (a bare id
+ * is not a ref), `'integracao'`, `''`, `null`, a number ⇒ `null`.
+ */
+export function contaIdFromRef(raw: unknown): string | null {
+  const ref = toOuterRefOrNull(raw);
+  if (ref === null) return null;
+  const { collection, id } = parseRef(ref);
+  return collection === 'integracao' && id !== '' ? id : null;
+}
+
 /** Firestore reserves both relative-path names; either one addresses elsewhere. */
 const NOMES_RELATIVOS = new Set(['.', '..']);
 

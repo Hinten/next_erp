@@ -1,3 +1,5 @@
+import { z } from 'zod';
+
 /**
  * Family identity — pure, total, no database.
  *
@@ -175,6 +177,98 @@ export function ehFamiliaDeUm(produto: ProdutoDeFamilia): boolean {
  */
 export function unidadeVendavel(produto: ProdutoDeFamilia): string {
   return ehFamiliaDeUm(produto) ? produto.filhoUnicoId! : produto.id;
+}
+
+/* -------------------------------------------------------------------------- */
+/*               The shape of an ERP root, read from its member                */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The shape of an ERP root (a produto with no `paiId`), as a channel import that must MATCH
+ * shapes reads it — the Loja Integrada product import (step 9) first:
+ *
+ *  - `raiz-simples`: no child at all;
+ *  - `familia-de-um`: one child, the SOLE MEMBER the web's "Novo produto" builds — a child with
+ *    no variation taxonomy (neither `variacoesUid` nor `grupoDeVariacoesUid` holds an id);
+ *  - `familia-de-uma-variacao`: one child that IS a variation (it carries a taxonomy) — a real
+ *    family that happens to have one member;
+ *  - `familia-de-muitas`: two or more children;
+ *  - `forma-ilegivel`: the denormalisation drifted — one child but no `filhoUnicoId`, a
+ *    `filhoUnicoId` naming no child (or a child of another root), a pointer beside two or more
+ *    children, or a "root" that is itself a child. Never guessed into a shape.
+ *
+ * ⚠️ {@link ehFamiliaDeUm} is true for BOTH one-child shapes: it reads `filhoUnicoId`, which
+ * {@link derivarFilhoUnico} sets for any root with exactly one child. This tells them apart by
+ * reading the MEMBER, never the pointer alone.
+ */
+export const formaRaizErpSchema = z.enum([
+  'raiz-simples',
+  'familia-de-um',
+  'familia-de-uma-variacao',
+  'familia-de-muitas',
+  'forma-ilegivel',
+]);
+export type FormaRaizErp = z.infer<typeof formaRaizErpSchema>;
+
+/** Named members of {@link formaRaizErpSchema} — see `delfrance/prefer-schema-enum`. */
+export const FORMA_RAIZ_ERP = {
+  raizSimples: 'raiz-simples',
+  familiaDeUm: 'familia-de-um',
+  familiaDeUmaVariacao: 'familia-de-uma-variacao',
+  familiaDeMuitas: 'familia-de-muitas',
+  formaIlegivel: 'forma-ilegivel',
+} as const satisfies Record<string, FormaRaizErp>;
+
+/** The member fields {@link formaDaRaizErp} reads. */
+export interface MembroDeFamilia {
+  readonly id: string;
+  /** Required: a member is proved by naming the root, never assumed. */
+  readonly paiId: string | null;
+  readonly variacoesUid?: readonly string[] | null;
+  readonly grupoDeVariacoesUid?: readonly string[] | null;
+}
+
+/** A taxonomy list holding at least one id; `null`, absent and `[]` hold none. */
+function temTaxonomia(lista: readonly string[] | null | undefined): boolean {
+  return Array.isArray(lista) && lista.length > 0;
+}
+
+/**
+ * The shape of `raiz`, read from its member and its child count.
+ *
+ * @param entrada.membro the produto `raiz.filhoUnicoId` names, as read (`null` when that id names
+ *   no document, or when the root has no pointer and the caller read none).
+ * @param entrada.contagemDeFilhos the children a `paiId == <root>` read found, capped by its
+ *   limit (`limit(2)`: 0, 1 or 2 = "two or more"); `null` when the caller did not read them —
+ *   allowed only when the root carries a `filhoUnicoId`, since without the pointer the count is
+ *   the only evidence.
+ *
+ * Equal: `filhoUnicoId` + a member without taxonomy ⇒ `familia-de-um`; + a member with taxonomy
+ * ⇒ `familia-de-uma-variacao`; no pointer and no child ⇒ `raiz-simples`; no pointer and two or
+ * more ⇒ `familia-de-muitas`.
+ * Distinct: one child and no `filhoUnicoId` ⇒ `forma-ilegivel`, never `familia-de-um`.
+ */
+export function formaDaRaizErp(entrada: {
+  readonly raiz: ProdutoDeFamilia;
+  readonly membro: MembroDeFamilia | null;
+  readonly contagemDeFilhos: number | null;
+}): FormaRaizErp {
+  const { raiz, membro, contagemDeFilhos } = entrada;
+  if (raiz.paiId != null || raiz.id === '') return FORMA_RAIZ_ERP.formaIlegivel;
+  const ponteiro = raiz.filhoUnicoId;
+  if (ponteiro != null && ponteiro !== '') {
+    if (membro === null || membro.id !== ponteiro || membro.paiId !== raiz.id) {
+      return FORMA_RAIZ_ERP.formaIlegivel;
+    }
+    if (contagemDeFilhos !== null && contagemDeFilhos !== 1) return FORMA_RAIZ_ERP.formaIlegivel;
+    return temTaxonomia(membro.variacoesUid) || temTaxonomia(membro.grupoDeVariacoesUid)
+      ? FORMA_RAIZ_ERP.familiaDeUmaVariacao
+      : FORMA_RAIZ_ERP.familiaDeUm;
+  }
+  if (contagemDeFilhos === null) return FORMA_RAIZ_ERP.formaIlegivel;
+  if (contagemDeFilhos === 0) return FORMA_RAIZ_ERP.raizSimples;
+  if (contagemDeFilhos === 1) return FORMA_RAIZ_ERP.formaIlegivel;
+  return FORMA_RAIZ_ERP.familiaDeMuitas;
 }
 
 /* -------------------------------------------------------------------------- */

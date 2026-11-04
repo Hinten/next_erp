@@ -119,7 +119,8 @@ export function situacaoValidadeTokenLi(dias: number): SituacaoValidadeTokenLi {
  * them the catalogue reads (`GET …/conta/[id]/{categorias,marcas,grades}` and
  * `GET …/conta/[id]/grades/[gradeId]`, step 10), and the pedidos routes
  * (`PUT …/pedidos/[pedidoId]/rota-etiqueta`, the label routing, and
- * `GET …/pedidos/[pedidoId]/pagamento`, the paid re-check). The web keys its
+ * `GET …/pedidos/[pedidoId]/pagamento`, the paid re-check), and the product
+ * import routes (`…/conta/[id]/importacoes…`, step 9). The web keys its
  * copy and its decisions on `code`, never on the status alone: a 422 can mean
  * "refused by Loja Integrada" or "malformed, never sent", and a 503 can mean
  * "retry" or "switched off until the cutover" — each needs its own advice.
@@ -213,6 +214,16 @@ export const CODIGO_ERRO_LI = {
    * list. Only that list fails: the conta is NOT parked, so its orders keep flowing.
    */
   recursoNaoPermitido: 'LI_RECURSO_NAO_PERMITIDO',
+  /**
+   * 409 — the conta already has a product import running (`pendente` or
+   * `executando`); the envelope's `jobId` names it, so the web attaches to it.
+   * Only the import's start route answers it.
+   */
+  importacaoEmAndamento: 'LI_IMPORTACAO_EM_ANDAMENTO',
+  /** 404 — no product import with this id for this conta (another conta's job reads the same). */
+  importacaoNaoEncontrada: 'LI_IMPORTACAO_NAO_ENCONTRADA',
+  /** 409 — the product import already ended (cancelling it again changes nothing). */
+  importacaoEncerrada: 'LI_IMPORTACAO_ENCERRADA',
 } as const;
 export type CodigoErroLi = (typeof CODIGO_ERRO_LI)[keyof typeof CODIGO_ERRO_LI];
 
@@ -323,13 +334,15 @@ export type RespostaRemocaoCredencialLi = z.infer<typeof respostaRemocaoCredenci
 
 /**
  * Every non-2xx body of the conta routes and the pedidos routes: the repo's
- * `{ error, code, issues? }` envelope, plus two fields only the validation
- * outcomes carry.
+ * `{ error, code, issues? }` envelope, plus the fields only some outcomes
+ * carry.
  *
  * - `issues` — field PATHS only, never a value;
  * - `status` — the HTTP status Loja Integrada answered, on a refused or
  *   inconclusive validation (`null` when there was none);
- * - `correlationId` — the validation call's id, to find it in the logs.
+ * - `correlationId` — the validation call's id, to find it in the logs;
+ * - `jobId` — the RUNNING product import, on `LI_IMPORTACAO_EM_ANDAMENTO`
+ *   only, so the web attaches to it instead of starting another.
  *
  * `code` is a plain string rather than {@link CODIGO_ERRO_LI}'s union: a code a
  * newer backend adds must still parse in an older browser.
@@ -342,5 +355,6 @@ export const erroContaLojaIntegradaSchema = z.object({
   issues: z.array(z.string()).nullable().optional(),
   status: z.number().int().nullable().optional(),
   correlationId: z.string().nullable().optional(),
+  jobId: z.string().nullable().optional(),
 });
 export type ErroContaLojaIntegrada = z.infer<typeof erroContaLojaIntegradaSchema>;
