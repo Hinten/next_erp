@@ -22,8 +22,8 @@ Master plan: `.master_plans/loja-integrada/loja-integrada-marketplace-integratio
   variation linker reads the grades; categories and brands wait for step 11's product tab.
 - Step 9 (the product import, in stacked PRs): the job routes `conta/[id]/importacoes…` (below)
   and `lib/lojaIntegrada/importacao/` — the start core, the job lifecycle, the dispatch's time
-  budget, its named-task producer and the read phases (catalogue, listing and trash list, detail
-  reads, family assembly) so far.
+  budget, its named-task producer, the read phases (catalogue, listing and trash list, detail
+  reads, family assembly), the match cascade, the evidence pass and the option learning so far.
 
 ## Routes (`/api/marketplace/loja-integrada/conta/[id]…`)
 
@@ -130,6 +130,25 @@ carries the continuation `seq`, the cursors or the selection's ids.
   the distinct count against the first page's `total_count`). A variation no listed parent claims
   and a trashed parent claims is `na-lixeira` with no detail read; only the rest are detail-read,
   and their `pai` places them. An orphan is never imported as a simple product.
+- **The match is the import's own cascade** (`importacao/resolucao.ts`), never the order import's
+  SKU stage (that one answers the sellable unit; a link sits on the ROOT): this conta's link
+  (`vinculoDoProdutoLi`, the only shared piece), a root by exact SKU, then any produto by exact SKU
+  with the sole-member hop for a store simple product only, every probe `limit(2)`. Shapes must
+  agree (`formaDaRaizErp`): a store family never meets an ERP sole member, a store simple product
+  never a one-variation family. Variations are matched under the matched parent by their link,
+  their exact SKU, then their option COMBINATION (`sku-diferente` when the SKUs differ). It folds
+  nothing and every query rides a declared index (`resolucao.test.ts` checks each one against
+  `firestore.indexes.json`). Before a link is written, the produto's own links are read whole and
+  judged by `vinculoLiDaContaEId`: one store product per conta per ERP produto.
+- **Option links are learned in two passes**, under both actions: `importacao/evidencias.ts`
+  collects, over every family, the claims of variations matched by EXACT SKU (one claim document
+  per store option, never one per variation); `importacao/gruposLi.ts` then decides them all at
+  once with the shared `decidirAprendizadoLi` (unanimity, fail-closed "holds") and writes each
+  changed grupo ONCE, tier 1 on the memo's stamp, through the never-drop merge — a lost
+  precondition re-reads that grupo and re-decides once, a second loss is reported. Simular writes
+  no grupo: its learnings ride the job (`aprendizadosSimulados`) as an overlay later resolutions
+  read through the same merge, so its verdicts equal an `aplicar` run's. No grupo or variante is
+  ever created.
 
 ## Routes (`/api/marketplace/loja-integrada/pedidos/[pedidoId]…`, step 15)
 
