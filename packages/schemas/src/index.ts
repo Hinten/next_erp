@@ -1181,6 +1181,7 @@ export {
   type TipoProblemaAtributoShopee,
   type ProblemaAtributoShopee,
 } from './atributosShopee';
+export * from './marcaShopee'; // #1911 P9: typed brandshopee rows + THE reader (rules: integracao.ts)
 
 export {
   listaDePrecos,

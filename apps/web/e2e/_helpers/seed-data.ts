@@ -1046,8 +1046,37 @@ export async function cleanupMercadoLivreFixtures(prefix: string): Promise<void>
   await cleanupIntegracaoFixtures(prefix);
 }
 
-/** Teardown for `seedShopeeFixtures`. */
+/**
+ * Every `brandshopee` row (the conta's brand shortlist, #1911 P9) under each
+ * Shopee conta the prefix sweep is about to delete. A SUBCOLLECTION: deleting
+ * the conta never cascades to it, and the sweep finds contas by `nome` — so
+ * the rows must go BEFORE their conta does, or nothing would find them again.
+ */
+async function cleanupMarcasShopeeDasContas(prefix: string): Promise<void> {
+  const contas = await db()
+    .collection('integracao')
+    .where('nome', '>=', prefix)
+    .where('nome', '<', `${prefix}${PREFIX_MAX}`)
+    .select()
+    .get();
+  await Promise.all(
+    contas.docs.map(async (conta) => {
+      const marcas = await conta.ref.collection('brandshopee').get();
+      if (marcas.empty) return;
+      const batch = db().batch();
+      marcas.docs.forEach((d) => batch.delete(d.ref));
+      await batch.commit();
+    }),
+  );
+}
+
+/**
+ * Teardown for `seedShopeeFixtures`, the contas' `brandshopee` rows first (see
+ * {@link cleanupMarcasShopeeDasContas}). Only here: the sweep shared by every
+ * channel stays parents-only.
+ */
 export async function cleanupShopeeFixtures(prefix: string): Promise<void> {
+  await cleanupMarcasShopeeDasContas(prefix);
   await cleanupIntegracaoFixtures(prefix);
 }
 

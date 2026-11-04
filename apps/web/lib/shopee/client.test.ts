@@ -2837,3 +2837,141 @@ describe('#1911 — the two taxonomy reads: the whole bands and the suggestion',
     expect(pedidos[0]?.url).not.toContain('imagemCapa');
   });
 });
+
+/* ---------------------------------------------------------------------------
+ * #1911 (P9) — `marcas`: one page of a category's brands, for the Marcas section
+ * ------------------------------------------------------------------------- */
+
+/** A `taxonomia/marcas` 200: one leaf page, «No Brand» included, more pages to come. */
+const MARCAS_200 = {
+  leaf: true,
+  categoryId: 100087,
+  status: 1,
+  offset: 0,
+  pageSize: 100,
+  marcas: [
+    { brandId: 0, originalBrandName: 'No Brand', displayBrandName: null },
+    { brandId: 3001, originalBrandName: 'Marca Exemplo', displayBrandName: 'Marca Exemplo BR' },
+  ],
+  hasNextPage: true,
+  nextOffset: 37,
+  isMandatory: false,
+  inputType: 'DROP_DOWN',
+};
+
+describe('#1911 — `marcas`: one page of a category’s brands', () => {
+  it('⭐ a GET with EVERY parameter percent-encoded, no body, no signal — parsed whole', async () => {
+    const { c, pedidos } = gravador(JSON.stringify(MARCAS_200));
+
+    await expect(
+      c.marcas({
+        integracaoId: 'int/1 2&x',
+        categoryId: 100087,
+        offset: 37,
+        pageSize: 50,
+        status: 2,
+      }),
+    ).resolves.toEqual(MARCAS_200);
+
+    expect(pedidos).toHaveLength(1);
+    expect(pedidos[0]?.url).toBe(
+      `${BASE}/taxonomia/marcas?integracaoId=int%2F1%202%26x&categoryId=100087&offset=37&pageSize=50&status=2`,
+    );
+    expect(pedidos[0]?.init?.method).toBe('GET');
+    expect(pedidos[0]?.init).not.toHaveProperty('body');
+    expect(pedidos[0]?.init !== undefined && 'signal' in pedidos[0].init).toBe(false);
+  });
+
+  it('each optional key OMITTED when absent — the route’s defaults apply', async () => {
+    const { c, pedidos } = gravador(JSON.stringify(MARCAS_200));
+
+    await c.marcas({ integracaoId: 'int-1', categoryId: 100087 });
+
+    expect(pedidos[0]?.url).toBe(`${BASE}/taxonomia/marcas?integracaoId=int-1&categoryId=100087`);
+  });
+
+  it('NEAR-MISS: `offset: 0` is SENT — only an absent key is omitted', async () => {
+    const { c, pedidos } = gravador(JSON.stringify(MARCAS_200));
+
+    await c.marcas({ integracaoId: 'int-1', categoryId: 100087, offset: 0 });
+
+    expect(pedidos[0]?.url).toBe(
+      `${BASE}/taxonomia/marcas?integracaoId=int-1&categoryId=100087&offset=0`,
+    );
+  });
+
+  it('⭐ `nextOffset` is Shopee’s cursor VERBATIM — never recomputed as offset + pageSize', async () => {
+    const { c } = gravador(JSON.stringify(MARCAS_200));
+
+    const pagina = await c.marcas({ integracaoId: 'int-1', categoryId: 100087 });
+
+    expect(pagina.nextOffset).toBe(37);
+    expect(pagina.nextOffset).not.toBe(pagina.offset + pagina.pageSize);
+    // «No Brand» is a row of the page, a value — the picker decides, not the client.
+    expect(pagina.marcas[0]?.brandId).toBe(0);
+  });
+
+  it('a non-leaf answers the same shape, empty — and parses', async () => {
+    const vazia = {
+      ...MARCAS_200,
+      leaf: false,
+      marcas: [],
+      hasNextPage: false,
+      nextOffset: null,
+      isMandatory: null,
+      inputType: null,
+    };
+    const { c } = gravador(JSON.stringify(vazia));
+
+    await expect(c.marcas({ integracaoId: 'int-1', categoryId: 100017 })).resolves.toEqual(vazia);
+  });
+
+  it.each([
+    ['a quoted brandId (our serialisation, strict)', { brandId: '3001' }, 'marcas[].brandId'],
+    [
+      'a missing displayBrandName (every key required)',
+      { displayBrandName: undefined },
+      'marcas[].displayBrandName',
+    ],
+  ])('⭐ NEAR-MISS: %s is a RespostaInvalida, never a page', async (_n, estrago, campo) => {
+    const corpo = {
+      ...MARCAS_200,
+      marcas: [{ ...MARCAS_200.marcas[1], ...estrago }],
+    };
+    const { c } = gravador(JSON.stringify(corpo));
+
+    const err = await c
+      .marcas({ integracaoId: 'int-1', categoryId: 100087 })
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(ShopeeClientRespostaInvalidaError);
+    expect((err as ShopeeClientRespostaInvalidaError).campos).toContain(campo);
+  });
+
+  it('an unknown key STRIPS — a newer route never costs an older browser', async () => {
+    const { c } = gravador(JSON.stringify({ ...MARCAS_200, campoDoFuturo: 1 }));
+
+    const pagina = await c.marcas({ integracaoId: 'int-1', categoryId: 100087 });
+
+    expect('campoDoFuturo' in pagina).toBe(false);
+  });
+
+  it('an unknown category is the 404 with its code — the backend’s sentence', async () => {
+    const { c } = gravador(
+      JSON.stringify({
+        error: 'Categoria 999 não existe na árvore desta conta.',
+        code: 'SHOPEE_CATEGORIA_DESCONHECIDA',
+      }),
+      404,
+    );
+
+    const err = await c.marcas({ integracaoId: 'int-1', categoryId: 999 }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(ShopeeClientHttpError);
+    expect((err as ShopeeClientHttpError).status).toBe(404);
+    expect((err as ShopeeClientHttpError).code).toBe('SHOPEE_CATEGORIA_DESCONHECIDA');
+    expect((err as ShopeeClientHttpError).message).toBe(
+      'Categoria 999 não existe na árvore desta conta.',
+    );
+  });
+});

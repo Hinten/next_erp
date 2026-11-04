@@ -12,6 +12,7 @@ import {
   categoriaResumoDtoSchema as resumoCompartilhadoSchema,
   detalheTabelaMedidasDtoSchema as detalheCompartilhadoSchema,
   listaTabelasMedidasDtoSchema as listaCompartilhadaSchema,
+  marcaDtoSchema as marcaCompartilhadaSchema,
   projetarTabelaShopee,
   respostaAtualizarRascunhoShopeeSchema as atualizarCompartilhadoSchema,
   respostaCategoriasShopeeSchema as categoriasCompartilhadaSchema,
@@ -19,6 +20,7 @@ import {
   respostaDescartarRascunhoShopeeSchema as descartarCompartilhadoSchema,
   respostaLimitesDoItemShopeeSchema as limitesDoItemCompartilhadoSchema,
   respostaLimitesTabelaMedidasShopeeSchema,
+  respostaMarcasShopeeSchema as marcasCompartilhadaSchema,
   respostaRecomendacaoCategoriaShopeeSchema as recomendacaoCompartilhadaSchema,
   tabelaMedidasLinhaDtoSchema as linhaCompartilhadaSchema,
   tabelaShopeeProjetadaSchema,
@@ -42,6 +44,7 @@ import {
   envioPrecoManualShopeeSchema,
   jobIdShopeeSchema,
   listaTabelasMedidasDtoSchema,
+  marcaDtoSchema,
   massImportStatusShopeeSchema,
   oauthStartResponseSchema,
   priceSyncHistoricoShopeeSchema,
@@ -54,6 +57,7 @@ import {
   respostaDescartarRascunhoShopeeSchema,
   respostaLimitesDoItemShopeeSchema,
   respostaLimitesShopeeSchema,
+  respostaMarcasShopeeSchema,
   respostaPublicarShopeeSchema,
   respostaRecomendacaoCategoriaShopeeSchema,
   respostaReverificarShopeeSchema,
@@ -1971,6 +1975,8 @@ describe('#1911 — every taxonomy and draft answer here IS the shared schema ob
       respostaRecomendacaoCategoriaShopeeSchema,
       recomendacaoCompartilhadaSchema,
     ],
+    ['marcaDtoSchema (P9)', marcaDtoSchema, marcaCompartilhadaSchema],
+    ['respostaMarcasShopeeSchema (P9)', respostaMarcasShopeeSchema, marcasCompartilhadaSchema],
     [
       'respostaCriarRascunhoShopeeSchema',
       respostaCriarRascunhoShopeeSchema,
@@ -2237,5 +2243,32 @@ describe('#1911 — the draft refusals’ extras: `conflitos`, `aguardarMs`, `vi
       aguardarMs: null,
       vinculos: null,
     });
+  });
+});
+
+describe('#1911 (P9) — a category’s page of brands', () => {
+  const PAGINA = {
+    leaf: true,
+    categoryId: 100087,
+    status: 1,
+    offset: 0,
+    pageSize: 100,
+    marcas: [{ brandId: 0, originalBrandName: 'No Brand', displayBrandName: null }],
+    hasNextPage: false,
+    nextOffset: null,
+    isMandatory: true,
+    inputType: null,
+  };
+
+  it('the control: «No Brand» (`brandId: 0`) and a `null` cursor parse — both are values', () => {
+    expect(respostaMarcasShopeeSchema.parse(PAGINA)).toEqual(PAGINA);
+  });
+
+  it.each([
+    ['a quoted nextOffset (rule 3: ours, strict)', { nextOffset: '37' }],
+    ['a missing hasNextPage (rule 2: every key required)', { hasNextPage: undefined }],
+    ['a row with a fractional brandId', { marcas: [{ ...PAGINA.marcas[0], brandId: 1.5 }] }],
+  ])('NEAR-MISS: %s is refused', (_n, estrago) => {
+    expect(respostaMarcasShopeeSchema.safeParse({ ...PAGINA, ...estrago }).success).toBe(false);
   });
 });
