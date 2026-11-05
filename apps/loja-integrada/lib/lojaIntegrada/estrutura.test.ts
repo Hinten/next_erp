@@ -906,40 +906,51 @@ describe('lib/lojaIntegrada layout', () => {
     },
   );
 
-  it('the import task path (the queue handler, trigger, deps, dispatch) reaches Loja Integrada only through the context loader: no fetch, and no client, validating GET or CDN reader of its own, in its run-time closure', () => {
-    for (const entrada of CAMINHO_DA_TAREFA_DA_IMPORTACAO) {
-      expect(lerDoApp(entrada), entrada).not.toBeNull();
-    }
-    expect(violacoesDaRotaDeLeitura(CAMINHO_DA_TAREFA_DA_IMPORTACAO, lerDoApp)).toEqual([]);
-    // Anti-vacuity: the walk entered the dispatch, its phases and the context loader through the
-    // functions codebase's relative imports, and saw the package the context reads through.
-    const ler: LeitorDeFonte = (c) => {
-      const texto = lerDoApp(c);
-      return texto === null ? null : semImportacoesDeTipo(texto);
-    };
-    const fecho = fechoDeImportacoes(CAMINHO_DA_TAREFA_DA_IMPORTACAO, ler, resolverAliasDoApp(ler));
-    expect(fecho.arquivos).toEqual(
-      expect.arrayContaining([
-        ...CAMINHO_DA_TAREFA_DA_IMPORTACAO,
-        CONSTRUTOR_DO_CLIENTE,
-        // The handler's OWN imports were walked too: the reads queue's other lane (order intake)
-        // rides the same closure and is held to the same rules.
-        'functions/src/depsLeitura.ts',
-        'lib/lojaIntegrada/notificacoes/notificacao.ts',
-        'functions/src/agendador.ts',
-        'lib/lojaIntegrada/importacao/agendadorImportacao.ts',
-        'lib/lojaIntegrada/importacao/catalogoDoJob.ts',
-        'lib/lojaIntegrada/importacao/listagem.ts',
-        'lib/lojaIntegrada/importacao/detalhes.ts',
-        'lib/lojaIntegrada/importacao/familiaDoJob.ts',
-        'lib/lojaIntegrada/importacao/vinculos.ts',
-      ]),
-    );
-    expect(fecho.externos).toContain('@delfrance/integrations-loja-integrada');
-    // The dispatch loads the context ONCE, and names no package client of its own.
-    const despacho = lerDoApp(DESPACHO_DA_IMPORTACAO) ?? '';
-    expect(despacho.split('loadLojaIntegradaContext(')).toHaveLength(2);
-  });
+  // The widest closure in the app (both reads-queue lanes, every import phase), walked twice:
+  // about a second here, eight on a loaded CI runner, so the default timeout would turn load
+  // into a red test.
+  it(
+    'the import task path (the queue handler, trigger, deps, dispatch) reaches Loja Integrada only through the context loader: no fetch, and no client, validating GET or CDN reader of its own, in its run-time closure',
+    { timeout: 30_000 },
+    () => {
+      for (const entrada of CAMINHO_DA_TAREFA_DA_IMPORTACAO) {
+        expect(lerDoApp(entrada), entrada).not.toBeNull();
+      }
+      expect(violacoesDaRotaDeLeitura(CAMINHO_DA_TAREFA_DA_IMPORTACAO, lerDoApp)).toEqual([]);
+      // Anti-vacuity: the walk entered the dispatch, its phases and the context loader through the
+      // functions codebase's relative imports, and saw the package the context reads through.
+      const ler: LeitorDeFonte = (c) => {
+        const texto = lerDoApp(c);
+        return texto === null ? null : semImportacoesDeTipo(texto);
+      };
+      const fecho = fechoDeImportacoes(
+        CAMINHO_DA_TAREFA_DA_IMPORTACAO,
+        ler,
+        resolverAliasDoApp(ler),
+      );
+      expect(fecho.arquivos).toEqual(
+        expect.arrayContaining([
+          ...CAMINHO_DA_TAREFA_DA_IMPORTACAO,
+          CONSTRUTOR_DO_CLIENTE,
+          // The handler's OWN imports were walked too: the reads queue's other lane (order intake)
+          // rides the same closure and is held to the same rules.
+          'functions/src/depsLeitura.ts',
+          'lib/lojaIntegrada/notificacoes/notificacao.ts',
+          'functions/src/agendador.ts',
+          'lib/lojaIntegrada/importacao/agendadorImportacao.ts',
+          'lib/lojaIntegrada/importacao/catalogoDoJob.ts',
+          'lib/lojaIntegrada/importacao/listagem.ts',
+          'lib/lojaIntegrada/importacao/detalhes.ts',
+          'lib/lojaIntegrada/importacao/familiaDoJob.ts',
+          'lib/lojaIntegrada/importacao/vinculos.ts',
+        ]),
+      );
+      expect(fecho.externos).toContain('@delfrance/integrations-loja-integrada');
+      // The dispatch loads the context ONCE, and names no package client of its own.
+      const despacho = lerDoApp(DESPACHO_DA_IMPORTACAO) ?? '';
+      expect(despacho.split('loadLojaIntegradaContext(')).toHaveLength(2);
+    },
+  );
 
   it('every route file under the conta folder is in ROTAS_DE_LEITURA_LI, ROTAS_SEM_CHAMADA_LI or one of the credential routes (a new route cannot skip the walk)', () => {
     const naPasta = arquivosTs(RAIZ_APP)
