@@ -234,7 +234,9 @@ function lista(v: readonly string[]): readonly string[] | undefined {
 }
 
 /** The field names a failed parse names (each once, in order). */
-function camposDoErro(issues: readonly { readonly path: readonly PropertyKey[] }[]): string[] {
+export function camposDoErro(
+  issues: readonly { readonly path: readonly PropertyKey[] }[],
+): string[] {
   return [...new Set(issues.map((i) => String(i.path[0] ?? '')).filter((c) => c !== ''))];
 }
 
