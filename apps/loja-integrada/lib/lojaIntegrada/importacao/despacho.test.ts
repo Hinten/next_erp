@@ -1196,6 +1196,57 @@ describe('the queue’s last attempt', () => {
     }
   });
 
+  it('⚠️ NEAR-MISS: a courtesy whose producer throws anything ELSE (a broken deploy, a coding bug) stays loud — the same error, on the stop and on the last attempt, and the job untouched', async () => {
+    const casos = [
+      { via: 'aoParar', tentativa: 0 },
+      { via: 'aoParar', tentativa: 2 },
+      { via: 'naUltimaTentativa', tentativa: 2 },
+    ] as const;
+    for (const { via, tentativa } of casos) {
+      db = new FakeDb();
+      seedConta(db, CONTA);
+      seedCredencial(db, CONTA);
+      __resetAllReadCaches();
+      seedSnapshotDeFamilias([10, 20, 30]);
+      if (via === 'aoParar') {
+        // Another dispatch of seq 0 ends its slice while this one runs family 10.
+        db.antesDaProximaEscrita(caminhoItemLi(JOB, '10'), async () => {
+          await importacaoLojaIntegradaCollection
+            .docRef(asDb(db), {}, JOB)
+            .update({ atualizadoEmMs: 1, seq: 1 });
+        });
+      } else {
+        // Another dispatch ends its slice, and THIS end checkpoint then fails unlanded.
+        db.antesDaProximaEscrita(caminhoJobLi(JOB), async () => {
+          await importacaoLojaIntegradaCollection
+            .docRef(asDb(db), {}, JOB)
+            .update({ atualizadoEmMs: 1, seq: 1 });
+          throw grpc(4, 'DEADLINE_EXCEEDED');
+        });
+      }
+      const t = transporte();
+      const quebra = new TypeError('broken deploy');
+      t.falhas.push(quebra);
+      const { deps } = montarDeps({
+        t,
+        tentativa,
+        ...(via === 'naUltimaTentativa' ? { jaDecorridoMs: 61_000 } : {}),
+      });
+      const rotulo = `${via}/${String(tentativa)}`;
+      await expect(despacharImportacaoLi(asDb(db), tarefa(0), deps), rotulo).rejects.toBe(quebra);
+      expect(jobGravado(), rotulo).toMatchObject({
+        status: 'executando',
+        seq: 1,
+        motivo: null,
+        atualizadoEmMs: 1,
+      });
+      expect(
+        t.envios.map((e) => e.opcoes),
+        rotulo,
+      ).toEqual([{ id: `li-importacao-${JOB}-1`, scheduleDelaySeconds: 60 }]);
+    }
+  });
+
   it('⚠️ a courtesy failing on attempt 1 ends that task `parado`, so no last attempt ever re-targets the seq another dispatch carries and stamps it', async () => {
     seedSnapshotDeFamilias([10, 20]);
     // Another dispatch of seq 0 ENDS its slice (seq 1) while attempt 1 runs family 10.
@@ -1315,7 +1366,7 @@ describe('the queue’s last attempt', () => {
     ]);
   });
 
-  it('⚠️ OUR end checkpoint LANDED behind a DEADLINE_EXCEEDED and the last attempt’s hand-off fails transiently too: the job’s NEW seq is stamped tentativas-esgotadas — nobody else carries it', async () => {
+  it('⚠️ OUR end checkpoint LANDED behind a DEADLINE_EXCEEDED and the last attempt’s hand-off fails transiently too: the job’s NEW seq is stamped tentativas-esgotadas — the common case, where nobody else enqueued', async () => {
     seedSnapshotDeFamilias([10, 20, 30]);
     db.respostaPerdidaNaProximaEscrita(caminhoJobLi(JOB), grpc(4, 'DEADLINE_EXCEEDED'));
     const t = transporte();

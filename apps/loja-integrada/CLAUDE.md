@@ -224,11 +224,14 @@ carries the continuation `seq`, the cursors or the selection's ids.
   attempt). A checkpoint that stops on a job one `seq` ahead is always a courtesy, on every
   attempt. The repair keeps the usual endings on the stored `seq` (`tarefas-desligadas`, and
   `tentativas-esgotadas` when its last-attempt enqueue fails: the common writer is this task's own
-  dead earlier attempt). Residuals: the owner died before its enqueue AND the courtesy failed ⇒
-  `executando` with nothing queued until Cancelar (one write, then a new start; a coding bug stays
-  loud); an earlier attempt the queue counted as failed but still ALIVE (mid-hand-off, or already
-  enqueued) AND the last attempt's repair enqueue fails transiently ⇒ that job is stamped
-  `tentativas-esgotadas`. It reads the snapshot, its details, the grupo memo and the
+  dead earlier attempt). Both residuals need two attempts of one task acting on one job (a reply
+  lost, a stalled or crashed instance; never a slow slice — the 100 s budget sits far inside the
+  300 s timeout): the owner never enqueued (died first, or its enqueue failed after the queue
+  stopped listening) AND the courtesy failed ⇒ `executando` with nothing queued until Cancelar (one
+  write, then a new start; a coding bug stays loud) — a trade made knowingly, since a rethrowing
+  courtesy would let the retry's last attempt stamp a job whose owner DID hand off; and a LAST
+  attempt whose own hand-off fails transiently (the repair's, or our landed end's) stamps
+  `tentativas-esgotadas` even when another attempt already enqueued the successor. It reads the snapshot, its details, the grupo memo and the
   claims at most once per dispatch, lazily. The summary aviso is synced before the phase machine's
   own terminal stamps (`aplicar` only), on a FRESH read of the job that still runs at its `seq`,
   the stamp chained from that read (a cancel landing in between the two is the stated residual).

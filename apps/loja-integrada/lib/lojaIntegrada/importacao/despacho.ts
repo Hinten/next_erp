@@ -136,7 +136,8 @@
  *  - **OURS** (the last attempt's re-read finds our patch whole at `seq + 1`) ⇒ our own hand-off,
  *    with OUR delay — so a 429 pause that landed behind an error still waits 60 s. If it fails, the
  *    usual ending rules apply, on the new `seq`: the valve closed ⇒ `tarefas-desligadas`; a
- *    transient failure ⇒ `tentativas-esgotadas` (nobody else will carry it).
+ *    transient failure ⇒ `tentativas-esgotadas` (normally nobody else carries it; the exception is
+ *    the second residual below).
  *  - **ANOTHER dispatch's** (and ALWAYS a checkpoint that stops: our unit checkpoints never move
  *    `seq`, and our own landed end reads `gravado`) ⇒ a COURTESY: the named successor at the
  *    CONSERVATIVE 60 s. The owner normally enqueued already (ours is then already-exists, and the
@@ -156,19 +157,27 @@
  *    `seq` is this task's own earlier attempt that DIED after its end checkpoint (its enqueue failed
  *    and it rethrew, or it crashed), and a visible failure beats a silent hang.
  *
- * ⚠️ Accepted residual (the courtesy): the owner died BEFORE its own enqueue (the queue gave up on
- * it) AND the courtesy failed (the valve closed, or a transient Cloud Tasks failure, on ANY
- * attempt — the courtesy ends its task, so no retry repairs it): the job sits `executando` with
- * nothing queued, and every new start answers 409 until a person presses Cancelar — one write,
- * which needs no worker (`job.ts`, the cancel), then a new start. Stamping instead would kill the
- * owner's job whenever the owner DID enqueue, which is the common case.
+ * Both residuals below need two attempts of ONE named task acting on one job: the queue counted an
+ * earlier attempt as failed while it still ran, or after it had acted (its reply lost, its instance
+ * stalled or crashed after a write; the 100 s budget keeps a dispatch far inside the handler's
+ * 300 s timeout, so a slow slice alone never causes it), and dispatched the next one.
  *
- * ⚠️ Accepted residual (the repair): the owner is an earlier attempt of this task the queue already
- * counted as failed (past its dispatch deadline, or its reply lost) but still ALIVE — mid-hand-off,
- * or with its successor already enqueued — and this task's LAST attempt repairs it with an enqueue
- * that fails transiently: that job is stamped `falhou/tentativas-esgotadas` (a successor already
- * queued then reads a finished job and does nothing). One transient failure of OURS suffices; the
- * owner's own enqueue may well have succeeded.
+ * ⚠️ Accepted residual (stranded): the owner never enqueued — it died before its enqueue, OR its own
+ * enqueue failed after the queue stopped listening (a transient failure, possibly the same Cloud
+ * Tasks outage that fails the courtesy) — AND the courtesy failed (the valve closed, or a transient
+ * failure, on ANY attempt: the courtesy ends its task, so no retry repairs it). The job sits
+ * `executando` with nothing queued, and every new start answers 409 until a person presses
+ * Cancelar — one write, which needs no worker (`job.ts`, the cancel), then a new start. This is a
+ * trade made knowingly: a courtesy that rethrew would let this task's retry repair that case, but
+ * the same retry's last attempt would then stamp a job whose owner DID hand off, the common case.
+ *
+ * ⚠️ Accepted residual (a healthy job stamped): a LAST attempt whose own hand-off fails transiently —
+ * the repair's, or OUR landed end's — stamps the job `falhou/tentativas-esgotadas` even when another
+ * attempt of this task had already enqueued the successor: the owner of the repaired `seq` (alive
+ * or not — its reply lost, or crashed after its enqueue), or an earlier attempt still running whose
+ * courtesy succeeded. The queued successor then reads a finished job and does nothing. One
+ * transient failure of OURS suffices. In the common case nobody else enqueued, and a visible
+ * failure beats a silent hang.
  *
  * ## The summary aviso
  *
@@ -767,8 +776,9 @@ class DespachoImportacaoLi {
    * dispatch may have landed behind the error. One found ONE `seq` ahead, still `executando`, has its
    * named successor handed off from that read — what the retry's continuation check would have done
    * — by WHOSE checkpoint put it there (module header, "Whose hand-off"): OUR landed end-of-dispatch
-   * checkpoint ⇒ our own hand-off, with our delay, and a failing one stamps the new `seq` (nobody
-   * else carries it); another dispatch's ⇒ a courtesy, never a stamp. One still running at this
+   * checkpoint ⇒ our own hand-off, with our delay, and a failing one stamps the new `seq` (normally
+   * nobody else carries it; the module header's second residual is the exception); another
+   * dispatch's ⇒ a courtesy, never a stamp. One still running at this
    * dispatch's `seq` is stamped `falhou/tentativas-esgotadas`, chained from that read (a cancel that
    * won is never overwritten); anything else is left alone. Any other failure is rethrown.
    */
