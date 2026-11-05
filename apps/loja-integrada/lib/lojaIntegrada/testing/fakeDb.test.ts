@@ -814,3 +814,48 @@ describe('FakeDb — createTime (step 9: a retried import unit recognises the li
     expect(us(b.createTime)).toBe(us(b.updateTime));
   });
 });
+
+describe('FakeDb — select (step 9: the create-time SKU probe projects `sku`)', () => {
+  it('keeps ONLY the selected fields a document has, and drops no document — one lacking them reads empty', async () => {
+    const db = new FakeDb();
+    db.seed('integracao/a', { sku: 'X', nome: 'A', paiId: null });
+    db.seed('integracao/b', { sku: 'Y', nome: 'B' });
+    db.seed('integracao/c', { nome: 'C' });
+    const snap = await integracaoCollection.ref(asDb(db), {}).select('sku').get();
+    expect(snap.docs.map((d) => [d.id, d.data()])).toEqual([
+      ['a', { sku: 'X' }],
+      ['b', { sku: 'Y' }],
+      ['c', {}],
+    ]);
+    // NEAR-MISS: the projection is the QUERY's — the stored documents keep every field.
+    expect(db.ler('integracao/a')).toEqual({ sku: 'X', nome: 'A', paiId: null });
+    expect(db.consultas.at(-1)).toMatchObject({ selecao: ['sku'] });
+  });
+
+  it('filters on a field the projection leaves out, exactly as the server does', async () => {
+    const db = new FakeDb();
+    db.seed('integracao/a', { sku: 'X', paiId: 'p' });
+    db.seed('integracao/b', { sku: 'X', paiId: null });
+    const snap = await integracaoCollection
+      .ref(asDb(db), {})
+      .where('paiId', '==', 'p')
+      .select('sku')
+      .get();
+    expect(snap.docs.map((d) => [d.id, d.data()])).toEqual([['a', { sku: 'X' }]]);
+  });
+
+  it('a query without select keeps every field, and records no projection', async () => {
+    const db = new FakeDb();
+    db.seed('integracao/a', { sku: 'X', nome: 'A' });
+    const snap = await integracaoCollection.ref(asDb(db), {}).get();
+    expect(snap.docs[0]?.data()).toEqual({ sku: 'X', nome: 'A' });
+    expect(db.consultas.at(-1)).not.toHaveProperty('selecao');
+  });
+
+  it('refuses what it does not model: no field, a dotted path, a second select', () => {
+    const ref = integracaoCollection.ref(asDb(new FakeDb()), {});
+    expect(() => ref.select()).toThrow(/select/);
+    expect(() => ref.select('a.b')).toThrow(/select/);
+    expect(() => ref.select('sku').select('nome')).toThrow(/select/);
+  });
+});

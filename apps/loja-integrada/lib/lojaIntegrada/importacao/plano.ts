@@ -240,12 +240,16 @@ export function camposDoErro(
   return [...new Set(issues.map((i) => String(i.path[0] ?? '')).filter((c) => c !== ''))];
 }
 
-type PlanoDoVinculoLi =
+/** One link's plan: the planned link, or the field names its document fails on. */
+export type PlanoDoVinculoLi =
   | { readonly tipo: 'ok'; readonly vinculo: VinculoPlanejadoLi }
   | { readonly tipo: 'invalido'; readonly campos: readonly string[] };
 
-/** One link's fields and its create document (module header, "The links"). */
-function planejarVinculo(
+/**
+ * One link's fields and its create document (module header, "The links"). Exported for the complete
+ * step, whose created produtos carry the SAME link document, in their create's batch. Pure.
+ */
+export function planejarVinculoLi(
   contaId: string,
   papel: PapelDoVinculoLi,
   produtoId: string,
@@ -507,7 +511,7 @@ export function planejarFamiliaLi(e: EntradaDoPlanoLi): PlanoDaFamiliaLi {
   }
 
   // Matched: the root's link, then each matched variation's.
-  const planoDaRaiz = planejarVinculo(
+  const planoDaRaiz = planejarVinculoLi(
     job.integracaoId,
     PAPEL_DO_VINCULO_LI.raiz,
     res.erpId,
@@ -549,7 +553,7 @@ export function planejarFamiliaLi(e: EntradaDoPlanoLi): PlanoDaFamiliaLi {
         });
         continue;
       }
-      const planoDoFilho = planejarVinculo(
+      const planoDoFilho = planejarVinculoLi(
         job.integracaoId,
         PAPEL_DO_VINCULO_LI.filho,
         r.erp.id,
