@@ -1,11 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PERM } from '@delfrance/auth';
 import { READ_CACHE_DISABLED_ENV, __resetAllReadCaches } from '@delfrance/data/admin/cache';
-import {
-  SHOPEE_GET_VARIATIONS_PATH,
-  SHOPEE_GET_VARIATION_TREE_PATH_ALT,
-  ShopeeNetworkError,
-} from '@delfrance/integrations-shopee';
+import { SHOPEE_GET_VARIATIONS_PATH, ShopeeNetworkError } from '@delfrance/integrations-shopee';
 import {
   respostaVariacoesShopeeSchema,
   variacaoDtoSchema as variacaoCompartilhada,
@@ -164,24 +160,25 @@ describe('GET taxonomia/variacoes — autenticação e argumentos', () => {
 });
 
 describe('pathUsed instrumenta a contradição da página', () => {
-  it('ecoa o caminho dos SAMPLES quando SHOPEE_VARIATIONS_PATH não está setada', async () => {
+  it('ecoa o caminho PADRÃO (get_variation_tree) quando SHOPEE_VARIATIONS_PATH não está setada', async () => {
     const res = await GET(req({ integracaoId: 'int-1', categoryId: '100182' }, AUTORIZADO));
     const body = (await res.json()) as Record<string, unknown>;
 
-    expect(body).toHaveProperty('pathUsed', SHOPEE_GET_VARIATIONS_PATH);
+    // O LITERAL, nunca a constante comparada com ela mesma.
+    expect(body).toHaveProperty('pathUsed', '/api/v2/product/get_variation_tree');
     expect(() => corpoSchema.parse(body)).not.toThrow();
   });
 
   it('ecoa a sobrescrita quando ela existe — o par do caso acima', async () => {
-    // O caminho vai DENTRO da base string do HMAC: o errado volta como
-    // `error_sign`, que se parece com chave de parceiro errada. Ecoar o que foi
-    // assinado é o que transforma uma chamada no sandbox em resposta.
-    h.loadCtx.mockResolvedValue(ctxDouble(SHOPEE_GET_VARIATION_TREE_PATH_ALT));
+    // Resolvido no BR (2026-11-04): a grafia dos exemplos da página responde HTTP
+    // 404 `error_not_found`, não `error_sign`. A sobrescrita fica como válvula de
+    // escape (o sandbox SG nunca foi capturado), e ecoar o que foi assinado é o
+    // que torna a escolha observável numa chamada só.
+    const caminhoDosExemplos = '/api/v2/product/get_variations';
+    h.loadCtx.mockResolvedValue(ctxDouble(caminhoDosExemplos));
     const res = await GET(req({ integracaoId: 'int-1', categoryId: '100182' }, AUTORIZADO));
 
-    await expect(res.json()).resolves.toMatchObject({
-      pathUsed: SHOPEE_GET_VARIATION_TREE_PATH_ALT,
-    });
+    await expect(res.json()).resolves.toMatchObject({ pathUsed: caminhoDosExemplos });
   });
 
   it('também acompanha a resposta vazia de uma categoria do meio', async () => {

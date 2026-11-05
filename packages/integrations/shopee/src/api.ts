@@ -84,8 +84,8 @@
  * Seven of them, all Shop-signed GETs on the `product` module, all read-only and
  * all validation-before-the-wire: a bound that cannot be satisfied REJECTS
  * without spending a provider call. Four of Shopee's own contradictions are
- * instrumented rather than guessed — the `get_variations` path (see
- * {@link SHOPEE_GET_VARIATION_TREE_PATH_ALT}), the language casing (see
+ * instrumented rather than guessed — the `get_variations` path (settled on BR, see
+ * {@link SHOPEE_GET_VARIATIONS_PATH}), the language casing (see
  * {@link SHOPEE_TAXONOMY_LANGUAGE}), `category_id_list` vs `category_ids` (the
  * single joined literal in `getAttributeTree`) and `gtin_limit`'s position (see
  * {@link ShopeeItemLimitRead}, which carries BOTH).
@@ -570,8 +570,16 @@ export const SHOPEE_GET_BRAND_LIST_PATH = '/api/v2/product/get_brand_list';
 export const SHOPEE_GET_ITEM_LIMIT_PATH = '/api/v2/product/get_item_limit';
 /** `GET` — Shop-signed. WRAPPED. The kit bands, which are their own numbers. */
 export const SHOPEE_GET_KIT_ITEM_LIMIT_PATH = '/api/v2/product/get_kit_item_limit';
-/** `GET` — Shop-signed. Payload under **`data`**. The default; see the ALT below. */
-export const SHOPEE_GET_VARIATIONS_PATH = '/api/v2/product/get_variations';
+/**
+ * `GET` — Shop-signed. Payload under **`data`**. The operation is
+ * `v2.product.get_variations`: its page's `path`/`url`/`test_url` say
+ * `get_variation_tree`, its samples `get_variations`. ⚠️ SETTLED on BR production
+ * 2026-11-04: the samples' spelling answers HTTP 404 `error_not_found` (the
+ * gateway's route-not-served shape, `ShopeeOperacaoNaoServidaError`), not
+ * `error_sign`; the legacy app signs this path too. The `SHOPEE_VARIATIONS_PATH`
+ * override stays as an escape hatch: the SG sandbox (staging) was never captured.
+ */
+export const SHOPEE_GET_VARIATIONS_PATH = '/api/v2/product/get_variation_tree';
 /** `GET` — Shop-signed. WRAPPED. Offered, never applied automatically. */
 export const SHOPEE_CATEGORY_RECOMMEND_PATH = '/api/v2/product/category_recommend';
 
@@ -806,25 +814,6 @@ export type ShopeeEscrowDetailTransport = 'get-query' | 'post-body';
  */
 export const SHOPEE_ESCROW_DETAIL_TRANSPORT: ShopeeEscrowDetailTransport = 'get-query';
 
-/**
- * The OTHER spelling of the `get_variations` path — and the reason the default is
- * overridable rather than settled here.
- *
- * ⚠️ Observed 2026-09-08 on the `v2.product.get_variations` reference page: its
- * `path`, `url` and `test_url` all say `/api/v2/product/get_variation_tree`,
- * while all four of its generated request samples call
- * `/api/v2/product/get_variations`. One of the two is wrong and the page cannot
- * say which.
- *
- * ⚠️ The path sits INSIDE the HMAC base string, so the wrong one does not fail as
- * a 404 — it fails as `error_sign`, which reads like a credential problem and
- * points nowhere near here. Hence the `hosts.ts` technique: default to the
- * samples ({@link SHOPEE_GET_VARIATIONS_PATH}), let `SHOPEE_VARIATIONS_PATH` in
- * `apps/shopee` swap in this constant, and settle it with one live sandbox call
- * instead of a code change.
- */
-export const SHOPEE_GET_VARIATION_TREE_PATH_ALT = '/api/v2/product/get_variation_tree';
-
 /** Shopee's own bound on `get_shops_by_partner`. */
 export const SHOPEE_MAX_PAGE_SIZE = 100;
 
@@ -1001,23 +990,25 @@ export const SHOPEE_TAXONOMY_LANGUAGE = 'pt-br';
 /**
  * Per-operation API path overrides.
  *
- * Only the operations whose documented path is CONTRADICTED by the same page
- * belong here. It is not a general-purpose routing hook: a path that is merely
+ * Only an operation whose documented path was CONTRADICTED by its own page
+ * belongs here, and the override is kept as an escape hatch once the default is
+ * settled. It is not a general-purpose routing hook: a path that is merely
  * unusual is a constant, not an override.
  */
 export interface ShopeeApiPathOverrides {
-  /** See {@link SHOPEE_GET_VARIATION_TREE_PATH_ALT}. */
+  /** See {@link SHOPEE_GET_VARIATIONS_PATH}. */
   readonly getVariations?: string;
 }
 
 /**
  * A bare API path — leading `/`, no scheme, no host, no query, no fragment.
  *
- * ⚠️ Rejected rather than trimmed, and for the same reason `normalizeHost`
- * rejects a path-bearing origin: the path is part of the HMAC base string. An
- * override carrying a host would be signed as if it were a path and every call
- * would come back `error_sign`, with nothing in the message pointing here. A
- * query string would be signed too and then silently duplicated by `signedQuery`.
+ * ⚠️ Rejected rather than trimmed: the path is signed verbatim and the URL is
+ * built as `${apiHost}${path}` (`call.ts`). An override carrying a scheme or
+ * host would therefore send the request to a host that does not exist (a
+ * `ShopeeNetworkError`) or to a path Shopee does not route, and neither error
+ * would name this variable. A query string would be signed too and then
+ * silently duplicated by `signedQuery`.
  */
 export function normalizeApiPath(raw: string, envVar: string): string {
   const trimmed = raw.trim();
@@ -3984,7 +3975,7 @@ export function createShopeeClient(config: ShopeeClientConfig): ShopeeClient {
 
   // ⚠️ Resolved ONCE, here, so a malformed override fails at construction — the
   // same moment a malformed `shopId` does. Resolving it per call would sign an
-  // unvalidated string and turn a config typo into an `error_sign` per request.
+  // unvalidated string and turn a config typo into a failed call per request.
   const variationsPath =
     config.paths?.getVariations === undefined
       ? SHOPEE_GET_VARIATIONS_PATH
@@ -4130,7 +4121,7 @@ export function createShopeeClient(config: ShopeeClientConfig): ShopeeClient {
       assertIdPositivo('category_id', p.categoryId);
       const res = await shopeeCall(transport, {
         method: 'GET',
-        // The contradicted path — see `SHOPEE_GET_VARIATION_TREE_PATH_ALT`.
+        // The settled path — see `SHOPEE_GET_VARIATIONS_PATH`.
         path: variationsPath,
         call: await signedCall(),
         // DATA-wrapped, the only operation that is.

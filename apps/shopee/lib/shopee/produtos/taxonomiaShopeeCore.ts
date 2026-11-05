@@ -185,6 +185,18 @@ export interface TierShopee {
   readonly nome: string;
   /** `0` = CUSTOM. */
   readonly variationId: number;
+  /**
+   * The tier's `standardise_tier_variation[].variation_group_id`, paired by
+   * index under the SAME rule as {@link TierShopee.variationId} (`pareia` in
+   * {@link tiersDoItem}). `0` when Shopee sent none — absent, `null` or `0`: the
+   * single-level sentinel the variation tree spells as group `0` named `""` (BR
+   * Cor) — and ALWAYS `0` on a CUSTOM tier (`variationId === 0`), because a group
+   * belongs to a standard variation. Non-zero only for a two-level standard
+   * variation (BR Tamanho (BR)).
+   *
+   * ⚠️ REQUIRED, never optional: an absent key and `0` must not be two states.
+   */
+  readonly variationGroupId: number;
   readonly opcoes: readonly OpcaoDeTierShopee[];
   /**
    * This tier's position in the WIRE `tier_variation`, for the same reason as
@@ -259,6 +271,9 @@ export function tiersDoItem(entrada: {
     const nome = nomeDeTierShopee(tier.name ?? padrao?.variation_name);
     const variationId = inteiroOuZero(padrao?.variation_id);
     if (nome.length === 0 && variationId === 0) continue;
+    // Same `pareia` gate as the id (`padrao` is `undefined` when the lengths
+    // differ), and `0` on a custom tier: a group belongs to a standard variation.
+    const variationGroupId = variationId !== 0 ? inteiroOuZero(padrao?.variation_group_id) : 0;
 
     const opcoesPadrao = padrao?.variation_option_list ?? [];
     const pareiaOpcoes = pareia && opcoesPadrao.length === tier.option_list.length;
@@ -270,7 +285,7 @@ export function tiersDoItem(entrada: {
       if (nomeOpcao.length === 0 && optionId === 0) continue;
       opcoes.push({ nome: nomeOpcao, optionId, indice: j });
     }
-    saida.push({ nome, variationId, opcoes, indice: i });
+    saida.push({ nome, variationId, variationGroupId, opcoes, indice: i });
   }
   return saida;
 }
@@ -359,6 +374,8 @@ function mesmaOpcao(a: LinkVariacaoOpcaoShopee, b: LinkVariacaoOpcaoShopee): boo
  * Field-by-field, on a matching entry:
  *  - `variation_id` / `variation_group_list`: take OURS **only** when theirs is
  *    `0` and ours is non-zero. A non-zero operator value is never overwritten.
+ *    The group is filled only when the stored `variation_id` is `0` or ours: a
+ *    group beside another variation is a pair no listing reports.
  *  - `name`: fill-blank only.
  *  - `variationOptions`: matched by {@link mesmaOpcao}; a match unions
  *    `arakene_variation_id` and fill-blanks the name; a new option is appended.
@@ -397,7 +414,14 @@ export function fundirLinksVariacoesShopee(
       fundido.variation_id = nosso.variation_id;
       mudouEsta = true;
     }
-    if (atual.variation_group_list === 0 && nosso.variation_group_list !== 0) {
+    // ⚠️ A group belongs to ITS variation: fill it only beside a stored id that
+    // is ours or still `0`. Beside ANOTHER stored variation it would form a
+    // pair no listing reports — sent by the publisher, never corrected (non-zero).
+    if (
+      atual.variation_group_list === 0 &&
+      nosso.variation_group_list !== 0 &&
+      (atual.variation_id === 0 || atual.variation_id === nosso.variation_id)
+    ) {
       fundido.variation_group_list = nosso.variation_group_list;
       mudouEsta = true;
     }
@@ -758,9 +782,20 @@ export function planejarTaxonomia(args: ArgsPlanejarTaxonomia): PlanoDeTaxonomia
       name: args.nomeCategoria,
       category_id: categoryId,
       variation_id: tier.variationId,
-      // ⚠️ A SCALAR int despite the plural name — the group id. `0` when Shopee
-      // gave none, which is the normal answer outside Fashion.
-      variation_group_list: 0,
+      // ⚠️ A SCALAR int despite the plural name — the group id THIS listing
+      // reports ({@link TierShopee.variationGroupId}): non-zero only for a
+      // two-level standard variation (BR Tamanho (BR)), `0` otherwise.
+      // {@link fundirLinksVariacoesShopee} fills only a stored `0`, so the entry
+      // keeps the FIRST non-zero group it was given — the legacy operator's pick
+      // (`.old/lib/canaisDeVenda/shopee/pages/variacoesCadastroViewShopee.dart:434-438`)
+      // or the first listing imported into it — and a later listing of the same
+      // leaf in another group of the same variation (BR Tamanho (INT) vs (BR))
+      // does not change it. One group per (grupo, conta, category) is the
+      // binding model; the operator chooses it in the binding editor (#1911
+      // P14). A re-import back-fills a stored `0` with no migration — but only
+      // beside a stored `variation_id` that is `0` or this one: an entry naming
+      // ANOTHER variation keeps its group `0`.
+      variation_group_list: tier.variationGroupId,
       // ⚠️ A BARE doc id, NOT a `documents/integracao/<id>` outer-ref — unlike
       // every other conta reference in the Shopee models (trap 2 of the
       // schema: the legacy corpus stores it bare). The shared key FOLDS a stored

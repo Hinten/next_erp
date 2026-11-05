@@ -136,16 +136,17 @@ describe('shopeeVariationsPath', () => {
   });
 
   it('is null for a blank value, so the package keeps its default path', () => {
-    // A `??` here would pass '' to the client as an override, and the path sits
-    // INSIDE the HMAC base string — the symptom would be `error_sign` on every
-    // `get_variations` call, reading exactly like a bad partner key.
+    // A `??` here would pass the blank to the client as an override, which the
+    // package's `normalizeApiPath` refuses at CONSTRUCTION (`ShopeeConfigError`:
+    // no leading `/`) — every shop-signed client would fail to build instead of
+    // keeping the default path.
     vi.stubEnv('SHOPEE_VARIATIONS_PATH', '   ');
     expect(shopeeVariationsPath()).toBeNull();
   });
 
   it('passes a configured path through untouched, shape and all', () => {
-    vi.stubEnv('SHOPEE_VARIATIONS_PATH', '  /api/v2/product/get_variation_tree  ');
-    expect(shopeeVariationsPath()).toBe('/api/v2/product/get_variation_tree');
+    vi.stubEnv('SHOPEE_VARIATIONS_PATH', '  /api/v2/product/get_variations  ');
+    expect(shopeeVariationsPath()).toBe('/api/v2/product/get_variations');
   });
 
   it.each(['api/v2/product/get_variations', 'https://partner.shopeemobile.com/api/v2/x', '/x?a=1'])(
@@ -176,8 +177,8 @@ describe('shopeeConfig', () => {
     // The pair for the line above: `null` is the default, not the only value —
     // an assertion that only ever saw `null` could not tell a wired-up field
     // from one nobody fills.
-    vi.stubEnv('SHOPEE_VARIATIONS_PATH', '/api/v2/product/get_variation_tree');
-    expect(shopeeConfig().variationsPath).toBe('/api/v2/product/get_variation_tree');
+    vi.stubEnv('SHOPEE_VARIATIONS_PATH', '/api/v2/product/get_variations');
+    expect(shopeeConfig().variationsPath).toBe('/api/v2/product/get_variations');
   });
 
   it.each([
