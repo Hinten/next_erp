@@ -1,16 +1,26 @@
+import { readFileSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
+
 import { describe, expect, it } from 'vitest';
 
-import { patternFindings, scanForPiiReprovavel } from './piiScan';
+import { patternFindings, redactionResidue, scanForPiiReprovavel } from './piiScan';
 import {
+  CAMINHOS_DE_SKU,
+  CAMINHOS_SEM_SAIDA_MASCARADA,
+  FOLHAS_DE_TEXTO_DO_ANUNCIO,
   REDACTED_PATH_SUFFIXES,
   REDACTED_SUBTREES_SEM_EXCECAO,
   type WireValue,
+  chaveDaFolha,
+  ehCaminhoSemSaidaMascarada,
+  ehSkuSemConteudo,
   ehSubarvoreSemExcecao,
   ehValorMascarado,
   isRedactedPath,
   placeholderFor,
   redactWireBody,
 } from './redact';
+import { WIRE_DIR } from './wireCorpus';
 
 /**
  * The smallest body whose WALK path ends with `sufixo` — an `*` segment becomes
@@ -556,5 +566,600 @@ describe('redactWireBody — os blocos do comprador de uma DEVOLUÇÃO (passo 17
       'return_pickup_address',
       'user',
     ]);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*          As páginas de LEITURA de anúncio (#1911): as capturas BR          */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * An UNREDACTED `get_item_base_info` page, in the shape the BR production read
+ * answers. ⚠️ Every value is INVENTED — the title, the description, the SKU,
+ * the URLs — and the ids are the corpus's fixture ids. The `imagem-redigida`
+ * strings are the BR capture script's OWN placeholder, which this module keeps.
+ */
+const CRU_ANUNCIO: WireValue = {
+  error: '',
+  message: '',
+  warning: '',
+  response: {
+    item_list: [
+      {
+        item_id: 2_500_139_861,
+        category_id: 100_244,
+        item_name: 'Camiseta Inventada da Loja Inventada',
+        description: 'Descrição inventada que cita a Loja Inventada e o seu endereço.',
+        description_type: 'normal',
+        item_sku: 'CAM-PRETA-M',
+        image: {
+          image_id_list: ['imagem-redigida'],
+          image_url_list: ['https://cf.shopee.com.br/file/br-inventada-1'],
+        },
+        promotion_image: {
+          image_id_list: ['imagem-redigida'],
+          image_url_list: ['https://cf.shopee.com.br/file/br-inventada-2'],
+        },
+        size_chart: 'https://cf.shopee.com.br/file/br-tabela-inventada',
+        size_chart_id: 0,
+        video_info: [
+          {
+            video_url: 'https://video.shopee.com.br/inventado.mp4',
+            thumbnail_url: 'https://cf.shopee.com.br/file/br-miniatura-inventada',
+            duration: 12,
+          },
+        ],
+      },
+    ],
+  },
+};
+
+/**
+ * A SKU in the SHAPE of the BR capture script's keyed pseudonym (`SKU-` + eight
+ * lowercase hex) — ⚠️ INVENTED, never a committed one. A test that pins the
+ * pseudonym exit needs a value of that shape, and copying one out of a `.br-`
+ * body would put a capture value in a test (it did, once: #1911's review). The
+ * `inventado de verdade` test below reds the day this constant matches anything
+ * in `__wire__/`.
+ */
+const PSEUDONIMO_INVENTADO = 'SKU-c0ffee42';
+
+/**
+ * An UNREDACTED `get_model_list` page — the two tier spellings and three models.
+ * ⚠️ Invented values (the pseudonym-shaped SKU is {@link PSEUDONIMO_INVENTADO});
+ * `101054`/`101056` and the group id are public taxonomy, and `LOCAL-REDIGIDO`
+ * is the capture script's placeholder.
+ */
+const CRU_MODELOS: WireValue = {
+  error: '',
+  message: '',
+  response: {
+    tier_variation: [
+      {
+        name: 'Cor',
+        option_list: [
+          {
+            option: 'Preto',
+            image: {
+              image_id: 'imagem-redigida',
+              image_url: 'https://cf.shopee.com.br/file/br-opcao-inventada',
+            },
+          },
+        ],
+      },
+    ],
+    standardise_tier_variation: [
+      {
+        variation_id: 101_054,
+        variation_name: 'Cor',
+        variation_option_list: [
+          {
+            variation_option_id: 0,
+            variation_option_name: 'Preto',
+            image_id: 'imagem-redigida',
+            image_url: 'https://cf.shopee.com.br/file/br-opcao-padrao-inventada',
+          },
+        ],
+      },
+      { variation_id: 101_056, variation_group_id: 844_758_844_060_204, variation_name: 'Tamanho' },
+    ],
+    model: [
+      {
+        model_id: 2_000_458_802,
+        model_sku: 'AZUL-P',
+        tier_index: [0],
+        stock_info_v2: { seller_stock: [{ location_id: 'LOCAL-REDIGIDO', stock: 3 }] },
+      },
+      { model_id: 2_000_458_803, model_sku: PSEUDONIMO_INVENTADO, tier_index: [1] },
+      { model_id: 2_000_458_804, model_sku: 'SONDA-KIT-M1', tier_index: [2] },
+    ],
+  },
+};
+
+type LinhaDoAnuncio = Registro & {
+  image: Registro;
+  promotion_image: Registro;
+  video_info: Registro[];
+};
+
+interface ModelosRedigidos {
+  tier_variation: { option_list: { image: Registro }[] }[];
+  standardise_tier_variation: { variation_option_list?: Registro[] }[];
+  model: Registro[];
+}
+
+function anuncioRedigido(cru: WireValue = CRU_ANUNCIO): LinhaDoAnuncio {
+  return (redactWireBody(cru) as { response: { item_list: LinhaDoAnuncio[] } }).response
+    .item_list[0]!;
+}
+
+function modelosRedigidos(): ModelosRedigidos {
+  return (redactWireBody(CRU_MODELOS) as unknown as { response: ModelosRedigidos }).response;
+}
+
+/** The smallest `get_item_base_info` page with ONE leaf at `item_list[0][chave]`. */
+function anuncioCom(chave: string, valor: WireValue): WireValue {
+  return { response: { item_list: [{ [chave]: valor }] } };
+}
+
+function skuDoAnuncio(sku: string): unknown {
+  return anuncioRedigido(anuncioCom('item_sku', sku)).item_sku;
+}
+
+/** The SKU of the smallest `get_model_list` page with ONE `model_sku`, redacted. */
+function skuDoModelo(sku: string): unknown {
+  const limpo = redactWireBody({ response: { model: [{ model_sku: sku }] } });
+  return (limpo as { response: { model: Registro[] } }).response.model[0]!.model_sku;
+}
+
+describe('redactWireBody — as páginas de LEITURA de anúncio (#1911)', () => {
+  it('o TÍTULO do anúncio sai — `response.item_list.*.item_name`, QUATRO segmentos', () => {
+    expect(anuncioRedigido().item_name).toBe('REDACTED');
+    expect(isRedactedPath(['response', 'item_list', '*', 'item_name'])).toBe(true);
+  });
+
+  it('⚠️ NEAR-MISS: o título da LINHA DO PEDIDO, o do KIT e o do PUSH ficam', () => {
+    // Por isso são QUATRO segmentos: `['item_list', '*', 'item_name']` casaria a
+    // linha do pedido — dado do PEDIDO, que a importação leva a `nomeDeVenda`.
+    const pedido = (
+      redactWireBody(CRU) as { response: { order_list: { item_list: Registro[] }[] } }
+    ).response.order_list[0]!.item_list[0]!;
+    expect(pedido.item_name).toBe('Camiseta de algodão');
+
+    const kit = (
+      redactWireBody({
+        response: {
+          product_info: { item_name: 'Kit inventado', description: 'Descrição do kit inventada' },
+        },
+      }) as { response: { product_info: Registro } }
+    ).response.product_info;
+    expect(kit).toEqual({ item_name: 'Kit inventado', description: 'Descrição do kit inventada' });
+
+    const push = (
+      redactWireBody({ code: 16, data: { item_id: 2_500_139_861, item_name: 'Título' } }) as {
+        data: Registro;
+      }
+    ).data;
+    expect(push.item_name).toBe('Título');
+
+    expect(isRedactedPath(['response', 'order_list', '*', 'item_list', '*', 'item_name'])).toBe(
+      false,
+    );
+    expect(isRedactedPath(['response', 'product_info', 'item_name'])).toBe(false);
+    expect(isRedactedPath(['data', 'item_name'])).toBe(false);
+    // Um `item_list` que não pende de `response` também não é a página de leitura.
+    expect(isRedactedPath(['data', 'item_list', '*', 'item_name'])).toBe(false);
+  });
+
+  it('D-3 PAR: a DESCRIÇÃO do anúncio sai — e o placeholder do script de captura vira `REDACTED`', () => {
+    expect(anuncioRedigido().description).toBe('REDACTED');
+    // O script de captura BR escreveu `REDIGIDO (n caracteres)`; o redator do
+    // repositório não confia nele e o substitui (o README guarda cada `n`).
+    expect(
+      anuncioRedigido(anuncioCom('description', 'REDIGIDO (1234 caracteres)')).description,
+    ).toBe('REDACTED');
+    expect(isRedactedPath(['response', 'item_list', '*', 'description'])).toBe(true);
+    // …e a saída do VAZIO continua valendo ali.
+    expect(anuncioRedigido(anuncioCom('description', '')).description).toBe('');
+  });
+
+  it('⚠️ D-3 NEAR-MISS: uma `description` em OUTRO caminho fica — o corpo de PEDIDO do kit e a leitura do kit', () => {
+    // O corpo de pedido de `add_kit_item` (`item_setting.description`): um
+    // pedido NOSSO, não uma leitura da loja.
+    const pedido: WireValue = {
+      item_setting: {
+        item_name: 'Kit inventado',
+        description: 'Kit de teste inventado. Nao comprar.',
+        item_sku: 'KIT-INVENTADO',
+      },
+    };
+    expect(redactWireBody(pedido)).toEqual(pedido);
+    expect(isRedactedPath(['item_setting', 'description'])).toBe(false);
+    // A leitura do KIT (`get_kit_item_info`): `wireCorpus.test.ts` afirma que a
+    // descrição do kit tem texto (`/\S/`).
+    expect(isRedactedPath(['response', 'product_info', 'description'])).toBe(false);
+    // Um `item_list` que não pende de `response` também não é a página de
+    // leitura — o par do título acima, para a descrição.
+    expect(isRedactedPath(['data', 'item_list', '*', 'description'])).toBe(false);
+    // …e `description_type` é vocabulário da Shopee, não texto do anúncio.
+    expect(anuncioRedigido().description_type).toBe('normal');
+  });
+
+  /** One `get_item_base_info` row whose description is EXTENDED: two blocks. */
+  const DESCRICAO_ESTENDIDA: WireValue = {
+    response: {
+      item_list: [
+        {
+          description: '',
+          description_type: 'extended',
+          description_info: {
+            extended_description: {
+              field_list: [
+                { field_type: 'text', text: 'Texto inventado do anúncio *promo*' },
+                { field_type: 'image', image_info: { image_id: 'imagem-inventada' } },
+              ],
+            },
+          },
+        },
+      ],
+    },
+  };
+
+  it('D-3 PAR: a descrição ESTENDIDA também sai — cada bloco `text`, mesmo com `*`', () => {
+    const redigido = redactWireBody(DESCRICAO_ESTENDIDA);
+    const limpo = redigido as {
+      response: {
+        item_list: { description_info: { extended_description: { field_list: Registro[] } } }[];
+      };
+    };
+    const blocos = limpo.response.item_list[0]!.description_info.extended_description.field_list;
+    expect(blocos[0]).toEqual({ field_type: 'text', text: 'REDACTED' });
+    expect(
+      isRedactedPath([
+        'response',
+        'item_list',
+        '*',
+        'description_info',
+        'extended_description',
+        'field_list',
+        '*',
+        'text',
+      ]),
+    ).toBe(true);
+    expect(redactWireBody(redigido)).toEqual(redigido);
+  });
+
+  it('⚠️ D-3 NEAR-MISS: na descrição estendida, `field_type` e a imagem do bloco ficam; um `text` fora da página de leitura fica', () => {
+    const limpo = redactWireBody(DESCRICAO_ESTENDIDA) as {
+      response: {
+        item_list: { description_info: { extended_description: { field_list: Registro[] } } }[];
+      };
+    };
+    const blocos = limpo.response.item_list[0]!.description_info.extended_description.field_list;
+    expect(blocos[1]).toEqual({
+      field_type: 'image',
+      image_info: { image_id: 'imagem-inventada' },
+    });
+    // O corpo de PEDIDO de `add_item` (`description_info` no topo): nosso, não
+    // uma leitura da loja.
+    const pedido: WireValue = {
+      description_info: {
+        extended_description: { field_list: [{ field_type: 'text', text: 'Texto inventado' }] },
+      },
+    };
+    expect(redactWireBody(pedido)).toEqual(pedido);
+    expect(
+      isRedactedPath(['description_info', 'extended_description', 'field_list', '*', 'text']),
+    ).toBe(false);
+  });
+
+  it('a URL de imagem de um `string[]` vira a URL-placeholder — a chave é o último segmento que NÃO é índice', () => {
+    const linha = anuncioRedigido();
+    expect(linha.image.image_url_list).toEqual(['https://redacted.invalid/imagem']);
+    expect(linha.promotion_image.image_url_list).toEqual(['https://redacted.invalid/imagem']);
+    // O marcador antigo das sondas de kit (passo 19) também é regravado.
+    const sonda = redactWireBody({
+      image: { image_url_list: ['https://example.invalid/file/redacted'] },
+    }) as { image: Registro };
+    expect(sonda.image.image_url_list).toEqual(['https://redacted.invalid/imagem']);
+    expect(chaveDaFolha(['response', 'item_list', '*', 'image', 'image_url_list', '*'])).toBe(
+      'image_url_list',
+    );
+    expect(chaveDaFolha(['dispute_text_reason', '*', '*'])).toBe('dispute_text_reason');
+    expect(chaveDaFolha(['*'])).toBe('');
+    expect(chaveDaFolha([])).toBe('');
+  });
+
+  it('⚠️ NEAR-MISS: `image`, `images` e a lista de `dispute_text_reason` continuam `REDACTED` — nenhuma tem caso de URL', () => {
+    const limpo = redactWireBody({
+      image: ['https://fotos.example.com/1.jpg'],
+      item: [{ images: ['https://fotos.example.com/2.jpg'] }],
+      dispute_text_reason: ['texto inventado'],
+    }) as { image: unknown; item: Registro[]; dispute_text_reason: unknown };
+    expect(limpo.image).toEqual(['REDACTED']);
+    expect(limpo.item[0]!.images).toEqual(['REDACTED']);
+    expect(limpo.dispute_text_reason).toEqual(['REDACTED']);
+  });
+
+  it('`image_url` em UM segmento — a opção de tier e a opção padronizada também saem', () => {
+    const modelos = modelosRedigidos();
+    expect(modelos.tier_variation[0]!.option_list[0]!.image.image_url).toBe(
+      'https://redacted.invalid/imagem',
+    );
+    expect(modelos.standardise_tier_variation[0]!.variation_option_list![0]!.image_url).toBe(
+      'https://redacted.invalid/imagem',
+    );
+    // NEAR-MISS: o id da imagem (o placeholder do script) e o resto da opção ficam.
+    expect(modelos.tier_variation[0]!.option_list[0]!.image.image_id).toBe('imagem-redigida');
+    expect(modelos.standardise_tier_variation[0]!.variation_option_list![0]).toMatchObject({
+      variation_option_id: 0,
+      variation_option_name: 'Preto',
+      image_id: 'imagem-redigida',
+    });
+    expect(modelos.standardise_tier_variation[1]).toEqual({
+      variation_id: 101_056,
+      variation_group_id: 844_758_844_060_204,
+      variation_name: 'Tamanho',
+    });
+  });
+
+  it('`size_chart` vira a URL-placeholder; vazio fica vazio; `size_chart_id` fica', () => {
+    expect(anuncioRedigido().size_chart).toBe('https://redacted.invalid/imagem');
+    expect(anuncioRedigido(anuncioCom('size_chart', '')).size_chart).toBe('');
+    expect(anuncioRedigido().size_chart_id).toBe(0);
+    expect(isRedactedPath(['response', 'item_list', '*', 'size_chart_id'])).toBe(false);
+  });
+
+  it('o VÍDEO sai como `REDACTED` — sem caso de URL, que reescreveria o `buyer_videos` já gravado', () => {
+    const video = anuncioRedigido().video_info[0]!;
+    expect(video).toEqual({ video_url: 'REDACTED', thumbnail_url: 'REDACTED', duration: 12 });
+    expect(placeholderFor('video_url', 'https://video.example.com/x.mp4')).toBe('REDACTED');
+    expect(placeholderFor('thumbnail_url', 'https://video.example.com/x.jpg')).toBe('REDACTED');
+  });
+
+  it('o SKU de anúncio e de modelo sai — salvo o PSEUDÔNIMO do script e o marcador da sonda', () => {
+    expect(skuDoAnuncio('CAM-PRETA-M')).toBe('REDACTED');
+    expect(skuDoAnuncio(PSEUDONIMO_INVENTADO)).toBe(PSEUDONIMO_INVENTADO);
+    expect(skuDoAnuncio('SONDA-KIT')).toBe('SONDA-KIT');
+    expect(skuDoModelo('AZUL-P')).toBe('REDACTED');
+    expect(skuDoModelo(PSEUDONIMO_INVENTADO)).toBe(PSEUDONIMO_INVENTADO);
+    expect(skuDoModelo('SONDA-KIT-M1')).toBe('SONDA-KIT-M1');
+    expect(skuDoModelo('SONDA-KIT2')).toBe('SONDA-KIT2');
+    // O corpo inteiro: cada modelo pela sua regra.
+    expect(modelosRedigidos().model.map((m) => m.model_sku)).toEqual([
+      'REDACTED',
+      PSEUDONIMO_INVENTADO,
+      'SONDA-KIT-M1',
+    ]);
+    // …e o vazio fica vazio.
+    expect(skuDoAnuncio('')).toBe('');
+  });
+
+  it.each([
+    ['hex MAIÚSCULO', 'SKU-C0FFEE42'],
+    ['sete dígitos hex', 'SKU-c0ffee4'],
+    ['nove dígitos hex', 'SKU-c0ffee425'],
+    ['prefixo minúsculo', 'sku-c0ffee42'],
+    ['espaço antes', ' SKU-c0ffee42'],
+    ['sufixo depois', 'SKU-c0ffee42-M'],
+    ['um asterisco no lugar de um dígito', 'SKU-c0ffee4*'],
+    ['sonda minúscula', 'SONDA-kit'],
+    ['sonda com minúscula no fim', 'SONDA-KITx'],
+    ['sonda com prefixo', 'XSONDA-KIT'],
+  ])('⚠️ NEAR-MISS do pseudônimo: %s (%j) NÃO é saída — sai `REDACTED`', (_, sku) => {
+    expect(skuDoAnuncio(sku)).toBe('REDACTED');
+    expect(skuDoModelo(sku)).toBe('REDACTED');
+  });
+
+  it('⚠️ NEAR-MISS de ESCOPO: o SKU do pedido, da devolução e do escrow fica; o pseudônimo em outro caminho redigido sai', () => {
+    // O SKU da linha do pedido e o do escrow, que as suítes da cascata de SKU
+    // leem do corpo gravado — nenhum termina num dos dois sufixos.
+    const pedido = (
+      redactWireBody({
+        response: {
+          order_list: [{ item_list: [{ item_sku: 'CAM-01', model_sku: '123002002' }] }],
+        },
+      }) as { response: { order_list: { item_list: Registro[] }[] } }
+    ).response.order_list[0]!.item_list[0]!;
+    expect(pedido).toEqual({ item_sku: 'CAM-01', model_sku: '123002002' });
+    const escrow = JSON.stringify(
+      redactWireBody({
+        response: { order_income: { items: [{ item_sku: 'CAM-01', model_sku: 'PRETA-M' }] } },
+      }),
+    );
+    expect(escrow).toContain('"item_sku":"CAM-01"');
+    expect(escrow).toContain('"model_sku":"PRETA-M"');
+    // A devolução (o `item.item_sku` acima, no teste do detalhe) também fica.
+    expect(isRedactedPath(['response', 'item', '*', 'item_sku'])).toBe(false);
+    expect(isRedactedPath(['response', 'order_list', '*', 'item_list', '*', 'model_sku'])).toBe(
+      false,
+    );
+    // E a saída NÃO vaza para as outras entradas: um valor com forma de
+    // pseudônimo num nome de destinatário ou num título sai como qualquer valor.
+    const destinatario = redactWireBody({ recipient_address: { name: PSEUDONIMO_INVENTADO } }) as {
+      recipient_address: Registro;
+    };
+    expect(destinatario.recipient_address.name).toBe('REDACTED');
+    expect(anuncioRedigido(anuncioCom('item_name', 'SONDA-KIT')).item_name).toBe('REDACTED');
+    expect(ehSkuSemConteudo(['recipient_address', 'name'], PSEUDONIMO_INVENTADO)).toBe(false);
+    expect(ehSkuSemConteudo(['response', 'item_list', '*', 'item_sku'], PSEUDONIMO_INVENTADO)).toBe(
+      true,
+    );
+    expect(ehSkuSemConteudo(['response', 'model', '*', 'model_sku'], 'SONDA-KIT')).toBe(true);
+    expect(ehSkuSemConteudo(['response', 'model', '*', 'model_sku'], 'AZUL-P')).toBe(false);
+    expect(CAMINHOS_DE_SKU).toEqual([
+      ['response', 'item_list', '*', 'item_sku'],
+      ['response', 'model', '*', 'model_sku'],
+    ]);
+  });
+
+  it('⚠️ PAR: um `*` no título, na descrição ou no SKU do anúncio NÃO abre a saída do mascarado — sai `REDACTED`', () => {
+    // A Shopee não mascara o anúncio da PRÓPRIA loja: um `*` ali é texto que a
+    // loja digitou, e a saída do mascarado o manteria — como ponto fixo, que o
+    // `piiScan` só conta como achado `masked` informativo, nunca reprovação.
+    expect(
+      anuncioRedigido(anuncioCom('item_name', '*Promocao* Camiseta Inventada')).item_name,
+    ).toBe('REDACTED');
+    expect(
+      anuncioRedigido(anuncioCom('description', '*** oferta ***\n* algodao')).description,
+    ).toBe('REDACTED');
+    expect(skuDoAnuncio('CAM*01')).toBe('REDACTED');
+    expect(skuDoModelo('AZUL*P')).toBe('REDACTED');
+    // …o vazio continua saída ali, e o resultado é ponto fixo.
+    expect(anuncioRedigido(anuncioCom('item_name', '')).item_name).toBe('');
+    const uma = redactWireBody(anuncioCom('item_name', '*Promocao*'));
+    expect(redactWireBody(uma)).toEqual(uma);
+    expect(FOLHAS_DE_TEXTO_DO_ANUNCIO).toEqual([
+      ['response', 'item_list', '*', 'item_name'],
+      ['response', 'item_list', '*', 'description'],
+      [
+        'response',
+        'item_list',
+        '*',
+        'description_info',
+        'extended_description',
+        'field_list',
+        '*',
+        'text',
+      ],
+    ]);
+    expect(CAMINHOS_SEM_SAIDA_MASCARADA).toEqual([
+      ...FOLHAS_DE_TEXTO_DO_ANUNCIO,
+      ...CAMINHOS_DE_SKU,
+    ]);
+    for (const caminho of CAMINHOS_SEM_SAIDA_MASCARADA) {
+      expect(ehCaminhoSemSaidaMascarada(caminho), caminho.join('.')).toBe(true);
+    }
+  });
+
+  it('⚠️ NEAR-MISS: FORA dessas folhas o mascarado continua saída — o destinatário fica `****`; a linha do pedido e o kit ficam', () => {
+    const limpo = redactWireBody({
+      response: {
+        order_list: [
+          {
+            recipient_address: { name: '****', phone: '******64' },
+            item_list: [{ item_name: 'Camiseta *promo*', item_sku: 'CAM*01' }],
+          },
+        ],
+        product_info: { item_name: 'Kit *inventado*' },
+      },
+    }) as {
+      response: {
+        order_list: { recipient_address: Registro; item_list: Registro[] }[];
+        product_info: Registro;
+      };
+    };
+    const pedido = limpo.response.order_list[0]!;
+    expect(pedido.recipient_address).toEqual({ name: '****', phone: '******64' });
+    expect(pedido.item_list[0]).toEqual({ item_name: 'Camiseta *promo*', item_sku: 'CAM*01' });
+    expect(limpo.response.product_info.item_name).toBe('Kit *inventado*');
+    expect(
+      ehCaminhoSemSaidaMascarada(['response', 'order_list', '*', 'recipient_address', 'name']),
+    ).toBe(false);
+    expect(
+      ehCaminhoSemSaidaMascarada(['response', 'order_list', '*', 'item_list', '*', 'item_name']),
+    ).toBe(false);
+    expect(ehCaminhoSemSaidaMascarada(['response', 'product_info', 'item_name'])).toBe(false);
+  });
+
+  it('o pseudônimo destes testes é INVENTADO de verdade — o seu hex não aparece em NENHUM arquivo de `__wire__/`', () => {
+    const hex = PSEUDONIMO_INVENTADO.slice('SKU-'.length);
+    expect(/^[0-9a-f]{8}$/.test(hex)).toBe(true);
+    const arquivos = readdirSync(WIRE_DIR);
+    // Âncora anti-vacuidade: o diretório tem os corpos que a busca percorre.
+    expect(arquivos.filter((f) => f.endsWith('.json')).length).toBeGreaterThan(0);
+    // Uma CONTAGEM, comparada em minúsculas: uma falha nunca imprime o trecho.
+    expect(
+      arquivos.filter((f) => readFileSync(join(WIRE_DIR, f), 'utf8').toLowerCase().includes(hex))
+        .length,
+    ).toBe(0);
+  });
+
+  it('os placeholders do PRÓPRIO script de captura que não são texto do anúncio ficam: `imagem-redigida` e `LOCAL-REDIGIDO`', () => {
+    expect(anuncioRedigido().image.image_id_list).toEqual(['imagem-redigida']);
+    expect(modelosRedigidos().model[0]!.stock_info_v2).toEqual({
+      seller_stock: [{ location_id: 'LOCAL-REDIGIDO', stock: 3 }],
+    });
+    expect(isRedactedPath(['response', 'item_list', '*', 'image', 'image_id_list', '*'])).toBe(
+      false,
+    );
+    expect(
+      isRedactedPath([
+        'response',
+        'model',
+        '*',
+        'stock_info_v2',
+        'seller_stock',
+        '*',
+        'location_id',
+      ]),
+    ).toBe(false);
+  });
+
+  it('as entradas #1911 estão no denylist como desenhadas — e as grafias erradas NÃO', () => {
+    for (const entrada of [
+      ['response', 'item_list', '*', 'item_name'],
+      ['response', 'item_list', '*', 'description'],
+      ['image_url_list', '*'],
+      ['image_url'],
+      ['size_chart'],
+      ['video_info', '*', 'video_url'],
+      ['video_info', '*', 'thumbnail_url'],
+      ['response', 'item_list', '*', 'item_sku'],
+      ['response', 'model', '*', 'model_sku'],
+    ]) {
+      expect(REDACTED_PATH_SUFFIXES, entrada.join('.')).toContainEqual(entrada);
+    }
+    for (const errada of [
+      ['item_list', '*', 'item_name'],
+      ['item_name'],
+      ['description'],
+      ['item_sku'],
+      ['model_sku'],
+      ['image_info', 'image_url'],
+    ]) {
+      expect(REDACTED_PATH_SUFFIXES, errada.join('.')).not.toContainEqual(errada);
+    }
+  });
+
+  it('é IDEMPOTENTE sobre as duas páginas — o ponto fixo que o piiScan usa', () => {
+    for (const cru of [CRU_ANUNCIO, CRU_MODELOS]) {
+      const uma = redactWireBody(cru);
+      expect(redactWireBody(uma)).toEqual(uma);
+      expect(redactWireBody(redactWireBody(uma))).toEqual(uma);
+      expect(redactionResidue(uma)).toEqual([]);
+      expect(scanForPiiReprovavel(uma)).toEqual([]);
+    }
+  });
+
+  it('CONTROLE A: o resíduo de redação acusa CADA folha nova nos corpos crus, e nenhuma vizinha', () => {
+    const prefixo = 'response.item_list.*.';
+    expect(
+      redactionResidue(CRU_ANUNCIO)
+        .map((f) => f.path)
+        .sort(),
+    ).toEqual(
+      [
+        `${prefixo}description`,
+        `${prefixo}image.image_url_list.*`,
+        `${prefixo}item_name`,
+        `${prefixo}item_sku`,
+        `${prefixo}promotion_image.image_url_list.*`,
+        `${prefixo}size_chart`,
+        `${prefixo}video_info.*.thumbnail_url`,
+        `${prefixo}video_info.*.video_url`,
+      ].sort(),
+    );
+    expect(
+      redactionResidue(CRU_MODELOS)
+        .map((f) => f.path)
+        .sort(),
+    ).toEqual(
+      [
+        'response.model.*.model_sku',
+        'response.standardise_tier_variation.*.variation_option_list.*.image_url',
+        'response.tier_variation.*.option_list.*.image.image_url',
+      ].sort(),
+    );
   });
 });

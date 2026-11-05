@@ -1,0 +1,1824 @@
+{
+  "error": "",
+  "message": "",
+  "warning": "",
+  "response": {
+    "list": [
+      {
+        "category_id": 100824,
+        "attribute_tree": [
+          {
+            "attribute_id": 100248,
+            "mandatory": false,
+            "name": "Volume",
+            "attribute_value_list": [
+              {
+                "value_id": 499,
+                "name": "1L",
+                "value_unit": "L",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "1L"
+                  }
+                ]
+              },
+              {
+                "value_id": 511,
+                "name": "10ml",
+                "value_unit": "ml",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "10ml"
+                  }
+                ]
+              },
+              {
+                "value_id": 520,
+                "name": "20ml",
+                "value_unit": "ml",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "20ml"
+                  }
+                ]
+              },
+              {
+                "value_id": 524,
+                "name": "30ml",
+                "value_unit": "ml",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "30ml"
+                  }
+                ]
+              },
+              {
+                "value_id": 530,
+                "name": "50ml",
+                "value_unit": "ml",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "50ml"
+                  }
+                ]
+              },
+              {
+                "value_id": 533,
+                "name": "100ml",
+                "value_unit": "ml",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "100ml"
+                  }
+                ]
+              },
+              {
+                "value_id": 541,
+                "name": "150ml",
+                "value_unit": "ml",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "150ml"
+                  }
+                ]
+              },
+              {
+                "value_id": 544,
+                "name": "200ml",
+                "value_unit": "ml",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "200ml"
+                  }
+                ]
+              },
+              {
+                "value_id": 587,
+                "name": "250ml",
+                "value_unit": "ml",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "250ml"
+                  }
+                ]
+              },
+              {
+                "value_id": 598,
+                "name": "300ml",
+                "value_unit": "ml",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "300ml"
+                  }
+                ]
+              },
+              {
+                "value_id": 610,
+                "name": "330ml",
+                "value_unit": "ml",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "330ml"
+                  }
+                ]
+              },
+              {
+                "value_id": 620,
+                "name": "400ml",
+                "value_unit": "ml",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "400ml"
+                  }
+                ]
+              },
+              {
+                "value_id": 627,
+                "name": "500ml",
+                "value_unit": "ml",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "500ml"
+                  }
+                ]
+              },
+              {
+                "value_id": 635,
+                "name": "750ml",
+                "value_unit": "ml",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "750ml"
+                  }
+                ]
+              }
+            ],
+            "attribute_info": {
+              "input_type": 2,
+              "input_validation_type": 3,
+              "format_type": 2,
+              "attribute_unit_list": ["ml", "L"],
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Volume"
+              }
+            ]
+          },
+          {
+            "attribute_id": 100037,
+            "mandatory": false,
+            "name": "Region of Origin",
+            "attribute_value_list": [
+              {
+                "value_id": 1,
+                "name": "Japan",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Japão"
+                  }
+                ]
+              },
+              {
+                "value_id": 26,
+                "name": "Australia",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Austrália"
+                  }
+                ]
+              },
+              {
+                "value_id": 35,
+                "name": "Mainland China",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "China"
+                  }
+                ]
+              },
+              {
+                "value_id": 48,
+                "name": "Korea",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Coreia"
+                  }
+                ]
+              },
+              {
+                "value_id": 60,
+                "name": "Europe",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Europa"
+                  }
+                ]
+              },
+              {
+                "value_id": 68,
+                "name": "Indonesia",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Indonésia"
+                  }
+                ]
+              },
+              {
+                "value_id": 74,
+                "name": "Malaysia",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Malásia"
+                  }
+                ]
+              },
+              {
+                "value_id": 93,
+                "name": "Others",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Outros"
+                  }
+                ]
+              },
+              {
+                "value_id": 104,
+                "name": "Philippines",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Filipinas"
+                  }
+                ]
+              },
+              {
+                "value_id": 108,
+                "name": "Singapore",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Singapura"
+                  }
+                ]
+              },
+              {
+                "value_id": 110,
+                "name": "America",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "América"
+                  }
+                ]
+              },
+              {
+                "value_id": 112,
+                "name": "Taiwan",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Taiwan"
+                  }
+                ]
+              },
+              {
+                "value_id": 129,
+                "name": "Thailand",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Tailândia"
+                  }
+                ]
+              },
+              {
+                "value_id": 136,
+                "name": "Vietnam",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Vietnã"
+                  }
+                ]
+              },
+              {
+                "value_id": 142,
+                "name": "England",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Inglaterra"
+                  }
+                ]
+              },
+              {
+                "value_id": 146,
+                "name": "France",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "França"
+                  }
+                ]
+              },
+              {
+                "value_id": 149,
+                "name": "Germany",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Alemanha"
+                  }
+                ]
+              },
+              {
+                "value_id": 151,
+                "name": "Denmark",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Dinamarca"
+                  }
+                ]
+              },
+              {
+                "value_id": 154,
+                "name": "India",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Índia"
+                  }
+                ]
+              },
+              {
+                "value_id": 156,
+                "name": "Hong Kong",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Hong Kong"
+                  }
+                ]
+              },
+              {
+                "value_id": 158,
+                "name": "Italy",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Itália"
+                  }
+                ]
+              },
+              {
+                "value_id": 160,
+                "name": "Netherlands",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Holanda"
+                  }
+                ]
+              },
+              {
+                "value_id": 163,
+                "name": "New Zealand",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Nova Zelândia"
+                  }
+                ]
+              },
+              {
+                "value_id": 165,
+                "name": "Norway",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Noruega"
+                  }
+                ]
+              },
+              {
+                "value_id": 167,
+                "name": "UK",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Reino Unido"
+                  }
+                ]
+              },
+              {
+                "value_id": 169,
+                "name": "Sweden",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Suécia"
+                  }
+                ]
+              },
+              {
+                "value_id": 171,
+                "name": "Bangladesh",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Bangladesh"
+                  }
+                ]
+              },
+              {
+                "value_id": 173,
+                "name": "Local",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Local"
+                  }
+                ]
+              },
+              {
+                "value_id": 175,
+                "name": "Europe & America",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Europa e América"
+                  }
+                ]
+              },
+              {
+                "value_id": 177,
+                "name": "Canada",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Canadá"
+                  }
+                ]
+              },
+              {
+                "value_id": 6737,
+                "name": "Brasil",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Brasil"
+                  }
+                ]
+              },
+              {
+                "value_id": 6738,
+                "name": "Colombia",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Colombia"
+                  }
+                ]
+              },
+              {
+                "value_id": 6739,
+                "name": "Chile",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Chile"
+                  }
+                ]
+              },
+              {
+                "value_id": 6740,
+                "name": "Argentina",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Argentina"
+                  }
+                ]
+              },
+              {
+                "value_id": 6741,
+                "name": "Mexico",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "México"
+                  }
+                ]
+              },
+              {
+                "value_id": 7181,
+                "name": "Poland",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Polônia"
+                  }
+                ]
+              }
+            ],
+            "attribute_info": {
+              "input_type": 2,
+              "input_validation_type": 2,
+              "format_type": 1,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "País de Origem"
+              }
+            ]
+          },
+          {
+            "attribute_id": 101001,
+            "mandatory": false,
+            "name": "Drink Form",
+            "attribute_value_list": [
+              {
+                "value_id": 5457,
+                "name": "Coffee Capsules",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Cápsulas de café"
+                  }
+                ]
+              },
+              {
+                "value_id": 5458,
+                "name": "Ground Coffee",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Café moído"
+                  }
+                ]
+              },
+              {
+                "value_id": 5459,
+                "name": "Coffee Beans",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Grãos de café"
+                  }
+                ]
+              },
+              {
+                "value_id": 5461,
+                "name": "3-in-1 & Instant Coffee",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "3 em 1 e café solúvel"
+                  }
+                ]
+              },
+              {
+                "value_id": 5462,
+                "name": "Others",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Outros"
+                  }
+                ]
+              },
+              {
+                "value_id": 5466,
+                "name": "Ready to Drink",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Pronto para o consumo"
+                  }
+                ]
+              }
+            ],
+            "attribute_info": {
+              "input_type": 2,
+              "input_validation_type": 2,
+              "format_type": 1,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Forma das Bebidas"
+              }
+            ]
+          },
+          {
+            "attribute_id": 100044,
+            "mandatory": false,
+            "name": "Coffee Type",
+            "attribute_value_list": [
+              {
+                "value_id": 2,
+                "name": "Latte",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Latte"
+                  }
+                ]
+              },
+              {
+                "value_id": 19,
+                "name": "Mocha",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Mocha"
+                  }
+                ]
+              },
+              {
+                "value_id": 21,
+                "name": "Cappuccino",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Cappuccino"
+                  }
+                ]
+              },
+              {
+                "value_id": 47,
+                "name": "Espresso",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Espresso"
+                  }
+                ]
+              },
+              {
+                "value_id": 94,
+                "name": "Decaf",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Descafeinado"
+                  }
+                ]
+              },
+              {
+                "value_id": 107,
+                "name": "Americano",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Americano"
+                  }
+                ]
+              }
+            ],
+            "attribute_info": {
+              "input_type": 2,
+              "input_validation_type": 2,
+              "format_type": 1,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Tipo de Café"
+              }
+            ]
+          },
+          {
+            "attribute_id": 100974,
+            "mandatory": false,
+            "name": "Ingredient",
+            "attribute_info": {
+              "input_type": 3,
+              "input_validation_type": 2,
+              "format_type": 1,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Princípios Ativos"
+              }
+            ]
+          },
+          {
+            "attribute_id": 101029,
+            "mandatory": false,
+            "name": "indication",
+            "attribute_info": {
+              "input_type": 3,
+              "input_validation_type": 3,
+              "format_type": 2,
+              "attribute_unit_list": [
+                "ML",
+                "L",
+                "MG",
+                "G/GR",
+                "KG",
+                "CM",
+                "M",
+                "Dozen",
+                "Piece",
+                "Pack",
+                "Set",
+                "Box"
+              ],
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Tamanho Do Pacote"
+              }
+            ]
+          },
+          {
+            "attribute_id": 100253,
+            "mandatory": false,
+            "name": "Food Type",
+            "attribute_value_list": [
+              {
+                "value_id": 252,
+                "name": "Homemade",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Caseira"
+                  }
+                ]
+              },
+              {
+                "value_id": 254,
+                "name": "Others",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Outros"
+                  }
+                ]
+              },
+              {
+                "value_id": 255,
+                "name": "Seasonal",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Sazonal"
+                  }
+                ]
+              },
+              {
+                "value_id": 257,
+                "name": "Traditional",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Tradicional"
+                  }
+                ]
+              }
+            ],
+            "attribute_info": {
+              "input_type": 5,
+              "input_validation_type": 2,
+              "format_type": 1,
+              "max_value_count": 5,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Alimentos"
+              }
+            ]
+          },
+          {
+            "attribute_id": 100999,
+            "mandatory": false,
+            "name": "Quantity",
+            "attribute_info": {
+              "input_type": 3,
+              "input_validation_type": 2,
+              "format_type": 1,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Quantidade da embalagem"
+              }
+            ]
+          },
+          {
+            "attribute_id": 100095,
+            "mandatory": false,
+            "name": "Weight",
+            "attribute_value_list": [
+              {
+                "value_id": 515,
+                "name": "10g",
+                "value_unit": "g",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "10g"
+                  }
+                ]
+              },
+              {
+                "value_id": 523,
+                "name": "20g",
+                "value_unit": "g",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "20g"
+                  }
+                ]
+              },
+              {
+                "value_id": 545,
+                "name": "30g",
+                "value_unit": "g",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "30g"
+                  }
+                ]
+              },
+              {
+                "value_id": 551,
+                "name": "100g",
+                "value_unit": "g",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "100g"
+                  }
+                ]
+              },
+              {
+                "value_id": 556,
+                "name": "50g",
+                "value_unit": "g",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "50g"
+                  }
+                ]
+              },
+              {
+                "value_id": 562,
+                "name": "150g",
+                "value_unit": "g",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "150g"
+                  }
+                ]
+              },
+              {
+                "value_id": 578,
+                "name": "200g",
+                "value_unit": "g",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "200g"
+                  }
+                ]
+              },
+              {
+                "value_id": 586,
+                "name": "250g",
+                "value_unit": "g",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "250g"
+                  }
+                ]
+              },
+              {
+                "value_id": 599,
+                "name": "300g",
+                "value_unit": "g",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "300g"
+                  }
+                ]
+              },
+              {
+                "value_id": 613,
+                "name": "500g",
+                "value_unit": "g",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "500g"
+                  }
+                ]
+              },
+              {
+                "value_id": 622,
+                "name": "750g",
+                "value_unit": "g",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "750g"
+                  }
+                ]
+              },
+              {
+                "value_id": 631,
+                "name": "1kg",
+                "value_unit": "kg",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "1kg"
+                  }
+                ]
+              },
+              {
+                "value_id": 640,
+                "name": "1.5kg",
+                "value_unit": "kg",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "1.5kg"
+                  }
+                ]
+              },
+              {
+                "value_id": 646,
+                "name": "2kg",
+                "value_unit": "kg",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "2kg"
+                  }
+                ]
+              },
+              {
+                "value_id": 653,
+                "name": "3kg",
+                "value_unit": "kg",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "3kg"
+                  }
+                ]
+              },
+              {
+                "value_id": 663,
+                "name": "5kg",
+                "value_unit": "kg",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "5kg"
+                  }
+                ]
+              }
+            ],
+            "attribute_info": {
+              "input_type": 2,
+              "input_validation_type": 3,
+              "format_type": 2,
+              "attribute_unit_list": ["g", "kg"],
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Peso do Produto"
+              }
+            ]
+          },
+          {
+            "attribute_id": 100009,
+            "mandatory": false,
+            "name": "Specialty Diet",
+            "attribute_value_list": [
+              {
+                "value_id": 428,
+                "name": "Cholesterol Free",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Sem colesterol"
+                  }
+                ]
+              },
+              {
+                "value_id": 437,
+                "name": "Caffeine Free",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Sem Cafeína"
+                  }
+                ]
+              },
+              {
+                "value_id": 444,
+                "name": "Gluten Free",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Sem Glúten"
+                  }
+                ]
+              },
+              {
+                "value_id": 451,
+                "name": "GMO Free",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Sem OGM"
+                  }
+                ]
+              },
+              {
+                "value_id": 459,
+                "name": "Halal",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Halal"
+                  }
+                ]
+              },
+              {
+                "value_id": 465,
+                "name": "Healthier Choice",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Escolha mais saudável"
+                  }
+                ]
+              },
+              {
+                "value_id": 470,
+                "name": "Lactose Free",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Sem lactose"
+                  }
+                ]
+              },
+              {
+                "value_id": 475,
+                "name": "Low Fat",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Baixo teor de gordura"
+                  }
+                ]
+              },
+              {
+                "value_id": 485,
+                "name": "Low Sodium",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Baixo teor de sódio"
+                  }
+                ]
+              },
+              {
+                "value_id": 495,
+                "name": "Low Sugar",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Baixo teor de açúcar"
+                  }
+                ]
+              },
+              {
+                "value_id": 501,
+                "name": "Sugar Free",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Sem Açúcar"
+                  }
+                ]
+              },
+              {
+                "value_id": 505,
+                "name": "Trans Fat Free",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Sem gordura trans"
+                  }
+                ]
+              },
+              {
+                "value_id": 12296,
+                "name": "Organic",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Organic"
+                  }
+                ]
+              },
+              {
+                "value_id": 12298,
+                "name": "Saturated Fat Free",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Saturated Fat Free"
+                  }
+                ]
+              },
+              {
+                "value_id": 12326,
+                "name": "Vegetarian",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Vegetarian"
+                  }
+                ]
+              }
+            ],
+            "attribute_info": {
+              "input_type": 5,
+              "input_validation_type": 2,
+              "format_type": 1,
+              "max_value_count": 5,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Dieta Especializada"
+              }
+            ]
+          },
+          {
+            "attribute_id": 100017,
+            "mandatory": false,
+            "name": "Packaging Type",
+            "attribute_value_list": [
+              {
+                "value_id": 363,
+                "name": "Cans",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Latas"
+                  }
+                ]
+              },
+              {
+                "value_id": 371,
+                "name": "Glass Bottle",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Garrafas de vidro"
+                  }
+                ]
+              },
+              {
+                "value_id": 12343,
+                "name": "Plastic Bottle",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Plastic Bottle"
+                  }
+                ]
+              },
+              {
+                "value_id": 12344,
+                "name": "Canister",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Canister"
+                  }
+                ]
+              },
+              {
+                "value_id": 12345,
+                "name": "Refill Bottle",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Refill Bottle"
+                  }
+                ]
+              },
+              {
+                "value_id": 12346,
+                "name": "Bottle",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Bottle"
+                  }
+                ]
+              },
+              {
+                "value_id": 12347,
+                "name": "Bag",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Bag"
+                  }
+                ]
+              },
+              {
+                "value_id": 12348,
+                "name": "Refill Pouch",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Refill Pouch"
+                  }
+                ]
+              }
+            ],
+            "attribute_info": {
+              "input_type": 2,
+              "input_validation_type": 2,
+              "format_type": 1,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Tipo de Embalagem"
+              }
+            ]
+          },
+          {
+            "attribute_id": 100036,
+            "mandatory": false,
+            "name": "Formulation",
+            "attribute_info": {
+              "input_type": 2,
+              "input_validation_type": 2,
+              "format_type": 1,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Formulação"
+              }
+            ]
+          },
+          {
+            "attribute_id": 100048,
+            "mandatory": false,
+            "name": "Storage Type",
+            "attribute_value_list": [
+              {
+                "value_id": 467,
+                "name": "Frozen",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Congelado"
+                  }
+                ]
+              },
+              {
+                "value_id": 12353,
+                "name": "Cupboard",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Cupboard"
+                  }
+                ]
+              },
+              {
+                "value_id": 12354,
+                "name": "Chilled",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Chilled"
+                  }
+                ]
+              }
+            ],
+            "attribute_info": {
+              "input_type": 2,
+              "input_validation_type": 2,
+              "format_type": 1,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Tipo de Armazenamento"
+              }
+            ]
+          },
+          {
+            "attribute_id": 100249,
+            "mandatory": false,
+            "name": "Flavour",
+            "attribute_value_list": [
+              {
+                "value_id": 71,
+                "name": "Apple",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Maçã"
+                  }
+                ]
+              },
+              {
+                "value_id": 76,
+                "name": "Apricot",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Damasco"
+                  }
+                ]
+              },
+              {
+                "value_id": 90,
+                "name": "Blueberry",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Mirtilo"
+                  }
+                ]
+              },
+              {
+                "value_id": 113,
+                "name": "Cherry",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Cereja"
+                  }
+                ]
+              },
+              {
+                "value_id": 124,
+                "name": "Grape",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Uva"
+                  }
+                ]
+              },
+              {
+                "value_id": 148,
+                "name": "Mango",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Manga"
+                  }
+                ]
+              },
+              {
+                "value_id": 153,
+                "name": "Orange",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Laranja"
+                  }
+                ]
+              },
+              {
+                "value_id": 157,
+                "name": "Peach",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Pêssego"
+                  }
+                ]
+              },
+              {
+                "value_id": 161,
+                "name": "Pineapple",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Abacaxi"
+                  }
+                ]
+              },
+              {
+                "value_id": 221,
+                "name": "Tomato",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Tomate"
+                  }
+                ]
+              },
+              {
+                "value_id": 250,
+                "name": "Durian",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Durian"
+                  }
+                ]
+              },
+              {
+                "value_id": 644,
+                "name": "Kiwi",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Kiwi"
+                  }
+                ]
+              }
+            ],
+            "attribute_info": {
+              "input_type": 5,
+              "input_validation_type": 2,
+              "format_type": 1,
+              "max_value_count": 5,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Sabor"
+              }
+            ]
+          },
+          {
+            "attribute_id": 101219,
+            "mandatory": false,
+            "name": "Custom Product",
+            "attribute_value_list": [
+              {
+                "value_id": 7221,
+                "name": "Yes",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Sim"
+                  }
+                ]
+              },
+              {
+                "value_id": 7222,
+                "name": "No",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Não"
+                  }
+                ]
+              }
+            ],
+            "attribute_info": {
+              "input_type": 1,
+              "input_validation_type": 0,
+              "format_type": 1,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Produto personalizado"
+              }
+            ]
+          },
+          {
+            "attribute_id": 101306,
+            "mandatory": false,
+            "name": "Quantity per Pack",
+            "attribute_value_list": [
+              {
+                "value_id": 11855,
+                "name": "1",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "1"
+                  }
+                ]
+              },
+              {
+                "value_id": 11856,
+                "name": "2",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "2"
+                  }
+                ]
+              },
+              {
+                "value_id": 11857,
+                "name": "3",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "3"
+                  }
+                ]
+              },
+              {
+                "value_id": 11858,
+                "name": "4",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "4"
+                  }
+                ]
+              },
+              {
+                "value_id": 11859,
+                "name": "5",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "5"
+                  }
+                ]
+              },
+              {
+                "value_id": 11860,
+                "name": "6",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "6"
+                  }
+                ]
+              },
+              {
+                "value_id": 11861,
+                "name": "7",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "7"
+                  }
+                ]
+              },
+              {
+                "value_id": 11862,
+                "name": "8",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "8"
+                  }
+                ]
+              },
+              {
+                "value_id": 11863,
+                "name": "9",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "9"
+                  }
+                ]
+              },
+              {
+                "value_id": 11864,
+                "name": "10",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "10"
+                  }
+                ]
+              },
+              {
+                "value_id": 11865,
+                "name": "11",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "11"
+                  }
+                ]
+              },
+              {
+                "value_id": 11866,
+                "name": "12",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "12"
+                  }
+                ]
+              }
+            ],
+            "attribute_info": {
+              "input_type": 2,
+              "input_validation_type": 0,
+              "format_type": 1,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Quantidade por Pacote"
+              }
+            ]
+          },
+          {
+            "attribute_id": 101352,
+            "mandatory": false,
+            "name": "Item Batch code",
+            "attribute_info": {
+              "input_type": 3,
+              "input_validation_type": 2,
+              "format_type": 1,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Nr. do Lote do Produto"
+              }
+            ]
+          },
+          {
+            "attribute_id": 101353,
+            "mandatory": false,
+            "name": "Item Code",
+            "attribute_info": {
+              "input_type": 3,
+              "input_validation_type": 2,
+              "format_type": 1,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Código de registro ou notificação da ANVISA"
+              }
+            ]
+          },
+          {
+            "attribute_id": 101354,
+            "mandatory": false,
+            "name": "Exemption Reason",
+            "attribute_info": {
+              "input_type": 3,
+              "input_validation_type": 2,
+              "format_type": 1,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Motivo de Isenção Anvisa"
+              }
+            ]
+          },
+          {
+            "attribute_id": 101439,
+            "mandatory": false,
+            "name": "Item Qty. same batch",
+            "attribute_info": {
+              "input_type": 3,
+              "input_validation_type": 2,
+              "format_type": 1,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Qtd. de Produto no Lote"
+              }
+            ]
+          },
+          {
+            "attribute_id": 101440,
+            "mandatory": false,
+            "name": "Expire Date",
+            "attribute_info": {
+              "input_type": 3,
+              "input_validation_type": 2,
+              "format_type": 1,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Data de validade Anvisa"
+              }
+            ]
+          },
+          {
+            "attribute_id": 102344,
+            "mandatory": false,
+            "name": "MAPA Registration ID",
+            "attribute_info": {
+              "input_type": 3,
+              "input_validation_type": 0,
+              "format_type": 1,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Número do registro MAPA"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "debug_message": ""
+}

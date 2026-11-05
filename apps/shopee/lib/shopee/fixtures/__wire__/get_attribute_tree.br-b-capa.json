@@ -1,0 +1,1152 @@
+{
+  "error": "",
+  "message": "",
+  "warning": "",
+  "response": {
+    "list": [
+      {
+        "category_id": 100490,
+        "attribute_tree": [
+          {
+            "attribute_id": 100408,
+            "mandatory": true,
+            "name": "Connection Type",
+            "attribute_value_list": [
+              {
+                "value_id": 2498,
+                "name": "Wired",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Com fio, Sem conexão ou Outros"
+                  }
+                ]
+              },
+              {
+                "value_id": 2530,
+                "name": "Wireless",
+                "child_attribute_list": [
+                  {
+                    "attribute_id": 101237,
+                    "mandatory": true,
+                    "name": "Manufacturer",
+                    "attribute_info": {
+                      "input_type": 2,
+                      "input_validation_type": 2,
+                      "format_type": 1,
+                      "is_oem": false,
+                      "support_search_value": true
+                    },
+                    "multi_lang": [
+                      {
+                        "language": "pt-BR",
+                        "value": "Fabricante"
+                      }
+                    ]
+                  },
+                  {
+                    "attribute_id": 101197,
+                    "mandatory": true,
+                    "name": "Registration ID",
+                    "attribute_info": {
+                      "input_type": 3,
+                      "input_validation_type": 2,
+                      "format_type": 1,
+                      "is_oem": false,
+                      "support_search_value": false
+                    },
+                    "multi_lang": [
+                      {
+                        "language": "pt-BR",
+                        "value": "Nr. de Homologação"
+                      }
+                    ]
+                  },
+                  {
+                    "attribute_id": 101040,
+                    "mandatory": true,
+                    "name": "Model Name",
+                    "attribute_info": {
+                      "input_type": 3,
+                      "input_validation_type": 2,
+                      "format_type": 1,
+                      "is_oem": false,
+                      "support_search_value": false
+                    },
+                    "multi_lang": [
+                      {
+                        "language": "pt-BR",
+                        "value": "Nome do Modelo"
+                      }
+                    ]
+                  }
+                ],
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Sem fio (Bluetooth, Wifi, Radiofrequência)"
+                  }
+                ]
+              }
+            ],
+            "attribute_info": {
+              "input_type": 1,
+              "input_validation_type": 0,
+              "format_type": 1,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Tipo de Conexão"
+              }
+            ]
+          },
+          {
+            "attribute_id": 100121,
+            "mandatory": false,
+            "name": "Warranty Duration",
+            "attribute_value_list": [
+              {
+                "value_id": 776,
+                "name": "1 Month",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "1 Mês"
+                  }
+                ]
+              },
+              {
+                "value_id": 789,
+                "name": "2 Months",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "2 Meses"
+                  }
+                ]
+              },
+              {
+                "value_id": 799,
+                "name": "3 Months",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "3 Meses"
+                  }
+                ]
+              },
+              {
+                "value_id": 810,
+                "name": "6 Months",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "6 Meses"
+                  }
+                ]
+              },
+              {
+                "value_id": 822,
+                "name": "12 Months",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "12 Meses"
+                  }
+                ]
+              },
+              {
+                "value_id": 831,
+                "name": "24 Months",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "24 Meses"
+                  }
+                ]
+              },
+              {
+                "value_id": 857,
+                "name": "3 Years",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "3 Anos"
+                  }
+                ]
+              },
+              {
+                "value_id": 5577,
+                "name": "No Warranty",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Sem garantia"
+                  }
+                ]
+              }
+            ],
+            "attribute_info": {
+              "input_type": 2,
+              "input_validation_type": 2,
+              "format_type": 1,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Duração da Garantia"
+              }
+            ]
+          },
+          {
+            "attribute_id": 100134,
+            "mandatory": false,
+            "name": "Material",
+            "attribute_value_list": [
+              {
+                "value_id": 1207,
+                "name": "Plastic",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Plástico"
+                  }
+                ]
+              },
+              {
+                "value_id": 1209,
+                "name": "Fabric",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Tecido"
+                  }
+                ]
+              },
+              {
+                "value_id": 1211,
+                "name": "Wood",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Madeira"
+                  }
+                ]
+              },
+              {
+                "value_id": 1221,
+                "name": "Leather",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Couro"
+                  }
+                ]
+              },
+              {
+                "value_id": 1223,
+                "name": "Metal",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Metal"
+                  }
+                ]
+              },
+              {
+                "value_id": 1257,
+                "name": "Others",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Outros"
+                  }
+                ]
+              },
+              {
+                "value_id": 1445,
+                "name": "Polycarbonate",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Policarbonato"
+                  }
+                ]
+              },
+              {
+                "value_id": 1591,
+                "name": "Aluminium",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Alumínio"
+                  }
+                ]
+              },
+              {
+                "value_id": 1699,
+                "name": "Carbon Fibre",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Fibra de Carbono"
+                  }
+                ]
+              },
+              {
+                "value_id": 1726,
+                "name": "Neoprene",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Neoprene"
+                  }
+                ]
+              },
+              {
+                "value_id": 5502,
+                "name": "TPU",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "TPU"
+                  }
+                ]
+              },
+              {
+                "value_id": 5503,
+                "name": "Silicon",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Silicone"
+                  }
+                ]
+              }
+            ],
+            "attribute_info": {
+              "input_type": 5,
+              "input_validation_type": 2,
+              "format_type": 1,
+              "max_value_count": 5,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Material"
+              }
+            ]
+          },
+          {
+            "attribute_id": 100162,
+            "mandatory": false,
+            "name": "Pattern",
+            "attribute_info": {
+              "input_type": 5,
+              "input_validation_type": 2,
+              "format_type": 1,
+              "max_value_count": 5,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Estampa"
+              }
+            ]
+          },
+          {
+            "attribute_id": 100204,
+            "mandatory": false,
+            "name": "Leather Type",
+            "attribute_value_list": [
+              {
+                "value_id": 1683,
+                "name": "Cow Hide",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Couro de Vaca"
+                  }
+                ]
+              },
+              {
+                "value_id": 1759,
+                "name": "Lamb Skin",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Pele de Cordeiro"
+                  }
+                ]
+              }
+            ],
+            "attribute_info": {
+              "input_type": 2,
+              "input_validation_type": 2,
+              "format_type": 1,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Tipo de Couro"
+              }
+            ]
+          },
+          {
+            "attribute_id": 100230,
+            "mandatory": false,
+            "name": "Strap Material",
+            "attribute_value_list": [
+              {
+                "value_id": 1868,
+                "name": "Leather",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Couro"
+                  }
+                ]
+              },
+              {
+                "value_id": 1882,
+                "name": "Nylon",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Náilon"
+                  }
+                ]
+              },
+              {
+                "value_id": 1897,
+                "name": "Plastic",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Plástico"
+                  }
+                ]
+              },
+              {
+                "value_id": 1922,
+                "name": "Resin",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Resina"
+                  }
+                ]
+              },
+              {
+                "value_id": 1937,
+                "name": "Rubber",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Borracha"
+                  }
+                ]
+              },
+              {
+                "value_id": 1952,
+                "name": "Silicone",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Silicone"
+                  }
+                ]
+              },
+              {
+                "value_id": 1967,
+                "name": "Stainless Steel",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Aço Inoxidável"
+                  }
+                ]
+              }
+            ],
+            "attribute_info": {
+              "input_type": 2,
+              "input_validation_type": 2,
+              "format_type": 1,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Material da Correia"
+              }
+            ]
+          },
+          {
+            "attribute_id": 100370,
+            "mandatory": false,
+            "name": "Warranty Type",
+            "attribute_value_list": [
+              {
+                "value_id": 2397,
+                "name": "International Warranty",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Garantia Internacional"
+                  }
+                ]
+              },
+              {
+                "value_id": 2419,
+                "name": "Manufacturer Warranty",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Garantia do Fabricante"
+                  }
+                ]
+              },
+              {
+                "value_id": 2437,
+                "name": "Supplier Warranty",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Garantia do Fornecedor"
+                  }
+                ]
+              },
+              {
+                "value_id": 5576,
+                "name": "No Warranty",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Sem Garantia"
+                  }
+                ]
+              }
+            ],
+            "attribute_info": {
+              "input_type": 2,
+              "input_validation_type": 2,
+              "format_type": 1,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Tipo de Garantia"
+              }
+            ]
+          },
+          {
+            "attribute_id": 100470,
+            "mandatory": false,
+            "name": "Case Feature",
+            "attribute_value_list": [
+              {
+                "value_id": 2689,
+                "name": "Dust Resistant",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Resistente à Poeira"
+                  }
+                ]
+              },
+              {
+                "value_id": 2712,
+                "name": "Built-in Stand",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Suporte Embutido"
+                  }
+                ]
+              },
+              {
+                "value_id": 2731,
+                "name": "Card Holder",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Suporte para Cartão"
+                  }
+                ]
+              },
+              {
+                "value_id": 2746,
+                "name": "Built-in Keyboard",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Taclado Embutido"
+                  }
+                ]
+              },
+              {
+                "value_id": 2769,
+                "name": "Dirt Resistant",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Resistente à Sujeira"
+                  }
+                ]
+              },
+              {
+                "value_id": 2788,
+                "name": "Car/ Bike Mount",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Suporte para Carro / Bicicleta"
+                  }
+                ]
+              },
+              {
+                "value_id": 2806,
+                "name": "Notification Screen",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Tela de Notificação"
+                  }
+                ]
+              },
+              {
+                "value_id": 2819,
+                "name": "Others",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Outros"
+                  }
+                ]
+              },
+              {
+                "value_id": 2832,
+                "name": "Shock Resistant",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Resistente à Batidas"
+                  }
+                ]
+              },
+              {
+                "value_id": 2847,
+                "name": "Sweat Resistant",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Resistente ao Suor"
+                  }
+                ]
+              },
+              {
+                "value_id": 2855,
+                "name": "Water Resistant",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Resistente à Água"
+                  }
+                ]
+              }
+            ],
+            "attribute_info": {
+              "input_type": 5,
+              "input_validation_type": 2,
+              "format_type": 1,
+              "max_value_count": 5,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Recursos da Capa"
+              }
+            ]
+          },
+          {
+            "attribute_id": 100471,
+            "mandatory": false,
+            "name": "Case Type",
+            "attribute_value_list": [
+              {
+                "value_id": 2702,
+                "name": "Customized",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Customizada"
+                  }
+                ]
+              },
+              {
+                "value_id": 2722,
+                "name": "Flip",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Flip"
+                  }
+                ]
+              },
+              {
+                "value_id": 2745,
+                "name": "Leather",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Couro"
+                  }
+                ]
+              },
+              {
+                "value_id": 2760,
+                "name": "Rhinestone",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Strass"
+                  }
+                ]
+              },
+              {
+                "value_id": 2773,
+                "name": "Waterproof",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "À Prova D'água"
+                  }
+                ]
+              },
+              {
+                "value_id": 2792,
+                "name": "Others",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Outros"
+                  }
+                ]
+              }
+            ],
+            "attribute_info": {
+              "input_type": 5,
+              "input_validation_type": 2,
+              "format_type": 1,
+              "max_value_count": 5,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Tipo de Capa"
+              }
+            ]
+          },
+          {
+            "attribute_id": 100481,
+            "mandatory": false,
+            "name": "Mobile Cable Type",
+            "attribute_value_list": [
+              {
+                "value_id": 2733,
+                "name": "Lightning",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Relâmpago"
+                  }
+                ]
+              },
+              {
+                "value_id": 2752,
+                "name": "Micro USB",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Micro USB"
+                  }
+                ]
+              },
+              {
+                "value_id": 2766,
+                "name": "Others",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Outros"
+                  }
+                ]
+              },
+              {
+                "value_id": 2790,
+                "name": "Type C",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Tipo C"
+                  }
+                ]
+              }
+            ],
+            "attribute_info": {
+              "input_type": 5,
+              "input_validation_type": 2,
+              "format_type": 1,
+              "max_value_count": 5,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Tipo de Cabo Móvel"
+              }
+            ]
+          },
+          {
+            "attribute_id": 100488,
+            "mandatory": false,
+            "name": "Applicable Mobile Brand",
+            "attribute_value_list": [
+              {
+                "value_id": 2743,
+                "name": "ASUS",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "ASUS"
+                  }
+                ]
+              },
+              {
+                "value_id": 2761,
+                "name": "Google",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Google"
+                  }
+                ]
+              },
+              {
+                "value_id": 2783,
+                "name": "HTC",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "HTC"
+                  }
+                ]
+              },
+              {
+                "value_id": 2800,
+                "name": "LG",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "LG"
+                  }
+                ]
+              },
+              {
+                "value_id": 2843,
+                "name": "Nokia",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Nokia"
+                  }
+                ]
+              },
+              {
+                "value_id": 2852,
+                "name": "OPPO",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "OPPO"
+                  }
+                ]
+              },
+              {
+                "value_id": 2862,
+                "name": "Samsung",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Samsung"
+                  }
+                ]
+              },
+              {
+                "value_id": 2872,
+                "name": "Sharp",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Sharp"
+                  }
+                ]
+              },
+              {
+                "value_id": 2891,
+                "name": "Sugar",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Sugar"
+                  }
+                ]
+              },
+              {
+                "value_id": 2908,
+                "name": "Vivo",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Vivo"
+                  }
+                ]
+              },
+              {
+                "value_id": 2916,
+                "name": "Xiaomi",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Xiaomi"
+                  }
+                ]
+              },
+              {
+                "value_id": 2938,
+                "name": "Meitu",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Meitu"
+                  }
+                ]
+              },
+              {
+                "value_id": 2960,
+                "name": "Huawei",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Huawei"
+                  }
+                ]
+              },
+              {
+                "value_id": 2977,
+                "name": "Apple",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Apple"
+                  }
+                ]
+              },
+              {
+                "value_id": 2996,
+                "name": "Others",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Outros"
+                  }
+                ]
+              },
+              {
+                "value_id": 3015,
+                "name": "Sony",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Sony"
+                  }
+                ]
+              }
+            ],
+            "attribute_info": {
+              "input_type": 2,
+              "input_validation_type": 2,
+              "format_type": 1,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Marca de Celular Aplicável"
+              }
+            ]
+          },
+          {
+            "attribute_id": 100490,
+            "mandatory": false,
+            "name": "Phone Model",
+            "attribute_info": {
+              "input_type": 3,
+              "input_validation_type": 2,
+              "format_type": 1,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Modelo do Celular"
+              }
+            ]
+          },
+          {
+            "attribute_id": 100503,
+            "mandatory": false,
+            "name": "Screen Protector Type",
+            "attribute_value_list": [
+              {
+                "value_id": 2839,
+                "name": "Others",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Outras"
+                  }
+                ]
+              }
+            ],
+            "attribute_info": {
+              "input_type": 2,
+              "input_validation_type": 2,
+              "format_type": 1,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Tipo de Tela"
+              }
+            ]
+          },
+          {
+            "attribute_id": 100999,
+            "mandatory": false,
+            "name": "Quantity",
+            "attribute_info": {
+              "input_type": 3,
+              "input_validation_type": 2,
+              "format_type": 1,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Quantidade da embalagem"
+              }
+            ]
+          },
+          {
+            "attribute_id": 101029,
+            "mandatory": false,
+            "name": "indication",
+            "attribute_info": {
+              "input_type": 3,
+              "input_validation_type": 3,
+              "format_type": 2,
+              "attribute_unit_list": [
+                "ML",
+                "L",
+                "MG",
+                "G/GR",
+                "KG",
+                "CM",
+                "M",
+                "Dozen",
+                "Piece",
+                "Pack",
+                "Set",
+                "Box"
+              ],
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Tamanho Do Pacote"
+              }
+            ]
+          },
+          {
+            "attribute_id": 101219,
+            "mandatory": false,
+            "name": "Custom Product",
+            "attribute_value_list": [
+              {
+                "value_id": 7221,
+                "name": "Yes",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Sim"
+                  }
+                ]
+              },
+              {
+                "value_id": 7222,
+                "name": "No",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Não"
+                  }
+                ]
+              }
+            ],
+            "attribute_info": {
+              "input_type": 1,
+              "input_validation_type": 0,
+              "format_type": 1,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Produto personalizado"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "debug_message": ""
+}

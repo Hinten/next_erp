@@ -50,9 +50,10 @@
  * no second source of truth (a "mode" flag on the client) that could disagree
  * with it.
  *
- * ⚠️ `get_item_limit` matches none of the three: it renders `gtin_limit` as a
- * SIBLING of `response`. It composes {@link shopeeItemLimitSchema} by hand for
- * that reason, and its reader receives both positions.
+ * ⚠️ `get_item_limit` matches none of the three: its page renders `gtin_limit`
+ * as a SIBLING of `response` (BR sends it inside `response`). It composes
+ * {@link shopeeItemLimitSchema} by hand for that reason, and its reader receives
+ * both positions.
  *
  * ## Numbers
  *
@@ -615,8 +616,15 @@ export type ShopeeItemExtendedDescriptionLimit = z.infer<
 >;
 
 /**
- * `dts_limit` — the ITEM page's shape. No `support_pre_order` here; the KIT page
- * is the one that declares it.
+ * `dts_limit` — the ITEM page's shape. The page's table declares no
+ * `support_pre_order` (the KIT page is the one that does), but the BR wire DOES
+ * send it here: `true` for category 100244 (`get_item_limit.br-c-camiseta.json`),
+ * `false` for 101787 (`get_item_limit.br-anuncio-atributos.json`), absent on the
+ * shop-wide read (`get_item_limit.br-loja.json`) — and no `-1` was observed on
+ * `days_to_ship_limit` (2026-11-04; pinned by the `pino 4` describe of
+ * `apps/shopee/lib/shopee/fixtures/capturasBr.test.ts`). It is not declared:
+ * `.passthrough()` keeps it on the parsed value, no ERP code reads it, and
+ * whether to project it is an open design choice.
  */
 export const shopeeItemDtsLimitSchema = z
   .object({
@@ -635,9 +643,13 @@ export type ShopeeItemDtsLimit = z.infer<typeof shopeeItemDtsLimitSchema>;
  *
  * ⚠️ `gtin_limit` is declared HERE **and** as a sibling of `response` on
  * {@link shopeeItemLimitSchema}: the page renders it outside `response` and ships
- * no response sample, so which position the live API uses is unsettled. Both are
- * nullable and the reader merges them; a single guessed position would have been
- * a field that is silently always `null`.
+ * no response sample. BR production (2026-11-04) answered INSIDE `response` on
+ * both category reads and sent no sibling on any of the three
+ * (`get_item_limit.br-*.json`, pinned by the `pino 4` describe of
+ * `apps/shopee/lib/shopee/fixtures/capturasBr.test.ts`). Both positions stay
+ * declared, nullable, and the reader merges them; guessing only the sibling
+ * would have been a field that is silently always `null` — which BR has now
+ * shown.
  */
 export const shopeeItemLimitPayloadSchema = z
   .object({
