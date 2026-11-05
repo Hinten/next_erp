@@ -16,9 +16,10 @@
  * echoes request values and can carry a buyer's name, address or CPF; an LWA
  * body is either a token pair or an `error_description`. An error travels
  * further than any log line: into `err.message`, a route's 5xx answer, a
- * durable failure doc. An SP-API body reaches exactly one place, the
+ * durable failure doc. An SP-API body reaches at most one place, the
  * `onChamada` observer (`client.ts`), already scrubbed of the access token; an
- * LWA body reaches nothing at all. The codes are the observer's own bounded
+ * LWA body and a Tokens API body (`/tokens/…`, whose 2xx IS the Restricted Data
+ * Token) reach nothing at all. The codes are the observer's own bounded
  * list (printable ASCII, at most 64 characters each, at most 10, never one
  * holding the token), never a `message` or `details`, and a NON-ENUMERABLE
  * property: a caller that must tell one 400 from another (`EntityNotFound` on

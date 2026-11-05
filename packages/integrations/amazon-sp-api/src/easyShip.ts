@@ -43,9 +43,9 @@
  * holds the buyer's label: a bearer link to personal data. It is read once and
  * handed to `documentosEasyShip.ts`; this package never stores it or puts it in
  * an error. It DOES reach the observer event: the 2xx body that carries it is
- * the event's `corpo`, like every SP-API body (only the access token is
- * scrubbed). What keeps it out of every log line is the app's logger, which
- * denies that leaf.
+ * the event's `corpo`, like every SP-API body outside the Tokens API (only the
+ * access token is scrubbed). What keeps it out of every log line is the app's
+ * logger, which denies that leaf.
  *
  * ## What it is not
  *

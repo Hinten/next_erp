@@ -34,14 +34,14 @@
  * as a header value. `expiresIn` is read through `wireInt()` (a quoted number
  * must not cost the token) and may be absent.
  *
- * ⚠️ The token is a credential. This module never caches it and no error ever
- * carries it, but it reaches TWO places: the caller, and the observer event's
- * `corpo` (`onChamada`). The write client hands every 2xx body to the observer
- * with only the LWA access token of that request scrubbed out, and the RDT is a
- * different value. What keeps it out of every log line is the app's logger,
- * which classifies this path as a secret one and excerpts nothing of it; the
- * test pins that the token does reach the event, so a change to either side
- * has to face the other.
+ * ⚠️ The token is a credential. This module never caches it, no error ever
+ * carries it, and it reaches ONE place: the caller. The observer event of the
+ * mint (`onChamada`) carries `corpo: null` STRUCTURALLY: the request core
+ * (`client.ts`) builds every Tokens API event with `levaCorpo: false`, decided
+ * from the path — the flag `lwa.ts` sets for every LWA event — so neither this
+ * call site nor a cast decides it. The app's logger also classifies
+ * this path as a secret one and excerpts nothing of it — a second fence, not
+ * the only one.
  */
 import { wireInt } from '@delfrance/core/wire';
 import { z } from 'zod';
