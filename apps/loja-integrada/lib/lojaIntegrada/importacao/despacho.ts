@@ -13,8 +13,11 @@
  *     - `nada` — a stale chain, a finished or cancelled job: nothing else is read or written;
  *     - `continuacao` — this task already wrote its end-of-dispatch checkpoint and its hand-off may
  *       have failed: it re-enqueues the NAMED successor and stops (no context, no Loja Integrada
- *       call). The successor's delay is the ordinary 2 s even after a 429 pause: a retry reaches
- *       here only after the queue's own backoff (60 s at least), so the pause has already passed;
+ *       call). The successor's delay is the ordinary 2 s even after a 429 pause: a RETRY reaches
+ *       here only after the queue's own backoff (60 s at least) from an attempt that failed after
+ *       that checkpoint, so the pause has already passed. This holds for a retry entering here
+ *       only — never for the last attempt's own re-read nor for a checkpoint that stops ("Whose
+ *       hand-off" below);
  *     - `executar` — the run below.
  *  4. The context (`core/contexto.ts`), whose FIRST act is the read switch: while
  *     `LOJA_INTEGRADA_CHAMADAS` is not exactly `on` it refuses with zero Firestore reads and zero
@@ -91,31 +94,60 @@
  *    An EMPTY or non-JSON 200 (`vazio`, `nao-json`: a gateway's answer, not the product's) is
  *    rethrown like any transient failure, and the retry reads the detail again. A LIST page off its
  *    schema is not one product, and propagates.
- *  - **Tasks switched off** on the continuation (`LiTarefasDesligadasError`) ⇒
- *    `falhou/tarefas-desligadas`: never a job left `executando` with nothing queued.
+ *  - **Tasks switched off** on OUR continuation (`LiTarefasDesligadasError`) ⇒
+ *    `falhou/tarefas-desligadas`: never a job left `executando` with nothing queued. On a courtesy
+ *    hand-off it is `parado` instead ("Whose hand-off" below).
  *  - **Everything else is rethrown**, and Cloud Tasks retries the same task: before its last
  *    checkpoint it resumes from the last unit checkpoint; after it, the continuation check
  *    re-enqueues the successor. On the queue's LAST attempt ({@link TASK_MAX_ATTEMPTS}) a failure of
  *    a class a retry could have changed — Loja Integrada's answers, the network, a page or a body
  *    off its schema, Cloud Tasks, Firestore, a stored document off its schema, the park's
  *    contention, another writer of the same `seq` (`LiImportacaoConcorrenteError`) — is answered
- *    from a FRESH read of the job instead, since no retry follows to do it: a job still running at
- *    the dispatch's `seq` is stamped `falhou/tentativas-esgotadas`; a job ONE `seq` ahead, still
- *    `executando`, has its named successor handed off, exactly as the continuation check does,
- *    and is never stamped; anything else is left alone. The second case is an end-of-dispatch
- *    checkpoint that LANDED while its call surfaced another error (a DEADLINE_EXCEEDED, an
- *    UNAVAILABLE after the SDK's retries, a 9 whose re-read failed): stamped, or left with no task,
- *    the job would sit `executando` and every new start would answer 409. A hand-off that fails
- *    there too stamps the job's new `seq` (the valve closed: `tarefas-desligadas`). The other
- *    writer of the same `seq` is an earlier attempt of this very task (the task is named per
- *    `seq`, and the queue runs one at a time) that the queue already gave up on: no retry of the
- *    task follows the last attempt, so leaving the job `executando` would leave it with nothing to
- *    carry it. Our own write found stored after a lost reply is never such a writer (`job.ts`,
- *    "Is it our write?"). Our own misconfiguration and coding bugs stay loud on every attempt.
+ *    from a FRESH raw read of the job instead, since no retry follows to do it: a job still running
+ *    at the dispatch's `seq` is stamped `falhou/tentativas-esgotadas`; a job ONE `seq` ahead, still
+ *    `executando`, is handed off by whose checkpoint put it there ("Whose hand-off" below) and is
+ *    never stamped for this dispatch's failure; anything else is left alone. The common cause of the
+ *    second case is OUR end-of-dispatch checkpoint that LANDED while its call surfaced another
+ *    error (a DEADLINE_EXCEEDED, an UNAVAILABLE after the SDK's retries, a 9 whose re-read failed):
+ *    stamped, or left with no task, the job would sit `executando` and every new start would answer
+ *    409. The other writer of the same `seq` is an earlier attempt of this very task (the task is
+ *    named per `seq`, and the queue runs one at a time) that the queue already gave up on: no retry
+ *    of the task follows the last attempt, so leaving the job `executando` would leave it with
+ *    nothing to carry it. Our own write found stored after a lost reply is never such a writer
+ *    (`job.ts`, "Is it our write?"). Our own misconfiguration and coding bugs stay loud on every
+ *    attempt.
  *  - **A checkpoint that stops** on a job its fresh read finds ONE `seq` ahead, still
  *    `executando` — that earlier attempt ended its slice, and may never hand off — hands the named
- *    successor off from that read, on every attempt: the dispatch ends `continuacao`, not `parado`.
- *    An existing task is success, so it is safe whichever dispatch enqueues first.
+ *    successor off as a courtesy ("Whose hand-off" below), on every attempt: the dispatch ends
+ *    `continuacao`, not `parado`.
+ *
+ * ## Whose hand-off (a job found ONE `seq` ahead, still `executando`)
+ *
+ * The end-of-dispatch checkpoint's writer OWNS the hand-off: it alone knows the delay (2 s for a
+ * spent budget, 60 s for a 429 pause) and, once its slice is written, it alone carries the job. So a
+ * dispatch keeps its own end patch and delay from BEFORE the write, and tells its landed checkpoint
+ * from another dispatch's with `guardaOPatchLi` on the raw stored job (every patch carries this
+ * dispatch's own ms stamp; `job.ts`, "Is it our write?"):
+ *
+ *  - **OURS** (the last attempt's re-read finds our patch whole at `seq + 1`) ⇒ our own hand-off,
+ *    with OUR delay — so a 429 pause that landed behind an error still waits 60 s. If it fails, the
+ *    usual ending rules apply, on the new `seq`: the valve closed ⇒ `tarefas-desligadas`; a
+ *    transient failure ⇒ `tentativas-esgotadas` (nobody else will carry it).
+ *  - **ANOTHER dispatch's** (and ALWAYS a checkpoint that stops: our unit checkpoints never move
+ *    `seq`, and our own landed end reads `gravado`) ⇒ a COURTESY: the named successor at the
+ *    CONSERVATIVE 60 s. The owner normally enqueued already (ours is then already-exists, and the
+ *    owner's delay stands); if ours wins the name, 60 s can never cut a pause short and only delays
+ *    a budget end by 58 s. The dispatch never re-targets the stored `seq`, so nothing it does later
+ *    can stamp a `seq` it never owned. A courtesy that fails never stamps: the valve closed is
+ *    `parado` (the owner reads the same valve at its own hand-off); a transient failure is rethrown
+ *    before the queue's last attempt (the retry's continuation check hands off again) and is
+ *    `parado` on it.
+ *
+ * ⚠️ Accepted residual: the owner died BEFORE its own enqueue (the queue gave up on it) AND every
+ * courtesy failed too (a transient Cloud Tasks failure on the last attempt, or the valve closed):
+ * the job sits `executando` with nothing queued, and every new start answers 409 until a person
+ * presses Cancelar — which needs no worker (`job.ts`, the cancel). Stamping instead would kill the
+ * owner's job whenever the owner DID enqueue, which is the common case.
  *
  * ## The summary aviso
  *
@@ -229,15 +261,18 @@ import {
   DECISAO_DESPACHO_LI,
   type DesfechoImportacaoLi,
   FLUXO_IMPORTACAO_LI,
-  type JobLidoLi,
   LiImportacaoConcorrenteError,
   type ProgressoImportacaoLi,
+  type ReleituraLi,
   type ResultadoCheckpointLi,
   decidirDespachoLi,
   encerrarImportacaoLi,
   gravarCheckpointDaUnidadeLi,
   gravarCheckpointDoFimDoDespachoLi,
+  guardaOPatchLi,
   lerJobLi,
+  patchDoFimDoDespachoLi,
+  relerJobLi,
 } from './job';
 import { executarUnidadeDaListaLi, unidadeDaListaLi } from './listagem';
 import {
@@ -303,7 +338,8 @@ export type DesfechoDespachoImportacaoLi =
   | 'parado'
   /**
    * The successor of a job found one `seq` ahead was re-enqueued: by the continuation check (this
-   * task had already checkpointed for it), by a checkpoint that stopped on it, or by the last attempt.
+   * task had already checkpointed for it), by a checkpoint that stopped on it (a courtesy), or by
+   * the last attempt (its own landed checkpoint, or a courtesy).
    */
   | 'continuacao'
   /** Nothing to do: a stale `seq`, a finished or cancelled job, no job, another conta's job. */
@@ -401,6 +437,16 @@ const FAMILIAS_DO_INICIO: ImportacaoLojaIntegrada['familias'] = {
   filhosLidos: [],
 };
 
+/**
+ * The end-of-dispatch checkpoint THIS dispatch sent, kept from BEFORE its write (module header,
+ * "Whose hand-off"): the `seq` it ran at, its patch as written and the delay its own hand-off carries.
+ */
+interface FimProprioLi {
+  readonly seq: number;
+  readonly patch: Partial<ImportacaoLojaIntegrada>;
+  readonly atrasoS: number;
+}
+
 const progresso = (p: ProgressoImportacaoLi): PassoDoDespachoLi => ({
   tipo: 'progresso',
   progresso: p,
@@ -473,6 +519,8 @@ class DespachoImportacaoLi {
   /** Where this dispatch writes: the job's CURRENT `seq` and the last write's stamp. */
   private alvo: AlvoDoDespachoLi | null = null;
   private contexto: ContextoLojaIntegrada | null = null;
+  /** This dispatch's own end-of-dispatch checkpoint, once sent ({@link FimProprioLi}). */
+  private fimProprio: FimProprioLi | null = null;
   private unidades = 0;
   private chamadas = 0;
 
@@ -689,34 +737,54 @@ class DespachoImportacaoLi {
 
   /**
    * The queue's LAST attempt (module header, "Failures"): for a failure a retry could have changed,
-   * the job is RE-READ first, since a write of this dispatch may have landed behind the error. One
-   * found ONE `seq` ahead, still `executando` (the end-of-dispatch checkpoint landed, or another
-   * dispatch of this `seq` ended its slice), has its named successor handed off from that read —
-   * what the retry's continuation check would have done; one still running at this dispatch's `seq`
-   * is stamped `falhou/tentativas-esgotadas`, chained from that read (a cancel that won is never
-   * overwritten); anything else is left alone. Any other failure is rethrown.
+   * the job is RE-READ first (raw, so "is it our write?" can be asked), since a write of this
+   * dispatch may have landed behind the error. One found ONE `seq` ahead, still `executando`, has its
+   * named successor handed off from that read — what the retry's continuation check would have done
+   * — by WHOSE checkpoint put it there (module header, "Whose hand-off"): OUR landed end-of-dispatch
+   * checkpoint ⇒ our own hand-off, with our delay, and a failing one stamps the new `seq` (nobody
+   * else carries it); another dispatch's ⇒ a courtesy, never a stamp. One still running at this
+   * dispatch's `seq` is stamped `falhou/tentativas-esgotadas`, chained from that read (a cancel that
+   * won is never overwritten); anything else is left alone. Any other failure is rethrown.
    */
   async naUltimaTentativa(err: unknown): Promise<ResultadoDespachoImportacaoLi> {
     if (!esgotaAsTentativas(err) || this.alvo === null) throw err;
-    const lido = await lerJobLi(this.db, this.alvo.jobId);
-    if (lido === null) return this.resultado(DESFECHO_DESPACHO_IMPORTACAO_LI.parado);
+    const relido = await relerJobLi(this.db, this.alvo.jobId);
+    if (relido === null) return this.resultado(DESFECHO_DESPACHO_IMPORTACAO_LI.parado);
+    const { lido } = relido;
     const decisao = decidirDespachoLi(lido.job, this.alvo.seq);
     if (decisao === DECISAO_DESPACHO_LI.nada) {
       return this.resultado(DESFECHO_DESPACHO_IMPORTACAO_LI.parado);
     }
     if (decisao === DECISAO_DESPACHO_LI.continuacao) {
+      const fim = this.nossoFimArmazenado(relido);
+      if (fim === null) return this.entregarPorCortesia(lido.job);
+      // OUR end-of-dispatch checkpoint landed behind the error: the hand-off is ours, on the
+      // stored `seq`, chained from this read, with the delay that checkpoint was written for.
+      this.job = lido.job;
+      this.alvo = { jobId: this.alvo.jobId, seq: lido.job.seq, versao: lido.versao };
       try {
-        // The valve closed is answered inside (`tarefas-desligadas`), as at every hand-off.
-        return await this.entregarDoArmazenado(lido);
+        // The valve closed is answered inside (`tarefas-desligadas`), as at every hand-off of ours.
+        return await this.entregar(fim.atrasoS, DESFECHO_DESPACHO_IMPORTACAO_LI.continuacao);
       } catch (falha) {
-        // The hand-off failed as well, and no retry follows: the job's NEW seq is stamped, as for
-        // any failure after an end-of-dispatch checkpoint — never `executando` with nothing queued.
+        // Our hand-off failed as well, and no retry follows: the job's NEW seq is stamped, as for
+        // any failure after our end-of-dispatch checkpoint — never `executando` with nothing queued.
         if (!esgotaAsTentativas(falha)) throw falha;
         return this.esgotarTentativas();
       }
     }
     this.alvo = { ...this.alvo, versao: lido.versao };
     return this.esgotarTentativas();
+  }
+
+  /**
+   * This dispatch's own end-of-dispatch checkpoint when the RAW stored job holds it whole
+   * (`guardaOPatchLi`: every patch carries this dispatch's own ms stamp), written at the `seq` this
+   * dispatch still targets; `null` when the job one `seq` ahead is another dispatch's.
+   */
+  private nossoFimArmazenado(relido: ReleituraLi): FimProprioLi | null {
+    const fim = this.fimProprio;
+    if (fim === null || fim.seq !== this.alvoAtual().seq) return null;
+    return guardaOPatchLi(relido.dados, fim.patch) ? fim : null;
   }
 
   /** Stamp `falhou/tentativas-esgotadas` on the dispatch's current `seq`, chained from its alvo. */
@@ -798,7 +866,14 @@ class DespachoImportacaoLi {
   ): Promise<ResultadoDespachoImportacaoLi> {
     const agora = this.deps.agoraMs();
     const alvo = this.alvoAtual();
+    // Kept BEFORE the write: it may land behind an error the last attempt then answers.
+    this.fimProprio = {
+      seq: alvo.seq,
+      patch: patchDoFimDoDespachoLi(alvo, progressoFinal, agora),
+      atrasoS,
+    };
     const r = await gravarCheckpointDoFimDoDespachoLi(this.db, alvo, progressoFinal, agora);
+    // Lost to another writer (our own landed write reads `gravado`): never ours to hand off.
     if (r.tipo === 'parar') return this.aoParar(r);
     // The job now runs at seq + 1: the hand-off, a valve stamp and a last-attempt stamp target it.
     this.alvo = { jobId: alvo.jobId, seq: alvo.seq + 1, versao: r.versao };
@@ -815,8 +890,9 @@ class DespachoImportacaoLi {
   /**
    * A checkpoint that lost and STOPPED (`job.ts`, "A lost checkpoint is never re-applied"). A job
    * its fresh read found ONE `seq` ahead, still `executando`, is another dispatch of this `seq` that
-   * ended its slice — and that one may never hand off (the queue gave up on it, or its enqueue
-   * failed after the queue stopped listening): its named successor is handed off from that read.
+   * ended its slice — never this one (our own landed write reads `gravado`, and a unit checkpoint
+   * never moves `seq`) — and that one may never hand off (the queue gave up on it, or its enqueue
+   * failed after the queue stopped listening): its named successor is handed off as a COURTESY.
    * Anything else — cancelled, ended, gone, further on — is `parado`.
    */
   private async aoParar(
@@ -824,32 +900,55 @@ class DespachoImportacaoLi {
   ): Promise<ResultadoDespachoImportacaoLi> {
     if (
       r.job === null ||
-      r.versao === null ||
       decidirDespachoLi(r.job, this.alvoAtual().seq) !== DECISAO_DESPACHO_LI.continuacao
     ) {
       return this.resultado(DESFECHO_DESPACHO_IMPORTACAO_LI.parado);
     }
-    return this.entregarDoArmazenado({ job: r.job, versao: r.versao });
+    return this.entregarPorCortesia(r.job);
   }
 
   /**
-   * The continuation check's hand-off for a job READ one `seq` ahead of this dispatch: the dispatch
-   * now targets the STORED `seq`, chained from that read, and enqueues its NAMED successor (an
-   * existing one is success, so it is safe whichever dispatch bumped `seq`).
+   * A COURTESY hand-off (module header, "Whose hand-off"): the named successor of a job ANOTHER
+   * dispatch of this `seq` moved one `seq` ahead. That dispatch owns the hand-off and normally made
+   * it, so this one never targets the stored `seq` (`this.alvo` is left alone: nothing later can
+   * decide to stamp a `seq` this dispatch never owned) and enqueues with the CONSERVATIVE 60 s — an
+   * existing task is success and the owner's delay stands; a name ours wins can never cut a 429
+   * pause short, and delays a budget end by 58 s at most. Its failures never stamp: the valve closed
+   * is `parado` (the owner reads the same valve at its own hand-off); a transient one is rethrown
+   * before the queue's last attempt (the retry's continuation check hands off again) and is
+   * `parado` on it.
    */
-  private async entregarDoArmazenado(
-    lido: Pick<JobLidoLi, 'job' | 'versao'>,
+  private async entregarPorCortesia(
+    job: ImportacaoLojaIntegrada,
   ): Promise<ResultadoDespachoImportacaoLi> {
-    this.job = lido.job;
-    this.alvo = { jobId: this.alvoAtual().jobId, seq: lido.job.seq, versao: lido.versao };
-    return this.entregar(
-      ATRASO_CONTINUACAO_IMPORTACAO_LI_S,
-      DESFECHO_DESPACHO_IMPORTACAO_LI.continuacao,
-    );
+    try {
+      await this.deps
+        .agendador()
+        .enfileirar(this.sucessorEm(job.seq), { atrasoS: ATRASO_PAUSA_429_IMPORTACAO_LI_S });
+    } catch (err) {
+      if (err instanceof LiTarefasDesligadasError) {
+        return this.resultado(DESFECHO_DESPACHO_IMPORTACAO_LI.parado);
+      }
+      if (this.deps.tentativa < TASK_MAX_ATTEMPTS - 1 || !esgotaAsTentativas(err)) throw err;
+      return this.resultado(DESFECHO_DESPACHO_IMPORTACAO_LI.parado);
+    }
+    this.job = job;
+    return this.resultado(DESFECHO_DESPACHO_IMPORTACAO_LI.continuacao);
+  }
+
+  /** The named task of the job's dispatch at `seq`. */
+  private sucessorEm(seq: number): TarefaImportacaoLi {
+    return {
+      tipo: TIPO_TAREFA_IMPORTACAO_LI,
+      contaId: this.tarefa.contaId,
+      jobId: this.alvoAtual().jobId,
+      seq,
+    };
   }
 
   /**
-   * Enqueue the NAMED dispatch the job's current `seq` names. An existing one is success (the
+   * OUR hand-off: enqueue the NAMED dispatch the job's current `seq` names, a `seq` this dispatch
+   * owns (it wrote it, or this task's continuation check read it). An existing one is success (the
    * producer's rule); the valve closed stamps the job `falhou/tarefas-desligadas`; a transient
    * Cloud Tasks failure is rethrown, and the retry's continuation check enqueues it again.
    */
@@ -857,15 +956,8 @@ class DespachoImportacaoLi {
     atrasoS: number,
     desfecho: DesfechoDespachoImportacaoLi,
   ): Promise<ResultadoDespachoImportacaoLi> {
-    const alvo = this.alvoAtual();
-    const sucessor: TarefaImportacaoLi = {
-      tipo: TIPO_TAREFA_IMPORTACAO_LI,
-      contaId: this.tarefa.contaId,
-      jobId: alvo.jobId,
-      seq: alvo.seq,
-    };
     try {
-      await this.deps.agendador().enfileirar(sucessor, { atrasoS });
+      await this.deps.agendador().enfileirar(this.sucessorEm(this.alvoAtual().seq), { atrasoS });
     } catch (err) {
       if (!(err instanceof LiTarefasDesligadasError)) throw err;
       return this.encerrar(

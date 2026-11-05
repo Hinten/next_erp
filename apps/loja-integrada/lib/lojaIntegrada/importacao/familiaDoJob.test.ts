@@ -441,6 +441,45 @@ describe('a retried family — the links its own job created still count', () =>
     expect(r.contadores).toMatchObject({ familias: 1, vinculados: 0, semMudanca: 1 });
   });
 
+  it('⚠️ ACCEPTED RESIDUAL: a MIRROR REFRESH this job landed reads sem-mudanca on the retried unit — semMudanca +1, its informational vinculo-atualizado lost; vinculados unaffected', async () => {
+    const MISTO = 2;
+    const db = new FakeDb();
+    seedErp(db);
+    const deps = depsDoJob(db, 'job-1');
+    const ctx = contexto(aplicar);
+    const familia = daLoja(MISTO);
+    const item = caminhoItemLi('job-1', '30');
+    // The refresh of the migrated auto-id link LANDS; the item write after it fails.
+    db.falharEscrita(item, grpc(14, 'UNAVAILABLE'));
+    await expect(executarFamiliaLi(deps, ctx, familia)).rejects.toMatchObject({ code: 14 });
+    expect(db.ler(vinculo('mixed', 'aUtO1d0000000000000x'))).toMatchObject({ removido: false });
+    db.falharEscrita(item, null);
+    const retentativa = relatado(await executarFamiliaLi(deps, ctx, familia));
+
+    const { r: primeira } = await semFalha(aplicar, MISTO);
+    expect(primeira.item.pendencias).toMatchObject([
+      {
+        codigo: PENDENCIA_IMPORTACAO_LI.vinculoAtualizado,
+        acionavel: false,
+        referencias: ['estadoPublicacao', 'nome', 'removido'],
+      },
+    ]);
+    expect(primeira.contadores).toMatchObject({ semMudanca: 0, pendenciasInformativas: 1 });
+    // The residual's exact shape — a known gap, not a silent one. Closing it needs a job-owned
+    // record of each planned refresh written before the link writes (`vinculos.ts` header).
+    expect(retentativa.item).toMatchObject({
+      situacaoErp: SITUACAO_ERP_ITEM_LI.vinculado,
+      acao: ACAO_ITEM_IMPORTACAO_LI.nenhuma,
+      pendencias: [],
+    });
+    expect(retentativa.contadores).toEqual({
+      ...primeira.contadores,
+      semMudanca: primeira.contadores.semMudanca + 1,
+      pendenciasInformativas: primeira.contadores.pendenciasInformativas - 1,
+    });
+    expect(retentativa.contadores.vinculados).toBe(primeira.contadores.vinculados);
+  });
+
   it('⚠️ NEAR-MISS: ANOTHER conta’s identical link at our doc id, created during this job, never counts', async () => {
     const { db: referencia } = await semFalha(aplicar, CANECA);
     const planejado = referencia.ler(vinculo('caneca', '20'));

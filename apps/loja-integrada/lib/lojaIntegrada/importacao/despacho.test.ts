@@ -1142,10 +1142,116 @@ describe('the queue’s last attempt', () => {
       const r = await despacharImportacaoLi(asDb(db), tarefa(0), deps);
       expect(r.desfecho, String(tentativa)).toBe('continuacao');
       expect(jobGravado(), String(tentativa)).toMatchObject({ status: 'executando', seq: 1 });
+      // A COURTESY hand-off (the other dispatch owns the successor): the conservative 60 s, so a
+      // pause that dispatch ended on is never shortened — its own enqueue wins or ours waits.
       expect(t.envios, String(tentativa)).toEqual([
-        { tarefa: tarefa(1), opcoes: { id: `li-importacao-${JOB}-1`, scheduleDelaySeconds: 2 } },
+        { tarefa: tarefa(1), opcoes: { id: `li-importacao-${JOB}-1`, scheduleDelaySeconds: 60 } },
       ]);
     }
+  });
+
+  it('⚠️ a COURTESY hand-off that fails transiently never kills the job the other dispatch carries: rethrown before the last attempt, `parado` on it — never stamped', async () => {
+    for (const [tentativa, esperado] of [
+      [1, 'throws'],
+      [2, 'parado'],
+    ] as const) {
+      db = new FakeDb();
+      seedConta(db, CONTA);
+      seedCredencial(db, CONTA);
+      __resetAllReadCaches();
+      seedSnapshotDeFamilias([10, 20]);
+      // An earlier attempt of this task, still alive, ENDS its slice (seq 1) and enqueued its own
+      // successor; this attempt's unit checkpoint stops on it and enqueues the same name again.
+      db.antesDaProximaEscrita(caminhoItemLi(JOB, '10'), async () => {
+        await importacaoLojaIntegradaCollection
+          .docRef(asDb(db), {}, JOB)
+          .update({ atualizadoEmMs: 1, seq: 1 });
+      });
+      const t = transporte();
+      t.falhas.push(falhaDoFunctions('unknown-error'));
+      const { deps } = montarDeps({ t, tentativa });
+      const execucao = despacharImportacaoLi(asDb(db), tarefa(0), deps);
+      if (esperado === 'throws') {
+        await expect(execucao).rejects.toBeInstanceOf(LiTarefasTransitoriasError);
+      } else {
+        expect(await execucao).toMatchObject({ desfecho: 'parado', motivo: null });
+      }
+      expect(jobGravado(), String(tentativa)).toMatchObject({
+        status: 'executando',
+        seq: 1,
+        motivo: null,
+        atualizadoEmMs: 1,
+      });
+      expect(
+        t.envios.map((e) => e.opcoes),
+        String(tentativa),
+      ).toEqual([{ id: `li-importacao-${JOB}-1`, scheduleDelaySeconds: 60 }]);
+    }
+  });
+
+  it('⚠️ the last attempt finds the job ONE seq ahead written by ANOTHER dispatch (its own end checkpoint never landed): a courtesy hand-off at 60 s; failing, `parado` — never stamped', async () => {
+    for (const falha of [false, true]) {
+      db = new FakeDb();
+      seedConta(db, CONTA);
+      seedCredencial(db, CONTA);
+      __resetAllReadCaches();
+      seedSnapshotDeFamilias([10, 20, 30]);
+      // Another dispatch of seq 0 ends its slice, and THIS end checkpoint then fails unlanded.
+      db.antesDaProximaEscrita(caminhoJobLi(JOB), async () => {
+        await importacaoLojaIntegradaCollection
+          .docRef(asDb(db), {}, JOB)
+          .update({ atualizadoEmMs: 1, seq: 1 });
+        throw grpc(4, 'DEADLINE_EXCEEDED');
+      });
+      const t = transporte();
+      if (falha) t.falhas.push(falhaDoFunctions('unknown-error'));
+      const { deps } = montarDeps({ t, tentativa: 2, jaDecorridoMs: 61_000 });
+      const r = await despacharImportacaoLi(asDb(db), tarefa(0), deps);
+      expect(r, String(falha)).toMatchObject({
+        desfecho: falha ? 'parado' : 'continuacao',
+        motivo: null,
+      });
+      expect(jobGravado(), String(falha)).toMatchObject({
+        status: 'executando',
+        seq: 1,
+        motivo: null,
+        atualizadoEmMs: 1,
+      });
+      expect(
+        t.envios.map((e) => e.opcoes),
+        String(falha),
+      ).toEqual([{ id: `li-importacao-${JOB}-1`, scheduleDelaySeconds: 60 }]);
+    }
+  });
+
+  it('⚠️ OUR 429-pause end checkpoint LANDED behind a DEADLINE_EXCEEDED, on the last attempt: the successor is handed off 60 s later — the pause is never shortened', async () => {
+    seedJobLi(db, JOB, CONTA, { status: 'pendente' });
+    db.respostaPerdidaNaProximaEscrita(caminhoJobLi(JOB), grpc(4, 'DEADLINE_EXCEEDED'));
+    const { deps, t } = montarDeps({ responder: lojaCom429(1_000), tentativa: 2 });
+    const r = await despacharImportacaoLi(asDb(db), tarefa(0), deps);
+    expect(r).toMatchObject({ desfecho: 'continuacao', motivo: null });
+    expect(jobGravado()).toMatchObject({ status: 'executando', seq: 1, pausas429: 1 });
+    expect(t.envios).toEqual([
+      { tarefa: tarefa(1), opcoes: { id: `li-importacao-${JOB}-1`, scheduleDelaySeconds: 60 } },
+    ]);
+  });
+
+  it('⚠️ OUR end checkpoint LANDED behind a DEADLINE_EXCEEDED and the last attempt’s hand-off fails transiently too: the job’s NEW seq is stamped tentativas-esgotadas — nobody else carries it', async () => {
+    seedSnapshotDeFamilias([10, 20, 30]);
+    db.respostaPerdidaNaProximaEscrita(caminhoJobLi(JOB), grpc(4, 'DEADLINE_EXCEEDED'));
+    const t = transporte();
+    t.falhas.push(falhaDoFunctions('unknown-error'));
+    const { deps } = montarDeps({ t, tentativa: 2, jaDecorridoMs: 61_000 });
+    const r = await despacharImportacaoLi(asDb(db), tarefa(0), deps);
+    expect(r).toMatchObject({ desfecho: 'falhou', motivo: 'tentativas-esgotadas' });
+    expect(jobGravado()).toMatchObject({
+      status: 'falhou',
+      motivo: 'tentativas-esgotadas',
+      seq: 1,
+    });
+    expect(t.envios.map((e) => e.opcoes)).toEqual([
+      { id: `li-importacao-${JOB}-1`, scheduleDelaySeconds: 2 },
+    ]);
   });
 
   it('⚠️ the END-of-dispatch checkpoint LANDED but the call failed DEADLINE_EXCEEDED, on the last attempt: the named successor is handed off, the job never stamped', async () => {
@@ -1157,8 +1263,10 @@ describe('the queue’s last attempt', () => {
     const r = await despacharImportacaoLi(asDb(db), tarefa(0), deps);
     expect(r.desfecho).toBe('continuacao');
     expect(jobGravado()).toMatchObject({ status: 'executando', seq: 1, motivo: null });
-    expect(t.envios.map((e) => e.tarefa)).toEqual([tarefa(1)]);
-    expect(t.envios.map((e) => e.opcoes.id)).toEqual([`li-importacao-${JOB}-1`]);
+    // NEAR-MISS of the 429 case below: OUR landed end was a BUDGET end ⇒ its own 2 s.
+    expect(t.envios).toEqual([
+      { tarefa: tarefa(1), opcoes: { id: `li-importacao-${JOB}-1`, scheduleDelaySeconds: 2 } },
+    ]);
     // The chain goes on from the successor.
     const { resultados } = await rodarAteOFim({ t }, 1);
     expect(resultados.at(-1)?.desfecho).toBe('concluido');

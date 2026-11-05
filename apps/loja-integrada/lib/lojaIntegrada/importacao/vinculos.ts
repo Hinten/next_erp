@@ -65,7 +65,15 @@
  *  - a link this job created that another writer then CHANGED is refreshed as usual
  *    (`atualizado`): its creation is counted nowhere;
  *  - a refresh of TWO documents (ours, plus an auto-id link of this conta another writer added —
- *    row 11's residual) is never read as a creation.
+ *    row 11's residual) is never read as a creation, whatever the documents' order (decided once,
+ *    after the loop);
+ *  - a MIRROR REFRESH this job landed reads `sem-mudanca` on a retried unit: `semMudanca + 1`, its
+ *    informational `vinculo-atualizado` lost; `vinculados` unaffected. The refresh's `update` lands,
+ *    then the item write or the checkpoint fails (or the instance dies), and the retry finds the
+ *    link already equal to the plan. Its `updateTime` after the job's start cannot tell our refresh
+ *    from another writer's, nor say which fields it changed. Closing it needs a job-owned tier-0
+ *    record of each planned refresh's `campos`, written BEFORE the link writes (a write per refreshed
+ *    link); pinned as it stands in `familiaDoJob.test.ts`.
  *
  * ⚠️ Accepted residual (the plan's row 11): a link of this conta written at an AUTO id by another
  * writer between our scan and our create leaves two links of one conta on the produto; the next
@@ -299,7 +307,8 @@ async function refrescar(
   const campos = new Set<string>();
   const nossoDocId = String(vinculo.liId);
   let gravado = false;
-  let retomado = false;
+  /** The snapshot of the document at the store id's doc id, when it is among `docIds`. */
+  let nosso: DocumentSnapshot | null = null;
   for (const docId of docIds) {
     const snap = lidos.get(docId) ?? (await refDoVinculo(deps, vinculo, docId).get());
     if (!snap.exists || snap.updateTime === undefined) return PERDEU;
@@ -307,12 +316,10 @@ async function refrescar(
     if (vinculoLiDaContaEId(dados, deps.contaId, vinculo.liId) !== RELACAO_VINCULO_LI.mesmo) {
       return PERDEU;
     }
+    if (docId === nossoDocId) nosso = snap;
     const patch = patchDoVinculoLi(dados, vinculo);
     const chaves = Object.keys(patch);
-    if (chaves.length === 0) {
-      retomado = docIds.length === 1 && docId === nossoDocId && criadoPorEsteJob(deps, snap);
-      continue;
-    }
+    if (chaves.length === 0) continue;
     for (const c of chaves) campos.add(c);
     if (deps.modo === MODO_IMPORTACAO_LI.simular) continue;
     try {
@@ -323,7 +330,12 @@ async function refrescar(
       return PERDEU;
     }
   }
-  if (campos.size === 0 && retomado) {
+  // Decided once, over the whole refresh, so the documents' order never decides it: only a refresh
+  // of ONE document — ours — that changed nothing is a creation (module header: a refresh of TWO
+  // documents is never one).
+  const retomado =
+    campos.size === 0 && docIds.length === 1 && nosso !== null && criadoPorEsteJob(deps, nosso);
+  if (retomado) {
     return {
       tipo: 'fim',
       desfecho: { tipo: DESFECHO_DO_VINCULO_LI.criado, docId: nossoDocId, retomado: true },

@@ -450,6 +450,26 @@ describe('vincularProdutoLi — a link THIS job already created is still its cre
     expect(r.desfecho).toEqual({ tipo: DESFECHO_DO_VINCULO_LI.semMudanca, docIds: ['aUtO1d'] });
   });
 
+  it('⚠️ NEAR-MISS: the link THIS job created plus an identical AUTO-id link of this conta another writer added (row 11) ⇒ sem-mudanca with BOTH docIds — a refresh of two documents is never a creation', async () => {
+    const db = new FakeDb();
+    const v = vinculoSimples(10, 'p10');
+    const job = deps(db);
+    await vincularProdutoLi(job, v);
+    // An auto id that sorts BEFORE the store id's ('0' < '1'), equal to the plan.
+    const auto = '0AAAAAAAAAAAAAAAAAAA';
+    await produtoLojaIntegradaLinkCollection
+      .docRef(asDb(db), { produtoId: 'p10' }, auto)
+      .create({ ...v.doc });
+    const antes = db.escritas.length;
+    const r = await vincularProdutoLi(job, v);
+    expect(r).toEqual({
+      vinculo: v,
+      desfecho: { tipo: DESFECHO_DO_VINCULO_LI.semMudanca, docIds: ['10', auto] },
+      gravado: false,
+    });
+    expect(db.escritas).toHaveLength(antes);
+  });
+
   it('NEAR-MISS: ANOTHER conta’s document at our doc id, created during this job ⇒ vinculo-ambiguo, never counted', async () => {
     const db = new FakeDb();
     const job = deps(db);

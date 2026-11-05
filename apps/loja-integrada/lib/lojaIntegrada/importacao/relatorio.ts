@@ -41,8 +41,10 @@
  * the job's counters in the SAME checkpoint that moves the family cursor past it, so a retried
  * unit recomputes its delta from the same base and counts nothing twice — and, because a link its
  * own job created still reads `criado` (`vinculos.ts`), the SAME delta: never `vinculados + 0,
- * semMudanca + 1` for the links the failed attempt landed. Residuals: `vinculos.ts`'s, and the
- * cascade's informational `sku-diferente` / `sku-repetido-na-loja` on a variation first matched by
+ * semMudanca + 1` for the links the failed attempt landed. Residuals: `vinculos.ts`'s — among them
+ * a mirror refresh this job landed, which reads `sem-mudanca` on a retried unit (`semMudanca + 1`,
+ * its informational `vinculo-atualizado` lost; `vinculados` unaffected) — and the cascade's
+ * informational `sku-diferente` / `sku-repetido-na-loja` on a variation first matched by
  * combination (`familiaDoJob.ts`, "A retried family").
  *
  * ## The write ({@link gravarItemLi}) — tier 0

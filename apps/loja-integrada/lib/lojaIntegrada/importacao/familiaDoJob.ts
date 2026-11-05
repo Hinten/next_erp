@@ -38,7 +38,10 @@
  * the informational `sku-diferente` / `sku-repetido-na-loja` that attempt reported for it is not
  * reported again (one informational pendência fewer; the link, the action and every other counter
  * agree). Closing it means rung 1 recognising this job's link and falling through to the SKU and
- * combination rungs, which read nothing new for a variation.
+ * combination rungs, which read nothing new for a variation. ⚠️ And a MIRROR REFRESH this job
+ * landed reads `sem-mudanca` on a retried unit: `semMudanca + 1`, its informational
+ * `vinculo-atualizado` lost; `vinculados` unaffected (`vinculos.ts`, "Accepted residuals"; pinned
+ * in `familiaDoJob.test.ts`).
  *
  * ⚠️ Never name the Admin SDK's multi-document read-and-write call here — not even in a comment
  * (`estrutura.test.ts`). Next-free; `db` is a parameter.

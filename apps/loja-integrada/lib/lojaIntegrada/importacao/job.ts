@@ -42,8 +42,11 @@
  * A unit checkpoint keeps `seq`; only the end-of-dispatch checkpoint writes `seq + 1`, so a dispatch
  * retried before its last checkpoint resumes from its last unit checkpoint, and one retried after it
  * finds `stored − 1` and only hands off. The queue's LAST attempt has no retry to do that: it
- * re-reads the job itself, and one found at `stored − 1` — an end-of-dispatch checkpoint that LANDED
- * while its call surfaced an error — is handed off there, never stamped (`despacho.ts`).
+ * re-reads the job itself ({@link relerJobLi}), and one found at `stored − 1` is handed off there,
+ * never stamped for that failure — with the dispatch's own delay when the stored job holds ITS end
+ * patch ({@link patchDoFimDoDespachoLi}, {@link guardaOPatchLi}: a checkpoint that LANDED while its
+ * call surfaced an error), else as a courtesy at the conservative 60 s that never stamps
+ * (`despacho.ts`, "Whose hand-off").
  *
  * ## A lost checkpoint is never re-applied
  *
@@ -58,8 +61,9 @@
  *    would stop with nothing queued and the job would sit `executando` at `seq + 1`;
  *  - the job no longer runs at this `seq` (cancelled, ended, gone, or its `seq` moved) ⇒ `parar`,
  *    with the fresh read and its stamp: a job found ONE `seq` ahead and still `executando` (another
- *    dispatch of this `seq` ended its slice, and may never hand off) is handed off by the dispatch
- *    from that read, exactly as the continuation check does (`despacho.ts`), never stamped;
+ *    dispatch of this `seq` ended its slice, and may never hand off — never this one, whose own
+ *    landed write reads `gravado` above) gets a COURTESY hand-off of its named successor from the
+ *    dispatch (`despacho.ts`, "Whose hand-off"), never a stamp;
  *  - it still runs at this `seq` — another dispatch of the same `seq` wrote it (a cut dispatch the
  *    platform kept alive, say) ⇒ {@link LiImportacaoConcorrenteError}. The task THROWS, and Cloud
  *    Tasks' retry resumes from whatever is stored.
@@ -209,12 +213,17 @@ export async function lerJobLi(db: Firestore, jobId: string): Promise<JobLidoLi 
 }
 
 /** A re-read after a lost write: the job, and its RAW stored fields ({@link guardaOPatchLi}). */
-interface ReleituraLi {
+export interface ReleituraLi {
   readonly lido: JobLidoLi;
   readonly dados: unknown;
 }
 
-async function relerJob(db: Firestore, jobId: string): Promise<ReleituraLi | null> {
+/**
+ * The job by id with its RAW stored fields, or `null` when there is none: the read that asks "is
+ * it our write?" ({@link guardaOPatchLi}) — here after a lost write, and in the dispatch's last
+ * attempt about its own end-of-dispatch checkpoint (`despacho.ts`).
+ */
+export async function relerJobLi(db: Firestore, jobId: string): Promise<ReleituraLi | null> {
   const snap = await importacaoLojaIntegradaCollection.docRef(db, {}, jobId).get();
   const lido = jobDoSnapshot(jobId, snap);
   return lido === null ? null : { lido, dados: snap.data() };
@@ -454,13 +463,48 @@ export type ResultadoCheckpointLi =
   /**
    * Not written, and the dispatch STOPS: the job is cancelled, ended, gone (`job: null`) or runs at
    * another `seq`. `job` is the fresh read and `versao` its `updateTime` (both `null` when gone):
-   * a job found one `seq` ahead, still `executando`, is handed off from that read (`despacho.ts`).
+   * a job found one `seq` ahead, still `executando`, gets a courtesy hand-off (`despacho.ts`), which
+   * never writes the job, so `versao` chains nothing there.
    */
   | {
       readonly tipo: 'parar';
       readonly job: ImportacaoLojaIntegrada | null;
       readonly versao: Timestamp | null;
     };
+
+/** The patch a checkpoint writes, exactly as written (and as {@link guardaOPatchLi} compares it). */
+function patchDoCheckpoint(
+  alvo: AlvoDoDespachoLi,
+  progresso: ProgressoImportacaoLi,
+  agoraMs: number,
+  fimDoDespacho: boolean,
+): Partial<ImportacaoLojaIntegrada> {
+  for (const campo of Object.keys(progresso)) {
+    if (!CAMPOS_DE_PROGRESSO.has(campo)) {
+      throw new TypeError(`job: o checkpoint não escreve o campo '${campo}'`);
+    }
+  }
+  return importacaoLojaIntegradaCollection.parseMerge({
+    ...progresso,
+    status: STATUS_IMPORTACAO_LI.executando,
+    atualizadoEmMs: agoraMs,
+    ...(fimDoDespacho ? { seq: alvo.seq + 1 } : {}),
+  });
+}
+
+/**
+ * The patch {@link gravarCheckpointDoFimDoDespachoLi} writes for the same arguments, byte for byte.
+ * The dispatch keeps it to tell, on its last attempt, ITS landed end-of-dispatch checkpoint from
+ * another dispatch's ({@link guardaOPatchLi} on a {@link relerJobLi}): every patch carries the
+ * writer's own ms stamp (module header, "Is it our write?"). Pure.
+ */
+export function patchDoFimDoDespachoLi(
+  alvo: AlvoDoDespachoLi,
+  progresso: ProgressoImportacaoLi,
+  agoraMs: number,
+): Partial<ImportacaoLojaIntegrada> {
+  return patchDoCheckpoint(alvo, progresso, agoraMs, true);
+}
 
 async function gravarCheckpoint(
   db: Firestore,
@@ -469,17 +513,7 @@ async function gravarCheckpoint(
   agoraMs: number,
   fimDoDespacho: boolean,
 ): Promise<ResultadoCheckpointLi> {
-  for (const campo of Object.keys(progresso)) {
-    if (!CAMPOS_DE_PROGRESSO.has(campo)) {
-      throw new TypeError(`job: o checkpoint não escreve o campo '${campo}'`);
-    }
-  }
-  const patch = importacaoLojaIntegradaCollection.parseMerge({
-    ...progresso,
-    status: STATUS_IMPORTACAO_LI.executando,
-    atualizadoEmMs: agoraMs,
-    ...(fimDoDespacho ? { seq: alvo.seq + 1 } : {}),
-  });
+  const patch = patchDoCheckpoint(alvo, progresso, agoraMs, fimDoDespacho);
   const ref = importacaoLojaIntegradaCollection.docRef(db, {}, alvo.jobId);
   try {
     const { writeTime } = await ref.update(patch, { lastUpdateTime: alvo.versao });
@@ -488,7 +522,7 @@ async function gravarCheckpoint(
     if (!isFailedPrecondition(err) && !isNotFound(err)) throw err;
   }
   // Lost: re-read, and NEVER re-apply this patch (module header).
-  const relido = await relerJob(db, alvo.jobId);
+  const relido = await relerJobLi(db, alvo.jobId);
   if (relido === null) return { tipo: 'parar', job: null, versao: null };
   // Our own write, stored before its reply was lost: written, on the stored stamp.
   if (guardaOPatchLi(relido.dados, patch)) return { tipo: 'gravado', versao: relido.lido.versao };
@@ -574,7 +608,7 @@ export async function encerrarImportacaoLi(
   let escritas = 0;
   for (;;) {
     if (versao === null) {
-      const relido = await relerJob(db, alvo.jobId);
+      const relido = await relerJobLi(db, alvo.jobId);
       if (relido === null) return { tipo: 'ja-encerrado', job: null };
       // After a lost write: our own stamp, stored before its reply was lost (module header).
       if (escritas > 0 && guardaOPatchLi(relido.dados, patch)) {
@@ -637,7 +671,7 @@ export async function cancelarImportacaoLi(
   let escritas = 0;
   for (;;) {
     // Every decision below is derived from THIS attempt's read.
-    const relido = await relerJob(db, jobId);
+    const relido = await relerJobLi(db, jobId);
     const lido = relido !== null && relido.lido.job.integracaoId === contaId ? relido.lido : null;
     if (lido === null) return { tipo: 'nao-encontrada' };
     // After a lost write: our own cancel, stored before its reply was lost (module header).

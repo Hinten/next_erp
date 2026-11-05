@@ -185,8 +185,10 @@ carries the continuation `seq`, the cursors or the selection's ids.
   plan, whose snapshot `createTime` is at or after the job document's own `createTime` (the
   dispatch's job read; server clock, never `iniciadoEmMs`) reads `criado`/`retomado`, and a root
   `vinculado` only through it reports `encontrado`. Residuals in `vinculos.ts` (two jobs of one conta
-  at once, another writer's identical link during the run) and `familiaDoJob.ts` (a variation first
-  matched by combination loses its informational `sku-diferente` on the retry).
+  at once, another writer's identical link during the run, and a MIRROR REFRESH this job landed,
+  which reads `sem-mudanca` on the retry: `semMudanca +1`, its informational `vinculo-atualizado`
+  lost, `vinculados` unaffected) and `familiaDoJob.ts` (a variation first matched by combination
+  loses its informational `sku-diferente` on the retry).
 - **The first dispatch is a TRIGGER's** (`functions/src/onImportacaoLojaIntegradaCriada.ts`,
   CREATE of `importacoesLojaIntegrada/{jobId}`): ONLY a job created `pendente` enqueues the named
   task `li-importacao-<jobId>-0` on the READS queue (zero reads; anything else returns with no
@@ -209,10 +211,16 @@ carries the continuation `seq`, the cursors or the selection's ids.
   hand-off ⇒ `tarefas-desligadas`; anything else rethrows, and on the queue's LAST attempt a
   failure a retry could have changed — another writer of the same `seq` included, an earlier
   attempt the queue gave up on — RE-READS the job: still running at that `seq` ⇒ stamped
-  `tentativas-esgotadas`; ONE `seq` ahead and `executando` (an end checkpoint that LANDED behind a
-  DEADLINE_EXCEEDED, or a 9 whose re-read failed) ⇒ its named successor is handed off as the
-  continuation check does, never stamped (a coding bug stays loud). A checkpoint that stops on a
-  job one `seq` ahead hands off the same way, on every attempt. It reads the snapshot, its details, the grupo memo and the
+  `tentativas-esgotadas`; ONE `seq` ahead and `executando` ⇒ handed off by WHOSE end checkpoint
+  put it there (`guardaOPatchLi` against the end patch the dispatch kept from before its write,
+  `patchDoFimDoDespachoLi`): OURS (it LANDED behind a DEADLINE_EXCEEDED, or a 9 whose re-read
+  failed) ⇒ our own hand-off with OUR delay (2 s budget end, 60 s 429 pause), and if that fails the
+  usual endings on the new `seq` (`tarefas-desligadas`, `tentativas-esgotadas`); another dispatch's
+  ⇒ a COURTESY at the conservative 60 s that never re-targets the `seq` and never stamps (valve
+  closed ⇒ `parado`; transient ⇒ rethrown, `parado` on the last attempt). A checkpoint that stops
+  on a job one `seq` ahead is always a courtesy, on every attempt. Residual: the owner died before
+  its enqueue AND the courtesy failed ⇒ `executando` with nothing queued until Cancelar (a coding
+  bug stays loud). It reads the snapshot, its details, the grupo memo and the
   claims at most once per dispatch, lazily. The summary aviso is synced before the phase machine's
   own terminal stamps (`aplicar` only), on a FRESH read of the job that still runs at its `seq`,
   the stamp chained from that read (a cancel landing in between the two is the stated residual).
