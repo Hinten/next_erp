@@ -53,20 +53,17 @@
  * (`enfileirarNomeandoFalhaTransitoriaLi`), so the two queues cannot classify a
  * Cloud Tasks failure differently.
  */
-import { FirebaseFunctionsError } from 'firebase-admin/functions';
 import { sha256Hex } from '@delfrance/data/admin';
 
 import {
   LiTarefasDesligadasError,
   LiTarefasTransitoriasError,
   enfileirarNomeandoFalhaTransitoriaLi,
+  tarefaJaExisteLi,
 } from '../notificacoes/agendador';
 import type { PayloadTarefaEscritaLi } from './notificacaoEscrita';
 
 export { LiTarefasDesligadasError, LiTarefasTransitoriasError };
-
-/** The SDK's code for a named task Cloud Tasks already holds (an answered 409). */
-const CODIGO_TAREFA_JA_EXISTE = 'functions/task-already-exists';
 
 /** The event id of a freight history row (module header). */
 export function eventoDoHistoricoLi(pedidoId: string, historicoId: string): string {
@@ -140,15 +137,6 @@ export interface OpcoesAgendadorEscritaLi {
   readonly desligado: boolean;
 }
 
-/** Whether `err` is the SDK's answered "a task with this id already exists". */
-function tarefaJaExiste(err: unknown): boolean {
-  return (
-    err instanceof FirebaseFunctionsError &&
-    err.code === CODIGO_TAREFA_JA_EXISTE &&
-    err.httpResponse !== undefined
-  );
-}
-
 /**
  * The producer: with the valve closed, every enqueue rejects with
  * {@link LiTarefasDesligadasError} and the queue is never resolved; otherwise
@@ -169,7 +157,7 @@ export function criarAgendadorEscritaLi(opcoes: OpcoesAgendadorEscritaLi): Agend
         try {
           await opcoes.fila().enqueue(tarefa, { id });
         } catch (err) {
-          if (tarefaJaExiste(err)) return;
+          if (tarefaJaExisteLi(err)) return;
           throw err;
         }
       }),

@@ -5,8 +5,12 @@
 import { describe, expect, it } from 'vitest';
 import { escreverAviso } from '@delfrance/data/admin/avisos';
 import {
+  ALVO_IMPORTACAO_LI,
   CANAL_AVISO,
+  MODO_IMPORTACAO_LI,
+  MOTIVO_CATEGORIA_SEM_VINCULO_LI,
   MOTIVO_IMPORTACAO_PARADA_LI,
+  STATUS_IMPORTACAO_LI,
   ROTAS_AVISO,
   SEVERIDADE_AVISO,
   TIPO_AVISO,
@@ -33,6 +37,11 @@ import {
   seedConta,
   seedCredencial,
 } from '../testing/fixtures';
+import {
+  avisarCategoriaSemVinculoLi,
+  sincronizarAvisoDePendenciasLi,
+  sincronizarAvisoDeRevisaoFiscalLi,
+} from '../importacao/avisosImportacao';
 import {
   MAX_PAGINAS_AVISOS_ABERTOS,
   PAGINA_AVISOS_ABERTOS,
@@ -425,6 +434,84 @@ describe('pass (b): open rows of contas that no longer exist', () => {
     for (const chave of orfaos) {
       expect(aviso(db, chave), chave).toMatchObject({ resolucaoMotivo: 'conta-removida' });
     }
+  });
+
+  it('⚠️ the product import’s tipos (step 9): a LISTED conta’s three rows stay open, a gone conta’s are resolved', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'viva');
+    seedCredencial(db, 'viva', { tokenExpiraEmMs: expiraEm(60) });
+    const deps = { increment, nowMs: AGORA_MS - DIA_MS };
+    /** The three rows of one conta, raised by an `aplicar` job that ended before the tick. */
+    async function avisosDaImportacao(conta: string): Promise<string[]> {
+      const job = {
+        jobId: `job-${conta}`,
+        integracaoId: conta,
+        lojaNome: conta,
+        modo: MODO_IMPORTACAO_LI.aplicar,
+        fimMs: AGORA_MS - DIA_MS,
+      };
+      await sincronizarAvisoDePendenciasLi(
+        asDb(db),
+        { ...job, alvo: ALVO_IMPORTACAO_LI.todos, status: STATUS_IMPORTACAO_LI.concluido },
+        { total: 1, porCodigo: { 'sem-sku': 1 } },
+        deps,
+      );
+      await sincronizarAvisoDeRevisaoFiscalLi(asDb(db), { ...job, abertos: 2 }, deps);
+      await avisarCategoriaSemVinculoLi(
+        asDb(db),
+        job,
+        {
+          categoriaLiId: 7,
+          caminho: [7],
+          produtos: 1,
+          motivo: MOTIVO_CATEGORIA_SEM_VINCULO_LI.semVinculo,
+        },
+        deps,
+      );
+      return db
+        .idsEm('avisos')
+        .filter((id) => id.includes(`:${conta}`) && !id.includes(`:${conta}2`));
+    }
+    const vivos = await avisosDaImportacao('viva');
+    const orfaos = await avisosDaImportacao('apagada');
+    expect(vivos).toHaveLength(3);
+    expect(orfaos).toHaveLength(3);
+
+    const r = await sweep(db);
+    expect(r.orfaos.resolvidos).toBe(3);
+    for (const chave of vivos) expect(aviso(db, chave)?.resolvidoEm, chave).toBeNull();
+    for (const chave of orfaos) {
+      expect(aviso(db, chave), chave).toMatchObject({ resolucaoMotivo: 'conta-removida' });
+    }
+  });
+
+  it('⚠️ a product-import row raised AFTER the list was read (a brand-new conta) stays open', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'viva');
+    seedCredencial(db, 'viva', { tokenExpiraEmMs: expiraEm(20) });
+    // Pass (a)'s raise on `viva` is the write the new conta's import job lands right before.
+    db.antesDaProximaEscrita(caminhoAviso(chaveExpiracao('viva')), async () => {
+      seedConta(db, 'nova', { nome: 'Loja Nova' });
+      await sincronizarAvisoDeRevisaoFiscalLi(
+        asDb(db),
+        {
+          jobId: 'job-nova',
+          integracaoId: 'nova',
+          lojaNome: 'Loja Nova',
+          modo: MODO_IMPORTACAO_LI.aplicar,
+          fimMs: AGORA_MS,
+          abertos: 1,
+        },
+        { increment, nowMs: AGORA_MS },
+      );
+    });
+
+    const r = await sweep(db);
+    expect(r.contas).toBe(1);
+    expect(r.orfaos.resolvidos).toBe(0);
+    const abertas = db.idsEm('avisos').filter((id) => id.includes(':nova'));
+    expect(abertas).toHaveLength(1);
+    expect(aviso(db, abertas[0] ?? '')?.resolvidoEm).toBeNull();
   });
 
   it('⚠️ an import-stopped row raised AFTER the list was read (a brand-new conta) stays open', async () => {

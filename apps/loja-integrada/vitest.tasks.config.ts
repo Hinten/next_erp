@@ -60,6 +60,15 @@ import { defineConfig } from 'vitest/config';
 //   - ends by deleting its links and awaiting the anchor's last write before its
 //     produtos go (`lib/lojaIntegrada/testing/ancoraLi.ts`).
 //
+// ⚠️ And a FOURTH, `onImportacaoLojaIntegradaCriada`, on every CREATE of
+// `importacoesLojaIntegrada/*` — it enqueues a dispatch onto the READS queue for
+// a job created `pendente` (the dispatch then stops at the read switch and stamps
+// the job `falhou/chamadas-desligadas`). So a suite seeds its jobs `executando`
+// (or ended), which the trigger ignores with zero reads, unless that dispatch is
+// what it awaits — as `functions/src/importacao.tasks.test.ts` does, with job ids
+// no other suite uses, awaiting each one's stamp before it ends. No import suite
+// writes a link document, so the anchor never fires on one of them.
+//
 // Each file's `beforeEach` deletes what it reads, because the files
 // share one emulator and run one at a time (`fileParallelism: false`).
 export default defineConfig({

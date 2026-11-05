@@ -4,9 +4,12 @@
  * stale precondition would make every race test vacuous.
  */
 import { describe, expect, it } from 'vitest';
+import { FieldPath, Timestamp } from 'firebase-admin/firestore';
 import {
   avisoCollection,
+  importacaoLojaIntegradaCollection,
   integracaoCollection,
+  itemImportacaoLiCollection,
   produtoLojaIntegradaLinkCollection,
 } from '@delfrance/data/admin/collections';
 import {
@@ -79,10 +82,10 @@ describe('FakeDb', () => {
     expect(db.ler('integracao/a')).toEqual({ n: 3 });
   });
 
-  it('throws on what it does not model: set, undefined, a dotted key, another operator', async () => {
+  it('throws on what it does not model: a set option, undefined, a dotted key, another operator', async () => {
     const db = new FakeDb();
     const ref = refDe(db, 'a');
-    expect(() => ref.set({ x: 1 })).toThrow(/set\(\) não é modelado/);
+    expect(() => ref.set({ x: 1 }, { merge: false })).toThrow(/set\(\) com estas opções/);
     await expect(ref.create({ x: undefined })).rejects.toThrow(/undefined/);
     await ref.create({ x: 1 });
     await expect(ref.update({ 'a.b': 1 })).rejects.toThrow(/ponto/);
@@ -112,6 +115,84 @@ describe('FakeDb', () => {
       isFailedPrecondition,
     );
     expect(db.ler('integracao/a')).toEqual({ x: 99 });
+  });
+
+  it('respostaPerdidaNaProximaEscrita: the guarded update LANDS, then rejects 9 — once, and never a plain update', async () => {
+    const db = new FakeDb();
+    const ref = refDe(db, 'a');
+    await ref.create({ x: 1 });
+    const lido = await ref.get();
+    db.respostaPerdidaNaProximaEscrita('integracao/a');
+    // A plain update is not the one the facility models: it lands and answers as usual.
+    await ref.update({ y: 1 });
+    const relido = await ref.get();
+    await expect(ref.update({ x: 2 }, { lastUpdateTime: relido.updateTime })).rejects.toSatisfy(
+      isFailedPrecondition,
+    );
+    // Stored all the same: the write the caller saw fail is there.
+    expect(db.ler('integracao/a')).toEqual({ x: 2, y: 1 });
+    expect(db.escritasEm('integracao/a').map((e) => e.verbo)).toEqual([
+      'create',
+      'update',
+      'update',
+    ]);
+    // One-shot: the next guarded update answers normally.
+    const depois = await ref.get();
+    await expect(
+      ref.update({ x: 3 }, { lastUpdateTime: depois.updateTime }),
+    ).resolves.toBeDefined();
+    // ⚠️ NEAR-MISS: a stale stamp is still refused WITHOUT landing.
+    await expect(ref.update({ x: 4 }, { lastUpdateTime: lido.updateTime })).rejects.toSatisfy(
+      isFailedPrecondition,
+    );
+    expect(db.ler('integracao/a')).toEqual({ x: 3, y: 1 });
+  });
+
+  it('respostaPerdidaNaProximaEscrita with an error: the guarded update LANDS, then rejects with THAT error — once', async () => {
+    const db = new FakeDb();
+    const ref = refDe(db, 'a');
+    await ref.create({ x: 1 });
+    const prazo = grpc(4, 'DEADLINE_EXCEEDED');
+    db.respostaPerdidaNaProximaEscrita('integracao/a', prazo);
+    const lido = await ref.get();
+    await expect(ref.update({ x: 2 }, { lastUpdateTime: lido.updateTime })).rejects.toBe(prazo);
+    expect(db.ler('integracao/a')).toEqual({ x: 2 });
+    // One-shot: the next guarded update answers normally.
+    const depois = await ref.get();
+    await expect(
+      ref.update({ x: 3 }, { lastUpdateTime: depois.updateTime }),
+    ).resolves.toBeDefined();
+  });
+
+  it('falharProximaLeitura: the NEXT get rejects with the error, the one after it reads normally', async () => {
+    const db = new FakeDb();
+    db.seed('integracao/a', { x: 1 });
+    const fora = grpc(14, 'UNAVAILABLE');
+    db.falharProximaLeitura('integracao/a', fora);
+    // ⚠️ NEAR-MISS: another path is not affected.
+    db.seed('integracao/b', { x: 2 });
+    expect((await refDe(db, 'b').get()).data()).toEqual({ x: 2 });
+    await expect(refDe(db, 'a').get()).rejects.toBe(fora);
+    expect((await refDe(db, 'a').get()).data()).toEqual({ x: 1 });
+  });
+
+  it('antesDaProximaConsulta runs ONCE before the next query on that collection, and the query sees its write', async () => {
+    const db = new FakeDb();
+    db.seed('integracao/a', { tipo: 3 });
+    db.antesDaProximaConsulta('integracao', async () => {
+      await refDe(db, 'b').create({ tipo: 3 });
+    });
+    const q = integracaoCollection.ref(asDb(db), {}).where('tipo', '==', 3);
+    expect((await q.get()).docs.map((d) => d.id)).toEqual(['a', 'b']);
+    // One-shot: the next query runs no hook (a second create would throw 6).
+    expect((await q.get()).size).toBe(2);
+    // ⚠️ NEAR-MISS: a query on ANOTHER collection never runs it.
+    db.antesDaProximaConsulta('integracao', () => {
+      throw new Error('não deveria rodar');
+    });
+    await expect(
+      importacaoLojaIntegradaCollection.ref(asDb(db), {}).limit(1).get(),
+    ).resolves.toBeDefined();
   });
 
   it('query: == filter (absent never matches), orderBy, limit and a doc cursor', async () => {
@@ -222,6 +303,66 @@ describe('FakeDb', () => {
   });
 });
 
+describe('FakeDb — document-key order and auto ids (step 9, the product import)', () => {
+  const itens = (db: FakeDb) => itemImportacaoLiCollection.ref(asDb(db), { jobId: 'j1' });
+
+  it('orderBy(FieldPath.documentId()) orders by the KEY and keeps a doc with no fields of note', async () => {
+    const db = new FakeDb();
+    // Key order is TEXT order: '10' sorts before '9'.
+    for (const id of ['9', '10', '200', '3'])
+      db.seed(`importacoesLojaIntegrada/j1/itens/${id}`, {});
+    db.seed('importacoesLojaIntegrada/j2/itens/1', {});
+    const ids = (await itens(db).orderBy(FieldPath.documentId()).get()).docs.map((d) => d.id);
+    expect(ids).toEqual(['10', '200', '3', '9']);
+    const desc = await itens(db).orderBy(FieldPath.documentId(), 'desc').get();
+    expect(desc.docs.map((d) => d.id)).toEqual(['9', '3', '200', '10']);
+    expect(db.consultas.at(-1)?.ordens).toEqual([['__name__', 'desc']]);
+  });
+
+  it('startAfter(<id>) on a key ordering seeks past the id — whether or not that doc exists', async () => {
+    const db = new FakeDb();
+    for (const id of ['a', 'b', 'c', 'd']) db.seed(`importacoesLojaIntegrada/j1/itens/${id}`, {});
+    const q = itens(db).orderBy(FieldPath.documentId());
+    expect((await q.startAfter('b').limit(1).get()).docs.map((d) => d.id)).toEqual(['c']);
+    // A cursor id that names no document still pages on, by key.
+    expect((await q.startAfter('bb').get()).docs.map((d) => d.id)).toEqual(['c', 'd']);
+    expect((await q.startAfter('d').get()).docs).toEqual([]);
+    expect(db.consultas.at(-1)).toMatchObject({ ordens: [['__name__', 'asc']], apos: 'd' });
+  });
+
+  it('⚠️ NEAR-MISS: a value cursor on a FIELD ordering, on a mixed one or with no ordering throws', () => {
+    const db = new FakeDb();
+    expect(() => itens(db).orderBy('nome').startAfter('b')).toThrow(/startAfter\(<valor>\)/);
+    expect(() => itens(db).orderBy('nome').orderBy(FieldPath.documentId()).startAfter('b')).toThrow(
+      /startAfter\(<valor>\)/,
+    );
+    expect(() => itens(db).startAfter('b')).toThrow(/startAfter\(<valor>\)/);
+  });
+
+  it('a key cursor that is empty or carries a slash throws, as the SDK does', () => {
+    const db = new FakeDb();
+    const q = itens(db).orderBy(FieldPath.documentId());
+    expect(() => q.startAfter('')).toThrow(/id simples/);
+    expect(() => q.startAfter('a/b')).toThrow(/id simples/);
+  });
+
+  it('an orderBy over any other FieldPath throws', () => {
+    const db = new FakeDb();
+    expect(() => itens(db).orderBy(new FieldPath('a', 'b'))).toThrow(/não é a chave/);
+  });
+
+  it('collection().doc() with no id (the handle’s newDocId) mints a fresh 20-character id; an empty id still throws', async () => {
+    const db = new FakeDb();
+    const a = importacaoLojaIntegradaCollection.newDocId(asDb(db), {});
+    const b = importacaoLojaIntegradaCollection.newDocId(asDb(db), {});
+    expect(a).toMatch(/^[A-Za-z0-9]{20}$/);
+    expect(b).not.toBe(a);
+    await importacaoLojaIntegradaCollection.docRef(asDb(db), {}, a).create({ x: 1 });
+    expect(db.ler(`importacoesLojaIntegrada/${a}`)).toEqual({ x: 1 });
+    expect(() => importacaoLojaIntegradaCollection.docRef(asDb(db), {}, '')).toThrow(/vazio/);
+  });
+});
+
 describe('FakeDb — what the shared notification store needs (step 3)', () => {
   it("where('<') compares within ONE type: null, absent and other types never match", async () => {
     const db = new FakeDb();
@@ -268,12 +409,53 @@ describe('FakeDb — what the shared notification store needs (step 3)', () => {
     expect((await ref.get()).updateTime?.isEqual(w.writeTime)).toBe(true);
   });
 
+  it('set(data) overwrites the WHOLE document, creating it when absent, and logs the overwrite', async () => {
+    const db = new FakeDb();
+    const ref = refDe(db, 'a');
+    const w1 = await ref.set({ x: 1, m: { a: 1 } });
+    expect(db.ler('integracao/a')).toEqual({ x: 1, m: { a: 1 } });
+    await ref.set({ y: 2 });
+    // Every field of the previous version is gone — never merged.
+    expect(db.ler('integracao/a')).toEqual({ y: 2 });
+    expect(db.escritasEm('integracao/a').map((e) => [e.verbo, e.sobrescrita])).toEqual([
+      ['set', true],
+      ['set', true],
+    ]);
+    expect((await ref.get()).updateTime?.isEqual(w1.writeTime)).toBe(false);
+  });
+
+  it('a merge-set is never logged as an overwrite', async () => {
+    const db = new FakeDb();
+    await refDe(db, 'a').set({ x: 1 }, { merge: true });
+    expect(db.escritasEm('integracao/a')[0]).not.toHaveProperty('sobrescrita');
+  });
+
+  it('set(data) refuses what create refuses — synchronously, before anything lands', () => {
+    const db = new FakeDb();
+    const ref = refDe(db, 'a');
+    expect(() => ref.set({ x: undefined })).toThrow(/undefined/);
+    expect(() => ref.set({ n: increment(1) })).toThrow(/increment/);
+    expect(() => ref.set({ l: arrayUnion('a') })).toThrow(/arrayUnion/);
+    expect(db.escritas).toEqual([]);
+  });
+
+  it('set(data) meets an interleaved write and lands LAST, replacing it', async () => {
+    const db = new FakeDb();
+    const ref = refDe(db, 'a');
+    await ref.create({ x: 1 });
+    db.antesDaProximaEscrita('integracao/a', async () => {
+      await ref.update({ y: 9 });
+    });
+    await ref.set({ x: 2 });
+    expect(db.ler('integracao/a')).toEqual({ x: 2 });
+  });
+
   it('set refuses every form it does not model — synchronously, before anything lands', () => {
     const db = new FakeDb();
     const ref = refDe(db, 'a');
-    expect(() => ref.set({ x: 1 })).toThrow(/set\(\) não é modelado/);
-    expect(() => ref.set({ x: 1 }, { merge: false })).toThrow(/set\(\) não é modelado/);
-    expect(() => ref.set({ x: 1 }, { mergeFields: ['x'] })).toThrow(/set\(\) não é modelado/);
+    expect(() => ref.set({ x: 1 }, { merge: false })).toThrow(/set\(\) com estas opções/);
+    expect(() => ref.set({ x: 1 }, { mergeFields: ['x'] })).toThrow(/set\(\) com estas opções/);
+    expect(() => ref.set({ x: 1 }, {})).toThrow(/set\(\) com estas opções/);
     expect(() => ref.set({ m: { a: 1 } }, { merge: true })).toThrow(/mapa aninhado/);
     expect(() => ref.set({ 'a.b': 1 }, { merge: true })).toThrow(/ponto/);
     expect(() => ref.set({ x: undefined }, { merge: true })).toThrow(/undefined/);
@@ -555,5 +737,80 @@ describe('FakeDb — collection groups and `in` (step 5, the link docs)', () => 
         Array.from({ length: 31 }, (_, i) => i),
       ),
     ).toThrow(/1 a 30/);
+  });
+});
+
+describe('FakeDb — createTime (step 9: a retried import unit recognises the links it created)', () => {
+  const us = (t: { seconds: number; nanoseconds: number } | undefined) =>
+    t === undefined ? undefined : t.seconds * 1_000_000 + t.nanoseconds / 1000;
+
+  it('create sets it to its own commit stamp; every LATER write keeps it — update, guarded update, both sets', async () => {
+    const db = new FakeDb();
+    const ref = refDe(db, 'a');
+    const { writeTime } = await ref.create({ x: 1 });
+    await ref.update({ x: 2 });
+    const lido = await ref.get();
+    await ref.update({ x: 3 }, { lastUpdateTime: lido.updateTime });
+    await ref.set({ x: 4, y: 1 }, { merge: true });
+    await ref.set({ x: 5 });
+    const depois = await ref.get();
+    expect(us(depois.createTime)).toBe(us(writeTime));
+    // NEAR-MISS: the update stamp moved with every write; the create stamp did not.
+    expect(us(depois.updateTime)).toBe(us(writeTime)! + 4);
+  });
+
+  it('a document that does not exist has none; one born of a set or a merge-set takes that write’s stamp', async () => {
+    const db = new FakeDb();
+    expect((await refDe(db, 'nada').get()).createTime).toBeUndefined();
+    const s = await refDe(db, 's').set({ x: 1 });
+    const m = await refDe(db, 'm').set({ x: 1 }, { merge: true });
+    expect(us((await refDe(db, 's').get()).createTime)).toBe(us(s.writeTime));
+    expect(us((await refDe(db, 'm').get()).createTime)).toBe(us(m.writeTime));
+  });
+
+  it('⚠️ NEAR-MISS: deleted and created again, it is a NEW document with a new createTime', async () => {
+    const db = new FakeDb();
+    const ref = refDe(db, 'a');
+    const primeiro = await ref.create({ x: 1 });
+    await ref.delete();
+    const segundo = await ref.create({ x: 1 });
+    expect(us((await ref.get()).createTime)).toBe(us(segundo.writeTime));
+    expect(us(segundo.writeTime)).not.toBe(us(primeiro.writeTime));
+  });
+
+  it('seed: a new path takes the seed’s stamp, a seeded EXISTING path keeps its createTime', async () => {
+    const db = new FakeDb();
+    const c1 = db.seed('integracao/a', { x: 1 });
+    db.seed('integracao/a', { x: 2 });
+    expect(us((await refDe(db, 'a').get()).createTime)).toBe(us(c1));
+  });
+
+  it('valueOf() is the real Timestamp’s ordering text byte for byte, so fake and real stamps order together', async () => {
+    const db = new FakeDb();
+    const { writeTime } = await refDe(db, 'a').create({ x: 1 });
+    const real = new Timestamp(writeTime.seconds, writeTime.nanoseconds);
+    expect(writeTime.valueOf()).toBe(real.valueOf());
+    // NEAR-MISS: one nanosecond either way, and a second boundary, order as the real ones do.
+    const antes = new Timestamp(writeTime.seconds, writeTime.nanoseconds - 1);
+    const depois = new Timestamp(writeTime.seconds - 1, 999_999_999);
+    expect(writeTime.valueOf() > antes.valueOf()).toBe(true);
+    expect(writeTime.valueOf() > depois.valueOf()).toBe(true);
+    expect(writeTime.valueOf() < new Timestamp(writeTime.seconds + 1, 0).valueOf()).toBe(true);
+  });
+
+  it('a query result and a batch carry it the same way', async () => {
+    const db = new FakeDb();
+    const criado = db.seed('integracao/a', { tipo: 3 });
+    await asDb(db)
+      .batch()
+      .update(refDe(db, 'a'), { tipo: 3, n: 1 })
+      .create(refDe(db, 'b'), { tipo: 3 })
+      .commit();
+    const b = await refDe(db, 'b').get();
+    const snap = await integracaoCollection.ref(asDb(db), {}).where('tipo', '==', 3).get();
+    const porId = new Map(snap.docs.map((d) => [d.id, us(d.createTime)]));
+    expect(porId.get('a')).toBe(us(criado));
+    expect(porId.get('b')).toBe(us(b.createTime));
+    expect(us(b.createTime)).toBe(us(b.updateTime));
   });
 });

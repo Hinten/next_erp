@@ -287,6 +287,7 @@ export const ACAO_HARD_DO_CODIGO_LI = {
   [E.importacaoEmAndamento]: 'confirmar-transitorio',
   [E.importacaoNaoEncontrada]: 'confirmar-transitorio',
   [E.importacaoEncerrada]: 'confirmar-transitorio',
+  [E.importacaoEmConflito]: 'confirmar-transitorio',
 } as const satisfies Record<CodigoErroLi, AcaoHardDoCodigoLi>;
 
 /**
@@ -325,6 +326,7 @@ export const ACAO_IMPRESSAO_DO_CODIGO_LI = {
   [E.importacaoEmAndamento]: 'confirmar-transitorio',
   [E.importacaoNaoEncontrada]: 'confirmar-transitorio',
   [E.importacaoEncerrada]: 'confirmar-transitorio',
+  [E.importacaoEmConflito]: 'confirmar-transitorio',
 } as const satisfies Record<CodigoErroLi, AcaoImpressaoDoCodigoLi>;
 
 /**
@@ -363,6 +365,7 @@ const LINHA_DO_CODIGO_LI: Readonly<Record<CodigoErroLi, string>> = {
   [E.importacaoEmAndamento]: 'resposta inesperada do backend',
   [E.importacaoNaoEncontrada]: 'resposta inesperada do backend',
   [E.importacaoEncerrada]: 'resposta inesperada do backend',
+  [E.importacaoEmConflito]: 'resposta inesperada do backend',
 };
 
 /** The `<causa>` of every non-code failure, by its class. */

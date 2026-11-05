@@ -68,7 +68,11 @@
  * existing contas are never touched here: the expiry and reconexão rows are
  * pass (a)'s, and the import-stopped row belongs to the order poller (step-3
  * PR 3-e), so its chave is in the existing set too — otherwise this pass would
- * close a LIVE conta's open import-stopped row every day.
+ * close a LIVE conta's open import-stopped row every day. The product import's
+ * rows (step 9) follow the same two rules: its two per-conta chaves are in the
+ * existing set, its per-category rows are matched by key prefix, and all three
+ * are clocked by a job's own stamp, so a row of theirs written after the
+ * enumeration's read is left for the next tick, like an order-import row.
  *
  * The cursor is the last row's snapshot, and the server seeks past its VALUES:
  * a row this pass resolved is no longer in the result, and paging continues
@@ -94,14 +98,17 @@ import { CANAL_AVISO } from '@delfrance/schemas';
 
 import {
   MOTIVO_AVISO_LI,
+  TIPOS_AVISO_IMPORTACAO_PRODUTOS_LI,
   TIPOS_AVISO_LI,
-  TIPOS_AVISO_PEDIDO_LI,
+  TIPOS_AVISO_POR_ENTIDADE_LI,
   avisarReconexaoPendente,
   chaveExpiracao,
+  chaveImportacaoComPendenciasLi,
   chaveImportacaoParada,
   chaveReconexao,
+  chaveRevisaoFiscalLi,
   prefixoDaContaNoAvisoLi,
-  prefixoDoAvisoDePedidoLi,
+  prefixoDoAvisoPorEntidadeLi,
   relogioDoDocumentoUs,
   resolverAvisoDeContaRemovida,
   resolverExpiracaoToken,
@@ -288,16 +295,20 @@ export async function sweepLojaIntegradaTokenExpiry(
 
   /* ---- pass (b): open rows of contas that no longer exist ----------------- */
   // Every chave a LISTED conta may hold — the import-stopped one too, whose
-  // producer is the order poller, not this sweep (module header).
+  // producer is the order poller, and the product import's two per-conta rows,
+  // whose producer is the import job — not this sweep (module header).
   const chavesExistentes = new Set<string>();
-  // The order-import tipos (step 5) hold MANY rows per conta: matched by the
-  // conta's key prefix, recomputed per listed conta (`prefixoDaContaNoAvisoLi`).
+  // The per-entity tipos (the order import's, step 5, and the product import's
+  // per-category one, step 9) hold MANY rows per conta: matched by the conta's
+  // key prefix, recomputed per listed conta (`prefixoDaContaNoAvisoLi`).
   const prefixosExistentes = new Set<string>();
   for (const conta of contas) {
     chavesExistentes.add(chaveExpiracao(conta.integracaoId));
     chavesExistentes.add(chaveReconexao(conta.integracaoId));
     chavesExistentes.add(chaveImportacaoParada(conta.integracaoId));
-    for (const tipo of TIPOS_AVISO_PEDIDO_LI) {
+    chavesExistentes.add(chaveRevisaoFiscalLi(conta.integracaoId));
+    chavesExistentes.add(chaveImportacaoComPendenciasLi(conta.integracaoId));
+    for (const tipo of TIPOS_AVISO_POR_ENTIDADE_LI) {
       prefixosExistentes.add(prefixoDaContaNoAvisoLi(tipo, conta.integracaoId));
     }
   }
@@ -338,11 +349,14 @@ export async function sweepLojaIntegradaTokenExpiry(
       if (row?.canal !== CANAL_AVISO.lojaIntegrada) continue;
       if (typeof row.tipo !== 'string' || !TIPOS_AVISO_LI.has(row.tipo)) continue;
       if (chavesExistentes.has(doc.id)) continue;
-      const prefixo = prefixoDoAvisoDePedidoLi(row.tipo, doc.id);
+      const prefixo = prefixoDoAvisoPorEntidadeLi(row.tipo, doc.id);
       if (prefixo !== null && prefixosExistentes.has(prefixo)) continue;
-      // An order-import row written AFTER the list was read may belong to a conta created after
-      // it: the next tick, which lists that conta, decides (module header).
-      if (prefixo !== null && relogioDoDocumentoUs(doc.updateTime) > listaLidaEmUs) continue;
+      // A per-entity or product-import row written AFTER the list was read may belong to a conta
+      // created after it: the next tick, which lists that conta, decides (module header).
+      const semRelogioDeLista =
+        prefixo !== null ||
+        (TIPOS_AVISO_IMPORTACAO_PRODUTOS_LI as ReadonlySet<string>).has(row.tipo);
+      if (semRelogioDeLista && relogioDoDocumentoUs(doc.updateTime) > listaLidaEmUs) continue;
       try {
         if (await resolverAvisoDeContaRemovida(db, doc.id, listaLidaEmUs, avisoDeps)) {
           orfaosResolvidos += 1;
