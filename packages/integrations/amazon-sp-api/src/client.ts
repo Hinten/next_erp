@@ -8,7 +8,8 @@
  * there is no flag to flip, no verb parameter, no request body to fill. It
  * hands the core a `GET` built from its named fields, so nothing a caller adds
  * to the request object can ride along. The write path is a SEPARATE client in
- * `escrita.ts` (one `post`, the Delivery invoice only), never a widened `get`.
+ * `escrita.ts` (one `post`, for the package's SP-API writes), never a widened
+ * `get`.
  *
  * ## The request core is INTERNAL
  *

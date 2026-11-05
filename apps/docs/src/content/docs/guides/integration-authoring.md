@@ -73,7 +73,7 @@ Firestore-bound half**:
 | `freight-br` | `apps/melhor-envio` | Melhor Envio: OAuth, quote, cart→checkout, label print, tracking |
 | `shopee` | `apps/shopee` | Shopee Open Platform: HMAC request signing, hosts, consent URL + token endpoints, wire schemas |
 | `loja-integrada` | `apps/loja-integrada` | Loja Integrada REST v1: Personal Token header, GET-only read client, separate write client, Tastypie paging, typed errors |
-| `amazon-sp-api` | `apps/amazon` | Amazon SP-API (NA host, BR marketplace): LWA token exchanges, GET-only read client, a Delivery write client, typed errors |
+| `amazon-sp-api` | `apps/amazon` | Amazon SP-API (NA host, BR marketplace): LWA token exchanges, GET-only read client, ONE write client (Delivery, Tokens, Easy Ship), the header-free Easy Ship label download (fflate), typed errors |
 
 ⚠️ Two throw-only marketplace scaffolds (`magalu`, `facebook`) were deleted in
 #815 and stay deleted. `shopee`, `loja-integrada` and `amazon-sp-api` came back as

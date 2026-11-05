@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@delfrance/core": "workspace:*",
+    "fflate": "catalog:",
     "zod": "catalog:"
   },
   "devDependencies": {

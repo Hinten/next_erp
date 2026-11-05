@@ -191,10 +191,14 @@ const ALLOWED_STRICT = {
   // `z.number()` to keep strict, so there is nothing here for strictness to
   // protect. A later write step whose body holds a number brings its first entry.
   // No `amazon-sp-api` entry either. It has a GET client and ONE write client
-  // (Delivery only), and neither outbound body is a Zod schema: the LWA token
-  // POST is a form-encoded `URLSearchParams` of strings, and `submitInvoice`'s
-  // body is a `JSON.stringify` of five NAMED string keys (`entrega.ts`); if a
-  // later write step brings a Zod request body, that step adds its first entry.
+  // (Delivery, Tokens and Easy Ship), and no outbound body is a Zod schema: the
+  // LWA token POST is a form-encoded `URLSearchParams` of strings,
+  // `submitInvoice`'s body is a `JSON.stringify` of five NAMED string keys
+  // (`entrega.ts`), and the RDT mint's and the Easy Ship bulk's bodies are a
+  // `JSON.stringify` of named keys too (`tokens.ts`, `easyShip.ts`). The RDT
+  // RESPONSE reads `expiresIn` through `wireInt()`, so the ban above holds there
+  // with no carve-out. If a later write step brings a Zod request body, that
+  // step adds its first entry.
 };
 
 /**
