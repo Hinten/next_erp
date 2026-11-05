@@ -9,6 +9,7 @@ import {
   avisoCollection,
   intFreteCollection,
   integracaoCollection,
+  nfev4Collection,
   notificacaoAmazonCollection,
   pagamentoCollection,
   pedidoCollection,
@@ -461,5 +462,47 @@ describe('step 5: the prodAmazon collection group and the int_frete lookup', () 
       .where('ativo', '==', true)
       .get();
     expect(snap.docs.map((d) => d.id)).toEqual(['amz-c1']);
+  });
+});
+
+describe('step 14 (14-c): ONE pedido’s nfev4 listing, whole, and a single precondition update', () => {
+  const nfev4 = (pedidoId: string) => nfev4Collection.ref(asDb(db), { pedidoId });
+
+  it('lists the pedido’s nfev4 documents — its own, never another pedido’s or a deeper one', async () => {
+    db.seed('pedidos/p1/nfev4/s1', { estado: 'a' });
+    db.seed('pedidos/p1/nfev4/s2', { estado: 'c' });
+    db.seed('pedidos/p2/nfev4/s1', { estado: 'a' });
+    db.seed('pedidos/p1/nfev4/s1/eventos/e1', { x: 1 });
+    const snap = await nfev4('p1').get();
+    expect(snap.docs.map((d) => [d.id, d.data()])).toEqual([
+      ['s1', { estado: 'a' }],
+      ['s2', { estado: 'c' }],
+    ]);
+    expect(db.consultas.at(-1)).toEqual({
+      colecao: 'pedidos/p1/nfev4',
+      filtros: [],
+      ordens: [],
+      limite: null,
+      apos: null,
+    });
+  });
+
+  it.each<[string, () => { get: () => Promise<unknown> }]>([
+    ['a filter', () => nfev4('p1').where('estado', '==', 'a')],
+    ['an order', () => nfev4('p1').orderBy('estado')],
+    ['a limit', () => nfev4('p1').limit(1)],
+    ['the collection group', () => nfev4Collection.groupQuery(asDb(db))],
+    ['another subcollection', () => pagamentoCollection.ref(asDb(db), { pedidoId: 'p1' })],
+  ])('NEAR-MISS: REFUSES %s', async (_c, montar) => {
+    await expect(montar().get()).rejects.toThrow(/fora dos índices/);
+  });
+
+  it('a single update under lastUpdateTime lands on a fresh stamp and is refused 9 on a stale one', async () => {
+    const stamp = db.seed('pedidos/p1', { a: 1 });
+    await pedidoRef('p1').update({ a: 2 }, { lastUpdateTime: stamp as never });
+    expect(db.ler('pedidos/p1')).toEqual({ a: 2 });
+    expect(
+      await codigoDe(pedidoRef('p1').update({ a: 3 }, { lastUpdateTime: stamp as never })),
+    ).toBe(9);
   });
 });

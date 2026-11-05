@@ -48,7 +48,7 @@ a page of the 3-day queue irreversibly.
 - `lib/shopee/taxonomia/` — the layer behind those routes: `cache.ts` (seven
   `createReadCache`s + `taxonomiaCtx`), `categorias.ts` (the tree index and the
   three-valued leaf gate), `params.ts` (hand-rolled query readers → pt-BR 400s),
-  `dto.ts` (the answer shapes and their projections), and one reader per
+  `dto.ts` (projections; shapes in `@delfrance/schemas`), and one reader per
   operation (`atributos`, `marcas`, `limites`, `variacoes`, `recomendacao`).
 - `app/api/health/route.ts` — `{ service: 'shopee' }`.
 - `lib/shopee/env.ts` — the one place this app reads its **Shopee**
@@ -205,9 +205,11 @@ a page of the 3-day queue irreversibly.
   a time, 300 s, a 3-attempt ladder); enqueued by TWO identities because it
   re-enqueues itself.
 - `app/api/marketplace/shopee/publicar/route.ts` — step 11's publish
-  (`PERM.integracao.write`): 200 with the summary built BY NAME, 400 for a bad
-  body, 404 `SHOPEE_ANUNCIO_NAO_ENCONTRADO`; it is the composition root for the
-  clock, the wait and the partner client, because `anuncios/` builds none.
+  (`PERM.integracao.write`): 200 with the summary built BY NAME, 202 when a
+  create's outcome is unknown, 400 for a bad body, 404
+  `SHOPEE_ANUNCIO_NAO_ENCONTRADO`, 409 for a draft; it is the composition root
+  for the clock, the wait and the partner client, because `anuncios/` builds none.
+- `app/api/marketplace/shopee/rascunho/**` — #1911's draft routes (**Publish**).
 - `app/api/marketplace/shopee/enviar-estoque/route.ts` — step 12's manual stock
   push (`PERM.integracao.write`): **200 even when every listing failed** (a
   per-listing refusal is DATA), 409 `SHOPEE_CONTA_PAUSADA` before any provider
@@ -447,12 +449,12 @@ a page of the 3-day queue irreversibly.
   `avisos/autorizacao.ts`, which stays the one module on the AVISOS path that
   knows the unit (the three pedido seams above are the others).
 - `lib/shopee/testing/fakeDb.ts` — the shared in-memory Firestore double
-  **114** suites in this app name (112 drive it), and since step 8 it has a
+  **120** suites in this app name (118 drive it), and since step 8 it has a
   suite of its OWN. ⚠️ Re-derive the number, never increment it:
   `git grep -l "testing/fakeDb" -- "apps/shopee/**/*.test.ts" | wc -l` (after
   step 8: 20, 9: 34, 12: 57, 13: 73, 14: 81, 15: 84, 15b: 87, 17: 93, 18: 95,
-  19: 108, 20: 111, 21: 114 — the two `*.tasks.test.ts` suites it counts name
-  the double in a docblock only).
+  19: 108, 20: 111, 21: 114, #1911: 120 — the two `*.tasks.test.ts` suites it
+  counts name the double in a docblock only).
   Step 9 extended the double ADDITIVELY: an
   `__arrayUnion` sentinel applied on write, **dotted-path** expansion on
   `update` (the price patch writes `precos.<tabelaId>`), and a real `updateTime`
@@ -1393,12 +1395,10 @@ kit declares `support_pre_order` and `component_count_limit_of_single_model`.
 cursor, echoed verbatim (it is not `offset + pageSize`), and the caller asks for
 the next one.
 
-**`brandshopee` is untouched, and stays the curated shortlist.** Shopee's brand
-API is extremely slow, so brands are to be registered once and read from our own
-database — but NOTHING reads `integracao/{id}/brandshopee` yet: the produto's
-brand dropdown and the conta-screen shortlist editor are listing authoring's
-(#1911). The `marcas` route is only for that editor's REGISTRATION picker, and
-publish re-validates the brand (step 11).
+**`brandshopee` is the curated shortlist** (the brand API is slow):
+`marcaShopee.ts` in schemas, deduped by `brand_id`, edited on the conta screen;
+a draft stores the `brand_id` + `original_brand_name` pair picked from it.
+Publish never reads it.
 
 **Recommendations are OFFERED, never applied** (`applied: false`, #799), and a
 suggested id absent from the tree degrades that ROW (`unresolved`, one log line)
@@ -1410,12 +1410,9 @@ serve `get_kit_item_limit` — step 19's gateway 404
 (`ShopeeOperacaoNaoServidaError`), cached as the VALUE `indisponivel` and
 answered 200 with `indisponivel: true`.
 
-`limparTaxonomiaShopee()` clears all seven caches at once, coarse on purpose:
-the primitive has no prefix scan. ⚠️ **Correction (step 3):** an earlier revision
-said `push 13` was where granularity would earn its keep. It is not — `push 13`
-is the brand-register RESULT and the dispatch table `ack`s it, invalidating
-nothing. Nothing in step 3 clears a taxonomy cache; whichever step first reacts
-to a brand or category change is where the question comes back.
+`limparTaxonomiaShopee()` clears all seven caches at once (the primitive has no
+prefix scan). Nothing clears one on a brand or category change; `push 13` (the
+brand-register result) is only `ack`ed.
 
 ## Publish (`lib/shopee/anuncios/`, step 11)
 
@@ -1430,14 +1427,26 @@ The first WRITER of a listing. Reasoning: `anuncios/README.md`.
   `get_model_list`; a model with no ERP child is KEPT; no link doc is deleted.
 - `tax_info` is whole or absent; the three seller constants are NOT sent, and
   one all-or-nothing refusal retries the same call once without the block.
-- Refusals throw `ShopeePublishBlockedError` BEFORE any Shopee write; a
-  rejection is a `problema` on the field that fixes it. Both vocabularies
-  PERSIST.
+- Refusals throw `ShopeePublishBlockedError` BEFORE any listing write
+  (model-leg exceptions: `anuncios/README.md`); a rejection is a `problema` on
+  the field that fixes it. Both vocabularies PERSIST.
 - `item_status` comes from the READ-BACK, never the request.
 - `size_chart_info` (step 18) rides create AND update: the tabela's template for
   the listing's resolved category (`categoriaDoAnuncio`), else its FIRST photo,
   else nothing — never the `0`/`''` detach. A refusal is a 422 on
   `size_chart_info`, never retried without it.
+- **Drafts (#1911)**: `item_id: null` (`ehRascunhoShopee`), never live, reached
+  only by a named `linkDocId`. `rascunho/{,atualizar,descartar}`
+  (`anuncios/rascunho.ts`) create/edit/discard one; publish locks
+  (`publicacaoEmCurso`) and claims it; a first create refuses a same-SKU listing
+  not linked to the produto; an uncertain `add_item` is a 202, re-sought by the
+  SKU sent (an attestation's `criacaoIncertaAdota` must match ENSURE's verdict
+  or nothing is sent); the import adopts only a draft with attempt evidence.
+- An expired lock its run never stamped, on a draft with no record, reads
+  `livre` at once. ENSURE and the first-create walk stop before the request
+  deadline: 409 `PUBLICACAO_EXPIRADA`, nothing sent (the CLI has the lock's
+  time). Follow-ups #2064 (narrow the walk), #2061 (ENSURE's fallback).
+  Registers 307–313: `anuncios/README.md`.
 
 ## Stock sync (`lib/shopee/estoque/`, step 12)
 
@@ -1624,7 +1633,8 @@ the pick (see **Publish**). Depth and register rows 248–269:
 
 - Same `publicar` route/CLI; `escolherArmaDePublicacao` picks item vs kit from
   the conta's links. A first publish is a kit only when `ehKitVirtualEfetivo`;
-  `ehKitVirtual` without `ehKit` is REFUSED. Once linked, the LINK decides.
+  `ehKitVirtual` without `ehKit` is REFUSED. Once live-linked, the LINK decides
+  (never a draft).
 - ONE recipe module: `receitaKitShopee.ts` in `@delfrance/schemas` (the
   default-model rule, the fold, the fingerprint). Never a second copy here, in
   `apps/functions` or in `apps/web`.
@@ -1862,8 +1872,8 @@ reuses and `shared/ttl.ts`. **Step 14 grew it by exactly two** —
 `packages/schemas/src/nfe.ts` (`ESTADO_NFE`, `CHAVE_NFE_REGEX`, the trigger's
 `nfeMeta`). **Step 17 grew it by exactly one** —
 `packages/schemas/src/devolucaoShopee.ts` (`ehReturnSnShopee`); **step 20** by
-`packages/data/src/admin/frete/**`, **step 22** by `packages/data/src/zodParse.ts`
-— for a closure of **53** entries today.
+`packages/data/src/admin/frete/**`, **step 22** by `packages/data/src/zodParse.ts`,
+**#1911** by five schema files — for a closure of **58** entries today.
 `pull_request:` still has **no** `paths:` and
 never may — the `changes` job derives that closure from the workspace graph.
 

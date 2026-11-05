@@ -17,11 +17,16 @@
  * reads, for the `/medidas` Shopee tab). Since step 21 it also runs the three
  * on-demand pushes (stock, price, pause/reactivate), publishes and re-verifies
  * ONE listing, and starts / polls / cancels the two account-wide jobs (the mass
- * import and the price update) — thirteen methods, named exactly like
- * `lib/mercado-livre/client.ts`'s so a shared component types against either
- * client structurally. Every one is answered by `apps/shopee` over an
- * authenticated cross-origin call (its `proxy.ts` allows exactly
- * `/api/marketplace/*`).
+ * import and the price update), each named exactly like the
+ * `lib/mercado-livre/client.ts` method doing the same job, so a shared component
+ * types against either client structurally. Since #1911 it creates, edits and
+ * discards a listing DRAFT through the draft routes, reads two more taxonomy
+ * answers for the draft editor — the item bands WHOLE (`limitesDoItem`, beside
+ * `limites`' size-chart slice) and Shopee's category suggestion — and pages a
+ * category's brands for a conta's Marcas section (`marcas`). Every method of
+ * {@link ShopeeClient} — twenty-eight today; re-count the interface, never bump
+ * this number — is answered by `apps/shopee` over an authenticated
+ * cross-origin call (its `proxy.ts` allows exactly `/api/marketplace/*`).
  *
  * ⚠️ This client retries NOTHING. Whether a failed READ is re-attempted is the
  * query's decision (`shopeeQueryRetry`, `./erros.ts`), and that predicate never
@@ -36,7 +41,16 @@
  */
 import { useMemo } from 'react';
 import type { z } from 'zod';
-import type { AcaoStatusAnuncio, importacaoShopeeOptionsSchema } from '@delfrance/schemas';
+import type {
+  AcaoStatusAnuncio,
+  AtributoShopeeRequisicao,
+  CamposRascunhoShopee,
+  corpoAtualizarRascunhoShopeeSchema,
+  corpoCriarRascunhoShopeeSchema,
+  corpoDescartarRascunhoShopeeSchema,
+  importacaoShopeeOptionsSchema,
+  MarcaRascunhoShopee,
+} from '@delfrance/schemas';
 
 import { envelopeDeErro, lerRespostaJson, resumirCampos } from '@delfrance/core/wire';
 
@@ -59,9 +73,15 @@ import {
   priceSyncHistoricoShopeeSchema,
   priceSyncRelatorioPaginaShopeeSchema,
   priceSyncStatusShopeeSchema,
+  respostaAtualizarRascunhoShopeeSchema,
   respostaCategoriasShopeeSchema,
+  respostaCriarRascunhoShopeeSchema,
+  respostaDescartarRascunhoShopeeSchema,
+  respostaLimitesDoItemShopeeSchema,
   respostaLimitesShopeeSchema,
+  respostaMarcasShopeeSchema,
   respostaPublicarShopeeSchema,
+  respostaRecomendacaoCategoriaShopeeSchema,
   respostaReverificarShopeeSchema,
   shopeeContaStatusSchema,
   shopeeEtiquetaPendenteSchema,
@@ -80,9 +100,15 @@ import {
   type PriceSyncHistoricoShopee,
   type PriceSyncRelatorioPaginaShopee,
   type PriceSyncStatusShopee,
+  type RespostaAtualizarRascunhoShopee,
   type RespostaCategoriasShopee,
+  type RespostaCriarRascunhoShopee,
+  type RespostaDescartarRascunhoShopee,
+  type RespostaLimitesDoItemShopee,
   type RespostaLimitesShopee,
+  type RespostaMarcasShopee,
   type RespostaPublicarShopee,
+  type RespostaRecomendacaoCategoriaShopee,
   type RespostaReverificarShopee,
   type ShopeeContaStatus,
   type ShopeeEtiquetaPendente,
@@ -311,6 +337,37 @@ export type ReclamacaoAcaoShopeeInput =
  * - `principal` — the native kit's principal produto;
  * - `recriar` / `converterEmKit` — the two kit arms. ⚠️ The route refuses both
  *   together, and `recriar` without `linkDocId` (400 each).
+ * - `confirmarSegundoAnuncio` (#1911) — the operator confirmed a SECOND listing
+ *   of the produto on the conta (D15) before a draft's publish: without it the
+ *   reservation refuses 409 `rascunhoContaJaTemAnuncio` with `detalhes.vinculos`.
+ * - `confirmarCriacaoIncerta` (#1911) — the operator's Seller-Centre
+ *   attestation about a draft's uncertain last create. The route honours it
+ *   ONLY for the refusals `criacao-incerta-sem-sku` and
+ *   `criacao-incerta-ja-vinculada`, ignores it everywhere else, and it never
+ *   skips the look-up.
+ * - `criacaoIncertaAdota` (#1911 P11 review, §I1) — what that attestation
+ *   EXPECTS the look-up to decide: the unlinked listing id(s) the publish
+ *   adopts, or `[]` for a deliberate create. The look-up honours the
+ *   attestation only when its FRESH verdict is that one, and otherwise refuses
+ *   with a fresh row, nothing sent. Sent ONLY beside
+ *   `confirmarCriacaoIncerta: true` (dropped from the body without it); the
+ *   flag alone keeps the CLI's meaning (no expectation, no guard) — the web's
+ *   draft publish never sends it alone (`corpoPublicarRascunhoShopee`).
+ *
+ * ⚠️ A DRAFT is published by its `linkDocId` alone — never `categoryId` (the
+ * draft carries its own) and never a kit flag. The route's parser is not
+ * strict: a backend older than a key IGNORES it, a mistyped one is a 400 —
+ * hence the literal `true`, omitted when absent.
+ *
+ * ⚠️ **Deploy order (review R7-roundtrip#4).** Because an older backend
+ * ignores what it does not know, the web's draft Publicar is only as safe as
+ * the apps/shopee it reaches: the FIRST apps/web deploy carrying P10/P11 —
+ * whichever PR triggers it — goes out only after apps/shopee App Hosting (and
+ * the Shopee functions codebase, `firebase.shopee.deploy.json`) is live at
+ * batch A (#2048–#2054) or later, and P11's `criacaoIncertaAdota` needs the
+ * P11 server: a backend without the guard drops the expectation and honours
+ * the bare flag, so an exit labelled «adota … — não cria outro» could create.
+ * apps/shopee FIRST, then apps/web.
  */
 export interface PublicarShopeeInput {
   integracaoId: string;
@@ -321,6 +378,77 @@ export interface PublicarShopeeInput {
   principal?: string;
   recriar?: true;
   converterEmKit?: true;
+  confirmarSegundoAnuncio?: true;
+  confirmarCriacaoIncerta?: true;
+  criacaoIncertaAdota?: readonly number[];
+}
+
+/**
+ * A draft's fields as a draft body names them (#1911): the projection's shape
+ * (`CamposRascunhoShopee`, `@delfrance/schemas`) WITHOUT the reserved
+ * `logistic_info`, which no draft body accepts yet. `marca` is ONE value over
+ * the stored pair; `description: null` is "the produto's own"; `attributes`
+ * travel in the REQUEST shape.
+ */
+export type CamposDoCorpoRascunhoShopee = Omit<CamposRascunhoShopee, 'logistic_info'>;
+
+/**
+ * Create a draft (`POST …/rascunho`).
+ *
+ * - `linkDocId` — the id the CLIENT generated: exactly Firestore's auto-id shape
+ *   (`PADRAO_ID_RASCUNHO_SHOPEE`, 20 letters or digits; never a UUID). A create
+ *   at an id holding a document that is not this draft is a 409
+ *   `rascunhoIdEmUso`; this draft with OTHER content, a 409 `rascunhoConflito`.
+ * - `conteudo` — EVERY field, `attributes: null` on a new draft. `item_name`
+ *   `null` or blank is a CODELESS 400 (the editor never lets it out).
+ * - `confirmarSegundoAnuncio` — the operator confirmed a SECOND listing on the
+ *   conta (after a 409 `rascunhoContaJaTemAnuncio`); omitted when absent.
+ */
+export interface CriarRascunhoShopeeInput {
+  integracaoId: string;
+  produtoId: string;
+  linkDocId: string;
+  conteudo: CamposDoCorpoRascunhoShopee;
+  confirmarSegundoAnuncio?: true;
+}
+
+/**
+ * Edit a draft (`POST …/rascunho/atualizar`). `linkDocId` is any existing
+ * draft's id — a legacy one included, so it is NEVER held to the create's id
+ * shape.
+ *
+ * - `patch` — the CHANGED fields only, at least one; an absent key is "not
+ *   changed".
+ * - `base` — what the operator SAW, VERBATIM, for exactly the fields
+ *   `camposDaBaseDoRascunhoShopee(patch)` names (`@delfrance/schemas`): the
+ *   patch's, plus `attributes` when the patch changes `category_id` without
+ *   them. Any other key set is a CODELESS 400 — read it from that function,
+ *   never hand-roll it.
+ */
+export interface AtualizarRascunhoShopeeInput {
+  integracaoId: string;
+  produtoId: string;
+  linkDocId: string;
+  base: Partial<CamposDoCorpoRascunhoShopee>;
+  patch: Partial<CamposDoCorpoRascunhoShopee>;
+}
+
+/**
+ * Discard a draft (`POST …/rascunho/descartar`).
+ *
+ * - `base` — what the operator SAW for EVERY field, verbatim (`null` allowed):
+ *   a draft edited meanwhile is refused (409 `rascunhoConflito`), never
+ *   discarded unseen.
+ * - `confirmarCriacaoIncerta` — the operator's attestation, after checking in
+ *   Seller Centre, that the uncertain last create left nothing this draft must
+ *   become (after a 409 `rascunhoCriacaoIncerta`); omitted when absent.
+ */
+export interface DescartarRascunhoShopeeInput {
+  integracaoId: string;
+  produtoId: string;
+  linkDocId: string;
+  base: CamposDoCorpoRascunhoShopee;
+  confirmarCriacaoIncerta?: true;
 }
 
 export interface ShopeeClient {
@@ -466,15 +594,25 @@ export interface ShopeeClient {
     signal?: AbortSignal;
   }): Promise<AnuncioStatusShopee>;
   /**
-   * Publish an EXISTING link — an ordinary listing or a native kit
-   * (PERM.integracao.write). The answer is tagged: `tipo: 'item'` or
-   * `tipo: 'kit'`, and a kit whose `desfecho` is `incerto` is the 202 — the
-   * caller waits `aguardarMs` and re-sends the IDENTICAL input.
+   * Publish an EXISTING link — an ordinary listing, a native kit, or a listing
+   * DRAFT's first create (#1911) (PERM.integracao.write). The answer is
+   * tagged: `tipo: 'item'`, `tipo: 'kit'` — a kit whose `desfecho` is
+   * `incerto` is its 202: the caller waits `aguardarMs` and re-sends the
+   * IDENTICAL input — or `tipo: 'item-incerto'`, the 202 of a draft's create
+   * whose outcome nobody knows (never "falhou"; the next publish of the same
+   * draft looks the listing up first).
    *
-   * A refusal before any Shopee write is a 422 `SHOPEE_PUBLISH_BLOCKED`, one
-   * after is a 422 `SHOPEE_PUBLISH_REJECTED` (`detalhes.etapa`); both carry
-   * `detalhes.problemas`, each with its machine-readable `acao`. 404
-   * `SHOPEE_ANUNCIO_NAO_ENCONTRADO` when the conta holds no such link.
+   * The ERP's own refusal is a 422 `SHOPEE_PUBLISH_BLOCKED` — usually decided
+   * before any Shopee write, but the model leg of an UPDATE refuses AFTER
+   * `update_item`, and the body names no etapa that would tell the two apart;
+   * a refusal classified onto a Shopee call is a 422 `SHOPEE_PUBLISH_REJECTED`
+   * (`detalhes.etapa`, where it landed). Both carry `detalhes.problemas`, each
+   * with its machine-readable `acao`. 404
+   * `SHOPEE_ANUNCIO_NAO_ENCONTRADO` when the conta holds no such link — for a
+   * draft, one discarded meanwhile. A draft's lock answers the 409s of
+   * `CODIGO_FALHA_SHOPEE`'s #1911 block (`publicacaoEmAndamento`,
+   * `rascunhoJaPublicado`, `publicacaoExpirada`, `rascunhoContencao`,
+   * `rascunhoCriacaoIncerta`, `rascunhoContaJaTemAnuncio`).
    *
    * ⚠️ **No `signal`, on purpose.** Creating a kit is not idempotent: an abort
    * would turn a publish the server goes on to finish into an "unknown" the
@@ -550,6 +688,87 @@ export interface ShopeeClient {
     jobId: string;
     depois?: string | null;
   }): Promise<PriceSyncRelatorioPaginaShopee>;
+
+  // ---- #1911: listing drafts, the two taxonomy reads the draft editor adds, and
+  // the brand page a conta's Marcas section reads. ----
+  // A refusal of the DRAFT is a ShopeeClientHttpError whose `code` is one of
+  // `CODIGO_FALHA_SHOPEE`'s #1911 block (`./erros.ts`), its extras on `detalhes`
+  // (`linkDocId`, `conflitos`, `aguardarMs`, `vinculos`, `motivo`). Two answers
+  // carry NO code — a 400 for a refused body and the 404 of a conta that is not
+  // Shopee's — and their `message` is the route's own sentence.
+
+  /**
+   * Create a listing draft (PERM.integracao.write). BOTH 2xx are a success:
+   * **201** `criado: true` (made now) and **200** `criado: false` (the same
+   * draft with the same content was already there — a double click, or a retry
+   * whose first answer was lost). 404 `rascunhoInexistente` here means the
+   * PRODUTO is gone; a conta that is not Shopee's is a codeless 404.
+   */
+  criarRascunho(input: CriarRascunhoShopeeInput): Promise<RespostaCriarRascunhoShopee>;
+  /**
+   * Edit a listing draft (PERM.integracao.write) — `gravados` lists the fields
+   * WRITTEN (`[]` = nothing differed). 409 `rascunhoConflito` when what is
+   * stored is not the `base`: NOTHING was written.
+   */
+  atualizarRascunho(input: AtualizarRascunhoShopeeInput): Promise<RespostaAtualizarRascunhoShopee>;
+  /**
+   * Discard a listing draft — its document is deleted (PERM.integracao.write).
+   * Only while it is still a draft and no publish holds it; a draft whose last
+   * create may have reached Shopee also needs `confirmarCriacaoIncerta`.
+   */
+  descartarRascunho(input: DescartarRascunhoShopeeInput): Promise<RespostaDescartarRascunhoShopee>;
+  /**
+   * The categories Shopee SUGGESTS for a product name (PERM.integracao.read) —
+   * OFFERED, never applied (`applied: false`). A suggested id this shop's tree
+   * lacks degrades its ROW and is counted in `unresolved`.
+   *
+   * ⚠️ `nome` only. The route's optional `imagemCapa` is an image id from
+   * Shopee's `upload_image`, which the browser never holds, so this client
+   * never sends it.
+   */
+  recomendacaoCategoria(input: {
+    integracaoId: string;
+    nome: string;
+  }): Promise<RespostaRecomendacaoCategoriaShopee>;
+  /**
+   * The item bands WHOLE — price, stock, title / description lengths, images,
+   * days to ship, weight and dimensions, the size-chart flags, the GTIN rule —
+   * for the draft editor (PERM.integracao.read). The shop-wide bands when
+   * `categoryId` is `null` (the query key OMITTED); one category's otherwise.
+   *
+   * ⚠️ The opposite tolerance of {@link limites}: every band is REQUIRED, so a
+   * malformed one refuses the answer (`ShopeeClientRespostaInvalidaError`),
+   * where the size-chart slice drops it unread.
+   */
+  limitesDoItem(input: {
+    integracaoId: string;
+    categoryId: number | null;
+  }): Promise<RespostaLimitesDoItemShopee>;
+  /**
+   * ONE page of a LEAF category's brands, straight from Shopee
+   * (PERM.integracao.read) — the registration picker of a conta's Marcas
+   * section. A non-leaf answers `leaf: false` with no brands; an id the tree
+   * does not hold is a 404 `SHOPEE_CATEGORIA_DESCONHECIDA`.
+   *
+   * - No paging loop here: the caller asks for the next page with
+   *   `offset: nextOffset` while `hasNextPage` — never on `nextOffset` alone,
+   *   and never `offset + pageSize`.
+   * - `status` — `1` the approved brands (the route's default), `2` the ones
+   *   under review; mirrored as literals because the Shopee package that names
+   *   them must never reach a browser. Any other value is a 400.
+   * - Each optional key is OMITTED when absent (the route's defaults apply);
+   *   `offset: 0` is SENT.
+   *
+   * ⚠️ Shopee's brand API is slow and there is no name search: page through it,
+   * never poll it.
+   */
+  marcas(input: {
+    integracaoId: string;
+    categoryId: number;
+    offset?: number;
+    pageSize?: number;
+    status?: 1 | 2;
+  }): Promise<RespostaMarcasShopee>;
 }
 
 /** The label route. */
@@ -581,6 +800,17 @@ const ATUALIZAR_PRECOS_STATUS_PATH = '/api/marketplace/shopee/atualizar-precos/s
 const ATUALIZAR_PRECOS_CANCELAR_PATH = '/api/marketplace/shopee/atualizar-precos/cancelar';
 const ATUALIZAR_PRECOS_HISTORICO_PATH = '/api/marketplace/shopee/atualizar-precos/historico';
 const ATUALIZAR_PRECOS_RELATORIO_PATH = '/api/marketplace/shopee/atualizar-precos/relatorio';
+
+/** The three draft routes (#1911) — POST sub-paths, because CORS admits only GET/POST/OPTIONS. */
+const RASCUNHO_PATH = '/api/marketplace/shopee/rascunho';
+const RASCUNHO_ATUALIZAR_PATH = '/api/marketplace/shopee/rascunho/atualizar';
+const RASCUNHO_DESCARTAR_PATH = '/api/marketplace/shopee/rascunho/descartar';
+
+/** The draft editor's extra taxonomy read (#1911); the bands reuse {@link LIMITES_PATH}. */
+const RECOMENDACAO_CATEGORIA_PATH = '/api/marketplace/shopee/taxonomia/recomendacao-categoria';
+
+/** A category's brands, one page — the Marcas section's registration picker (#1911). */
+const MARCAS_PATH = '/api/marketplace/shopee/taxonomia/marcas';
 
 /**
  * A query string from named parameters, each value percent-encoded and an
@@ -789,7 +1019,9 @@ function corpoDaReclamacao(p: ReclamacaoAcaoShopeeInput): Record<string, unknown
  * The publish body, rebuilt BY NAME: the two ids, then each optional key only
  * when it is not `undefined` — OMITTED, never `null`-filled, so the body says
  * exactly what the caller chose and nothing else. A caller object carrying one
- * more field never reaches the route.
+ * more field never reaches the route. `criacaoIncertaAdota` rides ONLY with
+ * `confirmarCriacaoIncerta: true` (an expectation of no attestation is
+ * nothing), copied id by id.
  */
 function corpoDaPublicacao(p: PublicarShopeeInput): Record<string, unknown> {
   return {
@@ -801,6 +1033,113 @@ function corpoDaPublicacao(p: PublicarShopeeInput): Record<string, unknown> {
     ...(p.principal === undefined ? {} : { principal: p.principal }),
     ...(p.recriar === undefined ? {} : { recriar: p.recriar }),
     ...(p.converterEmKit === undefined ? {} : { converterEmKit: p.converterEmKit }),
+    ...(p.confirmarSegundoAnuncio === undefined
+      ? {}
+      : { confirmarSegundoAnuncio: p.confirmarSegundoAnuncio }),
+    ...(p.confirmarCriacaoIncerta === undefined
+      ? {}
+      : { confirmarCriacaoIncerta: p.confirmarCriacaoIncerta }),
+    ...(p.confirmarCriacaoIncerta === true && p.criacaoIncertaAdota !== undefined
+      ? { criacaoIncertaAdota: p.criacaoIncertaAdota.map((id) => id) }
+      : {}),
+  };
+}
+
+/*
+ * #1911 — the three draft bodies. Every one is rebuilt BY NAME, down to each
+ * attribute value, and typed against the draft route's OWN body schema
+ * (`@delfrance/schemas`): the route parses STRICT, so a key a caller's object
+ * carries beyond these — `item_id`, `logistic_info`, a decoder's bookkeeping —
+ * would be a 400, and a renamed field is a compile error here instead. Values
+ * travel VERBATIM: nothing is trimmed, defaulted or normalised (a `base` is
+ * compared, byte for byte, against what is stored).
+ */
+
+/** The brand pair, by name — `null` stays `null` ("no brand chosen"). */
+function marcaPorNome(marca: MarcaRascunhoShopee | null): MarcaRascunhoShopee | null {
+  return marca === null
+    ? null
+    : { brand_id: marca.brand_id, original_brand_name: marca.original_brand_name };
+}
+
+/** An attribute list, by name; an absent optional key of a value stays absent. */
+function atributosPorNome(atributos: readonly AtributoShopeeRequisicao[] | null) {
+  return atributos === null
+    ? null
+    : atributos.map((atributo) => ({
+        attribute_id: atributo.attribute_id,
+        attribute_value_list: atributo.attribute_value_list.map((valor) => ({
+          value_id: valor.value_id,
+          ...(valor.original_value_name === undefined
+            ? {}
+            : { original_value_name: valor.original_value_name }),
+          ...(valor.value_unit === undefined ? {} : { value_unit: valor.value_unit }),
+        })),
+      }));
+}
+
+/** EVERY draft field, by name — the create's `conteudo`, the discard's `base`. */
+function camposPorNome(campos: CamposDoCorpoRascunhoShopee) {
+  return {
+    item_name: campos.item_name,
+    description: campos.description,
+    category_id: campos.category_id,
+    marca: marcaPorNome(campos.marca),
+    attributes: atributosPorNome(campos.attributes),
+  };
+}
+
+/**
+ * Only the fields the caller NAMED, by name — an edit's `patch` and `base`. A
+ * key whose value is `undefined` is absent; `null` is a value and is sent.
+ */
+function camposNomeadosPorNome(campos: Partial<CamposDoCorpoRascunhoShopee>) {
+  return {
+    ...(campos.item_name === undefined ? {} : { item_name: campos.item_name }),
+    ...(campos.description === undefined ? {} : { description: campos.description }),
+    ...(campos.category_id === undefined ? {} : { category_id: campos.category_id }),
+    ...(campos.marca === undefined ? {} : { marca: marcaPorNome(campos.marca) }),
+    ...(campos.attributes === undefined ? {} : { attributes: atributosPorNome(campos.attributes) }),
+  };
+}
+
+function corpoDoRascunhoCriado(
+  p: CriarRascunhoShopeeInput,
+): z.input<typeof corpoCriarRascunhoShopeeSchema> {
+  return {
+    integracaoId: p.integracaoId,
+    produtoId: p.produtoId,
+    linkDocId: p.linkDocId,
+    conteudo: camposPorNome(p.conteudo),
+    ...(p.confirmarSegundoAnuncio === undefined
+      ? {}
+      : { confirmarSegundoAnuncio: p.confirmarSegundoAnuncio }),
+  };
+}
+
+function corpoDoRascunhoAtualizado(
+  p: AtualizarRascunhoShopeeInput,
+): z.input<typeof corpoAtualizarRascunhoShopeeSchema> {
+  return {
+    integracaoId: p.integracaoId,
+    produtoId: p.produtoId,
+    linkDocId: p.linkDocId,
+    base: camposNomeadosPorNome(p.base),
+    patch: camposNomeadosPorNome(p.patch),
+  };
+}
+
+function corpoDoRascunhoDescartado(
+  p: DescartarRascunhoShopeeInput,
+): z.input<typeof corpoDescartarRascunhoShopeeSchema> {
+  return {
+    integracaoId: p.integracaoId,
+    produtoId: p.produtoId,
+    linkDocId: p.linkDocId,
+    base: camposPorNome(p.base),
+    ...(p.confirmarCriacaoIncerta === undefined
+      ? {}
+      : { confirmarCriacaoIncerta: p.confirmarCriacaoIncerta }),
   };
 }
 
@@ -1128,6 +1467,51 @@ export function createShopeeClient(config: {
           depois: input.depois ?? undefined,
         })}`,
         priceSyncRelatorioPaginaShopeeSchema,
+      ),
+    // #1911: the three draft POSTs, each body rebuilt by name against the
+    // route's own schema; each 2xx parsed with the route's own answer schema
+    // (`call()` takes the create's 201 and its 200 alike). No `signal`: a
+    // draft write the server goes on to finish must not read "unknown".
+    criarRascunho: (input) =>
+      call(RASCUNHO_PATH, respostaCriarRascunhoShopeeSchema, corpoDoRascunhoCriado(input)),
+    atualizarRascunho: (input) =>
+      call(
+        RASCUNHO_ATUALIZAR_PATH,
+        respostaAtualizarRascunhoShopeeSchema,
+        corpoDoRascunhoAtualizado(input),
+      ),
+    descartarRascunho: (input) =>
+      call(
+        RASCUNHO_DESCARTAR_PATH,
+        respostaDescartarRascunhoShopeeSchema,
+        corpoDoRascunhoDescartado(input),
+      ),
+    recomendacaoCategoria: (input) =>
+      call(
+        `${RECOMENDACAO_CATEGORIA_PATH}?${consulta({
+          integracaoId: input.integracaoId,
+          nome: input.nome,
+        })}`,
+        respostaRecomendacaoCategoriaShopeeSchema,
+      ),
+    limitesDoItem: (input) =>
+      call(
+        `${LIMITES_PATH}?${consulta({
+          integracaoId: input.integracaoId,
+          categoryId: input.categoryId ?? undefined,
+        })}`,
+        respostaLimitesDoItemShopeeSchema,
+      ),
+    marcas: (input) =>
+      call(
+        `${MARCAS_PATH}?${consulta({
+          integracaoId: input.integracaoId,
+          categoryId: input.categoryId,
+          offset: input.offset,
+          pageSize: input.pageSize,
+          status: input.status,
+        })}`,
+        respostaMarcasShopeeSchema,
       ),
   };
 }

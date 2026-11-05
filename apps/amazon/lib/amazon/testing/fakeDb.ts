@@ -78,11 +78,12 @@
  * read-and-write call is not, and this fake gains no method shaped like it:
  * this app runs none (`estrutura.test.ts` scans the fakes too).
  *
- * ## Queries: ONLY the six indexed shapes
+ * ## Queries: ONLY the six indexed shapes, and one subcollection listing
  *
  * On Enterprise an unindexed query does not fail — it full-scans and bills
  * (root rule 1). So this fake refuses every query shape except the six this
- * app runs, each of which is a declared composite (or its equality prefix):
+ * app runs, each of which is a declared composite (or its equality prefix), and
+ * the one listing that needs no index (7):
  *
  *  1. `integracao` · `tipo ==`, `selling_partner_id ==`, `ativo ==` · no order
  *     (the seller guard and step 3's routing; step 2 PR r's index);
@@ -100,7 +101,11 @@
  *     `sku ==` · no order · `limit` (the link lookup; the declared
  *     `(contaAmazonOuterRef, sku)` collection-group index). A group query matches
  *     every stored document whose LAST collection segment is the id, at any
- *     depth, and refuses `startAfter`.
+ *     depth, and refuses `startAfter`;
+ *  7. (step 14, PR 14-c) `pedidos/{id}/nfev4` · NO filter, NO order, NO limit —
+ *     the NF-e task's and the importer's ONE unfiltered listing of one pedido's
+ *     NF-e documents: a subcollection read whole, never a scan of the
+ *     collection group. Any filter, order or limit on it is refused.
  *
  * Semantics follow the server: `==` is strict equality on the stored value (a
  * missing field never matches); `in` is `===` against ANY of 1 to 30 values (an
@@ -323,12 +328,19 @@ const FORMAS_INDEXADAS: readonly {
   { colecao: 'prodAmazon', grupo: true, filtros: ['contaAmazonOuterRef in', 'sku'], ordens: [] },
 ];
 
+/** Shape 7 (module header): ONE pedido's `nfev4` subcollection, by its full path. */
+const LISTAGEM_NFEV4 = /^pedidos\/[^/]+\/nfev4$/;
+
 function formaIndexada(
   colecao: string,
   grupo: boolean,
   filtros: readonly Filtro[],
   ordens: readonly Ordem[],
+  limite: number | null,
 ) {
+  if (!grupo && LISTAGEM_NFEV4.test(colecao)) {
+    return filtros.length === 0 && ordens.length === 0 && limite === null;
+  }
   const f = filtros.map(rotuloDoFiltro).join(',');
   const o = ordens.map((x) => `${x.campo} ${x.direcao}`).join(',');
   return FORMAS_INDEXADAS.some(
@@ -896,7 +908,7 @@ export class FakeDb {
 
   private buscar(colecao: string, grupo: boolean, estado: EstadoConsulta) {
     const { filtros, ordens, limite, apos } = estado;
-    if (!formaIndexada(colecao, grupo, filtros, ordens)) {
+    if (!formaIndexada(colecao, grupo, filtros, ordens, limite)) {
       return Promise.reject(
         new Error(
           `FakeDb: consulta fora dos índices declarados em '${colecao}'${grupo ? ' (grupo)' : ''} ` +

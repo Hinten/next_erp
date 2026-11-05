@@ -13,7 +13,7 @@ name: CI — Amazon
 # they live in their own lane behind their own gate. A skip of this lane
 # therefore loses only the emulator suites, never the unit suites.
 #
-# ONE job, six suite files today:
+# ONE job, nine suite files today:
 #   - `apps/amazon/app/api/webhooks/amazon/route.tasks.test.ts` — the push
 #     receiver's round trip below, plus a foreign application id, a duplicated
 #     NotificationId and the sweep-only valve;
@@ -32,11 +32,28 @@ name: CI — Amazon
 #     conta trigger (step 20): a write to `integracao` → the real deployed
 #     `onDocumentWritten` → the shared `int_frete` core → a created, patched,
 #     deactivated or adopted `int_frete` doc (`amz-<id>`, or a migrated one),
-#     read back raw. It makes no Amazon call.
-# ⚠️ The trigger fires on EVERY suite's `integracao` writes, not only its own:
-# the functions emulator loads the whole codebase. The rules that keep the files
-# apart (unique conta ids, the step-3/4 suites' incomplete seeds, the trigger
-# suite awaiting its own last write) are in `vitest.tasks.config.ts`.
+#     read back raw. It makes no Amazon call;
+#   - `apps/amazon/lib/amazon/pedidos/importarPedido.firestore.test.ts` — the
+#     order import (step 5) on the real Firestore, in the vitest process;
+#   - `apps/amazon/functions/src/onNfeAprovadaAmazon.tasks.test.ts` — the NF-e
+#     trigger (step 14): an approved sale `nfev4` of a proved pedido → the real
+#     deployed `onDocumentWritten` → its ONE named enqueue → the real
+#     `processAmazonNfeUpload` → the NF-e valve OFF (`AMAZON_MODO_NFE` unset
+#     here) → an `nfeUploadRejeitado` aviso `envio-nao-ligado`, before any
+#     context and so before the read switch. It makes no Amazon call;
+#   - `apps/amazon/lib/amazon/nfe/processarNfe.firestore.test.ts` — the NF-e task
+#     IN the vitest process (the switch `on` as an object literal, `getOrder`
+#     and the invoice status served by a scripted fetch that refuses any POST):
+#     the freight stamp racing the import's batch, and the aviso clock dropping
+#     a stale raise, on the real server.
+# ⚠️ The two triggers fire on EVERY suite's writes, not only their own: the
+# functions emulator loads the whole codebase — the conta trigger on
+# `integracao`, the NF-e trigger on every `pedidos/{id}/nfev4` write. The FOUR
+# rules that keep the files apart (unique conta ids, the step-3/4 suites'
+# incomplete seeds, each trigger suite awaiting its own last write, and — step
+# 14 — a ready `nfev4` written only under a pedido whose stored evidence says
+# NOT Delivery by Amazon, except in the one NF-e trigger suite) are in
+# `vitest.tasks.config.ts`.
 # Adding a file with the `.tasks.test.ts` or `.firestore.test.ts` suffix adds it
 # to THIS job — no new job, no new check name, no new row in the gate manifest.
 # Both suffixes share one config on purpose (`vitest.tasks.config.ts`).

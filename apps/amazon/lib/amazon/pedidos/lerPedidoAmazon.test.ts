@@ -2,6 +2,9 @@
  * The import's one `getOrder` read, through the REAL context over the fake db
  * and a scripted `fetch` (no network: the global `fetch` refuses).
  */
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
 
@@ -47,16 +50,29 @@ function corpo(over: Record<string, unknown> = {}) {
   return { ...JSON.parse(JSON.stringify(pedidoAmazon())), ...over } as Record<string, unknown>;
 }
 
+/** What the importer hands the read for a payload (its mapping, module header of the read). */
+function alvoDoPayload(p: ReturnType<typeof payloadPush>) {
+  return {
+    amazonOrderId: p.amazonOrderId,
+    pisoUs: p.origem === 'poll' ? p.lastUpdatedUs : null,
+  };
+}
+
 async function ler(
   resposta: Record<string, unknown>,
-  opcoes: { payload?: ReturnType<typeof payloadPush>; tentativa?: number | null } = {},
+  opcoes: {
+    payload?: ReturnType<typeof payloadPush>;
+    pisoUs?: number | null;
+    tentativa?: number | null;
+  } = {},
 ) {
   const h = harnessImportador([respostaDoPedido(resposta)]);
   const contexto = await h.contexto();
   const leituras = h.db.leituras.length;
+  const alvo = alvoDoPayload(opcoes.payload ?? payloadPush());
   const p = lerPedidoAmazon(
     contexto,
-    opcoes.payload ?? payloadPush(),
+    opcoes.pisoUs === undefined ? alvo : { ...alvo, pisoUs: opcoes.pisoUs },
     registroTeste(opcoes.tentativa === undefined ? 0 : opcoes.tentativa),
   );
   return { h, p, leiturasAntes: leituras };
@@ -135,6 +151,44 @@ describe('lerPedidoAmazon — the one getOrder', () => {
     });
   });
 
+  describe('★ the floor is a PARAMETER (step 14, PR 14-c): `{ amazonOrderId, pisoUs }`', () => {
+    it('any floor newer than the read refuses it on a queue attempt — the NF-e task’s stored watermark included', async () => {
+      const { p } = await ler(corpo(), { pisoUs: ATUALIZADO_US + 1, tentativa: 3 });
+      await expect(p).rejects.toBeInstanceOf(AmazonLeituraDefasadaError);
+    });
+
+    it('NEAR-MISS: pisoUs null is never compared, whatever the read says', async () => {
+      const { p } = await ler(corpo(), { pisoUs: null, tentativa: 0 });
+      await expect(p).resolves.toMatchObject({ tipo: 'lido', defasadaAceita: false });
+    });
+
+    it('NEAR-MISS: a floor EQUAL to the read is no lag; one microsecond below is none either', async () => {
+      for (const pisoUs of [ATUALIZADO_US, ATUALIZADO_US - 1]) {
+        const { p } = await ler(corpo(), { pisoUs, tentativa: 0 });
+        await expect(p).resolves.toMatchObject({ tipo: 'lido', defasadaAceita: false });
+      }
+    });
+
+    it('the importer maps a poll payload to its lastUpdatedUs and a push to null — the read reads nothing else of a payload', async () => {
+      const fonte = readFileSync(
+        fileURLToPath(new URL('./importarPedido.ts', import.meta.url)),
+        'utf8',
+      );
+      expect(fonte).toContain(
+        'pisoUs: payload.origem === ORIGEM_NOTIFICACAO_AMAZON.poll ? payload.lastUpdatedUs : null,',
+      );
+      const leitor = readFileSync(
+        fileURLToPath(new URL('./lerPedidoAmazon.ts', import.meta.url)),
+        'utf8',
+      );
+      // Code only (comments aside): the read takes no payload at all.
+      const codigo = leitor.replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, '');
+      expect(codigo).not.toMatch(/\bpayload\b|\bPayloadNotificacaoAmazon\b|\borigem\b/);
+      // ÂNCORA: the strip kept the code.
+      expect(codigo).toContain('alvo.pisoUs !== null && instante.us < alvo.pisoUs');
+    });
+  });
+
   describe('★ the BR marketplace', () => {
     it.each<[string, Record<string, unknown>]>([
       ['another marketplace id', { marketplaceId: 'ATVPDKIKX0DER', channelName: 'AMAZON' }],
@@ -160,7 +214,7 @@ describe('lerPedidoAmazon — the one getOrder', () => {
       respostaDoPedido(corpo()),
     ]);
     const contexto = await h.contexto();
-    const r = await lerPedidoAmazon(contexto, payloadPush(), registroTeste(0));
+    const r = await lerPedidoAmazon(contexto, alvoDoPayload(payloadPush()), registroTeste(0));
     expect(r).toMatchObject({ tipo: 'lido' });
     expect(h.gets).toHaveLength(2);
     expect(h.lwa).toBe(1);

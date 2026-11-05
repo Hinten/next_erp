@@ -15,7 +15,11 @@
  * - #1911 (P1, D3) — a DRAFT is never the live listing: an unnamed publish
  *   beside a draft that sorts first updates the LIVE item and leaves the draft
  *   byte-unchanged, and a draft that reaches step 11 by name on a kit-virtual
- *   produto is refused twice over (the dispatcher, then `produto-e-kit`).
+ *   produto is refused twice over (the dispatcher, then `produto-e-kit`);
+ * - #1911 batch-B review round 5 (Lucas §I4 on the KIT arms) — an attestation
+ *   carrying its expectation whose named link the dispatcher sends to a kit arm
+ *   is the reservation's 409 `JA_PUBLICADO` BEFORE the arm: zero Shopee calls,
+ *   zero writes; the bare flag and a named draft keep their paths.
  *
  * No link or row is hand-built, except the ORDINARY (old-model) listing a
  * converter starts from — the legacy state L0 describes — M186's link states,
@@ -43,6 +47,7 @@ import {
   type ShopeeUpdateKitItemRequest,
 } from '@delfrance/integrations-shopee';
 import {
+  CODIGO_RASCUNHO_SHOPEE,
   ESTADO_ANUNCIO_SHOPEE,
   importacaoShopeeOptionsSchema,
   toOuterRef,
@@ -75,6 +80,11 @@ import {
   type EntradaDePublicacaoShopee,
   type ResultadoPublicacaoShopee,
 } from './publicarShopee';
+import {
+  ConflitoDeRascunhoShopeeError,
+  conflitoDeRascunhoJaPublicado,
+  type ControlesDaPublicacaoAoVivo,
+} from './reservaRascunho';
 
 // M186's seam: step 11's two halves, REAL by default (every kit module reads its
 // helpers through this same module), observable when a test asks.
@@ -1778,5 +1788,267 @@ describe('#1911 (P1, D3) — um RASCUNHO nunca é o anúncio vivo, pela entrada'
         publicarShopee(depsDeItem(db, lojaDeItem()), entradaDoItem({ linkDocId: RASCUNHO })),
       ).rejects.toBe(falha);
     });
+  });
+
+  describe('(§I4, round 5) ⛔ quase-pares: no braço de ITEM a expectativa é da RESERVA — o guarda da entrada não a antecipa', () => {
+    it('um RASCUNHO nomeado (livre) + a expectativa ⇒ chega ao braço de item, e a reserva recusa criacao-incerta-encerrada (422) — nunca o 409 dos braços de kit', async () => {
+      for (const esperado of [[ITEM_VIVO], []]) {
+        const db = new FakeDb();
+        semear(db);
+        const antes = structuredClone(doc(db, CAMINHO_RASCUNHO));
+        const loja = lojaDeItem();
+        vi.mocked(publicarAnuncioShopee).mockClear();
+
+        const erro = await falhaDe(
+          publicarShopee(
+            comAtestacao(depsDeItem(db, loja), {
+              confirmarCriacaoIncerta: true,
+              criacaoIncertaAdota: esperado,
+            }),
+            entradaDoItem({ linkDocId: RASCUNHO }),
+          ),
+        );
+
+        const caso = JSON.stringify(esperado);
+        expect(erro, caso).toBeInstanceOf(ShopeePublishBlockedError);
+        expect(erro, caso).not.toBeInstanceOf(ConflitoDeRascunhoShopeeError);
+        expect(motivos(erro as ShopeePublishBlockedError), caso).toEqual([
+          MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaEncerrada,
+        ]);
+        expect(publicarAnuncioShopee, caso).toHaveBeenCalledTimes(1);
+        expect(vi.mocked(publicarAnuncioShopee).mock.calls[0]?.[1], caso).toMatchObject({
+          linkDocId: RASCUNHO,
+        });
+        expect(loja.ops, caso).toEqual([]);
+        expect(db.writes, caso).toEqual([]);
+        expect(doc(db, CAMINHO_RASCUNHO), caso).toEqual(antes);
+      }
+    });
+
+    it('o vínculo COMUM vivo nomeado + a expectativa ⇒ o MESMO 409 JA_PUBLICADO, mas da reserva do braço de item (round 4) — o publicador de item É chamado', async () => {
+      const db = new FakeDb();
+      semear(db);
+      const loja = lojaDeItem();
+      vi.mocked(publicarAnuncioShopee).mockClear();
+
+      const erro = await conflitoDe(
+        publicarShopee(
+          comAtestacao(depsDeItem(db, loja), {
+            confirmarCriacaoIncerta: true,
+            criacaoIncertaAdota: [ITEM_VIVO],
+          }),
+          entradaDoItem({ linkDocId: VIVO }),
+        ),
+      );
+
+      expect(erro.code).toBe(CODIGO_RASCUNHO_SHOPEE.jaPublicado);
+      expect(erro.linkDocId).toBe(VIVO);
+      expect(publicarAnuncioShopee).toHaveBeenCalledTimes(1);
+      expect(loja.ops).toEqual([]);
+      expect(db.writes).toEqual([]);
+    });
+  });
+});
+
+/* ========================================================================== */
+/*  #1911 batch-B review round 5 — Lucas §I4 on the KIT arms                   */
+/* ========================================================================== */
+
+/** The live controls a route publish carries, with the attestation under test. */
+function comAtestacao(
+  base: KitDeps,
+  atestacao: Pick<ControlesDaPublicacaoAoVivo, 'confirmarCriacaoIncerta' | 'criacaoIncertaAdota'>,
+): KitDeps {
+  return {
+    ...base,
+    aoVivo: {
+      agora: () => AGORA,
+      prazoDaRequisicao: null,
+      aquecerCredencial: () => Promise.resolve(),
+      confirmarSegundoAnuncio: false,
+      ...atestacao,
+    },
+  };
+}
+
+async function conflitoDe(p: Promise<unknown>): Promise<ConflitoDeRascunhoShopeeError> {
+  const erro = await falhaDe(p);
+  expect(erro).toBeInstanceOf(ConflitoDeRascunhoShopeeError);
+  return erro as ConflitoDeRascunhoShopeeError;
+}
+
+describe('(§I4, round 5) uma atestação COM expectativa que o despacho manda a um braço de KIT ⇒ o 409 JA_PUBLICADO da reserva, ANTES do braço', () => {
+  /** K with its LIVE native kit (VINCULO_1), made by a REAL kit-criar; the step-11 seams cleared. */
+  async function kitVivo() {
+    const db = new FakeDb();
+    semearComponentes(db);
+    semearFamilia(db);
+    const loja = novaLoja();
+    const criado = await kit(publicar(db, loja));
+    expect(criado).toMatchObject({ arma: 'kit-criar', desfecho: 'criado', linkDocId: VINCULO_1 });
+    vi.mocked(prepararPublicacao).mockClear();
+    vi.mocked(publicarAnuncioShopee).mockClear();
+    return { db, loja, desde: loja.ops.length };
+  }
+
+  /** The kit link removed in Seller Centre: class X — reachable only by `--recriar`. */
+  function removerKit(db: FakeDb): void {
+    const caminho = `produtos/${K}/prodshopee/${VINCULO_1}`;
+    db.seed(caminho, { ...doc(db, caminho), estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.removido });
+  }
+
+  it('o kit NATIVO nomeado ⇒ kit-atualizar, kit-recriar (vivo) e kit-recriar (removido) recusam com [L] e [] — zero chamadas à Shopee, zero escritas, o vínculo intocado, a frase ÚNICA da reserva', async () => {
+    const casos = [
+      [[KIT_1], {}, false, 'kit-atualizar'],
+      [[], {}, false, 'kit-atualizar'],
+      [[KIT_1], { recriar: true }, false, 'kit-recriar'],
+      [[], { recriar: true }, false, 'kit-recriar'],
+      [[KIT_1], { recriar: true }, true, 'kit-recriar'],
+    ] as const;
+    for (const [esperado, opcao, removido, braco] of casos) {
+      const { db, loja, desde } = await kitVivo();
+      if (removido) removerKit(db);
+      const escritas = db.writes.length;
+      const antes = structuredClone(vinculo(db, VINCULO_1));
+      const pedido = entrada({ linkDocId: VINCULO_1, ...opcao });
+      const caso = `${JSON.stringify(esperado)} ${JSON.stringify(opcao)} removido=${String(removido)}`;
+      // The premise: the dispatcher really routes this link to a KIT arm.
+      expect(await escolherArmaShopee(deps(db, loja), pedido), caso).toEqual({
+        ok: true,
+        arma: { arma: braco, linkDocId: VINCULO_1 },
+      });
+
+      const erro = await conflitoDe(
+        publicarShopee(
+          comAtestacao(deps(db, loja), {
+            confirmarCriacaoIncerta: true,
+            criacaoIncertaAdota: esperado,
+          }),
+          pedido,
+        ),
+      );
+
+      expect(erro.code, caso).toBe(CODIGO_RASCUNHO_SHOPEE.jaPublicado);
+      expect(erro.linkDocId, caso).toBe(VINCULO_1);
+      expect(erro.aguardarMs, caso).toBeNull();
+      expect(erro.vinculos, caso).toBeNull();
+      // ONE home for the sentence: the reservation's own builder.
+      expect(erro.message, caso).toBe(conflitoDeRascunhoJaPublicado(VINCULO_1).message);
+      expect(loja.ops.slice(desde), caso).toEqual([]);
+      expect(db.writes.length, caso).toBe(escritas);
+      expect(vinculo(db, VINCULO_1), caso).toEqual(antes);
+      expect(publicarAnuncioShopee, caso).not.toHaveBeenCalled();
+    }
+  });
+
+  it('--converter-em-kit NOMEANDO o anúncio COMUM vivo + a expectativa ⇒ o 409 antes do kit-converter — zero add_kit_item, zero escritas, o comum intocado', async () => {
+    for (const esperado of [[ITEM_COMUM], []]) {
+      const db = new FakeDb();
+      semearComponentes(db);
+      semearFamilia(db, { ehKitVirtual: null });
+      semearAnuncioComum(db);
+      const loja = novaLoja();
+      loja.itens.set(ITEM_COMUM, itemComum());
+      const antes = structuredClone(vinculo(db, VINCULO_COMUM));
+      const pedido = entrada({ linkDocId: VINCULO_COMUM, converterEmKit: true });
+      const caso = JSON.stringify(esperado);
+      expect(await escolherArmaShopee(deps(db, loja), pedido), caso).toEqual({
+        ok: true,
+        arma: { arma: 'kit-converter', antecessorLinkDocId: VINCULO_COMUM },
+      });
+
+      const erro = await conflitoDe(
+        publicarShopee(
+          comAtestacao(deps(db, loja), {
+            confirmarCriacaoIncerta: true,
+            criacaoIncertaAdota: esperado,
+          }),
+          pedido,
+        ),
+      );
+
+      expect(erro.code, caso).toBe(CODIGO_RASCUNHO_SHOPEE.jaPublicado);
+      expect(erro.linkDocId, caso).toBe(VINCULO_COMUM);
+      expect(loja.ops, caso).toEqual([]);
+      expect(db.writes, caso).toEqual([]);
+      expect(vinculosDeK(db), caso).toEqual([VINCULO_COMUM]);
+      expect(vinculo(db, VINCULO_COMUM), caso).toEqual(antes);
+    }
+  });
+
+  it('⛔ quase-par: o MESMO kit nativo nomeado com a flag NUA (expectativa ausente ou null), sem flag, com a expectativa SEM a flag, ou sem controles ⇒ o kit-atualizar de sempre, EXECUTADO (um update_kit_item)', async () => {
+    const atestacoes = [
+      { confirmarCriacaoIncerta: true },
+      { confirmarCriacaoIncerta: true, criacaoIncertaAdota: null },
+      { confirmarCriacaoIncerta: false },
+      { confirmarCriacaoIncerta: false, criacaoIncertaAdota: [KIT_1] },
+      null,
+    ] as const;
+    for (const atestacao of atestacoes) {
+      const { db, loja, desde } = await kitVivo();
+      const base = deps(db, loja);
+
+      const r = await kit(
+        publicarShopee(
+          atestacao === null ? base : comAtestacao(base, atestacao),
+          entrada({ linkDocId: VINCULO_1 }),
+        ),
+      );
+
+      const caso = JSON.stringify(atestacao);
+      expect(r, caso).toMatchObject({
+        arma: 'kit-atualizar',
+        desfecho: 'atualizado',
+        itemId: KIT_1,
+        linkDocId: VINCULO_1,
+      });
+      expect(
+        loja.chamadas.slice(desde).filter((c) => c.op === 'update_kit_item'),
+        caso,
+      ).toEqual([{ op: 'update_kit_item', ids: [KIT_1] }]);
+    }
+  });
+
+  it('defesa: uma expectativa SEM linkDocId (a leitura do corpo a recusa com 400) que chegasse a um braço de kit ⇒ um erro de composição, NUNCA o braço — zero chamadas, zero escritas', async () => {
+    const db = new FakeDb();
+    semearComponentes(db);
+    semearFamilia(db);
+    const loja = novaLoja();
+    expect(await escolherArmaShopee(deps(db, loja), entrada())).toEqual({
+      ok: true,
+      arma: { arma: 'kit-criar' },
+    });
+
+    const erro = await falhaDe(
+      publicarShopee(
+        comAtestacao(deps(db, loja), { confirmarCriacaoIncerta: true, criacaoIncertaAdota: [] }),
+        entrada(),
+      ),
+    );
+
+    expect(erro).toBeInstanceOf(Error);
+    expect(erro).not.toBeInstanceOf(ConflitoDeRascunhoShopeeError);
+    expect((erro as Error).message).toContain('sem linkDocId');
+    expect(loja.ops).toEqual([]);
+    expect(db.writes).toEqual([]);
+  });
+
+  it('⛔ quase-par: --converter-em-kit no MESMO comum com a flag NUA ⇒ o kit-converter de sempre (um add_kit_item)', async () => {
+    const db = new FakeDb();
+    semearComponentes(db);
+    semearFamilia(db, { ehKitVirtual: null });
+    semearAnuncioComum(db);
+    const loja = novaLoja();
+    loja.itens.set(ITEM_COMUM, itemComum());
+
+    const r = await kit(
+      publicarShopee(
+        comAtestacao(deps(db, loja), { confirmarCriacaoIncerta: true }),
+        entrada({ linkDocId: VINCULO_COMUM, converterEmKit: true }),
+      ),
+    );
+
+    expect(r).toMatchObject({ arma: 'kit-converter' });
+    expect(quantas(loja, 'add_kit_item')).toBe(1);
   });
 });

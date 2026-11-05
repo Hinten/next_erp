@@ -9,6 +9,7 @@ import {
   historicoFreteInicialCollection,
   importacaoLojaIntegradaCollection,
   integracaoCollection,
+  produtoLojaIntegradaLinkCollection,
 } from '@delfrance/data/admin/collections';
 import { MAX_TENTATIVAS_DEFERRED, TASK_MAX_ATTEMPTS } from '@delfrance/data/admin/notifications';
 import { PRAZO_LI_MS } from '@delfrance/integrations-loja-integrada';
@@ -108,6 +109,7 @@ const {
   onHistoricoFreteLojaIntegrada,
   onImportacaoLojaIntegradaCriada,
   onIntegracaoLojaIntegradaChanged,
+  onProdutoLojaIntegradaLinkChanged,
   pollLojaIntegradaPedidos,
   reprocessLojaIntegradaNotifications,
   sweepLojaIntegradaTokenExpiry,
@@ -159,13 +161,16 @@ const FILAS = { filaLeituraLojaIntegrada, filaEscritaLojaIntegrada } as const;
  * The failure it guards is the silent one: an `onDocument*` bound to the
  * `(default)` sentinel, or with no `database` at all, deploys fine and never
  * fires, with nothing anywhere to say so. Master plan step 20 added the first
- * (`onIntegracaoLojaIntegradaChanged`); the `every GATILHO…` tests below walk
- * the MAP, never a named trigger, so a second one (step 7's history trigger)
- * and a third (step 9's job-creation trigger) landed covered.
+ * (`onIntegracaoLojaIntegradaChanged`), step 7 the second, and step 9 the third
+ * and fourth (`onProdutoLojaIntegradaLinkChanged`, the anchor, and
+ * `onImportacaoLojaIntegradaCriada`, the import's job-creation trigger); the
+ * `every GATILHO…` tests below walk the MAP, never a named trigger, so each one
+ * lands covered.
  */
 const GATILHOS = {
   onIntegracaoLojaIntegradaChanged,
   onHistoricoFreteLojaIntegrada,
+  onProdutoLojaIntegradaLinkChanged,
   onImportacaoLojaIntegradaCriada,
 } as const;
 
@@ -185,6 +190,11 @@ const CAMINHOS_DOS_GATILHOS = {
     colecao: historicoFreteInicialCollection.resolvePath({ pedidoId: '{pedidoId}' }),
     ancora: 'pedidos/{pedidoId}/historicoFtIni',
     folha: '{historicoId}',
+  },
+  onProdutoLojaIntegradaLinkChanged: {
+    colecao: produtoLojaIntegradaLinkCollection.resolvePath({ produtoId: '{produtoId}' }),
+    ancora: 'produtos/{produtoId}/produtolojaintegrada',
+    folha: '{linkId}',
   },
   onImportacaoLojaIntegradaCriada: {
     colecao: importacaoLojaIntegradaCollection.resolvePath({}),
@@ -787,9 +797,15 @@ describe('the Firestore triggers (GATILHOS)', () => {
 
   it('every GATILHO declares retry: true', () => {
     // At-least-once redelivery for transient Firestore failures; without it the
-    // event is dropped on the first one. Safe because the reconcile is
-    // state-driven: a redelivery replays the ORIGINAL before/after, and the
-    // reconcile reads neither — it re-reads the conta itself.
+    // event is dropped on the first one. A redelivery replays the ORIGINAL
+    // before/after, and every arm but one is safe under that: the conta reconcile
+    // reads neither (it re-reads the conta itself), the history trigger enqueues a
+    // NAMED task, and the anchor's remove re-derives from a guarded re-read of the
+    // links stored now. ⚠️ The anchor's ADD is the exception: a blind `arrayUnion`
+    // handled after its link's close (Eventarc gives no order, and a retried create
+    // can land late) leaves a conta listed with no counting link, which nothing
+    // removes. Accepted as the over-inclusive direction; the trigger's docblock says
+    // why and what closing it would cost.
     for (const [nome, fn] of Object.entries(GATILHOS)) {
       expect(gatilhoDeEvento(fn).retry, nome).toBe(true);
     }
@@ -860,7 +876,7 @@ describe('every trigger of the codebase', () => {
     ]);
   });
 
-  it('every event-trigger export is in GATILHOS — exactly {onHistoricoFreteLojaIntegrada, onImportacaoLojaIntegradaCriada, onIntegracaoLojaIntegradaChanged}', () => {
+  it('every event-trigger export is in GATILHOS — exactly {onHistoricoFreteLojaIntegrada, onImportacaoLojaIntegradaCriada, onIntegracaoLojaIntegradaChanged, onProdutoLojaIntegradaLinkChanged}', () => {
     // The third exhaustiveness twin: the two above filter on `scheduleTrigger`
     // and `taskQueueTrigger`, so an `onDocument*` export would otherwise have its
     // `database`, region, secrets and `retry` read by nothing.
@@ -869,6 +885,7 @@ describe('every trigger of the codebase', () => {
       'onHistoricoFreteLojaIntegrada',
       'onImportacaoLojaIntegradaCriada',
       'onIntegracaoLojaIntegradaChanged',
+      'onProdutoLojaIntegradaLinkChanged',
     ]);
   });
 

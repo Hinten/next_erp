@@ -40,6 +40,12 @@ export function shopeeClientFalso(metodos: Partial<ShopeeClient> = {}): ShopeeCl
     cancelPriceSync: naoEsperado('cancelPriceSync'),
     priceSyncHistorico: naoEsperado('priceSyncHistorico'),
     priceSyncRelatorio: naoEsperado('priceSyncRelatorio'),
+    criarRascunho: naoEsperado('criarRascunho'),
+    atualizarRascunho: naoEsperado('atualizarRascunho'),
+    descartarRascunho: naoEsperado('descartarRascunho'),
+    recomendacaoCategoria: naoEsperado('recomendacaoCategoria'),
+    limitesDoItem: naoEsperado('limitesDoItem'),
+    marcas: naoEsperado('marcas'),
   };
   return { ...base, ...metodos };
 }

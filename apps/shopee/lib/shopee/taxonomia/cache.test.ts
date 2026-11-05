@@ -517,7 +517,7 @@ describe('limparTaxonomiaShopee', () => {
   it('esvazia os SETE caches', async () => {
     // Grosso de propósito (o primitivo não varre por prefixo), mas grosso não
     // pode significar incompleto: um cache esquecido aqui seguiria servindo
-    // dados velhos depois de um `push 13`.
+    // dados velhos depois de uma limpeza.
     const { chamadas, ctx } = ctxDuplo();
     const ler = async (): Promise<void> => {
       await lerIndiceDeCategorias(ctx);

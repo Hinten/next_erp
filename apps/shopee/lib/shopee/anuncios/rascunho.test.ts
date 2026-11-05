@@ -33,6 +33,8 @@ import {
   corpoAtualizarRascunhoShopeeSchema,
   corpoCriarRascunhoShopeeSchema,
   corpoDescartarRascunhoShopeeSchema,
+  estadoPublicacaoRascunhoShopee,
+  janelaDaCriacaoIncertaShopee,
   respostaAtualizarRascunhoShopeeSchema,
   respostaCriarRascunhoShopeeSchema,
   respostaDescartarRascunhoShopeeSchema,
@@ -40,6 +42,7 @@ import {
 } from '@delfrance/schemas';
 
 import { ShopeeContaNotConfiguredError } from '../core/shopee';
+import { veredictoDeAdocaoShopee } from '../produtos/resolveProduto';
 import { FakeDb, asDb, grpc } from '../testing/fakeDb';
 import {
   RecusaDeRascunhoShopeeError,
@@ -1771,6 +1774,64 @@ describe('atualizarRascunhoShopee — base conferida (nível 3) + update guardad
       }
     });
 
+    it('(#1911 rodada 3) CATEGORIA_TRAVADA nomeia a saída DEPOIS da importação — o rascunho que continua é descartado confirmando; nunca «adota», nunca o «e depois descarte» incondicional', async () => {
+      // Any `incerta` reading answers this 409 — with a window (the record) and
+      // without one — so the exit is keyed on the draft still being there.
+      for (const extra of [
+        { publicacaoEmCurso: travaAlheia(AGORA - AGUARDAR_ANUNCIO_INCERTO_SHOPEE_MS) },
+        { criacaoIncertaDesde: AGORA - 1_000 },
+      ]) {
+        const db = new FakeDb();
+        db.seed(CAMINHO, rascunho(extra));
+        const err = await recusaDe(
+          atualizarRascunhoShopee(
+            deps(db),
+            corpoAtualizar({ category_id: 100_017, attributes: null }, { category_id: 100_030 }),
+          ),
+        );
+        expect(err.code, JSON.stringify(extra)).toBe(CODIGO_RASCUNHO_SHOPEE.categoriaTravada);
+        expect(err.message).toBe(
+          `a última tentativa de publicar o rascunho ${RASCUNHO} pode ter criado o anúncio na ` +
+            'Shopee, na categoria gravada: ela não muda até isso se resolver. Confira no Seller ' +
+            'Centre e importe o anúncio se ele existir; se ele não existir, ou se este rascunho ' +
+            'continuar depois da importação, descarte este rascunho confirmando a criação ' +
+            'incerta. Nada foi gravado.',
+        );
+        expect(err.message).not.toMatch(/adota|adoção/);
+        // ⛔ quase-par: never the no-window publish 409's UNCONDITIONAL clause
+        // — with a window the import normally adopts, and nothing is left.
+        expect(err.message).not.toContain('e depois descarte este rascunho');
+      }
+    });
+
+    it('(#1911 rodada 3, re-verificação) CATEGORIA_TRAVADA num incerta SEM janela (registro ilegível) dá a MESMA frase — a importação nunca adota, e a saída nomeada é o descarte confirmando', async () => {
+      // Both readings of the test above carry a window (a STAMPED lock — `sku`
+      // set — and a readable record); this is the one without: the import
+      // answers `sem-tentativa`, so «se este rascunho continuar depois da
+      // importação» is the case that ALWAYS happens, and it must be named.
+      const semJanela = rascunho({ criacaoIncertaDesde: '2026-10-01' });
+      expect(estadoPublicacaoRascunhoShopee(semJanela, AGORA).tipo).toBe('incerta');
+      expect(janelaDaCriacaoIncertaShopee(semJanela)).toBeNull();
+      expect(veredictoDeAdocaoShopee(semJanela, INTEGRACAO, 1_757_000_000)).toBe('sem-tentativa');
+
+      const db = new FakeDb();
+      db.seed(CAMINHO, semJanela);
+      const err = await recusaDe(
+        atualizarRascunhoShopee(
+          deps(db),
+          corpoAtualizar({ category_id: 100_017, attributes: null }, { category_id: 100_030 }),
+        ),
+      );
+      expect(err.status).toBe(409);
+      expect(err.code).toBe(CODIGO_RASCUNHO_SHOPEE.categoriaTravada);
+      expect(err.message).toContain(
+        'se ele não existir, ou se este rascunho continuar depois da importação, descarte este ' +
+          'rascunho confirmando a criação incerta.',
+      );
+      expect(err.message).not.toMatch(/adota|adoção/);
+      expect(db.writes).toEqual([]);
+    });
+
     it('⛔ INCERTA + a categoria GRAVADA re-enviada no patch ⇒ AINDA 409 CATEGORIA_TRAVADA, e o título ao lado também não grava — a trava é "o patch NOMEIA category_id" (DA-4), nunca "o valor muda"; quase-par: o MESMO título sem category_id grava', async () => {
       for (const extra of [
         { publicacaoEmCurso: travaAlheia(AGORA - AGUARDAR_ANUNCIO_INCERTO_SHOPEE_MS) },
@@ -1897,6 +1958,41 @@ describe('atualizarRascunhoShopee — base conferida (nível 3) + update guardad
       expect(err.code).toBe(CODIGO_RASCUNHO_SHOPEE.jaPublicado);
       expect(corpoDaRecusaDeRascunhoShopee(err).linkDocId).toBe(RASCUNHO);
       expect(db.writes).toEqual([]);
+    });
+
+    /**
+     * #1911 batch-B review round 5 (VERIFY-0's round-4 nit): the sentence
+     * claims only what the read showed — the link RECORDS a listing — never
+     * that the listing still EXISTS on Shopee (an adopted or claimed link may
+     * have been removed in Seller Centre since). The reservation's own 409
+     * dropped that claim in round 4; the save and discard routes share THIS
+     * builder, so both are pinned.
+     */
+    it('a frase do 409 JA_PUBLICADO (salvar E descartar): o vínculo REGISTRA um anúncio — nunca «já existe na Shopee» —, o conteúdo não é editado aqui, recarregue, nada gravado', async () => {
+      const db = new FakeDb();
+      const anuncio = rascunho({ item_id: ITEM_VIVO });
+      db.seed(CAMINHO, anuncio);
+      const aoSalvar = await recusaDe(
+        atualizarRascunhoShopee(
+          deps(db),
+          corpoAtualizar({ item_name: 'Camiseta do rascunho' }, { item_name: 'X' }),
+        ),
+      );
+      const aoDescartar = await recusaDe(
+        descartarRascunhoShopee(deps(db), corpoDescartar(vista(anuncio))),
+      );
+
+      for (const err of [aoSalvar, aoDescartar]) {
+        expect(err.code).toBe(CODIGO_RASCUNHO_SHOPEE.jaPublicado);
+        expect(err.message).toBe(
+          `o vínculo ${RASCUNHO} já não é um rascunho: ele já registra um anúncio da Shopee, e o ` +
+            'conteúdo de um anúncio publicado não é editado aqui. Recarregue a aba. Nada foi gravado.',
+        );
+        // ⛔ near-miss: the over-claim the round-4 reservation dropped stays gone here too.
+        expect(err.message).not.toMatch(/já existe na Shopee|o anúncio já existe/);
+      }
+      expect(db.writes).toEqual([]);
+      expect(db.deletes).toEqual([]);
     });
   });
 
@@ -2077,6 +2173,58 @@ describe('descartarRascunhoShopee — base INTEIRA conferida + delete guardado',
         );
         expect(err.code, String(confirmar)).toBe(CODIGO_RASCUNHO_SHOPEE.criacaoIncerta);
         expect(doc(db)).toEqual(raw);
+        expect(db.deletes).toEqual([]);
+      }
+    });
+
+    it('(#1911 P12) a frase do 409 CRIACAO_INCERTA dá os TRÊS casos do Seller Centre e a ressalva do SKU', async () => {
+      const db = new FakeDb();
+      db.seed(CAMINHO, raw);
+      const err = await recusaDe(descartarRascunhoShopee(deps(db), corpoDescartar(vista(raw))));
+      expect(err.code).toBe(CODIGO_RASCUNHO_SHOPEE.criacaoIncerta);
+      // (a) + (b): não existe, ou existe e já está vinculado ⇒ confirmar o descarte.
+      expect(err.message).toContain(
+        'se o anúncio NÃO existe, ou existe e já está vinculado no ERP, confirme para descartar',
+      );
+      // (c): existe SEM vínculo ⇒ NÃO descartar; o SKU antes da importação.
+      expect(err.message).toContain(
+        'se existe SEM vínculo, não descarte — dê a ele o mesmo SKU do produto',
+      );
+      expect(err.message).toContain('(sem SKU, a importação cria outro produto)');
+      expect(err.message).toContain('Nada foi apagado.');
+      // ⛔ quase-par: nunca o "importe-o" sozinho de antes, sem o passo do SKU.
+      expect(err.message).not.toContain('se o anúncio existe, importe-o;');
+    });
+
+    /*
+     * Batch-B review R7-roundtrip#5. The import adopts a draft only when it can
+     * read the attempt window (and exactly one draft qualifies, and the SKU
+     * lands on one produto) — `veredictoDeAdocaoShopee`. A draft can read
+     * `incerta` with NO readable window (no lock, a malformed record), and the
+     * 409 is decided on `incerta` alone, so its sentence may not promise the
+     * adoption: it says «normalmente» and names the other outcome's exit.
+     */
+    it('(R7-roundtrip#5) a frase diz que a importação NORMALMENTE adota e dá a saída de um vínculo à parte — a mesma frase num incerta com janela legível e num SEM janela (que a importação não adota)', async () => {
+      const semJanela = rascunho({ criacaoIncertaDesde: '2026-10-01' });
+      // Anchors: both read `incerta`; only `raw` has a window the import can adopt by.
+      expect(estadoPublicacaoRascunhoShopee(raw, AGORA).tipo).toBe('incerta');
+      expect(estadoPublicacaoRascunhoShopee(semJanela, AGORA).tipo).toBe('incerta');
+      expect(janelaDaCriacaoIncertaShopee(raw)).not.toBeNull();
+      expect(janelaDaCriacaoIncertaShopee(semJanela)).toBeNull();
+      expect(veredictoDeAdocaoShopee(semJanela, INTEGRACAO, 1_757_000_000)).toBe('sem-tentativa');
+
+      for (const link of [raw, semJanela]) {
+        const db = new FakeDb();
+        db.seed(CAMINHO, link);
+        const err = await recusaDe(descartarRascunhoShopee(deps(db), corpoDescartar(vista(link))));
+        expect(err.code).toBe(CODIGO_RASCUNHO_SHOPEE.criacaoIncerta);
+        expect(err.message).toContain(
+          'e importe-o. Normalmente a importação adota este rascunho; se ela criar um vínculo à ' +
+            'parte, o anúncio passa a estar vinculado no ERP e este rascunho pode ser descartado ' +
+            'com a confirmação. Nada foi apagado.',
+        );
+        // ⛔ quase-par: never the unconditional promise P12 shipped.
+        expect(err.message).not.toContain('que a importação adota este rascunho');
         expect(db.deletes).toEqual([]);
       }
     });

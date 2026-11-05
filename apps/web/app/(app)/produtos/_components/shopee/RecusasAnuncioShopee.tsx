@@ -2,13 +2,18 @@
 
 import { Alert, List, Stack, Text } from '@mantine/core';
 import {
+  ehRascunhoShopee,
   mecanismosDaRecusaAnterior,
   recusaEstoqueDoAnuncioShopeeLegivel,
   recusaPrecoDoAnuncioShopeeLegivel,
   type ProdutoShopeeLink,
 } from '@delfrance/schemas';
 
-import { formatarInstanteShopee } from '@/lib/shopee/anuncioProduto';
+import {
+  formatarInstanteShopee,
+  textoDaEtapaShopee,
+  textoDaRecusaGuardadaShopee,
+} from '@/lib/shopee/anuncioProduto';
 import { textoPreenchido } from './campos';
 
 export interface RecusasAnuncioShopeeProps {
@@ -55,14 +60,15 @@ export function RecusasAnuncioShopee({ link, agoraMs }: RecusasAnuncioShopeeProp
     <Stack gap="xs">
       {falha !== null && (
         <Alert color="red" variant="light" title="A última publicação falhou">
-          <Text size="sm">
-            {[
-              falha.em === null ? null : `Em ${falha.em}`,
-              falha.etapa === null ? null : `etapa ${falha.etapa}`,
-            ]
-              .filter((p): p is string => p !== null)
-              .join(', ')}
-          </Text>
+          {falha.em !== null && <Text size="sm">Em {falha.em}.</Text>}
+          {falha.etapa !== null && (
+            // Worded by the outcome panel's own reader — never the raw code
+            // (review R8-copy#15) — and by the block's kind: a DRAFT has no
+            // «Reverificar» to name (R8-copy#2).
+            <Text size="sm">
+              {textoDaEtapaShopee(falha.etapa, { ehRascunho: ehRascunhoShopee(link) })}
+            </Text>
+          )}
           {falha.problemas.length > 0 ? (
             <List size="sm" spacing={2}>
               {falha.problemas.map((p, i) => (
@@ -165,7 +171,18 @@ function sentencaDaRecusa(
   return `${quando === null ? '' : `Em ${quando}: `}${texto}${cod === null ? '' : ` (código ${cod})`}`;
 }
 
-/** The last failed publish, read field by field from the stored (possibly raw) value. */
+/**
+ * The last failed publish, read field by field from the stored (possibly raw)
+ * value. Each stored refusal row reads the tab's OWN copy of its `motivo`
+ * first (`textoDaRecusaGuardadaShopee`, #1911 rev. 2a #12) and its stored
+ * `mensagem` only as the fallback: a draft's refused `add_item` is stamped
+ * here, and Shopee's English prose (`anuncio-semelhante-existente`, its
+ * `error_repeated_mtsku`) must not be what stays on screen once the outcome
+ * panel is gone. A row with neither is dropped. The stored `etapa` is kept
+ * as the CODE here and worded at render by `textoDaEtapaShopee` (an
+ * own-property label lookup with a neutral fallback): the raw code — `add_item`,
+ * an etapa this build does not know, `constructor` — is never printed.
+ */
 function lerFalhaPublicacao(valor: unknown): {
   em: string | null;
   etapa: string | null;
@@ -177,7 +194,8 @@ function lerFalhaPublicacao(valor: unknown): {
   const problemas = Array.isArray(f.problemas)
     ? f.problemas.flatMap((p: unknown) => {
         if (typeof p !== 'object' || p === null) return [];
-        const texto = textoPreenchido((p as Record<string, unknown>).mensagem);
+        const linha = p as Record<string, unknown>;
+        const texto = textoDaRecusaGuardadaShopee(linha.motivo, linha.mensagem);
         return texto === null ? [] : [texto];
       })
     : [];

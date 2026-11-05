@@ -56,6 +56,7 @@ import { getAdminFirestore } from '@/lib/firebase/admin';
 import { agoraUsDe, chaveContaPrecisaAtencao } from '../avisos/avisos';
 import { loadAmazonContext } from '../core/contexto';
 import type { AmbienteAmazon } from '../env';
+import { chaveAvisoNfeAmazon } from '../nfe/avisoNfe';
 import type { DepsImportadorAmazon } from '../notificacoes/notificacao';
 import { gerarCpf } from '../testing/documentos';
 import {
@@ -114,6 +115,14 @@ async function limpar(): Promise<void> {
   for (const motivo of Object.values(MOTIVO_CONTA_AMAZON)) {
     await db()
       .doc(`avisos/${chaveContaPrecisaAtencao(CONTA, motivo)}`)
+      .delete();
+  }
+  // Step 14 (PR 14-c): the import's two NF-e TRANSITIONS (into a cancelled sale,
+  // freight into the stock-removal set) leave a resolved `nfeUploadRejeitado`
+  // tombstone on the pedido's key.
+  for (const orderId of [ORDER, '123-4567890-1234567']) {
+    await db()
+      .doc(`avisos/${chaveAvisoNfeAmazon(CONTA, makePedidoIdAmazon(CONTA, orderId))}`)
       .delete();
   }
   const avisosDoPedido = await db()

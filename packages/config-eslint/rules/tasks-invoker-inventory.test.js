@@ -78,6 +78,8 @@ const INVENTORY = {
   // ---- codebase `amazon` --------------------------------------------------
   'apps/amazon/functions/src/filaLeitura.ts':
     'The Amazon reads queue (filaLeituraAmazon, order intake). Enqueued by the push receiver route (App Hosting runtime SA) and by the 15-minute backstop poll pollAmazonOrders (functions runtime SA, through functions/src/agendador.ts). The reprocess sweep re-drives rows inline and never enqueues.',
+  'apps/amazon/functions/src/filaNfe.ts':
+    'The Amazon NF-e upload queue (processAmazonNfeUpload, master-plan step 14). Enqueued by the onNfeAprovadaAmazon Firestore trigger (ONE named task per CloudEvent, through functions/src/agendadorNfe.ts) and re-enqueued by ITSELF for the verification ladder, the one resubmit and the 429 pause (scheduleDelaySeconds) — both the functions runtime SA — and, from PR 14-d, by the re-drive route enviar-nfe under the App Hosting runtime SA: two identities.',
 
   // ---- codebase `nfe` -----------------------------------------------------
   'apps/nfe/functions/src/reconciliar.ts':
@@ -137,7 +139,7 @@ const TASK_CALL_RE = /\bonTaskDispatched\s*(?:<[\s\S]*?>)?\s*\(/;
  * having checked NOTHING — the "green job that ran zero tests" shape. These are
  * a floor, not an inventory: they only ever need raising.
  */
-const MIN_TASK_FILES = 20;
+const MIN_TASK_FILES = 21;
 const MIN_CODEBASES = 9;
 
 function read(file) {

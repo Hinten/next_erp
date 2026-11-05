@@ -21,6 +21,10 @@ import {
   integracaoSchema,
   INTEGRACAO_TIPO,
   ESTADO_ANUNCIO_SHOPEE,
+  linhaDeMarcaParaGravarShopee,
+  motivoRecusaMarcaShopee,
+  PRODUTO_EXTRA_DATA_DOC_ID,
+  produtoExtraDataSchema,
   produtoShopeeLinkSchema,
   SHOPEE_ITEM_STATUS,
   MODALIDADE_FRETE,
@@ -31,6 +35,7 @@ import {
   STATUS_LINK_PAGAMENTO,
   STATUS_PAGAMENTO,
   TIPO_AVISO,
+  type MarcaDto,
   type MlSizeChart,
   type Mensagem,
   TIPO_INTEGRACAO_PGTO,
@@ -1046,9 +1051,68 @@ export async function cleanupMercadoLivreFixtures(prefix: string): Promise<void>
   await cleanupIntegracaoFixtures(prefix);
 }
 
-/** Teardown for `seedShopeeFixtures`. */
+/**
+ * Every `brandshopee` row (the conta's brand shortlist, #1911 P9) under each
+ * Shopee conta the prefix sweep is about to delete. A SUBCOLLECTION: deleting
+ * the conta never cascades to it, and the sweep finds contas by `nome` — so
+ * the rows must go BEFORE their conta does, or nothing would find them again.
+ */
+async function cleanupMarcasShopeeDasContas(prefix: string): Promise<void> {
+  const contas = await db()
+    .collection('integracao')
+    .where('nome', '>=', prefix)
+    .where('nome', '<', `${prefix}${PREFIX_MAX}`)
+    .select()
+    .get();
+  await Promise.all(
+    contas.docs.map(async (conta) => {
+      const marcas = await conta.ref.collection('brandshopee').get();
+      if (marcas.empty) return;
+      const batch = db().batch();
+      marcas.docs.forEach((d) => batch.delete(d.ref));
+      await batch.commit();
+    }),
+  );
+}
+
+/**
+ * Teardown for `seedShopeeFixtures`, the contas' `brandshopee` rows first (see
+ * {@link cleanupMarcasShopeeDasContas}). Only here: the sweep shared by every
+ * channel stays parents-only.
+ */
 export async function cleanupShopeeFixtures(prefix: string): Promise<void> {
+  await cleanupMarcasShopeeDasContas(prefix);
   await cleanupIntegracaoFixtures(prefix);
+}
+
+/**
+ * Register ONE brand on a Shopee conta's shortlist,
+ * `integracao/{integracaoId}/brandshopee` (#1911 P9), the way the conta's
+ * Marcas section writes it: through `linhaDeMarcaParaGravarShopee`
+ * (`@delfrance/schemas`, that section's writer rule), so the row sits at
+ * `String(brand_id)` with exactly the three fields a new row stores, and a
+ * fixture cannot drift from what a draft's brand picker (P10) reads. Throws
+ * for a brand that rule refuses: a seed never holds a row the section could
+ * not have written. Answers the row's doc id.
+ *
+ * Call it once `seedShopeeFixtures` has made the conta:
+ * `cleanupShopeeFixtures` finds the rows THROUGH their conta (Firestore never
+ * cascades), so a row under a conta that was never made is swept by nothing.
+ */
+export async function seedMarcaShopee(integracaoId: string, marca: MarcaDto): Promise<string> {
+  const linha = linhaDeMarcaParaGravarShopee(marca);
+  if (linha === null) {
+    throw new Error(
+      `seedMarcaShopee: brand ${String(marca.brandId)} refused (${String(motivoRecusaMarcaShopee(marca))})`,
+    );
+  }
+  await db()
+    .collection('integracao')
+    .doc(integracaoId)
+    .collection('brandshopee')
+    .doc(linha.docId)
+    .set(linha.data);
+  return linha.docId;
 }
 
 /** Teardown for `seedLojaIntegradaFixtures`. */
@@ -4166,7 +4230,13 @@ export const SHOPEE_E2E_ITEM_KIT_REMOVIDO = 1000002;
  *  - `ativo` — live and deboosted, with one deboost violation and a CURRENT
  *    price refusal (its refusal stamp is newer than its clean-send stamp);
  *  - `kitRemovido` — a native kit Shopee removed (`removido`, `SELLER_DELETE`);
- *  - `rascunho` — a draft never published (`item_id: null`, no category).
+ *  - `rascunho` — a draft never published (`item_id: null`), with NO category
+ *    and NO brand chosen (`brand_id: null`) and no publish lock (it reads
+ *    `livre`). Two consequences the Shopee tab's draft editor (#1911 P10)
+ *    relies on: its `categoria-ausente` and `marca-nao-escolhida` pendências
+ *    show in EVERY test that opens the conta, and it makes NO apps/shopee
+ *    request on render — a category's bands are read only once a category
+ *    exists — so a spec that renders it needs no taxonomy stub.
  *
  * Also stamps the conta's `shop_id` with {@link SHOPEE_E2E_SHOP_ID}: the
  * fixture conta `seedShopeeFixtures` writes carries none, and without it no
@@ -4263,10 +4333,167 @@ export async function seedProdutoShopeeVinculado(
       item_name: `${prefix}-rascunho`,
       item_id: null,
       category_id: null,
+      brand_id: null,
     }),
   );
   await batch.commit();
   return { produtoId, links };
+}
+
+/** Fixture item id of the ONE listing {@link seedEditorRascunhoShopee} seeds on its second conta — never a real one. */
+const SHOPEE_E2E_ITEM_REMOVIDO = 1000003;
+
+/** The stored Descrição (`produtos/<id>/extraData/singleton.descricao`) {@link seedEditorRascunhoShopee} gives the produto. */
+const DESCRICAO_PRODUTO_SHOPEE_E2E = 'Descrição do produto semeada pelo e2e da Shopee.';
+
+/**
+ * What the produto editor's Shopee DRAFT editor (#1911 P10) needs on top of
+ * {@link seedProdutoShopeeVinculado} — call it AFTER that seed (same `prefix`)
+ * and after `seedShopeeFixtures(prefix, 2)`:
+ *
+ *  - **a second conta, `contaSoRemovido`, holding ONE `removido` listing** of
+ *    the produto (`${prefix}-removido`, an ordinary listing — not a kit). Two
+ *    reasons. The tab lists contas through an UNORDERED, bounded query and
+ *    reads by id only the contas a link of this produto names, so on a shared
+ *    staging project with many Shopee contas a conta holding nothing of this
+ *    produto might get no tab at all; the link makes its tab certain. And a
+ *    `removido` listing is exactly what the second-listing confirmation
+ *    IGNORES (`vinculosQueExigemConfirmacaoShopee`, `@delfrance/schemas` — the
+ *    set the draft route's create refuses with too — counts only a live
+ *    listing, a superseded one still on Shopee, or a draft), so "Novo
+ *    anúncio" there opens the new draft with NO confirmation — the near-miss
+ *    of conta 1, whose live listing and draft ask first. The conta is also
+ *    made ACTIVE (`seedShopeeFixtures` seeds every even conta inactive):
+ *    whether a draft may start on an inactive conta is not what that case
+ *    is about.
+ *  - **the produto's stored Descrição** (`extraData/singleton`, through the
+ *    schema), so a draft with no description of its own has no `sem-descricao`
+ *    pendência: the pendências read the STORED produto documents the publish
+ *    reads, never the form.
+ *
+ * Every id is deterministic. Teardown: the spec's `prodshopee` and
+ * `extraData` subcollection sweeps (`cleanupProdutoSubcollection`) BEFORE the
+ * produto's, then `cleanupShopeeFixtures` — Firestore never cascades.
+ */
+export async function seedEditorRascunhoShopee(
+  prefix: string,
+  contaSoRemovido: string,
+): Promise<{ removido: string }> {
+  const produtoId = `${prefix}-prod`;
+  const removido = `${prefix}-removido`;
+  const now = Date.now();
+  const produtoRef = db().collection('produtos').doc(produtoId);
+  const batch = db().batch();
+  batch.update(db().collection('integracao').doc(contaSoRemovido), { ativo: true });
+  batch.set(
+    produtoRef.collection('prodshopee').doc(removido),
+    produtoShopeeLinkSchema.parse({
+      contaProdutoShopeeOuterRef: `documents/integracao/${contaSoRemovido}`,
+      item_name: `${prefix}-removido`,
+      item_id: SHOPEE_E2E_ITEM_REMOVIDO,
+      category_id: 100087,
+      item_status: SHOPEE_ITEM_STATUS.sellerDelete,
+      estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.removido,
+      publicadoEm: now - 3 * 86_400_000,
+    }),
+  );
+  batch.set(
+    produtoRef.collection('extraData').doc(PRODUTO_EXTRA_DATA_DOC_ID),
+    produtoExtraDataSchema.parse({ descricao: DESCRICAO_PRODUTO_SHOPEE_E2E }),
+  );
+  await batch.commit();
+  return { removido };
+}
+
+/**
+ * Fixture Shopee category of the READY draft {@link seedRascunhoProntoShopee}
+ * seeds (the one the other seeded links carry) — the spec stubs that
+ * category's tree node and bands; its category-pick test also stubs the
+ * fixture root above it and one sibling leaf (fixture ids too).
+ */
+export const SHOPEE_E2E_CATEGORIA = 100087;
+
+/**
+ * A SECOND produto, `${prefix}-pronto`, holding ONE Shopee draft READY to
+ * publish on `integracaoId` — what the produto editor's «Publicar» on a draft
+ * (#1911 P11) needs. Call it AFTER {@link seedProdutoShopeeVinculado} (same
+ * `prefix` and conta): that seed stamps the conta's `shop_id`.
+ *
+ *  - The draft `${prefix}-pronto-rascunho` — `item_id: null`, no publish lock
+ *    (it reads `livre`) — has a category ({@link SHOPEE_E2E_CATEGORIA}),
+ *    «Sem marca» (`brand_id: 0`: a CHOSEN brand, never the `null` of "not
+ *    chosen") and a non-blank title; its description is `null`, so the
+ *    produto's STORED Descrição (seeded here, through the schema) stands in.
+ *    So it has no pendência once its category's bands are read — and those
+ *    are a request to apps/shopee, which the spec stubs, per test, for the
+ *    tests that open this produto alone.
+ *  - Why a produto of its OWN: the Shopee tab reads the bands of every draft
+ *    of ITS produto that has a category, on render — so a categorised draft
+ *    beside {@link seedProdutoShopeeVinculado}'s links would add an apps/shopee
+ *    read to every test of the spec. And the conta holds nothing else of this
+ *    produto, so its Publicar confirmation carries no second-listing warning
+ *    (`vinculosQueExigemConfirmacaoShopee`, `@delfrance/schemas`, without the
+ *    draft being published).
+ *  - The produto has NO weight (neither `pesoBrutoKg` nor `pesoLiquidoKg`), so
+ *    `sem-peso` on campo `weight` — what the spec's publish stub answers — is
+ *    ONE of the refusals the listing assembly (`montarAnuncio`) raises for it,
+ *    and the FIRST row of its answer: the assembly checks the weight right
+ *    after the name, the description and the category, which this draft
+ *    passes under the spec's stubbed bands. It is not the only row: the real
+ *    422 is the UNION of every refusal found, and this produto also has no
+ *    dimensions (`sem-dimensoes`), no photos (`fotos: null` ⇒ `sem-fotos`)
+ *    and no price (`sem-preco`, a create's) — plus whatever the conta's stock
+ *    band and logistics add. The stub's one-row answer («1 problema») is a
+ *    deliberate simplification (design-DC-web §3), so the spec asserts row
+ *    `-0`, never the row count nor the header's total.
+ *
+ * Every id is deterministic. Teardown: the spec's `prodshopee` and `extraData`
+ * sweeps of THIS produto (`cleanupProdutoSubcollection`) before
+ * `cleanupByNamePrefix('produtos', prefix)` — its `nome` carries the prefix —
+ * since Firestore never cascades.
+ */
+export async function seedRascunhoProntoShopee(
+  prefix: string,
+  integracaoId: string,
+): Promise<{ produtoId: string; rascunho: string }> {
+  const produtoId = `${prefix}-pronto`;
+  const rascunho = `${prefix}-pronto-rascunho`;
+  const produtoRef = db().collection('produtos').doc(produtoId);
+  const batch = db().batch();
+  batch.set(produtoRef, {
+    ultimaModificacao: Date.now(),
+    nome: produtoId,
+    sku: `${prefix.toUpperCase().replace(/-/g, '_')}_SHP_PRONTO`,
+    publicado: true,
+    ehKit: false,
+    ehKitVirtual: false,
+    ofereceFreteGratis: false,
+    permiteVendaSemEstoque: false,
+    fotos: null,
+    videos: null,
+    paiId: null,
+    ordem: null,
+    timestamp: new Date().toISOString(),
+    integracoesComProduto: [integracaoId],
+  });
+  batch.set(
+    produtoRef.collection('prodshopee').doc(rascunho),
+    produtoShopeeLinkSchema.parse({
+      contaProdutoShopeeOuterRef: `documents/integracao/${integracaoId}`,
+      item_name: `${prefix}-pronto`,
+      item_id: null,
+      category_id: SHOPEE_E2E_CATEGORIA,
+      brand_id: 0,
+      original_brand_name: null,
+      description: null,
+    }),
+  );
+  batch.set(
+    produtoRef.collection('extraData').doc(PRODUTO_EXTRA_DATA_DOC_ID),
+    produtoExtraDataSchema.parse({ descricao: DESCRICAO_PRODUTO_SHOPEE_E2E }),
+  );
+  await batch.commit();
+  return { produtoId, rascunho };
 }
 
 /**

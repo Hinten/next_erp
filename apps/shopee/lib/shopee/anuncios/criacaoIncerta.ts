@@ -199,8 +199,21 @@
  * produto that HAS a SKU: an ambiguous (a moved SKU included) or incomplete
  * scan refuses whatever the flag says.
  *
- * ⚠️ The seven motivos — ENSURE's four and, since P5b, the first create's three
- * (`anuncio-existente-sem-vinculo`, `anuncio-existente-de-outro-produto`,
+ * ⚠️ And when it carries its EXPECTATION (`criacaoIncertaAdota`, #1911
+ * batch-B review, Lucas §I1 — the web always sends one), the attested verdict
+ * stands only if it is exactly that: `[L]` ⇒ adopting `L`, `[]` ⇒ a create.
+ * Anything else — `L` linked since the refusal, a listing freed or appearing
+ * since — refuses (`criacao-incerta-ja-vinculada` over THIS scan's classes,
+ * or `-sem-sku`), nothing sent and nothing adopted. Absent ⇒ the bare flag's
+ * meaning above, which is the CLI's. A draft that does not read `incerta`
+ * runs no ENSURE, so there a present expectation refuses too — the
+ * reservation, on its own read, with `problemaDaAtestacaoSemCriacaoIncerta`
+ * (its own motivo, `criacao-incerta-encerrada`: no look-up ran).
+ *
+ * ⚠️ The eight motivos — ENSURE's four, the reservation's
+ * `criacao-incerta-encerrada` (built here, batch-B review round 4) and, since
+ * P5b, the first create's three (`anuncio-existente-sem-vinculo`,
+ * `anuncio-existente-de-outro-produto`,
  * `busca-de-anuncio-existente-incompleta`) — are spelled HERE and only here,
  * through `MOTIVO_PUBLICACAO_BLOQUEADA` — never quoted
  * (`anuncios/errosPublicacao.test.ts` O7 reads this folder as raw text and
@@ -589,12 +602,21 @@ export interface ResultadoItemIncerto {
  * listing is imported onto a NEW produto, this draft is never adopted, and
  * every exit left is a duplicate listing or a false attestation. The listing
  * first gets, in Seller Centre, the SKU the produto gets in the ERP; then the
- * import's SKU rung binds it to THIS produto and adopts this draft.
+ * import's SKU rung NORMALLY binds it to THIS produto and adopts this draft.
+ *
+ * ⚠️ «normalmente adota», never a flat promise (#1911 batch-B review,
+ * R7-roundtrip#5's sibling — the {@link problemaSkuMudou} reasoning): the import
+ * still links the listing APART when two drafts of the produto are adoptable,
+ * when Shopee leaves `create_time` unknown, or when the SKU names two parent
+ * produtos (`produtos/resolveProduto.ts`), so the exit for that outcome — the
+ * discard, whose own 409 asks for the attestation — is named. It sits in
+ * {@link problemaSemSku}'s fixed 487 characters, under `MAX_MENSAGEM_PROBLEMA`
+ * (pinned).
  */
 const SE_EXISTIR_SEM_SKU =
   'se o anúncio existir, dê a ele no Seller Centre o MESMO SKU que você cadastrar neste ' +
-  'produto e só então importe-o (importar:anuncio), que o vincula a este produto e adota este ' +
-  'rascunho — sem SKU a importação cria OUTRO produto';
+  'produto e só então importe-o (importar:anuncio), que normalmente adota este rascunho ' +
+  '(sem adoção, descarte este rascunho) — sem SKU a importação cria OUTRO produto';
 
 /**
  * The sentence of an uncertain create — what to do next, in the order the
@@ -677,6 +699,14 @@ export interface EntradaDaBuscaIncerta {
   readonly vinculosDoProduto: readonly VinculoLidoDaConta[];
   /** The operator's attestation — honoured for `-sem-sku` and `-ja-vinculada` ONLY (K1-11). */
   readonly confirmarCriacaoIncerta: boolean;
+  /**
+   * What the attestation EXPECTS (#1911 batch-B review, Lucas §I1): `[L]` =
+   * adopt `L`, `[]` = create. Present ⇒ an attested verdict stands ONLY when it
+   * is exactly that, else {@link problemaDaAtestacaoQueNaoConfere} (see
+   * `decidir`). Absent or `null` ⇒ the bare attestation (the CLI's meaning).
+   * Read only beside `confirmarCriacaoIncerta: true`.
+   */
+  readonly criacaoIncertaAdota?: readonly number[] | null;
   /**
    * The deadline checkpoint (#1911 batch-A review) — asked before EACH
    * `get_item_list` page and EACH base-info chunk; `false` ⇒ the look-up stops
@@ -764,16 +794,34 @@ function skuNaFrase(sku: string): string {
  * neither does a scan by the sent one, whose hit would then be ADOPTED under a
  * SKU the produto no longer has. NOT attestable (K1-11): the operator puts one
  * SKU on both sides.
+ *
+ * ⚠️ «NORMALMENTE adota» (#1911 batch-B review, R7-roundtrip#5's sibling): this
+ * refusal is ENSURE's, so the draft HAS a readable attempt window (the
+ * reservation refuses `CRIACAO_INCERTA` without one) — but the import still
+ * declines to adopt it when two drafts of the produto are adoptable, when
+ * Shopee leaves the listing's `create_time` unknown, or when the SKU the
+ * operator sets names two parent produtos (`produtos/resolveProduto.ts`). It
+ * then links the listing apart, and the exit is the discard with the
+ * attestation.
+ *
+ * ⚠️ The two SKUs CLOSE the sentence (#1911 batch-B review, round 3): they are
+ * the only variable part — up to 255 characters each (`produtoSchema.sku`) —
+ * and `ShopeePublishBlockedError` cuts every `mensagem` at
+ * `MAX_MENSAGEM_PROBLEMA`, from the END. Interpolated first (round 2), they let
+ * the cap cut into the last exit from a combined 48 characters on; written
+ * last, the cap can only ever reach the SKUs, never an exit. Pinned through
+ * the real class: a 30 + 30 pair stays whole, and a 50 + 50 pair and the
+ * 255 + 255 maximum are cut inside the SKUs with all three exits whole.
  */
 function problemaSkuMudou(enviado: string, atual: string): ProblemaDeBloqueio {
   return bloqueio(
     MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaAmbigua,
-    `a última tentativa foi enviada ${enviado === '' ? 'sem SKU' : `com o SKU ${skuNaFrase(enviado)}`} ` +
-      `e o produto agora está ${atual === '' ? 'sem SKU' : `com ${skuNaFrase(atual)}`} — o ERP só ` +
-      'procura o anúncio pelo SKU que a tentativa enviou, e não decide. Confira no Seller Centre: ' +
-      'se o anúncio existir, deixe o MESMO SKU nele e no produto e importe-o (importar:anuncio), ' +
-      'que o vincula e adota este rascunho; se não existir, volte o SKU do produto ao enviado e ' +
-      'publique de novo, ou descarte este rascunho confirmando a criação incerta',
+    'o SKU do produto mudou desde a última tentativa — o ERP só procura o anúncio pelo SKU ' +
+      'enviado, e não decide. Confira no Seller Centre: se o anúncio existir, deixe o MESMO SKU ' +
+      'nele e no produto e importe-o (importar:anuncio), que normalmente adota este rascunho; se ' +
+      'não existir, volte o SKU do produto ao enviado e publique de novo. Sem adoção, ou sem ' +
+      'anúncio, descarte este rascunho confirmando a criação incerta. Enviado: ' +
+      `${skuNaFrase(enviado)}; agora: ${skuNaFrase(atual)}`,
   );
 }
 
@@ -904,9 +952,12 @@ export async function localizarAnuncioIncerto(
   }
   const sku = enviado ?? atual;
   if (sku === '') {
-    // ⚠️ Never scanned: a blank fold would "hit" every SKU-less listing.
-    return e.confirmarCriacaoIncerta
-      ? { tipo: 'prosseguir', resumo: semVarrer }
+    // ⚠️ Never scanned: a blank fold would "hit" every SKU-less listing. The
+    // attested verdict is a create, so an attestation expecting an ADOPTION
+    // does not match it (§I1) — refused with this verdict's own problem.
+    const atestado: VeredictoDaBuscaIncerta = { tipo: 'prosseguir', resumo: semVarrer };
+    return e.confirmarCriacaoIncerta && atestacaoConfere(atestado, e.criacaoIncertaAdota)
+      ? atestado
       : { tipo: 'recusar', problema: problemaSemSku(), resumo: semVarrer };
   }
   /** A REPORTED blank SKU is a doubt only while what the attempt sent is unknown. */
@@ -1008,6 +1059,8 @@ export async function localizarAnuncioIncerto(
     integracaoId: e.integracaoId,
     produtoId: e.produtoId,
     veredicto: veredicto.tipo === 'recusar' ? veredicto.problema.motivo : veredicto.tipo,
+    atestado: e.confirmarCriacaoIncerta,
+    esperado: e.criacaoIncertaAdota ?? null,
     definitivos,
     indecidiveis,
     vinculadas,
@@ -1017,9 +1070,124 @@ export async function localizarAnuncioIncerto(
   return veredicto;
 }
 
+/**
+ * Does an ATTESTED verdict do exactly what the attestation expected (#1911
+ * batch-B review, Lucas §I1)? Absent (`null`/`undefined`) ⇒ yes — the bare
+ * attestation, the CLI's meaning. `[]` matches only a create (`prosseguir`);
+ * `[L]` only adopting `L`. Never a set comparison: an adoption is ONE listing,
+ * so no longer list ever matches (fail closed), and `[L, L]` is not `[L]`.
+ */
+function atestacaoConfere(
+  veredicto: VeredictoDaBuscaIncerta,
+  esperado: readonly number[] | null | undefined,
+): boolean {
+  if (esperado === null || esperado === undefined) return true;
+  if (veredicto.tipo === 'adotar') return esperado.length === 1 && esperado[0] === veredicto.itemId;
+  if (veredicto.tipo === 'prosseguir') return esperado.length === 0;
+  return false;
+}
+
+/**
+ * What an attestation EXPECTS (#1911 batch-B review, Lucas §I1), or `null`
+ * for the bare one: the expectation counts only beside
+ * `confirmarCriacaoIncerta: true` — the pairing the route's body enforces
+ * (`corpoPublicacao.ts`, a 400 otherwise) and ENSURE reads (`decidir`).
+ */
+export function expectativaDaAtestacao(c: {
+  readonly confirmarCriacaoIncerta: boolean;
+  readonly criacaoIncertaAdota?: readonly number[] | null;
+}): readonly number[] | null {
+  return c.confirmarCriacaoIncerta ? (c.criacaoIncertaAdota ?? null) : null;
+}
+
+/** What an expectation promised, as the refusals word it. */
+function fraseDoEsperado(esperado: readonly number[]): string {
+  return esperado.length === 0
+    ? 'criar um anúncio novo'
+    : `adotar ${esperado.length === 1 ? 'o anúncio' : 'os anúncios'} ${listaDeIds(esperado)}`;
+}
+
+/**
+ * An attestation WITH its expectation that reached a draft whose reading is
+ * NOT `incerta` (#1911 batch-B review, Lucas §I1 — "anything else ⇒ refuse,
+ * nothing sent"): the expectation is honoured ONLY by ENSURE's fresh verdict,
+ * and such a draft runs no ENSURE. The record went after the refusal the
+ * operator attested (another run's COMPLETE look-up cleared it, then that
+ * run created nothing — refused, or stopped before the send), so what would
+ * follow — a FIRST create — is neither the adoption (`[L]`) nor the create
+ * over THAT attempt (`[]`) the operator confirmed. Refused by the reservation
+ * on ITS read, before its lock: nothing written, nothing sent.
+ *
+ * Under its OWN motivo, `criacao-incerta-encerrada` (batch-B review round 4)
+ * — never `criacao-incerta-ja-vinculada`'s acao-less row, which answers a
+ * look-up that DID run ({@link problemaDaAtestacaoQueNaoConfere} with no
+ * candidate): on one shared shape a client could only word the two apart by
+ * the draft's state when it renders, and another run may record a NEW
+ * uncertain attempt after this refusal. No `acao`: nothing was looked up, so
+ * there is nothing to import, and a row with no attestation exit cannot loop.
+ * The sentence is in the PAST of the read that decided — true however the
+ * draft moves afterwards — and claims no cause it cannot know.
+ */
+export function problemaDaAtestacaoSemCriacaoIncerta(
+  esperado: readonly number[],
+): ProblemaDeBloqueio {
+  return bloqueio(
+    MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaEncerrada,
+    `a confirmação da criação incerta esperava ${fraseDoEsperado(esperado)}, mas, quando esta ` +
+      'publicação leu o rascunho, ele já não registrava a criação incerta confirmada — nada foi ' +
+      'enviado nem vinculado, e nenhuma busca foi feita. A confirmação vale só para a recusa que ' +
+      'a pediu: publique de novo sem ela, a partir do estado atual do rascunho',
+  );
+}
+
+/**
+ * An attested publish whose FRESH scan does not do what the attestation
+ * expected (#1911 batch-B review, Lucas §I1): the refusal the operator acted
+ * on is stale — a listing it showed unlinked is linked now, one it showed
+ * linked is free now, or one appeared or left the window. Nothing is sent and
+ * nothing adopted; the problem carries the classes THIS scan found (each
+ * candidate with its state, linked ones with their produto), so the exits are
+ * re-derived from the present, never from the stale refusal.
+ *
+ * Under `criacao-incerta-ja-vinculada`: the one attestable class of a scan
+ * that ran (the web's two exits key on it, `importar{itemIds, vinculados}`
+ * telling linked from free). With NO candidate at all `importar` cannot be
+ * built (its `itemIds` is never empty) and the row carries no `acao`. The
+ * remedy goes BEFORE the ids, so the 500-character cap trims ids only.
+ */
+function problemaDaAtestacaoQueNaoConfere(
+  esperado: readonly number[],
+  todos: readonly number[],
+  vinculados: readonly Vinculado[],
+  produtoId: string,
+): ProblemaDeBloqueio {
+  const dono = new Map(vinculados.map((v) => [v.itemId, v.produtoId]));
+  const nomeados = todos.slice(0, IDS_NA_FRASE).map((itemId) => {
+    const produto = dono.get(itemId);
+    if (produto === undefined) return `${String(itemId)} (sem vínculo)`;
+    return produto === produtoId
+      ? `${String(itemId)} (deste produto)`
+      : `${String(itemId)} (do produto ${produto})`;
+  });
+  const mais = todos.length > IDS_NA_FRASE ? ` e mais ${String(todos.length - IDS_NA_FRASE)}` : '';
+  const esperava = fraseDoEsperado(esperado);
+  const achados =
+    todos.length === 0
+      ? 'nenhum anúncio com o SKU enviado, criado na janela da última tentativa'
+      : `anúncio(s) com o SKU enviado, criados na janela da última tentativa: ` +
+        `${nomeados.join(', ')}${mais}`;
+  return bloqueio(
+    MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaJaVinculada,
+    `a confirmação da criação incerta esperava ${esperava}, e a busca de agora não confere — ` +
+      'nada foi enviado nem vinculado. Confira no Seller Centre e escolha de novo a partir do ' +
+      `que a busca acha agora: ${achados}`,
+    todos.length === 0 ? undefined : acaoImportar(todos, vinculados),
+  );
+}
+
 /** The verdict over a COMPLETE scan's three classes — see the module docblock. */
 function decidir(
-  e: Pick<EntradaDaBuscaIncerta, 'produtoId' | 'confirmarCriacaoIncerta'>,
+  e: Pick<EntradaDaBuscaIncerta, 'produtoId' | 'confirmarCriacaoIncerta' | 'criacaoIncertaAdota'>,
   resumo: ResumoDaBuscaIncerta,
   c: {
     readonly definitivos: readonly number[];
@@ -1041,8 +1209,28 @@ function decidir(
     };
   }
   const [unico] = c.definitivos;
-  if (unico !== undefined) return { tipo: 'adotar', itemId: unico, resumo };
-  return { tipo: 'prosseguir', resumo };
+  const veredicto: VeredictoDaBuscaIncerta =
+    unico === undefined
+      ? { tipo: 'prosseguir', resumo }
+      : { tipo: 'adotar', itemId: unico, resumo };
+  // ⚠️ §I1: an attestation states what it expects, and THIS scan — under the
+  // lock, never the refusal it was read off — must do exactly that, or nothing
+  // is sent: a listing linked since that refusal would otherwise turn a
+  // promised adoption into a second `add_item`, and one unlinked since would
+  // turn a deliberate create into overwriting it.
+  if (e.confirmarCriacaoIncerta && !atestacaoConfere(veredicto, e.criacaoIncertaAdota)) {
+    return {
+      tipo: 'recusar',
+      problema: problemaDaAtestacaoQueNaoConfere(
+        e.criacaoIncertaAdota ?? [],
+        todos,
+        c.vinculados,
+        e.produtoId,
+      ),
+      resumo,
+    };
+  }
+  return veredicto;
 }
 
 /* -------------------------------------------------------------------------- */

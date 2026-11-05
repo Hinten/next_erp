@@ -30,11 +30,16 @@ const MARGEM_MS = 30_000;
 const APP_DIR = path.resolve(__dirname, '../..');
 const TIMEOUT_SECONDS_LINHA = /^\s*timeoutSeconds\s*:\s*(\d+)\s*(?:#.*)?$/;
 
-/** The three routes, and how many code exchanges each may make: status / start / callback. */
+/**
+ * The routes, and how many code exchanges each may make: status / start /
+ * callback / the NF-e re-drive (step 14, PR 14-d — ZERO Amazon calls of any
+ * kind, below).
+ */
 const ROTAS: readonly (readonly [string, number])[] = [
   ['app/api/marketplace/amazon/conta/[id]/route.ts', 0],
   ['app/api/marketplace/amazon/conta/[id]/oauth/start/route.ts', 0],
   ['app/api/oauth/amazon/callback/route.ts', 0],
+  ['app/api/marketplace/amazon/enviar-nfe/route.ts', 0],
   // The callback's body lives in `conectar.ts`; the ONE exchange is counted there.
   ['lib/amazon/conta/conectar.ts', 1],
 ];
@@ -78,14 +83,16 @@ describe('the OAuth routes fit inside the backend ceiling', () => {
     expect(PRAZO_AMAZON_MS.lwa + MARGEM_MS).toBeLessThanOrEqual(tetoS * 1000);
   });
 
-  it('status / start / callback make 0 / 0 / 1 code exchanges, and no route ever refreshes', () => {
+  it('status / start / callback / re-drive make 0 / 0 / 1 / 0 code exchanges, and no route ever refreshes', () => {
     for (const [arquivo, trocas] of ROTAS) {
       const fonte = ler(arquivo);
       expect(contar(fonte, 'trocarCodigoAutorizacao('), arquivo).toBe(trocas);
       expect(contar(fonte, 'trocarRefreshToken('), arquivo).toBe(0);
     }
     // No route reaches Amazon any other way: no context, no client, no raw fetch.
-    for (const [arquivo] of ROTAS.slice(0, 3)) {
+    const rotas = ROTAS.map(([arquivo]) => arquivo).filter((a) => a.startsWith('app/'));
+    expect(rotas).toHaveLength(4);
+    for (const arquivo of rotas) {
       expect(ler(arquivo), arquivo).not.toMatch(/loadAmazonContext|criarClienteSpApi|fetch\(/);
     }
     // The status and start bodies never exchange either.
@@ -106,6 +113,20 @@ describe('the OAuth routes fit inside the backend ceiling', () => {
       expect(contar(fonte, 'trocarCodigoAutorizacao('), arquivo).toBe(0);
       expect(contar(fonte, 'trocarRefreshToken('), arquivo).toBe(0);
       expect(fonte, arquivo).not.toMatch(/loadAmazonContext|criarClienteSpApi|fetch\(/);
+    }
+  });
+
+  it('★ the NF-e re-drive (route and body) makes ZERO Amazon calls of any kind: it only enqueues (step 14, PR 14-d)', () => {
+    for (const arquivo of [
+      'app/api/marketplace/amazon/enviar-nfe/route.ts',
+      'lib/amazon/nfe/reenvioNfe.ts',
+    ]) {
+      const fonte = ler(arquivo);
+      expect(contar(fonte, 'trocarCodigoAutorizacao('), arquivo).toBe(0);
+      expect(contar(fonte, 'trocarRefreshToken('), arquivo).toBe(0);
+      expect(fonte, arquivo).not.toMatch(
+        /loadAmazonContext|criarClienteSpApi|criarClienteEscritaSpApi|executarEscritaAmazon|lerPedidoAmazon\(|consultarStatusNotaFiscal|enviarNotaFiscal|fetch\(/,
+      );
     }
   });
 

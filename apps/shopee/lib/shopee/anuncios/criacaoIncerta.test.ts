@@ -59,6 +59,7 @@ import {
   incertezaDocumentadaDeAddItem,
   localizarAnuncioIncerto,
   mensagemDoAnuncioIncerto,
+  problemaDaAtestacaoSemCriacaoIncerta,
   problemasDoAnuncioExistente,
   recusaDeterministicaDeAddItem,
   recusaDoAnuncioIncerto,
@@ -67,7 +68,11 @@ import {
   type DesfechoDeCriacaoDeItem,
   type LinhaCriacaoDeItem,
 } from './criacaoIncerta';
-import { MOTIVO_PROBLEMA_PUBLICACAO, MOTIVO_PUBLICACAO_BLOQUEADA } from './errosPublicacao';
+import {
+  MOTIVO_PROBLEMA_PUBLICACAO,
+  MOTIVO_PUBLICACAO_BLOQUEADA,
+  ShopeePublishBlockedError,
+} from './errosPublicacao';
 import { FRASE_TABELA_MEDIDAS_FOTO_RECUSADA } from './problemasPublicacao';
 
 /* -------------------------------------------------------------------------- */
@@ -464,14 +469,15 @@ describe('as tabelas — fechadas, alcançáveis, sem motivo soletrado', () => {
     }
   });
 
-  it('o FONTE não soletra motivo algum entre aspas, e pela constante produz SÓ as quatro da busca (P5) e as três da primeira criação (P5b)', () => {
+  it('o FONTE não soletra motivo algum entre aspas, e pela constante produz SÓ as quatro da busca (P5), a da expectativa sem criação incerta (round 4) e as três da primeira criação (P5b)', () => {
     const fonte = readFileSync(
       fileURLToPath(new URL('./criacaoIncerta.ts', import.meta.url)),
       'utf8',
     );
     expect(fonte).toContain('RECUSAS_DETERMINISTICAS_ADD_ITEM');
-    // ENSURE's four refusals and the first create's three (P5b) — and nothing
-    // else of either vocabulary.
+    // ENSURE's four refusals, the reservation's `criacao-incerta-encerrada`
+    // (built here, batch-B review round 4) and the first create's three
+    // (P5b) — and nothing else of either vocabulary.
     const pelaConstante = [...fonte.matchAll(/MOTIVO_PUBLICACAO_BLOQUEADA\.(\w+)/g)]
       .map((m) => m[1])
       .sort();
@@ -481,6 +487,7 @@ describe('as tabelas — fechadas, alcançáveis, sem motivo soletrado', () => {
       'buscaDeAnuncioExistenteIncompleta',
       'buscaDeAnuncioIncompleta',
       'criacaoIncertaAmbigua',
+      'criacaoIncertaEncerrada',
       'criacaoIncertaJaVinculada',
       'criacaoIncertaSemSku',
     ]);
@@ -1092,6 +1099,28 @@ describe('o 202 de uma criação incerta — as peças', () => {
     expect(comSku).not.toContain('importar:anuncio');
   });
 
+  it('(R7-roundtrip#5, sem SKU) a importação NORMALMENTE adota — e a saída sem adoção é o descarte', () => {
+    const frase202 = mensagemDoAnuncioIncerto(false);
+    // The import links the listing APART on two adoptable drafts, an unknown
+    // create_time or a SKU on two produtos: never promised, and its exit named.
+    expect(frase202).toContain(
+      'importe-o (importar:anuncio), que normalmente adota este rascunho (sem adoção, descarte ' +
+        'este rascunho) — sem SKU a importação cria OUTRO produto',
+    );
+    // ⛔ quase-pares: the unconditional promise is gone; the not-exists exit (the
+    // attested re-publish) and the SKU-first order stay exactly as they were.
+    expect(frase202).not.toContain('que o vincula a este produto e adota este rascunho');
+    expect(frase202).not.toMatch(/(?<!normalmente )adota este rascunho/);
+    expect(frase202).toContain(
+      'se não existir, publique de novo o mesmo rascunho confirmando a criação incerta ' +
+        '(--confirmar-criacao-incerta)',
+    );
+    expect(frase202.indexOf('MESMO SKU')).toBeLessThan(frase202.indexOf('importar:anuncio'));
+    // The 202 never offers the discard as the not-exists exit: «sem adoção» is the
+    // ONLY place it appears, and that is the existing-listing branch.
+    expect(frase202.match(/descarte este rascunho/g)).toHaveLength(1);
+  });
+
   it('CriacaoDeAnuncioIncertaError é do APP — nunca um ShopeeError — e guarda a causa', () => {
     const causa = new ShopeeNetworkError('caiu');
     const err = new CriacaoDeAnuncioIncertaError(
@@ -1222,6 +1251,8 @@ describe('localizarAnuncioIncerto — a busca que falha FECHADO (D5, K1-7, K1-11
       enviado: string | null;
       desdeMs: number;
       confirmar: boolean;
+      /** The attestation's expectation (§I1) — absent ⇒ the key is NOT passed (the CLI). */
+      esperado: readonly number[] | null;
       vinculos: readonly { id: string; raw: Json }[];
     }> = {},
   ) {
@@ -1236,6 +1267,7 @@ describe('localizarAnuncioIncerto — a busca que falha FECHADO (D5, K1-7, K1-11
       },
       vinculosDoProduto: over.vinculos ?? [],
       confirmarCriacaoIncerta: over.confirmar ?? false,
+      ...('esperado' in over ? { criacaoIncertaAdota: over.esperado ?? null } : {}),
     });
   }
 
@@ -1256,6 +1288,24 @@ describe('localizarAnuncioIncerto — a busca que falha FECHADO (D5, K1-7, K1-11
       expect(c.getItemList).not.toHaveBeenCalled();
       expect(v.resumo.varreu).toBe(false);
     }
+  });
+
+  it('(R7-roundtrip#5) a recusa sem SKU: «normalmente adota», a saída sem adoção, e INTEIRA nos 500', async () => {
+    const frase = recusa(await buscar(cliente({}).client, { sku: null })).mensagem;
+    expect(frase).toContain(
+      'que normalmente adota este rascunho (sem adoção, descarte este rascunho)',
+    );
+    // ⛔ quase-pares: no flat promise is left, while the not-exists exit — the
+    // attested re-publish, NOT the discard — still closes the sentence, whole.
+    expect(frase).not.toContain('que o vincula a este produto e adota este rascunho');
+    expect(frase).not.toMatch(/(?<!normalmente )adota este rascunho/);
+    expect(frase.length).toBeLessThanOrEqual(500);
+    expect(
+      frase.endsWith(
+        'se não existir, publique de novo confirmando a criação incerta ' +
+          '(--confirmar-criacao-incerta)',
+      ),
+    ).toBe(true);
   });
 
   it('(K1-11) sem SKU + confirmarCriacaoIncerta ⇒ prossegue SEM varrer (varreu: false — o registro fica)', async () => {
@@ -1460,6 +1510,78 @@ describe('localizarAnuncioIncerto — a busca que falha FECHADO (D5, K1-7, K1-11
       const v = await buscar(cliente({}).client, { sku: 'SKU-NOVO-123', enviado: 'SKU-VELHO-123' });
       expect(recusa(v).mensagem.length).toBeLessThanOrEqual(500);
       expect(recusa(v).mensagem).toContain('descarte este rascunho');
+    });
+
+    it('(R7-roundtrip#5) a importação NORMALMENTE adota — e a saída sem adoção é o descarte atestado', async () => {
+      const v = await buscar(cliente({}).client, { sku: 'SKU-NOVO-123', enviado: 'SKU-VELHO-123' });
+      const frase = recusa(v).mensagem;
+      // The import declines to adopt on two adoptable drafts, an unknown
+      // create_time or a SKU on two produtos: never promised, and its exit named.
+      expect(frase).toContain('importe-o (importar:anuncio), que normalmente adota este rascunho');
+      expect(frase).toContain(
+        'Sem adoção, ou sem anúncio, descarte este rascunho confirmando a criação incerta',
+      );
+      // ⛔ quase-pares: the unconditional promise is gone, while the SKU-back exit
+      // of a listing that does not exist stays exactly as it was.
+      expect(frase).not.toContain('que o vincula e adota este rascunho');
+      expect(frase).not.toMatch(/(?<!normalmente )adota este rascunho/);
+      expect(frase).toContain(
+        'se não existir, volte o SKU do produto ao enviado e publique de novo',
+      );
+      // Whole at this SHORT pair, and the two SKUs close it, AFTER every exit
+      // (round 3). What the 500-character cap does to a LONG pair: the next test.
+      expect(frase.endsWith('Enviado: «SKU-VELHO-123»; agora: «SKU-NOVO-123»')).toBe(true);
+    });
+
+    it('(R7-roundtrip#5, rodada 3) SKUs LONGOS: o corte dos 500 só alcança os SKUs do fim — as três saídas ficam INTEIRAS', async () => {
+      const SAIDAS = [
+        'se o anúncio existir, deixe o MESMO SKU nele e no produto e importe-o ' +
+          '(importar:anuncio), que normalmente adota este rascunho',
+        'se não existir, volte o SKU do produto ao enviado e publique de novo',
+        'Sem adoção, ou sem anúncio, descarte este rascunho confirmando a criação incerta.',
+      ] as const;
+      // What the 422 carries: ShopeePublishBlockedError caps every mensagem at
+      // 500 characters, cutting from the END (`limitarMensagemProblema`).
+      const no422 = async (enviado: string, sku: string) => {
+        const problema = recusa(await buscar(cliente({}).client, { sku, enviado }));
+        const err = new ShopeePublishBlockedError({
+          produtoId: PRODUTO,
+          itemId: null,
+          problemas: [problema],
+        });
+        return { bruta: problema.mensagem, enviada: err.problemas[0]?.mensagem ?? '' };
+      };
+
+      // A realistic long pair, 30 + 30: WHOLE, the SKUs included.
+      const enviado30 = 'CAMISETA-ALGODAO-PRETA-GG-0001';
+      const atual30 = 'CAMISETA-ALGODAO-PRETA-GG-0002';
+      expect([enviado30.length, atual30.length]).toEqual([30, 30]);
+      const trinta = await no422(enviado30, atual30);
+      expect(trinta.enviada).toBe(trinta.bruta);
+      expect(trinta.enviada.endsWith(`Enviado: «${enviado30}»; agora: «${atual30}»`)).toBe(true);
+      for (const saida of SAIDAS) expect(trinta.enviada).toContain(saida);
+
+      // ⛔ quase-pares: pairs the cap DOES cut — a 100-character pair (50 + 50)
+      // and the produto schema's maximum (255 + 255). The cut lands inside the
+      // SKUs; every exit survives whole, before the first SKU.
+      const enviado50 = 'KIT-CAMISETA-ALGODAO-PRETA-GG-ESTAMPA-FRENTE-V0001';
+      const atual50 = 'KIT-CAMISETA-ALGODAO-PRETA-GG-ESTAMPA-FRENTE-V0002';
+      expect([enviado50.length, atual50.length]).toEqual([50, 50]);
+      for (const [enviado, atual] of [
+        [enviado50, atual50],
+        ['E'.repeat(255), 'A'.repeat(255)],
+      ] as const) {
+        const r = await no422(enviado, atual);
+        expect(r.bruta.length).toBeGreaterThan(500);
+        expect(r.enviada).toHaveLength(500);
+        expect(r.enviada.endsWith('…')).toBe(true);
+        for (const saida of SAIDAS) expect(r.enviada).toContain(saida);
+        const primeiroSku = r.enviada.indexOf('Enviado: «');
+        expect(primeiroSku).toBeGreaterThan(-1);
+        for (const saida of SAIDAS) {
+          expect(r.enviada.indexOf(saida) + saida.length).toBeLessThan(primeiroSku);
+        }
+      }
     });
   });
 
@@ -1693,6 +1815,233 @@ describe('localizarAnuncioIncerto — a busca que falha FECHADO (D5, K1-7, K1-11
             JSON.stringify(over),
           ).toMatchObject({ tipo: 'prosseguir' });
         }
+      });
+    });
+
+    /**
+     * #1911 batch-B review R4-1369-fold#0 (Lucas §I1, 2026-10-29): the web's
+     * attestation exits are read off a 422 that may be stale by the time the
+     * operator clicks. The expectation travels with the attestation and THIS
+     * scan must do exactly it — never the bare flag's "go".
+     */
+    describe('(§I1) a atestação COM a expectativa: só vale quando a busca DE AGORA faz exatamente isso', () => {
+      it('adoção esperada [A] e A ainda livre (o caso misto: B vinculado) ⇒ adotar A', async () => {
+        const v = await buscar(umaLoja(base(ITEM_A), base(ITEM_B)).client, {
+          vinculos: [vinculoProprio(ITEM_B)],
+          confirmar: true,
+          esperado: [ITEM_A],
+        });
+        expect(v).toMatchObject({ tipo: 'adotar', itemId: ITEM_A });
+      });
+
+      it('criação esperada [] e tudo vinculado ⇒ prosseguir (o segundo anúncio de propósito)', async () => {
+        const v = await buscar(umaLoja(base(ITEM_A)).client, {
+          db: comVinculoDe(OUTRO_PRODUTO, ITEM_A),
+          confirmar: true,
+          esperado: [],
+        });
+        expect(v).toMatchObject({ tipo: 'prosseguir', resumo: { varreu: true } });
+      });
+
+      it('⛔ o cenário do review: adoção esperada [A], mas A foi vinculado a OUTRO produto desde a recusa ⇒ RECUSA com as classes de AGORA — nunca prosseguir', async () => {
+        // The import minted P″ holding A between the 422 and this click.
+        const db = comVinculoDe(OUTRO_PRODUTO, ITEM_A);
+        const v = await buscar(umaLoja(base(ITEM_A), base(ITEM_B)).client, {
+          db,
+          vinculos: [vinculoProprio(ITEM_B)],
+          confirmar: true,
+          esperado: [ITEM_A],
+        });
+        const p = recusa(v);
+        expect(p).toMatchObject({
+          campo: 'item_sku',
+          motivo: MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaJaVinculada,
+          acao: {
+            tipo: 'importar',
+            itemIds: [ITEM_A, ITEM_B],
+            // The web re-derives its exits from THESE: A is no longer free.
+            vinculados: [
+              { itemId: ITEM_A, produtoId: OUTRO_PRODUTO },
+              { itemId: ITEM_B, produtoId: PRODUTO },
+            ],
+          },
+        });
+        expect(p.mensagem).toContain(`esperava adotar o anúncio ${String(ITEM_A)}`);
+        expect(p.mensagem).toContain('nada foi enviado nem vinculado');
+        expect(p.mensagem).toContain(`${String(ITEM_A)} (do produto ${OUTRO_PRODUTO})`);
+        expect(p.mensagem).toContain(`${String(ITEM_B)} (deste produto)`);
+        // ⛔ The SAME scan without the expectation is today's meaning (the
+        // CLI's): the bare flag overrides the linked rows and goes on.
+        expect(
+          await buscar(umaLoja(base(ITEM_A), base(ITEM_B)).client, {
+            db: comVinculoDe(OUTRO_PRODUTO, ITEM_A),
+            vinculos: [vinculoProprio(ITEM_B)],
+            confirmar: true,
+          }),
+        ).toMatchObject({ tipo: 'prosseguir' });
+      });
+
+      it('⛔ o reverso: criação esperada [], mas o vinculado de antes está LIVRE agora ⇒ RECUSA (nunca adotar e sobrescrever)', async () => {
+        const v = await buscar(umaLoja(base(ITEM_A)).client, { confirmar: true, esperado: [] });
+        const p = recusa(v);
+        expect(p).toMatchObject({
+          motivo: MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaJaVinculada,
+          acao: { tipo: 'importar', itemIds: [ITEM_A], vinculados: [] },
+        });
+        expect(p.mensagem).toContain('esperava criar um anúncio novo');
+        expect(p.mensagem).toContain(`${String(ITEM_A)} (sem vínculo)`);
+        // ⛔ quase-par: sem a expectativa (ausente, ou null), o MESMO achado é
+        // adotado — o sentido de hoje.
+        for (const over of [{}, { esperado: null }]) {
+          expect(
+            await buscar(umaLoja(base(ITEM_A)).client, { confirmar: true, ...over }),
+            JSON.stringify(over),
+          ).toMatchObject({ tipo: 'adotar', itemId: ITEM_A });
+        }
+      });
+
+      it('criação esperada [] e um livre APARECEU ao lado do vinculado ⇒ recusa, nomeando o livre', async () => {
+        const v = await buscar(umaLoja(base(ITEM_A), base(ITEM_B)).client, {
+          vinculos: [vinculoProprio(ITEM_B)],
+          confirmar: true,
+          esperado: [],
+        });
+        expect(recusa(v)).toMatchObject({
+          motivo: MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaJaVinculada,
+          acao: { itemIds: [ITEM_A, ITEM_B], vinculados: [{ itemId: ITEM_B, produtoId: PRODUTO }] },
+        });
+      });
+
+      it('adoção esperada [A], e a busca acha OUTRO livre (C) ⇒ recusa — nunca adota o que não foi prometido', async () => {
+        const v = await buscar(umaLoja(base(ITEM_C)).client, {
+          confirmar: true,
+          esperado: [ITEM_A],
+        });
+        expect(recusa(v)).toMatchObject({
+          motivo: MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaJaVinculada,
+          acao: { itemIds: [ITEM_C], vinculados: [] },
+        });
+      });
+
+      it('adoção esperada [A], e a janela está VAZIA agora ⇒ recusa SEM acao (importar nunca vai vazio) — nunca cria', async () => {
+        const c = cliente({});
+        const p = recusa(await buscar(c.client, { confirmar: true, esperado: [ITEM_A] }));
+        expect(p.motivo).toBe(MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaJaVinculada);
+        expect(p).not.toHaveProperty('acao');
+        expect(p.mensagem).toContain('nenhum anúncio com o SKU enviado');
+        // ⛔ quase-par: [] na mesma janela vazia CONFERE ⇒ prosseguir.
+        expect(await buscar(cliente({}).client, { confirmar: true, esperado: [] })).toMatchObject({
+          tipo: 'prosseguir',
+        });
+      });
+
+      /**
+       * Round 4 (VERIFY-0 round-2 residual #2). Two acao-less refusals answer an
+       * attestation's expectation, and they are DIFFERENT facts: this one — the
+       * scan RAN and its window is empty — and the reservation's, on a draft that
+       * no longer records the attempt, where NO look-up ran. On one shared slug a
+       * client could only tell them apart by the draft's state when it renders,
+       * and a NEW uncertain attempt recorded after the refusal would make it say
+       * «a busca de agora não acha…» about a search that never happened.
+       */
+      it('⛔ as duas recusas SEM acao ficam DISTINTAS: a busca que rodou e não achou (ja-vinculada) ⟷ a expectativa sem criação incerta, sem busca (encerrada)', async () => {
+        const rodou = recusa(
+          await buscar(cliente({}).client, { confirmar: true, esperado: [ITEM_A] }),
+        );
+        const semBusca = problemaDaAtestacaoSemCriacaoIncerta([ITEM_A]);
+
+        // Same shape — campo item_sku, no `acao` — and NOT the same motivo.
+        expect(rodou).toMatchObject({
+          campo: 'item_sku',
+          motivo: MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaJaVinculada,
+        });
+        expect(semBusca).toEqual({
+          campo: 'item_sku',
+          motivo: MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaEncerrada,
+          mensagem: semBusca.mensagem,
+        });
+        expect(rodou).not.toHaveProperty('acao');
+        expect(semBusca).not.toHaveProperty('acao');
+        expect(semBusca.motivo).not.toBe(rodou.motivo);
+        // Each sentence says what happened, and only that.
+        expect(rodou.mensagem).toContain('a busca de agora não confere');
+        expect(semBusca.mensagem).toContain('nenhuma busca foi feita');
+        expect(semBusca.mensagem).not.toMatch(/busca de agora|não confere|não acha/);
+        expect(semBusca.mensagem).toContain(`esperava adotar o anúncio ${String(ITEM_A)}`);
+        expect(problemaDaAtestacaoSemCriacaoIncerta([]).mensagem).toContain(
+          'esperava criar um anúncio novo',
+        );
+      });
+
+      it('⛔ só [] ou UM id conferem: [A, A] e [A, B] nunca adotam A', async () => {
+        for (const esperado of [
+          [ITEM_A, ITEM_A],
+          [ITEM_A, ITEM_B],
+        ]) {
+          expect(
+            recusa(await buscar(umaLoja(base(ITEM_A)).client, { confirmar: true, esperado }))
+              .motivo,
+            JSON.stringify(esperado),
+          ).toBe(MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaJaVinculada);
+        }
+      });
+
+      it('sem SKU: [] confere (prosseguir, sem varrer); uma ADOÇÃO esperada recusa com o sem-sku de agora', async () => {
+        const c = cliente({});
+        expect(await buscar(c.client, { sku: ' ', confirmar: true, esperado: [] })).toMatchObject({
+          tipo: 'prosseguir',
+          resumo: { varreu: false },
+        });
+        expect(
+          recusa(await buscar(c.client, { sku: ' ', confirmar: true, esperado: [ITEM_A] })).motivo,
+        ).toBe(MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaSemSku);
+        expect(c.getItemList).not.toHaveBeenCalled();
+      });
+
+      it('⛔ a expectativa SEM a atestação não passa por cima de nada: o já-vinculado de sempre', async () => {
+        const v = await buscar(umaLoja(base(ITEM_A)).client, {
+          vinculos: [vinculoProprio(ITEM_A)],
+          esperado: [],
+        });
+        const p = recusa(v);
+        expect(p.motivo).toBe(MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaJaVinculada);
+        expect(p.mensagem).toMatch(/descarte ESTE rascunho/);
+        expect(p.mensagem).not.toContain('esperava');
+      });
+
+      it('⛔ ambígua e incompleta continuam vencendo — a expectativa não as transforma em "não confere"', async () => {
+        expect(
+          recusa(
+            await buscar(umaLoja(base(ITEM_A), base(ITEM_B)).client, {
+              confirmar: true,
+              esperado: [ITEM_A],
+            }),
+          ).motivo,
+        ).toBe(MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaAmbigua);
+        const semFim = cliente({ paginas: [pagina([], true, 100), pagina([], true, 100)] });
+        expect(recusa(await buscar(semFim.client, { confirmar: true, esperado: [] })).motivo).toBe(
+          MOTIVO_PUBLICACAO_BLOQUEADA.buscaDeAnuncioIncompleta,
+        );
+      });
+
+      it('a frase cabe nos 500 caracteres com muitos ids e produtos longos: o remédio vem ANTES dos ids', async () => {
+        const db = new FakeDb();
+        const bases = Array.from({ length: 12 }, (_v, i) => base(ITEM_C + i));
+        for (const [i, b] of bases.entries()) {
+          const produto = `produto-com-um-id-bem-comprido-${String(i)}`;
+          db.seed(`produtos/${produto}/prodshopee/link-${String(i)}`, {
+            contaProdutoShopeeOuterRef: REF_CONTA,
+            item_id: b.item_id,
+          });
+        }
+        const p = recusa(
+          await buscar(umaLoja(...bases).client, { db, confirmar: true, esperado: [ITEM_A] }),
+        );
+        const remedio =
+          'Confira no Seller Centre e escolha de novo a partir do que a busca acha agora';
+        expect(p.mensagem).toContain(remedio);
+        expect(p.mensagem.indexOf(remedio)).toBeLessThan(500 - remedio.length);
+        expect((p.acao as { itemIds: number[] }).itemIds).toHaveLength(12);
       });
     });
   });

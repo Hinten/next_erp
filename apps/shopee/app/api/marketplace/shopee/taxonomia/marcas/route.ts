@@ -3,14 +3,17 @@
  *
  * ONE page of a leaf category's brands, straight from Shopee.
  *
- * ⚠️ **This route does not feed a produto brand dropdown — none exists yet, and
- * NOTHING reads the brand shortlist yet.** A dropdown would read
- * `integracao/{id}/brandshopee` — the operator-curated shortlist — because
- * Shopee's brand API is extremely slow. This route is for the REGISTRATION
- * picker where an operator adds a brand to that shortlist, and step 10 writes
- * nothing: that picker and the shortlist editor are listing authoring's (#1911,
- * the step after step 21; no `apps/web` caller exists today), and publish
- * re-validates the brand (step 11).
+ * ⚠️ **This route does not feed a produto brand dropdown.** That dropdown —
+ * the draft editor's brand picker (`apps/web` `MarcaRascunhoShopee`, #1911
+ * P10) — reads `integracao/{id}/brandshopee`, the operator-curated shortlist,
+ * because Shopee's brand API is extremely slow. This route serves the
+ * REGISTRATION picker of the shortlist's editor, the Marcas section of the
+ * conta page (`apps/web` `/canais/shopee/[id]`, #1911 P9), where an operator
+ * adds a brand to that shortlist. Step 10 writes nothing — the page saves the
+ * rows to Firestore itself — and publish re-validates NOTHING against the
+ * shortlist: it sends the `brand_id` + `original_brand_name` pair the draft
+ * stored, and its own bounded `get_brand_list` walk only names a stored id
+ * that has no name (`anuncios/publicarAnuncio.ts`, `resolverMarcaDoAnuncio`).
  *
  * ⚠️ **No paging loop.** One page per request, `nextOffset` echoed verbatim, and
  * the caller decides whether to ask for another. `next_offset` is Shopee's own

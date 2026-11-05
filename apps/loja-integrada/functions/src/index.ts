@@ -56,8 +56,14 @@ import { getDb } from './lib/admin';
  * in-queue sweep (`varrerEscritasLojaIntegrada`, ./varrerEscritas). Until the
  * window the write valve is unset, so nothing is recorded or written.
  *
- * Master plan step 9 adds the product import: a Firestore trigger on the job
- * document's creation (`onImportacaoLojaIntegradaCriada`,
+ * Master plan step 9 (PR 9-v) adds the anchor trigger,
+ * `onProdutoLojaIntegradaLinkChanged` (./onProdutoLojaIntegradaLinkChanged): it
+ * keeps each produto's `integracoesComProduto` in step with that produto's Loja
+ * Integrada link documents, through the shared core, and makes no Loja
+ * Integrada call.
+ *
+ * Master plan step 9 (PR 9-c) adds the product import: a Firestore trigger on
+ * the job document's creation (`onImportacaoLojaIntegradaCriada`,
  * ./onImportacaoLojaIntegradaCriada) enqueues the job's first slice onto the
  * READS queue, which runs each slice (`tipo: importacao`) and enqueues the next
  * one by name. Until the window the read switch stops every slice at its first
@@ -120,6 +126,12 @@ export { pollLojaIntegradaPedidos } from './pollPedidos';
  * conta (master plan step 20, ./onIntegracaoLojaIntegradaChanged).
  */
 export { onIntegracaoLojaIntegradaChanged } from './onIntegracaoLojaIntegradaChanged';
+
+/**
+ * The anchor trigger: each produto's `integracoesComProduto` follows its Loja
+ * Integrada link documents (master plan step 9, ./onProdutoLojaIntegradaLinkChanged).
+ */
+export { onProdutoLojaIntegradaLinkChanged } from './onProdutoLojaIntegradaLinkChanged';
 
 /**
  * The product import's job-creation trigger: a job created `pendente` ⇒ ONE

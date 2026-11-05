@@ -13,6 +13,8 @@ const h = vi.hoisted(() => ({
   children: [] as Array<{ id: string; data: Record<string, unknown> }>,
   toasts: [] as string[],
   rows: [] as unknown[],
+  /** Every value the grid reported through `onDirtyChange`, in order (KNOWN #9 round 3). */
+  relatos: [] as boolean[],
 }));
 
 vi.mock('@delfrance/data', () => ({
@@ -73,6 +75,13 @@ const { KitVariacoesManager } = await import('./KitVariacoesManager');
 
 const db = {} as unknown as Firestore;
 
+/** A STABLE reporter, as the page passes its `useState` setter. */
+const relatar = (dirty: boolean) => {
+  h.relatos.push(dirty);
+};
+/** The grid's last report — what the page holds right now. */
+const ultimoRelato = () => h.relatos.at(-1);
+
 function rows(): VariationRow[] {
   return h.rows.length > 0
     ? (h.rows as VariationRow[])
@@ -97,7 +106,14 @@ function renderManager() {
     const form = useForm({ defaultValues: { ehKit: true, componentesKit: {} } });
     return (
       <FormProvider {...form}>
-        <KitVariacoesManager produtoId="p1" db={db} grupos={[]} rows={rows()} flushRef={flushRef} />
+        <KitVariacoesManager
+          produtoId="p1"
+          db={db}
+          grupos={[]}
+          rows={rows()}
+          flushRef={flushRef}
+          onDirtyChange={relatar}
+        />
       </FormProvider>
     );
   }
@@ -120,6 +136,7 @@ beforeEach(() => {
   h.toasts.length = 0;
   h.children = [{ id: 'c1', data: { componentesKit: null } }];
   h.rows.length = 0;
+  h.relatos.length = 0;
 });
 
 afterEach(() => {
@@ -264,5 +281,125 @@ describe('KitVariacoesManager', () => {
     });
     expect(h.saves).toHaveLength(1);
     expect(h.saves[0]).toEqual([{ id: 'c1', componentesKit: { 'comp-1': { quantidade: 1 } } }]);
+  });
+});
+
+// #1911 P11 review, KNOWN #9 round 3: the staged maps live HERE, outside the
+// produto form, and a Shopee draft's «Publicar» derives a kit model's stock
+// from the STORED child composition — so the page must be told while one is
+// pending (its «Publicar» gate and its leave-guard read this report).
+describe('KitVariacoesManager — reports its staged compositions to the page (KNOWN #9 round 3)', () => {
+  it('`false` on mount, `true` once a composition is staged, `false` again once the flush WROTE it', async () => {
+    const { flushRef } = renderManager();
+    expect(h.relatos).toEqual([false]);
+
+    fireEvent.click(screen.getByTestId('stage-kit'));
+    expect(ultimoRelato()).toBe(true);
+
+    await act(async () => {
+      await flushRef.current!('p1', {});
+    });
+    expect(h.saves).toHaveLength(1);
+    expect(ultimoRelato()).toBe(false);
+
+    // A new edit after the save is pending again.
+    fireEvent.click(screen.getByTestId('stage-kit'));
+    expect(ultimoRelato()).toBe(true);
+  });
+
+  it('NEAR-MISS: an UNRESOLVED entry stays staged, so the report stays `true` — until the retry writes it', async () => {
+    h.children = [];
+    const { flushRef } = renderManager();
+    fireEvent.click(screen.getByTestId('stage-kit'));
+    expect(ultimoRelato()).toBe(true);
+
+    await act(async () => {
+      await flushRef.current!('p1', {});
+    });
+    expect(h.saves).toEqual([]);
+    // The save "succeeded" but wrote nothing: still pending, never reported clean.
+    expect(h.relatos).toEqual([false, true]);
+
+    h.children = [{ id: 'c1', data: { componentesKit: null } }];
+    await act(async () => {
+      await flushRef.current!('p1', {});
+    });
+    expect(h.saves).toHaveLength(1);
+    expect(ultimoRelato()).toBe(false);
+  });
+
+  it('a DROPPED entry (its variation delete-marked) is released with nothing written, and the report turns `false`', async () => {
+    const vivo: VariationRow = {
+      key: 'X',
+      id: 'X',
+      nome: 'Antiga',
+      sku: 'ANTIGA',
+      variacoesUid: [],
+      precos: null,
+      deleteMark: false,
+    };
+    h.rows = [vivo];
+    h.children = [{ id: 'X', data: { componentesKit: null } }];
+    const { flushRef, rerender } = renderManager();
+    fireEvent.click(screen.getByTestId('stage-kit'));
+    expect(ultimoRelato()).toBe(true);
+
+    // Marked for deletion: the grid hides it, but its staged map is still there
+    // (and still reported) until the flush releases it.
+    h.rows = [{ ...vivo, deleteMark: true }];
+    await act(async () => rerender());
+    expect(ultimoRelato()).toBe(true);
+
+    await act(async () => {
+      await flushRef.current!('p1', {});
+    });
+    expect(h.saves).toEqual([]);
+    expect(ultimoRelato()).toBe(false);
+  });
+
+  // VERIFY-2 round 3: the report sits ABOVE the grid's `return null` on
+  // purpose — «É kit» switched off hides the grid, but the flush still WRITES
+  // the staged map (it has no `ehKit` check), so the page must keep holding.
+  // A report gated on the grid being visible (`pendente && ehKit`) survived
+  // every other test here.
+  it('NEAR-MISS: «É kit» switched OFF hides the grid, but the staged map is still written by the flush — the report stays `true` until it is', async () => {
+    const flushRef: { current: KitVariacoesFlush | null } = { current: null };
+    function HostComInterruptor() {
+      const form = useForm({ defaultValues: { ehKit: true, componentesKit: {} } });
+      return (
+        <FormProvider {...form}>
+          <button type="button" data-testid="kit-off" onClick={() => form.setValue('ehKit', false)}>
+            kit off
+          </button>
+          <KitVariacoesManager
+            produtoId="p1"
+            db={db}
+            grupos={[]}
+            rows={rows()}
+            flushRef={flushRef}
+            onDirtyChange={relatar}
+          />
+        </FormProvider>
+      );
+    }
+    render(
+      <MantineTestProvider>
+        <HostComInterruptor />
+      </MantineTestProvider>,
+    );
+    fireEvent.click(screen.getByTestId('stage-kit'));
+    expect(ultimoRelato()).toBe(true);
+
+    fireEvent.click(screen.getByTestId('kit-off'));
+    // The grid is gone…
+    expect(screen.queryByTestId('stage-kit')).toBeNull();
+    // …but its staged map is not, and the report says so.
+    expect(ultimoRelato()).toBe(true);
+
+    await act(async () => {
+      await flushRef.current!('p1', {});
+    });
+    expect(h.saves).toHaveLength(1);
+    expect(ultimoRelato()).toBe(false);
   });
 });

@@ -277,7 +277,8 @@ Unchanged on purpose: `anuncioShopeeVivo` and the `integracoesComProduto` denorm
 (they already exclude drafts); `resolverLinkPorProduto` (the dispatcher hands it
 the id it chose); every `item_id`-keyed lookup (a draft has no `item_id` to
 match); the kit component reads (`ehKitNativoAtivo` needs an `item_id`); the web
-readers (#1911's web PRs). Publishing a NAMED draft is step 11's first publish,
+readers (#1911's web PRs, P8–P11, which tell a draft apart through the same
+`ehRascunhoShopee`). Publishing a NAMED draft is step 11's first publish,
 as before — it is the only way a draft is ever published. The proof is
 `publicarShopee.test.ts`'s #1911 block: an unnamed publish beside a draft that
 sorts first sends exactly ONE `update_item`, for the live item, zero `add_item`,
@@ -334,7 +335,14 @@ nothing.
    `confirmarSegundoAnuncio` ⇒ release ours, 409 `CONTA_JA_TEM_ANUNCIO` with
    `vinculos`. Each reservation WRITES before it READS, so of two concurrent
    ones the later scanner sees the earlier lock: they can both abort, never both
-   pass.
+   pass. The web does not open a draft's «Publicar» that this scan would only
+   refuse (#1911 P11 review round 3): another STORED draft of the produto on
+   the conta whose document records an attempt that may have created a
+   listing (a record, a stamped lock or an unreadable one) holds the button
+   with the impediment `irmao-incerto` (`apps/web/lib/shopee/rascunho.ts`,
+   `rascunhosIrmaosIncertosShopee`). A sibling whose lock was never stamped
+   reads `livre` there, so while that lock lives the web may still open a
+   «Publicar» this 409 answers.
 3. **The pre-send re-read** (in `aplicarPublicacao`, right before `add_item`):
    the stored token must still be ours, else 409 `PUBLICACAO_EXPIRADA`, nothing
    sent, the foreign lock untouched. Since the batch-A review it also WRITES —
@@ -485,12 +493,18 @@ precondition.
   record. A late re-publish on a busy shop can hit the 20-page ceiling (2 000
   rows) — or Shopee's undocumented offset cap (`error_param` "get items offset
   over limit", which throws and hands the lock back) — on EVERY try, and waiting
-  never helps. Nothing is duplicated; the draft is stranded, and while it reads
+  never helps. A window walk that does not fit the request's time stops at the
+  deadline checkpoint instead (step 3 above): 409 `PUBLICACAO_EXPIRADA`, the
+  record kept, so the next try walks the same window again — the CLI, which has
+  the lock's time rather than the request's, may finish it. Nothing is
+  duplicated; the draft is stranded, and while it reads
   `incerta` every other draft of the produto on the conta hears 409
   `EM_ANDAMENTO` with no `aguardarMs`. The exit, when Seller Centre holds no such
-  listing: discard the draft with the attestation (`rascunho/descartar` +
-  `confirmarCriacaoIncerta`) and create a new one — K1-11 stands, the attestation
-  is NOT honoured for `busca-de-anuncio-incompleta`. What fills the window is
+  listing: discard the draft with the attestation — the tab's «Descartar» and
+  its Seller-Centre dialog (#1911 P10), or `rascunho/descartar` +
+  `confirmarCriacaoIncerta` — and create a new one; the tab's copy for
+  `busca-de-anuncio-incompleta` (P11) says exactly that. K1-11 stands: the
+  attestation is NOT honoured for `busca-de-anuncio-incompleta`. What fills the window is
   every create and every `update_item` since the attempt — never a stock or
   price write, which does not move `update_time` (register 94). The new draft is
   still guarded: its first create runs the full same-SKU walk (P5b), so the
@@ -505,11 +519,16 @@ precondition.
   re-activate — and the next publish is a plain update, which never lists. The
   durable fix (a `relistagemPendente` marker the plan reads) waits on Lucas.
 - **(ix) A minted draft counts as a Shopee link for the produto delete guard**
-  (`findProdutoReferences`: "vinculado(a) a anúncio(s): Shopee") until it is
-  published with `--link` or discarded. Before P10's Descartar ships, discarding
-  is `POST …/rascunho/descartar` with `{integracaoId, produtoId, linkDocId,
-base}` (`base` required): do not run a no-link `publicar:anuncio --live`
-  between batch A and P10's web deploy (#1998).
+  (`deleteProdutoCascade` in `packages/data`, and `findProdutoReferences` for a
+  variation's child delete in `apps/web`: "vinculado(a) a anúncio(s): Shopee")
+  until it is published (`--link`, or its block's «Publicar», #1911 P11) or
+  discarded — «Descartar» in its block on the produto's Shopee tab (P10; both
+  guards' docblocks point there, the deleted-conta case included), or
+  `POST …/rascunho/descartar` with `{integracaoId, produtoId, linkDocId, base}`
+  (`base` required). Until P10 is in the `apps/web` deployed on the project
+  you run against (staging: batch B's first staging web deploy; production:
+  #1998 step 4's web rebuild), the route is the only discard: do not run a
+  no-link `publicar:anuncio --live` there before it.
 - **(x) A padded or shared SKU** (`' X'`, or two produtos with `'X'`) declines
   the import's SKU rung, which then MINTS a produto for the attempt's listing.
   ENSURE no longer ignores that link (it refuses `-ja-vinculada`, naming the
@@ -526,17 +545,35 @@ base}` (`base` required): do not run a no-link `publicar:anuncio --live`
   the sentence says.
 - **(xi) The first create's look-up is the WHOLE catalogue** (P5b). The kit
   scan's base-info batch covers the shop's few kits; the ordinary one covers
-  every non-kit listing — ⌈n/100⌉ + ⌈n/50⌉ calls on every first create with a
-  SKU, inside the route's 180 s ceiling (a slow walk STOPS at the deadline
-  checkpoint before its next read — batch-A review — and ends in
-  `PUBLICACAO_EXPIRADA`, nothing sent, the lock handed back;
-  `publicar:anuncio --live` has no request ceiling, only the lock's
-  `expiraEm`). A shop past the kit's 100 pages (10 000 listings) answers
-  `busca-de-anuncio-existente-incompleta` on EVERY first create — the kit
-  arm's own limit, and no flag overrides it; Shopee's undocumented offset cap
-  (`error_param` "get items offset over limit", seen by the mass import) may
-  bite first, and then the publish fails with that error, nothing sent
-  (register **311**).
+  every non-kit listing — ⌈n/100⌉ `get_item_list` pages + ⌈n/50⌉
+  `get_item_base_info` calls, one after the other, on every first create with
+  a SKU, and Lucas's largest conta holds 2 000–10 000 listings (register
+  **313**). Since the batch-A review the walk asks the deadline checkpoint
+  before each page and each base-info chunk (step 3 above), so a route walk
+  that does not fit what is left of the request (its 180 s ceiling less the
+  30 s margin, after `preparar` and the photos) STOPS: 409
+  `PUBLICACAO_EXPIRADA`, nothing sent, the lock handed back unstamped, no
+  record. ⚠️ On a conta whose walk never fits, EVERY retry re-walks from the
+  start and expires the same way — retrying does not help. The exits:
+  `publicar:anuncio --live`, which has no request ceiling, only the lock's
+  `expiraEm` (300 s) — the server sentence names it, so the tab hides it as
+  terminal text and shows its own copy (nothing created, no promise that a
+  retry helps, and the Seller-Centre exit: create the listing there with the
+  produto's SKU, import it, discard the draft — #1911 P11); or follow-up
+  #2064 (a narrower walk: `search_item` by SKU plus a recency walk). A walk
+  the platform still cuts (one Shopee call hanging past the ceiling — the
+  transport has no fetch deadline, residual (i)) leaves the lock UNSTAMPED:
+  the draft reads `em-andamento` until `expiraEm`, then `livre` at once
+  (step 1), and the retry is a first create with the full look-up again, so
+  this path never skips the 10-26 check. A shop past the kit's 100 pages
+  (10 000 listings) answers `busca-de-anuncio-existente-incompleta` on EVERY
+  first create — the kit arm's own limit, and no flag overrides it; Shopee's
+  undocumented offset cap (`error_param` "get items offset over limit", seen
+  by the mass import) may bite first, and then the publish fails with that
+  error — a 502 the tab words with the same Seller-Centre exit — nothing sent
+  (register **311**). And a listed row Shopee leaves out of
+  `get_item_base_info` refuses `busca-de-anuncio-existente-incompleta`
+  naming the ids (register **312**).
 - **(xii) An `incerta` draft's retry runs ENSURE and NOT the first create's
   look-up** (Lucas: ENSURE already scans) — for the SKU fold ENSURE searched
   only: a body that sends any other fold (the SKU renamed between the
@@ -579,7 +616,10 @@ be refused `criacao-incerta-sem-sku`, whose sentence (and the 202's) never sends
 the operator to `importar:anuncio` ALONE — the import binds a SKU-less listing to
 a NEW produto (its SKU rung is the only one that reaches an existing produto),
 so the listing first gets, in Seller Centre, the SKU the produto gets in the
-ERP; then the import binds it to this produto and adopts the draft. Because the lock stays LIVE, every tab,
+ERP; then the import normally binds it to this produto and adopts the draft (it
+links the listing apart on two adoptable drafts, an unknown `create_time` or the
+SKU on two produtos, and both sentences name the discard for that). Because the
+lock stays LIVE, every tab,
 operator and the CLI hear 409 `EM_ANDAMENTO {aguardarMs}` until it lapses — the
 server enforces the wait, the web's countdown is a nicety.
 
@@ -658,12 +698,19 @@ then an own linked listing (unless attested), then the adoption.
 | the walk stopped early                           | `busca-de-anuncio-incompleta` (repeating helps only a bad cursor — residual (vii))                                                                                                                                                                                                                                                                                                               |
 | the request deadline cut the walk (batch-A)      | 409 `PUBLICACAO_EXPIRADA` — asked before every page and every base-info chunk; NO verdict on what was read (a definite hit included), the lock handed back, the record KEPT                                                                                                                                                                                                                      |
 | the SKU sent folds blank                         | `criacao-incerta-sem-sku` (no scan)                                                                                                                                                                                                                                                                                                                                                              |
+| the attestation's expectation is not met         | `criacao-incerta-ja-vinculada` built over THIS scan's classes (`acao` `importar{itemIds, vinculados}` when it found a candidate, none when it found nothing) — `criacao-incerta-sem-sku` when there was no scan; nothing sent, nothing adopted (`criacaoIncertaAdota`, below)                                                                                                                    |
+| an expectation, the draft reads `livre`          | `criacao-incerta-encerrada` (no `acao`) — the reservation, on any read BEFORE its lock: no look-up, nothing written or sent                                                                                                                                                                                                                                                                      |
+| an expectation, the link is no longer a draft    | 409 `JA_PUBLICADO` (§I4) — the item arm's reservation on whichever read finds it, the kit arms at the publish entry (a link the dispatcher refuses outright answers its 422 first): nothing written or sent                                                                                                                                                                                      |
 | a COMPLETE walk, zero definite, zero undecidable | token-guarded clear of `criacaoIncertaDesde` and `criacaoIncertaSku`, then `add_item`                                                                                                                                                                                                                                                                                                            |
 
-The four refusals are `ShopeePublishBlockedError`s: nothing was sent, and they
-are produced ONLY in `criacaoIncerta.ts`, through `MOTIVO_PUBLICACAO_BLOQUEADA`
-(`errosPublicacao.test.ts` and `montagemAnuncio.test.ts` pin the file and the
-spelling). **`confirmarCriacaoIncerta`** (publish body; CLI
+Every refusal row but the two 409s is a `ShopeePublishBlockedError` (a 422):
+nothing was sent, and its motivo — ENSURE's four, and the reservation's
+`criacao-incerta-encerrada` — is built ONLY in `criacaoIncerta.ts`, through
+`MOTIVO_PUBLICACAO_BLOQUEADA` (`errosPublicacao.test.ts` and
+`montagemAnuncio.test.ts` pin the file and the spelling;
+`readmeAnuncios.test.ts` pins that this README names every motivo that file
+builds).
+**`confirmarCriacaoIncerta`** (publish body; CLI
 `--confirmar-criacao-incerta`) is the operator's attestation that Seller Centre
 holds no listing this draft must become, and it is honoured for EXACTLY two verdicts —
 `criacao-incerta-sem-sku` and `criacao-incerta-ja-vinculada` (a deliberate
@@ -675,6 +722,53 @@ claim clears it. A complete zero-hit scan's clear MUST land before `add_item`
 — a lost one is 409 `CONTENCAO` / `PUBLICACAO_EXPIRADA`, lock released, nothing
 sent. ⚠️ The dry run does NOT run the scan yet: it takes no lock, so it prints
 the plan only (a read-only ENSURE in the dry run is a follow-up).
+
+**`criacaoIncertaAdota` — what the attestation expects** (publish body only;
+#1911 batch-B review, Lucas §I1–§I4). It is read off the refusal the operator
+acted on: `[L]` = adopt the unlinked listing `L`, `[]` = a deliberate create.
+The web's draft «Publicar» always sends it beside the flag; the CLI never does,
+and an ABSENT key keeps the bare flag's meaning above. `corpoPublicacao.ts`
+answers 400 at the parse — before the conta context loads, nothing read or
+written — when it comes without `confirmarCriacaoIncerta: true`, without a
+`linkDocId` (the draft it attests: unnamed, the publisher would mint a fresh
+draft that the reservation then refuses, and that draft would stay behind), as
+an explicit `null` (never read as absent: a client that serialised a forgotten
+expectation as `null` would otherwise publish unguarded), or as anything but a
+list of positive safe integers. Present, it is a guard, never a hint:
+
+- **ENSURE proceeds only when its FRESH verdict is exactly that** (`decidir`,
+  `atestacaoConfere`): `[L]` ⇒ only `adotar L`, `[]` ⇒ only `prosseguir`.
+  Anything else — `L` linked since the refusal, a listing freed, one appearing
+  in or leaving the window — is the 422 `criacao-incerta-ja-vinculada` built
+  over THIS scan's classes, so the exits are re-derived from the present,
+  never from the stale refusal; nothing is sent and nothing adopted. On a
+  SKU-less produto (no scan: the attested verdict is a create) anything but
+  `[]` is `criacao-incerta-sem-sku`. An ambiguous scan and an incomplete walk
+  still refuse first, whatever was expected.
+- **A draft that no longer reads `incerta`** on any read of the reservation's
+  attempt loop before its lock write — the first, or the re-read after a lost
+  precondition (the record went after the refusal: another run's complete
+  look-up cleared it, and that run created nothing) — runs no ENSURE, and the
+  first create that would follow is not what was attested: 422
+  `criacao-incerta-encerrada` (no `acao`), decided BEFORE the lock — no
+  look-up, nothing written, nothing sent. A live lock still answers
+  `EM_ANDAMENTO` first, as for any publish.
+- **A named link that is no longer a draft** (§I4, Lucas 2026-11-03: another
+  run, or the import, adopted or claimed it since the refusal) is 409
+  `JA_PUBLICADO`, never the update the bare flag would run — the item arm on
+  whichever of the reservation's reads finds it; the kit arms (a native kit's
+  `kit-atualizar` / `kit-recriar`, a live listing's `kit-converter`) at the
+  publish entry (`publicarShopee.ts`, `recusarAtestacaoNumBracoDeKit`), on the
+  dispatcher's read of the links, before any Shopee call, upload or write. Its
+  sentence (`conflitoDeRascunhoJaPublicado`) says only that the link RECORDS a
+  listing. A link the DISPATCHER refuses outright never reaches either guard
+  and answers the dispatcher's 422 instead — a superseded link
+  (`vinculo-substituido`), a dead native kit without `recriar`
+  (`listagem-removida`), or any other refusal of `armaDePublicacao.ts`; zero
+  Shopee calls, nothing sent either way.
+
+Rule 7: the last two write nothing; the first takes and hands back the lock
+like every ENSURE refusal (the token-guarded writes above), and keeps the record.
 
 **D15 runs BEFORE ENSURE.** The reservation's lock-then-scan of the conta's
 other links happens first, so a sibling's create in flight is a 409, never a
@@ -730,7 +824,9 @@ with it the code decides. The create classifier reads the same code, alone, as
 `nao-criado`, and a test holds the two readings of one error together. The
 problema carries Shopee's prose; our sentence (import it if it is this
 produto's; a second listing must differ, or Shopee may treat it as spam) is the
-web's (P11) and the CLI's copy, keyed on the motivo.
+CLI's (`FRASE_ANUNCIO_SEMELHANTE`), and the web's (#1911 P11,
+`TEXTO_MOTIVO_ANUNCIO_SHOPEE`) says only that Shopee may treat it as a
+duplicate — check Seller Centre before trying again; both keyed on the motivo.
 
 Rule 7, the new writes: the pre-send SKU stamp, the `incerto` rewrite, the
 zero-hit clear and the ENSURE adoption are token-guarded updates on the draft
@@ -820,8 +916,8 @@ the brand are publish's (`montagemAnuncio.ts`), never the draft's.
 JSON parse, the STRICT body parse (`corpo{Criar,Atualizar,Descartar}RascunhoShopeeSchema`
 in `@delfrance/schemas`, `shopeeRascunho.ts` — an unknown key, `item_id`
 included, is a 400, never dropped, so a web deployed before this app fails
-loudly) and the CLOCK — one `Date.now()` per request, handed to `rascunho.ts` as
-`nowMs`. No module in this folder reads a clock (the raw-text pin in
+loudly) and the CLOCK — one clock read per request, in the route, handed to
+`rascunho.ts` as `nowMs`. No module in this folder reads a clock (the raw-text pin in
 `statusAnuncio.test.ts`). Every answer body is built BY NAME, and its codes are
 `CODIGO_RASCUNHO_SHOPEE`'s, the one vocabulary the web reads.
 
@@ -880,7 +976,12 @@ stored legacy list that reads EQUAL is never rewritten (D9: no migration).
   409 `EM_ANDAMENTO` · 409 `CONFLITO` (stored ≠ `base`, K1-13: an edit made
   meanwhile is never discarded unseen) · 409 `CRIACAO_INCERTA` (`incerta`
   without `confirmarCriacaoIncerta: true`, K1-6: the draft is the only record
-  of that attempt).
+  of that attempt). Its sentence gives the three Seller-Centre cases the tab's
+  «Descartar» dialog asks (P10): no listing, or one already linked in the ERP
+  ⇒ confirm; one with NO link ⇒ keep the draft, give the listing the
+  produto's SKU and import it, which normally adopts the draft — if it links
+  the listing apart instead, confirm then (a SKU-less import makes another
+  produto). The tab maps the code and never shows the sentence.
 
 Answers: create **201** `{linkDocId, criado: true}` / **200** `{linkDocId,
 criado: false}`; edit 200 `{linkDocId, gravados}` (`[]` = equal, NOTHING
@@ -972,8 +1073,10 @@ signature is unchanged, because `publicarAnuncioCli.ts`'s dry run calls it too.
   `atributosParaGravarShopee` over the operator's list before it posts the patch
   (P13, `AtributosRascunhoShopee.tsx`). The draft route (`rascunho.ts`) makes
   zero Shopee calls and has no tree, so it writes the patch's request-shape list
-  as received, and publish sends what is stored. Until P13 nothing calls it, and
-  the web never writes `attributes`.
+  as received, and publish sends what is stored. Until P13 nothing calls it:
+  the web's draft editor (P10) never puts `attributes` in a patch — it writes
+  only `attributes: null` on a create, and sends the stored list as the `base`
+  of a category change, whose write then clears it.
 - ⚠️ **A DATE stored in the READ form goes out in the WRITE form.** Guide 209
   §2.3 documents the write as a Unix timestamp in `original_value_name` and the
   read as `MM/YYYY` / `DD/MM/YYYY`; the product import stores the read
@@ -1338,13 +1441,15 @@ and answers the id at `response.image_info.image_id` (registers 70/71 closed),
 so `SHOPEE_UPLOAD_IMAGE_SIGNING` is the one literal that would flip it and
 production passes no per-call override.
 
-### A refusal is thrown BEFORE any Shopee write; a rejection is a problema on a field
+### A refusal is thrown BEFORE any listing write; a rejection is a problema on a field
 
 Two classes, two moments, and both **PERSIST**.
 
-`ShopeePublishBlockedError` is OUR refusal: step 11's 22 motivos (54 today —
-steps 19 and #1911 added theirs; `errosPublicacao.test.ts` pins the count),
-raised before any Shopee WRITE for the produto, carrying `problemas` that is
+`ShopeePublishBlockedError` is OUR refusal: step 11's 22 motivos (58 today —
+steps 19 and #1911 added theirs; `errosPublicacao.test.ts` pins the count,
+`readmeAnuncios.test.ts` this sentence),
+raised before any Shopee LISTING write for the produto (the model-leg
+exception is below), carrying `problemas` that is
 **non-empty by TYPE** — the guard
 `temProblemaDeBloqueio` is what turns a collected array into that argument, so
 no path can construct the class with a fallback member nothing legitimately
@@ -1357,6 +1462,24 @@ Q1c makes that a refusal of the publish, and it lands before any listing write.
 Its headline (`cabecalhoDaRecusa`, shared with the CLI) drops the empty `()` and,
 when Shopee never judged the photo (`recusadaPelaShopee: false`), says
 "Publicação interrompida em fotos" instead of "recusada pela Shopee".
+
+⚠️ **The model-leg exception: a blocked refusal AFTER `update_item`.**
+`aplicarModelos` (`modelosPublicacao.ts`) re-derives the tiers against a FRESH
+`get_model_list` on the UPDATE path only — a create's leg sees `viva: null`,
+exactly what the plan saw — and that tree can make the tier authoring
+unsendable where the plan saw nothing. It then throws `ShopeePublishBlockedError`
+with the item already written: a live option position that cannot be read back
+(`variacao-sem-vinculo`), a tier's option union with the live options past the
+wire cap or an option name it now sends outside its band (`opcoes-demais` — the
+tier and model counts are the plan's own, so they cannot newly fail here), and
+#1911 P7's custom-tier re-code
+(`variacao-sem-vinculo`: an unpaired custom tier that `update_tier_variation`
+would rewrite IN PLACE — "Importe o anúncio ou ajuste o nome do grupo",
+`tiersPublicacao.ts`). The listing exists, so the next publish resumes as an
+update and runs the leg again; the CLI's `LINHAS_DO_BLOQUEIO` already warns
+that a `--live` refusal can follow the `update_item`. In this folder every
+other blocked refusal precedes the listing write (a draft's lock, mint and SKU
+stamp are Firestore writes, not listing writes).
 
 `problemaDeErroShopee` strips ONE leading `<module>.` before lookup and never
 rewrites the error's own code; the strip is a SECOND lookup, and it is
@@ -1591,8 +1714,10 @@ So nobody reads a gap as a bug:
   planner here never builds a kit body; `produto-e-kit` is its defensive
   assertion (above). An ordinary ERP `ehKit` produto publishes like any other.
   The design is `../kits/README.md`.
-- **`apps/web` (step 21)** — the produto tab, the `anuncioStatus` provider row
-  and the registry rows. The three routes and the CLI land HERE.
+- **`apps/web` (step 21; #1911 P8–P11)** — the produto tab (since #1911 also a
+  draft's editor, «Descartar» and «Publicar»), the `anuncioStatus` provider row
+  and the registry rows. The routes (step 11's three, #1911's three draft
+  routes) and the CLI land HERE.
 - **`batch_add_item`**, and authoring `scheduled_publish_time` (it is READ, for
   the fold and for code 27).
 - **`wholesale[]`** from the conta's `tabelasAtacado` — a recorded gap, and at
@@ -1615,7 +1740,11 @@ So nobody reads a gap as a bug:
 - **`brandshopee`.** Step 11 does not read the operator-curated shortlist: the
   marca cascade is `brand_id 0` ⇒ "No Brand", else the link's
   `original_brand_name`, else a BOUNDED `get_brand_list` paging loop, else
-  `marca-sem-nome` on a create and `brand` omitted on an update.
+  `marca-sem-nome` on a create and `brand` omitted on an update. Since #1911
+  P9/P10 the shortlist is typed (`marcaShopee.ts` in `@delfrance/schemas`) and
+  read by `apps/web` only — the draft editor's brand picker stores the picked
+  `brand_id` + `original_brand_name` pair on the link, which is what this
+  cascade reads.
 - **No ruleset regeneration, no new env var, no new index, no
   tasks-invoker entry.** Every schema addition is on a bare const, so both
   generated rulesets and both snapshots stay byte-identical.
@@ -1632,45 +1761,45 @@ at both producers. The first republish after that change can create listings for
 produtos that were previously unpublishable — it is a deliberate correction, not
 a regression.
 
-| #   | item                                                                                                                                                                                                                           | state                                                                                                                                                                                                                                                                                                                       |
-| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 67  | which fields Shopee's BR all-or-nothing validator actually counts                                                                                                                                                              | ⏳ the SG shop accepted the block AND the block minus `cofins` — one `update_item` from a BR shop                                                                                                                                                                                                                           |
-| 68  | whether `csosn` / `icms_cst` are alternatives, and whether the three unsent constants count toward the set                                                                                                                     | ⏳ same call. The one-shot retry is what makes this survivable                                                                                                                                                                                                                                                              |
-| 69  | whether the SG sandbox exercises the BR `tax_info` path at all                                                                                                                                                                 | ✅ **no** — it ignores the block entirely and the read-back carries none                                                                                                                                                                                                                                                    |
-| 70  | `upload_image`'s signing mode                                                                                                                                                                                                  | ✅ **Public**, accepted on a 600×600 PNG                                                                                                                                                                                                                                                                                    |
-| 71  | the multipart field name (`image` vs `file`)                                                                                                                                                                                   | ✅ **`image`**, id at `response.image_info.image_id`                                                                                                                                                                                                                                                                        |
-| 72  | options per tier: 20 or 50                                                                                                                                                                                                     | ✅ **50** — 21 options in one tier were accepted                                                                                                                                                                                                                                                                            |
-| 73  | whether `get_item_violation_info`'s live body carries `error`                                                                                                                                                                  | ✅ **it does not** — hence the per-operation tolerance (O4)                                                                                                                                                                                                                                                                 |
-| 74  | `brandshopee` is untyped (`passthrough`), has no handle and no reader                                                                                                                                                          | → 21-4 (#1911): typing it, its handle and the conta Marcas editor are listing authoring's (decision S)                                                                                                                                                                                                                      |
-| 75  | `delete_model` / `delete_item` ship with no step-11 caller                                                                                                                                                                     | ⏳ nothing. Recorded so the absence is not read as an oversight                                                                                                                                                                                                                                                             |
-| 76  | step 9's CLI prints `tax_info` KEYS only; this one prints keys AND values (C34)                                                                                                                                                | ⏳ a one-line docblock decision in a follow-up; step 9's file is untouched here                                                                                                                                                                                                                                             |
-| 77  | `ACAO_STATUS_ANUNCIO` lives in `mercadoLivreLink.ts` and is now read by a Shopee route                                                                                                                                         | ⏳ a mechanical move later; the VALUE must not fork                                                                                                                                                                                                                                                                         |
-| 78  | the promoted `trailingSegment` and `operacaoIdFromImpostoRef` are the same fold twice                                                                                                                                          | ⏳ a follow-up; collapsing them here would be a cascade change dressed as a cleanup                                                                                                                                                                                                                                         |
-| 79  | `ex_tipi` is not sent, so the emitted key set is CONSTANT                                                                                                                                                                      | ⏳ the day a BR shop refuses a block without it                                                                                                                                                                                                                                                                             |
-| 80  | no automated guard stops `packages/data` gaining an NF-e package dependency                                                                                                                                                    | ⏳ a PR-checklist clause; a boundary lint rule is out of scope here                                                                                                                                                                                                                                                         |
-| 81  | Eventarc/Pub-Sub enablement for this codebase's first Firestore trigger                                                                                                                                                        | ⏳ **migration window** — `DEPLOY.md`'s Cutover, the first deploy, never an agent                                                                                                                                                                                                                                           |
-| 82  | what `item_status` / `scheduled_publish_time` hold after a failed scheduled publish, and WHY it failed                                                                                                                         | ⏳ **nothing settles it** — push 27 carries three fields, none a reason, and there is no success push. The handler writes what it reads and the aviso says the cause is unknown                                                                                                                                             |
-| 83  | whether `unlist_item {unlist: false}` really re-lists                                                                                                                                                                          | ⏳ **half open** — it re-listed a SELLER-created UNLIST. The Shopee pre-launch case is unmeasurable on that shop and the `update_item` door exists for it                                                                                                                                                                   |
-| 84  | whether `attribute_list` / `image_id_list` replace wholesale on `update_item`                                                                                                                                                  | ⏳ the full lists are always sent, which is correct under either reading                                                                                                                                                                                                                                                    |
-| 85  | whether an `image_id` expires or is reusable across items/shops, and whether `image_id_list[i]` ↔ `image_url_list[i]` is positional                                                                                            | ⏳ the per-integração `externalIds` scoping is the conservatism                                                                                                                                                                                                                                                             |
-| 86  | whether a purged `image_id` is reported with a parseable per-id message                                                                                                                                                        | ⏳ recorded as a gap; no self-heal is built                                                                                                                                                                                                                                                                                 |
-| 87  | whether a Storage-emulator host can ever appear in `arquivo.url`                                                                                                                                                               | ⏳ the allow-list's emulator entry is INERT today — a seeded emulator corpus                                                                                                                                                                                                                                                |
-| 88  | whether a PUSH envelope may enter `fixtures/__wire__/` (which holds RESPONSE bodies)                                                                                                                                           | ✅ sidestepped — the push-16 body stays inline in its test, and no new fixture was committed                                                                                                                                                                                                                                |
-| 89  | whether the conta's `operacaoOuterRef` is the right operação for a publish `tax_info`                                                                                                                                          | ✅ **yes** — the nota for an order from this listing resolves through that same operação                                                                                                                                                                                                                                    |
-| 262 | `size_chart_info.size_chart_id` is accepted as a JSON NUMBER on add / update (announcement 1404 types it string)                                                                                                               | ⏳ the first BR publish with a matched template — the CLI's `lido de volta` line (step 18's register, home `../tabelaMedidas/README.md` §7)                                                                                                                                                                                 |
-| 263 | `update_item` WITHOUT `size_chart_info` keeps a Seller-Centre chart                                                                                                                                                            | ⏳ sandbox / BR — the reason nothing here ever sends a detach                                                                                                                                                                                                                                                               |
-| 264 | add / update answer a stale template id with the detail page's sentence; how a template of ANOTHER category is refused                                                                                                         | ⏳ BR — an unmatched sentence still surfaces as `desconhecido` with Shopee's prose                                                                                                                                                                                                                                          |
-| 265 | `get_item_base_info.size_chart_id` echoes the sent id; its value with no template (`0` / absent / `null`)                                                                                                                      | ⏳ sandbox — `lidaDeVolta` reads it raw                                                                                                                                                                                                                                                                                     |
-| 267 | `size_chart` accepts an `upload_image` id from the default scene                                                                                                                                                               | ⏳ BR shop: one photo-only publish                                                                                                                                                                                                                                                                                          |
-| 268 | the image validator's exact sentence, per photo or per call                                                                                                                                                                    | ⏳ BR shop: one refused photo                                                                                                                                                                                                                                                                                               |
-| 269 | whether `support_image_size_chart: false` is ever answered for a BR apparel leaf, and honoured                                                                                                                                 | ⏳ BR shop: `get_item_limit` + one publish — the explicit-`false` withhold is the vetoable ruling                                                                                                                                                                                                                           |
-| 307 | a freshly created item appears in `get_item_list` (`update_time_from` inside the window) before the 240 s wait ends (#1911 P5)                                                                                                 | ⏳ BR shop: one create, then the scan at +240 s. A longer index lag is a RESIDUAL (the scan misses it and re-sends) — `AGUARDAR_ANUNCIO_INCERTO_SHOPEE_MS` grows                                                                                                                                                            |
-| 308 | `create_time` is populated on a just-created item's `get_item_base_info` (#1911 P5)                                                                                                                                            | ⏳ BR shop: same call. Non-gating — a `null` reads `desconhecido` and ENSURE refuses `criacao-incerta-ambigua` (fails closed)                                                                                                                                                                                               |
-| 309 | a CUSTOM tier (`variation_id: 0`, the D12 fallback) is accepted in a BR standardised (Fashion) leaf (#1911 P7, Q3)                                                                                                             | ⏳ BR shop: the first varied publish on a Fashion leaf with no binding entry. A refusal is a Shopee rejection; the fix is a STANDARD binding on `/variacoes`                                                                                                                                                                |
-| 310 | `get_item_list` honours `update_time_from` with NO `update_time_to` (filters — neither refused nor ignored), and the widest window it takes (#1911 P5)                                                                         | ⏳ BR shop: the 307 probe, plus one from-only call compared with an unwindowed walk. Refused ⇒ ENSURE throws on every re-run (lock released, record kept); ignored ⇒ a shop past 2 000 live listings answers `busca-de-anuncio-incompleta` every time. Both fail closed. Overlaps register 58 (inclusivity, maximum window) |
-| 311 | where Shopee's `get_item_list` offset cap ("get items offset over limit", `error_param`) sits for an UN-narrowed walk, against the 100-page / 10 000-row ceiling the kit scan and the first create's look-up share (#1911 P5b) | ⏳ BR shop: one un-narrowed walk to the end. A cap below 10 000 ⇒ every first create (and every kit create) on a shop past it throws that `error_param` — nothing sent, the lock released (fail closed); the fix would be a narrowed walk, the mass import's documented mitigation                                          |
-| 312 | `get_item_base_info` returns every item `get_item_list` lists under `STATUS_BUSCA_KIT` (incl. `BANNED`, `REVIEWING`) (#1911 P6)                                                                                                | ⏳ BR shop: one page plus its base-info batch, compare the id sets. A systematic omission ⇒ every first create (and every kit create) on that conta refuses `busca-de-anuncio-existente-incompleta` / `busca-de-kit-incompleta` — fail closed; the fix would be to narrow the statuses                                      |
-| 313 | a full first-create same-SKU walk (⌈n/100⌉ `get_item_list` + ⌈n/50⌉ `get_item_base_info`) of the largest conta (2 000–10 000 listings, Lucas) fits the route's 180 s less the 30 s margin (#1911 P6)                           | ⏳ BR shop: time one dry walk. Too slow ⇒ every route first create there answers 409 `PUBLICACAO_EXPIRADA` — nothing sent, the lock released — and the CLI (the lock's 300 s) is the path; #2064 narrows the walk                                                                                                           |
+| #   | item                                                                                                                                                                                                                           | state                                                                                                                                                                                                                                                                                                                                                                                            |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 67  | which fields Shopee's BR all-or-nothing validator actually counts                                                                                                                                                              | ⏳ the SG shop accepted the block AND the block minus `cofins` — one `update_item` from a BR shop                                                                                                                                                                                                                                                                                                |
+| 68  | whether `csosn` / `icms_cst` are alternatives, and whether the three unsent constants count toward the set                                                                                                                     | ⏳ same call. The one-shot retry is what makes this survivable                                                                                                                                                                                                                                                                                                                                   |
+| 69  | whether the SG sandbox exercises the BR `tax_info` path at all                                                                                                                                                                 | ✅ **no** — it ignores the block entirely and the read-back carries none                                                                                                                                                                                                                                                                                                                         |
+| 70  | `upload_image`'s signing mode                                                                                                                                                                                                  | ✅ **Public**, accepted on a 600×600 PNG                                                                                                                                                                                                                                                                                                                                                         |
+| 71  | the multipart field name (`image` vs `file`)                                                                                                                                                                                   | ✅ **`image`**, id at `response.image_info.image_id`                                                                                                                                                                                                                                                                                                                                             |
+| 72  | options per tier: 20 or 50                                                                                                                                                                                                     | ✅ **50** — 21 options in one tier were accepted                                                                                                                                                                                                                                                                                                                                                 |
+| 73  | whether `get_item_violation_info`'s live body carries `error`                                                                                                                                                                  | ✅ **it does not** — hence the per-operation tolerance (O4)                                                                                                                                                                                                                                                                                                                                      |
+| 74  | `brandshopee` is untyped (`passthrough`), has no handle and no reader                                                                                                                                                          | ✅ **closed by #1911 P9** — typed legacy-tolerant in `@delfrance/schemas` (`marcaShopee.ts`, ONE reader `marcasDaContaShopee`; the rules surface stays `passthrough`), handle `apps/web/lib/data/marcaShopeeCollection.ts`, edited in the conta's Marcas section (`/canais/shopee/[id]`). Publish still never reads it                                                                           |
+| 75  | `delete_model` / `delete_item` ship with no step-11 caller                                                                                                                                                                     | ⏳ nothing. Recorded so the absence is not read as an oversight                                                                                                                                                                                                                                                                                                                                  |
+| 76  | step 9's CLI prints `tax_info` KEYS only; this one prints keys AND values (C34)                                                                                                                                                | ⏳ a one-line docblock decision in a follow-up; step 9's file is untouched here                                                                                                                                                                                                                                                                                                                  |
+| 77  | `ACAO_STATUS_ANUNCIO` lives in `mercadoLivreLink.ts` and is now read by a Shopee route                                                                                                                                         | ⏳ a mechanical move later; the VALUE must not fork                                                                                                                                                                                                                                                                                                                                              |
+| 78  | the promoted `trailingSegment` and `operacaoIdFromImpostoRef` are the same fold twice                                                                                                                                          | ⏳ a follow-up; collapsing them here would be a cascade change dressed as a cleanup                                                                                                                                                                                                                                                                                                              |
+| 79  | `ex_tipi` is not sent, so the emitted key set is CONSTANT                                                                                                                                                                      | ⏳ the day a BR shop refuses a block without it                                                                                                                                                                                                                                                                                                                                                  |
+| 80  | no automated guard stops `packages/data` gaining an NF-e package dependency                                                                                                                                                    | ⏳ a PR-checklist clause; a boundary lint rule is out of scope here                                                                                                                                                                                                                                                                                                                              |
+| 81  | Eventarc/Pub-Sub enablement for this codebase's first Firestore trigger                                                                                                                                                        | ⏳ **migration window** — `DEPLOY.md`'s Cutover, the first deploy, never an agent                                                                                                                                                                                                                                                                                                                |
+| 82  | what `item_status` / `scheduled_publish_time` hold after a failed scheduled publish, and WHY it failed                                                                                                                         | ⏳ **nothing settles it** — push 27 carries three fields, none a reason, and there is no success push. The handler writes what it reads and the aviso says the cause is unknown                                                                                                                                                                                                                  |
+| 83  | whether `unlist_item {unlist: false}` really re-lists                                                                                                                                                                          | ⏳ **half open** — it re-listed a SELLER-created UNLIST. The Shopee pre-launch case is unmeasurable on that shop and the `update_item` door exists for it                                                                                                                                                                                                                                        |
+| 84  | whether `attribute_list` / `image_id_list` replace wholesale on `update_item`                                                                                                                                                  | ⏳ the full lists are always sent, which is correct under either reading                                                                                                                                                                                                                                                                                                                         |
+| 85  | whether an `image_id` expires or is reusable across items/shops, and whether `image_id_list[i]` ↔ `image_url_list[i]` is positional                                                                                            | ⏳ the per-integração `externalIds` scoping is the conservatism                                                                                                                                                                                                                                                                                                                                  |
+| 86  | whether a purged `image_id` is reported with a parseable per-id message                                                                                                                                                        | ⏳ recorded as a gap; no self-heal is built                                                                                                                                                                                                                                                                                                                                                      |
+| 87  | whether a Storage-emulator host can ever appear in `arquivo.url`                                                                                                                                                               | ⏳ the allow-list's emulator entry is INERT today — a seeded emulator corpus                                                                                                                                                                                                                                                                                                                     |
+| 88  | whether a PUSH envelope may enter `fixtures/__wire__/` (which holds RESPONSE bodies)                                                                                                                                           | ✅ sidestepped — the push-16 body stays inline in its test, and no new fixture was committed                                                                                                                                                                                                                                                                                                     |
+| 89  | whether the conta's `operacaoOuterRef` is the right operação for a publish `tax_info`                                                                                                                                          | ✅ **yes** — the nota for an order from this listing resolves through that same operação                                                                                                                                                                                                                                                                                                         |
+| 262 | `size_chart_info.size_chart_id` is accepted as a JSON NUMBER on add / update (announcement 1404 types it string)                                                                                                               | ⏳ the first BR publish with a matched template — the CLI's `lido de volta` line (step 18's register, home `../tabelaMedidas/README.md` §7)                                                                                                                                                                                                                                                      |
+| 263 | `update_item` WITHOUT `size_chart_info` keeps a Seller-Centre chart                                                                                                                                                            | ⏳ sandbox / BR — the reason nothing here ever sends a detach                                                                                                                                                                                                                                                                                                                                    |
+| 264 | add / update answer a stale template id with the detail page's sentence; how a template of ANOTHER category is refused                                                                                                         | ⏳ BR — an unmatched sentence still surfaces as `desconhecido` with Shopee's prose                                                                                                                                                                                                                                                                                                               |
+| 265 | `get_item_base_info.size_chart_id` echoes the sent id; its value with no template (`0` / absent / `null`)                                                                                                                      | ⏳ sandbox — `lidaDeVolta` reads it raw                                                                                                                                                                                                                                                                                                                                                          |
+| 267 | `size_chart` accepts an `upload_image` id from the default scene                                                                                                                                                               | ⏳ BR shop: one photo-only publish                                                                                                                                                                                                                                                                                                                                                               |
+| 268 | the image validator's exact sentence, per photo or per call                                                                                                                                                                    | ⏳ BR shop: one refused photo                                                                                                                                                                                                                                                                                                                                                                    |
+| 269 | whether `support_image_size_chart: false` is ever answered for a BR apparel leaf, and honoured                                                                                                                                 | ⏳ BR shop: `get_item_limit` + one publish — the explicit-`false` withhold is the vetoable ruling                                                                                                                                                                                                                                                                                                |
+| 307 | a freshly created item appears in `get_item_list` (`update_time_from` inside the window) before the 240 s wait ends (#1911 P5)                                                                                                 | ⏳ BR shop: one create, then the scan at +240 s. A longer index lag is a RESIDUAL (the scan misses it and re-sends) — `AGUARDAR_ANUNCIO_INCERTO_SHOPEE_MS` grows                                                                                                                                                                                                                                 |
+| 308 | `create_time` is populated on a just-created item's `get_item_base_info` (#1911 P5)                                                                                                                                            | ⏳ BR shop: same call. Non-gating — a `null` reads `desconhecido` and ENSURE refuses `criacao-incerta-ambigua` (fails closed)                                                                                                                                                                                                                                                                    |
+| 309 | a CUSTOM tier (`variation_id: 0`, the D12 fallback) is accepted in a BR standardised (Fashion) leaf (#1911 P7, Q3)                                                                                                             | ⏳ BR shop: the first varied publish on a Fashion leaf with no binding entry. A refusal is a Shopee rejection; the fix is a STANDARD binding on `/variacoes`                                                                                                                                                                                                                                     |
+| 310 | `get_item_list` honours `update_time_from` with NO `update_time_to` (filters — neither refused nor ignored), and the widest window it takes (#1911 P5)                                                                         | ⏳ BR shop: the 307 probe, plus one from-only call compared with an unwindowed walk. Refused ⇒ ENSURE throws on every re-run (lock released, record kept); ignored ⇒ a shop past 2 000 live listings answers `busca-de-anuncio-incompleta` every time. Both fail closed. Overlaps register 58 (inclusivity, maximum window)                                                                      |
+| 311 | where Shopee's `get_item_list` offset cap ("get items offset over limit", `error_param`) sits for an UN-narrowed walk, against the 100-page / 10 000-row ceiling the kit scan and the first create's look-up share (#1911 P5b) | ⏳ BR shop: one un-narrowed walk to the end. A cap below 10 000 ⇒ every first create (and every kit create) on a shop past it throws that `error_param` — nothing sent, the lock released (fail closed); the fix would be a narrowed walk, the mass import's documented mitigation (follow-up #2064)                                                                                             |
+| 312 | `get_item_base_info` returns every item `get_item_list` lists under `STATUS_BUSCA_KIT` (incl. `BANNED`, `REVIEWING`) (#1911 P6)                                                                                                | ⏳ BR shop: one page plus its base-info batch, compare the id sets. A systematic omission ⇒ every first create (and every kit create) on that conta refuses `busca-de-anuncio-existente-incompleta` / `busca-de-kit-incompleta` — fail closed; the fix would be to narrow the statuses. The kit arm's SECOND base-info read (a resumed `--recriar` / `--converter-em-kit`) is #2065's (PR #2073) |
+| 313 | a full first-create same-SKU walk (⌈n/100⌉ `get_item_list` + ⌈n/50⌉ `get_item_base_info`) of the largest conta (2 000–10 000 listings, Lucas) fits the route's 180 s less the 30 s margin (#1911 P6)                           | ⏳ BR shop: time one read-only walk (`--dry-run` walks nothing). Too slow ⇒ every route first create there answers 409 `PUBLICACAO_EXPIRADA` on every retry — nothing sent, the lock released — and the CLI (the lock's 300 s) is the path; the tab names the Seller-Centre exit instead (#1911 P11); follow-up #2064 would narrow the walk                                                      |
 
 Also unmeasured, and not a register line: nothing in this folder has met a BR
 shop. The `esperar` of 5 000 ms, the re-list door order, the daily-quota reset

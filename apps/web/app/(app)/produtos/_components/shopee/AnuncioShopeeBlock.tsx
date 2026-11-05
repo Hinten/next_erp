@@ -1,14 +1,15 @@
 'use client';
 
 import type { Firestore } from 'firebase/firestore';
-import { Card, Divider, Stack, Text } from '@mantine/core';
-import type { ProdutoShopeeLink } from '@delfrance/schemas';
+import { Alert, Card, Divider, Stack, Text } from '@mantine/core';
+import { textoUtilizavelShopee, type ProdutoShopeeLink } from '@delfrance/schemas';
 
 import { AcoesAnuncioShopee, type AcoesShopee } from './AcoesAnuncioShopee';
-import type { ContaShopee, TabelaMedidasDoProduto } from './ContaShopeePanel';
+import type { ContaShopee, RascunhosShopee, TabelaMedidasDoProduto } from './ContaShopeePanel';
 import { DesfechoAcaoShopee } from './DesfechoAcaoShopee';
 import { KitAnuncioShopee } from './KitAnuncioShopee';
 import { ModelosAnuncioShopee } from './ModelosAnuncioShopee';
+import { RascunhoShopee } from './RascunhoShopee';
 import { RecusasAnuncioShopee } from './RecusasAnuncioShopee';
 import { StatusAnuncioShopee } from './StatusAnuncioShopee';
 import { TabelaMedidasShopeeResumo } from './TabelaMedidasShopeeResumo';
@@ -30,6 +31,8 @@ export interface AnuncioShopeeBlockProps {
   produtoEhKit: boolean;
   /** The actions' state and handlers — owned by the editor (its rule R2). */
   acoes: AcoesShopee;
+  /** The listing drafts' state and handlers (#1911 P10) — owned by the editor. */
+  rascunhos: RascunhosShopee;
 }
 
 /**
@@ -40,11 +43,23 @@ export interface AnuncioShopeeBlockProps {
  * any listing of a kit produto), on demand its models — then the outcome of the
  * last action on it, and the action row.
  *
+ * A DRAFT (`ehRascunhoShopee`, `@delfrance/schemas` — #1911 P10; the editor
+ * decides it, `RascunhosShopee.propsDe`) shows its editor (`RascunhoShopee`)
+ * where the action row would be, and the size-chart
+ * line reads the category the operator is EDITING, not the stored one. A
+ * listing that was a draft being edited when it got published says so above
+ * its state — the unsaved edits were not applied, and that is never silent.
+ * The outcome panel gets what a draft's «Publicar» answers are read with
+ * (#1911 P11): the produto (for an `importar` row's ids), whether the STORED
+ * link has its own description (where a `description` row routes), the
+ * tab's surface destinations, and — while the link is a draft — its publish
+ * reading and attestation exits (`RascunhosShopee.desfechoDoRascunhoDe`).
+ *
  * Every value shown comes from the live link document (or, for the models, a
  * one-shot read): an action calls an apps/shopee route, and the block repaints
  * from the snapshot that route's write-back lands in. Presentational — the
- * open/closed "Variações", the outcomes and the write in flight belong to the
- * editor (its rule R2).
+ * open/closed "Variações", the outcomes, the draft being edited and the write
+ * in flight belong to the editor (its rule R2).
  */
 export function AnuncioShopeeBlock({
   db,
@@ -59,22 +74,46 @@ export function AnuncioShopeeBlock({
   onAlternarModelos,
   produtoEhKit,
   acoes,
+  rascunhos,
 }: AnuncioShopeeBlockProps) {
   const desfecho = acoes.desfechoDe(linkDocId);
+  // `null` unless the editor decided a DRAFT block for this link — by the
+  // schemas' `ehRascunhoShopee`, ONE gate (#1369): a native-kit link with no
+  // `item_id` is no draft and keeps the action row's "código inválido" line.
+  const rascunho = rascunhos.propsDe(conta, linkDocId);
+  const avisoDoRascunho = rascunhos.avisoDe(linkDocId);
   return (
     <Card withBorder padding="sm" data-testid={`shopee-anuncio-${linkDocId}`}>
       <Stack gap="sm">
         <Text fw={600} size="sm">
           {textoPreenchido(link.item_name) ?? 'Anúncio sem título'}
         </Text>
-        <StatusAnuncioShopee link={link} shopId={conta.shopId} />
+        {avisoDoRascunho !== null && (
+          <Alert
+            color="orange"
+            variant="light"
+            withCloseButton
+            closeButtonLabel="Dispensar aviso"
+            onClose={() => rascunhos.dispensarAviso(linkDocId)}
+            data-testid={`shopee-rascunho-aviso-${linkDocId}`}
+          >
+            {avisoDoRascunho}
+          </Alert>
+        )}
+        <StatusAnuncioShopee
+          link={link}
+          shopId={conta.shopId}
+          // A draft's badge reads ITS block decision — never the lock fields again (#1369).
+          publicacao={rascunho !== null ? rascunho.bloco.publicacao : null}
+        />
         <RecusasAnuncioShopee link={link} agoraMs={agoraMs} />
         <ViolacoesAnuncioShopee link={link} />
         <Divider />
         <TabelaMedidasShopeeResumo
           tabelaMedidas={tabelaMedidas}
           contaId={contaDoAnuncioLegivel ? conta.id : null}
-          categoryId={link.category_id}
+          // A draft: the category being EDITED — the one its publish would use.
+          categoryId={rascunho !== null ? rascunho.bloco.valores.category_id : link.category_id}
         />
         <KitAnuncioShopee
           db={db}
@@ -96,12 +135,21 @@ export function AnuncioShopeeBlock({
         {desfecho !== null && (
           <DesfechoAcaoShopee
             contaId={conta.id}
+            produtoId={produtoId}
             linkDocId={linkDocId}
             desfecho={desfecho}
             acoes={acoes}
+            // The STORED link's own text (a draft's Publicar reads the stored draft).
+            descricaoPropria={textoUtilizavelShopee(link.description) !== null}
+            destinosDasSuperficies={rascunhos.destinosDasSuperficies}
+            rascunho={rascunhos.desfechoDoRascunhoDe(linkDocId)}
           />
         )}
-        <AcoesAnuncioShopee contaId={conta.id} linkDocId={linkDocId} link={link} acoes={acoes} />
+        {rascunho !== null ? (
+          <RascunhoShopee {...rascunho} />
+        ) : (
+          <AcoesAnuncioShopee contaId={conta.id} linkDocId={linkDocId} link={link} acoes={acoes} />
+        )}
       </Stack>
     </Card>
   );

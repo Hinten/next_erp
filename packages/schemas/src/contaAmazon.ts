@@ -19,8 +19,9 @@ import { FUSO_FISCAL } from './simplesNacional/competencia';
  *
  * It holds: the reauthorization arithmetic (São Paulo civil days), the seller-id
  * predicate and the read-free routing predicate step 3 reuses, the error `code`s
- * and envelope, the status projection, the start answer, and the closed set of
- * OAuth-return reasons the callback redirects with.
+ * and envelope, the status projection, the start answer, the closed set of
+ * OAuth-return reasons the callback redirects with, and (step 14) the NF-e
+ * re-drive route's own code set, error envelope and 202 answer.
  *
  * ⚠️ A NEW file on purpose, not a block inside `integracao.ts`: that file sits
  * on the NF-e live lane's path list, so every push touching it would cost a
@@ -245,6 +246,67 @@ export const erroContaAmazonSchema = z.object({
 export type ErroContaAmazon = z.infer<typeof erroContaAmazonSchema>;
 
 /* -------------------------------------------------------------------------- */
+/*                     The NF-e re-drive route (step 14)                       */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The `code` of every error envelope `POST /api/marketplace/amazon/enviar-nfe`
+ * answers with that is NOT already in {@link CODIGO_ERRO_AMAZON} (the route's
+ * read-switch refusal reuses `AMAZON_CHAMADAS_DESLIGADAS`, whose copy the web
+ * already has).
+ *
+ * ⚠️ A SEPARATE closed set on purpose, never a widening of
+ * {@link CODIGO_ERRO_AMAZON}: `apps/web` keeps an exhaustive copy `Record` over
+ * that one and a literal pin of its values, so a fifth member there fails the
+ * web typecheck until a conta-panel sentence exists for a code the conta routes
+ * never answer. The button that calls this route, and its copy over THIS set,
+ * belong to master-plan step 21. Every value is unique across BOTH sets.
+ *
+ * The route never calls Amazon and never writes Firestore: every refusal below
+ * means NOTHING was enqueued.
+ */
+export const CODIGO_ERRO_NFE_AMAZON = {
+  /**
+   * 400 — the body is not exactly `{ pedidoId, nfeId? }` (any other key — a
+   * `fase`, a counter — is refused, never ignored), or an id is outside its
+   * grammar. `pedidoId` is the ERP pedido DOCUMENT id (the aviso row's
+   * `entidade`, the id in the pedido page's URL), never the Amazon order number.
+   * `issues` names the field PATHS, never a value.
+   */
+  CORPO_INVALIDO: 'AMAZON_CORPO_INVALIDO',
+  /** 404 — no pedido with this id. */
+  PEDIDO_NAO_ENCONTRADO: 'AMAZON_PEDIDO_NAO_ENCONTRADO',
+  /** 404 — an explicit `nfeId` names no NF-e document of this pedido. */
+  NFE_NAO_ENCONTRADA: 'AMAZON_NFE_NAO_ENCONTRADA',
+  /**
+   * 409 — the pedido or its NF-e cannot go to Amazon; the envelope's `motivo`
+   * says why, as a closed backend slug (the pedido is not a PROVED Amazon pedido
+   * of a conta, its NF-e emission is blocked, the note is not approved in
+   * produção with its authorized XML, it is not a sale note, or the pedido has no
+   * approved note at all — the closest miss).
+   */
+  NFE_NAO_ELEGIVEL: 'AMAZON_NFE_NAO_ELEGIVEL',
+  /**
+   * 503 — the backend's queue valve (`AMAZON_TASKS_DISABLED=1`) is closed. There
+   * is no NF-e sweep behind it: retry once the queue is open again.
+   */
+  TAREFAS_DESLIGADAS: 'AMAZON_TAREFAS_DESLIGADAS',
+} as const;
+export type CodigoErroNfeAmazon =
+  (typeof CODIGO_ERRO_NFE_AMAZON)[keyof typeof CODIGO_ERRO_NFE_AMAZON];
+
+/**
+ * Every non-2xx JSON body of the NF-e re-drive route: the conta routes'
+ * envelope ({@link erroContaAmazonSchema}, `code` still a plain string) plus the
+ * 409's `motivo` — a closed backend slug, kept a plain string for the same
+ * reason as `code` (a slug a newer backend adds still parses).
+ */
+export const erroEnvioNfeAmazonSchema = erroContaAmazonSchema.extend({
+  motivo: z.string().nullable().optional(),
+});
+export type ErroEnvioNfeAmazon = z.infer<typeof erroEnvioNfeAmazonSchema>;
+
+/* -------------------------------------------------------------------------- */
 /*                                  Answers                                   */
 /* -------------------------------------------------------------------------- */
 
@@ -297,6 +359,26 @@ export const respostaInicioOAuthAmazonSchema = z.object({
   authorizeUrl: z.string().url(),
 });
 export type RespostaInicioOAuthAmazon = z.infer<typeof respostaInicioOAuthAmazonSchema>;
+
+/**
+ * What `POST /api/marketplace/amazon/enviar-nfe` answers on 202: ONE NF-e upload
+ * task was enqueued for this pedido's note — `nfeId` is the document the route
+ * chose (or the one the body named). Enqueued is not uploaded: the task decides
+ * everything Amazon-side (the valve, the live order, Amazon's invoice status
+ * first, the sibling notes) and reports through the pedido's
+ * `nfeUploadRejeitado` aviso — or, for an outcome that raises no aviso (a live
+ * order that is not Delivery by Amazon, an inactive conta, …), only in its own
+ * `evento: 'nfe'` log lines, so a 202 followed by no aviso change is read there.
+ * Two eligible sale notes are enqueued too, and the task refuses them
+ * (`nfe-ambigua`); a cancelled sale is enqueued for the task's incidente.
+ * Tolerant like the status, for the same reason.
+ */
+export const respostaEnvioNfeAmazonSchema = z.object({
+  enfileirado: z.literal(true),
+  pedidoId: z.string(),
+  nfeId: z.string(),
+});
+export type RespostaEnvioNfeAmazon = z.infer<typeof respostaEnvioNfeAmazonSchema>;
 
 /* -------------------------------------------------------------------------- */
 /*                            OAuth callback return                           */

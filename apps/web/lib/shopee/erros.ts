@@ -17,6 +17,12 @@
  * detail read per template — an automatic retry multiplies exactly the calls
  * that tripped the limit.
  */
+import {
+  CODIGO_RASCUNHO_SHOPEE,
+  motivoRascunhoInvalidoShopeeSchema,
+  type MotivoRascunhoInvalidoShopee,
+} from '@delfrance/schemas';
+
 import { ShopeeClientHttpError, ShopeeClientNetworkError } from './client';
 
 /**
@@ -29,7 +35,15 @@ import { ShopeeClientHttpError, ShopeeClientNetworkError } from './client';
  *
  * The first six get their own copy in {@link descreverFalhaShopee}; the step-21
  * block below (#1529) is the vocabulary of the pushes, the listing actions and
- * the two jobs, whose callers word their own copy.
+ * the two jobs, and the #1911 block that of the listing drafts — their callers
+ * word their own copy.
+ *
+ * ⚠️ The #1911 values are SPELLED THROUGH `CODIGO_RASCUNHO_SHOPEE`
+ * (`@delfrance/schemas`), the object `apps/shopee`'s draft and publish routes
+ * answer with — never as quoted literals, so a renamed code is a compile error
+ * on both sides of a deploy. `erros.test.ts` reads THIS FILE as text to hold
+ * that spelling: a retyped literal of the same value passes every value test,
+ * and only the raw-text pin can see it.
  */
 export const CODIGO_FALHA_SHOPEE = {
   tabelaMedidasInexistente: 'SHOPEE_TABELA_MEDIDAS_INEXISTENTE',
@@ -47,7 +61,12 @@ export const CODIGO_FALHA_SHOPEE = {
   contaSemTabelaNormal: 'SHOPEE_CONTA_SEM_TABELA_NORMAL',
   /** 422 — the conta cannot take a price push (`detalhes.motivo` / `regiao`). */
   precoContaRecusada: 'SHOPEE_PRECO_CONTA_RECUSADA',
-  /** 422 — refused BEFORE any Shopee write (`detalhes.problemas`). */
+  /**
+   * 422 — the ERP's own refusal (`detalhes.problemas`). Usually decided before
+   * any Shopee write, but NOT always: on an UPDATE the model leg refuses AFTER
+   * `update_item`, and the body names no etapa that would tell the two apart —
+   * so never read it as "nothing was sent".
+   */
   publicacaoBloqueada: 'SHOPEE_PUBLISH_BLOCKED',
   /** 422 — Shopee refused a write mid-publish (`detalhes.etapa`, `detalhes.problemas`). */
   publicacaoRecusada: 'SHOPEE_PUBLISH_REJECTED',
@@ -63,6 +82,44 @@ export const CODIGO_FALHA_SHOPEE = {
   envioPrecoEmAndamento: 'SHOPEE_PRICE_SYNC_RUNNING',
   envioPrecoNaoEmAndamento: 'SHOPEE_PRICE_SYNC_NOT_RUNNING',
   envioPrecoNaoEnfileirado: 'SHOPEE_PRICE_SYNC_ENQUEUE_FAILED',
+  // ---- #1911: the listing drafts — the three draft routes and the publish of a draft. ----
+  /**
+   * 409 — the draft's publish lock is held (by this draft, or by a SIBLING link
+   * of the produto on the conta). `detalhes.aguardarMs` (absent ⇒ waiting does
+   * not help), `detalhes.vinculos` when the holder is a sibling.
+   */
+  publicacaoEmAndamento: CODIGO_RASCUNHO_SHOPEE.publicacaoEmAndamento,
+  /**
+   * 409 — the named link is no longer a draft: it RECORDS a listing (an
+   * `item_id`), which may have been removed on Shopee since — never proof that
+   * the listing exists there now.
+   */
+  rascunhoJaPublicado: CODIGO_RASCUNHO_SHOPEE.jaPublicado,
+  /**
+   * 409, publish only — stopped BEFORE the create (the send gate, a look-up
+   * that ran out of time, or a lock no longer this run's): nothing was created.
+   */
+  publicacaoExpirada: CODIGO_RASCUNHO_SHOPEE.publicacaoExpirada,
+  /** 409, publish only — the lock was lost to concurrent writes on every attempt. */
+  rascunhoContencao: CODIGO_RASCUNHO_SHOPEE.contencao,
+  /** 409 — the draft's last create may have reached Shopee; refused until the operator attests. */
+  rascunhoCriacaoIncerta: CODIGO_RASCUNHO_SHOPEE.criacaoIncerta,
+  /** 409 — a SECOND listing on the conta needs the operator's confirmation (`detalhes.vinculos`). */
+  rascunhoContaJaTemAnuncio: CODIGO_RASCUNHO_SHOPEE.contaJaTemAnuncio,
+  /** 409 — the stored draft is not what the operator saw; nothing written (`detalhes.conflitos`). */
+  rascunhoConflito: CODIGO_RASCUNHO_SHOPEE.conflito,
+  /** 409, create only — the id already holds a document that is not this draft. */
+  rascunhoIdEmUso: CODIGO_RASCUNHO_SHOPEE.idEmUso,
+  /** 409, edit only — the category of a draft whose last create is uncertain cannot change. */
+  rascunhoCategoriaTravada: CODIGO_RASCUNHO_SHOPEE.categoriaTravada,
+  /** 422, create only — the produto cannot carry a draft ({@link motivoRascunhoInvalido}). */
+  rascunhoProdutoInvalido: CODIGO_RASCUNHO_SHOPEE.produtoInvalido,
+  /**
+   * 404 — on create, the PRODUTO does not exist; on edit / discard, the draft
+   * does not (or belongs to another conta). One code, two meanings: the caller
+   * knows which route it called.
+   */
+  rascunhoInexistente: CODIGO_RASCUNHO_SHOPEE.inexistente,
 } as const satisfies Record<string, string>;
 
 /** Shopee's two rate-limit classes, as the backend's 502 body names them in `kind`. */
@@ -95,6 +152,26 @@ export interface FalhaShopee {
  */
 export function codigoDaFalhaShopee(err: unknown): string | null {
   return err instanceof ShopeeClientHttpError ? err.code : null;
+}
+
+/**
+ * Why a draft create refused the produto — `filho` (a variation child) or
+ * `kit-virtual` — read off a 422 {@link CODIGO_FALHA_SHOPEE}`.rascunhoProdutoInvalido`;
+ * `null` for any other failure, and for a motivo this build does not know.
+ *
+ * ⚠️ The narrowing happens HERE, under that one code, and never on the wire:
+ * `detalhes.motivo` is a free string shared with the price, publish and import
+ * 422s, and the same slug under another code is not this answer.
+ */
+export function motivoRascunhoInvalido(err: unknown): MotivoRascunhoInvalidoShopee | null {
+  if (
+    !(err instanceof ShopeeClientHttpError) ||
+    err.code !== CODIGO_FALHA_SHOPEE.rascunhoProdutoInvalido
+  ) {
+    return null;
+  }
+  const lido = motivoRascunhoInvalidoShopeeSchema.safeParse(err.detalhes.motivo);
+  return lido.success ? lido.data : null;
 }
 
 /**

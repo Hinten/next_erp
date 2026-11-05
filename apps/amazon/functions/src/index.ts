@@ -33,8 +33,10 @@ import {
   reprocessarAdiadasAmazon,
   reprocessarNotificacoesAmazon,
 } from '../../lib/amazon/notificacoes/notificacao';
+import { FILA_NFE_AMAZON } from '../../lib/amazon/nfe/tarefaNfe';
 import { SEGREDOS_DE_LEITURA_AMAZON, depsDeLeituraAmazon } from './depsLeitura';
 import * as filaLeitura from './filaLeitura';
+import * as filaNfe from './filaNfe';
 import { getDb } from './lib/admin';
 
 /**
@@ -53,7 +55,12 @@ import { getDb } from './lib/admin';
  * Step 20 adds the conta trigger (`onIntegracaoAmazonChanged`,
  * ./onIntegracaoAmazonChanged): the codebase's first Firestore trigger, which
  * keeps each Amazon conta's `int_frete` doc in step with the conta and makes no
- * Amazon call.
+ * Amazon call. Step 14 (PR 14-c) adds the NF-e trigger (`onNfeAprovadaAmazon`,
+ * ./onNfeAprovadaAmazon), the first producer of the NF-e queue, through its
+ * own composition root (./agendadorNfe) — it makes no Amazon call either — and
+ * the NF-e queue itself (`processAmazonNfeUpload`, ./filaNfe), the codebase's
+ * SECOND task queue and its first Amazon WRITER (behind the read switch, the
+ * NF-e valve and its canary).
  *
  * ⚠️ ONE logger: every line goes through `LOGGER_STDOUT_AMAZON` /
  * `registrarEventoAmazon` (`lib/amazon/core/log.ts`). This file never imports
@@ -81,14 +88,38 @@ if (!(FILA_LEITURA_AMAZON in filaLeitura)) {
   );
 }
 
+// The same assertion for the NF-e queue (step 14, PR 14-c): every NF-e producer
+// — the trigger's root, the handler's own re-enqueues, the re-drive route — targets
+// `FILA_NFE_AMAZON`.
+if (!(FILA_NFE_AMAZON in filaNfe)) {
+  throw new Error(
+    '[amazon] function-name drift: functions/src/filaNfe.ts must export a ' +
+      `handler named '${FILA_NFE_AMAZON}' (the enqueue target). ` +
+      'Rename the export and the FILA_NFE_AMAZON constant together.',
+  );
+}
+
 /** The ONE reads queue (one dispatch at a time, retry with backoff). */
 export { filaLeituraAmazon } from './filaLeitura';
+
+/**
+ * The NF-e queue (step 14, PR 14-c): the upload of an approved sale NF-e to
+ * Amazon, status first, behind the read switch, the NF-e valve and its canary.
+ */
+export { processAmazonNfeUpload } from './filaNfe';
 
 /** The 15-minute backstop poll: the reads queue's second producer (./pollPedidos). */
 export { pollAmazonOrders } from './pollPedidos';
 
 /** The conta trigger (step 20): each Amazon conta's `int_frete` doc follows the conta. */
 export { onIntegracaoAmazonChanged } from './onIntegracaoAmazonChanged';
+
+/**
+ * The NF-e trigger (step 14, PR 14-c): an approved sale `nfev4` of a proved
+ * Amazon pedido is enqueued for upload (named after the CloudEvent); an approved
+ * one cancelled while the order lives raises an aviso. No Amazon call (D11).
+ */
+export { onNfeAprovadaAmazon } from './onNfeAprovadaAmazon';
 
 /**
  * Documents examined per lane on each tick of the reprocess sweep. NOT exported:

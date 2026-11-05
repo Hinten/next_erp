@@ -28,8 +28,20 @@ import type { FaixaDto } from './taxonomiaShopeeDto';
  * - `publicarAnuncio.ts`'s `textoUtilizavel` is a DIFFERENT function: it tests
  *   the trimmed text for blankness but returns the UNTRIMMED one, and it feeds
  *   projections, not the band check. Replacing it would change what is stored.
- * - `kits/planoKit.ts` keeps its own `textoUtilizavel` / `dentroDaFaixa`: the
- *   kit path is out of #1911's scope. Recorded, not fixed.
+ * - `kits/planoKit.ts` keeps its own `textoUtilizavel` / `dentroDaFaixa` for
+ *   the kit's name, description and price bands (and `kits/republicarKit.ts`
+ *   its own `textoUtilizavel`). Recorded, not fixed. On the kit path only the
+ *   tier name and option checks (`planoKit.ts`, #1911 batch A) read
+ *   {@link textoNaFaixaShopee} and {@link descreverFaixaShopee} from here,
+ *   as the item's do (`anuncios/tiersPublicacao.ts`).
+ *
+ * Readers today: the publisher (`montagemAnuncio.ts`, the tier modules
+ * above, and `publicarAnuncio.ts`'s no-link mint, which asks
+ * {@link textoUtilizavelShopee} whether the produto has a name), the draft
+ * route (`rascunho.ts`), this package's `produto/collection/shopeeRascunho.ts`
+ * (the draft's pendências), `marcaShopee.ts` and `atributosShopee.ts`, and
+ * `apps/web`'s Shopee tab (the draft editor's blank tests, character counter
+ * and band sentences) and Marcas dialog (#1911 P9–P11).
  */
 
 /** A usable text value: trimmed and non-empty. Blank means ABSENT everywhere the publisher reads text. */

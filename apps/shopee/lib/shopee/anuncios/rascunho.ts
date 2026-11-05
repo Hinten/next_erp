@@ -272,13 +272,20 @@ function inexistente(linkDocId: string): RecusaDeRascunhoShopeeError {
   });
 }
 
+/**
+ * 409 `JA_PUBLICADO` of the draft SAVE and DISCARD routes — the stored
+ * document is no longer a draft. The sentence claims only what the read
+ * showed — the document RECORDS a listing — never that the listing still
+ * exists on Shopee: an adopted or claimed link may have been removed in Seller
+ * Centre since (#1911 batch-B review round 5, the reservation's round-4 fix).
+ */
 function jaPublicado(linkDocId: string): RecusaDeRascunhoShopeeError {
   return new RecusaDeRascunhoShopeeError({
     status: 409,
     code: CODIGO_RASCUNHO_SHOPEE.jaPublicado,
     linkDocId,
     mensagem:
-      `o vínculo ${linkDocId} já não é um rascunho: o anúncio já existe na Shopee, e o ` +
+      `o vínculo ${linkDocId} já não é um rascunho: ele já registra um anúncio da Shopee, e o ` +
       'conteúdo de um anúncio publicado não é editado aqui. Recarregue a aba. Nada foi gravado.',
   });
 }
@@ -696,6 +703,13 @@ export async function atualizarRascunhoShopee(
       throw emAndamento(linkDocId, estado.aguardarMs, estado.posExpiracao);
     }
     if (estado.tipo === 'incerta' && alterados.includes(CAMPO_RASCUNHO_SHOPEE.categoryId)) {
+      // The exit after the import (#1911 batch-B review, round 3): the import
+      // adopts this draft only with a readable window, one adoptable draft, a
+      // known `create_time` and one parent produto (`produtos/resolveProduto.ts`)
+      // — otherwise it links the listing apart, the draft stays `incerta` and
+      // its category stays locked. Any `incerta` reading lands here, window or
+      // not, so the sentence keys that exit on the draft still being there and
+      // promises no adoption (the web words its own, FRASE_CATEGORIA_TRAVADA_SHOPEE).
       throw new RecusaDeRascunhoShopeeError({
         status: 409,
         code: CODIGO_RASCUNHO_SHOPEE.categoriaTravada,
@@ -703,7 +717,9 @@ export async function atualizarRascunhoShopee(
         mensagem:
           `a última tentativa de publicar o rascunho ${linkDocId} pode ter criado o anúncio na ` +
           'Shopee, na categoria gravada: ela não muda até isso se resolver. Confira no Seller ' +
-          'Centre e importe o anúncio se ele existir. Nada foi gravado.',
+          'Centre e importe o anúncio se ele existir; se ele não existir, ou se este rascunho ' +
+          'continuar depois da importação, descarte este rascunho confirmando a criação ' +
+          'incerta. Nada foi gravado.',
       });
     }
 
@@ -802,6 +818,14 @@ export async function descartarRascunhoShopee(
 
     const incerta = estado.tipo === 'incerta';
     if (incerta && corpo.confirmarCriacaoIncerta !== true) {
+      // «Normalmente» (batch-B review R7-roundtrip#5): the import adopts ONLY a
+      // draft whose attempt window it can read, holding the listing's
+      // `create_time`, and only when exactly one draft qualifies and the SKU
+      // lands on one produto (`produtos/resolveProduto.ts`,
+      // `veredictoDeAdocaoShopee`). An `incerta` reading does not promise that
+      // — an unreadable lock or record reads `incerta` with NO window — so the
+      // sentence names the other outcome too: a link apart, after which this
+      // draft is case (b) and the confirmed discard is the exit.
       throw new RecusaDeRascunhoShopeeError({
         status: 409,
         code: CODIGO_RASCUNHO_SHOPEE.criacaoIncerta,
@@ -809,8 +833,11 @@ export async function descartarRascunhoShopee(
         mensagem:
           `a última tentativa de publicar o rascunho ${linkDocId} pode ter criado o anúncio na ` +
           'Shopee (resultado desconhecido), e o rascunho é o único registro dela. Confira no ' +
-          'Seller Centre: se o anúncio existe, importe-o; se NÃO existe, confirme para ' +
-          'descartar. Nada foi apagado.',
+          'Seller Centre: se o anúncio NÃO existe, ou existe e já está vinculado no ERP, confirme ' +
+          'para descartar; se existe SEM vínculo, não descarte — dê a ele o mesmo SKU do produto ' +
+          '(sem SKU, a importação cria outro produto) e importe-o. Normalmente a importação adota ' +
+          'este rascunho; se ela criar um vínculo à parte, o anúncio passa a estar vinculado no ' +
+          'ERP e este rascunho pode ser descartado com a confirmação. Nada foi apagado.',
       });
     }
 
