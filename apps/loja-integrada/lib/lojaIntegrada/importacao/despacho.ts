@@ -11,13 +11,15 @@
  *  2. The job, read by id. No job, or another conta's job ⇒ nothing.
  *  3. The `seq` decision (`decidirDespachoLi`, `job.ts`):
  *     - `nada` — a stale chain, a finished or cancelled job: nothing else is read or written;
- *     - `continuacao` — this task already wrote its end-of-dispatch checkpoint and its hand-off may
- *       have failed: it re-enqueues the NAMED successor and stops (no context, no Loja Integrada
- *       call). The successor's delay is the ordinary 2 s even after a 429 pause: a RETRY reaches
- *       here only after the queue's own backoff (60 s at least) from an attempt that failed after
- *       that checkpoint, so the pause has already passed. This holds for a retry entering here
- *       only — never for the last attempt's own re-read nor for a checkpoint that stops ("Whose
- *       hand-off" below);
+ *     - `continuacao` — the stored job is already one `seq` ahead: an earlier attempt of this task
+ *       wrote its end-of-dispatch checkpoint, and its hand-off may never have happened. This task
+ *       REPAIRS it: it re-enqueues the NAMED successor and stops (no context, no Loja Integrada
+ *       call), at the CONSERVATIVE 60 s, never 2 s — it cannot tell whether the checkpoint it
+ *       repairs was a budget end or a 429 pause, and 60 s never cuts a pause short (a budget end
+ *       only waits 58 s longer, on a rare recovery path). When the owner's own enqueue exists, ours
+ *       is already-exists and the owner's delay stands. The repair is OUR hand-off and targets the
+ *       stored `seq`: the valve closed stamps it `tarefas-desligadas`, and a transient failure on
+ *       the queue's last attempt stamps it `tentativas-esgotadas` ("Whose hand-off" below);
  *     - `executar` — the run below.
  *  4. The context (`core/contexto.ts`), whose FIRST act is the read switch: while
  *     `LOJA_INTEGRADA_CHAMADAS` is not exactly `on` it refuses with zero Firestore reads and zero
@@ -104,9 +106,11 @@
  *    off its schema, Cloud Tasks, Firestore, a stored document off its schema, the park's
  *    contention, another writer of the same `seq` (`LiImportacaoConcorrenteError`) — is answered
  *    from a FRESH raw read of the job instead, since no retry follows to do it: a job still running
- *    at the dispatch's `seq` is stamped `falhou/tentativas-esgotadas`; a job ONE `seq` ahead, still
- *    `executando`, is handed off by whose checkpoint put it there ("Whose hand-off" below) and is
- *    never stamped for this dispatch's failure; anything else is left alone. The common cause of the
+ *    at the dispatch's `seq` is stamped `falhou/tentativas-esgotadas` (a task that entered
+ *    `continuacao` targets the stored `seq` from its first read, so its failed repair stamps that
+ *    `seq`); a job ONE `seq` ahead, still `executando`, is handed off by whose checkpoint put it
+ *    there ("Whose hand-off" below) and is never stamped for this dispatch's failure; anything
+ *    else is left alone. The common cause of the
  *    second case is OUR end-of-dispatch checkpoint that LANDED while its call surfaced another
  *    error (a DEADLINE_EXCEEDED, an UNAVAILABLE after the SDK's retries, a 9 whose re-read failed):
  *    stamped, or left with no task, the job would sit `executando` and every new start would answer
@@ -119,7 +123,7 @@
  *  - **A checkpoint that stops** on a job its fresh read finds ONE `seq` ahead, still
  *    `executando` — that earlier attempt ended its slice, and may never hand off — hands the named
  *    successor off as a courtesy ("Whose hand-off" below), on every attempt: the dispatch ends
- *    `continuacao`, not `parado`.
+ *    `continuacao`, or `parado` when the courtesy fails — never rethrown, never stamped.
  *
  * ## Whose hand-off (a job found ONE `seq` ahead, still `executando`)
  *
@@ -138,16 +142,33 @@
  *    CONSERVATIVE 60 s. The owner normally enqueued already (ours is then already-exists, and the
  *    owner's delay stands); if ours wins the name, 60 s can never cut a pause short and only delays
  *    a budget end by 58 s. The dispatch never re-targets the stored `seq`, so nothing it does later
- *    can stamp a `seq` it never owned. A courtesy that fails never stamps: the valve closed is
- *    `parado` (the owner reads the same valve at its own hand-off); a transient failure is rethrown
- *    before the queue's last attempt (the retry's continuation check hands off again) and is
- *    `parado` on it.
+ *    can stamp a `seq` it never owned. A courtesy that fails never stamps and NEVER rethrows: the
+ *    valve closed (the owner reads the same valve at its own hand-off) and a transient Cloud Tasks
+ *    failure are both `parado`, on EVERY attempt. The courtesy is belt and braces — the owner, an
+ *    earlier attempt of this same named task, owns its own hand-off — and a rethrow would give the
+ *    job to this task's retry, whose continuation check takes the stored `seq` as its own (the
+ *    REPAIR, below) and stamps it on the queue's last attempt when its enqueue fails as well.
+ *  - **The REPAIR** (a task whose FIRST read finds its job already one `seq` ahead: the
+ *    `continuacao` decision, "The order of one dispatch" step 3) ⇒ OUR hand-off on the stored `seq`,
+ *    at the conservative 60 s, for it cannot know the owner's delay. Its failures end as ours do:
+ *    the valve closed ⇒ `tarefas-desligadas`; a transient failure is rethrown, and on the queue's
+ *    last attempt the stored `seq` is stamped `tentativas-esgotadas`. The common writer of that
+ *    `seq` is this task's own earlier attempt that DIED after its end checkpoint (its enqueue failed
+ *    and it rethrew, or it crashed), and a visible failure beats a silent hang.
  *
- * ⚠️ Accepted residual: the owner died BEFORE its own enqueue (the queue gave up on it) AND every
- * courtesy failed too (a transient Cloud Tasks failure on the last attempt, or the valve closed):
- * the job sits `executando` with nothing queued, and every new start answers 409 until a person
- * presses Cancelar — which needs no worker (`job.ts`, the cancel). Stamping instead would kill the
+ * ⚠️ Accepted residual (the courtesy): the owner died BEFORE its own enqueue (the queue gave up on
+ * it) AND the courtesy failed (the valve closed, or a transient Cloud Tasks failure, on ANY
+ * attempt — the courtesy ends its task, so no retry repairs it): the job sits `executando` with
+ * nothing queued, and every new start answers 409 until a person presses Cancelar — one write,
+ * which needs no worker (`job.ts`, the cancel), then a new start. Stamping instead would kill the
  * owner's job whenever the owner DID enqueue, which is the common case.
+ *
+ * ⚠️ Accepted residual (the repair): the owner is an earlier attempt of this task the queue already
+ * counted as failed (past its dispatch deadline, or its reply lost) but still ALIVE — mid-hand-off,
+ * or with its successor already enqueued — and this task's LAST attempt repairs it with an enqueue
+ * that fails transiently: that job is stamped `falhou/tentativas-esgotadas` (a successor already
+ * queued then reads a finished job and does nothing). One transient failure of OURS suffices; the
+ * owner's own enqueue may well have succeeded.
  *
  * ## The summary aviso
  *
@@ -334,7 +355,10 @@ export type DesfechoDespachoImportacaoLi =
   | 'pausado'
   | 'concluido'
   | 'falhou'
-  /** A checkpoint or a stamp found the job cancelled, ended or moved on: this dispatch stopped. */
+  /**
+   * A checkpoint or a stamp found the job cancelled, ended or moved on, or a courtesy hand-off
+   * failed (never rethrown): this dispatch stopped.
+   */
   | 'parado'
   /**
    * The successor of a job found one `seq` ahead was re-enqueued: by the continuation check (this
@@ -571,8 +595,10 @@ class DespachoImportacaoLi {
     // From here on, every write is preconditioned on the job's CURRENT seq and on this read.
     this.alvo = { jobId: this.tarefa.jobId, seq: lido.job.seq, versao: lido.versao };
     if (decisao === DECISAO_DESPACHO_LI.continuacao) {
+      // The REPAIR of a hand-off that may never have happened: it cannot tell a budget end from a
+      // 429 pause, so the conservative 60 s, which never cuts a pause short (module header, step 3).
       return this.entregar(
-        ATRASO_CONTINUACAO_IMPORTACAO_LI_S,
+        ATRASO_PAUSA_429_IMPORTACAO_LI_S,
         DESFECHO_DESPACHO_IMPORTACAO_LI.continuacao,
       );
     }
@@ -913,10 +939,12 @@ class DespachoImportacaoLi {
    * it, so this one never targets the stored `seq` (`this.alvo` is left alone: nothing later can
    * decide to stamp a `seq` this dispatch never owned) and enqueues with the CONSERVATIVE 60 s — an
    * existing task is success and the owner's delay stands; a name ours wins can never cut a 429
-   * pause short, and delays a budget end by 58 s at most. Its failures never stamp: the valve closed
-   * is `parado` (the owner reads the same valve at its own hand-off); a transient one is rethrown
-   * before the queue's last attempt (the retry's continuation check hands off again) and is
-   * `parado` on it.
+   * pause short, and delays a budget end by 58 s at most. Its failures never stamp and never
+   * rethrow: the valve closed (the owner reads the same valve at its own hand-off) and a transient
+   * Cloud Tasks failure are `parado` on EVERY attempt. A rethrow would hand the job to this task's
+   * retry, whose continuation check carries the stored `seq` as its own and, on the queue's last
+   * attempt, stamps it when its enqueue fails as well — a healthy job the other dispatch carries.
+   * Anything else the producer rethrows (a broken deploy, a coding bug) stays loud.
    */
   private async entregarPorCortesia(
     job: ImportacaoLojaIntegrada,
@@ -926,11 +954,10 @@ class DespachoImportacaoLi {
         .agendador()
         .enfileirar(this.sucessorEm(job.seq), { atrasoS: ATRASO_PAUSA_429_IMPORTACAO_LI_S });
     } catch (err) {
-      if (err instanceof LiTarefasDesligadasError) {
+      if (err instanceof LiTarefasDesligadasError || err instanceof LiTarefasTransitoriasError) {
         return this.resultado(DESFECHO_DESPACHO_IMPORTACAO_LI.parado);
       }
-      if (this.deps.tentativa < TASK_MAX_ATTEMPTS - 1 || !esgotaAsTentativas(err)) throw err;
-      return this.resultado(DESFECHO_DESPACHO_IMPORTACAO_LI.parado);
+      throw err;
     }
     this.job = job;
     return this.resultado(DESFECHO_DESPACHO_IMPORTACAO_LI.continuacao);

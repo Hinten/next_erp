@@ -35,8 +35,8 @@
  *  - `payload.seq == stored.seq` and the job is `pendente` or `executando` ⇒ `executar`;
  *  - `payload.seq == stored.seq − 1` and the job is `executando` ⇒ `continuacao`: this task already
  *    wrote its end-of-dispatch checkpoint and its hand-off may have failed. It only re-enqueues the
- *    NAMED successor (`idTarefaImportacaoLi(jobId, stored.seq)`; an existing one is success) and
- *    stops;
+ *    NAMED successor (`idTarefaImportacaoLi(jobId, stored.seq)`; an existing one is success) at the
+ *    conservative 60 s — it cannot tell a budget end from a 429 pause (`despacho.ts`) — and stops;
  *  - anything else ⇒ `nada`: a stale chain, a finished or cancelled job.
  *
  * A unit checkpoint keeps `seq`; only the end-of-dispatch checkpoint writes `seq + 1`, so a dispatch
@@ -45,8 +45,8 @@
  * re-reads the job itself ({@link relerJobLi}), and one found at `stored − 1` is handed off there,
  * never stamped for that failure — with the dispatch's own delay when the stored job holds ITS end
  * patch ({@link patchDoFimDoDespachoLi}, {@link guardaOPatchLi}: a checkpoint that LANDED while its
- * call surfaced an error), else as a courtesy at the conservative 60 s that never stamps
- * (`despacho.ts`, "Whose hand-off").
+ * call surfaced an error), else as a courtesy at the conservative 60 s that never stamps and never
+ * rethrows (`despacho.ts`, "Whose hand-off").
  *
  * ## A lost checkpoint is never re-applied
  *

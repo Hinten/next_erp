@@ -4,7 +4,8 @@
  * proves:
  *
  *  - the payload and the `seq` gate: a stale chain, a finished job, another conta's job do nothing
- *    beyond the job read; the continuation check re-enqueues the NAMED successor and stops;
+ *    beyond the job read; the continuation check re-enqueues the NAMED successor (at the
+ *    conservative 60 s: it repairs a hand-off whose delay it cannot know) and stops;
  *  - the read switch FIRST: a context refusal ends the job `falhou` with its motivo and zero calls;
  *  - the time budget: a scripted clock stops a dispatch before the unit that would cross 70 s, and
  *    the next dispatch resumes at the same offset or family; per-unit checkpoints never move `seq`;
@@ -321,16 +322,18 @@ describe('the payload and the seq gate', () => {
     expect(t.envios).toEqual([]);
   });
 
-  it('stored − 1 while executando: the continuation check re-enqueues the NAMED successor and stops — no context, no write', async () => {
+  it('stored − 1 while executando: the continuation check re-enqueues the NAMED successor at the conservative 60 s and stops — no context, no write', async () => {
     seedJobLi(db, JOB, CONTA, { status: 'executando', seq: 2 });
     // The switch OFF: the continuation check makes no call, so it never asks.
     const { deps, chamadas, t } = montarDeps({ ambiente: {} });
     const r = await despacharImportacaoLi(asDb(db), tarefa(1), deps);
     expect(r.desfecho).toBe('continuacao');
+    // It cannot tell whether the checkpoint it repairs was a budget end (2 s) or a 429 pause (60 s):
+    // 60 s never cuts a pause short.
     expect(t.envios).toEqual([
       {
         tarefa: tarefa(2),
-        opcoes: { id: `li-importacao-${JOB}-2`, scheduleDelaySeconds: 2 },
+        opcoes: { id: `li-importacao-${JOB}-2`, scheduleDelaySeconds: 60 },
       },
     ]);
     expect(db.escritas).toEqual([]);
@@ -1003,7 +1006,7 @@ describe('a 429', () => {
     expect(jobGravado().catalogo).toEqual({ recurso: 'categorias', proximoOffset: 0, paginas: 0 });
   });
 
-  it(`the pause's hand-off failing transiently is recovered by the retry's continuation check`, async () => {
+  it(`⚠️ the pause's hand-off failing transiently is recovered by the retry's continuation check, still 60 s later — the repair never shortens a pause`, async () => {
     seedJobLi(db, JOB, CONTA, { status: 'pendente' });
     const t = transporte();
     t.falhas.push(falhaDoFunctions('unknown-error'));
@@ -1018,6 +1021,13 @@ describe('a 429', () => {
     expect((await despacharImportacaoLi(asDb(db), tarefa(0), retry.deps)).desfecho).toBe(
       'continuacao',
     );
+    // The retry knows nothing of the pause its dead attempt checkpointed: the conservative 60 s.
+    // NEAR-MISS: OUR OWN landed budget end, answered on the last attempt, still hands off at its
+    // own 2 s (`the queue’s last attempt`, the end checkpoint LANDED behind a DEADLINE_EXCEEDED).
+    expect(t.envios.map((e) => e.opcoes)).toEqual([
+      { id: `li-importacao-${JOB}-1`, scheduleDelaySeconds: 60 },
+      { id: `li-importacao-${JOB}-1`, scheduleDelaySeconds: 60 },
+    ]);
     const { resultados } = await rodarAteOFim({ relogio, t }, 1);
     expect(resultados.at(-1)?.desfecho).toBe('concluido');
   });
@@ -1150,11 +1160,8 @@ describe('the queue’s last attempt', () => {
     }
   });
 
-  it('⚠️ a COURTESY hand-off that fails transiently never kills the job the other dispatch carries: rethrown before the last attempt, `parado` on it — never stamped', async () => {
-    for (const [tentativa, esperado] of [
-      [1, 'throws'],
-      [2, 'parado'],
-    ] as const) {
+  it('⚠️ a COURTESY hand-off that fails transiently never kills the job the other dispatch carries: `parado` on EVERY attempt — never rethrown, never stamped', async () => {
+    for (const tentativa of [0, 1, 2]) {
       db = new FakeDb();
       seedConta(db, CONTA);
       seedCredencial(db, CONTA);
@@ -1170,12 +1177,12 @@ describe('the queue’s last attempt', () => {
       const t = transporte();
       t.falhas.push(falhaDoFunctions('unknown-error'));
       const { deps } = montarDeps({ t, tentativa });
-      const execucao = despacharImportacaoLi(asDb(db), tarefa(0), deps);
-      if (esperado === 'throws') {
-        await expect(execucao).rejects.toBeInstanceOf(LiTarefasTransitoriasError);
-      } else {
-        expect(await execucao).toMatchObject({ desfecho: 'parado', motivo: null });
-      }
+      // Never rethrown: a retry of this task would find the job one seq ahead and run the
+      // continuation check, which carries the job as its own and stamps it on the last attempt.
+      expect(
+        await despacharImportacaoLi(asDb(db), tarefa(0), deps),
+        String(tentativa),
+      ).toMatchObject({ desfecho: 'parado', motivo: null });
       expect(jobGravado(), String(tentativa)).toMatchObject({
         status: 'executando',
         seq: 1,
@@ -1186,6 +1193,78 @@ describe('the queue’s last attempt', () => {
         t.envios.map((e) => e.opcoes),
         String(tentativa),
       ).toEqual([{ id: `li-importacao-${JOB}-1`, scheduleDelaySeconds: 60 }]);
+    }
+  });
+
+  it('⚠️ a courtesy failing on attempt 1 ends that task `parado`, so no last attempt ever re-targets the seq another dispatch carries and stamps it', async () => {
+    seedSnapshotDeFamilias([10, 20]);
+    // Another dispatch of seq 0 ENDS its slice (seq 1) while attempt 1 runs family 10.
+    db.antesDaProximaEscrita(caminhoItemLi(JOB, '10'), async () => {
+      await importacaoLojaIntegradaCollection
+        .docRef(asDb(db), {}, JOB)
+        .update({ atualizadoEmMs: 1, seq: 1 });
+    });
+    const t = transporte();
+    t.falhas.push(falhaDoFunctions('unknown-error'));
+    const um = montarDeps({ t, tentativa: 1 });
+    // The task SUCCEEDS: Cloud Tasks schedules no attempt 2 of it, whose continuation check would
+    // point at seq 1, fail its enqueue as well and stamp a job it never carried.
+    expect(await despacharImportacaoLi(asDb(db), tarefa(0), um.deps)).toMatchObject({
+      desfecho: 'parado',
+      motivo: null,
+    });
+    expect(jobGravado()).toMatchObject({
+      status: 'executando',
+      seq: 1,
+      motivo: null,
+      atualizadoEmMs: 1,
+    });
+    expect(escritasDoJob().map((e) => e.dados?.['status'])).not.toContain('falhou');
+    expect(t.envios.map((e) => e.opcoes)).toEqual([
+      { id: `li-importacao-${JOB}-1`, scheduleDelaySeconds: 60 },
+    ]);
+  });
+
+  it('⚠️ the OWNER’s repair across attempts: attempt 1’s OWN end checkpoint lands and its enqueue fails (rethrown); the last attempt’s continuation check hands off at the conservative 60 s — and stamps only when that enqueue fails too', async () => {
+    for (const falhaNaUltima of [false, true]) {
+      db = new FakeDb();
+      seedConta(db, CONTA);
+      seedCredencial(db, CONTA);
+      __resetAllReadCaches();
+      seedSnapshotDeFamilias([10, 20, 30]);
+      const t = transporte();
+      t.falhas.push(falhaDoFunctions('unknown-error'));
+      // No unit fits: a BUDGET end (its own delay 2 s), landed, then the hand-off fails.
+      const um = montarDeps({ t, tentativa: 1, jaDecorridoMs: 61_000 });
+      await expect(despacharImportacaoLi(asDb(db), tarefa(0), um.deps)).rejects.toBeInstanceOf(
+        LiTarefasTransitoriasError,
+      );
+      expect(jobGravado(), String(falhaNaUltima)).toMatchObject({ status: 'executando', seq: 1 });
+
+      // The queue's LAST attempt of the same task, on the state attempt 1 left.
+      if (falhaNaUltima) t.falhas.push(falhaDoFunctions('unknown-error'));
+      const dois = montarDeps({ t, tentativa: 2 });
+      const r = await despacharImportacaoLi(asDb(db), tarefa(0), dois.deps);
+      if (falhaNaUltima) {
+        // Ours, and no retry follows: a visible failure beats a job `executando` with nothing queued.
+        expect(r).toMatchObject({ desfecho: 'falhou', motivo: 'tentativas-esgotadas' });
+        expect(jobGravado()).toMatchObject({
+          status: 'falhou',
+          motivo: 'tentativas-esgotadas',
+          seq: 1,
+        });
+      } else {
+        expect(r).toMatchObject({ desfecho: 'continuacao', motivo: null });
+        expect(jobGravado()).toMatchObject({ status: 'executando', seq: 1, motivo: null });
+      }
+      // The continuation check cannot know its dead attempt's checkpoint was a budget end.
+      expect(
+        t.envios.map((e) => e.opcoes),
+        String(falhaNaUltima),
+      ).toEqual([
+        { id: `li-importacao-${JOB}-1`, scheduleDelaySeconds: 2 },
+        { id: `li-importacao-${JOB}-1`, scheduleDelaySeconds: 60 },
+      ]);
     }
   });
 

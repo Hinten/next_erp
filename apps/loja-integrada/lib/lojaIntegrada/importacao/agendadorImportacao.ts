@@ -28,7 +28,9 @@
  *    dispatch PER IMPORT RUNNING AT ONCE — the one running when it arrived, and each other conta's
  *    continuation scheduled before it (`functions/src/index.test.ts` pins the ladder per count);
  *  - {@link ATRASO_PAUSA_429_IMPORTACAO_LI_S} (60 s) after Loja Integrada answered 429: the next
- *    dispatch starts in a fresh minute of the store's rate window.
+ *    dispatch starts in a fresh minute of the store's rate window. A dispatch also uses it for every
+ *    hand-off whose owner's delay it cannot know — the continuation check's repair and a courtesy
+ *    (`despacho.ts`, "Whose hand-off") — since 60 s never cuts a pause short.
  *
  * Any other value is refused before the queue is resolved (`RangeError`): the delay is a decision
  * of this module, not a knob. ⚠️ The functions emulator ignores `scheduleDelaySeconds`
@@ -42,7 +44,8 @@
  *    closed, and the queue was never resolved. The caller stamps the job `falhou` with
  *    `tarefas-desligadas`: an import is never left `executando` with nothing queued.
  *  - {@link LiTarefasTransitoriasError} — Cloud Tasks hiccupped. The caller THROWS, and its own
- *    retry re-attempts the same named enqueue (the continuation check, for a dispatch).
+ *    retry re-attempts the same named enqueue (the continuation check, for a dispatch). The one
+ *    exception is a dispatch's COURTESY hand-off, which owns no hand-off and ends `parado`.
  *  - anything else, rethrown EXACTLY as thrown — a broken deploy, a root's region guard, a coding
  *    bug. It must fail loudly.
  *
