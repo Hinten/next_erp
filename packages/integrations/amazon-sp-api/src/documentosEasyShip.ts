@@ -230,16 +230,27 @@ export async function baixarDocumentosEasyShip(
 /*                                  CRC-32                                    */
 /* -------------------------------------------------------------------------- */
 
-/** The CRC-32 (IEEE 802.3, reflected polynomial `0xEDB88320`) table, 256 entries. */
-const TABELA_CRC32: Uint32Array = (() => {
+/**
+ * The CRC-32 (IEEE 802.3, reflected polynomial `0xEDB88320`) table, 256
+ * entries, built on the FIRST label read, never at module load. The barrel
+ * reaches every bundle that imports the package — the functions bundle
+ * included, which reads no label — and esbuild keeps any top-level call it
+ * cannot prove pure, so a module-level table would be built at every cold
+ * start. A function nothing calls is dropped, with no annotation to trust.
+ */
+let tabelaCrc32: Uint32Array | null = null;
+
+function obterTabelaCrc32(): Uint32Array {
+  if (tabelaCrc32 !== null) return tabelaCrc32;
   const tabela = new Uint32Array(256);
   for (let n = 0; n < 256; n++) {
     let c = n;
     for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
     tabela[n] = c >>> 0;
   }
+  tabelaCrc32 = tabela;
   return tabela;
-})();
+}
 
 /**
  * The CRC-32 a zip records for an entry. Pinned by the standard check value:
@@ -248,8 +259,9 @@ const TABELA_CRC32: Uint32Array = (() => {
  * ⚠️ INTERNAL: exported for the test, never from the barrel.
  */
 export function crc32(bytes: Uint8Array): number {
+  const tabela = obterTabelaCrc32();
   let c = 0xffffffff;
-  for (const b of bytes) c = (TABELA_CRC32[(c ^ b) & 0xff] ?? 0) ^ (c >>> 8);
+  for (const b of bytes) c = (tabela[(c ^ b) & 0xff] ?? 0) ^ (c >>> 8);
   return (c ^ 0xffffffff) >>> 0;
 }
 

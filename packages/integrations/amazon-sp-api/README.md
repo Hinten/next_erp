@@ -54,8 +54,9 @@ Every SP-API operation this package can call, with the model's default usage pla
   rejection's order id and `error.code`, and `printableDocumentsUrl`.
 - `printableDocumentsUrl` is a pre-signed, short-lived link to a zip holding the buyer's label.
   This package never stores it or puts it in an error: `baixarDocumentosEasyShip` downloads it
-  at once (below). Like every SP-API 2xx body, the answer that carries it reaches the observer
-  event's `corpo`; the app's logger denies that leaf, and that is what keeps it out of a log line.
+  at once (below). Like every SP-API 2xx body outside the Tokens API, the answer that carries it
+  reaches the observer event's `corpo`; the app's logger denies that leaf, and that is what keeps
+  it out of a log line.
 - `getOrder` requests eight datasets: `BUYER`, `RECIPIENT`, `TAX`, `PAYMENT`, `PROCEEDS`,
   `FULFILLMENT`, `PACKAGES`, `CANCELLATION`. `FULFILLMENT_ORDERS`, `EXPENSE` and
   `PROMOTION` stay out until a step reads them.
@@ -102,14 +103,14 @@ carries the URL, a byte of the document or an entry name.
   carrying any secret, is refused before anything is sent.
 - **No LWA body is ever handed to the observer** (`corpo: null`): a 200 is the token
   pair, and an error carries an `error_description`. Only the `error` code is read,
-  through a closed set (`codigoLwa`). An SP-API body reaches the observer with the
-  access token scrubbed, and never reaches an error.
-- The **Restricted Data Token** is a credential too, and gets no structural `corpo: null`:
-  `createRestrictedDataToken` is an ordinary SP-API write, so the minted token reaches the
-  caller AND the observer event's `corpo` (the scrub removes only the LWA access token of
-  that request). It is never cached here and never in an error; the app's logger classifies
-  that path as a secret one and excerpts nothing of it, which is the only thing keeping the
-  token out of a log line (`tokens.test.ts` pins that the event carries it).
+  through a closed set (`codigoLwa`). Any other SP-API body (the Tokens API's excepted, next
+  bullet) reaches the observer with the access token scrubbed, and never reaches an error.
+- The **Restricted Data Token** is a credential too, so **no Tokens API body is ever handed
+  to the observer either** (`corpo: null`, decided by the request core from the `/tokens/`
+  path, without case, for both clients). The minted token reaches the caller only: it is
+  never cached here and never in an error. Its error codes still ride the event
+  (`codigosErro`). The app's logger also classifies that path as a secret one and excerpts
+  nothing of it, a second fence.
 - Every secret must be visible ASCII and is **never trimmed**: a token with a line
   break is a paste accident, refused rather than repaired. `credencialLwaValida`
   is that exact rule for the client id, client secret, refresh token and code,

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { type ChamadaAmazon, type OpcoesClienteSpApi, URL_BASE_SP_API } from '../src/client';
-import { CAMINHO_AGENDAMENTO_EASY_SHIP } from '../src/easyShip';
+import { CAMINHO_AGENDAMENTO_EASY_SHIP, respostaAgendamentoEasyShipSchema } from '../src/easyShip';
 import { AmazonHttpError, AmazonNotFoundError, AmazonSchemaError } from '../src/errors';
 import { criarClienteEscritaSpApi } from '../src/escrita';
 import {
@@ -131,15 +131,44 @@ describe('criarTokenRestrito (createRestrictedDataToken)', () => {
     expect(init.body).not.toContain('GET');
   });
 
-  it('★ the minted token DOES reach the observer event’s corpo: only the app’s secret path policy keeps it out of a log line', async () => {
-    // Pinned on purpose. The write client scrubs only the LWA access token of
-    // the request; the RDT is another value. A change to the observer seam, or
-    // to the app's policy for this path, has to face this test.
+  it('★ the minted token reaches the caller only: the mint’s observer event carries corpo: null', async () => {
+    // Structural: the request core (`client.ts`) blanks every Tokens API body
+    // by path (`levaCorpo: false`, the flag `lwa.ts` sets for LWA), so no call
+    // site decides it.
     const { c, eventos } = escritor(mockFetch(() => json(tokenRestrito200SemAlvo)));
-    await criarTokenRestrito(c, RECURSO_RESTRITO_AGENDAMENTO);
+    expect((await criarTokenRestrito(c, RECURSO_RESTRITO_AGENDAMENTO)).token).toBe(RDT);
     expect(eventos).toHaveLength(1);
-    expect(eventos[0]?.resultado).toBe('ok');
-    expect(eventos[0]?.corpo).toContain(RDT);
+    expect(eventos[0]).toMatchObject({ resultado: 'ok', status: 200, corpo: null });
+    expect(JSON.stringify(eventos)).not.toContain(RDT);
+  });
+
+  it('★ nor on a failure: a 2xx failing the grammar and a 400 blank the body, and the codes still ride', async () => {
+    const recusado = escritor(
+      mockFetch(() => json({ restrictedDataToken: 'rdt|TESTE com-espaco', expiresIn: 3600 })),
+    );
+    await falha(criarTokenRestrito(recusado.c, RECURSO_RESTRITO_AGENDAMENTO));
+    expect(recusado.eventos[0]).toMatchObject({ resultado: 'schema', status: 200, corpo: null });
+    expect(JSON.stringify(recusado.eventos)).not.toContain('rdt|');
+
+    const erro = escritor(mockFetch(() => json(erro400TokenInvalidRequest, 400)));
+    await falha(criarTokenRestrito(erro.c, RECURSO_RESTRITO_AGENDAMENTO));
+    expect(erro.eventos[0]).toMatchObject({
+      resultado: 'http',
+      status: 400,
+      codigosErro: ['InvalidRequest'],
+      corpo: null,
+    });
+  });
+
+  it('near-miss: the bulk call through the SAME write client keeps its body on the event', async () => {
+    const { c, eventos } = escritor(mockFetch(() => json({ scheduledPackages: [] })));
+    await c.post({
+      operacao: 'createScheduledPackageBulk',
+      caminho: CAMINHO_AGENDAMENTO_EASY_SHIP,
+      corpo: '{}',
+      schema: respostaAgendamentoEasyShipSchema,
+    });
+    expect(eventos[0]).toMatchObject({ resultado: 'ok', corpo: '{"scheduledPackages":[]}' });
   });
 
   it.each([

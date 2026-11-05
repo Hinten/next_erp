@@ -288,6 +288,44 @@ describe('the body never reaches the observer, nor an error', () => {
   });
 });
 
+describe('no Tokens API response body reaches the observer (the core decides, by path)', () => {
+  /** Stands in for a minted credential in the RESPONSE: never on an event. */
+  const CREDENCIAL = 'CREDENCIAL-NA-RESPOSTA-0000-nunca-no-evento';
+  const resposta = (status = 200) =>
+    mockFetch(() => json({ restrictedDataToken: CREDENCIAL }, status));
+
+  it.each([
+    ['the mint’s path', '/tokens/2021-03-01/restrictedDataToken'],
+    ['another Tokens API version', '/tokens/2099-01-01/outraOperacao'],
+    ['the same segment in another case', '/tOKENS/2021-03-01/restrictedDataToken'],
+  ])('★ a POST to %s → corpo: null, on a 2xx and on a 4xx', async (_caso, caminho) => {
+    const sucesso = escritor(resposta());
+    await sucesso.c.post(pedidoPost({ caminho }));
+    expect(sucesso.eventos[0]).toMatchObject({ resultado: 'ok', caminho, corpo: null });
+
+    const recusa = escritor(resposta(400));
+    await falha(recusa.c.post(pedidoPost({ caminho })));
+    expect(recusa.eventos[0]).toMatchObject({ resultado: 'http', status: 400, corpo: null });
+    expect(JSON.stringify([...sucesso.eventos, ...recusa.eventos])).not.toContain(CREDENCIAL);
+  });
+
+  it('★ the read client too: a GET under /tokens/ → corpo: null', async () => {
+    const { c, eventos } = leitor(resposta());
+    await c.get({ operacao: 'x', caminho: '/tokens/2021-03-01/restrictedDataToken', schema });
+    expect(eventos[0]).toMatchObject({ resultado: 'ok', metodo: 'GET', corpo: null });
+  });
+
+  it.each([
+    ['a segment that only starts with the name', '/tokensx/2021-03-01/restrictedDataToken'],
+    ['the name deeper in the path', '/orders/v0/tokens/restrictedDataToken'],
+    ['the name as the last segment', '/delivery/2022-07-01/tokens'],
+  ])('near-miss: %s keeps its body on the event', async (_caso, caminho) => {
+    const { c, eventos } = escritor(resposta());
+    await c.post(pedidoPost({ caminho }));
+    expect(eventos[0]?.corpo).toBe(`{"restrictedDataToken":"${CREDENCIAL}"}`);
+  });
+});
+
 describe('the token never rides the body', () => {
   it('★ a body holding the token is refused before fetch runs: token-no-corpo, nothing observed', async () => {
     const f = ok();

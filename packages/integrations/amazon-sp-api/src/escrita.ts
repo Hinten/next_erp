@@ -25,7 +25,9 @@
  * ⚠️ **The request body never reaches the observer.** The event is built from
  * named fields (`criarEmissor`), and `ChamadaAmazon` has no request-body field:
  * a write's body is a whole fiscal document, buyer data included. The RESPONSE
- * body reaches the observer as a read's does, scrubbed of the token.
+ * body reaches the observer as a read's does, scrubbed of the token — except
+ * the Restricted Data Token mint's (`tokens.ts`): no Tokens API body ever
+ * reaches it (`client.ts`).
  *
  * ## What a write's outcome means
  *

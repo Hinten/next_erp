@@ -176,6 +176,9 @@ export type ResultadoChamadaAmazon =
  *   out; the app's logger applies its own allow-list and size cap.
  * - LWA: `corpo` is ALWAYS `null`. A 200 IS the token pair, and an error carries
  *   an `error_description`; every LWA body stays out of the logs.
+ * - The SP-API Tokens API (`/tokens/…`, the Restricted Data Token mint):
+ *   `corpo` is ALWAYS `null` too, for the same reason — a 2xx IS a credential
+ *   (`client.ts`). Its `codigosErro` still ride the event.
  *
  * The event exists only in memory.
  */
@@ -205,7 +208,7 @@ export interface ChamadaAmazon {
   readonly codigosErro: readonly string[];
   /** LWA only: the `error` code of a non-2xx body. */
   readonly codigoLwa: CodigoErroLwa | null;
-  /** See the interface header: scrubbed text for SP-API, always `null` for LWA. */
+  /** See the interface header: scrubbed text for SP-API, always `null` for LWA and the Tokens API. */
   readonly corpo: string | null;
 }
 
@@ -217,8 +220,8 @@ export type ParteDoEvento = Pick<
   Partial<Pick<ChamadaAmazon, 'codigosErro' | 'codigoLwa'>>;
 
 /**
- * The emitter for ONE request. `levaCorpo: false` (LWA) forces `corpo: null`
- * structurally, whatever a call site passes.
+ * The emitter for ONE request. `levaCorpo: false` (LWA, and the SP-API Tokens
+ * API) forces `corpo: null` structurally, whatever a call site passes.
  */
 export function criarEmissor(
   fixo: Pick<
