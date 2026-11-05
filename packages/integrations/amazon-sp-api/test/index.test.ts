@@ -30,6 +30,20 @@ describe('the constants', () => {
     expect(Object.keys(barril.STATUS_FATURA_ENTREGA_AMAZON)).toHaveLength(4);
     expect(Object.keys(barril.STATUS_FATURAMENTO_PEDIDO_AMAZON)).toHaveLength(4);
     expect(Object.keys(barril.STATUS_FATURA_ITEM_AMAZON)).toHaveLength(4);
+    expect(barril.OPERACAO_AGENDAMENTO_EASY_SHIP).toBe('createScheduledPackageBulk');
+    expect(barril.CAMINHO_AGENDAMENTO_EASY_SHIP).toBe('/easyShip/2022-03-23/packages/bulk');
+    expect(barril.FORMATO_ETIQUETA_EASY_SHIP).toBe('ZPL');
+    expect(barril.CODIGO_PACOTE_JA_AGENDADO_EASY_SHIP).toBe('ScheduledPackageAlreadyExists');
+    expect(barril.CODIGO_DIMENSOES_AUSENTES_EASY_SHIP).toBe('MissingPackageDimensions');
+    expect(barril.OPERACAO_TOKEN_RESTRITO).toBe('createRestrictedDataToken');
+    expect(barril.CAMINHO_TOKEN_RESTRITO).toBe('/tokens/2021-03-01/restrictedDataToken');
+    expect(barril.RECURSO_RESTRITO_AGENDAMENTO).toEqual({
+      method: 'POST',
+      path: '/easyShip/2022-03-23/packages/bulk',
+    });
+    expect(barril.MAX_ZIP_EASY_SHIP_BYTES).toBe(5 * 1024 * 1024);
+    expect(barril.MAX_ENTRADAS_ZIP_EASY_SHIP).toBe(64);
+    expect(barril.MAX_ZPL_EASY_SHIP_BYTES).toBe(1024 * 1024);
   });
 });
 
@@ -50,6 +64,10 @@ describe('the barrel', () => {
       'criarClienteEscritaSpApi',
       'consultarStatusNotaFiscal',
       'enviarNotaFiscal',
+      'agendarPacotesEasyShip',
+      'criarTokenRestrito',
+      'baixarDocumentosEasyShip',
+      'extrairEtiquetaZplEasyShip',
     ] as const) {
       expect(typeof barril[nome], nome).toBe('function');
     }
@@ -65,10 +83,17 @@ describe('the barrel', () => {
       'dinheiroWireAmazonSchema',
       'respostaStatusNotaFiscalSchema',
       'respostaEnvioNotaFiscalSchema',
+      'respostaAgendamentoEasyShipSchema',
+      'respostaTokenRestritoSchema',
     ] as const) {
       expect(typeof barril[nome].safeParse, nome).toBe('function');
     }
-    expect(barril.PRAZO_AMAZON_MS).toEqual({ leitura: 20_000, lwa: 20_000, escrita: 30_000 });
+    expect(barril.PRAZO_AMAZON_MS).toEqual({
+      documento: 20_000,
+      escrita: 30_000,
+      leitura: 20_000,
+      lwa: 20_000,
+    });
     for (const classe of [
       barril.AmazonError,
       barril.AmazonConfigError,
@@ -79,6 +104,7 @@ describe('the barrel', () => {
       barril.AmazonSchemaError,
       barril.AmazonNetworkError,
       barril.AmazonTimeoutError,
+      barril.AmazonDocumentoEasyShipError,
     ]) {
       expect(typeof classe).toBe('function');
     }
@@ -99,6 +125,10 @@ describe('the barrel', () => {
       // The request core both clients share (`client.ts`).
       'executarSpApi',
       'prepararNucleoSpApi',
+      // The shared order-id check (`transporte.ts`), and the document module's
+      // internals (`documentosEasyShip.ts`).
+      'exigirPedidoAmazon',
+      'crc32',
     ]) {
       expect(exportados, interno).not.toContain(interno);
     }

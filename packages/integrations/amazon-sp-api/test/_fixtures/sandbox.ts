@@ -69,6 +69,15 @@
  *  - `erro400StatusInvalidInput` — delivery `getInvoiceStatus` 400 static[0].
  *  - `envioNotaFiscal200` — delivery `submitInvoice` 200 static[0]: `{}`.
  *  - `erro400EnvioEntityNotFound` — delivery `submitInvoice` 400 static[0].
+ *  - `agendamentoEasyShip200` — easyShip `createScheduledPackageBulk` 200
+ *    static[0]: three orders, two scheduled and one rejected with
+ *    `InvalidInput`. The three order ids (also inside the rejection's `message`
+ *    and `details`) take the FAKE 3-7-7 shape (`000-0000000-…`); every other
+ *    value is the model's own, byte for byte — units `IN` and `ounces` and the
+ *    `printableDocumentsUrl` `https://www.amazon.com/documents.zip`, all of them
+ *    outside what the model declares or what the download accepts.
+ *  - `erro400AgendamentoInvalidInput` — easyShip `createScheduledPackageBulk`
+ *    400 static[0].
  *  - `statusNotaFiscalSemRemessa` — NOT a sandbox example: the KEY shape of the
  *    owner's one read-only status capture (C2; `apps/amazon`'s
  *    `c2-status-aceita.json`, which this package cannot read): no
@@ -115,6 +124,99 @@ export const envioNotaFiscal200 = {} as const;
 export const erro400EnvioEntityNotFound = {
   errors: [
     { code: 'EntityNotFound', message: 'Entity (ShipmentId, BadIDForShipment) was not found' },
+  ],
+} as const;
+
+export const agendamentoEasyShip200 = {
+  scheduledPackages: [
+    {
+      scheduledPackageId: {
+        amazonOrderId: '000-0000000-0000301',
+        packageId: '1ab0f06a-9149-87e0-aba9-7098117872d6',
+      },
+      packageTimeSlot: {
+        slotId: 'AQc48yxSAAAAADZG0qQAAAAA6kkAAAAAAAA=',
+        startTime: '2022-03-09T10:00:00+09:00',
+        endTime: '2022-03-10T10:00:00+09:00',
+        handoverMethod: 'PICKUP',
+      },
+      packageIdentifier: '1ab0f06a-9149-87e0-aba9-7098117872d6',
+      invoice: {
+        invoiceNumber: 'IN-456',
+        invoiceDate: '2022-03-09T10:00:00+09:00',
+      },
+      packageDimensions: {
+        length: 5.905511805,
+        width: 3.6220472404,
+        height: 3.4645669256,
+        unit: 'IN',
+        identifier: 'IN_SuggestedContainerDimension',
+      },
+      packageWeight: {
+        value: 11.466,
+        unit: 'ounces',
+      },
+      packageItems: [
+        {
+          orderItemId: '6195931986885',
+          orderItemSerialNumbers: ['ABCDE1234', '56789FGHI'],
+        },
+      ],
+      packageStatus: 'ReadyForPickup',
+      trackingDetails: {
+        trackingId: '1652969339691',
+      },
+    },
+    {
+      scheduledPackageId: {
+        amazonOrderId: '000-0000000-0000302',
+        packageId: '80c06e53-3d96-f13f-30ca-85b50b1cb4ce',
+      },
+      packageTimeSlot: {
+        slotId: 'AQef4K2CAAAAAGdIAEAAAAAA6kkAAAAAAAA=',
+        startTime: '2022-05-21T10:00:00+09:00',
+        endTime: '2022-05-21T10:00:00+09:00',
+      },
+      invoice: {
+        invoiceNumber: 'IN-456',
+        invoiceDate: '2022-05-21T10:00:00+09:00',
+      },
+      packageDimensions: {
+        length: 5.905511805,
+        width: 3.6220472404,
+        height: 3.4645669256,
+        unit: 'IN',
+        identifier: 'IN_SuggestedContainerDimension',
+      },
+      packageWeight: {
+        value: 11.466,
+        unit: 'ounces',
+      },
+      packageStatus: 'ReadyForPickup',
+      trackingDetails: {
+        trackingId: '1652969339693',
+      },
+    },
+  ],
+  rejectedOrders: [
+    {
+      amazonOrderId: '000-0000000-0000303',
+      error: {
+        code: 'InvalidInput',
+        details: "Couldn't find the order details for 000-0000000-0000303",
+        message: "Couldn't find the order details for 000-0000000-0000303",
+      },
+    },
+  ],
+  printableDocumentsUrl: 'https://www.amazon.com/documents.zip',
+} as const;
+
+export const erro400AgendamentoInvalidInput = {
+  errors: [
+    {
+      code: 'InvalidInput',
+      message: 'Request has missing or invalid parameters and cannot be parsed.',
+    },
   ],
 } as const;
 

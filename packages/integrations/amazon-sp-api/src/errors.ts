@@ -127,8 +127,11 @@ export function lerCodigoErroLwa(valor: unknown): CodigoErroLwa | null {
 export type DestinoAmazon = 'sp-api' | 'lwa';
 
 /**
- * The only two methods this package sends: SP-API reads (`GET`), and a `POST`
- * — the LWA token exchange, or the write client's one write (`escrita.ts`).
+ * The only two methods this package sends to Amazon's APIs: SP-API reads
+ * (`GET`), and a `POST` — the LWA token exchange, or one of the write client's
+ * writes (`escrita.ts`). The Easy Ship document download is a `GET` on a
+ * pre-signed object, not an SP-API call, and raises its own class
+ * ({@link AmazonDocumentoEasyShipError}).
  */
 export type MetodoAmazon = 'GET' | 'POST';
 
@@ -209,17 +212,18 @@ export type MotivoConfigAmazon =
  * - `'token-no-corpo'` — the write client's request body contains the access
  *   token (it travels in `x-amz-access-token` only), or is not text, so it
  *   cannot be checked for one.
- * - `'pedido'` — a Delivery helper (`entrega.ts`) was handed an order id
- *   outside Amazon's `3-7-7` digit grammar.
+ * - `'pedido'` — a Delivery or Easy Ship helper (`entrega.ts`, `easyShip.ts`)
+ *   was handed an order id outside Amazon's `3-7-7` digit grammar.
  * - `'md5'` — `submitInvoice`'s `contentMD5Value` is not the base64 of a
  *   16-byte digest (24 characters ending in `==`); a hex digest is refused.
  * - `'base64'` — `submitInvoice`'s `invoiceContent` is empty or not standard
  *   base64 (its alphabet, `=` padding only at the end, a length multiple of 4).
  *
  * `'application-id'` and `'state'` are raised by `montarUrlConsentimento`
- * (`consentimento.ts`), which builds a URL and sends nothing; `'pedido'`,
- * `'md5'` and `'base64'` by the Delivery helpers, before the credential is
- * read: "no request was made" holds trivially there.
+ * (`consentimento.ts`), which builds a URL and sends nothing; `'pedido'` by a
+ * Delivery or Easy Ship helper (`entrega.ts`, `easyShip.ts`), and `'md5'` and
+ * `'base64'` by the Delivery upload, before the credential is read: "no request
+ * was made" holds trivially there.
  *
  * ⚠️ The message never echoes the offending value: a rejected token is still a
  * token, a rejected `ref` may contain one, a rejected path may carry a query, and
@@ -539,5 +543,93 @@ export class AmazonTimeoutError extends AmazonNetworkError {
     );
     this.name = 'AmazonTimeoutError';
     this.prazoMs = init.prazoMs;
+  }
+}
+
+/** Why the Easy Ship label document could not be fetched or read (`documentosEasyShip.ts`). */
+export type MotivoDocumentoEasyShip =
+  | 'url-invalida'
+  | 'expirado'
+  | 'http'
+  | 'grande-demais'
+  | 'nao-zip'
+  | 'rede'
+  | 'prazo'
+  | 'zip-invalido'
+  | 'entradas-demais'
+  | 'sem-zpl'
+  | 'zpl-multiplo'
+  | 'zpl-grande-demais'
+  | 'zpl-invalido';
+
+/**
+ * The Easy Ship label document failed: its download (the pre-signed URL the
+ * bulk scheduling answered) or the extraction of its one ZPL entry.
+ *
+ * - Download: `'url-invalida'` (not an `https:` URL on an `.amazonaws.com`
+ *   host, with no port and no userinfo; nothing was fetched), `'expirado'`
+ *   (HTTP 403, the answer to an expired pre-signed URL), `'http'` (any other
+ *   non-200), `'grande-demais'` (the body passed the byte cap), `'nao-zip'`
+ *   (the body is not a zip: an XML error page, an empty archive), `'rede'`
+ *   (the connection failed, or a redirect was refused) and `'prazo'` (the
+ *   `documento` deadline passed).
+ * - Extraction: `'zip-invalido'` (a corrupt archive, an unsupported method, a
+ *   zip64 marker, or an entry that does not match its central-directory record),
+ *   `'entradas-demais'`, `'sem-zpl'`, `'zpl-multiplo'`, `'zpl-grande-demais'`
+ *   and `'zpl-invalido'` (the entry does not look like ZPL).
+ *
+ * Rooted at {@link AmazonError} with `refCredencial: null`: no credential is
+ * involved (the download sends no header at all). `status` is the HTTP status
+ * of `'http'` and `'expirado'`, `null` otherwise.
+ *
+ * ⚠️ The message is FIXED per motivo. It never carries the URL (a bearer link
+ * to buyer data), its host, path or query, a byte of the document, or a zip
+ * entry's name. And there is no `cause`: a platform error can name the host.
+ * There is no numeric `code` either: the extraction tells fflate's own errors
+ * apart by one (`documentosEasyShip.ts`).
+ */
+export class AmazonDocumentoEasyShipError extends AmazonError {
+  readonly motivo: MotivoDocumentoEasyShip;
+  readonly status: number | null;
+
+  constructor(motivo: MotivoDocumentoEasyShip, init: { readonly status?: number } = {}) {
+    const status = init.status ?? null;
+    super(mensagemDeDocumento(motivo, status), { refCredencial: null });
+    this.name = 'AmazonDocumentoEasyShipError';
+    this.motivo = motivo;
+    this.status = status;
+  }
+}
+
+function mensagemDeDocumento(motivo: MotivoDocumentoEasyShip, status: number | null): string {
+  const prefixo = 'Etiqueta Easy Ship:';
+  const http = status === null ? '' : ` (HTTP ${String(status)})`;
+  switch (motivo) {
+    case 'url-invalida':
+      return `${prefixo} o link do documento não é uma URL https de um host de documentos da Amazon, sem porta e sem usuário. Nada foi baixado.`;
+    case 'expirado':
+      return `${prefixo} o link do documento foi recusado${http}; ele pode ter expirado.`;
+    case 'http':
+      return `${prefixo} o download do documento não respondeu 200${http}.`;
+    case 'grande-demais':
+      return `${prefixo} o documento passou do tamanho máximo aceito; o download foi interrompido.`;
+    case 'nao-zip':
+      return `${prefixo} o documento baixado não é um arquivo zip.`;
+    case 'rede':
+      return `${prefixo} falha de rede ao baixar o documento (redirecionamentos não são seguidos).`;
+    case 'prazo':
+      return `${prefixo} o download do documento não terminou dentro do prazo.`;
+    case 'zip-invalido':
+      return `${prefixo} o arquivo zip está corrompido ou fora do formato aceito.`;
+    case 'entradas-demais':
+      return `${prefixo} o arquivo zip tem entradas demais.`;
+    case 'sem-zpl':
+      return `${prefixo} o arquivo zip não contém uma etiqueta ZPL.`;
+    case 'zpl-multiplo':
+      return `${prefixo} o arquivo zip contém mais de uma etiqueta ZPL.`;
+    case 'zpl-grande-demais':
+      return `${prefixo} a etiqueta ZPL passa do tamanho máximo aceito.`;
+    case 'zpl-invalido':
+      return `${prefixo} a entrada da etiqueta não tem o conteúdo de uma etiqueta ZPL.`;
   }
 }

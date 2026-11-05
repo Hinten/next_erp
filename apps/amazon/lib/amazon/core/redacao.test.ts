@@ -34,6 +34,7 @@ import {
   chaveDeCredencialAmazon,
   chaveNegadaAmazon,
   classificarCaminho,
+  codigoDeErroSeguro,
   cortarUtf8,
   mascararTexto,
   passaPredicadoAmazon,
@@ -328,6 +329,31 @@ describe('spec coverage — against the committed leaf inventory', () => {
     for (const c of INVENTARIO.codigosDeErroDosExemplos) {
       expect(CODIGOS_ERRO_AMAZON.has(c), c).toBe(true);
     }
+  });
+
+  it('★ CODIGOS_ERRO_AMAZON holds every Easy Ship Code member, and NOT MissingPackageDimensions', () => {
+    // easyShip_2022-03-23.json #/definitions/Code, all eleven members.
+    for (const c of [
+      'InvalidInput',
+      'InvalidTimeSlotId',
+      'ScheduledPackageAlreadyExists',
+      'ScheduleWindowExpired',
+      'RetryableAfterGettingNewSlots',
+      'TimeSlotNotAvailable',
+      'ResourceNotFound',
+      'InvalidOrderState',
+      'RegionNotSupported',
+      'OrderNotEligibleForRescheduling',
+      'InternalServerError',
+    ]) {
+      expect(CODIGOS_ERRO_AMAZON.has(c), c).toBe(true);
+      expect(codigoDeErroSeguro(c)).toBe(c);
+    }
+    // A per-order rejection code the model never names: it stays OUT of the
+    // closed set (a top-level copy logs as the "other" code), and logs through
+    // the rejection grammar when it arrives inside a 200 body.
+    expect(CODIGOS_ERRO_AMAZON.has('MissingPackageDimensions')).toBe(false);
+    expect(codigoDeErroSeguro('MissingPackageDimensions')).toBe(CODIGO_OUTRO);
   });
 
   it('the security lists are pinned verbatim', () => {

@@ -42,6 +42,7 @@ const PEDIDO = /\d{3}-\d{7}-\d{7}/g;
 /** The extensions a label zip's entry keeps, compared in lower case: label and document formats only. */
 export const EXTENSOES_MANTIDAS: ReadonlySet<string> = new Set([
   'zpl',
+  'zpl2',
   'pdf',
   'png',
   'gif',

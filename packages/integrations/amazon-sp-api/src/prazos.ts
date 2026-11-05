@@ -6,12 +6,13 @@
  * and never answered would hold the caller until undici's own 300 s limits —
  * the whole request ceiling of an App Hosting backend. Every call opens one of
  * these deadlines (`abrirPrazo` from `@delfrance/core/wire`), reads the body
- * inside it, and a call that outlives it throws `AmazonTimeoutError`.
+ * inside it, and a call that outlives it throws `AmazonTimeoutError` (the
+ * `'documento'` class: `AmazonDocumentoEasyShipError` with motivo `'prazo'`).
  *
  * ## Why the budget is keyed on the operation CLASS, not the endpoint
  *
  * The question a budget answers is "what does a cut HERE leave behind?" (the
- * Melhor Envio precedent, `freight-br/src/melhor-envio/prazos.ts`). Three
+ * Melhor Envio precedent, `freight-br/src/melhor-envio/prazos.ts`). Four
  * classes exist:
  *
  * - `'leitura'` — an SP-API `GET`. A cut one leaves nothing behind, and
@@ -30,6 +31,10 @@
  *   the answer never arrived. So it is NEVER repeated in the same attempt — the
  *   caller re-reads the provider's state and decides from that. The budget is
  *   longer than a read's because the body (a whole document) travels up.
+ * - `'documento'` — a `GET` of a pre-signed object on a non-SP-API host: the
+ *   Easy Ship label document (`documentosEasyShip.ts`). A cut download leaves
+ *   nothing behind; the caller may repeat the WHOLE label call, never the
+ *   download alone (the URL may have expired).
  *
  * ⚠️ There is no `{ curto, longo }` pair and no row in
  * `http-client-timeout-ceiling.test.js`: that registry holds clients of OUR
@@ -40,7 +45,7 @@
  */
 
 /** The idempotency class of a call. */
-export type ClasseOperacaoAmazon = 'leitura' | 'lwa' | 'escrita';
+export type ClasseOperacaoAmazon = 'leitura' | 'lwa' | 'escrita' | 'documento';
 
 /**
  * Milliseconds per call, by class. `satisfies Record<ClasseOperacaoAmazon, …>`
@@ -51,4 +56,5 @@ export const PRAZO_AMAZON_MS = {
   leitura: 20_000,
   lwa: 20_000,
   escrita: 30_000,
+  documento: 20_000,
 } as const satisfies Record<ClasseOperacaoAmazon, number>;
