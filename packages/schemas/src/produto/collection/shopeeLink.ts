@@ -117,7 +117,8 @@ import { ACAO_STATUS_ANUNCIO, type AcaoStatusAnuncio } from './mercadoLivreLink'
  *    - write-back #2, the list Shopee's read-back ANSWERED;
  *    - the product import's `dadosLinkListagem` (`produtos/mapeamento.ts`):
  *      the item, kit and mass imports and the draft adoption, all from one
- *      `get_item_base_info` read;
+ *      Shopee read (`get_item_base_info`, or `get_kit_item_info`'s
+ *      `product_info` for a kit);
  *    - the kit create's `escreverVinculoDoKit` (`kits/vinculosKit.ts`), the
  *      list `add_kit_item` was sent.
  *    The ONE write of the list with no stamp is the draft create's schema

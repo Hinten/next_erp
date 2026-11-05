@@ -11,13 +11,17 @@
  * ## The two paths, and when the stored one wins
  *
  * On a REPUBLISH the link document may carry `logistic_info`. When THIS app
- * wrote it — Shopee's read-back of the live listing, an import's reading, or
- * the list a publish sent — it holds the operator's own Seller Centre choices,
- * including two values the ERP cannot produce at all: the `size_id` of a
- * `SIZE_SELECTION` channel and the `shipping_fee` of a `CUSTOM_PRICE` one.
- * Rebuilding from scratch on every publish would silently overwrite both. So a
- * TRUSTED stored list is re-validated against the live channel list and, when
- * anything survives, it WINS.
+ * wrote it (Shopee's read-back of the live listing, an import's reading, or the
+ * body a publish sent), it is the last list this app WROTE to this document —
+ * for an item also the last it sent or read back; a kit republish sends a list
+ * and writes none back (`../kits/vinculosKit.ts`). That may
+ * include two values the ERP cannot produce at all: the `size_id` of a
+ * `SIZE_SELECTION` channel and the `shipping_fee` of a `CUSTOM_PRICE` one. The
+ * stamp records WHO wrote the list, never that it is current: a list a full
+ * pass sent, or a kit link's create-time body, carries neither value.
+ * Rebuilding from scratch on every publish would silently overwrite them where
+ * they exist. So a TRUSTED stored list is re-validated against the live channel
+ * list and, when anything survives, it WINS.
  *
  * ⚠️ **The stored list is trusted only when this app wrote it (#2015).** The
  * legacy exporter rebuilt its own list from `get_channel_list` on every save,
@@ -46,6 +50,15 @@
  * `logistica-nao-confirmada`, naming that listing. Everything else — a draft, a
  * removido link, a trusted list, an absent or unreadable value, a parcel that
  * does not fit — keeps `logistica-sem-canal`'s sentence unchanged.
+ *
+ * When EVERY lost compulsory channel took it, neither shop-wide sentence (no
+ * compulsory channel enabled, no channel at all) is added. Condition 3 of
+ * `faltaNaoConfirmada` proves each such channel is enabled and fits, so after
+ * the import records a readable value it is sent and neither sentence could
+ * still hold. Under `logistica-sem-canal` each would also carry the web's
+ * weight button, and the no-channel sentence says to check weight and
+ * dimensions. One lost compulsory channel that kept its own
+ * `logistica-sem-canal` sentence keeps both.
  *
  * ## What "re-validated" means, and why it is not a Zod parse
  *
@@ -576,7 +589,9 @@ function passagemCompleta(
  * enabled. An empty result is a `logistica-sem-canal` refusal — `logistic_info`
  * is REQUIRED on `add_item`, so there is no such thing as publishing with none.
  * A lost compulsory channel is `logistica-sem-canal` too, except the one case
- * {@link faltaNaoConfirmada} names (`logistica-nao-confirmada`).
+ * {@link faltaNaoConfirmada} names (`logistica-nao-confirmada`). When every
+ * lost compulsory channel is that case, the two shop-wide sentences are left
+ * out (the module header's "The one refusal a distrusted list adds").
  */
 export function construirLogistica(args: ArgsLogistica): ResultadoLogistica {
   const canais = args.canais.filter((c): c is ShopeeLogisticsChannel => c != null);
@@ -606,6 +621,7 @@ export function construirLogistica(args: ArgsLogistica): ResultadoLogistica {
   }
 
   const problemas: ProblemaDeBloqueio[] = [];
+  let naoConfirmados = 0;
   for (const logisticId of passagem.inescapaveisPerdidos) {
     const naoConfirmada = faltaNaoConfirmada(args, passagem.pulados, logisticId);
     if (naoConfirmada !== null) {
@@ -624,6 +640,7 @@ export function construirLogistica(args: ArgsLogistica): ResultadoLogistica {
           MOTIVO_PUBLICACAO_BLOQUEADA.logisticaNaoConfirmada,
         ),
       );
+      naoConfirmados += 1;
       continue;
     }
     problemas.push(
@@ -635,18 +652,33 @@ export function construirLogistica(args: ArgsLogistica): ResultadoLogistica {
     );
   }
 
+  // ⚠️ #2015 (V-REFUSAL-9): when EVERY lost compulsory channel took
+  // `logistica-nao-confirmada`, the import its sentence names is the whole
+  // remedy — `faltaNaoConfirmada`'s condition 3 proves each of those channels
+  // is enabled and fits, so once the import records a readable value they are
+  // sent and neither shop-wide sentence below holds. Under
+  // `logistica-sem-canal` each would get the web's weight button on its
+  // `logistic_info` row, and the no-channel one says to check weight and
+  // dimensions — advice that contradicts that sentence. So neither is added.
+  // One lost compulsory channel that kept the sentence above — a fit failure,
+  // an unreadable value, a draft — keeps both, because there weight or Seller
+  // Centre IS a remedy. `> 0` is load-bearing: with no lost compulsory channel
+  // "every" is vacuous, and an empty list must still say so.
+  const soFaltaConfirmar =
+    naoConfirmados > 0 && naoConfirmados === passagem.inescapaveisPerdidos.length;
+
   const temInescapavel = canais.some((c) => canalInescapavel(c));
   const enviouInescapavel = passagem.entradas.some((e) => {
     const canal = porId.get(e.logistic_id);
     return canal !== undefined && canalInescapavel(canal);
   });
-  if (temInescapavel && !enviouInescapavel) {
+  if (temInescapavel && !enviouInescapavel && !soFaltaConfirmar) {
     problemas.push(
       problemaDeLogistica('Nenhum canal obrigatório da loja pôde ser habilitado para este item.'),
     );
   }
 
-  if (passagem.entradas.length === 0) {
+  if (passagem.entradas.length === 0 && !soFaltaConfirmar) {
     problemas.push(
       problemaDeLogistica(
         'Nenhum canal de logística da loja aceita este item: confira peso, ' +

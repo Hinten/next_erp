@@ -850,13 +850,11 @@ describe('#2015 — logistica-nao-confirmada (Lucas D2): o canal obrigatório cu
           mensagem: fraseNaoConfirmada(falta),
         },
       ]);
-      // Sentence (1) is REPLACED for that channel, never added beside N1; the
-      // aggregate sentence (2) is unchanged.
+      // Sentence (1) is REPLACED for that channel, never added beside N1; and
+      // with EVERY lost compulsory channel on N1, the aggregate sentence (2) is
+      // left out (V-REFUSAL-9) — N1 is the whole refusal.
       expect(r.problemas.map((p) => p.mensagem)).not.toContain(FRASE_CANAL_OBRIGATORIO_PERDIDO);
-      expect(motivosDosProblemas(r)).toEqual(['logistica-nao-confirmada', 'logistica-sem-canal']);
-      expect(r.problemas[1]?.mensagem).toBe(
-        'Nenhum canal obrigatório da loja pôde ser habilitado para este item.',
-      );
+      expect(r.problemas).toEqual(naoConfirmados);
     },
   );
 
@@ -1117,8 +1115,181 @@ describe('#2015 — logistica-nao-confirmada (Lucas D2): o canal obrigatório cu
           armazenado: entradas.map((e) => ({ logistic_id: CANAL_OBRIGATORIO, ...e })),
         }),
       );
-      expect(motivosDosProblemas(r)).toEqual(['logistica-nao-confirmada', 'logistica-sem-canal']);
+      expect(motivosDosProblemas(r)).toEqual(['logistica-nao-confirmada']);
       expect(r.problemas[0]?.mensagem).toBe(fraseNaoConfirmada(falta));
     },
   );
+});
+
+/* -------------------------------------------------------------------------- */
+/*   (13) #2015 — quando TODO obrigatório perdido tomou N1, as frases da loja   */
+/*        ficam de fora (V-REFUSAL-9)                                          */
+/* -------------------------------------------------------------------------- */
+
+/** Sentence (2), verbatim — the aggregate "no compulsory channel" one. */
+const FRASE_NENHUM_OBRIGATORIO =
+  'Nenhum canal obrigatório da loja pôde ser habilitado para este item.';
+
+/** Sentence (3), verbatim — the "no channel at all" one, with its weight advice. */
+const FRASE_NENHUM_CANAL =
+  'Nenhum canal de logística da loja aceita este item: confira peso, dimensões e os ' +
+  'canais habilitados no Seller Centre.';
+
+const OUTRO_OBRIGATORIO = 90008;
+
+/** The compulsory SIZE_SELECTION channel fits; the sibling does not (0.5 kg > 0.1 kg). */
+const SO_O_OBRIGATORIO_CABE: readonly ShopeeLogisticsChannel[] = [
+  canal({
+    logistics_channel_id: CANAL_OBRIGATORIO,
+    fee_type: SHOPEE_LOGISTICS_FEE_TYPE.sizeSelection,
+    compulsory_channel: true,
+  }),
+  canal({ logistics_channel_id: CANAL_IRMAO, weight_limit: { item_max_weight: 0.1 } }),
+];
+
+/** A readable size for the compulsory channel, in the stored list. */
+const TAMANHO_LEGIVEL = [{ logistic_id: CANAL_OBRIGATORIO, size_id: '7' }];
+
+/** Sentence (1) for another channel id. */
+function frase1Do(logisticId: number): string {
+  return FRASE_CANAL_OBRIGATORIO_PERDIDO.replace(String(CANAL_OBRIGATORIO), String(logisticId));
+}
+
+function semCanal(mensagem: string) {
+  return { campo: 'logistic_info', motivo: 'logistica-sem-canal', mensagem };
+}
+
+describe('(13) #2015 — quando TODO obrigatório perdido tomou N1, as frases da loja ficam de fora (V-REFUSAL-9)', () => {
+  it('A. dois obrigatórios, ambos N1 (um tamanho, uma tarifa) ⇒ exatamente as duas N1, nenhuma linha logistica-sem-canal', () => {
+    const r = construirLogistica(
+      desconfiada({
+        canais: [
+          canal({
+            logistics_channel_id: CANAL_OBRIGATORIO,
+            fee_type: SHOPEE_LOGISTICS_FEE_TYPE.sizeSelection,
+            compulsory_channel: true,
+          }),
+          canal({
+            logistics_channel_id: OUTRO_OBRIGATORIO,
+            fee_type: SHOPEE_LOGISTICS_FEE_TYPE.customPrice,
+            compulsory_channel: true,
+          }),
+          canal({ logistics_channel_id: CANAL_IRMAO }),
+        ],
+        armazenado: [...TAMANHO_LEGIVEL, { logistic_id: OUTRO_OBRIGATORIO, shipping_fee: '12.90' }],
+      }),
+    );
+    expect(r.logistic_info.map((e) => e.logistic_id)).toEqual([CANAL_IRMAO]);
+    expect(r.problemas).toEqual([
+      {
+        campo: 'logistic_info',
+        motivo: 'logistica-nao-confirmada',
+        mensagem: fraseNaoConfirmada('um tamanho'),
+      },
+      {
+        campo: 'logistic_info',
+        motivo: 'logistica-nao-confirmada',
+        mensagem: fraseNaoConfirmada('uma tarifa de frete').replace(
+          String(CANAL_OBRIGATORIO),
+          String(OUTRO_OBRIGATORIO),
+        ),
+      },
+    ]);
+  });
+
+  it('B. só o obrigatório cabe, desconfiado e com tamanho legível ⇒ lista VAZIA, a N1 sozinha bloqueia, e nenhum conselho de peso', () => {
+    const r = construirLogistica(
+      desconfiada({ canais: SO_O_OBRIGATORIO_CABE, armazenado: TAMANHO_LEGIVEL }),
+    );
+    expect(r.logistic_info).toEqual([]);
+    expect(r.pulados).toEqual([
+      { logisticId: CANAL_OBRIGATORIO, motivo: 'size-selection-sem-size-id' },
+      { logisticId: CANAL_IRMAO, motivo: 'peso-fora-do-limite' },
+    ]);
+    expect(r.problemas).toEqual([
+      {
+        campo: 'logistic_info',
+        motivo: 'logistica-nao-confirmada',
+        mensagem: fraseNaoConfirmada('um tamanho'),
+      },
+    ]);
+    for (const p of r.problemas) expect(p.mensagem).not.toMatch(/peso|dimens/i);
+    // An empty list is still REFUSED — the CLI's "bloqueada" line rests on this.
+    expect(r.problemas.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it.each([
+    {
+      rotulo: 'um rascunho (sem anúncio a importar), desconfiado e com tamanho legível',
+      entrada: desconfiada({
+        canais: SO_O_OBRIGATORIO_CABE,
+        armazenado: TAMANHO_LEGIVEL,
+        itemIdImportavel: null,
+      }),
+    },
+    {
+      rotulo: 'uma lista CONFIÁVEL com size_id vazio, com anúncio a importar',
+      entrada: args({
+        canais: SO_O_OBRIGATORIO_CABE,
+        armazenado: [{ logistic_id: CANAL_OBRIGATORIO, size_id: '' }],
+        itemIdImportavel: ITEM_IMPORTAVEL,
+      }),
+    },
+  ])(
+    '⛔ C. QUASE-PAR ($rotulo): os MESMOS pulados de B, mas sem N1 ⇒ exatamente (1), (2) e (3) em logistica-sem-canal',
+    ({ entrada }) => {
+      const r = construirLogistica(entrada);
+      expect(r.logistic_info).toEqual([]);
+      // The skips are B's, byte for byte: only the trust/import arguments differ,
+      // so a rule that read `pulados` alone could not tell the two apart.
+      expect(r.pulados).toEqual([
+        { logisticId: CANAL_OBRIGATORIO, motivo: 'size-selection-sem-size-id' },
+        { logisticId: CANAL_IRMAO, motivo: 'peso-fora-do-limite' },
+      ]);
+      expect(r.problemas).toEqual([
+        semCanal(FRASE_CANAL_OBRIGATORIO_PERDIDO),
+        semCanal(FRASE_NENHUM_OBRIGATORIO),
+        semCanal(FRASE_NENHUM_CANAL),
+      ]);
+    },
+  );
+
+  it('⛔ D. QUASE-PAR (mistura): N1 num obrigatório e (1) noutro pesado demais, irmão pesado demais ⇒ N1, (1), (2) e (3)', () => {
+    const r = construirLogistica(
+      desconfiada({
+        canais: [
+          canal({
+            logistics_channel_id: CANAL_OBRIGATORIO,
+            fee_type: SHOPEE_LOGISTICS_FEE_TYPE.sizeSelection,
+            compulsory_channel: true,
+          }),
+          canal({
+            logistics_channel_id: OUTRO_OBRIGATORIO,
+            compulsory_channel: true,
+            weight_limit: { item_max_weight: 0.1 },
+          }),
+          canal({ logistics_channel_id: CANAL_IRMAO, weight_limit: { item_max_weight: 0.1 } }),
+        ],
+        armazenado: TAMANHO_LEGIVEL,
+      }),
+    );
+    expect(r.logistic_info).toEqual([]);
+    expect(r.problemas.map((p) => [p.motivo, p.mensagem])).toEqual([
+      ['logistica-nao-confirmada', fraseNaoConfirmada('um tamanho')],
+      ['logistica-sem-canal', frase1Do(OUTRO_OBRIGATORIO)],
+      ['logistica-sem-canal', FRASE_NENHUM_OBRIGATORIO],
+      ['logistica-sem-canal', FRASE_NENHUM_CANAL],
+    ]);
+  });
+
+  it('⛔ E. QUASE-PAR (vácuo): desconfiada, nenhum obrigatório na loja e nada cabe ⇒ exatamente (3)', () => {
+    const r = construirLogistica(
+      desconfiada({
+        canais: [canal({ weight_limit: { item_max_weight: 0.1 } })],
+        armazenado: [{ logistic_id: CANAL_PADRAO, enabled: true, is_free: true }],
+      }),
+    );
+    expect(r.logistic_info).toEqual([]);
+    expect(r.problemas).toEqual([semCanal(FRASE_NENHUM_CANAL)]);
+  });
 });

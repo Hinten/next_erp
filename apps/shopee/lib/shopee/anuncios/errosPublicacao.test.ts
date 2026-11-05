@@ -171,7 +171,8 @@ describe('MOTIVO_PUBLICACAO_BLOQUEADA', () => {
     // rascunho que já não registra a criação incerta (`criacao-incerta-encerrada`
     // — antes, o `-ja-vinculada` sem acao, o mesmo formato da busca que rodou).
     // O #2015 (Lucas D2) acrescentou `logistica-nao-confirmada`: o canal
-    // obrigatório cujo tamanho/tarifa só uma lista que ESTE app não gravou tem.
+    // obrigatório cujo tamanho/tarifa só uma lista gravada tem, sem registro de
+    // que ESTE app a gravou.
     expect([...Object.values(MOTIVO_PUBLICACAO_BLOQUEADA)].sort()).toEqual([
       'anuncio-existente-de-outro-produto',
       'anuncio-existente-sem-vinculo',

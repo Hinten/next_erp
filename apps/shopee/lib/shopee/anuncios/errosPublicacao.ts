@@ -50,8 +50,8 @@
  *   before writing the listing (the model leg's update-path refusals of
  *   `variacao-sem-vinculo` / `opcoes-demais` aside). 59 members: step 11's
  *   22, #2015's `logistica-nao-confirmada` (`anuncios/logisticaPublicacao.ts`:
- *   a compulsory channel's size or fee held only by a stored list this app did
- *   not write), the nineteen native-kit
+ *   a compulsory channel's size or fee held only by a stored list with no
+ *   record that this app wrote it), the nineteen native-kit
  *   refusals of step 19's kit core (`kits/planoKit.ts`, PR 5), the recriar's
  *   safety net `recriacao-sem-diferenca` (`kits/recriarKit.ts`, PR 6), the
  *   seven refusals only the publish dispatcher produces
@@ -190,7 +190,9 @@ export type MotivoPublicacaoBloqueada =
    * Shopee: the remedy is importing it (its `item_id` is in the sentence), so
    * the value the shop holds today is recorded and stamped. Every other lost
    * compulsory channel — a draft, a trusted list, an unreadable or absent
-   * value, a parcel that does not fit — stays `logistica-sem-canal`. Campo
+   * value, a parcel that does not fit — stays `logistica-sem-canal`. When EVERY
+   * lost compulsory channel took it, the builder adds neither shop-wide
+   * `logistica-sem-canal` sentence (see `construirLogistica`). Campo
    * `logistic_info`, no `acao`.
    */
   | 'logistica-nao-confirmada'

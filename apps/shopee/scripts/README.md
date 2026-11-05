@@ -1063,7 +1063,7 @@ that way if you extend it.
 | `### attribute_list (N)`                                                                                                      | per attribute the id, how many values and whether it is mandatory (a ROOT's flag: a filled mandatory CHILD prints `false`) — then `obrigatórios SEM valor` as NAMES, the `atributo-obrigatorio` refusal spelled out, a missing child as `filho (em pai: valor)`.         |
 | `### tax_info`                                                                                                                | `bloco … ENVIADO inteiro` or `omitido (<motivo>)`, the `chaves` line always, then one `chave valor` line per field. ⚠️ **The VALUES are printed here** — unlike `importar:anuncio`, which prints keys only. A CFOP or a CSOSN is a catalogue code, not a seller's datum. |
 | `### size_chart_info`                                                                                                         | what goes out: `size_chart_id N` (the template id IS printed), `size_chart — a PRIMEIRA foto da tabela` (never its `image_id`), `NADA — … RECUSADA` or `— omitido (<motivo>; foto: …)`; then `fonte`, the `tabMedi` counts and `size_chart_limit` as ADVICE. See below.  |
-| `### logistic_info (N a enviar)`                                                                                              | one row per channel sent (`fee_type`, `enabled`, `is_free`) and then `pulados` with each channel's reason. A channel can appear in both lists — one says "on anyway", the other "not sent by us".                                                                        |
+| `### logistic_info (N a enviar)`                                                                                              | one row per channel sent (`fee_type`, `enabled`, `is_free`) and then `pulados` with each channel's reason. A channel can appear in both lists — one says "on anyway", the other "not sent by us". With an unstamped link this is the FULL pass (§12.5).                  |
 | `### tiers (N)`                                                                                                               | per grupo the `variation_id` and the group, then each option with `foto=sim\|não` and `(ocupada por modelo sem filho)` where a live model holds a position nothing of ours binds.                                                                                        |
 | `### modelos (acao=…, profundidade mudou=…)`                                                                                  | `init` / `update` / `nenhuma`, the new models' `tier_index`, sku, price and stock, the re-listed ones, the skus to update, the `modelos sem filho` that are KEPT, and any `vínculos desaparecidos`.                                                                      |
 | `### fotos e sequência`                                                                                                       | five counts plus one line per failure (`arquivoId — motivo`, **never** the message or the URL), and which re-list door is planned.                                                                                                                                       |
@@ -1189,6 +1189,18 @@ kit that slipped past the dispatcher, which is a defect of the ERP.
 - **`logistica-sem-canal`** on a shop whose only enabled channel needs a
   `size_id` the produto has none of (`SIZE_SELECTION`). A shop with no usable
   channel cannot publish, and that is Shopee's rule, not ours.
+- **A link with no `logisticaGravadaEm` ignores its stored list** (#2015). That
+  is every migrated link, and every staging link written before #2015. The
+  `### logistic_info` block then prints the FULL pass: every fitting channel,
+  with `is_free` from the produto flag. Its `pulados` read exactly like "no size
+  stored", and nothing in the output says the stored list was ignored. To keep
+  the listing's Seller Centre logistics, run
+  `pnpm --filter @delfrance/shopee-app importar:anuncio --integracao <conta> --item <item_id> --live`
+  first (§11), then dry-run again.
+- **`logistica-nao-confirmada`** (#2015): a compulsory `SIZE_SELECTION` /
+  `CUSTOM_PRICE` channel's size or fee sits only in such an unstamped list. Run
+  that same import for the `item_id` named in the sentence, then publish again.
+  A draft, a `removido` link or kit-criar gets `logistica-sem-canal` instead.
 - **The ≥ 5 s wait looks like a hang** between `add_item` and the tier leg on a
   create with children. It is `esperar(5000)`, and it is deliberate: Shopee
   needs the item to settle before `init_tier_variation`.

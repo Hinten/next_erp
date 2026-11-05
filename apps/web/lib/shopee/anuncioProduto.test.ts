@@ -2,10 +2,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   AGUARDAR_KIT_INCERTO_SHOPEE_MS,
   ESTADO_ANUNCIO_SHOPEE,
+  OPCOES_IMPORTACAO_SHOPEE_PADRAO,
+  SHOPEE_IMPORT_STATUS,
   campoRascunhoShopeeSchema,
   TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE,
   estadoAnuncioShopeeSchema,
   tipoAcaoSugeridaPublicacaoShopeeSchema,
+  type ShopeeImportStatus,
 } from '@delfrance/schemas';
 
 import {
@@ -82,6 +85,8 @@ import {
   rotuloDaPublicacaoQueAdotaShopee,
   textoDaConfirmacaoDePublicacaoShopee,
   textoDaRecusaGuardadaShopee,
+  textosDasRecusasGuardadasShopee,
+  linhasDosProblemasShopee,
   textoDoSegundoAnuncioNaPublicacaoShopee,
   tituloDoSegundoAnuncioNaPublicacaoShopee,
   FRASE_ATESTACAO_QUE_VARRE_SHOPEE,
@@ -98,6 +103,10 @@ import {
   type ContextoDoRascunhoNoProblemaShopee,
   type IncertoKitShopee,
 } from './anuncioProduto';
+import {
+  ROTULO_OPCAO_IMPORTACAO_SHOPEE,
+  ROTULO_STATUS_IMPORTACAO_SHOPEE,
+} from './rotulosImportacaoShopee';
 import {
   ShopeeClientHttpError,
   ShopeeClientNetworkError,
@@ -2895,7 +2904,66 @@ describe('#2015 — logistica-nao-confirmada: the copy, then the server’s chan
     expect(copia).not.toMatch(/nunca (foi )?(lido|enviado)|não foi lido/);
     expect(copia).not.toMatch(TEXTO_DE_TERMINAL);
     // Not the produto's weight or size: no field of the produto is the fix.
-    expect(copia).not.toMatch(/peso|dimens/i);
+    // The ONE «dimensões» is inside a quoted dialog label (a box to leave
+    // unticked), so the advice is checked with every «…» taken out.
+    expect(copia.replace(/«[^»]*»/g, '')).not.toMatch(/peso|dimens/i);
+    expect((copia.match(/«[^»]*»/g) ?? []).filter((rotulo) => /dimens/i.test(rotulo))).toEqual([
+      `«${ROTULO_OPCAO_IMPORTACAO_SHOPEE.sobrescreverDadosProduto}»`,
+    ]);
+  });
+
+  it('CPY-2/CPY-3: the copy names every box of the door that decides whether the import reaches the listing or re-prices the conta — labels read from the dialog’s own module', () => {
+    const R = ROTULO_OPCAO_IMPORTACAO_SHOPEE;
+    const S = ROTULO_STATUS_IMPORTACAO_SHOPEE;
+    for (const trecho of [
+      `«${R.atualizarCadastrados}» marcado`,
+      // A banned or in-review listing is scanned only when its status is ticked.
+      `com o status atual do anúncio marcado em «${R.statuses}»`,
+      `(«${S[SHOPEE_IMPORT_STATUS.banned]}» e «${S[SHOPEE_IMPORT_STATUS.reviewing]}» vêm desmarcados)`,
+      // A window can leave the listing out.
+      `«${R.janela}» vazia`,
+      // Whole-conta re-read: at the defaults it would replace the ERP price.
+      'A importação relê todos os anúncios da conta nesses status',
+      `desmarque «${R.sobrescreverPreco}» (vem marcado)`,
+      `deixe desmarcados «${R.sobrescreverEstoque}» e «${R.sobrescreverDadosProduto}»`,
+    ]) {
+      expect(copia).toContain(trecho);
+    }
+    // NEAR-MISS: unticking «Importar …» does NOT stop the overwrite (the
+    // greyed-out «Sobrescrever …» box is still sent), so the copy never says so.
+    expect(copia).not.toContain(`desmarque «${R.importarPreco}»`);
+    expect(copia).not.toContain(`desmarque «${R.importarEstoque}»`);
+    expect(copia).not.toContain(`«${R.importarPreco}»`);
+    expect(copia).not.toContain(`«${R.importarEstoque}»`);
+  });
+
+  it('CPY-2/TST-3: every DEFAULT the copy claims is the dialog’s real default (`OPCOES_IMPORTACAO_SHOPEE_PADRAO`)', () => {
+    const PADRAO = OPCOES_IMPORTACAO_SHOPEE_PADRAO;
+    const S = ROTULO_STATUS_IMPORTACAO_SHOPEE;
+    // «desmarque «Sobrescrever preço existente» (vem marcado)» — and untickable:
+    // the dialog disables it while «Importar preço» is unticked.
+    expect(PADRAO.sobrescreverPreco).toBe(true);
+    expect(PADRAO.importarPreco).toBe(true);
+    // «deixe desmarcados …» — they come unticked.
+    expect(PADRAO.sobrescreverEstoque).toBe(false);
+    expect(PADRAO.sobrescreverDadosProduto).toBe(false);
+    // «… marcado — sem essa opção um anúncio já vinculado é pulado».
+    expect(PADRAO.atualizarCadastrados).toBe(false);
+    // «… vazia» — no window by default.
+    expect(PADRAO.updateTimeFromS).toBeNull();
+    expect(PADRAO.updateTimeToS).toBeNull();
+    // The statuses the copy calls unticked are exactly the ones off by default.
+    const padrao = new Set<ShopeeImportStatus>(PADRAO.statuses);
+    const desmarcados = Object.values(SHOPEE_IMPORT_STATUS).filter((v) => !padrao.has(v));
+    expect(desmarcados.length).toBeGreaterThan(0); // anti-vacuity
+    for (const v of Object.values(SHOPEE_IMPORT_STATUS)) {
+      if (padrao.has(v)) {
+        // NEAR-MISS: a status ticked by default is never called unticked.
+        expect(copia, v).not.toContain(`«${S[v]}»`);
+      } else {
+        expect(copia, v).toContain(`«${S[v]}»`);
+      }
+    }
   });
 
   it('never the kit sentence nor «sem próximo passo» — live or draft, attested or not, whatever the sentence', () => {
@@ -2960,5 +3028,163 @@ describe('#2015 — logistica-nao-confirmada: the copy, then the server’s chan
       copia,
     );
     expect(textoDaRecusaGuardadaShopee('logistica-sem-canal', FRASE_1)).toBe(FRASE_1);
+  });
+
+  /* ---- one copy per refusal (V-REFUSAL-6): the server emits one row per lost channel ---- */
+
+  type Linha = Parameters<typeof textoDoProblemaShopee>[0];
+  const lnc = (mensagem: string, acao: Linha['acao'] = null): Linha => ({
+    motivo: M.logisticaNaoConfirmada,
+    mensagem,
+    acao,
+  });
+  const semCanal = (mensagem: string): Linha => ({
+    motivo: 'logistica-sem-canal',
+    mensagem,
+    acao: null,
+  });
+  const N1A = n1(80003, 'um tamanho', 1000123);
+  const N1B = n1(80007, 'uma tarifa de frete', 1000123);
+  const textos = (linhas: readonly { readonly texto: string }[]) => linhas.map((l) => l.texto);
+  const vezes = (texto: string, trecho: string) => texto.split(trecho).length - 1;
+
+  it('PAIR: two lost channels ⇒ the copy ONCE, then each channel’s own sentence — both channels reach the screen', () => {
+    const linhas = linhasDosProblemasShopee([lnc(N1A), lnc(N1B)], 'L1', 'p1');
+    expect(textos(linhas)).toEqual([`${copia} Detalhe: ${N1A}`, `Detalhe: ${N1B}`]);
+    expect(linhas.map((l) => l.indice)).toEqual([0, 1]);
+    const tela = textos(linhas).join(' ');
+    expect(vezes(tela, copia)).toBe(1);
+    expect(tela).toContain('80003');
+    expect(tela).toContain('80007');
+  });
+
+  it('a `logistica-sem-canal` row beside it keeps its sentence VERBATIM', () => {
+    expect(textos(linhasDosProblemasShopee([lnc(N1A), semCanal(FRASE_2)], 'L1', 'p1'))).toEqual([
+      `${copia} Detalhe: ${N1A}`,
+      FRASE_2,
+    ]);
+  });
+
+  it('a later row whose sentence would say nothing (terminal or blank) is DROPPED — its siblings keep their ORIGINAL index', () => {
+    const linhas = linhasDosProblemasShopee(
+      [lnc(N1A), lnc(TERMINAL), semCanal(FRASE_1), lnc('   ')],
+      'L1',
+      'p1',
+    );
+    expect(linhas.map((l) => l.indice)).toEqual([0, 2]);
+    expect(textos(linhas)).toEqual([`${copia} Detalhe: ${N1A}`, FRASE_1]);
+    // NEAR-MISS: a terminal FIRST row still carries the copy; the next one is its Detalhe.
+    expect(textos(linhasDosProblemasShopee([lnc(TERMINAL), lnc(N1B)]))).toEqual([
+      copia,
+      `Detalhe: ${N1B}`,
+    ]);
+  });
+
+  it('NEAR-MISS: folded by motivo `===`, never by text — two identical `logistica-sem-canal` rows both stay', () => {
+    expect(
+      textos(linhasDosProblemasShopee([semCanal(FRASE_1), semCanal(FRASE_1)], 'L1', 'p1')),
+    ).toEqual([FRASE_1, FRASE_1]);
+  });
+
+  it('NEAR-MISS: the set is EXACTLY this motivo — two #11 rows each keep #11’s copy', () => {
+    const busca = (mensagem: string): Linha => ({
+      motivo: M.buscaDeAnuncioExistenteIncompleta,
+      mensagem,
+      acao: null,
+    });
+    const linhas = [
+      busca('O anúncio 1000201 ficou de fora.'),
+      busca('O anúncio 1000202 ficou de fora.'),
+    ];
+    expect(textos(linhasDosProblemasShopee(linhas, 'L1', 'p1'))).toEqual(
+      linhas.map((p) => textoDoProblemaShopee(p, 'L1', 'p1')),
+    );
+    const copiaDaBusca = TEXTO_MOTIVO_ANUNCIO_SHOPEE[M.buscaDeAnuncioExistenteIncompleta] ?? '?';
+    for (const t of textos(linhasDosProblemasShopee(linhas, 'L1', 'p1'))) {
+      expect(t.startsWith(copiaDaBusca)).toBe(true);
+    }
+  });
+
+  it('NEAR-MISS: a row WITH an `acao` is never folded, and never counts as the first', () => {
+    const comAcao = lnc(N1B, {
+      tipo: TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.importar,
+      itemIds: [1000123],
+      vinculados: [],
+    });
+    for (const lista of [
+      [lnc(N1A), comAcao],
+      [comAcao, lnc(N1A)],
+    ]) {
+      expect(textos(linhasDosProblemasShopee(lista, 'L1', 'p1'))).toEqual(
+        lista.map((p) => textoDoProblemaShopee(p, 'L1', 'p1')),
+      );
+    }
+  });
+
+  it('every row it does not fold reads EXACTLY `textoDoProblemaShopee` with the same arguments — the draft context and the block’s produto included', () => {
+    const ctx = contextoDeRascunho({ respondeAtestacao: true });
+    const lista: Linha[] = [
+      { motivo: M.criacaoIncertaSemSku, mensagem: 'use --confirmar-criacao-incerta', acao: null },
+      lnc(N1A),
+      {
+        motivo: M.criacaoIncertaJaVinculada,
+        mensagem: 'rode importar:anuncio',
+        acao: {
+          tipo: TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.importar,
+          itemIds: [111],
+          vinculados: [{ itemId: 111, produtoId: 'p1' }],
+        },
+      },
+      semCanal(FRASE_1),
+      lnc(N1B),
+    ];
+    const linhas = linhasDosProblemasShopee(lista, 'L1', 'p1', ctx);
+    expect(linhas.map((l) => l.indice)).toEqual([0, 1, 2, 3, 4]);
+    for (const l of linhas.slice(0, 4)) {
+      expect(l.problema).toBe(lista[l.indice]);
+      expect(l.texto).toBe(textoDoProblemaShopee(l.problema, 'L1', 'p1', ctx));
+    }
+    // Anti-vacuity: the context and the produto reached the copy.
+    expect(linhas[0]?.texto.startsWith(FRASE_ATESTACAO_SUPERADA_SHOPEE)).toBe(true);
+    expect(linhas[2]?.texto).toContain('111 (deste produto)');
+    expect(linhas[4]?.texto).toBe(`Detalhe: ${N1B}`);
+  });
+
+  it('STORED: a later row of the motivo is dropped (its text would be the identical copy) ⟷ NEAR-MISS two stored rows with the same sentence both stay', () => {
+    const guardada = (motivo: unknown, mensagem: unknown) => ({
+      campo: 'logistic_info',
+      motivo,
+      mensagem,
+    });
+    expect(
+      textosDasRecusasGuardadasShopee([
+        guardada(M.logisticaNaoConfirmada, N1A),
+        guardada(M.logisticaNaoConfirmada, N1B),
+        guardada('logistica-sem-canal', FRASE_1),
+      ]),
+    ).toEqual([copia, FRASE_1]);
+    expect(
+      textosDasRecusasGuardadasShopee([
+        guardada('logistica-sem-canal', FRASE_1),
+        guardada('logistica-sem-canal', FRASE_1),
+      ]),
+    ).toEqual([FRASE_1, FRASE_1]);
+  });
+
+  it('STORED: rows read as `textoDaRecusaGuardadaShopee` does — non-objects and blank rows dropped, order kept; not an array ⇒ []', () => {
+    expect(
+      textosDasRecusasGuardadasShopee([
+        null,
+        'não é uma linha',
+        42,
+        { motivo: 'outro', mensagem: '   ' },
+        { motivo: 'outro', mensagem: 'Primeira.' },
+        { motivo: M.logisticaNaoConfirmada, mensagem: null },
+        { motivo: 7, mensagem: 'Terceira.' },
+      ]),
+    ).toEqual(['Primeira.', copia, 'Terceira.']);
+    for (const valor of [undefined, null, {}, 'x', 3]) {
+      expect(textosDasRecusasGuardadasShopee(valor)).toEqual([]);
+    }
   });
 });

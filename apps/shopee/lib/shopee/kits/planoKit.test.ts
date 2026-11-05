@@ -1795,6 +1795,11 @@ function frase1(canalId: number): string {
   );
 }
 
+/**
+ * Sentence (2). It stands beside sentence (1) only: when EVERY lost compulsory
+ * channel took `logistica-nao-confirmada`, `construirLogistica` leaves it out
+ * (V-REFUSAL-9), so the N1 expectations below carry it no more.
+ */
 const NENHUM_OBRIGATORIO = {
   campo: 'logistic_info',
   motivo: M.logisticaSemCanal,
@@ -1914,7 +1919,6 @@ describe('#2015 — kit-atualizar: a lista do kit alvo só vence quando CARIMBAD
         motivo: M.logisticaNaoConfirmada,
         mensagem: fraseN1(CANAL_TARIFA, 'uma tarifa de frete', KIT),
       },
-      NENHUM_OBRIGATORIO,
     ]);
     // ⛔ QUASE-PAR: carimbada, a mesma tarifa é REENVIADA e nada recusa.
     const carimbada = planejarKit(
@@ -1968,7 +1972,6 @@ describe('#2015 — kit-converter: a lista do ANTECESSOR comum só vence quando 
         motivo: M.logisticaNaoConfirmada,
         mensagem: fraseN1(CANAL_TAMANHO, 'um tamanho', ITEM_COMUM),
       },
-      NENHUM_OBRIGATORIO,
     ]);
     expect(plano.corpo).toBeNull();
     // ⛔ QUASE-PAR: carimbado, o tamanho é REENVIADO e nada recusa.
@@ -2015,7 +2018,6 @@ describe('#2015 — kit-recriar e kit-criar: sem anúncio a importar, a frase (1
         motivo: M.logisticaNaoConfirmada,
         mensagem: fraseN1(CANAL_TAMANHO, 'um tamanho', KIT),
       },
-      NENHUM_OBRIGATORIO,
     ]);
   });
 

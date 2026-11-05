@@ -1977,6 +1977,70 @@ describe('aplicarPublicacao — o carimbo de falha', () => {
       falhaPublicacao: expect.objectContaining({ etapa: 'update_item', erro: 'error_limit' }),
     });
   });
+
+  /**
+   * #2015 (V-WRITERS-10): the failure stamp is a key-scoped MERGE that names
+   * neither `logistic_info` nor `logisticaGravadaEm` — so a stamped list stays
+   * trusted and an unstamped one stays distrusted. The rate-limited
+   * `update_item` makes the stamp the run's ONLY link write.
+   */
+  async function falhaPorLimiteSobre(extra: Record<string, unknown>): Promise<{
+    readonly db: FakeDb;
+    readonly semeado: Record<string, unknown>;
+  }> {
+    const db = new FakeDb();
+    semearCatalogo(db);
+    semearLink(db, {
+      logistic_info: [{ logistic_id: CANAL, enabled: true, is_free: true }],
+      ...extra,
+    });
+    const semeado = structuredClone(db.store[CAMINHO_LINK]?.data ?? {});
+    const fake = clienteFake({
+      updateItem: () => {
+        throw new ShopeeRateLimitError('Shopee respondeu error_limit', {
+          code: 'error_limit',
+          kind: SHOPEE_ERROR_KIND.burst,
+          httpStatus: 200,
+          path: '/api/v2/product/update_item',
+        });
+      },
+    });
+    const { plano } = await planejar(db, fake);
+    await expect(aplicarPublicacao(deps(db, fake), plano)).rejects.toBeInstanceOf(
+      ShopeeRateLimitError,
+    );
+    return { db, semeado };
+  }
+
+  it('#2015 PAR: num vínculo CARIMBADO o carimbo de falha é UM merge de exatamente {falhaPublicacao, ultimaModificacao} — a lista e o carimbo ficam', async () => {
+    const { db, semeado } = await falhaPorLimiteSobre({ logisticaGravadaEm: AGORA - 60_000 });
+    const patches = patchesDoLink(db);
+    expect(patches).toHaveLength(1);
+    const patch = patches[0] ?? {};
+    expect(Object.keys(patch).sort()).toEqual(['falhaPublicacao', 'ultimaModificacao']);
+    expect(Object.keys((patch.falhaPublicacao ?? {}) as Record<string, unknown>).sort()).toEqual([
+      'em',
+      'erro',
+      'etapa',
+      'mensagem',
+      'problemas',
+    ]);
+    expect(db.store[CAMINHO_LINK]?.data).toEqual({
+      ...semeado,
+      falhaPublicacao: patch.falhaPublicacao,
+      ultimaModificacao: AGORA,
+    });
+    expect(logisticaGravadaPeloErpShopee(db.store[CAMINHO_LINK]?.data ?? null)).toBe(true);
+  });
+
+  it('⛔ #2015 QUASE-PAR: o MESMO carimbo de falha num vínculo SEM carimbo não o cunha — continua desconfiado', async () => {
+    const { db, semeado } = await falhaPorLimiteSobre({});
+    expect(semeado).not.toHaveProperty('logisticaGravadaEm');
+    const doc = db.store[CAMINHO_LINK]?.data;
+    expect(doc).not.toHaveProperty('logisticaGravadaEm');
+    expect(doc?.logistic_info).toEqual(semeado.logistic_info);
+    expect(logisticaGravadaPeloErpShopee(doc ?? null)).toBe(false);
+  });
 });
 
 /* ========================================================================== */

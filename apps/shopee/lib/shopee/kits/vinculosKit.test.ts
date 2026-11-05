@@ -17,6 +17,7 @@ import { montarItemLido } from '../produtos/itemLido';
 import { FakeDb, asDb, grpc } from '../testing/fakeDb';
 import { idDaVariacaoDeKit, idDoVinculoDeKit } from './idsKit';
 import {
+  carimbarSubstituicao,
   escreverLeituraDoKit,
   escreverVariacoesDoKit,
   escreverVinculoDoKit,
@@ -196,6 +197,42 @@ describe('#2015 — logisticaGravadaEm rides the kit create, never #2', () => {
       logisticaGravadaEm: AGORA,
       ultimaModificacao: AGORA + 60_000,
     });
+  });
+});
+
+describe('#2015 — the superseded pointer (carimbarSubstituicao) names neither the list nor the stamp', () => {
+  // V-WRITERS-10: the pointer is a key-scoped MERGE of exactly its two keys, so
+  // a stamped list stays trusted and an unstamped one stays distrusted.
+  const CAMINHO = `produtos/${K}/prodshopee/link-velho`;
+  const PONTEIRO = { substituidoPorLinkDocId: 'link-novo', substituidoEm: AGORA };
+
+  async function substituir(extra: Record<string, unknown>) {
+    const db = new FakeDb();
+    db.seed(CAMINHO, {
+      contaProdutoShopeeOuterRef: CONTA_REF,
+      item_id: KIT,
+      logistic_info: [{ logistic_id: 90003, enabled: true, is_free: true }],
+      ...extra,
+    });
+    const semeado = structuredClone(db.store[CAMINHO]?.data ?? {});
+    await carimbarSubstituicao(asDb(db), K, 'link-velho', PONTEIRO);
+    return { db, semeado };
+  }
+
+  it('PAIR: over a STAMPED link the ONE write is exactly the two pointer keys, and the doc stays trusted', async () => {
+    const { db, semeado } = await substituir({ logisticaGravadaEm: AGORA - 1 });
+    expect(db.writes).toEqual([{ path: CAMINHO, patch: PONTEIRO }]);
+    expect(db.store[CAMINHO]?.data).toEqual({ ...semeado, ...PONTEIRO });
+    expect(logisticaGravadaPeloErpShopee(db.store[CAMINHO]?.data ?? null)).toBe(true);
+  });
+
+  it('⛔ NEAR-MISS: over an UNSTAMPED link the same write mints no stamp — still distrusted', async () => {
+    const { db, semeado } = await substituir({});
+    expect(db.writes).toEqual([{ path: CAMINHO, patch: PONTEIRO }]);
+    const doc = db.store[CAMINHO]?.data;
+    expect(doc).not.toHaveProperty('logisticaGravadaEm');
+    expect(doc?.logistic_info).toEqual(semeado.logistic_info);
+    expect(logisticaGravadaPeloErpShopee(doc ?? null)).toBe(false);
   });
 });
 

@@ -1312,10 +1312,10 @@ call the predicate, no file outside a test reads the field raw, and only the
 four writers above write it.
 
 Nothing else stamps. The draft create writes `logistic_info: null` with no
-stamp on a NEW document (a null list takes the full pass anyway); a draft edit
-or discard, every lock and ENSURE write, the failure stamp, pause, re-verify,
-stock, price, kit #2 and the superseded pointer are key-scoped merges or
-updates that leave both the list and the stamp alone. A
+stamp on a NEW document (a null list takes the full pass anyway); a draft edit,
+every lock and ENSURE write, the failure stamp, pause, re-verify, stock, price,
+kit #2 and the superseded pointer are key-scoped merges or updates that leave
+both the list and the stamp alone, and the discard deletes the document. A
 DISTRUSTED list still reaches `construirLogistica`, because the refusal below
 reads it, but never its stored pass: the full pass runs and only ITS `pulados`
 are reported.
@@ -1329,6 +1329,18 @@ export survives only if the listing is IMPORTED first (whether `update_item`
 disables a channel the request omits is UNVERIFIED). A staging link this app
 wrote before #2015 carries no stamp either and takes one full pass at its next
 item publish.
+
+⚠️ **Deploy `functions:shopee` no later than the apps/shopee App Hosting
+rollout.** The web's only import door, the mass import, runs
+`dadosLinkListagem` in the nested functions codebase
+(`functions/src/processMassImport.ts`). App Hosting rolls out automatically on a
+merge into `production`. Until the functions carry #2015, an import writes
+Shopee's list WITHOUT the stamp. The next publish still distrusts it, so a
+`logistica-nao-confirmada` refusal comes back after the very import it asked
+for, and importing before a Republicar protects nothing.
+`importar:anuncio --live` from a #2015 checkout does stamp. The other order is
+harmless, because a pre-#2015 publisher trusts every stored list. apps/web may
+go in any order.
 
 A stored `size_id` that is not a safe positive integer **refuses** rather than
 coercing (C32): the package's own `wireInt()` would coerce, and a coerced size
@@ -1348,11 +1360,27 @@ link's live `item_id`, on the kit converter its predecessor's. Campo
 `logistic_info`, no `acao`; the sentence names that `item_id`: import the
 listing, then publish again. A draft, a `removido` link, kit-criar, a trusted
 list, an absent or unreadable value and a parcel that does not fit keep
-`logistica-sem-canal`'s sentence word for word, and so do the two shop-wide
-sentences (no compulsory channel enabled, no channel at all), which may stand
-beside the new one. The web words it with its own copy and points at the one
-web door that re-reads a LINKED listing: the mass import with «Atualizar
-anúncios já cadastrados» ticked.
+`logistica-sem-canal`'s sentence word for word.
+
+The two shop-wide sentences (no compulsory channel enabled; no channel at all)
+stay `logistica-sem-canal`, with ONE exception: when EVERY lost compulsory
+channel took `logistica-nao-confirmada`, neither is added. Each of those
+channels is enabled and fits, so the import is the whole remedy. Either
+sentence would put weight advice, and the web's weight button on a
+`logistica-sem-canal` row, beside it. The `logistica-nao-confirmada` rows alone
+still block. One lost compulsory channel that kept the old sentence keeps both.
+
+The web words the new motivo with its own copy and points at the one web door
+that re-reads a LINKED listing: the mass import, with «Atualizar anúncios já
+cadastrados» ticked, the listing's current status ticked in «Status dos
+anúncios» («Banidos» and «Em revisão» start unticked), an empty «Janela de
+atualização (opcional)», and «Sobrescrever preço existente» UNticked. That run
+re-reads every listing of the conta in those statuses, and at the dialog's
+default it replaces the ERP price of every childless linked produto and every
+child with Shopee's (a parent with children keeps its own)
+(`planejarPreco` in `../produtos/mapeamento.ts` reads `sobrescreverPreco` alone
+on an update). The quoted labels are the dialog's own constants
+(`apps/web/lib/shopee/rotulosImportacaoShopee.ts`).
 
 ⚠️ `update_item`'s request table omits `logistic_info` while every code sample,
 its own error list and `announcement 1395` carry it. It is sent, and write-back
