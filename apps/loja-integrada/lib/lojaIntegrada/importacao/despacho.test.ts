@@ -221,6 +221,10 @@ function montarDeps(o: OpcoesDeps = {}) {
     agendador:
       o.agendador ??
       (() => criarAgendadorImportacaoLi({ fila: () => t.fila, desligado: o.desligado ?? false })),
+    // No phase of this build stores a photo: a bucket asked for is a test that must say so.
+    bucket: () => {
+      throw new Error('despacho.test: nenhum bucket neste despacho');
+    },
     logger: { warn },
     tentativa: o.tentativa ?? 0,
     idTarefa: 'tarefa-1',

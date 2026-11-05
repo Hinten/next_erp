@@ -4,7 +4,7 @@
  * stale precondition would make every race test vacuous.
  */
 import { describe, expect, it } from 'vitest';
-import { FieldPath, Timestamp } from 'firebase-admin/firestore';
+import { FieldPath, FieldValue, Timestamp } from 'firebase-admin/firestore';
 import {
   avisoCollection,
   importacaoLojaIntegradaCollection,
@@ -544,6 +544,55 @@ describe('FakeDb — the array-union sentinel (step 20, the freight mapa)', () =
     await ref.create({ l: [] });
     await expect(ref.update({ l: arrayUnion({ k: undefined }) })).rejects.toThrow(/undefined/);
     expect(db.ler('integracao/a')).toEqual({ l: [] });
+  });
+});
+
+describe('FakeDb — the Admin SDK’s own array union (step 9: the shared uploader writes it)', () => {
+  it('EQUAL: FieldValue.arrayUnion is applied exactly as the sentinel, element by element', async () => {
+    const db = new FakeDb();
+    const ref = refDe(db, 'a');
+    const legado = [{ externalId: '1', integracaoPath: 'documents/integracao/C1' }];
+    await ref.create({ l: legado, m: legado });
+    const novo = { externalId: '2', integracaoPath: 'documents/integracao/C1' };
+    await ref.update({ l: FieldValue.arrayUnion(...legado, novo) });
+    await ref.update({ m: arrayUnion(...legado, novo) });
+    const lido = db.ler('integracao/a');
+    expect(lido?.l).toEqual([...legado, novo]);
+    expect(lido?.l).toEqual(lido?.m);
+  });
+
+  it('an absent field becomes exactly the elements; a stale stamp refuses it with 9', async () => {
+    const db = new FakeDb();
+    const ref = refDe(db, 'a');
+    await ref.create({ outro: 1 });
+    const lido = await ref.get();
+    await ref.update({ l: FieldValue.arrayUnion('x') });
+    expect(db.ler('integracao/a')).toEqual({ outro: 1, l: ['x'] });
+    await expect(
+      ref.update({ l: FieldValue.arrayUnion('y') }, { lastUpdateTime: lido.updateTime }),
+    ).rejects.toSatisfy(isFailedPrecondition);
+    expect(db.ler('integracao/a')).toEqual({ outro: 1, l: ['x'] });
+  });
+
+  it('refuses it where the sentinel is refused: create and a merge-set', async () => {
+    const db = new FakeDb();
+    const ref = refDe(db, 'a');
+    await expect(ref.create({ l: FieldValue.arrayUnion('a') })).rejects.toThrow(
+      /arrayUnion em create/,
+    );
+    expect(() => ref.set({ l: FieldValue.arrayUnion('a') }, { merge: true })).toThrow(
+      /arrayUnion em set merge/,
+    );
+  });
+
+  it('⚠️ NEAR-MISS: another SDK FieldValue (an increment) is NOT read as a union', async () => {
+    const db = new FakeDb();
+    const ref = refDe(db, 'a');
+    await ref.create({ l: ['x'] });
+    await ref.update({ l: FieldValue.increment(1) });
+    // Not merged into the stored list: whatever the fake does with it, it is not a union.
+    expect(db.ler('integracao/a')?.l).not.toEqual(['x', 1]);
+    expect(Array.isArray(db.ler('integracao/a')?.l)).toBe(false);
   });
 });
 

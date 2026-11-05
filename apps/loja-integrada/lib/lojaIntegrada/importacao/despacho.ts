@@ -201,6 +201,7 @@
  */
 import type { Firestore, Timestamp } from 'firebase-admin/firestore';
 import { isGrpcStatusError } from '@delfrance/data/admin/grpcErrors';
+import type { Bucket } from '@delfrance/storage/admin';
 import { TASK_MAX_ATTEMPTS } from '@delfrance/data/admin/notifications';
 import {
   LiAuthError,
@@ -344,6 +345,12 @@ export interface DepsDespachoImportacaoLi {
   readonly increment: (by: number) => unknown;
   /** The producer, built only when a hand-off is due (the tasks valve is read when it is built). */
   readonly agendador: () => AgendadorImportacaoLi;
+  /**
+   * The default bucket a "complete" run stores its photos in (`fotos.ts`), resolved only when asked;
+   * `null` when nothing names one: the run's photos are skipped and the job is stamped
+   * `fotosIndisponiveis`.
+   */
+  readonly bucket: () => Bucket | null;
   readonly logger: LoggerDespachoImportacaoLi;
   /** The Cloud Tasks attempt, 0-based (`req.retryCount`). */
   readonly tentativa: number;

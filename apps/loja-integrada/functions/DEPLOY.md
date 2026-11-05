@@ -155,6 +155,17 @@ exists — so nothing is ever written to Loja Integrada before the window.
   `importacoesLojaIntegrada (integracaoId ASC, iniciadoEmMs DESC)`; a dispatch
   reads its job by id only. On Enterprise a missing index does not fail, it
   full-scans and bills the scan.
+- **The default bucket's object grant, before the first "complete" import
+  with photos** (master-plan step 9). The import's photos are this codebase's
+  FIRST Storage write: the functions runtime SA uploads each picture to the
+  project's default bucket (see "Photos: the runtime SA writes the default
+  bucket" under the IAM section). The bucket NAME is read from the runtime's own
+  `FIREBASE_CONFIG.storageBucket` (no env var to set); when nothing names one,
+  a run skips its photos and its card shows "fotos indisponíveis" instead of
+  failing. The `storage` functions codebase (`apps/functions`, its
+  `resizeProductImage` trigger) makes the 200/400/jpeg derivatives of every
+  picture uploaded `resizeState: 'pending'`, so it is deployed first, as it is
+  for every other product photo.
 - **`apps/web` carrying the import's three aviso tipos before the read switch is
   set** (master-plan step 9): `lojaIntegradaImportacaoComPendencias` (raised at
   an `aplicar` import's end), `lojaIntegradaCategoriaSemVinculo` and
@@ -570,6 +581,41 @@ service, so that principal needs `run.invoker` ON THE SERVICE. Without it the
 task is created and delivered and the service answers 403 `run.routes.invoke`,
 with NO failure document written anywhere.
 
+### Photos: the runtime SA writes the default bucket (master-plan step 9)
+
+A product import run with "completar" and photos ("só em produtos sem fotos")
+uploads each picture to the project's DEFAULT bucket through the shared uploader
+(`putArquivoAdmin`): an `arquivos` document first (Firestore, which the runtime
+SA already writes), then the object
+`produtos/<produtoId>/originals/<sha-512>.<ext>`. **That is the first Storage
+write this codebase makes, and it needs a grant the Cloud Tasks section above
+does not cover**: the functions runtime SA must create objects in that bucket,
+and OVERWRITE one — an upload retried after its object landed but before its
+document recorded it writes the same object name again, and Cloud Storage
+requires delete permission to replace an object. So grant
+`roles/storage.objectUser` ON THE BUCKET (not the project); `roles/storage.objectCreator`
+alone lets a first upload through and refuses that retry with a 403. Nothing
+here reads, lists or deletes objects of its own accord. No new Cloud Tasks grant:
+photos run inside the import's slices, on the reads queue.
+
+```bash
+# The bucket is the one FIREBASE_CONFIG names on the deployed functions — on a
+# project created after late 2024 that is <project-id>.firebasestorage.app,
+# NOT <project-id>.appspot.com. Confirm it first:
+gcloud storage buckets list --project=<project-id>
+gcloud storage buckets add-iam-policy-binding gs://<default-bucket> \
+  --member="serviceAccount:<functions-runtime-sa>" \
+  --role="roles/storage.objectUser"
+```
+
+⚠️ On the NEW project the default compute SA may not hold Editor (an org policy
+can disable that automatic grant), so do not assume the old project's implicit
+access carries over. Without the grant every photo upload fails with a 403,
+which propagates: the task retries the slice and fails the same way each time,
+so the job stops at the first picture it tries to store. The fills written
+before it stay (a restart redoes nothing twice: every import write is
+idempotent), and Cancelar ends the job; grant, then start it again.
+
 ### The deploy aborts if `TASKS_INVOKER_SA` is missing (#1133)
 
 `predeploy` runs `node tools/deploy-env/preflight.mjs loja-integrada` **before** the
@@ -828,6 +874,25 @@ of this section passes.
    from the web is refused by its route (503, no job). Once the switch is on, the
    first import of a conta is a person's step of the window, never this check:
    a Simular, then its report read, before any `aplicar`.
+
+9. **The import's photos (master-plan step 9, "complete").** Before the first
+   `aplicar` run with "completar" and photos, the functions runtime SA holds
+   object create AND overwrite on the default bucket (the IAM section's
+   "Photos" block):
+
+   ```bash
+   gcloud storage buckets get-iam-policy gs://<default-bucket> --project=<project-id>
+   # expect serviceAccount:<functions-runtime-sa> under roles/storage.objectUser
+   ```
+
+   The bucket named there is the one the deployed functions' `FIREBASE_CONFIG`
+   carries (`gcloud storage buckets list` shows the project's default; a
+   project created after late 2024 names it `<project-id>.firebasestorage.app`).
+   Then the first such run's card does NOT show "fotos indisponíveis", and a
+   produto it gave pictures to shows them in the web editor with their
+   thumbnails (the `storage` codebase's resize trigger made the derivatives).
+   Why the window: the production project and its bucket exist only then, and
+   before the switch no import runs.
 
 ## The status write-back in the window (master-plan step 7)
 
