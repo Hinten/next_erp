@@ -1,0 +1,204 @@
+{
+  "error": "",
+  "message": "",
+  "warning": "fail to get channel estimated_shipping_fee for channel [91003];\nfail to get channel estimated_shipping_fee for channel [90024];\nfail to get channel estimated_shipping_fee for channel [91006]",
+  "response": {
+    "item_list": [
+      {
+        "item_id": 1119583813,
+        "category_id": 101775,
+        "item_name": "REDACTED",
+        "description": "REDACTED",
+        "item_sku": "SKU-6db0860a",
+        "create_time": 1600000000,
+        "update_time": 1700000000,
+        "attribute_list": [
+          {
+            "attribute_id": 100037,
+            "original_attribute_name": "Region of Origin",
+            "attribute_value_list": [
+              {
+                "value_id": 6737,
+                "original_value_name": "Brasil",
+                "value_unit": ""
+              }
+            ],
+            "is_mandatory": false
+          },
+          {
+            "attribute_id": 100134,
+            "original_attribute_name": "Material",
+            "attribute_value_list": [
+              {
+                "value_id": 1285,
+                "original_value_name": "Textile",
+                "value_unit": ""
+              }
+            ],
+            "is_mandatory": false
+          },
+          {
+            "attribute_id": 100162,
+            "original_attribute_name": "Pattern",
+            "attribute_value_list": [
+              {
+                "value_id": 1463,
+                "original_value_name": "Plain",
+                "value_unit": ""
+              }
+            ],
+            "is_mandatory": false
+          },
+          {
+            "attribute_id": 100168,
+            "original_attribute_name": "Sleeve Length",
+            "attribute_value_list": [
+              {
+                "value_id": 1480,
+                "original_value_name": "Long Sleeves",
+                "value_unit": ""
+              }
+            ],
+            "is_mandatory": false
+          },
+          {
+            "attribute_id": 100999,
+            "original_attribute_name": "Quantity",
+            "attribute_value_list": [
+              {
+                "value_id": 0,
+                "original_value_name": "1",
+                "value_unit": ""
+              }
+            ],
+            "is_mandatory": false
+          },
+          {
+            "attribute_id": 101029,
+            "original_attribute_name": "indication",
+            "attribute_value_list": [
+              {
+                "value_id": 0,
+                "original_value_name": "10",
+                "value_unit": "CM"
+              }
+            ],
+            "is_mandatory": false
+          }
+        ],
+        "image": {
+          "image_id_list": [
+            "imagem-redigida",
+            "imagem-redigida",
+            "imagem-redigida",
+            "imagem-redigida",
+            "imagem-redigida",
+            "imagem-redigida",
+            "imagem-redigida",
+            "imagem-redigida",
+            "imagem-redigida"
+          ],
+          "image_url_list": [
+            "https://redacted.invalid/imagem",
+            "https://redacted.invalid/imagem",
+            "https://redacted.invalid/imagem",
+            "https://redacted.invalid/imagem",
+            "https://redacted.invalid/imagem",
+            "https://redacted.invalid/imagem",
+            "https://redacted.invalid/imagem",
+            "https://redacted.invalid/imagem",
+            "https://redacted.invalid/imagem"
+          ],
+          "image_ratio": "1:1"
+        },
+        "weight": "0.25",
+        "dimension": {
+          "package_length": 25,
+          "package_width": 19,
+          "package_height": 3
+        },
+        "logistic_info": [
+          {
+            "logistic_id": 91003,
+            "logistic_name": "Entrega Padrão",
+            "enabled": true,
+            "size_id": 0,
+            "is_free": false,
+            "include_pickup": false
+          },
+          {
+            "logistic_id": 90024,
+            "logistic_name": "Retire Perto de Você",
+            "enabled": true,
+            "size_id": 0,
+            "is_free": false,
+            "include_pickup": false
+          },
+          {
+            "logistic_id": 91006,
+            "logistic_name": "Expresso Aéreo",
+            "enabled": true,
+            "size_id": 0,
+            "is_free": false,
+            "include_pickup": false
+          }
+        ],
+        "pre_order": {
+          "is_pre_order": false,
+          "days_to_ship": 2
+        },
+        "condition": "NEW",
+        "size_chart": "https://redacted.invalid/imagem",
+        "item_status": "NORMAL",
+        "has_model": true,
+        "has_promotion": false,
+        "video_info": [
+          {
+            "video_url": "REDACTED",
+            "thumbnail_url": "REDACTED",
+            "duration": 15
+          }
+        ],
+        "brand": {
+          "brand_id": 0,
+          "original_brand_name": "NoBrand"
+        },
+        "item_dangerous": 0,
+        "tax_info": {
+          "ncm": "61099000",
+          "same_state_cfop": "",
+          "diff_state_cfop": "",
+          "csosn": "",
+          "origin": "0",
+          "cest": "2803800",
+          "measure_unit": "UN",
+          "pis_cofins_cst": "",
+          "federal_state_taxes": "0.00",
+          "operation_type": "1",
+          "ex_tipi": "",
+          "fci_num": "",
+          "recopi_num": "",
+          "additional_info": "",
+          "tax_rule_id": 1
+        },
+        "description_type": "normal",
+        "size_chart_id": 0,
+        "promotion_image": {
+          "image_id_list": ["imagem-redigida"],
+          "image_url_list": ["https://redacted.invalid/imagem"]
+        },
+        "deboost": "FALSE",
+        "compatibility_info": {},
+        "authorised_brand_id": 0,
+        "is_fulfillment_by_shopee": false,
+        "tag": {
+          "kit": false
+        },
+        "purchase_limit_info": {
+          "min_purchase_limit": 1
+        }
+      }
+    ]
+  },
+  "debug_message": ""
+}

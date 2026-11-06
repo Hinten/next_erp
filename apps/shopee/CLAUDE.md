@@ -1361,12 +1361,12 @@ and `children`.
 guessed** (the `hosts.ts` technique — settled by one live sandbox call, flipped
 by one literal or one env var):
 
-1. **The `get_variations` path.** The page's `path`/`url`/`test_url` say
-   `/api/v2/product/get_variation_tree`; all four of its samples call
-   `/api/v2/product/get_variations`. The package defaults to the samples and
-   `SHOPEE_VARIATIONS_PATH` overrides it. The path is INSIDE the HMAC base
-   string, so the wrong one fails as `error_sign`, which reads like a bad partner
-   key — hence the `variacoes` route echoes `pathUsed`.
+1. **The `get_variations` path — SETTLED on BR (2026-11-04).** The page's
+   `path`/`url`/`test_url` say `/api/v2/product/get_variation_tree`, its samples
+   `…/get_variations`; BR production answers the first and HTTP 404
+   `error_not_found` on the second (NOT `error_sign`). The package defaults to
+   `get_variation_tree`; `SHOPEE_VARIATIONS_PATH` stays an override, and the
+   `variacoes` route echoes `pathUsed`.
 2. **`category_id_list` vs `category_ids`.** The parameter table says the first,
    the page's own cURL says the second. The app sends ONE category per call,
    which serialises identically under both, and logs `error_param` raw with the

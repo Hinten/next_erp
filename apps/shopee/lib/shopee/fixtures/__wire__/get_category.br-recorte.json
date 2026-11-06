@@ -1,0 +1,378 @@
+{
+  "error": "",
+  "message": "",
+  "warning": "",
+  "response": {
+    "category_list": [
+      {
+        "category_id": 100017,
+        "parent_category_id": 0,
+        "original_category_name": "Women Clothes",
+        "display_category_name": "Roupas Femininas",
+        "has_children": true,
+        "debug_message": null
+      },
+      {
+        "category_id": 100099,
+        "parent_category_id": 100017,
+        "original_category_name": "Tops",
+        "display_category_name": "Blusas",
+        "has_children": true,
+        "debug_message": null
+      },
+      {
+        "category_id": 100352,
+        "parent_category_id": 100099,
+        "original_category_name": "T-shirts",
+        "display_category_name": "Camisetas",
+        "has_children": false,
+        "debug_message": null
+      },
+      {
+        "category_id": 100011,
+        "parent_category_id": 0,
+        "original_category_name": "Men Clothes",
+        "display_category_name": "Roupas Masculinas",
+        "has_children": true,
+        "debug_message": null
+      },
+      {
+        "category_id": 100054,
+        "parent_category_id": 100011,
+        "original_category_name": "Tops",
+        "display_category_name": "Blusas",
+        "has_children": true,
+        "debug_message": null
+      },
+      {
+        "category_id": 100244,
+        "parent_category_id": 100054,
+        "original_category_name": "T-Shirts",
+        "display_category_name": "Camisetas",
+        "has_children": false,
+        "debug_message": null
+      },
+      {
+        "category_id": 100630,
+        "parent_category_id": 0,
+        "original_category_name": "Beauty",
+        "display_category_name": "Beleza",
+        "has_children": true,
+        "debug_message": null
+      },
+      {
+        "category_id": 100659,
+        "parent_category_id": 100630,
+        "original_category_name": "Hair Care",
+        "display_category_name": "Cuidados com o Cabelo",
+        "has_children": true,
+        "debug_message": null
+      },
+      {
+        "category_id": 100869,
+        "parent_category_id": 100659,
+        "original_category_name": "Shampoo",
+        "display_category_name": "Shampoo",
+        "has_children": false,
+        "debug_message": null
+      },
+      {
+        "category_id": 100001,
+        "parent_category_id": 0,
+        "original_category_name": "Health",
+        "display_category_name": "Saúde",
+        "has_children": true,
+        "debug_message": null
+      },
+      {
+        "category_id": 100009,
+        "parent_category_id": 0,
+        "original_category_name": "Fashion Accessories",
+        "display_category_name": "Acessórios de Moda",
+        "has_children": true,
+        "debug_message": null
+      },
+      {
+        "category_id": 100010,
+        "parent_category_id": 0,
+        "original_category_name": "Home Appliances",
+        "display_category_name": "Eletrodomésticos",
+        "has_children": true,
+        "debug_message": null
+      },
+      {
+        "category_id": 100012,
+        "parent_category_id": 0,
+        "original_category_name": "Men Shoes",
+        "display_category_name": "Sapatos Masculinos",
+        "has_children": true,
+        "debug_message": null
+      },
+      {
+        "category_id": 100013,
+        "parent_category_id": 0,
+        "original_category_name": "Mobile & Gadgets",
+        "display_category_name": "Celulares e Dispositivos",
+        "has_children": true,
+        "debug_message": null
+      },
+      {
+        "category_id": 100075,
+        "parent_category_id": 100013,
+        "original_category_name": "Accessories",
+        "display_category_name": "Acessórios",
+        "has_children": true,
+        "debug_message": null
+      },
+      {
+        "category_id": 100290,
+        "parent_category_id": 100075,
+        "original_category_name": "Cases, Covers, & Skins",
+        "display_category_name": "Capas",
+        "has_children": true,
+        "debug_message": null
+      },
+      {
+        "category_id": 100490,
+        "parent_category_id": 100290,
+        "original_category_name": "Phone Cases, Covers, & Skins",
+        "display_category_name": "Capas para Celular",
+        "has_children": false,
+        "debug_message": null
+      },
+      {
+        "category_id": 100015,
+        "parent_category_id": 0,
+        "original_category_name": "Travel & Luggage",
+        "display_category_name": "Viagens e Bagagens",
+        "has_children": true,
+        "debug_message": null
+      },
+      {
+        "category_id": 100016,
+        "parent_category_id": 0,
+        "original_category_name": "Women Bags",
+        "display_category_name": "Bolsas Femininas",
+        "has_children": true,
+        "debug_message": null
+      },
+      {
+        "category_id": 100532,
+        "parent_category_id": 0,
+        "original_category_name": "Women Shoes",
+        "display_category_name": "Sapatos Femininos",
+        "has_children": true,
+        "debug_message": null
+      },
+      {
+        "category_id": 100533,
+        "parent_category_id": 0,
+        "original_category_name": "Men Bags",
+        "display_category_name": "Bolsas Masculinas",
+        "has_children": true,
+        "debug_message": null
+      },
+      {
+        "category_id": 100534,
+        "parent_category_id": 0,
+        "original_category_name": "Watches",
+        "display_category_name": "Relógios",
+        "has_children": true,
+        "debug_message": null
+      },
+      {
+        "category_id": 100535,
+        "parent_category_id": 0,
+        "original_category_name": "Audio",
+        "display_category_name": "Áudio",
+        "has_children": true,
+        "debug_message": null
+      },
+      {
+        "category_id": 100629,
+        "parent_category_id": 0,
+        "original_category_name": "Food & Beverages",
+        "display_category_name": "Alimentos e Bebidas",
+        "has_children": true,
+        "debug_message": null
+      },
+      {
+        "category_id": 100651,
+        "parent_category_id": 100629,
+        "original_category_name": "Beverages",
+        "display_category_name": "Bebidas",
+        "has_children": true,
+        "debug_message": null
+      },
+      {
+        "category_id": 100824,
+        "parent_category_id": 100651,
+        "original_category_name": "Coffee",
+        "display_category_name": "Café",
+        "has_children": false,
+        "debug_message": null
+      },
+      {
+        "category_id": 100631,
+        "parent_category_id": 0,
+        "original_category_name": "Pets",
+        "display_category_name": "Animais Domésticos",
+        "has_children": true,
+        "debug_message": null
+      },
+      {
+        "category_id": 100632,
+        "parent_category_id": 0,
+        "original_category_name": "Mom & Baby",
+        "display_category_name": "Mãe e Bebê",
+        "has_children": true,
+        "debug_message": null
+      },
+      {
+        "category_id": 100633,
+        "parent_category_id": 0,
+        "original_category_name": "Baby & Kids Fashion",
+        "display_category_name": "Moda Infantil",
+        "has_children": true,
+        "debug_message": null
+      },
+      {
+        "category_id": 100691,
+        "parent_category_id": 100633,
+        "original_category_name": "Girl Clothes",
+        "display_category_name": "Roupas de Meninas",
+        "has_children": true,
+        "debug_message": null
+      },
+      {
+        "category_id": 101054,
+        "parent_category_id": 100691,
+        "original_category_name": "Bottoms",
+        "display_category_name": "Calças",
+        "has_children": true,
+        "debug_message": null
+      },
+      {
+        "category_id": 101787,
+        "parent_category_id": 101054,
+        "original_category_name": "Skirts",
+        "display_category_name": "Saias",
+        "has_children": false,
+        "debug_message": null
+      },
+      {
+        "category_id": 101052,
+        "parent_category_id": 100691,
+        "original_category_name": "Tops",
+        "display_category_name": "Blusas",
+        "has_children": true,
+        "debug_message": null
+      },
+      {
+        "category_id": 101775,
+        "parent_category_id": 101052,
+        "original_category_name": "Shirts & Blouses",
+        "display_category_name": "Camisas",
+        "has_children": false,
+        "debug_message": null
+      },
+      {
+        "category_id": 100634,
+        "parent_category_id": 0,
+        "original_category_name": "Gaming & Consoles",
+        "display_category_name": "Jogos e Consoles",
+        "has_children": true,
+        "debug_message": null
+      },
+      {
+        "category_id": 100635,
+        "parent_category_id": 0,
+        "original_category_name": "Cameras & Drones",
+        "display_category_name": "Câmeras e Drones",
+        "has_children": true,
+        "debug_message": null
+      },
+      {
+        "category_id": 100636,
+        "parent_category_id": 0,
+        "original_category_name": "Home & Living",
+        "display_category_name": "Casa e Decoração",
+        "has_children": true,
+        "debug_message": null
+      },
+      {
+        "category_id": 100718,
+        "parent_category_id": 100636,
+        "original_category_name": "Dinnerware",
+        "display_category_name": "Louça",
+        "has_children": true,
+        "debug_message": null
+      },
+      {
+        "category_id": 101239,
+        "parent_category_id": 100718,
+        "original_category_name": "Tea Pots & Sets",
+        "display_category_name": "Xícaras, Canecas e Jogos de Chá",
+        "has_children": false,
+        "debug_message": null
+      },
+      {
+        "category_id": 100637,
+        "parent_category_id": 0,
+        "original_category_name": "Sports & Outdoors",
+        "display_category_name": "Esportes e Atividades ao Ar Livre",
+        "has_children": true,
+        "debug_message": null
+      },
+      {
+        "category_id": 100638,
+        "parent_category_id": 0,
+        "original_category_name": "Stationery",
+        "display_category_name": "Papelaria",
+        "has_children": true,
+        "debug_message": null
+      },
+      {
+        "category_id": 100639,
+        "parent_category_id": 0,
+        "original_category_name": "Hobbies & Collections",
+        "display_category_name": "Hobbies e Coleções",
+        "has_children": true,
+        "debug_message": null
+      },
+      {
+        "category_id": 100643,
+        "parent_category_id": 0,
+        "original_category_name": "Books & Magazines",
+        "display_category_name": "Livros e Revistas",
+        "has_children": true,
+        "debug_message": null
+      },
+      {
+        "category_id": 100644,
+        "parent_category_id": 0,
+        "original_category_name": "Computers & Accessories",
+        "display_category_name": "Computadores e Acessórios",
+        "has_children": true,
+        "debug_message": null
+      },
+      {
+        "category_id": 100642,
+        "parent_category_id": 0,
+        "original_category_name": "Tickets, Vouchers & Services",
+        "display_category_name": "Ingressos, Cupons e Serviços",
+        "has_children": true,
+        "debug_message": null
+      },
+      {
+        "category_id": 102187,
+        "parent_category_id": 0,
+        "original_category_name": "Spare Parts and Accessories for Vehicles",
+        "display_category_name": "Peças e Acessórios para Veículos",
+        "has_children": true,
+        "debug_message": null
+      }
+    ]
+  },
+  "debug_message": ""
+}
