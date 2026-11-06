@@ -22,6 +22,7 @@ import {
   cancelamentoDeNfeAprovadaAmazon,
   escolherNfeParaEnvioAmazon,
   irmaosDaNfeAmazon,
+  notaDeVendaCanceladaAmazon,
   pisoDoPedidoAmazon,
   provaDeIdentidadeAmazon,
   vendaCanceladaAmazon,
@@ -357,6 +358,45 @@ describe('irmaosDaNfeAmazon', () => {
         { id: 'v', raw: nfe({ xml_nfe_proc: proc('1', '4') }) },
       ]),
     ).toEqual({ outraElegivel: false, irmaCancelada: false });
+  });
+});
+
+describe('notaDeVendaCanceladaAmazon — the sibling reader’s cancelled-sale test, exported (step 15)', () => {
+  it('★ a cancelled sale note ⇒ true — its proc gone or illegible included', () => {
+    expect(notaDeVendaCanceladaAmazon(nfe({ estado: ESTADO_NFE.cancelada }))).toBe(true);
+    expect(
+      notaDeVendaCanceladaAmazon(nfe({ estado: ESTADO_NFE.cancelada, xml_nfe_proc: null })),
+    ).toBe(true);
+    expect(
+      notaDeVendaCanceladaAmazon(
+        nfe({ estado: ESTADO_NFE.cancelada, xml_nfe_proc: proc('', '1') }),
+      ),
+    ).toBe(true);
+  });
+
+  it('NEAR-MISS: a cancelled devolução (a legible non-sale proc), an aprovada note, an error note ⇒ false', () => {
+    expect(
+      notaDeVendaCanceladaAmazon(
+        nfe({ estado: ESTADO_NFE.cancelada, xml_nfe_proc: proc('0', '4') }),
+      ),
+    ).toBe(false);
+    expect(notaDeVendaCanceladaAmazon(nfe())).toBe(false);
+    expect(notaDeVendaCanceladaAmazon(nfe({ estado: ESTADO_NFE.error }))).toBe(false);
+  });
+
+  it('agrees with irmaosDaNfeAmazon on every sibling (one rule, the reader calls it)', () => {
+    const casos = [
+      nfe({ estado: ESTADO_NFE.cancelada }),
+      nfe({ estado: ESTADO_NFE.cancelada, xml_nfe_proc: null }),
+      nfe({ estado: ESTADO_NFE.cancelada, xml_nfe_proc: proc('0', '4') }),
+      nfe({ estado: ESTADO_NFE.cancelada, xml_nfe_proc: proc('1', '1', '2') }),
+      nfe(),
+    ];
+    for (const raw of casos) {
+      expect(irmaosDaNfeAmazon('nossa', [{ id: 'irma', raw }]).irmaCancelada).toBe(
+        notaDeVendaCanceladaAmazon(raw),
+      );
+    }
   });
 });
 

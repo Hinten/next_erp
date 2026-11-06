@@ -717,6 +717,9 @@ export const SEVERIDADE_MOTIVO_PEDIDO_AMAZON: Readonly<
   [MOTIVO_PEDIDO_AMAZON.cancelamentoSolicitado]: SEVERIDADE_AVISO.atencao,
   [MOTIVO_PEDIDO_AMAZON.pacoteStatusDesconhecido]: SEVERIDADE_AVISO.atencao,
   [MOTIVO_PEDIDO_AMAZON.coletaCancelada]: SEVERIDADE_AVISO.atencao,
+  // Step 15: the Easy Ship scheduling refusals, raised only by the scheduling task.
+  [MOTIVO_PEDIDO_AMAZON.dimensoesAusentes]: SEVERIDADE_AVISO.critico,
+  [MOTIVO_PEDIDO_AMAZON.agendamentoRecusado]: SEVERIDADE_AVISO.critico,
 };
 
 /** One order, as its per-pedido rows name it. */
@@ -768,7 +771,7 @@ export interface SincroniaAvisosAmazon {
  * watermark advanced when the clock is newer — the shared resolver's rule). A
  * key with NO row is left alone: a
  * clocked resolve would seed a resolved row for every motivo of every order
- * (eight documents per pedido, rewritten on every import). The residue,
+ * (one document per motivo per pedido, rewritten on every import). The residue,
  * documented: an older import of the same order whose FIRST raise of a motivo
  * lands after a newer import's read found no row opens a stale row, closed by
  * the order's next import.

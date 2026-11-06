@@ -1,8 +1,10 @@
 /**
  * The SP-API WRITE client, `criarClienteEscritaSpApi`: the package's only writer
  * to the Selling Partner API, kept apart from the read client (`client.ts`) on
- * purpose. Its one consumer is the Delivery invoice upload (`entrega.ts`,
- * `enviarNotaFiscal`); the app builds it in exactly one place, its write engine.
+ * purpose. Its consumers are the Delivery invoice upload (`entrega.ts`,
+ * `enviarNotaFiscal`), the RDT mint (`tokens.ts`, `criarTokenRestrito`) and the
+ * Easy Ship bulk (`easyShip.ts`, `agendarPacotesEasyShip`); the app builds it in
+ * exactly one place, its write engine.
  *
  * ## One method, `post`
  *
@@ -12,9 +14,10 @@
  * differs is only what a write needs:
  *
  *  - **the body**, `corpo`, is a JSON STRING the caller already built from
- *    named keys (`entrega.ts`), sent byte for byte. It is refused when it
- *    contains the access token, or is not text and so cannot be checked
- *    (`AmazonConfigError('token-no-corpo')`), before anything is sent;
+ *    named keys (`entrega.ts`, `tokens.ts`, `easyShip.ts`), sent byte for
+ *    byte. It is refused when it contains the access token, or is not text
+ *    and so cannot be checked (`AmazonConfigError('token-no-corpo')`), before
+ *    anything is sent;
  *  - **exactly five headers**: `get`'s four plus `content-type:
  *    application/json`;
  *  - **the deadline class `'escrita'`** (`prazos.ts`), longer than a read's.
@@ -22,7 +25,9 @@
  * ⚠️ **The request body never reaches the observer.** The event is built from
  * named fields (`criarEmissor`), and `ChamadaAmazon` has no request-body field:
  * a write's body is a whole fiscal document, buyer data included. The RESPONSE
- * body reaches the observer as a read's does, scrubbed of the token.
+ * body reaches the observer as a read's does, scrubbed of the token — except
+ * the Restricted Data Token mint's (`tokens.ts`): no Tokens API body ever
+ * reaches it (`client.ts`).
  *
  * ## What a write's outcome means
  *

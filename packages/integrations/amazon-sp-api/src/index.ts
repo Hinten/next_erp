@@ -9,7 +9,11 @@
  * only), the backstop poll's one list read, `searchOrders` (`pedidos.ts`,
  * step 4), the importer's one order read, `getOrder` (`pedidos.ts`, step 5),
  * the Delivery-by-Amazon NF-e status read and upload, `getInvoiceStatus` and
- * `submitInvoice` (`entrega.ts`, step 14), the per-call deadlines, the typed
+ * `submitInvoice` (`entrega.ts`, step 14), the Restricted Data Token mint,
+ * `createRestrictedDataToken` (`tokens.ts`, step 15), the Easy Ship pickup
+ * scheduling, `createScheduledPackageBulk` (`easyShip.ts`, step 15), the
+ * download of the Easy Ship label document and the extraction of its one ZPL
+ * label (`documentosEasyShip.ts`, step 15), the per-call deadlines, the typed
  * errors, and the wire schemas those consume. Everything stateful (the credential store, the OAuth routes,
  * the access-token cache, the sweeps) is driven by the App Hosting backend
  * `apps/amazon`, which holds the Firestore/Admin-SDK dependency.
@@ -27,9 +31,14 @@
  *  - **No Firestore, no Admin SDK, no `@delfrance/data`.** ADR 0015.
  *  - **No SigV4.** SP-API has not required AWS signing since 2023-10-02.
  *  - **Exactly one write client, `escrita.ts`, used only by the app's write
- *    engine.** The read client's `get` takes no body by construction; the one
- *    SP-API write is `submitInvoice` (`entrega.ts`), and nothing writes to the
- *    provider before the cutover (D11). The other POST is the LWA token exchange.
+ *    engine.** The read client's `get` takes no body by construction; the
+ *    SP-API writes are `submitInvoice` (`entrega.ts`),
+ *    `createRestrictedDataToken` (`tokens.ts`) and `createScheduledPackageBulk`
+ *    (`easyShip.ts`), and nothing writes to the provider before the cutover
+ *    (D11). The other POST is the LWA token exchange.
+ *  - **One non-SP-API GET**: the Easy Ship document download
+ *    (`documentosEasyShip.ts`), header-free, with no credential and no observer
+ *    event; its `fetch` is a required option, never the global.
  *  - **No OAuth route, no credential store, no token cache.** The access token
  *    is supplied per call by the caller and never kept here.
  *  - **No `client_credentials` (grantless) grant yet.** No pre-cutover step
@@ -54,7 +63,8 @@
  *
  * `transporte.ts` is internal and deliberately not re-exported, and so is the
  * request core both clients share (`prepararNucleoSpApi` / `executarSpApi` in
- * `client.ts`): that module's public names are listed one by one below.
+ * `client.ts`): that module's public names are listed one by one below, and so
+ * are `documentosEasyShip.ts`' (its CRC-32 helper stays internal).
  */
 export * from './errors';
 export * from './prazos';
@@ -79,3 +89,13 @@ export * from './lwa';
 export * from './consentimento';
 export * from './pedidos';
 export * from './entrega';
+export * from './easyShip';
+export * from './tokens';
+export {
+  baixarDocumentosEasyShip,
+  extrairEtiquetaZplEasyShip,
+  MAX_ENTRADAS_ZIP_EASY_SHIP,
+  MAX_ZIP_EASY_SHIP_BYTES,
+  MAX_ZPL_EASY_SHIP_BYTES,
+  type OpcoesDownloadEasyShip,
+} from './documentosEasyShip';

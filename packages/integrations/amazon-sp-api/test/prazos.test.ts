@@ -5,7 +5,12 @@ import { PRAZO_AMAZON_MS } from '../src/prazos';
 
 describe('PRAZO_AMAZON_MS', () => {
   it('pins the budgets — changing one must be a deliberate, reviewed edit', () => {
-    expect(PRAZO_AMAZON_MS).toEqual({ leitura: 20_000, lwa: 20_000, escrita: 30_000 });
+    expect(PRAZO_AMAZON_MS).toEqual({
+      documento: 20_000,
+      escrita: 30_000,
+      leitura: 20_000,
+      lwa: 20_000,
+    });
   });
 
   it.each(Object.entries(PRAZO_AMAZON_MS))(
@@ -21,6 +26,6 @@ describe('PRAZO_AMAZON_MS', () => {
   );
 
   it('has a budget per class (the table above is not vacuous)', () => {
-    expect(Object.keys(PRAZO_AMAZON_MS).sort()).toEqual(['escrita', 'leitura', 'lwa']);
+    expect(Object.keys(PRAZO_AMAZON_MS).sort()).toEqual(['documento', 'escrita', 'leitura', 'lwa']);
   });
 });

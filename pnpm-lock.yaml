@@ -1282,6 +1282,9 @@ importers:
       '@delfrance/core':
         specifier: workspace:*
         version: link:../../core
+      fflate:
+        specifier: 'catalog:'
+        version: 0.8.3
       zod:
         specifier: 'catalog:'
         version: 4.4.3

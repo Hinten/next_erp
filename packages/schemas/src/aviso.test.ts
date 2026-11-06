@@ -395,19 +395,25 @@ describe('the two Amazon order-import tipos (Amazon steps 5 and 7)', () => {
     }
   });
 
-  it('★ MOTIVO_PEDIDO_AMAZON has exactly the eight motivos, its constant member for member', () => {
+  it('★ MOTIVO_PEDIDO_AMAZON has exactly the ten motivos, its constant member for member', () => {
     expect([...motivoPedidoAmazonSchema.options].sort()).toEqual(
       [
         'aceitar-cancelamento',
+        'agendamento-recusado',
         'cancelado-so-no-erp',
         'cancelamento-solicitado',
         'coleta-cancelada',
+        'dimensoes-ausentes',
         'divergencia-itens',
         'logistica-desconhecida',
         'pacote-status-desconhecido',
         'status-desconhecido',
       ].sort(),
     );
+    // Step 15 (PR 15-b): the two Easy Ship scheduling refusals.
+    expect(motivoPedidoAmazonSchema.options).toHaveLength(10);
+    expect(MOTIVO_PEDIDO_AMAZON.dimensoesAusentes).toBe('dimensoes-ausentes');
+    expect(MOTIVO_PEDIDO_AMAZON.agendamentoRecusado).toBe('agendamento-recusado');
     expect(Object.values(MOTIVO_PEDIDO_AMAZON).sort()).toEqual(
       [...motivoPedidoAmazonSchema.options].sort(),
     );
@@ -453,6 +459,8 @@ describe('the two Amazon order-import tipos (Amazon steps 5 and 7)', () => {
     ['cancelamento-solicitado', 'atencao'],
     ['pacote-status-desconhecido', 'atencao'],
     ['coleta-cancelada', 'atencao'],
+    ['dimensoes-ausentes', 'critico'],
+    ['agendamento-recusado', 'critico'],
   ])(
     '★ the per-pedido docblock gives `%s` its severity (%s), a resolver and a residue',
     (motivo, severidade) => {

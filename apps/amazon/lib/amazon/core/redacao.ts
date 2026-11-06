@@ -125,6 +125,16 @@ export const PROFUNDIDADE_MAXIMA_PERCURSO = 32;
  *   `UnsupportedMediaType` — the generic SP-API codes the step-2b plan names
  *   for 404, 429, 413 and 415; no cached model example shows them, so each is
  *   confirmed in the migration window (D11).
+ * - `InvalidTimeSlotId`, `ScheduledPackageAlreadyExists`,
+ *   `ScheduleWindowExpired`, `RetryableAfterGettingNewSlots`,
+ *   `TimeSlotNotAvailable`, `InvalidOrderState`, `RegionNotSupported`,
+ *   `OrderNotEligibleForRescheduling`, `InternalServerError` — the Easy Ship
+ *   members `easyShip_2022-03-23.json #/definitions/Code` lists (step 15; its
+ *   other two, `InvalidInput` and `ResourceNotFound`, are above). The table is
+ *   referenced by no operation, so a code may arrive top-level or per order.
+ *   `MissingPackageDimensions` is deliberately NOT here: the model never names
+ *   it, and as a per-order rejection inside a 200 body it logs through the
+ *   `codigoRejeicao` grammar instead.
  */
 export const CODIGOS_ERRO_AMAZON: ReadonlySet<string> = new Set([
   'InvalidInput',
@@ -142,6 +152,15 @@ export const CODIGOS_ERRO_AMAZON: ReadonlySet<string> = new Set([
   'QuotaExceeded',
   'RequestEntityTooLarge',
   'UnsupportedMediaType',
+  'InvalidTimeSlotId',
+  'ScheduledPackageAlreadyExists',
+  'ScheduleWindowExpired',
+  'RetryableAfterGettingNewSlots',
+  'TimeSlotNotAvailable',
+  'InvalidOrderState',
+  'RegionNotSupported',
+  'OrderNotEligibleForRescheduling',
+  'InternalServerError',
 ]);
 
 /** A code through the closed set: itself, or {@link CODIGO_OUTRO}. */
