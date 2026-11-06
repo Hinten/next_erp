@@ -266,10 +266,17 @@ carries the continuation `seq`, the cursors or the selection's ids.
   its guarded windows; a create's or an add's links ride that batch. Between units the family's
   progress rides `revisao.cursorProdutoId` as tagged text `f:<json>` (⚠️ a deviation from the
   plan's job contract, which has no field for it yet: nobody reads that field during `familias`,
-  and the move to `revisao` clears it). The TARGET is decided once, on the ERP before the job
-  acted: a root that reads `vinculado` only through this job's own landed create stays in a
-  `naoNoErp` job, and an adoption's or a closing's re-run of the cascade keeps the preparation's
-  verdict. A unit whose detail list found nothing to read reuses that list's cascade. No writer
+  and the move to `revisao` clears it). The TARGET is decided once, on the ERP as it stood when
+  the job STARTED: a matched root at the family's own SKU-keyed id created at or after the job
+  document (this job's landed create, another conta's create it adopted or met landed) was absent
+  then, so the family is also in `naoNoErp` — on the first attempt and on every retry, whether the
+  retry meets it through this job's link or through the SKU; it adds a target, never removes one
+  (`jaNoErp` keeps the cascade's answer). An adoption's or a closing's re-run of the cascade keeps
+  the preparation's verdict. ⚠️ Residuals: a root deleted and created again at that id reads as
+  absent at the start; an attempt that wrote ONLY its item (nothing imported), retried after
+  another writer's root at an auto id (anywhere, under "only link") landed, drops out of
+  `naoNoErp` with that item left uncounted. A unit whose detail list found nothing to read reuses
+  that list's cascade. No writer
   here names the transaction API (no inventory row). The writers, each with its tier:
   - **Categories** (`categorias.ts`): the product's leaf by the shared tree helpers; under
     `criarEVincular` the unlinked chain BELOW the nearest linked ancestor, root-most first, each

@@ -1493,6 +1493,136 @@ describe('complete — the target is decided once (`naoNoErp`)', () => {
     expect(r.item.acao).not.toBe('criar');
     expect(db.ler(vinculo(raiz, '50'))).toMatchObject({ id: 50, contaLojaIntegrada: REF });
   });
+
+  /* A retried ADOPTION: another conta's create lands at our id right before our batch. */
+  const NOVO = () => `li-sku-${sha256('NOVO')}`;
+  const NOVO_LOJA = () => simplesDetalhado(50, { sku: 'NOVO', nome: 'Novo' });
+
+  /** Another conta's ERP família de um for SKU `NOVO`, at the id our create would take. */
+  function seedOutraConta(db: FakeDb, raiz: string = NOVO()): void {
+    db.seed(`produtos/${raiz}`, {
+      nome: 'Novo',
+      sku: 'NOVO',
+      paiId: null,
+      filhoUnicoId: `${raiz}-un`,
+    });
+    db.seed(`produtos/${raiz}-un`, { nome: 'Novo', sku: 'NOVO-UN', paiId: raiz });
+  }
+
+  /** A fresh ERP and job whose create of `NOVO` meets another conta's, landed before its batch. */
+  function adocao(jobId: string): { db: FakeDb; deps: DepsFamiliaLi } {
+    const db = new FakeDb();
+    const deps = depsDoJob(db, jobId);
+    db.antesDaProximaEscrita(revisaoDe(jobId, NOVO()), () => seedOutraConta(db));
+    return { db, deps };
+  }
+
+  it('an ADOPTION retried after its link LANDED (the item write failed) stays in the target: the link counts as created again, the item says encontrado — never fora-do-alvo', async () => {
+    const { deps: depsRef } = adocao('job-t3');
+    const primeira = await relatado(depsRef, naoNoErp(), NOVO_LOJA());
+
+    const { db, deps } = adocao('job-t3');
+    const item = caminhoItemLi('job-t3', '50');
+    db.falharEscrita(item, grpc(14, 'UNAVAILABLE'));
+    await expect(executarFamiliaLi(deps, naoNoErp(), NOVO_LOJA())).rejects.toMatchObject({
+      code: 14,
+    });
+    expect(db.ler(vinculo(NOVO(), '50'))).toMatchObject({ id: 50, contaLojaIntegrada: REF });
+    db.falharEscrita(item, null);
+    const retry = await executarFamiliaLi(deps, naoNoErp(), NOVO_LOJA());
+    if (retry.tipo !== 'relatado') throw new Error(`o retry terminou ${retry.tipo}`);
+
+    expect(primeira.item).toMatchObject({ situacaoErp: 'encontrado', acao: 'completar' });
+    // ⚠️ The stated residual of a retried complete unit: the fields its landed fill wrote are found
+    // filled, so the retry names none of them (and counts no completed produto). All else agrees.
+    expect(retry.item).toMatchObject({ acao: 'vincular', camposPreenchidos: [] });
+    expect(
+      veredito({
+        ...retry.item,
+        acao: primeira.item.acao,
+        camposPreenchidos: primeira.item.camposPreenchidos,
+      }),
+    ).toEqual(veredito(primeira.item));
+    expect({ ...retry.contadores, completados: primeira.contadores.completados }).toEqual(
+      primeira.contadores,
+    );
+    expect(retry.contadores).toMatchObject({ vinculados: 1, criados: 0, completados: 0 });
+  });
+
+  it('an ADOPTION retried after its fills landed but BEFORE its link (the link write failed) stays in the target: the retry writes the link', async () => {
+    const { db, deps } = adocao('job-t4');
+    const link = vinculo(NOVO(), '50');
+    // The batch's commit meets the root's path first (and fails on the other conta's root); the
+    // root's FILL is the next write there: from it on, this conta's link write fails.
+    db.antesDaProximaEscrita(`produtos/${NOVO()}`, () => undefined);
+    db.antesDaProximaEscrita(`produtos/${NOVO()}`, () => {
+      db.falharEscrita(link, grpc(14, 'UNAVAILABLE'));
+    });
+    await expect(executarFamiliaLi(deps, naoNoErp(), NOVO_LOJA())).rejects.toMatchObject({
+      code: 14,
+    });
+    expect(db.escritasEm(`produtos/${NOVO()}`).length).toBeGreaterThan(0);
+    expect(db.ler(link)).toBeUndefined();
+    db.falharEscrita(link, null);
+    const retry = await executarFamiliaLi(deps, naoNoErp(), NOVO_LOJA());
+    if (retry.tipo !== 'relatado') throw new Error(`o retry terminou ${retry.tipo}`);
+    expect(retry.item).toMatchObject({ situacaoErp: 'encontrado', erpId: NOVO() });
+    expect(retry.contadores.vinculados).toBe(1);
+    expect(db.ler(link)).toMatchObject({ id: 50, contaLojaIntegrada: REF });
+  });
+
+  it('PAIR: a root another conta’s import created at the family’s id AFTER this job started is in the target, filled and linked (Simular decides the same) ⟷ NEAR-MISS created BEFORE the job, or at an AUTO id: fora-do-alvo', async () => {
+    // After the job started, before this job met the family.
+    const db = new FakeDb();
+    const deps = depsDoJob(db, 'job-t5');
+    seedOutraConta(db);
+    const r = await relatado(deps, naoNoErp(), NOVO_LOJA());
+    expect(r.item).toMatchObject({ situacaoErp: 'encontrado', erpId: NOVO(), acao: 'completar' });
+    expect(db.ler(vinculo(NOVO(), '50'))).toMatchObject({ id: 50, contaLojaIntegrada: REF });
+
+    const simulado = new FakeDb();
+    const depsSimular = depsDoJob(simulado, 'job-t5');
+    seedOutraConta(simulado);
+    const s = await relatado(
+      depsSimular,
+      contextoCompletar(MODO_IMPORTACAO_LI.simular, { alvo: ALVO_IMPORTACAO_LI.naoNoErp }),
+      NOVO_LOJA(),
+    );
+    expect(veredito(s.item)).toEqual(veredito(r.item));
+
+    // NEAR-MISS: the same root, created BEFORE the job document — in the ERP when it started.
+    const antes = new FakeDb();
+    seedOutraConta(antes);
+    const fora = await executarFamiliaLi(depsDoJob(antes, 'job-t6'), naoNoErp(), NOVO_LOJA());
+    expect(fora.tipo).toBe('fora-do-alvo');
+
+    // NEAR-MISS: a root created after the job at an AUTO id (no import's): the cascade's answer.
+    const manual = new FakeDb();
+    const depsManual = depsDoJob(manual, 'job-t7');
+    seedOutraConta(manual, 'novo-manual');
+    const foraManual = await executarFamiliaLi(depsManual, naoNoErp(), NOVO_LOJA());
+    expect(foraManual.tipo).toBe('fora-do-alvo');
+  });
+
+  it('jaNoErp keeps the cascade’s answer: a root another conta created after the job started is matched, so in the target too — on a retry after its link landed as well (born during the job ADDS a target, never removes one)', async () => {
+    const jaNoErp = () =>
+      contextoCompletar(MODO_IMPORTACAO_LI.aplicar, { alvo: ALVO_IMPORTACAO_LI.jaNoErp });
+    const db = new FakeDb();
+    const deps = depsDoJob(db, 'job-t8');
+    seedOutraConta(db);
+    const item = caminhoItemLi('job-t8', '50');
+    db.falharEscrita(item, grpc(14, 'UNAVAILABLE'));
+    await expect(executarFamiliaLi(deps, jaNoErp(), NOVO_LOJA())).rejects.toMatchObject({
+      code: 14,
+    });
+    expect(db.ler(vinculo(NOVO(), '50'))).toMatchObject({ id: 50, contaLojaIntegrada: REF });
+    db.falharEscrita(item, null);
+    // The retry meets the root `vinculado` through this job's link, under a root born during the
+    // job: still matched, so still in jaNoErp.
+    const r = await relatado(deps, jaNoErp(), NOVO_LOJA());
+    expect(r.item).toMatchObject({ situacaoErp: 'encontrado', erpId: NOVO() });
+    expect(r.contadores.vinculados).toBe(1);
+  });
 });
 
 describe('complete — one cascade per unit', () => {

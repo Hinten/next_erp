@@ -13,11 +13,24 @@
  *  2. The target (`familiaNoAlvoLi`): a family outside it stops here — no variation resolved, no
  *     link, no item — unless it is in CONFLICT under `jaNoErp`/`naoNoErp`, which is reported with
  *     its conflict and no link (`plano.ts`, "The target"). **The target is decided once**, on the
- *     ERP as it stood BEFORE this job acted: a root the cascade answers `vinculado` only because it
- *     is THIS job's landed create ("A retried family") is judged as the `ausente` it was, and the
- *     re-runs of the cascade a unit makes after its own writes (an adoption, a closing) keep the
- *     verdict the preparation reached — so a `naoNoErp` family never drops out of its own target
- *     halfway through being imported.
+ *     ERP as it stood when the job STARTED, wherever an import's own writes could move it. Under
+ *     "complete" a matched root at the id the family's create would take (`li-sku-…`, which only an
+ *     import writes) and created at or after the job document was `ausente` then — THIS job's
+ *     landed create ("A retried family"), or another conta's create this job adopted, or met
+ *     already landed — so the family is ALSO in the target `ausente` puts it in (`naoNoErp`): on
+ *     the first attempt and on every retry alike, whether the retry meets the root through this
+ *     job's own link, through the SKU (a fill landed, the link not yet), or with the photo
+ *     progress lost. It adds a target, never removes one: `jaNoErp` keeps the cascade's answer, so
+ *     such a root is in both. And the re-runs of the cascade a unit makes after its own writes (an
+ *     adoption, a closing) keep the verdict the preparation reached. So a `naoNoErp` family never
+ *     drops out of its own target halfway through being imported. One document by id, read only
+ *     where it can matter (a `vinculado` root under `aplicar`, a match outside `naoNoErp`); a root
+ *     at any other id keeps the cascade's answer.
+ *     ⚠️ Accepted residuals: a root deleted and created again at that id during the run reads as
+ *     absent at the start; and a family whose earlier attempt wrote ONLY its report item (nothing
+ *     imported: "only link"'s `ausente` item, a refused create) and whose retry meets a root another
+ *     writer created since — by hand at an auto id, or anywhere under "only link" — is outside a
+ *     `naoNoErp` target on the retry: that item stays, uncounted.
  *  3. A matched parent's variations (`resolverFilhosLi`), resolved against the grupos the caller
  *     passes: the dispatch's memo, plus, under Simular, the overlay of what the job would have
  *     learned (`gruposParaResolverLi`), so a Simular verdict equals an `aplicar` one.
@@ -134,11 +147,14 @@
  *
  * Under "complete" a retried unit also meets its own CREATE: a family whose batch landed reaches
  * the cascade's rung 1 through the batch's own link. Its root is recognised as THIS job's creation
- * when its id is a SKU-keyed one (`li-sku-…`), its `createTime` is at or after the job document's,
- * and this conta's link of the store root under it carries the SAME `createTime` (one batch, one
- * commit stamp) — decided in the cascade itself, BEFORE the target (step 2): the item then says
- * `criar`, `ausente`, with the same create count, links and tax review as the attempt that landed
- * it, in a `naoNoErp` job too — never `sku-ja-existe` against itself. A VARIATION THIS job added
+ * when its id is the family's SKU-keyed one (`li-sku-…`), its `createTime` is at or after the job
+ * document's, and this conta's link of the store root under it carries the SAME `createTime` (one
+ * batch, one commit stamp) — decided in the cascade itself, BEFORE the target (step 2): the item
+ * then says `criar`, `ausente`, with the same create count, links and tax review as the attempt
+ * that landed it, in a `naoNoErp` job too — never `sku-ja-existe` against itself. An ADOPTED family
+ * (another conta's create at our id) is met again through this job's own root link (or, the link
+ * not landed yet, through the SKU): in the target by step 2, its link `retomado`, the item
+ * `encontrado` as the first attempt said it. A VARIATION THIS job added
  * to an existing family is recognised the same way, by its own link: matched (`casado`) through
  * it, a SKU-keyed id, and the link born in the variation's own commit — counted as created again,
  * the item `completar`, its tax review re-written (the add's batch made it durable first anyway).
@@ -209,6 +225,7 @@ import {
   TIPO_RESULTADO_FAMILIA_NOVA_LI,
   criadoComOVinculoDaContaLi,
   criarFamiliaLi,
+  idProdutoCriadoLi,
   recusasAntesDosDetalhesLi,
 } from './familiaNova';
 import type { FamiliaLi, FilhoDaFamiliaLi } from './familias';
@@ -358,32 +375,56 @@ const matched = (
 /** What the cascade needs of the deps: the ERP, and the job's `createTime` (its own creates). */
 type DepsDoCasamentoLi = Pick<DepsFamiliaLi, 'db' | 'criacaoDoJob'>;
 
+const AUSENTE: ResolucaoDaRaizLi = { tipo: SITUACAO_ERP_ITEM_LI.ausente };
+
 /**
- * The matched root when it is THIS job's create, landed by an earlier attempt of the unit (module
- * header, "A retried family"): `aplicar` + "complete", matched through this conta's link, a
- * SKU-keyed id, created at or after the job document, and this conta's link of the store root under
- * it created in the SAME commit. Its snapshot, else `null`. Two documents by id at most.
+ * The matched root's document when it shows the family was ABSENT from the ERP when the job
+ * started (module header, "Order", step 2): "complete" only, the root at the id the family's own
+ * create takes (`idProdutoCriadoLi` of the store root's SKU — only an import writes there) and
+ * created at or after the job document. Its snapshot, else `null`. ONE document by id, read only
+ * where its answer can matter: a root `vinculado` under `aplicar` (it may be this job's own create,
+ * {@link criadaPorEsteJobDoSnapLi}), or a match that leaves the family outside a target an `ausente`
+ * root is in (`naoNoErp`). A root at any other id keeps the cascade's answer: an adoption only ever
+ * meets a root at this one.
  */
-async function raizCriadaPorEsteJobLi(
+async function raizNascidaDuranteOJobLi(
   deps: DepsDoCasamentoLi,
   ctx: ContextoDasFamiliasLi,
   familia: FamiliaLi,
   raiz: ResolucaoDaRaizLi,
 ): Promise<DocumentSnapshot | null> {
-  if (
-    ctx.job.modo !== MODO_IMPORTACAO_LI.aplicar ||
-    ctx.job.acao !== ACAO_IMPORTACAO_LI.completar
-  ) {
-    return null;
-  }
-  if (raiz.tipo !== SITUACAO_ERP_ITEM_LI.vinculado) return null;
-  if (!raiz.erpId.startsWith(PREFIXO_ID_PRODUTO_CRIADO_LI)) return null;
+  if (ctx.job.acao !== ACAO_IMPORTACAO_LI.completar || !matched(raiz)) return null;
+  const sku = familia.raiz.sku;
+  if (sku === null || sku === '' || raiz.erpId !== idProdutoCriadoLi(sku)) return null;
+  const propria =
+    ctx.job.modo === MODO_IMPORTACAO_LI.aplicar && raiz.tipo === SITUACAO_ERP_ITEM_LI.vinculado;
+  const mudaOAlvo =
+    !familiaNoAlvoLi(ctx.job, familia.raiz.id, raiz) &&
+    familiaNoAlvoLi(ctx.job, familia.raiz.id, AUSENTE);
+  if (!propria && !mudaOAlvo) return null;
   const snap = await produtoCollection.docRef(deps.db, {}, raiz.erpId).get();
   const criado = snap.createTime;
   if (!snap.exists || criado === undefined) return null;
-  if (criado.valueOf() < deps.criacaoDoJob.valueOf()) return null;
-  return (await criadoComOVinculoDaContaLi(deps.db, ctx.job.integracaoId, snap, familia.raiz.id))
-    ? snap
+  return criado.valueOf() >= deps.criacaoDoJob.valueOf() ? snap : null;
+}
+
+/**
+ * The matched root when it is THIS job's create, landed by an earlier attempt of the unit (module
+ * header, "A retried family"): `aplicar`, matched through this conta's link, born during the job
+ * ({@link raizNascidaDuranteOJobLi}'s `nascida`), and this conta's link of the store root under it
+ * created in the SAME commit. Its snapshot, else `null`. One link document by id.
+ */
+async function criadaPorEsteJobDoSnapLi(
+  deps: DepsDoCasamentoLi,
+  ctx: ContextoDasFamiliasLi,
+  familia: FamiliaLi,
+  raiz: ResolucaoDaRaizLi,
+  nascida: DocumentSnapshot | null,
+): Promise<DocumentSnapshot | null> {
+  if (nascida === null || ctx.job.modo !== MODO_IMPORTACAO_LI.aplicar) return null;
+  if (raiz.tipo !== SITUACAO_ERP_ITEM_LI.vinculado) return null;
+  return (await criadoComOVinculoDaContaLi(deps.db, ctx.job.integracaoId, nascida, familia.raiz.id))
+    ? nascida
     : null;
 }
 
@@ -392,7 +433,7 @@ interface OpcoesDoCasamentoLi {
   /**
    * The target as the unit decided it BEFORE its own writes (module header, "Order", step 2): the
    * adoption's re-run and the photo closing pass the preparation's verdict. The root is then never
-   * asked whether it is this job's own create (both callers met it as someone else's).
+   * asked when it was born (both callers met it as someone else's).
    */
   readonly alvoDecidido?: boolean;
 }
@@ -406,18 +447,17 @@ async function casarFamilia(
 ): Promise<CasamentoLi> {
   const resolucao = { db: deps.db, contaId: ctx.job.integracaoId };
   const raiz = await resolverRaizLi(resolucao, familia, ctx.skusRepetidos);
-  const criadaPorEsteJob =
+  const nascida =
     opcoes.alvoDecidido === undefined
-      ? await raizCriadaPorEsteJobLi(deps, ctx, familia, raiz)
+      ? await raizNascidaDuranteOJobLi(deps, ctx, familia, raiz)
       : null;
-  // A root this job created was `ausente` when the job met it: the target is that verdict's.
+  const criadaPorEsteJob = await criadaPorEsteJobDoSnapLi(deps, ctx, familia, raiz, nascida);
+  // A root born during the job (this job's create, or another conta's it adopted or met) was
+  // `ausente` when the job STARTED: the family is also in the target that verdict puts it in.
   const noAlvo =
     opcoes.alvoDecidido ??
-    familiaNoAlvoLi(
-      ctx.job,
-      familia.raiz.id,
-      criadaPorEsteJob === null ? raiz : { tipo: SITUACAO_ERP_ITEM_LI.ausente },
-    );
+    (familiaNoAlvoLi(ctx.job, familia.raiz.id, raiz) ||
+      (nascida !== null && familiaNoAlvoLi(ctx.job, familia.raiz.id, AUSENTE)));
 
   let filhos: ResolucaoDosFilhosLi | null = null;
   if (noAlvo && familia.raiz.tipo === TIPO_PRODUTO_LI.atributo && matched(raiz)) {
@@ -1382,8 +1422,8 @@ interface CriadaPorEsteJobLi {
 /**
  * The matched root as THIS job's create, landed by an earlier attempt of this unit (module header,
  * "A retried family"), with the produtos of its batch — when the cascade recognised it
- * (`raizCriadaPorEsteJobLi`: a SKU-keyed id, created at or after the job document, with this conta's
- * link of the store root created in the same commit). `null` otherwise.
+ * (`criadaPorEsteJobDoSnapLi`: the family's SKU-keyed id, created at or after the job document, with
+ * this conta's link of the store root created in the same commit). `null` otherwise.
  */
 async function criadaPorEsteJob(
   deps: DepsFamiliaLi,
