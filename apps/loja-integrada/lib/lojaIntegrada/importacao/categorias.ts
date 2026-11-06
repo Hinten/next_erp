@@ -286,6 +286,43 @@ const AVISO_DA_CADEIA_LI = {
   profundidade: MOTIVO_CATEGORIA_SEM_VINCULO_LI.profundidade,
 } as const satisfies Record<MotivoCadeiaCategoriaLi, MotivoCategoriaSemVinculoLi | null>;
 
+/** A refused chain's motivo as a pendência carries it (its last reference), when it is one. */
+function motivoDaCadeiaLido(texto: string | undefined): MotivoCadeiaCategoriaLi | null {
+  return Object.values(MOTIVO_CADEIA_CATEGORIA_LI).find((m) => m === texto) ?? null;
+}
+
+/**
+ * The per-category aviso's material, re-derived at a job's END from one REPORTED category pendência
+ * and the job's map (the job keeps no per-category tally across dispatches, so the items are the
+ * record): exactly the `aviso` {@link resolverCategoriaDoProdutoLi} returned when it refused that
+ * product — `categoria-sem-vinculo` `[<id>]` ⇒ the category's whole chain (or itself alone when the
+ * chain does not read), motivo `sem-vinculo`; `categoria-recusada` `[<id>, …, <cadeia motivo>]` ⇒
+ * the category alone with that motivo's aviso motivo, or nothing when none is due (`ausente`); any
+ * other code, an unreadable chain (`['ilegivel']`) or a first reference that is no store id ⇒
+ * `null`. The map's tree only ever changes its links during a job, never its shape, so the chain
+ * read here is the one the refusal read. Pure.
+ */
+export function avisoDaPendenciaDeCategoriaLi(
+  mapa: readonly CategoriaDoJobLi[],
+  pendencia: { readonly codigo: string; readonly referencias: readonly string[] },
+): AvisoDeCategoriaLi | null {
+  const primeira = pendencia.referencias[0] ?? '';
+  const id = /^[1-9]\d{0,14}$/.test(primeira) ? Number(primeira) : null;
+  if (id === null) return null;
+  if (pendencia.codigo === PENDENCIA_IMPORTACAO_LI.categoriaSemVinculo) {
+    const cadeia = arvoreCategoriasLi(mapa).cadeia(id);
+    return {
+      categoriaLiId: id,
+      caminho: cadeia.tipo === 'ok' ? [...cadeia.ids] : [id],
+      motivo: MOTIVO_CATEGORIA_SEM_VINCULO_LI.semVinculo,
+    };
+  }
+  if (pendencia.codigo !== PENDENCIA_IMPORTACAO_LI.categoriaRecusada) return null;
+  const motivoDaCadeia = motivoDaCadeiaLido(pendencia.referencias.at(-1));
+  const motivo = motivoDaCadeia === null ? null : AVISO_DA_CADEIA_LI[motivoDaCadeia];
+  return motivo === null ? null : { categoriaLiId: id, caminho: [id], motivo };
+}
+
 /* -------------------------------------------------------------------------- */
 /*                                The decision                                 */
 /* -------------------------------------------------------------------------- */

@@ -440,6 +440,12 @@ export interface DepsPreenchimentoLi {
   readonly modo: ModoImportacaoLi;
   /** The job's clock, ms: the produto's `ultimaModificacao`. */
   readonly agoraMs: () => number;
+  /**
+   * Test seam: runs right before each guarded write of the PRODUTO, after the read that write is
+   * guarded by — the window an operator's edit lands in (`completar.firestore.test.ts`).
+   * Production passes nothing.
+   */
+  readonly antesDaEscrita?: () => Promise<void> | void;
 }
 
 export interface EntradaDoPreenchimentoLi {
@@ -514,6 +520,7 @@ async function preencherOProduto(
       ...plano.patch,
       ultimaModificacao: deps.agoraMs(),
     });
+    await deps.antesDaEscrita?.();
     try {
       await ref.update(escrito, { lastUpdateTime: snap.updateTime });
       return { plano, campos: plano.campos, gravado: true, conflito: false };

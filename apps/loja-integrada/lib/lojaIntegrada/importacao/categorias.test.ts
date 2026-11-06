@@ -25,6 +25,7 @@ import {
   type CategoriaDoProdutoLi,
   type DepsCategoriasLi,
   TIPO_CATEGORIA_DO_PRODUTO_LI,
+  avisoDaPendenciaDeCategoriaLi,
   idCategoriaCriadaLi,
   idVinculoCategoriaCriadoLi,
   resolverCategoriaDoProdutoLi,
@@ -799,5 +800,65 @@ describe('Simular: nothing written, the same verdicts as aplicar (the map overla
     );
     expect(recusada(r.categoria).pendencia).toBe(PENDENCIA_IMPORTACAO_LI.categoriaAmbigua);
     expect(db.escritas).toEqual([]);
+  });
+});
+
+describe('avisoDaPendenciaDeCategoriaLi: the job-end aviso re-derived from a REPORTED refusal', () => {
+  /** Every refusal the resolver can report with (or without) an aviso: the map and the URIs. */
+  const casos: readonly [string, Partial<DepsCategoriasLi>, CategoriaDoJobLi[], string[]][] = [
+    [
+      'soVincular, an unlinked leaf under a root',
+      { categorias: CATEGORIAS_IMPORTACAO_LI.soVincular },
+      [cat(1, null), cat(2, 1)],
+      [uri(1), uri(2)],
+    ],
+    ['pai-ilegivel', {}, [cat(1, 'ilegivel'), cat(2, 1)], [uri(2)]],
+    ['pai-ausente', {}, [cat(2, 77)], [uri(2)]],
+    ['ciclo', {}, [cat(1, 2), cat(2, 1), cat(3, 2)], [uri(3)]],
+    ['a leaf the store’s list lacks (no aviso)', {}, [cat(1, null)], [uri(9)]],
+    ['unreadable URIs (no aviso)', {}, [cat(1, null)], ['/api/v1/categoria/None']],
+  ];
+
+  it.each(casos)(
+    'PAIR: %s ⇒ exactly the aviso the resolver returned',
+    async (_nome, over, mapa, uris) => {
+      const r = await resolverCategoriaDoProdutoLi(deps(new FakeDb(), over), mapa, uris);
+      const c = recusada(r.categoria);
+      expect(
+        avisoDaPendenciaDeCategoriaLi(r.mapaCategorias, {
+          codigo: c.pendencia,
+          referencias: c.referencias,
+        }),
+      ).toEqual(c.aviso);
+    },
+  );
+
+  it('NEAR-MISS: another category code, or a first reference that is no canonical store id, gives none', () => {
+    const mapa = [cat(1, null), cat(2, 1)];
+    expect(
+      avisoDaPendenciaDeCategoriaLi(mapa, {
+        codigo: PENDENCIA_IMPORTACAO_LI.categoriaAmbigua,
+        referencias: ['2'],
+      }),
+    ).toBeNull();
+    for (const primeira of ['02', ' 2', '2.0', 'ilegivel', '']) {
+      expect(
+        avisoDaPendenciaDeCategoriaLi(mapa, {
+          codigo: PENDENCIA_IMPORTACAO_LI.categoriaSemVinculo,
+          referencias: [primeira],
+        }),
+        primeira,
+      ).toBeNull();
+    }
+    expect(
+      avisoDaPendenciaDeCategoriaLi(mapa, {
+        codigo: PENDENCIA_IMPORTACAO_LI.categoriaSemVinculo,
+        referencias: ['2'],
+      }),
+    ).toEqual({
+      categoriaLiId: 2,
+      caminho: [1, 2],
+      motivo: MOTIVO_CATEGORIA_SEM_VINCULO_LI.semVinculo,
+    });
   });
 });

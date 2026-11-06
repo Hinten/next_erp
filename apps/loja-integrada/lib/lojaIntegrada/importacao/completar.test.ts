@@ -704,6 +704,32 @@ describe('preencherProdutoLi — the tier-1 fill on the fake', () => {
     expect(escritas[0]?.dados).not.toHaveProperty('gtin');
   });
 
+  it('the `antesDaEscrita` seam runs after the read each guarded produto write is guarded by — an edit landing there is lost-to, re-planned, and never written over', async () => {
+    const db = new FakeDb();
+    db.seed(P, produtoErp());
+    const chamadas: number[] = [];
+    const r = preenchido(
+      await preencherProdutoLi(
+        {
+          ...deps(db),
+          antesDaEscrita: () => {
+            chamadas.push(db.escritasEm(P).length);
+            // Only once: the second attempt's window stays empty.
+            if (chamadas.length === 1) {
+              db.seed(P, { ...(db.ler(P) ?? {}), gtin: 'DO-OPERADOR' });
+            }
+          },
+        },
+        { produtoId: PRODUTO, liId: null, valores: valoresDoLiLi(fonte()) },
+      ),
+    );
+    // Once per attempt, before that attempt's write (none had landed at either).
+    expect(chamadas).toEqual([0, 0]);
+    expect(db.ler(P)?.gtin).toBe('DO-OPERADOR');
+    expect(r.campos).not.toContain('gtin');
+    expect(db.escritasEm(P)).toHaveLength(1);
+  });
+
   it('EQUAL PAIR: OUR write that landed with its reply lost counts as written — one write, never redone', async () => {
     const db = new FakeDb();
     db.seed(P, produtoErp());
