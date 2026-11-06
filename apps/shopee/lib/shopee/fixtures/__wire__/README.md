@@ -311,9 +311,10 @@ named as kept: the tax data (`tax_info`), weights, dimensions, attribute
 values, the logistics flags (`logistic_info`'s switches), the item-limit
 numbers (the three `get_item_limit.br-*` bodies, the shop's item-count limit
 `item_count_limit` among them) and the shop's channel switches
-(`get_channel_list.br.json`). Also kept, though not separately put to him:
+(`get_channel_list.br.json`). Lucas also chose, on 2026-11-06, to keep
 `logistic_info.*.estimated_shipping_fee` (3 numbers,
-`get_item_base_info.br-anuncio-variacoes.json`), every id, `tier_index`, the
+`get_item_base_info.br-anuncio-variacoes.json`). Also kept, though not
+separately put to him: every id, `tier_index`, the
 promotion flags, the pre-order settings (`pre_order.days_to_ship`) and the
 standard option names.
 

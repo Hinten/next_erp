@@ -32,8 +32,8 @@
  * Everything else is KEPT unchanged, key order included — every id,
  * `tier_index`, `currency` and the promotion flags; the tax data, weights,
  * dimensions, attribute values and logistics flags that Lucas named as kept on
- * 2026-11-05; and — not separately put to him —
- * `logistic_info.*.estimated_shipping_fee` and the pre-order settings. Tier
+ * 2026-11-05; `logistic_info.*.estimated_shipping_fee`, which he chose to keep
+ * on 2026-11-06; and — not separately put to him — the pre-order settings. Tier
  * NAMES are kept too: on the committed bodies every tier is a standard
  * variation, so its name is Shopee's.
  *
