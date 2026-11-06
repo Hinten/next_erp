@@ -68,6 +68,7 @@ const {
   desfazerRemocaoMarcaShopee,
   escritasMarcasDaContaShopee,
   lerAlteracoesMarcasShopee,
+  remocoesJaFeitasMarcasShopee,
   removerMarcaShopee,
 } = await import('./marcasDaConta');
 const { MissingTransactionBaselineError, NothingChangedError, RecordConflictError, saveRecord } =
@@ -555,6 +556,50 @@ describe('escritasMarcasDaContaShopee × saveRecord — what reaches the store',
     expect(h.docs.get(caminho('3001'))).toStrictEqual(ROW_NOVA);
   });
 
+  it('⭐ (#2084 review, the removal mirror of F2) «Salvar mesmo assim» over a removal another tab already did: its `delete` is guarded by `null`, the save skips it unread and commits nothing — so the delta must drop it (remocoesJaFeitasMarcasShopee)', async () => {
+    h.docs.delete(caminho(LEGADO_9));
+    const delta = removerMarcaShopee(null, marca(docsIniciais, 9));
+    // What the modal leaves: the deleted doc's baseline moved to the server's version.
+    const aceito = contexto({
+      [caminho(LEGADO_7A)]: ROW_7A,
+      [caminho(LEGADO_7B)]: ROW_7B,
+      [caminho(LEGADO_9)]: null,
+    });
+    // What leaves the stage is exactly what this save would not write.
+    expect(remocoesJaFeitasMarcasShopee(db, INT, lerAlteracoesMarcasShopee(delta), aceito)).toEqual(
+      [9],
+    );
+    const err = await salvar(delta, aceito).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(NothingChangedError);
+    expect(commits()).toBe(0);
+    expect(h.docs.has(caminho(LEGADO_9))).toBe(false);
+  });
+
+  it('⭐ NEAR-MISS: a two-doc brand with ONE doc already gone is NOT done — the other `delete` commits, and its projection takes the WHOLE brand off the delta', async () => {
+    h.docs.delete(caminho(LEGADO_7A));
+    const delta = removerMarcaShopee(null, marca(docsIniciais, 7));
+    const aceito = contexto({
+      [caminho(LEGADO_7A)]: null,
+      [caminho(LEGADO_7B)]: ROW_7B,
+      [caminho(LEGADO_9)]: ROW_9,
+    });
+    expect(remocoesJaFeitasMarcasShopee(db, INT, lerAlteracoesMarcasShopee(delta), aceito)).toEqual(
+      [],
+    );
+
+    const r = await salvar(delta, aceito);
+
+    expect(commits()).toBe(1);
+    expect(r.documents.map((doc) => [doc.path, doc.data])).toEqual([[caminho(LEGADO_7B), null]]);
+    expect(h.docs.has(caminho(LEGADO_7B))).toBe(false);
+    expect(h.docs.get(caminho(LEGADO_9))).toStrictEqual(ROW_9);
+    const depois = r.documents.reduce<unknown>(
+      (v, doc) => doc.guard.toFormValue(doc.data, v),
+      delta,
+    );
+    expect(depois).toBeNull();
+  });
+
   it('⭐ NEAR-MISS: an UNREADABLE doc at that path is never overwritten — not even after «Salvar mesmo assim»', async () => {
     const estranho: Doc = { brand_id: '3001', original_brand_name: 'Quoted' };
     h.docs.set(caminho('3001'), estranho);
@@ -853,5 +898,77 @@ describe('cadastrosJaGravadosMarcasShopee — a staged registration held as stor
     });
     expect(cadastrosJaGravadosMarcasShopee(db, INT, comRemocao, ctx)).toEqual([4002]);
     expect(cadastrosJaGravadosMarcasShopee(db, INT, null, ctx)).toEqual([]);
+  });
+});
+
+describe('remocoesJaFeitasMarcasShopee — a staged removal with EVERY doc held absent (#2084 review, the removal mirror of F2)', () => {
+  const docs = { [LEGADO_7A]: ROW_7A, [LEGADO_7B]: ROW_7B, [LEGADO_9]: ROW_9 };
+  /** Brand 9: ONE doc. */
+  const remove9 = lerAlteracoesMarcasShopee(removerMarcaShopee(null, marca(docs, 9)));
+  /** Brand 7: TWO legacy docs. */
+  const remove7 = lerAlteracoesMarcasShopee(removerMarcaShopee(null, marca(docs, 7)));
+
+  it('EQUAL: a single-doc removal whose doc is held `null` ⇒ done', () => {
+    expect(
+      remocoesJaFeitasMarcasShopee(db, INT, remove9, contexto({ [caminho(LEGADO_9)]: null })),
+    ).toEqual([9]);
+  });
+
+  it('EQUAL: a two-doc brand with BOTH docs held `null` ⇒ done', () => {
+    expect(
+      remocoesJaFeitasMarcasShopee(
+        db,
+        INT,
+        remove7,
+        contexto({ [caminho(LEGADO_7A)]: null, [caminho(LEGADO_7B)]: null }),
+      ),
+    ).toEqual([7]);
+  });
+
+  it('⭐ NEAR-MISS: a two-doc brand with ONE doc held `null` and the other still a row ⇒ NOT done — that `delete` still writes', () => {
+    for (const ctx of [
+      contexto({ [caminho(LEGADO_7A)]: null, [caminho(LEGADO_7B)]: ROW_7B }),
+      contexto({ [caminho(LEGADO_7A)]: ROW_7A, [caminho(LEGADO_7B)]: null }),
+    ]) {
+      expect(remocoesJaFeitasMarcasShopee(db, INT, remove7, ctx)).toEqual([]);
+    }
+  });
+
+  it.each<[string, Record<string, Doc | null>]>([
+    ['held as its row', { [caminho(LEGADO_9)]: ROW_9 }],
+    ['never held (`undefined` — the save refuses, nothing is done)', {}],
+    ['held as an EMPTY row (`{}` is a document, not absence)', { [caminho(LEGADO_9)]: {} }],
+  ])('NEAR-MISS: the single doc %s ⇒ NOT done', (_, baselines) => {
+    expect(remocoesJaFeitasMarcasShopee(db, INT, remove9, contexto(baselines))).toEqual([]);
+  });
+
+  it('NEAR-MISS: an ADD whose path is held `null` is never counted; nothing staged ⇒ none', () => {
+    const adicao = lerAlteracoesMarcasShopee(adicionarMarcasShopee(null, [NOVA]));
+    const ctx = contexto({ [caminho('3001')]: null });
+    expect(remocoesJaFeitasMarcasShopee(db, INT, adicao, ctx)).toEqual([]);
+    expect(remocoesJaFeitasMarcasShopee(db, INT, null, ctx)).toEqual([]);
+  });
+
+  it('only the done ones, in the delta’s order — never sorted', () => {
+    const LEGADO_5 = 'CcccccccccccccccccC1';
+    const LEGADO_8 = 'DdddddddddddddddddD1';
+    const ROW_5: Doc = { brand_id: 5, original_brand_name: 'Puma', display_brand_name: null };
+    const ROW_8: Doc = { brand_id: 8, original_brand_name: 'Asics', display_brand_name: null };
+    const todos = { ...docs, [LEGADO_5]: ROW_5, [LEGADO_8]: ROW_8 };
+    // Staged 5, 9, 7, 8: the delta's order is 5, 9, 7, 8. With 7 half-done the
+    // done ids are 5, 9, 8 — neither ascending nor descending, so a sort in
+    // either direction reorders them.
+    const delta = lerAlteracoesMarcasShopee(
+      [5, 9, 7, 8].reduce<unknown>((v, id) => removerMarcaShopee(v, marca(todos, id)), null),
+    );
+    expect(delta?.remover.map((r) => r.brandId)).toEqual([5, 9, 7, 8]);
+    const ctx = contexto({
+      [caminho(LEGADO_5)]: null,
+      [caminho(LEGADO_9)]: null,
+      [caminho(LEGADO_7A)]: ROW_7A,
+      [caminho(LEGADO_7B)]: null,
+      [caminho(LEGADO_8)]: null,
+    });
+    expect(remocoesJaFeitasMarcasShopee(db, INT, delta, ctx)).toEqual([5, 9, 8]);
   });
 });

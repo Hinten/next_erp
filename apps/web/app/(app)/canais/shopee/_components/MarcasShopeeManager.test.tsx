@@ -695,3 +695,76 @@ describe('a staged registration held as stored EXACTLY is satisfied, and leaves 
     expect(within(linhaDaMarca(3003)).queryByText('Será removida')).toBeNull();
   });
 });
+
+describe('a staged removal whose EVERY doc the registry comes to hold absent is done, and leaves the delta at once (#2084 review, the removal mirror of F2)', () => {
+  const PUMA: MarcaDto = { brandId: 3003, originalBrandName: 'Puma', displayBrandName: null };
+  const linhaPuma = { brand_id: 3003, original_brand_name: 'Puma', display_brand_name: null };
+  const REMOVE_NIKE = { brandId: 1001, docIds: [ID_NIKE] };
+  const REMOVE_ADIDAS = { brandId: 1002, docIds: [ID_ADIDAS_1, ID_ADIDAS_2] };
+  const REMOVE_7 = { brandId: 7, docIds: [ID_SEM_NOME] };
+
+  it('⭐ the registry’s rebase of a staged removal’s ONLY doc to `null` drops it — INSIDE the rebase, before anything reads the form — and only it', () => {
+    const { documents } = show({ inicial: { adicionar: [], remover: [REMOVE_NIKE, REMOVE_7] } });
+    act(() => {
+      documents!.rebase(caminho(ID_NIKE), null);
+      // Synchronous: "Salvar mesmo assim" saves right after this rebase.
+      expect(mudancas).toEqual([{ adicionar: [], remover: [REMOVE_7] }]);
+    });
+    expect(within(linhaDaMarca(1001)).queryByText('Será removida')).toBeNull();
+    expect(within(linhaDaMarca(7)).getByText('Será removida')).toBeTruthy();
+    // This tab's server truth still LISTS Nike (it has not heard the delete):
+    // unstaged, its `null` goes back UP to the listed row, so a «Remover» on
+    // the stale row conflicts again — fail-closed, never a silent write.
+    expect(documents!.getBaseline(caminho(ID_NIKE))).toEqual(legado(1001, 'Nike'));
+    expect(mudancas).toHaveLength(1);
+  });
+
+  it('⭐ NEAR-MISS: a doc rebased to a DIFFERENT row (changed, not deleted), or ONE of a brand’s two docs `null`, keeps the removal staged', () => {
+    const { documents } = show({
+      inicial: { adicionar: [], remover: [REMOVE_NIKE, REMOVE_ADIDAS] },
+    });
+    act(() => documents!.rebase(caminho(ID_NIKE), legado(1001, 'NIKE')));
+    act(() => documents!.rebase(caminho(ID_ADIDAS_1), null));
+    expect(mudancas).toEqual([]);
+    expect(within(linhaDaMarca(1001)).getByText('Será removida')).toBeTruthy();
+    expect(within(linhaDaMarca(1002)).getByText('Será removida')).toBeTruthy();
+  });
+
+  it('NEAR-MISS: a registration staged beside the done removal stays staged', () => {
+    const { documents } = show({ inicial: { adicionar: [PUMA], remover: [REMOVE_NIKE] } });
+    act(() => documents!.rebase(caminho(ID_NIKE), null));
+    expect(mudancas).toEqual([{ adicionar: [PUMA], remover: [] }]);
+    expect(screen.getByTestId('shopee-marca-nova-3003')).toBeTruthy();
+  });
+
+  it('both arms in ONE notify: a satisfied registration AND a done removal leave in ONE `onChange`', () => {
+    // Nike's doc already held absent, and gone from server truth, before the
+    // section subscribes: nothing notifies until the rebase below.
+    const documents = createTransactionDocuments();
+    documents.seedBaseline(caminho(ID_NIKE), null);
+    emitir(linhasPadrao().filter((l) => l.id !== ID_NIKE));
+    show({ documents, inicial: { adicionar: [PUMA], remover: [REMOVE_NIKE] } });
+    expect(mudancas).toEqual([]);
+    expect(screen.getByTestId('shopee-marca-removida-fora-1001')).toBeTruthy();
+    act(() => documents.rebase(caminho('3003'), linhaPuma));
+    expect(mudancas).toEqual([null]);
+    expect(screen.queryByTestId('shopee-marca-nova-3003')).toBeNull();
+    expect(screen.queryByTestId('shopee-marca-removida-fora-1001')).toBeNull();
+  });
+
+  it('a BURST of rebases — «Salvar mesmo assim» rebases every conflicting doc in ONE synchronous loop: a later notify with nothing new to drop calls no `onChange`, it reads the delta the earlier one already projected', () => {
+    const { documents } = show({
+      inicial: { adicionar: [], remover: [REMOVE_NIKE, REMOVE_ADIDAS] },
+    });
+    act(() => {
+      // Two conflicts accepted at once, with no render in between: Nike's only
+      // doc deleted (done), one of Adidas's two docs deleted (not done — its
+      // other `delete` still writes).
+      documents!.rebase(caminho(ID_NIKE), null);
+      documents!.rebase(caminho(ID_ADIDAS_1), null);
+    });
+    expect(mudancas).toEqual([{ adicionar: [], remover: [REMOVE_ADIDAS] }]);
+    expect(within(linhaDaMarca(1001)).queryByText('Será removida')).toBeNull();
+    expect(within(linhaDaMarca(1002)).getByText('Será removida')).toBeTruthy();
+  });
+});
