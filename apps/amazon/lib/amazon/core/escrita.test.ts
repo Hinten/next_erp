@@ -2,17 +2,20 @@
  * The write engine (step 14, PR 14-b), end to end against the REAL package
  * write client with an injected `fetch` — no network (D11): the valve gates,
  * the one diff line, the one write through the caller's own deps, and the
- * forced-refresh-once rule on a write.
+ * forced-refresh-once rule on a write. Step 15 (PR 15-b): the scheduling flow,
+ * the restricted-client factory and the one client builder.
  */
 import {
   AmazonAuthError,
   AmazonHttpError,
   type CredencialSpApi,
+  type OpcoesClienteSpApi,
   type SpApiEscritaClient,
   enviarNotaFiscal,
 } from '@delfrance/integrations-amazon-sp-api';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { agendarNaAmazon } from '../agendamento/easyShipAmazon';
 import { conteudoDaNfeAmazon } from '../nfe/conteudoNfe';
 import { AGORA_MS, REF_VERSIONADA, linhasDeChamada, loggerEspiao } from '../testing/fixtures';
 import {
@@ -21,6 +24,27 @@ import {
   executarEscritaAmazon,
 } from './escrita';
 import { CANARIO_ENV_AMAZON, FLUXO_AMAZON, VALVULA_ENV_AMAZON, lerValvula } from './valvulas';
+
+/**
+ * Every write client the engine builds, recorded (its options, the observer
+ * included) and then built for real: the constructor is named only by the
+ * engine's one builder, so this counts the builder's calls.
+ */
+const construcoes = vi.hoisted(() => [] as unknown[]);
+vi.mock('@delfrance/integrations-amazon-sp-api', async (original) => {
+  const real = await original<typeof import('@delfrance/integrations-amazon-sp-api')>();
+  return {
+    ...real,
+    criarClienteEscritaSpApi: (opts: OpcoesClienteSpApi) => {
+      construcoes.push(opts);
+      return real.criarClienteEscritaSpApi(opts);
+    },
+  };
+});
+
+beforeEach(() => {
+  construcoes.length = 0;
+});
 
 const CONTA = 'conta-teste';
 const ORDER = '171-9876543-2109876';
@@ -317,5 +341,224 @@ describe('executarEscritaAmazon — the one write', () => {
     const m = montar({ modo: 'on', contaId: 'outra-conta' });
     await expect(m.run()).rejects.toBeInstanceOf(TypeError);
     expect(m.lerAtual).not.toHaveBeenCalled();
+  });
+});
+
+/* ------------------------------------------------------------------------------ */
+/*              step 15 (PR 15-b): the scheduling flow and its clients             */
+/* ------------------------------------------------------------------------------ */
+
+const ACESSO_LWA = 'tok|TESTE-acesso-escrita-naoreal';
+const RDT_1 = 'Atz.TESTE-rdt-um-sintetico-naoreal';
+const RDT_2 = 'Atz.TESTE-rdt-dois-sintetico-naoreal';
+const CAMINHO_MINT = '/tokens/2021-03-01/restrictedDataToken';
+const CAMINHO_BULK = '/easyShip/2022-03-23/packages/bulk';
+
+/** The mint's 200, the model's shape. */
+const rdt = (token: string) => json(200, { restrictedDataToken: token, expiresIn: 3600 });
+
+/** The bulk's 200 for our order (no URL: the URL is not this suite's subject). */
+const bulkOk = json(200, {
+  scheduledPackages: [
+    {
+      scheduledPackageId: { amazonOrderId: ORDER, packageId: 'PKG-TESTE-1' },
+      packageStatus: 'ReadyForPickup',
+    },
+  ],
+});
+
+/** The scheduling valve as one environment states it. */
+function valvulaAgendamento(
+  modo: string | undefined,
+  canario: string | undefined = `${CONTA}:${ORDER}`,
+) {
+  return lerValvula(FLUXO_AMAZON.agendamento, {
+    [VALVULA_ENV_AMAZON.agendamento]: modo,
+    [CANARIO_ENV_AMAZON.agendamento]: canario,
+  });
+}
+
+type Restrito = Parameters<typeof agendarNaAmazon>[1];
+
+/** One engine run of the scheduling shape: the REAL mint and bulk through `agendarNaAmazon`. */
+function montarAgendamento(o: { modo?: string; respostas?: (() => Response)[] } = {}) {
+  const { logger, linhas } = loggerEspiao();
+  const f = fetchRoteirizado(...(o.respostas ?? []));
+  const ctx = contexto();
+  const lerAtual = vi.fn(() => Promise.resolve('agendar'));
+  const escrever = vi.fn(
+    (cliente: SpApiEscritaClient, _plano: PlanoEscritaAmazon, restrito: Restrito) =>
+      agendarNaAmazon(cliente, restrito, ORDER),
+  );
+  const run = () =>
+    executarEscritaAmazon({
+      valvula: valvulaAgendamento(o.modo),
+      contaId: CONTA,
+      alvo: ORDER,
+      contexto: ctx,
+      deps: {
+        logger,
+        fetch: f.fetch,
+        agora: () => AGORA_MS,
+        gerarCorrelationId: () => 'corr-teste',
+      },
+      registro: { fluxo: 'agendamento', tentativa: 0, idTarefa: 'tarefa-agendamento-1' },
+      lerAtual,
+      planejar: (atual: string): PlanoEscritaAmazon => ({
+        escrever: true,
+        diff: { acao: atual, escreveria: true },
+      }),
+      escrever,
+    });
+  return { run, linhas, f, ctx, lerAtual, escrever };
+}
+
+const forcadas = (ctx: ReturnType<typeof contexto>) =>
+  ctx.obterAcesso.mock.calls.filter((c) => c[0]?.forcarRenovacao === true);
+
+const caminhos = (f: ReturnType<typeof fetchRoteirizado>) =>
+  f.pedidos.map((p) => new URL(p.url).pathname);
+
+describe('executarEscritaAmazon — the scheduling flow (step 15, PR 15-b)', () => {
+  it('★ the flow has its own event row: agendamento', () => {
+    expect(EVENTO_DA_ESCRITA_AMAZON).toEqual({ nfe: 'nfe', agendamento: 'agendamento' });
+  });
+
+  it('★ agendamento under off never calls lerAtual, and nothing reaches the network', async () => {
+    const m = montarAgendamento({ modo: 'off' });
+    await expect(m.run()).resolves.toEqual({ tipo: 'desligado' });
+    expect(m.lerAtual).not.toHaveBeenCalled();
+    expect(m.escrever).not.toHaveBeenCalled();
+    expect(m.f.chamadas).not.toHaveBeenCalled();
+    expect(m.linhas).toEqual([]);
+  });
+
+  it('★ agendamento under dry-run writes ONE line, evento agendamento, and never calls escrever', async () => {
+    const m = montarAgendamento({ modo: 'dry-run' });
+    await expect(m.run()).resolves.toMatchObject({ tipo: 'simulado', motivo: 'valvula' });
+    expect(m.lerAtual).toHaveBeenCalledTimes(1);
+    expect(m.escrever).not.toHaveBeenCalled();
+    expect(m.f.chamadas).not.toHaveBeenCalled();
+    expect(m.linhas).toHaveLength(1);
+    expect(m.linhas[0]?.meta).toMatchObject({
+      evento: 'agendamento',
+      fluxo: 'agendamento',
+      conta: CONTA,
+      modo: 'dry-run',
+      escreveria: true,
+    });
+  });
+
+  it('★ on + canary: escrever gets a restricted factory — the mint carries the LWA token, the bulk the RDT and never the LWA token', async () => {
+    const m = montarAgendamento({ modo: 'on', respostas: [rdt(RDT_1), bulkOk] });
+    await expect(m.run()).resolves.toMatchObject({ tipo: 'escrito' });
+    expect(m.escrever).toHaveBeenCalledTimes(1);
+    expect(typeof m.escrever.mock.calls[0]?.[2]).toBe('function');
+    expect(m.f.pedidos.map((p) => p.metodo)).toEqual(['POST', 'POST']);
+    expect(caminhos(m.f)).toEqual([CAMINHO_MINT, CAMINHO_BULK]);
+    const [mint, bulk] = m.f.pedidos;
+    expect(mint?.cabecalhos.get('x-amz-access-token')).toBe(ACESSO_LWA);
+    expect(bulk?.cabecalhos.get('x-amz-access-token')).toBe(RDT_1);
+    for (const [, valor] of bulk?.cabecalhos ?? []) expect(valor).not.toContain(ACESSO_LWA);
+    // The bulk body is the package's three keys; the engine added nothing.
+    expect(Object.keys(JSON.parse(bulk?.corpo ?? '{}') as object).sort()).toEqual(
+      ['labelFormat', 'marketplaceId', 'orderScheduleDetailsList'].sort(),
+    );
+    // One getter read for the LWA request (the mint), one for the factory's
+    // ref; the restricted client never reads it (it sends the token handed in).
+    expect(m.ctx.obterAcesso.mock.calls).toEqual([[], []]);
+  });
+
+  it('★ the call lines: the mint says lwa-acesso, the bulk rdt — both labelled with the LWA ref’s version; no line holds either token', async () => {
+    const m = montarAgendamento({ modo: 'on', respostas: [rdt(RDT_1), bulkOk] });
+    await m.run();
+    const chamadas = linhasDeChamada(m.linhas);
+    expect(chamadas.map((l) => [l.operacao, l.credencial])).toEqual([
+      ['createRestrictedDataToken', 'lwa-acesso'],
+      ['createScheduledPackageBulk', 'rdt'],
+    ]);
+    for (const l of chamadas) {
+      expect(l).toMatchObject({
+        conta: CONTA,
+        fluxo: 'agendamento',
+        tentativa: 0,
+        idTarefa: 'tarefa-agendamento-1',
+        versaoCredencial: Number(REF_VERSIONADA.split('.')[1]),
+      });
+    }
+    const tudo = JSON.stringify(m.linhas);
+    expect(tudo).not.toContain(RDT_1);
+    expect(tudo).not.toContain(ACESSO_LWA);
+  });
+
+  it('★ mutation 11: a 401 on the BULK ⇒ ONE forced refresh, and the retry MINTS A NEW token (two mints, two bulks)', async () => {
+    const m = montarAgendamento({
+      modo: 'on',
+      respostas: [rdt(RDT_1), json(401, {}), rdt(RDT_2), bulkOk],
+    });
+    await expect(m.run()).resolves.toMatchObject({ tipo: 'escrito' });
+    expect(m.escrever).toHaveBeenCalledTimes(2);
+    expect(caminhos(m.f)).toEqual([CAMINHO_MINT, CAMINHO_BULK, CAMINHO_MINT, CAMINHO_BULK]);
+    expect(m.f.pedidos[1]?.cabecalhos.get('x-amz-access-token')).toBe(RDT_1);
+    expect(m.f.pedidos[3]?.cabecalhos.get('x-amz-access-token')).toBe(RDT_2);
+    expect(forcadas(m.ctx)).toHaveLength(1);
+  });
+
+  it('NEAR-MISS: a 401/403 on the SECOND bulk propagates — no third mint, one refresh', async () => {
+    const m = montarAgendamento({
+      modo: 'on',
+      respostas: [rdt(RDT_1), json(401, {}), rdt(RDT_2), json(403, {}), rdt(RDT_1), bulkOk],
+    });
+    await expect(m.run()).rejects.toBeInstanceOf(AmazonAuthError);
+    expect(m.f.pedidos).toHaveLength(4);
+    expect(forcadas(m.ctx)).toHaveLength(1);
+  });
+
+  it('a 401 on the MINT refreshes once too: then one mint and one bulk', async () => {
+    const m = montarAgendamento({ modo: 'on', respostas: [json(401, {}), rdt(RDT_1), bulkOk] });
+    await expect(m.run()).resolves.toMatchObject({ tipo: 'escrito' });
+    expect(caminhos(m.f)).toEqual([CAMINHO_MINT, CAMINHO_MINT, CAMINHO_BULK]);
+    expect(forcadas(m.ctx)).toHaveLength(1);
+  });
+
+  it('a 5xx on the bulk propagates after ONE bulk — never repeated, never refreshed', async () => {
+    const m = montarAgendamento({ modo: 'on', respostas: [rdt(RDT_1), json(503, {}), bulkOk] });
+    await expect(m.run()).rejects.toBeInstanceOf(AmazonHttpError);
+    expect(caminhos(m.f)).toEqual([CAMINHO_MINT, CAMINHO_BULK]);
+    expect(forcadas(m.ctx)).toHaveLength(0);
+  });
+});
+
+describe('the one client builder (step 15, PR 15-b)', () => {
+  it('★ mutation 10: a scheduling run builds TWO clients through the builder, each with its OWN observer; an NF-e run builds ONE', async () => {
+    await montarAgendamento({ modo: 'on', respostas: [rdt(RDT_1), bulkOk] }).run();
+    expect(construcoes).toHaveLength(2);
+    const [lwa, restrito] = construcoes as OpcoesClienteSpApi[];
+    expect(typeof lwa?.onChamada).toBe('function');
+    expect(typeof restrito?.onChamada).toBe('function');
+    expect(lwa?.onChamada).not.toBe(restrito?.onChamada);
+    // The SAME deps reach both.
+    expect(restrito?.fetch).toBe(lwa?.fetch);
+    expect(restrito?.userAgent).toBe(lwa?.userAgent);
+    expect(restrito?.agora).toBe(lwa?.agora);
+    expect(restrito?.gerarCorrelationId).toBe(lwa?.gerarCorrelationId);
+
+    construcoes.length = 0;
+    await montar({ modo: 'on', respostas: [json(200, {})] }).run();
+    expect(construcoes).toHaveLength(1);
+  });
+
+  it('a retried escrever builds a fresh restricted client: a run refreshed once builds THREE (the LWA client once per run)', async () => {
+    await montarAgendamento({
+      modo: 'on',
+      respostas: [rdt(RDT_1), json(401, {}), rdt(RDT_2), bulkOk],
+    }).run();
+    expect(construcoes).toHaveLength(3);
+  });
+
+  it('dry-run and off build no client at all', async () => {
+    await montarAgendamento({ modo: 'dry-run' }).run();
+    await montarAgendamento({ modo: 'off' }).run();
+    expect(construcoes).toHaveLength(0);
   });
 });

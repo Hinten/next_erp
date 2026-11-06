@@ -7,14 +7,20 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vites
 import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
 import {
   historicoFreteInicialCollection,
+  importacaoLojaIntegradaCollection,
   integracaoCollection,
   produtoLojaIntegradaLinkCollection,
 } from '@delfrance/data/admin/collections';
 import { MAX_TENTATIVAS_DEFERRED, TASK_MAX_ATTEMPTS } from '@delfrance/data/admin/notifications';
 import { PRAZO_LI_MS } from '@delfrance/integrations-loja-integrada';
+import {
+  CAUDA_DESPACHO_IMPORTACAO_LI_MS,
+  ORCAMENTO_DESPACHO_IMPORTACAO_LI_MS,
+} from '@delfrance/schemas';
 
 import { __setRelogioDoCacheParaTestes } from '../../lib/lojaIntegrada/core/contaCache';
 import { PRAZO_ULTIMA_ESCRITA_MS } from '../../lib/lojaIntegrada/core/escrita';
+import { DURACAO_MAXIMA_DESPACHO_IMPORTACAO_LI_MS } from '../../lib/lojaIntegrada/importacao/orcamento';
 import type { ImportadorPedidoLi } from '../../lib/lojaIntegrada/notificacoes/notificacao';
 import { importarPedidoLi } from '../../lib/lojaIntegrada/pedidos/importarPedido';
 import {
@@ -101,6 +107,7 @@ const {
   filaEscritaLojaIntegrada,
   filaLeituraLojaIntegrada,
   onHistoricoFreteLojaIntegrada,
+  onImportacaoLojaIntegradaCriada,
   onIntegracaoLojaIntegradaChanged,
   onProdutoLojaIntegradaLinkChanged,
   pollLojaIntegradaPedidos,
@@ -154,14 +161,17 @@ const FILAS = { filaLeituraLojaIntegrada, filaEscritaLojaIntegrada } as const;
  * The failure it guards is the silent one: an `onDocument*` bound to the
  * `(default)` sentinel, or with no `database` at all, deploys fine and never
  * fires, with nothing anywhere to say so. Master plan step 20 added the first
- * (`onIntegracaoLojaIntegradaChanged`), step 7 the second and step 9 the third
- * (`onProdutoLojaIntegradaLinkChanged`, the anchor); the `every GATILHO…` tests
- * below walk the MAP, never a named trigger, so each one lands covered.
+ * (`onIntegracaoLojaIntegradaChanged`), step 7 the second, and step 9 the third
+ * and fourth (`onProdutoLojaIntegradaLinkChanged`, the anchor, and
+ * `onImportacaoLojaIntegradaCriada`, the import's job-creation trigger); the
+ * `every GATILHO…` tests below walk the MAP, never a named trigger, so each one
+ * lands covered.
  */
 const GATILHOS = {
   onIntegracaoLojaIntegradaChanged,
   onHistoricoFreteLojaIntegrada,
   onProdutoLojaIntegradaLinkChanged,
+  onImportacaoLojaIntegradaCriada,
 } as const;
 
 /**
@@ -185,6 +195,11 @@ const CAMINHOS_DOS_GATILHOS = {
     colecao: produtoLojaIntegradaLinkCollection.resolvePath({ produtoId: '{produtoId}' }),
     ancora: 'produtos/{produtoId}/produtolojaintegrada',
     folha: '{linkId}',
+  },
+  onImportacaoLojaIntegradaCriada: {
+    colecao: importacaoLojaIntegradaCollection.resolvePath({}),
+    ancora: 'importacoesLojaIntegrada',
+    folha: '{jobId}',
   },
 } as const satisfies Record<
   keyof typeof GATILHOS,
@@ -606,6 +621,55 @@ describe('filaLeituraLojaIntegrada — the declared options', () => {
     expect(escadaSegundos).toBeLessThanOrEqual(1800);
   });
 
+  it('closes the SAME ladder with ONE product import as a co-tenant: each attempt may wait one import dispatch', () => {
+    // The import (master plan step 9) rides this queue at concurrency 1, so an order-intake
+    // attempt may first wait for one import dispatch — at most its budget plus its tail
+    // (`importacao/orcamento.ts`). With that wait on every attempt, the ladder still fits half
+    // the hot sweep's hour: 3 × (300 + 100) + 2 × 300 = 1 800. That is K = 1 import running:
+    // the next test states what K imports at once cost.
+    const tentativas = fila.retryConfig.maxAttempts ?? 0;
+    const execucao = endpointOf(filaLeituraLojaIntegrada).timeoutSeconds as number;
+    const backoff = fila.retryConfig.maxBackoffSeconds ?? 0;
+    const despachoDaImportacaoS =
+      (ORCAMENTO_DESPACHO_IMPORTACAO_LI_MS + CAUDA_DESPACHO_IMPORTACAO_LI_MS) / 1000;
+    const escadaSegundos =
+      tentativas * (execucao + despachoDaImportacaoS) + Math.max(tentativas - 1, 0) * backoff;
+    expect(despachoDaImportacaoS).toBe(100);
+    // The dispatch's own ceiling IS that sum (the budget module derives it, never a third number).
+    expect(DURACAO_MAXIMA_DESPACHO_IMPORTACAO_LI_MS).toBe(despachoDaImportacaoS * 1000);
+    expect(escadaSegundos).toBe(1800);
+    expect(escadaSegundos).toBeLessThanOrEqual(1800);
+    // And a dispatch fits the queue's own timeout, with room for the platform's start-up.
+    expect(despachoDaImportacaoS).toBeLessThan(execucao);
+  });
+
+  it('with K imports running at once (one per conta), each attempt may wait K dispatches: half the hour holds for K = 1 only, the whole hour up to K = 7', () => {
+    // The start guard allows one running import PER CONTA, and every conta's chain rides this one
+    // queue. An intake task waits for the dispatch running when it arrived and for every chain's
+    // continuation scheduled before it (each chain has at most one queued at a time): K
+    // dispatches, so the ladder is 3 × (300 + K × 100) + 2 × 300. Two contas importing at once
+    // (2 100 s) no longer fit half the hot sweep's hour — the margin, not the bound: a ladder that
+    // fits the hour still closes before the hot sweep re-drives the row.
+    const tentativas = fila.retryConfig.maxAttempts ?? 0;
+    const execucao = endpointOf(filaLeituraLojaIntegrada).timeoutSeconds as number;
+    const backoff = fila.retryConfig.maxBackoffSeconds ?? 0;
+    const despachoS = DURACAO_MAXIMA_DESPACHO_IMPORTACAO_LI_MS / 1000;
+    const escada = (k: number): number =>
+      tentativas * (execucao + k * despachoS) + Math.max(tentativas - 1, 0) * backoff;
+    const MEIA_HORA = 1800;
+    const HORA_DO_SWEEP_QUENTE = 3600;
+    expect(escada(1)).toBe(1800);
+    expect(escada(1)).toBeLessThanOrEqual(MEIA_HORA);
+    // ⚠️ NEAR-MISS: one more import at once breaks the half-hour margin.
+    expect(escada(2)).toBe(2100);
+    expect(escada(2)).toBeGreaterThan(MEIA_HORA);
+    // The largest K whose ladder still closes inside the hot sweep's hour.
+    const kMaximo = Math.max(
+      ...[1, 2, 3, 4, 5, 6, 7, 8, 9].filter((k) => escada(k) <= HORA_DO_SWEEP_QUENTE),
+    );
+    expect(kMaximo).toBe(7);
+  });
+
   it('declares the invoker, the leg whose absence fails invisibly (#1133)', () => {
     expect(fila.invoker).toEqual([
       'apphosting@p.iam.gserviceaccount.com',
@@ -812,13 +876,14 @@ describe('every trigger of the codebase', () => {
     ]);
   });
 
-  it('every event-trigger export is in GATILHOS — exactly {onHistoricoFreteLojaIntegrada, onIntegracaoLojaIntegradaChanged, onProdutoLojaIntegradaLinkChanged}', () => {
+  it('every event-trigger export is in GATILHOS — exactly {onHistoricoFreteLojaIntegrada, onImportacaoLojaIntegradaCriada, onIntegracaoLojaIntegradaChanged, onProdutoLojaIntegradaLinkChanged}', () => {
     // The third exhaustiveness twin: the two above filter on `scheduleTrigger`
     // and `taskQueueTrigger`, so an `onDocument*` export would otherwise have its
     // `database`, region, secrets and `retry` read by nothing.
     expect(exportadosCom('eventTrigger')).toEqual(Object.keys(GATILHOS).sort());
     expect(exportadosCom('eventTrigger')).toEqual([
       'onHistoricoFreteLojaIntegrada',
+      'onImportacaoLojaIntegradaCriada',
       'onIntegracaoLojaIntegradaChanged',
       'onProdutoLojaIntegradaLinkChanged',
     ]);

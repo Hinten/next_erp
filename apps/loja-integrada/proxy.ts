@@ -9,9 +9,11 @@ import { NextResponse, type NextRequest } from 'next/server';
 // (/api/webhooks/loja-integrada/…, master plan step 4) is a server→server call
 // from the platform with no preflight, so it stays OUT of the matcher.
 //
-// The methods are the credential routes' verbs: GET (status), PUT (save and
-// renew) and DELETE (remove). POST is not listed on purpose: it is
-// CORS-safelisted, and `cors-proxy-covers-routes.test.js` does not require it.
+// The methods are the routes' verbs: GET (status, the catalogue, the product
+// imports), PUT (save and renew a credential, route a label), DELETE (remove a
+// credential) and POST (start and cancel a product import, master plan step 9).
+// POST is CORS-safelisted, but these calls carry `Authorization` and a JSON body,
+// so the browser preflights them and the preflight must list it.
 
 const DEV_ORIGIN = 'http://localhost:3000';
 
@@ -49,7 +51,7 @@ export function proxy(req: NextRequest) {
     }
     const res = new NextResponse(null, { status: 204 });
     applyCors(res.headers, allowed);
-    res.headers.set('Access-Control-Allow-Methods', 'GET, PUT, DELETE, OPTIONS');
+    res.headers.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
     res.headers.set('Access-Control-Allow-Headers', 'authorization, content-type');
     res.headers.set('Access-Control-Max-Age', '86400');
     return res;

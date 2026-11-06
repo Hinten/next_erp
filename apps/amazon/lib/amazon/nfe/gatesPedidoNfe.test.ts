@@ -6,7 +6,11 @@ import { describe, expect, it } from 'vitest';
 
 import { PedidoAmazonIlegivelError } from '../pedidos/erros';
 import { linhaAmazon, pedidoAmazon, type OpcoesPedidoTeste } from '../testing/pedidoWireAmazon';
-import { gatesDoPedidoAmazonParaNfe } from './gatesPedidoNfe';
+import {
+  ehPedidoDbaAmazon,
+  gatesDoPedidoAmazonParaNfe,
+  solicitacaoCancelamentoAbertaAmazon,
+} from './gatesPedidoNfe';
 
 /** A Delivery-by-Amazon order: MERCHANT, the DBA program, UNSHIPPED — the gates' `segue`. */
 const dba = (o: OpcoesPedidoTeste = {}) =>
@@ -103,5 +107,44 @@ describe('gatesDoPedidoAmazonParaNfe', () => {
       linhaAmazon('L1', { qtd: 1, preco: '10.00' }),
     ];
     expect(() => gatesDoPedidoAmazonParaNfe(dba({ linhas }))).toThrow(PedidoAmazonIlegivelError);
+  });
+});
+
+/**
+ * Step 15 (PR 15-b) reads gates 3 and 4 through the SAME two predicates, now
+ * exported: the gate above calls them, so every test of it is a test of them too.
+ */
+describe('the exported predicates (gates 3 and 4)', () => {
+  it('solicitacaoCancelamentoAbertaAmazon: an open request on ANY line; NEAR-MISS one its own execution closed, and none', () => {
+    const aberta = linhaAmazon('L1', { qtd: 1, preco: '10.00', solicitacao: true });
+    const fechada = linhaAmazon('L1', {
+      qtd: 1,
+      preco: '10.00',
+      solicitacao: true,
+      execucao: true,
+    });
+    expect(solicitacaoCancelamentoAbertaAmazon(dba({ linhas: [aberta] }))).toBe(true);
+    expect(
+      solicitacaoCancelamentoAbertaAmazon(
+        dba({
+          linhas: [
+            linhaAmazon('L1', { qtd: 1, preco: '10.00', execucao: true }),
+            linhaAmazon('L2', { qtd: 1, preco: '10.00', solicitacao: true }),
+          ],
+        }),
+      ),
+    ).toBe(true);
+    expect(solicitacaoCancelamentoAbertaAmazon(dba({ linhas: [fechada] }))).toBe(false);
+    expect(solicitacaoCancelamentoAbertaAmazon(dba())).toBe(false);
+  });
+
+  it('ehPedidoDbaAmazon: MERCHANT + DELIVERY_BY_AMAZON only; NEAR-MISSES AMAZON_EASY_SHIP, fulfilledBy AMAZON, absent, a trailing space', () => {
+    expect(ehPedidoDbaAmazon(dba())).toBe(true);
+    expect(ehPedidoDbaAmazon(dba({ programs: ['PRIME', 'DELIVERY_BY_AMAZON'] }))).toBe(true);
+    expect(ehPedidoDbaAmazon(dba({ programs: ['AMAZON_EASY_SHIP'] }))).toBe(false);
+    expect(ehPedidoDbaAmazon(dba({ por: 'AMAZON' }))).toBe(false);
+    expect(ehPedidoDbaAmazon(dba({ por: null }))).toBe(false);
+    expect(ehPedidoDbaAmazon(dba({ programs: null }))).toBe(false);
+    expect(ehPedidoDbaAmazon(dba({ programs: ['DELIVERY_BY_AMAZON '] }))).toBe(false);
   });
 });

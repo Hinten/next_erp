@@ -1,3 +1,7 @@
+import {
+  OPERACAO_AGENDAMENTO_EASY_SHIP,
+  OPERACAO_TOKEN_RESTRITO,
+} from '@delfrance/integrations-amazon-sp-api';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { gerarCpf, pontuarCpf } from '../testing/documentos';
@@ -17,6 +21,7 @@ import {
   MAX_CAMPO_TEXTO_BYTES,
   MAX_TRECHO_CORPO_BYTES,
   NAO_PRIMITIVO,
+  OPERACOES_COM_TOKEN_RESTRITO_AMAZON,
   type CamposLogAmazon,
   type OpcoesObservadorAmazon,
   camposSeguros,
@@ -93,6 +98,43 @@ describe('the call line is a projection', () => {
       credencial: 'lwa-codigo',
       versaoCredencial: null,
     });
+  });
+});
+
+describe('the credential class (step 15): a Restricted Data Token call says rdt', () => {
+  it('★ mutation 12: a createScheduledPackageBulk line says rdt; getOrder says lwa-acesso; NEAR-MISS: the mint (sent WITH the LWA token) says lwa-acesso', () => {
+    expect(
+      linha({
+        operacao: 'createScheduledPackageBulk',
+        metodo: 'POST',
+        caminho: '/easyShip/2022-03-23/packages/bulk',
+        query: [],
+      }).credencial,
+    ).toBe('rdt');
+    expect(linha({}).credencial).toBe('lwa-acesso');
+    expect(
+      linha({
+        operacao: 'createRestrictedDataToken',
+        metodo: 'POST',
+        caminho: '/tokens/2021-03-01/restrictedDataToken',
+        query: [],
+      }).credencial,
+    ).toBe('lwa-acesso');
+  });
+
+  it('the operation decides EXACTLY, and only on an SP-API call: a near-spelling is lwa-acesso, an LWA exchange keeps its own class', () => {
+    for (const operacao of ['createscheduledpackagebulk', 'createScheduledPackage', 'Bulk']) {
+      expect(linha({ operacao }).credencial, operacao).toBe('lwa-acesso');
+    }
+    expect(linha({ operacao: 42 as never }).credencial).toBe('lwa-acesso');
+    expect(
+      linha({ destino: 'lwa', corpo: null, operacao: 'createScheduledPackageBulk' }).credencial,
+    ).toBe('lwa-refresh');
+  });
+
+  it('the local literal set is EXACTLY the package’s bulk operation — and never the mint', () => {
+    expect([...OPERACOES_COM_TOKEN_RESTRITO_AMAZON]).toEqual([OPERACAO_AGENDAMENTO_EASY_SHIP]);
+    expect(OPERACOES_COM_TOKEN_RESTRITO_AMAZON.has(OPERACAO_TOKEN_RESTRITO)).toBe(false);
   });
 });
 
@@ -453,7 +495,32 @@ describe('registrarEventoAmazon', () => {
     ]);
   });
 
-  it('an evento outside the closed set is <invalido> (near-misses of the step-3, step-4, step-5, step-14 and step-20 names)', () => {
+  it('step 15 adds `agendamento`: written as given, with its `conta` and `fluxo` envelope', () => {
+    const { logger, linhas } = loggerEspiao();
+    registrarEventoAmazon(
+      logger,
+      'agendamento',
+      'INFO',
+      'm',
+      { acao: 'agendar', escreveria: true },
+      { conta: CONTA, fluxo: 'agendamento' },
+    );
+    expect(linhas).toEqual([
+      {
+        nivel: 'info',
+        mensagem: 'm',
+        meta: {
+          acao: 'agendar',
+          escreveria: true,
+          evento: 'agendamento',
+          conta: CONTA,
+          fluxo: 'agendamento',
+        },
+      },
+    ]);
+  });
+
+  it('an evento outside the closed set is <invalido> (near-misses of the step-3, step-4, step-5, step-14, step-15 and step-20 names)', () => {
     const { logger, linhas } = loggerEspiao();
     registrarEventoAmazon(logger, 'tarefas' as never, 'INFO', 'm', {});
     registrarEventoAmazon(logger, 'notificacoes' as never, 'INFO', 'm', {});
@@ -467,7 +534,11 @@ describe('registrarEventoAmazon', () => {
     registrarEventoAmazon(logger, 'nfes' as never, 'INFO', 'm', {});
     registrarEventoAmazon(logger, 'NFE' as never, 'INFO', 'm', {});
     registrarEventoAmazon(logger, 'nf-e' as never, 'INFO', 'm', {});
+    registrarEventoAmazon(logger, 'agendamentos' as never, 'INFO', 'm', {});
+    registrarEventoAmazon(logger, 'easyShip' as never, 'INFO', 'm', {});
     expect(linhas.map((l) => l.meta?.evento)).toEqual([
+      INVALIDO,
+      INVALIDO,
       INVALIDO,
       INVALIDO,
       INVALIDO,

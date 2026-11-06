@@ -24,6 +24,8 @@ import { pacoteAmazon, pedidoAmazon, type OpcoesPacoteTeste } from '../testing/p
 import {
   ESCADA_FRETE_AMAZON,
   ESTADOS_FRETE_CARIMBAVEIS_NFE_AMAZON,
+  ESTADO_FRETE_AGENDADO_AMAZON,
+  ESTADO_FRETE_A_AGENDAR_AMAZON,
   ESTADO_FRETE_DE_DETAILED_STATUS,
   FALHAS_FRETE_AMAZON,
   MERCADORIA_FORA_DO_STATUS_PACOTE_AMAZON,
@@ -1859,5 +1861,40 @@ describe('step 14 (PR 14-b): the NF-e stamp, its clear, and gate 5', () => {
         ressuscitado: false,
       });
     }
+  });
+});
+
+describe('step 15 (PR 15-b): the scheduling targets, and the freight step 15 does NOT write', () => {
+  it('★ "already scheduled" is rung 8 (PENDING_PICK_UP / PENDING_DROP_OFF); "to schedule" is rung 4 (PENDING_SCHEDULE + ACCEPTED)', () => {
+    expect(ESTADO_FRETE_AGENDADO_AMAZON).toBe(ESTADO_FRETE.aguardandoPostagem);
+    expect(ESTADO_FRETE_A_AGENDAR_AMAZON).toBe(ESTADO_FRETE.aguardandoAgendamento);
+    for (const token of ['PENDING_PICK_UP', 'PENDING_DROP_OFF']) {
+      expect(projetarPacoteAmazon(token, 'ACCEPTED'), token).toMatchObject({
+        estado: ESTADO_FRETE_AGENDADO_AMAZON,
+      });
+    }
+    expect(projetarPacoteAmazon('PENDING_SCHEDULE', 'ACCEPTED')).toMatchObject({
+      estado: ESTADO_FRETE_A_AGENDAR_AMAZON,
+      notaNaoExigida: false,
+    });
+    expect(ESCADA_FRETE_AMAZON.indexOf(ESTADO_FRETE_A_AGENDAR_AMAZON)).toBe(4);
+    expect(ESCADA_FRETE_AMAZON.indexOf(ESTADO_FRETE_AGENDADO_AMAZON)).toBe(8);
+  });
+
+  it('★ the verdict REFUSES despachoAutorizado over aguardandoPostagem and over checkFinalizado — on either clock: why step 15 writes no freight', () => {
+    for (const de of [ESTADO_FRETE.aguardandoPostagem, ESTADO_FRETE.checkFinalizado]) {
+      for (const maisNovo of [false, true]) {
+        expect(aplicavel(de, ESTADO_FRETE.despachoAutorizado, { maisNovo }), de).toEqual({
+          escrever: false,
+          motivo: 'regressivo',
+        });
+      }
+    }
+    // NEAR-MISS: over aguardandoAgendamento (rung 4) the same target would be written.
+    expect(aplicavel(ESTADO_FRETE.aguardandoAgendamento, ESTADO_FRETE.despachoAutorizado)).toEqual({
+      escrever: true,
+      estado: 'despachoAutorizado',
+      ressuscitado: false,
+    });
   });
 });

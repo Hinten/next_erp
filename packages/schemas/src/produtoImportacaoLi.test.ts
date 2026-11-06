@@ -212,13 +212,18 @@ describe('lerDetalheProdutoLi — the DETAIL view', () => {
     },
   );
 
-  it('reads the brand from its URI', () => {
+  it('reads the brand from its URI, and keeps that URI VERBATIM for the link', () => {
     expect(
-      lerDetalheProdutoLi({ ...DETALHE_FILHO, marca: '/api/v1/marca/5000001/' })?.marcaId,
-    ).toBe(5000001);
+      lerDetalheProdutoLi({ ...DETALHE_FILHO, marca: '/api/v1/marca/5000001/' }),
+    ).toMatchObject({ marcaId: 5000001, marca: '/api/v1/marca/5000001/' });
+    // ⚠️ NEAR-MISS: a value that does not read as a brand URI is kept as nothing, never verbatim.
+    expect(lerDetalheProdutoLi({ ...DETALHE_FILHO, marca: '/api/v1/marca/None' })).toMatchObject({
+      marcaId: null,
+      marca: null,
+    });
     expect(
-      lerDetalheProdutoLi({ ...DETALHE_FILHO, marca: '/api/v1/marca/None' })?.marcaId,
-    ).toBeNull();
+      lerDetalheProdutoLi({ ...DETALHE_FILHO, marca: '/api/v1/categoria/5000001' }),
+    ).toMatchObject({ marcaId: null, marca: null });
   });
 
   it('keeps a description up to the ceiling verbatim, HTML included', () => {

@@ -673,6 +673,22 @@ const FRASE_MOTIVO_PEDIDO_AMAZON: Record<MotivoPedidoAmazon, string> = {
     'a coleta de um pacote foi cancelada — a coleta, não o pedido. Reagende a coleta no Seller ' +
     'Central; o aviso se encerra quando nenhum pacote estiver com a coleta cancelada, ou se o ' +
     'pedido for cancelado',
+  // Os dois motivos do agendamento da coleta (Easy Ship), gravados só pela
+  // tarefa de agendamento. Quem os encerra é a importação seguinte do pedido
+  // que mostrar a coleta agendada (ou o fim do agendamento), não o conserto em
+  // si — por isso a frase diz "na próxima atualização do pedido".
+  [MOTIVO_PEDIDO_AMAZON.dimensoesAusentes]:
+    'a Amazon recusou o agendamento da coleta porque o anúncio está sem dimensões ou peso — ' +
+    'corrija no Seller Central e reimprima a etiqueta; o aviso se encerra quando a Amazon ' +
+    'registrar o agendamento ou a coleta (na próxima atualização do pedido), ou se o pedido for ' +
+    'cancelado',
+  // Sem um remédio único: o código da recusa pode ter mais de uma causa (peso e
+  // dimensões, ou o prazo do pedido), e os params guardam só o motivo.
+  [MOTIVO_PEDIDO_AMAZON.agendamentoRecusado]:
+    'a Amazon recusou o agendamento da coleta — confira no Seller Central o peso e as dimensões ' +
+    'do anúncio e o prazo do pedido, e agende a coleta por lá; o aviso se encerra quando a ' +
+    'Amazon registrar o agendamento ou a coleta (na próxima atualização do pedido), ou se o ' +
+    'pedido for cancelado',
 };
 
 /** A frase do motivo, ou um texto neutro — o mesmo contrato de {@link fraseMotivoImportacaoParada}. */

@@ -359,8 +359,10 @@ describe('MarketplaceChannel stays deleted (#815)', () => {
     // GET-only read client and a separate write client — with typed errors and
     // paging, paired with `apps/loja-integrada`;
     // `amazon-sp-api`: the two Login with Amazon token exchanges, a GET client
-    // and ONE separate write client (Delivery only: the NF-e upload of step 14)
-    // with typed errors, paired with `apps/amazon` — which is the ADR-0015 shape,
+    // and ONE separate write client (Delivery, Tokens and Easy Ship: the NF-e
+    // upload of step 14, the RDT mint and the pickup bulk of step 15), the
+    // header-free Easy Ship label download, and typed errors, paired with
+    // `apps/amazon` — which is the ADR-0015 shape,
     // the opposite of the throw-only scaffold that was deleted.
     // Shrinking the list alone would have reopened the hole this guard exists
     // for, so the shape they graduated INTO is asserted by the sibling test below.

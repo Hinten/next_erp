@@ -25,6 +25,11 @@ import type { DocData } from './fakeDb';
 export interface RespostaCatalogoLi {
   readonly status: number;
   readonly corpo: unknown;
+  /**
+   * A RAW body sent exactly as given instead of `corpo` (`text/html`): an empty answer or a
+   * gateway's page, the bodies JSON cannot express.
+   */
+  readonly texto?: string;
 }
 
 /** One request the scripted platform received. */
@@ -56,8 +61,11 @@ export function plataformaCatalogoLi(
   return { fetch, chamadas };
 }
 
-/** A JSON `Response`. */
+/** A JSON `Response` (or, with `texto`, that raw body). */
 export function json(r: RespostaCatalogoLi): Response {
+  if (r.texto !== undefined) {
+    return new Response(r.texto, { status: r.status, headers: { 'content-type': 'text/html' } });
+  }
   return new Response(JSON.stringify(r.corpo), {
     status: r.status,
     headers: { 'content-type': 'application/json' },

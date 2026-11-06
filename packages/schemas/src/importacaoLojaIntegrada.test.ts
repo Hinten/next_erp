@@ -149,7 +149,7 @@ describe('importacaoLojaIntegradaSchema — the job document', () => {
       lixeira: { proximoOffset: 0, paginas: 0, linhas: 0 },
       orfaos: { cursorLiId: null },
       familias: { cursorPaiId: null, filhosLidos: [] },
-      aprendizado: { cursorEvidenciaId: null },
+      aprendizado: { cursorEvidenciaId: null, conflitos: [] },
       revisao: { cursorProdutoId: null, anteriorJobId: null },
       mapaCategorias: [],
       marcas: [],

@@ -20,15 +20,23 @@ import { FakeDb, asDb, grpc, increment } from '../testing/fakeDb';
 import { AGORA_MS, DIA_MS, caminhoAviso } from '../testing/fixtures';
 import {
   MOTIVO_AVISO_LI,
+  TIPOS_AVISO_IMPORTACAO_PRODUTOS_LI,
   TIPOS_AVISO_LI,
+  TIPOS_AVISO_PEDIDO_LI,
+  TIPOS_AVISO_POR_ENTIDADE_LI,
   agoraUsDe,
   avisarExpiracaoToken,
   avisarImportacaoParada,
   avisarReconexaoPendente,
   chaveExpiracao,
+  chaveImportacaoComPendenciasLi,
   chaveImportacaoParada,
   chaveReconexao,
+  chaveRevisaoFiscalLi,
+  prefixoDaContaNoAvisoLi,
+  prefixoDoAvisoPorEntidadeLi,
   prazoUsDe,
+  relogioDaImportacaoUs,
   relogioDoDocumentoUs,
   resolverAvisoDeContaRemovida,
   resolverAvisosAposRemocao,
@@ -335,6 +343,10 @@ describe('the import-stopped tipo (step 3) in the orphan pass', () => {
         TIPO_AVISO.lojaIntegradaReversaoComEtiqueta,
         // The status write-back (step 7): one row per pedido, matched by key PREFIX too.
         TIPO_AVISO.lojaIntegradaRastreioDivergente,
+        // The product import (step 9): one row per store category (by key PREFIX), two per conta.
+        TIPO_AVISO.lojaIntegradaCategoriaSemVinculo,
+        TIPO_AVISO.lojaIntegradaRevisaoFiscal,
+        TIPO_AVISO.lojaIntegradaImportacaoComPendencias,
       ].sort(),
     );
     const { chave } = await raise(new FakeDb(), 1_000);
@@ -616,6 +628,61 @@ function contar(texto: string, agulha: string): number {
   return texto.split(agulha).length - 1;
 }
 
+describe('the product import tipos (step 9)', () => {
+  const ID = 'conta-li-1';
+
+  it('two per-conta keys, apart from every other per-conta key', () => {
+    expect(chaveRevisaoFiscalLi(ID)).toBe(
+      chaveDeAviso({ tipo: TIPO_AVISO.lojaIntegradaRevisaoFiscal, conta: ID }),
+    );
+    expect(chaveImportacaoComPendenciasLi(ID)).toBe(
+      chaveDeAviso({ tipo: TIPO_AVISO.lojaIntegradaImportacaoComPendencias, conta: ID }),
+    );
+    const chaves = [
+      chaveExpiracao(ID),
+      chaveReconexao(ID),
+      chaveImportacaoParada(ID),
+      chaveRevisaoFiscalLi(ID),
+      chaveImportacaoComPendenciasLi(ID),
+    ];
+    expect(new Set(chaves).size).toBe(chaves.length);
+  });
+
+  it('the per-category tipo joins the per-entity set (matched by key prefix); the per-conta two do not', () => {
+    expect(TIPOS_AVISO_POR_ENTIDADE_LI.has(TIPO_AVISO.lojaIntegradaCategoriaSemVinculo)).toBe(true);
+    for (const tipo of TIPOS_AVISO_PEDIDO_LI)
+      expect(TIPOS_AVISO_POR_ENTIDADE_LI.has(tipo), tipo).toBe(true);
+    expect(TIPOS_AVISO_POR_ENTIDADE_LI.has(TIPO_AVISO.lojaIntegradaRevisaoFiscal)).toBe(false);
+    expect(TIPOS_AVISO_POR_ENTIDADE_LI.has(TIPO_AVISO.lojaIntegradaImportacaoComPendencias)).toBe(
+      false,
+    );
+    expect([...TIPOS_AVISO_IMPORTACAO_PRODUTOS_LI].sort()).toEqual(
+      [
+        TIPO_AVISO.lojaIntegradaCategoriaSemVinculo,
+        TIPO_AVISO.lojaIntegradaRevisaoFiscal,
+        TIPO_AVISO.lojaIntegradaImportacaoComPendencias,
+      ].sort(),
+    );
+  });
+
+  it('a category row’s prefix is its conta’s; near-miss: a per-conta tipo has none', () => {
+    const tipo = TIPO_AVISO.lojaIntegradaCategoriaSemVinculo;
+    const chave = chaveDeAviso({ tipo, conta: ID, entidade: '7645875' });
+    expect(prefixoDoAvisoPorEntidadeLi(tipo, chave)).toBe(prefixoDaContaNoAvisoLi(tipo, ID));
+    expect(prefixoDoAvisoPorEntidadeLi(tipo, chave)).not.toBe(
+      prefixoDaContaNoAvisoLi(tipo, 'conta-li-12'),
+    );
+    expect(
+      prefixoDoAvisoPorEntidadeLi(TIPO_AVISO.lojaIntegradaRevisaoFiscal, chaveRevisaoFiscalLi(ID)),
+    ).toBeNull();
+  });
+
+  it('a job stamp in ms becomes the µs clock, through agoraUsDe', () => {
+    expect(relogioDaImportacaoUs(AGORA_MS)).toBe(agoraUsDe({ nowMs: AGORA_MS }));
+    expect(relogioDaImportacaoUs(AGORA_MS + 1)).toBe(relogioDaImportacaoUs(AGORA_MS) + 1_000);
+  });
+});
+
 describe('⚠️ the µs boundary: two converting modules, every conversion counted', () => {
   const rotas = fontes(RAIZ_ROTAS);
   const arquivos = [...fontes(RAIZ_LIB), ...rotas];
@@ -630,8 +697,9 @@ describe('⚠️ the µs boundary: two converting modules, every conversion coun
     expect(arquivos.length).toBeGreaterThan(5);
     expect(arquivos).toContain(avisos);
     expect(arquivos).toContain(dataLi);
-    // The three credential routes plus the four catalogue reads (step 10).
-    expect(rotas.filter((r) => r.includes('conta'))).toHaveLength(7);
+    // The three credential routes, the four catalogue reads (step 10) and the product import's
+    // four routes (step 9).
+    expect(rotas.filter((r) => r.includes('conta'))).toHaveLength(11);
   });
 
   it('this module calls the ms → µs converter exactly twice (agoraUsDe, prazoUsDe)', () => {

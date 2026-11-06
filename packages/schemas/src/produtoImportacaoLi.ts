@@ -132,6 +132,11 @@ export const produtoLiDetalhadoSchema = produtoLiLidoSchema.extend({
   /** `pai` was neither empty nor a readable product URI — never read as "no parent". */
   paiIlegivel: z.boolean(),
   marcaId: idLiSchema.nullable(),
+  /**
+   * The brand URI a link doc stores VERBATIM (the row URIs' rule), kept only when it reads as a
+   * brand URI (`marcaId` set); `null` otherwise. A detail stored before it existed reads `null`.
+   */
+  marca: z.string().min(1).nullable().default(null),
   destaque: z.boolean().nullable(),
   usado: z.boolean().nullable(),
   /** kg; `null` when absent, unreadable or not positive. */
@@ -397,12 +402,14 @@ export function lerDetalheProdutoLi(detalhe: LinhaDetalheProdutoLi): ProdutoLiDe
   const descricaoLonga = descricaoTamanho > MAX_DESCRICAO_LI;
 
   const { imagens, descartadas } = lerImagens(detalhe);
+  const marcaId = idDoRecursoLi(detalhe.marca, RECURSO_URI_LI.marca);
 
   return {
     ...linha,
     paiId,
     paiIlegivel: !paiVazio && paiId === null,
-    marcaId: idDoRecursoLi(detalhe.marca, RECURSO_URI_LI.marca),
+    marcaId,
+    marca: marcaId !== null && typeof detalhe.marca === 'string' ? detalhe.marca : null,
     destaque: booleano(detalhe.destaque),
     usado: booleano(detalhe.usado),
     pesoKg: medidaPositivaLi(detalhe.peso),

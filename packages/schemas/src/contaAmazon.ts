@@ -307,6 +307,91 @@ export const erroEnvioNfeAmazonSchema = erroContaAmazonSchema.extend({
 export type ErroEnvioNfeAmazon = z.infer<typeof erroEnvioNfeAmazonSchema>;
 
 /* -------------------------------------------------------------------------- */
+/*                    The Easy Ship label (step 15, PR 15-b)                   */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Why the Easy Ship label of a pedido cannot be printed (or its pickup
+ * scheduled) right now — the closed backend slug a label refusal carries in
+ * its `motivo`. The scheduling decision of `apps/amazon` answers it; the label
+ * route's own error codes (and the envelope that carries this slug, a PLAIN
+ * string, the {@link erroEnvioNfeAmazonSchema} precedent, so a slug a newer
+ * backend adds still parses) arrive with the route, and `apps/web` narrows the
+ * string through this schema, falling back to a neutral sentence.
+ *
+ * - The pedido as stored: `nao-amazon` (not a PROVED Amazon pedido of a conta),
+ *   `outra-integradora` (its freight block belongs to another integradora, or
+ *   names none), `pedido-bloqueado` (the pedido is held at `error`),
+ *   `mercadoria-fora` (its freight says the goods already left).
+ * - The live order: `pedido-cancelado`, `pedido-pendente`,
+ *   `cancelamento-solicitado` (an open buyer request), `nao-dba` (not Delivery
+ *   by Amazon), `ja-enviado`, `status-pedido-inesperado`, `pacote-desconhecido`
+ *   (a package status the ERP does not know, or a package without a
+ *   reference), `coleta-cancelada` (Amazon cancelled the pickup: rescheduling
+ *   stays in Seller Central), `marketplace-estrangeiro`, `nf-nao-requerida`
+ *   (the order-level invoice status `NOT_REQUIRED`: only `ACCEPTED` schedules).
+ * - The pedido's NF-e documents: `nfe-ambigua` (two authorized sale notes),
+ *   `nfe-substituta` (a cancelled sale note beside the authorized one),
+ *   `nfe-cancelada` (a cancelled sale note and no authorized one).
+ * - Amazon's answer to the scheduling: `dimensoes-ausentes` (the listing lacks
+ *   dimensions or weight), `agendamento-recusado` (any other refusal).
+ * - Waiting for Amazon to accept the NF-e, keyed on the order-level invoice
+ *   status: `nfe-em-processamento` (`PROCESSING`, absent or unknown),
+ *   `nfe-recusada-pela-amazon` (`ERRORED`), `nfe-nao-enviada` (`NOT_FOUND`).
+ */
+export const motivoEtiquetaAmazonSchema = z.enum([
+  'nao-amazon',
+  'outra-integradora',
+  'pedido-bloqueado',
+  'mercadoria-fora',
+  'pedido-cancelado',
+  'pedido-pendente',
+  'cancelamento-solicitado',
+  'nao-dba',
+  'ja-enviado',
+  'status-pedido-inesperado',
+  'pacote-desconhecido',
+  'coleta-cancelada',
+  'marketplace-estrangeiro',
+  'nf-nao-requerida',
+  'nfe-ambigua',
+  'nfe-substituta',
+  'nfe-cancelada',
+  'dimensoes-ausentes',
+  'agendamento-recusado',
+  'nfe-em-processamento',
+  'nfe-recusada-pela-amazon',
+  'nfe-nao-enviada',
+]);
+export type MotivoEtiquetaAmazon = z.infer<typeof motivoEtiquetaAmazonSchema>;
+
+/** Named members of {@link motivoEtiquetaAmazonSchema} — see `delfrance/prefer-schema-enum`. */
+export const MOTIVO_ETIQUETA_AMAZON = {
+  naoAmazon: 'nao-amazon',
+  outraIntegradora: 'outra-integradora',
+  pedidoBloqueado: 'pedido-bloqueado',
+  mercadoriaFora: 'mercadoria-fora',
+  pedidoCancelado: 'pedido-cancelado',
+  pedidoPendente: 'pedido-pendente',
+  cancelamentoSolicitado: 'cancelamento-solicitado',
+  naoDba: 'nao-dba',
+  jaEnviado: 'ja-enviado',
+  statusPedidoInesperado: 'status-pedido-inesperado',
+  pacoteDesconhecido: 'pacote-desconhecido',
+  coletaCancelada: 'coleta-cancelada',
+  marketplaceEstrangeiro: 'marketplace-estrangeiro',
+  nfNaoRequerida: 'nf-nao-requerida',
+  nfeAmbigua: 'nfe-ambigua',
+  nfeSubstituta: 'nfe-substituta',
+  nfeCancelada: 'nfe-cancelada',
+  dimensoesAusentes: 'dimensoes-ausentes',
+  agendamentoRecusado: 'agendamento-recusado',
+  nfeEmProcessamento: 'nfe-em-processamento',
+  nfeRecusadaPelaAmazon: 'nfe-recusada-pela-amazon',
+  nfeNaoEnviada: 'nfe-nao-enviada',
+} as const satisfies Record<string, MotivoEtiquetaAmazon>;
+
+/* -------------------------------------------------------------------------- */
 /*                                  Answers                                   */
 /* -------------------------------------------------------------------------- */
 

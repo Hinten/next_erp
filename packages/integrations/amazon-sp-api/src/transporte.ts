@@ -1,17 +1,25 @@
 /**
  * The transport core shared by `client.ts` (SP-API reads) and `lwa.ts` (the
  * token exchanges): the input checks both make, the observer event, and the ONE
- * place a request is sent — deadline, body read, release and the catch ladder.
+ * place an SP-API or LWA request is sent — deadline, body read, release and the
+ * catch ladder. The Easy Ship document download (`documentosEasyShip.ts`) keeps
+ * its own ladder on purpose (no headers, `redirect: 'error'`, a byte cap, no
+ * observer, `AmazonDocumentoEasyShipError`), in the same order: deadline,
+ * caller abort, `TypeError`, rethrow. A fix to one ladder belongs in the other.
  *
  * ⚠️ INTERNAL. The barrel (`index.ts`) does not re-export this module; the
  * public constants and the observer types are re-exported from `client.ts`.
  * Two copies of the deadline-and-catch sequence would drift (#1094 fixed the
  * same ladder in five clients one at a time), so both callers go through
  * {@link enviar} and only the STATUS classification stays per destination.
+ *
+ * It also holds the one order-id grammar check the operation helpers share
+ * ({@link exigirPedidoAmazon}).
  */
 import { abrirPrazo } from '@delfrance/core/wire';
 
 import {
+  AmazonConfigError,
   AmazonNetworkError,
   AmazonTimeoutError,
   type CodigoErroLwa,
@@ -38,6 +46,9 @@ const ASCII_IMPRIMIVEL = /^[\x20-\x7E]+$/;
 
 /** `x-amzn-RequestId` as we keep it: a plain id, never free text. */
 const REQUEST_ID = /^[A-Za-z0-9._:-]{1,128}$/;
+
+/** An Amazon order id: 3-7-7 digits. */
+const PEDIDO_AMAZON = /^\d{3}-\d{7}-\d{7}$/;
 
 /* -------------------------------------------------------------------------- */
 /*                                 The checks                                 */
@@ -76,6 +87,18 @@ export function userAgentValido(ua: unknown): ua is string {
 export function refValida(ref: unknown, segredos: readonly string[]): ref is string {
   if (typeof ref !== 'string' || ref.length === 0 || ref.length > MAX_REF_CREDENCIAL) return false;
   return !segredos.some((s) => s.length > 0 && ref.includes(s));
+}
+
+/**
+ * An order id outside Amazon's 3-7-7 digit grammar is refused with
+ * `AmazonConfigError('pedido')`, before any credential is read or anything is
+ * sent. One copy for every helper that puts an order id in a query or a body
+ * (`entrega.ts`, `easyShip.ts`), so the grammar cannot drift between them.
+ */
+export function exigirPedidoAmazon(orderId: unknown, operacao: string): asserts orderId is string {
+  if (typeof orderId !== 'string' || !PEDIDO_AMAZON.test(orderId)) {
+    throw new AmazonConfigError('pedido', { operacao, refCredencial: null });
+  }
 }
 
 /** Whether any of the secrets appears inside `texto`. */
@@ -153,6 +176,9 @@ export type ResultadoChamadaAmazon =
  *   out; the app's logger applies its own allow-list and size cap.
  * - LWA: `corpo` is ALWAYS `null`. A 200 IS the token pair, and an error carries
  *   an `error_description`; every LWA body stays out of the logs.
+ * - The SP-API Tokens API (`/tokens/…`, the Restricted Data Token mint):
+ *   `corpo` is ALWAYS `null` too, for the same reason — a 2xx IS a credential
+ *   (`client.ts`). Its `codigosErro` still ride the event.
  *
  * The event exists only in memory.
  */
@@ -182,7 +208,7 @@ export interface ChamadaAmazon {
   readonly codigosErro: readonly string[];
   /** LWA only: the `error` code of a non-2xx body. */
   readonly codigoLwa: CodigoErroLwa | null;
-  /** See the interface header: scrubbed text for SP-API, always `null` for LWA. */
+  /** See the interface header: scrubbed text for SP-API, always `null` for LWA and the Tokens API. */
   readonly corpo: string | null;
 }
 
@@ -194,8 +220,8 @@ export type ParteDoEvento = Pick<
   Partial<Pick<ChamadaAmazon, 'codigosErro' | 'codigoLwa'>>;
 
 /**
- * The emitter for ONE request. `levaCorpo: false` (LWA) forces `corpo: null`
- * structurally, whatever a call site passes.
+ * The emitter for ONE request. `levaCorpo: false` (LWA, and the SP-API Tokens
+ * API) forces `corpo: null` structurally, whatever a call site passes.
  */
 export function criarEmissor(
   fixo: Pick<

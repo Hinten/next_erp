@@ -13,7 +13,8 @@
  *
  * ## Exactly what it supports — and it THROWS on anything else
  *
- *  - `doc.get()` → `{ exists, id, updateTime, readTime, data() }`;
+ *  - `doc.get()` → `{ exists, id, createTime, updateTime, readTime, data() }` — see "The
+ *    stamps" below for `createTime`;
  *  - `doc.create(data)` — rejects gRPC 6 (ALREADY_EXISTS) on an existing doc;
  *  - `doc.update(patch)` — rejects gRPC 5 (NOT_FOUND) on a missing doc;
  *  - `doc.update(patch, { lastUpdateTime })` — rejects gRPC 9
@@ -25,9 +26,25 @@
  *  - `doc.delete()` — idempotent, like the real one;
  *  - `doc.set(data, { merge: true })` — an upsert of FLAT fields (step 3: the
  *    shared notification store's `mark` is a merge-set). Exactly that option:
- *    a plain `set` still throws, and so does a nested map in the patch, whose
+ *    any other option throws, and so does a nested map in the patch, whose
  *    field-by-field deep merge this fake does not model;
+ *  - `doc.set(data)` with NO options — a whole-document overwrite, creating
+ *    the document when absent (step 9: the import job's snapshot pages and
+ *    detail docs, written at deterministic ids by their only writer, so a
+ *    retried unit overwrites its own earlier attempt). Its payload meets the
+ *    `create` refusals (`undefined`, and neither sentinel is modelled in it),
+ *    and its log entry carries `sobrescrita: true`;
  *  - every write resolves `{ writeTime }`;
+ *  - a LOST REPLY ({@link FakeDb.respostaPerdidaNaProximaEscrita}, step 9): the next guarded
+ *    `update` on a path LANDS and then rejects gRPC 9 — what the Admin SDK reports when a commit
+ *    landed, its reply was lost (UNAVAILABLE), and the SDK's own retry of the same commit met the
+ *    stamp of its own write. The caller sees a lost precondition for a write that is stored. Given
+ *    an error, it rejects with THAT one instead: a commit that landed while the call surfaced a
+ *    DEADLINE_EXCEEDED, or an UNAVAILABLE after the SDK's retries;
+ *  - a ONE-SHOT read failure ({@link FakeDb.falharProximaLeitura}, step 9): the next `get()` on a
+ *    path rejects, the one after it reads normally — a re-read that failed transiently once;
+ *  - a hook BEFORE a query is answered ({@link FakeDb.antesDaProximaConsulta}, step 9): the
+ *    one-shot window a concurrent writer lands in while a reader pages a collection;
  *  - the `{ __increment: n }` sentinel ({@link increment}), APPLIED on write,
  *    because `escreverAviso` writes `deps.increment(1)`;
  *  - the `{ __arrayUnion: [...] }` sentinel ({@link arrayUnion}), APPLIED on
@@ -45,15 +62,22 @@
  *    `limit`, `startAfter(doc)` and `get()` → `{ docs, empty, size, readTime }`
  *    — see "Queries" below. Each result doc carries its `ref`, whose
  *    `parent.parent` is the owning document (`ref.parent.parent.id`);
+ *  - `orderBy(FieldPath.documentId())` and, on a query ordered by it ALONE,
+ *    `startAfter('<a plain document id>')` (step 9: the product import's report
+ *    pages its job's items in document-key order) — see "Queries" below;
+ *  - `collection().doc()` with NO id (step 9: the import job's auto id): a fresh
+ *    id from a per-fake counter, 20 letters and digits like the SDK's;
  *  - `collectionGroup(id)` (step 5: the link docs under every produto): the
  *    same query builder over every stored document whose LAST collection
  *    segment is `id`, at any depth;
  *  - `batch()` (step 5: the pedido and its pagamentos in ONE commit) — see
  *    "The batch" below.
  *
- * Everything else — a plain `set`, any other operator, a dotted update key, an
+ * Everything else — a `set` with any other option, any other operator, a dotted update key, an
  * `undefined` value, a precondition that is not a stamp, an `orderBy` over a
- * value that is not null/boolean/number/string — throws. That is the Shopee
+ * value that is not null/boolean/number/string, an `orderBy` over a `FieldPath`
+ * other than the document key, a `startAfter` VALUE on any other ordering —
+ * throws. That is the Shopee
  * step-8 lesson: a double that silently answers "matches nothing" or "wrote it"
  * for a call it does not model lets every suite read green. The only atomic
  * multi-document write modelled is the batch below; the multi-document
@@ -101,6 +125,12 @@
  *    (a resolved aviso, a deleted row) pages on exactly as it does in
  *    production. A snapshot missing an `orderBy` field, and an `orderBy` after
  *    a cursor, throw, as the SDK does.
+ *  - **`orderBy(FieldPath.documentId())` orders by the document KEY** (the id in
+ *    a collection, the full path in a group), never filters for existence, and
+ *    a query ordered by it alone takes `startAfter('<id>')`: a plain id, seeking
+ *    past it whether or not a document of that id exists. A value with a `/`,
+ *    an empty one, or a value cursor on any other ordering throws, as the SDK
+ *    does for the first two.
  *
  * ## Read times
  *
@@ -120,7 +150,18 @@
  *
  * ⚠️ An object, not a number: two reads of one real `Timestamp` are two
  * instances, so `a.updateTime === b.updateTime` is false for equal real stamps.
- * The precondition here compares through `isEqual`, never by reference.
+ * The precondition here compares through `isEqual`, never by reference. Its
+ * `valueOf()` is the SDK's ordering text byte for byte — `<seconds - MIN_SECONDS>`
+ * padded to 12, a dot, the nanoseconds padded to 9 — so a fake stamp orders
+ * against a real `Timestamp` as two real ones do (`fakeDb.test.ts` pins both).
+ *
+ * Every snapshot of an existing document — `get()`, a query's docs — also carries
+ * `createTime`, as the server keeps it (step 9: a retried import unit recognises
+ * the links its own job created): the stamp of the write that brought the
+ * document into being (a `create`, a `set` or merge-`set` on an absent path, a
+ * batch `create`, a `seed` of a new path), KEPT by every later write to it
+ * (updates, both `set`s, a re-`seed`), and new again only after a delete. An
+ * absent document has none.
  *
  * ## Interleavings
  *
@@ -139,10 +180,15 @@ export interface CarimboFake {
   readonly nanoseconds: number;
   isEqual(outro: unknown): boolean;
   toMillis(): number;
+  /** The SDK's ordering text, byte for byte (header, "The stamps"). */
+  valueOf(): string;
 }
 
 /** The first stamp's epoch, in µs: 2027-01-15T08:00:00Z. */
 const INICIO_US = 1_800_000_000_000_000;
+
+/** The SDK's `MIN_SECONDS` (0001-01-01T00:00:00Z), which its `valueOf()` offsets seconds by. */
+const MIN_SECONDS_DO_SDK = -62_135_596_800;
 
 function carimbo(us: number): CarimboFake {
   const seconds = Math.floor(us / 1_000_000);
@@ -153,6 +199,8 @@ function carimbo(us: number): CarimboFake {
     isEqual: (outro: unknown) =>
       ehCarimbo(outro) && outro.seconds === seconds && outro.nanoseconds === nanoseconds,
     toMillis: () => seconds * 1000 + Math.floor(nanoseconds / 1_000_000),
+    valueOf: () =>
+      `${String(seconds - MIN_SECONDS_DO_SDK).padStart(12, '0')}.${String(nanoseconds).padStart(9, '0')}`,
   };
 }
 
@@ -248,6 +296,8 @@ function recusarIndefinido(valor: unknown, caminho: string): void {
 interface Stored {
   data: DocData;
   updateTime: CarimboFake;
+  /** The stamp of the write that created the document; kept by every later write (header). */
+  createTime: CarimboFake;
 }
 
 /** The operators this fake models (module header). */
@@ -275,11 +325,31 @@ function satisfaz(armazenado: unknown, f: Filtro): boolean {
 interface Ordem {
   campo: string;
   direcao: 'asc' | 'desc';
+  /** `orderBy(FieldPath.documentId())`: the document KEY, never a stored field. */
+  chave?: true;
+}
+
+/** How a key ordering is recorded in {@link ConsultaFake.ordens}: the SDK's own name for it. */
+const CAMPO_DA_CHAVE = '__name__';
+
+/**
+ * Whether `campo` is the SDK's "the document key": a `FieldPath` (an object with `isEqual`) whose
+ * formatted name is `__name__` — exactly what `FieldPath.documentId()` is, and what the SDK itself
+ * treats as equal to it. Read by shape, never by importing the class: several route suites mock the
+ * SDK's Firestore module, and this fake must not depend on what they keep.
+ */
+function ehChaveDoDocumento(campo: unknown): boolean {
+  return (
+    typeof campo === 'object' &&
+    campo !== null &&
+    typeof (campo as { isEqual?: unknown }).isEqual === 'function' &&
+    String(campo) === CAMPO_DA_CHAVE
+  );
 }
 
 /** One write, as {@link FakeDb.escritas} records it. */
 export interface EscritaFake {
-  /** `set` is only ever the merge form (`set(data, { merge: true })`). */
+  /** `set` is the merge form (`set(data, { merge: true })`) or, with `sobrescrita`, the overwrite. */
   readonly verbo: 'create' | 'update' | 'delete' | 'set';
   readonly caminho: string;
   /** The payload as handed over (`null` for a delete). */
@@ -287,6 +357,8 @@ export interface EscritaFake {
   readonly writeTime: CarimboFake;
   /** The batch it landed in (1, 2, … per fake); absent on a single-document write. */
   readonly lote?: number;
+  /** A plain `set(data)`: the whole document replaced. Absent on every other write. */
+  readonly sobrescrita?: true;
 }
 
 /** One query, as {@link FakeDb.consultas} records it. */
@@ -321,6 +393,11 @@ function compararValores(a: unknown, b: unknown, campo: string): number {
   return (a as boolean | number | string) < (b as boolean | number | string) ? -1 : 1;
 }
 
+/** Two document keys, in key order. */
+function compararIds(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
 /** A row as the ordering sees it: an id and the values of its fields. */
 interface Posicao {
   readonly id: string;
@@ -332,11 +409,14 @@ interface Posicao {
  * direction of the LAST `orderBy` (ascending when there is none).
  */
 function compararPosicoes(a: Posicao, b: Posicao, ordens: readonly Ordem[]): number {
-  for (const { campo, direcao } of ordens) {
-    const c = compararValores(a.data[campo], b.data[campo], campo);
+  for (const { campo, direcao, chave } of ordens) {
+    const c =
+      chave === true
+        ? compararIds(a.id, b.id)
+        : compararValores(a.data[campo], b.data[campo], campo);
     if (c !== 0) return direcao === 'desc' ? -c : c;
   }
-  const c = a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+  const c = compararIds(a.id, b.id);
   return (ordens.at(-1)?.direcao ?? 'asc') === 'desc' ? -c : c;
 }
 
@@ -456,7 +536,11 @@ export class FakeDb {
   private readonly falhasDeLeitura = new Map<string, Error>();
   private readonly falhasDeEscrita = new Map<string, Error>();
   private readonly falhasDeConsulta = new Map<string, Error>();
+  private readonly respostasPerdidas = new Map<string, Error>();
+  private readonly falhasDeLeituraUnicas = new Map<string, Error[]>();
+  private readonly ganchosDeConsulta = new Map<string, (() => Promise<void> | void)[]>();
   private lotes = 0;
+  private idsAutomaticos = 0;
 
   /** Every write that LANDED, in order. A refused write is not here. */
   readonly escritas: EscritaFake[] = [];
@@ -469,8 +553,14 @@ export class FakeDb {
   seed(caminho: string, data: DocData): CarimboFake {
     recusarIndefinido(data, caminho);
     const updateTime = this.proximoCarimbo();
-    this.store.set(caminho, { data: structuredClone(data), updateTime });
+    this.guardar(caminho, structuredClone(data), updateTime);
     return updateTime;
+  }
+
+  /** Store `data` at `caminho` under `updateTime`, keeping a stored `createTime` (module header). */
+  private guardar(caminho: string, data: DocData, updateTime: CarimboFake): void {
+    const createTime = this.store.get(caminho)?.createTime ?? updateTime;
+    this.store.set(caminho, { data, updateTime, createTime });
   }
 
   /** The stored document, or `undefined`. A copy: mutating it changes nothing. */
@@ -512,6 +602,23 @@ export class FakeDb {
     else this.falhasDeLeitura.set(caminho, err);
   }
 
+  /** The NEXT `get()` on `caminho` rejects with `err` (one-shot; queue several to fail several). */
+  falharProximaLeitura(caminho: string, err: Error): void {
+    this.falhasDeLeituraUnicas.set(caminho, [
+      ...(this.falhasDeLeituraUnicas.get(caminho) ?? []),
+      err,
+    ]);
+  }
+
+  /**
+   * Run `fn` right before the NEXT query on `colecao` is answered (one-shot; queue several to
+   * intercept several): the window a concurrent writer lands in while a reader pages a collection.
+   * `fn` may write through this same fake.
+   */
+  antesDaProximaConsulta(colecao: string, fn: () => Promise<void> | void): void {
+    this.ganchosDeConsulta.set(colecao, [...(this.ganchosDeConsulta.get(colecao) ?? []), fn]);
+  }
+
   /** Every query on `colecao` rejects with `err` until cleared with `null`. */
   falharConsulta(colecao: string, err: Error | null): void {
     if (err === null) this.falhasDeConsulta.delete(colecao);
@@ -522,6 +629,20 @@ export class FakeDb {
   falharEscrita(caminho: string, err: Error | null): void {
     if (err === null) this.falhasDeEscrita.delete(caminho);
     else this.falhasDeEscrita.set(caminho, err);
+  }
+
+  /**
+   * The NEXT guarded `update` on `caminho` (one with a `lastUpdateTime`) lands, and then rejects
+   * gRPC 9 (one-shot; module header, "a LOST REPLY"): the SDK retried a commit whose reply was lost,
+   * and the retry met its own write's stamp. With `erro`, it rejects with that error instead (a
+   * DEADLINE_EXCEEDED surfaced for a commit that landed). Any other write on the path is not
+   * affected.
+   */
+  respostaPerdidaNaProximaEscrita(
+    caminho: string,
+    erro: Error = grpc(9, 'FAILED_PRECONDITION'),
+  ): void {
+    this.respostasPerdidas.set(caminho, erro);
   }
 
   private proximoCarimbo(): CarimboFake {
@@ -548,6 +669,7 @@ export class FakeDb {
     caminho: string,
     dados: DocData | null,
     noLote?: { readonly writeTime: CarimboFake; readonly lote: number },
+    sobrescrita?: true,
   ): CarimboFake {
     const writeTime = noLote?.writeTime ?? this.proximoCarimbo();
     this.escritas.push({
@@ -556,6 +678,7 @@ export class FakeDb {
       dados: dados === null ? null : structuredClone(dados),
       writeTime,
       ...(noLote === undefined ? {} : { lote: noLote.lote }),
+      ...(sobrescrita === undefined ? {} : { sobrescrita }),
     });
     return writeTime;
   }
@@ -584,11 +707,17 @@ export class FakeDb {
         this.leituras.push(caminho);
         const falha = this.falhasDeLeitura.get(caminho);
         if (falha) return Promise.reject(falha);
+        const unica = this.falhasDeLeituraUnicas.get(caminho)?.shift();
+        if (this.falhasDeLeituraUnicas.get(caminho)?.length === 0) {
+          this.falhasDeLeituraUnicas.delete(caminho);
+        }
+        if (unica !== undefined) return Promise.reject(unica);
         const atual = this.store.get(caminho);
         const dados = atual === undefined ? undefined : structuredClone(atual.data);
         return Promise.resolve({
           id,
           exists: atual !== undefined,
+          createTime: atual?.createTime,
           updateTime: atual?.updateTime,
           readTime: this.carimboDeLeitura(),
           data: () => dados,
@@ -600,7 +729,7 @@ export class FakeDb {
         if (this.store.has(caminho)) throw grpc(6, 'ALREADY_EXISTS');
         validarCriacao(caminho, data);
         const writeTime = this.registrar('create', caminho, data);
-        this.store.set(caminho, { data: structuredClone(data), updateTime: writeTime });
+        this.guardar(caminho, structuredClone(data), writeTime);
         return { writeTime };
       },
       update: async (patch: DocData, precondicao?: PrecondicaoFake) => {
@@ -612,7 +741,14 @@ export class FakeDb {
         const recusa = recusaDeAtualizacao(atual, precondicao);
         if (recusa !== null || atual === undefined) throw recusa ?? grpc(5, 'NOT_FOUND');
         const writeTime = this.registrar('update', caminho, patch);
-        this.store.set(caminho, { data: this.aplicar(atual.data, patch), updateTime: writeTime });
+        this.guardar(caminho, this.aplicar(atual.data, patch), writeTime);
+        const perdida = this.respostasPerdidas.get(caminho);
+        if (precondicao?.lastUpdateTime !== undefined && perdida !== undefined) {
+          this.respostasPerdidas.delete(caminho);
+          // Stored, and the SDK's retry of the same commit met its own stamp (module header) — or
+          // the call surfaced another error for a commit that landed all the same.
+          throw perdida;
+        }
         return { writeTime };
       },
       delete: async (precondicao?: unknown) => {
@@ -627,6 +763,17 @@ export class FakeDb {
       // NOT async on purpose: an unmodelled call throws synchronously, before
       // anything could be mistaken for a write that landed.
       set: (data: DocData, opcoes?: unknown) => {
+        if (opcoes === undefined) {
+          // The whole-document overwrite (module header): the `create` refusals, then it lands
+          // whether or not the document exists, replacing every field.
+          validarCriacao(caminho, data);
+          return (async () => {
+            await this.antesDeEscrever(caminho);
+            const writeTime = this.registrar('set', caminho, data, undefined, true);
+            this.guardar(caminho, structuredClone(data), writeTime);
+            return { writeTime };
+          })();
+        }
         const chaves =
           typeof opcoes === 'object' && opcoes !== null ? Object.keys(opcoes as object) : [];
         const ehMerge =
@@ -635,8 +782,8 @@ export class FakeDb {
           (opcoes as { merge: unknown }).merge === true;
         if (!ehMerge) {
           throw new Error(
-            'FakeDb: set() não é modelado — nada neste app sobrescreve um documento inteiro ' +
-              '(só set(…, { merge: true }), o mark do pipeline compartilhado)',
+            'FakeDb: set() com estas opções não é modelado — só set(data), a sobrescrita ' +
+              'inteira, e set(…, { merge: true }), o mark do pipeline compartilhado',
           );
         }
         recusarIndefinido(data, caminho);
@@ -664,7 +811,7 @@ export class FakeDb {
           await this.antesDeEscrever(caminho);
           const atual = this.store.get(caminho);
           const writeTime = this.registrar('set', caminho, data);
-          this.store.set(caminho, { data: this.aplicar(atual?.data, data), updateTime: writeTime });
+          this.guardar(caminho, this.aplicar(atual?.data, data), writeTime);
           return { writeTime };
         })();
       },
@@ -681,8 +828,14 @@ export class FakeDb {
     return {
       ...raiz,
       doc: (id?: string) => {
+        if (id === undefined) {
+          // The SDK's auto id is 20 letters and digits; this one is too, from a counter.
+          this.idsAutomaticos += 1;
+          const automatico = `fakeauto${String(this.idsAutomaticos).padStart(12, '0')}`;
+          return this.docRef(`${colecao}/${automatico}`, automatico);
+        }
         if (typeof id !== 'string' || id === '') {
-          throw new Error('FakeDb: doc() sem id não é modelado');
+          throw new Error('FakeDb: doc() com um id vazio ou que não é texto não é modelado');
         }
         return this.docRef(`${colecao}/${id}`, id);
       },
@@ -751,7 +904,7 @@ export class FakeDb {
           const anterior = e.verbo === 'create' ? undefined : this.store.get(e.caminho)?.data;
           const dados =
             e.verbo === 'create' ? structuredClone(e.dados) : this.aplicar(anterior, e.dados);
-          this.store.set(e.caminho, { data: dados, updateTime: noLote.writeTime });
+          this.guardar(e.caminho, dados, noLote.writeTime);
         }
         return fila.map(() => ({ writeTime: noLote.writeTime }));
       },
@@ -782,16 +935,38 @@ export class FakeDb {
         }
         return derivar({ filtros: [...estado.filtros, { campo, op, valor }] });
       },
-      orderBy: (campo: string, direcao: 'asc' | 'desc' = 'asc') => {
+      orderBy: (campo: unknown, direcao: 'asc' | 'desc' = 'asc') => {
         if (estado.apos !== null) {
           // The SDK freezes a cursor's values against the orderBy known when it
           // was set, and refuses a later one.
           throw new Error('FakeDb: orderBy() depois de startAfter() — o SDK recusa');
         }
+        if (ehChaveDoDocumento(campo)) {
+          return derivar({
+            ordens: [...estado.ordens, { campo: CAMPO_DA_CHAVE, direcao, chave: true }],
+          });
+        }
+        if (typeof campo !== 'string') {
+          throw new Error('FakeDb: orderBy() por um FieldPath que não é a chave não é modelado');
+        }
         return derivar({ ordens: [...estado.ordens, { campo, direcao }] });
       },
       limit: (n: number) => derivar({ limite: n }),
-      startAfter: (doc: { id: string; data: () => DocData | undefined }) => {
+      startAfter: (doc: string | { id: string; data: () => DocData | undefined }) => {
+        if (typeof doc === 'string') {
+          // A VALUE cursor: modelled only on a query ordered by the document key alone.
+          const [ordem, ...outras] = estado.ordens;
+          if (ordem?.chave !== true || outras.length > 0) {
+            throw new Error(
+              'FakeDb: startAfter(<valor>) só é modelado sobre orderBy(FieldPath.documentId()) sozinho',
+            );
+          }
+          if (doc === '' || doc.includes('/')) {
+            // The SDK: the value must be a plain document id of the queried collection.
+            throw new Error(`FakeDb: startAfter('${doc}') — o SDK exige um id simples`);
+          }
+          return derivar({ apos: { id: doc, data: {} } });
+        }
         if (
           typeof doc !== 'object' ||
           doc === null ||
@@ -801,8 +976,8 @@ export class FakeDb {
           throw new Error('FakeDb: startAfter só aceita um snapshot de documento');
         }
         const data = doc.data();
-        for (const { campo } of estado.ordens) {
-          if (data?.[campo] === undefined) {
+        for (const { campo, chave } of estado.ordens) {
+          if (chave !== true && data?.[campo] === undefined) {
             throw new Error(
               `FakeDb: startAfter — o snapshot '${doc.id}' não tem o campo '${campo}' do orderBy`,
             );
@@ -810,7 +985,13 @@ export class FakeDb {
         }
         return derivar({ apos: { id: doc.id, data: structuredClone(data ?? {}) } });
       },
-      get: () => this.buscar(colecao, grupo, estado),
+      get: async () => {
+        const fila = this.ganchosDeConsulta.get(colecao);
+        const gancho = fila?.shift();
+        if (fila !== undefined && fila.length === 0) this.ganchosDeConsulta.delete(colecao);
+        if (gancho !== undefined) await gancho();
+        return this.buscar(colecao, grupo, estado);
+      },
     };
   }
 
@@ -840,7 +1021,8 @@ export class FakeDb {
       .filter(([, s]) => filtros.every((f) => satisfaz(s.data[f.campo], f)))
       // `orderBy` filters for existence: a document lacking the field is
       // dropped, while a stored `null` is kept.
-      .filter(([, s]) => ordens.every((o) => s.data[o.campo] !== undefined))
+      // The document KEY always exists: a key ordering filters nothing.
+      .filter(([, s]) => ordens.every((o) => o.chave === true || s.data[o.campo] !== undefined))
       // A group query ties on the FULL path (the server's order); a collection on the id.
       .map(([p, stored]) => ({
         id: grupo ? p : p.slice(prefixo.length),
@@ -867,6 +1049,7 @@ export class FakeDb {
         id,
         ref: this.docRef(caminho, id),
         exists: true,
+        createTime: stored.createTime,
         updateTime: stored.updateTime,
         data: () => dados,
       };

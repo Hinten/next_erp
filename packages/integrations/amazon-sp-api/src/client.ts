@@ -8,7 +8,8 @@
  * there is no flag to flip, no verb parameter, no request body to fill. It
  * hands the core a `GET` built from its named fields, so nothing a caller adds
  * to the request object can ride along. The write path is a SEPARATE client in
- * `escrita.ts` (one `post`, the Delivery invoice only), never a widened `get`.
+ * `escrita.ts` (one `post`, for the package's SP-API writes), never a widened
+ * `get`.
  *
  * ## The request core is INTERNAL
  *
@@ -77,7 +78,10 @@
  *     never by `errors[].code`, which is free-form. The codes ride the
  *     observer event and the HTTP error (`codigosErro`) as labels only.
  *  7. Call `onChamada` once, then return or throw. The REQUEST body never
- *     reaches the event: `ChamadaAmazon` has no field for it.
+ *     reaches the event: `ChamadaAmazon` has no field for it. Nor does any
+ *     RESPONSE body of the Tokens API (`/tokens/…`): its 2xx IS a credential
+ *     (the Restricted Data Token, `tokens.ts`), so its event carries
+ *     `corpo: null` structurally, as an LWA event does.
  *
  * ⚠️ **Redirects are never followed.** SP-API documents none (no 3xx in any
  * model), so a 3xx is an `AmazonHttpError` with `transitorio: false`. Following
@@ -331,6 +335,23 @@ function dataAmz(ms: number): string {
 /* -------------------------------------------------------------------------- */
 
 /**
+ * The Tokens API's first path segment. Its one operation answers with a
+ * credential, so no response body under it ever reaches the observer (module
+ * header, step 7): decided here, by the path, so no call site can forget it
+ * and no cast can route around it.
+ */
+const PREFIXO_API_TOKENS = '/tokens/';
+
+/**
+ * Whether `caminho` belongs to the Tokens API. Compared without case: the path
+ * check admits capitals after the first letter, and hiding a body is the safe
+ * side of any doubt.
+ */
+function ehCaminhoDaApiDeTokens(caminho: string): boolean {
+  return caminho.toLowerCase().startsWith(PREFIXO_API_TOKENS);
+}
+
+/**
  * What the core needs from a client, resolved ONCE at construction.
  * ⚠️ INTERNAL: exported for `escrita.ts`, never from the barrel.
  */
@@ -429,7 +450,8 @@ export async function executarSpApi<S extends z.ZodType>(
   };
   if (corpo !== undefined) headers['content-type'] = 'application/json';
 
-  // Built from named fields: the request body has no slot in the event.
+  // Built from named fields: the request body has no slot in the event, and a
+  // Tokens API response body never fills `corpo` (module header, step 7).
   const emitir = criarEmissor(
     {
       destino: 'sp-api',
@@ -440,7 +462,7 @@ export async function executarSpApi<S extends z.ZodType>(
       correlationId,
       refCredencial: ref,
     },
-    true,
+    !ehCaminhoDaApiDeTokens(caminho),
     n.opts.onChamada,
   );
 
