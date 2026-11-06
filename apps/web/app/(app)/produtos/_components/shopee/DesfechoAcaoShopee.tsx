@@ -22,9 +22,9 @@ import {
   fraseDaPublicacaoSemRespostaShopee,
   fraseDoAnuncioIncertoShopee,
   fraseDoRascunhoPublicadoShopee,
+  linhasDosProblemasShopee,
   textoDaEtapaShopee,
   textoDoAvisoKit,
-  textoDoProblemaShopee,
   vinculoSubstituidoAlheio,
 } from '@/lib/shopee/anuncioProduto';
 import {
@@ -847,11 +847,21 @@ function DesfechoRecusado({
         {desfecho.problemas.length === 0 ? (
           <Text size="sm">{semTerminal(desfecho.mensagem, ehRascunho)}</Text>
         ) : (
-          desfecho.problemas.map((p, i) => (
-            <Stack key={i} gap={4} data-testid={`shopee-problema-${linkDocId}-${String(i)}`}>
-              <Text size="sm">
-                {textoDoProblemaShopee(p, linkDocId, produtoId, contextoDoRascunho)}
-              </Text>
+          // One text per row, except a refusal-wide copy shown ONCE (#2015's
+          // `logistica-nao-confirmada`: one row per lost channel); `indice` is
+          // the row's position in `problemas`, so a dropped row moves no testid.
+          linhasDosProblemasShopee(
+            desfecho.problemas,
+            linkDocId,
+            produtoId,
+            contextoDoRascunho,
+          ).map(({ problema: p, indice, texto }) => (
+            <Stack
+              key={indice}
+              gap={4}
+              data-testid={`shopee-problema-${linkDocId}-${String(indice)}`}
+            >
+              <Text size="sm">{texto}</Text>
               <BotaoDoProblema
                 contaId={contaId}
                 linkDocId={linkDocId}

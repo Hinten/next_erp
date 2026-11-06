@@ -45,6 +45,7 @@ import {
   AGUARDAR_KIT_INCERTO_SHOPEE_MS,
   ESTADO_ANUNCIO_SHOPEE,
   FUSO_FISCAL,
+  SHOPEE_IMPORT_STATUS,
   TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE,
   anuncioShopeeVivo,
   descreverFaixaShopee,
@@ -66,6 +67,10 @@ import {
   ShopeeClientHttpError,
   type PublicarShopeeInput,
 } from './client';
+import {
+  ROTULO_OPCAO_IMPORTACAO_SHOPEE as R,
+  ROTULO_STATUS_IMPORTACAO_SHOPEE as S,
+} from './rotulosImportacaoShopee';
 import type {
   ItemPublicadoShopee,
   ProblemaShopee,
@@ -386,8 +391,8 @@ export const FRASE_RECUSA_SEM_PASSO_RASCUNHO_SHOPEE =
  *    unless it reads as a terminal instruction, which becomes
  *    {@link FRASE_RECUSA_SEM_PASSO_SHOPEE}. A worded motivo whose sentence
  *    carries a fact the copy cannot (`busca-de-anuncio-existente-incompleta`:
- *    WHICH listings Shopee left out) shows it beside the copy, when it is not
- *    terminal text.
+ *    WHICH listings Shopee left out; `logistica-nao-confirmada`: which channel,
+ *    which listing) shows it beside the copy, when it is not terminal text.
  *  - `importar` (#1911 P11): an ordinary-listing motivo of
  *    {@link TEXTO_MOTIVO_ANUNCIO_SHOPEE} reads ITS copy and then every id with
  *    its state — «(sem vínculo)», «(deste produto)», «(do produto X)»
@@ -1085,18 +1090,20 @@ export const FRASE_MARCA_NAO_ESCOLHIDA_SHOPEE =
   'Escolha a marca deste rascunho (ou «Sem marca») antes de publicar.';
 
 /**
- * The ordinary listing's refusal motivos the tab words or BRANCHES on (#1911)
- * — apps/shopee's vocabulary (`anuncios/errosPublicacao.ts`'s
- * `MOTIVO_PUBLICACAO_BLOQUEADA` and the wire-only `anuncio-semelhante-existente`),
- * which the browser cannot import, so spelled ONCE, here. Every reader — the
- * copy maps below, the Seller-Centre attestation exits and the SKU routing
- * allow-list (`./rascunho.ts`) — keys on these.
+ * The ordinary listing's refusal motivos the tab words or BRANCHES on (#1911;
+ * `logistica-nao-confirmada` since #2015) — apps/shopee's vocabulary
+ * (`anuncios/errosPublicacao.ts`'s `MOTIVO_PUBLICACAO_BLOQUEADA` and the
+ * wire-only `anuncio-semelhante-existente`), which the browser cannot import,
+ * so spelled ONCE, here. Every reader — the copy maps below, the Seller-Centre
+ * attestation exits, the SKU routing allow-list and the logistics row's
+ * weight-button exclusion (`./rascunho.ts`) — keys on these.
  *
  * ⚠️ A server rename fails closed only for BUTTONS and ROUTES (K2-14): the
  * row loses its exit and its field route. The COPY does not fail safe — the
  * four `importar` rows fall back to `textoDoImportar`, which opens with the KIT
  * sentence, and a renamed `marca-nao-escolhida` ADDS the «a marca pode não
- * valer» aviso (`superficieDoCampoShopee` is a deny-list). So a rename is
+ * valer» aviso (`superficieDoCampoShopee` is a deny-list), as a renamed
+ * `logistica-nao-confirmada` gets back the weight button. So a rename is
  * caught by apps/shopee's cross-app pin (`anuncios/errosPublicacao.test.ts`
  * reads this block as text — keep its header line byte-identical). Never a
  * prefix match.
@@ -1114,6 +1121,7 @@ export const MOTIVO_ANUNCIO_SHOPEE = {
   anuncioExistenteDeOutroProduto: 'anuncio-existente-de-outro-produto',
   buscaDeAnuncioExistenteIncompleta: 'busca-de-anuncio-existente-incompleta',
   anuncioSemelhanteExistente: 'anuncio-semelhante-existente',
+  logisticaNaoConfirmada: 'logistica-nao-confirmada',
 } as const satisfies Record<string, string>;
 export type MotivoAnuncioShopee =
   (typeof MOTIVO_ANUNCIO_SHOPEE)[keyof typeof MOTIVO_ANUNCIO_SHOPEE];
@@ -1360,6 +1368,54 @@ export const FRASE_ATESTACAO_SEM_CRIACAO_INCERTA_FORA_DO_RASCUNHO_SHOPEE = `${FA
  * - `anuncio-semelhante-existente` — Shopee's `error_repeated_mtsku`, a WIRE
  *   refusal (its sentence is Shopee's English); also stamped on the link, so
  *   the stored row reads it too ({@link textoDaRecusaGuardadaShopee}).
+ *
+ * #2015 — the logistics provenance refusal (Lucas D3):
+ * - `logistica-nao-confirmada` — a compulsory channel needs a size or a fee
+ *   that only the link's stored `logistic_info` holds, and nothing records
+ *   that THIS app wrote that list (`logisticaGravadaEm` absent: the legacy
+ *   app's, or written before the stamp existed), so publish does not re-send
+ *   it. The server emits it only for a listing an import can re-read. The
+ *   remedy is that import, and the one web door that re-reads an ALREADY
+ *   LINKED listing is the mass import with «Atualizar anúncios já
+ *   cadastrados» ticked (off, it skips every linked listing) — never a weight
+ *   button (`./rascunho.ts`). Worded as "no record", never "this ERP never
+ *   wrote it": true on any link the stamp does not vouch for. The server's
+ *   sentence follows as «Detalhe:» ({@link MOTIVOS_COM_A_FRASE_DO_SERVIDOR}),
+ *   and a refusal with several such rows shows this copy ONCE
+ *   ({@link linhasDosProblemasShopee}, {@link textosDasRecusasGuardadasShopee}).
+ *
+ *   The copy names every other box of that door that decides whether the
+ *   import reaches the listing or harms anything, because the door is a
+ *   WHOLE-CONTA re-read, not a one-listing import:
+ *   - «Status dos anúncios»: the scan lists only the ticked statuses, and
+ *     «Banidos» and «Em revisão» come unticked — a banned or in-review
+ *     listing still gets this motivo (of the linked listings, only a
+ *     `removido` one is worded otherwise), so the operator must tick its
+ *     status or the import never sees it;
+ *   - «Janela de atualização (opcional)»: a window can leave the listing out;
+ *   - «Sobrescrever preço existente» comes TICKED: on an already linked
+ *     produto the import's price step reads that box alone (apps/shopee
+ *     `planejarPreco`, `lib/shopee/produtos/mapeamento.ts`), so at the
+ *     dialog's defaults it would replace the ERP price of every childless
+ *     linked produto and every child of the conta with Shopee's (a parent with
+ *     children keeps its own). Unticking «Importar preço» does not stop it
+ *     (the greyed-out box is still sent), so the copy names the box itself;
+ *   - «Sobrescrever estoque existente» and «Sobrescrever dados do produto
+ *     (marca, dimensões, SKU)» come unticked and must stay so. That keeps a
+ *     REGISTERED stock row; a linked produto with NO row in the conta's
+ *     depósito still gets one holding Shopee's count, under «Importar
+ *     estoque» (`planejarEstoque`, same file), which is why the copy says
+ *     «o estoque registrado» rather than promising every stock untouched.
+ *   Every default the copy claims is pinned against
+ *   `OPCOES_IMPORTACAO_SHOPEE_PADRAO` (`./anuncioProduto.test.ts`) and on the
+ *   dialog's screen (`ImportarTodosShopeeDialog.test.tsx`); every quoted
+ *   label is read from `./rotulosImportacaoShopee`, the module the dialog
+ *   renders, never typed out a second time (#1369).
+ *
+ *   ONE sentence for every state of the listing: neither reader receives the
+ *   link's `estadoAnuncio` (`textoDoProblemaShopee` gets the row and the
+ *   block's ids, `textoDaRecusaGuardadaShopee` the stored row), so the copy
+ *   says "the listing's current status" instead of naming it.
  */
 export const TEXTO_MOTIVO_ANUNCIO_SHOPEE: Readonly<Record<string, string>> = {
   [M.rascunhoEmKitVirtual]: FRASE_RASCUNHO_EM_KIT_VIRTUAL_SHOPEE,
@@ -1402,6 +1458,18 @@ export const TEXTO_MOTIVO_ANUNCIO_SHOPEE: Readonly<Record<string, string>> = {
   [M.anuncioSemelhanteExistente]:
     'A Shopee considera este anúncio parecido demais com outro já publicado nesta loja. Ela ' +
     'pode tratá-lo como duplicata: confira no Seller Centre antes de tentar de novo.',
+  [M.logisticaNaoConfirmada]:
+    'Um canal obrigatório da loja precisa de um tamanho ou de uma tarifa de frete. O valor ' +
+    'gravado neste vínculo não é usado: o ERP não tem registro de tê-lo lido da Shopee nem de ' +
+    'tê-lo enviado a ela. Importe o anúncio para gravar os valores atuais da Shopee e publique ' +
+    `de novo. Para importá-lo, use a importação em massa (${PORTA_DA_IMPORTACAO_SHOPEE}) com ` +
+    `«${R.atualizarCadastrados}» marcado — sem essa opção um anúncio já vinculado é pulado —, ` +
+    `com o status atual do anúncio marcado em «${R.statuses}» («${S[SHOPEE_IMPORT_STATUS.banned]}» ` +
+    `e «${S[SHOPEE_IMPORT_STATUS.reviewing]}» vêm desmarcados) e com a «${R.janela}» vazia. A ` +
+    'importação relê todos os anúncios da conta nesses status: para não trocar o preço, o ' +
+    'estoque registrado e os dados dos produtos já cadastrados pelos da Shopee, desmarque ' +
+    `«${R.sobrescreverPreco}» (vem marcado) e deixe desmarcados «${R.sobrescreverEstoque}» e ` +
+    `«${R.sobrescreverDadosProduto}».`,
 };
 
 /**
@@ -1493,11 +1561,78 @@ function textoDoMotivoSemAcaoShopee(
 /**
  * Worded motivos whose server sentence ALSO shows, after the copy (when it is
  * not terminal text): it carries a fact the copy cannot — which listings
- * Shopee left out of the look-up, or how far the walk got (§H).
+ * Shopee left out of the look-up, or how far the walk got (§H); which
+ * compulsory channel lacks what, and which listing to import (#2015).
  */
 const MOTIVOS_COM_A_FRASE_DO_SERVIDOR: ReadonlySet<string> = new Set([
   M.buscaDeAnuncioExistenteIncompleta,
+  M.logisticaNaoConfirmada,
 ]);
+
+/**
+ * Worded motivos whose copy is about the REFUSAL, not about its row, so one
+ * refusal shows it once however many rows carry the motivo (#2015): the
+ * server emits one `logistica-nao-confirmada` row per lost compulsory
+ * channel, and each row's copy is the same paragraph. Exactly this one: #11's
+ * rows (`busca-de-anuncio-existente-incompleta`) and every other motivo keep
+ * their copy per row.
+ */
+const MOTIVOS_DE_COPIA_UNICA_SHOPEE: ReadonlySet<string> = new Set([M.logisticaNaoConfirmada]);
+
+/** One rendered row of a 422's `problemas`: the row, its ORIGINAL position, and its text. */
+export interface LinhaDoProblemaShopee<P> {
+  readonly problema: P;
+  /** The row's index in the 422's `problemas` — stable whatever rows are dropped (testids, keys). */
+  readonly indice: number;
+  readonly texto: string;
+}
+
+/**
+ * The text of every row of ONE refusal, in order — {@link textoDoProblemaShopee}
+ * with the same arguments, except that a motivo of
+ * {@link MOTIVOS_DE_COPIA_UNICA_SHOPEE} is worded ONCE: its first acao-less row
+ * reads the copy (and its own sentence as «Detalhe:»), and every LATER
+ * acao-less row of the same motivo reads only `Detalhe: <its sentence>` —
+ * which still names its channel and listing — or is DROPPED when that
+ * sentence is blank or terminal text (it would say nothing: no acao, and this
+ * motivo has no surface, `./rascunho.ts`).
+ *
+ * Matched by motivo `===` only, never by text: two `logistica-sem-canal` rows
+ * with the same sentence are two rows. A row WITH an `acao` is never folded
+ * and never counts as the first (its ids are its own). `indice` is the row's
+ * position in `problemas`, so a dropped row leaves its siblings' testids
+ * where they were.
+ */
+export function linhasDosProblemasShopee<
+  P extends Pick<ProblemaShopee, 'mensagem' | 'acao'> & { readonly motivo?: string },
+>(
+  problemas: readonly P[],
+  linkDoBloco?: string,
+  produtoDoBloco?: string,
+  rascunho?: ContextoDoRascunhoNoProblemaShopee | null,
+): readonly LinhaDoProblemaShopee<P>[] {
+  const jaRedigidos = new Set<string>();
+  const linhas: LinhaDoProblemaShopee<P>[] = [];
+  problemas.forEach((problema, indice) => {
+    const { motivo, acao } = problema;
+    const unica =
+      acao === null && motivo !== undefined && MOTIVOS_DE_COPIA_UNICA_SHOPEE.has(motivo);
+    if (unica && jaRedigidos.has(motivo)) {
+      const frase = problema.mensagem.trim();
+      if (frase !== '' && !ehFraseDeTerminal(frase)) {
+        linhas.push({ problema, indice, texto: comoDetalhe(frase) });
+      }
+      return;
+    }
+    if (unica) jaRedigidos.add(motivo);
+    linhas.push({
+      problema,
+      indice,
+      texto: textoDoProblemaShopee(problema, linkDoBloco, produtoDoBloco, rascunho),
+    });
+  });
+  return linhas;
+}
 
 /**
  * The copy of ONE refusal row STORED on the link (`falhaPublicacao.problemas[]`,
@@ -1511,6 +1646,31 @@ export function textoDaRecusaGuardadaShopee(motivo: unknown, mensagem: unknown):
     typeof motivo === 'string' ? textoProprio(TEXTO_MOTIVO_ANUNCIO_SHOPEE, motivo) : null;
   if (doMotivo !== null) return doMotivo;
   return typeof mensagem === 'string' && mensagem.trim() !== '' ? mensagem : null;
+}
+
+/**
+ * The texts of EVERY refusal row stored on the link (`falhaPublicacao.problemas`,
+ * read raw), in order: {@link textoDaRecusaGuardadaShopee} per row — a
+ * non-object row, and a row with neither copy nor sentence, is dropped — except
+ * that a LATER row of a motivo in {@link MOTIVOS_DE_COPIA_UNICA_SHOPEE} is
+ * dropped too: its text would be the identical copy (a stored row shows the
+ * copy alone, never its sentence). Matched by motivo `===` only, never by
+ * text: two stored rows with the same sentence are two rows. Not an array ⇒ `[]`.
+ */
+export function textosDasRecusasGuardadasShopee(problemas: unknown): string[] {
+  if (!Array.isArray(problemas)) return [];
+  const jaRedigidos = new Set<string>();
+  return problemas.flatMap((p: unknown) => {
+    if (typeof p !== 'object' || p === null) return [];
+    const linha = p as Record<string, unknown>;
+    const motivo = linha.motivo;
+    const unica = typeof motivo === 'string' && MOTIVOS_DE_COPIA_UNICA_SHOPEE.has(motivo);
+    if (unica && jaRedigidos.has(motivo)) return [];
+    const texto = textoDaRecusaGuardadaShopee(motivo, linha.mensagem);
+    if (texto === null) return [];
+    if (unica) jaRedigidos.add(motivo);
+    return [texto];
+  });
 }
 
 /** The tab's own copy of a refusal `motivo` — {@link TEXTO_MOTIVO_KIT}, then {@link TEXTO_MOTIVO_ANUNCIO_SHOPEE}. */

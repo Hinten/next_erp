@@ -12,7 +12,7 @@ import {
   produtoShopeeLinkCollection,
   variacaoShopeeLinkCollection,
 } from '@delfrance/data/admin/collections';
-import { importacaoShopeeOptionsSchema } from '@delfrance/schemas';
+import { importacaoShopeeOptionsSchema, logisticaGravadaPeloErpShopee } from '@delfrance/schemas';
 
 import { idDaVariacaoDeKit, idDoVinculoDeKit } from '../kits/idsKit';
 import { FakeDb, asDb, grpc, increment } from '../testing/fakeDb';
@@ -959,5 +959,136 @@ describe('importarAnuncioShopee — a adoção de um rascunho, ponta a ponta (#1
       item_id: null,
       criacaoIncertaDesde: DESDE_MS,
     });
+  });
+});
+
+/* ---- 6. #2015 — a adoção APLICADA deixa a lista da Shopee E o carimbo ---------- */
+
+describe('importarAnuncioShopee — `logisticaGravadaEm` sobre um rascunho LEGADO (#2015)', () => {
+  const DESDE_MS = 1_756_999_000_000;
+  const DENTRO_S = 1_757_000_000;
+  const SKU = 'SKU-ADOCAO';
+  const COLECAO = `produtos/${PAI}/prodshopee`;
+  const CAMINHO = `${COLECAO}/rasc-1`;
+  /** O que o legado gravou: uma lista sua, sem carimbo nosso. */
+  const LISTA_LEGADA = [{ logistic_id: 99, is_free: true, shipping_fee: 12.9, size_id: 3 }];
+  /** O que a Shopee responde agora. */
+  const LISTA_LIDA = [{ logistic_id: 1, is_free: false, size_id: 7 }];
+
+  beforeEach(() => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    vi.spyOn(console, 'info').mockImplementation(() => undefined);
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function semear(db: FakeDb, rascunho: Record<string, unknown>): void {
+    db.seed(`produtos/${PAI}`, { nome: 'Camiseta', sku: SKU, paiId: null });
+    db.seed(CAMINHO, {
+      item_id: null,
+      contaProdutoShopeeOuterRef: REF_CONTA,
+      item_name: 'Título do rascunho',
+      logistic_info: LISTA_LEGADA,
+      ...rascunho,
+    });
+  }
+
+  const lido = () => item({ item_sku: SKU, create_time: DENTRO_S, logistic_info: LISTA_LIDA });
+
+  it('o update GUARDADO da adoção grava a lista da Shopee E o carimbo — no MESMO patch — e o vínculo passa a ser confiável', async () => {
+    const db = new FakeDb();
+    semear(db, { criacaoIncertaDesde: DESDE_MS, logisticaGravadaEm: null });
+    expect(logisticaGravadaPeloErpShopee(lerDoc(db, CAMINHO))).toBe(false);
+
+    await importarAnuncioShopee(depsDoImport(db), lido());
+
+    expect(db.idsEm(COLECAO)).toEqual(['rasc-1']);
+    const doc = lerDoc(db, CAMINHO);
+    expect(doc).toMatchObject({ item_id: ITEM_ID, logisticaGravadaEm: AGORA });
+    expect(doc.logistic_info).toEqual([
+      expect.objectContaining({ logistic_id: 1, is_free: false, size_id: 7 }),
+    ]);
+    expect(logisticaGravadaPeloErpShopee(doc)).toBe(true);
+    // The guarded-update branch, not the merge: ONE update patch carries both keys.
+    const patches = db.patches.filter((p) => p.path === CAMINHO);
+    expect(patches).toHaveLength(1);
+    expect(patches[0]?.patch).toHaveProperty('logisticaGravadaEm', AGORA);
+    expect(patches[0]?.patch).toHaveProperty('logistic_info');
+  });
+
+  it('⛔ NEAR-MISS: um rascunho com um carimbo ANTERIOR também termina em `nowMs` — o carimbo é dado do import, nunca de primeira vez', async () => {
+    const db = new FakeDb();
+    semear(db, { criacaoIncertaDesde: DESDE_MS, logisticaGravadaEm: 111 });
+
+    await importarAnuncioShopee(depsDoImport(db), lido());
+
+    expect(db.idsEm(COLECAO)).toEqual(['rasc-1']);
+    expect(lerDoc(db, CAMINHO).logisticaGravadaEm).toBe(AGORA);
+  });
+
+  it('⛔ NEAR-MISS: um rascunho NÃO adotável (nunca enviado) fica byte a byte — sem carimbo, a lista legada intacta; só o vínculo NOVO é carimbado', async () => {
+    const db = new FakeDb();
+    semear(db, {});
+    const antes = structuredClone(lerDoc(db, CAMINHO));
+
+    await importarAnuncioShopee(depsDoImport(db), lido());
+
+    expect(lerDoc(db, CAMINHO)).toEqual(antes);
+    expect(logisticaGravadaPeloErpShopee(lerDoc(db, CAMINHO))).toBe(false);
+    const novo = db.idsEm(COLECAO).find((i) => i !== 'rasc-1');
+    expect(novo).toBeDefined();
+    expect(lerDoc(db, `${COLECAO}/${String(novo)}`)).toMatchObject({
+      item_id: ITEM_ID,
+      logisticaGravadaEm: AGORA,
+    });
+  });
+
+  it('o ramo CONVERGIDO (o claim do publish chegou antes): o merge simples também carimba', async () => {
+    const db = new FakeDb();
+    semear(db, { item_id: ITEM_ID, logisticaGravadaEm: null });
+    const { dataCadastro, ...dados } = dadosLinkListagem(lido(), null, INTEGRACAO, AGORA);
+
+    const id = await aplicarLinkDaListagem(asDb(db), PAI, {
+      acao: 'adotar',
+      docId: 'rasc-1',
+      dados,
+      seAusentes: { dataCadastro },
+      limpeza: {},
+      adocao: { integracaoId: INTEGRACAO, itemId: ITEM_ID, createTimeS: DENTRO_S },
+    });
+
+    expect(id).toBe('rasc-1');
+    expect(db.patches).toEqual([]);
+    expect(lerDoc(db, CAMINHO)).toMatchObject({ logisticaGravadaEm: AGORA });
+  });
+
+  it('o ramo BIFURCADO (o rascunho foi de OUTRO item): o vínculo NOVO sai com a lista da Shopee E o carimbo; o do outro fica byte a byte', async () => {
+    const db = new FakeDb();
+    semear(db, { item_id: ITEM_ID + 1 });
+    const antes = structuredClone(lerDoc(db, CAMINHO));
+    const { dataCadastro, ...dados } = dadosLinkListagem(lido(), null, INTEGRACAO, AGORA);
+
+    const id = await aplicarLinkDaListagem(asDb(db), PAI, {
+      acao: 'adotar',
+      docId: 'rasc-1',
+      dados,
+      seAusentes: { dataCadastro },
+      limpeza: {},
+      adocao: { integracaoId: INTEGRACAO, itemId: ITEM_ID, createTimeS: DENTRO_S },
+    });
+
+    // The fork's `add`, never an update of the other item's document.
+    expect(id).not.toBe('rasc-1');
+    expect(db.patches).toEqual([]);
+    const novo = lerDoc(db, `${COLECAO}/${id}`);
+    expect(novo).toMatchObject({ item_id: ITEM_ID, logisticaGravadaEm: AGORA });
+    expect(novo.logistic_info).toEqual([
+      expect.objectContaining({ logistic_id: 1, is_free: false, size_id: 7 }),
+    ]);
+    expect(logisticaGravadaPeloErpShopee(novo)).toBe(true);
+    // The other item's document keeps its legacy list and stays unvouched.
+    expect(lerDoc(db, CAMINHO)).toEqual(antes);
+    expect(logisticaGravadaPeloErpShopee(lerDoc(db, CAMINHO))).toBe(false);
   });
 });

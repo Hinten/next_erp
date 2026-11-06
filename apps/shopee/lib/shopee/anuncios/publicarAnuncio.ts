@@ -129,6 +129,7 @@ import {
   estoqueDisponivel,
   fotoSchema,
   kitEstoqueDisponivel,
+  logisticaGravadaPeloErpShopee,
   parseFakePath,
   parseRef,
   precoDoFilhoNaTabela,
@@ -592,6 +593,13 @@ function produtoParaPublicar(id: string, raw: Record<string, unknown>): ProdutoP
  * to tell a draft nobody gave a brand from an imported listing whose
  * `brand_id` is `null`. The listing assembly refuses the first
  * (`marca-nao-escolhida`) and never the second.
+ *
+ * ⚠️ `logisticaConfiavel` (#2015) is the shared `logisticaGravadaPeloErpShopee`
+ * over the RAW document too — the provenance stamp `logisticaGravadaEm` ALONE
+ * (Lucas D1): never `item_id`, `ehRascunho`, `estadoAnuncio` or
+ * `ultimaPublicacao`, because ENSURE's adoption turns a legacy draft into a
+ * listing that keeps its legacy list. `logistic_info` stays projected when it
+ * is distrusted: the plan never re-sends it then, but its refusal reads it.
  */
 function linkListagemLido(
   raw: Record<string, unknown>,
@@ -611,6 +619,7 @@ function linkListagemLido(
     kitNativo: booleanoOuNull(raw.kitNativo),
     ehRascunho: ehRascunhoShopee(raw),
     marcaNaoEscolhida: rascunhoSemMarcaShopee(raw),
+    logisticaConfiavel: logisticaGravadaPeloErpShopee(raw),
   };
 }
 
@@ -1419,9 +1428,24 @@ async function escreverWriteBack1(
   });
 }
 
-/** Write-back #1's field set — §2.4's, AS SENT — over one reading of the link. */
-function dadosDoWriteBack1(
-  deps: PublicarAnuncioDeps,
+/**
+ * Write-back #1's field set — §2.4's, AS SENT — over one reading of the link.
+ *
+ * ⚠️ **The provenance stamp rides the list's OWN spread (#2015).**
+ * `logisticaGravadaEm: deps.nowMs` is written in the same patch and under the
+ * same condition as the `logistic_info` it vouches for — never beside the
+ * unconditional `ultimaPublicacao`, which is stamped whether or not a list was
+ * sent, so a body without a list writes neither key. One spread covers every
+ * target: the plain merge/add and the draft claim's three branches, which all
+ * call this one function. Milliseconds, and only its PRESENCE is ever read
+ * (`logisticaGravadaPeloErpShopee`).
+ *
+ * Exported for the same-condition test alone (a real body always carries
+ * `logistic_info`, so only a direct call can show the stamp stays out of a
+ * body without one); `deps` is narrowed to the two fields it reads.
+ */
+export function dadosDoWriteBack1(
+  deps: Pick<PublicarAnuncioDeps, 'integracaoId' | 'nowMs'>,
   args: {
     readonly itemId: number;
     readonly corpo: CorpoDeItem;
@@ -1441,7 +1465,9 @@ function dadosDoWriteBack1(
     ...(corpo.category_id === undefined ? {} : { category_id: corpo.category_id }),
     ...(corpo.condition === undefined ? {} : { condition: corpo.condition }),
     ...(corpo.attribute_list === undefined ? {} : { attributes: corpo.attribute_list }),
-    ...(corpo.logistic_info === undefined ? {} : { logistic_info: corpo.logistic_info }),
+    ...(corpo.logistic_info === undefined
+      ? {}
+      : { logistic_info: corpo.logistic_info, logisticaGravadaEm: deps.nowMs }),
     ...(corpo.brand === undefined ? {} : { brand_id: corpo.brand.brand_id }),
     taxInfoOmitido: args.taxInfoOmitido,
     ultimaPublicacao: { em: deps.nowMs, etapa: args.etapa, itemId: args.itemId },
@@ -1463,6 +1489,13 @@ function dadosDoWriteBack1(
  * write-back, the kit arm's read-back), so a step-11 link no longer stays
  * `null` for ever. An ordinary listing stores `false`, which is DATA: steps 12
  * and 13 read it as "not a native kit" exactly as they read an absent one.
+ *
+ * #2015: the read-back's `logistic_info` is always written (Shopee's array or
+ * `null`, never absent), so its provenance stamp `logisticaGravadaEm` is
+ * written beside it UNCONDITIONALLY. Like `falhaPublicacao` and
+ * `ultimaModificacao` it is not a reading of Shopee: it records WHO wrote the
+ * list. Write-back #1 already stamped the same document with the same
+ * `deps.nowMs`; this one is the belt.
  */
 async function escreverWriteBack2(
   deps: PublicarAnuncioDeps,
@@ -1484,6 +1517,8 @@ async function escreverWriteBack2(
       deboost: args.deboost,
       original_brand_name: base.brand?.original_brand_name ?? null,
       logistic_info: base.logistic_info,
+      // Same patch, same condition (always) as the list above (#2015).
+      logisticaGravadaEm: deps.nowMs,
       kitNativo: ehKitDe(base),
       // A publish that got this far SUCCEEDED; leaving the last failure standing
       // would make the operator's panel lie about the current state.

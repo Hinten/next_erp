@@ -35,6 +35,7 @@ import {
   corpoDescartarRascunhoShopeeSchema,
   estadoPublicacaoRascunhoShopee,
   janelaDaCriacaoIncertaShopee,
+  logisticaGravadaPeloErpShopee,
   respostaAtualizarRascunhoShopeeSchema,
   respostaCriarRascunhoShopeeSchema,
   respostaDescartarRascunhoShopeeSchema,
@@ -2114,6 +2115,76 @@ describe('atualizarRascunhoShopee — base conferida (nível 3) + update guardad
         ),
       ).rejects.toBe(falha);
     });
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*            2b · #2015 — the draft routes never write the provenance stamp    */
+/* -------------------------------------------------------------------------- */
+
+describe('o carimbo da logística (#2015) — criar e editar um rascunho NUNCA o escrevem', () => {
+  /** A list the LEGACY app left on a draft — `is_free: true` and a CUSTOM_PRICE fee. */
+  const LISTA_LEGADA = [
+    { logistic_id: 90_003, enabled: true, is_free: true },
+    { logistic_id: 90_004, enabled: true, is_free: false, shipping_fee: '12.90' },
+  ];
+
+  it('o rascunho CRIADO grava logistic_info null e NENHUMA chave logisticaGravadaEm — a única escrita da lista sem carimbo', async () => {
+    const db = base();
+
+    await criarRascunhoShopee(deps(db), corpoCriar());
+
+    const salvo = doc(db) ?? {};
+    // The parse default writes the list key (null)…
+    expect(Object.prototype.hasOwnProperty.call(salvo, 'logistic_info')).toBe(true);
+    expect(salvo.logistic_info).toBeNull();
+    // …and never the stamp: no list this app produced or Shopee answered.
+    expect(salvo).not.toHaveProperty('logisticaGravadaEm');
+    expect(escritasEm(db)).toHaveLength(1);
+    expect(escritasEm(db)[0]).not.toHaveProperty('logisticaGravadaEm');
+    expect(logisticaGravadaPeloErpShopee(salvo)).toBe(false);
+  });
+
+  it('editar o título de um rascunho LEGADO (lista, sem carimbo) ⇒ continua SEM carimbo, e a lista fica byte a byte', async () => {
+    const db = new FakeDb();
+    db.seed(CAMINHO, rascunho({ logistic_info: LISTA_LEGADA }));
+    const antes = structuredClone(doc(db) ?? {});
+
+    const r = await atualizarRascunhoShopee(
+      deps(db),
+      corpoAtualizar({ item_name: 'Camiseta do rascunho' }, { item_name: 'Camiseta Azul' }),
+    );
+
+    expect(r.gravados).toEqual([CAMPO_RASCUNHO_SHOPEE.itemName]);
+    // The edit is key-scoped: the title and the clock, nothing about logistics.
+    expect(db.patches).toEqual([
+      { path: CAMINHO, patch: { item_name: 'Camiseta Azul', ultimaModificacao: AGORA } },
+    ]);
+    expect(doc(db)).toEqual({ ...antes, item_name: 'Camiseta Azul', ultimaModificacao: AGORA });
+    expect(doc(db)?.logistic_info).toEqual(LISTA_LEGADA);
+    expect(doc(db)).not.toHaveProperty('logisticaGravadaEm');
+    expect(logisticaGravadaPeloErpShopee(doc(db) ?? null)).toBe(false);
+  });
+
+  it('⛔ quase-par: editar um rascunho CARIMBADO MANTÉM o carimbo e a lista — a edição nem tira nem põe', async () => {
+    const CARIMBO = AGORA - 86_400_000;
+    const db = new FakeDb();
+    db.seed(CAMINHO, rascunho({ logistic_info: LISTA_LEGADA, logisticaGravadaEm: CARIMBO }));
+
+    const r = await atualizarRascunhoShopee(
+      deps(db),
+      corpoAtualizar(
+        { item_name: 'Camiseta do rascunho', description: null },
+        { item_name: 'Camiseta Azul', description: 'Algodão' },
+      ),
+    );
+
+    expect(r.gravados).toEqual([CAMPO_RASCUNHO_SHOPEE.itemName, CAMPO_RASCUNHO_SHOPEE.description]);
+    expect(db.writes.some((w) => 'logisticaGravadaEm' in w.patch)).toBe(false);
+    // Never re-stamped with this edit's clock, never cleared.
+    expect(doc(db)?.logisticaGravadaEm).toBe(CARIMBO);
+    expect(doc(db)?.logistic_info).toEqual(LISTA_LEGADA);
+    expect(logisticaGravadaPeloErpShopee(doc(db) ?? null)).toBe(true);
   });
 });
 

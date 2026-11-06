@@ -3,23 +3,31 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import { OPCOES_IMPORTACAO_SHOPEE_PADRAO, SHOPEE_IMPORT_STATUS } from '@delfrance/schemas';
 
 import { MantineTestProvider } from '@/lib/testing/mantine';
+import {
+  ROTULO_OPCAO_IMPORTACAO_SHOPEE,
+  ROTULO_STATUS_IMPORTACAO_SHOPEE,
+} from '@/lib/shopee/rotulosImportacaoShopee';
 import type { ImportarTodosShopeeActionState } from './useImportarTodosShopeeAction';
 import type { AtualizarPrecosShopeeActionState } from './useAtualizarPrecosShopeeAction';
 
 // The calendar has its own library tests; two plain inputs drive the range so
 // the dialog's own rules — both ends or neither, SECONDS on the wire — are what
-// is exercised here (the `relatorios/checkouts/page.test.tsx` precedent).
+// is exercised here (the `relatorios/checkouts/page.test.tsx` precedent). Its
+// label is rendered too, so the shared label module's `janela` is on screen.
 vi.mock('@mantine/dates', () => ({
   DatePickerInput: ({
+    label,
     value,
     onChange,
     error,
   }: {
+    label?: string;
     value: [string | null, string | null];
     onChange: (value: [string | null, string | null]) => void;
     error?: string | null;
   }) => (
     <>
+      <span>{label}</span>
       <input
         aria-label="Janela — de"
         value={value[0] ?? ''}
@@ -124,6 +132,45 @@ describe('ImportarTodosShopeeDialog', () => {
     expect((iniciar() as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(iniciar());
     expect(state.start).not.toHaveBeenCalled();
+  });
+
+  it('#2015: every label the shared module names is on screen, with the default the refusal copy claims', () => {
+    // `anuncioProduto.ts`'s `logistica-nao-confirmada` copy quotes these labels
+    // and says which come ticked: the screen must agree with both.
+    const R = ROTULO_OPCAO_IMPORTACAO_SHOPEE;
+    const S = ROTULO_STATUS_IMPORTACAO_SHOPEE;
+    renderImportacao();
+    const caixa = (rotulo: string) => screen.getByLabelText(rotulo) as HTMLInputElement;
+    for (const chave of [
+      'importarEstoque',
+      'sobrescreverEstoque',
+      'importarPreco',
+      'sobrescreverPreco',
+      'importarFotos',
+      'importarCategorias',
+      'atualizarProdutoPai',
+      'sobrescreverDadosProduto',
+      'atualizarCadastrados',
+    ] as const) {
+      expect(caixa(R[chave]).type, chave).toBe('checkbox');
+    }
+    // «desmarque … (vem marcado)»: ticked, and untickable as the dialog opens.
+    expect(caixa(R.sobrescreverPreco).checked).toBe(true);
+    expect(caixa(R.sobrescreverPreco).disabled).toBe(false);
+    // «deixe desmarcados …» / «… marcado» (the operator ticks it).
+    expect(caixa(R.sobrescreverEstoque).checked).toBe(false);
+    expect(caixa(R.sobrescreverDadosProduto).checked).toBe(false);
+    expect(caixa(R.atualizarCadastrados).checked).toBe(false);
+    // «(«Banidos» e «Em revisão» vêm desmarcados)» — the other two come ticked.
+    expect(caixa(S[SHOPEE_IMPORT_STATUS.banned]).checked).toBe(false);
+    expect(caixa(S[SHOPEE_IMPORT_STATUS.reviewing]).checked).toBe(false);
+    expect(caixa(S[SHOPEE_IMPORT_STATUS.normal]).checked).toBe(true);
+    expect(caixa(S[SHOPEE_IMPORT_STATUS.unlist]).checked).toBe(true);
+    expect(screen.getByText(R.statuses)).not.toBeNull();
+    // «… a «Janela de atualização (opcional)» vazia»: it opens empty.
+    expect(screen.getByText(R.janela)).not.toBeNull();
+    expect(caixa('Janela — de').value).toBe('');
+    expect(caixa('Janela — até').value).toBe('');
   });
 
   it('sends the toggles the operator changed', () => {

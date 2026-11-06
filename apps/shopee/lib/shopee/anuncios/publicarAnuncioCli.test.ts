@@ -2428,3 +2428,43 @@ describe('scripts/publicar-anuncio.ts — o relógio VIVO do rascunho (#1911)', 
     );
   });
 });
+
+/* ========================================================================== */
+/*  #2015 · logistic_info vazio porque TODO obrigatório perdido tomou N1       */
+/* ========================================================================== */
+
+describe('#2015 — logistic_info vazio quando todo obrigatório perdido tomou logistica-nao-confirmada', () => {
+  const N1: ProblemaDeBloqueio = {
+    campo: 'logistic_info',
+    motivo: MOTIVO_PUBLICACAO_BLOQUEADA.logisticaNaoConfirmada,
+    mensagem:
+      'O canal obrigatório 90007 precisa de um tamanho, e o ERP não tem registro de ter lido da ' +
+      'Shopee nem de ter enviado a ela o valor gravado neste vínculo, então esse valor não é ' +
+      'reenviado. Importe o anúncio 1000123 para gravar os valores atuais da Shopee e publique de novo.',
+  };
+  const soN1 = plano({
+    logistica: {
+      logistic_info: [],
+      canaisHabilitados: [],
+      pulados: [{ logisticId: 90_007, motivo: 'size-selection-sem-size-id' }],
+      problemas: [N1],
+    },
+    problemas: [N1],
+  });
+
+  it('a linha da seção não atribui o bloqueio a logistica-sem-canal: aponta para os problemas, que vêm DEPOIS e só trazem a N1', () => {
+    const linhas = renderizarPlano(soN1, contexto());
+    const secao = linhas.indexOf('### logistic_info (0 a enviar)');
+    expect(secao).toBeGreaterThanOrEqual(0);
+    expect(linhas[secao + 1]).toBe(
+      '  (nenhum — a publicação está bloqueada: veja os problemas de logistic_info abaixo)',
+    );
+    const texto = linhas.join('\n');
+    // Nothing in the whole transcript names the motivo this refusal did NOT take.
+    expect(texto).not.toContain(MOTIVO_PUBLICACAO_BLOQUEADA.logisticaSemCanal);
+    // «abaixo» is true: the problemas section follows and carries the N1 row.
+    const problemas = texto.indexOf('### problemas (1) — NADA seria enviado');
+    expect(problemas).toBeGreaterThan(texto.indexOf('### logistic_info (0 a enviar)'));
+    expect(texto.slice(problemas)).toContain(MOTIVO_PUBLICACAO_BLOQUEADA.logisticaNaoConfirmada);
+  });
+});
