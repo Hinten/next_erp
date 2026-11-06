@@ -1358,8 +1358,8 @@ route answers lookups over that index — roots, or one node with `pathFromRoot`
 and `children`.
 
 **Four contradictions in Shopee's own docs, each instrumented rather than
-guessed** (the `hosts.ts` technique — settled by one live sandbox call, flipped
-by one literal or one env var):
+guessed** (the `hosts.ts` technique, flipped by one literal or one env var; BR
+production reads settled 1, 3, 4):
 
 1. **The `get_variations` path — SETTLED on BR (2026-11-04).** The page's
    `path`/`url`/`test_url` say `/api/v2/product/get_variation_tree`, its samples
@@ -1371,14 +1371,14 @@ by one literal or one env var):
    the page's own cURL says the second. The app sends ONE category per call,
    which serialises identically under both, and logs `error_param` raw with the
    parameter name it sent.
-3. **`gtin_limit`'s position.** The item page renders it as a SIBLING of
-   `response` and ships no response sample. Both positions are declared;
+3. **`gtin_limit`'s position.** The page renders a SIBLING of `response`; BR
+   sends it INSIDE (`capturasBr.test.ts` pin 4). Both stay declared;
    `lerLimitesDeItem` merges them (inner wins, both absent stays `null` and never
    `{}`).
-4. **The language casing.** `get_category` spells it `pt-br`,
-   `get_attribute_tree` spells it `pt-BR`. ONE constant
-   (`SHOPEE_TAXONOMY_LANGUAGE = 'pt-br'`) goes to all three ops, so a wrong guess
-   is one literal to flip and `error_invalid_language` is the signal.
+4. **The language casing.** BR answers `get_attribute_tree` identically for
+   `pt-br`, `pt-BR` or none, in English: pt-BR is only `multi_lang`'s, which
+   `projetarAtributos` serves. `get_category` honours the ONE constant
+   (`SHOPEE_TAXONOMY_LANGUAGE = 'pt-br'`).
 
 **Values that are data, not absences:** `brand_id: 0` is Shopee's "No Brand"
 (a choice the operator makes), `variation_option_id: 0` is the observed CUSTOM

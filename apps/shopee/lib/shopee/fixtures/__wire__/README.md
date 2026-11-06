@@ -684,13 +684,15 @@ Each one is asserted in `wireCorpus.test.ts`:
 
 The twenty-one `.br-` bodies are the corpus's first BR evidence and its only
 production evidence. Every bullet below ends with the `it` in
-`../capturasBr.test.ts` that pins it, or says **prose, from the uncut
-capture** when the committed body cannot carry the fact. Most pins read the
+`../capturasBr.test.ts` that pins it (the P13a bullet names its own file), or
+says **prose, from the uncut capture** when the committed body cannot carry
+the fact. Most pins read the
 committed text through a REAL `createShopeeClient` whose fake `fetch` serves
 it; the rest read the raw body. A title with `%s` is an `it.each`, and the
 count says over how many bodies. No pin names a title, a SKU, a listing id or
 a captured price, stock count or date — only booleans, counts, placeholders
-(the neutral constants among them) and public taxonomy ids.
+(the neutral constants among them), public taxonomy ids and, in the P13a
+pins, four public value labels.
 
 **The category tree** (`get_category.br-recorte.json`):
 
@@ -742,6 +744,16 @@ a captured price, stock count or date — only booleans, counts, placeholders
   `pt-BR` anywhere. The request says `pt-br`; the answer spells it `pt-BR`. —
   pin:
   ``get_attribute_tree.br-* (as oito juntas): 141 atributos (69 ids distintos), TODOS com uma entrada `pt-BR`; 708 valores, exatamente UM sem — a-caneca 100134/1942; nenhuma outra língua``
+- P13a (#1911) projects that `pt-BR` entry as the `name` of every attribute
+  and value, else Shopee's own `name` (only 100134/1942); the three groups
+  that would then read alike in one list, all in 100134, are suffixed with
+  Shopee's name — «Porcelana (Porcelain)» / «Porcelana (Fine China)»,
+  «Lã (Fleece)» / «Lã (Wool)». — pins, in
+  `../../taxonomia/dto.capturasBr.test.ts`:
+  ``get_attribute_tree.br-*: todo outro nome é EXATAMENTE a entrada `pt-BR` do corpo (849 − 6 − 1 = 842)``,
+  ``get_attribute_tree.br-*: UM só nó sem `pt-BR` — get_attribute_tree.br-a-caneca.json 100134/1942 — e ele mostra o nome da Shopee``
+  and
+  `get_attribute_tree.br-*: 3 grupos colidem, todos no 100134 — e só eles levam sufixo, com o nome da Shopee`
 - Each of the three listings (`anuncio-atributos` in 101787,
   `anuncio-logistica` in 101775, `anuncio-variacoes` in 100352) validates
   against its own category's tree with no problem, and the stored-attribute
