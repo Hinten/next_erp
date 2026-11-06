@@ -12,7 +12,12 @@
  *  1. The root through the cascade (`resolverRaizLi`).
  *  2. The target (`familiaNoAlvoLi`): a family outside it stops here — no variation resolved, no
  *     link, no item — unless it is in CONFLICT under `jaNoErp`/`naoNoErp`, which is reported with
- *     its conflict and no link (`plano.ts`, "The target").
+ *     its conflict and no link (`plano.ts`, "The target"). **The target is decided once**, on the
+ *     ERP as it stood BEFORE this job acted: a root the cascade answers `vinculado` only because it
+ *     is THIS job's landed create ("A retried family") is judged as the `ausente` it was, and the
+ *     re-runs of the cascade a unit makes after its own writes (an adoption, a closing) keep the
+ *     verdict the preparation reached — so a `naoNoErp` family never drops out of its own target
+ *     halfway through being imported.
  *  3. A matched parent's variations (`resolverFilhosLi`), resolved against the grupos the caller
  *     passes: the dispatch's memo, plus, under Simular, the overlay of what the job would have
  *     learned (`gruposParaResolverLi`), so a Simular verdict equals an `aplicar` one.
@@ -29,16 +34,27 @@
  * PREPARATION ({@link executarFamiliaLi}):
  *
  *  - **A family the ERP lacks** (`ausente`, its create classified viable by the plan): the root's
- *    category (`categorias.ts`: the job's map, create-and-link when the job says so), then the
- *    WHOLE family in one batch with its links (`familiaNova.ts`: the create probe immediately before
- *    the commit, ids keyed by the SKU). A root found at its id with the store SKU (another conta's
- *    create) is ADOPTED: the cascade runs again and the family takes the path below. A refused
- *    create reports why and creates nothing.
+ *    category PLANNED (`categorias.ts` run as Simular runs it: reads, no write — its ids are
+ *    deterministic), then the WHOLE family in one batch with its links (`familiaNova.ts`: every
+ *    refusal, then the create probe immediately before the commit, ids keyed by the SKU). Only once
+ *    the batch is about to be committed are the planned categories created and linked
+ *    (`criarEVincular`) and the family's tax review made durable (`familiaNova.ts`'s
+ *    `antesDoLote`), so a refused create leaves no category behind and reports no category
+ *    pendência (it imported nothing). A root found at its id with the store SKU (another conta's
+ *    create) is ADOPTED: the cascade runs again and the family takes the path below; when that
+ *    cascade no longer matches the root (another shape, a second root with the SKU), the item
+ *    carries the cascade's own verdict, and only a root found GONE is `conflito-de-escrita`.
  *  - **A family the ERP has** (`vinculado` or `encontrado`): its EMPTY fields filled
  *    (`completar.ts`), the root first, then each matched variation on its own, with the PARENT's
- *    category (the root's stored one, else the one just resolved) and, when its read detail has no
- *    box, the parent's box. The root's category is resolved only when the root's own is empty, so a
- *    run never creates a category no produto takes. NO link yet.
+ *    category as the root's fill LEFT it — the one the fill wrote, else the one its last read found
+ *    stored (an operator's, landed meanwhile), else none — and, when its read detail has no box, the
+ *    parent's box. The root's category is resolved only when the root's own is empty, planned
+ *    first and created only when the plan resolves, so a run never creates a category no produto
+ *    takes (but for a fill that then loses its race). NO link yet.
+ *
+ * ⚠️ The categories a create-and-link run creates are not NAMED in the report: the item contract
+ * has no field for them (the job's map shows them `vinculada`, like any other link). A duplicate of
+ * a category of the same name shows in the ERP's category list, not on the card.
  *
  * Then the PHOTOS (`fotos.ts`, the job's `fotos: soSemFotos` with a default bucket): onto every
  * produto the preparation filled or created that has none — under `aplicar` one budgeted unit per
@@ -63,7 +79,13 @@
  *  - **The tax review** (`aplicar` only): every produto created, and every produto whose EMPTY
  *    category was filled or stays empty, joins this job's list (`revisaoFiscal.ts`, tier 0, merged
  *    on `ALREADY_EXISTS`) with why: `produto-criado`, `categoria-criada` (a categoria an import
- *    created), `categoria-preenchida`, `sem-categoria` — written by the unit that decided it.
+ *    created), `categoria-preenchida`, `sem-categoria`. The entry a WRITE calls for — a create's
+ *    batch, an add's batch, a fill of an empty category — is written BEFORE that write (each
+ *    writer's hook), never after it: a write that lands and whose unit then fails is met by the
+ *    retry as already done, and an entry the retry cannot re-derive would be lost for good. The
+ *    direction is safe: a write that then loses leaves an entry one review too many (a produto that
+ *    does not exist leaves the list at the re-check). The other entries (`sem-categoria`) are
+ *    written by the unit that decided them, at its end; a retry decides them again.
  *
  * The item says `criar` for a create (also on a retried unit that meets its own landed create,
  * below), `completar` when a field was filled, a photo stored or a variation added, `vincular` when
@@ -83,7 +105,8 @@
  *
  * What the preparation decided — its fields, pendências, counts and photo targets — and the photo
  * cursor, checkpointed after every unit until the closing reports it. ⚠️ The job contract has no
- * field of its own for it: it rides as TAGGED TEXT (`f:<json>`) in `revisao.cursorProdutoId`, which
+ * field of its own for it (a deviation from the plan's job contract, awaiting its own field in
+ * `packages/schemas`): it rides as TAGGED TEXT (`f:<json>`) in `revisao.cursorProdutoId`, which
  * no one reads during the `familias` phase (the `revisao` phase, the field's owner, starts after it
  * and the transition clears it). Only {@link textoDoProgressoDaFamiliaLi} writes it and
  * {@link lerProgressoDaFamiliaLi} reads it back; a text that does not read, or names another family,
@@ -113,20 +136,29 @@
  * the cascade's rung 1 through the batch's own link. Its root is recognised as THIS job's creation
  * when its id is a SKU-keyed one (`li-sku-…`), its `createTime` is at or after the job document's,
  * and this conta's link of the store root under it carries the SAME `createTime` (one batch, one
- * commit stamp): the item then says `criar`, `ausente`, with the same create count, links and tax
- * review as the attempt that landed it — never `sku-ja-existe` against itself. ⚠️ Accepted
- * residuals of a retried complete unit: the fields a landed fill wrote are found filled, so they are
- * reported nowhere (`completar.ts`), and a `descricao-longa` of a landed create is not reported
- * again (the create is not re-planned).
+ * commit stamp) — decided in the cascade itself, BEFORE the target (step 2): the item then says
+ * `criar`, `ausente`, with the same create count, links and tax review as the attempt that landed
+ * it, in a `naoNoErp` job too — never `sku-ja-existe` against itself. A VARIATION THIS job added
+ * to an existing family is recognised the same way, by its own link: matched (`casado`) through
+ * it, a SKU-keyed id, and the link born in the variation's own commit — counted as created again,
+ * the item `completar`, its tax review re-written (the add's batch made it durable first anyway).
+ * ⚠️ Accepted residuals of a retried complete unit: the fields a landed fill wrote are found
+ * filled, so the REPORT names none of them (`completar.ts`; the tax review of a filled category
+ * was written before the fill, so the durable list loses nothing), and a `descricao-longa` of a
+ * landed create or add is not reported again (neither is re-planned).
  *
  * ⚠️ Never name the Admin SDK's multi-document read-and-write call here — not even in a comment
  * (`estrutura.test.ts`). Next-free; `db` is a parameter.
  *
  * ## The reads, against the indexes (root rule 1)
  *
- * The cascade's and the writers' own (each module states its indexes); here only documents by id:
- * a matched produto and its `extraData` (whether a detail could fill them, {@link
- * detalhesDaFamiliaLi}; the root's stored category). No query of its own.
+ * The cascade's and the writers' own (each module states its indexes), and the create probe the
+ * detail list asks before any detail is read (`familiaNova.ts`, `produtos (sku ASC)`); here only
+ * documents by id: a matched produto and its `extraData` (whether a detail could fill them, {@link
+ * detalhesDaFamiliaLi}; the root's stored category), a SKU-keyed root or variation and this conta's
+ * link under it (this job's own create or add). No query of its own. A unit whose detail list
+ * found nothing to read reuses that list's cascade instead of running it again
+ * ({@link executarFamiliaLi}'s `casamento`).
  */
 import type { DocumentSnapshot, Firestore, Timestamp } from 'firebase-admin/firestore';
 import { produtoCollection, produtoExtraDataCollection } from '@delfrance/data/admin/collections';
@@ -146,19 +178,23 @@ import {
   SITUACAO_ERP_ITEM_LI,
   TIPO_PRODUTO_LI,
   TIPO_RESOLUCAO_OPCAO_LI,
-  parseRef,
   pendenciaImportacaoLiSchema,
-  toOuterRefOrNull,
 } from '@delfrance/schemas';
 import { z } from 'zod';
 
-import { TIPO_CATEGORIA_DO_PRODUTO_LI, resolverCategoriaDoProdutoLi } from './categorias';
+import {
+  type ResultadoCategoriaDoProdutoLi,
+  TIPO_CATEGORIA_DO_PRODUTO_LI,
+  resolverCategoriaDoProdutoLi,
+} from './categorias';
 import {
   CATEGORIA_NO_PREENCHIMENTO_LI,
   type CategoriaNoPreenchimentoLi,
   type MedidasErpLi,
+  type ResultadoDoPreenchimentoLi,
   TIPO_RESULTADO_PREENCHIMENTO_LI,
   type ValoresDoLiLi,
+  categoriaErpArmazenadaLi,
   planejarPreenchimentoExtraDataLi,
   planejarPreenchimentoProdutoLi,
   preencherProdutoLi,
@@ -169,9 +205,11 @@ import { detalheLidoLi } from './detalhes';
 import {
   PAPEL_DO_PRODUTO_CRIADO_LI,
   PREFIXO_ID_PRODUTO_CRIADO_LI,
+  type ProdutoCriadoLi,
   TIPO_RESULTADO_FAMILIA_NOVA_LI,
   criadoComOVinculoDaContaLi,
   criarFamiliaLi,
+  recusasAntesDosDetalhesLi,
 } from './familiaNova';
 import type { FamiliaLi, FilhoDaFamiliaLi } from './familias';
 import { adicionarFilhosLi } from './filhoNovo';
@@ -209,6 +247,7 @@ import {
 } from './resolucao';
 import { adicionarARevisaoFiscalLi } from './revisaoFiscal';
 import {
+  DESFECHO_DO_VINCULO_LI,
   type ResultadoDoVinculoLi,
   type ResultadoDosVinculosLi,
   vincularFamiliaLi,
@@ -298,22 +337,87 @@ interface CasamentoLi {
   readonly raiz: ResolucaoDaRaizLi;
   readonly filhos: ResolucaoDosFilhosLi | null;
   readonly plano: PlanoDaFamiliaLi;
+  /**
+   * The matched root's snapshot when it is THIS job's create, landed by an earlier attempt of the
+   * unit (module header, "A retried family"); `null` otherwise, and always under Simular.
+   */
+  readonly criadaPorEsteJob: DocumentSnapshot | null;
 }
+
+/**
+ * The cascade and plan of one family, as {@link detalhesDaFamiliaLi} computed them: handed back to
+ * {@link executarFamiliaLi} by a caller in the SAME unit, over the same family and context.
+ */
+export type CasamentoDaFamiliaLi = CasamentoLi;
 
 const matched = (
   r: ResolucaoDaRaizLi,
 ): r is Extract<ResolucaoDaRaizLi, { readonly erpId: string }> =>
   r.tipo === SITUACAO_ERP_ITEM_LI.vinculado || r.tipo === SITUACAO_ERP_ITEM_LI.encontrado;
 
-/** Steps 1–4 for `familia`. */
-async function casarFamilia(
-  db: Firestore,
+/** What the cascade needs of the deps: the ERP, and the job's `createTime` (its own creates). */
+type DepsDoCasamentoLi = Pick<DepsFamiliaLi, 'db' | 'criacaoDoJob'>;
+
+/**
+ * The matched root when it is THIS job's create, landed by an earlier attempt of the unit (module
+ * header, "A retried family"): `aplicar` + "complete", matched through this conta's link, a
+ * SKU-keyed id, created at or after the job document, and this conta's link of the store root under
+ * it created in the SAME commit. Its snapshot, else `null`. Two documents by id at most.
+ */
+async function raizCriadaPorEsteJobLi(
+  deps: DepsDoCasamentoLi,
   ctx: ContextoDasFamiliasLi,
   familia: FamiliaLi,
+  raiz: ResolucaoDaRaizLi,
+): Promise<DocumentSnapshot | null> {
+  if (
+    ctx.job.modo !== MODO_IMPORTACAO_LI.aplicar ||
+    ctx.job.acao !== ACAO_IMPORTACAO_LI.completar
+  ) {
+    return null;
+  }
+  if (raiz.tipo !== SITUACAO_ERP_ITEM_LI.vinculado) return null;
+  if (!raiz.erpId.startsWith(PREFIXO_ID_PRODUTO_CRIADO_LI)) return null;
+  const snap = await produtoCollection.docRef(deps.db, {}, raiz.erpId).get();
+  const criado = snap.createTime;
+  if (!snap.exists || criado === undefined) return null;
+  if (criado.valueOf() < deps.criacaoDoJob.valueOf()) return null;
+  return (await criadoComOVinculoDaContaLi(deps.db, ctx.job.integracaoId, snap, familia.raiz.id))
+    ? snap
+    : null;
+}
+
+/** How a re-run of the cascade inside a unit is told the target the unit already decided. */
+interface OpcoesDoCasamentoLi {
+  /**
+   * The target as the unit decided it BEFORE its own writes (module header, "Order", step 2): the
+   * adoption's re-run and the photo closing pass the preparation's verdict. The root is then never
+   * asked whether it is this job's own create (both callers met it as someone else's).
+   */
+  readonly alvoDecidido?: boolean;
+}
+
+/** Steps 1–4 for `familia`. */
+async function casarFamilia(
+  deps: DepsDoCasamentoLi,
+  ctx: ContextoDasFamiliasLi,
+  familia: FamiliaLi,
+  opcoes: OpcoesDoCasamentoLi = {},
 ): Promise<CasamentoLi> {
-  const resolucao = { db, contaId: ctx.job.integracaoId };
+  const resolucao = { db: deps.db, contaId: ctx.job.integracaoId };
   const raiz = await resolverRaizLi(resolucao, familia, ctx.skusRepetidos);
-  const noAlvo = familiaNoAlvoLi(ctx.job, familia.raiz.id, raiz);
+  const criadaPorEsteJob =
+    opcoes.alvoDecidido === undefined
+      ? await raizCriadaPorEsteJobLi(deps, ctx, familia, raiz)
+      : null;
+  // A root this job created was `ausente` when the job met it: the target is that verdict's.
+  const noAlvo =
+    opcoes.alvoDecidido ??
+    familiaNoAlvoLi(
+      ctx.job,
+      familia.raiz.id,
+      criadaPorEsteJob === null ? raiz : { tipo: SITUACAO_ERP_ITEM_LI.ausente },
+    );
 
   let filhos: ResolucaoDosFilhosLi | null = null;
   if (noAlvo && familia.raiz.tipo === TIPO_PRODUTO_LI.atributo && matched(raiz)) {
@@ -330,21 +434,25 @@ async function casarFamilia(
     filhos,
     skusRepetidos: ctx.skusRepetidos,
     recusasDoAprendizado: ctx.recusasDoAprendizado,
+    noAlvo,
   });
-  return { raiz, filhos, plano };
+  return { raiz, filhos, plano, criadaPorEsteJob };
 }
 
 /**
  * Run one family's unit (module header, "Order"): under "only link" the whole family; under
  * "complete" its preparation, then — when nothing is to be fetched (no photo, or Simular) — its
- * closing in the same unit; otherwise `fotos`, for the caller's photo units.
+ * closing in the same unit; otherwise `fotos`, for the caller's photo units. `casamento`: the
+ * cascade {@link detalhesDaFamiliaLi} ran over this SAME family and context in this SAME unit,
+ * reused instead of running it again (absent ⇒ it runs here).
  */
 export async function executarFamiliaLi(
   deps: DepsFamiliaLi,
   ctx: ContextoDasFamiliasLi,
   familia: FamiliaLi,
+  casamentoDaUnidade?: CasamentoDaFamiliaLi,
 ): Promise<ResultadoDaFamiliaLi> {
-  const casamento = await casarFamilia(deps.db, ctx, familia);
+  const casamento = casamentoDaUnidade ?? (await casarFamilia(deps, ctx, familia));
   const { plano } = casamento;
   if (!plano.relatar) {
     return { tipo: 'fora-do-alvo', plano, mapaCategorias: ctx.job.mapaCategorias };
@@ -465,14 +573,19 @@ function preenche(a: ProdutoArmazenadoLi, valores: ValoresDoLiLi): boolean {
 }
 
 /**
- * The store ids whose DETAIL completing `familia` needs, root first, then its variations ascending
- * (the plan's cost rule: a detail is read only where it can change something). Reads the cascade's
- * own reads and the matched produtos by id; calls nothing outside the ERP. `[]` under "only link",
- * outside the target, for a refused or conflicting family. The caller drops the ids whose detail
+ * What completing `familia` needs before its preparation: the store ids whose DETAIL it needs, root
+ * first, then its variations ascending (the plan's cost rule: a detail is read only where it can
+ * change something), and the cascade that answer was decided on, for {@link executarFamiliaLi} to
+ * reuse when the caller runs the family in the same unit. Reads the cascade's own reads, the
+ * matched produtos by id and — for a family the ERP lacks — the create probe; calls nothing outside
+ * the ERP. No id under "only link" (and no cascade), outside the target, for a refused or
+ * conflicting family, for a family this job already created. The caller drops the ids whose detail
  * the job already holds or tried (the `orfaos` phase's, or one this family's earlier units read).
  *
  *  - A family the ERP lacks, whose create the plan classifies viable: the root and every variation
- *    the create would add (a create is decided only over a whole family).
+ *    the create would add (a create is decided only over a whole family) — unless a check that
+ *    needs no detail already refuses the create (an option, a combination, the probe over the rows'
+ *    SKUs: `recusasAntesDosDetalhesLi`), which then costs no call; the create reports it.
  *  - A family the ERP has: the root when it has an empty field a detail fills (weight, box,
  *    description, brand) or — when the run copies photos — no photo (its pictures are the detail's);
  *    a matched variation when it has an empty weight, box or description of its own; a variation
@@ -485,15 +598,40 @@ function preenche(a: ProdutoArmazenadoLi, valores: ValoresDoLiLi): boolean {
  *    read for its photos alone: a detail never read gives no picture (`fotos.ts`, "Which").
  */
 export async function detalhesDaFamiliaLi(
+  deps: DepsDoCasamentoLi,
+  ctx: ContextoDasFamiliasLi,
+  familia: FamiliaLi,
+): Promise<DetalhesDaFamiliaLi> {
+  if (ctx.job.acao !== ACAO_IMPORTACAO_LI.completar) return { ids: [], casamento: null };
+  const casamento = await casarFamilia(deps, ctx, familia);
+  const ids = await idsADetalhar(deps.db, ctx, familia, casamento);
+  return { ids, casamento };
+}
+
+/** {@link detalhesDaFamiliaLi}'s answer. */
+export interface DetalhesDaFamiliaLi {
+  readonly ids: readonly number[];
+  /** The cascade the ids were decided on; `null` under "only link" (none ran). */
+  readonly casamento: CasamentoDaFamiliaLi | null;
+}
+
+async function idsADetalhar(
   db: Firestore,
   ctx: ContextoDasFamiliasLi,
   familia: FamiliaLi,
+  casamento: CasamentoLi,
 ): Promise<number[]> {
-  if (ctx.job.acao !== ACAO_IMPORTACAO_LI.completar) return [];
-  const { raiz, filhos, plano } = await casarFamilia(db, ctx, familia);
+  const { raiz, filhos, plano } = casamento;
   if (!plano.noAlvo) return [];
+  // This job's own landed create: every detail it took was read before it.
+  if (casamento.criadaPorEsteJob !== null) return [];
   if (raiz.tipo === SITUACAO_ERP_ITEM_LI.ausente) {
-    return plano.criacao?.viavel === true ? [familia.raiz.id, ...plano.criacao.filhos] : [];
+    if (plano.criacao?.viavel !== true) return [];
+    const recusas = await recusasAntesDosDetalhesLi(
+      { db, contaId: ctx.job.integracaoId },
+      { familia, criacao: plano.criacao, grupos: ctx.grupos },
+    );
+    return recusas.length > 0 ? [] : [familia.raiz.id, ...plano.criacao.filhos];
   }
   if (!matched(raiz)) return [];
 
@@ -684,6 +822,20 @@ class AcumuladoDoCompletar {
     string,
     { readonly liId: number | null; readonly motivos: Set<MotivoRevisaoFiscalLi> }
   >();
+  /** The motivos this unit already WROTE per produto (a write's hook, before the write). */
+  readonly gravadas = new Map<string, Set<MotivoRevisaoFiscalLi>>();
+
+  /** Whether every motivo of `motivos` is already written for `produtoId` by this unit. */
+  jaGravado(produtoId: string, motivos: Iterable<MotivoRevisaoFiscalLi>): boolean {
+    const feitas = this.gravadas.get(produtoId);
+    return feitas !== undefined && [...motivos].every((m) => feitas.has(m));
+  }
+
+  marcarGravado(produtoId: string, motivos: Iterable<MotivoRevisaoFiscalLi>): void {
+    const feitas = this.gravadas.get(produtoId) ?? new Set();
+    for (const m of motivos) feitas.add(m);
+    this.gravadas.set(produtoId, feitas);
+  }
 
   constructor(mapa: readonly CategoriaDoJobLi[]) {
     this.mapa = mapa;
@@ -732,33 +884,125 @@ interface CategoriaDaFamiliaLi {
 
 const SEM_CATEGORIA: CategoriaDaFamiliaLi = { erpId: null, criadaPelaImportacao: false };
 
-/** Resolve (and, under `criarEVincular`, create) the root's store category (`categorias.ts`). */
-async function categoriaDaRaiz(
+/** The root's store category as `categorias.ts` decided it (module header, "Complete"). */
+interface CategoriaDecididaLi {
+  readonly categoria: CategoriaDaFamiliaLi;
+  /** Why the produto gets none, reported only with a produto that IS completed or created. */
+  readonly pendencia: PendenciaDoPlanoLi | null;
+  /** Store categories the decision creates and links (planned: would) before the produto takes it. */
+  readonly criadas: readonly number[];
+  /** The job's map after the decision (a plan's: its creates as `simulada`). */
+  readonly mapa: readonly CategoriaDoJobLi[];
+}
+
+function categoriaDecidida(r: ResultadoCategoriaDoProdutoLi): CategoriaDecididaLi {
+  const c = r.categoria;
+  if (c.tipo === TIPO_CATEGORIA_DO_PRODUTO_LI.resolvida) {
+    return {
+      categoria: { erpId: c.erpCategoriaId, criadaPelaImportacao: c.criadaPelaImportacao },
+      pendencia: null,
+      criadas: c.criadas,
+      mapa: r.mapaCategorias,
+    };
+  }
+  return {
+    categoria: SEM_CATEGORIA,
+    pendencia:
+      c.tipo === TIPO_CATEGORIA_DO_PRODUTO_LI.recusada
+        ? { codigo: c.pendencia, liId: null, referencias: c.referencias }
+        : null,
+    criadas: c.tipo === TIPO_CATEGORIA_DO_PRODUTO_LI.recusada ? c.criadas : [],
+    mapa: r.mapaCategorias,
+  };
+}
+
+function resolverCategoria(
+  deps: DepsFamiliaLi,
+  ctx: ContextoDasFamiliasLi,
+  familia: FamiliaLi,
+  modo: typeof MODO_IMPORTACAO_LI.simular | typeof MODO_IMPORTACAO_LI.aplicar,
+  mapa: readonly CategoriaDoJobLi[],
+): Promise<ResultadoCategoriaDoProdutoLi> {
+  return resolverCategoriaDoProdutoLi(
+    {
+      db: deps.db,
+      contaId: ctx.job.integracaoId,
+      modo,
+      categorias: ctx.job.categorias,
+      agoraMs: deps.agoraMs,
+    },
+    mapa,
+    familia.raiz.categorias,
+  );
+}
+
+/**
+ * The root's store category PLANNED (module header, "Complete"): `categorias.ts` run as Simular
+ * runs it, whatever the job's mode — every read, no write (the ids it would create are
+ * deterministic). The job's map is not touched.
+ */
+async function planejarCategoriaDaRaiz(
   deps: DepsFamiliaLi,
   ctx: ContextoDasFamiliasLi,
   familia: FamiliaLi,
   acc: AcumuladoDoCompletar,
-): Promise<CategoriaDaFamiliaLi> {
-  const r = await resolverCategoriaDoProdutoLi(
-    {
-      db: deps.db,
-      contaId: ctx.job.integracaoId,
-      modo: ctx.job.modo,
-      categorias: ctx.job.categorias,
-      agoraMs: deps.agoraMs,
-    },
-    acc.mapa,
-    familia.raiz.categorias,
+): Promise<CategoriaDecididaLi> {
+  return categoriaDecidida(
+    await resolverCategoria(deps, ctx, familia, MODO_IMPORTACAO_LI.simular, acc.mapa),
   );
-  acc.mapa = r.mapaCategorias;
-  const c = r.categoria;
-  if (c.tipo === TIPO_CATEGORIA_DO_PRODUTO_LI.resolvida) {
-    return { erpId: c.erpCategoriaId, criadaPelaImportacao: c.criadaPelaImportacao };
+}
+
+/**
+ * The planned category CARRIED OUT, for a produto that is about to take it: under `aplicar`, the
+ * resolution run for real only when the plan resolves AND creates (a linked leaf, a refusal and no
+ * category write nothing); the job's map then takes the real outcome. Under Simular the plan is the
+ * outcome, and the map takes its `simulada` creates. Returns the outcome — the real one, which may
+ * differ from the plan when another writer acted in between.
+ */
+async function aplicarCategoriaDaRaiz(
+  deps: DepsFamiliaLi,
+  ctx: ContextoDasFamiliasLi,
+  familia: FamiliaLi,
+  acc: AcumuladoDoCompletar,
+  planejada: CategoriaDecididaLi,
+): Promise<CategoriaDecididaLi> {
+  if (planejada.categoria.erpId === null || planejada.criadas.length === 0) return planejada;
+  if (ctx.job.modo === MODO_IMPORTACAO_LI.simular) {
+    acc.mapa = planejada.mapa;
+    return planejada;
   }
-  if (c.tipo === TIPO_CATEGORIA_DO_PRODUTO_LI.recusada) {
-    acc.pendencias.push({ codigo: c.pendencia, liId: null, referencias: c.referencias });
-  }
-  return SEM_CATEGORIA;
+  const real = categoriaDecidida(
+    await resolverCategoria(deps, ctx, familia, MODO_IMPORTACAO_LI.aplicar, acc.mapa),
+  );
+  acc.mapa = real.mapa;
+  return real;
+}
+
+/** Write now (`aplicar` only) the tax-review entries a write is about to call for (module header). */
+async function gravarRevisaoAntes(
+  deps: DepsFamiliaLi,
+  ctx: ContextoDasFamiliasLi,
+  acc: AcumuladoDoCompletar,
+  entradas: readonly {
+    readonly produtoId: string;
+    readonly liId: number | null;
+    readonly motivos: readonly MotivoRevisaoFiscalLi[];
+  }[],
+): Promise<void> {
+  if (ctx.job.modo !== MODO_IMPORTACAO_LI.aplicar) return;
+  await Promise.all(
+    entradas.map(async ({ produtoId, liId, motivos }) => {
+      if (motivos.length === 0 || acc.jaGravado(produtoId, motivos)) return;
+      await adicionarARevisaoFiscalLi(deps.db, deps.jobId, {
+        produtoId,
+        motivos: [...motivos],
+        liId,
+        desdeJobId: deps.jobId,
+        desdeMs: deps.agoraMs(),
+      });
+      acc.marcarGravado(produtoId, motivos);
+    }),
+  );
 }
 
 /** The tax-review motivos of a CREATED produto (module header, "The tax review"). */
@@ -795,13 +1039,11 @@ function criadaPorImportacaoLi(contaId: string, erpId: string): boolean {
   return erpId.startsWith(prefixo) && /^[1-9]\d{0,14}$/.test(erpId.slice(prefixo.length));
 }
 
-/** A stored `categoriaProdutoOuterRef` as the categoria's id; `null` when empty or not one. */
-function categoriaArmazenadaLi(produto: Readonly<Record<string, unknown>>): string | null {
-  if (vazioNoErpLi(produto, 'categoriaProdutoOuterRef')) return null;
-  const ref = toOuterRefOrNull(produto.categoriaProdutoOuterRef);
-  if (ref === null) return null;
-  const { collection, id } = parseRef(ref);
-  return collection === 'categorias' && id !== '' ? id : null;
+/** A categoria id read back as the family's (its creator recognised by its id). */
+function categoriaDaFamiliaPeloId(contaId: string, erpId: string | null): CategoriaDaFamiliaLi {
+  return erpId === null
+    ? SEM_CATEGORIA
+    : { erpId, criadaPelaImportacao: criadaPorImportacaoLi(contaId, erpId) };
 }
 
 /** A stored category read back as the family's (its creator recognised by its id). */
@@ -809,15 +1051,27 @@ function categoriaDaFamiliaArmazenada(
   contaId: string,
   produto: Readonly<Record<string, unknown>>,
 ): CategoriaDaFamiliaLi {
-  const erpId = categoriaArmazenadaLi(produto);
-  return erpId === null
-    ? SEM_CATEGORIA
-    : { erpId, criadaPelaImportacao: criadaPorImportacaoLi(contaId, erpId) };
+  return categoriaDaFamiliaPeloId(contaId, categoriaErpArmazenadaLi(produto));
 }
 
 /**
- * Fill ONE existing produto and account for it; `false` when the produto is gone (its link is then
- * not written).
+ * The variations' category (module header, "Complete"): the root's as its fill LEFT it — the one
+ * the fill wrote (Simular: would), else the one its last read found stored, else none — never the
+ * one resolved before the fill, which an operator's edit or a lost race may have kept off the root.
+ */
+function categoriaDosFilhosLi(
+  contaId: string,
+  daRaiz: Extract<ResultadoDoPreenchimentoLi, { readonly tipo: 'preenchido' }>,
+  resolvida: CategoriaDaFamiliaLi,
+): CategoriaDaFamiliaLi {
+  if (daRaiz.categoria === CATEGORIA_NO_PREENCHIMENTO_LI.preenchida) return resolvida;
+  return categoriaDaFamiliaPeloId(contaId, daRaiz.categoriaErpId);
+}
+
+/**
+ * Fill ONE existing produto and account for it: its fill's outcome, or `null` when the produto is
+ * gone (its link is then not written). The tax review a filled EMPTY category calls for is written
+ * BEFORE the write that fills it (module header, "The tax review").
  */
 async function preencher(
   deps: DepsFamiliaLi,
@@ -829,13 +1083,25 @@ async function preencher(
     readonly valores: ValoresDoLiLi;
     readonly categoria: CategoriaDaFamiliaLi;
   },
-): Promise<boolean> {
+): Promise<Extract<ResultadoDoPreenchimentoLi, { readonly tipo: 'preenchido' }> | null> {
   const r = await preencherProdutoLi(
-    { db: deps.db, modo: ctx.job.modo, agoraMs: deps.agoraMs },
+    {
+      db: deps.db,
+      modo: ctx.job.modo,
+      agoraMs: deps.agoraMs,
+      antesDePreencherCategoria: () =>
+        gravarRevisaoAntes(deps, ctx, acc, [
+          {
+            produtoId: alvo.produtoId,
+            liId: alvo.liId,
+            motivos: motivosDoPreenchido(CATEGORIA_NO_PREENCHIMENTO_LI.preenchida, alvo.categoria),
+          },
+        ]),
+    },
     { produtoId: alvo.produtoId, liId: alvo.liId, valores: alvo.valores },
   );
   acc.pendencias.push(...r.pendencias);
-  if (r.tipo === TIPO_RESULTADO_PREENCHIMENTO_LI.ausente) return false;
+  if (r.tipo === TIPO_RESULTADO_PREENCHIMENTO_LI.ausente) return null;
   for (const campo of r.campos) acc.campo(campo);
   const simular = ctx.job.modo === MODO_IMPORTACAO_LI.simular;
   if (simular ? r.campos.length > 0 : r.gravado) {
@@ -843,12 +1109,13 @@ async function preencher(
     acc.completado = true;
   }
   acc.revisar(alvo.produtoId, alvo.liId, motivosDoPreenchido(r.categoria, alvo.categoria));
-  return true;
+  return r;
 }
 
 /**
  * Write the tax-review entries gathered so far (`aplicar` only), in the order the produtos were met,
- * and forget them: each unit writes the entries it decided.
+ * and forget them: each unit writes the entries it decided. An entry whose every motivo this unit
+ * already wrote before a write (module header, "The tax review") costs nothing more.
  */
 async function gravarRevisao(
   deps: DepsFamiliaLi,
@@ -857,6 +1124,7 @@ async function gravarRevisao(
 ): Promise<void> {
   if (ctx.job.modo === MODO_IMPORTACAO_LI.aplicar) {
     for (const [produtoId, { liId, motivos }] of acc.revisao) {
+      if (acc.jaGravado(produtoId, motivos)) continue;
       await adicionarARevisaoFiscalLi(deps.db, deps.jobId, {
         produtoId,
         motivos: [...motivos],
@@ -864,6 +1132,7 @@ async function gravarRevisao(
         desdeJobId: deps.jobId,
         desdeMs: deps.agoraMs(),
       });
+      acc.marcarGravado(produtoId, motivos);
     }
   }
   acc.revisao.clear();
@@ -967,62 +1236,7 @@ async function prepararFamilia(
 ): Promise<PreparoLi> {
   const { raiz, plano } = casamento;
   if (raiz.tipo === SITUACAO_ERP_ITEM_LI.ausente && plano.criacao?.viavel === true) {
-    const categoria = await categoriaDaRaiz(deps, ctx, familia, acc);
-    const r = await criarFamiliaLi(
-      {
-        db: deps.db,
-        contaId: ctx.job.integracaoId,
-        modo: ctx.job.modo,
-        agoraMs: deps.agoraMs,
-      },
-      {
-        familia,
-        criacao: plano.criacao,
-        grupos: ctx.grupos,
-        categoriaErpId: categoria.erpId,
-        marcas: ctx.job.marcas,
-      },
-    );
-    if (r.tipo === TIPO_RESULTADO_FAMILIA_NOVA_LI.criada) {
-      acc.criados = r.produtos.filter((p) => p.papel !== PAPEL_DO_PRODUTO_CRIADO_LI.membro).length;
-      acc.vinculados = r.vinculos.length;
-      acc.pendencias.push(...r.pendencias);
-      acc.nomesCortados.push(...r.nomesCortados);
-      for (const p of r.produtos) {
-        acc.revisar(
-          p.produtoId,
-          p.papel === PAPEL_DO_PRODUTO_CRIADO_LI.filho ? p.liId : null,
-          motivosDoCriado(categoria),
-        );
-      }
-      return {
-        tipo: CAMINHO_DO_COMPLETAR_LI.criada,
-        plano,
-        erpRaizId: r.raizId,
-        categoria,
-        // The sole member is never a photo target: its root carries the pictures.
-        alvos: r.produtos
-          .filter((p) => p.papel !== PAPEL_DO_PRODUTO_CRIADO_LI.membro)
-          .map((p) => ({
-            produtoId: p.produtoId,
-            liId: p.papel === PAPEL_DO_PRODUTO_CRIADO_LI.filho ? p.liId : null,
-          })),
-      };
-    }
-    if (r.tipo === TIPO_RESULTADO_FAMILIA_NOVA_LI.recusada) {
-      acc.pendencias.push(...r.pendencias);
-      return { tipo: 'nada', plano, criacaoRecusada: true };
-    }
-    // Another writer (another conta's job, a person) created this SKU's root at our id: adopt it,
-    // through the cascade again, and complete it as a family the ERP has.
-    const adotada = await casarFamilia(deps.db, ctx, familia);
-    if (matched(adotada.raiz)) return prepararExistente(deps, ctx, familia, adotada, acc);
-    acc.pendencias.push({
-      codigo: PENDENCIA_IMPORTACAO_LI.conflitoDeEscrita,
-      liId: null,
-      referencias: [r.raizId],
-    });
-    return { tipo: 'nada', plano, criacaoRecusada: true };
+    return criarFamilia(deps, ctx, familia, casamento, plano.criacao, acc);
   }
   if (!matched(raiz)) return { tipo: 'nada', plano, criacaoRecusada: false };
 
@@ -1044,6 +1258,111 @@ async function prepararFamilia(
   };
 }
 
+/**
+ * A family the ERP lacks, CREATED (module header, "Complete"): its category planned with no write,
+ * the whole family through `familiaNova.ts` — whose `antesDoLote`, once every refusal and the
+ * probe passed, creates the planned categories and makes the family's tax review durable right
+ * before the batch — or ADOPTED when another writer's root holds our id.
+ */
+async function criarFamilia(
+  deps: DepsFamiliaLi,
+  ctx: ContextoDasFamiliasLi,
+  familia: FamiliaLi,
+  casamento: CasamentoLi,
+  criacao: NonNullable<PlanoDaFamiliaLi['criacao']>,
+  acc: AcumuladoDoCompletar,
+): Promise<PreparoLi> {
+  const { plano } = casamento;
+  const planejada = await planejarCategoriaDaRaiz(deps, ctx, familia, acc);
+  // What `antesDoLote` carried out, when it ran (a holder: it is set inside the hook).
+  const lote: { aplicada: CategoriaDecididaLi | null } = { aplicada: null };
+  const revisaoDoLote = (produtos: readonly ProdutoCriadoLi[], categoria: CategoriaDaFamiliaLi) =>
+    produtos.map((p) => ({
+      produtoId: p.produtoId,
+      liId: p.papel === PAPEL_DO_PRODUTO_CRIADO_LI.filho ? p.liId : null,
+      motivos: motivosDoCriado(categoria),
+    }));
+  const r = await criarFamiliaLi(
+    {
+      db: deps.db,
+      contaId: ctx.job.integracaoId,
+      modo: ctx.job.modo,
+      agoraMs: deps.agoraMs,
+      antesDoLote: async (produtos) => {
+        const real = await aplicarCategoriaDaRaiz(deps, ctx, familia, acc, planejada);
+        lote.aplicada = real;
+        // Another writer changed what the category comes to since the plan: the batch was planned
+        // on the plan's, so it is not committed.
+        if (real.categoria.erpId !== planejada.categoria.erpId) {
+          return [
+            real.pendencia ?? {
+              codigo: PENDENCIA_IMPORTACAO_LI.conflitoDeEscrita,
+              liId: null,
+              referencias: [planejada.categoria.erpId ?? ''],
+            },
+          ];
+        }
+        await gravarRevisaoAntes(deps, ctx, acc, revisaoDoLote(produtos, real.categoria));
+        return null;
+      },
+    },
+    {
+      familia,
+      criacao,
+      grupos: ctx.grupos,
+      categoriaErpId: planejada.categoria.erpId,
+      marcas: ctx.job.marcas,
+    },
+  );
+  if (r.tipo === TIPO_RESULTADO_FAMILIA_NOVA_LI.criada) {
+    // Simular, or an earlier attempt's batch met again (`retomada`): the plan carried out now — under
+    // Simular its `simulada` map, under `aplicar` the categories that batch already took, adopted.
+    const final: CategoriaDecididaLi =
+      lote.aplicada ?? (await aplicarCategoriaDaRaiz(deps, ctx, familia, acc, planejada));
+    const { categoria } = final;
+    if (final.pendencia !== null) acc.pendencias.push(final.pendencia);
+    acc.criados = r.produtos.filter((p) => p.papel !== PAPEL_DO_PRODUTO_CRIADO_LI.membro).length;
+    acc.vinculados = r.vinculos.length;
+    acc.pendencias.push(...r.pendencias);
+    acc.nomesCortados.push(...r.nomesCortados);
+    for (const e of revisaoDoLote(r.produtos, categoria))
+      acc.revisar(e.produtoId, e.liId, e.motivos);
+    return {
+      tipo: CAMINHO_DO_COMPLETAR_LI.criada,
+      plano,
+      erpRaizId: r.raizId,
+      categoria,
+      // The sole member is never a photo target: its root carries the pictures.
+      alvos: r.produtos
+        .filter((p) => p.papel !== PAPEL_DO_PRODUTO_CRIADO_LI.membro)
+        .map((p) => ({
+          produtoId: p.produtoId,
+          liId: p.papel === PAPEL_DO_PRODUTO_CRIADO_LI.filho ? p.liId : null,
+        })),
+    };
+  }
+  if (r.tipo === TIPO_RESULTADO_FAMILIA_NOVA_LI.recusada) {
+    // Nothing imported: no category pendência rides the refusal (it named no produto's category).
+    acc.pendencias.push(...r.pendencias);
+    return { tipo: 'nada', plano, criacaoRecusada: true };
+  }
+  // Another writer (another conta's job, a person) created this SKU's root at our id: adopt it,
+  // through the cascade again — in the target this unit decided — and complete it as a family the
+  // ERP has. A cascade that no longer matches it reports its OWN verdict (another shape, a second
+  // root with the SKU); only a root found gone is a lost write.
+  const adotada = await casarFamilia(deps, ctx, familia, { alvoDecidido: plano.noAlvo });
+  if (matched(adotada.raiz)) return prepararExistente(deps, ctx, familia, adotada, acc);
+  if (adotada.raiz.tipo === SITUACAO_ERP_ITEM_LI.ausente) {
+    acc.pendencias.push({
+      codigo: PENDENCIA_IMPORTACAO_LI.conflitoDeEscrita,
+      liId: null,
+      referencias: [r.raizId],
+    });
+    return { tipo: 'nada', plano, criacaoRecusada: true };
+  }
+  return { tipo: 'nada', plano: adotada.plano, criacaoRecusada: true };
+}
+
 /** A family this job created in an earlier attempt of the unit (module header, "A retried family"). */
 interface CriadaPorEsteJobLi {
   /** The plan the attempt that created it made (the root `ausente`, the create viable). */
@@ -1061,10 +1380,10 @@ interface CriadaPorEsteJobLi {
 }
 
 /**
- * Whether the matched root is THIS job's create, landed by an earlier attempt of this unit (module
- * header, "A retried family"): a SKU-keyed id, created at or after the job document, with this
- * conta's link of the store root created in the same commit. `null` otherwise — and for a root
- * matched any other way than by this conta's link (a create always writes its link).
+ * The matched root as THIS job's create, landed by an earlier attempt of this unit (module header,
+ * "A retried family"), with the produtos of its batch — when the cascade recognised it
+ * (`raizCriadaPorEsteJobLi`: a SKU-keyed id, created at or after the job document, with this conta's
+ * link of the store root created in the same commit). `null` otherwise.
  */
 async function criadaPorEsteJob(
   deps: DepsFamiliaLi,
@@ -1072,16 +1391,9 @@ async function criadaPorEsteJob(
   familia: FamiliaLi,
   casamento: CasamentoLi,
 ): Promise<CriadaPorEsteJobLi | null> {
-  const { raiz, filhos } = casamento;
-  if (raiz.tipo !== SITUACAO_ERP_ITEM_LI.vinculado) return null;
-  if (!raiz.erpId.startsWith(PREFIXO_ID_PRODUTO_CRIADO_LI)) return null;
-  const snap = await produtoCollection.docRef(deps.db, {}, raiz.erpId).get();
-  const criado = snap.createTime;
-  if (!snap.exists || criado === undefined) return null;
-  if (criado.valueOf() < deps.criacaoDoJob.valueOf()) return null;
-  if (!(await criadoComOVinculoDaContaLi(deps.db, ctx.job.integracaoId, snap, familia.raiz.id))) {
-    return null;
-  }
+  const { raiz, filhos, criadaPorEsteJob: snap } = casamento;
+  const criado = snap?.createTime;
+  if (snap === null || criado === undefined || !matched(raiz)) return null;
   const dados = (snap.data() ?? {}) as Record<string, unknown>;
   const produtos: { produtoId: string; liId: number | null; membro: boolean }[] = [
     { produtoId: raiz.erpId, liId: null, membro: false },
@@ -1135,7 +1447,8 @@ function valoresDoFilho(
 
 /**
  * A family the ERP has, PREPARED (module header, "Complete"): the root's category (only when its
- * own is empty) and fill, then each matched variation's fill. No link: the closing writes them.
+ * own is empty; planned, then carried out) and fill, then each matched variation's fill with the
+ * category the root's fill LEFT. No link: the closing writes them.
  */
 async function prepararExistente(
   deps: DepsFamiliaLi,
@@ -1157,11 +1470,14 @@ async function prepararExistente(
     });
     return { tipo: 'nada', plano, criacaoRecusada: false };
   }
-  const daRaiz = categoriaArmazenadaLi(armazenada.produto);
-  const categoria = vazioNoErpLi(armazenada.produto, 'categoriaProdutoOuterRef')
-    ? await categoriaDaRaiz(deps, ctx, familia, acc)
-    : SEM_CATEGORIA;
-  const raizViva = await preencher(deps, ctx, acc, {
+  let categoria = SEM_CATEGORIA;
+  if (vazioNoErpLi(armazenada.produto, 'categoriaProdutoOuterRef')) {
+    const planejada = await planejarCategoriaDaRaiz(deps, ctx, familia, acc);
+    const final = await aplicarCategoriaDaRaiz(deps, ctx, familia, acc, planejada);
+    if (final.pendencia !== null) acc.pendencias.push(final.pendencia);
+    categoria = final.categoria;
+  }
+  const daRaiz = await preencher(deps, ctx, acc, {
     produtoId: raiz.erpId,
     liId: null,
     valores: valoresDoLiLi({
@@ -1174,12 +1490,9 @@ async function prepararExistente(
     }),
     categoria,
   });
-  if (!raizViva) return { tipo: 'nada', plano, criacaoRecusada: false };
-  // The variations' category: the parent's own, else the one just resolved for it.
-  const daFamilia: CategoriaDaFamiliaLi =
-    daRaiz !== null
-      ? { erpId: daRaiz, criadaPelaImportacao: criadaPorImportacaoLi(ctx.job.integracaoId, daRaiz) }
-      : categoria;
+  if (daRaiz === null) return { tipo: 'nada', plano, criacaoRecusada: false };
+  // The variations' category: the root's as its fill LEFT it, never the pre-fill read's guess.
+  const daFamilia = categoriaDosFilhosLi(ctx.job.integracaoId, daRaiz, categoria);
 
   // Each matched variation, filled on its own.
   const porId = new Map<number, FilhoDaFamiliaLi>(familia.filhos.map((f) => [f.linha.id, f]));
@@ -1198,7 +1511,7 @@ async function prepararExistente(
       valores: valoresDoFilho(ctx, familia, filho, daFamilia),
       categoria: daFamilia,
     });
-    if (vivo) alvos.push({ produtoId: r.erp.id, liId: r.liId });
+    if (vivo !== null) alvos.push({ produtoId: r.erp.id, liId: r.liId });
     else sumidos.add(r.erp.id);
   }
   return {
@@ -1251,7 +1564,9 @@ export async function fecharFamiliaLi(
       alvos,
     };
   } else {
-    const casamento = await casarFamilia(deps.db, ctx, familia);
+    // The family was in the target when it was prepared: the closing keeps that verdict (module
+    // header, "Order", step 2).
+    const casamento = await casarFamilia(deps, ctx, familia, { alvoDecidido: true });
     if (!matched(casamento.raiz) || casamento.raiz.erpId !== progresso.erpRaizId) {
       // The root the preparation filled is no longer the one the cascade answers (deleted, or
       // re-linked meanwhile): nothing is linked over it, and nothing is created in its place.
@@ -1346,6 +1661,7 @@ async function vincularEAdicionar(
     raizVinculo: plano.raizVinculo,
     filhosVinculos: plano.filhosVinculos.filter((v) => !sumidos.has(v.produtoId)),
   });
+  await recontarAdicionadosPorEsteJob(deps, ctx, resultado, categoria, acc);
 
   // The variations the ERP family lacks, beside the root's CONFIRMED link.
   const ausentes = (filhos?.filhos ?? []).some((r) => r.situacao === SITUACAO_DO_FILHO_LI.ausente);
@@ -1363,6 +1679,18 @@ async function vincularEAdicionar(
       contaId: ctx.job.integracaoId,
       modo: ctx.job.modo,
       agoraMs: deps.agoraMs,
+      // The added variations' tax review, durable before they exist (module header).
+      antesDoLote: (adicionados) =>
+        gravarRevisaoAntes(
+          deps,
+          ctx,
+          acc,
+          adicionados.map((a) => ({
+            produtoId: a.produtoId,
+            liId: a.liId,
+            motivos: motivosDoCriado(categoria),
+          })),
+        ),
     },
     {
       familia,
@@ -1393,7 +1721,7 @@ async function vincularEAdicionar(
       valores: valoresDoFilho(ctx, familia, filho, categoria),
       categoria,
     });
-    if (!vivo) continue;
+    if (vivo === null) continue;
     const planejado = planejarVinculoLi(
       ctx.job.integracaoId,
       PAPEL_DO_VINCULO_LI.filho,
@@ -1413,4 +1741,33 @@ async function vincularEAdicionar(
     filhosVinculados.push(await vincularProdutoLi(depsDosVinculos(deps, ctx), planejado.vinculo));
   }
   return { raiz: resultado.raiz, filhos: filhosVinculados };
+}
+
+/**
+ * The variations THIS job ADDED to the family in an earlier attempt of the unit (module header, "A
+ * retried family"), met again through their own links: a child link this job created (`criado`,
+ * `retomado`) under a SKU-keyed produto born in the SAME commit as that link — the add's batch, one
+ * commit stamp. Each is counted as created again (its link already counts as created), the item
+ * says `completar`, and its tax review is gathered again. Never under Simular (it writes no link).
+ * One produto and one link by id per such variation.
+ */
+async function recontarAdicionadosPorEsteJob(
+  deps: DepsFamiliaLi,
+  ctx: ContextoDasFamiliasLi,
+  vinculos: ResultadoDosVinculosLi,
+  categoria: CategoriaDaFamiliaLi,
+  acc: AcumuladoDoCompletar,
+): Promise<void> {
+  for (const v of vinculos.filhos) {
+    const { desfecho } = v;
+    const { produtoId, liId } = v.vinculo;
+    if (desfecho.tipo !== DESFECHO_DO_VINCULO_LI.criado || desfecho.retomado !== true) continue;
+    if (!produtoId.startsWith(PREFIXO_ID_PRODUTO_CRIADO_LI)) continue;
+    const snap = await produtoCollection.docRef(deps.db, {}, produtoId).get();
+    if (!snap.exists) continue;
+    if (!(await criadoComOVinculoDaContaLi(deps.db, ctx.job.integracaoId, snap, liId))) continue;
+    acc.criados += 1;
+    acc.completado = true;
+    acc.revisar(produtoId, liId, motivosDoCriado(categoria));
+  }
 }

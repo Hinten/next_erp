@@ -504,12 +504,14 @@ functions runtime SA, the identity the poller runs as (by default
 `PROJECT_NUMBER-compute@developer.gserviceaccount.com`); step 4 revisits this
 block when the App Hosting runtime SA joins.
 
-**The product import (master-plan step 9) needs NO new grant.** Its two
-producers — the `onImportacaoLojaIntegradaCriada` trigger (a job's first slice)
-and each import slice handing off to the next — both run as the functions runtime
-SA and enqueue onto the SAME reads queue `filaLeituraLojaIntegrada`, so the reads
-queue's three grants already cover them. The import's start route (App Hosting)
-only creates the job document and never enqueues.
+**The product import (master-plan step 9) needs NO new Cloud Tasks grant** (its
+photos need a STORAGE grant: "Photos: the runtime SA writes the default bucket"
+below). Its two producers — the `onImportacaoLojaIntegradaCriada` trigger (a
+job's first slice) and each import slice handing off to the next — both run as
+the functions runtime SA and enqueue onto the SAME reads queue
+`filaLeituraLojaIntegrada`, so the reads queue's three grants already cover them.
+The import's start route (App Hosting) only creates the job document and never
+enqueues.
 
 **The writes queue (master-plan step 7) needs the same three, for its own
 queue.** `filaEscritaLojaIntegrada` is enqueued by the history trigger and the
@@ -619,7 +621,10 @@ writes before it stay — that family's fills, or its create with the links that
 ride the create's batch; an existing family's links come after its photos, so
 they are not written yet — and a restart redoes none of them
 (every import write is fill-empty, create-only or idempotent). Cancelar ends
-the job; grant, then start it again.
+the job; grant, then start it again. The same stranding follows a TRANSIENT
+Storage failure (a 5xx or 429 from Cloud Storage) that happens to hit the
+queue's last attempt: no Storage error class is narrowed there, so it is never
+stamped `tentativas-esgotadas` — Cancelar is the recovery in both cases.
 
 ### The deploy aborts if `TASKS_INVOKER_SA` is missing (#1133)
 

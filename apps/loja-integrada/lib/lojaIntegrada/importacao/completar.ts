@@ -91,16 +91,31 @@
  * ## What the result reports
  *
  * The NAMES of the fields filled (Simular: that would be) — the produto's bare, the extraData's
- * prefixed — for the report item, the pendências above, and how the category stands for the
+ * prefixed — for the report item, the pendências above, how the category stands for the
  * tax-review list: `preenchida` (it was empty and this fill wrote it), `existente` (it had a value)
  * or `vazia` (it was empty and stays so: the store gave none, the one it gave was refused, or the
- * write lost every attempt).
+ * write lost every attempt) — and the ERP categoria the produto HOLDS after the call, as far as it
+ * knows (`categoriaErpId`): the one it wrote (Simular: would write), else the one its LAST read
+ * found stored, else none. A family's variations take that one, never the one the caller resolved
+ * before the fill: a root whose fill lost its category to an operator keeps the operator's, and
+ * its variations follow it (`familiaDoJob.ts`).
+ *
+ * ## The category's tax review ({@link DepsPreenchimentoLi.antesDePreencherCategoria})
+ *
+ * A fill that writes an EMPTY category changes how the NF-e resolves the produto's taxes, so that
+ * produto joins the tax-review list. The entry must not depend on THIS call's outcome reaching the
+ * caller: a write that lands and whose unit is then retried (its reply lost, any later failure of
+ * the unit) finds the category filled, plans nothing for it, and could never say so again. So the
+ * caller's hook runs right BEFORE every guarded write whose patch fills the category (`aplicar`
+ * only) and makes the entry durable first. A write that then loses leaves an entry for a produto
+ * whose category is not the one planned: one review more, never one less.
  *
  * ⚠️ Accepted residual: a fill that LANDED while its reply was lost and that another writer then
  * changed again before the re-read (a later `ultimaModificacao`) is not recognised as ours; the
  * re-plan finds those fields filled and writes nothing over them, and they are reported nowhere. A
  * unit retried after the fill landed reads the same: the fields are filled, so the retry reports
- * none of them.
+ * none of them. Only the REPORT loses them: the tax-review entry a filled category calls for was
+ * written before the write (above), so the durable list never does.
  *
  * ## The reads, against the indexes (root rule 1)
  *
@@ -136,6 +151,7 @@ import {
   PRODUTO_EXTRA_DATA_DOC_ID,
   type ProdutoLiDetalhado,
   type ProdutoLiLido,
+  parseRef,
   produtoExtraDataSchema,
   produtoSchema,
   toOuterRefOrNull,
@@ -335,6 +351,20 @@ export interface PlanoDoExtraDataLi extends PlanoDoPreenchimentoLi {
   readonly descricaoLongaTamanho: number | null;
 }
 
+/**
+ * A stored `categoriaProdutoOuterRef` as the categoria's ERP id; `null` when it is empty or names no
+ * categoria (another collection, an empty id, a value that is not a ref). Pure.
+ */
+export function categoriaErpArmazenadaLi(
+  produto: Readonly<Record<string, unknown>>,
+): string | null {
+  if (vazioNoErpLi(produto, 'categoriaProdutoOuterRef')) return null;
+  const ref = toOuterRefOrNull(produto.categoriaProdutoOuterRef);
+  if (ref === null) return null;
+  const { collection, id } = parseRef(ref);
+  return collection === 'categorias' && id !== '' ? id : null;
+}
+
 /** A category id no `documents/categorias/<id>` ref can be formed from: reported, never thrown. */
 const REF_IMPOSSIVEL = Symbol('ref-impossivel');
 
@@ -446,6 +476,12 @@ export interface DepsPreenchimentoLi {
    * Production passes nothing.
    */
   readonly antesDaEscrita?: () => Promise<void> | void;
+  /**
+   * Runs right before each guarded write of the produto whose patch fills its EMPTY category
+   * (`aplicar` only; module header, "The category's tax review"): the caller makes the tax-review
+   * entry that write calls for durable FIRST. A throw propagates, and nothing is written.
+   */
+  readonly antesDePreencherCategoria?: () => Promise<void>;
 }
 
 export interface EntradaDoPreenchimentoLi {
@@ -470,6 +506,12 @@ export type ResultadoDoPreenchimentoLi =
       /** The fields filled (Simular: that would be), produto's then extraData's, table order. */
       readonly campos: readonly string[];
       readonly categoria: CategoriaNoPreenchimentoLi;
+      /**
+       * The ERP categoria the produto holds after this call, as far as it knows (module header,
+       * "What the result reports"): the one it wrote (Simular: would write), else the one its last
+       * read found stored, else `null`.
+       */
+      readonly categoriaErpId: string | null;
       readonly pendencias: readonly PendenciaDoPlanoLi[];
       /** A write of this call landed (`aplicar` only). */
       readonly gravado: boolean;
@@ -485,6 +527,8 @@ export const TIPO_RESULTADO_PREENCHIMENTO_LI = {
 interface DesfechoDoDocumento<P extends PlanoDoPreenchimentoLi> {
   /** The last plan made (its `invalidos` are what the item reports). */
   readonly plano: P;
+  /** The document as the read that last plan was made on found it (`{}` for an absent one). */
+  readonly lido: Readonly<Record<string, unknown>>;
   /** The fields that LANDED (Simular: the plan's). */
   readonly campos: readonly string[];
   readonly gravado: boolean;
@@ -507,30 +551,37 @@ async function preencherOProduto(
   let snap = await ref.get();
   for (let escritas = 0; ; escritas += 1) {
     if (!snap.exists || snap.updateTime === undefined) return null;
-    const plano = planejarPreenchimentoProdutoLi(dadosDe(snap), valores);
-    if (plano.campos.length === 0) return { plano, campos: [], gravado: false, conflito: false };
+    const lido = dadosDe(snap);
+    const plano = planejarPreenchimentoProdutoLi(lido, valores);
+    if (plano.campos.length === 0) {
+      return { plano, lido, campos: [], gravado: false, conflito: false };
+    }
     if (deps.modo === MODO_IMPORTACAO_LI.simular) {
-      return { plano, campos: plano.campos, gravado: false, conflito: false };
+      return { plano, lido, campos: plano.campos, gravado: false, conflito: false };
     }
     if (escritas >= MAX_TENTATIVAS_PREENCHIMENTO_LI) {
-      return { plano, campos: [], gravado: false, conflito: true };
+      return { plano, lido, campos: [], gravado: false, conflito: true };
     }
     // Validated as the collection validates a merge: an unmodelled key throws (a coding error).
     const escrito = produtoCollection.parseMerge({
       ...plano.patch,
       ultimaModificacao: deps.agoraMs(),
     });
+    // The category's tax review, made durable BEFORE the write that calls for it (module header).
+    if (Object.hasOwn(plano.patch, 'categoriaProdutoOuterRef')) {
+      await deps.antesDePreencherCategoria?.();
+    }
     await deps.antesDaEscrita?.();
     try {
       await ref.update(escrito, { lastUpdateTime: snap.updateTime });
-      return { plano, campos: plano.campos, gravado: true, conflito: false };
+      return { plano, lido, campos: plano.campos, gravado: true, conflito: false };
     } catch (err) {
       if (!isFailedPrecondition(err) && !isNotFound(err)) throw err;
     }
     snap = await ref.get();
     // Our own write, landed with its reply lost (module header): counted, never redone.
     if (snap.exists && guardaOPatchLi(snap.data(), escrito)) {
-      return { plano, campos: plano.campos, gravado: true, conflito: false };
+      return { plano, lido, campos: plano.campos, gravado: true, conflito: false };
     }
   }
 }
@@ -545,22 +596,22 @@ async function preencherOExtraData(
   let snap = await ref.get();
   for (let escritas = 0; ; escritas += 1) {
     const versao = snap.exists ? snap.updateTime : undefined;
-    const plano = planejarPreenchimentoExtraDataLi(
-      versao === undefined ? null : dadosDe(snap),
-      valores,
-    );
-    if (plano.campos.length === 0) return { plano, campos: [], gravado: false, conflito: false };
+    const lido = versao === undefined ? {} : dadosDe(snap);
+    const plano = planejarPreenchimentoExtraDataLi(versao === undefined ? null : lido, valores);
+    if (plano.campos.length === 0) {
+      return { plano, lido, campos: [], gravado: false, conflito: false };
+    }
     if (deps.modo === MODO_IMPORTACAO_LI.simular) {
-      return { plano, campos: plano.campos, gravado: false, conflito: false };
+      return { plano, lido, campos: plano.campos, gravado: false, conflito: false };
     }
     if (escritas >= MAX_TENTATIVAS_PREENCHIMENTO_LI) {
-      return { plano, campos: [], gravado: false, conflito: true };
+      return { plano, lido, campos: [], gravado: false, conflito: true };
     }
     const escrito = produtoExtraDataCollection.parseMerge({ ...plano.patch });
     try {
       if (versao === undefined) await ref.create(escrito);
       else await ref.update(escrito, { lastUpdateTime: versao });
-      return { plano, campos: plano.campos, gravado: true, conflito: false };
+      return { plano, lido, campos: plano.campos, gravado: true, conflito: false };
     } catch (err) {
       const perdeu =
         versao === undefined ? isAlreadyExists(err) : isFailedPrecondition(err) || isNotFound(err);
@@ -568,7 +619,7 @@ async function preencherOExtraData(
     }
     snap = await ref.get();
     if (snap.exists && guardaOPatchLi(snap.data(), escrito)) {
-      return { plano, campos: plano.campos, gravado: true, conflito: false };
+      return { plano, lido, campos: plano.campos, gravado: true, conflito: false };
     }
   }
 }
@@ -641,6 +692,9 @@ export async function preencherProdutoLi(
     produtoId,
     campos: [...produto.campos, ...(extra?.campos ?? [])],
     categoria,
+    categoriaErpId: categoriaPreenchida
+      ? valores.categoriaErpId
+      : categoriaErpArmazenadaLi(produto.lido),
     pendencias,
     gravado: produto.gravado || extra?.gravado === true,
   };

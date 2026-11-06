@@ -40,6 +40,7 @@ import {
   PASSO_REVISAO_FISCAL_LI,
   type PassoRevisaoFiscalLi,
   adicionarARevisaoFiscalLi,
+  criarLeitorDeListasRevisaoLi,
   criarLeitorDeRegrasImpostoLi,
   evidenciaFiscalDoProdutoLi,
   executarUnidadeDaRevisaoFiscalLi,
@@ -133,6 +134,7 @@ function deps(db: FakeDb, over: Partial<DepsRevisaoFiscalLi> = {}): DepsRevisaoF
     contaId: CONTA,
     jobId: JOB,
     regras: criarLeitorDeRegrasImpostoLi(asDb(db)),
+    listas: criarLeitorDeListasRevisaoLi(asDb(db)),
     ...over,
   };
 }
@@ -641,19 +643,74 @@ describe('every query the phase sends rides a declared index, or none (root rule
       expect(c.filtros).toEqual([['integracaoId', '==', CONTA]]);
       expect(c.ordens).toEqual([['iniciadoEmMs', 'desc']]);
     }
-    // Every other ordered query is a job's own subcollection in document-key order, unfiltered.
-    for (const c of filtradas.filter((q) => q.colecao !== 'importacoesLojaIntegrada')) {
-      expect(c.filtros).toEqual([]);
-      expect(c.ordens).toEqual([['__name__', 'asc']]);
-      expect(c.colecao).toMatch(/^importacoesLojaIntegrada\/[^/]+\/revisao$/);
-    }
-    // The rest: the produto's and the category's imposto `limit(1)`, and the rules' group, whole.
-    for (const c of db.consultas.filter((q) => q.filtros.length === 0 && q.ordens.length === 0)) {
+    // No other query is ordered — above all, no document-key RANGE over a list: on Enterprise,
+    // with no `__name__` index, every such page scans the whole list (module header).
+    expect(filtradas.filter((q) => q.colecao !== 'importacoesLojaIntegrada')).toEqual([]);
+    // The rest: a job's list read WHOLE, the produto's and the category's imposto `limit(1)`, and
+    // the rules' group, whole.
+    const soltas = db.consultas.filter((q) => q.filtros.length === 0 && q.ordens.length === 0);
+    // Anti-vacuity: both lists (the source's and this job's) were read whole.
+    expect(
+      soltas
+        .filter((c) => c.colecao.endsWith('/revisao'))
+        .map((c) => c.colecao)
+        .sort(),
+    ).toEqual([`${caminhoJobLi('job-anterior')}/revisao`, `${caminhoJobLi(JOB)}/revisao`].sort());
+    for (const c of soltas) {
       expect(
-        (c.colecao.endsWith('/imposto') && c.limite === 1) ||
+        (/^importacoesLojaIntegrada\/[^/]+\/revisao$/.test(c.colecao) &&
+          c.limite === null &&
+          c.apos === null) ||
+          (c.colecao.endsWith('/imposto') && c.limite === 1) ||
           (c.colecao === 'regras' && c.grupo === true && c.limite === null),
         JSON.stringify(c),
       ).toBe(true);
     }
+  });
+});
+
+describe('a list is read WHOLE once per dispatch — never paged by a key range', () => {
+  it('a re-check of three pages and a two-page carry read each list ONCE per reader; a new reader (the next dispatch) reads again', async () => {
+    const db = new FakeDb();
+    seedEsteJob(db);
+    seedJob(db, 'job-anterior', 400);
+    const n = PAGINA_TRANSPORTE_REVISAO_LI + 3;
+    for (let i = 0; i < n; i += 1) {
+      const id = `p-${String(i).padStart(4, '0')}`;
+      seedEntrada(db, 'job-anterior', id);
+      seedProduto(db, id);
+    }
+    const leiturasDe = (jobId: string) =>
+      db.consultas.filter((c) => c.colecao === `${caminhoJobLi(jobId)}/revisao`).length;
+    const umDespacho = deps(db);
+    const r = await rodarFase(umDespacho);
+    expect(r.abertos).toBe(n);
+    // Two copy pages, three re-check pages: still ONE read of each list.
+    expect(r.passos.filter((p) => p.tipo === 'progresso' && p.transportadas > 0)).toHaveLength(2);
+    expect(r.passos.filter((p) => p.conferidas > 0)).toHaveLength(3);
+    expect(leiturasDe('job-anterior')).toBe(1);
+    expect(leiturasDe(JOB)).toBe(1);
+
+    // The next dispatch's reader reads this job's list again, once.
+    await executarUnidadeDaRevisaoFiscalLi(deps(db), {
+      cursorProdutoId: 'r:0:',
+      anteriorJobId: null,
+    });
+    expect(leiturasDe(JOB)).toBe(2);
+  });
+
+  it('PAIR: the in-memory page resumes strictly AFTER the cursor’s id ⟷ NEAR-MISS an id equal to it is never handled twice', async () => {
+    const db = new FakeDb();
+    seedEsteJob(db);
+    for (const id of ['a', 'b', 'c']) {
+      seedEntrada(db, JOB, id);
+      seedProduto(db, id);
+    }
+    const passo = await executarUnidadeDaRevisaoFiscalLi(deps(db), {
+      cursorProdutoId: 'r:1:b',
+      anteriorJobId: null,
+    });
+    expect(passo).toMatchObject({ tipo: 'concluido', conferidas: 1, abertos: 2 });
+    expect(passo.estado.cursorProdutoId).toBe('r:2:c');
   });
 });

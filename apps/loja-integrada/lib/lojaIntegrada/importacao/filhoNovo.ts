@@ -16,14 +16,22 @@
  * the cascade, and is skipped here with nothing added. On top of it, a variation is added ONLY when
  *  - it is visible: a hidden or blocked one is never created (`oculto-nao-criado`; decided
  *    2026-11-03 — the next run adds it once the store shows it);
+ *  - its DETAIL was read and agrees (the whole-family create's "The details", `familiaNova.ts`):
+ *    none read — a 404 (deleted since the listing) or a body off its schema — ⇒ `dado-invalido`
+ *    (`detalhe`); hidden, blocked or trashed in it ⇒ `oculto-nao-criado`; another SKU in it ⇒
+ *    `dado-invalido` (`sku`), since the id is keyed by the SKU. A product the store no longer has is
+ *    never added, nor linked;
  *  - every option's grupo is one the family ALREADY uses — the parent's `grupoDeVariacoesUid`, or a
  *    child's `grupoDeVariacoesUid` or `variacoesUid` — else `variacao-sem-vinculo` naming the
  *    options: a new axis would change the family's shape, which the import never does;
  *  - its combination of variantes is no existing child's (`variacao-ambigua`, naming it) and no
  *    other added variation's (`variacao-ambigua` on both);
- *  - every planned document parses (`dado-invalido`, field names) and its SKU passes the create
- *    probe: an exact hit anywhere in the catalogue ⇒ `sku-ja-existe` naming the ERP ids, a
- *    "parecido" hit alone ⇒ `sku-parecido` — that variation is left out, the others still added.
+ *  - every planned document parses (`dado-invalido`, field names), its name — when the cut at the
+ *    ERP's limit shortened it — is no other added variation's and no sibling's (`dado-invalido`,
+ *    `nome`: the ERP family builder never makes two children of one name that way), and its SKU
+ *    passes the create probe: an exact hit anywhere in the catalogue ⇒ `sku-ja-existe` naming the
+ *    ERP ids, a "parecido" hit alone ⇒ `sku-parecido` — that variation is left out, the others
+ *    still added.
  * A variation added is built by the whole-family create's rules (`familiaNova.ts`): the id keyed by
  * its SKU, the name by the ERP family rule over the ERP PARENT's stored name, the taxonomy from the
  * resolution, the store's values through the fill-empty's one field map (the parent's resolved
@@ -41,7 +49,12 @@
  *     existing-product path (fill and link). Anything else at the id ⇒ `sku-ja-existe`.
  *  3. The checks above, the grupos read by id, the probe — in the same dispatch, immediately before
  *     the commit, no Loja Integrada call in between.
- *  4. ONE batch: every child `create()`, their `extraData` and link `create()`s, and
+ *  4. What must precede the batch ({@link DepsFilhoNovoLi.antesDoLote}, `aplicar` only): the
+ *     caller's tax-review entries for the variations the batch adds, made durable before they
+ *     exist — a retried unit meets an added variation through its own link and never adds it again,
+ *     so an entry written after the commit could be lost for good. A batch that then loses leaves
+ *     an entry for a produto that does not exist, which the re-check closes.
+ *  5. ONE batch: every child `create()`, their `extraData` and link `create()`s, and
  *     `update(parent, { filhoUnicoId: derivarFilhoUnico(<the child set read in THIS attempt> +
  *     <the added ones>), ultimaModificacao }, { lastUpdateTime: <the parent's read> })` — written
  *     even when the pointer does not move: it is the guard. Every ERP writer that changes a child
@@ -98,6 +111,7 @@ import {
   PENDENCIA_IMPORTACAO_LI,
   derivarFilhoUnico,
   idFromRefOrNull,
+  mesmoSkuLi,
   parseFakePath,
   sameCombo,
 } from '@delfrance/schemas';
@@ -113,8 +127,10 @@ import {
   criadoComOVinculoDaContaLi,
   enfileirarCriacoesLi,
   estadoDoIdPlanejadoLi,
+  foraDaLojaNoDetalheLi,
   idProdutoCriadoLi,
   lerGruposErpLi,
+  nomesIguaisPeloCorteLi,
   opcoesResolvidasLi,
   paiArmazenadoLi,
   planejarDocCriadoLi,
@@ -238,6 +254,13 @@ export interface DepsFilhoNovoLi {
    * commit — where a sibling delete lands in the emulator suite. Production passes nothing.
    */
   readonly antesDoCommit?: () => Promise<void> | void;
+  /**
+   * What must precede the batch (module header, "Each attempt", step 4), `aplicar` only: runs right
+   * before each attempt's commit with the variations it adds. A throw propagates.
+   */
+  readonly antesDoLote?: (
+    adicionados: readonly { readonly produtoId: string; readonly liId: number }[],
+  ) => Promise<void>;
 }
 
 export interface EntradaDoFilhoNovoLi {
@@ -498,10 +521,33 @@ async function tentar(
     }
   }
 
+  // A name the cut made another added variation's or a sibling's (module header).
+  const nomeDe = (p: ProdutoPlanejadoLi): string =>
+    typeof p.doc.nome === 'string' ? p.doc.nome : '';
+  const nomesDosIrmaos = new Set(
+    irmaos.flatMap((i) => (typeof i.dados.nome === 'string' ? [i.dados.nome] : [])),
+  );
+  const iguais = new Set(
+    nomesIguaisPeloCorteLi(
+      planejados.map((p) => ({
+        liId: p.liId,
+        nome: nomeDe(p),
+        cortado: nomesCortados.includes(p.liId),
+      })),
+    ),
+  );
+  for (const p of planejados) {
+    if (nomesCortados.includes(p.liId) && nomesDosIrmaos.has(nomeDe(p))) iguais.add(p.liId);
+  }
+  for (const liId of [...iguais].sort((a, b) => a - b)) {
+    recusar(PENDENCIA_IMPORTACAO_LI.dadoInvalido, liId, ['nome']);
+  }
+  const nomeados = planejados.filter((p) => !iguais.has(p.liId));
+
   // The probe, immediately before the commit.
-  let aCriar = planejados;
-  if (planejados.length > 0) {
-    const skus: SkuSondadoLi[] = planejados.map((p) => ({ sku: p.sku, liId: p.liId }));
+  let aCriar = nomeados;
+  if (nomeados.length > 0) {
+    const skus: SkuSondadoLi[] = nomeados.map((p) => ({ sku: p.sku, liId: p.liId }));
     const sonda = await sondarSkusLi(
       db,
       skus.map((s) => s.sku),
@@ -510,7 +556,7 @@ async function tentar(
     pendencias.push(...colisoes);
     const recusados = new Set(colisoes.map((p) => p.liId));
     // `ordem` after the highest the siblings hold, in the order the survivors were planned.
-    aCriar = planejados
+    aCriar = nomeados
       .filter((p) => !recusados.has(p.liId))
       .map((p, i) => ({ ...p, doc: { ...p.doc, ordem: ordem + 1 + i } }));
   }
@@ -531,7 +577,10 @@ async function tentar(
     return fim({ ...resultado, gravado: adicionados.length > 0, ponteiro });
   }
 
-  // (4) ONE batch: the children, their extraData and links, and the parent's pointer under its read.
+  // (4) What must precede the batch: the caller's tax review of the variations it adds.
+  await deps.antesDoLote?.(aCriar.map((p) => ({ produtoId: p.produtoId, liId: p.liId })));
+
+  // (5) ONE batch: the children, their extraData and links, and the parent's pointer under its read.
   const lote = db.batch();
   enfileirarCriacoesLi(db, lote, aCriar);
   lote.update(
@@ -585,6 +634,32 @@ export async function adicionarFilhosLi(
     const { sku } = filho.linha;
     const opcoes = opcoesResolvidasLi(r.opcoes);
     if (sku === null || entrada.skusRepetidos.has(sku) || opcoes.tipo === 'recusada') continue;
+    // Its detail, the store's fresher view (module header, "Which variations").
+    const { detalhe } = filho;
+    if (detalhe === null) {
+      fixas.push({
+        codigo: PENDENCIA_IMPORTACAO_LI.dadoInvalido,
+        liId: r.liId,
+        referencias: ['detalhe'],
+      });
+      continue;
+    }
+    if (foraDaLojaNoDetalheLi(detalhe)) {
+      fixas.push({
+        codigo: PENDENCIA_IMPORTACAO_LI.ocultoNaoCriado,
+        liId: r.liId,
+        referencias: [],
+      });
+      continue;
+    }
+    if (!mesmoSkuLi(sku, detalhe.sku)) {
+      fixas.push({
+        codigo: PENDENCIA_IMPORTACAO_LI.dadoInvalido,
+        liId: r.liId,
+        referencias: ['sku'],
+      });
+      continue;
+    }
     candidatos.push({ filho, sku, produtoId: idProdutoCriadoLi(sku), opcoes: opcoes.opcoes });
   }
   const vazio: ResultadoDoFilhoNovoLi = {

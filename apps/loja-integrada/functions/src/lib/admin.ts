@@ -32,8 +32,9 @@ export function getDb(): Firestore {
 /**
  * The DEFAULT bucket's name for the product import's photos (master plan step 9, "complete"), or
  * `null` when nothing names one. Pure: the two inputs are handed in, so the ladder is pinned
- * offline (`admin.test.ts`). Two tiers, the Shopee and Mercado Livre backends' resolver
- * (`apps/shopee/lib/firebase/admin.ts`) without the two this codebase must not have:
+ * offline (`admin.test.ts`). Two tiers of its own: the `FIREBASE_CONFIG.storageBucket` tier of the
+ * Shopee backend's resolver (`apps/shopee/lib/firebase/admin.ts`), plus the admin app's own option —
+ * without that resolver's operator override and its derived name (below):
  *
  *  1. `FIREBASE_CONFIG.storageBucket` — the runtime's OWN answer: the Cloud Functions runtime (and
  *     the functions emulator) injects `FIREBASE_CONFIG`, and it carries the project's real default
@@ -49,9 +50,10 @@ export function getDb(): Firestore {
  *  - the classic `<projectId>.appspot.com` DERIVED from the project id. A project created after
  *    late 2024 — the new project the migration window moves the data to included — defaults to
  *    `<projectId>.firebasestorage.app`, so the derived name names a bucket that does not exist:
- *    every upload would fail as a Storage error the task retries until the job is stamped
- *    `tentativas-esgotadas`, where `null` skips the photos and stamps the job
- *    `fotosIndisponiveis`, which the card shows. A wrong guess is worse than none.
+ *    every upload would fail as a Storage error the task retries on every attempt — and, no
+ *    Storage error class being narrowed on the last one, leaves the job `executando` until a
+ *    person cancels it (`despacho.ts`, "Failures") — where `null` skips the photos and stamps the
+ *    job `fotosIndisponiveis`, which the card shows. A wrong guess is worse than none.
  */
 export function nomeDoBucketPadraoLi(
   firebaseConfig: string | undefined,

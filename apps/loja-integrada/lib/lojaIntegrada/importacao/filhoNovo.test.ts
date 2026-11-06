@@ -252,6 +252,9 @@ interface Opcoes {
   readonly modo?: ModoImportacaoLi;
   readonly conta?: string;
   readonly antesDoCommit?: () => Promise<void> | void;
+  readonly antesDoLote?: (
+    adicionados: readonly { readonly produtoId: string; readonly liId: number }[],
+  ) => Promise<void>;
 }
 
 function adicionar(
@@ -267,6 +270,7 @@ function adicionar(
       modo: o.modo ?? MODO_IMPORTACAO_LI.aplicar,
       agoraMs: () => AGORA_MS,
       ...(o.antesDoCommit === undefined ? {} : { antesDoCommit: o.antesDoCommit }),
+      ...(o.antesDoLote === undefined ? {} : { antesDoLote: o.antesDoLote }),
     },
     {
       erpPaiId: PAI,
@@ -689,6 +693,119 @@ describe('a variation already at its id', () => {
 });
 
 /* -------------------------------- Simular --------------------------------- */
+
+describe('the variation’s DETAIL — the store’s fresher view', () => {
+  const soVerde = (f: FamiliaLi) => ({
+    familia: f,
+    filhos: {
+      filhos: [
+        { ...ausente(801, [[GRADE, 1, COR, 'v-azul']]), situacao: SITUACAO_DO_FILHO_LI.casado },
+        ausente(802, [[GRADE, 2, COR, 'v-verde']]),
+      ],
+    },
+  });
+
+  it('none read (the store answered 404: deleted since the listing) ⇒ dado-invalido(detalhe), never added; NEAR-MISS: read ⇒ added', async () => {
+    const db = new FakeDb();
+    seedGrupos(db);
+    seedFamiliaErp(db);
+    const f = familia([AZUL, VERDE]);
+    const semDetalhe: FamiliaLi = {
+      ...f,
+      filhos: f.filhos.map((x) => (x.linha.id === 802 ? { ...x, detalhe: null } : x)),
+    };
+    const r = await adicionar(db, soVerde(semDetalhe));
+    expect(r.pendencias).toEqual([
+      { codigo: PENDENCIA_IMPORTACAO_LI.dadoInvalido, liId: 802, referencias: ['detalhe'] },
+    ]);
+    expect(r.adicionados).toEqual([]);
+    expect(db.escritas).toEqual([]);
+
+    const lido = await adicionar(db, soVerde(f));
+    expect(lido.adicionados).toEqual([{ liId: 802, produtoId: VERDE_ID, retomado: false }]);
+  });
+
+  it('hidden, blocked or TRASHED in its detail ⇒ oculto-nao-criado; another SKU in it ⇒ dado-invalido(sku) — never added', async () => {
+    for (const [detalhe, codigo, referencias] of [
+      [{ ativo: false }, PENDENCIA_IMPORTACAO_LI.ocultoNaoCriado, []],
+      [{ bloqueado: true }, PENDENCIA_IMPORTACAO_LI.ocultoNaoCriado, []],
+      [{ removido: true }, PENDENCIA_IMPORTACAO_LI.ocultoNaoCriado, []],
+      [{ sku: 'CAM-VD-NOVO' }, PENDENCIA_IMPORTACAO_LI.dadoInvalido, ['sku']],
+    ] as const) {
+      const db = new FakeDb();
+      seedGrupos(db);
+      seedFamiliaErp(db);
+      const r = await adicionar(db, soVerde(familia([AZUL, { ...VERDE, detalhe }])));
+      expect(r.pendencias, JSON.stringify(detalhe)).toEqual([
+        { codigo, liId: 802, referencias: [...referencias] },
+      ]);
+      expect(r.adicionados).toEqual([]);
+      expect(db.escritas).toEqual([]);
+    }
+  });
+});
+
+describe('what must precede the batch, and a name the cut made', () => {
+  it('antesDoLote runs BEFORE the commit with the variations it adds (aplicar only; NEAR-MISS: Simular never)', async () => {
+    const db = new FakeDb();
+    seedGrupos(db);
+    seedFamiliaErp(db);
+    const vistos: { readonly produtoId: string; readonly liId: number }[][] = [];
+    const escritasAntes: number[] = [];
+    const entrada = {
+      familia: familia([AZUL, VERDE]),
+      filhos: {
+        filhos: [
+          { ...ausente(801, [[GRADE, 1, COR, 'v-azul']]), situacao: SITUACAO_DO_FILHO_LI.casado },
+          ausente(802, [[GRADE, 2, COR, 'v-verde']]),
+        ],
+      },
+    };
+    const antesDoLote = async (
+      a: readonly { readonly produtoId: string; readonly liId: number }[],
+    ) => {
+      vistos.push([...a]);
+      escritasAntes.push(db.escritas.length);
+    };
+    await adicionar(db, entrada, { modo: MODO_IMPORTACAO_LI.simular, antesDoLote });
+    expect(vistos).toEqual([]);
+    await adicionar(db, entrada, { antesDoLote });
+    expect(vistos).toEqual([[{ produtoId: VERDE_ID, liId: 802 }]]);
+    // Nothing of the batch had landed when it ran.
+    expect(escritasAntes).toEqual([0]);
+    expect(db.ler(`produtos/${VERDE_ID}`)).toBeDefined();
+  });
+
+  it('a CUT name equal to a sibling’s ⇒ dado-invalido(nome), not added; NEAR-MISS: a cut name no sibling holds ⇒ added', async () => {
+    const longo = 'N'.repeat(100);
+    const db = new FakeDb();
+    seedGrupos(db);
+    seedFamiliaErp(db);
+    // The parent's name fills the field: every child's name cuts back to it — the sibling's too.
+    await produto(db, PAI).update({ nome: longo });
+    await produto(db, AZUL_ERP).update({ nome: longo });
+    const entrada = {
+      familia: familia([AZUL, VERDE]),
+      filhos: {
+        filhos: [
+          { ...ausente(801, [[GRADE, 1, COR, 'v-azul']]), situacao: SITUACAO_DO_FILHO_LI.casado },
+          ausente(802, [[GRADE, 2, COR, 'v-verde']]),
+        ],
+      },
+    };
+    const r = await adicionar(db, entrada);
+    expect(r.pendencias).toEqual([
+      { codigo: PENDENCIA_IMPORTACAO_LI.dadoInvalido, liId: 802, referencias: ['nome'] },
+    ]);
+    expect(r.adicionados).toEqual([]);
+
+    await produto(db, AZUL_ERP).update({ nome: 'Camiseta Azul' });
+    const ok = await adicionar(db, entrada);
+    expect(ok.adicionados.map((a) => a.liId)).toEqual([802]);
+    expect(ok.nomesCortados).toEqual([802]);
+    expect(db.ler(`produtos/${VERDE_ID}`)?.nome).toBe(longo);
+  });
+});
 
 describe('Simular — the same reads and verdicts, nothing written', () => {
   it('the add a run would make, and no write — aplicar then adds exactly it', async () => {

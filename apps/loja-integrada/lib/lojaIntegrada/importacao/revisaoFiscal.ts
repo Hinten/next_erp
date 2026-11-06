@@ -35,7 +35,7 @@
  * `revisao.anteriorJobId` names the newest source.
  *
  * **2. The re-check.** This job's whole list, one page of {@link PAGINA_CONFERENCIA_REVISAO_LI} per
- * unit, in document-key order. An entry LEAVES — its document is deleted from this job's list —
+ * unit, in the produto ids' order. An entry LEAVES — its document is deleted from this job's list —
  * only on evidence ({@link evidenciaFiscalDoProdutoLi}):
  *  - a `regraImposto` names the produto or its category (the NF-e cascade's own tier-4 match,
  *    `regraImpostoCasaComProduto`, on its produto and category arms: the NCM a rule could name lives
@@ -43,9 +43,15 @@
  *  - the produto has its own `imposto` document;
  *  - its CURRENT category (read from the produto, as the cascade reads it) has one;
  *  - or the produto no longer exists: a deleted produto is never invoiced, and an entry no
- *    evidence could ever close would keep the aviso open for good.
+ *    evidence could ever close would keep the aviso open for good. (⚠️ A deviation from the plan's
+ *    "nothing closes it but evidence", kept for the owner's review: it is also what closes the entry
+ *    a create's or an add's batch left when that batch then lost — `familiaDoJob.ts`, "The tax
+ *    review", writes the entry BEFORE the write it records.)
  * Nothing else removes an entry: a later job that changes nothing carries it forward unchanged.
  * The phase ends with the open count, for the tax-review aviso (`avisosImportacao.ts`).
+ *
+ * (⚠️ Also a deviation from the plan's "the conta's previous `aplicar` job": the carry-forward walks
+ * past a failed or cancelled `aplicar` job to the newest CONCLUDED one, for the reason above.)
  *
  * ## The cursor
  *
@@ -71,15 +77,26 @@
  *    `importacoesLojaIntegrada (integracaoId ASC, iniciadoEmMs DESC)` composite serves every page
  *    (`revisaoFiscal.test.ts` checks it against `firestore.indexes.json`); the job a page resumes
  *    after is read by id.
- *  - A job's `revisao` subcollection in DOCUMENT-KEY order (`orderBy(FieldPath.documentId())`,
- *    `startAfter(<id>)`, a limit): its native order, no index.
- *  - Per entry, at most THREE reads: the produto by id (its existence and its current category),
- *    then `produtos/{id}/imposto` `limit(1)` and `categorias/{id}/imposto` `limit(1)` — unfiltered,
- *    so no index — skipped as soon as a rule or an earlier read is evidence.
+ *  - A job's `revisao` subcollection is read WHOLE — unfiltered, unordered, no limit, so no index —
+ *    ONCE per dispatch per list ({@link criarLeitorDeListasRevisaoLi}), and paged IN MEMORY in the
+ *    produto ids' code-unit order (the cursor's `<produtoId>` is the last id handled in that order).
+ *    ⚠️ Never a document-key RANGE (`orderBy(documentId())` + `startAfter` + a limit): Enterprise
+ *    keeps no implicit key index, and with none LEADING with `__name__` declared for `revisao` such
+ *    a page is cut residually after scanning the WHOLE list (measured on staging, #1874) — and the
+ *    list is durable, carried from job to job, so N/page pages over N entries would make every
+ *    `aplicar` job, an only-link one included, cost the square of the list. Read whole, a list costs
+ *    one scan per dispatch the phase spans; a `revisao (__name__ ASC)` index (#1874's remedy) would
+ *    make true range pages possible, a window deploy of its own.
+ *  - Per entry, at most THREE reads: the produto by id (its existence and its CURRENT category, which
+ *    the cascade reads too), then `produtos/{id}/imposto` `limit(1)` and `categorias/{id}/imposto`
+ *    `limit(1)` — unfiltered, so no index — skipped as soon as a rule or an earlier read is evidence.
+ *    (The plan priced "≤ 2 reads per item": the produto read it left out is required.)
  *  - Every `regraImposto` (the `regras` collection group, unfiltered: every rule of every operação
  *    is wanted), read ONCE per dispatch that re-checks ({@link criarLeitorDeRegrasImpostoLi}), and
  *    only when a page holds an entry. Each is `safeParse`d and a rule that does not parse is
- *    DROPPED, as the cascade drops it: a rule the NF-e never applies covers nothing.
+ *    DROPPED, as the cascade drops it: a rule the NF-e never applies covers nothing. (The plan said
+ *    once per JOB; the job contract has no field to carry them between dispatches, so a re-check
+ *    spanning K dispatches reads them K times.)
  *
  * ## Errors (root rule 6)
  *
@@ -89,7 +106,7 @@
  * ⚠️ Never name the Admin SDK's multi-document read-and-write call here — not even in a comment
  * (`estrutura.test.ts`). Next-free; `db` is a parameter. Every stamp is ms.
  */
-import { FieldPath, type Firestore } from 'firebase-admin/firestore';
+import type { DocumentReference, Firestore } from 'firebase-admin/firestore';
 import {
   impostoCategoriaCollection,
   impostoProdutoCollection,
@@ -330,6 +347,58 @@ export async function evidenciaFiscalDoProdutoLi(
 }
 
 /* -------------------------------------------------------------------------- */
+/*                                  The lists                                  */
+/* -------------------------------------------------------------------------- */
+
+/** One entry of a job's list as read: its id (the produto's), its raw data and its document. */
+export interface EntradaListadaLi {
+  readonly id: string;
+  readonly dados: unknown;
+  readonly ref: DocumentReference;
+}
+
+/** A job's WHOLE list, sorted by id (module header, "The reads"), read once per reader. */
+export type LeitorDeListasRevisaoLi = (jobId: string) => Promise<readonly EntradaListadaLi[]>;
+
+/** The code-unit order the phase pages in (module header, "The reads"): a total order of ids. */
+function compararIds(a: string, b: string): number {
+  if (a === b) return 0;
+  return a < b ? -1 : 1;
+}
+
+/**
+ * A reader of a job's whole `revisao` list, memoised per job for ITS lifetime: one per dispatch, so
+ * each list is read at most once per dispatch — never a key range (module header, "The reads").
+ */
+export function criarLeitorDeListasRevisaoLi(db: Firestore): LeitorDeListasRevisaoLi {
+  const lidas = new Map<string, Promise<readonly EntradaListadaLi[]>>();
+  return (jobId) => {
+    const ja = lidas.get(jobId);
+    if (ja !== undefined) return ja;
+    const lendo = lerLista(db, jobId);
+    lidas.set(jobId, lendo);
+    return lendo;
+  };
+}
+
+async function lerLista(db: Firestore, jobId: string): Promise<readonly EntradaListadaLi[]> {
+  const snap = await revisaoFiscalImportacaoLiCollection.ref(db, { jobId }).get();
+  return snap.docs
+    .map((d) => ({ id: d.id, dados: d.data(), ref: d.ref }))
+    .sort((a, b) => compararIds(a.id, b.id));
+}
+
+/** At most `n` entries of `lista` whose id comes after `depois` (`null`: from the start). */
+function paginaDaLista(
+  lista: readonly EntradaListadaLi[],
+  depois: string | null,
+  n: number,
+): EntradaListadaLi[] {
+  const inicio = depois === null ? 0 : lista.findIndex((e) => compararIds(e.id, depois) > 0);
+  return inicio < 0 ? [] : lista.slice(inicio, inicio + n);
+}
+
+/* -------------------------------------------------------------------------- */
 /*                                  The cursor                                 */
 /* -------------------------------------------------------------------------- */
 
@@ -392,6 +461,8 @@ export interface DepsRevisaoFiscalLi {
   readonly jobId: string;
   /** The tax rules, read at most once per dispatch ({@link criarLeitorDeRegrasImpostoLi}). */
   readonly regras: LeitorDeRegrasImpostoLi;
+  /** The jobs' lists, each read at most once per dispatch ({@link criarLeitorDeListasRevisaoLi}). */
+  readonly listas: LeitorDeListasRevisaoLi;
 }
 
 /** How one unit of the phase ended. */
@@ -509,14 +580,14 @@ async function copiarPagina(
   estado: EstadoRevisaoFiscalLi,
   cursor: Extract<CursorRevisaoLi, { etapa: 'copiando' }>,
 ): Promise<PassoRevisaoFiscalLi> {
-  let consulta = revisaoFiscalImportacaoLiCollection
-    .ref(deps.db, { jobId: cursor.jobId })
-    .orderBy(FieldPath.documentId());
-  if (cursor.depois !== null) consulta = consulta.startAfter(cursor.depois);
-  const pagina = await consulta.limit(PAGINA_TRANSPORTE_REVISAO_LI).get();
+  const pagina = paginaDaLista(
+    await deps.listas(cursor.jobId),
+    cursor.depois,
+    PAGINA_TRANSPORTE_REVISAO_LI,
+  );
   await Promise.all(
-    pagina.docs.map((doc) => {
-      const lida = lerEntradaArmazenada(doc.id, doc.data());
+    pagina.map((e) => {
+      const lida = lerEntradaArmazenada(e.id, e.dados);
       // The job that FIRST listed it stays its "since"; an entry that names none is the source's.
       return adicionarARevisaoFiscalLi(deps.db, deps.jobId, {
         ...lida,
@@ -524,8 +595,8 @@ async function copiarPagina(
       });
     }),
   );
-  const transportadas = pagina.docs.length;
-  const ultimo = pagina.docs.at(-1);
+  const transportadas = pagina.length;
+  const ultimo = pagina.at(-1);
   if (transportadas === PAGINA_TRANSPORTE_REVISAO_LI && ultimo !== undefined) {
     return progresso(estado, { ...cursor, depois: ultimo.id }, { transportadas });
   }
@@ -544,22 +615,24 @@ async function conferirPagina(
   estado: EstadoRevisaoFiscalLi,
   cursor: Extract<CursorRevisaoLi, { etapa: 'conferindo' }>,
 ): Promise<PassoRevisaoFiscalLi> {
-  let consulta = revisaoFiscalImportacaoLiCollection
-    .ref(deps.db, { jobId: deps.jobId })
-    .orderBy(FieldPath.documentId());
-  if (cursor.depois !== null) consulta = consulta.startAfter(cursor.depois);
-  const pagina = await consulta.limit(PAGINA_CONFERENCIA_REVISAO_LI).get();
-  const regras = pagina.empty ? [] : await deps.regras();
-  const evidencias = await Promise.all(
-    pagina.docs.map((doc) => evidenciaFiscalDoProdutoLi(deps.db, doc.id, regras)),
+  // This job's list as this dispatch first read it: an entry this phase deletes sits behind the
+  // cursor, and nothing adds one while the phase runs (the familias phase is over).
+  const pagina = paginaDaLista(
+    await deps.listas(deps.jobId),
+    cursor.depois,
+    PAGINA_CONFERENCIA_REVISAO_LI,
   );
-  const saem = pagina.docs.filter((_, i) => evidencias[i] !== null);
-  await Promise.all(saem.map((doc) => doc.ref.delete()));
+  const regras = pagina.length === 0 ? [] : await deps.regras();
+  const evidencias = await Promise.all(
+    pagina.map((e) => evidenciaFiscalDoProdutoLi(deps.db, e.id, regras)),
+  );
+  const saem = pagina.filter((_, i) => evidencias[i] !== null);
+  await Promise.all(saem.map((e) => e.ref.delete()));
 
-  const conferidas = pagina.docs.length;
+  const conferidas = pagina.length;
   const saidas = saem.length;
   const abertos = cursor.abertos + conferidas - saidas;
-  const depois = pagina.docs.at(-1)?.id ?? cursor.depois;
+  const depois = pagina.at(-1)?.id ?? cursor.depois;
   const proximo: CursorRevisaoLi = { etapa: 'conferindo', abertos, depois };
   if (conferidas === PAGINA_CONFERENCIA_REVISAO_LI) {
     return progresso(estado, proximo, { conferidas, saidas });

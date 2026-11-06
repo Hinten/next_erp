@@ -1001,3 +1001,113 @@ describe('preencherProdutoLi — what the item reports', () => {
     expect(r.campos).not.toContain('categoriaProdutoOuterRef');
   });
 });
+
+describe('preencherProdutoLi — the category it LEAVES, and the tax review made durable first', () => {
+  it('categoriaErpId — the fill wrote it ⇒ the resolved one; an operator’s landed between our read and write ⇒ THEIRS; a value already there ⇒ that one', async () => {
+    const escrita = new FakeDb();
+    escrita.seed(P, produtoErp());
+    expect(preenchido(await preencher(escrita)).categoriaErpId).toBe(CATEGORIA_ERP);
+
+    const operador = new FakeDb();
+    operador.seed(P, produtoErp());
+    operador.antesDaProximaEscrita(P, () => {
+      operador.seed(P, {
+        ...(operador.ler(P) ?? {}),
+        categoriaProdutoOuterRef: 'documents/categorias/cat-do-operador',
+      });
+    });
+    const r = preenchido(await preencher(operador));
+    expect(r.categoria).toBe(CATEGORIA_NO_PREENCHIMENTO_LI.existente);
+    expect(r.categoriaErpId).toBe('cat-do-operador');
+
+    const ja = new FakeDb();
+    ja.seed(P, produtoErp({ categoriaProdutoOuterRef: 'documents/categorias/cat-antes' }));
+    expect(preenchido(await preencher(ja)).categoriaErpId).toBe('cat-antes');
+  });
+
+  it('NEAR-MISS: an EMPTY category the fill could not write (every attempt lost; the store gave none) ⇒ none, never the resolved one', async () => {
+    const perdeu = new FakeDb();
+    perdeu.seed(P, produtoErp());
+    for (let i = 1; i <= MAX_TENTATIVAS_PREENCHIMENTO_LI; i += 1) {
+      perdeu.antesDaProximaEscrita(P, () => {
+        perdeu.seed(P, { ...(perdeu.ler(P) ?? {}), nome: `Editado ${String(i)}` });
+      });
+    }
+    const r = preenchido(await preencher(perdeu));
+    expect(r.categoria).toBe(CATEGORIA_NO_PREENCHIMENTO_LI.vazia);
+    expect(r.categoriaErpId).toBeNull();
+
+    const nada = new FakeDb();
+    nada.seed(P, produtoErp());
+    expect(
+      preenchido(await preencher(nada, fonte({ categoriaErpId: null }))).categoriaErpId,
+    ).toBeNull();
+  });
+
+  it('antesDePreencherCategoria runs right BEFORE every guarded write that fills the EMPTY category, before the write lands', async () => {
+    const db = new FakeDb();
+    db.seed(P, produtoErp());
+    // The first write loses to an unrelated edit: the hook runs again before the second.
+    db.antesDaProximaEscrita(P, () => {
+      db.seed(P, { ...(db.ler(P) ?? {}), nome: 'Editado' });
+    });
+    const vistas: number[] = [];
+    preenchido(
+      await preencherProdutoLi(
+        {
+          ...deps(db),
+          antesDePreencherCategoria: () => {
+            vistas.push(db.escritasEm(P).length);
+            return Promise.resolve();
+          },
+        },
+        { produtoId: PRODUTO, liId: null, valores: valoresDoLiLi(fonte()) },
+      ),
+    );
+    expect(vistas).toEqual([0, 0]);
+    expect(db.ler(P)?.categoriaProdutoOuterRef).toBe(REF_CATEGORIA);
+  });
+
+  it('NEAR-MISS: a fill that writes no category (it has one; the store gives none) and Simular never run it; a throw in it writes nothing', async () => {
+    const chamadas: string[] = [];
+    const hook = (nome: string) => () => {
+      chamadas.push(nome);
+      return Promise.resolve();
+    };
+    const comCategoria = new FakeDb();
+    comCategoria.seed(P, produtoErp({ categoriaProdutoOuterRef: 'documents/categorias/c' }));
+    await preencherProdutoLi(
+      { ...deps(comCategoria), antesDePreencherCategoria: hook('com-categoria') },
+      { produtoId: PRODUTO, liId: null, valores: valoresDoLiLi(fonte()) },
+    );
+    const semValor = new FakeDb();
+    semValor.seed(P, produtoErp());
+    await preencherProdutoLi(
+      { ...deps(semValor), antesDePreencherCategoria: hook('sem-valor') },
+      { produtoId: PRODUTO, liId: null, valores: valoresDoLiLi(fonte({ categoriaErpId: null })) },
+    );
+    const simular = new FakeDb();
+    simular.seed(P, produtoErp());
+    await preencherProdutoLi(
+      {
+        ...deps(simular, MODO_IMPORTACAO_LI.simular),
+        antesDePreencherCategoria: hook('simular'),
+      },
+      { produtoId: PRODUTO, liId: null, valores: valoresDoLiLi(fonte()) },
+    );
+    expect(chamadas).toEqual([]);
+
+    const falha = new FakeDb();
+    falha.seed(P, produtoErp());
+    await expect(
+      preencherProdutoLi(
+        {
+          ...deps(falha),
+          antesDePreencherCategoria: () => Promise.reject(grpc(14, 'UNAVAILABLE')),
+        },
+        { produtoId: PRODUTO, liId: null, valores: valoresDoLiLi(fonte()) },
+      ),
+    ).rejects.toMatchObject({ code: 14 });
+    expect(falha.escritasEm(P)).toEqual([]);
+  });
+});

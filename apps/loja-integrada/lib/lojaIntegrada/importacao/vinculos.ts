@@ -86,7 +86,9 @@
  * `vincular`: picking the second in "Importar selecionados" then meets the refusal at `aplicar`
  * time, and nothing is written for it. Closing it needs an overlay of the links a Simular would
  * create, kept across dispatches; it would cost a read and a write per planned link of every
- * Simular to cover a store whose two products map to one ERP produto.
+ * Simular to cover a store whose two products map to one ERP produto. Its sibling under "complete":
+ * the produtos an EARLIER family of the same Simular would create (`despacho.ts`, "Simular writes only
+ * the job") are met by no later family's cascade or create probe either.
  *
  * ## A family ({@link vincularFamiliaLi})
  *

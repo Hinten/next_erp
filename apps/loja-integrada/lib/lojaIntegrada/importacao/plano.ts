@@ -9,7 +9,9 @@
  * ## The target ({@link planejarFamiliaLi})
  *
  * `familiaNoAlvoLi` (the cascade's): `todos` takes every family, `selecionados` the roots the start
- * body named, `jaNoErp` a root the cascade matched to one ERP produto, `naoNoErp` an `ausente` one.
+ * body named, `jaNoErp` a root the cascade matched to one ERP produto, `naoNoErp` an `ausente` one —
+ * unless the caller passes the target it decided BEFORE its own writes (`noAlvo`): a family this
+ * job created, met again through its own link, stays in the `naoNoErp` target it was in.
  * A family outside the target is planned as `noAlvo: false` with no link and no create, and the
  * caller writes no report item for it — except a family in CONFLICT (two owners, two SKU hits, a
  * shape mismatch, no SKU, a SKU the store repeats): it belongs to no target but `todos` and
@@ -216,6 +218,12 @@ export interface EntradaDoPlanoLi {
   readonly skusRepetidos: ReadonlySet<string>;
   /** Why each claimed option stays unlearned (`recusasDoAprendizadoLi`), keyed `<g>_<v>`. */
   readonly recusasDoAprendizado: ReadonlyMap<string, RecusaNoRelatorioLi>;
+  /**
+   * The target as the caller DECIDED it before this unit acted (`familiaDoJob.ts`, "The target,
+   * decided once"); absent ⇒ `familiaNoAlvoLi` over `raiz`. A family this job created is still in
+   * a `naoNoErp` target when a retried unit meets its root through its own link.
+   */
+  readonly noAlvo?: boolean;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -472,7 +480,7 @@ export function planejarFamiliaLi(e: EntradaDoPlanoLi): PlanoDaFamiliaLi {
     liId: p.liId,
     referencias: [],
   }));
-  const noAlvo = familiaNoAlvoLi(job, raiz.id, res);
+  const noAlvo = e.noAlvo ?? familiaNoAlvoLi(job, raiz.id, res);
   // A family in conflict is in no target but todos/selecionados, and reported under the other two.
   const relatar =
     noAlvo ||

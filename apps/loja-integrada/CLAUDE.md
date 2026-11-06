@@ -264,50 +264,76 @@ carries the continuation `seq`, the cursors or the selection's ids.
   call), its PHOTOS (one picture per unit, `aplicar` only), its CLOSING (no call). Per produto:
   fill, then photos, then the link LAST, so this job's own anchor write never lands inside one of
   its guarded windows; a create's or an add's links ride that batch. Between units the family's
-  progress rides `revisao.cursorProdutoId` as tagged text `f:<json>` (the contract has no field for
-  it yet; nobody reads that field during `familias`, and the move to `revisao` clears it). No
-  writer here names the transaction API (no inventory row). The writers, each with its tier:
+  progress rides `revisao.cursorProdutoId` as tagged text `f:<json>` (⚠️ a deviation from the
+  plan's job contract, which has no field for it yet: nobody reads that field during `familias`,
+  and the move to `revisao` clears it). The TARGET is decided once, on the ERP before the job
+  acted: a root that reads `vinculado` only through this job's own landed create stays in a
+  `naoNoErp` job, and an adoption's or a closing's re-run of the cascade keeps the preparation's
+  verdict. A unit whose detail list found nothing to read reuses that list's cascade. No writer
+  here names the transaction API (no inventory row). The writers, each with its tier:
   - **Categories** (`categorias.ts`): the product's leaf by the shared tree helpers; under
     `criarEVincular` the unlinked chain BELOW the nearest linked ancestor, root-most first, each
     categoria at `li-<conta>-<id>` and its link at `<conta>-<id>` — two tier-0 `create()`s,
     `ALREADY_EXISTS` re-read and judged before adopting; `nomeCompleto` from the ERP parent's
-    stored breadcrumb, never the store's names joined. A variation takes its PARENT's category.
+    stored breadcrumb, never the store's names joined. Always PLANNED first (the resolution run as
+    Simular runs it: reads, no write) and created only for a produto about to take it — a create's
+    right before its batch, after every refusal — so a refused create leaves no category behind
+    and reports no category pendência. ⚠️ The report does not NAME the categories a run created
+    (the item contract has no field for them; the job's map shows them `vinculada`).
   - **The whole-family create** (`familiaNova.ts`): ids keyed by the SKU (`li-sku-<sha256>`,
     `-un` for a sole member), so two contas selling one SKU meet on one id; the planned ids read
     first; the create probe (`sondarSkusLi`, every SKU the batch writes, the "parecido" forms
     too) right before the commit; then ONE batch of `create()`s — produtos, `extraData`, links —
     all or nothing (tier 0 by construction). `ALREADY_EXISTS` re-reads: the root holding the store
-    SKU is ADOPTED (the existing-product path), unless this conta's root link shares its
-    `createTime` (our own batch, its reply lost: `retomada`); anything else at an id is
-    `sku-ja-existe`. A simple product becomes a família de um; a family takes the ERP builder's
-    names, selection and `filhoUnicoId` (`derivarFilhoUnico` over the full set); a hidden
-    product or variation is never created.
+    SKU is ADOPTED (the existing-product path; a cascade that then refuses it reports its own
+    verdict), unless this conta's root link shares its `createTime` (our own batch, its reply lost:
+    `retomada`); anything else at an id is `sku-ja-existe`. A simple product becomes a família de
+    um; a family takes the ERP builder's names, selection and `filhoUnicoId` (`derivarFilhoUnico`
+    over the full set); a hidden product or variation is never created. The DETAILS decide too: a
+    root or kept variation whose detail was never read (a 404: deleted since the listing) refuses
+    the create (`dado-invalido`, `detalhe` — judged after the probe), one its detail shows hidden,
+    blocked or trashed is not created, one whose detail changed the SKU refuses it (`dado-invalido`,
+    `sku`). The checks needing no detail (options, the probe over the rows' SKUs) run BEFORE the
+    details are read, so a family they refuse costs no call. A name over 100 is cut (⚠️ logged
+    only: the report's vocabulary has no code for it), and two variations the cut makes one name
+    refuse the create (`dado-invalido`, `nome`).
   - **Add-child** (`filhoNovo.ts`), beside the parent's CONFIRMED link: the missing variations,
     their links and the parent's `filhoUnicoId` in ONE batch, tier 1 on the PARENT (every ERP
     writer that changes a child set writes the parent too); a lost precondition re-reads the
     parent and the child set and re-plans (≤ 3); a post-commit re-derive catches a writer that
-    moved the pointer alone.
+    moved the pointer alone. Each variation needs its own read detail, as the create does. A
+    retried unit meets a variation THIS job added through its own link and counts it as created
+    again.
   - **Fill-empty** (`completar.ts`): only a field absent, `null` or `''` — never `0`, `false` or a
     value of another shape — tier 1 `update(patch, { lastUpdateTime })` on the attempt's read,
     re-planned on a loss (≤ 3), a lost reply recognised by `guardaOPatchLi`; an absent `extraData`
     created with only the filled keys; a kit root's rollup fields never. ONE unit conversion,
-    `medidasErpDoDetalheLi` (weight in kg, box in cm: an inference still to be confirmed).
+    `medidasErpDoDetalheLi` (weight in kg, box in cm: an inference still to be confirmed). The
+    variations take the category the ROOT's fill left (the one it wrote, else the one its last
+    read found — an operator's landed meanwhile — else none), never the pre-fill guess.
   - **Photos** (`fotos.ts`), onto a produto with NONE: through `contexto.cdn` only, the ORIGINAL
     first, `800x800` in a unit of its own when the original is over the cap, the type from the
     BYTES; stored by the shared uploader (`putArquivoAdmin`: create-first, content-addressed)
     raced against `PRAZO_UPLOAD_LI_MS`; then ONE tier-1 write on a read taken AFTER the uploads,
     so an operator's photo landing meanwhile wins. No default bucket ⇒ the job is stamped
-    `fotosIndisponiveis` and no photo is planned. A Storage failure propagates: a missing bucket
-    grant leaves the job `executando` until Cancelar (`functions/DEPLOY.md`).
+    `fotosIndisponiveis` and no photo is planned. A Storage failure propagates and, ⚠️ no Storage
+    error class being reachable to narrow on, is never stamped `tentativas-esgotadas`: a missing
+    bucket grant, or a transient Storage failure on the queue's last attempt, leaves the job
+    `executando` until Cancelar (`functions/DEPLOY.md`).
   - **The tax review** (`revisaoFiscal.ts`): a produto created, or one whose empty category was
     filled or stays empty, joins the job's `revisao/{produtoId}` (tier 0, merged on
-    `ALREADY_EXISTS`). The `revisao` phase carries the conta's earlier `aplicar` jobs' open entries
-    forward (the declared job index), removes an entry only on EVIDENCE — its own or its
-    category's `imposto`, or a `regraImposto` naming either (the resolver's tier-4 match) — or
-    when its produto is gone, and syncs `lojaIntegradaRevisaoFiscal` on the open count.
+    `ALREADY_EXISTS`) — the entry a create's batch, an add's batch or a category fill calls for
+    written BEFORE that write, so a write that lands and whose unit then fails never loses it. The
+    `revisao` phase carries the conta's earlier `aplicar` jobs' open entries forward (the declared
+    job index), removes an entry only on EVIDENCE — its own or its category's `imposto`, or a
+    `regraImposto` naming either (the resolver's tier-4 match) — or when its produto is gone, and
+    syncs `lojaIntegradaRevisaoFiscal` on the open count. A list is read WHOLE once per dispatch
+    and paged in memory, never by a document-key range (on Enterprise one scans the whole list per
+    page without a `__name__` index).
   - Simular decides all of it and writes none of it: the category plans ride the job's
-    `mapaCategorias` (`simulada`), photos are counted with no download, and it never enters
-    `revisao`.
+    `mapaCategorias` (`simulada`), photos are counted with no download (it cannot foresee a
+    `foto-recusada`), and it never enters `revisao`. ⚠️ Residual: a later family of the same
+    Simular never meets the produtos an earlier one would have created (`despacho.ts`).
 - **The import's avisos** (`importacao/avisosImportacao.ts`): Simular raises and resolves nothing;
   the summary aviso closes only after an `alvo: todos` job that ends `concluido` with no actionable
   pendência; the per-category one is raised at an `aplicar` job's end from its items' own category

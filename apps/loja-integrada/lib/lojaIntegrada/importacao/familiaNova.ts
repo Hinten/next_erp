@@ -21,9 +21,34 @@
  *    ERP family never holds two children of one combination.
  *  - **Every planned document parses** through its schema (`produto`, `extraData`, the link): a
  *    failure is `dado-invalido` with the field names, and nothing is created. The only truncation
- *    is a name: cut at {@link MAX_NOME_PRODUTO_LI}, its store id reported in `nomesCortados`. A
- *    description over the ERP's limit is not written and is reported (`descricao-longa`), the
- *    product still created (decided 2026-11-03).
+ *    is a name: cut at {@link MAX_NOME_PRODUTO_LI}, its store id returned in `nomesCortados`
+ *    (⚠️ the report's closed vocabulary has no code for a cut name, so the caller can only log it).
+ *    Two created variations whose CUT names come out equal refuse the create with `dado-invalido`
+ *    (`nome`) on each: the ERP family builder never makes such a pair (its names fit the field
+ *    whole), and two variations told apart by nothing but their ids would be one name twice in
+ *    every list. A description over the ERP's limit is not written and is reported
+ *    (`descricao-longa`), the product still created (decided 2026-11-03).
+ *
+ * ## The details (the store's fresher view)
+ *
+ * The plan classified the family on its LIST rows; the complete step then read the detail of the
+ * root and of every kept variation, and a create is decided on those details too:
+ *  - a detail that says the product is hidden, blocked or TRASHED: the root ⇒ the create is
+ *    refused (`oculto-nao-criado`); a variation ⇒ it is left out like a hidden row
+ *    (`oculto-nao-criado` on it, informational), and a family left with none is not created;
+ *  - a detail whose SKU is not the row's (exact bytes): the ids are keyed by the SKU, so the create
+ *    is refused (`dado-invalido`, `sku`) rather than key them on a stale one;
+ *  - a detail that was never READ (the store answered 404 — a product deleted since the listing —
+ *    or a body off its schema): the create is refused (`dado-invalido`, `detalhe`), so a product
+ *    the store no longer has is never created, nor linked. This one is checked only AFTER the
+ *    probe (step 2 below): a family whose details were never asked for because the probe would
+ *    refuse it anyway ({@link recusasAntesDosDetalhesLi}) then reports the probe's verdict.
+ *
+ * ## Before the details ({@link recusasAntesDosDetalhesLi})
+ *
+ * The checks that need no detail — the options, the combinations, the probe over the SKUs the rows
+ * give — are offered to the caller BEFORE it reads any detail, so a family the create would refuse
+ * anyway costs no Loja Integrada call. They are run again, unchanged, by the create itself.
  *
  * ## The shapes — the ERP family builder's
  *
@@ -78,17 +103,26 @@
  *     no Loja Integrada call in between. An exact hit refuses the WHOLE family with `sku-ja-existe`
  *     naming the ERP ids; a "parecido" hit alone, with `sku-parecido` (decided 2026-11-03: a person
  *     decides). A hit on one of the planned ids is left to the commit, whose `ALREADY_EXISTS` is
- *     judged by step 1 on the next attempt.
- *  3. **ONE batch of `create()`s**, all or nothing (Firestore rejects the whole commit when any of
+ *     judged by step 1 on the next attempt. Then the details' presence ("The details" above).
+ *  3. **What must precede the batch** ({@link DepsFamiliaNovaLi.antesDoLote}, `aplicar` only): the
+ *     caller's own writes the batch depends on — the categories the produtos take, created only now
+ *     that the family WILL be committed, and the tax-review entries the create calls for, made
+ *     durable before the produtos exist (`familiaDoJob.ts`). Firestore writes only, no Loja
+ *     Integrada call. Its refusal refuses the create with nothing of the batch written.
+ *  4. **ONE batch of `create()`s**, all or nothing (Firestore rejects the whole commit when any of
  *     them exists). `ALREADY_EXISTS` starts the next attempt from step 1; a second one with nothing
  *     there to explain it (a stray link or `extraData` document left under one of the planned ids)
  *     is `conflito-de-escrita` ({@link MAX_TENTATIVAS_FAMILIA_NOVA_LI}).
  *
  * ⚠️ Accepted residual: an operator's hand-made produto with one of the SKUs (an AUTO id) landing
- * between the probe and the commit; the next run's cascade finds two produtos for that SKU
- * (`sku-ambiguo`). And a unit RETRIED after its batch landed meets this conta's link through the
- * cascade's rung 1 and never reaches this module: telling that family "created by this job" apart
- * from one found is the caller's (the link's and the root's `createTime` against the job's).
+ * between the probe and the commit — a window step 3's few Firestore writes widen; the next run's
+ * cascade finds two produtos for that SKU (`sku-ambiguo`). And a unit RETRIED after its batch
+ * landed meets this conta's link through the cascade's rung 1 and never reaches this module:
+ * telling that family "created by this job" apart from one found is the caller's (the link's and
+ * the root's `createTime` against the job's). ⚠️ Simular's parity: Simular writes nothing, so a
+ * LATER family of the same Simular never meets the produtos an earlier one would have created —
+ * the probe and the cascade answer as if the store's first family were not imported
+ * (`despacho.ts`, "Simular writes only the job", states the residual and its cost).
  *
  * The batch holds at most 3 writes per produto (the produto, its `extraData`, its link): a store
  * family is capped at 50 variations, far under Firestore's 500 writes per commit; a plan past it is
@@ -162,6 +196,7 @@ import {
   type PendenciaDoPlanoLi,
   type VinculoPlanejadoLi,
   camposDoErro,
+  ocultoNaLojaLi,
   planejarVinculoLi,
 } from './plano';
 
@@ -270,6 +305,38 @@ export function opcoesResolvidasLi(
     resolvidas.push({ gradeId: o.gradeId, opcaoId: o.opcaoId, grupoId, varianteId });
   }
   return recusada ? { tipo: 'recusada', referencias } : { tipo: 'ok', opcoes: resolvidas };
+}
+
+/**
+ * Whether a store product's DETAIL says it is not to be created (module header, "The details"):
+ * hidden (`ativo: false`), blocked (`bloqueado: true`) or trashed (`removido: true`). Pure.
+ */
+export function foraDaLojaNoDetalheLi(
+  detalhe: Pick<ProdutoLiDetalhado, 'ativo' | 'bloqueado' | 'removido'>,
+): boolean {
+  return ocultoNaLojaLi(detalhe) || detalhe.removido === true;
+}
+
+/**
+ * The store ids of created variations whose names the cut made EQUAL (module header, "The
+ * checks"): every member of a group of two or more equal names of which at least one was cut.
+ * Equal without any cut (two variantes of one name in two grupos) is the ERP builder's own result,
+ * and is left alone. Pure.
+ */
+export function nomesIguaisPeloCorteLi(
+  nomes: readonly { readonly liId: number; readonly nome: string; readonly cortado: boolean }[],
+): number[] {
+  const porNome = new Map<string, { liIds: number[]; cortado: boolean }>();
+  for (const n of nomes) {
+    const grupo = porNome.get(n.nome) ?? { liIds: [], cortado: false };
+    grupo.liIds.push(n.liId);
+    grupo.cortado ||= n.cortado;
+    porNome.set(n.nome, grupo);
+  }
+  return [...porNome.values()]
+    .filter((g) => g.liIds.length > 1 && g.cortado)
+    .flatMap((g) => g.liIds)
+    .sort((a, b) => a - b);
 }
 
 /** A created variation's taxonomy and name (module header, "The shapes"). */
@@ -602,6 +669,15 @@ export interface DepsFamiliaNovaLi {
    * concurrent writer lands in. Production passes nothing.
    */
   readonly antesDoCommit?: () => Promise<void> | void;
+  /**
+   * What must precede the batch (module header, step 3), `aplicar` only: runs once an attempt's ids
+   * are judged, its probe passed and every detail is there, with the produtos the batch creates.
+   * `null` (or none) ⇒ the batch is committed; pendências ⇒ the create is refused with them and
+   * nothing of the batch is written. A throw propagates.
+   */
+  readonly antesDoLote?: (
+    produtos: readonly ProdutoCriadoLi[],
+  ) => Promise<readonly PendenciaDoPlanoLi[] | null>;
 }
 
 export interface EntradaDaFamiliaNovaLi {
@@ -662,6 +738,11 @@ type PlanoDaFamiliaNova =
       readonly produtos: readonly ProdutoPlanejadoLi[];
       readonly pendencias: readonly PendenciaDoPlanoLi[];
       readonly nomesCortados: readonly number[];
+      /**
+       * The produtos planned WITHOUT a read detail (module header, "The details"): `dado-invalido`
+       * (`detalhe`) each, checked only after the probe.
+       */
+      readonly semDetalhe: readonly PendenciaDoPlanoLi[];
     }
   | { readonly tipo: 'recusada'; readonly pendencias: readonly PendenciaDoPlanoLi[] };
 
@@ -679,7 +760,121 @@ interface FilhoDoPlano {
   readonly opcoes: readonly OpcaoResolvidaLi[];
 }
 
-/** The plan of the whole batch (module header, "The checks" and "The shapes"). */
+/** The kept variations of a create, each with every option resolved — or what refuses them. */
+interface FilhosDaCriacao {
+  readonly filhos: readonly FilhoDoPlano[];
+  /** What refuses the WHOLE family (no SKU, an option, a combination, a detail's SKU). */
+  readonly recusas: readonly PendenciaDoPlanoLi[];
+  /** Variations a read detail shows hidden, blocked or trashed: left out (informational). */
+  readonly deixados: readonly PendenciaDoPlanoLi[];
+}
+
+/**
+ * The kept variations — exactly `criacao.filhos`, minus those a read detail shows out of the store —
+ * each with every option resolved, and no two on one combination (module header, "The checks" and
+ * "The details"). Pure; needs no detail (a variation whose detail is not read is judged on its row).
+ */
+function filhosDaCriacaoLi(
+  contaId: string,
+  entrada: Pick<EntradaDaFamiliaNovaLi, 'familia' | 'criacao' | 'grupos'>,
+): FilhosDaCriacao {
+  const { familia, criacao } = entrada;
+  const ehFamilia = familia.raiz.tipo === TIPO_PRODUTO_LI.atributo;
+  const porId = new Map(familia.filhos.map((f) => [f.linha.id, f]));
+  const filhos: FilhoDoPlano[] = [];
+  const recusas: PendenciaDoPlanoLi[] = [];
+  const deixados: PendenciaDoPlanoLi[] = [];
+  for (const liId of ehFamilia ? criacao.filhos : []) {
+    const filho = porId.get(liId);
+    if (filho === undefined) {
+      throw new RangeError(`criarFamiliaLi: a variação ${String(liId)} não está na família`);
+    }
+    const { sku } = filho.linha;
+    if (sku === null) {
+      recusas.push({ codigo: PENDENCIA_IMPORTACAO_LI.semSku, liId, referencias: [] });
+      continue;
+    }
+    if (filho.detalhe !== null && foraDaLojaNoDetalheLi(filho.detalhe)) {
+      deixados.push({ codigo: PENDENCIA_IMPORTACAO_LI.ocultoNaoCriado, liId, referencias: [] });
+      continue;
+    }
+    if (filho.detalhe !== null && !mesmoSkuLi(sku, filho.detalhe.sku)) {
+      recusas.push({ codigo: PENDENCIA_IMPORTACAO_LI.dadoInvalido, liId, referencias: ['sku'] });
+      continue;
+    }
+    const opcoes = opcoesResolvidasLi(
+      resolverOpcoesDoFilhoLi({
+        contaId,
+        opcoesUris: filho.linha.variacoes,
+        grupos: entrada.grupos,
+      }),
+    );
+    if (opcoes.tipo === 'recusada') {
+      recusas.push({
+        codigo: PENDENCIA_IMPORTACAO_LI.variacaoSemVinculo,
+        liId,
+        referencias: opcoes.referencias,
+      });
+      continue;
+    }
+    filhos.push({ filho, sku, opcoes: opcoes.opcoes });
+  }
+  // Two kept variations on one combination: an ERP family never holds two such children.
+  for (const a of filhos) {
+    const outros = filhos.filter(
+      (b) => b !== a && sameCombo(combinacaoLi(a.opcoes), combinacaoLi(b.opcoes)),
+    );
+    if (outros.length > 0) {
+      recusas.push({
+        codigo: PENDENCIA_IMPORTACAO_LI.variacaoAmbigua,
+        liId: a.filho.linha.id,
+        referencias: outros.map((b) => String(b.filho.linha.id)),
+      });
+    }
+  }
+  return { filhos, recusas, deixados };
+}
+
+/**
+ * What refuses a create WITHOUT any detail (module header, "Before the details"): the kept
+ * variations' options and combinations, then the create probe over every SKU the batch would write
+ * as the ROWS give it (the root's, each kept variation's, a sole member's derived one). The caller
+ * asks it before reading a family's details, so a family the create would refuse anyway costs no
+ * Loja Integrada call. `[]` ⇒ nothing refuses it yet. Reads: the probe only (`produtos (sku ASC)`).
+ */
+export async function recusasAntesDosDetalhesLi(
+  deps: Pick<DepsFamiliaNovaLi, 'db' | 'contaId'>,
+  entrada: Pick<EntradaDaFamiliaNovaLi, 'familia' | 'criacao' | 'grupos'>,
+): Promise<readonly PendenciaDoPlanoLi[]> {
+  const { raiz } = entrada.familia;
+  if (raiz.sku === null) {
+    return [{ codigo: PENDENCIA_IMPORTACAO_LI.semSku, liId: null, referencias: [] }];
+  }
+  const { filhos, recusas } = filhosDaCriacaoLi(deps.contaId, entrada);
+  if (recusas.length > 0) return recusas;
+  const skus: SkuSondadoLi[] = [{ sku: raiz.sku, liId: null }];
+  const ids = new Set([idProdutoCriadoLi(raiz.sku)]);
+  // The sole member's SKU exactly as the create derives it: the ERP builder's own mirror.
+  const membro: unknown =
+    raiz.tipo === TIPO_PRODUTO_LI.atributo
+      ? null
+      : montarMembroUnico(idProdutoCriadoLi(raiz.sku), { sku: raiz.sku }).sku;
+  if (typeof membro === 'string' && membro !== '') {
+    skus.push({ sku: membro, liId: null });
+    ids.add(idMembroCriadoLi(raiz.sku));
+  }
+  for (const f of filhos) {
+    skus.push({ sku: f.sku, liId: f.filho.linha.id });
+    ids.add(idProdutoCriadoLi(f.sku));
+  }
+  const sonda = await sondarSkusLi(
+    deps.db,
+    skus.map((s) => s.sku),
+  );
+  return veredictoDaSondaLi(sonda, skus, ids);
+}
+
+/** The plan of the whole batch (module header, "The checks", "The details" and "The shapes"). */
 async function planejarFamiliaNova(
   deps: DepsFamiliaNovaLi,
   entrada: EntradaDaFamiliaNovaLi,
@@ -696,56 +891,31 @@ async function planejarFamiliaNova(
       { codigo: PENDENCIA_IMPORTACAO_LI.dadoInvalido, liId: null, referencias: ['nome'] },
     ]);
   }
+  // The root's detail, when read, is the fresher view (module header, "The details").
+  if (detalheDaRaiz !== null && foraDaLojaNoDetalheLi(detalheDaRaiz)) {
+    return recusa([
+      { codigo: PENDENCIA_IMPORTACAO_LI.ocultoNaoCriado, liId: null, referencias: [] },
+    ]);
+  }
+  if (detalheDaRaiz !== null && !mesmoSkuLi(raiz.sku, detalheDaRaiz.sku)) {
+    return recusa([
+      { codigo: PENDENCIA_IMPORTACAO_LI.dadoInvalido, liId: null, referencias: ['sku'] },
+    ]);
+  }
   const raizId = idProdutoCriadoLi(raiz.sku);
   const ehFamilia = raiz.tipo === TIPO_PRODUTO_LI.atributo;
-  const pendencias: PendenciaDoPlanoLi[] = [];
-  const recusas: PendenciaDoPlanoLi[] = [];
   const nomesCortados: number[] = criacao.nomeCortado ? [raiz.id] : [];
 
-  // The kept variations: exactly `criacao.filhos`, each with every option resolved.
-  const porId = new Map(familia.filhos.map((f) => [f.linha.id, f]));
-  const filhos: FilhoDoPlano[] = [];
-  for (const liId of ehFamilia ? criacao.filhos : []) {
-    const filho = porId.get(liId);
-    if (filho === undefined) {
-      throw new RangeError(`criarFamiliaLi: a variação ${String(liId)} não está na família`);
-    }
-    if (filho.linha.sku === null) {
-      recusas.push({ codigo: PENDENCIA_IMPORTACAO_LI.semSku, liId, referencias: [] });
-      continue;
-    }
-    const opcoes = opcoesResolvidasLi(
-      resolverOpcoesDoFilhoLi({
-        contaId: deps.contaId,
-        opcoesUris: filho.linha.variacoes,
-        grupos: entrada.grupos,
-      }),
-    );
-    if (opcoes.tipo === 'recusada') {
-      recusas.push({
-        codigo: PENDENCIA_IMPORTACAO_LI.variacaoSemVinculo,
-        liId,
-        referencias: opcoes.referencias,
-      });
-      continue;
-    }
-    filhos.push({ filho, sku: filho.linha.sku, opcoes: opcoes.opcoes });
-  }
+  // The kept variations: `criacao.filhos` minus those a detail shows out of the store, each with
+  // every option resolved.
+  const daCriacao = filhosDaCriacaoLi(deps.contaId, entrada);
+  const { filhos } = daCriacao;
+  const pendencias: PendenciaDoPlanoLi[] = [...daCriacao.deixados];
+  const recusas: PendenciaDoPlanoLi[] = [...daCriacao.recusas];
   if (ehFamilia && filhos.length + recusas.length === 0) {
+    // Every kept variation left out by its detail: the family is not created.
+    if (daCriacao.deixados.length > 0) return recusa(daCriacao.deixados);
     throw new RangeError('criarFamiliaLi: uma família sem variação a criar não é viável');
-  }
-  // Two kept variations on one combination: an ERP family never holds two such children.
-  for (const a of filhos) {
-    const outros = filhos.filter(
-      (b) => b !== a && sameCombo(combinacaoLi(a.opcoes), combinacaoLi(b.opcoes)),
-    );
-    if (outros.length > 0) {
-      recusas.push({
-        codigo: PENDENCIA_IMPORTACAO_LI.variacaoAmbigua,
-        liId: a.filho.linha.id,
-        referencias: outros.map((b) => String(b.filho.linha.id)),
-      });
-    }
   }
   if (recusas.length > 0) return recusa(recusas);
 
@@ -764,6 +934,18 @@ async function planejarFamiliaNova(
       });
     }
   });
+  // Two variations the name cut made one name (module header, "The checks").
+  const iguais = nomesIguaisPeloCorteLi(
+    filhos.flatMap((f, i) => {
+      const t = taxonomias[i];
+      return t?.tipo === 'ok'
+        ? [{ liId: f.filho.linha.id, nome: t.nome, cortado: t.nomeCortado }]
+        : [];
+    }),
+  );
+  for (const liId of iguais) {
+    recusas.push({ codigo: PENDENCIA_IMPORTACAO_LI.dadoInvalido, liId, referencias: ['nome'] });
+  }
   if (recusas.length > 0) return recusa(recusas);
 
   const invalido = (liId: number | null, campos: readonly string[]) => {
@@ -956,7 +1138,21 @@ async function planejarFamiliaNova(
       { codigo: PENDENCIA_IMPORTACAO_LI.dadoInvalido, liId: null, referencias: ['filhos'] },
     ]);
   }
-  return { tipo: 'ok', raizId, produtos, pendencias, nomesCortados };
+  // Every produto created from a store product whose detail was never read (module header, "The
+  // details"): refused, but only once the probe had its say.
+  const semDetalhe: PendenciaDoPlanoLi[] = [
+    ...(detalheDaRaiz === null
+      ? [{ codigo: PENDENCIA_IMPORTACAO_LI.dadoInvalido, liId: null, referencias: ['detalhe'] }]
+      : []),
+    ...filhos
+      .filter((f) => f.filho.detalhe === null)
+      .map((f) => ({
+        codigo: PENDENCIA_IMPORTACAO_LI.dadoInvalido,
+        liId: f.filho.linha.id,
+        referencias: ['detalhe'],
+      })),
+  ];
+  return { tipo: 'ok', raizId, produtos, pendencias, nomesCortados, semDetalhe };
 }
 
 /** What step 1 decided over the planned ids. */
@@ -1061,9 +1257,17 @@ export async function criarFamiliaLi(
     );
     const colisoes = veredictoDaSondaLi(sonda, skus, idsPlanejados);
     if (colisoes.length > 0) return recusa(colisoes);
+    // Every detail the create takes was read — asked only now (module header, "The details").
+    if (plano.semDetalhe.length > 0) return recusa(plano.semDetalhe);
     if (deps.modo === MODO_IMPORTACAO_LI.simular) return criada(false, false);
 
-    // (3) ONE batch, all or nothing.
+    // (3) What must precede the batch: the caller's categories and tax review.
+    const antes = await deps.antesDoLote?.(
+      produtos.map((p) => ({ produtoId: p.produtoId, papel: p.papel, liId: p.liId })),
+    );
+    if (antes !== undefined && antes !== null && antes.length > 0) return recusa(antes);
+
+    // (4) ONE batch, all or nothing.
     const lote = deps.db.batch();
     enfileirarCriacoesLi(deps.db, lote, produtos);
     await deps.antesDoCommit?.();

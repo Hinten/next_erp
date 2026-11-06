@@ -53,6 +53,8 @@ import {
   estadoDoIdPlanejadoLi,
   idMembroCriadoLi,
   idProdutoCriadoLi,
+  nomesIguaisPeloCorteLi,
+  recusasAntesDosDetalhesLi,
 } from './familiaNova';
 import { type FamiliaLi, ORIGEM_DO_FILHO_LI } from './familias';
 import { planejarFamiliaLi } from './plano';
@@ -576,6 +578,260 @@ describe('every planned document parses — only a name is ever cut', () => {
     const r2 = await criar(outra, simples(500, 'X', { nome: 'P'.repeat(120) }));
     expect(outra.ler(`produtos/${idProdutoCriadoLi('X')}`)?.nome).toBe('P'.repeat(100));
     expect(r2).toMatchObject({ nomesCortados: [500] });
+  });
+});
+
+/* ------------------------------- the details ------------------------------- */
+
+describe('the details — the store’s fresher view decides too', () => {
+  const semDetalheDaRaiz = (f: FamiliaLi): FamiliaLi => ({ ...f, detalheDaRaiz: null });
+
+  it('the ROOT’s detail never read (the store answered 404: deleted since the listing) ⇒ dado-invalido(detalhe), nothing created; NEAR-MISS: read ⇒ created', async () => {
+    const db = new FakeDb();
+    expect(recusa(await criar(db, semDetalheDaRaiz(simples(500, 'X'))))).toEqual([
+      { codigo: PENDENCIA_IMPORTACAO_LI.dadoInvalido, liId: null, referencias: ['detalhe'] },
+    ]);
+    expect(db.escritas).toEqual([]);
+    expect((await criar(db, simples(500, 'X'))).tipo).toBe(TIPO_RESULTADO_FAMILIA_NOVA_LI.criada);
+  });
+
+  it('a kept VARIATION’s detail never read ⇒ dado-invalido(detalhe) on it, the whole family refused', async () => {
+    const db = new FakeDb();
+    seedGrupo(db);
+    const f = familia(800, 'CAM', [AZUL, VERDE]);
+    const r = await criar(db, {
+      ...f,
+      filhos: f.filhos.map((x) => (x.linha.id === 802 ? { ...x, detalhe: null } : x)),
+    });
+    expect(recusa(r)).toEqual([
+      { codigo: PENDENCIA_IMPORTACAO_LI.dadoInvalido, liId: 802, referencias: ['detalhe'] },
+    ]);
+    expect(db.escritas).toEqual([]);
+  });
+
+  it('a missing detail is judged only AFTER the probe: with a probe hit, the family reports the probe’s verdict', async () => {
+    const db = new FakeDb();
+    seedProduto(db, 'a-mao', { sku: 'X' });
+    expect(recusa(await criar(db, semDetalheDaRaiz(simples(500, 'X'))))).toEqual([
+      { codigo: PENDENCIA_IMPORTACAO_LI.skuJaExiste, liId: null, referencias: ['a-mao'] },
+    ]);
+  });
+
+  it('the ROOT hidden, blocked or TRASHED in its detail ⇒ oculto-nao-criado; another SKU in it ⇒ dado-invalido(sku) — nothing read or written', async () => {
+    for (const [detalhe, esperado] of [
+      [{ ativo: false }, { codigo: PENDENCIA_IMPORTACAO_LI.ocultoNaoCriado, referencias: [] }],
+      [{ bloqueado: true }, { codigo: PENDENCIA_IMPORTACAO_LI.ocultoNaoCriado, referencias: [] }],
+      [{ removido: true }, { codigo: PENDENCIA_IMPORTACAO_LI.ocultoNaoCriado, referencias: [] }],
+      [{ sku: 'X-NOVO' }, { codigo: PENDENCIA_IMPORTACAO_LI.dadoInvalido, referencias: ['sku'] }],
+    ] as const) {
+      const db = new FakeDb();
+      expect(
+        recusa(await criar(db, simples(500, 'X', {}, detalhe))),
+        JSON.stringify(detalhe),
+      ).toEqual([{ codigo: esperado.codigo, liId: null, referencias: [...esperado.referencias] }]);
+      expect(db.escritas).toEqual([]);
+      expect(db.consultas).toEqual([]);
+    }
+  });
+
+  it('a VARIATION hidden or trashed in its detail is left out (oculto-nao-criado); every one left out ⇒ not created', async () => {
+    const db = new FakeDb();
+    seedGrupo(db);
+    const r = await criar(
+      db,
+      familia(800, 'CAM', [AZUL, { ...VERDE, detalhe: { ...VERDE.detalhe, removido: true } }]),
+    );
+    expect(r).toMatchObject({
+      tipo: TIPO_RESULTADO_FAMILIA_NOVA_LI.criada,
+      pendencias: [{ codigo: PENDENCIA_IMPORTACAO_LI.ocultoNaoCriado, liId: 802, referencias: [] }],
+    });
+    expect(db.ler(`produtos/${idProdutoCriadoLi('CAM-VD')}`)).toBeUndefined();
+    expect(db.ler(`produtos/${idProdutoCriadoLi('CAM')}`)?.filhoUnicoId).toBe(
+      idProdutoCriadoLi('CAM-AZ'),
+    );
+
+    const nenhum = new FakeDb();
+    seedGrupo(nenhum);
+    const todos = await criar(
+      nenhum,
+      familia(800, 'CAM', [{ ...AZUL, detalhe: { ativo: false } }]),
+    );
+    expect(recusa(todos)).toEqual([
+      { codigo: PENDENCIA_IMPORTACAO_LI.ocultoNaoCriado, liId: 801, referencias: [] },
+    ]);
+    expect(nenhum.escritas).toEqual([]);
+  });
+
+  it('a variation whose detail carries ANOTHER SKU refuses the family (dado-invalido(sku)): its id would be keyed on a stale SKU', async () => {
+    const db = new FakeDb();
+    seedGrupo(db);
+    const r = await criar(
+      db,
+      familia(800, 'CAM', [AZUL, { ...VERDE, detalhe: { ...VERDE.detalhe, sku: 'CAM-VERDE' } }]),
+    );
+    expect(recusa(r)).toEqual([
+      { codigo: PENDENCIA_IMPORTACAO_LI.dadoInvalido, liId: 802, referencias: ['sku'] },
+    ]);
+    expect(db.escritas).toEqual([]);
+  });
+});
+
+describe('recusasAntesDosDetalhesLi — what refuses a create with no detail read', () => {
+  const plano = (f: FamiliaLi) => {
+    const p = planejarFamiliaLi({
+      job: {
+        integracaoId: CONTA,
+        modo: MODO_IMPORTACAO_LI.aplicar,
+        alvo: ALVO_IMPORTACAO_LI.todos,
+        acao: ACAO_IMPORTACAO_LI.completar,
+        selecionados: [],
+      },
+      familia: f,
+      raiz: { tipo: SITUACAO_ERP_ITEM_LI.ausente },
+      filhos: null,
+      skusRepetidos: new Set(),
+      recusasDoAprendizado: new Map(),
+    });
+    if (p.criacao === null) throw new Error('sem criação');
+    return p.criacao;
+  };
+  const semDetalhes = (f: FamiliaLi): FamiliaLi => ({
+    ...f,
+    detalheDaRaiz: null,
+    filhos: f.filhos.map((x) => ({ ...x, detalhe: null })),
+  });
+  const antes = (db: FakeDb, f: FamiliaLi) =>
+    recusasAntesDosDetalhesLi(
+      { db: asDb(db), contaId: CONTA },
+      { familia: f, criacao: plano(f), grupos: [grupoLi()] },
+    );
+
+  it('PAIR: every option resolved and no SKU in the ERP ⇒ nothing refuses yet ⟷ NEAR-MISS an option with no link ⇒ variacao-sem-vinculo, no query', async () => {
+    const db = new FakeDb();
+    expect(await antes(db, semDetalhes(familia(800, 'CAM', [AZUL, VERDE])))).toEqual([]);
+    const semVinculo = new FakeDb();
+    expect(
+      await antes(semVinculo, semDetalhes(familia(800, 'CAM', [AZUL, { ...VERDE, opcao: 3 }]))),
+    ).toEqual([
+      { codigo: PENDENCIA_IMPORTACAO_LI.variacaoSemVinculo, liId: 802, referencias: ['8946/3'] },
+    ]);
+    expect(semVinculo.consultas).toEqual([]);
+  });
+
+  it('the probe over the rows’ SKUs — a variation’s, the sole member’s DERIVED one — answers with no detail; a hit on a PLANNED id is left to the commit', async () => {
+    const db = new FakeDb();
+    seedProduto(db, 'erp-raiz', { sku: 'CAM-VD' });
+    expect(await antes(db, semDetalhes(familia(800, 'CAM', [AZUL, VERDE])))).toEqual([
+      { codigo: PENDENCIA_IMPORTACAO_LI.skuJaExiste, liId: 802, referencias: ['erp-raiz'] },
+    ]);
+    const membro = new FakeDb();
+    seedProduto(membro, 'a-mao', { sku: 'X-UN' });
+    expect(await antes(membro, semDetalhes(simples(500, 'X')))).toEqual([
+      { codigo: PENDENCIA_IMPORTACAO_LI.skuJaExiste, liId: null, referencias: ['a-mao'] },
+    ]);
+    const planejado = new FakeDb();
+    seedProduto(planejado, idProdutoCriadoLi('X'), { sku: 'X' });
+    expect(await antes(planejado, semDetalhes(simples(500, 'X')))).toEqual([]);
+  });
+});
+
+describe('antesDoLote — what must precede the batch', () => {
+  it('runs after the probe and every check, right BEFORE the commit, with every produto of the batch (the sole member too); NEAR-MISS Simular never runs it', async () => {
+    const db = new FakeDb();
+    const vistos: unknown[] = [];
+    const deps = {
+      db: asDb(db),
+      contaId: CONTA,
+      agoraMs: () => AGORA_MS,
+      antesDoLote: async (produtos: readonly unknown[]) => {
+        vistos.push({ produtos: [...produtos], escritas: db.escritas.length });
+        return null;
+      },
+    };
+    const f = simples(500, 'X');
+    const criacao = {
+      viavel: true,
+      nome: 'Produto 500',
+      nomeCortado: false,
+      filhos: [],
+      ocultos: [],
+    };
+    const entrada = { familia: f, criacao, grupos: [], categoriaErpId: CATEGORIA, marcas: MARCAS };
+    await criarFamiliaLi({ ...deps, modo: MODO_IMPORTACAO_LI.simular }, entrada);
+    expect(vistos).toEqual([]);
+    const r = await criarFamiliaLi({ ...deps, modo: MODO_IMPORTACAO_LI.aplicar }, entrada);
+    expect(r.tipo).toBe(TIPO_RESULTADO_FAMILIA_NOVA_LI.criada);
+    expect(vistos).toEqual([
+      {
+        produtos: [
+          { produtoId: idProdutoCriadoLi('X'), papel: PAPEL_DO_PRODUTO_CRIADO_LI.raiz, liId: 500 },
+          { produtoId: idMembroCriadoLi('X'), papel: PAPEL_DO_PRODUTO_CRIADO_LI.membro, liId: 500 },
+        ],
+        escritas: 0,
+      },
+    ]);
+  });
+
+  it('its pendências refuse the create: nothing of the batch is written', async () => {
+    const db = new FakeDb();
+    const recusada = {
+      codigo: PENDENCIA_IMPORTACAO_LI.categoriaAmbigua,
+      liId: null,
+      referencias: ['900'],
+    };
+    const r = await criarFamiliaLi(
+      {
+        db: asDb(db),
+        contaId: CONTA,
+        modo: MODO_IMPORTACAO_LI.aplicar,
+        agoraMs: () => AGORA_MS,
+        antesDoLote: () => Promise.resolve([recusada]),
+      },
+      {
+        familia: simples(500, 'X'),
+        criacao: { viavel: true, nome: 'Produto 500', nomeCortado: false, filhos: [], ocultos: [] },
+        grupos: [],
+        categoriaErpId: CATEGORIA,
+        marcas: MARCAS,
+      },
+    );
+    expect(recusa(r)).toEqual([recusada]);
+    expect(db.escritas).toEqual([]);
+  });
+});
+
+describe('a name the cut made', () => {
+  it('two variations whose CUT names come out equal ⇒ dado-invalido(nome) on both, nothing created', async () => {
+    const db = new FakeDb();
+    seedGrupo(db);
+    // The parent's name fills the field: "<100> Azul" and "<100> Verde" both cut back to it.
+    const r = await criar(db, familia(800, 'CAM', [AZUL, VERDE], { nome: 'N'.repeat(100) }));
+    expect(recusa(r)).toEqual([
+      { codigo: PENDENCIA_IMPORTACAO_LI.dadoInvalido, liId: 801, referencias: ['nome'] },
+      { codigo: PENDENCIA_IMPORTACAO_LI.dadoInvalido, liId: 802, referencias: ['nome'] },
+    ]);
+    expect(db.escritas).toEqual([]);
+  });
+
+  it('nomesIguaisPeloCorteLi — EQUAL by the cut ⇒ both named; NEAR-MISS: equal with NO cut (the builder’s own), or cut and distinct ⇒ none', () => {
+    expect(
+      nomesIguaisPeloCorteLi([
+        { liId: 2, nome: 'A', cortado: false },
+        { liId: 1, nome: 'A', cortado: true },
+      ]),
+    ).toEqual([1, 2]);
+    expect(
+      nomesIguaisPeloCorteLi([
+        { liId: 1, nome: 'A', cortado: false },
+        { liId: 2, nome: 'A', cortado: false },
+      ]),
+    ).toEqual([]);
+    expect(
+      nomesIguaisPeloCorteLi([
+        { liId: 1, nome: 'A', cortado: true },
+        { liId: 2, nome: 'a', cortado: true },
+      ]),
+    ).toEqual([]);
   });
 });
 

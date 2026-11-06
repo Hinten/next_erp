@@ -1195,16 +1195,401 @@ describe('complete — photos', () => {
   });
 });
 
+/* ----------------- complete — the review findings, each pinned ----------------- */
+
+/** This conta's map with store category 900 linked to ERP categoria `cat-1`. */
+const MAPA_900_LIGADA = [
+  {
+    id: 900,
+    nome: 'Roupas',
+    pai: { tipo: 'raiz' as const },
+    erpCategoriaId: 'cat-1',
+    vinculo: 'vinculada' as const,
+  },
+];
+const MAPA_900_SEM_VINCULO = [
+  { ...MAPA_900_LIGADA[0]!, erpCategoriaId: null, vinculo: 'sem-vinculo' as const },
+];
+const CAT_900 = ['/api/v1/categoria/900'];
+const revisaoDe = (jobId: string, produtoId: string) =>
+  `${caminhoJobLi(jobId)}/revisao/${produtoId}`;
+
+describe('complete — the tax review is durable BEFORE the write that calls for it', () => {
+  it('an add whose batch LANDED and whose unit then failed: the retry finds the entry, and counts the variation as created again (the item says completar)', async () => {
+    const db = new FakeDb();
+    seedGrupoCompletar(db);
+    db.seed('produtos/cam', { nome: 'Camiseta', sku: 'CAM', paiId: null, filhoUnicoId: 'cam-az' });
+    db.seed('produtos/cam-az', {
+      nome: 'Camiseta Azul',
+      sku: 'CAM-AZ',
+      paiId: 'cam',
+      gtin: 'G1',
+      pesoLiquidoKg: 1,
+      pesoBrutoKg: 1,
+      alturaCm: 1,
+      larguraCm: 1,
+      profundidadeCm: 1,
+      variacoesUid: [varianteFakePath(GRUPO_C, 'v-azul')],
+      grupoDeVariacoesUid: [GRUPO_C],
+    });
+    // The root's fill is its first write; the add's batch its second — right after which the
+    // post-commit re-derive's read of the parent fails: the batch landed, the unit throws.
+    db.antesDaProximaEscrita('produtos/cam', () => undefined);
+    db.antesDaProximaEscrita('produtos/cam', () => {
+      db.falharProximaLeitura('produtos/cam', grpc(14, 'UNAVAILABLE'));
+    });
+    const deps = depsDoJob(db, 'job-r1');
+    const ctx = contextoCompletar(MODO_IMPORTACAO_LI.aplicar);
+    const f = familiaDetalhada(100, 'CAM', [
+      { id: 101, sku: 'CAM-AZ', opcao: 1 },
+      { id: 102, sku: 'CAM-VD', opcao: 2 },
+    ]);
+    await expect(executarFamiliaLi(deps, ctx, f)).rejects.toMatchObject({ code: 14 });
+    const verde = `li-sku-${sha256('CAM-VD')}`;
+    expect(db.ler(`produtos/${verde}`)).toMatchObject({ paiId: 'cam' });
+    // Written BEFORE the batch, so the failure after it lost nothing.
+    expect(db.ler(revisaoDe('job-r1', verde))).toMatchObject({
+      motivos: ['produto-criado', 'sem-categoria'],
+      liId: 102,
+    });
+
+    const retry = await relatado(deps, ctx, f);
+    expect(retry.item.acao).toBe('completar');
+    expect(retry.contadores).toMatchObject({ criados: 1, vinculados: 3 });
+    expect(retry.item.pendencias.map((p) => p.codigo)).not.toContain('sku-ja-existe');
+    expect(db.ler(revisaoDe('job-r1', verde))).toMatchObject({
+      motivos: ['produto-criado', 'sem-categoria'],
+    });
+  });
+
+  it('⚠️ NEAR-MISS: a variation ANOTHER job added (its link born before this job) is never counted as created', async () => {
+    const db = new FakeDb();
+    seedGrupoCompletar(db);
+    db.seed('produtos/cam', { nome: 'Camiseta', sku: 'CAM', paiId: null, filhoUnicoId: 'cam-az' });
+    db.seed('produtos/cam-az', {
+      nome: 'Camiseta Azul',
+      sku: 'CAM-AZ',
+      paiId: 'cam',
+      variacoesUid: [varianteFakePath(GRUPO_C, 'v-azul')],
+      grupoDeVariacoesUid: [GRUPO_C],
+    });
+    const ctx = contextoCompletar(MODO_IMPORTACAO_LI.aplicar);
+    const f = familiaDetalhada(100, 'CAM', [
+      { id: 101, sku: 'CAM-AZ', opcao: 1 },
+      { id: 102, sku: 'CAM-VD', opcao: 2 },
+    ]);
+    await relatado(depsDoJob(db, 'job-antes-r'), ctx, f);
+    const depois = await relatado(depsDoJob(db, 'job-depois-r'), ctx, f);
+    expect(depois.contadores.criados).toBe(0);
+    expect(depois.item.acao).not.toBe('criar');
+  });
+
+  it('a fill of the EMPTY category that LANDED, its unit then failing (the extraData write): the retry finds the categoria-preenchida entry', async () => {
+    const db = new FakeDb();
+    db.seed('produtos/caneca', { nome: 'Caneca', sku: 'CAN', paiId: null, filhoUnicoId: null });
+    db.falharEscrita('produtos/caneca/extraData/singleton', grpc(14, 'UNAVAILABLE'));
+    const deps = depsDoJob(db, 'job-r2');
+    const ctx = contextoCompletar(MODO_IMPORTACAO_LI.aplicar, { mapaCategorias: MAPA_900_LIGADA });
+    const f = simplesDetalhado(20, { sku: 'CAN', categorias: CAT_900 });
+    await expect(executarFamiliaLi(deps, ctx, f)).rejects.toMatchObject({ code: 14 });
+    expect(db.ler('produtos/caneca')?.categoriaProdutoOuterRef).toBe('documents/categorias/cat-1');
+    const entrada = revisaoDe('job-r2', 'caneca');
+    // The entry was written BEFORE the produto's update.
+    const ordem = db.escritas.map((e) => e.caminho);
+    expect(ordem.indexOf(entrada)).toBeGreaterThanOrEqual(0);
+    expect(ordem.indexOf(entrada)).toBeLessThan(ordem.indexOf('produtos/caneca'));
+
+    db.falharEscrita('produtos/caneca/extraData/singleton', null);
+    await relatado(deps, ctx, f);
+    expect(db.ler(entrada)).toMatchObject({ motivos: ['categoria-preenchida'], liId: null });
+  });
+
+  it('a family create: every produto’s entry is written BEFORE the batch', async () => {
+    const db = new FakeDb();
+    seedGrupoCompletar(db);
+    await relatado(
+      depsDoJob(db, 'job-r3'),
+      contextoCompletar(MODO_IMPORTACAO_LI.aplicar),
+      familiaDetalhada(100, 'CAM', [{ id: 101, sku: 'CAM-AZ', opcao: 1 }]),
+    );
+    const ordem = db.escritas.map((e) => e.caminho);
+    const raiz = `li-sku-${sha256('CAM')}`;
+    const lote = ordem.indexOf(`produtos/${raiz}`);
+    expect(lote).toBeGreaterThan(0);
+    for (const id of [raiz, `li-sku-${sha256('CAM-AZ')}`]) {
+      expect(ordem.indexOf(revisaoDe('job-r3', id)), id).toBeLessThan(lote);
+    }
+  });
+});
+
+describe('complete — the variations take the category the root’s fill LEFT', () => {
+  function seedFamiliaSemCategoria(db: FakeDb): void {
+    db.seed('produtos/cam', { nome: 'Camiseta', sku: 'CAM', paiId: null, filhoUnicoId: 'cam-az' });
+    db.seed('produtos/cam-az', {
+      nome: 'Camiseta Azul',
+      sku: 'CAM-AZ',
+      paiId: 'cam',
+      variacoesUid: [varianteFakePath(GRUPO_C, 'v-azul')],
+      grupoDeVariacoesUid: [GRUPO_C],
+    });
+  }
+  const f = () =>
+    familiaDetalhada(100, 'CAM', [{ id: 101, sku: 'CAM-AZ', opcao: 1 }], { categorias: CAT_900 });
+  const ctx = () =>
+    contextoCompletar(MODO_IMPORTACAO_LI.aplicar, { mapaCategorias: MAPA_900_LIGADA });
+
+  it('PAIR: the root’s fill wrote the resolved category ⇒ the variation takes it ⟷ NEAR-MISS an operator set the root’s between our read and write ⇒ the variation takes THEIRS', async () => {
+    const db = new FakeDb();
+    seedGrupoCompletar(db);
+    seedFamiliaSemCategoria(db);
+    await relatado(depsDoJob(db, 'job-k1'), ctx(), f());
+    expect(db.ler('produtos/cam')?.categoriaProdutoOuterRef).toBe('documents/categorias/cat-1');
+    expect(db.ler('produtos/cam-az')?.categoriaProdutoOuterRef).toBe('documents/categorias/cat-1');
+
+    const op = new FakeDb();
+    seedGrupoCompletar(op);
+    seedFamiliaSemCategoria(op);
+    op.antesDaProximaEscrita('produtos/cam', () => {
+      op.seed('produtos/cam', {
+        ...(op.ler('produtos/cam') ?? {}),
+        categoriaProdutoOuterRef: 'documents/categorias/cat-op',
+      });
+    });
+    await relatado(depsDoJob(op, 'job-k2'), ctx(), f());
+    expect(op.ler('produtos/cam')?.categoriaProdutoOuterRef).toBe('documents/categorias/cat-op');
+    expect(op.ler('produtos/cam-az')?.categoriaProdutoOuterRef).toBe('documents/categorias/cat-op');
+  });
+
+  it('the root’s fill LOST every attempt (its category still empty) ⇒ the variations get none', async () => {
+    const db = new FakeDb();
+    seedGrupoCompletar(db);
+    seedFamiliaSemCategoria(db);
+    for (let i = 0; i < 3; i += 1) {
+      db.antesDaProximaEscrita('produtos/cam', () => {
+        db.seed('produtos/cam', {
+          ...(db.ler('produtos/cam') ?? {}),
+          nome: `Editado ${String(i)}`,
+        });
+      });
+    }
+    const r = await relatado(depsDoJob(db, 'job-k3'), ctx(), f());
+    expect(r.item.pendencias.map((p) => p.codigo)).toContain('conflito-de-escrita');
+    expect(db.ler('produtos/cam')?.categoriaProdutoOuterRef ?? null).toBeNull();
+    expect(db.ler('produtos/cam-az')?.categoriaProdutoOuterRef ?? null).toBeNull();
+  });
+});
+
+describe('complete — a refused create creates no category and reports none', () => {
+  it('an option with no link (criarEVincular, aplicar): ZERO categoria or link writes, no category pendência ⟷ NEAR-MISS a creatable family creates its category', async () => {
+    const db = new FakeDb();
+    seedGrupoCompletar(db);
+    const ctx = contextoCompletar(MODO_IMPORTACAO_LI.aplicar, {
+      categorias: CATEGORIAS_IMPORTACAO_LI.criarEVincular,
+      mapaCategorias: MAPA_900_SEM_VINCULO,
+    });
+    const recusada = await relatado(
+      depsDoJob(db, 'job-g1'),
+      ctx,
+      familiaDetalhada(100, 'CAM', [{ id: 101, sku: 'CAM-AZ', opcao: 9 }], { categorias: CAT_900 }),
+    );
+    expect(recusada.item.pendencias.map((p) => p.codigo)).toEqual(['variacao-sem-vinculo']);
+    expect(db.escritas.filter((e) => e.caminho.startsWith('categorias/'))).toEqual([]);
+    expect(recusada.mapaCategorias).toEqual(MAPA_900_SEM_VINCULO);
+
+    const criada = await relatado(
+      depsDoJob(db, 'job-g1'),
+      ctx,
+      familiaDetalhada(200, 'MEIA', [{ id: 201, sku: 'MEIA-AZ', opcao: 1 }], {
+        categorias: CAT_900,
+      }),
+    );
+    expect(criada.item.acao).toBe('criar');
+    expect(db.ler(`categorias/li-${CONTA}-900`)).toMatchObject({ nome: 'Roupas' });
+  });
+
+  it('a probe hit, under soVincular categories: no categoria-sem-vinculo on the refused item (it imported nothing)', async () => {
+    const db = new FakeDb();
+    seedGrupoCompletar(db);
+    db.seed('produtos/a-mao', { nome: 'A mão', sku: 'CAM-AZ', paiId: null, filhoUnicoId: null });
+    const r = await relatado(
+      depsDoJob(db, 'job-g2'),
+      contextoCompletar(MODO_IMPORTACAO_LI.aplicar, { mapaCategorias: MAPA_900_SEM_VINCULO }),
+      familiaDetalhada(100, 'CAM', [{ id: 101, sku: 'CAM-AZ', opcao: 1 }], { categorias: CAT_900 }),
+    );
+    expect(r.item.pendencias.map((p) => p.codigo)).toEqual(['sku-ja-existe']);
+  });
+});
+
+describe('complete — an adoption whose cascade no longer matches reports the cascade’s verdict', () => {
+  it('another writer’s ERP família de um lands at our id before the batch: forma-diferente, never conflito-de-escrita', async () => {
+    const db = new FakeDb();
+    seedGrupoCompletar(db);
+    const raiz = `li-sku-${sha256('CAM')}`;
+    // Lands right before our batch (our tax review is written first, then the batch).
+    db.antesDaProximaEscrita(revisaoDe('job-a1', raiz), () => {
+      db.seed(`produtos/${raiz}`, {
+        nome: 'Camiseta',
+        sku: 'CAM',
+        paiId: null,
+        filhoUnicoId: `${raiz}-un`,
+      });
+      db.seed(`produtos/${raiz}-un`, { nome: 'Camiseta', sku: 'CAM-UN', paiId: raiz });
+    });
+    const r = await relatado(
+      depsDoJob(db, 'job-a1'),
+      contextoCompletar(MODO_IMPORTACAO_LI.aplicar),
+      familiaDetalhada(100, 'CAM', [{ id: 101, sku: 'CAM-AZ', opcao: 1 }]),
+    );
+    const codigos = r.item.pendencias.map((p) => p.codigo);
+    expect(codigos).toContain('forma-diferente');
+    expect(codigos).not.toContain('conflito-de-escrita');
+    expect(r.item.acao).toBe('nenhuma');
+    expect(db.ler(`produtos/li-sku-${sha256('CAM-AZ')}`)).toBeUndefined();
+  });
+});
+
+describe('complete — the target is decided once (`naoNoErp`)', () => {
+  const naoNoErp = () =>
+    contextoCompletar(MODO_IMPORTACAO_LI.aplicar, { alvo: ALVO_IMPORTACAO_LI.naoNoErp });
+
+  it('a unit RETRIED after its own create landed stays in the target: the same item and delta, never fora-do-alvo', async () => {
+    const db = new FakeDb();
+    seedGrupoCompletar(db);
+    const deps = depsDoJob(db, 'job-t1');
+    const f = familiaDetalhada(100, 'CAM', [{ id: 101, sku: 'CAM-AZ', opcao: 1 }]);
+    const primeira = await relatado(deps, naoNoErp(), f);
+    const retry = await executarFamiliaLi(deps, naoNoErp(), f);
+    if (retry.tipo !== 'relatado') throw new Error(`o retry terminou ${retry.tipo}`);
+    expect(veredito(retry.item)).toEqual(veredito(primeira.item));
+    expect(retry.contadores).toEqual(primeira.contadores);
+  });
+
+  it('⚠️ NEAR-MISS: another job’s create of the same family is outside a later naoNoErp job — it is in the ERP now', async () => {
+    const db = new FakeDb();
+    seedGrupoCompletar(db);
+    const f = familiaDetalhada(100, 'CAM', [{ id: 101, sku: 'CAM-AZ', opcao: 1 }]);
+    await relatado(depsDoJob(db, 'job-t-antes'), naoNoErp(), f);
+    const depois = await executarFamiliaLi(depsDoJob(db, 'job-t-depois'), naoNoErp(), f);
+    expect(depois.tipo).toBe('fora-do-alvo');
+  });
+
+  it('an ADOPTION (another conta’s create landed at our id before the batch) is filled AND linked for this conta', async () => {
+    const db = new FakeDb();
+    const raiz = `li-sku-${sha256('NOVO')}`;
+    db.antesDaProximaEscrita(revisaoDe('job-t2', raiz), () => {
+      db.seed(`produtos/${raiz}`, {
+        nome: 'Novo',
+        sku: 'NOVO',
+        paiId: null,
+        filhoUnicoId: `${raiz}-un`,
+      });
+      db.seed(`produtos/${raiz}-un`, { nome: 'Novo', sku: 'NOVO-UN', paiId: raiz });
+    });
+    const r = await relatado(
+      depsDoJob(db, 'job-t2'),
+      naoNoErp(),
+      simplesDetalhado(50, { sku: 'NOVO', nome: 'Novo' }),
+    );
+    expect(r.item.acao).not.toBe('criar');
+    expect(db.ler(vinculo(raiz, '50'))).toMatchObject({ id: 50, contaLojaIntegrada: REF });
+  });
+});
+
+describe('complete — one cascade per unit', () => {
+  it('a unit whose detail list found nothing to read reuses that list’s cascade: no rung-1 query again', async () => {
+    const consultasDoVinculo = (db: FakeDb) =>
+      db.consultas.filter((c) => c.colecao === 'produtolojaintegrada' && c.grupo === true).length;
+    const cheio = {
+      nome: 'Caneca',
+      sku: 'CAN',
+      paiId: null,
+      filhoUnicoId: null,
+      gtin: 'G',
+      pesoLiquidoKg: 1,
+      pesoBrutoKg: 1,
+      alturaCm: 1,
+      larguraCm: 1,
+      profundidadeCm: 1,
+      categoriaProdutoOuterRef: 'documents/categorias/c',
+    };
+    const ctx = contextoCompletar(MODO_IMPORTACAO_LI.aplicar);
+    const f = familia(linhaProdutoLi(20, { sku: 'CAN' }));
+
+    const reuso = new FakeDb();
+    reuso.seed('produtos/caneca', cheio);
+    reuso.seed('produtos/caneca/extraData/singleton', { descricao: 'd', marca: 'm' });
+    const deps = depsDoJob(reuso, 'job-u1');
+    const d = await detalhesDaFamiliaLi(deps, ctx, f);
+    expect(d.ids).toEqual([]);
+    const antes = consultasDoVinculo(reuso);
+    if (d.casamento === null) throw new Error('sem cascata');
+    const r = await executarFamiliaLi(deps, ctx, f, d.casamento);
+    expect(r.tipo).toBe('relatado');
+    expect(consultasDoVinculo(reuso) - antes).toBe(0);
+
+    // NEAR-MISS: without it, the unit runs the cascade itself.
+    const sem = new FakeDb();
+    sem.seed('produtos/caneca', cheio);
+    sem.seed('produtos/caneca/extraData/singleton', { descricao: 'd', marca: 'm' });
+    await executarFamiliaLi(depsDoJob(sem, 'job-u2'), ctx, f);
+    expect(consultasDoVinculo(sem)).toBe(1);
+  });
+});
+
+describe('detalhesDaFamiliaLi — a create the checks with no detail refuse costs no detail call', () => {
+  it('an option with no link, or a probe hit ⇒ no id; NEAR-MISS: neither ⇒ the root and every variation', async () => {
+    const db = new FakeDb();
+    seedGrupoCompletar(db);
+    const deps = depsDoJob(db, 'job-d2');
+    const ctx = contextoCompletar(MODO_IMPORTACAO_LI.aplicar);
+    const semVinculo = familiaDetalhada(100, 'CAM', [{ id: 101, sku: 'CAM-AZ', opcao: 9 }]);
+    expect((await detalhesDaFamiliaLi(deps, ctx, semVinculo)).ids).toEqual([]);
+
+    const nova = familiaDetalhada(200, 'MEIA', [{ id: 201, sku: 'MEIA-AZ', opcao: 1 }]);
+    expect((await detalhesDaFamiliaLi(deps, ctx, nova)).ids).toEqual([200, 201]);
+    db.seed('produtos/a-mao', { nome: 'A mão', sku: 'MEIA-AZ', paiId: null, filhoUnicoId: null });
+    expect((await detalhesDaFamiliaLi(deps, ctx, nova)).ids).toEqual([]);
+  });
+});
+
+describe('⚠️ ACCEPTED RESIDUAL — Simular does not see the produtos an earlier family would create', () => {
+  it('two store SKUs that differ only by case: aplicar refuses the second (sku-parecido against the first’s create); Simular says criar for both', async () => {
+    async function rodarModo(modo: ModoImportacaoLi) {
+      const db = new FakeDb();
+      const deps = depsDoJob(db, 'job-s1');
+      const ctx = contextoCompletar(modo);
+      const itens: ItemImportacaoLi[] = [];
+      for (const f of [
+        simplesDetalhado(100, { sku: 'ABC-1' }),
+        simplesDetalhado(200, { sku: 'abc-1' }),
+      ]) {
+        itens.push((await relatado(deps, ctx, f)).item);
+      }
+      return itens;
+    }
+    const aplicar = await rodarModo(MODO_IMPORTACAO_LI.aplicar);
+    const simular = await rodarModo(MODO_IMPORTACAO_LI.simular);
+    // The root's SKU and its sole member's derived one both meet the first create.
+    expect(new Set(aplicar[1]?.pendencias.map((p) => p.codigo))).toEqual(new Set(['sku-parecido']));
+    expect(aplicar[1]?.acao).not.toBe('criar');
+    // The divergence the residual states: closing it needs an overlay the job contract lacks.
+    expect(simular[1]?.acao).toBe('criar');
+    expect(simular[1]?.pendencias).toEqual([]);
+  });
+});
 describe('detalhesDaFamiliaLi — a detail only where it can change something', () => {
   it('a family the ERP lacks needs the root and every variation the create adds; a filled existing produto needs none (near-miss: one empty field needs its own)', async () => {
     const db = new FakeDb();
     seedGrupoCompletar(db);
     const ctx = contextoCompletar(MODO_IMPORTACAO_LI.aplicar);
+    const deps = depsDoJob(db, 'job-d1');
+    const ids = async (c: ContextoDasFamiliasLi, f: FamiliaLi) =>
+      (await detalhesDaFamiliaLi(deps, c, f)).ids;
     const nova = familiaDetalhada(100, 'CAM', [
       { id: 101, sku: 'CAM-AZ', opcao: 1 },
       { id: 102, sku: 'CAM-VD', opcao: 2, linha: { ativo: false } },
     ]);
-    expect(await detalhesDaFamiliaLi(asDb(db), ctx, nova)).toEqual([100, 101]);
+    expect(await ids(ctx, nova)).toEqual([100, 101]);
 
     const cheio = {
       nome: 'Caneca',
@@ -1222,17 +1607,13 @@ describe('detalhesDaFamiliaLi — a detail only where it can change something', 
     db.seed('produtos/caneca', cheio);
     db.seed('produtos/caneca/extraData/singleton', { descricao: 'd', marca: 'm' });
     const simples = familia(linhaProdutoLi(20, { sku: 'CAN' }));
-    expect(await detalhesDaFamiliaLi(asDb(db), ctx, simples)).toEqual([]);
+    expect(await ids(ctx, simples)).toEqual([]);
     // The same produto without photos, when the run copies them: its pictures are the detail's.
-    expect(await detalhesDaFamiliaLi(asDb(db), { ...ctx, importarFotos: true }, simples)).toEqual([
-      20,
-    ]);
+    expect(await ids({ ...ctx, importarFotos: true }, simples)).toEqual([20]);
     db.seed('produtos/caneca', { ...cheio, pesoBrutoKg: null });
-    expect(await detalhesDaFamiliaLi(asDb(db), ctx, simples)).toEqual([20]);
+    expect(await ids(ctx, simples)).toEqual([20]);
     // "Only link" reads no detail.
-    expect(
-      await detalhesDaFamiliaLi(asDb(db), contexto(MODO_IMPORTACAO_LI.aplicar), simples),
-    ).toEqual([]);
+    expect(await ids(contexto(MODO_IMPORTACAO_LI.aplicar), simples)).toEqual([]);
   });
 });
 

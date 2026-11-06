@@ -110,7 +110,12 @@
  * NO download and no upload at all: Simular writes only the job, and a picture fetched only to be
  * thrown away is a CDN call that decides nothing. Each existing target is read once (photos ⇒ none
  * planned); a produto the run would create is not read (it would be created with none). The answer
- * is the count a real run would fetch; it cannot foresee a refusal.
+ * is the count a real run would fetch; it cannot foresee a refusal. ⚠️ A deviation from the plan's
+ * "Simular runs the same reads and decisions" for the photos alone, kept for the owner's review: a
+ * picture whose CDN path now answers 404 (or is too large, or not an image) is counted by Simular
+ * and refused by `aplicar` (`foto-recusada`), so the two runs' `fotos` counter and that
+ * informational pendência can differ. Matching it would cost one CDN download per picture in every
+ * Simular, thrown away.
  *
  * ## No bucket
  *
