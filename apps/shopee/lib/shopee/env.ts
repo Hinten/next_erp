@@ -154,14 +154,17 @@ export function shopeeHosts(): ShopeeHosts {
  *
  * The `get_variations` documentation page contradicts ITSELF: its `path`, `url`
  * and `test_url` fields all say `/api/v2/product/get_variation_tree`, while all
- * four of its own samples call `/api/v2/product/get_variations`. The package
- * defaults to the samples' path.
+ * four of its own samples call `/api/v2/product/get_variations`. SETTLED on BR
+ * production (2026-11-04): the package defaults to `get_variation_tree`, the
+ * path BR serves and the legacy app signs.
  *
- * ⚠️ The path is INSIDE the HMAC base string, so the wrong one does not fail as
- * a 404 — it fails as a SIGN error, which reads exactly like a bad partner key.
- * That is why this is settled by one live call in the sandbox and flipped with
- * an environment variable rather than a redeploy, the same technique
- * `hosts.ts` uses for its three open host contradictions.
+ * ⚠️ A wrong path answers HTTP 404 `error_not_found` on BR — the gateway's
+ * route-not-served shape (`ShopeeOperacaoNaoServidaError`), not a sign error.
+ * The variable stays as an escape hatch, flipped with an environment variable
+ * rather than a code change (the technique `hosts.ts` uses for its host
+ * contradictions; an App Hosting value still takes effect only on the next
+ * rollout), because the SG sandbox staging runs on (`SHOPEE_SANDBOX=1`) was
+ * never captured for this operation.
  *
  * ⚠️ Blank-guarded, and SHAPE-agnostic on purpose. This module answers "what
  * did the operator type"; the package's `normalizeApiPath` decides whether that

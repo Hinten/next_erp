@@ -27,7 +27,6 @@ import {
   SHOPEE_GET_PACKAGE_DETAIL_PATH,
   SHOPEE_GET_SHOP_HOLIDAY_MODE_PATH,
   SHOPEE_GET_VARIATIONS_PATH,
-  SHOPEE_GET_VARIATION_TREE_PATH_ALT,
   SHOPEE_GET_WAREHOUSE_DETAIL_PATH,
   SHOPEE_INIT_TIER_VARIATION_PATH,
   SHOPEE_ITEM_BASE_INFO_MAX_IDS,
@@ -709,7 +708,7 @@ const OPS_TAXONOMIA: readonly OpTaxonomia[] = [
   {
     nome: 'getVariations',
     corpo: VARIATIONS_BODY,
-    path: '/api/v2/product/get_variations',
+    path: '/api/v2/product/get_variation_tree',
     chaves: [...CHAVES_COMUNS, 'category_id'],
     chamar: (c) => c.getVariations({ categoryId: 4321 }),
   },
@@ -816,42 +815,70 @@ describe('a query assinada de cada leitura de taxonomia', () => {
 
 /* -------------------------------------------------------------------------- */
 
-describe('o caminho contraditório de get_variations', () => {
-  it('usa por padrão o caminho dos EXEMPLOS da página', async () => {
+describe('o caminho de get_variations — get_variation_tree, resolvido no BR (2026-11-04)', () => {
+  // A grafia dos EXEMPLOS da página (o `path`/`url`/`test_url` dela dizem
+  // `get_variation_tree`). LOCAL de propósito: não há mais constante exportada
+  // para ela — só cabe como sobrescrita (`SHOPEE_VARIATIONS_PATH`, a válvula de
+  // escape do sandbox SG, nunca capturado).
+  const CAMINHO_DOS_EXEMPLOS = '/api/v2/product/get_variations';
+
+  it('(1) usa por padrão `get_variation_tree` — o caminho que a produção BR responde', async () => {
     const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(VARIATIONS_BODY));
     await createShopeeClient(shopConfig(fetchMock)).getVariations({ categoryId: 4321 });
-    expect(new URL(String(fetchMock.mock.calls[0]![0])).pathname).toBe(SHOPEE_GET_VARIATIONS_PATH);
-    expect(SHOPEE_GET_VARIATIONS_PATH).not.toBe(SHOPEE_GET_VARIATION_TREE_PATH_ALT);
+    // O LITERAL, nunca a constante comparada com ela mesma.
+    expect(new URL(String(fetchMock.mock.calls[0]![0])).pathname).toBe(
+      '/api/v2/product/get_variation_tree',
+    );
   });
 
-  it('a sobrescrita muda o pathname E a assinatura', async () => {
-    // ⚠️ O caminho está DENTRO da base string do HMAC: escolher o errado não dá
-    // 404, dá `error_sign`. Por isso a troca tem de mudar as duas coisas.
+  it('(2) QUASE-IGUAL: a grafia dos exemplos como sobrescrita muda o pathname E a assinatura', async () => {
+    // O caminho está DENTRO da base string do HMAC, então a troca tem de mudar
+    // as duas coisas — uma sobrescrita que só mudasse a URL assinaria o padrão.
     const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(VARIATIONS_BODY));
     const token = () => Promise.resolve('token-fixo');
 
     await createShopeeClient(shopConfig(fetchMock, token)).getVariations({ categoryId: 4321 });
     await createShopeeClient({
       ...shopConfig(fetchMock, token),
-      paths: { getVariations: SHOPEE_GET_VARIATION_TREE_PATH_ALT },
+      paths: { getVariations: CAMINHO_DOS_EXEMPLOS },
     }).getVariations({ categoryId: 4321 });
 
     const padrao = new URL(String(fetchMock.mock.calls[0]![0]));
-    const alternativo = new URL(String(fetchMock.mock.calls[1]![0]));
-    expect(padrao.pathname).toBe(SHOPEE_GET_VARIATIONS_PATH);
-    expect(alternativo.pathname).toBe(SHOPEE_GET_VARIATION_TREE_PATH_ALT);
-    expect(alternativo.searchParams.get('sign')).not.toBe(padrao.searchParams.get('sign'));
+    const exemplos = new URL(String(fetchMock.mock.calls[1]![0]));
+    expect(padrao.pathname).toBe('/api/v2/product/get_variation_tree');
+    expect(exemplos.pathname).toBe(CAMINHO_DOS_EXEMPLOS);
+    expect(exemplos.searchParams.get('sign')).not.toBe(padrao.searchParams.get('sign'));
   });
 
-  it('aceita uma sobrescrita bem formada, com espaços em volta', async () => {
+  it('(3) o 404 do BR na grafia dos exemplos rejeita como a FAMÍLIA ShopeeApiError, código `error_not_found`', async () => {
+    // O corpo VERBATIM da captura C7 do BR
+    // (`enviar\get_variations.br-c-camiseta-get_variations.json`, meta
+    // `httpStatus: 404`): a rota que o gateway não serve, NUNCA `error_sign`.
+    // ⚠️ Afirma a FAMÍLIA, não a subclasse: um 404 cru que trouxesse `request_id`
+    // seria a classe base, e o que este teste fixa é o código, não o formato.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse({ error: 'error_not_found' }, 404),
+    );
+    const erro = await erroDe(
+      createShopeeClient({
+        ...shopConfig(fetchMock),
+        paths: { getVariations: CAMINHO_DOS_EXEMPLOS },
+      }).getVariations({ categoryId: 4321 }),
+    );
+    expect(erro).toBeInstanceOf(ShopeeApiError);
+    expect((erro as ShopeeApiError).code).toBe('error_not_found');
+    expect((erro as ShopeeApiError).httpStatus).toBe(404);
+    expect(new URL(String(fetchMock.mock.calls[0]![0])).pathname).toBe(CAMINHO_DOS_EXEMPLOS);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('(4) aceita uma sobrescrita bem formada, com espaços em volta', async () => {
     const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(VARIATIONS_BODY));
     await createShopeeClient({
       ...shopConfig(fetchMock),
-      paths: { getVariations: `  ${SHOPEE_GET_VARIATION_TREE_PATH_ALT}  ` },
+      paths: { getVariations: `  ${CAMINHO_DOS_EXEMPLOS}  ` },
     }).getVariations({ categoryId: 4321 });
-    expect(new URL(String(fetchMock.mock.calls[0]![0])).pathname).toBe(
-      SHOPEE_GET_VARIATION_TREE_PATH_ALT,
-    );
+    expect(new URL(String(fetchMock.mock.calls[0]![0])).pathname).toBe(CAMINHO_DOS_EXEMPLOS);
   });
 
   it.each([
