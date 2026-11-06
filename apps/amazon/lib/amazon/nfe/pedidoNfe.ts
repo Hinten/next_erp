@@ -335,9 +335,24 @@ export interface IrmaosDaNfeAmazon {
 }
 
 /**
+ * Whether ONE `nfev4` document is a cancelled SALE note: `estado` `'c'`, and
+ * its proc is not a legible NON-sale note (a cancelled devolução is no re-issue
+ * of the sale). A cancelled document whose proc is gone or illegible counts.
+ * The sibling reader below asks it of every other document; EXPORTED for the
+ * Easy Ship scheduling's NF-e gate (step 15), which asks it of the whole
+ * listing — one rule, never a second copy of it.
+ */
+export function notaDeVendaCanceladaAmazon(raw: Readonly<Record<string, unknown>>): boolean {
+  if (raw.estado !== ESTADO_NFE.cancelada) return false;
+  const xml = raw.xml_nfe_proc;
+  return typeof xml !== 'string' || finalidadeDaNfeProc(xml) !== 'outra';
+}
+
+/**
  * The siblings of `nfeId` among `docs` (the pedido's whole, unfiltered
  * `nfev4` listing; ours is skipped by id). A cancelled document whose proc is a
- * legible non-sale note (a devolução) is no re-issue of the sale.
+ * legible non-sale note (a devolução) is no re-issue of the sale
+ * ({@link notaDeVendaCanceladaAmazon}).
  */
 export function irmaosDaNfeAmazon(
   nfeId: string,
@@ -348,10 +363,7 @@ export function irmaosDaNfeAmazon(
   for (const doc of docs) {
     if (doc.id === nfeId) continue;
     if (motivoForaDoEnvioNfeAmazon(doc.raw) === null) outraElegivel = true;
-    if (doc.raw.estado === ESTADO_NFE.cancelada) {
-      const xml = doc.raw.xml_nfe_proc;
-      if (typeof xml !== 'string' || finalidadeDaNfeProc(xml) !== 'outra') irmaCancelada = true;
-    }
+    if (notaDeVendaCanceladaAmazon(doc.raw)) irmaCancelada = true;
   }
   return { outraElegivel, irmaCancelada };
 }

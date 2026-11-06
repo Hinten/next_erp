@@ -10,8 +10,10 @@
  * file is the ONLY place in the app that names that type or builds an
  * observer: the package's hook is wired at exactly four sites (the LWA
  * refresh and the SP-API client in `contexto.ts`, the code exchange in
- * `conectar.ts`, and the write engine's write client in `escrita.ts`), each
- * with `criarObservadorAmazon(…)` as its whole value, and
+ * `conectar.ts`, and the write engine's one client builder in `escrita.ts`,
+ * which builds the LWA write client and, since step 15, every restricted
+ * client — each with its own observer), each with
+ * `criarObservadorAmazon(…)` as its whole value, and
  * `estrutura.test.ts` fails on any other observer, or on the type named
  * anywhere else. So the raw event reaches a line only through
  * {@link linhaDaChamada}.
@@ -108,7 +110,11 @@ export interface LoggerAmazon {
  * Hosting — the re-drive route's one line per answer: `rota: 'enviar-nfe'`,
  * `resultado` a code, `enfileirado` or `falhou`, a closed `motivo`, the ids —
  * ids, closed codes and Amazon's status constants only, never the XML, its
- * digest or the access key).
+ * digest or the access key) or the Easy Ship scheduling (step 15: the write
+ * engine's dry-run line, and the scheduling task's and the label route's own
+ * lines — ids, closed codes, grammar-checked rejection codes and counts only,
+ * never the label's pre-signed URL, the Restricted Data Token, a label byte, a
+ * tracking, package or slot id, or Amazon's text).
  */
 export type EventoAmazon =
   | 'chamada'
@@ -120,7 +126,8 @@ export type EventoAmazon =
   | 'poll'
   | 'int-frete'
   | 'pedido'
-  | 'nfe';
+  | 'nfe'
+  | 'agendamento';
 
 /** What a NON-call line is about: `chamada` is written by the observer alone. */
 export type EventoAvulsoAmazon = Exclude<EventoAmazon, 'chamada'>;
@@ -136,6 +143,7 @@ const EVENTOS_AVULSOS: Readonly<Record<EventoAvulsoAmazon, true>> = {
   'int-frete': true,
   pedido: true,
   nfe: true,
+  agendamento: true,
 };
 
 /** The body excerpt's cap, in UTF-8 bytes, applied AFTER the regex layer. */
@@ -174,8 +182,33 @@ export type EnvelopeEventoAmazon = Partial<Omit<OpcoesObservadorAmazon, 'logger'
   readonly conta?: string | null;
 };
 
-/** How the call authenticated, never which credential. */
-export type CredencialDaLinhaAmazon = 'lwa-acesso' | 'lwa-refresh' | 'lwa-codigo' | typeof INVALIDO;
+/**
+ * How the call authenticated, never which credential: an SP-API call with the
+ * LWA access token (`lwa-acesso`) or with a Restricted Data Token (`rdt`, step
+ * 15: {@link OPERACOES_COM_TOKEN_RESTRITO_AMAZON}), or an LWA exchange of a
+ * refresh token (`lwa-refresh`) or of a consent code (`lwa-codigo`).
+ */
+export type CredencialDaLinhaAmazon =
+  | 'lwa-acesso'
+  | 'rdt'
+  | 'lwa-refresh'
+  | 'lwa-codigo'
+  | typeof INVALIDO;
+
+/**
+ * The SP-API operations this app sends with a Restricted Data Token instead of
+ * the LWA access token (step 15): the Easy Ship bulk scheduling. The MINT of
+ * that token (`createRestrictedDataToken`) is NOT here: it is sent with the LWA
+ * access token, so its line says `lwa-acesso`.
+ *
+ * A LOCAL literal on purpose, never the package's operation constant: this
+ * module sits in the NF-e trigger's D11 closure, which may import the SP-API
+ * package as TYPES only (`estrutura.test.ts`). `log.test.ts` pins it equal to
+ * the package's constant.
+ */
+export const OPERACOES_COM_TOKEN_RESTRITO_AMAZON: ReadonlySet<string> = new Set([
+  'createScheduledPackageBulk',
+]);
 
 /** A type alias, not an interface: it must be assignable to {@link CamposLogAmazon}. */
 export type LinhaChamadaAmazon = {
@@ -361,8 +394,16 @@ export function severidadeDaChamada(resultado: unknown, status: unknown): Severi
   }
 }
 
-function credencialDaLinha(destino: string, ref: unknown): CredencialDaLinhaAmazon {
-  if (destino === 'sp-api') return 'lwa-acesso';
+function credencialDaLinha(
+  destino: string,
+  ref: unknown,
+  operacao: unknown,
+): CredencialDaLinhaAmazon {
+  if (destino === 'sp-api') {
+    return typeof operacao === 'string' && OPERACOES_COM_TOKEN_RESTRITO_AMAZON.has(operacao)
+      ? 'rdt'
+      : 'lwa-acesso';
+  }
   if (destino !== 'lwa') return INVALIDO;
   if (ref === REF_CONSENTIMENTO) return 'lwa-codigo';
   return versaoDaRef(ref) === null ? INVALIDO : 'lwa-refresh';
@@ -450,7 +491,7 @@ export function linhaDaChamada(
     caminho: caminho.texto,
     status,
     resultado: doConjunto(RESULTADOS, e.resultado),
-    credencial: credencialDaLinha(destino, e.refCredencial),
+    credencial: credencialDaLinha(destino, e.refCredencial, e.operacao),
     versaoCredencial,
     limiteTaxa: numeroFinito(e.limiteTaxa),
     latenciaMs: numeroFinito(e.latenciaMs),

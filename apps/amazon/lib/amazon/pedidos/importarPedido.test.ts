@@ -31,6 +31,7 @@ import {
   chaveContaPrecisaAtencao,
   chavePedidoPrecisaAtencao,
   relogioDoDocumentoUs,
+  sincronizarAvisosDoPedidoAmazon,
 } from '../avisos/avisos';
 import { __setRelogioDoCacheParaTestes } from '../core/contaCache';
 import { avisarNfeAmazon, chaveAvisoNfeAmazon } from '../nfe/avisoNfe';
@@ -68,6 +69,7 @@ import {
 import { TEXTO_ERRO_AMAZON } from './estadoPedidoAmazon';
 import {
   JANELA_CANCELAMENTO_RECENTE_AMAZON_US,
+  MOTIVOS_AGENDAMENTO_PEDIDO_AMAZON,
   MOTIVOS_PEDIDO_DO_IMPORTADOR_AMAZON,
   clienteDoEnderecoAmazon,
   condicoesNfeDoPedidoAmazon,
@@ -1224,6 +1226,7 @@ describe('motivosDoPedidoAmazon — the resolvers (decision 26 as amended)', () 
       decisao: { ...base, avisos: ['status-desconhecido'] },
       fase: 'desconhecida',
       estadoFinal: ESTADO_PEDIDO.pago,
+      agendamentoEncerrado: false,
     });
     expect(r.levantar).toEqual(['status-desconhecido']);
     expect(r.resolver).not.toContain('status-desconhecido');
@@ -1251,12 +1254,14 @@ describe('motivosDoPedidoAmazon — the resolvers (decision 26 as amended)', () 
           decisao: { ...base, avisos },
           fase,
           estadoFinal: ESTADO_PEDIDO.pago,
+          agendamentoEncerrado: false,
         });
         expect(r.levantar, `${avisos.join('+')} ${fase}`).toEqual(avisos);
         for (const m of avisos) expect(r.resolver, `${m} ${fase}`).not.toContain(m);
       }
     }
-    // The list holds all EIGHT motivos of the tipo (none left to a later PR).
+    // The list holds all TEN motivos of the tipo (none left to a later PR): the two
+    // Easy Ship scheduling motivos joined it in step 15 (PR 15-b), with the enum.
     expect([...MOTIVOS_PEDIDO_DO_IMPORTADOR_AMAZON].sort()).toEqual(
       [...motivoPedidoAmazonSchema.options].sort(),
     );
@@ -1268,6 +1273,7 @@ describe('motivosDoPedidoAmazon — the resolvers (decision 26 as amended)', () 
         decisao: { ...base, motivoEstado: 'manter' },
         fase: 'apr',
         estadoFinal: ESTADO_PEDIDO.error,
+        agendamentoEncerrado: false,
       }).resolver,
     ).not.toContain('divergencia-itens');
     expect(
@@ -1275,6 +1281,7 @@ describe('motivosDoPedidoAmazon — the resolvers (decision 26 as amended)', () 
         decisao: { ...base, motivoEstado: 'sem-mudanca' },
         fase: 'apr',
         estadoFinal: ESTADO_PEDIDO.pago,
+        agendamentoEncerrado: false,
       }).resolver,
     ).toContain('divergencia-itens');
   });
@@ -1288,6 +1295,7 @@ describe('motivosDoPedidoAmazon — the resolvers (decision 26 as amended)', () 
             decisao: { ...base, motivoEstado, itensConferem: false },
             fase,
             estadoFinal,
+            agendamentoEncerrado: false,
           });
           expect(semConferir.resolver, rotulo).not.toContain('divergencia-itens');
           // Never raised by the resolver either: only the decision raises it.
@@ -1296,6 +1304,7 @@ describe('motivosDoPedidoAmazon — the resolvers (decision 26 as amended)', () 
             decisao: { ...base, motivoEstado, itensConferem: true },
             fase,
             estadoFinal,
+            agendamentoEncerrado: false,
           });
           expect(conferindo.resolver, rotulo).toContain('divergencia-itens');
         }
@@ -1306,6 +1315,8 @@ describe('motivosDoPedidoAmazon — the resolvers (decision 26 as amended)', () 
       decisao: { ...base, itensConferem: false },
       fase: 'env',
       estadoFinal: ESTADO_PEDIDO.pago,
+      // SHIPPED: scheduling has ended, so the two scheduling motivos resolve too.
+      agendamentoEncerrado: true,
     });
     expect(r.resolver).toEqual(
       MOTIVOS_PEDIDO_DO_IMPORTADOR_AMAZON.filter((m) => m !== 'divergencia-itens'),
@@ -1315,32 +1326,102 @@ describe('motivosDoPedidoAmazon — the resolvers (decision 26 as amended)', () 
   it.each<[string, Parameters<typeof motivosDoPedidoAmazon>[0], boolean]>([
     [
       'Amazon CANCELLED',
-      { decisao: base, fase: 'cancelado', estadoFinal: ESTADO_PEDIDO.cancelado },
+      {
+        decisao: base,
+        fase: 'cancelado',
+        estadoFinal: ESTADO_PEDIDO.cancelado,
+        agendamentoEncerrado: true,
+      },
       true,
     ],
-    ['Amazon SHIPPED', { decisao: base, fase: 'env', estadoFinal: ESTADO_PEDIDO.cancelado }, true],
+    [
+      'Amazon SHIPPED',
+      {
+        decisao: base,
+        fase: 'env',
+        estadoFinal: ESTADO_PEDIDO.cancelado,
+        agendamentoEncerrado: true,
+      },
+      true,
+    ],
     [
       'the pedido no longer terminal',
-      { decisao: base, fase: 'apr', estadoFinal: ESTADO_PEDIDO.pago },
+      { decisao: base, fase: 'apr', estadoFinal: ESTADO_PEDIDO.pago, agendamentoEncerrado: false },
       true,
     ],
     [
       'still to ship, still cancelled',
-      { decisao: base, fase: 'apr', estadoFinal: ESTADO_PEDIDO.cancelado },
+      {
+        decisao: base,
+        fase: 'apr',
+        estadoFinal: ESTADO_PEDIDO.cancelado,
+        agendamentoEncerrado: false,
+      },
       false,
     ],
     [
       'PENDING, still cancelled',
-      { decisao: base, fase: 'pre', estadoFinal: ESTADO_PEDIDO.estornadoIntegralmente },
+      {
+        decisao: base,
+        fase: 'pre',
+        estadoFinal: ESTADO_PEDIDO.estornadoIntegralmente,
+        agendamentoEncerrado: false,
+      },
       false,
     ],
     [
       'an unknown status, still cancelled',
-      { decisao: base, fase: 'desconhecida', estadoFinal: ESTADO_PEDIDO.cancelado },
+      {
+        decisao: base,
+        fase: 'desconhecida',
+        estadoFinal: ESTADO_PEDIDO.cancelado,
+        agendamentoEncerrado: false,
+      },
       false,
     ],
   ])('cancelado-so-no-erp — %s ⇒ resolved: %s', (_c, entrada, resolve) => {
     expect(motivosDoPedidoAmazon(entrada).resolver.includes('cancelado-so-no-erp')).toBe(resolve);
+  });
+
+  it('★ step 15: the two scheduling motivos resolve ONLY when scheduling has ended — whatever the phase, the estado or the lines; NEAR-MISS: not ended ⇒ neither is resolved (no getAll key)', () => {
+    const agendamento = ['dimensoes-ausentes', 'agendamento-recusado'] as const;
+    expect([...MOTIVOS_AGENDAMENTO_PEDIDO_AMAZON].sort()).toEqual([...agendamento].sort());
+    for (const fase of ['apr', 'env', 'cancelado', 'pre', 'desconhecida'] as const) {
+      for (const estadoFinal of [ESTADO_PEDIDO.pago, ESTADO_PEDIDO.cancelado, null]) {
+        for (const itensConferem of [true, false]) {
+          const rotulo = `${fase} ${String(estadoFinal)} ${String(itensConferem)}`;
+          const entrada = { decisao: { ...base, itensConferem }, fase, estadoFinal };
+          const encerrado = motivosDoPedidoAmazon({ ...entrada, agendamentoEncerrado: true });
+          const aberto = motivosDoPedidoAmazon({ ...entrada, agendamentoEncerrado: false });
+          for (const m of agendamento) {
+            expect(encerrado.resolver, `${m} ${rotulo}`).toContain(m);
+            expect(aberto.resolver, `${m} ${rotulo}`).not.toContain(m);
+            expect(encerrado.levantar, `${m} ${rotulo}`).not.toContain(m);
+            expect(aberto.levantar, `${m} ${rotulo}`).not.toContain(m);
+          }
+          // Every other motivo's verdict ignores the flag.
+          expect(aberto.resolver, rotulo).toEqual(
+            encerrado.resolver.filter((m) => !MOTIVOS_AGENDAMENTO_PEDIDO_AMAZON.has(m)),
+          );
+        }
+      }
+    }
+  });
+
+  it('★ step 15: an import NEVER raises a scheduling motivo — even a decision that listed one (the task is their one producer)', () => {
+    for (const agendamentoEncerrado of [true, false]) {
+      const r = motivosDoPedidoAmazon({
+        decisao: {
+          ...base,
+          avisos: ['dimensoes-ausentes', 'agendamento-recusado', 'status-desconhecido'],
+        },
+        fase: 'apr',
+        estadoFinal: ESTADO_PEDIDO.pago,
+        agendamentoEncerrado,
+      });
+      // NEAR-MISS: the other derived motivo still rises.
+      expect(r.levantar).toEqual(['status-desconhecido']);
+    }
   });
 });
 
@@ -1708,6 +1789,129 @@ describe('★ PR 7 — Easy Ship packages through the import', () => {
         expect(pagamentoGuardado?.status_pagamento, status).toBe(8);
         expect(incidente(ex, 'amz-cancelado-apos-envio'), status).toBeUndefined();
         expect(frete(ex).estado, status).toBe('cancelado');
+      }
+    }
+  });
+});
+
+/* ------------------- step 15 (PR 15-b): the two scheduling motivos ------------------- */
+
+describe('★ step 15 (PR 15-b) — the import RESOLVES the two scheduling motivos once scheduling has ended, and never raises them', () => {
+  const AGENDAMENTO = [
+    MOTIVO_PEDIDO_AMAZON.dimensoesAusentes,
+    MOTIVO_PEDIDO_AMAZON.agendamentoRecusado,
+  ] as const;
+  const caminhosAgendamento = AGENDAMENTO.map((m) =>
+    caminhoAviso(chavePedidoPrecisaAtencao(CONTA_IMPORTADOR, ORDER_ID_TESTE, m)),
+  );
+
+  /** An approved order (the buyer, its invoice status merged into the same `tax`) with one package. */
+  function comPacote(
+    c: Record<string, unknown>,
+    detalhe: string,
+    opcoes: { status?: string; atualizadoEm?: string; invoiceStatus?: string } = {},
+  ): Record<string, unknown> {
+    return pedido({
+      status: opcoes.status ?? 'UNSHIPPED',
+      atualizadoEm: opcoes.atualizadoEm,
+      pacotesBrutos: [pacoteAmazon('PKG-1', detalhe, { status: 'PENDING' })],
+      extra: {
+        ...c,
+        tax: {
+          ...(c.tax as Record<string, unknown>),
+          taxInvoicing: { invoiceStatus: opcoes.invoiceStatus ?? 'ACCEPTED' },
+        },
+      },
+    });
+  }
+
+  /** The scheduling task's raise of both rows (as 15-c will), clocked by the first commit. */
+  async function levantarAgendamento(ex: Execucao): Promise<void> {
+    const relogio = ex.h.db.escritasEm(CAMINHO)[0]?.writeTime;
+    expect(relogio).toBeDefined();
+    await sincronizarAvisosDoPedidoAmazon(
+      asDb(ex.h.db),
+      { increment, nowMs: AGORA_MS, logger: ex.h.log.logger },
+      {
+        integracaoId: CONTA_IMPORTADOR,
+        orderId: ORDER_ID_TESTE,
+        pedidoId: PEDIDO_ID,
+        levantar: [...AGENDAMENTO],
+        resolver: [],
+        relogio: relogio!,
+      },
+    );
+    for (const m of AGENDAMENTO) expect(avisoPedido(ex, m)?.resolvidoEm, m).toBeNull();
+  }
+
+  it('★ PENDING_PICK_UP resolves both open rows; NEAR-MISS: a newer PENDING_SCHEDULE + ACCEPTED leaves them OPEN and reads neither key', async () => {
+    const ex = montar();
+    const c = comprador();
+    await ex.importar(comPacote(c, 'PENDING_SCHEDULE'));
+    await levantarAgendamento(ex);
+
+    const leiturasAntes = ex.h.db.leituras.length;
+    const r = await ex.importar(comPacote(c, 'PENDING_SCHEDULE', { atualizadoEm: depois(60) }));
+    expect(r.kind).toBe('importado');
+    for (const m of AGENDAMENTO) expect(avisoPedido(ex, m)?.resolvidoEm, m).toBeNull();
+    // Neither key joined the per-pedido sync's getAll: no extra read on an order still to schedule.
+    const lidas = ex.h.db.leituras.slice(leiturasAntes);
+    for (const caminho of caminhosAgendamento) expect(lidas).not.toContain(caminho);
+    // Anti-vacuity: that sync did read the other motivos' keys.
+    expect(lidas.filter((l) => l.startsWith('avisos/')).length).toBeGreaterThan(0);
+
+    const leiturasAgendado = ex.h.db.leituras.length;
+    await ex.importar(comPacote(c, 'PENDING_PICK_UP', { atualizadoEm: depois(120) }));
+    expect(ex.h.db.ler(CAMINHO)?.freteInicial).toMatchObject({ estado: 'aguardandoPostagem' });
+    for (const m of AGENDAMENTO) expect(avisoPedido(ex, m)?.resolvidoEm, m).not.toBeNull();
+    // Scheduled or later: both keys join the getAll (+2 reads).
+    const lidasAgendado = ex.h.db.leituras.slice(leiturasAgendado);
+    for (const caminho of caminhosAgendamento) expect(lidasAgendado).toContain(caminho);
+  });
+
+  it('★ CANCELLED resolves both open rows', async () => {
+    const ex = montar();
+    const c = comprador();
+    await ex.importar(comPacote(c, 'PENDING_SCHEDULE'));
+    await levantarAgendamento(ex);
+    await ex.importar(pedido({ status: 'CANCELLED', atualizadoEm: depois(60), extra: c }));
+    for (const m of AGENDAMENTO) expect(avisoPedido(ex, m)?.resolvidoEm, m).not.toBeNull();
+  });
+
+  it('★ LABEL_CANCELLED (a schedule existed) resolves both; SHIPPED with the package picked up does too', async () => {
+    const cancelada = montar();
+    const c = comprador();
+    await cancelada.importar(comPacote(c, 'PENDING_SCHEDULE'));
+    await levantarAgendamento(cancelada);
+    await cancelada.importar(comPacote(c, 'LABEL_CANCELLED', { atualizadoEm: depois(60) }));
+    for (const m of AGENDAMENTO) {
+      expect(avisoPedido(cancelada, m)?.resolvidoEm, m).not.toBeNull();
+    }
+
+    const enviado = montar();
+    await enviado.importar(comPacote(c, 'PENDING_SCHEDULE'));
+    await levantarAgendamento(enviado);
+    await enviado.importar(
+      comPacote(c, 'PICKED_UP', { status: 'SHIPPED', atualizadoEm: depois(60) }),
+    );
+    for (const m of AGENDAMENTO) expect(avisoPedido(enviado, m)?.resolvidoEm, m).not.toBeNull();
+  });
+
+  it('★ no import ever RAISES either: to schedule, scheduled, cancelled pickup, shipped, cancelled, pending — no row written', async () => {
+    const leituras: readonly Record<string, unknown>[] = [
+      comPacote(comprador(), 'PENDING_SCHEDULE'),
+      comPacote(comprador(), 'PENDING_SCHEDULE', { invoiceStatus: 'PROCESSING' }),
+      comPacote(comprador(), 'PENDING_PICK_UP'),
+      comPacote(comprador(), 'LABEL_CANCELLED'),
+      comPacote(comprador(), 'PICKED_UP', { status: 'SHIPPED' }),
+      pedido({ status: 'UNSHIPPED', extra: comprador() }),
+      pedido({ status: 'PENDING' }),
+    ];
+    for (const [i, corpo] of leituras.entries()) {
+      const ex = montar();
+      await ex.importar(corpo);
+      for (const caminho of caminhosAgendamento) {
+        expect(ex.h.db.ler(caminho), `${String(i)} ${caminho}`).toBeUndefined();
       }
     }
   });

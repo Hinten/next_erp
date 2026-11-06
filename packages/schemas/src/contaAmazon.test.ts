@@ -5,6 +5,7 @@ import {
   CODIGO_ERRO_NFE_AMAZON,
   LIMIAR_AVISO_AMAZON_DIAS,
   MAX_SELLING_PARTNER_ID,
+  MOTIVO_ETIQUETA_AMAZON,
   MOTIVO_RETORNO_OAUTH_AMAZON,
   VALIDADE_AUTORIZACAO_AMAZON_DIAS,
   contaAmazonRoteavel,
@@ -12,6 +13,7 @@ import {
   diasParaReautorizarAmazon,
   erroContaAmazonSchema,
   erroEnvioNfeAmazonSchema,
+  motivoEtiquetaAmazonSchema,
   motivoRetornoOAuthAmazonSchema,
   reautorizarAteAmazon,
   respostaEnvioNfeAmazonSchema,
@@ -297,6 +299,61 @@ describe('erroEnvioNfeAmazonSchema', () => {
   });
 });
 
+describe('MOTIVO_ETIQUETA_AMAZON (the Easy Ship label refusals, step 15)', () => {
+  it('★ is exactly the 22 slugs, its constant member for member', () => {
+    expect([...motivoEtiquetaAmazonSchema.options].sort()).toEqual(
+      [
+        'nao-amazon',
+        'outra-integradora',
+        'pedido-bloqueado',
+        'mercadoria-fora',
+        'pedido-cancelado',
+        'pedido-pendente',
+        'cancelamento-solicitado',
+        'nao-dba',
+        'ja-enviado',
+        'status-pedido-inesperado',
+        'pacote-desconhecido',
+        'coleta-cancelada',
+        'marketplace-estrangeiro',
+        'nf-nao-requerida',
+        'nfe-ambigua',
+        'nfe-substituta',
+        'nfe-cancelada',
+        'dimensoes-ausentes',
+        'agendamento-recusado',
+        'nfe-em-processamento',
+        'nfe-recusada-pela-amazon',
+        'nfe-nao-enviada',
+      ].sort(),
+    );
+    expect(motivoEtiquetaAmazonSchema.options).toHaveLength(22);
+    expect(Object.values(MOTIVO_ETIQUETA_AMAZON).sort()).toEqual(
+      [...motivoEtiquetaAmazonSchema.options].sort(),
+    );
+  });
+
+  it('every slug is a lower-case kebab token (a URL- and log-safe code, never a sentence)', () => {
+    for (const slug of motivoEtiquetaAmazonSchema.options) {
+      expect(slug).toMatch(/^[a-z]+(-[a-z]+)*$/);
+    }
+  });
+
+  it('NEAR-MISSES stay refused: another casing, a spacing, a code, the NF-e task’s own reading of an unknown status', () => {
+    for (const quase of [
+      'NAO-DBA',
+      'nao_dba',
+      ' nao-dba',
+      'AMAZON_ETIQUETA_NAO_ELEGIVEL',
+      'status-pedido-desconhecido',
+      'leitura-defasada',
+      '',
+    ]) {
+      expect(motivoEtiquetaAmazonSchema.safeParse(quase).success, quase).toBe(false);
+    }
+  });
+});
+
 describe('respostaEnvioNfeAmazonSchema', () => {
   it('parses the 202, strips an unknown key, refuses `enfileirado: false` and a missing id', () => {
     const ok = { enfileirado: true, pedidoId: 'a'.repeat(64), nfeId: 's1' };
@@ -495,6 +552,8 @@ describe('barrel', () => {
     expect(barrel.CODIGO_ERRO_AMAZON).toBe(CODIGO_ERRO_AMAZON);
     expect(barrel.CODIGO_ERRO_NFE_AMAZON).toBe(CODIGO_ERRO_NFE_AMAZON);
     expect(barrel.erroEnvioNfeAmazonSchema).toBe(erroEnvioNfeAmazonSchema);
+    expect(barrel.motivoEtiquetaAmazonSchema).toBe(motivoEtiquetaAmazonSchema);
+    expect(barrel.MOTIVO_ETIQUETA_AMAZON).toBe(MOTIVO_ETIQUETA_AMAZON);
     expect(barrel.respostaEnvioNfeAmazonSchema).toBe(respostaEnvioNfeAmazonSchema);
     expect(barrel.reautorizarAteAmazon).toBe(reautorizarAteAmazon);
     expect(barrel.diasParaReautorizarAmazon).toBe(diasParaReautorizarAmazon);

@@ -650,18 +650,46 @@ describe('step 5 (PR 5-d): the order import producers — clocked on the FIRESTO
     );
   });
 
-  it('every per-pedido motivo has its severity: four critico, four atencao', () => {
+  it('every per-pedido motivo has its severity: six critico, four atencao', () => {
     const criticos = Object.entries(SEVERIDADE_MOTIVO_PEDIDO_AMAZON)
       .filter(([, s]) => s === SEVERIDADE_AVISO.critico)
       .map(([m]) => m)
       .sort();
     expect(criticos).toEqual([
       'aceitar-cancelamento',
+      'agendamento-recusado',
       'cancelado-so-no-erp',
+      'dimensoes-ausentes',
       'divergencia-itens',
       'logistica-desconhecida',
     ]);
-    expect(Object.keys(SEVERIDADE_MOTIVO_PEDIDO_AMAZON)).toHaveLength(8);
+    expect(Object.keys(SEVERIDADE_MOTIVO_PEDIDO_AMAZON)).toHaveLength(10);
+  });
+
+  it('★ step 15: both Easy Ship scheduling refusals raise critico, with exactly pedido + motivo and the pedido route', async () => {
+    for (const motivo of [
+      MOTIVO_PEDIDO_AMAZON.dimensoesAusentes,
+      MOTIVO_PEDIDO_AMAZON.agendamentoRecusado,
+    ]) {
+      await sincronizarAvisosDoPedidoAmazon(asDb(db), deps(), {
+        ...pedido,
+        levantar: [motivo],
+        resolver: [],
+        relogio: T1,
+      });
+      expect(db.ler(chave(motivo)), motivo).toMatchObject({
+        tipo: TIPO_AVISO.amazonPedidoPrecisaAtencao,
+        severidade: SEVERIDADE_AVISO.critico,
+        params: { pedido: ORDER, motivo },
+        motivo,
+        urlInterna: { rota: ROTAS_AVISO.pedido.build(PEDIDO), campo: null },
+        resolvidoEm: null,
+      });
+      expect(Object.keys((db.ler(chave(motivo))?.params ?? {}) as object).sort()).toEqual([
+        'motivo',
+        'pedido',
+      ]);
+    }
   });
 
   it('★ raises with exactly pedido + motivo, the pedido route, in-app, the clock converted HERE', async () => {

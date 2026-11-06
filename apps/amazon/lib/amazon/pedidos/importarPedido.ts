@@ -75,7 +75,10 @@
  *     decision, never from `S`. Per-pedido avisos are clocked by the batch's
  *     commit `writeTime` (`importado`) or the winning snapshot's `readTime`
  *     (`sem-mudanca`); per-conta avisos by the conta read's `readTime` (plan §3
- *     decision 40).
+ *     decision 40). The two Easy Ship scheduling motivos (step 15) are never
+ *     raised here, and join the resolve list — and so the sync's `getAll` —
+ *     only when the read shows scheduling has ENDED
+ *     (`agendamento/decisaoAgendamento.ts`).
  *  8b. **The NF-e transitions** (step 14, PR 14-c; {@link transicoesNfeDoPedidoAmazon}),
  *     on a TRANSITION the winning batch WROTE, and nothing else: INTO a
  *     cancelled sale (`ESTADOS_TERMINAIS_AMAZON`: `cancelado`, or
@@ -146,6 +149,7 @@ import {
   type OuterRef,
 } from '@delfrance/schemas';
 
+import { agendamentoEncerradoAmazon } from '../agendamento/decisaoAgendamento';
 import {
   MOTIVO_AVISO_AMAZON,
   agoraUsDe,
@@ -218,12 +222,16 @@ import { criarResolvedorDeVinculosAmazon, type FalhaVinculoAmazon } from './vinc
 export const JANELA_CANCELAMENTO_RECENTE_AMAZON_US = 15 * 60 * 1_000_000;
 
 /**
- * The per-pedido aviso motivos THIS import raises and resolves — all eight of
- * the tipo. The two freight motivos arrived with the package fold that derives
- * them (PR 7): `pacote-status-desconhecido` while some package is unknown or
- * unkeyed, `coleta-cancelada` while some package is `LABEL_CANCELLED` on an
- * order Amazon has not cancelled (`frete/estadoFreteAmazon.ts`), each derived
- * from the order alone so its resolve is exactly its condition ending.
+ * The per-pedido aviso motivos THIS import resolves — all ten of the tipo —
+ * and, all but the two scheduling ones, raises. The two freight motivos
+ * arrived with the package fold that derives them (PR 7):
+ * `pacote-status-desconhecido` while some package is unknown or unkeyed,
+ * `coleta-cancelada` while some package is `LABEL_CANCELLED` on an order Amazon
+ * has not cancelled (`frete/estadoFreteAmazon.ts`), each derived from the order
+ * alone so its resolve is exactly its condition ending. The two scheduling
+ * motivos arrived with step 15 ({@link MOTIVOS_AGENDAMENTO_PEDIDO_AMAZON}): the
+ * Easy Ship scheduling task raises them, and this import only resolves them,
+ * once its read shows scheduling has ended.
  */
 export const MOTIVOS_PEDIDO_DO_IMPORTADOR_AMAZON: readonly MotivoPedidoAmazon[] = [
   MOTIVO_PEDIDO_AMAZON.divergenciaItens,
@@ -234,7 +242,21 @@ export const MOTIVOS_PEDIDO_DO_IMPORTADOR_AMAZON: readonly MotivoPedidoAmazon[] 
   MOTIVO_PEDIDO_AMAZON.cancelamentoSolicitado,
   MOTIVO_PEDIDO_AMAZON.pacoteStatusDesconhecido,
   MOTIVO_PEDIDO_AMAZON.coletaCancelada,
+  MOTIVO_PEDIDO_AMAZON.dimensoesAusentes,
+  MOTIVO_PEDIDO_AMAZON.agendamentoRecusado,
 ];
+
+/**
+ * The two Easy Ship scheduling motivos (step 15): RAISED only by the scheduling
+ * task, never by this import, and RESOLVED by this import only when its read
+ * shows scheduling has ended (`agendamentoEncerradoAmazon`) — so an import of an
+ * order still to schedule neither resolves them nor puts their keys in its
+ * `getAll` (two reads per import otherwise).
+ */
+export const MOTIVOS_AGENDAMENTO_PEDIDO_AMAZON: ReadonlySet<MotivoPedidoAmazon> = new Set([
+  MOTIVO_PEDIDO_AMAZON.dimensoesAusentes,
+  MOTIVO_PEDIDO_AMAZON.agendamentoRecusado,
+]);
 
 /** The importer's OWN log codes (closed), beside the mappers' `EventoPedidoAmazon`. */
 export const CODIGO_LOG_PEDIDO_AMAZON = {
@@ -268,7 +290,7 @@ const ROTULO_LOG = '[amazon/pedido]';
  * (each motivo's machine resolver, the tipo's docblock in `@delfrance/schemas`,
  * as amended 2026-10-22):
  *
- *  - every motivo the decision DERIVED is raised;
+ *  - every motivo the decision DERIVED is raised (never a scheduling one, below);
  *  - of {@link MOTIVOS_PEDIDO_DO_IMPORTADOR_AMAZON}, every motivo NOT derived is
  *    resolved (the two freight motivos included: the decision derives each
  *    exactly while its condition holds — every package token known and keyed;
@@ -292,16 +314,26 @@ const ROTULO_LOG = '[amazon/pedido]';
  *     - `cancelado-so-no-erp` unless Amazon reports `CANCELLED` or `SHIPPED`,
  *       or the pedido is no longer terminal after this import (reopened by an
  *       operator, or resurrected by Amazon's own newer read). A PENDING, an
- *       unknown status or a request opened meanwhile leaves it as it is.
+ *       unknown status or a request opened meanwhile leaves it as it is;
+ *     - the two scheduling motivos ({@link MOTIVOS_AGENDAMENTO_PEDIDO_AMAZON},
+ *       step 15) ONLY when `agendamentoEncerrado` — the read shows the pickup
+ *       scheduled or later, the goods out, the pickup cancelled after it
+ *       existed, or the order `SHIPPED` / `CANCELLED`
+ *       (`agendamentoEncerradoAmazon`). They are NEVER raised here: the
+ *       scheduling task is their one producer, so a decision that listed one
+ *       would still raise nothing.
  */
 export function motivosDoPedidoAmazon(e: {
   readonly decisao: Pick<DecisaoPedidoAmazon, 'avisos' | 'motivoEstado' | 'itensConferem'>;
   readonly fase: FaseVendaAmazon;
   /** The pedido's estado once this import landed (`null`: outside the enum). */
   readonly estadoFinal: EstadoPedido | null;
+  /** The read shows scheduling has ENDED (`agendamentoEncerradoAmazon` over the import's order). */
+  readonly agendamentoEncerrado: boolean;
 }): { readonly levantar: MotivoPedidoAmazon[]; readonly resolver: MotivoPedidoAmazon[] } {
-  const levantar = [...e.decisao.avisos];
+  const levantar = e.decisao.avisos.filter((m) => !MOTIVOS_AGENDAMENTO_PEDIDO_AMAZON.has(m));
   const resolve = (motivo: MotivoPedidoAmazon): boolean => {
+    if (MOTIVOS_AGENDAMENTO_PEDIDO_AMAZON.has(motivo)) return e.agendamentoEncerrado;
     if (motivo === MOTIVO_PEDIDO_AMAZON.divergenciaItens) {
       return e.decisao.itensConferem && e.decisao.motivoEstado !== MOTIVO_ESTADO_AMAZON.manter;
     }
@@ -860,7 +892,12 @@ export async function importarPedidoAmazon(
   const estadoFinal =
     decisao.estadoEscrito ??
     (gravacao.armazenado === null ? null : lerResumoArmazenadoAmazon(gravacao.armazenado).estado);
-  const motivos = motivosDoPedidoAmazon({ decisao, fase, estadoFinal });
+  const motivos = motivosDoPedidoAmazon({
+    decisao,
+    fase,
+    estadoFinal,
+    agendamentoEncerrado: agendamentoEncerradoAmazon(order),
+  });
   await sincronizarAvisosDoPedidoAmazon(db, depsDoAviso, {
     integracaoId: contaId,
     orderId,

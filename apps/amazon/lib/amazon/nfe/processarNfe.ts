@@ -126,10 +126,6 @@ import {
 } from '../avisos/avisos';
 import { type ContextoAmazon, type ContextoAmazonDeps, loadAmazonContext } from '../core/contexto';
 import {
-  ChamadasAmazonDesligadasError,
-  ContaAmazonInativaError,
-  ContaAmazonNaoConectadaError,
-  ContaAmazonNaoEncontradaError,
   ContaAmazonParadaError,
   CredencialAmazonAusenteError,
   CredencialAmazonInvalidaError,
@@ -156,7 +152,11 @@ import {
 } from '../core/valvulas';
 import type { AmbienteAmazon } from '../env';
 import { sanitizarFalhaDaTarefaAmazon } from '../notificacoes/notificacao';
-import { AmazonLeituraDefasadaError, PedidoAmazonIlegivelError } from '../pedidos/erros';
+import {
+  FALHA_LEITURA_AMAZON,
+  type FalhaLeituraAmazon,
+  classificarFalhaDeLeituraAmazon,
+} from '../pedidos/falhaLeituraAmazon';
 import { registrarIncidenteNfePedidoCanceladoAmazon } from '../pedidos/incidentesPedidoAmazon';
 import { lerPedidoAmazon } from '../pedidos/lerPedidoAmazon';
 import {
@@ -793,57 +793,58 @@ type FalhaAntesDoEnvio =
 
 /**
  * A failure of the context, of `getOrder` or of the status read — before any
- * submit, so a throw is safe (the retry re-reads status first). Most-derived
- * classes first (rule 6). The status read's own 4xx and schema refusals never
- * reach here: `entregaAmazon.ts` reads them as a reading.
+ * submit, so a throw is safe (the retry re-reads status first). The CLASS is
+ * read by the shared read-side ladder (`classificarFalhaDeLeituraAmazon`,
+ * `pedidos/falhaLeituraAmazon.ts`: most-derived classes first, rule 6, the
+ * ladder this module ran inline until step 15 extracted it), and this table
+ * answers each of its tokens the NF-e way. TOTAL over the tokens: a new one
+ * fails this module's typecheck until the NF-e task answers it. The status
+ * read's own 4xx and schema refusals never reach here: `entregaAmazon.ts`
+ * reads them as a reading.
  */
-function classificarFalhaAntesDoEnvio(err: unknown): FalhaAntesDoEnvio {
-  if (err instanceof AmazonThrottleError) return { tipo: 'pausa' };
-  if (err instanceof AmazonAuthError) {
-    // A second SP-API 401/403 after the forced refresh is a grant this app does
-    // not hold; an LWA refusal is the conta's authorization.
-    return {
-      tipo: 'avisar',
-      motivo:
-        err.destino === 'lwa'
-          ? MOTIVO_NFE_AMAZON.contaIndisponivel
-          : MOTIVO_NFE_AMAZON.semPermissao,
-    };
-  }
-  if (err instanceof AmazonNotFoundError) {
-    return { tipo: 'avisar', motivo: MOTIVO_NFE_AMAZON.pedidoNaoEncontradoNaAmazon };
-  }
-  if (err instanceof AmazonHttpError) {
-    return err.transitorio
-      ? { tipo: 'transitorio' }
-      : { tipo: 'avisar', motivo: MOTIVO_NFE_AMAZON.statusPedidoDesconhecido };
-  }
-  if (err instanceof AmazonSchemaError) {
-    return { tipo: 'avisar', motivo: MOTIVO_NFE_AMAZON.statusPedidoDesconhecido };
-  }
-  if (err instanceof AmazonNetworkError) return { tipo: 'transitorio' };
-  if (err instanceof AmazonLeituraDefasadaError) return { tipo: 'transitorio' };
-  if (err instanceof PedidoAmazonIlegivelError) {
-    return { tipo: 'avisar', motivo: MOTIVO_NFE_AMAZON.statusNfeDesconhecido };
-  }
-  if (err instanceof ChamadasAmazonDesligadasError) {
-    return { tipo: 'avisar', motivo: MOTIVO_NFE_AMAZON.chamadasDesligadas };
-  }
-  if (err instanceof ContaAmazonInativaError) {
-    return { tipo: 'descartar', motivo: MOTIVO_NFE_AMAZON.contaInativa };
-  }
-  if (
-    err instanceof ContaAmazonNaoEncontradaError ||
-    err instanceof ContaAmazonNaoConectadaError ||
-    err instanceof ContaAmazonParadaError ||
-    err instanceof CredencialAmazonAusenteError ||
-    err instanceof CredencialAmazonInvalidaError
-  ) {
-    return { tipo: 'avisar', motivo: MOTIVO_NFE_AMAZON.contaIndisponivel };
-  }
+const FALHA_ANTES_DO_ENVIO: Readonly<Record<FalhaLeituraAmazon, FalhaAntesDoEnvio>> = {
+  [FALHA_LEITURA_AMAZON.pausa]: { tipo: 'pausa' },
+  [FALHA_LEITURA_AMAZON.transitorio]: { tipo: 'transitorio' },
+  // A second SP-API 401/403 after the forced refresh is a grant this app does
+  // not hold; an LWA refusal is the conta's authorization.
+  [FALHA_LEITURA_AMAZON.authLwa]: { tipo: 'avisar', motivo: MOTIVO_NFE_AMAZON.contaIndisponivel },
+  [FALHA_LEITURA_AMAZON.authSpApi]: { tipo: 'avisar', motivo: MOTIVO_NFE_AMAZON.semPermissao },
+  [FALHA_LEITURA_AMAZON.naoEncontrado]: {
+    tipo: 'avisar',
+    motivo: MOTIVO_NFE_AMAZON.pedidoNaoEncontradoNaAmazon,
+  },
+  [FALHA_LEITURA_AMAZON.httpDefinitivo]: {
+    tipo: 'avisar',
+    motivo: MOTIVO_NFE_AMAZON.statusPedidoDesconhecido,
+  },
+  [FALHA_LEITURA_AMAZON.esquema]: {
+    tipo: 'avisar',
+    motivo: MOTIVO_NFE_AMAZON.statusPedidoDesconhecido,
+  },
+  [FALHA_LEITURA_AMAZON.ilegivel]: {
+    tipo: 'avisar',
+    motivo: MOTIVO_NFE_AMAZON.statusNfeDesconhecido,
+  },
+  [FALHA_LEITURA_AMAZON.chamadasDesligadas]: {
+    tipo: 'avisar',
+    motivo: MOTIVO_NFE_AMAZON.chamadasDesligadas,
+  },
+  [FALHA_LEITURA_AMAZON.contaInativa]: {
+    tipo: 'descartar',
+    motivo: MOTIVO_NFE_AMAZON.contaInativa,
+  },
+  [FALHA_LEITURA_AMAZON.contaIndisponivel]: {
+    tipo: 'avisar',
+    motivo: MOTIVO_NFE_AMAZON.contaIndisponivel,
+  },
   // AmazonConfigError (nothing was sent: a bug), a Firestore error, a deploy
   // shape (the LWA pair missing), a bug: the queue's retry.
-  return { tipo: 'relancar' };
+  [FALHA_LEITURA_AMAZON.relancar]: { tipo: 'relancar' },
+};
+
+/** A failure before the submit, answered through {@link FALHA_ANTES_DO_ENVIO}. */
+function classificarFalhaAntesDoEnvio(err: unknown): FalhaAntesDoEnvio {
+  return FALHA_ANTES_DO_ENVIO[classificarFalhaDeLeituraAmazon(err)];
 }
 
 /** Whether this dispatch is the queue's last attempt. */

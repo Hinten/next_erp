@@ -392,6 +392,10 @@ one (step-14 plan §3 decision 21; the button and its copy are step 21's).
   `pacotesAmazon.ts`, `pagamentoAmazon.ts`, `orderIds.ts`, `codigosPedidoAmazon.ts`, `erros.ts`)
   and `frete/estadoFreteAmazon.ts` (the ONE freight-estado verdict steps 7, 14 and 15 route
   through). `estrutura.test.ts` pins the single getOrder caller and the single batch site.
+  `pedidos/falhaLeituraAmazon.ts` (step 15, PR 15-b) is the ONE class ladder of a READ-side
+  failure (the context's conta and credential classes, `getOrder`, `lerPedidoAmazon.ts`'s own
+  refusals) into neutral tokens (`classificarFalhaDeLeituraAmazon`): the NF-e task maps them
+  onto its motivos, the Easy Ship scheduling onto its answers — never a second copy.
 - The write engine `core/escrita.ts` (step 14, PR 14-b) is the ONE module that builds an
   SP-API write client (`estrutura.test.ts` refuses the constructor named in any other
   production file of the app — all of `lib/`, `app/`, `functions/`, `scripts/` and
@@ -406,6 +410,29 @@ one (step-14 plan §3 decision 21; the button and its copy are step 21's).
   checked against `PROIBIDOS_NO_GATILHO_NFE` by `violacoesD11`, type edges walked), which
   superseded 14-b's dedicated LIGHT guard — no SP-API value import, nothing of `pedidos/`
   but `orderIds.ts`, no unresolved or `@/` import.
+- Since step 15 (PR 15-b) the engine has TWO write flows and exactly two callers
+  (`estrutura.test.ts`): `nfe/processarNfe.ts` and `agendamento/executarAgendamento.ts`.
+  `escrever` gets a third argument, a restricted-client FACTORY (a Restricted Data Token in,
+  a write client that sends it out); the engine builds BOTH clients through its ONE local
+  builder (`construirClienteEscrita`), which holds the file's one observer site, so each
+  client gets its own observer. The forced-refresh-once rule wraps the WHOLE `escrever`, so
+  a 401/403 on the mint or the bulk refreshes once and mints a NEW token.
+- The Easy Ship scheduling (step 15) lives in `lib/amazon/agendamento/`, Next-free, reading no
+  process environment and never importing `@/` (`estrutura.test.ts`). PR 15-b ships it
+  UNWIRED — no queue, entry or route calls it yet (those are 15-c/15-d): the task contract
+  (`tarefaAgendamento.ts`: the strict payload, its three builders, the entry task NAME per
+  OBSERVATION — the NF-e dispatch's task id, or the pedido plus the import read's
+  `watermarkUs` — never per pedido); the pure decisions (`decisaoAgendamento.ts`: the live
+  order through step 7's fold, `ACCEPTED` only, the stored gates on the RAW pedido, the NF-e
+  gate over one `nfev4` listing, Amazon's answer read `rejectedOrders` first, the plans —
+  a stale print read never writes — and the print's outcome over an existing schedule, where
+  the URL decides); the ONE module naming the token mint and the bulk
+  (`easyShipAmazon.ts`: it never returns, logs or stores the token, and its
+  `ehFalhaHttpDoBulkEasyShip` tells the bulk's own HTTP answer from the mint's or an LWA
+  exchange's — only the bulk's can be Amazon refusing the order); and the ONE run
+  (`executarAgendamento.ts`), which tags every failure with its PHASE (`leitura` before the
+  plan reached `escrever`, `escrita` after), because the engine lets a `getOrder` 404 and a
+  bulk 404 out through the same throw.
 - The conta cache (`core/contaCache.ts`) is token-free and used by the context
   loader ONLY; the credential is re-read uncached on every request.
 - Routes never import the park (`core/estacionamento.ts`); step 3 is its first caller.
@@ -428,12 +455,18 @@ one (step-14 plan §3 decision 21; the button and its copy are step 21's).
   hook at EXACTLY four sites: the LWA refresh and the SP-API client (`core/contexto.ts`;
   callers pass `registro` — flow, attempt, task/notification ids — and the loader writes
   `logger` and `conta` LAST), the code exchange (`conta/conectar.ts`), and the write
-  engine's write client (`core/escrita.ts`, step 14; labelled the loader's way). Only
-  `core/log.ts` names the raw event type; `estrutura.test.ts` refuses any other observer
-  (inline, forwarded, shorthand, combined, shadowed, renamed).
+  engine's one client builder (`core/escrita.ts`, step 14; labelled the loader's way; since
+  step 15 it builds the LWA write client AND every restricted client, each with its OWN
+  observer, so the count stays four). Only `core/log.ts` names the raw event type;
+  `estrutura.test.ts` refuses any other observer (inline, forwarded, shorthand, combined,
+  shadowed, renamed).
 - The line is a projection (`CHAVES_DA_LINHA`, 26 keys): envelope by grammar, the redacted
-  path + query, `credencial` (`lwa-acesso` / `lwa-refresh` / `lwa-codigo`), the ref's
-  VERSION only, codes through the closed `CODIGOS_ERRO_AMAZON` (`<outro>` otherwise).
+  path + query, `credencial` (`lwa-acesso` / `rdt` / `lwa-refresh` / `lwa-codigo`), the ref's
+  VERSION only, codes through the closed `CODIGOS_ERRO_AMAZON` (`<outro>` otherwise). `rdt`
+  (step 15) is an SP-API call sent with a Restricted Data Token — the Easy Ship bulk, listed
+  in `OPERACOES_COM_TOKEN_RESTRITO_AMAZON`, a LOCAL literal (the logger may import the
+  package as types only); the token MINT is sent with the LWA token, so it says
+  `lwa-acesso`. A restricted call is labelled with the LWA credential's ref version.
   NEVER in a line: a token, the client secret, the state, the code, a seller id (a path
   slot is `<sellerId>`), the ref or its fingerprint, an LWA body, a header, a raw query.
 - The excerpt fails closed: no excerpt for LWA, for ANY 401/403, for a call without a ref
@@ -468,6 +501,13 @@ one (step-14 plan §3 decision 21; the button and its copy are step 21's).
   import's report — `acao`, `itens` (the D17 lines verdict) and `linhasPreservadas`,
   `linhasDivergentes`, `linhasSemProduto` — null on every arm without one; a `done` import whose
   `itens` is `divergencia-itens-aprovado` (an order BLOCKED for a person) logs WARNING.
+- The Easy Ship scheduling (step 15) writes `evento: 'agendamento'` lines. In PR 15-b the only
+  one is the write engine's dry-run diff, EXACTLY `acao`, `motivo`, `fase`, `invoiceStatus`,
+  `modoExecucao`, `escreveria` (closed tokens) plus the engine's own campos. Step 15's own
+  lines never carry the label's pre-signed URL, the Restricted Data Token, a label byte, a
+  zip entry name, a tracking, package or slot id, or Amazon's text. Its SP-API CALL lines
+  (`evento: 'chamada'`) are the ordinary ones: by step 2b's design their excerpt KEEPS
+  Amazon-made package, slot and tracking ids, and denies the URL and the token.
 - ⚠️ A SECOND declared departure from the one-logger rule, beside the `int_frete` core's (see
   "int_frete binding"): the shared collection handles' SOFT read (`parseRead`, `packages/data`)
   writes `[data] schema mismatch on <path>` plus the Zod issue list (codes, paths, messages) to
