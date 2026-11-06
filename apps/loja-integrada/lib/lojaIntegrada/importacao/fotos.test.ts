@@ -680,6 +680,37 @@ describe('the write: ONE guarded update on a read taken after the uploads', () =
     expect(resultado.produtos[0]?.desfecho).toBe(DESFECHO_FOTOS_DO_PRODUTO_LI.importadas);
   });
 
+  it('the write is guarded by a read taken AFTER the upload: an edit landing DURING the upload costs no retry — ONE guarded write attempt, and ours lands', async () => {
+    const a = imagem(773);
+    const m = montar({ [orig(a)]: ok(png(26)) });
+    semeiaProduto(m.db);
+    const guardar = m.deps.guardar;
+    if (guardar === null) throw new Error('fotos.test: a montagem tem um bucket');
+    let tentativas = 0;
+    const deps: DepsFotosLi = {
+      ...m.deps,
+      // Another writer's edit (no photo) lands while the picture is stored — after the produto's
+      // first read, before the read the write is guarded by.
+      guardar: async (foto) => {
+        await guardar(foto);
+        await refProduto(m.db).update({ nome: 'Editado durante o envio' });
+        // From here on, every guarded write ATTEMPT on the produto is counted (none of them writes).
+        for (let i = 0; i < MAX_TENTATIVAS_FOTOS_LI; i += 1) {
+          m.db.antesDaProximaEscrita(P, () => {
+            tentativas += 1;
+          });
+        }
+      },
+    };
+    const resultado = concluido(await rodarAteOFim({ ...m, deps }, [alvoRaiz([a])]));
+    expect(tentativas).toBe(1);
+    expect(resultado.produtos[0]?.desfecho).toBe(DESFECHO_FOTOS_DO_PRODUTO_LI.importadas);
+    expect(m.db.ler(P)).toMatchObject({
+      nome: 'Editado durante o envio',
+      fotos: [fotoEsperada(PRODUTO, png(26))],
+    });
+  });
+
   it('EQUAL: our own write landed with its reply lost (a 9) ⇒ counted as written, never redone', async () => {
     const a = imagem(763);
     const m = montar({ [orig(a)]: ok(png(8)) });

@@ -559,6 +559,38 @@ describe('which variations are added', () => {
     expect(db.leituras).toEqual([]);
   });
 
+  it('⚠️ NEAR-MISS: hidden in its ROW is oculto-nao-criado whatever its detail says — none read (the complete step reads none for a hidden variation) is never dado-invalido(detalhe); one read visible waits for the next run', async () => {
+    const casadoAzul = {
+      ...ausente(801, [[GRADE, 1, COR, 'v-azul']]),
+      situacao: SITUACAO_DO_FILHO_LI.casado,
+    };
+    const f = familia([AZUL, { ...VERDE, linha: { ativo: false } }]);
+    for (const caso of ['nenhum detalhe', 'detalhe visivel'] as const) {
+      const db = new FakeDb();
+      seedGrupos(db);
+      seedFamiliaErp(db);
+      const doCaso: FamiliaLi = {
+        ...f,
+        filhos: f.filhos.map((x) =>
+          x.linha.id !== 802 || x.detalhe === null
+            ? x
+            : // The store showed it again after the listing: its detail reads visible.
+              { ...x, detalhe: caso === 'nenhum detalhe' ? null : { ...x.detalhe, ativo: true } },
+        ),
+      };
+      const r = await adicionar(db, {
+        familia: doCaso,
+        filhos: { filhos: [casadoAzul, ausente(802, [[GRADE, 2, COR, 'v-verde']])] },
+      });
+      expect(r.pendencias, caso).toEqual([
+        { codigo: PENDENCIA_IMPORTACAO_LI.ocultoNaoCriado, liId: 802, referencias: [] },
+      ]);
+      expect(r.adicionados, caso).toEqual([]);
+      expect(db.leituras, caso).toEqual([]);
+      expect(db.escritas, caso).toEqual([]);
+    }
+  });
+
   it('a SKU the store repeats, or an option the cascade left unresolved, is skipped silently (the cascade reported it)', async () => {
     const db = new FakeDb();
     seedFamiliaErp(db);

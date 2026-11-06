@@ -48,6 +48,7 @@ import {
   MOTIVO_CATEGORIA_SEM_VINCULO_LI,
   MOTIVO_FALHA_IMPORTACAO_LI,
   type ModoImportacaoLi,
+  ORCAMENTO_DESPACHO_IMPORTACAO_LI_MS,
   PENDENCIA_IMPORTACAO_LI,
   SITUACAO_ERP_ITEM_LI,
   TIPO_AVISO,
@@ -62,6 +63,7 @@ import {
 } from '@delfrance/schemas';
 
 import { __setRelogioDoCacheParaTestes } from '../core/contaCache';
+import { RITMO_LEITURA_LI_MS } from '../core/ritmo';
 import { LiTarefasTransitoriasError } from '../notificacoes/agendador';
 import {
   type ChamadaCatalogoLi,
@@ -111,6 +113,7 @@ import {
 } from './despacho';
 import { avisarCategoriaSemVinculoLi, chaveCategoriaSemVinculoLi } from './avisosImportacao';
 import { cancelarImportacaoLi } from './job';
+import { PIOR_CASO_UNIDADE_IMPORTACAO_LI_MS } from './orcamento';
 
 const sha256Hex = (texto: string) => createHash('sha256').update(texto, 'utf8').digest('hex');
 
@@ -2190,6 +2193,120 @@ describe('complete — the dispatch', () => {
       // The family's progress is gone once it closed.
       revisao: expect.not.objectContaining({ cursorProdutoId: expect.stringMatching(/^f:/) }),
     });
+  });
+
+  /** One store simple product `sku` (id 20) with ONE picture, and its ERP produto `caneca`. */
+  function lojaDeUmaFoto(sku: string): LojaDeProdutosLi {
+    db.seed('produtos/caneca', { nome: 'Caneca', sku, paiId: null, filhoUnicoId: null });
+    const linha = linhaProdutoLi(20, { sku });
+    seedJobLi(db, JOB, CONTA, {
+      status: 'pendente',
+      modo: 'aplicar',
+      acao: 'completar',
+      fotos: 'soSemFotos',
+    });
+    return {
+      ativos: [linha],
+      detalhes: new Map([[20, detalheLi(linha, null, { imagens: [imagemLi(71, 1)] })]]),
+    };
+  }
+
+  it('the prepared family’s progress rides its unit’s checkpoint: on a clock that moves at EVERY reading the run ends — the fill written once, then the picture', async () => {
+    const loja = lojaDeUmaFoto('CAN-R');
+    const bucket = new FakeBucket();
+    const pedidosCdn: string[] = [];
+    // Every reading costs 1 s, so a unit that does nothing still spends the budget: a progress
+    // that never reached a checkpoint shows as a run that never ends, never as a hung suite.
+    let agora = AGORA_MS;
+    const relogio: Relogio = {
+      get agora() {
+        agora += 1_000;
+        return agora;
+      },
+      set agora(ms: number) {
+        agora = ms;
+      },
+    };
+    const { resultados } = await rodarAteOFim({
+      responder: lojaCompleta(loja),
+      relogio,
+      bucket: () => asBucket(bucket),
+      cdn: new Map([['loja/produto/71/foto.jpg', png(1)]]),
+      pedidosCdn,
+    });
+    expect(resultados.at(-1)?.desfecho).toBe('concluido');
+    expect(pedidosCdn).toEqual(['/loja/produto/71/foto.jpg']);
+    // The preparation ran ONCE (its fill), then the picture's own write.
+    const naCaneca = db.escritasEm('produtos/caneca');
+    expect(naCaneca).toHaveLength(2);
+    expect(Object.keys(naCaneca[1]?.dados ?? {}).sort()).toEqual([
+      'fotos',
+      'fotosArquivosIds',
+      'ultimaModificacao',
+    ]);
+    // Between the two, a checkpoint carried the family's progress.
+    const comProgresso = escritasDoJob().filter((e) => {
+      const revisao = (e.dados as { revisao?: { cursorProdutoId?: unknown } }).revisao;
+      return (
+        typeof revisao?.cursorProdutoId === 'string' && revisao.cursorProdutoId.startsWith('f:')
+      );
+    });
+    expect(comProgresso.length).toBeGreaterThan(0);
+  });
+
+  it('a photo unit starts only while its 52 s worst case fits — never on the 10 s a family unit needs', async () => {
+    const loja = lojaDeUmaFoto('CAN-O');
+    const bucket = new FakeBucket();
+    const relogio: Relogio = { agora: AGORA_MS };
+    const t = transporte();
+    // Each CDN request: how far into ITS dispatch it was sent (the pacer's 2 s already waited).
+    const decorridos: number[] = [];
+    let proxima = tarefa(0);
+    let ultimo: string | null = null;
+    for (let i = 0; i < 40 && ultimo !== DESFECHO_DESPACHO_IMPORTACAO_LI.concluido; i += 1) {
+      // The FIRST dispatch starts 30 s late: the family's preparation still fits (a few calls and
+      // 10 s), its picture's 52 s does not.
+      const jaDecorridoMs = i === 0 ? 30_000 : 0;
+      const inicio = relogio.agora - jaDecorridoMs;
+      const pedidos: string[] = [];
+      const { deps } = montarDeps({
+        responder: lojaCompleta(loja),
+        relogio,
+        t,
+        jaDecorridoMs,
+        bucket: () => asBucket(bucket),
+        cdn: new Map([['loja/produto/71/foto.jpg', png(1)]]),
+        pedidosCdn: pedidos,
+      });
+      const doDespacho = deps.fetch;
+      if (doDespacho === undefined) throw new Error('despacho.test: montarDeps dá um fetch');
+      const r = await despacharImportacaoLi(asDb(db), proxima, {
+        ...deps,
+        fetch: async (input, init) => {
+          const antes = pedidos.length;
+          const resposta = await doDespacho(input, init);
+          if (pedidos.length > antes) decorridos.push(relogio.agora - inicio);
+          return resposta;
+        },
+      });
+      ultimo = r.desfecho;
+      // Anti-vacuity: the late dispatch DID reach the picture — the family is prepared, its
+      // picture pending, when it hands off.
+      if (i === 0) expect(jobGravado().revisao.cursorProdutoId).toMatch(/^f:/);
+      const enviada = t.envios.at(-1)?.tarefa;
+      if (r.desfecho === DESFECHO_DESPACHO_IMPORTACAO_LI.continuado && enviada !== undefined) {
+        proxima = enviada;
+      }
+    }
+    expect(ultimo).toBe(DESFECHO_DESPACHO_IMPORTACAO_LI.concluido);
+    // The first dispatch prepared the family and left the picture to the next one.
+    expect(decorridos).toHaveLength(1);
+    expect(decorridos[0]).toBeLessThanOrEqual(
+      ORCAMENTO_DESPACHO_IMPORTACAO_LI_MS -
+        PIOR_CASO_UNIDADE_IMPORTACAO_LI_MS.foto +
+        RITMO_LEITURA_LI_MS,
+    );
+    expect(db.ler('produtos/caneca')?.fotos).toHaveLength(1);
   });
 
   it('a second complete run over an unchanged store writes NO ERP document (idempotence)', async () => {

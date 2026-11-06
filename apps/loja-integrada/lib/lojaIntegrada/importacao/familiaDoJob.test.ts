@@ -1320,6 +1320,35 @@ describe('complete — the tax review is durable BEFORE the write that calls for
       expect(ordem.indexOf(revisaoDe('job-r3', id)), id).toBeLessThan(lote);
     }
   });
+
+  it('PAIR: a family created under a HAND-MADE linked category ⇒ every produto it created joins as `produto-criado` alone ⟷ NEAR-MISS under one an import created ⇒ `categoria-criada` too', async () => {
+    const raiz = `li-sku-${sha256('CAM')}`;
+    const azul = `li-sku-${sha256('CAM-AZ')}`;
+    for (const [jobId, erpCategoriaId, motivos] of [
+      ['job-r4', 'cat-1', ['produto-criado']],
+      ['job-r5', `li-${CONTA}-900`, ['produto-criado', 'categoria-criada']],
+    ] as const) {
+      const db = new FakeDb();
+      seedGrupoCompletar(db);
+      await relatado(
+        depsDoJob(db, jobId),
+        contextoCompletar(MODO_IMPORTACAO_LI.aplicar, {
+          mapaCategorias: [{ ...MAPA_900_LIGADA[0]!, erpCategoriaId }],
+        }),
+        familiaDetalhada(100, 'CAM', [{ id: 101, sku: 'CAM-AZ', opcao: 1 }], {
+          categorias: CAT_900,
+        }),
+      );
+      // A created produto joins whatever category it got; only the re-check's evidence (its
+      // category's `imposto` included) takes it off the list.
+      for (const id of [raiz, azul]) {
+        expect(db.ler(`produtos/${id}`)?.categoriaProdutoOuterRef, id).toBe(
+          `documents/categorias/${erpCategoriaId}`,
+        );
+        expect(db.ler(revisaoDe(jobId, id))?.motivos, `${jobId} ${id}`).toEqual([...motivos]);
+      }
+    }
+  });
 });
 
 describe('complete — the variations take the category the root’s fill LEFT', () => {
