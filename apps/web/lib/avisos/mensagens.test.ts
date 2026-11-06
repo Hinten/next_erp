@@ -1644,8 +1644,8 @@ describe('MENSAGENS_POR_TIPO.amazonPedidoPrecisaAtencao', () => {
     );
   });
 
-  it('★ is TOTAL over the eight motivo codes: every one has its own phrase, never the fallback', () => {
-    expect(motivoPedidoAmazonSchema.options).toHaveLength(8);
+  it('★ is TOTAL over the ten motivo codes: every one has its own phrase, never the fallback', () => {
+    expect(motivoPedidoAmazonSchema.options).toHaveLength(10);
     const frases = new Set<string>();
     for (const motivo of motivoPedidoAmazonSchema.options) {
       const corpo = mensagem.corpo({ pedido: ORDER, motivo });
@@ -1681,6 +1681,35 @@ describe('MENSAGENS_POR_TIPO.amazonPedidoPrecisaAtencao', () => {
     const corpo = mensagem.corpo({ pedido: ORDER, motivo: MOTIVO_PEDIDO_AMAZON.canceladoSoNoErp });
     expect(corpo).toContain('está cancelado no ERP, mas a Amazon ainda espera o envio');
     expect(corpo).toContain('Reabra o pedido no ERP para enviá-lo, ou cancele-o no Seller Central');
+  });
+
+  it('★ step 15: both Easy Ship scheduling refusals render their phrase, and each says when the aviso closes', () => {
+    const dimensoes = mensagem.corpo({
+      pedido: ORDER,
+      motivo: MOTIVO_PEDIDO_AMAZON.dimensoesAusentes,
+    });
+    expect(dimensoes).toBe(
+      `O pedido ${ORDER} da Amazon precisa de atenção: a Amazon recusou o agendamento da coleta ` +
+        'porque o anúncio está sem dimensões ou peso — corrija no Seller Central e reimprima a ' +
+        'etiqueta; o aviso se encerra quando a Amazon registrar o agendamento ou a coleta (na ' +
+        'próxima atualização do pedido), ou se o pedido for cancelado.',
+    );
+    const recusado = mensagem.corpo({
+      pedido: ORDER,
+      motivo: MOTIVO_PEDIDO_AMAZON.agendamentoRecusado,
+    });
+    expect(recusado).toBe(
+      `O pedido ${ORDER} da Amazon precisa de atenção: a Amazon recusou o agendamento da coleta — ` +
+        'confira no Seller Central o peso e as dimensões do anúncio e o prazo do pedido, e agende ' +
+        'a coleta por lá; o aviso se encerra quando a Amazon registrar o agendamento ou a coleta ' +
+        '(na próxima atualização do pedido), ou se o pedido for cancelado.',
+    );
+    for (const corpo of [dimensoes, recusado]) {
+      expect(corpo).toContain('o aviso se encerra');
+      expect(corpo).toContain('na próxima atualização do pedido');
+    }
+    // `agendamento-recusado` names NO single remedy: never "corrija as dimensões".
+    expect(recusado).not.toContain('corrija');
   });
 
   it('a request on an UNPRINTED pedido asks for a decision, never says it was cancelled', () => {

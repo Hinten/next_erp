@@ -1031,9 +1031,10 @@ export const TIPO_AVISO_LABELS = {
  *
  * ---
  *
- * **`amazonPedidoPrecisaAtencao`** (Amazon steps 5 and 7, #1931 and #1933 —
- * producer in `apps/amazon/lib/amazon/avisos/avisos.ts`, called by the order
- * import) — one Amazon order needs a person, for one of the
+ * **`amazonPedidoPrecisaAtencao`** (Amazon steps 5, 7 and 15, #1931, #1933 and
+ * #1939 — producer in `apps/amazon/lib/amazon/avisos/avisos.ts`, called by the
+ * order import and, from step 15's PR 15-c, for the two scheduling motivos, by
+ * the Easy Ship scheduling task) — one Amazon order needs a person, for one of the
  * {@link MOTIVO_PEDIDO_AMAZON} reasons. Only a reason a later import can see END
  * is a member: a permanent fact of an order (fulfilled by Amazon, a zero value,
  * a cancellation after shipment, a split or divergent payment, a possible
@@ -1116,6 +1117,34 @@ export const TIPO_AVISO_LABELS = {
  *       pickup, not the order. Resolver: no package `LABEL_CANCELLED` left, or
  *       the order `CANCELLED`. Residue: an order Amazon never updates again
  *       keeps its row until retention.
+ *     - `dimensoes-ausentes` — **critico**. Amazon refused to schedule the
+ *       Easy Ship pickup because the listing lacks dimensions or weight: the
+ *       operator fixes the listing in Seller Central and prints the label
+ *       again. RAISED only by the Easy Ship scheduling task (step 15, from PR
+ *       15-c), never by an import. Resolver: any import whose read shows
+ *       scheduling has ENDED — a package scheduled or later
+ *       (`PENDING_PICK_UP` / `PENDING_DROP_OFF` and up), the goods out, the
+ *       pickup cancelled after it existed, or the order `SHIPPED` or
+ *       `CANCELLED` (an import of an order still to schedule neither resolves
+ *       it nor reads its key); and, from PR 15-c, the scheduling task when it
+ *       schedules (or reads the order already scheduled), and the import that
+ *       moves the pedido into a cancelled sale, which SEEDS a resolved row, so
+ *       a task raise racing the cancellation is dropped.
+ *       Residue: a raise landing after a newer import's read found no row
+ *       opens a stale row (an import resolves only rows that exist), closed by
+ *       the order's next import; and a schedule made by a PRINT or in Seller
+ *       Central, which writes no aviso and is seen only at the order's next
+ *       import — within the poll's 15 minutes if scheduling moves the order's
+ *       clock, else at the pickup — so the row stays open after the remedy
+ *       worked until then.
+ *     - `agendamento-recusado` — **critico**. Amazon refused to schedule the
+ *       Easy Ship pickup for any other reason (its code is logged, never
+ *       shown: the `params` stay `pedido` + `motivo`), a slot refusal that
+ *       persisted through every retry included: the operator checks the
+ *       listing's weight and dimensions and the order's deadline, and
+ *       schedules the pickup in Seller Central. RAISED only by the Easy Ship
+ *       scheduling task (from PR 15-c), never by an import. Resolver: the same as
+ *       `dimensoes-ausentes`'s. Residue: the same as `dimensoes-ausentes`'s.
  *  - **The conta-wide residue**: a DELETED conta's per-pedido rows have no
  *    resolver at all. The expiry sweep's orphan pass closes per-CONTA tipos
  *    only, and this tipo is deliberately NOT among them: the pass resolves every
@@ -1476,11 +1505,13 @@ export const MOTIVO_IMPORTACAO_PARADA_AMAZON = {
  * Why one Amazon order needs a person — the `amazonPedidoPrecisaAtencao`
  * aviso's `params.motivo` AND its key's `janela`, a CODE the wording in
  * `apps/web/lib/avisos/mensagens.ts` renders (the {@link PENDENCIA_RECLAMACAO}
- * shape: a wording fix is retroactive). Eight members, each with its severity,
+ * shape: a wording fix is retroactive). Ten members, each with its severity,
  * its machine resolver and its residue in the tipo's docblock entry above:
  *
  *  - **critico**: `divergencia-itens`, `logistica-desconhecida`,
- *    `aceitar-cancelamento`, `cancelado-so-no-erp`;
+ *    `aceitar-cancelamento`, `cancelado-so-no-erp`, and the two Easy Ship
+ *    scheduling refusals `dimensoes-ausentes` and `agendamento-recusado`
+ *    (step 15: raised by the scheduling task from PR 15-c, never by an import);
  *  - **atencao**: `status-desconhecido`, `cancelamento-solicitado`,
  *    `pacote-status-desconhecido`, `coleta-cancelada`.
  *
@@ -1501,6 +1532,8 @@ export const motivoPedidoAmazonSchema = z.enum([
   'cancelamento-solicitado',
   'pacote-status-desconhecido',
   'coleta-cancelada',
+  'dimensoes-ausentes',
+  'agendamento-recusado',
 ]);
 export type MotivoPedidoAmazon = z.infer<typeof motivoPedidoAmazonSchema>;
 
@@ -1514,6 +1547,8 @@ export const MOTIVO_PEDIDO_AMAZON = {
   cancelamentoSolicitado: 'cancelamento-solicitado',
   pacoteStatusDesconhecido: 'pacote-status-desconhecido',
   coletaCancelada: 'coleta-cancelada',
+  dimensoesAusentes: 'dimensoes-ausentes',
+  agendamentoRecusado: 'agendamento-recusado',
 } as const satisfies Record<string, MotivoPedidoAmazon>;
 
 /**

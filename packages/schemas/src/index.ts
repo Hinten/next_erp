@@ -540,7 +540,8 @@ export {
 // The Amazon conta wire contract — the reauthorization arithmetic, the seller-id
 // and routing predicates, the error codes, the status and start answers and the
 // closed OAuth-return reasons that `apps/amazon` and `apps/web` must agree on —
-// and (step 14) the NF-e re-drive route's own code set, envelope and answer.
+// and (step 14) the NF-e re-drive route's own code set, envelope and answer,
+// and (step 15) the closed slugs of an Easy Ship label refusal.
 // Not a collection: no meta, nothing to register.
 export {
   CHAVE_RETORNO_OAUTH_AMAZON,
@@ -548,6 +549,7 @@ export {
   CODIGO_ERRO_NFE_AMAZON,
   LIMIAR_AVISO_AMAZON_DIAS,
   MAX_SELLING_PARTNER_ID,
+  MOTIVO_ETIQUETA_AMAZON,
   MOTIVO_RETORNO_OAUTH_AMAZON,
   VALIDADE_AUTORIZACAO_AMAZON_DIAS,
   contaAmazonRoteavel,
@@ -555,6 +557,7 @@ export {
   diasParaReautorizarAmazon,
   erroContaAmazonSchema,
   erroEnvioNfeAmazonSchema,
+  motivoEtiquetaAmazonSchema,
   motivoRetornoOAuthAmazonSchema,
   reautorizarAteAmazon,
   respostaEnvioNfeAmazonSchema,
@@ -565,6 +568,7 @@ export {
   type CodigoErroNfeAmazon,
   type ErroContaAmazon,
   type ErroEnvioNfeAmazon,
+  type MotivoEtiquetaAmazon,
   type MotivoRetornoOAuthAmazon,
   type RespostaEnvioNfeAmazon,
   type RespostaInicioOAuthAmazon,

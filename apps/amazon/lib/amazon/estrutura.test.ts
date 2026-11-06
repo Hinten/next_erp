@@ -86,7 +86,16 @@
  *    conta write of every channel: its transitive import closure (type edges
  *    walked too, so it fails closed) is pinned file by file, reaches no context,
  *    conta read, credential, park, valve, env reader, intake or queue module, and
- *    imports the SP-API package as TYPES only (read off the TypeScript AST).
+ *    imports the SP-API package as TYPES only (read off the TypeScript AST);
+ *  - (step 15, PR 15-b) `agendamento/` is Next-free, reads no process
+ *    environment and never imports the `@/` alias; the write engine has exactly
+ *    TWO callers, one per write flow (`nfe/processarNfe.ts`,
+ *    `agendamento/executarAgendamento.ts`); the Restricted Data Token mint and
+ *    the Easy Ship bulk are named in production code by ONE module,
+ *    `agendamento/easyShipAmazon.ts`, across `lib/`, `app/`, `functions/src` and
+ *    `scripts/` (the redactor, the logger's local literal and the sanitizer's
+ *    bulk-path rows aside); and the observer seam stays at FOUR sites, the
+ *    engine's one inside its one client builder.
  */
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, posix, relative, sep } from 'node:path';
@@ -1133,6 +1142,82 @@ const MODULOS_LEVES_DA_NFE = [
 /** The ONE `pedidos/` module the NF-e trigger may reach: the importer's digest. */
 const ORDER_IDS_DA_NFE = 'lib/amazon/pedidos/orderIds.ts';
 
+/* --------------------- step 15 (PR 15-b): the Easy Ship scheduling --------------------- */
+
+/** The ONLY production callers of the write engine: one per write flow (step-15 plan §3 decision 13). */
+const CHAMADORES_DO_MOTOR_DE_ESCRITA = [
+  'lib/amazon/agendamento/executarAgendamento.ts',
+  'lib/amazon/nfe/processarNfe.ts',
+];
+
+/**
+ * A CALL of the write engine, in comment-free code — a type argument list
+ * allowed, its own declaration (`function executarEscritaAmazon<…>(`) not.
+ */
+const CHAMADA_DO_MOTOR_DE_ESCRITA =
+  /(?<!\bfunction\s+)\bexecutarEscritaAmazon\s*(?:<[^()]*>\s*)?\(/;
+
+const chamaOMotorDeEscrita = (texto: string) =>
+  CHAMADA_DO_MOTOR_DE_ESCRITA.test(semComentarios(texto));
+
+/**
+ * The production files that may NAME the write engine at all: its own module
+ * (the declaration) and its two callers. The NAME scan fails closed where the
+ * call scan cannot: an aliased import (`executarEscritaAmazon as motor`), a
+ * bound reference or a re-export runs the engine under another name, and only
+ * the name gives it away.
+ */
+const NOMEIAM_O_MOTOR_DE_ESCRITA = [MOTOR_DE_ESCRITA, ...CHAMADORES_DO_MOTOR_DE_ESCRITA].sort();
+
+const nomeiaOMotorDeEscrita = (texto: string) =>
+  /\bexecutarEscritaAmazon\b/.test(semComentarios(texto));
+
+/** The ONE module that may name the token mint and the Easy Ship bulk. */
+const CHAMADOR_DO_EASY_SHIP = 'lib/amazon/agendamento/easyShipAmazon.ts';
+
+/**
+ * Production files that NAME the mint or the bulk without calling either, each
+ * with why: the redactor keys its allow-list tables by the operation and its
+ * path (its closure is pinned to `zod` and `@delfrance/core/*`); the logger
+ * holds the bulk's operation as a LOCAL literal
+ * (`OPERACOES_COM_TOKEN_RESTRITO_AMAZON`, the line's `rdt` class: it may import
+ * the package as TYPES only); and three sanitizer modules name the bulk's
+ * operation or path for its capture attachments, never a helper. Tests are
+ * exempt by construction (the scan reads no test file): they name the helpers
+ * to drive a recording client or an injected fetch.
+ */
+const NOMEIAM_O_EASY_SHIP_SEM_CHAMAR = [
+  'lib/amazon/core/log.ts',
+  'lib/amazon/core/redacao.ts',
+  'lib/amazon/sanitizacao/capturaParaFixture.ts',
+  'lib/amazon/sanitizacao/executar.ts',
+  'lib/amazon/sanitizacao/requisicao.ts',
+];
+
+/**
+ * A mint or bulk call site, in comment-free code: either package helper, the
+ * mint's one resource, either operation-name or path constant, either response
+ * schema, either operation name, or either path — anywhere in a string.
+ */
+const CHAMADA_DO_EASY_SHIP =
+  /\bcriarTokenRestrito\b|\bagendarPacotesEasyShip\b|\bRECURSO_RESTRITO_AGENDAMENTO\b|\bOPERACAO_TOKEN_RESTRITO\b|\bCAMINHO_TOKEN_RESTRITO\b|\brespostaTokenRestritoSchema\b|\bOPERACAO_AGENDAMENTO_EASY_SHIP\b|\bCAMINHO_AGENDAMENTO_EASY_SHIP\b|\brespostaAgendamentoEasyShipSchema\b|\bcreateRestrictedDataToken\b|\bcreateScheduledPackageBulk\b|\/tokens\/2021-03-01\/restrictedDataToken|\/easyShip\/2022-03-23\/packages\/bulk/;
+
+const nomeiaOEasyShip = (texto: string) => CHAMADA_DO_EASY_SHIP.test(semComentarios(texto));
+
+/** The write engine's one client builder (step-15 plan §2, PR 15-b). */
+const CONSTRUTOR_LOCAL_DO_MOTOR = 'construirClienteEscrita';
+
+/** The source text of the top-level function `nome` in `texto`, or `null`. */
+function textoDaFuncao(texto: string, nome: string): string | null {
+  const fonte = ts.createSourceFile('x.ts', texto, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  for (const declaracao of fonte.statements) {
+    if (ts.isFunctionDeclaration(declaracao) && declaracao.name?.text === nome) {
+      return declaracao.getText(fonte);
+    }
+  }
+  return null;
+}
+
 /* -------------------------------- the pinned lines -------------------------------- */
 
 const INVENTARIO = 'apps/amazon/lib/amazon/testing/especificacaoFolhas.json';
@@ -1195,6 +1280,10 @@ describe('lib/amazon layout', () => {
         'notificacoes/notificacao.ts',
         'notificacoes/prazo.ts',
         'notificacoes/receptor.ts',
+        'agendamento/decisaoAgendamento.ts',
+        'agendamento/easyShipAmazon.ts',
+        'agendamento/executarAgendamento.ts',
+        'agendamento/tarefaAgendamento.ts',
         'pedidos/clienteAmazon.ts',
         'pedidos/codigosPedidoAmazon.ts',
         'pedidos/dinheiroAmazon.ts',
@@ -1202,6 +1291,7 @@ describe('lib/amazon layout', () => {
         'pedidos/escritaPagamento.ts',
         'pedidos/escritaPedido.ts',
         'pedidos/estadoPedidoAmazon.ts',
+        'pedidos/falhaLeituraAmazon.ts',
         'pedidos/freteAmazon.ts',
         'pedidos/importarPedido.ts',
         'pedidos/incidentesPedidoAmazon.ts',
@@ -1667,6 +1757,7 @@ describe('the step-4 backstop poll guards (4-a)', () => {
       'pedidos/escritaPagamento.ts',
       'pedidos/escritaPedido.ts',
       'pedidos/estadoPedidoAmazon.ts',
+      'pedidos/falhaLeituraAmazon.ts',
       'pedidos/freteAmazon.ts',
       'pedidos/importarPedido.ts',
       'pedidos/incidentesPedidoAmazon.ts',
@@ -2246,6 +2337,150 @@ describe('the step-14 NF-e re-drive route guards (14-d)', () => {
     expect(rota).not.toMatch(/PERM\.integracao/);
     expect(rota).toContain('reenviarNfeAmazon(');
     expect(rota).toMatch(/export async function POST\(/);
+  });
+});
+
+describe('the step-15 Easy Ship scheduling guards (15-b)', () => {
+  const agendamento = arquivosTs(join(RAIZ_LIB, 'agendamento')).filter((p) => !ehTeste(p));
+
+  it('★ (1) agendamento/ is Next-free, reads no process environment and never imports the @/ alias', () => {
+    expect(agendamento.map(rel).sort()).toEqual([
+      'agendamento/decisaoAgendamento.ts',
+      'agendamento/easyShipAmazon.ts',
+      'agendamento/executarAgendamento.ts',
+      'agendamento/tarefaAgendamento.ts',
+    ]);
+    for (const arquivo of agendamento) {
+      const texto = readFileSync(arquivo, 'utf8');
+      expect(texto, rel(arquivo)).not.toMatch(/process\s*\.\s*env/);
+      expect(/from 'next(\/[^']*)?'/.test(texto), rel(arquivo)).toBe(false);
+      expect(
+        especificadores(texto).filter((e) => e.startsWith('@/')),
+        rel(arquivo),
+      ).toEqual([]);
+    }
+  });
+
+  // An app-wide parse: CI headroom, not a budget.
+  it(
+    `★ (2) the write engine is CALLED by exactly two production files, one per write flow, and NAMED by no other: ${CHAMADORES_DO_MOTOR_DE_ESCRITA.join(', ')}`,
+    { timeout: 30_000 },
+    () => {
+      const fontes = fontesDoChamadorDeSearchOrders();
+      const chamam = fontes
+        .filter((p) => chamaOMotorDeEscrita(readFileSync(p, 'utf8')))
+        .map(relApp)
+        .sort();
+      expect(chamam).toEqual(CHAMADORES_DO_MOTOR_DE_ESCRITA);
+      // The name scan: no third file reaches the engine under another name.
+      const nomeiam = fontes
+        .filter((p) => nomeiaOMotorDeEscrita(readFileSync(p, 'utf8')))
+        .map(relApp)
+        .sort();
+      expect(nomeiam).toEqual(NOMEIAM_O_MOTOR_DE_ESCRITA);
+      // Anti-vacuity: the engine itself names the function (its declaration) and
+      // is not a caller; the scan read the functions codebase and the scripts.
+      expect(lerDoApp(CONSTRUTOR_DO_CLIENTE_DE_ESCRITA)).toContain('executarEscritaAmazon');
+      expect(fontes.map(relApp)).toEqual(
+        expect.arrayContaining(['functions/src/index.ts', 'scripts/sanitizar.ts']),
+      );
+    },
+  );
+
+  // An app-wide parse: CI headroom, not a budget.
+  it(
+    `★ (3) the token mint and the Easy Ship bulk are named in production code by ONE module: ${CHAMADOR_DO_EASY_SHIP}`,
+    { timeout: 30_000 },
+    () => {
+      const nomeiam = fontesDoChamadorDeSearchOrders()
+        .filter((p) => nomeiaOEasyShip(readFileSync(p, 'utf8')))
+        .map(relApp)
+        .sort();
+      expect(nomeiam.filter((p) => !NOMEIAM_O_EASY_SHIP_SEM_CHAMAR.includes(p))).toEqual([
+        CHAMADOR_DO_EASY_SHIP,
+      ]);
+      // Anti-vacuity: the scan sees every exempt mention, by name.
+      expect(nomeiam).toEqual(expect.arrayContaining(NOMEIAM_O_EASY_SHIP_SEM_CHAMAR));
+      // The caller really calls both helpers.
+      const chamador = semComentarios(lerDoApp(CHAMADOR_DO_EASY_SHIP) ?? '');
+      expect(chamador).toMatch(/\bcriarTokenRestrito\(/);
+      expect(chamador).toMatch(/\bagendarPacotesEasyShip\(/);
+    },
+  );
+
+  it('★ (4) the observer seam stays at FOUR sites, and the engine’s ONE site — and its one write-client constructor call — sit inside its one client builder', () => {
+    const motor = lerDoApp(CONSTRUTOR_DO_CLIENTE_DE_ESCRITA) ?? '';
+    expect(motor.split(SEAM_OK)).toHaveLength(2);
+    const construtor = textoDaFuncao(motor, CONSTRUTOR_LOCAL_DO_MOTOR) ?? '';
+    expect(construtor.split(SEAM_OK)).toHaveLength(2);
+    const codigo = semComentarios(motor);
+    expect(codigo.match(/\bcriarClienteEscritaSpApi\s*\(/g) ?? []).toHaveLength(1);
+    expect(semComentarios(construtor)).toMatch(/\bcriarClienteEscritaSpApi\s*\(/);
+    // The builder builds BOTH clients: its declaration, the LWA client's call
+    // and the restricted factory's call.
+    expect(codigo.match(new RegExp(`\\b${CONSTRUTOR_LOCAL_DO_MOTOR}\\(`, 'g')) ?? []).toHaveLength(
+      3,
+    );
+    // The seam pin itself (`the observer seam: … at exactly 4 sites`, above) is
+    // unchanged: four sites, the engine's once.
+  });
+
+  it('the scans flag what they exist for, and nothing alike (near-misses)', () => {
+    for (const fonte of [
+      'const r = await executarEscritaAmazon({ valvula });',
+      'executarEscritaAmazon<A, P, R>({ valvula });',
+      'return executarEscritaAmazon ({ valvula });',
+    ]) {
+      expect(chamaOMotorDeEscrita(fonte), fonte).toBe(true);
+    }
+    for (const fonte of [
+      'export async function executarEscritaAmazon<A, P extends X, R>(e: E) {}',
+      'function executarEscritaAmazon(e: E) {}',
+      '// executarEscritaAmazon(e)',
+      "import { executarEscritaAmazon } from '../core/escrita';",
+      'const x = executarEscritaAmazonDepois(e);',
+    ]) {
+      expect(chamaOMotorDeEscrita(fonte), fonte).toBe(false);
+    }
+    // What the call scan cannot see, the NAME scan flags: an alias, a bound
+    // reference, a member call, a re-export.
+    for (const fonte of [
+      "import { executarEscritaAmazon as motor } from '../core/escrita';",
+      'const m = executarEscritaAmazon;',
+      'escrita.executarEscritaAmazon.call(null, e);',
+      "export { executarEscritaAmazon as rodar } from '../core/escrita';",
+    ]) {
+      expect(chamaOMotorDeEscrita(fonte), fonte).toBe(false);
+      expect(nomeiaOMotorDeEscrita(fonte), fonte).toBe(true);
+    }
+    for (const fonte of [
+      '// executarEscritaAmazon(e)',
+      '/** see `executarEscritaAmazon` */ const y = 1;',
+      'const x = executarEscritaAmazonDepois(e);',
+    ]) {
+      expect(nomeiaOMotorDeEscrita(fonte), fonte).toBe(false);
+    }
+    for (const fonte of [
+      'await criarTokenRestrito(cliente, RECURSO_RESTRITO_AGENDAMENTO);',
+      'await agendarPacotesEasyShip(escritor, { orderId });',
+      "escritor.post({ operacao: 'createScheduledPackageBulk', caminho: c, corpo, schema });",
+      "escritor.post({ operacao: op, caminho: '/easyShip/2022-03-23/packages/bulk', corpo, schema });",
+      'escritor.post({ operacao: OPERACAO_TOKEN_RESTRITO, caminho: CAMINHO_TOKEN_RESTRITO, corpo, schema });',
+      'escritor.post({ operacao: `createRestrictedDataToken`, caminho: c, corpo, schema });',
+      "const motivo = 'a capture (POST /easyShip/2022-03-23/packages/bulk) only';",
+    ]) {
+      expect(nomeiaOEasyShip(fonte), fonte).toBe(true);
+    }
+    for (const fonte of [
+      '// criarTokenRestrito(cliente, r)',
+      '/* agendarPacotesEasyShip(escritor, e) */',
+      '/** the `createScheduledPackageBulk` bulk */ const y = 1;',
+      'const x = agendarNaAmazon(cliente, restrito, orderId);',
+      "const nome = 'createScheduledPackageBulks';",
+      "const caminho = '/easyShip/2022-03-23/timeSlot';",
+    ]) {
+      expect(nomeiaOEasyShip(fonte), fonte).toBe(false);
+    }
   });
 });
 

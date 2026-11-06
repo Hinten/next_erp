@@ -33,6 +33,24 @@
  *     (`renovacaoUnica.ts`): a 401/403 refreshes once and retries once — it
  *     was not processed — and a second one propagates.
  *
+ * ## The restricted client (step 15, PR 15-b)
+ *
+ * `escrever`'s third argument is a FACTORY ({@link FabricaClienteRestritoAmazon}):
+ * handed a Restricted Data Token the flow minted through the write client, it
+ * answers a write client that sends THAT token as its access token — the Easy
+ * Ship bulk is a restricted operation. The factory reads the context's current
+ * credential once (`obterAcesso`: the cached LWA credential, no network unless
+ * it went stale) only for its `ref`, the label every call line carries, and
+ * builds the client through the SAME local builder as the LWA write client
+ * ({@link construirClienteEscrita}): one place names the package's constructor
+ * and one place builds the call-line observer, and each client built gets its
+ * OWN observer (a stateless closure over the logger, the conta and the run's
+ * `registro`). The forced-refresh-once rule wraps the WHOLE `escrever`, so a
+ * 401/403 on the mint OR on the restricted call refreshes the LWA token once
+ * and runs `escrever` again — which mints a NEW token: a restricted token is
+ * never kept across calls of `escrever`, runs or retries. The NF-e flow ignores
+ * the factory.
+ *
  * The write's outcome is the flow's: any error `escrever` throws propagates
  * untouched. ⚠️ A cut, 5xx or schema-failing write MAY HAVE LANDED, and this
  * engine never repeats one — there is exactly one call to `escrever` per run
@@ -49,6 +67,7 @@
  * takes that context. Before the window no flow calls it at all.
  */
 import {
+  type CredencialSpApi,
   criarClienteEscritaSpApi,
   type SpApiEscritaClient,
 } from '@delfrance/integrations-amazon-sp-api';
@@ -79,6 +98,7 @@ import {
  */
 export const EVENTO_DA_ESCRITA_AMAZON = {
   [FLUXO_AMAZON.nfe]: 'nfe',
+  [FLUXO_AMAZON.agendamento]: 'agendamento',
 } as const satisfies Partial<Record<FluxoAmazon, EventoAvulsoAmazon>>;
 
 /** The write flows the engine runs today. */
@@ -106,6 +126,13 @@ export type DepsEscritaAmazon = Pick<
   'logger' | 'fetch' | 'agora' | 'gerarCorrelationId'
 >;
 
+/**
+ * A restricted client, on demand (module header): the Restricted Data Token in,
+ * a write client that sends it as the access token out. Every call builds a NEW
+ * client with its own observer; nothing is kept.
+ */
+export type FabricaClienteRestritoAmazon = (token: string) => Promise<SpApiEscritaClient>;
+
 export interface EntradaEscritaAmazon<A, P extends PlanoEscritaAmazon, R> {
   /** The flow's valve, read ONCE at the run's start by the caller. */
   readonly valvula: ValvulaAmazon<FluxoDeEscritaAmazon>;
@@ -122,8 +149,15 @@ export interface EntradaEscritaAmazon<A, P extends PlanoEscritaAmazon, R> {
   readonly lerAtual: () => Promise<A>;
   /** The plan, pure (step 3). */
   readonly planejar: (atual: A) => P;
-  /** The ONE write (step 5), through the client the engine built. */
-  readonly escrever: (cliente: SpApiEscritaClient, plano: P) => Promise<R>;
+  /**
+   * The ONE write (step 5), through the client the engine built; `restrito`
+   * builds a restricted client for a token the flow minted (module header).
+   */
+  readonly escrever: (
+    cliente: SpApiEscritaClient,
+    plano: P,
+    restrito: FabricaClienteRestritoAmazon,
+  ) => Promise<R>;
 }
 
 /** What one run did. */
@@ -162,6 +196,33 @@ function registrarSimulacao(
   );
 }
 
+/**
+ * The engine's ONE client builder: the only place here that names the package's
+ * write-client constructor and builds a call-line observer. Every client gets
+ * its OWN observer, labelled the loader's way (the caller's `registro` first,
+ * then the logger and the context's conta).
+ */
+function construirClienteEscrita(
+  e: Pick<
+    EntradaEscritaAmazon<unknown, PlanoEscritaAmazon, unknown>,
+    'contexto' | 'deps' | 'registro'
+  >,
+  obterCredencial: () => CredencialSpApi | Promise<CredencialSpApi>,
+): SpApiEscritaClient {
+  return criarClienteEscritaSpApi({
+    obterCredencial,
+    userAgent: AGENTE_USUARIO_AMAZON,
+    fetch: e.deps.fetch,
+    onChamada: criarObservadorAmazon({
+      ...e.registro,
+      logger: e.deps.logger,
+      conta: e.contexto.integracaoId,
+    }),
+    gerarCorrelationId: e.deps.gerarCorrelationId,
+    agora: e.deps.agora,
+  });
+}
+
 /** One write run (module header). */
 export async function executarEscritaAmazon<A, P extends PlanoEscritaAmazon, R>(
   e: EntradaEscritaAmazon<A, P, R>,
@@ -185,20 +246,17 @@ export async function executarEscritaAmazon<A, P extends PlanoEscritaAmazon, R>(
   }
   if (!plano.escrever) return { tipo: 'sem-escrita', atual, plano };
 
-  // 5. One write, through a client built here and nowhere else.
-  const cliente = criarClienteEscritaSpApi({
-    // Re-read on every request, as the context's own read client does.
-    obterCredencial: () => e.contexto.obterAcesso(),
-    userAgent: AGENTE_USUARIO_AMAZON,
-    fetch: e.deps.fetch,
-    onChamada: criarObservadorAmazon({
-      ...e.registro,
-      logger: e.deps.logger,
-      conta: e.contexto.integracaoId,
-    }),
-    gerarCorrelationId: e.deps.gerarCorrelationId,
-    agora: e.deps.agora,
-  });
-  const resposta = await executarComRenovacaoUnica(e.contexto, () => e.escrever(cliente, plano));
+  // 5. One write, through clients built here and nowhere else. The LWA one
+  //    re-reads the context's getter on every request, as the context's own read
+  //    client does; a restricted one sends the token it was handed, labelled
+  //    with the CURRENT LWA credential's ref.
+  const cliente = construirClienteEscrita(e, () => e.contexto.obterAcesso());
+  const restrito: FabricaClienteRestritoAmazon = async (token) => {
+    const { ref } = await e.contexto.obterAcesso();
+    return construirClienteEscrita(e, () => ({ accessToken: token, ref }));
+  };
+  const resposta = await executarComRenovacaoUnica(e.contexto, () =>
+    e.escrever(cliente, plano, restrito),
+  );
   return { tipo: 'escrito', atual, plano, resposta };
 }

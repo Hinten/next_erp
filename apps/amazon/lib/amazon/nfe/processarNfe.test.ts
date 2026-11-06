@@ -792,6 +792,30 @@ describe('P8 — the LIVE order, on every dispatch', () => {
     },
   );
 
+  it('★ LWA refusing the refresh of a STALE token before getOrder (invalid_grant) ⇒ aviso conta-indisponivel — the conta’s authorization, never sem-permissao — no SP-API call, no stamp', async () => {
+    const c = cenario();
+    seedCredencial(c.fake, CONTA, { expirationDate: AGORA_MS - 1 });
+    const base = c.deps();
+    const deps: DepsProcessarNfeAmazon = {
+      ...base,
+      fetch: (input, init) => {
+        if (new URL(String(input)).pathname === '/auth/o2/token') {
+          c.chamadas.push('LWA');
+          return Promise.resolve(respostaJson(400, { error: 'invalid_grant' }));
+        }
+        return (base.fetch ?? fetch)(input, init);
+      },
+    };
+    const r = await processarNfeAmazon(
+      asDb(c.fake),
+      tarefaInicialNfeAmazon(PEDIDO_ID, NFE_ID),
+      deps,
+    );
+    expect(r).toMatchObject({ acao: 'avisado', motivo: 'conta-indisponivel' });
+    expect(c.chamadas).toEqual(['LWA']);
+    expect(frete(c).estado).toBe('aguardandoNFe');
+  });
+
   it('an illegible order (PedidoAmazonIlegivelError) ⇒ aviso status-nfe-desconhecido; a 404 ⇒ pedido-nao-encontrado-na-amazon', async () => {
     const c = cenario({ getOrder: [ordem({ extra: { orderId: '171-9876543-0000000' } })] });
     expect(await c.rodar()).toMatchObject({ acao: 'avisado', motivo: 'status-nfe-desconhecido' });

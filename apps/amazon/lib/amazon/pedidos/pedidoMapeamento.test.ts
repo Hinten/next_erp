@@ -37,6 +37,7 @@ import { PedidoAmazonIlegivelError } from './erros';
 import { PREFIXO_ERRO_AMAZON, TEXTO_ERRO_AMAZON } from './estadoPedidoAmazon';
 import { motivosDoPedidoAmazon } from './importarPedido';
 import {
+  freteInicialDaAmazon,
   mapearPedidoAmazon,
   montarEscritaPedidoAmazon,
   type EntradasPedidoAmazon,
@@ -2370,6 +2371,30 @@ describe('★ PR 7 — the freight group: packages → freteInicial, inside the 
     expect(freteDo(avanca)?.estado).toBe('aCaminho');
   });
 
+  it('★ (step 15) freteInicialDaAmazon IS the rule the import reads: no block or an `amz` one is ours; another integradora’s, or one WITHOUT externalOptionIntegracao, is not (NEAR-MISSES: a case fold, a padded value)', () => {
+    expect(freteInicialDaAmazon(null)).toBe(true);
+    expect(freteInicialDaAmazon({ externalOptionIntegracao: INTEGRACAO_FRETE.amazon })).toBe(true);
+    expect(freteInicialDaAmazon({ externalOptionIntegracao: INTEGRACAO_FRETE.melhorEnvios })).toBe(
+      false,
+    );
+    expect(freteInicialDaAmazon({ estado: 'iniciado' })).toBe(false);
+    expect(freteInicialDaAmazon({ externalOptionIntegracao: null })).toBe(false);
+    expect(freteInicialDaAmazon({ externalOptionIntegracao: 'AMZ' })).toBe(false);
+    expect(freteInicialDaAmazon({ externalOptionIntegracao: ' amz' })).toBe(false);
+    // The import itself: a stored block WITHOUT the integradora is left untouched.
+    const semIntegradora = comFreteGuardado({ estado: 'iniciado' });
+    delete (semIntegradora.freteInicial as Record<string, unknown>).externalOptionIntegracao;
+    expect(
+      freteDo(
+        montar(semIntegradora, {
+          status: 'SHIPPED',
+          linhas: DUAS,
+          pacotesBrutos: [pacoteAmazon('PKG-1', 'PICKED_UP')],
+        }),
+      ),
+    ).toBeNull();
+  });
+
   it('★ a block another modality owns (Melhor Envio) is UNTOUCHED — but the freight motivos are still derived from the order', () => {
     const guardado = comFreteGuardado({
       externalOptionIntegracao: INTEGRACAO_FRETE.melhorEnvios,
@@ -3789,6 +3814,7 @@ describe('★ PR 5-f — a pedido ALREADY held at our block error: it leaves for
       decisao: decisao(r),
       fase: 'desconhecida',
       estadoFinal,
+      agendamentoEncerrado: false,
     });
     expect(resolver, nome).not.toContain('divergencia-itens');
   }
