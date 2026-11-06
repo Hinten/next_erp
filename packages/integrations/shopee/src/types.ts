@@ -786,7 +786,8 @@ export const shopeeVariationsPayloadSchema = z
 export type ShopeeVariations = z.infer<typeof shopeeVariationsPayloadSchema>;
 
 /**
- * `GET /api/v2/product/get_variations` — the only `data`-wrapped operation.
+ * `v2.product.get_variations`, signed at `GET /api/v2/product/get_variation_tree`
+ * — the only `data`-wrapped operation.
  *
  * ⚠️ Its success sample carries `warning: "success"`. That is noise, not a
  * partial failure, and filtering it is the app's job — the transport hands every

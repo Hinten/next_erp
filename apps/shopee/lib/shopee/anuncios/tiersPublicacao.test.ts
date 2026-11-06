@@ -174,8 +174,8 @@ describe('ordenarTiers — a ordem é derivada UMA vez e depois lida do anúncio
     // A ordem de criação seria [g-tam, g-cor]; o anúncio vivo diz o contrário.
     const viva = {
       tiers: [
-        { nome: 'Cor', variationId: 0, opcoes: [], indice: 0 },
-        { nome: 'Tamanho', variationId: 0, opcoes: [], indice: 1 },
+        { nome: 'Cor', variationId: 0, variationGroupId: 0, opcoes: [], indice: 0 },
+        { nome: 'Tamanho', variationId: 0, variationGroupId: 0, opcoes: [], indice: 1 },
       ],
       integracaoId: INTEGRACAO,
       categoryId: CATEGORIA,
