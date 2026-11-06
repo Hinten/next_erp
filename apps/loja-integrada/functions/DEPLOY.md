@@ -596,7 +596,8 @@ requires delete permission to replace an object. So grant
 `roles/storage.objectUser` ON THE BUCKET (not the project); `roles/storage.objectCreator`
 alone lets a first upload through and refuses that retry with a 403. Nothing
 here reads, lists or deletes objects of its own accord. No new Cloud Tasks grant:
-photos run inside the import's slices, on the reads queue.
+photos run as the import dispatch's `foto` units (one picture each), on the reads
+queue.
 
 ```bash
 # The bucket is the one FIREBASE_CONFIG names on the deployed functions — on a
@@ -612,9 +613,13 @@ gcloud storage buckets add-iam-policy-binding gs://<default-bucket> \
 can disable that automatic grant), so do not assume the old project's implicit
 access carries over. Without the grant every photo upload fails with a 403,
 which propagates: the task retries the slice and fails the same way each time,
-so the job stops at the first picture it tries to store. The fills written
-before it stay (a restart redoes nothing twice: every import write is
-idempotent), and Cancelar ends the job; grant, then start it again.
+so the job stops at the first picture it tries to store and stays `executando`
+with nothing queued (its card flags it after 45 minutes without progress). The
+writes before it stay — that family's fills, or its create with the links that
+ride the create's batch; an existing family's links come after its photos, so
+they are not written yet — and a restart redoes none of them
+(every import write is fill-empty, create-only or idempotent). Cancelar ends
+the job; grant, then start it again.
 
 ### The deploy aborts if `TASKS_INVOKER_SA` is missing (#1133)
 

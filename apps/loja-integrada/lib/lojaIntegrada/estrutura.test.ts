@@ -460,6 +460,22 @@ const CAMINHO_DA_TAREFA_DA_IMPORTACAO = [
   DESPACHO_DA_IMPORTACAO,
 ] as const;
 
+/** The complete step's photos (step 9, PR 9-d): the dispatch's ONE path to the CDN. */
+const MODULO_DAS_FOTOS = 'lib/lojaIntegrada/importacao/fotos.ts';
+
+/**
+ * The complete step's modules (step 9, PR 9-d), each reached from the dispatch: the task path's
+ * walk must hold every one, so a call or a client written in any of them is seen.
+ */
+const MODULOS_DO_COMPLETAR = [
+  'lib/lojaIntegrada/importacao/categorias.ts',
+  'lib/lojaIntegrada/importacao/completar.ts',
+  'lib/lojaIntegrada/importacao/familiaNova.ts',
+  'lib/lojaIntegrada/importacao/filhoNovo.ts',
+  MODULO_DAS_FOTOS,
+  'lib/lojaIntegrada/importacao/revisaoFiscal.ts',
+] as const;
+
 /** The one module of a read route's closure allowed to build a Loja Integrada client. */
 const CONSTRUTOR_DO_CLIENTE = 'lib/lojaIntegrada/core/contexto.ts';
 
@@ -720,6 +736,7 @@ describe('lib/lojaIntegrada layout', () => {
         'importacao/inicio.ts',
         'importacao/job.ts',
         'importacao/orcamento.ts',
+        ...MODULOS_DO_COMPLETAR.map((p) => p.slice('lib/lojaIntegrada/'.length)),
       ]),
     );
   });
@@ -943,12 +960,27 @@ describe('lib/lojaIntegrada layout', () => {
           'lib/lojaIntegrada/importacao/detalhes.ts',
           'lib/lojaIntegrada/importacao/familiaDoJob.ts',
           'lib/lojaIntegrada/importacao/vinculos.ts',
+          // The complete step's writers ride the same closure (PR 9-d): the photos, which
+          // download from the CDN, are held to the same rules as every read.
+          ...MODULOS_DO_COMPLETAR,
         ]),
       );
-      expect(fecho.externos).toContain('@delfrance/integrations-loja-integrada');
+      expect(fecho.externos).toEqual(
+        expect.arrayContaining([
+          '@delfrance/integrations-loja-integrada',
+          // The photos' shared uploader: the walk reached the photo module's own imports.
+          '@delfrance/storage/admin',
+        ]),
+      );
       // The dispatch loads the context ONCE, and names no package client of its own.
       const despacho = lerDoApp(DESPACHO_DA_IMPORTACAO) ?? '';
       expect(despacho.split('loadLojaIntegradaContext(')).toHaveLength(2);
+      // The photos download through the reader the dispatch hands them from THAT context — once,
+      // and only through it.
+      expect(despacho.split('cdn: this.contextoAtual().cdn')).toHaveLength(2);
+      const fotos = lerDoApp(MODULO_DAS_FOTOS) ?? '';
+      expect(fotos.split('.baixarImagemLi(')).toHaveLength(2);
+      expect(fotos).toContain('deps.cdn.baixarImagemLi(');
     },
   );
 
