@@ -1007,14 +1007,14 @@ describe('o grupo de variação (`variation_group_id`) — lido do anúncio, gra
   const CRU_BR = {
     model: [],
     tier_variation: [
-      { name: 'Cor', option_list: [{ option: 'Rosa Fluor' }] },
+      { name: 'Cor', option_list: [{ option: 'Cor inventada' }] },
       { name: 'Tamanho', option_list: [{ option: 'M' }] },
     ],
     standardise_tier_variation: [
       {
         variation_id: 101054,
         variation_name: 'Cor',
-        variation_option_list: [{ variation_option_id: 0, variation_option_name: 'Rosa Fluor' }],
+        variation_option_list: [{ variation_option_id: 0, variation_option_name: 'Cor inventada' }],
       },
       {
         variation_id: 101056,
