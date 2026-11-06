@@ -9,7 +9,10 @@
  * ## The target ({@link planejarFamiliaLi})
  *
  * `familiaNoAlvoLi` (the cascade's): `todos` takes every family, `selecionados` the roots the start
- * body named, `jaNoErp` a root the cascade matched to one ERP produto, `naoNoErp` an `ausente` one.
+ * body named, `jaNoErp` a root the cascade matched to one ERP produto, `naoNoErp` an `ausente` one —
+ * unless the caller passes the target it decided (`noAlvo`): a family whose root was absent when
+ * the job started (this job's create, another conta's it adopted), met again matched, stays in the
+ * `naoNoErp` target it was in (`familiaDoJob.ts`, "Order", step 2).
  * A family outside the target is planned as `noAlvo: false` with no link and no create, and the
  * caller writes no report item for it — except a family in CONFLICT (two owners, two SKU hits, a
  * shape mismatch, no SKU, a SKU the store repeats): it belongs to no target but `todos` and
@@ -216,6 +219,13 @@ export interface EntradaDoPlanoLi {
   readonly skusRepetidos: ReadonlySet<string>;
   /** Why each claimed option stays unlearned (`recusasDoAprendizadoLi`), keyed `<g>_<v>`. */
   readonly recusasDoAprendizado: ReadonlyMap<string, RecusaNoRelatorioLi>;
+  /**
+   * The target as the caller DECIDED it (`familiaDoJob.ts`, "Order", step 2: decided once);
+   * absent ⇒ `familiaNoAlvoLi` over `raiz`. A family whose root was absent when the job started
+   * (this job's create, another conta's it adopted) is still in a `naoNoErp` target when a retried
+   * unit meets that root matched.
+   */
+  readonly noAlvo?: boolean;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -234,16 +244,22 @@ function lista(v: readonly string[]): readonly string[] | undefined {
 }
 
 /** The field names a failed parse names (each once, in order). */
-function camposDoErro(issues: readonly { readonly path: readonly PropertyKey[] }[]): string[] {
+export function camposDoErro(
+  issues: readonly { readonly path: readonly PropertyKey[] }[],
+): string[] {
   return [...new Set(issues.map((i) => String(i.path[0] ?? '')).filter((c) => c !== ''))];
 }
 
-type PlanoDoVinculoLi =
+/** One link's plan: the planned link, or the field names its document fails on. */
+export type PlanoDoVinculoLi =
   | { readonly tipo: 'ok'; readonly vinculo: VinculoPlanejadoLi }
   | { readonly tipo: 'invalido'; readonly campos: readonly string[] };
 
-/** One link's fields and its create document (module header, "The links"). */
-function planejarVinculo(
+/**
+ * One link's fields and its create document (module header, "The links"). Exported for the complete
+ * step, whose created produtos carry the SAME link document, in their create's batch. Pure.
+ */
+export function planejarVinculoLi(
   contaId: string,
   papel: PapelDoVinculoLi,
   produtoId: string,
@@ -466,7 +482,7 @@ export function planejarFamiliaLi(e: EntradaDoPlanoLi): PlanoDaFamiliaLi {
     liId: p.liId,
     referencias: [],
   }));
-  const noAlvo = familiaNoAlvoLi(job, raiz.id, res);
+  const noAlvo = e.noAlvo ?? familiaNoAlvoLi(job, raiz.id, res);
   // A family in conflict is in no target but todos/selecionados, and reported under the other two.
   const relatar =
     noAlvo ||
@@ -505,7 +521,7 @@ export function planejarFamiliaLi(e: EntradaDoPlanoLi): PlanoDaFamiliaLi {
   }
 
   // Matched: the root's link, then each matched variation's.
-  const planoDaRaiz = planejarVinculo(
+  const planoDaRaiz = planejarVinculoLi(
     job.integracaoId,
     PAPEL_DO_VINCULO_LI.raiz,
     res.erpId,
@@ -547,7 +563,7 @@ export function planejarFamiliaLi(e: EntradaDoPlanoLi): PlanoDaFamiliaLi {
         });
         continue;
       }
-      const planoDoFilho = planejarVinculo(
+      const planoDoFilho = planejarVinculoLi(
         job.integracaoId,
         PAPEL_DO_VINCULO_LI.filho,
         r.erp.id,

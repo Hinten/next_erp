@@ -23,6 +23,7 @@
  * Nothing reaches the network (D17): the GLOBAL `fetch` is stubbed to throw for the whole file, and
  * the context gets a scripted store as its `fetch` seam.
  */
+import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
 import {
@@ -33,6 +34,7 @@ import {
   CAMINHO_CATEGORIAS_LI,
   CAMINHO_MARCAS_LI,
   LiHttpError,
+  URL_BASE_CDN_LI,
 } from '@delfrance/integrations-loja-integrada';
 import {
   ACAO_IMPORTACAO_LI,
@@ -46,11 +48,14 @@ import {
   MOTIVO_CATEGORIA_SEM_VINCULO_LI,
   MOTIVO_FALHA_IMPORTACAO_LI,
   type ModoImportacaoLi,
+  ORCAMENTO_DESPACHO_IMPORTACAO_LI_MS,
+  PENDENCIA_IMPORTACAO_LI,
   SITUACAO_ERP_ITEM_LI,
   TIPO_AVISO,
   TIPO_PAGINA_IMPORTACAO_LI,
   type TarefaImportacaoLi,
   chaveDeAviso,
+  fundirLinksVariacoesLi,
   idPaginaImportacaoLi,
   importacaoLojaIntegradaSchema,
   itemImportacaoLiSchema,
@@ -58,6 +63,7 @@ import {
 } from '@delfrance/schemas';
 
 import { __setRelogioDoCacheParaTestes } from '../core/contaCache';
+import { RITMO_LEITURA_LI_MS } from '../core/ritmo';
 import { LiTarefasTransitoriasError } from '../notificacoes/agendador';
 import {
   type ChamadaCatalogoLi,
@@ -68,6 +74,7 @@ import {
   paginaCatalogoLi,
   plataformaCatalogoLi,
 } from '../testing/catalogoLi';
+import { FakeBucket, asBucket } from '../testing/fakeBucket';
 import { type DocData, FakeDb, asDb, grpc, increment } from '../testing/fakeDb';
 import { falhaDoFunctions } from '../testing/falhaDeEnfileiramento';
 import {
@@ -100,11 +107,15 @@ import {
   DESFECHO_DESPACHO_IMPORTACAO_LI,
   type DepsDespachoImportacaoLi,
   camposDoRegistroDaImportacaoLi,
+  categoriasSemVinculoDoJob,
   despacharImportacaoLi,
   faseDepoisDasFamiliasLi,
 } from './despacho';
 import { avisarCategoriaSemVinculoLi, chaveCategoriaSemVinculoLi } from './avisosImportacao';
 import { cancelarImportacaoLi } from './job';
+import { PIOR_CASO_UNIDADE_IMPORTACAO_LI_MS } from './orcamento';
+
+const sha256Hex = (texto: string) => createHash('sha256').update(texto, 'utf8').digest('hex');
 
 const CONTA = 'conta-li-despacho';
 const JOB = 'job-despacho';
@@ -201,6 +212,32 @@ interface OpcoesDeps {
   /** How long before the dispatch's first statement its start was stamped (ms). */
   readonly jaDecorridoMs?: number;
   readonly agendador?: DepsDespachoImportacaoLi['agendador'];
+  /** The default bucket (photos); absent = a bucket asked for fails the test. */
+  readonly bucket?: DepsDespachoImportacaoLi['bucket'];
+  /** The CDN: the bytes of each picture path (the ORIGINAL form); absent = no CDN host answers. */
+  readonly cdn?: ReadonlyMap<string, Uint8Array<ArrayBuffer>>;
+  /** Every CDN request, as sent. */
+  readonly pedidosCdn?: string[];
+}
+
+/** The scripted store's `fetch`, with the CDN host answering `cdn`'s pictures (404 otherwise). */
+function comCdn(
+  fetchDaLoja: typeof globalThis.fetch,
+  cdn: ReadonlyMap<string, Uint8Array<ArrayBuffer>>,
+  pedidos: string[],
+): typeof globalThis.fetch {
+  return (input, init) => {
+    const texto = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+    const url = new URL(texto);
+    if (url.origin !== URL_BASE_CDN_LI) return fetchDaLoja(input, init);
+    pedidos.push(url.pathname);
+    const bytes = cdn.get(url.pathname.slice(1));
+    return Promise.resolve(
+      bytes === undefined
+        ? new Response(null, { status: 404 })
+        : new Response(bytes, { status: 200, headers: { 'content-type': 'image/jpg' } }),
+    );
+  };
 }
 
 function montarDeps(o: OpcoesDeps = {}) {
@@ -221,10 +258,17 @@ function montarDeps(o: OpcoesDeps = {}) {
     agendador:
       o.agendador ??
       (() => criarAgendadorImportacaoLi({ fila: () => t.fila, desligado: o.desligado ?? false })),
+    // A bucket asked for by a test that did not give one fails it: only photos ask for it.
+    bucket:
+      o.bucket ??
+      (() => {
+        throw new Error('despacho.test: nenhum bucket neste despacho');
+      }),
     logger: { warn },
     tentativa: o.tentativa ?? 0,
     idTarefa: 'tarefa-1',
-    fetch: plataforma.fetch,
+    fetch:
+      o.cdn === undefined ? plataforma.fetch : comCdn(plataforma.fetch, o.cdn, o.pedidosCdn ?? []),
     escrever: gravador.escrever,
   };
   return { deps, chamadas: plataforma.chamadas, t, warn, relogio };
@@ -255,11 +299,11 @@ function escritasDoJob() {
  * Run a job from `seq` until a dispatch ends without a hand-off, each successor with a fresh start
  * stamp on the same clock. Returns every dispatch's result.
  */
-async function rodarAteOFim(o: OpcoesDeps, seq = 0, maximo = 40) {
+async function rodarAteOFim(o: OpcoesDeps, seq = 0, maximo = 40, jobId = JOB) {
   const relogio = o.relogio ?? { agora: AGORA_MS };
   const t = o.t ?? transporte();
   const resultados = [];
-  let proxima = tarefa(seq);
+  let proxima = tarefa(seq, { jobId });
   for (let i = 0; i < maximo; i += 1) {
     const { deps } = montarDeps({ ...o, relogio, t, jaDecorridoMs: 0 });
     const r = await despacharImportacaoLi(asDb(db), proxima, deps);
@@ -429,6 +473,10 @@ describe('a whole job', () => {
       'familias',
       null,
       null,
+      null,
+      // An `aplicar` job re-checks the tax-review list, whatever its action: its two units (no
+      // earlier job to carry from, then the empty list's re-check).
+      'revisao',
       null,
       'fim',
       null,
@@ -640,6 +688,8 @@ describe('Simular and aplicar', () => {
       foraDoJob.filter((c) => !/^produtos\/[^/]+\/produtolojaintegrada\/\d+$/.test(c)),
     ).toEqual([
       'grupoDeVariacoes/cor',
+      // The tax-review phase of every `aplicar` job: an empty list resolves its aviso.
+      caminhoAviso(chaveDeAviso({ tipo: TIPO_AVISO.lojaIntegradaRevisaoFiscal, conta: CONTA })),
       caminhoAviso(
         chaveDeAviso({ tipo: TIPO_AVISO.lojaIntegradaImportacaoComPendencias, conta: CONTA }),
       ),
@@ -1772,22 +1822,75 @@ describe('a variation read in the SAME dispatch as its family', () => {
   });
 });
 
-describe('the complete step’s seam', () => {
-  it('a job found in `revisao` (never entered in this build) concludes it with no work', async () => {
-    seedJobLi(db, JOB, CONTA, { status: 'executando', fase: 'revisao' });
+describe('the tax-review phase', () => {
+  it('`familias` is followed by `revisao` for EVERY `aplicar` job, under either action; by `fim` under Simular', () => {
+    for (const acao of [ACAO_IMPORTACAO_LI.soVincular, ACAO_IMPORTACAO_LI.completar]) {
+      expect(faseDepoisDasFamiliasLi({ modo: MODO_IMPORTACAO_LI.aplicar, acao })).toBe(
+        FASE_IMPORTACAO_LI.revisao,
+      );
+      expect(faseDepoisDasFamiliasLi({ modo: MODO_IMPORTACAO_LI.simular, acao })).toBe(
+        FASE_IMPORTACAO_LI.fim,
+      );
+    }
+  });
+
+  it('a Simular job found in `revisao` concludes it with no work, raising and resolving nothing', async () => {
+    seedJobLi(db, JOB, CONTA, { status: 'executando', fase: 'revisao', modo: 'simular' });
     const { deps, chamadas } = montarDeps();
     const r = await despacharImportacaoLi(asDb(db), tarefa(0), deps);
     expect(r).toMatchObject({ desfecho: 'concluido', unidades: 1, chamadas: 0 });
     expect(chamadas).toEqual([]);
     expect(escritasDoJob().map((e) => (e.dados as DocData).fase ?? null)).toEqual(['fim', null]);
+    expect(db.escritas.filter((e) => e.caminho.startsWith('avisos/'))).toEqual([]);
+    expect(db.consultas).toEqual([]);
   });
 
-  it('`familias` is followed by `fim` in this build, whatever the action', () => {
-    for (const acao of [ACAO_IMPORTACAO_LI.soVincular, ACAO_IMPORTACAO_LI.completar]) {
-      for (const modo of [MODO_IMPORTACAO_LI.simular, MODO_IMPORTACAO_LI.aplicar]) {
-        expect(faseDepoisDasFamiliasLi({ modo, acao })).toBe(FASE_IMPORTACAO_LI.fim);
-      }
-    }
+  const AVISO_REVISAO = () =>
+    caminhoAviso(chaveDeAviso({ tipo: TIPO_AVISO.lojaIntegradaRevisaoFiscal, conta: CONTA }));
+
+  /** An earlier `aplicar` job of the conta that concluded with `produtoId` on its list. */
+  function jobAnteriorComRevisao(produtoId: string): void {
+    seedJobLi(db, 'job-anterior', CONTA, {
+      status: 'concluido',
+      modo: 'aplicar',
+      fase: 'fim',
+      iniciadoEmMs: AGORA_MS - 86_400_000,
+    });
+    db.seed(`${caminhoJobLi('job-anterior')}/revisao/${produtoId}`, {
+      produtoId,
+      motivos: ['produto-criado'],
+      liId: null,
+      desdeJobId: 'job-anterior',
+      desdeMs: AGORA_MS - 86_400_000,
+    });
+  }
+
+  it('an `aplicar` job carries the earlier job’s open entry forward, keeps it without evidence and raises the aviso with the open count', async () => {
+    jobAnteriorComRevisao('p-revisao');
+    db.seed('produtos/p-revisao', { nome: 'Sem imposto', sku: 'SEM-IMP', paiId: null });
+    seedJobLi(db, JOB, CONTA, { status: 'executando', fase: 'revisao', modo: 'aplicar' });
+    const { resultados } = await rodarAteOFim({});
+    expect(resultados.at(-1)?.desfecho).toBe('concluido');
+    expect(db.ler(`${caminhoJobLi(JOB)}/revisao/p-revisao`)).toMatchObject({
+      produtoId: 'p-revisao',
+      desdeJobId: 'job-anterior',
+    });
+    expect(db.ler(AVISO_REVISAO())).toMatchObject({
+      tipo: TIPO_AVISO.lojaIntegradaRevisaoFiscal,
+      resolvidoEm: null,
+      params: expect.objectContaining({ abertos: 1, job: JOB }),
+    });
+    expect(jobGravado()).toMatchObject({ status: 'concluido', fase: 'fim' });
+  });
+
+  it('the entry leaves on evidence — the produto’s own `imposto` — and the aviso resolves (near-miss: the same entry without it stays)', async () => {
+    jobAnteriorComRevisao('p-revisao');
+    db.seed('produtos/p-revisao', { nome: 'Com imposto', sku: 'COM-IMP', paiId: null });
+    db.seed('produtos/p-revisao/imposto/i-1', { ncm: '00000000' });
+    seedJobLi(db, JOB, CONTA, { status: 'executando', fase: 'revisao', modo: 'aplicar' });
+    await rodarAteOFim({});
+    expect(db.ler(`${caminhoJobLi(JOB)}/revisao/p-revisao`)).toBeUndefined();
+    expect(db.ler(AVISO_REVISAO())).toMatchObject({ resolvidoEm: expect.anything() });
   });
 });
 
@@ -1894,5 +1997,505 @@ describe('the log line', () => {
         { tipo: 'importacao', seq: -1, jobId: { x: 1 } },
       ),
     ).toMatchObject({ outcome: 'dropped', seq: null, jobId: null, contaId: null });
+  });
+});
+
+/* --------------------------------- complete --------------------------------- */
+
+/** grupo `cor` linking options 1..n of grade `COR` for this conta to variantes `v-1`..`v-n`. */
+function seedGrupoCorDe(n: number): void {
+  const ids = Array.from({ length: n }, (_, i) => `v-${String(i + 1)}`);
+  const fusao = fundirLinksVariacoesLi(
+    null,
+    ids.map((varianteId, i) => ({
+      integracaoLiId: CONTA,
+      gradeId: COR,
+      opcaoId: i + 1,
+      varianteId,
+    })),
+  );
+  if (!fusao.ok) throw new Error('seedGrupoCorDe: a fusão recusou a lista vazia');
+  db.seed('grupoDeVariacoes/cor', {
+    nome: 'Cor',
+    ordem: 1,
+    variacoesIds: ids,
+    variacoes: ids.map((id) => ({ id, nome: `Cor ${id}` })),
+    linksVariacoesli: fusao.array,
+  });
+}
+
+/** A store family `sku` with `n` variations (option i ⇒ `v-i`) and every detail. */
+function lojaDeUmaFamilia(paiId: number, sku: string, n: number): LojaDeProdutosLi {
+  const filhos = Array.from({ length: n }, (_, i) =>
+    filhoLi(paiId + i + 1, { sku: `${sku}-${String(i + 1)}`, variacoes: [uriOpcaoLi(COR, i + 1)] }),
+  );
+  const pai = paiLi(
+    paiId,
+    filhos.map((f) => f.id as number),
+    { sku, nome: 'Família' },
+  );
+  return {
+    ativos: [pai, ...filhos],
+    detalhes: new Map([
+      [paiId, detalheLi(pai, null)],
+      ...filhos.map((f): [number, DocData] => [f.id as number, detalheLi(f, paiId)]),
+    ]),
+  };
+}
+
+/** A PNG: its magic number, then `n` (each picture its own bytes). */
+function png(n: number): Uint8Array<ArrayBuffer> {
+  return new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, n, n + 1]);
+}
+
+const imagemLi = (id: number, posicao: number) => ({
+  id,
+  caminho: `loja/produto/${String(id)}/foto.jpg`,
+  principal: posicao === 1,
+  posicao,
+  mime: null,
+});
+
+const ehEscritaDoErp = (caminho: string) =>
+  !caminho.startsWith('importacoesLojaIntegrada/') && !caminho.startsWith('avisos/');
+
+describe('complete — the dispatch', () => {
+  it('reads each detail the family needs as ONE unit, never twice, and creates a 50-variation family in ONE batch at the end, across several dispatches', async () => {
+    seedGrupoCorDe(50);
+    seedJobLi(db, JOB, CONTA, { status: 'pendente', modo: 'aplicar', acao: 'completar' });
+    const loja = lojaDeUmaFamilia(1000, 'GRANDE', 50);
+    const plataforma = { responder: lojaCompleta(loja) };
+    const { resultados } = await rodarAteOFim(plataforma, 0, 60);
+
+    expect(resultados.length).toBeGreaterThan(2);
+    expect(resultados.at(-1)?.desfecho).toBe('concluido');
+    // Every detail asked for exactly once (51: the parent and its 50 variations).
+    const lidos = db.escritas
+      .filter((e) => e.caminho.startsWith(`${caminhoJobLi(JOB)}/detalhes/`))
+      .map((e) => e.caminho);
+    expect(lidos).toHaveLength(51);
+    expect(new Set(lidos).size).toBe(51);
+    // ONE commit created the whole family, after the last detail was read.
+    const criacoes = db.escritas.filter(
+      (e) => ehEscritaDoErp(e.caminho) && e.verbo === 'create' && e.caminho.startsWith('produtos/'),
+    );
+    expect(new Set(criacoes.map((e) => e.lote)).size).toBe(1);
+    expect(criacoes[0]?.lote).toBeDefined();
+    expect(criacoes.filter((e) => /^produtos\/[^/]+$/.test(e.caminho))).toHaveLength(51);
+    const ultimaLeitura = db.escritas.reduce(
+      (ultima, e, i) => (e.caminho.startsWith(`${caminhoJobLi(JOB)}/detalhes/`) ? i : ultima),
+      -1,
+    );
+    expect(db.escritas.findIndex((e) => e === criacoes[0])).toBeGreaterThan(ultimaLeitura);
+    expect(itens().get(1000)).toMatchObject({ acao: 'criar', aplicada: true, pendencias: [] });
+    expect(jobGravado()).toMatchObject({
+      status: 'concluido',
+      familias: { cursorPaiId: null, filhosLidos: [] },
+      contadores: { criados: 51, vinculados: 51 },
+    });
+  });
+
+  it('a cancel between two complete units stops the dispatch at the next one: the second detail is never read', async () => {
+    seedGrupoCorDe(2);
+    seedJobLi(db, JOB, CONTA, { status: 'pendente', modo: 'aplicar', acao: 'completar' });
+    const loja = lojaDeUmaFamilia(1000, 'DUAS', 2);
+    // The operator's Cancelar lands while the family's FIRST detail is being stored.
+    db.antesDaProximaEscrita(`${caminhoJobLi(JOB)}/detalhes/1000`, async () => {
+      await cancelarImportacaoLi(asDb(db), CONTA, JOB, AGORA_MS);
+    });
+    const { deps, chamadas } = montarDeps({ responder: lojaCompleta(loja) });
+    const r = await despacharImportacaoLi(asDb(db), tarefa(0), deps);
+    expect(r.desfecho).toBe('parado');
+    expect(chamadas.map((c) => c.caminho).filter((c) => /^\/v1\/produto\/\d+\/$/.test(c))).toEqual([
+      '/v1/produto/1000/',
+    ]);
+    expect(jobGravado()).toMatchObject({ status: 'cancelado' });
+    expect(db.escritas.filter((e) => ehEscritaDoErp(e.caminho))).toEqual([]);
+  });
+
+  it('no bucket ⇒ `fotosIndisponiveis` on the job, no picture fetched — and the rest of the run still completes', async () => {
+    const linha = linhaProdutoLi(10, { sku: 'COM-FOTO' });
+    const loja: LojaDeProdutosLi = {
+      ativos: [linha],
+      detalhes: new Map([[10, detalheLi(linha, null, { imagens: [imagemLi(71, 1)] })]]),
+    };
+    seedJobLi(db, JOB, CONTA, {
+      status: 'pendente',
+      modo: 'aplicar',
+      acao: 'completar',
+      fotos: 'soSemFotos',
+    });
+    const pedidosCdn: string[] = [];
+    const { resultados } = await rodarAteOFim({
+      responder: lojaCompleta(loja),
+      bucket: () => null,
+      cdn: new Map([['loja/produto/71/foto.jpg', png(1)]]),
+      pedidosCdn,
+    });
+    expect(resultados.at(-1)?.desfecho).toBe('concluido');
+    expect(jobGravado()).toMatchObject({ status: 'concluido', fotosIndisponiveis: true });
+    expect(pedidosCdn).toEqual([]);
+    expect(itens().get(10)).toMatchObject({ acao: 'criar', aplicada: true });
+    expect(db.ler(`produtos/li-sku-${sha256Hex('COM-FOTO')}`)?.fotos ?? []).toEqual([]);
+  });
+
+  it('photos: the fill writes first, then each picture (one unit each, written once onto the produto), then the link LAST', async () => {
+    db.seed('produtos/caneca', { nome: 'Caneca', sku: 'CAN-F', paiId: null, filhoUnicoId: null });
+    const linha = linhaProdutoLi(20, { sku: 'CAN-F' });
+    const loja: LojaDeProdutosLi = {
+      ativos: [linha],
+      detalhes: new Map([
+        [20, detalheLi(linha, null, { imagens: [imagemLi(71, 1), imagemLi(72, 2)] })],
+      ]),
+    };
+    seedJobLi(db, JOB, CONTA, {
+      status: 'pendente',
+      modo: 'aplicar',
+      acao: 'completar',
+      fotos: 'soSemFotos',
+    });
+    const bucket = new FakeBucket();
+    const pedidosCdn: string[] = [];
+    const { resultados } = await rodarAteOFim({
+      responder: lojaCompleta(loja),
+      bucket: () => asBucket(bucket),
+      cdn: new Map([
+        ['loja/produto/71/foto.jpg', png(1)],
+        ['loja/produto/72/foto.jpg', png(2)],
+      ]),
+      pedidosCdn,
+    });
+    expect(resultados.at(-1)?.desfecho).toBe('concluido');
+    expect(pedidosCdn).toEqual(['/loja/produto/71/foto.jpg', '/loja/produto/72/foto.jpg']);
+    expect(bucket.salvos).toHaveLength(2);
+
+    const doErp = db.escritas.filter((e) => ehEscritaDoErp(e.caminho));
+    const naCaneca = doErp.filter((e) => e.caminho === 'produtos/caneca');
+    // Two writes on the produto: the fill, then its pictures (once, after both uploads).
+    expect(naCaneca).toHaveLength(2);
+    expect(Object.keys(naCaneca[1]?.dados ?? {}).sort()).toEqual([
+      'fotos',
+      'fotosArquivosIds',
+      'ultimaModificacao',
+    ]);
+    const ordem = doErp.map((e) => e.caminho);
+    const link = ordem.indexOf('produtos/caneca/produtolojaintegrada/20');
+    expect(link).toBe(ordem.length - 1);
+    expect(ordem.indexOf('produtos/caneca')).toBeLessThan(
+      ordem.findIndex((c) => c.startsWith('arquivos/')),
+    );
+    expect(db.ler('produtos/caneca')?.fotos).toHaveLength(2);
+    expect(itens().get(20)).toMatchObject({ acao: 'completar', aplicada: true });
+    expect(itens().get(20)?.camposPreenchidos.at(-1)).toBe('fotos');
+    expect(jobGravado()).toMatchObject({
+      status: 'concluido',
+      contadores: { fotos: 2, completados: 1, vinculados: 1 },
+      // The family's progress is gone once it closed.
+      revisao: expect.not.objectContaining({ cursorProdutoId: expect.stringMatching(/^f:/) }),
+    });
+  });
+
+  /** One store simple product `sku` (id 20) with ONE picture, and its ERP produto `caneca`. */
+  function lojaDeUmaFoto(sku: string): LojaDeProdutosLi {
+    db.seed('produtos/caneca', { nome: 'Caneca', sku, paiId: null, filhoUnicoId: null });
+    const linha = linhaProdutoLi(20, { sku });
+    seedJobLi(db, JOB, CONTA, {
+      status: 'pendente',
+      modo: 'aplicar',
+      acao: 'completar',
+      fotos: 'soSemFotos',
+    });
+    return {
+      ativos: [linha],
+      detalhes: new Map([[20, detalheLi(linha, null, { imagens: [imagemLi(71, 1)] })]]),
+    };
+  }
+
+  it('the prepared family’s progress rides its unit’s checkpoint: on a clock that moves at EVERY reading the run ends — the fill written once, then the picture', async () => {
+    const loja = lojaDeUmaFoto('CAN-R');
+    const bucket = new FakeBucket();
+    const pedidosCdn: string[] = [];
+    // Every reading costs 1 s, so a unit that does nothing still spends the budget: a progress
+    // that never reached a checkpoint shows as a run that never ends, never as a hung suite.
+    let agora = AGORA_MS;
+    const relogio: Relogio = {
+      get agora() {
+        agora += 1_000;
+        return agora;
+      },
+      set agora(ms: number) {
+        agora = ms;
+      },
+    };
+    const { resultados } = await rodarAteOFim({
+      responder: lojaCompleta(loja),
+      relogio,
+      bucket: () => asBucket(bucket),
+      cdn: new Map([['loja/produto/71/foto.jpg', png(1)]]),
+      pedidosCdn,
+    });
+    expect(resultados.at(-1)?.desfecho).toBe('concluido');
+    expect(pedidosCdn).toEqual(['/loja/produto/71/foto.jpg']);
+    // The preparation ran ONCE (its fill), then the picture's own write.
+    const naCaneca = db.escritasEm('produtos/caneca');
+    expect(naCaneca).toHaveLength(2);
+    expect(Object.keys(naCaneca[1]?.dados ?? {}).sort()).toEqual([
+      'fotos',
+      'fotosArquivosIds',
+      'ultimaModificacao',
+    ]);
+    // Between the two, a checkpoint carried the family's progress.
+    const comProgresso = escritasDoJob().filter((e) => {
+      const revisao = (e.dados as { revisao?: { cursorProdutoId?: unknown } }).revisao;
+      return (
+        typeof revisao?.cursorProdutoId === 'string' && revisao.cursorProdutoId.startsWith('f:')
+      );
+    });
+    expect(comProgresso.length).toBeGreaterThan(0);
+  });
+
+  it('a photo unit starts only while its 52 s worst case fits — never on the 10 s a family unit needs', async () => {
+    const loja = lojaDeUmaFoto('CAN-O');
+    const bucket = new FakeBucket();
+    const relogio: Relogio = { agora: AGORA_MS };
+    const t = transporte();
+    // Each CDN request: how far into ITS dispatch it was sent (the pacer's 2 s already waited).
+    const decorridos: number[] = [];
+    let proxima = tarefa(0);
+    let ultimo: string | null = null;
+    for (let i = 0; i < 40 && ultimo !== DESFECHO_DESPACHO_IMPORTACAO_LI.concluido; i += 1) {
+      // The FIRST dispatch starts 30 s late: the family's preparation still fits (a few calls and
+      // 10 s), its picture's 52 s does not.
+      const jaDecorridoMs = i === 0 ? 30_000 : 0;
+      const inicio = relogio.agora - jaDecorridoMs;
+      const pedidos: string[] = [];
+      const { deps } = montarDeps({
+        responder: lojaCompleta(loja),
+        relogio,
+        t,
+        jaDecorridoMs,
+        bucket: () => asBucket(bucket),
+        cdn: new Map([['loja/produto/71/foto.jpg', png(1)]]),
+        pedidosCdn: pedidos,
+      });
+      const doDespacho = deps.fetch;
+      if (doDespacho === undefined) throw new Error('despacho.test: montarDeps dá um fetch');
+      const r = await despacharImportacaoLi(asDb(db), proxima, {
+        ...deps,
+        fetch: async (input, init) => {
+          const antes = pedidos.length;
+          const resposta = await doDespacho(input, init);
+          if (pedidos.length > antes) decorridos.push(relogio.agora - inicio);
+          return resposta;
+        },
+      });
+      ultimo = r.desfecho;
+      // Anti-vacuity: the late dispatch DID reach the picture — the family is prepared, its
+      // picture pending, when it hands off.
+      if (i === 0) expect(jobGravado().revisao.cursorProdutoId).toMatch(/^f:/);
+      const enviada = t.envios.at(-1)?.tarefa;
+      if (r.desfecho === DESFECHO_DESPACHO_IMPORTACAO_LI.continuado && enviada !== undefined) {
+        proxima = enviada;
+      }
+    }
+    expect(ultimo).toBe(DESFECHO_DESPACHO_IMPORTACAO_LI.concluido);
+    // The first dispatch prepared the family and left the picture to the next one.
+    expect(decorridos).toHaveLength(1);
+    expect(decorridos[0]).toBeLessThanOrEqual(
+      ORCAMENTO_DESPACHO_IMPORTACAO_LI_MS -
+        PIOR_CASO_UNIDADE_IMPORTACAO_LI_MS.foto +
+        RITMO_LEITURA_LI_MS,
+    );
+    expect(db.ler('produtos/caneca')?.fotos).toHaveLength(1);
+  });
+
+  it('a second complete run over an unchanged store writes NO ERP document (idempotence)', async () => {
+    db.seed('produtos/caneca', { nome: 'Caneca', sku: 'CAN-I', paiId: null, filhoUnicoId: null });
+    const existente = linhaProdutoLi(20, { sku: 'CAN-I' });
+    const nova = linhaProdutoLi(30, { sku: 'NOVA-I' });
+    const loja: LojaDeProdutosLi = {
+      ativos: [existente, nova],
+      detalhes: new Map([
+        [20, detalheLi(existente, null)],
+        [30, detalheLi(nova, null)],
+      ]),
+    };
+    seedJobLi(db, JOB, CONTA, { status: 'pendente', modo: 'aplicar', acao: 'completar' });
+    await rodarAteOFim({ responder: lojaCompleta(loja) });
+    expect(itens().get(20)).toMatchObject({ acao: 'completar' });
+    expect(itens().get(30)).toMatchObject({ acao: 'criar' });
+
+    const antes = db.escritas.length;
+    seedJobLi(db, 'job-despacho-2', CONTA, {
+      status: 'pendente',
+      modo: 'aplicar',
+      acao: 'completar',
+      iniciadoEmMs: AGORA_MS + 1,
+    });
+    const { resultados } = await rodarAteOFim(
+      { responder: lojaCompleta(loja) },
+      0,
+      40,
+      'job-despacho-2',
+    );
+    expect(resultados.at(-1)?.desfecho).toBe('concluido');
+    expect(db.escritas.slice(antes).filter((e) => ehEscritaDoErp(e.caminho))).toEqual([]);
+  });
+});
+
+/** The A/B store under "complete", plus two store-only products in ONE unlinked store category. */
+const LOJA_AB_COMPLETA: LojaDeProdutosLi = (() => {
+  const p1 = linhaProdutoLi(10, { sku: 'P1', categorias: ['/api/v1/categoria/900'] });
+  const p2 = linhaProdutoLi(20, { sku: 'P2', categorias: ['/api/v1/categoria/900'] });
+  const ativos = [p1, p2, ...LOJA_AB.ativos];
+  const paiDe = new Map<number, number>([
+    [101, 100],
+    [102, 100],
+    [201, 200],
+  ]);
+  return {
+    ativos,
+    detalhes: new Map(
+      ativos.map((linha): [number, DocData] => {
+        const id = linha.id as number;
+        return [id, detalheLi(linha, paiDe.get(id) ?? null)];
+      }),
+    ),
+  };
+})();
+
+describe('complete — Simular and aplicar', () => {
+  it('give the SAME per-item verdicts on ONE fixture where a category created for product 1 serves product 2 and a learning from family A resolves family B — and Simular writes only the job', async () => {
+    async function rodarModo(modo: ModoImportacaoLi) {
+      db = new FakeDb();
+      seedConta(db, CONTA);
+      seedCredencial(db, CONTA);
+      seedErpAB();
+      seedJobLi(db, JOB, CONTA, {
+        status: 'pendente',
+        modo,
+        acao: 'completar',
+        categorias: 'criarEVincular',
+      });
+      __resetAllReadCaches();
+      const { resultados } = await rodarAteOFim({ responder: lojaCompleta(LOJA_AB_COMPLETA) });
+      return {
+        resultados,
+        itens: itens(),
+        job: jobGravado(),
+        caminhos: db.escritas.map((e) => e.caminho),
+        ler: (caminho: string) => db.ler(caminho),
+      };
+    }
+    const simular = await rodarModo(MODO_IMPORTACAO_LI.simular);
+    const aplicar = await rodarModo(MODO_IMPORTACAO_LI.aplicar);
+    expect(simular.resultados.at(-1)?.desfecho).toBe('concluido');
+    expect(aplicar.resultados.at(-1)?.desfecho).toBe('concluido');
+
+    expect([...simular.itens.keys()]).toEqual([...aplicar.itens.keys()]);
+    for (const id of aplicar.itens.keys()) {
+      expect(veredito(simular.itens.get(id)), String(id)).toEqual(veredito(aplicar.itens.get(id)));
+    }
+    expect(simular.job.contadores).toEqual(aplicar.job.contadores);
+
+    // Family B's green child is matched through the LEARNED option, under "complete" too.
+    expect(aplicar.itens.get(200)?.pendencias).toContainEqual({
+      codigo: 'sku-diferente',
+      acionavel: false,
+      liId: 201,
+      referencias: ['CAN-VERDE', 'CAN-VD'],
+    });
+    // The category: created ONCE (by product 1) and taken by product 2.
+    const categoria = `li-${CONTA}-900`;
+    expect(aplicar.ler(`categorias/${categoria}`)).toMatchObject({ nome: 'Categoria 900' });
+    for (const sku of ['P1', 'P2']) {
+      expect(aplicar.ler(`produtos/li-sku-${sha256Hex(sku)}`)).toMatchObject({
+        categoriaProdutoOuterRef: `documents/categorias/${categoria}`,
+      });
+    }
+    expect(aplicar.caminhos.filter((c) => c === `categorias/${categoria}`)).toHaveLength(1);
+    expect(simular.job.mapaCategorias).toContainEqual(
+      expect.objectContaining({ id: 900, erpCategoriaId: categoria, vinculo: 'simulada' }),
+    );
+    expect(simular.job.aprendizadosSimulados).toEqual([
+      { grupoId: 'cor', gradeId: COR, opcaoId: 2, varianteId: 'v-verde' },
+    ]);
+    // Simular: every write is the job or its own subcollections.
+    const prefixo = caminhoJobLi(JOB);
+    expect(simular.caminhos.filter((c) => c !== prefixo && !c.startsWith(`${prefixo}/`))).toEqual(
+      [],
+    );
+  });
+});
+
+describe('complete — the per-category aviso at the job’s end', () => {
+  const loja = (): LojaDeProdutosLi => {
+    const p1 = linhaProdutoLi(10, { sku: 'C1', categorias: ['/api/v1/categoria/900'] });
+    const p2 = linhaProdutoLi(20, { sku: 'C2', categorias: ['/api/v1/categoria/900'] });
+    return {
+      ativos: [p1, p2],
+      detalhes: new Map([
+        [10, detalheLi(p1, null)],
+        [20, detalheLi(p2, null)],
+      ]),
+    };
+  };
+
+  it('an `aplicar` job that imported products WITHOUT their unlinked store category raises ONE row for it, counting them; a Simular raises none', async () => {
+    const caminho = caminhoAviso(chaveCategoriaSemVinculoLi(CONTA, 900));
+    seedJobLi(db, JOB, CONTA, { status: 'pendente', modo: 'simular', acao: 'completar' });
+    await rodarAteOFim({ responder: lojaCompleta(loja()) });
+    expect(
+      itens()
+        .get(10)
+        ?.pendencias.map((p) => p.codigo),
+    ).toContain('categoria-sem-vinculo');
+    expect(db.ler(caminho)).toBeUndefined();
+
+    seedJobLi(db, JOB, CONTA, { status: 'pendente', modo: 'aplicar', acao: 'completar' });
+    const { resultados } = await rodarAteOFim({ responder: lojaCompleta(loja()) });
+    expect(resultados.at(-1)?.desfecho).toBe('concluido');
+    expect(db.ler(caminho)).toMatchObject({
+      tipo: TIPO_AVISO.lojaIntegradaCategoriaSemVinculo,
+      resolvidoEm: null,
+      params: expect.objectContaining({ produtos: 2, caminho: '900', motivo: 'sem-vinculo' }),
+    });
+    // Both created produtos joined the tax review — each root AND its sole member, the unit an
+    // order line resolves to (its taxes are the NF-e's): created, with no category.
+    expect(db.idsEm(`${caminhoJobLi(JOB)}/revisao`).sort()).toEqual(
+      ['C1', 'C2']
+        .flatMap((sku) => [`li-sku-${sha256Hex(sku)}`, `li-sku-${sha256Hex(sku)}-un`])
+        .sort(),
+    );
+  });
+
+  it('categoriasSemVinculoDoJob: one row per store category, products summed across refusals naming it ⟷ NEAR-MISS a refusal needing no row adds none', () => {
+    const mapa = [
+      {
+        id: 900,
+        nome: 'C',
+        pai: { tipo: 'raiz' as const },
+        erpCategoriaId: null,
+        vinculo: 'sem-vinculo' as const,
+      },
+    ];
+    expect(
+      categoriasSemVinculoDoJob({ mapaCategorias: mapa }, [
+        { codigo: PENDENCIA_IMPORTACAO_LI.categoriaSemVinculo, referencias: ['900'], itens: 2 },
+        {
+          codigo: PENDENCIA_IMPORTACAO_LI.categoriaRecusada,
+          referencias: ['900', 'ausente'],
+          itens: 5,
+        },
+        { codigo: PENDENCIA_IMPORTACAO_LI.categoriaRecusada, referencias: ['ilegivel'], itens: 4 },
+      ]),
+    ).toEqual([
+      {
+        categoriaLiId: 900,
+        caminho: [900],
+        motivo: MOTIVO_CATEGORIA_SEM_VINCULO_LI.semVinculo,
+        produtos: 2,
+      },
+    ]);
   });
 });

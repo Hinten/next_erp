@@ -2,7 +2,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 
 import { describe, expect, it } from 'vitest';
-import { PRAZO_LI_MS } from '@delfrance/integrations-loja-integrada';
+import { PRAZO_CDN_LI_MS, PRAZO_LI_MS } from '@delfrance/integrations-loja-integrada';
 import {
   CAUDA_DESPACHO_IMPORTACAO_LI_MS,
   MAX_PAGINAS_CATALOGO_LI,
@@ -14,7 +14,9 @@ import {
   DURACAO_MAXIMA_DESPACHO_IMPORTACAO_LI_MS,
   PIOR_CASO_FAMILIA_SEM_CHAMADA_LI_MS,
   PIOR_CASO_UNIDADE_IMPORTACAO_LI_MS,
+  PRAZO_UPLOAD_LI_MS,
 } from './importacao/orcamento';
+import { unidadeDaFotoLi } from './importacao/fotos';
 import { CONCORRENCIA_REDRIVE_LI, LIMITE_REDRIVE_LI } from './notificacoes/notificacao';
 
 /**
@@ -298,7 +300,9 @@ describe('the catalogue routes fit inside the backend ceiling', () => {
  *
  * Its reads run in the reads queue's DISPATCH, held to a time budget (`importacao/orcamento.ts`):
  * a unit starts only while its worst case still ends inside `ORCAMENTO_DESPACHO_IMPORTACAO_LI_MS`,
- * and `CAUDA_DESPACHO_IMPORTACAO_LI_MS` covers the hand-off. The queue's own arithmetic with that
+ * and `CAUDA_DESPACHO_IMPORTACAO_LI_MS` covers the hand-off. A photo unit (`importacao/fotos.ts`)
+ * is one CDN download and one upload the app races against its own deadline (the shared uploader
+ * takes none); an original refused as too large is fetched again at 800x800 in a unit of its own. The queue's own arithmetic with that
  * co-tenant (`3 × (300 + 100) + 2 × 300 ≤ 1 800`) is pinned beside its options in
  * `functions/src/index.test.ts`.
  */
@@ -332,6 +336,28 @@ describe('the product import: its routes call nothing, its dispatch fits its bud
       RITMO_LEITURA_LI_MS + PRAZO_LI_MS.leitura,
     );
     expect(PIOR_CASO_UNIDADE_IMPORTACAO_LI_MS.familia).toBe(PIOR_CASO_FAMILIA_SEM_CHAMADA_LI_MS);
+  });
+
+  it('a photo unit = the pacer + the CDN deadline + the upload deadline = 52 s; the 800x800 refetch is a 52 s unit of its OWN', () => {
+    expect(PRAZO_UPLOAD_LI_MS).toBe(30_000);
+    expect(PIOR_CASO_UNIDADE_IMPORTACAO_LI_MS.foto).toBe(
+      RITMO_LEITURA_LI_MS + PRAZO_CDN_LI_MS + PRAZO_UPLOAD_LI_MS,
+    );
+    expect(PIOR_CASO_UNIDADE_IMPORTACAO_LI_MS.foto).toBe(52_000);
+    expect(PIOR_CASO_UNIDADE_IMPORTACAO_LI_MS.foto).toBeLessThanOrEqual(
+      ORCAMENTO_DESPACHO_IMPORTACAO_LI_MS,
+    );
+    // The photo module asks for that row for every step, the reduced form's included.
+    expect(unidadeDaFotoLi()).toBe('foto');
+    // The original refused as too large and its 800x800 in ONE unit would be 74 s: no 70 s budget
+    // could ever start it, so the refetch is checkpointed and budgeted as a unit of its own.
+    const umaUnidadeSo = 2 * (RITMO_LEITURA_LI_MS + PRAZO_CDN_LI_MS) + PRAZO_UPLOAD_LI_MS;
+    expect(umaUnidadeSo).toBe(74_000);
+    expect(umaUnidadeSo).toBeGreaterThan(ORCAMENTO_DESPACHO_IMPORTACAO_LI_MS);
+    // A photo unit plus the tail stays far inside the reads queue's 300 s function timeout.
+    expect(PIOR_CASO_UNIDADE_IMPORTACAO_LI_MS.foto + CAUDA_DESPACHO_IMPORTACAO_LI_MS).toBeLessThan(
+      300_000,
+    );
   });
 
   it('every unit fits an empty budget, and budget + tail ≤ 100 s', () => {

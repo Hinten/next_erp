@@ -4,7 +4,7 @@
  * stale precondition would make every race test vacuous.
  */
 import { describe, expect, it } from 'vitest';
-import { FieldPath, Timestamp } from 'firebase-admin/firestore';
+import { FieldPath, FieldValue, Timestamp } from 'firebase-admin/firestore';
 import {
   avisoCollection,
   importacaoLojaIntegradaCollection,
@@ -547,6 +547,55 @@ describe('FakeDb — the array-union sentinel (step 20, the freight mapa)', () =
   });
 });
 
+describe('FakeDb — the Admin SDK’s own array union (step 9: the shared uploader writes it)', () => {
+  it('EQUAL: FieldValue.arrayUnion is applied exactly as the sentinel, element by element', async () => {
+    const db = new FakeDb();
+    const ref = refDe(db, 'a');
+    const legado = [{ externalId: '1', integracaoPath: 'documents/integracao/C1' }];
+    await ref.create({ l: legado, m: legado });
+    const novo = { externalId: '2', integracaoPath: 'documents/integracao/C1' };
+    await ref.update({ l: FieldValue.arrayUnion(...legado, novo) });
+    await ref.update({ m: arrayUnion(...legado, novo) });
+    const lido = db.ler('integracao/a');
+    expect(lido?.l).toEqual([...legado, novo]);
+    expect(lido?.l).toEqual(lido?.m);
+  });
+
+  it('an absent field becomes exactly the elements; a stale stamp refuses it with 9', async () => {
+    const db = new FakeDb();
+    const ref = refDe(db, 'a');
+    await ref.create({ outro: 1 });
+    const lido = await ref.get();
+    await ref.update({ l: FieldValue.arrayUnion('x') });
+    expect(db.ler('integracao/a')).toEqual({ outro: 1, l: ['x'] });
+    await expect(
+      ref.update({ l: FieldValue.arrayUnion('y') }, { lastUpdateTime: lido.updateTime }),
+    ).rejects.toSatisfy(isFailedPrecondition);
+    expect(db.ler('integracao/a')).toEqual({ outro: 1, l: ['x'] });
+  });
+
+  it('refuses it where the sentinel is refused: create and a merge-set', async () => {
+    const db = new FakeDb();
+    const ref = refDe(db, 'a');
+    await expect(ref.create({ l: FieldValue.arrayUnion('a') })).rejects.toThrow(
+      /arrayUnion em create/,
+    );
+    expect(() => ref.set({ l: FieldValue.arrayUnion('a') }, { merge: true })).toThrow(
+      /arrayUnion em set merge/,
+    );
+  });
+
+  it('⚠️ NEAR-MISS: another SDK FieldValue (an increment) is NOT read as a union', async () => {
+    const db = new FakeDb();
+    const ref = refDe(db, 'a');
+    await ref.create({ l: ['x'] });
+    await ref.update({ l: FieldValue.increment(1) });
+    // Not merged into the stored list: whatever the fake does with it, it is not a union.
+    expect(db.ler('integracao/a')?.l).not.toEqual(['x', 1]);
+    expect(Array.isArray(db.ler('integracao/a')?.l)).toBe(false);
+  });
+});
+
 describe('FakeDb — the batch (step 5, the pedido and its pagamentos)', () => {
   function refsDe(db: FakeDb) {
     const banco = asDb(db);
@@ -812,5 +861,50 @@ describe('FakeDb — createTime (step 9: a retried import unit recognises the li
     expect(porId.get('a')).toBe(us(criado));
     expect(porId.get('b')).toBe(us(b.createTime));
     expect(us(b.createTime)).toBe(us(b.updateTime));
+  });
+});
+
+describe('FakeDb — select (step 9: the create-time SKU probe projects `sku`)', () => {
+  it('keeps ONLY the selected fields a document has, and drops no document — one lacking them reads empty', async () => {
+    const db = new FakeDb();
+    db.seed('integracao/a', { sku: 'X', nome: 'A', paiId: null });
+    db.seed('integracao/b', { sku: 'Y', nome: 'B' });
+    db.seed('integracao/c', { nome: 'C' });
+    const snap = await integracaoCollection.ref(asDb(db), {}).select('sku').get();
+    expect(snap.docs.map((d) => [d.id, d.data()])).toEqual([
+      ['a', { sku: 'X' }],
+      ['b', { sku: 'Y' }],
+      ['c', {}],
+    ]);
+    // NEAR-MISS: the projection is the QUERY's — the stored documents keep every field.
+    expect(db.ler('integracao/a')).toEqual({ sku: 'X', nome: 'A', paiId: null });
+    expect(db.consultas.at(-1)).toMatchObject({ selecao: ['sku'] });
+  });
+
+  it('filters on a field the projection leaves out, exactly as the server does', async () => {
+    const db = new FakeDb();
+    db.seed('integracao/a', { sku: 'X', paiId: 'p' });
+    db.seed('integracao/b', { sku: 'X', paiId: null });
+    const snap = await integracaoCollection
+      .ref(asDb(db), {})
+      .where('paiId', '==', 'p')
+      .select('sku')
+      .get();
+    expect(snap.docs.map((d) => [d.id, d.data()])).toEqual([['a', { sku: 'X' }]]);
+  });
+
+  it('a query without select keeps every field, and records no projection', async () => {
+    const db = new FakeDb();
+    db.seed('integracao/a', { sku: 'X', nome: 'A' });
+    const snap = await integracaoCollection.ref(asDb(db), {}).get();
+    expect(snap.docs[0]?.data()).toEqual({ sku: 'X', nome: 'A' });
+    expect(db.consultas.at(-1)).not.toHaveProperty('selecao');
+  });
+
+  it('refuses what it does not model: no field, a dotted path, a second select', () => {
+    const ref = integracaoCollection.ref(asDb(new FakeDb()), {});
+    expect(() => ref.select()).toThrow(/select/);
+    expect(() => ref.select('a.b')).toThrow(/select/);
+    expect(() => ref.select('sku').select('nome')).toThrow(/select/);
   });
 });

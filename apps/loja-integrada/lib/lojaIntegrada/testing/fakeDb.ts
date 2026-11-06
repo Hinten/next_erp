@@ -56,12 +56,20 @@
  *    there (same key SET in any order, same values; `1` ≠ `'1'`, `0` ≠ `null`).
  *    A `create` or a merge-`set` carrying it throws: neither is modelled. The
  *    write log keeps the sentinel itself, which a read-modify-write would not;
+ *  - the Admin SDK's OWN `FieldValue.arrayUnion(...)` (step 9: the product import's photos run
+ *    the shared uploader `putArquivoAdmin`, which unions a re-uploaded picture's `externalIds`
+ *    with it), applied EXACTLY like the sentinel above — the same refusals, the same semantics —
+ *    read off the transform's public `elements` array. Only an array union: every other SDK
+ *    `FieldValue` is left as it was before (no write of this app hands one to this fake);
  *  - `collection().where(campo, '==', valor)`, `where(campo, '<', valor)` (step
  *    3: the shared sweep's lane query), `where(campo, 'in', [...])` (step 5: the
  *    link-doc lookup over every stored form of the conta ref), `orderBy`,
  *    `limit`, `startAfter(doc)` and `get()` → `{ docs, empty, size, readTime }`
  *    — see "Queries" below. Each result doc carries its `ref`, whose
  *    `parent.parent` is the owning document (`ref.parent.parent.id`);
+ *  - `select(...campos)` (step 9: the create-time SKU probe projects `sku`): the matching
+ *    documents with ONLY those fields in their `data()` — a document lacking every one of them is
+ *    still returned, with an empty `data()`, as the server's projection does (it filters nothing);
  *  - `orderBy(FieldPath.documentId())` and, on a query ordered by it ALONE,
  *    `startAfter('<a plain document id>')` (step 9: the product import's report
  *    pages its job's items in document-key order) — see "Queries" below;
@@ -170,7 +178,7 @@
  * is exactly the window a concurrent writer lands in. The intercepted write then
  * meets the state that callback left behind, precondition included.
  */
-import type { Firestore } from 'firebase-admin/firestore';
+import { FieldValue, type Firestore } from 'firebase-admin/firestore';
 
 export type DocData = Record<string, unknown>;
 
@@ -236,12 +244,26 @@ export function arrayUnion(...elementos: unknown[]): unknown {
   return { __arrayUnion: elementos };
 }
 
-function ehUniao(v: unknown): v is { __arrayUnion: unknown[] } {
-  return (
-    typeof v === 'object' &&
-    v !== null &&
-    Array.isArray((v as { __arrayUnion?: unknown }).__arrayUnion)
-  );
+/**
+ * The elements of an array union — this fake's sentinel, or the Admin SDK's own
+ * `FieldValue.arrayUnion(...)`, whose transform carries them on a public `elements` array — or
+ * `null` for anything else, an SDK `FieldValue` that is NOT an array union included (header).
+ */
+function elementosDaUniao(v: unknown): readonly unknown[] | null {
+  if (typeof v !== 'object' || v === null) return null;
+  const nossos = (v as { __arrayUnion?: unknown }).__arrayUnion;
+  if (Array.isArray(nossos)) return nossos;
+  // A suite that mocks `firebase-admin/firestore` may hand this module a `FieldValue` that is a plain
+  // object (the route suites stub only `increment`): no SDK value can reach the fake there.
+  if (typeof FieldValue === 'function' && v instanceof FieldValue) {
+    const doSdk = (v as unknown as { elements?: unknown }).elements;
+    return Array.isArray(doSdk) ? doSdk : null;
+  }
+  return null;
+}
+
+function ehUniao(v: unknown): boolean {
+  return elementosDaUniao(v) !== null;
 }
 
 /**
@@ -371,6 +393,8 @@ export interface ConsultaFake {
   readonly ordens: readonly [string, 'asc' | 'desc'][];
   readonly limite: number | null;
   readonly apos: string | null;
+  /** The `select()` projection, when the query has one. */
+  readonly selecao?: readonly string[];
 }
 
 /**
@@ -432,6 +456,8 @@ interface EstadoConsulta {
   readonly ordens: readonly Ordem[];
   readonly limite: number | null;
   readonly apos: Cursor | null;
+  /** The `select()` projection; `null` = every field. */
+  readonly selecao: readonly string[] | null;
 }
 
 /** A write's precondition, as the single-document `update` and the batch take it. */
@@ -455,9 +481,9 @@ function validarAtualizacao(caminho: string, patch: DocData, precondicao?: Preco
   recusarIndefinido(patch, caminho);
   for (const [chave, valor] of Object.entries(patch)) {
     // The real SDK refuses `undefined` inside the union's elements too.
-    if (ehUniao(valor)) {
-      valor.__arrayUnion.forEach((e, i) => recusarIndefinido(e, `${caminho}.${chave}[${i}]`));
-    }
+    elementosDaUniao(valor)?.forEach((e, i) => {
+      recusarIndefinido(e, `${caminho}.${chave}[${String(i)}]`);
+    });
   }
   if (Object.keys(patch).length === 0) throw new Error('FakeDb: update vazio');
   for (const chave of Object.keys(patch)) {
@@ -686,11 +712,12 @@ export class FakeDb {
   private aplicar(anterior: DocData | undefined, patch: DocData): DocData {
     const saida: DocData = structuredClone(anterior ?? {});
     for (const [chave, valor] of Object.entries(patch)) {
+      const uniao = elementosDaUniao(valor);
       if (ehIncremento(valor)) {
         const atual = saida[chave];
         saida[chave] = (typeof atual === 'number' ? atual : 0) + valor.__increment;
-      } else if (ehUniao(valor)) {
-        saida[chave] = unir(saida[chave], valor.__arrayUnion);
+      } else if (uniao !== null) {
+        saida[chave] = unir(saida[chave], uniao);
       } else {
         saida[chave] = structuredClone(valor);
       }
@@ -824,6 +851,7 @@ export class FakeDb {
       ordens: [],
       limite: null,
       apos: null,
+      selecao: null,
     });
     return {
       ...raiz,
@@ -847,7 +875,13 @@ export class FakeDb {
     if (idColecao === '' || idColecao.includes('/')) {
       throw new Error('FakeDb: collectionGroup() precisa de um id de coleção, sem barra');
     }
-    return this.consulta(idColecao, true, { filtros: [], ordens: [], limite: null, apos: null });
+    return this.consulta(idColecao, true, {
+      filtros: [],
+      ordens: [],
+      limite: null,
+      apos: null,
+      selecao: null,
+    });
   }
 
   /** A batch: all or nothing, each write under its own precondition (module header). */
@@ -952,6 +986,18 @@ export class FakeDb {
         return derivar({ ordens: [...estado.ordens, { campo, direcao }] });
       },
       limit: (n: number) => derivar({ limite: n }),
+      select: (...campos: unknown[]) => {
+        // `select()` with no field (keys only), a FieldPath, a dotted path or a repeated call are
+        // not modelled: refuse rather than answer with a projection the server would not give.
+        if (
+          campos.length === 0 ||
+          estado.selecao !== null ||
+          campos.some((c) => typeof c !== 'string' || c === '' || c.includes('.'))
+        ) {
+          throw new Error('FakeDb: select() só é modelado com 1+ campos de topo, uma vez');
+        }
+        return derivar({ selecao: [...new Set(campos as string[])] });
+      },
       startAfter: (doc: string | { id: string; data: () => DocData | undefined }) => {
         if (typeof doc === 'string') {
           // A VALUE cursor: modelled only on a query ordered by the document key alone.
@@ -996,7 +1042,7 @@ export class FakeDb {
   }
 
   private buscar(colecao: string, grupo: boolean, estado: EstadoConsulta) {
-    const { filtros, ordens, limite, apos } = estado;
+    const { filtros, ordens, limite, apos, selecao } = estado;
     const falha = this.falhasDeConsulta.get(colecao);
     if (falha) return Promise.reject(falha);
     this.consultas.push({
@@ -1006,6 +1052,7 @@ export class FakeDb {
       ordens: ordens.map((o) => [o.campo, o.direcao] as [string, 'asc' | 'desc']),
       limite,
       apos: apos === null ? null : apos.id,
+      ...(selecao === null ? {} : { selecao }),
     });
     const prefixo = `${colecao}/`;
     // A group query: the last collection segment, at any depth. Otherwise the direct children.
@@ -1043,7 +1090,15 @@ export class FakeDb {
         : ordenados.filter((linha) => compararPosicoes(linha, apos, ordens) > 0);
     const limitados = limite === null ? aPartirDe : aPartirDe.slice(0, limite);
     const docs = limitados.map(({ caminho, stored }) => {
-      const dados = structuredClone(stored.data);
+      // A projection keeps only the selected fields a document HAS; it never drops the document.
+      const dados =
+        selecao === null
+          ? structuredClone(stored.data)
+          : Object.fromEntries(
+              selecao
+                .filter((c) => Object.hasOwn(stored.data, c))
+                .map((c) => [c, structuredClone(stored.data[c])]),
+            );
       const id = caminho.split('/').at(-1) ?? '';
       return {
         id,

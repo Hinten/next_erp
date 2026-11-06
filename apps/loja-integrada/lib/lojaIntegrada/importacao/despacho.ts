@@ -42,8 +42,10 @@
  * | `orfaos` | one detail the assembly needs (an unexplained variation, or a claimed id never listed); then the phase's end | a call; then none | `familias.ts` |
  * | `evidencias` | one family's exact-SKU claims | none | `evidencias.ts` |
  * | `aprendizado` | every claim decided at once | none | `gruposLi.ts` |
- * | `familias` | one family: cascade, plan, links, item; then the closing unit (the `nao-listado` and loose-row items) | none; none | `familias.ts`, `familiaDoJob.ts` |
- * | `fim` | the summary aviso (`aplicar`), then `concluido` | none | `avisosImportacao.ts`, `job.ts` |
+ * | `familias`, "only link" | one family: cascade, plan, links, item; then the closing unit (the `nao-listado` and loose-row items) | none; none | `familias.ts`, `familiaDoJob.ts` |
+ * | `familias`, "complete" | one detail the family needs; then the family's preparation (with nothing to fetch, also its closing); then one photo; then its closing | a call; none; a photo; none | `familiaDoJob.ts`, `fotos.ts` |
+ * | `revisao` (`aplicar` only) | one page of the tax-review carry-forward or re-check; at its end the tax-review aviso | none | `revisaoFiscal.ts`, `avisosImportacao.ts` |
+ * | `fim` | the summary aviso and the per-category avisos (`aplicar`), then `concluido` | none | `avisosImportacao.ts`, `job.ts` |
  *
  * At the catalogue phase's end an `aplicar` job also resolves the per-category avisos whose store
  * category is now linked or gone (`resolverCategoriasSemVinculoLi`). In `familias`, only the
@@ -51,10 +53,47 @@
  * the selection costs no read at all. The evidence pass visits every store family whatever the
  * target (its own header).
  *
- * ⚠️ The SEAMS of the complete step — and nothing of it here. "Complete" adds its own units (the
- * photos) inside the family, and the tax-review phase `revisao` after `familias` under an `aplicar`
- * job that completes ({@link faseDepoisDasFamiliasLi}). In this build `revisao` is never entered;
- * a job found there concludes it with no work.
+ * ## Complete (`acao: completar`)
+ *
+ * A family's complete step spans SEVERAL units, each budgeted and checkpointed on its own at the
+ * same `seq` (`familiaDoJob.ts`, "Complete"), so a cancel is seen at the next one:
+ *
+ *  1. **Its details**, one call per unit: every id `detalhesDaFamiliaLi` says completing the family
+ *     needs (a detail only where it can change something), minus every detail the job holds or
+ *     tried — the `orfaos` phase's, and the family's own, which the job's `familias.filhosLidos`
+ *     lists (the root's id included). The family is matched and planned only once the last one is
+ *     read: an all-or-nothing create never sees half a family. A create the checks that need no
+ *     detail already refuse (an option, a combination, the probe over the rows' SKUs) asks for none.
+ *     The list is computed once per dispatch per family; a unit whose cost was not known yet is
+ *     budgeted as a call (the worst of a detail read and a family).
+ *  2. **Its preparation**, no call: the category planned, then the create (every refusal, the probe
+ *     immediately before the commit, the planned categories created and the tax review written only
+ *     then — in the same unit, with no Loja Integrada call in between) or the fills. A unit whose
+ *     detail list found nothing to read reuses that list's cascade. With nothing to fetch — no
+ *     photo, the bucket missing, or Simular (which counts the pictures with no download) — the
+ *     closing runs in the same unit.
+ *  3. **Its photos**, `aplicar` only: one picture per unit (`fotos.ts`, the `foto` budget row; its
+ *     `800x800` fallback a unit of its own), the downloads counted with the calls. An upload past its
+ *     deadline ends the dispatch's units at once (`parar`): the end-of-dispatch checkpoint and the
+ *     continuation follow, and the next dispatch fetches that picture again.
+ *  4. **Its closing**, no call: the links LAST, the variations the ERP family lacks, the item, the
+ *     counters — and the family cursor past it.
+ *
+ * Between the units the family's PROGRESS rides the job (`familiaDoJob.ts`, "The family's
+ * progress": tagged text in `revisao.cursorProdutoId`, which the transition to `revisao` clears).
+ * Work a unit was not budgeted for is never started: it checkpoints what it learned, and the next
+ * unit is budgeted for that work.
+ *
+ * **Photos and the bucket.** A job that asks for photos (`deveImportarFotosLi`) asks the functions
+ * codebase for the default bucket ONCE per dispatch, under Simular too, so its verdict is an
+ * `aplicar` run's: none ⇒ the job is stamped `fotosIndisponiveis` in that unit's checkpoint and no
+ * photo is planned for the rest of the run; one found missing after a family's preparation closes
+ * that family with what was stored.
+ *
+ * **The tax review.** EVERY `aplicar` job enters `revisao` after `familias`, under either action
+ * ({@link faseDepoisDasFamiliasLi}); its last unit syncs the tax-review aviso on the open count
+ * (`sincronizarAvisoDeRevisaoFiscalLi`). The per-category aviso is raised at the job's end beside the
+ * summary aviso, from the items' own category refusals ({@link categoriasSemVinculoDoJob}).
  *
  * ## What each dispatch reads once, and keeps
  *
@@ -68,11 +107,20 @@
  *
  * ## Simular writes only the job
  *
- * Under `simular` every phase decides exactly as `aplicar` does (one stated residual: two store roots
- * placed on ONE ERP produto, `vinculos.ts`) and writes only the job document and its own
- * subcollections: no link, no grupo (the learnings ride the job as an overlay later families
- * resolve against), no aviso of the import's. The modules below each hold that rule; the dispatch
- * adds no write of its own outside the job.
+ * Under `simular` every phase decides exactly as `aplicar` does and writes only the job document
+ * and its own subcollections: no link, no grupo (the learnings ride the job as an overlay later
+ * families resolve against), no aviso of the import's. Two stated residuals of that parity: two
+ * store roots placed on ONE ERP produto (`vinculos.ts`), and — under "complete" — the produtos an
+ * EARLIER family would create or add: Simular writes none of them, so a later family's cascade and
+ * create probe never meet them. Store SKUs `'ABC-1'` and `'abc-1'`, both absent: `aplicar` creates
+ * the first and refuses the second (`sku-parecido`, against the first's create); Simular says
+ * `criar` for both (pinned in `familiaDoJob.test.ts`). The same for a store simple product whose SKU
+ * is another's derived sole-member SKU (`'ABC'` and `'ABC-UN'`). Closing it needs an overlay of the
+ * SKUs a Simular would create, kept on the job across dispatches, which the job contract has no
+ * field for; the `aplicar` run refuses what Simular promised, and writes nothing for it. The modules below each hold that rule — under "complete" a
+ * category or family create is planned, a fill decided, a picture counted, none written — and the
+ * dispatch adds no write of its own outside the job: Simular never enters `revisao`, and the photo
+ * units are `aplicar`'s alone.
  *
  * ⚠️ The ONE exception is not the import's decision: a 401/403 parks the conta exactly as every
  * reader parks it (`tratarFalhaDeAutenticacao`: the conta's credential document and its reconexão
@@ -119,7 +167,14 @@
  *    of the task follows the last attempt, so leaving the job `executando` would leave it with
  *    nothing to carry it. Our own write found stored after a lost reply is never such a writer
  *    (`job.ts`, "Is it our write?"). Our own misconfiguration and coding bugs stay loud on every
- *    attempt.
+ *    attempt. ⚠️ So does a STORAGE failure of a photo upload (`fotos.ts`: it propagates) — a
+ *    deviation from the plan's "the queue's last attempt stamps `falhou/tentativas-esgotadas`": no
+ *    class of the Storage client is reachable from this app to narrow on (rule 6 forbids testing
+ *    the `Error` base or a duck-typed shape), so a persistent failure — a missing bucket grant —
+ *    AND a transient one (a GCS 5xx or 429) that happens to hit the last attempt are rethrown there
+ *    too and leave the job `executando` with nothing queued: every new start answers 409 until a
+ *    person presses Cancelar (the card flags it after 45 min without progress). Closing it needs
+ *    the Storage client's error class (or a guard for it) exported by `@delfrance/storage/admin`.
  *  - **A checkpoint that stops** on a job its fresh read finds ONE `seq` ahead, still
  *    `executando` — that earlier attempt ended its slice, and may never hand off — hands the named
  *    successor off as a courtesy ("Whose hand-off" below), on every attempt: the dispatch ends
@@ -201,6 +256,7 @@
  */
 import type { Firestore, Timestamp } from 'firebase-admin/firestore';
 import { isGrpcStatusError } from '@delfrance/data/admin/grpcErrors';
+import type { Bucket } from '@delfrance/storage/admin';
 import { TASK_MAX_ATTEMPTS } from '@delfrance/data/admin/notifications';
 import {
   LiAuthError,
@@ -211,6 +267,7 @@ import {
   LiThrottleError,
 } from '@delfrance/integrations-loja-integrada';
 import {
+  ACAO_IMPORTACAO_LI,
   ALVO_IMPORTACAO_LI,
   type ContadoresImportacaoLi,
   type DetalheImportacaoLi,
@@ -252,8 +309,15 @@ import {
   LiTarefasDesligadasError,
   LiTarefasTransitoriasError,
 } from './agendadorImportacao';
-import { resolverCategoriasSemVinculoLi, sincronizarAvisoDePendenciasLi } from './avisosImportacao';
+import {
+  type CategoriaSemVinculoLi,
+  avisarCategoriaSemVinculoLi,
+  resolverCategoriasSemVinculoLi,
+  sincronizarAvisoDePendenciasLi,
+  sincronizarAvisoDeRevisaoFiscalLi,
+} from './avisosImportacao';
 import { executarUnidadeDoCatalogoDoJobLi, unidadeDoCatalogoDoJobLi } from './catalogoDoJob';
+import { avisoDaPendenciaDeCategoriaLi } from './categorias';
 import {
   type DetalhesDeps,
   type ResultadoDetalheLi,
@@ -265,7 +329,20 @@ import {
   executarUnidadeDasEvidenciasLi,
   lerEvidenciasDoJobLi,
 } from './evidencias';
-import { type ContextoDasFamiliasLi, executarFamiliaLi } from './familiaDoJob';
+import {
+  type CasamentoDaFamiliaLi,
+  type ContextoDasFamiliasLi,
+  type DepsFamiliaLi,
+  type ProgressoDaFamiliaLi,
+  alvosDeFotosDaFamiliaLi,
+  comDetalhesLi,
+  detalhesDaFamiliaLi,
+  executarFamiliaLi,
+  fecharFamiliaLi,
+  lerProgressoDaFamiliaLi,
+  resultadoFotosDoProgressoLi,
+  textoDoProgressoDaFamiliaLi,
+} from './familiaDoJob';
 import {
   type FamiliaLi,
   type IndiceDoSnapshotLi,
@@ -278,6 +355,15 @@ import {
   proximoOrfaoLi,
   unidadeDosOrfaosLi,
 } from './familias';
+import {
+  type GuardarFotoLi,
+  TIPO_PASSO_FOTOS_LI,
+  criarGuardarFotoLi,
+  deveImportarFotosLi,
+  executarUnidadeDeFotoLi,
+  resultadoDasFotosLi,
+  unidadeDaFotoLi,
+} from './fotos';
 import {
   type MemoDeGruposLi,
   UNIDADE_DO_APRENDIZADO_LI,
@@ -307,11 +393,13 @@ import {
 import { executarUnidadeDaListaLi, unidadeDaListaLi } from './listagem';
 import {
   type OrcamentoDespachoLi,
+  PIOR_CASO_UNIDADE_IMPORTACAO_LI_MS,
   UNIDADE_IMPORTACAO_LI,
   type UnidadeImportacaoLi,
   abrirOrcamentoLi,
 } from './orcamento';
 import {
+  type ContagemAcionavelLi,
   contadoresDoItemLi,
   contarPendenciasAcionaveisLi,
   gravarItemLi,
@@ -320,6 +408,15 @@ import {
   somarContadoresLi,
 } from './relatorio';
 import { skusRepetidosNaLojaLi } from './resolucao';
+import {
+  type LeitorDeListasRevisaoLi,
+  type LeitorDeRegrasImpostoLi,
+  PASSO_REVISAO_FISCAL_LI,
+  criarLeitorDeListasRevisaoLi,
+  criarLeitorDeRegrasImpostoLi,
+  executarUnidadeDaRevisaoFiscalLi,
+  unidadeDaRevisaoFiscalLi,
+} from './revisaoFiscal';
 
 export { FLUXO_IMPORTACAO_LI };
 
@@ -344,6 +441,12 @@ export interface DepsDespachoImportacaoLi {
   readonly increment: (by: number) => unknown;
   /** The producer, built only when a hand-off is due (the tasks valve is read when it is built). */
   readonly agendador: () => AgendadorImportacaoLi;
+  /**
+   * The default bucket a "complete" run stores its photos in (`fotos.ts`), resolved only when asked;
+   * `null` when nothing names one: the run's photos are skipped and the job is stamped
+   * `fotosIndisponiveis`.
+   */
+  readonly bucket: () => Bucket | null;
   readonly logger: LoggerDespachoImportacaoLi;
   /** The Cloud Tasks attempt, 0-based (`req.retryCount`). */
   readonly tentativa: number;
@@ -405,13 +508,19 @@ export interface ResultadoDespachoImportacaoLi {
 }
 
 /**
- * The phase after `familias`: `fim` in this build. ⚠️ The complete step's seam: an `aplicar` job
- * that completes enters the tax-review phase `revisao` here.
+ * The phase after `familias` (module header, "The phases"): `revisao` for EVERY `aplicar` job, under
+ * either action — the tax-review list is durable across jobs, and the carry-forward
+ * (`revisaoFiscal.ts`) reads a CONCLUDED `aplicar` job as one that re-checked it, so a job that
+ * concluded without the phase would hide every older open entry behind it; a "only link" job adds
+ * no entry, but re-checks the list and closes the aviso once evidence arrived. `fim` under Simular,
+ * which raises and resolves nothing.
  */
 export function faseDepoisDasFamiliasLi(
-  _job: Pick<ImportacaoLojaIntegrada, 'modo' | 'acao'>,
+  job: Pick<ImportacaoLojaIntegrada, 'modo' | 'acao'>,
 ): FaseImportacaoLi {
-  return FASE_IMPORTACAO_LI.fim;
+  return job.modo === MODO_IMPORTACAO_LI.aplicar
+    ? FASE_IMPORTACAO_LI.revisao
+    : FASE_IMPORTACAO_LI.fim;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -450,6 +559,31 @@ function esgotaAsTentativas(err: unknown): boolean {
   );
 }
 
+/**
+ * The per-category aviso's rows of a job (module header, "The summary aviso"): one per store
+ * category its items' own category refusals name (`avisoDaPendenciaDeCategoriaLi` over the job's
+ * map), the products counted across every refusal naming it, in first-seen order. A refusal whose
+ * category needs no row (a leaf the store's list lacks, unreadable URIs) gives none.
+ */
+export function categoriasSemVinculoDoJob(
+  job: Pick<ImportacaoLojaIntegrada, 'mapaCategorias'>,
+  categorias: NonNullable<ContagemAcionavelLi['categorias']>,
+): CategoriaSemVinculoLi[] {
+  const porId = new Map<number, CategoriaSemVinculoLi>();
+  for (const c of categorias) {
+    const aviso = avisoDaPendenciaDeCategoriaLi(job.mapaCategorias, c);
+    if (aviso === null) continue;
+    const antes = porId.get(aviso.categoriaLiId);
+    porId.set(aviso.categoriaLiId, {
+      categoriaLiId: aviso.categoriaLiId,
+      caminho: antes?.caminho ?? aviso.caminho,
+      motivo: antes?.motivo ?? aviso.motivo,
+      produtos: (antes?.produtos ?? 0) + c.itens,
+    });
+  }
+  return [...porId.values()];
+}
+
 /* -------------------------------------------------------------------------- */
 /*                                   One unit                                  */
 /* -------------------------------------------------------------------------- */
@@ -469,6 +603,20 @@ const FAMILIAS_DO_INICIO: ImportacaoLojaIntegrada['familias'] = {
   cursorPaiId: null,
   filhosLidos: [],
 };
+
+/**
+ * The `revisao` cursor before its phase: also what clears a family's progress, which rides that
+ * field's text during the `familias` phase (`familiaDoJob.ts`, "The family's progress").
+ */
+const REVISAO_DO_INICIO: ImportacaoLojaIntegrada['revisao'] = {
+  cursorProdutoId: null,
+  anteriorJobId: null,
+};
+
+/** Whether a unit budgeted as `orcada` covers work whose worst case is `custo`'s. */
+function cobre(orcada: UnidadeImportacaoLi, custo: UnidadeImportacaoLi): boolean {
+  return PIOR_CASO_UNIDADE_IMPORTACAO_LI_MS[custo] <= PIOR_CASO_UNIDADE_IMPORTACAO_LI_MS[orcada];
+}
 
 /**
  * The end-of-dispatch checkpoint THIS dispatch sent, kept from BEFORE its write (module header,
@@ -566,6 +714,21 @@ class DespachoImportacaoLi {
   private skusRepetidos: ReadonlySet<string> | null = null;
   private memo: MemoDeGruposLi | null = null;
   private recusas: ContextoDasFamiliasLi['recusasDoAprendizado'] | null = null;
+  /** The details the complete step still has to read for the family it is on (ids, in order). */
+  private faltantes: { readonly raizLiId: number; readonly ids: readonly number[] } | null = null;
+  /** The stored details already looked up for the complete step this dispatch (by id). */
+  private readonly detalhesProcurados = new Set<number>();
+  /** The photo upload seam, once the bucket was asked for (`undefined` until then). */
+  private guardar: GuardarFotoLi | null | undefined = undefined;
+  /** The tax rules, read at most once per dispatch (`revisaoFiscal.ts`). */
+  private regras: LeitorDeRegrasImpostoLi | null = null;
+  /** The jobs' tax-review lists, each read whole at most once per dispatch (`revisaoFiscal.ts`). */
+  private listasRevisao: LeitorDeListasRevisaoLi | null = null;
+  /**
+   * A photo upload outlived its deadline (`fotos.ts`, `parar`): no more unit in this dispatch — the
+   * end-of-dispatch checkpoint and the continuation follow at once.
+   */
+  private encerrarAgora = false;
 
   constructor(
     private readonly db: Firestore,
@@ -653,7 +816,7 @@ class DespachoImportacaoLi {
 
     for (;;) {
       const proxima = this.proximaUnidade();
-      if (!this.orcamento.cabe(proxima.unidade)) {
+      if (this.encerrarAgora || !this.orcamento.cabe(proxima.unidade)) {
         return this.fimDoDespacho(
           {},
           ATRASO_CONTINUACAO_IMPORTACAO_LI_S,
@@ -885,6 +1048,22 @@ class DespachoImportacaoLi {
         contagem,
         { increment: this.deps.increment, nowMs: agora, logger: this.deps.logger },
       );
+      // The per-category rows of the categories this job left products without (the complete
+      // step's, `categorias.ts`), from the items' own refusals: the job keeps no tally of them.
+      for (const categoria of categoriasSemVinculoDoJob(job, contagem.categorias ?? [])) {
+        await avisarCategoriaSemVinculoLi(
+          this.db,
+          {
+            jobId: this.tarefa.jobId,
+            integracaoId: job.integracaoId,
+            lojaNome: this.lojaNome(),
+            modo: job.modo,
+            fimMs: agora,
+          },
+          categoria,
+          { increment: this.deps.increment, nowMs: agora, logger: this.deps.logger },
+        );
+      }
     }
     const r = await encerrarImportacaoLi(this.db, this.alvoAtual(), desfecho, agora);
     if (r.tipo !== 'encerrado') return this.resultado(DESFECHO_DESPACHO_IMPORTACAO_LI.parado);
@@ -1133,11 +1312,7 @@ class DespachoImportacaoLi {
       case FASE_IMPORTACAO_LI.familias:
         return this.unidadeDasFamilias(job);
       case FASE_IMPORTACAO_LI.revisao:
-        // The complete step's phase (module header): never entered in this build, concluded empty.
-        return {
-          unidade: UNIDADE_IMPORTACAO_LI.familia,
-          executar: () => Promise.resolve(progresso({ fase: FASE_IMPORTACAO_LI.fim })),
-        };
+        return this.unidadeDaRevisao(job);
       case FASE_IMPORTACAO_LI.fim:
         return {
           unidade: UNIDADE_IMPORTACAO_LI.familia,
@@ -1332,28 +1507,37 @@ class DespachoImportacaoLi {
     };
   }
 
-  private unidadeDasFamilias(job: ImportacaoLojaIntegrada): UnidadeDoDespachoLi {
+  /** The next family of the phase after the family cursor (the target's only), if any. */
+  private proximaFamilia(job: ImportacaoLojaIntegrada, m: MontagemLi): FamiliaLi | null {
     const { cursorPaiId } = job.familias;
-    const proximaDe = (m: MontagemLi): FamiliaLi | null =>
+    return (
       this.familiasDoAlvo(job, m).find((f) => cursorPaiId === null || f.raiz.id > cursorPaiId) ??
-      null;
+      null
+    );
+  }
 
-    // Every detail the assembly needs was read in the `orfaos` phase: a family calls nothing.
-    // ⚠️ The complete step's seam: its per-family detail reads (`familias.filhosLidos`).
+  private depsDaFamilia(): DepsFamiliaLi {
+    return {
+      db: this.db,
+      jobId: this.tarefa.jobId,
+      criacaoDoJob: this.criacaoDoJobAtual(),
+      agoraMs: this.deps.agoraMs,
+    };
+  }
+
+  private unidadeDasFamilias(job: ImportacaoLojaIntegrada): UnidadeDoDespachoLi {
+    if (job.acao === ACAO_IMPORTACAO_LI.completar) return this.unidadeDoCompletar(job);
+    // "Only link": every detail the assembly needs was read in the `orfaos` phase, so a family
+    // calls nothing.
     return {
       unidade: UNIDADE_IMPORTACAO_LI.familia,
       executar: async () => {
         const m = await this.montagemDoJob();
-        const familia = proximaDe(m);
+        const familia = this.proximaFamilia(job, m);
         if (familia === null) return this.fecharFamilias(job, m);
 
         const r = await executarFamiliaLi(
-          {
-            db: this.db,
-            jobId: this.tarefa.jobId,
-            criacaoDoJob: this.criacaoDoJobAtual(),
-            agoraMs: this.deps.agoraMs,
-          },
+          this.depsDaFamilia(),
           await this.contextoDasFamilias(job),
           familia,
         );
@@ -1363,6 +1547,327 @@ class DespachoImportacaoLi {
           familias: { cursorPaiId: familia.raiz.id, filhosLidos: [] },
           contadores,
         });
+      },
+    };
+  }
+
+  /* --------------------------------- complete --------------------------------- */
+
+  /**
+   * Whether the run copies photos, and the job patch a missing bucket stamps (module header,
+   * "Complete"): the job asks for them and has not found the bucket missing yet ⇒ the bucket is
+   * asked for ONCE per dispatch; `null` ⇒ `fotosIndisponiveis`, and no photo for the rest of the
+   * run. Asked under Simular too, so its verdict is an `aplicar` run's.
+   */
+  private fotosDoJob(job: ImportacaoLojaIntegrada): {
+    readonly importar: boolean;
+    readonly patch: ProgressoImportacaoLi;
+  } {
+    if (!deveImportarFotosLi(job) || job.fotosIndisponiveis) return { importar: false, patch: {} };
+    const guardar = this.guardarDasFotos(job);
+    return guardar === null
+      ? { importar: false, patch: { fotosIndisponiveis: true } }
+      : { importar: true, patch: {} };
+  }
+
+  private guardarDasFotos(job: ImportacaoLojaIntegrada): GuardarFotoLi | null {
+    if (this.guardar === undefined) {
+      const bucket = this.deps.bucket();
+      this.guardar =
+        bucket === null
+          ? null
+          : criarGuardarFotoLi({ db: this.db, bucket, contaId: job.integracaoId });
+    }
+    return this.guardar;
+  }
+
+  /**
+   * The details the complete step READ for the job's current family (`familias.filhosLidos`) —
+   * and every one the dispatch holds — in the assembly's map, each looked up by id at most once
+   * per dispatch. Returns the map.
+   */
+  private async detalhesDaFamilia(
+    job: ImportacaoLojaIntegrada,
+  ): Promise<ReadonlyMap<number, DetalheImportacaoLi>> {
+    await this.montagemDoJob();
+    const detalhes = this.detalhes;
+    if (detalhes === null) throw new TypeError('despacho: montagem sem detalhes');
+    const ids = job.familias.filhosLidos.filter(
+      (id) => !detalhes.has(id) && !this.detalhesProcurados.has(id),
+    );
+    for (const id of ids) this.detalhesProcurados.add(id);
+    if (ids.length > 0) {
+      for (const [id, d] of await lerDetalhesGravadosLi(this.db, this.tarefa.jobId, ids)) {
+        detalhes.set(id, d);
+      }
+    }
+    return detalhes;
+  }
+
+  /**
+   * The details completing `familia` still needs — never one the job holds or tried: the `orfaos`
+   * phase's, and the family's own earlier units' (`familias.filhosLidos`). Computed once per
+   * dispatch per family (it runs the cascade), then each read is crossed off. `casamento` is that
+   * cascade when THIS call computed it (the caller's unit may reuse it: same family, same
+   * context); `null` when the list came from an earlier unit, whose cascade may predate a detail.
+   */
+  private async faltantesDaFamilia(
+    job: ImportacaoLojaIntegrada,
+    ctx: ContextoDasFamiliasLi,
+    familia: FamiliaLi,
+  ): Promise<{
+    readonly ids: readonly number[];
+    readonly casamento: CasamentoDaFamiliaLi | null;
+  }> {
+    if (this.faltantes?.raizLiId !== familia.raiz.id) {
+      const lidos = new Set([...job.familias.filhosLidos, ...(await this.aDetalharDoSnapshot())]);
+      const d = await detalhesDaFamiliaLi(this.depsDaFamilia(), ctx, familia);
+      const ids = d.ids.filter((id) => !lidos.has(id));
+      this.faltantes = { raizLiId: familia.raiz.id, ids: [...new Set(ids)] };
+      return { ids: this.faltantes.ids, casamento: d.casamento };
+    }
+    return { ids: this.faltantes.ids, casamento: null };
+  }
+
+  /**
+   * The cost of the complete step's next unit, before it runs: a family in progress ⇒ a photo, or
+   * its closing; a family whose missing details this dispatch knows ⇒ a call, or the family; one it
+   * has not looked at yet ⇒ a call (the worst of a detail read and a family).
+   */
+  private custoDoCompletar(
+    job: ImportacaoLojaIntegrada,
+    emCurso: ProgressoDaFamiliaLi | null,
+  ): UnidadeImportacaoLi {
+    const cursor = job.familias.cursorPaiId;
+    if (emCurso !== null && (cursor === null || emCurso.raizLiId > cursor)) {
+      return emCurso.resultadoFotos === null ? unidadeDaFotoLi() : UNIDADE_IMPORTACAO_LI.familia;
+    }
+    if (this.faltantes !== null && (cursor === null || this.faltantes.raizLiId > cursor)) {
+      return this.faltantes.ids.length > 0
+        ? UNIDADE_IMPORTACAO_LI.chamada
+        : UNIDADE_IMPORTACAO_LI.familia;
+    }
+    return UNIDADE_IMPORTACAO_LI.chamada;
+  }
+
+  /**
+   * The complete step's next unit for the current family (module header, "Complete"): one detail
+   * read, the family's preparation (and, with nothing to fetch, its closing), one photo, or the
+   * closing — each budgeted on its own and checkpointed at the same `seq`. Work the unit was not
+   * budgeted for is never started: the unit then checkpoints what it learned and the next one is
+   * budgeted for it.
+   */
+  private unidadeDoCompletar(job: ImportacaoLojaIntegrada): UnidadeDoDespachoLi {
+    const guardado = lerProgressoDaFamiliaLi(job.revisao.cursorProdutoId);
+    const unidade = this.custoDoCompletar(job, guardado);
+    return {
+      unidade,
+      executar: async () => {
+        const m = await this.montagemDoJob();
+        const familia = this.proximaFamilia(job, m);
+        if (familia === null) return this.fecharFamilias(job, m);
+        const fotos = this.fotosDoJob(job);
+        const ctx: ContextoDasFamiliasLi = {
+          ...(await this.contextoDasFamilias(job)),
+          importarFotos: fotos.importar,
+        };
+        const completa = comDetalhesLi(familia, await this.detalhesDaFamilia(job));
+
+        // A family in progress (its preparation done): a photo, or its closing.
+        if (guardado?.raizLiId === familia.raiz.id) {
+          return this.continuarFamilia(job, ctx, completa, guardado, unidade, fotos.patch);
+        }
+        // A progress of another family (read back from an older attempt) is none: cleared.
+        const limpo: ProgressoImportacaoLi =
+          guardado === null ? {} : { revisao: REVISAO_DO_INICIO };
+
+        const faltantes = await this.faltantesDaFamilia(job, ctx, completa);
+        const liId = faltantes.ids[0];
+        if (liId !== undefined) {
+          if (!cobre(unidade, UNIDADE_IMPORTACAO_LI.chamada)) {
+            return progresso({ ...limpo, ...fotos.patch });
+          }
+          this.registrarDetalhe(liId, await this.lerDetalheContido(liId));
+          this.faltantes = { raizLiId: familia.raiz.id, ids: faltantes.ids.slice(1) };
+          return progresso({
+            ...limpo,
+            ...fotos.patch,
+            familias: { ...job.familias, filhosLidos: [...job.familias.filhosLidos, liId] },
+          });
+        }
+
+        // Nothing to read: this unit's own cascade (when it ran one) is reused, never re-run.
+        const r = await executarFamiliaLi(
+          this.depsDaFamilia(),
+          ctx,
+          completa,
+          faltantes.casamento ?? undefined,
+        );
+        if (r.tipo === 'fotos') {
+          return progresso({
+            ...fotos.patch,
+            mapaCategorias: [...r.mapaCategorias],
+            revisao: {
+              ...REVISAO_DO_INICIO,
+              cursorProdutoId: textoDoProgressoDaFamiliaLi(r.progresso),
+            },
+          });
+        }
+        if (r.tipo === 'relatado') this.avisarNomesCortados(r.nomesCortados);
+        this.faltantes = null;
+        return progresso({
+          ...limpo,
+          ...fotos.patch,
+          familias: { cursorPaiId: familia.raiz.id, filhosLidos: [] },
+          contadores:
+            r.tipo === 'relatado'
+              ? somarContadoresLi(job.contadores, r.contadores)
+              : job.contadores,
+          mapaCategorias: [...r.mapaCategorias],
+        });
+      },
+    };
+  }
+
+  /**
+   * A family in progress (`familiaDoJob.ts`, "The family's progress"): its next photo while any is
+   * left (one download at most, `fotos.ts`), else its closing — the links, the adds, the item and
+   * the counters, the family cursor moved past it and the progress cleared.
+   */
+  private async continuarFamilia(
+    job: ImportacaoLojaIntegrada,
+    ctx: ContextoDasFamiliasLi,
+    familia: FamiliaLi,
+    emCurso: ProgressoDaFamiliaLi,
+    unidade: UnidadeImportacaoLi,
+    patchDasFotos: ProgressoImportacaoLi,
+  ): Promise<PassoDoDespachoLi> {
+    const comProgresso = (p: ProgressoDaFamiliaLi): ProgressoImportacaoLi => ({
+      revisao: { ...REVISAO_DO_INICIO, cursorProdutoId: textoDoProgressoDaFamiliaLi(p) },
+    });
+
+    if (emCurso.resultadoFotos === null) {
+      if (!cobre(unidade, unidadeDaFotoLi())) return progresso({ ...patchDasFotos });
+      const passo = await executarUnidadeDeFotoLi(
+        {
+          db: this.db,
+          cdn: this.contextoAtual().cdn,
+          guardar: ctx.importarFotos === true ? this.guardarDasFotos(job) : null,
+          esperar: this.deps.esperar,
+          agoraMs: this.deps.agoraMs,
+          logger: this.deps.logger,
+        },
+        alvosDeFotosDaFamiliaLi(familia, emCurso),
+        emCurso.fotos,
+      );
+      switch (passo.tipo) {
+        case TIPO_PASSO_FOTOS_LI.semBucket:
+          // No bucket (the job found it missing since the family's preparation): what was stored
+          // stays, nothing more is fetched, and the family closes with it.
+          return progresso({
+            ...patchDasFotos,
+            fotosIndisponiveis: true,
+            ...comProgresso({
+              ...emCurso,
+              resultadoFotos: resultadoFotosDoProgressoLi(
+                resultadoDasFotosLi(emCurso.fotos ?? { feitos: [], recusadas: [] }),
+              ),
+            }),
+          });
+        case TIPO_PASSO_FOTOS_LI.progresso:
+        case TIPO_PASSO_FOTOS_LI.parar:
+          this.chamadas += passo.downloads;
+          // An upload past its deadline: this dispatch runs no more unit (`fotos.ts`).
+          if (passo.tipo === TIPO_PASSO_FOTOS_LI.parar) this.encerrarAgora = true;
+          return progresso({
+            ...patchDasFotos,
+            ...comProgresso({ ...emCurso, fotos: passo.cursor }),
+          });
+        case TIPO_PASSO_FOTOS_LI.concluido:
+          this.chamadas += passo.downloads;
+          return progresso({
+            ...patchDasFotos,
+            ...comProgresso({
+              ...emCurso,
+              resultadoFotos: resultadoFotosDoProgressoLi(passo.resultado),
+            }),
+          });
+      }
+    }
+
+    const r = await fecharFamiliaLi(
+      this.depsDaFamilia(),
+      ctx,
+      familia,
+      emCurso,
+      emCurso.resultadoFotos,
+    );
+    this.avisarNomesCortados(r.nomesCortados);
+    this.faltantes = null;
+    return progresso({
+      ...patchDasFotos,
+      revisao: REVISAO_DO_INICIO,
+      familias: { cursorPaiId: familia.raiz.id, filhosLidos: [] },
+      contadores: somarContadoresLi(job.contadores, r.contadores),
+      mapaCategorias: [...r.mapaCategorias],
+    });
+  }
+
+  /** ONE line for the created produtos whose name was cut at the ERP's limit (store ids only). */
+  private avisarNomesCortados(liIds: readonly number[]): void {
+    if (liIds.length === 0) return;
+    this.deps.logger.warn('[loja-integrada] importação: nome de produto criado cortado no limite', {
+      jobId: this.tarefa.jobId,
+      liIds: [...liIds],
+    });
+  }
+
+  /* ---------------------------------- revisao ---------------------------------- */
+
+  /**
+   * The `revisao` phase's next unit (module header, "The phases"; `revisaoFiscal.ts`): the
+   * carry-forward, then the re-check, one page per unit; at its end the tax-review aviso is synced
+   * on the open count and the job moves to `fim`. A Simular job never enters it (one found there
+   * concludes it with no work). ⚠️ Accepted residual: a Cancelar landing during the phase's LAST
+   * unit leaves the aviso synced by a job that then reads `cancelado` — its re-check had finished,
+   * so the count it carries is the list's.
+   */
+  private unidadeDaRevisao(job: ImportacaoLojaIntegrada): UnidadeDoDespachoLi {
+    return {
+      unidade: unidadeDaRevisaoFiscalLi(),
+      executar: async () => {
+        if (job.modo !== MODO_IMPORTACAO_LI.aplicar) {
+          return progresso({ fase: FASE_IMPORTACAO_LI.fim });
+        }
+        this.regras ??= criarLeitorDeRegrasImpostoLi(this.db);
+        this.listasRevisao ??= criarLeitorDeListasRevisaoLi(this.db);
+        const passo = await executarUnidadeDaRevisaoFiscalLi(
+          {
+            db: this.db,
+            contaId: job.integracaoId,
+            jobId: this.tarefa.jobId,
+            regras: this.regras,
+            listas: this.listasRevisao,
+          },
+          job.revisao,
+        );
+        if (passo.tipo === PASSO_REVISAO_FISCAL_LI.progresso) {
+          return progresso({ revisao: passo.estado });
+        }
+        const agora = this.deps.agoraMs();
+        await sincronizarAvisoDeRevisaoFiscalLi(
+          this.db,
+          {
+            jobId: this.tarefa.jobId,
+            integracaoId: job.integracaoId,
+            lojaNome: this.lojaNome(),
+            modo: job.modo,
+            fimMs: agora,
+            abertos: passo.abertos,
+          },
+          { increment: this.deps.increment, nowMs: agora, logger: this.deps.logger },
+        );
+        return progresso({ revisao: passo.estado, fase: FASE_IMPORTACAO_LI.fim });
       },
     };
   }
@@ -1399,6 +1904,8 @@ class DespachoImportacaoLi {
     return progresso({
       fase: faseDepoisDasFamiliasLi(job),
       familias: FAMILIAS_DO_INICIO,
+      // The `revisao` phase starts from its own beginning (and no family's progress survives it).
+      revisao: REVISAO_DO_INICIO,
       contadores,
     });
   }
