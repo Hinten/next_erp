@@ -25,7 +25,7 @@ import { getAdminApp } from './lib/admin';
  * the conta reads and the SP-API error classes — and the NF-e trigger runs on
  * EVERY `nfev4` write of the project, so its import closure is pinned file by
  * file to reach none of them (`estrutura.test.ts`, D11 by construction).
- * `estrutura.test.ts` also pins the three roots and the queue each one binds.
+ * `estrutura.test.ts` also pins the app's four roots and the queue each one binds.
  *
  * The trigger makes it reachable from `src/index.ts`, so esbuild bundles it and
  * `tools/deploy-env/bundle-inlining.test.js` checks the region it inlines on

@@ -80,6 +80,8 @@ const INVENTORY = {
     'The Amazon reads queue (filaLeituraAmazon, order intake). Enqueued by the push receiver route (App Hosting runtime SA) and by the 15-minute backstop poll pollAmazonOrders (functions runtime SA, through functions/src/agendador.ts). The reprocess sweep re-drives rows inline and never enqueues.',
   'apps/amazon/functions/src/filaNfe.ts':
     'The Amazon NF-e upload queue (processAmazonNfeUpload, master-plan step 14). Enqueued by the onNfeAprovadaAmazon Firestore trigger (ONE named task per CloudEvent, through functions/src/agendadorNfe.ts) and re-enqueued by ITSELF for the verification ladder, the one resubmit and the 429 pause (scheduleDelaySeconds) — both the functions runtime SA — and, from PR 14-d, by the re-drive route enviar-nfe under the App Hosting runtime SA: two identities.',
+  'apps/amazon/functions/src/filaAgendamento.ts':
+    'The Amazon Easy Ship scheduling queue (processAmazonEasyShipSchedule, master-plan step 15). Enqueued through functions/src/agendadorAgendamento.ts by the NF-e task acceptance seam (E1, one task named after the NF-e dispatch, scheduleDelaySeconds), by the reads-queue order import (E2, one task named after the import read) and by ITSELF for the espera and 429 pause rungs (unnamed, scheduleDelaySeconds) — all the functions runtime SA. The App Hosting bundle has no producer for it; the deploy still grants enqueuer to BOTH runtime SAs, because TASKS_INVOKER_SA is the one codebase-wide list.',
 
   // ---- codebase `nfe` -----------------------------------------------------
   'apps/nfe/functions/src/reconciliar.ts':

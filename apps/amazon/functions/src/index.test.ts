@@ -10,6 +10,10 @@ import { TASK_MAX_ATTEMPTS } from '@delfrance/data/admin/notifications';
 import { PRAZO_AMAZON_MS } from '@delfrance/integrations-amazon-sp-api';
 import { ORIGEM_NOTIFICACAO_AMAZON, TIPO_TAREFA_AMAZON, nfeMeta } from '@delfrance/schemas';
 
+import {
+  FILA_AGENDAMENTO_AMAZON,
+  TENTATIVAS_AGENDAMENTO_AMAZON,
+} from '../../lib/amazon/agendamento/tarefaAgendamento';
 import type { ExpiracaoSweepAmazonResult } from '../../lib/amazon/conta/expiracaoSweep';
 import { __setRelogioDoCacheParaTestes } from '../../lib/amazon/core/contaCache';
 import { LOGGER_STDOUT_AMAZON } from '../../lib/amazon/core/log';
@@ -125,6 +129,7 @@ const {
   onIntegracaoAmazonChanged,
   onNfeAprovadaAmazon,
   pollAmazonOrders,
+  processAmazonEasyShipSchedule,
   processAmazonNfeUpload,
   reprocessAmazonNotifications,
   sweepAmazonExpirations,
@@ -150,15 +155,17 @@ const AGENDAMENTOS = {
 } as const;
 
 /**
- * Every TASK-QUEUE trigger: exactly TWO. The channel has one reads queue that
- * dispatches on `tipo` (Firebase binds one function per queue), and — step 14
- * (PR 14-c) said so — ONE queue per WRITE flow, because Amazon's rates are per
- * operation and one shared queue at concurrency 1 would let a stock run starve
- * invoices (step-14 plan §3 decision 9): the NF-e upload's
- * `processAmazonNfeUpload`. A third `onTaskDispatched` here is a defect, not a
- * feature, until a step says otherwise.
+ * Every TASK-QUEUE trigger: exactly THREE. The channel has one reads queue that
+ * dispatches on `tipo` (Firebase binds one function per queue), and ONE queue
+ * per WRITE flow — the NF-e upload and the Easy Ship scheduling — because
+ * Amazon's rates are per operation and one shared queue at concurrency 1 would
+ * let one flow starve another (step-14 plan §3 decision 9; step-15 plan §3
+ * decision 1): `processAmazonNfeUpload` (step 14, PR 14-c) and
+ * `processAmazonEasyShipSchedule` (step 15, PR 15-c). A fourth
+ * `onTaskDispatched` here is a defect, not a feature, until a step says
+ * otherwise.
  */
-const FILAS = { filaLeituraAmazon, processAmazonNfeUpload } as const;
+const FILAS = { filaLeituraAmazon, processAmazonNfeUpload, processAmazonEasyShipSchedule } as const;
 
 /**
  * Every FIRESTORE-TRIGGER export — the third sibling of {@link AGENDAMENTOS}
@@ -427,6 +434,16 @@ describe('reprocessAmazonNotifications — what the run binds', () => {
     const deps = vi.mocked(notificacao.reprocessarNotificacoesAmazon).mock.calls[0]?.[2];
     expect(deps?.importador).toBe(destinos.DESTINO_TIPO_AMAZON.pedido);
     expect(deps?.importador).toBe(importarPedidoAmazon);
+  });
+
+  it('★ binds the importer’s Easy Ship scheduling producer (step 15, E2): the functions SCHEDULING root itself — never the NF-e root, never a stand-in', async () => {
+    const { criarAgendadorAgendamentoAmazonDoAmbiente } = await import('./agendadorAgendamento');
+    const { criarAgendadorNfeAmazonDoAmbiente } = await import('./agendadorNfe');
+    await rodarAgendamento(reprocessAmazonNotifications);
+
+    const deps = vi.mocked(notificacao.reprocessarNotificacoesAmazon).mock.calls[0]?.[2];
+    expect(deps?.agendamento).toBe(criarAgendadorAgendamentoAmazonDoAmbiente);
+    expect(deps?.agendamento).not.toBe(criarAgendadorNfeAmazonDoAmbiente);
   });
 
   it('binds the importer’s CEP lookup: ONE process-wide client, the same object on every run', async () => {
@@ -924,6 +941,76 @@ describe('processAmazonNfeUpload — the declared options (step 14, PR 14-c)', (
   });
 });
 
+describe('processAmazonEasyShipSchedule — the declared options (step 15, PR 15-c)', () => {
+  const fila = filaDe(processAmazonEasyShipSchedule);
+  const fonte = readFileSync(
+    fileURLToPath(new URL('./filaAgendamento.ts', import.meta.url)),
+    'utf8',
+  ).replace(/\s+/g, ' ');
+
+  it('★ (mutation 14) dispatches ONE task at a time, at most one per second — concurrency 1 orders the avisos and serialises one order’s schedules', () => {
+    // Easy Ship's bulk allows 1 rps (burst 5). Concurrency 1 is also the ordering
+    // guard among the task's own raises and resolves of one order's row, and it
+    // makes the second of two tasks for one order read `ja-agendado` instead of
+    // racing the first to Amazon — the source carries that reason on the pin.
+    expect(fila.rateLimits).toEqual({ maxConcurrentDispatches: 1, maxDispatchesPerSecond: 1 });
+    expect(fonte).toContain(
+      "Orders this queue's avisos and serialises the automatic schedules of // one order. rateLimits: { maxConcurrentDispatches: 1, maxDispatchesPerSecond: 1 }",
+    );
+  });
+
+  it('gives up exactly when the handler’s last-attempt rule answers: maxAttempts IS TENTATIVAS_AGENDAMENTO_AMAZON', () => {
+    expect(fila.retryConfig.maxAttempts).toBe(TENTATIVAS_AGENDAMENTO_AMAZON);
+    // ÂNCORA: the last-attempt rule of the handler is written for four.
+    expect(TENTATIVAS_AGENDAMENTO_AMAZON).toBe(4);
+  });
+
+  it('★ (mutation 24) backs off 60 s → 300 s with up to three doublings — NEVER the other queues’ 10 s: a cut bulk may still be running at Amazon', () => {
+    expect(fila.retryConfig).toMatchObject({
+      maxAttempts: TENTATIVAS_AGENDAMENTO_AMAZON,
+      minBackoffSeconds: 60,
+      maxBackoffSeconds: 300,
+      maxDoublings: 3,
+    });
+    expect(fonte).toContain(
+      'never retry sooner than // the label route asks the operator to wait. minBackoffSeconds: 60,',
+    );
+    // ÂNCORA: the reads and NF-e queues keep 10 s; only this one waits a minute.
+    expect(filaDe(filaLeituraAmazon).retryConfig.minBackoffSeconds).toBe(10);
+    expect(filaDe(processAmazonNfeUpload).retryConfig.minBackoffSeconds).toBe(10);
+  });
+
+  it('★ has timeoutSeconds 300 — above the 220-s worst case of ONE dispatch, read off PRAZO_AMAZON_MS', () => {
+    // A stale-token LWA refresh at the first request; getOrder, its forced
+    // refresh and getOrder again; the token mint and the bulk; a forced refresh
+    // after a 401/403 on either; the mint and the bulk again — each bounded by
+    // the package's own deadline for its class (both POSTs are `escrita`).
+    const piorCasoMs =
+      PRAZO_AMAZON_MS.lwa +
+      2 * PRAZO_AMAZON_MS.leitura +
+      PRAZO_AMAZON_MS.lwa +
+      2 * PRAZO_AMAZON_MS.escrita +
+      PRAZO_AMAZON_MS.lwa +
+      2 * PRAZO_AMAZON_MS.escrita;
+    const timeoutS = endpointOf(processAmazonEasyShipSchedule).timeoutSeconds as number;
+    expect(piorCasoMs).toBeLessThan(timeoutS * 1000);
+    // ÂNCORA: the numbers this arithmetic was written for.
+    expect([piorCasoMs, timeoutS]).toEqual([220_000, 300]);
+  });
+
+  it('declares the invoker — the SAME two-SA list as the NF-e queue (the deploy applies the one list to every task function, #1133)', () => {
+    expect(fila.invoker).toEqual([
+      'apphosting@p.iam.gserviceaccount.com',
+      '1-compute@developer.gserviceaccount.com',
+    ]);
+    expect(fila.invoker).toEqual(filaDe(processAmazonNfeUpload).invoker);
+  });
+
+  it('★ (mutation 16) binds EXACTLY the LWA client secret — a forced refresh after a 401/403 needs it', () => {
+    expect(segredosDe(processAmazonEasyShipSchedule)).toEqual([SEGREDO_LWA]);
+  });
+});
+
 /* -------------------------------------------------------------------------- */
 /*               The step-5 recent-cancel window vs the deployed options      */
 /* -------------------------------------------------------------------------- */
@@ -1063,10 +1150,11 @@ describe('every trigger of the codebase', () => {
     ]);
   });
 
-  it('the task exports are EXACTLY {filaLeituraAmazon, processAmazonNfeUpload}', () => {
+  it('the task exports are EXACTLY {filaLeituraAmazon, processAmazonEasyShipSchedule, processAmazonNfeUpload}', () => {
     expect(exportadosCom('taskQueueTrigger')).toEqual(Object.keys(FILAS).sort());
     expect(exportadosCom('taskQueueTrigger')).toEqual([
       'filaLeituraAmazon',
+      'processAmazonEasyShipSchedule',
       'processAmazonNfeUpload',
     ]);
   });
@@ -1111,13 +1199,15 @@ describe('every trigger of the codebase', () => {
     expect(Object.keys(modulo).sort()).toEqual(Object.keys(TODOS).sort());
   });
 
-  it('the queue export keys are exactly FILA_LEITURA_AMAZON and FILA_NFE_AMAZON — the enqueue targets', () => {
+  it('the queue export keys are exactly FILA_LEITURA_AMAZON, FILA_NFE_AMAZON and FILA_AGENDAMENTO_AMAZON — the enqueue targets', () => {
     // `index.ts` asserts each pair at module load (a half-rename fails Firebase's
     // codebase analysis); this pins them offline, where the failure names itself.
     expect(notificacao.FILA_LEITURA_AMAZON in modulo).toBe(true);
     expect(notificacao.FILA_LEITURA_AMAZON).toBe('filaLeituraAmazon');
     expect(FILA_NFE_AMAZON in modulo).toBe(true);
     expect(FILA_NFE_AMAZON).toBe('processAmazonNfeUpload');
+    expect(FILA_AGENDAMENTO_AMAZON in modulo).toBe(true);
+    expect(FILA_AGENDAMENTO_AMAZON).toBe('processAmazonEasyShipSchedule');
   });
 
   // Re-importing the whole index after `vi.resetModules()` takes ~0.2 s here but
@@ -1159,7 +1249,24 @@ describe('every trigger of the codebase', () => {
     },
   );
 
-  it('binds the LWA secret on the two queues, the reprocess and the poll, and NOTHING else anywhere', () => {
+  it(
+    'and the scheduling queue’s module-load assertion fires on its half-rename too',
+    { timeout: 30_000 },
+    async () => {
+      vi.resetModules();
+      vi.doMock('./filaAgendamento', () => ({ filaAgendamentoRenomeada: {} }));
+      try {
+        await expect(import('./index')).rejects.toThrow(
+          "function-name drift: functions/src/filaAgendamento.ts must export a handler named 'processAmazonEasyShipSchedule'",
+        );
+      } finally {
+        vi.doUnmock('./filaAgendamento');
+        vi.resetModules();
+      }
+    },
+  );
+
+  it('binds the LWA secret on the three queues, the reprocess and the poll, and NOTHING else anywhere', () => {
     // The expiry sweep and the two Firestore triggers make no Amazon call
     // (D11): a declared secret missing from Secret Manager would fail the whole
     // deploy for a function that never reads it.
@@ -1173,7 +1280,7 @@ describe('every trigger of the codebase', () => {
       expect(segredosDe(fn), nome).toEqual(esperado);
     }
     // ÂNCORA: the walk covers all three families.
-    expect(Object.keys(TODOS)).toHaveLength(7);
+    expect(Object.keys(TODOS)).toHaveLength(8);
   });
 
   it('runs in the inlined region (the bare options import, #1108) and caps instances at 10', () => {

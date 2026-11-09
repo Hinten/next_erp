@@ -25,6 +25,7 @@
  */
 import {
   AmazonHttpError,
+  AmazonSchemaError,
   OPERACAO_AGENDAMENTO_EASY_SHIP,
   RECURSO_RESTRITO_AGENDAMENTO,
   type RespostaAgendamentoEasyShip,
@@ -61,6 +62,22 @@ export async function agendarNaAmazon(
 export function ehFalhaHttpDoBulkEasyShip(erro: unknown): erro is AmazonHttpError {
   return (
     erro instanceof AmazonHttpError &&
+    erro.destino === 'sp-api' &&
+    erro.operacao === OPERACAO_AGENDAMENTO_EASY_SHIP
+  );
+}
+
+/**
+ * Whether `erro` is the BULK's own 2xx answer off its schema: an SP-API
+ * `AmazonSchemaError` labelled with the bulk's operation (step 15, PR 15-c).
+ * Amazon ANSWERED the bulk, so the order may well be scheduled — unlike a token
+ * mint's answer off its schema, after which no bulk was sent. Like
+ * {@link ehFalhaHttpDoBulkEasyShip}, it reads the error's own label and no state
+ * of the run.
+ */
+export function ehRespostaForaDoEsquemaDoBulkEasyShip(erro: unknown): erro is AmazonSchemaError {
+  return (
+    erro instanceof AmazonSchemaError &&
     erro.destino === 'sp-api' &&
     erro.operacao === OPERACAO_AGENDAMENTO_EASY_SHIP
   );
