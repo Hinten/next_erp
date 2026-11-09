@@ -106,9 +106,10 @@
  *     judged by step 1 on the next attempt. Then the details' presence ("The details" above).
  *  3. **What must precede the batch** ({@link DepsFamiliaNovaLi.antesDoLote}, `aplicar` only): the
  *     caller's own writes the batch depends on — the categories the produtos take, created only now
- *     that the family WILL be committed, and the tax-review entries the create calls for, made
- *     durable before the produtos exist (`familiaDoJob.ts`). Firestore writes only, no Loja
- *     Integrada call. Its refusal refuses the create with nothing of the batch written.
+ *     that every refusal has passed (a batch that then loses leaves them standing), and the
+ *     tax-review entries the create calls for, made durable before the produtos exist
+ *     (`familiaDoJob.ts`). Firestore writes only, no Loja Integrada call. Its refusal refuses the
+ *     create with nothing of the batch written.
  *  4. **ONE batch of `create()`s**, all or nothing (Firestore rejects the whole commit when any of
  *     them exists). `ALREADY_EXISTS` starts the next attempt from step 1; a second one with nothing
  *     there to explain it (a stray link or `extraData` document left under one of the planned ids)
