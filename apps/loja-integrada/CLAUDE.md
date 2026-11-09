@@ -904,7 +904,8 @@ apps/loja-integrada/lib/lojaIntegrada/testing/especificacaoFolhas.json` (no pair
 
 - `pedidos/importarPedido.ts` fills the step-3 seam: the queue and both sweeps run it, the
   poller passes its importer gate. The context refuses first while the read switch is
-  off, so a run DEFERS before any read and reaches no import path, A4 included (D17).
+  off, so a run DEFERS before any read and reaches no import path, the paid-without-CEP
+  refusal below included (D17).
   Every rule lives in the pure mappers beside it.
 - The freight route and the pedido id are SHARED, never copied: `pedidos/freteMapeamento.ts`
   decides the `mapa` row and the target through `@delfrance/schemas`'s
@@ -917,7 +918,7 @@ apps/loja-integrada/lib/lojaIntegrada/testing/especificacaoFolhas.json` (no pair
   `lojaIntegradaFreteNaoSuportado` sync run HERE, on every attempt that routed), cliente
   and endereço, then ONE atomic `WriteBatch` (the pedido and every pagamento, each under
   its own precondition; a lost one re-derives all, 3 attempts, then a retry).
-- A4: a PAID order with a shipment, NO CEP at all (no delivery block, or a `cep` absent,
+- Paid without a CEP: a PAID order with a shipment, NO CEP at all (no delivery block, or a `cep` absent,
   `null`, `''`, blank or `-`) and no stored endereço throws `LiPedidoPagoSemEnderecoError`
   before step 7; a pickup is exempt. It retries; the park at the cap logs an ERROR line
   (ids only) and raises the `critico` `lojaIntegradaPedidoPagoSemEndereco`, which an
@@ -934,7 +935,7 @@ apps/loja-integrada/lib/lojaIntegrada/testing/especificacaoFolhas.json` (no pair
   schema and Zod refusals park. Estado and payment status come from the situação codigo
   through one shared table; a stored stamp is read through `coerceToMicros`.
 - Six aviso tipos (`avisosPedidoLi.ts`): situação desconhecida, contestado, hub, frete não
-  suportado, pago sem endereço and A7's `lojaIntegradaReversaoComEtiqueta` (a reversal on
+  suportado, pago sem endereço and `lojaIntegradaReversaoComEtiqueta` (a reversal on
   a pedido with a bought label). Order avisos and incidentes run after the batch, on
   `importado` and `sem-mudanca`, so a retry after a crash still writes them.
 - A re-import keeps the `externalOptionData` keys Loja Integrada does not own (`agency`).
