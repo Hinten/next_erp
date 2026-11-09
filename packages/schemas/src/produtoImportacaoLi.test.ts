@@ -12,8 +12,10 @@ import {
   produtoLiDetalhadoSchema,
   produtoLiLidoSchema,
   skuParecidoLi,
+  skusParecidosNaLojaLi,
   type LinhaDetalheProdutoLi,
   type LinhaProdutoLi,
+  type SkuDaLojaLi,
 } from './index';
 
 /** A parent row in the shape of the public document's list example (fake ids and names). */
@@ -448,5 +450,93 @@ describe('skuParecidoLi — the create guard’s probe forms', () => {
     ['an ERP SKU with an end space', 'ABC-1', 'ABC-1 '],
   ])('⚠️ STATED LIMIT: %s is NOT reached (only the store side is folded)', (_r, loja, erp) => {
     expect(skuParecidoLi(loja)).not.toContain(erp);
+  });
+});
+
+describe('skusParecidosNaLojaLi — the store-side near duplicates', () => {
+  const linha = (sku: unknown): SkuDaLojaLi => ({ sku, simples: false });
+  const simples = (sku: unknown): SkuDaLojaLi => ({ sku, simples: true });
+  const decidir = (linhas: readonly SkuDaLojaLi[]): string[] =>
+    [...skusParecidosNaLojaLi(linhas)].sort();
+
+  it.each<[string, SkuDaLojaLi[], string[]]>([
+    ['another case', [linha('ABC-1'), linha('abc-1')], ['ABC-1', 'abc-1']],
+    ['a trailing space', [linha('ABC-1'), linha('ABC-1 ')], ['ABC-1', 'ABC-1 ']],
+    ['a leading space and another case', [linha(' Abc-1'), linha('ABC-1')], [' Abc-1', 'ABC-1']],
+    [
+      'two MIXED cases (both sides are in memory: the probe’s ERP-side limit does not apply)',
+      [linha('Abc-1'), linha('aBC-1')],
+      ['Abc-1', 'aBC-1'],
+    ],
+    ['a no-break space at an edge', [linha('ABC-1 '), linha('ABC-1')], ['ABC-1', 'ABC-1 ']],
+    ['a simple product’s derived SKU against a row', [simples('X'), linha('X-UN')], ['X', 'X-UN']],
+    ['that derived SKU in another case', [simples('X'), linha('x-un')], ['X', 'x-un']],
+    [
+      'a simple product with edge spaces: the member’s base is trimmed',
+      [simples(' X '), linha('X-UN')],
+      [' X ', 'X-UN'],
+    ],
+    ['two simple products in another case', [simples('X'), simples('x')], ['X', 'x']],
+    [
+      'a simple product repeated, beside its derived SKU',
+      [simples('X'), simples('X'), linha('X-UN')],
+      ['X', 'X-UN'],
+    ],
+  ])('EQUAL: %s collide, both rows’ OWN SKUs returned', (_r, linhas, esperado) => {
+    expect(decidir(linhas)).toEqual([...esperado].sort());
+  });
+
+  it('EQUAL: two simple products with the same first 252 characters collide through their cut derived SKUs', () => {
+    const inicio = 'K'.repeat(252);
+    expect(decidir([simples(`${inicio}A`), simples(`${inicio}B`)])).toEqual([
+      `${inicio}A`,
+      `${inicio}B`,
+    ]);
+    // ⚠️ NEAR-MISS: the same two as parents write no member, so nothing is cut and nothing collides.
+    expect(decidir([linha(`${inicio}A`), linha(`${inicio}B`)])).toEqual([]);
+  });
+
+  it.each<[string, SkuDaLojaLi[]]>([
+    ['another final digit', [linha('ABC-1'), linha('ABC-2')]],
+    ['a variation’s longer SKU', [linha('X-AZ'), linha('X-AZUL')]],
+    ['a missing hyphen', [linha('ABC-1'), linha('ABC1')]],
+    ['a leading zero', [linha('01'), linha('1')]],
+    ['one SKU the derived one is a prefix of', [simples('X'), linha('X-UNI')]],
+    [
+      'a PARENT’s SKU beside a row named like a member (a parent writes no member)',
+      [linha('X'), linha('X-UN')],
+    ],
+    ['the same bytes twice (an exact repeat is the caller’s other rule)', [linha('X'), linha('X')]],
+    ['the same simple product twice', [simples('X'), simples('X')]],
+    ['a simple product alone: its own derived SKU is no other row', [simples('X')]],
+    [
+      'two blank SKUs of different lengths: the empty form never matches',
+      [linha('   '), linha(' ')],
+    ],
+    ['a blank simple product writes no member', [simples('   '), linha('-UN')]],
+  ])('⚠️ NEAR-MISS: %s do not collide', (_r, linhas) => {
+    expect(decidir(linhas)).toEqual([]);
+  });
+
+  it('only the rows that collide are returned, whatever else the snapshot holds', () => {
+    expect(decidir([linha('A'), linha('a'), linha('b'), simples('C')])).toEqual(['A', 'a']);
+  });
+
+  it('⚠️ processing order never picks a winner: any order answers the same', () => {
+    const linhas = [simples('X'), linha('X-UN'), linha('abc-1'), linha('ABC-1'), linha('Z')];
+    const esperado = ['ABC-1', 'X', 'X-UN', 'abc-1'];
+    expect(decidir(linhas)).toEqual(esperado);
+    expect(decidir([...linhas].reverse())).toEqual(esperado);
+  });
+
+  it.each([[null], [undefined], [''], [123], [{ sku: 'X' }]])(
+    'a row whose SKU is %j carries none: it never collides and never throws',
+    (sku) => {
+      expect(decidir([linha(sku), simples(sku), linha('X')])).toEqual([]);
+    },
+  );
+
+  it('nothing to decide over an empty snapshot', () => {
+    expect(decidir([])).toEqual([]);
   });
 });

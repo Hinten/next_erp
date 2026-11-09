@@ -269,6 +269,7 @@ describe('montarItemDaFamiliaLi — the pendências', () => {
       acao: ACAO_ITEM_IMPORTACAO_LI.nenhuma,
       aplicada: false,
       camposPreenchidos: [],
+      categoriasCriadas: [],
       pendencias: [
         {
           codigo: PENDENCIA_IMPORTACAO_LI.naLixeira,
