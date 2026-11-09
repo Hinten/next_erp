@@ -85,10 +85,10 @@
  * all validation-before-the-wire: a bound that cannot be satisfied REJECTS
  * without spending a provider call. Four of Shopee's own contradictions are
  * instrumented rather than guessed — the `get_variations` path (settled on BR, see
- * {@link SHOPEE_GET_VARIATIONS_PATH}), the language casing (see
+ * {@link SHOPEE_GET_VARIATIONS_PATH}), the language casing (settled on BR, see
  * {@link SHOPEE_TAXONOMY_LANGUAGE}), `category_id_list` vs `category_ids` (the
- * single joined literal in `getAttributeTree`) and `gtin_limit`'s position (see
- * {@link ShopeeItemLimitRead}, which carries BOTH).
+ * single joined literal in `getAttributeTree`) and `gtin_limit`'s position
+ * (settled on BR, see {@link ShopeeItemLimitRead}, which carries BOTH).
  *
  * ## The item reads (step 9)
  *
@@ -566,7 +566,11 @@ export const SHOPEE_GET_CATEGORY_PATH = '/api/v2/product/get_category';
 export const SHOPEE_GET_ATTRIBUTE_TREE_PATH = '/api/v2/product/get_attribute_tree';
 /** `GET` — Shop-signed. WRAPPED. ONE page of a leaf category's brands. */
 export const SHOPEE_GET_BRAND_LIST_PATH = '/api/v2/product/get_brand_list';
-/** `GET` — Shop-signed. WRAPPED **plus** a `gtin_limit` sibling of `response`. */
+/**
+ * `GET` — Shop-signed. WRAPPED, with `gtin_limit` read in TWO places: inside
+ * `response` (where BR sends it) and as the sibling of `response` the page
+ * renders. See {@link ShopeeItemLimitRead}.
+ */
 export const SHOPEE_GET_ITEM_LIMIT_PATH = '/api/v2/product/get_item_limit';
 /** `GET` — Shop-signed. WRAPPED. The kit bands, which are their own numbers. */
 export const SHOPEE_GET_KIT_ITEM_LIMIT_PATH = '/api/v2/product/get_kit_item_limit';
@@ -975,15 +979,15 @@ export const SHOPEE_BRAND_STATUS = { normal: 1, pending: 2 } as const;
 export type ShopeeBrandStatus = (typeof SHOPEE_BRAND_STATUS)[keyof typeof SHOPEE_BRAND_STATUS];
 
 /**
- * The language every taxonomy read asks for.
- *
- * ⚠️ Observed 2026-09-08: `get_category` and `get_brand_list` spell the Brazilian
- * option **`pt-br`**, while `get_attribute_tree` spells it **`pt-BR`**. Whether
- * the API folds the case is undocumented, and nothing in either page says.
- *
- * ONE constant is sent to all three, deliberately: a wrong guess is then a single
- * literal to flip, and `error_invalid_language` — which `apps/shopee` logs raw —
- * is the signal that says so. Two constants would have made the flip a search.
+ * The language every taxonomy read asks for. ⚠️ Settled on BR production
+ * (2026-11-04): `get_category`, asked in `pt-br`, answered Portuguese
+ * `display_category_name`s, while `get_attribute_tree` answered the same bytes
+ * for `pt-br`, `pt-BR` or none, with English `name`s — its pt-BR text is each
+ * row's `multi_lang` entry `"pt-BR"` (some rows untranslated), which
+ * `apps/shopee`'s `projetarAtributos` serves (#1911 P13a). Evidence:
+ * `get_category.br-recorte.json` and the a-caneca row of the `__wire__` README
+ * (one sha256 for the three spellings). ONE constant, sent to all three reads;
+ * `get_brand_list`, whose page also spells `pt-br`, was not captured.
  */
 export const SHOPEE_TAXONOMY_LANGUAGE = 'pt-br';
 
@@ -1306,8 +1310,15 @@ export interface CategoryRecommendParams {
 /**
  * What `getItemLimit` hands back: the inner `response` AND the `gtin_limit`
  * SIBLING, because the page renders that field outside `response` and ships no
- * response sample. Merging the two positions is the reader's job in
- * `apps/shopee`; discarding one of them here would have hidden the answer.
+ * response sample. ⚠️ SETTLED on BR production (2026-11-04): the rule arrived
+ * INSIDE `response` on both category reads, no sibling came on any of the three
+ * reads, and the shop-wide read carried neither (`get_item_limit.br-*.json`,
+ * pinned by the `pino 4` describe of
+ * `apps/shopee/lib/shopee/fixtures/capturasBr.test.ts`). Both positions still
+ * travel — the sibling is the fallback for a region that answers the way the
+ * page renders. Merging them is the reader's job in `apps/shopee`
+ * (`lerLimitesDeItem`, inner wins); discarding one of them here would have
+ * hidden the answer.
  */
 export interface ShopeeItemLimitRead {
   readonly response: ShopeeItemLimit;
@@ -1865,7 +1876,10 @@ export interface ShopeeClient {
   getAttributeTree(p: GetAttributeTreeParams): Promise<ShopeeAttributeTree>;
   /** ONE page of a leaf category's brands. `brand_id: 0` is "No Brand", not absent. */
   getBrandList(p: GetBrandListParams): Promise<ShopeeBrandList>;
-  /** The item bands, plus the `gtin_limit` sibling. See {@link ShopeeItemLimitRead}. */
+  /**
+   * The item bands, plus the `gtin_limit` sibling the page renders — `null` on
+   * BR, which sends the rule inside `response`. See {@link ShopeeItemLimitRead}.
+   */
   getItemLimit(p?: GetItemLimitParams): Promise<ShopeeItemLimitRead>;
   /**
    * The KIT bands — never derived from {@link ShopeeClient.getItemLimit}'s.
@@ -4093,9 +4107,9 @@ export function createShopeeClient(config: ShopeeClientConfig): ShopeeClient {
         // sends no `category_id` — the shop-wide read.
         query: { category_id: p.categoryId },
       });
-      // ⚠️ BOTH positions travel to the caller. Which one Shopee fills is
-      // unsettled (the page renders `gtin_limit` outside `response` and ships no
-      // response sample), so the merge belongs to the reader that can log it.
+      // ⚠️ BOTH positions travel to the caller. The page renders `gtin_limit`
+      // outside `response`; BR production fills the inner one (2026-11-04,
+      // `capturasBr.test.ts`'s `pino 4`). The merge belongs to the reader.
       return { response: res.response, gtin_limit: res.gtin_limit };
     },
 
