@@ -41,7 +41,9 @@ import type { CollectionMetadata } from './types';
  * A job document written before a field shipped must still parse, or an in-flight import stops
  * resuming the moment a backend is deployed under it (the Shopee importer's retrofit lesson). The
  * only required fields are the three every create writes: `integracaoId`, `status`,
- * `iniciadoEmMs`. Every array default is a FUNCTION, so no two parses share one array.
+ * `iniciadoEmMs`. Every array default is a FUNCTION, so no two parses share one array. One field
+ * also tolerates a stored value it cannot read: `progressoDaFamilia` then reads as `null` and the
+ * family is prepared again ({@link progressoDaFamiliaLiSchema}).
  *
  * ## The subcollections
  * Five, all written only by this job, default-denied like the parent (no rules match block):
@@ -325,7 +327,9 @@ export const MOTIVO_FALHA_IMPORTACAO_LI = {
  *
  * **Actionable** ({@link PENDENCIAS_ACIONAVEIS_LI}) — a person can fix it in the ERP or in the
  * store; they keep the per-conta summary aviso open: `sem-sku`, `sku-ambiguo`, `sku-parecido`,
- * `sku-ja-existe`, `sku-repetido-na-loja`, `vinculo-ambiguo`, `vinculado-a-outro`,
+ * `sku-ja-existe`, `sku-repetido-na-loja`, `sku-parecido-na-loja` (a SKU that another store row
+ * shares a probe form with, or that meets another row's derived sole-member SKU: it means the row
+ * must not be created or matched by SKU), `vinculo-ambiguo`, `vinculado-a-outro`,
  * `vinculo-pai-ausente`, `vinculo-ilegivel`, `forma-diferente`, `filho-de-outra-familia`,
  * `grade-sem-vinculo`, `opcao-sem-vinculo`, `grade-em-dois-grupos`, `opcao-em-dois-grupos`,
  * `variacao-ambigua`, `variacao-sem-vinculo`, `evidencia-divergente`, `categoria-sem-vinculo`,
@@ -335,7 +339,8 @@ export const MOTIVO_FALHA_IMPORTACAO_LI = {
  * **Informational** — a fact of the store or of this run; shown in the report, never keeps an
  * aviso open: `orfao`, `na-lixeira` (a variation whose parent is in the store's trash: never
  * linked, never created), `familia-vazia`, `tipo-desconhecido`, `oculto-nao-criado`,
- * `nao-listado`, `sku-diferente`, `vinculo-atualizado`, `foto-recusada`, `sem-estoque-no-erp`,
+ * `nome-cortado` (a produto this run created, or under Simular would create, whose name was cut at
+ * the ERP's 100-character limit), `nao-listado`, `sku-diferente`, `vinculo-atualizado`, `foto-recusada`, `sem-estoque-no-erp`,
  * `sem-preco-no-erp`, `revisao-fiscal`.
  */
 export const pendenciaImportacaoLiSchema = z.enum([
@@ -344,6 +349,7 @@ export const pendenciaImportacaoLiSchema = z.enum([
   'sku-parecido',
   'sku-ja-existe',
   'sku-repetido-na-loja',
+  'sku-parecido-na-loja',
   'vinculo-ambiguo',
   'vinculado-a-outro',
   'vinculo-pai-ausente',
@@ -368,6 +374,7 @@ export const pendenciaImportacaoLiSchema = z.enum([
   'familia-vazia',
   'tipo-desconhecido',
   'oculto-nao-criado',
+  'nome-cortado',
   'nao-listado',
   'sku-diferente',
   'vinculo-atualizado',
@@ -385,6 +392,7 @@ export const PENDENCIA_IMPORTACAO_LI = {
   skuParecido: 'sku-parecido',
   skuJaExiste: 'sku-ja-existe',
   skuRepetidoNaLoja: 'sku-repetido-na-loja',
+  skuParecidoNaLoja: 'sku-parecido-na-loja',
   vinculoAmbiguo: 'vinculo-ambiguo',
   vinculadoAOutro: 'vinculado-a-outro',
   vinculoPaiAusente: 'vinculo-pai-ausente',
@@ -409,6 +417,7 @@ export const PENDENCIA_IMPORTACAO_LI = {
   familiaVazia: 'familia-vazia',
   tipoDesconhecido: 'tipo-desconhecido',
   ocultoNaoCriado: 'oculto-nao-criado',
+  nomeCortado: 'nome-cortado',
   naoListado: 'nao-listado',
   skuDiferente: 'sku-diferente',
   vinculoAtualizado: 'vinculo-atualizado',
@@ -425,6 +434,7 @@ export const PENDENCIAS_ACIONAVEIS_LI: ReadonlySet<PendenciaImportacaoLi> = new 
   PENDENCIA_IMPORTACAO_LI.skuParecido,
   PENDENCIA_IMPORTACAO_LI.skuJaExiste,
   PENDENCIA_IMPORTACAO_LI.skuRepetidoNaLoja,
+  PENDENCIA_IMPORTACAO_LI.skuParecidoNaLoja,
   PENDENCIA_IMPORTACAO_LI.vinculoAmbiguo,
   PENDENCIA_IMPORTACAO_LI.vinculadoAOutro,
   PENDENCIA_IMPORTACAO_LI.vinculoPaiAusente,
@@ -569,8 +579,9 @@ export type EvidenciaOpcaoLi = z.infer<typeof evidenciaOpcaoLiSchema>;
 /**
  * Where a store product stands against the ERP: `vinculado` (its link for this conta exists),
  * `encontrado` (found by exactly one SKU, not linked yet), `ausente` (not in the ERP), `conflito`
- * (two owners, two SKU hits or a shape mismatch: in no target but `todos`/`selecionados`, and
- * reported under every target), `nao-listado` (a selected id the store's listing lacks), `avulso`
+ * (two owners, two SKU hits, a shape mismatch, no SKU, or a SKU repeated or nearly repeated in the
+ * store: in no target but `todos`/`selecionados`, and reported under every target), `nao-listado`
+ * (a selected id the store's listing lacks), `avulso`
  * (a live row that belongs to no family — an orphan variation, a variation of a trashed parent, a
  * row of an unknown `tipo` — never matched against the ERP, reported with its informational code).
  */
@@ -634,6 +645,15 @@ export const itemImportacaoLiSchema = z.object({
   aplicada: z.boolean().default(false),
   /** The ERP field NAMES filled (or that would be). */
   camposPreenchidos: z.array(z.string()).default(() => []),
+  /**
+   * The store categories this family's run created and linked (Simular: would), root-most first. A
+   * category appears on the item of the family that created it, so the report names every category
+   * a create-and-link run created, but for a unit retried over its own landed create or category
+   * fill: the retry does not plan that category again, so the item stops naming it (the category
+   * stands, and a later family that meets it adopts it and names it there). A later family that
+   * uses a category the job already holds as linked names none.
+   */
+  categoriasCriadas: z.array(idLiSchema).default(() => []),
   pendencias: z.array(pendenciaItemLiSchema).default(() => []),
   atualizadoEmMs: millisSinceEpoch(),
 });
@@ -656,10 +676,11 @@ export const MOTIVO_REVISAO_FISCAL_LI = {
 } as const satisfies Record<string, MotivoRevisaoFiscalLi>;
 
 /**
- * `revisao/{produtoId}` — one produto whose taxes need a look. Carried forward from the conta's
- * previous `aplicar` job and re-checked on EVIDENCE at the end of every `aplicar` job: it leaves the
- * list only when the produto has its own tax setting, its category has one, or a tax rule names it
- * or its category. Nothing else closes it.
+ * `revisao/{produtoId}` — one produto whose taxes need a look. Carried forward from every earlier
+ * `aplicar` job back to the newest one that ended `concluido`, skipping Simular jobs (decided
+ * 2026-11-06), and re-checked on EVIDENCE at the end of every `aplicar` job: it leaves the list only
+ * when the produto has its own tax setting, its category has one, a tax rule names it or its
+ * category, or the produto no longer exists (decided 2026-11-06). Nothing else closes it.
  */
 export const revisaoFiscalLiSchema = z.object({
   produtoId: z.string().min(1),
@@ -733,6 +754,36 @@ export const cursorListaProdutosLiSchema = z.object({
   divergente: z.boolean().default(false),
 });
 
+/**
+ * The `revisao` phase's sub-steps:
+ *  - `inicio`: nothing done yet;
+ *  - `apos`: every job down to `fonteJobId` (newest first) is handled: find the next source;
+ *  - `copiando`: copying source `fonteJobId` after `depoisProdutoId` (`null`: from its start);
+ *    `ultimaFonte` marks the walk's last source (it ended `concluido`);
+ *  - `conferindo`: re-checking this job's list after `depoisProdutoId` (`null`: from its start),
+ *    with `abertos` entries kept so far.
+ */
+export const etapaRevisaoFiscalLiSchema = z.enum(['inicio', 'apos', 'copiando', 'conferindo']);
+export type EtapaRevisaoFiscalLi = z.infer<typeof etapaRevisaoFiscalLiSchema>;
+/** Named members of {@link etapaRevisaoFiscalLiSchema} — see `delfrance/prefer-schema-enum`. */
+export const ETAPA_REVISAO_FISCAL_LI = {
+  inicio: 'inicio',
+  apos: 'apos',
+  copiando: 'copiando',
+  conferindo: 'conferindo',
+} as const satisfies Record<string, EtapaRevisaoFiscalLi>;
+
+/** The `revisao` phase's cursor, and the newest earlier `aplicar` job its list was carried from. */
+export const cursorRevisaoFiscalLiSchema = z.object({
+  etapa: etapaRevisaoFiscalLiSchema.default(ETAPA_REVISAO_FISCAL_LI.inicio),
+  fonteJobId: z.string().min(1).nullable().default(null),
+  ultimaFonte: z.boolean().default(false),
+  depoisProdutoId: z.string().min(1).nullable().default(null),
+  abertos: z.number().int().nonnegative().default(0),
+  anteriorJobId: z.string().nullable().default(null),
+});
+export type CursorRevisaoFiscalLi = z.infer<typeof cursorRevisaoFiscalLiSchema>;
+
 /** The run's counters (report totals; the items are the detail). */
 export const contadoresImportacaoLiSchema = z.object({
   familias: z.number().int().nonnegative().default(0),
@@ -754,6 +805,174 @@ export const aprendizadoSimuladoLiSchema = z.object({
   opcaoId: idLiSchema,
   varianteId: z.string().min(1),
 });
+
+/* -------------------------------------------------------------------------- */
+/*                       One family's complete step, in units                  */
+/* -------------------------------------------------------------------------- */
+
+/** Why a picture was refused: every CDN outcome but `ok`. */
+export const motivoFotoRecusadaLiSchema = z.enum([
+  'caminho-invalido',
+  'redirecionamento',
+  'nao-encontrada',
+  'http',
+  'muito-grande',
+  'nao-e-imagem',
+]);
+export type MotivoFotoRecusadaLi = z.infer<typeof motivoFotoRecusadaLiSchema>;
+/** Named members of {@link motivoFotoRecusadaLiSchema} — see `delfrance/prefer-schema-enum`. */
+export const MOTIVO_FOTO_RECUSADA_LI = {
+  caminhoInvalido: 'caminho-invalido',
+  redirecionamento: 'redirecionamento',
+  naoEncontrada: 'nao-encontrada',
+  http: 'http',
+  muitoGrande: 'muito-grande',
+  naoEImagem: 'nao-e-imagem',
+} as const satisfies Record<string, MotivoFotoRecusadaLi>;
+
+/** How a produto's pictures ended. */
+export const desfechoFotosDoProdutoLiSchema = z.enum([
+  /** Written (Simular: would be): `fotos` counts them. */
+  'importadas',
+  /** It had a photo when its pictures started: nothing fetched. */
+  'com-fotos',
+  /** Another writer's photo arrived before our write: theirs stay, ours are written nowhere. */
+  'perdeu',
+  /** The produto is gone. */
+  'ausente',
+  /** Every write lost, and it still has no photo: `conflito-de-escrita`. */
+  'conflito',
+  /** Every picture was refused: nothing to write. */
+  'nenhuma-aceita',
+]);
+export type DesfechoFotosDoProdutoLi = z.infer<typeof desfechoFotosDoProdutoLiSchema>;
+/** Named members of {@link desfechoFotosDoProdutoLiSchema} — see `delfrance/prefer-schema-enum`. */
+export const DESFECHO_FOTOS_DO_PRODUTO_LI = {
+  importadas: 'importadas',
+  comFotos: 'com-fotos',
+  perdeu: 'perdeu',
+  ausente: 'ausente',
+  conflito: 'conflito',
+  nenhumaAceita: 'nenhuma-aceita',
+} as const satisfies Record<string, DesfechoFotosDoProdutoLi>;
+
+/** A sha-512 digest, in lowercase hex. */
+const HASH_SHA512_HEX = /^[0-9a-f]{128}$/;
+
+/**
+ * The resumable state of one family's pictures: what the dispatch checkpoints after every unit and
+ * hands back to the next.
+ */
+export const cursorFotosLiSchema = z.object({
+  /** The produto whose pictures are under way; `null` once every target is done. */
+  produtoId: z.string().min(1).nullable(),
+  /** The index, in that produto's pictures, of the next one to fetch. */
+  proxima: z.number().int().nonnegative(),
+  /** That picture's ORIGINAL came back too large: the next unit fetches its `800x800`. */
+  reduzida: z.boolean(),
+  /** That produto's pictures already stored, in plan order. */
+  enviadas: z.array(z.object({ imagemId: idLiSchema, hash: z.string().regex(HASH_SHA512_HEX) })),
+  /** The produtos of the family done so far, in order. */
+  feitos: z.array(
+    z.object({
+      produtoId: z.string().min(1),
+      liId: idLiSchema.nullable(),
+      desfecho: desfechoFotosDoProdutoLiSchema,
+      fotos: z.number().int().nonnegative(),
+    }),
+  ),
+  /** Every picture of the family refused so far. */
+  recusadas: z.array(
+    z.object({
+      liId: idLiSchema.nullable(),
+      imagemId: idLiSchema,
+      motivo: motivoFotoRecusadaLiSchema,
+    }),
+  ),
+});
+export type CursorFotosLi = z.infer<typeof cursorFotosLiSchema>;
+
+/** Which path the preparation took, for a family whose photos are under way. */
+export const caminhoDoCompletarLiSchema = z.enum(['existente', 'criada']);
+export type CaminhoDoCompletarLi = z.infer<typeof caminhoDoCompletarLiSchema>;
+/** Named members of {@link caminhoDoCompletarLiSchema} — see `delfrance/prefer-schema-enum`. */
+export const CAMINHO_DO_COMPLETAR_LI = {
+  /** A family the ERP has: filled, links still to write. */
+  existente: 'existente',
+  /** A family this job created (links in the batch). */
+  criada: 'criada',
+} as const satisfies Record<string, CaminhoDoCompletarLi>;
+
+const pendenciaDoProgressoSchema = z.object({
+  codigo: pendenciaImportacaoLiSchema,
+  liId: idLiSchema.nullable(),
+  referencias: z.array(z.string()),
+});
+
+const resultadoFotosDoProgressoSchema = z.object({
+  produtos: cursorFotosLiSchema.shape.feitos,
+  gravadas: z.number().int().nonnegative(),
+  pendencias: z.array(pendenciaDoProgressoSchema),
+});
+
+/**
+ * One family's complete step between its units: what the preparation decided, the photo targets,
+ * the photo cursor and, once every picture is decided, the photos' result. `fotos` goes back to
+ * `null` the moment `resultadoFotos` is set, and the schema refuses a progress holding both: nothing
+ * reads the cursor after that, and keeping it would add about 150 KB to the worst case.
+ *
+ * Worst case (a root and 50 variations, the store's cap, each with 50 pictures, every picture
+ * refused): about 185 KB while the pictures run, about 230 KB once the result replaces the cursor.
+ * Beside a job at its other ceilings (500 categories and 500 brands with 255-character accented
+ * names, 1,000 selected ids) the document stays near 855 KB; with 30-character names, near 405 KB.
+ * Kept beside the result, the cursor would take that document to about 1 MB, some 45 KB from
+ * Firestore's limit. Pinned in `importacaoLojaIntegrada.test.ts`.
+ *
+ * ⚠️ These figures hold at the store's cap, and nothing in this repo enforces that cap: `filhos` is
+ * read with no ceiling. Each variation past it adds about 4.4 KB, so with every other ceiling hit
+ * the document passes 1 MiB near 94 variations, and Firestore would then refuse its checkpoint.
+ */
+export const progressoDaFamiliaLiSchema = z
+  .object({
+    /** The family's root store id: a progress of any other family is none. */
+    raizLiId: idLiSchema,
+    caminho: caminhoDoCompletarLiSchema,
+    /** The ERP root: matched, or created by this job. */
+    erpRaizId: z.string().min(1),
+    /** The variations' category (the parent's stored one, else the one resolved for it). */
+    categoria: z.object({
+      erpId: z.string().min(1).nullable(),
+      criadaPelaImportacao: z.boolean(),
+    }),
+    /** The plan's create was carried out (or met again, landed, by a retried unit). */
+    criacaoAplicada: z.boolean(),
+    completado: z.boolean(),
+    campos: z.array(z.string()),
+    pendencias: z.array(pendenciaDoProgressoSchema),
+    /** Store categories this family created, carried to the item at its closing. */
+    categoriasCriadas: z.array(idLiSchema),
+    criados: z.number().int().nonnegative(),
+    completados: z.number().int().nonnegative(),
+    vinculados: z.number().int().nonnegative(),
+    /** ERP produtos the preparation found gone: no link is written for them. */
+    sumidos: z.array(z.string().min(1)),
+    /** The produtos whose pictures may be copied, in order; their pictures are the details'. */
+    alvos: z.array(z.object({ produtoId: z.string().min(1), liId: idLiSchema.nullable() })),
+    /** The photo cursor; `null` before the first picture and again once the result is set. */
+    fotos: cursorFotosLiSchema.nullable(),
+    /** Every picture decided: the photos' result, for the closing; `null` while under way. */
+    resultadoFotos: resultadoFotosDoProgressoSchema.nullable(),
+  })
+  .superRefine((progresso, ctx) => {
+    if (progresso.fotos !== null && progresso.resultadoFotos !== null) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['fotos'],
+        message: 'the photo cursor must be null once resultadoFotos is set',
+      });
+    }
+  });
+export type ProgressoDaFamiliaLi = z.infer<typeof progressoDaFamiliaLiSchema>;
 
 export const importacaoLojaIntegradaSchema = z.object({
   /** The Loja Integrada conta (integração doc id) this job reads. */
@@ -816,13 +1035,15 @@ export const importacaoLojaIntegradaSchema = z.object({
       conflitos: z.array(z.string().min(1)).default(() => []),
     })
     .default(() => ({ cursorEvidenciaId: null, conflitos: [] })),
-  /** The `revisao` phase's cursor, and the previous `aplicar` job its list was carried from. */
-  revisao: z
-    .object({
-      cursorProdutoId: z.string().nullable().default(null),
-      anteriorJobId: z.string().nullable().default(null),
-    })
-    .default(() => ({ cursorProdutoId: null, anteriorJobId: null })),
+  /**
+   * The family whose complete step spans units: `null` between families and in every other phase.
+   * A stored value that does not parse reads as `null`, and the family is prepared again: safe,
+   * since every write of a preparation is fill-empty, create-only or tier 0. A writer must validate
+   * it through `progressoDaFamiliaLiSchema.parse` BEFORE writing, so this tolerance never hides a
+   * bug.
+   */
+  progressoDaFamilia: progressoDaFamiliaLiSchema.nullable().catch(null).default(null),
+  revisao: cursorRevisaoFiscalLiSchema.default(() => cursorRevisaoFiscalLiSchema.parse({})),
 
   /** The store's categories and their ERP side (at most the catalogue ceiling, 500). */
   mapaCategorias: z.array(categoriaDoJobLiSchema).default(() => []),

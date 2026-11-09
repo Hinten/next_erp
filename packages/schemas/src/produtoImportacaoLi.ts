@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { RECURSO_URI_LI, idDoRecursoLi, opcaoDoRecursoLi } from './catalogoLojaIntegrada';
 import { inteiroPositivoCanonicoLi } from './mapaFreteLojaIntegrada';
+import { skuDoMembroUnico } from './produto/pureLogic/familia';
 
 /**
  * The ONE reader of a Loja Integrada product into the typed views the product import (master
@@ -31,8 +32,9 @@ import { inteiroPositivoCanonicoLi } from './mapaFreteLojaIntegrada';
  * ## Text: `''` is nothing, nothing else is folded
  * `sku`, `nome` and `gtin` are kept VERBATIM; only the exact `''` (and a non-string) reads as
  * `null`. `' X '` stays `' X '`: the SKU is an identity and is compared byte for byte
- * ({@link mesmoSkuLi}). The one place a SKU is folded is {@link skuParecidoLi}, a probe that can
- * only REFUSE a create, never link two products.
+ * ({@link mesmoSkuLi}). The one place a SKU is folded is the pair {@link skuParecidoLi} and
+ * {@link skusParecidosNaLojaLi}: both can only REFUSE (a create, and for the store-side decision a
+ * match by SKU too), never link two products.
  *
  * Pure and total: no clock, no network, no Firestore.
  *
@@ -466,5 +468,64 @@ export function skuParecidoLi(sku: unknown): string[] {
   ];
   const saida: string[] = [];
   for (const forma of formas) if (forma !== '' && !saida.includes(forma)) saida.push(forma);
+  return saida;
+}
+
+/** One row of the job's assembly, as {@link skusParecidosNaLojaLi} reads it. */
+export interface SkuDaLojaLi {
+  /** The row's SKU, verbatim. Anything but a non-empty string carries no SKU. */
+  readonly sku: unknown;
+  /** A simple store product: its create also writes its sole member's derived SKU. */
+  readonly simples: boolean;
+}
+
+/**
+ * The store-side near duplicates, decided from the whole snapshot before anything is created, so
+ * processing order never picks a winner and Simular answers as `aplicar` does. Every SKU the job
+ * would write (each row's own, and a simple product's `skuDoMembroUnico`) is listed under its probe
+ * forms ({@link skuParecidoLi}); two rows whose written SKUs share a form collide, and BOTH rows' OWN
+ * SKUs are returned. Both sides are in memory here, so the probe's stated ERP-side limit does not
+ * apply. Two rows with the SAME bytes are one SKU here: an exact repeat is the caller's other rule
+ * (`sku-repetido-na-loja`), never this one.
+ *
+ * Equal (both returned): `'ABC-1'` and `'abc-1'`; `'ABC-1'` and `'ABC-1 '`; `' Abc-1'` and `'ABC-1'`;
+ * `'Abc-1'` and `'aBC-1'`; a simple `'X'` (derived `'X-UN'`) and a row `'X-UN'`; a simple `'X'` and a
+ * row `'x-un'`.
+ * Distinct: `'ABC-1'` and `'ABC-2'`; `'X-AZ'` and `'X-AZUL'`; `'ABC-1'` and `'ABC1'`; `'01'` and `'1'`;
+ * a simple `'X'` and a row `'X-UNI'`; a PARENT `'X'` (no member) and a row `'X-UN'`; `'X'` twice;
+ * a simple `'X'` alone (its own derived SKU is no other row).
+ *
+ * ⚠️ Sharing a form is exact on ASCII (non-empty, trimmed, case-folded equality) and WIDER beyond it:
+ * characters that share an upper or a lower case collide, as `'ß'` and `'ss'` do through `'SS'` and
+ * the Kelvin sign and `'K'` through `'k'`, although the probe calls neither parecido with the other.
+ * A stated over-fold, kept on purpose: asking for the probe's one-way reach instead would lose
+ * `'Abc-1'` and `'aBC-1'`, and its worst case is both rows refused: neither row's family created
+ * (one flagged variation refuses its whole family) and neither row matched by exact SKU, so a
+ * product the ERP already has goes unlinked unless an existing link answers, each row with an
+ * actionable pendência.
+ *
+ * Pure and total.
+ */
+export function skusParecidosNaLojaLi(linhas: readonly SkuDaLojaLi[]): ReadonlySet<string> {
+  const donosPorForma = new Map<string, Set<string>>();
+  const registrar = (escrito: string, dono: string): void => {
+    for (const forma of skuParecidoLi(escrito)) {
+      const donos = donosPorForma.get(forma) ?? new Set<string>();
+      donos.add(dono);
+      donosPorForma.set(forma, donos);
+    }
+  };
+  for (const { sku, simples } of linhas) {
+    if (typeof sku !== 'string' || sku === '') continue;
+    registrar(sku, sku);
+    if (simples) {
+      const membro = skuDoMembroUnico(sku);
+      if (membro !== null) registrar(membro, sku);
+    }
+  }
+  const saida = new Set<string>();
+  for (const donos of donosPorForma.values()) {
+    if (donos.size > 1) for (const dono of donos) saida.add(dono);
+  }
   return saida;
 }
