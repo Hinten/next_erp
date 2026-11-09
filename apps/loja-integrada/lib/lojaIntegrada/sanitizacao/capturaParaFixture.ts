@@ -17,8 +17,10 @@
  * passed in as data; without one, a catalogue pair is refused
  * (`sem-chave-de-fixtures`, its printed request line blanked to `<id>` and
  * `<sku>`), and so is a pair where two different ids or SKUs land on one
- * pseudonym (`colisao-de-pseudonimo`). Catalogue data the mapping cannot reach is refused
- * too: an error body that keeps a number (`numero-em-erro-do-catalogo`), and a
+ * pseudonym (`colisao-de-pseudonimo`) or a real id it maps already has a
+ * pseudonym's 12 digits (`id-real-na-faixa-do-pseudonimo`). Catalogue data the
+ * mapping cannot reach is refused too: an error body that keeps a number
+ * (`numero-em-erro-do-catalogo`), and a
  * catalogue resource on a path the class does not admit, which would fall to
  * `estrutural` and keep its ids (`catalogo-fora-da-classe`).
  *
@@ -380,6 +382,9 @@ export function capturaParaFixture(
     })),
     ...(pseudonimos !== null && pseudonimos.colisoes > 0
       ? [{ onde: 'pseudonimos', tipo: 'colisao-de-pseudonimo' }]
+      : []),
+    ...(pseudonimos !== null && pseudonimos.idsReaisNaFaixa > 0
+      ? [{ onde: 'pseudonimos', tipo: 'id-real-na-faixa-do-pseudonimo' }]
       : []),
   ];
   const vistos = new Set<string>();

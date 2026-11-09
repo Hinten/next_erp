@@ -366,6 +366,22 @@ describe('executarSanitizacao — catalogue pseudonyms and the key file', () => 
     expect(r.saida).not.toContain('7777');
   });
 
+  it('a real id in the pseudonym range refuses the run, names its remedy, and is never printed', () => {
+    const r = rodar(
+      ['--entrada', PASTA, '--dry-run'],
+      disco({
+        arquivos: {
+          ...pares({ produto: par('GET /v1/produto/734210985116/ 404', '') }),
+          ...COM_CHAVE,
+        },
+      }),
+    );
+    expect(r).toMatchObject({ codigo: 1, escritas: [] });
+    expect(r.saida).toContain('  produto pseudonimos :: id-real-na-faixa-do-pseudonimo\n');
+    expect(r.saida).toContain('hint (id-real-na-faixa-do-pseudonimo):');
+    expect(r.saida).not.toContain('734210985116');
+  });
+
   it('a key that is not a regular file is no key', () => {
     const r = rodar(
       ['--entrada', PASTA],

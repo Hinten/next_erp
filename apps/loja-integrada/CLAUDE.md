@@ -569,8 +569,11 @@ apps/loja-integrada/lib/lojaIntegrada/testing/especificacaoFolhas.json` (no pair
 - **Catalogue ids are keyed pseudonyms** (`sanitizacao/pseudonimo.ts`): on a `catalogo`
   2xx pair the sanitizer maps every kept `id` and `*_id`, every id segment of a kept
   resource URI, of the request path and of `meta.next`/`previous`, and the `produto=`
-  query value to `1e8 + HMAC-SHA256(key, "li-fixture-id:" + id)[0..6] mod 9e8`, one
-  namespace for every resource, so the relations between rows survive. The key is
+  query value to `1e11 + HMAC-SHA256(key, "li-fixture-id:" + id)[0..6] mod 9e11`, one
+  namespace for every resource, so the relations between rows survive. Twelve digits:
+  no real id has that many (products and images, the longest, have 9), and a pair
+  holding one is refused (`id-real-na-faixa-do-pseudonimo`), so the range check is
+  sound for every resource kind; neither 11 nor 14, the CPF and CNPJ lengths. The key is
   `.chave-fixtures` in the capture folder (created once by `--gerar-chave`, which refuses
   to replace it; never printed, never committed). ⚠️ **The key OUTLIVES the captures**:
   deleting merged raw pairs never deletes it, and a later catalogue capture must use the

@@ -98,22 +98,33 @@ const GRADE = {
 };
 
 describe('the pseudonym', () => {
-  it('is 1e8 + (the first 6 bytes of HMAC-SHA256(key, "li-fixture-id:" + id)) mod 9e8', () => {
+  it('is 1e11 + (the first 6 bytes of HMAC-SHA256(key, "li-fixture-id:" + id)) mod 9e11', () => {
     const mac = createHmac('sha256', Buffer.from(CHAVE_DE_TESTE_HEX, 'hex'))
       .update('li-fixture-id:1234567', 'utf8')
       .digest();
-    expect(CHAVE.pseudonimo('1234567')).toBe(100_000_000 + (mac.readUIntBE(0, 6) % 900_000_000));
+    expect(CHAVE.pseudonimo('1234567')).toBe(
+      100_000_000_000 + (mac.readUIntBE(0, 6) % 900_000_000_000),
+    );
   });
 
-  it('is a canonical 9-digit safe integer for every id', () => {
+  it('is a canonical 12-digit safe integer for every id', () => {
     for (let id = 0; id < 2000; id++) {
       const falso = f(id);
       expect(Number.isSafeInteger(falso)).toBe(true);
       expect(falso).toBeGreaterThanOrEqual(PSEUDONIMO_MINIMO_LI);
       expect(falso).toBeLessThanOrEqual(PSEUDONIMO_MAXIMO_LI);
-      expect(String(falso)).toMatch(/^[1-9]\d{8}$/);
+      expect(String(falso)).toMatch(/^[1-9]\d{11}$/);
     }
-    expect([PSEUDONIMO_MINIMO_LI, PSEUDONIMO_MAXIMO_LI]).toEqual([100_000_000, 999_999_999]);
+    expect([PSEUDONIMO_MINIMO_LI, PSEUDONIMO_MAXIMO_LI]).toEqual([
+      100_000_000_000, 999_999_999_999,
+    ]);
+  });
+
+  it('is never a length the check-digit scan reads as a document (11 or 14 digits)', () => {
+    for (const n of [PSEUDONIMO_MINIMO_LI, PSEUDONIMO_MAXIMO_LI]) {
+      expect(String(n)).not.toHaveLength(11);
+      expect(String(n)).not.toHaveLength(14);
+    }
   });
 
   it('EQUAL: the same key and the same id give the same pseudonym, whatever spells the id', () => {
@@ -160,12 +171,12 @@ describe('the key file', () => {
     const texto = textoDeChaveNovaLi(bytes);
     expect(texto).toMatch(/^[0-9a-f]{64}\n$/);
     expect(ChaveDeFixturesLi.deTexto(texto)?.pseudonimo('5')).toBe(
-      100_000_000 +
+      100_000_000_000 +
         (createHmac('sha256', Buffer.from(bytes))
           .update('li-fixture-id:5')
           .digest()
           .readUIntBE(0, 6) %
-          900_000_000),
+          900_000_000_000),
     );
     expect(() => textoDeChaveNovaLi(new Uint8Array(31))).toThrow(RangeError);
   });
@@ -194,6 +205,26 @@ describe('PseudonimosLi', () => {
     const p = new PseudonimosLi(CHAVE);
     expect(p.de(String(a))).toBe(p.de(String(b)));
     expect(p.colisoes).toBe(1);
+  });
+
+  it('counts each distinct real id that already lies in the pseudonym range, however it is reached', () => {
+    const p = new PseudonimosLi(CHAVE);
+    p.de(String(PSEUDONIMO_MINIMO_LI));
+    p.de(String(PSEUDONIMO_MAXIMO_LI));
+    p.de(String(PSEUDONIMO_MAXIMO_LI));
+    expect(pseudonimizarCaminhoLi(`/v1/produto/${String(PSEUDONIMO_MINIMO_LI + 7)}/`, p)).toMatch(
+      /^\/v1\/produto\/\d{12}\/$/,
+    );
+    expect(p.idsReaisNaFaixa).toBe(3);
+  });
+
+  it("NEAR-MISS: a real id one digit short or one digit long of the range is not counted (a product's 9 digits included)", () => {
+    const p = new PseudonimosLi(CHAVE);
+    for (const id of [PSEUDONIMO_MINIMO_LI - 1, PSEUDONIMO_MAXIMO_LI + 1, 987_654_321, 4101, 0]) {
+      p.de(idCanonicoLi(id));
+    }
+    expect(p.de(idCanonicoLi('000987654321'))).toBe(f(987_654_321));
+    expect(p.idsReaisNaFaixa).toBe(0);
   });
 });
 

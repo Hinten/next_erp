@@ -32,24 +32,24 @@
       },
       "objects": [
         {
-          "id": 194224891,
+          "id": 542894224891,
           "apelido": "REDACTED",
           "ativo": false,
           "bloqueado": false,
           "categorias": [
-            "/api/v1/categoria/636837664"
+            "/api/v1/categoria/996036837664"
           ],
           "descricao_completa": "REDACTED",
           "filhos": [
-            "/api/v1/produto/199792027",
-            "/api/v1/produto/622325301",
-            "/api/v1/produto/476839186",
-            "/api/v1/produto/504519746",
-            "/api/v1/produto/328366373"
+            "/api/v1/produto/975799792027",
+            "/api/v1/produto/262522325301",
+            "/api/v1/produto/922076839186",
+            "/api/v1/produto/590904519746",
+            "/api/v1/produto/168628366373"
           ],
           "grades": [
-            "/api/v1/grades/605007075",
-            "/api/v1/grades/881691653"
+            "/api/v1/grades/757505007075",
+            "/api/v1/grades/783881691653"
           ],
           "gtin": null,
           "id_externo": null,
@@ -57,7 +57,7 @@
           "ncm": null,
           "nome": "REDACTED",
           "removido": true,
-          "resource_uri": "/api/v1/produto/194224891",
+          "resource_uri": "/api/v1/produto/542894224891",
           "seo": "REDACTED",
           "sku": "482676647",
           "tipo": "atributo",
@@ -69,24 +69,24 @@
           "tags": []
         },
         {
-          "id": 735842975,
+          "id": 656835842975,
           "apelido": "REDACTED",
           "ativo": false,
           "bloqueado": false,
           "categorias": [
-            "/api/v1/categoria/636837664"
+            "/api/v1/categoria/996036837664"
           ],
           "descricao_completa": "REDACTED",
           "filhos": [
-            "/api/v1/produto/106314447",
-            "/api/v1/produto/910421646",
-            "/api/v1/produto/373360489",
-            "/api/v1/produto/757466763",
-            "/api/v1/produto/766944691"
+            "/api/v1/produto/706606314447",
+            "/api/v1/produto/747910421646",
+            "/api/v1/produto/524173360489",
+            "/api/v1/produto/263557466763",
+            "/api/v1/produto/349966944691"
           ],
           "grades": [
-            "/api/v1/grades/605007075",
-            "/api/v1/grades/881691653"
+            "/api/v1/grades/757505007075",
+            "/api/v1/grades/783881691653"
           ],
           "gtin": "",
           "id_externo": null,
@@ -94,7 +94,7 @@
           "ncm": "",
           "nome": "REDACTED",
           "removido": true,
-          "resource_uri": "/api/v1/produto/735842975",
+          "resource_uri": "/api/v1/produto/656835842975",
           "seo": "REDACTED",
           "sku": "187467593",
           "tipo": "atributo",
@@ -106,24 +106,24 @@
           "tags": []
         },
         {
-          "id": 412656387,
+          "id": 216412656387,
           "apelido": "REDACTED",
           "ativo": false,
           "bloqueado": false,
           "categorias": [
-            "/api/v1/categoria/636837664"
+            "/api/v1/categoria/996036837664"
           ],
           "descricao_completa": "REDACTED",
           "filhos": [
-            "/api/v1/produto/610782726",
-            "/api/v1/produto/629683443",
-            "/api/v1/produto/416413343",
-            "/api/v1/produto/829455908",
-            "/api/v1/produto/208192540"
+            "/api/v1/produto/447010782726",
+            "/api/v1/produto/348029683443",
+            "/api/v1/produto/458516413343",
+            "/api/v1/produto/632629455908",
+            "/api/v1/produto/484408192540"
           ],
           "grades": [
-            "/api/v1/grades/605007075",
-            "/api/v1/grades/881691653"
+            "/api/v1/grades/757505007075",
+            "/api/v1/grades/783881691653"
           ],
           "gtin": "",
           "id_externo": null,
@@ -131,7 +131,7 @@
           "ncm": "",
           "nome": "REDACTED",
           "removido": true,
-          "resource_uri": "/api/v1/produto/412656387",
+          "resource_uri": "/api/v1/produto/216412656387",
           "seo": "REDACTED",
           "sku": "675774869",
           "tipo": "atributo",
@@ -143,12 +143,12 @@
           "tags": []
         },
         {
-          "id": 757255795,
+          "id": 592057255795,
           "apelido": "REDACTED",
           "ativo": false,
           "bloqueado": false,
           "categorias": [
-            "/api/v1/categoria/818827211"
+            "/api/v1/categoria/719018827211"
           ],
           "descricao_completa": "",
           "grades": [],
@@ -158,7 +158,7 @@
           "ncm": null,
           "nome": "REDACTED",
           "removido": true,
-          "resource_uri": "/api/v1/produto/757255795",
+          "resource_uri": "/api/v1/produto/592057255795",
           "seo": "REDACTED",
           "sku": "8244674",
           "tipo": "normal",
@@ -170,19 +170,19 @@
           "tags": []
         },
         {
-          "id": 628675122,
+          "id": 294028675122,
           "apelido": "REDACTED",
           "ativo": false,
           "bloqueado": false,
           "categorias": [
-            "/api/v1/categoria/624629014"
+            "/api/v1/categoria/494724629014"
           ],
           "descricao_completa": "REDACTED",
           "filhos": [
-            "/api/v1/produto/206056535"
+            "/api/v1/produto/797606056535"
           ],
           "grades": [
-            "/api/v1/grades/881691653"
+            "/api/v1/grades/783881691653"
           ],
           "gtin": "",
           "id_externo": null,
@@ -190,7 +190,7 @@
           "ncm": "",
           "nome": "REDACTED",
           "removido": true,
-          "resource_uri": "/api/v1/produto/628675122",
+          "resource_uri": "/api/v1/produto/294028675122",
           "seo": "REDACTED",
           "sku": "VVA07WRGY",
           "tipo": "atributo",
@@ -202,22 +202,22 @@
           "tags": []
         },
         {
-          "id": 894626705,
+          "id": 331194626705,
           "apelido": "REDACTED",
           "ativo": false,
           "bloqueado": false,
           "categorias": [
-            "/api/v1/categoria/636837664"
+            "/api/v1/categoria/996036837664"
           ],
           "descricao_completa": "REDACTED",
           "filhos": [
-            "/api/v1/produto/868254181",
-            "/api/v1/produto/894326012",
-            "/api/v1/produto/243538736",
-            "/api/v1/produto/142777556"
+            "/api/v1/produto/396868254181",
+            "/api/v1/produto/626394326012",
+            "/api/v1/produto/255843538736",
+            "/api/v1/produto/456442777556"
           ],
           "grades": [
-            "/api/v1/grades/881691653"
+            "/api/v1/grades/783881691653"
           ],
           "gtin": "",
           "id_externo": null,
@@ -225,7 +225,7 @@
           "ncm": "",
           "nome": "REDACTED",
           "removido": true,
-          "resource_uri": "/api/v1/produto/894626705",
+          "resource_uri": "/api/v1/produto/331194626705",
           "seo": "REDACTED",
           "sku": "060392096",
           "tipo": "atributo",
@@ -237,24 +237,24 @@
           "tags": []
         },
         {
-          "id": 299380320,
+          "id": 326999380320,
           "apelido": "REDACTED",
           "ativo": false,
           "bloqueado": false,
           "categorias": [
-            "/api/v1/categoria/636837664"
+            "/api/v1/categoria/996036837664"
           ],
           "descricao_completa": "REDACTED",
           "filhos": [
-            "/api/v1/produto/739220065",
-            "/api/v1/produto/441748218",
-            "/api/v1/produto/459874531",
-            "/api/v1/produto/338436715",
-            "/api/v1/produto/817874716"
+            "/api/v1/produto/637939220065",
+            "/api/v1/produto/804141748218",
+            "/api/v1/produto/247959874531",
+            "/api/v1/produto/120938436715",
+            "/api/v1/produto/723517874716"
           ],
           "grades": [
-            "/api/v1/grades/605007075",
-            "/api/v1/grades/881691653"
+            "/api/v1/grades/757505007075",
+            "/api/v1/grades/783881691653"
           ],
           "gtin": "",
           "id_externo": null,
@@ -262,7 +262,7 @@
           "ncm": "",
           "nome": "REDACTED",
           "removido": true,
-          "resource_uri": "/api/v1/produto/299380320",
+          "resource_uri": "/api/v1/produto/326999380320",
           "seo": "REDACTED",
           "sku": "886183620",
           "tipo": "atributo",
@@ -274,22 +274,22 @@
           "tags": []
         },
         {
-          "id": 947321988,
+          "id": 752447321988,
           "apelido": "REDACTED",
           "ativo": false,
           "bloqueado": false,
           "categorias": [
-            "/api/v1/categoria/636837664"
+            "/api/v1/categoria/996036837664"
           ],
           "descricao_completa": "REDACTED",
           "filhos": [
-            "/api/v1/produto/163768294",
-            "/api/v1/produto/358759694",
-            "/api/v1/produto/934230457",
-            "/api/v1/produto/841300494"
+            "/api/v1/produto/944263768294",
+            "/api/v1/produto/121858759694",
+            "/api/v1/produto/810034230457",
+            "/api/v1/produto/184441300494"
           ],
           "grades": [
-            "/api/v1/grades/881691653"
+            "/api/v1/grades/783881691653"
           ],
           "gtin": "",
           "id_externo": null,
@@ -297,7 +297,7 @@
           "ncm": "",
           "nome": "REDACTED",
           "removido": true,
-          "resource_uri": "/api/v1/produto/947321988",
+          "resource_uri": "/api/v1/produto/752447321988",
           "seo": "REDACTED",
           "sku": "899052526",
           "tipo": "atributo",
@@ -309,22 +309,22 @@
           "tags": []
         },
         {
-          "id": 949879891,
+          "id": 330349879891,
           "apelido": "REDACTED",
           "ativo": true,
           "bloqueado": false,
           "categorias": [],
           "descricao_completa": "REDACTED",
           "filhos": [
-            "/api/v1/produto/658047495",
-            "/api/v1/produto/234488757",
-            "/api/v1/produto/896414998",
-            "/api/v1/produto/118279669",
-            "/api/v1/produto/325194562"
+            "/api/v1/produto/778258047495",
+            "/api/v1/produto/291834488757",
+            "/api/v1/produto/332096414998",
+            "/api/v1/produto/415018279669",
+            "/api/v1/produto/753625194562"
           ],
           "grades": [
-            "/api/v1/grades/605007075",
-            "/api/v1/grades/881691653"
+            "/api/v1/grades/757505007075",
+            "/api/v1/grades/783881691653"
           ],
           "gtin": "",
           "id_externo": null,
@@ -332,7 +332,7 @@
           "ncm": "",
           "nome": "REDACTED",
           "removido": true,
-          "resource_uri": "/api/v1/produto/949879891",
+          "resource_uri": "/api/v1/produto/330349879891",
           "seo": "REDACTED",
           "sku": "0719425",
           "tipo": "atributo",
@@ -344,22 +344,22 @@
           "tags": []
         },
         {
-          "id": 676169424,
+          "id": 135676169424,
           "apelido": "REDACTED",
           "ativo": false,
           "bloqueado": false,
           "categorias": [
-            "/api/v1/categoria/636837664"
+            "/api/v1/categoria/996036837664"
           ],
           "descricao_completa": "REDACTED",
           "filhos": [
-            "/api/v1/produto/628017316",
-            "/api/v1/produto/271689380",
-            "/api/v1/produto/881155034",
-            "/api/v1/produto/974545551"
+            "/api/v1/produto/557728017316",
+            "/api/v1/produto/460171689380",
+            "/api/v1/produto/338381155034",
+            "/api/v1/produto/796574545551"
           ],
           "grades": [
-            "/api/v1/grades/881691653"
+            "/api/v1/grades/783881691653"
           ],
           "gtin": "",
           "id_externo": null,
@@ -367,7 +367,7 @@
           "ncm": "",
           "nome": "REDACTED",
           "removido": true,
-          "resource_uri": "/api/v1/produto/676169424",
+          "resource_uri": "/api/v1/produto/135676169424",
           "seo": "REDACTED",
           "sku": "132349652",
           "tipo": "atributo",
@@ -379,22 +379,22 @@
           "tags": []
         },
         {
-          "id": 644422488,
+          "id": 259844422488,
           "apelido": "REDACTED",
           "ativo": false,
           "bloqueado": false,
           "categorias": [
-            "/api/v1/categoria/636837664"
+            "/api/v1/categoria/996036837664"
           ],
           "descricao_completa": "REDACTED",
           "filhos": [
-            "/api/v1/produto/311111608",
-            "/api/v1/produto/503531977",
-            "/api/v1/produto/997371821",
-            "/api/v1/produto/714864051"
+            "/api/v1/produto/488111111608",
+            "/api/v1/produto/851003531977",
+            "/api/v1/produto/242197371821",
+            "/api/v1/produto/992514864051"
           ],
           "grades": [
-            "/api/v1/grades/881691653"
+            "/api/v1/grades/783881691653"
           ],
           "gtin": "",
           "id_externo": null,
@@ -402,7 +402,7 @@
           "ncm": "",
           "nome": "REDACTED",
           "removido": true,
-          "resource_uri": "/api/v1/produto/644422488",
+          "resource_uri": "/api/v1/produto/259844422488",
           "seo": "REDACTED",
           "sku": "06479166065",
           "tipo": "atributo",
@@ -414,22 +414,22 @@
           "tags": []
         },
         {
-          "id": 514164728,
+          "id": 709714164728,
           "apelido": "REDACTED",
           "ativo": false,
           "bloqueado": false,
           "categorias": [
-            "/api/v1/categoria/636837664"
+            "/api/v1/categoria/996036837664"
           ],
           "descricao_completa": "REDACTED",
           "filhos": [
-            "/api/v1/produto/805463587",
-            "/api/v1/produto/128222530",
-            "/api/v1/produto/902924871",
-            "/api/v1/produto/266184361"
+            "/api/v1/produto/367105463587",
+            "/api/v1/produto/212528222530",
+            "/api/v1/produto/558002924871",
+            "/api/v1/produto/381866184361"
           ],
           "grades": [
-            "/api/v1/grades/881691653"
+            "/api/v1/grades/783881691653"
           ],
           "gtin": "",
           "id_externo": null,
@@ -437,7 +437,7 @@
           "ncm": "",
           "nome": "REDACTED",
           "removido": true,
-          "resource_uri": "/api/v1/produto/514164728",
+          "resource_uri": "/api/v1/produto/709714164728",
           "seo": "REDACTED",
           "sku": "064781793184",
           "tipo": "atributo",
@@ -449,22 +449,22 @@
           "tags": []
         },
         {
-          "id": 100649681,
+          "id": 447400649681,
           "apelido": "REDACTED",
           "ativo": false,
           "bloqueado": false,
           "categorias": [
-            "/api/v1/categoria/636837664"
+            "/api/v1/categoria/996036837664"
           ],
           "descricao_completa": "REDACTED",
           "filhos": [
-            "/api/v1/produto/333467597",
-            "/api/v1/produto/287758619",
-            "/api/v1/produto/939383434",
-            "/api/v1/produto/356545241"
+            "/api/v1/produto/321633467597",
+            "/api/v1/produto/196487758619",
+            "/api/v1/produto/133239383434",
+            "/api/v1/produto/280256545241"
           ],
           "grades": [
-            "/api/v1/grades/881691653"
+            "/api/v1/grades/783881691653"
           ],
           "gtin": "",
           "id_externo": null,
@@ -472,7 +472,7 @@
           "ncm": "",
           "nome": "REDACTED",
           "removido": true,
-          "resource_uri": "/api/v1/produto/100649681",
+          "resource_uri": "/api/v1/produto/447400649681",
           "seo": "REDACTED",
           "sku": "064703063",
           "tipo": "atributo",
@@ -484,22 +484,22 @@
           "tags": []
         },
         {
-          "id": 373576442,
+          "id": 743773576442,
           "apelido": "REDACTED",
           "ativo": false,
           "bloqueado": false,
           "categorias": [
-            "/api/v1/categoria/636837664"
+            "/api/v1/categoria/996036837664"
           ],
           "descricao_completa": "REDACTED",
           "filhos": [
-            "/api/v1/produto/937376132",
-            "/api/v1/produto/400887633",
-            "/api/v1/produto/473841550",
-            "/api/v1/produto/794900421"
+            "/api/v1/produto/657937376132",
+            "/api/v1/produto/112000887633",
+            "/api/v1/produto/213773841550",
+            "/api/v1/produto/688394900421"
           ],
           "grades": [
-            "/api/v1/grades/881691653"
+            "/api/v1/grades/783881691653"
           ],
           "gtin": "",
           "id_externo": null,
@@ -507,7 +507,7 @@
           "ncm": "",
           "nome": "REDACTED",
           "removido": true,
-          "resource_uri": "/api/v1/produto/373576442",
+          "resource_uri": "/api/v1/produto/743773576442",
           "seo": "REDACTED",
           "sku": "064701283",
           "tipo": "atributo",
@@ -519,22 +519,22 @@
           "tags": []
         },
         {
-          "id": 618475266,
+          "id": 564018475266,
           "apelido": "REDACTED",
           "ativo": false,
           "bloqueado": false,
           "categorias": [
-            "/api/v1/categoria/636837664"
+            "/api/v1/categoria/996036837664"
           ],
           "descricao_completa": "REDACTED",
           "filhos": [
-            "/api/v1/produto/715825454",
-            "/api/v1/produto/354692999",
-            "/api/v1/produto/814141492",
-            "/api/v1/produto/840328886"
+            "/api/v1/produto/813415825454",
+            "/api/v1/produto/483654692999",
+            "/api/v1/produto/857614141492",
+            "/api/v1/produto/937740328886"
           ],
           "grades": [
-            "/api/v1/grades/881691653"
+            "/api/v1/grades/783881691653"
           ],
           "gtin": "",
           "id_externo": null,
@@ -542,7 +542,7 @@
           "ncm": "",
           "nome": "REDACTED",
           "removido": true,
-          "resource_uri": "/api/v1/produto/618475266",
+          "resource_uri": "/api/v1/produto/564018475266",
           "seo": "REDACTED",
           "sku": "064703629",
           "tipo": "atributo",
@@ -554,22 +554,22 @@
           "tags": []
         },
         {
-          "id": 521329327,
+          "id": 584621329327,
           "apelido": "REDACTED",
           "ativo": false,
           "bloqueado": false,
           "categorias": [
-            "/api/v1/categoria/636837664"
+            "/api/v1/categoria/996036837664"
           ],
           "descricao_completa": "REDACTED",
           "filhos": [
-            "/api/v1/produto/737167325",
-            "/api/v1/produto/154463687",
-            "/api/v1/produto/924917433",
-            "/api/v1/produto/595977531"
+            "/api/v1/produto/476837167325",
+            "/api/v1/produto/885754463687",
+            "/api/v1/produto/544524917433",
+            "/api/v1/produto/490195977531"
           ],
           "grades": [
-            "/api/v1/grades/881691653"
+            "/api/v1/grades/783881691653"
           ],
           "gtin": "",
           "id_externo": null,
@@ -577,7 +577,7 @@
           "ncm": "",
           "nome": "REDACTED",
           "removido": true,
-          "resource_uri": "/api/v1/produto/521329327",
+          "resource_uri": "/api/v1/produto/584621329327",
           "seo": "REDACTED",
           "sku": "064701331",
           "tipo": "atributo",
@@ -589,22 +589,22 @@
           "tags": []
         },
         {
-          "id": 157564486,
+          "id": 340357564486,
           "apelido": "REDACTED",
           "ativo": false,
           "bloqueado": false,
           "categorias": [
-            "/api/v1/categoria/636837664"
+            "/api/v1/categoria/996036837664"
           ],
           "descricao_completa": "REDACTED",
           "filhos": [
-            "/api/v1/produto/685815812",
-            "/api/v1/produto/362609378",
-            "/api/v1/produto/898204692",
-            "/api/v1/produto/646781553"
+            "/api/v1/produto/517285815812",
+            "/api/v1/produto/906662609378",
+            "/api/v1/produto/871198204692",
+            "/api/v1/produto/648646781553"
           ],
           "grades": [
-            "/api/v1/grades/881691653"
+            "/api/v1/grades/783881691653"
           ],
           "gtin": "",
           "id_externo": null,
@@ -612,7 +612,7 @@
           "ncm": "",
           "nome": "REDACTED",
           "removido": true,
-          "resource_uri": "/api/v1/produto/157564486",
+          "resource_uri": "/api/v1/produto/340357564486",
           "seo": "REDACTED",
           "sku": "06470263452",
           "tipo": "atributo",
@@ -624,22 +624,22 @@
           "tags": []
         },
         {
-          "id": 272258410,
+          "id": 740972258410,
           "apelido": "REDACTED",
           "ativo": false,
           "bloqueado": false,
           "categorias": [
-            "/api/v1/categoria/636837664"
+            "/api/v1/categoria/996036837664"
           ],
           "descricao_completa": "REDACTED",
           "filhos": [
-            "/api/v1/produto/792440964",
-            "/api/v1/produto/281755936",
-            "/api/v1/produto/279373603",
-            "/api/v1/produto/889990093"
+            "/api/v1/produto/952992440964",
+            "/api/v1/produto/146081755936",
+            "/api/v1/produto/494379373603",
+            "/api/v1/produto/188989990093"
           ],
           "grades": [
-            "/api/v1/grades/881691653"
+            "/api/v1/grades/783881691653"
           ],
           "gtin": "",
           "id_externo": null,
@@ -647,7 +647,7 @@
           "ncm": "",
           "nome": "REDACTED",
           "removido": true,
-          "resource_uri": "/api/v1/produto/272258410",
+          "resource_uri": "/api/v1/produto/740972258410",
           "seo": "REDACTED",
           "sku": "0647800224536",
           "tipo": "atributo",
@@ -659,22 +659,22 @@
           "tags": []
         },
         {
-          "id": 882557926,
+          "id": 521082557926,
           "apelido": "REDACTED",
           "ativo": false,
           "bloqueado": false,
           "categorias": [
-            "/api/v1/categoria/636837664"
+            "/api/v1/categoria/996036837664"
           ],
           "descricao_completa": "REDACTED",
           "filhos": [
-            "/api/v1/produto/441523521",
-            "/api/v1/produto/886236844",
-            "/api/v1/produto/857911662",
-            "/api/v1/produto/825331563"
+            "/api/v1/produto/501741523521",
+            "/api/v1/produto/223186236844",
+            "/api/v1/produto/937757911662",
+            "/api/v1/produto/978225331563"
           ],
           "grades": [
-            "/api/v1/grades/881691653"
+            "/api/v1/grades/783881691653"
           ],
           "gtin": "",
           "id_externo": null,
@@ -682,7 +682,7 @@
           "ncm": "",
           "nome": "REDACTED",
           "removido": true,
-          "resource_uri": "/api/v1/produto/882557926",
+          "resource_uri": "/api/v1/produto/521082557926",
           "seo": "REDACTED",
           "sku": "064703615",
           "tipo": "atributo",
@@ -694,22 +694,22 @@
           "tags": []
         },
         {
-          "id": 615270648,
+          "id": 231915270648,
           "apelido": "REDACTED",
           "ativo": false,
           "bloqueado": false,
           "categorias": [
-            "/api/v1/categoria/636837664"
+            "/api/v1/categoria/996036837664"
           ],
           "descricao_completa": "REDACTED",
           "filhos": [
-            "/api/v1/produto/732637049",
-            "/api/v1/produto/698502380",
-            "/api/v1/produto/965513883",
-            "/api/v1/produto/506922006"
+            "/api/v1/produto/301332637049",
+            "/api/v1/produto/405698502380",
+            "/api/v1/produto/108065513883",
+            "/api/v1/produto/897806922006"
           ],
           "grades": [
-            "/api/v1/grades/881691653"
+            "/api/v1/grades/783881691653"
           ],
           "gtin": "",
           "id_externo": null,
@@ -717,7 +717,7 @@
           "ncm": "",
           "nome": "REDACTED",
           "removido": true,
-          "resource_uri": "/api/v1/produto/615270648",
+          "resource_uri": "/api/v1/produto/231915270648",
           "seo": "REDACTED",
           "sku": "064703873",
           "tipo": "atributo",
@@ -729,23 +729,23 @@
           "tags": []
         },
         {
-          "id": 633454922,
+          "id": 849333454922,
           "apelido": "REDACTED",
           "ativo": false,
           "bloqueado": false,
           "categorias": [
-            "/api/v1/categoria/430836150",
-            "/api/v1/categoria/968017824"
+            "/api/v1/categoria/941830836150",
+            "/api/v1/categoria/960368017824"
           ],
           "descricao_completa": "REDACTED",
           "filhos": [
-            "/api/v1/produto/210693164",
-            "/api/v1/produto/125785994",
-            "/api/v1/produto/272829210",
-            "/api/v1/produto/331268320"
+            "/api/v1/produto/951510693164",
+            "/api/v1/produto/665225785994",
+            "/api/v1/produto/563672829210",
+            "/api/v1/produto/106531268320"
           ],
           "grades": [
-            "/api/v1/grades/881691653"
+            "/api/v1/grades/783881691653"
           ],
           "gtin": "",
           "id_externo": null,
@@ -753,7 +753,7 @@
           "ncm": "",
           "nome": "REDACTED",
           "removido": true,
-          "resource_uri": "/api/v1/produto/633454922",
+          "resource_uri": "/api/v1/produto/849333454922",
           "seo": "REDACTED",
           "sku": "06472255",
           "tipo": "atributo",
@@ -765,28 +765,28 @@
           "tags": []
         },
         {
-          "id": 202626537,
+          "id": 194602626537,
           "apelido": "REDACTED",
           "ativo": false,
           "bloqueado": false,
           "categorias": [
-            "/api/v1/categoria/636837664"
+            "/api/v1/categoria/996036837664"
           ],
           "descricao_completa": "REDACTED",
           "filhos": [
-            "/api/v1/produto/905093948",
-            "/api/v1/produto/264310243",
-            "/api/v1/produto/514144872",
-            "/api/v1/produto/842527698",
-            "/api/v1/produto/661031955",
-            "/api/v1/produto/408803784",
-            "/api/v1/produto/928898317",
-            "/api/v1/produto/729123926",
-            "/api/v1/produto/425257839"
+            "/api/v1/produto/763205093948",
+            "/api/v1/produto/941664310243",
+            "/api/v1/produto/285814144872",
+            "/api/v1/produto/980942527698",
+            "/api/v1/produto/842161031955",
+            "/api/v1/produto/204708803784",
+            "/api/v1/produto/999928898317",
+            "/api/v1/produto/773829123926",
+            "/api/v1/produto/505325257839"
           ],
           "grades": [
-            "/api/v1/grades/605007075",
-            "/api/v1/grades/881691653"
+            "/api/v1/grades/757505007075",
+            "/api/v1/grades/783881691653"
           ],
           "gtin": "",
           "id_externo": null,
@@ -794,7 +794,7 @@
           "ncm": "",
           "nome": "REDACTED",
           "removido": true,
-          "resource_uri": "/api/v1/produto/202626537",
+          "resource_uri": "/api/v1/produto/194602626537",
           "seo": "REDACTED",
           "sku": "06470363",
           "tipo": "atributo",
@@ -806,32 +806,32 @@
           "tags": []
         },
         {
-          "id": 209920161,
+          "id": 102809920161,
           "apelido": "REDACTED",
           "ativo": true,
           "bloqueado": false,
           "categorias": [
-            "/api/v1/categoria/591040833",
-            "/api/v1/categoria/430836150"
+            "/api/v1/categoria/367791040833",
+            "/api/v1/categoria/941830836150"
           ],
           "descricao_completa": "REDACTED",
           "filhos": [
-            "/api/v1/produto/140897936",
-            "/api/v1/produto/530791691",
-            "/api/v1/produto/999404722",
-            "/api/v1/produto/393860197",
-            "/api/v1/produto/633219661",
-            "/api/v1/produto/227360111",
-            "/api/v1/produto/147120086",
-            "/api/v1/produto/978320531",
-            "/api/v1/produto/914164577",
-            "/api/v1/produto/177837869",
-            "/api/v1/produto/983268252",
-            "/api/v1/produto/818692371"
+            "/api/v1/produto/515840897936",
+            "/api/v1/produto/329030791691",
+            "/api/v1/produto/659799404722",
+            "/api/v1/produto/219093860197",
+            "/api/v1/produto/526233219661",
+            "/api/v1/produto/674327360111",
+            "/api/v1/produto/567147120086",
+            "/api/v1/produto/587778320531",
+            "/api/v1/produto/685814164577",
+            "/api/v1/produto/617577837869",
+            "/api/v1/produto/692183268252",
+            "/api/v1/produto/919718692371"
           ],
           "grades": [
-            "/api/v1/grades/605007075",
-            "/api/v1/grades/881691653"
+            "/api/v1/grades/757505007075",
+            "/api/v1/grades/783881691653"
           ],
           "gtin": "",
           "id_externo": null,
@@ -839,7 +839,7 @@
           "ncm": "REDACTED",
           "nome": "REDACTED",
           "removido": true,
-          "resource_uri": "/api/v1/produto/209920161",
+          "resource_uri": "/api/v1/produto/102809920161",
           "seo": "REDACTED",
           "sku": "7892711132869",
           "tipo": "atributo",
@@ -851,18 +851,18 @@
           "tags": []
         },
         {
-          "id": 288881319,
+          "id": 427788881319,
           "apelido": "REDACTED",
           "ativo": false,
           "bloqueado": false,
           "categorias": [
-            "/api/v1/categoria/835662267"
+            "/api/v1/categoria/780235662267"
           ],
           "descricao_completa": "REDACTED",
           "filhos": [],
           "grades": [
-            "/api/v1/grades/605007075",
-            "/api/v1/grades/881691653"
+            "/api/v1/grades/757505007075",
+            "/api/v1/grades/783881691653"
           ],
           "gtin": "",
           "id_externo": null,
@@ -870,7 +870,7 @@
           "ncm": "",
           "nome": "REDACTED",
           "removido": true,
-          "resource_uri": "/api/v1/produto/288881319",
+          "resource_uri": "/api/v1/produto/427788881319",
           "seo": "REDACTED",
           "sku": "IEHUTLT2V",
           "tipo": "atributo",
@@ -882,7 +882,7 @@
           "tags": []
         },
         {
-          "id": 532286896,
+          "id": 370432286896,
           "apelido": "REDACTED",
           "ativo": true,
           "bloqueado": false,
@@ -890,8 +890,8 @@
           "descricao_completa": "REDACTED",
           "filhos": [],
           "grades": [
-            "/api/v1/grades/605007075",
-            "/api/v1/grades/881691653"
+            "/api/v1/grades/757505007075",
+            "/api/v1/grades/783881691653"
           ],
           "gtin": "",
           "id_externo": null,
@@ -899,7 +899,7 @@
           "ncm": null,
           "nome": "REDACTED",
           "removido": true,
-          "resource_uri": "/api/v1/produto/532286896",
+          "resource_uri": "/api/v1/produto/370432286896",
           "seo": "REDACTED",
           "sku": "4959051",
           "tipo": "atributo",
@@ -911,21 +911,21 @@
           "tags": []
         },
         {
-          "id": 725241802,
+          "id": 222125241802,
           "apelido": "REDACTED",
           "ativo": false,
           "bloqueado": false,
           "categorias": [],
           "descricao_completa": "REDACTED",
           "filhos": [
-            "/api/v1/produto/907699490",
-            "/api/v1/produto/651415627",
-            "/api/v1/produto/340612670",
-            "/api/v1/produto/169310164"
+            "/api/v1/produto/619207699490",
+            "/api/v1/produto/352551415627",
+            "/api/v1/produto/925540612670",
+            "/api/v1/produto/766069310164"
           ],
           "grades": [
-            "/api/v1/grades/605007075",
-            "/api/v1/grades/881691653"
+            "/api/v1/grades/757505007075",
+            "/api/v1/grades/783881691653"
           ],
           "gtin": "",
           "id_externo": null,
@@ -933,7 +933,7 @@
           "ncm": "",
           "nome": "REDACTED",
           "removido": true,
-          "resource_uri": "/api/v1/produto/725241802",
+          "resource_uri": "/api/v1/produto/222125241802",
           "seo": "REDACTED",
           "sku": "6612130",
           "tipo": "atributo",
@@ -945,25 +945,25 @@
           "tags": []
         },
         {
-          "id": 642451872,
+          "id": 218442451872,
           "apelido": "REDACTED",
           "ativo": true,
           "bloqueado": false,
           "categorias": [
-            "/api/v1/categoria/888106838",
-            "/api/v1/categoria/248946901"
+            "/api/v1/categoria/116088106838",
+            "/api/v1/categoria/461948946901"
           ],
           "descricao_completa": "REDACTED",
           "filhos": [
-            "/api/v1/produto/316868273",
-            "/api/v1/produto/502721772",
-            "/api/v1/produto/921974476",
-            "/api/v1/produto/613065933",
-            "/api/v1/produto/695293991"
+            "/api/v1/produto/362116868273",
+            "/api/v1/produto/830302721772",
+            "/api/v1/produto/173721974476",
+            "/api/v1/produto/405613065933",
+            "/api/v1/produto/128495293991"
           ],
           "grades": [
-            "/api/v1/grades/605007075",
-            "/api/v1/grades/881691653"
+            "/api/v1/grades/757505007075",
+            "/api/v1/grades/783881691653"
           ],
           "gtin": "",
           "id_externo": null,
@@ -971,7 +971,7 @@
           "ncm": null,
           "nome": "REDACTED",
           "removido": true,
-          "resource_uri": "/api/v1/produto/642451872",
+          "resource_uri": "/api/v1/produto/218442451872",
           "seo": "REDACTED",
           "sku": "66472",
           "tipo": "atributo",
@@ -983,24 +983,24 @@
           "tags": []
         },
         {
-          "id": 189823356,
+          "id": 842589823356,
           "apelido": "REDACTED",
           "ativo": false,
           "bloqueado": false,
           "categorias": [
-            "/api/v1/categoria/636837664"
+            "/api/v1/categoria/996036837664"
           ],
           "descricao_completa": "REDACTED",
           "filhos": [
-            "/api/v1/produto/356866228",
-            "/api/v1/produto/529949794",
-            "/api/v1/produto/656915531",
-            "/api/v1/produto/609889905",
-            "/api/v1/produto/675197124"
+            "/api/v1/produto/993056866228",
+            "/api/v1/produto/915829949794",
+            "/api/v1/produto/979856915531",
+            "/api/v1/produto/123909889905",
+            "/api/v1/produto/456975197124"
           ],
           "grades": [
-            "/api/v1/grades/605007075",
-            "/api/v1/grades/881691653"
+            "/api/v1/grades/757505007075",
+            "/api/v1/grades/783881691653"
           ],
           "gtin": "",
           "id_externo": null,
@@ -1008,7 +1008,7 @@
           "ncm": "REDACTED",
           "nome": "REDACTED",
           "removido": true,
-          "resource_uri": "/api/v1/produto/189823356",
+          "resource_uri": "/api/v1/produto/842589823356",
           "seo": "REDACTED",
           "sku": "693991410",
           "tipo": "atributo",
@@ -1020,24 +1020,24 @@
           "tags": []
         },
         {
-          "id": 830201046,
+          "id": 612830201046,
           "apelido": "REDACTED",
           "ativo": false,
           "bloqueado": false,
           "categorias": [
-            "/api/v1/categoria/636837664"
+            "/api/v1/categoria/996036837664"
           ],
           "descricao_completa": "REDACTED",
           "filhos": [
-            "/api/v1/produto/376465391",
-            "/api/v1/produto/942742791",
-            "/api/v1/produto/413794641",
-            "/api/v1/produto/919013093",
-            "/api/v1/produto/589928541"
+            "/api/v1/produto/826576465391",
+            "/api/v1/produto/545442742791",
+            "/api/v1/produto/192113794641",
+            "/api/v1/produto/704719013093",
+            "/api/v1/produto/660289928541"
           ],
           "grades": [
-            "/api/v1/grades/605007075",
-            "/api/v1/grades/881691653"
+            "/api/v1/grades/757505007075",
+            "/api/v1/grades/783881691653"
           ],
           "gtin": "",
           "id_externo": null,
@@ -1045,7 +1045,7 @@
           "ncm": "",
           "nome": "REDACTED",
           "removido": true,
-          "resource_uri": "/api/v1/produto/830201046",
+          "resource_uri": "/api/v1/produto/612830201046",
           "seo": "REDACTED",
           "sku": "16107058",
           "tipo": "atributo",
@@ -1057,23 +1057,23 @@
           "tags": []
         },
         {
-          "id": 197675048,
+          "id": 252197675048,
           "apelido": "REDACTED",
           "ativo": false,
           "bloqueado": false,
           "categorias": [
-            "/api/v1/categoria/636837664"
+            "/api/v1/categoria/996036837664"
           ],
           "descricao_completa": "REDACTED",
           "filhos": [
-            "/api/v1/produto/952290259",
-            "/api/v1/produto/148789886",
-            "/api/v1/produto/452776488",
-            "/api/v1/produto/369853454"
+            "/api/v1/produto/719152290259",
+            "/api/v1/produto/631948789886",
+            "/api/v1/produto/297452776488",
+            "/api/v1/produto/820269853454"
           ],
           "grades": [
-            "/api/v1/grades/605007075",
-            "/api/v1/grades/881691653"
+            "/api/v1/grades/757505007075",
+            "/api/v1/grades/783881691653"
           ],
           "gtin": "",
           "id_externo": null,
@@ -1081,7 +1081,7 @@
           "ncm": "",
           "nome": "REDACTED",
           "removido": true,
-          "resource_uri": "/api/v1/produto/197675048",
+          "resource_uri": "/api/v1/produto/252197675048",
           "seo": "REDACTED",
           "sku": "3330655",
           "tipo": "atributo",
@@ -1093,31 +1093,31 @@
           "tags": []
         },
         {
-          "id": 652345760,
+          "id": 862852345760,
           "apelido": "REDACTED",
           "ativo": false,
           "bloqueado": false,
           "categorias": [
-            "/api/v1/categoria/624629014"
+            "/api/v1/categoria/494724629014"
           ],
           "descricao_completa": "REDACTED",
           "filhos": [
-            "/api/v1/produto/213551971",
-            "/api/v1/produto/157568347",
-            "/api/v1/produto/415612027",
-            "/api/v1/produto/414439791",
-            "/api/v1/produto/836591154",
-            "/api/v1/produto/275826061",
-            "/api/v1/produto/702062004",
-            "/api/v1/produto/694327493",
-            "/api/v1/produto/484712490",
-            "/api/v1/produto/705378548",
-            "/api/v1/produto/567359054",
-            "/api/v1/produto/787355785"
+            "/api/v1/produto/946113551971",
+            "/api/v1/produto/161257568347",
+            "/api/v1/produto/798715612027",
+            "/api/v1/produto/128214439791",
+            "/api/v1/produto/872936591154",
+            "/api/v1/produto/481775826061",
+            "/api/v1/produto/652302062004",
+            "/api/v1/produto/934894327493",
+            "/api/v1/produto/462184712490",
+            "/api/v1/produto/872805378548",
+            "/api/v1/produto/743967359054",
+            "/api/v1/produto/988987355785"
           ],
           "grades": [
-            "/api/v1/grades/605007075",
-            "/api/v1/grades/881691653"
+            "/api/v1/grades/757505007075",
+            "/api/v1/grades/783881691653"
           ],
           "gtin": "",
           "id_externo": null,
@@ -1125,7 +1125,7 @@
           "ncm": "",
           "nome": "REDACTED",
           "removido": true,
-          "resource_uri": "/api/v1/produto/652345760",
+          "resource_uri": "/api/v1/produto/862852345760",
           "seo": "REDACTED",
           "sku": "UR5Y76PFZ",
           "tipo": "atributo",
@@ -1137,24 +1137,24 @@
           "tags": []
         },
         {
-          "id": 469286281,
+          "id": 477469286281,
           "apelido": "REDACTED",
           "ativo": false,
           "bloqueado": false,
           "categorias": [
-            "/api/v1/categoria/750044667"
+            "/api/v1/categoria/246450044667"
           ],
           "descricao_completa": "REDACTED",
           "filhos": [
-            "/api/v1/produto/536951435",
-            "/api/v1/produto/236233362",
-            "/api/v1/produto/603566273",
-            "/api/v1/produto/126780298",
-            "/api/v1/produto/755874956"
+            "/api/v1/produto/503636951435",
+            "/api/v1/produto/531236233362",
+            "/api/v1/produto/244503566273",
+            "/api/v1/produto/261126780298",
+            "/api/v1/produto/286055874956"
           ],
           "grades": [
-            "/api/v1/grades/605007075",
-            "/api/v1/grades/881691653"
+            "/api/v1/grades/757505007075",
+            "/api/v1/grades/783881691653"
           ],
           "gtin": "",
           "id_externo": null,
@@ -1162,7 +1162,7 @@
           "ncm": "",
           "nome": "REDACTED",
           "removido": true,
-          "resource_uri": "/api/v1/produto/469286281",
+          "resource_uri": "/api/v1/produto/477469286281",
           "seo": "REDACTED",
           "sku": "1180",
           "tipo": "atributo",
@@ -1174,24 +1174,24 @@
           "tags": []
         },
         {
-          "id": 388653353,
+          "id": 118288653353,
           "apelido": "REDACTED",
           "ativo": false,
           "bloqueado": false,
           "categorias": [
-            "/api/v1/categoria/636837664"
+            "/api/v1/categoria/996036837664"
           ],
           "descricao_completa": "REDACTED",
           "filhos": [
-            "/api/v1/produto/378122056",
-            "/api/v1/produto/389835268",
-            "/api/v1/produto/557087481",
-            "/api/v1/produto/185907209",
-            "/api/v1/produto/157826343"
+            "/api/v1/produto/226278122056",
+            "/api/v1/produto/222689835268",
+            "/api/v1/produto/807857087481",
+            "/api/v1/produto/757985907209",
+            "/api/v1/produto/504157826343"
           ],
           "grades": [
-            "/api/v1/grades/605007075",
-            "/api/v1/grades/881691653"
+            "/api/v1/grades/757505007075",
+            "/api/v1/grades/783881691653"
           ],
           "gtin": "",
           "id_externo": null,
@@ -1199,7 +1199,7 @@
           "ncm": "",
           "nome": "REDACTED",
           "removido": true,
-          "resource_uri": "/api/v1/produto/388653353",
+          "resource_uri": "/api/v1/produto/118288653353",
           "seo": "REDACTED",
           "sku": "627517",
           "tipo": "atributo",
@@ -1211,23 +1211,23 @@
           "tags": []
         },
         {
-          "id": 435351505,
+          "id": 766335351505,
           "apelido": "REDACTED",
           "ativo": true,
           "bloqueado": false,
           "categorias": [
-            "/api/v1/categoria/624629014"
+            "/api/v1/categoria/494724629014"
           ],
           "descricao_completa": "REDACTED",
           "filhos": [
-            "/api/v1/produto/354097822",
-            "/api/v1/produto/102783517",
-            "/api/v1/produto/506386208",
-            "/api/v1/produto/831824611"
+            "/api/v1/produto/783354097822",
+            "/api/v1/produto/289002783517",
+            "/api/v1/produto/309206386208",
+            "/api/v1/produto/537231824611"
           ],
           "grades": [
-            "/api/v1/grades/605007075",
-            "/api/v1/grades/881691653"
+            "/api/v1/grades/757505007075",
+            "/api/v1/grades/783881691653"
           ],
           "gtin": "",
           "id_externo": null,
@@ -1235,7 +1235,7 @@
           "ncm": null,
           "nome": "REDACTED",
           "removido": true,
-          "resource_uri": "/api/v1/produto/435351505",
+          "resource_uri": "/api/v1/produto/766335351505",
           "seo": "REDACTED",
           "sku": "1869558",
           "tipo": "atributo",
@@ -1247,24 +1247,24 @@
           "tags": []
         },
         {
-          "id": 483289332,
+          "id": 335283289332,
           "apelido": "REDACTED",
           "ativo": true,
           "bloqueado": false,
           "categorias": [
-            "/api/v1/categoria/218397023"
+            "/api/v1/categoria/955118397023"
           ],
           "descricao_completa": "REDACTED",
           "filhos": [
-            "/api/v1/produto/548584219",
-            "/api/v1/produto/286326509",
-            "/api/v1/produto/781859746",
-            "/api/v1/produto/295939950",
-            "/api/v1/produto/695780729"
+            "/api/v1/produto/684548584219",
+            "/api/v1/produto/940786326509",
+            "/api/v1/produto/603781859746",
+            "/api/v1/produto/950695939950",
+            "/api/v1/produto/580295780729"
           ],
           "grades": [
-            "/api/v1/grades/605007075",
-            "/api/v1/grades/881691653"
+            "/api/v1/grades/757505007075",
+            "/api/v1/grades/783881691653"
           ],
           "gtin": "",
           "id_externo": null,
@@ -1272,7 +1272,7 @@
           "ncm": null,
           "nome": "REDACTED",
           "removido": true,
-          "resource_uri": "/api/v1/produto/483289332",
+          "resource_uri": "/api/v1/produto/335283289332",
           "seo": "REDACTED",
           "sku": "023508041303",
           "tipo": "atributo",

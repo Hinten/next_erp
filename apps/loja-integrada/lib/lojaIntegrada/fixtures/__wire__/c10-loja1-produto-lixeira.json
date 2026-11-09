@@ -5,7 +5,7 @@
   "capturadoEm": "2026-11-03",
   "requisicao": {
     "metodo": "GET",
-    "caminho": "/v1/produto/194224891/",
+    "caminho": "/v1/produto/542894224891/",
     "query": []
   },
   "resposta": {
@@ -14,28 +14,28 @@
     "forma": "json",
     "bytes": 6564,
     "corpo": {
-      "id": 194224891,
+      "id": 542894224891,
       "altura": 5,
       "apelido": "REDACTED",
       "ativo": false,
       "bloqueado": false,
       "categorias": [
-        "/api/v1/categoria/636837664"
+        "/api/v1/categoria/996036837664"
       ],
       "data_criacao": "2025-04-01T11:51:57.880224",
       "data_modificacao": "2025-04-02T16:53:38.414904",
       "descricao_completa": "REDACTED",
       "destaque": false,
       "filhos": [
-        "/api/v1/produto/199792027",
-        "/api/v1/produto/622325301",
-        "/api/v1/produto/476839186",
-        "/api/v1/produto/504519746",
-        "/api/v1/produto/328366373"
+        "/api/v1/produto/975799792027",
+        "/api/v1/produto/262522325301",
+        "/api/v1/produto/922076839186",
+        "/api/v1/produto/590904519746",
+        "/api/v1/produto/168628366373"
       ],
       "grades": [
-        "/api/v1/grades/605007075",
-        "/api/v1/grades/881691653"
+        "/api/v1/grades/757505007075",
+        "/api/v1/grades/783881691653"
       ],
       "gtin": null,
       "id_externo": null,
@@ -43,74 +43,74 @@
         "caminho": "REDACTED",
         "grande": "REDACTED",
         "icone": "REDACTED",
-        "id": 443208986,
+        "id": 730343208986,
         "id_anymarket": null,
-        "imagem_id": 865886970,
+        "imagem_id": 470665886970,
         "imagem_variacao": null,
         "media": "REDACTED",
         "mime": "image/png",
         "pequena": "REDACTED",
         "posicao": "0",
         "principal": true,
-        "produto": "/api/v1/produto/194224891",
-        "resource_uri": "/api/v1/produto_imagem/443208986"
+        "produto": "/api/v1/produto/542894224891",
+        "resource_uri": "/api/v1/produto_imagem/730343208986"
       },
       "imagens": [
         {
           "caminho": "REDACTED",
           "grande": "REDACTED",
           "icone": "REDACTED",
-          "id": 443208986,
+          "id": 730343208986,
           "id_anymarket": null,
-          "imagem_id": 865886970,
+          "imagem_id": 470665886970,
           "media": "REDACTED",
           "mime": "image/png",
           "pequena": "REDACTED",
           "posicao": "0",
           "principal": true,
-          "produto": "/api/v1/produto/194224891",
-          "resource_uri": "/api/v1/produto_imagem/443208986"
+          "produto": "/api/v1/produto/542894224891",
+          "resource_uri": "/api/v1/produto_imagem/730343208986"
         },
         {
           "caminho": "REDACTED",
           "grande": "REDACTED",
           "icone": "REDACTED",
-          "id": 243258622,
+          "id": 494343258622,
           "id_anymarket": null,
-          "imagem_id": 398652653,
+          "imagem_id": 966098652653,
           "media": "REDACTED",
           "mime": "image/png",
           "pequena": "REDACTED",
           "posicao": "1",
           "principal": false,
-          "produto": "/api/v1/produto/194224891",
-          "resource_uri": "/api/v1/produto_imagem/243258622"
+          "produto": "/api/v1/produto/542894224891",
+          "resource_uri": "/api/v1/produto_imagem/494343258622"
         },
         {
           "caminho": "REDACTED",
           "grande": "REDACTED",
           "icone": "REDACTED",
-          "id": 908263239,
+          "id": 917108263239,
           "id_anymarket": null,
-          "imagem_id": 384000981,
+          "imagem_id": 539484000981,
           "media": "REDACTED",
           "mime": "image/png",
           "pequena": "REDACTED",
           "posicao": "2",
           "principal": false,
-          "produto": "/api/v1/produto/194224891",
-          "resource_uri": "/api/v1/produto_imagem/908263239"
+          "produto": "/api/v1/produto/542894224891",
+          "resource_uri": "/api/v1/produto_imagem/917108263239"
         }
       ],
       "largura": 10,
-      "marca": "/api/v1/marca/564840611",
+      "marca": "/api/v1/marca/338064840611",
       "mpn": null,
       "ncm": null,
       "nome": "REDACTED",
       "peso": "0.210",
       "profundidade": 10,
       "removido": true,
-      "resource_uri": "/api/v1/produto/194224891",
+      "resource_uri": "/api/v1/produto/542894224891",
       "seo": "REDACTED",
       "sku": "482676647",
       "tipo": "atributo",

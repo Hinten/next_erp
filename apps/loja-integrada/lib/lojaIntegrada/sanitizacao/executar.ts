@@ -256,6 +256,8 @@ const DICAS: Readonly<Record<string, string>> = {
     'capture names are lowercase letters, digits and -, at most 40, ending .json or .txt',
   'sem-chave-de-fixtures': `a catalogue pair needs the pseudonym key ${ARQUIVO_CHAVE_FIXTURES} (a regular file in the capture folder): restore it if committed catalogue fixtures were made with it, else create it once with --gerar-chave; keep it as long as any catalogue fixture exists (it outlives the captures), and re-run`,
   'colisao-de-pseudonimo': `two different ids or SKUs got one pseudonym: move ${ARQUIVO_CHAVE_FIXTURES} out, create a new key with --gerar-chave, and re-run every catalogue pair (a new key changes every catalogue id and SKU)`,
+  'id-real-na-faixa-do-pseudonimo':
+    'a real catalogue id already has the pseudonyms’ own length, so the corpus test could not tell it from a pseudonym if it ever leaked: move the pseudonym range in sanitizacao/pseudonimo.ts to a length no real id has, in a reviewed change, and regenerate every catalogue fixture under the same key',
   'chave-existente': `${ARQUIVO_CHAVE_FIXTURES} already exists and is never replaced: a new key changes every catalogue id and SKU, so every catalogue pair would have to be re-run`,
   'numero-em-erro-do-catalogo':
     'a catalogue error body keeps a number, which may echo a resource id, and a pseudonym cannot replace it there: capture an error whose body holds no number other than its status, or leave the pair out',

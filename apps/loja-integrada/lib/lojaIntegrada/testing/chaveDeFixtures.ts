@@ -19,29 +19,19 @@ export function chaveDeTeste(hex: string = CHAVE_DE_TESTE_HEX): ChaveDeFixturesL
   return chave;
 }
 
-const colisoes = new Map<string, readonly [number, number]>();
-
 /**
- * Two different ids that share one pseudonym under `hex`: the first collision
- * among 1, 2, 3, … Pseudonyms span 900 000 000 values, so by the birthday bound
- * one turns up after some tens of thousands of ids. Memoized per key.
+ * Two different ids that share one pseudonym under the TEST key: the first
+ * collision among 1, 2, 3, … Pseudonyms span 900 000 000 000 values, so by the
+ * birthday bound it lies past a million ids, a search of seconds that every suite
+ * would repeat; it was found once by that search and is written here. It stays
+ * honest without the search: every caller asserts the pair's effect (equal
+ * pseudonyms, or the `colisao-de-pseudonimo` refusal), so a change to the formula
+ * or the range fails there.
  */
-export function colisaoDePseudonimo(hex: string = CHAVE_DE_TESTE_HEX): readonly [number, number] {
-  const memo = colisoes.get(hex);
-  if (memo !== undefined) return memo;
-  const chave = chaveDeTeste(hex);
-  const vistos = new Map<number, number>();
-  for (let id = 1; id <= 1_000_000; id++) {
-    const falso = chave.pseudonimo(String(id));
-    const anterior = vistos.get(falso);
-    if (anterior !== undefined) {
-      const par = [anterior, id] as const;
-      colisoes.set(hex, par);
-      return par;
-    }
-    vistos.set(falso, id);
-  }
-  throw new RangeError('no collision among the first million ids');
+const COLISAO_DA_CHAVE_DE_TESTE = [336_261, 1_043_013] as const;
+
+export function colisaoDePseudonimo(): readonly [number, number] {
+  return COLISAO_DA_CHAVE_DE_TESTE;
 }
 
 /**

@@ -621,9 +621,11 @@ describe('__wire__ corpus — catalogue ids keep their function without a real i
   });
 
   // This pins "pseudonymized", not merely "consistent": every pseudonym has exactly
-  // 9 digits, while every real Loja Integrada id seen so far (categories, brands,
-  // grades, options, in both stores) has 4 to 8, so a real id cannot pass today. A
-  // future real id of 9 digits could; the relation tests above would still hold.
+  // 12 digits, and the sanitizer refuses a pair holding a real id of 12 digits
+  // (`id-real-na-faixa-do-pseudonimo`), whatever it names. So every real id it mapped
+  // into these fixtures — categories, brands, grades, options, products and images, in
+  // both stores — lies below the range (4 to 9 digits), and an id of those kinds that
+  // leaked unmapped could not pass.
   it('every catalogue id is in the pseudonym range', () => {
     const { foraDaFaixa, ids } = idsForaDaFaixa(fixtures);
     expect(foraDaFaixa).toEqual([]);
@@ -799,8 +801,9 @@ describe('catalogue id relations: what the corpus checks compare', () => {
     ]);
   });
 
-  it('the range: a 9-digit pseudonym passes; a real-sized id fails, in a body, a URI or the path', () => {
+  it('the range: a 12-digit pseudonym passes; a real-sized id fails, in a body, a URI or the path', () => {
     const p = PSEUDONIMO_MINIMO_LI + 12_345;
+    expect(String(p)).toMatch(/^[1-9]\d{11}$/);
     expect(
       idsForaDaFaixa([['c9-loja1-g.json', grade(p, [opcao(p, PSEUDONIMO_MAXIMO_LI)])]]),
     ).toEqual({ foraDaFaixa: [], ids: 7 });
@@ -811,6 +814,9 @@ describe('catalogue id relations: what the corpus checks compare', () => {
         ['c.json', envelope('/v1/grades/6062/', { id: p })],
         ['e.json', envelope(`/v1/categoria/set/${String(p)};4101/`, { objects: [] })],
         ['d.json', categorias({ id: PSEUDONIMO_MAXIMO_LI + 1, resource_uri: 'REDACTED' })],
+        // A product's or an image's 9 digits, and the 11 just below the range.
+        ['f.json', envelope('/v1/produto/987654321/', { id: p })],
+        ['g.json', categorias({ id: PSEUDONIMO_MINIMO_LI - 1, resource_uri: 'REDACTED' })],
       ]).foraDaFaixa,
     ).toEqual([
       'a.json :: 1 id(s) outside the pseudonym range',
@@ -818,6 +824,8 @@ describe('catalogue id relations: what the corpus checks compare', () => {
       'c.json :: 1 id(s) outside the pseudonym range',
       'e.json :: 1 id(s) outside the pseudonym range',
       'd.json :: 1 id(s) outside the pseudonym range',
+      'f.json :: 1 id(s) outside the pseudonym range',
+      'g.json :: 1 id(s) outside the pseudonym range',
     ]);
   });
 

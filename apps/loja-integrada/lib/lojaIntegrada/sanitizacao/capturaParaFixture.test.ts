@@ -641,6 +641,34 @@ describe('capturaParaFixture — catalogue ids are pseudonymized', () => {
     expect(achados(r)).toEqual(['pseudonimos :: colisao-de-pseudonimo']);
   });
 
+  it('a real id that already has the pseudonyms’ 12 digits refuses the pair, wherever it sits, and is never printed', () => {
+    const real = 734_210_985_116;
+    for (const [linha, corpo] of [
+      ['GET /v1/produto/ 200', { objects: [{ id: real, resource_uri: '/api/v1/produto/7' }] }],
+      [
+        'GET /v1/produto/ 200',
+        { objects: [{ id: 7, filhos: [`/api/v1/produto/${String(real)}`] }] },
+      ],
+      [`GET /v1/produto/${String(real)}/ 404`, ''],
+      [`GET /v1/produto_imagem/?produto=${String(real)} 200`, { objects: [] }],
+    ] as const) {
+      const r = captura(linha, corpo);
+      expect(achados(r), linha).toEqual(['pseudonimos :: id-real-na-faixa-do-pseudonimo']);
+      expect(JSON.stringify(r), linha).not.toContain(String(real));
+    }
+  });
+
+  it("NEAR-MISS: a real id of a product's 9 digits, or of 11 or 13, is mapped and written", () => {
+    for (const id of [987_654_321, 99_999_999_999, 1_000_000_000_000]) {
+      const env = envelope(
+        captura('GET /v1/produto/ 200', {
+          objects: [{ id, resource_uri: `/api/v1/produto/${String(id)}` }],
+        }),
+      );
+      expect(em(env.resposta.corpo, 'objects.0.id')).toBe(f(id));
+    }
+  });
+
   it('a clean pair reports the pseudonyms it used (pseudonym -> real), in memory only', () => {
     const r = captura('GET /v1/grades/6062/ 200', GRADE);
     if (!r.ok) throw new Error('refused');

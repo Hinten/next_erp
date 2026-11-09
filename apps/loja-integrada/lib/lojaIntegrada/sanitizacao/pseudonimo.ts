@@ -8,7 +8,7 @@
  * sanitizer replaces each one with a PSEUDONYM that keeps every relation intact:
  *
  * ```
- * fake = 100 000 000 + (first 6 bytes of HMAC-SHA256(key, "li-fixture-id:" + id)) mod 900 000 000
+ * fake = 100 000 000 000 + (first 6 bytes of HMAC-SHA256(key, "li-fixture-id:" + id)) mod 900 000 000 000
  * ```
  *
  * - **One namespace.** The same real number always gives the same fake, whatever
@@ -18,16 +18,28 @@
  *   `/grade/<g>/variacao/<v>` stays one grade; a category row and every
  *   `categoria_pai` naming it stay one category.
  * - **Keyed.** Without the key, a fake says nothing about the id behind it (a
- *   plain hash of a 4- to 8-digit number would be reversed by enumeration). The
+ *   plain hash of a 4- to 9-digit number would be reversed by enumeration). The
  *   key is 32 random bytes in `.chave-fixtures`, in the capture folder; this
  *   module only receives it as data, and {@link ChaveDeFixturesLi} never prints it.
  * - **Deterministic.** The same key and the same capture give the same bytes, and a
  *   `--so` subset gives the same ids as a full run.
- * - **Canonical 9-digit safe integers.** Never a leading zero; the range is
- *   pinned by `wireCorpus.test.ts`. Two different ids may share a fake (a
- *   collision, about one in 900 million per pair): {@link PseudonimosLi} counts
+ * - **Canonical 12-digit safe integers.** Never a leading zero; the range is
+ *   pinned by `wireCorpus.test.ts`. Twelve, because no real id comes near it
+ *   (categories, brands, grades and options have 4 to 8 digits, products and
+ *   images up to 9), and because it is neither 11 nor 14, the lengths the
+ *   check-digit scan reads as a CPF or a CNPJ. Two different ids may share a fake
+ *   (a collision, about one in 900 billion per pair): {@link PseudonimosLi} counts
  *   it and the run refuses (`colisao-de-pseudonimo`); the remedy is a new key and
  *   a re-run of every catalogue pair.
+ * - **No real id inside the range.** A real id that already had 12 digits would
+ *   read as a pseudonym, and the corpus test's range check could no longer tell
+ *   one that leaked unmapped from a mapped one. {@link PseudonimosLi} counts every
+ *   real id it maps that lies in the range, whatever resource it names, and the
+ *   pair is refused (`id-real-na-faixa-do-pseudonimo`, printing no value); the
+ *   remedy is a range of a length no real id has, and every catalogue fixture
+ *   regenerated under the same key. That refusal is what makes the range check
+ *   sound: every real id the sanitizer has mapped lies outside the range, so one
+ *   of those kinds that leaked unmapped would fall outside it too.
  *
  * WHAT is mapped, and nothing else (only for the `catalogo` class, only in the
  * `fixture` profile; the logger never sees this module):
@@ -102,9 +114,9 @@ import {
 } from '../core/redacao';
 import { segmentoDaTabela } from './folhas';
 
-/** The smallest and the largest pseudonym: every one has exactly 9 digits. */
-export const PSEUDONIMO_MINIMO_LI = 100_000_000;
-export const PSEUDONIMO_MAXIMO_LI = 999_999_999;
+/** The smallest and the largest pseudonym: every one has exactly 12 digits. */
+export const PSEUDONIMO_MINIMO_LI = 100_000_000_000;
+export const PSEUDONIMO_MAXIMO_LI = 999_999_999_999;
 const FAIXA = PSEUDONIMO_MAXIMO_LI - PSEUDONIMO_MINIMO_LI + 1;
 
 /** The key's length in bytes; `.chave-fixtures` holds it as 64 hexadecimal digits. */
@@ -127,6 +139,10 @@ function deslocar(c: number, base: number, tamanho: number, passo: number): stri
 }
 const CHAVE_HEX = /^[0-9a-fA-F]{64}$/;
 const DIGITOS = /^\d+$/;
+/** A canonical decimal id inside the pseudonym range: as many digits, no leading zero. */
+const NA_FAIXA_DO_PSEUDONIMO = new RegExp(
+  `^[1-9]\\d{${String(String(PSEUDONIMO_MINIMO_LI).length - 1)}}$`,
+);
 /** An id segment: one id, or a `;`-separated list (`/v1/categoria/set/41;42`). */
 const LISTA_DE_IDS = /^\d+(?:;\d+)*$/;
 
@@ -238,9 +254,9 @@ export const OCULTAR_IDS_LI: TrocaDeIdsLi = { troca: () => '<id>', sku: () => '<
 
 /**
  * The pseudonyms of one run (or one pair): each id and each SKU mapped once,
- * every mapping recorded, and every collision counted. `ids` and `skus` hold the
- * REAL values, in memory only: nothing prints them, and a finding names a
- * collision, never a value.
+ * every mapping recorded, and every collision and every real id inside the
+ * pseudonym range counted. `ids` and `skus` hold the REAL values, in memory
+ * only: nothing prints them, and a finding names a count, never a value.
  */
 export class PseudonimosLi implements TrocaDeIdsLi {
   readonly #chave: ChaveDeFixturesLi;
@@ -249,6 +265,8 @@ export class PseudonimosLi implements TrocaDeIdsLi {
   readonly #skus = new Map<string, string>();
   /** SKU pseudonym → the real SKU behind it. */
   readonly #skusReais = new Map<string, string>();
+  /** The distinct real ids mapped that already lie in the pseudonym range. */
+  readonly #reaisNaFaixa = new Set<string>();
   #colisoes = 0;
 
   constructor(chave: ChaveDeFixturesLi) {
@@ -257,6 +275,7 @@ export class PseudonimosLi implements TrocaDeIdsLi {
 
   /** The pseudonym of a canonical id, recorded. */
   de(idCanonico: string): number {
+    if (NA_FAIXA_DO_PSEUDONIMO.test(idCanonico)) this.#reaisNaFaixa.add(idCanonico);
     const falso = this.#chave.pseudonimo(idCanonico);
     const anterior = this.#reais.get(falso);
     if (anterior === undefined) this.#reais.set(falso, idCanonico);
@@ -284,6 +303,14 @@ export class PseudonimosLi implements TrocaDeIdsLi {
   /** How many times a second, different id or SKU landed on a pseudonym already taken. */
   get colisoes(): number {
     return this.#colisoes;
+  }
+
+  /**
+   * How many distinct REAL ids mapped already lie in the pseudonym range (12
+   * digits): each would read as a pseudonym, so the pair is refused.
+   */
+  get idsReaisNaFaixa(): number {
+    return this.#reaisNaFaixa.size;
   }
 
   /** Pseudonym → the real canonical id behind it. Never printed. */

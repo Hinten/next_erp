@@ -93,8 +93,11 @@ The fixture profile keeps Loja Integrada's own numeric ids on the catalogue clas
 real resource ids. So the sanitizer replaces each one with a keyed pseudonym:
 
 ```text
-fake = 100000000 + (first 6 bytes of HMAC-SHA256(key, "li-fixture-id:" + id)) mod 900000000
+fake = 100000000000 + (first 6 bytes of HMAC-SHA256(key, "li-fixture-id:" + id)) mod 900000000000
 ```
+
+Twelve digits, a length no real id has (the longest, products and images, have 9) and
+neither 11 nor 14, the lengths the check-digit scan reads as a CPF or a CNPJ.
 
 - **What is mapped**, on catalogue pairs only: every kept number (or digit-only
   string) under a key named `id` or ending in `_id` (`imagem_id`), the id segments of
@@ -107,7 +110,7 @@ fake = 100000000 + (first 6 bytes of HMAC-SHA256(key, "li-fixture-id:" + id)) mo
 - **What is refused instead**, because the mapping cannot reach it: a catalogue error
   body that keeps a number other than its status (`numero-em-erro-do-catalogo`: the
   error walk keeps small integers under any key, which may echo a resource id, and a
-  9-digit pseudonym cannot live there), and a catalogue resource on a path the
+  12-digit pseudonym cannot live there), and a catalogue resource on a path the
   catalogue class does not admit, such as a grade's sub-resource
   (`catalogo-fora-da-classe`: it would fall to the strictest class, whose generic table
   keeps `id` and `resource_uri` as they are). Only the paths `ehCatalogo` in
@@ -126,7 +129,7 @@ fake = 100000000 + (first 6 bytes of HMAC-SHA256(key, "li-fixture-id:" + id)) mo
   captured.
 - With no key, a catalogue pair's request line is printed with each id position as
   `<id>` and each `sku=` value as `<sku>`, never a real one.
-- **One namespace**: the same real id always gives the same 9-digit pseudonym, in
+- **One namespace**: the same real id always gives the same 12-digit pseudonym, in
   every file and both stores, so a category row and every `categoria_pai` naming it,
   or a grade's id, list row and option URIs, still agree. The same key over the same
   capture writes the same bytes, and a `--so` run gives the same ids as a full run.
@@ -148,11 +151,16 @@ fake = 100000000 + (first 6 bytes of HMAC-SHA256(key, "li-fixture-id:" + id)) mo
   its raw pair: losing the key after the raw pairs are deleted means recapturing every
   catalogue fixture. Never mix keys in the corpus.
 - Two different ids that land on one pseudonym, in one pair or across the run's pairs,
-  refuse the run (`colisao-de-pseudonimo`, about one in 900 million per pair of ids):
+  refuse the run (`colisao-de-pseudonimo`, about one in 900 billion per pair of ids):
   move the old key out, create a new one, and re-run every catalogue pair. Two SKUs
   can share a pseudonym only when a letter meets an escaped digit at the same place
   after the same characters, and that refuses the run the same way. A `--so` run
   checks only the pairs it converts, so the authoritative check is a full run.
+- A real id that already has 12 digits refuses its pair
+  (`id-real-na-faixa-do-pseudonimo`, no value printed): it would read as a pseudonym,
+  and the corpus test that every catalogue id lies in the pseudonym range would no
+  longer catch one that leaked unmapped. Move the range to a length no real id has, in
+  a reviewed change, and regenerate every catalogue fixture under the same key.
 
 ### A capture is a pair
 
