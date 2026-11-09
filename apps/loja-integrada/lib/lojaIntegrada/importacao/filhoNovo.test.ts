@@ -224,7 +224,7 @@ function familia(variacoes: readonly Variacao[]): FamiliaLi {
 async function cascata(db: FakeDb, f: FamiliaLi): Promise<ResolucaoDosFilhosLi> {
   return resolverFilhosLi({ db: asDb(db), contaId: CONTA }, f, PAI, {
     grupos: MEMO,
-    skusRepetidos: new Set(),
+    skusEmConflito: new Map(),
   });
 }
 
@@ -259,8 +259,8 @@ interface Opcoes {
 
 function adicionar(
   db: FakeDb,
-  entrada: Omit<EntradaDoFilhoNovoLi, 'erpPaiId' | 'categoriaErpId' | 'marcas' | 'skusRepetidos'> &
-    Partial<Pick<EntradaDoFilhoNovoLi, 'skusRepetidos'>>,
+  entrada: Omit<EntradaDoFilhoNovoLi, 'erpPaiId' | 'categoriaErpId' | 'marcas' | 'skusEmConflito'> &
+    Partial<Pick<EntradaDoFilhoNovoLi, 'skusEmConflito'>>,
   o: Opcoes = {},
 ): Promise<ResultadoDoFilhoNovoLi> {
   return adicionarFilhosLi(
@@ -276,7 +276,7 @@ function adicionar(
       erpPaiId: PAI,
       categoriaErpId: CATEGORIA,
       marcas: MARCAS,
-      skusRepetidos: new Set(),
+      skusEmConflito: new Map(),
       ...entrada,
     },
   );
@@ -591,33 +591,39 @@ describe('which variations are added', () => {
     }
   });
 
-  it('a SKU the store repeats, or an option the cascade left unresolved, is skipped silently (the cascade reported it)', async () => {
-    const db = new FakeDb();
-    seedFamiliaErp(db);
-    const r = await adicionar(db, {
-      familia: familia([VERDE, ROXO]),
-      skusRepetidos: new Set(['CAM-VD']),
-      filhos: {
-        filhos: [
-          ausente(802, [[GRADE, 2, COR, 'v-verde']]),
-          {
-            ...ausente(803, []),
-            opcoes: [
-              {
-                tipo: TIPO_RESOLUCAO_OPCAO_LI.opcaoSemVinculo,
-                gradeId: GRADE,
-                opcaoId: 4,
-                grupoIds: [],
-                varianteIds: [],
-              },
-            ],
-          },
-        ],
-      },
-    });
-    expect(r).toMatchObject({ adicionados: [], pendencias: [] });
-    expect(db.leituras).toEqual([]);
-  });
+  it.each([
+    PENDENCIA_IMPORTACAO_LI.skuRepetidoNaLoja,
+    PENDENCIA_IMPORTACAO_LI.skuParecidoNaLoja,
+  ] as const)(
+    'a SKU in conflict in the store (%s), or an option the cascade left unresolved, is skipped silently (the cascade reported it)',
+    async (conflito) => {
+      const db = new FakeDb();
+      seedFamiliaErp(db);
+      const r = await adicionar(db, {
+        familia: familia([VERDE, ROXO]),
+        skusEmConflito: new Map([['CAM-VD', conflito]]),
+        filhos: {
+          filhos: [
+            ausente(802, [[GRADE, 2, COR, 'v-verde']]),
+            {
+              ...ausente(803, []),
+              opcoes: [
+                {
+                  tipo: TIPO_RESOLUCAO_OPCAO_LI.opcaoSemVinculo,
+                  gradeId: GRADE,
+                  opcaoId: 4,
+                  grupoIds: [],
+                  varianteIds: [],
+                },
+              ],
+            },
+          ],
+        },
+      });
+      expect(r).toMatchObject({ adicionados: [], pendencias: [] });
+      expect(db.leituras).toEqual([]);
+    },
+  );
 });
 
 /* -------------------------------- the probe -------------------------------- */
@@ -834,8 +840,32 @@ describe('what must precede the batch, and a name the cut made', () => {
     await produto(db, AZUL_ERP).update({ nome: 'Camiseta Azul' });
     const ok = await adicionar(db, entrada);
     expect(ok.adicionados.map((a) => a.liId)).toEqual([802]);
-    expect(ok.nomesCortados).toEqual([802]);
+    expect(ok.pendencias).toEqual([
+      { codigo: PENDENCIA_IMPORTACAO_LI.nomeCortado, liId: 802, referencias: [] },
+    ]);
     expect(db.ler(`produtos/${VERDE_ID}`)?.nome).toBe(longo);
+  });
+
+  it('NEAR-MISS: a variation the probe refuses reports no cut name: nothing was created to carry it', async () => {
+    const longo = 'L'.repeat(100);
+    const db = new FakeDb();
+    seedGrupos(db);
+    seedFamiliaErp(db);
+    await produto(db, PAI).update({ nome: longo });
+    db.seed('produtos/a-mao', { nome: 'A mão', sku: 'CAM-VD', paiId: null, filhoUnicoId: null });
+    const r = await adicionar(db, {
+      familia: familia([AZUL, VERDE]),
+      filhos: {
+        filhos: [
+          { ...ausente(801, [[GRADE, 1, COR, 'v-azul']]), situacao: SITUACAO_DO_FILHO_LI.casado },
+          ausente(802, [[GRADE, 2, COR, 'v-verde']]),
+        ],
+      },
+    });
+    expect(r.adicionados).toEqual([]);
+    expect(r.pendencias).toEqual([
+      { codigo: PENDENCIA_IMPORTACAO_LI.skuJaExiste, liId: 802, referencias: ['a-mao'] },
+    ]);
   });
 });
 

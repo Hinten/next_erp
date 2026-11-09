@@ -12,8 +12,9 @@
  *
  * Every variation the cascade left `ausente` whose options ALL resolved (`resolverFilhosLi` resolved
  * them over the grupos the caller passed: the memo, plus the Simular overlay) — a variation with an
- * option that did not resolve, with no SKU, or with a SKU the store repeats was already reported by
- * the cascade, and is skipped here with nothing added. On top of it, a variation is added ONLY when
+ * option that did not resolve, with no SKU, or with a SKU the store repeats or nearly repeats
+ * (`conflitosDeSkuNaLojaLi`) was already reported by the cascade, and is skipped here with nothing
+ * added. On top of it, a variation is added ONLY when
  *  - it is visible: a hidden or blocked one is never created (`oculto-nao-criado`; decided
  *    2026-11-03 — the next run adds it once the store shows it);
  *  - its DETAIL was read and agrees (the whole-family create's "The details", `familiaNova.ts`):
@@ -31,7 +32,8 @@
  *    `nome`: the ERP family builder never makes two children of one name that way), and its SKU
  *    passes the create probe: an exact hit anywhere in the catalogue ⇒ `sku-ja-existe` naming the
  *    ERP ids, a "parecido" hit alone ⇒ `sku-parecido` — that variation is left out, the others
- *    still added.
+ *    still added. A name the cut shortened on a variation that IS added is reported (`nome-cortado`,
+ *    informational).
  * A variation added is built by the whole-family create's rules (`familiaNova.ts`): the id keyed by
  * its SKU, the name by the ERP family rule over the ERP PARENT's stored name, the taxonomy from the
  * resolution, the store's values through the fill-empty's one field map (the parent's resolved
@@ -145,7 +147,11 @@ import {
   ocultoNaLojaLi,
   planejarVinculoLi,
 } from './plano';
-import { type ResolucaoDosFilhosLi, SITUACAO_DO_FILHO_LI } from './resolucao';
+import {
+  type ConflitoDeSkuNaLojaLi,
+  type ResolucaoDosFilhosLi,
+  SITUACAO_DO_FILHO_LI,
+} from './resolucao';
 
 /** The attempts of one add: the first and two re-plans after a lost commit (module header). */
 export const MAX_TENTATIVAS_FILHO_NOVO_LI = 3;
@@ -270,8 +276,8 @@ export interface EntradaDoFilhoNovoLi {
   readonly erpPaiId: string;
   /** The cascade's verdict on the family's variations under `erpPaiId` (`resolverFilhosLi`). */
   readonly filhos: Pick<ResolucaoDosFilhosLi, 'filhos'>;
-  /** SKUs two store rows carry (`skusRepetidosNaLojaLi`): never created. */
-  readonly skusRepetidos: ReadonlySet<string>;
+  /** SKUs in conflict in the store (`conflitosDeSkuNaLojaLi`): never created. */
+  readonly skusEmConflito: ReadonlyMap<string, ConflitoDeSkuNaLojaLi>;
   /** The parent's resolved ERP categoria — what its existing variations are filled with too. */
   readonly categoriaErpId: string | null;
   /** The job's brand list. */
@@ -299,8 +305,6 @@ export interface ResultadoDoFilhoNovoLi {
   /** The links the batch wrote beside the added variations (none for a `retomado` one). */
   readonly vinculos: readonly VinculoPlanejadoLi[];
   readonly pendencias: readonly PendenciaDoPlanoLi[];
-  /** Store ids whose produto name was cut. */
-  readonly nomesCortados: readonly number[];
   /** A batch of this call landed (`aplicar` only). */
   readonly gravado: boolean;
   /** The post-commit re-derive; `null` when nothing was added under `aplicar`. */
@@ -347,7 +351,6 @@ async function tentar(
       adicionados: [],
       existentes: [],
       vinculos: [],
-      nomesCortados: [],
       gravado: false,
       ponteiro: null,
       ...r,
@@ -560,6 +563,16 @@ async function tentar(
       .filter((p) => !recusados.has(p.liId))
       .map((p, i) => ({ ...p, doc: { ...p.doc, ordem: ordem + 1 + i } }));
   }
+  // Only a variation that IS added reports its cut name: a refused one created nothing.
+  for (const p of aCriar) {
+    if (nomesCortados.includes(p.liId)) {
+      pendencias.push({
+        codigo: PENDENCIA_IMPORTACAO_LI.nomeCortado,
+        liId: p.liId,
+        referencias: [],
+      });
+    }
+  }
   const resultado = {
     adicionados: [
       ...adicionados,
@@ -567,7 +580,6 @@ async function tentar(
     ].sort((a, b) => a.liId - b.liId),
     existentes,
     vinculos: aCriar.flatMap((p) => (p.vinculo === null ? [] : [p.vinculo])),
-    nomesCortados: nomesCortados.filter((id) => aCriar.some((p) => p.liId === id)),
   };
   if (deps.modo === MODO_IMPORTACAO_LI.simular) return fim(resultado);
   if (aCriar.length === 0) {
@@ -630,10 +642,10 @@ export async function adicionarFilhosLi(
       });
       continue;
     }
-    // No SKU, a SKU the store repeats, an option that did not resolve: the cascade reported it.
+    // No SKU, a SKU in conflict in the store, an option that did not resolve: the cascade reported it.
     const { sku } = filho.linha;
     const opcoes = opcoesResolvidasLi(r.opcoes);
-    if (sku === null || entrada.skusRepetidos.has(sku) || opcoes.tipo === 'recusada') continue;
+    if (sku === null || entrada.skusEmConflito.has(sku) || opcoes.tipo === 'recusada') continue;
     // Its detail, the store's fresher view (module header, "Which variations").
     const { detalhe } = filho;
     if (detalhe === null) {
@@ -667,7 +679,6 @@ export async function adicionarFilhosLi(
     existentes: [],
     vinculos: [],
     pendencias: fixas,
-    nomesCortados: [],
     gravado: false,
     ponteiro: null,
   };

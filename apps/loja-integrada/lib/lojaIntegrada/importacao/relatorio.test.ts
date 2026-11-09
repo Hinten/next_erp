@@ -405,6 +405,31 @@ describe('the complete step in the report', () => {
     expect(item(SEM_VINCULOS, { plano: p })).toMatchObject({ acao: 'criar', erpId: null });
   });
 
+  it('the categories a run created reach the item ⟷ NEAR-MISS none given, none named', () => {
+    const p = plano({ situacaoErp: SITUACAO_ERP_ITEM_LI.ausente, erpId: null, criacao });
+    expect(
+      item(SEM_VINCULOS, { plano: p, categoriasCriadas: [900, 901] }).categoriasCriadas,
+    ).toEqual([900, 901]);
+    expect(item(SEM_VINCULOS, { plano: p }).categoriasCriadas).toEqual([]);
+  });
+
+  it('a cut name is informational: it counts as such and keeps no aviso open', () => {
+    const p = plano({ situacaoErp: SITUACAO_ERP_ITEM_LI.ausente, erpId: null, criacao });
+    const comCorte = item(SEM_VINCULOS, {
+      plano: p,
+      pendenciasDoCompletar: [
+        { codigo: PENDENCIA_IMPORTACAO_LI.nomeCortado, liId: null, referencias: [] },
+      ],
+    });
+    expect(comCorte.pendencias).toEqual([
+      { codigo: 'nome-cortado', acionavel: false, liId: null, referencias: [] },
+    ]);
+    expect(contadoresDoItemLi(comCorte, SEM_VINCULOS)).toMatchObject({
+      pendenciasInformativas: 1,
+      pendenciasAcionaveis: 0,
+    });
+  });
+
   it('a create the complete step REFUSED is never `criar`; a fill is `completar`, ranked above `vincular`', () => {
     const p = plano({ situacaoErp: SITUACAO_ERP_ITEM_LI.ausente, erpId: null, criacao });
     expect(item(SEM_VINCULOS, { plano: p, criacaoRecusada: true }).acao).toBe('nenhuma');

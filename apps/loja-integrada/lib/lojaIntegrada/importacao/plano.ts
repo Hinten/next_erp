@@ -15,8 +15,8 @@
  * `naoNoErp` target it was in (`familiaDoJob.ts`, "Order", step 2).
  * A family outside the target is planned as `noAlvo: false` with no link and no create, and the
  * caller writes no report item for it — except a family in CONFLICT (two owners, two SKU hits, a
- * shape mismatch, no SKU, a SKU the store repeats): it belongs to no target but `todos` and
- * `selecionados`, and under `jaNoErp` and `naoNoErp` it is still REPORTED (`relatar`), with its
+ * shape mismatch, no SKU, a SKU the store repeats or nearly repeats): it belongs to no target but
+ * `todos` and `selecionados`, and under `jaNoErp` and `naoNoErp` it is still REPORTED (`relatar`), with its
  * conflict and no link, so a run of either never reads as "everything on this side is done".
  *
  * ## The links (`raizVinculo`, `filhosVinculos`)
@@ -60,8 +60,9 @@
  *    {@link MAX_NOME_PRODUTO_LI} first; a `null` name is `dado-invalido(nome)`);
  *  - a parent keeps at least one VISIBLE variation: a hidden or blocked one is left out
  *    (`oculto-nao-criado` on it), and a family whose every variation is hidden is not created;
- *  - every kept variation has a SKU no other store row repeats and parses through the produto
- *    schema, and no claimed variation is still without a usable detail.
+ *  - every kept variation has a SKU no other store row repeats or nearly repeats
+ *    (`conflitosDeSkuNaLojaLi`) and parses through the produto schema, and no claimed variation is
+ *    still without a usable detail.
  * Whether every kept variation's options resolve is the complete step's check (it needs the grupo
  * memo); this plan only lists them.
  *
@@ -105,6 +106,7 @@ import {
 import type { FamiliaLi, FilhoDaFamiliaLi } from './familias';
 import { type RecusaNoRelatorioLi, pendenciaDaRecusaLi } from './gruposLi';
 import {
+  type ConflitoDeSkuNaLojaLi,
   type PendenciaDaResolucaoLi,
   type ResolucaoDaRaizLi,
   type ResolucaoDoFilhoLi,
@@ -215,8 +217,8 @@ export interface EntradaDoPlanoLi {
   readonly raiz: ResolucaoDaRaizLi;
   /** The variations' match under the matched root (`resolverFilhosLi`); `null` when not run. */
   readonly filhos: ResolucaoDosFilhosLi | null;
-  /** SKUs two store rows carry (`skusRepetidosNaLojaLi`): never created. */
-  readonly skusRepetidos: ReadonlySet<string>;
+  /** SKUs in conflict in the store, with their code (`conflitosDeSkuNaLojaLi`): never created. */
+  readonly skusEmConflito: ReadonlyMap<string, ConflitoDeSkuNaLojaLi>;
   /** Why each claimed option stays unlearned (`recusasDoAprendizadoLi`), keyed `<g>_<v>`. */
   readonly recusasDoAprendizado: ReadonlyMap<string, RecusaNoRelatorioLi>;
   /**
@@ -325,7 +327,7 @@ export function ocultoNaLojaLi(linha: Pick<ProdutoLiLido, 'ativo' | 'bloqueado'>
 /** The create's classification (module header, "The create"). */
 function planejarCriacao(
   familia: FamiliaLi,
-  skusRepetidos: ReadonlySet<string>,
+  skusEmConflito: ReadonlyMap<string, ConflitoDeSkuNaLojaLi>,
 ): { readonly criacao: CriacaoPlanejadaLi; readonly pendencias: readonly PendenciaDoPlanoLi[] } {
   const { raiz } = familia;
   const pendencias: PendenciaDoPlanoLi[] = [];
@@ -364,8 +366,9 @@ function planejarCriacao(
         viavel = false;
         continue;
       }
-      if (skusRepetidos.has(linha.sku)) {
-        recusar(PENDENCIA_IMPORTACAO_LI.skuRepetidoNaLoja, linha.id);
+      const emConflito = skusEmConflito.get(linha.sku);
+      if (emConflito !== undefined) {
+        recusar(emConflito, linha.id);
         viavel = false;
       }
       const camposDoFilho = camposDoFilhoSchema.safeParse({ sku: linha.sku, gtin: linha.gtin });
@@ -511,7 +514,7 @@ export function planejarFamiliaLi(e: EntradaDoPlanoLi): PlanoDaFamiliaLi {
     if (job.acao !== ACAO_IMPORTACAO_LI.completar) {
       return { ...base, ...vazio, pendencias: semRepetir(pendencias) };
     }
-    const { criacao, pendencias: daCriacao } = planejarCriacao(familia, e.skusRepetidos);
+    const { criacao, pendencias: daCriacao } = planejarCriacao(familia, e.skusEmConflito);
     return {
       ...base,
       ...vazio,

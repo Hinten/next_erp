@@ -65,9 +65,10 @@
  *    first and created only when the plan resolves, so a run never creates a category no produto
  *    takes (but for a fill that then loses its race). NO link yet.
  *
- * ⚠️ The categories a create-and-link run creates are not NAMED in the report: the item contract
- * has no field for them (the job's map shows them `vinculada`, like any other link). A duplicate of
- * a category of the same name shows in the ERP's category list, not on the card.
+ * Each category a create-and-link run creates is named on the item of the family that created it
+ * (`categoriasCriadas`, recorded where the plan is carried out, {@link aplicarCategoriaDaRaiz}, so a
+ * category a refused create already made is named too). A duplicate of a category of the same name
+ * shows in the ERP's category list, not on the card.
  *
  * Then the PHOTOS (`fotos.ts`, the job's `fotos: soSemFotos` with a default bucket): onto every
  * produto the preparation filled or created that has none — under `aplicar` one budgeted unit per
@@ -116,15 +117,12 @@
  *
  * ## The family's progress between its units ({@link ProgressoDaFamiliaLi})
  *
- * What the preparation decided — its fields, pendências, counts and photo targets — and the photo
- * cursor, checkpointed after every unit until the closing reports it. ⚠️ The job contract has no
- * field of its own for it (a deviation from the plan's job contract, awaiting its own field in
- * `packages/schemas`): it rides as TAGGED TEXT (`f:<json>`) in `revisao.cursorProdutoId`, which
- * no one reads during the `familias` phase (the `revisao` phase, the field's owner, starts after it
- * and the transition clears it). Only {@link textoDoProgressoDaFamiliaLi} writes it and
- * {@link lerProgressoDaFamiliaLi} reads it back; a text that does not read, or names another family,
- * is no progress, and the family is prepared again — safe, since every write of it is fill-empty,
- * create-only or tier 0, at the price of the residuals of "A retried family".
+ * What the preparation decided — its fields, pendências, the categories it created, counts and
+ * photo targets — and the photo cursor, checkpointed after every unit until the closing reports it:
+ * the job's own `progressoDaFamilia`, which the closing clears. A stored value that does not parse,
+ * or that names another family, is no progress, and the family is prepared again — safe, since every
+ * write of it is fill-empty, create-only or tier 0, at the price of the residuals of "A retried
+ * family".
  *
  * ## A retried family
  *
@@ -136,10 +134,9 @@
  * through such a link back to `encontrado` (`relatorio.ts`). So the retry's item and counter delta
  * equal the first attempt's — and Simular's for the same store — with the residuals
  * `vinculos.ts` states, and one of the cascade's own: a VARIATION the first attempt matched by its
- * option combination (or under a SKU the store repeats) is matched by its link on the retry, so
- * the informational `sku-diferente` / `sku-repetido-na-loja` that attempt reported for it is not
- * reported again (one informational pendência fewer; the link, the action and every other counter
- * agree). Closing it means rung 1 recognising this job's link and falling through to the SKU and
+ * option combination (or under a SKU in conflict in the store) is matched by its link on the retry,
+ * so the `sku-diferente`, `sku-repetido-na-loja` or `sku-parecido-na-loja` that attempt reported for
+ * it is not reported again (one pendência fewer; the link and the action agree). Closing it means rung 1 recognising this job's link and falling through to the SKU and
  * combination rungs, which read nothing new for a variation. ⚠️ And a MIRROR REFRESH this job
  * landed reads `sem-mudanca` on a retried unit: `semMudanca + 1`, its informational
  * `vinculo-atualizado` lost; `vinculados` unaffected (`vinculos.ts`, "Accepted residuals"; pinned
@@ -160,8 +157,9 @@
  * the item `completar`, its tax review re-written (the add's batch made it durable first anyway).
  * ⚠️ Accepted residuals of a retried complete unit: the fields a landed fill wrote are found
  * filled, so the REPORT names none of them (`completar.ts`; the tax review of a filled category
- * was written before the fill, so the durable list loses nothing), and a `descricao-longa` of a
- * landed create or add is not reported again (neither is re-planned).
+ * was written before the fill, so the durable list loses nothing), and a `descricao-longa` or
+ * `nome-cortado` of a landed create or add is not reported again (neither is re-planned), nor are
+ * the `categoriasCriadas` of a landed create (the categories stand; only the item stops naming them).
  *
  * ⚠️ Never name the Admin SDK's multi-document read-and-write call here — not even in a comment
  * (`estrutura.test.ts`). Next-free; `db` is a parameter.
@@ -180,6 +178,7 @@ import type { DocumentSnapshot, Firestore, Timestamp } from 'firebase-admin/fire
 import { produtoCollection, produtoExtraDataCollection } from '@delfrance/data/admin/collections';
 import {
   ACAO_IMPORTACAO_LI,
+  CAMINHO_DO_COMPLETAR_LI,
   type CategoriaDoJobLi,
   type ContadoresImportacaoLi,
   type DetalheImportacaoLi,
@@ -191,12 +190,12 @@ import {
   type MotivoRevisaoFiscalLi,
   PENDENCIA_IMPORTACAO_LI,
   PRODUTO_EXTRA_DATA_DOC_ID,
+  type ProgressoDaFamiliaLi,
   SITUACAO_ERP_ITEM_LI,
   TIPO_PRODUTO_LI,
   TIPO_RESOLUCAO_OPCAO_LI,
-  pendenciaImportacaoLiSchema,
+  progressoDaFamiliaLiSchema,
 } from '@delfrance/schemas';
-import { z } from 'zod';
 
 import {
   type ResultadoCategoriaDoProdutoLi,
@@ -235,7 +234,6 @@ import {
   type CandidatoAFotosLi,
   type ResultadoFotosDaFamiliaLi,
   contarFotosSimuladasLi,
-  cursorFotosLiSchema,
   planejarAlvosDeFotosLi,
   semFotosNoErpLi,
 } from './fotos';
@@ -255,6 +253,7 @@ import {
   montarItemDaFamiliaLi,
 } from './relatorio';
 import {
+  type ConflitoDeSkuNaLojaLi,
   type ResolucaoDaRaizLi,
   type ResolucaoDosFilhosLi,
   SITUACAO_DO_FILHO_LI,
@@ -299,8 +298,8 @@ export interface ContextoDasFamiliasLi {
     | 'mapaCategorias'
     | 'marcas'
   >;
-  /** `skusRepetidosNaLojaLi` over the job's assembly. */
-  readonly skusRepetidos: ReadonlySet<string>;
+  /** `conflitosDeSkuNaLojaLi` over the job's assembly. */
+  readonly skusEmConflito: ReadonlyMap<string, ConflitoDeSkuNaLojaLi>;
   /** The grupos to resolve options against (`gruposParaResolverLi`). */
   readonly grupos: readonly GrupoComLinksLi[];
   /** The learning's refusals, keyed `<gradeId>_<opcaoId>` (`recusasDoAprendizadoLi`). */
@@ -330,11 +329,6 @@ export type ResultadoDaFamiliaLi =
       readonly contadores: ContadoresImportacaoLi;
       /** The job's category map after this family: the caller checkpoints it with the unit. */
       readonly mapaCategorias: readonly CategoriaDoJobLi[];
-      /**
-       * Store ids whose created produto's name was cut at the ERP's limit: the report's closed
-       * vocabulary has no code for it, so the caller logs them.
-       */
-      readonly nomesCortados: readonly number[];
     }
   /**
    * `aplicar` under "complete": the family is PREPARED and has pictures to fetch. The caller
@@ -446,7 +440,7 @@ async function casarFamilia(
   opcoes: OpcoesDoCasamentoLi = {},
 ): Promise<CasamentoLi> {
   const resolucao = { db: deps.db, contaId: ctx.job.integracaoId };
-  const raiz = await resolverRaizLi(resolucao, familia, ctx.skusRepetidos);
+  const raiz = await resolverRaizLi(resolucao, familia, ctx.skusEmConflito);
   const nascida =
     opcoes.alvoDecidido === undefined
       ? await raizNascidaDuranteOJobLi(deps, ctx, familia, raiz)
@@ -463,7 +457,7 @@ async function casarFamilia(
   if (noAlvo && familia.raiz.tipo === TIPO_PRODUTO_LI.atributo && matched(raiz)) {
     filhos = await resolverFilhosLi(resolucao, familia, raiz.erpId, {
       grupos: ctx.grupos,
-      skusRepetidos: ctx.skusRepetidos,
+      skusEmConflito: ctx.skusEmConflito,
     });
   }
 
@@ -472,7 +466,7 @@ async function casarFamilia(
     familia,
     raiz,
     filhos,
-    skusRepetidos: ctx.skusRepetidos,
+    skusEmConflito: ctx.skusEmConflito,
     recusasDoAprendizado: ctx.recusasDoAprendizado,
     noAlvo,
   });
@@ -517,7 +511,6 @@ export async function executarFamiliaLi(
     item,
     contadores: contadoresDoItemLi(item, vinculos),
     mapaCategorias: ctx.job.mapaCategorias,
-    nomesCortados: [],
   };
 }
 
@@ -631,7 +624,7 @@ function preenche(a: ProdutoArmazenadoLi, valores: ValoresDoLiLi): boolean {
  *    a matched variation when it has an empty weight, box or description of its own; a variation
  *    whose box is empty also needs ITS detail (only a read detail without a box inherits the
  *    parent's) and the PARENT's, and one whose brand is empty the parent's; a variation the family
- *    may ADD (visible, with a SKU the store does not repeat, every option resolved) its own and the
+ *    may ADD (visible, with a SKU in no conflict in the store, every option resolved) its own and the
  *    parent's. When the run copies photos and any variation's detail is read, the root's is too:
  *    a variation's pictures are copied only when they are not its parent's set (`fotos.ts`), which
  *    only the parent's detail can say. A variation whose detail is not otherwise needed is never
@@ -698,7 +691,7 @@ async function idsADetalhar(
       linha !== undefined &&
       !ocultoNaLojaLi(linha) &&
       linha.sku !== null &&
-      !ctx.skusRepetidos.has(linha.sku) &&
+      !ctx.skusEmConflito.has(linha.sku) &&
       r.opcoes.length > 0 &&
       r.opcoes.every((o) => o.tipo === TIPO_RESOLUCAO_OPCAO_LI.resolvida);
     if (podeEntrar) {
@@ -713,92 +706,6 @@ async function idsADetalhar(
 /* -------------------------------------------------------------------------- */
 /*                         The progress between units                          */
 /* -------------------------------------------------------------------------- */
-
-/** Which path the preparation took, for a family whose photos are under way. */
-export const caminhoDoCompletarLiSchema = z.enum(['existente', 'criada']);
-export type CaminhoDoCompletarLi = z.infer<typeof caminhoDoCompletarLiSchema>;
-/** Named members of {@link caminhoDoCompletarLiSchema} — see `delfrance/prefer-schema-enum`. */
-export const CAMINHO_DO_COMPLETAR_LI = {
-  /** A family the ERP has: filled, links still to write. */
-  existente: 'existente',
-  /** A family this job created (links in the batch). */
-  criada: 'criada',
-} as const satisfies Record<string, CaminhoDoCompletarLi>;
-
-const idLiSchema = z.number().int().positive();
-
-const pendenciaDoProgressoSchema = z.object({
-  codigo: pendenciaImportacaoLiSchema,
-  liId: idLiSchema.nullable(),
-  referencias: z.array(z.string()),
-});
-
-const resultadoFotosDoProgressoSchema = z.object({
-  produtos: cursorFotosLiSchema.shape.feitos,
-  gravadas: z.number().int().nonnegative(),
-  pendencias: z.array(pendenciaDoProgressoSchema),
-});
-
-/**
- * One family's complete step between its units (module header, "The family's progress"): what the
- * preparation decided, the photo targets, the photo cursor and, once every picture is decided, the
- * photos' result.
- */
-export const progressoDaFamiliaLiSchema = z.object({
-  /** The family's root store id: a progress of any other family is none. */
-  raizLiId: idLiSchema,
-  caminho: caminhoDoCompletarLiSchema,
-  /** The ERP root: matched, or created by this job. */
-  erpRaizId: z.string().min(1),
-  /** The variations' category (the parent's stored one, else the one resolved for it). */
-  categoria: z.object({
-    erpId: z.string().min(1).nullable(),
-    criadaPelaImportacao: z.boolean(),
-  }),
-  /** The plan's create was carried out (or met again, landed, by a retried unit). */
-  criacaoAplicada: z.boolean(),
-  completado: z.boolean(),
-  campos: z.array(z.string()),
-  pendencias: z.array(pendenciaDoProgressoSchema),
-  nomesCortados: z.array(idLiSchema),
-  criados: z.number().int().nonnegative(),
-  completados: z.number().int().nonnegative(),
-  vinculados: z.number().int().nonnegative(),
-  /** ERP produtos the preparation found gone: no link is written for them. */
-  sumidos: z.array(z.string().min(1)),
-  /** The produtos whose pictures may be copied, in order; their pictures are the details'. */
-  alvos: z.array(z.object({ produtoId: z.string().min(1), liId: idLiSchema.nullable() })),
-  /** The photo cursor (`fotos.ts`); `null` before the first picture. */
-  fotos: cursorFotosLiSchema.nullable(),
-  /** Every picture decided: the photos' result, for the closing; `null` while under way. */
-  resultadoFotos: resultadoFotosDoProgressoSchema.nullable(),
-});
-export type ProgressoDaFamiliaLi = z.infer<typeof progressoDaFamiliaLiSchema>;
-
-/** The tag of a family's progress in `revisao.cursorProdutoId` (module header). */
-export const PREFIXO_PROGRESSO_DA_FAMILIA_LI = 'f:';
-
-/** The progress as the tagged text the job carries (module header). */
-export function textoDoProgressoDaFamiliaLi(progresso: ProgressoDaFamiliaLi): string {
-  return `${PREFIXO_PROGRESSO_DA_FAMILIA_LI}${JSON.stringify(progressoDaFamiliaLiSchema.parse(progresso))}`;
-}
-
-/**
- * The progress a job's `revisao.cursorProdutoId` carries, or `null`: no text, another tag, a text
- * that is not JSON or does not parse — the family is prepared again (module header).
- */
-export function lerProgressoDaFamiliaLi(texto: string | null): ProgressoDaFamiliaLi | null {
-  if (texto === null || !texto.startsWith(PREFIXO_PROGRESSO_DA_FAMILIA_LI)) return null;
-  let bruto: unknown;
-  try {
-    bruto = JSON.parse(texto.slice(PREFIXO_PROGRESSO_DA_FAMILIA_LI.length));
-  } catch (err) {
-    if (!(err instanceof SyntaxError)) throw err;
-    return null;
-  }
-  const lido = progressoDaFamiliaLiSchema.safeParse(bruto);
-  return lido.success ? lido.data : null;
-}
 
 /** A family's photo candidates, each with its detail's pictures (none when no detail was read). */
 function candidatosDeFotos(
@@ -851,7 +758,8 @@ class AcumuladoDoCompletar {
   mapa: readonly CategoriaDoJobLi[];
   readonly pendencias: PendenciaDoPlanoLi[] = [];
   readonly campos: string[] = [];
-  readonly nomesCortados: number[] = [];
+  /** The store categories this family's run created (Simular: would), each once, root-most first. */
+  readonly categoriasCriadas: number[] = [];
   criados = 0;
   completados = 0;
   vinculados = 0;
@@ -890,6 +798,12 @@ class AcumuladoDoCompletar {
 
   campo(nome: string): void {
     if (!this.campos.includes(nome)) this.campos.push(nome);
+  }
+
+  categoriaCriada(liIds: readonly number[]): void {
+    for (const liId of liIds) {
+      if (!this.categoriasCriadas.includes(liId)) this.categoriasCriadas.push(liId);
+    }
   }
 
   contagem(): ContagemDoCompletarLi {
@@ -997,7 +911,9 @@ async function planejarCategoriaDaRaiz(
  * resolution run for real only when the plan resolves AND creates (a linked leaf, a refusal and no
  * category write nothing); the job's map then takes the real outcome. Under Simular the plan is the
  * outcome, and the map takes its `simulada` creates. Returns the outcome — the real one, which may
- * differ from the plan when another writer acted in between.
+ * differ from the plan when another writer acted in between. The ONE place the categories a family
+ * created are recorded for its item: the real run's, a refusal's included (its first creates stand),
+ * since this runs once per attempt of a create and only the record outlives an attempt.
  */
 async function aplicarCategoriaDaRaiz(
   deps: DepsFamiliaLi,
@@ -1009,12 +925,14 @@ async function aplicarCategoriaDaRaiz(
   if (planejada.categoria.erpId === null || planejada.criadas.length === 0) return planejada;
   if (ctx.job.modo === MODO_IMPORTACAO_LI.simular) {
     acc.mapa = planejada.mapa;
+    acc.categoriaCriada(planejada.criadas);
     return planejada;
   }
   const real = categoriaDecidida(
     await resolverCategoria(deps, ctx, familia, MODO_IMPORTACAO_LI.aplicar, acc.mapa),
   );
   acc.mapa = real.mapa;
+  acc.categoriaCriada(real.criadas);
   return real;
 }
 
@@ -1255,7 +1173,7 @@ function paraProgresso(
     completado: acc.completado,
     campos: [...acc.campos],
     pendencias: acc.pendencias.map((p) => ({ ...p, referencias: [...p.referencias] })),
-    nomesCortados: [...acc.nomesCortados],
+    categoriasCriadas: [...acc.categoriasCriadas],
     criados: acc.criados,
     completados: acc.completados,
     vinculados: acc.vinculados,
@@ -1364,7 +1282,6 @@ async function criarFamilia(
     acc.criados = r.produtos.filter((p) => p.papel !== PAPEL_DO_PRODUTO_CRIADO_LI.membro).length;
     acc.vinculados = r.vinculos.length;
     acc.pendencias.push(...r.pendencias);
-    acc.nomesCortados.push(...r.nomesCortados);
     for (const e of revisaoDoLote(r.produtos, categoria))
       acc.revisar(e.produtoId, e.liId, e.motivos);
     return {
@@ -1456,7 +1373,7 @@ async function criadaPorEsteJob(
     familia,
     raiz: { tipo: SITUACAO_ERP_ITEM_LI.ausente },
     filhos: null,
-    skusRepetidos: ctx.skusRepetidos,
+    skusEmConflito: ctx.skusEmConflito,
     recusasDoAprendizado: ctx.recusasDoAprendizado,
   });
   if (plano.criacao?.viavel !== true) return null;
@@ -1580,7 +1497,7 @@ export async function fecharFamiliaLi(
   const acc = new AcumuladoDoCompletar(ctx.job.mapaCategorias);
   acc.pendencias.push(...progresso.pendencias);
   for (const c of progresso.campos) acc.campo(c);
-  acc.nomesCortados.push(...progresso.nomesCortados);
+  acc.categoriaCriada(progresso.categoriasCriadas);
   acc.criados = progresso.criados;
   acc.completados = progresso.completados;
   acc.vinculados = progresso.vinculados;
@@ -1596,7 +1513,7 @@ export async function fecharFamiliaLi(
         familia,
         raiz: { tipo: SITUACAO_ERP_ITEM_LI.ausente },
         filhos: null,
-        skusRepetidos: ctx.skusRepetidos,
+        skusEmConflito: ctx.skusEmConflito,
         recusasDoAprendizado: ctx.recusasDoAprendizado,
       }),
       erpRaizId: progresso.erpRaizId,
@@ -1668,6 +1585,7 @@ async function fechar(
     erpIdCriado,
     completado: acc.completado,
     camposPreenchidos: acc.campos,
+    categoriasCriadas: acc.categoriasCriadas,
     pendenciasDoCompletar: acc.pendencias,
     agoraMs: deps.agoraMs(),
   });
@@ -1679,7 +1597,6 @@ async function fechar(
     item,
     contadores: contadoresDoItemLi(item, vinculos, acc.contagem()),
     mapaCategorias: acc.mapa,
-    nomesCortados: [...acc.nomesCortados].sort((a, b) => a - b),
   };
 }
 
@@ -1736,13 +1653,12 @@ async function vincularEAdicionar(
       familia,
       erpPaiId: preparo.erpRaizId,
       filhos,
-      skusRepetidos: ctx.skusRepetidos,
+      skusEmConflito: ctx.skusEmConflito,
       categoriaErpId: categoria.erpId,
       marcas: ctx.job.marcas,
     },
   );
   acc.pendencias.push(...adicao.pendencias);
-  acc.nomesCortados.push(...adicao.nomesCortados);
   for (const a of adicao.adicionados) {
     acc.criados += 1;
     acc.vinculados += 1;

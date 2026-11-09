@@ -19,12 +19,16 @@ import {
 } from '@delfrance/integrations-loja-integrada';
 import {
   ACAO_IMPORTACAO_LI,
+  type CursorFotosLi,
+  DESFECHO_FOTOS_DO_PRODUTO_LI,
   FILETYPE,
   FOTOS_IMPORTACAO_LI,
   type Foto,
   type ImagemProdutoLi,
+  MOTIVO_FOTO_RECUSADA_LI,
   PENDENCIA_IMPORTACAO_LI,
   buildFotoRefs,
+  cursorFotosLiSchema,
   deriveFotosArquivosIds,
   productArquivoId,
   productOriginalPath,
@@ -37,11 +41,8 @@ import { detalheLi, linhaProdutoLi, paiLi, vistaDetalhadaLi } from '../testing/p
 import {
   type AlvoDeFotosLi,
   type CandidatoAFotosLi,
-  type CursorFotosLi,
-  DESFECHO_FOTOS_DO_PRODUTO_LI,
   type DepsFotosLi,
   MAX_TENTATIVAS_FOTOS_LI,
-  MOTIVO_FOTO_RECUSADA_LI,
   type PassoFotosLi,
   TIPO_PASSO_FOTOS_LI,
   contarFotosSimuladasLi,
@@ -50,7 +51,6 @@ import {
   deveImportarFotosLi,
   executarUnidadeDeFotoLi,
   hashDaFotoLi,
-  lerCursorFotosLi,
   mesmoConjuntoDeImagensLi,
   planejarAlvosDeFotosLi,
   semFotosNoErpLi,
@@ -225,7 +225,7 @@ async function rodarAteOFim(
     const passo = await executarUnidadeDeFotoLi(m.deps, alvos, atual);
     passos.push(passo);
     if (passo.tipo !== TIPO_PASSO_FOTOS_LI.progresso) return passos;
-    atual = lerCursorFotosLi(JSON.parse(JSON.stringify(passo.cursor)));
+    atual = cursorFotosLiSchema.parse(JSON.parse(JSON.stringify(passo.cursor)));
     expect(atual, 'o cursor relido').not.toBeNull();
   }
   throw new Error('fotos.test: a família não terminou');
@@ -931,24 +931,37 @@ describe('no bucket', () => {
 /* -------------------------------- the cursor ------------------------------ */
 
 describe('the cursor', () => {
-  it('reads back what a checkpoint stored; anything else reads `null` (the family restarts)', () => {
+  it('reads back what a checkpoint stored; anything else does not parse', () => {
     const cursor: CursorFotosLi = {
       produtoId: PRODUTO,
       proxima: 2,
       reduzida: true,
       enviadas: [{ imagemId: 1, hash: 'a'.repeat(128) }],
-      feitos: [{ produtoId: FILHO, liId: 9101, desfecho: 'com-fotos', fotos: 0 }],
-      recusadas: [{ liId: null, imagemId: 3, motivo: 'http' }],
+      feitos: [
+        {
+          produtoId: FILHO,
+          liId: 9101,
+          desfecho: DESFECHO_FOTOS_DO_PRODUTO_LI.comFotos,
+          fotos: 0,
+        },
+      ],
+      recusadas: [{ liId: null, imagemId: 3, motivo: MOTIVO_FOTO_RECUSADA_LI.http }],
     };
-    expect(lerCursorFotosLi(JSON.parse(JSON.stringify(cursor)))).toEqual(cursor);
-    expect(lerCursorFotosLi(null)).toBeNull();
+    expect(cursorFotosLiSchema.parse(JSON.parse(JSON.stringify(cursor)))).toEqual(cursor);
+    expect(cursorFotosLiSchema.safeParse(null).success).toBe(false);
     expect(
-      lerCursorFotosLi({ ...cursor, enviadas: [{ imagemId: 1, hash: 'nao-e-hash' }] }),
-    ).toBeNull();
+      cursorFotosLiSchema.safeParse({
+        ...cursor,
+        enviadas: [{ imagemId: 1, hash: 'nao-e-hash' }],
+      }).success,
+    ).toBe(false);
     expect(
-      lerCursorFotosLi({ ...cursor, recusadas: [{ liId: null, imagemId: 3, motivo: 'ok' }] }),
-    ).toBeNull();
-    expect(lerCursorFotosLi({ ...cursor, proxima: -1 })).toBeNull();
+      cursorFotosLiSchema.safeParse({
+        ...cursor,
+        recusadas: [{ liId: null, imagemId: 3, motivo: 'ok' }],
+      }).success,
+    ).toBe(false);
+    expect(cursorFotosLiSchema.safeParse({ ...cursor, proxima: -1 }).success).toBe(false);
   });
 
   it('a cursor naming a produto outside the targets is another plan’s: RangeError', async () => {
@@ -1006,7 +1019,7 @@ describe('through the package’s real CDN reader (its transport stubbed)', () =
 
 /* --------------------------------- Simular -------------------------------- */
 
-describe('Simular: no download, no upload, no write — the count a real run would fetch', () => {
+describe('Simular (decided 2026-11-06): no download, no upload, no write — the count a real run would fetch', () => {
   it('existing without photo ⇒ every picture; with a photo or gone ⇒ none; created ⇒ every picture, with no read', async () => {
     const db = new FakeDb();
     semeiaProduto(db, P);

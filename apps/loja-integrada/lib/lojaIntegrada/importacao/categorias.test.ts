@@ -362,7 +362,8 @@ describe('criarEVincular: the breadcrumb is the ERP parent’s own', () => {
     });
     // NEAR-MISS: the store's own path never reaches a document.
     for (const e of db.escritas) expect(JSON.stringify(e.dados)).not.toContain('A > B');
-    // The category above the linked one is not created: no product of this call sits in it.
+    // Decided 2026-11-06: the category above the linked one is not created (no product of this call
+    // sits in it).
     expect(db.ler(caminhoCategoria(idCategoriaCriadaLi(CONTA, 10)))).toBeUndefined();
     // The map: the created one is linked now; the others untouched.
     expect(entradas(r.mapaCategorias, 12)).toEqual([

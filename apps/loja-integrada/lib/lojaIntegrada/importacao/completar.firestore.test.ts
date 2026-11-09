@@ -55,6 +55,8 @@ import type { DesfechoImagemLi, LeitorCdnLi } from '@delfrance/integrations-loja
 import {
   ACAO_IMPORTACAO_LI,
   ALVO_IMPORTACAO_LI,
+  type CursorFotosLi,
+  DESFECHO_FOTOS_DO_PRODUTO_LI,
   type Foto,
   type GrupoComLinksLi,
   type ImagemProdutoLi,
@@ -97,12 +99,10 @@ import { type FamiliaLi, ORIGEM_DO_FILHO_LI } from './familias';
 import { DESFECHO_DO_PONTEIRO_LI, adicionarFilhosLi } from './filhoNovo';
 import {
   type AlvoDeFotosLi,
-  DESFECHO_FOTOS_DO_PRODUTO_LI,
   type DepsFotosLi,
   type GuardarFotoLi,
   type ResultadoFotosDaFamiliaLi,
   TIPO_PASSO_FOTOS_LI,
-  type CursorFotosLi,
   criarGuardarFotoLi,
   executarUnidadeDeFotoLi,
   hashDaFotoLi,
@@ -306,7 +306,7 @@ async function criar(
     familia: f,
     raiz: { tipo: SITUACAO_ERP_ITEM_LI.ausente },
     filhos: null,
-    skusRepetidos: new Set(),
+    skusEmConflito: new Map(),
     recusasDoAprendizado: new Map(),
   });
   if (plano.criacao === null) {
@@ -340,7 +340,7 @@ let criacaoDoJob: Timestamp | undefined;
 async function vincularOExistente(f: FamiliaLi, conta: string): Promise<ResultadoDosVinculosLi> {
   if (criacaoDoJob === undefined) throw new Error('completar.firestore.test: o job não foi lido');
   const contexto = { db: db(), contaId: conta };
-  const raiz = await resolverRaizLi(contexto, f, new Set());
+  const raiz = await resolverRaizLi(contexto, f, new Map());
   if (raiz.tipo !== SITUACAO_ERP_ITEM_LI.encontrado) {
     throw new Error(`completar.firestore.test: a raiz não foi encontrada (${raiz.tipo})`);
   }
@@ -349,14 +349,14 @@ async function vincularOExistente(f: FamiliaLi, conta: string): Promise<Resultad
       ? null
       : await resolverFilhosLi(contexto, f, raiz.erpId, {
           grupos: memo(),
-          skusRepetidos: new Set(),
+          skusEmConflito: new Map(),
         });
   const plano = planejarFamiliaLi({
     job: jobDoPlano(conta),
     familia: f,
     raiz,
     filhos,
-    skusRepetidos: new Set(),
+    skusEmConflito: new Map(),
     recusasDoAprendizado: new Map(),
   });
   return vincularFamiliaLi({ ...contexto, modo: MODO_IMPORTACAO_LI.aplicar, criacaoDoJob }, plano);
@@ -755,7 +755,7 @@ describe.skipIf(!EMULATED)('the product import’s "complete" writes on a real F
     ]);
     const filhos = await resolverFilhosLi({ db: db(), contaId: CONTA }, f, ID.camisa, {
       grupos: memo(),
-      skusRepetidos: new Set(),
+      skusEmConflito: new Map(),
     });
     let commits = 0;
     const r = await adicionarFilhosLi(
@@ -776,7 +776,7 @@ describe.skipIf(!EMULATED)('the product import’s "complete" writes on a real F
         familia: f,
         erpPaiId: ID.camisa,
         filhos,
-        skusRepetidos: new Set(),
+        skusEmConflito: new Map(),
         categoriaErpId: CATEGORIA,
         marcas: MARCAS,
       },

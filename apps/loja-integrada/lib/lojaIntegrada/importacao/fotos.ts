@@ -110,10 +110,9 @@
  * NO download and no upload at all: Simular writes only the job, and a picture fetched only to be
  * thrown away is a CDN call that decides nothing. Each existing target is read once (photos ⇒ none
  * planned); a produto the run would create is not read (it would be created with none). The answer
- * is the count a real run would fetch; it cannot foresee a refusal. ⚠️ A deviation from the plan's
- * "Simular runs the same reads and decisions" for the photos alone, kept for the owner's review: a
- * picture whose CDN path now answers 404 (or is too large, or not an image) is counted by Simular
- * and refused by `aplicar` (`foto-recusada`), so the two runs' `fotos` counter and that
+ * is the count a real run would fetch; it cannot foresee a refusal. Decided 2026-11-06 for the photos
+ * alone: a picture whose CDN path now answers 404 (or is too large, or not an image) is counted by
+ * Simular and refused by `aplicar` (`foto-recusada`), so the two runs' `fotos` counter and that
  * informational pendência can differ. Matching it would cost one CDN download per picture in every
  * Simular, thrown away.
  *
@@ -148,10 +147,14 @@ import {
 } from '@delfrance/integrations-loja-integrada';
 import {
   ACAO_IMPORTACAO_LI,
+  type CursorFotosLi,
+  DESFECHO_FOTOS_DO_PRODUTO_LI,
+  type DesfechoFotosDoProdutoLi,
   FOTOS_IMPORTACAO_LI,
   type Foto,
   type ImagemProdutoLi,
   type ImportacaoLojaIntegrada,
+  type MotivoFotoRecusadaLi,
   PENDENCIA_IMPORTACAO_LI,
   buildFotoRefs,
   deriveFotosArquivosIds,
@@ -161,7 +164,6 @@ import {
   toOuterRef,
 } from '@delfrance/schemas';
 import { type Bucket, putArquivoAdmin } from '@delfrance/storage/admin';
-import { z } from 'zod';
 
 import { RITMO_LEITURA_LI_MS } from '../core/ritmo';
 import { guardaOPatchLi } from './job';
@@ -235,107 +237,17 @@ export function planejarAlvosDeFotosLi(familia: {
 /*                                   The cursor                                */
 /* -------------------------------------------------------------------------- */
 
-/** Why a picture was refused: every CDN outcome but `ok` (module header, step 3). */
-export const motivoFotoRecusadaLiSchema = z.enum([
-  'caminho-invalido',
-  'redirecionamento',
-  'nao-encontrada',
-  'http',
-  'muito-grande',
-  'nao-e-imagem',
-]);
-export type MotivoFotoRecusadaLi = z.infer<typeof motivoFotoRecusadaLiSchema>;
-/** Named members of {@link motivoFotoRecusadaLiSchema} — see `delfrance/prefer-schema-enum`. */
-export const MOTIVO_FOTO_RECUSADA_LI = {
-  caminhoInvalido: 'caminho-invalido',
-  redirecionamento: 'redirecionamento',
-  naoEncontrada: 'nao-encontrada',
-  http: 'http',
-  muitoGrande: 'muito-grande',
-  naoEImagem: 'nao-e-imagem',
-} as const satisfies Record<string, MotivoFotoRecusadaLi>;
-
 // The motivos ARE the reader's outcomes but `ok`, both ways: a new outcome of the package does not
-// compile until it is decided here.
+// compile until it is decided in the job contract.
 type ComoMotivo = Exclude<ResultadoImagemLi, 'ok'>;
 const _todoResultadoTemMotivo: ComoMotivo extends MotivoFotoRecusadaLi ? true : never = true;
 const _todoMotivoEResultado: MotivoFotoRecusadaLi extends ComoMotivo ? true : never = true;
 void _todoResultadoTemMotivo;
 void _todoMotivoEResultado;
 
-/** How a produto's pictures ended (module header). */
-export const desfechoFotosDoProdutoLiSchema = z.enum([
-  /** Written (Simular: would be): `fotos` counts them. */
-  'importadas',
-  /** It had a photo when its pictures started: nothing fetched. */
-  'com-fotos',
-  /** Another writer's photo arrived before our write: theirs stay, ours are written nowhere. */
-  'perdeu',
-  /** The produto is gone. */
-  'ausente',
-  /** Every write lost, and it still has no photo: `conflito-de-escrita`. */
-  'conflito',
-  /** Every picture was refused: nothing to write. */
-  'nenhuma-aceita',
-]);
-export type DesfechoFotosDoProdutoLi = z.infer<typeof desfechoFotosDoProdutoLiSchema>;
-/** Named members of {@link desfechoFotosDoProdutoLiSchema} — see `delfrance/prefer-schema-enum`. */
-export const DESFECHO_FOTOS_DO_PRODUTO_LI = {
-  importadas: 'importadas',
-  comFotos: 'com-fotos',
-  perdeu: 'perdeu',
-  ausente: 'ausente',
-  conflito: 'conflito',
-  nenhumaAceita: 'nenhuma-aceita',
-} as const satisfies Record<string, DesfechoFotosDoProdutoLi>;
-
-const idLiSchema = z.number().int().positive();
-
-/** A sha-512 digest, in lowercase hex. */
-const HASH_SHA512_HEX = /^[0-9a-f]{128}$/;
-
-/**
- * The resumable state of one family's pictures (module header, "The cursor"): what the caller
- * checkpoints after every unit and hands back to the next. Read back through
- * {@link lerCursorFotosLi}. ⚠️ The job contract has no field of its own for it yet.
- */
-export const cursorFotosLiSchema = z.object({
-  /** The produto whose pictures are under way; `null` once every target is done. */
-  produtoId: z.string().min(1).nullable(),
-  /** The index, in that produto's pictures, of the next one to fetch. */
-  proxima: z.number().int().nonnegative(),
-  /** That picture's ORIGINAL came back too large: the next unit fetches its `800x800`. */
-  reduzida: z.boolean(),
-  /** That produto's pictures already stored, in plan order. */
-  enviadas: z.array(z.object({ imagemId: idLiSchema, hash: z.string().regex(HASH_SHA512_HEX) })),
-  /** The produtos of the family done so far, in order. */
-  feitos: z.array(
-    z.object({
-      produtoId: z.string().min(1),
-      liId: idLiSchema.nullable(),
-      desfecho: desfechoFotosDoProdutoLiSchema,
-      fotos: z.number().int().nonnegative(),
-    }),
-  ),
-  /** Every picture of the family refused so far. */
-  recusadas: z.array(
-    z.object({
-      liId: idLiSchema.nullable(),
-      imagemId: idLiSchema,
-      motivo: motivoFotoRecusadaLiSchema,
-    }),
-  ),
-});
-export type CursorFotosLi = z.infer<typeof cursorFotosLiSchema>;
 export type ProdutoComFotosLi = CursorFotosLi['feitos'][number];
 export type FotoRecusadaLi = CursorFotosLi['recusadas'][number];
 type FotoEnviadaLi = CursorFotosLi['enviadas'][number];
-
-/** A stored cursor read back, or `null` when it does not parse: the family's pictures restart. */
-export function lerCursorFotosLi(armazenado: unknown): CursorFotosLi | null {
-  const lido = cursorFotosLiSchema.safeParse(armazenado);
-  return lido.success ? lido.data : null;
-}
 
 /** The cursor before a family's first unit. */
 export function cursorInicialDeFotosLi(alvos: readonly AlvoDeFotosLi[]): CursorFotosLi {

@@ -239,7 +239,7 @@ function criar(db: FakeDb, f: FamiliaLi, o: Opcoes = {}): Promise<ResultadoDaFam
     familia: f,
     raiz: { tipo: SITUACAO_ERP_ITEM_LI.ausente },
     filhos: null,
-    skusRepetidos: new Set(),
+    skusEmConflito: new Map(),
     recusasDoAprendizado: new Map(),
   });
   if (plano.criacao === null)
@@ -309,7 +309,6 @@ describe('a simple store product ⇒ an ERP família de um, in ONE batch', () =>
       gravado: true,
       retomada: false,
       pendencias: [],
-      nomesCortados: [],
     });
     expect(db.ler(`produtos/${raizId}`)).toMatchObject({
       nome: 'Produto 500',
@@ -363,7 +362,7 @@ describe('a simple store product ⇒ an ERP família de um, in ONE batch', () =>
     const outra = await resolverRaizLi(
       { db: asDb(db), contaId: OUTRA },
       simples(900, 'X'),
-      new Set(),
+      new Map(),
     );
     expect(outra).toMatchObject({
       tipo: SITUACAO_ERP_ITEM_LI.encontrado,
@@ -573,11 +572,27 @@ describe('every planned document parses — only a name is ever cut', () => {
     expect(db.ler(`produtos/${idProdutoCriadoLi('CAM')}`)?.nome).toBe(longo);
     // NEAR-MISS: the root's 98 fit; its child's 98 + ' Azul' do not.
     expect(db.ler(`produtos/${idProdutoCriadoLi('CAM-AZ')}`)?.nome).toBe(`${longo} A`);
-    expect(r).toMatchObject({ nomesCortados: [801] });
+    expect(r).toMatchObject({
+      pendencias: [{ codigo: PENDENCIA_IMPORTACAO_LI.nomeCortado, liId: 801, referencias: [] }],
+    });
     const outra = new FakeDb();
     const r2 = await criar(outra, simples(500, 'X', { nome: 'P'.repeat(120) }));
     expect(outra.ler(`produtos/${idProdutoCriadoLi('X')}`)?.nome).toBe('P'.repeat(100));
-    expect(r2).toMatchObject({ nomesCortados: [500] });
+    expect(r2).toMatchObject({
+      pendencias: [{ codigo: PENDENCIA_IMPORTACAO_LI.nomeCortado, liId: null, referencias: [] }],
+    });
+  });
+
+  it('NEAR-MISS: a refused create reports no cut name: nothing was created to carry it', async () => {
+    const db = new FakeDb();
+    db.seed('produtos/a-mao', { nome: 'A mão', sku: 'X', paiId: null, filhoUnicoId: null });
+    const r = await criar(db, simples(500, 'X', { nome: 'P'.repeat(120) }));
+    expect(r).toEqual({
+      tipo: TIPO_RESULTADO_FAMILIA_NOVA_LI.recusada,
+      pendencias: [
+        expect.objectContaining({ codigo: PENDENCIA_IMPORTACAO_LI.skuJaExiste, liId: null }),
+      ],
+    });
   });
 });
 
@@ -689,7 +704,7 @@ describe('recusasAntesDosDetalhesLi — what refuses a create with no detail rea
       familia: f,
       raiz: { tipo: SITUACAO_ERP_ITEM_LI.ausente },
       filhos: null,
-      skusRepetidos: new Set(),
+      skusEmConflito: new Map(),
       recusasDoAprendizado: new Map(),
     });
     if (p.criacao === null) throw new Error('sem criação');
@@ -924,7 +939,7 @@ describe('the planned ids and ALREADY_EXISTS', () => {
 
     // The existing-product path: the cascade now finds the root by its SKU, the link is written.
     const contexto = { db: asDb(db), contaId: CONTA };
-    const raiz = await resolverRaizLi(contexto, simples(500, 'X'), new Set());
+    const raiz = await resolverRaizLi(contexto, simples(500, 'X'), new Map());
     expect(raiz).toMatchObject({ tipo: SITUACAO_ERP_ITEM_LI.encontrado, erpId: raizId });
     const plano = planejarFamiliaLi({
       job: {
@@ -937,7 +952,7 @@ describe('the planned ids and ALREADY_EXISTS', () => {
       familia: simples(500, 'X'),
       raiz,
       filhos: null,
-      skusRepetidos: new Set(),
+      skusEmConflito: new Map(),
       recusasDoAprendizado: new Map(),
     });
     const criacaoDoJob = seedJobLi(db, 'job-familia-nova', CONTA) as unknown as Timestamp;

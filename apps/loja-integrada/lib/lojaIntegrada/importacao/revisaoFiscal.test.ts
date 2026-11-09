@@ -13,6 +13,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  ETAPA_REVISAO_FISCAL_LI,
   MODO_IMPORTACAO_LI,
   MOTIVO_REVISAO_FISCAL_LI,
   type RevisaoFiscalLi,
@@ -298,7 +299,7 @@ describe('the carry-forward — the conta’s earlier aplicar jobs', () => {
     });
   });
 
-  it('NEAR-MISS: a newer aplicar job that FAILED before its re-check is carried TOO — the walk goes past it to the concluded one', async () => {
+  it('decided 2026-11-06, NEAR-MISS: a newer aplicar job that FAILED before its re-check is carried TOO — the walk goes past it to the concluded one', async () => {
     const db = new FakeDb();
     seedEsteJob(db);
     seedJob(db, 'job-falhou', 500, { status: STATUS_IMPORTACAO_LI.falhou });
@@ -384,20 +385,24 @@ describe('the carry-forward — the conta’s earlier aplicar jobs', () => {
     expect(r.estado.anteriorJobId).toBeNull();
   });
 
-  it('a cursor this module cannot read starts the phase over — and lands where a clean run lands (every step is idempotent)', async () => {
-    const db = new FakeDb();
-    seedEsteJob(db);
-    seedJob(db, 'job-anterior', 400);
-    seedEntrada(db, 'job-anterior', 'p1');
-    seedProduto(db, 'p1');
-    const limpo = await rodarFase(deps(db));
-    const recomecado = await rodarFase(deps(db), {
-      cursorProdutoId: 'x:lixo',
-      anteriorJobId: null,
-    });
-    expect(recomecado.abertos).toBe(limpo.abertos);
-    expect(listaDe(db)).toEqual(['p1']);
-  });
+  it.each([ETAPA_REVISAO_FISCAL_LI.copiando, ETAPA_REVISAO_FISCAL_LI.apos])(
+    'an inconsistent cursor (`%s` with no source) starts the phase over — and lands where a clean run lands (every step is idempotent)',
+    async (etapa) => {
+      const db = new FakeDb();
+      seedEsteJob(db);
+      seedJob(db, 'job-anterior', 400);
+      seedEntrada(db, 'job-anterior', 'p1');
+      seedProduto(db, 'p1');
+      const limpo = await rodarFase(deps(db));
+      const recomecado = await rodarFase(deps(db), {
+        ...INICIAL,
+        etapa,
+        fonteJobId: null,
+      });
+      expect(recomecado.abertos).toBe(limpo.abertos);
+      expect(listaDe(db)).toEqual(['p1']);
+    },
+  );
 });
 
 /* ------------------------------ the re-check ------------------------------- */
@@ -480,7 +485,7 @@ describe('the re-check — an entry leaves on EVIDENCE only', () => {
     expect(fica.ficou).toBe(true);
   });
 
-  it('the produto deleted ⇒ it leaves (nothing could ever close it, and it is never invoiced)', async () => {
+  it('decided 2026-11-06: the produto deleted ⇒ it leaves (nothing could ever close it, and it is never invoiced)', async () => {
     const sai = await umaEntrada(() => undefined);
     expect(sai).toMatchObject({ abertos: 0, ficou: false });
   });
@@ -693,8 +698,8 @@ describe('a list is read WHOLE once per dispatch — never paged by a key range'
 
     // The next dispatch's reader reads this job's list again, once.
     await executarUnidadeDaRevisaoFiscalLi(deps(db), {
-      cursorProdutoId: 'r:0:',
-      anteriorJobId: null,
+      ...INICIAL,
+      etapa: ETAPA_REVISAO_FISCAL_LI.conferindo,
     });
     expect(leiturasDe(JOB)).toBe(2);
   });
@@ -707,10 +712,16 @@ describe('a list is read WHOLE once per dispatch — never paged by a key range'
       seedProduto(db, id);
     }
     const passo = await executarUnidadeDaRevisaoFiscalLi(deps(db), {
-      cursorProdutoId: 'r:1:b',
-      anteriorJobId: null,
+      ...INICIAL,
+      etapa: ETAPA_REVISAO_FISCAL_LI.conferindo,
+      abertos: 1,
+      depoisProdutoId: 'b',
     });
     expect(passo).toMatchObject({ tipo: 'concluido', conferidas: 1, abertos: 2 });
-    expect(passo.estado.cursorProdutoId).toBe('r:2:c');
+    expect(passo.estado).toMatchObject({
+      etapa: ETAPA_REVISAO_FISCAL_LI.conferindo,
+      abertos: 2,
+      depoisProdutoId: 'c',
+    });
   });
 });

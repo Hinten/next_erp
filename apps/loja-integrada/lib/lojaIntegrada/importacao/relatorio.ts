@@ -24,8 +24,10 @@
  *    `criar` the complete step has not carried out; `true` otherwise;
  *  - `erpId`: for a `criar`, the root the complete step created (or would: its SKU-keyed id);
  *  - `camposPreenchidos`: the field NAMES the complete step filled (or would), as it reports them;
+ *  - `categoriasCriadas`: the store categories the complete step created and linked for this family
+ *    (or would), root-most first;
  *  - `pendencias`: the plan's, then the complete step's own (`pendenciasDoCompletar`: a category, a
- *    create or a fill refused, a description too long), then each link refusal (the root's with
+ *    create or a fill refused, a description too long, a name cut), then each link refusal (the root's with
  *    `liId: null`, a variation's with its store id) and each refresh as `vinculo-atualizado`
  *    (informational, the changed FIELD names as references), each tagged actionable or
  *    informational through the schema's one predicate (`ehPendenciaAcionavelLi`); exact duplicates
@@ -53,7 +55,7 @@
  * semMudanca + 1` for the links the failed attempt landed. Residuals: `vinculos.ts`'s — among them
  * a mirror refresh this job landed, which reads `sem-mudanca` on a retried unit (`semMudanca + 1`,
  * its informational `vinculo-atualizado` lost; `vinculados` unaffected) — and the cascade's
- * informational `sku-diferente` / `sku-repetido-na-loja` on a variation first matched by
+ * `sku-diferente`, `sku-repetido-na-loja` or `sku-parecido-na-loja` on a variation first matched by
  * combination (`familiaDoJob.ts`, "A retried family").
  *
  * ## The write ({@link gravarItemLi}) — tier 0
@@ -118,6 +120,8 @@ export interface EntradaDoItemLi {
   readonly erpIdCriado?: string | null;
   /** The ERP field NAMES the complete step filled (or would). */
   readonly camposPreenchidos?: readonly string[];
+  /** The store categories the complete step created and linked for this family (or would). */
+  readonly categoriasCriadas?: readonly number[];
   /** The complete step's own pendências, after the plan's. */
   readonly pendenciasDoCompletar?: readonly PendenciaDoPlanoLi[];
   /** The item's `atualizadoEmMs`. */
@@ -214,6 +218,7 @@ export function montarItemDaFamiliaLi(e: EntradaDoItemLi): ItemImportacaoLi {
     acao,
     aplicada,
     camposPreenchidos: [...(e.camposPreenchidos ?? [])],
+    categoriasCriadas: [...(e.categoriasCriadas ?? [])],
     pendencias: semRepetir(
       [...plano.pendencias, ...(e.pendenciasDoCompletar ?? []), ...dosVinculos].map(paraItem),
     ),

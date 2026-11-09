@@ -162,7 +162,8 @@ carries the continuation `seq`, the cursors or the selection's ids.
   claims and a trashed parent claims is `na-lixeira` with no detail read; the `orfaos` phase then
   reads EVERY other detail the assembly needs — the unexplained variations (their `pai` places
   them) and the ids a parent claims that no list carried — before any family is matched, so the
-  SKUs the store repeats are known whole and processing order never picks a winner. An orphan is
+  SKUs the store repeats or nearly repeats are known whole and processing order never picks a
+  winner. An orphan is
   never imported as a simple product; a LOOSE row (an orphan, a variation of a trashed parent, an
   unknown `tipo`) is its own `avulso` report item under every target but `selecionados`.
 - **The match is the import's own cascade** (`importacao/resolucao.ts`), never the order import's
@@ -174,7 +175,11 @@ carries the continuation `seq`, the cursors or the selection's ids.
   their exact SKU, then their option COMBINATION (`sku-diferente` when the SKUs differ). It folds
   nothing and every query rides a declared index (`resolucao.test.ts` checks each one against
   `firestore.indexes.json`). Before a link is written, the produto's own links are read whole and
-  judged by `vinculoLiDaContaEId`: one store product per conta per ERP produto.
+  judged by `vinculoLiDaContaEId`: one store product per conta per ERP produto. A SKU in conflict
+  in the store (`conflitosDeSkuNaLojaLi`, computed once per dispatch from the whole assembly: an
+  exact repeat, `sku-repetido-na-loja`, or a near duplicate, `sku-parecido-na-loja`, by the shared
+  `skusParecidosNaLojaLi`) is matched only by an existing link or a variation's combination, and
+  never created.
 - **Option links are learned in two passes**, under both actions: `importacao/evidencias.ts`
   collects, over every family, the claims of variations matched by EXACT SKU (one claim document
   per store option, never one per variation); `importacao/gruposLi.ts` then decides them all at
@@ -264,9 +269,9 @@ carries the continuation `seq`, the cursors or the selection's ids.
   call), its PHOTOS (one picture per unit, `aplicar` only), its CLOSING (no call). Per produto:
   fill, then photos, then the link LAST, so this job's own anchor write never lands inside one of
   its guarded windows; a create's or an add's links ride that batch. Between units the family's
-  progress rides `revisao.cursorProdutoId` as tagged text `f:<json>` (⚠️ a deviation from the
-  plan's job contract, which has no field for it yet: nobody reads that field during `familias`,
-  and the move to `revisao` clears it). The TARGET is decided once, on the ERP as it stood when
+  progress rides the job's own `progressoDaFamilia`, validated before every write and cleared at
+  its closing (a stored value that does not parse reads as none: the family is prepared again). The
+  TARGET is decided once, on the ERP as it stood when
   the job STARTED: a matched root at the family's own SKU-keyed id created at or after the job
   document (this job's landed create, another conta's create it adopted or met landed) was absent
   then, so the family is also in `naoNoErp` — on the first attempt and on every retry, whether the
@@ -279,14 +284,14 @@ carries the continuation `seq`, the cursors or the selection's ids.
   that list's cascade. No writer
   here names the transaction API (no inventory row). The writers, each with its tier:
   - **Categories** (`categorias.ts`): the product's leaf by the shared tree helpers; under
-    `criarEVincular` the unlinked chain BELOW the nearest linked ancestor, root-most first, each
-    categoria at `li-<conta>-<id>` and its link at `<conta>-<id>` — two tier-0 `create()`s,
-    `ALREADY_EXISTS` re-read and judged before adopting; `nomeCompleto` from the ERP parent's
+    `criarEVincular` the unlinked chain BELOW the nearest linked ancestor (decided 2026-11-06: one
+    above it stays uncreated), root-most first, each categoria at `li-<conta>-<id>` and its link at
+    `<conta>-<id>` — two tier-0 `create()`s, `ALREADY_EXISTS` re-read and judged before adopting; `nomeCompleto` from the ERP parent's
     stored breadcrumb, never the store's names joined. Always PLANNED first (the resolution run as
     Simular runs it: reads, no write) and created only for a produto about to take it — a create's
     right before its batch, after every refusal — so a refused create leaves no category behind
-    and reports no category pendência. ⚠️ The report does not NAME the categories a run created
-    (the item contract has no field for them; the job's map shows them `vinculada`).
+    and reports no category pendência. The item of the family that created a category names it
+    (`categoriasCriadas`; a later family that uses it names none).
   - **The whole-family create** (`familiaNova.ts`): ids keyed by the SKU (`li-sku-<sha256>`,
     `-un` for a sole member), so two contas selling one SKU meet on one id; the planned ids read
     first; the create probe (`sondarSkusLi`, every SKU the batch writes, the "parecido" forms
@@ -301,9 +306,9 @@ carries the continuation `seq`, the cursors or the selection's ids.
     the create (`dado-invalido`, `detalhe` — judged after the probe), one its detail shows hidden,
     blocked or trashed is not created, one whose detail changed the SKU refuses it (`dado-invalido`,
     `sku`). The checks needing no detail (options, the probe over the rows' SKUs) run BEFORE the
-    details are read, so a family they refuse costs no call. A name over 100 is cut (⚠️ logged
-    only: the report's vocabulary has no code for it), and two variations the cut makes one name
-    refuse the create (`dado-invalido`, `nome`).
+    details are read, so a family they refuse costs no call. A name over 100 is cut and reported
+    (`nome-cortado`, informational), and two variations the cut makes one name refuse the create
+    (`dado-invalido`, `nome`).
   - **Add-child** (`filhoNovo.ts`), beside the parent's CONFIRMED link: the missing variations,
     their links and the parent's `filhoUnicoId` in ONE batch, tier 1 on the PARENT (every ERP
     writer that changes a child set writes the parent too); a lost precondition re-reads the
@@ -331,16 +336,18 @@ carries the continuation `seq`, the cursors or the selection's ids.
     filled or stays empty, joins the job's `revisao/{produtoId}` (tier 0, merged on
     `ALREADY_EXISTS`) — the entry a create's batch, an add's batch or a category fill calls for
     written BEFORE that write, so a write that lands and whose unit then fails never loses it. The
-    `revisao` phase carries the conta's earlier `aplicar` jobs' open entries forward (the declared
-    job index), removes an entry only on EVIDENCE — its own or its category's `imposto`, or a
-    `regraImposto` naming either (the resolver's tier-4 match) — or when its produto is gone, and
-    syncs `lojaIntegradaRevisaoFiscal` on the open count. A list is read WHOLE once per dispatch
+    `revisao` phase carries the open entries of every earlier `aplicar` job back to the newest one
+    that ended `concluido`, skipping Simular jobs (decided 2026-11-06; the declared job index),
+    removes an entry only on EVIDENCE — its own or its category's `imposto`, or a `regraImposto`
+    naming either (the resolver's tier-4 match) — or when its produto is gone (decided 2026-11-06),
+    and syncs `lojaIntegradaRevisaoFiscal` on the open count. A list is read WHOLE once per dispatch
     and paged in memory, never by a document-key range (on Enterprise one scans the whole list per
     page without a `__name__` index).
   - Simular decides all of it and writes none of it: the category plans ride the job's
-    `mapaCategorias` (`simulada`), photos are counted with no download (it cannot foresee a
-    `foto-recusada`), and it never enters `revisao`. ⚠️ Residual: a later family of the same
-    Simular never meets the produtos an earlier one would have created (`despacho.ts`).
+    `mapaCategorias` (`simulada`), photos are counted with no download (decided 2026-11-06, so it
+    cannot foresee a `foto-recusada`), and it never enters `revisao`. Store SKUs that would collide
+    with one another are decided from the whole snapshot before anything is created, so both modes
+    refuse them alike.
 - **The import's avisos** (`importacao/avisosImportacao.ts`): Simular raises and resolves nothing;
   the summary aviso closes only after an `alvo: todos` job that ends `concluido` with no actionable
   pendência; the per-category one is raised at an `aplicar` job's end from its items' own category

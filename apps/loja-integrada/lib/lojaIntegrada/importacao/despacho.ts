@@ -80,8 +80,7 @@
  *     counters — and the family cursor past it.
  *
  * Between the units the family's PROGRESS rides the job (`familiaDoJob.ts`, "The family's
- * progress": tagged text in `revisao.cursorProdutoId`, which the transition to `revisao` clears).
- * Work a unit was not budgeted for is never started: it checkpoints what it learned, and the next
+ * progress": `progressoDaFamilia`, which the closing clears). Work a unit was not budgeted for is never started: it checkpoints what it learned, and the next
  * unit is budgeted for that work.
  *
  * **Photos and the bucket.** A job that asks for photos (`deveImportarFotosLi`) asks the functions
@@ -109,18 +108,14 @@
  *
  * Under `simular` every phase decides exactly as `aplicar` does and writes only the job document
  * and its own subcollections: no link, no grupo (the learnings ride the job as an overlay later
- * families resolve against), no aviso of the import's. Two stated residuals of that parity: two
- * store roots placed on ONE ERP produto (`vinculos.ts`), and — under "complete" — the produtos an
- * EARLIER family would create or add: Simular writes none of them, so a later family's cascade and
- * create probe never meet them. Store SKUs `'ABC-1'` and `'abc-1'`, both absent: `aplicar` creates
- * the first and refuses the second (`sku-parecido`, against the first's create); Simular says
- * `criar` for both (pinned in `familiaDoJob.test.ts`). The same for a store simple product whose SKU
- * is another's derived sole-member SKU (`'ABC'` and `'ABC-UN'`). Closing it needs an overlay of the
- * SKUs a Simular would create, kept on the job across dispatches, which the job contract has no
- * field for; the `aplicar` run refuses what Simular promised, and writes nothing for it. The modules below each hold that rule — under "complete" a
- * category or family create is planned, a fill decided, a picture counted, none written — and the
- * dispatch adds no write of its own outside the job: Simular never enters `revisao`, and the photo
- * units are `aplicar`'s alone.
+ * families resolve against), no aviso of the import's. One stated residual of that parity: two
+ * store roots placed on ONE ERP produto (`vinculos.ts`). A later family never needs what an earlier
+ * one would have created: store SKUs that repeat or nearly repeat one another, or a store simple
+ * product's derived sole-member SKU, are decided from the whole snapshot before anything is created
+ * (`conflitosDeSkuNaLojaLi`), so both modes refuse them alike (pinned in `familiaDoJob.test.ts`). The
+ * modules below each hold that rule — under "complete" a category or family create is planned, a fill
+ * decided, a picture counted, none written — and the dispatch adds no write of its own outside the
+ * job: Simular never enters `revisao`, and the photo units are `aplicar`'s alone.
  *
  * ⚠️ The ONE exception is not the import's decision: a 401/403 parks the conta exactly as every
  * reader parks it (`tratarFalhaDeAutenticacao`: the conta's credential document and its reconexão
@@ -279,11 +274,13 @@ import {
   MODO_IMPORTACAO_LI,
   MOTIVO_FALHA_IMPORTACAO_LI,
   type MotivoFalhaImportacaoLi,
+  type ProgressoDaFamiliaLi,
   STATUS_IMPORTACAO_LI,
   TIPO_PAGINA_IMPORTACAO_LI,
   TIPO_TAREFA_IMPORTACAO_LI,
   type TarefaImportacaoLi,
   type TipoPaginaImportacaoLi,
+  progressoDaFamiliaLiSchema,
   tarefaImportacaoLiSchema,
 } from '@delfrance/schemas';
 import { ZodError } from 'zod';
@@ -333,15 +330,12 @@ import {
   type CasamentoDaFamiliaLi,
   type ContextoDasFamiliasLi,
   type DepsFamiliaLi,
-  type ProgressoDaFamiliaLi,
   alvosDeFotosDaFamiliaLi,
   comDetalhesLi,
   detalhesDaFamiliaLi,
   executarFamiliaLi,
   fecharFamiliaLi,
-  lerProgressoDaFamiliaLi,
   resultadoFotosDoProgressoLi,
-  textoDoProgressoDaFamiliaLi,
 } from './familiaDoJob';
 import {
   type FamiliaLi,
@@ -407,7 +401,7 @@ import {
   itemNaoListadoLi,
   somarContadoresLi,
 } from './relatorio';
-import { skusRepetidosNaLojaLi } from './resolucao';
+import { type ConflitoDeSkuNaLojaLi, conflitosDeSkuNaLojaLi } from './resolucao';
 import {
   type LeitorDeListasRevisaoLi,
   type LeitorDeRegrasImpostoLi,
@@ -604,15 +598,6 @@ const FAMILIAS_DO_INICIO: ImportacaoLojaIntegrada['familias'] = {
   filhosLidos: [],
 };
 
-/**
- * The `revisao` cursor before its phase: also what clears a family's progress, which rides that
- * field's text during the `familias` phase (`familiaDoJob.ts`, "The family's progress").
- */
-const REVISAO_DO_INICIO: ImportacaoLojaIntegrada['revisao'] = {
-  cursorProdutoId: null,
-  anteriorJobId: null,
-};
-
 /** Whether a unit budgeted as `orcada` covers work whose worst case is `custo`'s. */
 function cobre(orcada: UnidadeImportacaoLi, custo: UnidadeImportacaoLi): boolean {
   return PIOR_CASO_UNIDADE_IMPORTACAO_LI_MS[custo] <= PIOR_CASO_UNIDADE_IMPORTACAO_LI_MS[orcada];
@@ -711,7 +696,7 @@ class DespachoImportacaoLi {
   private aDetalhar: readonly number[] | null = null;
   private detalhes: Map<number, DetalheImportacaoLi> | null = null;
   private montagem: MontagemLi | null = null;
-  private skusRepetidos: ReadonlySet<string> | null = null;
+  private skusEmConflito: ReadonlyMap<string, ConflitoDeSkuNaLojaLi> | null = null;
   private memo: MemoDeGruposLi | null = null;
   private recusas: ContextoDasFamiliasLi['recusasDoAprendizado'] | null = null;
   /** The details the complete step still has to read for the family it is on (ids, in order). */
@@ -1214,15 +1199,15 @@ class DespachoImportacaoLi {
     }
     if (this.montagem === null) {
       this.montagem = montarFamiliasLi(indice, this.detalhes);
-      this.skusRepetidos = skusRepetidosNaLojaLi(this.montagem);
+      this.skusEmConflito = conflitosDeSkuNaLojaLi(this.montagem);
     }
     return this.montagem;
   }
 
-  private async skusRepetidosDoJob(): Promise<ReadonlySet<string>> {
+  private async skusEmConflitoDoJob(): Promise<ReadonlyMap<string, ConflitoDeSkuNaLojaLi>> {
     await this.montagemDoJob();
-    if (this.skusRepetidos === null) throw new TypeError('despacho: montagem sem SKUs');
-    return this.skusRepetidos;
+    if (this.skusEmConflito === null) throw new TypeError('despacho: montagem sem SKUs');
+    return this.skusEmConflito;
   }
 
   private async memoDeGrupos(): Promise<MemoDeGruposLi> {
@@ -1434,7 +1419,7 @@ class DespachoImportacaoLi {
             montagem: await this.montagemDoJob(),
             // The memo alone: nothing is learned before the next phase.
             grupos: await this.memoDeGrupos(),
-            skusRepetidos: await this.skusRepetidosDoJob(),
+            skusEmConflito: await this.skusEmConflitoDoJob(),
           },
           job.familias,
         );
@@ -1501,7 +1486,7 @@ class DespachoImportacaoLi {
     );
     return {
       job,
-      skusRepetidos: await this.skusRepetidosDoJob(),
+      skusEmConflito: await this.skusEmConflitoDoJob(),
       grupos,
       recusasDoAprendizado: this.recusas,
     };
@@ -1658,7 +1643,7 @@ class DespachoImportacaoLi {
    * budgeted for it.
    */
   private unidadeDoCompletar(job: ImportacaoLojaIntegrada): UnidadeDoDespachoLi {
-    const guardado = lerProgressoDaFamiliaLi(job.revisao.cursorProdutoId);
+    const guardado = job.progressoDaFamilia;
     const unidade = this.custoDoCompletar(job, guardado);
     return {
       unidade,
@@ -1678,8 +1663,7 @@ class DespachoImportacaoLi {
           return this.continuarFamilia(job, ctx, completa, guardado, unidade, fotos.patch);
         }
         // A progress of another family (read back from an older attempt) is none: cleared.
-        const limpo: ProgressoImportacaoLi =
-          guardado === null ? {} : { revisao: REVISAO_DO_INICIO };
+        const limpo: ProgressoImportacaoLi = guardado === null ? {} : { progressoDaFamilia: null };
 
         const faltantes = await this.faltantesDaFamilia(job, ctx, completa);
         const liId = faltantes.ids[0];
@@ -1707,13 +1691,9 @@ class DespachoImportacaoLi {
           return progresso({
             ...fotos.patch,
             mapaCategorias: [...r.mapaCategorias],
-            revisao: {
-              ...REVISAO_DO_INICIO,
-              cursorProdutoId: textoDoProgressoDaFamiliaLi(r.progresso),
-            },
+            progressoDaFamilia: r.progresso,
           });
         }
-        if (r.tipo === 'relatado') this.avisarNomesCortados(r.nomesCortados);
         this.faltantes = null;
         return progresso({
           ...limpo,
@@ -1742,8 +1722,10 @@ class DespachoImportacaoLi {
     unidade: UnidadeImportacaoLi,
     patchDasFotos: ProgressoImportacaoLi,
   ): Promise<PassoDoDespachoLi> {
+    // Validated BEFORE the write: the job field reads an unparseable value as `null`, so a bad patch
+    // would otherwise be written as "no progress" with nothing to say why.
     const comProgresso = (p: ProgressoDaFamiliaLi): ProgressoImportacaoLi => ({
-      revisao: { ...REVISAO_DO_INICIO, cursorProdutoId: textoDoProgressoDaFamiliaLi(p) },
+      progressoDaFamilia: progressoDaFamiliaLiSchema.parse(p),
     });
 
     if (emCurso.resultadoFotos === null) {
@@ -1769,6 +1751,7 @@ class DespachoImportacaoLi {
             fotosIndisponiveis: true,
             ...comProgresso({
               ...emCurso,
+              fotos: null,
               resultadoFotos: resultadoFotosDoProgressoLi(
                 resultadoDasFotosLi(emCurso.fotos ?? { feitos: [], recusadas: [] }),
               ),
@@ -1789,6 +1772,7 @@ class DespachoImportacaoLi {
             ...patchDasFotos,
             ...comProgresso({
               ...emCurso,
+              fotos: null,
               resultadoFotos: resultadoFotosDoProgressoLi(passo.resultado),
             }),
           });
@@ -1802,23 +1786,13 @@ class DespachoImportacaoLi {
       emCurso,
       emCurso.resultadoFotos,
     );
-    this.avisarNomesCortados(r.nomesCortados);
     this.faltantes = null;
     return progresso({
       ...patchDasFotos,
-      revisao: REVISAO_DO_INICIO,
+      progressoDaFamilia: null,
       familias: { cursorPaiId: familia.raiz.id, filhosLidos: [] },
       contadores: somarContadoresLi(job.contadores, r.contadores),
       mapaCategorias: [...r.mapaCategorias],
-    });
-  }
-
-  /** ONE line for the created produtos whose name was cut at the ERP's limit (store ids only). */
-  private avisarNomesCortados(liIds: readonly number[]): void {
-    if (liIds.length === 0) return;
-    this.deps.logger.warn('[loja-integrada] importação: nome de produto criado cortado no limite', {
-      jobId: this.tarefa.jobId,
-      liIds: [...liIds],
     });
   }
 
@@ -1904,8 +1878,8 @@ class DespachoImportacaoLi {
     return progresso({
       fase: faseDepoisDasFamiliasLi(job),
       familias: FAMILIAS_DO_INICIO,
-      // The `revisao` phase starts from its own beginning (and no family's progress survives it).
-      revisao: REVISAO_DO_INICIO,
+      // No family's progress outlives the phase.
+      progressoDaFamilia: null,
       contadores,
     });
   }

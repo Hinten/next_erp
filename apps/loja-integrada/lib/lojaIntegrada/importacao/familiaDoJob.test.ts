@@ -24,6 +24,7 @@ import {
   ACAO_ITEM_IMPORTACAO_LI,
   ALVO_IMPORTACAO_LI,
   CATEGORIAS_IMPORTACAO_LI,
+  DESFECHO_FOTOS_DO_PRODUTO_LI,
   type GrupoComLinksLi,
   type ItemImportacaoLi,
   type MarcaCatalogoLi,
@@ -32,6 +33,7 @@ import {
   PENDENCIA_IMPORTACAO_LI,
   SITUACAO_ERP_ITEM_LI,
   fundirLinksVariacoesLi,
+  progressoDaFamiliaLiSchema,
   varianteFakePath,
 } from '@delfrance/schemas';
 
@@ -56,10 +58,9 @@ import {
   detalhesDaFamiliaLi,
   executarFamiliaLi,
   fecharFamiliaLi,
-  lerProgressoDaFamiliaLi,
-  textoDoProgressoDaFamiliaLi,
 } from './familiaDoJob';
 import { type FamiliaLi, ORIGEM_DO_FILHO_LI } from './familias';
+import { conflitosDeSkuNaLojaLi } from './resolucao';
 
 const CONTA = 'conta-li-familia-job';
 const REF = `documents/integracao/${CONTA}`;
@@ -165,7 +166,7 @@ function contexto(
       marcas: [],
       ...over,
     },
-    skusRepetidos: new Set(),
+    skusEmConflito: new Map(),
     grupos: [],
     recusasDoAprendizado: new Map(),
   };
@@ -1137,17 +1138,21 @@ describe('complete — photos', () => {
     ]);
     expect(db.ler(vinculo('caneca', '20'))).toBeUndefined();
     expect(db.idsEm(`${caminhoJobLi('job-f1')}/itens`)).toEqual([]);
-    // The progress rides the job as tagged text and reads back whole (near-miss: another tag).
-    const texto = textoDoProgressoDaFamiliaLi(r.progresso);
-    expect(texto.startsWith('f:')).toBe(true);
-    expect(lerProgressoDaFamiliaLi(texto)).toEqual(r.progresso);
-    expect(lerProgressoDaFamiliaLi(`r:0:${texto.slice(2)}`)).toBeNull();
-    expect(lerProgressoDaFamiliaLi('f:{nao-e-json')).toBeNull();
-    expect(lerProgressoDaFamiliaLi(null)).toBeNull();
+    // The progress rides the job in its own field, and reads back whole from what was stored.
+    expect(progressoDaFamiliaLiSchema.parse(JSON.parse(JSON.stringify(r.progresso)))).toEqual(
+      r.progresso,
+    );
 
     // The closing, once every picture is decided: the link LAST, the photos counted.
     const fechada = await fecharFamiliaLi(depsDoJob(db, 'job-f1'), ctx, f, r.progresso, {
-      produtos: [{ produtoId: 'caneca', liId: null, desfecho: 'importadas', fotos: 2 }],
+      produtos: [
+        {
+          produtoId: 'caneca',
+          liId: null,
+          desfecho: DESFECHO_FOTOS_DO_PRODUTO_LI.importadas,
+          fotos: 2,
+        },
+      ],
       gravadas: 2,
       pendencias: [],
     });
@@ -1711,31 +1716,270 @@ describe('detalhesDaFamiliaLi — a create the checks with no detail refuse cost
   });
 });
 
-describe('⚠️ ACCEPTED RESIDUAL — Simular does not see the produtos an earlier family would create', () => {
-  it('two store SKUs that differ only by case: aplicar refuses the second (sku-parecido against the first’s create); Simular says criar for both', async () => {
-    async function rodarModo(modo: ModoImportacaoLi) {
-      const db = new FakeDb();
-      const deps = depsDoJob(db, 'job-s1');
-      const ctx = contextoCompletar(modo);
-      const itens: ItemImportacaoLi[] = [];
-      for (const f of [
-        simplesDetalhado(100, { sku: 'ABC-1' }),
-        simplesDetalhado(200, { sku: 'abc-1' }),
-      ]) {
-        itens.push((await relatado(deps, ctx, f)).item);
+describe('PARITY — store near duplicates are refused in both modes, whichever family comes first', () => {
+  const MODOS = [MODO_IMPORTACAO_LI.aplicar, MODO_IMPORTACAO_LI.simular];
+
+  /** The conflict map, as the dispatch computes it once from the whole assembly. */
+  function conflitosDe(familias: readonly FamiliaLi[]) {
+    return conflitosDeSkuNaLojaLi({
+      familias,
+      avulsos: [],
+      contagens: { reivindicacoesIgnoradas: 0, reivindicacoesDisputadas: 0, filhosIlegiveis: 0 },
+    });
+  }
+
+  it.each([
+    ["'ABC-1' and 'abc-1' (case only)", 'ABC-1', 'abc-1'],
+    ["'ABC' and 'ABC-UN' (a simple product's derived sole-member SKU)", 'ABC', 'ABC-UN'],
+  ])(
+    '%s: both items conflito, nenhuma, sku-parecido-na-loja, no produto written',
+    async (_caso, a, b) => {
+      for (const modo of MODOS) {
+        for (const [primeiro, segundo] of [
+          [a, b],
+          [b, a],
+        ] as const) {
+          const db = new FakeDb();
+          const deps = depsDoJob(db, 'job-s1');
+          const familias = [
+            simplesDetalhado(100, { sku: primeiro }),
+            simplesDetalhado(200, { sku: segundo }),
+          ];
+          const ctx = { ...contextoCompletar(modo), skusEmConflito: conflitosDe(familias) };
+          for (const f of familias) {
+            const { item } = await relatado(deps, ctx, f);
+            expect(item, `${modo}: ${primeiro} antes de ${segundo}`).toMatchObject({
+              situacaoErp: SITUACAO_ERP_ITEM_LI.conflito,
+              acao: ACAO_ITEM_IMPORTACAO_LI.nenhuma,
+              erpId: null,
+              pendencias: [
+                {
+                  codigo: PENDENCIA_IMPORTACAO_LI.skuParecidoNaLoja,
+                  acionavel: true,
+                  liId: null,
+                  referencias: [],
+                },
+              ],
+            });
+          }
+          expect(db.escritas.filter((e) => e.caminho.startsWith('produtos/'))).toEqual([]);
+        }
       }
-      return itens;
+    },
+  );
+
+  it("NEAR-MISS: 'ABC-1' and 'ABC-2' are no near duplicates: both created, in both modes", async () => {
+    for (const modo of MODOS) {
+      const db = new FakeDb();
+      const deps = depsDoJob(db, 'job-s2');
+      const familias = [
+        simplesDetalhado(100, { sku: 'ABC-1' }),
+        simplesDetalhado(200, { sku: 'ABC-2' }),
+      ];
+      const ctx = { ...contextoCompletar(modo), skusEmConflito: conflitosDe(familias) };
+      for (const f of familias) {
+        const { item } = await relatado(deps, ctx, f);
+        expect(item, modo).toMatchObject({ acao: ACAO_ITEM_IMPORTACAO_LI.criar, pendencias: [] });
+      }
     }
-    const aplicar = await rodarModo(MODO_IMPORTACAO_LI.aplicar);
-    const simular = await rodarModo(MODO_IMPORTACAO_LI.simular);
-    // The root's SKU and its sole member's derived one both meet the first create.
-    expect(new Set(aplicar[1]?.pendencias.map((p) => p.codigo))).toEqual(new Set(['sku-parecido']));
-    expect(aplicar[1]?.acao).not.toBe('criar');
-    // The divergence the residual states: closing it needs an overlay the job contract lacks.
-    expect(simular[1]?.acao).toBe('criar');
-    expect(simular[1]?.pendencias).toEqual([]);
+  });
+
+  it('a flagged variation refuses the family it would be created with, in both modes (its code on it)', async () => {
+    for (const modo of MODOS) {
+      const db = new FakeDb();
+      seedGrupoCompletar(db);
+      const familias = [
+        familiaDetalhada(100, 'CAM', [{ id: 101, sku: 'CAM-AZ', opcao: 1 }]),
+        simplesDetalhado(200, { sku: 'cam-az' }),
+      ];
+      const ctx = { ...contextoCompletar(modo), skusEmConflito: conflitosDe(familias) };
+      const [familiaComFilho, simples] = familias;
+      if (familiaComFilho === undefined || simples === undefined) throw new Error('sem famílias');
+      const { item } = await relatado(depsDoJob(db, 'job-s3'), ctx, familiaComFilho);
+      expect(item, modo).toMatchObject({
+        situacaoErp: SITUACAO_ERP_ITEM_LI.ausente,
+        acao: ACAO_ITEM_IMPORTACAO_LI.nenhuma,
+        pendencias: [
+          {
+            codigo: PENDENCIA_IMPORTACAO_LI.skuParecidoNaLoja,
+            acionavel: true,
+            liId: 101,
+            referencias: [],
+          },
+        ],
+      });
+      expect(db.escritas.filter((e) => e.caminho.startsWith('produtos/'))).toEqual([]);
+    }
   });
 });
+
+describe('complete — the item names the categories its run created', () => {
+  const MODOS = [MODO_IMPORTACAO_LI.aplicar, MODO_IMPORTACAO_LI.simular];
+  const ctxQueCria = (
+    modo: ModoImportacaoLi,
+    mapaCategorias: ContextoDasFamiliasLi['job']['mapaCategorias'] = MAPA_900_SEM_VINCULO,
+  ) =>
+    contextoCompletar(modo, {
+      categorias: CATEGORIAS_IMPORTACAO_LI.criarEVincular,
+      mapaCategorias,
+    });
+
+  it.each(MODOS)(
+    '%s: the family that creates a category names it ⟷ NEAR-MISS a later family that uses it names none',
+    async (modo) => {
+      const db = new FakeDb();
+      const deps = depsDoJob(db, 'job-k1');
+      const ctx = ctxQueCria(modo);
+      const primeira = await relatado(
+        deps,
+        ctx,
+        simplesDetalhado(10, { sku: 'SKU-A', categorias: CAT_900 }),
+      );
+      expect(primeira.item.categoriasCriadas).toEqual([900]);
+      const segunda = await relatado(
+        deps,
+        { ...ctx, job: { ...ctx.job, mapaCategorias: [...primeira.mapaCategorias] } },
+        simplesDetalhado(20, { sku: 'SKU-B', categorias: CAT_900 }),
+      );
+      expect(segunda.item).toMatchObject({ acao: 'criar', categoriasCriadas: [] });
+    },
+  );
+
+  it.each(MODOS)('%s: a chain is named root-most first', async (modo) => {
+    const db = new FakeDb();
+    const mapa = [
+      ...MAPA_900_SEM_VINCULO,
+      {
+        id: 901,
+        nome: 'Camisetas',
+        pai: { tipo: 'id' as const, id: 900 },
+        erpCategoriaId: null,
+        vinculo: 'sem-vinculo' as const,
+      },
+    ];
+    const { item } = await relatado(
+      depsDoJob(db, 'job-k2'),
+      ctxQueCria(modo, mapa),
+      simplesDetalhado(10, { sku: 'SKU-A', categorias: ['/api/v1/categoria/901'] }),
+    );
+    expect(item.categoriasCriadas).toEqual([900, 901]);
+  });
+
+  it.each(MODOS)(
+    '%s: a family the ERP has names the category its empty field took ⟷ NEAR-MISS a linked one names none',
+    async (modo) => {
+      const seed = () => {
+        const db = new FakeDb();
+        db.seed('produtos/caneca', { nome: 'Caneca', sku: 'CAN', paiId: null, filhoUnicoId: null });
+        return db;
+      };
+      const f = simplesDetalhado(20, { sku: 'CAN', categorias: CAT_900 });
+      const criando = await relatado(depsDoJob(seed(), 'job-k3'), ctxQueCria(modo), f);
+      expect(criando.item.categoriasCriadas).toEqual([900]);
+      const db = seed();
+      db.seed('categorias/cat-1', { nome: 'Roupas', nomeCompleto: 'Roupas' });
+      const ligada = await relatado(depsDoJob(db, 'job-k3'), ctxQueCria(modo, MAPA_900_LIGADA), f);
+      expect(ligada.item.categoriasCriadas).toEqual([]);
+    },
+  );
+
+  it('survives the photo units: the progress carries it, the closing names it', async () => {
+    const db = new FakeDb();
+    const imagens = [
+      { id: 71, caminho: 'loja/produto/71/a.jpg', principal: true, posicao: 1, mime: null },
+    ];
+    const f = simplesDetalhado(10, { sku: 'SKU-A', categorias: CAT_900 }, { imagens });
+    const ctx = { ...ctxQueCria(MODO_IMPORTACAO_LI.aplicar), importarFotos: true };
+    const deps = depsDoJob(db, 'job-k4');
+    const r = await executarFamiliaLi(deps, ctx, f);
+    if (r.tipo !== 'fotos') throw new Error(`esperava fotos, veio ${r.tipo}`);
+    expect(r.progresso.categoriasCriadas).toEqual([900]);
+    const lido = progressoDaFamiliaLiSchema.parse(JSON.parse(JSON.stringify(r.progresso)));
+    const fechada = await fecharFamiliaLi(deps, ctx, f, lido, {
+      produtos: [],
+      gravadas: 0,
+      pendencias: [],
+    });
+    expect(fechada.item.categoriasCriadas).toEqual([900]);
+  });
+
+  it.each(MODOS)(
+    '%s: a refused create names none (its category was never created)',
+    async (modo) => {
+      const db = new FakeDb();
+      seedGrupoCompletar(db);
+      const { item } = await relatado(
+        depsDoJob(db, 'job-k5'),
+        ctxQueCria(modo),
+        familiaDetalhada(100, 'CAM', [{ id: 101, sku: 'CAM-AZ', opcao: 9 }], {
+          categorias: CAT_900,
+        }),
+      );
+      expect(item.pendencias.map((p) => p.codigo)).toEqual(['variacao-sem-vinculo']);
+      expect(item.categoriasCriadas).toEqual([]);
+    },
+  );
+
+  it('a create refused AFTER its category landed still names it: recorded when created, never read from the last attempt', async () => {
+    const db = new FakeDb();
+    // A stray document under the planned root: both attempts of the batch lose, and the SECOND finds
+    // the category already linked, so only what the FIRST recorded can name it.
+    db.seed(`produtos/li-sku-${sha256('SKU-A')}/extraData/singleton`, { marca: 'perdida' });
+    const { item } = await relatado(
+      depsDoJob(db, 'job-k6'),
+      ctxQueCria(MODO_IMPORTACAO_LI.aplicar),
+      simplesDetalhado(10, { sku: 'SKU-A', categorias: CAT_900 }),
+    );
+    expect(item.acao).toBe('nenhuma');
+    expect(item.pendencias.map((p) => p.codigo)).toEqual(['conflito-de-escrita']);
+    expect(db.ler(`categorias/li-${CONTA}-900`)).toMatchObject({ nome: 'Roupas' });
+    expect(item.categoriasCriadas).toEqual([900]);
+  });
+});
+
+describe('complete — a name cut at the ERP limit is on the item', () => {
+  const MODOS = [MODO_IMPORTACAO_LI.aplicar, MODO_IMPORTACAO_LI.simular];
+
+  it.each(MODOS)(
+    '%s: over 100 ⇒ an informational nome-cortado ⟷ NEAR-MISS exactly 100 ⇒ none',
+    async (modo) => {
+      const cortado = await relatado(
+        depsDoJob(new FakeDb(), 'job-n1'),
+        contextoCompletar(modo),
+        simplesDetalhado(10, { sku: 'SKU-A', nome: 'N'.repeat(101) }),
+      );
+      expect(cortado.item).toMatchObject({
+        acao: 'criar',
+        pendencias: [{ codigo: 'nome-cortado', acionavel: false, liId: null, referencias: [] }],
+      });
+      expect(cortado.contadores).toMatchObject({
+        pendenciasInformativas: 1,
+        pendenciasAcionaveis: 0,
+      });
+      const inteiro = await relatado(
+        depsDoJob(new FakeDb(), 'job-n2'),
+        contextoCompletar(modo),
+        simplesDetalhado(10, { sku: 'SKU-A', nome: 'N'.repeat(100) }),
+      );
+      expect(inteiro.item.pendencias).toEqual([]);
+    },
+  );
+
+  it('a refused create reports none: nothing was created to carry the cut name', async () => {
+    const db = new FakeDb();
+    seedGrupoCompletar(db);
+    db.seed('produtos/a-mao', { nome: 'A mão', sku: 'CAM-AZ', paiId: null, filhoUnicoId: null });
+    const { item } = await relatado(
+      depsDoJob(db, 'job-n3'),
+      contextoCompletar(MODO_IMPORTACAO_LI.aplicar),
+      familiaDetalhada(100, 'CAM', [{ id: 101, sku: 'CAM-AZ', opcao: 1 }], {
+        nome: 'N'.repeat(120),
+      }),
+    );
+    expect(item.pendencias.map((p) => p.codigo)).toEqual(['sku-ja-existe']);
+  });
+});
+
 describe('detalhesDaFamiliaLi — a detail only where it can change something', () => {
   it('a family the ERP lacks needs the root and every variation the create adds; a filled existing produto needs none (near-miss: one empty field needs its own)', async () => {
     const db = new FakeDb();

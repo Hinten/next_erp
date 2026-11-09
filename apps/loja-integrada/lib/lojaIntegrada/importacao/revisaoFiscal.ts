@@ -42,33 +42,23 @@
  *    in the very tax settings this list asks a person to review);
  *  - the produto has its own `imposto` document;
  *  - its CURRENT category (read from the produto, as the cascade reads it) has one;
- *  - or the produto no longer exists: a deleted produto is never invoiced, and an entry no
- *    evidence could ever close would keep the aviso open for good. (⚠️ A deviation from the plan's
- *    "nothing closes it but evidence", kept for the owner's review: it is also what closes the entry
- *    a create's or an add's batch left when that batch then lost — `familiaDoJob.ts`, "The tax
- *    review", writes the entry BEFORE the write it records.)
+ *  - or the produto no longer exists (decided 2026-11-06): a deleted produto is never invoiced, and
+ *    an entry no evidence could ever close would keep the aviso open for good. It is also what
+ *    closes the entry a create's or an add's batch left when that batch then lost —
+ *    `familiaDoJob.ts`, "The tax review", writes the entry BEFORE the write it records.
  * Nothing else removes an entry: a later job that changes nothing carries it forward unchanged.
  * The phase ends with the open count, for the tax-review aviso (`avisosImportacao.ts`).
  *
- * (⚠️ Also a deviation from the plan's "the conta's previous `aplicar` job": the carry-forward walks
- * past a failed or cancelled `aplicar` job to the newest CONCLUDED one, for the reason above.)
+ * (Decided 2026-11-06: the carry-forward walks past a failed or cancelled `aplicar` job to the newest
+ * CONCLUDED one, for the reason above, rather than stopping at the conta's previous `aplicar` job.)
  *
  * ## The cursor
  *
- * The job contract gives the phase one text cursor (`revisao.cursorProdutoId`) and the source's id
- * (`revisao.anteriorJobId`). The phase needs where it is (carrying from a source, or re-checking),
- * the position inside it and, while re-checking, the entries kept so far — so the text is TAGGED,
- * written and read here only:
- *  - `null` — nothing done yet;
- *  - `a:<jobId>` — every job down to `<jobId>` (newest first) is handled: find the next source;
- *  - `c:<jobId>:<produtoId>` / `u:<jobId>:<produtoId>` — copying source `<jobId>` after
- *    `<produtoId>` (empty: from its start); `u` marks the walk's LAST source (it ended `concluido`);
- *  - `r:<abertos>:<produtoId>` — re-checking after `<produtoId>` (empty: from the start), with
- *    `<abertos>` entries kept so far.
- * A job id is the start route's auto id (`ID_IMPORTACAO_LI_REGEX`: no `:`), so the first `:` after
- * it ends it; a produto id is everything after. A text this module cannot read starts the phase
- * over from `null` — safe, every step is idempotent. Only jobs whose id that grammar admits are
- * walked past or copied (every job the start route creates).
+ * The job's `revisao` field ({@link EstadoRevisaoFiscalLi}): the sub-step (`etapa`), the source
+ * (`fonteJobId`, with `ultimaFonte` for the walk's LAST source, the one that ended `concluido`), the
+ * position (`depoisProdutoId`: `null` from the start) and the entries kept so far (`abertos`), read
+ * and written whole here; `anteriorJobId` names the newest source. A cursor that names no source for
+ * a sub-step that needs one starts the phase over — safe, every step is idempotent.
  *
  * ## The reads, against the indexes (root rule 1)
  *
@@ -79,7 +69,7 @@
  *    after is read by id.
  *  - A job's `revisao` subcollection is read WHOLE — unfiltered, unordered, no limit, so no index —
  *    ONCE per dispatch per list ({@link criarLeitorDeListasRevisaoLi}), and paged IN MEMORY in the
- *    produto ids' code-unit order (the cursor's `<produtoId>` is the last id handled in that order).
+ *    produto ids' code-unit order (the cursor's `depoisProdutoId` is the last id handled in that order).
  *    ⚠️ Never a document-key RANGE (`orderBy(documentId())` + `startAfter` + a limit): Enterprise
  *    keeps no implicit key index, and with none LEADING with `__name__` declared for `revisao` such
  *    a page is cut residually after scanning the WHOLE list (measured on staging, #1874) — and the
@@ -118,8 +108,8 @@ import {
 import { isAlreadyExists } from '@delfrance/data/admin/grpcErrors';
 import { parseCategoriaUid, regraImpostoCasaComProduto } from '@delfrance/data/admin/imposto';
 import {
-  ID_IMPORTACAO_LI_REGEX,
-  type ImportacaoLojaIntegrada,
+  type CursorRevisaoFiscalLi,
+  ETAPA_REVISAO_FISCAL_LI,
   LIMITE_IMPORTACOES_LISTADAS_LI,
   MODO_IMPORTACAO_LI,
   type MotivoRevisaoFiscalLi,
@@ -144,7 +134,7 @@ export const PAGINA_TRANSPORTE_REVISAO_LI = 100;
 export const PAGINA_CONFERENCIA_REVISAO_LI = 50;
 
 /** The job's `revisao` field: the phase's state. */
-export type EstadoRevisaoFiscalLi = ImportacaoLojaIntegrada['revisao'];
+export type EstadoRevisaoFiscalLi = CursorRevisaoFiscalLi;
 
 /* -------------------------------------------------------------------------- */
 /*                                   An entry                                  */
@@ -403,49 +393,72 @@ function paginaDaLista(
 /* -------------------------------------------------------------------------- */
 
 type CursorRevisaoLi =
-  | { readonly etapa: 'inicio' }
-  | { readonly etapa: 'apos'; readonly jobId: string }
+  | { readonly etapa: typeof ETAPA_REVISAO_FISCAL_LI.inicio }
+  | { readonly etapa: typeof ETAPA_REVISAO_FISCAL_LI.apos; readonly jobId: string }
   | {
-      readonly etapa: 'copiando';
+      readonly etapa: typeof ETAPA_REVISAO_FISCAL_LI.copiando;
       readonly jobId: string;
       readonly ultima: boolean;
       readonly depois: string | null;
     }
-  | { readonly etapa: 'conferindo'; readonly abertos: number; readonly depois: string | null };
+  | {
+      readonly etapa: typeof ETAPA_REVISAO_FISCAL_LI.conferindo;
+      readonly abertos: number;
+      readonly depois: string | null;
+    };
 
-const INICIO: CursorRevisaoLi = { etapa: 'inicio' };
+const INICIO: CursorRevisaoLi = { etapa: ETAPA_REVISAO_FISCAL_LI.inicio };
 
-/** The tagged text (module header, "The cursor"); anything unreadable is the start. */
-function lerCursor(texto: string | null): CursorRevisaoLi {
-  if (texto === null) return INICIO;
-  const etiqueta = texto.slice(0, 2);
-  const resto = texto.slice(2);
-  if (etiqueta === 'a:')
-    return ID_IMPORTACAO_LI_REGEX.test(resto) ? { etapa: 'apos', jobId: resto } : INICIO;
-  const separador = resto.indexOf(':');
-  if (separador < 0) return INICIO;
-  const cabeca = resto.slice(0, separador);
-  const posicao = resto.slice(separador + 1);
-  const depois = posicao === '' ? null : posicao;
-  if ((etiqueta === 'c:' || etiqueta === 'u:') && ID_IMPORTACAO_LI_REGEX.test(cabeca)) {
-    return { etapa: 'copiando', jobId: cabeca, ultima: etiqueta === 'u:', depois };
+/** The job's cursor (module header, "The cursor"); a sub-step with no source it needs is the start. */
+function lerCursor(estado: EstadoRevisaoFiscalLi): CursorRevisaoLi {
+  switch (estado.etapa) {
+    case ETAPA_REVISAO_FISCAL_LI.inicio:
+      return INICIO;
+    case ETAPA_REVISAO_FISCAL_LI.apos:
+      return estado.fonteJobId === null
+        ? INICIO
+        : { etapa: ETAPA_REVISAO_FISCAL_LI.apos, jobId: estado.fonteJobId };
+    case ETAPA_REVISAO_FISCAL_LI.copiando:
+      return estado.fonteJobId === null
+        ? INICIO
+        : {
+            etapa: ETAPA_REVISAO_FISCAL_LI.copiando,
+            jobId: estado.fonteJobId,
+            ultima: estado.ultimaFonte,
+            depois: estado.depoisProdutoId,
+          };
+    case ETAPA_REVISAO_FISCAL_LI.conferindo:
+      return {
+        etapa: ETAPA_REVISAO_FISCAL_LI.conferindo,
+        abertos: estado.abertos,
+        depois: estado.depoisProdutoId,
+      };
   }
-  if (etiqueta === 'r:' && /^(0|[1-9][0-9]{0,14})$/.test(cabeca)) {
-    return { etapa: 'conferindo', abertos: Number(cabeca), depois };
-  }
-  return INICIO;
 }
 
-function escreverCursor(cursor: CursorRevisaoLi): string | null {
+/** Every field of the job's cursor but `anteriorJobId`, which the walk's own step keeps. */
+function escreverCursor(cursor: CursorRevisaoLi): Omit<EstadoRevisaoFiscalLi, 'anteriorJobId'> {
+  const vazio = { fonteJobId: null, ultimaFonte: false, depoisProdutoId: null, abertos: 0 };
   switch (cursor.etapa) {
-    case 'inicio':
-      return null;
-    case 'apos':
-      return `a:${cursor.jobId}`;
-    case 'copiando':
-      return `${cursor.ultima ? 'u' : 'c'}:${cursor.jobId}:${cursor.depois ?? ''}`;
-    case 'conferindo':
-      return `r:${String(cursor.abertos)}:${cursor.depois ?? ''}`;
+    case ETAPA_REVISAO_FISCAL_LI.inicio:
+      return { etapa: cursor.etapa, ...vazio };
+    case ETAPA_REVISAO_FISCAL_LI.apos:
+      return { etapa: cursor.etapa, ...vazio, fonteJobId: cursor.jobId };
+    case ETAPA_REVISAO_FISCAL_LI.copiando:
+      return {
+        etapa: cursor.etapa,
+        ...vazio,
+        fonteJobId: cursor.jobId,
+        ultimaFonte: cursor.ultima,
+        depoisProdutoId: cursor.depois,
+      };
+    case ETAPA_REVISAO_FISCAL_LI.conferindo:
+      return {
+        etapa: cursor.etapa,
+        ...vazio,
+        depoisProdutoId: cursor.depois,
+        abertos: cursor.abertos,
+      };
   }
 }
 
@@ -505,15 +518,15 @@ export async function executarUnidadeDaRevisaoFiscalLi(
   deps: DepsRevisaoFiscalLi,
   estado: EstadoRevisaoFiscalLi,
 ): Promise<PassoRevisaoFiscalLi> {
-  const cursor = lerCursor(estado.cursorProdutoId);
+  const cursor = lerCursor(estado);
   switch (cursor.etapa) {
-    case 'inicio':
+    case ETAPA_REVISAO_FISCAL_LI.inicio:
       return procurarFonte(deps, estado, null);
-    case 'apos':
+    case ETAPA_REVISAO_FISCAL_LI.apos:
       return procurarFonte(deps, estado, cursor.jobId);
-    case 'copiando':
+    case ETAPA_REVISAO_FISCAL_LI.copiando:
       return copiarPagina(deps, estado, cursor);
-    case 'conferindo':
+    case ETAPA_REVISAO_FISCAL_LI.conferindo:
       return conferirPagina(deps, estado, cursor);
   }
 }
@@ -525,7 +538,7 @@ function progresso(
 ): PassoRevisaoFiscalLi {
   return {
     tipo: PASSO_REVISAO_FISCAL_LI.progresso,
-    estado: { ...estado, cursorProdutoId: escreverCursor(cursor) },
+    estado: { ...estado, ...escreverCursor(cursor) },
     transportadas: contagens.transportadas ?? 0,
     conferidas: contagens.conferidas ?? 0,
     saidas: contagens.saidas ?? 0,
@@ -558,27 +571,36 @@ async function procurarFonte(
   }
   const pagina = await consulta.get();
   for (const doc of pagina.docs) {
-    if (doc.id === deps.jobId || !ID_IMPORTACAO_LI_REGEX.test(doc.id)) continue;
+    if (doc.id === deps.jobId) continue;
     const fonte = lerFonte(doc.data());
     if (!fonte.aplicar) continue;
     return progresso(
       { ...estado, anteriorJobId: estado.anteriorJobId ?? doc.id },
-      { etapa: 'copiando', jobId: doc.id, ultima: fonte.concluido, depois: null },
+      {
+        etapa: ETAPA_REVISAO_FISCAL_LI.copiando,
+        jobId: doc.id,
+        ultima: fonte.concluido,
+        depois: null,
+      },
     );
   }
-  const retomavel = pagina.docs.filter((d) => ID_IMPORTACAO_LI_REGEX.test(d.id)).at(-1);
-  if (pagina.docs.length < LIMITE_IMPORTACOES_LISTADAS_LI || retomavel === undefined) {
+  const ultimoDaPagina = pagina.docs.at(-1);
+  if (pagina.docs.length < LIMITE_IMPORTACOES_LISTADAS_LI || ultimoDaPagina === undefined) {
     // The conta's oldest job is behind us: the list is carried, the re-check starts.
-    return progresso(estado, { etapa: 'conferindo', abertos: 0, depois: null });
+    return progresso(estado, {
+      etapa: ETAPA_REVISAO_FISCAL_LI.conferindo,
+      abertos: 0,
+      depois: null,
+    });
   }
-  return progresso(estado, { etapa: 'apos', jobId: retomavel.id });
+  return progresso(estado, { etapa: ETAPA_REVISAO_FISCAL_LI.apos, jobId: ultimoDaPagina.id });
 }
 
 /** One page of source `cursor.jobId`'s list, added to this job's. */
 async function copiarPagina(
   deps: DepsRevisaoFiscalLi,
   estado: EstadoRevisaoFiscalLi,
-  cursor: Extract<CursorRevisaoLi, { etapa: 'copiando' }>,
+  cursor: Extract<CursorRevisaoLi, { etapa: typeof ETAPA_REVISAO_FISCAL_LI.copiando }>,
 ): Promise<PassoRevisaoFiscalLi> {
   const pagina = paginaDaLista(
     await deps.listas(cursor.jobId),
@@ -603,8 +625,8 @@ async function copiarPagina(
   return progresso(
     estado,
     cursor.ultima
-      ? { etapa: 'conferindo', abertos: 0, depois: null }
-      : { etapa: 'apos', jobId: cursor.jobId },
+      ? { etapa: ETAPA_REVISAO_FISCAL_LI.conferindo, abertos: 0, depois: null }
+      : { etapa: ETAPA_REVISAO_FISCAL_LI.apos, jobId: cursor.jobId },
     { transportadas },
   );
 }
@@ -613,7 +635,7 @@ async function copiarPagina(
 async function conferirPagina(
   deps: DepsRevisaoFiscalLi,
   estado: EstadoRevisaoFiscalLi,
-  cursor: Extract<CursorRevisaoLi, { etapa: 'conferindo' }>,
+  cursor: Extract<CursorRevisaoLi, { etapa: typeof ETAPA_REVISAO_FISCAL_LI.conferindo }>,
 ): Promise<PassoRevisaoFiscalLi> {
   // This job's list as this dispatch first read it: an entry this phase deletes sits behind the
   // cursor, and nothing adds one while the phase runs (the familias phase is over).
@@ -633,13 +655,17 @@ async function conferirPagina(
   const saidas = saem.length;
   const abertos = cursor.abertos + conferidas - saidas;
   const depois = pagina.at(-1)?.id ?? cursor.depois;
-  const proximo: CursorRevisaoLi = { etapa: 'conferindo', abertos, depois };
+  const proximo: CursorRevisaoLi = {
+    etapa: ETAPA_REVISAO_FISCAL_LI.conferindo,
+    abertos,
+    depois,
+  };
   if (conferidas === PAGINA_CONFERENCIA_REVISAO_LI) {
     return progresso(estado, proximo, { conferidas, saidas });
   }
   return {
     tipo: PASSO_REVISAO_FISCAL_LI.concluido,
-    estado: { ...estado, cursorProdutoId: escreverCursor(proximo) },
+    estado: { ...estado, ...escreverCursor(proximo) },
     abertos,
     conferidas,
     saidas,

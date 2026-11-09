@@ -424,6 +424,7 @@ export type ProgressoImportacaoLi = Partial<
     | 'orfaos'
     | 'familias'
     | 'aprendizado'
+    | 'progressoDaFamilia'
     | 'revisao'
     | 'mapaCategorias'
     | 'marcas'
@@ -443,6 +444,7 @@ const CAMPOS_DE_PROGRESSO: ReadonlySet<string> = new Set([
   'orfaos',
   'familias',
   'aprendizado',
+  'progressoDaFamilia',
   'revisao',
   'mapaCategorias',
   'marcas',
