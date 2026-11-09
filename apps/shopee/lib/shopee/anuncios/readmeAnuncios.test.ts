@@ -146,4 +146,62 @@ describe('README.md de anuncios/ — o que ele afirma sobre as recusas', () => {
     // A cited name that is only a PREFIX of a real function does not count as defined.
     expect(ler('./criacaoIncerta.ts')).not.toMatch(/^(?:export )?function atestacaoConfer\(/m);
   });
+
+  /*
+   * #2015: the logistics section states the provenance rule. It names the
+   * refusal only that rule produces, the stamp, the ONE predicate and the
+   * source guard, and its writer table cites functions — so a renamed writer,
+   * or a section reverted to "the stored list first", reds here instead of
+   * leaving the doc describing a rule the code no longer has.
+   */
+  const SECAO_LOGISTICA =
+    '### Logistics: a stored list is re-sent only when THIS app wrote it, `get_channel_list` otherwise';
+
+  /** The section up to the next `### ` heading, whitespace folded — `''` without its heading. */
+  function secaoDeLogistica(texto: string): string {
+    const inicio = texto.indexOf(SECAO_LOGISTICA);
+    if (inicio < 0) return '';
+    const fim = texto.indexOf('\n### ', inicio + SECAO_LOGISTICA.length);
+    return emUmaLinha(fim < 0 ? texto.slice(inicio) : texto.slice(inicio, fim));
+  }
+
+  /** `[symbol, the file that defines it]` — each one the section cites. */
+  const CITADOS_NA_LOGISTICA = [
+    ['construirLogistica', './logisticaPublicacao.ts'],
+    ['linkListagemLido', './publicarAnuncio.ts'],
+    ['dadosDoWriteBack1', './publicarAnuncio.ts'],
+    ['escreverWriteBack2', './publicarAnuncio.ts'],
+    ['dadosLinkListagem', '../produtos/mapeamento.ts'],
+    ['escreverVinculoDoKit', '../kits/vinculosKit.ts'],
+  ] as const;
+
+  it('a seção de logística diz a regra da proveniência (#2015) e só cita funções que existem', () => {
+    const secao = secaoDeLogistica(LEIA_ME);
+    expect(secao).not.toBe('');
+    expect(nomeia(secao, MOTIVO_PUBLICACAO_BLOQUEADA.logisticaNaoConfirmada)).toBe(true);
+    expect(nomeia(secao, MOTIVO_PUBLICACAO_BLOQUEADA.logisticaSemCanal)).toBe(true);
+    expect(nomeia(secao, 'logisticaGravadaEm')).toBe(true);
+    expect(nomeia(secao, 'logisticaGravadaPeloErpShopee')).toBe(true);
+    expect(nomeia(secao, 'logisticaProveniencia.test.ts')).toBe(true);
+    expect(ler('./logisticaProveniencia.test.ts')).toContain("describe('#2015 no código do app'");
+    for (const [simbolo, arquivo] of CITADOS_NA_LOGISTICA) {
+      expect(nomeia(secao, simbolo), simbolo).toBe(true);
+      expect(ler(arquivo), `${simbolo} em ${arquivo}`).toMatch(
+        new RegExp(`^(?:export )?(?:async )?function ${simbolo}\\(`, 'm'),
+      );
+    }
+    // The pre-#2015 rule — "the stored list wins whenever one entry survives" — is gone.
+    expect(LEIA_ME).not.toContain('### Logistics: the stored list first');
+  });
+
+  it('near-miss: o recorte da logística para no título seguinte, e sem o título não recorta nada', () => {
+    const secao = secaoDeLogistica(LEIA_ME);
+    // `tax_info`'s section comes right after and is not part of the rule.
+    expect(secao).not.toContain('is whole or nothing');
+    expect(secaoDeLogistica(LEIA_ME.replace(SECAO_LOGISTICA, '### Logistics'))).toBe('');
+    // A heading level deeper (`#### `) does not end the section.
+    expect(secaoDeLogistica(`${SECAO_LOGISTICA}\na\n#### b\nc\n### d\n`)).toBe(
+      `${SECAO_LOGISTICA} a #### b c`,
+    );
+  });
 });

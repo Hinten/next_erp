@@ -79,6 +79,7 @@ import {
   respostaJson,
 } from '../testing/fixtures';
 import { payloadPush, registroTeste } from '../testing/importadorAmazon';
+import { filaAgendamentoDeTeste } from '../testing/produtorAgendamento';
 import {
   ATUALIZADO_US,
   depois,
@@ -254,6 +255,7 @@ async function importar(order: Record<string, unknown>) {
     increment: (by) => FieldValue.increment(by),
     logger: log.logger,
     viaCep: { buscarCep: () => Promise.resolve(null) },
+    agendamento: filaAgendamentoDeTeste().produtor,
     registro: registroTeste(0),
   };
   return importarPedidoAmazon(db(), contexto, { ...payloadPush(ORDER), sellerId: SPID_A }, deps);
@@ -300,6 +302,10 @@ async function processar(handle: Firestore, statusAmazon: Record<string, unknown
           },
         }),
       }),
+    // Step 15 (PR 15-c): the seam's scheduling producer, a recorder too — no
+    // case here reaches `aceita` with a scheduling-eligible order, and none may
+    // enqueue a real task.
+    agendamento: filaAgendamentoDeTeste().produtor,
     registro: { tentativa: 0, idTarefa: 'tarefa-nfe-ci' },
     fetch,
     gerarCorrelationId: () => 'corr-nfe-ci',

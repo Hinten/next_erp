@@ -183,6 +183,7 @@ const LINK: LinkListagemLido = {
   logistic_info: null,
   estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo,
   marcaNaoEscolhida: false,
+  logisticaConfiavel: false,
 };
 
 const RESUMO: ResumoFotosPublicacao = {

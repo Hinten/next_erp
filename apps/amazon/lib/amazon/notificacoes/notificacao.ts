@@ -54,7 +54,9 @@
  *  3. The CONTEXT (`core/contexto.ts`): switch, LWA pair, conta, credential.
  *  4. The IMPORTER seam: `null` ⇒ `adiado/importador-ausente`; otherwise the
  *     importer runs with ITS deps (the clock, the increment, the logger, the
- *     CEP lookup and this run's registro), built field by field.
+ *     CEP lookup, the Easy Ship scheduling producer — step 15's structural port
+ *     {@link ProdutorAgendamentoAmazon} — and this run's registro), built field
+ *     by field.
  *  5. Every throw goes through {@link classificarFalhaDaTarefaAmazon}; `null`
  *     rethrows through the SANITIZING BOUNDARY (below).
  *
@@ -648,6 +650,53 @@ export interface RegistroLeituraAmazon {
 export type BuscadorCepAmazon = Parameters<typeof recoverEnderecoFromCep>[1];
 
 /**
+ * The Easy Ship scheduling task's payload, as the order import's port
+ * ({@link ProdutorAgendamentoAmazon}) names it: a plain readonly record,
+ * declared HERE and never imported from `agendamento/` (the port's docblock).
+ */
+export interface TarefaAgendamentoPortaAmazon {
+  readonly pedidoId: string;
+  readonly contaId: string;
+  readonly orderId: string;
+  readonly origem: 'aceite-nfe' | 'importacao';
+  readonly espera: number;
+  readonly pausas: number;
+}
+
+/** The observation an entry's task is named after, as the port names it (declared HERE). */
+export type ObservacaoAgendamentoPortaAmazon =
+  | { readonly origem: 'aceite-nfe'; readonly idTarefaNfe: string | null }
+  | { readonly origem: 'importacao'; readonly pedidoId: string; readonly watermarkUs: number };
+
+/**
+ * The Easy Ship scheduling queue's producer, as the order import takes it (step
+ * 15, PR 15-c: the import's post-commit entry E2): a LOCAL structural port, the
+ * {@link BuscadorCepAmazon} shape — this module sits in the App Hosting
+ * receiver's import closure, which the structure walk follows through TYPE
+ * edges too, so it never names the scheduling producer or anything else under
+ * `agendamento/`, not even by type. Its payload and observation shapes are
+ * declared here as plain readonly records. The functions root
+ * (`functions/src/depsLeitura.ts`) hands in the REAL producer's root, which
+ * satisfies it structurally, and the importer hands it on to the entry
+ * (`agendamento/entradasAgendamento.ts`), whose own type is the real producer's.
+ * A test hands in a recording fake.
+ *
+ * ⚠️ A function-typed PROPERTY, never a method: a method's parameters compare
+ * bivariantly even under `strictFunctionTypes`, so a required field the real
+ * payload or observation gained would still satisfy a method-shaped port. As a
+ * property, the root's binding is where that drift fails typecheck. The
+ * importer's hand-off is the weaker check: its target (the real producer's
+ * interface) declares a method, so there only the arity and the result count.
+ */
+export interface ProdutorAgendamentoAmazon {
+  readonly enfileirarEntrada: (
+    payload: TarefaAgendamentoPortaAmazon,
+    observacao: ObservacaoAgendamentoPortaAmazon,
+    atrasoS?: number,
+  ) => Promise<'enfileirada' | 'ja-enfileirada'>;
+}
+
+/**
  * ONE deps binding shared by the task and the sweeps (the functions codebase's
  * `depsLeitura.ts`, PR 3-d). The registro is added per entry point.
  */
@@ -662,6 +711,12 @@ export interface DepsLeituraAmazon extends DepsClassificadorAmazon {
    * Only ever called after an Amazon read, so it sits behind the read switch.
    */
   readonly viaCep: BuscadorCepAmazon;
+  /**
+   * The importer's Easy Ship scheduling producer (step 15, PR 15-c): the
+   * functions root's, built only when an import reads an order ready to
+   * schedule (E2). REQUIRED, so no binding can forget it.
+   */
+  readonly agendamento: () => ProdutorAgendamentoAmazon;
   /** Test seams, forwarded to the context's client. */
   readonly fetch?: typeof globalThis.fetch;
   readonly gerarCorrelationId?: () => string;
@@ -685,6 +740,8 @@ export interface DepsImportadorAmazon {
   readonly increment: (by: number) => unknown;
   readonly logger: LoggerAmazon;
   readonly viaCep: BuscadorCepAmazon;
+  /** The Easy Ship scheduling producer, for the import's post-commit entry E2 (step 15). */
+  readonly agendamento: () => ProdutorAgendamentoAmazon;
   /** The run's flow and Cloud Tasks attempt: `tentativa` `null` = a sweep re-drive. */
   readonly registro: RegistroLeituraAmazon;
 }
@@ -787,6 +844,7 @@ export async function processarNotificacaoAmazon(
       increment: deps.increment,
       logger: deps.logger,
       viaCep: deps.viaCep,
+      agendamento: deps.agendamento,
       registro: deps.registro,
     });
   } catch (err) {

@@ -1,0 +1,1955 @@
+{
+  "error": "",
+  "message": "",
+  "warning": "",
+  "data": {
+    "standardise_variation_list": [
+      {
+        "variation_id": 101056,
+        "variation_name": "Tamanho",
+        "variation_group_list": [
+          {
+            "variation_group_id": 841350766059029,
+            "variation_group_name": "Tamanho (INT)",
+            "variation_option_list": [
+              {
+                "variation_option_id": 6263,
+                "variation_option_name": "XS"
+              },
+              {
+                "variation_option_id": 6264,
+                "variation_option_name": "S"
+              },
+              {
+                "variation_option_id": 6265,
+                "variation_option_name": "XL"
+              },
+              {
+                "variation_option_id": 6266,
+                "variation_option_name": "XXXL"
+              },
+              {
+                "variation_option_id": 6267,
+                "variation_option_name": "XXL"
+              },
+              {
+                "variation_option_id": 6269,
+                "variation_option_name": "XXXXL"
+              },
+              {
+                "variation_option_id": 6270,
+                "variation_option_name": "M"
+              },
+              {
+                "variation_option_id": 6271,
+                "variation_option_name": "L"
+              }
+            ]
+          },
+          {
+            "variation_group_id": 844758844060204,
+            "variation_group_name": "Tamanho (BR)",
+            "variation_option_list": [
+              {
+                "variation_option_id": 6855,
+                "variation_option_name": "25"
+              },
+              {
+                "variation_option_id": 6856,
+                "variation_option_name": "36"
+              },
+              {
+                "variation_option_id": 6857,
+                "variation_option_name": "P"
+              },
+              {
+                "variation_option_id": 6858,
+                "variation_option_name": "G2"
+              },
+              {
+                "variation_option_id": 6860,
+                "variation_option_name": "14"
+              },
+              {
+                "variation_option_id": 6861,
+                "variation_option_name": "G1"
+              },
+              {
+                "variation_option_id": 6862,
+                "variation_option_name": "38"
+              },
+              {
+                "variation_option_id": 6863,
+                "variation_option_name": "G"
+              },
+              {
+                "variation_option_id": 6865,
+                "variation_option_name": "28"
+              },
+              {
+                "variation_option_id": 6867,
+                "variation_option_name": "10"
+              },
+              {
+                "variation_option_id": 6869,
+                "variation_option_name": "23"
+              },
+              {
+                "variation_option_id": 6871,
+                "variation_option_name": "34"
+              },
+              {
+                "variation_option_id": 6872,
+                "variation_option_name": "7"
+              },
+              {
+                "variation_option_id": 6874,
+                "variation_option_name": "3"
+              },
+              {
+                "variation_option_id": 6875,
+                "variation_option_name": "33"
+              },
+              {
+                "variation_option_id": 6876,
+                "variation_option_name": "31"
+              },
+              {
+                "variation_option_id": 6877,
+                "variation_option_name": "15"
+              },
+              {
+                "variation_option_id": 6878,
+                "variation_option_name": "32"
+              },
+              {
+                "variation_option_id": 6879,
+                "variation_option_name": "39"
+              },
+              {
+                "variation_option_id": 6880,
+                "variation_option_name": "9"
+              },
+              {
+                "variation_option_id": 6881,
+                "variation_option_name": "20"
+              },
+              {
+                "variation_option_id": 6882,
+                "variation_option_name": "45"
+              },
+              {
+                "variation_option_id": 6883,
+                "variation_option_name": "G4"
+              },
+              {
+                "variation_option_id": 6884,
+                "variation_option_name": "16"
+              },
+              {
+                "variation_option_id": 6885,
+                "variation_option_name": "13"
+              },
+              {
+                "variation_option_id": 6887,
+                "variation_option_name": "12"
+              },
+              {
+                "variation_option_id": 6888,
+                "variation_option_name": "40"
+              },
+              {
+                "variation_option_id": 6889,
+                "variation_option_name": "18"
+              },
+              {
+                "variation_option_id": 6890,
+                "variation_option_name": "29"
+              },
+              {
+                "variation_option_id": 6891,
+                "variation_option_name": "48"
+              },
+              {
+                "variation_option_id": 6893,
+                "variation_option_name": "24"
+              },
+              {
+                "variation_option_id": 6895,
+                "variation_option_name": "2"
+              },
+              {
+                "variation_option_id": 6896,
+                "variation_option_name": "44"
+              },
+              {
+                "variation_option_id": 6899,
+                "variation_option_name": "11"
+              },
+              {
+                "variation_option_id": 6901,
+                "variation_option_name": "5"
+              },
+              {
+                "variation_option_id": 6902,
+                "variation_option_name": "27"
+              },
+              {
+                "variation_option_id": 6903,
+                "variation_option_name": "8"
+              },
+              {
+                "variation_option_id": 6905,
+                "variation_option_name": "22"
+              },
+              {
+                "variation_option_id": 6908,
+                "variation_option_name": "30"
+              },
+              {
+                "variation_option_id": 6909,
+                "variation_option_name": "19"
+              },
+              {
+                "variation_option_id": 6910,
+                "variation_option_name": "47"
+              },
+              {
+                "variation_option_id": 6911,
+                "variation_option_name": "21"
+              },
+              {
+                "variation_option_id": 6913,
+                "variation_option_name": "41"
+              },
+              {
+                "variation_option_id": 6915,
+                "variation_option_name": "4"
+              },
+              {
+                "variation_option_id": 6916,
+                "variation_option_name": "46"
+              },
+              {
+                "variation_option_id": 6917,
+                "variation_option_name": "G3"
+              },
+              {
+                "variation_option_id": 6920,
+                "variation_option_name": "37"
+              },
+              {
+                "variation_option_id": 6921,
+                "variation_option_name": "GG"
+              },
+              {
+                "variation_option_id": 6923,
+                "variation_option_name": "35"
+              },
+              {
+                "variation_option_id": 6926,
+                "variation_option_name": "17"
+              },
+              {
+                "variation_option_id": 6927,
+                "variation_option_name": "6"
+              },
+              {
+                "variation_option_id": 6928,
+                "variation_option_name": "42"
+              },
+              {
+                "variation_option_id": 6931,
+                "variation_option_name": "26"
+              },
+              {
+                "variation_option_id": 6932,
+                "variation_option_name": "43"
+              },
+              {
+                "variation_option_id": 7211,
+                "variation_option_name": "PP"
+              },
+              {
+                "variation_option_id": 7212,
+                "variation_option_name": "50"
+              },
+              {
+                "variation_option_id": 7213,
+                "variation_option_name": "52"
+              },
+              {
+                "variation_option_id": 7214,
+                "variation_option_name": "54"
+              },
+              {
+                "variation_option_id": 7215,
+                "variation_option_name": "56"
+              },
+              {
+                "variation_option_id": 7216,
+                "variation_option_name": "58"
+              },
+              {
+                "variation_option_id": 7217,
+                "variation_option_name": "60"
+              },
+              {
+                "variation_option_id": 9656,
+                "variation_option_name": "10.5"
+              },
+              {
+                "variation_option_id": 9657,
+                "variation_option_name": "11.5"
+              },
+              {
+                "variation_option_id": 9658,
+                "variation_option_name": "12.5"
+              },
+              {
+                "variation_option_id": 9659,
+                "variation_option_name": "13.5"
+              },
+              {
+                "variation_option_id": 9660,
+                "variation_option_name": "14.5"
+              },
+              {
+                "variation_option_id": 9661,
+                "variation_option_name": "15.5"
+              },
+              {
+                "variation_option_id": 9666,
+                "variation_option_name": "4.5"
+              },
+              {
+                "variation_option_id": 9669,
+                "variation_option_name": "5.5"
+              },
+              {
+                "variation_option_id": 9670,
+                "variation_option_name": "6.5"
+              },
+              {
+                "variation_option_id": 9671,
+                "variation_option_name": "7.5"
+              },
+              {
+                "variation_option_id": 9672,
+                "variation_option_name": "8.5"
+              },
+              {
+                "variation_option_id": 9673,
+                "variation_option_name": "9.5"
+              },
+              {
+                "variation_option_id": 9677,
+                "variation_option_name": "U"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "variation_id": 101054,
+        "variation_name": "Cor",
+        "variation_group_list": [
+          {
+            "variation_group_id": 0,
+            "variation_group_name": "",
+            "variation_option_list": [
+              {
+                "variation_option_id": 6242,
+                "variation_option_name": "Vermelho"
+              },
+              {
+                "variation_option_id": 6243,
+                "variation_option_name": "Laranja"
+              },
+              {
+                "variation_option_id": 6244,
+                "variation_option_name": "Amarelo"
+              },
+              {
+                "variation_option_id": 6245,
+                "variation_option_name": "Verde"
+              },
+              {
+                "variation_option_id": 6246,
+                "variation_option_name": "Azul"
+              },
+              {
+                "variation_option_id": 6247,
+                "variation_option_name": "Roxo"
+              },
+              {
+                "variation_option_id": 6248,
+                "variation_option_name": "Rosa"
+              },
+              {
+                "variation_option_id": 6250,
+                "variation_option_name": "Azul Claro"
+              },
+              {
+                "variation_option_id": 6251,
+                "variation_option_name": "Roxo Claro"
+              },
+              {
+                "variation_option_id": 6252,
+                "variation_option_name": "Branco"
+              },
+              {
+                "variation_option_id": 6254,
+                "variation_option_name": "Prata"
+              },
+              {
+                "variation_option_id": 6255,
+                "variation_option_name": "Marrom"
+              },
+              {
+                "variation_option_id": 6256,
+                "variation_option_name": "Cáqui"
+              },
+              {
+                "variation_option_id": 6258,
+                "variation_option_name": "Preto"
+              },
+              {
+                "variation_option_id": 6259,
+                "variation_option_name": "Dourado"
+              },
+              {
+                "variation_option_id": 6260,
+                "variation_option_name": "Multicolorido"
+              },
+              {
+                "variation_option_id": 9163,
+                "variation_option_name": "Cinza Alumínio"
+              },
+              {
+                "variation_option_id": 9164,
+                "variation_option_name": "Marrom Âmbar"
+              },
+              {
+                "variation_option_id": 9165,
+                "variation_option_name": "Amarelo Âmbar"
+              },
+              {
+                "variation_option_id": 9166,
+                "variation_option_name": "Roxo Ametista"
+              },
+              {
+                "variation_option_id": 9168,
+                "variation_option_name": "Verde Abacate"
+              },
+              {
+                "variation_option_id": 9169,
+                "variation_option_name": "Azul Bebê"
+              },
+              {
+                "variation_option_id": 9170,
+                "variation_option_name": "Verde Bebê"
+              },
+              {
+                "variation_option_id": 9171,
+                "variation_option_name": "Rosa Bebê"
+              },
+              {
+                "variation_option_id": 9172,
+                "variation_option_name": "Bege"
+              },
+              {
+                "variation_option_id": 9174,
+                "variation_option_name": "Vermelho Sangue"
+              },
+              {
+                "variation_option_id": 9175,
+                "variation_option_name": "Verde Azulado"
+              },
+              {
+                "variation_option_id": 9176,
+                "variation_option_name": "Azul Brilhante"
+              },
+              {
+                "variation_option_id": 9177,
+                "variation_option_name": "Verde Brilhante"
+              },
+              {
+                "variation_option_id": 9178,
+                "variation_option_name": "Cáqui Brilhante"
+              },
+              {
+                "variation_option_id": 9179,
+                "variation_option_name": "Laranja Brilhante"
+              },
+              {
+                "variation_option_id": 9180,
+                "variation_option_name": "Rosa Brilhante"
+              },
+              {
+                "variation_option_id": 9181,
+                "variation_option_name": "Roxo Brilhante"
+              },
+              {
+                "variation_option_id": 9182,
+                "variation_option_name": "Vermelho Brilhante"
+              },
+              {
+                "variation_option_id": 9183,
+                "variation_option_name": "Prata Brilhante"
+              },
+              {
+                "variation_option_id": 9184,
+                "variation_option_name": "Violeta Brilhante"
+              },
+              {
+                "variation_option_id": 9185,
+                "variation_option_name": "Branco Brilhante"
+              },
+              {
+                "variation_option_id": 9186,
+                "variation_option_name": "Amarelo Brilhante"
+              },
+              {
+                "variation_option_id": 9187,
+                "variation_option_name": "Bronze"
+              },
+              {
+                "variation_option_id": 9188,
+                "variation_option_name": "Laranja Bronze"
+              },
+              {
+                "variation_option_id": 9189,
+                "variation_option_name": "Rosa Chiclete"
+              },
+              {
+                "variation_option_id": 9190,
+                "variation_option_name": "Vermelho Bordô"
+              },
+              {
+                "variation_option_id": 9191,
+                "variation_option_name": "Laranja Queimado"
+              },
+              {
+                "variation_option_id": 9192,
+                "variation_option_name": "Amarelo Queimado"
+              },
+              {
+                "variation_option_id": 9193,
+                "variation_option_name": "Amarelo Canário"
+              },
+              {
+                "variation_option_id": 9194,
+                "variation_option_name": "Marrom Caramelo"
+              },
+              {
+                "variation_option_id": 9195,
+                "variation_option_name": "Cinza Cimento"
+              },
+              {
+                "variation_option_id": 9196,
+                "variation_option_name": "Preto Carvão"
+              },
+              {
+                "variation_option_id": 9197,
+                "variation_option_name": "Rosa Cereja"
+              },
+              {
+                "variation_option_id": 9198,
+                "variation_option_name": "Vermelho Cereja"
+              },
+              {
+                "variation_option_id": 9200,
+                "variation_option_name": "Laranja Canela"
+              },
+              {
+                "variation_option_id": 9202,
+                "variation_option_name": "Marrom Café"
+              },
+              {
+                "variation_option_id": 9203,
+                "variation_option_name": "Cobre"
+              },
+              {
+                "variation_option_id": 9204,
+                "variation_option_name": "Cobre Metálico"
+              },
+              {
+                "variation_option_id": 9205,
+                "variation_option_name": "Vermelho Cobre"
+              },
+              {
+                "variation_option_id": 9206,
+                "variation_option_name": "Laranja Coral"
+              },
+              {
+                "variation_option_id": 9207,
+                "variation_option_name": "Branco Algodão"
+              },
+              {
+                "variation_option_id": 9208,
+                "variation_option_name": "Creme"
+              },
+              {
+                "variation_option_id": 9209,
+                "variation_option_name": "Vermelho Carmim"
+              },
+              {
+                "variation_option_id": 9210,
+                "variation_option_name": "Azul Ciano"
+              },
+              {
+                "variation_option_id": 9211,
+                "variation_option_name": "Bege Escuro"
+              },
+              {
+                "variation_option_id": 9212,
+                "variation_option_name": "Azul Escuro"
+              },
+              {
+                "variation_option_id": 9213,
+                "variation_option_name": "Marrom Escuro"
+              },
+              {
+                "variation_option_id": 9214,
+                "variation_option_name": "Dourado Escuro"
+              },
+              {
+                "variation_option_id": 9215,
+                "variation_option_name": "Cinza Escuro"
+              },
+              {
+                "variation_option_id": 9216,
+                "variation_option_name": "Verde Escuro"
+              },
+              {
+                "variation_option_id": 9218,
+                "variation_option_name": "Caqui Escuro"
+              },
+              {
+                "variation_option_id": 9219,
+                "variation_option_name": "Laranja Escuro"
+              },
+              {
+                "variation_option_id": 9220,
+                "variation_option_name": "Rosa Escuro"
+              },
+              {
+                "variation_option_id": 9221,
+                "variation_option_name": "Roxo Escuro"
+              },
+              {
+                "variation_option_id": 9222,
+                "variation_option_name": "Vermelho Escuro"
+              },
+              {
+                "variation_option_id": 9223,
+                "variation_option_name": "Prata Escuro"
+              },
+              {
+                "variation_option_id": 9224,
+                "variation_option_name": "Violeta Escuro"
+              },
+              {
+                "variation_option_id": 9226,
+                "variation_option_name": "Amarelo Escuro"
+              },
+              {
+                "variation_option_id": 9227,
+                "variation_option_name": "Azul Intenso"
+              },
+              {
+                "variation_option_id": 9228,
+                "variation_option_name": "Verde Intenso"
+              },
+              {
+                "variation_option_id": 9230,
+                "variation_option_name": "Preto Ébano"
+              },
+              {
+                "variation_option_id": 9231,
+                "variation_option_name": "Verde Esmeralda"
+              },
+              {
+                "variation_option_id": 9232,
+                "variation_option_name": "Rosa Flamingo"
+              },
+              {
+                "variation_option_id": 9233,
+                "variation_option_name": "Preto Fluorescente"
+              },
+              {
+                "variation_option_id": 9234,
+                "variation_option_name": "Azul Fluorescente"
+              },
+              {
+                "variation_option_id": 9235,
+                "variation_option_name": "Marrom Fluorescente"
+              },
+              {
+                "variation_option_id": 9236,
+                "variation_option_name": "Rosa Fluorescente"
+              },
+              {
+                "variation_option_id": 9237,
+                "variation_option_name": "Roxo Fluorescente"
+              },
+              {
+                "variation_option_id": 9238,
+                "variation_option_name": "Vermelho Fluorescente"
+              },
+              {
+                "variation_option_id": 9239,
+                "variation_option_name": "Prata Fluorescente"
+              },
+              {
+                "variation_option_id": 9240,
+                "variation_option_name": "Violeta Fluorescente"
+              },
+              {
+                "variation_option_id": 9241,
+                "variation_option_name": "Branco Fluorescente"
+              },
+              {
+                "variation_option_id": 9242,
+                "variation_option_name": "Verde Floresta"
+              },
+              {
+                "variation_option_id": 9243,
+                "variation_option_name": "Rosa Fúcsia"
+              },
+              {
+                "variation_option_id": 9244,
+                "variation_option_name": "Roxo Fúchsia"
+              },
+              {
+                "variation_option_id": 9246,
+                "variation_option_name": "Preto Brilhante"
+              },
+              {
+                "variation_option_id": 9247,
+                "variation_option_name": "Marrom Brilhante"
+              },
+              {
+                "variation_option_id": 9248,
+                "variation_option_name": "Cinza Brilhante"
+              },
+              {
+                "variation_option_id": 9249,
+                "variation_option_name": "Amarelo Dourado"
+              },
+              {
+                "variation_option_id": 9250,
+                "variation_option_name": "Cinza Granito"
+              },
+              {
+                "variation_option_id": 9251,
+                "variation_option_name": "Preto Grafite"
+              },
+              {
+                "variation_option_id": 9252,
+                "variation_option_name": "Cinza Grafite"
+              },
+              {
+                "variation_option_id": 9253,
+                "variation_option_name": "Cinza"
+              },
+              {
+                "variation_option_id": 9254,
+                "variation_option_name": "Amarelo Esverdeado"
+              },
+              {
+                "variation_option_id": 9255,
+                "variation_option_name": "Verde Acinzentado"
+              },
+              {
+                "variation_option_id": 9256,
+                "variation_option_name": "Rosa Goiaba"
+              },
+              {
+                "variation_option_id": 9257,
+                "variation_option_name": "Marrom Avelã"
+              },
+              {
+                "variation_option_id": 9258,
+                "variation_option_name": "Branco Gelo"
+              },
+              {
+                "variation_option_id": 9259,
+                "variation_option_name": "Azul Índigo"
+              },
+              {
+                "variation_option_id": 9261,
+                "variation_option_name": "Branco Marfim"
+              },
+              {
+                "variation_option_id": 9262,
+                "variation_option_name": "Preto Lava"
+              },
+              {
+                "variation_option_id": 9263,
+                "variation_option_name": "Lavanda"
+              },
+              {
+                "variation_option_id": 9264,
+                "variation_option_name": "Preto Chumbo"
+              },
+              {
+                "variation_option_id": 9265,
+                "variation_option_name": "Cinza Chumbo"
+              },
+              {
+                "variation_option_id": 9266,
+                "variation_option_name": "Verde Folha"
+              },
+              {
+                "variation_option_id": 9267,
+                "variation_option_name": "Marrom Couro"
+              },
+              {
+                "variation_option_id": 9268,
+                "variation_option_name": "Bege Claro"
+              },
+              {
+                "variation_option_id": 9269,
+                "variation_option_name": "Marrom Claro"
+              },
+              {
+                "variation_option_id": 9270,
+                "variation_option_name": "Dourado Claro"
+              },
+              {
+                "variation_option_id": 9271,
+                "variation_option_name": "Verde Claro"
+              },
+              {
+                "variation_option_id": 9272,
+                "variation_option_name": "Cinza Claro"
+              },
+              {
+                "variation_option_id": 9273,
+                "variation_option_name": "Caqui Claro"
+              },
+              {
+                "variation_option_id": 9274,
+                "variation_option_name": "Laranja Claro"
+              },
+              {
+                "variation_option_id": 9275,
+                "variation_option_name": "Rosa Claro"
+              },
+              {
+                "variation_option_id": 9276,
+                "variation_option_name": "Vermelho Claro"
+              },
+              {
+                "variation_option_id": 9277,
+                "variation_option_name": "Prata Claro"
+              },
+              {
+                "variation_option_id": 9278,
+                "variation_option_name": "Violeta Claro"
+              },
+              {
+                "variation_option_id": 9279,
+                "variation_option_name": "Branco Claro"
+              },
+              {
+                "variation_option_id": 9280,
+                "variation_option_name": "Amarelo Claro"
+              },
+              {
+                "variation_option_id": 9281,
+                "variation_option_name": "Lilás"
+              },
+              {
+                "variation_option_id": 9282,
+                "variation_option_name": "Verde Lima"
+              },
+              {
+                "variation_option_id": 9283,
+                "variation_option_name": "Linho"
+              },
+              {
+                "variation_option_id": 9284,
+                "variation_option_name": "Roxo Magenta"
+              },
+              {
+                "variation_option_id": 9285,
+                "variation_option_name": "Marrom Mogno"
+              },
+              {
+                "variation_option_id": 9286,
+                "variation_option_name": "Malva"
+              },
+              {
+                "variation_option_id": 9287,
+                "variation_option_name": "Vermelho Marsala"
+              },
+              {
+                "variation_option_id": 9288,
+                "variation_option_name": "Preto Fosco"
+              },
+              {
+                "variation_option_id": 9289,
+                "variation_option_name": "Azul Fosco"
+              },
+              {
+                "variation_option_id": 9290,
+                "variation_option_name": "Marrom Fosco"
+              },
+              {
+                "variation_option_id": 9291,
+                "variation_option_name": "Dourado Fosco"
+              },
+              {
+                "variation_option_id": 9292,
+                "variation_option_name": "Cinza Fosco"
+              },
+              {
+                "variation_option_id": 9293,
+                "variation_option_name": "Verde Fosco"
+              },
+              {
+                "variation_option_id": 9294,
+                "variation_option_name": "Rosa Fosco"
+              },
+              {
+                "variation_option_id": 9295,
+                "variation_option_name": "Roxo Fosco"
+              },
+              {
+                "variation_option_id": 9296,
+                "variation_option_name": "Vermelho Fosco"
+              },
+              {
+                "variation_option_id": 9297,
+                "variation_option_name": "Prata Fosco"
+              },
+              {
+                "variation_option_id": 9298,
+                "variation_option_name": "Violeta Fosco"
+              },
+              {
+                "variation_option_id": 9299,
+                "variation_option_name": "Branco Fosco"
+              },
+              {
+                "variation_option_id": 9300,
+                "variation_option_name": "Rosa Malva"
+              },
+              {
+                "variation_option_id": 9301,
+                "variation_option_name": "Azul Médio"
+              },
+              {
+                "variation_option_id": 9302,
+                "variation_option_name": "Marrom Médio"
+              },
+              {
+                "variation_option_id": 9303,
+                "variation_option_name": "Dourado Médio"
+              },
+              {
+                "variation_option_id": 9304,
+                "variation_option_name": "Cinza Médio"
+              },
+              {
+                "variation_option_id": 9305,
+                "variation_option_name": "Verde Médio"
+              },
+              {
+                "variation_option_id": 9306,
+                "variation_option_name": "Cáqui Médio"
+              },
+              {
+                "variation_option_id": 9307,
+                "variation_option_name": "Laranja Médio"
+              },
+              {
+                "variation_option_id": 9308,
+                "variation_option_name": "Rosa Médio"
+              },
+              {
+                "variation_option_id": 9309,
+                "variation_option_name": "Vermelho Médio"
+              },
+              {
+                "variation_option_id": 9310,
+                "variation_option_name": "Prata Médio"
+              },
+              {
+                "variation_option_id": 9311,
+                "variation_option_name": "Violeta Médio"
+              },
+              {
+                "variation_option_id": 9312,
+                "variation_option_name": "Amarelo Médio"
+              },
+              {
+                "variation_option_id": 9313,
+                "variation_option_name": "Preto Metálico"
+              },
+              {
+                "variation_option_id": 9314,
+                "variation_option_name": "Azul Metálico"
+              },
+              {
+                "variation_option_id": 9315,
+                "variation_option_name": "Marrom Metálico"
+              },
+              {
+                "variation_option_id": 9316,
+                "variation_option_name": "Dourado Metálico"
+              },
+              {
+                "variation_option_id": 9317,
+                "variation_option_name": "Verde Metálico"
+              },
+              {
+                "variation_option_id": 9318,
+                "variation_option_name": "Laranja Metálico"
+              },
+              {
+                "variation_option_id": 9319,
+                "variation_option_name": "Rosa Metálico"
+              },
+              {
+                "variation_option_id": 9320,
+                "variation_option_name": "Roxo Metálico"
+              },
+              {
+                "variation_option_id": 9321,
+                "variation_option_name": "Vermelho Metálico"
+              },
+              {
+                "variation_option_id": 9322,
+                "variation_option_name": "Violeta Metálico"
+              },
+              {
+                "variation_option_id": 9323,
+                "variation_option_name": "Branco Metálico"
+              },
+              {
+                "variation_option_id": 9324,
+                "variation_option_name": "Amarelo Metálico"
+              },
+              {
+                "variation_option_id": 9325,
+                "variation_option_name": "Branco Leite"
+              },
+              {
+                "variation_option_id": 9326,
+                "variation_option_name": "Verde Hortelã"
+              },
+              {
+                "variation_option_id": 9327,
+                "variation_option_name": "Verde Musgo"
+              },
+              {
+                "variation_option_id": 9328,
+                "variation_option_name": "Amarelo Mostarda"
+              },
+              {
+                "variation_option_id": 9329,
+                "variation_option_name": "Azul Marinho"
+              },
+              {
+                "variation_option_id": 9330,
+                "variation_option_name": "Preto Neon"
+              },
+              {
+                "variation_option_id": 9331,
+                "variation_option_name": "Azul Neon"
+              },
+              {
+                "variation_option_id": 9332,
+                "variation_option_name": "Marrom Neon"
+              },
+              {
+                "variation_option_id": 9333,
+                "variation_option_name": "Dourado Neon"
+              },
+              {
+                "variation_option_id": 9334,
+                "variation_option_name": "Cinza Neon"
+              },
+              {
+                "variation_option_id": 9335,
+                "variation_option_name": "Rosa Neon"
+              },
+              {
+                "variation_option_id": 9336,
+                "variation_option_name": "Roxo Neon"
+              },
+              {
+                "variation_option_id": 9337,
+                "variation_option_name": "Vermelho Neon"
+              },
+              {
+                "variation_option_id": 9338,
+                "variation_option_name": "Prata Neon"
+              },
+              {
+                "variation_option_id": 9339,
+                "variation_option_name": "Violeta Neon"
+              },
+              {
+                "variation_option_id": 9340,
+                "variation_option_name": "Branco Neon"
+              },
+              {
+                "variation_option_id": 9341,
+                "variation_option_name": "Marrom Ocre"
+              },
+              {
+                "variation_option_id": 9342,
+                "variation_option_name": "Laranja Ocre"
+              },
+              {
+                "variation_option_id": 9343,
+                "variation_option_name": "Off-white"
+              },
+              {
+                "variation_option_id": 9582,
+                "variation_option_name": "Rosa Velho"
+              },
+              {
+                "variation_option_id": 9584,
+                "variation_option_name": "Verde Oliva"
+              },
+              {
+                "variation_option_id": 9585,
+                "variation_option_name": "Preto"
+              },
+              {
+                "variation_option_id": 9589,
+                "variation_option_name": "Amarelo Alaranjado"
+              },
+              {
+                "variation_option_id": 9590,
+                "variation_option_name": "Azul Pastel"
+              },
+              {
+                "variation_option_id": 9591,
+                "variation_option_name": "Verde Pastel"
+              },
+              {
+                "variation_option_id": 9592,
+                "variation_option_name": "Laranja Pastel"
+              },
+              {
+                "variation_option_id": 9593,
+                "variation_option_name": "Rosa Pastel"
+              },
+              {
+                "variation_option_id": 9594,
+                "variation_option_name": "Roxo Pastel"
+              },
+              {
+                "variation_option_id": 9595,
+                "variation_option_name": "Vermelho Pastel"
+              },
+              {
+                "variation_option_id": 9596,
+                "variation_option_name": "Violeta Pastel"
+              },
+              {
+                "variation_option_id": 9597,
+                "variation_option_name": "Amarelo Pastel"
+              },
+              {
+                "variation_option_id": 9598,
+                "variation_option_name": "Rosa Pêssego"
+              },
+              {
+                "variation_option_id": 9599,
+                "variation_option_name": "Branco Pérola"
+              },
+              {
+                "variation_option_id": 9600,
+                "variation_option_name": "Laranja Persa"
+              },
+              {
+                "variation_option_id": 9602,
+                "variation_option_name": "Prata Platina"
+              },
+              {
+                "variation_option_id": 9604,
+                "variation_option_name": "Roxo Púrpura"
+              },
+              {
+                "variation_option_id": 9605,
+                "variation_option_name": "Rosa Quartzo"
+              },
+              {
+                "variation_option_id": 9606,
+                "variation_option_name": "Vermelho Framboesa"
+              },
+              {
+                "variation_option_id": 9607,
+                "variation_option_name": "Castanho Avermelhado"
+              },
+              {
+                "variation_option_id": 9608,
+                "variation_option_name": "Rosé"
+              },
+              {
+                "variation_option_id": 9610,
+                "variation_option_name": "Azul Royal"
+              },
+              {
+                "variation_option_id": 9611,
+                "variation_option_name": "Vermelho Rubi"
+              },
+              {
+                "variation_option_id": 9613,
+                "variation_option_name": "Laranja Salmão"
+              },
+              {
+                "variation_option_id": 9614,
+                "variation_option_name": "Rosa Salmão"
+              },
+              {
+                "variation_option_id": 9615,
+                "variation_option_name": "Azul Safira"
+              },
+              {
+                "variation_option_id": 9616,
+                "variation_option_name": "Vermelho Escarlate"
+              },
+              {
+                "variation_option_id": 9617,
+                "variation_option_name": "Verde Mar"
+              },
+              {
+                "variation_option_id": 9618,
+                "variation_option_name": "Cinza Sombra"
+              },
+              {
+                "variation_option_id": 9619,
+                "variation_option_name": "Dourado Brilhante"
+              },
+              {
+                "variation_option_id": 9620,
+                "variation_option_name": "Rosa Choque"
+              },
+              {
+                "variation_option_id": 9621,
+                "variation_option_name": "Cinza Prateado"
+              },
+              {
+                "variation_option_id": 9622,
+                "variation_option_name": "Azul Céu"
+              },
+              {
+                "variation_option_id": 9623,
+                "variation_option_name": "Preto Ardósia"
+              },
+              {
+                "variation_option_id": 9624,
+                "variation_option_name": "Branco Neve"
+              },
+              {
+                "variation_option_id": 9625,
+                "variation_option_name": "Amarelo Sol"
+              },
+              {
+                "variation_option_id": 9627,
+                "variation_option_name": "Cáqui Bronzeado"
+              },
+              {
+                "variation_option_id": 9628,
+                "variation_option_name": "Laranja Tangerina"
+              },
+              {
+                "variation_option_id": 9630,
+                "variation_option_name": "Laranja Terracota"
+              },
+              {
+                "variation_option_id": 9631,
+                "variation_option_name": "Azul Tiffany"
+              },
+              {
+                "variation_option_id": 9632,
+                "variation_option_name": "Azul Turquesa"
+              },
+              {
+                "variation_option_id": 9633,
+                "variation_option_name": "Violeta"
+              },
+              {
+                "variation_option_id": 9634,
+                "variation_option_name": "Verde Água"
+              },
+              {
+                "variation_option_id": 9635,
+                "variation_option_name": "Vermelho Vinho"
+              },
+              {
+                "variation_option_id": 9636,
+                "variation_option_name": "Marrom Madeira"
+              },
+              {
+                "variation_option_id": 9638,
+                "variation_option_name": "Verde Amarelado"
+              },
+              {
+                "variation_option_id": 9639,
+                "variation_option_name": "Cáqui Amarelado"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "variation_id": 101264,
+        "variation_name": " Estampa",
+        "variation_group_list": [
+          {
+            "variation_group_id": 0,
+            "variation_group_name": "",
+            "variation_option_list": [
+              {
+                "variation_option_id": 9498,
+                "variation_option_name": "Animais"
+              },
+              {
+                "variation_option_id": 9499,
+                "variation_option_name": "Camuflado"
+              },
+              {
+                "variation_option_id": 9500,
+                "variation_option_name": "Xadrez"
+              },
+              {
+                "variation_option_id": 9501,
+                "variation_option_name": "Natal"
+              },
+              {
+                "variation_option_id": 9502,
+                "variation_option_name": "Pontilhado"
+              },
+              {
+                "variation_option_id": 9503,
+                "variation_option_name": "Étnico"
+              },
+              {
+                "variation_option_id": 9504,
+                "variation_option_name": "Flamingo"
+              },
+              {
+                "variation_option_id": 9505,
+                "variation_option_name": "Floral"
+              },
+              {
+                "variation_option_id": 9506,
+                "variation_option_name": "Frutas"
+              },
+              {
+                "variation_option_id": 9507,
+                "variation_option_name": "Galáxia"
+              },
+              {
+                "variation_option_id": 9508,
+                "variation_option_name": "Geométrico"
+              },
+              {
+                "variation_option_id": 9509,
+                "variation_option_name": "Degradê"
+              },
+              {
+                "variation_option_id": 9510,
+                "variation_option_name": "Halloween"
+              },
+              {
+                "variation_option_id": 9511,
+                "variation_option_name": "Oncinha"
+              },
+              {
+                "variation_option_id": 9512,
+                "variation_option_name": "Multicolorido"
+              },
+              {
+                "variation_option_id": 9513,
+                "variation_option_name": "Paisley"
+              },
+              {
+                "variation_option_id": 9514,
+                "variation_option_name": "Liso"
+              },
+              {
+                "variation_option_id": 9515,
+                "variation_option_name": "Bolas"
+              },
+              {
+                "variation_option_id": 9516,
+                "variation_option_name": "Escamas"
+              },
+              {
+                "variation_option_id": 9517,
+                "variation_option_name": "Pele De Cobra"
+              },
+              {
+                "variation_option_id": 9518,
+                "variation_option_name": "Listrado"
+              },
+              {
+                "variation_option_id": 9519,
+                "variation_option_name": "Tie Dye"
+              },
+              {
+                "variation_option_id": 9520,
+                "variation_option_name": "Tropical"
+              },
+              {
+                "variation_option_id": 9521,
+                "variation_option_name": "Zebra"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "variation_id": 103236,
+        "variation_name": "Estilo"
+      },
+      {
+        "variation_id": 101259,
+        "variation_name": " Estilo",
+        "variation_group_list": [
+          {
+            "variation_group_id": 0,
+            "variation_group_name": "",
+            "variation_option_list": [
+              {
+                "variation_option_id": 9344,
+                "variation_option_name": "Adesivo"
+              },
+              {
+                "variation_option_id": 9345,
+                "variation_option_name": "Salto Quadrado"
+              },
+              {
+                "variation_option_id": 9346,
+                "variation_option_name": "Body"
+              },
+              {
+                "variation_option_id": 9348,
+                "variation_option_name": "Fivela"
+              },
+              {
+                "variation_option_id": 9349,
+                "variation_option_name": "Capri"
+              },
+              {
+                "variation_option_id": 9350,
+                "variation_option_name": "Cargo"
+              },
+              {
+                "variation_option_id": 9351,
+                "variation_option_name": "Casual"
+              },
+              {
+                "variation_option_id": 9352,
+                "variation_option_name": "Corrente"
+              },
+              {
+                "variation_option_id": 9353,
+                "variation_option_name": "Chemise"
+              },
+              {
+                "variation_option_id": 9354,
+                "variation_option_name": "Compressão"
+              },
+              {
+                "variation_option_id": 9355,
+                "variation_option_name": "Cropped"
+              },
+              {
+                "variation_option_id": 9356,
+                "variation_option_name": "Destroyed"
+              },
+              {
+                "variation_option_id": 9357,
+                "variation_option_name": "Bordado"
+              },
+              {
+                "variation_option_id": 9358,
+                "variation_option_name": "Evasê"
+              },
+              {
+                "variation_option_id": 9359,
+                "variation_option_name": "Flare"
+              },
+              {
+                "variation_option_id": 9360,
+                "variation_option_name": "Cintura Alta"
+              },
+              {
+                "variation_option_id": 9361,
+                "variation_option_name": "Argola"
+              },
+              {
+                "variation_option_id": 9362,
+                "variation_option_name": "Jogger"
+              },
+              {
+                "variation_option_id": 9363,
+                "variation_option_name": "Laços"
+              },
+              {
+                "variation_option_id": 9364,
+                "variation_option_name": "Cintura Baixa"
+              },
+              {
+                "variation_option_id": 9365,
+                "variation_option_name": "Mom"
+              },
+              {
+                "variation_option_id": 9366,
+                "variation_option_name": "Mullet"
+              },
+              {
+                "variation_option_id": 9367,
+                "variation_option_name": "Dedos À Mostra"
+              },
+              {
+                "variation_option_id": 9368,
+                "variation_option_name": "Oversized"
+              },
+              {
+                "variation_option_id": 9369,
+                "variation_option_name": "Pantacourt"
+              },
+              {
+                "variation_option_id": 9370,
+                "variation_option_name": "Pantalona"
+              },
+              {
+                "variation_option_id": 9371,
+                "variation_option_name": "Pingentes"
+              },
+              {
+                "variation_option_id": 9372,
+                "variation_option_name": "Plataforma"
+              },
+              {
+                "variation_option_id": 9373,
+                "variation_option_name": "Plissado"
+              },
+              {
+                "variation_option_id": 9374,
+                "variation_option_name": "Bico Fino"
+              },
+              {
+                "variation_option_id": 9375,
+                "variation_option_name": "Gola Redonda"
+              },
+              {
+                "variation_option_id": 9376,
+                "variation_option_name": "Bico Redondo"
+              },
+              {
+                "variation_option_id": 9377,
+                "variation_option_name": "Bufante"
+              },
+              {
+                "variation_option_id": 9378,
+                "variation_option_name": "Sem Costura"
+              },
+              {
+                "variation_option_id": 9379,
+                "variation_option_name": "Skinny"
+              },
+              {
+                "variation_option_id": 9380,
+                "variation_option_name": "Social"
+              },
+              {
+                "variation_option_id": 9381,
+                "variation_option_name": "Esportiva"
+              },
+              {
+                "variation_option_id": 9382,
+                "variation_option_name": "Bico Quadrado"
+              },
+              {
+                "variation_option_id": 9383,
+                "variation_option_name": "Salto Agulha"
+              },
+              {
+                "variation_option_id": 9384,
+                "variation_option_name": "Reta"
+              },
+              {
+                "variation_option_id": 9385,
+                "variation_option_name": "Nadador"
+              },
+              {
+                "variation_option_id": 9386,
+                "variation_option_name": "Alça Fina"
+              },
+              {
+                "variation_option_id": 9387,
+                "variation_option_name": "Tratorado"
+              },
+              {
+                "variation_option_id": 9388,
+                "variation_option_name": "Tubinho"
+              },
+              {
+                "variation_option_id": 9389,
+                "variation_option_name": "Gola Alta"
+              },
+              {
+                "variation_option_id": 9390,
+                "variation_option_name": "Gola V"
+              },
+              {
+                "variation_option_id": 9391,
+                "variation_option_name": "Wide Leg"
+              },
+              {
+                "variation_option_id": 9392,
+                "variation_option_name": "Com Apliques"
+              },
+              {
+                "variation_option_id": 9393,
+                "variation_option_name": "Com Bojo"
+              },
+              {
+                "variation_option_id": 9394,
+                "variation_option_name": "Com Botões"
+              },
+              {
+                "variation_option_id": 9395,
+                "variation_option_name": "Com Aro"
+              },
+              {
+                "variation_option_id": 9396,
+                "variation_option_name": "Com Ziper"
+              },
+              {
+                "variation_option_id": 9397,
+                "variation_option_name": "Sem Apliques"
+              },
+              {
+                "variation_option_id": 9398,
+                "variation_option_name": "Sem Aro"
+              },
+              {
+                "variation_option_id": 9399,
+                "variation_option_name": "Sem Ziper"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "variation_id": 101261,
+        "variation_name": " Comprimento",
+        "variation_group_list": [
+          {
+            "variation_group_id": 0,
+            "variation_group_name": "",
+            "variation_option_list": [
+              {
+                "variation_option_id": 9406,
+                "variation_option_name": "Manga 3/4"
+              },
+              {
+                "variation_option_id": 9414,
+                "variation_option_name": "Manga Longa"
+              },
+              {
+                "variation_option_id": 9423,
+                "variation_option_name": "Manga Curta"
+              },
+              {
+                "variation_option_id": 9425,
+                "variation_option_name": "Sem Manga"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "variation_id": 101263,
+        "variation_name": " Material",
+        "variation_group_list": [
+          {
+            "variation_group_id": 0,
+            "variation_group_name": "",
+            "variation_option_list": [
+              {
+                "variation_option_id": 9430,
+                "variation_option_name": "Acetato"
+              },
+              {
+                "variation_option_id": 9431,
+                "variation_option_name": "Acrílico"
+              },
+              {
+                "variation_option_id": 9432,
+                "variation_option_name": "Alumínio"
+              },
+              {
+                "variation_option_id": 9433,
+                "variation_option_name": "Prateado"
+              },
+              {
+                "variation_option_id": 9434,
+                "variation_option_name": "Missanga"
+              },
+              {
+                "variation_option_id": 9435,
+                "variation_option_name": "Latão"
+              },
+              {
+                "variation_option_id": 9436,
+                "variation_option_name": "Lona"
+              },
+              {
+                "variation_option_id": 9437,
+                "variation_option_name": "Camurça"
+              },
+              {
+                "variation_option_id": 9438,
+                "variation_option_name": "Chiffon"
+              },
+              {
+                "variation_option_id": 9439,
+                "variation_option_name": "Cobre"
+              },
+              {
+                "variation_option_id": 9440,
+                "variation_option_name": "Algodão"
+              },
+              {
+                "variation_option_id": 9441,
+                "variation_option_name": "Crepe"
+              },
+              {
+                "variation_option_id": 9442,
+                "variation_option_name": "Crochê"
+              },
+              {
+                "variation_option_id": 9443,
+                "variation_option_name": "Jeans"
+              },
+              {
+                "variation_option_id": 9444,
+                "variation_option_name": "Elastano"
+              },
+              {
+                "variation_option_id": 9445,
+                "variation_option_name": "Borracha Elástica"
+              },
+              {
+                "variation_option_id": 9446,
+                "variation_option_name": "Plissado Elástico"
+              },
+              {
+                "variation_option_id": 9447,
+                "variation_option_name": "Bordado"
+              },
+              {
+                "variation_option_id": 9448,
+                "variation_option_name": "Sola De Eva"
+              },
+              {
+                "variation_option_id": 9449,
+                "variation_option_name": "Flanela"
+              },
+              {
+                "variation_option_id": 9450,
+                "variation_option_name": "Espuma"
+              },
+              {
+                "variation_option_id": 9451,
+                "variation_option_name": "Sola De Espuma"
+              },
+              {
+                "variation_option_id": 9452,
+                "variation_option_name": "Vidro"
+              },
+              {
+                "variation_option_id": 9453,
+                "variation_option_name": "Ouro"
+              },
+              {
+                "variation_option_id": 9454,
+                "variation_option_name": "Ferro"
+              },
+              {
+                "variation_option_id": 9455,
+                "variation_option_name": "Renda"
+              },
+              {
+                "variation_option_id": 9456,
+                "variation_option_name": "Renda Com Elastano"
+              },
+              {
+                "variation_option_id": 9457,
+                "variation_option_name": "Couro"
+              },
+              {
+                "variation_option_id": 9458,
+                "variation_option_name": "Sola De Couro"
+              },
+              {
+                "variation_option_id": 9459,
+                "variation_option_name": "Linho"
+              },
+              {
+                "variation_option_id": 9460,
+                "variation_option_name": "Lurex"
+              },
+              {
+                "variation_option_id": 9461,
+                "variation_option_name": "Metal"
+              },
+              {
+                "variation_option_id": 9462,
+                "variation_option_name": "Musselina"
+              },
+              {
+                "variation_option_id": 9463,
+                "variation_option_name": "Pedras Naturais"
+              },
+              {
+                "variation_option_id": 9464,
+                "variation_option_name": "Neoprene"
+              },
+              {
+                "variation_option_id": 9465,
+                "variation_option_name": "Sola De Borracha Anti-Derrapante"
+              },
+              {
+                "variation_option_id": 9466,
+                "variation_option_name": "Nylon"
+              },
+              {
+                "variation_option_id": 9467,
+                "variation_option_name": "Organza"
+              },
+              {
+                "variation_option_id": 9468,
+                "variation_option_name": "Pérolas"
+              },
+              {
+                "variation_option_id": 9469,
+                "variation_option_name": "Resina"
+              },
+              {
+                "variation_option_id": 9470,
+                "variation_option_name": "Plástico"
+              },
+              {
+                "variation_option_id": 9471,
+                "variation_option_name": "Sola De Plástico"
+              },
+              {
+                "variation_option_id": 9472,
+                "variation_option_name": "Poliamida"
+              },
+              {
+                "variation_option_id": 9473,
+                "variation_option_name": "Poliéster"
+              },
+              {
+                "variation_option_id": 9474,
+                "variation_option_name": "Strass"
+              },
+              {
+                "variation_option_id": 9475,
+                "variation_option_name": "Ribana"
+              },
+              {
+                "variation_option_id": 9476,
+                "variation_option_name": "Borracha"
+              },
+              {
+                "variation_option_id": 9477,
+                "variation_option_name": "Sola De Borracha"
+              },
+              {
+                "variation_option_id": 9478,
+                "variation_option_name": "Cetim"
+              },
+              {
+                "variation_option_id": 9479,
+                "variation_option_name": "Seda"
+              },
+              {
+                "variation_option_id": 9480,
+                "variation_option_name": "Silicone"
+              },
+              {
+                "variation_option_id": 9481,
+                "variation_option_name": "Prata"
+              },
+              {
+                "variation_option_id": 9482,
+                "variation_option_name": "Aço Inoxidável"
+              },
+              {
+                "variation_option_id": 9484,
+                "variation_option_name": "Sola De Couro Sintético"
+              },
+              {
+                "variation_option_id": 9485,
+                "variation_option_name": "Borracha Sintética"
+              },
+              {
+                "variation_option_id": 9486,
+                "variation_option_name": "Sola De Borracha Sintética"
+              },
+              {
+                "variation_option_id": 9487,
+                "variation_option_name": "Tule"
+              },
+              {
+                "variation_option_id": 9488,
+                "variation_option_name": "Tweed"
+              },
+              {
+                "variation_option_id": 9489,
+                "variation_option_name": "Sarja"
+              },
+              {
+                "variation_option_id": 9490,
+                "variation_option_name": "Veludo"
+              },
+              {
+                "variation_option_id": 9491,
+                "variation_option_name": "Veludo Cotelê"
+              },
+              {
+                "variation_option_id": 9492,
+                "variation_option_name": "Vinil"
+              },
+              {
+                "variation_option_id": 9493,
+                "variation_option_name": "Viscose"
+              },
+              {
+                "variation_option_id": 9494,
+                "variation_option_name": "Banhado"
+              },
+              {
+                "variation_option_id": 9495,
+                "variation_option_name": "Madeira"
+              },
+              {
+                "variation_option_id": 9496,
+                "variation_option_name": "Lã"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

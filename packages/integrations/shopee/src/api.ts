@@ -84,11 +84,11 @@
  * Seven of them, all Shop-signed GETs on the `product` module, all read-only and
  * all validation-before-the-wire: a bound that cannot be satisfied REJECTS
  * without spending a provider call. Four of Shopee's own contradictions are
- * instrumented rather than guessed — the `get_variations` path (see
- * {@link SHOPEE_GET_VARIATION_TREE_PATH_ALT}), the language casing (see
+ * instrumented rather than guessed — the `get_variations` path (settled on BR, see
+ * {@link SHOPEE_GET_VARIATIONS_PATH}), the language casing (settled on BR, see
  * {@link SHOPEE_TAXONOMY_LANGUAGE}), `category_id_list` vs `category_ids` (the
- * single joined literal in `getAttributeTree`) and `gtin_limit`'s position (see
- * {@link ShopeeItemLimitRead}, which carries BOTH).
+ * single joined literal in `getAttributeTree`) and `gtin_limit`'s position
+ * (settled on BR, see {@link ShopeeItemLimitRead}, which carries BOTH).
  *
  * ## The item reads (step 9)
  *
@@ -566,12 +566,24 @@ export const SHOPEE_GET_CATEGORY_PATH = '/api/v2/product/get_category';
 export const SHOPEE_GET_ATTRIBUTE_TREE_PATH = '/api/v2/product/get_attribute_tree';
 /** `GET` — Shop-signed. WRAPPED. ONE page of a leaf category's brands. */
 export const SHOPEE_GET_BRAND_LIST_PATH = '/api/v2/product/get_brand_list';
-/** `GET` — Shop-signed. WRAPPED **plus** a `gtin_limit` sibling of `response`. */
+/**
+ * `GET` — Shop-signed. WRAPPED, with `gtin_limit` read in TWO places: inside
+ * `response` (where BR sends it) and as the sibling of `response` the page
+ * renders. See {@link ShopeeItemLimitRead}.
+ */
 export const SHOPEE_GET_ITEM_LIMIT_PATH = '/api/v2/product/get_item_limit';
 /** `GET` — Shop-signed. WRAPPED. The kit bands, which are their own numbers. */
 export const SHOPEE_GET_KIT_ITEM_LIMIT_PATH = '/api/v2/product/get_kit_item_limit';
-/** `GET` — Shop-signed. Payload under **`data`**. The default; see the ALT below. */
-export const SHOPEE_GET_VARIATIONS_PATH = '/api/v2/product/get_variations';
+/**
+ * `GET` — Shop-signed. Payload under **`data`**. The operation is
+ * `v2.product.get_variations`: its page's `path`/`url`/`test_url` say
+ * `get_variation_tree`, its samples `get_variations`. ⚠️ SETTLED on BR production
+ * 2026-11-04: the samples' spelling answers HTTP 404 `error_not_found` (the
+ * gateway's route-not-served shape, `ShopeeOperacaoNaoServidaError`), not
+ * `error_sign`; the legacy app signs this path too. The `SHOPEE_VARIATIONS_PATH`
+ * override stays as an escape hatch: the SG sandbox (staging) was never captured.
+ */
+export const SHOPEE_GET_VARIATIONS_PATH = '/api/v2/product/get_variation_tree';
 /** `GET` — Shop-signed. WRAPPED. Offered, never applied automatically. */
 export const SHOPEE_CATEGORY_RECOMMEND_PATH = '/api/v2/product/category_recommend';
 
@@ -806,25 +818,6 @@ export type ShopeeEscrowDetailTransport = 'get-query' | 'post-body';
  */
 export const SHOPEE_ESCROW_DETAIL_TRANSPORT: ShopeeEscrowDetailTransport = 'get-query';
 
-/**
- * The OTHER spelling of the `get_variations` path — and the reason the default is
- * overridable rather than settled here.
- *
- * ⚠️ Observed 2026-09-08 on the `v2.product.get_variations` reference page: its
- * `path`, `url` and `test_url` all say `/api/v2/product/get_variation_tree`,
- * while all four of its generated request samples call
- * `/api/v2/product/get_variations`. One of the two is wrong and the page cannot
- * say which.
- *
- * ⚠️ The path sits INSIDE the HMAC base string, so the wrong one does not fail as
- * a 404 — it fails as `error_sign`, which reads like a credential problem and
- * points nowhere near here. Hence the `hosts.ts` technique: default to the
- * samples ({@link SHOPEE_GET_VARIATIONS_PATH}), let `SHOPEE_VARIATIONS_PATH` in
- * `apps/shopee` swap in this constant, and settle it with one live sandbox call
- * instead of a code change.
- */
-export const SHOPEE_GET_VARIATION_TREE_PATH_ALT = '/api/v2/product/get_variation_tree';
-
 /** Shopee's own bound on `get_shops_by_partner`. */
 export const SHOPEE_MAX_PAGE_SIZE = 100;
 
@@ -986,38 +979,40 @@ export const SHOPEE_BRAND_STATUS = { normal: 1, pending: 2 } as const;
 export type ShopeeBrandStatus = (typeof SHOPEE_BRAND_STATUS)[keyof typeof SHOPEE_BRAND_STATUS];
 
 /**
- * The language every taxonomy read asks for.
- *
- * ⚠️ Observed 2026-09-08: `get_category` and `get_brand_list` spell the Brazilian
- * option **`pt-br`**, while `get_attribute_tree` spells it **`pt-BR`**. Whether
- * the API folds the case is undocumented, and nothing in either page says.
- *
- * ONE constant is sent to all three, deliberately: a wrong guess is then a single
- * literal to flip, and `error_invalid_language` — which `apps/shopee` logs raw —
- * is the signal that says so. Two constants would have made the flip a search.
+ * The language every taxonomy read asks for. ⚠️ Settled on BR production
+ * (2026-11-04): `get_category`, asked in `pt-br`, answered Portuguese
+ * `display_category_name`s, while `get_attribute_tree` answered the same bytes
+ * for `pt-br`, `pt-BR` or none, with English `name`s — its pt-BR text is each
+ * row's `multi_lang` entry `"pt-BR"` (some rows untranslated), which
+ * `apps/shopee`'s `projetarAtributos` serves (#1911 P13a). Evidence:
+ * `get_category.br-recorte.json` and the a-caneca row of the `__wire__` README
+ * (one sha256 for the three spellings). ONE constant, sent to all three reads;
+ * `get_brand_list`, whose page also spells `pt-br`, was not captured.
  */
 export const SHOPEE_TAXONOMY_LANGUAGE = 'pt-br';
 
 /**
  * Per-operation API path overrides.
  *
- * Only the operations whose documented path is CONTRADICTED by the same page
- * belong here. It is not a general-purpose routing hook: a path that is merely
+ * Only an operation whose documented path was CONTRADICTED by its own page
+ * belongs here, and the override is kept as an escape hatch once the default is
+ * settled. It is not a general-purpose routing hook: a path that is merely
  * unusual is a constant, not an override.
  */
 export interface ShopeeApiPathOverrides {
-  /** See {@link SHOPEE_GET_VARIATION_TREE_PATH_ALT}. */
+  /** See {@link SHOPEE_GET_VARIATIONS_PATH}. */
   readonly getVariations?: string;
 }
 
 /**
  * A bare API path — leading `/`, no scheme, no host, no query, no fragment.
  *
- * ⚠️ Rejected rather than trimmed, and for the same reason `normalizeHost`
- * rejects a path-bearing origin: the path is part of the HMAC base string. An
- * override carrying a host would be signed as if it were a path and every call
- * would come back `error_sign`, with nothing in the message pointing here. A
- * query string would be signed too and then silently duplicated by `signedQuery`.
+ * ⚠️ Rejected rather than trimmed: the path is signed verbatim and the URL is
+ * built as `${apiHost}${path}` (`call.ts`). An override carrying a scheme or
+ * host would therefore send the request to a host that does not exist (a
+ * `ShopeeNetworkError`) or to a path Shopee does not route, and neither error
+ * would name this variable. A query string would be signed too and then
+ * silently duplicated by `signedQuery`.
  */
 export function normalizeApiPath(raw: string, envVar: string): string {
   const trimmed = raw.trim();
@@ -1315,8 +1310,15 @@ export interface CategoryRecommendParams {
 /**
  * What `getItemLimit` hands back: the inner `response` AND the `gtin_limit`
  * SIBLING, because the page renders that field outside `response` and ships no
- * response sample. Merging the two positions is the reader's job in
- * `apps/shopee`; discarding one of them here would have hidden the answer.
+ * response sample. ⚠️ SETTLED on BR production (2026-11-04): the rule arrived
+ * INSIDE `response` on both category reads, no sibling came on any of the three
+ * reads, and the shop-wide read carried neither (`get_item_limit.br-*.json`,
+ * pinned by the `pino 4` describe of
+ * `apps/shopee/lib/shopee/fixtures/capturasBr.test.ts`). Both positions still
+ * travel — the sibling is the fallback for a region that answers the way the
+ * page renders. Merging them is the reader's job in `apps/shopee`
+ * (`lerLimitesDeItem`, inner wins); discarding one of them here would have
+ * hidden the answer.
  */
 export interface ShopeeItemLimitRead {
   readonly response: ShopeeItemLimit;
@@ -1874,7 +1876,10 @@ export interface ShopeeClient {
   getAttributeTree(p: GetAttributeTreeParams): Promise<ShopeeAttributeTree>;
   /** ONE page of a leaf category's brands. `brand_id: 0` is "No Brand", not absent. */
   getBrandList(p: GetBrandListParams): Promise<ShopeeBrandList>;
-  /** The item bands, plus the `gtin_limit` sibling. See {@link ShopeeItemLimitRead}. */
+  /**
+   * The item bands, plus the `gtin_limit` sibling the page renders — `null` on
+   * BR, which sends the rule inside `response`. See {@link ShopeeItemLimitRead}.
+   */
   getItemLimit(p?: GetItemLimitParams): Promise<ShopeeItemLimitRead>;
   /**
    * The KIT bands — never derived from {@link ShopeeClient.getItemLimit}'s.
@@ -3984,7 +3989,7 @@ export function createShopeeClient(config: ShopeeClientConfig): ShopeeClient {
 
   // ⚠️ Resolved ONCE, here, so a malformed override fails at construction — the
   // same moment a malformed `shopId` does. Resolving it per call would sign an
-  // unvalidated string and turn a config typo into an `error_sign` per request.
+  // unvalidated string and turn a config typo into a failed call per request.
   const variationsPath =
     config.paths?.getVariations === undefined
       ? SHOPEE_GET_VARIATIONS_PATH
@@ -4102,9 +4107,9 @@ export function createShopeeClient(config: ShopeeClientConfig): ShopeeClient {
         // sends no `category_id` — the shop-wide read.
         query: { category_id: p.categoryId },
       });
-      // ⚠️ BOTH positions travel to the caller. Which one Shopee fills is
-      // unsettled (the page renders `gtin_limit` outside `response` and ships no
-      // response sample), so the merge belongs to the reader that can log it.
+      // ⚠️ BOTH positions travel to the caller. The page renders `gtin_limit`
+      // outside `response`; BR production fills the inner one (2026-11-04,
+      // `capturasBr.test.ts`'s `pino 4`). The merge belongs to the reader.
       return { response: res.response, gtin_limit: res.gtin_limit };
     },
 
@@ -4130,7 +4135,7 @@ export function createShopeeClient(config: ShopeeClientConfig): ShopeeClient {
       assertIdPositivo('category_id', p.categoryId);
       const res = await shopeeCall(transport, {
         method: 'GET',
-        // The contradicted path — see `SHOPEE_GET_VARIATION_TREE_PATH_ALT`.
+        // The settled path — see `SHOPEE_GET_VARIATIONS_PATH`.
         path: variationsPath,
         call: await signedCall(),
         // DATA-wrapped, the only operation that is.

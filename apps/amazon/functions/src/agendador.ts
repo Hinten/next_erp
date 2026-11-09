@@ -18,8 +18,9 @@ import { getAdminApp } from './lib/admin';
  * `lib/firebase/filaLeitura.ts` (the receiver's reads queue and, since step 14's
  * PR 14-d, the re-drive route's NF-e queue, behind ONE call), and since PR 14-c
  * the NF-e queue has its own functions root, `./agendadorNfe` — never this
- * file, whose closure reaches the context. `estrutura.test.ts` pins the THREE as
- * the app's ONLY `getFunctions(` callers, each to its queue set.
+ * file, whose closure reaches the context — as the Easy Ship scheduling queue
+ * has since PR 15-c, `./agendadorAgendamento`. `estrutura.test.ts` pins the FOUR
+ * as the app's ONLY `getFunctions(` callers, each to its queue set.
  *
  * The poll makes it reachable from `src/index.ts`, so esbuild bundles it and
  * `tools/deploy-env/bundle-inlining.test.js` checks the region it inlines on the

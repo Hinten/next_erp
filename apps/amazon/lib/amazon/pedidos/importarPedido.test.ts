@@ -27,6 +27,11 @@ import {
   motivoPedidoAmazonSchema,
 } from '@delfrance/schemas';
 
+import { enfileirarAgendamentoDoAceiteAmazon } from '../agendamento/entradasAgendamento';
+import {
+  ORIGEM_AGENDAMENTO_AMAZON,
+  idDaTarefaDeAgendamentoAmazon,
+} from '../agendamento/tarefaAgendamento';
 import {
   chaveContaPrecisaAtencao,
   chavePedidoPrecisaAtencao,
@@ -34,11 +39,13 @@ import {
   sincronizarAvisosDoPedidoAmazon,
 } from '../avisos/avisos';
 import { __setRelogioDoCacheParaTestes } from '../core/contaCache';
+import { AmazonTarefasTransitoriasError } from '../core/filaTarefas';
 import { avisarNfeAmazon, chaveAvisoNfeAmazon } from '../nfe/avisoNfe';
 import { carimbarFreteNfeAmazon } from '../nfe/carimboFreteNfe';
 import type { DepsImportadorAmazon } from '../notificacoes/notificacao';
 import { gerarCnpj, gerarCpf } from '../testing/documentos';
 import { asDb, grpc, increment } from '../testing/fakeDb';
+import { falhaDoFunctions } from '../testing/falhaDeEnfileiramento';
 import { AGORA_MS, caminhoAviso, caminhoConta } from '../testing/fixtures';
 import {
   CONTA_IMPORTADOR,
@@ -185,6 +192,7 @@ function montar(): Execucao {
       increment,
       logger: h.log.logger,
       viaCep: ex.viaCep,
+      agendamento: h.agendamentos.produtor,
       registro,
     }),
     async importar(corpo, opcoes = {}) {
@@ -1825,7 +1833,7 @@ describe('★ step 15 (PR 15-b) — the import RESOLVES the two scheduling motiv
     });
   }
 
-  /** The scheduling task's raise of both rows (as 15-c will), clocked by the first commit. */
+  /** The scheduling task's raise of both rows, clocked by the first commit. */
   async function levantarAgendamento(ex: Execucao): Promise<void> {
     const relogio = ex.h.db.escritasEm(CAMINHO)[0]?.writeTime;
     expect(relogio).toBeDefined();
@@ -2981,5 +2989,467 @@ describe('★ step 14 (14-c) — the import’s two NF-e TRANSITIONS', () => {
         escrita: { tipo: 'criar', corpo: {}, decisao: decisao('cancelado') } as never,
       }),
     ).toEqual({ vendaCancelada: false, freteDespachado: false });
+  });
+});
+
+/* ------------------------- step 15 (PR 15-c): E2 and the cancel seed ------------------------- */
+
+/** A Delivery-by-Amazon order (MERCHANT + DELIVERY_BY_AMAZON), its invoice status beside the buyer. */
+function pedidoDba(
+  detalhe: string | null,
+  opcoes: {
+    status?: string;
+    atualizadoEm?: string;
+    invoiceStatus?: string;
+    linhas?: readonly Record<string, unknown>[];
+  } = {},
+): Record<string, unknown> {
+  const c = comprador();
+  return pedido({
+    status: opcoes.status ?? 'UNSHIPPED',
+    programs: ['DELIVERY_BY_AMAZON'],
+    atualizadoEm: opcoes.atualizadoEm,
+    linhas: opcoes.linhas,
+    pacotesBrutos:
+      detalhe === null ? undefined : [pacoteAmazon('PKG-1', detalhe, { status: 'PENDING' })],
+    extra: {
+      ...c,
+      tax: {
+        ...(c.tax as Record<string, unknown>),
+        taxInvoicing: { invoiceStatus: opcoes.invoiceStatus ?? 'ACCEPTED' },
+      },
+    },
+  });
+}
+
+/** E2's task name for the import read at `watermarkUs`. */
+const nomeE2 = (watermarkUs = ATUALIZADO_US) =>
+  idDaTarefaDeAgendamentoAmazon({
+    origem: ORIGEM_AGENDAMENTO_AMAZON.importacao,
+    pedidoId: PEDIDO_ID,
+    watermarkUs,
+  });
+
+const linhasDoAgendamento = (ex: Execucao) =>
+  ex.h.log.linhas.filter((l) => l.meta?.evento === 'agendamento');
+
+describe('★ step 15 (PR 15-c) — E2: the import enqueues the scheduling entry on a read whose decision is agendar', () => {
+  it('★ PENDING_SCHEDULE + ACCEPTED ⇒ ONE enqueue: origem importacao, NO delay, named sha256("agendamento:importacao:" + pedidoId + ":" + watermarkUs) — and 8c makes ZERO Firestore operations', async () => {
+    const ex = montar();
+    let noEnfileiramento = -1;
+    ex.h.agendamentos.aoEnfileirar = () => {
+      noEnfileiramento = ex.h.db.operacoes;
+    };
+    const leituras = ex.h.db.leituras.length;
+    const consultas = ex.h.db.consultas.length;
+    expect(await ex.importar(pedidoDba('PENDING_SCHEDULE'))).toMatchObject({ kind: 'importado' });
+
+    expect(ex.h.agendamentos.enfileiradas).toEqual([
+      {
+        tarefa: {
+          pedidoId: PEDIDO_ID,
+          contaId: CONTA_IMPORTADOR,
+          orderId: ORDER_ID_TESTE,
+          origem: 'importacao',
+          espera: 0,
+          pausas: 0,
+        },
+        id: nomeE2(),
+        atrasoS: 0,
+      },
+    ]);
+    // The ENQUEUE is the last thing the import does: not one Firestore operation after it…
+    expect(noEnfileiramento).toBe(ex.h.db.operacoes);
+    // …and E2 reads no nfev4 (the task's NF-e gate judges the documents).
+    expect(ex.h.db.leituras.slice(leituras).filter((c) => c.includes('/nfev4'))).toEqual([]);
+    expect(ex.h.db.consultas.slice(consultas).filter((c) => c.colecao.includes('nfev4'))).toEqual(
+      [],
+    );
+    // A successful enqueue writes no line of its own.
+    expect(linhasDoAgendamento(ex)).toEqual([]);
+
+    // …nor one BEFORE it: the twin import of the same order whose read does not
+    // schedule (the order-level invoice status still PROCESSING) never reaches
+    // 8c, and reads, queries and writes EXACTLY the same documents outside
+    // `avisos/` (the two reads' per-pedido motivos legitimately differ there).
+    // A cold conta cache for the twin too, as each test starts with.
+    __resetAllReadCaches();
+    const gemea = montar();
+    await gemea.importar(pedidoDba('PENDING_SCHEDULE', { invoiceStatus: 'PROCESSING' }));
+    expect(gemea.h.agendamentos.tentativas).toEqual([]);
+    const foraDeAvisos = (db: typeof ex.h.db) => ({
+      leituras: db.leituras.filter((p) => !p.startsWith('avisos/')),
+      consultas: db.consultas.map((c) => c.colecao),
+      escritas: db.escritas.map((w) => w.caminho).filter((p) => !p.startsWith('avisos/')),
+    });
+    expect(foraDeAvisos(ex.h.db)).toEqual(foraDeAvisos(gemea.h.db));
+    expect(foraDeAvisos(ex.h.db).leituras).toContain(CAMINHO);
+  });
+
+  it('★ the SAME read again (sem-mudanca, a redelivery) enqueues too — under the SAME name, so it dedupes (ONE INFO line); a NEWER read lands under its own', async () => {
+    const ex = montar();
+    const corpo = pedidoDba('PENDING_SCHEDULE');
+    await ex.importar(corpo);
+    expect(await ex.importar(corpo, { tentativa: 1 })).toMatchObject({ kind: 'sem-mudanca' });
+    expect(ex.h.agendamentos.tentativas.map((t) => t.id)).toEqual([nomeE2(), nomeE2()]);
+    expect(ex.h.agendamentos.enfileiradas).toHaveLength(1);
+    expect(linhasDoAgendamento(ex)).toEqual([
+      expect.objectContaining({
+        nivel: 'info',
+        meta: expect.objectContaining({
+          motivo: 'ja-enfileirada',
+          origem: 'importacao',
+          // The line belongs to the import that observed: its attempt, handed on.
+          tentativa: 1,
+        }) as unknown,
+      }),
+    ]);
+
+    await ex.importar(pedidoDba('PENDING_SCHEDULE', { atualizadoEm: depois(60) }));
+    expect(ex.h.agendamentos.enfileiradas.map((t) => t.id)).toEqual([
+      nomeE2(),
+      nomeE2(ATUALIZADO_US + 60_000_000),
+    ]);
+  });
+
+  it('★ ★ (mutation 3) THE TOMBSTONE CASE: the queue holds an E1 task’s name for about an hour after it RAN, whatever that task concluded (its waits exhausted, the valve off) — the E2 import within that hour still creates a NEW task under its OWN name', async () => {
+    const ex = montar();
+    // The E1 entry went through the SAME queue, which keeps the name it was given.
+    await enfileirarAgendamentoDoAceiteAmazon(
+      { contaId: CONTA_IMPORTADOR, pedidoId: PEDIDO_ID, nfeId: 's1', orderId: ORDER_ID_TESTE },
+      {
+        agendamento: ex.h.agendamentos.produtor,
+        logger: ex.h.log.logger,
+        idTarefa: 'tarefa-nfe-1',
+        ultimaTentativa: false,
+      },
+    );
+    const nomeE1 = idDaTarefaDeAgendamentoAmazon({
+      origem: ORIGEM_AGENDAMENTO_AMAZON.aceiteNfe,
+      idTarefaNfe: 'tarefa-nfe-1',
+    });
+    expect(ex.h.agendamentos.nomes.has(nomeE1)).toBe(true);
+
+    await ex.importar(pedidoDba('PENDING_SCHEDULE'));
+    expect(ex.h.agendamentos.enfileiradas.map((t) => [t.id, t.tarefa.origem])).toEqual([
+      [nomeE1, 'aceite-nfe'],
+      [nomeE2(), 'importacao'],
+    ]);
+    expect(linhasDoAgendamento(ex)).toEqual([]);
+  });
+
+  it.each<[string, Record<string, unknown>]>([
+    [
+      'PENDING_SCHEDULE + PROCESSING',
+      pedidoDba('PENDING_SCHEDULE', { invoiceStatus: 'PROCESSING' }),
+    ],
+    [
+      'PENDING_SCHEDULE + NOT_REQUIRED (only ACCEPTED schedules)',
+      pedidoDba('PENDING_SCHEDULE', { invoiceStatus: 'NOT_REQUIRED' }),
+    ],
+    ['PENDING_PICK_UP (already scheduled)', pedidoDba('PENDING_PICK_UP')],
+    [
+      'an open cancellation request',
+      pedidoDba('PENDING_SCHEDULE', {
+        linhas: [linhaAmazon('L1', { qtd: 2, preco: '10.00', solicitacao: true })],
+      }),
+    ],
+    [
+      'not Delivery by Amazon (the same order without the program)',
+      pedido({
+        status: 'UNSHIPPED',
+        pacotesBrutos: [pacoteAmazon('PKG-1', 'PENDING_SCHEDULE', { status: 'PENDING' })],
+        invoiceStatus: 'ACCEPTED',
+      }),
+    ],
+  ])('★ NEAR-MISS: %s enqueues NOTHING', async (_c, corpo) => {
+    const ex = montar();
+    await ex.importar(corpo);
+    expect(ex.h.agendamentos.tentativas).toEqual([]);
+    expect(ex.h.agendamentos.construcoes).toBe(0);
+  });
+
+  it('★ NEAR-MISS: CANCELLED (ACCEPTED survives a cancellation) enqueues nothing', async () => {
+    const ex = montar();
+    await ex.importar(pedidoDba('PENDING_SCHEDULE', { invoiceStatus: 'PROCESSING' }));
+    await ex.importar(
+      pedidoDba('PENDING_SCHEDULE', { status: 'CANCELLED', atualizadoEm: depois(60) }),
+    );
+    expect(ex.h.db.ler(CAMINHO)?.estado).toBe('estornadoIntegralmente');
+    expect(ex.h.agendamentos.tentativas).toEqual([]);
+  });
+
+  it('★ obsoleto enqueues nothing (an older read than the pedido holds writes nothing at all)', async () => {
+    const ex = montar();
+    await ex.importar(pedidoDba('PENDING_SCHEDULE', { atualizadoEm: depois(60) }));
+    expect(ex.h.agendamentos.tentativas).toHaveLength(1);
+    expect(await ex.importar(pedidoDba('PENDING_SCHEDULE'))).toEqual({ kind: 'obsoleto' });
+    expect(ex.h.agendamentos.tentativas).toHaveLength(1);
+  });
+
+  it('★ obsoleto found by the BATCH (a newer import committed between this read and its batch) enqueues nothing either — that newer import ran its own 8c', async () => {
+    // Control: the same schedulable read, with no newer writer, DOES enqueue.
+    const controle = montar();
+    await controle.importar(pedidoDba('PENDING_SCHEDULE', { invoiceStatus: 'PROCESSING' }));
+    await controle.importar(pedidoDba('PENDING_SCHEDULE', { atualizadoEm: depois(60) }));
+    expect(controle.h.agendamentos.tentativas).toHaveLength(1);
+
+    const ex = montar();
+    await ex.importar(pedidoDba('PENDING_SCHEDULE', { invoiceStatus: 'PROCESSING' }));
+    expect(ex.h.agendamentos.tentativas).toEqual([]);
+    // Another importer commits a NEWER Amazon read right before this batch.
+    ex.h.db.antesDaProximaEscrita(CAMINHO, () => {
+      const atual = ex.h.db.ler(CAMINHO) ?? {};
+      ex.h.db.seed(CAMINHO, { ...atual, lastMarketplaceUpdate: ATUALIZADO_US + 600_000_000 });
+    });
+    expect(await ex.importar(pedidoDba('PENDING_SCHEDULE', { atualizadoEm: depois(60) }))).toEqual({
+      kind: 'obsoleto',
+    });
+    expect(ex.h.agendamentos.tentativas).toEqual([]);
+    expect(ex.h.agendamentos.construcoes).toBe(0);
+  });
+
+  it('★ the tasks valve closed ⇒ ONE WARNING and the import result unchanged (importado, the pedido written)', async () => {
+    const ex = montar();
+    ex.h.agendamentos.desligado = true;
+    expect(await ex.importar(pedidoDba('PENDING_SCHEDULE'))).toMatchObject({ kind: 'importado' });
+    expect(ex.h.db.ler(CAMINHO)?.freteInicial).toMatchObject({ estado: 'aguardandoAgendamento' });
+    expect(linhasDoAgendamento(ex)).toEqual([
+      expect.objectContaining({
+        nivel: 'warn',
+        meta: expect.objectContaining({
+          motivo: 'agendamento-nao-enfileirado',
+          erro: 'AmazonAgendamentoTarefasDesligadasError',
+        }) as unknown,
+      }),
+    ]);
+  });
+
+  it('★ a TRANSIENT THROWS out of the post-commit step (the import’s own retry); the retry does not re-write the batch and enqueues under the SAME name', async () => {
+    const ex = montar();
+    const corpo = pedidoDba('PENDING_SCHEDULE');
+    ex.h.agendamentos.falha = () => falhaDoFunctions('unknown-error', 503);
+    await expect(ex.importar(corpo)).rejects.toBeInstanceOf(AmazonTarefasTransitoriasError);
+    // The batch HAD committed: the throw came after it.
+    expect(ex.h.db.ler(CAMINHO)?.freteInicial).toMatchObject({ estado: 'aguardandoAgendamento' });
+    const escritasDoPedido = ex.h.db.escritasEm(CAMINHO).length;
+
+    ex.h.agendamentos.falha = null;
+    expect(await ex.importar(corpo, { tentativa: 1 })).toMatchObject({ kind: 'sem-mudanca' });
+    expect(ex.h.db.escritasEm(CAMINHO)).toHaveLength(escritasDoPedido);
+    expect(ex.h.agendamentos.tentativas.map((t) => t.id)).toEqual([nomeE2(), nomeE2()]);
+    expect(ex.h.agendamentos.enfileiradas.map((t) => t.id)).toEqual([nomeE2()]);
+  });
+
+  it('★ (mutation 11) THE STAMP CASE: the stored freight `error` kept (gate 5), the order-level ACCEPTED ⇒ E2 enqueues — keyed on the READ, never on a freight transition', async () => {
+    const ex = montar();
+    await ex.importar(pedidoDba(null, { invoiceStatus: 'NOT_FOUND' }));
+    expect(ex.h.agendamentos.tentativas).toEqual([]);
+    const doc = ex.h.db.ler(CAMINHO) ?? {};
+    ex.h.db.seed(CAMINHO, {
+      ...doc,
+      freteInicial: { ...(doc.freteInicial as Record<string, unknown>), estado: 'error' },
+    });
+    await ex.importar(pedidoDba('PENDING_SCHEDULE', { atualizadoEm: depois(60) }));
+    // No freight transition: the stamp stands…
+    expect((ex.h.db.ler(CAMINHO)?.freteInicial as Record<string, unknown>).estado).toBe('error');
+    // …and the read still schedules.
+    expect(ex.h.agendamentos.enfileiradas.map((t) => t.id)).toEqual([
+      nomeE2(ATUALIZADO_US + 60_000_000),
+    ]);
+  });
+
+  it('★ the PARTIAL-ACCEPTANCE case (step-15 plan §3 decision 27): step 14 ended nfe-parcialmente-aceita (an open nfeUploadRejeitado row, one aprovada note) and the order reads PENDING_SCHEDULE + ACCEPTED ⇒ E2 enqueues', async () => {
+    const ex = montar();
+    await ex.importar(pedidoDba(null, { invoiceStatus: 'PROCESSING' }));
+    ex.h.db.seed(`${CAMINHO}/nfev4/s1`, {
+      estado: 'a',
+      xml_nfe_proc:
+        '<nfeProc><NFe><infNFe><ide><tpAmb>1</tpAmb><tpNF>1</tpNF><finNFe>1</finNFe></ide>' +
+        '</infNFe></NFe></nfeProc>',
+    });
+    expect(
+      await avisarNfeAmazon(
+        asDb(ex.h.db),
+        { increment, nowMs: AGORA_MS },
+        {
+          integracaoId: CONTA_IMPORTADOR,
+          pedidoId: PEDIDO_ID,
+          numero: ORDER_ID_TESTE,
+          motivo: 'nfe-parcialmente-aceita',
+          relogio: { seconds: 1, nanoseconds: 0 },
+        },
+      ),
+    ).not.toBe('ignorado');
+    await ex.importar(pedidoDba('PENDING_SCHEDULE', { atualizadoEm: depois(60) }));
+    expect(ex.h.agendamentos.enfileiradas.map((t) => t.id)).toEqual([
+      nomeE2(ATUALIZADO_US + 60_000_000),
+    ]);
+    // The step-14 row is not the import's to touch here.
+    expect(
+      ex.h.db.ler(caminhoAviso(chaveAvisoNfeAmazon(CONTA_IMPORTADOR, PEDIDO_ID)))?.resolvidoEm,
+    ).toBeNull();
+  });
+});
+
+describe('★ step 15 (PR 15-c) — the cancel SEED: a cancelled sale seeds a resolved row of BOTH scheduling motivos', () => {
+  const AGENDAMENTO = [
+    MOTIVO_PEDIDO_AMAZON.dimensoesAusentes,
+    MOTIVO_PEDIDO_AMAZON.agendamentoRecusado,
+  ] as const;
+  const caminhoDo = (m: (typeof AGENDAMENTO)[number]) =>
+    caminhoAviso(chavePedidoPrecisaAtencao(CONTA_IMPORTADOR, ORDER_ID_TESTE, m));
+
+  /**
+   * The scheduling task's raise of `motivo` (`agendamento/processarAgendamento.ts`'s
+   * `sincronizar`), clocked by its older A3 read; the real task runs the same race end
+   * to end in `processarAgendamento.test.ts`.
+   */
+  function levantarDaTarefa(
+    ex: Execucao,
+    motivo: (typeof AGENDAMENTO)[number],
+    relogio: { readonly seconds: number; readonly nanoseconds: number },
+  ) {
+    return sincronizarAvisosDoPedidoAmazon(
+      asDb(ex.h.db),
+      { increment, nowMs: AGORA_MS, logger: ex.h.log.logger },
+      {
+        integracaoId: CONTA_IMPORTADOR,
+        orderId: ORDER_ID_TESTE,
+        pedidoId: PEDIDO_ID,
+        levantar: [motivo],
+        resolver: [],
+        relogio,
+      },
+    );
+  }
+
+  /** The cancellation read of a DBA order. */
+  const cancelamento = (segundos = 60) =>
+    pedidoDba(null, {
+      status: 'CANCELLED',
+      atualizadoEm: depois(segundos),
+      invoiceStatus: 'ACCEPTED',
+    });
+
+  it.each<[string, () => Record<string, unknown>, string]>([
+    ['a PENDING order cancelled ⇒ cancelado', () => pedido({ status: 'PENDING' }), 'cancelado'],
+    [
+      'a PAID order cancelled ⇒ estornadoIntegralmente',
+      () => pedidoDba('PENDING_SCHEDULE', { invoiceStatus: 'PROCESSING' }),
+      'estornadoIntegralmente',
+    ],
+  ])(
+    '★ (mutation 12) %s: the transition SEEDS a RESOLVED row for BOTH motivos when none exists — two aviso documents, clocked by the batch writeTime, never open',
+    async (_c, antes, estado) => {
+      const ex = montar();
+      await ex.importar(antes());
+      for (const m of AGENDAMENTO) expect(ex.h.db.ler(caminhoDo(m)), m).toBeUndefined();
+      const escritasAntes = ex.h.db.escritas.length;
+      await ex.importar(cancelamento());
+      expect(ex.h.db.ler(CAMINHO)?.estado).toBe(estado);
+      const lote = ex.h.db.escritas.slice(escritasAntes).find((e) => e.lote !== undefined);
+      expect(lote).toBeDefined();
+      for (const m of AGENDAMENTO) {
+        const escritas = ex.h.db.escritas
+          .slice(escritasAntes)
+          .filter((e) => e.caminho === caminhoDo(m));
+        expect(
+          escritas.map((e) => e.verbo),
+          m,
+        ).toEqual(['create']);
+        expect(ex.h.db.ler(caminhoDo(m)), m).toMatchObject({
+          tipo: TIPO_AVISO.amazonPedidoPrecisaAtencao,
+          motivo: m,
+          severidade: 'critico',
+          resolucaoMotivo: 'condicao-encerrada',
+          relogioEvento: relogioDoDocumentoUs(lote?.writeTime ?? { seconds: 0, nanoseconds: 0 }),
+        });
+        expect(ex.h.db.ler(caminhoDo(m))?.resolvidoEm, m).not.toBeNull();
+      }
+    },
+  );
+
+  it('★ ★ THE RACE (step-15 plan §2.1): the task’s A3 read, then a CANCELLED import commits, then the task’s refusal raise clocked by the OLDER A3 read ⇒ ignorado, no open row; NEAR-MISS: without the seed (an absent row) the same raise opens a critico row', async () => {
+    const ex = montar();
+    await ex.importar(pedidoDba('PENDING_SCHEDULE'));
+    // The task's A3 pedido read: older than the cancellation's commit.
+    const a3 = ex.h.db.escritasEm(CAMINHO)[0]?.writeTime;
+    expect(a3).toBeDefined();
+    await ex.importar(cancelamento());
+    // Amazon answered the bulk InvalidOrderState: the task raises agendamento-recusado.
+    expect(await levantarDaTarefa(ex, MOTIVO_PEDIDO_AMAZON.agendamentoRecusado, a3!)).toMatchObject(
+      { levantados: 0 },
+    );
+    for (const m of AGENDAMENTO) expect(ex.h.db.ler(caminhoDo(m))?.resolvidoEm, m).not.toBeNull();
+
+    // NEAR-MISS: the same race where the cancel import left no row (an only-existing-row resolve).
+    const semSemente = montar();
+    await semSemente.importar(pedidoDba('PENDING_SCHEDULE'));
+    const a3b = semSemente.h.db.escritasEm(CAMINHO)[0]?.writeTime;
+    await semSemente.importar(cancelamento());
+    for (const m of AGENDAMENTO) semSemente.h.db.apagar(caminhoDo(m));
+    expect(
+      await levantarDaTarefa(semSemente, MOTIVO_PEDIDO_AMAZON.agendamentoRecusado, a3b!),
+    ).toMatchObject({ levantados: 1 });
+    expect(semSemente.h.db.ler(caminhoDo(MOTIVO_PEDIDO_AMAZON.agendamentoRecusado))).toMatchObject({
+      severidade: 'critico',
+      resolvidoEm: null,
+    });
+  });
+
+  it('★ a REDELIVERY on a pedido already cancelled seeds too (8b’s conditions rule): the first attempt lost the seed after its commit, the retry writes it', async () => {
+    const ex = montar();
+    await ex.importar(pedidoDba('PENDING_SCHEDULE', { invoiceStatus: 'PROCESSING' }));
+    const alvo = caminhoDo(MOTIVO_PEDIDO_AMAZON.dimensoesAusentes);
+    ex.h.db.falharEscrita(alvo, grpc(14, 'UNAVAILABLE'));
+    await expect(ex.importar(cancelamento())).rejects.toMatchObject({ code: 14 });
+    ex.h.db.falharEscrita(alvo, null);
+    expect(ex.h.db.ler(alvo)).toBeUndefined();
+    expect(ex.h.db.ler(CAMINHO)?.estado).toBe('estornadoIntegralmente');
+
+    expect(await ex.importar(cancelamento(), { tentativa: 1 })).toMatchObject({
+      kind: 'sem-mudanca',
+    });
+    for (const m of AGENDAMENTO) {
+      expect(ex.h.db.ler(caminhoDo(m)), m).toMatchObject({ resolucaoMotivo: 'condicao-encerrada' });
+      expect(ex.h.db.ler(caminhoDo(m))?.resolvidoEm, m).not.toBeNull();
+    }
+  });
+
+  it('NEAR-MISS (the hot path): a FIRST attempt over a pedido ALREADY cancelled is no transition — it seeds nothing', async () => {
+    const ex = montar();
+    await ex.importar(pedidoDba('PENDING_SCHEDULE', { invoiceStatus: 'PROCESSING' }));
+    ex.h.db.seed(CAMINHO, { ...(ex.h.db.ler(CAMINHO) ?? {}), estado: 'cancelado' });
+    await ex.importar(
+      pedidoDba('PENDING_SCHEDULE', { atualizadoEm: depois(60), invoiceStatus: 'PROCESSING' }),
+    );
+    for (const m of AGENDAMENTO) expect(ex.h.db.ler(caminhoDo(m)), m).toBeUndefined();
+  });
+
+  it('★ NEAR-MISS (where the seed STOPS): the goods-out transition is no cancelled sale, so it seeds neither motivo', async () => {
+    const ex = montar();
+    await ex.importar(pedidoDba('PENDING_SCHEDULE'));
+    await ex.importar(pedidoDba('PENDING_PICK_UP', { atualizadoEm: depois(60) }));
+    for (const m of AGENDAMENTO) expect(ex.h.db.ler(caminhoDo(m)), m).toBeUndefined();
+  });
+
+  it('★ no import ever RAISES either motivo: E2 reads, the cancel seed and a re-import leave no OPEN scheduling row', async () => {
+    const ex = montar();
+    const leituras = [
+      pedidoDba('PENDING_SCHEDULE'),
+      pedidoDba('PENDING_SCHEDULE', { atualizadoEm: depois(30) }),
+      cancelamento(60),
+      cancelamento(90),
+    ];
+    for (const corpo of leituras) {
+      await ex.importar(corpo);
+      for (const m of AGENDAMENTO) {
+        const linha = ex.h.db.ler(caminhoDo(m));
+        if (linha !== undefined) expect(linha.resolvidoEm, m).not.toBeNull();
+      }
+    }
+    // Anti-vacuity: the cancellation did seed both.
+    for (const m of AGENDAMENTO) expect(ex.h.db.ler(caminhoDo(m)), m).toBeDefined();
   });
 });

@@ -9,6 +9,7 @@ import {
   type ShopeeModel,
 } from '@delfrance/integrations-shopee';
 import {
+  INTEGRACAO_TIPO,
   TIPO_VARIACAO,
   resolverEntradaShopeeDoGrupo,
   type LinkVariacoesShopee,
@@ -42,6 +43,7 @@ function tier(parcial: Partial<TierShopee> = {}): TierShopee {
   return {
     nome: 'Cor',
     variationId: 0,
+    variationGroupId: 0,
     // ⚠️ `indice` is the WIRE position, and a fixture with TWO tiers has to say
     // so: the plan is keyed by it, exactly like `model.tier_index`.
     opcoes: [{ nome: 'Azul', optionId: 0, indice: 0 }],
@@ -828,6 +830,47 @@ describe('fundirLinksVariacoesShopee', () => {
     expect((r.array[0] as LinkVariacoesShopee).variation_id).toBe(100015);
   });
 
+  it('⛔ NEAR-MISS: um `variation_group_list` NÃO-ZERO do operador não é apagado por um nosso 0', () => {
+    const r = fundirLinksVariacoesShopee(
+      [{ ...entrada({ variation_group_list: 841350766059029 }) }],
+      entrada({ variation_group_list: 0 }),
+    );
+    expect((r.array[0] as LinkVariacoesShopee).variation_group_list).toBe(841350766059029);
+    expect(r.mudou).toBe(false);
+  });
+
+  it('preenche o grupo ao lado de um `variation_id` armazenado IGUAL ao nosso', () => {
+    const r = fundirLinksVariacoesShopee(
+      [{ ...entrada({ variation_id: 101056, variation_group_list: 0 }) }],
+      entrada({ variation_id: 101056, variation_group_list: 844758844060204 }),
+    );
+    const e = r.array[0] as LinkVariacoesShopee;
+    expect([e.variation_id, e.variation_group_list]).toEqual([101056, 844758844060204]);
+    expect(r.mudou).toBe(true);
+  });
+
+  it('preenche o PAR inteiro sobre uma entrada (0, 0) — id e grupo do mesmo anúncio', () => {
+    const r = fundirLinksVariacoesShopee(
+      [{ ...entrada({ variation_id: 0, variation_group_list: 0 }) }],
+      entrada({ variation_id: 101056, variation_group_list: 844758844060204 }),
+    );
+    const e = r.array[0] as LinkVariacoesShopee;
+    expect([e.variation_id, e.variation_group_list]).toEqual([101056, 844758844060204]);
+    expect(r.mudou).toBe(true);
+  });
+
+  it('⛔ NEAR-MISS: um grupo 0 ao lado de OUTRO `variation_id` armazenado NÃO é preenchido — nada muda', () => {
+    // O grupo é da variação 101056; a entrada guarda 999. O par (999, grupo de
+    // 101056) não é de anúncio nenhum, e o publicador o mandaria.
+    const r = fundirLinksVariacoesShopee(
+      [{ ...entrada({ variation_id: 999, variation_group_list: 0 }) }],
+      entrada({ variation_id: 101056, variation_group_list: 844758844060204 }),
+    );
+    const e = r.array[0] as LinkVariacoesShopee;
+    expect([e.variation_id, e.variation_group_list]).toEqual([999, 0]);
+    expect(r.mudou).toBe(false);
+  });
+
   it('preenche um `variation_id` ZERO com o nosso', () => {
     const r = fundirLinksVariacoesShopee(
       [{ ...entrada({ variation_id: 0 }) }],
@@ -938,6 +981,310 @@ describe('fundirLinksVariacoesShopee', () => {
     const r = fundirLinksVariacoesShopee(null, entrada());
     expect((r.array[0] as LinkVariacoesShopee).integracaoShopeeId).toBe('int-1');
     expect(JSON.stringify(r.array)).not.toContain('documents/integracao');
+  });
+});
+
+/* -------- 6b. o grupo de variação de DOIS níveis (#1911, BR 2026-11-04) -------- */
+
+/*
+ * `standardise_tier_variation[].variation_group_id` — lido do anúncio por
+ * `tiersDoItem` e gravado por `planejarTaxonomia` no `variation_group_list` da
+ * entrada. Antes, o leitor o ignorava e o planejador gravava `0` sempre: uma
+ * escrita de tier posterior não mandava grupo para uma variação de dois níveis.
+ */
+describe('o grupo de variação (`variation_group_id`) — lido do anúncio, gravado na importação', () => {
+  const GRUPO_TAMANHO_BR = 844758844060204;
+  /** Um grupo NÃO-ZERO diferente, de outra região (INT) — a escolha de um operador legado. */
+  const GRUPO_LEGADO_INT = 841350766059029;
+
+  /**
+   * O formato BR de DOIS tiers, inline. Os campos de TIER são os da captura
+   * (`get_model_list.br-anuncio-variacoes.json`, `$.response.standardise_tier_variation`):
+   * `[0]` Cor 101054 SEM a chave `variation_group_id` (o nível único); `[1]`
+   * Tamanho 101056 com o grupo 844758844060204 (Tamanho (BR)). As listas de
+   * opções estão cortadas a uma por tier — elas não decidem o grupo.
+   */
+  const CRU_BR = {
+    model: [],
+    tier_variation: [
+      { name: 'Cor', option_list: [{ option: 'Cor inventada' }] },
+      { name: 'Tamanho', option_list: [{ option: 'M' }] },
+    ],
+    standardise_tier_variation: [
+      {
+        variation_id: 101054,
+        variation_name: 'Cor',
+        variation_option_list: [{ variation_option_id: 0, variation_option_name: 'Cor inventada' }],
+      },
+      {
+        variation_id: 101056,
+        variation_name: 'Tamanho',
+        variation_group_id: GRUPO_TAMANHO_BR,
+        variation_option_list: [{ variation_option_name: 'M' }],
+      },
+    ],
+  };
+  // Pelo schema do PACOTE, como a importação lê: a chave ausente vira `null`.
+  const ARVORE_BR = shopeeModelListPayloadSchema.parse(CRU_BR);
+  const tiersBr = () =>
+    tiersDoItem({
+      tiers: ARVORE_BR.tier_variation ?? [],
+      padronizados: ARVORE_BR.standardise_tier_variation ?? [],
+    });
+
+  describe('tiersDoItem', () => {
+    it('⭐ carrega o grupo por ÍNDICE no formato BR — Cor (sem a chave) ⇒ 0, Tamanho ⇒ 844758844060204', () => {
+      // ÂNCORA: a Cor do BR NÃO traz a chave — não é um `0` explícito.
+      expect('variation_group_id' in CRU_BR.standardise_tier_variation[0]!).toBe(false);
+
+      expect(tiersBr().map((t) => [t.nome, t.variationId, t.variationGroupId])).toEqual([
+        ['Cor', 101054, 0],
+        ['Tamanho', 101056, GRUPO_TAMANHO_BR],
+      ]);
+    });
+
+    it('⛔ NEAR-MISS: comprimentos DIFERENTES ⇒ todo `variationGroupId` é 0, como o id', () => {
+      // O mesmo `pareia` do id: parear um par desalinhado grudaria o grupo de um
+      // tier no nome de outro.
+      const lista = tiersDoItem({
+        tiers: [
+          { name: 'Cor', option_list: [{ option: 'Azul' }] },
+          { name: 'Tamanho', option_list: [{ option: 'P' }] },
+        ] as never,
+        padronizados: [
+          { variation_id: 101056, variation_group_id: GRUPO_TAMANHO_BR, variation_option_list: [] },
+        ] as never,
+      });
+      expect(lista.map((t) => t.variationGroupId)).toEqual([0, 0]);
+      expect(lista.map((t) => t.variationId)).toEqual([0, 0]);
+    });
+
+    it('⛔ NEAR-MISS: um tier CUSTOM (`variation_id` 0) que traz um grupo ⇒ 0 — grupo é de variação padrão', () => {
+      const lista = tiersDoItem({
+        tiers: [{ name: 'Estampa', option_list: [{ option: 'Listrada' }] }] as never,
+        padronizados: [
+          { variation_id: 0, variation_group_id: 7, variation_option_list: [] },
+        ] as never,
+      });
+      expect(lista[0]?.variationId).toBe(0);
+      expect(lista[0]?.variationGroupId).toBe(0);
+    });
+
+    it('⛔ NEAR-MISS: um grupo `null` numa variação padrão ⇒ 0, nunca uma ausência', () => {
+      const lista = tiersDoItem({
+        tiers: [{ name: 'Tamanho', option_list: [{ option: 'P' }] }] as never,
+        padronizados: [
+          { variation_id: 101056, variation_group_id: null, variation_option_list: [] },
+        ] as never,
+      });
+      expect(lista[0]?.variationId).toBe(101056);
+      expect(lista[0]).toHaveProperty('variationGroupId', 0);
+    });
+
+    it('⛔ NEAR-MISS: as listas de OPÇÕES com comprimentos diferentes NÃO zeram o grupo — só os ids de opção', () => {
+      // `pareiaOpcoes` decide só os ids de OPÇÃO. O grupo segue o `pareia` do
+      // TIER, como o `variationId`: um portão pelas opções zeraria o grupo de
+      // dois níveis assim que a lista de opções do anúncio divergisse da padrão.
+      const lista = tiersDoItem({
+        tiers: [{ name: 'Tamanho', option_list: [{ option: 'P' }, { option: 'M' }] }] as never,
+        padronizados: [
+          {
+            variation_id: 101056,
+            variation_group_id: GRUPO_TAMANHO_BR,
+            variation_option_list: [{ variation_option_id: 555, variation_option_name: 'P' }],
+          },
+        ] as never,
+      });
+      // ÂNCORA: as opções de fato NÃO parearam (1 contra 2) — os ids voltaram custom.
+      expect(lista[0]?.opcoes.map((o) => o.optionId)).toEqual([0, 0]);
+      // …e o grupo sobreviveu: segue o `pareia`, como o `variationId`, nunca o `pareiaOpcoes`.
+      expect(lista.map((t) => [t.variationId, t.variationGroupId])).toEqual([
+        [101056, GRUPO_TAMANHO_BR],
+      ]);
+    });
+
+    it('⛔ um tier DESCARTADO antes do padrão não desloca o grupo — o par é pelo índice do WIRE', () => {
+      // `tiersDoItem` COMPACTA: o grupo do tier `i` é o de `padronizados[i]`,
+      // nunca o da posição compactada (que aqui seria o do tier descartado).
+      const lista = tiersDoItem({
+        tiers: [
+          { name: '', option_list: [] },
+          { name: 'Tamanho', option_list: [{ option: 'M' }] },
+        ] as never,
+        padronizados: [
+          { variation_id: 0, variation_group_id: null, variation_option_list: [] },
+          { variation_id: 101056, variation_group_id: GRUPO_TAMANHO_BR, variation_option_list: [] },
+        ] as never,
+      });
+      expect(lista.map((t) => [t.nome, t.indice, t.variationGroupId])).toEqual([
+        ['Tamanho', 1, GRUPO_TAMANHO_BR],
+      ]);
+    });
+  });
+
+  describe('planejarTaxonomia', () => {
+    const base = {
+      modelos: [] as ShopeeModel[],
+      integracaoId: INTEGRACAO,
+      categoryId: CATEGORIA,
+      nomeCategoria: 'Camisetas',
+      nowMs: AGORA,
+    };
+
+    const entradasDe = (links: unknown): LinkVariacoesShopee[] => links as LinkVariacoesShopee[];
+
+    /** O tier Tamanho (BR) já lido, com uma opção custom `M`. */
+    const tamanho = tier({
+      nome: 'Tamanho',
+      variationId: 101056,
+      variationGroupId: GRUPO_TAMANHO_BR,
+      opcoes: [{ nome: 'M', optionId: 0, indice: 0 }],
+    });
+
+    /**
+     * O grupo do operador JÁ importado: a variante `M` com o carimbo desta
+     * integração e a entrada (conta, categoria) com a opção já mapeada — tudo
+     * igual ao que a importação diria, MENOS o grupo armazenado.
+     */
+    const grupoArmazenado = (variationGroupList: number) =>
+      memo([
+        {
+          id: 'shopee-101056',
+          raw: {
+            nome: 'Tamanho',
+            variacoes: [
+              {
+                id: 'v-m',
+                nome: 'M',
+                externalVariacaoLinks: [
+                  {
+                    tipo: INTEGRACAO_TIPO.shopee,
+                    integracaoId: INTEGRACAO,
+                    externalId: 'M',
+                    externalName: 'M',
+                    timestamp: AGORA,
+                  },
+                ],
+              },
+            ],
+            variacoesIds: ['v-m'],
+            linksVariacoesShopee: [
+              entrada({
+                variation_id: 101056,
+                variation_group_list: variationGroupList,
+                variationOptions: [
+                  { shopee_option_id: 0, shopee_option_name: 'M', arakene_variation_id: ['v-m'] },
+                ],
+              }),
+            ],
+          },
+        },
+      ]);
+
+    it('⭐ importação NOVA do formato BR de dois tiers: Tamanho grava 844758844060204, Cor grava 0', () => {
+      const plano = planejarTaxonomia({ ...base, tiers: tiersBr(), candidatos: memo() });
+
+      const porId = new Map(plano.grupos.map((g) => [g.grupoId, g]));
+      const cor = porId.get('shopee-101054');
+      const tam = porId.get('shopee-101056');
+      expect(cor?.criar).toBe(true);
+      expect(tam?.criar).toBe(true);
+      expect(entradasDe(cor?.docNovo?.linksVariacoesShopee)).toEqual([
+        expect.objectContaining({ variation_id: 101054, variation_group_list: 0 }),
+      ]);
+      expect(entradasDe(tam?.docNovo?.linksVariacoesShopee)).toEqual([
+        expect.objectContaining({
+          integracaoShopeeId: INTEGRACAO,
+          category_id: CATEGORIA,
+          variation_id: 101056,
+          variation_group_list: GRUPO_TAMANHO_BR,
+        }),
+      ]);
+    });
+
+    it('reimportação sobre uma entrada armazenada com grupo 0 ⇒ preenchido, e é a ÚNICA mudança', () => {
+      const plano = planejarTaxonomia({
+        ...base,
+        tiers: [tamanho],
+        candidatos: grupoArmazenado(0),
+      });
+      const g = plano.grupos[0];
+      expect(g?.criar).toBe(false);
+      // `mudou: true` — o patch existe; e só a entrada mudou, as variantes não.
+      expect(g?.patch).not.toBeNull();
+      expect(entradasDe(g?.patch?.linksVariacoesShopee)).toEqual([
+        expect.objectContaining({ variation_id: 101056, variation_group_list: GRUPO_TAMANHO_BR }),
+      ]);
+      expect(g?.varianteIds).toEqual(['v-m']);
+    });
+
+    it('⭐ ⛔ NEAR-MISS: um grupo NÃO-ZERO diferente armazenado — o legado (INT) OU o de uma importação anterior — é MANTIDO, nada é escrito', () => {
+      // Um não-zero armazenado — o que o operador escolheu no formulário legado
+      // (`variacoesCadastroViewShopee.dart`) OU o que uma importação anterior
+      // gravou (o primeiro anúncio daquela folha) — nunca é sobrescrito pelo que
+      // o anúncio diz hoje: só um `0` armazenado é preenchido. Um grupo por
+      // (grupo, conta, categoria) é o modelo do vínculo; quem o escolhe é o
+      // operador, no editor de vínculos (#1911 P14).
+      const plano = planejarTaxonomia({
+        ...base,
+        tiers: [tamanho],
+        candidatos: grupoArmazenado(GRUPO_LEGADO_INT),
+      });
+      expect(plano.grupos[0]?.criar).toBe(false);
+      expect(plano.grupos[0]?.patch).toBeNull();
+    });
+
+    it('⭐ ⛔ NEAR-MISS: o anúncio SEM grupo (0) não apaga um grupo legado NÃO-ZERO armazenado — nada é escrito', () => {
+      // O par do teste do INT no sentido oposto: o anúncio vivo diz 0 (nível
+      // único, ou um tier que a Shopee não agrupa) e o armazenado é a escolha do
+      // operador legado. Só um `0` armazenado é preenchido; um não-zero nunca é
+      // trocado — nem por outro grupo, nem por zero.
+      const plano = planejarTaxonomia({
+        ...base,
+        tiers: [{ ...tamanho, variationGroupId: 0 }],
+        candidatos: grupoArmazenado(GRUPO_LEGADO_INT),
+      });
+      expect(plano.grupos[0]?.criar).toBe(false);
+      expect(plano.grupos[0]?.patch).toBeNull();
+    });
+
+    it('reimportação byte-idêntica com o grupo já armazenado ⇒ `mudou: false`, nada é escrito', () => {
+      const plano = planejarTaxonomia({
+        ...base,
+        tiers: [tamanho],
+        candidatos: grupoArmazenado(GRUPO_TAMANHO_BR),
+      });
+      expect(plano.grupos[0]?.criar).toBe(false);
+      expect(plano.grupos[0]?.patch).toBeNull();
+    });
+
+    it('⭐ ⛔ NEAR-MISS: um grupo armazenado 0 ao lado de OUTRO `variation_id` NÃO-ZERO não recebe o grupo do anúncio', () => {
+      // O grupo pertence à variação que o anúncio reporta (101056). A entrada
+      // armazenada aponta outra (999, a escolha do operador), num grupo casado
+      // pelo NOME, e o publicador manda o PAR armazenado (`tiersPublicacao.ts`):
+      // gravar o grupo de 101056 ali montaria (999, 844758844060204) — e, por
+      // ser não-zero, a fusão nunca o corrigiria.
+      const plano = planejarTaxonomia({
+        ...base,
+        tiers: [tamanho],
+        candidatos: memo([
+          {
+            id: 'g-tam',
+            raw: {
+              nome: 'Tamanho',
+              variacoes: [],
+              variacoesIds: [],
+              linksVariacoesShopee: [entrada({ variation_id: 999, variation_group_list: 0 })],
+            },
+          },
+        ]),
+      });
+      const nossa = entradasDe(plano.grupos[0]?.patch?.linksVariacoesShopee).find(
+        (e) => e.category_id === CATEGORIA,
+      );
+      expect(plano.grupos[0]?.grupoId).toBe('g-tam');
+      expect([nossa?.variation_id, nossa?.variation_group_list]).toEqual([999, 0]);
+    });
   });
 });
 

@@ -314,6 +314,50 @@ describe('o contrato compartilhado com apps/web (#1911 P2)', () => {
     },
   );
 
+  it('os nomes saem em português — a entrada `pt-BR` do multi_lang, em todo nível (#1911 P13a)', async () => {
+    const profundo = atributoProfundo();
+    const [valorProfundo] = profundo.attribute_value_list;
+    h.getAttributeTree.mockResolvedValue({
+      list: [
+        {
+          category_id: 100182,
+          warning: null,
+          attribute_tree: [
+            {
+              ...profundo,
+              multi_lang: [
+                { language: 'en', value: 'Connection Type' },
+                { language: 'pt-BR', value: 'Tipo de Conexão' },
+              ],
+              attribute_value_list: [
+                {
+                  ...valorProfundo,
+                  multi_lang: [{ language: 'pt-BR', value: 'Sem fio' }],
+                  child_attribute_list: [
+                    { ...atributo(10, false), multi_lang: [{ language: 'pt-br', value: 'Quase' }] },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+    const res = await GET(req({ integracaoId: 'int-1', categoryId: '100182' }, AUTORIZADO));
+    const body = (await res.json()) as Record<string, unknown>;
+    const lido = respostaAtributosShopeeSchema.parse(body);
+
+    expect(res.status).toBe(200);
+    // O formato não mudou: nenhuma chave nova (`multi_lang`) no corpo.
+    expect(body).not.toHaveProperty(['atributos', 0, 'multi_lang']);
+    expect(lido.atributos[0]?.name).toBe('Tipo de Conexão');
+    expect(lido.atributos[0]?.attributeValueList[0]?.name).toBe('Sem fio');
+    // ⛔ `pt-br` minúsculo não é a grafia da Shopee: o filho fica com o nome dela.
+    expect(lido.atributos[0]?.attributeValueList[0]?.childAttributeList[0]?.name).toBe(
+      'atributo-10',
+    );
+  });
+
   it('o parse acima não é vazio: ele chegou ao atributo FILHO e ao attribute_info', async () => {
     h.getAttributeTree.mockResolvedValue({
       list: [{ category_id: 100182, warning: null, attribute_tree: [atributoProfundo()] }],
