@@ -846,6 +846,26 @@ describe('what must precede the batch, and a name the cut made', () => {
     expect(db.ler(`produtos/${VERDE_ID}`)?.nome).toBe(longo);
   });
 
+  it('NEAR-MISS: a name of exactly 100 fits whole: the variation is added and no cut is reported', async () => {
+    const justo = 'J'.repeat(94);
+    const db = new FakeDb();
+    seedGrupos(db);
+    seedFamiliaErp(db);
+    await produto(db, PAI).update({ nome: justo });
+    const r = await adicionar(db, {
+      familia: familia([AZUL, VERDE]),
+      filhos: {
+        filhos: [
+          { ...ausente(801, [[GRADE, 1, COR, 'v-azul']]), situacao: SITUACAO_DO_FILHO_LI.casado },
+          ausente(802, [[GRADE, 2, COR, 'v-verde']]),
+        ],
+      },
+    });
+    expect(r.adicionados.map((a) => a.liId)).toEqual([802]);
+    expect(r.pendencias).toEqual([]);
+    expect(db.ler(`produtos/${VERDE_ID}`)?.nome).toBe(`${justo} Verde`);
+  });
+
   it('NEAR-MISS: a variation the probe refuses reports no cut name: nothing was created to carry it', async () => {
     const longo = 'L'.repeat(100);
     const db = new FakeDb();

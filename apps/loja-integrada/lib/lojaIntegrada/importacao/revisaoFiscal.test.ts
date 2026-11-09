@@ -412,6 +412,45 @@ describe('the carry-forward — the conta’s earlier aplicar jobs', () => {
       expect(recomecado.estado.anteriorJobId).toBe('job-anterior');
     },
   );
+
+  it('the same inconsistent cursor saying it was on the walk’s LAST source still starts over: the carry-forward is never skipped', async () => {
+    const db = new FakeDb();
+    seedEsteJob(db);
+    seedJob(db, 'job-anterior', 400);
+    seedEntrada(db, 'job-anterior', 'p1');
+    seedProduto(db, 'p1');
+    const r = await rodarFase(deps(db), {
+      ...INICIAL,
+      etapa: ETAPA_REVISAO_FISCAL_LI.copiando,
+      fonteJobId: null,
+      ultimaFonte: true,
+    });
+    expect(listaDe(db)).toEqual(['p1']);
+    expect(r.abertos).toBe(1);
+    expect(r.estado.anteriorJobId).toBe('job-anterior');
+  });
+});
+
+describe('the re-check — where the cursor ends', () => {
+  it('a list of exactly one page ends on an empty page, its position and its count kept', async () => {
+    const db = new FakeDb();
+    seedEsteJob(db);
+    const ids = Array.from(
+      { length: PAGINA_CONFERENCIA_REVISAO_LI },
+      (_, i) => `p-${String(i).padStart(4, '0')}`,
+    );
+    for (const id of ids) {
+      seedEntrada(db, JOB, id);
+      seedProduto(db, id);
+    }
+    const r = await rodarFase(deps(db));
+    expect(r.passos.at(-1)).toMatchObject({ tipo: 'concluido', conferidas: 0, saidas: 0 });
+    expect(r.estado).toMatchObject({
+      etapa: ETAPA_REVISAO_FISCAL_LI.conferindo,
+      abertos: ids.length,
+      depoisProdutoId: ids.at(-1),
+    });
+  });
 });
 
 /* ------------------------------ the re-check ------------------------------- */

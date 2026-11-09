@@ -358,6 +358,39 @@ describe('the claims of a matched family', () => {
     });
   });
 
+  it('a family whose ROOT SKU is in conflict in the store is matched to nothing, so its exact-SKU variation claims nothing ⟷ NEAR-MISS in no conflict it claims', async () => {
+    const db = new FakeDb();
+    familiaErpDeTamanho(db);
+    const f = familia(paiLi(500, [501], { sku: 'CAM' }), [variacao(501, 'CAM-P', [TAM, 1])]);
+    const grupos = [grupo('tam', ['v-p', 'v-m'])];
+    const parecido = new Map([['CAM', PENDENCIA_IMPORTACAO_LI.skuParecidoNaLoja] as const]);
+    expect(await umaUnidade(db, [f], grupos, null, parecido)).toMatchObject({
+      raiz: {
+        tipo: SITUACAO_ERP_ITEM_LI.conflito,
+        pendencia: PENDENCIA_IMPORTACAO_LI.skuParecidoNaLoja,
+      },
+      alegacoes: 0,
+    });
+    expect(await umaUnidade(db, [f], grupos)).toMatchObject({
+      raiz: { tipo: SITUACAO_ERP_ITEM_LI.encontrado },
+      alegacoes: 1,
+    });
+  });
+
+  it('a variation in conflict never takes a child by SKU: its combination lands it on its sibling’s child, and neither claims ⟷ NEAR-MISS in no conflict each takes its own, and the sibling claims', async () => {
+    const db = new FakeDb();
+    familiaErpDeTamanho(db);
+    // 501's SKU names child `p`; its linked option resolves to `m`, the child 502's own SKU names.
+    const f = familia(paiLi(500, [501, 502], { sku: 'CAM' }), [
+      variacao(501, 'CAM-P', [TAM, 2]),
+      variacao(502, 'CAM-M', [TAM, 1]),
+    ]);
+    const grupos = [grupo('tam', ['v-p', 'v-m'], { [TAM]: { 2: ['v-m'] } })];
+    const parecido = new Map([['CAM-P', PENDENCIA_IMPORTACAO_LI.skuParecidoNaLoja] as const]);
+    expect(await umaUnidade(db, [f], grupos, null, parecido)).toMatchObject({ alegacoes: 0 });
+    expect(await umaUnidade(db, [f], grupos)).toMatchObject({ alegacoes: 1 });
+  });
+
   it('an option already standing for TWO variantes, or a grade linked in two grupos, gives no claim', async () => {
     const db = new FakeDb();
     familiaErpDeTamanho(db);

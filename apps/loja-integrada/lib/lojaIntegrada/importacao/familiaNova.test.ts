@@ -583,6 +583,15 @@ describe('every planned document parses — only a name is ever cut', () => {
     });
   });
 
+  it('NEAR-MISS: a variation’s name of exactly 100 fits whole, and no cut is reported', async () => {
+    const db = new FakeDb();
+    seedGrupo(db);
+    const justo = 'N'.repeat(95);
+    const r = await criar(db, familia(800, 'CAM', [AZUL], { nome: justo }));
+    expect(db.ler(`produtos/${idProdutoCriadoLi('CAM-AZ')}`)?.nome).toBe(`${justo} Azul`);
+    expect(r).toMatchObject({ tipo: TIPO_RESULTADO_FAMILIA_NOVA_LI.criada, pendencias: [] });
+  });
+
   it('NEAR-MISS: a refused create reports no cut name: nothing was created to carry it', async () => {
     const db = new FakeDb();
     db.seed('produtos/a-mao', { nome: 'A mão', sku: 'X', paiId: null, filhoUnicoId: null });
