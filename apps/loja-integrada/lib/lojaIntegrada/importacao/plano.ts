@@ -59,7 +59,8 @@
  *  - its LI-sourced fields parse through the produto schema (`nome` cut at
  *    {@link MAX_NOME_PRODUTO_LI} first; a `null` name is `dado-invalido(nome)`);
  *  - a parent keeps at least one VISIBLE variation: a hidden or blocked one is left out
- *    (`oculto-nao-criado` on it), and a family whose every variation is hidden is not created;
+ *    (`oculto-nao-criado` on it, beside its store conflict when its SKU has one: it refuses its
+ *    partner, never this family), and a family whose every variation is hidden is not created;
  *  - every kept variation has a SKU no other store row repeats or nearly repeats
  *    (`conflitosDeSkuNaLojaLi`) and parses through the produto schema, and no claimed variation is
  *    still without a usable detail.
@@ -358,6 +359,10 @@ function planejarCriacao(
       if (ocultoNaLojaLi(linha)) {
         ocultos.push(linha.id);
         recusar(PENDENCIA_IMPORTACAO_LI.ocultoNaoCriado, linha.id);
+        // Left out, so it refuses nothing here; but a hidden row counts in the store's conflicts and
+        // its partner is refused over it, so the report must carry the code on this row too.
+        const conflitoDoOculto = linha.sku === null ? undefined : skusEmConflito.get(linha.sku);
+        if (conflitoDoOculto !== undefined) recusar(conflitoDoOculto, linha.id);
         continue;
       }
       filhos.push(linha.id);

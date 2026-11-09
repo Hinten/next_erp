@@ -378,8 +378,8 @@ export type PassoDasEvidenciasLi =
 
 /**
  * Run the `evidencias` phase's next unit: the next family above the cursor (module header).
- * `montagem` and `skusEmConflito` come from the job's snapshot (computed once per dispatch);
- * `grupos` is the dispatch's grupo memo.
+ * `montagem` and `skusEmConflito` come from the job's snapshot (the conflicts computed with the
+ * assembly, from the whole snapshot); `grupos` is the dispatch's grupo memo.
  */
 export async function executarUnidadeDasEvidenciasLi(
   deps: DepsEvidenciasLi,

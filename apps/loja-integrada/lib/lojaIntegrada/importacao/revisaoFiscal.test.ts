@@ -388,19 +388,28 @@ describe('the carry-forward — the conta’s earlier aplicar jobs', () => {
   it.each([ETAPA_REVISAO_FISCAL_LI.copiando, ETAPA_REVISAO_FISCAL_LI.apos])(
     'an inconsistent cursor (`%s` with no source) starts the phase over — and lands where a clean run lands (every step is idempotent)',
     async (etapa) => {
-      const db = new FakeDb();
-      seedEsteJob(db);
-      seedJob(db, 'job-anterior', 400);
-      seedEntrada(db, 'job-anterior', 'p1');
-      seedProduto(db, 'p1');
-      const limpo = await rodarFase(deps(db));
+      function semeado(): FakeDb {
+        const db = new FakeDb();
+        seedEsteJob(db);
+        seedJob(db, 'job-anterior', 400);
+        seedEntrada(db, 'job-anterior', 'p1');
+        seedProduto(db, 'p1');
+        return db;
+      }
+      const limpo = await rodarFase(deps(semeado()));
+      // Its own store: on the clean run's, p1 would already be in this job's list whether the
+      // inconsistent cursor carried anything or not.
+      const db = semeado();
       const recomecado = await rodarFase(deps(db), {
         ...INICIAL,
         etapa,
         fonteJobId: null,
       });
+      expect(recomecado.abertos).toBe(1);
       expect(recomecado.abertos).toBe(limpo.abertos);
       expect(listaDe(db)).toEqual(['p1']);
+      // Only the walk's own first step sets it: the phase really did start over.
+      expect(recomecado.estado.anteriorJobId).toBe('job-anterior');
     },
   );
 });

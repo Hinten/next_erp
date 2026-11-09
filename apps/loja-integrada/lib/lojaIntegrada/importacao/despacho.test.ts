@@ -2211,7 +2211,7 @@ describe('complete — the dispatch', () => {
     expect(comResultado.length).toBeGreaterThan(0);
     for (const p of comResultado) expect(p.fotos).toBeNull();
     // A cursor did run before it: the near-miss of the pin above.
-    expect(dadosDoJob.some((d) => d.progressoDaFamilia?.fotos !== null)).toBe(true);
+    expect(dadosDoJob.some((d) => (d.progressoDaFamilia?.fotos ?? null) !== null)).toBe(true);
 
     // The closing clears the progress in the very write that moves the family cursor past it.
     const fechamento = escritasDoJob()
@@ -2538,43 +2538,47 @@ describe('complete — store near duplicates, end to end', () => {
       [50, 'LIVRE'],
     ]);
     const ativos = [...skus].map(([id, sku]) => linhaProdutoLi(id, { sku }));
-    const loja: LojaDeProdutosLi = {
-      ativos,
-      detalhes: new Map(ativos.map((linha) => [linha.id as number, detalheLi(linha, null)])),
-    };
-    async function rodarModo(modo: ModoImportacaoLi) {
+    const detalhes = new Map(ativos.map((linha) => [linha.id as number, detalheLi(linha, null)]));
+    async function rodarModo(modo: ModoImportacaoLi, ordem: LojaDeProdutosLi['ativos']) {
       db = new FakeDb();
       seedConta(db, CONTA);
       seedCredencial(db, CONTA);
       seedJobLi(db, JOB, CONTA, { status: 'pendente', modo, acao: 'completar' });
       __resetAllReadCaches();
-      const { resultados } = await rodarAteOFim({ responder: lojaCompleta(loja) });
+      const { resultados } = await rodarAteOFim({
+        responder: lojaCompleta({ ativos: ordem, detalhes }),
+      });
       expect(resultados.at(-1)?.desfecho).toBe('concluido');
       return { itens: itens(), job: jobGravado(), ler: (c: string) => db.ler(c) };
     }
-    const simular = await rodarModo(MODO_IMPORTACAO_LI.simular);
-    const aplicar = await rodarModo(MODO_IMPORTACAO_LI.aplicar);
 
-    expect([...simular.itens.keys()]).toEqual([...aplicar.itens.keys()]);
-    for (const id of aplicar.itens.keys()) {
-      expect(veredito(simular.itens.get(id)), String(id)).toEqual(veredito(aplicar.itens.get(id)));
+    for (const ordem of [ativos, [...ativos].reverse()]) {
+      const simular = await rodarModo(MODO_IMPORTACAO_LI.simular, ordem);
+      const aplicar = await rodarModo(MODO_IMPORTACAO_LI.aplicar, ordem);
+
+      expect([...simular.itens.keys()]).toEqual([...aplicar.itens.keys()]);
+      for (const id of aplicar.itens.keys()) {
+        expect(veredito(simular.itens.get(id)), String(id)).toEqual(
+          veredito(aplicar.itens.get(id)),
+        );
+      }
+      expect(simular.job.contadores).toEqual(aplicar.job.contadores);
+      expect(aplicar.job.contadores).toMatchObject({ criados: 1, pendenciasAcionaveis: 4 });
+      for (const id of [10, 20, 30, 40]) {
+        expect(aplicar.itens.get(id), String(id)).toMatchObject({
+          situacaoErp: 'conflito',
+          acao: 'nenhuma',
+          erpId: null,
+          pendencias: [
+            { codigo: 'sku-parecido-na-loja', acionavel: true, liId: null, referencias: [] },
+          ],
+        });
+        expect(aplicar.ler(`produtos/li-sku-${sha256Hex(skus.get(id) ?? '')}`)).toBeUndefined();
+      }
+      // NEAR-MISS: the family that collides with nothing is created.
+      expect(aplicar.itens.get(50)).toMatchObject({ acao: 'criar', pendencias: [] });
+      expect(aplicar.ler(`produtos/li-sku-${sha256Hex('LIVRE')}`)).toMatchObject({ sku: 'LIVRE' });
     }
-    expect(simular.job.contadores).toEqual(aplicar.job.contadores);
-    expect(aplicar.job.contadores).toMatchObject({ criados: 1, pendenciasAcionaveis: 4 });
-    for (const id of [10, 20, 30, 40]) {
-      expect(aplicar.itens.get(id), String(id)).toMatchObject({
-        situacaoErp: 'conflito',
-        acao: 'nenhuma',
-        erpId: null,
-        pendencias: [
-          { codigo: 'sku-parecido-na-loja', acionavel: true, liId: null, referencias: [] },
-        ],
-      });
-      expect(aplicar.ler(`produtos/li-sku-${sha256Hex(skus.get(id) ?? '')}`)).toBeUndefined();
-    }
-    // NEAR-MISS: the family that collides with nothing is created.
-    expect(aplicar.itens.get(50)).toMatchObject({ acao: 'criar', pendencias: [] });
-    expect(aplicar.ler(`produtos/li-sku-${sha256Hex('LIVRE')}`)).toMatchObject({ sku: 'LIVRE' });
   });
 });
 

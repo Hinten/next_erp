@@ -108,14 +108,16 @@
  *
  * Under `simular` every phase decides exactly as `aplicar` does and writes only the job document
  * and its own subcollections: no link, no grupo (the learnings ride the job as an overlay later
- * families resolve against), no aviso of the import's. One stated residual of that parity: two
- * store roots placed on ONE ERP produto (`vinculos.ts`). A later family never needs what an earlier
- * one would have created: store SKUs that repeat or nearly repeat one another, or a store simple
- * product's derived sole-member SKU, are decided from the whole snapshot before anything is created
- * (`conflitosDeSkuNaLojaLi`), so both modes refuse them alike (pinned in `familiaDoJob.test.ts`). The
- * modules below each hold that rule — under "complete" a category or family create is planned, a fill
- * decided, a picture counted, none written — and the dispatch adds no write of its own outside the
- * job: Simular never enters `revisao`, and the photo units are `aplicar`'s alone.
+ * families resolve against), no aviso of the import's. Two stated residuals of that parity: two
+ * store roots placed on ONE ERP produto (`vinculos.ts`) and, decided 2026-11-06, the photos: Simular
+ * counts them with no download, so it cannot foresee a `foto-recusada` and the `fotos` counter can
+ * differ (`fotos.ts`). A later family never needs what an earlier one would have created: store SKUs
+ * that repeat or nearly repeat one another, or a store simple product's derived sole-member SKU, are
+ * decided from the whole snapshot before anything is created (`conflitosDeSkuNaLojaLi`), so both modes
+ * refuse them alike (pinned in `familiaDoJob.test.ts`). The modules below each hold that rule — under
+ * "complete" a category or family create is planned, a fill decided, a picture counted, none written —
+ * and the dispatch adds no write of its own outside the job: Simular never enters `revisao`, and the
+ * photo units are `aplicar`'s alone.
  *
  * ⚠️ The ONE exception is not the import's decision: a 401/403 parks the conta exactly as every
  * reader parks it (`tratarFalhaDeAutenticacao`: the conta's credential document and its reconexão
@@ -1475,7 +1477,7 @@ class DespachoImportacaoLi {
     return montagem.familias.filter((f) => selecionados.has(f.raiz.id));
   }
 
-  /** What every family of this dispatch shares (once per dispatch; header). */
+  /** What every family of this dispatch shares (from what it read once and keeps; header). */
   private async contextoDasFamilias(job: ImportacaoLojaIntegrada): Promise<ContextoDasFamiliasLi> {
     const grupos = gruposParaResolverLi(await this.memoDeGrupos(), job);
     this.recusas ??= recusasDoAprendizadoLi(

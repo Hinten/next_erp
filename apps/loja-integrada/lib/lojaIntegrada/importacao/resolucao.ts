@@ -278,8 +278,8 @@ export type ConflitoDeSkuNaLojaLi =
   | typeof PENDENCIA_IMPORTACAO_LI.skuParecidoNaLoja;
 
 /**
- * Every SKU of the assembly that is in conflict in the store, with its code: computed ONCE per
- * dispatch from the whole snapshot, before anything is created, so processing order never picks a
+ * Every SKU of the assembly that is in conflict in the store, with its code: computed with the
+ * assembly, from the whole snapshot, before anything is created, so processing order never picks a
  * winner and Simular answers as `aplicar` does. Exact repeats are {@link skusRepetidosNaLojaLi}'s;
  * near duplicates are `skusParecidosNaLojaLi`'s, over every root (a simple product also writes its
  * sole member's derived SKU) and every attached variation, hidden rows included. A SKU that is both

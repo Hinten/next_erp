@@ -52,8 +52,9 @@
  *    refusal, then the create probe immediately before the commit, ids keyed by the SKU). Only once
  *    the batch is about to be committed are the planned categories created and linked
  *    (`criarEVincular`) and the family's tax review made durable (`familiaNova.ts`'s
- *    `antesDoLote`), so a refused create leaves no category behind and reports no category
- *    pendência (it imported nothing). A root found at its id with the store SKU (another conta's
+ *    `antesDoLote`), so a create refused before its batch leaves no category behind and reports no
+ *    category pendência (it imported nothing); a batch that then loses leaves the category standing,
+ *    and the item names it. A root found at its id with the store SKU (another conta's
  *    create) is ADOPTED: the cascade runs again and the family takes the path below; when that
  *    cascade no longer matches the root (another shape, a second root with the SKU), the item
  *    carries the cascade's own verdict, and only a root found GONE is `conflito-de-escrita`.
@@ -67,8 +68,9 @@
  *
  * Each category a create-and-link run creates is named on the item of the family that created it
  * (`categoriasCriadas`, recorded where the plan is carried out, {@link aplicarCategoriaDaRaiz}, so a
- * category a refused create already made is named too). A duplicate of a category of the same name
- * shows in the ERP's category list, not on the card.
+ * category a refused create already made is named too), but for the retried unit of "A retried
+ * family". A duplicate of a category of the same name shows in the ERP's category list, not on the
+ * card.
  *
  * Then the PHOTOS (`fotos.ts`, the job's `fotos: soSemFotos` with a default bucket): onto every
  * produto the preparation filled or created that has none — under `aplicar` one budgeted unit per
@@ -159,7 +161,9 @@
  * filled, so the REPORT names none of them (`completar.ts`; the tax review of a filled category
  * was written before the fill, so the durable list loses nothing), and a `descricao-longa` or
  * `nome-cortado` of a landed create or add is not reported again (neither is re-planned), nor are
- * the `categoriasCriadas` of a landed create (the categories stand; only the item stops naming them).
+ * the `categoriasCriadas` of a landed create or a landed category fill (the categories stand; only
+ * the item stops naming them, unless a later family meets one and adopts it; both pinned in
+ * `familiaDoJob.test.ts`).
  *
  * ⚠️ Never name the Admin SDK's multi-document read-and-write call here — not even in a comment
  * (`estrutura.test.ts`). Next-free; `db` is a parameter.
@@ -284,7 +288,7 @@ export interface DepsFamiliaLi {
   readonly agoraMs: () => number;
 }
 
-/** What every family of one dispatch shares (computed once per dispatch by the caller). */
+/** What every family of one dispatch shares (the caller's, from what it read once and keeps). */
 export interface ContextoDasFamiliasLi {
   /** The job as last checkpointed: its options, and under "complete" its category map and brands. */
   readonly job: Pick<

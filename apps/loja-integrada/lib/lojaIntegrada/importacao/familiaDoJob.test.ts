@@ -1719,7 +1719,7 @@ describe('detalhesDaFamiliaLi — a create the checks with no detail refuse cost
 describe('PARITY — store near duplicates are refused in both modes, whichever family comes first', () => {
   const MODOS = [MODO_IMPORTACAO_LI.aplicar, MODO_IMPORTACAO_LI.simular];
 
-  /** The conflict map, as the dispatch computes it once from the whole assembly. */
+  /** The conflict map, as the dispatch computes it from the whole assembly. */
   function conflitosDe(familias: readonly FamiliaLi[]) {
     return conflitosDeSkuNaLojaLi({
       familias,
@@ -1809,6 +1809,59 @@ describe('PARITY — store near duplicates are refused in both modes, whichever 
         ],
       });
       expect(db.escritas.filter((e) => e.caminho.startsWith('produtos/'))).toEqual([]);
+    }
+  });
+
+  it('a HIDDEN variation’s near duplicate refuses its visible partner, and BOTH items carry the code: the hidden row’s family is created without it, in both modes', async () => {
+    for (const modo of MODOS) {
+      const db = new FakeDb();
+      seedGrupoCompletar(db);
+      const familias = [
+        familiaDetalhada(100, 'P', [{ id: 101, sku: 'P-1', opcao: 1 }]),
+        familiaDetalhada(200, 'Q', [
+          { id: 201, sku: 'Q-1', opcao: 1 },
+          { id: 202, sku: 'p-1', opcao: 2, linha: { ativo: false } },
+        ]),
+      ];
+      const ctx = { ...contextoCompletar(modo), skusEmConflito: conflitosDe(familias) };
+      const [recusada, criada] = familias;
+      if (recusada === undefined || criada === undefined) throw new Error('sem famílias');
+      const deps = depsDoJob(db, 'job-s4');
+
+      const doParceiro = await relatado(deps, ctx, recusada);
+      expect(doParceiro.item, modo).toMatchObject({
+        situacaoErp: SITUACAO_ERP_ITEM_LI.ausente,
+        acao: ACAO_ITEM_IMPORTACAO_LI.nenhuma,
+        pendencias: [
+          {
+            codigo: PENDENCIA_IMPORTACAO_LI.skuParecidoNaLoja,
+            acionavel: true,
+            liId: 101,
+            referencias: [],
+          },
+        ],
+      });
+
+      const doOculto = await relatado(deps, ctx, criada);
+      expect(doOculto.item, modo).toMatchObject({ acao: ACAO_ITEM_IMPORTACAO_LI.criar });
+      expect(doOculto.item.pendencias, modo).toEqual([
+        {
+          codigo: PENDENCIA_IMPORTACAO_LI.ocultoNaoCriado,
+          acionavel: false,
+          liId: 202,
+          referencias: [],
+        },
+        {
+          codigo: PENDENCIA_IMPORTACAO_LI.skuParecidoNaLoja,
+          acionavel: true,
+          liId: 202,
+          referencias: [],
+        },
+      ]);
+      expect(doOculto.contadores, modo).toMatchObject({
+        pendenciasAcionaveis: 1,
+        pendenciasInformativas: 1,
+      });
     }
   });
 });
@@ -1934,6 +1987,48 @@ describe('complete — the item names the categories its run created', () => {
     expect(item.pendencias.map((p) => p.codigo)).toEqual(['conflito-de-escrita']);
     expect(db.ler(`categorias/li-${CONTA}-900`)).toMatchObject({ nome: 'Roupas' });
     expect(item.categoriasCriadas).toEqual([900]);
+  });
+
+  it('⚠️ ACCEPTED RESIDUAL: a unit retried over its own landed category FILL stops naming the category (it stands); a later family that meets it adopts it and names it', async () => {
+    const db = new FakeDb();
+    db.seed('produtos/caneca', { nome: 'Caneca', sku: 'CAN', paiId: null, filhoUnicoId: null });
+    db.falharEscrita('produtos/caneca/extraData/singleton', grpc(14, 'UNAVAILABLE'));
+    const deps = depsDoJob(db, 'job-k7');
+    const ctx = ctxQueCria(MODO_IMPORTACAO_LI.aplicar);
+    const f = simplesDetalhado(20, { sku: 'CAN', categorias: CAT_900 });
+    await expect(executarFamiliaLi(deps, ctx, f)).rejects.toMatchObject({ code: 14 });
+    expect(db.ler('produtos/caneca')?.categoriaProdutoOuterRef).toBe(
+      `documents/categorias/li-${CONTA}-900`,
+    );
+    db.falharEscrita('produtos/caneca/extraData/singleton', null);
+
+    const retry = await relatado(deps, ctx, f);
+    expect(retry.item.categoriasCriadas).toEqual([]);
+    expect(db.ler(`categorias/li-${CONTA}-900`)).toMatchObject({ nome: 'Roupas' });
+
+    // The failed unit's checkpoint never landed, so the job's map still has the category unlinked.
+    const depois = await relatado(
+      deps,
+      ctx,
+      simplesDetalhado(30, { sku: 'NOVO', categorias: CAT_900 }),
+    );
+    expect(depois.item.categoriasCriadas).toEqual([900]);
+  });
+
+  it('⚠️ ACCEPTED RESIDUAL: a unit retried over its own landed CREATE stops naming the category too (it stands)', async () => {
+    const db = new FakeDb();
+    const item = caminhoItemLi('job-k8', '10');
+    db.falharEscrita(item, grpc(14, 'UNAVAILABLE'));
+    const deps = depsDoJob(db, 'job-k8');
+    const ctx = ctxQueCria(MODO_IMPORTACAO_LI.aplicar);
+    const f = simplesDetalhado(10, { sku: 'SKU-A', categorias: CAT_900 });
+    await expect(executarFamiliaLi(deps, ctx, f)).rejects.toMatchObject({ code: 14 });
+    expect(db.ler(`produtos/li-sku-${sha256('SKU-A')}`)).toMatchObject({ sku: 'SKU-A' });
+    db.falharEscrita(item, null);
+
+    const retry = await relatado(deps, ctx, f);
+    expect(retry.item).toMatchObject({ acao: 'criar', categoriasCriadas: [] });
+    expect(db.ler(`categorias/li-${CONTA}-900`)).toMatchObject({ nome: 'Roupas' });
   });
 });
 

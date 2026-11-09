@@ -226,7 +226,6 @@ async function rodarAteOFim(
     passos.push(passo);
     if (passo.tipo !== TIPO_PASSO_FOTOS_LI.progresso) return passos;
     atual = cursorFotosLiSchema.parse(JSON.parse(JSON.stringify(passo.cursor)));
-    expect(atual, 'o cursor relido').not.toBeNull();
   }
   throw new Error('fotos.test: a família não terminou');
 }

@@ -408,11 +408,11 @@ export function decidirDespachoLi(
 /* -------------------------------------------------------------------------- */
 
 /**
- * The job fields a checkpoint may write: the phase, the cursors, the catalogue's maps, the Simular
- * overlay, the counters, the 429 pauses and the photo flag. Never the status, `seq`, the motivo, the
- * end stamp, the conta or the options — each has its own writer. Whole values only: a cursor is
- * written as a whole object (a partial one would be completed with defaults by the schema and reset
- * its other fields), which the `Pick` of the parsed type enforces.
+ * The job fields a checkpoint may write: the phase, the cursors, a family's progress, the
+ * catalogue's maps, the Simular overlay, the counters, the 429 pauses and the photo flag. Never the
+ * status, `seq`, the motivo, the end stamp, the conta or the options — each has its own writer. Whole
+ * values only: a cursor is written as a whole object (a partial one would be completed with defaults
+ * by the schema and reset its other fields), which the `Pick` of the parsed type enforces.
  */
 export type ProgressoImportacaoLi = Partial<
   Pick<

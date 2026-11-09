@@ -176,8 +176,9 @@ carries the continuation `seq`, the cursors or the selection's ids.
   nothing and every query rides a declared index (`resolucao.test.ts` checks each one against
   `firestore.indexes.json`). Before a link is written, the produto's own links are read whole and
   judged by `vinculoLiDaContaEId`: one store product per conta per ERP produto. A SKU in conflict
-  in the store (`conflitosDeSkuNaLojaLi`, computed once per dispatch from the whole assembly: an
-  exact repeat, `sku-repetido-na-loja`, or a near duplicate, `sku-parecido-na-loja`, by the shared
+  in the store (`conflitosDeSkuNaLojaLi`, computed with the assembly, from the whole snapshot,
+  before anything is created: an exact repeat, `sku-repetido-na-loja`, or a near duplicate,
+  `sku-parecido-na-loja`, by the shared
   `skusParecidosNaLojaLi`) is matched only by an existing link or a variation's combination, and
   never created.
 - **Option links are learned in two passes**, under both actions: `importacao/evidencias.ts`
@@ -214,7 +215,8 @@ carries the continuation `seq`, the cursors or the selection's ids.
   at once, another writer's identical link during the run, and a MIRROR REFRESH this job landed,
   which reads `sem-mudanca` on the retry: `semMudanca +1`, its informational `vinculo-atualizado`
   lost, `vinculados` unaffected) and `familiaDoJob.ts` (a variation first matched by combination
-  loses its informational `sku-diferente` on the retry).
+  loses its `sku-diferente`, or its actionable `sku-repetido-na-loja` / `sku-parecido-na-loja`, on
+  the retry).
 - **The first dispatch is a TRIGGER's** (`functions/src/onImportacaoLojaIntegradaCriada.ts`,
   CREATE of `importacoesLojaIntegrada/{jobId}`): ONLY a job created `pendente` enqueues the named
   task `li-importacao-<jobId>-0` on the READS queue (zero reads; anything else returns with no
@@ -289,9 +291,12 @@ carries the continuation `seq`, the cursors or the selection's ids.
     `<conta>-<id>` — two tier-0 `create()`s, `ALREADY_EXISTS` re-read and judged before adopting; `nomeCompleto` from the ERP parent's
     stored breadcrumb, never the store's names joined. Always PLANNED first (the resolution run as
     Simular runs it: reads, no write) and created only for a produto about to take it — a create's
-    right before its batch, after every refusal — so a refused create leaves no category behind
-    and reports no category pendência. The item of the family that created a category names it
-    (`categoriasCriadas`; a later family that uses it names none).
+    right before its batch, after every refusal — so a create refused before its batch leaves no
+    category behind and reports no category pendência (a batch that then loses leaves the category
+    standing, and the item names it). The item of the family that created a category names it
+    (`categoriasCriadas`; a later family that uses it names none), but for a unit retried over its
+    own landed create or category fill, whose item stops naming it (`familiaDoJob.ts`, "A retried
+    family").
   - **The whole-family create** (`familiaNova.ts`): ids keyed by the SKU (`li-sku-<sha256>`,
     `-un` for a sole member), so two contas selling one SKU meet on one id; the planned ids read
     first; the create probe (`sondarSkusLi`, every SKU the batch writes, the "parecido" forms
