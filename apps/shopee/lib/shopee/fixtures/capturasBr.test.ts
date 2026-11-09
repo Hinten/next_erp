@@ -63,10 +63,12 @@ import {
   respostaLimitesDoItemShopeeSchema,
   respostaLimitesTabelaMedidasShopeeSchema,
   validarAtributosShopee,
+  varianteFakePath,
 } from '@delfrance/schemas';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { lerCanaisDaLoja } from '../anuncios/publicarAnuncio';
+import { montarTiers, reconciliarModelos } from '../anuncios/tiersPublicacao';
 import { planejarTaxonomia, tiersDoItem } from '../produtos/taxonomiaShopeeCore';
 import { type ShopeeTaxonomiaCtx, lerIndiceDeCategorias } from '../taxonomia/cache';
 import { construirIndice, ehFolha, raizes } from '../taxonomia/categorias';
@@ -765,6 +767,192 @@ describe(`pino 6 — ${FIXTURE_MODEL_LIST_BR_ANUNCIO_VARIACOES}`, () => {
         integracaoShopeeId: INTEGRACAO,
       }),
     ]);
+  });
+
+  it(`${FIXTURE_MODEL_LIST_BR_ANUNCIO_VARIACOES}: (#1911 P14a R3) sobre um grupo Cor JÁ vinculado, \`planejarTaxonomia\` grava 844758844060204 no Tamanho, e a opção do vendedor (id 0) liga pela LINHA armazenada — não pelo nome da variante`, async () => {
+    const lido = await modelos();
+    const tiers = tiersDe(lido);
+    const categoria = 100352;
+    // An INVENTED ERP grupo whose stored entry already binds the seller's id-0
+    // option (as the import or the legacy form wrote it, and P14's editor will) to
+    // a variante the operator named otherwise.
+    const linha = {
+      shopee_option_id: 0,
+      shopee_option_name: 'Opção inventada 1',
+      arakene_variation_id: ['v-erp'],
+    };
+    const plano = planejarTaxonomia({
+      tiers,
+      modelos: lido.model,
+      candidatos: [
+        {
+          id: 'g-cor',
+          raw: {
+            nome: 'Cor',
+            variacoes: [{ id: 'v-erp', nome: 'Cor do ERP' }],
+            linksVariacoesShopee: [
+              {
+                name: '',
+                category_id: categoria,
+                variation_id: VARIACAO_COR,
+                variation_group_list: 0,
+                integracaoShopeeId: INTEGRACAO,
+                variationOptions: [linha],
+              },
+            ],
+          },
+        },
+      ],
+      integracaoId: INTEGRACAO,
+      categoryId: categoria,
+      nomeCategoria: '',
+      nowMs: AGORA_MS,
+    });
+
+    const cor = plano.grupos.find((g) => g.grupoId === 'g-cor');
+    expect(cor?.criar).toBe(false);
+    // The seller's option sits at WIRE index 4 (pin 9 below); its four
+    // standard siblings bind nothing stored and are created by id.
+    expect(cor?.varianteIds).toEqual([
+      'shopee-9632',
+      'shopee-6245',
+      'shopee-9186',
+      'shopee-9179',
+      'v-erp',
+    ]);
+    const variacoes = (cor?.patch?.variacoes ?? []) as { readonly id: string }[];
+    // `casado.variacoes` first, then rung 4's pushes in wire order; no `n-` twin of
+    // the seller's option.
+    expect(variacoes.map((v) => v.id)).toEqual([
+      'v-erp',
+      'shopee-9632',
+      'shopee-6245',
+      'shopee-9186',
+      'shopee-9179',
+    ]);
+    const entradas = (cor?.patch?.linksVariacoesShopee ?? []) as {
+      readonly variationOptions: readonly { readonly shopee_option_id: number }[];
+    }[];
+    expect(entradas).toHaveLength(1);
+    expect(entradas[0]?.variationOptions.filter((o) => o.shopee_option_id === 0)).toEqual([linha]);
+    // The five models on that option carry the bound variante.
+    expect(
+      plano.combos.filter((c) => c.variacoesUid?.includes(varianteFakePath('g-cor', 'v-erp')))
+        .length,
+    ).toBe(5);
+
+    const tamanho = plano.grupos.find((g) => g.grupoId === `shopee-${String(VARIACAO_TAMANHO)}`);
+    expect(tamanho?.criar).toBe(true);
+    expect(tamanho?.docNovo?.linksVariacoesShopee).toEqual([
+      expect.objectContaining({
+        variation_id: VARIACAO_TAMANHO,
+        variation_group_list: GRUPO_TAMANHO_BR,
+        integracaoShopeeId: INTEGRACAO,
+      }),
+    ]);
+  });
+
+  it(`${FIXTURE_MODEL_LIST_BR_ANUNCIO_VARIACOES}: (#1911 P14a M1) o corpo commitado pela PUBLICAÇÃO: a opção do vendedor (id 0) sob a variação padrão pareia pela linha {0, …}, no índice 4 — e o republish não muda nada`, async () => {
+    const lido = await modelos();
+    const categoria = 100352;
+    const entradaDe = (
+      variationId: number,
+      grupoVariacao: number,
+      linha: {
+        readonly shopee_option_id: number;
+        readonly shopee_option_name: string;
+        readonly arakene_variation_id: readonly string[];
+      },
+    ) => ({
+      name: '',
+      category_id: categoria,
+      variation_id: variationId,
+      variation_group_list: grupoVariacao,
+      integracaoShopeeId: INTEGRACAO,
+      variationOptions: [linha],
+    });
+    // The capture's model on that option and Tamanho P (public taxonomy, 6857). Its
+    // id and SKU are read back from the body, never named here (this file's header).
+    const modelo = lido.model.find((m) => m.tier_index.join() === '4,1');
+    expect(modelo).toBeDefined();
+    const sku = modelo?.model_sku ?? null;
+    expect(sku).not.toBeNull();
+
+    const r = montarTiers({
+      integracaoId: INTEGRACAO,
+      categoryId: categoria,
+      bandaDeEstoque: null,
+      bandaNomeDoTier: null,
+      bandaNomeDaOpcao: null,
+      viva: lido,
+      grupos: [
+        {
+          grupoId: 'g-cor',
+          nome: 'Cor',
+          ordem: 1,
+          permiteFotos: false,
+          variacoes: [{ varianteId: 'v-erp', nome: 'Cor do ERP', ordem: 0 }],
+          linksVariacoesShopee: [
+            entradaDe(VARIACAO_COR, 0, {
+              shopee_option_id: 0,
+              shopee_option_name: 'Opção inventada 1',
+              arakene_variation_id: ['v-erp'],
+            }),
+          ],
+        },
+        {
+          grupoId: 'g-tam',
+          nome: 'Tamanho',
+          ordem: 2,
+          permiteFotos: false,
+          variacoes: [{ varianteId: 'v-p', nome: 'P', ordem: 0 }],
+          linksVariacoesShopee: [
+            entradaDe(VARIACAO_TAMANHO, GRUPO_TAMANHO_BR, {
+              shopee_option_id: 6857,
+              shopee_option_name: 'P',
+              arakene_variation_id: ['v-p'],
+            }),
+          ],
+        },
+      ],
+      filhos: [
+        {
+          produtoId: 'p-filho',
+          sku,
+          gtin: null,
+          ordem: 1,
+          variacoesUid: [varianteFakePath('g-cor', 'v-erp'), varianteFakePath('g-tam', 'v-p')],
+          preco: 10,
+          estoque: 5,
+          fotos: [],
+          linkModelId: null,
+          linkDocId: 'l-filho',
+          tierIndexArmazenado: null,
+        },
+      ],
+    });
+    expect(r.problemas).toEqual([]);
+    expect(r.tiers[0]?.opcoes).toHaveLength(5);
+    expect(r.tiers[0]?.opcoes[4]?.varianteId).toBe('v-erp');
+    expect(r.modelos.map((m) => m.tier_index)).toEqual([[4, 1]]);
+
+    const plano = reconciliarModelos({
+      montados: r.modelos,
+      armazenados: [
+        {
+          produtoId: 'p-filho',
+          linkDocId: 'l-filho',
+          modelId: modelo?.model_id ?? 0,
+          modelSku: sku,
+          tierIndex: [4, 1],
+        },
+      ],
+      viva: lido,
+      profundidadeNossa: r.tiers.length,
+    });
+    expect(plano.acao).toBe('nenhuma');
+    expect(plano.modelList).toHaveLength(25);
+    expect(plano.modelosSemFilho).toHaveLength(24);
   });
 
   it(`${FIXTURE_MODEL_LIST_BR_ANUNCIO_VARIACOES}: 25 modelos, 25 \`tier_index\` distintos`, async () => {

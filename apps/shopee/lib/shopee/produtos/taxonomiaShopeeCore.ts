@@ -239,6 +239,9 @@ function inteiroOuZero(v: number | null | undefined): number {
  * STORED ERP grupo/variante name verbatim against this fold's output (`'Cor '`
  * ≠ `'Cor'` is pinned there), and {@link mesmaOpcao} compares two stored option
  * names byte-exact. Those are step 9's decisions; #1911 did not change them.
+ * The ONE import consumer is rung 1's custom-option arm (#1911 P14a), which
+ * reads the stored id-`0` row the publisher pairs a live custom option with —
+ * so it folds both sides exactly as the publisher does.
  */
 export function nomeDeTierShopee(nome: string | null | undefined): string {
   return typeof nome === 'string' ? nome.trim() : '';
@@ -569,6 +572,42 @@ function entradaDoGrupo(
   return resolucao.tipo === 'armazenada' ? resolucao.entrada : null;
 }
 
+/**
+ * The stored option row a LIVE option stands for in a grupo's entry — the ONE
+ * answer, shared by rung 1 of the variante cascade and the publisher
+ * (`anuncios/tiersPublicacao.ts`), so the two cannot disagree on the ROW. They
+ * differ only in the variante they read from it: rung 1 takes
+ * `arakene_variation_id[0]` (the legacy `.first`), the publisher prefers the one a
+ * child of its publish uses.
+ *
+ * - A STANDARD option (id ≠ `0`): the row carrying the same non-zero
+ *   `shopee_option_id`, whatever the names say.
+ * - A CUSTOM option (id `0`, #1911 P14a R3): the id-`0` row whose
+ *   `shopee_option_name` equals the live name through {@link nomeDeTierShopee},
+ *   on BOTH sides.
+ *   Before R3, rung 1 read only non-zero rows and rung 2 compared the live name
+ *   with the VARIANTE's, so the first re-import after a variante was renamed minted
+ *   a twin (`n-<slug>`), and later ones bound that twin at rung 2 and wrote nothing,
+ *   while the publisher still paired the row.
+ *
+ * EQUAL: `'Cor inventada '` (stored, trailing space) ≡ live `'Cor inventada'`.
+ * DISTINCT: case (`'cor inventada'`) and inner whitespace (`'Cor  inventada'`),
+ * as everywhere this fold runs; and a NON-ZERO row is never matched by name, nor
+ * a non-zero live option by an id-`0` row's name — `0` is custom, not a wildcard.
+ */
+export function linhaDaOpcaoNaEntrada(
+  entrada: { readonly variationOptions: readonly LinkVariacaoOpcaoShopee[] },
+  opcao: Pick<OpcaoDeTierShopee, 'optionId' | 'nome'>,
+): LinkVariacaoOpcaoShopee | undefined {
+  if (opcao.optionId !== 0) {
+    return entrada.variationOptions.find((o) => o.shopee_option_id === opcao.optionId);
+  }
+  const nomeVivo = nomeDeTierShopee(opcao.nome);
+  return entrada.variationOptions.find(
+    (o) => o.shopee_option_id === 0 && nomeDeTierShopee(o.shopee_option_name) === nomeVivo,
+  );
+}
+
 /** The grupo one tier resolved to, and how. */
 export interface GrupoPlanejado {
   readonly grupoId: string;
@@ -649,9 +688,12 @@ export interface ArgsPlanejarTaxonomia {
  * **Variante cascade**, in order, over the grupo's embedded `variacoes`:
  *  1. the grupo's stored `(integração, category)` entry — the one the shared
  *     binding key resolves, the same the publisher reads — its `variationOptions`
- *     row whose **non-zero** `shopee_option_id` equals ours ⇒
- *     `arakene_variation_id[0]` (the FIRST, matching the legacy export's own
- *     `.first`) — accepted only if that variante still exists;
+ *     row whose **non-zero** `shopee_option_id` equals ours, or, for a CUSTOM
+ *     option (id `0`), the id-`0` row whose name equals ours through
+ *     {@link nomeDeTierShopee} (the publisher's own pairing, #1911 P14a — see
+ *     `linhaDaOpcaoNaEntrada`) ⇒ `arakene_variation_id[0]` (the FIRST, matching
+ *     the legacy export's own `.first`) — accepted only if that variante still
+ *     exists, else the option falls through to rung 2;
  *  2. exact `nome`;
  *  3. the two single-class literal swaps, gender vowel then space⇄hyphen,
  *     **never combined**;
@@ -709,12 +751,11 @@ export function planejarTaxonomia(args: ArgsPlanejarTaxonomia): PlanoDeTaxonomia
     for (const opcao of tier.opcoes) {
       const lidas = variacoes.map(lerVariante).filter((v): v is VarianteLida => v !== null);
 
-      // Rung 1 — the operator's own option mapping.
+      // Rung 1 — the operator's own option mapping: the row the PUBLISHER pairs
+      // this live option with (by id, or — a custom option — by folded name).
       let alvo: VarianteLida | null = null;
-      if (opcao.optionId !== 0 && entradaArmazenada !== null) {
-        const linha = entradaArmazenada.variationOptions.find(
-          (o) => o.shopee_option_id === opcao.optionId,
-        );
+      if (entradaArmazenada !== null) {
+        const linha = linhaDaOpcaoNaEntrada(entradaArmazenada, opcao);
         const primeiro = linha?.arakene_variation_id[0];
         alvo = primeiro !== undefined ? (lidas.find((v) => v.id === primeiro) ?? null) : null;
       }
