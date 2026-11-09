@@ -25,6 +25,7 @@
  */
 import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { ZodError } from 'zod';
 import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
 import {
   grupoDeVariacoesCollection,
@@ -117,6 +118,23 @@ import { avisarCategoriaSemVinculoLi, chaveCategoriaSemVinculoLi } from './aviso
 import { cancelarImportacaoLi } from './job';
 import { PIOR_CASO_UNIDADE_IMPORTACAO_LI_MS } from './orcamento';
 
+/** The cursor one test makes the photo step hand back; `null` (every other test) runs the real one. */
+const cursorDeFotoForcado = vi.hoisted(() => ({ valor: null as unknown }));
+
+vi.mock('./fotos', async (importOriginal) => {
+  const real = await importOriginal<typeof import('./fotos')>();
+  return {
+    ...real,
+    executarUnidadeDeFotoLi: (...args: Parameters<typeof real.executarUnidadeDeFotoLi>) => {
+      const cursor = cursorDeFotoForcado.valor;
+      if (cursor === null) return real.executarUnidadeDeFotoLi(...args);
+      // One unit only: a checkpoint that lets it through fails the test, never spins the dispatch.
+      cursorDeFotoForcado.valor = null;
+      return Promise.resolve({ tipo: real.TIPO_PASSO_FOTOS_LI.progresso, cursor, downloads: 0 });
+    },
+  };
+});
+
 const sha256Hex = (texto: string) => createHash('sha256').update(texto, 'utf8').digest('hex');
 
 const CONTA = 'conta-li-despacho';
@@ -140,6 +158,7 @@ beforeEach(() => {
   gravador = gravadorDeLog();
 });
 afterEach(() => {
+  cursorDeFotoForcado.valor = null;
   expect(fetchGlobal).not.toHaveBeenCalled();
   vi.unstubAllGlobals();
   __resetAllReadCaches();
@@ -2544,6 +2563,45 @@ describe('complete — the dispatch', () => {
       expect.objectContaining({ codigo: 'foto-recusada', acionavel: false }),
     );
     expect(jobGravado().contadores).toMatchObject({ fotos: 1, vinculados: 1 });
+    // The result the closing is handed, as it was checkpointed: the produto's outcome rides it too.
+    const comResultado = escritasDoJob()
+      .map(
+        (e) => (e.dados as { progressoDaFamilia?: ProgressoDaFamiliaLi | null }).progressoDaFamilia,
+      )
+      .find((p) => p !== null && p !== undefined && p.resultadoFotos !== null);
+    expect(comResultado?.resultadoFotos).toMatchObject({
+      gravadas: 1,
+      produtos: [{ produtoId: 'caneca', liId: null, desfecho: 'importadas', fotos: 1 }],
+    });
+  });
+
+  it('a photo step handing back a cursor off the contract fails its unit, and nothing is checkpointed: read back, that value would be "no progress" with nothing to say why', async () => {
+    db.seed('produtos/caneca', { nome: 'Caneca', sku: 'LI-20', paiId: null, filhoUnicoId: null });
+    const emCurso = {
+      ...progressoDe(20),
+      erpRaizId: 'caneca',
+      alvos: [{ produtoId: 'caneca', liId: null }],
+    };
+    seedSnapshotDeFamilias([20], {
+      modo: 'aplicar',
+      acao: 'completar',
+      fotos: 'soSemFotos',
+      progressoDaFamilia: emCurso,
+    });
+    cursorDeFotoForcado.valor = {
+      produtoId: 'caneca',
+      proxima: -1,
+      reduzida: false,
+      enviadas: [],
+      feitos: [],
+      recusadas: [],
+    };
+    const { deps } = montarDeps({
+      bucket: () => asBucket(new FakeBucket()),
+      responder: lojaCompleta({ ativos: [] }),
+    });
+    await expect(despacharImportacaoLi(asDb(db), tarefa(0), deps)).rejects.toBeInstanceOf(ZodError);
+    expect(jobGravado().progressoDaFamilia).toEqual(emCurso);
   });
 
   it('the category a preparation creates rides the very checkpoint of its progress, and stands after the closing', async () => {

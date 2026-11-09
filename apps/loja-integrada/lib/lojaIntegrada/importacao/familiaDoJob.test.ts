@@ -23,6 +23,7 @@ import {
   ACAO_IMPORTACAO_LI,
   ACAO_ITEM_IMPORTACAO_LI,
   ALVO_IMPORTACAO_LI,
+  CAMINHO_DO_COMPLETAR_LI,
   CATEGORIAS_IMPORTACAO_LI,
   DESFECHO_FOTOS_DO_PRODUTO_LI,
   type GrupoComLinksLi,
@@ -2447,6 +2448,50 @@ describe('complete — a family closed through its progress reports what ONE uni
       expect.objectContaining({ codigo: 'conflito-de-escrita', referencias: ['outra-raiz'] }),
     );
     expect(db.ler(vinculo('caneca', '20'))).toBeUndefined();
+  });
+
+  it('the progress records the create carried out ⟷ NEAR-MISS a family the ERP has records none', async () => {
+    const ctx = { ...contextoCompletar(MODO_IMPORTACAO_LI.aplicar), importarFotos: true };
+    const criada = await executarFamiliaLi(
+      depsDoJob(new FakeDb(), 'job-u6'),
+      ctx,
+      simplesDetalhado(10, { sku: 'SKU-A' }, { imagens: [IMAGEM] }),
+    );
+    expect(criada).toMatchObject({
+      tipo: 'fotos',
+      progresso: { caminho: CAMINHO_DO_COMPLETAR_LI.criada, criacaoAplicada: true },
+    });
+
+    const db = new FakeDb();
+    db.seed('produtos/caneca', { nome: 'Caneca', sku: 'CAN', paiId: null, filhoUnicoId: null });
+    const existente = await executarFamiliaLi(
+      depsDoJob(db, 'job-u6'),
+      ctx,
+      simplesDetalhado(20, { sku: 'CAN' }, { imagens: [IMAGEM] }),
+    );
+    expect(existente).toMatchObject({
+      tipo: 'fotos',
+      progresso: { caminho: CAMINHO_DO_COMPLETAR_LI.existente, criacaoAplicada: false },
+    });
+  });
+
+  it('a progress naming a category twice names it once on the item ⟷ NEAR-MISS two categories are both named, in order', async () => {
+    const db = new FakeDb();
+    db.seed('produtos/caneca', { nome: 'Caneca', sku: 'CAN', paiId: null, filhoUnicoId: null });
+    const f = simplesDetalhado(20, { sku: 'CAN' }, { imagens: [IMAGEM] });
+    const ctx = { ...contextoCompletar(MODO_IMPORTACAO_LI.aplicar), importarFotos: true };
+    const deps = depsDoJob(db, 'job-u7');
+    const r = await executarFamiliaLi(deps, ctx, f);
+    if (r.tipo !== 'fotos') throw new Error(`esperava fotos, veio ${r.tipo}`);
+
+    const fechada = await fecharFamiliaLi(
+      deps,
+      ctx,
+      f,
+      { ...r.progresso, categoriasCriadas: [900, 900, 901] },
+      NENHUMA_FOTO_GUARDADA,
+    );
+    expect(fechada.item.categoriasCriadas).toEqual([900, 901]);
   });
 });
 

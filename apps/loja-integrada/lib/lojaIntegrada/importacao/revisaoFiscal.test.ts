@@ -429,6 +429,17 @@ describe('the carry-forward — the conta’s earlier aplicar jobs', () => {
     expect(r.abertos).toBe(1);
     expect(r.estado.anteriorJobId).toBe('job-anterior');
   });
+
+  it('a stray position on a cursor with no source yet never reaches the first source: it is copied from its first entry', async () => {
+    const db = new FakeDb();
+    seedEsteJob(db);
+    seedJob(db, 'job-anterior', 400);
+    seedEntrada(db, 'job-anterior', 'p1');
+    seedProduto(db, 'p1');
+    const r = await rodarFase(deps(db), { ...INICIAL, depoisProdutoId: 'p9' });
+    expect(listaDe(db)).toEqual(['p1']);
+    expect(r.abertos).toBe(1);
+  });
 });
 
 describe('the re-check — where the cursor ends', () => {
