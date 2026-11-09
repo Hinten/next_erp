@@ -39,9 +39,8 @@
  * the store keeps one per variation.
  *
  * Units ({@link medidasErpDoDetalheLi}, the ONE place they are converted): the store's weight is
- * read as kilograms and its dimensions as centimetres. ⚠️ That is an INFERENCE from the store's
- * panel, awaiting the owner's confirmation; a different unit changes that one function. The weight
- * is rounded to the gram — the precision the ERP's weight field is edited at — which also absorbs
+ * in kilograms and its dimensions in centimetres — the store's own units, the ERP's too, decided
+ * 2026-11-09 on the owner's confirmation — so neither is scaled. The weight is rounded to the gram — the precision the ERP's weight field is edited at — which also absorbs
  * the float noise a decimal text such as `"0.450000000000000011…"` parses to; a weight below half a
  * gram rounds to nothing, never to a `0` that would fill the field for good. Dimensions are kept as
  * read (the store sends integers).
@@ -216,8 +215,8 @@ const GRAMAS_POR_KG = 1000;
 /**
  * THE unit conversion of the import (module header, "Units"): the detail's measures as the ERP
  * stores them — the weight in kg rounded to the gram, the dimensions in cm as read. A weight that
- * rounds to zero is nothing. ⚠️ kg and cm are an inference awaiting the owner's confirmation:
- * change this function, and only this one, if they turn out otherwise.
+ * rounds to zero is nothing. kg and cm are the store's own units (decided 2026-11-09), so nothing
+ * is scaled; a unit change would be made in this function, and only this one.
  */
 export function medidasErpDoDetalheLi(
   detalhe: Pick<ProdutoLiDetalhado, 'pesoKg' | 'alturaCm' | 'larguraCm' | 'profundidadeCm'> | null,

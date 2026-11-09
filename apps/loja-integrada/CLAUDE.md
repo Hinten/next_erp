@@ -325,7 +325,8 @@ carries the continuation `seq`, the cursors or the selection's ids.
     value of another shape — tier 1 `update(patch, { lastUpdateTime })` on the attempt's read,
     re-planned on a loss (≤ 3), a lost reply recognised by `guardaOPatchLi`; an absent `extraData`
     created with only the filled keys; a kit root's rollup fields never. ONE unit conversion,
-    `medidasErpDoDetalheLi` (weight in kg, box in cm: an inference still to be confirmed). The
+    `medidasErpDoDetalheLi` (weight in kg, box in cm: the store's own units, decided 2026-11-09,
+    so nothing is scaled). The
     variations take the category the ROOT's fill left (the one it wrote, else the one its last
     read found — an operator's landed meanwhile — else none), never the pre-fill guess.
   - **Photos** (`fotos.ts`), onto a produto with NONE: through `contexto.cdn` only, the ORIGINAL
