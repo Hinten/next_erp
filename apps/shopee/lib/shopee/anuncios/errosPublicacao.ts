@@ -143,8 +143,8 @@ export type MotivoPublicacaoBloqueada =
    * no position in a grupo's tier (the model cannot be placed), its grupo's
    * binding entry is unreadable, a variante is bound to no option of the
    * standardised variation, a live option position cannot be read back, or
-   * (#1911 P7) an unpaired custom tier would be re-coded in place on an
-   * update — the last two raised by the model leg after `update_item`. The
+   * (#1911 P7, #2043) an unpaired tier, custom or standard, would be re-coded
+   * in place on an update — the last two raised by the model leg after `update_item`. The
    * kit arm (`kits/planoKit.ts`) raises it for a child with no variante in the
    * kit's grupo.
    */

@@ -1213,46 +1213,159 @@ every republish. A blank name is refused on both paths and whatever the band,
 since our client's `assertTextoNaoVazio` would refuse it only after the create.
 A `null` band checks no length — the behaviour before the review.
 
-**The re-code refusal (Q2).** A custom tier has no identity but its NAME. On an
-update it pairs with a live CUSTOM tier only when the names are equal through
-the NAME fold above. A STANDARD live tier is claimed only
+**The re-code refusal (Q2, #2043).** A custom tier has no identity but its NAME.
+On an update it pairs with a live CUSTOM tier only when the names are equal
+through the NAME fold above. A STANDARD live tier is claimed only
 by a stored entry carrying its `variation_id`. An unpaired grupo used to be
 rebuilt from the ERP alone while every live model kept its old `tier_index`, so
 each model silently pointed at ANOTHER option, with the wrong stock and price
 per variant and nothing to detect it afterwards. Now, when the model leg will
-rewrite the tiers IN PLACE, a custom grupo that pairs with no live tier is
-refused: "Importe o anúncio ou ajuste o nome do grupo". "In place" is
+rewrite the tiers IN PLACE, ANY grupo that pairs with no live tier is refused
+`variacao-sem-vinculo`, whatever its `variation_id`. "In place" is
 `reconciliarModelos`'s own predicate, shared and not copied
 (`reconstroiAEstrutura`): some live model has a `model_id > 0` and the live
-depth equals ours. The refusal covers the implicit fallback AND a STORED
-`variation_id: 0` entry; the import writes those, and the legacy export named
-its custom tiers by `tipo` (`Cor`, `Tamanho`), so a migrated listing can hit it
-on its first republish. It fires in the model leg after `update_item`, where it
-is stamped and recoverable. Neither of these is refused: a depth change
+depth equals ours. It fires in the model leg after `update_item`, where it is
+stamped and recoverable. Neither of these is refused: a depth change
 (1→2, 2→1), and a listing with no addressable model. Both are
-`init_tier_variation`, which re-creates every model, so nothing can be re-coded.
+`init_tier_variation`, which re-creates every model, so nothing can be re-coded;
+an unpaired grupo's live options are replaced there, because the tier is
+re-authored from the ERP. The two cases get two different sentences:
+
+- A CUSTOM grupo (the implicit fallback, or a STORED `variation_id: 0` entry):
+  "Importe o anúncio ou ajuste o nome do grupo". The import writes those
+  entries, and the legacy export named its custom tiers by `tipo` (`Cor`,
+  `Tamanho`), so a migrated listing can hit it on its first republish. Which half
+  of the sentence can work depends on the live tier. Facing a live CUSTOM tier,
+  only a rename exits (the grupo's, or the tier's in Seller Centre): the pairing
+  reads `grupo.nome` and the live name, and an import changes neither, because its
+  grupo patch never names `nome` and an existing child's `variacoesUid` is
+  fill-only, so `lerGrupos` keeps reading the same grupo. So that migrated listing
+  (legacy `Cor` against a grupo named otherwise) exits only by a rename, never by
+  the import. Facing a live STANDARD tier, an import heals a stored `0` or an
+  absent entry, but only when its grupo cascade lands on this grupo; with a
+  `shopee-<id>` grupo in the memo it lands there, and this grupo stays refused.
+  Pinned in `tiersPublicacao.test.ts` (Q2).
+- A STANDARD grupo (#2043) — a stored entry whose non-zero `variation_id` no
+  live tier carries, or whose tier another grupo storing the same id already
+  claimed (a live tier pairs with ONE grupo, the first in `grupos`; a second one is
+  refused, and there the sentence's «nenhum tier» reads false, which is accepted
+  because it fails closed and the text is the spec's): "O vínculo do grupo "{G}"
+  usa a variação padronizada {id}, que nenhum tier do anúncio tem — … Corrija o
+  vínculo em Variações (aba Shopee) para a variação que o anúncio usa." Never
+  "Importe": the import's merge never overwrites a non-zero stored `variation_id`
+  (`../produtos/taxonomiaShopeeCore.ts`, `fundirLinksVariacoesShopee`), so a
+  re-import cannot clear it: the entry keeps its id, and the merge only appends the
+  live options' rows to it. The way out is the binding. Such an entry is
+  import-written (the live tier was later recreated in Seller Centre under
+  another standard variation, or as a custom tier with another name),
+  legacy-authored (the Flutter form wrote this array in the migrated corpus and
+  let the operator pick the standard `variation_id`), or re-bound on purpose in
+  P14's binding editor. Until that editor ships, Variações has no field for the
+  binding, so the refusal has no in-app exit yet — still the safe side: it
+  fails closed, stamped, after `update_item`. Without it, the rebuild authored
+  only the options a child uses, so a live model with no child kept a
+  `tier_index` that now named another option (or pointed past the list), a
+  child with no stored `model_id` and no SKU bound by its NEW coordinate (the
+  synthetic pass) and could take over another variant's model, and in a
+  two-level listing the unpaired tier was appended LAST, reading every
+  child-less model across swapped axes.
 
 - A grupo `'Cor '` facing a live `'Cor'` PAIRS (the NAME fold); `'cor'` or
   `'C or'` does not, and is refused like any renamed grupo. The batch-A review
   inverted the old `'Cor '` ≠ `'Cor'` near-miss on purpose: the reader trims, so
   a byte-exact pairing could never match a padded name.
-- Addressable live models with NO readable tier (both trees absent, or every
-  tier nameless and dropped by `tiersDoItem`) leave nothing to pair with. The
-  live depth still comes from the models' `tier_index` (from the tree length
-  only when every `tier_index` is empty). At OUR depth, or when no depth can be
-  read at all, the leg would update in place and a custom grupo is refused; at
-  any other depth it is `init_tier_variation`, so nothing is refused. The real
-  wire always carries the tier tree with the models.
-- **Not covered:** an unpaired grupo whose STORED entry is STANDARD
-  (`variation_id ≠ 0`) is still rebuilt in place at the same depth, as before
-  #1911 — Q2 decided the custom tiers only. Models bound by `model_id` or SKU
-  follow their child; a child bound only by coordinate, or a live model with
-  no child, can be re-coded. Reachable today only after a live standard tier
-  was recreated or renamed in Seller Centre over an import-written entry; P14's
-  binding editor makes it reachable on purpose. Refusing any grupo left
-  unpaired at the same depth, whatever its `variation_id`, is the batch-A
-  review's known item 2 — a follow-up, not #1911's. No test pins either
-  behaviour yet.
+- Addressable live models with NO readable tier (both trees absent, every tier
+  nameless and dropped by `tiersDoItem`, or only `standardise_tier_variation`
+  present, since `tiersDoItem` iterates `tier_variation`) leave nothing to pair
+  with. The live depth still comes from the models' `tier_index` (from the tree
+  length only when every `tier_index` is empty). At OUR depth, or when no depth can
+  be read at all, the leg would update in place and ANY grupo is refused, custom or
+  standard; at any other depth it is `init_tier_variation`, so nothing is refused.
+  No committed capture shows these shapes, or trees of different lengths
+  (`types.ts` tolerates every combination). Every committed body with models carries
+  both trees at equal length. In the standard-tree-only and length-mismatch shapes
+  a stored standard grupo gets the #2043 sentence although its id may be live on
+  the wire: it fails closed, but the sentence can be inaccurate.
+- A grupo whose STORED entry is STANDARD and does not pair is refused like a
+  custom one (#2043, the batch-A review's known item 2): stored 88 against a
+  live 77 at the same depth with addressable models is refused with no tier and
+  no model (`tiersPublicacao.test.ts` (2c-bis), and end to end in
+  `tiersPublicacao.republicar.test.ts`: after `update_item`, stamped, and the
+  model leg sends nothing); 77 against 77 pairs; 88 with a depth change or with
+  no addressable model is `init`.
+- ⚠️ Not covered (flagged, not probed): a live CUSTOM tier is claimed by NAME
+  alone, whatever the grupo's entry says, so a grupo with a stored STANDARD
+  entry pairs with a live custom tier of the same name and is sent in place
+  under that standard `variation_id`, over live options that all have id `0`.
+  Positions are kept, so nothing is re-coded; the local outcome is pinned in
+  (2c-bis), and only Shopee's acceptance of that body stays unmeasured. The inverse
+  (a stored custom entry against a live standard tier) is refused and pinned.
+- ⚠️ Not covered either (flagged, not probed): a paired STANDARD tier is sent with
+  the STORED `variation_group_list`, not the live group. One entry holds one group
+  per (grupo, conta, leaf) and the import never overwrites a non-zero one, so a
+  listing in another group of the same variation re-sends its live option ids under
+  the stored group whenever the model leg sends. A stored `0` omits the key, and a
+  re-import heals only that case. Shopee's reaction is unmeasured.
+
+**The ERP never renames a LIVE option it keeps (#1911 P14a, M1; Lucas, Q1 = A).**
+Whenever the model leg sends `update_tier_variation`, every live option of a tier
+that PAIRS goes under its OWN current name (`nomeDeTierShopee(viva.nome)`), never
+the paired variante's; a republish whose leg plans `acao: 'nenhuma'` sends no tier
+body at all, because `reconciliarModelos` never compares option names. Only a
+nameless live option — possible only beside a non-zero option id, which
+`tiersDoItem` keeps — falls back to its stored row's `shopee_option_name`, then to
+the variante's name. The row's name counts even when its variante has left the
+grupo (the position then pairs no variante); with no name anywhere the blank is
+sent as it stands, beside the non-zero id, exactly as main does, and what Shopee
+does with it is unmeasured. On a create (and for any option the live tree lacks,
+and for every option of an unpaired tier on the `init` arm) an option bound by a
+stored row sends that row's name; an unbound custom option sends the variante's. So
+a listing created with a standard «Azul Turquesa» bound to an ERP variante named
+otherwise keeps «Azul Turquesa» on every republish (before, any such send carried
+the variante's name instead).
+
+Why the echo: a standard option's name is Shopee's catalogue string, and Shopee's
+reaction to an ERP string beside a non-zero option id is unmeasured: it may ignore
+the string, refuse after `update_item` or rename the standardised value. The echo
+changes nothing under any of those, because it re-sends what Shopee already holds.
+Whether Shopee accepts the echo itself is also unmeasured (register 317):
+announcement 873 forbids any name beside a non-zero VARIATION id, and if the option
+level mirrors it, this leg is refused as it was before P14a. Also, a custom option's
+name IS the identity the next pairing finds it by: the publisher and the import's
+variante rung 1 find its stored id-`0` row through ONE function, by that same fold
+(`linhaDaOpcaoNaEntrada`, `../produtos/taxonomiaShopeeCore.ts`).
+
+A row may bind several variantes, and a live option then stands for the first of
+them, in grupo order, that a child of THIS publish uses, else the first in grupo
+order. So a family whose children each use one variante of the row republishes;
+two children on two variantes of one row still fall on one option and are refused
+(`combinacao-duplicada`).
+
+Renaming an option is a Seller Centre act, and the two kinds behave differently. A
+renamed STANDARD option pairs by id: the next update echoes the new name and moves
+nothing, and the import leaves the old text on the stored row (the merge only fills
+a BLANK name). A renamed CUSTOM option matches no stored row, so unless an ERP
+variante already has exactly the new name, the import mints `n-<slug>` and appends a
+row beside the old one, and the child stays on the old variante (`variacoesUid` only
+fills a blank). The next update then keeps the new option at its index, re-appends
+the OLD name for that child's variante and moves the model there, which leaves the
+new option with no model. The same happens with no import at all, and whether Shopee
+accepts that body is unmeasured. To keep a custom rename, rename the ERP variante to
+the same name BEFORE importing: the live option then pairs by the variante's name
+and nothing moves. Once a twin exists that no longer works, and the child has to
+move to the twin.
+
+Two consequences for the option duplicate check, whose custom key is the name SENT.
+(1) A second variante named like a live custom option that a stored row already
+gives to another variante now collides (`combinacao-duplicada`) instead of renaming
+the live option and appending a twin. (2) Two live custom options bound to ONE
+variante no longer collide by name, because each keeps its own. They are refused by
+variante instead (`combinacao-duplicada`, a second key on the variante id, custom
+options only): without that refusal a full grid would fail loudly (the client's
+repeated-`tier_index` guard, a `ShopeeConfigError` after `update_item`), and only a
+free coordinate would reach Shopee, moving a model onto another option. Two variantes
+of the SAME name with their OWN rows are not a collision: the key is the id. Pinned
+in `tiersPublicacao.test.ts` (2d-bis).
 
 ### A depth change invalidates every `model_id` — rewrite in place, never delete
 
@@ -1472,9 +1585,10 @@ with the item already written: a live option position that cannot be read back
 (`variacao-sem-vinculo`), a tier's option union with the live options past the
 wire cap or an option name it now sends outside its band (`opcoes-demais` — the
 tier and model counts are the plan's own, so they cannot newly fail here), and
-#1911 P7's custom-tier re-code
-(`variacao-sem-vinculo`: an unpaired custom tier that `update_tier_variation`
-would rewrite IN PLACE — "Importe o anúncio ou ajuste o nome do grupo",
+#1911 P7's re-code refusal
+(`variacao-sem-vinculo`: an unpaired tier that `update_tier_variation` would
+rewrite IN PLACE — custom: "Importe o anúncio ou ajuste o nome do grupo";
+standard since #2043: "Corrija o vínculo em Variações (aba Shopee)…",
 `tiersPublicacao.ts`). The listing exists, so the next publish resumes as an
 update and runs the leg again; the CLI's `LINHAS_DO_BLOQUEIO` already warns
 that a `--live` refusal can follow the `update_item`. In this folder every
@@ -1800,6 +1914,7 @@ a regression.
 | 311 | where Shopee's `get_item_list` offset cap ("get items offset over limit", `error_param`) sits for an UN-narrowed walk, against the 100-page / 10 000-row ceiling the kit scan and the first create's look-up share (#1911 P5b) | ⏳ BR shop: one un-narrowed walk to the end. A cap below 10 000 ⇒ every first create (and every kit create) on a shop past it throws that `error_param` — nothing sent, the lock released (fail closed); the fix would be a narrowed walk, the mass import's documented mitigation (follow-up #2064)                                                                                             |
 | 312 | `get_item_base_info` returns every item `get_item_list` lists under `STATUS_BUSCA_KIT` (incl. `BANNED`, `REVIEWING`) (#1911 P6)                                                                                                | ⏳ BR shop: one page plus its base-info batch, compare the id sets. A systematic omission ⇒ every first create (and every kit create) on that conta refuses `busca-de-anuncio-existente-incompleta` / `busca-de-kit-incompleta` — fail closed; the fix would be to narrow the statuses. The kit arm's SECOND base-info read (a resumed `--recriar` / `--converter-em-kit`) is #2065's (PR #2073) |
 | 313 | a full first-create same-SKU walk (⌈n/100⌉ `get_item_list` + ⌈n/50⌉ `get_item_base_info`) of the largest conta (2 000–10 000 listings, Lucas) fits the route's 180 s less the 30 s margin (#1911 P6)                           | ⏳ BR shop: time one read-only walk (`--dry-run` walks nothing). Too slow ⇒ every route first create there answers 409 `PUBLICACAO_EXPIRADA` on every retry — nothing sent, the lock released — and the CLI (the lock's 300 s) is the path; the tab names the Seller-Centre exit instead (#1911 P11); follow-up #2064 would narrow the walk                                                      |
+| 317 | Shopee's answer to a `variation_option_name` beside a non-zero `variation_option_id` on `update_tier_variation`, when the name is the live option's own (#1911 P14a, R2)                                                       | ⏳ BR shop: the first republish of a listing with a standard option. A refusal arrives after `update_item`, in the model leg, as a provider failure naming no cause                                                                                                                                                                                                                              |
 
 Also unmeasured, and not a register line: nothing in this folder has met a BR
 shop. The `esperar` of 5 000 ms, the re-list door order, the daily-quota reset

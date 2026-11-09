@@ -1087,15 +1087,23 @@ WITHHELD under `support_image_size_chart=false`.
 **`### tiers` (#1911, D12)** prints `variation_id=0` for a CUSTOM tier, and
 since #1911 a grupo with NO binding entry for this conta and leaf gets one: the
 tier is named after the grupo, and every option is `0` named after its variante.
-It used to be a `variacao-sem-vinculo` problema. Two refusals remain under
+It used to be a `variacao-sem-vinculo` problema. Three refusals remain under
 `### problemas`. A binding entry that exists but cannot be read is refused
 ("existe mas não pôde ser lido"); fix it in Variações. ⚠️ The dry run plans
-against no live tree, so it can never show the second one: on an UPDATE,
-`--live` refuses a custom tier whose name matches no live tier byte for byte
-("Importe o anúncio ou ajuste o nome do grupo"). That refusal arrives after
-`update_item`, in the model leg, so the item fields are already sent. A grupo
-renamed in the ERP, or a migrated listing whose tier was named by the legacy
-app, hits it; re-importing the listing or restoring the name clears it.
+against no live tree, so it can never show the other two, and both arrive after
+`update_item`, in the model leg, so the item fields are already sent:
+
+- On an UPDATE, `--live` refuses a custom tier whose name matches no live tier
+  through the name fold (the ends trimmed; case and inner spaces kept): "Importe
+  o anúncio ou ajuste o nome do grupo". A grupo renamed in the ERP, or a migrated
+  listing whose tier was named by the legacy app, hits it. Restoring the name
+  clears it; a re-import helps only against a live STANDARD tier, when its cascade
+  lands on this grupo.
+- Since #2043 it also refuses a stored STANDARD entry whose `variation_id` no live
+  tier carries: "Corrija o vínculo em Variações (aba Shopee) para a variação que o
+  anúncio usa". A re-import cannot clear it, because the merge never overwrites a
+  non-zero stored id. Until P14's binding editor ships, Variações has no field for
+  it, so this refusal has no in-app exit yet.
 
 ### 12.4 The live run
 

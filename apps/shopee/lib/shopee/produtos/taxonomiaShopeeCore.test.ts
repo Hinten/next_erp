@@ -1285,6 +1285,50 @@ describe('o grupo de variação (`variation_group_id`) — lido do anúncio, gra
       expect(plano.grupos[0]?.grupoId).toBe('g-tam');
       expect([nossa?.variation_id, nossa?.variation_group_list]).toEqual([999, 0]);
     });
+
+    it('⭐ ⛔ NEAR-MISS: a entrada armazenada 88 contra o tier vivo 77 mantém o 88 — a fusão só ANEXA as linhas vivas, por isso reimportar não tira a recusa do #2043', () => {
+      const plano = planejarTaxonomia({
+        ...base,
+        tiers: [
+          tier({
+            nome: 'Cor',
+            variationId: 77,
+            opcoes: [
+              { nome: 'Verde', optionId: 6, indice: 0 },
+              { nome: 'Azul', optionId: 5, indice: 1 },
+            ],
+          }),
+        ],
+        candidatos: memo([
+          {
+            id: 'g-cor',
+            raw: {
+              nome: 'Cor',
+              variacoes: [
+                { id: 'v-azul', nome: 'Azul' },
+                { id: 'v-verde', nome: 'Verde' },
+              ],
+              linksVariacoesShopee: [
+                entrada({
+                  variation_id: 88,
+                  variationOptions: [
+                    {
+                      shopee_option_id: 9,
+                      shopee_option_name: 'Azul',
+                      arakene_variation_id: ['v-azul'],
+                    },
+                  ],
+                }),
+              ],
+            },
+          },
+        ]),
+      });
+      expect(plano.grupos[0]?.patch).not.toBeNull();
+      const nossa = entradasDe(plano.grupos[0]?.patch?.linksVariacoesShopee)[0];
+      expect(nossa?.variation_id).toBe(88);
+      expect(nossa?.variationOptions.map((o) => o.shopee_option_id)).toEqual([9, 6, 5]);
+    });
   });
 });
 
@@ -1584,5 +1628,220 @@ describe('a chave de vínculo compartilhada — fusão, variante e grupo', () =>
     expect(/\.category_id\s*[!=]==/.test(fonte)).toBe(false);
     expect(/split\(['"]\/['"]\)/.test(fonte)).toBe(false);
     expect(fonte.includes(['chave', 'DaEntrada'].join(''))).toBe(false);
+  });
+});
+
+/* ------- #1911 P14a (R3) — rung 1 also reads a stored CUSTOM option row -------- */
+
+describe('planejarTaxonomia — #1911 P14a (R3): o rung 1 da VARIANTE também lê a linha CUSTOM (id 0) armazenada, pelo nome dobrado, como a publicação', () => {
+  // The publisher pairs a live custom option through the stored id-0 row whose
+  // name equals it through `nomeDeTierShopee` (`tiersPublicacao.ts`). Before
+  // R3 this rung read only NON-zero rows, so a variante renamed after its row
+  // was stored lost the binding here: rung 2 compared the live name with the
+  // VARIANTE's, so the next re-import created a twin `n-<slug>` (unioned into a
+  // byte-identical row, or a new row beside a trailing-space one), and later ones
+  // bound that twin at rung 2 and wrote nothing. Invented names only.
+  const base = {
+    modelos: [] as ShopeeModel[],
+    integracaoId: INTEGRACAO,
+    categoryId: CATEGORIA,
+    nomeCategoria: 'Camisetas',
+    nowMs: AGORA,
+  };
+  const viva = (nome: string, optionId = 0) =>
+    tier({ nome: 'Cor', opcoes: [{ nome, optionId, indice: 0 }] });
+  const linha = (
+    shopee_option_name: string,
+    arakene_variation_id = ['v-erp'],
+    shopee_option_id = 0,
+  ) => ({
+    shopee_option_id,
+    shopee_option_name,
+    arakene_variation_id,
+  });
+  const DO_ERP = { id: 'v-erp', nome: 'Cor do ERP' };
+  const candidatosCom = (
+    variationOptions: ReturnType<typeof linha>[],
+    variacoes: { id: string; nome: string }[] = [DO_ERP],
+  ) =>
+    memo([
+      {
+        id: 'g-cor',
+        raw: { nome: 'Cor', variacoes, linksVariacoesShopee: [entrada({ variationOptions })] },
+      },
+    ]);
+  const planejar = (opcao: TierShopee, candidatos: GrupoMemo['docs']) =>
+    planejarTaxonomia({ ...base, tiers: [opcao], candidatos });
+
+  it("⚠️ PAR: a viva {0, 'Cor inventada'} + a linha {0, 'Cor inventada', [v-erp]} + a variante 'Cor do ERP' ⇒ liga v-erp — nenhuma n-cor-inventada criada, e a linha não ganha gêmea", () => {
+    const plano = planejar(viva('Cor inventada'), candidatosCom([linha('Cor inventada')]));
+    expect(plano.grupos[0]?.varianteIds).toEqual(['v-erp']);
+    const patch = plano.grupos[0]?.patch ?? {};
+    expect(((patch.variacoes ?? []) as { id: string }[]).map((v) => v.id)).toEqual(['v-erp']);
+    const entradas = (patch.linksVariacoesShopee ?? []) as LinkVariacoesShopee[];
+    expect(entradas.map((e) => e.variationOptions)).toEqual([[linha('Cor inventada')]]);
+  });
+
+  it("⛔ QUASE: a linha {0, 'cor inventada'} (a CAIXA) NÃO casa no rung 1 — a caixa fica, e a opção cai para a criação", () => {
+    const plano = planejar(viva('Cor inventada'), candidatosCom([linha('cor inventada')]));
+    expect(plano.grupos[0]?.varianteIds).toEqual(['n-cor-inventada']);
+  });
+
+  it("⚠️ PAR: a linha {0, 'Cor inventada '} (espaço no FIM) casa — as pontas dobram pelo nomeDeTierShopee", () => {
+    const plano = planejar(viva('Cor inventada'), candidatosCom([linha('Cor inventada ')]));
+    expect(plano.grupos[0]?.varianteIds).toEqual(['v-erp']);
+  });
+
+  it("⛔ QUASE: a linha {0, 'Cor  inventada'} (DOIS espaços DENTRO) não casa", () => {
+    const plano = planejar(viva('Cor inventada'), candidatosCom([linha('Cor  inventada')]));
+    expect(plano.grupos[0]?.varianteIds).toEqual(['n-cor-inventada']);
+  });
+
+  it('⛔ QUASE: um [0] pendurado (a variante não existe mais) cai para o rung 2 — e só o [0] conta', () => {
+    // Rung 2 binds the variante whose name is EXACTLY the live one.
+    const pendurado = planejar(
+      viva('Cor inventada'),
+      candidatosCom(
+        [linha('Cor inventada', ['v-sumiu'])],
+        [DO_ERP, { id: 'v-nome', nome: 'Cor inventada' }],
+      ),
+    );
+    expect(pendurado.grupos[0]?.varianteIds).toEqual(['v-nome']);
+    // A live [1] does not stand in for a dangling [0]: the legacy `.first`.
+    const segundo = planejar(
+      viva('Cor inventada'),
+      candidatosCom([linha('Cor inventada', ['v-sumiu', 'v-erp'])]),
+    );
+    expect(segundo.grupos[0]?.varianteIds).toEqual(['n-cor-inventada']);
+  });
+
+  it('⛔ QUASE: uma linha NÃO-ZERO nunca casa pelo nome — nem a viva custom pela linha {5, …}, nem a viva {5, …} pela linha {0, …}', () => {
+    const custom = planejar(
+      viva('Cor inventada'),
+      candidatosCom([linha('Cor inventada', ['v-erp'], 5)]),
+    );
+    expect(custom.grupos[0]?.varianteIds).toEqual(['n-cor-inventada']);
+    const padrao = planejar(viva('Cor inventada', 5), candidatosCom([linha('Cor inventada')]));
+    expect(padrao.grupos[0]?.varianteIds).toEqual(['shopee-5']);
+  });
+
+  it('⛔ QUASE: uma linha {0, …} com arakene_variation_id VAZIO não liga nada — cai para o rung 2, e sem variante homônima para a criação', () => {
+    const peloNome = planejar(
+      viva('Cor inventada'),
+      candidatosCom(
+        [linha('Cor inventada', [])],
+        [DO_ERP, { id: 'v-nome', nome: 'Cor inventada' }],
+      ),
+    );
+    expect(peloNome.grupos[0]?.varianteIds).toEqual(['v-nome']);
+    const criada = planejar(viva('Cor inventada'), candidatosCom([linha('Cor inventada', [])]));
+    expect(criada.grupos[0]?.varianteIds).toEqual(['n-cor-inventada']);
+  });
+
+  it("⛔ QUASE: uma opção PADRÃO viva casa pelo ID, nunca pelo nome — a linha {6, 'Cor inventada'} não rouba a viva {5, 'Cor inventada'} da linha {5, 'Nome antigo inventado'}", () => {
+    const plano = planejar(
+      viva('Cor inventada', 5),
+      candidatosCom(
+        [linha('Cor inventada', ['v-outra'], 6), linha('Nome antigo inventado', ['v-erp'], 5)],
+        [DO_ERP, { id: 'v-outra', nome: 'Outra do ERP' }],
+      ),
+    );
+    expect(plano.grupos[0]?.varianteIds).toEqual(['v-erp']);
+  });
+
+  it('⚠️ PAR: duas linhas {0, …} que dobram para o mesmo nome — vale a PRIMEIRA, a mesma que a publicação lê', () => {
+    const plano = planejar(
+      viva('Cor inventada'),
+      candidatosCom(
+        [linha('Cor inventada ', ['v-erp']), linha('Cor inventada', ['v-outra'])],
+        [DO_ERP, { id: 'v-outra', nome: 'Outra do ERP' }],
+      ),
+    );
+    expect(plano.grupos[0]?.varianteIds).toEqual(['v-erp']);
+  });
+
+  it("⚠️ PAR: a LINHA vence a variante homônima — a viva {0, 'Cor inventada'} liga v-erp, nunca a outra variante de mesmo nome (como a publicação)", () => {
+    const plano = planejar(
+      viva('Cor inventada'),
+      candidatosCom([linha('Cor inventada')], [{ id: 'v-xara', nome: 'Cor inventada' }, DO_ERP]),
+    );
+    expect(plano.grupos[0]?.varianteIds).toEqual(['v-erp']);
+  });
+
+  it.each([
+    [
+      'outra conta (int-12)',
+      [entrada({ integracaoShopeeId: 'int-12', variationOptions: [linha('Cor inventada')] })],
+    ],
+    [
+      'outra categoria',
+      [entrada({ category_id: 999999, variationOptions: [linha('Cor inventada')] })],
+    ],
+    [
+      'um elemento ilegível da mesma chave',
+      [
+        {
+          ...entrada({ variationOptions: [linha('Cor inventada')] }),
+          variation_group_list: [1, 2],
+        },
+      ],
+    ],
+    [
+      'uma gêmea atrás da primeira entrada da chave',
+      [entrada(), entrada({ variationOptions: [linha('Cor inventada')] })],
+    ],
+  ])(
+    "⛔ QUASE: a linha {0, 'Cor inventada'} em %s NÃO é lida — o nome só vale dentro da entrada resolvida",
+    (_caso, links) => {
+      const plano = planejar(
+        viva('Cor inventada'),
+        memo([
+          { id: 'g-cor', raw: { nome: 'Cor', variacoes: [DO_ERP], linksVariacoesShopee: links } },
+        ]),
+      );
+      expect(plano.grupos[0]?.varianteIds).toEqual(['n-cor-inventada']);
+    },
+  );
+
+  it('⚠️ import depois do rename: padrão mantém o texto da linha; personalizada cunha n- e anexa, e a linha antiga fica', () => {
+    const linhasDe = (plano: ReturnType<typeof planejar>) =>
+      ((plano.grupos[0]?.patch?.linksVariacoesShopee ?? []) as LinkVariacoesShopee[]).flatMap((e) =>
+        e.variationOptions.map((o) => [o.shopee_option_name, o.arakene_variation_id]),
+      );
+
+    const padrao = planejar(
+      tier({
+        nome: 'Cor',
+        variationId: 77,
+        opcoes: [{ nome: 'Nome novo inventado', optionId: 5, indice: 0 }],
+      }),
+      memo([
+        {
+          id: 'g-cor',
+          raw: {
+            nome: 'Cor',
+            variacoes: [DO_ERP],
+            linksVariacoesShopee: [
+              entrada({
+                variation_id: 77,
+                variationOptions: [linha('Nome antigo inventado', ['v-erp'], 5)],
+              }),
+            ],
+          },
+        },
+      ]),
+    );
+    expect(padrao.grupos[0]?.varianteIds).toEqual(['v-erp']);
+    expect(linhasDe(padrao)).toEqual([['Nome antigo inventado', ['v-erp']]]);
+
+    const personalizada = planejar(
+      viva('Nome novo inventado'),
+      candidatosCom([linha('Nome antigo inventado')]),
+    );
+    expect(personalizada.grupos[0]?.varianteIds).toEqual(['n-nome-novo-inventado']);
+    expect(linhasDe(personalizada)).toEqual([
+      ['Nome antigo inventado', ['v-erp']],
+      ['Nome novo inventado', ['n-nome-novo-inventado']],
+    ]);
   });
 });
