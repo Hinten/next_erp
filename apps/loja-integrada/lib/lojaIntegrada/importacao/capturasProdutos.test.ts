@@ -994,8 +994,15 @@ describe('C10 — (i) the product captures share the step-10 catalogue captures�
     return { linhas, detalhes };
   }
 
+  /**
+   * How many brand references each store's product captures make. Only a DETAIL names a
+   * brand (a list row carries no `marca`), and only the larger store has detail captures,
+   * so the smaller store's brand check below has nothing to check, and says so here.
+   */
+  const MARCAS_NOMEADAS: Readonly<Record<string, number>> = { loja1: 3, loja2: 0 };
+
   it.each(LOJAS)(
-    '%s: every category, grade, option grade and brand a product names is a row of the same store’s C9 lists; a detailed option names its own grade',
+    '%s: every category, grade and option grade a product names, and every brand a detail names, is a row of the same store’s C9 lists; a detailed option names its own grade',
     async (loja) => {
       const { linhas, detalhes } = await vistasDaLoja(loja);
       const todas = [...linhas, ...detalhes];
@@ -1014,6 +1021,17 @@ describe('C10 — (i) the product captures share the step-10 catalogue captures�
       expect(categoriasNomeadas.length > 0, `${loja}: categories`).toBe(true);
       expect(gradesNomeadas.length > 0, `${loja}: grades`).toBe(true);
       expect(opcoes.length > 0, `${loja}: options`).toBe(true);
+      // The brand check's own count: non-vacuous where a detail was captured, and a
+      // detail capture added (or a list row that starts naming a brand) moves it.
+      expect(marcasNomeadas.length, `${loja}: brands named`).toBe(MARCAS_NOMEADAS[loja]);
+      const linhasCruas = [...paginasVivas(loja), captura(loja, 'produtos-lixeira')].flatMap(
+        (c) => listaDe(c).objects,
+      );
+      expect(linhasCruas.length > 0, `${loja}: list rows`).toBe(true);
+      expect(
+        linhasCruas.every((o) => !('marca' in o)),
+        `${loja}: a list row names no brand`,
+      ).toBe(true);
       expect(
         categoriasNomeadas.every((id) => categorias.has(id)),
         `${loja}: categories`,
