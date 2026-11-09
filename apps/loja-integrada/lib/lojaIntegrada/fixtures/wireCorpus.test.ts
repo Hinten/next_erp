@@ -17,12 +17,16 @@ import {
 
 /**
  * The floor that keeps the assertions below non-vacuous: the number of committed
- * fixtures — the Mercado Livre corpus test is the precedent. 29 since step 10:
- * 18 from the owner's first captures (step 3) plus the 11 catalogue captures
- * (`c9-*`: categories, brands, grades and two grade details per store, plus the
- * larger store's second category page, `c9-loja1-categorias-p2`). The
- * step-3 captures held 19 pairs; `pedido-enviado` was a byte-identical duplicate
- * of `pedido-boleto` (the same order requested twice) and is not committed
+ * fixtures — the Mercado Livre corpus test is the precedent. 42 since step 9:
+ * 18 from the owner's first captures (step 3), the 11 catalogue captures
+ * (`c9-*`, step 10: categories, brands, grades and two grade details per store,
+ * plus the larger store's second category page, `c9-loja1-categorias-p2`) and
+ * the 13 product captures (`c10-*`, step 9: both stores' first live page and
+ * trash list; the larger store's second and last pages, its unfiltered first
+ * page, a page at `limit=100` and the `limit=200` refusal; a parent's, a
+ * variation's and a trashed parent's detail, and an unknown id). The step-3
+ * captures held 19 pairs; `pedido-enviado` was a byte-identical duplicate of
+ * `pedido-boleto` (the same order requested twice) and is not committed
  * (`__wire__/README.md`).
  *
  * ⚠️ It equals the count on purpose, and the first test asserts the equality:
@@ -33,7 +37,7 @@ import {
  * it, in the same commit. Below it, "every fixture is valid and clean" holds of
  * fewer files than were reviewed.
  */
-const MINIMO_DE_FIXTURES = 29;
+const MINIMO_DE_FIXTURES = 42;
 
 /**
  * The two body classes whose redaction tables KEEP a row's Loja Integrada `id`.
@@ -457,8 +461,9 @@ describe('__wire__ corpus', () => {
     expect(divergencias).toEqual([]);
     // Non-vacuous, on every kind of row: the two stores share platform grades,
     // payment methods and statuses; a grade detail's root is also a row of its
-    // store's grade list; and the step-3 category capture shares its row with
-    // step 10's category list.
+    // store's grade list; the step-3 category capture shares its row with
+    // step 10's category list; and a product sits on several product pages and
+    // in its own detail.
     expect(comparados).toEqual(['catalogo (raiz)', 'catalogo objects.*', 'configuracao objects.*']);
   });
 
@@ -589,8 +594,11 @@ describe('__wire__ corpus — catalogue ids keep their function without a real i
     const { divergencias, linhas } = urisQueDivergemDoId(fixtures);
     expect(divergencias).toEqual([]);
     // Non-vacuous: every category, brand and grade row, both grade roots per store, and
-    // every grade option (67 + 15 + 1 categories, 3 brands, 21 grade rows, 4 roots, 74 options).
-    expect(linhas).toBe(185);
+    // every grade option (67 + 15 + 1 categories, 3 brands, 21 grade rows, 4 roots, 74 options:
+    // 185); every row of the product lists (100 + 4 × 50 + 8 + 35 + 40 = 383); and the three
+    // product details' roots, `imagem_principal` and `imagens` (variation 1, parent 1 + 1 + 12,
+    // trashed parent 1 + 1 + 3: 20).
+    expect(linhas).toBe(588);
   });
 
   it('every categoria_pai names a category row of the same store (across its pages)', () => {
@@ -619,16 +627,17 @@ describe('__wire__ corpus — catalogue ids keep their function without a real i
   it('every catalogue id is in the pseudonym range', () => {
     const { foraDaFaixa, ids } = idsForaDaFaixa(fixtures);
     expect(foraDaFaixa).toEqual([]);
-    // Non-vacuous: every id of the 12 catalogue fixtures (bodies, URIs, request paths).
-    expect(ids).toBe(577);
+    // Non-vacuous: every id of the catalogue fixtures (bodies, URIs, request paths): 577 in
+    // the step-10 and step-3 ones, 848 in the product captures.
+    expect(ids).toBe(1425);
   });
 
   it("every variation a product row names, held by the same store, starts with its parent's SKU", () => {
     const { divergencias, pares } = skusForaDoPai(fixtures);
     expect(divergencias).toEqual([]);
-    // The committed corpus holds no product capture yet: the change that commits the
-    // product captures raises this to the parent-variation pairs they hold.
-    expect(pares).toBe(0);
+    // Non-vacuous: the parent-variation pairs the product captures hold (each product
+    // counted once, whichever capture holds it).
+    expect(pares).toBe(124);
   });
 });
 

@@ -1,0 +1,1513 @@
+{
+  "versao": 1,
+  "perfil": "fixture",
+  "credencial": "personal-token",
+  "capturadoEm": "2026-11-09",
+  "requisicao": {
+    "metodo": "GET",
+    "caminho": "/v1/produto/",
+    "query": [
+      [
+        "limit",
+        "50"
+      ],
+      [
+        "removido",
+        "true"
+      ]
+    ]
+  },
+  "resposta": {
+    "status": 200,
+    "politica": "catalogo",
+    "forma": "json",
+    "bytes": 92518,
+    "corpo": {
+      "meta": {
+        "limit": 50,
+        "offset": 0,
+        "total_count": 40,
+        "previous": null,
+        "next": null
+      },
+      "objects": [
+        {
+          "id": 204326914,
+          "apelido": "REDACTED",
+          "ativo": false,
+          "bloqueado": false,
+          "categorias": [
+            "/api/v1/categoria/553365087",
+            "/api/v1/categoria/362562783"
+          ],
+          "descricao_completa": "REDACTED",
+          "filhos": [
+            "/api/v1/produto/580183543",
+            "/api/v1/produto/127677237",
+            "/api/v1/produto/371913736",
+            "/api/v1/produto/797210094"
+          ],
+          "grades": [
+            "/api/v1/grades/371385839"
+          ],
+          "gtin": "",
+          "id_externo": null,
+          "mpn": "",
+          "ncm": "",
+          "nome": "REDACTED",
+          "removido": true,
+          "resource_uri": "/api/v1/produto/204326914",
+          "seo": "REDACTED",
+          "sku": "064181649",
+          "tipo": "atributo",
+          "url": "https://redacted.invalid/",
+          "url_video_youtube": "",
+          "variacoes": [],
+          "produto_id_anymarket": null,
+          "produto_id_sku_anymarket": null,
+          "tags": []
+        },
+        {
+          "id": 760076957,
+          "apelido": "REDACTED",
+          "ativo": false,
+          "bloqueado": false,
+          "categorias": [
+            "/api/v1/categoria/471205474",
+            "/api/v1/categoria/298609402"
+          ],
+          "descricao_completa": "REDACTED",
+          "filhos": [
+            "/api/v1/produto/708227957",
+            "/api/v1/produto/259429528",
+            "/api/v1/produto/332309820"
+          ],
+          "grades": [
+            "/api/v1/grades/371385839"
+          ],
+          "gtin": "",
+          "id_externo": null,
+          "mpn": "",
+          "ncm": "",
+          "nome": "REDACTED",
+          "removido": true,
+          "resource_uri": "/api/v1/produto/760076957",
+          "seo": "REDACTED",
+          "sku": "29786278",
+          "tipo": "atributo",
+          "url": "https://redacted.invalid/",
+          "url_video_youtube": "",
+          "variacoes": [],
+          "produto_id_anymarket": null,
+          "produto_id_sku_anymarket": null,
+          "tags": []
+        },
+        {
+          "id": 967471957,
+          "apelido": "REDACTED",
+          "ativo": false,
+          "bloqueado": false,
+          "categorias": [
+            "/api/v1/categoria/362562783",
+            "/api/v1/categoria/298609402"
+          ],
+          "descricao_completa": "REDACTED",
+          "filhos": [
+            "/api/v1/produto/810244364",
+            "/api/v1/produto/658018949",
+            "/api/v1/produto/717203567",
+            "/api/v1/produto/221651044"
+          ],
+          "grades": [
+            "/api/v1/grades/371385839"
+          ],
+          "gtin": "",
+          "id_externo": null,
+          "mpn": "",
+          "ncm": "",
+          "nome": "REDACTED",
+          "removido": true,
+          "resource_uri": "/api/v1/produto/967471957",
+          "seo": "REDACTED",
+          "sku": "8730924",
+          "tipo": "atributo",
+          "url": "https://redacted.invalid/",
+          "url_video_youtube": "",
+          "variacoes": [],
+          "produto_id_anymarket": null,
+          "produto_id_sku_anymarket": null,
+          "tags": []
+        },
+        {
+          "id": 262349020,
+          "apelido": "REDACTED",
+          "ativo": false,
+          "bloqueado": false,
+          "categorias": [
+            "/api/v1/categoria/362562783",
+            "/api/v1/categoria/298609402"
+          ],
+          "descricao_completa": "REDACTED",
+          "filhos": [
+            "/api/v1/produto/573479591",
+            "/api/v1/produto/284861868",
+            "/api/v1/produto/611678576",
+            "/api/v1/produto/143206443"
+          ],
+          "grades": [
+            "/api/v1/grades/605007075",
+            "/api/v1/grades/371385839"
+          ],
+          "gtin": "",
+          "id_externo": null,
+          "mpn": "",
+          "ncm": "",
+          "nome": "REDACTED",
+          "removido": true,
+          "resource_uri": "/api/v1/produto/262349020",
+          "seo": "REDACTED",
+          "sku": "3604851270",
+          "tipo": "atributo",
+          "url": "https://redacted.invalid/",
+          "url_video_youtube": "",
+          "variacoes": [],
+          "produto_id_anymarket": null,
+          "produto_id_sku_anymarket": null,
+          "tags": []
+        },
+        {
+          "id": 609246501,
+          "apelido": "REDACTED",
+          "ativo": false,
+          "bloqueado": false,
+          "categorias": [
+            "/api/v1/categoria/783192787",
+            "/api/v1/categoria/298609402"
+          ],
+          "descricao_completa": "REDACTED",
+          "filhos": [
+            "/api/v1/produto/315204190",
+            "/api/v1/produto/769795362",
+            "/api/v1/produto/868843657",
+            "/api/v1/produto/512961223",
+            "/api/v1/produto/570022999"
+          ],
+          "grades": [
+            "/api/v1/grades/605007075",
+            "/api/v1/grades/371385839"
+          ],
+          "gtin": "",
+          "id_externo": null,
+          "mpn": "",
+          "ncm": "",
+          "nome": "REDACTED",
+          "removido": true,
+          "resource_uri": "/api/v1/produto/609246501",
+          "seo": "REDACTED",
+          "sku": "33356397",
+          "tipo": "atributo",
+          "url": "https://redacted.invalid/",
+          "url_video_youtube": "https://redacted.invalid/",
+          "variacoes": [],
+          "produto_id_anymarket": null,
+          "produto_id_sku_anymarket": null,
+          "tags": []
+        },
+        {
+          "id": 352667757,
+          "apelido": "REDACTED",
+          "ativo": false,
+          "bloqueado": false,
+          "categorias": [
+            "/api/v1/categoria/720690049",
+            "/api/v1/categoria/362562783",
+            "/api/v1/categoria/298609402"
+          ],
+          "descricao_completa": "REDACTED",
+          "filhos": [
+            "/api/v1/produto/620114767",
+            "/api/v1/produto/530475898",
+            "/api/v1/produto/100233720",
+            "/api/v1/produto/372197758"
+          ],
+          "grades": [
+            "/api/v1/grades/605007075",
+            "/api/v1/grades/371385839"
+          ],
+          "gtin": "",
+          "id_externo": null,
+          "mpn": "",
+          "ncm": "",
+          "nome": "REDACTED",
+          "removido": true,
+          "resource_uri": "/api/v1/produto/352667757",
+          "seo": "REDACTED",
+          "sku": "88546561",
+          "tipo": "atributo",
+          "url": "https://redacted.invalid/",
+          "url_video_youtube": "",
+          "variacoes": [],
+          "produto_id_anymarket": null,
+          "produto_id_sku_anymarket": null,
+          "tags": []
+        },
+        {
+          "id": 488992381,
+          "apelido": "REDACTED",
+          "ativo": false,
+          "bloqueado": false,
+          "categorias": [
+            "/api/v1/categoria/238537479",
+            "/api/v1/categoria/298609402"
+          ],
+          "descricao_completa": "REDACTED",
+          "filhos": [
+            "/api/v1/produto/509183588",
+            "/api/v1/produto/730305619",
+            "/api/v1/produto/906045076",
+            "/api/v1/produto/420151475"
+          ],
+          "grades": [
+            "/api/v1/grades/371385839"
+          ],
+          "gtin": "",
+          "id_externo": null,
+          "mpn": "",
+          "ncm": "",
+          "nome": "REDACTED",
+          "removido": true,
+          "resource_uri": "/api/v1/produto/488992381",
+          "seo": "REDACTED",
+          "sku": "474968",
+          "tipo": "atributo",
+          "url": "https://redacted.invalid/",
+          "url_video_youtube": "",
+          "variacoes": [],
+          "produto_id_anymarket": null,
+          "produto_id_sku_anymarket": null,
+          "tags": []
+        },
+        {
+          "id": 632040570,
+          "apelido": "REDACTED",
+          "ativo": false,
+          "bloqueado": false,
+          "categorias": [
+            "/api/v1/categoria/720690049",
+            "/api/v1/categoria/362562783",
+            "/api/v1/categoria/298609402"
+          ],
+          "descricao_completa": "REDACTED",
+          "filhos": [
+            "/api/v1/produto/880878667",
+            "/api/v1/produto/502362143",
+            "/api/v1/produto/392232781",
+            "/api/v1/produto/144843622"
+          ],
+          "grades": [
+            "/api/v1/grades/605007075",
+            "/api/v1/grades/371385839"
+          ],
+          "gtin": "",
+          "id_externo": null,
+          "mpn": "",
+          "ncm": "",
+          "nome": "REDACTED",
+          "removido": true,
+          "resource_uri": "/api/v1/produto/632040570",
+          "seo": "REDACTED",
+          "sku": "87778",
+          "tipo": "atributo",
+          "url": "https://redacted.invalid/",
+          "url_video_youtube": "",
+          "variacoes": [],
+          "produto_id_anymarket": null,
+          "produto_id_sku_anymarket": null,
+          "tags": []
+        },
+        {
+          "id": 481124976,
+          "apelido": "REDACTED",
+          "ativo": false,
+          "bloqueado": false,
+          "categorias": [
+            "/api/v1/categoria/720690049",
+            "/api/v1/categoria/362562783",
+            "/api/v1/categoria/298609402"
+          ],
+          "descricao_completa": "REDACTED",
+          "filhos": [
+            "/api/v1/produto/145983197",
+            "/api/v1/produto/721587221",
+            "/api/v1/produto/209754279",
+            "/api/v1/produto/440433971"
+          ],
+          "grades": [
+            "/api/v1/grades/605007075",
+            "/api/v1/grades/371385839"
+          ],
+          "gtin": "",
+          "id_externo": null,
+          "mpn": "",
+          "ncm": "",
+          "nome": "REDACTED",
+          "removido": true,
+          "resource_uri": "/api/v1/produto/481124976",
+          "seo": "REDACTED",
+          "sku": "87777",
+          "tipo": "atributo",
+          "url": "https://redacted.invalid/",
+          "url_video_youtube": "",
+          "variacoes": [],
+          "produto_id_anymarket": null,
+          "produto_id_sku_anymarket": null,
+          "tags": []
+        },
+        {
+          "id": 907242243,
+          "apelido": "REDACTED",
+          "ativo": false,
+          "bloqueado": false,
+          "categorias": [
+            "/api/v1/categoria/530416288"
+          ],
+          "descricao_completa": "REDACTED",
+          "filhos": [
+            "/api/v1/produto/597130790",
+            "/api/v1/produto/871871722",
+            "/api/v1/produto/343782468",
+            "/api/v1/produto/136266621"
+          ],
+          "grades": [
+            "/api/v1/grades/605007075",
+            "/api/v1/grades/371385839"
+          ],
+          "gtin": "",
+          "id_externo": null,
+          "mpn": "",
+          "ncm": "REDACTED",
+          "nome": "REDACTED",
+          "removido": true,
+          "resource_uri": "/api/v1/produto/907242243",
+          "seo": "REDACTED",
+          "sku": "50139272",
+          "tipo": "atributo",
+          "url": "https://redacted.invalid/",
+          "url_video_youtube": "",
+          "variacoes": [],
+          "produto_id_anymarket": null,
+          "produto_id_sku_anymarket": null,
+          "tags": []
+        },
+        {
+          "id": 760108825,
+          "apelido": "REDACTED",
+          "ativo": false,
+          "bloqueado": false,
+          "categorias": [
+            "/api/v1/categoria/362562783"
+          ],
+          "descricao_completa": "REDACTED",
+          "filhos": [
+            "/api/v1/produto/773239168",
+            "/api/v1/produto/140353491",
+            "/api/v1/produto/847378181",
+            "/api/v1/produto/904728340"
+          ],
+          "grades": [
+            "/api/v1/grades/605007075",
+            "/api/v1/grades/371385839"
+          ],
+          "gtin": "",
+          "id_externo": null,
+          "mpn": "",
+          "ncm": "",
+          "nome": "REDACTED",
+          "removido": true,
+          "resource_uri": "/api/v1/produto/760108825",
+          "seo": "REDACTED",
+          "sku": "7833",
+          "tipo": "atributo",
+          "url": "https://redacted.invalid/",
+          "url_video_youtube": "",
+          "variacoes": [],
+          "produto_id_anymarket": null,
+          "produto_id_sku_anymarket": null,
+          "tags": []
+        },
+        {
+          "id": 274549571,
+          "apelido": "REDACTED",
+          "ativo": false,
+          "bloqueado": false,
+          "categorias": [
+            "/api/v1/categoria/530416288"
+          ],
+          "descricao_completa": "REDACTED",
+          "filhos": [
+            "/api/v1/produto/316959273",
+            "/api/v1/produto/422379966",
+            "/api/v1/produto/610469588"
+          ],
+          "grades": [
+            "/api/v1/grades/605007075",
+            "/api/v1/grades/371385839"
+          ],
+          "gtin": "",
+          "id_externo": null,
+          "mpn": "",
+          "ncm": "",
+          "nome": "REDACTED",
+          "removido": true,
+          "resource_uri": "/api/v1/produto/274549571",
+          "seo": "REDACTED",
+          "sku": "5013",
+          "tipo": "atributo",
+          "url": "https://redacted.invalid/",
+          "url_video_youtube": "",
+          "variacoes": [],
+          "produto_id_anymarket": null,
+          "produto_id_sku_anymarket": null,
+          "tags": []
+        },
+        {
+          "id": 373542541,
+          "apelido": "REDACTED",
+          "ativo": false,
+          "bloqueado": false,
+          "categorias": [
+            "/api/v1/categoria/720690049",
+            "/api/v1/categoria/362562783",
+            "/api/v1/categoria/298609402"
+          ],
+          "descricao_completa": "REDACTED",
+          "filhos": [
+            "/api/v1/produto/773384516",
+            "/api/v1/produto/501875596",
+            "/api/v1/produto/618770351",
+            "/api/v1/produto/862724319"
+          ],
+          "grades": [
+            "/api/v1/grades/605007075",
+            "/api/v1/grades/371385839"
+          ],
+          "gtin": "",
+          "id_externo": null,
+          "mpn": "",
+          "ncm": "",
+          "nome": "REDACTED",
+          "removido": true,
+          "resource_uri": "/api/v1/produto/373542541",
+          "seo": "REDACTED",
+          "sku": "13621",
+          "tipo": "atributo",
+          "url": "https://redacted.invalid/",
+          "url_video_youtube": "",
+          "variacoes": [],
+          "produto_id_anymarket": null,
+          "produto_id_sku_anymarket": null,
+          "tags": [
+            "REDACTED",
+            "REDACTED"
+          ]
+        },
+        {
+          "id": 356805476,
+          "apelido": "REDACTED",
+          "ativo": false,
+          "bloqueado": false,
+          "categorias": [
+            "/api/v1/categoria/783192787",
+            "/api/v1/categoria/298609402"
+          ],
+          "descricao_completa": "REDACTED",
+          "filhos": [
+            "/api/v1/produto/303549446",
+            "/api/v1/produto/776017133",
+            "/api/v1/produto/756917061",
+            "/api/v1/produto/908603377",
+            "/api/v1/produto/457169781",
+            "/api/v1/produto/889461481",
+            "/api/v1/produto/751426756",
+            "/api/v1/produto/138752244",
+            "/api/v1/produto/351414164",
+            "/api/v1/produto/587403476"
+          ],
+          "grades": [
+            "/api/v1/grades/605007075",
+            "/api/v1/grades/371385839"
+          ],
+          "gtin": "",
+          "id_externo": null,
+          "mpn": "",
+          "ncm": "",
+          "nome": "REDACTED",
+          "removido": true,
+          "resource_uri": "/api/v1/produto/356805476",
+          "seo": "REDACTED",
+          "sku": "3335",
+          "tipo": "atributo",
+          "url": "https://redacted.invalid/",
+          "url_video_youtube": "",
+          "variacoes": [],
+          "produto_id_anymarket": null,
+          "produto_id_sku_anymarket": null,
+          "tags": []
+        },
+        {
+          "id": 966972684,
+          "apelido": "REDACTED",
+          "ativo": false,
+          "bloqueado": false,
+          "categorias": [
+            "/api/v1/categoria/530416288"
+          ],
+          "descricao_completa": "REDACTED",
+          "filhos": [
+            "/api/v1/produto/868972342",
+            "/api/v1/produto/736750791",
+            "/api/v1/produto/476289286",
+            "/api/v1/produto/298009852"
+          ],
+          "grades": [
+            "/api/v1/grades/605007075",
+            "/api/v1/grades/371385839"
+          ],
+          "gtin": "",
+          "id_externo": null,
+          "mpn": "",
+          "ncm": "",
+          "nome": "REDACTED",
+          "removido": true,
+          "resource_uri": "/api/v1/produto/966972684",
+          "seo": "REDACTED",
+          "sku": "9414931",
+          "tipo": "atributo",
+          "url": "https://redacted.invalid/",
+          "url_video_youtube": "",
+          "variacoes": [],
+          "produto_id_anymarket": null,
+          "produto_id_sku_anymarket": null,
+          "tags": []
+        },
+        {
+          "id": 143098944,
+          "apelido": "REDACTED",
+          "ativo": false,
+          "bloqueado": false,
+          "categorias": [
+            "/api/v1/categoria/362562783",
+            "/api/v1/categoria/298609402"
+          ],
+          "descricao_completa": "REDACTED",
+          "filhos": [
+            "/api/v1/produto/202001791",
+            "/api/v1/produto/500834996",
+            "/api/v1/produto/194335566",
+            "/api/v1/produto/637131029"
+          ],
+          "grades": [
+            "/api/v1/grades/605007075",
+            "/api/v1/grades/371385839"
+          ],
+          "gtin": "",
+          "id_externo": null,
+          "mpn": "",
+          "ncm": "",
+          "nome": "REDACTED",
+          "removido": true,
+          "resource_uri": "/api/v1/produto/143098944",
+          "seo": "REDACTED",
+          "sku": "4723",
+          "tipo": "atributo",
+          "url": "https://redacted.invalid/",
+          "url_video_youtube": "",
+          "variacoes": [],
+          "produto_id_anymarket": null,
+          "produto_id_sku_anymarket": null,
+          "tags": []
+        },
+        {
+          "id": 706197931,
+          "apelido": "REDACTED",
+          "ativo": false,
+          "bloqueado": false,
+          "categorias": [
+            "/api/v1/categoria/783192787"
+          ],
+          "descricao_completa": "REDACTED",
+          "filhos": [
+            "/api/v1/produto/134379636",
+            "/api/v1/produto/185512373",
+            "/api/v1/produto/336619448",
+            "/api/v1/produto/180793511"
+          ],
+          "grades": [
+            "/api/v1/grades/605007075",
+            "/api/v1/grades/371385839"
+          ],
+          "gtin": "",
+          "id_externo": null,
+          "mpn": "",
+          "ncm": "",
+          "nome": "REDACTED",
+          "removido": true,
+          "resource_uri": "/api/v1/produto/706197931",
+          "seo": "REDACTED",
+          "sku": "1372388",
+          "tipo": "atributo",
+          "url": "https://redacted.invalid/",
+          "url_video_youtube": "",
+          "variacoes": [],
+          "produto_id_anymarket": null,
+          "produto_id_sku_anymarket": null,
+          "tags": []
+        },
+        {
+          "id": 248457286,
+          "apelido": "REDACTED",
+          "ativo": false,
+          "bloqueado": false,
+          "categorias": [
+            "/api/v1/categoria/530416288"
+          ],
+          "descricao_completa": "REDACTED",
+          "filhos": [
+            "/api/v1/produto/215535383",
+            "/api/v1/produto/716409621",
+            "/api/v1/produto/540948997",
+            "/api/v1/produto/355664366"
+          ],
+          "grades": [
+            "/api/v1/grades/605007075",
+            "/api/v1/grades/371385839"
+          ],
+          "gtin": "",
+          "id_externo": null,
+          "mpn": "",
+          "ncm": "",
+          "nome": "REDACTED",
+          "removido": true,
+          "resource_uri": "/api/v1/produto/248457286",
+          "seo": "REDACTED",
+          "sku": "1724289",
+          "tipo": "atributo",
+          "url": "https://redacted.invalid/",
+          "url_video_youtube": "",
+          "variacoes": [],
+          "produto_id_anymarket": null,
+          "produto_id_sku_anymarket": null,
+          "tags": []
+        },
+        {
+          "id": 973299702,
+          "apelido": "REDACTED",
+          "ativo": false,
+          "bloqueado": false,
+          "categorias": [
+            "/api/v1/categoria/530416288"
+          ],
+          "descricao_completa": "REDACTED",
+          "filhos": [
+            "/api/v1/produto/516456340",
+            "/api/v1/produto/315470616",
+            "/api/v1/produto/773301829"
+          ],
+          "grades": [
+            "/api/v1/grades/605007075",
+            "/api/v1/grades/371385839"
+          ],
+          "gtin": "",
+          "id_externo": null,
+          "mpn": "",
+          "ncm": "REDACTED",
+          "nome": "REDACTED",
+          "removido": true,
+          "resource_uri": "/api/v1/produto/973299702",
+          "seo": "REDACTED",
+          "sku": "9581447",
+          "tipo": "atributo",
+          "url": "https://redacted.invalid/",
+          "url_video_youtube": "",
+          "variacoes": [],
+          "produto_id_anymarket": null,
+          "produto_id_sku_anymarket": null,
+          "tags": []
+        },
+        {
+          "id": 386336756,
+          "apelido": "REDACTED",
+          "ativo": false,
+          "bloqueado": false,
+          "categorias": [
+            "/api/v1/categoria/783192787",
+            "/api/v1/categoria/298609402"
+          ],
+          "descricao_completa": "REDACTED",
+          "filhos": [
+            "/api/v1/produto/402346899",
+            "/api/v1/produto/869296107",
+            "/api/v1/produto/297331602",
+            "/api/v1/produto/388446326"
+          ],
+          "grades": [
+            "/api/v1/grades/605007075",
+            "/api/v1/grades/371385839"
+          ],
+          "gtin": "",
+          "id_externo": null,
+          "mpn": "",
+          "ncm": "REDACTED",
+          "nome": "REDACTED",
+          "removido": true,
+          "resource_uri": "/api/v1/produto/386336756",
+          "seo": "REDACTED",
+          "sku": "132004656",
+          "tipo": "atributo",
+          "url": "https://redacted.invalid/",
+          "url_video_youtube": "",
+          "variacoes": [],
+          "produto_id_anymarket": null,
+          "produto_id_sku_anymarket": null,
+          "tags": []
+        },
+        {
+          "id": 863308227,
+          "apelido": "REDACTED",
+          "ativo": false,
+          "bloqueado": false,
+          "categorias": [
+            "/api/v1/categoria/720690049",
+            "/api/v1/categoria/298609402"
+          ],
+          "descricao_completa": "REDACTED",
+          "filhos": [
+            "/api/v1/produto/473152116",
+            "/api/v1/produto/260496826",
+            "/api/v1/produto/912967295",
+            "/api/v1/produto/886270735"
+          ],
+          "grades": [
+            "/api/v1/grades/605007075",
+            "/api/v1/grades/371385839"
+          ],
+          "gtin": "",
+          "id_externo": null,
+          "mpn": "",
+          "ncm": "",
+          "nome": "REDACTED",
+          "removido": true,
+          "resource_uri": "/api/v1/produto/863308227",
+          "seo": "REDACTED",
+          "sku": "0385349",
+          "tipo": "atributo",
+          "url": "https://redacted.invalid/",
+          "url_video_youtube": "",
+          "variacoes": [],
+          "produto_id_anymarket": null,
+          "produto_id_sku_anymarket": null,
+          "tags": []
+        },
+        {
+          "id": 725706355,
+          "apelido": "REDACTED",
+          "ativo": false,
+          "bloqueado": false,
+          "categorias": [
+            "/api/v1/categoria/720690049",
+            "/api/v1/categoria/298609402"
+          ],
+          "descricao_completa": "REDACTED",
+          "filhos": [
+            "/api/v1/produto/419988588",
+            "/api/v1/produto/409934997",
+            "/api/v1/produto/559779999",
+            "/api/v1/produto/552249380"
+          ],
+          "grades": [
+            "/api/v1/grades/605007075",
+            "/api/v1/grades/371385839"
+          ],
+          "gtin": "",
+          "id_externo": null,
+          "mpn": "",
+          "ncm": "",
+          "nome": "REDACTED",
+          "removido": true,
+          "resource_uri": "/api/v1/produto/725706355",
+          "seo": "REDACTED",
+          "sku": "2784232",
+          "tipo": "atributo",
+          "url": "https://redacted.invalid/",
+          "url_video_youtube": "",
+          "variacoes": [],
+          "produto_id_anymarket": null,
+          "produto_id_sku_anymarket": null,
+          "tags": []
+        },
+        {
+          "id": 824791378,
+          "apelido": "REDACTED",
+          "ativo": false,
+          "bloqueado": false,
+          "categorias": [],
+          "descricao_completa": "REDACTED",
+          "filhos": [
+            "/api/v1/produto/268423580"
+          ],
+          "grades": [
+            "/api/v1/grades/605007075",
+            "/api/v1/grades/371385839"
+          ],
+          "gtin": "",
+          "id_externo": null,
+          "mpn": "",
+          "ncm": "",
+          "nome": "REDACTED",
+          "removido": true,
+          "resource_uri": "/api/v1/produto/824791378",
+          "seo": "REDACTED",
+          "sku": "059353",
+          "tipo": "atributo",
+          "url": "https://redacted.invalid/",
+          "url_video_youtube": "",
+          "variacoes": [],
+          "produto_id_anymarket": null,
+          "produto_id_sku_anymarket": null,
+          "tags": []
+        },
+        {
+          "id": 503958929,
+          "apelido": "REDACTED",
+          "ativo": false,
+          "bloqueado": false,
+          "categorias": [
+            "/api/v1/categoria/720690049"
+          ],
+          "descricao_completa": "REDACTED",
+          "filhos": [
+            "/api/v1/produto/644647354",
+            "/api/v1/produto/296154560",
+            "/api/v1/produto/666275703",
+            "/api/v1/produto/373355673"
+          ],
+          "grades": [
+            "/api/v1/grades/605007075",
+            "/api/v1/grades/371385839"
+          ],
+          "gtin": "",
+          "id_externo": null,
+          "mpn": "",
+          "ncm": "",
+          "nome": "REDACTED",
+          "removido": true,
+          "resource_uri": "/api/v1/produto/503958929",
+          "seo": "REDACTED",
+          "sku": "9552620",
+          "tipo": "atributo",
+          "url": "https://redacted.invalid/",
+          "url_video_youtube": "",
+          "variacoes": [],
+          "produto_id_anymarket": null,
+          "produto_id_sku_anymarket": null,
+          "tags": []
+        },
+        {
+          "id": 519096378,
+          "apelido": "REDACTED",
+          "ativo": false,
+          "bloqueado": false,
+          "categorias": [
+            "/api/v1/categoria/720690049",
+            "/api/v1/categoria/238537479",
+            "/api/v1/categoria/298609402"
+          ],
+          "descricao_completa": "REDACTED",
+          "filhos": [
+            "/api/v1/produto/127993473",
+            "/api/v1/produto/602692504",
+            "/api/v1/produto/914759993",
+            "/api/v1/produto/402474727"
+          ],
+          "grades": [
+            "/api/v1/grades/605007075",
+            "/api/v1/grades/371385839"
+          ],
+          "gtin": "",
+          "id_externo": null,
+          "mpn": "",
+          "ncm": "REDACTED",
+          "nome": "REDACTED",
+          "removido": true,
+          "resource_uri": "/api/v1/produto/519096378",
+          "seo": "REDACTED",
+          "sku": "8206243",
+          "tipo": "atributo",
+          "url": "https://redacted.invalid/",
+          "url_video_youtube": "",
+          "variacoes": [],
+          "produto_id_anymarket": null,
+          "produto_id_sku_anymarket": null,
+          "tags": []
+        },
+        {
+          "id": 165517117,
+          "apelido": "REDACTED",
+          "ativo": false,
+          "bloqueado": false,
+          "categorias": [
+            "/api/v1/categoria/868997224"
+          ],
+          "descricao_completa": "",
+          "filhos": [
+            "/api/v1/produto/952840487",
+            "/api/v1/produto/892108245",
+            "/api/v1/produto/729884606",
+            "/api/v1/produto/191202183"
+          ],
+          "grades": [
+            "/api/v1/grades/371385839"
+          ],
+          "gtin": "",
+          "id_externo": null,
+          "mpn": "",
+          "ncm": "REDACTED",
+          "nome": "REDACTED",
+          "removido": true,
+          "resource_uri": "/api/v1/produto/165517117",
+          "seo": "REDACTED",
+          "sku": "134496237736",
+          "tipo": "atributo",
+          "url": "https://redacted.invalid/",
+          "url_video_youtube": "",
+          "variacoes": [],
+          "produto_id_anymarket": null,
+          "produto_id_sku_anymarket": null,
+          "tags": []
+        },
+        {
+          "id": 925983460,
+          "apelido": "REDACTED",
+          "ativo": false,
+          "bloqueado": false,
+          "categorias": [
+            "/api/v1/categoria/868997224",
+            "/api/v1/categoria/298609402"
+          ],
+          "descricao_completa": "REDACTED",
+          "filhos": [
+            "/api/v1/produto/788421970",
+            "/api/v1/produto/972057187",
+            "/api/v1/produto/986607181",
+            "/api/v1/produto/698521866"
+          ],
+          "grades": [
+            "/api/v1/grades/605007075",
+            "/api/v1/grades/371385839"
+          ],
+          "gtin": "",
+          "id_externo": null,
+          "mpn": "",
+          "ncm": "",
+          "nome": "REDACTED",
+          "removido": true,
+          "resource_uri": "/api/v1/produto/925983460",
+          "seo": "REDACTED",
+          "sku": "4761402186277",
+          "tipo": "atributo",
+          "url": "https://redacted.invalid/",
+          "url_video_youtube": "",
+          "variacoes": [],
+          "produto_id_anymarket": null,
+          "produto_id_sku_anymarket": null,
+          "tags": []
+        },
+        {
+          "id": 260632885,
+          "apelido": "REDACTED",
+          "ativo": false,
+          "bloqueado": false,
+          "categorias": [
+            "/api/v1/categoria/362562783"
+          ],
+          "descricao_completa": "",
+          "filhos": [
+            "/api/v1/produto/446784279",
+            "/api/v1/produto/660795818",
+            "/api/v1/produto/608158387",
+            "/api/v1/produto/210329101",
+            "/api/v1/produto/162519044",
+            "/api/v1/produto/990839405",
+            "/api/v1/produto/107555614",
+            "/api/v1/produto/394912076"
+          ],
+          "grades": [
+            "/api/v1/grades/605007075",
+            "/api/v1/grades/371385839"
+          ],
+          "gtin": "",
+          "id_externo": null,
+          "mpn": "",
+          "ncm": "",
+          "nome": "REDACTED",
+          "removido": true,
+          "resource_uri": "/api/v1/produto/260632885",
+          "seo": "REDACTED",
+          "sku": "35297859",
+          "tipo": "atributo",
+          "url": "https://redacted.invalid/",
+          "url_video_youtube": "",
+          "variacoes": [],
+          "produto_id_anymarket": null,
+          "produto_id_sku_anymarket": null,
+          "tags": []
+        },
+        {
+          "id": 895067428,
+          "apelido": "REDACTED",
+          "ativo": false,
+          "bloqueado": false,
+          "categorias": [
+            "/api/v1/categoria/362562783"
+          ],
+          "descricao_completa": "REDACTED",
+          "filhos": [
+            "/api/v1/produto/453130602",
+            "/api/v1/produto/481313151",
+            "/api/v1/produto/831583290",
+            "/api/v1/produto/543119163",
+            "/api/v1/produto/780824291",
+            "/api/v1/produto/998398474",
+            "/api/v1/produto/106274031",
+            "/api/v1/produto/605938743"
+          ],
+          "grades": [
+            "/api/v1/grades/605007075",
+            "/api/v1/grades/371385839"
+          ],
+          "gtin": "",
+          "id_externo": null,
+          "mpn": "",
+          "ncm": "",
+          "nome": "REDACTED",
+          "removido": true,
+          "resource_uri": "/api/v1/produto/895067428",
+          "seo": "REDACTED",
+          "sku": "7425811242282",
+          "tipo": "atributo",
+          "url": "https://redacted.invalid/",
+          "url_video_youtube": "",
+          "variacoes": [],
+          "produto_id_anymarket": null,
+          "produto_id_sku_anymarket": null,
+          "tags": []
+        },
+        {
+          "id": 523689018,
+          "apelido": "REDACTED",
+          "ativo": false,
+          "bloqueado": false,
+          "categorias": [
+            "/api/v1/categoria/362562783"
+          ],
+          "descricao_completa": "REDACTED",
+          "filhos": [
+            "/api/v1/produto/241290092",
+            "/api/v1/produto/204917239",
+            "/api/v1/produto/628887877",
+            "/api/v1/produto/324646499"
+          ],
+          "grades": [
+            "/api/v1/grades/605007075",
+            "/api/v1/grades/371385839"
+          ],
+          "gtin": "",
+          "id_externo": null,
+          "mpn": "",
+          "ncm": "",
+          "nome": "REDACTED",
+          "removido": true,
+          "resource_uri": "/api/v1/produto/523689018",
+          "seo": "REDACTED",
+          "sku": "85051480",
+          "tipo": "atributo",
+          "url": "https://redacted.invalid/",
+          "url_video_youtube": "",
+          "variacoes": [],
+          "produto_id_anymarket": null,
+          "produto_id_sku_anymarket": null,
+          "tags": []
+        },
+        {
+          "id": 474675717,
+          "apelido": "REDACTED",
+          "ativo": false,
+          "bloqueado": false,
+          "categorias": [
+            "/api/v1/categoria/362562783"
+          ],
+          "descricao_completa": "REDACTED",
+          "filhos": [
+            "/api/v1/produto/606080387",
+            "/api/v1/produto/984623505",
+            "/api/v1/produto/594749391",
+            "/api/v1/produto/502455210"
+          ],
+          "grades": [
+            "/api/v1/grades/605007075",
+            "/api/v1/grades/371385839"
+          ],
+          "gtin": "",
+          "id_externo": null,
+          "mpn": "",
+          "ncm": "",
+          "nome": "REDACTED",
+          "removido": true,
+          "resource_uri": "/api/v1/produto/474675717",
+          "seo": "REDACTED",
+          "sku": "850513",
+          "tipo": "atributo",
+          "url": "https://redacted.invalid/",
+          "url_video_youtube": "",
+          "variacoes": [],
+          "produto_id_anymarket": null,
+          "produto_id_sku_anymarket": null,
+          "tags": []
+        },
+        {
+          "id": 939745645,
+          "apelido": "REDACTED",
+          "ativo": false,
+          "bloqueado": false,
+          "categorias": [
+            "/api/v1/categoria/471205474"
+          ],
+          "descricao_completa": "REDACTED",
+          "filhos": [
+            "/api/v1/produto/914438710",
+            "/api/v1/produto/279107780",
+            "/api/v1/produto/193318020",
+            "/api/v1/produto/448178071",
+            "/api/v1/produto/883223381",
+            "/api/v1/produto/752370802",
+            "/api/v1/produto/409967019",
+            "/api/v1/produto/581816029"
+          ],
+          "grades": [
+            "/api/v1/grades/605007075",
+            "/api/v1/grades/371385839"
+          ],
+          "gtin": "",
+          "id_externo": null,
+          "mpn": "",
+          "ncm": "REDACTED",
+          "nome": "REDACTED",
+          "removido": true,
+          "resource_uri": "/api/v1/produto/939745645",
+          "seo": "REDACTED",
+          "sku": "1311331059489",
+          "tipo": "atributo",
+          "url": "https://redacted.invalid/",
+          "url_video_youtube": "",
+          "variacoes": [],
+          "produto_id_anymarket": null,
+          "produto_id_sku_anymarket": null,
+          "tags": [
+            "REDACTED"
+          ]
+        },
+        {
+          "id": 775636169,
+          "apelido": "REDACTED",
+          "ativo": false,
+          "bloqueado": false,
+          "categorias": [
+            "/api/v1/categoria/783192787",
+            "/api/v1/categoria/720690049",
+            "/api/v1/categoria/298609402"
+          ],
+          "descricao_completa": "REDACTED",
+          "filhos": [
+            "/api/v1/produto/874424738",
+            "/api/v1/produto/586239039",
+            "/api/v1/produto/759005882",
+            "/api/v1/produto/444600246"
+          ],
+          "grades": [
+            "/api/v1/grades/605007075",
+            "/api/v1/grades/371385839"
+          ],
+          "gtin": "",
+          "id_externo": null,
+          "mpn": "",
+          "ncm": "REDACTED",
+          "nome": "REDACTED",
+          "removido": true,
+          "resource_uri": "/api/v1/produto/775636169",
+          "seo": "REDACTED",
+          "sku": "3452919",
+          "tipo": "atributo",
+          "url": "https://redacted.invalid/",
+          "url_video_youtube": "",
+          "variacoes": [],
+          "produto_id_anymarket": null,
+          "produto_id_sku_anymarket": null,
+          "tags": []
+        },
+        {
+          "id": 880525263,
+          "apelido": "REDACTED",
+          "ativo": false,
+          "bloqueado": false,
+          "categorias": [
+            "/api/v1/categoria/530416288"
+          ],
+          "descricao_completa": "REDACTED",
+          "filhos": [
+            "/api/v1/produto/952580605",
+            "/api/v1/produto/662532538",
+            "/api/v1/produto/503976419"
+          ],
+          "grades": [
+            "/api/v1/grades/371385839"
+          ],
+          "gtin": "",
+          "id_externo": null,
+          "mpn": "",
+          "ncm": "REDACTED",
+          "nome": "REDACTED",
+          "removido": true,
+          "resource_uri": "/api/v1/produto/880525263",
+          "seo": "REDACTED",
+          "sku": "74225103359",
+          "tipo": "atributo",
+          "url": "https://redacted.invalid/",
+          "url_video_youtube": "",
+          "variacoes": [],
+          "produto_id_anymarket": null,
+          "produto_id_sku_anymarket": null,
+          "tags": []
+        },
+        {
+          "id": 375734776,
+          "apelido": "REDACTED",
+          "ativo": false,
+          "bloqueado": false,
+          "categorias": [
+            "/api/v1/categoria/720690049",
+            "/api/v1/categoria/783192787",
+            "/api/v1/categoria/298609402"
+          ],
+          "descricao_completa": "REDACTED",
+          "filhos": [
+            "/api/v1/produto/352341289",
+            "/api/v1/produto/972964761",
+            "/api/v1/produto/490132123",
+            "/api/v1/produto/940002848"
+          ],
+          "grades": [
+            "/api/v1/grades/605007075",
+            "/api/v1/grades/371385839"
+          ],
+          "gtin": "",
+          "id_externo": null,
+          "mpn": "",
+          "ncm": "",
+          "nome": "REDACTED",
+          "removido": true,
+          "resource_uri": "/api/v1/produto/375734776",
+          "seo": "REDACTED",
+          "sku": "775438",
+          "tipo": "atributo",
+          "url": "https://redacted.invalid/",
+          "url_video_youtube": "",
+          "variacoes": [],
+          "produto_id_anymarket": null,
+          "produto_id_sku_anymarket": null,
+          "tags": []
+        },
+        {
+          "id": 769916911,
+          "apelido": "REDACTED",
+          "ativo": false,
+          "bloqueado": false,
+          "categorias": [
+            "/api/v1/categoria/783192787"
+          ],
+          "descricao_completa": "REDACTED",
+          "filhos": [
+            "/api/v1/produto/968214586",
+            "/api/v1/produto/927950587",
+            "/api/v1/produto/966777288",
+            "/api/v1/produto/584578107"
+          ],
+          "grades": [
+            "/api/v1/grades/605007075",
+            "/api/v1/grades/371385839"
+          ],
+          "gtin": "",
+          "id_externo": null,
+          "mpn": "",
+          "ncm": "REDACTED",
+          "nome": "REDACTED",
+          "removido": true,
+          "resource_uri": "/api/v1/produto/769916911",
+          "seo": "REDACTED",
+          "sku": "0051746000H68",
+          "tipo": "atributo",
+          "url": "https://redacted.invalid/",
+          "url_video_youtube": "",
+          "variacoes": [],
+          "produto_id_anymarket": null,
+          "produto_id_sku_anymarket": null,
+          "tags": []
+        },
+        {
+          "id": 853987125,
+          "apelido": "REDACTED",
+          "ativo": true,
+          "bloqueado": false,
+          "categorias": [
+            "/api/v1/categoria/720690049",
+            "/api/v1/categoria/783192787",
+            "/api/v1/categoria/298609402",
+            "/api/v1/categoria/244672331"
+          ],
+          "descricao_completa": "REDACTED",
+          "filhos": [
+            "/api/v1/produto/869355185",
+            "/api/v1/produto/230411703",
+            "/api/v1/produto/662232886",
+            "/api/v1/produto/667628502"
+          ],
+          "grades": [
+            "/api/v1/grades/605007075",
+            "/api/v1/grades/371385839"
+          ],
+          "gtin": null,
+          "id_externo": null,
+          "mpn": null,
+          "ncm": null,
+          "nome": "REDACTED",
+          "removido": true,
+          "resource_uri": "/api/v1/produto/853987125",
+          "seo": "REDACTED",
+          "sku": "0053795",
+          "tipo": "atributo",
+          "url": "https://redacted.invalid/",
+          "url_video_youtube": null,
+          "variacoes": [],
+          "produto_id_anymarket": null,
+          "produto_id_sku_anymarket": null,
+          "tags": []
+        },
+        {
+          "id": 216178651,
+          "apelido": "REDACTED",
+          "ativo": false,
+          "bloqueado": false,
+          "categorias": [
+            "/api/v1/categoria/720690049"
+          ],
+          "descricao_completa": "REDACTED",
+          "filhos": [
+            "/api/v1/produto/816751039",
+            "/api/v1/produto/604699566",
+            "/api/v1/produto/599102007",
+            "/api/v1/produto/664980942"
+          ],
+          "grades": [
+            "/api/v1/grades/605007075",
+            "/api/v1/grades/371385839"
+          ],
+          "gtin": "",
+          "id_externo": null,
+          "mpn": "",
+          "ncm": "",
+          "nome": "REDACTED",
+          "removido": true,
+          "resource_uri": "/api/v1/produto/216178651",
+          "seo": "REDACTED",
+          "sku": "7809072",
+          "tipo": "atributo",
+          "url": "https://redacted.invalid/",
+          "url_video_youtube": "",
+          "variacoes": [],
+          "produto_id_anymarket": null,
+          "produto_id_sku_anymarket": null,
+          "tags": []
+        },
+        {
+          "id": 368763081,
+          "apelido": "REDACTED",
+          "ativo": false,
+          "bloqueado": false,
+          "categorias": [
+            "/api/v1/categoria/530416288"
+          ],
+          "descricao_completa": "REDACTED",
+          "filhos": [
+            "/api/v1/produto/786816929",
+            "/api/v1/produto/510984599",
+            "/api/v1/produto/886115658"
+          ],
+          "grades": [
+            "/api/v1/grades/371385839"
+          ],
+          "gtin": "",
+          "id_externo": null,
+          "mpn": "",
+          "ncm": "REDACTED",
+          "nome": "REDACTED",
+          "removido": true,
+          "resource_uri": "/api/v1/produto/368763081",
+          "seo": "REDACTED",
+          "sku": "00487740022959",
+          "tipo": "atributo",
+          "url": "https://redacted.invalid/",
+          "url_video_youtube": "",
+          "variacoes": [],
+          "produto_id_anymarket": null,
+          "produto_id_sku_anymarket": null,
+          "tags": []
+        },
+        {
+          "id": 240162701,
+          "apelido": "REDACTED",
+          "ativo": false,
+          "bloqueado": false,
+          "categorias": [
+            "/api/v1/categoria/530416288"
+          ],
+          "descricao_completa": "REDACTED",
+          "filhos": [
+            "/api/v1/produto/813441151",
+            "/api/v1/produto/331011596",
+            "/api/v1/produto/644857741",
+            "/api/v1/produto/504291907"
+          ],
+          "grades": [
+            "/api/v1/grades/605007075",
+            "/api/v1/grades/371385839"
+          ],
+          "gtin": "",
+          "id_externo": null,
+          "mpn": "",
+          "ncm": "",
+          "nome": "REDACTED",
+          "removido": true,
+          "resource_uri": "/api/v1/produto/240162701",
+          "seo": "REDACTED",
+          "sku": "4681354",
+          "tipo": "atributo",
+          "url": "https://redacted.invalid/",
+          "url_video_youtube": "",
+          "variacoes": [],
+          "produto_id_anymarket": null,
+          "produto_id_sku_anymarket": null,
+          "tags": []
+        }
+      ]
+    }
+  }
+}

@@ -607,9 +607,11 @@ apps/loja-integrada/lib/lojaIntegrada/testing/especificacaoFolhas.json` (no pair
 - A fixture is pushed only after Lucas has seen it (the repo is public), and only after
   `sanitizar --entrada … --verificar <files>` passes over the new fixtures, the changed docs
   and the PR-body draft. `wireCorpus.test.ts` re-scans the corpus in CI (no store list
-  there); its floor `MINIMO_DE_FIXTURES` is the committed count (29: the 18 step-3 captures
-  plus the 11 step-10 catalogue captures, `c9-*`), so a fixture that disappears fails it,
-  and so does one added without moving it.
+  there); its floor `MINIMO_DE_FIXTURES` is the committed count (42: the 18 step-3 captures,
+  the 11 step-10 catalogue captures, `c9-*`, and the 13 step-9 product captures, `c10-*`),
+  so a fixture that disappears fails it, and so does one added without moving it. The
+  product captures are replayed through the import's own reads by
+  `importacao/capturasProdutos.test.ts`.
 - ⚠️ The owner's raw `pedido-enviado` pair duplicates `pedido-boleto` (the same order,
   identical sanitized bytes) and is EXCLUDED from the corpus. It stays in `~/li-capturas`
   until he deletes it, so a sanitizer run without `--so` writes it back: delete that raw

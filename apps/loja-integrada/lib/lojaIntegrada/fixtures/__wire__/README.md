@@ -47,11 +47,11 @@ Every other file in this folder is one fixture envelope, `<nome>.json`, written 
 
 `wireCorpus.test.ts` reads this folder: every file must be a valid envelope, serialised
 as `JSON.stringify(v, null, 2) + '\n'`, and pass both layers of `piiScan.ts`.
-`MINIMO_DE_FIXTURES` is the number of committed fixtures (29 since step 10: 18 from the
-owner's first captures, step 3, plus the 11 catalogue captures `c9-*`), and the test
-asserts the count equals it: a fixture that disappears fails, and so does one added
-without moving it. A change that adds or deliberately removes a fixture moves it in the
-same commit.
+`MINIMO_DE_FIXTURES` is the number of committed fixtures (42 since step 9: 18 from the
+owner's first captures, step 3, the 11 catalogue captures `c9-*`, step 10, and the 13
+product captures `c10-*`, step 9), and the test asserts the count equals it: a fixture
+that disappears fails, and so does one added without moving it. A change that adds or
+deliberately removes a fixture moves it in the same commit.
 
 A change to `core/redacao.ts` can change what the sanitizer writes for a fixture already
 committed. Re-run the dry run over every pair: a fixture whose bytes would change is
