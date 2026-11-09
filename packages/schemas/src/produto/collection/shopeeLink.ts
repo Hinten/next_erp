@@ -22,7 +22,7 @@ import { ACAO_STATUS_ANUNCIO, type AcaoStatusAnuncio } from './mercadoLivreLink'
  *
  * ## The writer inventory, whole
  *
- * Eight groups of fields have a named writer set, and none of the eight overlap:
+ * Nine groups of fields have a named writer set, and none of the nine overlap:
  *  - **`item_status` + `estadoAnuncio`** — FIVE writers, enumerated on
  *    {@link shopeeItemStatusSchema} below;
  *  - **the ten `estoque*` scalars** (step 12) — **ONE** writer, the stock
@@ -107,6 +107,28 @@ import { ACAO_STATUS_ANUNCIO, type AcaoStatusAnuncio } from './mercadoLivreLink'
  *    SENT, folded — written in the SAME writes that set or carry
  *    `criacaoIncertaDesde` (the `incerto` re-arm, the takeover) and cleared by
  *    the same four; read only through `janelaDaCriacaoIncertaShopee`'s `sku`;
+ *  - **`logistic_info` + `logisticaGravadaEm`** (#2015) — the stored logistics
+ *    list and the stamp that vouches THIS app wrote it. FOUR writer sites, all
+ *    in `apps/shopee`, under ONE rule — the stamp rides the SAME patch, under
+ *    the SAME condition, as the list:
+ *    - step 11's write-back #1 (`anuncios/publicarAnuncio.ts`), the list the
+ *      request SENT, only when the body carried one — and through it the
+ *      draft claim `reivindicarRascunhoShopee`, on all three of its branches;
+ *    - write-back #2, the list Shopee's read-back ANSWERED;
+ *    - the product import's `dadosLinkListagem` (`produtos/mapeamento.ts`):
+ *      the item, kit and mass imports and the draft adoption, all from one
+ *      Shopee read (`get_item_base_info`, or `get_kit_item_info`'s
+ *      `product_info` for a kit);
+ *    - the kit create's `escreverVinculoDoKit` (`kits/vinculosKit.ts`), the
+ *      list `add_kit_item` was sent.
+ *    The ONE write of the list with no stamp is the draft create's schema
+ *    default `null` on a NEW doc — a `null` list vouches for nothing. Every
+ *    other write to the link (ENSURE's adoption, the lock, the failure stamp,
+ *    the stock and price syncs, the kit read-back) names neither key, and
+ *    nothing in a browser writes either. The legacy app wrote the list but
+ *    never the stamp, so a migrated list reads as distrusted until its first
+ *    publish or import. Read only through `logisticaGravadaPeloErpShopee`
+ *    (`./shopeeLinkLeitura.ts`), never raw.
  * The stock sender READS `item_status` and `estadoAnuncio` into its refusal
  * fingerprint and never writes either, so it can never race the five above.
  * The price sender writes neither.
@@ -124,7 +146,9 @@ import { ACAO_STATUS_ANUNCIO, type AcaoStatusAnuncio } from './mercadoLivreLink'
  *  - most nested blobs (`description_info`, `logistic_info`, `wholesale`,
  *    `complaint_policy`, `attributes`) are raw Shopee API pass-through JSON
  *    the audit didn't fully enumerate field-by-field — kept loosely typed
- *    here on purpose (wire tolerance over strictness);
+ *    here on purpose (wire tolerance over strictness). Whether a stored
+ *    `logistic_info` may be RE-SENT is not in its shape at all: it is the
+ *    `logisticaGravadaEm` stamp beside it (#2015, the inventory above);
  *  - `violations` items mirror **push 18**'s `item_status_details[]` and
  *    `deboost_details[]` — the same five fields on both sides, with
  *    `suggested_category[]` only on the deboost side. See
@@ -900,6 +924,44 @@ export const produtoShopeeLinkSchema = z
      * `criacaoIncertaDesde` beside it is ignored.
      */
     criacaoIncertaSku: z.string().nullable().optional(),
+
+    // === #2015 — the PROVENANCE of `logistic_info`. A bare const on this
+    // `.passthrough()` shape like every block above ⇒ no ruleset
+    // regeneration. ⚠️ SERVER-STAMPED ⇒ `.nullable().optional()`, NOT
+    // `.nullable().default(null)`: a link that never carried the key — every
+    // migrated row — parses with it ABSENT, never with a `null` no writer chose.
+
+    /**
+     * MILLISECONDS — when THIS app last wrote {@link logistic_info}: a list a
+     * publish SENT (write-back #1, the draft claim, the kit create) or one
+     * Shopee ANSWERED (write-back #2, the product import). `null` or absent =
+     * this app cannot vouch for the stored list, and the publish planners
+     * rebuild the logistics instead of re-sending it.
+     *
+     * ⚠️ The whole signal is PRESENCE, as a number. Nothing compares it as a
+     * clock — not against `ultimaPublicacao.em`, not against another stamp,
+     * not against another link — so its value claims no ordering, only
+     * "written here".
+     *
+     * ⚠️ The legacy app never wrote it: its exporter built a list of its own
+     * from the shop's channels on every send and wrote back only `item_id` and
+     * `item_status`, so a migrated list is an older import's read or a legacy
+     * screen's edit — no record of what was last sent or of what Shopee holds.
+     * Absent ⇒ distrusted, and there is NO backfill: a link heals at its first
+     * successful publish or import, because a stamp a script wrote would
+     * vouch for a list nobody re-read.
+     *
+     * ⚠️ Written only in the SAME patch, under the SAME condition, as the list
+     * it vouches for: a write that leaves the list alone leaves the stamp
+     * alone. The draft create writes none — its list is the schema's `null`,
+     * which takes the full pass anyway. The header's writer inventory names
+     * the four sites.
+     *
+     * ⚠️ Never read raw: `logisticaGravadaPeloErpShopee`
+     * (`./shopeeLinkLeitura.ts`) is the ONE reading (#1369). In memory only —
+     * a Firestore `where` on it would full-scan and bill on Enterprise.
+     */
+    logisticaGravadaEm: z.number().int().nullable().optional(),
   })
   .passthrough();
 export type ProdutoShopeeLink = z.infer<typeof produtoShopeeLinkSchema>;

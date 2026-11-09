@@ -10,6 +10,7 @@ import {
   shopeeLogisticsChannelSchema,
 } from '@delfrance/integrations-shopee';
 
+import { exigirAcaoSeHaComando } from '../kits/testing/exigirAcao';
 import {
   UNIDADES_PARA_CM,
   type ArgsLogistica,
@@ -45,10 +46,19 @@ const DIM_10: ShopeeDimensionRequest = {
   package_width: 10,
 };
 
+/**
+ * ⚠️ The fixture defaults to a TRUSTED list (#2015), and that is load-bearing:
+ * blocks (6) and (7) below pin the STORED pass, and three of them ('um size_id
+ * $rotulo PULA', CUSTOM_PRICE 'ruim', 'valida VAZIA') would stay green on a
+ * distrusted default for the wrong reason — the full pass produces the same
+ * skips. The first test of block (12) pins this default.
+ */
 function args(parcial: Partial<ArgsLogistica> = {}): ArgsLogistica {
   return {
     canais: [canal()],
     armazenado: null,
+    armazenadoConfiavel: true,
+    itemIdImportavel: null,
     pesoKg: 0.5,
     dimensaoCm: DIM_10,
     ofereceFreteGratis: false,
@@ -630,5 +640,656 @@ describe('disciplina do módulo', () => {
   it('não reimplementa um limite do fio: o fee_type vem do pacote', () => {
     expect(fonte).toContain('SHOPEE_LOGISTICS_FEE_TYPE');
     expect(fonte).not.toMatch(/'SIZE_SELECTION'|'CUSTOM_PRICE'|'SIZE_INPUT'/);
+  });
+
+  it('#2015: a confiança chega pronta — o módulo nunca lê o carimbo nem chama o predicado', () => {
+    // A decisão "quem gravou a lista" mora em UM predicado de
+    // `@delfrance/schemas`, chamado por quem lê o vínculo CRU; aqui ela é só um
+    // booleano. Uma segunda leitura do carimbo é o cheiro do #1369.
+    expect(fonte).toContain('armazenadoConfiavel');
+    expect(fonte).not.toMatch(
+      /\.logisticaGravadaEm\b|\[['"]logisticaGravadaEm['"]\]|logisticaGravadaPeloErpShopee\(/,
+    );
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*          (12) #2015 — a lista armazenada só vale se ESTE app a gravou        */
+/* -------------------------------------------------------------------------- */
+
+const CANAL_OBRIGATORIO = 90007;
+const ITEM_IMPORTAVEL = 123;
+
+/** Sentence (1) — today's, unchanged, under `logistica-sem-canal`. */
+const FRASE_CANAL_OBRIGATORIO_PERDIDO =
+  'O canal obrigatório 90007 não pôde ser habilitado: falta um valor que só o Seller ' +
+  'Centre define (tamanho ou tarifa), ou o item não cabe nos limites do canal.';
+
+/** N1 — the new refusal's sentence, for one value. */
+function fraseNaoConfirmada(falta: string, itemId: number = ITEM_IMPORTAVEL): string {
+  return (
+    `O canal obrigatório 90007 precisa de ${falta}, e o ERP não tem registro de ter lido da ` +
+    'Shopee nem de ter enviado a ela o valor gravado neste vínculo, então esse valor não é ' +
+    `reenviado. Importe o anúncio ${String(itemId)} para gravar os valores atuais da Shopee e ` +
+    'publique de novo.'
+  );
+}
+
+/** A compulsory channel of one fee type, beside an ordinary channel that always fits. */
+function canaisComObrigatorio(
+  feeType: string,
+  parcial: Record<string, unknown> = {},
+): ShopeeLogisticsChannel[] {
+  return [
+    canal({
+      logistics_channel_id: CANAL_OBRIGATORIO,
+      fee_type: feeType,
+      compulsory_channel: true,
+      ...parcial,
+    }),
+    canal({ logistics_channel_id: CANAL_IRMAO }),
+  ];
+}
+
+/** A distrusted list (the legacy corpus) on a listing an import could re-read. */
+function desconfiada(parcial: Partial<ArgsLogistica> = {}): ArgsLogistica {
+  return args({ armazenadoConfiavel: false, itemIdImportavel: ITEM_IMPORTAVEL, ...parcial });
+}
+
+function motivosDosProblemas(r: ReturnType<typeof construirLogistica>): readonly string[] {
+  return r.problemas.map((p) => p.motivo);
+}
+
+describe('#2015 — a confiança na lista armazenada', () => {
+  it('âncora: o fixture args() é CONFIÁVEL e sem anúncio a importar — os blocos (6) e (7) não passam por vácuo', () => {
+    const padrao = args();
+    expect(padrao.armazenadoConfiavel).toBe(true);
+    expect(padrao.itemIdImportavel).toBeNull();
+    // ⛔ QUASE-PAR: o MESMO armazenado que (7) fixa, desconfiado, dá OUTRA
+    // resposta — então o padrão é o que decide aqueles testes.
+    const armazenado = [{ logistic_id: CANAL_PADRAO }];
+    const canais = [
+      canal({ logistics_channel_id: CANAL_PADRAO }),
+      canal({ logistics_channel_id: CANAL_IRMAO }),
+    ];
+    expect(
+      construirLogistica(args({ canais, armazenado })).logistic_info.map((e) => e.logistic_id),
+    ).toEqual([CANAL_PADRAO]);
+    expect(
+      construirLogistica(desconfiada({ canais, armazenado })).logistic_info.map(
+        (e) => e.logistic_id,
+      ),
+    ).toEqual([CANAL_PADRAO, CANAL_IRMAO]);
+  });
+
+  it('⚠️ PAR: is_free:true armazenado e flag do produto false — confiável manda true num canal só; desconfiada manda false em TODOS', () => {
+    const base = {
+      canais: [
+        canal({ logistics_channel_id: CANAL_PADRAO }),
+        canal({ logistics_channel_id: CANAL_IRMAO }),
+      ],
+      armazenado: [{ logistic_id: CANAL_PADRAO, is_free: true }],
+      ofereceFreteGratis: false,
+    };
+    const confiavel = construirLogistica(args(base));
+    expect(confiavel.logistic_info).toEqual([
+      { logistic_id: CANAL_PADRAO, enabled: true, is_free: true },
+    ]);
+    expect(confiavel.canaisHabilitados).toEqual([CANAL_PADRAO]);
+
+    const naoConfiavel = construirLogistica(desconfiada(base));
+    expect(naoConfiavel.logistic_info).toEqual([
+      { logistic_id: CANAL_PADRAO, enabled: true, is_free: false },
+      { logistic_id: CANAL_IRMAO, enabled: true, is_free: false },
+    ]);
+    expect(naoConfiavel.canaisHabilitados).toEqual([CANAL_PADRAO, CANAL_IRMAO]);
+    expect(naoConfiavel.problemas).toEqual([]);
+  });
+
+  it('⚠️ PAR (a outra direção): is_free:false armazenado e flag true — desconfiada manda true (o flag), confiável manda false', () => {
+    const base = {
+      armazenado: [{ logistic_id: CANAL_PADRAO, is_free: false }],
+      ofereceFreteGratis: true,
+    };
+    expect(construirLogistica(desconfiada(base)).logistic_info[0]?.is_free).toBe(true);
+    expect(construirLogistica(args(base)).logistic_info[0]?.is_free).toBe(false);
+  });
+
+  it('CUSTOM_PRICE não obrigatório com tarifa "12.90": confiável envia 12.9; desconfiada NÃO envia a tarifa, pula o canal, e não há problema', () => {
+    const base = {
+      canais: canaisComObrigatorio(SHOPEE_LOGISTICS_FEE_TYPE.customPrice, {
+        compulsory_channel: false,
+      }),
+      armazenado: [{ logistic_id: CANAL_OBRIGATORIO, shipping_fee: '12.90' }],
+    };
+    const confiavel = construirLogistica(args(base));
+    expect(confiavel.logistic_info).toEqual([
+      { logistic_id: CANAL_OBRIGATORIO, enabled: true, is_free: false, shipping_fee: 12.9 },
+    ]);
+
+    const naoConfiavel = construirLogistica(desconfiada(base));
+    expect(naoConfiavel.logistic_info).toEqual([
+      { logistic_id: CANAL_IRMAO, enabled: true, is_free: false },
+    ]);
+    expect(naoConfiavel.logistic_info.some((e) => 'shipping_fee' in e)).toBe(false);
+    expect(naoConfiavel.pulados).toEqual([
+      { logisticId: CANAL_OBRIGATORIO, motivo: 'custom-price-sem-tarifa' },
+    ]);
+    expect(naoConfiavel.problemas).toEqual([]);
+  });
+
+  it('SIZE_SELECTION não obrigatório com size_id 7: desconfiada NUNCA envia o tamanho armazenado', () => {
+    const base = {
+      canais: canaisComObrigatorio(SHOPEE_LOGISTICS_FEE_TYPE.sizeSelection, {
+        compulsory_channel: false,
+      }),
+      armazenado: [{ logistic_id: CANAL_OBRIGATORIO, size_id: 7 }],
+    };
+    expect(construirLogistica(args(base)).logistic_info).toEqual([
+      { logistic_id: CANAL_OBRIGATORIO, enabled: true, is_free: false, size_id: 7 },
+    ]);
+    const naoConfiavel = construirLogistica(desconfiada(base));
+    expect(naoConfiavel.logistic_info.some((e) => 'size_id' in e)).toBe(false);
+    expect(naoConfiavel.pulados).toEqual([
+      { logisticId: CANAL_OBRIGATORIO, motivo: 'size-selection-sem-size-id' },
+    ]);
+    expect(naoConfiavel.problemas).toEqual([]);
+  });
+
+  it('uma lista desconfiada só relata os pulados da passagem COMPLETA — nunca os da armazenada', () => {
+    const base = {
+      canais: [canal({ logistics_channel_id: CANAL_PADRAO })],
+      // 90099 sumiu da loja: a passagem armazenada o relataria.
+      armazenado: [{ logistic_id: CANAL_PADRAO }, { logistic_id: 90099 }],
+    };
+    expect(construirLogistica(args(base)).pulados).toEqual([
+      { logisticId: 90099, motivo: 'nao-habilitado-na-loja' },
+    ]);
+    const naoConfiavel = construirLogistica(desconfiada(base));
+    expect(naoConfiavel.pulados).toEqual([]);
+    expect(naoConfiavel.logistic_info.map((e) => e.logistic_id)).toEqual([CANAL_PADRAO]);
+  });
+});
+
+describe('#2015 — logistica-nao-confirmada (Lucas D2): o canal obrigatório cujo valor só a lista desconfiada tem', () => {
+  it.each([
+    {
+      rotulo: 'SIZE_SELECTION, size_id "7"',
+      feeType: SHOPEE_LOGISTICS_FEE_TYPE.sizeSelection,
+      entrada: { size_id: '7' },
+      falta: 'um tamanho',
+    },
+    {
+      rotulo: 'SIZE_SELECTION, size_id 7',
+      feeType: SHOPEE_LOGISTICS_FEE_TYPE.sizeSelection,
+      entrada: { size_id: 7 },
+      falta: 'um tamanho',
+    },
+    {
+      rotulo: 'CUSTOM_PRICE, shipping_fee "12.90"',
+      feeType: SHOPEE_LOGISTICS_FEE_TYPE.customPrice,
+      entrada: { shipping_fee: '12.90' },
+      falta: 'uma tarifa de frete',
+    },
+  ])(
+    '$rotulo, desconfiada, anúncio 123 ⇒ UMA logistica-nao-confirmada com N1',
+    ({ feeType, entrada, falta }) => {
+      const r = construirLogistica(
+        desconfiada({
+          canais: canaisComObrigatorio(feeType),
+          armazenado: [{ logistic_id: CANAL_OBRIGATORIO, ...entrada }],
+        }),
+      );
+      // The compulsory channel is NOT sent; the ordinary one is.
+      expect(r.logistic_info.map((e) => e.logistic_id)).toEqual([CANAL_IRMAO]);
+      const naoConfirmados = r.problemas.filter((p) => p.motivo === 'logistica-nao-confirmada');
+      expect(naoConfirmados).toEqual([
+        {
+          campo: 'logistic_info',
+          motivo: 'logistica-nao-confirmada',
+          mensagem: fraseNaoConfirmada(falta),
+        },
+      ]);
+      // Sentence (1) is REPLACED for that channel, never added beside N1; and
+      // with EVERY lost compulsory channel on N1, the aggregate sentence (2) is
+      // left out (V-REFUSAL-9) — N1 is the whole refusal.
+      expect(r.problemas.map((p) => p.mensagem)).not.toContain(FRASE_CANAL_OBRIGATORIO_PERDIDO);
+      expect(r.problemas).toEqual(naoConfirmados);
+    },
+  );
+
+  it('N1 não é uma frase de terminal: nenhuma flag, nenhum script `:anuncio`, nenhum "comando" — e nenhuma acao', () => {
+    const r = construirLogistica(
+      desconfiada({
+        canais: canaisComObrigatorio(SHOPEE_LOGISTICS_FEE_TYPE.sizeSelection),
+        armazenado: [{ logistic_id: CANAL_OBRIGATORIO, size_id: '7' }],
+      }),
+    );
+    const n1 = r.problemas[0];
+    expect(n1?.motivo).toBe('logistica-nao-confirmada');
+    expect(n1).toBeDefined();
+    if (n1 === undefined) return;
+    expect(() => exigirAcaoSeHaComando(n1)).not.toThrow();
+    expect(n1.mensagem).not.toMatch(/(^|[\s(])--[a-z]|:anuncio\b|\bcomandos?\b/i);
+    expect('acao' in n1).toBe(false);
+  });
+
+  it('N1 afirma só a AUSÊNCIA DE REGISTRO — nunca que o valor "não foi lido" nem "não foi enviado" (a web mostra os dois lado a lado)', () => {
+    // A missing stamp proves only that nothing in this app vouches for the
+    // list: a legacy import DID read it from Shopee, and a link this app wrote
+    // before #2015 WAS sent by it. The web's copy claims "o ERP não tem
+    // registro" and shows N1 as «Detalhe:» beside it, so N1 must claim the
+    // same and nothing stronger — for a size AND for a fee.
+    for (const [feeType, armazenado] of [
+      [SHOPEE_LOGISTICS_FEE_TYPE.sizeSelection, { logistic_id: CANAL_OBRIGATORIO, size_id: '7' }],
+      [
+        SHOPEE_LOGISTICS_FEE_TYPE.customPrice,
+        { logistic_id: CANAL_OBRIGATORIO, shipping_fee: '12.90' },
+      ],
+    ] as const) {
+      const r = construirLogistica(
+        desconfiada({ canais: canaisComObrigatorio(feeType), armazenado: [armazenado] }),
+      );
+      const n1 = r.problemas[0]?.mensagem ?? '';
+      expect(r.problemas[0]?.motivo, feeType).toBe('logistica-nao-confirmada');
+      expect(n1).toContain(
+        'o ERP não tem registro de ter lido da Shopee nem de ter enviado a ela o valor gravado',
+      );
+      expect(n1).not.toMatch(/não foi (lido|enviado)|nunca (foi )?(lido|enviado)|por este ERP/);
+    }
+  });
+
+  it('N1 nomeia o itemIdImportavel que o chamador passou — nunca outro', () => {
+    const r = construirLogistica(
+      desconfiada({
+        canais: canaisComObrigatorio(SHOPEE_LOGISTICS_FEE_TYPE.sizeSelection),
+        armazenado: [{ logistic_id: CANAL_OBRIGATORIO, size_id: '7' }],
+        itemIdImportavel: 2500139861,
+      }),
+    );
+    expect(r.problemas[0]?.mensagem).toBe(fraseNaoConfirmada('um tamanho', 2500139861));
+  });
+
+  it('⚠️ QUASE-PAR: a MESMA lista CONFIÁVEL envia o canal com o size_id e não há problema nenhum', () => {
+    const r = construirLogistica(
+      args({
+        canais: canaisComObrigatorio(SHOPEE_LOGISTICS_FEE_TYPE.sizeSelection),
+        armazenado: [{ logistic_id: CANAL_OBRIGATORIO, size_id: '7' }],
+        itemIdImportavel: ITEM_IMPORTAVEL,
+      }),
+    );
+    expect(r.logistic_info).toEqual([
+      { logistic_id: CANAL_OBRIGATORIO, enabled: true, is_free: false, size_id: 7 },
+    ]);
+    expect(r.problemas).toEqual([]);
+  });
+
+  it.each([
+    { rotulo: 'size_id vazio', entrada: { size_id: '' } },
+    { rotulo: 'size_id decimal "12.5"', entrada: { size_id: '12.5' } },
+    { rotulo: 'size_id "0"', entrada: { size_id: '0' } },
+    { rotulo: 'size_id ausente', entrada: {} },
+    { rotulo: 'só uma TARIFA legível num canal de TAMANHO', entrada: { shipping_fee: '12.90' } },
+  ])(
+    '⛔ QUASE-PAR ($rotulo): desconfiada, mas sem valor legível ⇒ a frase (1) em logistica-sem-canal',
+    ({ entrada }) => {
+      const r = construirLogistica(
+        desconfiada({
+          canais: canaisComObrigatorio(SHOPEE_LOGISTICS_FEE_TYPE.sizeSelection),
+          armazenado: [{ logistic_id: CANAL_OBRIGATORIO, ...entrada }],
+        }),
+      );
+      expect(motivosDosProblemas(r)).not.toContain('logistica-nao-confirmada');
+      expect(r.problemas[0]).toEqual({
+        campo: 'logistic_info',
+        motivo: 'logistica-sem-canal',
+        mensagem: FRASE_CANAL_OBRIGATORIO_PERDIDO,
+      });
+    },
+  );
+
+  it('⛔ QUASE-PAR: só um TAMANHO legível num canal de TARIFA ⇒ a frase (1)', () => {
+    const r = construirLogistica(
+      desconfiada({
+        canais: canaisComObrigatorio(SHOPEE_LOGISTICS_FEE_TYPE.customPrice),
+        armazenado: [{ logistic_id: CANAL_OBRIGATORIO, size_id: '7', shipping_fee: 'grátis' }],
+      }),
+    );
+    expect(motivosDosProblemas(r)).not.toContain('logistica-nao-confirmada');
+    expect(r.problemas[0]?.mensagem).toBe(FRASE_CANAL_OBRIGATORIO_PERDIDO);
+  });
+
+  it('⛔ QUASE-PAR: o valor legível é de OUTRO canal — nenhuma entrada armazenada para o obrigatório ⇒ a frase (1)', () => {
+    const r = construirLogistica(
+      desconfiada({
+        canais: canaisComObrigatorio(SHOPEE_LOGISTICS_FEE_TYPE.sizeSelection),
+        armazenado: [{ logistic_id: CANAL_IRMAO, size_id: '7' }],
+      }),
+    );
+    expect(motivosDosProblemas(r)).not.toContain('logistica-nao-confirmada');
+    expect(r.problemas[0]?.mensagem).toBe(FRASE_CANAL_OBRIGATORIO_PERDIDO);
+  });
+
+  it('⛔ QUASE-PAR: lista CONFIÁVEL com um tamanho ilegível ⇒ a frase (1), mesmo com anúncio a importar', () => {
+    const r = construirLogistica(
+      args({
+        canais: canaisComObrigatorio(SHOPEE_LOGISTICS_FEE_TYPE.sizeSelection),
+        armazenado: [{ logistic_id: CANAL_OBRIGATORIO, size_id: '' }],
+        itemIdImportavel: ITEM_IMPORTAVEL,
+      }),
+    );
+    expect(motivosDosProblemas(r)).not.toContain('logistica-nao-confirmada');
+    expect(r.problemas[0]?.mensagem).toBe(FRASE_CANAL_OBRIGATORIO_PERDIDO);
+  });
+
+  it('⛔ QUASE-PAR: uma lista CONFIÁVEL nunca recebe N1 — nem quando o canal tem uma entrada ilegível E outra legível', () => {
+    // The one shape in which a TRUSTED stored pass both skips the compulsory
+    // channel (the '' entry) and holds a readable size for it (the '7' entry,
+    // which it SENDS): only the trust guard keeps N1's "não é reenviado" from
+    // being said about a channel that is on the wire.
+    const r = construirLogistica(
+      args({
+        canais: canaisComObrigatorio(SHOPEE_LOGISTICS_FEE_TYPE.sizeSelection),
+        armazenado: [
+          { logistic_id: CANAL_OBRIGATORIO, size_id: '' },
+          { logistic_id: CANAL_OBRIGATORIO, size_id: '7' },
+        ],
+        itemIdImportavel: ITEM_IMPORTAVEL,
+      }),
+    );
+    expect(r.logistic_info).toEqual([
+      { logistic_id: CANAL_OBRIGATORIO, enabled: true, is_free: false, size_id: 7 },
+    ]);
+    expect(motivosDosProblemas(r)).not.toContain('logistica-nao-confirmada');
+  });
+
+  it('⛔ QUASE-PAR: lista desconfiada com um tamanho legível, mas SEM anúncio a importar (um rascunho) ⇒ a frase (1)', () => {
+    const r = construirLogistica(
+      desconfiada({
+        canais: canaisComObrigatorio(SHOPEE_LOGISTICS_FEE_TYPE.sizeSelection),
+        armazenado: [{ logistic_id: CANAL_OBRIGATORIO, size_id: '7' }],
+        itemIdImportavel: null,
+      }),
+    );
+    expect(motivosDosProblemas(r)).not.toContain('logistica-nao-confirmada');
+    expect(r.problemas[0]?.mensagem).toBe(FRASE_CANAL_OBRIGATORIO_PERDIDO);
+  });
+
+  it.each([
+    {
+      rotulo: 'o pacote não cabe (peso)',
+      parcial: { weight_limit: { item_max_weight: 0.1 } },
+      motivo: 'peso-fora-do-limite',
+    },
+    {
+      rotulo: 'o canal não está habilitado na loja',
+      parcial: { enabled: false },
+      motivo: 'nao-habilitado-na-loja',
+    },
+  ])(
+    '⛔ QUASE-PAR: tamanho legível e desconfiado, mas $rotulo ⇒ a frase (1) — o pulado não é por falta do valor',
+    ({ parcial, motivo }) => {
+      const r = construirLogistica(
+        desconfiada({
+          canais: canaisComObrigatorio(SHOPEE_LOGISTICS_FEE_TYPE.sizeSelection, parcial),
+          armazenado: [{ logistic_id: CANAL_OBRIGATORIO, size_id: '7' }],
+        }),
+      );
+      expect(r.pulados).toEqual([{ logisticId: CANAL_OBRIGATORIO, motivo }]);
+      expect(motivosDosProblemas(r)).not.toContain('logistica-nao-confirmada');
+      expect(r.problemas[0]?.mensagem).toBe(FRASE_CANAL_OBRIGATORIO_PERDIDO);
+    },
+  );
+
+  it('⛔ QUASE-PAR POR CANAL: dois obrigatórios desconfiados, ambos com tamanho legível — só o que foi pulado POR FALTA DO VALOR recebe N1; o que não cabe fica na frase (1)', () => {
+    // Condition 3 is PER CHANNEL: the "sem-size-id" skip of one compulsory
+    // channel must never lend N1 to ANOTHER one that was skipped for its weight
+    // — there "não é reenviado" would blame the stamp for a channel a trusted
+    // copy would not have sent either.
+    const OBRIGATORIO_PESADO = 90008;
+    const r = construirLogistica(
+      desconfiada({
+        canais: [
+          canal({
+            logistics_channel_id: CANAL_OBRIGATORIO,
+            fee_type: SHOPEE_LOGISTICS_FEE_TYPE.sizeSelection,
+            compulsory_channel: true,
+          }),
+          canal({
+            logistics_channel_id: OBRIGATORIO_PESADO,
+            fee_type: SHOPEE_LOGISTICS_FEE_TYPE.sizeSelection,
+            compulsory_channel: true,
+            weight_limit: { item_max_weight: 0.1 },
+          }),
+          canal({ logistics_channel_id: CANAL_IRMAO }),
+        ],
+        armazenado: [
+          { logistic_id: CANAL_OBRIGATORIO, size_id: '7' },
+          { logistic_id: OBRIGATORIO_PESADO, size_id: '8' },
+        ],
+      }),
+    );
+    expect(r.pulados).toEqual([
+      { logisticId: CANAL_OBRIGATORIO, motivo: 'size-selection-sem-size-id' },
+      { logisticId: OBRIGATORIO_PESADO, motivo: 'peso-fora-do-limite' },
+    ]);
+    expect(r.problemas.map((p) => [p.motivo, p.mensagem])).toEqual([
+      ['logistica-nao-confirmada', fraseNaoConfirmada('um tamanho')],
+      [
+        'logistica-sem-canal',
+        FRASE_CANAL_OBRIGATORIO_PERDIDO.replace(
+          String(CANAL_OBRIGATORIO),
+          String(OBRIGATORIO_PESADO),
+        ),
+      ],
+      [
+        'logistica-sem-canal',
+        'Nenhum canal obrigatório da loja pôde ser habilitado para este item.',
+      ],
+    ]);
+  });
+
+  it.each([
+    {
+      rotulo: 'tamanho',
+      feeType: SHOPEE_LOGISTICS_FEE_TYPE.sizeSelection,
+      entradas: [{ size_id: '' }, { size_id: '7' }],
+      falta: 'um tamanho',
+    },
+    {
+      rotulo: 'tarifa',
+      feeType: SHOPEE_LOGISTICS_FEE_TYPE.customPrice,
+      entradas: [{ shipping_fee: 'grátis' }, { shipping_fee: '12.90' }],
+      falta: 'uma tarifa de frete',
+    },
+  ])(
+    'PAR (duas entradas do MESMO canal, uma ilegível e outra legível, $rotulo): desconfiada ⇒ N1 — basta UMA entrada guardar o valor',
+    ({ feeType, entradas, falta }) => {
+      // The mirror of the trusted duplicate-entry test above: a trusted copy of
+      // this list SENDS the readable value, so a distrusted one really
+      // withholds it and N1's "não é reenviado" is true. An "every entry"
+      // reading would fall back to sentence (1) here.
+      const r = construirLogistica(
+        desconfiada({
+          canais: canaisComObrigatorio(feeType),
+          armazenado: entradas.map((e) => ({ logistic_id: CANAL_OBRIGATORIO, ...e })),
+        }),
+      );
+      expect(motivosDosProblemas(r)).toEqual(['logistica-nao-confirmada']);
+      expect(r.problemas[0]?.mensagem).toBe(fraseNaoConfirmada(falta));
+    },
+  );
+});
+
+/* -------------------------------------------------------------------------- */
+/*   (13) #2015 — quando TODO obrigatório perdido tomou N1, as frases da loja   */
+/*        ficam de fora (V-REFUSAL-9)                                          */
+/* -------------------------------------------------------------------------- */
+
+/** Sentence (2), verbatim — the aggregate "no compulsory channel" one. */
+const FRASE_NENHUM_OBRIGATORIO =
+  'Nenhum canal obrigatório da loja pôde ser habilitado para este item.';
+
+/** Sentence (3), verbatim — the "no channel at all" one, with its weight advice. */
+const FRASE_NENHUM_CANAL =
+  'Nenhum canal de logística da loja aceita este item: confira peso, dimensões e os ' +
+  'canais habilitados no Seller Centre.';
+
+const OUTRO_OBRIGATORIO = 90008;
+
+/** The compulsory SIZE_SELECTION channel fits; the sibling does not (0.5 kg > 0.1 kg). */
+const SO_O_OBRIGATORIO_CABE: readonly ShopeeLogisticsChannel[] = [
+  canal({
+    logistics_channel_id: CANAL_OBRIGATORIO,
+    fee_type: SHOPEE_LOGISTICS_FEE_TYPE.sizeSelection,
+    compulsory_channel: true,
+  }),
+  canal({ logistics_channel_id: CANAL_IRMAO, weight_limit: { item_max_weight: 0.1 } }),
+];
+
+/** A readable size for the compulsory channel, in the stored list. */
+const TAMANHO_LEGIVEL = [{ logistic_id: CANAL_OBRIGATORIO, size_id: '7' }];
+
+/** Sentence (1) for another channel id. */
+function frase1Do(logisticId: number): string {
+  return FRASE_CANAL_OBRIGATORIO_PERDIDO.replace(String(CANAL_OBRIGATORIO), String(logisticId));
+}
+
+function semCanal(mensagem: string) {
+  return { campo: 'logistic_info', motivo: 'logistica-sem-canal', mensagem };
+}
+
+describe('(13) #2015 — quando TODO obrigatório perdido tomou N1, as frases da loja ficam de fora (V-REFUSAL-9)', () => {
+  it('A. dois obrigatórios, ambos N1 (um tamanho, uma tarifa) ⇒ exatamente as duas N1, nenhuma linha logistica-sem-canal', () => {
+    const r = construirLogistica(
+      desconfiada({
+        canais: [
+          canal({
+            logistics_channel_id: CANAL_OBRIGATORIO,
+            fee_type: SHOPEE_LOGISTICS_FEE_TYPE.sizeSelection,
+            compulsory_channel: true,
+          }),
+          canal({
+            logistics_channel_id: OUTRO_OBRIGATORIO,
+            fee_type: SHOPEE_LOGISTICS_FEE_TYPE.customPrice,
+            compulsory_channel: true,
+          }),
+          canal({ logistics_channel_id: CANAL_IRMAO }),
+        ],
+        armazenado: [...TAMANHO_LEGIVEL, { logistic_id: OUTRO_OBRIGATORIO, shipping_fee: '12.90' }],
+      }),
+    );
+    expect(r.logistic_info.map((e) => e.logistic_id)).toEqual([CANAL_IRMAO]);
+    expect(r.problemas).toEqual([
+      {
+        campo: 'logistic_info',
+        motivo: 'logistica-nao-confirmada',
+        mensagem: fraseNaoConfirmada('um tamanho'),
+      },
+      {
+        campo: 'logistic_info',
+        motivo: 'logistica-nao-confirmada',
+        mensagem: fraseNaoConfirmada('uma tarifa de frete').replace(
+          String(CANAL_OBRIGATORIO),
+          String(OUTRO_OBRIGATORIO),
+        ),
+      },
+    ]);
+  });
+
+  it('B. só o obrigatório cabe, desconfiado e com tamanho legível ⇒ lista VAZIA, a N1 sozinha bloqueia, e nenhum conselho de peso', () => {
+    const r = construirLogistica(
+      desconfiada({ canais: SO_O_OBRIGATORIO_CABE, armazenado: TAMANHO_LEGIVEL }),
+    );
+    expect(r.logistic_info).toEqual([]);
+    expect(r.pulados).toEqual([
+      { logisticId: CANAL_OBRIGATORIO, motivo: 'size-selection-sem-size-id' },
+      { logisticId: CANAL_IRMAO, motivo: 'peso-fora-do-limite' },
+    ]);
+    expect(r.problemas).toEqual([
+      {
+        campo: 'logistic_info',
+        motivo: 'logistica-nao-confirmada',
+        mensagem: fraseNaoConfirmada('um tamanho'),
+      },
+    ]);
+    for (const p of r.problemas) expect(p.mensagem).not.toMatch(/peso|dimens/i);
+    // An empty list is still REFUSED — the CLI's "bloqueada" line rests on this.
+    expect(r.problemas.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it.each([
+    {
+      rotulo: 'um rascunho (sem anúncio a importar), desconfiado e com tamanho legível',
+      entrada: desconfiada({
+        canais: SO_O_OBRIGATORIO_CABE,
+        armazenado: TAMANHO_LEGIVEL,
+        itemIdImportavel: null,
+      }),
+    },
+    {
+      rotulo: 'uma lista CONFIÁVEL com size_id vazio, com anúncio a importar',
+      entrada: args({
+        canais: SO_O_OBRIGATORIO_CABE,
+        armazenado: [{ logistic_id: CANAL_OBRIGATORIO, size_id: '' }],
+        itemIdImportavel: ITEM_IMPORTAVEL,
+      }),
+    },
+  ])(
+    '⛔ C. QUASE-PAR ($rotulo): os MESMOS pulados de B, mas sem N1 ⇒ exatamente (1), (2) e (3) em logistica-sem-canal',
+    ({ entrada }) => {
+      const r = construirLogistica(entrada);
+      expect(r.logistic_info).toEqual([]);
+      // The skips are B's, byte for byte: only the trust/import arguments differ,
+      // so a rule that read `pulados` alone could not tell the two apart.
+      expect(r.pulados).toEqual([
+        { logisticId: CANAL_OBRIGATORIO, motivo: 'size-selection-sem-size-id' },
+        { logisticId: CANAL_IRMAO, motivo: 'peso-fora-do-limite' },
+      ]);
+      expect(r.problemas).toEqual([
+        semCanal(FRASE_CANAL_OBRIGATORIO_PERDIDO),
+        semCanal(FRASE_NENHUM_OBRIGATORIO),
+        semCanal(FRASE_NENHUM_CANAL),
+      ]);
+    },
+  );
+
+  it('⛔ D. QUASE-PAR (mistura): N1 num obrigatório e (1) noutro pesado demais, irmão pesado demais ⇒ N1, (1), (2) e (3)', () => {
+    const r = construirLogistica(
+      desconfiada({
+        canais: [
+          canal({
+            logistics_channel_id: CANAL_OBRIGATORIO,
+            fee_type: SHOPEE_LOGISTICS_FEE_TYPE.sizeSelection,
+            compulsory_channel: true,
+          }),
+          canal({
+            logistics_channel_id: OUTRO_OBRIGATORIO,
+            compulsory_channel: true,
+            weight_limit: { item_max_weight: 0.1 },
+          }),
+          canal({ logistics_channel_id: CANAL_IRMAO, weight_limit: { item_max_weight: 0.1 } }),
+        ],
+        armazenado: TAMANHO_LEGIVEL,
+      }),
+    );
+    expect(r.logistic_info).toEqual([]);
+    expect(r.problemas.map((p) => [p.motivo, p.mensagem])).toEqual([
+      ['logistica-nao-confirmada', fraseNaoConfirmada('um tamanho')],
+      ['logistica-sem-canal', frase1Do(OUTRO_OBRIGATORIO)],
+      ['logistica-sem-canal', FRASE_NENHUM_OBRIGATORIO],
+      ['logistica-sem-canal', FRASE_NENHUM_CANAL],
+    ]);
+  });
+
+  it('⛔ E. QUASE-PAR (vácuo): desconfiada, nenhum obrigatório na loja e nada cabe ⇒ exatamente (3)', () => {
+    const r = construirLogistica(
+      desconfiada({
+        canais: [canal({ weight_limit: { item_max_weight: 0.1 } })],
+        armazenado: [{ logistic_id: CANAL_PADRAO, enabled: true, is_free: true }],
+      }),
+    );
+    expect(r.logistic_info).toEqual([]);
+    expect(r.problemas).toEqual([semCanal(FRASE_NENHUM_CANAL)]);
   });
 });

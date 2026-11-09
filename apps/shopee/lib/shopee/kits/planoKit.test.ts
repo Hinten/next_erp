@@ -1715,6 +1715,323 @@ describe('OP-8 — um --principal NOMEADO que não resolve recusa principal-inva
   });
 });
 
+/* -------------------------------------------------------------------------- */
+/*  #2015 — the alvo's stored logistic_info is re-sent only when THIS app      */
+/*  wrote it (the provenance stamp), per arm                                   */
+/* -------------------------------------------------------------------------- */
+
+/** The converter's ordinary PREDECESSOR (the `recriarKit.test.ts` role id). */
+const ITEM_COMUM = 2500139861;
+const CANAL_TARIFA = 90005;
+const CANAL_TAMANHO = 90007;
+const CANAL_IRMAO = 90009;
+/** MILLISECONDS — any safe integer >= 0; the predicate reads PRESENCE, never a clock. */
+const CARIMBO = 1_791_331_200_000;
+const FEE = SHOPEE_LOGISTICS_FEE_TYPE;
+
+function canalDe(
+  id: number,
+  feeType: string,
+  extra: Record<string, unknown> = {},
+): ShopeeLogisticsChannel {
+  return shopeeLogisticsChannelSchema.parse({
+    logistics_channel_id: id,
+    enabled: true,
+    fee_type: feeType,
+    ...extra,
+  });
+}
+
+/** CANAL and its sibling (SIZE_INPUT) plus a CUSTOM_PRICE channel — none compulsory. */
+const CANAIS_LIVRES: readonly ShopeeLogisticsChannel[] = [
+  canal(),
+  canalDe(CANAL_IRMAO, FEE.sizeInput),
+  canalDe(CANAL_TARIFA, FEE.customPrice),
+];
+
+/** What a legacy screen left on a link: `is_free` ON and a seller fee, on two of the three channels. */
+const LISTA_LEGADA: readonly Record<string, unknown>[] = [
+  { logistic_id: CANAL, enabled: true, is_free: true },
+  { logistic_id: CANAL_TARIFA, enabled: true, is_free: true, shipping_fee: '12.90' },
+];
+
+/** TRUSTED: the stored list re-validated wins — its `is_free`, its fee, its channel set. */
+const PASSE_DA_LISTA = [
+  { logistic_id: CANAL, enabled: true, is_free: true },
+  { logistic_id: CANAL_TARIFA, enabled: true, is_free: true, shipping_fee: 12.9 },
+];
+
+/**
+ * DISTRUSTED: the full pass with the produto flag OFF — every fitting channel
+ * (the sibling the list omitted included), `is_free` from the produto, and the
+ * CUSTOM_PRICE channel skipped for want of a fee (never the stored one).
+ */
+const PASSE_COMPLETO = [
+  { logistic_id: CANAL, enabled: true, is_free: false },
+  { logistic_id: CANAL_IRMAO, enabled: true, is_free: false },
+];
+
+/** The COMPULSORY channel that needs a value only the Seller Centre sets. */
+const OBRIGATORIO_TAMANHO = canalDe(CANAL_TAMANHO, FEE.sizeSelection, {
+  compulsory_channel: true,
+});
+const OBRIGATORIO_TARIFA = canalDe(CANAL_TARIFA, FEE.customPrice, { compulsory_channel: true });
+
+/** N1 — `logisticaPublicacao.ts`'s sentence, relayed verbatim (the kit plan writes none). */
+function fraseN1(canalId: number, falta: string, itemId: number): string {
+  return (
+    `O canal obrigatório ${String(canalId)} precisa de ${falta}, e o ERP não tem registro de ` +
+    'ter lido da Shopee nem de ter enviado a ela o valor gravado neste vínculo, então esse ' +
+    `valor não é reenviado. Importe o anúncio ${String(itemId)} para gravar os valores atuais ` +
+    'da Shopee e publique de novo.'
+  );
+}
+
+/** Sentence (1) — today's `logistica-sem-canal` wording for a lost compulsory channel. */
+function frase1(canalId: number): string {
+  return (
+    `O canal obrigatório ${String(canalId)} não pôde ser habilitado: falta um valor que só o ` +
+    'Seller Centre define (tamanho ou tarifa), ou o item não cabe nos limites do canal.'
+  );
+}
+
+/**
+ * Sentence (2). It stands beside sentence (1) only: when EVERY lost compulsory
+ * channel took `logistica-nao-confirmada`, `construirLogistica` leaves it out
+ * (V-REFUSAL-9), so the N1 expectations below carry it no more.
+ */
+const NENHUM_OBRIGATORIO = {
+  campo: 'logistic_info',
+  motivo: M.logisticaSemCanal,
+  mensagem: 'Nenhum canal obrigatório da loja pôde ser habilitado para este item.',
+};
+
+/** The logistics rows of a plan, through K2 (a sentence naming a CLI command needs `acao`). */
+function daLogistica(problemas: readonly ProblemaPublicacao[]): readonly ProblemaPublicacao[] {
+  return exigirAcaoEmTodas(problemas).filter((p) => p.campo === 'logistic_info');
+}
+
+/** kit-atualizar over the live native kit `link-kit` (KIT), its raw extended. */
+function atualizarCom(raw: Record<string, unknown>, over: Partial<ContextoKit> = {}): ContextoKit {
+  return atualizar({
+    canais: CANAIS_LIVRES,
+    alvo: {
+      linkDocId: 'link-kit',
+      raw: {
+        item_id: KIT,
+        kitNativo: true,
+        item_name: 'Kit vivo',
+        description: 'Descrição viva',
+        logistic_info: LISTA_LEGADA,
+        ...raw,
+      },
+    },
+    ...over,
+  });
+}
+
+/** kit-converter over the live ORDINARY predecessor `link-comum` (ITEM_COMUM). */
+function converterCom(raw: Record<string, unknown>, over: Partial<ContextoKit> = {}): ContextoKit {
+  const antecessor = {
+    item_id: ITEM_COMUM,
+    item_status: 'NORMAL',
+    estadoAnuncio: 'ativo',
+    logistic_info: LISTA_LEGADA,
+    ...raw,
+  };
+  return contexto({
+    arma: { arma: 'kit-converter', antecessorLinkDocId: 'link-comum' },
+    alvo: { linkDocId: 'link-comum', raw: antecessor },
+    vinculos: [vinculo('link-comum', antecessor)],
+    canais: CANAIS_LIVRES,
+    ...over,
+  });
+}
+
+/** kit-recriar over the native kit `link-kit` (KIT), whatever its estado. */
+function recriarCom(raw: Record<string, unknown>, over: Partial<ContextoKit> = {}): ContextoKit {
+  const alvo = { item_id: KIT, kitNativo: true, logistic_info: LISTA_LEGADA, ...raw };
+  return contexto({
+    arma: { arma: 'kit-recriar', linkDocId: 'link-kit' },
+    alvo: { linkDocId: 'link-kit', raw: alvo },
+    vinculos: [vinculo('link-kit', alvo)],
+    canais: CANAIS_LIVRES,
+    ...over,
+  });
+}
+
+describe('#2015 — kit-atualizar: a lista do kit alvo só vence quando CARIMBADA', () => {
+  it('PAR: alvo carimbado ⇒ a lista gravada vence (is_free, tarifa e o conjunto de canais dela)', () => {
+    const plano = planejarKit(atualizarCom({ logisticaGravadaEm: CARIMBO }), fotos());
+    expect(plano.problemas).toEqual([]);
+    expect(plano.conteudo?.logisticInfo).toEqual(PASSE_DA_LISTA);
+  });
+
+  it('⛔ QUASE-PAR: a MESMA lista sem carimbo ⇒ passe completo — is_free do produto, nenhuma tarifa reenviada, o irmão habilitado', () => {
+    const plano = planejarKit(atualizarCom({}), fotos());
+    // The CUSTOM_PRICE channel is not compulsory: a skip, never a refusal.
+    expect(plano.problemas).toEqual([]);
+    expect(plano.conteudo?.logisticInfo).toEqual(PASSE_COMPLETO);
+    for (const entrada of plano.conteudo?.logisticInfo ?? []) {
+      expect(entrada).not.toHaveProperty('shipping_fee');
+    }
+    // `null`, `ultimaPublicacao` and an item_id prove nothing (Lucas D1): still distrusted.
+    for (const raw of [
+      { logisticaGravadaEm: null },
+      { logisticaGravadaEm: String(CARIMBO) },
+      { ultimaPublicacao: { em: CARIMBO, etapa: 'add_kit_item', itemId: KIT } },
+    ]) {
+      expect(
+        planejarKit(atualizarCom(raw), fotos()).conteudo?.logisticInfo,
+        JSON.stringify(raw),
+      ).toEqual(PASSE_COMPLETO);
+    }
+  });
+
+  it('is_free nos DOIS sentidos: a lista diz false e o produto true — carimbada manda false, sem carimbo manda true', () => {
+    const lista = [{ logistic_id: CANAL, enabled: true, is_free: false }];
+    const gratis: Partial<ContextoKit> = {
+      canais: [canal()],
+      produto: { id: K, sku: 'KIT-1', raw: { ...RAW_DO_KIT, ofereceFreteGratis: true } },
+    };
+    const confiavel = planejarKit(
+      atualizarCom({ logistic_info: lista, logisticaGravadaEm: CARIMBO }, gratis),
+      fotos(),
+    );
+    expect(confiavel.conteudo?.logisticInfo).toEqual([
+      { logistic_id: CANAL, enabled: true, is_free: false },
+    ]);
+    const legada = planejarKit(atualizarCom({ logistic_info: lista }, gratis), fotos());
+    expect(legada.conteudo?.logisticInfo).toEqual([
+      { logistic_id: CANAL, enabled: true, is_free: true },
+    ]);
+  });
+
+  it('obrigatório sem carimbo, com uma tarifa LEGÍVEL gravada: logistica-nao-confirmada nomeando o PRÓPRIO kit (a tarifa, não o tamanho)', () => {
+    const lista = [{ logistic_id: CANAL_TARIFA, enabled: true, shipping_fee: '12.90' }];
+    const plano = planejarKit(
+      atualizarCom({ logistic_info: lista }, { canais: [canal(), OBRIGATORIO_TARIFA] }),
+      fotos(),
+    );
+    expect(daLogistica(plano.problemas)).toEqual([
+      {
+        campo: 'logistic_info',
+        motivo: M.logisticaNaoConfirmada,
+        mensagem: fraseN1(CANAL_TARIFA, 'uma tarifa de frete', KIT),
+      },
+    ]);
+    // ⛔ QUASE-PAR: carimbada, a mesma tarifa é REENVIADA e nada recusa.
+    const carimbada = planejarKit(
+      atualizarCom(
+        { logistic_info: lista, logisticaGravadaEm: CARIMBO },
+        { canais: [canal(), OBRIGATORIO_TARIFA] },
+      ),
+      fotos(),
+    );
+    expect(carimbada.problemas).toEqual([]);
+    expect(carimbada.conteudo?.logisticInfo).toEqual([
+      { logistic_id: CANAL_TARIFA, enabled: true, is_free: false, shipping_fee: 12.9 },
+    ]);
+  });
+});
+
+describe('#2015 — kit-converter: a lista do ANTECESSOR comum só vence quando CARIMBADA', () => {
+  it('antecessor legado sem carimbo (is_free:true + tarifa CUSTOM_PRICE) ⇒ o add_kit_item leva o passe completo', () => {
+    const plano = planejarKit(converterCom({}), fotos());
+    expect(plano.problemas).toEqual([]);
+    expect(plano.kitNovo).toEqual({ acao: 'criar' });
+    const corpo = plano.corpo;
+    expect(corpo).not.toBeNull();
+    if (corpo === null) return;
+    expect(() => assertAddKitItemRequest(corpo)).not.toThrow();
+    expect(corpo.item_setting.logistic_info).toEqual(PASSE_COMPLETO);
+    for (const entrada of corpo.item_setting.logistic_info) {
+      expect(entrada).not.toHaveProperty('shipping_fee');
+    }
+  });
+
+  it('⛔ PAR: o antecessor CARIMBADO vence — o corpo leva a lista dele, tarifa incluída', () => {
+    const plano = planejarKit(converterCom({ logisticaGravadaEm: CARIMBO }), fotos());
+    expect(plano.problemas).toEqual([]);
+    const corpo = plano.corpo;
+    expect(corpo).not.toBeNull();
+    if (corpo === null) return;
+    expect(() => assertAddKitItemRequest(corpo)).not.toThrow();
+    expect(corpo.item_setting.logistic_info).toEqual(PASSE_DA_LISTA);
+  });
+
+  it('o remédio nomeia o ANTECESSOR (o anúncio que a importação relê) — um tamanho legível, sem carimbo', () => {
+    const lista = [{ logistic_id: CANAL_TAMANHO, enabled: true, size_id: '7' }];
+    const plano = planejarKit(
+      converterCom({ logistic_info: lista }, { canais: [canal(), OBRIGATORIO_TAMANHO] }),
+      fotos(),
+    );
+    expect(daLogistica(plano.problemas)).toEqual([
+      {
+        campo: 'logistic_info',
+        motivo: M.logisticaNaoConfirmada,
+        mensagem: fraseN1(CANAL_TAMANHO, 'um tamanho', ITEM_COMUM),
+      },
+    ]);
+    expect(plano.corpo).toBeNull();
+    // ⛔ QUASE-PAR: carimbado, o tamanho é REENVIADO e nada recusa.
+    const carimbado = planejarKit(
+      converterCom(
+        { logistic_info: lista, logisticaGravadaEm: CARIMBO },
+        { canais: [canal(), OBRIGATORIO_TAMANHO] },
+      ),
+      fotos(),
+    );
+    expect(carimbado.problemas).toEqual([]);
+    expect(carimbado.corpo?.item_setting.logistic_info).toEqual([
+      { logistic_id: CANAL_TAMANHO, enabled: true, is_free: false, size_id: 7 },
+    ]);
+  });
+});
+
+describe('#2015 — kit-recriar e kit-criar: sem anúncio a importar, a frase (1) fica', () => {
+  const lista = [{ logistic_id: CANAL_TAMANHO, enabled: true, size_id: '7' }];
+  const obrigatorio: Partial<ContextoKit> = { canais: [canal(), OBRIGATORIO_TAMANHO] };
+
+  it('⛔ QUASE-PAR: um alvo REMOVIDO não tem o que importar ⇒ logistica-sem-canal com a frase (1), nunca o motivo novo', () => {
+    const plano = planejarKit(
+      recriarCom(
+        { logistic_info: lista, estadoAnuncio: 'removido', item_status: 'SELLER_DELETE' },
+        obrigatorio,
+      ),
+      fotos(),
+    );
+    expect(daLogistica(plano.problemas)).toEqual([
+      { campo: 'logistic_info', motivo: M.logisticaSemCanal, mensagem: frase1(CANAL_TAMANHO) },
+      NENHUM_OBRIGATORIO,
+    ]);
+  });
+
+  it('PAR: o MESMO alvo vivo ⇒ logistica-nao-confirmada nomeando o kit velho', () => {
+    const plano = planejarKit(
+      recriarCom({ logistic_info: lista, estadoAnuncio: 'ativo' }, obrigatorio),
+      fotos(),
+    );
+    expect(daLogistica(plano.problemas)).toEqual([
+      {
+        campo: 'logistic_info',
+        motivo: M.logisticaNaoConfirmada,
+        mensagem: fraseN1(CANAL_TAMANHO, 'um tamanho', KIT),
+      },
+    ]);
+  });
+
+  it('kit-criar não muda: sem alvo, nada a confiar nem a importar — passe completo e a frase (1)', () => {
+    expect(
+      planejarKit(contexto({ canais: CANAIS_LIVRES }), fotos()).corpo?.item_setting.logistic_info,
+    ).toEqual(PASSE_COMPLETO);
+    expect(daLogistica(planejarKit(contexto(obrigatorio), fotos()).problemas)).toEqual([
+      { campo: 'logistic_info', motivo: M.logisticaSemCanal, mensagem: frase1(CANAL_TAMANHO) },
+      NENHUM_OBRIGATORIO,
+    ]);
+  });
+});
+
 describe('step 21 (K1/K2) — o `acao` de cada recusa que nomeia um comando de CLI', () => {
   it('K1 — cada produtor exportado carrega o `acao` EXATO', () => {
     expect(
@@ -1802,7 +2119,16 @@ describe('step 21 (K1/K2) — o `acao` de cada recusa que nomeia um comando de C
       problemaKitRemovido({ itemId: null, linkDocId: 'l' }),
       ...planejarKit(contexto({ principal: null, principalPedido: null }), fotos()).problemas,
       ...problemasDaFaseA(faseA({ produto: { id: K, sku: null, raw: {} }, descricao: null })),
+      // #2015: the import remedy names a listing, never a CLI command — no `acao`.
+      ...planejarKit(
+        converterCom(
+          { logistic_info: [{ logistic_id: CANAL_TAMANHO, enabled: true, size_id: '7' }] },
+          { canais: [canal(), OBRIGATORIO_TAMANHO] },
+        ),
+        fotos(),
+      ).problemas,
     ];
+    expect(recusas.map((p) => p.motivo)).toContain(M.logisticaNaoConfirmada);
     for (const p of recusas) exigirAcaoSeHaComando(p);
     // ⛔ NEAR-MISS: a refusal with no CLI text carries NO `acao` key at all —
     // absent, never `undefined`, so its stored / served shape did not change.

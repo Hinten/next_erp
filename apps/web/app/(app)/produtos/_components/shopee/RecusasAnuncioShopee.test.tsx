@@ -99,6 +99,29 @@ describe('RecusasAnuncioShopee — a stored refusal row reads the motivo copy fi
     ]);
   });
 
+  it('#2015: two stored `logistica-nao-confirmada` rows ⇒ the copy ONCE ⟷ NEAR-MISS the `logistica-sem-canal` row beside them stays', () => {
+    const SEM_CANAL = 'Nenhum canal obrigatório da loja pôde ser habilitado para este item.';
+    show(
+      link([
+        {
+          campo: 'logistic_info',
+          motivo: MOTIVO_ANUNCIO_SHOPEE.logisticaNaoConfirmada,
+          mensagem: 'O canal obrigatório 80003 precisa de um tamanho.',
+        },
+        {
+          campo: 'logistic_info',
+          motivo: MOTIVO_ANUNCIO_SHOPEE.logisticaNaoConfirmada,
+          mensagem: 'O canal obrigatório 80007 precisa de uma tarifa de frete.',
+        },
+        { campo: 'logistic_info', motivo: 'logistica-sem-canal', mensagem: SEM_CANAL },
+      ]),
+    );
+    expect(itens()).toEqual([
+      TEXTO_MOTIVO_ANUNCIO_SHOPEE[MOTIVO_ANUNCIO_SHOPEE.logisticaNaoConfirmada],
+      SEM_CANAL,
+    ]);
+  });
+
   it('no row at all ⇒ the stored summary sentence, as before', () => {
     show(link([], 'A Shopee recusou o anúncio.'));
     expect(itens()).toEqual([]);
