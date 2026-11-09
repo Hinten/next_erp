@@ -472,6 +472,11 @@ describe('skusParecidosNaLojaLi — the store-side near duplicates', () => {
     ['a simple product’s derived SKU against a row', [simples('X'), linha('X-UN')], ['X', 'X-UN']],
     ['that derived SKU in another case', [simples('X'), linha('x-un')], ['X', 'x-un']],
     [
+      'a lower-case simple product: its derived SKU is listed under its forms, not only its bytes',
+      [simples('x'), linha('X-UN')],
+      ['x', 'X-UN'],
+    ],
+    [
       'a simple product with edge spaces: the member’s base is trimmed',
       [simples(' X '), linha('X-UN')],
       [' X ', 'X-UN'],
@@ -501,6 +506,8 @@ describe('skusParecidosNaLojaLi — the store-side near duplicates', () => {
     ['a variation’s longer SKU', [linha('X-AZ'), linha('X-AZUL')]],
     ['a missing hyphen', [linha('ABC-1'), linha('ABC1')]],
     ['a leading zero', [linha('01'), linha('1')]],
+    ['an accent (no diacritic is folded)', [linha('CAFÉ-1'), linha('CAFE-1')]],
+    ['full-width letters (no compatibility form is folded)', [linha('ＡＢＣ-1'), linha('ABC-1')]],
     ['one SKU the derived one is a prefix of', [simples('X'), linha('X-UNI')]],
     [
       'a PARENT’s SKU beside a row named like a member (a parent writes no member)',
