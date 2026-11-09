@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   type EvidenciaOpcaoLi,
   type GrupoComLinksLi,
+  PENDENCIA_IMPORTACAO_LI,
   SITUACAO_ERP_ITEM_LI,
   evidenciaOpcaoLiSchema,
   importacaoLojaIntegradaMeta,
@@ -31,7 +32,7 @@ import {
 } from './evidencias';
 import { type FamiliaLi, type MontagemLi, ORIGEM_DO_FILHO_LI } from './familias';
 import { UNIDADE_IMPORTACAO_LI } from './orcamento';
-import { projetarProdutoErpLi } from './resolucao';
+import { type ConflitoDeSkuNaLojaLi, projetarProdutoErpLi } from './resolucao';
 
 const CONTA = 'conta-li-evidencias';
 const JOB = 'job-evidencias';
@@ -135,18 +136,18 @@ function familiaErpDeTamanho(db: FakeDb, skus: { p?: string; m?: string } = {}):
   seedProduto(db, 'm', { sku: skus.m ?? 'CAM-M', paiId: 'pai', ...taxonomia(['tam', 'v-m']) });
 }
 
-const SEM_REPETIDOS: ReadonlySet<string> = new Set();
+const SEM_CONFLITO: ReadonlyMap<string, ConflitoDeSkuNaLojaLi> = new Map();
 
 async function umaUnidade(
   db: FakeDb,
   familias: readonly FamiliaLi[],
   grupos: readonly GrupoComLinksLi[],
   cursorPaiId: number | null = null,
-  skusRepetidos: ReadonlySet<string> = SEM_REPETIDOS,
+  skusEmConflito: ReadonlyMap<string, ConflitoDeSkuNaLojaLi> = SEM_CONFLITO,
 ) {
   return executarUnidadeDasEvidenciasLi(
     deps(db),
-    { montagem: montagem(familias), grupos, skusRepetidos },
+    { montagem: montagem(familias), grupos, skusEmConflito },
     { cursorPaiId, filhosLidos: [] },
   );
 }
@@ -326,22 +327,68 @@ describe('the claims of a matched family', () => {
     const db = new FakeDb();
     familiaErpDeTamanho(db);
     const f = familia(paiLi(500, [501], { sku: 'CAM' }), [variacao(501, 'CAM-P', [TAM, 1])]);
-    expect(
-      await umaUnidade(db, [f], [grupo('tam', ['v-p', 'v-m'])], null, new Set(['CAM-P'])),
-    ).toMatchObject({ raiz: { tipo: SITUACAO_ERP_ITEM_LI.encontrado }, alegacoes: 0 });
+    const repetido = new Map([['CAM-P', PENDENCIA_IMPORTACAO_LI.skuRepetidoNaLoja] as const]);
+    const parecido = new Map([['CAM-P', PENDENCIA_IMPORTACAO_LI.skuParecidoNaLoja] as const]);
+    expect(await umaUnidade(db, [f], [grupo('tam', ['v-p', 'v-m'])], null, repetido)).toMatchObject(
+      {
+        raiz: { tipo: SITUACAO_ERP_ITEM_LI.encontrado },
+        alegacoes: 0,
+      },
+    );
+    // A near duplicate is no exact-SKU evidence either.
+    expect(await umaUnidade(db, [f], [grupo('tam', ['v-p', 'v-m'])], null, parecido)).toMatchObject(
+      {
+        alegacoes: 0,
+      },
+    );
     // …even matched through its OWN link to a child with that same SKU.
     db.seed('produtos/p/produtolojaintegrada/501', {
       contaLojaIntegrada: `documents/integracao/${CONTA}`,
       id: 501,
       sku: 'CAM-P',
     });
-    expect(
-      await umaUnidade(db, [f], [grupo('tam', ['v-p', 'v-m'])], null, new Set(['CAM-P'])),
-    ).toMatchObject({ alegacoes: 0 });
+    expect(await umaUnidade(db, [f], [grupo('tam', ['v-p', 'v-m'])], null, repetido)).toMatchObject(
+      {
+        alegacoes: 0,
+      },
+    );
     // EQUAL: the same link with the SKU not repeated is exact-SKU evidence.
     expect(await umaUnidade(db, [f], [grupo('tam', ['v-p', 'v-m'])])).toMatchObject({
       alegacoes: 1,
     });
+  });
+
+  it('a family whose ROOT SKU is in conflict in the store is matched to nothing, so its exact-SKU variation claims nothing ⟷ NEAR-MISS in no conflict it claims', async () => {
+    const db = new FakeDb();
+    familiaErpDeTamanho(db);
+    const f = familia(paiLi(500, [501], { sku: 'CAM' }), [variacao(501, 'CAM-P', [TAM, 1])]);
+    const grupos = [grupo('tam', ['v-p', 'v-m'])];
+    const parecido = new Map([['CAM', PENDENCIA_IMPORTACAO_LI.skuParecidoNaLoja] as const]);
+    expect(await umaUnidade(db, [f], grupos, null, parecido)).toMatchObject({
+      raiz: {
+        tipo: SITUACAO_ERP_ITEM_LI.conflito,
+        pendencia: PENDENCIA_IMPORTACAO_LI.skuParecidoNaLoja,
+      },
+      alegacoes: 0,
+    });
+    expect(await umaUnidade(db, [f], grupos)).toMatchObject({
+      raiz: { tipo: SITUACAO_ERP_ITEM_LI.encontrado },
+      alegacoes: 1,
+    });
+  });
+
+  it('a variation in conflict never takes a child by SKU: its combination lands it on its sibling’s child, and neither claims ⟷ NEAR-MISS in no conflict each takes its own, and the sibling claims', async () => {
+    const db = new FakeDb();
+    familiaErpDeTamanho(db);
+    // 501's SKU names child `p`; its linked option resolves to `m`, the child 502's own SKU names.
+    const f = familia(paiLi(500, [501, 502], { sku: 'CAM' }), [
+      variacao(501, 'CAM-P', [TAM, 2]),
+      variacao(502, 'CAM-M', [TAM, 1]),
+    ]);
+    const grupos = [grupo('tam', ['v-p', 'v-m'], { [TAM]: { 2: ['v-m'] } })];
+    const parecido = new Map([['CAM-P', PENDENCIA_IMPORTACAO_LI.skuParecidoNaLoja] as const]);
+    expect(await umaUnidade(db, [f], grupos, null, parecido)).toMatchObject({ alegacoes: 0 });
+    expect(await umaUnidade(db, [f], grupos)).toMatchObject({ alegacoes: 1 });
   });
 
   it('an option already standing for TWO variantes, or a grade linked in two grupos, gives no claim', async () => {

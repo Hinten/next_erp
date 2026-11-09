@@ -7,7 +7,7 @@
  *
  * Call it only for a family `plano.ts` classified as creatable (`criacao.viavel`): the root visible,
  * not an empty family, its name and SKU parsing, every kept variation visible with a SKU the store
- * does not repeat. Hidden or blocked variations are already left out there (`oculto-nao-criado`):
+ * does not repeat or nearly repeat. Hidden or blocked variations are already left out there (`oculto-nao-criado`):
  * this module creates exactly `criacao.filhos`.
  *
  * ## The checks before anything is planned
@@ -21,8 +21,8 @@
  *    ERP family never holds two children of one combination.
  *  - **Every planned document parses** through its schema (`produto`, `extraData`, the link): a
  *    failure is `dado-invalido` with the field names, and nothing is created. The only truncation
- *    is a name: cut at {@link MAX_NOME_PRODUTO_LI}, its store id returned in `nomesCortados`
- *    (⚠️ the report's closed vocabulary has no code for a cut name, so the caller can only log it).
+ *    is a name: cut at {@link MAX_NOME_PRODUTO_LI} and reported (`nome-cortado`, informational, on the
+ *    created family only: a refused create reports none).
  *    Two created variations whose CUT names come out equal refuse the create with `dado-invalido`
  *    (`nome`) on each: the ERP family builder never makes such a pair (its names fit the field
  *    whole), and two variations told apart by nothing but their ids would be one name twice in
@@ -106,9 +106,10 @@
  *     judged by step 1 on the next attempt. Then the details' presence ("The details" above).
  *  3. **What must precede the batch** ({@link DepsFamiliaNovaLi.antesDoLote}, `aplicar` only): the
  *     caller's own writes the batch depends on — the categories the produtos take, created only now
- *     that the family WILL be committed, and the tax-review entries the create calls for, made
- *     durable before the produtos exist (`familiaDoJob.ts`). Firestore writes only, no Loja
- *     Integrada call. Its refusal refuses the create with nothing of the batch written.
+ *     that every refusal has passed (a batch that then loses leaves them standing), and the
+ *     tax-review entries the create calls for, made durable before the produtos exist
+ *     (`familiaDoJob.ts`). Firestore writes only, no Loja Integrada call. Its refusal refuses the
+ *     create with nothing of the batch written.
  *  4. **ONE batch of `create()`s**, all or nothing (Firestore rejects the whole commit when any of
  *     them exists). `ALREADY_EXISTS` starts the next attempt from step 1; a second one with nothing
  *     there to explain it (a stray link or `extraData` document left under one of the planned ids)
@@ -119,10 +120,7 @@
  * cascade finds two produtos for that SKU (`sku-ambiguo`). And a unit RETRIED after its batch
  * landed meets this conta's link through the cascade's rung 1 and never reaches this module:
  * telling that family "created by this job" apart from one found is the caller's (the link's and
- * the root's `createTime` against the job's). ⚠️ Simular's parity: Simular writes nothing, so a
- * LATER family of the same Simular never meets the produtos an earlier one would have created —
- * the probe and the cascade answer as if the store's first family were not imported
- * (`despacho.ts`, "Simular writes only the job", states the residual and its cost).
+ * the root's `createTime` against the job's).
  *
  * The batch holds at most 3 writes per produto (the produto, its `extraData`, its link): a store
  * family is capped at 50 variations, far under Firestore's 500 writes per commit; a plan past it is
@@ -709,10 +707,11 @@ export type ResultadoDaFamiliaNovaLi =
       readonly produtos: readonly ProdutoCriadoLi[];
       /** The links the batch wrote (the root's first). */
       readonly vinculos: readonly VinculoPlanejadoLi[];
-      /** What a created family still reports: a description too long to write (`descricao-longa`). */
+      /**
+       * What a created family still reports: a description too long to write (`descricao-longa`), a
+       * name cut at {@link MAX_NOME_PRODUTO_LI} (`nome-cortado`), a variation left out.
+       */
       readonly pendencias: readonly PendenciaDoPlanoLi[];
-      /** Store ids whose produto name was cut at {@link MAX_NOME_PRODUTO_LI}. */
-      readonly nomesCortados: readonly number[];
       /** The batch landed (`aplicar` only). */
       readonly gravado: boolean;
       /** This conta's batch had already landed (its reply lost): nothing written by this call. */
@@ -737,7 +736,6 @@ type PlanoDaFamiliaNova =
       readonly raizId: string;
       readonly produtos: readonly ProdutoPlanejadoLi[];
       readonly pendencias: readonly PendenciaDoPlanoLi[];
-      readonly nomesCortados: readonly number[];
       /**
        * The produtos planned WITHOUT a read detail (module header, "The details"): `dado-invalido`
        * (`detalhe`) each, checked only after the probe.
@@ -904,13 +902,15 @@ async function planejarFamiliaNova(
   }
   const raizId = idProdutoCriadoLi(raiz.sku);
   const ehFamilia = raiz.tipo === TIPO_PRODUTO_LI.atributo;
-  const nomesCortados: number[] = criacao.nomeCortado ? [raiz.id] : [];
 
   // The kept variations: `criacao.filhos` minus those a detail shows out of the store, each with
   // every option resolved.
   const daCriacao = filhosDaCriacaoLi(deps.contaId, entrada);
   const { filhos } = daCriacao;
   const pendencias: PendenciaDoPlanoLi[] = [...daCriacao.deixados];
+  if (criacao.nomeCortado) {
+    pendencias.push({ codigo: PENDENCIA_IMPORTACAO_LI.nomeCortado, liId: null, referencias: [] });
+  }
   const recusas: PendenciaDoPlanoLi[] = [...daCriacao.recusas];
   if (ehFamilia && filhos.length + recusas.length === 0) {
     // Every kept variation left out by its detail: the family is not created.
@@ -987,7 +987,13 @@ async function planejarFamiliaNova(
     if (t?.tipo !== 'ok') return;
     const { linha, detalhe } = f.filho;
     const produtoId = idProdutoCriadoLi(f.sku);
-    if (t.nomeCortado) nomesCortados.push(linha.id);
+    if (t.nomeCortado) {
+      pendencias.push({
+        codigo: PENDENCIA_IMPORTACAO_LI.nomeCortado,
+        liId: linha.id,
+        referencias: [],
+      });
+    }
     const doc = planejarDocCriadoLi(
       {
         nome: t.nome,
@@ -1152,7 +1158,7 @@ async function planejarFamiliaNova(
         referencias: ['detalhe'],
       })),
   ];
-  return { tipo: 'ok', raizId, produtos, pendencias, nomesCortados, semDetalhe };
+  return { tipo: 'ok', raizId, produtos, pendencias, semDetalhe };
 }
 
 /** What step 1 decided over the planned ids. */
@@ -1231,7 +1237,6 @@ export async function criarFamiliaLi(
     produtos: produtos.map((p) => ({ produtoId: p.produtoId, papel: p.papel, liId: p.liId })),
     vinculos: produtos.flatMap((p) => (p.vinculo === null ? [] : [p.vinculo])),
     pendencias: plano.pendencias,
-    nomesCortados: [...plano.nomesCortados].sort((a, b) => a - b),
     gravado,
     retomada,
   });

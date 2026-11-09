@@ -37,6 +37,8 @@ import {
   VIA_DO_FILHO_LI,
   alvoDaRaizLi,
   escanearVinculosDoProdutoLi,
+  conflitosDeSkuNaLojaLi,
+  type ConflitoDeSkuNaLojaLi,
   familiaNoAlvoLi,
   formaConcordaLi,
   irmaosComMesmasOpcoesLi,
@@ -134,7 +136,7 @@ function grupo(
   };
 }
 
-const NENHUM_REPETIDO: ReadonlySet<string> = new Set();
+const SEM_CONFLITO: ReadonlyMap<string, ConflitoDeSkuNaLojaLi> = new Map();
 
 /** A store variation with ONE option `(GRADE, opcao)`. */
 function variacao(id: number, sku: string | null, opcao: number): DocData {
@@ -150,7 +152,7 @@ describe('resolverRaizLi — rung 1, the link of THIS conta', () => {
     seedProduto(db, 'f1', { paiId: 'pai' });
     seedProduto(db, 'f2', { paiId: 'pai' });
     seedVinculo(db, 'pai', 500);
-    const r = await resolverRaizLi(deps(db), familia(paiLi(500, [501])), NENHUM_REPETIDO);
+    const r = await resolverRaizLi(deps(db), familia(paiLi(500, [501])), SEM_CONFLITO);
     expect(r).toEqual({
       tipo: SITUACAO_ERP_ITEM_LI.vinculado,
       erpId: 'pai',
@@ -165,8 +167,8 @@ describe('resolverRaizLi — rung 1, the link of THIS conta', () => {
     seedProduto(db, 'r', { sku: 'X' });
     seedVinculo(db, 'r', 500, CONTA);
     seedVinculo(db, 'r', 900, OUTRA);
-    const daConta = await resolverRaizLi(deps(db, CONTA), simples(500, 'X'), NENHUM_REPETIDO);
-    const daOutra = await resolverRaizLi(deps(db, OUTRA), simples(900, 'X'), NENHUM_REPETIDO);
+    const daConta = await resolverRaizLi(deps(db, CONTA), simples(500, 'X'), SEM_CONFLITO);
+    const daOutra = await resolverRaizLi(deps(db, OUTRA), simples(900, 'X'), SEM_CONFLITO);
     expect(daConta).toMatchObject({ tipo: SITUACAO_ERP_ITEM_LI.vinculado, erpId: 'r' });
     expect(daOutra).toMatchObject({ tipo: SITUACAO_ERP_ITEM_LI.vinculado, erpId: 'r' });
   });
@@ -175,7 +177,7 @@ describe('resolverRaizLi — rung 1, the link of THIS conta', () => {
     const db = new FakeDb();
     seedProduto(db, 'r', { sku: 'X' });
     seedVinculo(db, 'r', 500, OUTRA);
-    const r = await resolverRaizLi(deps(db, CONTA), simples(500, 'X'), NENHUM_REPETIDO);
+    const r = await resolverRaizLi(deps(db, CONTA), simples(500, 'X'), SEM_CONFLITO);
     // Found by its SKU (not linked for this conta yet), never "vinculado" through C2's link.
     expect(r).toMatchObject({ tipo: SITUACAO_ERP_ITEM_LI.encontrado, via: VIA_DA_RAIZ_LI.skuRaiz });
   });
@@ -186,7 +188,7 @@ describe('resolverRaizLi — rung 1, the link of THIS conta', () => {
     seedProduto(db, 'b', { sku: 'B' });
     seedVinculo(db, 'a', 500);
     seedVinculo(db, 'b', 500);
-    const ambiguo = await resolverRaizLi(deps(db), simples(500, 'A'), NENHUM_REPETIDO);
+    const ambiguo = await resolverRaizLi(deps(db), simples(500, 'A'), SEM_CONFLITO);
     expect(ambiguo).toEqual({
       tipo: SITUACAO_ERP_ITEM_LI.conflito,
       pendencia: PENDENCIA_IMPORTACAO_LI.vinculoAmbiguo,
@@ -198,7 +200,7 @@ describe('resolverRaizLi — rung 1, the link of THIS conta', () => {
     seedProduto(db2, 'vivo', { sku: 'A' });
     seedVinculo(db2, 'vivo', 500);
     seedVinculo(db2, 'apagado', 500); // a link left under a produto that no longer exists
-    expect(await resolverRaizLi(deps(db2), simples(500, 'A'), NENHUM_REPETIDO)).toMatchObject({
+    expect(await resolverRaizLi(deps(db2), simples(500, 'A'), SEM_CONFLITO)).toMatchObject({
       tipo: SITUACAO_ERP_ITEM_LI.vinculado,
       erpId: 'vivo',
     });
@@ -209,7 +211,7 @@ describe('resolverRaizLi — rung 1, the link of THIS conta', () => {
     seedProduto(db, 'pai', { sku: 'P' });
     seedProduto(db, 'filho', { sku: 'F', paiId: 'pai' });
     seedVinculo(db, 'filho', 500);
-    expect(await resolverRaizLi(deps(db), simples(500, 'F'), NENHUM_REPETIDO)).toEqual({
+    expect(await resolverRaizLi(deps(db), simples(500, 'F'), SEM_CONFLITO)).toEqual({
       tipo: SITUACAO_ERP_ITEM_LI.conflito,
       pendencia: PENDENCIA_IMPORTACAO_LI.formaDiferente,
       erpIds: ['filho'],
@@ -220,10 +222,10 @@ describe('resolverRaizLi — rung 1, the link of THIS conta', () => {
     const db = new FakeDb();
     seedProduto(db, 'r');
     seedVinculo(db, 'r', 500);
-    expect(await resolverRaizLi(deps(db), simples(500, null), NENHUM_REPETIDO)).toMatchObject({
+    expect(await resolverRaizLi(deps(db), simples(500, null), SEM_CONFLITO)).toMatchObject({
       tipo: SITUACAO_ERP_ITEM_LI.vinculado,
     });
-    expect(await resolverRaizLi(deps(db), simples(501, null), NENHUM_REPETIDO)).toEqual({
+    expect(await resolverRaizLi(deps(db), simples(501, null), SEM_CONFLITO)).toEqual({
       tipo: SITUACAO_ERP_ITEM_LI.conflito,
       pendencia: PENDENCIA_IMPORTACAO_LI.semSku,
       erpIds: [],
@@ -233,7 +235,7 @@ describe('resolverRaizLi — rung 1, the link of THIS conta', () => {
   it('a SKU the store repeats: rung 1 still answers, the SKU rungs never do', async () => {
     const db = new FakeDb();
     seedProduto(db, 'r', { sku: 'X' });
-    const repetidos = new Set(['X']);
+    const repetidos = new Map([['X', PENDENCIA_IMPORTACAO_LI.skuRepetidoNaLoja] as const]);
     expect(await resolverRaizLi(deps(db), simples(500, 'X'), repetidos)).toEqual({
       tipo: SITUACAO_ERP_ITEM_LI.conflito,
       pendencia: PENDENCIA_IMPORTACAO_LI.skuRepetidoNaLoja,
@@ -245,6 +247,38 @@ describe('resolverRaizLi — rung 1, the link of THIS conta', () => {
       erpId: 'r',
     });
   });
+
+  it('a store NEAR duplicate: refused with its code with no link ⟷ NEAR-MISS an existing link still answers', async () => {
+    const db = new FakeDb();
+    seedProduto(db, 'r', { sku: 'ABC-1' });
+    const parecidos = new Map([['ABC-1', PENDENCIA_IMPORTACAO_LI.skuParecidoNaLoja] as const]);
+    expect(await resolverRaizLi(deps(db), simples(500, 'ABC-1'), parecidos)).toEqual({
+      tipo: SITUACAO_ERP_ITEM_LI.conflito,
+      pendencia: PENDENCIA_IMPORTACAO_LI.skuParecidoNaLoja,
+      erpIds: [],
+    });
+    seedVinculo(db, 'r', 500);
+    expect(await resolverRaizLi(deps(db), simples(500, 'ABC-1'), parecidos)).toMatchObject({
+      tipo: SITUACAO_ERP_ITEM_LI.vinculado,
+      erpId: 'r',
+    });
+  });
+
+  it('a flagged store simple product never takes the sole-member hop ⟷ NEAR-MISS an unflagged one does', async () => {
+    const db = new FakeDb();
+    seedProduto(db, 'raiz', { sku: 'ABC', filhoUnicoId: 'membro' });
+    seedProduto(db, 'membro', { sku: 'ABC-UN', paiId: 'raiz' });
+    const parecidos = new Map([['ABC-UN', PENDENCIA_IMPORTACAO_LI.skuParecidoNaLoja] as const]);
+    expect(await resolverRaizLi(deps(db), simples(500, 'ABC-UN'), parecidos)).toEqual({
+      tipo: SITUACAO_ERP_ITEM_LI.conflito,
+      pendencia: PENDENCIA_IMPORTACAO_LI.skuParecidoNaLoja,
+      erpIds: [],
+    });
+    expect(await resolverRaizLi(deps(db), simples(500, 'ABC-UN'), SEM_CONFLITO)).toMatchObject({
+      tipo: SITUACAO_ERP_ITEM_LI.encontrado,
+      via: VIA_DA_RAIZ_LI.membroUnico,
+    });
+  });
 });
 
 describe('resolverRaizLi — rungs 2 and 3, by SKU', () => {
@@ -252,7 +286,7 @@ describe('resolverRaizLi — rungs 2 and 3, by SKU', () => {
     const db = new FakeDb();
     seedProduto(db, 'a', { sku: 'X' });
     seedProduto(db, 'b', { sku: 'X' });
-    const r = await resolverRaizLi(deps(db), simples(500, 'X'), NENHUM_REPETIDO);
+    const r = await resolverRaizLi(deps(db), simples(500, 'X'), SEM_CONFLITO);
     expect(r).toEqual({
       tipo: SITUACAO_ERP_ITEM_LI.conflito,
       pendencia: PENDENCIA_IMPORTACAO_LI.skuAmbiguo,
@@ -265,7 +299,7 @@ describe('resolverRaizLi — rungs 2 and 3, by SKU', () => {
     const db = new FakeDb();
     seedProduto(db, 'raiz', { sku: 'ABC', filhoUnicoId: 'membro' });
     seedProduto(db, 'membro', { sku: 'ABC-UN', paiId: 'raiz' });
-    const r = await resolverRaizLi(deps(db), simples(500, 'ABC-UN'), NENHUM_REPETIDO);
+    const r = await resolverRaizLi(deps(db), simples(500, 'ABC-UN'), SEM_CONFLITO);
     expect(r).toEqual({
       tipo: SITUACAO_ERP_ITEM_LI.encontrado,
       erpId: 'raiz',
@@ -279,7 +313,7 @@ describe('resolverRaizLi — rungs 2 and 3, by SKU', () => {
     const db = new FakeDb();
     seedProduto(db, 'raiz', { sku: 'ABC', filhoUnicoId: 'filho' });
     seedProduto(db, 'filho', { sku: 'ABC-UN', paiId: 'raiz', ...taxonomia('g', 'v') });
-    expect(await resolverRaizLi(deps(db), simples(500, 'ABC-UN'), NENHUM_REPETIDO)).toEqual({
+    expect(await resolverRaizLi(deps(db), simples(500, 'ABC-UN'), SEM_CONFLITO)).toEqual({
       tipo: SITUACAO_ERP_ITEM_LI.conflito,
       pendencia: PENDENCIA_IMPORTACAO_LI.formaDiferente,
       erpIds: ['filho'],
@@ -292,7 +326,7 @@ describe('resolverRaizLi — rungs 2 and 3, by SKU', () => {
       const db = new FakeDb();
       seedProduto(db, 'raiz', { sku: 'OUTRO', filhoUnicoId: 'membro' });
       seedProduto(db, 'membro', { sku: 'ABC-UN', paiId: 'raiz' });
-      expect(await resolverRaizLi(deps(db), simples(500, sku), NENHUM_REPETIDO)).toEqual({
+      expect(await resolverRaizLi(deps(db), simples(500, sku), SEM_CONFLITO)).toEqual({
         tipo: SITUACAO_ERP_ITEM_LI.ausente,
       });
     },
@@ -301,7 +335,7 @@ describe('resolverRaizLi — rungs 2 and 3, by SKU', () => {
   it('EQUAL: an ERP ROOT whose OWN SKU is `ABC-UN` ⇒ rung 2 answers it, before any hop', async () => {
     const db = new FakeDb();
     seedProduto(db, 'raiz-un', { sku: 'ABC-UN' });
-    expect(await resolverRaizLi(deps(db), simples(500, 'ABC-UN'), NENHUM_REPETIDO)).toMatchObject({
+    expect(await resolverRaizLi(deps(db), simples(500, 'ABC-UN'), SEM_CONFLITO)).toMatchObject({
       tipo: SITUACAO_ERP_ITEM_LI.encontrado,
       erpId: 'raiz-un',
       via: VIA_DA_RAIZ_LI.skuRaiz,
@@ -315,9 +349,9 @@ describe('resolverRaizLi — rungs 2 and 3, by SKU', () => {
     seedProduto(db, 'raiz2', { sku: 'DEF' });
     seedProduto(db, 'solto', { sku: 'DEF-UN', paiId: 'raiz2' });
     expect(
-      await resolverRaizLi(deps(db), familia(paiLi(500, [], { sku: 'ABC-UN' })), NENHUM_REPETIDO),
+      await resolverRaizLi(deps(db), familia(paiLi(500, [], { sku: 'ABC-UN' })), SEM_CONFLITO),
     ).toMatchObject({ pendencia: PENDENCIA_IMPORTACAO_LI.formaDiferente });
-    expect(await resolverRaizLi(deps(db), simples(501, 'DEF-UN'), NENHUM_REPETIDO)).toMatchObject({
+    expect(await resolverRaizLi(deps(db), simples(501, 'DEF-UN'), SEM_CONFLITO)).toMatchObject({
       pendencia: PENDENCIA_IMPORTACAO_LI.formaDiferente,
       erpIds: ['solto'],
     });
@@ -326,7 +360,7 @@ describe('resolverRaizLi — rungs 2 and 3, by SKU', () => {
   it('a hit with NO paiId field at all is a root rung 2 could not see', async () => {
     const db = new FakeDb();
     db.seed('produtos/legado', { nome: 'Legado', sku: 'L' });
-    expect(await resolverRaizLi(deps(db), simples(500, 'L'), NENHUM_REPETIDO)).toMatchObject({
+    expect(await resolverRaizLi(deps(db), simples(500, 'L'), SEM_CONFLITO)).toMatchObject({
       tipo: SITUACAO_ERP_ITEM_LI.encontrado,
       erpId: 'legado',
       via: VIA_DA_RAIZ_LI.skuRaiz,
@@ -335,7 +369,7 @@ describe('resolverRaizLi — rungs 2 and 3, by SKU', () => {
 
   it('nothing by link or SKU ⇒ ausente, target naoNoErp', async () => {
     const db = new FakeDb();
-    const r = await resolverRaizLi(deps(db), simples(500, 'NOVO'), NENHUM_REPETIDO);
+    const r = await resolverRaizLi(deps(db), simples(500, 'NOVO'), SEM_CONFLITO);
     expect(r).toEqual({ tipo: SITUACAO_ERP_ITEM_LI.ausente });
     expect(alvoDaRaizLi(r)).toBe(ALVO_IMPORTACAO_LI.naoNoErp);
   });
@@ -347,7 +381,7 @@ describe('resolverRaizLi — the ERP root shape must agree', () => {
     seedProduto(db, 'raiz', { sku: 'CAM', filhoUnicoId: 'azul' });
     seedProduto(db, 'azul', { sku: 'CAM-AZ', paiId: 'raiz', ...taxonomia('g', 'v') });
     expect(
-      await resolverRaizLi(deps(db), familia(paiLi(500, [501], { sku: 'CAM' })), NENHUM_REPETIDO),
+      await resolverRaizLi(deps(db), familia(paiLi(500, [501], { sku: 'CAM' })), SEM_CONFLITO),
     ).toMatchObject({
       tipo: SITUACAO_ERP_ITEM_LI.encontrado,
       erpId: 'raiz',
@@ -360,7 +394,7 @@ describe('resolverRaizLi — the ERP root shape must agree', () => {
     seedProduto(db, 'raiz', { sku: 'CAM', filhoUnicoId: 'membro' });
     seedProduto(db, 'membro', { sku: 'CAM-UN', paiId: 'raiz' });
     expect(
-      await resolverRaizLi(deps(db), familia(paiLi(500, [501], { sku: 'CAM' })), NENHUM_REPETIDO),
+      await resolverRaizLi(deps(db), familia(paiLi(500, [501], { sku: 'CAM' })), SEM_CONFLITO),
     ).toEqual({
       tipo: SITUACAO_ERP_ITEM_LI.conflito,
       pendencia: PENDENCIA_IMPORTACAO_LI.formaDiferente,
@@ -372,7 +406,7 @@ describe('resolverRaizLi — the ERP root shape must agree', () => {
     const db = new FakeDb();
     seedProduto(db, 'raiz', { sku: 'CAM', filhoUnicoId: 'azul' });
     seedProduto(db, 'azul', { sku: 'CAM-AZ', paiId: 'raiz', ...taxonomia('g', 'v') });
-    expect(await resolverRaizLi(deps(db), simples(500, 'CAM'), NENHUM_REPETIDO)).toMatchObject({
+    expect(await resolverRaizLi(deps(db), simples(500, 'CAM'), SEM_CONFLITO)).toMatchObject({
       pendencia: PENDENCIA_IMPORTACAO_LI.formaDiferente,
     });
   });
@@ -382,7 +416,7 @@ describe('resolverRaizLi — the ERP root shape must agree', () => {
     seedProduto(db, 'raiz', { sku: 'CAM' });
     seedProduto(db, 'unico', { sku: 'CAM-1', paiId: 'raiz' });
     for (const f of [simples(500, 'CAM'), familia(paiLi(500, [501], { sku: 'CAM' }))]) {
-      expect(await resolverRaizLi(deps(db), f, NENHUM_REPETIDO)).toMatchObject({
+      expect(await resolverRaizLi(deps(db), f, SEM_CONFLITO)).toMatchObject({
         pendencia: PENDENCIA_IMPORTACAO_LI.formaDiferente,
       });
     }
@@ -394,17 +428,17 @@ describe('resolverRaizLi — the ERP root shape must agree', () => {
     seedProduto(db, 'muitos', { sku: 'M' });
     seedProduto(db, 'm1', { paiId: 'muitos' });
     seedProduto(db, 'm2', { paiId: 'muitos' });
-    expect(await resolverRaizLi(deps(db), simples(500, 'S'), NENHUM_REPETIDO)).toMatchObject({
+    expect(await resolverRaizLi(deps(db), simples(500, 'S'), SEM_CONFLITO)).toMatchObject({
       forma: FORMA_RAIZ_ERP.raizSimples,
     });
     expect(
-      await resolverRaizLi(deps(db), familia(paiLi(501, [], { sku: 'M' })), NENHUM_REPETIDO),
+      await resolverRaizLi(deps(db), familia(paiLi(501, [], { sku: 'M' })), SEM_CONFLITO),
     ).toMatchObject({ forma: FORMA_RAIZ_ERP.familiaDeMuitas });
     // ⚠️ and the crossed pairs are both refused
     expect(
-      await resolverRaizLi(deps(db), familia(paiLi(502, [], { sku: 'S' })), NENHUM_REPETIDO),
+      await resolverRaizLi(deps(db), familia(paiLi(502, [], { sku: 'S' })), SEM_CONFLITO),
     ).toMatchObject({ pendencia: PENDENCIA_IMPORTACAO_LI.formaDiferente });
-    expect(await resolverRaizLi(deps(db), simples(503, 'M'), NENHUM_REPETIDO)).toMatchObject({
+    expect(await resolverRaizLi(deps(db), simples(503, 'M'), SEM_CONFLITO)).toMatchObject({
       pendencia: PENDENCIA_IMPORTACAO_LI.formaDiferente,
     });
   });
@@ -456,6 +490,91 @@ describe('skusRepetidosNaLojaLi — exact bytes over every root and attached var
   });
 });
 
+describe('conflitosDeSkuNaLojaLi — every SKU in conflict in the store, with its code', () => {
+  function montagem(familias: readonly FamiliaLi[]): MontagemLi {
+    return {
+      familias,
+      avulsos: [],
+      contagens: { reivindicacoesIgnoradas: 0, reivindicacoesDisputadas: 0, filhosIlegiveis: 0 },
+    };
+  }
+  const parecido = PENDENCIA_IMPORTACAO_LI.skuParecidoNaLoja;
+  const repetido = PENDENCIA_IMPORTACAO_LI.skuRepetidoNaLoja;
+
+  it.each<readonly [string, () => readonly FamiliaLi[], readonly (readonly [string, string])[]]>([
+    [
+      'two roots differing by case: both near duplicates',
+      () => [simples(1, 'ABC-1'), simples(2, 'abc-1')],
+      [
+        ['ABC-1', parecido],
+        ['abc-1', parecido],
+      ],
+    ],
+    [
+      'a variation and another family’s root',
+      () => [
+        familia(paiLi(1, [2], { sku: 'P' }), [filhoLi(2, { sku: 'X-AZ' })]),
+        simples(3, 'x-az'),
+      ],
+      [
+        ['X-AZ', parecido],
+        ['x-az', parecido],
+      ],
+    ],
+    [
+      'a simple product’s derived sole-member SKU against a row',
+      () => [simples(1, 'X'), simples(2, 'X-UN')],
+      [
+        ['X', parecido],
+        ['X-UN', parecido],
+      ],
+    ],
+    [
+      'a repeat WINS over a near duplicate of the same SKU',
+      () => [simples(1, 'ABC'), simples(2, 'ABC'), simples(3, 'abc')],
+      [
+        ['ABC', repetido],
+        ['abc', parecido],
+      ],
+    ],
+    [
+      'a HIDDEN row counts: it is a store row whatever its visibility',
+      () => [simples(1, 'ABC'), familia(linhaProdutoLi(2, { sku: 'abc', ativo: false }))],
+      [
+        ['ABC', parecido],
+        ['abc', parecido],
+      ],
+    ],
+    ['NEAR-MISS: `ABC-1` and `ABC-2`', () => [simples(1, 'ABC-1'), simples(2, 'ABC-2')], []],
+    ['NEAR-MISS: `X-AZ` and `X-AZUL`', () => [simples(1, 'X-AZ'), simples(2, 'X-AZUL')], []],
+    [
+      'NEAR-MISS: `X` (derived `X-UN`) and `X-UNI`',
+      () => [simples(1, 'X'), simples(2, 'X-UNI')],
+      [],
+    ],
+    [
+      'NEAR-MISS: a PARENT `X` has no sole member, so `X-UN` meets nothing',
+      () => [familia(paiLi(1, [], { sku: 'X' })), simples(2, 'X-UN')],
+      [],
+    ],
+    [
+      'NEAR-MISS: a VARIATION `X` has no sole member, so `X-UN` meets nothing',
+      () => [familia(paiLi(1, [2], { sku: 'P' }), [filhoLi(2, { sku: 'X' })]), simples(3, 'X-UN')],
+      [],
+    ],
+    [
+      'NEAR-MISS: a product with no SKU conflicts with nothing',
+      () => [simples(1, null), simples(2, null)],
+      [],
+    ],
+  ])('%s', (_caso, familias, esperado) => {
+    const obtido = [...conflitosDeSkuNaLojaLi(montagem(familias()))].sort(([a], [b]) =>
+      a < b ? -1 : a > b ? 1 : 0,
+    );
+    expect(obtido).toEqual([...esperado].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
+  });
+});
+
 describe('targets', () => {
   const vinculado: ResolucaoDaRaizLi = {
     tipo: SITUACAO_ERP_ITEM_LI.vinculado,
@@ -476,6 +595,7 @@ describe('targets', () => {
     PENDENCIA_IMPORTACAO_LI.formaDiferente,
     PENDENCIA_IMPORTACAO_LI.semSku,
     PENDENCIA_IMPORTACAO_LI.skuRepetidoNaLoja,
+    PENDENCIA_IMPORTACAO_LI.skuParecidoNaLoja,
   ].map((pendencia) => ({ tipo: SITUACAO_ERP_ITEM_LI.conflito, pendencia, erpIds: [] }));
 
   it('EQUAL: a link owner and a SKU root are jaNoErp; neither is naoNoErp', () => {
@@ -484,7 +604,7 @@ describe('targets', () => {
     expect(alvoDaRaizLi(ausente)).toBe(ALVO_IMPORTACAO_LI.naoNoErp);
   });
 
-  it('⚠️ NEAR-MISS: two owners, two SKU hits, a shape mismatch, no SKU, a repeated SKU ⇒ neither target — only todos and selecionados take them', () => {
+  it('⚠️ NEAR-MISS: two owners, two SKU hits, a shape mismatch, no SKU, a repeated or nearly repeated SKU ⇒ neither target — only todos and selecionados take them', () => {
     for (const c of conflitos) {
       expect(alvoDaRaizLi(c)).toBeNull();
       expect(familiaNoAlvoLi({ alvo: ALVO_IMPORTACAO_LI.jaNoErp, selecionados: [] }, 7, c)).toBe(
@@ -525,7 +645,7 @@ describe('resolverFilhosLi — the rungs of a matched family', () => {
     seedProduto(db, 'm', { sku: skus.m ?? 'CAM-M', paiId: 'pai', ...taxonomia('g', 'v-m') });
   }
   const grupos = [grupo('g', ['v-p', 'v-m'], { 1: ['v-p'], 2: ['v-m'] })];
-  const contexto = { grupos, skusRepetidos: NENHUM_REPETIDO };
+  const contexto = { grupos, skusEmConflito: SEM_CONFLITO };
 
   it('EQUAL: equal SKUs ⇒ matched by rung 2', async () => {
     const db = new FakeDb();
@@ -628,7 +748,7 @@ describe('resolverFilhosLi — the rungs of a matched family', () => {
       deps(db),
       familia(paiLi(500, [501]), [variacao(501, 'L1', 1)]),
       'pai',
-      { grupos: ambiguo, skusRepetidos: NENHUM_REPETIDO },
+      { grupos: ambiguo, skusEmConflito: SEM_CONFLITO },
     );
     expect(r.filhos[0]).toMatchObject({
       situacao: SITUACAO_DO_FILHO_LI.ausente,
@@ -646,7 +766,7 @@ describe('resolverFilhosLi — the rungs of a matched family', () => {
       deps(db),
       familia(paiLi(500, [501]), [variacao(501, 'L1', 1)]),
       'pai',
-      { grupos: daOutra, skusRepetidos: NENHUM_REPETIDO },
+      { grupos: daOutra, skusEmConflito: SEM_CONFLITO },
     );
     expect(r.filhos[0]).toMatchObject({
       situacao: SITUACAO_DO_FILHO_LI.ausente,
@@ -727,7 +847,7 @@ describe('resolverFilhosLi — the rungs of a matched family', () => {
       deps(db),
       familia(paiLi(500, [501, 502]), [variacao(501, null, 2), variacao(502, 'REP', 1)]),
       'pai',
-      { grupos, skusRepetidos: new Set(['REP']) },
+      { grupos, skusEmConflito: new Map([['REP', PENDENCIA_IMPORTACAO_LI.skuRepetidoNaLoja]]) },
     );
     expect(r.filhos[0]).toMatchObject({
       situacao: SITUACAO_DO_FILHO_LI.conflito,
@@ -738,6 +858,50 @@ describe('resolverFilhosLi — the rungs of a matched family', () => {
       situacao: 'casado',
       via: VIA_DO_FILHO_LI.combinacao,
       pendencias: [{ codigo: PENDENCIA_IMPORTACAO_LI.skuRepetidoNaLoja }],
+    });
+  });
+
+  it('a store NEAR duplicate: rung 2 skipped though the ERP child has that very SKU, matched by its combination, the code kept', async () => {
+    const db = new FakeDb();
+    familiaErp(db, { p: 'CAM-P', m: 'CAM-M' });
+    const parecidos = new Map([['CAM-P', PENDENCIA_IMPORTACAO_LI.skuParecidoNaLoja] as const]);
+    const r = await resolverFilhosLi(
+      deps(db),
+      familia(paiLi(500, [501]), [variacao(501, 'CAM-P', 1)]),
+      'pai',
+      { grupos, skusEmConflito: parecidos },
+    );
+    expect(r.filhos[0]).toMatchObject({
+      situacao: SITUACAO_DO_FILHO_LI.casado,
+      via: VIA_DO_FILHO_LI.combinacao,
+      erp: { id: 'p' },
+      pendencias: [{ codigo: PENDENCIA_IMPORTACAO_LI.skuParecidoNaLoja, liId: 501 }],
+    });
+    // NEAR-MISS: unflagged, the same variation is matched by rung 2 with nothing to report.
+    const limpo = await resolverFilhosLi(
+      deps(db),
+      familia(paiLi(500, [501]), [variacao(501, 'CAM-P', 1)]),
+      'pai',
+      { grupos, skusEmConflito: SEM_CONFLITO },
+    );
+    expect(limpo.filhos[0]).toMatchObject({ via: VIA_DO_FILHO_LI.sku, pendencias: [] });
+  });
+
+  it('a flagged variation matching nothing stays ausente, carrying its code (the add never creates it)', async () => {
+    const db = new FakeDb();
+    familiaErp(db);
+    const r = await resolverFilhosLi(
+      deps(db),
+      familia(paiLi(500, [501]), [variacao(501, 'NOVO', 3)]),
+      'pai',
+      {
+        grupos: [grupo('g', ['v-p', 'v-m', 'v-g'], { 1: ['v-p'], 2: ['v-m'], 3: ['v-g'] })],
+        skusEmConflito: new Map([['NOVO', PENDENCIA_IMPORTACAO_LI.skuParecidoNaLoja]]),
+      },
+    );
+    expect(r.filhos[0]).toMatchObject({
+      situacao: SITUACAO_DO_FILHO_LI.ausente,
+      pendencias: [{ codigo: PENDENCIA_IMPORTACAO_LI.skuParecidoNaLoja, liId: 501 }],
     });
   });
 });
@@ -831,14 +995,14 @@ describe('every query the cascade sends rides a declared index (root rule 1)', (
     seedProduto(db, 'p', { sku: 'CAM-P', paiId: 'pai', ...taxonomia('g', 'v-p') });
     seedProduto(db, 'm', { sku: 'CAM-M', paiId: 'pai', ...taxonomia('g', 'v-m') });
     seedVinculo(db, 'pai', 500);
-    await resolverRaizLi(deps(db), familia(paiLi(500, [501])), NENHUM_REPETIDO);
-    await resolverRaizLi(deps(db), simples(600, 'ABC-UN'), NENHUM_REPETIDO);
-    await resolverRaizLi(deps(db), simples(601, 'CAM'), NENHUM_REPETIDO);
+    await resolverRaizLi(deps(db), familia(paiLi(500, [501])), SEM_CONFLITO);
+    await resolverRaizLi(deps(db), simples(600, 'ABC-UN'), SEM_CONFLITO);
+    await resolverRaizLi(deps(db), simples(601, 'CAM'), SEM_CONFLITO);
     await resolverFilhosLi(
       deps(db),
       familia(paiLi(500, [501]), [variacao(501, 'CAM-P', 1)]),
       'pai',
-      { grupos: [grupo('g', ['v-p'], { 1: ['v-p'] })], skusRepetidos: NENHUM_REPETIDO },
+      { grupos: [grupo('g', ['v-p'], { 1: ['v-p'] })], skusEmConflito: SEM_CONFLITO },
     );
 
     const declarados = indices();

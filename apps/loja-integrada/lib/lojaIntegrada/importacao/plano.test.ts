@@ -141,7 +141,7 @@ function planejar(over: Partial<EntradaDoPlanoLi> & Pick<EntradaDoPlanoLi, 'fami
   return planejarFamiliaLi({
     job: job(),
     filhos: null,
-    skusRepetidos: new Set(),
+    skusEmConflito: new Map(),
     recusasDoAprendizado: new Map(),
     ...over,
   });
@@ -444,6 +444,44 @@ describe('planejarFamiliaLi — the create classification (completar)', () => {
     expect(p.criacao).toMatchObject({ viavel: false, filhos: [], ocultos: [501] });
   });
 
+  it.each([PENDENCIA_IMPORTACAO_LI.skuParecidoNaLoja, PENDENCIA_IMPORTACAO_LI.skuRepetidoNaLoja])(
+    'a HIDDEN variation whose SKU is in conflict reports %s too, so its visible partner’s refusal has a row that explains it; the family it is left out of stays viable',
+    (codigo) => {
+      const p = planejar({
+        job: completar,
+        familia: familia(paiLi(500, [501, 502]), [
+          filhoLi(501, { sku: 'A' }),
+          filhoLi(502, { sku: 'b', ativo: false }),
+        ]),
+        raiz: AUSENTE,
+        skusEmConflito: new Map([['b', codigo]]),
+      });
+      expect(p.criacao).toMatchObject({ viavel: true, filhos: [501], ocultos: [502] });
+      expect(p.pendencias).toEqual([
+        { codigo: PENDENCIA_IMPORTACAO_LI.ocultoNaoCriado, liId: 502, referencias: [] },
+        { codigo, liId: 502, referencias: [] },
+      ]);
+    },
+  );
+
+  it('⚠️ NEAR-MISS: a hidden variation whose SKU is not in conflict (another case, or none at all) says only that it was left out', () => {
+    const p = planejar({
+      job: completar,
+      familia: familia(paiLi(500, [501, 502, 503]), [
+        filhoLi(501, { sku: 'A' }),
+        filhoLi(502, { sku: 'b', ativo: false }),
+        filhoLi(503, { sku: '', bloqueado: true }),
+      ]),
+      raiz: AUSENTE,
+      skusEmConflito: new Map([['B', PENDENCIA_IMPORTACAO_LI.skuParecidoNaLoja]]),
+    });
+    expect(p.criacao).toMatchObject({ viavel: true, filhos: [501], ocultos: [502, 503] });
+    expect(p.pendencias).toEqual([
+      { codigo: PENDENCIA_IMPORTACAO_LI.ocultoNaoCriado, liId: 502, referencias: [] },
+      { codigo: PENDENCIA_IMPORTACAO_LI.ocultoNaoCriado, liId: 503, referencias: [] },
+    ]);
+  });
+
   it('an empty family is never created', () => {
     const vazia: PendenciaDaMontagemLi = {
       codigo: PENDENCIA_IMPORTACAO_LI.familiaVazia,
@@ -526,7 +564,7 @@ describe('planejarFamiliaLi — the create classification (completar)', () => {
       job: completar,
       familia: familia(paiLi(500, [501]), [filhoLi(501, { sku: 'A' })]),
       raiz: AUSENTE,
-      skusRepetidos: new Set(['A']),
+      skusEmConflito: new Map([['A', PENDENCIA_IMPORTACAO_LI.skuRepetidoNaLoja]]),
     });
     expect(repetido.criacao?.viavel).toBe(false);
     expect(repetido.pendencias).toContainEqual({
@@ -534,12 +572,28 @@ describe('planejarFamiliaLi — the create classification (completar)', () => {
       liId: 501,
       referencias: [],
     });
+    // A near duplicate refuses the same way, under its own code.
+    const parecido = planejar({
+      job: completar,
+      familia: familia(paiLi(500, [501]), [filhoLi(501, { sku: 'A' })]),
+      raiz: AUSENTE,
+      skusEmConflito: new Map([['A', PENDENCIA_IMPORTACAO_LI.skuParecidoNaLoja]]),
+    });
+    expect(parecido.criacao?.viavel).toBe(false);
+    expect(parecido.pendencias).toContainEqual({
+      codigo: PENDENCIA_IMPORTACAO_LI.skuParecidoNaLoja,
+      liId: 501,
+      referencias: [],
+    });
+    expect(parecido.pendencias.map((p) => p.codigo)).not.toContain(
+      PENDENCIA_IMPORTACAO_LI.skuRepetidoNaLoja,
+    );
     // Near-miss: `'A '` is another SKU (exact bytes), so `'A'` repeated does not touch it.
     const outro = planejar({
       job: completar,
       familia: familia(paiLi(500, [501]), [filhoLi(501, { sku: 'A ' })]),
       raiz: AUSENTE,
-      skusRepetidos: new Set(['A']),
+      skusEmConflito: new Map([['A', PENDENCIA_IMPORTACAO_LI.skuRepetidoNaLoja]]),
     });
     expect(outro.criacao?.viavel).toBe(true);
   });

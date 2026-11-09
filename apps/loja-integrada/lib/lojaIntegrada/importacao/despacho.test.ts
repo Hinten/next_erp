@@ -25,6 +25,7 @@
  */
 import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { ZodError } from 'zod';
 import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
 import {
   grupoDeVariacoesCollection,
@@ -50,6 +51,7 @@ import {
   type ModoImportacaoLi,
   ORCAMENTO_DESPACHO_IMPORTACAO_LI_MS,
   PENDENCIA_IMPORTACAO_LI,
+  type ProgressoDaFamiliaLi,
   SITUACAO_ERP_ITEM_LI,
   TIPO_AVISO,
   TIPO_PAGINA_IMPORTACAO_LI,
@@ -59,6 +61,7 @@ import {
   idPaginaImportacaoLi,
   importacaoLojaIntegradaSchema,
   itemImportacaoLiSchema,
+  progressoDaFamiliaLiSchema,
   varianteFakePath,
 } from '@delfrance/schemas';
 
@@ -86,7 +89,7 @@ import {
   seedConta,
   seedCredencial,
 } from '../testing/fixtures';
-import { caminhoItemLi, caminhoJobLi, seedJobLi } from '../testing/importacaoLi';
+import { caminhoItemLi, caminhoJobLi, jobLi, seedJobLi } from '../testing/importacaoLi';
 import {
   type LojaDeProdutosLi,
   detalheLi,
@@ -115,6 +118,23 @@ import { avisarCategoriaSemVinculoLi, chaveCategoriaSemVinculoLi } from './aviso
 import { cancelarImportacaoLi } from './job';
 import { PIOR_CASO_UNIDADE_IMPORTACAO_LI_MS } from './orcamento';
 
+/** The cursor one test makes the photo step hand back; `null` (every other test) runs the real one. */
+const cursorDeFotoForcado = vi.hoisted(() => ({ valor: null as unknown }));
+
+vi.mock('./fotos', async (importOriginal) => {
+  const real = await importOriginal<typeof import('./fotos')>();
+  return {
+    ...real,
+    executarUnidadeDeFotoLi: (...args: Parameters<typeof real.executarUnidadeDeFotoLi>) => {
+      const cursor = cursorDeFotoForcado.valor;
+      if (cursor === null) return real.executarUnidadeDeFotoLi(...args);
+      // One unit only: a checkpoint that lets it through fails the test, never spins the dispatch.
+      cursorDeFotoForcado.valor = null;
+      return Promise.resolve({ tipo: real.TIPO_PASSO_FOTOS_LI.progresso, cursor, downloads: 0 });
+    },
+  };
+});
+
 const sha256Hex = (texto: string) => createHash('sha256').update(texto, 'utf8').digest('hex');
 
 const CONTA = 'conta-li-despacho';
@@ -138,6 +158,7 @@ beforeEach(() => {
   gravador = gravadorDeLog();
 });
 afterEach(() => {
+  cursorDeFotoForcado.valor = null;
   expect(fetchGlobal).not.toHaveBeenCalled();
   vi.unstubAllGlobals();
   __resetAllReadCaches();
@@ -1881,6 +1902,13 @@ describe('the tax-review phase', () => {
       params: expect.objectContaining({ abertos: 1, job: JOB }),
     });
     expect(jobGravado()).toMatchObject({ status: 'concluido', fase: 'fim' });
+    // The phase's last unit checkpoints its cursor too: what the re-check ended on, on the job.
+    expect(jobGravado().revisao).toMatchObject({
+      etapa: 'conferindo',
+      abertos: 1,
+      depoisProdutoId: 'p-revisao',
+      anteriorJobId: 'job-anterior',
+    });
   });
 
   it('the entry leaves on evidence — the produto’s own `imposto` — and the aviso resolves (near-miss: the same entry without it stays)', async () => {
@@ -2191,8 +2219,172 @@ describe('complete — the dispatch', () => {
       status: 'concluido',
       contadores: { fotos: 2, completados: 1, vinculados: 1 },
       // The family's progress is gone once it closed.
-      revisao: expect.not.objectContaining({ cursorProdutoId: expect.stringMatching(/^f:/) }),
+      progressoDaFamilia: null,
     });
+
+    // The photo cursor is gone the moment the result is set (the contract's size bound rests on it).
+    const dadosDoJob = escritasDoJob().map(
+      (e) =>
+        e.dados as {
+          readonly fase?: string;
+          readonly revisao?: unknown;
+          readonly progressoDaFamilia?: ProgressoDaFamiliaLi | null;
+        },
+    );
+    const comResultado = dadosDoJob.flatMap((d) =>
+      d.progressoDaFamilia?.resultadoFotos ? [d.progressoDaFamilia] : [],
+    );
+    expect(comResultado.length).toBeGreaterThan(0);
+    for (const p of comResultado) expect(p.fotos).toBeNull();
+    // A cursor did run before it: the near-miss of the pin above.
+    expect(dadosDoJob.some((d) => (d.progressoDaFamilia?.fotos ?? null) !== null)).toBe(true);
+
+    // The closing clears the progress in the very write that moves the family cursor past it.
+    const fechamento = escritasDoJob()
+      .map((e) => e.dados as { familias?: { cursorPaiId?: number }; progressoDaFamilia?: unknown })
+      .find((d) => d.familias?.cursorPaiId === 20);
+    expect(fechamento).toHaveProperty('progressoDaFamilia', null);
+
+    // `revisao` is untouched until its own phase: the family's units write only their own field.
+    const entrada = dadosDoJob.findIndex((d) => d.fase === 'revisao');
+    expect(entrada).toBeGreaterThan(0);
+    expect(dadosDoJob.slice(0, entrada + 1).filter((d) => 'revisao' in d)).toEqual([]);
+  });
+
+  it('the bucket found missing with a picture already stored: the family closes with the cursor gone, nothing more fetched, `fotosIndisponiveis` on the job', async () => {
+    db.seed('produtos/caneca', { nome: 'Caneca', sku: 'CAN-B', paiId: null, filhoUnicoId: null });
+    const linha = linhaProdutoLi(20, { sku: 'CAN-B' });
+    const loja: LojaDeProdutosLi = {
+      ativos: [linha],
+      detalhes: new Map([
+        [20, detalheLi(linha, null, { imagens: [imagemLi(71, 1), imagemLi(72, 2)] })],
+      ]),
+    };
+    seedJobLi(db, JOB, CONTA, {
+      status: 'pendente',
+      modo: 'aplicar',
+      acao: 'completar',
+      fotos: 'soSemFotos',
+    });
+    const fake = new FakeBucket();
+    const relogio: Relogio = { agora: AGORA_MS };
+    const t = transporte();
+    const pedidosCdn: string[] = [];
+    let temBucket = true;
+    let proxima = tarefa(0);
+    let ultimo: string | null = null;
+    for (let i = 0; i < 40 && ultimo !== DESFECHO_DESPACHO_IMPORTACAO_LI.concluido; i += 1) {
+      const { deps } = montarDeps({
+        responder: lojaCompleta(loja),
+        relogio,
+        t,
+        bucket: () => (temBucket ? asBucket(fake) : null),
+        cdn: new Map([
+          ['loja/produto/71/foto.jpg', png(1)],
+          ['loja/produto/72/foto.jpg', png(2)],
+        ]),
+        pedidosCdn,
+      });
+      const doDespacho = deps.fetch;
+      if (doDespacho === undefined) throw new Error('despacho.test: montarDeps dá um fetch');
+      const r = await despacharImportacaoLi(asDb(db), proxima, {
+        ...deps,
+        fetch: async (input, init) => {
+          const antes = pedidosCdn.length;
+          const resposta = await doDespacho(input, init);
+          // The first picture spends the budget, and the bucket is gone for the next dispatch.
+          if (pedidosCdn.length > antes) {
+            relogio.agora += 60_000;
+            temBucket = false;
+          }
+          return resposta;
+        },
+      });
+      ultimo = r.desfecho;
+      const enviada = t.envios.at(-1)?.tarefa;
+      if (r.desfecho === DESFECHO_DESPACHO_IMPORTACAO_LI.continuado && enviada !== undefined) {
+        proxima = enviada;
+      }
+    }
+    expect(ultimo).toBe(DESFECHO_DESPACHO_IMPORTACAO_LI.concluido);
+    expect(pedidosCdn).toEqual(['/loja/produto/71/foto.jpg']);
+    expect(jobGravado()).toMatchObject({ fotosIndisponiveis: true, progressoDaFamilia: null });
+    const progressos = escritasDoJob().flatMap((e) => {
+      const { progressoDaFamilia } = e.dados as {
+        progressoDaFamilia?: ProgressoDaFamiliaLi | null;
+      };
+      return progressoDaFamilia ? [progressoDaFamilia] : [];
+    });
+    // Anti-vacuity: a cursor with that picture WAS checkpointed before the bucket went.
+    expect(progressos.some((p) => p.fotos?.enviadas.length === 1)).toBe(true);
+    const comResultado = progressos.filter((p) => p.resultadoFotos !== null);
+    expect(comResultado.length).toBeGreaterThan(0);
+    for (const p of comResultado) expect(p.fotos).toBeNull();
+    expect(itens().get(20)).toMatchObject({ aplicada: true });
+  });
+
+  /** A family's progress, valid, of store root `raizLiId`. */
+  const progressoDe = (raizLiId: number): ProgressoDaFamiliaLi =>
+    progressoDaFamiliaLiSchema.parse({
+      raizLiId,
+      caminho: 'existente',
+      erpRaizId: 'outra',
+      categoria: { erpId: null, criadaPelaImportacao: false },
+      criacaoAplicada: false,
+      completado: false,
+      campos: [],
+      pendencias: [],
+      categoriasCriadas: [],
+      criados: 0,
+      completados: 0,
+      vinculados: 0,
+      sumidos: [],
+      alvos: [{ produtoId: 'outra', liId: null }],
+      fotos: null,
+      resultadoFotos: null,
+    });
+
+  it('a stored progress of ANOTHER family is none: the next unit clears it, and this family is prepared', async () => {
+    const linha = linhaProdutoLi(10, { sku: 'LIVRE-P' });
+    const loja: LojaDeProdutosLi = {
+      ativos: [linha],
+      detalhes: new Map([[10, detalheLi(linha, null)]]),
+    };
+    seedJobLi(db, JOB, CONTA, {
+      status: 'pendente',
+      modo: 'aplicar',
+      acao: 'completar',
+      progressoDaFamilia: progressoDe(999),
+    });
+    const { resultados } = await rodarAteOFim({ responder: lojaCompleta(loja) });
+    expect(resultados.at(-1)?.desfecho).toBe('concluido');
+    expect(itens().get(10)).toMatchObject({ acao: 'criar', aplicada: true });
+    expect(jobGravado().progressoDaFamilia).toBeNull();
+    // Cleared by the family's FIRST unit (its detail read), never left for the phase's end.
+    const primeira = escritasDoJob()
+      .map(
+        (e) => e.dados as { familias?: { filhosLidos?: number[] }; progressoDaFamilia?: unknown },
+      )
+      .find((d) => d.familias?.filhosLidos?.includes(10));
+    expect(primeira).toHaveProperty('progressoDaFamilia', null);
+  });
+
+  it('a stored progress that does not parse reads as none: the family is prepared and the phase clears it', async () => {
+    const linha = linhaProdutoLi(10, { sku: 'LIVRE-L' });
+    const loja: LojaDeProdutosLi = {
+      ativos: [linha],
+      detalhes: new Map([[10, detalheLi(linha, null)]]),
+    };
+    // Seeded RAW: the seed helper parses the job, which would read the bad value as `null` first.
+    db.seed(caminhoJobLi(JOB), {
+      ...jobLi(CONTA, { status: 'pendente', modo: 'aplicar', acao: 'completar' }),
+      progressoDaFamilia: { raizLiId: 'lixo' },
+    });
+    expect(db.ler(caminhoJobLi(JOB))?.progressoDaFamilia).toEqual({ raizLiId: 'lixo' });
+    const { resultados } = await rodarAteOFim({ responder: lojaCompleta(loja) });
+    expect(resultados.at(-1)?.desfecho).toBe('concluido');
+    expect(itens().get(10)).toMatchObject({ acao: 'criar', aplicada: true });
+    expect(db.ler(caminhoJobLi(JOB))?.progressoDaFamilia).toBeNull();
   });
 
   /** One store simple product `sku` (id 20) with ONE picture, and its ERP produto `caneca`. */
@@ -2246,10 +2438,8 @@ describe('complete — the dispatch', () => {
     ]);
     // Between the two, a checkpoint carried the family's progress.
     const comProgresso = escritasDoJob().filter((e) => {
-      const revisao = (e.dados as { revisao?: { cursorProdutoId?: unknown } }).revisao;
-      return (
-        typeof revisao?.cursorProdutoId === 'string' && revisao.cursorProdutoId.startsWith('f:')
-      );
+      const { progressoDaFamilia } = e.dados as { progressoDaFamilia?: unknown };
+      return typeof progressoDaFamilia === 'object' && progressoDaFamilia !== null;
     });
     expect(comProgresso.length).toBeGreaterThan(0);
   });
@@ -2292,7 +2482,7 @@ describe('complete — the dispatch', () => {
       ultimo = r.desfecho;
       // Anti-vacuity: the late dispatch DID reach the picture — the family is prepared, its
       // picture pending, when it hands off.
-      if (i === 0) expect(jobGravado().revisao.cursorProdutoId).toMatch(/^f:/);
+      if (i === 0) expect(jobGravado().progressoDaFamilia).toMatchObject({ raizLiId: 20 });
       const enviada = t.envios.at(-1)?.tarefa;
       if (r.desfecho === DESFECHO_DESPACHO_IMPORTACAO_LI.continuado && enviada !== undefined) {
         proxima = enviada;
@@ -2307,6 +2497,145 @@ describe('complete — the dispatch', () => {
         RITMO_LEITURA_LI_MS,
     );
     expect(db.ler('produtos/caneca')?.fotos).toHaveLength(1);
+  });
+
+  it('the closing is budgeted as the 10 s family unit it is, never as a picture: with 30 s left it still runs', async () => {
+    db.seed('produtos/caneca', { nome: 'Caneca', sku: 'LI-20', paiId: null, filhoUnicoId: null });
+    seedSnapshotDeFamilias([20], {
+      modo: 'aplicar',
+      acao: 'completar',
+      progressoDaFamilia: {
+        ...progressoDe(20),
+        erpRaizId: 'caneca',
+        alvos: [{ produtoId: 'caneca', liId: null }],
+        resultadoFotos: { produtos: [], gravadas: 0, pendencias: [] },
+      },
+    });
+    const { deps } = montarDeps({ jaDecorridoMs: 40_000, responder: lojaCompleta({ ativos: [] }) });
+    await despacharImportacaoLi(asDb(db), tarefa(0), deps);
+    expect(itens().get(20)).toMatchObject({ erpId: 'caneca', aplicada: true });
+    expect(jobGravado().progressoDaFamilia).toBeNull();
+  });
+
+  it('a stale progress, of a family behind the cursor, is budgeted as the unit that really starts, never as a picture: with 30 s left it is cleared', async () => {
+    const linha = linhaProdutoLi(30, { sku: 'LI-30' });
+    seedSnapshotDeFamilias([10, 30], {
+      modo: 'aplicar',
+      acao: 'completar',
+      familias: { cursorPaiId: 10, filhosLidos: [] },
+      progressoDaFamilia: progressoDe(10),
+    });
+    const { deps } = montarDeps({
+      jaDecorridoMs: 40_000,
+      responder: lojaCompleta({
+        ativos: [],
+        detalhes: new Map([[30, detalheLi(linha, null)]]),
+      }),
+    });
+    await despacharImportacaoLi(asDb(db), tarefa(0), deps);
+    expect(jobGravado().progressoDaFamilia).toBeNull();
+  });
+
+  it('a picture the CDN refuses reaches the item through the progress: `foto-recusada`, informational, beside the one stored', async () => {
+    db.seed('produtos/caneca', { nome: 'Caneca', sku: 'CAN-X', paiId: null, filhoUnicoId: null });
+    const linha = linhaProdutoLi(20, { sku: 'CAN-X' });
+    seedJobLi(db, JOB, CONTA, {
+      status: 'pendente',
+      modo: 'aplicar',
+      acao: 'completar',
+      fotos: 'soSemFotos',
+    });
+    const bucket = new FakeBucket();
+    const { resultados } = await rodarAteOFim({
+      responder: lojaCompleta({
+        ativos: [linha],
+        detalhes: new Map([
+          [20, detalheLi(linha, null, { imagens: [imagemLi(71, 1), imagemLi(72, 2)] })],
+        ]),
+      }),
+      bucket: () => asBucket(bucket),
+      // Picture 71 answers 404.
+      cdn: new Map([['loja/produto/72/foto.jpg', png(2)]]),
+    });
+    expect(resultados.at(-1)?.desfecho).toBe('concluido');
+    expect(bucket.salvos).toHaveLength(1);
+    expect(itens().get(20)?.pendencias).toContainEqual(
+      expect.objectContaining({ codigo: 'foto-recusada', acionavel: false }),
+    );
+    expect(jobGravado().contadores).toMatchObject({ fotos: 1, vinculados: 1 });
+    // The result the closing is handed, as it was checkpointed: the produto's outcome rides it too.
+    const comResultado = escritasDoJob()
+      .map(
+        (e) => (e.dados as { progressoDaFamilia?: ProgressoDaFamiliaLi | null }).progressoDaFamilia,
+      )
+      .find((p) => p !== null && p !== undefined && p.resultadoFotos !== null);
+    expect(comResultado?.resultadoFotos).toMatchObject({
+      gravadas: 1,
+      produtos: [{ produtoId: 'caneca', liId: null, desfecho: 'importadas', fotos: 1 }],
+    });
+  });
+
+  it('a photo step handing back a cursor off the contract fails its unit, and nothing is checkpointed: read back, that value would be "no progress" with nothing to say why', async () => {
+    db.seed('produtos/caneca', { nome: 'Caneca', sku: 'LI-20', paiId: null, filhoUnicoId: null });
+    const emCurso = {
+      ...progressoDe(20),
+      erpRaizId: 'caneca',
+      alvos: [{ produtoId: 'caneca', liId: null }],
+    };
+    seedSnapshotDeFamilias([20], {
+      modo: 'aplicar',
+      acao: 'completar',
+      fotos: 'soSemFotos',
+      progressoDaFamilia: emCurso,
+    });
+    cursorDeFotoForcado.valor = {
+      produtoId: 'caneca',
+      proxima: -1,
+      reduzida: false,
+      enviadas: [],
+      feitos: [],
+      recusadas: [],
+    };
+    const { deps } = montarDeps({
+      bucket: () => asBucket(new FakeBucket()),
+      responder: lojaCompleta({ ativos: [] }),
+    });
+    await expect(despacharImportacaoLi(asDb(db), tarefa(0), deps)).rejects.toBeInstanceOf(ZodError);
+    expect(jobGravado().progressoDaFamilia).toEqual(emCurso);
+  });
+
+  it('the category a preparation creates rides the very checkpoint of its progress, and stands after the closing', async () => {
+    db.seed('produtos/caneca', { nome: 'Caneca', sku: 'CAN-M', paiId: null, filhoUnicoId: null });
+    const linha = linhaProdutoLi(20, { sku: 'CAN-M', categorias: ['/api/v1/categoria/900'] });
+    seedJobLi(db, JOB, CONTA, {
+      status: 'pendente',
+      modo: 'aplicar',
+      acao: 'completar',
+      fotos: 'soSemFotos',
+      categorias: 'criarEVincular',
+    });
+    const bucket = new FakeBucket();
+    await rodarAteOFim({
+      responder: lojaCompleta({
+        ativos: [linha],
+        detalhes: new Map([[20, detalheLi(linha, null, { imagens: [imagemLi(71, 1)] })]]),
+      }),
+      bucket: () => asBucket(bucket),
+      cdn: new Map([['loja/produto/71/foto.jpg', png(1)]]),
+    });
+    const ligada = { id: 900, vinculo: 'vinculada', erpCategoriaId: `li-${CONTA}-900` };
+    expect(jobGravado().mapaCategorias).toEqual([expect.objectContaining(ligada)]);
+    const comProgresso = escritasDoJob()
+      .map(
+        (e) =>
+          e.dados as {
+            readonly progressoDaFamilia?: unknown;
+            readonly mapaCategorias?: readonly unknown[];
+          },
+      )
+      .find((d) => typeof d.progressoDaFamilia === 'object' && d.progressoDaFamilia !== null);
+    expect(comProgresso?.mapaCategorias).toEqual([expect.objectContaining(ligada)]);
+    expect(itens().get(20)).toMatchObject({ categoriasCriadas: [900] });
   });
 
   it('a second complete run over an unchanged store writes NO ERP document (idempotence)', async () => {
@@ -2363,6 +2692,104 @@ const LOJA_AB_COMPLETA: LojaDeProdutosLi = (() => {
     ),
   };
 })();
+
+describe('complete — store near duplicates, end to end', () => {
+  it('both modes refuse them from the whole snapshot, whichever came first: the same verdicts, no produto written for them, the other family created', async () => {
+    const skus = new Map<number, string>([
+      [10, 'ABC-1'],
+      [20, 'abc-1'],
+      [30, 'XYZ'],
+      [40, 'XYZ-UN'],
+      [50, 'LIVRE'],
+    ]);
+    const ativos = [...skus].map(([id, sku]) => linhaProdutoLi(id, { sku }));
+    const detalhes = new Map(ativos.map((linha) => [linha.id as number, detalheLi(linha, null)]));
+    async function rodarModo(modo: ModoImportacaoLi, ordem: LojaDeProdutosLi['ativos']) {
+      db = new FakeDb();
+      seedConta(db, CONTA);
+      seedCredencial(db, CONTA);
+      seedJobLi(db, JOB, CONTA, { status: 'pendente', modo, acao: 'completar' });
+      __resetAllReadCaches();
+      const { resultados } = await rodarAteOFim({
+        responder: lojaCompleta({ ativos: ordem, detalhes }),
+      });
+      expect(resultados.at(-1)?.desfecho).toBe('concluido');
+      return { itens: itens(), job: jobGravado(), ler: (c: string) => db.ler(c) };
+    }
+
+    for (const ordem of [ativos, [...ativos].reverse()]) {
+      const simular = await rodarModo(MODO_IMPORTACAO_LI.simular, ordem);
+      const aplicar = await rodarModo(MODO_IMPORTACAO_LI.aplicar, ordem);
+
+      expect([...simular.itens.keys()]).toEqual([...aplicar.itens.keys()]);
+      for (const id of aplicar.itens.keys()) {
+        expect(veredito(simular.itens.get(id)), String(id)).toEqual(
+          veredito(aplicar.itens.get(id)),
+        );
+      }
+      expect(simular.job.contadores).toEqual(aplicar.job.contadores);
+      expect(aplicar.job.contadores).toMatchObject({ criados: 1, pendenciasAcionaveis: 4 });
+      for (const id of [10, 20, 30, 40]) {
+        expect(aplicar.itens.get(id), String(id)).toMatchObject({
+          situacaoErp: 'conflito',
+          acao: 'nenhuma',
+          erpId: null,
+          pendencias: [
+            { codigo: 'sku-parecido-na-loja', acionavel: true, liId: null, referencias: [] },
+          ],
+        });
+        expect(aplicar.ler(`produtos/li-sku-${sha256Hex(skus.get(id) ?? '')}`)).toBeUndefined();
+      }
+      // NEAR-MISS: the family that collides with nothing is created.
+      expect(aplicar.itens.get(50)).toMatchObject({ acao: 'criar', pendencias: [] });
+      expect(aplicar.ler(`produtos/li-sku-${sha256Hex('LIVRE')}`)).toMatchObject({ sku: 'LIVRE' });
+    }
+  });
+
+  it('a `selecionados` job decides them from the WHOLE snapshot too: a selected row meets one it did not select, and nothing is created for it', async () => {
+    const ativos = [
+      linhaProdutoLi(10, { sku: 'ABC-1' }),
+      linhaProdutoLi(20, { sku: 'abc-1' }),
+      linhaProdutoLi(30, { sku: 'LIVRE' }),
+    ];
+    const detalhes = new Map(ativos.map((linha) => [linha.id as number, detalheLi(linha, null)]));
+    seedJobLi(db, JOB, CONTA, {
+      status: 'pendente',
+      modo: 'aplicar',
+      acao: 'completar',
+      alvo: 'selecionados',
+      selecionados: [10, 30],
+    });
+    const { resultados } = await rodarAteOFim({ responder: lojaCompleta({ ativos, detalhes }) });
+    expect(resultados.at(-1)?.desfecho).toBe('concluido');
+    expect(itens().get(10)).toMatchObject({
+      situacaoErp: 'conflito',
+      acao: 'nenhuma',
+      pendencias: [{ codigo: 'sku-parecido-na-loja', acionavel: true, liId: null }],
+    });
+    expect(db.ler(`produtos/li-sku-${sha256Hex('ABC-1')}`)).toBeUndefined();
+    // NEAR-MISS: the other selected row collides with nothing; the row not selected has no item.
+    expect(itens().get(30)).toMatchObject({ acao: 'criar', pendencias: [] });
+    expect(itens().has(20)).toBe(false);
+  });
+
+  it('a variation one of them flags gives no claim in the evidence phase, so nothing is learned from it ⟷ NEAR-MISS the same store without the other row learns', async () => {
+    async function evidenciasCom(ativos: LojaDeProdutosLi['ativos']) {
+      db = new FakeDb();
+      seedConta(db, CONTA);
+      seedCredencial(db, CONTA);
+      seedErpAB();
+      seedJobLi(db, JOB, CONTA, { status: 'pendente', modo: MODO_IMPORTACAO_LI.aplicar });
+      __resetAllReadCaches();
+      await rodarAteOFim({ responder: lojaCompleta({ ativos }) });
+      return db.idsEm(`${caminhoJobLi(JOB)}/evidencias`);
+    }
+    expect(await evidenciasCom(LOJA_AB.ativos)).toEqual([`${String(COR)}_2`]);
+    expect(
+      await evidenciasCom([...LOJA_AB.ativos, linhaProdutoLi(300, { sku: 'cam-vd' })]),
+    ).toEqual([]);
+  });
+});
 
 describe('complete — Simular and aplicar', () => {
   it('give the SAME per-item verdicts on ONE fixture where a category created for product 1 serves product 2 and a learning from family A resolves family B — and Simular writes only the job', async () => {

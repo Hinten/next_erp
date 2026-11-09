@@ -32,8 +32,11 @@
  *  4. Nothing ⇒ `ausente` (only "complete" may create, after its own probe — 9-d's).
  *
  * A store root with no SKU (`''` or none) answers only rung 1, else `sem-sku`; one whose SKU another
- * snapshot row also carries ({@link skusRepetidosNaLojaLi}, exact bytes) answers only rung 1, else
- * `sku-repetido-na-loja` — so processing order never picks a winner between them.
+ * snapshot row also carries, or nearly does ({@link conflitosDeSkuNaLojaLi}: exact bytes, or a SKU
+ * that shares a probe form with another row's or meets another row's derived sole-member SKU),
+ * answers only rung 1, else `sku-repetido-na-loja` or `sku-parecido-na-loja` — decided from the whole
+ * snapshot before anything is created, so processing order never picks a winner between them and
+ * Simular answers as `aplicar` does.
  *
  * **Shapes must agree** ({@link formaConcordaLi}), read by `formaDaRaizErp` from the matched root,
  * its member when `filhoUnicoId` is set, and a `paiId == <root> limit 2` children read otherwise:
@@ -50,7 +53,8 @@
  *     `filho-de-outra-familia`; two owners ⇒ `vinculo-ambiguo`);
  *  2. the SKU among the parent's children, compared by `mesmoSkuLi` — the exact bytes a
  *     `sku == x and paiId == <parent>` query would match, at one read per family instead of one per
- *     variation: one ⇒ matched; two ⇒ `sku-ambiguo`;
+ *     variation: one ⇒ matched; two ⇒ `sku-ambiguo`. A SKU in conflict in the store
+ *     ({@link conflitosDeSkuNaLojaLi}) skips this rung and carries its code on to the next;
  *  3. the COMBINATION: every option resolved to an ERP variante (`resolverOpcoesDoFilhoLi`, over the
  *     grupos the caller passes — the dispatch's memo, plus the Simular overlay), then `sameCombo`
  *     against the children's `variacoesUid`: one ⇒ matched, and when the two SKUs differ the
@@ -77,8 +81,8 @@
  *
  * `jaNoErp` = rung 1, 2 or 3 answered one ERP produto; `naoNoErp` = `ausente`; `todos` = every
  * family; `selecionados` = the roots the start body named. A family in conflict (two owners, two SKU
- * hits, a shape mismatch, no SKU, a SKU repeated in the store) belongs to no target but `todos` and
- * `selecionados`, and is reported.
+ * hits, a shape mismatch, no SKU, a SKU repeated or nearly repeated in the store) belongs to no target
+ * but `todos` and `selecionados`, and is reported.
  *
  * ## The reads, against the indexes (root rule 1)
  *
@@ -93,9 +97,10 @@
  * ## Sameness
  *
  * This module folds nothing. A SKU is compared by Firestore equality or `mesmoSkuLi` (both exact
- * bytes), a link's id and conta by `vinculoLiDaContaEId`, a combination by `sameCombo`, a shape by
- * `formaDaRaizErp` — each owned by `packages/schemas` with its pairs pinned there; the near-misses
- * that matter at this altitude are pinned in `resolucao.test.ts`.
+ * bytes), the store's near duplicates by `skusParecidosNaLojaLi`, a link's id and conta by
+ * `vinculoLiDaContaEId`, a combination by `sameCombo`, a shape by `formaDaRaizErp` — each owned by
+ * `packages/schemas` with its pairs pinned there; the near-misses that matter at this altitude are
+ * pinned in `resolucao.test.ts`.
  *
  * ⚠️ Never name the Admin SDK's multi-document read-and-write call here — not even in a comment
  * (`estrutura.test.ts`). Next-free; `db` is a parameter.
@@ -117,6 +122,7 @@ import {
   RELACAO_VINCULO_LI,
   type ResolucaoOpcaoLi,
   SITUACAO_ERP_ITEM_LI,
+  type SkuDaLojaLi,
   TIPO_PRODUTO_LI,
   TIPO_RESOLUCAO_OPCAO_LI,
   type TipoProdutoLi,
@@ -125,6 +131,7 @@ import {
   mesmoSkuLi,
   resolverOpcoesDoFilhoLi,
   sameCombo,
+  skusParecidosNaLojaLi,
   varianteFakePath,
   vinculoLiDaContaEId,
 } from '@delfrance/schemas';
@@ -265,6 +272,37 @@ export function skusRepetidosNaLojaLi(montagem: MontagemLi): ReadonlySet<string>
   return repetidos;
 }
 
+/** Why a store SKU may be neither created nor matched by SKU: an exact repeat, or a near one. */
+export type ConflitoDeSkuNaLojaLi =
+  | typeof PENDENCIA_IMPORTACAO_LI.skuRepetidoNaLoja
+  | typeof PENDENCIA_IMPORTACAO_LI.skuParecidoNaLoja;
+
+/**
+ * Every SKU of the assembly that is in conflict in the store, with its code: computed with the
+ * assembly, from the whole snapshot, before anything is created, so processing order never picks a
+ * winner and Simular answers as `aplicar` does. Exact repeats are {@link skusRepetidosNaLojaLi}'s;
+ * near duplicates are `skusParecidosNaLojaLi`'s, over every root (a simple product also writes its
+ * sole member's derived SKU) and every attached variation, hidden rows included. A SKU that is both
+ * is a repeat. Equal and near-miss pairs are pinned in `produtoImportacaoLi.test.ts`. Pure.
+ */
+export function conflitosDeSkuNaLojaLi(
+  montagem: MontagemLi,
+): ReadonlyMap<string, ConflitoDeSkuNaLojaLi> {
+  const linhas: SkuDaLojaLi[] = [];
+  for (const familia of montagem.familias) {
+    linhas.push({ sku: familia.raiz.sku, simples: familia.raiz.tipo === TIPO_PRODUTO_LI.normal });
+    for (const filho of familia.filhos) linhas.push({ sku: filho.linha.sku, simples: false });
+  }
+  const conflitos = new Map<string, ConflitoDeSkuNaLojaLi>();
+  for (const sku of skusParecidosNaLojaLi(linhas)) {
+    conflitos.set(sku, PENDENCIA_IMPORTACAO_LI.skuParecidoNaLoja);
+  }
+  for (const sku of skusRepetidosNaLojaLi(montagem)) {
+    conflitos.set(sku, PENDENCIA_IMPORTACAO_LI.skuRepetidoNaLoja);
+  }
+  return conflitos;
+}
+
 /* -------------------------------------------------------------------------- */
 /*                                  The root                                   */
 /* -------------------------------------------------------------------------- */
@@ -291,7 +329,7 @@ export type ConflitoDaRaizLi =
   | typeof PENDENCIA_IMPORTACAO_LI.skuAmbiguo
   | typeof PENDENCIA_IMPORTACAO_LI.formaDiferente
   | typeof PENDENCIA_IMPORTACAO_LI.semSku
-  | typeof PENDENCIA_IMPORTACAO_LI.skuRepetidoNaLoja;
+  | ConflitoDeSkuNaLojaLi;
 
 /**
  * Where a store root stands (module header). `tipo` is the report's `situacaoErp`: `vinculado`
@@ -383,13 +421,13 @@ async function pelaUnicaFilha(
 }
 
 /**
- * The cascade for one store family's ROOT (module header, "The root"). `skusRepetidos` is
- * {@link skusRepetidosNaLojaLi} over the job's assembly.
+ * The cascade for one store family's ROOT (module header, "The root"). `skusEmConflito` is
+ * {@link conflitosDeSkuNaLojaLi} over the job's assembly.
  */
 export async function resolverRaizLi(
   deps: DepsResolucaoLi,
   familia: Pick<FamiliaLi, 'raiz'>,
-  skusRepetidos: ReadonlySet<string>,
+  skusEmConflito: ReadonlyMap<string, ConflitoDeSkuNaLojaLi>,
 ): Promise<ResolucaoDaRaizLi> {
   const { raiz } = familia;
 
@@ -408,7 +446,8 @@ export async function resolverRaizLi(
 
   const { sku } = raiz;
   if (sku === null) return conflito(PENDENCIA_IMPORTACAO_LI.semSku);
-  if (skusRepetidos.has(sku)) return conflito(PENDENCIA_IMPORTACAO_LI.skuRepetidoNaLoja);
+  const emConflito = skusEmConflito.get(sku);
+  if (emConflito !== undefined) return conflito(emConflito);
 
   // (2) A root by its own SKU.
   const raizes = projetarDocs(
@@ -548,7 +587,7 @@ async function resolverFilho(
     readonly erpPaiId: string;
     readonly erpFilhos: readonly ProdutoErpLi[];
     readonly grupos: readonly GrupoComLinksLi[];
-    readonly skusRepetidos: ReadonlySet<string>;
+    readonly skusEmConflito: ReadonlyMap<string, ConflitoDeSkuNaLojaLi>;
     readonly combinacaoLiberada: boolean;
   },
 ): Promise<ResolucaoDoFilhoLi> {
@@ -594,13 +633,10 @@ async function resolverFilho(
   if (sku === null) return recusa(PENDENCIA_IMPORTACAO_LI.semSku);
   const pendencias: PendenciaDaResolucaoLi[] = [];
 
-  // (2) Its SKU among the parent's children — never a SKU the store repeats.
-  if (contexto.skusRepetidos.has(sku)) {
-    pendencias.push({
-      codigo: PENDENCIA_IMPORTACAO_LI.skuRepetidoNaLoja,
-      liId: linha.id,
-      referencias: [],
-    });
+  // (2) Its SKU among the parent's children — never a SKU in conflict in the store.
+  const emConflito = contexto.skusEmConflito.get(sku);
+  if (emConflito !== undefined) {
+    pendencias.push({ codigo: emConflito, liId: linha.id, referencias: [] });
   } else {
     const porSku = contexto.erpFilhos.filter((e) => mesmoSkuLi(sku, e.sku));
     if (porSku.length > 1) {
@@ -652,10 +688,8 @@ async function resolverFilho(
               referencias: [sku, porCombinacao.sku ?? ''],
             },
           ];
-      const repetido = pendencias.filter(
-        (p) => p.codigo === PENDENCIA_IMPORTACAO_LI.skuRepetidoNaLoja,
-      );
-      return casado(porCombinacao, VIA_DO_FILHO_LI.combinacao, [...repetido, ...diferente]);
+      const naLoja = pendencias.filter((p) => p.codigo === emConflito);
+      return casado(porCombinacao, VIA_DO_FILHO_LI.combinacao, [...naLoja, ...diferente]);
     }
   }
 
@@ -674,7 +708,7 @@ export async function resolverFilhosLi(
   erpPaiId: string,
   contexto: {
     readonly grupos: readonly GrupoComLinksLi[];
-    readonly skusRepetidos: ReadonlySet<string>;
+    readonly skusEmConflito: ReadonlyMap<string, ConflitoDeSkuNaLojaLi>;
   },
 ): Promise<ResolucaoDosFilhosLi> {
   const erpFilhos = (await lerFilhosErp(deps.db, erpPaiId, null)).sort((a, b) =>
@@ -694,7 +728,7 @@ export async function resolverFilhosLi(
         erpPaiId,
         erpFilhos,
         grupos: contexto.grupos,
-        skusRepetidos: contexto.skusRepetidos,
+        skusEmConflito: contexto.skusEmConflito,
         combinacaoLiberada: irmaos.length === 0,
       }),
     );

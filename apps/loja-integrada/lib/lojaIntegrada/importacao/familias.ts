@@ -196,8 +196,8 @@ export function filhosSemLinhaLi(indice: IndiceDoSnapshotLi): number[] {
  * EVERY id the assembly needs a detail of, ascending: the orphans to explain
  * ({@link orfaosAExplicarLi}, live rows) and the claimed ids never listed ({@link filhosSemLinhaLi},
  * not rows) — two disjoint lists. The `orfaos` phase reads them all before any family is matched,
- * so the assembly — and the SKUs the store repeats, which a never-listed variation can carry — is
- * whole before the first match: processing order never picks a winner.
+ * so the assembly — and the SKUs the store repeats or nearly repeats, which a never-listed variation
+ * can carry — is whole before the first match: processing order never picks a winner.
  */
 export function idsADetalharLi(indice: IndiceDoSnapshotLi): number[] {
   return [...orfaosAExplicarLi(indice), ...filhosSemLinhaLi(indice)].sort(crescente);

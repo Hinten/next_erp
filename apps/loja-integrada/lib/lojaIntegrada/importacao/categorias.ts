@@ -39,9 +39,9 @@
  * never a flat tree. Then, walking UP from the leaf, the nearest ancestor that is linked (or
  * `simulada`) is the ERP parent; an `ambigua` one there ⇒ `categoria-ambigua`. Every unlinked
  * category BELOW that parent is created, ROOT-MOST FIRST, each under the one just created (the
- * leaf last). An unlinked category ABOVE a linked ancestor is not created: no product of this call
- * sits in it, and the linked ancestor's own ERP parent is the operator's choice. With no linked
- * ancestor at all, the chain's root is created as an ERP root.
+ * leaf last). An unlinked category ABOVE a linked ancestor is not created (decided 2026-11-06): no
+ * product of this call sits in it, and the linked ancestor's own ERP parent is the operator's
+ * choice. With no linked ancestor at all, the chain's root is created as an ERP root.
  *
  * Each created category is TWO documents, each a tier-0 `create()` at a deterministic id:
  *  - `categorias/li-<contaId>-<store id>` ({@link idCategoriaCriadaLi}): `nome` (the store's,
