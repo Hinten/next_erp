@@ -3,7 +3,7 @@
  * boundary at which a unit is refused, and the clock edge cases. Pure: no Firestore, no network.
  */
 import { describe, expect, it } from 'vitest';
-import { PRAZO_LI_MS } from '@delfrance/integrations-loja-integrada';
+import { PRAZO_CDN_LI_MS, PRAZO_LI_MS } from '@delfrance/integrations-loja-integrada';
 import {
   CAUDA_DESPACHO_IMPORTACAO_LI_MS,
   ORCAMENTO_DESPACHO_IMPORTACAO_LI_MS,
@@ -14,6 +14,7 @@ import {
   DURACAO_MAXIMA_DESPACHO_IMPORTACAO_LI_MS,
   PIOR_CASO_FAMILIA_SEM_CHAMADA_LI_MS,
   PIOR_CASO_UNIDADE_IMPORTACAO_LI_MS,
+  PRAZO_UPLOAD_LI_MS,
   UNIDADE_IMPORTACAO_LI,
   type UnidadeImportacaoLi,
   abrirOrcamentoLi,
@@ -31,6 +32,23 @@ describe('the worst case of each unit', () => {
   it('a family with no call = 10 s, nominal', () => {
     expect(PIOR_CASO_UNIDADE_IMPORTACAO_LI_MS.familia).toBe(PIOR_CASO_FAMILIA_SEM_CHAMADA_LI_MS);
     expect(PIOR_CASO_FAMILIA_SEM_CHAMADA_LI_MS).toBe(10_000);
+  });
+
+  it('a photo = the pacer’s wait + the CDN deadline + the upload deadline (2 s + 20 s + 30 s = 52 s)', () => {
+    expect(PIOR_CASO_UNIDADE_IMPORTACAO_LI_MS.foto).toBe(
+      RITMO_LEITURA_LI_MS + PRAZO_CDN_LI_MS + PRAZO_UPLOAD_LI_MS,
+    );
+    expect(PRAZO_UPLOAD_LI_MS).toBe(30_000);
+    expect(PIOR_CASO_UNIDADE_IMPORTACAO_LI_MS.foto).toBe(52_000);
+  });
+
+  it('⚠️ the 800x800 refetch is a unit of its OWN: inside the original’s unit the two would not fit any budget', () => {
+    // An original refused as too large (read up to the cap) and its reduced form, in ONE unit.
+    const juntas = 2 * (RITMO_LEITURA_LI_MS + PRAZO_CDN_LI_MS) + PRAZO_UPLOAD_LI_MS;
+    expect(juntas).toBe(74_000);
+    expect(juntas).toBeGreaterThan(ORCAMENTO_DESPACHO_IMPORTACAO_LI_MS);
+    // Split, each is a `foto` unit and fits an empty budget.
+    expect(cabeNoOrcamentoLi(0, 'foto')).toBe(true);
   });
 
   it('the table has a row for every unit, and no other', () => {
@@ -70,6 +88,7 @@ describe('cabeNoOrcamentoLi — the boundary, exactly', () => {
   const casos: readonly (readonly [UnidadeImportacaoLi, number])[] = [
     ['chamada', ORCAMENTO_DESPACHO_IMPORTACAO_LI_MS - PIOR_CASO_UNIDADE_IMPORTACAO_LI_MS.chamada],
     ['familia', ORCAMENTO_DESPACHO_IMPORTACAO_LI_MS - PIOR_CASO_UNIDADE_IMPORTACAO_LI_MS.familia],
+    ['foto', ORCAMENTO_DESPACHO_IMPORTACAO_LI_MS - PIOR_CASO_UNIDADE_IMPORTACAO_LI_MS.foto],
   ];
 
   it.each(casos)(
@@ -86,14 +105,19 @@ describe('cabeNoOrcamentoLi — the boundary, exactly', () => {
     },
   );
 
-  it('today’s numbers: a call starts up to 48 s in, a family up to 60 s in', () => {
+  it('today’s numbers: a call starts up to 48 s in, a family up to 60 s in, a photo up to 18 s in', () => {
     expect(cabeNoOrcamentoLi(48_000, 'chamada')).toBe(true);
     expect(cabeNoOrcamentoLi(48_001, 'chamada')).toBe(false);
     expect(cabeNoOrcamentoLi(60_000, 'familia')).toBe(true);
     expect(cabeNoOrcamentoLi(60_001, 'familia')).toBe(false);
-    // The two units are not interchangeable: at 50 s a family still fits, a call does not.
+    expect(cabeNoOrcamentoLi(18_000, 'foto')).toBe(true);
+    expect(cabeNoOrcamentoLi(18_001, 'foto')).toBe(false);
+    // The units are not interchangeable: at 50 s a family still fits, a call does not; at 20 s a
+    // call still fits, a photo does not.
     expect(cabeNoOrcamentoLi(50_000, 'familia')).toBe(true);
     expect(cabeNoOrcamentoLi(50_000, 'chamada')).toBe(false);
+    expect(cabeNoOrcamentoLi(20_000, 'chamada')).toBe(true);
+    expect(cabeNoOrcamentoLi(20_000, 'foto')).toBe(false);
   });
 
   it('a clock that stepped BACKWARDS reads as 0 elapsed, never as extra budget', () => {
@@ -110,7 +134,7 @@ describe('cabeNoOrcamentoLi — the boundary, exactly', () => {
   );
 
   it('a unit with no row throws (only an untyped caller can pass one)', () => {
-    expect(() => cabeNoOrcamentoLi(0, 'foto' as UnidadeImportacaoLi)).toThrow(TypeError);
+    expect(() => cabeNoOrcamentoLi(0, 'pagina' as UnidadeImportacaoLi)).toThrow(TypeError);
     expect(() => cabeNoOrcamentoLi(0, 'toString' as UnidadeImportacaoLi)).toThrow(TypeError);
   });
 });

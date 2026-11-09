@@ -253,8 +253,12 @@ export async function lerJobDaContaLi(
   return lido !== null && lido.job.integracaoId === contaId ? lido : null;
 }
 
-/** The conta's newest jobs, newest first: the one indexed query (module header). */
-function consultaDaConta(db: Firestore, contaId: string) {
+/**
+ * The conta's newest jobs, newest first: the one indexed query (module header). Exported for the
+ * tax-review carry-forward (`revisaoFiscal.ts`), which pages it with `startAfter` — the same
+ * composite serves every page.
+ */
+export function consultaImportacoesDaContaLi(db: Firestore, contaId: string) {
   return importacaoLojaIntegradaCollection
     .ref(db, {})
     .where('integracaoId', '==', contaId)
@@ -273,7 +277,7 @@ function consultaDaConta(db: Firestore, contaId: string) {
  * idempotent, so the second run redoes work and changes nothing (the accepted residual).
  */
 export async function jobEmCursoDaContaLi(db: Firestore, contaId: string): Promise<string | null> {
-  const snap = await consultaDaConta(db, contaId).get();
+  const snap = await consultaImportacoesDaContaLi(db, contaId).get();
   for (const doc of snap.docs) {
     const dados: unknown = doc.data();
     const bruto =
@@ -289,7 +293,7 @@ export async function listarImportacoesDaContaLi(
   db: Firestore,
   contaId: string,
 ): Promise<RespostaImportacaoLi[]> {
-  const snap = await consultaDaConta(db, contaId).get();
+  const snap = await consultaImportacoesDaContaLi(db, contaId).get();
   return snap.docs.map((doc) =>
     projetarImportacaoLi(doc.id, importacaoLojaIntegradaSchema.parse(doc.data())),
   );

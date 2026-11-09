@@ -208,6 +208,9 @@ describe.skipIf(!EMULATED)('the product import’s job on a real Firestore', () 
           throw new Error('nenhum contador');
         },
         agendador,
+        bucket: () => {
+          throw new Error('importacao.firestore.test: nenhum bucket');
+        },
         logger: { warn: vi.fn() },
         tentativa: 0,
         idTarefa: null,
