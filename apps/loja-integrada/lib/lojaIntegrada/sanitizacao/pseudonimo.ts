@@ -41,7 +41,10 @@
  *    `/set/41;42` subset included: the path redactor keeps that segment whole;
  * 4. the value of an id query key ({@link CHAVES_DE_ID_NA_QUERY_LI}: `produto`) in
  *    the request query, and the path ids and id query values of `meta.next` and
- *    `meta.previous` (`/api/v1/produto_imagem/?limit=1&offset=1&produto=<id>`).
+ *    `meta.previous` (`/api/v1/produto_imagem/?limit=1&offset=1&produto=<id>`);
+ * 5. every SKU: a kept string under a leaf whose predicate is `sku` (a product
+ *    row's or detail's `sku`), and the `sku=` value of the request query and of
+ *    `meta.next`/`meta.previous` — see "SKUs" below.
  *
  * Meta numbers (`limit`, `offset`, `total_count`) and every other query value
  * (`limit`, `offset`, a date) are never touched: they carry no store's resource
@@ -49,15 +52,52 @@
  * the error walk's own rule, and `capturaParaFixture` refuses a catalogue one
  * that keeps a number.
  *
+ * ## SKUs
+ *
+ * A storefront prints a product's SKU on its public page, so a real SKU is a
+ * search away from naming the store. A catalogue fixture therefore carries a
+ * keyed pseudonym of each SKU, built character by character:
+ *
+ * ```
+ * n(i)   = first 6 bytes of HMAC-SHA256(key, "li-fixture-sku:" + upper(sku[0..i-1]))
+ * digit  → (d + 1 + n(i) mod 9) mod 10
+ * letter → (l + 1 + n(i) mod 25) mod 26, in its own case
+ * other  → kept
+ * ```
+ *
+ * - **Prefix-preserving.** Position i depends only on the SKU before it, so a
+ *   variation whose SKU is its parent's plus a suffix keeps exactly that
+ *   relation, in every file and both stores, with no knowledge of which row is
+ *   the parent. The same suffix under two parents maps differently.
+ * - **Shape-preserving.** Same length, a digit stays a digit and a letter a
+ *   letter of its case; every digit and every letter CHANGES (the step is never
+ *   0). `upper` is ASCII-only, so `abc-1` and `ABC-1` stay one SKU apart in case
+ *   only: the import's near-duplicate rule reads them as it read the real ones.
+ * - **Injective.** Two different SKUs get one step at their first differing
+ *   position (they share what precedes it), so their pseudonyms differ there. The
+ *   one exception is the escape below: an escaped digit can land on the letter a
+ *   real LETTER in that same position maps to. {@link PseudonimosLi} counts that
+ *   as a collision, and the run is refused.
+ * - **Never a document.** A pseudonym is written only after the redactor kept the
+ *   real SKU, so it trips no shape pattern (they read character classes only).
+ *   The check-digit layer reads values: whenever the pseudonym so far ENDS in a
+ *   run that layer would mask (`fimDeTrechoDaCamadaDeDigitosLi`: an 11-digit CPF
+ *   or a 14-digit or letter-bearing CNPJ with valid check digits), that last
+ *   digit becomes an upper-case letter. Decided on the prefix alone, so it keeps
+ *   the prefix relation; it can mark a run that more digits would have broken
+ *   anyway (a letter inside a longer variation SKU), never miss one.
+ *
  * Pure: the key, the raw tree and the sanitized tree in, a new tree out. The only
  * import beyond this app is `node:crypto`'s HMAC, which opens nothing.
  */
 import { createHmac } from 'node:crypto';
 
 import {
+  REDIGIDO,
   type TabelaRedacaoLi,
   type ValorJsonLi,
   decodificarValorDaQueryLi,
+  fimDeTrechoDaCamadaDeDigitosLi,
   passaPredicadoLi,
 } from '../core/redacao';
 import { segmentoDaTabela } from './folhas';
@@ -71,6 +111,20 @@ const FAIXA = PSEUDONIMO_MAXIMO_LI - PSEUDONIMO_MINIMO_LI + 1;
 export const BYTES_DA_CHAVE_LI = 32;
 
 const PREFIXO_DA_MENSAGEM = 'li-fixture-id:';
+/** The SKU positions' own namespace: never the same message as an id's. */
+const PREFIXO_DO_SKU = 'li-fixture-sku:';
+const CODIGO_0 = 48;
+const CODIGO_A = 65;
+const CODIGO_A_MINUSCULO = 97;
+
+/** ASCII letters upper-cased, every other character as it is (no length change). */
+const maiusculasAscii = (t: string) => t.replace(/[a-z]/g, (c) => c.toUpperCase());
+
+/** `c` (a char code) shifted inside the run of `tamanho` codes from `base`, or `null` outside it. */
+function deslocar(c: number, base: number, tamanho: number, passo: number): string | null {
+  if (c < base || c >= base + tamanho) return null;
+  return String.fromCharCode(base + ((c - base + passo) % tamanho));
+}
 const CHAVE_HEX = /^[0-9a-fA-F]{64}$/;
 const DIGITOS = /^\d+$/;
 /** An id segment: one id, or a `;`-separated list (`/v1/categoria/set/41;42`). */
@@ -105,6 +159,43 @@ export class ChaveDeFixturesLi {
     return PSEUDONIMO_MINIMO_LI + (mac.readUIntBE(0, 6) % FAIXA);
   }
 
+  /** `n(i)` of the module comment: the keyed value of the SKU position after `antes`. */
+  #valorDaPosicao(antes: string): number {
+    return createHmac('sha256', this.#bytes)
+      .update(`${PREFIXO_DO_SKU}${maiusculasAscii(antes)}`, 'utf8')
+      .digest()
+      .readUIntBE(0, 6);
+  }
+
+  /**
+   * The pseudonym of a SKU, character by character ("SKUs" in the module comment):
+   * prefix- and shape-preserving, every digit and letter changed, and never ending a
+   * run the redactor's check-digit layer would mask.
+   */
+  sku(sku: string): string {
+    let saida = '';
+    for (let i = 0; i < sku.length; i++) {
+      const c = sku.charCodeAt(i);
+      const n = this.#valorDaPosicao(sku.slice(0, i));
+      const digito = deslocar(c, CODIGO_0, 10, 1 + (n % 9));
+      if (digito !== null) {
+        const ate = saida + digito;
+        // A run the digit layer would mask ENDS here: this digit becomes a letter.
+        saida =
+          fimDeTrechoDaCamadaDeDigitosLi(ate) === ate.length
+            ? saida + String.fromCharCode(CODIGO_A + ((Number(digito) + Math.floor(n / 9)) % 26))
+            : ate;
+        continue;
+      }
+      const passo = 1 + (n % 25);
+      saida +=
+        deslocar(c, CODIGO_A, 26, passo) ??
+        deslocar(c, CODIGO_A_MINUSCULO, 26, passo) ??
+        sku.charAt(i);
+    }
+    return saida;
+  }
+
   toJSON(): string {
     return '<chave-de-fixtures>';
   }
@@ -130,26 +221,34 @@ export function idCanonicoLi(id: number | string): string {
   return typeof id === 'number' ? String(id) : id.replace(/^0+(?=\d)/, '');
 }
 
-/** What an id position of a URL-shaped text becomes: its pseudonym, or a blank. */
+/** What an id position (or a `sku=` value) of a URL-shaped text becomes: its pseudonym, or a blank. */
 export interface TrocaDeIdsLi {
   /** The text that replaces the canonical id `idCanonico`. */
   troca(idCanonico: string): string;
+  /** The text that replaces a kept SKU (a query value, decoded). */
+  sku(sku: string): string;
 }
 
 /**
- * Every id position blanked as `<id>`: the request line a catalogue pair with no
- * key prints in a dry run (the pair is refused, and its real ids are never shown).
+ * Every id position blanked as `<id>`, and every `sku=` value as `<sku>`: the
+ * request line a catalogue pair with no key prints in a dry run (the pair is
+ * refused, and its real ids and SKUs are never shown).
  */
-export const OCULTAR_IDS_LI: TrocaDeIdsLi = { troca: () => '<id>' };
+export const OCULTAR_IDS_LI: TrocaDeIdsLi = { troca: () => '<id>', sku: () => '<sku>' };
 
 /**
- * The pseudonyms of one run (or one pair): each id mapped once, every mapping
- * recorded, and every collision counted. `ids` holds the REAL ids, in memory
- * only: nothing prints it, and a finding names a collision, never an id.
+ * The pseudonyms of one run (or one pair): each id and each SKU mapped once,
+ * every mapping recorded, and every collision counted. `ids` and `skus` hold the
+ * REAL values, in memory only: nothing prints them, and a finding names a
+ * collision, never a value.
  */
 export class PseudonimosLi implements TrocaDeIdsLi {
   readonly #chave: ChaveDeFixturesLi;
   readonly #reais = new Map<number, string>();
+  /** Real SKU → its pseudonym (each SKU is computed once). */
+  readonly #skus = new Map<string, string>();
+  /** SKU pseudonym → the real SKU behind it. */
+  readonly #skusReais = new Map<string, string>();
   #colisoes = 0;
 
   constructor(chave: ChaveDeFixturesLi) {
@@ -170,7 +269,19 @@ export class PseudonimosLi implements TrocaDeIdsLi {
     return String(this.de(idCanonico));
   }
 
-  /** How many times a second, different id landed on a pseudonym already taken. */
+  /** The pseudonym of a SKU, recorded. */
+  sku(sku: string): string {
+    const conhecido = this.#skus.get(sku);
+    if (conhecido !== undefined) return conhecido;
+    const falso = this.#chave.sku(sku);
+    this.#skus.set(sku, falso);
+    const anterior = this.#skusReais.get(falso);
+    if (anterior === undefined) this.#skusReais.set(falso, sku);
+    else if (anterior !== sku) this.#colisoes += 1;
+    return falso;
+  }
+
+  /** How many times a second, different id or SKU landed on a pseudonym already taken. */
   get colisoes(): number {
     return this.#colisoes;
   }
@@ -178,6 +289,11 @@ export class PseudonimosLi implements TrocaDeIdsLi {
   /** Pseudonym → the real canonical id behind it. Never printed. */
   get ids(): ReadonlyMap<number, string> {
     return this.#reais;
+  }
+
+  /** SKU pseudonym → the real SKU behind it. Never printed. */
+  get skus(): ReadonlyMap<string, string> {
+    return this.#skusReais;
   }
 }
 
@@ -208,26 +324,48 @@ export function pseudonimizarCaminhoLi(caminho: string, troca: TrocaDeIdsLi): st
 /**
  * The query keys whose value is a catalogue resource id
  * (`/v1/produto_imagem/?produto=<id>`). Every other kept query value — `limit`,
- * `offset`, a date, a SKU — is not an id and is never touched.
+ * `offset`, a date — is not an id and is never touched; a SKU is mapped as a
+ * SKU ({@link CHAVE_DE_SKU_NA_QUERY_LI}).
  */
 export const CHAVES_DE_ID_NA_QUERY_LI: ReadonlySet<string> = new Set(['produto']);
 
+/** The query key whose value is a SKU (`/v1/produto/?sku=<sku>`): mapped like a body SKU. */
+export const CHAVE_DE_SKU_NA_QUERY_LI = 'sku';
+
 /**
- * An id query pair with its value mapped. The redactor tests a value DECODED and
- * keeps its raw spelling (`produto=%35%35` passes as `55`), so the value is
- * decoded the same way here: every spelling the redactor kept is mapped, and
- * written as the plain pseudonym.
+ * A pseudonym written as a query value: the characters the redactor's split reads
+ * as syntax (`%`, `&`, `=`, `#`, `+`) percent-encoded, every other one as it is,
+ * so the redactor decodes it back to the pseudonym and keeps it.
+ */
+const paraAQuery = (t: string) =>
+  t.replace(/[%&=#+]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
+
+/**
+ * An id or SKU query pair with its value mapped. The redactor tests a value
+ * DECODED and keeps its raw spelling (`produto=%35%35` passes as `55`), so the
+ * value is decoded the same way here: every spelling the redactor kept is mapped,
+ * an id written as the plain pseudonym. A value the redactor refused
+ * (`<redacted>`) is no SKU and stays as it is.
  */
 function trocarPar(
   [chave, valor]: readonly [string, string],
   troca: TrocaDeIdsLi,
 ): readonly [string, string] {
+  if (chave === CHAVE_DE_SKU_NA_QUERY_LI) {
+    const sku = decodificarValorDaQueryLi(valor);
+    return valor !== REDIGIDO && passaPredicadoLi('sku', sku)
+      ? [chave, paraAQuery(troca.sku(sku))]
+      : [chave, valor];
+  }
   if (!CHAVES_DE_ID_NA_QUERY_LI.has(chave)) return [chave, valor];
   const id = decodificarValorDaQueryLi(valor);
   return DIGITOS.test(id) ? [chave, troca.troca(idCanonicoLi(id))] : [chave, valor];
 }
 
-/** The redacted query pairs with each id value ({@link CHAVES_DE_ID_NA_QUERY_LI}) mapped. */
+/**
+ * The redacted query pairs with each id value ({@link CHAVES_DE_ID_NA_QUERY_LI})
+ * and each SKU value ({@link CHAVE_DE_SKU_NA_QUERY_LI}) mapped.
+ */
 export function pseudonimizarQueryLi(
   query: readonly (readonly [string, string])[],
   troca: TrocaDeIdsLi,
@@ -274,8 +412,8 @@ function definir(alvo: Record<string, ValorJsonLi>, chave: string, valor: ValorJ
 }
 
 /**
- * The sanitized 2xx body with every kept catalogue id mapped (items 1, 2 and the
- * `meta.next`/`meta.previous` half of 4 in the module comment).
+ * The sanitized 2xx body with every kept catalogue id and SKU mapped (items 1, 2,
+ * the `meta.next`/`meta.previous` half of 4, and 5 in the module comment).
  *
  * `bruto` (the raw tree) and `sanitizado` (the profile's output) are walked in
  * parallel BY ENTRY POSITION, as the leaf table walks them: the profile keeps
@@ -309,6 +447,9 @@ export function pseudonimizarCorpoLi(
     }
     if (typeof s === 'string' && predicado === 'uriRecurso' && passaPredicadoLi('uriRecurso', s)) {
       return trocarSegmentos(s, pseudonimos);
+    }
+    if (typeof s === 'string' && predicado === 'sku' && passaPredicadoLi('sku', s)) {
+      return pseudonimos.sku(s);
     }
     return s;
   }

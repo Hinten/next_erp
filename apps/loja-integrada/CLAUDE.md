@@ -574,14 +574,29 @@ apps/loja-integrada/lib/lojaIntegrada/testing/especificacaoFolhas.json` (no pair
   to replace it; never printed, never committed). ⚠️ **The key OUTLIVES the captures**:
   deleting merged raw pairs never deletes it, and a later catalogue capture must use the
   same key, or its ids silently stop matching the committed fixtures. No key → the
-  catalogue pair is refused (its printed request line blanks ids as `<id>`); two ids on
-  one pseudonym → the run is refused (new key). **A new key changes every catalogue id:
-  regenerate every catalogue fixture in one change.** What the mapping cannot reach is
-  refused: a catalogue error body keeping a number other than its status, and a
+  catalogue pair is refused (its printed request line blanks ids as `<id>`, SKUs as
+  `<sku>`); two ids (or SKUs) on one pseudonym → the run is refused (new key). **A new key
+  changes every catalogue id and SKU: regenerate every catalogue fixture in one
+  change.** What the mapping cannot reach is refused: a catalogue error body keeping a
+  number other than its status, and a
   catalogue resource on a path `ehCatalogo` does not admit. Meta counts, other query
   values (`limit`, `offset`) and the configuration/estrutural classes are untouched. The
   dry run's leaf table shows mapped leaves as `pseudonimizado`; `wireCorpus.test.ts` pins
   their relations, distinctness and range.
+- **Catalogue SKUs are keyed pseudonyms too** (same key, same module): a storefront prints
+  a product's SKU on its public page, so a real one is a web search away from the store's
+  name. Every kept `sku` on a `catalogo` pair, and every `sku=` value of its request and
+  of `meta.next`/`previous`, maps one character at a time, each from
+  `HMAC-SHA256(key, "li-fixture-sku:" + upper(the SKU before it))`: same length, digit to
+  digit and letter to letter in its case, every digit and letter changed, and a
+  variation whose SKU is its parent's plus a suffix still starts with its parent's
+  pseudonym (`wireCorpus.test.ts` pins it). A digit that would END a run the redactor's
+  check-digit layer masks (`fimDeTrechoDaCamadaDeDigitosLi`, the layer's own table)
+  becomes an upper-case letter, decided on the prefix alone, so no pseudonym reads as a
+  CPF or CNPJ. Order SKUs (the `estrutural` class) stay as captured (Q3). The catalogue
+  class also FAKES every external identifier, `gtin`, `mpn` and `id_externo`
+  (`CHAVES_FALSAS_CATALOGO_LI`): a GTIN's company prefix, a supplier part number and
+  another channel's listing id each name their owner.
 - ⚠️ **Agents never open a raw capture** (no `cat`, editor or file tool): run the sanitizer
   and read only its output (`--dry-run` prints paths, types and treatments, never values)
   and the sanitized fixtures.
@@ -602,14 +617,18 @@ apps/loja-integrada/lib/lojaIntegrada/testing/especificacaoFolhas.json` (no pair
   covered without it: `pedido-pix` and `pedido-cartao` (`situacao.codigo`
   `pedido_enviado`, a tracking code under `envios`) and `historico-pedido-enviado`.
 - Kept on review of the first corpus (2026-10-14), not leaks: a 14-digit window INSIDE a
-  longer SKU that passes the CNPJ check (the scan tests whole values; any one window passes
-  by chance about 1% of the time, and the sibling variant's window fails), LI's own
+  longer ORDER SKU that passes the CNPJ check (the scan tests whole values; any one window
+  passes by chance about 1% of the time, and the sibling variant's window fails), LI's own
   numeric ids where the profile keeps them on the configuration class (platform-wide
   constants; catalogue ids are pseudonyms, above), `meta.total_count` (the kept numeros
   already show the store's scale) and `resposta.bytes` (step 11 sizes snapshots with it). ⚠️ An
   order detail's top-level `id` is FAKED (`0`) and so is every `itens.*.produto`
   (a placeholder, not even a URI): no capture test may key on either, and the produto
-  reference form has no real capture yet.
+  reference form has no real capture yet. Catalogue SKUs are NOT on this list: the product
+  captures' real variation SKUs hold 11- and 14-digit windows that pass a check, where a
+  family code meets its option suffix, in a pattern no "chance" or "the sibling fails"
+  argument covers, so they are pseudonymized (above) rather than kept on review. A window
+  inside a pseudonym says nothing about a real value.
 - `estrutura.test.ts` proves the sanitizer's import closure reaches no network or process
   module, no package client, no `firebase-admin`/`@delfrance/data`, no credential module,
   no `fetch(`, no run-time builtin (`getBuiltinModule`) and no global by computed name;

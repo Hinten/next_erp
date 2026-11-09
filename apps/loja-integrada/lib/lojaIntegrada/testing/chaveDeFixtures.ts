@@ -43,3 +43,33 @@ export function colisaoDePseudonimo(hex: string = CHAVE_DE_TESTE_HEX): readonly 
   }
   throw new RangeError('no collision among the first million ids');
 }
+
+/**
+ * An 11-digit SKU whose pseudonym under `hex` had its last digit ESCAPED to a
+ * letter (it would have ended a run with valid CPF check digits): the first among
+ * 10000000000, 10000000001, … About one in a hundred is.
+ */
+export function skuEscapado(hex: string = CHAVE_DE_TESTE_HEX): string {
+  const chave = chaveDeTeste(hex);
+  for (let i = 0; i < 100_000; i++) {
+    const sku = String(10_000_000_000 + i);
+    if (/[A-Z]/.test(chave.sku(sku))) return sku;
+  }
+  throw new RangeError('no escaped SKU among the first hundred thousand');
+}
+
+/**
+ * Two different SKUs that share one pseudonym under `hex` — the only way two
+ * can: an escaped SKU ({@link skuEscapado}) and the SKU with a LETTER in that
+ * last position whose own pseudonym is the same escape letter.
+ */
+export function colisaoDeSku(hex: string = CHAVE_DE_TESTE_HEX): readonly [string, string] {
+  const chave = chaveDeTeste(hex);
+  const escapado = skuEscapado(hex);
+  const falso = chave.sku(escapado);
+  for (let c = 65; c <= 90; c++) {
+    const letra = `${escapado.slice(0, -1)}${String.fromCharCode(c)}`;
+    if (chave.sku(letra) === falso) return [escapado, letra];
+  }
+  throw new RangeError('no letter lands on the escape');
+}

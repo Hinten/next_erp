@@ -354,6 +354,61 @@ function idsForaDaFaixa(fixtures: FixturesLi): { foraDaFaixa: string[]; ids: num
   return { foraDaFaixa, ids };
 }
 
+/* ------------------------- catalogue SKUs: their function ------------------------- */
+
+/** The store of any catalogue capture (`c10-loja2-…` → `loja2`); `null` for the others. */
+const lojaDaCaptura = (arquivo: string) => /^c\d+-(loja\d+)-/.exec(arquivo)?.[1] ?? null;
+
+interface LinhaDeProdutoLi {
+  readonly arquivo: string;
+  readonly sku: ValorJsonLi | undefined;
+  readonly filhos: readonly ValorJsonLi[];
+}
+
+/**
+ * Every variation a product row names in its `filhos`, found among the SAME store's
+ * product rows (any list page or detail), has a SKU that starts with its parent's.
+ * Catalogue SKUs are keyed pseudonyms (`sanitizacao/pseudonimo.ts`), built to keep
+ * exactly this relation of the stores' own SKUs; a pseudonym that broke it, or a
+ * fixture regenerated under another key beside an older one, fails here. Failures
+ * print file names and row kinds, never a SKU.
+ */
+function skusForaDoPai(fixtures: FixturesLi): { divergencias: string[]; pares: number } {
+  const porLoja = new Map<string, Map<string, LinhaDeProdutoLi>>();
+  for (const [arquivo, envelope] of doCatalogo(fixtures)) {
+    const loja = lojaDaCaptura(arquivo);
+    const corpo = envelope.resposta.corpo;
+    if (loja === null || !envelope.requisicao.caminho.startsWith('/v1/produto/')) continue;
+    if (!ehObjetoJsonLi(corpo)) continue;
+    const linhas = Array.isArray(corpo.objects) ? corpo.objects : [corpo];
+    const produtos = porLoja.get(loja) ?? new Map<string, LinhaDeProdutoLi>();
+    for (const linha of linhas) {
+      if (!ehObjetoJsonLi(linha) || typeof linha.id !== 'number') continue;
+      const filhos = Array.isArray(linha.filhos) ? linha.filhos : [];
+      produtos.set(String(linha.id), { arquivo, sku: linha.sku, filhos });
+    }
+    porLoja.set(loja, produtos);
+  }
+  const divergencias: string[] = [];
+  let pares = 0;
+  for (const produtos of porLoja.values()) {
+    for (const pai of produtos.values()) {
+      for (const uri of pai.filhos) {
+        const id = ehUriDeRecurso(uri) ? ultimoId(uri) : undefined;
+        const filho = id === undefined ? undefined : produtos.get(id);
+        if (filho === undefined || typeof pai.sku !== 'string' || typeof filho.sku !== 'string') {
+          continue;
+        }
+        pares += 1;
+        if (!filho.sku.startsWith(pai.sku)) {
+          divergencias.push(`${pai.arquivo} (pai) / ${filho.arquivo} (filho) :: sku`);
+        }
+      }
+    }
+  }
+  return { divergencias, pares };
+}
+
 describe('__wire__ corpus', () => {
   const arquivos = listarArquivosDoCorpusLi();
 
@@ -413,7 +468,8 @@ describe('__wire__ corpus', () => {
       'captured by the store owner',
       'scripts/sanitizar.ts',
       'are fakes',
-      'SKUs, order numeros, dates, quantities and prices are real',
+      'Order SKUs, order numeros, dates, quantities and prices are real',
+      'Catalogue SKUs are not',
       'MINIMO_DE_FIXTURES',
     ]) {
       expect(leiame, trecho).toContain(trecho);
@@ -565,6 +621,64 @@ describe('__wire__ corpus — catalogue ids keep their function without a real i
     expect(foraDaFaixa).toEqual([]);
     // Non-vacuous: every id of the 12 catalogue fixtures (bodies, URIs, request paths).
     expect(ids).toBe(577);
+  });
+
+  it("every variation a product row names, held by the same store, starts with its parent's SKU", () => {
+    const { divergencias, pares } = skusForaDoPai(fixtures);
+    expect(divergencias).toEqual([]);
+    // The committed corpus holds no product capture yet: the change that commits the
+    // product captures raises this to the parent-variation pairs they hold.
+    expect(pares).toBe(0);
+  });
+});
+
+describe('catalogue SKU relations: what the corpus check compares', () => {
+  const produtos = (...linhas: ValorJsonLi[]): EnvelopeFixtureLi => ({
+    versao: 1,
+    perfil: 'fixture',
+    credencial: 'personal-token',
+    capturadoEm: '2026-11-03',
+    requisicao: { metodo: 'GET', caminho: '/v1/produto/', query: [] },
+    resposta: {
+      status: 200,
+      politica: 'catalogo',
+      forma: 'json',
+      bytes: 2,
+      corpo: { meta: { next: null }, objects: linhas },
+    },
+  });
+  const pai = { id: 7, sku: '4821', filhos: ['/api/v1/produto/8'] };
+
+  it("EQUAL: a variation on another page of the same store, its SKU the parent's plus a suffix", () => {
+    expect(
+      skusForaDoPai([
+        ['c10-loja1-produtos.json', produtos(pai)],
+        ['c10-loja1-produtos-p2.json', produtos({ id: 8, sku: '4821903' })],
+      ]),
+    ).toEqual({ divergencias: [], pares: 1 });
+  });
+
+  it("NEAR-MISS: a variation whose SKU does not start with the parent's is a divergence", () => {
+    expect(
+      skusForaDoPai([['c10-loja1-produtos.json', produtos(pai, { id: 8, sku: '4812903' })]])
+        .divergencias,
+    ).toEqual(['c10-loja1-produtos.json (pai) / c10-loja1-produtos.json (filho) :: sku']);
+  });
+
+  it('never compared: the variation held only by the OTHER store, a row nobody holds, or a SKU that is not a string', () => {
+    expect(
+      skusForaDoPai([
+        ['c10-loja1-produtos.json', produtos(pai)],
+        ['c10-loja2-produtos.json', produtos({ id: 8, sku: '9999' })],
+      ]),
+    ).toEqual({ divergencias: [], pares: 0 });
+    expect(
+      skusForaDoPai([['c10-loja1-produtos.json', produtos(pai, { id: 8, sku: null })]]),
+    ).toEqual({ divergencias: [], pares: 0 });
+    expect(skusForaDoPai([['pedido-x.json', produtos(pai, { id: 8, sku: '9' })]])).toEqual({
+      divergencias: [],
+      pares: 0,
+    });
   });
 });
 

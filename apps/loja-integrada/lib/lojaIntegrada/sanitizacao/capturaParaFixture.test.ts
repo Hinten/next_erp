@@ -14,6 +14,7 @@ import {
   OUTRA_CHAVE_DE_TESTE_HEX,
   chaveDeTeste,
   colisaoDePseudonimo,
+  colisaoDeSku,
 } from '../testing/chaveDeFixtures';
 import {
   type ResultadoDaCapturaLi,
@@ -195,7 +196,7 @@ describe('capturaParaFixture — a 2xx pedido search', () => {
 });
 
 describe('capturaParaFixture — the catalogue and configuration classes', () => {
-  it('a produto detail keeps its keep-list (ids as their pseudonyms) and fakes names, descriptions, URLs, image paths and cost', () => {
+  it('a produto detail keeps its keep-list (ids and the SKU as their pseudonyms) and fakes names, descriptions, URLs, image paths and cost', () => {
     const corpo = envelope(
       captura('GET /v1/produto/7 200', {
         id: 7,
@@ -212,7 +213,7 @@ describe('capturaParaFixture — the catalogue and configuration classes', () =>
     ).resposta.corpo;
     expect(corpo).toEqual({
       id: f(7),
-      sku: 'CAM-001',
+      sku: CHAVE.sku('CAM-001'),
       ncm: '61091000',
       preco_cheio: '59.90',
       ativo: true,
@@ -352,7 +353,8 @@ describe('capturaParaFixture — refusals', () => {
   });
 
   it('a request line that holds a listed name is omitted from the summary', () => {
-    const r = captura('GET /v1/produto/?sku=LOJAEXEMPLO-1 200', { objects: [] });
+    // An order search keeps a `sku=` value as written (a catalogue one is pseudonymized).
+    const r = captura('GET /v1/pedido/search/?sku=LOJAEXEMPLO-1 200', { objects: [] });
     expect(achados(r)).toEqual(['requisicao.query.*.* :: nome-de-loja']);
     expect(r.resumo?.linhaRequisicao).toBeNull();
     expect(r.resumo?.linhaOmitidaPor).toEqual(['nome-de-loja']);
@@ -392,8 +394,8 @@ describe('capturaParaFixture — refusals', () => {
   });
 
   it('a percent-encoded listed name in a kept query value or in `meta.next` is refused', () => {
-    const r = captura('GET /v1/produto/?sku=LOJA%2FEXEMPLO-01 200', {
-      meta: { next: '/api/v1/produto/?sku=LOJA%2FEXEMPLO-01&offset=20' },
+    const r = captura('GET /v1/pedido/search/?sku=LOJA%2FEXEMPLO-01 200', {
+      meta: { next: '/api/v1/pedido/search/?sku=LOJA%2FEXEMPLO-01&offset=20' },
       objects: [],
     });
     expect(achados(r)).toEqual([
@@ -402,9 +404,9 @@ describe('capturaParaFixture — refusals', () => {
     ]);
     expect(r.resumo?.linhaRequisicao).toBeNull();
     // Control: the same SKU without a listed name is kept and printed.
-    const limpo = captura('GET /v1/produto/?sku=CAM%2F001-01 200', { objects: [] });
+    const limpo = captura('GET /v1/pedido/search/?sku=CAM%2F001-01 200', { objects: [] });
     expect(achados(limpo)).toEqual([]);
-    expect(limpo.resumo?.linhaRequisicao).toBe('GET /v1/produto/?sku=CAM%2F001-01');
+    expect(limpo.resumo?.linhaRequisicao).toBe('GET /v1/pedido/search/?sku=CAM%2F001-01');
   });
 
   it('a UTF-16 body with no BOM (NUL bytes) is refused as utf16, not read as text', () => {
@@ -522,6 +524,78 @@ describe('capturaParaFixture — catalogue ids are pseudonymized', () => {
         { caminho: 'meta.total_count', tipo: 'number', tratamento: 'mantido', contagem: 1 },
       ]),
     );
+  });
+
+  it("EQUAL: a product's SKU, its variation's (parent + suffix) and the request's and meta.next's `sku=` are one SKU pseudonym; no real SKU is written", () => {
+    const r = captura('GET /v1/produto/?sku=CAM-001&limit=2 200', {
+      meta: {
+        limit: 2,
+        offset: 0,
+        total_count: 3,
+        next: '/api/v1/produto/?sku=CAM-001&limit=2&offset=2',
+        previous: null,
+      },
+      objects: [
+        { id: 7, sku: 'CAM-001', tipo: 'atributo', filhos: ['/api/v1/produto/8'] },
+        { id: 8, sku: 'CAM-001-P', tipo: 'atributo_opcao' },
+      ],
+    });
+    const env = envelope(r);
+    const pai = CHAVE.sku('CAM-001');
+    expect(env.requisicao.query).toEqual([
+      ['sku', pai],
+      ['limit', '2'],
+    ]);
+    expect(em(env.resposta.corpo, 'meta.next')).toBe(
+      `/api/v1/produto/?sku=${pai}&limit=2&offset=2`,
+    );
+    expect(em(env.resposta.corpo, 'objects.0.sku')).toBe(pai);
+    expect(em(env.resposta.corpo, 'objects.1.sku')).toBe(CHAVE.sku('CAM-001-P'));
+    expect(String(em(env.resposta.corpo, 'objects.1.sku')).startsWith(pai)).toBe(true);
+    expect(JSON.stringify(env)).not.toContain('CAM-001');
+    expect(r.resumo?.linhaRequisicao).toBe(`GET /v1/produto/?sku=${pai}&limit=2`);
+    expect(r.resumo?.folhas).toEqual(
+      expect.arrayContaining([
+        { caminho: 'objects.*.sku', tipo: 'string', tratamento: 'pseudonimizado', contagem: 2 },
+        { caminho: 'objects.*.tipo', tipo: 'string', tratamento: 'mantido', contagem: 2 },
+      ]),
+    );
+    if (!r.ok) throw new Error('refused');
+    expect([...r.skus.entries()].sort()).toEqual(
+      [
+        [pai, 'CAM-001'],
+        [CHAVE.sku('CAM-001-P'), 'CAM-001-P'],
+      ].sort(),
+    );
+  });
+
+  it('a listed store name inside a catalogue SKU never reaches the fixture: the pseudonym replaces its letters', () => {
+    const r = captura('GET /v1/produto/?sku=LOJAEXEMPLO-1 200', {
+      objects: [{ id: 7, sku: 'LOJAEXEMPLO-1' }],
+    });
+    expect(achados(r)).toEqual([]);
+    expect(JSON.stringify(envelope(r)).toLowerCase()).not.toContain('exemplo');
+    expect(r.resumo?.linhaRequisicao).toBe(`GET /v1/produto/?sku=${CHAVE.sku('LOJAEXEMPLO-1')}`);
+  });
+
+  it('NEAR-MISS: an order SKU stays as captured, with the key, without it or under another', () => {
+    for (const chave of [CHAVE, null, chaveDeTeste(OUTRA_CHAVE_DE_TESTE_HEX)]) {
+      const corpo = envelope(capturaCom(chave, 'GET /v1/pedido/search/ 200', PEDIDO_BUSCA)).resposta
+        .corpo;
+      expect(em(corpo, 'objects.0.itens.0.sku')).toBe('CAM-001-P');
+    }
+  });
+
+  it('a SKU collision (two SKUs, one pseudonym) refuses the pair', () => {
+    const [a, b2] = colisaoDeSku();
+    const r = captura('GET /v1/produto/ 200', {
+      objects: [
+        { id: 7, sku: a },
+        { id: 8, sku: b2 },
+      ],
+    });
+    expect(achados(r)).toEqual(['pseudonimos :: colisao-de-pseudonimo']);
+    expect(JSON.stringify(r)).not.toContain(a);
   });
 
   it('NEAR-MISS: an allow-listed catalogue value the profile had to fake is still a finding', () => {

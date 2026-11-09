@@ -11,8 +11,17 @@ Every other file in this folder is one fixture envelope, `<nome>.json`, written 
   Integrada before the cutover (master plan D17).
 - Personal and store-identifying values are fakes of the same JSON type: customer data,
   product names, descriptions, URLs, image paths, tracking codes, external order ids,
-  configuration labels and cost (`fixture` profile of `core/redacao.ts`).
-- SKUs, order numeros, dates, quantities and prices are real (master plan D17, Q3).
+  a product's GTIN, part number and external id, configuration labels and cost
+  (`fixture` profile of `core/redacao.ts`).
+- Order SKUs, order numeros, dates, quantities and prices are real (master plan D17, Q3).
+- Catalogue SKUs are not: in a `catalogo` fixture every SKU (a product row's or
+  detail's `sku`, and a `sku=` value of the request or of `meta.next`/`meta.previous`)
+  is a keyed pseudonym of the same length and shape, built one character at a time
+  from the characters before it (`scripts/README.md`, "The pseudonym key"). One real
+  SKU is one pseudonym in every file and both stores, and a variation whose SKU is its
+  parent's plus a suffix still starts with its parent's pseudonym. A digit that would
+  close a run the check-digit scan reads as a CPF or CNPJ is an upper-case letter
+  instead. Never key a test on a particular SKU value.
 - Catalogue ids are not: in a `catalogo` fixture every Loja Integrada id (a row's `id`
   or `*_id`, the ids inside `resource_uri`, `categoria_pai`, an option's `grade` and its
   `/grade/<g>/variacao/<v>`, the ids of the request path and of `meta.next`/
@@ -53,7 +62,8 @@ pins the catalogue ids' function without naming one (each row's URI ends in its 
 every `categoria_pai` names a category of its store, each grade detail is one grade
 listed by its store, a store's category, grade and brand rows and a grade's options
 carry distinct ids) and that every catalogue id is in the pseudonym range
-`[100000000, 999999999]`.
+`[100000000, 999999999]`; and the catalogue SKUs' (every variation a product row names
+in `filhos`, held by the same store, starts with its parent's SKU).
 
 ## Excluded on purpose
 

@@ -26,8 +26,8 @@ this script turns them into committed fixtures under
   `<omitted: it trips <kind>>`), leaf paths with their JSON types and treatments,
   and findings as `<nome> <where> :: <kind>`. It never prints the pseudonym key.
 - A leaf's treatment is `mantido` (kept), `falsificado` (a fake of the same JSON
-  type), `redigido` (a fake of another type) or `pseudonimizado` (a catalogue id
-  the profile kept and the key then mapped):
+  type), `redigido` (a fake of another type) or `pseudonimizado` (a catalogue id or
+  SKU the profile kept and the key then mapped):
   `objects.*.id : number → pseudonimizado (50)`.
 
 ## Commands
@@ -112,8 +112,20 @@ fake = 100000000 + (first 6 bytes of HMAC-SHA256(key, "li-fixture-id:" + id)) mo
   (`catalogo-fora-da-classe`: it would fall to the strictest class, whose generic table
   keeps `id` and `resource_uri` as they are). Only the paths `ehCatalogo` in
   `core/redacao.ts` admits are pseudonymized.
+- **SKUs too**, on catalogue pairs only: every kept `sku` (a product row's or
+  detail's) and every `sku=` value of the request query and of `meta.next`/
+  `meta.previous`. A storefront prints a product's SKU on its public page, so a real
+  one is a web search away from naming the store. The SKU pseudonym is built one
+  character at a time, each one keyed on the SKU before it
+  (`HMAC-SHA256(key, "li-fixture-sku:" + prefix)`): same length, a digit stays a digit
+  and a letter a letter of its case, every digit and letter changes, and a variation
+  whose SKU is its parent's plus a suffix
+  still starts with its parent's pseudonym. A digit that would end a run the
+  check-digit scan reads as a CPF or CNPJ becomes an upper-case letter instead, so a
+  pseudonym never looks like a document. Order SKUs (`pedido` pairs) stay as
+  captured.
 - With no key, a catalogue pair's request line is printed with each id position as
-  `<id>`, never a real id.
+  `<id>` and each `sku=` value as `<sku>`, never a real one.
 - **One namespace**: the same real id always gives the same 9-digit pseudonym, in
   every file and both stores, so a category row and every `categoria_pai` naming it,
   or a grade's id, list row and option URIs, still agree. The same key over the same
@@ -131,14 +143,16 @@ fake = 100000000 + (first 6 bytes of HMAC-SHA256(key, "li-fixture-id:" + id)) mo
   `--gerar-chave`. Restore the key first if committed catalogue fixtures were made with
   it; `--gerar-chave` is for a corpus with no catalogue fixture yet. A malformed key
   file stops the run (exit 2) without quoting it.
-- **A new key changes every catalogue id**, so every committed catalogue fixture must
-  be regenerated under it (`--sobrescrever`) in one change, which needs its raw pair:
-  losing the key after the raw pairs are deleted means recapturing every catalogue
-  fixture. Never mix keys in the corpus.
+- **A new key changes every catalogue id and SKU**, so every committed catalogue
+  fixture must be regenerated under it (`--sobrescrever`) in one change, which needs
+  its raw pair: losing the key after the raw pairs are deleted means recapturing every
+  catalogue fixture. Never mix keys in the corpus.
 - Two different ids that land on one pseudonym, in one pair or across the run's pairs,
   refuse the run (`colisao-de-pseudonimo`, about one in 900 million per pair of ids):
-  move the old key out, create a new one, and re-run every catalogue pair. A `--so`
-  run checks only the pairs it converts, so the authoritative check is a full run.
+  move the old key out, create a new one, and re-run every catalogue pair. Two SKUs
+  can share a pseudonym only when a letter meets an escaped digit at the same place
+  after the same characters, and that refuses the run the same way. A `--so` run
+  checks only the pairs it converts, so the authoritative check is a full run.
 
 ### A capture is a pair
 
