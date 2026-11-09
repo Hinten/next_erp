@@ -112,12 +112,14 @@ one (step-14 plan §3 decision 21; the button and its copy are step 21's).
 - `src/index.ts` imports `./options` FIRST and ALONE and exports ONLY triggers:
   `filaLeituraAmazon` (the reads queue, = `FILA_LEITURA_AMAZON`, asserted at load),
   `processAmazonNfeUpload` (the step-14 NF-e queue, `src/filaNfe.ts`, = `FILA_NFE_AMAZON`,
-  asserted at load), `reprocessAmazonNotifications` (both lanes, logged separately),
+  asserted at load), `processAmazonEasyShipSchedule` (the step-15 Easy Ship scheduling
+  queue, `src/filaAgendamento.ts`, = `FILA_AGENDAMENTO_AMAZON`, asserted at load),
+  `reprocessAmazonNotifications` (both lanes, logged separately),
   `sweepAmazonExpirations` (the step-2 expiry body, daily, NO secret), `pollAmazonOrders`
   (the step-4 backstop poll, `src/pollPedidos.ts`), `onIntegracaoAmazonChanged` (the step-20
   conta trigger, NO secret) and `onNfeAprovadaAmazon` (the step-14 NF-e trigger, NO secret).
   `index.test.ts` pins every option off `__endpoint`, in three families (schedules, queues,
-  Firestore triggers), each exhaustive: TWO queues (`FILAS`) and TWO triggers (`GATILHOS`,
+  Firestore triggers), each exhaustive: THREE queues (`FILAS`) and TWO triggers (`GATILHOS`,
   each pinned to database `default`, `retry: true`, no secret, and a path row derived from
   its collection HANDLE — `nfev4Collection.resolvePath` anchored at
   `pedidos/{pedidoId}/nfev4` for the NF-e one).
@@ -130,16 +132,22 @@ one (step-14 plan §3 decision 21; the button and its copy are step 21's).
   declared exceptions, both from `packages/data`: the `int_frete` core's warning on
   `incompleto` — see "int_frete binding (step 20)" — and the shared handles' soft-read warning,
   which the order import meets in the cliente resolver — see "Logging (step 2b)".)
-- THREE composition roots are the app's only `getFunctions(` callers, each pinned to the
+- FOUR composition roots are the app's only `getFunctions(` callers, each pinned to the
   queue(s) it binds (`FILAS_DE_CADA_RAIZ` in `estrutura.test.ts`): `lib/firebase/filaLeitura.ts`
   (App Hosting: the reads queue for the receiver and, since step 14's PR 14-d, the NF-e
   queue for the re-drive route — BOTH behind its ONE `getFunctions(` call, pinned by
-  `filaLeitura.test.ts`), `functions/src/agendador.ts` (the step-4 poll; the reads queue) and
+  `filaLeitura.test.ts`), `functions/src/agendador.ts` (the step-4 poll; the reads queue),
   `functions/src/agendadorNfe.ts` (step 14, PR 14-c: the NF-e queue, for the trigger and the
-  task's own re-enqueues). Each reads the region as an object literal of STATIC `process.env`
-  reads (esbuild's `define`). ⚠️ `functions/src/agendador.ts` was deliberately NOT given the
-  NF-e producer: its closure reaches `notificacoes/notificacao.ts` by value (the context, the
-  conta reads, the SP-API error classes), which the NF-e trigger's D11 closure forbids.
+  task's own re-enqueues) and `functions/src/agendadorAgendamento.ts` (step 15, PR 15-c: the
+  Easy Ship scheduling queue, for its two entries — bound by `src/filaNfe.ts` and
+  `src/depsLeitura.ts` — and the scheduling task's own re-enqueues). Each reads the region as
+  an object literal of STATIC `process.env` reads (esbuild's `define`). ⚠️
+  `functions/src/agendador.ts` was deliberately NOT given the NF-e producer: its closure
+  reaches `notificacoes/notificacao.ts` by value (the context, the conta reads, the SP-API
+  error classes), which the NF-e trigger's D11 closure forbids. For the same reason the
+  scheduling producer has its OWN root and was never added to `functions/src/agendadorNfe.ts`
+  (an entry of that closure): `estrutura.test.ts` asserts the NF-e trigger's closure reaches
+  nothing under `agendamento/` (step-15 plan §3 decision 23).
   `src/tasksInvoker.ts` stays byte-identical to every other codebase's copy.
 
 ## CI (step 3)
@@ -192,6 +200,12 @@ one (step-14 plan §3 decision 21; the button and its copy are step 21's).
   `lib/amazon/nfe/processarNfe.firestore.test.ts` runs the NF-e task in-process (`ambiente`
   `on` as a literal, `getOrder` and the invoice status from a scripted fetch that refuses any
   POST) under that rule — `programs`, because the stamp's freight verdict reads `fulfilledBy`.
+- (step 15, PR 15-c) The functions emulator also loads the Easy Ship scheduling queue, and
+  nothing in the lane dispatches to it: the read switch is `off`, so the order import (E2)
+  never runs, and `AMAZON_MODO_NFE` is unset, so the NF-e task stops at P6 and never reaches
+  the acceptance (E1). No new suite and no new sharing rule; a future suite that does reach
+  the task still reads nothing while `AMAZON_MODO_AGENDAMENTO` is unset (A2's zero-read `off`
+  arm, pinned offline).
 - The lane cannot prove: Cloud Scheduler firing (`onSchedule` is ignored),
   `scheduleDelaySeconds` (firebase-tools#8254), `rateLimits`/`retryConfig` (pinned offline in
   `functions/src/index.test.ts`), index declarations, rules, the relay, or a trigger's
@@ -310,8 +324,13 @@ one (step-14 plan §3 decision 21; the button and its copy are step 21's).
   it on the last attempt, ⇒ where the chain ends without that step (after OUR submit the
   verification enqueue keeps `aceite-nao-confirmado` / `envio-nao-confirmado`, the valve
   included); P12 aviso → re-enqueue → stamp → resolve; `aceita`: the
-  clear → `nfe-validada` → the step-15 seam (`nfe/destinoAceite.ts`, NULL, pinned). Only the
-  trigger NAMES a task; the chain (and the re-drive route) enqueue UNNAMED. ONE `evento: 'nfe'`
+  clear → `nfe-validada` → the step-15 seam (`nfe/destinoAceite.ts`, FILLED by PR 15-c with
+  `enfileirarAgendamentoDoAceiteAmazon`: E1, ENQUEUE-only, never an Amazon call — ONE task
+  onto the scheduling queue NAMED after this NF-e dispatch's own task id, so a queue retry of
+  the same dispatch dedupes; a deterministic refusal is ONE WARNING, a transient is rethrown
+  and retries the whole NF-e dispatch, which never resubmits, except on the NF-e queue's last
+  attempt). Only the trigger and E1 NAME a task on this flow's side; the chain (and the
+  re-drive route) enqueue UNNAMED. ONE `evento: 'nfe'`
   dispatch line per run (`registrarDespachoNfeAmazon`), never the XML, its base64, the digest
   or a 44-digit run.
 - `rateLimits { maxConcurrentDispatches: 1, maxDispatchesPerSecond: 1 }`: concurrency 1 is the
@@ -418,8 +437,8 @@ one (step-14 plan §3 decision 21; the button and its copy are step 21's).
   client gets its own observer. The forced-refresh-once rule wraps the WHOLE `escrever`, so
   a 401/403 on the mint or the bulk refreshes once and mints a NEW token.
 - The Easy Ship scheduling (step 15) lives in `lib/amazon/agendamento/`, Next-free, reading no
-  process environment and never importing `@/` (`estrutura.test.ts`). PR 15-b ships it
-  UNWIRED — no queue, entry or route calls it yet (those are 15-c/15-d): the task contract
+  process environment and never importing `@/` (`estrutura.test.ts`). PR 15-b shipped its
+  pure half — the task contract
   (`tarefaAgendamento.ts`: the strict payload, its three builders, the entry task NAME per
   OBSERVATION — the NF-e dispatch's task id, or the pedido plus the import read's
   `watermarkUs` — never per pedido); the pure decisions (`decisaoAgendamento.ts`: the live
@@ -432,7 +451,21 @@ one (step-14 plan §3 decision 21; the button and its copy are step 21's).
   exchange's — only the bulk's can be Amazon refusing the order); and the ONE run
   (`executarAgendamento.ts`), which tags every failure with its PHASE (`leitura` before the
   plan reached `escrever`, `escrita` after), because the engine lets a `getOrder` 404 and a
-  bulk 404 out through the same throw.
+  bulk 404 out through the same throw. PR 15-c WIRED it (the label route is a later PR): the
+  pure producer (`agendadorAgendamento.ts`: the ONE named enqueue, `enfileirarEntrada`, and
+  the unnamed `enfileirar` for the task's own rungs); the two ENTRIES (`entradasAgendamento.ts`:
+  E1 from the NF-e acceptance seam, E2 from the order import's post-commit step 8c, each
+  named after its observation; a deterministic refusal is ONE WARNING, a transient is
+  rethrown into the observing dispatch's retry); and the TASK (`processarAgendamento.ts`,
+  A0–A9: the payload proved against its pedido id, the valve FIRST — `off` reads nothing —,
+  the stored gates and ONE `nfev4` listing, the context, the run, then the outcome split by
+  the run's PHASE — only the bulk's OWN HTTP answer can raise a scheduling refusal; a mint's
+  or an LWA exchange's never does). ⚠️ The order import's deps name the producer only
+  through a LOCAL structural port in `notificacoes/notificacao.ts`
+  (`ProdutorAgendamentoAmazon`): that module sits in the App Hosting closure, which
+  `estrutura.test.ts` asserts reaches nothing under `agendamento/` — never import the
+  producer's type there. Nothing under `agendamento/` makes a Firestore WRITE call
+  (`estrutura.test.ts`): its avisos go through `avisos/avisos.ts`.
 - The conta cache (`core/contaCache.ts`) is token-free and used by the context
   loader ONLY; the credential is re-read uncached on every request.
 - Routes never import the park (`core/estacionamento.ts`); step 3 is its first caller.
@@ -501,9 +534,15 @@ one (step-14 plan §3 decision 21; the button and its copy are step 21's).
   import's report — `acao`, `itens` (the D17 lines verdict) and `linhasPreservadas`,
   `linhasDivergentes`, `linhasSemProduto` — null on every arm without one; a `done` import whose
   `itens` is `divergencia-itens-aprovado` (an order BLOCKED for a person) logs WARNING.
-- The Easy Ship scheduling (step 15) writes `evento: 'agendamento'` lines. In PR 15-b the only
-  one is the write engine's dry-run diff, EXACTLY `acao`, `motivo`, `fase`, `invoiceStatus`,
-  `modoExecucao`, `escreveria` (closed tokens) plus the engine's own campos. Step 15's own
+- The Easy Ship scheduling (step 15) writes `evento: 'agendamento'` lines: the write engine's
+  dry-run diff, EXACTLY `acao`, `motivo`, `fase`, `invoiceStatus`, `modoExecucao`,
+  `escreveria` (closed tokens) plus the engine's own campos; an entry's WARNING
+  `agendamento-nao-enfileirado` (the error class only) or INFO `ja-enfileirada` (PR 15-c);
+  and ONE dispatch line per scheduling task run (`registrarDespachoAgendamentoAmazon`:
+  `fila`, `acao`, the closed `motivo`, `origem`, `espera`, `pausas`, the ids, the live
+  `decisao`, the read-side token `falha`, the error class, the rejection code through its
+  grammar, the HTTP codes through the closed set, the package count and status, the aviso
+  counts, the rung — ERROR for `leitura-falhou` / `escrita-falhou` / `sem-permissao`). Step 15's own
   lines never carry the label's pre-signed URL, the Restricted Data Token, a label byte, a
   zip entry name, a tracking, package or slot id, or Amazon's text. Its SP-API CALL lines
   (`evento: 'chamada'`) are the ordinary ones: by step 2b's design their excerpt KEEPS
@@ -547,7 +586,11 @@ functions codebase (`sweepAmazonExpirations`). The receiver (step 3) adds the Se
 `AMAZON_RELAY_SECRET` / `AMAZON_RELAY_PREVIOUS_SECRET` (the second only during a
 rotation; each 32–512 visible ASCII, else 503) and, in `lib/firebase/filaLeitura.ts`,
 `AMAZON_TASKS_REGION` (falls back to `FUNCTIONS_REGION`, no default, else 503; trimmed
-by `requireRegion`) and `AMAZON_TASKS_DISABLED` (exactly `1`). Both also serve the NF-e queue
+by `requireRegion`) and `AMAZON_TASKS_DISABLED` (exactly `1`). Both also serve the Easy Ship
+scheduling queue `processAmazonEasyShipSchedule` (step 15) from the functions root
+`src/agendadorAgendamento.ts` — where the valve stops its two entries and the task's own
+re-enqueues with NO sweep behind them (one WARNING each; from PR 15-d/15-e the checkout label
+print schedules instead, until they ship a person does in Seller Central) — and the NF-e queue
 `processAmazonNfeUpload` (step 14) from the functions root `src/agendadorNfe.ts`; there
 `AMAZON_TASKS_DISABLED=1` STOPS every NF-e upload with NO sweep behind it — the trigger, and a
 task whose next chain step the valve refuses (before its own submit), raise the aviso
@@ -590,7 +633,10 @@ no `env:` block.
   planned submit through the write engine (`core/escrita.ts`). A verification dispatch never
   consults the valve (it writes nothing to Amazon): a flip never ends a chain that submitted.
   The re-drive route (PR 14-d) never reads the pair either: it only enqueues, and the task
-  decides on the functions surface's values at run time.
+  decides on the functions surface's values at run time. Step 15 (PR 15-c) is the SECOND
+  caller: the scheduling task `processAmazonEasyShipSchedule` reads the scheduling pair FIRST
+  on every dispatch (before any Firestore read: `off` reads nothing at all) and decides its
+  target `<contaId>:<orderId>` from the payload alone; its two entries never read the pair.
 - W8 (the window, never before it), per flow: `dry-run` → a canary list → `on` → `*`, set ALIKE
   on both surfaces. Check the run-start line, then the dry-run diffs, then clean read-backs.
 
@@ -630,6 +676,13 @@ no `env:` block.
 | `amazonPedidoPrecisaAtencao` `aceitar-cancelamento` from the NF-e task (step 14) | seam, tier 2 | the existing per-pedido key, clocked by the task's P3 `readTime`; the live read is floored by the stored watermark |
 | Incidente `amz-nfe-pedido-cancelado` (step 14) | 0 | `create` at the deterministic id, only ALREADY_EXISTS swallowed (the task and the importer's cancel transition) |
 | NF-e re-drive route (step 14, PR 14-d) | — | no write: ONE UNNAMED enqueue is the whole effect. A double re-drive is two tasks, and the status-first read does NOT dedupe them inside Amazon's read-after-write lag (≈ 3 min): the second most likely submits again (step-14 plan §5 risk 2, accepted) — hence the operator rule, one re-drive per pedido, then wait |
+| Scheduling entries E1 / E2 (step 15, PR 15-c) | 0 | NAMED per OBSERVATION, never per pedido: E1 after the NF-e dispatch's own task id, E2 after `(pedidoId, the import read's watermarkUs)`; `task-already-exists` = that observation is already durable (one INFO line). A new observation always lands, whatever an earlier task for the order concluded (a name is refused for ≈ 1 h after its task RAN) |
+| Scheduling `espera` / `pausa` re-enqueue (step 15) | — | UNNAMED (a tombstone would refuse the next rung), at most one per dispatch, nothing after it; a transient throws for the queue's retry before the last attempt, the last attempt and the deterministic classes end the chain with ONE WARNING |
+| Easy Ship bulk (step 15) | provider-idempotent for a SEQUENTIAL resubmit | status-first: the live `getOrder` reads the order already scheduled and sends nothing; `ScheduledPackageAlreadyExists` reads as scheduled; concurrency 1 serialises the automatic schedules; a retry waits the queue's ≥ 60-s backoff and re-reads first. Two concurrent FIRST-time calls (a print racing the task) are undocumented and unguarded in code (step-15 plan §2.1) |
+| `amazonPedidoPrecisaAtencao` `dimensoes-ausentes` / `agendamento-recusado` (step 15) | seam, tier 2 on the Firestore timeline | raised ONLY by the scheduling task, resolved by it on a schedule (only rows that exist), both clocked by its pedido read's `readTime`; the importer resolves them once scheduling has ENDED (its batch `writeTime`, else its snapshot's `readTime`); between the task's own writes: concurrency 1 |
+| The importer's cancel SEED of both scheduling motivos (step 15) | seam, tier 2 | the import that moves a pedido into a cancelled sale (or meets that condition on a redelivery) resolves BOTH with a SEEDING clocked resolve (`semearResolucaoDoPedidoAmazon`): an absent row becomes a resolved tombstone, so a task raise racing the cancellation — clocked by its OLDER pedido read — is dropped |
+| `amazonPedidoPrecisaAtencao` `aceitar-cancelamento` from the scheduling task (step 15) | seam, tier 2 | the existing per-pedido key, clocked by the task's pedido `readTime`; the live read is floored by the stored watermark |
+| Scheduling task, pedido / freight | — | NO write: the schedule's mirror is the order import's (`estrutura.test.ts`: no Firestore write call under `agendamento/`) |
 
 This app adds **ONE** multi-document atomic-write site: the order import's batch
 (`pedidos/escritaPedido.ts`), each write under its own precondition. It opens **no** transaction

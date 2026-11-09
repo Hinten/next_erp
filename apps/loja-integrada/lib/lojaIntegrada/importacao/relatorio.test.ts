@@ -377,6 +377,7 @@ describe('gravarItemLi and contarPendenciasAcionaveisLi', () => {
     const c = await contarPendenciasAcionaveisLi(asDb(db), 'job-1');
     const pares = Math.floor(total / 2);
     expect(c).toEqual({
+      categorias: [],
       total,
       porCodigo: { 'sem-sku': pares, 'vinculo-ambiguo': total - pares },
     });
@@ -384,8 +385,86 @@ describe('gravarItemLi and contarPendenciasAcionaveisLi', () => {
 
   it('a job with no item counts zero', async () => {
     expect(await contarPendenciasAcionaveisLi(asDb(new FakeDb()), 'job-1')).toEqual({
+      categorias: [],
       total: 0,
       porCodigo: {},
     });
+  });
+});
+
+describe('the complete step in the report', () => {
+  const SEM_VINCULOS: ResultadoDosVinculosLi = { raiz: null, filhos: [] };
+  const criacao = { viavel: true, nome: 'Caneca', nomeCortado: false, filhos: [], ocultos: [] };
+
+  it('a create carried out names the CREATED root as the item’s erpId ⟷ NEAR-MISS without it, the plan’s (none for an absent root)', () => {
+    const p = plano({ situacaoErp: SITUACAO_ERP_ITEM_LI.ausente, erpId: null, criacao });
+    expect(
+      item(SEM_VINCULOS, { plano: p, criacaoAplicada: true, erpIdCriado: 'li-sku-x' }),
+    ).toMatchObject({ acao: 'criar', aplicada: true, erpId: 'li-sku-x' });
+    expect(item(SEM_VINCULOS, { plano: p })).toMatchObject({ acao: 'criar', erpId: null });
+  });
+
+  it('a create the complete step REFUSED is never `criar`; a fill is `completar`, ranked above `vincular`', () => {
+    const p = plano({ situacaoErp: SITUACAO_ERP_ITEM_LI.ausente, erpId: null, criacao });
+    expect(item(SEM_VINCULOS, { plano: p, criacaoRecusada: true }).acao).toBe('nenhuma');
+    expect(item(vinculos(CRIADO), { completado: true }).acao).toBe('completar');
+    expect(item(vinculos(CRIADO)).acao).toBe('vincular');
+  });
+
+  it('the complete step’s counts join the delta — pictures included — and any of them is a change ⟷ NEAR-MISS all zero is no change', () => {
+    const i = item(vinculos(SEM_MUDANCA));
+    expect(
+      contadoresDoItemLi(i, vinculos(SEM_MUDANCA), {
+        criados: 0,
+        completados: 0,
+        vinculados: 0,
+        fotos: 2,
+      }),
+    ).toMatchObject({ fotos: 2, semMudanca: 0, vinculados: 0 });
+    expect(
+      contadoresDoItemLi(i, vinculos(SEM_MUDANCA), {
+        criados: 3,
+        completados: 1,
+        vinculados: 3,
+        fotos: 0,
+      }),
+    ).toMatchObject({ criados: 3, completados: 1, vinculados: 3, semMudanca: 0 });
+    expect(
+      contadoresDoItemLi(i, vinculos(SEM_MUDANCA), {
+        criados: 0,
+        completados: 0,
+        vinculados: 0,
+        fotos: 0,
+      }),
+    ).toMatchObject({ fotos: 0, semMudanca: 1 });
+  });
+
+  it('the actionable count gathers the items’ OWN category refusals by exact code and references, counting items ⟷ NEAR-MISS a variation’s, or another code, is not one', async () => {
+    const db = new FakeDb();
+    const semVinculo = { codigo: PENDENCIA_IMPORTACAO_LI.categoriaSemVinculo, acionavel: true };
+    seedItemLi(db, 'job-1', 1, { pendencias: [{ ...semVinculo, referencias: ['900'] }] });
+    seedItemLi(db, 'job-1', 2, { pendencias: [{ ...semVinculo, referencias: ['900'] }] });
+    seedItemLi(db, 'job-1', 3, {
+      pendencias: [
+        {
+          codigo: PENDENCIA_IMPORTACAO_LI.categoriaRecusada,
+          acionavel: true,
+          referencias: ['901', 'ciclo'],
+        },
+        // A variation's refusal is not the item's category.
+        { ...semVinculo, liId: 31, referencias: ['902'] },
+        { codigo: PENDENCIA_IMPORTACAO_LI.categoriaAmbigua, acionavel: true, referencias: ['903'] },
+      ],
+    });
+    const c = await contarPendenciasAcionaveisLi(asDb(db), 'job-1');
+    expect(c.categorias).toEqual([
+      { codigo: PENDENCIA_IMPORTACAO_LI.categoriaSemVinculo, referencias: ['900'], itens: 2 },
+      {
+        codigo: PENDENCIA_IMPORTACAO_LI.categoriaRecusada,
+        referencias: ['901', 'ciclo'],
+        itens: 1,
+      },
+    ]);
+    expect(c.total).toBe(5);
   });
 });

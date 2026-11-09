@@ -458,6 +458,77 @@ describe('DesfechoAcaoShopee — refusal rows: copy with the block’s produto (
   });
 });
 
+describe('DesfechoAcaoShopee — #2015: one `logistica-nao-confirmada` copy per refusal, every channel still named', () => {
+  /** apps/shopee's N1 — one row per lost compulsory channel (spelled as `anuncioProduto.test.ts` does). */
+  const n1 = (canal: number) =>
+    `O canal obrigatório ${String(canal)} precisa de um tamanho, e o ERP não tem registro de ter ` +
+    'lido da Shopee nem de ter enviado a ela o valor gravado neste vínculo, então esse valor ' +
+    'não é reenviado. Importe o anúncio 1000123 para gravar os valores atuais da Shopee e ' +
+    'publique de novo.';
+  const lnc = (mensagem: string) =>
+    problema({
+      campo: 'logistic_info',
+      motivo: MOTIVO_ANUNCIO_SHOPEE.logisticaNaoConfirmada,
+      mensagem,
+    });
+  const copia = TEXTO_MOTIVO_ANUNCIO_SHOPEE[MOTIVO_ANUNCIO_SHOPEE.logisticaNaoConfirmada] ?? '?';
+  const vezes = (texto: string, trecho: string) => texto.split(trecho).length - 1;
+
+  it('two lost channels ⇒ row 0 reads the copy and channel A, row 1 ONLY channel B — the copy once in the alert', () => {
+    show({ desfecho: recusado([lnc(n1(80003)), lnc(n1(80007))]), rascunho: null });
+    expect(linha(0).textContent).toBe(`${copia} Detalhe: ${n1(80003)}`);
+    expect(linha(1).textContent).toBe(`Detalhe: ${n1(80007)}`);
+    expect(vezes(painel().textContent ?? '', copia)).toBe(1);
+  });
+
+  it('a later row with nothing to add (terminal text) is dropped — its siblings keep their ORIGINAL testids', () => {
+    show({
+      desfecho: recusado([
+        lnc(n1(80003)),
+        lnc('rode importar:anuncio --item 1000123'),
+        problema({
+          campo: 'logistic_info',
+          motivo: 'logistica-sem-canal',
+          mensagem: 'Nenhum canal obrigatório da loja pôde ser habilitado para este item.',
+        }),
+      ]),
+      rascunho: null,
+    });
+    expect(linha(0).textContent).toBe(`${copia} Detalhe: ${n1(80003)}`);
+    expect(screen.queryByTestId(`shopee-problema-${LINK}-1`)).toBeNull();
+    expect(linha(2).textContent).toContain(
+      'Nenhum canal obrigatório da loja pôde ser habilitado para este item.',
+    );
+  });
+
+  it('an all-N1 refusal (apps/shopee adds no shop-wide sentence then) offers NO weight button ⟷ NEAR-MISS a `logistica-sem-canal` row beside it gets one', () => {
+    h.secoes = {
+      activeSection: 'Shopee',
+      goToSection: vi.fn(),
+      sectionOfField: (k) => (k === 'pesoBrutoKg' ? 'Dimensões e peso' : null),
+    };
+    const peso = { name: 'Abrir no produto: Dimensões e peso' };
+    const r = show({ desfecho: recusado([lnc(n1(80003)), lnc(n1(80007))]), rascunho: null });
+    expect(within(painel()).queryAllByRole('button', peso)).toEqual([]);
+    expect(painel().textContent).not.toMatch(/confira peso/);
+    r.rerender({
+      desfecho: recusado([
+        lnc(n1(80003)),
+        problema({
+          campo: 'logistic_info',
+          motivo: 'logistica-sem-canal',
+          mensagem: 'Nenhum canal obrigatório da loja pôde ser habilitado para este item.',
+        }),
+      ]),
+      rascunho: null,
+    });
+    // Anti-vacuity: the same tab context DOES give the weight button to the
+    // `logistica-sem-canal` row, so its absence above is the motivo's doing.
+    expect(within(painel()).getAllByRole('button', peso)).toHaveLength(1);
+    expect(within(linha(1)).getAllByRole('button', peso)).toHaveLength(1);
+  });
+});
+
 describe('DesfechoAcaoShopee — K2-13: a draft is never published through a refusal row', () => {
   it('`republicar{linkDocId: <the draft>}` (P1’s rascunho-nao-nomeado) ⇒ NO button — a draft is not addressable', () => {
     const enderecavel = vi.fn(() => false);

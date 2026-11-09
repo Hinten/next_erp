@@ -29,6 +29,7 @@ import {
   tokenDeAcesso,
 } from './fixtures';
 import { ORDER_ID_TESTE } from './pedidoWireAmazon';
+import { type FilaAgendamentoDeTeste, filaAgendamentoDeTeste } from './produtorAgendamento';
 
 /** The conta every importer suite seeds. */
 export const CONTA_IMPORTADOR = 'conta-amz-importador';
@@ -90,6 +91,13 @@ export interface HarnessImportador {
   readonly fetch: typeof globalThis.fetch;
   /** The REAL context over the fake (the switch on, as an object literal). */
   contexto(): Promise<ContextoAmazon>;
+  /**
+   * The Easy Ship scheduling queue the import's entry (E2, step 15) enqueues
+   * onto: the REAL producer over a recording, name-keeping queue
+   * (`testing/produtorAgendamento.ts`). Hand `agendamentos.produtor` in as the
+   * import's `agendamento` dep.
+   */
+  readonly agendamentos: FilaAgendamentoDeTeste;
 }
 
 export function harnessImportador(respostas: RespostaSpApiTeste[] = []): HarnessImportador {
@@ -103,6 +111,7 @@ export function harnessImportador(respostas: RespostaSpApiTeste[] = []): Harness
     respostas,
     gets: [],
     lwa: 0,
+    agendamentos: filaAgendamentoDeTeste(),
     fetch: (input, init) => {
       const url = new URL(String(input));
       if ((init?.method ?? 'GET') === 'POST') {

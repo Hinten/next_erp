@@ -48,8 +48,9 @@
  *    14-b's LIGHT check of `nfe/tarefaNfe.ts`, `nfe/motivosNfe.ts` and
  *    `nfe/pedidoNfe.ts`, which sit in that closure. The task-SDK helpers live in
  *    `core/filaTarefas.ts`, the one production importer of the Cloud Tasks SDK
- *    under `lib/amazon`, and the app has exactly THREE `getFunctions(` roots,
- *    each pinned to the queue it binds; and each of the two Delivery calls
+ *    under `lib/amazon`, and the app has exactly FOUR `getFunctions(` roots
+ *    (since step 15, PR 15-c), each pinned to the queue it binds; and each of
+ *    the two Delivery calls
  *    (`getInvoiceStatus`, `submitInvoice`) has exactly ONE caller module,
  *    `nfe/entregaAmazon.ts`, across `lib/`, `app/`, `functions/src` and
  *    `scripts/` (tests exempt by construction: they name the helpers to drive
@@ -95,7 +96,13 @@
  *    `agendamento/easyShipAmazon.ts`, across `lib/`, `app/`, `functions/src` and
  *    `scripts/` (the redactor, the logger's local literal and the sanitizer's
  *    bulk-path rows aside); and the observer seam stays at FOUR sites, the
- *    engine's one inside its one client builder.
+ *    engine's one inside its one client builder;
+ *  - (step 15, PR 15-c) the scheduling queue has its OWN composition root
+ *    (`functions/src/agendadorAgendamento.ts`, the fourth `getFunctions(`
+ *    caller); no production file under `agendamento/` makes a Firestore WRITE
+ *    call (its avisos go through `avisos/avisos.ts`); and neither the NF-e
+ *    trigger's D11 closure nor the App Hosting closure reaches `agendamento/`
+ *    or that root.
  */
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, posix, relative, sep } from 'node:path';
@@ -563,7 +570,7 @@ function importadoresDoSdkDeTarefas(fontes: readonly (readonly [string, string])
 
 /**
  * The App Hosting composition root of the reads queue (3-c) and, since step
- * 14 (PR 14-d), of the NF-e queue's re-drive producer: one of the app's three
+ * 14 (PR 14-d), of the NF-e queue's re-drive producer: one of the app's four
  * `getFunctions(` callers.
  */
 const ARQUIVO_RAIZ_DA_FILA = 'lib/firebase/filaLeitura.ts';
@@ -607,6 +614,13 @@ const ARQUIVO_RAIZ_DA_FILA_FUNCOES = 'functions/src/agendador.ts';
 const ARQUIVO_RAIZ_DA_FILA_NFE = 'functions/src/agendadorNfe.ts';
 
 /**
+ * The functions codebase's composition root of the Easy Ship scheduling queue
+ * (step 15, PR 15-c): the FOURTH caller, never a second builder in the NF-e
+ * root, whose closure the NF-e trigger's D11 guard pins file by file.
+ */
+const ARQUIVO_RAIZ_DA_FILA_AGENDAMENTO = 'functions/src/agendadorAgendamento.ts';
+
+/**
  * Each composition root and the queue(s) it binds, by the path builders it
  * calls: a root that binds another root's queue — the NF-e producer added to
  * the functions codebase's reads-queue root, whose closure the NF-e trigger
@@ -619,6 +633,7 @@ const FILAS_DE_CADA_RAIZ: Readonly<Record<string, readonly string[]>> = {
   [ARQUIVO_RAIZ_DA_FILA]: ['caminhoDaFilaAmazon', 'caminhoDaFilaNfeAmazon'],
   [ARQUIVO_RAIZ_DA_FILA_FUNCOES]: ['caminhoDaFilaAmazon'],
   [ARQUIVO_RAIZ_DA_FILA_NFE]: ['caminhoDaFilaNfeAmazon'],
+  [ARQUIVO_RAIZ_DA_FILA_AGENDAMENTO]: ['caminhoDaFilaAgendamentoAmazon'],
 };
 
 /** The queue-path builders a source CALLS (comments aside), sorted and deduplicated. */
@@ -1280,9 +1295,12 @@ describe('lib/amazon layout', () => {
         'notificacoes/notificacao.ts',
         'notificacoes/prazo.ts',
         'notificacoes/receptor.ts',
+        'agendamento/agendadorAgendamento.ts',
         'agendamento/decisaoAgendamento.ts',
         'agendamento/easyShipAmazon.ts',
+        'agendamento/entradasAgendamento.ts',
         'agendamento/executarAgendamento.ts',
+        'agendamento/processarAgendamento.ts',
         'agendamento/tarefaAgendamento.ts',
         'pedidos/clienteAmazon.ts',
         'pedidos/codigosPedidoAmazon.ts',
@@ -1314,6 +1332,7 @@ describe('lib/amazon layout', () => {
         'testing/fixtures.ts',
         'testing/guardaDaLaneDeTarefas.ts',
         'testing/pedidoWireAmazon.ts',
+        'testing/produtorAgendamento.ts',
         'testing/sandboxBr.ts',
         'sanitizacao/requisicao.ts',
         'sanitizacao/local.ts',
@@ -1635,7 +1654,7 @@ describe('the step-3 intake guards', () => {
 
   // An app-wide parse (≈ 0.2–0.4 s locally, more on a CI runner): CI headroom, not a budget.
   it(
-    'no file under lib/amazon calls getFunctions(, and the THREE composition roots are the app’s only callers, each binding its own queue',
+    'no file under lib/amazon calls getFunctions(, and the FOUR composition roots are the app’s only callers, each binding its own queue',
     { timeout: 30_000 },
     () => {
       const lib = arquivosTs(RAIZ_LIB).filter((p) => !ehTeste(p));
@@ -1643,8 +1662,9 @@ describe('the step-3 intake guards', () => {
       // The EXACT list of composition roots, app-wide: the App Hosting
       // `lib/firebase/filaLeitura.ts` (3-c: the receiver's; since step 14, PR
       // 14-d, the re-drive route's NF-e producer too), the functions codebase's
-      // `functions/src/agendador.ts` (3-d, the step-4 poll's) and its NF-e root
-      // `functions/src/agendadorNfe.ts` (step 14, PR 14-c).
+      // `functions/src/agendador.ts` (3-d, the step-4 poll's), its NF-e root
+      // `functions/src/agendadorNfe.ts` (step 14, PR 14-c) and its scheduling
+      // root `functions/src/agendadorAgendamento.ts` (step 15, PR 15-c).
       // Every file the walk returns (`.ts`, `.tsx`, `.mjs`): a `.tsx` page is app code too.
       const app = arquivosTs(RAIZ_APP).filter((p) => !ehTeste(p));
       expect(app.length).toBeGreaterThan(40);
@@ -1653,7 +1673,12 @@ describe('the step-3 intake guards', () => {
         .map(relApp)
         .sort();
       expect(raizes).toEqual(
-        [ARQUIVO_RAIZ_DA_FILA_FUNCOES, ARQUIVO_RAIZ_DA_FILA, ARQUIVO_RAIZ_DA_FILA_NFE].sort(),
+        [
+          ARQUIVO_RAIZ_DA_FILA_FUNCOES,
+          ARQUIVO_RAIZ_DA_FILA,
+          ARQUIVO_RAIZ_DA_FILA_NFE,
+          ARQUIVO_RAIZ_DA_FILA_AGENDAMENTO,
+        ].sort(),
       );
       // ★ Each root's queue set: the NF-e producer added to the functions
       // codebase's reads-queue root (whose closure reaches the context) is a
@@ -2345,9 +2370,12 @@ describe('the step-15 Easy Ship scheduling guards (15-b)', () => {
 
   it('★ (1) agendamento/ is Next-free, reads no process environment and never imports the @/ alias', () => {
     expect(agendamento.map(rel).sort()).toEqual([
+      'agendamento/agendadorAgendamento.ts',
       'agendamento/decisaoAgendamento.ts',
       'agendamento/easyShipAmazon.ts',
+      'agendamento/entradasAgendamento.ts',
       'agendamento/executarAgendamento.ts',
+      'agendamento/processarAgendamento.ts',
       'agendamento/tarefaAgendamento.ts',
     ]);
     for (const arquivo of agendamento) {
@@ -2481,6 +2509,114 @@ describe('the step-15 Easy Ship scheduling guards (15-b)', () => {
     ]) {
       expect(nomeiaOEasyShip(fonte), fonte).toBe(false);
     }
+  });
+});
+
+/**
+ * A Firestore WRITE call (step 15, PR 15-c): a raw ref's or a shared collection
+ * handle's — `set`, `update`, `create`, `delete`, `batch`, `merge`,
+ * `mergeIfExists`, and `add` ON the two handles the task holds (a bare `.add(`
+ * is a `Set`'s). The re-drive route's shape ({@link ESCRITA_NO_REENVIO_NFE})
+ * minus the aviso writers by name: the scheduling task DOES write avisos, and
+ * only through `avisos/avisos.ts`'s seam, outside the folder. A pedido write
+ * under `agendamento/` is what this refuses (step-15 plan §3 decision 6); the
+ * fake db's write log in `processarAgendamento.test.ts` stays the behavioural pin.
+ */
+const ESCRITA_FIRESTORE_NO_AGENDAMENTO =
+  /\.\s*(?:set|update|create|delete|batch|merge|mergeIfExists)\s*\(|\b(?:pedidoCollection|nfev4Collection)\s*\.\s*add\s*\(/g;
+
+describe('the step-15 Easy Ship scheduling wiring guards (15-c)', () => {
+  const agendamento = arquivosTs(join(RAIZ_LIB, 'agendamento')).filter((p) => !ehTeste(p));
+
+  it('★ (mutation 6) no production file under agendamento/ makes a Firestore WRITE call — its reads stay allowed, its avisos go through avisos.ts', () => {
+    expect(agendamento.length).toBeGreaterThanOrEqual(7);
+    for (const arquivo of agendamento) {
+      const codigo = semComentarios(readFileSync(arquivo, 'utf8'));
+      expect(codigo.match(ESCRITA_FIRESTORE_NO_AGENDAMENTO) ?? [], rel(arquivo)).toEqual([]);
+    }
+    // Anti-vacuity: the task DOES read the pedido and its NF-e documents, and
+    // DOES write avisos — through the seam, by these names.
+    const tarefa = semComentarios(lerDoApp('lib/amazon/agendamento/processarAgendamento.ts') ?? '');
+    expect(tarefa).toMatch(/\bpedidoCollection\.docRef\(/);
+    expect(tarefa).toMatch(/\bnfev4Collection\.ref\(/);
+    expect(tarefa).toContain('sincronizarAvisosDoPedidoAmazon(');
+  });
+
+  it('the write scan flags what it exists for, and nothing alike (near-misses)', () => {
+    for (const escrita of [
+      'await ref.update({ x: 1 });',
+      'await pedidoCollection.add(db, {}, {});',
+      'await pedidoCollection.merge(db, {}, pedidoId, { x: 1 });',
+      'await nfev4Collection .set(db, { pedidoId }, nfeId, {});',
+      'const lote = db.batch();',
+    ]) {
+      expect(escrita.match(ESCRITA_FIRESTORE_NO_AGENDAMENTO), escrita).toHaveLength(1);
+    }
+    // NEAR-MISS: the two reads, a Set's add, and the aviso seam's call are no writes here.
+    for (const leitura of [
+      'await pedidoCollection.docRef(db, {}, pedidoId).get();',
+      'await nfev4Collection.ref(db, { pedidoId }).get();',
+      'const c = new Set<string>(); c.add(x);',
+      'await sincronizarAvisosDoPedidoAmazon(db, deps, e);',
+    ]) {
+      expect(leitura.match(ESCRITA_FIRESTORE_NO_AGENDAMENTO), leitura).toBeNull();
+    }
+  });
+
+  it('★ (mutation 13) the NF-e trigger’s D11 closure reaches NO agendamento/ module and not the scheduling root — that closure is unchanged', () => {
+    const fecho = fechoDeImportacoes(ENTRADAS_DO_GATILHO_NFE, lerDoApp);
+    expect(fecho.arquivos.filter((a) => a.startsWith('lib/amazon/agendamento/'))).toEqual([]);
+    expect(fecho.arquivos).not.toContain(ARQUIVO_RAIZ_DA_FILA_AGENDAMENTO);
+    // Anti-vacuity: the scheduling root DOES reach the producer, so a root that
+    // imported it would bring it into the NF-e trigger's closure.
+    const raiz = fechoDeImportacoes([ARQUIVO_RAIZ_DA_FILA_AGENDAMENTO], lerDoApp);
+    expect(raiz.arquivos).toEqual(
+      expect.arrayContaining([
+        ARQUIVO_RAIZ_DA_FILA_AGENDAMENTO,
+        'lib/amazon/agendamento/agendadorAgendamento.ts',
+      ]),
+    );
+    // …and the NF-e root names nothing of the scheduling producer, by any path.
+    expect(
+      especificadores(lerDoApp(ARQUIVO_RAIZ_DA_FILA_NFE) ?? '').filter((e) =>
+        /agendamento|agendadorAgendamento/.test(e),
+      ),
+    ).toEqual([]);
+  });
+
+  it('★ (mutation 25) the App Hosting closure reaches NO agendamento/ module and not the scheduling root — type edges walked', () => {
+    const fecho = fechoDeImportacoes(
+      entradasDoAppHosting(),
+      lerDoApp,
+      resolverAliasDoApp(lerDoApp),
+    );
+    expect(fecho.arquivos.filter((a) => a.startsWith('lib/amazon/agendamento/'))).toEqual([]);
+    expect(fecho.arquivos).not.toContain(ARQUIVO_RAIZ_DA_FILA_AGENDAMENTO);
+    // Anti-vacuity: the walk DOES reach the module that declares the order
+    // import's deps (its local structural port of the producer) and the NF-e
+    // producer the re-drive route enqueues through.
+    expect(fecho.arquivos).toEqual(
+      expect.arrayContaining([
+        'lib/amazon/notificacoes/notificacao.ts',
+        'lib/amazon/nfe/agendadorNfe.ts',
+      ]),
+    );
+  });
+
+  it('the scheduling root binds the scheduling queue only, and is read by the NF-e queue, the read deps and the scheduling queue — never by the NF-e trigger’s root', () => {
+    const raiz = lerDoApp(ARQUIVO_RAIZ_DA_FILA_AGENDAMENTO) ?? '';
+    expect(chamaGetFunctions(raiz)).toBe(true);
+    expect(filasDaRaiz(raiz)).toEqual(['caminhoDaFilaAgendamentoAmazon']);
+    const importadores = fontesDasFuncoes()
+      .map((p) => [relApp(p), readFileSync(p, 'utf8')] as const)
+      .filter(([, texto]) => especificadores(texto).includes('./agendadorAgendamento'))
+      .map(([arquivo]) => arquivo)
+      .sort();
+    expect(importadores).toEqual([
+      'functions/src/depsLeitura.ts',
+      'functions/src/filaAgendamento.ts',
+      'functions/src/filaNfe.ts',
+    ]);
   });
 });
 

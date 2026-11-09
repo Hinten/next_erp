@@ -4,8 +4,9 @@
  * its endereço, the pedido's incidentes and its avisos. It writes NOTHING to
  * Amazon; its one Amazon call (`getOrder`) goes through the context, which
  * refuses unless the read switch is exactly `on` (D11). Its only other network
- * call is the ViaCEP recovery of an endereço whose UF is unknown, through the
- * injected `deps.viaCep`.
+ * calls are the ViaCEP recovery of an endereço whose UF is unknown, through the
+ * injected `deps.viaCep`, and (step 15) ONE Cloud Tasks enqueue of the Easy Ship
+ * scheduling entry through the injected `deps.agendamento` (step 8c).
  *
  * WIRED in PR 5-e: the seam (`DESTINO_TIPO_AMAZON` in
  * `notificacoes/destinos.ts`, read only by the functions codebase's roots)
@@ -100,7 +101,28 @@
  *     incidente `create` swallows ALREADY_EXISTS). Every other FIRST attempt
  *     reads no `nfev4` and no `nfeUploadRejeitado` row (plan §3 decision 8's
  *     hot path), and these rows never join the `getAll` of the per-pedido sync,
- *     which resolves only existing rows.
+ *     which resolves only existing rows. Since step 15 (PR 15-c) the cancelled
+ *     sale ALSO seeds a resolved row of BOTH Easy Ship scheduling motivos
+ *     (`avisos.ts`'s `semearResolucaoDoPedidoAmazon`, same clock): a cancelled
+ *     order gets no further import, so a scheduling task's refusal raised from
+ *     a read OLDER than this commit — Amazon answers a bulk for an order
+ *     cancelled meanwhile with a refusal — is dropped instead of standing for
+ *     good. (Two aviso documents on that one transition.)
+ *  8c. **The Easy Ship scheduling entry** (step 15, PR 15-c; E2): on every
+ *     import that reaches here (`importado` or `sem-mudanca`, a first delivery
+ *     or a redelivery — never `obsoleto` or a skip), when the scheduling's own
+ *     pure decision over THIS read answers `agendar`
+ *     (`decidirAgendamentoAmazon`: Delivery by Amazon, `UNSHIPPED`, a package
+ *     still to schedule, the ORDER-level invoice status exactly `ACCEPTED`),
+ *     ONE enqueue onto the scheduling queue, named after `(pedidoId,
+ *     watermarkUs)` — a redelivery of the same read dedupes, a newer read always
+ *     lands (`agendamento/entradasAgendamento.ts`). Keyed on the READ, never on
+ *     a freight transition: the NF-e stamp's clear leaves no transition to see.
+ *     No Firestore read or write: the enqueue is the whole effect, and the task
+ *     judges the NF-e documents itself. A deterministic refusal (the queue
+ *     valve, a region) is one WARNING; a transient THROWS into this import's
+ *     own retry (the batch is not re-written: the retry reads `sem-mudanca` and
+ *     enqueues under the same name).
  *  9. **The result**, with the counts for the task line.
  *
  * Steps 4–6 may write (the cliente, the endereço) before a lost race at step 7
@@ -149,10 +171,16 @@ import {
   type OuterRef,
 } from '@delfrance/schemas';
 
-import { agendamentoEncerradoAmazon } from '../agendamento/decisaoAgendamento';
+import {
+  ACAO_AGENDAMENTO_AMAZON,
+  agendamentoEncerradoAmazon,
+  decidirAgendamentoAmazon,
+} from '../agendamento/decisaoAgendamento';
+import { enfileirarAgendamentoDaImportacaoAmazon } from '../agendamento/entradasAgendamento';
 import {
   MOTIVO_AVISO_AMAZON,
   agoraUsDe,
+  semearResolucaoDoPedidoAmazon,
   sincronizarAvisosDaContaAmazon,
   sincronizarAvisosDoPedidoAmazon,
 } from '../avisos/avisos';
@@ -939,6 +967,19 @@ export async function importarPedidoAmazon(
         { nowMs },
         { ...doPedido, motivo: MOTIVO_AVISO_AMAZON.pedidoCancelado },
       );
+      // Step 15: the cancel SEED of both scheduling motivos — a resolved
+      // tombstone even with no row, so a task raise from an older read is dropped.
+      await semearResolucaoDoPedidoAmazon(
+        db,
+        { nowMs },
+        {
+          integracaoId: contaId,
+          orderId,
+          pedidoId,
+          motivos: [...MOTIVOS_AGENDAMENTO_PEDIDO_AMAZON],
+          relogio: doPedido.relogio,
+        },
+      );
       const nfes = await nfev4Collection.ref(db, { pedidoId }).get();
       const escolha = escolherNfeParaEnvioAmazon(
         nfes.docs.map((d) => ({ id: d.id, raw: (d.data() ?? {}) as Record<string, unknown> })),
@@ -956,6 +997,15 @@ export async function importarPedidoAmazon(
         { ...doPedido, motivo: MOTIVO_AVISO_AMAZON.freteDespachado },
       );
     }
+  }
+
+  // 8c. The Easy Ship scheduling entry (E2, step 15): on THIS read, never on a
+  // freight transition; enqueue-only, named after (pedidoId, watermarkUs).
+  if (decidirAgendamentoAmazon(leitura).acao === ACAO_AGENDAMENTO_AMAZON.agendar) {
+    await enfileirarAgendamentoDaImportacaoAmazon(
+      { contaId, pedidoId, orderId, watermarkUs },
+      { agendamento: deps.agendamento, logger: deps.logger, registro: deps.registro },
+    );
   }
 
   // 9. The result.

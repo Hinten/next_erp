@@ -230,6 +230,7 @@ Shopee write. So a half-created kit whose produto now misses, say, its weight st
 | finding                                                                                                                            | republish                                                                                                     | create arm                                            |
 | ---------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
 | `sem-nome`, `sem-descricao`, `sem-peso`, `sem-dimensoes`, the name/description bands, `sem-fotos`, `logistica-sem-canal`           | refuses                                                                                                       | refuses                                               |
+| `logistica-nao-confirmada` (#2015): a compulsory size/fee channel whose only value sits in the alvo's UNSTAMPED list               | refuses, naming the kit's own `item_id` — import it, then publish again                                       | refuses — the converter names its PREDECESSOR         |
 | a BOUND child's `filho-sem-preco` / `sem-preco` / `preco-fora-da-faixa` (band only when served for the LIVE main's category)       | refuses                                                                                                       | refuses (every child)                                 |
 | the target kit reads deleted (a delete status, or a purged row)                                                                    | refuses `listagem-removida` (the kit sentence) and writes `estadoAnuncio: removido` on the link — a fact read | —                                                     |
 | `kit-sem-sku`, `kit-sku-com-espacos`                                                                                               | warns `sku-do-kit-nao-enviado`, resends the live `item_sku`                                                   | refuses                                               |
@@ -238,6 +239,21 @@ Shopee write. So a half-created kit whose produto now misses, say, its weight st
 | `--principal` ≠ the live main                                                                                                      | warns `principal-diferente` (the main is frozen after create; never applied)                                  | `principal-obrigatorio` / `principal-invalido` refuse |
 | a live model no child matches                                                                                                      | resent unchanged, warns `modelo-sem-filho`                                                                    | —                                                     |
 | an unbound ERP child that does not fit                                                                                             | the append is SKIPPED, warns `variacao-nao-anexada`; the update still goes                                    | `kit-variacoes-demais` / `kit-dois-eixos` refuse      |
+
+**The alvo's stored logistics are re-sent only when THIS app wrote them (#2015).** The alvo is
+the target kit's link, or the converter's ordinary PREDECESSOR. `planejarKit` hands its
+`logistic_info` to step 11's `construirLogistica` as TRUSTED only when
+`logisticaGravadaPeloErpShopee(alvo.raw)` holds — the stamp `logisticaGravadaEm`, which the
+kit create (`escreverVinculoDoKit`) and every import write beside the list, and #2 never
+does. An unstamped list (every migrated link) takes the full `get_channel_list` pass:
+`is_free` from K's flag, and no stored `size_id` or `shipping_fee` re-sent. When a compulsory
+size/fee channel's only value sat in that list, the run refuses `logistica-nao-confirmada`
+naming the alvo's live `item_id` — on the converter the predecessor's, so the remedy is
+importing THAT listing. kit-criar (no alvo) and a `removido` recriar target have nothing to
+import and keep `logistica-sem-canal`'s sentence. ⚠️ A republish writes no list back
+(`republicarKit.ts`), so an unstamped kit link takes the full pass on EVERY republish until an
+import rewrites it or a `--recriar` replaces the kit. The rule and its writers:
+`../anuncios/README.md`, "Logistics".
 
 An append (`model_id: 0`, the child's price, `model_sku` and ERP projection, never a main)
 needs the WHOLE tier resent with the new option appended (the live options verbatim, never

@@ -3189,6 +3189,32 @@ describe('superficieDoCampoShopee — campo → the surface that fixes it (D17, 
     }
   });
 
+  it('#2015: `logistica-nao-confirmada` on logistic_info gets NO surface ⟷ NEAR-MISS `logistica-sem-canal` (Shopee’s own logistics refusal included) keeps the weight', () => {
+    const PESO = { tipo: 'produto', campo: 'pesoBrutoKg' };
+    for (const contexto of [RASCUNHO, ANUNCIO]) {
+      // The fix is importing the listing: no produto field, so no button.
+      for (const campo of ['logistic_info', 'logistic_info[0].size_id']) {
+        expect(
+          superficieDoCampoShopee(linha(campo, M.logisticaNaoConfirmada), contexto),
+          campo,
+        ).toBeNull();
+      }
+      // A lost channel the parcel does not fit, and Shopee's
+      // `error_invalid_logistic_info` — both carry `logistica-sem-canal`.
+      expect(
+        superficieDoCampoShopee(linha('logistic_info', 'logistica-sem-canal'), contexto),
+      ).toEqual(PESO);
+      // An EXACT match, never a prefix.
+      expect(
+        superficieDoCampoShopee(linha('logistic_info', `${M.logisticaNaoConfirmada}-v2`), contexto),
+      ).toEqual(PESO);
+      // Scoped to the ROOT: the same motivo on the weight's own root still opens the weight.
+      expect(superficieDoCampoShopee(linha('weight', M.logisticaNaoConfirmada), contexto)).toEqual(
+        PESO,
+      );
+    }
+  });
+
   it('the ROOT is cut at the first `[` or `.` and matched EXACTLY — never a prefix', () => {
     expect(superficieDoCampoShopee(linha('item_name.0'), RASCUNHO)).toMatchObject({
       campo: 'item_name',

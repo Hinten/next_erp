@@ -58,12 +58,14 @@ import {
   OPCAO_TIER_KIT_UNICO,
   SHOPEE_KIT_MAX_MODELOS,
   TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE,
+  anuncioShopeeVivo,
   chaveReceitaKitErp,
   componentesShopeeDoKit,
   descreverFaixaShopee,
   ehKitNativoAtivo,
   ehVinculoSubstituido,
   escolherPrincipalDoKit,
+  logisticaGravadaPeloErpShopee,
   mesmoEnderecoDeComponente,
   problemasDeEstruturaDoKit,
   textoNaFaixaShopee,
@@ -1442,10 +1444,20 @@ export function planejarKit(ctx: ContextoKit, fotos: FotosResolvidas | null): Pl
   const medidas = produtoParaMedidas(ctx.produto);
   const peso = pesoParaPublicar(medidas);
   const dimensao = dimensaoParaPublicar(medidas);
-  const armazenado = ctx.alvo?.raw.logistic_info;
+  // #2015: the alvo's stored list — the target kit's, or the converter's
+  // ordinary PREDECESSOR's — is re-sent only when THIS app wrote it, decided by
+  // the ONE predicate over the RAW link and never by a local reading of the
+  // stamp. The listing an import would re-read is the alvo's own live
+  // `item_id`; kit-criar (no alvo) and a `removido` recriar target have none,
+  // so their refusal keeps `logistica-sem-canal`'s sentence.
+  const alvo = ctx.alvo;
+  const armazenado = alvo?.raw.logistic_info;
   const logistica = construirLogistica({
     canais: ctx.canais,
     armazenado: Array.isArray(armazenado) ? (armazenado as readonly unknown[]) : null,
+    armazenadoConfiavel: alvo !== null && logisticaGravadaPeloErpShopee(alvo.raw),
+    itemIdImportavel:
+      alvo !== null && anuncioShopeeVivo(alvo.raw) ? (alvo.raw.item_id as number) : null,
     pesoKg: peso,
     dimensaoCm: dimensao,
     ofereceFreteGratis: medidas.ofereceFreteGratis,

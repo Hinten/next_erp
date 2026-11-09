@@ -2,8 +2,10 @@
  * **How a stored Shopee link is READ** (step 21, #1529) — the read-side rules
  * of a `prodshopee` / `variashopee` document that more than one surface needs:
  * when a stored refusal is still worth showing, whether the stock sync is
- * currently skipping the listing, whether the listing is still "vivo", and
- * whether the link is a DRAFT that was never a listing at all (#1911).
+ * currently skipping the listing, whether the listing is still "vivo",
+ * whether the link is a DRAFT that was never a listing at all (#1911), and
+ * whether its stored `logistic_info` is one THIS app wrote and may re-send
+ * (#2015, {@link logisticaGravadaPeloErpShopee} — the stamp alone decides).
  *
  * ⚠️ ONE module (#1369). `apps/shopee` decides with these (the stock gate, the
  * `integracoesComProduto` trigger, the stock sweep) and the produto's Shopee tab
@@ -332,4 +334,37 @@ export function ehRascunhoShopee(
 ): boolean {
   if (link === null || link.kitNativo === true) return false;
   return link.item_id === null || link.item_id === undefined;
+}
+
+/* -------------------------------------------------------------------------- */
+/*            The logistics provenance predicate (#2015, Lucas D1)             */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Did THIS app write the stored `logistic_info` of this `prodshopee` document —
+ * a list a publish sent or one Shopee answered — so a publish may re-send it?
+ * THE one reading of `logisticaGravadaEm` (#1369): the item plan's projection
+ * and the kit plan decide with it, and nothing reads the stamp raw.
+ *
+ * - **EQUAL (trusted):** a stamp that is a safe integer `>= 0`, `0` included —
+ *   the signal is PRESENCE, never a clock, so no value is "too old".
+ * - **DISTINCT (distrusted):** an absent key (every migrated row: the legacy
+ *   app never wrote it), `null`, a numeric STRING, a fraction, a negative,
+ *   `NaN`, `±Infinity`, an unsafe integer — and a `null` link (no document).
+ * - ⚠️ **The stamp ALONE decides (D1).** It never looks at `item_id`,
+ *   `ehRascunhoShopee`, `estadoAnuncio` or `ultimaPublicacao`: ENSURE's
+ *   adoption turns a legacy draft into a listing that keeps its legacy list,
+ *   and `ultimaPublicacao` is written whether or not the publish carried a
+ *   list — so neither proves who wrote the list. A stamped draft is trusted;
+ *   an unstamped listing is not.
+ *
+ * Pure, total over `unknown`, no clock. In memory only — never a Firestore
+ * `where`.
+ */
+export function logisticaGravadaPeloErpShopee(
+  link: { readonly logisticaGravadaEm?: unknown } | null,
+): boolean {
+  if (link === null) return false;
+  const v = link.logisticaGravadaEm;
+  return typeof v === 'number' && Number.isSafeInteger(v) && v >= 0;
 }

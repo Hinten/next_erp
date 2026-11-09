@@ -207,6 +207,7 @@ function montar(): Execucao {
         logger: h.log.logger,
         // A lookup that answers nothing: the fixtures' UF is a placeholder.
         viaCep: { buscarCep: () => Promise.resolve(null) },
+        agendamento: h.agendamentos.produtor,
         registro: registroTeste(0),
       });
     },

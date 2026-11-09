@@ -25,16 +25,25 @@
  * | --- | --- |
  * | `chamada` — one Loja Integrada call: a listing page, a trash-list page, a catalogue page, a product detail | `RITMO_LEITURA_LI_MS` (the pacer's wait, OUTSIDE the call's deadline) + `PRAZO_LI_MS.leitura` = 2 s + 20 s = 22 s |
  * | `familia` — one family with no Loja Integrada call (its Firestore reads and writes), and every other unit that calls nothing: the catalogue phase's category-link read, a product list's closing count, a phase's last step that only concludes it | 10 s, nominal |
+ * | `foto` — ONE picture of a produto (`fotos.ts`): the pacer's wait, one CDN download, and the upload the app races against its own deadline | `RITMO_LEITURA_LI_MS` + `PRAZO_CDN_LI_MS` + {@link PRAZO_UPLOAD_LI_MS} = 2 s + 20 s + 30 s = 52 s |
  *
  * The family row is a budget, not a measurement: Firestore calls carry the SDK's own deadlines,
  * the queue's 300 s function timeout is the hard ceiling above all of it, and a dispatch the
- * platform cuts resumes from its last unit checkpoint.
+ * platform cuts resumes from its last unit checkpoint. The same holds for the Firestore reads and
+ * the one guarded write a photo unit adds around its download (the produto read when its pictures
+ * start, the write after its last one): they ride the row's margin and the tail.
  *
- * ⚠️ Photos are not a unit here yet. A photo (master plan step 9, "complete") costs a CDN download
- * plus an upload whose deadline the app enforces itself; an original that comes back too large and
- * is fetched again at `800x800` is a unit of its OWN (its own budget check, the original's outcome
- * checkpointed first), so no single unit exceeds 2 s + 20 s + the upload deadline. Those rows, and
- * the upload deadline constant, arrive with the photo import that spends them.
+ * ⚠️ An original that comes back TOO LARGE and is fetched again at `800x800` is a `foto` unit of
+ * its OWN, never a second download inside the first: the original's outcome is checkpointed first,
+ * and the reduced form waits for its own budget check. Inside one unit the two would cost
+ * 2 × (2 s + 20 s) + 30 s = 74 s — an original sent without a `Content-Length` is read up to the
+ * byte cap before it is refused — which no budget of 70 s could ever start. Split, each unit is at
+ * most 52 s (`prazos.test.ts` pins both numbers).
+ *
+ * The upload's deadline is the app's own ({@link PRAZO_UPLOAD_LI_MS}): the shared uploader takes no
+ * deadline and no signal, so `fotos.ts` races it. An upload past it ends the photo units of that
+ * dispatch; the next dispatch fetches and stores the same picture again (content-addressed, so a
+ * picture that did land is not stored twice).
  *
  * ## Elapsed time
  *
@@ -43,7 +52,7 @@
  * steps BACKWARDS (an NTP correction) reads as 0 elapsed, never as negative; a non-finite reading
  * fits nothing, so a broken clock stops the dispatch at its next unit instead of running unbounded.
  */
-import { PRAZO_LI_MS } from '@delfrance/integrations-loja-integrada';
+import { PRAZO_CDN_LI_MS, PRAZO_LI_MS } from '@delfrance/integrations-loja-integrada';
 import {
   CAUDA_DESPACHO_IMPORTACAO_LI_MS,
   ORCAMENTO_DESPACHO_IMPORTACAO_LI_MS,
@@ -52,13 +61,21 @@ import {
 import { RITMO_LEITURA_LI_MS } from '../core/ritmo';
 
 /** A unit of work a dispatch may start (module header). */
-export type UnidadeImportacaoLi = 'chamada' | 'familia';
+export type UnidadeImportacaoLi = 'chamada' | 'familia' | 'foto';
 
 /** Named members of {@link UnidadeImportacaoLi}. */
 export const UNIDADE_IMPORTACAO_LI = {
   chamada: 'chamada',
   familia: 'familia',
+  foto: 'foto',
 } as const satisfies Record<string, UnidadeImportacaoLi>;
+
+/**
+ * How long one picture's UPLOAD may take before the photo units of the dispatch stop, in ms
+ * (module header). The shared uploader takes no deadline and no signal, so `fotos.ts` races it
+ * against this; an upload still running past it is abandoned, never awaited again.
+ */
+export const PRAZO_UPLOAD_LI_MS = 30_000;
 
 /**
  * A family with no Loja Integrada call — or any other unit that calls nothing: its Firestore reads
@@ -73,6 +90,7 @@ export const PIOR_CASO_FAMILIA_SEM_CHAMADA_LI_MS = 10_000;
 export const PIOR_CASO_UNIDADE_IMPORTACAO_LI_MS = {
   chamada: RITMO_LEITURA_LI_MS + PRAZO_LI_MS.leitura,
   familia: PIOR_CASO_FAMILIA_SEM_CHAMADA_LI_MS,
+  foto: RITMO_LEITURA_LI_MS + PRAZO_CDN_LI_MS + PRAZO_UPLOAD_LI_MS,
 } as const satisfies Record<UnidadeImportacaoLi, number>;
 
 /** The longest a dispatch may run: the budget plus its tail (100 s). */

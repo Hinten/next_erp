@@ -48,8 +48,10 @@
  *
  * - {@link MOTIVO_PUBLICACAO_BLOQUEADA} — what the publisher may REFUSE with
  *   before writing the listing (the model leg's update-path refusals of
- *   `variacao-sem-vinculo` / `opcoes-demais` aside). 58 members: step 11's
- *   22, the nineteen native-kit
+ *   `variacao-sem-vinculo` / `opcoes-demais` aside). 59 members: step 11's
+ *   22, #2015's `logistica-nao-confirmada` (`anuncios/logisticaPublicacao.ts`:
+ *   a compulsory channel's size or fee held only by a stored list with no
+ *   record that this app wrote it), the nineteen native-kit
  *   refusals of step 19's kit core (`kits/planoKit.ts`, PR 5), the recriar's
  *   safety net `recriacao-sem-diferenca` (`kits/recriarKit.ts`, PR 6), the
  *   seven refusals only the publish dispatcher produces
@@ -64,7 +66,7 @@
  *   attestation's expectation on a draft that no longer records the attempt,
  *   refused by the reservation before any look-up.
  * - {@link MOTIVO_PROBLEMA_PUBLICACAO} — what a `problemas[]` entry may carry:
- *   those 58 plus the thirteen only a WIRE rejection can produce (step 18 added
+ *   those 59 plus the thirteen only a WIRE rejection can produce (step 18 added
  *   the two size-chart refusals on `size_chart_info`; step 19 the seven
  *   native-kit refusals, whose ONE producer is `kits/recusaKit.ts`; #1911 P5 the
  *   duplicate-listing refusal `error_repeated_mtsku`, a row of
@@ -177,6 +179,23 @@ export type MotivoPublicacaoBloqueada =
   | 'estoque-abaixo-do-minimo'
   /** The channel builder found no channel the item fits and the shop enables. */
   | 'logistica-sem-canal'
+  /**
+   * #2015 (Lucas D2): a COMPULSORY `SIZE_SELECTION` / `CUSTOM_PRICE` channel
+   * whose `size_id` / `shipping_fee` exists only in a stored `logistic_info`
+   * with no record that this app wrote it (`logisticaGravadaPeloErpShopee`,
+   * `@delfrance/schemas`) — in production, a list the legacy exporter's era
+   * left behind — which is therefore never re-sent. The sentence claims that
+   * absence of a record and nothing stronger. Produced ONLY by `anuncios/logisticaPublicacao.ts`,
+   * spelled there through this constant, and only when the listing exists at
+   * Shopee: the remedy is importing it (its `item_id` is in the sentence), so
+   * the value the shop holds today is recorded and stamped. Every other lost
+   * compulsory channel — a draft, a trusted list, an unreadable or absent
+   * value, a parcel that does not fit — stays `logistica-sem-canal`. When EVERY
+   * lost compulsory channel took it, the builder adds neither shop-wide
+   * `logistica-sem-canal` sentence (see `construirLogistica`). Campo
+   * `logistic_info`, no `acao`.
+   */
+  | 'logistica-nao-confirmada'
   /**
    * The stored `estadoAnuncio` says the listing is gone. Refused rather than
    * re-created: a `removido` listing keeps its `item_id`, and `update_item`
@@ -431,6 +450,7 @@ export const MOTIVO_PUBLICACAO_BLOQUEADA = {
   opcoesDemais: 'opcoes-demais',
   estoqueAbaixoDoMinimo: 'estoque-abaixo-do-minimo',
   logisticaSemCanal: 'logistica-sem-canal',
+  logisticaNaoConfirmada: 'logistica-nao-confirmada',
   listagemRemovida: 'listagem-removida',
   produtoEFilho: 'produto-e-filho',
   produtoEKit: 'produto-e-kit',

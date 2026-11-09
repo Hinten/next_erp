@@ -12,7 +12,7 @@ import {
 import {
   formatarInstanteShopee,
   textoDaEtapaShopee,
-  textoDaRecusaGuardadaShopee,
+  textosDasRecusasGuardadasShopee,
 } from '@/lib/shopee/anuncioProduto';
 import { textoPreenchido } from './campos';
 
@@ -178,7 +178,9 @@ function sentencaDaRecusa(
  * `mensagem` only as the fallback: a draft's refused `add_item` is stamped
  * here, and Shopee's English prose (`anuncio-semelhante-existente`, its
  * `error_repeated_mtsku`) must not be what stays on screen once the outcome
- * panel is gone. A row with neither is dropped. The stored `etapa` is kept
+ * panel is gone. A row with neither is dropped, and so is a later row of a
+ * refusal-wide copy already shown (#2015's `logistica-nao-confirmada`, one
+ * row per lost channel) — `textosDasRecusasGuardadasShopee`. The stored `etapa` is kept
  * as the CODE here and worded at render by `textoDaEtapaShopee` (an
  * own-property label lookup with a neutral fallback): the raw code — `add_item`,
  * an etapa this build does not know, `constructor` — is never printed.
@@ -191,14 +193,7 @@ function lerFalhaPublicacao(valor: unknown): {
 } | null {
   if (typeof valor !== 'object' || valor === null || Array.isArray(valor)) return null;
   const f = valor as Record<string, unknown>;
-  const problemas = Array.isArray(f.problemas)
-    ? f.problemas.flatMap((p: unknown) => {
-        if (typeof p !== 'object' || p === null) return [];
-        const linha = p as Record<string, unknown>;
-        const texto = textoDaRecusaGuardadaShopee(linha.motivo, linha.mensagem);
-        return texto === null ? [] : [texto];
-      })
-    : [];
+  const problemas = textosDasRecusasGuardadasShopee(f.problemas);
   return {
     em: formatarInstanteShopee(f.em),
     etapa: textoPreenchido(f.etapa),

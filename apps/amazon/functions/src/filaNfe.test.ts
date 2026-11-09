@@ -30,6 +30,7 @@ vi.mock('./lib/admin', () => ({
 
 const { processAmazonNfeUpload, depsDoEnvioNfeAmazon } = await import('./filaNfe');
 const { criarAgendadorNfeAmazonDoAmbiente } = await import('./agendadorNfe');
+const { criarAgendadorAgendamentoAmazonDoAmbiente } = await import('./agendadorAgendamento');
 
 afterAll(() => {
   if (originalTasksInvokerSa === undefined) delete process.env.TASKS_INVOKER_SA;
@@ -86,10 +87,13 @@ function linhas(): Record<string, unknown>[] {
 }
 
 describe('processAmazonNfeUpload — the body', () => {
-  it('binds the LIVE environment, the app logger and the functions root’s producer', () => {
+  it('binds the LIVE environment, the app logger and the functions roots’ producers (the NF-e queue; the scheduling queue for E1)', () => {
     const deps = depsDoEnvioNfeAmazon({ tentativa: 2, idTarefa: 't' });
     expect(deps.ambiente).toBe(process.env);
     expect(deps.agendador).toBe(criarAgendadorNfeAmazonDoAmbiente);
+    // Step 15 (PR 15-c): the seam's producer is the scheduling ROOT, never the NF-e one.
+    expect(deps.agendamento).toBe(criarAgendadorAgendamentoAmazonDoAmbiente);
+    expect(deps.agendamento).not.toBe(criarAgendadorNfeAmazonDoAmbiente);
     expect(deps.registro).toEqual({ tentativa: 2, idTarefa: 't' });
     expect(deps.fetch).toBeUndefined();
   });
