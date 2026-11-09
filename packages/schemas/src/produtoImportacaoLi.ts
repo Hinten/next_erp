@@ -33,7 +33,8 @@ import { skuDoMembroUnico } from './produto/pureLogic/familia';
  * `sku`, `nome` and `gtin` are kept VERBATIM; only the exact `''` (and a non-string) reads as
  * `null`. `' X '` stays `' X '`: the SKU is an identity and is compared byte for byte
  * ({@link mesmoSkuLi}). The one place a SKU is folded is the pair {@link skuParecidoLi} and
- * {@link skusParecidosNaLojaLi}: both can only REFUSE a create, never link two products.
+ * {@link skusParecidosNaLojaLi}: both can only REFUSE (a create, and for the store-side decision a
+ * match by SKU too), never link two products.
  *
  * Pure and total: no clock, no network, no Firestore.
  *
@@ -498,7 +499,10 @@ export interface SkuDaLojaLi {
  * characters that share an upper or a lower case collide, as `'ß'` and `'ss'` do through `'SS'` and
  * the Kelvin sign and `'K'` through `'k'`, although the probe calls neither parecido with the other.
  * A stated over-fold, kept on purpose: asking for the probe's one-way reach instead would lose
- * `'Abc-1'` and `'aBC-1'`, and its worst case is one refused create with an actionable pendência.
+ * `'Abc-1'` and `'aBC-1'`, and its worst case is both rows refused: neither row's family created
+ * (one flagged variation refuses its whole family) and neither row matched by exact SKU, so a
+ * product the ERP already has goes unlinked unless an existing link answers, each row with an
+ * actionable pendência.
  *
  * Pure and total.
  */
