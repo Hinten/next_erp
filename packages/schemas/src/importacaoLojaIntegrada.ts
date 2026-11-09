@@ -339,8 +339,8 @@ export const MOTIVO_FALHA_IMPORTACAO_LI = {
  * **Informational** — a fact of the store or of this run; shown in the report, never keeps an
  * aviso open: `orfao`, `na-lixeira` (a variation whose parent is in the store's trash: never
  * linked, never created), `familia-vazia`, `tipo-desconhecido`, `oculto-nao-criado`,
- * `nome-cortado` (a produto this run created whose name was cut at the ERP's 100-character limit),
- * `nao-listado`, `sku-diferente`, `vinculo-atualizado`, `foto-recusada`, `sem-estoque-no-erp`,
+ * `nome-cortado` (a produto this run created, or under Simular would create, whose name was cut at
+ * the ERP's 100-character limit), `nao-listado`, `sku-diferente`, `vinculo-atualizado`, `foto-recusada`, `sem-estoque-no-erp`,
  * `sem-preco-no-erp`, `revisao-fiscal`.
  */
 export const pendenciaImportacaoLiSchema = z.enum([
@@ -579,8 +579,9 @@ export type EvidenciaOpcaoLi = z.infer<typeof evidenciaOpcaoLiSchema>;
 /**
  * Where a store product stands against the ERP: `vinculado` (its link for this conta exists),
  * `encontrado` (found by exactly one SKU, not linked yet), `ausente` (not in the ERP), `conflito`
- * (two owners, two SKU hits or a shape mismatch: in no target but `todos`/`selecionados`, and
- * reported under every target), `nao-listado` (a selected id the store's listing lacks), `avulso`
+ * (two owners, two SKU hits, a shape mismatch, no SKU, or a SKU repeated or nearly repeated in the
+ * store: in no target but `todos`/`selecionados`, and reported under every target), `nao-listado`
+ * (a selected id the store's listing lacks), `avulso`
  * (a live row that belongs to no family — an orphan variation, a variation of a trashed parent, a
  * row of an unknown `tipo` — never matched against the ERP, reported with its informational code).
  */
@@ -647,7 +648,10 @@ export const itemImportacaoLiSchema = z.object({
   /**
    * The store categories this family's run created and linked (Simular: would), root-most first. A
    * category appears on the item of the family that created it, so the report names every category
-   * a create-and-link run created; a later family that uses it finds it linked and names none.
+   * a create-and-link run created, but for a unit retried over its own landed create or category
+   * fill: the retry does not plan that category again, so the item stops naming it (the category
+   * stands, and a later family that meets it adopts it and names it there). A later family that
+   * uses a category the job already holds as linked names none.
    */
   categoriasCriadas: z.array(idLiSchema).default(() => []),
   pendencias: z.array(pendenciaItemLiSchema).default(() => []),
@@ -945,7 +949,7 @@ export const progressoDaFamiliaLiSchema = z
     completado: z.boolean(),
     campos: z.array(z.string()),
     pendencias: z.array(pendenciaDoProgressoSchema),
-    /** Store categories this family created (Simular: would), carried to the item at its closing. */
+    /** Store categories this family created, carried to the item at its closing. */
     categoriasCriadas: z.array(idLiSchema),
     criados: z.number().int().nonnegative(),
     completados: z.number().int().nonnegative(),
