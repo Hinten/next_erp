@@ -1,0 +1,1282 @@
+{
+  "error": "",
+  "message": "",
+  "warning": "",
+  "response": {
+    "list": [
+      {
+        "category_id": 101239,
+        "attribute_tree": [
+          {
+            "attribute_id": 100037,
+            "mandatory": false,
+            "name": "Region of Origin",
+            "attribute_value_list": [
+              {
+                "value_id": 1,
+                "name": "Japan",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Japão"
+                  }
+                ]
+              },
+              {
+                "value_id": 35,
+                "name": "Mainland China",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "China"
+                  }
+                ]
+              },
+              {
+                "value_id": 48,
+                "name": "Korea",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Coreia"
+                  }
+                ]
+              },
+              {
+                "value_id": 68,
+                "name": "Indonesia",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Indonésia"
+                  }
+                ]
+              },
+              {
+                "value_id": 93,
+                "name": "Others",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Outros"
+                  }
+                ]
+              },
+              {
+                "value_id": 110,
+                "name": "America",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "América"
+                  }
+                ]
+              },
+              {
+                "value_id": 112,
+                "name": "Taiwan",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Taiwan"
+                  }
+                ]
+              },
+              {
+                "value_id": 129,
+                "name": "Thailand",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Tailândia"
+                  }
+                ]
+              },
+              {
+                "value_id": 136,
+                "name": "Vietnam",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Vietnã"
+                  }
+                ]
+              },
+              {
+                "value_id": 154,
+                "name": "India",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Índia"
+                  }
+                ]
+              },
+              {
+                "value_id": 171,
+                "name": "Bangladesh",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Bangladesh"
+                  }
+                ]
+              },
+              {
+                "value_id": 6737,
+                "name": "Brasil",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Brasil"
+                  }
+                ]
+              },
+              {
+                "value_id": 6738,
+                "name": "Colombia",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Colombia"
+                  }
+                ]
+              },
+              {
+                "value_id": 6739,
+                "name": "Chile",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Chile"
+                  }
+                ]
+              },
+              {
+                "value_id": 6740,
+                "name": "Argentina",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Argentina"
+                  }
+                ]
+              },
+              {
+                "value_id": 6741,
+                "name": "Mexico",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "México"
+                  }
+                ]
+              }
+            ],
+            "attribute_info": {
+              "input_type": 2,
+              "input_validation_type": 2,
+              "format_type": 1,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "País de Origem"
+              }
+            ]
+          },
+          {
+            "attribute_id": 100121,
+            "mandatory": false,
+            "name": "Warranty Duration",
+            "attribute_value_list": [
+              {
+                "value_id": 776,
+                "name": "1 Month",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "1 Mês"
+                  }
+                ]
+              },
+              {
+                "value_id": 789,
+                "name": "2 Months",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "2 Meses"
+                  }
+                ]
+              },
+              {
+                "value_id": 799,
+                "name": "3 Months",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "3 Meses"
+                  }
+                ]
+              },
+              {
+                "value_id": 810,
+                "name": "6 Months",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "6 Meses"
+                  }
+                ]
+              },
+              {
+                "value_id": 822,
+                "name": "12 Months",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "12 Meses"
+                  }
+                ]
+              },
+              {
+                "value_id": 831,
+                "name": "24 Months",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "24 Meses"
+                  }
+                ]
+              },
+              {
+                "value_id": 5577,
+                "name": "No Warranty",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Sem garantia"
+                  }
+                ]
+              }
+            ],
+            "attribute_info": {
+              "input_type": 2,
+              "input_validation_type": 2,
+              "format_type": 1,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Duração da Garantia"
+              }
+            ]
+          },
+          {
+            "attribute_id": 100130,
+            "mandatory": false,
+            "name": "Feature",
+            "attribute_value_list": [
+              {
+                "value_id": 1116,
+                "name": "Adjustable",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Ajustável"
+                  }
+                ]
+              },
+              {
+                "value_id": 1134,
+                "name": "BPA Free",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Livre de BPA"
+                  }
+                ]
+              },
+              {
+                "value_id": 12209,
+                "name": "Heat Resistant",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Resistente ao Calor"
+                  }
+                ]
+              },
+              {
+                "value_id": 14075,
+                "name": "With Handle",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Com Cabo"
+                  }
+                ]
+              },
+              {
+                "value_id": 14276,
+                "name": "With Removable Infuser",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Com infusor removível"
+                  }
+                ]
+              },
+              {
+                "value_id": 14277,
+                "name": "Anti-Scalding",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Anti-Escalding"
+                  }
+                ]
+              },
+              {
+                "value_id": 14278,
+                "name": "Anti-Skid",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Antiderrapagem"
+                  }
+                ]
+              },
+              {
+                "value_id": 14279,
+                "name": "Latex Free",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Látex Livre"
+                  }
+                ]
+              },
+              {
+                "value_id": 14280,
+                "name": "Nitrosamine Free",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Sem Nitrosamina"
+                  }
+                ]
+              },
+              {
+                "value_id": 14281,
+                "name": "Phthalate Free",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Livre de ftalatos"
+                  }
+                ]
+              },
+              {
+                "value_id": 14282,
+                "name": "PVC Free",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Livre de PVC"
+                  }
+                ]
+              },
+              {
+                "value_id": 14283,
+                "name": "Hermetic",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Vedação Hermética"
+                  }
+                ]
+              },
+              {
+                "value_id": 14284,
+                "name": "Dishwasher Safe",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Pode ser usado na lava-louças"
+                  }
+                ]
+              },
+              {
+                "value_id": 14285,
+                "name": "Fridge Safe",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Seguro na geladeira"
+                  }
+                ]
+              },
+              {
+                "value_id": 14286,
+                "name": "Microwave Safe",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Seguro para micro-ondas"
+                  }
+                ]
+              },
+              {
+                "value_id": 14287,
+                "name": "Can Be Stacked",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Pode ser empilhado"
+                  }
+                ]
+              },
+              {
+                "value_id": 14288,
+                "name": "With Cover",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Com Capa"
+                  }
+                ]
+              },
+              {
+                "value_id": 14289,
+                "name": "Thermal",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Térmico"
+                  }
+                ]
+              },
+              {
+                "value_id": 14290,
+                "name": "Heat Insulating",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Isolamento térmico"
+                  }
+                ]
+              }
+            ],
+            "attribute_info": {
+              "input_type": 5,
+              "input_validation_type": 2,
+              "format_type": 1,
+              "max_value_count": 5,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Funcionalidades"
+              }
+            ]
+          },
+          {
+            "attribute_id": 100134,
+            "mandatory": false,
+            "name": "Material",
+            "attribute_value_list": [
+              {
+                "value_id": 1207,
+                "name": "Plastic",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Plástico"
+                  }
+                ]
+              },
+              {
+                "value_id": 1218,
+                "name": "Glass",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Vidro"
+                  }
+                ]
+              },
+              {
+                "value_id": 1223,
+                "name": "Metal",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Metal"
+                  }
+                ]
+              },
+              {
+                "value_id": 1257,
+                "name": "Others",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Outros"
+                  }
+                ]
+              },
+              {
+                "value_id": 1481,
+                "name": "Ceramic",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Cerâmica"
+                  }
+                ]
+              },
+              {
+                "value_id": 1801,
+                "name": "Porcelain",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Porcelana"
+                  }
+                ]
+              },
+              {
+                "value_id": 1925,
+                "name": "Bone China",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Porcelana a Base de Ossos"
+                  }
+                ]
+              },
+              {
+                "value_id": 1942,
+                "name": "Earthernware"
+              },
+              {
+                "value_id": 1955,
+                "name": "Fine China",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Porcelana"
+                  }
+                ]
+              },
+              {
+                "value_id": 1965,
+                "name": "Stoneware",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Grés"
+                  }
+                ]
+              }
+            ],
+            "attribute_info": {
+              "input_type": 5,
+              "input_validation_type": 2,
+              "format_type": 1,
+              "max_value_count": 5,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Material"
+              }
+            ]
+          },
+          {
+            "attribute_id": 100169,
+            "mandatory": false,
+            "name": "Style",
+            "attribute_value_list": [
+              {
+                "value_id": 1559,
+                "name": "Retro",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Retrô"
+                  }
+                ]
+              },
+              {
+                "value_id": 1625,
+                "name": "Vintage",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Vintage"
+                  }
+                ]
+              },
+              {
+                "value_id": 11679,
+                "name": "Modern",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Modern"
+                  }
+                ]
+              },
+              {
+                "value_id": 11719,
+                "name": "Japanese",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Japanese"
+                  }
+                ]
+              },
+              {
+                "value_id": 11757,
+                "name": "Classic",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Classic"
+                  }
+                ]
+              },
+              {
+                "value_id": 12533,
+                "name": "Antique",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Antique"
+                  }
+                ]
+              },
+              {
+                "value_id": 12534,
+                "name": "Asian",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Asian"
+                  }
+                ]
+              },
+              {
+                "value_id": 12535,
+                "name": "French Country",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "French Country"
+                  }
+                ]
+              },
+              {
+                "value_id": 12536,
+                "name": "Garden",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Garden"
+                  }
+                ]
+              },
+              {
+                "value_id": 12537,
+                "name": "Glam",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Glam"
+                  }
+                ]
+              },
+              {
+                "value_id": 12538,
+                "name": "Industrial",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Industrial"
+                  }
+                ]
+              },
+              {
+                "value_id": 12539,
+                "name": "Rustic",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Rustic"
+                  }
+                ]
+              },
+              {
+                "value_id": 12540,
+                "name": "Southeast Asian",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Southeast Asian"
+                  }
+                ]
+              },
+              {
+                "value_id": 12541,
+                "name": "Traditional",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Traditional"
+                  }
+                ]
+              },
+              {
+                "value_id": 12542,
+                "name": "Tropical",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Tropical"
+                  }
+                ]
+              }
+            ],
+            "attribute_info": {
+              "input_type": 5,
+              "input_validation_type": 2,
+              "format_type": 1,
+              "max_value_count": 5,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Estilo"
+              }
+            ]
+          },
+          {
+            "attribute_id": 100278,
+            "mandatory": false,
+            "name": "Volume Capacity",
+            "attribute_info": {
+              "input_type": 5,
+              "input_validation_type": 3,
+              "format_type": 2,
+              "attribute_unit_list": ["L", "ml"],
+              "max_value_count": 5,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Capacidade de Volume"
+              }
+            ]
+          },
+          {
+            "attribute_id": 100370,
+            "mandatory": false,
+            "name": "Warranty Type",
+            "attribute_value_list": [
+              {
+                "value_id": 2397,
+                "name": "International Warranty",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Garantia Internacional"
+                  }
+                ]
+              },
+              {
+                "value_id": 2419,
+                "name": "Manufacturer Warranty",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Garantia do Fabricante"
+                  }
+                ]
+              },
+              {
+                "value_id": 2437,
+                "name": "Supplier Warranty",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Garantia do Fornecedor"
+                  }
+                ]
+              },
+              {
+                "value_id": 5576,
+                "name": "No Warranty",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Sem Garantia"
+                  }
+                ]
+              }
+            ],
+            "attribute_info": {
+              "input_type": 2,
+              "input_validation_type": 2,
+              "format_type": 1,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Tipo de Garantia"
+              }
+            ]
+          },
+          {
+            "attribute_id": 100729,
+            "mandatory": false,
+            "name": "Antique Collection",
+            "attribute_value_list": [
+              {
+                "value_id": 3803,
+                "name": "No",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Não"
+                  }
+                ]
+              },
+              {
+                "value_id": 3819,
+                "name": "Yes",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Sim"
+                  }
+                ]
+              }
+            ],
+            "attribute_info": {
+              "input_type": 1,
+              "input_validation_type": 0,
+              "format_type": 1,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Coleção de Antiguidade"
+              }
+            ]
+          },
+          {
+            "attribute_id": 100999,
+            "mandatory": false,
+            "name": "Quantity",
+            "attribute_info": {
+              "input_type": 3,
+              "input_validation_type": 2,
+              "format_type": 1,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Quantidade da embalagem"
+              }
+            ]
+          },
+          {
+            "attribute_id": 101029,
+            "mandatory": false,
+            "name": "indication",
+            "attribute_info": {
+              "input_type": 3,
+              "input_validation_type": 3,
+              "format_type": 2,
+              "attribute_unit_list": [
+                "ML",
+                "L",
+                "MG",
+                "G/GR",
+                "KG",
+                "CM",
+                "M",
+                "Dozen",
+                "Piece",
+                "Pack",
+                "Set",
+                "Box"
+              ],
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Tamanho Do Pacote"
+              }
+            ]
+          },
+          {
+            "attribute_id": 101219,
+            "mandatory": false,
+            "name": "Custom Product",
+            "attribute_value_list": [
+              {
+                "value_id": 7221,
+                "name": "Yes",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Sim"
+                  }
+                ]
+              },
+              {
+                "value_id": 7222,
+                "name": "No",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Não"
+                  }
+                ]
+              }
+            ],
+            "attribute_info": {
+              "input_type": 1,
+              "input_validation_type": 0,
+              "format_type": 1,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Produto personalizado"
+              }
+            ]
+          },
+          {
+            "attribute_id": 101306,
+            "mandatory": false,
+            "name": "Quantity per Pack",
+            "attribute_value_list": [
+              {
+                "value_id": 11855,
+                "name": "1",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "1"
+                  }
+                ]
+              },
+              {
+                "value_id": 11856,
+                "name": "2",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "2"
+                  }
+                ]
+              },
+              {
+                "value_id": 11857,
+                "name": "3",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "3"
+                  }
+                ]
+              },
+              {
+                "value_id": 11858,
+                "name": "4",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "4"
+                  }
+                ]
+              },
+              {
+                "value_id": 11859,
+                "name": "5",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "5"
+                  }
+                ]
+              },
+              {
+                "value_id": 11860,
+                "name": "6",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "6"
+                  }
+                ]
+              },
+              {
+                "value_id": 11861,
+                "name": "7",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "7"
+                  }
+                ]
+              },
+              {
+                "value_id": 11862,
+                "name": "8",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "8"
+                  }
+                ]
+              },
+              {
+                "value_id": 11863,
+                "name": "9",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "9"
+                  }
+                ]
+              },
+              {
+                "value_id": 11864,
+                "name": "10",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "10"
+                  }
+                ]
+              },
+              {
+                "value_id": 11865,
+                "name": "11",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "11"
+                  }
+                ]
+              },
+              {
+                "value_id": 11866,
+                "name": "12",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "12"
+                  }
+                ]
+              }
+            ],
+            "attribute_info": {
+              "input_type": 2,
+              "input_validation_type": 0,
+              "format_type": 1,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Quantidade por Pacote"
+              }
+            ]
+          },
+          {
+            "attribute_id": 101534,
+            "mandatory": false,
+            "name": "Coffee Pot Type",
+            "attribute_value_list": [
+              {
+                "value_id": 13618,
+                "name": "Slim Pot",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Slim Pot"
+                  }
+                ]
+              },
+              {
+                "value_id": 13619,
+                "name": "French Press",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "French Press"
+                  }
+                ]
+              },
+              {
+                "value_id": 13620,
+                "name": "Moka Pot",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Moka Pot"
+                  }
+                ]
+              },
+              {
+                "value_id": 13621,
+                "name": "Siphon Pot",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Siphon Pot"
+                  }
+                ]
+              }
+            ],
+            "attribute_info": {
+              "input_type": 2,
+              "input_validation_type": 0,
+              "format_type": 1,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Coffee Pot Type"
+              }
+            ]
+          },
+          {
+            "attribute_id": 101535,
+            "mandatory": false,
+            "name": "Manufacturing Technique",
+            "attribute_value_list": [
+              {
+                "value_id": 13622,
+                "name": "Handmade",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Handmade"
+                  }
+                ]
+              },
+              {
+                "value_id": 13623,
+                "name": "Machine Made",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Machine Made"
+                  }
+                ]
+              }
+            ],
+            "attribute_info": {
+              "input_type": 1,
+              "input_validation_type": 0,
+              "format_type": 1,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Manufacturing Technique"
+              }
+            ]
+          },
+          {
+            "attribute_id": 101537,
+            "mandatory": false,
+            "name": "Number Of Users",
+            "attribute_value_list": [
+              {
+                "value_id": 13630,
+                "name": "1-5 People",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "1-5 People"
+                  }
+                ]
+              },
+              {
+                "value_id": 13631,
+                "name": "6-10 People",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "6-10 People"
+                  }
+                ]
+              },
+              {
+                "value_id": 13632,
+                "name": "Above 11 People",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Above 11 People"
+                  }
+                ]
+              }
+            ],
+            "attribute_info": {
+              "input_type": 2,
+              "input_validation_type": 0,
+              "format_type": 1,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Number Of Users"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "debug_message": ""
+}
