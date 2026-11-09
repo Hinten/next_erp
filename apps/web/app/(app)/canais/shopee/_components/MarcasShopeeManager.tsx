@@ -19,6 +19,7 @@ import {
   desfazerRemocaoMarcaShopee,
   lerAlteracoesMarcasShopee,
   ocupantesDosRegistrosMarcasShopee,
+  remocoesJaFeitasMarcasShopee,
   removerMarcaShopee,
   type AlteracoesMarcasShopee,
   type OcupanteDoRegistroMarcaShopee,
@@ -75,10 +76,13 @@ import { AdicionarMarcasShopeeModal } from './AdicionarMarcasShopeeModal';
  * as "already gone" (#2084 review F1). A cached emission therefore changes
  * nothing here; the next server one does.
  *
- * A staged registration that the registry comes to hold as stored EXACTLY
- * (the conflict modal's "Salvar mesmo assim" over another operator's identical
- * row) is satisfied and leaves the delta at once, before the save reads the
- * form (`cadastrosJaGravadosMarcasShopee`, #2084 review F2).
+ * A staged registration or removal the registry comes to hold as already
+ * done — a registration held as stored EXACTLY, a removal with EVERY document
+ * held absent (the conflict modal's "Salvar mesmo assim" over another
+ * operator's identical row, or over a removal another tab already did) —
+ * leaves the delta at once, before the save reads the form
+ * (`cadastrosJaGravadosMarcasShopee`, #2084 review F2;
+ * `remocoesJaFeitasMarcasShopee`, its removal mirror).
  *
  * ## Identity is the integer `brand_id`
  *
@@ -216,13 +220,16 @@ export function MarcasShopeeManager({
     documents.seedFormField(CAMPO_MARCAS_SHOPEE, null);
   }, [db, integracaoId, documents, error, listadosNoServidor, value]);
 
-  // A staged registration the registry comes to hold as stored EXACTLY is
-  // satisfied, and leaves the delta (#2084 review F2). It must leave INSIDE
-  // the registry's notify: "Salvar mesmo assim" rebases the contested path and
-  // saves in the same click, and `saveRecord` would skip that `set` unread and
-  // never project it off the form — so an effect after the render would come
-  // too late, after the save had read (and, with another edit, reset the form
-  // to) the delta still holding it. The subscription is live while another tab
+  // A staged registration or removal the registry comes to hold as already
+  // done leaves the delta: a registration held as stored EXACTLY is satisfied
+  // (#2084 review F2), a removal with EVERY document held absent is done (its
+  // removal mirror). Both are read against the SAME delta and leave in ONE
+  // `onChange`. It must leave INSIDE the registry's notify: "Salvar mesmo
+  // assim" rebases the contested path and saves in the same click, and
+  // `saveRecord` would skip that `set` or `delete` unread and never project it
+  // off the form — so an effect after the render would come too late, after
+  // the save had read (and, with another edit, reset the form to) the delta
+  // still holding it. The subscription is live while another tab
   // is shown only because the page keeps this tab mounted
   // (`persistentSections`): a hidden `<Activity>` would unmount it, and the
   // "Salvar mesmo assim" clicked from «Dados gerais» would drop nothing.
@@ -248,9 +255,16 @@ export function MarcasShopeeManager({
         delta,
         documents,
       );
-      if (satisfeitos.length === 0) return;
+      const feitas = remocoesJaFeitasMarcasShopee(
+        atuais.current.db,
+        atuais.current.integracaoId,
+        delta,
+        documents,
+      );
+      if (satisfeitos.length === 0 && feitas.length === 0) return;
       let proximo: AlteracoesMarcasShopee | null = delta;
       for (const brandId of satisfeitos) proximo = desfazerAdicaoMarcaShopee(proximo, brandId);
+      for (const brandId of feitas) proximo = desfazerRemocaoMarcaShopee(proximo, brandId);
       atuais.current = { ...atuais.current, value: proximo };
       atuais.current.onChange(proximo);
     });
