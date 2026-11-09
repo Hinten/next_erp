@@ -492,7 +492,15 @@ export interface SkuDaLojaLi {
  * row `'x-un'`.
  * Distinct: `'ABC-1'` and `'ABC-2'`; `'X-AZ'` and `'X-AZUL'`; `'ABC-1'` and `'ABC1'`; `'01'` and `'1'`;
  * a simple `'X'` and a row `'X-UNI'`; a PARENT `'X'` (no member) and a row `'X-UN'`; `'X'` twice;
- * a simple `'X'` alone (its own derived SKU is no other row). Pure and total.
+ * a simple `'X'` alone (its own derived SKU is no other row).
+ *
+ * ⚠️ Sharing a form is exact on ASCII (non-empty, trimmed, case-folded equality) and WIDER beyond it:
+ * characters that share an upper or a lower case collide, as `'ß'` and `'ss'` do through `'SS'` and
+ * the Kelvin sign and `'K'` through `'k'`, although the probe calls neither parecido with the other.
+ * A stated over-fold, kept on purpose: asking for the probe's one-way reach instead would lose
+ * `'Abc-1'` and `'aBC-1'`, and its worst case is one refused create with an actionable pendência.
+ *
+ * Pure and total.
  */
 export function skusParecidosNaLojaLi(linhas: readonly SkuDaLojaLi[]): ReadonlySet<string> {
   const donosPorForma = new Map<string, Set<string>>();

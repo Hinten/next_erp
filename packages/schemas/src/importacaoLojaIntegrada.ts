@@ -328,8 +328,8 @@ export const MOTIVO_FALHA_IMPORTACAO_LI = {
  * **Actionable** ({@link PENDENCIAS_ACIONAVEIS_LI}) — a person can fix it in the ERP or in the
  * store; they keep the per-conta summary aviso open: `sem-sku`, `sku-ambiguo`, `sku-parecido`,
  * `sku-ja-existe`, `sku-repetido-na-loja`, `sku-parecido-na-loja` (a SKU that another store row
- * shares a probe form with, or that meets another row's derived sole-member SKU: such a row is
- * never created or matched by SKU), `vinculo-ambiguo`, `vinculado-a-outro`,
+ * shares a probe form with, or that meets another row's derived sole-member SKU: it means the row
+ * must not be created or matched by SKU), `vinculo-ambiguo`, `vinculado-a-outro`,
  * `vinculo-pai-ausente`, `vinculo-ilegivel`, `forma-diferente`, `filho-de-outra-familia`,
  * `grade-sem-vinculo`, `opcao-sem-vinculo`, `grade-em-dois-grupos`, `opcao-em-dois-grupos`,
  * `variacao-ambigua`, `variacao-sem-vinculo`, `evidencia-divergente`, `categoria-sem-vinculo`,
@@ -914,8 +914,8 @@ const resultadoFotosDoProgressoSchema = z.object({
 /**
  * One family's complete step between its units: what the preparation decided, the photo targets,
  * the photo cursor and, once every picture is decided, the photos' result. `fotos` goes back to
- * `null` the moment `resultadoFotos` is set: nothing reads the cursor after that, and keeping both
- * would double the worst case.
+ * `null` the moment `resultadoFotos` is set, and the schema refuses a progress holding both: nothing
+ * reads the cursor after that, and keeping it would add about 150 KB to the worst case.
  *
  * Worst case (a root and 50 variations, the store's cap, each with 50 pictures, every picture
  * refused): about 185 KB while the pictures run, about 230 KB once the result replaces the cursor.
@@ -923,37 +923,51 @@ const resultadoFotosDoProgressoSchema = z.object({
  * names, 1,000 selected ids) the document stays near 855 KB; with 30-character names, near 405 KB.
  * Kept beside the result, the cursor would take that document to about 1 MB, some 45 KB from
  * Firestore's limit. Pinned in `importacaoLojaIntegrada.test.ts`.
+ *
+ * ⚠️ These figures hold at the store's cap, and nothing in this repo enforces that cap: `filhos` is
+ * read with no ceiling. Each variation past it adds about 4.4 KB, so with every other ceiling hit
+ * the document passes 1 MiB near 94 variations, and Firestore would then refuse its checkpoint.
  */
-export const progressoDaFamiliaLiSchema = z.object({
-  /** The family's root store id: a progress of any other family is none. */
-  raizLiId: idLiSchema,
-  caminho: caminhoDoCompletarLiSchema,
-  /** The ERP root: matched, or created by this job. */
-  erpRaizId: z.string().min(1),
-  /** The variations' category (the parent's stored one, else the one resolved for it). */
-  categoria: z.object({
-    erpId: z.string().min(1).nullable(),
-    criadaPelaImportacao: z.boolean(),
-  }),
-  /** The plan's create was carried out (or met again, landed, by a retried unit). */
-  criacaoAplicada: z.boolean(),
-  completado: z.boolean(),
-  campos: z.array(z.string()),
-  pendencias: z.array(pendenciaDoProgressoSchema),
-  /** Store categories this family created (Simular: would), carried to the item at its closing. */
-  categoriasCriadas: z.array(idLiSchema),
-  criados: z.number().int().nonnegative(),
-  completados: z.number().int().nonnegative(),
-  vinculados: z.number().int().nonnegative(),
-  /** ERP produtos the preparation found gone: no link is written for them. */
-  sumidos: z.array(z.string().min(1)),
-  /** The produtos whose pictures may be copied, in order; their pictures are the details'. */
-  alvos: z.array(z.object({ produtoId: z.string().min(1), liId: idLiSchema.nullable() })),
-  /** The photo cursor; `null` before the first picture and again once the result is set. */
-  fotos: cursorFotosLiSchema.nullable(),
-  /** Every picture decided: the photos' result, for the closing; `null` while under way. */
-  resultadoFotos: resultadoFotosDoProgressoSchema.nullable(),
-});
+export const progressoDaFamiliaLiSchema = z
+  .object({
+    /** The family's root store id: a progress of any other family is none. */
+    raizLiId: idLiSchema,
+    caminho: caminhoDoCompletarLiSchema,
+    /** The ERP root: matched, or created by this job. */
+    erpRaizId: z.string().min(1),
+    /** The variations' category (the parent's stored one, else the one resolved for it). */
+    categoria: z.object({
+      erpId: z.string().min(1).nullable(),
+      criadaPelaImportacao: z.boolean(),
+    }),
+    /** The plan's create was carried out (or met again, landed, by a retried unit). */
+    criacaoAplicada: z.boolean(),
+    completado: z.boolean(),
+    campos: z.array(z.string()),
+    pendencias: z.array(pendenciaDoProgressoSchema),
+    /** Store categories this family created (Simular: would), carried to the item at its closing. */
+    categoriasCriadas: z.array(idLiSchema),
+    criados: z.number().int().nonnegative(),
+    completados: z.number().int().nonnegative(),
+    vinculados: z.number().int().nonnegative(),
+    /** ERP produtos the preparation found gone: no link is written for them. */
+    sumidos: z.array(z.string().min(1)),
+    /** The produtos whose pictures may be copied, in order; their pictures are the details'. */
+    alvos: z.array(z.object({ produtoId: z.string().min(1), liId: idLiSchema.nullable() })),
+    /** The photo cursor; `null` before the first picture and again once the result is set. */
+    fotos: cursorFotosLiSchema.nullable(),
+    /** Every picture decided: the photos' result, for the closing; `null` while under way. */
+    resultadoFotos: resultadoFotosDoProgressoSchema.nullable(),
+  })
+  .superRefine((progresso, ctx) => {
+    if (progresso.fotos !== null && progresso.resultadoFotos !== null) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['fotos'],
+        message: 'the photo cursor must be null once resultadoFotos is set',
+      });
+    }
+  });
 export type ProgressoDaFamiliaLi = z.infer<typeof progressoDaFamiliaLiSchema>;
 
 export const importacaoLojaIntegradaSchema = z.object({
@@ -1020,7 +1034,7 @@ export const importacaoLojaIntegradaSchema = z.object({
   /**
    * The family whose complete step spans units: `null` between families and in every other phase.
    * A stored value that does not parse reads as `null`, and the family is prepared again: safe,
-   * since every write of a preparation is fill-empty, create-only or tier 0. The dispatch validates
+   * since every write of a preparation is fill-empty, create-only or tier 0. A writer must validate
    * it through `progressoDaFamiliaLiSchema.parse` BEFORE writing, so this tolerance never hides a
    * bug.
    */

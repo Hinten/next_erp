@@ -88,6 +88,17 @@ function progressoMinimo(): ProgressoDaFamiliaLi {
   });
 }
 
+/** A photo cursor and a photos' result, each with its smallest valid content. */
+const CURSOR_FOTOS = {
+  produtoId: 'p1',
+  proxima: 0,
+  reduzida: false,
+  enviadas: [],
+  feitos: [],
+  recusadas: [],
+};
+const RESULTADO_FOTOS = { produtos: [], gravadas: 0, pendencias: [] };
+
 describe('the dispatch budget constants', () => {
   it('a dispatch is held to 100 s: budget 70 s + tail 30 s', () => {
     expect(ORCAMENTO_DESPACHO_IMPORTACAO_LI_MS).toBe(70_000);
@@ -270,10 +281,33 @@ describe('the job field a family’s complete step spans units through', () => {
       7,
       { raizLiId: 1000001 },
       { ...progressoMinimo(), caminho: 'outro' },
+      { ...progressoMinimo(), fotos: CURSOR_FOTOS, resultadoFotos: RESULTADO_FOTOS },
     ]) {
       const job = importacaoLojaIntegradaSchema.parse({ ...JOB_MINIMO, progressoDaFamilia });
       expect(job.progressoDaFamilia).toBeNull();
     }
+  });
+
+  it.each([
+    ['neither yet', {}],
+    ['a cursor under way', { fotos: CURSOR_FOTOS }],
+    ['a result, the cursor cleared', { resultadoFotos: RESULTADO_FOTOS }],
+  ])('EQUAL: %s is a progress', (_r, fotos) => {
+    expect(progressoDaFamiliaLiSchema.safeParse({ ...progressoMinimo(), ...fotos }).success).toBe(
+      true,
+    );
+  });
+
+  it.each([
+    ['a cursor under way', CURSOR_FOTOS],
+    ['a cursor past its last target', { ...CURSOR_FOTOS, produtoId: null }],
+  ])('⚠️ NEAR-MISS: %s beside a result is refused, not stored', (_r, fotos) => {
+    const lido = progressoDaFamiliaLiSchema.safeParse({
+      ...progressoMinimo(),
+      fotos,
+      resultadoFotos: RESULTADO_FOTOS,
+    });
+    expect(lido.success).toBe(false);
   });
 
   it('⚠️ NEAR-MISS: a readable progress is kept whole, never read as none', () => {
@@ -503,11 +537,14 @@ describe('a job document stays under the 1 MiB limit with a family at its ceilin
     expect(tamanhoDoDoc(jobNoTeto('ã'.repeat(30), noFechamento))).toBeLessThan(512 * 1024);
   });
 
-  it('⚠️ the closing clears the cursor: keeping both would leave almost no margin', () => {
-    // What the docblock's "goes back to null" buys: with the cursor kept beside the result, the
-    // worst case grows by the whole cursor, past the 900 KiB this contract allows.
-    const ambos = progressoDaFamiliaLiSchema.parse({ ...noFechamento, fotos: sobCursor.fotos });
-    expect(tamanhoDoDoc(jobNoTeto('ã'.repeat(255), ambos))).toBeGreaterThan(900 * 1024);
+  it('⚠️ the schema refuses a cursor beside the result: that shape would leave almost no margin', () => {
+    // What the refusal buys: with the cursor kept beside the result, the worst case grows by the
+    // whole cursor, past the 900 KiB this contract allows. The document is assembled by hand,
+    // because the job's own field reads this progress as none.
+    const ambos = { ...noFechamento, fotos: sobCursor.fotos };
+    expect(progressoDaFamiliaLiSchema.safeParse(ambos).success).toBe(false);
+    const job = { ...jobNoTeto('ã'.repeat(255), noFechamento), progressoDaFamilia: ambos };
+    expect(tamanhoDoDoc(job)).toBeGreaterThan(900 * 1024);
   });
 });
 

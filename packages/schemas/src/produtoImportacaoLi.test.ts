@@ -518,6 +518,51 @@ describe('skusParecidosNaLojaLi — the store-side near duplicates', () => {
     expect(decidir(linhas)).toEqual([]);
   });
 
+  it.each<[string, string, string]>([
+    ['the sharp s and ss, through SS', 'ß', 'ss'],
+    ['the dotless i and i, through I', 'ı', 'i'],
+    ['the long s and s, through S', 'ſ', 's'],
+    ['a ligature and its letters, through FI', 'ﬁ', 'fi'],
+    ['the two lower-case sigmas, through their upper case', 'ς', 'σ'],
+    ['the Kelvin sign and K, through k', 'K', 'K'],
+  ])(
+    '⚠️ STATED OVER-FOLD: %s collide, though the probe calls neither parecido with the other',
+    (_r, a, b) => {
+      expect(skuParecidoLi(a)).not.toContain(b);
+      expect(skuParecidoLi(b)).not.toContain(a);
+      expect(decidir([linha(a), linha(b)])).toEqual([a, b].sort());
+    },
+  );
+
+  it('why the over-fold stays: the probe’s one-way reach would lose pairs that must collide', () => {
+    // Two MIXED cases: neither SKU's forms hold the other's bytes, and these two must collide.
+    expect(skuParecidoLi('Abc-1')).not.toContain('aBC-1');
+    expect(skuParecidoLi('aBC-1')).not.toContain('Abc-1');
+    expect(decidir([linha('Abc-1'), linha('aBC-1')])).toEqual(['Abc-1', 'aBC-1']);
+    // Reached in one direction only: asking for both would lose this one.
+    expect(skuParecidoLi('ß')).toContain('SS');
+    expect(skuParecidoLi('SS')).not.toContain('ß');
+    expect(decidir([linha('ß'), linha('SS')])).toEqual(['SS', 'ß']);
+  });
+
+  it('on ASCII the fold is exact: two rows collide only when non-empty, trimmed and case-folded they are equal', () => {
+    const alfabeto = ['a', 'A', 'b', ' ', '-'];
+    const curtos = alfabeto.flatMap((x) => [x, ...alfabeto.map((y) => x + y)]);
+    const skus = curtos.flatMap((x) => [x, ...alfabeto.map((y) => x + y)]);
+    const dobrado = (s: string): string => s.trim().toLowerCase();
+    const unicos = [...new Set(skus)];
+    expect(unicos.length).toBeGreaterThan(100);
+    for (const a of unicos) {
+      for (const b of unicos) {
+        if (a === b) continue;
+        const colidem = skusParecidosNaLojaLi([linha(a), linha(b)]).size > 0;
+        expect(colidem, JSON.stringify([a, b])).toBe(
+          dobrado(a) !== '' && dobrado(a) === dobrado(b),
+        );
+      }
+    }
+  });
+
   it('only the rows that collide are returned, whatever else the snapshot holds', () => {
     expect(decidir([linha('A'), linha('a'), linha('b'), simples('C')])).toEqual(['A', 'a']);
   });
