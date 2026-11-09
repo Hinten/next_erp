@@ -104,6 +104,40 @@ describe('CORS allow-list', () => {
   });
 });
 
+describe('Access-Control-Expose-Headers (the label file name)', () => {
+  const ETIQUETA = 'http://localhost:3011/api/marketplace/amazon/etiqueta';
+
+  function post(origin: string): Response {
+    return proxy(
+      new NextRequest(ETIQUETA, { method: 'POST', headers: { origin } }),
+    ) as unknown as Response;
+  }
+
+  it('★ a non-preflight answer to an allowed origin exposes Content-Disposition', () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    vi.stubEnv('ALLOWED_ADMIN_ORIGINS', 'https://app.example.com');
+    expect(post('https://app.example.com').headers.get('access-control-expose-headers')).toBe(
+      'Content-Disposition',
+    );
+  });
+
+  it('★ NEAR-MISS: a disallowed origin gets no expose header', () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    vi.stubEnv('ALLOWED_ADMIN_ORIGINS', 'https://app.example.com');
+    expect(
+      post('https://evil.example.com').headers.get('access-control-expose-headers'),
+    ).toBeNull();
+  });
+
+  it('★ NEAR-MISS: the preflight, allowed origin included, carries none — the browser reads it off the answer', () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    vi.stubEnv('ALLOWED_ADMIN_ORIGINS', 'https://app.example.com');
+    const res = preflight('https://app.example.com');
+    expect(res.headers.get('access-control-allow-origin')).toBe('https://app.example.com');
+    expect(res.headers.get('access-control-expose-headers')).toBeNull();
+  });
+});
+
 describe('CORS methods and headers', () => {
   it('lists exactly GET, POST and OPTIONS (status and OAuth start), headers and max-age', () => {
     vi.stubEnv('NODE_ENV', 'production');

@@ -15,6 +15,7 @@ import {
   redirecionarParaWeb,
   respostaDeErroAmazon,
   respostaErro,
+  respostaEtiquetaZpl,
   respostaIdInvalido,
   respostaJson,
   respostaSemWebAppUrl,
@@ -44,6 +45,38 @@ describe('the headers', () => {
     );
     cabecalhosOk(comCabecalhosAmazon(new Response(null, { status: 401 })));
     cabecalhosOk(respostaVazia(200));
+    cabecalhosOk(respostaEtiquetaZpl({ bytes: new Uint8Array([0x5e]), nomeArquivo: 'a.zpl' }));
+  });
+});
+
+describe('respostaEtiquetaZpl (the one byte answer)', () => {
+  /** Bytes no UTF-8 decode would round-trip: an answer that re-encodes them changes them. */
+  const BYTES = new Uint8Array([0x5e, 0x58, 0x41, 0xff, 0x00, 0xc3, 0x28, 0x5e, 0x58, 0x5a]);
+
+  it('★ 200, Content-Type EXACTLY text/plain (no charset), the attachment name, both headers, the bytes verbatim', async () => {
+    const res = respostaEtiquetaZpl({
+      bytes: BYTES,
+      nomeArquivo: 'amazon-171-9876543-2109876.zpl',
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe('text/plain');
+    expect(res.headers.get('content-disposition')).toBe(
+      'attachment; filename="amazon-171-9876543-2109876.zpl"',
+    );
+    cabecalhosOk(res);
+    expect(new Uint8Array(await res.arrayBuffer())).toEqual(BYTES);
+  });
+
+  it.each([
+    ['a double quote, which would close the header value', 'a".zpl'],
+    ['a space', 'a b.zpl'],
+    ['a line break, which would start another header', 'a\n.zpl'],
+    ['a trailing line break', 'a.zpl\n'],
+    ['a path separator', 'a/b.zpl'],
+    ['a non-ASCII letter', 'ação.zpl'],
+    ['an empty name', ''],
+  ])('★ %s in the name is a TypeError, nothing answered', (_nome, nomeArquivo) => {
+    expect(() => respostaEtiquetaZpl({ bytes: BYTES, nomeArquivo })).toThrow(TypeError);
   });
 });
 

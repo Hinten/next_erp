@@ -167,7 +167,7 @@ The row lands with a whole-row assertion in `marketplace.test.ts`, replacing the
 ### 1.2 Unknowns only a live call settles
 
 Under D11 these split into three kinds:
-- **CAPTURABLE:** a read-only production response the owner captures by hand; the step-2b sanitizer turns it into a fixture before the dependent step merges.
+- **CAPTURABLE:** a read-only production response the owner captures by hand; the step-2b sanitizer turns it into a fixture. No capture gates a merge (the 2026-10-27 precedent): the dependent step ships its provisional default with a named flip test.
 - **WRITE-ONLY:** settled defensively in code now, and confirmed on a canary in the window.
 - **GATE:** stops a step if the answer is unfavourable.
 
@@ -234,7 +234,7 @@ A gap investigation then read every changelog entry and every docs page for Easy
 | D9 | **Price:** PRE-cutover and **manual only**. **The ERP sets `our_price`**; no Amazon repricer runs at the cutover. `minimum/maximum_seller_allowed_price` come from one pure function, `faixaDePrecoAmazon`. In v1 it reads today's price lists. When the promotional list is deprecated in favour of a price range, only that function changes. | Step 13. |
 | D10 | **App:** reuse the existing app (Public, Draft). The new ERP gets its **own authorization** through the website OAuth flow (`version=beta`) with its own redirect URI. After the cutover, the legacy copy is neutralised by **rotating the client secret**, not by revoking the authorization, because OAuth revocation is per app and would revoke the new token too. | Step 2; W1, W5, W13. |
 | D11 | **Mock only (the LI D17 analogue).** No live call from this repository's code before the cutover. Fixtures come from the models' `x-amzn-api-sandbox` examples plus sanitized owner captures. The first live calls happen in the window, behind valves and canaries. | Step 2b; §1.2; §5. |
-| D12 | **Easy Ship is scheduled automatically, once, after Amazon accepts the NF-e; after that, printing only fetches the label link.** Nothing is re-sent and nothing is rescheduled: for a scheduled order the bulk call returns the existing schedule plus a fresh `printableDocumentsUrl` **[LATAM, retired] + [operator]**, which the server downloads inside the print request (the link lives ~3 minutes, so it is never stored). `freteInicial.estado` and Amazon's invoice status say whether the order is already scheduled, as in the legacy. Amended by Lucas on 2026-10-14. | Steps 14–15. |
+| D12 | **Easy Ship is scheduled automatically, once, after Amazon accepts the NF-e; after that, printing only fetches the label link.** Nothing is re-sent and nothing is rescheduled: for a scheduled order the bulk call returns the existing schedule plus a fresh `printableDocumentsUrl` **[LATAM, retired] + [operator]**, which the server downloads inside the print request (the link lives ~3 minutes, so it is never stored). `freteInicial.estado` and Amazon's invoice status say whether the order is already scheduled, as in the legacy. Amended by Lucas on 2026-10-14. **Amended 2026-11-09 (Lucas, step 15):** whether the order is already scheduled is decided from the live `getOrder`, through step 7's fold, never from the stored `freteInicial.estado`. | Steps 14–15. |
 | D13 | **The existing AWS forwarder for product notifications is replaced, not reused** (confirmed by Lucas on 2026-10-14). It is switched off with the legacy (W6). Listing notifications return after the cutover through the step-3 relay (P1). | Step 3; P1. |
 | D14 | **Issues:** a tracker plus one issue per step, opened only after Lucas approves this written plan. Migration-window issues (§5) need a **separate** yes. | — |
 | D15 | **Execution:** every step gets a Phase-3 step plan that Lucas approves before code is written; stacked draft PRs. | §4.25. |
@@ -605,7 +605,7 @@ Every step gets a Phase-3 step plan that Lucas approves before code is written (
   - **Rule 7 is a precondition batch, not a transaction.** The pedido and its pagamento land in ONE `WriteBatch`, each write under its own precondition: `create`, or `update(…, { lastUpdateTime })` on the snapshot the decision was derived from. A lost precondition writes nothing and re-derives everything from a fresh read (at most three attempts, then a retryable error). The watermark (`lastMarketplaceUpdate`, µs from `lastUpdatedTime`) is compared on that same snapshot: a strictly OLDER incoming stamp is dropped on a pedido this importer wrote, and an EQUAL stamp re-derives (an unchanged redelivery yields an empty patch and writes nothing; a package-only change that did not move the clock still lands). It is the same tier-2 guarantee with the optimistic check made explicit; no transaction is opened in `apps/amazon`, so the transaction inventory gains no row and the "class B" line above no longer applies. A pedido this importer never wrote is never treated as newer than the incoming read on its stored stamp alone; the estado and freight ladders still refuse any regression.
   - **The index is declared here, not in step 9:** `prodAmazon (contaAmazonOuterRef ASC, sku ASC)`, COLLECTION_GROUP, READY before `functions:amazon` (W9). This supersedes "No new index expected".
   - **Cliente and endereço:** the IBGE code is NOT resolved or stored at import (the NF-e path resolves it for every channel). The document comes from the `BUYER` tax registration, decided by its digits (11 ⇒ CPF, 14 ⇒ CNPJ, check digits verified), never by its type label; never from the recipient, the phone or the e-mail. The address prefers `extendedFields`, and `addressLine2` is never used as the number or appended to the complement. The `MARKETPLACE` registration check is root-aware (an 8-digit root or 14 digits; absent is never a mismatch) and a mismatch raises a per-conta aviso. A real PENDING read (2026-11-03) carries it as 14 bare digits, so the full-equality arm is the one in use.
-  - **`pedido.marketplace`** also carries `invoiceStatus`, `fulfilledBy` and `programs`, verbatim (step 15 reads `invoiceStatus` there). `cancelReason` is never stored (free text a buyer may type).
+  - **`pedido.marketplace`** also carries `invoiceStatus`, `fulfilledBy` and `programs`, verbatim (step 15 decides on the live `getOrder`'s `invoiceStatus`, never this copy). `cancelReason` is never stored (free text a buyer may type).
   - **AFN and unknown logistics:** on CREATE, an order fulfilled by Amazon, or one whose `fulfilledBy` is absent or unknown, is created at estado `error` (no stock effect). On UPDATE a logistics signal never flips a stored estado that has a stock effect: `error` only from a pre-approval estado, otherwise the estado is kept. An Amazon-fulfilled order files a pedido incidente; an unknown `fulfilledBy` raises an aviso. This replaces "AFN: flagged, no stock effect, aviso". Tests pin the lifecycle of a PENDING order created without `fulfilledBy`, the provisional default capture C1 validates (PR 5-f): it is created at `error`, so nothing is reserved while it waits for payment; the first read with an approved status is the approval moment for the lines even when it still lacks `fulfilledBy` (the lines are mirrored there and locked after it); an approved `MERCHANT` read moves it to `pago`, creates the pagamento and resolves the aviso, and while every read lacks `fulfilledBy` it stays at `error` with the aviso open. Settled 2026-11-03: a real PENDING read carries `fulfilledBy: MERCHANT`, so it is created through the status table (`aguardandoConfirmacaoDePagamento`, reserving) and the create arm stays; the default above is only the defensive path for a read without the field.
   - **Items → produto through the conta's link docs only** (the conta's `prodAmazon` docs by exact `sku`; a read that reaches its limit, or two owners, is ambiguous and binds nothing). No SKU match and no ASIN match until the listings discussion (D18) decides it: an unlinked line stays unbound with an incidente and no stock effect, and is bound when Amazon re-sends the order after a link doc exists.
   - **Money:** the per-line price is `orderItems[].product.price.unitPrice`; the order discount goes to `descontoTotal` (the line discount stays 0); the freight money is SHIPPING minus its discount, `null` when absent (never 0); the pedido total is derived by the shared `derivePedidoFreteTotals`. This replaces "Money from `proceeds.breakdowns`" for the line price (the breakdowns still give the discount and the freight). Two proceeds shapes are never guessed into a split (PR 5-f), because the payment cross-check proves only the total and cannot see either: a DISCOUNT whose shipping part is not stated, on a line that also charges SHIPPING (no `SHIPPING` detail, and no documented non-shipping details adding up to the whole discount: the whole discount goes to the goods and the freight stays gross, so under FOB the note's total is understated with every total agreeing), and a TAX breakdown that is not exactly 0, counted on the lines and on the order level only when no line counts, since that level aggregates the lines (Amazon shows the tax apart, so its other amounts may be tax-exclusive while the line price is read as tax-inclusive). A read Amazon approved that carries either files a pedido incidente asking a person to check the NF-e's values before emission, plus one countable log line per read; the money itself is unchanged and the incidente does not block emission. Capture C1 (CP4) settles whether either shape occurs in BR.
@@ -660,7 +660,7 @@ Every step gets a Phase-3 step plan that Lucas approves before code is written (
 - **Rule 7:** state-preserving merge under the step-5 watermark; transitions only forward along the table.
 - **Does NOT:** write tracking back to Amazon (Amazon owns DBA tracking).
 - **Amendment (2026-10-27, PR 7):**
-  - **The ladder**, enumerated and forward only: `iniciado` < `aguardandoAutorizacao` < `aguardandoNFe` < `aguardandoValidacaoTransporadora` < `aguardandoAgendamento` < `despachoAutorizado` < `emSeparacao` < `empacotado` < `aguardandoPostagem` < `checkFinalizado` < `postado` < `recebidoPelaTransportadora` < `aCaminho` < `tentandoRealizarEntrega` < `entregue`, with the failures and the return leg beside it. A live state after a failure or a terminal one is written only on a STRICTLY newer order clock. Every later writer of the Amazon freight estado (steps 14 and 15) goes through the same verdict.
+  - **The ladder**, enumerated and forward only: `iniciado` < `aguardandoAutorizacao` < `aguardandoNFe` < `aguardandoValidacaoTransporadora` < `aguardandoAgendamento` < `despachoAutorizado` < `emSeparacao` < `empacotado` < `aguardandoPostagem` < `checkFinalizado` < `postado` < `recebidoPelaTransportadora` < `aCaminho` < `tentandoRealizarEntrega` < `entregue`, with the failures and the return leg beside it. A live state after a failure or a terminal one is written only on a STRICTLY newer order clock. Every later writer of the Amazon freight estado (step 14) goes through the same verdict; step 15 writes none.
   - **The intents above, as `freteInicial.estado`:** `PENDING_SCHEDULE` ⇒ `aguardandoNFe` or `aguardandoAgendamento` by `invoiceStatus` (absent ⇒ no change); `PENDING_PICK_UP`/`PENDING_DROP_OFF` ⇒ `aguardandoPostagem`; `PICKED_UP`/`DROPPED_OFF` ⇒ `postado`; `AT_ORIGIN_FC` ⇒ `recebidoPelaTransportadora`; `AT_DESTINATION_FC` ⇒ `aCaminho`; `OUT_FOR_DELIVERY` ⇒ `tentandoRealizarEntrega`; `DELIVERED` ⇒ `entregue`; the failure and return tokens ⇒ `falhaNaEntrega`, `enderecoNaoEncontrado`, `aCaminhoDoRemetente`, `devolvido`, `objetoExtraviado`. Exact match only; an unknown token changes nothing and raises the `pacote-status-desconhecido` aviso.
   - **`LABEL_CANCELLED` ⇒ `despachoNegado` plus the `coleta-cancelada` aviso**, not "needs rescheduling": rescheduling stays in Seller Central (§7 q3), and a rescheduled package arrives as a newer read.
   - **Several packages:** the least-advanced live package decides (the pedido leaves as a whole); one unknown or unkeyed package blocks the fold. The fold is computed before the CANCELLED decision, so goods already out keep a cancelled order's estado.
@@ -796,31 +796,28 @@ The template's `'feed-assincrono'` warning applies: the notification pipeline ha
 
 ### Step 15: Easy Ship scheduling + on-demand ZPL label — PRE
 
-- **Gate:** `etiqueta: 'fetch'`. **Trigger:** Cloud Task from step 14 (D12, automatic) and HTTP from checkout (print and reprint). **Docs:** [LATAM, retired] (`evidence/latam-dba-review.md`); M:easyShip_2022-03-23.json; D:tokens-api; D:get-tax-information step 5.
+- **Gate:** `etiqueta: 'fetch'`. **Trigger:** Cloud Task from step 14's acceptance (D12, automatic), Cloud Task from the order import whenever it reads an order ready to schedule (an NF-e uploaded by hand in Seller Central), and HTTP from checkout (print and reprint). **Docs:** [LATAM, retired] (`evidence/latam-dba-review.md`); M:easyShip_2022-03-23.json; D:tokens-api; D:get-tax-information step 5.
 - **What the "label link" is.** It is `printableDocumentsUrl` from `createScheduledPackageBulk`, a zip that lives ~3 minutes. There is no separate "get label" operation for BR (`getScheduledPackage` carries no document field), and the link is never stored because it expires. For an order that is **already scheduled**, the same call **does not reschedule**: it returns the existing schedule plus a fresh link **[LATAM, retired] + [operator]: this is how reprinting works in production today**. Fetching the link therefore needs nothing but that call.
-- **Scheduling (automatic, once, D12):** the step-14 task, on `ACCEPTED`:
+- **Scheduling (automatic, once, D12):** the queue `processAmazonEasyShipSchedule`, fed by those two entries, on order-level `ACCEPTED`:
   1. RDT: `POST /tokens/2021-03-01/restrictedDataToken {restrictedResources: [{method: 'POST', path: '/easyShip/2022-03-23/packages/bulk'}]}`.
-  2. `POST /easyShip/2022-03-23/packages/bulk {marketplaceId, orderScheduleDetailsList: [{amazonOrderId}], labelFormat: 'ZPL'}`: ONE order per call, slot chosen by Amazon.
-  3. Write `freteInicial` (`codRastreio = trackingDetails.trackingId`, `externalId = scheduledPackageId.packageId`, `estado = despachoAutorizado`). The link in the response is discarded.
-- **How the ERP knows it can go straight to the label** (the same signals the legacy used, made explicit):
-  - `freteInicial.estado` says scheduled: `despachoAutorizado` written by the step above, or the post-scheduling states mirrored from Amazon's package status by step 7 (`PENDING_PICK_UP` / `PENDING_DROP_OFF`);
-  - the NF-e acceptance is Amazon's own `tax.taxInvoicing.invoiceStatus = ACCEPTED`, mirrored by steps 5/14.
+  2. `POST /easyShip/2022-03-23/packages/bulk {marketplaceId, orderScheduleDetailsList: [{amazonOrderId}], labelFormat: 'ZPL'}`: ONE order per call, slot chosen by Amazon. The link in the response is discarded.
 
-  No new flag or collection is added: `freteInicial` already carries it.
-- **Printing and reprinting (checkout):** `POST /api/marketplace/amazon/etiqueta {pedidoId}`:
-  - **already scheduled** ⇒ just fetch the link: RDT + the same bulk call, download the zip **inside the request**, return the first `.zpl` entry. No NF-e upload, no new schedule, no extra status reads;
-  - **not scheduled yet, NF-e `ACCEPTED`** ⇒ the same call schedules and returns the link, and `freteInicial` is written as above;
-  - **NF-e not accepted yet** ⇒ 409 "aguardando aceite da NF-e pela Amazon" (the step-14 chain is still running).
+  No pedido field is written: step 7 mirrors the schedule from Amazon's package status at the order's next import.
+- **How the ERP knows it can go straight to the label:** the live `getOrder`, through step 7's fold: `PENDING_PICK_UP` / `PENDING_DROP_OFF` ⇒ fetch the label, whatever the invoice status; `PENDING_SCHEDULE` with the same read's order-level `tax.taxInvoicing.invoiceStatus = ACCEPTED` ⇒ the same call schedules. No new flag or collection is added.
+- **Printing and reprinting (checkout):** `POST /api/marketplace/amazon/etiqueta {pedidoId}`, with `PERM.frete.read`, plus `PERM.frete.write` when the call would schedule:
+  - **already scheduled** ⇒ just fetch the link: RDT + the same bulk call, download the zip **inside the request**, return exactly one ZPL entry. No NF-e upload and no new schedule; one live `getOrder`, one pedido read and one `nfev4` listing per print;
+  - **not scheduled yet, NF-e `ACCEPTED`** ⇒ the same call schedules and returns the link;
+  - **NF-e not accepted yet** ⇒ 409 `AGUARDANDO_NFE`, its `motivo` keyed on the order-level invoice status: `nfe-em-processamento` (the step-14 chain is still running; reprint later), `nfe-recusada-pela-amazon` or `nfe-nao-enviada` (see the pedido's NF-e aviso).
 - **No label is stored (D12, amended):** no `Arquivo`, no Storage object, no retention question.
-- **Rule 7:** two callers at once (the automatic task and a checkout print) are harmless, because Amazon returns the same schedule to the second caller and the `freteInicial` write carries the same values (tier 0). No lease and no schedule record are needed.
-- **Rejections:** `MissingPackageDimensions` ⇒ aviso + a 409 with the reason at checkout (fix in Seller Central); anything else ⇒ aviso with the code (open set).
+- **Rule 7:** no pedido write, no lease and no schedule record. A SEQUENTIAL resubmit reads as scheduled and the queue's concurrency 1 serialises the automatic schedules; two concurrent FIRST-time calls (a print racing the task, two prints, a re-click over a cut bulk) have an undocumented outcome and no guard in code, so the print's 503 asks for a wait of about a minute, never an immediate retry.
+- **Rejections:** the TASK raises `dimensoes-ausentes` / `agendamento-recusado`; the route answers 409 `RECUSADA` only and writes no aviso; the code is logged, never shown.
 - **Web:**
   - `apps/web/lib/checkout/etiqueta/providers/amazon.ts` calls `POST /api/marketplace/amazon/etiqueta {pedidoId}` and prints the returned ZPL with exact `text/plain`;
   - `FREIGHT_TIPO_CAPS.amz.canFetchLabel = true` (only that flag);
   - `'amz'` leaves `unsupportedMarketplace`.
-- **Firestore:** `pedidos.freteInicial` only; no new collection, no ruleset change.
+- **Firestore:** `amazonPedidoPrecisaAtencao` avisos only (the task's raises and its resolves once the order is scheduled, the importer's resolves and its cancel seed); no pedido field, no new collection, no ruleset change.
 - **Dry-run/valve:** `AMAZON_MODO_AGENDAMENTO` + canary (the dry-run checks the gates and builds the body; no bulk call). Printing an order that is already scheduled is a read of an existing schedule, but it still goes through the valve because bulk is a write endpoint.
-- **Verification:** gates refuse before `ACCEPTED`; the zip is downloaded within the request; first `.zpl` entry extraction; a second call returns the same tracking id (fixture from capture C3); `MissingPackageDimensions` ⇒ 409.
+- **Verification:** gates refuse before `ACCEPTED`; the zip is downloaded within the request; exactly one ZPL entry extracted; a resubmit reads as scheduled (C3); `MissingPackageDimensions` ⇒ 409.
 - **Does NOT:** store labels; choose slots; patch catalog dimensions; reschedule (Seller Central); request PDF.
 
 ### Steps 16, 18, 19: DROPPED (§4.24) · Step 17: returns/claims — POST, folded into P4
@@ -886,9 +883,9 @@ The template's `'feed-assincrono'` warning applies: the notification pipeline ha
 | Flow | Calls/day |
 |---|---|
 | Backstop `searchOrders` (every 15 min) | 96 (bucket ≈ 480/day sustained) |
-| `getOrder` (≈ 3–5 changes × 50 orders) | 150–250 at 0.5 rps |
+| `getOrder` (≈ 3–5 changes × 50 orders, plus ≈ 150–300 for Easy Ship: the scheduling task and each print) | 300–550 at 0.5 rps |
 | NF-e: status + submit + status checks | ≈ 50 × 4 at 1.133 rps |
-| Easy Ship: RDT + bulk (schedule once + each print) | ≈ 50 × 2–4 at 1 rps |
+| Easy Ship: RDT + bulk (schedule once + each print) | ≈ 200–300 at 1 rps |
 | Stock deltas (patch + deferred read-back) | a few hundred at 5 rps |
 | Daily stock reconcile | 1 listings report (create + status polls + document) + drift as patches (< 1,500) or 1 feed |
 | Full stock push (≈ 20,000 SKUs) | 1 `JSON_LISTINGS_FEED`: document + upload + `createFeed` + status polls + report (vs ≈ 67 min of patches) |
@@ -896,7 +893,7 @@ The template's `'feed-assincrono'` warning applies: the notification pipeline ha
 | Price, bulk (manual) | 1 listings report + 1 feed |
 | Listing link job, first pass | 1 report + one `getListingsItem` per unlinked SKU (≤ 20,000 ≈ 67 min, resumable) |
 
-**Queues** (starting points; the step plans confirm): a reads queue for intake and the link job; per-operation write queues, one per flow (stock, price, NF-e — `processAmazonNfeUpload`, step 14 — and agendamento), each with `maxConcurrentDispatches: 1` (Amazon's rate limits are per operation and Cloud Tasks' per queue, so one shared writes queue would let a stock run starve invoices); a feeds queue for the step-12a result polls; `minBackoff 10 s`, `maxBackoff 300 s`. `AmazonThrottleError` throws. Feeds stay far below the limit of 5 `JSON_LISTINGS_FEED` per 5 minutes: at most one stock feed and one price feed in flight per conta.
+**Queues** (starting points; the step plans confirm): a reads queue for intake and the link job; per-operation write queues, one per flow (stock, price, NF-e — `processAmazonNfeUpload`, step 14 — and agendamento — `processAmazonEasyShipSchedule`, step 15, with `minBackoff 60 s`), each with `maxConcurrentDispatches: 1` (Amazon's rate limits are per operation and Cloud Tasks' per queue, so one shared writes queue would let a stock run starve invoices); a feeds queue for the step-12a result polls; `minBackoff 10 s`, `maxBackoff 300 s`. `AmazonThrottleError` throws. Feeds stay far below the limit of 5 `JSON_LISTINGS_FEED` per 5 minutes: at most one stock feed and one price feed in flight per conta.
 
 ### 4.24 Dropped steps, with the `'nao'` or decision that dropped them
 
@@ -921,7 +918,7 @@ The template's `'feed-assincrono'` warning applies: the notification pipeline ha
 6. **Step 20.**
 7. **Steps 5 + 6 + 7** (captures C1 first). *(Amended 2026-10-27: built and merged without the captures; the capture-dependent defaults are validated later, tracked on #1923; see step 5's amendment.)*
 8. **⏸ The listings discussion (D18)**, then **steps 9 + 9b + 21-link** (order items need links).
-9. **Step 14 → step 15 + 21-etiqueta** (captures C2, C3 first).
+9. **Step 14 → step 15 + 21-etiqueta.** *(Amended: no capture gates a merge (the 2026-10-27 precedent), and this item runs before item 8 (Lucas, 2026-11-04).)*
 10. **Step 12a** (feed infrastructure), then **step 12 + 21-estoque.**
 11. **Step 13 + 21-preço** (the bulk path reuses 12a).
 12. **Step 22** (capture C6).
@@ -938,7 +935,7 @@ None of these writes is exercised by this code before the window. Each one's fir
 | `patchListingsItem` `purchasable_offer` | 13 | `AMAZON_MODO_PRECO` | `getListingsItem` `attributes.purchasable_offer` | the same + issues |
 | `JSON_LISTINGS_FEED` (price `PATCH` messages) | 13 + 12a | `AMAZON_MODO_PRECO` (feeds only under `*`) | the feed document vs the report price + `ultimaOfertaEnviada` | the processing report + sampled `getListingsItem` |
 | `submitInvoice` (Delivery by Amazon) | 14 | `AMAZON_MODO_NFE` | `getInvoiceStatus` | `getInvoiceStatus` |
-| `createScheduledPackageBulk` (schedule, and each label fetch) | 15 | `AMAZON_MODO_AGENDAMENTO` | the gates (status, invoice `ACCEPTED`) | `getScheduledPackage` / `getOrder` PACKAGES |
+| `createScheduledPackageBulk` (schedule, and each label fetch) | 15 | `AMAZON_MODO_AGENDAMENTO` | the gates (status, invoice `ACCEPTED`) | `getOrder` PACKAGES (step 7) |
 | `createDestination` / `createSubscription` | W5 | manual, by a person | — | `getSubscription` |
 
 ---
@@ -1036,7 +1033,7 @@ Each item below becomes an issue **only after Lucas says yes to opening it**. Th
 
 1. **`faixaDePrecoAmazon` v1:** `minimo` = the promotional list when > 0, else the normal price, and `maximo` = the normal price. Is that the range you want until the new price-range model exists?
 2. **Reservations:** keep PENDING Amazon orders reserving ERP stock (the current behaviour), or reserve only from UNSHIPPED?
-3. **Pickup rescheduling:** is it acceptable that rescheduling a DBA pickup stays in Seller Central (there is no documented BR API for it)?
+3. **Pickup rescheduling:** is it acceptable that rescheduling a DBA pickup stays in Seller Central (there is no documented BR API for it)? **Answered: it stays in Seller Central, a default kept on 2026-10-22.**
 4. **Listings (D18):** the known problems of the legacy listing flows, and the best way to handle each one. To be discussed when we reach step 9, before any listing step plan is written.
 5. **Refunds and returns (P4):** how the ERP should detect and handle them properly, beyond D17's interim inference. To be explored in depth after the cutover.
 

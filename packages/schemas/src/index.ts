@@ -541,11 +541,13 @@ export {
 // and routing predicates, the error codes, the status and start answers and the
 // closed OAuth-return reasons that `apps/amazon` and `apps/web` must agree on —
 // and (step 14) the NF-e re-drive route's own code set, envelope and answer,
-// and (step 15) the closed slugs of an Easy Ship label refusal.
+// and (step 15) the closed slugs of an Easy Ship label refusal and the label
+// route's own code set and envelope.
 // Not a collection: no meta, nothing to register.
 export {
   CHAVE_RETORNO_OAUTH_AMAZON,
   CODIGO_ERRO_AMAZON,
+  CODIGO_ERRO_ETIQUETA_AMAZON,
   CODIGO_ERRO_NFE_AMAZON,
   LIMIAR_AVISO_AMAZON_DIAS,
   MAX_SELLING_PARTNER_ID,
@@ -557,6 +559,7 @@ export {
   diasParaReautorizarAmazon,
   erroContaAmazonSchema,
   erroEnvioNfeAmazonSchema,
+  erroEtiquetaAmazonSchema,
   motivoEtiquetaAmazonSchema,
   motivoRetornoOAuthAmazonSchema,
   reautorizarAteAmazon,
@@ -565,9 +568,11 @@ export {
   sellingPartnerIdValido,
   statusContaAmazonSchema,
   type CodigoErroAmazon,
+  type CodigoErroEtiquetaAmazon,
   type CodigoErroNfeAmazon,
   type ErroContaAmazon,
   type ErroEnvioNfeAmazon,
+  type ErroEtiquetaAmazon,
   type MotivoEtiquetaAmazon,
   type MotivoRetornoOAuthAmazon,
   type RespostaEnvioNfeAmazon,

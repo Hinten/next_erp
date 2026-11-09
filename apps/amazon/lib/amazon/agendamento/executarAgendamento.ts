@@ -1,9 +1,8 @@
 /**
  * ONE Easy Ship scheduling run (step 15, PR 15-b): the ONE caller of the write
  * engine (`core/escrita.ts`) for this flow, shared by the scheduling task
- * (`modo: 'tarefa'`, 15-c) and the label route (`modo: 'impressao'`, 15-d).
- * Unwired in 15-b; since 15-c the scheduling task (`processarAgendamento.ts`)
- * is its caller, and the label route follows in 15-d.
+ * (`modo: 'tarefa'`, 15-c: `processarAgendamento.ts`) and the label route
+ * (`modo: 'impressao'`, 15-d: `etiquetaAmazon.ts`).
  *
  * Inside the engine, in its order: the target under the valve (`off` reads
  * nothing); the LIVE order through `pedidos/lerPedidoAmazon.ts` (the one

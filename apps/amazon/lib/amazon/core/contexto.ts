@@ -23,8 +23,9 @@
  * refused as inactive even when it is also unconnected or parked, so a
  * deactivated conta never reads as "reconnect it".
  *
- * The routes and the callback do NOT come through here: they must be able to
- * connect a parked, inactive or unconnected conta.
+ * The conta routes and the callback do NOT come through here: they must be able
+ * to connect a parked, inactive or unconnected conta. The label route does (step
+ * 15, PR 15-d), so its LWA refresh persists like a task's.
  *
  * ## The credential is re-read on EVERY request — {@link obterCredencialAmazon}
  *
