@@ -166,8 +166,9 @@ export function lerConfigAmazon(ambiente: AmbienteAmazon): ConfigAmazon | Config
 
 /**
  * Only the LWA pair — what the context loader's access-token refresh needs. A
- * flow (step 3's functions) never builds a consent URL nor redirects a browser,
- * so it must not be refused for lacking the connect-only keys.
+ * flow (step 3's functions, or since step 15 the label route on App Hosting)
+ * never builds a consent URL nor redirects a browser, so it must not be refused
+ * for lacking the connect-only keys.
  */
 export function lerAplicacaoLwaAmazon(
   ambiente: AmbienteAmazon,

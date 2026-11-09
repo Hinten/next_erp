@@ -14,7 +14,8 @@ import { NextResponse, type NextRequest } from 'next/server';
 //
 // The methods are the marketplace routes' verbs: GET (conta status) and POST
 // (OAuth start; since step 14, PR 14-d, also the NF-e re-drive
-// `/api/marketplace/amazon/enviar-nfe`). POST is CORS-safelisted, but a Bearer
+// `/api/marketplace/amazon/enviar-nfe`; since step 15, PR 15-d, also the label
+// `/api/marketplace/amazon/etiqueta`). POST is CORS-safelisted, but a Bearer
 // header preflights it anyway, so it is listed explicitly.
 //
 // Every answer here also carries `Referrer-Policy: no-referrer` (step-2 plan §3
@@ -69,7 +70,12 @@ export function proxy(req: NextRequest) {
 
   const res = NextResponse.next();
   res.headers.set('Referrer-Policy', 'no-referrer');
-  if (allowed) applyCors(res.headers, allowed);
+  if (allowed) {
+    applyCors(res.headers, allowed);
+    // The label route names its file through Content-Disposition. Unexposed, a
+    // cross-origin `fetch` reads that header as `null`.
+    res.headers.set('Access-Control-Expose-Headers', 'Content-Disposition');
+  }
   return res;
 }
 
