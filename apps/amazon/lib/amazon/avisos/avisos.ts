@@ -832,6 +832,49 @@ export function sincronizarAvisosDoPedidoAmazon(
 }
 
 /**
+ * A SEEDING clocked resolve of the given per-pedido motivos (step 15, PR 15-c):
+ * each key is resolved through the shared resolver WITH its metadata, whether
+ * or not a row exists — the shape `nfe/avisoNfe.ts`'s
+ * `resolverNfeDoPedidoAmazon` already uses. An open row is closed; an ABSENT
+ * one becomes a resolved TOMBSTONE stamped with `relogio`, so a later raise
+ * clocked by an OLDER observation is dropped instead of opening a row nothing
+ * would ever close; a resolved one only has its watermark advanced on a newer
+ * clock (the shared resolver's rule; an equal clock writes nothing).
+ *
+ * Unlike {@link sincronizarAvisosDoPedidoAmazon}, which resolves only rows that
+ * exist, so its caller decides when one extra document per motivo is worth it.
+ * Its one caller: the order import, on the transition (or, on a redelivery,
+ * the condition) of a cancelled sale, for the two Easy Ship scheduling motivos
+ * — a cancelled order gets no further import, so a scheduling task's raise
+ * racing the cancellation would otherwise stay open for good. Clocked by the
+ * import's batch `writeTime`, else its winning snapshot's `readTime`, converted
+ * HERE ({@link relogioDoDocumentoUs}); stamped `condicao-encerrada`, the tipo's
+ * machine resolution. Returns how many OPEN rows it closed.
+ */
+export async function semearResolucaoDoPedidoAmazon(
+  db: Firestore,
+  deps: { readonly nowMs: number },
+  e: PedidoDoAvisoAmazon & {
+    readonly motivos: readonly MotivoPedidoAmazon[];
+    readonly relogio: CommitDoDocumento;
+  },
+): Promise<number> {
+  const relogioUs = relogioDoDocumentoUs(e.relogio);
+  let resolvidos = 0;
+  for (const motivo of e.motivos) {
+    const fechou = await resolverAviso(
+      db,
+      chavePedidoPrecisaAtencao(e.integracaoId, e.orderId, motivo),
+      MOTIVO_AVISO_AMAZON.condicaoEncerrada,
+      { agoraUs: agoraUsDe(deps) },
+      planoPedidoPrecisaAtencao(e, motivo, relogioUs),
+    );
+    if (fechou) resolvidos += 1;
+  }
+  return resolvidos;
+}
+
+/**
  * The order import's per-conta rows (`amazonContaPrecisaAtencao`): raise and
  * resolve as the import's conta read and verdicts say, clocked by that conta
  * read's `readTime` — the server timeline the orphan pass's conta enumeration

@@ -70,6 +70,7 @@ import {
   respostaJson,
 } from '../testing/fixtures';
 import { payloadPush, registroTeste } from '../testing/importadorAmazon';
+import { filaAgendamentoDeTeste } from '../testing/produtorAgendamento';
 import {
   ATUALIZADO_US,
   depois,
@@ -171,6 +172,8 @@ async function importar(order: Record<string, unknown>, agoraMs = Date.now()) {
     increment: (by) => FieldValue.increment(by),
     logger: log.logger,
     viaCep: { buscarCep: () => Promise.resolve(null) },
+    // Step 15 (PR 15-c): the scheduling entry's producer, a recorder (no real task).
+    agendamento: filaAgendamentoDeTeste().produtor,
     registro: registroTeste(0),
   };
   const payload = { ...payloadPush(String(order.orderId)), sellerId: SPID_A };

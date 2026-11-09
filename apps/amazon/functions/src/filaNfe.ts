@@ -12,6 +12,7 @@ import {
 } from '../../lib/amazon/nfe/processarNfe';
 import { TENTATIVAS_NFE_AMAZON } from '../../lib/amazon/nfe/tarefaNfe';
 import { sanitizarFalhaDaTarefaAmazon } from '../../lib/amazon/notificacoes/notificacao';
+import { criarAgendadorAgendamentoAmazonDoAmbiente } from './agendadorAgendamento';
 import { criarAgendadorNfeAmazonDoAmbiente } from './agendadorNfe';
 import { getDb } from './lib/admin';
 import { tasksInvokerOptions } from './tasksInvoker';
@@ -37,6 +38,10 @@ export const SEGREDOS_DO_ENVIO_NFE_AMAZON: readonly string[] = [LWA_CLIENT_SECRE
  *   (the verification ladder, the one resubmit, the 429 pause) — the functions
  *   codebase's NF-e composition root (`./agendadorNfe`), built only when one is
  *   due. UNNAMED enqueues: only the trigger names its task.
+ * - `agendamento`: the Easy Ship scheduling queue's producer (step 15, PR
+ *   15-c) for the step-15 seam's ONE enqueue on the `aceita` path (E1) — the
+ *   functions codebase's scheduling root (`./agendadorAgendamento`), built
+ *   only when the seam runs. NAMED after this dispatch's own task id.
  * - `increment`: a tier-0 `FieldValue` for the aviso counter.
  * - `logger`: the app's ONE logger. Never `firebase-functions`' logger, never
  *   `console.*`.
@@ -48,6 +53,7 @@ export function depsDoEnvioNfeAmazon(registro: RegistroNfeAmazon): DepsProcessar
     logger: LOGGER_STDOUT_AMAZON,
     increment: (by: number) => FieldValue.increment(by),
     agendador: criarAgendadorNfeAmazonDoAmbiente,
+    agendamento: criarAgendadorAgendamentoAmazonDoAmbiente,
     registro,
   };
 }

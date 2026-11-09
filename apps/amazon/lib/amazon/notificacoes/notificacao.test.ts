@@ -6,6 +6,7 @@
  * except where a test scripts one LWA answer through the fetch spy (D11: no test
  * reaches Amazon).
  */
+import { readFileSync } from 'node:fs';
 import { format, inspect } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ZodError, z } from 'zod';
@@ -43,6 +44,7 @@ import {
   CredencialAmazonInvalidaError,
   EstacionamentoAmazonEmConflitoError,
 } from '../core/erros';
+import { AmazonTarefasTransitoriasError } from '../core/filaTarefas';
 import { ID_DE_CONTA } from '../core/idConta';
 import { FakeDb, asDb, grpc, increment } from '../testing/fakeDb';
 import {
@@ -65,6 +67,7 @@ import {
   textoDe,
   tokenDeAcesso,
 } from '../testing/fixtures';
+import { filaAgendamentoDeTeste } from '../testing/produtorAgendamento';
 import {
   AmazonCancelamentoRecenteError,
   AmazonLeituraDefasadaError,
@@ -143,6 +146,13 @@ afterEach(() => {
   cepsConsultados.length = 0;
 });
 
+/** The import's Easy Ship scheduling producer (step 15): a recorder no fake importer here calls. */
+const filaAgendamento = filaAgendamentoDeTeste();
+const produtorAgendamento = filaAgendamento.produtor;
+afterEach(() => {
+  expect(filaAgendamento.tentativas).toEqual([]);
+});
+
 function push(over: Partial<Extract<PayloadNotificacaoAmazon, { origem: 'push' }>> = {}) {
   return {
     tipo: TIPO_TAREFA_AMAZON.pedido,
@@ -177,6 +187,7 @@ function depsLeitura(over: Partial<DepsLeituraAmazon> = {}) {
     logger: log.logger,
     importador: null,
     viaCep: viaCepProibido,
+    agendamento: produtorAgendamento,
     increment,
     fetch: fetchProibido,
     ...over,
@@ -742,7 +753,26 @@ describe('the importer seam', () => {
     expect(db.escritas).toEqual([]);
   });
 
-  it('★ the importer gets ITS deps from the run — exactly the clock, the increment, the logger, the CEP lookup and the registro, never the environment or a test seam', async () => {
+  it('★ (step 15, mutation 25) the scheduling producer is a LOCAL structural port: this module names nothing under agendamento/, not even by type — the App Hosting receiver’s closure does not grow', () => {
+    const especificadores = (texto: string) =>
+      [...texto.matchAll(/\bfrom\s+'([^']+)'|\bimport\(\s*'([^']+)'\s*\)/g)].map(
+        (m) => m[1] ?? m[2] ?? '',
+      );
+    const fonte = readFileSync(new URL('./notificacao.ts', import.meta.url), 'utf8');
+    const doModulo = especificadores(fonte);
+    // Anti-vacuity: the scan reads this module's real imports.
+    expect(doModulo).toContain('../core/contexto');
+    expect(doModulo.filter((e) => e.includes('agendamento/'))).toEqual([]);
+    expect(fonte).toMatch(/^export interface ProdutorAgendamentoAmazon \{/m);
+    // NEAR-MISS: the scan catches the type import the port replaces.
+    expect(
+      especificadores(
+        "import type { AgendadorAgendamentoAmazon } from '../agendamento/agendadorAgendamento';",
+      ),
+    ).toEqual(['../agendamento/agendadorAgendamento']);
+  });
+
+  it('★ the importer gets ITS deps from the run — exactly the clock, the increment, the logger, the CEP lookup, the scheduling producer and the registro, never the environment or a test seam', async () => {
     contaConectada();
     const recebidos: DepsImportadorAmazon[] = [];
     const { deps } = depsExec(
@@ -760,13 +790,22 @@ describe('the importer seam', () => {
     // Field by field, never a spread: `ambiente` (the LWA pair) and the
     // transport seams stay with the context.
     expect(Object.keys(d ?? {}).sort()).toEqual(
-      ['agora', 'increment', 'logger', 'registro', 'viaCep'].sort(),
+      ['agendamento', 'agora', 'increment', 'logger', 'registro', 'viaCep'].sort(),
     );
     expect(d?.agora).toBe(deps.agora);
     expect(d?.increment).toBe(deps.increment);
     expect(d?.logger).toBe(deps.logger);
     expect(d?.viaCep).toBe(viaCepProibido);
+    // Step 15 (PR 15-c): the scheduling producer is the run's own, handed on as-is.
+    expect(d?.agendamento).toBe(produtorAgendamento);
     expect(d?.registro).toEqual({ fluxo: 'intake', tentativa: 2, idTarefa: 'tarefa-1' });
+  });
+
+  it('★ (step 15) the scheduling entry’s transient, thrown out of the importer, reaches the reads queue as a THROW — its retry and failure persistence; consuming it here would lose the entry behind a resolve', async () => {
+    contaConectada();
+    const err = AmazonTarefasTransitoriasError.porPrazo();
+    const { deps } = depsExec({ importador: falhaCom(err) });
+    await expect(processarNotificacaoAmazon(asDb(db), push(), deps)).rejects.toBe(err);
   });
 
   it('a sweep re-drive hands the importer the sweep’s registro: no attempt, no task id (its stale-read rule keys on it)', async () => {
