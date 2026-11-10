@@ -18,7 +18,11 @@ import {
 import { describe, expect, it, vi } from 'vitest';
 import type { z } from 'zod';
 
-import { agendarNaAmazon, ehFalhaHttpDoBulkEasyShip } from './easyShipAmazon';
+import {
+  agendarNaAmazon,
+  ehFalhaHttpDoBulkEasyShip,
+  ehRespostaForaDoEsquemaDoBulkEasyShip,
+} from './easyShipAmazon';
 
 const ORDER = '171-9876543-2109876';
 const RDT = 'Atz.TESTE-rdt-sintetico-naoreal';
@@ -158,6 +162,31 @@ describe('ehFalhaHttpDoBulkEasyShip — only the BULK’s own HTTP answer speaks
       null,
     ]) {
       expect(ehFalhaHttpDoBulkEasyShip(erro), String(erro)).toBe(false);
+    }
+  });
+
+  it('(15-c) the bulk’s 2xx off its schema is told apart from the mint’s — Amazon answered the bulk, so it may have scheduled', () => {
+    expect(
+      ehRespostaForaDoEsquemaDoBulkEasyShip(
+        new AmazonSchemaError({ ...bulk, status: 200, motivo: 'formato', campos: [] }),
+      ),
+    ).toBe(true);
+    // NEAR-MISS: the mint's schema failure, an LWA one under the bulk's label,
+    // and the bulk's HTTP or network failures are not it.
+    for (const erro of [
+      new AmazonSchemaError({ ...mint, status: 200, motivo: 'formato', campos: [] }),
+      new AmazonSchemaError({
+        ...bulk,
+        destino: 'lwa',
+        status: 200,
+        motivo: 'formato',
+        campos: [],
+      }),
+      new AmazonHttpError({ ...bulk, status: 400 }),
+      new AmazonNetworkError(bulk, new TypeError('fetch failed')),
+      null,
+    ]) {
+      expect(ehRespostaForaDoEsquemaDoBulkEasyShip(erro), String(erro)).toBe(false);
     }
   });
 });

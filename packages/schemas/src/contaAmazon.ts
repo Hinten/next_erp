@@ -260,7 +260,8 @@ export type ErroContaAmazon = z.infer<typeof erroContaAmazonSchema>;
  * that one and a literal pin of its values, so a fifth member there fails the
  * web typecheck until a conta-panel sentence exists for a code the conta routes
  * never answer. The button that calls this route, and its copy over THIS set,
- * belong to master-plan step 21. Every value is unique across BOTH sets.
+ * belong to master-plan step 21. Every value is unique across this set,
+ * {@link CODIGO_ERRO_AMAZON} and {@link CODIGO_ERRO_ETIQUETA_AMAZON}.
  *
  * The route never calls Amazon and never writes Firestore: every refusal below
  * means NOTHING was enqueued.
@@ -313,11 +314,11 @@ export type ErroEnvioNfeAmazon = z.infer<typeof erroEnvioNfeAmazonSchema>;
 /**
  * Why the Easy Ship label of a pedido cannot be printed (or its pickup
  * scheduled) right now — the closed backend slug a label refusal carries in
- * its `motivo`. The scheduling decision of `apps/amazon` answers it; the label
- * route's own error codes (and the envelope that carries this slug, a PLAIN
- * string, the {@link erroEnvioNfeAmazonSchema} precedent, so a slug a newer
- * backend adds still parses) arrive with the route, and `apps/web` narrows the
- * string through this schema, falling back to a neutral sentence.
+ * its `motivo`. The scheduling decision of `apps/amazon` answers it, and the
+ * label route answers it in {@link erroEtiquetaAmazonSchema}, whose `motivo` is
+ * a PLAIN string (so a slug a newer backend adds still parses): a reader of
+ * that envelope narrows the string through this schema, with a neutral sentence
+ * for a slug it does not know.
  *
  * - The pedido as stored: `nao-amazon` (not a PROVED Amazon pedido of a conta),
  *   `outra-integradora` (its freight block belongs to another integradora, or
@@ -390,6 +391,65 @@ export const MOTIVO_ETIQUETA_AMAZON = {
   nfeRecusadaPelaAmazon: 'nfe-recusada-pela-amazon',
   nfeNaoEnviada: 'nfe-nao-enviada',
 } as const satisfies Record<string, MotivoEtiquetaAmazon>;
+
+/**
+ * The `code` of every error envelope `POST /api/marketplace/amazon/etiqueta`
+ * answers with that is NOT already in {@link CODIGO_ERRO_AMAZON} (the route's
+ * read-switch refusal reuses `AMAZON_CHAMADAS_DESLIGADAS`).
+ *
+ * ⚠️ A SEPARATE closed set on purpose, never a widening of
+ * {@link CODIGO_ERRO_AMAZON}, for the reason {@link CODIGO_ERRO_NFE_AMAZON}
+ * gives. Every value is unique across all three sets.
+ *
+ * The 502/503 detail stays in the backend's log: the operator's remedy is the
+ * same for each.
+ */
+export const CODIGO_ERRO_ETIQUETA_AMAZON = {
+  /**
+   * 400 — the body is not exactly `{ pedidoId }`, with the ERP pedido DOCUMENT id
+   * (64 hexadecimal characters). `issues` names the field PATHS, never a value.
+   */
+  CORPO_INVALIDO: 'AMAZON_ETIQUETA_CORPO_INVALIDO',
+  /** 404 — no pedido with this id. */
+  PEDIDO_NAO_ENCONTRADO: 'AMAZON_ETIQUETA_PEDIDO_NAO_ENCONTRADO',
+  /** 403 — the order is not scheduled yet, and the caller may not schedule it (`frete.write`). */
+  SEM_PERMISSAO: 'AMAZON_ETIQUETA_SEM_PERMISSAO',
+  /** 409 — the pedido or the live order cannot be printed; `motivo` is a {@link MOTIVO_ETIQUETA_AMAZON} refusal. */
+  NAO_ELEGIVEL: 'AMAZON_ETIQUETA_NAO_ELEGIVEL',
+  /**
+   * 409 — Amazon has not accepted the NF-e at the ORDER level; `motivo` is
+   * `nfe-em-processamento`, `nfe-recusada-pela-amazon` or `nfe-nao-enviada`.
+   */
+  AGUARDANDO_NFE: 'AMAZON_ETIQUETA_AGUARDANDO_NFE',
+  /** 409 — Amazon refused to schedule this order; `motivo` is `dimensoes-ausentes` or `agendamento-recusado`. */
+  RECUSADA: 'AMAZON_ETIQUETA_RECUSADA',
+  /** 502 — no usable label came back: the label is printed from Seller Central. */
+  INDISPONIVEL: 'AMAZON_ETIQUETA_INDISPONIVEL',
+  /**
+   * 503 — Amazon is unavailable for now. Wait about a minute and reprint from
+   * the order list: a cut scheduling call may still be running at Amazon, so an
+   * immediate repeat is exactly what this answer must not invite.
+   */
+  AMAZON_INDISPONIVEL: 'AMAZON_ETIQUETA_AMAZON_INDISPONIVEL',
+  /** 503 — the pedido's conta or its credential cannot be used. */
+  CONTA_INDISPONIVEL: 'AMAZON_ETIQUETA_CONTA_INDISPONIVEL',
+  /** 503 — the scheduling valve is `off` or `dry-run`, or this order is outside its canary. */
+  DESLIGADA: 'AMAZON_ETIQUETA_DESLIGADA',
+} as const;
+export type CodigoErroEtiquetaAmazon =
+  (typeof CODIGO_ERRO_ETIQUETA_AMAZON)[keyof typeof CODIGO_ERRO_ETIQUETA_AMAZON];
+
+/**
+ * Every non-2xx JSON body of the label route: the conta routes' envelope
+ * ({@link erroContaAmazonSchema}, `code` still a plain string) plus `motivo`, a
+ * PLAIN string and never {@link motivoEtiquetaAmazonSchema}: `apps/amazon`
+ * deploys before `apps/web`, so the backend is always the newer side, and a
+ * closed enum here would turn every later slug into a generic status message.
+ */
+export const erroEtiquetaAmazonSchema = erroContaAmazonSchema.extend({
+  motivo: z.string().nullable().optional(),
+});
+export type ErroEtiquetaAmazon = z.infer<typeof erroEtiquetaAmazonSchema>;
 
 /* -------------------------------------------------------------------------- */
 /*                                  Answers                                   */

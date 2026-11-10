@@ -28,25 +28,25 @@
       },
       "objects": [
         {
-          "id": 127435428,
+          "id": 888427435428,
           "ativo": true,
           "id_externo": null,
           "apelido": "REDACTED",
           "descricao": null,
           "nome": "REDACTED",
           "destaque": false,
-          "resource_uri": "/api/v1/marca/127435428",
+          "resource_uri": "/api/v1/marca/888427435428",
           "imagem": null
         },
         {
-          "id": 564840611,
+          "id": 338064840611,
           "ativo": true,
           "id_externo": null,
           "apelido": "REDACTED",
           "descricao": "REDACTED",
           "nome": "REDACTED",
           "destaque": false,
-          "resource_uri": "/api/v1/marca/564840611",
+          "resource_uri": "/api/v1/marca/338064840611",
           "imagem": "REDACTED"
         }
       ]

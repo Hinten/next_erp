@@ -8,6 +8,7 @@ import {
 import {
   anuncioShopeeVivo,
   ehRascunhoShopee,
+  logisticaGravadaPeloErpShopee,
   mecanismosDaRecusaAnterior,
   pularPorRecusaAnterior,
   recusaEstoqueDoAnuncioShopeeLegivel,
@@ -566,5 +567,171 @@ describe('ehRascunhoShopee × anuncioShopeeVivo — classes DISJUNTAS sobre uma 
 
   it('a tabela cobre as três classes (não é vacuamente disjunta)', () => {
     expect(new Set(TABELA.map((l) => l.classe))).toEqual(new Set(['vivo', 'rascunho', 'nenhum']));
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*     (6) logisticaGravadaPeloErpShopee — the provenance stamp (#2015, D1)    */
+/* -------------------------------------------------------------------------- */
+
+describe('logisticaGravadaPeloErpShopee — só o carimbo decide (#2015, D1)', () => {
+  const CARIMBO = 1_730_000_000_000;
+  /** A legacy list, exactly the shape a migrated row carries — no stamp. */
+  const LISTA_LEGADA = [{ logistic_id: 90001, enabled: true, is_free: true }];
+  const ULTIMA = { em: CARIMBO, etapa: 'updateItem', itemId: ITEM_ID };
+
+  it('PAR: um carimbo inteiro em ms é confiável — `0` inclusive (o sinal é PRESENÇA, não relógio)', () => {
+    expect(logisticaGravadaPeloErpShopee({ logisticaGravadaEm: CARIMBO })).toBe(true);
+    expect(logisticaGravadaPeloErpShopee({ logisticaGravadaEm: 0 })).toBe(true);
+    expect(logisticaGravadaPeloErpShopee({ logisticaGravadaEm: Number.MAX_SAFE_INTEGER })).toBe(
+      true,
+    );
+  });
+
+  it('⚠️ NEAR-MISS: chave AUSENTE (toda linha migrada) e `null` NÃO são confiáveis', () => {
+    // `null` kills the "`'logisticaGravadaEm' in link`" mutant: the key is
+    // PRESENT and still vouches for nothing.
+    expect(logisticaGravadaPeloErpShopee({})).toBe(false);
+    expect(logisticaGravadaPeloErpShopee({ logisticaGravadaEm: undefined })).toBe(false);
+    expect(logisticaGravadaPeloErpShopee({ logisticaGravadaEm: null })).toBe(false);
+  });
+
+  it('⛔ NEAR-MISS: texto numérico, fração, negativo, NaN, ±Infinity, inteiro inseguro, booleano e objeto NÃO são carimbo', () => {
+    // The string kills the "`v != null`" mutant; `1.5` the "`Number.isFinite`"
+    // one; `-1` the dropped `>= 0`.
+    for (const ruim of [
+      String(CARIMBO),
+      '0',
+      1.5,
+      CARIMBO + 0.5,
+      -1,
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      Number.NEGATIVE_INFINITY,
+      2 ** 53,
+      true,
+      { em: CARIMBO },
+      [CARIMBO],
+    ]) {
+      expect(logisticaGravadaPeloErpShopee({ logisticaGravadaEm: ruim }), String(ruim)).toBe(false);
+    }
+  });
+
+  it('`null` (nenhum documento) não é confiável', () => {
+    expect(logisticaGravadaPeloErpShopee(null)).toBe(false);
+  });
+
+  it('⚠️ NEAR-MISS (D1): `ultimaPublicacao` PRESENTE sem carimbo NÃO é confiável — PAR: o mesmo link carimbado é', () => {
+    // Kills the "also accept `ultimaPublicacao`" mutant: write-back #1 stamps
+    // `ultimaPublicacao` unconditionally while the list is conditional, so it
+    // never proved who wrote the list.
+    const semCarimbo: Record<string, unknown> = {
+      item_id: ITEM_ID,
+      logistic_info: LISTA_LEGADA,
+      ultimaPublicacao: ULTIMA,
+    };
+    expect(logisticaGravadaPeloErpShopee(semCarimbo)).toBe(false);
+    expect(logisticaGravadaPeloErpShopee({ ...semCarimbo, logisticaGravadaEm: null })).toBe(false);
+    expect(logisticaGravadaPeloErpShopee({ ...semCarimbo, logisticaGravadaEm: CARIMBO })).toBe(
+      true,
+    );
+  });
+
+  it('⚠️ NEAR-MISS: a forma ADOTADA pelo ENSURE (item_id gravado, lista legada, sem carimbo) NÃO é confiável — PAR: carimbada é', () => {
+    // ENSURE's adoption writes `item_id` and keeps the legacy draft's list, and
+    // the run then resumes as an UPDATE. Kills every "keyed on item_id /
+    // !ehRascunho / anuncioShopeeVivo" mutant: this row is a vivo listing.
+    const adotado: Record<string, unknown> = {
+      item_id: ITEM_ID,
+      estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo,
+      item_status: 'NORMAL',
+      logistic_info: LISTA_LEGADA,
+      publicacaoEmCurso: null,
+      criacaoIncertaDesde: null,
+    };
+    expect(anuncioShopeeVivo(adotado)).toBe(true);
+    expect(ehRascunhoShopee(adotado)).toBe(false);
+    expect(logisticaGravadaPeloErpShopee(adotado)).toBe(false);
+    expect(logisticaGravadaPeloErpShopee({ ...adotado, logisticaGravadaEm: CARIMBO })).toBe(true);
+  });
+
+  it('PAR: um RASCUNHO carimbado é confiável; o mesmo rascunho sem carimbo não — o rascunho não decide', () => {
+    // Kills the "`!ehRascunhoShopee(link) && …`" mutant from the other side.
+    const rascunho: Record<string, unknown> = { item_id: null, logistic_info: LISTA_LEGADA };
+    expect(ehRascunhoShopee(rascunho)).toBe(true);
+    expect(logisticaGravadaPeloErpShopee(rascunho)).toBe(false);
+    expect(logisticaGravadaPeloErpShopee({ ...rascunho, logisticaGravadaEm: CARIMBO })).toBe(true);
+  });
+
+  it('nem `estadoAnuncio` nem a própria lista decidem: `removido`, lista vazia ou `null` seguem o carimbo', () => {
+    for (const extra of [
+      { estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.removido },
+      { logistic_info: [] },
+      { logistic_info: null },
+      { kitNativo: true },
+    ]) {
+      const link: Record<string, unknown> = { item_id: ITEM_ID, ...extra };
+      expect(logisticaGravadaPeloErpShopee(link), JSON.stringify(extra)).toBe(false);
+      expect(
+        logisticaGravadaPeloErpShopee({ ...link, logisticaGravadaEm: CARIMBO }),
+        JSON.stringify(extra),
+      ).toBe(true);
+    }
+  });
+
+  it('um link PARSEADO: sem a chave fica distrusted, com o carimbo fica trusted (pin de COMPILAÇÃO também)', () => {
+    // The parsed `ProdutoShopeeLink` is accepted as-is (compile pin), and the
+    // server-stamped `.optional()` leaves the key ABSENT on a link that never
+    // carried it — the migrated corpus.
+    const migrado: ProdutoShopeeLink = produtoShopeeLinkSchema.parse({
+      contaProdutoShopeeOuterRef: 'documents/integracao/int-1',
+      item_name: 'Camiseta Básica Azul',
+      item_id: ITEM_ID,
+      logistic_info: LISTA_LEGADA,
+    });
+    expect(migrado).not.toHaveProperty('logisticaGravadaEm');
+    expect(logisticaGravadaPeloErpShopee(migrado)).toBe(false);
+
+    const carimbado: ProdutoShopeeLink = produtoShopeeLinkSchema.parse({
+      contaProdutoShopeeOuterRef: 'documents/integracao/int-1',
+      item_name: 'Camiseta Básica Azul',
+      item_id: ITEM_ID,
+      logistic_info: LISTA_LEGADA,
+      logisticaGravadaEm: CARIMBO,
+    });
+    expect(logisticaGravadaPeloErpShopee(carimbado)).toBe(true);
+  });
+
+  it('pin de COMPILAÇÃO: um objeto TIPADO sem a chave (uma projeção) não compila — só o documento cru ou parseado', () => {
+    // The parameter is a weak type, so TypeScript refuses an object type that
+    // shares none of its keys: a caller that hands over a projection built
+    // without the stamp (instead of the raw link) fails `tsc`, not a test.
+    const projecao = { item_id: ITEM_ID, logistic_info: LISTA_LEGADA };
+    // @ts-expect-error — a typed projection with no `logisticaGravadaEm` key.
+    expect(logisticaGravadaPeloErpShopee(projecao)).toBe(false);
+    const cru: Record<string, unknown> = projecao;
+    expect(logisticaGravadaPeloErpShopee(cru)).toBe(false);
+  });
+
+  it('a tabela cruza as QUATRO combinações carimbo × rascunho — o predicado é ortogonal a item_id', () => {
+    // One table, anti-vacuity: every (stamped, draft) pair occurs, and the
+    // answer follows the stamp column alone.
+    const TABELA: readonly {
+      readonly link: Record<string, unknown>;
+      readonly carimbado: boolean;
+      readonly rascunho: boolean;
+    }[] = [
+      { link: { item_id: null }, carimbado: false, rascunho: true },
+      { link: { item_id: null, logisticaGravadaEm: CARIMBO }, carimbado: true, rascunho: true },
+      { link: { item_id: ITEM_ID }, carimbado: false, rascunho: false },
+      { link: { item_id: ITEM_ID, logisticaGravadaEm: CARIMBO }, carimbado: true, rascunho: false },
+    ];
+    const pares = new Set<string>();
+    for (const { link, carimbado, rascunho } of TABELA) {
+      expect(ehRascunhoShopee(link)).toBe(rascunho);
+      expect(logisticaGravadaPeloErpShopee(link)).toBe(carimbado);
+      pares.add(`${String(carimbado)}|${String(rascunho)}`);
+    }
+    expect(pares.size).toBe(4);
   });
 });

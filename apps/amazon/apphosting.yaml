@@ -8,8 +8,12 @@
 # (`POST /api/marketplace/amazon/enviar-nfe`, PR 14-d), which only enqueues onto
 # that codebase's NF-e queue `processAmazonNfeUpload` (no Amazon call, no
 # Firestore write). The step-4 backstop poll and the NF-e upload itself run in
-# that functions codebase, not here; the other Firestore-backed flows arrive in
-# later steps.
+# that functions codebase, not here. Step 15 adds the Easy Ship label route
+# (`POST /api/marketplace/amazon/etiqueta`, PR 15-d), the one route here that
+# writes to Amazon: inside one request it reads the live order, sends the
+# scheduling bulk (which answers the label's link) and downloads the label; it
+# writes no pedido, freight, scheduling or aviso document. The other
+# Firestore-backed flows arrive in later steps.
 runConfig:
   cpu: 1
   memoryMiB: 512
@@ -27,14 +31,15 @@ runConfig:
   minInstances: 0 # scale-to-zero: a per-channel backend costs only per request
   concurrency: 80
 # No `timeoutSeconds` — the platform default is what
-# `lib/amazon/prazos.test.ts` compares the OAuth callback's one exchange against.
+# `lib/amazon/prazos.test.ts` compares the OAuth callback's one exchange and the
+# label route's 240-s worst case against.
 #
 # No `runConfig.vpcAccess` — this channel needs no static egress IP: the LWA
 # token exchange is authorized by the app's client credentials, and an SP-API
 # call by its LWA access token alone (no AWS IAM or SigV4 since 2023-10-02,
 # master plan step 1).
 #
-# Environment this backend reads (steps 2, 2b, 3 and 14). None of it gets an `env:` row below,
+# Environment this backend reads (steps 2, 2b, 3, 14 and 15). None of it gets an `env:` row below,
 # on purpose: COMMENT ROWS ONLY, so nothing baked into the manifest can override
 # a console value during the window, and the list stays here so the next step
 # that reads a variable declares it in the same change:
@@ -76,7 +81,8 @@ runConfig:
 #                                without consuming the attempt; the NF-e re-drive
 #                                answers the same 503 and enqueues nothing (the
 #                                task it would enqueue reads the functions
-#                                codebase's copy). Set it on BOTH surfaces (this
+#                                codebase's copy); the label route answers it too,
+#                                having read nothing. Set it on BOTH surfaces (this
 #                                console and the functions codebase).
 #   AMAZON_RELAY_SECRET          Secret Manager. The push receiver's relay key: what
 #                                the AWS relay sends in `x-erp-relay-key` (the SAME
@@ -118,7 +124,10 @@ runConfig:
 #                                `env:` row here: nothing would read it, and a blank
 #                                `value: ''` row rejects the whole manifest.
 #
-# The write valves and canary lists (`lib/amazon/core/valvulas.ts`, step 2b). No
+# The write valves and canary lists (`lib/amazon/core/valvulas.ts`, step 2b). This
+# backend's label route reads the scheduling pair (`AMAZON_MODO_AGENDAMENTO`,
+# `AMAZON_CANARIO_AGENDAMENTO`, step 15), on every print, so set it ALIKE here and
+# on the functions codebase, whose scheduling task reads the same names. No other
 # write flow of THIS backend reads them: the NF-e pair is read by the functions
 # codebase's NF-e task (step 14), and the NF-e re-drive route here deliberately
 # never reads it (the task is the one source of truth). Every one stays UNSET

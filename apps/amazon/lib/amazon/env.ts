@@ -53,10 +53,11 @@ export const RELAY_SECRET_ENV = 'AMAZON_RELAY_SECRET';
  */
 export const RELAY_PREVIOUS_SECRET_ENV = 'AMAZON_RELAY_PREVIOUS_SECRET';
 /**
- * The region of BOTH Cloud Tasks queues of the functions codebase `amazon`: the
- * reads queue (`filaLeituraAmazon`, the push receiver's) and, since step 14, the
- * NF-e queue (`processAmazonNfeUpload` — on this surface, the re-drive route's,
- * PR 14-d). Read by the App Hosting composition root
+ * The region of the two Cloud Tasks queues App Hosting enqueues onto, of the
+ * three in the functions codebase `amazon`: the reads queue
+ * (`filaLeituraAmazon`, the push receiver's) and, since step 14, the NF-e queue
+ * (`processAmazonNfeUpload` — on this surface, the re-drive route's, PR 14-d).
+ * Read by the App Hosting composition root
  * (`lib/firebase/filaLeitura.ts`) as a static member read of the process
  * environment, never through this module; named here so a refusal can report
  * it. Its companion `AMAZON_TASKS_DISABLED=1` closes both queues there: the
@@ -165,8 +166,9 @@ export function lerConfigAmazon(ambiente: AmbienteAmazon): ConfigAmazon | Config
 
 /**
  * Only the LWA pair — what the context loader's access-token refresh needs. A
- * flow (step 3's functions) never builds a consent URL nor redirects a browser,
- * so it must not be refused for lacking the connect-only keys.
+ * flow (step 3's functions, or since step 15 the label route on App Hosting)
+ * never builds a consent URL nor redirects a browser, so it must not be refused
+ * for lacking the connect-only keys.
  */
 export function lerAplicacaoLwaAmazon(
   ambiente: AmbienteAmazon,

@@ -134,7 +134,7 @@ function plano(
             combinacaoAmbiguaNaLoja: false,
             pendencias: [],
           },
-    skusRepetidos: new Set(),
+    skusEmConflito: new Map(),
     recusasDoAprendizado: new Map(),
   });
 }

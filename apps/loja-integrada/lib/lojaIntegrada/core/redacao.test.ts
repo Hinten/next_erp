@@ -30,6 +30,7 @@ import {
   classificarCaminho,
   corpoDeRestauracaoLi,
   cortarUtf8,
+  fimDeTrechoDaCamadaDeDigitosLi,
   mascararTexto,
   passaPredicadoLi,
   profundidadeJson,
@@ -386,11 +387,14 @@ describe('spec coverage — against the committed leaf inventory', () => {
         'caminho',
         'custo',
         'grande',
+        'gtin',
         'icone',
         'id_anymarket',
+        'id_externo',
         'imagem',
         'imagem_variacao',
         'media',
+        'mpn',
         'nome',
         'nome_visivel',
         'pequena',
@@ -2445,6 +2449,80 @@ describe('near-miss pairs the mutation run found missing', () => {
     expect(
       fixtureJson('/v1/produto/1', 200, { ncm: '6109', sku: 'abc 1', estoque_quantidade: '5x' }),
     ).toEqual({ ncm: FALSO_LI.texto, sku: FALSO_LI.texto, estoque_quantidade: FALSO_LI.texto });
+  });
+
+  it('catalogue (fixture): a GTIN, a part number and an external id are faked at any depth; null and empty stay', () => {
+    const produto = {
+      gtin: '7891234567895',
+      mpn: 'ABC-123',
+      id_externo: 88_568_855,
+      sku: 'abc-1',
+      ncm: '61091000',
+    };
+    expect(fixtureJson('/v1/produto/1', 200, produto)).toEqual({
+      gtin: FALSO_LI.texto,
+      mpn: FALSO_LI.texto,
+      id_externo: 0,
+      sku: 'abc-1',
+      ncm: '61091000',
+    });
+    expect(fixtureJson('/v1/produto/', 200, { objects: [produto] })).toEqual({
+      objects: [
+        { gtin: FALSO_LI.texto, mpn: FALSO_LI.texto, id_externo: 0, sku: 'abc-1', ncm: '61091000' },
+      ],
+    });
+    for (const caminho of ['/v1/categoria/', '/v1/marca/']) {
+      expect(
+        fixtureJson(caminho, 200, { objects: [{ id: 7, id_externo: 'EXT-9' }] }),
+        caminho,
+      ).toEqual({ objects: [{ id: 7, id_externo: FALSO_LI.texto }] });
+    }
+    expect(
+      fixtureJson('/v1/grades/6062/', 200, {
+        id: 6062,
+        id_externo: 'EXT-1',
+        variacoes: [{ id: 31, id_externo: 'EXT-2' }],
+      }),
+    ).toEqual({
+      id: 6062,
+      id_externo: FALSO_LI.texto,
+      variacoes: [{ id: 31, id_externo: FALSO_LI.texto }],
+    });
+    // NEAR-MISS: what carries nothing stays as captured, so a corpus whose values are all
+    // empty is unchanged by the rule.
+    expect(
+      fixtureJson('/v1/produto/1', 200, { gtin: '', mpn: null, id_externo: null, sku: 'abc-1' }),
+    ).toEqual({ gtin: '', mpn: null, id_externo: null, sku: 'abc-1' });
+    // NEAR-MISS: the log keeps a catalogue body whole (behind the regex layer), as before.
+    expect(logJson('/v1/produto/1', 200, produto)).toEqual(produto);
+  });
+
+  it('fimDeTrechoDaCamadaDeDigitosLi: where the digit layer strikes first, and only there', () => {
+    // EQUAL: each kind the layer masks, at its own end.
+    expect(fimDeTrechoDaCamadaDeDigitosLi(CPF)).toBe(11);
+    expect(fimDeTrechoDaCamadaDeDigitosLi(`ab-${CPF}-x`)).toBe(14);
+    expect(fimDeTrechoDaCamadaDeDigitosLi(CNPJ)).toBe(14);
+    expect(fimDeTrechoDaCamadaDeDigitosLi(`/${CNPJ_LETRA}`)).toBe(15);
+    expect(fimDeTrechoDaCamadaDeDigitosLi(`${CNPJ}-${CPF}`)).toBe(14);
+    expect(fimDeTrechoDaCamadaDeDigitosLi(`${CPF}-${CNPJ}`)).toBe(11);
+    // NEAR-MISS: bad check digits, a longer digit run, a shape-only hit, nothing at all.
+    for (const t of [
+      CPF_INVALIDO,
+      CNPJ_LETRA_INVALIDO,
+      `${CPF}0`,
+      `0${CNPJ}`,
+      `${CPF.slice(0, 3)}.${CPF.slice(3, 6)}.${CPF.slice(6, 9)}-${CPF.slice(9)}`,
+      'abc-1',
+      '',
+    ]) {
+      expect(fimDeTrechoDaCamadaDeDigitosLi(t), t).toBeNull();
+    }
+    // It answers exactly when the layer itself masks a bare run.
+    for (const t of [CPF, CNPJ, CNPJ_LETRA, CPF_INVALIDO, `${CPF}0`, 'abc-1']) {
+      const soDigitos = mascararTexto(t, { digitos: true }).mascarados;
+      const semDigitos = mascararTexto(t, { digitos: false }).mascarados;
+      expect(fimDeTrechoDaCamadaDeDigitosLi(t) !== null, t).toBe(soDigitos > semDigitos);
+    }
   });
 
   it('every configuration label is faked in a fixture (situacao, envio, pagamento; list and detail) and kept in the log', () => {

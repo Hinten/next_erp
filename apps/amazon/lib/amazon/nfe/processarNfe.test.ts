@@ -15,6 +15,8 @@ import { requireRegion } from '@delfrance/core/region';
 import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
 import { ESTADO_FRETE, ESTADO_NFE, MOTIVO_PEDIDO_AMAZON } from '@delfrance/schemas';
 
+import { enfileirarAgendamentoDoAceiteAmazon } from '../agendamento/entradasAgendamento';
+import { idDaTarefaDeAgendamentoAmazon } from '../agendamento/tarefaAgendamento';
 import { chavePedidoPrecisaAtencao, relogioDoDocumentoUs } from '../avisos/avisos';
 import { __setRelogioDoCacheParaTestes } from '../core/contaCache';
 import { AmazonTarefasTransitoriasError } from '../core/filaTarefas';
@@ -24,6 +26,10 @@ import { ID_INCIDENTE_NFE_PEDIDO_CANCELADO_AMAZON } from '../pedidos/incidentesP
 import { makePedidoIdAmazon } from '../pedidos/orderIds';
 import { FakeDb, asDb, grpc, increment } from '../testing/fakeDb';
 import { falhaDoFunctions } from '../testing/falhaDeEnfileiramento';
+import {
+  type FilaAgendamentoDeTeste,
+  filaAgendamentoDeTeste,
+} from '../testing/produtorAgendamento';
 import {
   AGORA_MS,
   AMBIENTE_LIGADO,
@@ -46,6 +52,7 @@ import {
 import { caminhoDaFilaNfeAmazon, criarAgendadorNfeAmazon } from './agendadorNfe';
 import { chaveAvisoNfeAmazon } from './avisoNfe';
 import { conteudoDaNfeAmazon } from './conteudoNfe';
+import type { DestinoAceiteNfeAmazon } from './destinoAceite';
 import {
   type DepsProcessarNfeAmazon,
   type ResultadoNfeAmazon,
@@ -61,9 +68,13 @@ import {
   tarefaInicialNfeAmazon,
 } from './tarefaNfe';
 
-/** The step-15 seam and the content, swappable per test (both stay real by default). */
+/**
+ * The step-15 seam and the content, swappable per test. The seam is a SPY (null
+ * unless a test installs one — the REAL E1 included, `enfileirarAgendamentoDoAceiteAmazon`);
+ * the content stays real by default.
+ */
 const h = vi.hoisted(() => ({
-  destino: { agendar: null as null | ((a: unknown) => Promise<void>) },
+  destino: { agendar: null as DestinoAceiteNfeAmazon['agendar'] },
   md5Hex: false,
 }));
 vi.mock('./destinoAceite', () => ({ DESTINO_ACEITE_NFE_AMAZON: h.destino }));
@@ -162,6 +173,8 @@ interface Cenario {
   readonly chamadas: string[];
   /** Every enqueue the recording queue accepted (payload, options). */
   readonly enfileiradas: { readonly tarefa: TarefaNfeAmazon; readonly atrasoS: number }[];
+  /** The Easy Ship scheduling queue (step 15): the REAL producer over a recording, name-keeping queue. */
+  readonly agendamentos: FilaAgendamentoDeTeste;
   /** Make the queue reject the NEXT enqueues. */
   falhaDaFila: (() => unknown) | null;
   filaDesligada: boolean;
@@ -205,6 +218,7 @@ function cenario(rotas: Partial<Record<Rota, Roteiro[]>> = {}): Cenario {
     },
     chamadas: [],
     enfileiradas: [],
+    agendamentos: filaAgendamentoDeTeste(),
     falhaDaFila: null,
     filaDesligada: false,
     ambiente: { ...AMBIENTE_LIGADO, AMAZON_MODO_NFE: 'on', AMAZON_CANARIO_NFE: '*' },
@@ -228,6 +242,7 @@ function cenario(rotas: Partial<Record<Rota, Roteiro[]>> = {}): Cenario {
             },
           }),
         }),
+      agendamento: c.agendamentos.produtor,
       registro: { tentativa: c.tentativa, idTarefa: 'tarefa-nfe-teste-1' },
       fetch: (input, init) => {
         const url = new URL(String(input));
@@ -937,17 +952,181 @@ describe('P9 — status FIRST (idempotency)', () => {
     expect(c.fake.ler(CAMINHO)?.ultimaModificacao).toBe(AGORA_MS * 1000);
     expect(aviso(c)).toMatchObject({ resolucaoMotivo: 'nfe-validada' });
     expect(aviso(c)?.resolvidoEm).not.toBeNull();
-    expect(agendar).toHaveBeenCalledWith({
-      contaId: CONTA,
-      pedidoId: PEDIDO_ID,
-      nfeId: NFE_ID,
-      orderId: ORDER,
-    });
+    expect(agendar).toHaveBeenCalledExactlyOnceWith(
+      { contaId: CONTA, pedidoId: PEDIDO_ID, nfeId: NFE_ID, orderId: ORDER },
+      {
+        agendamento: c.agendamentos.produtor,
+        logger: expect.any(Object) as unknown,
+        idTarefa: 'tarefa-nfe-teste-1',
+        ultimaTentativa: false,
+      },
+    );
   });
 
-  it('the step-15 seam is NULL in step 14 (the real table, pinned)', async () => {
+  it('★ the step-15 seam is FILLED (step 15, PR 15-c): the real table’s agendar IS E1, enqueue-only', async () => {
     const real = await vi.importActual<typeof import('./destinoAceite')>('./destinoAceite');
-    expect(real.DESTINO_ACEITE_NFE_AMAZON).toEqual({ agendar: null });
+    expect(real.DESTINO_ACEITE_NFE_AMAZON.agendar).toBe(enfileirarAgendamentoDoAceiteAmazon);
+    expect(Object.keys(real.DESTINO_ACEITE_NFE_AMAZON)).toEqual(['agendar']);
+  });
+});
+
+describe('★ step 15 (PR 15-c) — E1 through the seam: the REAL entry, ONE enqueue, never an Amazon call', () => {
+  const NOME_E1 = idDaTarefaDeAgendamentoAmazon({
+    origem: 'aceite-nfe',
+    idTarefaNfe: 'tarefa-nfe-teste-1',
+  });
+  const linhasDoAgendamento = (c: Cenario) =>
+    c.log.linhas.filter((l) => l.meta?.evento === 'agendamento');
+
+  beforeEach(() => {
+    h.destino.agendar = enfileirarAgendamentoDoAceiteAmazon;
+  });
+
+  it('★ aceita ⇒ the producer’s enfileirarEntrada ONCE: origem aceite-nfe, delay 60, named after the dispatch’s registro.idTarefa — and ZERO extra fetch calls', async () => {
+    const semSeam = cenario({ status: [{ status: 200, corpo: STATUS.aceita }] });
+    h.destino.agendar = null;
+    await semSeam.rodar();
+    h.destino.agendar = enfileirarAgendamentoDoAceiteAmazon;
+
+    const c = cenario({ status: [{ status: 200, corpo: STATUS.aceita }] });
+    const r = await c.rodar();
+    expect(r).toMatchObject({ acao: 'aceita', motivo: 'ja-aceita', posEnvio: null });
+    expect(c.agendamentos.enfileiradas).toEqual([
+      {
+        tarefa: {
+          pedidoId: PEDIDO_ID,
+          contaId: CONTA,
+          orderId: ORDER,
+          origem: 'aceite-nfe',
+          espera: 0,
+          pausas: 0,
+        },
+        id: NOME_E1,
+        atrasoS: 60,
+      },
+    ]);
+    // (mutation 1) The seam made NO call: the dispatch's fetch list is the same without it.
+    expect(c.chamadas).toEqual(semSeam.chamadas);
+    expect(posts(c)).toEqual([]);
+    // The NF-e queue's own producer was never asked for a scheduling task.
+    expect(c.enfileiradas).toEqual([]);
+  });
+
+  it('★ NEAR-MISS: a queue retry of the SAME NF-e task enqueues under the SAME name (ja-enfileirada, ONE INFO line); a re-drive’s new NF-e task under a new one', async () => {
+    const c = cenario({ status: [{ status: 200, corpo: STATUS.aceita }] });
+    await c.rodar();
+    c.tentativa = 1;
+    expect(await c.rodar()).toMatchObject({ acao: 'aceita' });
+    expect(c.agendamentos.tentativas.map((t) => t.id)).toEqual([NOME_E1, NOME_E1]);
+    expect(c.agendamentos.enfileiradas).toHaveLength(1);
+    expect(linhasDoAgendamento(c)).toEqual([
+      expect.objectContaining({
+        nivel: 'info',
+        meta: expect.objectContaining({ motivo: 'ja-enfileirada' }) as unknown,
+      }),
+    ]);
+
+    const redrive = cenario({ status: [{ status: 200, corpo: STATUS.aceita }] });
+    const deps = { ...redrive.deps(), registro: { tentativa: 0, idTarefa: 'tarefa-nfe-redrive' } };
+    await processarNfeAmazon(asDb(redrive.fake), tarefaInicialNfeAmazon(PEDIDO_ID, NFE_ID), deps);
+    expect(redrive.agendamentos.enfileiradas.map((t) => t.id)).toEqual([
+      idDaTarefaDeAgendamentoAmazon({ origem: 'aceite-nfe', idTarefaNfe: 'tarefa-nfe-redrive' }),
+    ]);
+  });
+
+  it('★ (mutation 2) the tasks valve closed ⇒ ONE WARNING and NO throw on attempt 0: the NF-e result is still aceita', async () => {
+    const c = cenario({ status: [{ status: 200, corpo: STATUS.aceita }] });
+    c.agendamentos.desligado = true;
+    expect(await c.rodar()).toMatchObject({ acao: 'aceita', motivo: 'ja-aceita', posEnvio: null });
+    expect(c.agendamentos.tentativas).toEqual([]);
+    expect(linhasDoAgendamento(c)).toEqual([
+      expect.objectContaining({
+        nivel: 'warn',
+        meta: expect.objectContaining({
+          motivo: 'agendamento-nao-enfileirado',
+          erro: 'AmazonAgendamentoTarefasDesligadasError',
+        }) as unknown,
+      }),
+    ]);
+  });
+
+  it('★ (mutation 17) a TRANSIENT RETHROWS out of aceita on attempt 0 — the retry makes ZERO submit POSTs and enqueues under the SAME name; on the LAST attempt it is the WARNING, no throw', async () => {
+    const c = cenario({ status: [{ status: 200, corpo: STATUS.aceita }] });
+    c.agendamentos.falha = () => falhaDoFunctions('unknown-error', 503);
+    await expect(c.rodar()).rejects.toBeInstanceOf(AmazonTarefasTransitoriasError);
+    expect(linhasDoAgendamento(c)).toEqual([]);
+
+    // The queue's retry of the SAME dispatch: status first (Accepted), no submit.
+    c.agendamentos.falha = null;
+    c.tentativa = 1;
+    expect(await c.rodar()).toMatchObject({ acao: 'aceita' });
+    expect(posts(c)).toEqual([]);
+    expect(c.agendamentos.tentativas.map((t) => t.id)).toEqual([NOME_E1, NOME_E1]);
+    expect(c.agendamentos.enfileiradas.map((t) => t.id)).toEqual([NOME_E1]);
+
+    // The LAST attempt: the edge is answered by the WARNING, never a throw.
+    const ultima = cenario({ status: [{ status: 200, corpo: STATUS.aceita }] });
+    ultima.agendamentos.falha = () => falhaDoFunctions('unknown-error', 503);
+    ultima.tentativa = TENTATIVAS_NFE_AMAZON - 1;
+    expect(await ultima.rodar()).toMatchObject({ acao: 'aceita', posEnvio: null });
+    expect(linhasDoAgendamento(ultima)).toEqual([
+      expect.objectContaining({
+        nivel: 'warn',
+        meta: expect.objectContaining({
+          motivo: 'agendamento-nao-enfileirado',
+          erro: 'AmazonTarefasTransitoriasError',
+        }) as unknown,
+      }),
+    ]);
+  });
+
+  it('★ a transient that had in fact LANDED: the retry’s enqueue answers ja-enfileirada (one INFO line), nothing duplicated', async () => {
+    const c = cenario({ status: [{ status: 200, corpo: STATUS.aceita }] });
+    // Cloud Tasks already holds the name the first attempt sent before its answer was lost.
+    c.agendamentos.nomes.add(NOME_E1);
+    c.tentativa = 1;
+    expect(await c.rodar()).toMatchObject({ acao: 'aceita' });
+    expect(c.agendamentos.enfileiradas).toEqual([]);
+    expect(linhasDoAgendamento(c)).toHaveLength(1);
+    expect(linhasDoAgendamento(c)[0]).toMatchObject({ nivel: 'info' });
+  });
+
+  it('★ an unnamed TypeError from the producer PROPAGATES out of the dispatch', async () => {
+    const c = cenario({ status: [{ status: 200, corpo: STATUS.aceita }] });
+    const bug = new TypeError('teste: um bug no produtor');
+    const deps: DepsProcessarNfeAmazon = {
+      ...c.deps(),
+      agendamento: () => ({
+        enfileirarEntrada: () => Promise.reject(bug),
+        enfileirar: () => Promise.reject(bug),
+      }),
+    };
+    await expect(
+      processarNfeAmazon(asDb(c.fake), tarefaInicialNfeAmazon(PEDIDO_ID, NFE_ID), deps),
+    ).rejects.toBe(bug);
+  });
+
+  it('★ E1 is never called with a cancelled sibling (nfe-substituta), an ambiguous pedido (nfe-ambigua), a partial acceptance or on a cancelled read: nothing reaches the scheduling queue', async () => {
+    const substituta = cenario({ status: [{ status: 200, corpo: STATUS.aceita }] });
+    substituta.fake.seed(`${CAMINHO}/nfev4/s9`, nfeRaw({ estado: ESTADO_NFE.cancelada }));
+    expect(await substituta.rodar()).toMatchObject({ motivo: 'nfe-substituta' });
+
+    const ambigua = cenario({ status: [{ status: 200, corpo: STATUS.aceita }] });
+    ambigua.fake.seed(`${CAMINHO}/nfev4/s9`, nfeRaw());
+    expect(await ambigua.rodar()).toMatchObject({ motivo: 'nfe-ambigua' });
+
+    const parcial = cenario({
+      status: [{ status: 200, corpo: { orderInvoicingStatus: 'PartiallyAccepted' } }],
+    });
+    expect(await parcial.rodar()).toMatchObject({ motivo: 'nfe-parcialmente-aceita' });
+
+    const cancelada = cenario({ getOrder: [ordem({ status: 'CANCELLED' })] });
+    await cancelada.rodar(verificacao(2));
+
+    for (const c of [substituta, ambigua, parcial, cancelada]) {
+      expect(c.agendamentos.tentativas).toEqual([]);
+      expect(c.agendamentos.construcoes).toBe(0);
+    }
   });
 });
 

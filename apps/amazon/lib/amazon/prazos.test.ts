@@ -30,18 +30,32 @@ const MARGEM_MS = 30_000;
 const APP_DIR = path.resolve(__dirname, '../..');
 const TIMEOUT_SECONDS_LINHA = /^\s*timeoutSeconds\s*:\s*(\d+)\s*(?:#.*)?$/;
 
+/** The label route (step 15, PR 15-d), and its body: the one route whose body reaches Amazon. */
+const ROTA_ETIQUETA = 'app/api/marketplace/amazon/etiqueta/route.ts';
+const CORPO_DA_ETIQUETA = 'lib/amazon/agendamento/etiquetaAmazon.ts';
+
 /**
  * The routes, and how many code exchanges each may make: status / start /
  * callback / the NF-e re-drive (step 14, PR 14-d — ZERO Amazon calls of any
- * kind, below).
+ * kind, below) / the label route (step 15, PR 15-d — through its body, never an
+ * exchange: a stale token's refresh is the context's).
  */
 const ROTAS: readonly (readonly [string, number])[] = [
   ['app/api/marketplace/amazon/conta/[id]/route.ts', 0],
   ['app/api/marketplace/amazon/conta/[id]/oauth/start/route.ts', 0],
   ['app/api/oauth/amazon/callback/route.ts', 0],
   ['app/api/marketplace/amazon/enviar-nfe/route.ts', 0],
+  [ROTA_ETIQUETA, 0],
   // The callback's body lives in `conectar.ts`; the ONE exchange is counted there.
   ['lib/amazon/conta/conectar.ts', 1],
+];
+
+/** The bodies of the other four routes, which call neither the context nor the scheduling run. */
+const CORPOS_SEM_CONTEXTO = [
+  'lib/amazon/conta/status.ts',
+  'lib/amazon/conta/iniciar.ts',
+  'lib/amazon/conta/conectar.ts',
+  'lib/amazon/nfe/reenvioNfe.ts',
 ];
 
 function pinsDeTimeout(textos: string[]): { pinados: number[]; ilegiveis: string[] } {
@@ -69,6 +83,12 @@ function configDoBackend(): { arquivos: string[]; pinados: number[]; ilegiveis: 
 const contar = (texto: string, agulha: string) => texto.split(agulha).length - 1;
 const ler = (rota: string) => readFileSync(path.join(APP_DIR, rota), 'utf8');
 
+/** The smallest ceiling, in seconds: the smallest pin, else App Hosting's default. */
+function tetoDoBackendS(): number {
+  const { pinados } = configDoBackend();
+  return pinados.length > 0 ? Math.min(...pinados) : TETO_APP_HOSTING_PADRAO_S;
+}
+
 describe('the OAuth routes fit inside the backend ceiling', () => {
   it('reads the backend config (anti-vacuity), failing closed on an unreadable pin', () => {
     const { arquivos, ilegiveis } = configDoBackend();
@@ -77,29 +97,41 @@ describe('the OAuth routes fit inside the backend ceiling', () => {
   });
 
   it('PRAZO_AMAZON_MS.lwa + 30 s ≤ the smallest ceiling (300 s with no pin)', () => {
-    const { pinados } = configDoBackend();
-    const tetoS = pinados.length > 0 ? Math.min(...pinados) : TETO_APP_HOSTING_PADRAO_S;
     expect(PRAZO_AMAZON_MS.lwa).toBeGreaterThan(0);
-    expect(PRAZO_AMAZON_MS.lwa + MARGEM_MS).toBeLessThanOrEqual(tetoS * 1000);
+    expect(PRAZO_AMAZON_MS.lwa + MARGEM_MS).toBeLessThanOrEqual(tetoDoBackendS() * 1000);
   });
 
-  it('status / start / callback / re-drive make 0 / 0 / 1 / 0 code exchanges, and no route ever refreshes', () => {
+  it('status / start / callback / re-drive / label make 0 / 0 / 1 / 0 / 0 code exchanges, and no route ever refreshes', () => {
     for (const [arquivo, trocas] of ROTAS) {
       const fonte = ler(arquivo);
       expect(contar(fonte, 'trocarCodigoAutorizacao('), arquivo).toBe(trocas);
       expect(contar(fonte, 'trocarRefreshToken('), arquivo).toBe(0);
-    }
-    // No route reaches Amazon any other way: no context, no client, no raw fetch.
-    const rotas = ROTAS.map(([arquivo]) => arquivo).filter((a) => a.startsWith('app/'));
-    expect(rotas).toHaveLength(4);
-    for (const arquivo of rotas) {
-      expect(ler(arquivo), arquivo).not.toMatch(/loadAmazonContext|criarClienteSpApi|fetch\(/);
     }
     // The status and start bodies never exchange either.
     for (const corpo of ['lib/amazon/conta/status.ts', 'lib/amazon/conta/iniciar.ts']) {
       expect(contar(ler(corpo), 'trocarCodigoAutorizacao('), corpo).toBe(0);
       expect(contar(ler(corpo), 'trocarRefreshToken('), corpo).toBe(0);
     }
+    // Neither does the label route's body.
+    expect(contar(ler(CORPO_DA_ETIQUETA), 'trocarCodigoAutorizacao(')).toBe(0);
+    expect(contar(ler(CORPO_DA_ETIQUETA), 'trocarRefreshToken(')).toBe(0);
+  });
+
+  it('★ the five route files are thin (no context, no client, no raw fetch); the four other bodies call neither the context nor the run, and the label route’s body calls each once', () => {
+    const rotas = ROTAS.map(([arquivo]) => arquivo).filter((a) => a.startsWith('app/'));
+    expect(rotas).toHaveLength(5);
+    expect(rotas).toContain(ROTA_ETIQUETA);
+    for (const arquivo of rotas) {
+      expect(ler(arquivo), arquivo).not.toMatch(
+        /loadAmazonContext|criarClienteSpApi|criarClienteEscritaSpApi|executarAgendamentoAmazon|fetch\(/,
+      );
+    }
+    for (const corpo of CORPOS_SEM_CONTEXTO) {
+      expect(contar(ler(corpo), 'loadAmazonContext('), corpo).toBe(0);
+      expect(contar(ler(corpo), 'executarAgendamentoAmazon('), corpo).toBe(0);
+    }
+    expect(contar(ler(CORPO_DA_ETIQUETA), 'loadAmazonContext(')).toBe(1);
+    expect(contar(ler(CORPO_DA_ETIQUETA), 'executarAgendamentoAmazon(')).toBe(1);
   });
 
   it('the push receiver (route and body) makes ZERO Amazon calls of any kind', () => {
@@ -144,6 +176,35 @@ describe('the OAuth routes fit inside the backend ceiling', () => {
     ]);
     // A pin this small is exactly what this test exists to reject.
     expect(PRAZO_AMAZON_MS.lwa + MARGEM_MS).toBeGreaterThan(30 * 1000);
+  });
+});
+
+/**
+ * The label route runs inside ONE request on this backend, so everything it can
+ * call must fit under the request ceiling with a margin for its Firestore work: a
+ * print the PLATFORM cuts answers a 504 with the bulk's outcome unknown.
+ *
+ * Read off the package's own deadlines. A refresh of a stale token comes at the
+ * first request (`loadAmazonContext` itself only reads the credential), and the
+ * engine's forced-refresh-once rule wraps the read and the write separately.
+ */
+describe('the label route’s worst case fits the backend ceiling', () => {
+  const piorCasoDaEtiquetaMs =
+    PRAZO_AMAZON_MS.lwa + // the stale token's refresh, at the first request
+    PRAZO_AMAZON_MS.leitura + // getOrder
+    PRAZO_AMAZON_MS.lwa + // its forced refresh
+    PRAZO_AMAZON_MS.leitura + // getOrder again
+    2 * PRAZO_AMAZON_MS.escrita + // the token mint and the bulk
+    PRAZO_AMAZON_MS.lwa + // the write's forced refresh
+    2 * PRAZO_AMAZON_MS.escrita + // the token mint and the bulk again
+    PRAZO_AMAZON_MS.documento; // the zip
+
+  it('★ worst case + 30 s ≤ the smallest ceiling, anchored at [240 000 ms, 300 s]', () => {
+    const tetoS = tetoDoBackendS();
+    expect(piorCasoDaEtiquetaMs + MARGEM_MS).toBeLessThanOrEqual(tetoS * 1000);
+    // ÂNCORA: a new call on this path, a longer deadline or a lower pin moves this
+    // pair on purpose, and the web client's own deadline must then be looked at.
+    expect([piorCasoDaEtiquetaMs, tetoS]).toEqual([240_000, 300]);
   });
 });
 

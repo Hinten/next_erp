@@ -9,11 +9,14 @@
  * ## The target ({@link planejarFamiliaLi})
  *
  * `familiaNoAlvoLi` (the cascade's): `todos` takes every family, `selecionados` the roots the start
- * body named, `jaNoErp` a root the cascade matched to one ERP produto, `naoNoErp` an `ausente` one.
+ * body named, `jaNoErp` a root the cascade matched to one ERP produto, `naoNoErp` an `ausente` one —
+ * unless the caller passes the target it decided (`noAlvo`): a family whose root was absent when
+ * the job started (this job's create, another conta's it adopted), met again matched, stays in the
+ * `naoNoErp` target it was in (`familiaDoJob.ts`, "Order", step 2).
  * A family outside the target is planned as `noAlvo: false` with no link and no create, and the
  * caller writes no report item for it — except a family in CONFLICT (two owners, two SKU hits, a
- * shape mismatch, no SKU, a SKU the store repeats): it belongs to no target but `todos` and
- * `selecionados`, and under `jaNoErp` and `naoNoErp` it is still REPORTED (`relatar`), with its
+ * shape mismatch, no SKU, a SKU the store repeats or nearly repeats): it belongs to no target but
+ * `todos` and `selecionados`, and under `jaNoErp` and `naoNoErp` it is still REPORTED (`relatar`), with its
  * conflict and no link, so a run of either never reads as "everything on this side is done".
  *
  * ## The links (`raizVinculo`, `filhosVinculos`)
@@ -56,9 +59,11 @@
  *  - its LI-sourced fields parse through the produto schema (`nome` cut at
  *    {@link MAX_NOME_PRODUTO_LI} first; a `null` name is `dado-invalido(nome)`);
  *  - a parent keeps at least one VISIBLE variation: a hidden or blocked one is left out
- *    (`oculto-nao-criado` on it), and a family whose every variation is hidden is not created;
- *  - every kept variation has a SKU no other store row repeats and parses through the produto
- *    schema, and no claimed variation is still without a usable detail.
+ *    (`oculto-nao-criado` on it, beside its store conflict when its SKU has one: it refuses its
+ *    partner, never this family), and a family whose every variation is hidden is not created;
+ *  - every kept variation has a SKU no other store row repeats or nearly repeats
+ *    (`conflitosDeSkuNaLojaLi`) and parses through the produto schema, and no claimed variation is
+ *    still without a usable detail.
  * Whether every kept variation's options resolve is the complete step's check (it needs the grupo
  * memo); this plan only lists them.
  *
@@ -102,6 +107,7 @@ import {
 import type { FamiliaLi, FilhoDaFamiliaLi } from './familias';
 import { type RecusaNoRelatorioLi, pendenciaDaRecusaLi } from './gruposLi';
 import {
+  type ConflitoDeSkuNaLojaLi,
   type PendenciaDaResolucaoLi,
   type ResolucaoDaRaizLi,
   type ResolucaoDoFilhoLi,
@@ -212,10 +218,17 @@ export interface EntradaDoPlanoLi {
   readonly raiz: ResolucaoDaRaizLi;
   /** The variations' match under the matched root (`resolverFilhosLi`); `null` when not run. */
   readonly filhos: ResolucaoDosFilhosLi | null;
-  /** SKUs two store rows carry (`skusRepetidosNaLojaLi`): never created. */
-  readonly skusRepetidos: ReadonlySet<string>;
+  /** SKUs in conflict in the store, with their code (`conflitosDeSkuNaLojaLi`): never created. */
+  readonly skusEmConflito: ReadonlyMap<string, ConflitoDeSkuNaLojaLi>;
   /** Why each claimed option stays unlearned (`recusasDoAprendizadoLi`), keyed `<g>_<v>`. */
   readonly recusasDoAprendizado: ReadonlyMap<string, RecusaNoRelatorioLi>;
+  /**
+   * The target as the caller DECIDED it (`familiaDoJob.ts`, "Order", step 2: decided once);
+   * absent ⇒ `familiaNoAlvoLi` over `raiz`. A family whose root was absent when the job started
+   * (this job's create, another conta's it adopted) is still in a `naoNoErp` target when a retried
+   * unit meets that root matched.
+   */
+  readonly noAlvo?: boolean;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -234,16 +247,22 @@ function lista(v: readonly string[]): readonly string[] | undefined {
 }
 
 /** The field names a failed parse names (each once, in order). */
-function camposDoErro(issues: readonly { readonly path: readonly PropertyKey[] }[]): string[] {
+export function camposDoErro(
+  issues: readonly { readonly path: readonly PropertyKey[] }[],
+): string[] {
   return [...new Set(issues.map((i) => String(i.path[0] ?? '')).filter((c) => c !== ''))];
 }
 
-type PlanoDoVinculoLi =
+/** One link's plan: the planned link, or the field names its document fails on. */
+export type PlanoDoVinculoLi =
   | { readonly tipo: 'ok'; readonly vinculo: VinculoPlanejadoLi }
   | { readonly tipo: 'invalido'; readonly campos: readonly string[] };
 
-/** One link's fields and its create document (module header, "The links"). */
-function planejarVinculo(
+/**
+ * One link's fields and its create document (module header, "The links"). Exported for the complete
+ * step, whose created produtos carry the SAME link document, in their create's batch. Pure.
+ */
+export function planejarVinculoLi(
   contaId: string,
   papel: PapelDoVinculoLi,
   produtoId: string,
@@ -309,7 +328,7 @@ export function ocultoNaLojaLi(linha: Pick<ProdutoLiLido, 'ativo' | 'bloqueado'>
 /** The create's classification (module header, "The create"). */
 function planejarCriacao(
   familia: FamiliaLi,
-  skusRepetidos: ReadonlySet<string>,
+  skusEmConflito: ReadonlyMap<string, ConflitoDeSkuNaLojaLi>,
 ): { readonly criacao: CriacaoPlanejadaLi; readonly pendencias: readonly PendenciaDoPlanoLi[] } {
   const { raiz } = familia;
   const pendencias: PendenciaDoPlanoLi[] = [];
@@ -340,6 +359,10 @@ function planejarCriacao(
       if (ocultoNaLojaLi(linha)) {
         ocultos.push(linha.id);
         recusar(PENDENCIA_IMPORTACAO_LI.ocultoNaoCriado, linha.id);
+        // Left out, so it refuses nothing here; but a hidden row counts in the store's conflicts and
+        // its partner is refused over it, so the report must carry the code on this row too.
+        const conflitoDoOculto = linha.sku === null ? undefined : skusEmConflito.get(linha.sku);
+        if (conflitoDoOculto !== undefined) recusar(conflitoDoOculto, linha.id);
         continue;
       }
       filhos.push(linha.id);
@@ -348,8 +371,9 @@ function planejarCriacao(
         viavel = false;
         continue;
       }
-      if (skusRepetidos.has(linha.sku)) {
-        recusar(PENDENCIA_IMPORTACAO_LI.skuRepetidoNaLoja, linha.id);
+      const emConflito = skusEmConflito.get(linha.sku);
+      if (emConflito !== undefined) {
+        recusar(emConflito, linha.id);
         viavel = false;
       }
       const camposDoFilho = camposDoFilhoSchema.safeParse({ sku: linha.sku, gtin: linha.gtin });
@@ -466,7 +490,7 @@ export function planejarFamiliaLi(e: EntradaDoPlanoLi): PlanoDaFamiliaLi {
     liId: p.liId,
     referencias: [],
   }));
-  const noAlvo = familiaNoAlvoLi(job, raiz.id, res);
+  const noAlvo = e.noAlvo ?? familiaNoAlvoLi(job, raiz.id, res);
   // A family in conflict is in no target but todos/selecionados, and reported under the other two.
   const relatar =
     noAlvo ||
@@ -495,7 +519,7 @@ export function planejarFamiliaLi(e: EntradaDoPlanoLi): PlanoDaFamiliaLi {
     if (job.acao !== ACAO_IMPORTACAO_LI.completar) {
       return { ...base, ...vazio, pendencias: semRepetir(pendencias) };
     }
-    const { criacao, pendencias: daCriacao } = planejarCriacao(familia, e.skusRepetidos);
+    const { criacao, pendencias: daCriacao } = planejarCriacao(familia, e.skusEmConflito);
     return {
       ...base,
       ...vazio,
@@ -505,7 +529,7 @@ export function planejarFamiliaLi(e: EntradaDoPlanoLi): PlanoDaFamiliaLi {
   }
 
   // Matched: the root's link, then each matched variation's.
-  const planoDaRaiz = planejarVinculo(
+  const planoDaRaiz = planejarVinculoLi(
     job.integracaoId,
     PAPEL_DO_VINCULO_LI.raiz,
     res.erpId,
@@ -547,7 +571,7 @@ export function planejarFamiliaLi(e: EntradaDoPlanoLi): PlanoDaFamiliaLi {
         });
         continue;
       }
-      const planoDoFilho = planejarVinculo(
+      const planoDoFilho = planejarVinculoLi(
         job.integracaoId,
         PAPEL_DO_VINCULO_LI.filho,
         r.erp.id,

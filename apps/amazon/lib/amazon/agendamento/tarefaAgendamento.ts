@@ -2,8 +2,8 @@
  * The Easy Ship scheduling's task contract (step 15, PR 15-b): the payload of
  * the `processAmazonEasyShipSchedule` queue, its ladders and bounds, the THREE
  * pure builders that are the only way a payload is ever made, and the task
- * NAME of an entry enqueue. Unwired here: the producer, the two entries and the
- * handler that enqueue and read it arrive in 15-c.
+ * NAME of an entry enqueue. Unwired in 15-b; the producer, the two entries and
+ * the handler that enqueue and read it arrived in 15-c.
  *
  * ## What the payload carries
  *

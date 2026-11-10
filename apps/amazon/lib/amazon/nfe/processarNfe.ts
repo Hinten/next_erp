@@ -70,7 +70,8 @@
  *   on every attempt, sanitized (`sanitizarFalhaDaTarefaAmazon`).
  * - **P12** — an outcome's writes in THIS order: aviso → the due re-enqueue →
  *   stamp → resolve; for `aceita`: the clear (only from a stored `error`) →
- *   resolve `nfe-validada` → the step-15 seam (`destinoAceite.ts`, null).
+ *   resolve `nfe-validada` → the step-15 seam (`destinoAceite.ts`: E1, ONE
+ *   enqueue onto the Easy Ship scheduling queue, never an Amazon call).
  *   Every enqueue goes through a `tarefaNfe.ts` builder (the copy rules), and
  *   once a chain enqueue succeeded nothing later in the dispatch throws, so a
  *   retry never forks a chain. A LOST chain enqueue is never a silent drop
@@ -117,6 +118,7 @@ import {
   finalidadeDaNfeProc,
 } from '@delfrance/schemas';
 
+import type { AgendadorAgendamentoAmazon } from '../agendamento/agendadorAgendamento';
 import {
   type AvisoDepsAmazon,
   type CommitDoDocumento,
@@ -234,6 +236,11 @@ export interface DepsProcessarNfeAmazon {
   readonly increment: (by: number) => unknown;
   /** The NF-e queue's producer, for the handler's own re-enqueues — built only when one is due. */
   readonly agendador: () => AgendadorNfeAmazon;
+  /**
+   * The Easy Ship scheduling queue's producer (step 15, PR 15-c), for the
+   * step-15 seam's ONE enqueue on the `aceita` path — built only when it runs.
+   */
+  readonly agendamento: () => AgendadorAgendamentoAmazon;
   readonly registro: RegistroNfeAmazon;
   /** Test seams, forwarded to the context and the write engine as-is. */
   readonly fetch?: typeof globalThis.fetch;
@@ -697,15 +704,27 @@ async function aceita(
       { ...alvo, motivo: MOTIVO_AVISO_AMAZON.nfeValidada, relogio },
     ),
   );
+  // The step-15 seam: ENQUEUE-only (E1). Outside the no-throw boundary here
+  // (nothing before `aceita` set it), so a transient it rethrows retries the
+  // whole dispatch — which never resubmits (its status-first read says Accepted)
+  // and enqueues under the SAME name (this dispatch's own task id).
   const agendar = DESTINO_ACEITE_NFE_AMAZON.agendar;
   if (agendar !== null) {
     await executarEfeito(e, 'destino', () =>
-      agendar({
-        contaId: alvo.integracaoId,
-        pedidoId: alvo.pedidoId,
-        nfeId: e.t.nfeId,
-        orderId: alvo.numero,
-      }),
+      agendar(
+        {
+          contaId: alvo.integracaoId,
+          pedidoId: alvo.pedidoId,
+          nfeId: e.t.nfeId,
+          orderId: alvo.numero,
+        },
+        {
+          agendamento: e.deps.agendamento,
+          logger: e.deps.logger,
+          idTarefa: e.deps.registro.idTarefa,
+          ultimaTentativa: ultimaTentativa(e),
+        },
+      ),
     );
   }
   return resultado(e, {

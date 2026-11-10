@@ -1243,10 +1243,12 @@ export const TIPO_AVISO_LABELS = {
  *    and `job` (the newest job's id: its `revisao` subcollection is the list the
  *    web shows).
  *  - **The list is durable**: each `aplicar` job copies the still-open entries
- *    of the conta's previous one, adds its own, and re-checks them all. Nothing
- *    closes an entry but EVIDENCE — the produto has its own tax setting, its
- *    category has one, or a tax rule names the produto or its category (the
- *    resolver's own rule match).
+ *    of every earlier `aplicar` job back to the newest one that ended
+ *    `concluido`, skipping Simular jobs (decided 2026-11-06), adds its own, and
+ *    re-checks them all. Nothing closes an entry but EVIDENCE — the produto has
+ *    its own tax setting, its category has one, a tax rule names the produto or
+ *    its category (the resolver's own rule match), or the produto no longer
+ *    exists (decided 2026-11-06).
  *  - **Machine resolvers**: the end of a later `aplicar` job whose re-check
  *    leaves the list empty; and the orphan pass once the conta is gone.
  *

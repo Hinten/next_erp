@@ -253,8 +253,12 @@ export async function lerJobDaContaLi(
   return lido !== null && lido.job.integracaoId === contaId ? lido : null;
 }
 
-/** The conta's newest jobs, newest first: the one indexed query (module header). */
-function consultaDaConta(db: Firestore, contaId: string) {
+/**
+ * The conta's newest jobs, newest first: the one indexed query (module header). Exported for the
+ * tax-review carry-forward (`revisaoFiscal.ts`), which pages it with `startAfter` — the same
+ * composite serves every page.
+ */
+export function consultaImportacoesDaContaLi(db: Firestore, contaId: string) {
   return importacaoLojaIntegradaCollection
     .ref(db, {})
     .where('integracaoId', '==', contaId)
@@ -273,7 +277,7 @@ function consultaDaConta(db: Firestore, contaId: string) {
  * idempotent, so the second run redoes work and changes nothing (the accepted residual).
  */
 export async function jobEmCursoDaContaLi(db: Firestore, contaId: string): Promise<string | null> {
-  const snap = await consultaDaConta(db, contaId).get();
+  const snap = await consultaImportacoesDaContaLi(db, contaId).get();
   for (const doc of snap.docs) {
     const dados: unknown = doc.data();
     const bruto =
@@ -289,7 +293,7 @@ export async function listarImportacoesDaContaLi(
   db: Firestore,
   contaId: string,
 ): Promise<RespostaImportacaoLi[]> {
-  const snap = await consultaDaConta(db, contaId).get();
+  const snap = await consultaImportacoesDaContaLi(db, contaId).get();
   return snap.docs.map((doc) =>
     projetarImportacaoLi(doc.id, importacaoLojaIntegradaSchema.parse(doc.data())),
   );
@@ -404,11 +408,11 @@ export function decidirDespachoLi(
 /* -------------------------------------------------------------------------- */
 
 /**
- * The job fields a checkpoint may write: the phase, the cursors, the catalogue's maps, the Simular
- * overlay, the counters, the 429 pauses and the photo flag. Never the status, `seq`, the motivo, the
- * end stamp, the conta or the options — each has its own writer. Whole values only: a cursor is
- * written as a whole object (a partial one would be completed with defaults by the schema and reset
- * its other fields), which the `Pick` of the parsed type enforces.
+ * The job fields a checkpoint may write: the phase, the cursors, a family's progress, the
+ * catalogue's maps, the Simular overlay, the counters, the 429 pauses and the photo flag. Never the
+ * status, `seq`, the motivo, the end stamp, the conta or the options — each has its own writer. Whole
+ * values only: a cursor is written as a whole object (a partial one would be completed with defaults
+ * by the schema and reset its other fields), which the `Pick` of the parsed type enforces.
  */
 export type ProgressoImportacaoLi = Partial<
   Pick<
@@ -420,6 +424,7 @@ export type ProgressoImportacaoLi = Partial<
     | 'orfaos'
     | 'familias'
     | 'aprendizado'
+    | 'progressoDaFamilia'
     | 'revisao'
     | 'mapaCategorias'
     | 'marcas'
@@ -439,6 +444,7 @@ const CAMPOS_DE_PROGRESSO: ReadonlySet<string> = new Set([
   'orfaos',
   'familias',
   'aprendizado',
+  'progressoDaFamilia',
   'revisao',
   'mapaCategorias',
   'marcas',

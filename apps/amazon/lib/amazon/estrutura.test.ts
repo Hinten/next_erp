@@ -48,8 +48,9 @@
  *    14-b's LIGHT check of `nfe/tarefaNfe.ts`, `nfe/motivosNfe.ts` and
  *    `nfe/pedidoNfe.ts`, which sit in that closure. The task-SDK helpers live in
  *    `core/filaTarefas.ts`, the one production importer of the Cloud Tasks SDK
- *    under `lib/amazon`, and the app has exactly THREE `getFunctions(` roots,
- *    each pinned to the queue it binds; and each of the two Delivery calls
+ *    under `lib/amazon`, and the app has exactly FOUR `getFunctions(` roots
+ *    (since step 15, PR 15-c), each pinned to the queue it binds; and each of
+ *    the two Delivery calls
  *    (`getInvoiceStatus`, `submitInvoice`) has exactly ONE caller module,
  *    `nfe/entregaAmazon.ts`, across `lib/`, `app/`, `functions/src` and
  *    `scripts/` (tests exempt by construction: they name the helpers to drive
@@ -95,7 +96,23 @@
  *    `agendamento/easyShipAmazon.ts`, across `lib/`, `app/`, `functions/src` and
  *    `scripts/` (the redactor, the logger's local literal and the sanitizer's
  *    bulk-path rows aside); and the observer seam stays at FOUR sites, the
- *    engine's one inside its one client builder.
+ *    engine's one inside its one client builder;
+ *  - (step 15, PR 15-c) the scheduling queue has its OWN composition root
+ *    (`functions/src/agendadorAgendamento.ts`, the fourth `getFunctions(`
+ *    caller); no production file under `agendamento/` makes a Firestore WRITE
+ *    call (the task's avisos go through `avisos/avisos.ts`); and neither the NF-e
+ *    trigger's D11 closure nor the App Hosting union walk (every entry but the
+ *    label route, below) reaches `agendamento/` or that root;
+ *  - (step 15, PR 15-d) the label route `POST /api/marketplace/amazon/etiqueta`
+ *    is the ONE App Hosting entry allowed to reach the write engine. It gets its
+ *    OWN walk and its OWN forbidden list ({@link PROIBIDOS_NA_ROTA_ETIQUETA}): no
+ *    importer, no seam, no NF-e submit module, no scheduling task or producer,
+ *    no queue producer of this backend, and exactly one file of it names the
+ *    write client. The union walk still
+ *    refuses the engine and the scheduling modules. The route's own files write
+ *    no Firestore document, name no aviso writer and enqueue nothing; and the two
+ *    document helpers are named, comments included, by ONE production file,
+ *    `agendamento/etiquetaAmazon.ts`.
  */
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, posix, relative, sep } from 'node:path';
@@ -563,7 +580,7 @@ function importadoresDoSdkDeTarefas(fontes: readonly (readonly [string, string])
 
 /**
  * The App Hosting composition root of the reads queue (3-c) and, since step
- * 14 (PR 14-d), of the NF-e queue's re-drive producer: one of the app's three
+ * 14 (PR 14-d), of the NF-e queue's re-drive producer: one of the app's four
  * `getFunctions(` callers.
  */
 const ARQUIVO_RAIZ_DA_FILA = 'lib/firebase/filaLeitura.ts';
@@ -607,6 +624,13 @@ const ARQUIVO_RAIZ_DA_FILA_FUNCOES = 'functions/src/agendador.ts';
 const ARQUIVO_RAIZ_DA_FILA_NFE = 'functions/src/agendadorNfe.ts';
 
 /**
+ * The functions codebase's composition root of the Easy Ship scheduling queue
+ * (step 15, PR 15-c): the FOURTH caller, never a second builder in the NF-e
+ * root, whose closure the NF-e trigger's D11 guard pins file by file.
+ */
+const ARQUIVO_RAIZ_DA_FILA_AGENDAMENTO = 'functions/src/agendadorAgendamento.ts';
+
+/**
  * Each composition root and the queue(s) it binds, by the path builders it
  * calls: a root that binds another root's queue — the NF-e producer added to
  * the functions codebase's reads-queue root, whose closure the NF-e trigger
@@ -619,6 +643,7 @@ const FILAS_DE_CADA_RAIZ: Readonly<Record<string, readonly string[]>> = {
   [ARQUIVO_RAIZ_DA_FILA]: ['caminhoDaFilaAmazon', 'caminhoDaFilaNfeAmazon'],
   [ARQUIVO_RAIZ_DA_FILA_FUNCOES]: ['caminhoDaFilaAmazon'],
   [ARQUIVO_RAIZ_DA_FILA_NFE]: ['caminhoDaFilaNfeAmazon'],
+  [ARQUIVO_RAIZ_DA_FILA_AGENDAMENTO]: ['caminhoDaFilaAgendamentoAmazon'],
 };
 
 /** The queue-path builders a source CALLS (comments aside), sorted and deduplicated. */
@@ -882,6 +907,21 @@ const entradasDoAppHosting = (): string[] => [
 ];
 
 /**
+ * The label route (step 15, PR 15-d), relative to the APP root: the ONE App
+ * Hosting entry allowed to reach the write engine (step-15 plan §3 decision 13).
+ * {@link entradasDoAppHosting} discovers every file under `app/`, so taking it out
+ * of the union walk needs this pinned path.
+ */
+const ARQUIVO_ROTA_ETIQUETA = 'app/api/marketplace/amazon/etiqueta/route.ts';
+
+/**
+ * The UNION walk's entries: every App Hosting entry but the label route, which is
+ * walked alone against {@link PROIBIDOS_NA_ROTA_ETIQUETA}.
+ */
+const entradasDaUniaoDoAppHosting = (): string[] =>
+  entradasDoAppHosting().filter((e) => e !== ARQUIVO_ROTA_ETIQUETA);
+
+/**
  * The app's `@/` alias (`tsconfig.json` `paths`: `@/*` → `./*`), as a
  * {@link ResolvedorDePacote} over `ler`: the walk ENTERS an aliased module
  * instead of leaving it external — the routes import everything through it.
@@ -900,15 +940,48 @@ const resolverAliasDoApp =
 const MOTOR_DE_ESCRITA = 'lib/amazon/core/escrita.ts';
 
 /**
- * What the App Hosting closure may never reach: the importer and the seam that
- * holds it (5-e), and — since the NF-e re-drive route joined the bundle (step
- * 14, PR 14-d) — the write ENGINE: a route that can reach it can build a write
- * client and bypass the task's valve and canary (step-14 plan §3 decision 20).
+ * What the App Hosting union walk may never reach: the importer and the seam that
+ * holds it (5-e); since the NF-e re-drive route joined the bundle (step 14, PR
+ * 14-d), the write ENGINE, because a route that can reach it can build a write
+ * client and bypass the task's valve and canary (step-14 plan §3 decision 20);
+ * and since the label route (step 15, PR 15-d), the four scheduling modules no
+ * App Hosting entry needs: the task, its producer, its two entries and its
+ * payload (`notificacoes/notificacao.ts` declares the shapes it needs itself).
  */
 const PROIBIDOS_NO_APP_HOSTING = [
   SEAM_DO_IMPORTADOR,
   'lib/amazon/pedidos/importarPedido.ts',
   MOTOR_DE_ESCRITA,
+  'lib/amazon/agendamento/agendadorAgendamento.ts',
+  'lib/amazon/agendamento/entradasAgendamento.ts',
+  'lib/amazon/agendamento/processarAgendamento.ts',
+  'lib/amazon/agendamento/tarefaAgendamento.ts',
+];
+
+/**
+ * What the label route's OWN walk may never reach (step-15 plan §3 decision 13):
+ * it may reach the engine, through the run, but it schedules or prints inside a
+ * request and does nothing else. So: not the importer and its seam, not the
+ * NF-e submit modules, not the scheduling task, its producer or its entries.
+ * And, because the route enqueues nothing (step-15 plan §3 decision 14), not
+ * this backend's own producers either: the queue's App Hosting root, the reads
+ * and NF-e producers, and the task-SDK helpers. ViaCEP and `node:crypto` are the
+ * shared `externos` check of {@link violacoesDoAppHosting}.
+ */
+const PROIBIDOS_NA_ROTA_ETIQUETA = [
+  SEAM_DO_IMPORTADOR,
+  'lib/amazon/pedidos/importarPedido.ts',
+  'lib/amazon/nfe/processarNfe.ts',
+  'lib/amazon/nfe/entregaAmazon.ts',
+  'lib/amazon/nfe/conteudoNfe.ts',
+  'lib/amazon/nfe/carimboFreteNfe.ts',
+  'lib/amazon/agendamento/processarAgendamento.ts',
+  'lib/amazon/agendamento/agendadorAgendamento.ts',
+  'lib/amazon/agendamento/entradasAgendamento.ts',
+  'lib/firebase/filaLeitura.ts',
+  'lib/amazon/notificacoes/agendador.ts',
+  'lib/amazon/nfe/agendadorNfe.ts',
+  'lib/amazon/core/filaTarefas.ts',
 ];
 
 /**
@@ -919,20 +992,25 @@ const PROIBIDOS_NO_APP_HOSTING = [
 const ehCriptoDoNode = (espec: string) => espec === 'node:crypto' || espec === 'crypto';
 
 /**
- * Why the App Hosting closure (a {@link fechoDeImportacoes} walk with the alias
+ * Why an App Hosting walk (a {@link fechoDeImportacoes} walk with the alias
  * resolver; type edges walked too, since {@link especificadores} reads every
  * `from '…'`) breaks plan §3 decisions 32 and 48 (or step-14 plan §3 decision
- * 20); empty when it does not: it reaches the seam, the importer or the write
- * engine, imports the ViaCEP module (by value or by type) or `node:crypto`, or
- * holds an import the walk could not resolve (fail closed).
+ * 20, or step-15 plan §3 decision 13); empty when it does not: it reaches a file
+ * on `proibidos` (by default {@link PROIBIDOS_NO_APP_HOSTING}; the label route's
+ * walk passes {@link PROIBIDOS_NA_ROTA_ETIQUETA}), imports the ViaCEP module (by
+ * value or by type) or `node:crypto`, or holds an import the walk could not
+ * resolve (fail closed).
  */
-function violacoesDoAppHosting(fecho: {
-  arquivos: readonly string[];
-  externos: readonly string[];
-}): string[] {
+function violacoesDoAppHosting(
+  fecho: {
+    arquivos: readonly string[];
+    externos: readonly string[];
+  },
+  proibidos: readonly string[] = PROIBIDOS_NO_APP_HOSTING,
+): string[] {
   const violacoes: string[] = [];
   for (const arquivo of fecho.arquivos) {
-    if (PROIBIDOS_NO_APP_HOSTING.includes(arquivo)) violacoes.push(`reaches ${arquivo}`);
+    if (proibidos.includes(arquivo)) violacoes.push(`reaches ${arquivo}`);
   }
   for (const espec of fecho.externos) {
     if (ehViaCep(espec) || ehCriptoDoNode(espec)) violacoes.push(`imports ${espec}`);
@@ -1280,9 +1358,13 @@ describe('lib/amazon layout', () => {
         'notificacoes/notificacao.ts',
         'notificacoes/prazo.ts',
         'notificacoes/receptor.ts',
+        'agendamento/agendadorAgendamento.ts',
         'agendamento/decisaoAgendamento.ts',
         'agendamento/easyShipAmazon.ts',
+        'agendamento/entradasAgendamento.ts',
+        'agendamento/etiquetaAmazon.ts',
         'agendamento/executarAgendamento.ts',
+        'agendamento/processarAgendamento.ts',
         'agendamento/tarefaAgendamento.ts',
         'pedidos/clienteAmazon.ts',
         'pedidos/codigosPedidoAmazon.ts',
@@ -1314,7 +1396,9 @@ describe('lib/amazon layout', () => {
         'testing/fixtures.ts',
         'testing/guardaDaLaneDeTarefas.ts',
         'testing/pedidoWireAmazon.ts',
+        'testing/produtorAgendamento.ts',
         'testing/sandboxBr.ts',
+        'testing/zipEtiqueta.ts',
         'sanitizacao/requisicao.ts',
         'sanitizacao/local.ts',
         'sanitizacao/lote.ts',
@@ -1635,7 +1719,7 @@ describe('the step-3 intake guards', () => {
 
   // An app-wide parse (≈ 0.2–0.4 s locally, more on a CI runner): CI headroom, not a budget.
   it(
-    'no file under lib/amazon calls getFunctions(, and the THREE composition roots are the app’s only callers, each binding its own queue',
+    'no file under lib/amazon calls getFunctions(, and the FOUR composition roots are the app’s only callers, each binding its own queue',
     { timeout: 30_000 },
     () => {
       const lib = arquivosTs(RAIZ_LIB).filter((p) => !ehTeste(p));
@@ -1643,8 +1727,9 @@ describe('the step-3 intake guards', () => {
       // The EXACT list of composition roots, app-wide: the App Hosting
       // `lib/firebase/filaLeitura.ts` (3-c: the receiver's; since step 14, PR
       // 14-d, the re-drive route's NF-e producer too), the functions codebase's
-      // `functions/src/agendador.ts` (3-d, the step-4 poll's) and its NF-e root
-      // `functions/src/agendadorNfe.ts` (step 14, PR 14-c).
+      // `functions/src/agendador.ts` (3-d, the step-4 poll's), its NF-e root
+      // `functions/src/agendadorNfe.ts` (step 14, PR 14-c) and its scheduling
+      // root `functions/src/agendadorAgendamento.ts` (step 15, PR 15-c).
       // Every file the walk returns (`.ts`, `.tsx`, `.mjs`): a `.tsx` page is app code too.
       const app = arquivosTs(RAIZ_APP).filter((p) => !ehTeste(p));
       expect(app.length).toBeGreaterThan(40);
@@ -1653,7 +1738,12 @@ describe('the step-3 intake guards', () => {
         .map(relApp)
         .sort();
       expect(raizes).toEqual(
-        [ARQUIVO_RAIZ_DA_FILA_FUNCOES, ARQUIVO_RAIZ_DA_FILA, ARQUIVO_RAIZ_DA_FILA_NFE].sort(),
+        [
+          ARQUIVO_RAIZ_DA_FILA_FUNCOES,
+          ARQUIVO_RAIZ_DA_FILA,
+          ARQUIVO_RAIZ_DA_FILA_NFE,
+          ARQUIVO_RAIZ_DA_FILA_AGENDAMENTO,
+        ].sort(),
       );
       // ★ Each root's queue set: the NF-e producer added to the functions
       // codebase's reads-queue root (whose closure reaches the context) is a
@@ -1972,9 +2062,9 @@ describe('the step-5 seam guards (5-e)', () => {
     },
   );
 
-  it('★ the App Hosting closure (the routes, the receiver, its producer and root) never reaches the seam, the importer or the write engine, and no app file of it imports the ViaCEP module or node:crypto — type edges and the @/ alias walked', () => {
+  it('★ the App Hosting union walk (every route but the label route, which has its own walk below; the receiver, its producer and root) never reaches the seam, the importer, the write engine or the four scheduling modules, and no app file of it imports the ViaCEP module or node:crypto — type edges and the @/ alias walked', () => {
     const fecho = fechoDeImportacoes(
-      entradasDoAppHosting(),
+      entradasDaUniaoDoAppHosting(),
       lerDoApp,
       resolverAliasDoApp(lerDoApp),
     );
@@ -2345,9 +2435,13 @@ describe('the step-15 Easy Ship scheduling guards (15-b)', () => {
 
   it('★ (1) agendamento/ is Next-free, reads no process environment and never imports the @/ alias', () => {
     expect(agendamento.map(rel).sort()).toEqual([
+      'agendamento/agendadorAgendamento.ts',
       'agendamento/decisaoAgendamento.ts',
       'agendamento/easyShipAmazon.ts',
+      'agendamento/entradasAgendamento.ts',
+      'agendamento/etiquetaAmazon.ts',
       'agendamento/executarAgendamento.ts',
+      'agendamento/processarAgendamento.ts',
       'agendamento/tarefaAgendamento.ts',
     ]);
     for (const arquivo of agendamento) {
@@ -2480,6 +2574,366 @@ describe('the step-15 Easy Ship scheduling guards (15-b)', () => {
       "const caminho = '/easyShip/2022-03-23/timeSlot';",
     ]) {
       expect(nomeiaOEasyShip(fonte), fonte).toBe(false);
+    }
+  });
+});
+
+/**
+ * A Firestore WRITE call (step 15, PR 15-c): a raw ref's or a shared collection
+ * handle's — `set`, `update`, `create`, `delete`, `batch`, `merge`,
+ * `mergeIfExists`, and `add` ON the two handles the task holds (a bare `.add(`
+ * is a `Set`'s). The re-drive route's shape ({@link ESCRITA_NO_REENVIO_NFE})
+ * minus the aviso writers by name: the scheduling task DOES write avisos, and
+ * only through `avisos/avisos.ts`'s seam, outside the folder. A pedido write
+ * under `agendamento/` is what this refuses (step-15 plan §3 decision 6); the
+ * fake db's write log in `processarAgendamento.test.ts` stays the behavioural pin.
+ * The label route's files add the aviso writers by name ({@link ESCRITOR_DE_AVISO}).
+ */
+const ESCRITA_FIRESTORE_NO_AGENDAMENTO =
+  /\.\s*(?:set|update|create|delete|batch|merge|mergeIfExists)\s*\(|\b(?:pedidoCollection|nfev4Collection)\s*\.\s*add\s*\(/g;
+
+/**
+ * The aviso writers the scheduling task raises and resolves through, by name. The
+ * label route answers its refusals and writes no aviso (step-15 plan §3 decision
+ * 14), so its files name none of them.
+ */
+const ESCRITOR_DE_AVISO = /\b(?:sincronizarAvisosDoPedidoAmazon|escreverAviso|resolverAviso)\b/g;
+
+/** The aviso module, as an app-relative module path ({@link importaModulo}). */
+const MODULO_DE_AVISOS = 'lib/amazon/avisos/avisos';
+
+/** A call that enqueues a task, under any of the producers' method names. */
+const ENFILEIRA_TAREFA = /\benfileirar\w*\s*\(/g;
+
+/** The ONE production file that may name the two document helpers (step-15 plan §2, PR 15-d). */
+const CHAMADOR_DOS_DOCUMENTOS = 'lib/amazon/agendamento/etiquetaAmazon.ts';
+
+/**
+ * The package's two document helpers, by name, in RAW text: the guard reads
+ * comments too. A second reader of the pre-signed link would be a path to a
+ * buyer's label that no valve, canary or live decision sits in front of.
+ */
+const NOME_DOS_DOCUMENTOS = /\b(?:baixarDocumentosEasyShip|extrairEtiquetaZplEasyShip)\b/;
+
+/**
+ * Of `fontes` (app-relative paths with their raw text), the PRODUCTION files that
+ * name a document helper. A test and a walked package's file are exempt: they
+ * drive the helpers with a recording `fetch` and call nothing real.
+ */
+function nomeiamOsDocumentos(fontes: readonly (readonly [string, string])[]): string[] {
+  return fontes
+    .filter(([caminho]) => !ehTeste(caminho) && !ehDePacote(caminho))
+    .filter(([, texto]) => NOME_DOS_DOCUMENTOS.test(texto))
+    .map(([caminho]) => caminho)
+    .sort();
+}
+
+describe('the step-15 Easy Ship scheduling wiring guards (15-c)', () => {
+  const agendamento = arquivosTs(join(RAIZ_LIB, 'agendamento')).filter((p) => !ehTeste(p));
+
+  it('★ (mutation 6) no production file under agendamento/ makes a Firestore WRITE call — its reads stay allowed, its avisos go through avisos.ts', () => {
+    expect(agendamento.length).toBeGreaterThanOrEqual(7);
+    for (const arquivo of agendamento) {
+      const codigo = semComentarios(readFileSync(arquivo, 'utf8'));
+      expect(codigo.match(ESCRITA_FIRESTORE_NO_AGENDAMENTO) ?? [], rel(arquivo)).toEqual([]);
+    }
+    // Anti-vacuity: the task DOES read the pedido and its NF-e documents, and
+    // DOES write avisos — through the seam, by these names.
+    const tarefa = semComentarios(lerDoApp('lib/amazon/agendamento/processarAgendamento.ts') ?? '');
+    expect(tarefa).toMatch(/\bpedidoCollection\.docRef\(/);
+    expect(tarefa).toMatch(/\bnfev4Collection\.ref\(/);
+    expect(tarefa).toContain('sincronizarAvisosDoPedidoAmazon(');
+  });
+
+  it('the write scan flags what it exists for, and nothing alike (near-misses)', () => {
+    for (const escrita of [
+      'await ref.update({ x: 1 });',
+      'await pedidoCollection.add(db, {}, {});',
+      'await pedidoCollection.merge(db, {}, pedidoId, { x: 1 });',
+      'await nfev4Collection .set(db, { pedidoId }, nfeId, {});',
+      'const lote = db.batch();',
+    ]) {
+      expect(escrita.match(ESCRITA_FIRESTORE_NO_AGENDAMENTO), escrita).toHaveLength(1);
+    }
+    // NEAR-MISS: the two reads, a Set's add, and the aviso seam's call are no writes here.
+    for (const leitura of [
+      'await pedidoCollection.docRef(db, {}, pedidoId).get();',
+      'await nfev4Collection.ref(db, { pedidoId }).get();',
+      'const c = new Set<string>(); c.add(x);',
+      'await sincronizarAvisosDoPedidoAmazon(db, deps, e);',
+    ]) {
+      expect(leitura.match(ESCRITA_FIRESTORE_NO_AGENDAMENTO), leitura).toBeNull();
+    }
+  });
+
+  it('★ (mutation 13) the NF-e trigger’s D11 closure reaches NO agendamento/ module and not the scheduling root — that closure is unchanged', () => {
+    const fecho = fechoDeImportacoes(ENTRADAS_DO_GATILHO_NFE, lerDoApp);
+    expect(fecho.arquivos.filter((a) => a.startsWith('lib/amazon/agendamento/'))).toEqual([]);
+    expect(fecho.arquivos).not.toContain(ARQUIVO_RAIZ_DA_FILA_AGENDAMENTO);
+    // Anti-vacuity: the scheduling root DOES reach the producer, so a root that
+    // imported it would bring it into the NF-e trigger's closure.
+    const raiz = fechoDeImportacoes([ARQUIVO_RAIZ_DA_FILA_AGENDAMENTO], lerDoApp);
+    expect(raiz.arquivos).toEqual(
+      expect.arrayContaining([
+        ARQUIVO_RAIZ_DA_FILA_AGENDAMENTO,
+        'lib/amazon/agendamento/agendadorAgendamento.ts',
+      ]),
+    );
+    // …and the NF-e root names nothing of the scheduling producer, by any path.
+    expect(
+      especificadores(lerDoApp(ARQUIVO_RAIZ_DA_FILA_NFE) ?? '').filter((e) =>
+        /agendamento|agendadorAgendamento/.test(e),
+      ),
+    ).toEqual([]);
+  });
+
+  it('★ (mutation 25) the App Hosting union walk (every entry but the label route) reaches NO agendamento/ module and not the scheduling root — type edges walked', () => {
+    const fecho = fechoDeImportacoes(
+      entradasDaUniaoDoAppHosting(),
+      lerDoApp,
+      resolverAliasDoApp(lerDoApp),
+    );
+    expect(fecho.arquivos.filter((a) => a.startsWith('lib/amazon/agendamento/'))).toEqual([]);
+    expect(fecho.arquivos).not.toContain(ARQUIVO_RAIZ_DA_FILA_AGENDAMENTO);
+    // Anti-vacuity: the walk DOES reach the module that declares the order
+    // import's deps (its local structural port of the producer) and the NF-e
+    // producer the re-drive route enqueues through.
+    expect(fecho.arquivos).toEqual(
+      expect.arrayContaining([
+        'lib/amazon/notificacoes/notificacao.ts',
+        'lib/amazon/nfe/agendadorNfe.ts',
+      ]),
+    );
+  });
+
+  it('the scheduling root binds the scheduling queue only, and is read by the NF-e queue, the read deps and the scheduling queue — never by the NF-e trigger’s root', () => {
+    const raiz = lerDoApp(ARQUIVO_RAIZ_DA_FILA_AGENDAMENTO) ?? '';
+    expect(chamaGetFunctions(raiz)).toBe(true);
+    expect(filasDaRaiz(raiz)).toEqual(['caminhoDaFilaAgendamentoAmazon']);
+    const importadores = fontesDasFuncoes()
+      .map((p) => [relApp(p), readFileSync(p, 'utf8')] as const)
+      .filter(([, texto]) => especificadores(texto).includes('./agendadorAgendamento'))
+      .map(([arquivo]) => arquivo)
+      .sort();
+    expect(importadores).toEqual([
+      'functions/src/depsLeitura.ts',
+      'functions/src/filaAgendamento.ts',
+      'functions/src/filaNfe.ts',
+    ]);
+  });
+});
+
+describe('the step-15 label route guards (15-d)', () => {
+  const fechoDaRota = () =>
+    fechoDeImportacoes([ARQUIVO_ROTA_ETIQUETA], lerDoApp, resolverAliasDoApp(lerDoApp));
+
+  it('the union walk takes out the label route and no other entry', () => {
+    const todas = entradasDoAppHosting();
+    const uniao = entradasDaUniaoDoAppHosting();
+    expect(lerDoApp(ARQUIVO_ROTA_ETIQUETA)).not.toBeNull();
+    expect(todas.filter((e) => !uniao.includes(e))).toEqual([ARQUIVO_ROTA_ETIQUETA]);
+    // Near-miss: the sibling route that must stay under the union's list.
+    expect(uniao).toContain('app/api/marketplace/amazon/enviar-nfe/route.ts');
+  });
+
+  // The walks read, and the scans parse, every file they reach: CI headroom, not a budget.
+  it(
+    '★ the route’s own walk reaches the write engine and nothing on its forbidden list — type edges and the @/ alias walked',
+    { timeout: 30_000 },
+    () => {
+      const fecho = fechoDaRota();
+      expect(violacoesDoAppHosting(fecho, PROIBIDOS_NA_ROTA_ETIQUETA)).toEqual([]);
+      // Anti-vacuity: the walk entered the body, the run, the one Easy Ship module,
+      // the decisions and the engine.
+      expect(fecho.arquivos).toEqual(
+        expect.arrayContaining([
+          ARQUIVO_ROTA_ETIQUETA,
+          MOTOR_DE_ESCRITA,
+          'lib/amazon/agendamento/decisaoAgendamento.ts',
+          'lib/amazon/agendamento/easyShipAmazon.ts',
+          'lib/amazon/agendamento/etiquetaAmazon.ts',
+          'lib/amazon/agendamento/executarAgendamento.ts',
+        ]),
+      );
+      // The exception is exactly the engine: of the union's list, the route reaches
+      // nothing else.
+      expect(violacoesDoAppHosting(fecho)).toEqual([`reaches ${MOTOR_DE_ESCRITA}`]);
+    },
+  );
+
+  it(
+    '★ on the route’s walk, the files naming the SP-API write client are exactly the engine; on the union walk, no file does',
+    { timeout: 30_000 },
+    () => {
+      const fecho = fechoDaRota();
+      expect(fecho.arquivos.filter((a) => nomeiaClienteDeEscrita(lerDoApp(a) ?? ''))).toEqual([
+        MOTOR_DE_ESCRITA,
+      ]);
+      const uniao = fechoDeImportacoes(
+        entradasDaUniaoDoAppHosting(),
+        lerDoApp,
+        resolverAliasDoApp(lerDoApp),
+      );
+      expect(uniao.arquivos.filter((a) => nomeiaClienteDeEscrita(lerDoApp(a) ?? ''))).toEqual([]);
+    },
+  );
+
+  it(
+    '★ on the union walk, the context is called only by the intake pipeline, and the scheduling run by no file',
+    { timeout: 30_000 },
+    () => {
+      const uniao = fechoDeImportacoes(
+        entradasDaUniaoDoAppHosting(),
+        lerDoApp,
+        resolverAliasDoApp(lerDoApp),
+      );
+      const chamam = (nome: string) =>
+        uniao.arquivos.filter((a) =>
+          new RegExp(`\\b${nome}\\s*\\(`).test(semComentarios(lerDoApp(a) ?? '')),
+        );
+      // `core/contexto.ts` is the declaration. The pipeline sits on this walk for its
+      // error classes and its failure persist; `receptor.test.ts` is what pins the
+      // receiver's happy path to no db handle and no Firestore operation.
+      expect(chamam('loadAmazonContext')).toEqual([
+        'lib/amazon/core/contexto.ts',
+        'lib/amazon/notificacoes/notificacao.ts',
+      ]);
+      expect(chamam('executarAgendamentoAmazon')).toEqual([]);
+      // Anti-vacuity: the label route's body holds both calls.
+      const corpo = semComentarios(lerDoApp(CHAMADOR_DOS_DOCUMENTOS) ?? '');
+      expect(corpo).toMatch(/\bloadAmazonContext\s*\(/);
+      expect(corpo).toMatch(/\bexecutarAgendamentoAmazon\s*\(/);
+    },
+  );
+
+  it(
+    '★ (2) the route file and every agendamento/ file on its walk make no Firestore write, name no aviso writer, import no aviso module and enqueue nothing; the task’s file keeps the last three',
+    { timeout: 30_000 },
+    () => {
+      const fecho = fechoDaRota();
+      const proprios = fecho.arquivos.filter(
+        (a) => a === ARQUIVO_ROTA_ETIQUETA || a.startsWith('lib/amazon/agendamento/'),
+      );
+      // Anti-vacuity: the two files the route owns, and the run it reuses.
+      expect(proprios).toEqual(
+        expect.arrayContaining([
+          ARQUIVO_ROTA_ETIQUETA,
+          CHAMADOR_DOS_DOCUMENTOS,
+          'lib/amazon/agendamento/executarAgendamento.ts',
+        ]),
+      );
+      for (const arquivo of proprios) {
+        const texto = lerDoApp(arquivo) ?? '';
+        const codigo = semComentarios(texto);
+        expect(codigo, arquivo).not.toBe('');
+        expect(codigo.match(ESCRITA_FIRESTORE_NO_AGENDAMENTO) ?? [], arquivo).toEqual([]);
+        expect(codigo.match(ESCRITOR_DE_AVISO) ?? [], arquivo).toEqual([]);
+        expect(codigo.match(ENFILEIRA_TAREFA) ?? [], arquivo).toEqual([]);
+        expect(importaModulo(arquivo, texto, MODULO_DE_AVISOS), arquivo).toBe(false);
+      }
+      // Anti-vacuity: the scheduling task's file trips all three of the scans it keeps.
+      const arquivoDaTarefa = 'lib/amazon/agendamento/processarAgendamento.ts';
+      const tarefa = lerDoApp(arquivoDaTarefa) ?? '';
+      expect(semComentarios(tarefa).match(ESCRITOR_DE_AVISO)).toContain(
+        'sincronizarAvisosDoPedidoAmazon',
+      );
+      expect(semComentarios(tarefa).match(ENFILEIRA_TAREFA)).not.toBeNull();
+      expect(importaModulo(arquivoDaTarefa, tarefa, MODULO_DE_AVISOS)).toBe(true);
+    },
+  );
+
+  it('the aviso and enqueue scans flag what they exist for, and nothing alike (near-misses)', () => {
+    for (const [fonte, nome] of [
+      ['await sincronizarAvisosDoPedidoAmazon(db, deps, e);', 'sincronizarAvisosDoPedidoAmazon'],
+      ['await escreverAviso(db, deps, a);', 'escreverAviso'],
+      ['const r = resolverAviso;', 'resolverAviso'],
+    ] as const) {
+      expect(fonte.match(ESCRITOR_DE_AVISO), fonte).toEqual([nome]);
+    }
+    for (const fonte of [
+      'await resolverAvisosAntigos(db);',
+      'const escreverAvisoDepois = 1;',
+      'const motivo = MOTIVO_AVISO_AMAZON.x;',
+    ]) {
+      expect(fonte.match(ESCRITOR_DE_AVISO), fonte).toBeNull();
+    }
+    for (const [fonte, chamada] of [
+      ['await deps.agendador().enfileirar(t);', 'enfileirar('],
+      ['await produtor.enfileirarEntrada(t, o);', 'enfileirarEntrada('],
+    ] as const) {
+      expect(fonte.match(ENFILEIRA_TAREFA), fonte).toEqual([chamada]);
+    }
+    for (const fonte of [
+      'const enfileirada = 1;',
+      "const r = 'enfileirar';",
+      'jaEnfileirada(x);',
+    ]) {
+      expect(fonte.match(ENFILEIRA_TAREFA), fonte).toBeNull();
+    }
+    const arquivo = 'lib/amazon/agendamento/etiquetaAmazon.ts';
+    for (const espec of ['../avisos/avisos', '@/lib/amazon/avisos/avisos']) {
+      expect(
+        importaModulo(arquivo, `import type { X } from '${espec}';`, MODULO_DE_AVISOS),
+        espec,
+      ).toBe(true);
+    }
+    // NEAR-MISS: another module of that folder, and a same-named one elsewhere.
+    for (const espec of ['../avisos/outro', '../core/avisos']) {
+      expect(importaModulo(arquivo, `import { x } from '${espec}';`, MODULO_DE_AVISOS), espec).toBe(
+        false,
+      );
+    }
+  });
+
+  it(
+    `★ (3) the two document helpers are named by ONE production file of the whole app, comments included: ${CHAMADOR_DOS_DOCUMENTOS}`,
+    { timeout: 30_000 },
+    () => {
+      const fontes = fontesDeTodoOApp().map((p) => [relApp(p), readFileSync(p, 'utf8')] as const);
+      expect(nomeiamOsDocumentos(fontes)).toEqual([CHAMADOR_DOS_DOCUMENTOS]);
+      // Anti-vacuity: the scan read the App Hosting files outside `lib/amazon`,
+      // the functions codebase and the scripts; and the caller calls both helpers.
+      expect(fontes.map(([caminho]) => caminho)).toEqual(
+        expect.arrayContaining([
+          ...FORA_DE_LIB_AMAZON,
+          'functions/src/index.ts',
+          'scripts/sanitizar.ts',
+        ]),
+      );
+      const chamador = semComentarios(lerDoApp(CHAMADOR_DOS_DOCUMENTOS) ?? '');
+      expect(chamador).toMatch(/\bbaixarDocumentosEasyShip\(/);
+      expect(chamador).toMatch(/\bextrairEtiquetaZplEasyShip\(/);
+    },
+  );
+
+  it('the document scan flags a call, an import and a comment anywhere in production code, and nothing alike (near-misses)', () => {
+    const fora = 'lib/amazon/core/outro.ts';
+    for (const texto of [
+      'await baixarDocumentosEasyShip(url, { fetch });',
+      'extrairEtiquetaZplEasyShip(bytes);',
+      "import { baixarDocumentosEasyShip as baixar } from '@delfrance/integrations-amazon-sp-api';",
+      '// see extrairEtiquetaZplEasyShip(bytes)',
+    ]) {
+      expect(nomeiamOsDocumentos([[fora, texto]]), texto).toEqual([fora]);
+    }
+    // NEAR-MISS: a test and a package's own file are exempt, whatever they name.
+    for (const caminho of [
+      'lib/amazon/core/outro.test.ts',
+      '../../packages/integrations/amazon-sp-api/src/documentosEasyShip.ts',
+      '../../packages/integrations/amazon-sp-api/test/documentosEasyShip.ts',
+    ]) {
+      expect(
+        nomeiamOsDocumentos([[caminho, 'baixarDocumentosEasyShip(url, o);']]),
+        caminho,
+      ).toEqual([]);
+    }
+    // NEAR-MISS: the error class and a longer or shorter name are no mention.
+    for (const texto of [
+      'if (err instanceof AmazonDocumentoEasyShipError) throw err;',
+      'baixarDocumentosEasyShipDepois(url);',
+      'extrairEtiquetaZpl(bytes);',
+    ]) {
+      expect(nomeiamOsDocumentos([[fora, texto]]), texto).toEqual([]);
     }
   });
 });
@@ -2917,6 +3371,85 @@ describe('the guards, on synthetic source', () => {
       expect(
         violacoesDoAppHosting(
           fechoCom("import { x } from 'crypto-js';\nconst d = globalThis.crypto;"),
+        ),
+      ).toEqual([]);
+    });
+
+    /** A one-edge app: `rota` imports `alvo` through the alias. */
+    function fechoDaRotaCom(rota: string, alvo: string) {
+      const ler = leitor({
+        [rota]: `import type { X } from '@/${alvo.replace(/\.ts$/, '')}';`,
+        [alvo]: 'export type X = 1;',
+      });
+      return fechoDeImportacoes([rota], ler, resolverAliasDoApp(ler));
+    }
+
+    it('★ (step 15, PR 15-d) a synthetic edge from the NF-e re-drive route to the write engine still fails the default list, while the label route’s list allows it', () => {
+      const fecho = fechoDaRotaCom(
+        'app/api/marketplace/amazon/enviar-nfe/route.ts',
+        MOTOR_DE_ESCRITA,
+      );
+      expect(violacoesDoAppHosting(fecho)).toEqual([`reaches ${MOTOR_DE_ESCRITA}`]);
+      expect(violacoesDoAppHosting(fecho, PROIBIDOS_NA_ROTA_ETIQUETA)).toEqual([]);
+    });
+
+    it.each([
+      ['lib/amazon/agendamento/agendadorAgendamento.ts'],
+      ['lib/amazon/agendamento/entradasAgendamento.ts'],
+      ['lib/amazon/agendamento/processarAgendamento.ts'],
+      ['lib/amazon/agendamento/tarefaAgendamento.ts'],
+    ])('★ (step 15, PR 15-d) the default list refuses %s from any route', (alvo) => {
+      expect(violacoesDoAppHosting(fechoDaRotaCom(ROTA, alvo))).toEqual([`reaches ${alvo}`]);
+    });
+
+    it.each([
+      [SEAM_DO_IMPORTADOR],
+      [IMPORTADOR],
+      ['lib/amazon/nfe/processarNfe.ts'],
+      ['lib/amazon/nfe/entregaAmazon.ts'],
+      ['lib/amazon/nfe/conteudoNfe.ts'],
+      ['lib/amazon/nfe/carimboFreteNfe.ts'],
+      ['lib/amazon/agendamento/processarAgendamento.ts'],
+      ['lib/amazon/agendamento/agendadorAgendamento.ts'],
+      ['lib/amazon/agendamento/entradasAgendamento.ts'],
+      ['lib/firebase/filaLeitura.ts'],
+      ['lib/amazon/notificacoes/agendador.ts'],
+      ['lib/amazon/nfe/agendadorNfe.ts'],
+      ['lib/amazon/core/filaTarefas.ts'],
+    ])('★ (step 15, PR 15-d) the label route’s list refuses %s', (alvo) => {
+      expect(
+        violacoesDoAppHosting(
+          fechoDaRotaCom(ARQUIVO_ROTA_ETIQUETA, alvo),
+          PROIBIDOS_NA_ROTA_ETIQUETA,
+        ),
+      ).toEqual([`reaches ${alvo}`]);
+    });
+
+    it.each([
+      ["import type { ViaCepClient } from '@delfrance/core/cep';", '@delfrance/core/cep'],
+      ["import { createHash } from 'node:crypto';", 'node:crypto'],
+      ["import { createHash } from 'crypto';", 'crypto'],
+    ])('★ (step 15, PR 15-d) the label route’s walk still flags %s', (fonte, espec) => {
+      const ler = leitor({ [ARQUIVO_ROTA_ETIQUETA]: fonte });
+      expect(
+        violacoesDoAppHosting(
+          fechoDeImportacoes([ARQUIVO_ROTA_ETIQUETA], ler, resolverAliasDoApp(ler)),
+          PROIBIDOS_NA_ROTA_ETIQUETA,
+        ),
+      ).toEqual([`imports ${espec}`]);
+    });
+
+    it.each([
+      [MOTOR_DE_ESCRITA],
+      ['lib/amazon/agendamento/decisaoAgendamento.ts'],
+      ['lib/amazon/agendamento/easyShipAmazon.ts'],
+      ['lib/amazon/agendamento/executarAgendamento.ts'],
+      ['lib/amazon/agendamento/tarefaAgendamento.ts'],
+    ])('NEAR-MISS (step 15, PR 15-d): the label route’s list allows %s', (alvo) => {
+      expect(
+        violacoesDoAppHosting(
+          fechoDaRotaCom(ARQUIVO_ROTA_ETIQUETA, alvo),
+          PROIBIDOS_NA_ROTA_ETIQUETA,
         ),
       ).toEqual([]);
     });

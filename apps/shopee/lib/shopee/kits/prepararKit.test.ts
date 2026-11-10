@@ -17,6 +17,7 @@ import {
 import {
   ESTADO_ANUNCIO_SHOPEE,
   TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE,
+  logisticaGravadaPeloErpShopee,
   toOuterRef,
   varianteFakePath,
 } from '@delfrance/schemas';
@@ -32,7 +33,7 @@ import { limparTaxonomiaShopee } from '../taxonomia/cache';
 import { FakeDb, asDb } from '../testing/fakeDb';
 import { CAP_FOTOS_KIT } from './constantesKit';
 import { idDoVinculoDeKit } from './idsKit';
-import { decidirKitNovo, tetoDeFotosDoKit, vinculosNativosDoKit } from './planoKit';
+import { decidirKitNovo, planejarKit, tetoDeFotosDoKit, vinculosNativosDoKit } from './planoKit';
 import { prepararKit, type ArmaDeKit, type EntradaDeKit } from './prepararKit';
 
 /* -------------------------------------------------------------------------- */
@@ -1194,4 +1195,51 @@ describe('prepararKit — o --principal', () => {
     expect(filhoAzul?.componentesKitArmazenado).toEqual(armazenado);
     expect(filhoAzul?.componentesKit?.['comp-b-membro']).toMatchObject({ quantidade: 1 });
   });
+});
+
+/* ========================================================================== */
+/*  (7) #2015 — the stamp reaches the plan RAW (TST-1)                         */
+/* ========================================================================== */
+
+describe('#2015 — o carimbo do vínculo chega CRU ao plano (prepararKit → planejarKit)', () => {
+  // The kit plan decides trust over `ctx.alvo.raw` (`../kits/README.md` §5), and
+  // every planoKit test hands that raw in by hand. These seed the STORED link
+  // and run the real reader, so a projection that drops the stamp (a `select`,
+  // a `pick`) or injects one reds here. The shop's one channel is SIZE_INPUT, so
+  // `is_free` is the field that tells the two passes apart: the stored list says
+  // `true`, and K has no `ofereceFreteGratis`, so the full pass says `false`.
+  async function planoDoVinculo(extra: Json) {
+    const db = new FakeDb();
+    semearTudo(db);
+    const linkDocId = semearVinculoNativo(db, KIT_ITEM, {
+      logistic_info: [{ logistic_id: CANAL, enabled: true, is_free: true }],
+      ...extra,
+    });
+    const loja = lojaFake({ bases: { [KIT_ITEM]: baseDoKit() }, kits: { [KIT_ITEM]: kitVivo() } });
+    const ctx = await preparar(db, loja, {}, { arma: 'kit-atualizar', linkDocId });
+    return { ctx, plano: planejarKit(ctx, ctx.fotos) };
+  }
+
+  it('PAR: o vínculo CARIMBADO ⇒ o carimbo chega a `alvo.raw` e a lista gravada vence (is_free: true)', async () => {
+    const { ctx, plano } = await planoDoVinculo({ logisticaGravadaEm: AGORA });
+    expect(logisticaGravadaPeloErpShopee(ctx.alvo?.raw ?? {})).toBe(true);
+    expect(plano.conteudo?.logisticInfo).toEqual([
+      { logistic_id: CANAL, enabled: true, is_free: true },
+    ]);
+  });
+
+  it.each([
+    { rotulo: 'sem a chave', extra: {} },
+    { rotulo: 'carimbo null', extra: { logisticaGravadaEm: null } },
+  ])(
+    '⛔ QUASE-PAR ($rotulo): o MESMO vínculo sem carimbo ⇒ o predicado é falso e o plano leva o passe COMPLETO (is_free: false)',
+    async ({ extra }) => {
+      const { ctx, plano } = await planoDoVinculo(extra);
+      expect(ctx.alvo?.raw).toBeDefined();
+      expect(logisticaGravadaPeloErpShopee(ctx.alvo?.raw ?? {})).toBe(false);
+      expect(plano.conteudo?.logisticInfo).toEqual([
+        { logistic_id: CANAL, enabled: true, is_free: false },
+      ]);
+    },
+  );
 });

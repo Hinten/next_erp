@@ -49,6 +49,7 @@ import {
   resolverReconexaoPendente,
   resolverSegredoLwaExpirando,
   resolverSegredoLwaRecusado,
+  semearResolucaoDoPedidoAmazon,
   sincronizarAvisoDeReautorizacao,
 } from './avisos';
 
@@ -690,6 +691,75 @@ describe('step 5 (PR 5-d): the order import producers — clocked on the FIRESTO
         'pedido',
       ]);
     }
+  });
+
+  it('★ step 15 (PR 15-c): semearResolucaoDoPedidoAmazon ALWAYS seeds — an absent row becomes a resolved tombstone that drops an older raise; an open row is closed; an equal clock writes nothing', async () => {
+    const AGENDAMENTO = [
+      MOTIVO_PEDIDO_AMAZON.dimensoesAusentes,
+      MOTIVO_PEDIDO_AMAZON.agendamentoRecusado,
+    ];
+    // One row open (an earlier raise at T1), the other absent.
+    await sincronizarAvisosDoPedidoAmazon(asDb(db), deps(), {
+      ...pedido,
+      levantar: [MOTIVO_PEDIDO_AMAZON.agendamentoRecusado],
+      resolver: [],
+      relogio: T1,
+    });
+    expect(
+      await semearResolucaoDoPedidoAmazon(asDb(db), deps(), {
+        ...pedido,
+        motivos: AGENDAMENTO,
+        relogio: T2,
+      }),
+    ).toBe(1);
+    for (const m of AGENDAMENTO) {
+      expect(db.ler(chave(m)), m).toMatchObject({
+        tipo: TIPO_AVISO.amazonPedidoPrecisaAtencao,
+        severidade: SEVERIDADE_AVISO.critico,
+        params: { pedido: ORDER, motivo: m },
+        resolucaoMotivo: MOTIVO_AVISO_AMAZON.condicaoEncerrada,
+        relogioEvento: relogioDoDocumentoUs(T2),
+      });
+      expect(db.ler(chave(m))?.resolvidoEm, m).not.toBeNull();
+    }
+    // The tombstone drops a raise clocked by an OLDER observation…
+    const tardio = await sincronizarAvisosDoPedidoAmazon(asDb(db), deps(), {
+      ...pedido,
+      levantar: [MOTIVO_PEDIDO_AMAZON.dimensoesAusentes],
+      resolver: [],
+      relogio: T1,
+    });
+    expect(tardio.levantados).toBe(0);
+    expect(db.ler(chave(MOTIVO_PEDIDO_AMAZON.dimensoesAusentes))?.resolvidoEm).not.toBeNull();
+    // …and a second seed at the SAME clock writes nothing at all.
+    const escritas = db.escritas.length;
+    expect(
+      await semearResolucaoDoPedidoAmazon(asDb(db), deps(), {
+        ...pedido,
+        motivos: AGENDAMENTO,
+        relogio: T2,
+      }),
+    ).toBe(0);
+    expect(db.escritas.length).toBe(escritas);
+  });
+
+  it('NEAR-MISS: the import’s ordinary sync resolves only EXISTING rows — the same resolve over an absent row writes nothing, and the older raise then opens it', async () => {
+    const r = await sincronizarAvisosDoPedidoAmazon(asDb(db), deps(), {
+      ...pedido,
+      levantar: [],
+      resolver: [MOTIVO_PEDIDO_AMAZON.dimensoesAusentes],
+      relogio: T2,
+    });
+    expect(r).toEqual({ levantados: 0, resolvidos: 0 });
+    expect(db.ler(chave(MOTIVO_PEDIDO_AMAZON.dimensoesAusentes))).toBeUndefined();
+    const tardio = await sincronizarAvisosDoPedidoAmazon(asDb(db), deps(), {
+      ...pedido,
+      levantar: [MOTIVO_PEDIDO_AMAZON.dimensoesAusentes],
+      resolver: [],
+      relogio: T1,
+    });
+    expect(tardio.levantados).toBe(1);
+    expect(db.ler(chave(MOTIVO_PEDIDO_AMAZON.dimensoesAusentes))?.resolvidoEm).toBeNull();
   });
 
   it('★ raises with exactly pedido + motivo, the pedido route, in-app, the clock converted HERE', async () => {

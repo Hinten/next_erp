@@ -8,12 +8,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ZodError } from 'zod';
 import type { Timestamp } from 'firebase-admin/firestore';
 import {
+  CAMINHO_DO_COMPLETAR_LI,
   FASE_IMPORTACAO_LI,
   LIMITE_IMPORTACOES_LISTADAS_LI,
   LIMITE_ITENS_IMPORTACAO_LI,
   MOTIVO_FALHA_IMPORTACAO_LI,
   STATUS_IMPORTACAO_LI,
   type StatusImportacaoLi,
+  importacaoLojaIntegradaSchema,
+  progressoDaFamiliaLiSchema,
   respostaImportacaoLiSchema,
 } from '@delfrance/schemas';
 
@@ -281,6 +284,52 @@ describe('the checkpoints: tier 1, chained from each write’s writeTime', () =>
       'listagem',
       'status',
     ]);
+  });
+
+  it('a checkpoint writes a family’s progress in its own field, whole, and clears it with null', async () => {
+    const db = new FakeDb();
+    const carimbo = seedJobLi(db, JOB, CONTA, { status: 'executando', seq: 0 });
+    const emCurso = progressoDaFamiliaLiSchema.parse({
+      raizLiId: 20,
+      caminho: CAMINHO_DO_COMPLETAR_LI.existente,
+      erpRaizId: 'caneca',
+      categoria: { erpId: null, criadaPelaImportacao: false },
+      criacaoAplicada: false,
+      completado: false,
+      campos: [],
+      pendencias: [],
+      categoriasCriadas: [900],
+      criados: 0,
+      completados: 0,
+      vinculados: 0,
+      sumidos: [],
+      alvos: [{ produtoId: 'caneca', liId: null }],
+      fotos: null,
+      resultadoFotos: null,
+    });
+    const r = await gravarCheckpointDaUnidadeLi(
+      asDb(db),
+      { jobId: JOB, seq: 0, versao: v(carimbo) },
+      { progressoDaFamilia: emCurso },
+      AGORA_MS + 5,
+    );
+    if (r.tipo !== 'gravado') throw new Error('checkpoint perdido');
+    expect(
+      importacaoLojaIntegradaSchema.parse(db.ler(caminhoJobLi(JOB))).progressoDaFamilia,
+    ).toEqual(emCurso);
+    // Only its own field: the phase's cursor is not touched by a family's units.
+    expect(Object.keys(db.escritasEm(caminhoJobLi(JOB))[0]?.dados ?? {}).sort()).toEqual([
+      'atualizadoEmMs',
+      'progressoDaFamilia',
+      'status',
+    ]);
+    await gravarCheckpointDaUnidadeLi(
+      asDb(db),
+      { jobId: JOB, seq: 0, versao: r.versao },
+      { progressoDaFamilia: null },
+      AGORA_MS + 6,
+    );
+    expect(db.ler(caminhoJobLi(JOB))?.progressoDaFamilia).toBeNull();
   });
 
   it('the chain: each checkpoint’s versao is the next one’s precondition; a stale one is refused', async () => {

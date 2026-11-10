@@ -2064,6 +2064,12 @@ const RAIZES_DE_SKU: ReadonlySet<string> = new Set(['item_sku', 'sku']);
  * - weight, dimensions, photos, GTIN, price, stock, taxes, pre-order — the
  *   produto's field; `size_chart_info` — the size chart; the variation roots —
  *   the variations.
+ * - `logistic_info` — the produto's weight (a channel the parcel does not fit,
+ *   `logistica-sem-canal`, and Shopee's own logistics refusal), EXCEPT for
+ *   `logistica-nao-confirmada` (#2015): a stored size or fee the ERP has no
+ *   record of having written, fixed by importing the listing — no field of
+ *   the produto is the fix, so the row keeps its copy and gets no button.
+ *   Scoped to that ROOT: the same motivo on another root routes as usual.
  */
 export function superficieDoCampoShopee(
   problema: Pick<ProblemaShopee, 'campo' | 'motivo' | 'acao'>,
@@ -2099,6 +2105,11 @@ export function superficieDoCampoShopee(
       return ehRascunho ? null : SELLER_CENTRE;
     case 'size_chart_info':
       return { tipo: 'medidas' };
+    case 'logistic_info':
+      // #2015: the stored size/fee was not confirmed as this app's — the fix
+      // is importing the listing, never the produto's weight.
+      if (problema.motivo === MOTIVO_ANUNCIO_SHOPEE.logisticaNaoConfirmada) return null;
+      break;
   }
   if (RAIZES_DE_SKU.has(raiz)) {
     const permitido =

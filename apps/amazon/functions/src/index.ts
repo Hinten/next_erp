@@ -16,6 +16,7 @@ import { onSchedule } from 'firebase-functions/v2/scheduler';
 
 import { type CacheReport, readCacheDelta, readCacheMark } from '@delfrance/data/admin/cache';
 
+import { FILA_AGENDAMENTO_AMAZON } from '../../lib/amazon/agendamento/tarefaAgendamento';
 import {
   type ExpiracaoSweepAmazonResult,
   sweepAmazonExpiracoes,
@@ -35,6 +36,7 @@ import {
 } from '../../lib/amazon/notificacoes/notificacao';
 import { FILA_NFE_AMAZON } from '../../lib/amazon/nfe/tarefaNfe';
 import { SEGREDOS_DE_LEITURA_AMAZON, depsDeLeituraAmazon } from './depsLeitura';
+import * as filaAgendamento from './filaAgendamento';
 import * as filaLeitura from './filaLeitura';
 import * as filaNfe from './filaNfe';
 import { getDb } from './lib/admin';
@@ -60,7 +62,12 @@ import { getDb } from './lib/admin';
  * own composition root (./agendadorNfe) — it makes no Amazon call either — and
  * the NF-e queue itself (`processAmazonNfeUpload`, ./filaNfe), the codebase's
  * SECOND task queue and its first Amazon WRITER (behind the read switch, the
- * NF-e valve and its canary).
+ * NF-e valve and its canary). Step 15 (PR 15-c) adds the Easy Ship scheduling
+ * queue (`processAmazonEasyShipSchedule`, ./filaAgendamento), the THIRD task
+ * queue — one queue per WRITE flow — fed by the NF-e task's acceptance seam, the
+ * order import and its own re-enqueues, all through its own composition root
+ * (./agendadorAgendamento); it books an order's pickup behind the read switch,
+ * the scheduling valve and its canary.
  *
  * ⚠️ ONE logger: every line goes through `LOGGER_STDOUT_AMAZON` /
  * `registrarEventoAmazon` (`lib/amazon/core/log.ts`). This file never imports
@@ -99,6 +106,17 @@ if (!(FILA_NFE_AMAZON in filaNfe)) {
   );
 }
 
+// The same assertion for the Easy Ship scheduling queue (step 15, PR 15-c):
+// every scheduling producer — the acceptance seam, the order import, the
+// handler's own re-enqueues — targets `FILA_AGENDAMENTO_AMAZON`.
+if (!(FILA_AGENDAMENTO_AMAZON in filaAgendamento)) {
+  throw new Error(
+    '[amazon] function-name drift: functions/src/filaAgendamento.ts must export a ' +
+      `handler named '${FILA_AGENDAMENTO_AMAZON}' (the enqueue target). ` +
+      'Rename the export and the FILA_AGENDAMENTO_AMAZON constant together.',
+  );
+}
+
 /** The ONE reads queue (one dispatch at a time, retry with backoff). */
 export { filaLeituraAmazon } from './filaLeitura';
 
@@ -107,6 +125,13 @@ export { filaLeituraAmazon } from './filaLeitura';
  * Amazon, status first, behind the read switch, the NF-e valve and its canary.
  */
 export { processAmazonNfeUpload } from './filaNfe';
+
+/**
+ * The Easy Ship scheduling queue (step 15, PR 15-c): one pickup booked per
+ * order once Amazon accepted its NF-e, the live order read first, behind the
+ * read switch, the scheduling valve and its canary.
+ */
+export { processAmazonEasyShipSchedule } from './filaAgendamento';
 
 /** The 15-minute backstop poll: the reads queue's second producer (./pollPedidos). */
 export { pollAmazonOrders } from './pollPedidos';

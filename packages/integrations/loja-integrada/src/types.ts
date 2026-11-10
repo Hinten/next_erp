@@ -342,8 +342,10 @@ export const liProdutoLinhaSchema = z
  *    child): `liImagemProdutoSchema`.
  *
  * ⚠️ The document states no unit for the weight or the sizes, and this package
- * assumes none: it carries both as sent. Which unit the store means is still to
- * be confirmed, and converting either is the reader's call.
+ * converts neither: it carries both as sent. The store's units are kilograms and
+ * centimetres, as the owner confirmed (decided 2026-11-09); the product import
+ * reads them as such in ONE place, its `medidasErpDoDetalheLi`, and any other
+ * reader must do the same rather than guess.
  *
  * ⚠️ Price and stock (`preco_*`, `estoque_*`) are deliberately NOT declared:
  * the import never reads either, and the read returns a projection without them

@@ -6,7 +6,7 @@
  * Cloud Tasks transport through the file's ONE `getFunctions(` call
  * ({@link filaDoAppHosting}). Outside `lib/amazon` on purpose — it reads
  * `process.env` and calls `getFunctions(`, and `lib/amazon` does neither
- * (`estrutura.test.ts`, which also pins this file as one of the app's three
+ * (`estrutura.test.ts`, which also pins this file as one of the app's four
  * `getFunctions(` roots, pinned to its queue set — both path builders — by
  * `FILAS_DE_CADA_RAIZ`).
  *

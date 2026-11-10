@@ -5,6 +5,7 @@ import { LOGGER_STDOUT_AMAZON } from '../../lib/amazon/core/log';
 import { LWA_CLIENT_SECRET_ENV } from '../../lib/amazon/env';
 import { importadorPedidoAmazon } from '../../lib/amazon/notificacoes/destinos';
 import type { DepsLeituraAmazon } from '../../lib/amazon/notificacoes/notificacao';
+import { criarAgendadorAgendamentoAmazonDoAmbiente } from './agendadorAgendamento';
 
 /**
  * The Secret Manager names a READ run binds (`secrets:`): the LWA client
@@ -49,6 +50,13 @@ const VIA_CEP = createViaCepClient();
  *   checks it first, the context loader again), so nothing calls Amazon until
  *   the window sets it.
  * - `viaCep`: {@link VIA_CEP}, the importer's CEP recovery.
+ * - `agendamento`: the Easy Ship scheduling queue's producer (step 15, PR
+ *   15-c) for the import's post-commit entry E2 — the functions codebase's
+ *   scheduling root (`./agendadorAgendamento`), built only when an import
+ *   reads an order ready to schedule. `lib/` takes it through the structural
+ *   port `ProdutorAgendamentoAmazon`, so this binding is where the compiler
+ *   checks the real producer against that port. It only enqueues: the task
+ *   it names calls Amazon behind the read switch and the scheduling valve.
  * - `increment`: a tier-0 `FieldValue`, for every aviso counter a run bumps —
  *   the park's and the importer's — so two producers landing together cannot
  *   lose each other's bump.
@@ -66,6 +74,7 @@ export function depsDeLeituraAmazon(): DepsLeituraAmazon {
     logger: LOGGER_STDOUT_AMAZON,
     importador: importadorPedidoAmazon(),
     viaCep: VIA_CEP,
+    agendamento: criarAgendadorAgendamentoAmazonDoAmbiente,
     increment: (by: number) => FieldValue.increment(by),
   };
 }

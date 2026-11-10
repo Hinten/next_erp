@@ -31,7 +31,8 @@
  *     - any other verdict (an unreadable option, a grade or option linked twice, an option already
  *       standing for two variantes) gives no claim: learning cannot settle a conflict.
  *     A variation matched by COMBINATION gives none (its options already resolved), nor does one
- *     whose SKU another store row repeats, nor one whose ERP child's taxonomy does not read whole.
+ *     whose SKU another store row repeats or nearly repeats, nor one whose ERP child's taxonomy does
+ *     not read whole.
  *  4. the claims written to `evidencias/{gradeId}_{opcaoId}` — one document per store option,
  *     holding one entry per DISTINCT `(grupo, variante)` claimed, never one per variation, so a
  *     popular option cannot grow its document without bound.
@@ -76,6 +77,7 @@ import {
 import type { FamiliaLi, MontagemLi } from './familias';
 import { UNIDADE_IMPORTACAO_LI, type UnidadeImportacaoLi } from './orcamento';
 import {
+  type ConflitoDeSkuNaLojaLi,
   type DepsResolucaoLi,
   type ProdutoErpLi,
   type ResolucaoDaRaizLi,
@@ -143,10 +145,10 @@ export function eixoUnicoDaFamiliaLi(
 function casadoPorSku(
   r: ResolucaoDoFilhoLi,
   sku: string | null,
-  skusRepetidos: ReadonlySet<string>,
+  skusEmConflito: ReadonlyMap<string, ConflitoDeSkuNaLojaLi>,
 ): r is ResolucaoDoFilhoLi & { readonly erp: ProdutoErpLi } {
   if (r.situacao !== SITUACAO_DO_FILHO_LI.casado || r.erp === null || sku === null) return false;
-  if (skusRepetidos.has(sku)) return false;
+  if (skusEmConflito.has(sku)) return false;
   if (r.via !== VIA_DO_FILHO_LI.sku && r.via !== VIA_DO_FILHO_LI.vinculo) return false;
   return mesmoSkuLi(sku, r.erp.sku);
 }
@@ -226,13 +228,13 @@ function alegacoesDoFilho(
 export function alegacoesDaFamiliaLi(
   familia: Pick<FamiliaLi, 'filhos'>,
   filhos: ResolucaoDosFilhosLi,
-  skusRepetidos: ReadonlySet<string>,
+  skusEmConflito: ReadonlyMap<string, ConflitoDeSkuNaLojaLi>,
 ): AlegacaoDaFamiliaLi[] {
   const eixoUnico = eixoUnicoDaFamiliaLi(familia, filhos.erpFilhos);
   const skuDe = new Map(familia.filhos.map((f) => [f.linha.id, f.linha.sku]));
   const alegacoes: AlegacaoDaFamiliaLi[] = [];
   for (const r of filhos.filhos) {
-    if (!casadoPorSku(r, skuDe.get(r.liId) ?? null, skusRepetidos)) continue;
+    if (!casadoPorSku(r, skuDe.get(r.liId) ?? null, skusEmConflito)) continue;
     alegacoes.push(...alegacoesDoFilho(r, eixoUnico));
   }
   return alegacoes.sort(
@@ -376,15 +378,15 @@ export type PassoDasEvidenciasLi =
 
 /**
  * Run the `evidencias` phase's next unit: the next family above the cursor (module header).
- * `montagem` and `skusRepetidos` come from the job's snapshot (computed once per dispatch);
- * `grupos` is the dispatch's grupo memo.
+ * `montagem` and `skusEmConflito` come from the job's snapshot (the conflicts computed with the
+ * assembly, from the whole snapshot); `grupos` is the dispatch's grupo memo.
  */
 export async function executarUnidadeDasEvidenciasLi(
   deps: DepsEvidenciasLi,
   contexto: {
     readonly montagem: MontagemLi;
     readonly grupos: readonly GrupoComLinksLi[];
-    readonly skusRepetidos: ReadonlySet<string>;
+    readonly skusEmConflito: ReadonlyMap<string, ConflitoDeSkuNaLojaLi>;
   },
   cursor: CursorFamiliasLi,
 ): Promise<PassoDasEvidenciasLi> {
@@ -392,7 +394,7 @@ export async function executarUnidadeDasEvidenciasLi(
   if (familia === null) return { tipo: 'concluido' };
   const proximo: CursorFamiliasLi = { cursorPaiId: familia.raiz.id, filhosLidos: [] };
 
-  const raiz = await resolverRaizLi(deps, familia, contexto.skusRepetidos);
+  const raiz = await resolverRaizLi(deps, familia, contexto.skusEmConflito);
   if (
     raiz.tipo !== SITUACAO_ERP_ITEM_LI.vinculado &&
     raiz.tipo !== SITUACAO_ERP_ITEM_LI.encontrado
@@ -408,9 +410,9 @@ export async function executarUnidadeDasEvidenciasLi(
   }
   const filhos = await resolverFilhosLi(deps, familia, raiz.erpId, {
     grupos: contexto.grupos,
-    skusRepetidos: contexto.skusRepetidos,
+    skusEmConflito: contexto.skusEmConflito,
   });
-  const alegacoes = alegacoesDaFamiliaLi(familia, filhos, contexto.skusRepetidos);
+  const alegacoes = alegacoesDaFamiliaLi(familia, filhos, contexto.skusEmConflito);
   const documentos = await gravarAlegacoesLi(deps.db, deps.jobId, alegacoes);
   return {
     tipo: 'familia',

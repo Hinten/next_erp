@@ -3,6 +3,7 @@ import { logger } from 'firebase-functions/v2';
 
 import type { DepsDespachoImportacaoLi } from '../../lib/lojaIntegrada/importacao/despacho';
 import { criarAgendadorImportacaoLiDoAmbiente } from './agendador';
+import { getBucket } from './lib/admin';
 
 /**
  * The dependencies of one product-import DISPATCH (master plan step 9) — a reads-queue task of
@@ -21,6 +22,10 @@ import { criarAgendadorImportacaoLiDoAmbiente } from './agendador';
  *   the import's summary aviso — so two producers landing together cannot lose each other's bump.
  * - `agendador`: the producer ROOT, built only when a hand-off is due (the sweep-only valve is read
  *   when it is built), never at module load.
+ * - `bucket`: the default Cloud Storage bucket the photos of a "complete" run are stored in
+ *   (`lib/admin.ts`, `getBucket`: `FIREBASE_CONFIG.storageBucket`, then the admin app's own option),
+ *   resolved only when a dispatch asks for it — never at module load; `null` when nothing names
+ *   one, and the dispatch then skips the run's photos and stamps the job `fotosIndisponiveis`.
  * - `logger`: the run's one sink (`firebase-functions/v2`), ids and counts only.
  * - `tentativa`, `idTarefa`: the Cloud Tasks attempt (0-based) and the task id, for the last-attempt
  *   rule and the context's call lines.
@@ -42,6 +47,7 @@ export function depsDeImportacaoLi(registro: {
       }),
     increment: (by: number) => FieldValue.increment(by),
     agendador: criarAgendadorImportacaoLiDoAmbiente,
+    bucket: () => getBucket(),
     logger,
     tentativa: registro.tentativa,
     idTarefa: registro.idTarefa,

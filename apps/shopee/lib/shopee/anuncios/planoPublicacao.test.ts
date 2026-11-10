@@ -205,6 +205,7 @@ const LINK: LinkListagemLido = {
   logistic_info: null,
   estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo,
   marcaNaoEscolhida: false,
+  logisticaConfiavel: false,
 };
 
 /**
@@ -967,6 +968,126 @@ describe('planejarPublicacao — o vocabulário de bloqueio', () => {
     for (const problema of plano.problemas) expect(conhecidos.has(problema.motivo)).toBe(true);
     expect(warn).not.toHaveBeenCalled();
     warn.mockRestore();
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*        (8b) #2015 — a logística armazenada só vale se ESTE app a gravou     */
+/* -------------------------------------------------------------------------- */
+
+describe('planejarPublicacao — a confiança na logística armazenada (#2015)', () => {
+  const CANAL_IRMAO = 90005;
+  const CANAL_OBRIGATORIO = 90007;
+
+  /** A republish of LINK carrying a stored is_free:true on CANAL alone. */
+  function republicacao(link: Partial<LinkListagemLido>): ContextoPublicacao {
+    return contexto({
+      ehAtualizacao: true,
+      link: { ...LINK, logistic_info: [{ logistic_id: CANAL, is_free: true }], ...link },
+      canais: [canal(), canal({ logistics_channel_id: CANAL_IRMAO })],
+    });
+  }
+
+  /** A shop whose COMPULSORY channel needs a size, and a link that stored one. */
+  function comCanalObrigatorio(
+    link: Partial<LinkListagemLido>,
+    parcial: Partial<ContextoPublicacao> = {},
+  ): ContextoPublicacao {
+    return contexto({
+      ehAtualizacao: true,
+      link: {
+        ...LINK,
+        logistic_info: [{ logistic_id: CANAL_OBRIGATORIO, size_id: '7' }],
+        ...link,
+      },
+      canais: [
+        canal({
+          logistics_channel_id: CANAL_OBRIGATORIO,
+          fee_type: SHOPEE_LOGISTICS_FEE_TYPE.sizeSelection,
+          compulsory_channel: true,
+        }),
+        canal({ logistics_channel_id: CANAL_IRMAO }),
+      ],
+      ...parcial,
+    });
+  }
+
+  it('⚠️ PAR: um vínculo CONFIÁVEL mantém o is_free:true armazenado, num canal só', () => {
+    const plano = planejarPublicacao(republicacao({ logisticaConfiavel: true }), fotos());
+    expect(plano.logistica.logistic_info).toEqual([
+      { logistic_id: CANAL, enabled: true, is_free: true },
+    ]);
+    expect(plano.item.atualizar?.logistic_info).toEqual(plano.logistica.logistic_info);
+  });
+
+  it('⛔ QUASE-PAR: a MESMA lista num vínculo NÃO confiável toma a passagem completa — is_free do produto, todo canal que cabe', () => {
+    const plano = planejarPublicacao(republicacao({ logisticaConfiavel: false }), fotos());
+    expect(plano.logistica.logistic_info).toEqual([
+      { logistic_id: CANAL, enabled: true, is_free: false },
+      { logistic_id: CANAL_IRMAO, enabled: true, is_free: false },
+    ]);
+    expect(plano.problemas).toEqual([]);
+  });
+
+  it('a recusa nova nomeia o item_id do VÍNCULO — e é bloqueio do plano', () => {
+    const plano = planejarPublicacao(comCanalObrigatorio({ logisticaConfiavel: false }), fotos());
+    const naoConfirmada = plano.problemas.filter(
+      (p) => p.motivo === MOTIVO_PUBLICACAO_BLOQUEADA.logisticaNaoConfirmada,
+    );
+    expect(naoConfirmada).toHaveLength(1);
+    expect(naoConfirmada[0]?.campo).toBe('logistic_info');
+    expect(naoConfirmada[0]?.mensagem).toContain(`Importe o anúncio ${String(ITEM_ID)} `);
+    expect(naoConfirmada[0]?.mensagem).toContain('precisa de um tamanho');
+    expect(tipos(plano.passos)).toEqual(['fotos']);
+  });
+
+  it('⛔ QUASE-PAR: o mesmo vínculo CONFIÁVEL envia o canal obrigatório com o tamanho, sem recusa', () => {
+    const plano = planejarPublicacao(comCanalObrigatorio({ logisticaConfiavel: true }), fotos());
+    expect(plano.logistica.logistic_info).toEqual([
+      { logistic_id: CANAL_OBRIGATORIO, enabled: true, is_free: false, size_id: 7 },
+    ]);
+    expect(plano.problemas).toEqual([]);
+  });
+
+  it('⛔ QUASE-PAR: um RASCUNHO (sem item_id) nunca recebe a recusa nova — a frase (1) de logistica-sem-canal', () => {
+    const plano = planejarPublicacao(
+      comCanalObrigatorio(
+        { item_id: null, ehRascunho: true, logisticaConfiavel: false },
+        { ehAtualizacao: false },
+      ),
+      fotos(),
+    );
+    const motivos = plano.problemas.map((p) => p.motivo);
+    expect(motivos).not.toContain(MOTIVO_PUBLICACAO_BLOQUEADA.logisticaNaoConfirmada);
+    expect(plano.problemas[0]).toMatchObject({
+      campo: 'logistic_info',
+      motivo: MOTIVO_PUBLICACAO_BLOQUEADA.logisticaSemCanal,
+    });
+    expect(plano.problemas[0]?.mensagem).toContain(
+      `O canal obrigatório ${String(CANAL_OBRIGATORIO)} não pôde ser habilitado`,
+    );
+  });
+
+  it('⛔ QUASE-PAR: um vínculo REMOVIDO não tem anúncio a importar — a frase (1), nunca a recusa nova', () => {
+    const plano = planejarPublicacao(
+      comCanalObrigatorio({
+        logisticaConfiavel: false,
+        estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.removido,
+      }),
+      fotos(),
+    );
+    const motivos = plano.problemas.map((p) => p.motivo);
+    expect(motivos).not.toContain(MOTIVO_PUBLICACAO_BLOQUEADA.logisticaNaoConfirmada);
+    expect(motivos).toContain(MOTIVO_PUBLICACAO_BLOQUEADA.logisticaSemCanal);
+    expect(motivos).toContain(MOTIVO_PUBLICACAO_BLOQUEADA.listagemRemovida);
+  });
+
+  it('uma primeira publicação (sem vínculo) é a passagem completa, sem lista a confiar', () => {
+    const plano = planejarPublicacao(
+      contexto({ canais: [canal(), canal({ logistics_channel_id: CANAL_IRMAO })] }),
+      fotos(),
+    );
+    expect(plano.logistica.logistic_info.map((e) => e.logistic_id)).toEqual([CANAL, CANAL_IRMAO]);
   });
 });
 

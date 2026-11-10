@@ -5,6 +5,7 @@ import {
   OUTRA_CHAVE_DE_TESTE_HEX,
   chaveDeTeste,
   colisaoDePseudonimo,
+  colisaoDeSku,
 } from '../testing/chaveDeFixtures';
 import { gerarCpf } from '../testing/especificacaoPii';
 import {
@@ -150,7 +151,8 @@ describe('executarSanitizacao — all or nothing', () => {
         arquivos: pares({
           a: par(`GET /v1/pedido/search/?numero=${CPF} 200`, { objects: [] }),
           b: par(`GET /v1/cliente/${CPF} 200`, {}),
-          c: par('GET /v1/produto/?sku=LOJA%2FEXEMPLO-01 200', { objects: [] }),
+          // An order search keeps a `sku=` value as written (a catalogue one is pseudonymized).
+          c: par('GET /v1/pedido/search/?sku=LOJA%2FEXEMPLO-01 200', { objects: [] }),
         }),
       }),
     );
@@ -364,6 +366,22 @@ describe('executarSanitizacao — catalogue pseudonyms and the key file', () => 
     expect(r.saida).not.toContain('7777');
   });
 
+  it('a real id in the pseudonym range refuses the run, names its remedy, and is never printed', () => {
+    const r = rodar(
+      ['--entrada', PASTA, '--dry-run'],
+      disco({
+        arquivos: {
+          ...pares({ produto: par('GET /v1/produto/734210985116/ 404', '') }),
+          ...COM_CHAVE,
+        },
+      }),
+    );
+    expect(r).toMatchObject({ codigo: 1, escritas: [] });
+    expect(r.saida).toContain('  produto pseudonimos :: id-real-na-faixa-do-pseudonimo\n');
+    expect(r.saida).toContain('hint (id-real-na-faixa-do-pseudonimo):');
+    expect(r.saida).not.toContain('734210985116');
+  });
+
   it('a key that is not a regular file is no key', () => {
     const r = rodar(
       ['--entrada', PASTA],
@@ -439,6 +457,22 @@ describe('executarSanitizacao — catalogue pseudonyms and the key file', () => 
           disco({ arquivos: { ...pares({ m1: marca(a), m2: marca(b2) }), ...COM_CHAVE } }),
         ).codigo,
       ).toBe(0);
+    }
+  });
+
+  it('a SKU collision across two pairs refuses the run', () => {
+    const [a, b2] = colisaoDeSku();
+    const produto = (sku: string) =>
+      par('GET /v1/produto/?limit=1 200', { objects: [{ id: 7, sku }] });
+    const arquivos = { ...pares({ p1: produto(a), p2: produto(b2) }), ...COM_CHAVE };
+    const r = rodar(['--entrada', PASTA], disco({ arquivos }));
+    expect(r).toMatchObject({ codigo: 1, escritas: [] });
+    expect(r.saida).toContain('  p2 pseudonimos :: colisao-de-pseudonimo\n');
+    expect(r.saida).not.toContain(a);
+    expect(r.saida).not.toContain(b2);
+    // Near-miss: each pair alone is clean.
+    for (const nome of ['p1', 'p2']) {
+      expect(rodar(['--entrada', PASTA, '--so', nome], disco({ arquivos })).codigo).toBe(0);
     }
   });
 
