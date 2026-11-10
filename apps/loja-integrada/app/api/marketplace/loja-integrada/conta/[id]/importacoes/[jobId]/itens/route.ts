@@ -15,9 +15,10 @@
  *   job is read first, so another conta's report is never paged.
  * - Anything else (Firestore, a stored item that no longer parses) is rethrown: a 500 (root rule 6).
  *
- * The read is the job's own `itens` subcollection in key order with no filter (`importacao/job.ts`
- * says why no composite index is involved). ⚠️ It calls nothing outside the ERP
- * (`estrutura.test.ts` walks its closure with the label routing route's rules).
+ * The read is the job's own `itens` subcollection in key order with no filter, a range seek on the
+ * declared `itens (__name__ ASC)` index (`importacao/job.ts` says why Enterprise needs it). ⚠️ It
+ * calls nothing outside the ERP (`estrutura.test.ts` walks its closure with the label routing
+ * route's rules).
  */
 import { NextResponse } from 'next/server';
 import { CONTA_ID_LI_REGEX, ID_IMPORTACAO_LI_REGEX } from '@delfrance/schemas';

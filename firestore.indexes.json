@@ -1613,6 +1613,16 @@
       ]
     },
     {
+      "collectionGroup": "itens",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "metodo_pgto",
       "queryScope": "COLLECTION",
       "fields": [

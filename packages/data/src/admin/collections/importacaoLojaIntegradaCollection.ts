@@ -41,8 +41,10 @@ const subcolecaoDoJob = (sub: string): string =>
 /*
  * The job's five subcollections. Each is written only by the job's own dispatches (one at a time:
  * the reads queue runs at concurrency 1 and every dispatch checks the job's `seq`), at
- * deterministic ids — a retry overwrites its own earlier attempt. Each is read in document-key
- * order inside ONE job, so no index is declared for them.
+ * deterministic ids — a retry overwrites its own earlier attempt. Each is read inside ONE job, whole
+ * or by id, so no index is declared for them — but `itens`, whose report pages are document-key
+ * RANGES: they ride the declared `itens (__name__ ASC)`, since Enterprise keeps no implicit key
+ * index (#1874; pinned by `apps/loja-integrada`'s `importacao/job.indexes.test.ts`).
  *
  * ⚠️ Their leaf names (`paginas`, `detalhes`, `itens`, …) are generic, so `groupQuery()` on these
  * handles would also reach any other collection of the same name. Nothing calls it: every read

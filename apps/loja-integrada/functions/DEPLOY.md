@@ -150,10 +150,13 @@ exists — so nothing is ever written to Loja Integrada before the window.
   writes queue only under
   `LOJA_INTEGRADA_MODO_RASTREIO=on`: **the web build carrying its copy must be
   live before that valve is set to `on`**, or the avisos panel cannot render it.
-- **The product import's job index READY before this deploy** (master-plan
-  step 9). The import's start guard (App Hosting) and the web's list read
-  `importacoesLojaIntegrada (integracaoId ASC, iniciadoEmMs DESC)`; a dispatch
-  reads its job by id only. On Enterprise a missing index does not fail, it
+- **The product import's job and report indexes READY before this deploy**
+  (master-plan step 9). The import's start guard (App Hosting) and the web's
+  list read `importacoesLojaIntegrada (integracaoId ASC, iniciadoEmMs DESC)`; a
+  dispatch reads its job by id. The report's pages — the items route's, and the
+  job's own actionable count at its end — range-seek on `itens (__name__ ASC)`:
+  Enterprise keeps no implicit key index, so without it every page walks the
+  job's whole report (#1874). On Enterprise a missing index does not fail, it
   full-scans and bills the scan.
 - **The default bucket's object grant, before the first "complete" import
   with photos** (master-plan step 9). The import's photos are this codebase's
