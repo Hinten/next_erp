@@ -190,7 +190,10 @@ gcloud firestore indexes composite list --project <project-id> --database defaul
       fails and the whole channel silently degrades to sweep-only mode.
 - [ ] **`roles/run.invoker` on each of the five task functions** — the DISPATCH leg.
       Deployed with `TASKS_INVOKER_SA` set (#1133) this is automatic; verify with
-      `gcloud run services get-iam-policy processMercadoLivreNotification --region=us-east1`.
+      `gcloud run services get-iam-policy processmercadolivrenotification --region=us-east1 --project=<project-id>`.
+      It takes the Cloud Run SERVICE name, the queue name lowercased; confirm the
+      names with `gcloud run services list --region=us-east1 --project=<project-id>`
+      (`functions/DEPLOY.md`, the IAM section).
       ⚠️ Missing, it writes NO failure document: the receiver logs `enfileirado`, the
       task 403s at the function, and an empty `notificacoesMercadoLivre` reads as health.
       The list must also carry the **functions** runtime SA — the sweeps and every
