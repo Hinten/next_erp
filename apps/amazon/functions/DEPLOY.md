@@ -628,10 +628,28 @@ And onto `processAmazonEasyShipSchedule` (step 15):
   deploy grants it to BOTH runtime SAs anyway: `TASKS_INVOKER_SA` is ONE list,
   applied to every task function of the codebase.
 
-**Every** enqueuing identity needs **three** grants **per queue** (run grant 1
-and grant 3 once with `filaLeituraAmazon`, once with `processAmazonNfeUpload`
-and once with `processAmazonEasyShipSchedule`; grant 2 is per identity, not per
-queue):
+**Every** enqueuing identity needs **three** grants **per queue** (grant 2 is
+per identity, not per queue). Grant 1 takes the queue's name: run it once with
+`filaLeituraAmazon`, once with `processAmazonNfeUpload` and once with
+`processAmazonEasyShipSchedule`. Grant 3 takes the queue function's Cloud Run
+SERVICE name: run it once with `filaleituraamazon`, once with
+`processamazonnfeupload` and once with `processamazoneasyshipschedule`.
+
+⚠️ **A queue name and its Cloud Run service name differ in CASE.** Cloud Tasks
+keeps the function's name (`processAmazonEasyShipSchedule`). The gen2
+function's Cloud Run service is that name LOWERCASED
+(`processamazoneasyshipschedule`): Google's Cloud Run functions deploy guide
+documents that the service name turns uppercase letters into lowercase (and `_`
+into `-`). Every `gcloud tasks queues …` line takes the queue name, and every
+`gcloud run services …` line takes the service name; a camelCase name there
+names no service. firebase-tools does not derive a gen2 function's service
+name: it reads it from the Cloud Functions API (`serviceConfig.service`). No deploy of this
+codebase has shown the names yet, so confirm them on the first deploy before
+running grant 3 or the verification below:
+
+```bash
+gcloud run services list --region=<region> --project=<project-id>
+```
 
 ```bash
 # 1 - permission to CREATE the task. Queue-level, so it can only run once the
@@ -662,8 +680,9 @@ gcloud iam service-accounts add-iam-policy-binding <enqueuing-sa> \
 
 # 3 - permission to DISPATCH: roles/run.invoker ON THE SERVICE.
 # ⚠ THE DEPLOY APPLIES THIS ONE when TASKS_INVOKER_SA is set. Run it by hand
-# only for a deploy without that variable.
-gcloud run services add-iam-policy-binding filaLeituraAmazon --region=<region> \
+# only for a deploy without that variable. It takes the SERVICE name, the queue
+# name lowercased (above).
+gcloud run services add-iam-policy-binding filaleituraamazon --region=<region> \
   --project=<project-id> \
   --member="serviceAccount:<enqueuing-sa>" \
   --role="roles/run.invoker"
@@ -835,10 +854,13 @@ flipped:
    1 and 1 dispatch per second, and (step 15) `processAmazonEasyShipSchedule`
    with concurrency 1, 1 dispatch per second and a 60-s minimum backoff; Cloud
    Scheduler lists the three schedule functions.
-2. For EACH of the three queues, `gcloud run services get-iam-policy <queue>` and
-   `gcloud tasks queues get-iam-policy <queue>` both name every identity in
-   `TASKS_INVOKER_SA`, and each enqueuing identity holds
-   `roles/iam.serviceAccountUser` on itself (grant 2, which no deploy makes).
+2. For EACH of the three queues,
+   `gcloud run services get-iam-policy <service> --region=<region> --project=<project-id>`
+   (the queue name lowercased, as `gcloud run services list` shows it: see the
+   IAM section) and
+   `gcloud tasks queues get-iam-policy <queue> --location=<region> --project=<project-id>`
+   both name every identity in `TASKS_INVOKER_SA`, and each enqueuing identity
+   holds `roles/iam.serviceAccountUser` on itself (grant 2, which no deploy makes).
 3. The Firestore index `notificacoesAmazon (status, processedAt)` is READY.
 4. A reprocess tick logs two `evento: 'varredura'` lines (`lane: hot` and
    `lane: deferred`), and the first expiry run logs one.
