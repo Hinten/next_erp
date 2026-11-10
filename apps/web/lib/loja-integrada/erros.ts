@@ -37,6 +37,7 @@ import {
   LojaIntegradaClientHttpError,
   LojaIntegradaClientNetworkError,
   LojaIntegradaClientRespostaInvalidaError,
+  type MotivoBackendLiIndisponivel,
 } from './client';
 
 /** Where a failure's copy is shown. */
@@ -60,6 +61,25 @@ export interface FalhaCredencialLi {
 /** The backend's `code` on a failed call, or `null` (a network failure, a foreign error). */
 export function codigoDaFalhaLi(err: unknown): string | null {
   return err instanceof LojaIntegradaClientHttpError ? err.code : null;
+}
+
+/**
+ * Why this build cannot talk to the backend at all (`useBackendLojaIntegrada`'s
+ * `indisponivel`). Moved here, unchanged, from the conta panel, which renders it
+ * above its disabled form; the product import's action refuses with it too.
+ */
+export function mensagemBackendIndisponivel(motivo: MotivoBackendLiIndisponivel): string {
+  if (motivo === 'inseguro') {
+    return (
+      'Esta página é servida por https, mas o endereço do backend da Loja Integrada deste build ' +
+      'é http: o token não é enviado por uma conexão sem criptografia. Configure ' +
+      'NEXT_PUBLIC_LOJA_INTEGRADA_URL com o endereço https do backend.'
+    );
+  }
+  return (
+    'O endereço do backend da Loja Integrada deste build (NEXT_PUBLIC_LOJA_INTEGRADA_URL) não é ' +
+    'um endereço http(s) válido.'
+  );
 }
 
 const MENSAGEM_REDE =

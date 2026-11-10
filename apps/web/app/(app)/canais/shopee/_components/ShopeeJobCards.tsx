@@ -10,7 +10,8 @@
  * Each card owns its polling query (hooks cannot be looped over a dynamic list),
  * polls by `jobId`, and stops by itself once the job leaves `running`. The
  * cadence, the "sem progresso" hint and the printed instants all come from
- * `cadenciaJobsShopee.ts` and the shared `lib/marketplace/contaJobs/cadencia.ts`.
+ * `cadenciaJobsShopee.ts` and the shared `lib/marketplace/contaJobs/cadencia.ts`;
+ * the hint's sentence is the shared `components/contaJobs/AvisoSemProgresso.tsx`.
  *
  * ⚠️ `retry: false` on both queries, on purpose: the next tick IS the retry, and
  * a backoff ladder against a 3 s interval stacks overlapping fetches on a backend
@@ -27,6 +28,7 @@ import { useQuery } from '@tanstack/react-query';
 import { ENVIO_PRECO_SHOPEE_STATUS, IMPORTACAO_SHOPEE_STATUS } from '@delfrance/schemas';
 
 import { RetryAlert } from '@/components/feedback/RetryAlert';
+import { AvisoSemProgresso } from '@/components/contaJobs/AvisoSemProgresso';
 import { BaixarRelatorioButton } from '@/components/contaJobs/BaixarRelatorioButton';
 import { JobCardShell } from '@/components/contaJobs/JobCardShell';
 import { type AmostraDeJob, PriceSyncEntryList } from '@/components/contaJobs/PriceSyncEntryList';
@@ -55,18 +57,6 @@ interface CartaoDeJobProps {
   /** The job came from a busy start's 409 — the operator's choices were NOT applied to it. */
   reatado: boolean;
   onDismiss: () => void;
-}
-
-/** A RUNNING job that stopped checkpointing — shared by both cards. */
-function AvisoSemProgresso({ desde }: { desde: number }) {
-  return (
-    <Alert color="yellow" variant="light" p="xs">
-      <Text size="xs">
-        Sem progresso desde {formatarInstanteJob(desde)} — se continuar assim, cancele e inicie de
-        novo.
-      </Text>
-    </Alert>
-  );
 }
 
 /**

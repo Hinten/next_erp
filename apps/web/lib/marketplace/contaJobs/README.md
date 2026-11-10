@@ -23,6 +23,7 @@ components in `apps/web/components/contaJobs/`:
 | `PriceSyncEntryList.tsx`    | the skip/failure sample with its "+N mais" tail, over `AmostraDeJob`                                             |
 | `BaixarRelatorioButton.tsx` | "Baixar CSV" with its page counter                                                                               |
 | `ContasSelecionadas.tsx`    | the start dialogs' list of the contas a run will touch                                                           |
+| `AvisoSemProgresso.tsx`     | the "sem progresso desde …" line a card shows once its channel's rule says the run went silent                   |
 
 ## Adding a channel
 
@@ -87,4 +88,6 @@ same way: `cadencia.ts` is the channel-neutral half of Shopee's
 `cadenciaJobsShopee.ts` — the 3 s cadence, the 45-minute rule, the last sign of
 life and the printed instant, names and behaviour unchanged. The one addition,
 `silencioExcedido`, is the comparison Shopee's `semProgresso` used to inline;
-which statuses count as running stays with each channel's own enum.
+which statuses count as running stays with each channel's own enum. The
+sentence the cards print for it moved with it, out of Shopee's cards:
+`components/contaJobs/AvisoSemProgresso.tsx`, its copy unchanged.
