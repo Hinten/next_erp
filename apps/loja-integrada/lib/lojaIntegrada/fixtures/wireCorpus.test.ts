@@ -17,12 +17,16 @@ import {
 
 /**
  * The floor that keeps the assertions below non-vacuous: the number of committed
- * fixtures — the Mercado Livre corpus test is the precedent. 29 since step 10:
- * 18 from the owner's first captures (step 3) plus the 11 catalogue captures
- * (`c9-*`: categories, brands, grades and two grade details per store, plus the
- * larger store's second category page, `c9-loja1-categorias-p2`). The
- * step-3 captures held 19 pairs; `pedido-enviado` was a byte-identical duplicate
- * of `pedido-boleto` (the same order requested twice) and is not committed
+ * fixtures — the Mercado Livre corpus test is the precedent. 42 since step 9:
+ * 18 from the owner's first captures (step 3), the 11 catalogue captures
+ * (`c9-*`, step 10: categories, brands, grades and two grade details per store,
+ * plus the larger store's second category page, `c9-loja1-categorias-p2`) and
+ * the 13 product captures (`c10-*`, step 9: both stores' first live page and
+ * trash list; the larger store's second and last pages, its unfiltered first
+ * page, a page at `limit=100` and the `limit=200` refusal; a parent's, a
+ * variation's and a trashed parent's detail, and an unknown id). The step-3
+ * captures held 19 pairs; `pedido-enviado` was a byte-identical duplicate of
+ * `pedido-boleto` (the same order requested twice) and is not committed
  * (`__wire__/README.md`).
  *
  * ⚠️ It equals the count on purpose, and the first test asserts the equality:
@@ -33,7 +37,7 @@ import {
  * it, in the same commit. Below it, "every fixture is valid and clean" holds of
  * fewer files than were reviewed.
  */
-const MINIMO_DE_FIXTURES = 29;
+const MINIMO_DE_FIXTURES = 42;
 
 /**
  * The two body classes whose redaction tables KEEP a row's Loja Integrada `id`.
@@ -354,6 +358,61 @@ function idsForaDaFaixa(fixtures: FixturesLi): { foraDaFaixa: string[]; ids: num
   return { foraDaFaixa, ids };
 }
 
+/* ------------------------- catalogue SKUs: their function ------------------------- */
+
+/** The store of any catalogue capture (`c10-loja2-…` → `loja2`); `null` for the others. */
+const lojaDaCaptura = (arquivo: string) => /^c\d+-(loja\d+)-/.exec(arquivo)?.[1] ?? null;
+
+interface LinhaDeProdutoLi {
+  readonly arquivo: string;
+  readonly sku: ValorJsonLi | undefined;
+  readonly filhos: readonly ValorJsonLi[];
+}
+
+/**
+ * Every variation a product row names in its `filhos`, found among the SAME store's
+ * product rows (any list page or detail), has a SKU that starts with its parent's.
+ * Catalogue SKUs are keyed pseudonyms (`sanitizacao/pseudonimo.ts`), built to keep
+ * exactly this relation of the stores' own SKUs; a pseudonym that broke it, or a
+ * fixture regenerated under another key beside an older one, fails here. Failures
+ * print file names and row kinds, never a SKU.
+ */
+function skusForaDoPai(fixtures: FixturesLi): { divergencias: string[]; pares: number } {
+  const porLoja = new Map<string, Map<string, LinhaDeProdutoLi>>();
+  for (const [arquivo, envelope] of doCatalogo(fixtures)) {
+    const loja = lojaDaCaptura(arquivo);
+    const corpo = envelope.resposta.corpo;
+    if (loja === null || !envelope.requisicao.caminho.startsWith('/v1/produto/')) continue;
+    if (!ehObjetoJsonLi(corpo)) continue;
+    const linhas = Array.isArray(corpo.objects) ? corpo.objects : [corpo];
+    const produtos = porLoja.get(loja) ?? new Map<string, LinhaDeProdutoLi>();
+    for (const linha of linhas) {
+      if (!ehObjetoJsonLi(linha) || typeof linha.id !== 'number') continue;
+      const filhos = Array.isArray(linha.filhos) ? linha.filhos : [];
+      produtos.set(String(linha.id), { arquivo, sku: linha.sku, filhos });
+    }
+    porLoja.set(loja, produtos);
+  }
+  const divergencias: string[] = [];
+  let pares = 0;
+  for (const produtos of porLoja.values()) {
+    for (const pai of produtos.values()) {
+      for (const uri of pai.filhos) {
+        const id = ehUriDeRecurso(uri) ? ultimoId(uri) : undefined;
+        const filho = id === undefined ? undefined : produtos.get(id);
+        if (filho === undefined || typeof pai.sku !== 'string' || typeof filho.sku !== 'string') {
+          continue;
+        }
+        pares += 1;
+        if (!filho.sku.startsWith(pai.sku)) {
+          divergencias.push(`${pai.arquivo} (pai) / ${filho.arquivo} (filho) :: sku`);
+        }
+      }
+    }
+  }
+  return { divergencias, pares };
+}
+
 describe('__wire__ corpus', () => {
   const arquivos = listarArquivosDoCorpusLi();
 
@@ -402,8 +461,9 @@ describe('__wire__ corpus', () => {
     expect(divergencias).toEqual([]);
     // Non-vacuous, on every kind of row: the two stores share platform grades,
     // payment methods and statuses; a grade detail's root is also a row of its
-    // store's grade list; and the step-3 category capture shares its row with
-    // step 10's category list.
+    // store's grade list; the step-3 category capture shares its row with
+    // step 10's category list; and a product sits on several product pages and
+    // in its own detail.
     expect(comparados).toEqual(['catalogo (raiz)', 'catalogo objects.*', 'configuracao objects.*']);
   });
 
@@ -413,7 +473,8 @@ describe('__wire__ corpus', () => {
       'captured by the store owner',
       'scripts/sanitizar.ts',
       'are fakes',
-      'SKUs, order numeros, dates, quantities and prices are real',
+      'Order SKUs, order numeros, dates, quantities and prices are real',
+      'Catalogue SKUs are not',
       'MINIMO_DE_FIXTURES',
     ]) {
       expect(leiame, trecho).toContain(trecho);
@@ -533,8 +594,11 @@ describe('__wire__ corpus — catalogue ids keep their function without a real i
     const { divergencias, linhas } = urisQueDivergemDoId(fixtures);
     expect(divergencias).toEqual([]);
     // Non-vacuous: every category, brand and grade row, both grade roots per store, and
-    // every grade option (67 + 15 + 1 categories, 3 brands, 21 grade rows, 4 roots, 74 options).
-    expect(linhas).toBe(185);
+    // every grade option (67 + 15 + 1 categories, 3 brands, 21 grade rows, 4 roots, 74 options:
+    // 185); every row of the product lists (100 + 4 × 50 + 8 + 35 + 40 = 383); and the three
+    // product details' roots, `imagem_principal` and `imagens` (variation 1, parent 1 + 1 + 12,
+    // trashed parent 1 + 1 + 3: 20).
+    expect(linhas).toBe(588);
   });
 
   it('every categoria_pai names a category row of the same store (across its pages)', () => {
@@ -557,14 +621,75 @@ describe('__wire__ corpus — catalogue ids keep their function without a real i
   });
 
   // This pins "pseudonymized", not merely "consistent": every pseudonym has exactly
-  // 9 digits, while every real Loja Integrada id seen so far (categories, brands,
-  // grades, options, in both stores) has 4 to 8, so a real id cannot pass today. A
-  // future real id of 9 digits could; the relation tests above would still hold.
+  // 12 digits, and the sanitizer refuses a pair holding a real id of 12 digits
+  // (`id-real-na-faixa-do-pseudonimo`), whatever it names. So every real id it mapped
+  // into these fixtures — categories, brands, grades, options, products and images, in
+  // both stores — lies below the range (4 to 9 digits), and an id of those kinds that
+  // leaked unmapped could not pass.
   it('every catalogue id is in the pseudonym range', () => {
     const { foraDaFaixa, ids } = idsForaDaFaixa(fixtures);
     expect(foraDaFaixa).toEqual([]);
-    // Non-vacuous: every id of the 12 catalogue fixtures (bodies, URIs, request paths).
-    expect(ids).toBe(577);
+    // Non-vacuous: every id of the catalogue fixtures (bodies, URIs, request paths): 577 in
+    // the step-10 and step-3 ones, 848 in the product captures.
+    expect(ids).toBe(1425);
+  });
+
+  it("every variation a product row names, held by the same store, starts with its parent's SKU", () => {
+    const { divergencias, pares } = skusForaDoPai(fixtures);
+    expect(divergencias).toEqual([]);
+    // Non-vacuous: the parent-variation pairs the product captures hold (each product
+    // counted once, whichever capture holds it).
+    expect(pares).toBe(124);
+  });
+});
+
+describe('catalogue SKU relations: what the corpus check compares', () => {
+  const produtos = (...linhas: ValorJsonLi[]): EnvelopeFixtureLi => ({
+    versao: 1,
+    perfil: 'fixture',
+    credencial: 'personal-token',
+    capturadoEm: '2026-11-03',
+    requisicao: { metodo: 'GET', caminho: '/v1/produto/', query: [] },
+    resposta: {
+      status: 200,
+      politica: 'catalogo',
+      forma: 'json',
+      bytes: 2,
+      corpo: { meta: { next: null }, objects: linhas },
+    },
+  });
+  const pai = { id: 7, sku: '4821', filhos: ['/api/v1/produto/8'] };
+
+  it("EQUAL: a variation on another page of the same store, its SKU the parent's plus a suffix", () => {
+    expect(
+      skusForaDoPai([
+        ['c10-loja1-produtos.json', produtos(pai)],
+        ['c10-loja1-produtos-p2.json', produtos({ id: 8, sku: '4821903' })],
+      ]),
+    ).toEqual({ divergencias: [], pares: 1 });
+  });
+
+  it("NEAR-MISS: a variation whose SKU does not start with the parent's is a divergence", () => {
+    expect(
+      skusForaDoPai([['c10-loja1-produtos.json', produtos(pai, { id: 8, sku: '4812903' })]])
+        .divergencias,
+    ).toEqual(['c10-loja1-produtos.json (pai) / c10-loja1-produtos.json (filho) :: sku']);
+  });
+
+  it('never compared: the variation held only by the OTHER store, a row nobody holds, or a SKU that is not a string', () => {
+    expect(
+      skusForaDoPai([
+        ['c10-loja1-produtos.json', produtos(pai)],
+        ['c10-loja2-produtos.json', produtos({ id: 8, sku: '9999' })],
+      ]),
+    ).toEqual({ divergencias: [], pares: 0 });
+    expect(
+      skusForaDoPai([['c10-loja1-produtos.json', produtos(pai, { id: 8, sku: null })]]),
+    ).toEqual({ divergencias: [], pares: 0 });
+    expect(skusForaDoPai([['pedido-x.json', produtos(pai, { id: 8, sku: '9' })]])).toEqual({
+      divergencias: [],
+      pares: 0,
+    });
   });
 });
 
@@ -676,8 +801,9 @@ describe('catalogue id relations: what the corpus checks compare', () => {
     ]);
   });
 
-  it('the range: a 9-digit pseudonym passes; a real-sized id fails, in a body, a URI or the path', () => {
+  it('the range: a 12-digit pseudonym passes; a real-sized id fails, in a body, a URI or the path', () => {
     const p = PSEUDONIMO_MINIMO_LI + 12_345;
+    expect(String(p)).toMatch(/^[1-9]\d{11}$/);
     expect(
       idsForaDaFaixa([['c9-loja1-g.json', grade(p, [opcao(p, PSEUDONIMO_MAXIMO_LI)])]]),
     ).toEqual({ foraDaFaixa: [], ids: 7 });
@@ -688,6 +814,9 @@ describe('catalogue id relations: what the corpus checks compare', () => {
         ['c.json', envelope('/v1/grades/6062/', { id: p })],
         ['e.json', envelope(`/v1/categoria/set/${String(p)};4101/`, { objects: [] })],
         ['d.json', categorias({ id: PSEUDONIMO_MAXIMO_LI + 1, resource_uri: 'REDACTED' })],
+        // A product's or an image's 9 digits, and the 11 just below the range.
+        ['f.json', envelope('/v1/produto/987654321/', { id: p })],
+        ['g.json', categorias({ id: PSEUDONIMO_MINIMO_LI - 1, resource_uri: 'REDACTED' })],
       ]).foraDaFaixa,
     ).toEqual([
       'a.json :: 1 id(s) outside the pseudonym range',
@@ -695,6 +824,8 @@ describe('catalogue id relations: what the corpus checks compare', () => {
       'c.json :: 1 id(s) outside the pseudonym range',
       'e.json :: 1 id(s) outside the pseudonym range',
       'd.json :: 1 id(s) outside the pseudonym range',
+      'f.json :: 1 id(s) outside the pseudonym range',
+      'g.json :: 1 id(s) outside the pseudonym range',
     ]);
   });
 
