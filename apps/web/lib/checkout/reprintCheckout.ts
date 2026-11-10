@@ -5,6 +5,7 @@ import {
   type NFeHttpClient,
 } from '@delfrance/integrations-nfe/http-provider';
 import type { FreightHttpClient } from '@delfrance/integrations-freight-br/http-client';
+import type { AmazonClient } from '../amazon/client';
 import type { LojaIntegradaClient } from '../loja-integrada/client';
 import type { MercadoLivreClient } from '../mercado-livre/client';
 import type { ShopeeClient } from '../shopee/client';
@@ -68,6 +69,8 @@ export async function reprintCheckoutEtiqueta(args: {
   shopeeClient: ShopeeClient | null;
   /** Required like `shopeeClient`: the Loja Integrada paid re-check's soft gates ask it. */
   lojaIntegradaClient: LojaIntegradaClient | null;
+  /** Required like `shopeeClient`: the Amazon provider's label call (step 15). */
+  amazonClient: AmazonClient | null;
   formato: 'pdf' | 'zpl2';
   ui: EtiquetaProviderUi;
   printJobFn?: typeof printJob;
@@ -82,6 +85,7 @@ export async function reprintCheckoutEtiqueta(args: {
     mercadoLivreClient,
     shopeeClient,
     lojaIntegradaClient,
+    amazonClient,
     formato,
     ui,
   } = args;
@@ -132,6 +136,9 @@ export async function reprintCheckoutEtiqueta(args: {
     // The Shopee provider bounds its OWN calls (`SHOPEE_ETIQUETA_LIMITES` in
     // `etiqueta/providers/shopee.ts`: machine time, dialogs excluded) — safe
     // there because its route is resumable and never ships a package twice.
+    // The Amazon provider bounds its ONE label call past the backend's own
+    // ceiling (`PRAZO_ETIQUETA_AMAZON_MS` in `etiqueta/providers/amazon.ts`), so
+    // it never gives up while that call may still be scheduling the pickup.
     // The Loja Integrada paid re-check a soft gate makes before a reprint is
     // bounded by its own client deadline (a read, which prints nothing), and
     // its acknowledged-risk dialog is one more operator wait, reason (1).
@@ -150,6 +157,7 @@ export async function reprintCheckoutEtiqueta(args: {
         mercadoLivreClient,
         shopeeClient,
         lojaIntegradaClient,
+        amazonClient,
         printJob: args.printJobFn ?? printJob,
       },
       ui,

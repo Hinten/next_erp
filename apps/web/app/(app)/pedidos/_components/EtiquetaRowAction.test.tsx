@@ -30,6 +30,7 @@ const {
   firestoreDb,
   preverMock,
   alvosLi,
+  capsFalsas,
 } = vi.hoisted(() => ({
   // `null` = logged out / not built; each test sets what it needs.
   clientes: {
@@ -37,7 +38,10 @@ const {
     ml: null as unknown,
     shopee: null as unknown,
     li: null as unknown,
+    amazon: null as unknown,
   },
+  // Whether the `@delfrance/schemas` mock below fakes Magalu as fetchable.
+  capsFalsas: { magaluBuscaEtiqueta: true },
   emitirMock: vi.fn(),
   getDocMock: vi.fn(),
   showErrorMock: vi.fn(),
@@ -53,6 +57,10 @@ vi.mock('@/lib/firebase/client', () => ({ getFirebaseFirestore: () => firestoreD
 vi.mock('@/lib/freight/client', () => ({ useFreightClient: () => clientes.freight }));
 vi.mock('@/lib/mercado-livre/client', () => ({ useMercadoLivreClient: () => clientes.ml }));
 vi.mock('@/lib/shopee/client', () => ({ useShopeeClient: () => clientes.shopee }));
+vi.mock('@/lib/amazon/client', async (importActual) => ({
+  ...(await importActual<typeof import('@/lib/amazon/client')>()),
+  useAmazonClient: () => clientes.amazon,
+}));
 // Partial: the soft gate narrows on the client's REAL error classes.
 vi.mock('@/lib/loja-integrada/client', async (importActual) => ({
   ...(await importActual<typeof import('@/lib/loja-integrada/client')>()),
@@ -98,13 +106,14 @@ vi.mock('firebase/firestore', async () => {
 });
 // A FUTURE fetch provider (Q4-3): Magalu's caps flipped to `canFetchLabel`
 // WITHOUT the row learning its client — the shape of "flip the caps and forget
-// the row". Every other tipo keeps its real caps.
+// the row". Every other tipo keeps its real caps, and a test that needs
+// Magalu's REAL caps turns the fake off (`capsFalsas`).
 vi.mock('@delfrance/schemas', async () => {
   const actual = await vi.importActual<typeof import('@delfrance/schemas')>('@delfrance/schemas');
   return {
     ...actual,
     freightCapsFor: (tipo: string | null | undefined) =>
-      tipo === actual.INTEGRACAO_FRETE.magalu
+      tipo === actual.INTEGRACAO_FRETE.magalu && capsFalsas.magaluBuscaEtiqueta
         ? { ...actual.freightCapsFor(tipo), canFetchLabel: true }
         : actual.freightCapsFor(tipo),
   };
@@ -114,6 +123,7 @@ import { EtiquetaAcaoHost, useEtiquetaAcao, type RotaRegistrada } from './Etique
 import { EtiquetaRowAction } from './EtiquetaRowAction';
 
 const SHOPEE_CLIENT = { __shopee: true };
+const AMAZON_CLIENT = { __amazon: true };
 const DEFINIR = 'Definir transportadora';
 const ESCOLHER = 'Escolher transportadora…';
 const ML_CLIENT = { __ml: true };
@@ -139,6 +149,8 @@ function pedidoCom(frete: Record<string, unknown>): Pedido {
 /** The step-5 Shopee shape: the block names the tipo, and there is NO int_frete ref. */
 const PEDIDO_SHOPEE = pedidoCom({ externalOptionIntegracao: INTEGRACAO_FRETE.shopee });
 const PEDIDO_ML = pedidoCom({ externalOptionIntegracao: INTEGRACAO_FRETE.mercadoLivre });
+/** The imported Amazon shape: the block names the tipo, and there is NO int_frete ref. */
+const PEDIDO_AMAZON = pedidoCom({ externalOptionIntegracao: INTEGRACAO_FRETE.amazon });
 
 function snap(id: string, data: Record<string, unknown> | null) {
   return { id, exists: () => data !== null, data: () => data };
@@ -205,6 +217,8 @@ beforeEach(() => {
   clientes.ml = null;
   clientes.shopee = SHOPEE_CLIENT;
   clientes.li = null;
+  clientes.amazon = null;
+  capsFalsas.magaluBuscaEtiqueta = true;
   rotaParaRegistrar.registro = null;
   alvosLi.current = [];
   alvosLi.carregando = false;
@@ -270,6 +284,7 @@ describe('EtiquetaRowAction — alcance da Shopee (#1523)', () => {
     clientes.freight = { __freight: true };
     clientes.ml = ML_CLIENT;
     clientes.shopee = SHOPEE_CLIENT;
+    clientes.amazon = AMAZON_CLIENT;
     renderComHost(pedidoCom({ externalOptionIntegracao: INTEGRACAO_FRETE.magalu }));
     // It reaches the fetch action (the caps say so)…
     expect(botao(ZPL2).disabled).toBe(true);
@@ -425,6 +440,51 @@ describe('EtiquetaRowAction — alcance da Shopee (#1523)', () => {
     expect(await screen.findByText('Frete já postado.')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Continuar' }));
     await waitFor(() => expect(botao(ZPL2).disabled).toBe(false));
+  });
+});
+
+/**
+ * Amazon (step 15): the row's fetch buttons follow the Amazon client — and
+ * ONLY it. Without its branch in the row the buttons fail closed to disabled
+ * (Q4-3), so the enabled case below is what kills a missing branch.
+ */
+describe('EtiquetaRowAction — a etiqueta Amazon (step 15)', () => {
+  it('★ os botões ficam LIGADOS com o cliente da Amazon, sem os do ML e da Shopee', () => {
+    clientes.ml = null;
+    clientes.shopee = null;
+    clientes.amazon = AMAZON_CLIENT;
+    renderComHost(PEDIDO_AMAZON);
+    expect(botao(ZPL2).disabled).toBe(false);
+    expect(botao(PDF).disabled).toBe(false);
+    // The block names the tipo: no int_frete read.
+    expect(getDocMock).not.toHaveBeenCalled();
+  });
+
+  it('★ near-miss: sem o cliente da AMAZON os botões ficam desligados — com os do ML e da Shopee presentes', () => {
+    clientes.ml = ML_CLIENT;
+    clientes.shopee = SHOPEE_CLIENT;
+    clientes.amazon = null;
+    renderComHost(PEDIDO_AMAZON);
+    expect(botao(ZPL2).disabled).toBe(true);
+    expect(botao(PDF).disabled).toBe(true);
+    fireEvent.click(botao(ZPL2));
+    expect(emitirMock).not.toHaveBeenCalled();
+  });
+
+  it('o clique despacha pelo registry com fonte bloco e o cliente da Amazon', async () => {
+    clientes.amazon = AMAZON_CLIENT;
+    renderComHost(PEDIDO_AMAZON);
+    fireEvent.click(botao(PDF));
+    await waitFor(() => expect(emitirMock).toHaveBeenCalledTimes(1));
+    const input = emitirMock.mock.calls[0]![0] as EtiquetaProviderInput;
+    expect(input.intFrete).toEqual({
+      fonte: 'bloco',
+      id: null,
+      tipo: INTEGRACAO_FRETE.amazon,
+      data: null,
+    });
+    expect(input.formato).toBe('pdf');
+    expect(input.deps.amazonClient).toBe(AMAZON_CLIENT);
   });
 });
 
@@ -870,8 +930,10 @@ describe("EtiquetaRowAction — a pedido still on its Loja Integrada doc ('rotea
   });
 
   it('⚠️ NEAR-MISS: a marketplace with no label flow still says "ainda não suportada"', async () => {
-    docsPorId({ 'if-amz': { tipo: INTEGRACAO_FRETE.amazon } });
-    renderComHost(pedidoCom({ integracaoFreteOuterRef: 'documents/int_frete/if-amz' }));
+    // Magalu with its REAL caps (this file otherwise fakes it as fetchable).
+    capsFalsas.magaluBuscaEtiqueta = false;
+    docsPorId({ 'if-magalu': { tipo: INTEGRACAO_FRETE.magalu } });
+    renderComHost(pedidoCom({ integracaoFreteOuterRef: 'documents/int_frete/if-magalu' }));
 
     expect(
       await screen.findByText('Emissão de etiqueta para esta transportadora ainda não suportada.'),

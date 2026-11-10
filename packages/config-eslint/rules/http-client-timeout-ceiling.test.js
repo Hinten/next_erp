@@ -63,6 +63,13 @@ const LINHAS = [
     constante: 'NFE_PRAZO_MS',
     backend: 'apps/nfe',
   },
+  // The Amazon label call (step 15): it can be the call that SCHEDULES the
+  // pickup at Amazon, and two first-time schedules at once are undocumented.
+  {
+    cliente: 'apps/web/lib/checkout/etiqueta/providers/amazon.ts',
+    constante: 'PRAZO_ETIQUETA_AMAZON_MS',
+    backend: 'apps/amazon',
+  },
 ];
 
 /**
@@ -194,7 +201,7 @@ describe('HTTP client `longo` budgets outlast their backend ceiling (#1094)', ()
   });
 
   it.each(LINHAS)(
-    '$constante.longo ≥ the $backend ceiling + margin',
+    '$constante (its longo) ≥ the $backend ceiling + margin',
     ({ cliente, constante, backend }) => {
       const longoMs = lerLongoMs(readFileSync(resolve(REPO_ROOT, cliente), 'utf8'), constante);
       const { tetoS } = tetoDoBackendS(backend);

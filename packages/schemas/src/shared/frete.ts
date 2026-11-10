@@ -410,8 +410,8 @@ export const INTEGRACAO_FRETE = {
  *                   quote → cart → checkout → generate → print → webhook status.
  *   - `'fetch'`   — the marketplace already generated it; the app only fetches +
  *                   prints, and status arrives via the marketplace order-sync
- *                   (NOT a freight webhook). Live for Mercado Livre and Shopee
- *                   (their `canFetchLabel`); the other marketplaces are not
+ *                   (NOT a freight webhook). Implemented for Mercado Livre,
+ *                   Amazon and Shopee (their `canFetchLabel`); Magalu is not
  *                   implemented yet.
  *   - `'generic'` — no carrier API; the app renders a generic label on demand
  *                   (motoboy / outros).
@@ -433,8 +433,8 @@ export type FreightLabelMode = 'emit' | 'fetch' | 'generic' | 'none' | 'roteado'
  *
  * ⚠️ The **`can*` flags are the behavioral truth**. Every marketplace-owned
  * tipo (fetch category) stays ALL FALSE until its fetch flow + client route
- * exist — `mercadoLivre`'s and `shopee`'s `canFetchLabel` are the two live
- * exceptions, and `canFetchLabel` is the ONLY flag either sets — so
+ * exist — `mercadoLivre`'s, `amz`'s and `shopee`'s `canFetchLabel` are the
+ * three exceptions, and `canFetchLabel` is the ONLY flag any of them sets — so
  * `etiquetaRowState` yields `'unsupported'` for the rest, byte-identical to
  * the previous `tipo !== 'melhorEnvios'` reject. The generic-label tipos
  * (`motoboy`/`outros`) are the other exception: `canPrint` is true for them
@@ -503,10 +503,10 @@ export const FREIGHT_TIPO_CAPS: Record<IntegracaoFrete, FreightTipoCapabilities>
     labelMode: 'emit',
     channel: 'melhor-envio',
   },
-  // Marketplace-managed (fetch-only, read-only tab). Mercado Livre and Shopee
-  // are the live fetch providers (`canFetchLabel`, and no other `can*`);
-  // Amazon and Magalu are not ported yet, so every `can*` stays false (→
-  // `'unsupported'` in the row action).
+  // Marketplace-managed (fetch-only, read-only tab). Mercado Livre, Amazon and
+  // Shopee have fetch providers (`canFetchLabel`, and no other `can*`);
+  // Magalu is not ported yet, so every `can*` stays false (→ `'unsupported'`
+  // in the row action).
   mercadoLivre: {
     marketplaceOwned: true,
     canQuote: false,
@@ -537,12 +537,18 @@ export const FREIGHT_TIPO_CAPS: Record<IntegracaoFrete, FreightTipoCapabilities>
     labelMode: 'roteado',
     channel: null,
   },
+  // Step 15 — fetch via `apps/amazon`'s marketplace route
+  // (`POST /api/marketplace/amazon/etiqueta`, the Easy Ship ZPL). ⚠️
+  // `canFetchLabel` is the ONE flag that flipped: `canPrint` would route a
+  // `printLabelId` to Melhor Envio, `channel` is the FREIGHT route segment
+  // and this route is not one, and `canTrack` has no reader (the order import
+  // mirrors the schedule regardless).
   amz: {
     marketplaceOwned: true,
     canQuote: false,
     canBuy: false,
     canPrint: false,
-    canFetchLabel: false,
+    canFetchLabel: true,
     canTrack: false,
     labelMode: 'fetch',
     channel: null,

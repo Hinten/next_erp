@@ -3,6 +3,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MantineTestProvider } from '@/lib/testing/mantine';
 import { MODALIDADE_FRETE } from '@delfrance/schemas';
 
+import type { AmazonClient } from '@/lib/amazon/client';
 import type { LojaIntegradaClient } from '@/lib/loja-integrada/client';
 import type { ShopeeClient } from '@/lib/shopee/client';
 import type { EtiquetaProviderUi } from '@/lib/checkout/etiqueta/types';
@@ -45,6 +46,8 @@ function makeRow(over: Partial<OutroCheckoutRow> = {}): OutroCheckoutRow {
 const SHOPEE_SENTINEL = { __sentinela: 'shopee' } as unknown as ShopeeClient;
 /** The same, for the Loja Integrada client the soft gates ask (step 15). */
 const LI_SENTINEL = { __sentinela: 'loja-integrada' } as unknown as LojaIntegradaClient;
+/** The same, for the Amazon client the label provider calls (step 15). */
+const AMAZON_SENTINEL = { __sentinela: 'amazon' } as unknown as AmazonClient;
 
 function modalTree(row: OutroCheckoutRow | null, shopeeClient: ShopeeClient | null) {
   return (
@@ -58,6 +61,7 @@ function modalTree(row: OutroCheckoutRow | null, shopeeClient: ShopeeClient | nu
         mercadoLivreClient={null}
         shopeeClient={shopeeClient}
         lojaIntegradaClient={LI_SENTINEL}
+        amazonClient={AMAZON_SENTINEL}
         formatoDanfe="simplificadoPdf"
         formatoEtiqueta="pdf"
       />
@@ -383,6 +387,17 @@ describe('OutroCheckoutModal — a conferência de pagamento da Loja Integrada (
           message: 'Este frete não possui integração com transportadora.',
         }),
       ),
+    );
+  });
+});
+
+describe('OutroCheckoutModal — a reimpressão Amazon (step 15)', () => {
+  it('threads the screen Amazon client into the reprint (a hardcoded null is caught)', async () => {
+    renderModal(makeRow({ pedidoId: 'PEDA' }));
+    fireEvent.click(screen.getByRole('button', { name: /Reimprimir Frete/ }));
+    await waitFor(() => expect(h.reprintCheckoutEtiqueta).toHaveBeenCalledTimes(1));
+    expect(h.reprintCheckoutEtiqueta).toHaveBeenCalledWith(
+      expect.objectContaining({ pedidoId: 'PEDA', amazonClient: AMAZON_SENTINEL }),
     );
   });
 });

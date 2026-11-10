@@ -397,21 +397,20 @@ itself):
 - **(step 15) ERROR scheduling dispatch line `motivo: sem-permissao`**: a second
   401/403 on the token mint or the bulk after the forced refresh — the app's
   grant for Easy Ship is missing (app-wide, so no per-pedido aviso is raised).
-  Every order then waits for its label print (from PR 15-d/15-e; until they ship,
-  for a person in Seller Central), which fails the same way: fix the grant.
+  Every order then waits for its label print, which fails the same way: fix the
+  grant.
 - **(step 15) ERROR `motivo: leitura-falhou` / `escrita-falhou`** (`falha` names
   the read-side token): a definite failure of `getOrder`, of the token mint or of
-  an LWA exchange — never Amazon refusing the order, so no aviso. The checkout
-  label print re-reads and schedules (from PR 15-d/15-e; until they ship, a person
-  schedules it in Seller Central).
+  an LWA exchange — never Amazon refusing the order, so no aviso. The order's next
+  label print (at the checkout, or a reprint from the order list) re-reads and
+  schedules.
 - **(step 15) WARNING `motivo: agendamento-nao-reenfileirado`,
   `aceite-nao-espelhado`, `amazon-indisponivel`, `taxa-limitada` or
   `resposta-sem-pedido`**: the automatic chain ENDED without a schedule (a lost
   re-enqueue, the order-level acceptance never mirrored in ~43 minutes, an outage
   on the last attempt, Amazon still throttling after the five-step pause ladder,
   an answer naming neither our schedule nor our refusal). Log-only by design: the
-  checkout label print schedules (from PR 15-d/15-e; until they ship, a person
-  schedules it in Seller Central).
+  order's next label print schedules it.
 
 Watch in the first hours after W5 (W7: the look-back re-lists migrated, in-flight
 orders through the importer):
@@ -505,8 +504,8 @@ below stays COMMENTED OUT until the window:**
 # Easy Ship scheduling enqueue of this codebase (the acceptance entry, the
 # import entry, the scheduling task's own re-enqueues), with NO sweep behind it:
 # each logs one WARNING (`agendamento-nao-enfileirado` / `-nao-reenfileirado`)
-# and that order's pickup is booked at its checkout label print instead (from PR
-# 15-d/15-e; until they ship, by a person in Seller Central). Strict `=== '1'`:
+# and that order's pickup is booked at its next label print instead (the label
+# route enqueues nothing, so this variable never stops it). Strict `=== '1'`:
 # unset, blank, `true` and `1 ` all leave enqueuing ON. Use it before the queue
 # IAM is granted.
 # AMAZON_TASKS_DISABLED=1
@@ -779,7 +778,7 @@ the NF-e trigger's), as the functions runtime SA:
   is what schedules an NF-e uploaded by hand in Seller Central, IF Amazon's
   acceptance moves the order's `lastUpdatedTime`, so that the backstop poll lists
   it (not yet observed; no push fires on an acceptance, and otherwise only the
-  checkout label print schedules it, from PR 15-d/15-e);
+  order's next label print schedules it);
 - **the task itself**: UNNAMED re-enqueues, waiting for the order-level
   acceptance to mirror (120 s, 600 s, 1800 s — an acceptance entry only) and
   after a 429 (30 s … 480 s).
@@ -801,8 +800,7 @@ order-level invoice status not yet accepted still waits through its re-enqueues
 (up to 3 more tasks and `getOrder` reads). `AMAZON_CHAMADAS` not `on` ⇒ one
 WARNING `chamadas-desligadas`. `AMAZON_TASKS_DISABLED=1` ⇒ the entries and the
 re-enqueues log a WARNING and enqueue nothing, with no sweep behind them: the
-order's pickup is booked at its checkout label print (from PR 15-d/15-e; until
-they ship, by a person in Seller Central). In the window (W8) ramp it with (or
+order's pickup is booked at its next label print. In the window (W8) ramp it with (or
 ahead of) the NF-e valve, alike on both surfaces: `dry-run` → a canary list of
 `<contaId>:<orderId>` → `on` → `*`.
 
@@ -814,9 +812,9 @@ both resolve when the task (or a later import) sees the order scheduled, shipped
 or cancelled — the import that moves a pedido into a cancelled sale seeds a
 resolved row of both, so a refusal racing the cancellation cannot stay open. An
 open cancellation request raises the existing `aceitar-cancelamento`. Everything
-else is log-only. The valve, the switch, an outage and a lost re-enqueue: the
-checkout label print schedules anyway (from PR 15-d/15-e; until they ship, a
-person schedules it in Seller Central). A missing app grant: the print fails the
+else is log-only. An outage and a lost re-enqueue: the order's next label print
+schedules it anyway. The valve and the switch: they gate that print too (it
+answers 503, and Seller Central prints until they are on). A missing app grant: the print fails the
 same way, so fix the grant. An ambiguous or cancelled NF-e (step 14 already
 raised its own aviso): the print will refuse it too, and the exit is scheduling
 that pickup in Seller Central.

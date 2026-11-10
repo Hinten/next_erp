@@ -146,12 +146,33 @@ describe('etiquetaRowState', () => {
     ).toBe('imprimir');
   });
 
-  it("the not-yet-ported marketplaces stay 'unsupported' — 'rotear' is the router's alone", () => {
-    for (const tipo of [INTEGRACAO_FRETE.amazon, INTEGRACAO_FRETE.magalu]) {
-      expect(etiquetaRowState({ ...base, tipo, estado: ESTADO_FRETE.iniciado }).action).toBe(
-        'unsupported',
-      );
-    }
+  it('offers fetch-label for Amazon (step 15) with or without an externalId, and threads needsPostedConfirm', () => {
+    const amz = { ...base, tipo: INTEGRACAO_FRETE.amazon };
+    expect(etiquetaRowState({ ...amz, estado: ESTADO_FRETE.aguardandoAgendamento })).toEqual({
+      action: 'fetch-label',
+      needsPostedConfirm: false,
+    });
+    expect(
+      etiquetaRowState({ ...amz, externalId: 'AMZ-1', estado: ESTADO_FRETE.aguardandoPostagem }),
+    ).toEqual({ action: 'fetch-label', needsPostedConfirm: true });
+  });
+
+  it("⚠️ NEAR-MISS: an Amazon block carrying a printLabelId still fetches — Amazon is not printable, so it never reaches Melhor Envio's reprint", () => {
+    expect(
+      etiquetaRowState({
+        ...base,
+        tipo: INTEGRACAO_FRETE.amazon,
+        printLabelId: 'ME-1',
+        estado: ESTADO_FRETE.iniciado,
+      }).action,
+    ).toBe('fetch-label');
+  });
+
+  it("the not-yet-ported marketplace (Magalu) stays 'unsupported' — 'rotear' is the router's alone", () => {
+    expect(
+      etiquetaRowState({ ...base, tipo: INTEGRACAO_FRETE.magalu, estado: ESTADO_FRETE.iniciado })
+        .action,
+    ).toBe('unsupported');
   });
 
   it('flags needsPostedConfirm only for already-posted estados', () => {

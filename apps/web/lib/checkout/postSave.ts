@@ -3,6 +3,7 @@ import type { NFeHttpClient } from '@delfrance/integrations-nfe/http-provider';
 import { NFeHttpError, NFeNetworkError } from '@delfrance/integrations-nfe/http-provider';
 import type { FreightHttpClient } from '@delfrance/integrations-freight-br/http-client';
 import type { Pedido } from '@delfrance/schemas';
+import type { AmazonClient } from '../amazon/client';
 import type { LojaIntegradaClient } from '../loja-integrada/client';
 import type { ConferenciaLiCarregada } from '../loja-integrada/conferenciaPagamento';
 import type { MercadoLivreClient } from '../mercado-livre/client';
@@ -48,6 +49,8 @@ export async function runCheckoutPostSave(args: {
   shopeeClient: ShopeeClient | null;
   /** Required like `shopeeClient`: the Loja Integrada paid re-check's soft gates ask it. */
   lojaIntegradaClient: LojaIntegradaClient | null;
+  /** Required like `shopeeClient`: the Amazon provider's label call (step 15). */
+  amazonClient: AmazonClient | null;
   pedido: Pedido;
   pedidoId: string;
   formatoDanfe: CheckoutDanfeFormat;
@@ -70,6 +73,7 @@ export async function runCheckoutPostSave(args: {
     mercadoLivreClient,
     shopeeClient,
     lojaIntegradaClient,
+    amazonClient,
     pedido,
     pedidoId,
     formatoDanfe,
@@ -136,6 +140,7 @@ export async function runCheckoutPostSave(args: {
           mercadoLivreClient,
           shopeeClient,
           lojaIntegradaClient,
+          amazonClient,
           printJob: args.printJobFn ?? printJob,
         },
         ui,
