@@ -6,6 +6,7 @@ import {
   CODIGO_RASCUNHO_SHOPEE,
   MSG_ITEM_NAME_EM_BRANCO_RASCUNHO_SHOPEE,
   projetarTabelaShopee,
+  respostaVariacoesShopeeSchema,
 } from '@delfrance/schemas';
 
 import { shopeeClientFalso } from '@/lib/testing/shopeeClientFalso';
@@ -3115,5 +3116,175 @@ describe('#1911 — `marcas`: one page of a category’s brands', () => {
     expect((err as ShopeeClientHttpError).message).toBe(
       'Categoria 999 não existe na árvore desta conta.',
     );
+  });
+});
+
+/**
+ * The tree as `GET …/taxonomia/variacoes` projects it: hand-written in the shape
+ * of the public `get_variation_tree.br-*` captures, because a web test cannot
+ * import `apps/shopee`'s fixtures. What the tree MEANS is `./variacoes.test.ts`.
+ */
+const VARIACOES_200 = {
+  leaf: true,
+  categoryId: 100244,
+  standardiseVariationList: [
+    {
+      variationId: 101056,
+      variationName: 'Tamanho',
+      variationGroupList: [
+        {
+          variationGroupId: 841350766059029,
+          variationGroupName: 'Tamanho (INT)',
+          variationOptionList: [{ variationOptionId: 6270, variationOptionName: 'M' }],
+        },
+        {
+          variationGroupId: 844758844060204,
+          variationGroupName: 'Tamanho (BR)',
+          variationOptionList: [{ variationOptionId: 6933, variationOptionName: 'M' }],
+        },
+      ],
+    },
+    {
+      variationId: 900001,
+      variationName: ' Estampa',
+      variationGroupList: [
+        {
+          variationGroupId: 0,
+          variationGroupName: '',
+          variationOptionList: [{ variationOptionId: 900101, variationOptionName: ' Azul ' }],
+        },
+      ],
+    },
+    { variationId: 103236, variationName: 'Estilo', variationGroupList: [] },
+  ],
+  pathUsed: '/api/v2/product/get_variation_tree',
+};
+
+/** The route's 502 when Shopee answers its 404: `respond.ts`'s body, by name. */
+const VARIACOES_502_NAO_ENCONTRADO = {
+  error: 'Shopee: error_not_found',
+  code: 'SHOPEE_HTTP_ERROR',
+  upstreamStatus: 404,
+  shopeeCode: 'error_not_found',
+  kind: 'other',
+};
+
+describe('#1911 (P14) — `variacoes`: a árvore de variações de uma categoria folha', () => {
+  it('⭐ um GET com as DUAS chaves codificadas, sem corpo e sem signal', async () => {
+    const { c, pedidos } = gravador(JSON.stringify(VARIACOES_200));
+
+    await c.variacoes({ integracaoId: 'int/1 2&x', categoryId: 100244 });
+
+    expect(pedidos).toHaveLength(1);
+    expect(pedidos[0]?.url).toBe(
+      `${BASE}/taxonomia/variacoes?integracaoId=int%2F1%202%26x&categoryId=100244`,
+    );
+    expect(pedidos[0]?.init?.method).toBe('GET');
+    expect(pedidos[0]?.init).not.toHaveProperty('body');
+    expect(pedidos[0]?.init !== undefined && 'signal' in pedidos[0].init).toBe(false);
+  });
+
+  it('⭐ um 200 é lido pelo schema compartilhado, e os nomes e ids chegam intactos', async () => {
+    const { c } = gravador(JSON.stringify(VARIACOES_200));
+
+    const lida = await c.variacoes({ integracaoId: 'int-1', categoryId: 100244 });
+
+    expect(lida).toEqual(respostaVariacoesShopeeSchema.parse(VARIACOES_200));
+    expect(lida).toEqual(VARIACOES_200);
+    const [tamanho, estampa] = lida.standardiseVariationList;
+    expect(tamanho?.variationGroupList[1]?.variationGroupId).toBe(844758844060204);
+    expect(estampa?.variationName).toBe(' Estampa');
+    expect(estampa?.variationGroupList[0]?.variationOptionList[0]?.variationOptionName).toBe(
+      ' Azul ',
+    );
+  });
+
+  it('uma chave desconhecida é descartada: uma rota mais nova não custa um navegador mais velho', async () => {
+    const { c } = gravador(JSON.stringify({ ...VARIACOES_200, campoDoFuturo: 1 }));
+
+    const lida = await c.variacoes({ integracaoId: 'int-1', categoryId: 100244 });
+
+    expect('campoDoFuturo' in lida).toBe(false);
+  });
+
+  it('uma categoria que não é folha responde o mesmo formato, vazio, e é lida', async () => {
+    const vazia = { ...VARIACOES_200, leaf: false, standardiseVariationList: [] };
+    const { c } = gravador(JSON.stringify(vazia));
+
+    await expect(c.variacoes({ integracaoId: 'int-1', categoryId: 100017 })).resolves.toEqual(
+      vazia,
+    );
+  });
+
+  it('⭐ um corpo sem `pathUsed` é RespostaInvalida, nunca uma árvore', async () => {
+    const { pathUsed: _semPath, ...semPath } = VARIACOES_200;
+    const { c } = gravador(JSON.stringify(semPath));
+
+    const err = await c
+      .variacoes({ integracaoId: 'int-1', categoryId: 100244 })
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(ShopeeClientRespostaInvalidaError);
+    expect((err as ShopeeClientRespostaInvalidaError).campos).toEqual(['pathUsed']);
+  });
+
+  it.each([
+    [
+      'um id de variação entre aspas',
+      { variationId: '101056', variationName: 'Tamanho', variationGroupList: [] },
+      'standardiseVariationList[].variationId',
+    ],
+    [
+      'uma variação sem a lista de grupos',
+      { variationId: 101056, variationName: 'Tamanho' },
+      'standardiseVariationList[].variationGroupList',
+    ],
+  ])('NEAR-MISS: %s é RespostaInvalida', async (_n, variacao, campo) => {
+    const { c } = gravador(
+      JSON.stringify({ ...VARIACOES_200, standardiseVariationList: [variacao] }),
+    );
+
+    const err = await c
+      .variacoes({ integracaoId: 'int-1', categoryId: 100244 })
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(ShopeeClientRespostaInvalidaError);
+    expect((err as ShopeeClientRespostaInvalidaError).campos).toContain(campo);
+  });
+
+  it('⭐ o 502 `error_not_found` chega como ShopeeClientHttpError, com esse `shopeeCode`', async () => {
+    const { c } = gravador(JSON.stringify(VARIACOES_502_NAO_ENCONTRADO), 502);
+
+    const err = await c
+      .variacoes({ integracaoId: 'int-1', categoryId: 100244 })
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(ShopeeClientHttpError);
+    expect(err).not.toBeInstanceOf(ShopeeClientRespostaInvalidaError);
+    const http = err as ShopeeClientHttpError;
+    expect(http.status).toBe(502);
+    expect(http.code).toBe('SHOPEE_HTTP_ERROR');
+    expect(http.shopeeCode).toBe('error_not_found');
+    expect(http.kind).toBe('other');
+    expect(http.message).toBe('Shopee: error_not_found');
+  });
+
+  it('NEAR-MISS: a categoria desconhecida é um 404 com o código dela, sem `shopeeCode`', async () => {
+    const { c } = gravador(
+      JSON.stringify({
+        error: 'Categoria 999 não existe na árvore desta conta.',
+        code: 'SHOPEE_CATEGORIA_DESCONHECIDA',
+      }),
+      404,
+    );
+
+    const err = await c
+      .variacoes({ integracaoId: 'int-1', categoryId: 999 })
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(ShopeeClientHttpError);
+    expect((err as ShopeeClientHttpError).status).toBe(404);
+    expect((err as ShopeeClientHttpError).code).toBe('SHOPEE_CATEGORIA_DESCONHECIDA');
+    expect((err as ShopeeClientHttpError).shopeeCode).toBeNull();
   });
 });

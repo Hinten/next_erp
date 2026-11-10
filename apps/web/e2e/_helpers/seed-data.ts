@@ -3683,6 +3683,187 @@ export async function escreverLinksVariacoesLiConcorrente(
 }
 
 /**
+ * The fixed ids of the Shopee variation linker's fixtures (#1911 P14), shared
+ * by the seed below and the spec's stubbed taxonomy, so the two cannot drift.
+ * The category ids and names are INVENTED, never real Shopee categories;
+ * `variacaoTamanho` is Shopee's public standard "Tamanho" variation.
+ */
+export const VINCULADOR_SHOPEE_E2E = {
+  /** A Fashion leaf of the active conta: the spec's stub answers its tree. */
+  categoriaModa: { categoryId: 990_101, nome: 'Calças inventadas' },
+  /** The inactive conta's custom entry: never read from Shopee. */
+  categoriaDaContaInativa: { categoryId: 990_105, nome: 'Bolsas inventadas' },
+  variacaoTamanho: 101_056,
+} as const;
+
+/** The Shopee variation linker's fixtures (#1911 P14): what the spec reads back. */
+export interface VinculadorShopeeFixtures {
+  /** The grupo holding the stored entries below. */
+  readonly grupoId: string;
+  /** A grupo with variantes and NO `linksVariacoesShopee` key at all. */
+  readonly grupoSemChaveId: string;
+  /** That grupo's stored stamp: a save that writes anything moves it. */
+  readonly ultimaModificacaoSemChave: number;
+  /** The ACTIVE tipo-5 conta: the tab has one block for it. */
+  readonly contaAtivaId: string;
+  /** An INACTIVE tipo-5 conta: its stored entry is listed apart. */
+  readonly contaInativaId: string;
+  /** The grupo's stored `linksVariacoesShopee`, in order. */
+  readonly links: Record<string, unknown>[];
+  /** The grupo's stored `linksVariacoesli`: no save of the Shopee tab may touch it. */
+  readonly linksLi: Record<string, unknown>[];
+  /** The grupo's stored `linksVariacoesAmazon`: likewise. */
+  readonly linksAmazon: Record<string, unknown>[];
+}
+
+/**
+ * The Shopee variation linker's fixtures (#1911 P14): two Shopee contas from
+ * `seedShopeeFixtures` (the first active, the second inactive) and two grupos.
+ *
+ * Grupo `Tamanhos` (variantes P/M/G) holds, in `linksVariacoesShopee`, in order:
+ *  1. an import-shaped STANDARD entry of the active conta in the Fashion leaf,
+ *     variation "Tamanho" with `variation_group_list: 0` (the shape the import
+ *     wrote before it recorded the group), rows 6857 «P» → [p] and 6933 «M» →
+ *     [m] — 6933 is absent from the spec's stubbed tree;
+ *  2. a CUSTOM entry (`variation_id: 0`) of the inactive conta.
+ * It also holds a Loja Integrada and an Amazon array, each naming a conta that
+ * does not exist: the Loja Integrada tab lists its entry apart and reads
+ * nothing from the store for it, and no tab on this page authors the Amazon
+ * array (it is excluded from the form). Both must come back from every save
+ * exactly as stored.
+ *
+ * Grupo `Cores` (variantes Azul/Verde) has no `linksVariacoesShopee` key.
+ *
+ * Every `variacoesIds` matches its `variacoes`, so a save that changes nothing
+ * derives nothing. Every id is a fixture one; nothing here names a real shop.
+ * Teardown: {@link cleanupVinculadorShopeeFixtures}.
+ */
+export async function seedVinculadorShopeeFixtures(
+  prefix: string,
+): Promise<VinculadorShopeeFixtures> {
+  await seedShopeeFixtures(prefix, 2);
+  const contaAtivaId = `${prefix}-${pad(1)}`;
+  const contaInativaId = `${prefix}-${pad(2)}`;
+  const opcao = (id: number, nome: string, variantes: string[]) => ({
+    shopee_option_id: id,
+    shopee_option_name: nome,
+    arakene_variation_id: variantes,
+  });
+  const { categoriaModa, categoriaDaContaInativa, variacaoTamanho } = VINCULADOR_SHOPEE_E2E;
+  const links: Record<string, unknown>[] = [
+    {
+      name: categoriaModa.nome,
+      category_id: categoriaModa.categoryId,
+      variation_id: variacaoTamanho,
+      variation_group_list: 0,
+      integracaoShopeeId: contaAtivaId,
+      variationOptions: [opcao(6857, 'P', ['p']), opcao(6933, 'M', ['m'])],
+    },
+    {
+      name: categoriaDaContaInativa.nome,
+      category_id: categoriaDaContaInativa.categoryId,
+      variation_id: 0,
+      variation_group_list: 0,
+      integracaoShopeeId: contaInativaId,
+      variationOptions: [opcao(0, 'P', ['p'])],
+    },
+  ];
+  const linksLi: Record<string, unknown>[] = [
+    {
+      name: 'Tamanho',
+      grade_id: 990_201,
+      integracaoLiId: `${prefix}-li-inexistente`,
+      variationOptions: [
+        { li_option_id: 990_211, li_option_name: 'P', arakene_variation_id: ['p'] },
+      ],
+    },
+  ];
+  const linksAmazon: Record<string, unknown>[] = [
+    {
+      integracaoAmazonId: `${prefix}-amazon-inexistente`,
+      atributo: 'size_name',
+      valores: [{ valor: 'G', arakene_variation_id: ['g'] }],
+    },
+  ];
+  const grupoId = `${prefix}-grupo-shopee`;
+  const grupoSemChaveId = `${prefix}-grupo-sem-chave`;
+  // grupoDeVariacoes datetimes are millisecondsSinceEpoch INT (#484/#486).
+  const now = Date.now();
+  const col = db().collection('grupoDeVariacoes');
+  const batch = db().batch();
+  batch.set(col.doc(grupoId), {
+    nome: `${prefix}-Tamanhos`,
+    codigo: null,
+    ordem: 1,
+    tipo: 1,
+    permiteFotos: false,
+    variacoesIds: ['p', 'm', 'g'],
+    variacoes: [
+      { id: 'p', nome: 'P', codigo: 'P', timestamp: now },
+      { id: 'm', nome: 'M', codigo: 'M', timestamp: now },
+      { id: 'g', nome: 'G', codigo: 'G', timestamp: now },
+    ],
+    linksVariacoesShopee: links,
+    linksVariacoesli: linksLi,
+    linksVariacoesAmazon: linksAmazon,
+    timestamp: now,
+    ultimaModificacao: now,
+  });
+  batch.set(col.doc(grupoSemChaveId), {
+    nome: `${prefix}-Cores`,
+    codigo: null,
+    ordem: 2,
+    tipo: 2,
+    permiteFotos: false,
+    variacoesIds: ['az', 'vd'],
+    variacoes: [
+      { id: 'az', nome: 'Azul', codigo: 'AZ', timestamp: now },
+      { id: 'vd', nome: 'Verde', codigo: 'VD', timestamp: now },
+    ],
+    timestamp: now,
+    ultimaModificacao: now,
+  });
+  await batch.commit();
+  return {
+    grupoId,
+    grupoSemChaveId,
+    ultimaModificacaoSemChave: now,
+    contaAtivaId,
+    contaInativaId,
+    links,
+    linksLi,
+    linksAmazon,
+  };
+}
+
+/**
+ * Teardown for `seedVinculadorShopeeFixtures`: the contas through
+ * `cleanupShopeeFixtures` (their `brandshopee` rows first), then the grupos.
+ */
+export async function cleanupVinculadorShopeeFixtures(prefix: string): Promise<void> {
+  await Promise.all([
+    cleanupShopeeFixtures(prefix),
+    cleanupByNamePrefix('grupoDeVariacoes', prefix),
+  ]);
+}
+
+/**
+ * The product import's write of a grupo's Shopee links landing while a page has
+ * it open: its guarded update replaces the whole array and moves the
+ * last-modified stamp (it also names `variacoes`/`variacoesIds`, unchanged here,
+ * so they are left out).
+ */
+export async function escreverLinksVariacoesShopeeConcorrente(
+  id: string,
+  links: Record<string, unknown>[],
+): Promise<void> {
+  await db()
+    .collection('grupoDeVariacoes')
+    .doc(id)
+    .update({ linksVariacoesShopee: links, ultimaModificacao: Date.now() });
+}
+
+/**
  * Seed a parent produto wired to the groups from `seedGruposDeVariacao` —
  * `grupoDeVariacoesUid` (bare ids) + `variacoesUid` (fake paths, group-major:
  * Tamanhos P + Cores Azul/Verde). Gives the per-variant photo sections

@@ -32,17 +32,21 @@ import { idDoRef } from './vinculosShopee';
  *
  * ## The binding key (#1911, D12)
  *
- * {@link ehEntradaShopeeDaChave} and {@link resolverEntradaShopeeDoGrupo} are
- * the ONE answer to "which element is THE entry of this (conta, LEAF category)
- * pair". Three callers read it: the publisher's tier builder
+ * {@link chaveDaEntradaShopee} spells the key once: the (conta, LEAF category)
+ * pair an element names. {@link ehEntradaShopeeDaChave} asks it of one element
+ * and {@link resolverEntradaShopeeDoGrupo} of a whole list, and together they
+ * are the ONE answer to "which element is THE entry of this (conta, LEAF
+ * category) pair". Three callers read it: the publisher's tier builder
  * (`apps/shopee/lib/shopee/anuncios/tiersPublicacao.ts`), the import's merge
- * (`apps/shopee/lib/shopee/produtos/taxonomiaShopeeCore.ts`) and the web's
- * binding editor on `/variacoes` (P14). Before #1911 the first two spelled
- * the key twice and disagreed: the publisher matched the conta by its last
- * path segment, the import byte-exact. So a path-form stored id was a binding
- * for the publisher and a stranger for the import, which then appended a twin
- * entry that the publisher never read (first match wins). That is the #1369
- * shape, and it is why both callers now import the key from here.
+ * (`apps/shopee/lib/shopee/produtos/taxonomiaShopeeCore.ts`) and the binding
+ * editor on `/variacoes/[id]`
+ * (`apps/web/app/(app)/variacoes/_components/vinculadorShopee.ts`). Before
+ * #1911 the first two spelled the key twice and disagreed: the publisher
+ * matched the conta by its last path segment, the import byte-exact. So a
+ * path-form stored id was a binding for the publisher and a stranger for the
+ * import, which then appended a twin entry that the publisher never read (first
+ * match wins). That is the #1369 shape, and it is why all three import the key
+ * from here.
  */
 
 /** One Shopee tier OPTION of a {@link linkVariacoesShopeeSchema} entry. */
@@ -71,42 +75,67 @@ export const linkVariacoesShopeeSchema = z.strictObject({
 export type LinkVariacoesShopee = z.infer<typeof linkVariacoesShopeeSchema>;
 
 /**
- * Is this `linksVariacoesShopee[]` element the entry of the pair
- * (`integracaoId`, `categoryId`)?
+ * The (conta, LEAF category) key this `linksVariacoesShopee[]` element names, or
+ * `null` when it names no conta or no category.
  *
- * It answers yes when `category_id` is EXACTLY `categoryId` and the conta named
- * by `integracaoShopeeId` is `integracaoId`, read through `idDoRef` (fold (1) of
- * `./vinculosShopee`).
+ * The conta is `integracaoShopeeId` read through `idDoRef` (fold (1) of
+ * `./vinculosShopee`). The category is `category_id` exactly as stored, never
+ * coerced.
  *
  * The scope of the fold, pinned both ways in `shopeeLinkVariacoes.test.ts`:
- *  - EQUAL: the bare id `int-1` and every path form whose last segment is
+ *  - THE SAME KEY: the bare id `int-1` and every path form whose last segment is
  *    `int-1` (`documents/integracao/int-1`, `integracao/int-1`, a trailing
  *    `/`). Trap 2 says this schema stores whatever string it is given, so a
- *    migrated entry may still hold a path. Folding it here is what lets both
- *    callers bind it without a migration.
- *  - DISTINCT: `int-12` against `int-1` and the reverse (the whole segment is
- *    compared, never a prefix, suffix or substring); a different case or any
- *    whitespace (`idDoRef` keeps both); a blank, absent or non-string id; a
- *    category that is a different number, a numeric STRING, or absent.
+ *    migrated entry may still hold a path. Folding it here is what lets every
+ *    caller bind it without a migration.
+ *  - DIFFERENT KEYS: `int-12` against `int-1` and the reverse (the whole segment
+ *    is compared, never a prefix, suffix or substring); a different case or any
+ *    whitespace (`idDoRef` keeps both); a different category number.
+ *  - `null`: a blank, absent or non-string id; a category that is a numeric
+ *    STRING, absent, or not finite.
  *  - Recorded widening, the same one fold (1) records: only the last segment is
- *    compared, so a path into another collection whose last segment happened
- *    to be the integração id would match. Nothing writes such a value.
+ *    read, so a path into another collection whose last segment happened to be
+ *    the integração id names that conta. Nothing writes such a value.
+ *
+ * ⚠️ `NaN` and `±Infinity` have `typeof 'number'` and still name no category.
+ * The schema refuses all three, `NaN` never equals itself, and `JSON.stringify`
+ * writes all three as `null`, which would turn different stored values into one
+ * key for the editor that keys its entries by this key's JSON.
+ *
+ * Structural, like `vinculoShopeeEhDaConta`: it reads a parsed
+ * {@link LinkVariacoesShopee} and an unvalidated object the same way, which is
+ * what lets {@link resolverEntradaShopeeDoGrupo} ask the same question of an
+ * element its schema refused. It takes an object: a raw array element may be
+ * anything, so a caller narrows it first.
+ */
+export function chaveDaEntradaShopee(e: {
+  readonly category_id?: unknown;
+  readonly integracaoShopeeId?: unknown;
+}): { readonly integracaoId: string; readonly categoryId: number } | null {
+  const integracaoId = idDoRef(e.integracaoShopeeId);
+  const categoryId = e.category_id;
+  if (integracaoId === null) return null;
+  if (typeof categoryId !== 'number' || !Number.isFinite(categoryId)) return null;
+  return { integracaoId, categoryId };
+}
+
+/**
+ * Is this `linksVariacoesShopee[]` element the entry of the pair
+ * (`integracaoId`, `categoryId`)? Yes when {@link chaveDaEntradaShopee} names
+ * exactly that pair. The scope of the fold is documented there.
  *
  * ⚠️ Only the STORED side is folded. `integracaoId` is the bare integração doc
  * id, compared as given: a caller holding a path must pass `idDoRef(path)`. An
- * empty `integracaoId` matches nothing, because `idDoRef` never answers `''`.
- *
- * Structural and total, like `vinculoShopeeEhDaConta`: it reads a parsed
- * {@link LinkVariacoesShopee} and an unvalidated element the same way, which is
- * what lets {@link resolverEntradaShopeeDoGrupo} ask the same question of an
- * element its schema refused.
+ * empty `integracaoId` and a non-finite `categoryId` match nothing, because the
+ * key never holds either.
  */
 export function ehEntradaShopeeDaChave(
   e: { readonly category_id?: unknown; readonly integracaoShopeeId?: unknown },
   integracaoId: string,
   categoryId: number,
 ): boolean {
-  return e.category_id === categoryId && idDoRef(e.integracaoShopeeId) === integracaoId;
+  const chave = chaveDaEntradaShopee(e);
+  return chave !== null && chave.integracaoId === integracaoId && chave.categoryId === categoryId;
 }
 
 /**
@@ -144,18 +173,29 @@ function ehObjeto(bruto: unknown): bruto is Record<string, unknown> {
   return typeof bruto === 'object' && bruto !== null && !Array.isArray(bruto);
 }
 
-/** The fields one refused parse names: dotted paths, in issue order. */
-function camposRecusados(erro: z.ZodError): string[] {
-  const campos: string[] = [];
+/**
+ * The fields one refused parse of a `linksVariacoesShopee[]` element names:
+ * dotted paths in zod's issue order, each path once. An unknown key is named
+ * itself (`lixo`, `variationOptions.0.lixo`). A refusal of the value as a whole
+ * (an element that is not an object at all) names no field, so it adds nothing.
+ *
+ * Diagnostic text, which no decision reads. It is the ONE spelling of the list:
+ * {@link resolverEntradaShopeeDoGrupo}'s `ilegivel.campos` and the binding
+ * editor's unreadable item both call it, so the two cannot drift apart (#1369).
+ * The resolver asks it only of an object, where the strict schema reports each
+ * path once and never the value as a whole, so neither rule changes its answer.
+ */
+export function camposRecusados(erro: z.ZodError): string[] {
+  const campos = new Set<string>();
   for (const issue of erro.issues) {
     const caminho = issue.path.map((p) => String(p)).join('.');
     if (issue.code === 'unrecognized_keys') {
-      for (const chave of issue.keys) campos.push(caminho === '' ? chave : `${caminho}.${chave}`);
-    } else {
-      campos.push(caminho);
+      for (const chave of issue.keys) campos.add(caminho === '' ? chave : `${caminho}.${chave}`);
+    } else if (caminho !== '') {
+      campos.add(caminho);
     }
   }
-  return campos;
+  return [...campos];
 }
 
 /**

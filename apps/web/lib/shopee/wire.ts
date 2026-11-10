@@ -435,9 +435,10 @@ export const shopeeReclamacaoAcaoRespostaSchema = z.object({
 export type ShopeeReclamacaoAcaoResposta = z.infer<typeof shopeeReclamacaoAcaoRespostaSchema>;
 
 /* ---------------------------------------------------------------------------
- * The taxonomy reads (`GET …/taxonomia/{categorias,limites,recomendacao-categoria,marcas}`,
+ * The taxonomy reads (`GET …/taxonomia/{categorias,limites,recomendacao-categoria,marcas,variacoes}`,
  * step 10's routes — the `/medidas` Shopee tab since step 18, the listing-draft
- * editor and a conta's Marcas section since #1911) and the two size-chart reads
+ * editor and a conta's Marcas section since #1911, a grupo's Shopee tab since
+ * #1911 P14) and the two size-chart reads
  * (`GET …/tabela-medidas/{lista,detalhe}`, #1526, step 18)
  * ------------------------------------------------------------------------- */
 
@@ -523,6 +524,31 @@ export {
   respostaMarcasShopeeSchema,
   type MarcaDto,
   type RespostaMarcasShopee,
+} from '@delfrance/schemas';
+
+/**
+ * Shopee's STANDARDISED variation tree of one leaf category —
+ * `GET …/taxonomia/variacoes?integracaoId=&categoryId=` (#1911 P14), for the
+ * Shopee tab of `/variacoes/[id]`. Three levels (variation → group → option); a
+ * non-leaf category answers the same shape, empty (`leaf: false`).
+ *
+ * - ⚠️ A variation with no group, or a group with no option, is NORMAL: most
+ *   categories have nothing to bind. Read the tree through `./variacoes`, never
+ *   by the list's length.
+ * - `variationGroupId: 0` is a VALUE: with the name `''` it is a single-level
+ *   variation's sentinel, and it is what a link stores for it.
+ * - Names are Shopee's, verbatim (` Estampa`, with its space). Ids decide; a name
+ *   never does (two options may both read `Preto`).
+ */
+export {
+  respostaVariacoesShopeeSchema,
+  variacaoDtoSchema,
+  variacaoGrupoDtoSchema,
+  variacaoOpcaoDtoSchema,
+  type RespostaVariacoesShopee,
+  type VariacaoDto,
+  type VariacaoGrupoDto,
+  type VariacaoOpcaoDto,
 } from '@delfrance/schemas';
 
 /**

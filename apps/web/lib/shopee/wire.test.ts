@@ -23,8 +23,12 @@ import {
   respostaLimitesTabelaMedidasShopeeSchema,
   respostaMarcasShopeeSchema as marcasCompartilhadaSchema,
   respostaRecomendacaoCategoriaShopeeSchema as recomendacaoCompartilhadaSchema,
+  respostaVariacoesShopeeSchema as variacoesCompartilhadaSchema,
   tabelaMedidasLinhaDtoSchema as linhaCompartilhadaSchema,
   tabelaShopeeProjetadaSchema,
+  variacaoDtoSchema as variacaoCompartilhadaSchema,
+  variacaoGrupoDtoSchema as grupoDeVariacaoCompartilhadoSchema,
+  variacaoOpcaoDtoSchema as opcaoDeVariacaoCompartilhadaSchema,
   type DetalheTabelaShopeeEntrada,
 } from '@delfrance/schemas';
 
@@ -63,6 +67,7 @@ import {
   respostaPublicarShopeeSchema,
   respostaRecomendacaoCategoriaShopeeSchema,
   respostaReverificarShopeeSchema,
+  respostaVariacoesShopeeSchema,
   shopeeContaStatusSchema,
   shopeeEtiquetaPendenteSchema,
   shopeeLojaSchema,
@@ -70,6 +75,9 @@ import {
   shopeeReclamacaoEstadoSchema,
   solucaoDevolucaoShopeeSchema,
   tabelaMedidasLinhaDtoSchema,
+  variacaoDtoSchema,
+  variacaoGrupoDtoSchema,
+  variacaoOpcaoDtoSchema,
 } from './wire';
 
 /**
@@ -2073,6 +2081,14 @@ describe('#1911 — every taxonomy and draft answer here IS the shared schema ob
     ['marcaDtoSchema (P9)', marcaDtoSchema, marcaCompartilhadaSchema],
     ['respostaMarcasShopeeSchema (P9)', respostaMarcasShopeeSchema, marcasCompartilhadaSchema],
     [
+      'respostaVariacoesShopeeSchema (P14)',
+      respostaVariacoesShopeeSchema,
+      variacoesCompartilhadaSchema,
+    ],
+    ['variacaoDtoSchema (P14)', variacaoDtoSchema, variacaoCompartilhadaSchema],
+    ['variacaoGrupoDtoSchema (P14)', variacaoGrupoDtoSchema, grupoDeVariacaoCompartilhadoSchema],
+    ['variacaoOpcaoDtoSchema (P14)', variacaoOpcaoDtoSchema, opcaoDeVariacaoCompartilhadaSchema],
+    [
       'respostaCriarRascunhoShopeeSchema',
       respostaCriarRascunhoShopeeSchema,
       criarCompartilhadoSchema,
@@ -2370,5 +2386,68 @@ describe('#1911 (P9) — a category’s page of brands', () => {
     ['a row with a fractional brandId', { marcas: [{ ...PAGINA.marcas[0], brandId: 1.5 }] }],
   ])('NEAR-MISS: %s is refused', (_n, estrago) => {
     expect(respostaMarcasShopeeSchema.safeParse({ ...PAGINA, ...estrago }).success).toBe(false);
+  });
+});
+
+describe('#1911 (P14) — a árvore de variações de uma categoria', () => {
+  const OPCAO = { variationOptionId: 6933, variationOptionName: 'M' };
+  const GRUPO = {
+    variationGroupId: 844758844060204,
+    variationGroupName: 'Tamanho (BR)',
+    variationOptionList: [OPCAO],
+  };
+  const VARIACAO = { variationId: 101056, variationName: 'Tamanho', variationGroupList: [GRUPO] };
+  const ARVORE = {
+    leaf: true,
+    categoryId: 100244,
+    standardiseVariationList: [VARIACAO],
+    pathUsed: '/api/v2/product/get_variation_tree',
+  };
+
+  it('o controle: o grupo `0` de nome vazio, a opção `0`, o nome nulo e a variação sem grupo são valores', () => {
+    const corpo = {
+      ...ARVORE,
+      standardiseVariationList: [
+        {
+          variationId: 101054,
+          variationName: null,
+          variationGroupList: [
+            {
+              variationGroupId: 0,
+              variationGroupName: '',
+              variationOptionList: [{ variationOptionId: 0, variationOptionName: null }],
+            },
+          ],
+        },
+        { variationId: 103236, variationName: 'Estilo', variationGroupList: [] },
+      ],
+    };
+
+    expect(respostaVariacoesShopeeSchema.parse(corpo)).toStrictEqual(corpo);
+  });
+
+  it('um id de grupo de 15 dígitos chega exato', () => {
+    const lida = respostaVariacoesShopeeSchema.parse(ARVORE);
+
+    expect(lida.standardiseVariationList[0]?.variationGroupList[0]?.variationGroupId).toBe(
+      844758844060204,
+    );
+  });
+
+  const comVariacao = (variacao: unknown) => ({ ...ARVORE, standardiseVariationList: [variacao] });
+  const comGrupo = (grupo: unknown) => comVariacao({ ...VARIACAO, variationGroupList: [grupo] });
+
+  it.each([
+    ['sem `pathUsed`', { ...ARVORE, pathUsed: undefined }],
+    ['sem `leaf`', { ...ARVORE, leaf: undefined }],
+    ['uma variação sem a lista de grupos', comVariacao({ variationId: 1, variationName: 'x' })],
+    ['um id de variação entre aspas', comVariacao({ ...VARIACAO, variationId: '101056' })],
+    ['um id de grupo fracionário', comGrupo({ ...GRUPO, variationGroupId: 1.5 })],
+    [
+      'um id de opção entre aspas',
+      comGrupo({ ...GRUPO, variationOptionList: [{ ...OPCAO, variationOptionId: '6933' }] }),
+    ],
+  ])('NEAR-MISS: %s é recusado', (_n, corpo) => {
+    expect(respostaVariacoesShopeeSchema.safeParse(corpo).success).toBe(false);
   });
 });
