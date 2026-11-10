@@ -29,6 +29,7 @@ import type { PostSaveResult } from '@/lib/checkout/postSave';
 const h = vi.hoisted(() => ({
   SHOPEE_SENTINEL: { __sentinela: 'shopee' },
   LI_SENTINEL: { __sentinela: 'loja-integrada' },
+  AMAZON_SENTINEL: { __sentinela: 'amazon' },
   runCheckoutPostSave: vi.fn(),
   getDoc: vi.fn(),
   /** Every props object the "Outros Checkouts" reprint modal is rendered with. */
@@ -53,6 +54,10 @@ vi.mock('@/lib/nfe/client', () => ({ useNFeClient: () => null }));
 vi.mock('@/lib/freight/client', () => ({ useFreightClient: () => null }));
 vi.mock('@/lib/mercado-livre/client', () => ({ useMercadoLivreClient: () => null }));
 vi.mock('@/lib/shopee/client', () => ({ useShopeeClient: () => h.SHOPEE_SENTINEL }));
+vi.mock('@/lib/amazon/client', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/amazon/client')>()),
+  useAmazonClient: () => h.AMAZON_SENTINEL,
+}));
 vi.mock('@/lib/loja-integrada/client', async (importOriginal) => ({
   // The error classes stay real: the paid re-check narrows on them.
   ...(await importOriginal<typeof import('@/lib/loja-integrada/client')>()),
@@ -205,6 +210,26 @@ describe('CheckoutScreen — the reprint pane and the pickup question (#1523)', 
     await waitFor(() => expect(resposta).toBeNull());
     // The post-save returned, so the screen reset for the next pedido.
     await waitFor(() => expect(screen.queryByRole('button', { name: /Salvar/ })).toBeNull());
+  });
+});
+
+describe('CheckoutScreen — the Amazon label client (step 15)', () => {
+  it('Salvar hands runCheckoutPostSave the screen useAmazonClient(), never null', async () => {
+    renderTela();
+    await salvar();
+
+    await waitFor(() => expect(h.runCheckoutPostSave).toHaveBeenCalledTimes(1));
+    expect(h.runCheckoutPostSave).toHaveBeenCalledWith(
+      expect.objectContaining({ amazonClient: h.AMAZON_SENTINEL }),
+    );
+  });
+
+  it('the reprint modal gets the SAME client on every render — screen → sidebar → pane → modal', async () => {
+    renderTela();
+    await waitFor(() => expect(h.outroCheckoutModal).toHaveBeenCalled());
+    for (const [props] of h.outroCheckoutModal.mock.calls) {
+      expect(props).toEqual(expect.objectContaining({ amazonClient: h.AMAZON_SENTINEL }));
+    }
   });
 });
 

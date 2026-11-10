@@ -9,6 +9,7 @@ import { flattenPedidoItens, type EstadoFrete, type ScanLogEntry } from '@delfra
 import { PERM } from '@delfrance/auth';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { useAuth, usePermission } from '@/lib/auth';
+import { useAmazonClient } from '@/lib/amazon/client';
 import { useNFeClient } from '@/lib/nfe/client';
 import { useFreightClient } from '@/lib/freight/client';
 import { useLojaIntegradaClient } from '@/lib/loja-integrada/client';
@@ -78,6 +79,7 @@ export function CheckoutScreen({ fixture }: CheckoutScreenProps) {
   // The Loja Integrada paid re-check asks it: the save's own gate below, and
   // the soft gates (reprint, generic label) of the post-save.
   const lojaIntegradaClient = useLojaIntegradaClient();
+  const amazonClient = useAmazonClient();
 
   const { state, dispatch, bumpEpoch, currentEpoch } = useCheckoutReducer();
   // What Salvar is waiting on, when it is not the save itself (the Loja
@@ -405,6 +407,7 @@ export function CheckoutScreen({ fixture }: CheckoutScreenProps) {
           mercadoLivreClient,
           shopeeClient,
           lojaIntegradaClient,
+          amazonClient,
           pedido,
           pedidoId,
           formatoDanfe: snap.formatoDanfe,
@@ -437,6 +440,7 @@ export function CheckoutScreen({ fixture }: CheckoutScreenProps) {
     mercadoLivreClient,
     shopeeClient,
     lojaIntegradaClient,
+    amazonClient,
     ui,
     confirmDialog,
     reportPostSave,
@@ -521,6 +525,7 @@ export function CheckoutScreen({ fixture }: CheckoutScreenProps) {
             mercadoLivreClient={mercadoLivreClient}
             shopeeClient={shopeeClient}
             lojaIntegradaClient={lojaIntegradaClient}
+            amazonClient={amazonClient}
             formatoDanfe={state.formatoDanfe}
             onFormatoDanfe={(v) => dispatch({ type: 'format/danfe', value: v })}
             formatoEtiqueta={state.formatoEtiqueta}

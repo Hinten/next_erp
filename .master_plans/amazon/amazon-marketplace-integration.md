@@ -811,7 +811,7 @@ The template's `'feed-assincrono'` warning applies: the notification pipeline ha
 - **No label is stored (D12, amended):** no `Arquivo`, no Storage object, no retention question.
 - **Rule 7:** no pedido write, no lease and no schedule record. A SEQUENTIAL resubmit reads as scheduled and the queue's concurrency 1 serialises the automatic schedules; two concurrent FIRST-time calls (a print racing the task, two prints, a re-click over a cut bulk) have an undocumented outcome and no guard in code, so the print's 503 asks for a wait of about a minute, never an immediate retry.
 - **Rejections:** the TASK raises `dimensoes-ausentes` / `agendamento-recusado`; the route answers 409 `RECUSADA` only and writes no aviso; the code is logged, never shown.
-- **Web:**
+- **Web (PR 15-e; `apps/amazon` deploys before `apps/web`, W9):**
   - `apps/web/lib/checkout/etiqueta/providers/amazon.ts` calls `POST /api/marketplace/amazon/etiqueta {pedidoId}` and prints the returned ZPL with exact `text/plain`;
   - `FREIGHT_TIPO_CAPS.amz.canFetchLabel = true` (only that flag);
   - `'amz'` leaves `unsupportedMarketplace`.
@@ -842,7 +842,7 @@ The template's `'feed-assincrono'` warning applies: the notification pipeline ha
 - **The conta screen:** connect button (OAuth), status/aviso panel, intermediador fields (`cpf_cnpj`, `idCadIntTran`), freight tab.
 - **Link UI:** job + single SKU.
 - **Estoque and preço row providers** in `apps/web/lib/marketplace/{estoque,preco}/registry.ts`, gated off the caps row.
-- **The etiqueta provider** (step 15).
+- **The etiqueta provider** is built in step 15 (PR 15-e: `providers/amazon.ts`, its copy over the label route's codes and motivos, and the `amazonClient` dep).
 - `selling_partner_id` is shown read-only (server-owned).
 
 ### Step 22: Deploy isolation, rosters, settle `reclamacoes`, flip `implementado` — PRE
