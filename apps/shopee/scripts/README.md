@@ -1102,8 +1102,12 @@ against no live tree, so it can never show the other two, and both arrive after
 - Since #2043 it also refuses a stored STANDARD entry whose `variation_id` no live
   tier carries: "Corrija o vínculo em Variações (aba Shopee) para a variação que o
   anúncio usa". A re-import cannot clear it, because the merge never overwrites a
-  non-zero stored id. Until P14's binding editor ships, Variações has no field for
-  it, so this refusal has no in-app exit yet.
+  non-zero stored id. When the listing uses a standard variation with options,
+  the exit is the binding editor on `/variacoes/[id]`, tab Shopee: remove the
+  entry and add one for the same conta and category with that variation. When its
+  tier is custom, remove the entry and rename the grupo (or the tier in Seller
+  Centre) so the names match; otherwise remove the entry (see
+  `../lib/shopee/anuncios/README.md`).
 
 ### 12.4 The live run
 

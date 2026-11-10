@@ -1147,7 +1147,9 @@ Which `linksVariacoesShopee` element is a grupo's entry for the pair (conta,
 LEAF category) is decided in ONE place: `resolverEntradaShopeeDoGrupo` and its
 predicate `ehEntradaShopeeDaChave`, in `@delfrance/schemas`
 (`produto/collection/shopeeLinkVariacoes.ts`). The import's merge
-(`../produtos/taxonomiaShopeeCore.ts`) reads the same key. Before #1911 the two
+(`../produtos/taxonomiaShopeeCore.ts`) reads the same key, and so does the
+binding editor: bindings are authored on `/variacoes/[id]`, tab Shopee (#1911
+P14). Before #1911 the two
 spelled it twice and disagreed (the #1369 shape): the publisher folded the
 stored conta to its last path segment while the import compared it byte-exact,
 so a stored `documents/integracao/<id>` bound for the publisher and was twinned
@@ -1263,9 +1265,22 @@ re-authored from the ERP. The two cases get two different sentences:
   another standard variation, or as a custom tier with another name),
   legacy-authored (the Flutter form wrote this array in the migrated corpus and
   let the operator pick the standard `variation_id`), or re-bound on purpose in
-  P14's binding editor. Until that editor ships, Variações has no field for the
-  binding, so the refusal has no in-app exit yet — still the safe side: it
-  fails closed, stamped, after `update_item`. Without it, the rebuild authored
+  the binding editor. That editor is the exit when the listing's tier is a
+  STANDARD variation the editor offers (one whose tree has options): on
+  `/variacoes/[id]`, tab Shopee, remove the entry and add one for the same conta
+  and category with that variation, in one save (it never changes a stored
+  entry's variation in place). It authors standard entries only, so a live CUSTOM
+  tier or an option-less standard variation has no entry it can add. Facing a
+  live CUSTOM tier this refusal fires only when the names already differ (a
+  custom live tier pairs by name whatever the grupo stores): remove the entry AND
+  make the names match, by renaming the grupo or the tier in Seller Centre.
+  Removing it alone turns this refusal into the custom sentence above, and
+  renaming while keeping the standard entry pairs the grupo by name and still
+  sends the stored standard `variation_id` over a custom tier. Facing an
+  option-less standard tier, remove the entry: the grupo then reads as the
+  implicit custom fallback, under the custom sentence's exits above. A tier
+  another grupo already claimed is fixed on whichever grupo holds the wrong
+  binding. Until then the refusal fails closed, stamped, after `update_item`. Without it, the rebuild authored
   only the options a child uses, so a live model with no child kept a
   `tier_index` that now named another option (or pointed past the list), a
   child with no stored `model_id` and no SKU bound by its NEW coordinate (the

@@ -67,7 +67,9 @@ export type Variante = z.infer<typeof varianteSchema>;
  * Mirrors `GrupoDeVariacoes` in `packages/produtos/lib/src/models.dart`.
  *
  * The marketplace link arrays:
- *  - Shopee links are typed here, field and element.
+ *  - Shopee links are typed here, field and element. They are authored by the
+ *    product import and by the Shopee tab of the grupo's edit page
+ *    (`/variacoes/[id]`).
  *  - Loja Integrada's contract is the ELEMENT schema, its tolerant reader and its
  *    uniqueness validator in `produto/collection/lojaIntegradaLinkVariacoes.ts`,
  *    enforced where a link is WRITTEN (the web linker, the product import) and

@@ -1,10 +1,14 @@
 import { describe, expect, it } from 'vitest';
+import { z } from 'zod';
 
 // Importado pelo BARREL de propósito: a prova de que a linha `export *` em
 // `produto/index.ts` (e, por ela, a raiz `src/index.ts`) alcança o schema novo.
 import {
+  camposRecusados,
+  chaveDaEntradaShopee,
   ehEntradaShopeeDaChave,
   grupoDeVariacoesSchema,
+  idDoRef,
   linkVariacaoOpcaoShopeeSchema,
   linkVariacoesShopeeSchema,
   resolverEntradaShopeeDoGrupo,
@@ -302,6 +306,225 @@ describe('ehEntradaShopeeDaChave — a dobra da conta e da categoria', () => {
   });
 });
 
+/** The key of a stored conta spelling and a stored category, read off an otherwise empty element. */
+function chaveDe(integracaoShopeeId: unknown, category_id: unknown = CATEGORIA) {
+  return chaveDaEntradaShopee({ category_id, integracaoShopeeId });
+}
+
+describe('chaveDaEntradaShopee — a chave (conta, categoria) que o elemento nomeia', () => {
+  it('o id nu: a conta como veio e a categoria exata, e nada mais', () => {
+    expect(chaveDe('int-1')).toEqual({ integracaoId: 'int-1', categoryId: CATEGORIA });
+  });
+
+  it('IGUAIS: toda forma de caminho dobra para o último segmento — a MESMA chave do id nu, inclusive em JSON', () => {
+    const doIdNu = chaveDe('int-1');
+    for (const integracaoShopeeId of [
+      'documents/integracao/int-1',
+      'integracao/int-1',
+      'int-1/',
+      '/documents/integracao/int-1/',
+    ]) {
+      const chave = chaveDe(integracaoShopeeId);
+      expect(chave, integracaoShopeeId).toEqual(doIdNu);
+      // The web editor keys its entries by this JSON, so one key must be one string.
+      expect(JSON.stringify(chave), integracaoShopeeId).toBe(JSON.stringify(doIdNu));
+    }
+  });
+
+  it('⛔ NEAR-MISS: int-12 NÃO é int-1, nos dois sentidos — segmento inteiro, nunca prefixo, sufixo ou substring', () => {
+    for (const [integracaoShopeeId, conta] of [
+      ['int-12', 'int-12'],
+      ['documents/integracao/int-12', 'int-12'],
+      ['xint-1', 'xint-1'],
+      ['int-1x', 'int-1x'],
+      // The recorded widening: only the last segment is read.
+      ['documents/integracao/int-1/modelo', 'modelo'],
+    ] as const) {
+      expect(chaveDe(integracaoShopeeId), integracaoShopeeId).toEqual({
+        integracaoId: conta,
+        categoryId: CATEGORIA,
+      });
+    }
+    expect(chaveDe('int-12')).not.toEqual(chaveDe('int-1'));
+    expect(chaveDe('int-1')).not.toEqual(chaveDe('documents/integracao/int-12'));
+  });
+
+  it('⛔ NEAR-MISS: caixa e espaço NÃO dobram — cada grafia é outra conta, e só espaço não é "em branco"', () => {
+    for (const [integracaoShopeeId, conta] of [
+      [' int-1', ' int-1'],
+      ['int-1 ', 'int-1 '],
+      ['INT-1', 'INT-1'],
+      ['Int-1', 'Int-1'],
+      ['documents/integracao/ int-1', ' int-1'],
+      ['   ', '   '],
+    ] as const) {
+      const chave = chaveDe(integracaoShopeeId);
+      expect(chave, JSON.stringify(integracaoShopeeId)).toEqual({
+        integracaoId: conta,
+        categoryId: CATEGORIA,
+      });
+      expect(chave, JSON.stringify(integracaoShopeeId)).not.toEqual(chaveDe('int-1'));
+    }
+  });
+
+  it('⛔ NEAR-MISS: conta em branco, ausente ou que não é string ⇒ null', () => {
+    for (const integracaoShopeeId of [
+      '',
+      '/',
+      '//',
+      'documents',
+      'documents/',
+      undefined,
+      null,
+      1,
+      ['int-1'],
+      { id: 'int-1' },
+    ]) {
+      expect(chaveDe(integracaoShopeeId), JSON.stringify(integracaoShopeeId)).toBeNull();
+    }
+    expect(chaveDaEntradaShopee({ category_id: CATEGORIA })).toBeNull();
+    expect(chaveDaEntradaShopee({})).toBeNull();
+  });
+
+  it('⛔ NEAR-MISS: categoria 100352 é chave ⟷ a string 100352, ou a ausência, é null — nunca coagida', () => {
+    expect(chaveDe('int-1', 100352)).toEqual({ integracaoId: 'int-1', categoryId: 100352 });
+    expect(chaveDe('int-1', 100353)).not.toEqual(chaveDe('int-1', 100352));
+    for (const category_id of ['100352', '', null, [100352], { id: 100352 }, true]) {
+      expect(chaveDe('int-1', category_id), JSON.stringify(category_id)).toBeNull();
+    }
+    expect(chaveDaEntradaShopee({ integracaoShopeeId: 'int-1' })).toBeNull();
+  });
+
+  it('0 é um VALOR, nunca uma ausência; um número quebrado que o schema recusa ainda nomeia a categoria', () => {
+    expect(chaveDe('int-1', 0)).toEqual({ integracaoId: 'int-1', categoryId: 0 });
+    // The refused element must stay attributable, or the publisher would read it as no binding at all.
+    expect(chaveDe('int-1', 1.5)).toEqual({ integracaoId: 'int-1', categoryId: 1.5 });
+    expect(
+      resolverEntradaShopeeDoGrupo([entradaDaChave({ category_id: 1.5 })], CONTA, 1.5).tipo,
+    ).toBe('ilegivel');
+  });
+
+  it('⛔ NEAR-MISS: NaN e ±Infinity têm typeof number e não nomeiam categoria (em JSON, os três seriam o mesmo null)', () => {
+    for (const category_id of [NaN, Infinity, -Infinity]) {
+      expect(chaveDe('int-1', category_id), String(category_id)).toBeNull();
+      expect(
+        ehEntradaShopeeDaChave({ category_id, integracaoShopeeId: 'int-1' }, CONTA, category_id),
+        String(category_id),
+      ).toBe(false);
+    }
+  });
+
+  it('lê o elemento PARSEADO, o cru e o RECUSADO do mesmo jeito, e não muta nenhum', () => {
+    const esperada = { integracaoId: CONTA, categoryId: CATEGORIA };
+    const parseado: LinkVariacoesShopee = linkVariacoesShopeeSchema.parse(ELEMENTO_LEGADO);
+    expect(chaveDaEntradaShopee(parseado)).toEqual(esperada);
+    expect(chaveDaEntradaShopee(Object.freeze({ ...ELEMENTO_LEGADO }))).toEqual(esperada);
+    expect(chaveDaEntradaShopee(Object.freeze(recusadoDaChave()))).toEqual(esperada);
+    // The stored value keeps its spelling: only the key is folded (trap 2).
+    const comCaminho = recusadoDaChave({ integracaoShopeeId: 'documents/integracao/int-1' });
+    expect(chaveDaEntradaShopee(comCaminho)).toEqual(esperada);
+    expect(comCaminho['integracaoShopeeId']).toBe('documents/integracao/int-1');
+  });
+
+  // Every stored spelling the suite above pins, crossed with every pair a caller might ask about.
+  const CONTAS_ARMAZENADAS: readonly unknown[] = [
+    'int-1',
+    'documents/integracao/int-1',
+    'integracao/int-1',
+    'int-1/',
+    '/documents/integracao/int-1/',
+    'int-12',
+    'documents/integracao/int-12',
+    'xint-1',
+    'int-1x',
+    'documents/integracao/int-1/modelo',
+    ' int-1',
+    'int-1 ',
+    'INT-1',
+    'Int-1',
+    'documents/integracao/ int-1',
+    '',
+    '/',
+    'documents',
+    undefined,
+    null,
+    1,
+    ['int-1'],
+    { id: 'int-1' },
+  ];
+  const CATEGORIAS_ARMAZENADAS: readonly unknown[] = [
+    CATEGORIA,
+    100016,
+    10001,
+    0,
+    1.5,
+    '100015',
+    null,
+    undefined,
+    [CATEGORIA],
+    NaN,
+    Infinity,
+    -Infinity,
+  ];
+  const CONTAS_PEDIDAS: readonly string[] = [
+    'int-1',
+    'int-12',
+    'int',
+    'nt-1',
+    'int-',
+    '',
+    'documents/integracao/int-1',
+    'INT-1',
+    ' int-1',
+    'modelo',
+  ];
+  const CATEGORIAS_PEDIDAS: readonly number[] = [CATEGORIA, 100016, 10001, 0, 1.5, NaN];
+
+  it('A MATRIZ: ehEntradaShopeeDaChave(e, c, k) ⇔ a chave de e é {c, k}, célula a célula, e a grafia que o P14 substituiu (#1911 P7) responde o mesmo', () => {
+    const divergencias: string[] = [];
+    let casamentos = 0;
+    for (const base of [ELEMENTO_LEGADO, entradaDaChave(), recusadoDaChave()]) {
+      for (const integracaoShopeeId of CONTAS_ARMAZENADAS) {
+        for (const category_id of CATEGORIAS_ARMAZENADAS) {
+          const e = { ...base, integracaoShopeeId, category_id };
+          const chave = chaveDaEntradaShopee(e);
+          // A key always answers for itself, including a pair the lists below never ask about.
+          if (chave !== null && !ehEntradaShopeeDaChave(e, chave.integracaoId, chave.categoryId)) {
+            divergencias.push(`a chave não casa consigo: ${JSON.stringify(chave)}`);
+          }
+          for (const conta of CONTAS_PEDIDAS) {
+            for (const categoria of CATEGORIAS_PEDIDAS) {
+              const responde = ehEntradaShopeeDaChave(e, conta, categoria);
+              const chaveIgual =
+                chave !== null && chave.integracaoId === conta && chave.categoryId === categoria;
+              // The spelling this function replaced, kept as the neutrality oracle for apps/shopee.
+              const grafiaAnterior =
+                category_id === categoria && idDoRef(integracaoShopeeId) === conta;
+              if (responde !== chaveIgual || responde !== grafiaAnterior) {
+                divergencias.push(
+                  JSON.stringify({
+                    conta: integracaoShopeeId,
+                    categoria: String(category_id),
+                    pedido: [conta, String(categoria)],
+                    responde,
+                    chaveIgual,
+                    grafiaAnterior,
+                  }),
+                );
+              }
+              if (responde) casamentos += 1;
+            }
+          }
+        }
+      }
+    }
+    expect(divergencias).toEqual([]);
+    // 3 bases × 11 (stored conta, asked conta) pairs × 5 (stored category, asked category) pairs.
+    // Pinned so the matrix cannot pass by never matching at all.
+    expect(casamentos).toBe(165);
+  });
+});
+
 describe('resolverEntradaShopeeDoGrupo — armazenada | ilegivel | personalizada-implicita', () => {
   it('sem lista, lista vazia ou um valor que não é lista ⇒ personalizada-implicita', () => {
     // Os dois leitores (publicarAnuncio.ts e o lerGrupo do import) já leem uma
@@ -521,5 +744,67 @@ describe('resolverEntradaShopeeDoGrupo — armazenada | ilegivel | personalizada
     expect(rotulo(resolverEntradaShopeeDoGrupo([recusadoDaChave()], CONTA, CATEGORIA))).toBe(
       'ilegivel:0:variation_group_list',
     );
+  });
+});
+
+describe('camposRecusados — os campos de um parse recusado, numa grafia só (#1369)', () => {
+  const recusa = (bruto: unknown): z.ZodError => {
+    const lido = linkVariacoesShopeeSchema.safeParse(bruto);
+    if (lido.success) throw new TypeError('esperava uma recusa do schema');
+    return lido.error;
+  };
+
+  it('IGUAL: é a lista do ilegivel do resolvedor, para o mesmo elemento', () => {
+    const quebrado = {
+      ...entradaDaChave(),
+      variation_id: 'x',
+      lixo: true,
+      variationOptions: [
+        { shopee_option_id: 0, shopee_option_name: 'Azul', arakene_variation_id: 'v1', extra: 1 },
+      ],
+    };
+    const r = resolverEntradaShopeeDoGrupo([quebrado], CONTA, CATEGORIA);
+    expect(r.tipo).toBe('ilegivel');
+    expect(camposRecusados(recusa(quebrado))).toHaveLength(4);
+    expect(r.tipo === 'ilegivel' && r.campos).toEqual(camposRecusados(recusa(quebrado)));
+  });
+
+  it('um valor recusado POR INTEIRO (não é objeto) não nomeia campo nenhum — nunca um campo em branco', () => {
+    for (const bruto of ['lixo', null, 42, [ELEMENTO_LEGADO]]) {
+      const erro = recusa(bruto);
+      expect(
+        erro.issues.map((i) => i.path.length),
+        JSON.stringify(bruto),
+      ).toEqual([0]);
+      expect(camposRecusados(erro), JSON.stringify(bruto)).toEqual([]);
+    }
+  });
+
+  it('⛔ QUASE: uma chave desconhecida da RAIZ tem caminho vazio e mesmo assim é nomeada por si', () => {
+    expect(camposRecusados(recusa({ ...ELEMENTO_LEGADO, lixo: 1 }))).toEqual(['lixo']);
+  });
+
+  it('o mesmo caminho recusado duas vezes aparece UMA vez, na posição da primeira ⟷ ⛔ QUASE: o mesmo campo em duas opções são DOIS caminhos (o índice fica)', () => {
+    const duasRegras = z.strictObject({
+      a: z
+        .string()
+        .refine(() => false)
+        .refine(() => false),
+      b: z.number(),
+      o: z.array(z.strictObject({ x: z.number() })),
+    });
+    const lido = duasRegras.safeParse({
+      a: 'x',
+      b: 'y',
+      o: [
+        { x: 1, e: 1 },
+        { x: 2, e: 2 },
+      ],
+      z: 1,
+    });
+    if (lido.success) throw new TypeError('esperava uma recusa');
+    // The precondition: zod reports `a` twice.
+    expect(lido.error.issues.filter((i) => i.path.join('.') === 'a')).toHaveLength(2);
+    expect(camposRecusados(lido.error)).toEqual(['a', 'b', 'o.0.e', 'o.1.e', 'z']);
   });
 });

@@ -22,11 +22,13 @@
  * types against either client structurally. Since #1911 it creates, edits and
  * discards a listing DRAFT through the draft routes, reads two more taxonomy
  * answers for the draft editor — the item bands WHOLE (`limitesDoItem`, beside
- * `limites`' size-chart slice) and Shopee's category suggestion — and pages a
- * category's brands for a conta's Marcas section (`marcas`). Every method of
- * {@link ShopeeClient} — twenty-eight today; re-count the interface, never bump
- * this number — is answered by `apps/shopee` over an authenticated
- * cross-origin call (its `proxy.ts` allows exactly `/api/marketplace/*`).
+ * `limites`' size-chart slice) and Shopee's category suggestion — pages a
+ * category's brands for a conta's Marcas section (`marcas`), and reads a leaf
+ * category's standardised variation tree for a grupo's Shopee tab (`variacoes`).
+ * Every method of {@link ShopeeClient} — twenty-nine today; re-count the
+ * interface, never bump this number — is answered by `apps/shopee` over an
+ * authenticated cross-origin call (its `proxy.ts` allows exactly
+ * `/api/marketplace/*`).
  *
  * ⚠️ This client retries NOTHING. Whether a failed READ is re-attempted is the
  * query's decision (`shopeeQueryRetry`, `./erros.ts`), and that predicate never
@@ -83,6 +85,7 @@ import {
   respostaPublicarShopeeSchema,
   respostaRecomendacaoCategoriaShopeeSchema,
   respostaReverificarShopeeSchema,
+  respostaVariacoesShopeeSchema,
   shopeeContaStatusSchema,
   shopeeEtiquetaPendenteSchema,
   shopeeReclamacaoAcaoRespostaSchema,
@@ -110,6 +113,7 @@ import {
   type RespostaPublicarShopee,
   type RespostaRecomendacaoCategoriaShopee,
   type RespostaReverificarShopee,
+  type RespostaVariacoesShopee,
   type ShopeeContaStatus,
   type ShopeeEtiquetaPendente,
   type ShopeeOauthStart,
@@ -769,6 +773,17 @@ export interface ShopeeClient {
     pageSize?: number;
     status?: 1 | 2;
   }): Promise<RespostaMarcasShopee>;
+  /**
+   * Shopee's STANDARDISED variation tree of ONE leaf category
+   * (PERM.integracao.read) — what a grupo's Shopee tab binds its variantes to
+   * (#1911 P14). A non-leaf answers `leaf: false` with an empty list; an id the
+   * tree does not hold is a 404 `SHOPEE_CATEGORIA_DESCONHECIDA`.
+   *
+   * ⚠️ A body without `pathUsed` is a {@link ShopeeClientRespostaInvalidaError}:
+   * the route always echoes the path it called. Read it through
+   * `useVariacoesShopee` (`./variacoes`), which also owns the copy of a failure.
+   */
+  variacoes(input: { integracaoId: string; categoryId: number }): Promise<RespostaVariacoesShopee>;
 }
 
 /** The label route. */
@@ -811,6 +826,9 @@ const RECOMENDACAO_CATEGORIA_PATH = '/api/marketplace/shopee/taxonomia/recomenda
 
 /** A category's brands, one page — the Marcas section's registration picker (#1911). */
 const MARCAS_PATH = '/api/marketplace/shopee/taxonomia/marcas';
+
+/** A leaf category's standardised variation tree — a grupo's Shopee tab (#1911 P14). */
+const VARIACOES_PATH = '/api/marketplace/shopee/taxonomia/variacoes';
 
 /**
  * A query string from named parameters, each value percent-encoded and an
@@ -1512,6 +1530,14 @@ export function createShopeeClient(config: {
           status: input.status,
         })}`,
         respostaMarcasShopeeSchema,
+      ),
+    variacoes: (input) =>
+      call(
+        `${VARIACOES_PATH}?${consulta({
+          integracaoId: input.integracaoId,
+          categoryId: input.categoryId,
+        })}`,
+        respostaVariacoesShopeeSchema,
       ),
   };
 }

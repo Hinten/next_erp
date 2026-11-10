@@ -117,8 +117,8 @@
  * those, and the legacy export named its custom tiers by `tipo`, so a migrated
  * listing hits it on its first republish) AND a STORED STANDARD entry whose
  * `variation_id` no live tier carries (the tier was recreated in Seller Centre
- * under another standard variation, the legacy Flutter form authored it, or —
- * once P14's binding editor ships — it was re-bound on purpose in Variações) or
+ * under another standard variation, the legacy Flutter form authored it, or it
+ * was re-bound on purpose in Variações, tab Shopee) or
  * whose tier another grupo storing the same id already claimed: a live tier pairs
  * with ONE grupo, the first in `grupos`.
  *
@@ -131,9 +131,16 @@
  * tier, an import heals a stored `0` or an absent entry, but only when its grupo
  * cascade lands on this grupo. A standard entry is told to fix its binding, because
  * re-importing cannot clear it — the import's merge never overwrites a non-zero
- * stored `variation_id`; it only appends the live options' rows to the entry. Until
- * P14's editor ships, Variações has no field for the binding, so this refusal has no
- * in-app exit yet — still the safe side: it fails closed, stamped.
+ * stored `variation_id`; it only appends the live options' rows to the entry. When
+ * the live tier is a standard variation with options, the exit is the binding
+ * editor on `/variacoes/[id]`, tab Shopee: remove the entry and add one for the same
+ * conta and category with that variation, in one save (the editor never changes a
+ * stored entry's variation in place). The editor authors standard entries only:
+ * facing a live CUSTOM tier (refused only when the names differ, since a custom
+ * tier pairs by name whatever the grupo stores) the exit is removing the entry AND
+ * renaming the grupo or the tier so the names match; facing an option-less
+ * standard tier, removing the entry; a tier another grupo claimed is fixed on the
+ * grupo that holds the wrong binding. Until then the refusal fails closed, stamped.
  *
  * A depth change is not guarded: it is `init_tier_variation`, which re-creates
  * every model, and neither is a listing with no addressable model. The refusal

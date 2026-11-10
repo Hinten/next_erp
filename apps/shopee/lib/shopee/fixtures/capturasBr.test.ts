@@ -774,7 +774,7 @@ describe(`pino 6 — ${FIXTURE_MODEL_LIST_BR_ANUNCIO_VARIACOES}`, () => {
     const tiers = tiersDe(lido);
     const categoria = 100352;
     // An INVENTED ERP grupo whose stored entry already binds the seller's id-0
-    // option (as the import or the legacy form wrote it, and P14's editor will) to
+    // option (as the import, the legacy form or the binding editor writes it) to
     // a variante the operator named otherwise.
     const linha = {
       shopee_option_id: 0,
