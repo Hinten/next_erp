@@ -69,7 +69,24 @@ The receiver route (`/api/webhooks/mercado-pago`, on the App Hosting backend)
 enqueues onto the `processMercadoPagoNotification` queue via
 `firebase-admin`'s `getFunctions().taskQueue(...).enqueue(...)`. That requires the
 **App Hosting runtime service account** to be able to enqueue tasks and act as the
-functions' invoker SA — grant these **once**, before switching the webhook URL:
+functions' invoker SA — grant these **once**, before switching the webhook URL.
+
+⚠️ **The queue name and its Cloud Run service name differ in CASE.** Cloud Tasks
+keeps the function's name (`processMercadoPagoNotification`). The gen2
+function's Cloud Run service is that name LOWERCASED
+(`processmercadopagonotification`): Google's
+[Cloud Run functions deploy guide](https://docs.cloud.google.com/functions/docs/deploy)
+documents that the service name turns uppercase letters into lowercase (and `_`
+into `-`). Every `gcloud tasks queues …` line takes the queue name, and every
+`gcloud run services …` line takes the service name; a camelCase name there
+names no service. firebase-tools does not derive a gen2 function's service
+name: it reads it from the Cloud Functions API (`serviceConfig.service`). This
+file has never recorded the names a deploy produced, so confirm them on the next
+deploy before running the `run.invoker` grant or the verification below:
+
+```bash
+gcloud run services list --region=<region> --project=<project-id>
+```
 
 ```bash
 # App Hosting runtime SA (the identity the receiver route runs as):
@@ -89,8 +106,10 @@ gcloud iam service-accounts add-iam-policy-binding <functions-runtime-sa> \
 # with NO failure document written anywhere.
 #
 # ⚠ SINCE #1133 THE DEPLOY DOES THIS FOR YOU when TASKS_INVOKER_SA is set (see
-# below). Run it by hand only for a deploy without that variable.
-gcloud run services add-iam-policy-binding processMercadoPagoNotification --region=<region> \
+# below). Run it by hand only for a deploy without that variable. It takes the
+# SERVICE name, the queue name lowercased (above).
+gcloud run services add-iam-policy-binding processmercadopagonotification --region=<region> \
+  --project=<project-id> \
   --member="serviceAccount:<apphosting-runtime-sa>" \
   --role="roles/run.invoker"
 ```
@@ -154,8 +173,9 @@ firebase-tools skips `setInvokerUpdate` when the option is absent — but a serv
 **create**, i.e. a new or renamed task function, leaves no binding at all. That
 silent case is what this variable exists for.
 
-Verify it took, with nobody having run gcloud:
-`gcloud run services get-iam-policy processMercadoPagoNotification --region=<region>`.
+Verify it took, with nobody having run gcloud, by the service name (the IAM
+section above):
+`gcloud run services get-iam-policy processmercadopagonotification --region=<region> --project=<project-id>`.
 
 Until this is granted the enqueue fails; the receiver then **falls back** to
 persisting the notification as `failed` (the reprocess sweep drains it) and still

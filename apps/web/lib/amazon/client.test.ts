@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderHook } from '@testing-library/react';
-import { CODIGO_ERRO_AMAZON, type StatusContaAmazon } from '@delfrance/schemas';
+import {
+  CODIGO_ERRO_AMAZON,
+  CODIGO_ERRO_ETIQUETA_AMAZON,
+  MOTIVO_ETIQUETA_AMAZON,
+  type StatusContaAmazon,
+} from '@delfrance/schemas';
 
 /**
  * The browser client for `apps/amazon`'s conta routes.
@@ -24,13 +29,25 @@ vi.mock('@/lib/auth/useAuth', () => ({ useAuth: () => ({ user: h.user }) }));
 
 const {
   DEFAULT_AMAZON_URL,
+  NOME_ETIQUETA_AMAZON_PADRAO,
   criarClienteAmazon,
+  ehTipoEtiquetaAmazon,
   resolverBackendAmazon,
   useAmazonClient,
   useBackendAmazon,
 } = await import('./client');
-const { AmazonBackendError, AmazonRedeError, AmazonRespostaInvalidaError } =
-  await import('./erros');
+const {
+  AmazonBackendError,
+  AmazonRedeError,
+  AmazonRespostaInvalidaError,
+  MENSAGEM_ETIQUETA_AMAZON_AGUARDE,
+  MENSAGEM_MOTIVO_ETIQUETA_AMAZON_DESCONHECIDO,
+  MENSAGENS_CODIGO_ERRO_ETIQUETA_AMAZON,
+  MENSAGENS_MOTIVO_ETIQUETA_AMAZON,
+  mensagemErroEtiquetaAmazon,
+  mensagemHttpAmazon,
+  mensagemHttpEtiquetaAmazon,
+} = await import('./erros');
 
 const BASE = 'https://amazon.backend.test';
 
@@ -345,6 +362,466 @@ describe('transport failures', () => {
 
     await expect(c.oauthStart('conta-1')).rejects.toBe(falhaDeSessao);
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+});
+
+/* ------------------------------------------------------------------------ */
+/*                    etiqueta(pedidoId) — the label route                   */
+/* ------------------------------------------------------------------------ */
+
+/** The ERP pedido DOCUMENT id the route's strict body takes (64 hex). */
+const PEDIDO_ID = 'ab'.repeat(32);
+const NOME = 'amazon-111-2222222-3333333.zpl';
+
+/** A ZPL label with a byte that is NOT valid UTF-8 (0xFF) and a two-byte `ç`. */
+const ZPL = new Uint8Array([
+  ...new TextEncoder().encode('^XA^FO50,50^FDCaixa '),
+  0xff,
+  0xc3,
+  0xa7,
+  ...new TextEncoder().encode('^FS^XZ\n'),
+]);
+
+const codificar = (texto: string) => new TextEncoder().encode(texto);
+
+/**
+ * A 200 with BYTES (a `Uint8Array` body: a string body would get a
+ * `text/plain;charset=UTF-8` type by itself). `null` drops a header.
+ */
+function rotulo(
+  corpo: Uint8Array<ArrayBuffer>,
+  headers: { tipo?: string | null; disposicao?: string | null } = {},
+  status = 200,
+): Response {
+  const h: Record<string, string> = {};
+  const tipo = headers.tipo === undefined ? 'text/plain' : headers.tipo;
+  const disposicao =
+    headers.disposicao === undefined ? `attachment; filename="${NOME}"` : headers.disposicao;
+  if (tipo !== null) h['content-type'] = tipo;
+  if (disposicao !== null) h['content-disposition'] = disposicao;
+  return new Response(corpo, { status, headers: h });
+}
+
+async function bytesDe(blob: Blob): Promise<number[]> {
+  return [...new Uint8Array(await blob.arrayBuffer())];
+}
+
+describe('etiqueta(pedidoId) — the wire', () => {
+  it('is a POST on …/etiqueta with the ID token, a JSON type and EXACTLY { pedidoId }', async () => {
+    const { c, chamadas } = cliente(() => rotulo(ZPL));
+    const controle = new AbortController();
+
+    await c.etiqueta(PEDIDO_ID, { signal: controle.signal });
+
+    expect(chamadas).toHaveLength(1);
+    const [ch] = chamadas;
+    expect(ch?.url).toBe(`${BASE}/api/marketplace/amazon/etiqueta`);
+    expect(ch?.init.method).toBe('POST');
+    expect(ch?.init.headers).toEqual({
+      Authorization: 'Bearer id-token-firebase',
+      'Content-Type': 'application/json',
+    });
+    // The route's body is strict: one more key (a format, say) is a 400.
+    expect(ch?.init.body).toBe(JSON.stringify({ pedidoId: PEDIDO_ID }));
+    expect(ch?.init.signal).toBe(controle.signal);
+  });
+
+  it('an ID-token failure is NOT relabelled a network error, and nothing is sent', async () => {
+    const falhaDeSessao = new Error('auth/network-request-failed');
+    const fetchImpl = vi.fn();
+    const c = criarClienteAmazon(BASE, () => Promise.reject(falhaDeSessao), fetchImpl);
+
+    await expect(c.etiqueta(PEDIDO_ID)).rejects.toBe(falhaDeSessao);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+});
+
+describe('etiqueta(pedidoId) — the 200 is the label, byte for byte', () => {
+  it('returns the bytes untouched, the route’s file name and the type as received', async () => {
+    const { c } = cliente(() => rotulo(ZPL));
+
+    const etiqueta = await c.etiqueta(PEDIDO_ID);
+
+    expect(await bytesDe(etiqueta.bytes)).toEqual([...ZPL]);
+    expect(etiqueta.nomeArquivo).toBe(NOME);
+    expect(etiqueta.tipo).toBe('text/plain');
+  });
+
+  it('⭐ a byte that is not valid UTF-8 survives (read with blob(), never text())', async () => {
+    const { c } = cliente(() => rotulo(ZPL));
+
+    const etiqueta = await c.etiqueta(PEDIDO_ID);
+
+    const recebidos = await bytesDe(etiqueta.bytes);
+    expect(recebidos).toContain(0xff);
+    expect(recebidos).toEqual([...ZPL]);
+    // NEAR-MISS: the same answer read through text() and re-encoded is NOT the
+    // same bytes — 0xFF becomes U+FFFD (EF BF BD). Proof the sentinel can tell.
+    const viaTexto = codificar(await rotulo(ZPL).text());
+    expect([...viaTexto]).not.toEqual([...ZPL]);
+  });
+
+  it('a charset a proxy appended is accepted, and kept in `tipo` as received', async () => {
+    const { c } = cliente(() => rotulo(ZPL, { tipo: 'text/plain;charset=UTF-8' }));
+
+    const etiqueta = await c.etiqueta(PEDIDO_ID);
+
+    expect(etiqueta.tipo).toBe('text/plain;charset=UTF-8');
+    expect(await bytesDe(etiqueta.bytes)).toEqual([...ZPL]);
+  });
+
+  it('a ZPL with leading blank lines is still a label (only markup is refused)', async () => {
+    const corpo = new Uint8Array([0x0d, 0x0a, 0x20, 0x09, ...ZPL]);
+    const { c } = cliente(() => rotulo(corpo));
+
+    expect(await bytesDe((await c.etiqueta(PEDIDO_ID)).bytes)).toEqual([...corpo]);
+  });
+
+  it.each([
+    ['absent', null],
+    ['present but naming no file', 'attachment'],
+  ])(
+    'with a Content-Disposition %s the name falls back to amazon-etiqueta.zpl',
+    async (_caso, disposicao) => {
+      const { c } = cliente(() => rotulo(ZPL, { disposicao }));
+
+      const etiqueta = await c.etiqueta(PEDIDO_ID);
+
+      expect(etiqueta.nomeArquivo).toBe(NOME_ETIQUETA_AMAZON_PADRAO);
+      expect(NOME_ETIQUETA_AMAZON_PADRAO).toBe('amazon-etiqueta.zpl');
+    },
+  );
+});
+
+/** "Try again" in any spelling — a refused label is never a retry. */
+const TENTE_DE_NOVO = /tente|novamente|de novo/i;
+
+/** Every argument `console.error` got, as text (the spy is set in `beforeEach`). */
+function argumentosDoConsole(): string[] {
+  return vi
+    .mocked(console.error)
+    .mock.calls.flat()
+    .map((arg) => String(arg));
+}
+
+/**
+ * What every refused 200 must hold: the client's own sentence, which the
+ * operator reads WORD FOR WORD (`mensagemErroEtiquetaAmazon` keeps it), names
+ * the way out and never invites a retry; and no byte of a body that HAS one
+ * (`trechoDoCorpo`, `null` for an empty or blank body) reaches the message or
+ * a log line.
+ */
+function exigirRecusa(err: unknown, status: number, trechoDoCorpo: string | null): void {
+  expect(err).toBeInstanceOf(AmazonRespostaInvalidaError);
+  const recusa = err as InstanceType<typeof AmazonRespostaInvalidaError>;
+  expect(recusa.status).toBe(status);
+  expect(recusa.message).toContain('Seller Central');
+  expect(recusa.message).not.toMatch(TENTE_DE_NOVO);
+  if (trechoDoCorpo === null) return;
+  expect(recusa.message).not.toContain(trechoDoCorpo);
+  for (const arg of argumentosDoConsole()) expect(arg).not.toContain(trechoDoCorpo);
+}
+
+describe('etiqueta(pedidoId) — a 2xx that is not a label is refused, never printed', () => {
+  it.each([
+    ['text/html', 'an HTML page'],
+    ['application/json', 'a JSON body'],
+    ['application/octet-stream', 'opaque bytes'],
+    ['text/plainx', 'a type that only LOOKS like plain text'],
+    ['application/pdf', 'a PDF'],
+  ])('a 200 typed %s (%s) is an AmazonRespostaInvalidaError', async (tipo) => {
+    const { c } = cliente(() => rotulo(ZPL, { tipo }));
+
+    exigirRecusa(await falhaDe(c.etiqueta(PEDIDO_ID)), 200, '^XA');
+  });
+
+  it('a 200 with NO Content-Type is refused', async () => {
+    const { c } = cliente(() => rotulo(ZPL, { tipo: null }));
+
+    exigirRecusa(await falhaDe(c.etiqueta(PEDIDO_ID)), 200, '^XA');
+  });
+
+  it.each([
+    ['empty', new Uint8Array(), null],
+    ['blank', codificar(' \r\n\t \n'), null],
+    ['an HTML page served as text', codificar('\n  <!doctype html><html>Proxy</html>'), 'Proxy'],
+    ['a JSON body served as text', codificar('{"error":"x","code":"y"}'), '"code"'],
+  ])('a text/plain 200 that is %s is refused', async (_caso, corpo, trechoDoCorpo) => {
+    const { c } = cliente(() => rotulo(corpo));
+
+    // Nothing of the body reaches the message or a log: a label carries an address.
+    exigirRecusa(await falhaDe(c.etiqueta(PEDIDO_ID)), 200, trechoDoCorpo);
+  });
+
+  it('a 2xx other than 200 is refused, with its real status', async () => {
+    const { c } = cliente(() => rotulo(ZPL, {}, 202));
+
+    exigirRecusa(await falhaDe(c.etiqueta(PEDIDO_ID)), 202, '^XA');
+  });
+
+  it('ehTipoEtiquetaAmazon — the essence, folded: equal pairs and near-misses', () => {
+    expect(ehTipoEtiquetaAmazon('text/plain')).toBe(true);
+    expect(ehTipoEtiquetaAmazon('TEXT/PLAIN; charset=utf-8')).toBe(true);
+    expect(ehTipoEtiquetaAmazon(' text/plain ;x=y')).toBe(true);
+    expect(ehTipoEtiquetaAmazon('text/plainx')).toBe(false);
+    expect(ehTipoEtiquetaAmazon('text/plai')).toBe(false);
+    expect(ehTipoEtiquetaAmazon('text/html')).toBe(false);
+    expect(ehTipoEtiquetaAmazon('')).toBe(false);
+    expect(ehTipoEtiquetaAmazon(null)).toBe(false);
+  });
+});
+
+describe('etiqueta(pedidoId) — the error envelope carries the motivo', () => {
+  it('⭐ a 409 NAO_ELEGIVEL + nfe-ambigua through the REAL client shows the motivo’s sentence', async () => {
+    const { c } = cliente(() =>
+      json(409, {
+        error: 'A etiqueta deste pedido não pode ser impressa agora.',
+        code: CODIGO_ERRO_ETIQUETA_AMAZON.NAO_ELEGIVEL,
+        motivo: MOTIVO_ETIQUETA_AMAZON.nfeAmbigua,
+      }),
+    );
+
+    const err = (await falhaDe(c.etiqueta(PEDIDO_ID))) as InstanceType<typeof AmazonBackendError>;
+
+    expect(err).toBeInstanceOf(AmazonBackendError);
+    expect(err.status).toBe(409);
+    expect(err.codigo).toBe(CODIGO_ERRO_ETIQUETA_AMAZON.NAO_ELEGIVEL);
+    expect(err.motivo).toBe(MOTIVO_ETIQUETA_AMAZON.nfeAmbigua);
+    expect(mensagemErroEtiquetaAmazon(err)).toBe(
+      MENSAGENS_MOTIVO_ETIQUETA_AMAZON[MOTIVO_ETIQUETA_AMAZON.nfeAmbigua],
+    );
+  });
+
+  it('NEAR-MISS: the same 409 WITHOUT a motivo gives the code’s generic sentence', async () => {
+    const { c } = cliente(() =>
+      json(409, {
+        error: 'A etiqueta deste pedido não pode ser impressa agora.',
+        code: CODIGO_ERRO_ETIQUETA_AMAZON.NAO_ELEGIVEL,
+      }),
+    );
+
+    const err = (await falhaDe(c.etiqueta(PEDIDO_ID))) as InstanceType<typeof AmazonBackendError>;
+
+    expect(err.motivo).toBeNull();
+    expect(mensagemErroEtiquetaAmazon(err)).toBe(
+      MENSAGENS_CODIGO_ERRO_ETIQUETA_AMAZON[CODIGO_ERRO_ETIQUETA_AMAZON.NAO_ELEGIVEL],
+    );
+  });
+
+  it('a motivo slug a newer backend added still parses, and reads as the neutral sentence', async () => {
+    const { c } = cliente(() =>
+      json(409, {
+        error: 'Recusado.',
+        code: CODIGO_ERRO_ETIQUETA_AMAZON.RECUSADA,
+        motivo: 'motivo-de-um-backend-novo',
+      }),
+    );
+
+    const err = (await falhaDe(c.etiqueta(PEDIDO_ID))) as InstanceType<typeof AmazonBackendError>;
+
+    expect(err.codigo).toBe(CODIGO_ERRO_ETIQUETA_AMAZON.RECUSADA);
+    expect(err.motivo).toBe('motivo-de-um-backend-novo');
+    expect(mensagemErroEtiquetaAmazon(err)).toBe(MENSAGEM_MOTIVO_ETIQUETA_AMAZON_DESCONHECIDO);
+  });
+
+  it('NEAR-MISS: a conta route’s envelope never carries a motivo (its schema strips it)', async () => {
+    const { c } = cliente(() =>
+      json(409, {
+        error: 'Algo.',
+        code: CODIGO_ERRO_AMAZON.CONTA_NAO_ENCONTRADA,
+        motivo: MOTIVO_ETIQUETA_AMAZON.nfeAmbigua,
+      }),
+    );
+
+    const err = (await falhaDe(c.conta('conta-1'))) as InstanceType<typeof AmazonBackendError>;
+
+    expect(err.codigo).toBe(CODIGO_ERRO_AMAZON.CONTA_NAO_ENCONTRADA);
+    expect(err.motivo).toBeNull();
+  });
+
+  it('a numeric motivo is not the envelope: no code, the label call’s status copy', async () => {
+    const { c } = cliente(() =>
+      json(409, { error: 'x', code: CODIGO_ERRO_ETIQUETA_AMAZON.NAO_ELEGIVEL, motivo: 5 }),
+    );
+
+    const err = (await falhaDe(c.etiqueta(PEDIDO_ID))) as InstanceType<typeof AmazonBackendError>;
+
+    expect(err.codigo).toBeNull();
+    expect(err.motivo).toBeNull();
+    // The label call's OWN status sentence, never the conta routes' one.
+    expect(err.message).toBe(mensagemHttpEtiquetaAmazon(409));
+    expect(err.message).not.toBe(mensagemHttpAmazon(409));
+    expect(mensagemErroEtiquetaAmazon(err)).toBe(mensagemHttpEtiquetaAmazon(409));
+  });
+
+  it('⚠️ a codeless proxy 504 is the WAIT sentence, never the conta routes’ "Tente novamente"', async () => {
+    const { c } = cliente(() => html(504));
+
+    const err = (await falhaDe(c.etiqueta(PEDIDO_ID))) as InstanceType<typeof AmazonBackendError>;
+
+    expect(err).toBeInstanceOf(AmazonBackendError);
+    expect(err.codigo).toBeNull();
+    expect(err.status).toBe(504);
+    expect(err.message).toBe(MENSAGEM_ETIQUETA_AMAZON_AGUARDE);
+    expect(err.message).not.toContain('Proxy error');
+    expect(mensagemErroEtiquetaAmazon(err)).toBe(MENSAGEM_ETIQUETA_AMAZON_AGUARDE);
+    // The page itself (an error page, never a label) goes to the console, with
+    // the route and the status, so someone can see what answered.
+    expect(console.error).toHaveBeenCalledWith(
+      expect.stringContaining('/api/marketplace/amazon/etiqueta (HTTP 504)'),
+      expect.stringContaining('Proxy error'),
+    );
+  });
+
+  it('a 400 CORPO_INVALIDO keeps its `issues` as field paths, and no motivo', async () => {
+    const { c } = cliente(() =>
+      json(400, {
+        error: 'Corpo inválido.',
+        code: CODIGO_ERRO_ETIQUETA_AMAZON.CORPO_INVALIDO,
+        issues: ['pedidoId'],
+      }),
+    );
+
+    const err = (await falhaDe(c.etiqueta(PEDIDO_ID))) as InstanceType<typeof AmazonBackendError>;
+
+    expect(err.codigo).toBe(CODIGO_ERRO_ETIQUETA_AMAZON.CORPO_INVALIDO);
+    expect(err.campos).toEqual(['pedidoId']);
+    expect(err.motivo).toBeNull();
+  });
+
+  it("a code this build does not know shows the backend's own sentence, through the REAL client", async () => {
+    const frase = 'Uma recusa que um backend mais novo descreve.';
+    const { c } = cliente(() => json(409, { error: frase, code: 'AMAZON_ETIQUETA_NOVO' }));
+
+    const err = (await falhaDe(c.etiqueta(PEDIDO_ID))) as InstanceType<typeof AmazonBackendError>;
+
+    expect(err.codigo).toBe('AMAZON_ETIQUETA_NOVO');
+    expect(err.message).toBe(frase);
+    expect(mensagemErroEtiquetaAmazon(err)).toBe(frase);
+  });
+
+  it("verifyCaller's CODELESS 403 names the frete permission, never the integrações one", async () => {
+    const { c } = cliente(() => json(403, { error: 'Sem permissão para esta operação.' }));
+
+    const err = (await falhaDe(c.etiqueta(PEDIDO_ID))) as InstanceType<typeof AmazonBackendError>;
+
+    expect(err.codigo).toBeNull();
+    expect(err.status).toBe(403);
+    expect(err.message).toBe(mensagemHttpEtiquetaAmazon(403));
+    expect(mensagemErroEtiquetaAmazon(err)).toContain('permissão de frete');
+    expect(mensagemErroEtiquetaAmazon(err)).not.toContain('integrações');
+  });
+});
+
+describe('etiqueta(pedidoId) — transport failures and aborts', () => {
+  it('a rejected fetch is an AmazonRedeError, the cause kept', async () => {
+    const causa = new TypeError('Failed to fetch');
+    const { c } = cliente(() => Promise.reject(causa));
+
+    const err = (await falhaDe(c.etiqueta(PEDIDO_ID))) as InstanceType<typeof AmazonRedeError>;
+
+    expect(err).toBeInstanceOf(AmazonRedeError);
+    expect(err.cause).toBe(causa);
+  });
+
+  it('a label body that drops MID-READ is an AmazonRedeError, never a bare TypeError', async () => {
+    const quebrado = rotulo(ZPL);
+    vi.spyOn(quebrado, 'blob').mockRejectedValue(new TypeError('terminated'));
+    const { c } = cliente(() => quebrado);
+
+    await expect(c.etiqueta(PEDIDO_ID)).rejects.toBeInstanceOf(AmazonRedeError);
+  });
+
+  it('an error body that drops MID-READ is an AmazonRedeError too', async () => {
+    const quebrado = json(503, { error: 'x', code: 'y' });
+    vi.spyOn(quebrado, 'text').mockRejectedValue(new TypeError('terminated'));
+    const { c } = cliente(() => quebrado);
+
+    await expect(c.etiqueta(PEDIDO_ID)).rejects.toBeInstanceOf(AmazonRedeError);
+  });
+
+  it('⭐ an abort IN FLIGHT rejects with the abort itself, never an AmazonRedeError', async () => {
+    const controle = new AbortController();
+    const fetchImpl = vi.fn(
+      (_url: RequestInfo | URL, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => {
+            reject(init.signal?.reason);
+          });
+        }),
+    );
+    const c = criarClienteAmazon(BASE, async () => 'id-token-firebase', fetchImpl);
+
+    const p = falhaDe(c.etiqueta(PEDIDO_ID, { signal: controle.signal }));
+    await vi.waitFor(() => {
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+    });
+    controle.abort();
+    const err = await p;
+
+    expect(err).toBe(controle.signal.reason);
+    expect((err as Error).name).toBe('AbortError');
+    expect(err).not.toBeInstanceOf(AmazonRedeError);
+  });
+
+  it('⭐ an abort DURING the body read rejects with the abort itself', async () => {
+    const controle = new AbortController();
+    const resposta = rotulo(ZPL);
+    vi.spyOn(resposta, 'blob').mockImplementation(() => {
+      controle.abort();
+      return Promise.reject(controle.signal.reason);
+    });
+    const { c } = cliente(() => resposta);
+
+    const err = await falhaDe(c.etiqueta(PEDIDO_ID, { signal: controle.signal }));
+
+    expect(err).toBe(controle.signal.reason);
+    expect(err).not.toBeInstanceOf(AmazonRedeError);
+  });
+
+  it('⭐ a TypeError mid-read AFTER the caller aborted is rethrown as itself, never relabelled', async () => {
+    // A runtime may surface the abort as the connection's own failure; the
+    // caller owns that outcome and tells it apart by its signal.
+    const controle = new AbortController();
+    const rasgado = new TypeError('terminated');
+    const resposta = rotulo(ZPL);
+    vi.spyOn(resposta, 'blob').mockImplementation(() => {
+      controle.abort();
+      return Promise.reject(rasgado);
+    });
+    const { c } = cliente(() => resposta);
+
+    const err = await falhaDe(c.etiqueta(PEDIDO_ID, { signal: controle.signal }));
+
+    expect(err).toBe(rasgado);
+    expect(err).not.toBeInstanceOf(AmazonRedeError);
+  });
+
+  it('⭐ its ERROR-body twin: a TypeError mid-read of a non-2xx AFTER the caller aborted is rethrown as itself', async () => {
+    const controle = new AbortController();
+    const rasgado = new TypeError('terminated');
+    const resposta = json(503, { error: 'x', code: 'y' });
+    vi.spyOn(resposta, 'text').mockImplementation(() => {
+      controle.abort();
+      return Promise.reject(rasgado);
+    });
+    const { c } = cliente(() => resposta);
+
+    const err = await falhaDe(c.etiqueta(PEDIDO_ID, { signal: controle.signal }));
+
+    expect(err).toBe(rasgado);
+    expect(err).not.toBeInstanceOf(AmazonRedeError);
+  });
+
+  it('NEAR-MISS: the same mid-read rejection as a TypeError with NO abort is a network error', async () => {
+    const controle = new AbortController();
+    const resposta = rotulo(ZPL);
+    vi.spyOn(resposta, 'blob').mockRejectedValue(new TypeError('terminated'));
+    const { c } = cliente(() => resposta);
+
+    await expect(c.etiqueta(PEDIDO_ID, { signal: controle.signal })).rejects.toBeInstanceOf(
+      AmazonRedeError,
+    );
   });
 });
 

@@ -2,7 +2,7 @@
 
 /**
  * Etiqueta actions inside the `/pedidos` FreteCell HoverCard — buy-or-reprint
- * (Melhor Envio), fetch-and-print (Mercado Livre, Shopee) or the carrier-less
+ * (Melhor Envio), fetch-and-print (Mercado Livre, Shopee, Amazon) or the carrier-less
  * generic label (motoboy/outros, PDF or ZPL2), dispatched by carrier `tipo`.
  *
  * The tipo is the DISPATCH tipo (`tipoDeDespacho`, #1523): a marketplace-owned
@@ -58,6 +58,7 @@ import {
 } from '@delfrance/schemas';
 
 import { intFreteTipoQueryKey } from './rowReadPrefetch';
+import { useAmazonClient } from '@/lib/amazon/client';
 import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { useFreightClient } from '@/lib/freight/client';
@@ -98,6 +99,7 @@ export function EtiquetaRowAction({
   const mlClient = useMercadoLivreClient();
   const shopeeClient = useShopeeClient();
   const lojaIntegradaClient = useLojaIntegradaClient();
+  const amazonClient = useAmazonClient();
 
   // The page host when there is one; otherwise this row's own instance, whose
   // dialogs it then renders itself (hooks stay unconditional).
@@ -179,6 +181,7 @@ export function EtiquetaRowAction({
   let clienteDoFetchPresente = false;
   if (tipo === INTEGRACAO_FRETE.mercadoLivre) clienteDoFetchPresente = mlClient !== null;
   else if (tipo === INTEGRACAO_FRETE.shopee) clienteDoFetchPresente = shopeeClient !== null;
+  else if (tipo === INTEGRACAO_FRETE.amazon) clienteDoFetchPresente = amazonClient !== null;
 
   // Legacy pre-print confirm: a reverse label on a saída (or a non-reverse one
   // on an entrada) is usually a mistake — ask before printing.
@@ -248,7 +251,7 @@ export function EtiquetaRowAction({
   // Run an etiqueta action through the shared checkout etiqueta registry —
   // the same gates (sem-frete skip, posted-risk confirm) and provider
   // dispatch the checkout post-save uses. Serves the marketplace fetch-label
-  // (Mercado Livre, Shopee) and the carrier-less generic label (no client
+  // (Mercado Livre, Shopee, Amazon) and the carrier-less generic label (no client
   // needed — `genericLabelProvider` only uses `deps.printJob`); a provider that
   // does need a client reports its own 'error' outcome when it is null (see
   // `mercadoLivreProvider`), so this stays a single guard.
@@ -300,6 +303,7 @@ export function EtiquetaRowAction({
           mercadoLivreClient: mlClient,
           shopeeClient,
           lojaIntegradaClient,
+          amazonClient,
           printJob,
         },
         ui,

@@ -6161,3 +6161,75 @@ export async function cleanupLinkPagamentoFixtures(prefix: string): Promise<void
   await Promise.all(subcolecoes.map((s) => cleanupPedidoSubcollectionByPrefix(s, prefix)));
   await Promise.all([cleanupByNamePrefix('metodo_pgto', prefix), cleanupPedidoFixtures(prefix)]);
 }
+
+/**
+ * Fixture for the Amazon etiqueta row action (step 15): TWO pedidos whose
+ * `freteInicial` is the block the Amazon order import writes, and nothing else
+ * — the label route they reach is stubbed by the spec, so no conta, `int_frete`
+ * or cliente is read.
+ *
+ *   - `<prefix>-ped-001` (`agendado`) sits at `aguardandoPostagem`, what the
+ *     import mirrors a scheduled pickup to — an estado the shared gates treat
+ *     as ALREADY POSTED (`isFreteJaPostado`), so a provider without
+ *     `reimpressao: 'mesmo-documento'` would ask the posted-risk confirm here;
+ *   - `<prefix>-ped-002` (`aguardandoNfe`) sits at `aguardandoNFe`, what the
+ *     import mirrors an order to while Amazon has not accepted its NF-e: no
+ *     pickup scheduled yet, so its first print is the one the route answers
+ *     with 409 `AGUARDANDO_NFE`.
+ *
+ * Both carry `externalOptionIntegracao: 'amz'` and NO `integracaoFreteOuterRef`,
+ * so the row reaches the provider off the block alone (`resolverIntFrete`,
+ * `fonte: 'bloco'`), and `externalId: null`, which the provider never reads.
+ * Built through `seedFreteInicial` with the import's default modalidade (FOB),
+ * so every other key carries the importer's default.
+ */
+export async function seedPedidoEtiquetaAmazonFixtures(prefix: string): Promise<{
+  agendado: string;
+  aguardandoNfe: string;
+}> {
+  const agendado = `${prefix}-ped-001`;
+  const aguardandoNfe = `${prefix}-ped-002`;
+  const agoraUs = millisToMicros(Date.now());
+
+  const pedido = (numero: string, estado: (typeof ESTADO_FRETE)[keyof typeof ESTADO_FRETE]) =>
+    db()
+      .collection('pedidos')
+      .doc(numero)
+      .set({
+        ehSaida: true,
+        estado: ESTADO_PEDIDO.pago,
+        numero,
+        itens: {},
+        itensIds: [],
+        descontoTotal: 0,
+        timestamp: agoraUs,
+        freteInicial: {
+          ...seedFreteInicial(MODALIDADE_FRETE.fob, true),
+          externalOptionIntegracao: INTEGRACAO_FRETE.amazon,
+          externalId: null,
+          externalOptionId: null,
+          integracaoFreteOuterRef: null,
+          estado,
+          codRastreio: null,
+          ultimaModificacao: agoraUs,
+        },
+      });
+
+  await Promise.all([
+    pedido(agendado, ESTADO_FRETE.aguardandoPostagem),
+    pedido(aguardandoNfe, ESTADO_FRETE.aguardandoNFe),
+  ]);
+
+  return { agendado, aguardandoNfe };
+}
+
+/**
+ * Teardown for `seedPedidoEtiquetaAmazonFixtures`: the trails `onPedidoChanged`
+ * appends under each pedido (a non-null `freteInicial`) are swept BEFORE the
+ * parents, which never cascade (the `cleanupPedidoFreteFixtures` order).
+ */
+export async function cleanupPedidoEtiquetaAmazonFixtures(prefix: string): Promise<void> {
+  await cleanupPedidoSubcollectionByPrefix('historicoFtIni', prefix);
+  await cleanupPedidoSubcollectionByPrefix('historicoEstadoPedido', prefix);
+  await cleanupByFieldPrefix('pedidos', 'numero', prefix);
+}

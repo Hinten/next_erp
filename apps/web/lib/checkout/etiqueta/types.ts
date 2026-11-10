@@ -3,6 +3,7 @@ import type { FreteDoPedido, IntFrete, IntegracaoFrete, Pedido } from '@delfranc
 import type { FreightHttpClient } from '@delfrance/integrations-freight-br/http-client';
 import type { NFeHttpClient } from '@delfrance/integrations-nfe/http-provider';
 
+import type { AmazonClient } from '@/lib/amazon/client';
 import type { ConferenciaLiCarregada } from '@/lib/loja-integrada/conferenciaPagamento';
 import type { LojaIntegradaClient } from '@/lib/loja-integrada/client';
 import type { MercadoLivreClient } from '@/lib/mercado-livre/client';
@@ -155,6 +156,13 @@ export interface EtiquetaProviderDeps {
    * gate then asks the "não verificável" confirm. REQUIRED like `shopeeClient`.
    */
   readonly lojaIntegradaClient: LojaIntegradaClient | null;
+  /**
+   * The `apps/amazon` backend client (step 15): the Easy Ship label fetch.
+   * `null` while logged out or when the build cannot reach the backend safely
+   * (`useAmazonClient()`), and the Amazon provider then answers its "cliente
+   * indisponível" error with no call. REQUIRED like `shopeeClient`.
+   */
+  readonly amazonClient: AmazonClient | null;
   /** Local print-agent bridge (falls back to a browser download). */
   readonly printJob: typeof printJob;
   /** Injectable wait (the ML invoice-pending retry); providers default to a real `setTimeout`. */

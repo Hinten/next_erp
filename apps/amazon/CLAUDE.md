@@ -39,8 +39,9 @@ closed set, `CODIGO_ERRO_NFE_AMAZON` (`@delfrance/schemas`), never a widening of
 one (step-14 plan §3 decision 21; the button and its copy are step 21's). The label route's are
 a third closed set, `CODIGO_ERRO_ETIQUETA_AMAZON`, plus the read switch's reused code; its
 envelope's `motivo` is a plain string (`erroEtiquetaAmazonSchema`), because this backend deploys
-before `apps/web` and may send a slug the web does not know yet. Nothing in `apps/web` calls the
-label route until PR 15-e.
+before `apps/web` and may send a slug the web does not know yet. Its one caller in `apps/web` is
+the Amazon label provider (step 15, PR 15-e: `apps/web/lib/checkout/etiqueta/providers/amazon.ts`,
+the checkout print and the `/pedidos` row action), which needs this backend deployed first.
 
 ## Receiver (step 3)
 
@@ -630,8 +631,8 @@ rotation; each 32–512 visible ASCII, else 503) and, in `lib/firebase/filaLeitu
 by `requireRegion`) and `AMAZON_TASKS_DISABLED` (exactly `1`). Both also serve the Easy Ship
 scheduling queue `processAmazonEasyShipSchedule` (step 15) from the functions root
 `src/agendadorAgendamento.ts` — where the valve stops its two entries and the task's own
-re-enqueues with NO sweep behind them (one WARNING each; from PR 15-d/15-e the checkout label
-print schedules instead, until they ship a person does in Seller Central) — and the NF-e queue
+re-enqueues with NO sweep behind them (one WARNING each; the order's next label print, through the
+label route, schedules instead) — and the NF-e queue
 `processAmazonNfeUpload` (step 14) from the functions root `src/agendadorNfe.ts`; there
 `AMAZON_TASKS_DISABLED=1` STOPS every NF-e upload with NO sweep behind it — the trigger, and a
 task whose next chain step the valve refuses (before its own submit), raise the aviso

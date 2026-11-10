@@ -59,7 +59,7 @@ without a caps row is a **compile error**.
 | Category (`labelMode`) | Who makes the label | Status / tracking | Frete tab | Examples |
 | --- | --- | --- | --- | --- |
 | **emit** | the app buys + generates it (OAuth → quote → cart → checkout → generate → print) | a freight **webhook** (`webhooks/melhor-envio`) | editable | `melhorEnvios` |
-| **fetch** | the **marketplace** generated it; the app fetches + prints | the marketplace **order-sync** (its own webhook), NOT a freight webhook | **read-only** (`marketplaceOwned`); `lojaIntegrada` remaps via `int_frete.mapa` to a target carrier | `mercadoLivre` / `shopee` — live (`canFetchLabel`, their only `can*`); `amz` / `magalu` / `lojaIntegrada` — Phase 5/6, stubs today |
+| **fetch** | the **marketplace** generated it; the app fetches + prints | the marketplace **order-sync** (its own webhook), NOT a freight webhook | **read-only** (`marketplaceOwned`); `lojaIntegrada` remaps via `int_frete.mapa` to a target carrier | `mercadoLivre` / `shopee` — live (`canFetchLabel`, their only `can*`); `amz` — implemented (step 15, the same single flag; its label route is on `apps/amazon`); `magalu` / `lojaIntegrada` — Phase 5/6, stubs today |
 | **generic / none** | no carrier API — the app renders the label itself from the pedido (`generic`, `lib/etiqueta-generica/`) or there is none (`none`) | none (manual) | editable | `motoboy` / `outros`; `retiradaNaLoja` / `fob` |
 
 ⚠️ **The `can*` flags drive behavior, and `labelMode` now drives one branch of
@@ -78,9 +78,11 @@ load-bearing.
 
 Printable today: `melhorEnvios` (bought label) plus `motoboy` / `outros` (an
 on-demand PDF rendered client-side from the pedido — `lib/etiqueta-generica/`).
-Fetched today: `mercadoLivre` and `shopee` (`canFetchLabel` → the row's
-`'fetch-label'` action). `retiradaNaLoja` / `fob` are `labelMode: 'none'` and
-still resolve to `unsupported`, as does every other marketplace.
+Fetched: `mercadoLivre`, `shopee` and `amz` (step 15; its label route is on
+`apps/amazon`, so the print works once that app is deployed, before
+`apps/web`) (`canFetchLabel` → the row's `'fetch-label'` action).
+`retiradaNaLoja` / `fob` are `labelMode: 'none'` and still resolve to
+`unsupported`, as does every other marketplace-owned tipo (`magalu`).
 
 ### The etiqueta dispatch — `apps/web/lib/checkout/etiqueta/README.md`
 

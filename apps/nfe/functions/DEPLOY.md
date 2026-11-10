@@ -97,10 +97,27 @@ firebase-tools applies only when you deploy with that `--project`.
 ## One-time IAM (the apps/nfe App Hosting app enqueues to this function's queue)
 
 `apps/nfe` (App Hosting) enqueues onto the auto-provisioned `reconciliarNfe` queue
-via `firebase-admin`'s `taskQueue()`. Grant its runtime SA, once per project:
+via `firebase-admin`'s `taskQueue()`. Grant its runtime SA, once per project.
+
+⚠️ **The queue name and its Cloud Run service name differ in CASE.** Cloud Tasks
+keeps the function's name (`reconciliarNfe`). The gen2 function's Cloud Run
+service is that name LOWERCASED (`reconciliarnfe`): Google's
+[Cloud Run functions deploy guide](https://docs.cloud.google.com/functions/docs/deploy)
+documents that the service name turns uppercase letters into lowercase (and `_`
+into `-`). Every `gcloud tasks queues …` line takes the queue name, and every
+`gcloud run services …` line takes the service name; a camelCase name there
+names no service. firebase-tools does not derive a gen2 function's service
+name: it reads it from the Cloud Functions API (`serviceConfig.service`). This
+file has never recorded the names a deploy produced, so confirm them on the next
+deploy before running the `run.invoker` grant or the verification below:
+
+```bash
+gcloud run services list --region=<region> --project=<project-id>
+```
 
 ```bash
 PROJECT=<project-id>
+REGION=<region>                            # the nfe codebase's FUNCTIONS_REGION
 NFE_RUNTIME_SA=<apps/nfe App Hosting runtime SA>
 FN_RUNTIME_SA=<nfe functions runtime SA>   # default: <projnum>-compute@developer.gserviceaccount.com
 gcloud projects add-iam-policy-binding "$PROJECT" \
@@ -115,8 +132,9 @@ gcloud iam service-accounts add-iam-policy-binding "$FN_RUNTIME_SA" --project="$
 # with NO failure document written anywhere.
 #
 # ⚠ SINCE #1133 THE DEPLOY DOES THIS FOR YOU when TASKS_INVOKER_SA is set (see
-# below). Run it by hand only for a deploy without that variable.
-gcloud run services add-iam-policy-binding reconciliarNfe --region="$REGION" \
+# below). Run it by hand only for a deploy without that variable. It takes the
+# SERVICE name, the queue name lowercased (above).
+gcloud run services add-iam-policy-binding reconciliarnfe --region="$REGION" \
   --project="$PROJECT" \
   --member="serviceAccount:$NFE_RUNTIME_SA" --role="roles/run.invoker"
 ```
@@ -179,8 +197,9 @@ firebase-tools skips `setInvokerUpdate` when the option is absent — but a serv
 **create**, i.e. a new or renamed task function, leaves no binding at all. That
 silent case is what this variable exists for.
 
-Verify it took, with nobody having run gcloud:
-`gcloud run services get-iam-policy reconciliarNfe --region=$REGION`.
+Verify it took, with nobody having run gcloud, by the service name (the IAM
+section above):
+`gcloud run services get-iam-policy reconciliarnfe --region=<region> --project=<project-id>`.
 
 ## Verify (staging)
 

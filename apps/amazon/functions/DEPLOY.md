@@ -397,21 +397,20 @@ itself):
 - **(step 15) ERROR scheduling dispatch line `motivo: sem-permissao`**: a second
   401/403 on the token mint or the bulk after the forced refresh — the app's
   grant for Easy Ship is missing (app-wide, so no per-pedido aviso is raised).
-  Every order then waits for its label print (from PR 15-d/15-e; until they ship,
-  for a person in Seller Central), which fails the same way: fix the grant.
+  Every order then waits for its label print, which fails the same way: fix the
+  grant.
 - **(step 15) ERROR `motivo: leitura-falhou` / `escrita-falhou`** (`falha` names
   the read-side token): a definite failure of `getOrder`, of the token mint or of
-  an LWA exchange — never Amazon refusing the order, so no aviso. The checkout
-  label print re-reads and schedules (from PR 15-d/15-e; until they ship, a person
-  schedules it in Seller Central).
+  an LWA exchange — never Amazon refusing the order, so no aviso. The order's next
+  label print (at the checkout, or a reprint from the order list) re-reads and
+  schedules.
 - **(step 15) WARNING `motivo: agendamento-nao-reenfileirado`,
   `aceite-nao-espelhado`, `amazon-indisponivel`, `taxa-limitada` or
   `resposta-sem-pedido`**: the automatic chain ENDED without a schedule (a lost
   re-enqueue, the order-level acceptance never mirrored in ~43 minutes, an outage
   on the last attempt, Amazon still throttling after the five-step pause ladder,
   an answer naming neither our schedule nor our refusal). Log-only by design: the
-  checkout label print schedules (from PR 15-d/15-e; until they ship, a person
-  schedules it in Seller Central).
+  order's next label print schedules it.
 
 Watch in the first hours after W5 (W7: the look-back re-lists migrated, in-flight
 orders through the importer):
@@ -505,8 +504,8 @@ below stays COMMENTED OUT until the window:**
 # Easy Ship scheduling enqueue of this codebase (the acceptance entry, the
 # import entry, the scheduling task's own re-enqueues), with NO sweep behind it:
 # each logs one WARNING (`agendamento-nao-enfileirado` / `-nao-reenfileirado`)
-# and that order's pickup is booked at its checkout label print instead (from PR
-# 15-d/15-e; until they ship, by a person in Seller Central). Strict `=== '1'`:
+# and that order's pickup is booked at its next label print instead (the label
+# route enqueues nothing, so this variable never stops it). Strict `=== '1'`:
 # unset, blank, `true` and `1 ` all leave enqueuing ON. Use it before the queue
 # IAM is granted.
 # AMAZON_TASKS_DISABLED=1
@@ -629,10 +628,28 @@ And onto `processAmazonEasyShipSchedule` (step 15):
   deploy grants it to BOTH runtime SAs anyway: `TASKS_INVOKER_SA` is ONE list,
   applied to every task function of the codebase.
 
-**Every** enqueuing identity needs **three** grants **per queue** (run grant 1
-and grant 3 once with `filaLeituraAmazon`, once with `processAmazonNfeUpload`
-and once with `processAmazonEasyShipSchedule`; grant 2 is per identity, not per
-queue):
+**Every** enqueuing identity needs **three** grants **per queue** (grant 2 is
+per identity, not per queue). Grant 1 takes the queue's name: run it once with
+`filaLeituraAmazon`, once with `processAmazonNfeUpload` and once with
+`processAmazonEasyShipSchedule`. Grant 3 takes the queue function's Cloud Run
+SERVICE name: run it once with `filaleituraamazon`, once with
+`processamazonnfeupload` and once with `processamazoneasyshipschedule`.
+
+⚠️ **A queue name and its Cloud Run service name differ in CASE.** Cloud Tasks
+keeps the function's name (`processAmazonEasyShipSchedule`). The gen2
+function's Cloud Run service is that name LOWERCASED
+(`processamazoneasyshipschedule`): Google's Cloud Run functions deploy guide
+documents that the service name turns uppercase letters into lowercase (and `_`
+into `-`). Every `gcloud tasks queues …` line takes the queue name, and every
+`gcloud run services …` line takes the service name; a camelCase name there
+names no service. firebase-tools does not derive a gen2 function's service
+name: it reads it from the Cloud Functions API (`serviceConfig.service`). No deploy of this
+codebase has shown the names yet, so confirm them on the first deploy before
+running grant 3 or the verification below:
+
+```bash
+gcloud run services list --region=<region> --project=<project-id>
+```
 
 ```bash
 # 1 - permission to CREATE the task. Queue-level, so it can only run once the
@@ -663,8 +680,9 @@ gcloud iam service-accounts add-iam-policy-binding <enqueuing-sa> \
 
 # 3 - permission to DISPATCH: roles/run.invoker ON THE SERVICE.
 # ⚠ THE DEPLOY APPLIES THIS ONE when TASKS_INVOKER_SA is set. Run it by hand
-# only for a deploy without that variable.
-gcloud run services add-iam-policy-binding filaLeituraAmazon --region=<region> \
+# only for a deploy without that variable. It takes the SERVICE name, the queue
+# name lowercased (above).
+gcloud run services add-iam-policy-binding filaleituraamazon --region=<region> \
   --project=<project-id> \
   --member="serviceAccount:<enqueuing-sa>" \
   --role="roles/run.invoker"
@@ -779,7 +797,7 @@ the NF-e trigger's), as the functions runtime SA:
   is what schedules an NF-e uploaded by hand in Seller Central, IF Amazon's
   acceptance moves the order's `lastUpdatedTime`, so that the backstop poll lists
   it (not yet observed; no push fires on an acceptance, and otherwise only the
-  checkout label print schedules it, from PR 15-d/15-e);
+  order's next label print schedules it);
 - **the task itself**: UNNAMED re-enqueues, waiting for the order-level
   acceptance to mirror (120 s, 600 s, 1800 s — an acceptance entry only) and
   after a 429 (30 s … 480 s).
@@ -801,8 +819,7 @@ order-level invoice status not yet accepted still waits through its re-enqueues
 (up to 3 more tasks and `getOrder` reads). `AMAZON_CHAMADAS` not `on` ⇒ one
 WARNING `chamadas-desligadas`. `AMAZON_TASKS_DISABLED=1` ⇒ the entries and the
 re-enqueues log a WARNING and enqueue nothing, with no sweep behind them: the
-order's pickup is booked at its checkout label print (from PR 15-d/15-e; until
-they ship, by a person in Seller Central). In the window (W8) ramp it with (or
+order's pickup is booked at its next label print. In the window (W8) ramp it with (or
 ahead of) the NF-e valve, alike on both surfaces: `dry-run` → a canary list of
 `<contaId>:<orderId>` → `on` → `*`.
 
@@ -814,9 +831,9 @@ both resolve when the task (or a later import) sees the order scheduled, shipped
 or cancelled — the import that moves a pedido into a cancelled sale seeds a
 resolved row of both, so a refusal racing the cancellation cannot stay open. An
 open cancellation request raises the existing `aceitar-cancelamento`. Everything
-else is log-only. The valve, the switch, an outage and a lost re-enqueue: the
-checkout label print schedules anyway (from PR 15-d/15-e; until they ship, a
-person schedules it in Seller Central). A missing app grant: the print fails the
+else is log-only. An outage and a lost re-enqueue: the order's next label print
+schedules it anyway. The valve and the switch: they gate that print too (it
+answers 503, and Seller Central prints until they are on). A missing app grant: the print fails the
 same way, so fix the grant. An ambiguous or cancelled NF-e (step 14 already
 raised its own aviso): the print will refuse it too, and the exit is scheduling
 that pickup in Seller Central.
@@ -837,10 +854,13 @@ flipped:
    1 and 1 dispatch per second, and (step 15) `processAmazonEasyShipSchedule`
    with concurrency 1, 1 dispatch per second and a 60-s minimum backoff; Cloud
    Scheduler lists the three schedule functions.
-2. For EACH of the three queues, `gcloud run services get-iam-policy <queue>` and
-   `gcloud tasks queues get-iam-policy <queue>` both name every identity in
-   `TASKS_INVOKER_SA`, and each enqueuing identity holds
-   `roles/iam.serviceAccountUser` on itself (grant 2, which no deploy makes).
+2. For EACH of the three queues,
+   `gcloud run services get-iam-policy <service> --region=<region> --project=<project-id>`
+   (the queue name lowercased, as `gcloud run services list` shows it: see the
+   IAM section) and
+   `gcloud tasks queues get-iam-policy <queue> --location=<region> --project=<project-id>`
+   both name every identity in `TASKS_INVOKER_SA`, and each enqueuing identity
+   holds `roles/iam.serviceAccountUser` on itself (grant 2, which no deploy makes).
 3. The Firestore index `notificacoesAmazon (status, processedAt)` is READY.
 4. A reprocess tick logs two `evento: 'varredura'` lines (`lane: hot` and
    `lane: deferred`), and the first expiry run logs one.
