@@ -759,3 +759,25 @@ export function descreverFalhaLeituraImportacaoLi(err: unknown): FalhaLeituraImp
   }
   return { mensagem: 'Não foi possível ler as importações de produtos.', repetivel: false };
 }
+
+/**
+ * A backend that HAS the import but not its tax-review list: its route came
+ * later (`…/importacoes/[jobId]/revisao`), so a backend between the two answers
+ * that route alone with a 404 and no code.
+ */
+export const MENSAGEM_BACKEND_SEM_REVISAO_FISCAL_LI =
+  'Este backend da Loja Integrada ainda não oferece a lista de revisão fiscal das importações ' +
+  '(ele é anterior a esta tela). Avise o suporte para atualizá-lo.';
+
+/**
+ * The copy of a failed TAX-REVIEW read: {@link descreverFalhaLeituraImportacaoLi}'s,
+ * but for the probe. A 404 with no code on THIS route says the list is missing,
+ * never the import — the result view that asks for it was opened from a job the
+ * same backend answered.
+ */
+export function descreverFalhaLeituraRevisaoFiscalLi(err: unknown): FalhaLeituraImportacaoLi {
+  if (ehBackendSemImportacaoLi(err)) {
+    return { mensagem: MENSAGEM_BACKEND_SEM_REVISAO_FISCAL_LI, repetivel: false };
+  }
+  return descreverFalhaLeituraImportacaoLi(err);
+}

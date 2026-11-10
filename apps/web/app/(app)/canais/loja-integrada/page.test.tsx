@@ -1,10 +1,20 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { act, render, screen } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import type { ReactNode } from 'react';
+import { isValidElement, type ReactNode } from 'react';
+import {
+  ACAO_ITEM_IMPORTACAO_LI,
+  MODO_IMPORTACAO_LI,
+  SITUACAO_ERP_ITEM_LI,
+  STATUS_IMPORTACAO_LI,
+  TIPO_PRODUTO_LI,
+} from '@delfrance/schemas';
 
+import type { LojaIntegradaClient } from '@/lib/loja-integrada/client';
+import { respostaImportacaoLiFalsa } from '@/lib/testing/importacaoLiFalsa';
 import { lojaIntegradaClientFalso } from '@/lib/testing/lojaIntegradaClientFalso';
 import { MantineTestProvider } from '@/lib/testing/mantine';
+import type { AlvoResultadoImportacaoLi } from './_components/CartaoImportacaoLi';
 
 /**
  * The page's own decisions only — the dialog, the panel and the cards have
@@ -15,6 +25,7 @@ import { MantineTestProvider } from '@/lib/testing/mantine';
 const h = vi.hoisted(() => ({
   permissoes: { read: true, write: true, delete: true },
   tableViewProps: null as null | Record<string, unknown>,
+  client: null as LojaIntegradaClient | null,
 }));
 
 vi.mock('@/lib/firebase/client', () => ({ getFirebaseFirestore: () => ({}) }));
@@ -36,7 +47,10 @@ vi.mock('@/lib/loja-integrada/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/loja-integrada/client')>();
   return {
     ...actual,
-    useBackendLojaIntegrada: () => ({ client: lojaIntegradaClientFalso(), indisponivel: null }),
+    useBackendLojaIntegrada: () => ({
+      client: h.client ?? lojaIntegradaClientFalso(),
+      indisponivel: null,
+    }),
   };
 });
 vi.mock('@delfrance/ui', async (importOriginal) => {
@@ -74,7 +88,57 @@ function renderPage() {
 beforeEach(() => {
   h.permissoes = { read: true, write: true, delete: true };
   h.tableViewProps = null;
+  h.client = null;
 });
+
+/** A finished Simular of one selectable row, as a card hands it to the page. */
+const RESULTADO: AlvoResultadoImportacaoLi = {
+  conta: { id: 'conta-falsa-1', nome: 'Conta A' },
+  job: respostaImportacaoLiFalsa({
+    jobId: 'job-simulacao-1',
+    status: STATUS_IMPORTACAO_LI.concluido,
+    modo: MODO_IMPORTACAO_LI.simular,
+  }),
+};
+
+/**
+ * Open the result view the way a card does: through the `onAbrirResultado` the
+ * page hands the imports panel (the panel's element, read off the probe).
+ */
+function abrirResultado(painel: ((ctx: { collapsed: boolean }) => ReactNode) | undefined) {
+  const elemento = painel?.({ collapsed: false });
+  if (!isValidElement<{ onAbrirResultado?: (alvo: AlvoResultadoImportacaoLi) => void }>(elemento)) {
+    throw new Error('o painel não é um elemento');
+  }
+  const abrir = elemento.props.onAbrirResultado;
+  expect(abrir).toBeTypeOf('function');
+  act(() => abrir?.(RESULTADO));
+}
+
+function clientComUmItem() {
+  return lojaIntegradaClientFalso({
+    itensImportacao: vi.fn(async () => ({
+      itens: [
+        {
+          liId: 101,
+          tipo: TIPO_PRODUTO_LI.normal,
+          sku: 'SKU-FALSO-101',
+          nome: null,
+          filhos: 0,
+          situacaoErp: SITUACAO_ERP_ITEM_LI.ausente,
+          erpId: null,
+          acao: ACAO_ITEM_IMPORTACAO_LI.criar,
+          aplicada: false,
+          camposPreenchidos: [],
+          categoriasCriadas: [],
+          pendencias: [],
+          atualizadoEmMs: 1_790_000_000_000,
+        },
+      ],
+      proximo: null,
+    })),
+  });
+}
 
 describe('/canais/loja-integrada', () => {
   it('a writer gets the import action in the rail, with the imports panel under it', () => {
@@ -96,6 +160,26 @@ describe('/canais/loja-integrada', () => {
     const { actionIds, painel } = renderPage();
     expect(actionIds).toEqual(['delete']);
     expect(painel).toBeUndefined();
+  });
+
+  it('⭐ a card’s "Ver resultado" opens the result view, where a writer may import a selection', async () => {
+    h.client = clientComUmItem();
+    const { painel } = renderPage();
+    expect(screen.queryByText('Resultado da simulação — Conta A')).toBeNull();
+    abrirResultado(painel);
+    expect(screen.getByText('Resultado da simulação — Conta A')).not.toBeNull();
+    expect(await screen.findByText('SKU-FALSO-101')).not.toBeNull();
+    expect(screen.getByRole('button', { name: /^Importar selecionados/ })).not.toBeNull();
+  });
+
+  it('NEAR MISS — a viewer who may only read gets the same result, with no way to start', async () => {
+    h.permissoes = { read: true, write: false, delete: false };
+    h.client = clientComUmItem();
+    const { painel } = renderPage();
+    abrirResultado(painel);
+    expect(await screen.findByText('SKU-FALSO-101')).not.toBeNull();
+    expect(screen.queryByRole('button', { name: /^Importar selecionados/ })).toBeNull();
+    expect(screen.queryAllByRole('checkbox')).toHaveLength(0);
   });
 
   it('the delete stays gated on its own bit', () => {

@@ -77,11 +77,13 @@ const {
   ERROS_DO_CLIENTE_LI,
   MAX_PAGINAS_IMPORTACAO_LI,
   MENSAGEM_BACKEND_SEM_IMPORTACAO_LI,
+  MENSAGEM_BACKEND_SEM_REVISAO_FISCAL_LI,
   chaveImportacaoLi,
   chaveListaImportacoesLi,
   describeImportacaoLiStartError,
   descreverFalhaCancelamentoImportacaoLi,
   descreverFalhaLeituraImportacaoLi,
+  descreverFalhaLeituraRevisaoFiscalLi,
   ehBackendSemImportacaoLi,
   intervaloImportacaoLi,
   jobIdDaImportacaoEmAndamentoLi,
@@ -506,6 +508,38 @@ describe('descreverFalhaLeituraImportacaoLi — total', () => {
       mensagem: 'Não foi possível ler as importações de produtos.',
       repetivel: false,
     });
+  });
+});
+
+describe('descreverFalhaLeituraRevisaoFiscalLi — the tax-review list’s own probe', () => {
+  it('⭐ a 404 with no code says the LIST is missing, never the import', () => {
+    expect(descreverFalhaLeituraRevisaoFiscalLi(http(404, null))).toEqual({
+      mensagem: MENSAGEM_BACKEND_SEM_REVISAO_FISCAL_LI,
+      repetivel: false,
+    });
+    expect(MENSAGEM_BACKEND_SEM_REVISAO_FISCAL_LI).not.toBe(MENSAGEM_BACKEND_SEM_IMPORTACAO_LI);
+  });
+
+  it('NEAR MISS — a coded 404 and an unreadable 404 keep the shared copy', () => {
+    const naoEncontrada = http(404, CODIGO_ERRO_LI.importacaoNaoEncontrada);
+    expect(descreverFalhaLeituraRevisaoFiscalLi(naoEncontrada)).toEqual(
+      descreverFalhaLeituraImportacaoLi(naoEncontrada),
+    );
+    const ilegivel = new LojaIntegradaClientRespostaInvalidaError('ilegível', 404, []);
+    expect(descreverFalhaLeituraRevisaoFiscalLi(ilegivel).mensagem).toBe('ilegível');
+  });
+
+  it('everything else is the shared read copy', () => {
+    for (const err of [
+      http(500, null),
+      http(403, null),
+      new LojaIntegradaClientNetworkError(),
+      new Error('x'),
+    ]) {
+      expect(descreverFalhaLeituraRevisaoFiscalLi(err)).toEqual(
+        descreverFalhaLeituraImportacaoLi(err),
+      );
+    }
   });
 });
 

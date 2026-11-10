@@ -16,16 +16,20 @@ import { usePermission } from '@/lib/auth';
 import { integracaoCollection } from '@/lib/data/integracaoCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { type ContaRef, contaRefFromRow } from '@/lib/marketplace/contaJobs/types';
+import type { AlvoResultadoImportacaoLi } from './_components/CartaoImportacaoLi';
 import { DialogoImportacaoLi } from './_components/DialogoImportacaoLi';
 import { ImportacoesLiPanel } from './_components/ImportacoesLiPanel';
+import { ResultadoImportacaoLi } from './_components/ResultadoImportacaoLi';
 import { useImportarProdutosLiAction } from './_components/useImportarProdutosLiAction';
 
 /**
  * `/canais/loja-integrada`: the Loja Integrada contas list, and the product
  * import (master plan step 9) — "Importar produtos da loja", started for the
  * selected contas from the action rail, with one progress card per conta under
- * the button (`_components/ImportacoesLiPanel.tsx`). Shopee's page is the
- * reference shape.
+ * the button (`_components/ImportacoesLiPanel.tsx`), and each ended job's
+ * result — its report, its tax-review list and, from a finished Simular,
+ * "Importar selecionados" (`_components/ResultadoImportacaoLi.tsx`). Shopee's
+ * page is the reference shape.
  *
  * This screen replaced the static `CanalCapsPanel` placeholder once the channel
  * gained a registered conta (master-plan step 2). The panel component itself
@@ -44,6 +48,8 @@ export default function CanalLojaIntegradaPage() {
   const { allowed: canDelete } = usePermission(PERM.integracao.delete);
   const importacao = useImportarProdutosLiAction();
   const [selecionadas, setSelecionadas] = useState<readonly ContaRef[]>([]);
+  // The ended job whose result is open, or `null`. Set from a card's "Ver resultado".
+  const [resultado, setResultado] = useState<AlvoResultadoImportacaoLi | null>(null);
 
   // The `integracao` collection holds every channel type; this screen is one
   // slice. `integracaoMeta.defaultQuery` declares the `tipo` param + `nome`
@@ -147,6 +153,7 @@ export default function CanalLojaIntegradaPage() {
                   selecionadas={selecionadas}
                   importacao={importacao.state}
                   podeCancelar={canWrite}
+                  onAbrirResultado={setResultado}
                 />
               )
             : undefined
@@ -184,6 +191,13 @@ export default function CanalLojaIntegradaPage() {
       {/* Portalled — its position in the tree is irrelevant, but it must stay
           mounted unconditionally: the action opens it. */}
       <DialogoImportacaoLi state={importacao.state} />
+      {/* Same: opened from a card in the rail. "Importar selecionados" starts
+          through the action's own state, so only a writer gets it. */}
+      <ResultadoImportacaoLi
+        alvo={resultado}
+        onClose={() => setResultado(null)}
+        importacao={canWrite ? importacao.state : null}
+      />
     </>
   );
 }
