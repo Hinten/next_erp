@@ -1017,24 +1017,27 @@ export const MENSAGENS_POR_TIPO: Record<TipoAviso, MensagemAviso> = {
     corpo: corpoRastreioDivergenteLi,
   },
   // The three avisos of the product import (step 9), all `atencao`, all on the conta page,
-  // where the import's report lists every product behind them. No `runbook`: the fixes are in
-  // the app (the category and variation screens, a product's tax settings) or in the store's
-  // panel, and each sentence says which.
+  // where the import's report lists every product behind them (its import card and result
+  // view). No `runbook`: the fixes are in the app (the variation screen, a product's tax
+  // settings, an import run with other options) or in the store's panel, and each sentence says
+  // which. No screen links a category by hand, so no sentence asks for one.
   [TIPO_AVISO.lojaIntegradaCategoriaSemVinculo]: {
     titulo: 'Categoria da Loja Integrada sem vínculo',
     corpo: (params) =>
       `A categoria ${p(params, 'caminho')} da loja ${p(params, 'loja')} ficou sem categoria no ` +
       `ERP na importação de produtos: ${fraseMotivoCategoriaSemVinculo(params.motivo)}. ` +
       `${p(params, 'produtos')} produto(s) foram importados sem categoria e precisam de revisão ` +
-      'fiscal. Vincule a categoria (ou corrija-a no painel da Loja Integrada) e importe de novo; ' +
-      'o aviso se encerra quando a importação encontrar a categoria vinculada.',
+      'fiscal. Importe de novo com "Completar" e, em categorias, "Criar e vincular as que ' +
+      'faltam" (ou corrija a categoria no painel da Loja Integrada); o aviso se encerra quando ' +
+      'uma importação encontrar a categoria vinculada.',
   },
   [TIPO_AVISO.lojaIntegradaRevisaoFiscal]: {
     titulo: 'Produtos da Loja Integrada para revisão fiscal',
     corpo: (params) =>
       `A importação de produtos da loja ${p(params, 'loja')} criou ou mudou produtos e ` +
       `categorias de um jeito que muda o cálculo de impostos da NF-e: ${p(params, 'abertos')} ` +
-      'produto(s) aguardam revisão fiscal. A lista está no relatório da última importação; um ' +
+      'produto(s) aguardam revisão fiscal. A lista está no resultado da última importação que a ' +
+      'conferiu, na tela da conta ("Ver resultado", em "Revisão fiscal"); um ' +
       'produto sai dela quando ele, a categoria dele ou uma regra de imposto que o cite tiver a ' +
       'configuração fiscal. O aviso se encerra quando a lista ficar vazia.',
   },

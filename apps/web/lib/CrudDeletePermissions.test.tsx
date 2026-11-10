@@ -85,6 +85,11 @@ vi.mock('@/app/(app)/canais/amazon/_components/ContaAmazonPanel', () => ({
 vi.mock('@/app/(app)/canais/loja-integrada/_components/ContaLojaIntegradaPanel', () => ({
   ContaLojaIntegradaPanel: () => null,
 }));
+// The conta's product imports (step 9): their reads and the start's cache
+// updates run through TanStack Query, which this suite has no provider for.
+vi.mock('@/app/(app)/canais/loja-integrada/_components/ImportacoesDaContaLi', () => ({
+  ImportacoesDaContaLi: () => null,
+}));
 // The conta's two freight tabs (step 20): their pickers and the Melhor Envio
 // service list run through `useQuery`, which this suite has no provider for.
 vi.mock('@/app/(app)/canais/loja-integrada/_components/MapaFreteManager', () => ({

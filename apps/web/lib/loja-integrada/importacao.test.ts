@@ -29,12 +29,15 @@ import { QUERY_DEFAULT_OPTIONS } from '@/lib/query/QueryProvider';
  * failure.
  *
  * Pinned, each with its near miss:
- *  - the cadence: 3 s while `pendente`/`executando`, none after; 45 minutes of
- *    silence on a job still running, strictly past;
+ *  - the cadence: 3 s while `pendente`/`executando`, none after, and none after
+ *    a failure reading again cannot change; 45 minutes of silence on a job
+ *    still running, strictly past;
  *  - a job's every answer lands in the cached list too; a whole read follows
  *    `proximo` and refuses a cursor that does not advance;
- *  - an ENDED job's report is read once and kept; a running job's is re-read
- *    when the job ends;
+ *  - a `concluido` job's report and list are read once and kept — past the
+ *    app's own 30 s staleness; a running job's are re-read when it ends, and an
+ *    interrupted one's at each open;
+ *  - no read retries behind the operator (the app's default would retry once);
  *  - a busy start ATTACHES only on the exact code with a usable id;
  *  - the start describer narrows only this client's classes (`null` for
  *    anything else — the fan rethrows it); the cancel and read describers are
@@ -85,6 +88,8 @@ const {
   descreverFalhaLeituraImportacaoLi,
   descreverFalhaLeituraRevisaoFiscalLi,
   ehBackendSemImportacaoLi,
+  estadoDoRelatorioLi,
+  intervaloDaLeituraImportacaoLi,
   intervaloImportacaoLi,
   jobIdDaImportacaoEmAndamentoLi,
   lerTodasAsPaginasLi,
@@ -177,6 +182,17 @@ const tick = () =>
     await new Promise((r) => setTimeout(r, 0));
   });
 
+/**
+ * Under fake timers: let an answer that already arrived reach the hook. TanStack
+ * hands it over through a zero-delay timer, and the fake clock runs a zero-delay
+ * timer scheduled DURING a tick one millisecond later — so this moves the clock
+ * a few milliseconds, far from any 3 s boundary.
+ */
+const assentar = () =>
+  act(async () => {
+    for (let i = 0; i < 5; i++) await vi.advanceTimersByTimeAsync(1);
+  });
+
 beforeEach(() => {
   h.semCliente = false;
   for (const f of [
@@ -199,6 +215,43 @@ afterEach(() => {
 /* -------------------------------------------------------------------------- */
 /*                                 The cadence                                 */
 /* -------------------------------------------------------------------------- */
+
+describe('intervaloDaLeituraImportacaoLi — the job query’s interval', () => {
+  const rodando = job();
+
+  it('a failure that may pass keeps the cadence: the next tick is its retry', () => {
+    for (const error of [
+      http(503, null),
+      new LojaIntegradaClientNetworkError(),
+      new LojaIntegradaClientTempoEsgotadoError(),
+    ]) {
+      expect(intervaloDaLeituraImportacaoLi({ status: 'error', data: rodando, error })).toBe(3_000);
+    }
+    expect(intervaloDaLeituraImportacaoLi({ status: 'success', data: rodando, error: null })).toBe(
+      3_000,
+    );
+  });
+
+  it('⭐ NEAR MISS — a failure reading again cannot change stops it, though the last answer was running', () => {
+    for (const error of [
+      http(404, CODIGO_ERRO_LI.importacaoNaoEncontrada),
+      http(403, null),
+      new LojaIntegradaClientRespostaInvalidaError('status novo', 200, ['status']),
+    ]) {
+      expect(intervaloDaLeituraImportacaoLi({ status: 'error', data: rodando, error })).toBe(false);
+    }
+  });
+});
+
+describe('estadoDoRelatorioLi', () => {
+  it('only a concluido job’s report is final; a cancelled or failed one is interrupted', () => {
+    expect(estadoDoRelatorioLi({ status: STATUS_IMPORTACAO_LI.concluido })).toBe('final');
+    expect(estadoDoRelatorioLi({ status: STATUS_IMPORTACAO_LI.cancelado })).toBe('interrompido');
+    expect(estadoDoRelatorioLi({ status: STATUS_IMPORTACAO_LI.falhou })).toBe('interrompido');
+    expect(estadoDoRelatorioLi({ status: STATUS_IMPORTACAO_LI.executando })).toBe('parcial');
+    expect(estadoDoRelatorioLi({ status: STATUS_IMPORTACAO_LI.pendente })).toBe('parcial');
+  });
+});
 
 describe('intervaloImportacaoLi', () => {
   it('polls every 3 s while the job is pendente or executando', () => {
@@ -570,23 +623,45 @@ describe('useImportacoesLi', () => {
     expect(h.importacoes).toHaveBeenCalledOnce();
     expect(h.importacoes).toHaveBeenCalledWith('conta-1', { sinal: expect.any(AbortSignal) });
   });
+
+  it('a failed read is not retried behind the operator (the app’s default would)', async () => {
+    h.importacoes.mockRejectedValue(http(503, null));
+    const { result } = renderHook(() => useImportacoesLi('conta-1'), {
+      wrapper: wrapper(criarQc()),
+    });
+
+    await waitFor(() => expect(result.current.erro).toBeInstanceOf(LojaIntegradaClientHttpError));
+    await tick();
+    expect(h.importacoes).toHaveBeenCalledOnce();
+  });
 });
 
 describe('useImportacaoLi — the polled card', () => {
-  it('⭐ polls every 3 s while running and stops once the job ended', async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
+  it('⭐ polls every 3 s while running — not sooner — and stops once the job ended', async () => {
+    // No `shouldAdvanceTime`: only the test moves the clock, so a poll the hook
+    // fired sooner than 3 s would show in the count below.
+    vi.useFakeTimers();
     h.importacao
       .mockResolvedValueOnce(job())
       .mockResolvedValueOnce(job({ status: STATUS_IMPORTACAO_LI.concluido }));
     const { result } = renderHook(() => useImportacaoLi('conta-1', 'job-teste-1'), {
       wrapper: wrapper(criarQc()),
     });
-    await waitFor(() => expect(result.current.dados?.status).toBe(STATUS_IMPORTACAO_LI.executando));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(result.current.dados?.status).toBe(STATUS_IMPORTACAO_LI.executando);
 
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(3_000);
+      await vi.advanceTimersByTimeAsync(2_999);
     });
-    await waitFor(() => expect(result.current.dados?.status).toBe(STATUS_IMPORTACAO_LI.concluido));
+    expect(h.importacao).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(h.importacao).toHaveBeenCalledTimes(2);
+    await assentar();
+    expect(result.current.dados?.status).toBe(STATUS_IMPORTACAO_LI.concluido);
     await act(async () => {
       await vi.advanceTimersByTimeAsync(30_000);
     });
@@ -595,6 +670,64 @@ describe('useImportacaoLi — the polled card', () => {
     expect(h.importacao).toHaveBeenCalledWith('conta-1', 'job-teste-1', {
       sinal: expect.any(AbortSignal),
     });
+  });
+
+  it('⭐ a failure reading again cannot change STOPS the polling, though the last answer was running', async () => {
+    vi.useFakeTimers();
+    h.importacao
+      .mockResolvedValueOnce(job())
+      .mockRejectedValue(http(404, CODIGO_ERRO_LI.importacaoNaoEncontrada));
+    const { result } = renderHook(() => useImportacaoLi('conta-1', 'job-teste-1'), {
+      wrapper: wrapper(criarQc()),
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3_000);
+    });
+    await assentar();
+    expect(result.current.erro).toBeInstanceOf(LojaIntegradaClientHttpError);
+    // The last good answer stays on screen…
+    expect(result.current.dados?.status).toBe(STATUS_IMPORTACAO_LI.executando);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+    // …but nothing more is asked.
+    expect(h.importacao).toHaveBeenCalledTimes(2);
+  });
+
+  it('NEAR MISS — a failure that may pass keeps polling: the next tick is its retry', async () => {
+    vi.useFakeTimers();
+    h.importacao
+      .mockResolvedValueOnce(job())
+      .mockRejectedValueOnce(http(503, null))
+      .mockResolvedValueOnce(job({ status: STATUS_IMPORTACAO_LI.concluido }));
+    const { result } = renderHook(() => useImportacaoLi('conta-1', 'job-teste-1'), {
+      wrapper: wrapper(criarQc()),
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3_000);
+    });
+    await assentar();
+    expect(h.importacao).toHaveBeenCalledTimes(2);
+    expect(result.current.erro).toBeInstanceOf(LojaIntegradaClientHttpError);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3_000);
+    });
+    await assentar();
+
+    expect(h.importacao).toHaveBeenCalledTimes(3);
+    expect(result.current.dados?.status).toBe(STATUS_IMPORTACAO_LI.concluido);
+  });
+
+  it('a failed first read is not retried behind the operator (the app’s default would)', async () => {
+    h.importacao.mockRejectedValue(http(503, null));
+    const { result } = renderHook(() => useImportacaoLi('conta-1', 'job-teste-1'), {
+      wrapper: wrapper(criarQc()),
+    });
+
+    await waitFor(() => expect(result.current.erro).toBeInstanceOf(LojaIntegradaClientHttpError));
+    await tick();
+    expect(h.importacao).toHaveBeenCalledOnce();
   });
 
   it('every answer is written into the cached list — no second request', async () => {
@@ -644,7 +777,8 @@ describe('useItensImportacaoLi / useRevisaoImportacaoLi — the whole lists', ()
     expect(h.itensImportacao.mock.calls.map((c) => c[2])).toEqual([null, '2']);
   });
 
-  it('⭐ an ENDED job’s report is read once and kept: a remount reads nothing', async () => {
+  it('⭐ a concluido job’s report is read once and kept: a remount a minute later reads nothing', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
     h.itensImportacao.mockResolvedValue({ itens: [item(1)], proximo: null });
     const qc = criarQc();
     const fim = { jobId: 'job-teste-1', status: STATUS_IMPORTACAO_LI.concluido };
@@ -654,6 +788,9 @@ describe('useItensImportacaoLi / useRevisaoImportacaoLi — the whole lists', ()
     });
     await waitFor(() => expect(primeiro.result.current.dados).toHaveLength(1));
     primeiro.unmount();
+    // Past the app's own 30 s staleness, inside the cache's 5 minutes: only
+    // `staleTime: Infinity` keeps this from reading every page again.
+    vi.setSystemTime(Date.now() + 60_000);
     const segundo = renderHook(() => useItensImportacaoLi('conta-1', fim), {
       wrapper: wrapper(qc),
     });
@@ -661,6 +798,61 @@ describe('useItensImportacaoLi / useRevisaoImportacaoLi — the whole lists', ()
 
     expect(segundo.result.current.dados).toHaveLength(1);
     expect(h.itensImportacao).toHaveBeenCalledOnce();
+  });
+
+  it('⭐ NEAR MISS — a CANCELLED job’s report is read again at the next open: its last unit may land after the stamp', async () => {
+    h.itensImportacao
+      .mockResolvedValueOnce({ itens: [item(1)], proximo: null })
+      .mockResolvedValueOnce({ itens: [item(1), item(2)], proximo: null });
+    const qc = criarQc();
+    const cancelado = { jobId: 'job-teste-1', status: STATUS_IMPORTACAO_LI.cancelado };
+
+    const primeiro = renderHook(() => useItensImportacaoLi('conta-1', cancelado), {
+      wrapper: wrapper(qc),
+    });
+    await waitFor(() => expect(primeiro.result.current.dados).toHaveLength(1));
+    primeiro.unmount();
+    const segundo = renderHook(() => useItensImportacaoLi('conta-1', cancelado), {
+      wrapper: wrapper(qc),
+    });
+
+    await waitFor(() => expect(segundo.result.current.dados).toHaveLength(2));
+    expect(h.itensImportacao).toHaveBeenCalledTimes(2);
+  });
+
+  it('⭐ a concluido job’s tax-review list is kept the same way', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    h.revisaoImportacao.mockResolvedValue({ entradas: [], proximo: null });
+    const qc = criarQc();
+    const fim = { jobId: 'job-teste-1', status: STATUS_IMPORTACAO_LI.concluido };
+
+    const primeiro = renderHook(() => useRevisaoImportacaoLi('conta-1', fim), {
+      wrapper: wrapper(qc),
+    });
+    await waitFor(() => expect(primeiro.result.current.dados).toEqual([]));
+    primeiro.unmount();
+    vi.setSystemTime(Date.now() + 60_000);
+    renderHook(() => useRevisaoImportacaoLi('conta-1', fim), { wrapper: wrapper(qc) });
+    await tick();
+
+    expect(h.revisaoImportacao).toHaveBeenCalledOnce();
+  });
+
+  it('a failed report or list read is not retried behind the operator (the app’s default would)', async () => {
+    h.itensImportacao.mockRejectedValue(http(503, null));
+    h.revisaoImportacao.mockRejectedValue(http(503, null));
+    const fim = { jobId: 'job-teste-1', status: STATUS_IMPORTACAO_LI.concluido };
+    const qc = criarQc();
+    const itens = renderHook(() => useItensImportacaoLi('conta-1', fim), { wrapper: wrapper(qc) });
+    const revisao = renderHook(() => useRevisaoImportacaoLi('conta-1', fim), {
+      wrapper: wrapper(qc),
+    });
+
+    await waitFor(() => expect(itens.result.current.erro).not.toBeNull());
+    await waitFor(() => expect(revisao.result.current.erro).not.toBeNull());
+    await tick();
+    expect(h.itensImportacao).toHaveBeenCalledOnce();
+    expect(h.revisaoImportacao).toHaveBeenCalledOnce();
   });
 
   it('NEAR MISS — a running job’s report is a snapshot: the job ending reads the final one', async () => {

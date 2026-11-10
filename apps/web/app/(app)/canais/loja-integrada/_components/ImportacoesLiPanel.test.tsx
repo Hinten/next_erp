@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { useCallback, useState } from 'react';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MODO_IMPORTACAO_LI, STATUS_IMPORTACAO_LI } from '@delfrance/schemas';
@@ -11,11 +12,15 @@ import { MantineTestProvider } from '@/lib/testing/mantine';
 
 /**
  * The rail's product-import panel (master plan step 9): which contas get a
- * card, which job each card follows, the failed start BESIDE the job card, and
- * dismissing. The card itself has its own suite.
+ * card, which job each card follows, the failed start BESIDE the job card, an
+ * attached job's note, and dismissing — by JOB, kept across the panel's
+ * remount, and undone by a start that names the job again. The card itself has
+ * its own suite.
  *
- * Only the backend hook is replaced; the hooks and the copy are the REAL ones.
- * The ids are obviously fake.
+ * Only the backend hook is replaced; the hooks and the copy are the REAL ones,
+ * the dismissals the action hook's own (`useDispensasDeJobLi`). The harness
+ * holds the ledger the way the fan-out does: one entry per conta, and its
+ * `dismiss` drops the conta's entry. The ids are obviously fake.
  */
 
 const h = vi.hoisted(() => ({
@@ -30,7 +35,9 @@ vi.mock('@/lib/loja-integrada/client', async (importOriginal) => {
   };
 });
 
-const { ImportacoesLiPanel, contasDoPainelLi } = await import('./ImportacoesLiPanel');
+const { ImportacoesLiPanel, contasDoPainelLi, jobDoPainelLi } =
+  await import('./ImportacoesLiPanel');
+const { useDispensasDeJobLi } = await import('./useImportarProdutosLiAction');
 const { LojaIntegradaClientHttpError } = await import('@/lib/loja-integrada/client');
 const { MENSAGEM_BACKEND_SEM_IMPORTACAO_LI } = await import('@/lib/loja-integrada/importacao');
 
@@ -50,32 +57,77 @@ const NOVO = job({
   modo: MODO_IMPORTACAO_LI.simular,
 });
 
-function renderPainel({
-  entries = [],
-  selecionadas = [],
-  collapsed = false,
-  dismiss = vi.fn(),
-}: {
+interface PropsDoPainel {
   entries?: ContaJobOutcome[];
   selecionadas?: ContaRef[];
   collapsed?: boolean;
-  dismiss?: (contaId: string) => void;
-} = {}) {
+  reatados?: ReadonlySet<string>;
+  /** `false` unmounts the panel alone — the rail collapsed or expanded. */
+  montado?: boolean;
+}
+
+/**
+ * The page's side of the panel: a ledger whose `dismiss` drops the conta's
+ * entry, and the action hook's dismissals ABOVE the panel. A new `entries`
+ * from the test is a new ledger — a later start.
+ */
+function Pagina({
+  entries: ledger,
+  selecionadas,
+  collapsed,
+  reatados,
+  montado,
+  espiao,
+}: Required<PropsDoPainel> & { espiao: (contaId: string) => void }) {
+  const [entries, setEntries] = useState<readonly ContaJobOutcome[]>(ledger);
+  // A new ledger from the test replaces the held one (React's "props changed"
+  // pattern: during render, never in an effect).
+  const [ledgerVisto, setLedgerVisto] = useState(ledger);
+  if (ledger !== ledgerVisto) {
+    setLedgerVisto(ledger);
+    setEntries(ledger);
+  }
+  const dismiss = useCallback(
+    (contaId: string) => {
+      espiao(contaId);
+      setEntries((cur) => cur.filter((e) => e.conta.id !== contaId));
+    },
+    [espiao],
+  );
+  const dispensas = useDispensasDeJobLi(entries, dismiss);
+  if (!montado) return null;
+  return (
+    <ImportacoesLiPanel
+      collapsed={collapsed}
+      selecionadas={selecionadas}
+      importacao={{ entries, reatados, dismiss, ...dispensas }}
+      podeCancelar
+    />
+  );
+}
+
+function renderPainel(props: PropsDoPainel = {}) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const utils = render(
+  const dismiss = vi.fn<(contaId: string) => void>();
+  const host = (p: PropsDoPainel) => (
     <MantineTestProvider>
       <QueryClientProvider client={qc}>
-        <ImportacoesLiPanel
-          collapsed={collapsed}
-          selecionadas={selecionadas}
-          importacao={{ entries, reatados: new Set(), dismiss }}
-          podeCancelar
+        <Pagina
+          entries={p.entries ?? []}
+          selecionadas={p.selecionadas ?? []}
+          collapsed={p.collapsed ?? false}
+          reatados={p.reatados ?? new Set()}
+          montado={p.montado ?? true}
+          espiao={dismiss}
         />
       </QueryClientProvider>
-    </MantineTestProvider>,
+    </MantineTestProvider>
   );
-  return { dismiss, ...utils };
+  const utils = render(host(props));
+  return { dismiss, ...utils, rerenderPainel: (p: PropsDoPainel) => utils.rerender(host(p)) };
 }
+
+const NOTA_DO_REATADO = /As opções escolhidas agora não foram aplicadas/;
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -86,6 +138,36 @@ describe('contasDoPainelLi', () => {
     const entries: ContaJobOutcome[] = [{ kind: 'started', conta: B, jobId: 'job-b' }];
     expect(contasDoPainelLi(entries, [A, B])).toEqual([B, A]);
     expect(contasDoPainelLi([], [])).toEqual([]);
+  });
+});
+
+describe('jobDoPainelLi', () => {
+  const lista = [{ jobId: 'job-novo' }, { jobId: 'job-antigo' }];
+
+  it('a start shadows the list, and shows its job even when that job was hidden', () => {
+    const inicio: ContaJobOutcome = { kind: 'started', conta: A, jobId: 'job-antigo' };
+    expect(jobDoPainelLi(inicio, lista, new Set(['job-antigo']))).toEqual({
+      jobId: 'job-antigo',
+      visivel: 'job-antigo',
+    });
+  });
+
+  it('NEAR MISS — the list’s job, hidden, stays hidden; a failure falls through to the list', () => {
+    expect(jobDoPainelLi(null, lista, new Set(['job-novo']))).toEqual({
+      jobId: 'job-novo',
+      visivel: null,
+    });
+    const falha: ContaJobOutcome = { kind: 'error', conta: A, color: 'red', message: 'x' };
+    expect(jobDoPainelLi(falha, lista, new Set(['job-novo']))).toEqual({
+      jobId: 'job-novo',
+      visivel: null,
+    });
+    // Hidden by JOB, never by conta: another job of the same conta shows.
+    expect(jobDoPainelLi(null, lista, new Set(['job-antigo', 'conta-a']))).toEqual({
+      jobId: 'job-novo',
+      visivel: 'job-novo',
+    });
+    expect(jobDoPainelLi(null, [], new Set())).toEqual({ jobId: null, visivel: null });
   });
 });
 
@@ -142,8 +224,10 @@ describe('ImportacoesLiPanel', () => {
     h.clientRef.current = lojaIntegradaClientFalso({
       importacoes: vi.fn(async () => ({ importacoes: [ANTIGO] })),
     });
+    // Selected, so the conta keeps its place once the ledger forgets it.
     const { dismiss } = renderPainel({
       entries: [{ kind: 'error', conta: A, color: 'red', message: 'Falhou.' }],
+      selecionadas: [A],
     });
     await screen.findByText('Importação concluída.');
 
@@ -172,6 +256,90 @@ describe('ImportacoesLiPanel', () => {
     // Still selected, and still the list's newest: hidden all the same.
     expect(screen.queryByText('Importação concluída.')).toBeNull();
   });
+
+  it('⭐ a start that names a job dismissed earlier shows it again — a busy start’s 409 attaching to it', async () => {
+    h.clientRef.current = lojaIntegradaClientFalso({
+      importacoes: vi.fn(async () => ({ importacoes: [ANTIGO] })),
+    });
+    const { rerenderPainel } = renderPainel({
+      entries: [{ kind: 'started', conta: A, jobId: 'job-antigo' }],
+    });
+    await screen.findByText('Importação concluída.');
+    fireEvent.click(screen.getByRole('button', { name: /Dispensar Importação de produtos/ }));
+    expect(screen.queryByText('Importação concluída.')).toBeNull();
+
+    // A later "Importar produtos da loja" for the same conta met the 409 naming it.
+    rerenderPainel({
+      entries: [{ kind: 'started', conta: A, jobId: 'job-antigo' }],
+      reatados: new Set(['job-antigo']),
+    });
+
+    expect(await screen.findByText('Importação concluída.')).not.toBeNull();
+    expect(screen.getByText(NOTA_DO_REATADO)).not.toBeNull();
+  });
+
+  it('⭐ NEAR MISS — dismissed by JOB: a NEW job of the same conta shows, and the old one stays hidden', async () => {
+    h.clientRef.current = lojaIntegradaClientFalso({
+      importacoes: vi.fn(async () => ({ importacoes: [ANTIGO] })),
+      importacao: vi.fn(async () => NOVO),
+    });
+    const { rerenderPainel } = renderPainel({ selecionadas: [A] });
+    await screen.findByText('Importação concluída.');
+    fireEvent.click(screen.getByRole('button', { name: /Dispensar Importação de produtos/ }));
+    expect(screen.queryByText('Importação concluída.')).toBeNull();
+
+    rerenderPainel({
+      selecionadas: [A],
+      entries: [{ kind: 'started', conta: A, jobId: 'job-novo' }],
+    });
+
+    expect(await screen.findByText('Simulação concluída: nada foi gravado no ERP.')).not.toBeNull();
+    expect(screen.queryByText('Importação concluída.')).toBeNull();
+  });
+
+  it('⭐ a dismissed card stays hidden across the panel’s remount (the rail collapsed and expanded)', async () => {
+    h.clientRef.current = lojaIntegradaClientFalso({
+      importacoes: vi.fn(async () => ({ importacoes: [ANTIGO] })),
+    });
+    const { rerenderPainel } = renderPainel({ selecionadas: [A] });
+    await screen.findByText('Importação concluída.');
+    fireEvent.click(screen.getByRole('button', { name: /Dispensar Importação de produtos/ }));
+
+    rerenderPainel({ selecionadas: [A], montado: false });
+    rerenderPainel({ selecionadas: [A], montado: true });
+    // The list answers again into a fresh panel: still nothing.
+    await vi.waitFor(() => expect(screen.getByRole('region')).not.toBeNull());
+
+    expect(screen.queryByText('Importação concluída.')).toBeNull();
+  });
+
+  it('⭐ an attached job’s card says the options were NOT applied', async () => {
+    h.clientRef.current = lojaIntegradaClientFalso({
+      importacoes: vi.fn(async () => ({ importacoes: [ANTIGO] })),
+    });
+    renderPainel({
+      entries: [{ kind: 'started', conta: A, jobId: 'job-antigo' }],
+      reatados: new Set(['job-antigo']),
+    });
+
+    expect(await screen.findByText(NOTA_DO_REATADO)).not.toBeNull();
+  });
+
+  it.each([
+    ['the conta’s id', new Set(['conta-a'])],
+    ['another job’s id', new Set(['job-outro'])],
+  ])(
+    'NEAR MISS — an attach set holding %s: no note',
+    async (_nome, reatados: ReadonlySet<string>) => {
+      h.clientRef.current = lojaIntegradaClientFalso({
+        importacoes: vi.fn(async () => ({ importacoes: [ANTIGO] })),
+      });
+      renderPainel({ entries: [{ kind: 'started', conta: A, jobId: 'job-antigo' }], reatados });
+
+      await screen.findByText('Importação concluída.');
+      expect(screen.queryByText(NOTA_DO_REATADO)).toBeNull();
+    },
+  );
 
   it('NEAR MISS — dismissing the list’s job leaves a ledger entry for ANOTHER job alone', async () => {
     h.clientRef.current = lojaIntegradaClientFalso({

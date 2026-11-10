@@ -17,6 +17,14 @@
  *   "Known" is exact: the code is matched byte for byte through its schema,
  *   never trimmed or case-folded — a near miss is an unknown code, shown as such.
  *
+ * ## Only paths that exist
+ *
+ * An actionable pendência's sentence says what to do, and only through a path
+ * the app or the store offers TODAY: the variation linker (`/variacoes`), a
+ * produto's own screen, the store's panel, or running the import again with
+ * other options. No screen links an ERP category or produto to a store one by
+ * hand, so a sentence that would need one sends the operator to support.
+ *
  * ## Actionable or informational
  *
  * A pendência's class comes from the shared `ehPendenciaAcionavelLi` (the set
@@ -40,12 +48,15 @@ import {
   type FotosImportacaoLi,
   MODO_IMPORTACAO_LI,
   MOTIVO_FALHA_IMPORTACAO_LI,
+  MOTIVO_FOTO_RECUSADA_LI,
   MOTIVO_REVISAO_FISCAL_LI,
   type ModoImportacaoLi,
   type MotivoFalhaImportacaoLi,
+  type MotivoFotoRecusadaLi,
   type MotivoRevisaoFiscalLi,
   PENDENCIA_IMPORTACAO_LI,
   type PendenciaImportacaoLi,
+  type RespostaImportacaoLi,
   SITUACAO_ERP_ITEM_LI,
   STATUS_IMPORTACAO_LI,
   type SituacaoErpItemLi,
@@ -56,6 +67,7 @@ import {
   ehPendenciaAcionavelLi,
   faseImportacaoLiSchema,
   motivoFalhaImportacaoLiSchema,
+  motivoFotoRecusadaLiSchema,
   motivoRevisaoFiscalLiSchema,
   pendenciaImportacaoLiSchema,
   situacaoErpItemLiSchema,
@@ -242,14 +254,15 @@ export const TEXTO_PENDENCIA_IMPORTACAO_LI = {
   [PENDENCIA_IMPORTACAO_LI.vinculoAmbiguo]: {
     rotulo: 'Vínculo ambíguo',
     descricao:
-      'Mais de um produto do ERP está vinculado a este produto da loja nesta conta. Deixe um ' +
-      'vínculo só.',
+      'Mais de um produto do ERP está vinculado a este produto da loja nesta conta, e nada foi ' +
+      'escolhido. Avise o suporte para deixar um vínculo só.',
   },
   [PENDENCIA_IMPORTACAO_LI.vinculadoAOutro]: {
     rotulo: 'Vinculado a outro produto',
     descricao:
-      'O produto do ERP encontrado já está vinculado a outro produto desta loja. Nada foi ' +
-      'alterado: confira qual dos dois é o certo.',
+      'O produto do ERP encontrado já está vinculado a outro produto desta loja, e nada foi ' +
+      'alterado. Confira os SKUs dos dois no painel da Loja Integrada; se o vínculo que já ' +
+      'existe estiver errado, avise o suporte.',
   },
   [PENDENCIA_IMPORTACAO_LI.vinculoPaiAusente]: {
     rotulo: 'Produto pai sem vínculo',
@@ -258,8 +271,8 @@ export const TEXTO_PENDENCIA_IMPORTACAO_LI = {
   [PENDENCIA_IMPORTACAO_LI.vinculoIlegivel]: {
     rotulo: 'Vínculo ilegível',
     descricao:
-      'Um vínculo guardado no ERP para este produto está fora do formato (id ou conta). Corrija ' +
-      'ou remova esse vínculo.',
+      'Um vínculo guardado no ERP para este produto está fora do formato (id ou conta). Avise o ' +
+      'suporte para corrigi-lo ou removê-lo.',
   },
   [PENDENCIA_IMPORTACAO_LI.formaDiferente]: {
     rotulo: 'Forma diferente',
@@ -317,7 +330,8 @@ export const TEXTO_PENDENCIA_IMPORTACAO_LI = {
     rotulo: 'Categoria sem vínculo',
     descricao:
       'A categoria da loja não está vinculada a uma categoria do ERP, e o produto ficou sem ' +
-      'categoria. Vincule a categoria, ou importe com "Criar e vincular as que faltam".',
+      'categoria. Rode a importação de novo com "Completar" e, em categorias, "Criar e vincular ' +
+      'as que faltam": ela cria a categoria no ERP e a vincula.',
   },
   [PENDENCIA_IMPORTACAO_LI.categoriaRecusada]: {
     rotulo: 'Categoria recusada',
@@ -329,7 +343,8 @@ export const TEXTO_PENDENCIA_IMPORTACAO_LI = {
     rotulo: 'Categoria ambígua',
     descricao:
       'O produto está em mais de uma categoria final da loja, ou a categoria está vinculada a ' +
-      'duas categorias do ERP. Nada foi escolhido.',
+      'duas categorias do ERP, e nada foi escolhido. Deixe o produto em uma categoria final no ' +
+      'painel da Loja Integrada; se forem os vínculos, avise o suporte.',
   },
   [PENDENCIA_IMPORTACAO_LI.descricaoLonga]: {
     rotulo: 'Descrição longa demais',
@@ -340,8 +355,10 @@ export const TEXTO_PENDENCIA_IMPORTACAO_LI = {
   [PENDENCIA_IMPORTACAO_LI.dadoInvalido]: {
     rotulo: 'Dado inválido',
     descricao:
-      'Um campo da loja não pôde ser usado (veja os campos citados); o restante do produto ' +
-      'seguiu.',
+      'Um dado da loja não pôde ser usado (veja os campos citados). Um produto, uma variação ou ' +
+      'uma categoria que seria criado com ele não foi criado; num produto que já existia, só ' +
+      'esse campo ficou de fora. Corrija o dado no painel da Loja Integrada e rode a importação ' +
+      'de novo.',
   },
   [PENDENCIA_IMPORTACAO_LI.conflitoDeEscrita]: {
     rotulo: 'Conflito de gravação',
@@ -562,4 +579,133 @@ export function lerMotivoRevisaoFiscalLi(motivo: string): CodigoLidoLi<string> {
     motivo,
     (c) => `Motivo ${citar(c)}`,
   );
+}
+
+/* -------------------------------------------------------------------------- */
+/*                               The job's phase line                          */
+/* -------------------------------------------------------------------------- */
+
+/** A job created and not picked up yet: its stored phase is only where it WILL start. */
+export const TEXTO_JOB_AGUARDANDO_LI = 'Aguardando o início';
+
+/** The learning phase under Simular, which works out what it would link and writes nothing. */
+export const TEXTO_APRENDIZADO_SIMULADO_LI =
+  'Conferindo as opções de grade confirmadas pelo SKU (sem gravar)';
+
+/**
+ * The line a running card shows: what the job is doing NOW. A `pendente` job
+ * has not started (its stored phase is the first one it will run), and a
+ * Simular's learning phase links nothing — every other phase reads the same in
+ * both modes, through {@link lerFaseImportacaoLi}.
+ */
+export function textoDaFaseDoJobLi(
+  job: Pick<RespostaImportacaoLi, 'status' | 'fase' | 'modo'>,
+): string {
+  if (job.status === STATUS_IMPORTACAO_LI.pendente) return TEXTO_JOB_AGUARDANDO_LI;
+  if (job.modo === MODO_IMPORTACAO_LI.simular && job.fase === FASE_IMPORTACAO_LI.aprendizado) {
+    return TEXTO_APRENDIZADO_SIMULADO_LI;
+  }
+  return lerFaseImportacaoLi(job.fase).texto;
+}
+
+/* -------------------------------------------------------------------------- */
+/*                            The fields a report names                        */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The field names the report carries as plain strings — what the complete step
+ * filled (`camposPreenchidos`), what a `dado-invalido` cites, what a refreshed
+ * link changed — as the operator reads them. Matched EXACTLY, like every code
+ * here; a name this build does not know is shown as it came.
+ */
+const ROTULO_CAMPO_LI: ReadonlyMap<string, string> = new Map([
+  ['gtin', 'GTIN'],
+  ['pesoLiquidoKg', 'Peso líquido (kg)'],
+  ['pesoBrutoKg', 'Peso bruto (kg)'],
+  ['alturaCm', 'Altura (cm)'],
+  ['larguraCm', 'Largura (cm)'],
+  ['profundidadeCm', 'Profundidade (cm)'],
+  ['categoriaProdutoOuterRef', 'Categoria'],
+  ['extraData.descricao', 'Descrição'],
+  ['extraData.marca', 'Marca'],
+  ['nome', 'Nome'],
+  ['sku', 'SKU'],
+  ['filhos', 'Lista de variações do produto pai'],
+  ['detalhe', 'Detalhe do produto na loja'],
+  ['ativo', 'Ativo na loja'],
+  ['bloqueado', 'Bloqueado na loja'],
+  ['removido', 'Na lixeira da loja'],
+]);
+
+/**
+ * The prefixes a cited field path carries when it is a field of something
+ * else: a store category's, a category link's, a variation's.
+ */
+const PREFIXOS_CAMPO_LI: readonly (readonly [string, string])[] = [
+  ['categoria.', 'Categoria da loja'],
+  ['categoriaLojaIntegrada.', 'Vínculo da categoria'],
+  ['membro.', 'Variação'],
+];
+
+/** One field name of the report, in pt-BR — or as it came, when this build does not know it. */
+export function lerCampoLi(nome: string): string {
+  const direto = ROTULO_CAMPO_LI.get(nome);
+  if (direto !== undefined) return direto;
+  for (const [prefixo, dono] of PREFIXOS_CAMPO_LI) {
+    if (nome.startsWith(prefixo) && nome.length > prefixo.length) {
+      const resto = nome.slice(prefixo.length);
+      return `${dono}: ${ROTULO_CAMPO_LI.get(resto) ?? resto}`;
+    }
+  }
+  return nome;
+}
+
+/** Why a store picture was refused (a `foto-recusada`'s second reference). */
+export const ROTULO_MOTIVO_FOTO_RECUSADA_LI = {
+  [MOTIVO_FOTO_RECUSADA_LI.caminhoInvalido]: 'endereço inválido',
+  [MOTIVO_FOTO_RECUSADA_LI.redirecionamento]: 'o endereço redirecionou para outro',
+  [MOTIVO_FOTO_RECUSADA_LI.naoEncontrada]: 'não encontrada',
+  [MOTIVO_FOTO_RECUSADA_LI.http]: 'recusada pelo servidor de imagens',
+  [MOTIVO_FOTO_RECUSADA_LI.muitoGrande]: 'grande demais',
+  [MOTIVO_FOTO_RECUSADA_LI.naoEImagem]: 'não é uma imagem',
+} as const satisfies Record<MotivoFotoRecusadaLi, string>;
+
+/** A whole count of characters, as a reference carries it. */
+const INTEIRO = /^\d+$/;
+
+/**
+ * What a pendência names, as one line — or `null` when it names nothing. The
+ * codes whose references are FIELD names read them through {@link lerCampoLi};
+ * a too-long description says its length; a refused picture says which and
+ * why. Every other code names ids or SKUs, shown as they came — and so does a
+ * known code whose references do not have the shape it carries.
+ */
+export function textoReferenciasDaPendenciaLi(pendencia: {
+  readonly codigo: string;
+  readonly referencias: readonly string[];
+}): string | null {
+  const { referencias } = pendencia;
+  if (referencias.length === 0) return null;
+  const lido = pendenciaImportacaoLiSchema.safeParse(pendencia.codigo);
+  const codigo = lido.success ? lido.data : null;
+  if (
+    codigo === PENDENCIA_IMPORTACAO_LI.dadoInvalido ||
+    codigo === PENDENCIA_IMPORTACAO_LI.vinculoAtualizado
+  ) {
+    return `Campos: ${referencias.map(lerCampoLi).join(', ')}`;
+  }
+  if (codigo === PENDENCIA_IMPORTACAO_LI.descricaoLonga) {
+    const [tamanho] = referencias;
+    if (referencias.length === 1 && tamanho !== undefined && INTEIRO.test(tamanho)) {
+      return `Descrição com ${Number(tamanho).toLocaleString('pt-BR')} caracteres`;
+    }
+  }
+  if (codigo === PENDENCIA_IMPORTACAO_LI.fotoRecusada) {
+    const [imagem, motivo] = referencias;
+    const motivoLido = motivoFotoRecusadaLiSchema.safeParse(motivo);
+    if (referencias.length === 2 && imagem !== undefined && motivoLido.success) {
+      return `Imagem ${imagem}: ${ROTULO_MOTIVO_FOTO_RECUSADA_LI[motivoLido.data]}`;
+    }
+  }
+  return `Referências: ${referencias.join(', ')}`;
 }

@@ -23,15 +23,19 @@
  *   Shopee rule: the fan-out's ledger keeps one entry per conta, so a failed
  *   re-start replaces the started entry there, and the card falls back to the
  *   list's newest job, which still names it.
- * - **Dismissing a job card hides that job** for this session; a newer job of
- *   the same conta (a new start, the list's next newest) shows again.
- *   Dismissing a failed start's card forgets only the failure.
+ * - **Dismissing a job card hides that JOB** (by id) for this session; a newer
+ *   job of the same conta (a new start, a newer job at the head of the list)
+ *   shows. A start this session that NAMES a hidden job shows it again: a busy
+ *   start's 409 attaching to a job dismissed earlier is the operator asking for
+ *   it. Dismissing a failed start's card forgets only the failure.
+ * - The dismissals live in the action hook's state (`useDispensasDeJobLi`),
+ *   never here: the rail unmounts and remounts this panel each time it is
+ *   collapsed or expanded.
  *
  * Nothing here polls by itself: each job card owns its polling query
  * (`CartaoImportacaoLi.tsx`), because hooks cannot be looped over a dynamic
  * list.
  */
-import { useCallback, useState } from 'react';
 import { Badge, Card, Stack, Text } from '@mantine/core';
 
 import { ContaJobErrorCard } from '@/components/contaJobs/JobCardShell';
@@ -47,13 +51,13 @@ import {
   CartaoImportacaoLi,
   ROTULO_IMPORTACAO_PRODUTOS_LI,
 } from './CartaoImportacaoLi';
+import type { ImportarProdutosLiActionState } from './useImportarProdutosLiAction';
 
 /** What the panel needs from the action hook. */
-export interface FluxoDoPainelLi {
-  readonly entries: readonly ContaJobOutcome[];
-  readonly reatados: ReadonlySet<string>;
-  readonly dismiss: (contaId: string) => void;
-}
+export type FluxoDoPainelLi = Pick<
+  ImportarProdutosLiActionState,
+  'entries' | 'reatados' | 'dismiss' | 'dispensados' | 'dispensarJob'
+>;
 
 export interface ImportacoesLiPanelProps {
   readonly collapsed: boolean;
@@ -80,6 +84,24 @@ export function contasDoPainelLi(
   return [...contas.values()];
 }
 
+/**
+ * The job a conta's card follows, and the same id under `visivel` when its card
+ * shows (`null` when it is hidden). Module header: a STARTED entry shadows the
+ * list (a failure falls through to it), and that start shows its job even when
+ * the job was hidden earlier — the start is the operator asking for it again.
+ * Any other job shows unless it was hidden.
+ */
+export function jobDoPainelLi(
+  entrada: ContaJobOutcome | null,
+  importacoes: readonly { readonly jobId: string }[],
+  dispensados: ReadonlySet<string>,
+): { jobId: string | null; visivel: string | null } {
+  const iniciado = entrada?.kind === 'started' ? entrada.jobId : null;
+  const jobId = iniciado ?? importacoes[0]?.jobId ?? null;
+  const visivel = jobId !== null && (jobId === iniciado || !dispensados.has(jobId));
+  return { jobId, visivel: visivel ? jobId : null };
+}
+
 export function ImportacoesLiPanel({
   collapsed,
   selecionadas,
@@ -87,18 +109,7 @@ export function ImportacoesLiPanel({
   podeCancelar,
   onAbrirResultado,
 }: ImportacoesLiPanelProps) {
-  const [dispensados, setDispensados] = useState<ReadonlySet<string>>(new Set());
-  const { entries, reatados, dismiss } = importacao;
-
-  const dispensarJob = useCallback(
-    (contaId: string, jobId: string) => {
-      // A failure in the ledger is the card BESIDE this one, dismissed on its own.
-      const entrada = entries.find((e) => e.conta.id === contaId);
-      if (entrada?.kind === 'started' && entrada.jobId === jobId) dismiss(contaId);
-      setDispensados((cur) => new Set(cur).add(jobId));
-    },
-    [entries, dismiss],
-  );
+  const { entries, reatados, dismiss, dispensados, dispensarJob } = importacao;
 
   // The collapsed rail is an icon strip: only the session's count fits, and only
   // when there is something to count.
@@ -160,10 +171,7 @@ function ImportacoesDaContaLi({
 }) {
   const lista = useImportacoesLi(conta.id);
   const importacoes = lista.dados?.importacoes ?? [];
-  // Only a STARTED entry shadows the list: a failure falls through to it.
-  const jobId =
-    (entrada?.kind === 'started' ? entrada.jobId : undefined) ?? importacoes[0]?.jobId ?? null;
-  const visivel = jobId !== null && !dispensados.has(jobId);
+  const { jobId, visivel: jobVisivel } = jobDoPainelLi(entrada, importacoes, dispensados);
 
   return (
     <>
@@ -176,17 +184,17 @@ function ImportacoesDaContaLi({
           onDismiss={onDismissFalha}
         />
       )}
-      {visivel ? (
+      {jobVisivel !== null ? (
         <CartaoImportacaoLi
           // The jobId is in the key: a NEW job for the same conta is a new card
           // with a fresh query, never the old one re-pointed.
-          key={jobId}
+          key={jobVisivel}
           conta={conta}
-          jobId={jobId}
-          jobDaLista={importacoes.find((j) => j.jobId === jobId) ?? null}
-          reatado={reatados.has(jobId)}
+          jobId={jobVisivel}
+          jobDaLista={importacoes.find((j) => j.jobId === jobVisivel) ?? null}
+          reatado={reatados.has(jobVisivel)}
           podeCancelar={podeCancelar}
-          onDismiss={() => onDismissJob(jobId)}
+          onDismiss={() => onDismissJob(jobVisivel)}
           onAbrirResultado={onAbrirResultado}
         />
       ) : (

@@ -299,6 +299,79 @@ describe('useImportarProdutosLiAction', () => {
     expect(result.current.state.opened).toBe(false);
   });
 
+  it('⭐ `iniciar` resolves EACH conta’s outcome: a fresh start, an attach, a failure', async () => {
+    h.clientRef.current = lojaIntegradaClientFalso({
+      iniciarImportacao: vi.fn(async (contaId: string) => {
+        if (contaId === 'conta-b') throw emAndamento('job-vivo');
+        if (contaId === 'conta-c') throw new LojaIntegradaClientNetworkError();
+        return { jobId: `job-${contaId}` };
+      }),
+      importacoes: vi.fn(async () => ({ importacoes: [] })),
+    });
+    const { result } = renderAcao();
+    const contas = [
+      { id: 'conta-a', nome: 'Conta A' },
+      { id: 'conta-b', nome: 'Conta B' },
+      { id: 'conta-c', nome: 'Conta C' },
+    ];
+
+    let desfechos: unknown = null;
+    await act(async () => {
+      desfechos = await result.current.state.iniciar(contas, OPCOES);
+    });
+
+    expect(desfechos).toEqual([
+      { kind: 'started', conta: contas[0], jobId: 'job-conta-a', reatado: false },
+      // NEAR MISS — the same `started` kind, but an attach: the options were NOT applied.
+      { kind: 'started', conta: contas[1], jobId: 'job-vivo', reatado: true },
+      {
+        kind: 'error',
+        conta: contas[2],
+        color: 'red',
+        message: expect.stringMatching(/falha de rede/),
+      },
+    ]);
+  });
+
+  it('`iniciar` with no client starts nothing, says so, and resolves no outcome', async () => {
+    h.clientRef.current = null;
+    const { result } = renderAcao();
+
+    let desfechos: unknown = null;
+    await act(async () => {
+      desfechos = await result.current.state.iniciar([{ id: 'conta-a', nome: 'Conta A' }], OPCOES);
+    });
+
+    expect(desfechos).toEqual([]);
+    expect(h.notify).toHaveBeenCalledWith({
+      color: 'red',
+      message: 'Faça login novamente para usar as ações da Loja Integrada.',
+    });
+  });
+
+  it('⭐ dismissing a job card hides that JOB and forgets the start that named it — never a failure', async () => {
+    h.clientRef.current = lojaIntegradaClientFalso({
+      iniciarImportacao: vi.fn(async (contaId: string) => {
+        if (contaId === 'conta-b') throw new LojaIntegradaClientNetworkError();
+        return { jobId: `job-${contaId}` };
+      }),
+      importacoes: vi.fn(async () => ({ importacoes: [] })),
+    });
+    const { result } = renderAcao();
+    await abrirEIniciar(result, [row('conta-a', 'Conta A'), row('conta-b', 'Conta B')]);
+
+    act(() => {
+      result.current.state.dispensarJob('conta-a', 'job-conta-a');
+      // Conta B's ledger entry is a failure: hiding a job of B leaves it alone.
+      result.current.state.dispensarJob('conta-b', 'job-qualquer');
+    });
+
+    expect([...result.current.state.dispensados]).toEqual(['job-conta-a', 'job-qualquer']);
+    expect(result.current.state.entries.map((e) => [e.conta.id, e.kind])).toEqual([
+      ['conta-b', 'error'],
+    ]);
+  });
+
   it('does not open the dialog while logged out', () => {
     h.clientRef.current = null;
     const { result } = renderAcao();

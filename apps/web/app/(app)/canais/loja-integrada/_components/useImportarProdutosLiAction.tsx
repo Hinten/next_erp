@@ -20,6 +20,15 @@
  * rail follows it — a card the operator can watch and cancel, never an error.
  * The id lands in `reatados`, and its card says the options picked now were NOT
  * applied.
+ *
+ * ## Hidden cards
+ *
+ * The cards the operator dismissed live HERE, not in the rail's panel: the rail
+ * unmounts and remounts the panel each time it is collapsed or expanded, which
+ * would bring every dismissed card back. Dismissing a job card hides that JOB
+ * (by id) for the session and forgets the start that named it; a start that
+ * names the job again — a busy start's 409 attaching to it — shows it again
+ * (`ImportacoesLiPanel.tsx`).
  */
 import { useCallback, useMemo, useState } from 'react';
 import { notifications } from '@mantine/notifications';
@@ -38,6 +47,7 @@ import {
 import {
   type ContaJobOutcome,
   type ContaRef,
+  type JobErrorDescription,
   contaRefFromRow,
 } from '@/lib/marketplace/contaJobs/types';
 import { useContaJobFan } from '@/lib/marketplace/contaJobs/useContaJobFan';
@@ -45,7 +55,55 @@ import { useContaJobFan } from '@/lib/marketplace/contaJobs/useContaJobFan';
 /** The action's id in the TableView rail. */
 export const ID_ACAO_IMPORTAR_PRODUTOS_LI = 'loja-integrada-importar-produtos';
 
-export interface ImportarProdutosLiActionState {
+/**
+ * What one conta's start came to: a job to follow — fresh, or the running one
+ * a busy start attached to (`reatado`: the options were NOT applied) — or the
+ * failure's copy, the same as its card in the rail.
+ */
+export type DesfechoInicioLi =
+  | {
+      readonly kind: 'started';
+      readonly conta: ContaRef;
+      readonly jobId: string;
+      readonly reatado: boolean;
+    }
+  | {
+      readonly kind: 'error';
+      readonly conta: ContaRef;
+      readonly color: JobErrorDescription['color'];
+      readonly message: string;
+    };
+
+/** The job cards hidden this session, and the dismiss that hides one. */
+export interface DispensasDeJobLi {
+  /** The jobIds whose card the operator dismissed. */
+  readonly dispensados: ReadonlySet<string>;
+  /**
+   * Hide a job's card: the job's id joins `dispensados`, and a STARTED ledger
+   * entry naming that job is dismissed with it. A failure in the ledger is the
+   * card BESIDE the job's, and is dismissed on its own.
+   */
+  readonly dispensarJob: (contaId: string, jobId: string) => void;
+}
+
+/** The dismissals over a ledger, kept by whoever outlives the panel (module header). */
+export function useDispensasDeJobLi(
+  entries: readonly ContaJobOutcome[],
+  dismiss: (contaId: string) => void,
+): DispensasDeJobLi {
+  const [dispensados, setDispensados] = useState<ReadonlySet<string>>(new Set());
+  const dispensarJob = useCallback(
+    (contaId: string, jobId: string) => {
+      const entrada = entries.find((e) => e.conta.id === contaId);
+      if (entrada?.kind === 'started' && entrada.jobId === jobId) dismiss(contaId);
+      setDispensados((cur) => new Set(cur).add(jobId));
+    },
+    [entries, dismiss],
+  );
+  return { dispensados, dispensarJob };
+}
+
+export interface ImportarProdutosLiActionState extends DispensasDeJobLi {
   readonly opened: boolean;
   /** The contas captured when the action fired — the dialog lists them. */
   readonly contas: readonly ContaRef[];
@@ -61,12 +119,14 @@ export interface ImportarProdutosLiActionState {
   /**
    * A start for any contas, through the same ledger, attach and rethrow — what
    * the result view's "Importar selecionados" calls with `alvo: selecionados`.
-   * The dialog is left as it is.
+   * The dialog is left as it is. Resolves with each conta's outcome (input
+   * order), so the caller can tell a fresh start from an attach or a failure;
+   * with no client it starts nothing, says so, and resolves `[]`.
    */
   readonly iniciar: (
     contas: readonly ContaRef[],
     opcoes: EntradaOpcoesImportacaoLi,
-  ) => Promise<void>;
+  ) => Promise<readonly DesfechoInicioLi[]>;
   readonly dismiss: (contaId: string) => void;
 }
 
@@ -88,6 +148,14 @@ export function useImportarProdutosLiAction(): {
   const fan = useContaJobFan(describeImportacaoLiStartError);
   const [dialog, setDialog] = useState<DialogState>(FECHADO);
   const [reatados, setReatados] = useState<ReadonlySet<string>>(new Set());
+  const dispensas = useDispensasDeJobLi(fan.entries, fan.dismiss);
+
+  const semCliente = useCallback(() => {
+    notifications.show({
+      color: 'red',
+      message: indisponivel === null ? SEM_SESSAO : mensagemBackendIndisponivel(indisponivel),
+    });
+  }, [indisponivel]);
 
   const action = useMemo<ActionConfig<Integracao>>(
     () => ({
@@ -104,16 +172,13 @@ export function useImportarProdutosLiAction(): {
       // clear the selection the panel reads).
       run: (rows) => {
         if (!acoes) {
-          notifications.show({
-            color: 'red',
-            message: indisponivel === null ? SEM_SESSAO : mensagemBackendIndisponivel(indisponivel),
-          });
+          semCliente();
           return;
         }
         setDialog({ opened: true, contas: rows.map(contaRefFromRow) });
       },
     }),
-    [acoes, indisponivel],
+    [acoes, semCliente],
   );
 
   const close = useCallback(() => {
@@ -122,14 +187,25 @@ export function useImportarProdutosLiAction(): {
 
   const iniciar = useCallback<ImportarProdutosLiActionState['iniciar']>(
     async (contas, opcoes) => {
-      if (!acoes) return;
-      await fan.run(contas, async (contaId) => {
+      if (!acoes) {
+        semCliente();
+        return [];
+      }
+      const reatadasDaVez = new Set<string>();
+      const desfechos = await fan.run(contas, async (contaId) => {
         const inicio = await acoes.iniciar(contaId, opcoes);
-        if (inicio.reatado) setReatados((cur) => new Set(cur).add(inicio.jobId));
+        if (inicio.reatado) {
+          reatadasDaVez.add(contaId);
+          setReatados((cur) => new Set(cur).add(inicio.jobId));
+        }
         return { jobId: inicio.jobId };
       });
+      return desfechos.map(
+        (d): DesfechoInicioLi =>
+          d.kind === 'started' ? { ...d, reatado: reatadasDaVez.has(d.conta.id) } : d,
+      );
     },
-    [acoes, fan],
+    [acoes, fan, semCliente],
   );
 
   const start = useCallback(
@@ -152,6 +228,8 @@ export function useImportarProdutosLiAction(): {
       start,
       iniciar,
       dismiss: fan.dismiss,
+      dispensados: dispensas.dispensados,
+      dispensarJob: dispensas.dispensarJob,
     },
   };
 }

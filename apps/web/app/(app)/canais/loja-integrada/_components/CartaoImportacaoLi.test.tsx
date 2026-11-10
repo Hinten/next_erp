@@ -6,6 +6,7 @@ import {
   ACAO_IMPORTACAO_LI,
   ALVO_IMPORTACAO_LI,
   CATEGORIAS_IMPORTACAO_LI,
+  CODIGO_ERRO_LI,
   FASE_IMPORTACAO_LI,
   FOTOS_IMPORTACAO_LI,
   MODO_IMPORTACAO_LI,
@@ -22,7 +23,8 @@ import { MantineTestProvider } from '@/lib/testing/mantine';
 
 /**
  * One conta's product-import card (master plan step 9): what it reads, what it
- * shows from the job answer, Cancelar, "sem progresso" and the way into an
+ * shows from the job answer (the phase line, the list's progress, the
+ * counters), Cancelar and its refusals, "sem progresso" and the way into an
  * ended job's result.
  *
  * Only the backend hook is replaced: the error classes, the hooks and the copy
@@ -41,12 +43,20 @@ vi.mock('@/lib/loja-integrada/client', async (importOriginal) => {
   };
 });
 
-const { CartaoImportacaoLi, linhasDosContadoresLi, resumoDasOpcoesLi, textoListagemDivergenteLi } =
-  await import('./CartaoImportacaoLi');
+const {
+  CartaoImportacaoLi,
+  linhasDosContadoresLi,
+  resumoDasOpcoesLi,
+  textoLeituraDaListaLi,
+  textoListagemDivergenteLi,
+} = await import('./CartaoImportacaoLi');
 const { LojaIntegradaClientHttpError } = await import('@/lib/loja-integrada/client');
 const { MENSAGEM_BACKEND_SEM_IMPORTACAO_LI } = await import('@/lib/loja-integrada/importacao');
-const { MENSAGEM_MOTIVO_FALHA_IMPORTACAO_LI } =
-  await import('@/lib/loja-integrada/importacaoRotulos');
+const {
+  MENSAGEM_MOTIVO_FALHA_IMPORTACAO_LI,
+  TEXTO_APRENDIZADO_SIMULADO_LI,
+  TEXTO_JOB_AGUARDANDO_LI,
+} = await import('@/lib/loja-integrada/importacaoRotulos');
 const { SEM_PROGRESSO_MS } = await import('@/lib/marketplace/contaJobs/cadencia');
 
 const CONTA: ContaRef = { id: 'conta-falsa-1', nome: 'Conta A' };
@@ -132,7 +142,7 @@ describe('the pure lines', () => {
   it('the counters: done under Importar, proposed under Simular; photos and failures only when non-zero', () => {
     const aplicar = job({ contadores: CONTADORES });
     expect(linhasDosContadoresLi(aplicar)).toEqual([
-      '40 produtos lidos da loja',
+      '40 produtos da loja processados',
       '30 vinculados · 5 criados · 4 completados · 1 sem mudança',
       '3 pendências a resolver · 1 informativa',
     ]);
@@ -156,15 +166,33 @@ describe('the pure lines', () => {
     ).toBe('1 foto a copiar');
   });
 
-  it('⭐ the store’s count shows ONLY when the backend flagged the listing divergent', () => {
+  it('⭐ the store’s count shows ONLY when the backend flagged the listing divergent — in rows', () => {
     expect(textoListagemDivergenteLi({ linhas: 118, totalLi: 120, divergente: true })).toMatch(
-      /^A loja informou 120 produtos e a leitura achou 118 produtos:/,
+      /^A lista de produtos da loja informou 120 linhas \(produtos e variações\) e a leitura achou 118 linhas:/,
     );
     // NEAR MISS — different numbers, but the backend did not flag them: nothing.
     expect(textoListagemDivergenteLi({ linhas: 118, totalLi: 120, divergente: false })).toBeNull();
     expect(textoListagemDivergenteLi({ linhas: 1, totalLi: null, divergente: true })).toMatch(
-      /^A leitura achou 1 produto, um número diferente do que a loja informou:/,
+      /^A leitura da lista de produtos da loja achou 1 linha, um número diferente/,
     );
+  });
+
+  it('the list’s rows read so far show only while the listing runs', () => {
+    const listando = job({
+      fase: FASE_IMPORTACAO_LI.listagem,
+      listagem: { paginas: 3, linhas: 300, totalLi: 8_000, divergente: false },
+    });
+    expect(textoLeituraDaListaLi(listando)).toBe(
+      'Lista da loja: 300 linhas lidas de 8000 (produtos e variações)',
+    );
+    expect(
+      textoLeituraDaListaLi({ ...listando, listagem: { ...listando.listagem, totalLi: null } }),
+    ).toBe('Lista da loja: 300 linhas lidas');
+    // NEAR MISS — another phase, or an ended job: nothing.
+    expect(textoLeituraDaListaLi({ ...listando, fase: FASE_IMPORTACAO_LI.familias })).toBeNull();
+    expect(
+      textoLeituraDaListaLi({ ...listando, status: STATUS_IMPORTACAO_LI.cancelado }),
+    ).toBeNull();
   });
 });
 
@@ -218,6 +246,51 @@ describe('CartaoImportacaoLi', () => {
     expect(importacao).toHaveBeenCalledTimes(1);
   });
 
+  it('⭐ a QUEUED job says it waits for its start — never the phase it will start in', () => {
+    h.clientRef.current = lojaIntegradaClientFalso({ importacao: vi.fn(async () => job()) });
+    renderCartao(
+      cartao({
+        jobDaLista: job({
+          status: STATUS_IMPORTACAO_LI.pendente,
+          fase: FASE_IMPORTACAO_LI.catalogo,
+        }),
+      }),
+    );
+    expect(screen.getByText('Na fila')).not.toBeNull();
+    expect(screen.getByText(TEXTO_JOB_AGUARDANDO_LI)).not.toBeNull();
+    expect(screen.queryByText('Lendo as categorias e as marcas da loja')).toBeNull();
+  });
+
+  it('⭐ a Simular’s learning phase never says it links; an import’s does', () => {
+    h.clientRef.current = lojaIntegradaClientFalso({ importacao: vi.fn(async () => job()) });
+    const aprendendo = job({ fase: FASE_IMPORTACAO_LI.aprendizado });
+    const { unmount } = renderCartao(
+      cartao({ jobDaLista: { ...aprendendo, modo: MODO_IMPORTACAO_LI.simular } }),
+    );
+    expect(screen.getByText(TEXTO_APRENDIZADO_SIMULADO_LI)).not.toBeNull();
+    expect(screen.queryByText(/^Vinculando/)).toBeNull();
+    unmount();
+
+    renderCartao(cartao({ jobDaLista: aprendendo }));
+    expect(screen.getByText('Vinculando as opções de grade confirmadas pelo SKU')).not.toBeNull();
+  });
+
+  it('a running listing shows the rows read so far', () => {
+    h.clientRef.current = lojaIntegradaClientFalso({ importacao: vi.fn(async () => job()) });
+    renderCartao(
+      cartao({
+        jobDaLista: job({
+          fase: FASE_IMPORTACAO_LI.listagem,
+          listagem: { paginas: 3, linhas: 300, totalLi: 8_000, divergente: false },
+        }),
+      }),
+    );
+    expect(
+      screen.getByText('Lista da loja: 300 linhas lidas de 8000 (produtos e variações)'),
+    ).not.toBeNull();
+    expect(screen.getByText('0 produtos da loja processados')).not.toBeNull();
+  });
+
   it('a Simular says nothing is written, and its end says so too', () => {
     h.clientRef.current = lojaIntegradaClientFalso();
     renderCartao(
@@ -248,7 +321,9 @@ describe('CartaoImportacaoLi', () => {
         }),
       }),
     );
-    expect(screen.getByText(/A loja informou 120 produtos e a leitura achou 118/)).not.toBeNull();
+    expect(
+      screen.getByText(/informou 120 linhas \(produtos e variações\) e a leitura achou 118 linhas/),
+    ).not.toBeNull();
     expect(screen.getByText(/limitou as chamadas 2 vezes/)).not.toBeNull();
     expect(screen.getByText(/Fotos indisponíveis:/)).not.toBeNull();
   });
@@ -256,7 +331,7 @@ describe('CartaoImportacaoLi', () => {
   it('NEAR MISS — none of those three lines on a job that does not stamp them', () => {
     h.clientRef.current = lojaIntegradaClientFalso();
     renderCartao(cartao({ jobDaLista: job({ status: STATUS_IMPORTACAO_LI.concluido }) }));
-    expect(screen.queryByText(/A loja informou/)).toBeNull();
+    expect(screen.queryByText(/a leitura achou/)).toBeNull();
     expect(screen.queryByText(/limitou as chamadas/)).toBeNull();
     expect(screen.queryByText(/Fotos indisponíveis/)).toBeNull();
   });
@@ -308,6 +383,59 @@ describe('CartaoImportacaoLi', () => {
       await screen.findByText('Importação cancelada. O que ela já gravou no ERP permanece.'),
     ).not.toBeNull();
     expect(cancelarImportacao).toHaveBeenCalledWith('conta-falsa-1', 'job-falso-1');
+  });
+
+  it('⭐ a cancel that met the 3 lost attempts says the import is STILL running, and reads the job again', async () => {
+    const importacao = vi.fn(async () => job());
+    h.clientRef.current = lojaIntegradaClientFalso({
+      importacao,
+      cancelarImportacao: vi.fn(async () => {
+        throw new LojaIntegradaClientHttpError(
+          'Conflito.',
+          503,
+          CODIGO_ERRO_LI.importacaoEmConflito,
+        );
+      }),
+    });
+    renderCartao(cartao());
+    await screen.findByText('Em andamento');
+    expect(importacao).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole('button', { name: /Dispensar Importação de produtos/ }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Cancelar importação' }));
+
+    expect(
+      await screen.findByText(/continua em andamento\. Nada foi gravado: tente cancelar de novo\./),
+    ).not.toBeNull();
+    // The card re-reads the job, so it shows what the backend holds now.
+    await vi.waitFor(() => expect(importacao).toHaveBeenCalledTimes(2));
+    // NEAR MISS — never the generic copy, nor the backend's raw message.
+    expect(screen.queryByText('Não foi possível cancelar a importação.')).toBeNull();
+    expect(screen.queryByText('Conflito.')).toBeNull();
+  });
+
+  it('a cancel that lost the race to the job’s end says it had already ended', async () => {
+    const importacao = vi.fn(async () => job());
+    h.clientRef.current = lojaIntegradaClientFalso({
+      importacao,
+      cancelarImportacao: vi.fn(async () => {
+        throw new LojaIntegradaClientHttpError(
+          'Encerrada.',
+          409,
+          CODIGO_ERRO_LI.importacaoEncerrada,
+        );
+      }),
+    });
+    renderCartao(cartao());
+    await screen.findByText('Em andamento');
+
+    fireEvent.click(screen.getByRole('button', { name: /Dispensar Importação de produtos/ }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Cancelar importação' }));
+
+    expect(
+      await screen.findByText('Esta importação já terminou. Nada foi alterado.'),
+    ).not.toBeNull();
+    await vi.waitFor(() => expect(importacao).toHaveBeenCalledTimes(2));
   });
 
   it('NEAR MISS — without the write permission the X only hides the card: no confirm, no cancel', async () => {

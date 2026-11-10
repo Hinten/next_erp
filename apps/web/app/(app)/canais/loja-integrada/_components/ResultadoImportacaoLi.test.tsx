@@ -8,6 +8,7 @@ import {
   ALVO_IMPORTACAO_LI,
   CATEGORIAS_IMPORTACAO_LI,
   CODIGO_ERRO_LI,
+  FASE_IMPORTACAO_LI,
   FOTOS_IMPORTACAO_LI,
   type ItemRespostaImportacaoLi,
   MAX_SELECIONADOS_LI,
@@ -25,7 +26,11 @@ import type { ContaRef } from '@/lib/marketplace/contaJobs/types';
 import { respostaImportacaoLiFalsa } from '@/lib/testing/importacaoLiFalsa';
 import { lojaIntegradaClientFalso } from '@/lib/testing/lojaIntegradaClientFalso';
 import { MantineTestProvider } from '@/lib/testing/mantine';
-import type { ImportarProdutosLiActionState } from './useImportarProdutosLiAction';
+import type { AlvoResultadoImportacaoLi } from './CartaoImportacaoLi';
+import type {
+  DesfechoInicioLi,
+  ImportarProdutosLiActionState,
+} from './useImportarProdutosLiAction';
 
 /**
  * The result of an ended product import (master plan step 9): the report and
@@ -56,8 +61,11 @@ const {
   ehItemSelecionavelLi,
   estadoDoTodosLi,
   itemNoFiltroLi,
+  jobDaListaEmAbertoLi,
+  jobsDoSeletorLi,
   opcoesImportarSelecionadosLi,
   podeImportarSelecionadosLi,
+  revisaoFiscalCompletaLi,
   selecaoAoAlternarTodosLi,
   textoCategoriasCriadasLi,
 } = await import('./ResultadoImportacaoLi');
@@ -87,7 +95,22 @@ const IMPORTACAO = respostaImportacaoLiFalsa({
   jobId: 'job-importacao-1',
   status: STATUS_IMPORTACAO_LI.concluido,
   modo: MODO_IMPORTACAO_LI.aplicar,
+  fase: FASE_IMPORTACAO_LI.fim,
+  iniciadoEmMs: 1_790_000_000_000,
 });
+
+/** An import cancelled while it processed products: before its tax-review re-check. */
+const INTERROMPIDA = respostaImportacaoLiFalsa({
+  jobId: 'job-interrompida-1',
+  status: STATUS_IMPORTACAO_LI.cancelado,
+  modo: MODO_IMPORTACAO_LI.aplicar,
+  fase: FASE_IMPORTACAO_LI.familias,
+});
+
+/** What the action's `iniciar` resolves for a start that started a NEW job. */
+const iniciou = (): DesfechoInicioLi[] => [
+  { kind: 'started', conta: CONTA, jobId: 'job-novo', reatado: false },
+];
 
 function item(
   liId: number,
@@ -163,23 +186,34 @@ const ITENS: ItemRespostaImportacaoLi[] = [
 function client(over: Partial<LojaIntegradaClient> = {}) {
   return lojaIntegradaClientFalso({
     itensImportacao: vi.fn(async () => ({ itens: ITENS, proximo: null })),
+    importacoes: vi.fn(async () => ({ importacoes: [] })),
     ...over,
   });
 }
 
 interface Abertura {
   job?: RespostaImportacaoLi;
+  naRevisaoFiscal?: boolean;
   iniciar?: Mock<Iniciar>;
   semPermissao?: boolean;
   busy?: boolean;
 }
 
-function vista(a: Abertura, onClose: () => void) {
-  const iniciar = a.iniciar ?? vi.fn<Iniciar>(async () => {});
+function vista(
+  a: Abertura,
+  onClose: () => void,
+  onAbrir: (alvo: AlvoResultadoImportacaoLi) => void,
+) {
+  const iniciar = a.iniciar ?? vi.fn<Iniciar>(async () => iniciou());
   return (
     <ResultadoImportacaoLi
-      alvo={{ conta: CONTA, job: a.job ?? SIMULACAO }}
+      alvo={{
+        conta: CONTA,
+        job: a.job ?? SIMULACAO,
+        ...(a.naRevisaoFiscal === true ? { naRevisaoFiscal: true } : {}),
+      }}
       onClose={onClose}
+      onAbrir={onAbrir}
       importacao={a.semPermissao === true ? null : { iniciar, busy: a.busy ?? false }}
     />
   );
@@ -196,11 +230,13 @@ function host(children: ReactNode, qc: QueryClient) {
 function abrir(a: Abertura = {}) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const onClose = vi.fn();
-  const utils = render(host(vista(a, onClose), qc));
+  const onAbrir = vi.fn<(alvo: AlvoResultadoImportacaoLi) => void>();
+  const utils = render(host(vista(a, onClose, onAbrir), qc));
   return {
     onClose,
+    onAbrir,
     ...utils,
-    reabrir: (b: Abertura) => utils.rerender(host(vista(b, onClose), qc)),
+    reabrir: (b: Abertura) => utils.rerender(host(vista(b, onClose, onAbrir), qc)),
   };
 }
 
@@ -250,6 +286,42 @@ describe('itemNoFiltroLi — exact codes', () => {
     ).toBe(true);
   });
 
+  it('⭐ "Ação necessária" holds an item with ONE actionable pendência, whatever else it has', () => {
+    const acionavel = item(1, {
+      pendencias: [pendencia('orfao', false), pendencia('sku-parecido-na-loja', true)],
+    });
+    expect(itemNoFiltroLi(acionavel, FILTRO_RESULTADO_LI.acionaveis)).toBe(true);
+    // An unknown code takes the backend's stored flag.
+    expect(
+      itemNoFiltroLi(
+        item(2, { pendencias: [pendencia('codigo-novo', true)] }),
+        FILTRO_RESULTADO_LI.acionaveis,
+      ),
+    ).toBe(true);
+  });
+
+  it('NEAR MISS — informational pendências only, a stale stored flag on a KNOWN code, or none: not in "Ação necessária"', () => {
+    const informativas = item(1, {
+      pendencias: [pendencia('orfao', false), pendencia('vinculo-atualizado', false)],
+    });
+    expect(itemNoFiltroLi(informativas, FILTRO_RESULTADO_LI.acionaveis)).toBe(false);
+    expect(itemNoFiltroLi(informativas, FILTRO_RESULTADO_LI.pendencias)).toBe(true);
+    // A known code's class is the shared set's, never the stored flag's.
+    expect(
+      itemNoFiltroLi(
+        item(2, { pendencias: [pendencia('nome-cortado', true)] }),
+        FILTRO_RESULTADO_LI.acionaveis,
+      ),
+    ).toBe(false);
+    expect(
+      itemNoFiltroLi(
+        item(3, { pendencias: [pendencia('codigo-novo', false)] }),
+        FILTRO_RESULTADO_LI.acionaveis,
+      ),
+    ).toBe(false);
+    expect(itemNoFiltroLi(item(4), FILTRO_RESULTADO_LI.acionaveis)).toBe(false);
+  });
+
   it('"Com pendências" holds either class; "Revisão fiscal" holds no item at all', () => {
     const informativa = item(1, { pendencias: [pendencia('orfao', false)] });
     const acionavel = item(2, { pendencias: [pendencia('sem-sku', true)] });
@@ -265,6 +337,7 @@ describe('itemNoFiltroLi — exact codes', () => {
       criados: 1,
       vinculados: 1,
       completados: 1,
+      acionaveis: 1,
       pendencias: 2,
       avulsos: 1,
     });
@@ -302,6 +375,53 @@ describe('podeImportarSelecionadosLi', () => {
       expect(podeImportarSelecionadosLi({ ...SIMULACAO, status })).toBe(false);
     }
     expect(podeImportarSelecionadosLi(IMPORTACAO)).toBe(false);
+  });
+});
+
+describe('whose tax-review list is open', () => {
+  it('⭐ a whole list: an aplicar that ended after its re-check (concluido, or stopped in its last phase)', () => {
+    expect(revisaoFiscalCompletaLi(IMPORTACAO)).toBe(true);
+    expect(
+      revisaoFiscalCompletaLi({
+        ...INTERROMPIDA,
+        status: STATUS_IMPORTACAO_LI.falhou,
+        fase: FASE_IMPORTACAO_LI.fim,
+      }),
+    ).toBe(true);
+  });
+
+  it('NEAR MISS — stopped before the re-check, still running, or a Simular: not whole', () => {
+    expect(revisaoFiscalCompletaLi(INTERROMPIDA)).toBe(false);
+    expect(revisaoFiscalCompletaLi({ ...INTERROMPIDA, fase: FASE_IMPORTACAO_LI.revisao })).toBe(
+      false,
+    );
+    expect(
+      revisaoFiscalCompletaLi({
+        ...IMPORTACAO,
+        status: STATUS_IMPORTACAO_LI.executando,
+      }),
+    ).toBe(false);
+    expect(revisaoFiscalCompletaLi(SIMULACAO)).toBe(false);
+    expect(revisaoFiscalCompletaLi({ ...SIMULACAO, fase: FASE_IMPORTACAO_LI.fim })).toBe(false);
+  });
+
+  it('the open list is the NEWEST whole one, past Simulars and interrupted imports', () => {
+    const antiga = { ...IMPORTACAO, jobId: 'job-importacao-0' };
+    expect(jobDaListaEmAbertoLi([SIMULACAO, INTERROMPIDA, IMPORTACAO, antiga])).toBe(IMPORTACAO);
+    expect(jobDaListaEmAbertoLi([SIMULACAO, INTERROMPIDA])).toBeNull();
+  });
+
+  it('the picker offers the ended jobs, and the one on screen even when the list lacks it', () => {
+    const rodando = {
+      ...IMPORTACAO,
+      jobId: 'job-rodando',
+      status: STATUS_IMPORTACAO_LI.executando,
+    };
+    expect(jobsDoSeletorLi([rodando, SIMULACAO, IMPORTACAO], IMPORTACAO)).toEqual([
+      SIMULACAO,
+      IMPORTACAO,
+    ]);
+    expect(jobsDoSeletorLi([SIMULACAO], INTERROMPIDA)).toEqual([INTERROMPIDA, SIMULACAO]);
   });
 });
 
@@ -363,7 +483,7 @@ describe('the selection rules', () => {
 /* -------------------------------------------------------------------------- */
 
 describe('ResultadoImportacaoLi — the report', () => {
-  it('⭐ each row: tipo, situação, the proposed ação, filled fields, created categories, the ERP link', async () => {
+  it('⭐ each row: tipo, situação, the proposed ação, filled fields (in pt-BR), created categories, the ERP link', async () => {
     abrir();
     const pai = await screen.findByRole('row', { name: porId(103) });
     const t = within(pai);
@@ -371,7 +491,9 @@ describe('ResultadoImportacaoLi — the report', () => {
     expect(t.getByText('Vinculado')).not.toBeNull();
     // A Simular words its ação as a proposal.
     expect(t.getByText('A completar')).not.toBeNull();
-    expect(t.getByText('gtin, pesoBrutoKg')).not.toBeNull();
+    expect(t.getByText('GTIN, Peso bruto (kg)')).not.toBeNull();
+    // NEAR MISS — never the schema's own names.
+    expect(t.queryByText(/pesoBrutoKg/)).toBeNull();
     expect(t.getByText('2 categorias: 3001, 3002')).not.toBeNull();
     expect(t.getByRole('link', { name: 'produto-falso-103' }).getAttribute('href')).toBe(
       '/produtos/produto-falso-103/editar',
@@ -404,6 +526,31 @@ describe('ResultadoImportacaoLi — the report', () => {
     expect(r.getByText('Referências: produto-falso-9')).not.toBeNull();
     expect(r.getByText(informativa.rotulo)).not.toBeNull();
     expect(r.queryByText(informativa.descricao)).toBeNull();
+  });
+
+  it('what a pendência names reads in pt-BR where it is a field, a length or a picture', async () => {
+    h.clientRef.current = client({
+      itensImportacao: vi.fn(async () => ({
+        itens: [
+          item(101, {
+            pendencias: [
+              pendencia('dado-invalido', true, { referencias: ['nome', 'categoria.nome'] }),
+              pendencia('descricao-longa', true, { referencias: ['4123'] }),
+              pendencia('foto-recusada', false, { referencias: ['77', 'muito-grande'] }),
+              pendencia('vinculo-atualizado', false, { referencias: ['campo-novo'] }),
+            ],
+          }),
+        ],
+        proximo: null,
+      })),
+    });
+    abrir();
+    const r = within(await screen.findByRole('row', { name: porId(101) }));
+    expect(r.getByText('Campos: Nome, Categoria da loja: Nome')).not.toBeNull();
+    expect(r.getByText('Descrição com 4.123 caracteres')).not.toBeNull();
+    expect(r.getByText('Imagem 77: grande demais')).not.toBeNull();
+    // A field name this build does not know is shown as it came.
+    expect(r.getByText('Campos: campo-novo')).not.toBeNull();
   });
 
   it('a code this build does not know still shows, quoted', async () => {
@@ -444,6 +591,11 @@ describe('ResultadoImportacaoLi — the report', () => {
     expect(screen.getByRole('row', { name: porId(102) })).not.toBeNull();
     expect(screen.getByRole('row', { name: porId(104) })).not.toBeNull();
     expect(screen.queryByRole('row', { name: porId(103) })).toBeNull();
+
+    // Only the row a person must act on: 104's pendência is informational.
+    fireEvent.click(filtro(/^Ação necessária \(1\)$/));
+    expect(screen.getByRole('row', { name: porId(102) })).not.toBeNull();
+    expect(screen.queryByRole('row', { name: porId(104) })).toBeNull();
 
     fireEvent.click(filtro(/^A vincular/));
     expect(screen.getByRole('row', { name: porId(102) })).not.toBeNull();
@@ -539,6 +691,80 @@ describe('ResultadoImportacaoLi — "Revisão fiscal"', () => {
     expect(revisaoImportacao).not.toHaveBeenCalled();
   });
 
+  it('⭐ a Simular points at the OPEN list — the newest import that re-checked it — one click away', async () => {
+    const revisaoImportacao = vi.fn();
+    h.clientRef.current = client({
+      revisaoImportacao,
+      importacoes: vi.fn(async () => ({ importacoes: [SIMULACAO, INTERROMPIDA, IMPORTACAO] })),
+    });
+    const { onAbrir } = abrir();
+    await screen.findByRole('row', { name: porId(101) });
+    fireEvent.click(filtro(/^Revisão fiscal$/));
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Ver a lista em aberto' }));
+
+    expect(onAbrir).toHaveBeenCalledWith({ conta: CONTA, job: IMPORTACAO, naRevisaoFiscal: true });
+    // The Simular itself has no list to read.
+    expect(revisaoImportacao).not.toHaveBeenCalled();
+  });
+
+  it('opened on the open list, the view starts on "Revisão fiscal" and names no other', async () => {
+    const revisaoImportacao = vi.fn(async () => ({ entradas: [], proximo: null }));
+    h.clientRef.current = client({
+      revisaoImportacao,
+      importacoes: vi.fn(async () => ({ importacoes: [SIMULACAO, IMPORTACAO] })),
+    });
+    abrir({ job: IMPORTACAO, naRevisaoFiscal: true });
+
+    expect(
+      await screen.findByText('Nenhum produto na revisão fiscal desta importação.'),
+    ).not.toBeNull();
+    expect(revisaoImportacao).toHaveBeenCalledWith(
+      'conta-falsa-1',
+      'job-importacao-1',
+      null,
+      expect.anything(),
+    );
+    expect(screen.queryByRole('button', { name: 'Ver a lista em aberto' })).toBeNull();
+    expect(screen.queryByText(/parou antes de terminar de conferir/)).toBeNull();
+  });
+
+  it('⭐ an import that stopped before its re-check: its list is said PARTIAL, and the open one is pointed at', async () => {
+    const revisaoImportacao = vi.fn(async () => ({ entradas: [], proximo: null }));
+    h.clientRef.current = client({
+      revisaoImportacao,
+      importacoes: vi.fn(async () => ({ importacoes: [INTERROMPIDA, IMPORTACAO] })),
+    });
+    const { onAbrir } = abrir({ job: INTERROMPIDA, naRevisaoFiscal: true });
+
+    expect(
+      await screen.findByText(/parou antes de terminar de conferir a lista de revisão fiscal/),
+    ).not.toBeNull();
+    expect(await screen.findByText('Nenhum produto nesta lista parcial.')).not.toBeNull();
+    // NEAR MISS — never the whole list's wording.
+    expect(screen.queryByText('Nenhum produto na revisão fiscal desta importação.')).toBeNull();
+    expect(revisaoImportacao).toHaveBeenCalledWith(
+      'conta-falsa-1',
+      'job-interrompida-1',
+      null,
+      expect.anything(),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Ver a lista em aberto' }));
+    expect(onAbrir).toHaveBeenCalledWith({ conta: CONTA, job: IMPORTACAO, naRevisaoFiscal: true });
+  });
+
+  it('no import among the ten re-checked the list: the view says so', async () => {
+    h.clientRef.current = client({
+      importacoes: vi.fn(async () => ({ importacoes: [SIMULACAO] })),
+    });
+    abrir({ naRevisaoFiscal: true });
+    expect(
+      await screen.findByText(
+        'Nenhuma das 10 importações mais recentes desta conta conferiu a lista de revisão fiscal.',
+      ),
+    ).not.toBeNull();
+  });
+
   it('a backend that has the import but not the list says exactly that', async () => {
     h.clientRef.current = client({
       revisaoImportacao: vi.fn(async () => {
@@ -549,6 +775,38 @@ describe('ResultadoImportacaoLi — "Revisão fiscal"', () => {
     await screen.findByRole('row', { name: porId(101) });
     fireEvent.click(filtro(/^Revisão fiscal$/));
     expect(await screen.findByText(MENSAGEM_BACKEND_SEM_REVISAO_FISCAL_LI)).not.toBeNull();
+  });
+});
+
+describe('ResultadoImportacaoLi — the job picker', () => {
+  it('⭐ lists the conta’s other ended jobs and opens the one picked', async () => {
+    const rodando = {
+      ...IMPORTACAO,
+      jobId: 'job-rodando',
+      status: STATUS_IMPORTACAO_LI.executando,
+    };
+    h.clientRef.current = client({
+      importacoes: vi.fn(async () => ({ importacoes: [rodando, SIMULACAO, IMPORTACAO] })),
+    });
+    const { onAbrir } = abrir();
+    const seletor = await screen.findByRole('combobox', { name: 'Importação' });
+
+    fireEvent.click(seletor);
+    const opcoes = await screen.findAllByRole('option');
+    // NEAR MISS — the running job has no result yet: not offered.
+    expect(opcoes).toHaveLength(2);
+    fireEvent.click(opcoes.find((o) => o.textContent?.includes('Importar')) as HTMLElement);
+
+    expect(onAbrir).toHaveBeenCalledWith({ conta: CONTA, job: IMPORTACAO });
+  });
+
+  it('nothing else to offer: no picker', async () => {
+    h.clientRef.current = client({
+      importacoes: vi.fn(async () => ({ importacoes: [SIMULACAO] })),
+    });
+    abrir();
+    await screen.findByRole('row', { name: porId(101) });
+    expect(screen.queryByRole('combobox', { name: 'Importação' })).toBeNull();
   });
 });
 
@@ -566,7 +824,7 @@ describe('ResultadoImportacaoLi — "Importar selecionados"', () => {
   });
 
   it('⭐ sends EXACTLY the picked ids with the Simular’s options, then closes', async () => {
-    const iniciar = vi.fn<Iniciar>(async () => {});
+    const iniciar = vi.fn<Iniciar>(async () => iniciou());
     const { onClose } = abrir({ iniciar });
     await screen.findByRole('row', { name: porId(101) });
     expect((botaoImportar() as HTMLButtonElement).disabled).toBe(true);
@@ -591,8 +849,64 @@ describe('ResultadoImportacaoLi — "Importar selecionados"', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  it('⭐ a start that FAILED keeps the view open, the selection marked, and says why', async () => {
+    const iniciar = vi.fn<Iniciar>(async () => [
+      { kind: 'error', conta: CONTA, color: 'red', message: 'Falha de rede.' },
+    ]);
+    const { onClose } = abrir({ iniciar });
+    await screen.findByRole('row', { name: porId(101) });
+    fireEvent.click(caixa(101));
+    await act(async () => {
+      fireEvent.click(botaoImportar());
+    });
+
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByText('Falha de rede. A seleção continua marcada aqui.')).not.toBeNull();
+    expect((caixa(101) as HTMLInputElement).checked).toBe(true);
+  });
+
+  it('⭐ NEAR MISS — a busy start that ATTACHED keeps the view open too: the selection was not applied', async () => {
+    const iniciar = vi.fn<Iniciar>(async () => [
+      { kind: 'started', conta: CONTA, jobId: 'job-rodando', reatado: true },
+    ]);
+    const { onClose } = abrir({ iniciar });
+    await screen.findByRole('row', { name: porId(101) });
+    fireEvent.click(caixa(101));
+    await act(async () => {
+      fireEvent.click(botaoImportar());
+    });
+
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByText(/a seleção não foi importada/)).not.toBeNull();
+    expect((caixa(101) as HTMLInputElement).checked).toBe(true);
+  });
+
+  it('⭐ a start that settles after the view moved on to another job closes nothing', async () => {
+    let soltar: ((d: DesfechoInicioLi[]) => void) | null = null;
+    const iniciar = vi.fn<Iniciar>(
+      () =>
+        new Promise<DesfechoInicioLi[]>((resolve) => {
+          soltar = resolve;
+        }),
+    );
+    const { onClose, reabrir } = abrir({ iniciar });
+    await screen.findByRole('row', { name: porId(101) });
+    fireEvent.click(caixa(101));
+    fireEvent.click(botaoImportar());
+
+    // The operator opened another job's result meanwhile.
+    reabrir({ job: { ...SIMULACAO, jobId: 'job-simulacao-2' }, iniciar });
+    await screen.findByRole('row', { name: porId(101) });
+    await act(async () => {
+      soltar?.(iniciou());
+      await Promise.resolve();
+    });
+
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
   it('a box ticked twice is off again', async () => {
-    const iniciar = vi.fn<Iniciar>(async () => {});
+    const iniciar = vi.fn<Iniciar>(async () => iniciou());
     abrir({ iniciar });
     await screen.findByRole('row', { name: porId(101) });
     fireEvent.click(caixa(101));
@@ -605,7 +919,7 @@ describe('ResultadoImportacaoLi — "Importar selecionados"', () => {
   });
 
   it('⭐ select all covers the FILTERED selectable rows only, across the filter switch', async () => {
-    const iniciar = vi.fn<Iniciar>(async () => {});
+    const iniciar = vi.fn<Iniciar>(async () => iniciou());
     abrir({ iniciar });
     await screen.findByRole('row', { name: porId(101) });
     fireEvent.click(filtro(/^Com pendências/));
@@ -691,7 +1005,12 @@ describe('ResultadoImportacaoLi — through the real action', () => {
     const { state } = useImportarProdutosLiAction();
     return (
       <>
-        <ResultadoImportacaoLi alvo={{ conta: CONTA, job }} onClose={() => {}} importacao={state} />
+        <ResultadoImportacaoLi
+          alvo={{ conta: CONTA, job }}
+          onClose={() => {}}
+          onAbrir={() => {}}
+          importacao={state}
+        />
         <output data-testid="ledger">{JSON.stringify(state.entries)}</output>
         <output data-testid="reatados">{JSON.stringify([...state.reatados])}</output>
       </>

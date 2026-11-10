@@ -99,6 +99,8 @@ interface StubsLi {
   readonly status: ChamadaLi[];
   /** Every save PUT, in order. */
   readonly salvar: ChamadaLi[];
+  /** The conta page's product-import list reads (answered with no import). */
+  readonly importacoes: ChamadaLi[];
   /** Anything else that reached a conta route — each answered 409. */
   readonly inesperadas: ChamadaLi[];
   /** EVERY request URL the page made, for the "never in a URL" check. */
@@ -138,7 +140,7 @@ async function instalarStubsLi(
   contaId: string,
   opcoes: OpcoesStubsLi,
 ): Promise<StubsLi> {
-  const stubs: StubsLi = { status: [], salvar: [], inesperadas: [], urls: [] };
+  const stubs: StubsLi = { status: [], salvar: [], importacoes: [], inesperadas: [], urls: [] };
   page.on('request', (req) => stubs.urls.push(req.url()));
   const base = `${CONTA_PATH}${encodeURIComponent(contaId)}`;
 
@@ -158,6 +160,11 @@ async function instalarStubsLi(
         stubs.status.push(chamada);
         if (opcoes.status === 'inalcancavel') return route.abort('connectionrefused');
         return json(200, opcoes.status);
+      }
+      // The conta page also shows the conta's product imports: none here.
+      if (chamada.method === 'GET' && chamada.pathname === `${base}/importacoes`) {
+        stubs.importacoes.push(chamada);
+        return json(200, { importacoes: [] });
       }
       if (
         chamada.method === 'PUT' &&
@@ -691,10 +698,18 @@ test.describe.serial('Canais Loja Integrada e2e — TableView / ObjectView', () 
       simulacaoId: null,
     });
     expect(inicios[0]?.authorization).toMatch(/^Bearer \S+$/);
-    // No job card: there is no job to follow, so none was ever read.
-    await expect(painel.getByText('Na fila')).toHaveCount(0);
-    await expect(painel.getByText('Em andamento')).toHaveCount(0);
-    expect(stubs.chamadas.filter((c) => c.pathname.includes('/importacoes/'))).toEqual([]);
+    // No job card: the conta's only card is the refused start's, with nothing
+    // to open or cancel…
+    await expect(
+      painel.getByRole('button', { name: /^Dispensar Importação de produtos/ }),
+    ).toHaveCount(1);
+    await expect(painel.getByRole('button', { name: 'Ver resultado' })).toHaveCount(0);
+    // …and no request ever named a job: the stub records one under
+    // `<base>/<jobId>` whether it knows the job or not.
+    const base = `${CONTA_PATH}${encodeURIComponent(row(1))}/importacoes/`;
+    expect(
+      [...stubs.chamadas, ...stubs.inesperadas].filter((c) => c.pathname.startsWith(base)),
+    ).toEqual([]);
     expect(stubs.inesperadas).toEqual([]);
   });
 
@@ -705,7 +720,7 @@ test.describe.serial('Canais Loja Integrada e2e — TableView / ObjectView', () 
     const painel = await selecionarConta(page, stubs);
 
     await expect(painel.getByText('Em andamento')).toBeVisible({ timeout: 15_000 });
-    await expect(painel.getByText('40 produtos lidos da loja')).toBeVisible();
+    await expect(painel.getByText('40 produtos da loja processados')).toBeVisible();
     await expect(
       painel.getByText('12 vinculados · 3 criados · 2 completados · 23 sem mudança'),
     ).toBeVisible();

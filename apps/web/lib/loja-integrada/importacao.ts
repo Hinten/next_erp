@@ -21,16 +21,23 @@
  * - the list ({@link useImportacoesLi}): once per view, and again after a
  *   start or a cancel (both invalidate it);
  * - one job ({@link useImportacaoLi}): every {@link INTERVALO_JOB_MS} while it
- *   is `pendente` or `executando`, never after. Each answer is also written
+ *   is `pendente` or `executando`, never after — and never after a failure that
+ *   reading again cannot change (a 404, a 403, an answer this build cannot
+ *   parse: {@link intervaloDaLeituraImportacaoLi}). Each answer is also written
  *   into the list's cached copy, so the list never shows a status older than
  *   the card's, at no extra request;
  * - the report and the tax-review list ({@link useItensImportacaoLi},
  *   {@link useRevisaoImportacaoLi}): ALL pages, once per view, never polled.
- *   An ENDED job's report and list are final, so they are read once and kept
- *   (`staleTime: Infinity`); a running job's are a snapshot, and the key
- *   changes when the job ends, so the final ones are read then. Each page costs
- *   the backend a scan (the routes' headers), so nothing here re-reads behind
- *   the operator.
+ *   Only a `concluido` job's report and list are FINAL, read once and kept
+ *   (`staleTime: Infinity`): its own dispatch stamped the end after its last
+ *   unit. Any other job's are a snapshot, read again at each open — a running
+ *   one's obviously, but also a `cancelado` one's (the cancel is a stamp from
+ *   outside, and the unit in flight when it landed still writes its family's
+ *   item) and a `falhou` one's (the queue's last attempt stamps it while an
+ *   attempt the queue gave up on may still be writing). The key changes when a
+ *   job ends, so a running job's snapshot is never served as its end. Each page
+ *   costs the backend a scan (the routes' headers), so nothing here re-reads
+ *   behind the operator: only an open of the view does.
  *
  * Nothing retries behind the operator either (`retry: false`): a poll's next
  * tick IS its retry, and every other read offers its own "Tentar de novo".
@@ -62,6 +69,7 @@ import {
   type RespostaImportacoesLi,
   type RespostaRevisaoFiscalLi,
   STATUS_EM_CURSO_IMPORTACAO_LI,
+  STATUS_IMPORTACAO_LI,
   type EntradaRespostaRevisaoFiscalLi,
   type ItemRespostaImportacaoLi,
 } from '@delfrance/schemas';
@@ -104,11 +112,19 @@ export function chaveImportacaoLi(contaId: string, jobId: string) {
   return [...chaveImportacoesDaContaLi(contaId), 'job', jobId] as const;
 }
 
-/** Whether a job's report is final (`final`) or a snapshot of a running job (`parcial`). */
-type EstadoDoRelatorioLi = 'final' | 'parcial';
+/**
+ * Whether a job's report is final (`final`: the job ended `concluido`), a
+ * running job's snapshot (`parcial`), or an interrupted job's (`interrompido`:
+ * `cancelado` or `falhou`, which a unit still in flight may yet add to — the
+ * header says why).
+ */
+export type EstadoDoRelatorioLi = 'final' | 'parcial' | 'interrompido';
 
-function estadoDoRelatorio(job: Pick<RespostaImportacaoLi, 'status'>): EstadoDoRelatorioLi {
-  return STATUS_EM_CURSO_IMPORTACAO_LI.has(job.status) ? 'parcial' : 'final';
+export function estadoDoRelatorioLi(
+  job: Pick<RespostaImportacaoLi, 'status'>,
+): EstadoDoRelatorioLi {
+  if (STATUS_EM_CURSO_IMPORTACAO_LI.has(job.status)) return 'parcial';
+  return job.status === STATUS_IMPORTACAO_LI.concluido ? 'final' : 'interrompido';
 }
 
 /** A job's whole report, as final or as a running job's snapshot. */
@@ -133,13 +149,34 @@ export function chaveRevisaoImportacaoLi(
 /*                                 The cadence                                 */
 /* -------------------------------------------------------------------------- */
 
-/** The job query's `refetchInterval`: 3 s while `pendente` or `executando`, nothing after. */
+/** The job's own cadence: 3 s while `pendente` or `executando`, nothing after. */
 export function intervaloImportacaoLi(
   job: Pick<RespostaImportacaoLi, 'status'> | undefined,
 ): number | false {
   return job !== undefined && STATUS_EM_CURSO_IMPORTACAO_LI.has(job.status)
     ? INTERVALO_JOB_MS
     : false;
+}
+
+/**
+ * The job query's `refetchInterval`: the job's cadence, except after a failure
+ * that reading again cannot change — the read describer's `repetivel: false`.
+ * TanStack keeps the last good answer through a failed fetch, so without this a
+ * job last read running would be polled every 3 s for as long as its card is
+ * mounted, through a 404 or an answer this build cannot parse (a status newer
+ * than this build: the status is a strict enum), each poll a backend read. A
+ * failure that may pass (a 5xx, the network, a deadline) keeps the cadence:
+ * the next tick IS its retry.
+ */
+export function intervaloDaLeituraImportacaoLi(estado: {
+  readonly status: 'pending' | 'error' | 'success';
+  readonly data: Pick<RespostaImportacaoLi, 'status'> | undefined;
+  readonly error: unknown;
+}): number | false {
+  if (estado.status === 'error' && !descreverFalhaLeituraImportacaoLi(estado.error).repetivel) {
+    return false;
+  }
+  return intervaloImportacaoLi(estado.data);
 }
 
 /** A job's last sign of life: its last checkpoint, or its creation before the first. */
@@ -272,7 +309,7 @@ export function useImportacaoLi(
           },
     retry: false,
     refetchOnReconnect: false,
-    refetchInterval: (q) => intervaloImportacaoLi(q.state.data),
+    refetchInterval: (q) => intervaloDaLeituraImportacaoLi(q.state),
   });
   return leitura(consulta, indisponivel);
 }
@@ -333,7 +370,7 @@ export function useItensImportacaoLi(
   opcoes: OpcoesLeituraImportacaoHookLi = {},
 ): LeituraImportacaoLi<ItemRespostaImportacaoLi[]> {
   const { client, indisponivel } = useBackendLojaIntegrada();
-  const estado = job === null ? 'parcial' : estadoDoRelatorio(job);
+  const estado = job === null ? 'parcial' : estadoDoRelatorioLi(job);
   const consulta = useQuery({
     queryKey: chaveItensImportacaoLi(contaId, job?.jobId ?? '', estado),
     queryFn:
@@ -362,7 +399,7 @@ export function useRevisaoImportacaoLi(
   opcoes: OpcoesLeituraImportacaoHookLi = {},
 ): LeituraImportacaoLi<EntradaRespostaRevisaoFiscalLi[]> {
   const { client, indisponivel } = useBackendLojaIntegrada();
-  const estado = job === null ? 'parcial' : estadoDoRelatorio(job);
+  const estado = job === null ? 'parcial' : estadoDoRelatorioLi(job);
   const consulta = useQuery({
     queryKey: chaveRevisaoImportacaoLi(contaId, job?.jobId ?? '', estado),
     queryFn:

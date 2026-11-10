@@ -22,10 +22,17 @@ export interface ContaJobFan {
   readonly entries: readonly ContaJobOutcome[];
   /** A fan-out is in flight — drives the dialog's submit spinner. */
   readonly busy: boolean;
+  /**
+   * Starts one job per conta, records every outcome, and resolves with THIS
+   * run's outcomes (one per conta, in input order) — for a caller that must act
+   * on its own conta's result (close a view only when its start really started),
+   * which `entries` cannot tell it: React state is not yet updated when the
+   * await returns, and an older entry for the same conta looks the same.
+   */
   readonly run: (
     contas: readonly ContaRef[],
     start: (contaId: string) => Promise<{ jobId: string }>,
-  ) => Promise<void>;
+  ) => Promise<readonly ContaJobOutcome[]>;
   readonly dismiss: (contaId: string) => void;
 }
 
@@ -50,6 +57,7 @@ export function useContaJobFan(
         });
         setEntries((cur) => mergeByConta(cur, outcomes));
         if (unexpected.length > 0) throw unexpected[0];
+        return outcomes;
       } finally {
         setBusy(false);
       }

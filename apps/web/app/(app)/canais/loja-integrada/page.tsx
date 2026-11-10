@@ -64,8 +64,13 @@ export default function CanalLojaIntegradaPage() {
         does not call the conta "conectada". The import calls the store, so it
         sits behind the same read switch as every such call: until the migration
         a start answers that the calls are off (`LI_CHAMADAS_DESLIGADAS`), and
-        the start's card carries that sentence. The channel sends no NF-e to the
-        store, so the copy does not promise it.
+        the start's card carries that sentence. So do the order import (its
+        poller runs every 5 minutes, gated by the same switch) and the freight
+        status written back to the order (gated by the write valves): both are
+        code here, both run on their own once the migration turns the calls on,
+        and the copy says exactly that. Stock and price have no code in this
+        channel. The channel sends no NF-e to the store, so the copy does not
+        promise it.
       */}
       <Alert color="blue" title="O que esta tela faz hoje" mb="md">
         <Stack gap="xs">
@@ -87,9 +92,11 @@ export default function CanalLojaIntegradaPage() {
             que as chamadas à Loja Integrada estão desligadas.
           </Text>
           <Text size="sm">
-            Importar pedidos, enviar estoque e enviar preço não estão rodando neste canal, e nada é
-            sincronizado automaticamente com a Loja Integrada, em nenhuma direção: a importação de
-            produtos só roda quando alguém a inicia aqui.
+            A importação de pedidos (a cada 5 minutos) e o envio do andamento do frete de cada
+            pedido para a Loja Integrada (postado, entregue, aguardando retirada) também só
+            funcionam depois da migração; a partir dela, rodam sozinhos, sem ninguém iniciar. Enviar
+            estoque e enviar preço não existem neste canal: nada disso é sincronizado com a Loja
+            Integrada.
           </Text>
         </Stack>
       </Alert>
@@ -196,6 +203,7 @@ export default function CanalLojaIntegradaPage() {
       <ResultadoImportacaoLi
         alvo={resultado}
         onClose={() => setResultado(null)}
+        onAbrir={setResultado}
         importacao={canWrite ? importacao.state : null}
       />
     </>

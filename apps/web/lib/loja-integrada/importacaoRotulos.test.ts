@@ -2,11 +2,13 @@ import { describe, expect, it } from 'vitest';
 import {
   ACAO_ITEM_IMPORTACAO_LI,
   FASE_IMPORTACAO_LI,
+  MODO_IMPORTACAO_LI,
   MOTIVO_FALHA_IMPORTACAO_LI,
   MOTIVO_REVISAO_FISCAL_LI,
   PENDENCIAS_ACIONAVEIS_LI,
   PENDENCIA_IMPORTACAO_LI,
   SITUACAO_ERP_ITEM_LI,
+  STATUS_IMPORTACAO_LI,
   TIPO_PRODUTO_LI,
   acaoImportacaoLiSchema,
   acaoItemImportacaoLiSchema,
@@ -16,6 +18,7 @@ import {
   fotosImportacaoLiSchema,
   modoImportacaoLiSchema,
   motivoFalhaImportacaoLiSchema,
+  motivoFotoRecusadaLiSchema,
   motivoRevisaoFiscalLiSchema,
   pendenciaImportacaoLiSchema,
   situacaoErpItemLiSchema,
@@ -33,18 +36,24 @@ import {
   ROTULO_FASE_IMPORTACAO_LI,
   ROTULO_FOTOS_IMPORTACAO_LI,
   ROTULO_MODO_IMPORTACAO_LI,
+  ROTULO_MOTIVO_FOTO_RECUSADA_LI,
   ROTULO_MOTIVO_REVISAO_FISCAL_LI,
   ROTULO_SITUACAO_ERP_ITEM_LI,
   ROTULO_STATUS_IMPORTACAO_LI,
   ROTULO_TIPO_PRODUTO_LI,
+  TEXTO_APRENDIZADO_SIMULADO_LI,
+  TEXTO_JOB_AGUARDANDO_LI,
   TEXTO_PENDENCIA_IMPORTACAO_LI,
   lerAcaoItemImportacaoLi,
+  lerCampoLi,
   lerFaseImportacaoLi,
   lerMotivoFalhaImportacaoLi,
   lerMotivoRevisaoFiscalLi,
   lerPendenciaLi,
   lerSituacaoErpItemLi,
   lerTipoProdutoLi,
+  textoDaFaseDoJobLi,
+  textoReferenciasDaPendenciaLi,
 } from './importacaoRotulos';
 
 /**
@@ -74,6 +83,7 @@ describe('the exhaustive tables hold exactly the contract’s members', () => {
     ['ação do item', ROTULO_ACAO_ITEM_IMPORTACAO_LI, acaoItemImportacaoLiSchema.options],
     ['pendência', TEXTO_PENDENCIA_IMPORTACAO_LI, pendenciaImportacaoLiSchema.options],
     ['motivo de revisão', ROTULO_MOTIVO_REVISAO_FISCAL_LI, motivoRevisaoFiscalLiSchema.options],
+    ['motivo de foto', ROTULO_MOTIVO_FOTO_RECUSADA_LI, motivoFotoRecusadaLiSchema.options],
   ])('%s', (_nome, tabela, membros) => {
     expect(ordenadas(Object.keys(tabela))).toEqual(ordenadas(membros));
   });
@@ -219,5 +229,123 @@ describe('the other plain-string readers — equal pair and near miss each', () 
       texto: 'Motivo "sem categoria"',
       conhecido: false,
     });
+  });
+});
+
+describe('the actionable sentences send the operator only where a path exists', () => {
+  // No screen links an ERP category or produto to a store one by hand: a
+  // sentence asking for that would leave the summary aviso open for good.
+  it.each([...PENDENCIAS_ACIONAVEIS_LI])('%s', (codigo) => {
+    const { descricao } = TEXTO_PENDENCIA_IMPORTACAO_LI[codigo];
+    expect(descricao).not.toMatch(/Vincule a categoria/);
+    expect(descricao).not.toMatch(/Deixe um vínculo só/);
+    expect(descricao).not.toMatch(/Corrija ou remova esse vínculo/);
+  });
+
+  it('⭐ "dado-invalido" never says the rest of the product went ahead: a create refused is not created', () => {
+    const { descricao } = TEXTO_PENDENCIA_IMPORTACAO_LI[PENDENCIA_IMPORTACAO_LI.dadoInvalido];
+    expect(descricao).not.toMatch(/o restante do produto seguiu/);
+    expect(descricao).toMatch(/não foi criado/);
+    expect(descricao).toMatch(/num produto que já existia, só esse campo ficou de fora/);
+    expect(descricao).toMatch(/Corrija o dado no painel da Loja Integrada/);
+  });
+
+  it('"categoria-sem-vinculo" points at the import option that creates and links it', () => {
+    expect(
+      TEXTO_PENDENCIA_IMPORTACAO_LI[PENDENCIA_IMPORTACAO_LI.categoriaSemVinculo].descricao,
+    ).toMatch(/"Completar" e, em categorias, "Criar e vincular as que faltam"/);
+  });
+});
+
+describe('textoDaFaseDoJobLi — what a running job is doing NOW', () => {
+  const base = {
+    status: STATUS_IMPORTACAO_LI.executando,
+    modo: MODO_IMPORTACAO_LI.aplicar,
+    fase: FASE_IMPORTACAO_LI.catalogo,
+  };
+
+  it('a queued job waits, whatever phase it will start in', () => {
+    expect(textoDaFaseDoJobLi({ ...base, status: STATUS_IMPORTACAO_LI.pendente })).toBe(
+      TEXTO_JOB_AGUARDANDO_LI,
+    );
+    // NEAR MISS — the same stored phase on a job that runs reads as the phase.
+    expect(textoDaFaseDoJobLi(base)).toBe(ROTULO_FASE_IMPORTACAO_LI[FASE_IMPORTACAO_LI.catalogo]);
+  });
+
+  it('the learning phase links under Importar, and only checks under Simular', () => {
+    const aprendizado = { ...base, fase: FASE_IMPORTACAO_LI.aprendizado };
+    expect(textoDaFaseDoJobLi(aprendizado)).toBe(
+      ROTULO_FASE_IMPORTACAO_LI[FASE_IMPORTACAO_LI.aprendizado],
+    );
+    expect(textoDaFaseDoJobLi({ ...aprendizado, modo: MODO_IMPORTACAO_LI.simular })).toBe(
+      TEXTO_APRENDIZADO_SIMULADO_LI,
+    );
+    // NEAR MISS — any other phase reads the same in both modes.
+    expect(
+      textoDaFaseDoJobLi({
+        ...base,
+        fase: FASE_IMPORTACAO_LI.familias,
+        modo: MODO_IMPORTACAO_LI.simular,
+      }),
+    ).toBe(ROTULO_FASE_IMPORTACAO_LI[FASE_IMPORTACAO_LI.familias]);
+  });
+});
+
+describe('lerCampoLi — the report’s field names in pt-BR', () => {
+  it('EQUAL PAIR — a known name, bare or as a field of something else', () => {
+    expect(lerCampoLi('pesoBrutoKg')).toBe('Peso bruto (kg)');
+    expect(lerCampoLi('categoriaProdutoOuterRef')).toBe('Categoria');
+    expect(lerCampoLi('extraData.marca')).toBe('Marca');
+    expect(lerCampoLi('categoria.nome')).toBe('Categoria da loja: Nome');
+    expect(lerCampoLi('membro.sku')).toBe('Variação: SKU');
+  });
+
+  it('NEAR MISS — a name off by case or unknown is shown as it came', () => {
+    expect(lerCampoLi('PesoBrutoKg')).toBe('PesoBrutoKg');
+    expect(lerCampoLi('pesoBrutoKg ')).toBe('pesoBrutoKg ');
+    expect(lerCampoLi('extraData.cor')).toBe('extraData.cor');
+    expect(lerCampoLi('categoria.')).toBe('categoria.');
+    expect(lerCampoLi('categoria.campoNovo')).toBe('Categoria da loja: campoNovo');
+    // An inherited key of a plain object is not a field name.
+    expect(lerCampoLi('constructor')).toBe('constructor');
+  });
+});
+
+describe('textoReferenciasDaPendenciaLi — what a pendência names', () => {
+  it('fields, a length and a picture read in pt-BR', () => {
+    expect(
+      textoReferenciasDaPendenciaLi({ codigo: 'dado-invalido', referencias: ['nome', 'sku'] }),
+    ).toBe('Campos: Nome, SKU');
+    expect(
+      textoReferenciasDaPendenciaLi({ codigo: 'vinculo-atualizado', referencias: ['ativo'] }),
+    ).toBe('Campos: Ativo na loja');
+    expect(
+      textoReferenciasDaPendenciaLi({ codigo: 'descricao-longa', referencias: ['4123'] }),
+    ).toBe('Descrição com 4.123 caracteres');
+    expect(
+      textoReferenciasDaPendenciaLi({
+        codigo: 'foto-recusada',
+        referencias: ['77', 'nao-e-imagem'],
+      }),
+    ).toBe('Imagem 77: não é uma imagem');
+  });
+
+  it('NEAR MISS — ids and SKUs, an unknown code, or a reference off its shape are shown as they came', () => {
+    expect(
+      textoReferenciasDaPendenciaLi({ codigo: 'sku-ja-existe', referencias: ['produto-falso-9'] }),
+    ).toBe('Referências: produto-falso-9');
+    expect(textoReferenciasDaPendenciaLi({ codigo: 'codigo-novo', referencias: ['nome'] })).toBe(
+      'Referências: nome',
+    );
+    expect(
+      textoReferenciasDaPendenciaLi({ codigo: 'descricao-longa', referencias: ['4123 '] }),
+    ).toBe('Referências: 4123 ');
+    expect(
+      textoReferenciasDaPendenciaLi({
+        codigo: 'foto-recusada',
+        referencias: ['77', 'motivo-novo'],
+      }),
+    ).toBe('Referências: 77, motivo-novo');
+    expect(textoReferenciasDaPendenciaLi({ codigo: 'dado-invalido', referencias: [] })).toBeNull();
   });
 });

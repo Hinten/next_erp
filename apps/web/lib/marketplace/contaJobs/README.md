@@ -33,7 +33,9 @@ components in `apps/web/components/contaJobs/`:
    Mercado Livre's lives in `canais/mercado-livre/_components/mercadoLivreJobErrors.ts`.
    Shopee's (#1529) in `canais/shopee/_components/shopeeJobErrors.ts`, with `ERROS_DO_CLIENTE_SHOPEE`.
 2. In the action hook: `const fan = useContaJobFan(describe<Job>StartError);`
-   then `await fan.run(contas, (contaId) => client.start<Job>(contaId))`.
+   then `await fan.run(contas, (contaId) => client.start<Job>(contaId))`. The
+   run resolves with its own outcomes (one per conta, input order) for a caller
+   that must act on one conta's result; `entries` is the ledger the cards read.
 3. Render `fan.entries` with `components/contaJobs/*`, passing the channel's
    own `ErrosDoCliente` with every `onCancel` (Mercado Livre's is
    `ERROS_DO_CLIENTE_ML`, beside its describers). The cards, the panel, the

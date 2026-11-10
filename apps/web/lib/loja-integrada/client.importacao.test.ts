@@ -585,21 +585,47 @@ describe('the deadline and the caller signal', () => {
     },
   );
 
-  it("a read's CALLER abort (a query cancelled) comes back as the abort itself", async () => {
-    const { c, chamadas } = clienteQueSoAborta();
-    const controle = new AbortController();
+  // Every READ takes the caller's signal: a query cancelled (the result view
+  // closed mid-report) must stop the fetch, not let it run to its deadline.
+  it.each([
+    [
+      'importacoes',
+      (c: ReturnType<typeof createLojaIntegradaClient>, sinal: AbortSignal) =>
+        c.importacoes('conta-1', { sinal }),
+    ],
+    [
+      'importacao',
+      (c: ReturnType<typeof createLojaIntegradaClient>, sinal: AbortSignal) =>
+        c.importacao('conta-1', 'job-teste-1', { sinal }),
+    ],
+    [
+      'itensImportacao',
+      (c: ReturnType<typeof createLojaIntegradaClient>, sinal: AbortSignal) =>
+        c.itensImportacao('conta-1', 'job-teste-1', null, { sinal }),
+    ],
+    [
+      'revisaoImportacao',
+      (c: ReturnType<typeof createLojaIntegradaClient>, sinal: AbortSignal) =>
+        c.revisaoImportacao('conta-1', 'job-teste-1', null, { sinal }),
+    ],
+  ])(
+    "%s: the CALLER's abort (a query cancelled) stops the fetch and comes back as the abort itself",
+    async (_nome, chamar) => {
+      const { c, chamadas } = clienteQueSoAborta();
+      const controle = new AbortController();
 
-    const resultado = c
-      .importacao('conta-1', 'job-teste-1', { sinal: controle.signal })
-      .catch((e: unknown) => e);
-    await vi.advanceTimersByTimeAsync(10);
-    controle.abort();
+      const resultado = chamar(c, controle.signal).catch((e: unknown) => e);
+      await vi.advanceTimersByTimeAsync(10);
+      expect(chamadas[0]!.init.signal?.aborted).toBe(false);
+      controle.abort();
 
-    const err = await resultado;
-    expect(chamadas[0]!.init.signal?.aborted).toBe(true);
-    expect(err).toBeInstanceOf(DOMException);
-    expect(err).not.toBeInstanceOf(LojaIntegradaClientNetworkError);
-  });
+      const err = await resultado;
+      // Well before the 30 s deadline: the caller's signal reached the fetch.
+      expect(chamadas[0]!.init.signal?.aborted).toBe(true);
+      expect(err).toBeInstanceOf(DOMException);
+      expect(err).not.toBeInstanceOf(LojaIntegradaClientNetworkError);
+    },
+  );
 
   it('an answer in time clears the deadline — no timer outlives the call', async () => {
     const { c } = cliente(() => json(200, { importacoes: [] }));

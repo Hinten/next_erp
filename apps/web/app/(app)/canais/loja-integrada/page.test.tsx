@@ -205,14 +205,20 @@ describe('/canais/loja-integrada', () => {
     );
   });
 
-  it('⭐ says that orders, stock and price are not running here — and no longer that the import is not wired', () => {
+  it('⭐ says the order import and the freight status run on their own after the migration, and stock and price do not exist', () => {
     renderPage();
-    expect(
-      screen.getByText(
-        /Importar pedidos, enviar estoque e enviar preço não estão rodando neste canal/,
-      ),
-    ).not.toBeNull();
-    expect(screen.getByText(/nada é sincronizado automaticamente/)).not.toBeNull();
+    const pedidos = screen.getByText(/A importação de pedidos \(a cada 5 minutos\)/);
+    expect(pedidos.textContent).toMatch(
+      /o envio do andamento do frete de cada pedido para a Loja Integrada/,
+    );
+    expect(pedidos.textContent).toMatch(
+      /também só funcionam depois da migração; a partir dela, rodam sozinhos/,
+    );
+    expect(pedidos.textContent).toMatch(/Enviar estoque e enviar preço não existem neste canal/);
+    // NEAR MISS — never again "not running" or "nothing syncs": both turn false
+    // the day the migration turns the calls on, with no change here.
+    expect(screen.queryByText(/não estão rodando neste canal/)).toBeNull();
+    expect(screen.queryByText(/nada é sincronizado automaticamente/)).toBeNull();
     expect(screen.queryByText(/Importar produtos, importar pedidos/)).toBeNull();
     expect(screen.queryByText(/ainda não estão ligados neste canal/)).toBeNull();
   });

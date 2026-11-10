@@ -8,9 +8,10 @@
  * are this channel's own (`lib/loja-integrada/importacaoRotulos.ts`).
  *
  * What it shows: the status, the mode and the options the job ran with, the
- * phase while it runs, the counters, the store's count when the listing read a
- * different number, the 429 pauses, a run whose photos were skipped, the
- * failure's motivo, "sem progresso" after 45 minutes of silence, Cancelar while
+ * phase while it runs (or that it waits for its start), the store list's rows
+ * read so far while the listing runs, the counters, the store's count when the
+ * listing read a different number, the 429 pauses, a run whose photos were
+ * skipped, the failure's motivo, "sem progresso" after 45 minutes of silence, Cancelar while
  * it runs, and — for an ended job, when the page offers one — the way into its
  * result.
  *
@@ -30,6 +31,7 @@ import { Alert, Badge, Button, Group, Loader, Text } from '@mantine/core';
 import {
   ACAO_IMPORTACAO_LI,
   ALVO_IMPORTACAO_LI,
+  FASE_IMPORTACAO_LI,
   MODO_IMPORTACAO_LI,
   type RespostaImportacaoLi,
   STATUS_EM_CURSO_IMPORTACAO_LI,
@@ -56,8 +58,8 @@ import {
   ROTULO_FOTOS_IMPORTACAO_LI,
   ROTULO_MODO_IMPORTACAO_LI,
   ROTULO_STATUS_IMPORTACAO_LI,
-  lerFaseImportacaoLi,
   lerMotivoFalhaImportacaoLi,
+  textoDaFaseDoJobLi,
 } from '@/lib/loja-integrada/importacaoRotulos';
 import { formatarInstanteJob } from '@/lib/marketplace/contaJobs/cadencia';
 import type { ContaRef } from '@/lib/marketplace/contaJobs/types';
@@ -73,6 +75,8 @@ export const ROTULO_IMPORTACAO_PRODUTOS_LI = 'Importação de produtos';
 export interface AlvoResultadoImportacaoLi {
   readonly conta: ContaRef;
   readonly job: RespostaImportacaoLi;
+  /** Open straight on the job's tax-review list (the result view's own way to the open list). */
+  readonly naRevisaoFiscal?: boolean;
 }
 
 export interface CartaoImportacaoLiProps {
@@ -115,6 +119,11 @@ function contar(n: number, singular: string, plural: string): string {
 /**
  * The counters, worded as done or — for a Simular — as what an import would do.
  * Photos and failures only when there is something to say.
+ *
+ * The first one counts the store's products the run PROCESSED — a parent with
+ * its variations, or a simple product, each once — never the rows the listing
+ * read: those are {@link textoLeituraDaListaLi}'s and
+ * {@link textoListagemDivergenteLi}'s, which say "linhas".
  */
 export function linhasDosContadoresLi(
   job: Pick<RespostaImportacaoLi, 'modo' | 'contadores'>,
@@ -122,7 +131,7 @@ export function linhasDosContadoresLi(
   const c = job.contadores;
   const simular = job.modo === MODO_IMPORTACAO_LI.simular;
   const linhas = [
-    `${contar(c.familias, 'produto lido', 'produtos lidos')} da loja`,
+    contar(c.familias, 'produto da loja processado', 'produtos da loja processados'),
     (simular
       ? [
           `${String(c.vinculados)} a vincular`,
@@ -154,6 +163,23 @@ export function linhasDosContadoresLi(
 }
 
 /**
+ * The store list's rows read so far, while the listing runs: the counters stay
+ * at zero through the whole listing (products are processed only after it), so
+ * this is the only progress a long listing shows. `null` in any other phase.
+ */
+export function textoLeituraDaListaLi(
+  job: Pick<RespostaImportacaoLi, 'status' | 'fase' | 'listagem'>,
+): string | null {
+  if (!STATUS_EM_CURSO_IMPORTACAO_LI.has(job.status)) return null;
+  if (job.fase !== FASE_IMPORTACAO_LI.listagem) return null;
+  const { linhas, totalLi } = job.listagem;
+  const lidas = contar(linhas, 'linha lida', 'linhas lidas');
+  return totalLi === null
+    ? `Lista da loja: ${lidas}`
+    : `Lista da loja: ${lidas} de ${String(totalLi)} (produtos e variações)`;
+}
+
+/**
  * The listing's own count against the store's, when they differ: offset paging
  * under concurrent edits can repeat or skip a row, so the operator is told
  * rather than shown a total that silently disagrees.
@@ -162,11 +188,13 @@ export function textoListagemDivergenteLi(
   listagem: Pick<RespostaImportacaoLi['listagem'], 'linhas' | 'totalLi' | 'divergente'>,
 ): string | null {
   if (!listagem.divergente) return null;
-  const achou = contar(listagem.linhas, 'produto', 'produtos');
+  // Rows, never "produtos": the list counts every variation as its own row,
+  // and the card's first counter counts processed products.
+  const achou = contar(listagem.linhas, 'linha', 'linhas');
   const inicio =
     listagem.totalLi === null
-      ? `A leitura achou ${achou}, um número diferente do que a loja informou`
-      : `A loja informou ${contar(listagem.totalLi, 'produto', 'produtos')} e a leitura achou ${achou}`;
+      ? `A leitura da lista de produtos da loja achou ${achou}, um número diferente do que a loja informou`
+      : `A lista de produtos da loja informou ${contar(listagem.totalLi, 'linha', 'linhas')} (produtos e variações) e a leitura achou ${achou}`;
   return (
     `${inicio}: produtos alterados na loja durante a leitura podem ter sido lidos duas vezes ou ` +
     'pulados. Rode a importação de novo para conferir.'
@@ -207,6 +235,7 @@ export function CartaoImportacaoLi({
       : {};
 
   const divergente = job === null ? null : textoListagemDivergenteLi(job.listagem);
+  const leituraDaLista = job === null ? null : textoLeituraDaListaLi(job);
 
   return (
     <JobCardShell
@@ -258,7 +287,12 @@ export function CartaoImportacaoLi({
               Simulação: os números dizem o que uma importação faria; nada é gravado no ERP.
             </Text>
           )}
-          {emCurso && <Text size="xs">{lerFaseImportacaoLi(job.fase).texto}</Text>}
+          {emCurso && <Text size="xs">{textoDaFaseDoJobLi(job)}</Text>}
+          {leituraDaLista !== null && (
+            <Text size="xs" c="dimmed">
+              {leituraDaLista}
+            </Text>
+          )}
           {linhasDosContadoresLi(job).map((linha) => (
             <Text key={linha} size="xs">
               {linha}

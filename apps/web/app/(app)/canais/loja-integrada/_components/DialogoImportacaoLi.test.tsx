@@ -32,8 +32,10 @@ function estado(over: Partial<ImportarProdutosLiActionState> = {}): ImportarProd
     reatados: new Set(),
     close: vi.fn(),
     start: vi.fn(async () => {}),
-    iniciar: vi.fn(async () => {}),
+    iniciar: vi.fn(async () => []),
     dismiss: vi.fn(),
+    dispensados: new Set(),
+    dispensarJob: vi.fn(),
     ...over,
   };
 }
