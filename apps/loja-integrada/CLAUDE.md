@@ -129,7 +129,8 @@ carries the continuation `seq`, the cursors or the selection's ids.
   walked with the label routing route's rules): a missing job and another conta's job are the same
   404 `LI_IMPORTACAO_NAO_ENCONTRADA`; the report pages its job's own `itens` in document-key order
   (500 + 1 read, `?depois=` an item id) on the declared `itens (__name__ ASC)` index — without it
-  each page walks the whole report on Enterprise (#1874; `importacao/job.indexes.test.ts`).
+  each page is expected to walk the whole report on Enterprise (#1874, measured on a root
+  collection; `importacao/job.indexes.test.ts`).
 - **Every job write is tier 1** (`importacao/job.ts`, its header's table): checkpoints chained from
   each write's `writeTime`, only the end-of-dispatch one bumps `seq`; a lost checkpoint is never
   re-applied (stop when the job no longer runs at that `seq`, else `LiImportacaoConcorrenteError`

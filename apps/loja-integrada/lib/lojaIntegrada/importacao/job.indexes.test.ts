@@ -5,10 +5,12 @@
  * `startAfter(<the previous page's last id>)`, `limit(500 + 1)`, no filter — for the items route
  * and for the job's own actionable count at its end (`relatorio.ts`). Firestore Enterprise keeps
  * no implicit key index, not even on `__name__`, and nothing fails without a declared one: not the
- * deploy, not the emulator (which serves key order natively), not this app. Each page just walks
- * the job's whole report and sorts in memory — #1874 measured 313 index rows read per page of 100
- * on staging, and exactly the page once `__name__ ASC` was declared — so one full read of a report
- * of N items costs about N²/500 instead of N. The pairing is pinned here, offline, both ways: the
+ * deploy, not the emulator (which serves key order natively), not this app. Each page is then
+ * expected to walk the job's whole report and sort in memory — #1874 measured that on the root
+ * `arquivos` collection on staging (313 index rows read per page of 100, and exactly the page once
+ * `arquivos (__name__ ASC)` was declared); a per-parent subcollection is the same query shape, but
+ * its plan has not been measured separately — so one full read of a report of N items would cost
+ * about N²/500 instead of N. The pairing is pinned here, offline, both ways: the
  * pages still order by the key ALONE (the queries the fake records), and `firestore.indexes.json`
  * declares the collection id they read, COLLECTION scope, with `__name__ ASC` as its only field.
  *
@@ -29,7 +31,7 @@ import { caminhoJobLi, seedItemLi } from '../testing/importacaoLi';
 import { lerItensDaImportacaoLi } from './job';
 import { contarPendenciasAcionaveisLi } from './relatorio';
 
-// D17, per file: nothing here may reach the global `fetch`.
+// Per file: nothing here may reach the global `fetch` (no call to the store before the cutover).
 beforeEach(() => {
   vi.stubGlobal('fetch', () => {
     throw new Error('job.indexes.test: o fetch global não pode ser chamado');
@@ -82,7 +84,8 @@ function ehPaginaPorChave(consulta: ConsultaFake): boolean {
 
 /**
  * Whether `indice` is the key index the page `consulta` rides, in the one shape #1874 measured to
- * range-seek: the query's own collection id, the query's own scope (a plain collection query is
+ * range-seek on a root collection (and expected to for a per-parent subcollection, not yet
+ * measured): the query's own collection id, the query's own scope (a plain collection query is
  * `COLLECTION`; a group query needs `COLLECTION_GROUP`), and `__name__ ASCENDING` as the ONLY field.
  * Pure.
  */
@@ -96,19 +99,6 @@ function indiceServeAPagina(indice: IndiceDeclarado, consulta: ConsultaFake): bo
     campo?.fieldPath === '__name__' &&
     campo.order === 'ASCENDING'
   );
-}
-
-/**
- * Every query both readers send over a report one item longer than a page: the route's two pages
- * (first, then after the cursor) and the actionable count's walk of the same two.
- */
-async function consultasDoRelatorio(): Promise<ConsultaFake[]> {
-  const db = new FakeDb();
-  for (let i = 0; i <= LIMITE_ITENS_IMPORTACAO_LI; i += 1) seedItemLi(db, JOB, 300_000 + i);
-  const primeira = await lerItensDaImportacaoLi(asDb(db), JOB, null);
-  await lerItensDaImportacaoLi(asDb(db), JOB, primeira.proximo);
-  await contarPendenciasAcionaveisLi(asDb(db), JOB);
-  return db.consultas;
 }
 
 /** The page as the reader sends it (the recorded shape `job.test.ts` pins). */
@@ -126,6 +116,27 @@ const INDICE_DA_CHAVE: IndiceDeclarado = {
   queryScope: 'COLLECTION',
   fields: [{ fieldPath: '__name__', order: 'ASCENDING' }],
 };
+
+/**
+ * Every query both readers send over a report one item longer than a page: the route's two pages
+ * (first, then after the cursor) and the actionable count's walk of the same two.
+ */
+async function consultasDoRelatorio(): Promise<ConsultaFake[]> {
+  const db = new FakeDb();
+  for (let i = 0; i <= LIMITE_ITENS_IMPORTACAO_LI; i += 1) seedItemLi(db, JOB, 300_000 + i);
+  const primeira = await lerItensDaImportacaoLi(asDb(db), JOB, null);
+  await lerItensDaImportacaoLi(asDb(db), JOB, primeira.proximo);
+  // The count's walk is bounded: its THIRD query rejects. A cursor regression (a walk that never
+  // reaches its last page) then turns red here instead of looping forever — the fake answers on
+  // microtasks, so vitest's timer-based timeout could never fire.
+  db.antesDaProximaConsulta(PAGINA.colecao, () => undefined);
+  db.antesDaProximaConsulta(PAGINA.colecao, () => undefined);
+  db.antesDaProximaConsulta(PAGINA.colecao, () => {
+    throw new Error('job.indexes.test: the report walk did not stop after its last page');
+  });
+  await contarPendenciasAcionaveisLi(asDb(db), JOB);
+  return db.consultas;
+}
 
 describe('the import report pages and their key index (#1874)', () => {
   it('both readers page the job’s own `itens` by the document key alone, with no filter', async () => {
@@ -176,10 +187,16 @@ describe('the import report pages and their key index (#1874)', () => {
     ).toEqual([[{ fieldPath: '__name__', order: 'ASCENDING' }]]);
   });
 
-  it('EQUAL: the entry as declared serves the page as sent', () => {
+  it('EQUAL: the entry as declared serves the page as sent', async () => {
+    // Anchors: both literals are the shipped ones — the manifest holds this entry, and the
+    // reader's first page is this page — so every near-miss below stays one step from reality.
+    expect(indicesDeclarados()).toContainEqual(INDICE_DA_CHAVE);
+    expect((await consultasDoRelatorio())[0]).toEqual(PAGINA);
     expect(indiceServeAPagina(INDICE_DA_CHAVE, PAGINA)).toBe(true);
   });
 
+  // Each near-miss differs from the EQUAL pair in ONE respect, so each check of the predicate is
+  // the only one that rejects it.
   it.each<[string, IndiceDeclarado]>([
     ['COLLECTION_GROUP scope', { ...INDICE_DA_CHAVE, queryScope: 'COLLECTION_GROUP' }],
     // Not the shape #1874 measured to range-seek; the pin accepts that shape only.
@@ -199,14 +216,8 @@ describe('the import report pages and their key index (#1874)', () => {
       },
     ],
     [
-      'the key trailing a field',
-      {
-        ...INDICE_DA_CHAVE,
-        fields: [
-          { fieldPath: 'liId', order: 'ASCENDING' },
-          { fieldPath: '__name__', order: 'ASCENDING' },
-        ],
-      },
+      'a single field that is not the key',
+      { ...INDICE_DA_CHAVE, fields: [{ fieldPath: 'liId', order: 'ASCENDING' }] },
     ],
   ])('⚠️ NEAR-MISS (index): %s does not serve the page', (_, indice) => {
     expect(indiceServeAPagina(indice, PAGINA)).toBe(false);
@@ -214,16 +225,18 @@ describe('the import report pages and their key index (#1874)', () => {
 
   it.each<[string, ConsultaFake]>([
     ['a page with a filter', { ...PAGINA, filtros: [['acao', '==', 'nenhuma']] }],
+    ['a page ordered by a field alone', { ...PAGINA, ordens: [['liId', 'asc']] }],
     [
-      'a page ordered by a field first',
+      'a page ordered by the key, then a field',
       {
         ...PAGINA,
         ordens: [
-          ['liId', 'asc'],
           ['__name__', 'asc'],
+          ['liId', 'asc'],
         ],
       },
     ],
+    ['a page ordered by the key descending', { ...PAGINA, ordens: [['__name__', 'desc']] }],
     ['a group query over every `itens`', { ...PAGINA, colecao: 'itens', grupo: true }],
   ])('⚠️ NEAR-MISS (query): %s is not served by the key index', (_, consulta) => {
     expect(indiceServeAPagina(INDICE_DA_CHAVE, consulta)).toBe(false);

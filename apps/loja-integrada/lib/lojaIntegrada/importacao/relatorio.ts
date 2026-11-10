@@ -66,9 +66,9 @@
  * ## The actionable count ({@link contarPendenciasAcionaveisLi})
  *
  * The job's own `itens`, in document-key order, page by page (`lerItensDaImportacaoLi`): no query
- * with a filter, nothing outside the job, each page a range seek on the declared
- * `itens (__name__ ASC)` index (root rule 1; without it every page would walk the whole report,
- * `job.ts`, "The reads"). The items are the truth: a counter could only restate them. The same
+ * with a filter, nothing outside the job, each page riding the declared `itens (__name__ ASC)`
+ * index (root rule 1; without it every page is expected to walk the whole report, `job.ts`,
+ * "The reads"). The items are the truth: a counter could only restate them. The same
  * walk gathers the items' CATEGORY refusals (`categoria-sem-vinculo`, `categoria-recusada` on the
  * item itself) with how many items carry each, the per-category aviso's material at the job's end:
  * the job keeps no per-category tally across dispatches.

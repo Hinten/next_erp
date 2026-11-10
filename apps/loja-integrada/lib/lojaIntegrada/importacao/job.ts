@@ -96,13 +96,16 @@
  *  - One job: a read by id.
  *  - One page of a job's report: its own `itens` subcollection in DOCUMENT-KEY order
  *    (`orderBy(FieldPath.documentId())`, `startAfter(<the previous page's last id>)`,
- *    `limit(LIMITE_ITENS_IMPORTACAO_LI + 1)`), no filter — a range seek on the declared
- *    `itens (__name__ ASC)` index, so the read stops after the page. ⚠️ That index is NEEDED:
- *    Enterprise keeps no implicit key index, and without one each page walks the job's whole report
- *    and sorts in memory (#1874 measured 313 index rows per page of 100 on staging, exactly the page
- *    with the key index), so a full read of N items would cost about N²/500. Index collection ids
- *    are not path-scoped: the same entry also covers `pedidos/{id}/itens`. `job.indexes.test.ts`
- *    pins the pairing.
+ *    `limit(LIMITE_ITENS_IMPORTACAO_LI + 1)`), no filter — expected to range-seek on the declared
+ *    `itens (__name__ ASC)` index and stop after the page. ⚠️ That index is NEEDED: Enterprise
+ *    keeps no implicit key index, and without one each page is expected to walk the job's whole
+ *    report and sort in memory, so a full read of N items would cost about N²/500. #1874 measured
+ *    both plans on the root `arquivos` collection on staging (313 index rows per page of 100, then
+ *    exactly the page once `arquivos (__name__ ASC)` existed); a per-parent subcollection such as
+ *    this one is the same query shape, but its plan has not been measured separately (the
+ *    migrations' key-walk checker lists such walks as NOT PROBED). Index collection ids are not
+ *    path-scoped: the same entry also covers `pedidos/{id}/itens`. `job.indexes.test.ts` pins the
+ *    pairing.
  */
 import {
   FieldPath,

@@ -15,8 +15,8 @@
  *   job is read first, so another conta's report is never paged.
  * - Anything else (Firestore, a stored item that no longer parses) is rethrown: a 500 (root rule 6).
  *
- * The read is the job's own `itens` subcollection in key order with no filter, a range seek on the
- * declared `itens (__name__ ASC)` index (`importacao/job.ts` says why Enterprise needs it). ⚠️ It
+ * The read is the job's own `itens` subcollection in key order with no filter, riding the declared
+ * `itens (__name__ ASC)` index (`importacao/job.ts` says why Enterprise needs it). ⚠️ It
  * calls nothing outside the ERP (`estrutura.test.ts` walks its closure with the label routing
  * route's rules).
  */
