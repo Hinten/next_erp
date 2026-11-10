@@ -165,8 +165,10 @@ export function intervaloImportacaoLi(
  * job last read running would be polled every 3 s for as long as its card is
  * mounted, through a 404 or an answer this build cannot parse (a status newer
  * than this build: the status is a strict enum), each poll a backend read. A
- * failure that may pass (a 5xx, the network, a deadline) keeps the cadence:
- * the next tick IS its retry.
+ * failure that may pass (a 5xx, a 408 or 429, the network, a deadline) keeps
+ * the cadence: the next tick IS its retry — the card offers no other one once
+ * polling stops, so a transient answer classed as a verdict would freeze the
+ * card on "Em andamento" until a reload.
  */
 export function intervaloDaLeituraImportacaoLi(estado: {
   readonly status: 'pending' | 'error' | 'success';
@@ -740,6 +742,20 @@ export interface FalhaLeituraImportacaoLi {
 }
 
 /**
+ * Whether an HTTP failure with no copy of its own may answer differently next
+ * time — the rule `lib/mercado-livre/errors.ts` and `lib/shopee/erros.ts` hold
+ * too. A 4xx is a verdict about this request, EXCEPT a 408 or a 429: the
+ * serving platform answers those (a request it timed out, no instance free
+ * during a scale-up), and they pass. A 5xx may pass; `501` is as permanent as a
+ * 4xx. It matters beyond the retry button: a read failure that is NOT repeatable
+ * stops the job card's polling ({@link intervaloDaLeituraImportacaoLi}).
+ */
+function statusRepetivelLi(status: number): boolean {
+  if (status === 408 || status === 429) return true;
+  return status >= 500 && status !== 501;
+}
+
+/**
  * The copy of a failed READ (the list, a job, its report, its tax-review list).
  * TOTAL by contract: the screen renders it in a retry alert and has nowhere to
  * rethrow to, so every input produces copy.
@@ -771,9 +787,7 @@ export function descreverFalhaLeituraImportacaoLi(err: unknown): FalhaLeituraImp
         repetivel: false,
       };
     }
-    // A 4xx is a verdict about this request and will answer the same way again;
-    // a 5xx may not. `501` is as permanent as a 4xx.
-    return { mensagem: err.message, repetivel: err.status >= 500 && err.status !== 501 };
+    return { mensagem: err.message, repetivel: statusRepetivelLi(err.status) };
   }
   if (err instanceof LojaIntegradaClientTempoEsgotadoError) {
     return {

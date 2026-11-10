@@ -68,6 +68,7 @@ const {
   revisaoFiscalCompletaLi,
   selecaoAoAlternarTodosLi,
   textoCategoriasCriadasLi,
+  textoListaParcialLi,
 } = await import('./ResultadoImportacaoLi');
 const { useImportarProdutosLiAction } = await import('./useImportarProdutosLiAction');
 const { LojaIntegradaClientHttpError, corpoInicioImportacaoLi } =
@@ -411,6 +412,39 @@ describe('whose tax-review list is open', () => {
     expect(jobDaListaEmAbertoLi([SIMULACAO, INTERROMPIDA])).toBeNull();
   });
 
+  it('⭐ a partial list NEWER than the open one is joined by the next import', () => {
+    const texto = textoListaParcialLi(
+      { iniciadoEmMs: 1_790_000_000_001 },
+      { iniciadoEmMs: 1_790_000_000_000 },
+      false,
+    );
+    expect(texto).toMatch(/^Esta importação parou antes de terminar de conferir/);
+    expect(texto).toMatch(/A próxima importação junta o que está nela à lista em aberto/);
+    // No whole list among the ten: the next import's walk still reaches this one.
+    expect(textoListaParcialLi({ iniciadoEmMs: 1_790_000_000_001 }, null, false)).toMatch(
+      /A próxima importação junta/,
+    );
+  });
+
+  it('⭐ NEAR MISS — a partial list OLDER than the open one was already taken in: the next import never reads it again', () => {
+    const texto = textoListaParcialLi(
+      { iniciadoEmMs: 1_789_999_999_999 },
+      { iniciadoEmMs: 1_790_000_000_000 },
+      false,
+    );
+    expect(texto).toMatch(/^Esta importação parou antes de terminar de conferir/);
+    expect(texto).not.toMatch(/A próxima importação junta/);
+    expect(texto).toMatch(/já juntou o que está nela e conferiu de novo/);
+    expect(texto).toMatch(/podem já ter saído da revisão/);
+  });
+
+  it('while the conta’s imports load, only what is certain: the list is partial', () => {
+    expect(textoListaParcialLi({ iniciadoEmMs: 1_790_000_000_001 }, null, true)).toBe(
+      'Esta importação parou antes de terminar de conferir a lista de revisão fiscal, então a ' +
+        'lista abaixo é parcial.',
+    );
+  });
+
   it('the picker offers the ended jobs, and the one on screen even when the list lacks it', () => {
     const rodando = {
       ...IMPORTACAO,
@@ -751,6 +785,81 @@ describe('ResultadoImportacaoLi — "Revisão fiscal"', () => {
     );
     fireEvent.click(screen.getByRole('button', { name: 'Ver a lista em aberto' }));
     expect(onAbrir).toHaveBeenCalledWith({ conta: CONTA, job: IMPORTACAO, naRevisaoFiscal: true });
+    // This interrupted import is newer than the open list's: the next import joins it.
+    expect(await screen.findByText(/A próxima importação junta o que está nela/)).not.toBeNull();
+  });
+
+  it('⭐ NEAR MISS — an interrupted import OLDER than the open list is said to be taken in already', async () => {
+    const antiga = { ...INTERROMPIDA, iniciadoEmMs: IMPORTACAO.iniciadoEmMs - 1 };
+    h.clientRef.current = client({
+      revisaoImportacao: vi.fn(async () => ({ entradas: [], proximo: null })),
+      importacoes: vi.fn(async () => ({ importacoes: [IMPORTACAO, antiga] })),
+    });
+    abrir({ job: antiga, naRevisaoFiscal: true });
+
+    expect(await screen.findByText(/já juntou o que está nela e conferiu de novo/)).not.toBeNull();
+    expect(screen.queryByText(/A próxima importação junta/)).toBeNull();
+  });
+
+  it('⭐ opened on "Revisão fiscal", the list shows without reading the report — until a report filter is picked', async () => {
+    const itensImportacao = vi.fn(async () => ({ itens: ITENS, proximo: null }));
+    h.clientRef.current = client({
+      itensImportacao,
+      revisaoImportacao: vi.fn(async () => ({ entradas: [], proximo: null })),
+      importacoes: vi.fn(async () => ({ importacoes: [IMPORTACAO] })),
+    });
+    abrir({ job: IMPORTACAO, naRevisaoFiscal: true });
+
+    expect(
+      await screen.findByText('Nenhum produto na revisão fiscal desta importação.'),
+    ).not.toBeNull();
+    expect(itensImportacao).not.toHaveBeenCalled();
+    expect(screen.queryByText('Carregando o relatório…')).toBeNull();
+
+    fireEvent.click(filtro(/^Todos/));
+    expect(await screen.findByRole('row', { name: porId(101) })).not.toBeNull();
+    expect(itensImportacao).toHaveBeenCalledTimes(1);
+    expect(filtro(/^Todos \(5\)$/)).not.toBeNull();
+  });
+
+  it('⭐ NEAR MISS — coming back from "Revisão fiscal" never re-reads a report that is never fresh', async () => {
+    // An interrupted job's report is read with `staleTime: 0`: a read switched
+    // off and on again by the filter would read every page again.
+    const itensImportacao = vi.fn(async () => ({ itens: ITENS, proximo: null }));
+    h.clientRef.current = client({
+      itensImportacao,
+      revisaoImportacao: vi.fn(async () => ({ entradas: [], proximo: null })),
+      importacoes: vi.fn(async () => ({ importacoes: [INTERROMPIDA] })),
+    });
+    abrir({ job: INTERROMPIDA });
+    await screen.findByRole('row', { name: porId(101) });
+
+    fireEvent.click(filtro(/^Revisão fiscal$/));
+    expect(await screen.findByText('Nenhum produto nesta lista parcial.')).not.toBeNull();
+    fireEvent.click(filtro(/^Todos/));
+    expect(await screen.findByRole('row', { name: porId(101) })).not.toBeNull();
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(itensImportacao).toHaveBeenCalledTimes(1);
+  });
+
+  it('⭐ a report that cannot be read leaves the tax-review list one click away', async () => {
+    h.clientRef.current = client({
+      itensImportacao: vi.fn(async () => {
+        throw new LojaIntegradaClientHttpError('falha do backend', 500, null);
+      }),
+      revisaoImportacao: vi.fn(async () => ({ entradas: [], proximo: null })),
+      importacoes: vi.fn(async () => ({ importacoes: [IMPORTACAO] })),
+    });
+    abrir({ job: IMPORTACAO });
+    expect(await screen.findByText('falha do backend')).not.toBeNull();
+
+    fireEvent.click(filtro(/^Revisão fiscal$/));
+    expect(
+      await screen.findByText('Nenhum produto na revisão fiscal desta importação.'),
+    ).not.toBeNull();
+    expect(screen.queryByText('falha do backend')).toBeNull();
   });
 
   it('no import among the ten re-checked the list: the view says so', async () => {
@@ -936,6 +1045,8 @@ describe('ResultadoImportacaoLi — "Importar selecionados"', () => {
     expect(iniciar.mock.calls[0]?.[1]).toMatchObject({ selecionados: [102] });
   });
 
+  // 1,001 rows sorted, counted and filtered in jsdom: about 1.5 s alone, past the
+  // default 5 s under the whole suite's load — hence its own budget.
   it('⭐ the cap holds in the UI: at 1,000 no other box can be ticked, and select all refuses to pass it', async () => {
     const mil = Array.from({ length: MAX_SELECIONADOS_LI }, (_, i) => item(10_000 + i));
     const extra = item(90_000, { acao: ACAO_ITEM_IMPORTACAO_LI.vincular });
@@ -943,7 +1054,7 @@ describe('ResultadoImportacaoLi — "Importar selecionados"', () => {
       itensImportacao: vi.fn(async () => ({ itens: [...mil, extra], proximo: null })),
     });
     abrir();
-    await screen.findByRole('row', { name: porId(10000) });
+    await screen.findByRole('row', { name: porId(10000) }, { timeout: 10_000 });
     const todos = () =>
       screen.getByRole('checkbox', {
         name: 'Selecionar todos os produtos do filtro',
@@ -960,7 +1071,7 @@ describe('ResultadoImportacaoLi — "Importar selecionados"', () => {
     fireEvent.click(filtro(/^A vincular/));
     expect((caixa(90_000) as HTMLInputElement).disabled).toBe(true);
     expect((botaoImportar() as HTMLButtonElement).disabled).toBe(false);
-  });
+  }, 20_000);
 
   it('NEAR MISS — not a finished Simular: no box and no button', async () => {
     for (const job of [IMPORTACAO, { ...SIMULACAO, status: STATUS_IMPORTACAO_LI.cancelado }]) {

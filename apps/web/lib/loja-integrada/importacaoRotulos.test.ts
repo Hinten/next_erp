@@ -242,12 +242,18 @@ describe('the actionable sentences send the operator only where a path exists', 
     expect(descricao).not.toMatch(/Corrija ou remova esse vínculo/);
   });
 
-  it('⭐ "dado-invalido" never says the rest of the product went ahead: a create refused is not created', () => {
+  it('⭐ "dado-invalido" is true on every path: what depended on the data — create, complete OR link — was not done', () => {
     const { descricao } = TEXTO_PENDENCIA_IMPORTACAO_LI[PENDENCIA_IMPORTACAO_LI.dadoInvalido];
+    expect(descricao).toMatch(/o que dependia dele não foi feito: criar, completar ou vincular/);
+    // NEAR MISS — the fill path's narrower truth, said as if it were every path's:
+    // on a matched produto the code also means a variation neither matched nor linked.
     expect(descricao).not.toMatch(/o restante do produto seguiu/);
-    expect(descricao).toMatch(/não foi criado/);
-    expect(descricao).toMatch(/num produto que já existia, só esse campo ficou de fora/);
-    expect(descricao).toMatch(/Corrija o dado no painel da Loja Integrada/);
+    expect(descricao).not.toMatch(/só esse campo ficou de fora/);
+    // A detail the store answered off its schema, or a SKU that changed during the
+    // read, has nothing to correct in the panel: running again comes first.
+    expect(descricao).toMatch(/Rode a importação de novo/);
+    expect(descricao).toMatch(/corrija o dado citado no painel da Loja Integrada/);
+    expect(descricao).toMatch(/detalhe do produto na loja, avise o suporte/);
   });
 
   it('"categoria-sem-vinculo" points at the import option that creates and links it', () => {

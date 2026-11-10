@@ -177,17 +177,24 @@ describe('the pure lines', () => {
     );
   });
 
-  it('the list’s rows read so far show only while the listing runs', () => {
+  it('⭐ the list’s PAGES read so far show only while the listing runs — its rows are counted only at its close', () => {
+    // The wire's mid-listing shape: `paginas` advances page by page, `linhas`
+    // stays 0 until the closing count (which also moves the job past the listing).
     const listando = job({
       fase: FASE_IMPORTACAO_LI.listagem,
-      listagem: { paginas: 3, linhas: 300, totalLi: 8_000, divergente: false },
+      listagem: { paginas: 3, linhas: 0, totalLi: 8_000, divergente: false },
     });
     expect(textoLeituraDaListaLi(listando)).toBe(
-      'Lista da loja: 300 linhas lidas de 8000 (produtos e variações)',
+      'Lista da loja: 3 páginas lidas (até 100 linhas por página); a loja informou 8000 linhas (produtos e variações)',
     );
     expect(
       textoLeituraDaListaLi({ ...listando, listagem: { ...listando.listagem, totalLi: null } }),
-    ).toBe('Lista da loja: 300 linhas lidas');
+    ).toBe('Lista da loja: 3 páginas lidas (até 100 linhas por página)');
+    expect(
+      textoLeituraDaListaLi({ ...listando, listagem: { ...listando.listagem, paginas: 1 } }),
+    ).toMatch(/^Lista da loja: 1 página lida /);
+    // NEAR MISS — never the rows field, which reads 0 for the whole listing.
+    expect(textoLeituraDaListaLi(listando)).not.toMatch(/linhas lidas/);
     // NEAR MISS — another phase, or an ended job: nothing.
     expect(textoLeituraDaListaLi({ ...listando, fase: FASE_IMPORTACAO_LI.familias })).toBeNull();
     expect(
@@ -275,18 +282,20 @@ describe('CartaoImportacaoLi', () => {
     expect(screen.getByText('Vinculando as opções de grade confirmadas pelo SKU')).not.toBeNull();
   });
 
-  it('a running listing shows the rows read so far', () => {
+  it('a running listing shows the pages read so far', () => {
     h.clientRef.current = lojaIntegradaClientFalso({ importacao: vi.fn(async () => job()) });
     renderCartao(
       cartao({
         jobDaLista: job({
           fase: FASE_IMPORTACAO_LI.listagem,
-          listagem: { paginas: 3, linhas: 300, totalLi: 8_000, divergente: false },
+          listagem: { paginas: 3, linhas: 0, totalLi: 8_000, divergente: false },
         }),
       }),
     );
     expect(
-      screen.getByText('Lista da loja: 300 linhas lidas de 8000 (produtos e variações)'),
+      screen.getByText(
+        'Lista da loja: 3 páginas lidas (até 100 linhas por página); a loja informou 8000 linhas (produtos e variações)',
+      ),
     ).not.toBeNull();
     expect(screen.getByText('0 produtos da loja processados')).not.toBeNull();
   });

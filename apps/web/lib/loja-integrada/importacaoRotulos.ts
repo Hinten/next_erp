@@ -354,11 +354,17 @@ export const TEXTO_PENDENCIA_IMPORTACAO_LI = {
   },
   [PENDENCIA_IMPORTACAO_LI.dadoInvalido]: {
     rotulo: 'Dado inválido',
+    // True on every path that raises it: a create refused, a field left out of
+    // a fill, and — on a produto the ERP already had — a variation whose store
+    // detail was unusable, or a link that could not be planned, neither matched
+    // nor linked. A detail answered off its schema or a SKU that changed during
+    // the read has nothing to correct in the panel, so running again comes first.
     descricao:
-      'Um dado da loja não pôde ser usado (veja os campos citados). Um produto, uma variação ou ' +
-      'uma categoria que seria criado com ele não foi criado; num produto que já existia, só ' +
-      'esse campo ficou de fora. Corrija o dado no painel da Loja Integrada e rode a importação ' +
-      'de novo.',
+      'Um dado da loja não pôde ser usado (veja os campos citados), e o que dependia dele não ' +
+      'foi feito: criar, completar ou vincular o produto, a variação ou a categoria. Rode a ' +
+      'importação de novo, o que basta se o produto mudou na loja durante a leitura. Se a ' +
+      'pendência voltar, corrija o dado citado no painel da Loja Integrada; se o campo citado ' +
+      'for o detalhe do produto na loja, avise o suporte.',
   },
   [PENDENCIA_IMPORTACAO_LI.conflitoDeEscrita]: {
     rotulo: 'Conflito de gravação',

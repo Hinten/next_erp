@@ -39,10 +39,16 @@
  *  - an import that stopped before its re-check (`falhou`/`cancelado` before
  *    the last phase) holds only part of the list (what it put on it, and what
  *    it had carried so far): the view says the list is partial, shows it, and
- *    points at the open one — the next import joins the two;
+ *    points at the open one — saying, by which started first, whether the next
+ *    import joins the two or the open one already did (`textoListaParcialLi`);
  *  - a Simular writes no list, and the view points at the open one.
  * "The open list" is the newest import among the conta's ten whose re-check
  * ran — the list the `lojaIntegradaRevisaoFiscal` aviso counts.
+ *
+ * The list is its own read, independent of the report: a view opened on it
+ * ("Ver a lista em aberto", the aviso) does not read the report until a report
+ * filter is picked, and a report that cannot be read leaves the list one click
+ * away.
  *
  * ## "Importar selecionados"
  *
@@ -368,6 +374,39 @@ export function jobDaListaEmAbertoLi<
   return importacoes.find(revisaoFiscalCompletaLi) ?? null;
 }
 
+const TEXTO_LISTA_PARCIAL_LI =
+  'Esta importação parou antes de terminar de conferir a lista de revisão fiscal, então a ' +
+  'lista abaixo é parcial.';
+
+/**
+ * What an import that stopped before its re-check says of its PARTIAL list —
+ * and what becomes of it, which depends on ORDER. The backend's carry-forward
+ * walks the conta's `aplicar` jobs newest first (by `iniciadoEmMs`, the order
+ * used here) and stops after the first that ended `concluido`; an interrupted
+ * job is walked past. So:
+ *  - the open list's job started AFTER this one: its walk (or the walk of the
+ *    concluded job it stopped at) already took this list in and re-checked it,
+ *    so entries here may be closed by now — and when that job ended
+ *    `concluido`, the next import stops there and never reads this one again;
+ *  - otherwise (this one is newer, or no whole list is among the ten): the next
+ *    import's walk reaches this job and joins its list.
+ * While the conta's jobs load (`carregando`), only that the list is partial.
+ */
+export function textoListaParcialLi(
+  job: Pick<RespostaImportacaoLi, 'iniciadoEmMs'>,
+  emAberto: Pick<RespostaImportacaoLi, 'iniciadoEmMs'> | null,
+  carregando: boolean,
+): string {
+  if (carregando) return TEXTO_LISTA_PARCIAL_LI;
+  if (emAberto !== null && emAberto.iniciadoEmMs > job.iniciadoEmMs) {
+    return (
+      `${TEXTO_LISTA_PARCIAL_LI} A lista em aberto é de uma importação posterior, que já juntou ` +
+      'o que está nela e conferiu de novo: produtos daqui podem já ter saído da revisão.'
+    );
+  }
+  return `${TEXTO_LISTA_PARCIAL_LI} A próxima importação junta o que está nela à lista em aberto e confere todos.`;
+}
+
 /** The ended jobs the header's picker offers: the list's, plus the job on screen when the list lacks it. */
 export function jobsDoSeletorLi(
   importacoes: readonly RespostaImportacaoLi[],
@@ -487,7 +526,14 @@ function CorpoDoResultadoLi({
     };
   }, []);
 
-  const leitura = useItensImportacaoLi(conta.id, job);
+  // The report is read only once a report filter has been on screen: the
+  // tax-review list never waits on it (module header). A LATCH, never
+  // `filtro !== revisao`: a running or interrupted job's report is never fresh
+  // (`staleTime: 0`), so a read switched off and on again would re-read every
+  // page each time the operator came back from "Revisão fiscal".
+  const naRevisao = filtro === FILTRO_RESULTADO_LI.revisao;
+  const [relatorioAberto, setRelatorioAberto] = useState(!naRevisao);
+  const leitura = useItensImportacaoLi(conta.id, job, { habilitado: relatorioAberto });
   const itens = useMemo(
     () => [...(leitura.dados ?? [])].sort((a, b) => a.liId - b.liId),
     [leitura.dados],
@@ -502,6 +548,7 @@ function CorpoDoResultadoLi({
     const novo = TODOS_OS_FILTROS.find((f) => f === valor);
     if (novo === undefined) return;
     setFiltro(novo);
+    if (novo !== FILTRO_RESULTADO_LI.revisao) setRelatorioAberto(true);
     setPagina(1);
   }
 
@@ -523,65 +570,62 @@ function CorpoDoResultadoLi({
       <SeletorDeJobLi conta={conta} job={job} onAbrir={onAbrir} />
       <CabecalhoDoResultadoLi job={job} />
 
-      {leitura.erro != null ? (
+      <Box style={{ overflowX: 'auto' }}>
+        <SegmentedControl
+          size="xs"
+          aria-label="Filtro do resultado"
+          value={filtro}
+          onChange={trocarFiltro}
+          data={TODOS_OS_FILTROS.map((f) => ({
+            value: f,
+            // A report filter's count only once the report is read.
+            label:
+              f === FILTRO_RESULTADO_LI.revisao || leitura.dados === undefined
+                ? rotuloDoFiltro(f, simular)
+                : `${rotuloDoFiltro(f, simular)} (${String(contagem[f])})`,
+          }))}
+        />
+      </Box>
+
+      {naRevisao ? (
+        <RevisaoFiscalLi conta={conta} job={job} onAbrir={onAbrir} />
+      ) : leitura.erro != null ? (
         <FalhaDeLeituraLi leitura={leitura} descrever={descreverFalhaLeituraImportacaoLi} />
       ) : leitura.dados === undefined ? (
         <Carregando texto="Carregando o relatório…" />
       ) : (
         <>
-          <Box style={{ overflowX: 'auto' }}>
-            <SegmentedControl
-              size="xs"
-              aria-label="Filtro do resultado"
-              value={filtro}
-              onChange={trocarFiltro}
-              data={TODOS_OS_FILTROS.map((f) => ({
-                value: f,
-                label:
-                  f === FILTRO_RESULTADO_LI.revisao
-                    ? rotuloDoFiltro(f, simular)
-                    : `${rotuloDoFiltro(f, simular)} (${String(contagem[f])})`,
-              }))}
+          {comSelecao && (
+            <BarraDeSelecaoLi
+              job={job}
+              selecao={selecao}
+              busy={importacao.busy}
+              desfecho={desfecho}
+              onImportar={() => {
+                void importarSelecionados();
+              }}
             />
-          </Box>
-
-          {filtro === FILTRO_RESULTADO_LI.revisao ? (
-            <RevisaoFiscalLi conta={conta} job={job} onAbrir={onAbrir} />
-          ) : (
-            <>
-              {comSelecao && (
-                <BarraDeSelecaoLi
-                  job={job}
-                  selecao={selecao}
-                  busy={importacao.busy}
-                  desfecho={desfecho}
-                  onImportar={() => {
-                    void importarSelecionados();
-                  }}
-                />
-              )}
-              {simular && !comSelecao && (
-                <Text size="xs" c="dimmed">
-                  {podeImportarSelecionadosLi(job)
-                    ? 'Importar uma seleção desta simulação precisa da permissão de escrita de Integrações.'
-                    : 'Só uma simulação concluída permite importar uma seleção dos seus produtos.'}
-                </Text>
-              )}
-              <TabelaDoRelatorioLi
-                itens={filtrados}
-                pagina={pagina}
-                onPagina={setPagina}
-                comSelecao={comSelecao}
-                selecao={selecao}
-                onSelecao={setSelecao}
-                vazio={
-                  itens.length === 0
-                    ? 'O relatório desta importação está vazio: nenhum produto da loja chegou a ser processado.'
-                    : 'Nenhum produto neste filtro.'
-                }
-              />
-            </>
           )}
+          {simular && !comSelecao && (
+            <Text size="xs" c="dimmed">
+              {podeImportarSelecionadosLi(job)
+                ? 'Importar uma seleção desta simulação precisa da permissão de escrita de Integrações.'
+                : 'Só uma simulação concluída permite importar uma seleção dos seus produtos.'}
+            </Text>
+          )}
+          <TabelaDoRelatorioLi
+            itens={filtrados}
+            pagina={pagina}
+            onPagina={setPagina}
+            comSelecao={comSelecao}
+            selecao={selecao}
+            onSelecao={setSelecao}
+            vazio={
+              itens.length === 0
+                ? 'O relatório desta importação está vazio: nenhum produto da loja chegou a ser processado.'
+                : 'Nenhum produto neste filtro.'
+            }
+          />
         </>
       )}
     </Stack>
@@ -996,11 +1040,7 @@ function RevisaoFiscalLi({
     <Stack gap="xs">
       {!completa && (
         <Alert color="yellow" variant="light" p="xs">
-          <Text size="xs">
-            Esta importação parou antes de terminar de conferir a lista de revisão fiscal, então a
-            lista abaixo é parcial. A próxima importação junta o que está nela à lista em aberto e
-            confere todos.
-          </Text>
+          <Text size="xs">{textoListaParcialLi(job, emAberto, lista.dados === undefined)}</Text>
         </Alert>
       )}
       {irParaEmAberto ??

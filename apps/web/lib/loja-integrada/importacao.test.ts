@@ -222,6 +222,10 @@ describe('intervaloDaLeituraImportacaoLi — the job query’s interval', () => 
   it('a failure that may pass keeps the cadence: the next tick is its retry', () => {
     for (const error of [
       http(503, null),
+      // The serving platform's own "no instance free yet" and a request timeout:
+      // transient, though 4xx.
+      http(429, null),
+      http(408, null),
       new LojaIntegradaClientNetworkError(),
       new LojaIntegradaClientTempoEsgotadoError(),
     ]) {
@@ -236,6 +240,9 @@ describe('intervaloDaLeituraImportacaoLi — the job query’s interval', () => 
     for (const error of [
       http(404, CODIGO_ERRO_LI.importacaoNaoEncontrada),
       http(403, null),
+      // NEAR MISS of 429/408: a neighbouring 4xx is a verdict, and stays one.
+      http(409, null),
+      http(400, null),
       new LojaIntegradaClientRespostaInvalidaError('status novo', 200, ['status']),
     ]) {
       expect(intervaloDaLeituraImportacaoLi({ status: 'error', data: rodando, error })).toBe(false);
@@ -547,10 +554,13 @@ describe('descreverFalhaLeituraImportacaoLi — total', () => {
     ).toContain('Importação não encontrada');
   });
 
-  it('a 5xx and the network are worth repeating; a 4xx and an unknown error are not', () => {
+  it('a 5xx, a 429, a 408 and the network are worth repeating; another 4xx and an unknown error are not', () => {
     expect(descreverFalhaLeituraImportacaoLi(http(500, null)).repetivel).toBe(true);
     expect(descreverFalhaLeituraImportacaoLi(http(501, null)).repetivel).toBe(false);
+    expect(descreverFalhaLeituraImportacaoLi(http(429, null)).repetivel).toBe(true);
+    expect(descreverFalhaLeituraImportacaoLi(http(408, null)).repetivel).toBe(true);
     expect(descreverFalhaLeituraImportacaoLi(http(409, null)).repetivel).toBe(false);
+    expect(descreverFalhaLeituraImportacaoLi(http(428, null)).repetivel).toBe(false);
     expect(descreverFalhaLeituraImportacaoLi(new LojaIntegradaClientNetworkError()).repetivel).toBe(
       true,
     );

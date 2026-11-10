@@ -8,7 +8,7 @@
  * are this channel's own (`lib/loja-integrada/importacaoRotulos.ts`).
  *
  * What it shows: the status, the mode and the options the job ran with, the
- * phase while it runs (or that it waits for its start), the store list's rows
+ * phase while it runs (or that it waits for its start), the store list's pages
  * read so far while the listing runs, the counters, the store's count when the
  * listing read a different number, the 429 pauses, a run whose photos were
  * skipped, the failure's motivo, "sem progresso" after 45 minutes of silence, Cancelar while
@@ -32,6 +32,7 @@ import {
   ACAO_IMPORTACAO_LI,
   ALVO_IMPORTACAO_LI,
   FASE_IMPORTACAO_LI,
+  LIMITE_PAGINA_PRODUTOS_LI,
   MODO_IMPORTACAO_LI,
   type RespostaImportacaoLi,
   STATUS_EM_CURSO_IMPORTACAO_LI,
@@ -121,9 +122,9 @@ function contar(n: number, singular: string, plural: string): string {
  * Photos and failures only when there is something to say.
  *
  * The first one counts the store's products the run PROCESSED — a parent with
- * its variations, or a simple product, each once — never the rows the listing
- * read: those are {@link textoLeituraDaListaLi}'s and
- * {@link textoListagemDivergenteLi}'s, which say "linhas".
+ * its variations, or a simple product, each once — never what the listing
+ * read: that is {@link textoLeituraDaListaLi}'s (pages, while it runs) and
+ * {@link textoListagemDivergenteLi}'s (rows, once it closed), which say "linhas".
  */
 export function linhasDosContadoresLi(
   job: Pick<RespostaImportacaoLi, 'modo' | 'contadores'>,
@@ -163,20 +164,27 @@ export function linhasDosContadoresLi(
 }
 
 /**
- * The store list's rows read so far, while the listing runs: the counters stay
+ * The store list's PAGES read so far, while the listing runs: the counters stay
  * at zero through the whole listing (products are processed only after it), so
  * this is the only progress a long listing shows. `null` in any other phase.
+ *
+ * Pages, never rows: the backend counts the list's rows (`listagem.linhas`)
+ * only in the listing's closing unit, which also moves the job to its next
+ * phase, so on the wire `linhas` reads 0 for as long as `fase` is `listagem`.
+ * `paginas` is what advances. A page asks for at most
+ * `LIMITE_PAGINA_PRODUTOS_LI` rows — "até", since the store may answer fewer —
+ * and the store's own count, when it gave one, lets the operator size the rest.
  */
 export function textoLeituraDaListaLi(
   job: Pick<RespostaImportacaoLi, 'status' | 'fase' | 'listagem'>,
 ): string | null {
   if (!STATUS_EM_CURSO_IMPORTACAO_LI.has(job.status)) return null;
   if (job.fase !== FASE_IMPORTACAO_LI.listagem) return null;
-  const { linhas, totalLi } = job.listagem;
-  const lidas = contar(linhas, 'linha lida', 'linhas lidas');
+  const { paginas, totalLi } = job.listagem;
+  const lidas = `${contar(paginas, 'página lida', 'páginas lidas')} (até ${String(LIMITE_PAGINA_PRODUTOS_LI)} linhas por página)`;
   return totalLi === null
     ? `Lista da loja: ${lidas}`
-    : `Lista da loja: ${lidas} de ${String(totalLi)} (produtos e variações)`;
+    : `Lista da loja: ${lidas}; a loja informou ${contar(totalLi, 'linha', 'linhas')} (produtos e variações)`;
 }
 
 /**
