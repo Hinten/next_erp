@@ -439,7 +439,14 @@ test.describe.serial('Canais Loja Integrada e2e — TableView / ObjectView', () 
       page.getByText('validado na Loja Integrada no momento em que é salvo', { exact: false }),
     ).toBeVisible();
     await expect(page.getByText('mapeamento do frete', { exact: false })).toBeVisible();
-    await expect(page.getByText('nada é sincronizado', { exact: false })).toBeVisible();
+    await expect(
+      page.getByText('a importação só funciona depois da migração para este sistema', {
+        exact: false,
+      }),
+    ).toBeVisible();
+    await expect(
+      page.getByText('Enviar estoque e enviar preço não existem neste canal', { exact: false }),
+    ).toBeVisible();
   });
 
   test('navigates to the new-conta page', async ({ page }) => {
