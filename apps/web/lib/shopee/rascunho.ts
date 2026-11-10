@@ -49,23 +49,49 @@
  * ## A field is in the patch only when the operator changed it AND the write
  *    would change what is stored
  *
- * Only the four fields the P10 form renders ({@link CAMPOS_DO_FORMULARIO_RASCUNHO_SHOPEE}).
- * `attributes` is never in a patch before the attribute editor (P13): the
+ * Only the five fields the form renders ({@link CAMPOS_DO_FORMULARIO_RASCUNHO_SHOPEE}),
+ * `attributes` among them since the attribute editor (P13). The question is
+ * asked of every field alike, and it matters most for `attributes`: the
  * projection DECODES any stored list while the write schema demands positive
- * ids and re-normalises, so piping a legacy list through it would fail every
- * save of that draft — or send an `attributes` patch nobody made, which also
- * suppresses the clear a category change performs. Each changed field is
+ * ids and re-normalises, so an UNTOUCHED legacy list (an `attribute_id` the
+ * write refuses, an untrimmed custom name) is never piped through it — it
+ * would fail every save of that draft, or send an `attributes` patch nobody
+ * made. A list enters the patch only once the operator edited it, and then it
+ * is the editor's (`./atributosRascunho.ts`: the visible filter drops what the
+ * category does not show, in the base's order) — with ONE exception: a patch
+ * that changes `category_id` makes the route clear `attributes` unless it
+ * names them (K1-12), so after a category change a NON-EMPTY list always goes,
+ * even one equal to the held list (it was filled again for the new category;
+ * left out, the route would write `null` over it). Each changed field is
  * normalised ALONE, so a stored value the write schema refuses (a legacy
  * `category_id: 0`) blocks nothing while nobody touches it.
+ *
+ * `attributes` belong to the category: picking another category empties them
+ * (they are the old category's), and putting the HELD category back restores
+ * the held list ({@link comCampoRascunhoShopee}). A typing the attribute editor
+ * cannot accept yet (a digitação that blocks) makes `attributes` an invalid
+ * changed field, so «Salvar rascunho» waits for it
+ * ({@link planoDoRascunhoShopee}). The tie runs the other way too: a list was
+ * built against ONE category's tree, so a save of an edited list that does not
+ * change the category still checks that the category is the one the operator
+ * loaded ({@link divergenciasDoServidorShopee}).
  *
  * ## Rule 7 — the browser writes nothing
  *
  * Every draft write goes through apps/shopee's draft route (the P8 client
  * methods): a create at a client id (tier 0), an edit and a discard compared
  * against the `base` the operator saw (tier 3 — a loser is a 409 the operator
- * sees, never a silent overwrite). After a 2xx the HELD projection is never
- * rebuilt from what was sent (`gravados` may name fields the patch did not —
- * a category change clears `attributes`): the block shows what was saved,
+ * sees, never a silent overwrite). ⚠️ The route compares only the fields of the
+ * patch's `base`, and an attributes-only patch's base does not name the
+ * category its list was built for: the TAB checks that one itself
+ * ({@link divergenciasDoServidorShopee} names `category_id`; the save then
+ * sends nothing and opens the conflict modal), and the rebase never moves the
+ * category unseen while the list is edited ({@link rebasearEdicaoRascunhoShopee}).
+ * Residual: another tab's category write landing between this tab's last
+ * snapshot and its request is not seen by either check. After a 2xx the HELD
+ * projection is never rebuilt from what was sent (`gravados` may name fields
+ * the patch did not — a category change clears `attributes`): the block shows
+ * what was saved,
  * read-only, until the listener brings the stored draft back
  * ({@link marcarRascunhoShopeeSalvo}, {@link conciliarEdicaoRascunhoShopee}).
  */
@@ -84,6 +110,7 @@ import {
   pendenciasDoRascunhoShopee,
   vinculosQueExigemConfirmacaoShopee,
   type ArgsPendenciasRascunhoShopee,
+  type ArvoreAtributosShopee,
   type CampoRascunhoShopee,
   type CamposRascunhoShopee,
   type ConflitoRascunhoShopee,
@@ -108,6 +135,7 @@ import {
   FRASE_PUBLICAR_COM_ALTERACOES_SHOPEE,
   FRASE_PUBLICAR_PRODUTO_NAO_SALVO_SHOPEE,
   FRASE_PUBLICAR_RASCUNHO_NOVO_SHOPEE,
+  FRASE_PUBLICAR_SEM_ATRIBUTOS_SHOPEE,
   FRASE_PUBLICAR_SEM_FAIXAS_SHOPEE,
   FRASE_RASCUNHO_INEXISTENTE_NA_PUBLICACAO_SHOPEE,
   MOTIVO_ANUNCIO_SHOPEE,
@@ -146,6 +174,12 @@ import {
   type OperacaoRascunhoShopee,
 } from './anuncioProduto';
 import {
+  aplicarEdicaoDoAtributoShopee,
+  digitacoesBloqueiam,
+  type DigitacoesAtributosShopee,
+  type EdicaoDoAtributoShopee,
+} from './atributosRascunho';
+import {
   ShopeeClientNetworkError,
   ShopeeClientRespostaInvalidaError,
   shopeeHttpFallbackMessage,
@@ -164,23 +198,39 @@ import type { ProblemaShopee } from './wire';
 /* -------------------------------------------------------------------------- */
 
 /**
- * The draft fields the P10 form renders and may put in a patch, canonical
- * order. `attributes` joins with the attribute editor (P13), `logistic_info`
- * with the logistics editor (P16) — until then neither is ever sent by an edit.
+ * The draft fields the form renders and may put in a patch, canonical order:
+ * the P10 four, and `attributes` since the attribute editor (P13).
+ * `logistic_info` joins with the logistics editor (P16) — until then it is
+ * never sent by an edit.
  */
 export const CAMPOS_DO_FORMULARIO_RASCUNHO_SHOPEE = [
   CAMPO_RASCUNHO_SHOPEE.itemName,
   CAMPO_RASCUNHO_SHOPEE.description,
   CAMPO_RASCUNHO_SHOPEE.categoryId,
   CAMPO_RASCUNHO_SHOPEE.marca,
+  CAMPO_RASCUNHO_SHOPEE.attributes,
 ] as const satisfies readonly CampoRascunhoShopee[];
 export type CampoDoFormularioRascunhoShopee = (typeof CAMPOS_DO_FORMULARIO_RASCUNHO_SHOPEE)[number];
+
+/**
+ * The form fields a plain input sets ({@link comCampoRascunhoShopee}) — every
+ * one but `attributes`, which only the attribute editor writes
+ * ({@link comAtributoRascunhoShopee}: the visible filter, the base-relative
+ * order and the typings). A list set through the generic path would skip all
+ * three, so the type refuses it.
+ */
+export type CampoSimplesDoFormularioRascunhoShopee = Exclude<
+  CampoDoFormularioRascunhoShopee,
+  typeof CAMPO_RASCUNHO_SHOPEE.attributes
+>;
 
 /**
  * What the form holds, in the projection's types: `item_name` and
  * `description` as typed (a cleared input is `''` — never trimmed here),
  * `category_id` as picked, `marca` as the PAIR (`null` = not chosen; "Sem
- * marca" is {@link MARCA_SEM_MARCA_RASCUNHO_SHOPEE}).
+ * marca" is {@link MARCA_SEM_MARCA_RASCUNHO_SHOPEE}), `attributes` in the
+ * request shape the attribute editor keeps (the operator's own value objects —
+ * a typed text RAW, a typed decimal in its wire form; `null` = none).
  */
 export type FormularioRascunhoShopee = {
   readonly [C in CampoDoFormularioRascunhoShopee]: CamposRascunhoShopee[C];
@@ -189,13 +239,14 @@ export type FormularioRascunhoShopee = {
 /** A patch: the CHANGED form fields, each normalised as the draft route stores it. */
 export type PatchDoRascunhoShopee = Partial<FormularioRascunhoShopee>;
 
-/** The form fields of a projection. */
+/** The form fields of a projection — its `attributes` list VERBATIM (by reference). */
 export function formularioDoRascunhoShopee(campos: CamposRascunhoShopee): FormularioRascunhoShopee {
   return {
     item_name: campos.item_name,
     description: campos.description,
     category_id: campos.category_id,
     marca: campos.marca,
+    attributes: campos.attributes,
   };
 }
 
@@ -225,6 +276,15 @@ export interface EdicaoRascunhoShopee {
   readonly base: CamposRascunhoShopee;
   /** The form's current values. */
   readonly atual: FormularioRascunhoShopee;
+  /**
+   * The attribute editor's typings not (yet) in {@link atual}'s list
+   * (`./atributosRascunho.ts`, keyed by `String(attributeId)`): a typed text
+   * the editor cannot accept (a decimal with a dot, a number with no unit…)
+   * stays on screen here and BLOCKS the save ({@link planoDoRascunhoShopee});
+   * a blank text with a chosen unit only remembers the unit. `{}` on a new
+   * entry and after a category change.
+   */
+  readonly digitacoesAtributos: DigitacoesAtributosShopee;
   /**
    * Set by {@link marcarRascunhoShopeeSalvo} after a 2xx: what THIS draft's
    * document looked like in the links snapshot current when the request LEFT
@@ -286,6 +346,7 @@ export function novaEdicaoRascunhoShopee(args: {
     novo: true,
     base,
     atual: formularioDoRascunhoShopee(base),
+    digitacoesAtributos: {},
     salvo: null,
   };
 }
@@ -307,6 +368,7 @@ export function edicaoDoRascunhoGuardadoShopee(args: {
     novo: false,
     base,
     atual: formularioDoRascunhoShopee(base),
+    digitacoesAtributos: {},
     salvo: null,
   };
 }
@@ -316,13 +378,76 @@ export function edicaoDoRascunhoGuardadoShopee(args: {
  * into. ⚠️ Typing into a just-saved entry ends its read-only bridge: its `base`
  * is then the PRE-save projection, so the next save's baseline answers a
  * 409 the operator sees — the safe direction, never a silent overwrite.
+ *
+ * **A category pick carries the attributes with it** (they belong to the
+ * category): a pick that CHANGES the form's category empties `attributes` and
+ * drops every typing — except putting the HELD category back
+ * (`base.category_id`), which restores the held list. A pick of the category
+ * the form already holds changes nothing (the operator's attributes stay).
+ * The picker warns first while `BlocoRascunhoShopee.atributosPreenchidos`.
  */
-export function comCampoRascunhoShopee<C extends CampoDoFormularioRascunhoShopee>(
+export function comCampoRascunhoShopee<C extends CampoSimplesDoFormularioRascunhoShopee>(
   edicao: EdicaoRascunhoShopee,
   campo: C,
   valor: FormularioRascunhoShopee[C],
 ): EdicaoRascunhoShopee {
-  return { ...edicao, atual: { ...edicao.atual, [campo]: valor }, salvo: null };
+  const atual: FormularioRascunhoShopee = { ...edicao.atual, [campo]: valor };
+  const categoria = CAMPO_RASCUNHO_SHOPEE.categoryId;
+  if (
+    campo !== categoria ||
+    mesmoValorGravadoDoRascunhoShopee(categoria, edicao.atual.category_id, atual.category_id)
+  ) {
+    return { ...edicao, atual, salvo: null };
+  }
+  const deVolta = mesmoValorGravadoDoRascunhoShopee(
+    categoria,
+    edicao.base.category_id,
+    atual.category_id,
+  );
+  return {
+    ...edicao,
+    atual: { ...atual, attributes: deVolta ? edicao.base.attributes : null },
+    digitacoesAtributos: {},
+    salvo: null,
+  };
+}
+
+/**
+ * One operator edit of one attribute (`./atributosRascunho.ts`'s
+ * `aplicarEdicaoDoAtributoShopee`, over the form's list, the HELD base's list
+ * and the entry's typings). `arvore` is the tree of the form's category (the
+ * EDITED one) — the tab calls this only once it is loaded and only while the
+ * block takes typing. A refused edit (the composer's, a pick beyond the cap)
+ * and an edit that changes nothing answer the entry ITSELF; any other ends a
+ * just-saved bridge like {@link comCampoRascunhoShopee}.
+ */
+export function comAtributoRascunhoShopee(
+  edicao: EdicaoRascunhoShopee,
+  arvore: ArvoreAtributosShopee,
+  attributeId: number,
+  edicaoDoAtributo: EdicaoDoAtributoShopee,
+): EdicaoRascunhoShopee {
+  const resultado = aplicarEdicaoDoAtributoShopee({
+    arvore,
+    lista: edicao.atual.attributes,
+    guardados: edicao.base.attributes,
+    digitacoes: edicao.digitacoesAtributos,
+    attributeId,
+    edicao: edicaoDoAtributo,
+  });
+  if (!resultado.ok) return edicao;
+  if (
+    resultado.lista === edicao.atual.attributes &&
+    resultado.digitacoes === edicao.digitacoesAtributos
+  ) {
+    return edicao;
+  }
+  return {
+    ...edicao,
+    atual: { ...edicao.atual, attributes: resultado.lista },
+    digitacoesAtributos: resultado.digitacoes,
+    salvo: null,
+  };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -411,13 +536,18 @@ export type ImpedimentoDoRascunhoShopee =
 export interface PlanoDoRascunhoShopee {
   /**
    * The fields to WRITE, normalised (blank description ⇒ `null`, brand `0` or
-   * a blank name ⇒ no name). For a `novo` entry: all four (the create's
-   * `conteudo`); for a stored one: the {@link alterados}.
+   * a blank name ⇒ no name, an attribute's custom name trimmed and a blank
+   * unit omitted). For a `novo` entry: all five (the create's `conteudo`); for
+   * a stored one: the {@link alterados}.
    */
   readonly patch: PatchDoRascunhoShopee;
   /** The fields in {@link patch}, canonical order. */
   readonly alterados: readonly CampoDoFormularioRascunhoShopee[];
-  /** Fields the operator changed (all four on a `novo` entry) that no write accepts. */
+  /**
+   * Fields the operator changed (all five on a `novo` entry) that no write
+   * accepts — and `attributes` whenever a typing BLOCKS
+   * (`digitacoesBloqueiam`), even over a list that did not change.
+   */
   readonly invalidos: readonly CampoDoFormularioRascunhoShopee[];
   /** Unsaved work exists: a `novo` entry, a field to write, or a changed field still invalid. */
   readonly sujo: boolean;
@@ -465,6 +595,19 @@ function comCampoNoPatch<C extends CampoDoFormularioRascunhoShopee>(
  * `'  '` description over a stored `null` normalises to `null`: no change). A
  * field changed into a value no write accepts is {@link PlanoDoRascunhoShopee.invalidos}.
  *
+ * `attributes` is asked FIRST whether a typing blocks
+ * (`digitacoesBloqueiam(edicao.digitacoesAtributos)`): one that does makes the
+ * field invalid even when the list itself did not change — the typed text is
+ * on screen, so a save that dropped it would lose visible work. A list the
+ * operator edited is the attribute editor's (visible filter, base order), so
+ * the generic loop then asks it the same two questions as any field — EXCEPT
+ * after a category change (`category_id` is decided first, canonical order):
+ * the route then clears `attributes` unless the patch names them (K1-12), so
+ * a non-empty list enters the patch even when it equals the held one — under
+ * question (2) the held list is not what the category write leaves stored.
+ * An emptied list stays the held-list question (its `null` is what the clear
+ * writes anyway).
+ *
  * `dirty ⇔ patch non-empty` (rev. 2a #3) — plus a `novo` entry, and a changed
  * field still invalid (typed work the leave-guard must not lose). Never the
  * CONFLICT question: under it a legacy id-only brand re-picked with its name
@@ -479,8 +622,21 @@ export function planoDoRascunhoShopee(
   const invalidos: CampoDoFormularioRascunhoShopee[] = [];
 
   const considerar = <C extends CampoDoFormularioRascunhoShopee>(campo: C): void => {
+    if (
+      campo === CAMPO_RASCUNHO_SHOPEE.attributes &&
+      digitacoesBloqueiam(edicao.digitacoesAtributos)
+    ) {
+      invalidos.push(campo);
+      return;
+    }
     const valor = edicao.atual[campo];
-    if (!edicao.novo && mesmoValorGravadoDoRascunhoShopee(campo, edicao.base[campo], valor)) {
+    // K1-12: a category write clears the stored list unless the patch names it.
+    const comATrocaDeCategoria =
+      campo === CAMPO_RASCUNHO_SHOPEE.attributes &&
+      valor !== null &&
+      alterados.includes(CAMPO_RASCUNHO_SHOPEE.categoryId);
+    const comparaComABase = !edicao.novo && !comATrocaDeCategoria;
+    if (comparaComABase && mesmoValorGravadoDoRascunhoShopee(campo, edicao.base[campo], valor)) {
       return;
     }
     const normalizado = normalizar(campo, valor);
@@ -489,7 +645,7 @@ export function planoDoRascunhoShopee(
       return;
     }
     if (
-      !edicao.novo &&
+      comparaComABase &&
       mesmoValorGravadoDoRascunhoShopee(campo, edicao.base[campo], normalizado.valor)
     ) {
       return;
@@ -550,9 +706,11 @@ export function algumRascunhoShopeeSujo(edicoes: Iterable<EdicaoRascunhoShopee>)
 
 /**
  * `criarRascunho`'s input for a `novo` entry, or `null` when its plan has an
- * impediment (a blank title, …). `conteudo` names EVERY field — the four
- * normalised form values and `attributes: null` (a new draft has none) — so a
- * create retry at the same id compares like for like.
+ * impediment (a blank title, a blocking attribute typing, …). `conteudo` names
+ * EVERY field — the five normalised form values, `attributes` the list the
+ * operator filled (`null` when none) — so a create retry at the same id
+ * compares like for like ({@link conflitosAtualizadosDoRascunhoShopee} reads
+ * what it SENT the same way).
  * `confirmarSegundoAnuncio: true` only after the operator confirmed (D15).
  */
 export function corpoCriarRascunhoShopee(
@@ -573,7 +731,7 @@ export function corpoCriarRascunhoShopee(
       description: patch.description ?? null,
       category_id: patch.category_id ?? null,
       marca: patch.marca ?? null,
-      attributes: null,
+      attributes: patch.attributes ?? null,
     },
     ...(opcoes.confirmarSegundoAnuncio === true ? { confirmarSegundoAnuncio: true } : {}),
   };
@@ -757,9 +915,29 @@ function documentoNoSnapshot(snapshot: unknown, linkDocId: string): Record<strin
  * - any OTHER changed field keeps the base the operator LOADED: a writer that
  *   landed there after the 409 makes the re-send a 409 again — the safe
  *   direction, never an overwrite of a value nobody showed.
- * - `attributes` (not a form field) follows the category: while the category
- *   is not changed it becomes the stored list; while it is, it moves only when
- *   listed (the base a category change sends must be what the operator saw).
+ *
+ * `attributes` is a form field like the others, with two rules that tie it to
+ * the category it belongs to (`attributes` comes after `category_id` in the
+ * canonical order, so it is decided against the REBASED category):
+ *
+ * - **never "untouched" while the operator's category change survives the
+ *   rebase** — the list the category pick left (emptied) IS that change, so
+ *   another writer's list is never taken into the base unseen: it moves only
+ *   when listed (or named in `usarDoServidor`), and the form keeps the
+ *   operator's list (the new category's); nor while a typing BLOCKS (the typed
+ *   text is work on screen — it survives the rebase);
+ * - **the category taken from the stored draft (`usarDoServidor`) takes the
+ *   stored attributes too**, base and form — the operator gave up the category
+ *   change, so the list goes back to the category's own (the pick's "put the
+ *   held category back" rule);
+ * - **`category_id` is never "untouched" while the operator's attributes are
+ *   edited** (the list differs from the held one, or a typing blocks) — the
+ *   mirror of the first rule: the list was built against the LOADED category's
+ *   tree, so another writer's category is never taken into the form unseen
+ *   under it. It moves only when listed (base) or named in `usarDoServidor`.
+ *
+ * Whenever the form's list is taken from the stored draft, the typings go
+ * with it (they were typed over the list that left); otherwise they stay.
  *
  * `listados` defaults to `usarDoServidor` when that is given, else to the
  * fields that diverge NOW ({@link divergenciasDoServidorShopee} against
@@ -790,46 +968,66 @@ export function rebasearEdicaoRascunhoShopee(
 ): EdicaoRascunhoShopee {
   const guardado = camposDoRascunhoShopee(link);
   const doServidor = formularioDoRascunhoShopee(guardado);
+  const ATRIBUTOS = CAMPO_RASCUNHO_SHOPEE.attributes;
+  const CATEGORIA = CAMPO_RASCUNHO_SHOPEE.categoryId;
   let base: CamposRascunhoShopee = edicao.novo ? guardado : edicao.base;
   let atual = edicao.atual;
+  /** «Usar o que está salvo» for `campo` — the stored category carries its attributes. */
+  const usar = (campo: CampoDoFormularioRascunhoShopee): boolean =>
+    usarDoServidor.includes(campo) || (campo === ATRIBUTOS && usarDoServidor.includes(CATEGORIA));
+  let digitacoesAtributos = edicao.digitacoesAtributos;
+  /** The form's value of `campo` becomes the stored one — a list's typings go with the list. */
+  const tomar = (campo: CampoDoFormularioRascunhoShopee): void => {
+    atual = { ...atual, [campo]: doServidor[campo] };
+    if (campo === ATRIBUTOS) digitacoesAtributos = {};
+  };
 
   if (edicao.novo) {
-    for (const campo of CAMPOS_DO_FORMULARIO_RASCUNHO_SHOPEE) {
-      if (usarDoServidor.includes(campo)) atual = { ...atual, [campo]: doServidor[campo] };
-    }
+    for (const campo of CAMPOS_DO_FORMULARIO_RASCUNHO_SHOPEE) if (usar(campo)) tomar(campo);
   } else {
     const mostrados =
       listados ??
       (usarDoServidor.length > 0 ? usarDoServidor : divergenciasDoServidorShopee(edicao, link));
-    const rebasear = <C extends CampoDoFormularioRascunhoShopee>(campo: C): void => {
-      const intocado = mesmoValorGravadoDoRascunhoShopee(
-        campo,
-        edicao.base[campo],
-        edicao.atual[campo],
+    const digitacaoBloqueia = digitacoesBloqueiam(edicao.digitacoesAtributos);
+    const atributosEditados =
+      digitacaoBloqueia ||
+      !mesmoValorGravadoDoRascunhoShopee(
+        ATRIBUTOS,
+        edicao.base.attributes,
+        edicao.atual.attributes,
       );
-      if (intocado || usarDoServidor.includes(campo)) {
+    const rebasear = <C extends CampoDoFormularioRascunhoShopee>(campo: C): void => {
+      // `attributes` is decided after `category_id` (canonical order): `base`
+      // and `atual` already hold the rebased category here.
+      const daTrocaDeCategoria =
+        campo === ATRIBUTOS &&
+        !mesmoValorGravadoDoRascunhoShopee(CATEGORIA, base.category_id, atual.category_id);
+      const intocado =
+        !daTrocaDeCategoria &&
+        !(campo === ATRIBUTOS && digitacaoBloqueia) &&
+        !(campo === CATEGORIA && atributosEditados) &&
+        mesmoValorGravadoDoRascunhoShopee(campo, edicao.base[campo], edicao.atual[campo]);
+      if (intocado || (usar(campo) && !daTrocaDeCategoria)) {
         base = { ...base, [campo]: guardado[campo] };
-        atual = { ...atual, [campo]: doServidor[campo] };
-      } else if (mostrados.includes(campo)) {
+        tomar(campo);
+      } else if (mostrados.includes(campo) || usar(campo)) {
         base = { ...base, [campo]: guardado[campo] };
       }
     };
     for (const campo of CAMPOS_DO_FORMULARIO_RASCUNHO_SHOPEE) rebasear(campo);
-    const trocaCategoria = !mesmoValorGravadoDoRascunhoShopee(
-      CAMPO_RASCUNHO_SHOPEE.categoryId,
-      base.category_id,
-      atual.category_id,
-    );
-    const atributos = CAMPO_RASCUNHO_SHOPEE.attributes;
-    if (!trocaCategoria || mostrados.includes(atributos) || usarDoServidor.includes(atributos)) {
-      base = { ...base, attributes: guardado.attributes };
-    }
   }
 
   if (!usarDoServidor.includes(CAMPO_RASCUNHO_SHOPEE.marca)) {
     atual = { ...atual, marca: comNomeGuardadoDaMarca(atual.marca, base.marca) };
   }
-  return { ...edicao, novo: false, base, atual, salvo: null };
+  return {
+    ...edicao,
+    novo: false,
+    base,
+    atual,
+    digitacoesAtributos,
+    salvo: null,
+  };
 }
 
 /**
@@ -867,13 +1065,12 @@ export function conflitosAtualizadosDoRascunhoShopee(
   const aindaMostrado = (campo: CampoRascunhoShopee): boolean => {
     const linha = conflitos.find((c) => c.campo === campo);
     if (linha === undefined) {
-      // A create retry's unlisted `attributes`: the create sent `null`, and the
-      // 409 not listing them said the stored draft held the same.
-      return (
-        edicao.novo &&
-        campo === CAMPO_RASCUNHO_SHOPEE.attributes &&
-        mesmoValorGravadoDoRascunhoShopee(campo, null, guardado[campo])
-      );
+      // A create retry's unlisted `attributes`: the 409 not listing them said
+      // the stored draft held what the create SENT (`corpoCriarRascunhoShopee`:
+      // the form's list normalised, `null` when none) — still true now?
+      if (!edicao.novo || campo !== CAMPO_RASCUNHO_SHOPEE.attributes) return false;
+      const enviado = normalizar(campo, edicao.atual.attributes);
+      return enviado.ok && mesmoValorGravadoDoRascunhoShopee(campo, enviado.valor, guardado[campo]);
     }
     // `atual` is the wire's (`z.unknown()`), in the projection's form; the
     // compare is total over any value, so a foreign shape only reads DISTINCT.
@@ -918,7 +1115,12 @@ const LARGAR: ConciliacaoDaEdicaoShopee = { acao: 'largar', aviso: null };
  *   notice when it held unsaved work (a cache-served snapshot proves nothing
  *   is gone).
  * - **A clean stored entry** — dropped: the block renders the snapshot, which
- *   is always current.
+ *   is always current — EXCEPT one whose SCREEN the snapshot cannot repaint
+ *   ({@link telaSoDaEntrada}: a typing — a unit chosen before its number — or a
+ *   form value the write normalises away, like a custom value's trailing space
+ *   being typed), kept while every field it loaded is still what is stored. A
+ *   snapshot that moved under it drops it (never a stale base painted): only
+ *   that whitespace or that unit is lost.
  * - **A `novo` entry** — kept while its document is absent (nothing was
  *   created) or still a draft (a create that landed while its answer was lost:
  *   the next Salvar is that create's retry).
@@ -951,8 +1153,30 @@ export function conciliarEdicaoRascunhoShopee(
     if (!agora.servidorConfirmado) return MANTER;
     return { acao: 'largar', aviso: sujo ? FRASE_RASCUNHO_DESCARTADO_DURANTE_EDICAO_SHOPEE : null };
   }
-  if (!sujo) return LARGAR;
+  if (!sujo) return telaSoDaEntrada(edicao, link) ? MANTER : LARGAR;
   return jaEstaGuardado(edicao, link) ? LARGAR : MANTER;
+}
+
+/**
+ * A CLEAN stored entry whose form the snapshot cannot repaint — a typing (a
+ * unit remembered before its number), or a form value that differs from the
+ * held one only by what the write normalises (a custom value's raw text the
+ * write trims) — while every field it loaded is still what `link` stores. Both
+ * compares are the WRITE question: `'Alfa '` over a stored `'Alfa'` is EQUAL
+ * for the write (the plan is clean) and DISTINCT for the screen (the space
+ * being typed is on it).
+ */
+function telaSoDaEntrada(edicao: EdicaoRascunhoShopee, link: Record<string, unknown>): boolean {
+  const naTela =
+    Object.keys(edicao.digitacoesAtributos).length > 0 ||
+    CAMPOS_DO_FORMULARIO_RASCUNHO_SHOPEE.some(
+      (campo) => !mesmoValorGravadoDoRascunhoShopee(campo, edicao.base[campo], edicao.atual[campo]),
+    );
+  if (!naTela) return false;
+  const guardado = camposDoRascunhoShopee(link);
+  return CAMPOS_DO_FORMULARIO_RASCUNHO_SHOPEE.every((campo) =>
+    mesmoValorGravadoDoRascunhoShopee(campo, edicao.base[campo], guardado[campo]),
+  );
 }
 
 /** A just-saved entry against the current snapshot (see {@link conciliarEdicaoRascunhoShopee}). */
@@ -1008,6 +1232,15 @@ function jaEstaGuardado(edicao: EdicaoRascunhoShopee, link: Record<string, unkno
  * tab saved the title meanwhile. Non-empty ⇒ that save will answer 409
  * `rascunhoConflito`; the block can say so before the click. `[]` for a
  * `novo` or just-saved entry, or one with nothing to save.
+ *
+ * Plus `category_id` whenever the patch names `attributes` WITHOUT it: the
+ * list was built against the category the operator loaded, but such a patch's
+ * base does not name the category, so the route would NOT answer 409 when
+ * another writer moved it — it would write this list onto the other category.
+ * When this names `category_id` there, the tab refuses that save itself (no
+ * request; the conflict modal opens with these rows), and «Salvar mesmo assim»
+ * re-checks through {@link conflitosAtualizadosDoRascunhoShopee}, whose
+ * `moveram` is this.
  */
 export function divergenciasDoServidorShopee(
   edicao: EdicaoRascunhoShopee,
@@ -1016,9 +1249,36 @@ export function divergenciasDoServidorShopee(
   if (edicao.novo || edicao.salvo !== null) return [];
   const { patch } = planoDoRascunhoShopee(edicao, { tipo: 'livre' });
   const guardado = camposDoRascunhoShopee(link);
-  return camposDaBaseDoRascunhoShopee(patch).filter(
+  const daBase = camposDaBaseDoRascunhoShopee(patch);
+  const comparados =
+    daBase.includes(CAMPO_RASCUNHO_SHOPEE.attributes) &&
+    !daBase.includes(CAMPO_RASCUNHO_SHOPEE.categoryId)
+      ? CAMPOS_DO_FORMULARIO_RASCUNHO_SHOPEE.filter(
+          (campo) => campo === CAMPO_RASCUNHO_SHOPEE.categoryId || daBase.includes(campo),
+        )
+      : daBase;
+  return comparados.filter(
     (campo) => !mesmoValorDoRascunhoShopee(campo, edicao.base[campo], guardado[campo]),
   );
+}
+
+/**
+ * The rows the tab shows INSTEAD of sending a save the route would not refuse:
+ * {@link divergenciasDoServidorShopee} names `category_id` while the patch does
+ * not (an edited list whose category another writer moved). One row per
+ * diverging field, with its STORED value — the 409's shape, so the conflict
+ * modal and «Salvar mesmo assim» treat it as one. `null` ⇔ the save may go.
+ */
+export function conflitosAntesDeSalvarShopee(
+  edicao: EdicaoRascunhoShopee,
+  link: Record<string, unknown>,
+): ConflitoRascunhoShopee[] | null {
+  const divergencias = divergenciasDoServidorShopee(edicao, link);
+  if (!divergencias.includes(CAMPO_RASCUNHO_SHOPEE.categoryId)) return null;
+  const { patch } = planoDoRascunhoShopee(edicao, { tipo: 'livre' });
+  if (CAMPO_RASCUNHO_SHOPEE.categoryId in patch) return null;
+  const guardado = camposDoRascunhoShopee(link);
+  return divergencias.map((campo) => ({ campo, atual: guardado[campo] }));
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1347,13 +1607,15 @@ export interface BlocoRascunhoShopee {
    * `em-andamento`), or `null` when time alone changes nothing.
    */
   readonly releituraEmMs: number | null;
-  /** What the four fields show. */
+  /** What the five fields show. */
   readonly valores: FormularioRascunhoShopee;
   /**
    * The block's draft in the projection's form — {@link valores} over the held
-   * projection (its `attributes`) — the `campos` that
+   * projection, so the EDITED attributes — the `campos` that
    * `pendenciasDoRascunhoShopee` (`@delfrance/schemas`) reads for the block's
-   * pendências.
+   * pendências (with the EDITED category's tree, they follow the attributes as
+   * the operator fills them; the «Publicar» gate itself still needs the draft
+   * saved and clean, so there edited = stored).
    */
   readonly campos: CamposRascunhoShopee;
   readonly novo: boolean;
@@ -1381,8 +1643,32 @@ export interface BlocoRascunhoShopee {
   readonly podeDesfazer: boolean;
   readonly podeDescartar: boolean;
   readonly descarte: DescarteDoRascunhoShopee;
-  /** The held projection stores attributes: a category change clears them — warn first. */
-  readonly atributosGravados: boolean;
+  /**
+   * Attributes would be lost by a category change — warn first: the held
+   * projection stores at least one (the save clears them), OR the form holds
+   * at least one (a pick empties the form's list — a new draft's unsaved
+   * attributes included), OR a typing still on screen blocks the save (a pick
+   * drops every typing; `digitacoesBloqueiam` — a unit remembered alone is no
+   * work).
+   */
+  readonly atributosPreenchidos: boolean;
+  /**
+   * «Voltar à categoria gravada» ({@link podeVoltarCategoria}) would drop
+   * attribute work done for the CHANGED category — confirm first. The
+   * put-back restores the held list and drops every typing, so it costs work
+   * when a typing is on screen, or the form's list is non-empty and differs
+   * from the held one (after a pick the list starts at `null`, so anything in
+   * it was filled for the new category). Never `atributosPreenchidos`: a held
+   * list alone comes BACK with the revert.
+   */
+  readonly voltarCategoriaApagaAtributos: boolean;
+  /**
+   * The HELD projection stores attributes while the form shows ANOTHER
+   * category: the stored attributes belong to the saved category, and putting
+   * that category back brings them back (the picker says so). Never on a local
+   * new draft — it stores nothing.
+   */
+  readonly atributosGravadosForaDaCategoria: boolean;
   /** The block's notices, in order of importance. */
   readonly avisos: readonly string[];
 }
@@ -1440,6 +1726,16 @@ export function estadoDoBlocoRascunhoShopee(e: EntradaDoBlocoRascunhoShopee): Bl
   const impedimento = plano === null ? 'nada-a-salvar' : plano.impedimento;
   const podeSalvar = e.podeEditar && !e.ocupado && !e.kitVirtual && impedimento === null;
   const sujo = plano?.sujo === true;
+  const CATEGORIA = CAMPO_RASCUNHO_SHOPEE.categoryId;
+  const outraCategoria = !mesmoValorGravadoDoRascunhoShopee(
+    CATEGORIA,
+    guardado.category_id,
+    valores.category_id,
+  );
+  // Never on a local new draft: it has no stored category to go back to
+  // (`guardado` is its prefill), so the button would put back nothing.
+  const podeVoltarCategoria =
+    camposEditaveis && publicacao.tipo === 'incerta' && edicao !== null && !novo && outraCategoria;
 
   const avisos: string[] = [];
   if (e.kitVirtual) avisos.push(FRASE_RASCUNHO_EM_KIT_VIRTUAL_SHOPEE);
@@ -1467,18 +1763,7 @@ export function estadoDoBlocoRascunhoShopee(e: EntradaDoBlocoRascunhoShopee): Bl
     camposEditaveis,
     categoriaEditavel: camposEditaveis && publicacao.tipo !== 'incerta',
     categoriaGravada: guardado.category_id,
-    // Never on a local new draft: it has no stored category to go back to
-    // (`guardado` is its prefill), so the button would put back nothing.
-    podeVoltarCategoria:
-      camposEditaveis &&
-      publicacao.tipo === 'incerta' &&
-      edicao !== null &&
-      !novo &&
-      !mesmoValorGravadoDoRascunhoShopee(
-        CAMPO_RASCUNHO_SHOPEE.categoryId,
-        guardado.category_id,
-        valores.category_id,
-      ),
+    podeVoltarCategoria,
     sujo,
     podeSalvar,
     impedimento,
@@ -1492,7 +1777,22 @@ export function estadoDoBlocoRascunhoShopee(e: EntradaDoBlocoRascunhoShopee): Bl
       !salvo &&
       (novo || (link !== null && (edicao !== null || e.servidorConfirmado))),
     descarte: novo ? 'local' : publicacao.tipo === 'incerta' ? 'atestar' : 'confirmar',
-    atributosGravados: projecao?.attributes != null && projecao.attributes.length > 0,
+    atributosPreenchidos:
+      (projecao?.attributes?.length ?? 0) > 0 ||
+      (valores.attributes?.length ?? 0) > 0 ||
+      (edicao !== null && digitacoesBloqueiam(edicao.digitacoesAtributos)),
+    voltarCategoriaApagaAtributos:
+      podeVoltarCategoria &&
+      edicao !== null &&
+      (Object.keys(edicao.digitacoesAtributos).length > 0 ||
+        ((valores.attributes?.length ?? 0) > 0 &&
+          !mesmoValorGravadoDoRascunhoShopee(
+            CAMPO_RASCUNHO_SHOPEE.attributes,
+            guardado.attributes,
+            valores.attributes,
+          ))),
+    atributosGravadosForaDaCategoria:
+      edicao !== null && !novo && (projecao?.attributes?.length ?? 0) > 0 && outraCategoria,
     avisos,
   };
 }
@@ -1563,7 +1863,14 @@ export type ImpedimentoDaPublicacaoShopee =
    */
   | 'categoria-inexistente'
   /** The title/description bands are not loaded: a band pendência cannot be seen yet. */
-  | 'faixas-desconhecidas';
+  | 'faixas-desconhecidas'
+  /**
+   * The attribute tree of the draft's category is not loaded (still loading, or
+   * the read failed): a missing MANDATORY attribute cannot be seen yet — the
+   * `atributo-obrigatorio` pendência needs the tree — so «Publicar» waits for
+   * it, exactly as it waits for the bands. Checked after them.
+   */
+  | 'atributos-desconhecidos';
 
 /** The facts a draft's Publicar is decided from. */
 export interface EntradaDaPublicacaoDoRascunhoShopee {
@@ -1593,6 +1900,17 @@ export interface EntradaDaPublicacaoDoRascunhoShopee {
    */
   readonly limites: ArgsPendenciasRascunhoShopee['limites'];
   /**
+   * The attribute tree of the draft's EDITED category (`client.atributos`,
+   * `leaf: false` read as a complete EMPTY tree — the assembly refuses a
+   * non-leaf category on its own), or `null` while it loads or after the read
+   * failed — and `null` for a draft with no category or a non-positive legacy
+   * id, which ask apps/shopee nothing (`categoria-ausente` and
+   * `categoria-inexistente` speak first, so neither waits on a tree). Fed to
+   * `pendenciasDoRascunhoShopee`, so a mandatory attribute left empty is the
+   * `atributo-obrigatorio` pendência; `null` is `atributos-desconhecidos`.
+   */
+  readonly arvore: ArvoreAtributosShopee | null;
+  /**
    * The OTHER drafts of the produto on this conta whose last attempt may have
    * created a listing — {@link rascunhosIrmaosIncertosShopee} over the SAME
    * links snapshot the D15 count reads (review round 3). Non-empty ⇒
@@ -1608,10 +1926,11 @@ export interface PublicacaoDoRascunhoShopee {
   readonly impedimento: ImpedimentoDaPublicacaoShopee | null;
   /**
    * The pendências the publish would refuse (`pendenciasDoRascunhoShopee`, the
-   * listing assembly's own predicates, over the STORED produto texts) — `[]`
-   * when those texts are unknown or the produto is a virtual kit. ⚠️ Computed
-   * with `limites: null`, the list holds NO band pendência: that is why
-   * unknown bands are an impediment of their own.
+   * listing assembly's own predicates, over the STORED produto texts and the
+   * category's tree) — `[]` when those texts are unknown or the produto is a
+   * virtual kit. ⚠️ Computed with `limites: null`, the list holds NO band
+   * pendência, and with `arvore: null` no `atributo-obrigatorio`: that is why
+   * unknown bands and an unknown tree are impediments of their own.
    */
   readonly pendencias: readonly PendenciaRascunhoShopee[];
   /**
@@ -1625,7 +1944,11 @@ export interface PublicacaoDoRascunhoShopee {
  * THE decision of a draft's «Publicar» (#1911 P11, rev. 2a §D P11):
  * saved ∧ clean (P10's plan empty, not a local draft) ∧ the produto form clean
  * ∧ server truth ∧ no pendência ∧ a held category that names one
- * ({@link idDeCategoriaShopeeValido}) ∧ the bands LOADED ∧ the publish reading
+ * ({@link idDeCategoriaShopeeValido}) ∧ the bands LOADED ∧ the category's
+ * attribute tree LOADED (P13: the pendências read it, so a mandatory attribute
+ * left EMPTY — one the ERP cannot edit included — is `atributo-obrigatorio`
+ * while it holds no value; a stored value is carried and published, D-7; an
+ * OPTIONAL one blocks nothing) ∧ the publish reading
  * not `em-andamento` ∧ no OTHER draft of the produto on the conta recording an
  * attempt that may have created a listing (`irmao-incerto`, review round 3:
  * the server's sibling scan refuses every publish meanwhile, so the
@@ -1647,7 +1970,11 @@ export function publicacaoDoRascunhoShopee(
   const pendencias =
     e.textosDoProduto === null || bloco.kitVirtual
       ? []
-      : pendenciasDoRascunhoShopee(bloco.campos, { ...e.textosDoProduto, limites: e.limites });
+      : pendenciasDoRascunhoShopee(bloco.campos, {
+          ...e.textosDoProduto,
+          limites: e.limites,
+          arvore: e.arvore,
+        });
   const impedido = (
     impedimento: ImpedimentoDaPublicacaoShopee,
     aviso: string | null = null,
@@ -1686,6 +2013,10 @@ export function publicacaoDoRascunhoShopee(
     return impedido('categoria-inexistente');
   }
   if (e.limites === null) return impedido('faixas-desconhecidas', FRASE_PUBLICAR_SEM_FAIXAS_SHOPEE);
+  // `== null`: a caller that never read the tree (absent) waits like one still reading it.
+  if (e.arvore == null) {
+    return impedido('atributos-desconhecidos', FRASE_PUBLICAR_SEM_ATRIBUTOS_SHOPEE);
+  }
   return { podePublicar: true, impedimento: null, pendencias, aviso: null };
 }
 
@@ -2054,8 +2385,11 @@ const RAIZES_DE_SKU: ReadonlySet<string> = new Set(['item_sku', 'sku']);
  * - `brand` — the draft's Marca, with {@link FRASE_MARCA_PODE_NAO_VALER_SHOPEE}
  *   EXCEPT for `marca-nao-escolhida` (nothing was rejected: nothing was
  *   chosen); a listing's ⇒ Seller Centre.
- * - `attribute_list` — none on a draft until the attribute editor (P13); a
- *   listing's ⇒ Seller Centre.
+ * - `attribute_list` (and `attribute_list[COLOR]`, the token naming one
+ *   attribute) — the draft's «Atributos» section (P13: the publisher's own
+ *   `atributo-obrigatorio` and Shopee's attribute refusals alike); a
+ *   listing's ⇒ Seller Centre. Only that root: `attribute_lists` or
+ *   `attribute` route nowhere.
  * - `item_sku` / `sku` — an ALLOW-LIST (§C rule 4): the produto's SKU ONLY for
  *   `anuncio-existente-de-outro-produto` and an acao-less
  *   `criacao-incerta-ambigua` (the SKU moved). Every other motivo carrying it
@@ -2102,7 +2436,7 @@ export function superficieDoCampoShopee(
           : FRASE_MARCA_PODE_NAO_VALER_SHOPEE,
       );
     case 'attribute_list':
-      return ehRascunho ? null : SELLER_CENTRE;
+      return ehRascunho ? doRascunho(CAMPO_RASCUNHO_SHOPEE.attributes) : SELLER_CENTRE;
     case 'size_chart_info':
       return { tipo: 'medidas' };
     case 'logistic_info':

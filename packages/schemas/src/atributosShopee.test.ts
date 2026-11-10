@@ -3,6 +3,8 @@ import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
+import { localizarDecimal, parseDecimalPtBr } from '@delfrance/core/decimal';
+
 import {
   atributoShopeeRequisicaoSchema,
   atributosParaEnvioShopee,
@@ -11,6 +13,10 @@ import {
   atributosShopeeRequisicaoSchema,
   atributosVisiveisShopee,
   DATE_FORMAT_TYPE_ATRIBUTO_SHOPEE,
+  decimalShopeeDaTela,
+  decimalShopeeParaTela,
+  INPUT_TYPE_ATRIBUTO_SHOPEE,
+  INPUT_VALIDATION_TYPE_ATRIBUTO_SHOPEE,
   lerAtributosArmazenadosShopee,
   lerDataDeAtributoShopee,
   MOTIVO_DESCARTE_ATRIBUTO_SHOPEE,
@@ -948,6 +954,19 @@ describe('validarAtributosShopee — obrigatório (B1) e os tipos do editor', ()
     ]);
   });
 
+  it('⛔ árvore TRUNCADA: um id que nenhuma escrita aceita (`-3`, `0`) é `fora-da-categoria` mesmo assim — nenhum corte o explica ⟷ QUASE-PAR: um id POSITIVO ausente continua sem linha', () => {
+    const guardados = lidos([
+      { attribute_id: -3, attribute_value_list: [{ value_id: 0, original_value_name: 'x' }] },
+      { attribute_id: 0, attribute_value_list: [{ value_id: 0, original_value_name: 'y' }] },
+      { attribute_id: 999, attribute_value_list: [{ value_id: 1 }] },
+    ]);
+    expect(guardados.map((l) => l.attributeId)).toEqual([-3, 0, 999]);
+    expect(validarAtributosShopee({ ...PESO, truncated: true }, guardados)).toEqual([
+      { attributeId: -3, nome: '#-3', tipo: T.foraDaCategoria },
+      { attributeId: 0, nome: '#0', tipo: T.foraDaCategoria },
+    ]);
+  });
+
   it('no máximo uma linha por (atributo, tipo), mesmo com vários valores errados', () => {
     const r = validarAtributosShopee(
       arvore([atributo(10, { info: { inputType: 4, maxValueCount: 1 } })]),
@@ -1017,6 +1036,16 @@ describe('atributosParaGravarShopee — só o VISÍVEL, na ordem da árvore', ()
     expect(atributosParaGravarShopee(PESO, guardados)).toEqual([
       { attribute_id: 100, attribute_value_list: [{ value_id: 2 }] },
     ]);
+  });
+
+  it('⛔ árvore TRUNCADA não carrega um id que nenhuma escrita aceita (`-3`) — carregado, toda gravação da lista seria recusada ⟷ QUASE-PAR: o id POSITIVO que ela não mostra é carregado', () => {
+    const guardados = lidos([
+      { attribute_id: -3, attribute_value_list: [{ value_id: 0, original_value_name: 'x' }] },
+      { attribute_id: 999, attribute_value_list: [{ value_id: 1 }] },
+    ]);
+    const gravados = atributosParaGravarShopee({ ...PESO, truncated: true }, guardados);
+    expect(gravados).toEqual([{ attribute_id: 999, attribute_value_list: [{ value_id: 1 }] }]);
+    expect(atributoShopeeRequisicaoSchema.array().safeParse(gravados).success).toBe(true);
   });
 
   it('o que ela produz é uma escrita VÁLIDA (a forma de requisição)', () => {
@@ -1225,6 +1254,18 @@ describe('atributosParaEnvioShopee — a data na forma de LEITURA sai na de ESCR
     expect(atributosParaEnvioShopee(DATAS, lidos(guardados))).toEqual(guardados);
   });
 
+  it('PAR/QUASE-PAR: um decimal IMPORTADO com vírgula (`1,5`, a forma de leitura possível) num nó decimal sai COMO ESTÁ e o validador o aponta `tipo-de-valor` ⟷ `1.5` sai igual e sem problema — só a data é convertida no envio', () => {
+    const DECIMAL = arvore([atributo(520, { info: { inputType: 3, inputValidationType: 3 } })]);
+    const comVirgula = [custom(520, '1,5')];
+    expect(atributosParaEnvioShopee(DECIMAL, lidos(comVirgula))).toEqual(comVirgula);
+    expect(pares(validarAtributosShopee(DECIMAL, lidos(comVirgula)))).toEqual([
+      [520, T.tipoDeValor],
+    ]);
+    const comPonto = [custom(520, '1.5')];
+    expect(atributosParaEnvioShopee(DECIMAL, lidos(comPonto))).toEqual(comPonto);
+    expect(validarAtributosShopee(DECIMAL, lidos(comPonto))).toEqual([]);
+  });
+
   it('⛔ QUASE-PAR: uma data de LEITURA sem forma de escrita (antes de 1970: não há timestamp negativo) sai como está', () => {
     const antesDe1970 = [custom(505, '06/1969')];
     // Not vacuous: it IS a read-form date — only the write form refuses it.
@@ -1313,7 +1354,173 @@ describe('atributosParaEnvioShopee — a data na forma de LEITURA sai na de ESCR
 });
 
 /* -------------------------------------------------------------------------- */
-/*                        (8) vocabularies and the file                        */
+/*                    (8) a typed decimal: the separator only                  */
+/* -------------------------------------------------------------------------- */
+
+/** A synthetic free-text DECIMAL attribute (`input_type` 3, `input_validation_type` 3, no unit). */
+const MEDIDA = atributo(900, {
+  name: 'Medida',
+  info: {
+    inputType: INPUT_TYPE_ATRIBUTO_SHOPEE.textoLivre,
+    inputValidationType: INPUT_VALIDATION_TYPE_ATRIBUTO_SHOPEE.decimal,
+  },
+});
+
+/** The validator's `tipo`s for ONE custom value of {@link MEDIDA} — its decimal rule, asked directly. */
+function tiposDaMedida(nome: string): string[] {
+  return validarAtributosShopee(
+    arvore([MEDIDA]),
+    lidos([
+      { attribute_id: 900, attribute_value_list: [{ value_id: 0, original_value_name: nome }] },
+    ]),
+  ).map((p) => p.tipo);
+}
+
+/** A GENERATED sample of wire decimals: every sign × integer part × fractional part (none included). */
+const DECIMAIS_DO_FIO: readonly string[] = ['', '-'].flatMap((sinal) =>
+  ['0', '7', '01', '10', '1234567'].flatMap((inteiro) =>
+    [null, '0', '5', '50', '125', '000', '000001'].map(
+      (fracao) => `${sinal}${inteiro}${fracao === null ? '' : `.${fracao}`}`,
+    ),
+  ),
+);
+
+/** The same sample as an operator types it: a comma, and whitespace around it. */
+const DECIMAIS_DA_TELA: readonly string[] = DECIMAIS_DO_FIO.flatMap((w) =>
+  [
+    ['', ''],
+    [' ', ' '],
+    ['\t', ''],
+    ['', ' \n'],
+  ].map(([antes, depois]) => `${antes ?? ''}${w.replace('.', ',')}${depois ?? ''}`),
+);
+
+describe('decimalShopeeDaTela / decimalShopeeParaTela — decimal pt-BR: o separador e NADA mais (#1911 P13, #1372)', () => {
+  it('daTela: a vírgula vira ponto, TODO dígito fica, e o texto é aparado antes', () => {
+    for (const [tela, fio] of [
+      ['1,5', '1.5'],
+      ['1,50', '1.50'],
+      ['01,5', '01.5'],
+      ['10', '10'],
+      ['-2,25', '-2.25'],
+      [' 1,5 ', '1.5'],
+    ] as const) {
+      expect(decimalShopeeDaTela(tela), JSON.stringify(tela)).toBe(fio);
+    }
+  });
+
+  it('PAR/QUASE-PAR: `1,50` dá `1.50`, NUNCA `1.5`; `01,5` não é `1,5` — nada passa por um número (⟷ o parser do core, que dobra)', () => {
+    expect(decimalShopeeDaTela('1,50')).toBe('1.50');
+    expect(decimalShopeeDaTela('1,50')).not.toBe('1.5');
+    expect(decimalShopeeDaTela('1,50')).not.toBe(decimalShopeeDaTela('1,5'));
+    expect(decimalShopeeDaTela('01,5')).not.toBe(decimalShopeeDaTela('1,5'));
+    // ⟷ through a number the pairs are ONE value — the #1372 fold this pair exists to avoid.
+    expect(parseDecimalPtBr('1,50')).toBe(parseDecimalPtBr('1,5'));
+    expect(parseDecimalPtBr('01,5')).toBe(parseDecimalPtBr('1,5'));
+  });
+
+  it('daTela recusa (null): o PONTO, os dois separadores, duas vírgulas, o sinal +, a unidade, a vírgula sem dígito de um lado, o vazio', () => {
+    for (const recusado of [
+      '1.5',
+      '1.500',
+      '1.234,5',
+      '1,',
+      ',5',
+      '1,5,0',
+      '+1,5',
+      '',
+      '1,5 kg',
+      '   ',
+      '-',
+      '- 1,5',
+      '1 5',
+      'abc',
+    ]) {
+      expect(decimalShopeeDaTela(recusado), JSON.stringify(recusado)).toBeNull();
+    }
+  });
+
+  it('⚠️ D-9: o PONTO é recusado mesmo onde o fio o aceitaria — `1.500` é mil e quinhentos para o operador e um e meio no fio', () => {
+    // The validator's dot-only rule WOULD take it…
+    expect(tiposDaMedida('1.500')).toEqual([]);
+    // …so the refusal is the editor's own, fail-closed.
+    expect(decimalShopeeDaTela('1.500')).toBeNull();
+    expect(decimalShopeeDaTela('1.5')).toBeNull();
+    // ⟷ the same digits written with the comma ARE accepted, digits kept.
+    expect(decimalShopeeDaTela('1,500')).toBe('1.500');
+  });
+
+  it('paraTela: o ponto vira vírgula, TODO dígito fica, SEM limite de casas — `0.125` dá `0,125` (⟷ o localizador do core para em duas)', () => {
+    for (const [fio, tela] of [
+      ['1.5', '1,5'],
+      ['1.50', '1,50'],
+      ['0.125', '0,125'],
+      ['-2.25', '-2,25'],
+      ['01.5', '01,5'],
+    ] as const) {
+      expect(decimalShopeeParaTela(fio), fio).toBe(tela);
+    }
+    // ⟷ core's two-digit localizer leaves `0.125` alone — and the round trip breaks there.
+    expect(localizarDecimal('0.125')).toBe('0.125');
+    expect(decimalShopeeDaTela(localizarDecimal('0.125'))).toBeNull();
+    expect(decimalShopeeDaTela(decimalShopeeParaTela('0.125'))).toBe('0.125');
+  });
+
+  it('paraTela devolve INTACTO o que não é um decimal com ponto', () => {
+    for (const intacto of [
+      '1,5',
+      'abc',
+      '1.2.3',
+      '10',
+      '-3',
+      '',
+      ' 1.5',
+      '1.',
+      '.5',
+      '+1.5',
+      '1.234,5',
+    ]) {
+      expect(decimalShopeeParaTela(intacto), JSON.stringify(intacto)).toBe(intacto);
+    }
+  });
+
+  it('LEI 1 (amostra gerada): daTela(paraTela(w)) === w para todo w que a regra decimal do validador aceita', () => {
+    expect(DECIMAIS_DO_FIO).toHaveLength(70);
+    for (const w of DECIMAIS_DO_FIO) {
+      // The law's domain IS the validator's decimal rule, asked — not restated.
+      expect(tiposDaMedida(w), w).toEqual([]);
+      expect(decimalShopeeDaTela(decimalShopeeParaTela(w)), w).toBe(w);
+    }
+  });
+
+  it('LEI 2 (amostra gerada): paraTela(daTela(t)) === t.trim() para todo t na forma da tela', () => {
+    expect(DECIMAIS_DA_TELA).toHaveLength(280);
+    for (const t of DECIMAIS_DA_TELA) {
+      expect(t, JSON.stringify(t)).toMatch(/^\s*-?\d+(,\d+)?\s*$/);
+      const fio = decimalShopeeDaTela(t);
+      expect(fio, JSON.stringify(t)).not.toBeNull();
+      expect(decimalShopeeParaTela(fio ?? ''), JSON.stringify(t)).toBe(t.trim());
+    }
+  });
+
+  it('QUASE-PAR das leis: um valor do fio COM ponto, digitado como está, é recusado (a vírgula é exigida)', () => {
+    const comPonto = DECIMAIS_DO_FIO.filter((w) => w.includes('.'));
+    expect(comPonto).toHaveLength(60);
+    for (const w of comPonto) expect(decimalShopeeDaTela(w), w).toBeNull();
+  });
+
+  it('toda saída de daTela passa na regra decimal do validador (ivt 3 sintético ⇒ nenhum `tipo-de-valor`) ⟷ o texto da tela, sem conversão, falha', () => {
+    for (const t of DECIMAIS_DA_TELA) {
+      const fio = decimalShopeeDaTela(t);
+      expect(fio, JSON.stringify(t)).not.toBeNull();
+      expect(tiposDaMedida(fio ?? ''), JSON.stringify(t)).toEqual([]);
+    }
+    expect(tiposDaMedida('1,5')).toEqual([T.tipoDeValor]);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                        (9) vocabularies and the file                        */
 /* -------------------------------------------------------------------------- */
 
 describe('os vocabulários: cada enum tem sua constante, e nada mais', () => {

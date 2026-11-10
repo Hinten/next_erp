@@ -20,12 +20,13 @@
  * import and the price update), each named exactly like the
  * `lib/mercado-livre/client.ts` method doing the same job, so a shared component
  * types against either client structurally. Since #1911 it creates, edits and
- * discards a listing DRAFT through the draft routes, reads two more taxonomy
+ * discards a listing DRAFT through the draft routes, reads three more taxonomy
  * answers for the draft editor — the item bands WHOLE (`limitesDoItem`, beside
- * `limites`' size-chart slice) and Shopee's category suggestion — pages a
- * category's brands for a conta's Marcas section (`marcas`), and reads a leaf
- * category's standardised variation tree for a grupo's Shopee tab (`variacoes`).
- * Every method of {@link ShopeeClient} — twenty-nine today; re-count the
+ * `limites`' size-chart slice), Shopee's category suggestion and a leaf
+ * category's attribute tree (`atributos`, P13) — pages a category's brands for
+ * a conta's Marcas section (`marcas`), and reads a leaf category's standardised
+ * variation tree for a grupo's Shopee tab (`variacoes`).
+ * Every method of {@link ShopeeClient} — thirty today; re-count the
  * interface, never bump this number — is answered by `apps/shopee` over an
  * authenticated cross-origin call (its `proxy.ts` allows exactly
  * `/api/marketplace/*`).
@@ -75,6 +76,7 @@ import {
   priceSyncHistoricoShopeeSchema,
   priceSyncRelatorioPaginaShopeeSchema,
   priceSyncStatusShopeeSchema,
+  respostaAtributosShopeeSchema,
   respostaAtualizarRascunhoShopeeSchema,
   respostaCategoriasShopeeSchema,
   respostaCriarRascunhoShopeeSchema,
@@ -103,6 +105,7 @@ import {
   type PriceSyncHistoricoShopee,
   type PriceSyncRelatorioPaginaShopee,
   type PriceSyncStatusShopee,
+  type RespostaAtributosShopee,
   type RespostaAtualizarRascunhoShopee,
   type RespostaCategoriasShopee,
   type RespostaCriarRascunhoShopee,
@@ -403,8 +406,10 @@ export type CamposDoCorpoRascunhoShopee = Omit<CamposRascunhoShopee, 'logistic_i
  *   (`PADRAO_ID_RASCUNHO_SHOPEE`, 20 letters or digits; never a UUID). A create
  *   at an id holding a document that is not this draft is a 409
  *   `rascunhoIdEmUso`; this draft with OTHER content, a 409 `rascunhoConflito`.
- * - `conteudo` — EVERY field, `attributes: null` on a new draft. `item_name`
- *   `null` or blank is a CODELESS 400 (the editor never lets it out).
+ * - `conteudo` — EVERY field; `attributes` is the attribute editor's
+ *   normalised list (`corpoCriarRascunhoShopee`), `null` when the form holds
+ *   none. `item_name` `null` or blank is a CODELESS 400 (the editor never lets
+ *   it out).
  * - `confirmarSegundoAnuncio` — the operator confirmed a SECOND listing on the
  *   conta (after a 409 `rascunhoContaJaTemAnuncio`); omitted when absent.
  */
@@ -693,8 +698,9 @@ export interface ShopeeClient {
     depois?: string | null;
   }): Promise<PriceSyncRelatorioPaginaShopee>;
 
-  // ---- #1911: listing drafts, the two taxonomy reads the draft editor adds, and
-  // the brand page a conta's Marcas section reads. ----
+  // ---- #1911: listing drafts, the three taxonomy reads the draft editor adds,
+  // the brand page a conta's Marcas section reads, and the variation tree a
+  // grupo's Shopee tab reads. ----
   // A refusal of the DRAFT is a ShopeeClientHttpError whose `code` is one of
   // `CODIGO_FALHA_SHOPEE`'s #1911 block (`./erros.ts`), its extras on `detalhes`
   // (`linkDocId`, `conflitos`, `aguardarMs`, `vinculos`, `motivo`). Two answers
@@ -748,6 +754,20 @@ export interface ShopeeClient {
     integracaoId: string;
     categoryId: number | null;
   }): Promise<RespostaLimitesDoItemShopee>;
+  /**
+   * The attribute tree of ONE leaf category (PERM.integracao.read) — what a
+   * listing draft's «Atributos» section renders and its publish gate checks
+   * (#1911 P13): which attributes are mandatory, the input each takes, the
+   * selectable values, and the attributes a chosen value unlocks. A non-leaf
+   * answers `leaf: false` with an empty list; an id the tree does not hold is
+   * a 404 `SHOPEE_CATEGORIA_DESCONHECIDA`.
+   *
+   * ⚠️ `truncated: true` is a VALUE, not a failure: the tree is deeper than the
+   * answer holds, so it is NOT complete. A body without it is a
+   * {@link ShopeeClientRespostaInvalidaError}, at any depth of the tree.
+   * `categoryId` is required — there is no shop-wide tree.
+   */
+  atributos(input: { integracaoId: string; categoryId: number }): Promise<RespostaAtributosShopee>;
   /**
    * ONE page of a LEAF category's brands, straight from Shopee
    * (PERM.integracao.read) — the registration picker of a conta's Marcas
@@ -823,6 +843,9 @@ const RASCUNHO_DESCARTAR_PATH = '/api/marketplace/shopee/rascunho/descartar';
 
 /** The draft editor's extra taxonomy read (#1911); the bands reuse {@link LIMITES_PATH}. */
 const RECOMENDACAO_CATEGORIA_PATH = '/api/marketplace/shopee/taxonomia/recomendacao-categoria';
+
+/** A leaf category's attribute tree — a draft's «Atributos» section and its publish gate (#1911 P13). */
+const ATRIBUTOS_PATH = '/api/marketplace/shopee/taxonomia/atributos';
 
 /** A category's brands, one page — the Marcas section's registration picker (#1911). */
 const MARCAS_PATH = '/api/marketplace/shopee/taxonomia/marcas';
@@ -1519,6 +1542,14 @@ export function createShopeeClient(config: {
           categoryId: input.categoryId ?? undefined,
         })}`,
         respostaLimitesDoItemShopeeSchema,
+      ),
+    atributos: (input) =>
+      call(
+        `${ATRIBUTOS_PATH}?${consulta({
+          integracaoId: input.integracaoId,
+          categoryId: input.categoryId,
+        })}`,
+        respostaAtributosShopeeSchema,
       ),
     marcas: (input) =>
       call(

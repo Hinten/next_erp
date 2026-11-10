@@ -112,7 +112,7 @@ export function textoDoValorDoRascunhoShopee(campo: CampoRascunhoShopee, valor: 
   return '(valor não reconhecido)';
 }
 
-/** What the operator holds for `campo`: the form's value for the four form fields, else the held projection's (the form does not edit it). */
+/** What the operator holds for `campo`: the form's value for the five form fields (`attributes` since the attribute editor, #1911 P13 — the EDITED list, so «Sua alteração» counts what the operator holds now), else the held projection's (`logistic_info`: the form does not edit it). */
 function valorDaEdicao(
   edicao: EdicaoRascunhoShopee,
   campo: CampoRascunhoShopee,

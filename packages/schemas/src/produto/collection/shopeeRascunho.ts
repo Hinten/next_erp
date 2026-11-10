@@ -1035,7 +1035,8 @@ export interface ArgsPendenciasRascunhoShopee {
    * The category's attribute tree (`ArvoreAtributosShopee`). Absent or `null`
    * ⇒ no `atributo-obrigatorio` — the assembly's own reading of a category with
    * no tree read (it reads one only for a LEAF category). The draft editor
-   * supplies it once it reads the tree (P13).
+   * supplies the EDITED category's tree (P13), and its publish gate waits for
+   * that read rather than taking `null` for "nothing mandatory".
    */
   readonly arvore?: ArvoreAtributosShopee | null;
 }

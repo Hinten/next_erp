@@ -17,6 +17,8 @@ import {
 } from '@/components/shopee/ShopeeCategoriaBrowser';
 import {
   FRASE_TROCA_DE_CATEGORIA_APAGA_ATRIBUTOS_SHOPEE,
+  FRASE_VOLTAR_A_CATEGORIA_GRAVADA_TRAZ_ATRIBUTOS_SHOPEE,
+  FRASE_VOLTAR_CATEGORIA_APAGA_ATRIBUTOS_SHOPEE,
   ROTULO_VOLTAR_CATEGORIA_GRAVADA_SHOPEE,
 } from '@/lib/shopee/anuncioProduto';
 import { useShopeeClient, type ShopeeClient } from '@/lib/shopee/client';
@@ -41,8 +43,12 @@ export interface CategoriaRascunhoShopeeProps {
   titulo: string | null;
   /** The picker opens (`bloco.categoriaEditavel` — never while the reading is `incerta`); `false` ⇒ the path label alone. */
   editavel: boolean;
-  /** The held projection stores attributes (`bloco.atributosGravados`) — the modal says `FRASE_TROCA_DE_CATEGORIA_APAGA_ATRIBUTOS_SHOPEE` before a pick. */
-  atributosGravados: boolean;
+  /** A category change would clear attributes (`bloco.atributosPreenchidos`: the held projection stores at least one OR the form holds at least one — a new draft's unsaved list included — OR a typing still on screen blocks the save) — the modal says `FRASE_TROCA_DE_CATEGORIA_APAGA_ATRIBUTOS_SHOPEE` before a pick. */
+  atributosPreenchidos: boolean;
+  /** The saved draft stores attributes while the form shows another category (`bloco.atributosGravadosForaDaCategoria`) — the modal adds `FRASE_VOLTAR_A_CATEGORIA_GRAVADA_TRAZ_ATRIBUTOS_SHOPEE`: picking the saved category brings them back. */
+  atributosGravadosForaDaCategoria: boolean;
+  /** «Voltar à categoria gravada» would drop attribute work done for the category on screen (`bloco.voltarCategoriaApagaAtributos`) — the button then asks first (`FRASE_VOLTAR_CATEGORIA_APAGA_ATRIBUTOS_SHOPEE`); `false` ⇒ it reverts at once. */
+  voltarApagaAtributos: boolean;
   /** A LEAF was picked (a browser row, or a suggestion with `isLeaf === true`); `RascunhoShopee` forwards it as `onCampo('category_id', categoryId)`. */
   onEscolher: (categoryId: number) => void;
   /** Put the HELD category back — offered only while `bloco.podeVoltarCategoria` (`incerta` with an unsaved category change: the picker is closed, and this revert is the one pick the block still accepts); `null` ⇒ no such button. `RascunhoShopee` forwards it as `onCampo('category_id', bloco.categoriaGravada)`. */
@@ -322,7 +328,10 @@ function SugestoesDaCategoria({
  *   categoria», and the browser opens at the roots.
  * - **«Voltar à categoria gravada»** (`onVoltar`) — in `incerta`, with the
  *   picker closed, the one way to drop a category change made while `livre`
- *   and keep the other edits: a revert, never a change.
+ *   and keep the other edits: a revert, never a change. It restores the saved
+ *   attribute list and drops what was filled for the changed category, so
+ *   while that costs work (`voltarApagaAtributos`) it asks first — there is no
+ *   way back: the picker stays closed.
  */
 export function CategoriaRascunhoShopee({
   contaId,
@@ -330,11 +339,16 @@ export function CategoriaRascunhoShopee({
   categoryId,
   titulo,
   editavel,
-  atributosGravados,
+  atributosPreenchidos,
+  atributosGravadosForaDaCategoria,
+  voltarApagaAtributos,
   onEscolher,
   onVoltar,
 }: CategoriaRascunhoShopeeProps) {
   const [aberto, setAberto] = useState(false);
+  const [confirmandoVolta, setConfirmandoVolta] = useState(false);
+  // Closed as soon as the block stops offering the revert.
+  const voltaAberta = confirmandoVolta && onVoltar !== null;
   const valida = idDeCategoriaShopeeValido(categoryId);
   // A disabled query never runs, so the `''` key of a conta-less block reads nothing.
   const atual = useCategoriasShopee(contaId ?? '', categoryId, {
@@ -389,11 +403,51 @@ export function CategoriaRascunhoShopee({
           </Button>
         )}
         {onVoltar !== null && (
-          <Button type="button" size="xs" variant="light" onClick={onVoltar}>
+          <Button
+            type="button"
+            size="xs"
+            variant="light"
+            onClick={() => {
+              if (voltarApagaAtributos) setConfirmandoVolta(true);
+              else onVoltar();
+            }}
+          >
             {ROTULO_VOLTAR_CATEGORIA_GRAVADA_SHOPEE}
           </Button>
         )}
       </Group>
+      <Modal
+        opened={voltaAberta}
+        onClose={() => setConfirmandoVolta(false)}
+        title={ROTULO_VOLTAR_CATEGORIA_GRAVADA_SHOPEE}
+        centered
+      >
+        {voltaAberta && (
+          <Stack gap="md" data-testid={`${raiz}-voltar-confirmacao`}>
+            <Text size="sm">{FRASE_VOLTAR_CATEGORIA_APAGA_ATRIBUTOS_SHOPEE}</Text>
+            <Group justify="flex-end" gap="xs">
+              <Button
+                type="button"
+                size="xs"
+                variant="default"
+                onClick={() => setConfirmandoVolta(false)}
+              >
+                Cancelar
+              </Button>
+              <Button
+                type="button"
+                size="xs"
+                onClick={() => {
+                  setConfirmandoVolta(false);
+                  onVoltar?.();
+                }}
+              >
+                {ROTULO_VOLTAR_CATEGORIA_GRAVADA_SHOPEE}
+              </Button>
+            </Group>
+          </Stack>
+        )}
+      </Modal>
       {contaId !== null && (
         <Modal
           opened={modalAberto}
@@ -404,9 +458,11 @@ export function CategoriaRascunhoShopee({
         >
           {modalAberto && (
             <Stack gap="md" data-testid={`${raiz}-modal`}>
-              {atributosGravados && (
+              {atributosPreenchidos && (
                 <Alert color="yellow" variant="light">
                   {FRASE_TROCA_DE_CATEGORIA_APAGA_ATRIBUTOS_SHOPEE}
+                  {atributosGravadosForaDaCategoria &&
+                    ` ${FRASE_VOLTAR_A_CATEGORIA_GRAVADA_TRAZ_ATRIBUTOS_SHOPEE}`}
                 </Alert>
               )}
               <SugestoesDaCategoria contaId={contaId} titulo={titulo} onEscolher={escolher} />

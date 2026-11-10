@@ -40,6 +40,7 @@ const EDICAO: EdicaoRascunhoShopee = {
     item_name: 'Camiseta azul',
     marca: { brand_id: 0, original_brand_name: null },
   },
+  digitacoesAtributos: {},
   salvo: null,
 };
 
@@ -141,8 +142,59 @@ describe('ConflitoRascunhoShopeeModal — the rows', () => {
     expect(screen.getByText(FRASE_CONFLITO_CRIACAO_RASCUNHO_SHOPEE)).toBeTruthy();
     expect(cabecalhos()).toEqual(['Campo', 'Salvo agora', 'Sua alteração']);
     expect(celulas('category_id')).toEqual(['Categoria', 'Categoria #100090', 'Categoria #100087']);
-    // The form does not edit attributes: «Sua alteração» is the held value.
+    // «Sua alteração» is the FORM's list (#1911 P13) — none on this retry.
     expect(celulas('attributes')).toEqual(['Atributos', '2 atributo(s)', '(nenhum)']);
+  });
+
+  it('#1911 P13: «Sua alteração» de `attributes` conta a lista EDITADA — nunca a guardada ⟷ QUASE-PAR: «Quando você abriu» conta a guardada', () => {
+    const base: CamposRascunhoShopee = {
+      ...BASE,
+      attributes: [{ attribute_id: 100408, attribute_value_list: [{ value_id: 2498 }] }],
+    };
+    show({
+      conflito: {
+        linkDocId: LINK,
+        operacao: 'atualizar',
+        conflitos: [{ campo: CAMPO_RASCUNHO_SHOPEE.attributes, atual: [] }],
+      },
+      edicao: {
+        ...EDICAO,
+        base,
+        atual: {
+          ...formularioDoRascunhoShopee(base),
+          attributes: [
+            { attribute_id: 100408, attribute_value_list: [{ value_id: 2530 }] },
+            {
+              attribute_id: 101237,
+              attribute_value_list: [{ value_id: 0, original_value_name: 'Fabricante Exemplo' }],
+            },
+            {
+              attribute_id: 101029,
+              attribute_value_list: [{ value_id: 0, original_value_name: '1.5', value_unit: 'KG' }],
+            },
+          ],
+        },
+      },
+    });
+    expect(celulas('attributes')).toEqual([
+      'Atributos',
+      '1 atributo(s)',
+      '(nenhum)',
+      '3 atributo(s)',
+    ]);
+  });
+
+  it('QUASE-PAR: `logistic_info` não é campo do formulário — «Sua alteração» é o valor guardado', () => {
+    show({
+      conflito: {
+        linkDocId: LINK,
+        operacao: 'atualizar',
+        conflitos: [{ campo: CAMPO_RASCUNHO_SHOPEE.logisticInfo, atual: null }],
+      },
+      edicao: { ...EDICAO, base: { ...BASE, logistic_info: [] } },
+    });
+    // The held list reads «definida» in both columns; the form's (absent) would be «(automática)».
+    expect(celulas('logistic_info').slice(1)).toEqual(['definida', '(automática)', 'definida']);
   });
 });
 
