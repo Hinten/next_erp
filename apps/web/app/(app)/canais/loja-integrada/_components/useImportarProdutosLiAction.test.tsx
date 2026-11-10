@@ -372,6 +372,25 @@ describe('useImportarProdutosLiAction', () => {
     ]);
   });
 
+  it('NEAR MISS — hiding ANOTHER job of a conta keeps the start that names a different one', async () => {
+    h.clientRef.current = lojaIntegradaClientFalso({
+      iniciarImportacao: vi.fn(async (contaId: string) => ({ jobId: `job-${contaId}` })),
+      importacoes: vi.fn(async () => ({ importacoes: [] })),
+    });
+    const { result } = renderAcao();
+    await abrirEIniciar(result, [row('conta-a', 'Conta A')]);
+
+    act(() => {
+      // An older job of the same conta: its card hides, the session's start stays.
+      result.current.state.dispensarJob('conta-a', 'job-anterior');
+    });
+
+    expect([...result.current.state.dispensados]).toEqual(['job-anterior']);
+    expect(result.current.state.entries.map((e) => [e.conta.id, e.kind])).toEqual([
+      ['conta-a', 'started'],
+    ]);
+  });
+
   it('does not open the dialog while logged out', () => {
     h.clientRef.current = null;
     const { result } = renderAcao();

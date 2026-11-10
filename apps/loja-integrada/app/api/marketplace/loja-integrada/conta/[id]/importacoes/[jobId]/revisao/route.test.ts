@@ -58,6 +58,34 @@ function entrada(produtoId: string, over: Partial<Record<keyof RevisaoFiscalLi, 
   });
 }
 
+/**
+ * The fake answers an unordered read in key order, so a route that left its own sort out would
+ * still pass every other case here. The order is the route's (`listaRevisaoFiscal.ts`: "sorted in
+ * memory"), never the read's, and this wrapper proves it: the list's read comes back in REVERSE key
+ * order; every other read goes to the fake untouched.
+ */
+function emOrdemInversa(fake: FakeDb): unknown {
+  return new Proxy(fake, {
+    get(alvo, chave) {
+      const valor: unknown = Reflect.get(alvo, chave);
+      if (typeof valor !== 'function') return valor;
+      const metodo = (valor as (...args: unknown[]) => unknown).bind(alvo);
+      if (chave !== 'collection') return metodo;
+      return (caminho: string) => {
+        const colecao = metodo(caminho) as { get: () => Promise<{ docs: unknown[] }> };
+        if (caminho !== LISTA) return colecao;
+        return {
+          ...colecao,
+          get: async () => {
+            const snap = await colecao.get();
+            return { ...snap, docs: [...snap.docs].reverse() };
+          },
+        };
+      };
+    },
+  });
+}
+
 /** Seed `revisao/<produtoId>` with `dados` as stored (a valid entry unless a test says otherwise). */
 function seedEntrada(produtoId: string, dados: DocData = entrada(produtoId) as unknown as DocData) {
   db.seed(`${LISTA}/${produtoId}`, dados);
@@ -149,6 +177,18 @@ describe('GET …/importacoes/[jobId]/revisao', () => {
     for (const id of ['b', 'A', 'a', '9', '10']) seedEntrada(id);
     const lido = respostaRevisaoFiscalLiSchema.parse(await (await get()).json());
     expect(lido.entradas.map((e) => e.produtoId)).toEqual(['10', '9', 'A', 'a', 'b']);
+  });
+
+  it('⚠️ the order is the route’s own sort, never the read’s: a list read back in REVERSE key order still comes back sorted', async () => {
+    seedJobLi(db, JOB, CONTA);
+    for (const id of ['b', 'A', 'a', '9', '10']) seedEntrada(id);
+    h.db = emOrdemInversa(db);
+    const lido = respostaRevisaoFiscalLiSchema.parse(await (await get()).json());
+    expect(lido.entradas.map((e) => e.produtoId)).toEqual(['10', '9', 'A', 'a', 'b']);
+    // The wrapper did reverse the read: without the sort the answer would be b, a, A, 9, 10.
+    expect(db.consultas).toEqual([
+      { colecao: LISTA, filtros: [], ordens: [], limite: null, apos: null },
+    ]);
   });
 
   it('a stored entry that does not parse is still answered: its produto is the document key, every field that reads is kept, the rest null', async () => {

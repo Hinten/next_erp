@@ -444,6 +444,63 @@ describe('every 2xx is read against the shared contract', () => {
     expect(pagina).not.toHaveProperty('extra');
   });
 
+  // One case per call: a 2xx its OWN schema refuses never reaches the caller as
+  // data, whichever call read it — the start's id, the list, the cancel's job
+  // and the two paged answers included.
+  it.each([
+    [
+      'iniciarImportacao',
+      json(202, { jobId: 7 }),
+      ['jobId'],
+      (c: ReturnType<typeof cliente>['c']) =>
+        c.iniciarImportacao('conta-1', {
+          modo: MODO_IMPORTACAO_LI.simular,
+          alvo: ALVO_IMPORTACAO_LI.todos,
+          acao: ACAO_IMPORTACAO_LI.soVincular,
+        }),
+    ],
+    [
+      'importacoes',
+      json(200, { importacoes: [{ ...JOB, status: 'rodando' }] }),
+      ['importacoes[].status'],
+      (c: ReturnType<typeof cliente>['c']) => c.importacoes('conta-1'),
+    ],
+    [
+      'importacao',
+      json(200, { ...JOB, modo: 'ensaio' }),
+      ['modo'],
+      (c: ReturnType<typeof cliente>['c']) => c.importacao('conta-1', 'job-teste-1'),
+    ],
+    [
+      'cancelarImportacao',
+      json(200, { ...JOB, status: 'rodando' }),
+      ['status'],
+      (c: ReturnType<typeof cliente>['c']) => c.cancelarImportacao('conta-1', 'job-teste-1'),
+    ],
+    [
+      'itensImportacao',
+      json(200, { itens: [{ ...ITEM, liId: 'nao-e-um-id' }], proximo: null }),
+      ['itens[].liId'],
+      (c: ReturnType<typeof cliente>['c']) => c.itensImportacao('conta-1', 'job-teste-1'),
+    ],
+    [
+      'revisaoImportacao',
+      json(200, { entradas: [{ produtoId: 7, motivos: [] }], proximo: null }),
+      ['entradas[].produtoId'],
+      (c: ReturnType<typeof cliente>['c']) => c.revisaoImportacao('conta-1', 'job-teste-1'),
+    ],
+  ] as const)(
+    '%s: a 2xx its schema refuses is RESPOSTA_INVALIDA naming the field, never data',
+    async (_chamada, resposta, campos, chamar) => {
+      const { c } = cliente(() => resposta);
+
+      const err = (await chamar(c).catch((e: unknown) => e)) as HttpError;
+
+      expect(err).toBeInstanceOf(LojaIntegradaClientRespostaInvalidaError);
+      expect(err.campos).toEqual(campos);
+    },
+  );
+
   it('a tax-review entry keeps an unknown motivo verbatim', async () => {
     const { c } = cliente(() =>
       json(200, {
