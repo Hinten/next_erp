@@ -33,7 +33,8 @@
  *    lines, so a re-run over an unchanged capture writes identical bytes;
  *  - every route that CALLS NOTHING (`ROTAS_SEM_CHAMADA_LI`: the label routing route,
  *    `PUT …/pedidos/[pedidoId]/rota-etiqueta`, step 15, and the product import's status,
- *    cancel and report routes, `…/conta/[id]/importacoes/[jobId]{,/cancelar,/itens}`, step 9)
+ *    cancel, report and tax-review list routes,
+ *    `…/conta/[id]/importacoes/[jobId]{,/cancelar,/itens,/revisao}`, step 9)
  *    calls nothing outside the ERP: the run-time import closure of its route file — the app's
  *    `@/` modules walked too, type-only imports set aside because they load nothing —
  *    reaches no package client, no credential module, no context loader, no pacer, no
@@ -409,8 +410,17 @@ const NUCLEO_DO_CATALOGO = 'lib/lojaIntegrada/catalogo/catalogo.ts';
 /** The product import's job routes' folder (step 9). */
 const PASTA_DAS_IMPORTACOES = `${PASTA_DA_CONTA}/importacoes`;
 
-/** The product import's lifecycle module: the ONE core of its three call-free routes. */
+/**
+ * The product import's lifecycle module: the ONE core of its status, cancel and report routes. The
+ * tax-review list route reads the job through it too, and the list through its own core.
+ */
 const NUCLEO_DO_JOB = 'lib/lojaIntegrada/importacao/job.ts';
+
+/**
+ * The tax-review list as read (step 9): the core of the list route, shared with the `revisao`
+ * phase — which is why it is not in `revisaoFiscal.ts`, whose closure reaches the package.
+ */
+const NUCLEO_DA_LISTA_REVISAO = 'lib/lojaIntegrada/importacao/listaRevisaoFiscal.ts';
 
 /**
  * Every route that READS Loja Integrada, with the core it delegates to: each must reach the store
@@ -437,6 +447,7 @@ const ROTAS_SEM_CHAMADA_LI: readonly (readonly [string, string])[] = [
   [`${PASTA_DAS_IMPORTACOES}/[jobId]/route.ts`, NUCLEO_DO_JOB],
   [`${PASTA_DAS_IMPORTACOES}/[jobId]/cancelar/route.ts`, NUCLEO_DO_JOB],
   [`${PASTA_DAS_IMPORTACOES}/[jobId]/itens/route.ts`, NUCLEO_DO_JOB],
+  [`${PASTA_DAS_IMPORTACOES}/[jobId]/revisao/route.ts`, NUCLEO_DA_LISTA_REVISAO],
 ];
 
 /** The product import's dispatch (step 9): one slice of a job, run by the reads queue. */
@@ -888,6 +899,25 @@ describe('lib/lojaIntegrada layout', () => {
     },
   );
 
+  it('the tax-review list route reads the job through the lifecycle and the list through its own core, never through the revisao phase, whose closure reaches the package', () => {
+    const ler: LeitorDeFonte = (c) => {
+      const texto = lerDoApp(c);
+      return texto === null ? null : semImportacoesDeTipo(texto);
+    };
+    const fecho = fechoDeImportacoes(
+      [`${PASTA_DAS_IMPORTACOES}/[jobId]/revisao/route.ts`],
+      ler,
+      resolverAliasDoApp(ler),
+    );
+    expect(fecho.arquivos).toEqual(
+      expect.arrayContaining([NUCLEO_DO_JOB, NUCLEO_DA_LISTA_REVISAO]),
+    );
+    const FASE_DA_REVISAO = 'lib/lojaIntegrada/importacao/revisaoFiscal.ts';
+    expect(fecho.arquivos).not.toContain(FASE_DA_REVISAO);
+    // Why the list has a module of its own: walked by the same rules, the phase fails them.
+    expect(violacoesDaRotaSemChamada([FASE_DA_REVISAO], lerDoApp).length).toBeGreaterThan(0);
+  });
+
   it('the type-only import of the package in core/respond.ts is real, and set aside by every call-free walk', () => {
     expect(lerDoApp('lib/lojaIntegrada/core/respond.ts')).toContain(
       "import type { ValidacaoTokenLi } from '@delfrance/integrations-loja-integrada';",
@@ -1002,9 +1032,9 @@ describe('lib/lojaIntegrada layout', () => {
       naPasta.filter((p) => !listadas.has(p) && !semChamada.has(p) && !daCredencial.has(p)),
     ).toEqual([]);
     // Anti-vacuity: the scan found the four catalogue routes and the import's start, the import's
-    // three job routes, and the three credential ones.
+    // four job routes (status, cancel, report, tax-review list), and the three credential ones.
     expect(naPasta.filter((p) => listadas.has(p))).toHaveLength(5);
-    expect(naPasta.filter((p) => semChamada.has(p))).toHaveLength(3);
+    expect(naPasta.filter((p) => semChamada.has(p))).toHaveLength(4);
     expect(naPasta.filter((p) => daCredencial.has(p))).toHaveLength(3);
   });
 

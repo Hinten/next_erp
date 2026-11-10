@@ -115,7 +115,10 @@ work is `lib/lojaIntegrada/catalogo/catalogo.ts`.
 
 `POST …/importacoes` start (`PERM.integracao.write`), `GET …/importacoes` the conta's newest 10,
 `GET …/importacoes/[jobId]` one job, `POST …/importacoes/[jobId]/cancelar`, `GET
-…/importacoes/[jobId]/itens?depois=` one page of the report (the reads `PERM.integracao.read`). The
+…/importacoes/[jobId]/itens?depois=` one page of the report, `GET …/importacoes/[jobId]/revisao`
+the job's WHOLE tax-review list in one answer — read whole through the phase's own reader
+(`importacao/listaRevisaoFiscal.ts`), an entry that does not parse answered with its id, never
+dropped (the reads `PERM.integracao.read`). The
 wire contract (the strict start body, the non-strict answers, the job document, the task) is
 `packages/schemas/src/importacaoLojaIntegrada.ts`; every answer is built through it and never
 carries the continuation `seq`, the cursors or the selection's ids.

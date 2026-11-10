@@ -1125,9 +1125,9 @@ export function idTarefaImportacaoLi(jobId: string, seq: number): string {
 /*
  * NON-strict, like every answer of `apps/loja-integrada`: a later step may add a field, and a
  * browser built against this version must keep parsing it (unknown keys are stripped). `fase`,
- * `motivo` and a pendência's `codigo` are plain strings in the answers for the same reason — a
- * code a newer backend adds must still parse in an older browser. No answer carries `seq`: the
- * continuation is the backend's own.
+ * `motivo`, a pendência's `codigo` and a tax-review entry's `motivos` are plain strings in the
+ * answers for the same reason — a code a newer backend adds must still parse in an older browser.
+ * No answer carries `seq`: the continuation is the backend's own.
  */
 
 /** `POST …/conta/[id]/importacoes` → 202. */
@@ -1194,3 +1194,29 @@ export const respostaItensImportacaoLiSchema = z.object({
   proximo: z.string().nullable(),
 });
 export type RespostaItensImportacaoLi = z.infer<typeof respostaItensImportacaoLiSchema>;
+
+/**
+ * One tax-review entry as answered: its `motivos` are plain strings (see above), so a motivo a
+ * newer backend adds still parses in an older browser, which shows it generically.
+ */
+export const entradaRespostaRevisaoFiscalLiSchema = revisaoFiscalLiSchema.extend({
+  motivos: z.array(z.string()).default(() => []),
+});
+export type EntradaRespostaRevisaoFiscalLi = z.infer<typeof entradaRespostaRevisaoFiscalLiSchema>;
+
+/**
+ * `GET …/conta/[id]/importacoes/[jobId]/revisao`: the job's tax-review list (`revisao/*`, the list
+ * the `lojaIntegradaRevisaoFiscal` aviso names by its job) in the produto ids' code-unit order.
+ *
+ * `proximo` is the `?depois=` of the next page and `null` on the last, as in the items answer —
+ * and this backend always answers `null`: it reads the list WHOLE on every request (unfiltered, so
+ * no index) and answers it in one. A page cut in memory would re-read the whole list for every
+ * page, the square of the list (root rule 1); a key range would need a `revisao (__name__ ASC)`
+ * index, which `firestore.indexes.json` does not declare. The field is there so a later backend that pages for real does not cut the
+ * list short in a browser built against this one: a browser follows `proximo` until it is `null`.
+ */
+export const respostaRevisaoFiscalLiSchema = z.object({
+  entradas: z.array(entradaRespostaRevisaoFiscalLiSchema),
+  proximo: z.string().nullable(),
+});
+export type RespostaRevisaoFiscalLi = z.infer<typeof respostaRevisaoFiscalLiSchema>;

@@ -386,6 +386,7 @@ import {
   patchDoFimDoDespachoLi,
   relerJobLi,
 } from './job';
+import { type LeitorDeListasRevisaoLi, criarLeitorDeListasRevisaoLi } from './listaRevisaoFiscal';
 import { executarUnidadeDaListaLi, unidadeDaListaLi } from './listagem';
 import {
   type OrcamentoDespachoLi,
@@ -405,10 +406,8 @@ import {
 } from './relatorio';
 import { type ConflitoDeSkuNaLojaLi, conflitosDeSkuNaLojaLi } from './resolucao';
 import {
-  type LeitorDeListasRevisaoLi,
   type LeitorDeRegrasImpostoLi,
   PASSO_REVISAO_FISCAL_LI,
-  criarLeitorDeListasRevisaoLi,
   criarLeitorDeRegrasImpostoLi,
   executarUnidadeDaRevisaoFiscalLi,
   unidadeDaRevisaoFiscalLi,

@@ -30,6 +30,7 @@ import {
   RESULTADO_AVISO_IMPORTACAO_LI,
   sincronizarAvisoDeRevisaoFiscalLi,
 } from './avisosImportacao';
+import { criarLeitorDeListasRevisaoLi } from './listaRevisaoFiscal';
 import { UNIDADE_IMPORTACAO_LI } from './orcamento';
 import {
   DESFECHO_REVISAO_FISCAL_LI,
@@ -41,7 +42,6 @@ import {
   PASSO_REVISAO_FISCAL_LI,
   type PassoRevisaoFiscalLi,
   adicionarARevisaoFiscalLi,
-  criarLeitorDeListasRevisaoLi,
   criarLeitorDeRegrasImpostoLi,
   evidenciaFiscalDoProdutoLi,
   executarUnidadeDaRevisaoFiscalLi,

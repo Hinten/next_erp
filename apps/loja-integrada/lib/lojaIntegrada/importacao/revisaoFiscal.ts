@@ -68,7 +68,7 @@
  *    (`revisaoFiscal.test.ts` checks it against `firestore.indexes.json`); the job a page resumes
  *    after is read by id.
  *  - A job's `revisao` subcollection is read WHOLE — unfiltered, unordered, no limit, so no index —
- *    ONCE per dispatch per list ({@link criarLeitorDeListasRevisaoLi}), and paged IN MEMORY in the
+ *    ONCE per dispatch per list (`criarLeitorDeListasRevisaoLi`), and paged IN MEMORY in the
  *    produto ids' code-unit order (the cursor's `depoisProdutoId` is the last id handled in that order).
  *    ⚠️ Never a document-key RANGE (`orderBy(documentId())` + `startAfter` + a limit): Enterprise
  *    keeps no implicit key index, and with none LEADING with `__name__` declared for `revisao` such
@@ -76,7 +76,10 @@
  *    list is durable, carried from job to job, so N/page pages over N entries would make every
  *    `aplicar` job, an only-link one included, cost the square of the list. Read whole, a list costs
  *    one scan per dispatch the phase spans; a `revisao (__name__ ASC)` index (#1874's remedy) would
- *    make true range pages possible, a window deploy of its own.
+ *    make true range pages possible, a window deploy of its own. The reader, the order and the
+ *    stored entry's field-by-field read live in `listaRevisaoFiscal.ts`, which the list route
+ *    (`GET …/importacoes/[jobId]/revisao`) shares: that route calls nothing outside the ERP, and
+ *    this module reaches the package through the time budget.
  *  - Per entry, at most THREE reads: the produto by id (its existence and its CURRENT category, which
  *    the cascade reads too), then `produtos/{id}/imposto` `limit(1)` and `categorias/{id}/imposto`
  *    `limit(1)` — unfiltered, so no index — skipped as soon as a rule or an earlier read is evidence.
@@ -96,7 +99,7 @@
  * ⚠️ Never name the Admin SDK's multi-document read-and-write call here — not even in a comment
  * (`estrutura.test.ts`). Next-free; `db` is a parameter. Every stamp is ms.
  */
-import type { DocumentReference, Firestore } from 'firebase-admin/firestore';
+import type { Firestore } from 'firebase-admin/firestore';
 import {
   impostoCategoriaCollection,
   impostoProdutoCollection,
@@ -125,6 +128,11 @@ import {
 import type { z } from 'zod';
 
 import { consultaImportacoesDaContaLi } from './job';
+import {
+  type LeitorDeListasRevisaoLi,
+  lerEntradaRevisaoFiscalLi,
+  paginaDaListaRevisaoLi,
+} from './listaRevisaoFiscal';
 import { UNIDADE_IMPORTACAO_LI, type UnidadeImportacaoLi } from './orcamento';
 
 /** Entries of a source copied per unit. */
@@ -196,31 +204,6 @@ export function mesmaEntradaRevisaoFiscalLi(a: RevisaoFiscalLi, b: RevisaoFiscal
 }
 
 /**
- * A stored entry read field by field, so one unreadable field never loses the entry: its id is the
- * produto (the document's key, whatever the body says), a motivo this build does not know is left
- * out, and any other field that does not read is `null`.
- */
-function lerEntradaArmazenada(produtoId: string, dados: unknown): RevisaoFiscalLi {
-  const campo = (chave: string): unknown =>
-    typeof dados === 'object' && dados !== null ? Reflect.get(dados, chave) : undefined;
-  const forma = revisaoFiscalLiSchema.shape;
-  const motivosBrutos = campo('motivos');
-  const motivos = Array.isArray(motivosBrutos)
-    ? motivoRevisaoFiscalLiSchema.options.filter((m) => motivosBrutos.includes(m))
-    : [];
-  const liId = forma.liId.safeParse(campo('liId'));
-  const desdeJobId = forma.desdeJobId.safeParse(campo('desdeJobId'));
-  const desdeMs = forma.desdeMs.safeParse(campo('desdeMs'));
-  return {
-    produtoId,
-    motivos,
-    liId: liId.success ? liId.data : null,
-    desdeJobId: desdeJobId.success ? desdeJobId.data : null,
-    desdeMs: desdeMs.success ? desdeMs.data : null,
-  };
-}
-
-/**
  * Put one produto on job `jobId`'s tax-review list (module header, "Adding an entry"): created, or
  * merged into the entry already there. Throws on an entry that does not parse — a coding bug, never
  * data — and on any Firestore failure but the `ALREADY_EXISTS` it arbitrates on.
@@ -242,7 +225,7 @@ export async function adicionarARevisaoFiscalLi(
     if (!isAlreadyExists(err)) throw err;
   }
   const snap = await ref.get();
-  const armazenada = snap.exists ? lerEntradaArmazenada(nova.produtoId, snap.data()) : null;
+  const armazenada = snap.exists ? lerEntradaRevisaoFiscalLi(nova.produtoId, snap.data()) : null;
   const fundida = armazenada === null ? nova : fundirEntradasRevisaoFiscalLi(armazenada, nova);
   if (armazenada !== null && mesmaEntradaRevisaoFiscalLi(armazenada, fundida)) {
     return DESFECHO_REVISAO_FISCAL_LI.semMudanca;
@@ -337,58 +320,6 @@ export async function evidenciaFiscalDoProdutoLi(
 }
 
 /* -------------------------------------------------------------------------- */
-/*                                  The lists                                  */
-/* -------------------------------------------------------------------------- */
-
-/** One entry of a job's list as read: its id (the produto's), its raw data and its document. */
-export interface EntradaListadaLi {
-  readonly id: string;
-  readonly dados: unknown;
-  readonly ref: DocumentReference;
-}
-
-/** A job's WHOLE list, sorted by id (module header, "The reads"), read once per reader. */
-export type LeitorDeListasRevisaoLi = (jobId: string) => Promise<readonly EntradaListadaLi[]>;
-
-/** The code-unit order the phase pages in (module header, "The reads"): a total order of ids. */
-function compararIds(a: string, b: string): number {
-  if (a === b) return 0;
-  return a < b ? -1 : 1;
-}
-
-/**
- * A reader of a job's whole `revisao` list, memoised per job for ITS lifetime: one per dispatch, so
- * each list is read at most once per dispatch — never a key range (module header, "The reads").
- */
-export function criarLeitorDeListasRevisaoLi(db: Firestore): LeitorDeListasRevisaoLi {
-  const lidas = new Map<string, Promise<readonly EntradaListadaLi[]>>();
-  return (jobId) => {
-    const ja = lidas.get(jobId);
-    if (ja !== undefined) return ja;
-    const lendo = lerLista(db, jobId);
-    lidas.set(jobId, lendo);
-    return lendo;
-  };
-}
-
-async function lerLista(db: Firestore, jobId: string): Promise<readonly EntradaListadaLi[]> {
-  const snap = await revisaoFiscalImportacaoLiCollection.ref(db, { jobId }).get();
-  return snap.docs
-    .map((d) => ({ id: d.id, dados: d.data(), ref: d.ref }))
-    .sort((a, b) => compararIds(a.id, b.id));
-}
-
-/** At most `n` entries of `lista` whose id comes after `depois` (`null`: from the start). */
-function paginaDaLista(
-  lista: readonly EntradaListadaLi[],
-  depois: string | null,
-  n: number,
-): EntradaListadaLi[] {
-  const inicio = depois === null ? 0 : lista.findIndex((e) => compararIds(e.id, depois) > 0);
-  return inicio < 0 ? [] : lista.slice(inicio, inicio + n);
-}
-
-/* -------------------------------------------------------------------------- */
 /*                                  The cursor                                 */
 /* -------------------------------------------------------------------------- */
 
@@ -474,7 +405,7 @@ export interface DepsRevisaoFiscalLi {
   readonly jobId: string;
   /** The tax rules, read at most once per dispatch ({@link criarLeitorDeRegrasImpostoLi}). */
   readonly regras: LeitorDeRegrasImpostoLi;
-  /** The jobs' lists, each read at most once per dispatch ({@link criarLeitorDeListasRevisaoLi}). */
+  /** The jobs' lists, each read at most once per dispatch (`criarLeitorDeListasRevisaoLi`). */
   readonly listas: LeitorDeListasRevisaoLi;
 }
 
@@ -602,14 +533,14 @@ async function copiarPagina(
   estado: EstadoRevisaoFiscalLi,
   cursor: Extract<CursorRevisaoLi, { etapa: typeof ETAPA_REVISAO_FISCAL_LI.copiando }>,
 ): Promise<PassoRevisaoFiscalLi> {
-  const pagina = paginaDaLista(
+  const pagina = paginaDaListaRevisaoLi(
     await deps.listas(cursor.jobId),
     cursor.depois,
     PAGINA_TRANSPORTE_REVISAO_LI,
   );
   await Promise.all(
     pagina.map((e) => {
-      const lida = lerEntradaArmazenada(e.id, e.dados);
+      const lida = lerEntradaRevisaoFiscalLi(e.id, e.dados);
       // The job that FIRST listed it stays its "since"; an entry that names none is the source's.
       return adicionarARevisaoFiscalLi(deps.db, deps.jobId, {
         ...lida,
@@ -639,7 +570,7 @@ async function conferirPagina(
 ): Promise<PassoRevisaoFiscalLi> {
   // This job's list as this dispatch first read it: an entry this phase deletes sits behind the
   // cursor, and nothing adds one while the phase runs (the familias phase is over).
-  const pagina = paginaDaLista(
+  const pagina = paginaDaListaRevisaoLi(
     await deps.listas(deps.jobId),
     cursor.depois,
     PAGINA_CONFERENCIA_REVISAO_LI,
