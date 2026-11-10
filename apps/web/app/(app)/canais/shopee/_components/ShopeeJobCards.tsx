@@ -10,7 +10,7 @@
  * Each card owns its polling query (hooks cannot be looped over a dynamic list),
  * polls by `jobId`, and stops by itself once the job leaves `running`. The
  * cadence, the "sem progresso" hint and the printed instants all come from
- * `cadenciaJobsShopee.ts`.
+ * `cadenciaJobsShopee.ts` and the shared `lib/marketplace/contaJobs/cadencia.ts`.
  *
  * ⚠️ `retry: false` on both queries, on purpose: the next tick IS the retry, and
  * a backoff ladder against a 3 s interval stacks overlapping fetches on a backend
@@ -30,18 +30,13 @@ import { RetryAlert } from '@/components/feedback/RetryAlert';
 import { BaixarRelatorioButton } from '@/components/contaJobs/BaixarRelatorioButton';
 import { JobCardShell } from '@/components/contaJobs/JobCardShell';
 import { type AmostraDeJob, PriceSyncEntryList } from '@/components/contaJobs/PriceSyncEntryList';
+import { formatarInstanteJob, ultimoSinalDeVida } from '@/lib/marketplace/contaJobs/cadencia';
 import type { ContaRef } from '@/lib/marketplace/contaJobs/types';
 import { queryRetry } from '@/lib/query/queryRetry';
 import { useShopeeClient } from '@/lib/shopee/client';
 import { descreverFalhaShopee } from '@/lib/shopee/erros';
 import type { MassImportStatusShopee } from '@/lib/shopee/wire';
-import {
-  formatarInstanteJob,
-  intervaloEnvioPreco,
-  intervaloImportacao,
-  semProgresso,
-  ultimoSinalDeVida,
-} from './cadenciaJobsShopee';
+import { intervaloEnvioPreco, intervaloImportacao, semProgresso } from './cadenciaJobsShopee';
 import {
   descreverFalhaAoCancelarAtualizacaoPrecos,
   descreverFalhaAoCancelarImportacao,
