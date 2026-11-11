@@ -431,8 +431,9 @@ export interface CriarRascunhoShopeeInput {
  * - `base` — what the operator SAW, VERBATIM, for exactly the fields
  *   `camposDaBaseDoRascunhoShopee(patch)` names (`@delfrance/schemas`): the
  *   patch's, plus `attributes` when the patch changes `category_id` without
- *   them. Any other key set is a CODELESS 400 — read it from that function,
- *   never hand-roll it.
+ *   them, and `category_id` when the patch writes `attributes` without it
+ *   (P13 Q1). Any other key set is a CODELESS 400 — read it from that
+ *   function, never hand-roll it.
  */
 export interface AtualizarRascunhoShopeeInput {
   integracaoId: string;

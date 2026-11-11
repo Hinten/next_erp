@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, type KeyboardEvent } from 'react';
+import { useState } from 'react';
 import {
   Alert,
   Button,
@@ -63,6 +63,7 @@ import {
 import { CategoriaRascunhoShopee } from './CategoriaRascunhoShopee';
 import { idDoCampoRascunhoShopee } from './DesfechoAcaoShopee';
 import { MarcaRascunhoShopee, rotuloDaMarcaRascunhoShopee } from './MarcaRascunhoShopee';
+import { semEnviarOFormularioDoProduto } from './semEnviarOFormularioDoProduto';
 
 /**
  * The two draft writes a block starts (DC §2.1). The editor's
@@ -306,15 +307,6 @@ function descricaoDoCampo(
     `${base} ${String(medida.comprimento)} caracteres; esta categoria aceita ` +
     `${descreverFaixaShopee(banda)}.`
   );
-}
-
-/**
- * ⚠️ The draft sits INSIDE the produto's `<form>`: Enter in a single-line input
- * would submit THAT form (an implicit submission) — saving the produto, not
- * the draft. The title swallows it.
- */
-function semEnviarOFormularioDoProduto(e: KeyboardEvent<HTMLInputElement>): void {
-  if (e.key === 'Enter') e.preventDefault();
 }
 
 /**

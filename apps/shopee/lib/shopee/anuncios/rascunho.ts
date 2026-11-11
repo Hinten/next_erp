@@ -27,7 +27,9 @@
  *  - **edit** ({@link atualizarRascunhoShopee}) — tier **3 + 1**: the baseline
  *    compare (the operator's `base` against THE projection of what is stored,
  *    over the fields `camposDaBaseDoRascunhoShopee` names: the PATCH's, plus
- *    the stored `attributes` a category change clears — K1-12) tells the human
+ *    the stored `attributes` a category change clears — K1-12 — or the stored
+ *    `category_id` an attributes-only list was chosen in — its mirror, P13 Q1,
+ *    compared and never written) tells the human
  *    about a concurrent edit (409 `CONFLITO`, nothing written); the patch's
  *    fields that THE write comparison finds already stored are left out (all
  *    of them ⇒ 200 `gravados: []`, nothing written); the write is
@@ -653,11 +655,17 @@ function limpaAtributosNaTrocaDeCategoria(
  *     may still change any other field);
  *  3. the BASELINE — over `camposDaBaseDoRascunhoShopee(patch)`: the patch's
  *     fields, plus `attributes` when the patch changes `category_id` without
- *     them (K1-12; the body's refine made `base` name exactly that list), the
- *     operator's `base` against the stored projection — any field differs ⇒
- *     409 `CONFLITO` with every differing field and what is stored now. So an
- *     attribute save another operator landed meanwhile stops a category change
- *     that would wipe it, before anything is written;
+ *     them (K1-12), or plus `category_id` when the patch writes `attributes`
+ *     without it (the mirror, P13 Q1; the body's refine made `base` name
+ *     exactly that list), the operator's `base` against the stored projection —
+ *     any field differs ⇒ 409 `CONFLITO` with every differing field and what
+ *     is stored now. So an attribute save another operator landed meanwhile
+ *     stops a category change that would wipe it, and a category another
+ *     operator moved meanwhile stops an attribute list chosen in the old one,
+ *     before anything is written. The extra field is compared, never written
+ *     (step 4 iterates the PATCH's fields), and the `incerta` lock of step 2
+ *     keys on the patch, so a list compared beside the stored category is no
+ *     category write;
  *  4. the patch equals what is stored (THE WRITE comparison,
  *     `mesmoValorGravadoDoRascunhoShopee`, field by field) ⇒ 200
  *     `gravados: []`, NOTHING written — a legacy-shaped stored list included:
@@ -688,9 +696,12 @@ export async function atualizarRascunhoShopee(
   const patch: Partial<CamposRascunhoShopee> = corpo.patch;
   const alterados = camposPresentesDoRascunhoShopee(corpo.patch);
   // K1-12: the fields the baseline compares — the patch's, plus the
-  // `attributes` a category change clears. The body's refine made `base` name
-  // exactly these; iterating `alterados` instead would let a category change
-  // wipe an attribute save it never compared.
+  // `attributes` a category change clears, or the `category_id` an
+  // attributes-only list was chosen in (P13 Q1). The body's refine made `base`
+  // name exactly these; iterating `alterados` instead would let a category
+  // change wipe an attribute save it never compared, and an attribute list
+  // land on a category another operator moved it out of. Only `alterados` is
+  // ever written.
   const vistos = camposDaBaseDoRascunhoShopee(corpo.patch);
   const ref = produtoShopeeLinkCollection.docRef(deps.db, { produtoId }, linkDocId);
 

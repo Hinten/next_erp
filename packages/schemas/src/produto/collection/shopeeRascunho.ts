@@ -931,19 +931,29 @@ export function camposPresentesDoRascunhoShopee(
  *   `attributes`**: a category change clears the stored attributes (they
  *   belong to the old category), so that write must first prove the operator
  *   SAW the attributes it wipes — an attribute save another operator landed
- *   meanwhile is then a 409, never a silent wipe.
+ *   meanwhile is then a 409, never a silent wipe;
+ * - **plus `category_id` whenever the patch names `attributes` without
+ *   `category_id`** (the mirror, #1911 P13 Q1): a list is built against ONE
+ *   category's attribute tree, so an attributes-only write must first prove
+ *   the category the operator chose it in is still the stored one — a category
+ *   another operator moved meanwhile is then a 409, never this list written
+ *   onto the other category. The category is only COMPARED there, never
+ *   written: the patch does not name it.
+ *
+ * The two extras never meet: a patch naming both fields needs neither, and a
+ * patch naming only one gets the other.
  */
 export function camposDaBaseDoRascunhoShopee(
   patch: Partial<Record<CampoRascunhoShopee, unknown>>,
 ): CampoRascunhoShopee[] {
   const alterados = camposPresentesDoRascunhoShopee(patch);
-  const limpaAtributos =
-    alterados.includes(CAMPO_RASCUNHO_SHOPEE.categoryId) &&
-    !alterados.includes(CAMPO_RASCUNHO_SHOPEE.attributes);
-  if (!limpaAtributos) return alterados;
-  return campoRascunhoShopeeSchema.options.filter(
-    (campo) => campo === CAMPO_RASCUNHO_SHOPEE.attributes || alterados.includes(campo),
-  );
+  const nomeia = (campo: CampoRascunhoShopee): boolean => alterados.includes(campo);
+  const { attributes, categoryId } = CAMPO_RASCUNHO_SHOPEE;
+  let extra: CampoRascunhoShopee | null = null;
+  if (nomeia(categoryId) && !nomeia(attributes)) extra = attributes;
+  if (nomeia(attributes) && !nomeia(categoryId)) extra = categoryId;
+  if (extra === null) return alterados;
+  return campoRascunhoShopeeSchema.options.filter((campo) => campo === extra || nomeia(campo));
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1349,6 +1359,16 @@ export const MSG_BASE_SEM_ATRIBUTOS_NA_TROCA_DE_CATEGORIA_RASCUNHO_SHOPEE =
   'base deve trazer também attributes ao trocar category_id sem attributes no patch: a troca ' +
   'de categoria apaga os atributos guardados, e só os que o operador viu podem ser apagados.';
 
+/**
+ * The update body's 400 when `patch` writes `attributes` without
+ * `category_id` and `base` omits the `category_id` the list was built for
+ * (#1911 P13 Q1, the mirror of K1-12).
+ */
+export const MSG_BASE_SEM_CATEGORIA_NOS_ATRIBUTOS_RASCUNHO_SHOPEE =
+  'base deve trazer também category_id ao gravar attributes sem category_id no patch: os ' +
+  'atributos valem só para a categoria em que foram escolhidos, e só podem ser gravados sobre ' +
+  'a categoria que o operador viu.';
+
 /** Two canonical field lists name the same fields. */
 function mesmosCampos(
   a: readonly CampoRascunhoShopee[],
@@ -1367,8 +1387,13 @@ function mesmosCampos(
  * `patch`'s fields ({@link MSG_BASE_DIFERENTE_DO_PATCH_RASCUNHO_SHOPEE}) — plus
  * `attributes` when the patch changes `category_id` without them, because that
  * write clears them (K1-12, P6;
- * {@link MSG_BASE_SEM_ATRIBUTOS_NA_TROCA_DE_CATEGORIA_RASCUNHO_SHOPEE}) — so a
- * field is never written (or cleared) unchecked nor checked unwritten.
+ * {@link MSG_BASE_SEM_ATRIBUTOS_NA_TROCA_DE_CATEGORIA_RASCUNHO_SHOPEE}), and
+ * plus `category_id` when the patch writes `attributes` without it, because
+ * that list was chosen in one category (P13 Q1;
+ * {@link MSG_BASE_SEM_CATEGORIA_NOS_ATRIBUTOS_RASCUNHO_SHOPEE}) — so a field is
+ * never written (or cleared) unchecked nor checked unwritten, except the one
+ * extra field, which is checked and never written. A base that lacks ONLY that
+ * extra gets the extra's own sentence; any other mismatch gets the generic one.
  */
 export const corpoAtualizarRascunhoShopeeSchema = z
   .strictObject({
@@ -1387,16 +1412,18 @@ export const corpoAtualizarRascunhoShopeeSchema = z
     const exigidos = camposDaBaseDoRascunhoShopee(corpo.patch);
     const vistos = camposPresentesDoRascunhoShopee(corpo.base);
     if (mesmosCampos(vistos, exigidos)) return;
-    // The one field the patch does not name but the base must: say so.
-    const faltamSoOsAtributos =
-      !mesmosCampos(exigidos, alterados) && mesmosCampos(vistos, alterados);
-    ctx.addIssue({
-      code: 'custom',
-      path: ['base'],
-      message: faltamSoOsAtributos
-        ? MSG_BASE_SEM_ATRIBUTOS_NA_TROCA_DE_CATEGORIA_RASCUNHO_SHOPEE
-        : MSG_BASE_DIFERENTE_DO_PATCH_RASCUNHO_SHOPEE,
-    });
+    // The one field the patch does not name but the base must: when the base
+    // lacks only that one, say which.
+    const extra = exigidos.find((campo) => !alterados.includes(campo));
+    const soFaltaOExtra = extra !== undefined && mesmosCampos(vistos, alterados);
+    let message: string = MSG_BASE_DIFERENTE_DO_PATCH_RASCUNHO_SHOPEE;
+    if (soFaltaOExtra) {
+      message =
+        extra === CAMPO_RASCUNHO_SHOPEE.attributes
+          ? MSG_BASE_SEM_ATRIBUTOS_NA_TROCA_DE_CATEGORIA_RASCUNHO_SHOPEE
+          : MSG_BASE_SEM_CATEGORIA_NOS_ATRIBUTOS_RASCUNHO_SHOPEE;
+    }
+    ctx.addIssue({ code: 'custom', path: ['base'], message });
   });
 export type CorpoAtualizarRascunhoShopee = z.output<typeof corpoAtualizarRascunhoShopeeSchema>;
 

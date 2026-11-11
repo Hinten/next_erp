@@ -2757,7 +2757,11 @@ describe('#1911 — the draft bodies are rebuilt BY NAME, down to each attribute
       { category_id: null },
     ],
     ['marca (cleared)', { marca: CAMPOS.marca }, { marca: null }],
-    ['attributes (cleared)', { attributes: ATRIBUTOS }, { attributes: null }],
+    [
+      'attributes (cleared; `base` carrying the category the list was built for)',
+      { category_id: 100087, attributes: ATRIBUTOS },
+      { attributes: null },
+    ],
   ])(
     '⭐ NEAR-MISS: an edit’s `null` %s is SENT — `null` is a value for every field, never "not named"',
     async (_campo, base, patch) => {

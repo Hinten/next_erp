@@ -153,6 +153,12 @@ describe('README.md de anuncios/ — o que ele afirma sobre as recusas', () => {
    * source guard, and its writer table cites functions — so a renamed writer,
    * or a section reverted to "the stored list first", reds here instead of
    * leaving the doc describing a rule the code no longer has.
+   *
+   * #2099 (CPY-4, #1911 P14b): the section also names the second import
+   * remedy, the function that picks between the two, the one that names the
+   * channel, and the photo dedup whose scope the web's import recipe states
+   * ("a removed photo comes back") — and it no longer says an absent or
+   * unreadable value keeps the no-channel refusal's sentence.
    */
   const SECAO_LOGISTICA =
     '### Logistics: a stored list is re-sent only when THIS app wrote it, `get_channel_list` otherwise';
@@ -173,12 +179,16 @@ describe('README.md de anuncios/ — o que ele afirma sobre as recusas', () => {
     ['escreverWriteBack2', './publicarAnuncio.ts'],
     ['dadosLinkListagem', '../produtos/mapeamento.ts'],
     ['escreverVinculoDoKit', '../kits/vinculosKit.ts'],
+    ['remedioPelaImportacao', './logisticaPublicacao.ts'],
+    ['canalNomeado', './logisticaPublicacao.ts'],
+    ['idsDeImagemJaImportados', '../produtos/fotosShopee.ts'],
   ] as const;
 
   it('a seção de logística diz a regra da proveniência (#2015) e só cita funções que existem', () => {
     const secao = secaoDeLogistica(LEIA_ME);
     expect(secao).not.toBe('');
     expect(nomeia(secao, MOTIVO_PUBLICACAO_BLOQUEADA.logisticaNaoConfirmada)).toBe(true);
+    expect(nomeia(secao, MOTIVO_PUBLICACAO_BLOQUEADA.logisticaSemValorGravado)).toBe(true);
     expect(nomeia(secao, MOTIVO_PUBLICACAO_BLOQUEADA.logisticaSemCanal)).toBe(true);
     expect(nomeia(secao, 'logisticaGravadaEm')).toBe(true);
     expect(nomeia(secao, 'logisticaGravadaPeloErpShopee')).toBe(true);
@@ -192,6 +202,8 @@ describe('README.md de anuncios/ — o que ele afirma sobre as recusas', () => {
     }
     // The pre-#2015 rule — "the stored list wins whenever one entry survives" — is gone.
     expect(LEIA_ME).not.toContain('### Logistics: the stored list first');
+    // …and so is the pre-P14b one: an absent or unreadable value now takes CPY-4.
+    expect(secao).not.toContain('an absent or unreadable value');
   });
 
   it('near-miss: o recorte da logística para no título seguinte, e sem o título não recorta nada', () => {

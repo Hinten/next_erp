@@ -409,8 +409,9 @@ describe('republicar — #2043: um tier PADRÃO armazenado que não casa com o t
     const esperado = {
       campo: 'standardise_tier_variation',
       motivo: MOTIVO_PUBLICACAO_BLOQUEADA.variacaoSemVinculo,
+      // S3, with the ending #1911 P14b decided (P14a Q5): swap the binding or remove it.
       mensagem:
-        'O vínculo do grupo "Cor" usa a variação padronizada 88, que nenhum tier do anúncio tem — republicar reescreveria as opções. Corrija o vínculo em Variações (aba Shopee) para a variação que o anúncio usa.',
+        'O vínculo do grupo "Cor" usa a variação padronizada 88, que nenhum tier do anúncio tem — republicar reescreveria as opções. Corrija o vínculo em Variações (aba Shopee): troque-o pela variação que o anúncio usa ou remova-o.',
     };
     expect((err as ShopeePublishBlockedError).problemas).toEqual([esperado]);
 

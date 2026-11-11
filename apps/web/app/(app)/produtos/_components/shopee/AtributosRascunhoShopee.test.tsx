@@ -422,6 +422,15 @@ function digitar(campo: HTMLInputElement, texto: string): void {
   fireEvent.change(campo, { target: { value: texto } });
 }
 
+/** The error text Mantine ties to an input (`aria-describedby` → its `…-error` id), or `null`. */
+function erroDo(campo: HTMLElement): string | null {
+  const id = (campo.getAttribute('aria-describedby') ?? '')
+    .split(' ')
+    .find((i) => i.endsWith('-error'));
+  if (id === undefined) return null;
+  return document.getElementById(id)?.textContent ?? null;
+}
+
 beforeEach(() => {
   h.lista = null;
   h.digitacoes = {};
@@ -696,6 +705,21 @@ describe('AtributosRascunhoShopee — lista única e filhos', () => {
     mostrar({ arvore: arvore(TIPO_DE_CONEXAO) });
     expect(screen.queryByTestId(`shopee-atributo-${LINK}-100408-problemas`)).toBeNull();
     expect(linha(100408).textContent).toContain('*');
+  });
+
+  it('⚠️ PAR: com um valor escolhido, o botão de limpar se chama «Limpar» — e manda uma escolha vazia', () => {
+    mostrar({
+      arvore: arvore(TIPO_DE_CONEXAO),
+      guardados: [guardado(100408, { value_id: COM_FIO })],
+    });
+    fireEvent.click(within(linha(100408)).getByRole('button', { name: 'Limpar' }));
+    expect(h.edicoes).toEqual([[100408, { tipo: 'lista', valueIds: [] }]]);
+    expect(h.lista).toBeNull();
+  });
+
+  it('⛔ QUASE: sem valor escolhido, nenhum botão «Limpar»', () => {
+    mostrar({ arvore: arvore(TIPO_DE_CONEXAO) });
+    expect(within(linha(100408)).queryByRole('button', { name: 'Limpar' })).toBeNull();
   });
 });
 
@@ -1127,6 +1151,88 @@ describe('AtributosRascunhoShopee — múltiplos', () => {
     fireEvent.click(within(linha(100278)).getByRole('button', { name: 'Adicionar' }));
     expect(h.lista?.[0]?.attribute_value_list).toHaveLength(5);
   });
+
+  // #1911 P14b (P13 «no-sentence places», Lucas 2026-11-11): the composer's
+  // `repetido` and `vazio` say why «Adicionar» does nothing.
+  const JA_NA_LISTA = 'Este valor já está na lista.';
+  const DIGITE = 'Digite um valor.';
+  const adicionarDe = (attributeId: number) =>
+    within(linha(attributeId)).getByRole('button', { name: 'Adicionar' }) as HTMLButtonElement;
+
+  it('⚠️ PAR: um valor que já é um chip (`250` + `ml` em 100278) diz «Este valor já está na lista.» no compositor, e «Adicionar» fica desligado', () => {
+    mostrar({
+      arvore: arvore(CAPACIDADE),
+      guardados: [guardado(100278, { value_id: 0, original_value_name: '250', value_unit: 'ml' })],
+    });
+    escolher(linha(100278), 'Unidade', 'ml');
+    const campo = caixa(linha(100278), 'Adicionar outro valor');
+    digitar(campo, '250');
+    expect(erroDo(campo)).toBe(JA_NA_LISTA);
+    expect(erroDo(combobox(linha(100278), 'Unidade'))).toBeNull();
+    expect(adicionarDe(100278).disabled).toBe(true);
+  });
+
+  it('⛔ QUASE: outro número (`251` + `ml`) não diz nada e adiciona', () => {
+    mostrar({
+      arvore: arvore(CAPACIDADE),
+      guardados: [guardado(100278, { value_id: 0, original_value_name: '250', value_unit: 'ml' })],
+    });
+    escolher(linha(100278), 'Unidade', 'ml');
+    const campo = caixa(linha(100278), 'Adicionar outro valor');
+    digitar(campo, '251');
+    expect(erroDo(campo)).toBeNull();
+    expect(linha(100278).textContent).not.toContain(JA_NA_LISTA);
+    expect(adicionarDe(100278).disabled).toBe(false);
+  });
+
+  it('⛔ QUASE: o mesmo número com a unidade em outra grafia (`250 ML` gravado, `250` + `ml` digitado) não está na lista — a unidade conta exata', () => {
+    mostrar({
+      arvore: arvore(CAPACIDADE),
+      guardados: [guardado(100278, { value_id: 0, original_value_name: '250', value_unit: 'ML' })],
+    });
+    escolher(linha(100278), 'Unidade', 'ml');
+    const campo = caixa(linha(100278), 'Adicionar outro valor');
+    digitar(campo, '250');
+    expect(erroDo(campo)).toBeNull();
+    expect(linha(100278).textContent).not.toContain(JA_NA_LISTA);
+    expect(adicionarDe(100278).disabled).toBe(false);
+  });
+
+  it('⚠️ PAR: Enter no compositor VAZIO diz «Digite um valor.» (e não manda nada); a próxima tecla a tira — e apagar de novo não a traz de volta', () => {
+    mostrar({ arvore: arvore(MATERIAL) });
+    const campo = caixa(linha(100134), 'Adicionar outro valor');
+    // `false` = the default was prevented: the produto form is not submitted either.
+    expect(fireEvent.keyDown(campo, { key: 'Enter', code: 'Enter' })).toBe(false);
+    expect(erroDo(campo)).toBe(DIGITE);
+    expect(h.edicoes).toEqual([]);
+    digitar(campo, 'B');
+    expect(erroDo(campo)).toBeNull();
+    expect(linha(100134).textContent).not.toContain(DIGITE);
+    digitar(campo, '');
+    expect(erroDo(campo)).toBeNull();
+    expect(linha(100134).textContent).not.toContain(DIGITE);
+  });
+
+  it('⛔ QUASE: o compositor vazio INTOCADO não diz nada nem fica marcado', () => {
+    mostrar({ arvore: arvore(MATERIAL) });
+    const campo = caixa(linha(100134), 'Adicionar outro valor');
+    expect(erroDo(campo)).toBeNull();
+    expect(campo.getAttribute('aria-invalid')).toBeNull();
+    expect(linha(100134).textContent).not.toContain(DIGITE);
+  });
+
+  it('⛔ QUASE: o Enter que ADICIONA deixa o compositor vazio sem «Digite um valor.»', () => {
+    mostrar({ arvore: arvore(MATERIAL) });
+    const campo = caixa(linha(100134), 'Adicionar outro valor');
+    digitar(campo, 'Juta');
+    fireEvent.keyDown(campo, { key: 'Enter', code: 'Enter' });
+    expect(h.edicoes).toEqual([
+      [100134, { tipo: 'adicionar-personalizado', texto: 'Juta', unidade: null }],
+    ]);
+    expect(campo.value).toBe('');
+    expect(erroDo(campo)).toBeNull();
+    expect(linha(100134).textContent).not.toContain(DIGITE);
+  });
 });
 
 /* -------------------------------------------------------------------------- */
@@ -1491,12 +1597,21 @@ describe('AtributosRascunhoShopee — problemas de um valor GUARDADO (mostrados,
     );
   });
 
-  it('fraseDaDigitacaoDoAtributoShopee: `vazio` e `repetido` não têm frase; `valores-demais` tem', () => {
-    expect(
-      fraseDaDigitacaoDoAtributoShopee(MOTIVO_DIGITACAO_ATRIBUTO_SHOPEE.vazio, null, 5),
-    ).toBeNull();
+  it('fraseDaDigitacaoDoAtributoShopee: `vazio` e `repetido` têm frase (P13, sem frase até 11-11); `personalizado-nao-permitido` não; `valores-demais` tem', () => {
+    // Inverted on purpose (#1911 P14b, Lucas 2026-11-11): the two composer
+    // reasons gained their own sentences, each its own — never swapped.
+    expect(fraseDaDigitacaoDoAtributoShopee(MOTIVO_DIGITACAO_ATRIBUTO_SHOPEE.vazio, null, 5)).toBe(
+      'Digite um valor.',
+    );
     expect(
       fraseDaDigitacaoDoAtributoShopee(MOTIVO_DIGITACAO_ATRIBUTO_SHOPEE.repetido, null, 5),
+    ).toBe('Este valor já está na lista.');
+    expect(
+      fraseDaDigitacaoDoAtributoShopee(
+        MOTIVO_DIGITACAO_ATRIBUTO_SHOPEE.personalizadoNaoPermitido,
+        null,
+        5,
+      ),
     ).toBeNull();
     expect(
       fraseDaDigitacaoDoAtributoShopee(MOTIVO_DIGITACAO_ATRIBUTO_SHOPEE.valoresDemais, null, 5),

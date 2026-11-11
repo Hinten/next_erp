@@ -972,8 +972,8 @@ stored legacy list that reads EQUAL is never rewritten (D9: no migration).
   DA-4 keys the lock on the patch, never on a value change) · 409
   `CONFLITO {conflitos}` (the stored projection ≠ `base` on a field
   `camposDaBaseDoRascunhoShopee` names — the PATCHED ones, plus `attributes`
-  on a category change, below; a third lost precondition answers
-  `conflitos: []`).
+  on a category change, or `category_id` beside an attributes-only patch,
+  below; a third lost precondition answers `conflitos: []`).
 - **discard** — tier 3 + 1: the baseline compare over EVERY projected field,
   then `delete({lastUpdateTime})`, ≤ 3 re-derives. 404 · 409 `JA_PUBLICADO` ·
   409 `EM_ANDAMENTO` · 409 `CONFLITO` (stored ≠ `base`, K1-13: an edit made
@@ -1004,9 +1004,11 @@ Five rules a change must keep:
 - **An edit never writes the lock.** An `incerta` lock survives every edit; only
   publish takes, claims and releases it (above).
 - **The compare is over the fields the write touches** — the PATCHED ones, plus
-  the `attributes` a category change clears; a field someone else edited that
-  this request does not touch is not a conflict. On a discard it is over every
-  field, because a discard throws all of them away.
+  the `attributes` a category change clears — and, beside an attributes-only
+  patch, the `category_id` the list was chosen in, which is compared and never
+  written (#1911 P13 Q1, below); a field someone else edited that this request
+  does not touch is not a conflict. On a discard it is over every field, because
+  a discard throws all of them away.
 - **`marca` is ONE field over two stored keys**: written whole (`brand_id` +
   `original_brand_name`; `null` ⇒ both `null`; `0` ⇒ the name `null`), compared
   by `brand_id` only for a CONFLICT (a `base`), and as the PAIR for a WRITE (the
@@ -1021,6 +1023,19 @@ Five rules a change must keep:
   `MSG_BASE_SEM_ATRIBUTOS_NA_TROCA_DE_CATEGORIA_RASCUNHO_SHOPEE`) and the
   baseline compares it first, so an attribute save another operator landed
   meanwhile answers 409 `CONFLITO` naming `attributes` with nothing written.
+  ⚠️ **And the mirror (#1911 P14b, P13 Q1): a list lands only on the category
+  it was chosen in.** A patch naming `attributes` without `category_id` REQUIRES
+  `base.category_id` (else 400
+  `MSG_BASE_SEM_CATEGORIA_NOS_ATRIBUTOS_RASCUNHO_SHOPEE`), and the baseline
+  compares it, so a category another operator moved meanwhile answers 409
+  `CONFLITO` naming `category_id`, nothing written; the category is never
+  written by that patch, and the `incerta` lock keys on the patch, so this compare
+  is no category write. The two extras never meet: a patch naming both fields
+  needs neither. Deploy `apps/shopee` BEFORE `apps/web`, and roll them back
+  together: this route answers a tab older than the rule with that 400 on every
+  attribute save, and an older route answers a newer tab (whose base names the
+  category) with the generic `MSG_BASE_DIFERENTE_DO_PATCH_RASCUNHO_SHOPEE` 400 —
+  loud, and the typed list stays in the tab.
 - **The discard is this app's ONE `prodshopee` delete**, of a draft only, so
   `../produtos/links.ts`'s "never delete" gains exactly this exception. A publish
   whose create lands after the discard does not resurrect the draft: its
@@ -1140,10 +1155,12 @@ signature is unchanged, because `publicarAnuncioCli.ts`'s dry run calls it too.
     the category whose tree built it. The same tab drops an edit computed on
     another category's tree, and a save of an edited list proves the category
     it was built on: when another writer moved the category, the tab sends
-    nothing and opens the conflict modal with «Categoria» (an attributes-only
-    patch's `base` does not name the category, so the route alone would not
-    refuse it). Residual: a category write that lands between the tab's last
-    snapshot and its request is seen by neither.
+    nothing and opens the conflict modal with «Categoria». Since #1911 P14b
+    (P13 Q1) the route refuses it too, because an attributes-only patch's `base`
+    names the category (above): a category write that lands between the tab's
+    last snapshot and its request — which the tab cannot see — is a 409
+    `CONFLITO` naming `category_id`, nothing written. The tab's own check stays:
+    it spares a request the route would refuse with the same row.
   - **The conflict path is the P4/P6 one:** tier 3 (the `base` the operator
     loaded) plus tier 1 (`update(…, {lastUpdateTime})`). A concurrent attribute
     save is a 409 `rascunhoConflito` row `attributes`, and «Salvar mesmo assim»
@@ -1151,7 +1168,10 @@ signature is unchanged, because `publicarAnuncioCli.ts`'s dry run calls it too.
     operator's category change survives it or a blocking typing is held, so it
     never takes another tab's list unseen — nor `category_id` while the list is
     edited, so it never moves the list onto another writer's category unseen.
-    A create retry compares the stored list against what the create SENT.
+    A create retry compares the stored list against what the create SENT, and
+    shows a «Categoria» row only when the stored category is no longer the one
+    it sent (the re-send would then write it): an attributes-only re-send only
+    compares the category (#1911 P14b).
   - **«Publicar» waits on the tree.** A valid category whose tree is not read
     yet (or failed) holds «Publicar» (`atributos-desconhecidos`), since a
     missing mandatory attribute would otherwise be invisible to the gate. A
@@ -1264,8 +1284,10 @@ is a STANDARD binding authored on `/variacoes` (#1911's binding editor).
 **The NAME fold (#1911 batch-A).** Every tier and option name `montarTiers`
 SENDS (`variation_name`, `variation_option_name` — the create, the init and the
 update) and both sides of every name it PAIRS go through `nomeDeTierShopee`
-(`../produtos/taxonomiaShopeeCore.ts`), the same fold `tiersDoItem` reads the
-live tree with: the ENDS trimmed (an NBSP too), nothing else. So the string
+(defined in `@delfrance/schemas`, `produto/collection/shopeeLinkVariacoes.ts`,
+since #1911 P14b, and re-exported by `../produtos/taxonomiaShopeeCore.ts`), the
+same fold `tiersDoItem` reads the live tree with: the ENDS trimmed (an NBSP too),
+nothing else. So the string
 sent, read back and compared is one. EQUAL: `'Cor '` ≡ `' Cor'` ≡ `'Cor'`,
 `'Azul '` ≡ `'Azul'`. DISTINCT: case (`'Cor'` ≠ `'cor'`) and inner whitespace
 (`'Azul Claro'` ≠ `'Azul  Claro'`). Before it, the reader trimmed while the
@@ -1279,7 +1301,12 @@ The option duplicate check keys on the folded name, so `'Azul'` and `'Azul '` in
 one grupo refuse `combinacao-duplicada`. ⚠️ The IMPORT's grupo/variante rung 2
 still compares the stored ERP name verbatim (step 9, untouched): importing a
 listing created from a grupo `'Cor '` matches by `tipo` or creates a grupo
-`'Cor'`.
+`'Cor'`. The binding editor folds with the same function (#1911 P14b): a NEW
+custom option row it stores («Personalizada: «{variante}»») holds the
+variante's name through `nomeDeTierShopee`, the string this module sends, so the
+import's byte-exact `mesmaOpcao` finds that row instead of appending a twin
+(#2046). A row already stored is never re-spelled, and a STANDARD name is stored
+as Shopee's tree gives it.
 
 **The name BANDS (#1911 batch-A).** `get_item_limit`'s
 `tier_variation_name_length_limit` / `tier_variation_option_length_limit`
@@ -1315,59 +1342,109 @@ stamped and recoverable. Neither of these is refused: a depth change
 (1→2, 2→1), and a listing with no addressable model. Both are
 `init_tier_variation`, which re-creates every model, so nothing can be re-coded;
 an unpaired grupo's live options are replaced there, because the tier is
-re-authored from the ERP. The two cases get two different sentences:
+re-authored from the ERP. The refusal carries one of THREE sentences, each naming
+only the exit that works (#1911 P14b: P14 Q3(a), P14a open point 5 and Q5).
+`fraseDoTierSemPar` picks it by the grupo's ENTRY first, then by the readable
+live tiers no grupo claimed:
 
-- A CUSTOM grupo (the implicit fallback, or a STORED `variation_id: 0` entry):
-  "Importe o anúncio ou ajuste o nome do grupo". The import writes those
-  entries, and the legacy export named its custom tiers by `tipo` (`Cor`,
-  `Tamanho`), so a migrated listing can hit it on its first republish. Which half
-  of the sentence can work depends on the live tier. Facing a live CUSTOM tier,
-  only a rename exits (the grupo's, or the tier's in Seller Centre): the pairing
-  reads `grupo.nome` and the live name, and an import changes neither, because its
-  grupo patch never names `nome` and an existing child's `variacoesUid` is
-  fill-only, so `lerGrupos` keeps reading the same grupo. So that migrated listing
-  (legacy `Cor` against a grupo named otherwise) exits only by a rename, never by
-  the import. Facing a live STANDARD tier, an import heals a stored `0` or an
-  absent entry, but only when its grupo cascade lands on this grupo; with a
-  `shopee-<id>` grupo in the memo it lands there, and this grupo stays refused.
-  Pinned in `tiersPublicacao.test.ts` (Q2).
-- A STANDARD grupo (#2043) — a stored entry whose non-zero `variation_id` no
-  live tier carries, or whose tier another grupo storing the same id already
-  claimed (a live tier pairs with ONE grupo, the first in `grupos`; a second one is
-  refused, and there the sentence's «nenhum tier» reads false, which is accepted
-  because it fails closed and the text is the spec's): "O vínculo do grupo "{G}"
-  usa a variação padronizada {id}, que nenhum tier do anúncio tem — … Corrija o
-  vínculo em Variações (aba Shopee) para a variação que o anúncio usa." Never
-  "Importe": the import's merge never overwrites a non-zero stored `variation_id`
-  (`../produtos/taxonomiaShopeeCore.ts`, `fundirLinksVariacoesShopee`), so a
-  re-import cannot clear it: the entry keeps its id, and the merge only appends the
-  live options' rows to it. The way out is the binding. Such an entry is
+- **S1** — a CUSTOM grupo (the implicit fallback, or a STORED `variation_id: 0`
+  entry) while a live CUSTOM tier is left unclaimed and no unclaimed STANDARD tier
+  is named like the grupo, or while no live tier is readable at all: "O tier "{G}" não casa pelo nome com nenhum tier do anúncio
+  (grupo renomeado, ou anúncio exportado pelo app antigo) — republicar
+  reescreveria as opções. Ajuste o nome do grupo em Variações, ou o do tier no
+  Seller Centre, para que os dois fiquem iguais." Only a rename exits (the
+  grupo's, or the tier's in Seller Centre): the pairing reads `grupo.nome` and the
+  live name, and an import changes neither, because its grupo patch never names
+  `nome` and an existing child's `variacoesUid` is fill-only, so `lerGrupos` keeps
+  reading the same grupo. So S1 never says «Importe». The import writes stored
+  `0` entries, and the legacy export named its custom tiers by `tipo` (`Cor`,
+  `Tamanho`), so a migrated listing whose grupo is named otherwise hits S1 on its
+  first republish and exits only by a rename. In a MIX of unclaimed custom and
+  standard live tiers, a grupo already named like an unclaimed STANDARD tier
+  (through `nomeDeTierShopee`: the ends trimmed, case and inner whitespace kept)
+  gets S2 naming that tier's variation, because its name already matches and only
+  a binding pairs it; every other unpaired custom grupo gets S1. S1 can never make
+  a grupo claim a standard tier, but it does not name the tier to match, so a
+  rename toward the wrong unclaimed custom tier is still possible.
+- **S2** — a CUSTOM grupo while EVERY readable live tier no grupo claimed is
+  STANDARD (and there is at least one): "Para esta conta e a categoria
+  {categoria}, o grupo "{G}" não tem vínculo com a variação padronizada {ids}, que
+  o anúncio usa — republicar reescreveria as opções. Vincule o grupo a essa
+  variação nessa categoria em Variações (aba Shopee), ou importe o anúncio."
+  (`{ids}` = those variations, once each, joined by « ou »). No rename can make a
+  custom grupo claim a standard tier, so the first exit is a binding with that
+  variation for THIS conta and category. This is what a grupo gets once the
+  binding editor removed its standard entry (P14 Q3(a)), and the sentence names the
+  conta and the category because the grupo may hold that variation for another
+  category. The editor warns when such a removal is staged and no entry of the same
+  key with the same variation remains (P14 Q3(b): «Um anúncio publicado nesta
+  categoria que use a variação {id} será recusado ao republicar até que este
+  vínculo seja recriado.»). The second exit, the import, heals a stored `0` or an
+  absent entry, but only when its grupo cascade lands on this grupo (with a
+  `shopee-<id>` grupo in the memo it lands there, and this grupo stays refused)
+  and the used variantes are named like the live options: otherwise it mints `shopee-<id>`
+  variantes in the grupo, and the next republish refuses the child's own variante
+  instead (the per-variante sentence below). Pinned in `tiersPublicacao.test.ts`
+  (Q2, and the P14b describes).
+- **S3** — a STANDARD grupo (#2043): a stored entry whose non-zero
+  `variation_id` no live tier carries, or whose tier another grupo storing the
+  same id already claimed (a live tier pairs with ONE grupo, the first in
+  `grupos`; a second one is refused, and there the sentence's «nenhum tier» reads
+  false, which is accepted because it fails closed and the text is the spec's):
+  "O vínculo do grupo "{G}" usa a variação padronizada {id}, que nenhum tier do
+  anúncio tem — republicar reescreveria as opções. Corrija o vínculo em Variações
+  (aba Shopee): troque-o pela variação que o anúncio usa ou remova-o." The ENTRY
+  decides, never the live tier: a standard entry gets S3 whatever the live tiers
+  are. Never "Importe": the import's merge never overwrites a non-zero stored
+  `variation_id` (`../produtos/taxonomiaShopeeCore.ts`,
+  `fundirLinksVariacoesShopee`) and, beside another stored variation, appends
+  nothing to it (#2108 point 8), so a re-import cannot clear it. Such an entry is
   import-written (the live tier was later recreated in Seller Centre under
   another standard variation, or as a custom tier with another name),
   legacy-authored (the Flutter form wrote this array in the migrated corpus and
   let the operator pick the standard `variation_id`), or re-bound on purpose in
-  the binding editor. That editor is the exit when the listing's tier is a
-  STANDARD variation the editor offers (one whose tree has options): on
-  `/variacoes/[id]`, tab Shopee, remove the entry and add one for the same conta
+  the binding editor. The two exits are that editor's, on `/variacoes/[id]`, tab
+  Shopee. SWAP, when the listing's tier is a STANDARD variation the editor offers
+  (one whose tree has options): remove the entry and add one for the same conta
   and category with that variation, in one save (it never changes a stored
-  entry's variation in place). It authors standard entries only, so a live CUSTOM
-  tier or an option-less standard variation has no entry it can add. Facing a
-  live CUSTOM tier this refusal fires only when the names already differ (a
-  custom live tier pairs by name whatever the grupo stores): remove the entry AND
-  make the names match, by renaming the grupo or the tier in Seller Centre.
-  Removing it alone turns this refusal into the custom sentence above, and
-  renaming while keeping the standard entry pairs the grupo by name and still
-  sends the stored standard `variation_id` over a custom tier. Facing an
-  option-less standard tier, remove the entry: the grupo then reads as the
-  implicit custom fallback, under the custom sentence's exits above. A tier
-  another grupo already claimed is fixed on whichever grupo holds the wrong
-  binding. Until then the refusal fails closed, stamped, after `update_item`. Without it, the rebuild authored
-  only the options a child uses, so a live model with no child kept a
-  `tier_index` that now named another option (or pointed past the list), a
-  child with no stored `model_id` and no SKU bound by its NEW coordinate (the
-  synthetic pass) and could take over another variant's model, and in a
-  two-level listing the unpaired tier was appended LAST, reading every
-  child-less model across swapped axes.
+  entry's variation in place). Or REMOVE it, after which the next republish
+  answers S1 or S2 by the live tier. The editor authors standard entries only, so
+  a live CUSTOM tier or an option-less standard variation has no entry it can
+  add. Facing a live CUSTOM tier this refusal fires only when the names already
+  differ (a custom live tier pairs by name whatever the grupo stores): remove the
+  entry AND make the names match, by renaming the grupo or the tier in Seller
+  Centre. Removing it alone turns this refusal into S1, and renaming while keeping
+  the standard entry pairs the grupo by name and still sends the stored standard
+  `variation_id` over a custom tier. Facing an option-less standard tier, remove
+  the entry: the grupo then gets S2, and of S2's two exits only the import applies,
+  since the editor cannot add that variation. A tier another grupo already claimed
+  is fixed on whichever grupo holds the wrong binding.
+
+Until then each refusal fails closed, stamped, after `update_item`. Without it,
+the rebuild authored only the options a child uses, so a live model with no child
+kept a `tier_index` that now named another option (or pointed past the list), a
+child with no stored `model_id` and no SKU bound by its NEW coordinate (the
+synthetic pass) and could take over another variant's model, and in a two-level
+listing the unpaired tier was appended LAST, reading every child-less model
+across swapped axes.
+
+**The per-variante refusal names its exits (#1911 P14b, Lucas §5-7).** A grupo
+whose STANDARD entry binds no option to a variante a child uses is refused
+`variacao-sem-vinculo` on `standardise_tier_variation`: "A variante "{v}" do grupo
+"{g}" não está vinculada a nenhuma opção da variação padronizada {id}. Corrija o
+vínculo em Variações (aba Shopee): vincule a variante a uma opção dessa variação,
+troque o vínculo por outra variação ou remova-o." `montarTiers` decides it, and the
+plan runs `montarTiers` with no live tree, so a create and every republish meet it
+before any listing write. Since the import stopped appending another variation's
+rows (#2108 point 8, below), it is the first refusal a grupo bound to one
+variation meets on a listing of another. The three exits are the binding
+editor's. On a republish only one of them gets past the model leg too, and the
+listing's variation decides which: when the listing's tier IS the bound variation
+(a new variante added in the ERP), only binding the variante works, while a swap
+or a removal passes the plan and is refused in the model leg after `update_item`
+(S3 or S2; the editor's Q3(b) warning fires on both when staged); when the listing
+uses another variation, only the swap works. On a create all three work. Pinned in
+`tiersPublicacao.test.ts`'s #2043 describe.
 
 - A grupo `'Cor '` facing a live `'Cor'` PAIRS (the NAME fold); `'cor'` or
   `'C or'` does not, and is refused like any renamed grupo. The batch-A review
@@ -1383,8 +1460,8 @@ re-authored from the ERP. The two cases get two different sentences:
   No committed capture shows these shapes, or trees of different lengths
   (`types.ts` tolerates every combination). Every committed body with models carries
   both trees at equal length. In the standard-tree-only and length-mismatch shapes
-  a stored standard grupo gets the #2043 sentence although its id may be live on
-  the wire: it fails closed, but the sentence can be inaccurate.
+  a stored standard grupo gets S3 although its id may be live on the wire: it
+  fails closed, but the sentence can be inaccurate.
 - A grupo whose STORED entry is STANDARD and does not pair is refused like a
   custom one (#2043, the batch-A review's known item 2): stored 88 against a
   live 77 at the same depth with addressable models is refused with no tier and
@@ -1396,9 +1473,43 @@ re-authored from the ERP. The two cases get two different sentences:
   alone, whatever the grupo's entry says, so a grupo with a stored STANDARD
   entry pairs with a live custom tier of the same name and is sent in place
   under that standard `variation_id`, over live options that all have id `0`.
-  Positions are kept, so nothing is re-coded; the local outcome is pinned in
-  (2c-bis), and only Shopee's acceptance of that body stays unmeasured. The inverse
-  (a stored custom entry against a live standard tier) is refused and pinned.
+  Positions are kept only for the variantes named exactly like their live option
+  (through `nomeDeTierShopee`), or bound to it by an id-`0` row of the entry; the
+  local outcome is pinned in (2c-bis), and Shopee's acceptance of that body stays
+  unmeasured. The inverse (a stored custom entry against a live standard tier) is
+  refused and pinned. Since #2108 point 8 the import no longer appends that live
+  custom tier's rows to the stored standard entry (below), so the grupo's used
+  variantes need rows of their own there: each one without is refused per
+  variante (above), at the plan. ⚠️ But a used variante that DOES hold a row of
+  the standard variation and is named otherwise than its live option (tied to it
+  by the import's rung 3, a gender-vowel or space/hyphen swap, or renamed in the
+  ERP after the import) is not refused: it is APPENDED under that row's non-zero
+  option id, inside the custom tier, and its child's model moves onto the appended
+  option (`⚠️ RESÍDUO` in `tiersPublicacao.test.ts`, #1911 P14b; before #2108 point
+  8 the import's id-`0` rows held the live position). Whether to refuse it is open
+  for Lucas: refusing needs a new sentence. Where the same grupo and entry also
+  serve a listing of that standard variation in the same conta and category, the
+  exits are binding the missing variantes to options of that variation (only for
+  a variante named exactly like its live custom option; one named otherwise is
+  then appended and moves its model, as above), or moving the custom listing's
+  children to another grupo; removing the entry would refuse the standard listing
+  instead (S2).
+- **The import merges rows only into an entry of the SAME variation (#2108 point
+  8).** `fundirLinksVariacoesShopee` appends our option rows, unions their
+  variantes and fills a blank row name only in a stored entry whose `variation_id`
+  is `0` (healed with ours, which then takes our group and our rows too) or equals
+  ours. Beside ANOTHER stored variation the entry's rows stay byte-identical, no
+  twin entry is appended, and only a blank entry `name` (the category's label) is
+  filled: the publisher authors an option from ANY row that binds a variante
+  (`opcaoDaVariante`), so a foreign row would reach the wire under the stored id on
+  a create, an `init` or an appended option. Our `0` (a custom live tier, a kit) is
+  a value, never a wildcard, so its rows never enter a stored standard entry
+  either. The stored 88 against a live 77 therefore keeps its 88 AND its rows, and
+  a re-import leaves S3 standing. Staging grupos the old merge wrote keep their
+  foreign rows (re-seed staging if they get in the way; the binding editor flags
+  only the non-zero rows outside the entry's own variation tree,
+  `opcao-fora-da-arvore`). Pinned in `../produtos/taxonomiaShopeeCore.test.ts` and,
+  through the real merge, in `tiersPublicacao.test.ts`'s #2043 describe.
 - ⚠️ Not covered either (flagged, not probed): a paired STANDARD tier is sent with
   the STORED `variation_group_list`, not the live group. One entry holds one group
   per (grupo, conta, leaf) and the import never overwrites a non-zero one, so a
@@ -1423,6 +1534,22 @@ a listing created with a standard «Azul Turquesa» bound to an ERP variante nam
 otherwise keeps «Azul Turquesa» on every republish (before, any such send carried
 the variante's name instead).
 
+A row stored BLANK counts as no name (#1911 P14b, P14a open point 7): when the
+stored `shopee_option_name` folds to `''` (empty, spaces, an NBSP), the variante's
+folded name is sent instead, for a standard row and a custom one alike, in every
+arm above that authors an option the live tree lacks: the create, the `init` arm
+and an option appended on an update. Blank is decided AFTER the fold, so `'.'` or
+a zero-width space is a name and goes as stored. That is the rule a custom entry
+with no row already followed, and ONE helper serves both it and the nameless live
+option's fallback (`nomeDaLinhaOuDaVariante`, `tiersPublicacao.ts`). Only when the
+variante has no name either is the blank kept: a custom option is then refused
+(«… não tem nome, e uma opção personalizada leva o nome da variante — dê um nome a
+ela em Variações.», now true whenever it fires), and a standard one goes beside its
+id, unrefused, as before. Beside a STANDARD row's non-zero id this sends an ERP
+string where the row held none, and Shopee's answer is unmeasured (register 318).
+After a create that sent the variante's name for a blank CUSTOM row, the next
+import appends a second row beside the blank one (the #2046 family).
+
 Why the echo: a standard option's name is Shopee's catalogue string, and Shopee's
 reaction to an ERP string beside a non-zero option id is unmeasured: it may ignore
 the string, refuse after `update_item` or rename the standardised value. The echo
@@ -1432,7 +1559,12 @@ announcement 873 forbids any name beside a non-zero VARIATION id, and if the opt
 level mirrors it, this leg is refused as it was before P14a. Also, a custom option's
 name IS the identity the next pairing finds it by: the publisher and the import's
 variante rung 1 find its stored id-`0` row through ONE function, by that same fold
-(`linhaDaOpcaoNaEntrada`, `../produtos/taxonomiaShopeeCore.ts`).
+(`linhaDaOpcaoNaEntrada`, `../produtos/taxonomiaShopeeCore.ts`). So removing a
+custom entry whose row binds a live option to a variante of ANOTHER name makes the
+next publish append the variante's option and move the model onto it; the binding
+editor warns when that removal is staged (#1911 P14b, P14 Q2: «Ao remover este
+vínculo, a próxima publicação acrescenta a opção «{variante}» e move o modelo para
+ela; «{opção}» fica sem modelo.»).
 
 A row may bind several variantes, and a live option then stands for the first of
 them, in grupo order, that a child of THIS publish uses, else the first in grupo
@@ -1452,7 +1584,12 @@ new option with no model. The same happens with no import at all, and whether Sh
 accepts that body is unmeasured. To keep a custom rename, rename the ERP variante to
 the same name BEFORE importing: the live option then pairs by the variante's name
 and nothing moves. Once a twin exists that no longer works, and the child has to
-move to the twin.
+move to the twin. No refusal guards this, on purpose (#1911 P14b, P14a open point
+6, Lucas: not built): from stored data it cannot be told apart from an operator
+who renamed the ERP variante and re-picked «Personalizada» in the binding editor
+(an append-and-move like the one that editor's removal warning announces and
+allows), and after any import of the listing it cannot be detected at all, since
+the import mints a variante named after the new option.
 
 Two consequences for the option duplicate check, whose custom key is the name SENT.
 (1) A second variante named like a live custom option that a stored row already
@@ -1544,8 +1681,9 @@ rollout.** The web's only import door, the mass import, runs
 `dadosLinkListagem` in the nested functions codebase
 (`functions/src/processMassImport.ts`). App Hosting rolls out automatically on a
 merge into `production`. Until the functions carry #2015, an import writes
-Shopee's list WITHOUT the stamp. The next publish still distrusts it, so a
-`logistica-nao-confirmada` refusal comes back after the very import it asked
+Shopee's list WITHOUT the stamp. The next publish still distrusts it, so an
+import-remedy refusal (`logistica-nao-confirmada`, or since #1911 P14b (CPY-4)
+`logistica-sem-valor-gravado`, below) comes back after the very import it asked
 for, and importing before a Republicar protects nothing.
 `importar:anuncio --live` from a #2015 checkout does stamp. The other order is
 harmless, because a pre-#2015 publisher trusts every stored list. apps/web may
@@ -1559,28 +1697,50 @@ and never a factor of `1`. `canaisHabilitados` is REPORTING — it unions the li
 and in `pulados`: the first says "on anyway", the second says "not sent by us".
 Seven `MotivoCanalPulado` members, all producible, all pinned in
 `logisticaPublicacao.test.ts`. An empty `logistic_info`, or a compulsory channel
-we cannot satisfy, is the blocked motivo `logistica-sem-canal` — with ONE
-exception since #2015. A compulsory `SIZE_SELECTION` / `CUSTOM_PRICE` channel
-the full pass skipped for its missing value refuses
-**`logistica-nao-confirmada`** instead when the distrusted list holds a
-READABLE value for exactly that field (through the same readers the stored pass
-uses) AND there is a listing an import would re-read — `itemIdImportavel`: the
-link's live `item_id`, on the kit converter its predecessor's. Campo
-`logistic_info`, no `acao`; the sentence names that `item_id`: import the
-listing, then publish again. A draft, a `removido` link, kit-criar, a trusted
-list, an absent or unreadable value and a parcel that does not fit keep
-`logistica-sem-canal`'s sentence word for word.
+we cannot satisfy, is the blocked motivo `logistica-sem-canal` — with TWO
+exceptions, both import remedies (`remedioPelaImportacao`). Each needs a
+compulsory `SIZE_SELECTION` / `CUSTOM_PRICE` channel the full pass skipped for its
+missing value (so the channel is enabled and the parcel fits), a DISTRUSTED list,
+and a listing an import would re-read — `itemIdImportavel`: the link's live
+`item_id`, on the kit converter its predecessor's. Campo `logistic_info`, no
+`acao`, and the sentence names that `item_id`:
+
+- **`logistica-nao-confirmada`** (#2015) when the distrusted list holds a
+  READABLE value for exactly that field (through the same readers the stored pass
+  uses): import the listing, then publish again. It is decided first, so one
+  readable entry beside an unreadable one is still this refusal.
+- **`logistica-sem-valor-gravado`** (#2099, CPY-4) when it holds none — absent,
+  unreadable (`''`, `'12.5'`, `'0'`, a fee `'grátis'`), only the OTHER field, only
+  another channel's, or no list at all: «O canal obrigatório {canal} precisa de um
+  tamanho ou de uma tarifa de frete que este vínculo não tem gravados, e o ERP não
+  tem registro de ter gravado a lista de logística dele. Se o valor já está no
+  Seller Centre, importe o anúncio {item} e publique de novo; se não está,
+  defina-o no Seller Centre antes.» Here alone the channel is named
+  `«{nome}» ({id})`, with the shop's `logistics_channel_name` (Lucas §5-3; Seller
+  Centre lists channels by name), read through `textoUtilizavelShopee` — trimmed,
+  and the id alone when the name is missing or blank (`canalNomeado`).
+  `logistica-nao-confirmada` and `logistica-sem-canal` keep the bare id.
+
+A draft, a `removido` link, kit-criar, a trusted list, a parcel that does not fit
+and a channel the shop has not enabled keep `logistica-sem-canal`'s sentence word
+for word.
 
 The two shop-wide sentences (no compulsory channel enabled; no channel at all)
 stay `logistica-sem-canal`, with ONE exception: when EVERY lost compulsory
-channel took `logistica-nao-confirmada`, neither is added. Each of those
-channels is enabled and fits, so the import is the whole remedy. Either
-sentence would put weight advice, and the web's weight button on a
-`logistica-sem-canal` row, beside it. The `logistica-nao-confirmada` rows alone
-still block. One lost compulsory channel that kept the old sentence keeps both.
+channel took one of the two import remedies, neither is added. Each of those
+channels is enabled and fits, so the import (and, for CPY-4, the value set in
+Seller Centre) is the whole remedy, and the produto's weight cannot fix it.
+Either sentence would put weight advice, and the web's weight button on a
+`logistica-sem-canal` row, beside it; the web shows no weight button on an
+import-remedy row either (`superficieDoCampoShopee` in
+`apps/web/lib/shopee/rascunho.ts`). The import-remedy rows alone still block. One
+lost compulsory channel that kept the old sentence (one too heavy for it, say)
+keeps both, and the button rides on those rows.
 
-The web words the new motivo with its own copy and points at the one web door
-that re-reads a LINKED listing: the mass import, with «Atualizar anúncios já
+The web words each import remedy with its own copy and ends both with ONE shared
+recipe, `FRASE_COMO_IMPORTAR_ANUNCIO_VINCULADO_SHOPEE`
+(`apps/web/lib/shopee/anuncioProduto.ts`), which points at the one web door that
+re-reads a LINKED listing: the mass import, with «Atualizar anúncios já
 cadastrados» ticked, the listing's current status ticked in «Status dos
 anúncios» («Banidos» and «Em revisão» start unticked), an empty «Janela de
 atualização (opcional)», and «Sobrescrever preço existente» UNticked. That run
@@ -1588,7 +1748,18 @@ re-reads every listing of the conta in those statuses, and at the dialog's
 default it replaces the ERP price of every childless linked produto and every
 child with Shopee's (a parent with children keeps its own)
 (`planejarPreco` in `../produtos/mapeamento.ts` reads `sobrescreverPreco` alone
-on an update). The quoted labels are the dialog's own constants
+on an update). Since #1911 P14b (traps b/c of #2099's review) the recipe also says the two other things that run
+does: it imports every UNLINKED listing in those statuses too (bound to the one
+produto with the same SKU, else a new produto), and with «Importar fotos» ticked
+(the default) it APPENDS the listings' photos — it never removes or replaces one,
+but a photo removed from a produto comes back while the listing still has it,
+because the dedup (`idsDeImagemJaImportados`, `../produtos/fotosShopee.ts`) reads
+only the arquivos the produto's CURRENT `fotos` references. And since #1911 P14b (trap a of #2099's review) a
+greyed-out «Sobrescrever …» box is not sent: the dialog sends each one ANDed with
+the box it depends on (`importarPreco && sobrescreverPreco`, the same for estoque,
+and `atualizarProdutoPai && sobrescreverDadosProduto`), as `false` and never
+omitted (an omitted key would take the server default, `sobrescreverPreco: true`).
+The quoted labels are the dialog's own constants
 (`apps/web/lib/shopee/rotulosImportacaoShopee.ts`).
 
 ⚠️ `update_item`'s request table omits `logistic_info` while every code sample,
@@ -1753,7 +1924,7 @@ production passes no per-call override.
 
 Two classes, two moments, and both **PERSIST**.
 
-`ShopeePublishBlockedError` is OUR refusal: step 11's 22 motivos (59 today —
+`ShopeePublishBlockedError` is OUR refusal: step 11's 22 motivos (60 today —
 steps 19, #1911 and #2015 added theirs; `errosPublicacao.test.ts` pins the count,
 `readmeAnuncios.test.ts` this sentence),
 raised before any Shopee LISTING write for the produto (the model-leg
@@ -1782,9 +1953,12 @@ wire cap or an option name it now sends outside its band (`opcoes-demais` — th
 tier and model counts are the plan's own, so they cannot newly fail here), and
 #1911 P7's re-code refusal
 (`variacao-sem-vinculo`: an unpaired tier that `update_tier_variation` would
-rewrite IN PLACE — custom: "Importe o anúncio ou ajuste o nome do grupo";
-standard since #2043: "Corrija o vínculo em Variações (aba Shopee)…",
-`tiersPublicacao.ts`). The listing exists, so the next publish resumes as an
+rewrite IN PLACE — a custom grupo gets S1, "…Ajuste o nome do grupo em Variações,
+ou o do tier no Seller Centre…", or S2, "…Vincule o grupo a essa variação nessa
+categoria em Variações (aba Shopee), ou importe o anúncio."; a standard one,
+since #2043, S3, "…Corrija o vínculo em Variações (aba Shopee): troque-o pela
+variação que o anúncio usa ou remova-o.", `tiersPublicacao.ts`; the three are
+under "A grupo's tier" above). The listing exists, so the next publish resumes as an
 update and runs the leg again; the CLI's `LINHAS_DO_BLOQUEIO` already warns
 that a `--live` refusal can follow the `update_item`. In this folder every
 other blocked refusal precedes the listing write (a draft's lock, mint and SKU
@@ -2113,6 +2287,7 @@ a regression.
 | 315 | Shopee accepts a typed (custom) value for the search-sourced mandatory child 101237 «Fabricante» (#1911 P13)                                                                                                                   | ⏳ BR shop: the first publish with «Sem fio (…)» chosen on 100408 «Tipo de Conexão». Refused ⇒ that attribute needs `search_attribute_value_list`, which the ERP does not call (out of #1911; a yes from Lucas first); the editor offers a text input with a note that the search exists                                                                                                                                                                                  |
 | 316 | a typed value on a unit attribute (`format_type` 2) sent WITHOUT a unit: refused or stored (#1911 P13)                                                                                                                         | ⏳ non-gating. The editor forces a unit (fail-closed), so only an imported or legacy value can lack one; a draft holding one shows `unidade-invalida` («nenhuma»), and it is sent as stored, so its first republish settles it                                                                                                                                                                                                                                            |
 | 317 | Shopee's answer to a `variation_option_name` beside a non-zero `variation_option_id` on `update_tier_variation`, when the name is the live option's own (#1911 P14a, R2)                                                       | ⏳ BR shop: the first republish of a listing with a standard option. A refusal arrives after `update_item`, in the model leg, as a provider failure naming no cause                                                                                                                                                                                                                                                                                                       |
+| 318 | Shopee's answer to a variante's ERP name as `variation_option_name` beside a non-zero `variation_option_id` (`init_tier_variation` / `update_tier_variation`) for a STANDARD row stored blank (#1911 P14b, P14a open point 7)  | ⏳ BR shop: the first publish that authors an option from a standard binding row stored blank. Before P14b the blank itself went beside the id, unrefused and just as unmeasured. A refusal arrives as a Shopee rejection at the tier call: after `add_item` on a create (the listing then linked, UNLIST and model-less), after `update_item` on an update                                                                                                               |
 
 Also unmeasured, and not a register line: nothing in this folder has met a BR
 shop. The `esperar` of 5 000 ms, the re-list door order, the daily-quota reset

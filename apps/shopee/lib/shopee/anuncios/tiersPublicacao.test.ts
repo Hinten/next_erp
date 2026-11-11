@@ -341,8 +341,38 @@ describe('montarTiers — a autoria por tier', () => {
 const TEXTO_ILEGIVEL = (grupoNome: string): string =>
   `O vínculo do grupo "${grupoNome}" com esta conta para a categoria ${String(CATEGORIA)} existe mas não pôde ser lido — corrija-o em Variações.`;
 
+/**
+ * S1 (#1911 P14b, P14a open point 5): a CUSTOM entry facing a live CUSTOM tier
+ * (or nothing readable) — only a rename exits, so no «Importe».
+ */
 const TEXTO_NAO_CASA = (grupoNome: string): string =>
-  `O tier "${grupoNome}" não casa pelo nome com nenhum tier do anúncio (grupo renomeado, ou anúncio exportado pelo app antigo) — republicar reescreveria as opções. Importe o anúncio ou ajuste o nome do grupo.`;
+  `O tier "${grupoNome}" não casa pelo nome com nenhum tier do anúncio (grupo renomeado, ou anúncio exportado pelo app antigo) — republicar reescreveria as opções. Ajuste o nome do grupo em Variações, ou o do tier no Seller Centre, para que os dois fiquem iguais.`;
+
+/**
+ * S2 (#1911 P14b, P14 Q3(a)): a CUSTOM entry while every live tier left
+ * unclaimed is STANDARD — bind first, or import; names THIS conta's category.
+ */
+const TEXTO_PADRAO_VIVO = (grupoNome: string, ids: string): string =>
+  `Para esta conta e a categoria ${String(CATEGORIA)}, o grupo "${grupoNome}" não tem vínculo com a variação padronizada ${ids}, que o anúncio usa — republicar reescreveria as opções. Vincule o grupo a essa variação nessa categoria em Variações (aba Shopee), ou importe o anúncio.`;
+
+function recusaPadraoViva(grupoNome: string, ids: string) {
+  return {
+    campo: 'standardise_tier_variation',
+    motivo: MOTIVO_PUBLICACAO_BLOQUEADA.variacaoSemVinculo,
+    mensagem: TEXTO_PADRAO_VIVO(grupoNome, ids),
+  };
+}
+
+/**
+ * The per-variante refusal of a grupo whose STANDARD entry binds no option to a
+ * used variante, with the exit #1911 P14b added (§5-7) — the first verbatim pin.
+ */
+const TEXTO_VARIANTE_SEM_OPCAO = (
+  varianteNome: string,
+  grupoNome: string,
+  variationId: number,
+): string =>
+  `A variante "${varianteNome}" do grupo "${grupoNome}" não está vinculada a nenhuma opção da variação padronizada ${String(variationId)}. Corrija o vínculo em Variações (aba Shopee): vincule a variante a uma opção dessa variação, troque o vínculo por outra variação ou remova-o.`;
 
 /** A STANDARD entry (`variation_id: 77`) binding both test variantes to options 5 / 6. */
 function entradaPadrao(parcial: Parameters<typeof entrada>[0] = {}): unknown {
@@ -775,7 +805,9 @@ describe('montarTiers — #1911 (Q2): na ATUALIZAÇÃO, um tier custom que não 
     const implicito = montarTiers(
       args({ grupos: [grupoCor('Cor', null)], filhos: [filhosCor[0]!], viva }),
     );
-    expect(implicito.problemas).toEqual([recusaNaoCasa('Cor')]);
+    // #1911 P14b: the live tier left unclaimed is STANDARD, so the sentence is S2
+    // (bind it, or import) — a rename could never make this grupo claim it.
+    expect(implicito.problemas).toEqual([recusaPadraoViva('Cor', '77')]);
 
     // ⛔ par: a entrada PADRÃO armazenada com o mesmo variation_id casa e publica.
     const padrao = montarTiers(
@@ -809,7 +841,8 @@ describe('montarTiers — #1911 (Q2): na ATUALIZAÇÃO, um tier custom que não 
     const r = montarTiers(
       args({ grupos: [grupoCor('Cor', [ENTRADA_IMPORTADA])], filhos: [filhosCor[0]!], viva }),
     );
-    expect(r.problemas).toEqual([recusaNaoCasa('Cor')]);
+    // #1911 P14b: S2 — the live tier left unclaimed is STANDARD.
+    expect(r.problemas).toEqual([recusaPadraoViva('Cor', '77')]);
     expect(r.tiers).toEqual([]);
     expect(r.modelos).toEqual([]);
   });
@@ -1142,10 +1175,13 @@ describe('montarTiers — #1911 (Q2): na ATUALIZAÇÃO, um tier custom que não 
   });
 
   describe('reimportar o anúncio: o que a frase do Q2 pode prometer', () => {
-    // The Q2 sentence says "Importe o anúncio ou ajuste o nome do grupo", and which
-    // half can work depends on the live tier (module header). Each case runs the
-    // REAL import plan, applies its patch to the grupo, and publishes again. Both
-    // halves of the fold: what the import heals, and what it cannot reach.
+    // The Q2 sentence used to say "Importe o anúncio ou ajuste o nome do grupo" for
+    // both live kinds; #1911 P14b split it by the half that works (module header):
+    // facing a live CUSTOM tier S1 names only the rename, because the import cannot
+    // heal it; facing a live STANDARD tier S2 names the binding, then the import.
+    // Each case runs the REAL import plan, applies its patch to the grupo, and
+    // publishes again. Both halves of the fold: what the import heals, and what it
+    // cannot reach.
     const VIVA_77 = arvorePadrao77([
       modeloVivo({ model_id: VERDE, tier_index: [0], model_sku: 'VD' }),
       modeloVivo({ model_id: AZUL, tier_index: [1], model_sku: 'AZ' }),
@@ -1184,6 +1220,9 @@ describe('montarTiers — #1911 (Q2): na ATUALIZAÇÃO, um tier custom que não 
         args({ grupos: [depoisDoPatch(doc, patch)], filhos: filhosCor, viva: VIVA_COR }),
       );
       expect(depois.problemas).toEqual([recusaNaoCasa('Cores')]);
+      // #1911 P14b (P14a open point 5): so S1 must not offer the import at all.
+      expect(depois.problemas[0]?.mensagem).not.toContain('Importe');
+      expect(depois.problemas[0]?.mensagem).not.toContain('importe');
     });
 
     it('⚠️ PAR: reimportar cura o tier PADRÃO vivo — um 0 armazenado ou uma entrada ausente, no grupo em que a cascata cai', () => {
@@ -1192,7 +1231,8 @@ describe('montarTiers — #1911 (Q2): na ATUALIZAÇÃO, um tier custom que não 
         const antes = montarTiers(
           args({ grupos: [grupoCor('Cor', links)], filhos: filhosCor, viva: VIVA_77 }),
         );
-        expect(antes.problemas).toEqual([recusaNaoCasa('Cor')]);
+        // #1911 P14b: S2 — the second exit it names is this very import.
+        expect(antes.problemas).toEqual([recusaPadraoViva('Cor', '77')]);
 
         const plano = reimportar(VIVA_77, [doc]);
         expect(plano.grupos.map((g) => g.grupoId)).toEqual(['g-cor']);
@@ -1206,6 +1246,15 @@ describe('montarTiers — #1911 (Q2): na ATUALIZAÇÃO, um tier custom que não 
         );
         expect(depois.problemas).toEqual([]);
         expect(depois.tiers.map((t) => t.variation_id)).toEqual([77]);
+        // #1911 P14b (#2108 point 8): a stored `0` is still THIS variation's, so the
+        // heal still appends 77's rows and each live option keeps its own variante.
+        expect(
+          depois.tiers[0]!.opcoes.map((o) => [o.varianteId, o.variation_option_id]),
+          JSON.stringify(links),
+        ).toEqual([
+          ['v-verde', 6],
+          ['v-azul', 5],
+        ]);
       }
     });
 
@@ -1222,8 +1271,567 @@ describe('montarTiers — #1911 (Q2): na ATUALIZAÇÃO, um tier custom que não 
           viva: VIVA_77,
         }),
       );
-      expect(depois.problemas).toEqual([recusaNaoCasa('Cor')]);
+      expect(depois.problemas).toEqual([recusaPadraoViva('Cor', '77')]);
     });
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*  (2c-ter) #1911 P14b — the custom grupo's sentence follows the live tier   */
+/*  left unclaimed: S1 (rename) or S2 (bind, or import)                       */
+/* -------------------------------------------------------------------------- */
+
+describe('montarTiers — #1911 P14b (Q3a + aberto 5): a frase do grupo CUSTOM sem par segue o tier vivo que sobrou', () => {
+  const azul = variante('v-azul', 'Azul');
+  const verde = variante('v-verde', 'Verde');
+  const AZUL = MODEL_ID + 1;
+  const VERDE = MODEL_ID;
+
+  const VIVA_77 = arvorePadrao77([
+    modeloVivo({ model_id: VERDE, tier_index: [0], model_sku: 'VD' }),
+    modeloVivo({ model_id: AZUL, tier_index: [1], model_sku: 'AZ' }),
+  ]);
+
+  /** A live CUSTOM tier 'Cor' = [Verde, Azul], a model on each. */
+  const VIVA_COR: ArvoreVivaDoItem = {
+    tier_variation: [
+      shopeeTierVariationSchema.parse({
+        name: 'Cor',
+        option_list: [{ option: 'Verde' }, { option: 'Azul' }],
+      }),
+    ],
+    standardise_tier_variation: null,
+    model: [
+      modeloVivo({ model_id: VERDE, tier_index: [0], model_sku: 'VD' }),
+      modeloVivo({ model_id: AZUL, tier_index: [1], model_sku: 'AZ' }),
+    ],
+  };
+
+  function grupoCor(nome: string, linksVariacoesShopee: readonly unknown[] | null): GrupoParaTier {
+    return grupo({ grupoId: 'g-cor', nome, variacoes: [azul, verde], linksVariacoesShopee });
+  }
+
+  const SO_AZUL: readonly FilhoParaPublicar[] = [
+    filho({ produtoId: 'p-azul', variacoesUid: [varianteFakePath('g-cor', 'v-azul')] }),
+  ];
+
+  /** Two live tiers, each custom (`variationId: 0`) or standard, one model at [0, 0]. */
+  function vivaDeDoisTiers(
+    tiers: readonly { readonly nome: string; readonly variationId: number }[],
+  ): ArvoreVivaDoItem {
+    return {
+      tier_variation: tiers.map((t) =>
+        shopeeTierVariationSchema.parse({ name: t.nome, option_list: [{ option: 'Única' }] }),
+      ),
+      standardise_tier_variation: tiers.map((t) =>
+        shopeeStandardiseTierVariationSchema.parse({
+          variation_id: t.variationId,
+          variation_name: t.nome,
+          variation_option_list: [
+            { variation_option_id: t.variationId === 0 ? 0 : 1, variation_option_name: 'Única' },
+          ],
+        }),
+      ),
+      model: [modeloVivo({ model_id: AZUL, tier_index: [0, 0], model_sku: 'U-U' })],
+    };
+  }
+
+  /** Two IMPLICIT grupos (no entry) of one variante each, and the child using both. */
+  function doisGruposImplicitos(nomeA: string, nomeB: string) {
+    return {
+      grupos: [
+        grupo({
+          grupoId: 'g-a',
+          nome: nomeA,
+          ordem: 1,
+          variacoes: [variante('v-a', 'Única')],
+          linksVariacoesShopee: null,
+        }),
+        grupo({
+          grupoId: 'g-b',
+          nome: nomeB,
+          ordem: 2,
+          variacoes: [variante('v-b', 'Única')],
+          linksVariacoesShopee: null,
+        }),
+      ],
+      filhos: [
+        filho({
+          produtoId: 'p-ab',
+          variacoesUid: [varianteFakePath('g-a', 'v-a'), varianteFakePath('g-b', 'v-b')],
+        }),
+      ],
+    };
+  }
+
+  const recusaS1 = (grupoNome: string) => ({
+    campo: 'standardise_tier_variation',
+    motivo: MOTIVO_PUBLICACAO_BLOQUEADA.variacaoSemVinculo,
+    mensagem: TEXTO_NAO_CASA(grupoNome),
+  });
+
+  it('⚠️ PAR (Q3a): a entrada PADRÃO 77 casa com o tier vivo 77; o MESMO grupo sem ela (removida no editor — nenhuma, [] ou um 0 armazenado) recebe S2 nomeando 77, e nada é montado', () => {
+    const casado = montarTiers(
+      args({ grupos: [grupoCor('Cor', [entradaPadrao()])], filhos: SO_AZUL, viva: VIVA_77 }),
+    );
+    expect(casado.problemas).toEqual([]);
+
+    for (const links of [null, [], [entrada({ variation_id: 0 })]]) {
+      const r = montarTiers(
+        args({ grupos: [grupoCor('Cor', links)], filhos: SO_AZUL, viva: VIVA_77 }),
+      );
+      expect(r.problemas, JSON.stringify(links)).toEqual([recusaPadraoViva('Cor', '77')]);
+      expect(r.tiers).toEqual([]);
+      expect(r.modelos).toEqual([]);
+    }
+  });
+
+  it('⛔ QUASE (S2 nomeia o PAR): a 77 do grupo guardada para OUTRA categoria ou OUTRA conta não é deste par ⇒ S2 com a categoria DESTA publicação, nunca a da entrada alheia', () => {
+    for (const estrangeira of [
+      entradaPadrao({ category_id: 999999 }),
+      entradaPadrao({ integracaoShopeeId: 'int-12' }),
+    ]) {
+      const r = montarTiers(
+        args({ grupos: [grupoCor('Cor', [estrangeira])], filhos: SO_AZUL, viva: VIVA_77 }),
+      );
+      expect(r.problemas).toEqual([recusaPadraoViva('Cor', '77')]);
+      const mensagem = r.problemas[0]?.mensagem ?? '';
+      expect(mensagem).toContain(`categoria ${String(CATEGORIA)}`);
+      expect(mensagem).not.toContain('999999');
+    }
+  });
+
+  it('⛔ QUASE: o grupo implícito contra um tier vivo CUSTOM de outro nome recebe S1 — só renomear sai, e S1 não oferece a importação', () => {
+    const r = montarTiers(
+      args({ grupos: [grupoCor('Cores', null)], filhos: SO_AZUL, viva: VIVA_COR }),
+    );
+    expect(r.problemas).toEqual([recusaS1('Cores')]);
+    const mensagem = r.problemas[0]?.mensagem ?? '';
+    expect(mensagem).not.toContain('Importe');
+    expect(mensagem).not.toContain('importe');
+    expect(mensagem).toContain(
+      'Ajuste o nome do grupo em Variações, ou o do tier no Seller Centre',
+    );
+  });
+
+  it('⛔ QUASE: nenhum tier LEGÍVEL — só a árvore PADRÃO, sem tier_variation — recebe S1, nunca S2 com uma lista vazia de variações', () => {
+    const viva: ArvoreVivaDoItem = {
+      tier_variation: null,
+      standardise_tier_variation: VIVA_77.standardise_tier_variation,
+      model: [modeloVivo({ model_id: AZUL, tier_index: [0], model_sku: 'AZ' })],
+    };
+    const r = montarTiers(args({ grupos: [grupoCor('Cor', null)], filhos: SO_AZUL, viva }));
+    expect(r.problemas).toEqual([recusaS1('Cor')]);
+    expect(r.problemas[0]?.mensagem).not.toContain('variação padronizada');
+  });
+
+  // #1911 P14b retitled this test (it was «… ⇒ os DOIS recebem S1 — renomear nunca
+  // causa um par errado»): a rename toward the OTHER grupo's custom tier is still a
+  // wrong pairing S1 can lead to, and a grupo already named like the standard tier
+  // now gets S2 (the PAR below).
+  it('⛔ QUASE (mistura): um tier CUSTOM e um PADRÃO 88 sobrando, dois grupos implícitos de OUTROS nomes ⇒ os DOIS recebem S1 — nenhum nome casa com o padrão que sobrou', () => {
+    const { grupos, filhos } = doisGruposImplicitos('Grupo A inventado', 'Grupo B inventado');
+    const r = montarTiers(
+      args({
+        grupos,
+        filhos,
+        viva: vivaDeDoisTiers([
+          { nome: 'Estampa', variationId: 0 },
+          { nome: 'Tamanho', variationId: 88 },
+        ]),
+      }),
+    );
+    expect(r.problemas).toEqual([recusaS1('Grupo A inventado'), recusaS1('Grupo B inventado')]);
+  });
+
+  /** The mix of the test above: a custom «Estampa» and a standard 88 «Tamanho», both unclaimed. */
+  const VIVA_MISTA = vivaDeDoisTiers([
+    { nome: 'Estampa', variationId: 0 },
+    { nome: 'Tamanho', variationId: 88 },
+  ]);
+
+  it('⚠️ PAR (mistura, mesmo nome): o grupo Tamanho, já com o NOME do tier PADRÃO 88 que sobrou, recebe S2 nomeando 88 — renomear não o casa, só vincular; o grupo Cor recebe S1', () => {
+    const { grupos, filhos } = doisGruposImplicitos('Cor', 'Tamanho');
+    const r = montarTiers(args({ grupos, filhos, viva: VIVA_MISTA }));
+    expect(r.problemas).toEqual([recusaS1('Cor'), recusaPadraoViva('Tamanho', '88')]);
+    expect(r.tiers).toEqual([]);
+    expect(r.modelos).toEqual([]);
+  });
+
+  it("⚠️ PAR (escopo da dobra): ' Tamanho ' (as PONTAS) é o nome do padrão 88 ⇒ S2, e a frase cita o grupo como está", () => {
+    const { grupos, filhos } = doisGruposImplicitos('Cor', ' Tamanho ');
+    const r = montarTiers(args({ grupos, filhos, viva: VIVA_MISTA }));
+    expect(r.problemas).toEqual([recusaS1('Cor'), recusaPadraoViva(' Tamanho ', '88')]);
+  });
+
+  it.each([
+    ['a CAIXA', 'tamanho', 'Tamanho'],
+    ['o espaço de DENTRO', 'Tamanho  inventado', 'Tamanho inventado'],
+  ])(
+    '⛔ QUASE (escopo da dobra): %s não é o mesmo nome — %j contra o padrão 88 %j recebe S1, nunca S2',
+    (_caso, nomeDoGrupo, nomeDoTier) => {
+      const { grupos, filhos } = doisGruposImplicitos('Cor', nomeDoGrupo);
+      const r = montarTiers(
+        args({
+          grupos,
+          filhos,
+          viva: vivaDeDoisTiers([
+            { nome: 'Estampa', variationId: 0 },
+            { nome: nomeDoTier, variationId: 88 },
+          ]),
+        }),
+      );
+      expect(r.problemas).toEqual([recusaS1('Cor'), recusaS1(nomeDoGrupo)]);
+    },
+  );
+
+  it('⚠️ PAR: um tier CASADO não "sobra" — o custom Cor casa com o grupo Cor, o PADRÃO 88 sobra ⇒ só o Tamanho implícito é recusado, com S2 nomeando 88', () => {
+    const { grupos, filhos } = doisGruposImplicitos('Cor', 'Tamanho');
+    const r = montarTiers(
+      args({
+        grupos,
+        filhos,
+        viva: vivaDeDoisTiers([
+          { nome: 'Cor', variationId: 0 },
+          { nome: 'Tamanho', variationId: 88 },
+        ]),
+      }),
+    );
+    expect(r.problemas).toEqual([recusaPadraoViva('Tamanho', '88')]);
+    expect(r.tiers.map((t) => t.grupoId)).toEqual(['g-a']);
+  });
+
+  it('⚠️ PAR: o tier CASADO não "sobra" nem para um grupo de OUTRO nome — com o custom Cor casado e só o PADRÃO 88 sobrando, o implícito «Grupo B inventado» recebe S2 nomeando 88, nunca S1', () => {
+    // Since #1911 P14b a grupo named like the standard tier gets S2 even in a mix,
+    // so the test above no longer tells "paired" from "unclaimed": this one does.
+    const { grupos, filhos } = doisGruposImplicitos('Cor', 'Grupo B inventado');
+    const r = montarTiers(
+      args({
+        grupos,
+        filhos,
+        viva: vivaDeDoisTiers([
+          { nome: 'Cor', variationId: 0 },
+          { nome: 'Tamanho', variationId: 88 },
+        ]),
+      }),
+    );
+    expect(r.problemas).toEqual([recusaPadraoViva('Grupo B inventado', '88')]);
+    expect(r.tiers.map((t) => t.grupoId)).toEqual(['g-a']);
+  });
+
+  it('dois tiers PADRÃO sobrando ⇒ cada grupo implícito recebe S2 com «77 ou 88»; uma variação repetida é nomeada uma vez só', () => {
+    const { grupos, filhos } = doisGruposImplicitos('Grupo A inventado', 'Grupo B inventado');
+    const distintos = montarTiers(
+      args({
+        grupos,
+        filhos,
+        viva: vivaDeDoisTiers([
+          { nome: 'Cor', variationId: 77 },
+          { nome: 'Tamanho', variationId: 88 },
+        ]),
+      }),
+    );
+    expect(distintos.problemas).toEqual([
+      recusaPadraoViva('Grupo A inventado', '77 ou 88'),
+      recusaPadraoViva('Grupo B inventado', '77 ou 88'),
+    ]);
+
+    const repetidos = montarTiers(
+      args({
+        grupos,
+        filhos,
+        viva: vivaDeDoisTiers([
+          { nome: 'Cor', variationId: 77 },
+          { nome: 'Outra cor inventada', variationId: 77 },
+        ]),
+      }),
+    );
+    expect(repetidos.problemas).toEqual([
+      recusaPadraoViva('Grupo A inventado', '77'),
+      recusaPadraoViva('Grupo B inventado', '77'),
+    ]);
+  });
+
+  it('⚠️ PAR (P2): quem escolhe S3 é a ENTRADA, não o tier vivo — a 88 armazenada contra o 77 vivo recebe S3; removida, o MESMO grupo recebe S2', () => {
+    const comA88 = montarTiers(
+      args({ grupos: [grupoCor('Cor', [ENTRADA_88])], filhos: SO_AZUL, viva: VIVA_77 }),
+    );
+    expect(comA88.problemas.map((p) => p.mensagem)).toEqual([TEXTO_PADRAO_NAO_CASA('Cor', 88)]);
+
+    const semEla = montarTiers(
+      args({ grupos: [grupoCor('Cor', null)], filhos: SO_AZUL, viva: VIVA_77 }),
+    );
+    expect(semEla.problemas.map((p) => p.mensagem)).toEqual([TEXTO_PADRAO_VIVO('Cor', '77')]);
+  });
+
+  it('nenhuma frase de variacao-sem-vinculo aponta para o terminal — S1, S2, S3, a da variante e a do vínculo ilegível (o regex TEXTO_DE_TERMINAL da web)', () => {
+    // `apps/web/lib/shopee/anuncioProduto.test.ts`'s TEXTO_DE_TERMINAL: the web shows
+    // these sentences verbatim and spells them by hand, so a CLI pointer added here
+    // would pass every web test.
+    const TEXTO_DE_TERMINAL = /(^|\s)--[a-z]|:anuncio|comando/i;
+    const SO_VERDE = [
+      filho({ produtoId: 'p-verde', variacoesUid: [varianteFakePath('g-cor', 'v-verde')] }),
+    ];
+    const resultados = [
+      montarTiers(args({ grupos: [grupoCor('Cores', null)], filhos: SO_AZUL, viva: VIVA_COR })),
+      montarTiers(args({ grupos: [grupoCor('Cor', null)], filhos: SO_AZUL, viva: VIVA_77 })),
+      montarTiers(
+        args({ grupos: [grupoCor('Cor', [ENTRADA_88])], filhos: SO_AZUL, viva: VIVA_77 }),
+      ),
+      montarTiers(args({ grupos: [grupoCor('Cor', [ENTRADA_88])], filhos: SO_VERDE, viva: null })),
+      montarTiers(
+        args({ grupos: [grupoCor('Cor', [entradaQuebrada()])], filhos: SO_AZUL, viva: VIVA_77 }),
+      ),
+    ];
+    const daVariacao = resultados.flatMap((r) =>
+      r.problemas.filter((p) => p.motivo === MOTIVO_PUBLICACAO_BLOQUEADA.variacaoSemVinculo),
+    );
+    expect(
+      daVariacao.filter((p) => p.campo === 'standardise_tier_variation').map((p) => p.mensagem),
+    ).toEqual([
+      TEXTO_NAO_CASA('Cores'),
+      TEXTO_PADRAO_VIVO('Cor', '77'),
+      TEXTO_PADRAO_NAO_CASA('Cor', 88),
+      TEXTO_VARIANTE_SEM_OPCAO('Verde', 'Cor', 88),
+      TEXTO_ILEGIVEL('Cor'),
+    ]);
+    for (const p of daVariacao) expect(p.mensagem).not.toMatch(TEXTO_DE_TERMINAL);
+  });
+
+  it('as saídas que cada frase nomeia: S1 nunca «Importe»; S2 nunca «nome do grupo», e o vínculo vem ANTES da importação', () => {
+    const s1 = montarTiers(
+      args({ grupos: [grupoCor('Cores', null)], filhos: SO_AZUL, viva: VIVA_COR }),
+    ).problemas[0]?.mensagem;
+    const s2 = montarTiers(
+      args({ grupos: [grupoCor('Cor', null)], filhos: SO_AZUL, viva: VIVA_77 }),
+    ).problemas[0]?.mensagem;
+    expect(s1).toBeDefined();
+    expect(s2).toBeDefined();
+    expect(s1).not.toMatch(/[Ii]mporte/);
+    expect(s2).not.toContain('nome do grupo');
+    const vincule = s2!.indexOf(
+      'Vincule o grupo a essa variação nessa categoria em Variações (aba Shopee)',
+    );
+    const importe = s2!.indexOf('ou importe o anúncio');
+    expect(vincule).toBeGreaterThan(-1);
+    expect(importe).toBeGreaterThan(vincule);
+  });
+
+  it('caracterização (S2, «ou importe»): com a variante de OUTRO nome que a opção viva, importar cria a variante shopee-5 no grupo, e a republicação passa a recusar a VARIANTE do filho — não mais S2', () => {
+    const tom = variante('v-tom', 'Tom inventado');
+    const viva: ArvoreVivaDoItem = {
+      tier_variation: [
+        shopeeTierVariationSchema.parse({
+          name: 'Cor',
+          option_list: [{ option: 'Opção inventada 1' }],
+        }),
+      ],
+      standardise_tier_variation: [
+        shopeeStandardiseTierVariationSchema.parse({
+          variation_id: 77,
+          variation_name: 'Cor',
+          variation_option_list: [
+            { variation_option_id: 5, variation_option_name: 'Opção inventada 1' },
+          ],
+        }),
+      ],
+      model: [modeloVivo({ model_id: AZUL, tier_index: [0], model_sku: 'TM' })],
+    };
+    const filhos = [
+      filho({ produtoId: 'p-tom', variacoesUid: [varianteFakePath('g-cor', 'v-tom')] }),
+    ];
+    const antes = montarTiers(
+      args({
+        grupos: [
+          grupo({ grupoId: 'g-cor', nome: 'Cor', variacoes: [tom], linksVariacoesShopee: null }),
+        ],
+        filhos,
+        viva,
+      }),
+    );
+    expect(antes.problemas).toEqual([recusaPadraoViva('Cor', '77')]);
+
+    const plano = reimportar(viva, [
+      {
+        id: 'g-cor',
+        raw: {
+          nome: 'Cor',
+          tipo: TIPO_VARIACAO.cor,
+          variacoes: [{ id: 'v-tom', nome: 'Tom inventado' }],
+          variacoesIds: ['v-tom'],
+          linksVariacoesShopee: null,
+        },
+      },
+    ]);
+    expect(plano.grupos.map((g) => [g.grupoId, g.varianteIds])).toEqual([['g-cor', ['shopee-5']]]);
+    const patch = plano.grupos[0]?.patch;
+    const variacoes = (patch?.variacoes ?? []) as readonly { id: string; nome: string }[];
+    expect(variacoes.map((v) => [v.id, v.nome])).toEqual([
+      ['v-tom', 'Tom inventado'],
+      ['shopee-5', 'Opção inventada 1'],
+    ]);
+
+    const depois = montarTiers(
+      args({
+        grupos: [
+          grupo({
+            grupoId: 'g-cor',
+            nome: 'Cor',
+            variacoes: variacoes.map((v, i) => variante(v.id, v.nome, i + 1)),
+            linksVariacoesShopee: patch?.linksVariacoesShopee as readonly unknown[],
+          }),
+        ],
+        filhos,
+        viva,
+      }),
+    );
+    expect(depois.problemas.map((p) => p.mensagem)).toEqual([
+      TEXTO_VARIANTE_SEM_OPCAO('Tom inventado', 'Cor', 77),
+      'A variação p-tom não tem posição no grupo "Cor" e o modelo não pode ser colocado.',
+    ]);
+  });
+});
+
+describe('montarTiers — #1911 P14b: as frases novas cabem no teto de 500 caracteres (limitarMensagemProblema) com nomes longos e mantêm a saída', () => {
+  /** 60 characters — twice Shopee's BR tier/option name band (30), for an ERP name. */
+  const GRUPO_LONGO = 'Grupo inventado de nome longo '.padEnd(60, 'x');
+  const VARIANTE_LONGA = 'Variante inventada de nome longo '.padEnd(60, 'y');
+  /** Six-digit variation ids, the size of the committed BR fixtures'. */
+  const VARIACAO_A = 101_054;
+  const VARIACAO_B = 101_056;
+  const MODELO = MODEL_ID + 7;
+
+  function vivaPadrao(ids: readonly number[]): ArvoreVivaDoItem {
+    return {
+      tier_variation: ids.map((_, i) =>
+        shopeeTierVariationSchema.parse({
+          name: `Tier inventado ${String(i + 1)}`,
+          option_list: [{ option: 'Única' }],
+        }),
+      ),
+      standardise_tier_variation: ids.map((id, i) =>
+        shopeeStandardiseTierVariationSchema.parse({
+          variation_id: id,
+          variation_name: `Tier inventado ${String(i + 1)}`,
+          variation_option_list: [{ variation_option_id: 1, variation_option_name: 'Única' }],
+        }),
+      ),
+      model: [modeloVivo({ model_id: MODELO, tier_index: ids.map(() => 0), model_sku: 'U' })],
+    };
+  }
+
+  const grupoLongo = (linksVariacoesShopee: readonly unknown[] | null, nome = GRUPO_LONGO) =>
+    grupo({
+      grupoId: 'g-longo',
+      nome,
+      variacoes: [variante('v-longa', VARIANTE_LONGA)],
+      linksVariacoesShopee,
+    });
+  const outroGrupo = grupo({
+    grupoId: 'g-outro',
+    nome: 'Outro grupo inventado',
+    ordem: 2,
+    variacoes: [variante('v-outra', 'Única')],
+    linksVariacoesShopee: null,
+  });
+  const umFilho = [
+    filho({ produtoId: 'p-longo', variacoesUid: [varianteFakePath('g-longo', 'v-longa')] }),
+  ];
+  const doisFilhos = [
+    filho({
+      produtoId: 'p-longo-outro',
+      variacoesUid: [
+        varianteFakePath('g-longo', 'v-longa'),
+        varianteFakePath('g-outro', 'v-outra'),
+      ],
+    }),
+  ];
+
+  function mensagemDoLongo(r: ReturnType<typeof montarTiers>): string {
+    const mensagem = r.problemas[0]?.mensagem;
+    expect(mensagem).toBeDefined();
+    return mensagem!;
+  }
+
+  it('S1 com um grupo de 60 caracteres: inteira, terminando na saída', () => {
+    const viva: ArvoreVivaDoItem = {
+      tier_variation: [
+        shopeeTierVariationSchema.parse({ name: 'Cor', option_list: [{ option: 'Única' }] }),
+      ],
+      standardise_tier_variation: null,
+      model: [modeloVivo({ model_id: MODELO, tier_index: [0], model_sku: 'U' })],
+    };
+    const mensagem = mensagemDoLongo(
+      montarTiers(args({ grupos: [grupoLongo(null)], filhos: umFilho, viva })),
+    );
+    expect(GRUPO_LONGO).toHaveLength(60);
+    expect(mensagem).toBe(TEXTO_NAO_CASA(GRUPO_LONGO));
+    expect(mensagem.length).toBeLessThanOrEqual(500);
+    expect(mensagem.endsWith('para que os dois fiquem iguais.')).toBe(true);
+  });
+
+  it('S2 com um grupo de 60 caracteres e DUAS variações de seis dígitos: inteira, terminando na importação', () => {
+    const mensagem = mensagemDoLongo(
+      montarTiers(
+        args({
+          grupos: [grupoLongo(null), outroGrupo],
+          filhos: doisFilhos,
+          viva: vivaPadrao([VARIACAO_A, VARIACAO_B]),
+        }),
+      ),
+    );
+    expect(mensagem).toBe(
+      TEXTO_PADRAO_VIVO(GRUPO_LONGO, `${String(VARIACAO_A)} ou ${String(VARIACAO_B)}`),
+    );
+    expect(mensagem.length).toBeLessThanOrEqual(500);
+    expect(mensagem.endsWith('ou importe o anúncio.')).toBe(true);
+  });
+
+  it('S3 com um grupo de 60 caracteres: inteira, terminando em «ou remova-o.»', () => {
+    const mensagem = mensagemDoLongo(
+      montarTiers(
+        args({
+          grupos: [grupoLongo([entrada({ variation_id: VARIACAO_B })])],
+          filhos: umFilho,
+          viva: vivaPadrao([VARIACAO_A]),
+        }),
+      ),
+    );
+    expect(mensagem).toBe(TEXTO_PADRAO_NAO_CASA(GRUPO_LONGO, VARIACAO_B));
+    expect(mensagem.length).toBeLessThanOrEqual(500);
+    expect(mensagem.endsWith('ou remova-o.')).toBe(true);
+  });
+
+  it('a frase da VARIANTE com variante e grupo de 60 caracteres cada: inteira, com as três saídas', () => {
+    const mensagem = mensagemDoLongo(
+      montarTiers(
+        args({
+          grupos: [grupoLongo([entrada({ variation_id: VARIACAO_A })])],
+          filhos: umFilho,
+          viva: null,
+        }),
+      ),
+    );
+    expect(VARIANTE_LONGA).toHaveLength(60);
+    expect(mensagem).toBe(TEXTO_VARIANTE_SEM_OPCAO(VARIANTE_LONGA, GRUPO_LONGO, VARIACAO_A));
+    expect(mensagem.length).toBeLessThanOrEqual(500);
+    expect(mensagem.endsWith('troque o vínculo por outra variação ou remova-o.')).toBe(true);
+  });
+
+  it('⛔ QUASE (o que o teto corta): um nome de grupo de 300 caracteres leva S2 a 500 com «…» — e é a SAÍDA que se perde', () => {
+    const enorme = 'G'.repeat(300);
+    const mensagem = mensagemDoLongo(
+      montarTiers(
+        args({
+          grupos: [grupoLongo(null, enorme), outroGrupo],
+          filhos: doisFilhos,
+          viva: vivaPadrao([VARIACAO_A, VARIACAO_B]),
+        }),
+      ),
+    );
+    expect(mensagem).toHaveLength(500);
+    expect(mensagem.endsWith('…')).toBe(true);
+    expect(mensagem).not.toContain('ou importe o anúncio');
   });
 });
 
@@ -1232,8 +1840,9 @@ describe('montarTiers — #1911 (Q2): na ATUALIZAÇÃO, um tier custom que não 
 /*  one kept; an unpaired one is REFUSED too, with its own sentence           */
 /* -------------------------------------------------------------------------- */
 
+/** S3 (#2043), with the ending #1911 P14b decided (P14a Q5): swap the binding or remove it. */
 const TEXTO_PADRAO_NAO_CASA = (grupoNome: string, variationId: number): string =>
-  `O vínculo do grupo "${grupoNome}" usa a variação padronizada ${String(variationId)}, que nenhum tier do anúncio tem — republicar reescreveria as opções. Corrija o vínculo em Variações (aba Shopee) para a variação que o anúncio usa.`;
+  `O vínculo do grupo "${grupoNome}" usa a variação padronizada ${String(variationId)}, que nenhum tier do anúncio tem — republicar reescreveria as opções. Corrija o vínculo em Variações (aba Shopee): troque-o pela variação que o anúncio usa ou remova-o.`;
 
 describe('montarTiers — #2043: na ATUALIZAÇÃO, um grupo de entrada PADRÃO que não casa com nenhum tier vivo também é RECUSADO', () => {
   const azul = variante('v-azul', 'Azul');
@@ -1396,17 +2005,22 @@ describe('montarTiers — #2043: na ATUALIZAÇÃO, um grupo de entrada PADRÃO q
     expect(plano).toMatchObject({ acao: 'init', mudouProfundidade: true });
   });
 
-  it('a frase PADRÃO nomeia a variação 88 e aponta o vínculo em Variações — nunca «Importe» (a importação não sobrescreve um variation_id não-zero); a CUSTOM mantém o texto do Q2', () => {
+  // #1911 P14b retitled this test (it was «… a CUSTOM mantém o texto do Q2»): the
+  // custom twin facing a live STANDARD tier no longer gets the Q2 sentence but S2.
+  it('a frase PADRÃO (S3) nomeia a variação 88 e as duas saídas do vínculo em Variações — trocar ou remover, nunca «Importe» (a importação não sobrescreve um variation_id não-zero); a gêmea CUSTOM recebe S2 (vincular, ou importar)', () => {
     const padrao = montarTiers(
       args({ grupos: [grupoCor([ENTRADA_88])], filhos: SO_AZUL, viva: vivaPadrao77() }),
     );
     const mensagem = padrao.problemas[0]?.mensagem ?? '';
     expect(mensagem).toContain('variação padronizada 88');
     expect(mensagem).toContain('Variações (aba Shopee)');
+    expect(mensagem).toContain('troque-o pela variação que o anúncio usa');
+    expect(mensagem).toContain('ou remova-o');
     expect(mensagem).not.toContain('Importe');
+    expect(mensagem).not.toContain('importe');
 
-    // ⛔ pair: a stored CUSTOM entry that does not pair (the live tier is standard)
-    // keeps the Q2 sentence, which says to import or rename.
+    // ⛔ pair: a stored CUSTOM entry that does not pair, facing a live STANDARD
+    // tier, gets S2 — bind it, or import.
     const custom = montarTiers(
       args({
         grupos: [grupoCor([entrada({ variation_id: 0 })])],
@@ -1414,7 +2028,7 @@ describe('montarTiers — #2043: na ATUALIZAÇÃO, um grupo de entrada PADRÃO q
         viva: vivaPadrao77(),
       }),
     );
-    expect(custom.problemas.map((p) => p.mensagem)).toEqual([TEXTO_NAO_CASA('Cor')]);
+    expect(custom.problemas.map((p) => p.mensagem)).toEqual([TEXTO_PADRAO_VIVO('Cor', '77')]);
   });
 
   it('em DOIS níveis, a Cor padrão que não casa (seria ANEXADA por último, trocando os eixos) é recusada; o Tamanho custom casado não', () => {
@@ -1451,7 +2065,10 @@ describe('montarTiers — #2043: na ATUALIZAÇÃO, um grupo de entrada PADRÃO q
     }
   });
 
-  it('⚠️ QUASE: reimportar NÃO tira da recusa a entrada 88 — a fusão mantém o 88 e só anexa as linhas vivas, e a recusa é a mesma', () => {
+  // #1911 P14b retitled this test (it was «… a fusão mantém o 88 e só anexa as
+  // linhas vivas …»): since #2108 point 8 the merge appends nothing beside
+  // another variation.
+  it('⚠️ QUASE: reimportar NÃO tira da recusa a entrada 88 — a fusão mantém o 88 e as linhas dele, e a recusa é a mesma', () => {
     const viva = vivaPadrao77();
     const plano = reimportar(viva, [docDoGrupoCor('g-cor', 'Cor', [ENTRADA_88])]);
     const links = plano.grupos[0]?.patch?.linksVariacoesShopee as readonly unknown[];
@@ -1459,6 +2076,196 @@ describe('montarTiers — #2043: na ATUALIZAÇÃO, um grupo de entrada PADRÃO q
     expect(links[0]).toMatchObject({ variation_id: 88 });
     const r = montarTiers(args({ grupos: [grupoCor(links)], filhos: SO_AZUL, viva }));
     expect(r.problemas).toEqual([recusaPadrao('Cor', 88)]);
+  });
+
+  /* ---- #1911 P14b (#2108 point 8): the import no longer carries 77's rows  */
+  /* into the 88 entry, so the publisher never sends them under 88          */
+
+  describe('#1911 P14b (#2108 ponto 8): reimportado de um anúncio 77, o grupo da entrada 88 não ganha as linhas de 77 — e a publicação nunca as manda sob 88', () => {
+    /** Both children: Verde is the one the 88 entry binds no option to. */
+    const AZUL_P_E_VERDE_P: readonly FilhoParaPublicar[] = [
+      filho({
+        produtoId: 'p-azul-p',
+        variacoesUid: [varianteFakePath('g-cor', 'v-azul'), varianteFakePath('g-tam', 'v-p')],
+      }),
+      filho({
+        produtoId: 'p-verde-p',
+        variacoesUid: [varianteFakePath('g-cor', 'v-verde'), varianteFakePath('g-tam', 'v-p')],
+      }),
+    ];
+
+    const idsDeOpcao = (r: ReturnType<typeof montarTiers>) =>
+      r.tiers.flatMap((t) => t.opcoes.map((o) => o.variation_option_id));
+
+    /** The 88 entry as the REAL import over the 77 listing leaves it. */
+    function linksDepoisDaImportacao77(armazenada: unknown): readonly unknown[] {
+      const plano = reimportar(vivaPadrao77(), [docDoGrupoCor('g-cor', 'Cor', [armazenada])]);
+      const patch = plano.grupos[0]?.patch;
+      return (patch?.linksVariacoesShopee as readonly unknown[] | undefined) ?? [armazenada];
+    }
+
+    it('⛔ QUASE (h): na mudança de profundidade (init), Verde é RECUSADA com a frase da variante — nenhuma opção 6 (de 77) vai sob 88', () => {
+      const links = linksDepoisDaImportacao77(ENTRADA_88);
+      const r = montarTiers(
+        args({ grupos: [grupoCor(links), tam], filhos: AZUL_P_E_VERDE_P, viva: vivaPadrao77() }),
+      );
+      expect(r.problemas).toEqual([
+        {
+          campo: 'standardise_tier_variation',
+          motivo: MOTIVO_PUBLICACAO_BLOQUEADA.variacaoSemVinculo,
+          mensagem: TEXTO_VARIANTE_SEM_OPCAO('Verde', 'Cor', 88),
+        },
+        {
+          campo: 'model',
+          motivo: MOTIVO_PUBLICACAO_BLOQUEADA.variacaoSemVinculo,
+          mensagem:
+            'A variação p-verde-p não tem posição no grupo "Cor" e o modelo não pode ser colocado.',
+        },
+      ]);
+      expect(idsDeOpcao(r)).not.toContain(6);
+      expect(idsDeOpcao(r)).not.toContain(5);
+    });
+
+    it('⛔ QUASE (i): o mesmo grupo numa CRIAÇÃO (sem árvore viva) — Verde é recusada, nenhuma opção de 77 é autorada', () => {
+      const links = linksDepoisDaImportacao77(ENTRADA_88);
+      for (const viva of [null, undefined]) {
+        const r = montarTiers(
+          args({ grupos: [grupoCor(links), tam], filhos: AZUL_P_E_VERDE_P, viva }),
+        );
+        expect(r.problemas[0]?.mensagem).toBe(TEXTO_VARIANTE_SEM_OPCAO('Verde', 'Cor', 88));
+        expect(idsDeOpcao(r)).not.toContain(6);
+        expect(idsDeOpcao(r)).not.toContain(5);
+      }
+    });
+
+    it('⚠️ PAR (j): Verde ligada a uma opção DE 88 (11) ⇒ o init leva as opções [9, 11] e nada é recusado', () => {
+      const comVerde = {
+        ...(entradaPadrao({
+          variation_id: 88,
+          variationOptions: [
+            { shopee_option_id: 9, shopee_option_name: 'Azul', arakene_variation_id: ['v-azul'] },
+            {
+              shopee_option_id: 11,
+              shopee_option_name: 'Verde',
+              arakene_variation_id: ['v-verde'],
+            },
+          ],
+        }) as object),
+        name: 'Camisetas',
+      };
+      const links = linksDepoisDaImportacao77(comVerde);
+      const viva = vivaPadrao77();
+      const r = montarTiers(
+        args({ grupos: [grupoCor(links), tam], filhos: AZUL_P_E_VERDE_P, viva }),
+      );
+      expect(r.problemas).toEqual([]);
+      expect(r.tiers[0]!.opcoes.map((o) => [o.varianteId, o.variation_option_id])).toEqual([
+        ['v-azul', 9],
+        ['v-verde', 11],
+      ]);
+      const plano = reconciliarModelos({
+        montados: r.modelos,
+        armazenados: [],
+        viva,
+        profundidadeNossa: r.tiers.length,
+      });
+      expect(plano).toMatchObject({ acao: 'init', mudouProfundidade: true });
+    });
+
+    it('⛔ QUASE (k): o anúncio cujo tier É 88 [Azul(9)] — republicar não anexa (88, 6): Verde é recusada com a frase da variante', () => {
+      const links = linksDepoisDaImportacao77(ENTRADA_88);
+      const viva88: ArvoreVivaDoItem = {
+        tier_variation: [
+          shopeeTierVariationSchema.parse({ name: 'Cor', option_list: [{ option: 'Azul' }] }),
+        ],
+        standardise_tier_variation: [
+          shopeeStandardiseTierVariationSchema.parse({
+            variation_id: 88,
+            variation_name: 'Cor',
+            variation_option_list: [{ variation_option_id: 9, variation_option_name: 'Azul' }],
+          }),
+        ],
+        model: [modeloVivo({ model_id: AZUL, tier_index: [0], model_sku: 'AZ' })],
+      };
+      const r = montarTiers(
+        args({
+          grupos: [grupoCor(links)],
+          filhos: [
+            SO_AZUL[0]!,
+            filho({ produtoId: 'p-verde', variacoesUid: [varianteFakePath('g-cor', 'v-verde')] }),
+          ],
+          viva: viva88,
+        }),
+      );
+      expect(r.problemas.map((p) => p.mensagem)).toEqual([
+        TEXTO_VARIANTE_SEM_OPCAO('Verde', 'Cor', 88),
+        'A variação p-verde não tem posição no grupo "Cor" e o modelo não pode ser colocado.',
+      ]);
+      expect(r.tiers[0]!.opcoes.map((o) => [o.varianteId, o.variation_option_id])).toEqual([
+        ['v-azul', 9],
+      ]);
+    });
+
+    it('⚠️ PAR (as saídas da frase da variante): no anúncio cujo tier É 88, só VINCULAR a variante passa o plano e a perna de modelos; trocar o vínculo por 77 ou removê-lo passa o plano (sem árvore viva) e é recusado depois, com S3 ou S2', () => {
+      const viva88: ArvoreVivaDoItem = {
+        tier_variation: [
+          shopeeTierVariationSchema.parse({ name: 'Cor', option_list: [{ option: 'Azul' }] }),
+        ],
+        standardise_tier_variation: [
+          shopeeStandardiseTierVariationSchema.parse({
+            variation_id: 88,
+            variation_name: 'Cor',
+            variation_option_list: [{ variation_option_id: 9, variation_option_name: 'Azul' }],
+          }),
+        ],
+        model: [modeloVivo({ model_id: AZUL, tier_index: [0], model_sku: 'AZ' })],
+      };
+      const filhos = [
+        SO_AZUL[0]!,
+        filho({ produtoId: 'p-verde', variacoesUid: [varianteFakePath('g-cor', 'v-verde')] }),
+      ];
+      const plano = (links: readonly unknown[] | null) =>
+        montarTiers(args({ grupos: [grupoCor(links)], filhos, viva: null })).problemas;
+      const pernaDeModelos = (links: readonly unknown[] | null) =>
+        montarTiers(args({ grupos: [grupoCor(links)], filhos, viva: viva88 }));
+
+      // PAR: Verde bound to an option OF 88 (11) — the plan and the leg both pass.
+      const vinculada = {
+        ...(entradaPadrao({
+          variation_id: 88,
+          variationOptions: [
+            { shopee_option_id: 9, shopee_option_name: 'Azul', arakene_variation_id: ['v-azul'] },
+            {
+              shopee_option_id: 11,
+              shopee_option_name: 'Verde',
+              arakene_variation_id: ['v-verde'],
+            },
+          ],
+        }) as object),
+        name: 'Camisetas',
+      };
+      expect(plano([vinculada])).toEqual([]);
+      const ok = pernaDeModelos([vinculada]);
+      expect(ok.problemas).toEqual([]);
+      expect(ok.tiers[0]!.opcoes.map((o) => [o.varianteId, o.variation_option_id])).toEqual([
+        ['v-azul', 9],
+        ['v-verde', 11],
+      ]);
+
+      // ⛔ QUASE: SWAPPED for 77 (both variantes bound) — the plan passes, the leg says S3.
+      expect(plano([entradaPadrao()])).toEqual([]);
+      expect(pernaDeModelos([entradaPadrao()]).problemas.map((p) => p.mensagem)).toEqual([
+        TEXTO_PADRAO_NAO_CASA('Cor', 77),
+      ]);
+
+      // ⛔ QUASE: REMOVED (implicit custom) — the plan passes, the leg says S2 naming 88.
+      for (const removida of [null, []]) {
+        expect(plano(removida)).toEqual([]);
+        expect(pernaDeModelos(removida).problemas.map((p) => p.mensagem)).toEqual([
+          TEXTO_PADRAO_VIVO('Cor', '88'),
+        ]);
+      }
+    });
   });
 
   it('⚠️ RECUSA: a entrada armazenada 88 contra um tier vivo CUSTOM de OUTRO nome, em um nível, sem outro grupo com esse nome ⇒ variacao-sem-vinculo', () => {
@@ -1487,6 +2294,109 @@ describe('montarTiers — #2043: na ATUALIZAÇÃO, um grupo de entrada PADRÃO q
       ['v-azul', 0],
     ]);
     expect(r.modelos.map((m) => m.tier_index)).toEqual([[0]]);
+  });
+
+  it('⚠️ RESÍDUO (#1911 P14b, aberto para Lucas): a entrada 88 casa pelo NOME com o tier vivo CUSTOM — a variante de nome IGUAL à opção viva fica na posição; a de nome DIFERENTE (o degrau 3 da importação, ou renomeada no ERP) é ANEXADA sob o id 11 da linha padrão, e o modelo do filho vai para ela', () => {
+    const TOM = AZUL + 1;
+    const viva = arvore(
+      ['Azul', 'Tom inventada'],
+      [
+        modeloVivo({ model_id: AZUL, tier_index: [0], model_sku: 'AZ' }),
+        modeloVivo({ model_id: TOM, tier_index: [1], model_sku: 'TOM' }),
+      ],
+    );
+    const entrada88 = {
+      ...(entradaPadrao({
+        variation_id: 88,
+        variationOptions: [
+          { shopee_option_id: 9, shopee_option_name: 'Azul', arakene_variation_id: ['v-azul'] },
+          {
+            shopee_option_id: 11,
+            shopee_option_name: 'Tom inventado',
+            arakene_variation_id: ['v-tom'],
+          },
+        ],
+      }) as object),
+      name: 'Camisetas',
+    };
+    const publicar = (nomeDaVariante: string) => {
+      const montagem = montarTiers(
+        args({
+          grupos: [
+            grupo({
+              grupoId: 'g-cor',
+              nome: 'Cor',
+              variacoes: [azul, variante('v-tom', nomeDaVariante)],
+              linksVariacoesShopee: [entrada88],
+            }),
+          ],
+          filhos: [
+            SO_AZUL[0]!,
+            filho({
+              produtoId: 'p-tom',
+              sku: 'TOM',
+              linkDocId: 'l-tom',
+              variacoesUid: [varianteFakePath('g-cor', 'v-tom')],
+            }),
+          ],
+          viva,
+        }),
+      );
+      const plano = reconciliarModelos({
+        montados: montagem.modelos,
+        armazenados: [
+          {
+            produtoId: 'p-azul',
+            linkDocId: 'l-azul',
+            modelId: AZUL,
+            modelSku: 'AZ',
+            tierIndex: [0],
+          },
+          { produtoId: 'p-tom', linkDocId: 'l-tom', modelId: TOM, modelSku: 'TOM', tierIndex: [1] },
+        ],
+        viva,
+        profundidadeNossa: montagem.tiers.length,
+      });
+      return {
+        problemas: montagem.problemas,
+        tiers: montagem.tiers.map((t) => [t.variation_id, t.variation_name]),
+        opcoes: montagem.tiers[0]?.opcoes.map((o) => [
+          o.varianteId,
+          o.variation_option_id,
+          o.variation_option_name,
+        ]),
+        modelList: plano.modelList,
+      };
+    };
+
+    // PAR: the variante named EXACTLY like its live option keeps the position.
+    expect(publicar('Tom inventada')).toEqual({
+      problemas: [],
+      tiers: [[88, null]],
+      opcoes: [
+        ['v-azul', 0, 'Azul'],
+        ['v-tom', 0, 'Tom inventada'],
+      ],
+      modelList: [
+        { model_id: AZUL, tier_index: [0] },
+        { model_id: TOM, tier_index: [1] },
+      ],
+    });
+    // ⚠️ RESIDUE: named otherwise, it is appended under the standard row's id 11
+    // inside the custom tier, and its model moves there — no refusal (README).
+    expect(publicar('Tom inventado')).toEqual({
+      problemas: [],
+      tiers: [[88, null]],
+      opcoes: [
+        ['v-azul', 0, 'Azul'],
+        [null, 0, 'Tom inventada'],
+        ['v-tom', 11, 'Tom inventado'],
+      ],
+      modelList: [
+        { model_id: AZUL, tier_index: [0] },
+        { model_id: TOM, tier_index: [2] },
+      ],
+    });
   });
 
   it('⛔ QUASE: uma entrada de OUTRA conta ou categoria carregando 77, À FRENTE da nossa 88, não reivindica o tier vivo 77 ⇒ variacao-sem-vinculo nomeando 88', () => {
@@ -2179,6 +3089,190 @@ describe('montarTiers — #1911 P14a (M1): a ATUALIZAÇÃO nunca renomeia uma op
       [null, OPCAO_AZUL_TURQUESA, ''],
       ['v-outra', 9700, 'Opção inventada B'],
     ]);
+  });
+
+  /* ---- #1911 P14b (P14a open point 7): a row stored BLANK names nothing ---- */
+
+  describe('#1911 P14b (aberto 7): uma linha armazenada cujo nome dobra para BRANCO conta como sem nome — vai o nome da VARIANTE, em todo braço que autora uma opção', () => {
+    const linhaCustom = (shopee_option_name: string) =>
+      entrada({
+        variation_id: 0,
+        variationOptions: [
+          { shopee_option_id: 0, shopee_option_name, arakene_variation_id: ['v-tom'] },
+        ],
+      });
+
+    /** `''`, spaces and an NBSP: all blank AFTER the fold (`trim` strips U+00A0). */
+    const BRANCOS = ['', '  ', '\u00a0'] as const;
+
+    it.each(BRANCOS)(
+      '⚠️ PAR (criação, PADRÃO): a linha 9632 com nome %j manda «Tom inventado» ao lado do id — nunca o branco',
+      (branco) => {
+        const r = montarTiers(
+          args({
+            grupos: [grupoDe([tom], [entradaBr(branco)])],
+            filhos: [filhoDe('v-tom')],
+            viva: null,
+          }),
+        );
+        expect(r.problemas).toEqual([]);
+        expect(opcoesDe(r)).toEqual([['v-tom', OPCAO_AZUL_TURQUESA, 'Tom inventado']]);
+      },
+    );
+
+    it.each(BRANCOS)(
+      '⚠️ PAR (criação, CUSTOM): a linha {0, %j} manda «Tom inventado» — antes recusava dizendo que a variante não tinha nome',
+      (branco) => {
+        const r = montarTiers(
+          args({
+            grupos: [grupoDe([tom], [linhaCustom(branco)])],
+            filhos: [filhoDe('v-tom')],
+            viva: null,
+          }),
+        );
+        expect(r.problemas).toEqual([]);
+        expect(opcoesDe(r)).toEqual([['v-tom', 0, 'Tom inventado']]);
+      },
+    );
+
+    it('⚠️ PAR (init): numa mudança de profundidade, o grupo que não casa é autorado do ERP — a linha em branco manda o nome da variante', () => {
+      const viva: ArvoreVivaDoItem = {
+        tier_variation: [
+          shopeeTierVariationSchema.parse({ name: 'Estampa', option_list: [{ option: 'Lisa' }] }),
+        ],
+        standardise_tier_variation: null,
+        model: [modeloVivo({ model_id: MODELO, tier_index: [0], model_sku: 'TM' })],
+      };
+      const tam = grupo({
+        grupoId: 'g-tam',
+        nome: 'Tamanho',
+        ordem: 2,
+        variacoes: [variante('v-p', 'P')],
+        linksVariacoesShopee: null,
+      });
+      const r = montarTiers(
+        args({
+          grupos: [grupoDe([tom], [entradaBr('  ')]), tam],
+          filhos: [
+            filho({
+              produtoId: 'p-tom-p',
+              variacoesUid: [varianteFakePath('g-cor', 'v-tom'), varianteFakePath('g-tam', 'v-p')],
+            }),
+          ],
+          viva,
+        }),
+      );
+      expect(r.problemas).toEqual([]);
+      expect(opcoesDe(r)).toEqual([['v-tom', OPCAO_AZUL_TURQUESA, 'Tom inventado']]);
+      const plano = reconciliarModelos({
+        montados: r.modelos,
+        armazenados: [],
+        viva,
+        profundidadeNossa: r.tiers.length,
+      });
+      expect(plano).toMatchObject({ acao: 'init', mudouProfundidade: true });
+    });
+
+    it('⚠️ PAR (anexada numa atualização): a segunda linha com nome em BRANCO manda «Outro tom inventado» — a opção viva mantém o seu', () => {
+      const duasLinhas = entrada({
+        variation_id: VARIACAO_COR_BR,
+        variationOptions: [
+          {
+            shopee_option_id: OPCAO_AZUL_TURQUESA,
+            shopee_option_name: 'Azul Turquesa',
+            arakene_variation_id: ['v-tom'],
+          },
+          { shopee_option_id: 6245, shopee_option_name: '', arakene_variation_id: ['v-outra'] },
+        ],
+      });
+      const r = montarTiers(
+        args({
+          grupos: [grupoDe([tom, variante('v-outra', 'Outro tom inventado')], [duasLinhas])],
+          filhos: [filhoDe('v-tom'), filhoDe('v-outra')],
+          viva: vivaDeUmaOpcao('Azul Turquesa', OPCAO_AZUL_TURQUESA),
+        }),
+      );
+      expect(r.problemas).toEqual([]);
+      expect(opcoesDe(r)).toEqual([
+        ['v-tom', OPCAO_AZUL_TURQUESA, 'Azul Turquesa'],
+        ['v-outra', 6245, 'Outro tom inventado'],
+      ]);
+    });
+
+    it("⛔ QUASE (escopo da dobra): o nome da VARIANTE também dobra — ' Tom inventado ' vai como 'Tom inventado'", () => {
+      for (const links of [[entradaBr('')], [linhaCustom('')]]) {
+        const r = montarTiers(
+          args({
+            grupos: [grupoDe([variante('v-tom', ' Tom inventado ')], links)],
+            filhos: [filhoDe('v-tom')],
+            viva: null,
+          }),
+        );
+        expect(r.problemas).toEqual([]);
+        expect(opcoesDe(r)[0]?.[2]).toBe('Tom inventado');
+      }
+    });
+
+    it("⛔ QUASE (escopo da dobra): uma linha '.' é um NOME — vai '.', nunca o da variante (PADRÃO e CUSTOM)", () => {
+      const padrao = montarTiers(
+        args({
+          grupos: [grupoDe([tom], [entradaBr('.')])],
+          filhos: [filhoDe('v-tom')],
+          viva: null,
+        }),
+      );
+      expect(opcoesDe(padrao)).toEqual([['v-tom', OPCAO_AZUL_TURQUESA, '.']]);
+      const custom = montarTiers(
+        args({
+          grupos: [grupoDe([tom], [linhaCustom('.')])],
+          filhos: [filhoDe('v-tom')],
+          viva: null,
+        }),
+      );
+      expect(custom.problemas).toEqual([]);
+      expect(opcoesDe(custom)).toEqual([['v-tom', 0, '.']]);
+    });
+
+    it('⛔ QUASE (escopo da dobra): uma linha só com U+200B (largura zero — o trim NÃO o tira) é um nome e vai como está', () => {
+      const r = montarTiers(
+        args({
+          grupos: [grupoDe([tom], [entradaBr('\u200b')])],
+          filhos: [filhoDe('v-tom')],
+          viva: null,
+        }),
+      );
+      expect(opcoesDe(r)).toEqual([['v-tom', OPCAO_AZUL_TURQUESA, '\u200b']]);
+    });
+
+    it('⛔ QUASE: linha CUSTOM em branco E variante sem nome — continua recusada, agora com a frase verdadeira (a variante não tem nome)', () => {
+      const r = montarTiers(
+        args({
+          grupos: [grupoDe([variante('v-tom', '  ')], [linhaCustom('')])],
+          filhos: [filhoDe('v-tom')],
+          viva: null,
+        }),
+      );
+      expect(r.problemas).toEqual([
+        {
+          campo: 'standardise_tier_variation',
+          motivo: MOTIVO_PUBLICACAO_BLOQUEADA.opcoesDemais,
+          mensagem:
+            'A variante v-tom do grupo "Cor" não tem nome, e uma opção personalizada leva o nome da variante — dê um nome a ela em Variações.',
+        },
+      ]);
+    });
+
+    it('caracterização (inalterada): linha PADRÃO em branco E variante sem nome — o branco vai ao lado do id, sem recusa (o nome de uma opção padrão nunca é conferido)', () => {
+      const r = montarTiers(
+        args({
+          grupos: [grupoDe([variante('v-tom', '  ')], [entradaBr('')])],
+          filhos: [filhoDe('v-tom')],
+          viva: null,
+        }),
+      );
+      expect(r.problemas).toEqual([]);
+      expect(opcoesDe(r)).toEqual([['v-tom', OPCAO_AZUL_TURQUESA, '']]);
+    });
   });
 
   /* ---- which row and which variante a live option stands for -------------- */

@@ -17,6 +17,7 @@ import {
   PUBLICACAO_EM_CURSO_SHOPEE_TTL_MS,
   MSG_BASE_DIFERENTE_DO_PATCH_RASCUNHO_SHOPEE,
   MSG_BASE_SEM_ATRIBUTOS_NA_TROCA_DE_CATEGORIA_RASCUNHO_SHOPEE,
+  MSG_BASE_SEM_CATEGORIA_NOS_ATRIBUTOS_RASCUNHO_SHOPEE,
   MSG_PATCH_VAZIO_RASCUNHO_SHOPEE,
   respostaAtualizarRascunhoShopeeSchema,
 } from '@delfrance/schemas';
@@ -163,10 +164,21 @@ describe('autenticação e corpo', () => {
       MSG_BASE_SEM_ATRIBUTOS_NA_TROCA_DE_CATEGORIA_RASCUNHO_SHOPEE,
     ],
     [
+      // P13 Q1 (the mirror): a list is chosen in one category, so the base must
+      // show the category the operator saw — this is also EXACTLY the body a web
+      // bundle built before that rule sends on every attribute save.
+      'uma lista só de atributos cuja base não traz a categoria em que ela foi escolhida',
+      corpo(
+        { attributes: null },
+        { attributes: [{ attribute_id: 1, attribute_value_list: [{ value_id: 5 }] }] },
+      ),
+      MSG_BASE_SEM_CATEGORIA_NOS_ATRIBUTOS_RASCUNHO_SHOPEE,
+    ],
+    [
       // D9 (P6): the import's READ shape (a name on a list value) is never written.
       'atributos no formato de LEITURA no patch',
       corpo(
-        { attributes: null },
+        { category_id: 100_017, attributes: null },
         {
           attributes: [
             {
@@ -224,7 +236,8 @@ describe('editar — 200', () => {
     const res = await POST(
       req(
         corpo(
-          { attributes: null },
+          // P13 Q1: the base also shows the category the list was chosen in.
+          { category_id: 100_017, attributes: null },
           {
             attributes: [
               {
@@ -386,6 +399,69 @@ describe('editar — recusas', () => {
       gravados: [CAMPO_RASCUNHO_SHOPEE.categoryId, CAMPO_RASCUNHO_SHOPEE.attributes],
     });
     expect(db.store[CAMINHO]?.data).toMatchObject({ category_id: 100_009, attributes: null });
+  });
+
+  // P13 Q1 at the route, the mirror of K1-12: an attributes-only list is
+  // decided against the category the operator SAW it in, before anything is written.
+  const LISTA_DE_A = [{ attribute_id: 1, attribute_value_list: [{ value_id: 5 }] }];
+
+  it('⛔ P13 Q1: B moveu a categoria; a lista de atributos de A com a base da categoria ANTIGA ⇒ 409 CONFLITO em `category_id`, nada escrito', async () => {
+    semear(rascunho({ category_id: 100_009, attributes: null }));
+    const antes = structuredClone(db.store[CAMINHO]?.data);
+
+    const res = await POST(
+      req(corpo({ category_id: 100_017, attributes: null }, { attributes: LISTA_DE_A })),
+    );
+
+    expect(res.status).toBe(409);
+    await expect(res.json()).resolves.toMatchObject({
+      code: CODIGO_RASCUNHO_SHOPEE.conflito,
+      conflitos: [{ campo: CAMPO_RASCUNHO_SHOPEE.categoryId, atual: 100_009 }],
+    });
+    expect(db.store[CAMINHO]?.data).toEqual(antes);
+    expect(db.writes).toEqual([]);
+  });
+
+  it('near-miss P13 Q1: a mesma lista sobre a categoria que A VIU ⇒ 200, só `attributes` gravado — a categoria intacta', async () => {
+    semear();
+
+    const res = await POST(
+      req(corpo({ category_id: 100_017, attributes: null }, { attributes: LISTA_DE_A })),
+    );
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({
+      linkDocId: RASCUNHO,
+      gravados: [CAMPO_RASCUNHO_SHOPEE.attributes],
+    });
+    expect(db.writes).toEqual([
+      { path: CAMINHO, patch: { attributes: LISTA_DE_A, ultimaModificacao: T0 } },
+    ]);
+    expect(db.store[CAMINHO]?.data).toMatchObject({ category_id: 100_017 });
+  });
+
+  it('⛔ ordem do deploy (P13 Q1): o corpo de uma web ANTERIOR a esta regra — a base só com os atributos — é um 400 ALTO e sem perda: a frase do espelho, nada lido, o rascunho byte-igual', async () => {
+    semear();
+    const antes = structuredClone(db.store[CAMINHO]?.data);
+    const leituras = db.opLog.length;
+
+    // Exactly what a P13-only web sends on an attribute save: the base cut to
+    // the old `camposDaBaseDoRascunhoShopee(patch)`, i.e. `attributes` alone.
+    const res = await POST(req(corpo({ attributes: null }, { attributes: LISTA_DE_A })));
+
+    expect(res.status).toBe(400);
+    const { error } = (await res.json()) as { error: string };
+    expect(error).toContain(MSG_BASE_SEM_CATEGORIA_NOS_ATRIBUTOS_RASCUNHO_SHOPEE);
+    expect(error).not.toContain(MSG_BASE_DIFERENTE_DO_PATCH_RASCUNHO_SHOPEE);
+    expect(db.opLog.length).toBe(leituras);
+    expect(db.writes).toEqual([]);
+    expect(db.store[CAMINHO]?.data).toEqual(antes);
+    // ⟷ the body of a web built WITH the rule (the same list, the category
+    // in the base) is accepted by the same route.
+    const novo = await POST(
+      req(corpo({ category_id: 100_017, attributes: null }, { attributes: LISTA_DE_A })),
+    );
+    expect(novo.status).toBe(200);
   });
 
   it('⛔ 404 INEXISTENTE para um rascunho que não existe', async () => {

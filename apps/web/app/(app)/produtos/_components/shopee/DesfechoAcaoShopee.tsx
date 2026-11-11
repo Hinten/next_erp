@@ -864,9 +864,10 @@ function DesfechoRecusado({
         {desfecho.problemas.length === 0 ? (
           <Text size="sm">{semTerminal(desfecho.mensagem, ehRascunho)}</Text>
         ) : (
-          // One text per row, except a refusal-wide copy shown ONCE (#2015's
-          // `logistica-nao-confirmada`: one row per lost channel); `indice` is
-          // the row's position in `problemas`, so a dropped row moves no testid.
+          // One text per row, except a refusal-wide copy shown ONCE per motivo
+          // (#2015's `logistica-nao-confirmada` and #1911 P14b's (CPY-4)
+          // `logistica-sem-valor-gravado`: one row per lost channel); `indice`
+          // is the row's position in `problemas`, so a dropped row moves no testid.
           linhasDosProblemasShopee(
             desfecho.problemas,
             linkDocId,

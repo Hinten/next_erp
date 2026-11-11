@@ -3231,6 +3231,38 @@ describe('superficieDoCampoShopee — campo → the surface that fixes it (D17, 
     }
   });
 
+  it('#2099 CPY-4: `logistica-sem-valor-gravado` em logistic_info também fica SEM superfície — o canal já cabe, o peso não resolve ⟷ QUASE-PAR: `logistica-sem-canal`, o slug com sufixo e o mesmo motivo em `weight` continuam no peso', () => {
+    const PESO = { tipo: 'produto', campo: 'pesoBrutoKg' };
+    for (const contexto of [RASCUNHO, ANUNCIO]) {
+      // PAR: the import (or Seller Centre, then the import) is the fix — no button.
+      for (const campo of ['logistic_info', 'logistic_info[0].size_id']) {
+        expect(
+          superficieDoCampoShopee(linha(campo, M.logisticaSemValorGravado), contexto),
+          campo,
+        ).toBeNull();
+      }
+      // N1 keeps its own behaviour beside it: no button either.
+      expect(
+        superficieDoCampoShopee(linha('logistic_info', M.logisticaNaoConfirmada), contexto),
+      ).toBeNull();
+      // QUASE-PAR: the channel-level refusal the parcel may not fit keeps the weight …
+      expect(
+        superficieDoCampoShopee(linha('logistic_info', 'logistica-sem-canal'), contexto),
+      ).toEqual(PESO);
+      // … an EXACT match, never a prefix …
+      expect(
+        superficieDoCampoShopee(
+          linha('logistic_info', `${M.logisticaSemValorGravado}-v2`),
+          contexto,
+        ),
+      ).toEqual(PESO);
+      // … and scoped to the ROOT: the same motivo on `weight` still opens the weight.
+      expect(
+        superficieDoCampoShopee(linha('weight', M.logisticaSemValorGravado), contexto),
+      ).toEqual(PESO);
+    }
+  });
+
   it('the ROOT is cut at the first `[` or `.` and matched EXACTLY — never a prefix', () => {
     expect(superficieDoCampoShopee(linha('item_name.0'), RASCUNHO)).toMatchObject({
       campo: 'item_name',
@@ -3489,7 +3521,7 @@ describe('#1911 P13 — os atributos no rascunho: o quinto campo, a troca de cat
           },
         ],
       });
-      expect(corpo.base).toEqual({ attributes: projecao(link) });
+      expect(corpo.base).toEqual({ category_id: 100087, attributes: projecao(link) });
     });
 
     it('PAR: `Seminovo ` digitado (CRU, com o espaço) sobre um `Seminovo` guardado lê limpo — a escrita apara ⟷ QUASE-PAR: `seminovo` (outra caixa) é edição', () => {
@@ -3611,6 +3643,30 @@ describe('#1911 P13 — os atributos no rascunho: o quinto campo, a troca de cat
       expect(marcarRascunhoShopeeSalvo(e, []).atual.attributes).toEqual([
         personalizado(100413, 'Seminovo'),
       ]);
+    });
+
+    it('(P13 Q1) PAR: o patch só de atributos manda `{category_id, attributes}` na base — a categoria em que a lista foi escolhida, conferida e nunca escrita ⟷ QUASE-PAR: o patch de título não ganha a categoria; o que troca a categoria a nomeia uma vez só, no patch e na base (K1-12)', () => {
+      const link = guardado({ attributes: [COM_FIO_GUARDADO] });
+      const daLista = comAtributoRascunhoShopee(edicaoDe(link), ARVORE, 100413, texto('Seminovo'));
+      const corpo = atualizacaoAceita(daLista);
+      expect(corpo.patch).toEqual({
+        attributes: [COM_FIO_GUARDADO, personalizado(100413, 'Seminovo')],
+      });
+      expect(Object.keys(corpo.base)).toEqual([CATEGORIA, ATRIBUTOS]);
+      expect(corpo.base).toEqual({ category_id: 100087, attributes: projecao(link) });
+
+      const titulo = comCampoRascunhoShopee(edicaoDe(link), CAMPO_RASCUNHO_SHOPEE.itemName, 'B');
+      expect(atualizacaoAceita(titulo).base).toEqual({ item_name: 'Camiseta' });
+
+      let troca = comCampoRascunhoShopee(edicaoDe(link), CATEGORIA, 100099);
+      troca = comAtributoRascunhoShopee(troca, ARVORE, 100413, texto('Seminovo'));
+      const corpoTroca = atualizacaoAceita(troca);
+      expect(corpoTroca.patch).toEqual({
+        category_id: 100099,
+        attributes: [personalizado(100413, 'Seminovo')],
+      });
+      expect(Object.keys(corpoTroca.base)).toEqual([CATEGORIA, ATRIBUTOS]);
+      expect(corpoTroca.base).toEqual({ category_id: 100087, attributes: projecao(link) });
     });
   });
 
@@ -3734,12 +3790,15 @@ describe('#1911 P13 — os atributos no rascunho: o quinto campo, a troca de cat
       const listado = rebasearEdicaoRascunhoShopee(e, outraAba, [], [ATRIBUTOS]);
       expect(listado.atual.attributes).toBe(minha);
       const corpo = atualizacaoAceita(listado);
-      expect(corpo.base).toEqual({ attributes: projecao(outraAba) });
+      expect(corpo.base).toEqual({ category_id: 100087, attributes: projecao(outraAba) });
       expect(corpo.patch).toEqual({ attributes: minha });
 
       const naoListado = rebasearEdicaoRascunhoShopee(e, outraAba, [], []);
       expect(naoListado.atual.attributes).toBe(minha);
-      expect(atualizacaoAceita(naoListado).base).toEqual({ attributes: projecao(carregado()) });
+      expect(atualizacaoAceita(naoListado).base).toEqual({
+        category_id: 100087,
+        attributes: projecao(carregado()),
+      });
     });
 
     it('⛔ uma digitação que bloqueia SOBREVIVE ao «Salvar mesmo assim» (nunca lida como intocada) ⟷ QUASE-PAR: «Usar o que está salvo» nos atributos a descarta com a lista', () => {
@@ -3835,6 +3894,38 @@ describe('#1911 P13 — os atributos no rascunho: o quinto campo, a troca de cat
       ]);
     });
 
+    it('(P13 Q1) conflitosAtualizados — o retry de um CREATE que só difere na LISTA: o 409 lista `attributes` ⇒ null; a categoria da base é só conferida, nunca sobrescrita, e não vira linha «Categoria» ⟷ QUASE-PAR: a categoria guardada mudou depois do 409 ⇒ a linha «Categoria» (o reenvio a trocaria)', () => {
+      let novo = novaEdicaoRascunhoShopee({
+        linkDocId: ID_NOVO,
+        contaId: CONTA,
+        nomeProduto: 'Camiseta',
+      });
+      novo = comCampoRascunhoShopee(novo, CATEGORIA, 100087);
+      novo = comAtributoRascunhoShopee(novo, ARVORE, 100413, texto('Seminovo'));
+      const outra = [personalizado(100413, 'Usado')];
+      const semMarca = { brand_id: null, original_brand_name: null };
+      const linhas = [{ campo: ATRIBUTOS, atual: outra }];
+
+      const mesmaCategoria = guardado({ ...semMarca, attributes: outra });
+      // The fixture still yields an attributes-only re-send (title, category
+      // and brand are the stored ones), whose base names the category.
+      const reenvio = atualizacaoAceita(
+        rebasearEdicaoRascunhoShopee(novo, mesmaCategoria, [], [ATRIBUTOS]),
+      );
+      expect(reenvio.patch).toEqual({ attributes: [personalizado(100413, 'Seminovo')] });
+      expect(reenvio.base).toEqual({
+        category_id: 100087,
+        attributes: projecao(mesmaCategoria),
+      });
+      expect(conflitosAtualizadosDoRascunhoShopee(novo, mesmaCategoria, linhas)).toBeNull();
+
+      const outraCategoria = guardado({ ...semMarca, category_id: 100088, attributes: outra });
+      expect(conflitosAtualizadosDoRascunhoShopee(novo, outraCategoria, linhas)).toEqual([
+        { campo: CATEGORIA, atual: 100088 },
+        { campo: ATRIBUTOS, atual: projecao(outraCategoria) },
+      ]);
+    });
+
     it('o retry de um CREATE: «Usar o que está salvo» na categoria leva os atributos guardados e as digitações vão junto ⟷ QUASE-PAR: «Salvar mesmo assim» mantém a lista digitada', () => {
       let novo = novaEdicaoRascunhoShopee({
         linkDocId: ID_NOVO,
@@ -3876,9 +3967,12 @@ describe('#1911 P13 — os atributos no rascunho: o quinto campo, a troca de cat
       const minha = () =>
         comAtributoRascunhoShopee(edicaoDe(carregado()), ARVORE, 100413, texto('Seminovo'));
 
-      it('⛔ PAR: outra aba trocou a categoria (a lista igual) ⇒ a checagem nomeia `category_id` e a aba recusa o envio (a rota não recusaria: a base de um patch só de atributos não nomeia a categoria) ⟷ QUASE-PAR: só a lista mudou ⇒ `[attributes]`, a rota recusa sozinha', () => {
+      it('⛔ PAR: outra aba trocou a categoria (a lista igual) ⇒ a checagem nomeia `category_id` e a aba recusa o envio (a rota também recusa: a base nomeia a categoria; a aba recusa antes, sem pedido) ⟷ QUASE-PAR: só a lista mudou ⇒ `[attributes]`, a rota recusa sozinha', () => {
         const e = minha();
-        expect(atualizacaoAceita(e).base).toEqual({ attributes: projecao(carregado()) });
+        expect(atualizacaoAceita(e).base).toEqual({
+          category_id: 100087,
+          attributes: projecao(carregado()),
+        });
         const outraAba = guardado({ category_id: 100088, attributes: [COM_FIO_GUARDADO] });
         expect(divergenciasDoServidorShopee(e, outraAba)).toEqual([CATEGORIA]);
         expect(conflitosAntesDeSalvarShopee(e, outraAba)).toEqual([
@@ -3937,7 +4031,23 @@ describe('#1911 P13 — os atributos no rascunho: o quinto campo, a troca de cat
         expect(conflitosAtualizadosDoRascunhoShopee(e, soALista, linhaDaLista)).toBeNull();
         const igual = atualizacaoAceita(rebasearEdicaoRascunhoShopee(e, soALista, [], [ATRIBUTOS]));
         expect(igual.patch).toEqual({ attributes: L1 });
-        expect(igual.base).toEqual({ attributes: projecao(soALista) });
+        expect(igual.base).toEqual({ category_id: 100087, attributes: projecao(soALista) });
+      });
+
+      it('(P13 Q1) o 409 da ROTA que lista só «Categoria» (a outra aba a trocou depois do último snapshot desta): «Salvar mesmo assim» reenvia a categoria que o operador viu com a lista ⇒ null ⟷ QUASE-PAR: a categoria mudou de NOVO depois do 409 ⇒ a linha renovada', () => {
+        const e = minha();
+        const L1 = e.atual.attributes;
+        const outraAba = guardado({ category_id: 100088, attributes: [COM_FIO_GUARDADO] });
+        const linhas409 = [{ campo: CATEGORIA, atual: 100088 }];
+        expect(conflitosAtualizadosDoRascunhoShopee(e, outraAba, linhas409)).toBeNull();
+        const corpo = atualizacaoAceita(rebasearEdicaoRascunhoShopee(e, outraAba, [], [CATEGORIA]));
+        expect(corpo.patch).toEqual({ category_id: 100087, attributes: L1 });
+        expect(corpo.base).toEqual({ category_id: 100088, attributes: projecao(carregado()) });
+
+        const deNovo = guardado({ category_id: 100099, attributes: [COM_FIO_GUARDADO] });
+        expect(conflitosAtualizadosDoRascunhoShopee(e, deNovo, linhas409)).toEqual([
+          { campo: CATEGORIA, atual: 100099 },
+        ]);
       });
     });
 

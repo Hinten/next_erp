@@ -1896,9 +1896,9 @@ function EditorShopee({
   /**
    * «Salvar rascunho» on a block — only what its decision allows. An edited
    * attribute list whose category another writer moved is refused HERE
-   * (`conflitosAntesDeSalvarShopee`): the route compares only the patch's
-   * base, which does not name the category, so it would write the list onto
-   * the other category. Nothing is sent; the conflict modal shows the rows.
+   * (`conflitosAntesDeSalvarShopee`): the route would refuse it too (the base
+   * of an attributes-only patch names the category, P13 Q1), so nothing is
+   * sent — the request is spared, and the conflict modal shows the rows.
    */
   function salvarDoBloco(linkDocId: string) {
     const entrada = blocos.get(linkDocId);

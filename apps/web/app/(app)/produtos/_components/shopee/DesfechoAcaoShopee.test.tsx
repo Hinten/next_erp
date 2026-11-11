@@ -534,6 +534,77 @@ describe('DesfechoAcaoShopee — #2015: one `logistica-nao-confirmada` copy per 
   });
 });
 
+describe('DesfechoAcaoShopee — #2099 CPY-4: `logistica-sem-valor-gravado` sem botão de peso, uma cópia por motivo', () => {
+  /** apps/shopee's CPY-4 sentence; `canal` is «nome» (id) or the bare id (invented name, fixture ids). */
+  const cpy4 = (canal: string) =>
+    `O canal obrigatório ${canal} precisa de um tamanho ou de uma tarifa de frete que este ` +
+    'vínculo não tem gravados, e o ERP não tem registro de ter gravado a lista de logística ' +
+    'dele. Se o valor já está no Seller Centre, importe o anúncio 123 e publique de novo; se ' +
+    'não está, defina-o no Seller Centre antes.';
+  /** apps/shopee's N1 (#2015). */
+  const n1 = (canal: number) =>
+    `O canal obrigatório ${String(canal)} precisa de um tamanho, e o ERP não tem registro de ` +
+    'ter lido da Shopee nem de ter enviado a ela o valor gravado neste vínculo, então esse ' +
+    'valor não é reenviado. Importe o anúncio 123 para gravar os valores atuais da Shopee e ' +
+    'publique de novo.';
+  const comMotivo = (motivo: string, mensagem: string) =>
+    problema({ campo: 'logistic_info', motivo, mensagem });
+  const M = MOTIVO_ANUNCIO_SHOPEE;
+  const copiaCpy4 = TEXTO_MOTIVO_ANUNCIO_SHOPEE[M.logisticaSemValorGravado] ?? '?';
+  const copiaN1 = TEXTO_MOTIVO_ANUNCIO_SHOPEE[M.logisticaNaoConfirmada] ?? '?';
+  const SEM_CANAL = 'Nenhum canal obrigatório da loja pôde ser habilitado para este item.';
+  const peso = { name: 'Abrir no produto: Dimensões e peso' };
+  const vezes = (texto: string, trecho: string) => texto.split(trecho).length - 1;
+
+  beforeEach(() => {
+    h.secoes = {
+      activeSection: 'Shopee',
+      goToSection: vi.fn(),
+      sectionOfField: (k) => (k === 'pesoBrutoKg' ? 'Dimensões e peso' : null),
+    };
+  });
+
+  it('uma recusa só CPY-4 (o servidor não junta as frases da loja) ⇒ NENHUM botão de peso, a cópia uma vez e cada canal no seu «Detalhe:» ⟷ QUASE-PAR: uma linha `logistica-sem-canal` ao lado ganha exatamente UM', () => {
+    const r = show({
+      desfecho: recusado([
+        comMotivo(M.logisticaSemValorGravado, cpy4('«Canal inventado» (90007)')),
+        comMotivo(M.logisticaSemValorGravado, cpy4('90008')),
+      ]),
+      rascunho: null,
+    });
+    expect(linha(0).textContent).toBe(`${copiaCpy4} Detalhe: ${cpy4('«Canal inventado» (90007)')}`);
+    expect(linha(1).textContent).toBe(`Detalhe: ${cpy4('90008')}`);
+    expect(vezes(painel().textContent ?? '', copiaCpy4)).toBe(1);
+    expect(within(painel()).queryAllByRole('button', peso)).toEqual([]);
+    expect(painel().textContent).not.toMatch(/confira peso/);
+
+    r.rerender({
+      desfecho: recusado([
+        comMotivo(M.logisticaSemValorGravado, cpy4('90007')),
+        comMotivo('logistica-sem-canal', SEM_CANAL),
+      ]),
+      rascunho: null,
+    });
+    // Anti-vacuity: the same tab context DOES route `logistica-sem-canal` to the weight.
+    expect(within(painel()).getAllByRole('button', peso)).toHaveLength(1);
+    expect(within(linha(1)).getAllByRole('button', peso)).toHaveLength(1);
+    expect(within(linha(0)).queryAllByRole('button', peso)).toEqual([]);
+  });
+
+  it('N1 + CPY-4 na MESMA recusa ⇒ as duas cópias, uma vez cada, e nenhum botão de peso — N1 mantém o seu comportamento', () => {
+    show({
+      desfecho: recusado([
+        comMotivo(M.logisticaNaoConfirmada, n1(80003)),
+        comMotivo(M.logisticaSemValorGravado, cpy4('90007')),
+      ]),
+      rascunho: doRascunho(),
+    });
+    expect(linha(0).textContent).toBe(`${copiaN1} Detalhe: ${n1(80003)}`);
+    expect(linha(1).textContent).toBe(`${copiaCpy4} Detalhe: ${cpy4('90007')}`);
+    expect(within(painel()).queryAllByRole('button', peso)).toEqual([]);
+  });
+});
+
 describe('DesfechoAcaoShopee — K2-13: a draft is never published through a refusal row', () => {
   it('`republicar{linkDocId: <the draft>}` (P1’s rascunho-nao-nomeado) ⇒ NO button — a draft is not addressable', () => {
     const enderecavel = vi.fn(() => false);
