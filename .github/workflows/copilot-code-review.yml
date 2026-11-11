@@ -1,13 +1,12 @@
 name: Copilot Code Review Setup Steps
 
 # Copilot code review runs in its own ephemeral environment. When this file is
-# absent it falls back to `copilot-setup-steps.yml` — the CLOUD AGENT lane,
-# which installs a JDK, firebase-tools, Chromium + apt deps, builds the
-# functions bundle and runs a full Next production build. A reviewer reading a
-# diff needs none of that, so this file exists to give code review a lean
-# environment of its own: the workspace installed, and the turbo typecheck cache
-# warmed so `turbo run typecheck` is a cache hit for everything the PR did not
-# touch.
+# absent it falls back to `copilot-setup-steps.yml`, the cloud agent's setup.
+# This repo deleted that file on 2026-11-11, because it does not use the cloud
+# agent and its setup was the last job installing Chromium's apt deps on the
+# host. So this file is what gives code review a lean environment of its own:
+# the workspace installed, and the turbo typecheck cache warmed so
+# `turbo run typecheck` is a cache hit for everything the PR did not touch.
 
 # Validate this setup workflow when it changes, and allow manual reruns from
 # the Actions tab after it lands on the default branch.
@@ -21,9 +20,10 @@ on:
       - '.github/workflows/copilot-code-review.yml'
 
 jobs:
-  # The job name must be exactly `copilot-setup-steps` — the same name the cloud
-  # agent lane uses. It is the FILENAME that routes this workflow to Copilot code
-  # review, not the job name, so renaming the job makes the file inert.
+  # The job name must be exactly `copilot-setup-steps`, the id Copilot requires
+  # of its setup workflows. It is the FILENAME that routes this workflow to
+  # Copilot code review, not the job name, so renaming the job makes the file
+  # inert.
   copilot-setup-steps:
     runs-on: ubuntu-latest
     timeout-minutes: 20

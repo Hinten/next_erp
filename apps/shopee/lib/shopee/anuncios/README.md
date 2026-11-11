@@ -2083,9 +2083,10 @@ since step 21, re-exported here by `statusAnuncio.ts` — is total and
 non-throwing, and reads an ABSENT `estadoAnuncio` as VIVO — the safe direction:
 a link step 9 imported whose `estadoAnuncio` was never folded must not
 un-badge a produto (a #1911 DRAFT — `item_id: null` — is not vivo at all).
-`contaDoLinkShopee` reads `contaProdutoShopeeOuterRef` (⚠️ **not** ML's
-`contaOuterRef`), with a near-miss test proving a `contaOuterRef`-shaped
-document resolves to `null`.
+`contaDoLinkShopee` — in the same `shopeeLinkLeitura.ts`, re-exported here by
+`integracoesComProdutoShopee.ts` — reads `contaProdutoShopeeOuterRef` (⚠️
+**not** ML's `contaOuterRef`), with near-miss tests proving a
+`contaOuterRef`-shaped document resolves to `null`.
 
 ⚠️ **Register 81 is open and is MIGRATION-WINDOW work** (root `CLAUDE.md` rule
 8): whether a gen-2 Firestore trigger on this project needs Eventarc/Pub-Sub

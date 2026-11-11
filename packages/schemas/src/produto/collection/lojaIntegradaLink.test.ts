@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   ESTADO_PUBLICACAO_LI,
   RELACAO_VINCULO_LI,
+  contaDoLinkLi,
   estadoPublicacaoLiSchema,
   produtoLojaIntegradaLinkSchema,
   vinculoLiConta,
@@ -172,6 +173,68 @@ describe('contaIdFromRef — the conta a stored ref names (the one reader the LI
   it('⚠️ NEAR-MISS: the id is not folded — another case is another conta', () => {
     expect(contaIdFromRef('documents/integracao/c1')).toBe('c1');
     expect(contaIdFromRef('documents/integracao/c1')).not.toBe('C1');
+  });
+});
+
+describe('contaDoLinkLi — the anchor’s conta reader (contaLojaIntegrada, nothing else)', () => {
+  /** A store product id, so every body below would count: only the conta field varies. */
+  const ID_LI = 182904918;
+
+  it.each([
+    ['the canonical form', 'documents/integracao/C1'],
+    ['the bare form', 'integracao/C1'],
+    ['a leading slash', '/documents/integracao/C1'],
+  ])('EQUAL: %s reads as the same conta, C1', (_r, ref) => {
+    expect(contaDoLinkLi({ contaLojaIntegrada: ref, id: ID_LI })).toBe('C1');
+  });
+
+  it('⚠️ NEAR-MISS: another conta’s ref reads as THAT conta — never C1, and never case-folded', () => {
+    expect(contaDoLinkLi({ contaLojaIntegrada: 'documents/integracao/C2', id: ID_LI })).toBe('C2');
+    expect(contaDoLinkLi({ contaLojaIntegrada: 'documents/integracao/c1', id: ID_LI })).toBe('c1');
+  });
+
+  it.each([
+    ['another collection’s ref', 'documents/categorias/C1'],
+    ['a bare id (not a ref)', 'C1'],
+    ['the collection alone', 'integracao'],
+    ['an empty string', ''],
+    ['null', null],
+    ['a number', 42],
+    // A reader that stringified before it parsed would read this as C1: `String([ref])` is the ref.
+    ['the ref inside an array', ['documents/integracao/C1']],
+    ['the ref inside a map', { caminho: 'integracao/C1' }],
+  ])('⚠️ NEAR-MISS: %s reads null — never C1', (_r, ref) => {
+    expect(contaDoLinkLi({ contaLojaIntegrada: ref, id: ID_LI })).toBeNull();
+  });
+
+  it.each([['contaOuterRef'], ['contaProdutoShopeeOuterRef'], ['contaAmazonOuterRef']])(
+    '⚠️ NEAR-MISS: a doc carrying ONLY %s (another channel’s conta field) reads null',
+    (campo) => {
+      // The copy-paste trap: one identifier apart, it compiles, and the trigger goes silent.
+      expect(contaDoLinkLi({ [campo]: 'documents/integracao/C1', id: ID_LI })).toBeNull();
+      // ÂNCORA: the same body under the right field does read C1.
+      expect(contaDoLinkLi({ contaLojaIntegrada: 'documents/integracao/C1', id: ID_LI })).toBe(
+        'C1',
+      );
+    },
+  );
+
+  it('reads the conta whatever the link’s counting state — counting is vinculoLiConta’s', () => {
+    expect(
+      contaDoLinkLi({ contaLojaIntegrada: 'documents/integracao/C1', id: null, removido: true }),
+    ).toBe('C1');
+  });
+
+  it('⛔ a raw document never makes it throw', () => {
+    for (const bruto of [
+      {},
+      { contaLojaIntegrada: undefined },
+      { contaLojaIntegrada: { caminho: 'integracao/C1' } },
+      { contaLojaIntegrada: ['integracao/C1'] },
+      { contaLojaIntegrada: 'documents/integracao/C1', id: { valor: 1 } },
+    ]) {
+      expect(() => contaDoLinkLi(bruto)).not.toThrow();
+    }
   });
 });
 
