@@ -150,11 +150,16 @@ exists — so nothing is ever written to Loja Integrada before the window.
   writes queue only under
   `LOJA_INTEGRADA_MODO_RASTREIO=on`: **the web build carrying its copy must be
   live before that valve is set to `on`**, or the avisos panel cannot render it.
-- **The product import's job index READY before this deploy** (master-plan
-  step 9). The import's start guard (App Hosting) and the web's list read
-  `importacoesLojaIntegrada (integracaoId ASC, iniciadoEmMs DESC)`; a dispatch
-  reads its job by id only. On Enterprise a missing index does not fail, it
-  full-scans and bills the scan.
+- **The product import's job and report indexes READY before this deploy**
+  (master-plan step 9). The import's start guard (App Hosting) and the web's
+  list read `importacoesLojaIntegrada (integracaoId ASC, iniciadoEmMs DESC)`; a
+  dispatch reads its job by id. The report's pages — the items route's, and the
+  job's own actionable count at its end — are expected to range-seek on
+  `itens (__name__ ASC)`: Enterprise keeps no implicit key index, so without it
+  every page is expected to walk the job's whole report (#1874 measured both
+  plans on a root collection; a per-parent subcollection's plan is not measured
+  yet). On Enterprise a missing index does not fail, it full-scans and bills the
+  scan.
 - **The default bucket's object grant, before the first "complete" import
   with photos** (master-plan step 9). The import's photos are this codebase's
   FIRST Storage write: the functions runtime SA uploads each picture to the
@@ -879,8 +884,9 @@ of this section passes.
    # filtered to database 'default' + the importacoesLojaIntegrada/* document path
    ```
 
-   The index `importacoesLojaIntegrada (integracaoId ASC, iniciadoEmMs DESC)` is
-   READY (Prerequisites). With the read switch still UNSET, one import started
+   The indexes `importacoesLojaIntegrada (integracaoId ASC, iniciadoEmMs DESC)`
+   and `itens (__name__ ASC)` (collection scope) are READY (Prerequisites). With
+   the read switch still UNSET, one import started
    from the web is refused by its route (503, no job). Once the switch is on, the
    first import of a conta is a person's step of the window, never this check:
    a Simular, then its report read, before any `aplicar`.

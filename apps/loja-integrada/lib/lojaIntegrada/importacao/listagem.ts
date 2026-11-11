@@ -58,8 +58,9 @@
  *
  * The job's own `paginas` subcollection, WHOLE, in document-key order
  * ({@link lerPaginasDoJobLi}): no filter, so no composite is involved, and the read is bounded by
- * one job's pages. If a measurement on the new project ever shows a key-ordered read scanning
- * beyond the collection, the `__name__`-only index is the remedy.
+ * one job's pages. Key order is not native on Enterprise (no implicit key index: the read scans the
+ * pages and sorts them in memory, #1874), but a WHOLE read reads every page either way, so no
+ * `__name__` index is declared for it; only a key-RANGE page needs one (the report's, `job.ts`).
  *
  * ## Errors (root rule 6)
  *
