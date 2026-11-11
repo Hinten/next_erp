@@ -183,8 +183,8 @@ not "deduplicate" them without changing how required checks are published.
    edit that loses raises a conflict, never a silent drop. Re-checking a
    predicate against a binding read *outside* the transaction is not a guard:
    re-derive it from the `tx.get` result. ⚠️ The stamps are **not
-   interchangeable** — `ultimaModificacao` is µs on pedido/pagamento/produto but
-   **ms** on the ML links, and `historicoFtIni.data` is ms while
+   interchangeable** — `ultimaModificacao` is µs on pedido/pagamento but
+   **ms** on produto and the ML links, and `historicoFtIni.data` is ms while
    `historicoEstadoPedido.data` is µs, so a cross-unit comparison is a guard that
    never fires. See ADR 0011. ⚠️ There is deliberately **no lint rule** for this —
    the property is semantic and every syntactic proxy was measured and rejected

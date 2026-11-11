@@ -101,17 +101,20 @@ const LEITURAS_DO_CATALOGO = [
 /**
  * The product import's routes (step 9) and the cores they delegate to, with how many context loads
  * (`loadLojaIntegradaContext(`) each file makes. The START core makes exactly ONE — the read switch,
- * the conta, the credential — and calls nothing through it; the route files and the lifecycle
- * module (the status, cancel and report routes' only core) make none. No file here names a package
- * read: the import's reads run in the reads queue's dispatch, never in a request.
+ * the conta, the credential — and calls nothing through it; the route files, the lifecycle module
+ * (the status, cancel and report routes' only core, and the tax-review list route's job read) and
+ * the tax-review list's reader make none. No file here names a package read: the import's reads
+ * run in the reads queue's dispatch, never in a request.
  */
 const ROTAS_DA_IMPORTACAO: readonly (readonly [string, number])[] = [
   ['app/api/marketplace/loja-integrada/conta/[id]/importacoes/route.ts', 0],
   ['app/api/marketplace/loja-integrada/conta/[id]/importacoes/[jobId]/route.ts', 0],
   ['app/api/marketplace/loja-integrada/conta/[id]/importacoes/[jobId]/cancelar/route.ts', 0],
   ['app/api/marketplace/loja-integrada/conta/[id]/importacoes/[jobId]/itens/route.ts', 0],
+  ['app/api/marketplace/loja-integrada/conta/[id]/importacoes/[jobId]/revisao/route.ts', 0],
   ['lib/lojaIntegrada/importacao/inicio.ts', 1],
   ['lib/lojaIntegrada/importacao/job.ts', 0],
+  ['lib/lojaIntegrada/importacao/listaRevisaoFiscal.ts', 0],
 ];
 
 /** Every package read the import makes (in its dispatch), and the other ways out — none in a request. */
@@ -283,7 +286,7 @@ describe('the catalogue routes fit inside the backend ceiling', () => {
     ).toEqual([]);
     expect(naPasta.filter((f) => doCatalogo.has(f))).toHaveLength(4);
     expect(naPasta.filter((f) => daConta.has(f))).toHaveLength(3);
-    expect(naPasta.filter((f) => daImportacao.has(f))).toHaveLength(4);
+    expect(naPasta.filter((f) => daImportacao.has(f))).toHaveLength(5);
     // Anti-vacuity: each route delegates to the core, exactly once.
     for (const [arquivo] of ROTAS_DO_CATALOGO.filter(([a]) => a.startsWith('app/'))) {
       const fonte = readFileSync(path.join(APP_DIR, arquivo), 'utf8');
@@ -295,8 +298,8 @@ describe('the catalogue routes fit inside the backend ceiling', () => {
 /**
  * The product import (step 9). Its ROUTES make no Loja Integrada call: the start loads the context
  * once (the read switch FIRST, then the conta and one credential read) and creates the job; the
- * status, cancel and report routes read and write only the job. So each fits the backend's ceiling
- * with the margin alone.
+ * status, cancel and report routes read and write only the job, and the tax-review list route reads
+ * only the job and its list. So each fits the backend's ceiling with the margin alone.
  *
  * Its reads run in the reads queue's DISPATCH, held to a time budget (`importacao/orcamento.ts`):
  * a unit starts only while its worst case still ends inside `ORCAMENTO_DESPACHO_IMPORTACAO_LI_MS`,
@@ -323,6 +326,14 @@ describe('the product import: its routes call nothing, its dispatch fits its bud
         /lerJobDaContaLi\(|cancelarImportacaoLi\(/,
       );
     }
+    // The tax-review list route reads its list through the list's reader, once.
+    const lista = dosJobs.find(([a]) => a.endsWith('/revisao/route.ts'));
+    expect(
+      contar(
+        readFileSync(path.join(APP_DIR, lista?.[0] ?? ''), 'utf8'),
+        'lerRevisaoFiscalDaImportacaoLi(',
+      ),
+    ).toBe(1);
   });
 
   it('the start fits the smallest ceiling with the margin alone (no call to wait for)', () => {

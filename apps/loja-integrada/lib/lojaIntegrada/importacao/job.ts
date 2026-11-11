@@ -96,10 +96,16 @@
  *  - One job: a read by id.
  *  - One page of a job's report: its own `itens` subcollection in DOCUMENT-KEY order
  *    (`orderBy(FieldPath.documentId())`, `startAfter(<the previous page's last id>)`,
- *    `limit(LIMITE_ITENS_IMPORTACAO_LI + 1)`), no filter. Key order is the collection's native
- *    order, so no composite is involved and the read stops after the page; the subcollection holds
- *    one job's items only. If a measurement on the new project ever shows it scanning beyond the
- *    page, the `__name__`-only index is the remedy.
+ *    `limit(LIMITE_ITENS_IMPORTACAO_LI + 1)`), no filter — expected to range-seek on the declared
+ *    `itens (__name__ ASC)` index and stop after the page. ⚠️ That index is NEEDED: Enterprise
+ *    keeps no implicit key index, and without one each page is expected to walk the job's whole
+ *    report and sort in memory, so a full read of N items would cost about N²/500. #1874 measured
+ *    both plans on the root `arquivos` collection on staging (313 index rows per page of 100, then
+ *    exactly the page once `arquivos (__name__ ASC)` existed); a per-parent subcollection such as
+ *    this one is the same query shape, but its plan has not been measured separately (the
+ *    migrations' key-walk checker lists such walks as NOT PROBED). Index collection ids are not
+ *    path-scoped: the same entry also covers `pedidos/{id}/itens`. `job.indexes.test.ts` pins the
+ *    pairing.
  */
 import {
   FieldPath,

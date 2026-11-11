@@ -22,6 +22,7 @@ import {
 import { RecalcularPrecosCanalAction } from '../../_components/RecalcularPrecosCanalAction';
 import { ContaLojaIntegradaPanel } from '../_components/ContaLojaIntegradaPanel';
 import { HorarioCorteManager } from '../_components/HorarioCorteManager';
+import { ImportacoesDaContaLi } from '../_components/ImportacoesDaContaLi';
 import { MapaFreteManager } from '../_components/MapaFreteManager';
 import {
   lojaIntegradaExcludedFields,
@@ -136,6 +137,11 @@ export default function ContaLojaIntegradaPage() {
           typed token, a picked date, the last write's message), and Next reuses
           the component across a param change. */}
       <ContaLojaIntegradaPanel key={params.id} integracaoId={params.id} />
+
+      {/* The conta's newest product import and its result — where the import's
+          avisos link, so "the report" they name is here. key: per conta, like
+          the panel above (a dismissed card, an open result). */}
+      <ImportacoesDaContaLi key={`importacoes-${params.id}`} integracaoId={params.id} />
 
       {/* One form, one "Salvar": the conta fields and its freight doc's two tabs
           commit together, the freight doc as a guarded sibling write that is

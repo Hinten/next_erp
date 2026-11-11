@@ -149,8 +149,8 @@ describe('saveListing', () => {
   });
 
   it('stamps ultimaModificacao in MILLISECONDS', async () => {
-    // The ML link docs stamp ms while pedido/pagamento/produto stamp µs; a
-    // cross-unit value makes every later staleness comparison a no-op.
+    // The ML link docs stamp ms (as produto does) while pedido/pagamento stamp
+    // µs; a cross-unit value makes every later staleness comparison a no-op.
     const baseline = linkFixture();
     const { port, writes } = fakePort(baseline);
 

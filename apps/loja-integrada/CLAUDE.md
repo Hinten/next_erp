@@ -115,7 +115,10 @@ work is `lib/lojaIntegrada/catalogo/catalogo.ts`.
 
 `POST …/importacoes` start (`PERM.integracao.write`), `GET …/importacoes` the conta's newest 10,
 `GET …/importacoes/[jobId]` one job, `POST …/importacoes/[jobId]/cancelar`, `GET
-…/importacoes/[jobId]/itens?depois=` one page of the report (the reads `PERM.integracao.read`). The
+…/importacoes/[jobId]/itens?depois=` one page of the report, `GET …/importacoes/[jobId]/revisao`
+the job's WHOLE tax-review list in one answer — read whole through the phase's own reader
+(`importacao/listaRevisaoFiscal.ts`), an entry that does not parse answered with its id, never
+dropped (the reads `PERM.integracao.read`). The
 wire contract (the strict start body, the non-strict answers, the job document, the task) is
 `packages/schemas/src/importacaoLojaIntegrada.ts`; every answer is built through it and never
 carries the continuation `seq`, the cursors or the selection's ids.
@@ -128,7 +131,9 @@ carries the continuation `seq`, the cursors or the selection's ids.
 - **The other routes call nothing outside the ERP** (`estrutura.test.ts`'s `ROTAS_SEM_CHAMADA_LI`,
   walked with the label routing route's rules): a missing job and another conta's job are the same
   404 `LI_IMPORTACAO_NAO_ENCONTRADA`; the report pages its job's own `itens` in document-key order
-  (500 + 1 read, `?depois=` an item id).
+  (500 + 1 read, `?depois=` an item id) on the declared `itens (__name__ ASC)` index — without it
+  each page is expected to walk the whole report on Enterprise (#1874, measured on a root
+  collection; `importacao/job.indexes.test.ts`).
 - **Every job write is tier 1** (`importacao/job.ts`, its header's table): checkpoints chained from
   each write's `writeTime`, only the end-of-dispatch one bumps `seq`; a lost checkpoint is never
   re-applied (stop when the job no longer runs at that `seq`, else `LiImportacaoConcorrenteError`
