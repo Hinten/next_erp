@@ -150,6 +150,21 @@ describe('planejarMudancaDeLinkShopee', () => {
     });
   });
 
+  it.each([
+    ['a forma nua', `integracao/${CONTA}`],
+    ['uma barra inicial', `/documents/integracao/${CONTA}`],
+  ])(
+    'IGUAL: o ref em %s é a MESMA conta — o create a adiciona, reescrever para ela não move nada',
+    (_forma, ref) => {
+      // Through the binding, because the plan is handed the reader HERE: a binding that kept the
+      // shared export but planned through a local copy dropping this form would leave the
+      // reader's own suite green.
+      const outraForma = link({ contaProdutoShopeeOuterRef: ref });
+      expect(planejarMudancaDeLinkShopee(null, outraForma)).toEqual({ add: [CONTA], check: [] });
+      expect(planejarMudancaDeLinkShopee(link(), outraForma)).toEqual({ add: [], check: [] });
+    },
+  );
+
   it('re-apontar o ref da conta ADICIONA a nova e CHECA a antiga', () => {
     expect(
       planejarMudancaDeLinkShopee(link(), link({ contaProdutoShopeeOuterRef: REF_OUTRA })),

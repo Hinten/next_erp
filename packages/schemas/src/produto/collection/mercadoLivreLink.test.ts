@@ -495,15 +495,19 @@ describe('contaDoLinkMercadoLivre — the anchor’s conta reader (contaOuterRef
     },
   );
 
-  it('⚠️ no parent hop: a variation link with no own contaOuterRef reads null, whatever its parent ref', () => {
-    // Following the parent link is the app's resolver's job; this reader never reads elsewhere.
-    expect(
-      contaDoLinkMercadoLivre({
-        id: 123,
-        produtoMercadoLivreOuterRef: 'documents/produtos/P1/produtoMercadoLivre/L1',
-      }),
-    ).toBeNull();
-  });
+  it.each([
+    ['a parent-link path', 'documents/produtos/P1/produtoMercadoLivre/L1'],
+    // The discriminating row: a conta ref, so a reader falling back to the parent-ref FIELD
+    // would read C1 here. A pure reader cannot dereference the parent link, so reading that
+    // field is the only hop it could make, and the path above folds to null either way.
+    ['a conta-shaped value', 'documents/integracao/C1'],
+  ])(
+    '⚠️ NEAR-MISS, no parent hop: a variation link with no own contaOuterRef reads null, its parent ref being %s',
+    (_r, pai) => {
+      // Following the parent link is the app's resolver's job; this reader never reads elsewhere.
+      expect(contaDoLinkMercadoLivre({ id: 123, produtoMercadoLivreOuterRef: pai })).toBeNull();
+    },
+  );
 
   it('reads the conta whatever the link’s state — liveness is the predicates’ job', () => {
     expect(

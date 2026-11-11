@@ -91,7 +91,7 @@ const SENTINELAS: SentinelasDeArray = {
  * The ML binding of the promoted core: this channel keeps its conta ref on the
  * link doc's `contaOuterRef`, read by `contaDoLinkMercadoLivre`
  * (`@delfrance/schemas`, beside `linkHasLiveListing`, so a `tools/migrations`
- * script reads the same copy). Reading any other field name here would resolve
+ * script can read the same copy). Reading any other field name here would resolve
  * `null` on both sides, take the zero-cost fast path, and turn the trigger into
  * a silent no-op — which is why the core takes the reader as a required
  * parameter rather than defaulting to this one (#1519).

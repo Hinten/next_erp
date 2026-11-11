@@ -121,8 +121,9 @@ function proprio(o: Record<string, unknown>, chave: string): unknown {
  * It moved here from the app's anchor binding
  * (`apps/loja-integrada/lib/lojaIntegrada/produtos/integracoesComProdutoLi.ts`, which re-exports
  * it, so no importer changed) because a `tools/migrations` script needs the identical answer and
- * cannot import an app. The trigger's plan, the survivor read in `@delfrance/data/admin/produtos`
- * and that script now read one copy, always paired with {@link vinculoLiConta}.
+ * cannot import an app. The trigger's plan and the survivor read in
+ * `@delfrance/data/admin/produtos` read this one copy, always paired with {@link vinculoLiConta},
+ * and so will that script.
  *
  * ⚠️ **The FIELD is the decision.** Another channel's conta field (`contaOuterRef`,
  * `contaProdutoShopeeOuterRef`) is one identifier apart and compiles. Read here, it answers `null`

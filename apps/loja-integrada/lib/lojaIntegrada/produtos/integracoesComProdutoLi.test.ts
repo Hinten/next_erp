@@ -13,8 +13,11 @@
  * does not model and which no file of this app may name. So `removerContaSeOrfa` is the ONE stub
  * below — it records what the binding hands it, and the survivor closure is then driven by hand
  * with a read-only `tx` over the fake. Everything else is real: `planLinkChange`,
- * `contaIdFromRef`, `vinculoLiConta`, and `adicionarConta` against the fake. The remove's real
- * run is the emulator suite `functions/src/onProdutoLojaIntegradaLinkChanged.tasks.test.ts`.
+ * `contaIdFromRef`, `vinculoLiConta`, `adicionarConta` against the fake, and the shared survivor
+ * read, which a spy only records so the remove's test can pin that the closure it hands the core
+ * IS the one the shared read built (a local copy of that read would pass every behavioural check
+ * here). The remove's real run is the emulator suite
+ * `functions/src/onProdutoLojaIntegradaLinkChanged.tasks.test.ts`.
  */
 import { FieldValue, type Transaction } from 'firebase-admin/firestore';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -27,11 +30,14 @@ import { FakeDb, asDb, type DocData } from '../testing/fakeDb';
 const core = vi.hoisted(() => ({
   removerContaSeOrfa: vi.fn(async () => true),
   adicionarConta: vi.fn(),
+  sobrevivemVinculosDoProdutoLi: vi.fn(),
 }));
 vi.mock('@delfrance/data/admin/produtos', async (importOriginal) => {
   const real = await importOriginal<typeof import('@delfrance/data/admin/produtos')>();
   // The add stays REAL (it is one `update` the fake models); only the spy records it.
   core.adicionarConta.mockImplementation(real.adicionarConta);
+  // So does the survivor read: the spy records each closure it builds, and the closure is real.
+  core.sobrevivemVinculosDoProdutoLi.mockImplementation(real.sobrevivemVinculosDoProdutoLi);
   return { ...real, ...core };
 });
 
@@ -94,6 +100,7 @@ function chamadaDoRemove(): {
 beforeEach(() => {
   core.removerContaSeOrfa.mockClear();
   core.adicionarConta.mockClear();
+  core.sobrevivemVinculosDoProdutoLi.mockClear();
 });
 
 /* -------------------------------------------------------------------------- */
@@ -197,6 +204,15 @@ describe('planejarMudancaDeLinkLi — the arms of one write', () => {
     ).toEqual(NADA);
   });
 
+  it('EQUAL: a ref stored with a leading slash is the same conta — its create adds C1, a rewrite to it moves nothing', () => {
+    // Through the binding, because the plan is handed the reader HERE: a binding that kept the
+    // shared export but planned through a local copy dropping this form would leave the
+    // reader's own suite green.
+    const comBarra = link({ contaLojaIntegrada: `/documents/integracao/${C1}` });
+    expect(planejarMudancaDeLinkLi(null, comBarra)).toEqual({ add: [C1], check: [] });
+    expect(planejarMudancaDeLinkLi(link(), comBarra)).toEqual(NADA);
+  });
+
   it('an id change between two store product ids moves no membership ⇒ nothing', () => {
     expect(planejarMudancaDeLinkLi(link(), link({ id: ID_LI + 1 }))).toEqual(NADA);
   });
@@ -271,12 +287,24 @@ describe('removerContaLiSeOrfa', () => {
     expect(remocao.isEqual(FieldValue.arrayRemove(C1))).toBe(true);
     expect(remocao.isEqual(FieldValue.arrayUnion(C1))).toBe(false);
 
-    // ⚠️ And the closure really is THIS binding's reader, bound to the path's produto and this
-    // conta: `expect.any(Function)` would accept a closure bound to another produto, which would
-    // conclude "no survivors" and drop a live conta.
+    // ⛔ The closure IS the one the SHARED survivor read built, for this produto and this conta.
+    // A survivor re-spelled here could pass any behavioural check that misses the one stored
+    // form it drops, while it drifted from the copy a migration script's guarded add calls: the
+    // add and this remove would then disagree about a link and undo each other. So the identity
+    // is the pin, as it is for the conta reader; the shared read's own pairs are its suite's.
+    expect(core.sobrevivemVinculosDoProdutoLi).toHaveBeenCalledTimes(1);
+    const [dbDaLeitura, ...alvoDaLeitura] = core.sobrevivemVinculosDoProdutoLi.mock.calls[0] ?? [];
+    expect(dbDaLeitura).toBe(asDb(db));
+    expect(alvoDaLeitura).toEqual([PRODUTO, C1]);
+    expect(sobrevivem).toBe(core.sobrevivemVinculosDoProdutoLi.mock.results[0]?.value);
+
+    // And it runs, bound to the path's produto and this conta: `expect.any(Function)` would accept
+    // a closure bound to another produto, which would conclude "no survivors" and drop a live
+    // conta. The surviving link is stored with a leading slash, which a match on the two
+    // canonical forms would miss.
     semearLink(db, 'l1', { contaLojaIntegrada: `documents/integracao/${C2}` });
     await expect(sobrevivem(txLeitura())).resolves.toBe(false);
-    semearLink(db, 'l2');
+    semearLink(db, 'l2', { contaLojaIntegrada: `/documents/integracao/${C1}` });
     await expect(sobrevivem(txLeitura())).resolves.toBe(true);
     expect(db.consultas.map((c) => c.colecao)).toEqual([
       `produtos/${PRODUTO}/produtolojaintegrada`,

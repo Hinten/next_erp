@@ -858,8 +858,8 @@ export function linkHasLiveListing(link: Record<string, unknown> | null | undefi
  *
  * The app's binding (`apps/mercado-livre/lib/marketplace/anuncios/integracoesComProduto.ts`)
  * hands it to the shared anchor plan. It lives here, beside the two predicates,
- * so a `tools/migrations` script — which cannot import an app — reads the same
- * copy.
+ * so a `tools/migrations` script — which cannot import an app — can read the
+ * same copy.
  *
  * ⚠️ **No parent hop.** A variation link stored without its own `contaOuterRef`
  * reads `null` here. Inside the app, every conta comparison on a variation link

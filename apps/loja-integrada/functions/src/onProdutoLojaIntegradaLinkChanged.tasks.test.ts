@@ -43,7 +43,8 @@
  * conta after the look and still pass this file. The KEEP verdict and the survivor read's fold of
  * both stored ref forms are pinned OFFLINE (`packages/data/src/admin/produtos/sobreviventesLi.test.ts`:
  * the survivor pairs and the whole-subcollection read; `integracoesComProdutoLi.test.ts`: the
- * binding hands the remove that read); this case shows only that the real guarded write runs on
+ * binding hands the remove the closure that shared read built, pinned by identity); this case
+ * shows only that the real guarded write runs on
  * this produto and that losing the LAST counting link removes the conta.
  *
  * ⚠️ This suite SHARES its emulators with every other `*.tasks.test.ts` / `*.firestore.test.ts`

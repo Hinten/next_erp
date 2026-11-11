@@ -1055,9 +1055,9 @@ firebase.loja-integrada.tasks.json --only firestore,functions,tasks` (ports 8085
   functions emulator may run two invocations at once, so a later sentinel orders that check only
   as far as the emulator serializes them. The keep verdict and the survivor read's fold of both
   stored ref forms are pinned offline (the survivor read's own suite,
-  `packages/data/src/admin/produtos/sobreviventesLi.test.ts`, and the binding's, which proves the
-  remove is handed that read bound to its produto and conta:
-  `lib/lojaIntegrada/produtos/integracoesComProdutoLi.test.ts`); the emulator case shows only
+  `packages/data/src/admin/produtos/sobreviventesLi.test.ts`, and the binding's, which pins by
+  identity that the remove is handed the closure that shared read built for its produto and
+  conta: `lib/lojaIntegrada/produtos/integracoesComProdutoLi.test.ts`); the emulator case shows only
   that the real guarded write runs and that losing the last counting link removes the conta.
 - The lane cannot prove: Cloud Scheduler firing (`onSchedule` is ignored),
   `scheduleDelaySeconds` (firebase-tools#8254), index declarations, rules, that the
