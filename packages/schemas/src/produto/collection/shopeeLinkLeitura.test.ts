@@ -7,6 +7,7 @@ import {
 } from './shopeeLink';
 import {
   anuncioShopeeVivo,
+  contaDoLinkShopee,
   ehRascunhoShopee,
   logisticaGravadaPeloErpShopee,
   mecanismosDaRecusaAnterior,
@@ -428,6 +429,86 @@ describe('anuncioShopeeVivo', () => {
     expect(anuncioShopeeVivo({ item_id: Number.MAX_SAFE_INTEGER + 2 })).toBe(true);
     expect(anuncioShopeeVivo({ item_id: 1.5 })).toBe(true);
     expect(anuncioShopeeVivo({ item_id: Number.POSITIVE_INFINITY })).toBe(false);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*     (4b) contaDoLinkShopee — MOVED from the app's anchor binding            */
+/* -------------------------------------------------------------------------- */
+
+describe('contaDoLinkShopee — o leitor da conta da âncora (contaProdutoShopeeOuterRef, e só ele)', () => {
+  it.each([
+    ['a forma canônica', 'documents/integracao/C1'],
+    ['a forma nua', 'integracao/C1'],
+    ['uma barra inicial', '/documents/integracao/C1'],
+  ])('PAR: %s lê a MESMA conta, C1', (_caso, ref) => {
+    expect(contaDoLinkShopee({ contaProdutoShopeeOuterRef: ref, item_id: ITEM_ID })).toBe('C1');
+  });
+
+  it('⚠️ QUASE-PAR: o ref de outra conta lê ESSA conta — nunca C1, e sem dobrar caixa', () => {
+    expect(
+      contaDoLinkShopee({
+        contaProdutoShopeeOuterRef: 'documents/integracao/C2',
+        item_id: ITEM_ID,
+      }),
+    ).toBe('C2');
+    expect(
+      contaDoLinkShopee({
+        contaProdutoShopeeOuterRef: 'documents/integracao/c1',
+        item_id: ITEM_ID,
+      }),
+    ).toBe('c1');
+  });
+
+  it.each([
+    ['o ref de OUTRA coleção', 'documents/produtos/C1'],
+    ['um id nu (não é ref)', 'C1'],
+    ['a coleção sozinha', 'integracao'],
+    ['uma string vazia', ''],
+    ['null', null],
+    ['um número', 42],
+    // A reader that stringified before it parsed would read this as C1: `String([ref])` is the ref.
+    ['o ref DENTRO de um array', ['documents/integracao/C1']],
+  ])('⚠️ QUASE-PAR: %s lê null — nunca C1', (_caso, ref) => {
+    expect(contaDoLinkShopee({ contaProdutoShopeeOuterRef: ref, item_id: ITEM_ID })).toBeNull();
+  });
+
+  it.each([['contaOuterRef'], ['contaLojaIntegrada'], ['contaAmazonOuterRef']])(
+    '⛔ QUASE-PAR: um doc carregando SÓ %s (o campo de conta de outro canal) lê null',
+    (campo) => {
+      // The copy-paste trap: one identifier apart, it compiles, and the trigger goes silent.
+      expect(
+        contaDoLinkShopee({ [campo]: 'documents/integracao/C1', item_id: ITEM_ID }),
+      ).toBeNull();
+      // ÂNCORA: the same body under the right field does read C1.
+      expect(
+        contaDoLinkShopee({
+          contaProdutoShopeeOuterRef: 'documents/integracao/C1',
+          item_id: ITEM_ID,
+        }),
+      ).toBe('C1');
+    },
+  );
+
+  it('lê a conta seja qual for a vitalidade do link — vitalidade é do anuncioShopeeVivo', () => {
+    expect(
+      contaDoLinkShopee({
+        contaProdutoShopeeOuterRef: 'documents/integracao/C1',
+        item_id: null,
+        estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.removido,
+      }),
+    ).toBe('C1');
+  });
+
+  it('⛔ um documento cru nunca a faz LANÇAR', () => {
+    for (const bruto of [
+      {},
+      { contaProdutoShopeeOuterRef: undefined },
+      { contaProdutoShopeeOuterRef: { caminho: 'integracao/C1' } },
+      { contaProdutoShopeeOuterRef: 'documents/integracao/C1', item_id: 'nao-e-numero' },
+    ]) {
+      expect(() => contaDoLinkShopee(bruto)).not.toThrow();
+    }
   });
 });
 

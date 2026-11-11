@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
 import { FieldValue } from 'firebase-admin/firestore';
-import { ESTADO_ANUNCIO_SHOPEE } from '@delfrance/schemas';
+import {
+  ESTADO_ANUNCIO_SHOPEE,
+  contaDoLinkShopee as contaDoLinkShopeeCompartilhado,
+} from '@delfrance/schemas';
 
 import { FakeDb, asDb } from '../testing/fakeDb';
 import {
@@ -72,8 +75,11 @@ function sentinelaDe(valor: unknown): 'arrayUnion' | 'arrayRemove' | 'outro' {
 /* -------------------------------------------------------------------------- */
 
 describe('contaDoLinkShopee', () => {
-  it('lê contaProdutoShopeeOuterRef — não contaOuterRef', () => {
-    expect(contaDoLinkShopee(link())).toBe(CONTA);
+  it('⛔ reexporta o leitor ÚNICO de @delfrance/schemas — nunca uma cópia local', () => {
+    // Its pairs and near-misses live with it (`shopeeLinkLeitura.test.ts`). A
+    // local re-implementation here would leave that suite green while it
+    // drifted, so the binding's export must BE the shared function.
+    expect(contaDoLinkShopee).toBe(contaDoLinkShopeeCompartilhado);
   });
 
   it('⛔ QUASE-IGUAL: um doc carregando contaOuterRef (a forma do Mercado Livre) resolve NULL', () => {
@@ -88,15 +94,6 @@ describe('contaDoLinkShopee', () => {
 
     expect(contaDoLinkShopee(comoNoMercadoLivre)).toBeNull();
     expect(planejarMudancaDeLinkShopee(null, comoNoMercadoLivre)).toEqual({ add: [], check: [] });
-  });
-
-  it("aceita as duas formas de ref armazenadas ('documents/integracao/x' e 'integracao/x')", () => {
-    // The canonical form every app writes, and the bare one readers accept
-    // defensively — the migrated corpus carries both.
-    expect(contaDoLinkShopee(link({ contaProdutoShopeeOuterRef: REF_CONTA }))).toBe(CONTA);
-    expect(contaDoLinkShopee(link({ contaProdutoShopeeOuterRef: `integracao/${CONTA}` }))).toBe(
-      CONTA,
-    );
   });
 
   it('⛔ um documento ilegível não LANÇA — nem o fold da conta, nem o da vitalidade', () => {
@@ -152,6 +149,21 @@ describe('planejarMudancaDeLinkShopee', () => {
       check: [],
     });
   });
+
+  it.each([
+    ['a forma nua', `integracao/${CONTA}`],
+    ['uma barra inicial', `/documents/integracao/${CONTA}`],
+  ])(
+    'IGUAL: o ref em %s é a MESMA conta — o create a adiciona, reescrever para ela não move nada',
+    (_forma, ref) => {
+      // Through the binding, because the plan is handed the reader HERE: a binding that kept the
+      // shared export but planned through a local copy dropping this form would leave the
+      // reader's own suite green.
+      const outraForma = link({ contaProdutoShopeeOuterRef: ref });
+      expect(planejarMudancaDeLinkShopee(null, outraForma)).toEqual({ add: [CONTA], check: [] });
+      expect(planejarMudancaDeLinkShopee(link(), outraForma)).toEqual({ add: [], check: [] });
+    },
+  );
 
   it('re-apontar o ref da conta ADICIONA a nova e CHECA a antiga', () => {
     expect(

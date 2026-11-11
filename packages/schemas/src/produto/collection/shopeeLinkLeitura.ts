@@ -2,19 +2,23 @@
  * **How a stored Shopee link is READ** (step 21, #1529) — the read-side rules
  * of a `prodshopee` / `variashopee` document that more than one surface needs:
  * when a stored refusal is still worth showing, whether the stock sync is
- * currently skipping the listing, whether the listing is still "vivo",
- * whether the link is a DRAFT that was never a listing at all (#1911), and
- * whether its stored `logistic_info` is one THIS app wrote and may re-send
- * (#2015, {@link logisticaGravadaPeloErpShopee} — the stamp alone decides).
+ * currently skipping the listing, whether the listing is still "vivo" and
+ * which conta it counts for in `integracoesComProduto`, whether the link is a
+ * DRAFT that was never a listing at all (#1911), and whether its stored
+ * `logistic_info` is one THIS app wrote and may re-send (#2015,
+ * {@link logisticaGravadaPeloErpShopee} — the stamp alone decides).
  *
  * ⚠️ ONE module (#1369). `apps/shopee` decides with these (the stock gate, the
  * `integracoesComProduto` trigger, the stock sweep) and the produto's Shopee tab
  * in `apps/web` RENDERS with them; `apps/web` has no dependency edge to
  * `apps/shopee`, so the alternative was a browser copy that drifts toward
- * plausible while both read correct. Two of these were MOVED here verbatim —
- * {@link pularPorRecusaAnterior} from `apps/shopee/lib/shopee/estoque/podeEnviarEstoque.ts`
- * and {@link anuncioShopeeVivo} from `apps/shopee/lib/shopee/anuncios/statusAnuncio.ts`,
- * both of which re-export them so no importer changed.
+ * plausible while both read correct. Three of these were MOVED here verbatim —
+ * {@link pularPorRecusaAnterior} from `apps/shopee/lib/shopee/estoque/podeEnviarEstoque.ts`,
+ * {@link anuncioShopeeVivo} from `apps/shopee/lib/shopee/anuncios/statusAnuncio.ts`
+ * and {@link contaDoLinkShopee} from
+ * `apps/shopee/lib/shopee/anuncios/integracoesComProdutoShopee.ts` (a
+ * `tools/migrations` script needs it, and cannot import an app) — and each of
+ * those files re-exports its own, so no importer changed.
  *
  * ⚠️ **Pure and total over `unknown`.** A soft-read hands over the RAW document
  * when the schema does not parse it (a migrated Flutter row, a half-written
@@ -52,6 +56,7 @@
  * The rule is the reader's alone: nothing here decides a SEND (the stock skip
  * set below is a different question, answered by its own fingerprint).
  */
+import { contaIdFromRef } from '../../shared/outerRef';
 import { ESTADO_ANUNCIO_SHOPEE } from './shopeeLink';
 
 /* -------------------------------------------------------------------------- */
@@ -291,6 +296,33 @@ export function anuncioShopeeVivo(link: Record<string, unknown> | null): boolean
   const itemId = link.item_id;
   if (typeof itemId !== 'number' || !Number.isFinite(itemId) || itemId <= 0) return false;
   return link.estadoAnuncio !== ESTADO_ANUNCIO_SHOPEE.removido;
+}
+
+/* -------------------------------------------------------------------------- */
+/*   The anchor's conta reader (MOVED from integracoesComProdutoShopee.ts)    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The integração doc id a stored `prodshopee` link belongs to, or `null`: the
+ * `integracoesComProduto` anchor's CONTA reader, {@link contaIdFromRef} over
+ * `contaProdutoShopeeOuterRef`, always paired with {@link anuncioShopeeVivo}.
+ *
+ * ⚠️ **`contaProdutoShopeeOuterRef`, NOT `contaOuterRef`.** That is Mercado
+ * Livre's field name, one identifier apart. A copy-paste of the Mercado Livre
+ * reader compiles, resolves `null` on every Shopee link, makes both sides of
+ * the anchor plan's comparison `null`, takes the zero-cost fast path — and the
+ * trigger becomes a no-op that logs nothing.
+ *
+ * Total and non-throwing over a raw document, because `contaIdFromRef` is.
+ *
+ * Equal (⇒ `'C1'`): `'documents/integracao/C1'` ≡ `'integracao/C1'` ≡
+ * `'/documents/integracao/C1'` — the migrated corpus carries both stored forms.
+ * Distinct: another conta's ref reads as THAT conta; another collection's ref,
+ * the ref inside an array, and a doc carrying ONLY another channel's conta
+ * field (`contaOuterRef`, `contaLojaIntegrada`) ⇒ `null`.
+ */
+export function contaDoLinkShopee(link: Record<string, unknown>): string | null {
+  return contaIdFromRef(link.contaProdutoShopeeOuterRef);
 }
 
 /* -------------------------------------------------------------------------- */
