@@ -329,7 +329,7 @@ The order is load-bearing.
    Phase 0 step 7 landed.
 5. **Rotate** GitHub secrets, `.env.example`, operator `.env.local`.
    ⚠️ Leave the emulator lanes' hardcoded `demo-erp` alone (`e2e-emulator.yml`,
-   `ci-storage.yml`, `copilot-setup-steps.yml`) — those are offline by design.
+   `ci-storage.yml`) — those are offline by design.
 
 ### Phase 4 — drain and verify
 

@@ -335,9 +335,6 @@ const UNGATED = {
     'workflow_run + workflow_dispatch only. It reports on the TRUNK after a merge, ' +
     'not on a PR — it cannot gate anything, and by construction it cannot even run ' +
     'on one. Its own contract is assertion 14 below.',
-  '.github/workflows/copilot-setup-steps.yml':
-    'Agent environment bootstrap. Its self-referential `paths:` filter is correct: ' +
-    'it is not a test lane and reports on nothing.',
   '.github/workflows/claude.yml':
     'On-demand @claude bot. Triggers on issue/PR comments and reviews, never on ' +
     '`pull_request`, so it can gate nothing.',
@@ -345,8 +342,8 @@ const UNGATED = {
     'On-demand @claude review, `issue_comment` only. Never runs on `pull_request`.',
   '.github/workflows/copilot-code-review.yml':
     'Copilot review runner config. Its `pull_request:` trigger is self-referential ' +
-    '(`paths:` = this file), so it reports on nothing but its own edits — the same ' +
-    'deliberate shape as copilot-setup-steps.yml.',
+    '(`paths:` = this file), so it reports on nothing but its own edits. It is not ' +
+    'a test lane and gates nothing.',
 };
 
 /**
@@ -1024,22 +1021,8 @@ describe('CI lanes always report', () => {
         all.push({ name: checkName(id, body), file });
       }
     }
-    /**
-     * One documented collision, tolerated rather than fixed.
-     *
-     * `copilot-setup-steps.yml` and `copilot-code-review.yml` both declare a job
-     * keyed `copilot-setup-steps` — GitHub requires that exact job id in each file
-     * for Copilot to find it, so the key is a contract we do not own. Giving one a
-     * distinct `name:` would change the published check but risks breaking that
-     * lookup, and the collision is harmless here: both workflows are
-     * self-referentially `paths:`-filtered bootstraps that gate nothing and can
-     * never be pinned. Do NOT add gated lanes to this set.
-     */
-    const TOLERATED_COLLISIONS = new Set(['copilot-setup-steps']);
-
     const dupes = all
       .filter((a, i) => all.findIndex((b) => b.name === a.name) !== i)
-      .filter((d) => !TOLERATED_COLLISIONS.has(d.name))
       .map((d) => `${JSON.stringify(d.name)} (${d.file})`);
 
     expect(
@@ -1936,12 +1919,11 @@ describe('CI lanes always report', () => {
 
     /**
      * Push-triggered workflows that verify NOTHING about this repo, with the
-     * reason. Both are self-referentially `paths:`-filtered bootstraps (their
-     * `paths:` is their own file), so a failure there says something about the
+     * reason. Each is a self-referentially `paths:`-filtered bootstrap (its
+     * `paths:` is its own file), so a failure there says something about the
      * agent harness, never that `main` is broken.
      */
     const NOT_TRUNK_VERIFIERS = {
-      '.github/workflows/copilot-setup-steps.yml': 'agent environment bootstrap',
       '.github/workflows/copilot-code-review.yml': 'Copilot review runner config',
     };
 
@@ -2061,15 +2043,15 @@ describe('CI lanes always report', () => {
   });
 
   // ------------------------------------------------------------------
-  // 16. An apt-backed browser install trims the sources it does not use —
-  //     and a job inside the Playwright image runs none at all.
+  // 16. No job runs an apt-backed browser install — the e2e jobs run in the
+  //     Playwright image, where the system libraries are already there.
   // ------------------------------------------------------------------
   //
   // ⚠️ PROSE IS NOT AN INVOCATION, AND IT HIDES HERE IN TWO PLACES. `jobBlocks`
   // cannot know that a trailing comment block documents the NEXT job, so prose
-  // lands in the previous job's body — and the trim comment, e2e-reusable.yml's
-  // container note and e2e-emulator.yml's "do NOT add" warning all name
-  // `install-deps` in a comment. Hence `stripComments` below. But a comment is not
+  // lands in the previous job's body — and e2e-reusable.yml's container note and
+  // e2e-emulator.yml's "do NOT add" warning both name `install-deps` in a
+  // comment. Hence `stripComments` below. But a comment is not
   // the only prose: the retry loop used to `echo` a warning naming the very command
   // it wraps, and matching that line made this assertion pass while nothing real
   // was detected — the exact vacuous green the rot check underneath is meant to
@@ -2082,73 +2064,63 @@ describe('CI lanes always report', () => {
       .split('\n')
       .findIndex((line) => APT_INSTALL.test(line) && !PROSE.test(line));
 
-  it('every job installing Playwright system deps trims apt sources first', () => {
-    // WHAT WENT WRONG. `playwright install --with-deps` — and the `install-deps`
-    // half it decomposes into — shells out to `apt-get update`, which exits 100
-    // when ANY configured source fails, including one holding nothing it will
-    // install. The ubuntu-latest image ships two packages.microsoft.com repos; on
-    // 2026-08-27 both answered 403 and reddened `E2E gate (emulator)` on PR #1306,
-    // while every package Playwright actually installs — 9 font packages — sat on
-    // azure.archive.ubuntu.com and fetched fine. A concurrent run on another runner
-    // passed that same minute, so it is a per-edge-node flake that recurs.
+  it('no job runs an apt-backed Playwright install', () => {
+    // WHAT WENT WRONG, TWICE. `playwright install --with-deps`, and the
+    // `install-deps` half it decomposes into, runs `sudo apt-get update && apt-get
+    // install` on the host, so the job depends on every apt source on the runner.
     //
-    // Only jobs running BARE on the runner are exposed. The e2e lanes run inside
-    // `mcr.microsoft.com/playwright`, where the deps are pre-baked and no apt runs
-    // at all; the next assertion keeps them that way. The emulator lane joined
-    // them on 2026-11-11, after an hour in which every Ubuntu mirror stopped
-    // resolving on the runner and cancelled `E2E gate (emulator)` twice. The trim
-    // could not help with that one, because the archive itself was the
-    // unreachable host. What is left is `copilot-setup-steps.yml`, which CANNOT
-    // move: Copilot ignores `container:` in that job, and the agent works in the
-    // runner's own environment afterwards.
+    //   - 2026-08-27: `apt-get update` exits 100 when ANY configured source
+    //     fails, including one holding nothing it will install. Both
+    //     packages.microsoft.com repos on the image answered 403 and reddened
+    //     `E2E gate (emulator)` on PR #1306, while the 9 font packages Playwright
+    //     installs sat on azure.archive.ubuntu.com and fetched fine. The fix
+    //     then was a step that trimmed the apt sources to the Ubuntu archive.
+    //   - 2026-11-11: every *.ubuntu.com name stopped resolving on the runners.
+    //     apt paid a 20 s resolver timeout per file and per mirror, one attempt
+    //     took 628 s instead of 12 s, and the retried attempts outlasted the job
+    //     timeout. `E2E gate (emulator)` was CANCELLED twice, and the trim could
+    //     not help, because the archive itself was the unreachable host.
     //
-    // ⚠️ WHY A TEST AND NOT JUST THE COMMENT IN THE WORKFLOW. Deleting the trim
-    // step fails nothing until the next 403, which may be months out and will read
-    // as an unrelated flake when it lands. Same class as `apphosting-next-pinned`
-    // and `ai-root-entry-browser-safe`: a guard whose removal is otherwise silent.
-    const TRIM = /sources\.list\.d/;
+    // So the e2e lanes run inside `mcr.microsoft.com/playwright`, where the
+    // libraries are pre-baked and no apt runs at all (the next assertion pins the
+    // image). The last host install was copilot-setup-steps.yml. It could not
+    // move, because Copilot ignores `container:`, so it was deleted on 2026-11-11
+    // together with this repo's use of the Copilot cloud agent.
+    //
+    // ⚠️ WHY A TEST AND NOT JUST THE COMMENT IN A WORKFLOW. A new host install
+    // fails nothing until the next 403 or DNS outage, which may be months out and
+    // will read as an unrelated flake when it lands. Same class as
+    // `apphosting-next-pinned`: a hazard whose return is otherwise silent. And an
+    // empty result is exactly what a detector that stopped detecting would give,
+    // so the positive control below drives `aptInstallAt` over both spellings.
+    for (const run of [
+      'pnpm --filter @delfrance/web exec playwright install-deps chromium',
+      'npx playwright install --with-deps chromium',
+    ]) {
+      expect(aptInstallAt(`    steps:\n      - run: ${run}`), run).not.toBe(-1);
+    }
 
     const exposed = [];
-    const offenders = [];
-
     for (const file of findByPathspec(':(glob).github/workflows/*.y*ml').sort()) {
       for (const [jobId, body] of Object.entries(jobBlocks(read(file)))) {
-        const apt = aptInstallAt(body);
-        if (apt === -1) continue;
-        exposed.push(`${file}:${jobId}`);
-        // Order, not presence: a trim running AFTER the install protects nothing.
-        const trim = stripComments(body)
-          .split('\n')
-          .findIndex((line) => TRIM.test(line));
-        if (trim === -1 || trim > apt) offenders.push(`${file}:${jobId}`);
+        if (aptInstallAt(body) !== -1) exposed.push(`${file}:${jobId}`);
       }
     }
 
     expect(
-      exposed.length,
+      exposed,
       [
-        'Found no job running an apt-backed Playwright install.',
+        'A job runs an apt-backed Playwright install on the host.',
         '',
-        'Either copilot-setup-steps.yml stopped installing the browser on the host',
-        '— in which case delete this assertion and say so — or `APT_INSTALL` has',
-        'rotted and this assertion now checks nothing, which is the vacuous-green',
-        'failure the whole file exists to prevent.',
-      ].join('\n'),
-    ).toBeGreaterThanOrEqual(1);
-
-    expect(
-      offenders,
-      [
-        'A job runs an apt-backed Playwright install with no apt-source trim before it.',
+        'It now depends on every apt source on the runner image being reachable, and',
+        'that has already cost a red required check (a 403 from an unrelated repo) and',
+        'two CANCELLED ones (an Ubuntu archive DNS outage), none caused by the PR.',
+        'Run the job in the Playwright image instead (see e2e-emulator.yml), where the',
+        'system libraries are already there, and keep only `playwright install',
+        'chromium`. If it truly cannot move, it needs the apt-source trim (in the git',
+        'history of copilot-setup-steps.yml) and a `timeout` on every attempt.',
         '',
-        'That job now dies whenever an unrelated third-party repo on the runner image',
-        'is unreachable — a red required check caused by nothing in the PR, clearing',
-        'only on a re-run. Move the job into the Playwright container, where no apt',
-        'runs at all (see e2e-emulator.yml). Only if it cannot move, add the',
-        '`Trim apt sources to the Ubuntu archive` step ahead of the install (copy it',
-        'from copilot-setup-steps.yml).',
-        '',
-        ...offenders.map((o) => `  - ${o}`),
+        ...exposed.map((o) => `  - ${o}`),
       ].join('\n'),
     ).toEqual([]);
   });
@@ -2306,62 +2278,6 @@ describe('CI lanes always report', () => {
     expect(lockedVersion(lock, 'apps/web', '@playwright/test')).toBe('1.60.0');
     expect(lockedVersion(lock, 'apps/zzz', '@playwright/test')).toBeNull();
     expect(lockedVersion(lock, 'apps/none', '@playwright/test')).toBeNull();
-  });
-
-  it('native Playwright jobs pin the supported Ubuntu release', () => {
-    // PR #2076 failed before tests when ubuntu-latest moved to 26.04:
-    // Playwright 1.60.0 has no Chromium build for that platform. The e2e lanes
-    // (the emulator one included, since 2026-11-11) run in the `-noble` image, so
-    // their host release does not matter. This job installs on the host itself
-    // and cannot move into the image (see assertion 16).
-    const nativeJobs = {
-      '.github/workflows/copilot-setup-steps.yml': 'copilot-setup-steps',
-    };
-    const isPinned = (source, jobId) => {
-      const body = jobBlocks(source)[jobId];
-      if (body === undefined) return false;
-      const lines = stripComments(body)
-        .split('\n')
-        .filter((line) => line.trim());
-      if (lines.length === 0) return false;
-      const indent = Math.min(...lines.map((line) => line.match(/^ */)[0].length));
-      const runner = new RegExp(
-        `^ {${indent}}runs-on: (?:ubuntu-24\\.04|'ubuntu-24\\.04'|"ubuntu-24\\.04")(?: +#.*)? *$`,
-      );
-      return lines.some((line) => runner.test(line));
-    };
-
-    for (const [file, jobId] of Object.entries(nativeJobs)) {
-      expect(
-        isPinned(read(file), jobId),
-        `${file}:${jobId} must pin ubuntu-24.04 while native Chromium uses Playwright 1.60.0`,
-      ).toBe(true);
-
-      // Decoys in comments, another job and a step's env must not supply the
-      // pin. Drive the same scanner with both incompatible runner choices.
-      const fixture = (runner) =>
-        [
-          'jobs:',
-          '  another-job:',
-          '    runs-on: ubuntu-24.04',
-          `  ${jobId}:`,
-          '    # runs-on: ubuntu-24.04',
-          `    runs-on: ${runner}`,
-          '    steps:',
-          '      - run: echo done',
-          '        env:',
-          '          runs-on: ubuntu-24.04',
-        ].join('\n');
-      expect(isPinned(fixture('ubuntu-24.04'), jobId), jobId).toBe(true);
-      for (const runner of ['ubuntu-latest', 'ubuntu-26.04']) {
-        expect(isPinned(fixture(runner), jobId), `${jobId}: ${runner}`).toBe(false);
-      }
-      expect(
-        isPinned(fixture('ubuntu-latest').replace('    runs-on: ubuntu-latest\n', ''), jobId),
-        `${jobId}: missing job-level runner`,
-      ).toBe(false);
-      expect(isPinned('jobs:\n', jobId), `${jobId}: missing job`).toBe(false);
-    }
   });
 
   // ------------------------------------------------------------------
