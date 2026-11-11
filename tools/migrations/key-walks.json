@@ -119,6 +119,11 @@
       "parent": "integracao"
     },
     { "script": "2026-10-kit-virtual-contagem", "collection": "produtos", "scope": "COLLECTION" },
-    { "script": "2026-10-li-token-legado", "collection": "integracao", "scope": "COLLECTION" }
+    { "script": "2026-10-li-token-legado", "collection": "integracao", "scope": "COLLECTION" },
+    {
+      "script": "2026-11-li-integracoes-com-produto",
+      "collection": "produtolojaintegrada",
+      "scope": "COLLECTION_GROUP"
+    }
   ]
 }
