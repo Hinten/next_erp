@@ -6,6 +6,7 @@ import {
   CODIGO_RASCUNHO_SHOPEE,
   MSG_ITEM_NAME_EM_BRANCO_RASCUNHO_SHOPEE,
   projetarTabelaShopee,
+  respostaAtributosShopeeSchema,
   respostaVariacoesShopeeSchema,
 } from '@delfrance/schemas';
 
@@ -2464,7 +2465,7 @@ describe('step 21 — shopeeClientFalso, the ONE test client literal (C14)', () 
 // `rascunho-legado-1` (edits and discards take any id).
 const RASCUNHO_ID = 'AbCdEfGhIjKlMnOpQrSt';
 
-/** Every draft field, as a new draft's create names them (`attributes: null`). */
+/** Every draft field, as a create without attributes names them (`attributes: null`). */
 const CAMPOS: CamposDoCorpoRascunhoShopee = {
   item_name: 'Camiseta básica',
   description: null,
@@ -3286,5 +3287,276 @@ describe('#1911 (P14) — `variacoes`: a árvore de variações de uma categoria
     expect((err as ShopeeClientHttpError).status).toBe(404);
     expect((err as ShopeeClientHttpError).code).toBe('SHOPEE_CATEGORIA_DESCONHECIDA');
     expect((err as ShopeeClientHttpError).shopeeCode).toBeNull();
+  });
+});
+
+/* ---------------------------------------------------------------------------
+ * #1911 (P13) — `atributos`: a leaf category's attribute tree, for a draft's
+ * «Atributos» section and its publish gate
+ * ------------------------------------------------------------------------- */
+
+/** One attribute's editor metadata as `GET …/taxonomia/atributos` projects it (every key present). */
+const INFO_ATRIBUTO = {
+  inputType: 1,
+  inputValidationType: 0,
+  formatType: 1,
+  dateFormatType: null,
+  attributeUnitList: null,
+  maxValueCount: null,
+  introduction: null,
+  isOem: false,
+  supportSearchValue: false,
+};
+
+/**
+ * The tree as the route projects it: hand-written in the shape of the public
+ * `get_attribute_tree.br-*` captures (Shopee's own taxonomy ids and names),
+ * because a web test cannot import `apps/shopee`'s fixtures. A mandatory
+ * attribute whose second value unlocks a mandatory child, and a typed decimal
+ * with its own unit list.
+ */
+const ATRIBUTOS_200 = {
+  leaf: true,
+  categoryId: 100087,
+  warning: null,
+  truncated: false,
+  atributos: [
+    {
+      attributeId: 100408,
+      mandatory: true,
+      name: 'Tipo de Conexão',
+      attributeInfo: INFO_ATRIBUTO,
+      attributeValueList: [
+        {
+          valueId: 2498,
+          name: 'Com fio, Sem conexão ou Outros',
+          valueUnit: null,
+          childAttributeList: [],
+        },
+        {
+          valueId: 2530,
+          name: 'Sem fio (Bluetooth, Wifi, Radiofrequência)',
+          valueUnit: null,
+          childAttributeList: [
+            {
+              attributeId: 101237,
+              mandatory: true,
+              name: 'Fabricante',
+              attributeInfo: {
+                ...INFO_ATRIBUTO,
+                inputType: 2,
+                inputValidationType: 2,
+                supportSearchValue: true,
+              },
+              attributeValueList: [],
+            },
+          ],
+        },
+      ],
+    },
+    {
+      attributeId: 101029,
+      mandatory: false,
+      name: 'Tamanho Do Pacote',
+      attributeInfo: {
+        ...INFO_ATRIBUTO,
+        inputType: 3,
+        inputValidationType: 3,
+        formatType: 2,
+        attributeUnitList: [
+          'ML',
+          'L',
+          'MG',
+          'G/GR',
+          'KG',
+          'CM',
+          'M',
+          'Dozen',
+          'Piece',
+          'Pack',
+          'Set',
+          'Box',
+        ],
+      },
+      attributeValueList: [],
+    },
+  ],
+};
+
+describe('#1911 (P13) — `atributos`: a árvore de atributos de uma categoria folha', () => {
+  it('⭐ um GET com as DUAS chaves codificadas, sem corpo, sem Content-Type e sem signal', async () => {
+    const { c, pedidos } = gravador(JSON.stringify(ATRIBUTOS_200));
+
+    await c.atributos({ integracaoId: 'int/1 2&x', categoryId: 100087 });
+
+    expect(pedidos).toHaveLength(1);
+    expect(pedidos[0]?.url).toBe(
+      `${BASE}/taxonomia/atributos?integracaoId=int%2F1%202%26x&categoryId=100087`,
+    );
+    expect(pedidos[0]?.init?.method).toBe('GET');
+    expect(pedidos[0]?.init).not.toHaveProperty('body');
+    expect(pedidos[0]?.init?.headers).toEqual({
+      Authorization: 'Bearer token',
+      Accept: 'application/json',
+    });
+    expect(pedidos[0]?.init !== undefined && 'signal' in pedidos[0].init).toBe(false);
+  });
+
+  it('NEAR-MISS: é a rota dos ATRIBUTOS — nem a dos limites, nem a das variações, com a mesma consulta', async () => {
+    const { c, pedidos } = gravador(JSON.stringify(ATRIBUTOS_200));
+
+    await c.atributos({ integracaoId: 'int-1', categoryId: 100087 });
+
+    expect(pedidos[0]?.url).toBe(
+      `${BASE}/taxonomia/atributos?integracaoId=int-1&categoryId=100087`,
+    );
+    expect(pedidos[0]?.url).not.toContain('/taxonomia/limites');
+    expect(pedidos[0]?.url).not.toContain('/taxonomia/variacoes');
+  });
+
+  it('⭐ um 200 é lido pelo schema compartilhado: o filho sob o valor, os ids e as unidades chegam intactos', async () => {
+    const { c } = gravador(JSON.stringify(ATRIBUTOS_200));
+
+    const lida = await c.atributos({ integracaoId: 'int-1', categoryId: 100087 });
+
+    expect(lida).toEqual(respostaAtributosShopeeSchema.parse(ATRIBUTOS_200));
+    expect(lida).toEqual(ATRIBUTOS_200);
+    const [conexao, pacote] = lida.atributos;
+    expect(conexao?.attributeValueList[1]?.childAttributeList[0]?.attributeId).toBe(101237);
+    // NEAR-MISS: the OTHER value unlocks nothing — the tree, not the client, says where a child hangs.
+    expect(conexao?.attributeValueList[0]?.childAttributeList).toEqual([]);
+    // Shopee's unit list verbatim: its order and its case (`ML`, never folded to `ml`).
+    expect(pacote?.attributeInfo?.attributeUnitList?.slice(0, 3)).toEqual(['ML', 'L', 'MG']);
+    expect(pacote?.attributeInfo?.attributeUnitList).not.toContain('ml');
+  });
+
+  it('`truncated: true` e o valor `0` são valores: a árvore incompleta é lida, não recusada', async () => {
+    const corpo = {
+      ...ATRIBUTOS_200,
+      truncated: true,
+      atributos: [
+        {
+          attributeId: 100999,
+          mandatory: false,
+          name: null,
+          attributeInfo: null,
+          attributeValueList: [{ valueId: 0, name: null, valueUnit: '', childAttributeList: [] }],
+        },
+      ],
+    };
+    const { c } = gravador(JSON.stringify(corpo));
+
+    await expect(c.atributos({ integracaoId: 'int-1', categoryId: 100087 })).resolves.toEqual(
+      corpo,
+    );
+  });
+
+  it('uma chave desconhecida é descartada, também dentro da árvore: uma rota mais nova não custa um navegador mais velho', async () => {
+    const corpo = {
+      ...ATRIBUTOS_200,
+      campoDoFuturo: 1,
+      atributos: [{ ...ATRIBUTOS_200.atributos[1], campoDoFuturo: 2 }],
+    };
+    const { c } = gravador(JSON.stringify(corpo));
+
+    const lida = await c.atributos({ integracaoId: 'int-1', categoryId: 100087 });
+
+    expect('campoDoFuturo' in lida).toBe(false);
+    expect(lida.atributos[0] !== undefined && 'campoDoFuturo' in lida.atributos[0]).toBe(false);
+  });
+
+  it('uma categoria que não é folha responde o mesmo formato, vazio, e é lida', async () => {
+    const vazia = { ...ATRIBUTOS_200, leaf: false, atributos: [] };
+    const { c } = gravador(JSON.stringify(vazia));
+
+    await expect(c.atributos({ integracaoId: 'int-1', categoryId: 100017 })).resolves.toEqual(
+      vazia,
+    );
+  });
+
+  it('⭐ um corpo sem `truncated` é RespostaInvalida, nunca uma árvore completa', async () => {
+    const { truncated: _semTruncated, ...semTruncated } = ATRIBUTOS_200;
+    const { c } = gravador(JSON.stringify(semTruncated));
+
+    const err = await c
+      .atributos({ integracaoId: 'int-1', categoryId: 100087 })
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(ShopeeClientRespostaInvalidaError);
+    expect((err as ShopeeClientRespostaInvalidaError).campos).toEqual(['truncated']);
+  });
+
+  it.each([
+    [
+      'um id de atributo entre aspas',
+      [{ ...ATRIBUTOS_200.atributos[1], attributeId: '101029' }],
+      'atributos[].attributeId',
+    ],
+    [
+      'um FILHO com o id entre aspas (a recursão é lida)',
+      [
+        {
+          ...ATRIBUTOS_200.atributos[0],
+          attributeValueList: [
+            {
+              valueId: 2530,
+              name: 'Sem fio',
+              valueUnit: null,
+              childAttributeList: [
+                {
+                  attributeId: '101237',
+                  mandatory: true,
+                  name: 'Fabricante',
+                  attributeInfo: null,
+                  attributeValueList: [],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+      'atributos[].attributeValueList[].childAttributeList[].attributeId',
+    ],
+    [
+      'uma lista de unidades que não é de textos',
+      [
+        {
+          ...ATRIBUTOS_200.atributos[1],
+          attributeInfo: { ...INFO_ATRIBUTO, formatType: 2, attributeUnitList: [1] },
+        },
+      ],
+      'atributos[].attributeInfo.attributeUnitList[]',
+    ],
+  ])('NEAR-MISS: %s é RespostaInvalida', async (_n, atributos, campo) => {
+    const { c } = gravador(JSON.stringify({ ...ATRIBUTOS_200, atributos }));
+
+    const err = await c
+      .atributos({ integracaoId: 'int-1', categoryId: 100087 })
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(ShopeeClientRespostaInvalidaError);
+    expect((err as ShopeeClientRespostaInvalidaError).campos).toContain(campo);
+  });
+
+  it('a categoria desconhecida é o 404 com o código dela — a frase do backend', async () => {
+    const { c } = gravador(
+      JSON.stringify({
+        error: 'Categoria 999 não existe na árvore desta conta.',
+        code: 'SHOPEE_CATEGORIA_DESCONHECIDA',
+      }),
+      404,
+    );
+
+    const err = await c
+      .atributos({ integracaoId: 'int-1', categoryId: 999 })
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(ShopeeClientHttpError);
+    expect(err).not.toBeInstanceOf(ShopeeClientRespostaInvalidaError);
+    expect((err as ShopeeClientHttpError).status).toBe(404);
+    expect((err as ShopeeClientHttpError).code).toBe('SHOPEE_CATEGORIA_DESCONHECIDA');
+    expect((err as ShopeeClientHttpError).message).toBe(
+      'Categoria 999 não existe na árvore desta conta.',
+    );
   });
 });

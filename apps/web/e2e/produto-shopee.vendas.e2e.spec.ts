@@ -2,14 +2,20 @@ import { expect, test, type Locator, type Page } from '@playwright/test';
 import {
   ACAO_STATUS_ANUNCIO,
   ESTADO_ANUNCIO_SHOPEE,
+  FORMAT_TYPE_COM_UNIDADE_SHOPEE,
+  INPUT_TYPE_ATRIBUTO_SHOPEE,
+  INPUT_VALIDATION_TYPE_ATRIBUTO_SHOPEE,
   PADRAO_ID_RASCUNHO_SHOPEE,
   TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE,
   campoRascunhoShopeeSchema,
   descreverFaixaShopee,
   textoNaFaixaShopee,
+  type AtributoDto,
+  type AtributoInfoDto,
   type CampoRascunhoShopee,
   type CategoriaResumoDto,
   type FaixaDto,
+  type RespostaAtributosShopee,
   type RespostaAtualizarRascunhoShopee,
   type RespostaCategoriasShopee,
   type RespostaCriarRascunhoShopee,
@@ -57,14 +63,17 @@ import { warmRoutes } from './helpers/warmup';
  * ⚠️ The draft routes are stubbed too, so no draft document is ever written,
  * created or deleted by this suite: every test opens the seeded draft as
  * seeded. That draft has no category, so the editor reads no category bands
- * and asks apps/shopee for nothing on render — no test of ITS produto needs a
- * taxonomy stub. Two tests open a SECOND produto, whose draft has a category,
- * each stubbing its own reads through {@link instalarStubsShopee}'s per-test
- * map: the category pick (the stubbed tree — that category, its root and a
- * sibling leaf —, Shopee's suggestions for the draft's title and both leaves'
- * bands) and the publish (that category's node and bands, and its own
- * `publicar`). Every READ is recorded with its query too ({@link Leitura}),
- * so a test can say WHICH category's bands the page asked for.
+ * nor attribute tree and asks apps/shopee for nothing on render — no test of
+ * ITS produto needs a taxonomy stub. Three tests open a SECOND produto, whose
+ * draft has a category, each stubbing its own reads through
+ * {@link instalarStubsShopee}'s per-test map: the category pick (the stubbed
+ * tree — that category, its root and a sibling leaf —, Shopee's suggestions
+ * for the draft's title, and both leaves' bands and attribute trees), the
+ * attribute fill (that category's node and bands, and an attribute tree with
+ * mandatory attributes) and the publish (that category's node, bands and
+ * attribute tree, and its own `publicar`). Every READ is recorded with its
+ * query too ({@link Leitura}), so a test can say WHICH category's bands and
+ * tree the page asked for.
  *
  * The tab lists every Shopee conta on staging (shared project), so every
  * assertion is scoped by the run-scoped `data-testid="shopee-conta-<id>"` /
@@ -220,6 +229,38 @@ function pendenciaDoTituloForaDaFaixa(comprimento: number, faixa: FaixaDto): str
     `O título tem ${String(comprimento)} caracteres; esta categoria aceita ` +
     `${descreverFaixaShopee(faixa)}.`
   );
+}
+
+/*
+ * The draft's «Atributos» section (#1911 P13, `AtributosRascunhoShopee.tsx`)
+ * and its pendência (`lib/shopee/anuncioProduto.ts`), spelled for the same
+ * reason — the section's copy is written inline there, as `const`s of its own.
+ */
+
+/** `fraseDosAtributosObrigatoriosShopee` — the `atributo-obrigatorio` pendência, its names joined as they come. */
+function pendenciaDosAtributosObrigatorios(nomes: readonly string[]): string {
+  return `Preencha os atributos obrigatórios: ${nomes.join(', ')}.`;
+}
+/** A CHILD attribute's name in that pendência — the walk's (`atributosVisiveisShopee`, `@delfrance/schemas`). */
+function nomeDoAtributoFilho(filho: string, pai: string, valor: string): string {
+  return `${filho} (em ${pai}: ${valor})`;
+}
+/** `fraseDoPaiDoAtributoShopee` — the condition a MANDATORY child row states. */
+function fraseDoFilhoExigido(pai: string, valor: string): string {
+  return `Exigido quando ${pai} é «${valor}».`;
+}
+/** The unit picker's label, beside a typed value of a unit attribute. */
+const ROTULO_UNIDADE = 'Unidade';
+/** The BLOCKING typing of a value typed with no unit, shown on that picker. */
+const FRASE_ESCOLHA_A_UNIDADE = 'Escolha a unidade.';
+
+/** The test id of a draft's «Atributos» section — the element that also carries the attributes' field id. */
+function idDaSecaoDeAtributos(linkDocId: string): string {
+  return `shopee-rascunho-atributos-${linkDocId}`;
+}
+/** The test id of ONE attribute's row in that section. */
+function idDaLinhaDoAtributo(linkDocId: string, attributeId: number): string {
+  return `shopee-atributo-${linkDocId}-${String(attributeId)}`;
 }
 
 type Resposta = { readonly status: number; readonly corpo: unknown };
@@ -488,6 +529,163 @@ function limitesDaFolhaE2e(
   };
 }
 
+/*
+ * The stubbed attribute trees (#1911 P13) — `taxonomia/atributos?categoryId=`
+ * for a leaf of the stubbed category tree, typed by the shared answer type.
+ * Their attributes and values are PUBLIC Shopee BR taxonomy: the ids, flags and
+ * pt-BR names the committed `get_attribute_tree.br-*.json` captures carry, as
+ * apps/shopee's DTO projects them (`multi_lang`'s pt-BR as `name`). Only the
+ * category ids are fixtures; every value a test TYPES is invented.
+ */
+
+/** One public attribute or value: its Shopee id and its pt-BR name. */
+interface NoPublicoE2e {
+  readonly id: number;
+  readonly nome: string;
+}
+const TIPO_DE_CONEXAO: NoPublicoE2e = { id: 100408, nome: 'Tipo de Conexão' };
+const COM_FIO: NoPublicoE2e = { id: 2498, nome: 'Com fio, Sem conexão ou Outros' };
+const SEM_FIO: NoPublicoE2e = { id: 2530, nome: 'Sem fio (Bluetooth, Wifi, Radiofrequência)' };
+const FABRICANTE: NoPublicoE2e = { id: 101237, nome: 'Fabricante' };
+const NR_DE_HOMOLOGACAO: NoPublicoE2e = { id: 101197, nome: 'Nr. de Homologação' };
+const NOME_DO_MODELO: NoPublicoE2e = { id: 101040, nome: 'Nome do Modelo' };
+const TAMANHO_DO_PACOTE: NoPublicoE2e = { id: 101029, nome: 'Tamanho Do Pacote' };
+const QUANTIDADE_DA_EMBALAGEM: NoPublicoE2e = { id: 100999, nome: 'Quantidade da embalagem' };
+const CONDICAO: NoPublicoE2e = { id: 100413, nome: 'Condição' };
+/** «Tamanho Do Pacote»'s unit list, VERBATIM — Shopee's order and case (`ML`; another attribute's list says `ml`). */
+const UNIDADES_DO_TAMANHO_DO_PACOTE = [
+  'ML',
+  'L',
+  'MG',
+  'G/GR',
+  'KG',
+  'CM',
+  'M',
+  'Dozen',
+  'Piece',
+  'Pack',
+  'Set',
+  'Box',
+] as const;
+
+/**
+ * `input_validation_type` and `format_type` values the BR captures carry that
+ * no schema constant names: a list pick's (no validation), a free text's, and
+ * a value with no unit.
+ */
+const VALIDACAO_NENHUMA_E2E = 0;
+const VALIDACAO_TEXTO_E2E = 2;
+const FORMATO_SEM_UNIDADE_E2E = 1;
+
+/** `attribute_info` with every key a stub does not set as the BR captures leave it (absent ⇒ `null`). */
+function infoDoAtributoE2e(
+  info: Pick<AtributoInfoDto, 'inputType' | 'inputValidationType' | 'formatType'> &
+    Partial<AtributoInfoDto>,
+): AtributoInfoDto {
+  return {
+    dateFormatType: null,
+    attributeUnitList: null,
+    maxValueCount: null,
+    introduction: null,
+    isOem: false,
+    supportSearchValue: false,
+    ...info,
+  };
+}
+
+/** A free-text attribute with no value list and no unit (`input_type` 2 or 3) — a single text input. */
+function atributoDeTextoE2e(
+  no: NoPublicoE2e,
+  mandatory: boolean,
+  inputType: number,
+  supportSearchValue = false,
+): AtributoDto {
+  return {
+    attributeId: no.id,
+    mandatory,
+    name: no.nome,
+    attributeInfo: infoDoAtributoE2e({
+      inputType,
+      inputValidationType: VALIDACAO_TEXTO_E2E,
+      formatType: FORMATO_SEM_UNIDADE_E2E,
+      supportSearchValue,
+    }),
+    attributeValueList: [],
+  };
+}
+
+/**
+ * «Tipo de Conexão» — MANDATORY, one value of Shopee's list: «Sem fio (…)»
+ * unlocks three MANDATORY children (one of them, «Fabricante», also served by
+ * a Shopee search the ERP does not run: typed), «Com fio, …» unlocks none.
+ */
+const ATRIBUTO_TIPO_DE_CONEXAO: AtributoDto = {
+  attributeId: TIPO_DE_CONEXAO.id,
+  mandatory: true,
+  name: TIPO_DE_CONEXAO.nome,
+  attributeInfo: infoDoAtributoE2e({
+    inputType: INPUT_TYPE_ATRIBUTO_SHOPEE.listaUnica,
+    inputValidationType: VALIDACAO_NENHUMA_E2E,
+    formatType: FORMATO_SEM_UNIDADE_E2E,
+  }),
+  attributeValueList: [
+    { valueId: COM_FIO.id, name: COM_FIO.nome, valueUnit: null, childAttributeList: [] },
+    {
+      valueId: SEM_FIO.id,
+      name: SEM_FIO.nome,
+      valueUnit: null,
+      childAttributeList: [
+        atributoDeTextoE2e(
+          FABRICANTE,
+          true,
+          INPUT_TYPE_ATRIBUTO_SHOPEE.listaUnicaOuPersonalizado,
+          true,
+        ),
+        atributoDeTextoE2e(NR_DE_HOMOLOGACAO, true, INPUT_TYPE_ATRIBUTO_SHOPEE.textoLivre),
+        atributoDeTextoE2e(NOME_DO_MODELO, true, INPUT_TYPE_ATRIBUTO_SHOPEE.textoLivre),
+      ],
+    },
+  ],
+};
+/** «Tamanho Do Pacote» — optional, a typed DECIMAL with a unit of its own list. */
+const ATRIBUTO_TAMANHO_DO_PACOTE: AtributoDto = {
+  attributeId: TAMANHO_DO_PACOTE.id,
+  mandatory: false,
+  name: TAMANHO_DO_PACOTE.nome,
+  attributeInfo: infoDoAtributoE2e({
+    inputType: INPUT_TYPE_ATRIBUTO_SHOPEE.textoLivre,
+    inputValidationType: INPUT_VALIDATION_TYPE_ATRIBUTO_SHOPEE.decimal,
+    formatType: FORMAT_TYPE_COM_UNIDADE_SHOPEE,
+    attributeUnitList: [...UNIDADES_DO_TAMANHO_DO_PACOTE],
+  }),
+  attributeValueList: [],
+};
+
+/** A leaf's complete tree (no warning, nothing cut by the projection's depth cap). */
+function arvoreDaFolhaE2e(categoryId: number, atributos: AtributoDto[]): RespostaAtributosShopee {
+  return { leaf: true, categoryId, warning: null, truncated: false, atributos };
+}
+/**
+ * The ready draft's category tree of the attribute-fill test: the mandatory
+ * «Tipo de Conexão» (and its children), then the optional «Tamanho Do Pacote».
+ */
+const ARVORE_COM_OBRIGATORIOS_DO_RASCUNHO_PRONTO = arvoreDaFolhaE2e(SHOPEE_E2E_CATEGORIA, [
+  ATRIBUTO_TIPO_DE_CONEXAO,
+  ATRIBUTO_TAMANHO_DO_PACOTE,
+]);
+/**
+ * The trees of every other test opening the ready draft — ONLY optional
+ * attributes, so none is a pendência and «Publicar» acts on them — one
+ * attribute per leaf, a DIFFERENT one, so the section shows which leaf's tree
+ * it read.
+ */
+const ARVORE_OPCIONAL_DO_RASCUNHO_PRONTO = arvoreDaFolhaE2e(SHOPEE_E2E_CATEGORIA, [
+  atributoDeTextoE2e(QUANTIDADE_DA_EMBALAGEM, false, INPUT_TYPE_ATRIBUTO_SHOPEE.textoLivre),
+]);
+const ARVORE_OPCIONAL_DA_IRMA = arvoreDaFolhaE2e(CATEGORIA_IRMA_E2E, [
+  atributoDeTextoE2e(CONDICAO, false, INPUT_TYPE_ATRIBUTO_SHOPEE.listaUnicaOuPersonalizado),
+]);
+
 /**
  * The publish route's 422 for the ready draft's FIRST create: blocked before
  * any Shopee write (a plan refusal — no listing exists yet for a model leg to
@@ -516,12 +714,18 @@ function recusaSemPeso(corpo: Record<string, unknown> | null): Record<string, un
 }
 
 /**
- * The per-test stubs of the publish case (rev. 2a §D P11 #11): the ready
- * draft's category node and bands — answered for THAT conta and category only —
- * and its publish, answered for THAT link only. Any other read or publish
- * falls to `semStub`.
+ * The per-test stubs of the publish case (rev. 2a §D P11 #11) and of the
+ * attribute fill (#1911 P13): the ready draft's category node, bands and
+ * attribute tree — answered for THAT conta and category only; by default the
+ * tree of optional attributes only, the attribute fill passes its own — and
+ * its publish, answered for THAT link only. Any other read or publish falls to
+ * `semStub`.
  */
-function rotasDoRascunhoPronto(conta: string, rascunho: string): ReadonlyMap<string, Stub> {
+function rotasDoRascunhoPronto(
+  conta: string,
+  rascunho: string,
+  arvore: RespostaAtributosShopee = ARVORE_OPCIONAL_DO_RASCUNHO_PRONTO,
+): ReadonlyMap<string, Stub> {
   const daCategoria = (url: URL): boolean =>
     url.searchParams.get('integracaoId') === conta &&
     url.searchParams.get('categoryId') === String(SHOPEE_E2E_CATEGORIA);
@@ -540,6 +744,10 @@ function rotasDoRascunhoPronto(conta: string, rascunho: string): ReadonlyMap<str
               corpo: limitesDaFolhaE2e(SHOPEE_E2E_CATEGORIA, FAIXA_DO_TITULO_DO_RASCUNHO_PRONTO),
             }
           : null,
+    ],
+    [
+      'taxonomia/atributos',
+      (_corpo, url) => (daCategoria(url) ? { status: 200, corpo: arvore } : null),
     ],
     [
       'publicar',
@@ -582,10 +790,12 @@ function recomendacaoDoRascunhoPronto(): RespostaRecomendacaoCategoriaShopee {
 
 /**
  * The per-test stubs of the category pick (#1911 P11, the follow-up of review
- * R5-e2e#2): the stubbed tree's nodes and both leaves' bands — for THAT conta
- * and those ids only — and Shopee's suggestions for THAT conta and title. No
- * `publicar` of its own: the global one answers, and the test asserts it was
- * never called. Any other read (the roots, a shop-wide band) falls to `semStub`.
+ * R5-e2e#2): the stubbed tree's nodes, both leaves' bands and both leaves'
+ * attribute trees (P13: optional attributes only, one per leaf) — for THAT
+ * conta and those ids only — and Shopee's suggestions for THAT conta and
+ * title. No `publicar` of its own: the global one answers, and the test
+ * asserts it was never called. Any other read (the roots, a shop-wide band)
+ * falls to `semStub`.
  */
 function rotasDaEscolhaDeCategoria(conta: string, titulo: string): ReadonlyMap<string, Stub> {
   const daConta = (url: URL): boolean => url.searchParams.get('integracaoId') === conta;
@@ -597,7 +807,19 @@ function rotasDaEscolhaDeCategoria(conta: string, titulo: string): ReadonlyMap<s
     [SHOPEE_E2E_CATEGORIA, FAIXA_DO_TITULO_DO_RASCUNHO_PRONTO],
     [CATEGORIA_IRMA_E2E, FAIXA_DO_TITULO_DA_IRMA],
   ]);
+  const arvoreDaFolha = new Map<number, RespostaAtributosShopee>([
+    [SHOPEE_E2E_CATEGORIA, ARVORE_OPCIONAL_DO_RASCUNHO_PRONTO],
+    [CATEGORIA_IRMA_E2E, ARVORE_OPCIONAL_DA_IRMA],
+  ]);
   return new Map<string, Stub>([
+    [
+      'taxonomia/atributos',
+      (_corpo, url) => {
+        const id = idPedido(url);
+        const arvore = daConta(url) && id !== null ? arvoreDaFolha.get(id) : undefined;
+        return arvore === undefined ? null : { status: 200, corpo: arvore };
+      },
+    ],
     [
       'taxonomia/categorias',
       (_corpo, url) => {
@@ -724,9 +946,9 @@ const RAIZ_DO_RASCUNHO = 'shopee-rascunho-';
 
 /**
  * The link doc id of the ONE draft editor in `painel` holding a "Salvar
- * rascunho" button — read off its root's test id. Its two pickers carry test
- * ids under the same prefix, but neither holds that button, so only the root
- * matches.
+ * rascunho" button — read off its root's test id. Its two pickers and its
+ * «Atributos» section carry test ids under the same prefix, but none holds
+ * that button, so only the root matches.
  */
 async function idDoUnicoRascunho(painel: Locator): Promise<string> {
   const raiz = painel.locator(`[data-testid^="${RAIZ_DO_RASCUNHO}"]`).filter({
@@ -756,9 +978,9 @@ test.describe.serial('Produto Shopee tab e2e — listing state, actions and the 
   const tituloGuardado = `${prefix}-rascunho`;
   /**
    * The SECOND produto and its one draft READY to publish on `conta` — mirrors
-   * `seedRascunhoProntoShopee`. Only the category-pick and publish tests open
-   * it, each with its own taxonomy stubs, so its category's reads reach no
-   * other test.
+   * `seedRascunhoProntoShopee`. Only the category-pick, attribute-fill and
+   * publish tests open it, each with its own taxonomy stubs, so its category's
+   * reads reach no other test.
    */
   const pronto = { produtoId: `${prefix}-pronto`, rascunho: `${prefix}-pronto-rascunho` };
   /** The ready draft's stored title (mirrors the seed) — the suggestions' `nome`, and every band's measure. */
@@ -1210,7 +1432,7 @@ test.describe.serial('Produto Shopee tab e2e — listing state, actions and the 
     expect(stubs.chamadas).toEqual([]);
 
     await editor.getByRole('button', { name: 'Salvar rascunho', exact: true }).click();
-    // The create names EVERY field (`attributes: null` on a new draft) at the
+    // The create names EVERY field (`attributes: null`: this draft fills none) at the
     // id minted when the draft was opened — and no second-listing flag, since
     // nothing was confirmed.
     await expect
@@ -1296,6 +1518,10 @@ test.describe.serial('Produto Shopee tab e2e — listing state, actions and the 
         integracaoId: conta,
         categoryId: String(SHOPEE_E2E_CATEGORIA),
       }),
+      leitura('taxonomia/atributos', {
+        integracaoId: conta,
+        categoryId: String(SHOPEE_E2E_CATEGORIA),
+      }),
     ].sort();
     const lidasDepoisDaEscolha = [
       ...lidasNaAbertura,
@@ -1309,6 +1535,10 @@ test.describe.serial('Produto Shopee tab e2e — listing state, actions and the 
         categoryId: String(CATEGORIA_IRMA_E2E),
       }),
       leitura('taxonomia/limites', { integracaoId: conta, categoryId: String(CATEGORIA_IRMA_E2E) }),
+      leitura('taxonomia/atributos', {
+        integracaoId: conta,
+        categoryId: String(CATEGORIA_IRMA_E2E),
+      }),
     ].sort();
 
     await page.goto(`/produtos/${pronto.produtoId}/editar`);
@@ -1319,16 +1549,23 @@ test.describe.serial('Produto Shopee tab e2e — listing state, actions and the 
     const pendencias = editor.getByTestId(`${RAIZ_DO_RASCUNHO}${pronto.rascunho}-pendencias`);
     const aviso = editor.getByTestId(`${RAIZ_DO_RASCUNHO}${pronto.rascunho}-publicar-aviso`);
     const publicar = editor.getByRole('button', { name: ROTULO_PUBLICAR, exact: true });
+    const atributos = editor.getByTestId(idDaSecaoDeAtributos(pronto.rascunho));
+    // Each leaf's tree holds ONE optional attribute of its own: its row says which tree is shown.
+    const linhaDaCategoria = atributos.getByTestId(
+      idDaLinhaDoAtributo(pronto.rascunho, QUANTIDADE_DA_EMBALAGEM.id),
+    );
+    const linhaDaIrma = atributos.getByTestId(idDaLinhaDoAtributo(pronto.rascunho, CONDICAO.id));
 
     // Positive first: the held category's path, and «Publicar» acts on its
-    // bands — no pendência, no sentence under the button.
+    // bands and attribute tree — no pendência, no sentence under the button.
     await expect(
       rotulo.getByText(caminhoDaCategoria([RAIZ_E2E, FOLHA_DO_RASCUNHO_PRONTO]), { exact: true }),
     ).toBeVisible({ timeout: 30_000 });
     await expect(publicar).toBeEnabled({ timeout: 30_000 });
     await expect(pendencias).toHaveCount(0);
     await expect(aviso).toHaveCount(0);
-    // Two reads, both of the HELD category: its node and its bands.
+    await expect(linhaDaCategoria).toBeVisible();
+    // Three reads, all of the HELD category: its node, its bands and its attribute tree.
     expect(leiturasDistintas(stubs)).toEqual(lidasNaAbertura);
 
     await categoria.getByRole('button', { name: ROTULO_TROCAR_CATEGORIA, exact: true }).click();
@@ -1362,6 +1599,9 @@ test.describe.serial('Produto Shopee tab e2e — listing state, actions and the 
     await expect(pendencias.getByText(pendenciaDaIrma, { exact: true })).toBeVisible({
       timeout: 30_000,
     });
+    // So is the EDITED category's attribute tree — the sibling's row, never the held one's.
+    await expect(linhaDaIrma).toBeVisible({ timeout: 30_000 });
+    await expect(linhaDaCategoria).toHaveCount(0);
     expect(leiturasDistintas(stubs)).toEqual(lidasDepoisDaEscolha);
     // «Publicar» waits for the change to be saved, and says so.
     await expect(publicar).toBeDisabled();
@@ -1377,6 +1617,7 @@ test.describe.serial('Produto Shopee tab e2e — listing state, actions and the 
     await expect(publicar).toBeEnabled();
     await expect(pendencias).toHaveCount(0);
     await expect(aviso).toHaveCount(0);
+    await expect(linhaDaCategoria).toBeVisible();
     expect(escritas(stubs)).toEqual([]);
 
     // A suggestion picks the same leaf, and Salvar sends ONLY the category —
@@ -1412,9 +1653,172 @@ test.describe.serial('Produto Shopee tab e2e — listing state, actions and the 
     await expect(page.getByText(TOAST_RASCUNHO_SALVO, { exact: true })).toBeVisible({
       timeout: 30_000,
     });
-    // Nothing read beyond those six — no shop-wide band, no roots — and
+    // Nothing read beyond those eight — no shop-wide band, no roots — and
     // nothing outside the stubs.
     expect(leiturasDistintas(stubs)).toEqual(lidasDepoisDaEscolha);
+    expect(stubs.semStub, 'Shopee routes this spec does not stub').toEqual([]);
+  });
+
+  test("fills a draft's attributes from its category's tree and saves them in the request shape: a mandatory child shown only under the chosen value, a typed decimal sent with the attribute's own unit", async ({
+    page,
+  }) => {
+    const stubs = await instalarStubsShopee(
+      page,
+      links.kitRemovido,
+      rotasDoRascunhoPronto(conta, pronto.rascunho, ARVORE_COM_OBRIGATORIOS_DO_RASCUNHO_PRONTO),
+    );
+    /** Invented values, typed into «Sem fio»'s three children. */
+    const digitados = {
+      fabricanteDescartado: 'Fabricante trocado do e2e',
+      fabricante: 'Fabricante do e2e',
+      homologacao: 'Homologação do e2e',
+      modelo: 'Modelo do e2e',
+    };
+    const filhos = [FABRICANTE, NR_DE_HOMOLOGACAO, NOME_DO_MODELO];
+
+    await page.goto(`/produtos/${pronto.produtoId}/editar`);
+    const painel = await abrirConta(page, conta);
+    const editor = painel.getByTestId(`${RAIZ_DO_RASCUNHO}${pronto.rascunho}`);
+    const atributos = editor.getByTestId(idDaSecaoDeAtributos(pronto.rascunho));
+    const linha = (no: NoPublicoE2e): Locator =>
+      atributos.getByTestId(idDaLinhaDoAtributo(pronto.rascunho, no.id));
+    const texto = (no: NoPublicoE2e): Locator =>
+      linha(no).getByRole('textbox', { name: no.nome, exact: true });
+    const pendencias = editor.getByTestId(`${RAIZ_DO_RASCUNHO}${pronto.rascunho}-pendencias`);
+    const publicar = editor.getByRole('button', { name: ROTULO_PUBLICAR, exact: true });
+    const salvar = editor.getByRole('button', { name: 'Salvar rascunho', exact: true });
+    const tipoDeConexao = linha(TIPO_DE_CONEXAO).getByRole('combobox', {
+      name: TIPO_DE_CONEXAO.nome,
+      exact: true,
+    });
+    const escolherTipoDeConexao = async (valor: NoPublicoE2e): Promise<void> => {
+      await tipoDeConexao.click({ timeout: 30_000 });
+      await page.getByRole('option', { name: valor.nome, exact: true }).click();
+      await expect(tipoDeConexao).toHaveValue(valor.nome);
+    };
+
+    // Positive first: the tree is read — its two roots are rows — and its one
+    // mandatory root, empty, is the draft's pendência, so «Publicar» waits.
+    await expect(
+      pendencias.getByText(pendenciaDosAtributosObrigatorios([TIPO_DE_CONEXAO.nome]), {
+        exact: true,
+      }),
+    ).toBeVisible({ timeout: 30_000 });
+    await expect(tipoDeConexao).toBeVisible();
+    await expect(linha(TAMANHO_DO_PACOTE)).toBeVisible();
+    await expect(publicar).toBeDisabled();
+    // A child is no row while the value that unlocks it is not chosen.
+    for (const filho of filhos) await expect(linha(filho)).toHaveCount(0);
+
+    // «Sem fio» shows its three MANDATORY children, each saying when it is
+    // required, and the pendência now names them — under that value.
+    await escolherTipoDeConexao(SEM_FIO);
+    for (const filho of filhos) {
+      await expect(
+        linha(filho).getByText(fraseDoFilhoExigido(TIPO_DE_CONEXAO.nome, SEM_FIO.nome)),
+      ).toBeVisible();
+    }
+    await expect(
+      pendencias.getByText(
+        pendenciaDosAtributosObrigatorios(
+          filhos.map((f) => nomeDoAtributoFilho(f.nome, TIPO_DE_CONEXAO.nome, SEM_FIO.nome)),
+        ),
+        { exact: true },
+      ),
+    ).toBeVisible();
+
+    // A child's value goes with the value that showed it: «Com fio» hides the
+    // children (and with them the pendência), and «Sem fio» again shows them EMPTY.
+    await texto(FABRICANTE).fill(digitados.fabricanteDescartado);
+    await escolherTipoDeConexao(COM_FIO);
+    for (const filho of filhos) await expect(linha(filho)).toHaveCount(0);
+    await expect(pendencias).toHaveCount(0);
+    await escolherTipoDeConexao(SEM_FIO);
+    await expect(texto(FABRICANTE)).toHaveValue('');
+
+    await texto(FABRICANTE).fill(digitados.fabricante);
+    await texto(NR_DE_HOMOLOGACAO).fill(digitados.homologacao);
+    await texto(NOME_DO_MODELO).fill(digitados.modelo);
+    // Every mandatory attribute filled: no pendência, the change can be saved,
+    // and «Publicar» waits for that save.
+    await expect(pendencias).toHaveCount(0);
+    await expect(salvar).toBeEnabled();
+    await expect(publicar).toBeDisabled();
+
+    // A decimal typed with the pt-BR comma and NO unit blocks the save: the
+    // unit is the operator's to choose, never a default.
+    const tamanho = linha(TAMANHO_DO_PACOTE);
+    await texto(TAMANHO_DO_PACOTE).fill('1,5');
+    await expect(tamanho.getByText(FRASE_ESCOLHA_A_UNIDADE, { exact: true })).toBeVisible();
+    await expect(salvar).toBeDisabled();
+    // The units offered are the attribute's own list, verbatim — Shopee's
+    // order and case: `ML` is offered, a case-folded `ml` is not.
+    const unidade = tamanho.getByRole('combobox', { name: ROTULO_UNIDADE, exact: true });
+    await unidade.click();
+    await expect(
+      page.getByRole('listbox', { name: ROTULO_UNIDADE, exact: true }).getByRole('option'),
+    ).toHaveText([...UNIDADES_DO_TAMANHO_DO_PACOTE]);
+    await expect(page.getByRole('option', { name: 'ml', exact: true })).toHaveCount(0);
+    await page.getByRole('option', { name: 'KG', exact: true }).click();
+    await expect(unidade).toHaveValue('KG');
+    await expect(tamanho.getByText(FRASE_ESCOLHA_A_UNIDADE, { exact: true })).toHaveCount(0);
+    await expect(salvar).toBeEnabled();
+    // Nothing leaves the browser before the operator saves.
+    expect(escritas(stubs)).toEqual([]);
+    await salvar.click();
+
+    // ONLY the attributes, in the REQUEST shape and the walk's order — a root,
+    // the children its chosen value shows, the next root — the list pick by
+    // its id alone, each typed value as a custom one (`value_id: 0`), the
+    // decimal in the wire's dot form with the unit picked; and beside it the
+    // attributes the operator saw stored: none.
+    await expect
+      .poll(() => escritas(stubs), { timeout: 30_000 })
+      .toEqual([
+        {
+          metodo: 'POST',
+          rota: 'rascunho/atualizar',
+          corpo: {
+            integracaoId: conta,
+            produtoId: pronto.produtoId,
+            linkDocId: pronto.rascunho,
+            base: { attributes: null },
+            patch: {
+              attributes: [
+                {
+                  attribute_id: TIPO_DE_CONEXAO.id,
+                  attribute_value_list: [{ value_id: SEM_FIO.id }],
+                },
+                {
+                  attribute_id: FABRICANTE.id,
+                  attribute_value_list: [
+                    { value_id: 0, original_value_name: digitados.fabricante },
+                  ],
+                },
+                {
+                  attribute_id: NR_DE_HOMOLOGACAO.id,
+                  attribute_value_list: [
+                    { value_id: 0, original_value_name: digitados.homologacao },
+                  ],
+                },
+                {
+                  attribute_id: NOME_DO_MODELO.id,
+                  attribute_value_list: [{ value_id: 0, original_value_name: digitados.modelo }],
+                },
+                {
+                  attribute_id: TAMANHO_DO_PACOTE.id,
+                  attribute_value_list: [
+                    { value_id: 0, original_value_name: '1.5', value_unit: 'KG' },
+                  ],
+                },
+              ],
+            },
+          },
+        },
+      ]);
+    await expect(page.getByText(TOAST_RASCUNHO_SALVO, { exact: true })).toBeVisible({
+      timeout: 30_000,
+    });
     expect(stubs.semStub, 'Shopee routes this spec does not stub').toEqual([]);
   });
 
@@ -1433,7 +1837,9 @@ test.describe.serial('Produto Shopee tab e2e — listing state, actions and the 
     const editor = bloco.getByTestId(`${RAIZ_DO_RASCUNHO}${pronto.rascunho}`);
     // Positive first: saved, clean, a category and «Sem marca» chosen, the
     // produto's stored Descrição standing in — so «Publicar» acts once the
-    // category's bands are read (the stubbed `taxonomia/limites`).
+    // category's bands and its attribute tree are read (the stubbed
+    // `taxonomia/limites` and `taxonomia/atributos`, whose attributes are all
+    // optional).
     const publicar = editor.getByRole('button', { name: ROTULO_PUBLICAR, exact: true });
     await expect(publicar).toBeEnabled({ timeout: 30_000 });
     await expect(editor.getByText(PENDENCIA_CATEGORIA)).toHaveCount(0);

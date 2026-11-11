@@ -1,3 +1,7 @@
+import { readFileSync, readdirSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   AGUARDAR_KIT_INCERTO_SHOPEE_MS,
@@ -67,8 +71,15 @@ import {
   FRASE_PUBLICAR_COM_ALTERACOES_SHOPEE,
   FRASE_PUBLICAR_PRODUTO_NAO_SALVO_SHOPEE,
   FRASE_PUBLICAR_RASCUNHO_NOVO_SHOPEE,
+  FRASE_PUBLICAR_SEM_ATRIBUTOS_SHOPEE,
   FRASE_PUBLICAR_SEM_FAIXAS_SHOPEE,
   FRASE_RASCUNHO_INEXISTENTE_NA_PUBLICACAO_SHOPEE,
+  FRASE_TROCA_DE_CATEGORIA_APAGA_ATRIBUTOS_SHOPEE,
+  FRASE_VOLTAR_A_CATEGORIA_GRAVADA_TRAZ_ATRIBUTOS_SHOPEE,
+  FRASE_VOLTAR_CATEGORIA_APAGA_ATRIBUTOS_SHOPEE,
+  FRASE_VOLTAR_CATEGORIA_GRAVADA_SHOPEE,
+  fraseDosAtributosNaoLidosShopee,
+  saidaPeloSellerCentreDoRascunhoShopee,
   MOTIVO_ANUNCIO_SHOPEE,
   ROTULO_CRIAR_PAUSADO_SHOPEE,
   TEXTO_MOTIVO_ANUNCIO_SEM_ACAO_SHOPEE,
@@ -3185,6 +3196,190 @@ describe('#2015 — logistica-nao-confirmada: the copy, then the server’s chan
     ).toEqual(['Primeira.', copia, 'Terceira.']);
     for (const valor of [undefined, null, {}, 'x', 3]) {
       expect(textosDasRecusasGuardadasShopee(valor)).toEqual([]);
+    }
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*            #1911 P13 — the attribute editor's gate and its exit             */
+/* -------------------------------------------------------------------------- */
+
+describe('#1911 P13 — a saída pelo Seller Centre EXPORTADA é a mesma, lida no estado ATUAL do bloco', () => {
+  const NOW = 1_800_000_000_000;
+  const LIVRE = { tipo: 'livre' } as const;
+  const INCERTA = { tipo: 'incerta', desdeMs: NOW - 600_000 } as const;
+  const INCERTA_SEM_JANELA = { tipo: 'incerta', desdeMs: null } as const;
+  const EM_ANDAMENTO = {
+    tipo: 'em-andamento',
+    desdeMs: NOW - 60_000,
+    expiraEmMs: NOW + 240_000,
+    aguardarMs: 240_000,
+    aposIncerteza: false,
+    posExpiracao: false,
+  } as const;
+  /** The #11 row (`busca-de-anuncio-existente-incompleta`) ends with the PRIVATE exit — `SKU. <exit>`. */
+  const linhaDaBusca = {
+    motivo: MOTIVO_ANUNCIO_SHOPEE.buscaDeAnuncioExistenteIncompleta,
+    mensagem: 'rode publicar:anuncio pelo terminal',
+    acao: null,
+  };
+
+  it.each([
+    ['livre', LIVRE],
+    ['incerta, com janela', INCERTA],
+    ['incerta, sem janela', INCERTA_SEM_JANELA],
+    ['em-andamento', EM_ANDAMENTO],
+  ] as const)(
+    'PAR: em `%s`, o wrapper é EXATAMENTE a saída que a linha #11 já mostra (uma só grafia)',
+    (_n, publicacao) => {
+      const saida = saidaPeloSellerCentreDoRascunhoShopee(publicacao);
+      const linha = textoDoProblemaShopee(
+        linhaDaBusca,
+        'R1',
+        'p1',
+        contextoDeRascunho({ publicacao }),
+      );
+
+      expect(saida).not.toBe('');
+      expect(linha.endsWith(`SKU. ${saida}`)).toBe(true);
+    },
+  );
+
+  it('PAR: `livre` é o texto que a cauda «obrigatório» do editor compõe, VERBATIM', () => {
+    expect(
+      `Ele é obrigatório, então este rascunho não pode ser publicado pelo ERP. ${saidaPeloSellerCentreDoRascunhoShopee(LIVRE)}`,
+    ).toBe(
+      'Ele é obrigatório, então este rascunho não pode ser publicado pelo ERP. Procure o SKU ' +
+        'deste produto no Seller Centre: se já existe um anúncio com ele, importe-o ' +
+        `(${PORTA_DA_IMPORTACAO_SHOPEE}) e descarte este rascunho; se não existe, crie-o lá com ` +
+        'esse SKU e importe-o.',
+    );
+  });
+
+  it('QUASE-PAR: `livre` e `incerta` são saídas DIFERENTES — a incerta confere a última tentativa e nunca manda criar', () => {
+    const livre = saidaPeloSellerCentreDoRascunhoShopee(LIVRE);
+    const incerta = saidaPeloSellerCentreDoRascunhoShopee(INCERTA);
+
+    expect(incerta).not.toBe(livre);
+    expect(livre).toContain('Procure o SKU deste produto no Seller Centre');
+    expect(incerta).not.toContain('Procure o SKU');
+    expect(incerta).toContain('se o anúncio da última tentativa existe');
+    expect(incerta).not.toContain('crie-o');
+    expect(incerta).toContain('Não crie outro antes de conferir.');
+    // The window decides the incerta wording too: two readings, two exits.
+    expect(saidaPeloSellerCentreDoRascunhoShopee(INCERTA_SEM_JANELA)).not.toBe(incerta);
+    // em-andamento waits; it names neither exit.
+    const espera = saidaPeloSellerCentreDoRascunhoShopee(EM_ANDAMENTO);
+    expect(espera).not.toBe(livre);
+    expect(espera).not.toMatch(/Procure o SKU|crie-o|importe-o/);
+  });
+
+  it('nunca abre com «Esta tentativa não criou nada.» — um atributo que o editor não preenche não prova nada sobre tentativa alguma', () => {
+    for (const publicacao of [LIVRE, INCERTA, INCERTA_SEM_JANELA, EM_ANDAMENTO]) {
+      const saida = saidaPeloSellerCentreDoRascunhoShopee(publicacao);
+      expect(saida).not.toContain('Esta tentativa não criou nada.');
+      expect(saida).not.toMatch(TEXTO_DE_TERMINAL);
+    }
+  });
+
+  it('⭐ a saída é ESCRITA uma vez: nenhum outro fonte do lib nem da aba Shopee soletra «procure o SKU» (o editor de atributos chama o wrapper)', () => {
+    const aqui = dirname(fileURLToPath(import.meta.url));
+    const pastas = [aqui, join(aqui, '../../app/(app)/produtos/_components/shopee')];
+    const comAGrafia: string[] = [];
+    let ocorrencias = 0;
+    for (const pasta of pastas) {
+      for (const nome of readdirSync(pasta)) {
+        if (!/\.tsx?$/.test(nome) || /\.test\.tsx?$/.test(nome)) continue;
+        const fonte = readFileSync(join(pasta, nome), 'utf8');
+        // Case-insensitive: a lower-case «procure o SKU» after a colon is the same exit re-spelled.
+        const achados = fonte.match(/procure o SKU/gi) ?? [];
+        if (achados.length > 0) comAGrafia.push(nome);
+        ocorrencias += achados.length;
+      }
+    }
+
+    expect(comAGrafia).toEqual(['anuncioProduto.ts']);
+    expect(ocorrencias).toBe(1);
+  });
+});
+
+describe('#1911 P13 — Publicar espera a árvore de atributos da categoria', () => {
+  it('a espera: o texto exato, e NUNCA o das faixas (dois motivos, duas frases)', () => {
+    expect(FRASE_PUBLICAR_SEM_ATRIBUTOS_SHOPEE).toBe(
+      'Publicar fica disponível quando os atributos da categoria forem lidos da Shopee.',
+    );
+    expect(FRASE_PUBLICAR_SEM_ATRIBUTOS_SHOPEE).not.toBe(FRASE_PUBLICAR_SEM_FAIXAS_SHOPEE);
+  });
+
+  it('PAR: a leitura que FALHOU diz por quê — a frase base seguida da causa, aparada', () => {
+    const base =
+      'Publicar fica indisponível: os atributos da categoria não puderam ser lidos da Shopee.';
+    expect(fraseDosAtributosNaoLidosShopee('A Shopee está limitando as consultas agora.')).toBe(
+      `${base} A Shopee está limitando as consultas agora.`,
+    );
+    expect(fraseDosAtributosNaoLidosShopee('  Reconecte a conta.  ')).toBe(
+      `${base} Reconecte a conta.`,
+    );
+  });
+
+  it.each([
+    ['vazia', ''],
+    ['só espaços', '   '],
+    ['de terminal', 'rode publicar:anuncio --link L1'],
+  ])('QUASE-PAR: uma causa %s não é impressa — fica só a frase base', (_n, causa) => {
+    expect(fraseDosAtributosNaoLidosShopee(causa)).toBe(
+      'Publicar fica indisponível: os atributos da categoria não puderam ser lidos da Shopee.',
+    );
+  });
+
+  it('a falha nunca diz «fica disponível quando» — nada tornaria isso verdade', () => {
+    const t = fraseDosAtributosNaoLidosShopee('Tente de novo.');
+    expect(t).not.toBe(FRASE_PUBLICAR_SEM_ATRIBUTOS_SHOPEE);
+    expect(t).not.toMatch(/fica disponível quando/);
+  });
+
+  it('nenhuma frase nova é de terminal', () => {
+    for (const t of [
+      FRASE_PUBLICAR_SEM_ATRIBUTOS_SHOPEE,
+      fraseDosAtributosNaoLidosShopee(''),
+      FRASE_TROCA_DE_CATEGORIA_APAGA_ATRIBUTOS_SHOPEE,
+    ]) {
+      expect(t).not.toMatch(TEXTO_DE_TERMINAL);
+    }
+  });
+});
+
+describe('#1911 P13 — trocar a categoria apaga os atributos PREENCHIDOS', () => {
+  it('o texto exato: os preenchidos (gravados ou não), porque valem só para a categoria em que foram escolhidos', () => {
+    expect(FRASE_TROCA_DE_CATEGORIA_APAGA_ATRIBUTOS_SHOPEE).toBe(
+      'Trocar a categoria remove os atributos preenchidos neste rascunho: eles valem só para a ' +
+        'categoria em que foram escolhidos.',
+    );
+    // NEAR-MISS: never only the SAVED ones — a new draft's unsaved attributes are cleared too.
+    expect(FRASE_TROCA_DE_CATEGORIA_APAGA_ATRIBUTOS_SHOPEE).not.toMatch(/gravados/);
+    // NEAR-MISS: never «da categoria atual» — after an unsaved change the STORED ones are the saved category's.
+    expect(FRASE_TROCA_DE_CATEGORIA_APAGA_ATRIBUTOS_SHOPEE).not.toMatch(/categoria atual/);
+  });
+
+  it('voltar à categoria gravada: o que ela traz de volta, e o que a volta apaga — textos exatos', () => {
+    expect(FRASE_VOLTAR_A_CATEGORIA_GRAVADA_TRAZ_ATRIBUTOS_SHOPEE).toBe(
+      'Voltar à categoria gravada traz de volta os atributos gravados.',
+    );
+    expect(FRASE_VOLTAR_CATEGORIA_APAGA_ATRIBUTOS_SHOPEE).toBe(
+      'Voltar à categoria gravada remove os atributos preenchidos para a categoria atual.',
+    );
+    expect(FRASE_VOLTAR_CATEGORIA_GRAVADA_SHOPEE).toBe(
+      'Ou use «Voltar à categoria gravada» (em Categoria): desfaz a troca de categoria e os ' +
+        'atributos preenchidos para a categoria nova, e mantém as outras alterações.',
+    );
+    // NEAR-MISS: never «só a troca de categoria» — the new category's attributes go with it.
+    expect(FRASE_VOLTAR_CATEGORIA_GRAVADA_SHOPEE).not.toMatch(/só a troca/);
+    for (const t of [
+      FRASE_VOLTAR_A_CATEGORIA_GRAVADA_TRAZ_ATRIBUTOS_SHOPEE,
+      FRASE_VOLTAR_CATEGORIA_APAGA_ATRIBUTOS_SHOPEE,
+      FRASE_VOLTAR_CATEGORIA_GRAVADA_SHOPEE,
+    ]) {
+      expect(t).not.toMatch(TEXTO_DE_TERMINAL);
     }
   });
 });

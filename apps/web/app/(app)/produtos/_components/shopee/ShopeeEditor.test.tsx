@@ -20,6 +20,8 @@ import {
   anuncioShopeeVivo,
   chaveAvisoReceitaKitShopee,
   estadoPublicacaoRascunhoShopee,
+  type AtributoDto,
+  type AtributoInfoDto,
   type EstadoPublicacaoRascunhoShopee,
   type ProdutoShopeeLink,
 } from '@delfrance/schemas';
@@ -56,6 +58,7 @@ import {
   FRASE_ATESTACAO_SUPERADA_SHOPEE,
   FRASE_ATESTACAO_DE_RASCUNHO_JA_PUBLICADO_SHOPEE,
   FRASE_PUBLICAR_PRODUTO_NAO_SALVO_SHOPEE,
+  FRASE_PUBLICAR_SEM_ATRIBUTOS_SHOPEE,
   FRASE_PUBLICAR_SEM_FAIXAS_SHOPEE,
   MOTIVO_ANUNCIO_SHOPEE,
   PORTA_DA_IMPORTACAO_SHOPEE,
@@ -78,6 +81,7 @@ import {
   fraseDoConflitoIlegivelShopee,
   fraseDaPublicacaoExpiradaShopee,
   fraseDaPublicacaoInterrompidaShopee,
+  fraseDosAtributosNaoLidosShopee,
   fraseDoRascunhoEmAndamentoShopee,
   fraseDosRascunhosIrmaosIncertosShopee,
   textoDaConfirmacaoDePublicacaoShopee,
@@ -97,6 +101,7 @@ import {
   type AnuncioStatusShopee,
   type KitPublicadoShopee,
   type ProblemaShopee,
+  type RespostaAtributosShopee,
   type RespostaLimitesDoItemShopee,
   type RespostaPublicarShopee,
   type RespostaReverificarShopee,
@@ -1360,6 +1365,18 @@ function limitesDoItem(categoryId: number | null): RespostaLimitesDoItemShopee {
     gtinLimit: null,
     supportsPreOrder: false,
   };
+}
+
+/**
+ * A category's attribute tree — `client.atributos`' whole answer (#1911 P13):
+ * a leaf, healthy, complete, holding `atributos` (none by default).
+ */
+function respostaAtributos(
+  categoryId: number,
+  atributos: AtributoDto[] = [],
+  extra: Partial<RespostaAtributosShopee> = {},
+): RespostaAtributosShopee {
+  return { leaf: true, categoryId, warning: null, truncated: false, atributos, ...extra };
 }
 
 /** Every button a block's action row can hold — what a never-folded live link shows. */
@@ -5802,12 +5819,17 @@ const confirmarPublicacao = () =>
 /** What a live link's 404 reads (`MENSAGEM_VINCULO_FORA_DA_CONTA`) — never a draft's. */
 const FORA_DA_CONTA = 'Este vínculo não pertence mais a esta conta — a lista foi atualizada.';
 
-/** The operator may author, the stored produto has its Descrição, and the bands answer. */
+/**
+ * The operator may author, the stored produto has its Descrição, and the bands
+ * answer — and (#1911 P13) the category's attribute tree, with no attribute:
+ * «Publicar» waits on that read too.
+ */
 function prontoParaPublicar(publicar: ShopeeClient['publicar'], extra: Partial<ShopeeClient> = {}) {
   comAutoria();
   h.extraData = { descricao: DESCRICAO_DO_PRODUTO };
   h.client = shopeeClientFalso({
     limitesDoItem: async (input) => limitesDoItem(input.categoryId ?? null),
+    atributos: async (input) => respostaAtributos(input.categoryId),
     publicar,
     ...extra,
   });
@@ -7401,5 +7423,684 @@ describe('ShopeeEditor — the P11 review fixes on the tab (#1911 batch-B review
     r.rerender(ui(false));
     await waitFor(() => expect(formDe('L-rasc').decisaoDePublicar.podePublicar).toBe(true));
     expect(publicar).not.toHaveBeenCalled();
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*            #1911 P13 — the attribute tree and the «Atributos» section       */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * The tab reads the attribute tree of the category each draft is EDITED to
+ * (beside its bands), hands the section its reading and the MODEL's rows, feeds
+ * the gate, and applies `onAtributo` through `comAtributoRascunhoShopee`.
+ * Public BR taxonomy (100408 «Tipo de Conexão» with 2498 / 2530, 101029
+ * «Tamanho Do Pacote» and its 12 units); every typed or stored value invented.
+ */
+const infoDoAtributo = (p: Partial<AtributoInfoDto>): AtributoInfoDto => ({
+  inputType: null,
+  inputValidationType: 0,
+  formatType: 1,
+  dateFormatType: null,
+  attributeUnitList: null,
+  maxValueCount: null,
+  introduction: null,
+  isOem: false,
+  supportSearchValue: false,
+  ...p,
+});
+const TIPO_DE_CONEXAO: AtributoDto = {
+  attributeId: 100408,
+  mandatory: true,
+  name: 'Tipo de Conexão',
+  attributeInfo: infoDoAtributo({ inputType: 1 }),
+  attributeValueList: [
+    {
+      valueId: 2498,
+      name: 'Com fio, Sem conexão ou Outros',
+      valueUnit: null,
+      childAttributeList: [],
+    },
+    {
+      valueId: 2530,
+      name: 'Sem fio (Bluetooth, Wifi, Radiofrequência)',
+      valueUnit: null,
+      childAttributeList: [],
+    },
+  ],
+};
+const TAMANHO_DO_PACOTE: AtributoDto = {
+  attributeId: 101029,
+  mandatory: false,
+  name: 'Tamanho Do Pacote',
+  attributeInfo: infoDoAtributo({
+    inputType: 3,
+    inputValidationType: 3,
+    formatType: 2,
+    attributeUnitList: [
+      'ML',
+      'L',
+      'MG',
+      'G/GR',
+      'KG',
+      'CM',
+      'M',
+      'Dozen',
+      'Piece',
+      'Pack',
+      'Set',
+      'Box',
+    ],
+  }),
+  attributeValueList: [],
+};
+/** 100087's tree holds the mandatory 100408; 100088's the optional 101029 — told apart by WHICH rows a form got. */
+const ARVORES = new Map<number, AtributoDto[]>([
+  [100087, [TIPO_DE_CONEXAO]],
+  [100088, [TAMANHO_DO_PACOTE]],
+]);
+const respostaDaArvore = (categoryId: number) =>
+  respostaAtributos(categoryId, ARVORES.get(categoryId) ?? []);
+const COM_FIO_GUARDADO = [{ attribute_id: 100408, attribute_value_list: [{ value_id: 2498 }] }];
+const SEM_FIO = [{ attribute_id: 100408, attribute_value_list: [{ value_id: 2530 }] }];
+
+/** A tree read the test answers when it chooses — per category. */
+function arvoresSobControle() {
+  const pendentes = new Map<number, (r: RespostaAtributosShopee) => void>();
+  const atributos = vi.fn<ShopeeClient['atributos']>(
+    (input) =>
+      new Promise((resolve) => {
+        pendentes.set(input.categoryId, resolve);
+      }),
+  );
+  const responder = async (categoryId: number) => {
+    await waitFor(() => expect(pendentes.has(categoryId)).toBe(true));
+    act(() => pendentes.get(categoryId)?.(respostaDaArvore(categoryId)));
+  };
+  return { atributos, responder };
+}
+
+const linhasDe = (linkDocId: string) =>
+  formDe(linkDocId).atributos.linhas.map((l) => l.attributeId);
+
+describe('ShopeeEditor — a árvore de atributos da categoria EDITADA (#1911 P13)', () => {
+  it('uma leitura por (conta, categoria) — só blocos com categoria válida e conta encontrada; dois rascunhos na mesma categoria leem UMA vez ⟷ QUASE-PAR: nenhuma para categoria ausente, `0` ou conta não encontrada', async () => {
+    comAutoria();
+    const atributos = vi.fn<ShopeeClient['atributos']>(async (input) =>
+      respostaDaArvore(input.categoryId),
+    );
+    h.client = shopeeClientFalso({
+      limitesDoItem: async (input) => limitesDoItem(input.categoryId ?? null),
+      atributos,
+    });
+    h.links = [
+      rascunho('L-a', { category_id: 100087 }),
+      rascunho('L-b', { category_id: 100087 }),
+      rascunho('L-sem'),
+      rascunho('L-zero', { category_id: 0 }),
+      rascunho('L9', {
+        category_id: 100088,
+        contaProdutoShopeeOuterRef: 'documents/integracao/int-9',
+        attributes: [
+          ...COM_FIO_GUARDADO,
+          {
+            attribute_id: 101029,
+            attribute_value_list: [{ value_id: 0, original_value_name: '2', value_unit: 'KG' }],
+          },
+        ],
+      }),
+    ];
+    renderEditor();
+    await waitFor(() => expect(formDe('L-a').atributos.leitura.tipo).toBe('lida'));
+    expect(atributos.mock.calls.map(([i]) => i)).toStrictEqual([
+      { integracaoId: 'int-1', categoryId: 100087 },
+    ]);
+    expect(linhasDe('L-a')).toStrictEqual([100408]);
+    expect(linhasDe('L-b')).toStrictEqual([100408]);
+    expect(formDe('L-sem').atributos.leitura).toStrictEqual({ tipo: 'sem-categoria' });
+    expect(formDe('L-zero').atributos.leitura).toStrictEqual({ tipo: 'sem-categoria' });
+    expect(formDe('L-sem').atributos.linhas).toStrictEqual([]);
+
+    // The «não encontrada» tab: nothing read, the held list only counted.
+    fireEvent.click(await screen.findByRole('tab', { name: /Conta int-9 \(não encontrada\)/ }));
+    expect(formDe('L9').atributos.leitura).toStrictEqual({ tipo: 'sem-conta', gravados: 2 });
+    expect(formDe('L9').atributos.linhas).toStrictEqual([]);
+    expect(atributos).toHaveBeenCalledTimes(1);
+  });
+
+  it('«Publicar» ESPERA a árvore (`atributos-desconhecidos`, a frase da árvore; a seção diz «carregando») e só então lê a pendência do obrigatório ⟷ QUASE-PAR: as faixas sozinhas não abrem', async () => {
+    const { atributos, responder } = arvoresSobControle();
+    prontoParaPublicar(vi.fn<ShopeeClient['publicar']>(), { atributos });
+    h.links = [rascunhoPronto('L-rasc')];
+    renderEditor();
+    // The bands are in; the tree is not.
+    await waitFor(() => expect(formDe('L-rasc').limites).not.toBeNull());
+    expect(formDe('L-rasc').decisaoDePublicar).toMatchObject({
+      podePublicar: false,
+      impedimento: 'atributos-desconhecidos',
+      aviso: FRASE_PUBLICAR_SEM_ATRIBUTOS_SHOPEE,
+    });
+    expect(formDe('L-rasc').falhaDaLeitura).toBeNull();
+    expect(publicarDo('L-rasc').disabled).toBe(true);
+    expect(formDe('L-rasc').atributos.leitura).toStrictEqual({ tipo: 'carregando' });
+    expect(formDe('L-rasc').atributos.linhas).toStrictEqual([]);
+
+    // 100087's tree holds a MANDATORY attribute, empty here: still closed, as a pendência.
+    await responder(100087);
+    await waitFor(() => expect(formDe('L-rasc').atributos.leitura.tipo).toBe('lida'));
+    expect(formDe('L-rasc').decisaoDePublicar).toMatchObject({
+      podePublicar: false,
+      impedimento: 'pendencias',
+    });
+    expect(formDe('L-rasc').decisaoDePublicar.pendencias).toContainEqual({
+      tipo: 'atributo-obrigatorio',
+      nomes: ['Tipo de Conexão'],
+    });
+  });
+
+  it('a árvore lida e o obrigatório GUARDADO ⇒ «Publicar» habilitado; a seção recebe as linhas do MODELO ⟷ QUASE-PAR: categoria NÃO FOLHA ⇒ a árvore vazia completa (sem espera, sem linhas)', async () => {
+    prontoParaPublicar(vi.fn<ShopeeClient['publicar']>(), {
+      atributos: async (input) =>
+        input.categoryId === 100090
+          ? respostaAtributos(100090, [], { leaf: false })
+          : respostaDaArvore(input.categoryId),
+    });
+    h.links = [
+      rascunhoPronto('L-rasc', { attributes: SEM_FIO }),
+      rascunhoPronto('L-galho', { category_id: 100090 }),
+    ];
+    await renderPronto('L-rasc');
+    const linha = formDe('L-rasc').atributos.linhas[0];
+    expect(linha?.attributeId).toBe(100408);
+    expect(linha?.escolhidos).toStrictEqual([2530]);
+    expect(formDe('L-rasc').atributos.semLugar).toStrictEqual([]);
+    expect(formDe('L-rasc').atributos.removidosAoSalvar).toStrictEqual([]);
+
+    await waitFor(() => expect(formDe('L-galho').atributos.leitura.tipo).toBe('nao-folha'));
+    expect(formDe('L-galho').atributos.linhas).toStrictEqual([]);
+    expect(formDe('L-galho').decisaoDePublicar.impedimento).not.toBe('atributos-desconhecidos');
+  });
+
+  it('uma leitura que FALHOU: a seção diz a causa com «Ler de novo» e o «Publicar» também — a releitura abre ⟷ QUASE-PAR: depois dela, nenhuma falha nomeada', async () => {
+    const falhou = new ShopeeClientHttpError(
+      'A Shopee recusou a consulta dos atributos.',
+      502,
+      'SHOPEE_HTTP_ERROR',
+      null,
+      'other',
+      DETALHES_ERRO_SHOPEE_VAZIOS,
+    );
+    const atributos = vi
+      .fn<ShopeeClient['atributos']>()
+      .mockRejectedValueOnce(falhou)
+      .mockImplementation(async (input) => respostaAtributos(input.categoryId));
+    prontoParaPublicar(vi.fn<ShopeeClient['publicar']>(), { atributos });
+    h.links = [rascunhoPronto('L-rasc')];
+    renderEditor();
+    await waitFor(() => expect(formDe('L-rasc').falhaDaLeitura).not.toBeNull());
+    const causa = descreverFalhaShopee(falhou, { desconhecido: '' }).mensagem;
+    expect(formDe('L-rasc').decisaoDePublicar).toMatchObject({
+      podePublicar: false,
+      impedimento: 'atributos-desconhecidos',
+    });
+    expect(formDe('L-rasc').falhaDaLeitura?.mensagem).toBe(fraseDosAtributosNaoLidosShopee(causa));
+    expect(formDe('L-rasc').falhaDaLeitura?.mensagem).not.toBe(
+      fraseDosLimitesNaoLidosShopee(causa),
+    );
+    const leitura = formDe('L-rasc').atributos.leitura;
+    if (leitura.tipo !== 'falha') throw new Error('the section must say the read failed');
+    expect(leitura.causa).toBe(causa);
+    expect(leitura.relendo).toBe(false);
+    expect(atributos).toHaveBeenCalledTimes(1);
+
+    act(() => leitura.onLerDeNovo());
+    await waitFor(() => expect(formDe('L-rasc').decisaoDePublicar.podePublicar).toBe(true));
+    expect(atributos).toHaveBeenCalledTimes(2);
+    expect(formDe('L-rasc').falhaDaLeitura).toBeNull();
+    expect(formDe('L-rasc').atributos.leitura).toStrictEqual({ tipo: 'vazia', warning: null });
+  });
+
+  it('NEAR-MISS: faixas E árvore falharam ⇒ a razão é a das faixas (checadas antes) — nunca a da árvore no lugar', async () => {
+    const falhou = new ShopeeClientHttpError(
+      'Falhou.',
+      502,
+      'SHOPEE_HTTP_ERROR',
+      null,
+      'other',
+      DETALHES_ERRO_SHOPEE_VAZIOS,
+    );
+    prontoParaPublicar(vi.fn<ShopeeClient['publicar']>(), {
+      limitesDoItem: () => Promise.reject(falhou),
+      atributos: () => Promise.reject(falhou),
+    });
+    h.links = [rascunhoPronto('L-rasc')];
+    renderEditor();
+    await waitFor(() => expect(formDe('L-rasc').falhaDaLeitura).not.toBeNull());
+    const causa = descreverFalhaShopee(falhou, { desconhecido: '' }).mensagem;
+    expect(formDe('L-rasc').decisaoDePublicar.impedimento).toBe('faixas-desconhecidas');
+    expect(formDe('L-rasc').falhaDaLeitura?.mensagem).toBe(fraseDosLimitesNaoLidosShopee(causa));
+    // The section still says its own failure.
+    await waitFor(() => expect(formDe('L-rasc').atributos.leitura.tipo).toBe('falha'));
+  });
+
+  it('uma troca de categoria e uma edição de atributo no MESMO tick: a edição, feita sobre a árvore da categoria antiga, é ignorada — nunca aplicada ao rascunho da nova ⟷ QUASE-PAR: em ticks separados, a edição vale', async () => {
+    comAutoria();
+    h.client = shopeeClientFalso({
+      limitesDoItem: async (input) => limitesDoItem(input.categoryId ?? null),
+      atributos: async (input) => respostaDaArvore(input.categoryId),
+    });
+    h.links = [rascunho('L-rasc', { category_id: 100087 })];
+    renderEditor();
+    await waitFor(() => expect(linhasDe('L-rasc')).toStrictEqual([100408]));
+    // ONE render's handlers, both called before the next render.
+    const form = formDe('L-rasc');
+    act(() => {
+      form.onCampo('category_id', 100088);
+      form.onAtributo(100408, { tipo: 'lista', valueIds: [2530] });
+    });
+    expect(formDe('L-rasc').bloco.valores.category_id).toBe(100088);
+    expect(formDe('L-rasc').bloco.valores.attributes).toBeNull();
+
+    // NEAR-MISS: back on 100087, the same edit in its own tick applies.
+    act(() => formDe('L-rasc').onCampo('category_id', 100087));
+    act(() => formDe('L-rasc').onAtributo(100408, { tipo: 'lista', valueIds: [2530] }));
+    expect(formDe('L-rasc').bloco.valores.attributes).toStrictEqual(SEM_FIO);
+  });
+
+  it('`onAtributo` ANTES da árvore carregar não muda nada (nenhuma entrada nasce) ⟷ QUASE-PAR: carregada, a escolha cria a entrada e «Salvar rascunho» envia `patch.attributes` com a base que o operador viu', async () => {
+    comAutoria();
+    const { atributos, responder } = arvoresSobControle();
+    const atualizarRascunho = vi.fn<ShopeeClient['atualizarRascunho']>(async (input) => ({
+      linkDocId: input.linkDocId,
+      gravados: ['attributes'],
+    }));
+    h.client = shopeeClientFalso({
+      limitesDoItem: async (input) => limitesDoItem(input.categoryId ?? null),
+      atributos,
+      atualizarRascunho,
+    });
+    h.links = [rascunho('L-rasc', { category_id: 100087 })];
+    renderEditor();
+    act(() => formDe('L-rasc').onAtributo(100408, { tipo: 'lista', valueIds: [2530] }));
+    expect(formDe('L-rasc').bloco.valores.attributes).toBeNull();
+    expect(formDe('L-rasc').bloco.sujo).toBe(false);
+    expect(botaoDoRascunho('L-rasc', 'Salvar rascunho').disabled).toBe(true);
+
+    await responder(100087);
+    await waitFor(() => expect(formDe('L-rasc').atributos.leitura.tipo).toBe('lida'));
+    act(() => formDe('L-rasc').onAtributo(100408, { tipo: 'lista', valueIds: [2530] }));
+    expect(formDe('L-rasc').bloco.valores.attributes).toStrictEqual(SEM_FIO);
+    expect(formDe('L-rasc').bloco.sujo).toBe(true);
+    // The rows follow the entry: the pick is shown.
+    expect(formDe('L-rasc').atributos.linhas[0]?.escolhidos).toStrictEqual([2530]);
+
+    fireEvent.click(botaoDoRascunho('L-rasc', 'Salvar rascunho'));
+    await waitFor(() => expect(atualizarRascunho).toHaveBeenCalledTimes(1));
+    expect(atualizarRascunho.mock.calls[0]?.[0]).toStrictEqual({
+      integracaoId: 'int-1',
+      produtoId: 'prod-1',
+      linkDocId: 'L-rasc',
+      base: { attributes: null },
+      patch: { attributes: SEM_FIO },
+    });
+  });
+
+  it('o editor usa a árvore da categoria EDITADA — depois de uma troca, nunca a da guardada: até a nova chegar nada edita; chegando, só os atributos DELA', async () => {
+    comAutoria();
+    const { atributos, responder } = arvoresSobControle();
+    h.client = shopeeClientFalso({
+      limitesDoItem: async (input) => limitesDoItem(input.categoryId ?? null),
+      atributos,
+    });
+    h.links = [rascunho('L-rasc', { category_id: 100087, attributes: COM_FIO_GUARDADO })];
+    renderEditor();
+    await responder(100087);
+    await waitFor(() => expect(linhasDe('L-rasc')).toStrictEqual([100408]));
+
+    act(() => formDe('L-rasc').onCampo('category_id', 100088));
+    // The held category's tree is still cached — and never read for the new one.
+    expect(formDe('L-rasc').atributos.leitura).toStrictEqual({ tipo: 'carregando' });
+    expect(formDe('L-rasc').atributos.linhas).toStrictEqual([]);
+    act(() => formDe('L-rasc').onAtributo(100408, { tipo: 'lista', valueIds: [2530] }));
+    expect(formDe('L-rasc').bloco.valores.attributes).toBeNull();
+
+    await responder(100088);
+    await waitFor(() => expect(linhasDe('L-rasc')).toStrictEqual([101029]));
+    expect(atributos.mock.calls.map(([i]) => i.categoryId)).toStrictEqual([100087, 100088]);
+    // 100408 is no attribute of 100088: the model refuses it, nothing changes.
+    act(() => formDe('L-rasc').onAtributo(100408, { tipo: 'lista', valueIds: [2530] }));
+    expect(formDe('L-rasc').bloco.valores.attributes).toBeNull();
+    // 100088's own attribute: a typed decimal with its unit, in the wire form.
+    act(() => formDe('L-rasc').onAtributo(101029, { tipo: 'texto', texto: '1,5', unidade: 'KG' }));
+    expect(formDe('L-rasc').bloco.valores.attributes).toStrictEqual([
+      {
+        attribute_id: 101029,
+        attribute_value_list: [{ value_id: 0, original_value_name: '1.5', value_unit: 'KG' }],
+      },
+    ]);
+
+    // Back to the HELD category: its list is restored, and its CACHED tree read at once.
+    act(() => formDe('L-rasc').onCampo('category_id', 100087));
+    expect(formDe('L-rasc').atributos.leitura.tipo).toBe('lida');
+    expect(linhasDe('L-rasc')).toStrictEqual([100408]);
+    expect(formDe('L-rasc').bloco.valores.attributes).toStrictEqual(COM_FIO_GUARDADO);
+    expect(formDe('L-rasc').bloco.sujo).toBe(false);
+  });
+
+  it('⛔ «Marcar para remover» ANTES da árvore carregar não remove nada — sem a árvore todo guardado pareceria «sem lugar» ⟷ QUASE-PAR: carregada, só sai o que ela esconde', async () => {
+    const FORA = {
+      attribute_id: 999001,
+      attribute_value_list: [{ value_id: 0, original_value_name: 'Valor inventado' }],
+    };
+    comAutoria();
+    const { atributos, responder } = arvoresSobControle();
+    h.client = shopeeClientFalso({
+      limitesDoItem: async (input) => limitesDoItem(input.categoryId ?? null),
+      atributos,
+    });
+    const guardados = [...COM_FIO_GUARDADO, FORA];
+    h.links = [rascunho('L-rasc', { category_id: 100087, attributes: guardados })];
+    renderEditor();
+    await waitFor(() => expect(formDe('L-rasc').bloco.camposEditaveis).toBe(true));
+    expect(formDe('L-rasc').atributos.leitura).toStrictEqual({ tipo: 'carregando' });
+    act(() => formDe('L-rasc').onAtributo(100408, { tipo: 'remover-sem-lugar' }));
+    expect(formDe('L-rasc').bloco.valores.attributes).toStrictEqual(guardados);
+    expect(formDe('L-rasc').bloco.sujo).toBe(false);
+
+    await responder(100087);
+    await waitFor(() =>
+      expect(formDe('L-rasc').atributos.semLugar.map((i) => i.attributeId)).toStrictEqual([999001]),
+    );
+    act(() => formDe('L-rasc').onAtributo(100408, { tipo: 'remover-sem-lugar' }));
+    expect(formDe('L-rasc').bloco.valores.attributes).toStrictEqual(COM_FIO_GUARDADO);
+    expect(formDe('L-rasc').bloco.sujo).toBe(true);
+  });
+
+  it('⛔ uma árvore TRUNCADA chega TRUNCADA ao modelo: o guardado que ela não mostra não é «sem lugar» e uma edição o mantém ⟷ QUASE-PAR: completa, ele é «sem lugar» e a edição o tira', async () => {
+    const FORA = {
+      attribute_id: 999001,
+      attribute_value_list: [{ value_id: 0, original_value_name: 'Valor inventado' }],
+    };
+    comAutoria();
+    h.client = shopeeClientFalso({
+      limitesDoItem: async (input) => limitesDoItem(input.categoryId ?? null),
+      atributos: async (input) =>
+        respostaAtributos(input.categoryId, ARVORES.get(input.categoryId) ?? [], {
+          truncated: input.categoryId === 100087,
+        }),
+    });
+    h.links = [
+      rascunho('L-trunc', { category_id: 100087, attributes: [FORA] }),
+      rascunho('L-comp', { category_id: 100088, attributes: [FORA] }),
+    ];
+    renderEditor();
+    await waitFor(() => expect(linhasDe('L-trunc')).toStrictEqual([100408]));
+    await waitFor(() => expect(linhasDe('L-comp')).toStrictEqual([101029]));
+    expect(formDe('L-trunc').atributos.leitura).toStrictEqual({
+      tipo: 'lida',
+      truncated: true,
+      warning: null,
+    });
+    expect(formDe('L-trunc').atributos.semLugar).toStrictEqual([]);
+    act(() => formDe('L-trunc').onAtributo(100408, { tipo: 'lista', valueIds: [2530] }));
+    expect(formDe('L-trunc').bloco.valores.attributes).toStrictEqual([FORA, ...SEM_FIO]);
+
+    expect(formDe('L-comp').atributos.semLugar.map((i) => i.attributeId)).toStrictEqual([999001]);
+    act(() => formDe('L-comp').onAtributo(101029, { tipo: 'texto', texto: '1,5', unidade: 'KG' }));
+    expect(formDe('L-comp').bloco.valores.attributes).toStrictEqual([
+      {
+        attribute_id: 101029,
+        attribute_value_list: [{ value_id: 0, original_value_name: '1.5', value_unit: 'KG' }],
+      },
+    ]);
+  });
+
+  it('a árvore lida fica em cache pelo tempo do apps/shopee: voltar à categoria GUARDADA não lê de novo ⟷ QUASE-PAR: a categoria NOVA lê uma vez', async () => {
+    comAutoria();
+    const atributos = vi.fn<ShopeeClient['atributos']>(async (input) =>
+      respostaDaArvore(input.categoryId),
+    );
+    h.client = shopeeClientFalso({
+      limitesDoItem: async (input) => limitesDoItem(input.categoryId ?? null),
+      atributos,
+    });
+    h.links = [rascunho('L-rasc', { category_id: 100087 })];
+    renderEditor();
+    await waitFor(() => expect(linhasDe('L-rasc')).toStrictEqual([100408]));
+    act(() => formDe('L-rasc').onCampo('category_id', 100088));
+    await waitFor(() => expect(linhasDe('L-rasc')).toStrictEqual([101029]));
+    act(() => formDe('L-rasc').onCampo('category_id', 100087));
+    await waitFor(() => expect(linhasDe('L-rasc')).toStrictEqual([100408]));
+    // Give a refetch-on-mount its chance before counting.
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    expect(atributos.mock.calls.map(([i]) => i.categoryId)).toStrictEqual([100087, 100088]);
+  });
+
+  it('⭐ um espaço digitado depois de um personalizado GUARDADO fica na tela (limpo para a escrita, mas é a tela do operador) e as palavras seguintes saem separadas ⟷ QUASE-PAR: redigitado igual, limpo, a linha mostra o guardado', async () => {
+    const NOME_DO_MODELO: AtributoDto = {
+      attributeId: 101040,
+      mandatory: false,
+      name: 'Nome do Modelo',
+      attributeInfo: infoDoAtributo({ inputType: 3, inputValidationType: 2 }),
+      attributeValueList: [],
+    };
+    const ALFA = [
+      {
+        attribute_id: 101040,
+        attribute_value_list: [{ value_id: 0, original_value_name: 'Alfa' }],
+      },
+    ];
+    comAutoria();
+    const atualizarRascunho = vi.fn<ShopeeClient['atualizarRascunho']>(async (input) => ({
+      linkDocId: input.linkDocId,
+      gravados: ['attributes'],
+    }));
+    h.client = shopeeClientFalso({
+      limitesDoItem: async (input) => limitesDoItem(input.categoryId ?? null),
+      atributos: async (input) => respostaAtributos(input.categoryId, [NOME_DO_MODELO]),
+      atualizarRascunho,
+    });
+    h.links = [rascunho('L-rasc', { category_id: 100087, attributes: ALFA })];
+    renderEditor();
+    await waitFor(() => expect(linhasDe('L-rasc')).toStrictEqual([101040]));
+    const digitar = (texto: string) =>
+      act(() => formDe('L-rasc').onAtributo(101040, { tipo: 'texto', texto, unidade: null }));
+
+    digitar('Alfa ');
+    expect(formDe('L-rasc').atributos.linhas[0]?.textoDigitado).toBe('Alfa ');
+    expect(formDe('L-rasc').bloco.sujo).toBe(false);
+    digitar('Alfa');
+    expect(formDe('L-rasc').bloco.sujo).toBe(false);
+    expect(formDe('L-rasc').atributos.linhas[0]?.textoDigitado).toBe('Alfa');
+
+    digitar('Alfa ');
+    digitar('Alfa B');
+    expect(formDe('L-rasc').bloco.sujo).toBe(true);
+    fireEvent.click(botaoDoRascunho('L-rasc', 'Salvar rascunho'));
+    await waitFor(() => expect(atualizarRascunho).toHaveBeenCalledTimes(1));
+    expect(atualizarRascunho.mock.calls[0]?.[0].patch).toStrictEqual({
+      attributes: [
+        {
+          attribute_id: 101040,
+          attribute_value_list: [{ value_id: 0, original_value_name: 'Alfa B' }],
+        },
+      ],
+    });
+  });
+
+  it('⭐ a unidade escolhida ANTES do número num rascunho guardado fica (limpo, nada a salvar) e o número depois a usa ⟷ QUASE-PAR: apagada a unidade, nada fica', async () => {
+    comAutoria();
+    h.client = shopeeClientFalso({
+      limitesDoItem: async (input) => limitesDoItem(input.categoryId ?? null),
+      atributos: async (input) => respostaDaArvore(input.categoryId),
+    });
+    h.links = [rascunho('L-rasc', { category_id: 100088 })];
+    renderEditor();
+    await waitFor(() => expect(linhasDe('L-rasc')).toStrictEqual([101029]));
+    act(() => formDe('L-rasc').onAtributo(101029, { tipo: 'texto', texto: '', unidade: 'KG' }));
+    expect(formDe('L-rasc').atributos.linhas[0]?.unidadeDigitada).toBe('KG');
+    expect(formDe('L-rasc').bloco.sujo).toBe(false);
+    act(() => formDe('L-rasc').onAtributo(101029, { tipo: 'texto', texto: '1,5', unidade: 'KG' }));
+    expect(formDe('L-rasc').bloco.valores.attributes).toStrictEqual([
+      {
+        attribute_id: 101029,
+        attribute_value_list: [{ value_id: 0, original_value_name: '1.5', value_unit: 'KG' }],
+      },
+    ]);
+    expect(formDe('L-rasc').bloco.impedimento).toBeNull();
+
+    act(() => formDe('L-rasc').onAtributo(101029, { tipo: 'texto', texto: '', unidade: null }));
+    expect(formDe('L-rasc').atributos.linhas[0]?.unidadeDigitada).toBeNull();
+    expect(formDe('L-rasc').bloco.sujo).toBe(false);
+  });
+
+  it('⛔ uma lista editada cuja categoria OUTRA aba trocou: «Salvar rascunho» não envia nada e abre o conflito com «Categoria» — a rota não recusaria ⟷ QUASE-PAR: só a lista mudou ⇒ a rota decide (enviado)', async () => {
+    comAutoria();
+    const atualizarRascunho = vi.fn<ShopeeClient['atualizarRascunho']>(async (input) => ({
+      linkDocId: input.linkDocId,
+      gravados: ['attributes'],
+    }));
+    h.client = shopeeClientFalso({
+      limitesDoItem: async (input) => limitesDoItem(input.categoryId ?? null),
+      atributos: async (input) => respostaDaArvore(input.categoryId),
+      atualizarRascunho,
+    });
+    h.links = [rascunho('L-rasc', { category_id: 100087, attributes: COM_FIO_GUARDADO })];
+    const { rerender } = renderEditor();
+    await waitFor(() => expect(linhasDe('L-rasc')).toStrictEqual([100408]));
+    act(() => formDe('L-rasc').onAtributo(100408, { tipo: 'lista', valueIds: [2530] }));
+
+    // Another tab moved the category (keeping an equal list).
+    h.links = [rascunho('L-rasc', { category_id: 100088, attributes: COM_FIO_GUARDADO })];
+    rerenderEditor(rerender);
+    expect(formDe('L-rasc').divergencias).toEqual(['category_id']);
+    fireEvent.click(botaoDoRascunho('L-rasc', 'Salvar rascunho'));
+    await screen.findByTestId('shopee-rascunho-conflito');
+    expect(h.conflito?.conflito).toStrictEqual({
+      linkDocId: 'L-rasc',
+      operacao: 'atualizar',
+      conflitos: [{ campo: 'category_id', atual: 100088 }],
+    });
+    expect(atualizarRascunho).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Cancelar' }));
+
+    // NEAR-MISS: only the list moved — the route's own baseline decides.
+    h.links = [rascunho('L-rasc', { category_id: 100087, attributes: [] })];
+    rerenderEditor(rerender);
+    expect(formDe('L-rasc').divergencias).toEqual(['attributes']);
+    fireEvent.click(botaoDoRascunho('L-rasc', 'Salvar rascunho'));
+    await waitFor(() => expect(atualizarRascunho).toHaveBeenCalledTimes(1));
+    expect(atualizarRascunho.mock.calls[0]?.[0]).toMatchObject({
+      base: { attributes: COM_FIO_GUARDADO },
+      patch: { attributes: SEM_FIO },
+    });
+  });
+
+  it('a digitação que o modelo BLOQUEIA fica na entrada, aparece na linha e fecha o «Salvar» ⟷ QUASE-PAR: a mesma digitação com vírgula vale', async () => {
+    comAutoria();
+    h.client = shopeeClientFalso({
+      limitesDoItem: async (input) => limitesDoItem(input.categoryId ?? null),
+      atributos: async (input) => respostaDaArvore(input.categoryId),
+    });
+    h.links = [rascunho('L-rasc', { category_id: 100088 })];
+    renderEditor();
+    await waitFor(() => expect(linhasDe('L-rasc')).toStrictEqual([101029]));
+    act(() => formDe('L-rasc').onAtributo(101029, { tipo: 'texto', texto: '1.5', unidade: 'KG' }));
+    expect(formDe('L-rasc').atributos.linhas[0]?.digitacao).toBe('tipo-de-valor');
+    expect(formDe('L-rasc').atributos.linhas[0]?.textoDigitado).toBe('1.5');
+    expect(formDe('L-rasc').bloco.valores.attributes).toBeNull();
+    expect(formDe('L-rasc').bloco.impedimento).toBe('campo-invalido');
+    expect(botaoDoRascunho('L-rasc', 'Salvar rascunho').disabled).toBe(true);
+
+    act(() => formDe('L-rasc').onAtributo(101029, { tipo: 'texto', texto: '1,5', unidade: 'KG' }));
+    expect(formDe('L-rasc').atributos.linhas[0]?.digitacao).toBeNull();
+    expect(formDe('L-rasc').bloco.impedimento).toBeNull();
+    expect(botaoDoRascunho('L-rasc', 'Salvar rascunho').disabled).toBe(false);
+  });
+
+  it('as linhas seguem o MESMO estado que a edição aplica: sem entrada, a lista guardada é lista E base; editada, «Serão removidos ao salvar» lista o que sai ⟷ QUASE-PAR: «Desfazer alterações» o devolve', async () => {
+    comAutoria();
+    h.client = shopeeClientFalso({
+      limitesDoItem: async (input) => limitesDoItem(input.categoryId ?? null),
+      atributos: async (input) => respostaDaArvore(input.categoryId),
+    });
+    h.links = [rascunho('L-rasc', { category_id: 100087, attributes: COM_FIO_GUARDADO })];
+    renderEditor();
+    await waitFor(() => expect(linhasDe('L-rasc')).toStrictEqual([100408]));
+    expect(formDe('L-rasc').atributos.linhas[0]?.escolhidos).toStrictEqual([2498]);
+    expect(formDe('L-rasc').atributos.removidosAoSalvar).toStrictEqual([]);
+    expect(formDe('L-rasc').revisaoDoDesfazer).toBe(0);
+
+    act(() => formDe('L-rasc').onAtributo(100408, { tipo: 'lista', valueIds: [] }));
+    expect(formDe('L-rasc').bloco.valores.attributes).toBeNull();
+    expect(formDe('L-rasc').atributos.removidosAoSalvar.map((i) => i.attributeId)).toStrictEqual([
+      100408,
+    ]);
+    // An ordinary edit never remounts the section (the key stays).
+    expect(formDe('L-rasc').revisaoDoDesfazer).toBe(0);
+
+    act(() => formDe('L-rasc').onDesfazer());
+    expect(formDe('L-rasc').atributos.removidosAoSalvar).toStrictEqual([]);
+    expect(formDe('L-rasc').atributos.linhas[0]?.escolhidos).toStrictEqual([2498]);
+    // «Desfazer alterações» remounts it: its screen-only state starts over.
+    expect(formDe('L-rasc').revisaoDoDesfazer).toBe(1);
+  });
+
+  it('um rascunho RECÉM-SALVO mostra o que salvou: nada pendente, nenhum «Serão removidos ao salvar» de uma gravação já feita ⟷ QUASE-PAR: antes de salvar, a mesma lista os mostra', async () => {
+    comAutoria();
+    h.client = shopeeClientFalso({
+      limitesDoItem: async (input) => limitesDoItem(input.categoryId ?? null),
+      atributos: async (input) => respostaDaArvore(input.categoryId),
+      atualizarRascunho: async (input): Promise<RespostaAtualizar> => ({
+        linkDocId: input.linkDocId,
+        gravados: ['attributes'],
+      }),
+    });
+    h.links = [
+      rascunho('L-rasc', {
+        category_id: 100087,
+        attributes: COM_FIO_GUARDADO,
+        ultimaModificacao: 1_000,
+      }),
+    ];
+    renderEditor();
+    await waitFor(() => expect(linhasDe('L-rasc')).toStrictEqual([100408]));
+    act(() => formDe('L-rasc').onAtributo(100408, { tipo: 'lista', valueIds: [] }));
+    // Positive first: pending, the removal is staged and shown.
+    expect(formDe('L-rasc').atributos.removidosAoSalvar).toHaveLength(1);
+
+    fireEvent.click(botaoDoRascunho('L-rasc', 'Salvar rascunho'));
+    await waitFor(() =>
+      expect(formDe('L-rasc').bloco.avisos).toContain(FRASE_RASCUNHO_AGUARDANDO_SERVIDOR_SHOPEE),
+    );
+    expect(formDe('L-rasc').bloco.camposEditaveis).toBe(false);
+    expect(formDe('L-rasc').atributos.removidosAoSalvar).toStrictEqual([]);
+  });
+
+  it('somente leitura (sem permissão de escrita): `onAtributo` não cria entrada nem muda nada', async () => {
+    h.permitidos = new Set([PERM.integracao.read]);
+    h.client = shopeeClientFalso({
+      limitesDoItem: async (input) => limitesDoItem(input.categoryId ?? null),
+      atributos: async (input) => respostaDaArvore(input.categoryId),
+    });
+    h.links = [rascunho('L-rasc', { category_id: 100087 })];
+    renderEditor();
+    await waitFor(() => expect(linhasDe('L-rasc')).toStrictEqual([100408]));
+    expect(formDe('L-rasc').bloco.camposEditaveis).toBe(false);
+    act(() => formDe('L-rasc').onAtributo(100408, { tipo: 'lista', valueIds: [2530] }));
+    expect(formDe('L-rasc').bloco.valores.attributes).toBeNull();
+    expect(formDe('L-rasc').bloco.sujo).toBe(false);
+  });
+
+  it('o caminho genérico `onCampo` nunca escreve uma lista de atributos — o tipo a recusa', () => {
+    // Compile-time only (never run): P16 relies on `logistic_info` staying a generic field.
+    const _generico = (p: RascunhoShopeeProps) => {
+      p.onCampo('item_name', 'Camiseta');
+      // @ts-expect-error — `attributes` goes only through `onAtributo` (the visible filter, the order, the typings).
+      p.onCampo('attributes', null);
+    };
+    expect(typeof _generico).toBe('function');
   });
 });

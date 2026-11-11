@@ -39,6 +39,12 @@
  * {@link TEXTO_MOTIVO_ANUNCIO_SHOPEE}), the confirmation, and what each answer
  * of a draft's publish reads as — the 202, the lock's 409s, an answer that
  * never came. Again `./rascunho.ts` decides; this words.
+ *
+ * #1911 P13 adds the attribute editor's gate sentences — Publicar waiting on
+ * the category's attribute tree ({@link FRASE_PUBLICAR_SEM_ATRIBUTOS_SHOPEE},
+ * {@link fraseDosAtributosNaoLidosShopee}) — and EXPORTS the Seller Centre exit
+ * ({@link saidaPeloSellerCentreDoRascunhoShopee}) so a mandatory attribute the
+ * editor cannot fill names the same exit as every other row, never a copy.
  */
 import { z } from 'zod';
 import {
@@ -1211,6 +1217,26 @@ function saidaPeloSellerCentreShopee(
 }
 
 /**
+ * {@link saidaPeloSellerCentreShopee} for a draft the ERP cannot publish for a
+ * reason no button here fixes — a MANDATORY attribute its editor cannot fill
+ * (a date, a search-only list, a list Shopee sent no values for; #1911 P13)
+ * while it holds NO value (`obrigatorio-ausente`: a stored value is carried
+ * and published, D-7, so that draft is publishable and this exit is not said).
+ * The exit is the SAME one, chosen from the block's CURRENT reading
+ * (`bloco.publicacao`: `livre` checks for the SKU first, `incerta` names the
+ * last attempt's listing first, `em-andamento` waits), so a caller composes its
+ * own opening with this and never writes a third spelling of it.
+ *
+ * ⚠️ Never opens with «Esta tentativa não criou nada.»: an attribute the editor
+ * cannot fill proves nothing about any attempt.
+ */
+export function saidaPeloSellerCentreDoRascunhoShopee(
+  publicacao: EstadoPublicacaoRascunhoShopee,
+): string {
+  return saidaPeloSellerCentreShopee(publicacao, false);
+}
+
+/**
  * Row #11 (`busca-de-anuncio-existente-incompleta`): the first create's
  * same-SKU look-up did not finish — Shopee left a listed row out (its sentence
  * names the ids), the walk stopped short, or Shopee's own cap. The copy
@@ -1714,9 +1740,35 @@ export const FRASE_RASCUNHO_AGUARDANDO_SERVIDOR_SHOPEE =
 export const FRASE_LOGISTICA_RASCUNHO_SHOPEE =
   'Logística: escolhida automaticamente na publicação, entre os canais ativos da loja.';
 
-/** A category change on a draft that stores attributes: the change clears them (K1-12). */
+/**
+ * A category change on a draft whose attributes are filled — stored, or typed
+ * on this form and not saved yet, or a typing still on screen that blocks the
+ * save (`bloco.atributosPreenchidos`, #1911 P13): the attributes belong to the
+ * category they were chosen in, so the change clears them (K1-12). Never «da
+ * categoria atual»: after an unsaved category change the STORED ones belong to
+ * the saved category, not the one on screen.
+ */
 export const FRASE_TROCA_DE_CATEGORIA_APAGA_ATRIBUTOS_SHOPEE =
-  'Trocar a categoria remove os atributos já gravados neste rascunho.';
+  'Trocar a categoria remove os atributos preenchidos neste rascunho: eles valem só para a ' +
+  'categoria em que foram escolhidos.';
+
+/**
+ * Beside {@link FRASE_TROCA_DE_CATEGORIA_APAGA_ATRIBUTOS_SHOPEE} while the
+ * form shows ANOTHER category than the saved one and the saved draft stores
+ * attributes (`bloco.atributosGravadosForaDaCategoria`): picking the saved
+ * category again restores them — it removes nothing.
+ */
+export const FRASE_VOLTAR_A_CATEGORIA_GRAVADA_TRAZ_ATRIBUTOS_SHOPEE =
+  'Voltar à categoria gravada traz de volta os atributos gravados.';
+
+/**
+ * The confirmation of «Voltar à categoria gravada» while it would drop
+ * attribute work done for the category on screen
+ * (`bloco.voltarCategoriaApagaAtributos`): the put-back restores the saved
+ * list and drops what was filled or typed for the changed category.
+ */
+export const FRASE_VOLTAR_CATEGORIA_APAGA_ATRIBUTOS_SHOPEE =
+  'Voltar à categoria gravada remove os atributos preenchidos para a categoria atual.';
 
 /**
  * How the search for a create that may have happened works — the advice the
@@ -1796,7 +1848,11 @@ export function fraseDoTextoForaDaFaixaShopee(
   );
 }
 
-/** Mandatory attributes left empty (P13 renders them; the sentence is ready). */
+/**
+ * Mandatory attributes left empty — the `atributo-obrigatorio` pendência, which
+ * the draft's «Atributos» section fills (#1911 P13). `nomes` are the
+ * pendência's own, joined as they come.
+ */
 export function fraseDosAtributosObrigatoriosShopee(nomes: readonly string[]): string {
   return `Preencha os atributos obrigatórios: ${nomes.join(', ')}.`;
 }
@@ -2045,11 +2101,13 @@ export const ROTULO_VOLTAR_CATEGORIA_GRAVADA_SHOPEE = 'Voltar à categoria grava
  * {@link ROTULO_VOLTAR_CATEGORIA_GRAVADA_SHOPEE} (the local impediment of an
  * editable `incerta` block) — never with the route's 409, whose block may not
  * offer it yet: the way to keep the other edits. True with or without them
- * (it never says there are any).
+ * (it never says there are any). The attributes filled for the changed
+ * category go with the change (#1911 P13: they belong to it — the put-back
+ * restores the saved list), so «só a troca de categoria» would be false.
  */
 export const FRASE_VOLTAR_CATEGORIA_GRAVADA_SHOPEE =
-  `Ou use «${ROTULO_VOLTAR_CATEGORIA_GRAVADA_SHOPEE}» (em Categoria): desfaz só a troca ` +
-  'de categoria e mantém as outras alterações.';
+  `Ou use «${ROTULO_VOLTAR_CATEGORIA_GRAVADA_SHOPEE}» (em Categoria): desfaz a troca de ` +
+  'categoria e os atributos preenchidos para a categoria nova, e mantém as outras alterações.';
 
 /** 409 `rascunhoIdEmUso` (create only): never retried at the same id (C-19). */
 export const FRASE_RASCUNHO_ID_EM_USO_SHOPEE =
@@ -2155,6 +2213,29 @@ export const FRASE_PUBLICAR_PRODUTO_NAO_SALVO_SHOPEE =
 export const FRASE_PUBLICAR_SEM_FAIXAS_SHOPEE =
   'Publicar fica disponível quando os limites de título e descrição da categoria forem lidos ' +
   'da Shopee.';
+
+/**
+ * The category's attribute tree is not known yet (loading, or the read
+ * failed — #1911 P13, `atributos-desconhecidos`): until it is, a mandatory
+ * attribute left empty cannot be seen here, so Publicar waits for it too.
+ */
+export const FRASE_PUBLICAR_SEM_ATRIBUTOS_SHOPEE =
+  'Publicar fica disponível quando os atributos da categoria forem lidos da Shopee.';
+
+/**
+ * «Publicar» waits on the category's attribute tree and its read FAILED: what
+ * the button says instead of the pending {@link FRASE_PUBLICAR_SEM_ATRIBUTOS_SHOPEE},
+ * which nothing would make true. `causa` is `descreverFalhaShopee`'s sentence
+ * (it names its own exit — wait, reconnect, pick another category); a blank or
+ * terminal-worded cause is dropped, never printed. The twin of the bands'
+ * `fraseDosLimitesNaoLidosShopee` (`ShopeeEditor.tsx`).
+ */
+export function fraseDosAtributosNaoLidosShopee(causa: string): string {
+  const base =
+    'Publicar fica indisponível: os atributos da categoria não puderam ser lidos da Shopee.';
+  const texto = causa.trim();
+  return texto === '' || ehFraseDeTerminal(texto) ? base : `${base} ${texto}`;
+}
 
 /* ---- The confirmation (DC §2.6) ------------------------------------------- */
 

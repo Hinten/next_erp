@@ -56,6 +56,13 @@ import type { AtributoDto, AtributoInfoDto, AtributoValorDto } from './taxonomia
  * with ONE conversion the tree decides: a DATE stored in the READ form goes
  * out in the WRITE form (guide 209 §2.3), through the ONE date convention
  * below.
+ *
+ * ## A typed DECIMAL
+ *
+ * The wire holds a decimal attribute value as a dot-decimal STRING; a
+ * Brazilian operator types a comma. {@link decimalShopeeDaTela} and
+ * {@link decimalShopeeParaTela} swap the separator and nothing else — every
+ * digit kept, never through a number (#1372).
  */
 
 /* -------------------------------------------------------------------------- */
@@ -860,7 +867,11 @@ function problemaDoTipoDeValor(
  * - ⚠️ **A truncated tree (`truncated: true`) is judged LENIENTLY**: no
  *   `filho-sem-pai` / `fora-da-categoria` (the attribute may sit below the
  *   cut), and nothing below the cut is visible to be found missing — a
- *   problem is never raised from missing knowledge.
+ *   problem is never raised from missing knowledge. EXCEPT a stored
+ *   `attribute_id` no write accepts (not a positive integer —
+ *   {@link atributoShopeeRequisicaoSchema}): no tree holds it, below any cut
+ *   or not, so it is `fora-da-categoria` there too (and
+ *   {@link atributosParaGravarShopee} does not carry it).
  *
  * Two callers act on DIFFERENT subsets of ONE rule set (not a #1369 copy): the
  * publisher refuses only `obrigatorio-ausente` (`atributo-obrigatorio`) — every
@@ -928,9 +939,18 @@ export function validarAtributosShopee(
     for (const tipo of tipos) problemas.push({ attributeId: atributo.attributeId, nome, tipo });
   }
 
-  if (!arvore.truncated) {
-    for (const lido of porId.values()) {
-      if (visiveis.has(lido.attributeId) || lido.valores.length === 0) continue;
+  for (const lido of porId.values()) {
+    if (visiveis.has(lido.attributeId) || lido.valores.length === 0) continue;
+    // A truncated tree only raises what no cut can explain: an id no write accepts.
+    if (arvore.truncated) {
+      if (!idDeAtributoGravavel(lido.attributeId)) {
+        problemas.push({
+          attributeId: lido.attributeId,
+          nome: `#${String(lido.attributeId)}`,
+          tipo: TIPO_PROBLEMA_ATRIBUTO_SHOPEE.foraDaCategoria,
+        });
+      }
+    } else {
       const no = noDaArvore(arvore.atributos, lido.attributeId);
       problemas.push({
         attributeId: lido.attributeId,
@@ -946,29 +966,106 @@ export function validarAtributosShopee(
   return problemas;
 }
 
+/**
+ * An `attribute_id` a draft write accepts — {@link atributoShopeeRequisicaoSchema}'s
+ * own rule (a positive integer), never re-stated: a stored id that fails it
+ * sits in no tree, below any cut or not.
+ */
+function idDeAtributoGravavel(id: number): boolean {
+  return atributoShopeeRequisicaoSchema.shape.attribute_id.safeParse(id).success;
+}
+
 /* -------------------------------------------------------------------------- */
-/*                    What the draft editor's save posts                       */
+/*              A typed decimal: the operator's comma, the wire's dot          */
+/* -------------------------------------------------------------------------- */
+
+/** What {@link decimalShopeeDaTela} accepts, AFTER the trim: an optional leading `-`, digits, at most one comma, digits after it — the validator's `PADRAO_DECIMAL` with the comma for the dot. */
+const PADRAO_DECIMAL_NA_TELA = /^-?\d+(,\d+)?$/;
+/** What {@link decimalShopeeParaTela} localizes: a wire decimal WITH its dot (an integer has nothing to swap). */
+const PADRAO_DECIMAL_COM_PONTO = /^-?\d+\.\d+$/;
+
+/**
+ * **What the operator TYPES → what a typed decimal attribute value STORES**
+ * (#1911 P13, D-9) — the pt-BR separator swapped for the wire's dot, and
+ * NOTHING else: `'1,5'` → `'1.5'`, `'1,50'` → `'1.50'`, `'01,5'` → `'01.5'`,
+ * `'-2,25'` → `'-2.25'`, `'10'` → `'10'`; the text is trimmed first.
+ *
+ * ⚠️ **Lexical, digit-preserving — never through a number** (#1372). The value
+ * is a STRING on the wire (`original_value_name`) and on the draft, so `'1,50'`
+ * is not `'1.5'`: a parse-and-print would turn a real edit into "no change"
+ * (and `'01,5'` into `'1.5'`). `@delfrance/core/decimal`'s parser answers a
+ * NUMBER — that very fold — so it is the wrong tool here.
+ *
+ * `null` for anything else, and the caller keeps the typed text on screen:
+ *
+ * - ⚠️ **a DOT** (`'1.5'`, `'1.500'`) — fail-closed: a Brazilian operator's
+ *   `1.500` means one thousand five hundred, while the wire would read one and
+ *   a half. Asking for the comma costs a keystroke; guessing costs a ×1000
+ *   error on a listing;
+ * - both separators (`'1.234,5'`), two commas (`'1,5,0'`), a `+` sign, a unit
+ *   or any other text (`'1,5 kg'`), a separator with no digit on one side
+ *   (`'1,'`, `',5'`), blank.
+ *
+ * Every answer passes the validator's decimal rule
+ * (`INPUT_VALIDATION_TYPE_ATRIBUTO_SHOPEE.decimal`, dot-only) by construction.
+ * Round trip: `decimalShopeeParaTela(decimalShopeeDaTela(t)) === t.trim()` for
+ * every `t` this accepts. Pure, total.
+ */
+export function decimalShopeeDaTela(texto: string): string | null {
+  const t = texto.trim();
+  // At most one comma by construction, so the first replacement is the only one.
+  return PADRAO_DECIMAL_NA_TELA.test(t) ? t.replace(',', '.') : null;
+}
+
+/**
+ * **What a typed decimal attribute value STORES → what the operator READS**
+ * (#1911 P13) — the inverse of {@link decimalShopeeDaTela}: a wire decimal's
+ * dot becomes the pt-BR comma, every digit kept: `'1.5'` → `'1,5'`, `'1.50'` →
+ * `'1,50'`, `'0.125'` → `'0,125'`.
+ *
+ * ⚠️ **No bound on the fractional digits.** On Shopee's wire a dot is ALWAYS
+ * the decimal separator (the validator's decimal rule is dot-only), so
+ * `'0.125'` is a decimal, never a thousands group. `@delfrance/core/decimal`'s
+ * localizer stops at two fractional digits for a reason that does not hold
+ * here (a garment measurement of `'1.234'` reads as a thousands group), and it
+ * would break the round trip at `'0.125'`.
+ *
+ * Anything that is not a bare dot decimal comes back UNTOUCHED — an integer
+ * (`'10'`), a value already written with a comma, `'1.2.3'`, prose — so a
+ * stored value the validator flags is shown exactly as stored. Round trip:
+ * `decimalShopeeDaTela(decimalShopeeParaTela(w)) === w` for every `w` the
+ * validator's decimal rule accepts. Pure, total.
+ */
+export function decimalShopeeParaTela(valor: string): string {
+  // Exactly one dot by construction, so the first replacement is the only one.
+  return PADRAO_DECIMAL_COM_PONTO.test(valor) ? valor.replace('.', ',') : valor;
+}
+
+/* -------------------------------------------------------------------------- */
+/*                    What the draft editor's save keeps                       */
 /* -------------------------------------------------------------------------- */
 
 /**
- * The attribute list the web draft EDITOR posts (#1911, D9) — its `patch`: the
- * REQUEST shape, VISIBLE attributes only ({@link atributosVisiveisShopee}), in
- * walk order. The editor runs this over the operator's list BEFORE it posts
- * (P13's attribute editor, `AtributosRascunhoShopee.tsx`), and that is where an
- * attribute whose parent value was unchosen, and another category's
- * attributes, are dropped. Nowhere else: the draft ROUTE (`anuncios/rascunho.ts`)
- * makes zero Shopee calls and has no tree, so it writes the patch's list as
- * received, and the publisher sends what is stored. Until P13 nothing calls
- * this, and the web WRITES no attribute list (it sends the stored one back only
- * as a `base` precondition — on every discard, and on an update that changes
- * the category): a new draft's create posts `attributes: null` (none chosen),
- * an edit's patch never names them, and the draft route itself clears the
- * stored list when a patch changes the category (`anuncios/rascunho.ts`,
- * K1-12).
+ * **The VISIBLE attributes of a draft save** (#1911, D9) — the decoded list in
+ * the REQUEST shape, VISIBLE attributes only ({@link atributosVisiveisShopee}),
+ * in walk order. The web draft editor (P13, `apps/web`'s
+ * `lib/shopee/atributosRascunho.ts`) keeps exactly the attributes this answers
+ * (by id), with the operator's own values: it asks this over every candidate
+ * list, and that is where an attribute whose parent value was unchosen, and
+ * another category's attributes, are dropped. The operator's own value objects
+ * are kept rather than this answer's because the decoder TRIMS — re-encoding
+ * the list on every keystroke would eat the space the operator is typing.
+ * Nowhere else: the draft ROUTE (`anuncios/rascunho.ts`) makes zero Shopee
+ * calls and has no tree, so it writes the patch's list as received, and the
+ * publisher sends what is stored; the route itself only clears the stored list
+ * when a patch changes the category without naming `attributes` (K1-12).
  *
  * ⚠️ On a TRUNCATED tree the stored attributes the walk does not show are KEPT
  * (appended, in stored order): they may sit below the cut, and a save never
- * deletes from missing knowledge.
+ * deletes from missing knowledge — EXCEPT one whose `attribute_id` no write
+ * accepts (not a positive integer): it sits in no tree, and carried it would
+ * make every save of the list refuse (the validator lists it
+ * `fora-da-categoria`, so the editor shows it).
  *
  * Pure, total.
  */
@@ -988,6 +1085,7 @@ export function atributosParaGravarShopee(
   if (arvore.truncated) {
     for (const lido of porId.values()) {
       if (gravados.has(lido.attributeId) || lido.valores.length === 0) continue;
+      if (!idDeAtributoGravavel(lido.attributeId)) continue;
       saida.push(requisicaoDe(lido));
     }
   }
