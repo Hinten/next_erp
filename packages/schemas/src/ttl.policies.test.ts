@@ -66,4 +66,13 @@ describe('firestore.indexes.json TTL policies', () => {
   it('lists each registry group once', () => {
     expect(new Set(registryGroups).size).toBe(registryGroups.length);
   });
+
+  // Amazon step 12a: the feed record's row and its override, named, so the pair
+  // is pinned even if both were deleted together (the checks above would pass).
+  it('pairs the Amazon feed record row (feedsAmazon) with its override', () => {
+    expect(registryGroups).toContain('feedsAmazon');
+    expect(ttlOverrides.filter((o) => o.collectionGroup === 'feedsAmazon')).toEqual([
+      { collectionGroup: 'feedsAmazon', fieldPath: TTL_FIELD, ttl: true, indexes: [] },
+    ]);
+  });
 });

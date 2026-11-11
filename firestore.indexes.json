@@ -2855,6 +2855,12 @@
       "fieldPath": "expiraEm",
       "ttl": true,
       "indexes": []
+    },
+    {
+      "collectionGroup": "feedsAmazon",
+      "fieldPath": "expiraEm",
+      "ttl": true,
+      "indexes": []
     }
   ]
 }
