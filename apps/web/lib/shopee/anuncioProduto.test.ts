@@ -1897,10 +1897,12 @@ describe('#1911 P11 — textoDoProblemaShopee: §C rows #4–#12', () => {
 describe('#1911 P11 — §C #13/#14: the P7 variation refusals keep their OWN sentence (no new row)', () => {
   it('variacao-sem-vinculo and opcoes-demais read verbatim — never the "no next step" stand-in', () => {
     // The `variacao-sem-vinculo` sentences apps/shopee sends TODAY, spelled from
-    // `anuncios/tiersPublicacao.ts` (`fraseDoTierSemPar`'s S1/S2/S3 and the
-    // per-variante refusal with its #1911 P14b exit, §5-7) with invented names — the
-    // browser cannot import them, as the N1 block spells its sentence. Widening
-    // `FRASE_DE_TERMINAL` to match «ou importe o anúncio» or «aba Shopee» reds this.
+    // `anuncios/tiersPublicacao.ts` (`fraseDoTierSemPar`'s S1/S2/S3, the
+    // per-variante refusal with its #1911 P14b exit, §5-7, and the per-variante
+    // refusal of an append under a standard entry paired with a live custom tier,
+    // #1911 P14b Q1) with invented names — the browser cannot import them, as the N1
+    // block spells its sentence. Widening `FRASE_DE_TERMINAL` to match «ou importe o
+    // anúncio» or «aba Shopee» reds this.
     for (const [motivo, frase] of [
       [
         'variacao-sem-vinculo',
@@ -1921,6 +1923,10 @@ describe('#1911 P11 — §C #13/#14: the P7 variation refusals keep their OWN se
       [
         'variacao-sem-vinculo',
         'A variante "Variante Azul" do grupo "Cor inventada" não está vinculada a nenhuma opção da variação padronizada 77. Corrija o vínculo em Variações (aba Shopee): vincule a variante a uma opção dessa variação, troque o vínculo por outra variação ou remova-o.',
+      ],
+      [
+        'variacao-sem-vinculo',
+        'A variante "Tom inventado" do grupo "Cor inventada" não casa pelo nome com nenhuma opção do tier personalizado "Cor inventada" do anúncio, e o vínculo do grupo usa a variação padronizada 88 — republicar acrescentaria uma opção e moveria o modelo. Renomeie a variante em Variações para o nome da opção do anúncio, ou mova as variações deste anúncio para outro grupo.',
       ],
       ['opcoes-demais', 'O tier "Tamanho" tem um nome longo demais: encurte o nome em Variações.'],
     ] as const) {

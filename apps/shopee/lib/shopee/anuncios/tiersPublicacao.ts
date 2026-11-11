@@ -176,22 +176,78 @@
  * past the model leg too, and the listing decides which: a listing of THAT
  * variation (a new variante added in the ERP) needs the variante bound, while a
  * swap or a removal passes the plan and is refused after `update_item` (S3 or S2);
- * a listing of another variation needs the swap. On a create all three work.
+ * a listing of another variation needs the swap. On a create all three work. A
+ * listing whose live tier is CUSTOM and pairs with the grupo BY NAME (next
+ * paragraph) is neither: there binding works only for a variante named exactly
+ * like its live option (the name fold then claims it in the model leg), a variante
+ * named otherwise, once bound, meets the Q1 refusal below, and a swap keeps the
+ * entry standard, so it meets §5-7 or Q1 again. Only a removal gets past: the
+ * grupo then reads as an implicit custom entry, the variante is appended, and a
+ * child whose model sits on a live option moves onto the appended one, unrefused
+ * (P14a open point 6's class).
  *
- * ⚠️ Not refused (#1911 P14b residual, open for Lucas): a STANDARD entry paired
- * BY NAME with a live CUSTOM tier. A live custom option keeps its position for a
- * variante only through an id-`0` row of the entry or a variante NAMED like it
- * (`varianteDaOpcaoViva`, both through `nomeDeTierShopee`). A used variante named
- * otherwise — tied to that option by the import's rung 3 (a gender-vowel or a
- * space/hyphen swap), or renamed in the ERP after the import — that holds a row of
- * the standard variation is APPENDED under that row's non-zero option id, into the
- * custom tier, and its child's model moves onto the appended option. Before #2108
- * point 8 the import's id-`0` rows held the live position; Shopee's answer to the
- * body is unmeasured.
+ * **Refused (#1911 P14b, Q1 — Lucas, 2026-11-11): every APPEND under a STANDARD
+ * entry paired BY NAME with a live CUSTOM tier, when the model leg rewrites in
+ * place.** A live custom option keeps its position for a variante only through an
+ * id-`0` row of the entry or a variante NAMED like it (`varianteDaOpcaoViva`, both
+ * through `nomeDeTierShopee`). A used variante that neither claims — named
+ * otherwise, because the import's rung 3 tied it to that option (a gender-vowel or
+ * a space/hyphen swap), because it was renamed in the ERP after the import, or
+ * because the custom option was renamed in Seller Centre and the stored id-`0`
+ * row's name went stale (P14a open point 6, which stays unguarded for a CUSTOM
+ * entry) — and that holds a row of the entry would be APPENDED into the custom
+ * tier under that row's option id (non-zero, or an id-`0` row named like no live
+ * option), and `reconciliarModelos` would then move its child's model onto the
+ * appended option, leaving the old live option with no model. Before #2108 point
+ * 8 the import's id-`0` rows held the live position; now nothing does, so each
+ * such variante is refused `variacao-sem-vinculo`, one problema per variante, and
+ * never appended — the §5-7 shape (when every tier is authored, its child also
+ * gets the "não tem posição" model refusal):
+ * «A variante "{v}" do grupo "{g}" não casa pelo nome com nenhuma opção do tier
+ * personalizado "{tier}" do anúncio, e o vínculo do grupo usa a variação
+ * padronizada {id} — republicar acrescentaria uma opção e moveria o modelo.
+ * Renomeie a variante em Variações para o nome da opção do anúncio, ou mova as
+ * variações deste anúncio para outro grupo.» `{tier}` is the live tier's name as
+ * `tiersDoItem` reads it (already through `nomeDeTierShopee`, the only form of a
+ * live name this module ever holds — and the one it re-sends). The two exits are
+ * the decided ones, each with a precondition the sentence does not state (pinned
+ * `⚠️ PERGUNTA (Lucas):`). Renaming the variante to its live option's name lets the
+ * name fold claim it and keep the position, unless another variante of the grupo
+ * already claims that option — an id-`0` row binding it to another variante (the
+ * row's first used variante, else its first), or an EARLIER variante of the same
+ * name (the name rung takes the first homonym in grupo order, used or not): the
+ * refusal then repeats with `{v}` equal to the option's name, and the way out is
+ * that row or that homonym. Moving the listing's children to another grupo leaves
+ * this pairing only into a grupo named like the live tier (else S1); there, under a
+ * custom entry, every used variante must be claimed by its live option (named like
+ * it, or bound by an id-`0` row named like it), or the custom-entry append moves
+ * the child's model unrefused (P14a open point 6's class), and under another
+ * standard entry it meets this refusal again. A refused option never reaches the
+ * duplicate-key check below, so inside this pairing two used variantes that would
+ * land on ONE option (one row binding both) read as this refusal, never
+ * `combinacao-duplicada`, and no rename clears it. A variante with NO row stays on
+ * the §5-7 refusal; a live STANDARD tier, a custom entry, a create and the `init`
+ * arm (which re-creates every model, so nothing moves) append as before. The plan
+ * runs with no live tree, so a dry run never shows this refusal.
  *
- * A depth change is not guarded: it is `init_tier_variation`, which re-creates
- * every model, and neither is a listing with no addressable model. The refusal
- * lands after `update_item`, in the model leg, where it is stamped and recoverable.
+ * ⚠️ Open for Lucas (pinned `⚠️ PERGUNTA (Lucas):` for the brand-new variante): a
+ * child the reconciler would bind to NO live model — a BRAND-NEW variante (its
+ * child has no model on the listing yet), or an unlinked child whose live model's
+ * SKU differs (a model would be ADDED, none moved) — bound to a row of the standard
+ * variation is an append in the same pairing, so it is refused too, although no
+ * model moves and the listing may have no option to rename it to: the sentence's
+ * «moveria o modelo» and «Renomeie… para o nome da opção do anúncio» do not fit
+ * it. A brand-new variante gets here by following §5-7's own first exit (binding
+ * it). `montarTiers` holds each child's stored link fields (`linkModelId`,
+ * `tierIndexArmazenado`, `sku`), but WHICH live model a child binds is
+ * `reconciliarModelos`' decision (stored id → sku → coordinate, plus a synthetic
+ * candidate per child), so telling the cases apart here would re-derive that
+ * binding — a second copy.
+ *
+ * A depth change is not guarded — by the re-code guard or by Q1: it is
+ * `init_tier_variation`, which re-creates every model, and neither is a listing
+ * with no addressable model. Both refusals land after `update_item`, in the model
+ * leg, where they are stamped and recoverable.
  *
  * ## ⚠️ The ERP never renames a LIVE option it keeps (#1911 P14a, M1)
  *
@@ -955,7 +1011,11 @@ function fraseDoTierSemPar(
  * in place, a grupo that paired with no live tier — custom or standard (#2043) —
  * is refused before any option is authored: the re-code guard. Every live
  * option of a paired tier keeps its live index AND its live name (module header,
- * M1). Every custom name the live tree does not already hold is then checked
+ * M1). Each used variante no live option claimed is then APPENDED, except two
+ * per-variante refusals, both `variacao-sem-vinculo`: a STANDARD entry binding it
+ * no option (§5-7), and — on that in-place update — a STANDARD entry whose paired
+ * live tier is CUSTOM, where the append would move the child's model (#1911 P14b,
+ * Q1). Every custom name the live tree does not already hold is then checked
  * against its band (`opcoes-demais`, module header) — on a create that is BEFORE
  * `add_item`, because the plan runs this.
  */
@@ -1054,6 +1114,20 @@ export function montarTiers(args: ArgsMontarTiers): ResultadoMontarTiers {
     const opcoes: OpcaoCrua[] = [];
     const jaAutoradas = new Set<string>();
     const usadasDoGrupo = usadas.get(grupo.grupoId) ?? new Set<string>();
+    /**
+     * The STANDARD entry paired BY NAME with a live CUSTOM tier, rewritten in
+     * place (module header, "Refused (#1911 P14b, Q1)"): here every option this
+     * publish would APPEND moves a model, so the append loop below refuses it.
+     * `null` when the pairing is anything else — a create, the `init` arm, a live
+     * standard tier, a custom entry — and appending proceeds as before.
+     */
+    const tierPersonalizadoSobPadrao =
+      par.vivo !== null &&
+      par.vivo.variationId === 0 &&
+      entrada.variation_id !== 0 &&
+      reescreveNoLugar
+        ? par.vivo
+        : null;
 
     if (par.vivo) {
       const { lista, buraco } = opcoesVivasPorIndice(par.vivo);
@@ -1091,6 +1165,21 @@ export function montarTiers(args: ArgsMontarTiers): ResultadoMontarTiers {
             'standardise_tier_variation',
             MOTIVO_PUBLICACAO_BLOQUEADA.variacaoSemVinculo,
             `A variante "${variante.nome}" do grupo "${grupo.nome}" não está vinculada a nenhuma opção da variação padronizada ${String(entrada.variation_id)}. Corrija o vínculo em Variações (aba Shopee): vincule a variante a uma opção dessa variação, troque o vínculo por outra variação ou remova-o.`,
+          ),
+        );
+        continue;
+      }
+      if (tierPersonalizadoSobPadrao !== null) {
+        // #1911 P14b, Q1 (Lucas, 2026-11-11): no live option claimed this variante
+        // (no id-0 row of the entry and no variante name pairs it), so the row
+        // would land as a NEW option of the custom tier and the child's model would
+        // move onto it. Refused per variante, never appended — the §5-7 shape. A
+        // refused option never reaches the duplicate-key check below (module header).
+        problemas.push(
+          problema(
+            'standardise_tier_variation',
+            MOTIVO_PUBLICACAO_BLOQUEADA.variacaoSemVinculo,
+            `A variante "${variante.nome}" do grupo "${grupo.nome}" não casa pelo nome com nenhuma opção do tier personalizado "${tierPersonalizadoSobPadrao.nome}" do anúncio, e o vínculo do grupo usa a variação padronizada ${String(entrada.variation_id)} — republicar acrescentaria uma opção e moveria o modelo. Renomeie a variante em Variações para o nome da opção do anúncio, ou mova as variações deste anúncio para outro grupo.`,
           ),
         );
         continue;

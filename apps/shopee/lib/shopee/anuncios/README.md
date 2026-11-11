@@ -1443,7 +1443,13 @@ listing's variation decides which: when the listing's tier IS the bound variatio
 (a new variante added in the ERP), only binding the variante works, while a swap
 or a removal passes the plan and is refused in the model leg after `update_item`
 (S3 or S2; the editor's Q3(b) warning fires on both when staged); when the listing
-uses another variation, only the swap works. On a create all three work. Pinned in
+uses another variation, only the swap works. On a create all three work. A
+listing whose live tier is CUSTOM and pairs with the grupo by name (the Q1 bullet
+below) is neither: there binding works only for a variante named exactly like its
+live option, one named otherwise meets the Q1 refusal once bound, and a swap
+keeps the entry standard, so it meets this refusal or Q1 again. Only a removal
+gets past: the grupo then reads as an implicit custom entry, and the append moves
+a child's model unrefused (P14a open point 6's class). Pinned in
 `tiersPublicacao.test.ts`'s #2043 describe.
 
 - A grupo `'Cor '` facing a live `'Cor'` PAIRS (the NAME fold); `'cor'` or
@@ -1461,7 +1467,11 @@ uses another variation, only the swap works. On a create all three work. Pinned 
   (`types.ts` tolerates every combination). Every committed body with models carries
   both trees at equal length. In the standard-tree-only and length-mismatch shapes
   a stored standard grupo gets S3 although its id may be live on the wire: it
-  fails closed, but the sentence can be inaccurate.
+  fails closed, but the sentence can be inaccurate. In the length-mismatch shape a
+  stored standard grupo NAMED like the tier pairs with it instead (every tier
+  reads custom there), and each append gets the Q1 refusal (below), whose «tier
+  personalizado» can be inaccurate the same way; it fails closed too (the
+  «comprimentos diferentes» pin of «formas sem medida na fiação»).
 - A grupo whose STORED entry is STANDARD and does not pair is refused like a
   custom one (#2043, the batch-A review's known item 2): stored 88 against a
   live 77 at the same depth with addressable models is refused with no tier and
@@ -1480,20 +1490,75 @@ uses another variation, only the swap works. On a create all three work. Pinned 
   refused and pinned. Since #2108 point 8 the import no longer appends that live
   custom tier's rows to the stored standard entry (below), so the grupo's used
   variantes need rows of their own there: each one without is refused per
-  variante (above), at the plan. ⚠️ But a used variante that DOES hold a row of
-  the standard variation and is named otherwise than its live option (tied to it
-  by the import's rung 3, a gender-vowel or space/hyphen swap, or renamed in the
-  ERP after the import) is not refused: it is APPENDED under that row's non-zero
-  option id, inside the custom tier, and its child's model moves onto the appended
-  option (`⚠️ RESÍDUO` in `tiersPublicacao.test.ts`, #1911 P14b; before #2108 point
-  8 the import's id-`0` rows held the live position). Whether to refuse it is open
-  for Lucas: refusing needs a new sentence. Where the same grupo and entry also
-  serve a listing of that standard variation in the same conta and category, the
-  exits are binding the missing variantes to options of that variation (only for
-  a variante named exactly like its live custom option; one named otherwise is
-  then appended and moves its model, as above), or moving the custom listing's
-  children to another grupo; removing the entry would refuse the standard listing
-  instead (S2).
+  variante (above), at the plan.
+- **Refused: every APPEND into that pairing (#1911 P14b, Q1 — Lucas,
+  2026-11-11).** A used variante that holds a row of the standard entry but that
+  no live option claims — named otherwise than its live option (tied to it by the
+  import's rung 3, a gender-vowel or space/hyphen swap, or renamed in the ERP
+  after the import), or left behind by a Seller Centre rename of the custom option
+  that made a stored id-`0` row's name stale (P14a open point 6, below), whether
+  the row's id is non-zero or an id-`0` row named like no live option — would be
+  APPENDED inside the custom tier under the row's id, and `reconciliarModelos`
+  would move its child's model onto the appended option, leaving the old one with
+  no model (before #2108 point 8 the import's id-`0` rows held the live
+  position). When the model leg rewrites in place, each such
+  variante is refused `variacao-sem-vinculo` on `standardise_tier_variation`, one
+  problema per variante, and never appended: "A variante "{v}" do grupo "{g}" não
+  casa pelo nome com nenhuma opção do tier personalizado "{tier}" do anúncio, e o
+  vínculo do grupo usa a variação padronizada {id} — republicar acrescentaria uma
+  opção e moveria o modelo. Renomeie a variante em Variações para o nome da opção
+  do anúncio, ou mova as variações deste anúncio para outro grupo." `{tier}` is
+  the live tier's name as read (already through `nomeDeTierShopee`); `{v}` and
+  `{g}` are the ERP names as stored, like every sibling sentence. The exits:
+  rename the variante to its live option's name (the name fold then claims it and
+  the position is kept), or move the listing's children to another grupo. Each
+  has a precondition the sentence does not state (pinned `⚠️ PERGUNTA (Lucas):`
+  in the Q1 describe). The RENAME works only when no other variante of the grupo
+  already claims that option: an id-`0` row binding the option to another
+  variante (the row's first used variante, else its first), or an EARLIER
+  variante of the same name (the name rung takes the first homonym in grupo
+  order, used or not, and grupos are shared across produtos). Then the refusal
+  repeats with `{v}` equal to the option's name, so «não casa pelo nome» reads
+  false, and the way out is that row or that homonym, which the sentence does not
+  name. The MOVE leaves this pairing only into a grupo named like the live tier
+  (else S1); there, under a custom entry (a stored `0` or none), every used
+  variante must be claimed by its live option (named like it, or bound by an
+  id-`0` row named like it), or the custom-entry append moves the child's model
+  UNREFUSED (P14a open point 6's class); under another standard entry it meets
+  this refusal again. A refused option never reaches the option duplicate check,
+  so inside this pairing two used variantes that would land on ONE option (one
+  row binding both, id `0` or not) read as this refusal, never
+  `combinacao-duplicada` as under a custom entry or a live standard tier, and no
+  rename clears it. When every tier is authored the child also gets the
+  model-leg "não tem posição" refusal, as under §5-7 (a sibling grupo refused as
+  a whole — S1/S2/S3, an unreadable entry or position — suppresses every model
+  line). It lands after `update_item`, stamped (the plan has no live tree,
+  so a dry run never shows it). A create, the `init` arm (every model re-created,
+  so nothing moves), a live STANDARD tier and a custom entry append as before,
+  and a variante with no row stays on the per-variante refusal above. The
+  sentence is capped at 500 like every problema: its fixed text is 324
+  characters, so a 60-character variante with a grupo and tier at Shopee's
+  30-character band and a six-digit id fits whole (450), while a grupo and tier
+  of 60 each lose the end of «outro grupo.». Pinned in `tiersPublicacao.test.ts`
+  (`⚠️ RECUSA (#1911 P14b, Q1)` and the Q1 describe of (2c-bis)) and, end to end,
+  in `tiersPublicacao.republicar.test.ts`. ⚠️ Open for Lucas: a child the
+  reconciler would bind to NO live model — a BRAND-NEW variante (its child has no
+  model on the listing), or an unlinked child whose live model's SKU differs (a
+  model would be ADDED, none moved) — bound to a standard row is an append in the
+  same pairing and is refused too, although no model moves and the listing may
+  have no option to rename it to (`⚠️ PERGUNTA (Lucas):`, pinned for the
+  brand-new variante). A brand-new variante gets there by following the
+  per-variante refusal's own first exit, binding it. `montarTiers` holds each
+  child's stored link fields (`linkModelId`, `tierIndexArmazenado`, `sku`), but
+  which live model a child binds is `reconciliarModelos`' decision (stored id →
+  sku → coordinate, plus a synthetic candidate per child), so telling the two
+  apart there would re-derive that binding, a second copy. Where the same grupo
+  and entry also serve a listing of that standard variation in the same conta and
+  category, the exits are binding the missing variantes to options of that
+  variation (only for a variante named exactly like its live custom option; one
+  named otherwise is then refused on the custom listing, as above), or moving the
+  custom listing's children to another grupo; removing the entry would refuse the
+  standard listing instead (S2).
 - **The import merges rows only into an entry of the SAME variation (#2108 point
   8).** `fundirLinksVariacoesShopee` appends our option rows, unions their
   variantes and fills a blank row name only in a stored entry whose `variation_id`
@@ -1584,12 +1649,19 @@ new option with no model. The same happens with no import at all, and whether Sh
 accepts that body is unmeasured. To keep a custom rename, rename the ERP variante to
 the same name BEFORE importing: the live option then pairs by the variante's name
 and nothing moves. Once a twin exists that no longer works, and the child has to
-move to the twin. No refusal guards this, on purpose (#1911 P14b, P14a open point
-6, Lucas: not built): from stored data it cannot be told apart from an operator
-who renamed the ERP variante and re-picked «Personalizada» in the binding editor
-(an append-and-move like the one that editor's removal warning announces and
-allows), and after any import of the listing it cannot be detected at all, since
-the import mints a variante named after the new option.
+move to the twin. Under a CUSTOM entry no refusal guards this, on purpose (#1911
+P14b, P14a open point 6, Lucas: not built): from stored data it cannot be told
+apart from an operator who renamed the ERP variante and re-picked «Personalizada»
+in the binding editor (an append-and-move like the one that editor's removal
+warning announces and allows), and after any import of the listing it cannot be
+detected at all, since the import mints a variante named after the new option.
+⚠️ Under a STANDARD entry paired by name with the live custom tier the same
+rename IS refused since Q1 (above): by the Q1 sentence when the variante holds a
+row of the entry (the stale id-`0` row counts), by the per-variante §5-7 sentence
+when it holds none. Two of Lucas's decisions meet there (open point 6 «not built»
+and Q1 «refuse every append in that pairing»), and the Q1 sentence's rename exit
+is this paragraph's own advice. Pinned by `⚠️ PAR (#1911 P14b, Q1): a MESMA
+renomeação na Seller Centre…` in `tiersPublicacao.test.ts`.
 
 Two consequences for the option duplicate check, whose custom key is the name SENT.
 (1) A second variante named like a live custom option that a stored row already

@@ -12,6 +12,10 @@
  * real partner, shop, item or buyer.
  *
  * The unit-level pairs and near-misses are `tiersPublicacao.test.ts` (2c-bis).
+ *
+ * #1911 P14b (Q1) adds the same end-to-end shape for the per-variante refusal of
+ * an APPEND under a STANDARD entry paired by name with a live CUSTOM tier: it too
+ * passes the plan (no live tree) and lands in the model leg, stamped.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -447,6 +451,94 @@ describe('republicar — #2043: um tier PADRÃO armazenado que não casa com o t
       'get_model_list',
       'update_tier_variation',
       'update_model',
+    ]);
+  });
+});
+
+describe('republicar — #1911 P14b (Q1): a entrada PADRÃO casada pelo NOME com o tier vivo CUSTOM', () => {
+  /**
+   * The FRESH `get_model_list` of a listing whose ONE tier is CUSTOM «Cor» (no
+   * standard tree), option `nomeDaOpcao` at [0], the child's model on it — the sku
+   * diverging, so a paired leg has real work.
+   */
+  function arvoreVivaPersonalizada(nomeDaOpcao: string): ShopeeModelList {
+    return {
+      tier_variation: [{ name: 'Cor', option_list: [{ option: nomeDaOpcao }] }],
+      standardise_tier_variation: null,
+      model: [
+        {
+          model_id: MODEL_A,
+          tier_index: [0],
+          model_status: SHOPEE_MODEL_STATUS.normal,
+          model_sku: 'CAM-BR-P-ANTIGO',
+        },
+      ],
+    } as unknown as ShopeeModelList;
+  }
+
+  it('⚠️ a variante «Azul», ligada à opção padrão 9 da entrada 88, contra a opção viva «Azul inventada»: o plano passa (sem árvore viva) e a recusa do ANEXO chega DEPOIS do update_item, carimbada — e o leg de modelos não manda NADA', async () => {
+    // The live custom option is named otherwise than the variante, and no id-0 row
+    // ties them, so the stored row would be APPENDED into the custom tier under 9
+    // and the child's model moved onto it (#1911 P14b, Q1).
+    const db = new FakeDb();
+    semearCatalogo(db);
+    semearAnuncioPadrao(db, VARIACAO_ARMAZENADA, 9);
+    const { client, ops } = clienteDeAtualizacao(() => arvoreVivaPersonalizada('Azul inventada'));
+
+    const err = await republicar(db, client, ops);
+
+    expect(err).toBeInstanceOf(ShopeePublishBlockedError);
+    const esperado = [
+      {
+        campo: 'standardise_tier_variation',
+        motivo: MOTIVO_PUBLICACAO_BLOQUEADA.variacaoSemVinculo,
+        mensagem:
+          'A variante "Azul" do grupo "Cor" não casa pelo nome com nenhuma opção do tier personalizado "Cor" do anúncio, e o vínculo do grupo usa a variação padronizada 88 — republicar acrescentaria uma opção e moveria o modelo. Renomeie a variante em Variações para o nome da opção do anúncio, ou mova as variações deste anúncio para outro grupo.',
+      },
+      {
+        campo: 'model',
+        motivo: MOTIVO_PUBLICACAO_BLOQUEADA.variacaoSemVinculo,
+        mensagem: `A variação ${FILHO} não tem posição no grupo "Cor" e o modelo não pode ser colocado.`,
+      },
+    ];
+    expect((err as ShopeePublishBlockedError).problemas).toEqual(esperado);
+
+    expect(ops).toEqual([
+      'get_item_limit',
+      'get_attribute_tree',
+      'get_channel_list',
+      'update_item',
+      'get_model_list',
+    ]);
+    for (const escrita of ESCRITAS_DE_TIER_E_MODELO) {
+      expect(ops, escrita).not.toContain(escrita);
+    }
+    const carimbo = patchesDoLink(db).at(-1)?.falhaPublicacao as Record<string, unknown>;
+    expect(carimbo).toMatchObject({ em: AGORA, erro: 'ShopeePublishBlockedError' });
+    expect(carimbo.problemas).toEqual(esperado);
+  });
+
+  it('⛔ par: a opção viva com o MESMO nome da variante («Azul») a reivindica pela dobra — nada é anexado, e o leg segue para update_tier_variation com a opção viva no índice dela', async () => {
+    const db = new FakeDb();
+    semearCatalogo(db);
+    semearAnuncioPadrao(db, VARIACAO_ARMAZENADA, 9);
+    const { client, ops, corposDeTier } = clienteDeAtualizacao(() =>
+      arvoreVivaPersonalizada('Azul'),
+    );
+
+    expect(await republicar(db, client, ops)).toBeNull();
+
+    expect(ops).toContain('update_tier_variation');
+    expect(corposDeTier).toHaveLength(1);
+    // Sent under the STORED 88 over the live option's id 0 — the caracterização
+    // of tiersPublicacao.test.ts; Shopee's acceptance of that body is unmeasured.
+    expect(corposDeTier[0]?.standardise_tier_variation).toEqual([
+      expect.objectContaining({
+        variation_id: VARIACAO_ARMAZENADA,
+        variation_option_list: [
+          expect.objectContaining({ variation_option_id: 0, variation_option_name: 'Azul' }),
+        ],
+      }),
     ]);
   });
 });

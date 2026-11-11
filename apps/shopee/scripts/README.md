@@ -1088,12 +1088,13 @@ WITHHELD under `support_image_size_chart=false`.
 since #1911 a grupo with NO binding entry for this conta and leaf gets one: the
 tier is named after the grupo, and every option is `0` named after its variante.
 It used to be a `variacao-sem-vinculo` problema. Four grupo-level refusals remain
-under `### problemas` (and a per-variante one, below). A binding entry that
+under `### problemas` (and two per-variante ones: the Q1 bullet below, and the one
+after the list). A binding entry that
 exists but cannot be read is refused ("existe mas não pôde ser lido"); fix it in
 Variações. ⚠️ The
 dry run plans against no live tree, so it can never show the other three (S1, S2,
-S3), and all three arrive after `update_item`, in the model leg, so the item
-fields are already sent:
+S3) nor the Q1 one, and all four arrive after `update_item`, in the model leg, so
+the item fields are already sent:
 
 - On an UPDATE, `--live` refuses a custom grupo (no entry, or a stored `0`) that
   pairs with no live tier, with one of two sentences (#1911 P14b). **S1**, when
@@ -1120,6 +1121,26 @@ fields are already sent:
   remove it, and the next run answers S1 or S2 by the live tier; when the tier is
   custom, also rename the grupo (or the tier in Seller Centre) so the names match
   (see `../lib/shopee/anuncios/README.md`).
+- Since #1911 P14b (**Q1**, Lucas 2026-11-11) it also refuses, per variante, an
+  APPEND under a stored STANDARD entry that paired BY NAME with a live CUSTOM
+  tier: a used variante that holds a row of the entry but that no live option
+  claims (tied to it by the import's rung 3, renamed in the ERP, or left behind by
+  a Seller Centre rename of the custom option) would become a new option and its
+  child's model would move onto it — "A variante "{v}" do grupo "{g}" não casa
+  pelo nome com nenhuma opção do tier personalizado "{tier}" do anúncio, e o
+  vínculo do grupo usa a variação padronizada {id} — … Renomeie a variante em
+  Variações para o nome da opção do anúncio, ou mova as variações deste anúncio
+  para outro grupo." When every tier is authored, the child's own "não tem
+  posição" line follows it. ⚠️ Both exits have unstated preconditions: the rename
+  works only when no other variante already claims that option (an id-`0` row
+  binding it to another variante, or an earlier variante of the same name — then
+  the refusal repeats naming the option itself), and the move only into a grupo
+  named like the tier (else S1) where each used variante is claimed by its live
+  option (else, under a custom entry, the model moves unrefused). Two used
+  variantes on ONE option read as this refusal, never `combinacao-duplicada`. A
+  child bound to no live model (a brand-new variante, or an unlinked child whose
+  live model's SKU differs) is refused the same way, although no model of it
+  would move — open for Lucas (see `../lib/shopee/anuncios/README.md`).
 
 One more `variacao-sem-vinculo` the dry run CAN show, because the plan decides it
 without a live tree: a grupo whose STANDARD entry binds no option to a variante a
