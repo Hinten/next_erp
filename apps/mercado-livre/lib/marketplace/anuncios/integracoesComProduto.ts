@@ -44,7 +44,11 @@
  */
 
 import { FieldValue, type Firestore } from 'firebase-admin/firestore';
-import { linkHasLiveListing, variacaoLinkHasListing } from '@delfrance/schemas';
+import {
+  contaDoLinkMercadoLivre,
+  linkHasLiveListing,
+  variacaoLinkHasListing,
+} from '@delfrance/schemas';
 import {
   produtoMercadoLivreLinkCollection,
   variacaoMercadoLivreLinkCollection,
@@ -85,7 +89,9 @@ const SENTINELAS: SentinelasDeArray = {
  * What a link write means for the array, decided from the event payload ALONE.
  *
  * The ML binding of the promoted core: this channel keeps its conta ref on the
- * link doc's `contaOuterRef`. Reading any other field name here would resolve
+ * link doc's `contaOuterRef`, read by `contaDoLinkMercadoLivre`
+ * (`@delfrance/schemas`, beside `linkHasLiveListing`, so a `tools/migrations`
+ * script reads the same copy). Reading any other field name here would resolve
  * `null` on both sides, take the zero-cost fast path, and turn the trigger into
  * a silent no-op — which is why the core takes the reader as a required
  * parameter rather than defaulting to this one (#1519).
@@ -95,7 +101,7 @@ export function planLinkChange(
   after: Record<string, unknown> | null,
   counts: (link: Record<string, unknown> | null) => boolean,
 ): { add: string[]; check: string[] } {
-  return planLinkChangeCore(before, after, counts, (link) => contaIdFromRef(link.contaOuterRef));
+  return planLinkChangeCore(before, after, counts, contaDoLinkMercadoLivre);
 }
 
 /**

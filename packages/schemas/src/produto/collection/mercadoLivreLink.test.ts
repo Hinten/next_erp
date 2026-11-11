@@ -4,6 +4,7 @@ import {
   ML_CAUSA_CAMPO,
   ML_CAUSA_TIPO,
   campoAtributo,
+  contaDoLinkMercadoLivre,
   mlCausaSchema,
   mlModeracaoSchema,
   produtoMercadoLivreLinkSchema,
@@ -447,6 +448,81 @@ describe('linkHasLiveListing', () => {
       ESTADO_PUBLICACAO_ML.publicado,
     ]) {
       expect(linkHasLiveListing({ id: 'MLB1', estado })).toBe(true);
+    }
+  });
+});
+
+/* ------------------------- contaDoLinkMercadoLivre ------------------------ */
+
+describe('contaDoLinkMercadoLivre — the anchor’s conta reader (contaOuterRef, nothing else)', () => {
+  it.each([
+    ['the canonical form', 'documents/integracao/C1'],
+    ['the bare form', 'integracao/C1'],
+    ['a leading slash', '/documents/integracao/C1'],
+  ])('EQUAL: %s reads as the same conta, C1', (_r, ref) => {
+    expect(contaDoLinkMercadoLivre({ contaOuterRef: ref, id: 'MLB1' })).toBe('C1');
+  });
+
+  it('⚠️ NEAR-MISS: another conta’s ref reads as THAT conta — never C1, and never case-folded', () => {
+    expect(contaDoLinkMercadoLivre({ contaOuterRef: 'documents/integracao/C2' })).toBe('C2');
+    expect(contaDoLinkMercadoLivre({ contaOuterRef: 'documents/integracao/c1' })).toBe('c1');
+  });
+
+  it.each([
+    ['another collection’s ref', 'documents/produtos/C1'],
+    ['a bare id (not a ref)', 'C1'],
+    ['the collection alone', 'integracao'],
+    ['an empty string', ''],
+    ['null', null],
+    ['a number', 42],
+    // A reader that stringified before it parsed would read this as C1: `String([ref])` is the ref.
+    ['the ref inside an array', ['documents/integracao/C1']],
+  ])('⚠️ NEAR-MISS: %s reads null — never C1', (_r, ref) => {
+    expect(contaDoLinkMercadoLivre({ contaOuterRef: ref, id: 'MLB1' })).toBeNull();
+  });
+
+  it.each([['contaProdutoShopeeOuterRef'], ['contaLojaIntegrada'], ['contaAmazonOuterRef']])(
+    '⚠️ NEAR-MISS: a doc carrying ONLY %s (another channel’s conta field) reads null',
+    (campo) => {
+      // The copy-paste trap: one identifier apart, it compiles, and the trigger goes silent.
+      expect(
+        contaDoLinkMercadoLivre({ [campo]: 'documents/integracao/C1', id: 'MLB1' }),
+      ).toBeNull();
+      // ÂNCORA: the same body under the right field does read C1.
+      expect(
+        contaDoLinkMercadoLivre({ contaOuterRef: 'documents/integracao/C1', id: 'MLB1' }),
+      ).toBe('C1');
+    },
+  );
+
+  it('⚠️ no parent hop: a variation link with no own contaOuterRef reads null, whatever its parent ref', () => {
+    // Following the parent link is the app's resolver's job; this reader never reads elsewhere.
+    expect(
+      contaDoLinkMercadoLivre({
+        id: 123,
+        produtoMercadoLivreOuterRef: 'documents/produtos/P1/produtoMercadoLivre/L1',
+      }),
+    ).toBeNull();
+  });
+
+  it('reads the conta whatever the link’s state — liveness is the predicates’ job', () => {
+    expect(
+      contaDoLinkMercadoLivre({
+        contaOuterRef: 'documents/integracao/C1',
+        id: 'MLB1',
+        estado: ESTADO_PUBLICACAO_ML.cancelado,
+      }),
+    ).toBe('C1');
+  });
+
+  it('⛔ a raw document never makes it throw', () => {
+    for (const bruto of [
+      {},
+      { contaOuterRef: undefined },
+      { contaOuterRef: { caminho: 'integracao/C1' } },
+      { contaOuterRef: 'documents/integracao/C1', id: { valor: 1 } },
+    ]) {
+      expect(() => contaDoLinkMercadoLivre(bruto)).not.toThrow();
     }
   });
 });

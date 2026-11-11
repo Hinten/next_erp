@@ -10,7 +10,16 @@
  * the app — the link subcollections, the survivor queries, the variação
  * fallbacks — and enters here as two injected readers: `counts`, which decides
  * whether a link doc contributes, and `contaDoLink`, which says where that
- * doc's conta ref lives.
+ * doc's conta ref lives. (The two readers each channel passes are pure, so
+ * they live in `@delfrance/schemas`, side by side.)
+ *
+ * ⚠️ ONE exception to "stays in the app": Loja Integrada's survivor read,
+ * `sobreviventesLi.ts` in this folder. A second caller needs the identical read
+ * and cannot import an app — a `tools/migrations` script that adds a missing
+ * conta through {@link adicionarContaSeViva} — and that add converges only
+ * while its survivor folds exactly as the trigger's remove does, so there must
+ * be one copy. It still enters here as the caller-supplied `sobrevivem`
+ * closure: the module moved, the seam did not.
  *
  * That array is the ANCHOR PRE-FILTER the marketplace sweeps start from: a
  * conta id in it means "this account's sweep visits this produto every run", so
@@ -51,7 +60,8 @@
  *   the callback re-runs — re-checking a predicate against a binding read taken
  *   OUTSIDE the transaction would not be a guard at all. Since #1519 the
  *   survivors reader is a caller-supplied closure (ML's two collection-bound
- *   ones, Shopee's unfiltered `prodshopee` scan), so the class is unchanged:
+ *   ones, Shopee's unfiltered `prodshopee` scan, Loja Integrada's unfiltered
+ *   `produtolojaintegrada` read), so the class is unchanged:
  *   the verdict still comes from the callback's own `tx.get`.
  * - The READ-derived add ({@link adicionarContaSeViva}, #1200 — the monthly ML
  *   link audit that heals a produto whose array lost the conta) is **tier 1
