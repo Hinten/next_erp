@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { millisSinceEpoch } from '../../shared/datetime';
-import { outerRefSchema } from '../../shared/outerRef';
+import { contaIdFromRef, outerRefSchema } from '../../shared/outerRef';
 
 /**
  * Typed write-side schemas for the Mercado Livre listing link docs —
@@ -848,6 +848,37 @@ export function linkHasLiveListing(link: Record<string, unknown> | null | undefi
   if (link == null) return false;
   if (typeof link.id !== 'string' || link.id.length === 0) return false;
   return !estadoEncerraAnuncio(link.estado);
+}
+
+/**
+ * The integração doc id a stored Mercado Livre link belongs to, or `null`: the
+ * `integracoesComProduto` anchor's CONTA reader, {@link contaIdFromRef} over the
+ * link's OWN `contaOuterRef`, paired with {@link linkHasLiveListing} on a parent
+ * link and {@link variacaoLinkHasListing} on a variation link.
+ *
+ * The app's binding (`apps/mercado-livre/lib/marketplace/anuncios/integracoesComProduto.ts`)
+ * hands it to the shared anchor plan. It lives here, beside the two predicates,
+ * so a `tools/migrations` script — which cannot import an app — can read the
+ * same copy.
+ *
+ * ⚠️ **No parent hop.** A variation link stored without its own `contaOuterRef`
+ * reads `null` here. Inside the app, every conta comparison on a variation link
+ * goes through `resolverContaRefDaVariacao`, which follows
+ * `produtoMercadoLivreOuterRef` to the parent link; this reader never does.
+ *
+ * ⚠️ `contaOuterRef` is THIS channel's field. Shopee's is
+ * `contaProdutoShopeeOuterRef` and Loja Integrada's `contaLojaIntegrada`: one
+ * identifier apart, so a doc carrying only one of those reads `null` here.
+ *
+ * Total and non-throwing over a raw document, because `contaIdFromRef` is.
+ *
+ * Equal (⇒ `'C1'`): `'documents/integracao/C1'` ≡ `'integracao/C1'` ≡
+ * `'/documents/integracao/C1'`. Distinct: another conta's ref reads as THAT
+ * conta; another collection's ref, the ref inside an array, and a doc carrying
+ * ONLY another channel's conta field ⇒ `null`.
+ */
+export function contaDoLinkMercadoLivre(link: Record<string, unknown>): string | null {
+  return contaIdFromRef(link.contaOuterRef);
 }
 
 /** The two directions the operator can move a published listing's status. */

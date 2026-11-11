@@ -36,12 +36,13 @@ import { contaIdFromRef, outerRefSchema } from '../../shared/outerRef';
  *    nullable arrays since either can be absent depending on which side of
  *    the link a given doc represents.
  *
- * Two pure readers ride beside the schema, both total over a RAW stored value
- * (they never throw, and never need the doc to parse): {@link vinculoLiConta},
- * the anchor's counts predicate, and {@link vinculoLiDaContaEId}, which decides
- * whether a stored link IS the link of one (conta, store product).
+ * Three pure readers ride beside the schema, all total over a RAW stored value
+ * (they never throw, and never need the doc to parse): {@link contaDoLinkLi}
+ * and {@link vinculoLiConta}, the anchor's conta reader and counts predicate,
+ * and {@link vinculoLiDaContaEId}, which decides whether a stored link IS the
+ * link of one (conta, store product).
  *
- * ⚠️ Both decide "the same", so they are listed in
+ * ⚠️ They decide "the same", so this file is listed in
  * `packages/config-eslint/rules/equivalence-fold-inventory.test.js`, with their
  * equal pairs and near-misses pinned in `lojaIntegradaLink.test.ts`.
  */
@@ -114,6 +115,33 @@ function proprio(o: Record<string, unknown>, chave: string): unknown {
 }
 
 /**
+ * The integração doc id a stored `produtolojaintegrada` link belongs to, or `null`: the
+ * `integracoesComProduto` anchor's CONTA reader, {@link contaIdFromRef} over `contaLojaIntegrada`.
+ *
+ * It moved here from the app's anchor binding
+ * (`apps/loja-integrada/lib/lojaIntegrada/produtos/integracoesComProdutoLi.ts`, which re-exports
+ * it, so no importer changed) because a `tools/migrations` script needs the identical answer and
+ * cannot import an app. The trigger's plan and the survivor read in
+ * `@delfrance/data/admin/produtos` read this one copy, always paired with {@link vinculoLiConta},
+ * and so will that script.
+ *
+ * ⚠️ **The FIELD is the decision.** Another channel's conta field (`contaOuterRef`,
+ * `contaProdutoShopeeOuterRef`) is one identifier apart and compiles. Read here, it answers `null`
+ * for every Loja Integrada link, so both sides of the anchor plan's comparison are `null`, the
+ * zero-cost fast path swallows every write and the trigger does nothing, silently.
+ *
+ * Total and non-throwing over a raw document, because `contaIdFromRef` is.
+ *
+ * Equal (⇒ `'C1'`): `'documents/integracao/C1'` ≡ `'integracao/C1'` ≡ `'/documents/integracao/C1'`.
+ * Distinct: `'documents/integracao/C2'` ⇒ `'C2'`, never `'C1'`; `'documents/integracao/c1'` ⇒
+ * `'c1'` (no case fold); another collection's ref, the ref inside an array, and a doc carrying
+ * ONLY another channel's conta field ⇒ `null`.
+ */
+export function contaDoLinkLi(link: Record<string, unknown>): string | null {
+  return contaIdFromRef(link.contaLojaIntegrada);
+}
+
+/**
  * The anchor's COUNTS predicate (master plan step 12's prerequisite): does this stored link keep
  * its conta in the produto's `integracoesComProduto`?
  *
@@ -121,7 +149,7 @@ function proprio(o: Record<string, unknown>, chave: string): unknown {
  * canonical decimal text) that is not in the trash (`removido !== true`). Hidden (`ativo:
  * false`) and blocked links COUNT: over-including costs a skipped sweep row, under-including is a
  * silent stock and price outage. `estadoPublicacao` is not read — no decision depends on a stored
- * publication code. The conta is not read either: the anchor's binding reads it from the same
+ * publication code. The conta is not read either: {@link contaDoLinkLi} reads it from the same
  * document.
  *
  * Total and non-throwing: anything that is not an object counts nothing.

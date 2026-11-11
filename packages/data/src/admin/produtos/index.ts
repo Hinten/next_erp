@@ -11,6 +11,10 @@
  * the denorm array, the two write tiers and the payload-only plan are
  * channel-neutral, while the link subcollections and survivor queries that feed
  * them are not. Each channel binds the plan with its own conta-ref reader.
+ * One channel's survivor read lives here anyway: Loja Integrada's
+ * (`sobrevivemVinculosDoProdutoLi`, `sobreviventesLi.ts`), because a second
+ * caller, a `tools/migrations` script, needs the identical read and cannot
+ * import an app. It still enters the guarded writes as a closure.
  *
  * And the Loja Integrada product import's create-time SKU probe
  * (`sondarSkusLi`, master plan step 9): it reads Firestore AND folds a SKU, so
@@ -35,4 +39,5 @@ export {
   removerContaSeOrfa,
   type SentinelasDeArray,
 } from './integracoesComProduto';
+export { sobrevivemVinculosDoProdutoLi } from './sobreviventesLi';
 export { MAX_VALORES_IN_SONDA_SKU_LI, sondarSkusLi, type SondaSkuLi } from './sondaSkuLi';
