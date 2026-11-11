@@ -123,7 +123,7 @@ function proprio(o: Record<string, unknown>, chave: string): unknown {
  * it, so no importer changed) because a `tools/migrations` script needs the identical answer and
  * cannot import an app. The trigger's plan and the survivor read in
  * `@delfrance/data/admin/produtos` read this one copy, always paired with {@link vinculoLiConta},
- * and so will that script.
+ * and so does the anchor census in `tools/migrations/src/2026-11-li-integracoes-com-produto`.
  *
  * ⚠️ **The FIELD is the decision.** Another channel's conta field (`contaOuterRef`,
  * `contaProdutoShopeeOuterRef`) is one identifier apart and compiles. Read here, it answers `null`

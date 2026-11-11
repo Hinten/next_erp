@@ -103,10 +103,14 @@ import {
  * runner's closing `… 0 writes` figure is 0 BY DESIGN. This script counts its
  * own adds (`adicionados=`) and says so; the JSONL is the record.
  *
- * ## Refusals (exit 1, in every mode, before any write)
+ * ## Refusals (exit 1, in every mode, before any row or write)
  *
- * No Loja Integrada conta, or no counting link walked: the gate line reads
- * `GATE li: NAO-AVALIADO <motivo>`, never `0 0`, and the run throws.
+ * No Loja Integrada conta (decided before the walk), or no counting link walked
+ * (decided after read 3, before read 4 is paid for): the gate line reads
+ * `GATE li: NAO-AVALIADO <motivo>`, never `0 0`, and the run throws. The second
+ * still prints the count table and the `AVISO li: conta-inexistente` line first:
+ * links that all name a re-created or renamed conta refuse that way, and the
+ * table names the id they point at.
  *
  * ## ⛔ Agents never run this. It runs in the migration window only — root `CLAUDE.md` rule 8.
  */
@@ -135,7 +139,13 @@ export class CensoNaoAvaliado extends Error {
   constructor(readonly motivo: MotivoDeRecusa) {
     super(
       `GATE li: NAO-AVALIADO ${motivo}. Nothing was written. Check --project, the database and ` +
-        'that the import has finished (runbook: li-integracoes-com-produto.README.md).',
+        'that the import has finished' +
+        (motivo === 'sem-vinculos-que-contam'
+          ? ', and whether the links name a conta id that no longer exists: a re-created or ' +
+            'renamed conta prints an "AVISO li: conta-inexistente" line above, and the count ' +
+            'table names the id'
+          : '') +
+        ' (runbook: li-integracoes-com-produto.README.md).',
     );
     this.name = 'CensoNaoAvaliado';
   }
@@ -304,10 +314,22 @@ function logarResumo(resultado: ResultadoDoCenso): void {
   if (resultado.gate.contaInexistente > 0) {
     log(
       `AVISO li: conta-inexistente=${resultado.gate.contaInexistente} vinculo(s) que contam ` +
-        'apontam para uma conta que não existe. Um número grande aqui, com o gate em 0 0, é o ' +
-        'retrato de vínculos de uma conta recriada com outro id: leia o JSONL antes de seguir.',
+        'apontam para uma conta que não existe. Um número grande aqui é o retrato de vínculos de ' +
+        'uma conta recriada com outro id (com o gate em 0 0, ou NAO-AVALIADO quando todos ' +
+        'apontam para ela): a tabela acima dá o id, e o JSONL do dry-run, cada vínculo. Leia ' +
+        'antes de seguir.',
     );
   }
+}
+
+/**
+ * Print the summary, then refuse: exit 1, no row, no write, in every mode. The summary is what
+ * tells a re-created conta (its links counted as `li-conta-inexistente`, the WARNING printed)
+ * from a wrong project or database.
+ */
+function recusar(resultado: ResultadoDoCenso, motivo: MotivoDeRecusa): never {
+  logarResumo(resultado);
+  throw new CensoNaoAvaliado(motivo);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -380,6 +402,13 @@ export function criarCenso(
     /* -- 3. The produtos they name ------------------------------------------ */
     const produtos = await lerProdutos(ctx, produtosDosVinculosLi(vinculosLi));
 
+    // The second refusal depends on reads 1 to 3 only (read 4 feeds report-only classes), so it
+    // is decided before read 4's three queries per produto are paid for.
+    const semOutrosCanais = censar({ contas, vinculosLi, produtos, outrosCanais: new Map() });
+    if (semOutrosCanais.gate.recusa !== null) {
+      recusar(semOutrosCanais, semOutrosCanais.gate.recusa);
+    }
+
     /* -- 4. Their own other-channel links ----------------------------------- */
     const existentes = [...produtos.entries()].filter(([, p]) => p.existe).map(([id]) => id);
     const outrosCanais = new Map<string, VinculosDeOutrosCanais>();
@@ -397,10 +426,8 @@ export function criarCenso(
     const docsScanned = contas.length + vinculosLi.length + produtos.size + outrosLidos;
 
     /* -- Refusal: before any row and any write, in every mode --------------- */
-    if (resultado.gate.recusa !== null) {
-      log(linhaDoGate(resultado.gate));
-      throw new CensoNaoAvaliado(resultado.gate.recusa);
-    }
+    // The same gate as above; checked again so no row is ever written under a refusal.
+    if (resultado.gate.recusa !== null) recusar(resultado, resultado.gate.recusa);
 
     if (!ctx.reportOnly) for (const achado of resultado.achados) gravar(ctx, achado);
     logarResumo(resultado);

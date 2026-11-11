@@ -48,14 +48,15 @@ import {
  *
  * ## The conta filter
  *
- * A finding names a conta only when the link's conta reads as an existing
- * `integracao` doc of THAT channel's `tipo` (strict `===` on the stored number).
- * Everything else is its own ungated class, so nothing is dropped without a row:
- * a counting link whose ref reads as no conta at all is `*-conta-ilegivel`, one
- * whose conta doc is gone is `*-conta-inexistente`, one naming another channel's
- * conta is `*-conta-de-outro-tipo`. ⚠️ The tipo check is load-bearing: an
- * id of another tipo added here because a Loja Integrada link names it would be
- * removed by that channel's own reconcile.
+ * A gap (`*-ausente`), and so an add, names a conta only when the link's conta
+ * reads as an existing `integracao` doc of THAT channel's `tipo` (strict `===` on
+ * the stored number). Every other reading is its own ungated class, so nothing is
+ * dropped without a row: a counting link whose ref reads as no conta at all is
+ * `*-conta-ilegivel`, one whose conta doc is gone is `*-conta-inexistente`, one
+ * naming another channel's conta is `*-conta-de-outro-tipo`. Those rows still
+ * carry the conta id the link names, when one reads. ⚠️ The tipo check is
+ * load-bearing: an id of another tipo added here because a Loja Integrada link
+ * names it would be removed by that channel's own reconcile.
  *
  * ## No fold on the stored side
  *
@@ -86,7 +87,8 @@ import {
  *   That import answers "ambiguous" for the store product and binds no line. It
  *   reads no `removido`, so a trashed link is an owner here too; an owner whose
  *   produto doc is gone counts for nothing, as it does there. A text `id` is never
- *   part of this key: that link is `li-id-texto`.
+ *   part of this key: that link is `li-id-texto`. One row per store product, at its
+ *   first owner's path, so one produto can carry several.
  */
 
 /* -------------------------------------------------------------------------- */
@@ -159,12 +161,6 @@ export const CLASSE = {
   shopeeContaDeOutroTipo: 'shopee-conta-de-outro-tipo',
 } as const;
 export type Classe = (typeof CLASSE)[keyof typeof CLASSE];
-
-/** The two classes the gate counts. Every other class is informational. */
-export const CLASSES_DO_GATE: ReadonlySet<Classe> = new Set([
-  CLASSE.liAusente,
-  CLASSE.liCampoInvalido,
-]);
 
 /** Which channel a finding is about; `ancora` is the array itself. */
 export type Canal = 'li' | 'ml' | 'shopee' | 'ancora';
@@ -313,23 +309,41 @@ function julgarConta(
   return { tipo: 'valida', contaId };
 }
 
-/** Collects findings, one per (class, path, conta), and sorts them once at the end. */
+/**
+ * Collects findings, one per (class, path, conta, discriminator), and sorts them once at the end.
+ *
+ * The discriminator separates two findings that share a class, a path and a conta but are about
+ * different things: two `li-dono-duplicado` groups whose first owner is the same produto sit at
+ * that produto's path, and only the store id tells them apart. Without it the second group would
+ * be dropped with no row and no count. It is also the last sort key, so their order never depends
+ * on the order the links were walked in.
+ */
 class Coletor {
-  private readonly porChave = new Map<string, Achado>();
+  private readonly porChave = new Map<string, { achado: Achado; discriminador: string }>();
 
-  add(achado: Achado): void {
-    const chave = `${achado.classe}\u0000${achado.caminho}\u0000${achado.contaId ?? ''}`;
-    if (!this.porChave.has(chave)) this.porChave.set(chave, achado);
+  add(achado: Achado, discriminador = ''): void {
+    const chave = [achado.classe, achado.caminho, achado.contaId ?? '', discriminador].join(
+      '\u0000',
+    );
+    if (!this.porChave.has(chave)) this.porChave.set(chave, { achado, discriminador });
   }
 
   ordenados(): Achado[] {
-    return [...this.porChave.values()].sort(
-      (a, b) =>
-        comparar(a.caminho, b.caminho) ||
-        comparar(a.contaId ?? '', b.contaId ?? '') ||
-        comparar(a.classe, b.classe),
-    );
+    return [...this.porChave.values()]
+      .sort(
+        (a, b) =>
+          comparar(a.achado.caminho, b.achado.caminho) ||
+          comparar(a.achado.contaId ?? '', b.achado.contaId ?? '') ||
+          comparar(a.achado.classe, b.achado.classe) ||
+          comparar(a.discriminador, b.discriminador),
+      )
+      .map((e) => e.achado);
   }
+}
+
+/** A store id as a discriminator: zero-padded, so codepoint order is numeric order. */
+function discriminadorDoId(id: number): string {
+  return String(id).padStart(String(Number.MAX_SAFE_INTEGER).length, '0');
 }
 
 /** The stored link fields a finding's value carries. */
@@ -472,14 +486,18 @@ export function censar(entrada: EntradaDoCenso): ResultadoDoCenso {
   for (const dono of donos.values()) {
     if (dono.produtos.size < 2) continue;
     const produtos = [...dono.produtos].sort(comparar);
-    achados.add({
-      classe: CLASSE.liDonoDuplicado,
-      canal: 'li',
-      caminho: `${PRODUTOS}/${produtos[0]!}`,
-      campo: 'id',
-      contaId: dono.contaId,
-      valor: { id: dono.id, produtos },
-    });
+    // One row per store product: two groups can share their first owner, and so this path.
+    achados.add(
+      {
+        classe: CLASSE.liDonoDuplicado,
+        canal: 'li',
+        caminho: `${PRODUTOS}/${produtos[0]!}`,
+        campo: 'id',
+        contaId: dono.contaId,
+        valor: { id: dono.id, produtos },
+      },
+      discriminadorDoId(dono.id),
+    );
   }
 
   /* -- 3. Every existing produto holding a Loja Integrada link -------------- */

@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 
 import {
   CLASSE,
-  CLASSES_DO_GATE,
   censar,
   contagemPorConta,
   gatePassa,
@@ -354,8 +353,73 @@ describe('the safety rule: the add plan only ever holds Loja Integrada contas', 
     for (const { contaId } of r.plano) expect(TIPO_POR_CONTA.get(contaId)).toBe(3);
   });
 
-  it('only the two gate classes are gated', () => {
-    expect([...CLASSES_DO_GATE].sort()).toEqual([CLASSE.liAusente, CLASSE.liCampoInvalido]);
+  it('one finding of every other class gates nothing: ausente=0 campo-invalido=0 => PASSA', () => {
+    const ml = (doc: string, dados: Record<string, unknown>) => ({
+      caminho: `produtos/testemunha/produtoMercadoLivre/${doc}`,
+      dados: { id: `MLB${doc}`, estado: 'a', ...dados },
+    });
+    const vml = (doc: string, dados: Record<string, unknown>) => ({
+      caminho: `produtos/testemunha/variacaoMercadoLivre/${doc}`,
+      dados: { id: Number(doc), ...dados },
+    });
+    const sh = (doc: string, dados: Record<string, unknown>) => ({
+      caminho: `produtos/testemunha/prodshopee/${doc}`,
+      dados: { item_id: Number(doc), ...dados },
+    });
+    const r = censoCom(
+      [
+        {
+          caminho: 'clientes/c/produtolojaintegrada/1',
+          dados: { contaLojaIntegrada: 'documents/integracao/A', id: 1 },
+        },
+        vinculoLi('sumiu', '1', { id: 2 }),
+        vinculoLi('p', '1', { contaLojaIntegrada: 'documents/integracao/X', id: 3 }),
+        vinculoLi('p', '2', { contaLojaIntegrada: 'documents/integracao/M', id: 4 }),
+        vinculoLi('p', '3', { contaLojaIntegrada: 'documents/categorias/A', id: 5 }),
+        vinculoLi('dup1', '1', { id: 500 }),
+        vinculoLi('dup2', '1', { id: 500 }),
+        vinculoLi('txt', '1', { id: '600' }),
+        vinculoLi('filho', '1', { id: 700 }),
+        vinculoLi('caminho', '1', { id: 800 }),
+      ],
+      {
+        p: produto({ integracoesComProduto: ['A'] }),
+        dup1: produto({ integracoesComProduto: ['A'] }),
+        dup2: produto({ integracoesComProduto: ['A'] }),
+        txt: produto({ integracoesComProduto: ['A'] }),
+        filho: produto({ paiId: 'semraiz', integracoesComProduto: ['A'] }),
+        caminho: produto({ integracoesComProduto: ['A', 'integracao/A'] }),
+      },
+      {
+        testemunha: {
+          produtoMercadoLivre: [
+            ml('1', { contaOuterRef: 'documents/integracao/M' }),
+            ml('2', { contaOuterRef: 'documents/categorias/M' }),
+            ml('3', { contaOuterRef: 'documents/integracao/X' }),
+            ml('4', { contaOuterRef: 'documents/integracao/A' }),
+          ],
+          variacaoMercadoLivre: [
+            vml('1', { contaOuterRef: 'documents/integracao/M' }),
+            vml('2', { contaOuterRef: null }),
+          ],
+          prodshopee: [
+            sh('1', { contaProdutoShopeeOuterRef: 'documents/integracao/S' }),
+            sh('2', { contaProdutoShopeeOuterRef: 'documents/categorias/S' }),
+            sh('3', { contaProdutoShopeeOuterRef: 'documents/integracao/X' }),
+            sh('4', { contaProdutoShopeeOuterRef: 'documents/integracao/A' }),
+          ],
+        },
+      },
+    );
+    // The corpus really holds every class but the two gated ones, so the verdict below is not vacuous.
+    const naoGatadas = Object.values(CLASSE).filter(
+      (c) => c !== CLASSE.liAusente && c !== CLASSE.liCampoInvalido,
+    );
+    expect(new Set(r.achados.map((a) => a.classe))).toEqual(new Set(naoGatadas));
+    expect(r.gate).toMatchObject({ ausente: 0, campoInvalido: 0, recusa: null });
+    expect(gatePassa(r.gate)).toBe(true);
+    expect(linhaDoGate(r.gate)).toMatch(/^GATE li: ausente=0 campo-invalido=0 .* => PASSA$/);
+    expect(r.plano).toEqual([]);
   });
 });
 
@@ -648,6 +712,42 @@ describe('li-id-texto and li-dono-duplicado (report only)', () => {
     });
   });
 
+  it('two store products whose owners share their FIRST produto ⇒ two rows, never one', () => {
+    // p owns (A, 31) and (A, 32); q owns (A, 31) too, r owns (A, 32) too. Both rows sit at p's path.
+    const vinculos = [
+      vinculoLi('p', '1', { id: 31 }),
+      vinculoLi('p', '2', { id: 32 }),
+      vinculoLi('q', '1', { id: 31 }),
+      vinculoLi('r', '2', { id: 32 }),
+    ];
+    const produtos = {
+      p: produto({ integracoesComProduto: ['A'] }),
+      q: produto({ integracoesComProduto: ['A'] }),
+      r: produto({ integracoesComProduto: ['A'] }),
+    };
+    const r = censoCom(vinculos, produtos);
+    expect(daClasse(r, CLASSE.liDonoDuplicado)).toEqual([
+      {
+        classe: CLASSE.liDonoDuplicado,
+        canal: 'li',
+        caminho: 'produtos/p',
+        campo: 'id',
+        contaId: 'A',
+        valor: { id: 31, produtos: ['p', 'q'] },
+      },
+      {
+        classe: CLASSE.liDonoDuplicado,
+        canal: 'li',
+        caminho: 'produtos/p',
+        campo: 'id',
+        contaId: 'A',
+        valor: { id: 32, produtos: ['p', 'r'] },
+      },
+    ]);
+    // Their order is the store id's, never the order the links were walked in.
+    expect(JSON.stringify(censoCom([...vinculos].reverse(), produtos))).toBe(JSON.stringify(r));
+  });
+
   it('a trashed link is still an owner (the order import reads no removido)', () => {
     const r = censoCom([vinculoLi('p', '9'), vinculoLi('q', '9', { removido: true })], {
       p: produto({ integracoesComProduto: ['A'] }),
@@ -671,6 +771,23 @@ describe('li-id-texto and li-dono-duplicado (report only)', () => {
     [
       'two different ids',
       [vinculoLi('p', '9'), vinculoLi('q', '9', { id: ID_LI + 1 })],
+      ['p', 'q'],
+    ],
+    // No Loja Integrada order import runs for these contas, so no lookup can come out ambiguous.
+    [
+      'the same id under a GONE conta',
+      [
+        vinculoLi('p', '9', { contaLojaIntegrada: 'documents/integracao/X' }),
+        vinculoLi('q', '9', { contaLojaIntegrada: 'documents/integracao/X' }),
+      ],
+      ['p', 'q'],
+    ],
+    [
+      'the same id under a conta of ANOTHER tipo',
+      [
+        vinculoLi('p', '9', { contaLojaIntegrada: 'documents/integracao/M' }),
+        vinculoLi('q', '9', { contaLojaIntegrada: 'documents/integracao/M' }),
+      ],
       ['p', 'q'],
     ],
   ])('⚠️ NEAR-MISS: %s ⇒ no li-dono-duplicado', (_n, vinculos: VinculoLido[], ids: string[]) => {
@@ -745,7 +862,11 @@ describe('idempotence and determinism', () => {
     expect(primeira.plano.length).toBeGreaterThan(0);
     const segunda = censar(aplicarPlano(corpus(), primeira));
     expect(segunda.plano).toEqual([]);
-    expect(segunda.achados.filter((a) => CLASSES_DO_GATE.has(a.classe))).toEqual([]);
+    expect(
+      segunda.achados.filter(
+        (a) => a.classe === CLASSE.liAusente || a.classe === CLASSE.liCampoInvalido,
+      ),
+    ).toEqual([]);
     expect(gatePassa(segunda.gate)).toBe(true);
     // The judged population did not shrink: the same contas, the same counting links.
     expect(segunda.gate.contasLi).toBe(primeira.gate.contasLi);

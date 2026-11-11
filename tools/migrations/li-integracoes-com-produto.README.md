@@ -57,23 +57,27 @@ empty. The run prints the real counts.
 ## What it decides
 
 A conta belongs on the produto **whose own subcollection holds the link**,
-never on a parent or a child (every link trigger's rule). The readers are the
-ones the trigger uses, imported from `@delfrance/schemas`, so there is one copy
-of each rule:
+never on a parent or a child (every link trigger's rule). The readers are
+imported from `@delfrance/schemas`, so there is one copy of each rule:
 
 - **Loja Integrada:** a link counts when `vinculoLiConta` says so (a store
   product id, as a number or its canonical decimal text, not in the trash;
   hidden and blocked links count), and its conta is `contaDoLinkLi` (both stored
-  ref forms and a leading slash read the same conta).
+  ref forms and a leading slash read the same conta). These are the two readers
+  the Loja Integrada trigger plans with.
 - **Mercado Livre:** `linkHasLiveListing` on a parent link,
   `variacaoLinkHasListing` on a variation link, the conta from
-  `contaDoLinkMercadoLivre` (the link's OWN `contaOuterRef`, no parent hop).
+  `contaDoLinkMercadoLivre`: the link's OWN `contaOuterRef`. The Mercado Livre
+  variation trigger also falls back to its parent link's conta; this census
+  deliberately does not, so a variation without a readable conta of its own is
+  `ml-variacao-sem-conta`, never a gap.
 - **Shopee:** `anuncioShopeeVivo`, the conta from `contaDoLinkShopee`.
 
-A finding names a conta only when it is an existing `integracao` doc of that
-channel's `tipo`. ⚠️ That check is load-bearing: an id of another tipo added
-here because a Loja Integrada link names it would be removed by that channel's
-own reconcile, and the two scripts would flip the array back and forth.
+A gap (`*-ausente`), and so an add, names a conta only when it is an existing
+`integracao` doc of that channel's `tipo`; every other reading is its own
+ungated class. ⚠️ That check is load-bearing: an id of another tipo added here
+because a Loja Integrada link names it would be removed by that channel's own
+reconcile, and the two scripts would flip the array back and forth.
 
 Membership is checked with **no fold on the stored side**: the exact
 `array-contains` the sweeps run. `' C1'` or `integracao/C1` in the array does
@@ -84,23 +88,23 @@ not hold `C1`.
 Every row of the JSONL is one finding. Rows are sorted by path, then conta,
 then class, so two dry runs over the same data are byte-identical.
 
-| Class                               | Gated   | Applied | Meaning                                                                                                                                                                                     |
-| ----------------------------------- | ------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `li-ausente`                        | **yes** | **yes** | a Loja Integrada conta with a counting link on the produto, missing from the array (absent, `null` or an array without it)                                                                  |
-| `li-campo-invalido`                 | **yes** | no      | the stored field is neither absent, `null` nor an array. A union would overwrite it, so a person fixes it (below)                                                                           |
-| `li-conta-inexistente`              | no      | no      | a counting link whose conta doc does not exist. Printed as a WARNING beside the gate                                                                                                        |
-| `li-conta-de-outro-tipo`            | no      | no      | a counting link whose ref names a conta of another channel                                                                                                                                  |
-| `li-conta-ilegivel`                 | no      | no      | a counting link whose conta ref reads as no conta at all (malformed, absent, another collection's). Invisible to the trigger, the sweeps and the order import alike: a person reads the ref |
-| `li-produto-ausente`                | no      | no      | an orphan link: its produto doc does not exist                                                                                                                                              |
-| `li-caminho-inesperado`             | no      | no      | a link doc that is not at `produtos/<id>/produtolojaintegrada/<doc>`                                                                                                                        |
-| `li-raiz-sem-vinculo`               | no      | no      | a child holds a counting link of the conta, its root holds none: a sweep anchored on roots never visits the family. The product import's link pass (`soVincular`), or a person, fixes it    |
-| `li-id-texto`                       | no      | no      | a counting link whose `id` is stored as TEXT. It keeps its conta in the anchor, but the order import looks links up by the NUMBER id, and the text matches nothing there                    |
-| `li-dono-duplicado`                 | no      | no      | two existing produtos hold a link with the same (conta, stored number id), trashed or not: the order import answers "ambiguous" for that store product. One row, naming every produto       |
-| `entrada-em-forma-de-caminho`       | no      | no      | the array holds an `integracao/<id>`-shaped entry. Inert for every sweep, and left in place                                                                                                 |
-| `ml-ausente`, `ml-variacao-ausente` | no      | no      | a live Mercado Livre link whose conta is missing. Owner: `migrate:ml-integracoes-com-produto`                                                                                               |
-| `ml-variacao-sem-conta`             | no      | no      | a variation link with no `contaOuterRef` of its own. Owner: the same script's backfill                                                                                                      |
-| `shopee-ausente`                    | no      | no      | a live Shopee listing whose conta is missing. Owner: the Shopee census (#1910)                                                                                                              |
-| `ml-conta-*`, `shopee-conta-*`      | no      | no      | the `-ilegivel`, `-inexistente` and `-de-outro-tipo` classes above, for those channels                                                                                                      |
+| Class                               | Gated   | Applied | Meaning                                                                                                                                                                                                               |
+| ----------------------------------- | ------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `li-ausente`                        | **yes** | **yes** | a Loja Integrada conta with a counting link on the produto, missing from the array (absent, `null` or an array without it)                                                                                            |
+| `li-campo-invalido`                 | **yes** | no      | the stored field is neither absent, `null` nor an array. A union would overwrite it, so a person fixes it (below)                                                                                                     |
+| `li-conta-inexistente`              | no      | no      | a counting link whose conta doc does not exist. Printed as a WARNING beside the gate                                                                                                                                  |
+| `li-conta-de-outro-tipo`            | no      | no      | a counting link whose ref names a conta of another channel                                                                                                                                                            |
+| `li-conta-ilegivel`                 | no      | no      | a counting link whose conta ref reads as no conta at all (malformed, absent, another collection's). Invisible to the trigger, the sweeps and the order import alike: a person reads the ref                           |
+| `li-produto-ausente`                | no      | no      | an orphan link: its produto doc does not exist                                                                                                                                                                        |
+| `li-caminho-inesperado`             | no      | no      | a link doc that is not at `produtos/<id>/produtolojaintegrada/<doc>`                                                                                                                                                  |
+| `li-raiz-sem-vinculo`               | no      | no      | a child holds a counting link of the conta, its root holds none: a sweep anchored on roots never visits the family. The product import's link pass (`soVincular`), or a person, fixes it                              |
+| `li-id-texto`                       | no      | no      | a counting link whose `id` is stored as TEXT. It keeps its conta in the anchor, but the order import looks links up by the NUMBER id, and the text matches nothing there                                              |
+| `li-dono-duplicado`                 | no      | no      | two existing produtos hold a link with the same (conta, stored number id), trashed or not: the order import answers "ambiguous" for that store product. One row per store product, naming every produto               |
+| `entrada-em-forma-de-caminho`       | no      | no      | the array holds an `integracao/<id>`-shaped entry. Inert for every sweep, and left in place                                                                                                                           |
+| `ml-ausente`, `ml-variacao-ausente` | no      | no      | a live Mercado Livre link whose conta is missing. Owner: `migrate:ml-integracoes-com-produto`                                                                                                                         |
+| `ml-variacao-sem-conta`             | no      | no      | a counting variation link whose own `contaOuterRef` is absent or unreadable. Owner: the same script's backfill when it is absent (from the parent link, when that still names a conta); a person when it is malformed |
+| `shopee-ausente`                    | no      | no      | a live Shopee listing whose conta is missing. Owner: the Shopee census (#1910)                                                                                                                                        |
+| `ml-conta-*`, `shopee-conta-*`      | no      | no      | the `-ilegivel`, `-inexistente` and `-de-outro-tipo` classes above, for those channels (for a variation link, the unreadable case is `ml-variacao-sem-conta`)                                                         |
 
 Row shapes (the runner's):
 
@@ -126,19 +130,23 @@ GATE li: ausente=<n> campo-invalido=<m> contas-li=<c> vinculos-que-contam=<k> pr
   Compare each against that store's own product count in the Loja Integrada
   panel, and a re-run's against the first run's.
 - ⛔ **`GATE li: NAO-AVALIADO <motivo>` is a stop, not a pass.** The script
-  exits 1 before writing anything, in every mode:
+  exits 1 before writing any row, in every mode:
   - `sem-contas-li` — no `integracao` of the Loja Integrada tipo (refused
     before the walk);
   - `sem-vinculos-que-contam` — Loja Integrada contas exist, but no link was
-    judged.
+    judged (refused before read 4, which only the report-only classes need).
 
   The plausible causes are the wrong project, the wrong database or an
   incomplete import, and on every one of them the plain counts would read
-  `0 0`.
+  `0 0`. One more for `sem-vinculos-que-contam`: every counting link names a
+  conta id that no longer exists (a re-created or renamed conta). That refusal
+  still prints the count table and the `AVISO` line below, and the table names
+  the id the links point at.
 
 - `AVISO li: conta-inexistente=<n>` beside the gate: a bulk count there with a
-  gate of `0 0` is what links pointing at a re-created conta id look like. Read
-  the JSONL before going on.
+  gate of `0 0` (or `NAO-AVALIADO`, when every counting link points at it) is
+  what links pointing at a re-created conta id look like. The count table gives
+  the id, a dry run's JSONL every link. Read them before going on.
 - For `--apply`: `adicionados=<k> divergentes=<d>`, then the note that the
   runner's `0 writes` is expected.
 

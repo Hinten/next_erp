@@ -98,8 +98,14 @@ So a key walk needs exactly one index, and it must be declared:
 Filtering stays in code on the fetched page: the key index is the only index a
 walk needs, and no filter or composite index should be added for a one-time
 script. These key indexes are **migration-only**: once the window's walks have
-run they have no reader, and #1896 deletes them after the cutover. The exception
-is `arquivos(__name__ ASC)`, which the arquivo orphan sweep keeps for good.
+run they have no reader, and #1896 deletes them after the cutover. The permanent
+key-only indexes are not in `key-walks.json` at all: `arquivos`, `CMUN` and
+`itens`, each with a reader after the cutover (`PERMANENTES` in
+`src/keyWalks.indexes.test.ts`). ⚠️ One migration-only index must outlive the
+cutover for a while: `produtolojaintegrada (__name__ ASC)` (collection group)
+stays until the Loja Integrada anchor census's last re-run, after each conta's
+first product import
+([`li-integracoes-com-produto.README.md`](li-integracoes-com-produto.README.md)).
 
 ⚠️ **Agents never run these against production.** Staging is a rehearsal —
 dry-run counts, then a clean second pass as the idempotence check — and staging

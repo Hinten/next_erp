@@ -13,6 +13,7 @@ import {
   CAMPOS_PRODSHOPEE,
   CAMPOS_PRODUTO_ML,
   CAMPOS_VARIACAO_ML,
+  CONCORRENCIA,
   CensoNaoAvaliado,
   DEPENDENCIAS_DO_CENSO,
   NOME_DO_CENSO,
@@ -67,6 +68,14 @@ class MundoFake {
   readonly docs = new Map<string, Dados>();
   readonly leituras: Leitura[] = [];
   readonly getAlls: Array<{ caminhos: string[]; fieldMask: unknown }> = [];
+  /**
+   * Hand back the docs of every query with no `orderBy` in REVERSE key order. Such a query
+   * promises no order, so nothing the census writes may depend on the one it gets.
+   */
+  inverterSemOrdem = false;
+  /** The most produtos whose own per-produto reads were in flight at once. */
+  picoDeProdutosLidos = 0;
+  private readonly lendo = new Map<string, number>();
 
   seed(caminho: string, dados: Dados): this {
     this.docs.set(caminho, dados);
@@ -119,9 +128,23 @@ class MundoFake {
         if (estado.startAfter !== null) caminhos = caminhos.filter((p) => p > estado.startAfter!);
         if (estado.limit !== null) caminhos = caminhos.slice(0, estado.limit);
         const docs = caminhos.map((p) => this.snapshot(p, estado.select));
+        if (this.inverterSemOrdem && estado.orderBy.length === 0) docs.reverse();
+        if (tipo === 'colecao' && caminho.startsWith('produtos/')) {
+          await this.emVoo(caminho.split('/')[1]!);
+        }
         return { docs, size: docs.length, empty: docs.length === 0 };
       },
     };
+  }
+
+  /** Count one per-produto read in flight, and yield once so reads started together overlap. */
+  private async emVoo(produtoId: string): Promise<void> {
+    this.lendo.set(produtoId, (this.lendo.get(produtoId) ?? 0) + 1);
+    this.picoDeProdutosLidos = Math.max(this.picoDeProdutosLidos, this.lendo.size);
+    await Promise.resolve();
+    const restantes = this.lendo.get(produtoId)! - 1;
+    if (restantes === 0) this.lendo.delete(produtoId);
+    else this.lendo.set(produtoId, restantes);
   }
 
   private inicial = {
@@ -241,9 +264,15 @@ function nucleoEspiao(falsos: ReadonlyArray<readonly [string, string]> = []) {
 const ID_LI = 182904918;
 
 /**
- * Two Loja Integrada contas (A, B), one Mercado Livre (M), one Shopee (S). Gaps: p1 lacks A
- * (field absent), p2 lacks B (null), p4's field is a map. p3 is healthy. Each link and produto
- * also carries a name and a SKU the masks must keep out of every row.
+ * Two Loja Integrada contas (A, B), one Mercado Livre (M), one Shopee (S); no conta X exists.
+ * Gaps: p1 lacks A (field absent), p2 lacks B (it holds only A), p4's field is a map. p3 is
+ * healthy, and its Mercado Livre and Shopee links are CLOSED. f is p2's child: it holds A, and its
+ * root holds no link of A. Each link and produto also carries a name and a SKU the masks must keep
+ * out of every row.
+ *
+ * Every masked field decides a row here, so a mask that drops one changes the output:
+ * `paiId` (f's root), the Mercado Livre `estado` and the Shopee `estadoAnuncio` (p3's closed
+ * links), and a variation's own `contaOuterRef`, `id` (p2) and `itemId` (f).
  */
 function mundo(): MundoFake {
   const m = new MundoFake()
@@ -273,16 +302,36 @@ function mundo(): MundoFake {
       estado: 'a',
       nome: 'NOME-SECRETO',
     })
+    // A second Mercado Livre link on p1, of a conta that is gone: two findings in one unordered read.
+    .seed('produtos/p1/produtoMercadoLivre/x2', {
+      contaOuterRef: 'documents/integracao/X',
+      id: 'MLB9',
+      estado: 'a',
+    })
     .seed('produtos/p1/prodshopee/y', {
       contaProdutoShopeeOuterRef: 'documents/integracao/S',
       item_id: 12,
     })
     .seed('produtos/p1/variashopee/z', { contaVariacaoShopeeOuterRef: 'documents/integracao/S' })
     .seed('produtos/p1/prodAmazon/w', { contaAmazonOuterRef: 'documents/integracao/Z' })
-    .seed('produtos/p2', prod({ integracoesComProduto: null }))
+    .seed('produtos/p2', prod({ integracoesComProduto: ['A'] }))
     .seed('produtos/p2/produtolojaintegrada/2', link({ contaLojaIntegrada: 'integracao/B', id: 2 }))
+    .seed('produtos/p2/variacaoMercadoLivre/v', {
+      contaOuterRef: 'documents/integracao/M',
+      id: 77,
+    })
     .seed('produtos/p3', prod({ integracoesComProduto: ['A'] }))
     .seed('produtos/p3/produtolojaintegrada/3', link({ id: 3 }))
+    .seed('produtos/p3/produtoMercadoLivre/c', {
+      contaOuterRef: 'documents/integracao/M',
+      id: 'MLB3',
+      estado: 'c',
+    })
+    .seed('produtos/p3/prodshopee/r', {
+      contaProdutoShopeeOuterRef: 'documents/integracao/S',
+      item_id: 13,
+      estadoAnuncio: 'removido',
+    })
     .seed('produtos/p4', prod({ integracoesComProduto: { A: true } }))
     .seed('produtos/p4/produtolojaintegrada/4', link({ id: 4 }))
     // A trashed link, a non-canonical id and another collection's ref: none counts for an add.
@@ -293,6 +342,17 @@ function mundo(): MundoFake {
       'produtos/p5/produtolojaintegrada/7',
       link({ id: 7, contaLojaIntegrada: 'documents/categorias/A' }),
     )
+    // A counting link of a conta whose doc is gone: a row, and the WARNING beside the gate.
+    .seed(
+      'produtos/p5/produtolojaintegrada/9',
+      link({ id: 9, contaLojaIntegrada: 'documents/integracao/X' }),
+    )
+    .seed('produtos/f', prod({ paiId: 'p2', integracoesComProduto: ['A'] }))
+    .seed('produtos/f/produtolojaintegrada/10', link({ id: 10 }))
+    .seed('produtos/f/variacaoMercadoLivre/v', {
+      contaOuterRef: 'documents/integracao/M',
+      itemId: 'MLB2',
+    })
     // An orphan link: its produto is gone.
     .seed('produtos/sumiu/produtolojaintegrada/8', link({ id: 8 }));
   return m;
@@ -376,7 +436,7 @@ describe('the reads', () => {
     const porProduto = m.leituras.filter(
       (l) => l.tipo === 'colecao' && l.caminho.startsWith('produtos/'),
     );
-    const esperadas = ['p1', 'p2', 'p3', 'p4', 'p5'].flatMap((p) => [
+    const esperadas = ['f', 'p1', 'p2', 'p3', 'p4', 'p5'].flatMap((p) => [
       `produtos/${p}/prodshopee`,
       `produtos/${p}/produtoMercadoLivre`,
       `produtos/${p}/variacaoMercadoLivre`,
@@ -408,28 +468,61 @@ describe('dry run and --report-only', () => {
     const resumo = await criarCenso(deps)(ctx);
 
     expect(chamadas).toEqual([]);
+    // `from` is the stored value as read: absent on p1, an array without B on p2.
     expect(linhas.filter((l) => l.kind === 'change')).toEqual([
       { kind: 'change', path: 'produtos/p1', field: 'integracoesComProduto', a: null, b: 'A' },
-      { kind: 'change', path: 'produtos/p2', field: 'integracoesComProduto', a: null, b: 'B' },
+      { kind: 'change', path: 'produtos/p2', field: 'integracoesComProduto', a: ['A'], b: 'B' },
     ]);
     expect(linhas.filter((l) => l.kind === 'skip').map((l) => [l.path, l.b])).toEqual([
+      ['produtos/f', CLASSE.liRaizSemVinculo],
+      ['produtos/f', CLASSE.mlVariacaoAusente],
       ['produtos/p1', CLASSE.mlAusente],
       ['produtos/p1', CLASSE.shopeeAusente],
+      ['produtos/p1/produtoMercadoLivre/x2', CLASSE.mlContaInexistente],
+      ['produtos/p2', CLASSE.mlVariacaoAusente],
       ['produtos/p4', CLASSE.liCampoInvalido],
       ['produtos/p5/produtolojaintegrada/7', CLASSE.liContaIlegivel],
+      ['produtos/p5/produtolojaintegrada/9', CLASSE.liContaInexistente],
       ['produtos/sumiu/produtolojaintegrada/8', CLASSE.liProdutoAusente],
     ]);
+    // A skip row's value is `{ conta, valor }`: the owner reads the stored value from it.
+    expect(linhas).toContainEqual({
+      kind: 'skip',
+      path: 'produtos/p4',
+      field: 'integracoesComProduto',
+      a: { conta: 'A', valor: { A: true } },
+      b: CLASSE.liCampoInvalido,
+    });
+    expect(linhas).toContainEqual({
+      kind: 'skip',
+      path: 'produtos/p5/produtolojaintegrada/9',
+      field: 'contaLojaIntegrada',
+      a: {
+        conta: 'X',
+        valor: { contaLojaIntegrada: 'documents/integracao/X', id: 9, removido: false },
+      },
+      b: CLASSE.liContaInexistente,
+    });
     expect(resumo.docsChanged).toBe(2);
     const texto = saida.join('\n');
     expect(texto).toContain(
-      'GATE li: ausente=2 campo-invalido=1 contas-li=2 vinculos-que-contam=4 produtos=5 => BLOQUEIA',
+      'GATE li: ausente=2 campo-invalido=1 contas-li=2 vinculos-que-contam=5 produtos=6 => BLOQUEIA',
     );
+    expect(texto).toContain('AVISO li: conta-inexistente=1 ');
     expect(texto).toContain('DRY-RUN: nada foi escrito');
   });
 
-  it('two dry runs over the same data write identical rows', async () => {
+  it('the rows do not depend on the order an unordered read returns its docs in', async () => {
+    const ordemDeP1 = async (m: MundoFake) =>
+      (await m.collection('produtos/p1/produtoMercadoLivre').get()).docs.map((d) => d.id);
+    const invertido = mundo();
+    invertido.inverterSemOrdem = true;
+    // Not vacuous: p1's two Mercado Livre links, both findings, really come back the other way.
+    expect(await ordemDeP1(mundo())).toEqual(['x', 'x2']);
+    expect(await ordemDeP1(invertido)).toEqual(['x2', 'x']);
+
     const a = contexto(mundo());
-    const b = contexto(mundo());
+    const b = contexto(invertido);
     await criarCenso(nucleoEspiao().deps)(a.ctx);
     await criarCenso(nucleoEspiao().deps)(b.ctx);
     expect(b.linhas).toEqual(a.linhas);
@@ -450,7 +543,7 @@ describe('dry run and --report-only', () => {
     const tudo = JSON.stringify(linhas) + saida.join('\n');
     expect(tudo).not.toContain('NOME-SECRETO');
     expect(tudo).not.toContain('SKU-SECRETO');
-    expect(saida.join('\n')).toContain('li conta=A vinculos-que-contam=3');
+    expect(saida.join('\n')).toContain('li conta=A vinculos-que-contam=4');
     expect(saida.join('\n')).toContain('li conta=B vinculos-que-contam=1');
   });
 });
@@ -518,7 +611,7 @@ describe('--apply', () => {
     await expect(criarCenso(deps)(contexto(mundo(), { apply: true }).ctx)).rejects.toBe(erro);
   });
 
-  it("one produto's contas run in sequence, never at once", async () => {
+  it("one produto's contas run in sequence, never at once, and every one of them runs", async () => {
     const m = new MundoFake()
       .seed('integracao/A', { tipo: 3 })
       .seed('integracao/B', { tipo: 3 })
@@ -527,9 +620,11 @@ describe('--apply', () => {
       .seed('produtos/p/produtolojaintegrada/2', { contaLojaIntegrada: 'integracao/B', id: 2 });
     let emVoo = 0;
     let maximo = 0;
+    const chamadas: Array<readonly [string, string]> = [];
     const deps: DependenciasDoCenso = {
       ...nucleoEspiao().deps,
-      adicionarContaSeViva: async () => {
+      adicionarContaSeViva: async (_db, produtoId, contaId) => {
+        chamadas.push([produtoId, contaId]);
         emVoo += 1;
         maximo = Math.max(maximo, emVoo);
         await new Promise((r) => setTimeout(r, 1));
@@ -539,6 +634,75 @@ describe('--apply', () => {
     };
     await criarCenso(deps)(contexto(m, { apply: true }).ctx);
     expect(maximo).toBe(1);
+    expect(chamadas).toEqual([
+      ['p', 'A'],
+      ['p', 'B'],
+    ]);
+  });
+
+  /** `n` produtos, each holding a link of A and missing A: one gap per produto. */
+  function mundoDeLacunas(n: number): MundoFake {
+    const m = new MundoFake().seed('integracao/A', { tipo: 3 });
+    for (let i = 0; i < n; i += 1) {
+      const id = `p${String(i).padStart(2, '0')}`;
+      m.seed(`produtos/${id}`, {});
+      m.seed(`produtos/${id}/produtolojaintegrada/l`, {
+        contaLojaIntegrada: 'documents/integracao/A',
+        id: i + 1,
+      });
+    }
+    return m;
+  }
+
+  it('at most CONCORRENCIA produtos at once, in the per-produto reads and in the adds', async () => {
+    const m = mundoDeLacunas(CONCORRENCIA * 2 + 3);
+    let emVoo = 0;
+    let pico = 0;
+    const deps: DependenciasDoCenso = {
+      ...nucleoEspiao().deps,
+      adicionarContaSeViva: async () => {
+        emVoo += 1;
+        pico = Math.max(pico, emVoo);
+        await new Promise((r) => setTimeout(r, 1));
+        emVoo -= 1;
+        return true;
+      },
+    };
+    await criarCenso(deps)(contexto(m, { apply: true }).ctx);
+    expect(m.picoDeProdutosLidos).toBe(CONCORRENCIA);
+    expect(pico).toBe(CONCORRENCIA);
+  });
+
+  it('once an add rejects, no further add starts', async () => {
+    const m = mundoDeLacunas(CONCORRENCIA * 2 + 3);
+    const erro = new Error('UNAVAILABLE');
+    let rejeitou = false;
+    const antes: string[] = [];
+    const depois: string[] = [];
+    let liberar!: () => void;
+    const portao = new Promise<void>((r) => {
+      liberar = r;
+    });
+    const deps: DependenciasDoCenso = {
+      ...nucleoEspiao().deps,
+      adicionarContaSeViva: async (_db, produtoId) => {
+        (rejeitou ? depois : antes).push(produtoId);
+        if (produtoId === 'p00') {
+          // Yield first: the whole first round has started by the time this one rejects.
+          await Promise.resolve();
+          rejeitou = true;
+          throw erro;
+        }
+        await portao;
+        return true;
+      },
+    };
+    await expect(criarCenso(deps)(contexto(m, { apply: true }).ctx)).rejects.toBe(erro);
+    // Let the adds still in flight finish, and every worker look for another item.
+    liberar();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(antes).toHaveLength(CONCORRENCIA);
+    expect(depois).toEqual([]);
   });
 });
 
@@ -572,17 +736,30 @@ describe('the refusals (exit 1, before any write, in every mode)', () => {
           contaLojaIntegrada: 'documents/integracao/A',
           id: 1,
           removido: true,
+        })
+        // A counting link of a conta that is gone: a finding, so "no row" below means something,
+        // and the shape a re-created conta's links refuse with.
+        .seed('produtos/q', {})
+        .seed('produtos/q/produtolojaintegrada/2', {
+          contaLojaIntegrada: 'documents/integracao/X',
+          id: 2,
         });
       const { deps, chamadas } = nucleoEspiao();
       const { ctx, linhas } = contexto(m, modo);
-      await expect(criarCenso(deps)(ctx)).rejects.toMatchObject({
-        motivo: 'sem-vinculos-que-contam',
-      });
+      const promessa = criarCenso(deps)(ctx);
+      await expect(promessa).rejects.toMatchObject({ motivo: 'sem-vinculos-que-contam' });
+      await expect(promessa).rejects.toThrow(/a re-created or renamed conta/);
       expect(linhas).toEqual([]);
       expect(chamadas).toEqual([]);
       expect(saida).toContain(
         'GATE li: NAO-AVALIADO sem-vinculos-que-contam contas-li=1 vinculos-que-contam=0',
       );
+      // The refusal still says what it saw: the gone conta's id, and the WARNING.
+      const texto = saida.join('\n');
+      expect(texto).toContain('  li conta=X li-conta-inexistente=1');
+      expect(texto).toContain('AVISO li: conta-inexistente=1 ');
+      // Decided from reads 1 to 3: the per-produto reads are never paid for.
+      expect(m.leituras.filter((l) => l.caminho.startsWith('produtos/'))).toEqual([]);
     },
   );
 });
