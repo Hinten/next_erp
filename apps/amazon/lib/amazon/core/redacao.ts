@@ -18,8 +18,9 @@
  *    path TEMPLATES ({@link MODELOS_DE_CAMINHO_AMAZON}). `segredo` (the RDT,
  *    the application client secret, every report and feed `/documents`) is
  *    never excerpted and refused as a fixture; everything else — orders,
- *    `ORDER_CHANGE`, Easy Ship, Delivery, and ANY unknown path — is
- *    `estrutural`.
+ *    `ORDER_CHANGE`, Easy Ship, Delivery, Listings, the feeds themselves, and
+ *    ANY unknown path — is `estrutural`. The METHOD plays no part: a template
+ *    whose path two operations share has one table for both answers.
  * 2. **A 2xx JSON body** is walked with its template's table: only the
  *    spelled-out leaves keep their value, and only when it passes that leaf's
  *    predicate. A denied subtree, a denied key or a denied prefix wins at ANY
@@ -135,6 +136,14 @@ export const PROFUNDIDADE_MAXIMA_PERCURSO = 32;
  *   `MissingPackageDimensions` is deliberately NOT here: the model never names
  *   it, and as a per-order rejection inside a 200 body it logs through the
  *   `codigoRejeicao` grammar instead.
+ * - `BAD_REQUEST` — listings 2021-08-01 `getListingsItem`, `searchListingsItems`
+ *   and `patchListingsItem` 400 sandbox (`#/definitions/ErrorList`; step 12a).
+ * - `400` — feeds 2021-06-30 `createFeedDocument`, `createFeed`, `getFeed` and
+ *   `getFeedDocument` 400 sandbox (`#/definitions/ErrorList`; step 12a): that
+ *   model's examples put the HTTP status in `code`.
+ *
+ * A listings ISSUE code (`90220`, inside a 2xx body) never joins this set: it
+ * logs through the `codigoListing` grammar.
  */
 export const CODIGOS_ERRO_AMAZON: ReadonlySet<string> = new Set([
   'InvalidInput',
@@ -161,6 +170,8 @@ export const CODIGOS_ERRO_AMAZON: ReadonlySet<string> = new Set([
   'RegionNotSupported',
   'OrderNotEligibleForRescheduling',
   'InternalServerError',
+  'BAD_REQUEST',
+  '400',
 ]);
 
 /** A code through the closed set: itself, or {@link CODIGO_OUTRO}. */
@@ -185,14 +196,17 @@ export type NomePredicadoAmazon =
   | 'enumSnake'
   | 'enumCamel'
   | 'codigoRejeicao'
+  | 'codigoListing'
   | 'codigoErro'
   | 'unidade'
   | 'dataIso'
   | 'decimal'
   | 'moeda'
   | 'inteiro'
+  | 'digitos'
   | 'booleano'
   | 'rotulo'
+  | 'temaVariacao'
   | 'chaveNfe'
   | 'rastreio'
   | 'uf';
@@ -209,12 +223,27 @@ const OPACO = /^[A-Za-z0-9+/=_-]{1,64}$/;
 const ENUM_SNAKE = /^[A-Z][A-Z0-9_]{0,63}$/;
 const ENUM_CAMEL = /^[A-Z][A-Za-z]{0,63}$/;
 const CODIGO_REJEICAO = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
+/**
+ * A listings 2xx code token: an issue `code` (`90220`), a `conditionType` (`new_new`), an
+ * attribute name (`fake_attribute`). It sits in a 2xx body, never in `errors[].code`, so it
+ * never joins {@link CODIGOS_ERRO_AMAZON}.
+ */
+const CODIGO_LISTING = /^[0-9A-Za-z_]{1,32}$/;
+/** A variation theme: upper-snake attribute names joined by `/` (`COLOR_NAME/STYLE_NAME`). */
+const TEMA_VARIACAO = /^[A-Z][A-Z0-9_]{0,63}(?:\/[A-Z][A-Z0-9_]{0,63}){0,7}$/;
 const UNIDADE = /^[A-Za-z]{1,16}$/;
 const DATA_ISO =
   /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:?\d{2})?)?$/;
 const DECIMAL = /^-?\d{1,12}(?:\.\d{1,6})?$/;
 const MOEDA = /^[A-Z]{3}$/;
 const INTEIRO_TEXTO = /^-?\d{1,15}$/;
+/**
+ * An Amazon numeric id (a feed, a report, a report schedule) in every `{…:digitos}` path
+ * slot, and the `feedId` body leaf: ONE grammar, so a slot and a leaf never disagree.
+ * `redacao.test.ts` pins that the package's `FEED_ID_AMAZON_REGEX` accepts exactly the
+ * values this one keeps.
+ */
+const DIGITOS = /^\d{1,20}$/;
 const ROTULO = /^[\p{L}\p{N} ._/-]{1,40}$/u;
 const CHAVE_NFE = /^\d{44}$/;
 const RASTREIO = /^[A-Za-z0-9-]{6,40}$/;
@@ -236,6 +265,7 @@ const PREDICADOS: Readonly<Record<NomePredicadoAmazon, (v: unknown) => boolean>>
   enumSnake: texto(ENUM_SNAKE),
   enumCamel: texto(ENUM_CAMEL),
   codigoRejeicao: texto(CODIGO_REJEICAO),
+  codigoListing: texto(CODIGO_LISTING),
   codigoErro: (v) => typeof v === 'string' && CODIGOS_ERRO_AMAZON.has(v),
   unidade: texto(UNIDADE),
   dataIso: texto(DATA_ISO),
@@ -243,8 +273,10 @@ const PREDICADOS: Readonly<Record<NomePredicadoAmazon, (v: unknown) => boolean>>
     (typeof v === 'number' && Number.isFinite(v)) || (typeof v === 'string' && DECIMAL.test(v)),
   moeda: texto(MOEDA),
   inteiro: (v) => Number.isSafeInteger(v) || (typeof v === 'string' && INTEIRO_TEXTO.test(v)),
+  digitos: texto(DIGITOS),
   booleano: (v) => typeof v === 'boolean',
   rotulo: texto(ROTULO),
+  temaVariacao: texto(TEMA_VARIACAO),
   chaveNfe: texto(CHAVE_NFE),
   rastreio: texto(RASTREIO),
   uf: texto(UF),
@@ -252,19 +284,22 @@ const PREDICADOS: Readonly<Record<NomePredicadoAmazon, (v: unknown) => boolean>>
 
 /**
  * A kept value that passed one of these skips the bare check-digit pass (the
- * always-on patterns still run): Amazon ids, quantities, money, dates and the
- * 44-digit chave are bare digits by nature, and masking them would blind the
- * log. Every other kept string still takes it — above all one a SELLER typed:
- * `sku`, and `idDoVendedor`: an order alias ("seller-defined order numbers",
- * orders 2026-01-01), a promotion id ("provided by the seller", ordersV0), a
- * package reference ("seller-supplied", ordersV0). `opaco` is for Amazon-made
- * ids only (an Easy Ship package or slot, a subscription, a shipment).
+ * always-on patterns still run): Amazon ids (a feed, report or report schedule
+ * id is 1 to 20 bare digits), quantities, money, dates and the 44-digit chave
+ * are bare digits by nature, and masking them would blind the log. Every other
+ * kept string still takes it —
+ * above all one a SELLER typed: `sku`, and `idDoVendedor`: an order alias
+ * ("seller-defined order numbers", orders 2026-01-01), a promotion id ("provided
+ * by the seller", ordersV0), a package reference ("seller-supplied", ordersV0).
+ * `opaco` is for Amazon-made ids only (an Easy Ship package or slot, a
+ * subscription, a shipment).
  */
 export const ISENTOS_DE_DIGITOS: ReadonlySet<NomePredicadoAmazon> = new Set<NomePredicadoAmazon>([
   'pedidoAmazon',
   'itemPedido',
   'asin',
   'inteiro',
+  'digitos',
   'decimal',
   'dataIso',
   'chaveNfe',
@@ -1012,6 +1047,89 @@ const REGISTRO_SQS_SO_LOG: EntradasSoLog = [
 ];
 const REGISTRO_SQS_NEGADAS: readonly string[] = ['eventSource', 'attributes.AWSTraceHeader'];
 
+/**
+ * The issues of a listings item and of a submission (`#/definitions/Issue`, listings
+ * 2021-08-01), relative to their parent. `message` is an always-denied key, so it has NO
+ * entry here: a second rule would claim the leaf twice. Of `enforcements`, only the
+ * exemption's status is kept.
+ */
+const ISSUES_LISTING: Entradas = [
+  ['issues.*.code', 'codigoListing'],
+  ['issues.*.severity', 'enumSnake'],
+  ['issues.*.attributeNames.*', 'codigoListing'],
+  ['issues.*.categories.*', 'enumSnake'],
+  ['issues.*.marketplaceIds.*', 'idMarketplace'],
+  ['issues.*.enforcements.exemption.status', 'enumSnake'],
+];
+const ISSUES_LISTING_NEGADAS: readonly string[] = [
+  'issues.*.enforcements.actions.*.action',
+  'issues.*.enforcements.exemption.expiryDate',
+];
+
+/**
+ * One listings item (`#/definitions/Item`), relative to its object: the root of
+ * `getListingsItem`, `items.*` of `searchListingsItems`. The two price `amount`s are kept
+ * (the seller's own prices, never personal data); the rest of `offers` and `procurement`,
+ * the item name, the image, the FBA SKU and the open `attributes` map are redacted on
+ * purpose.
+ */
+const ITEM_LISTING: Entradas = [
+  ['summaries.*.marketplaceId', 'idMarketplace'],
+  ['summaries.*.productType', 'enumSnake'],
+  ['summaries.*.conditionType', 'codigoListing'],
+  ['summaries.*.status.*', 'enumSnake'],
+  ['summaries.*.createdDate', 'dataIso'],
+  ['summaries.*.lastUpdatedDate', 'dataIso'],
+  ['fulfillmentAvailability.*.fulfillmentChannelCode', 'enumSnake'],
+  ['fulfillmentAvailability.*.quantity', 'inteiro'],
+  ['relationships.*.marketplaceId', 'idMarketplace'],
+  ['relationships.*.relationships.*.type', 'enumSnake'],
+  ['relationships.*.relationships.*.variationTheme.attributes.*', 'codigoListing'],
+  ['relationships.*.relationships.*.variationTheme.theme', 'temaVariacao'],
+  ['productTypes.*.marketplaceId', 'idMarketplace'],
+  ['productTypes.*.productType', 'enumSnake'],
+  ['offers.*.price.amount', 'decimal'],
+  ['procurement.*.costPrice.amount', 'decimal'],
+  ...ISSUES_LISTING,
+];
+/** The seller's SKUs and Amazon's ASIN: kept in the log, faked in a fixture. */
+const ITEM_LISTING_SO_LOG: EntradasSoLog = [
+  ['sku', 'sku', 'sku'],
+  ['summaries.*.asin', 'asin', 'asin'],
+  ['relationships.*.relationships.*.childSkus.*', 'sku', 'sku'],
+  ['relationships.*.relationships.*.parentSkus.*', 'sku', 'sku'],
+];
+const ITEM_LISTING_NEGADAS: readonly string[] = [
+  'attributes.*',
+  'summaries.*.itemName',
+  'summaries.*.fnSku',
+  'summaries.*.mainImage.link',
+  'summaries.*.mainImage.height',
+  'summaries.*.mainImage.width',
+  'offers.*.marketplaceId',
+  'offers.*.offerType',
+  'offers.*.price.currencyCode',
+  'offers.*.audience.value',
+  'offers.*.audience.displayName',
+  'offers.*.points.pointsNumber',
+  'procurement.*.costPrice.currencyCode',
+  ...ISSUES_LISTING_NEGADAS,
+];
+
+/**
+ * A `patchListingsItem` answer (`#/definitions/ListingsItemSubmissionResponse`) beside
+ * the item's own `sku` and `issues`: the submission's status, its identifiers, and its
+ * id, an Amazon-made UUID faked in the UUID fake format (the SQS message id's class).
+ */
+const SUBMISSAO_LISTING: Entradas = [
+  ['status', 'enumSnake'],
+  ['identifiers.*.marketplaceId', 'idMarketplace'],
+];
+const SUBMISSAO_LISTING_SO_LOG: EntradasSoLog = [
+  ['submissionId', 'opaco', 'mensagem'],
+  ['identifiers.*.asin', 'asin', 'asin'],
+];
+
 export const TABELAS_AMAZON = {
   searchOrders: tabela(
     'searchOrders',
@@ -1059,6 +1177,51 @@ export const TABELAS_AMAZON = {
     [...ORDER_CHANGE_SO_LOG, ...REGISTRO_SQS_SO_LOG, ...sobSoLog('*', REGISTRO_SQS_SO_LOG)],
     true,
   ),
+  /**
+   * The `/listings/2021-08-01/items/{sellerId}/{sku}` template's ONE table: the union of
+   * `getListingsItem`'s item and `patchListingsItem`'s submission answer, which the
+   * template also matches (templates match by path only, {@link MODELO_DA_OPERACAO_AMAZON}).
+   */
+  getListingsItem: tabela(
+    'getListingsItem',
+    [...ITEM_LISTING, ...SUBMISSAO_LISTING],
+    ITEM_LISTING_NEGADAS,
+    [...ITEM_LISTING_SO_LOG, ...SUBMISSAO_LISTING_SO_LOG],
+  ),
+  /** The pagination tokens are redacted: a cursor is read as present or absent only. */
+  searchListingsItems: tabela(
+    'searchListingsItems',
+    [['numberOfResults', 'inteiro'], ...sob('items.*', ITEM_LISTING)],
+    [
+      'pagination.nextToken',
+      'pagination.previousToken',
+      ...sobCaminhos('items.*', ITEM_LISTING_NEGADAS),
+    ],
+    sobSoLog('items.*', ITEM_LISTING_SO_LOG),
+  ),
+  /**
+   * `getFeed` (`#/definitions/Feed`, feeds 2021-06-30). `resultFeedDocumentId` is redacted:
+   * it names a document whose path is `segredo`.
+   */
+  getFeed: tabela(
+    'getFeed',
+    [
+      ['feedId', 'digitos'],
+      ['feedType', 'enumSnake'],
+      ['processingStatus', 'enumSnake'],
+      ['marketplaceIds.*', 'idMarketplace'],
+      ['createdTime', 'dataIso'],
+      ['processingStartTime', 'dataIso'],
+      ['processingEndTime', 'dataIso'],
+    ],
+    ['resultFeedDocumentId'],
+  ),
+  /**
+   * The `/feeds/2021-06-30/feeds` template's table: `createFeed`'s 202
+   * (`#/definitions/CreateFeedResponse`). `getFeeds`' list is never called; every one of
+   * its leaves is redacted by default.
+   */
+  getFeeds: tabela('getFeeds', [['feedId', 'digitos']]),
 } as const satisfies Record<string, TabelaRedacaoAmazon>;
 
 /** One `OrderScheduleDetails` of the bulk REQUEST, and its `PackageDetails`. */
@@ -1257,7 +1420,9 @@ export const NOTIFICACAO_ORDER_CHANGE = 'notificacao:ORDER_CHANGE';
  * Every operation of §4.26 and C1–C6, plus the Sellers, Tokens, Application
  * and Notifications paths and the LWA token endpoint. The PATH redactor needs
  * them all (a later write step's URL is logged by this code); body TABLES
- * exist only for the 2b set (§3 decision 6). A slot is `{name:kind}`.
+ * exist only for the operations this integration calls: orders, the
+ * notification, Delivery, Easy Ship and, since step 12a, listings and feeds.
+ * A slot is `{name:kind}`.
  */
 export const MODELOS_DE_CAMINHO_AMAZON: readonly ModeloDeCaminhoAmazon[] = [
   modelo('searchOrders', '/orders/2026-01-01/orders', 'estrutural', TABELAS_AMAZON.searchOrders),
@@ -1308,15 +1473,28 @@ export const MODELOS_DE_CAMINHO_AMAZON: readonly ModeloDeCaminhoAmazon[] = [
     '/reports/2021-06-30/documents/{reportDocumentId:segredo}',
     'segredo',
   ),
-  modelo('getFeeds', '/feeds/2021-06-30/feeds', 'estrutural'),
-  modelo('getFeed', '/feeds/2021-06-30/feeds/{feedId:digitos}', 'estrutural'),
+  // GET getFeeds; POST createFeed answers on the same path (its table).
+  modelo('getFeeds', '/feeds/2021-06-30/feeds', 'estrutural', TABELAS_AMAZON.getFeeds),
+  modelo(
+    'getFeed',
+    '/feeds/2021-06-30/feeds/{feedId:digitos}',
+    'estrutural',
+    TABELAS_AMAZON.getFeed,
+  ),
   modelo('createFeedDocument', '/feeds/2021-06-30/documents', 'segredo'),
   modelo('getFeedDocument', '/feeds/2021-06-30/documents/{feedDocumentId:segredo}', 'segredo'),
-  modelo('searchListingsItems', '/listings/2021-08-01/items/{sellerId:sellerId}', 'estrutural'),
+  modelo(
+    'searchListingsItems',
+    '/listings/2021-08-01/items/{sellerId:sellerId}',
+    'estrutural',
+    TABELAS_AMAZON.searchListingsItems,
+  ),
+  // GET getListingsItem; PATCH patchListingsItem answers on the same path (its table).
   modelo(
     'getListingsItem',
     '/listings/2021-08-01/items/{sellerId:sellerId}/{sku:sku}',
     'estrutural',
+    TABELAS_AMAZON.getListingsItem,
   ),
   modelo('getMarketplaceParticipations', '/sellers/v1/marketplaceParticipations', 'estrutural'),
   modelo('getAccount', '/sellers/v1/account', 'estrutural'),
@@ -1373,6 +1551,25 @@ function modeloDoCaminho(caminho: string): ModeloDeCaminhoAmazon | null {
 function modeloPorNome(nome: string): ModeloDeCaminhoAmazon | null {
   if (nome === MODELO_ORDER_CHANGE.nome) return MODELO_ORDER_CHANGE;
   return MODELOS_DE_CAMINHO_AMAZON.find((m) => m.nome === nome) ?? null;
+}
+
+/**
+ * The operations whose PATH a sibling's template matches (templates match by path
+ * only, {@link modeloDoCaminho}), mapped to that template's name: their answers are
+ * redacted with its table, so the leaf coverage classifies their inventory leaves
+ * there too. Closed: a new shared path is one reviewed row here, and that template's
+ * table then covers the union of both operations' leaves.
+ */
+export const MODELO_DA_OPERACAO_AMAZON: Readonly<Record<string, string>> = {
+  patchListingsItem: 'getListingsItem',
+  createFeed: 'getFeeds',
+};
+
+/** The template name an `operationId` is redacted under: its alias, or itself. */
+export function nomeDoModeloDaOperacaoAmazon(operationId: string): string {
+  return Object.hasOwn(MODELO_DA_OPERACAO_AMAZON, operationId)
+    ? (MODELO_DA_OPERACAO_AMAZON[operationId] ?? operationId)
+    : operationId;
 }
 
 export interface ClassificacaoDoCaminhoAmazon {
@@ -1526,7 +1723,7 @@ export function redigirCaminhoEQuery(
           return perfil === 'log' ? s : encodeURIComponent(falsificar('sku', valor));
         }
         case 'digitos':
-          return /^\d{1,20}$/.test(valor) ? s : SEGMENTO_REDIGIDO;
+          return DIGITOS.test(valor) ? s : SEGMENTO_REDIGIDO;
         case 'enum':
           return ENUM_SNAKE.test(valor) ? s : SEGMENTO_REDIGIDO;
         case 'opaco':
@@ -2124,13 +2321,14 @@ export type RegraDaFolhaAmazon =
 
 /**
  * Every rule that claims `folha` (a dotted leaf path, `*` for an array index) in
- * a 2xx body of the template named `modelo` (an `operationId`). The coverage
- * test demands EXACTLY one per leaf of the committed inventory: a leaf no rule
- * claims would be redacted by default, silently; a leaf two rules claim is a
- * table contradiction.
+ * a 2xx body of the operation named `modelo` (an `operationId`, through
+ * {@link MODELO_DA_OPERACAO_AMAZON} when its path is a sibling's template). The
+ * coverage test demands EXACTLY one per leaf of the committed inventory: a leaf
+ * no rule claims would be redacted by default, silently; a leaf two rules claim
+ * is a table contradiction.
  */
 export function regrasDaFolhaAmazon(modelo: string, folha: string): readonly RegraDaFolhaAmazon[] {
-  const m = modeloPorNome(modelo);
+  const m = modeloPorNome(nomeDoModeloDaOperacaoAmazon(modelo));
   if (m === null) return [];
   if (m.politica === 'segredo') return [{ tipo: 'segredo' }];
   const t = m.tabela;

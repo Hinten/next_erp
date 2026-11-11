@@ -11,30 +11,45 @@ What ships here:
 | `lwa.ts`                | `URL_TOKEN_LWA`, `trocarRefreshToken`, `trocarCodigoAutorizacao` and `credencialLwaValida`             |
 | `consentimento.ts`      | `URL_CONSENTIMENTO_BR`, `montarUrlConsentimento` (a consent URL, never sent), `applicationIdValido`    |
 | `client.ts`             | `URL_BASE_SP_API`, `MARKETPLACE_ID_BR`, `criarClienteSpApi` (`get`, no body); the shared request core  |
-| `escrita.ts`            | `criarClienteEscritaSpApi`: the ONE write client, `post` only (a JSON body, `escrita` deadline)        |
+| `escrita.ts`            | `criarClienteEscritaSpApi`: the ONE write client, `post` and `patch` (a JSON body, `escrita` deadline) |
 | `pedidos.ts`            | `searchOrders` (`buscarPedidosAtualizados`) and `getOrder` (`buscarPedido`): the two Orders reads      |
 | `entrega.ts`            | Delivery: `consultarStatusNotaFiscal`, `enviarNotaFiscal`, the PascalCase status constants             |
 | `tokens.ts`             | Tokens: `criarTokenRestrito`, the Restricted Data Token for the ONE resource (the Easy Ship bulk)      |
 | `easyShip.ts`           | Easy Ship: `agendarPacotesEasyShip` (one order, no `packageDetails`, `labelFormat` always `ZPL`)       |
 | `documentosEasyShip.ts` | The label zip: `baixarDocumentosEasyShip` (header-free GET) and `extrairEtiquetaZplEasyShip`           |
+| `listings.ts`           | Listings: `lerListingAmazon`, `buscarListingsAmazon` (≤ 20 SKUs), `enviarDisponibilidadeAmazon`        |
+| `feeds.ts`              | `JSON_LISTINGS_FEED`: the four feed operations, `montarDocumentoListingsFeed`, the report parser       |
+| `documentosFeed.ts`     | The feed document upload (`PUT`) and the bounded, verified report download                             |
 | `prazos.ts`             | `PRAZO_AMAZON_MS`, the per-call deadline keyed on the operation class                                  |
 | `types.ts`              | The LWA token response and error body, the SP-API `errors[]` envelope, the Orders v2026 order          |
 | `errors.ts`             | The typed errors, `lerLimiteTaxa` (`x-amzn-RateLimit-Limit`) and `lerCodigoErroLwa`                    |
 | `transporte.ts`         | Internal (not re-exported): the one deadline-and-catch sequence both callers share; the order-id check |
+| `preAssinada.ts`        | Internal: the ONE pre-signed URL guard both document modules share                                     |
+| `crc32.ts`              | Internal: the CRC-32 and the fflate error predicate both document modules share                        |
 
 ## Operations
 
 Every SP-API operation this package can call, with the model's default usage plan
 (`x-amzn-RateLimit-Limit` reports the one actually applied, when Amazon sends it):
 
-| Operation                           | Helper                      | Path                                     | Query sent                                                                                               | Rate (rps) | Burst |
-| ----------------------------------- | --------------------------- | ---------------------------------------- | -------------------------------------------------------------------------------------------------------- | ---------- | ----- |
-| `searchOrders`                      | `buscarPedidosAtualizados`  | `/orders/2026-01-01/orders`              | `lastUpdatedAfter`, `marketplaceIds`, `maxResultsPerPage`, `paginationToken`?                            | 0.0056     | 20    |
-| `getOrder`                          | `buscarPedido`              | `/orders/2026-01-01/orders/{orderId}`    | `includedData` only: `DADOS_INCLUIDOS_GET_ORDER` joined with `,`                                         | 0.5        | 30    |
-| `getInvoiceStatus`                  | `consultarStatusNotaFiscal` | `/delivery/2022-07-01/invoice/status`    | `orderId`, `marketplaceId`, `invoiceType=Outbound`, `programType=EasyShip`                               | 1.133      | 25    |
-| `submitInvoice` (POST)              | `enviarNotaFiscal`          | `/delivery/2022-07-01/invoice`           | `orderId` only; body: `invoiceContent`, `contentMD5Value`, `invoiceType`, `programType`, `marketplaceId` | 1.133      | 25    |
-| `createRestrictedDataToken` (POST)  | `criarTokenRestrito`        | `/tokens/2021-03-01/restrictedDataToken` | none; body: `restrictedResources` (`POST` + the bulk path), no `dataElements`, no `targetApplication`    | 1          | 10    |
-| `createScheduledPackageBulk` (POST) | `agendarPacotesEasyShip`    | `/easyShip/2022-03-23/packages/bulk`     | none; body: `marketplaceId`, `orderScheduleDetailsList` (one `amazonOrderId`), `labelFormat: 'ZPL'`      | 1          | 5     |
+| Operation                           | Helper                        | Path                                           | Query sent                                                                                                                   | Rate (rps)  | Burst |
+| ----------------------------------- | ----------------------------- | ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- | ----------- | ----- |
+| `searchOrders`                      | `buscarPedidosAtualizados`    | `/orders/2026-01-01/orders`                    | `lastUpdatedAfter`, `marketplaceIds`, `maxResultsPerPage`, `paginationToken`?                                                | 0.0056      | 20    |
+| `getOrder`                          | `buscarPedido`                | `/orders/2026-01-01/orders/{orderId}`          | `includedData` only: `DADOS_INCLUIDOS_GET_ORDER` joined with `,`                                                             | 0.5         | 30    |
+| `getInvoiceStatus`                  | `consultarStatusNotaFiscal`   | `/delivery/2022-07-01/invoice/status`          | `orderId`, `marketplaceId`, `invoiceType=Outbound`, `programType=EasyShip`                                                   | 1.133       | 25    |
+| `submitInvoice` (POST)              | `enviarNotaFiscal`            | `/delivery/2022-07-01/invoice`                 | `orderId` only; body: `invoiceContent`, `contentMD5Value`, `invoiceType`, `programType`, `marketplaceId`                     | 1.133       | 25    |
+| `createRestrictedDataToken` (POST)  | `criarTokenRestrito`          | `/tokens/2021-03-01/restrictedDataToken`       | none; body: `restrictedResources` (`POST` + the bulk path), no `dataElements`, no `targetApplication`                        | 1           | 10    |
+| `createScheduledPackageBulk` (POST) | `agendarPacotesEasyShip`      | `/easyShip/2022-03-23/packages/bulk`           | none; body: `marketplaceId`, `orderScheduleDetailsList` (one `amazonOrderId`), `labelFormat: 'ZPL'`                          | 1           | 5     |
+| `getListingsItem`                   | `lerListingAmazon`            | `/listings/2021-08-01/items/{sellerId}/{sku}`  | `marketplaceIds`, `includedData` (the closed `DADOS_LISTING_AMAZON`), `issueLocale=pt_BR`                                    | 5           | 10    |
+| `searchListingsItems`               | `buscarListingsAmazon`        | `/listings/2021-08-01/items/{sellerId}`        | `marketplaceIds`, `identifiers` (≤ 20 SKUs, `,`-joined), `identifiersType=SKU`, `includedData`, `pageSize=20`, `issueLocale` | 5           | 5     |
+| `patchListingsItem` (PATCH)         | `enviarDisponibilidadeAmazon` | `/listings/2021-08-01/items/{sellerId}/{sku}`  | `marketplaceIds`, `issueLocale`; body: the stock `merge` (below)                                                             | 5           | 5     |
+| `createFeedDocument` (POST)         | `criarDocumentoFeedAmazon`    | `/feeds/2021-06-30/documents`                  | none; body: `contentType` (`CONTENT_TYPE_FEED_JSON`)                                                                         | 0.5         | 15    |
+| `createFeed` (POST)                 | `criarFeedAmazon`             | `/feeds/2021-06-30/feeds`                      | none; body: `feedType: 'JSON_LISTINGS_FEED'`, `marketplaceIds` (BR only), `inputFeedDocumentId`                              | 0.0083 (\*) | 15    |
+| `getFeed`                           | `lerFeedAmazon`               | `/feeds/2021-06-30/feeds/{feedId}`             | none                                                                                                                         | 2           | 15    |
+| `getFeedDocument`                   | `lerDocumentoFeedAmazon`      | `/feeds/2021-06-30/documents/{feedDocumentId}` | none (never `enableContentEncodingUrlHeader`)                                                                                | 0.0222      | 10    |
+
+(\*) The model says the rate limit of the `JSON_LISTINGS_FEED` feed type differs from the
+`createFeed` operation's: pacing is the caller's, and this package does not pace.
 
 - Each helper builds its query (and each write its body) from NAMED keys, never a spread of
   the caller's object. `getInvoiceStatus` never sends `shipmentId` or `invoiceId`.
@@ -65,6 +80,70 @@ Every SP-API operation this package can call, with the model's default usage pla
   leaf is nullish, every enum-like string is open, `orderItems` and a line's quantity,
   product and price may be absent (a cancelled order), and money amounts stay unread
   (`unknown`) for the app's one money reader.
+
+## Listings: the stock patch and its reads
+
+`listings.ts` (step 12a) holds the three listings operations the stock sync rides. Nothing in
+the app calls them yet.
+
+- **The SKU travels in the path, so it must be ONE segment.** `segmentoSkuAmazon` is the
+  reviewed encoder: `encodeURIComponent`, and `null` for a SKU that is empty, holds `/` or
+  `\`, contains `..`, equals `.`, or whose encoded segment the client's own path check would
+  refuse (`segmentoDeCaminho` beside `caminhoValido` in `client.ts`, internal, never copied).
+  A helper handed such a SKU refuses it (`AmazonConfigError('sku')`) before anything is read or
+  sent; `skuTemCaminhoAmazon` is the boolean. The `sellerId` is held to the same one-segment
+  rule (`'caminho'`).
+- **A search list is comma-delimited.** `skuBuscavelAmazon` refuses a SKU with a `,`, a space
+  (`URLSearchParams` sends it as `+`) or more than 40 code points; such a SKU is read alone.
+  `buscarListingsAmazon` refuses an empty list, more than 20, a duplicate or an unsearchable
+  SKU, and returns `truncada`: `true` when `numberOfResults` differs from the items' count or a
+  `nextToken` is present, so a SKU absent from that page is unknown, never "not listed".
+- **The stock body is EXACTLY one `merge`**: `{ productType: 'PRODUCT', patches: [{ op: 'merge',
+path: '/attributes/fulfillment_availability', value: [{ fulfillment_channel_code: 'DEFAULT',
+quantity }] }] }`, from named keys and constants. Never `replace` (Amazon's `replace` drops
+  every field the body omits, such as a lead time), never a lead time, never a `marketplace_id`
+  inside `value`, never a `mode`. The quantity must be a safe integer ≥ 0
+  (`AmazonConfigError('quantidade')`, nothing sent).
+- **The answers are tolerant**: every number through `wireInt()`, every enum an open string,
+  every field nullish except the item's `sku`. A `getListingsItem` 404 is the client's
+  `AmazonNotFoundError`.
+
+## Feeds: the `JSON_LISTINGS_FEED` submission
+
+`feeds.ts` (step 12a) holds the four SP-API operations of a submission, the document builder
+and the report parser; `documentosFeed.ts` holds the two pre-signed transfers.
+
+- **One `feedId` grammar**, `FEED_ID_AMAZON_REGEX` (`^[0-9]{1,20}$`): the 202 schema applies it
+  (a `createFeed` answer outside it is the client's `AmazonSchemaError`: the feed MAY have been
+  created) and so does `lerFeedAmazon` before anything is sent (`AmazonConfigError('feed')`).
+- **The document** (`montarDocumentoListingsFeed`): a header `{ sellerId, version: '2.0',
+issueLocale: 'pt_BR' }` (no `report`), then one `PATCH` message per input in the caller's
+  order, `messageId` its 1-based position, `productType: 'PRODUCT'`; minified, encoded once, and
+  refused whole (never split) on an empty `sellerId`, no message, more than 25,000, an empty or
+  duplicate SKU, a message without patches, or more than `MAX_BYTES_FEED` UTF-8 BYTES.
+- **The schemas**: Amazon's two published listings-feed JSON schemas are committed verbatim as
+  test fixtures (`test/_fixtures/`, sha256-pinned, out of Prettier's reach), and the tests check
+  the builder against them structurally, with no JSON-schema dependency.
+- **The report** (`lerRelatorioProcessamentoListings`): `summary` and its five counts required
+  (through `wireInt()`), every issue field optional (an issue may carry no `messageId`, `sku` or
+  `code`); empty or non-JSON text is `'json-invalido'`, a JSON that is not a report
+  `'relatorio-invalido'`.
+- **The upload** (`enviarDocumentoFeedAmazon`): the pre-signed URL guard, then ONE `PUT` with
+  exactly one header, `content-type: application/json; charset=UTF-8` (the value the document
+  was declared with), `redirect: 'error'`, under `PRAZO_AMAZON_MS.upload`. A 403 is
+  `'expirado'` (transient) only once the URL has outlived its 5 minutes since `createFeedDocument`
+  answered, else `'recusado'` (deterministic: a signature mismatch); both carry the closed
+  `codigoS3` read from at most 4 KiB of the XML answer.
+- **The download** (`baixarRelatorioFeedAmazon`): the guard, then ONE header-free `GET`, the
+  body cancelled past 20 MiB, and for `GZIP` the trailer's ISIZE read FIRST (refused past 32 MiB
+  with nothing inflated), a streaming inflation fed 16 KiB at a time and stopped at the first
+  slice whose output passes ISIZE (an understated ISIZE costs at most about 16 MiB of
+  inflation, never the whole stream's), the output required to be EXACTLY ISIZE bytes with the trailer's CRC-32, then
+  strict UTF-8 and the report parser.
+- Both transfers raise `AmazonDocumentoFeedError` (closed `motivo`; `ehTransitoriaDocumentoFeed`
+  says which may succeed on a fresh attempt of the WHOLE submission or read), with a fixed
+  message that never carries the URL, its host or query, or a byte; `fetch` is a required
+  option, never the global.
 
 ## The Easy Ship label document
 
@@ -173,6 +252,8 @@ anything left is the catch-all.
 | Our own input (token, ref, path, user-agent, LWA credentials, redirect URI, application id, state)             | `AmazonConfigError` — nothing was sent                                      |
 | A write body holding the token or not text; a Delivery or Easy Ship order id, MD5 or base64 of the wrong shape | `AmazonConfigError` — nothing was sent                                      |
 | The Easy Ship label document: its URL, download or zip (`documentosEasyShip.ts`)                               | `AmazonDocumentoEasyShipError` (`motivo`; `status` for an HTTP answer)      |
+| A listings SKU or quantity, or a feed document or id, of the wrong shape (`listings.ts`, `feeds.ts`)           | `AmazonConfigError` (`sku`, `quantidade`, `feed`) — nothing was sent        |
+| A feed document upload or report download (`documentosFeed.ts`, `feeds.ts`)                                    | `AmazonDocumentoFeedError` (`motivo`; `status`, `codigoS3` for an HTTP one) |
 
 `AmazonAuthError` is the INPUT to the app's parking decision, not the decision: an
 SP-API 403 also means "expired access token" (a refresh fixes it) or "missing role",
@@ -191,13 +272,15 @@ LANDED: the caller never repeats it in the same attempt, it re-reads the provide
 - **No Firestore / Admin SDK / `@delfrance/data`.** ADR 0015: a channel package is a
   library, not a plugin, and the ERP orchestration lives in its app.
 - **No SigV4.** SP-API has not required AWS signing since 2023-10-02.
-- **Exactly one write client, `escrita.ts`, used only by the app's write engine.** The read
-  client's `get` takes no body by construction; the SP-API writes are `submitInvoice`
-  (`entrega.ts`), `createRestrictedDataToken` (`tokens.ts`) and `createScheduledPackageBulk`
-  (`easyShip.ts`), and the other POST is the LWA token exchange. The request body never reaches
-  the observer event.
-- **One non-SP-API GET**: the Easy Ship document download (`documentosEasyShip.ts`),
-  header-free, with no credential and no observer event.
+- **Exactly one write client, `escrita.ts` (`post` and `patch`), used only by the app's write
+  engine.** The read client's `get` takes no body by construction; the SP-API writes are
+  `submitInvoice` (`entrega.ts`), `createRestrictedDataToken` (`tokens.ts`),
+  `createScheduledPackageBulk` (`easyShip.ts`), `patchListingsItem` (`listings.ts`),
+  `createFeedDocument` and `createFeed` (`feeds.ts`), and the other POST is the LWA token
+  exchange. The request body never reaches the observer event.
+- **Two non-SP-API GETs and one PUT** (the Easy Ship label, the feed report, the feed document
+  upload: `documentosEasyShip.ts`, `documentosFeed.ts`), with no credential and no observer
+  event; the GETs send no header at all, the PUT sends `content-type` alone.
 - **No OAuth route, no credential store, no token cache.** The access token is
   supplied by the caller on every call.
 - **No `client_credentials` (grantless) grant yet.** No pre-cutover step calls a
@@ -217,6 +300,8 @@ LANDED: the caller never repeats it in the same attempt, it re-reads the provide
   `buscarPedido` until then. Step 14 does the same: the write client and the Delivery helpers
   land in PR 14-a, and nothing calls them until the app's NF-e task (PR 14-c). So does step 15:
   the RDT, bulk and document helpers land in PR 15-a, ahead of the app code that calls them.
+  And step 12a: the listings and feeds helpers land in PR 12-a, ahead of the app code that
+  calls them.
 - **No call to Amazon from the tests** (D11). Every test injects its own `fetch`, and
   `test/_setup/semRede.ts` makes an un-injected one throw.
 - **No `build` script**, deliberately: `ci.yml`'s seven-job split relies on no

@@ -18,7 +18,8 @@
  *
  * 1. **The URL** must parse, be `https:`, carry no userinfo and no port, and
  *    name a host ending in `.amazonaws.com` (Amazon's object storage, where
- *    these documents have been observed in production). Anything else is
+ *    these documents have been observed in production): the guard in
+ *    `preAssinada.ts`, shared with the feed documents. Anything else is
  *    `'url-invalida'` and nothing is fetched. The model's own example URL
  *    (`https://www.amazon.com/documents.zip`) is refused by this rule.
  * 2. **One request**: `fetch(url, { method: 'GET', redirect: 'error', signal })`.
@@ -75,8 +76,9 @@
  * 4. **The count**: no kept entry is `'sem-zpl'`.
  * 5. **The verification**: the kept entry's record is joined by POSITION,
  *    never by name. The inflated bytes must have the record's original size AND
- *    its CRC-32, else `'zip-invalido'`. The CRC-32 is a table here: the package
- *    imports no `node:` module, and its Node 22 floor predates `zlib.crc32`.
+ *    its CRC-32, else `'zip-invalido'`. The CRC-32 is a table (`crc32.ts`,
+ *    shared with the feed report): the package imports no `node:` module, and
+ *    its Node 22 floor predates `zlib.crc32`.
  * 6. **The content**: the bytes must hold `^XA` somewhere, and must not start
  *    (after an optional UTF-8 BOM and ASCII whitespace) with `%PDF-`, `PK` or
  *    `<`; else `'zpl-invalido'`. Nothing is required before `^XA`: ZPL may put
@@ -94,8 +96,17 @@
 import { abrirPrazo } from '@delfrance/core/wire';
 import { unzipSync, type UnzipFileInfo, type Unzipped } from 'fflate';
 
+import { crc32, ehErroDoFflate } from './crc32';
 import { AmazonDocumentoEasyShipError } from './errors';
+import { urlPreAssinadaAmazon } from './preAssinada';
 import { PRAZO_AMAZON_MS } from './prazos';
+
+/**
+ * The CRC-32 the extraction verifies, from `crc32.ts`.
+ *
+ * ⚠️ INTERNAL: re-exported for this module's test, never from the barrel.
+ */
+export { crc32 } from './crc32';
 
 /** The download's byte cap: the stream is cancelled past it. */
 export const MAX_ZIP_EASY_SHIP_BYTES = 5 * 1024 * 1024;
@@ -121,30 +132,14 @@ export interface OpcoesDownloadEasyShip {
   readonly sinal?: AbortSignal;
 }
 
-/** The host suffix of Amazon's object storage, where the label documents live. */
-const SUFIXO_HOST_DOCUMENTO = '.amazonaws.com';
-
 /** `PK\x03\x04`: a zip's first local file header. */
 const ASSINATURA_ZIP = [0x50, 0x4b, 0x03, 0x04] as const;
 
 /** The URL to fetch, or `'url-invalida'` (module header, step 1). */
 function urlDoDocumento(url: unknown): string {
-  if (typeof url !== 'string') throw new AmazonDocumentoEasyShipError('url-invalida');
-  let alvo: URL;
-  try {
-    alvo = new URL(url);
-  } catch (err) {
-    if (err instanceof TypeError) throw new AmazonDocumentoEasyShipError('url-invalida');
-    throw err;
-  }
-  const valida =
-    alvo.protocol === 'https:' &&
-    alvo.username === '' &&
-    alvo.password === '' &&
-    alvo.port === '' &&
-    alvo.hostname.toLowerCase().endsWith(SUFIXO_HOST_DOCUMENTO);
-  if (!valida) throw new AmazonDocumentoEasyShipError('url-invalida');
-  return alvo.href;
+  const alvo = urlPreAssinadaAmazon(url);
+  if (alvo === null) throw new AmazonDocumentoEasyShipError('url-invalida');
+  return alvo;
 }
 
 /** The body, chunk by chunk; the stream is cancelled the moment the total passes the cap. */
@@ -224,45 +219,6 @@ export async function baixarDocumentosEasyShip(
   } finally {
     prazo.liberar();
   }
-}
-
-/* -------------------------------------------------------------------------- */
-/*                                  CRC-32                                    */
-/* -------------------------------------------------------------------------- */
-
-/**
- * The CRC-32 (IEEE 802.3, reflected polynomial `0xEDB88320`) table, 256
- * entries, built on the FIRST label read, never at module load. The barrel
- * reaches every bundle that imports the package — the functions bundle
- * included, which reads no label — and esbuild keeps any top-level call it
- * cannot prove pure, so a module-level table would be built at every cold
- * start. A function nothing calls is dropped, with no annotation to trust.
- */
-let tabelaCrc32: Uint32Array | null = null;
-
-function obterTabelaCrc32(): Uint32Array {
-  if (tabelaCrc32 !== null) return tabelaCrc32;
-  const tabela = new Uint32Array(256);
-  for (let n = 0; n < 256; n++) {
-    let c = n;
-    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-    tabela[n] = c >>> 0;
-  }
-  tabelaCrc32 = tabela;
-  return tabela;
-}
-
-/**
- * The CRC-32 a zip records for an entry. Pinned by the standard check value:
- * `0xCBF43926` for the ASCII bytes `123456789`.
- *
- * ⚠️ INTERNAL: exported for the test, never from the barrel.
- */
-export function crc32(bytes: Uint8Array): number {
-  const tabela = obterTabelaCrc32();
-  let c = 0xffffffff;
-  for (const b of bytes) c = (tabela[(c ^ b) & 0xff] ?? 0) ^ (c >>> 8);
-  return (c ^ 0xffffffff) >>> 0;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -371,16 +327,6 @@ const METODOS_ACEITOS: ReadonlySet<number> = new Set([0, 8]);
 function ehNomeZpl(nome: string): boolean {
   const minusculo = nome.toLowerCase();
   return EXTENSOES_ZPL.some((ext) => minusculo.endsWith(ext));
-}
-
-/**
- * fflate's own error: a plain `Error` carrying a NUMERIC `code` (its error
- * table's index). `instanceof Error` alone would claim every exception, so the
- * code is what identifies it; our class (which has no numeric `code`) is
- * narrowed out before this is asked.
- */
-function ehErroDoFflate(err: unknown): boolean {
-  return err instanceof Error && typeof (err as { code?: unknown }).code === 'number';
 }
 
 const BOM_UTF8 = [0xef, 0xbb, 0xbf] as const;

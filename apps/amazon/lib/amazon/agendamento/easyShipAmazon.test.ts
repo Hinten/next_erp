@@ -55,6 +55,7 @@ function clienteGravador(nome: string, corpo: unknown, posts: Post[]): SpApiEscr
         refCredencial: 'ref-teste',
       });
     },
+    patch: () => Promise.reject(new Error('patch não esperado')),
   };
 }
 
@@ -111,7 +112,10 @@ describe('agendarNaAmazon — the mint, then the bulk, each ONCE', () => {
   it('a mint that fails sends no bulk and builds no restricted client', async () => {
     const m = montar();
     const falha = new Error('mint');
-    const lwa: SpApiEscritaClient = { post: () => Promise.reject(falha) };
+    const lwa: SpApiEscritaClient = {
+      post: () => Promise.reject(falha),
+      patch: () => Promise.reject(new Error('patch não esperado')),
+    };
     await expect(agendarNaAmazon(lwa, m.fabrica, ORDER)).rejects.toBe(falha);
     expect(m.fabrica).not.toHaveBeenCalled();
     expect(m.posts).toEqual([]);

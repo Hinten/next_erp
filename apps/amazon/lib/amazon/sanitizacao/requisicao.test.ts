@@ -15,6 +15,10 @@ import {
 const b = (t: string) => new TextEncoder().encode(t);
 const GET_ORDER = '/orders/2026-01-01/orders/123-4567890-1234567';
 const BULK = '/easyShip/2022-03-23/packages/bulk';
+const LISTING = '/listings/2021-08-01/items/AXXXXXXXXXXXXX/SKU-1';
+const BUSCA_LISTINGS = '/listings/2021-08-01/items/AXXXXXXXXXXXXX';
+const FEEDS = '/feeds/2021-06-30/feeds';
+const FEED = '/feeds/2021-06-30/feeds/123456789';
 
 function sidecar(linha1: string, ...resto: string[]) {
   const linhas =
@@ -118,11 +122,7 @@ describe('the sidecar grammar', () => {
     ['a feed document', 'POST /feeds/2021-06-30/documents 201', 'segredo'],
     ['an unknown documents path', 'GET /reports/2021-06-30/documents 200', 'segredo'],
     ['the RDT', 'POST /tokens/2021-03-01/restrictedDataToken 200', 'segredo'],
-    [
-      'a listings path (no table yet)',
-      'GET /listings/2021-08-01/items/AXXXXXXXXXXXXX/SKU-1 200',
-      'sem-tabela',
-    ],
+    ['a reports path (no table)', 'GET /reports/2021-06-30/reports 200', 'sem-tabela'],
     ['an unknown path', 'GET /algo/2030-01-01/coisa 200', 'sem-tabela'],
     ['a fragment', `GET ${GET_ORDER}#x 200`, 'url-com-fragmento'],
     ['a dot segment', 'GET /orders/2026-01-01/../orders 200', 'caminho-inseguro'],
@@ -243,7 +243,9 @@ describe('★ the method belongs to the matched operation', () => {
   // Transcribed from Amazon's models (`amazon-doc.mjs op <operationId>`): every
   // operation declared on a path whose template has a table, and whether that
   // table describes its answer. PATCH updateScheduledPackages shares the
-  // package path but answers `Packages`, a shape no table describes.
+  // package path but answers `Packages`, a shape no table describes; the
+  // listings writes nothing calls (PUT, DELETE), the feed list (GET getFeeds) and
+  // cancelFeed are refused the same way.
   const OPERACOES_DOS_MODELOS = [
     { metodo: 'GET', caminho: '/orders/2026-01-01/orders', tabela: true }, // searchOrders
     { metodo: 'GET', caminho: GET_ORDER, tabela: true }, // getOrder
@@ -253,6 +255,15 @@ describe('★ the method belongs to the matched operation', () => {
     { metodo: 'POST', caminho: '/easyShip/2022-03-23/package', tabela: true }, // createScheduledPackage
     { metodo: 'PATCH', caminho: '/easyShip/2022-03-23/package', tabela: false }, // updateScheduledPackages
     { metodo: 'POST', caminho: BULK, tabela: true }, // createScheduledPackageBulk
+    { metodo: 'GET', caminho: LISTING, tabela: true }, // getListingsItem
+    { metodo: 'PATCH', caminho: LISTING, tabela: true }, // patchListingsItem
+    { metodo: 'PUT', caminho: LISTING, tabela: false }, // putListingsItem
+    { metodo: 'DELETE', caminho: LISTING, tabela: false }, // deleteListingsItem
+    { metodo: 'GET', caminho: BUSCA_LISTINGS, tabela: true }, // searchListingsItems
+    { metodo: 'GET', caminho: FEEDS, tabela: false }, // getFeeds
+    { metodo: 'POST', caminho: FEEDS, tabela: true }, // createFeed
+    { metodo: 'GET', caminho: FEED, tabela: true }, // getFeed
+    { metodo: 'DELETE', caminho: FEED, tabela: false }, // cancelFeed
   ] as const;
   const caminhos = [...new Set(OPERACOES_DOS_MODELOS.map((o) => o.caminho))];
   // copia-do-legado: the curl's own GET-only rule stays out of the matrix.
@@ -291,6 +302,19 @@ describe('★ the method belongs to the matched operation', () => {
     expect(copia('GET /easyShip/2022-03-23/package 200').ok).toBe(true);
     expect(copia('POST /easyShip/2022-03-23/package 200').ok).toBe(true);
     expect(tipos(copia('PATCH /easyShip/2022-03-23/package 200'))).toEqual(['metodo-da-operacao']);
+  });
+
+  it('★ a PATCH capture is accepted under the listings template; a PUT or a DELETE on the same path is refused', () => {
+    const r = copia(`PATCH ${LISTING} 200`);
+    expect(r).toMatchObject({ ok: true, requisicao: { metodo: 'PATCH', caminho: LISTING } });
+    expect(classificarCaminho(LISTING).modelo).toBe('getListingsItem');
+    expect(tipos(copia(`PUT ${LISTING} 200`))).toEqual(['metodo-da-operacao']);
+    expect(tipos(copia(`DELETE ${LISTING} 200`))).toEqual(['metodo-da-operacao']);
+    // The feed paths: createFeed's POST and getFeed's GET only.
+    expect(copia(`POST ${FEEDS} 202`).ok).toBe(true);
+    expect(tipos(copia(`GET ${FEEDS} 200`))).toEqual(['metodo-da-operacao']);
+    expect(copia(`GET ${FEED} 200`).ok).toBe(true);
+    expect(tipos(copia(`DELETE ${FEED} 200`))).toEqual(['metodo-da-operacao']);
   });
 
   // The method is checked only once the path has passed: a secret or untabled

@@ -191,14 +191,19 @@ const ALLOWED_STRICT = {
   // `z.number()` to keep strict, so there is nothing here for strictness to
   // protect. A later write step whose body holds a number brings its first entry.
   // No `amazon-sp-api` entry either. It has a GET client and ONE write client
-  // (Delivery, Tokens and Easy Ship), and no outbound body is a Zod schema: the
-  // LWA token POST is a form-encoded `URLSearchParams` of strings,
-  // `submitInvoice`'s body is a `JSON.stringify` of five NAMED string keys
-  // (`entrega.ts`), and the RDT mint's and the Easy Ship bulk's bodies are a
-  // `JSON.stringify` of named keys too (`tokens.ts`, `easyShip.ts`). The RDT
-  // RESPONSE reads `expiresIn` through `wireInt()`, so the ban above holds there
-  // with no carve-out. If a later write step brings a Zod request body, that
-  // step adds its first entry.
+  // (Delivery, Tokens, Easy Ship, Listings and Feeds), and no outbound body is a
+  // Zod schema: the LWA token POST is a form-encoded `URLSearchParams` of
+  // strings, `submitInvoice`'s body is a `JSON.stringify` of five NAMED string
+  // keys (`entrega.ts`), and the RDT mint's, the Easy Ship bulk's, the listings
+  // stock patch's (a quantity checked with `Number.isSafeInteger`, no schema) and
+  // the two feed submissions' bodies are a `JSON.stringify` of named keys too
+  // (`tokens.ts`, `easyShip.ts`, `listings.ts`, `feeds.ts`), as is the feed
+  // document itself. Every RESPONSE number reads through `wireInt()` (or, for an
+  // order line's `measurement.value`, `wireNumber()`) — the RDT's `expiresIn`, a
+  // listing's `quantity`, a search's `numberOfResults`, a processing report's
+  // `messageId` and five summary counts among them — so the ban above holds
+  // there with no carve-out. If a later write step brings a Zod request
+  // body, that step adds its first entry.
 };
 
 /**
@@ -277,12 +282,14 @@ const KNOWN_TOLERANT_LINES = {
   // Amazon SP-API. ⚠️ Same reason as Shopee and Loja Integrada: no
   // `ALLOWED_STRICT` entry (response shapes only), so this line is what keeps a
   // mistyped `amazon-sp-api` pathspec from leaving the "no bare z.number()"
-  // assertion running over an empty set. It is the package's only Zod number —
-  // the rate-limit header is read with `parseWireDecimal`, never Zod — and the
-  // pathspec reaches EVERY file under `src/`, so any hit elsewhere is a real
-  // offender. ⚠️ The text differs from ML/MP/ME's `expires_in: wireNumber(),`
-  // (LWA's lifetime is whole seconds, so `wireInt`); the per-path KEY is what
-  // makes it this package's anchor either way.
+  // assertion running over an empty set. It is one of the package's Zod numbers
+  // (each a tolerant `wireInt()` or `wireNumber()`, see the `ALLOWED_STRICT`
+  // paragraph above) — the rate-limit header is read with `parseWireDecimal`,
+  // never Zod — and the pathspec reaches EVERY file under `src/`, so any hit
+  // elsewhere is a real offender. ⚠️ The text differs from ML/MP/ME's
+  // `expires_in: wireNumber(),` (LWA's lifetime is whole seconds, so
+  // `wireInt`); the per-path KEY is what makes it this package's anchor either
+  // way.
   'packages/integrations/amazon-sp-api/src/types.ts': ['expires_in: wireInt(),'],
 };
 

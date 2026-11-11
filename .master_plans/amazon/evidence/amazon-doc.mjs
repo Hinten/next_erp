@@ -11,10 +11,14 @@
 //   node amazon-doc.mjs sandbox <operationId> [model] # the x-amzn-api-sandbox cases
 //   node amazon-doc.mjs notif <SchemaName>          # schemas/notifications/<SchemaName>.json
 //   node amazon-doc.mjs folhas [--saida <file>]     # the step-2b leaf inventory (paths + types only)
-//   node amazon-doc.mjs exemplo <operationId> <model> <n> --saida <abs> --nome <nome>
-//                                                   # ONE sandbox case as a capture pair (2b-b)
+//   node amazon-doc.mjs exemplo <operationId> <model> <n> --saida <abs> --nome <nome> [--parametro <nome>=<valor>]…
+//                                                   # ONE sandbox case as a capture pair (2b-b); a
+//                                                   # --parametro fills a path slot the case leaves empty
+//   node amazon-doc.mjs autoteste                   # exemplo's path rules, offline (no model, no network)
 //   node amazon-doc.mjs notif-exemplo <SchemaName> <n> --saida <abs> --nome <nome>
 //                                                   # ONE notification example as a capture pair
+//   node amazon-doc.mjs esquema schemas/feeds/<nome>.json --saida <arquivo>
+//                                                   # ONE published feed schema, byte for byte, + its sha256
 //   node amazon-doc.mjs refresh                     # drop the cache
 //
 // `model` is a key from `models`; without it every registered model is searched.
@@ -151,13 +155,33 @@ async function cmdNotif(schemaName) {
   console.log(JSON.stringify(json, null, 2));
 }
 
+/**
+ * One published feed JSON schema (`schemas/feeds/<nome>.json` of the models repo), written
+ * BYTE FOR BYTE from the cache or raw.githubusercontent.com (a committed test fixture's
+ * source, so no reformatting), and its sha256 printed for the fixture's provenance.
+ */
+async function cmdEsquema(caminho, args) {
+  const i = args.indexOf('--saida');
+  const saida = i >= 0 ? args[i + 1] : undefined;
+  if (!/^schemas\/feeds\/[A-Za-z0-9-]+\.json$/.test(caminho ?? '') || !saida) {
+    throw new Error('usage: node amazon-doc.mjs esquema schemas/feeds/<nome>.json --saida <arquivo>');
+  }
+  const texto = await loadText(caminho);
+  writeFileSync(resolve(saida), texto);
+  console.log(`${createHash('sha256').update(texto).digest('hex')}  ${caminho}`);
+}
+
 // ---------------------------------------------------------------------------
 // folhas: the leaf inventory of the step-2b redaction tables. Paths and JSON
 // types only, never a value; plus the literal `errors[].code` values the
 // in-scope models' examples carry (Amazon's own error codes, not data).
 // ---------------------------------------------------------------------------
 
-/** The operations whose 2xx and error bodies the step-2b tables classify. `erro` = every non-2xx schema, merged. */
+/**
+ * The operations whose 2xx and error bodies the redaction tables classify. `'200'` is the
+ * whole 2xx CLASS (every 2xx schema, merged: `createFeedDocument`'s 201 and `createFeed`'s
+ * 202 are read under it, see `folhasDaResposta`); `erro` = every non-2xx schema, merged.
+ */
 const OPERACOES_FOLHAS = [
   { modelo: 'orders', operationId: 'searchOrders', status: ['200', 'erro'] },
   { modelo: 'orders', operationId: 'getOrder', status: ['200', 'erro'] },
@@ -166,6 +190,13 @@ const OPERACOES_FOLHAS = [
   { modelo: 'easyShip', operationId: 'createScheduledPackageBulk', status: ['200', 'erro'] },
   { modelo: 'easyShip', operationId: 'getScheduledPackage', status: ['200', 'erro'] },
   { modelo: 'tokens', operationId: 'createRestrictedDataToken', status: ['200'] },
+  { modelo: 'listings', operationId: 'getListingsItem', status: ['200', 'erro'] },
+  { modelo: 'listings', operationId: 'searchListingsItems', status: ['200', 'erro'] },
+  { modelo: 'listings', operationId: 'patchListingsItem', status: ['200', 'erro'] },
+  { modelo: 'feeds', operationId: 'createFeedDocument', status: ['200', 'erro'] },
+  { modelo: 'feeds', operationId: 'createFeed', status: ['200', 'erro'] },
+  { modelo: 'feeds', operationId: 'getFeed', status: ['200', 'erro'] },
+  { modelo: 'feeds', operationId: 'getFeedDocument', status: ['200', 'erro'] },
 ];
 
 /** Notification schemas (`schemas/notifications/<name>.json`), inventoried as status `notificacao`. */
@@ -326,7 +357,7 @@ function exemplosDaResposta(resposta) {
 
 const ehStatus2xx = (s) => /^2\d\d$/.test(s);
 
-/** Leaves of one operation's responses of one status class, sorted. */
+/** Leaves of one operation's responses of one status class (`'200'` = every 2xx), sorted. */
 function folhasDaResposta(spec, op, classe) {
   const folhas = new Map();
   const anotar = (caminho, tipo) => {
@@ -526,11 +557,75 @@ function casosDoSandbox(op) {
   return casos;
 }
 
-/** exemplo <operationId> <model> <n> --saida <abs> --nome <nome>: the n-th sandbox case (0-based). */
+/** A refusal of `exemplo`'s input: the run stops with its message, nothing written. */
+class RecusaDoExemplo extends Error {}
+
+const NOME_DE_PARAMETRO = /^[A-Za-z][A-Za-z0-9]{0,63}$/;
+
+/**
+ * Every `--parametro <nome>=<valor>` (repeatable), as a Map. A name outside
+ * {@link NOME_DE_PARAMETRO}, an empty value or a name given twice refuses the run.
+ */
+function parametrosDoExemplo(args) {
+  const saida = new Map();
+  args.forEach((flag, i) => {
+    if (flag !== '--parametro') return;
+    const par = args[i + 1] ?? '';
+    const igual = par.indexOf('=');
+    const nome = igual === -1 ? '' : par.slice(0, igual);
+    const valor = igual === -1 ? '' : par.slice(igual + 1);
+    if (!NOME_DE_PARAMETRO.test(nome) || valor === '' || par.startsWith('--')) {
+      throw new RecusaDoExemplo('exemplo: --parametro takes <nome>=<valor>, both non-empty');
+    }
+    if (saida.has(nome)) throw new RecusaDoExemplo(`exemplo: --parametro ${nome} given twice`);
+    saida.set(nome, valor);
+  });
+  return saida;
+}
+
+/**
+ * The request path + query of one sandbox case. A path `{parameter}` takes the case's own
+ * value; a `--parametro` fills ONLY a path parameter the case leaves EMPTY (never one the
+ * case sets, never a query parameter, never a name the operation does not have). Whatever
+ * still has no value refuses the run: a capture line with a `{slot}` in it would read as a
+ * literal segment. Pure, so `autoteste` pins it offline.
+ */
+function caminhoDoCaso(path, definicoes, valores, preenchidos) {
+  const doCaminho = new Set(definicoes.filter((d) => d.in === 'path').map((d) => d.name));
+  for (const nome of preenchidos.keys()) {
+    if (!doCaminho.has(nome)) {
+      throw new RecusaDoExemplo(`exemplo: --parametro ${nome} is not a path parameter of the operation`);
+    }
+    if (Object.hasOwn(valores, nome)) {
+      throw new RecusaDoExemplo(`exemplo: --parametro ${nome} would override the case's own value`);
+    }
+  }
+  const emLista = (v) => (Array.isArray(v) ? v.map((x) => encodeURIComponent(String(x))).join(',') : encodeURIComponent(String(v)));
+  let caminho = path;
+  const query = [];
+  for (const def of definicoes) {
+    const doCaso = Object.hasOwn(valores, def.name);
+    if (!doCaso && !(def.in === 'path' && preenchidos.has(def.name))) continue;
+    const v = doCaso ? valores[def.name]?.value : preenchidos.get(def.name);
+    if (def.in === 'path') caminho = caminho.replace(`{${def.name}}`, encodeURIComponent(String(v)));
+    else if (def.in === 'query') query.push(`${encodeURIComponent(def.name)}=${emLista(v)}`);
+  }
+  if (/\{[^}]+\}/.test(caminho)) {
+    throw new RecusaDoExemplo('exemplo: a path parameter has no value in that case (fill it with --parametro <nome>=<valor>)');
+  }
+  return query.length === 0 ? caminho : `${caminho}?${query.join('&')}`;
+}
+
+/**
+ * exemplo <operationId> <model> <n> --saida <abs> --nome <nome> [--parametro <nome>=<valor>]…:
+ * the n-th sandbox case (0-based). A `--parametro` value is a FAKE-shaped id (the
+ * sanitizer fakes ids on the way in anyway), never a real seller id or SKU.
+ */
 async function cmdExemplo(operationId, modelKey, n, args) {
   if (!operationId || !modelKey || !/^\d+$/.test(n ?? '')) {
-    throw new Error('exemplo: usage: exemplo <operationId> <model> <n> --saida <abs> --nome <nome>');
+    throw new RecusaDoExemplo('exemplo: usage: exemplo <operationId> <model> <n> --saida <abs> --nome <nome> [--parametro <nome>=<valor>]…');
   }
+  const preenchidos = parametrosDoExemplo(args);
   const destino = destinoDoExemplo(args, 'exemplo');
   const { spec, path, method, op, item } = await findOperation(operationId, modelKey);
   const casos = casosDoSandbox(op);
@@ -540,18 +635,59 @@ async function cmdExemplo(operationId, modelKey, n, args) {
   const definicoes = [...(item.parameters ?? []), ...(op.parameters ?? [])]
     .map((p) => parametro(spec, p))
     .filter((p) => p && typeof p.name === 'string');
-  const emLista = (v) => (Array.isArray(v) ? v.map((x) => encodeURIComponent(String(x))).join(',') : encodeURIComponent(String(v)));
-  let caminho = path;
-  const query = [];
-  for (const def of definicoes) {
-    if (!Object.hasOwn(valores, def.name)) continue;
-    const v = valores[def.name]?.value;
-    if (def.in === 'path') caminho = caminho.replace(`{${def.name}}`, encodeURIComponent(String(v)));
-    else if (def.in === 'query') query.push(`${encodeURIComponent(def.name)}=${emLista(v)}`);
-  }
-  if (/\{[^}]+\}/.test(caminho)) throw new Error('exemplo: a path parameter has no value in that case');
-  const url = query.length === 0 ? caminho : `${caminho}?${query.join('&')}`;
+  const url = caminhoDoCaso(path, definicoes, valores, preenchidos);
   escreverPar(destino, escolhido.caso?.response ?? {}, `${method.toUpperCase()} ${url} ${escolhido.codigo}`);
+}
+
+/**
+ * autoteste: `exemplo`'s path rules on synthetic input, offline (no model, no network, no
+ * file). Exit code 1 and the failed case's name on any departure.
+ */
+function cmdAutoteste() {
+  const definicoes = [
+    { name: 'sellerId', in: 'path' },
+    { name: 'sku', in: 'path' },
+    { name: 'marketplaceIds', in: 'query' },
+  ];
+  const molde = '/listings/2021-08-01/items/{sellerId}/{sku}';
+  const mp = { marketplaceIds: { value: ['A2Q3Y263D00KWC'] } };
+  const recusa = (nome, f) => {
+    try {
+      f();
+    } catch (err) {
+      if (err instanceof RecusaDoExemplo) return;
+      throw err;
+    }
+    throw new Error(`autoteste: ${nome}: expected a refusal`);
+  };
+  const igual = (nome, obtido, esperado) => {
+    if (obtido !== esperado) throw new Error(`autoteste: ${nome}: got ${obtido}`);
+  };
+  recusa('a path parameter left unfilled', () => caminhoDoCaso(molde, definicoes, mp, new Map([['sellerId', 'AFAKE']])));
+  recusa('no parameter filled at all', () => caminhoDoCaso(molde, definicoes, mp, new Map()));
+  recusa('a query parameter named', () =>
+    caminhoDoCaso(molde, definicoes, {}, new Map([['sellerId', 'A'], ['sku', 'B'], ['marketplaceIds', 'C']])),
+  );
+  recusa('a name the operation lacks', () =>
+    caminhoDoCaso(molde, definicoes, mp, new Map([['sellerId', 'A'], ['sku', 'B'], ['outro', 'C']])),
+  );
+  recusa("overriding the case's own value", () =>
+    caminhoDoCaso(molde, definicoes, { sku: { value: 'X' } }, new Map([['sellerId', 'A'], ['sku', 'B']])),
+  );
+  recusa('a --parametro with no value', () => parametrosDoExemplo(['--parametro', 'sku=']));
+  recusa('a --parametro with no name', () => parametrosDoExemplo(['--parametro', '=B']));
+  recusa('a --parametro given twice', () => parametrosDoExemplo(['--parametro', 'sku=A', '--parametro', 'sku=B']));
+  igual(
+    'both filled',
+    caminhoDoCaso(molde, definicoes, mp, parametrosDoExemplo(['--parametro', 'sellerId=AFAKE', '--parametro', 'sku=a b'])),
+    '/listings/2021-08-01/items/AFAKE/a%20b?marketplaceIds=A2Q3Y263D00KWC',
+  );
+  igual(
+    "the case's own path value",
+    caminhoDoCaso(molde, definicoes, { sellerId: { value: 'S' }, sku: { value: 'K' } }, new Map()),
+    '/listings/2021-08-01/items/S/K',
+  );
+  console.log('autoteste: ok');
 }
 
 /** Notification schemas the sanitizer accepts, by their pseudo-line's type. */
@@ -580,13 +716,15 @@ try {
   else if (cmd === 'def' && a) await cmdDef(a, b);
   else if (cmd === 'sandbox' && a) await cmdSandbox(a, b);
   else if (cmd === 'notif' && a) await cmdNotif(a);
+  else if (cmd === 'esquema') await cmdEsquema(a, process.argv.slice(4));
+  else if (cmd === 'autoteste') cmdAutoteste();
   else if (cmd === 'refresh') rmSync(CACHE, { recursive: true, force: true });
   else {
-    console.error('usage: node amazon-doc.mjs models | op <operationId> [model] | def <Definition> [model] | sandbox <operationId> [model] | notif <SchemaName> | folhas [--saida <file>] | exemplo <operationId> <model> <n> --saida <abs> --nome <nome> | notif-exemplo <SchemaName> <n> --saida <abs> --nome <nome> | refresh');
+    console.error('usage: node amazon-doc.mjs models | op <operationId> [model] | def <Definition> [model] | sandbox <operationId> [model] | notif <SchemaName> | folhas [--saida <file>] | exemplo <operationId> <model> <n> --saida <abs> --nome <nome> [--parametro <nome>=<valor>]… | autoteste | notif-exemplo <SchemaName> <n> --saida <abs> --nome <nome> | esquema schemas/feeds/<nome>.json --saida <arquivo> | refresh');
     process.exitCode = 2;
   }
 } catch (err) {
-  if (err instanceof Error && /HTTP|not found|unknown model|^folhas:|^exemplo:|^notif-exemplo:|usage:|cannot spell/.test(err.message)) {
+  if (err instanceof Error && /HTTP|not found|unknown model|^folhas:|^exemplo:|^autoteste:|^notif-exemplo:|usage:|cannot spell/.test(err.message)) {
     console.error(err.message);
     process.exitCode = 1;
   } else {
