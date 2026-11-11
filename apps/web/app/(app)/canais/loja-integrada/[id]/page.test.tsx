@@ -132,6 +132,9 @@ vi.mock('@/lib/freight/client', () => ({
 vi.mock('@/app/(app)/canais/loja-integrada/_components/ContaLojaIntegradaPanel', () => ({
   ContaLojaIntegradaPanel: () => null,
 }));
+vi.mock('@/app/(app)/canais/loja-integrada/_components/ImportacoesDaContaLi', () => ({
+  ImportacoesDaContaLi: () => null,
+}));
 vi.mock('@/app/(app)/canais/_components/RecalcularPrecosCanalAction', () => ({
   RecalcularPrecosCanalAction: () => null,
 }));

@@ -27,6 +27,12 @@ export function lojaIntegradaClientFalso(
     removerCredencial: naoEsperado('removerCredencial'),
     grades: naoEsperado('grades'),
     grade: naoEsperado('grade'),
+    iniciarImportacao: naoEsperado('iniciarImportacao'),
+    importacoes: naoEsperado('importacoes'),
+    importacao: naoEsperado('importacao'),
+    cancelarImportacao: naoEsperado('cancelarImportacao'),
+    itensImportacao: naoEsperado('itensImportacao'),
+    revisaoImportacao: naoEsperado('revisaoImportacao'),
     rotearEtiqueta: naoEsperado('rotearEtiqueta'),
     conferirPagamento: naoEsperado('conferirPagamento'),
   };

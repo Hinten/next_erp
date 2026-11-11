@@ -32,6 +32,7 @@ import {
   desfechoFotosDoProdutoLiSchema,
   detalheProdutoLiSchema,
   ehPendenciaAcionavelLi,
+  entradaRespostaRevisaoFiscalLiSchema,
   etapaRevisaoFiscalLiSchema,
   evidenciaOpcaoLiSchema,
   faseImportacaoLiSchema,
@@ -50,6 +51,7 @@ import {
   progressoDaFamiliaLiSchema,
   respostaImportacaoLiSchema,
   respostaItensImportacaoLiSchema,
+  respostaRevisaoFiscalLiSchema,
   revisaoFiscalLiSchema,
   tarefaImportacaoLiSchema,
   tipoTarefaLiSchema,
@@ -871,5 +873,42 @@ describe('the route answers are NON-strict', () => {
         proximo: null,
       }).success,
     ).toBe(true);
+  });
+
+  describe('the tax-review answer', () => {
+    it('a motivo this build does not know still parses and is kept verbatim, while the STORED entry refuses it', () => {
+      const lido = respostaRevisaoFiscalLiSchema.parse({
+        entradas: [{ produtoId: 'p1', motivos: ['produto-criado', 'motivo-de-uma-versao-nova'] }],
+        proximo: null,
+        campoFuturo: 1,
+      });
+      expect(lido.entradas[0]?.motivos).toEqual(['produto-criado', 'motivo-de-uma-versao-nova']);
+      expect(lido).not.toHaveProperty('campoFuturo');
+      // The contrast: the job's own document schema stays closed over the motivos it knows.
+      expect(
+        revisaoFiscalLiSchema.safeParse({ produtoId: 'p1', motivos: ['motivo-de-uma-versao-nova'] })
+          .success,
+      ).toBe(false);
+    });
+
+    it('an entry carries the stored entry’s defaults; ⚠️ NEAR-MISS: a motivo that is not a string, or no `proximo`, is refused', () => {
+      expect(
+        entradaRespostaRevisaoFiscalLiSchema.parse({ produtoId: 'p1', campoFuturo: true }),
+      ).toEqual({ produtoId: 'p1', motivos: [], liId: null, desdeJobId: null, desdeMs: null });
+      expect(
+        entradaRespostaRevisaoFiscalLiSchema.safeParse({ produtoId: 'p1', motivos: [1] }).success,
+      ).toBe(false);
+      expect(respostaRevisaoFiscalLiSchema.safeParse({ entradas: [] }).success).toBe(false);
+      expect(respostaRevisaoFiscalLiSchema.parse({ entradas: [], proximo: null })).toEqual({
+        entradas: [],
+        proximo: null,
+      });
+    });
+
+    it('two parses never share the motivos default', () => {
+      const a = entradaRespostaRevisaoFiscalLiSchema.parse({ produtoId: 'p1' });
+      const b = entradaRespostaRevisaoFiscalLiSchema.parse({ produtoId: 'p2' });
+      expect(a.motivos).not.toBe(b.motivos);
+    });
   });
 });
