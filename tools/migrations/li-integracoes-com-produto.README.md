@@ -22,8 +22,8 @@ The Loja Integrada link trigger (`onProdutoLojaIntegradaLinkChanged`, in the
 from the day it is deployed. But a trigger fires only on a link WRITE, and a
 Firestore import fires no triggers for any channel (root `CLAUDE.md` rule 8).
 After the production data moves, nothing derives the array on arrival. This
-census is the only thing that does, for every produto carrying a Loja Integrada
-link.
+census is the only thing that does it for Loja Integrada contas, on every
+produto carrying a Loja Integrada link.
 
 ## What it reads
 
@@ -227,9 +227,9 @@ those channels' valves have gates of their own.
 ## Ordering
 
 - **After `functions:loja-integrada` is deployed** (the trigger is live): the
-  census converges the array once, and the trigger keeps it converged. Run it
-  first and every link write in between re-opens the drift. Always after the
-  import.
+  census converges the array once, and the trigger keeps it converged. If the
+  census runs before that deploy, every link write in between re-opens a gap.
+  Always after the import.
 - **After the Mercado Livre reconcile (`migrate:ml-integracoes-com-produto`) and
   the Shopee census (#1910), when they have already run. Never wait for them.**
   The Loja Integrada gate depends on neither. If they have not run, run this
@@ -274,7 +274,8 @@ there proves nothing about production; the rehearsal proves the mechanics.
 1. If staging holds no Loja Integrada link, write one test link by hand (the
    `sem-vinculos-que-contam` refusal stops a run that judges none).
 2. Remove that test produto's Loja Integrada conta from its array by hand.
-3. Dry run (`ausente=1`), `--apply`, dry run (`0 0`).
+3. Dry run (`ausente` at least 1, the test produto among the rows), `--apply`,
+   dry run (`0 0`).
 4. **The read-4 measurement:** explain the three per-produto reads for one
    produto that holds links, through the SDK's pipeline translation with
    `analyze` (Enterprise refuses the classic `explain()`; `scripts/check-key-walks.mjs`
