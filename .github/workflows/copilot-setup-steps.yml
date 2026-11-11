@@ -58,10 +58,8 @@ jobs:
       # almost every run; the shared namespace is refreshed by every merge to the
       # default branch, and default-branch caches are readable from any branch.
       # The Next.js cache below stays on a `copilot-` prefix — its build genuinely
-      # differs from what the CI lanes store. The Playwright cache no longer does:
-      # it holds the same browser build the e2e lanes download, so it shares their
-      # `playwright-` namespace and is keyed on the Playwright version instead of
-      # the lockfile. See e2e-emulator.yml for why that key, and not this one.
+      # differs from what the CI lanes store. The Playwright cache is keyed on the
+      # Playwright version instead of the lockfile; its own step says why.
       - name: Cache pnpm store
         uses: actions/cache@v5
         with:
@@ -84,9 +82,17 @@ jobs:
       - name: Install firebase-tools
         run: npm i -g firebase-tools@15.25.0
 
-      # This lane does not use the Playwright container image, so it fetches the
-      # browser and its apt system libraries itself — the same shape as
-      # e2e-emulator.yml, and carrying the same hazard.
+      # This job CANNOT run in the Playwright container that every e2e lane uses.
+      # Copilot honours six keys of this job (steps, permissions, runs-on,
+      # services, snapshot, timeout-minutes) and ignores the rest, `container:`
+      # included. The agent then works in this runner's environment, so the browser
+      # and its system libraries have to land on the host. So this job fetches both
+      # itself, and it is the last one in the repo that still depends on apt.
+      # e2e-emulator.yml did the same until 2026-11-11, when an hour-long Ubuntu
+      # archive DNS outage cancelled its required gate. That outage is survivable
+      # here because this check is required nowhere, and a failed setup step only
+      # makes Copilot skip the remaining steps and start work in whatever state
+      # the environment is in.
       - name: Resolve the Playwright version
         id: playwright
         run: |
@@ -100,6 +106,18 @@ jobs:
           fi
           echo "version=$v" >> "$GITHUB_OUTPUT"
 
+      # Keyed on the Playwright version, NOT on hashFiles('pnpm-lock.yaml') like the
+      # caches around it. The browser build depends on that version alone, while
+      # the lockfile changes on most PRs, so a lockfile key would start cold on
+      # nearly every run. No `restore-keys` on purpose: a prefix hit would restore
+      # another version's browsers, which `playwright install` would download again
+      # anyway while the post-step saved both sets. That install revalidates
+      # whatever it finds, so a partial or stale restore heals itself.
+      #
+      # ⚠️ It pays less than it looks. Only DEFAULT-BRANCH cache entries are
+      # readable from every branch, and this workflow's `push:` is `paths:`-filtered
+      # to this file, so a key reaches `main`'s scope only when a PR touching this
+      # file merges.
       - name: Cache Playwright browsers
         uses: actions/cache@v5
         with:
@@ -107,11 +125,30 @@ jobs:
           key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}
 
       # ⚠️ Playwright's system-deps install shells out to `apt-get update`, which
-      # exits 100 when ANY configured source fails — including the two
-      # packages.microsoft.com repos on the runner image, which answered 403 on
-      # 2026-08-27 and reddened the emulator gate. Every package it installs comes
-      # from the Ubuntu archive, so drop the rest. Full account, and the two
-      # controls this check carries, in e2e-emulator.yml.
+      # exits 100 when ANY configured source fails, including a source holding
+      # nothing it will install. The runner image ships two packages.microsoft.com
+      # repos (azure-cli, prod). On 2026-08-27 both answered 403 and reddened the
+      # emulator gate (run 33069232271, attempt 1), while every package Playwright
+      # actually installs (9 font packages) sat on azure.archive.ubuntu.com and
+      # fetched fine. A concurrent run on another runner passed that same minute,
+      # so it is a per-edge-node flake that recurs. Every package it installs comes
+      # from the Ubuntu archive, so drop the rest.
+      #
+      # Two controls, so the trim cannot go wrong silently in either direction: the
+      # `continue` keeps any file naming an Ubuntu host (so a future deb822 image
+      # that moves the archive into sources.list.d survives this), and the
+      # post-check exits 1 if the trim left no Ubuntu source at all.
+      #
+      # ⚠️ Both greps anchor to a NON-COMMENT line (`^[^#]*`). Matching anywhere in
+      # the file would let a third-party source survive on nothing more than a
+      # `# see https://help.ubuntu.com/…` line in its own header (some vendor
+      # packages ship exactly that), and the trim would silently stop covering the
+      # repo it exists to drop. deb822 is unaffected:
+      # `URIs: http://azure.archive.ubuntu.com/ubuntu/` carries no `#`.
+      #
+      # ⚠️ The trim cannot help when the Ubuntu archive ITSELF is unreachable, which
+      # is what took the emulator lane down on 2026-11-11 and moved it into the
+      # container.
       #
       # ⚠️ Deleting this step fails nothing until the next 403, so
       # `ci-lane-gates.test.js` asserts it precedes the apt step below.
