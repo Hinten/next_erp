@@ -1,16 +1,28 @@
 import type { ComponentesKit } from '@delfrance/schemas';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   type DocEstoqueLi,
   type ProdutoEstoqueLi,
   alvoEstoqueLi,
+  caminhoDeEstoqueLi,
   caminhoEstoqueLi,
   corpoEstoqueLi,
   membroEstoqueLi,
   opcoesEstoqueLi,
   quantidadeEstoqueLi,
+  quantidadePropriaLi,
 } from './quantidadeEstoqueLi';
+
+// Per file: nothing here may reach the global `fetch` (the module is pure; no client exists).
+beforeEach(() => {
+  vi.stubGlobal('fetch', () => {
+    throw new Error('quantidadeEstoqueLi.test: o fetch global não pode ser chamado');
+  });
+});
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 /** A stock record at the conta's depósito, owned by `produtoId` (the PATH says so). */
 function registro(
@@ -168,6 +180,40 @@ describe('membroEstoqueLi: refuses what only a bug can produce', () => {
     ).toThrow(RangeError);
   });
 
+  it('⚠️ two DIFFERENT records of one component: the core would let the last one win', () => {
+    // The core keys a component's availability by its owner, so handed both it keeps whichever
+    // comes last: 9 in this order, 0 in the other. Resolving them is the caller's job.
+    const comps = [
+      registro('blank', 'est-blank-dep1', { quantidade: 0 }),
+      registro('blank', 'auto-1', { quantidade: 9 }),
+    ];
+    for (const ordem of [comps, [...comps].reverse()]) {
+      expect(() =>
+        membroEstoqueLi({
+          produtoId: 'p1',
+          produto: { ehKit: true, componentesKit: componentes({ blank: 1 }) },
+          estoque: null,
+          componentes: ordem,
+        }),
+      ).toThrow(RangeError);
+    }
+  });
+
+  it('the same record read twice is one record (the first read kept)', () => {
+    const membro = membroEstoqueLi({
+      produtoId: 'p1',
+      produto: {},
+      estoque: null,
+      componentes: [
+        registro('blank', 'e-blank', { quantidade: 2 }),
+        registro('blank', 'e-blank', { quantidade: 5 }),
+      ],
+    });
+    expect(membro.componentEstoques).toEqual([
+      { quantidade: 2, estoqueDocId: 'e-blank', parentId: 'blank' },
+    ]);
+  });
+
   it('the member carries the record ids and the path owners', () => {
     const membro = membroEstoqueLi({
       produtoId: 'p1',
@@ -200,6 +246,38 @@ describe('caminhoEstoqueLi', () => {
     '',
   ])('refuses %j', (caminho) => {
     expect(caminhoEstoqueLi(caminho)).toBeNull();
+  });
+});
+
+describe('caminhoDeEstoqueLi: the inverse', () => {
+  it('builds the path the parser reads back', () => {
+    const caminho = caminhoDeEstoqueLi('p1', 'est-p1-dep1');
+    expect(caminho).toBe('produtos/p1/estoques/est-p1-dep1');
+    expect(caminhoEstoqueLi(caminho ?? '')).toEqual({ produtoId: 'p1', estoqueId: 'est-p1-dep1' });
+  });
+
+  it.each([
+    ['', 'e1'],
+    ['p1', ''],
+    ['p1/x', 'e1'],
+    ['p1', 'documents/e1'],
+  ])('refuses (%j, %j): not one path segment each', (produtoId, estoqueId) => {
+    expect(caminhoDeEstoqueLi(produtoId, estoqueId)).toBeNull();
+  });
+});
+
+describe('quantidadePropriaLi: a non-kit’s published quantity, through the core', () => {
+  it('floors and clamps at 0, with no ceiling', () => {
+    expect(quantidadePropriaLi(7.9)).toBe(7);
+    expect(quantidadePropriaLi(-3)).toBe(0);
+    expect(quantidadePropriaLi(0)).toBe(0);
+    expect(quantidadePropriaLi(1_000_000)).toBe(1_000_000);
+  });
+
+  it('agrees with the full member path for a record of the same available quantity', () => {
+    for (const quantidade of [-3, 0, 1.2, 1.8, 5]) {
+      expect(quantidadePropriaLi(quantidade)).toBe(S({ estoque: { quantidade } }));
+    }
   });
 });
 

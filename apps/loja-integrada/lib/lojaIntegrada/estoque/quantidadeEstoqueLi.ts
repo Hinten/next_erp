@@ -46,8 +46,10 @@ import type { ComponentesKit } from '@delfrance/schemas';
 import {
   type MembroDaFamilia,
   type OpcoesDeQuantidade,
+  type QuantidadeParaEnvioArgs,
   type RawEstoqueRow,
   quantidadeDoMembroCore,
+  quantidadeParaEnvioCore,
 } from '@delfrance/data/admin/estoque';
 
 /**
@@ -98,6 +100,21 @@ export function caminhoEstoqueLi(caminho: string): CaminhoEstoqueLi | null {
   return { produtoId, estoqueId };
 }
 
+/** A document id that can sit in one path segment: not empty, no `/`. */
+export function segmentoDeCaminhoLi(id: string): boolean {
+  return id !== '' && !id.includes('/');
+}
+
+/**
+ * The inverse of {@link caminhoEstoqueLi}: the path of record `estoqueId` of produto `produtoId`,
+ * or `null` when either is not one path segment. A record id is unique only under its owner, so a
+ * read is always named by the pair, never by the record id alone.
+ */
+export function caminhoDeEstoqueLi(produtoId: string, estoqueId: string): string | null {
+  if (!segmentoDeCaminhoLi(produtoId) || !segmentoDeCaminhoLi(estoqueId)) return null;
+  return `produtos/${produtoId}/estoques/${estoqueId}`;
+}
+
 /** {@link caminhoEstoqueLi}, for a path that came from a read: anything else is a bug. */
 function caminhoLido(doc: DocEstoqueLi): CaminhoEstoqueLi {
   const partes = caminhoEstoqueLi(doc.caminho);
@@ -112,16 +129,20 @@ function caminhoLido(doc: DocEstoqueLi): CaminhoEstoqueLi {
  *
  *  - `estoque`: the produto's OWN record there (chosen by the caller, a canonical record winning
  *    over a legacy one), or `null` when it has none — the core then reads 0;
- *  - `componentes`: one record per kit component at the same depósito; each row's `parentId` is
- *    the owner in its PATH (module header). A component with no record is simply absent: the
- *    core counts it 0 (#238), the safe direction;
+ *  - `componentes`: AT MOST one record per kit component at the same depósito, already resolved
+ *    (`estoqueNoDepositoLi` in `planoEstoqueLi.ts`: the canonical record wins); each row's
+ *    `parentId` is the owner in its PATH (module header). A component with no record is simply
+ *    absent: the core counts it 0 (#238), the safe direction;
  *  - the kit flags are read exactly (`=== true`): a stored `'true'` or `1` is not a kit.
  *
  * `publicado` and `timestampMs` are the member type's fields for another channel's sweep; the
  * quantity never reads them.
  *
- * Throws `RangeError` when a path does not parse, or the own record belongs to another produto:
- * both come from a read, so either is a bug, never data.
+ * Throws `RangeError` when a path does not parse, the own record belongs to another produto, or
+ * two DIFFERENT records of one component arrive (the same path twice is one record, the first
+ * read kept): the core keys a component's availability by its owner, so the last of two records
+ * would silently win and S would depend on the order of a query's rows. All three come from the
+ * caller, so each is a bug, never data.
  */
 export function membroEstoqueLi(args: {
   readonly produtoId: string;
@@ -137,10 +158,22 @@ export function membroEstoqueLi(args: {
     }
     estoque = { ...args.estoque.dados, estoqueDocId: proprio.estoqueId };
   }
-  const componentEstoques = args.componentes.map((doc): RawEstoqueRow => {
+  const registroDoDono = new Map<string, string>();
+  const componentEstoques: RawEstoqueRow[] = [];
+  for (const doc of args.componentes) {
     const dono = caminhoLido(doc);
-    return { ...doc.dados, estoqueDocId: dono.estoqueId, parentId: dono.produtoId };
-  });
+    const visto = registroDoDono.get(dono.produtoId);
+    if (visto === dono.estoqueId) continue;
+    if (visto !== undefined) {
+      throw new RangeError('membroEstoqueLi: dois registros de um componente no depósito');
+    }
+    registroDoDono.set(dono.produtoId, dono.estoqueId);
+    componentEstoques.push({
+      ...doc.dados,
+      estoqueDocId: dono.estoqueId,
+      parentId: dono.produtoId,
+    });
+  }
   return {
     produtoId: args.produtoId,
     ehKit: args.produto.ehKit === true,
@@ -166,6 +199,23 @@ export function membroEstoqueLi(args: {
  */
 export function quantidadeEstoqueLi(membro: MembroDaFamilia): number {
   return quantidadeDoMembroCore(membro, opcoesEstoqueLi) ?? 0;
+}
+
+/**
+ * What a NON-KIT publishes for one available quantity, UNCAPPED: the shared core's floor and
+ * lower clamp under {@link opcoesEstoqueLi}, never a second spelling of them. The trigger's direct
+ * gate compares it before and after a write (`planoEstoqueLi.ts`), applying the cap itself.
+ * `disponivel` is finite (the caller fails open on anything else).
+ */
+export function quantidadePropriaLi(disponivel: number): number {
+  const naoKit: QuantidadeParaEnvioArgs = {
+    ehKit: false,
+    ehKitVirtual: false,
+    componentesKit: null,
+    ownDisponivel: disponivel,
+    disponivelByProdutoId: {},
+  };
+  return quantidadeParaEnvioCore(naoKit, opcoesEstoqueLi) ?? 0;
 }
 
 /** A non-negative safe integer: what a quantity on this wire is. */

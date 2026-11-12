@@ -12,10 +12,11 @@
  *  2. **The trigger's relevance** ({@link relevanciaEventoEstoqueLi}), from the event payload
  *     alone: whether a stock-record write can move ANY store quantity (then the trigger pays its
  *     reads), and whether it can move the produto's OWN one (then it enqueues the direct task).
- *  3. **The run's plan** ({@link planoEstoqueLi}): which of the nine outcomes a child produto of a
- *     conta is in — skip reasons first, S last.
+ *  3. **The run's plan** ({@link planoEstoqueLi}): which outcome a child produto of a conta is
+ *     in ({@link PlanoEstoqueLi}) — skip reasons first, S last.
  *  4. **Kits** with at most 30 store kits per component ({@link kitsSinalizadosLi}): the
- *     tie-inclusive, fail-open filter, and the zero-cost skip ({@link irmaosParaLerLi}).
+ *     tie-inclusive, fail-open filter, and the zero-cost skip ({@link irmaosParaLerLi}). A
+ *     sibling is read by its PATH — a record id is unique only under its owner.
  *  5. **Kits** beyond 30 ({@link disparaKitsZeradosLi}, {@link cruzaParaZeroLi}): only a kit
  *     going from positive to 0 is sent at once; everything else waits for the nightly reconcile.
  *  6. **The reconcile's diff** of one store row against the snapshot ({@link diffLinhaEstoqueLi})
@@ -68,16 +69,20 @@ import {
   makeEstoqueUid,
   vinculoLiConta,
 } from '@delfrance/schemas';
-import { kitNaoVerificavel } from '@delfrance/data/admin/estoque';
+import { componentesNaoResolvidos, kitNaoVerificavel } from '@delfrance/data/admin/estoque';
 
 import {
   type CorpoEstoqueLi,
   type DocEstoqueLi,
   type ProdutoEstoqueLi,
+  alvoEstoqueLi,
+  caminhoDeEstoqueLi,
   caminhoEstoqueLi,
   corpoEstoqueLi,
   membroEstoqueLi,
   quantidadeEstoqueLi,
+  quantidadePropriaLi,
+  segmentoDeCaminhoLi,
 } from './quantidadeEstoqueLi';
 
 /* -------------------------------------------------------------------------- */
@@ -157,12 +162,16 @@ export type DecisaoEnvioEstoqueLi =
  * row whose reservation cannot be read is refused, and anything else gets the four-field body.
  *
  * Throws `RangeError` on an S that is not a non-negative safe integer or a bad cap (both ours).
+ * S is checked BEFORE the cap applies: a cap must never turn a bad S into a sendable one.
  */
 export function decidirEnvioEstoqueLi(args: {
   readonly S: number;
   readonly cap: number;
   readonly linha: EstoqueNaLojaLi;
 }): DecisaoEnvioEstoqueLi {
+  if (!Number.isSafeInteger(args.S) || args.S < 0) {
+    throw new RangeError('decidirEnvioEstoqueLi: S inválido');
+  }
   const S = Math.min(args.S, tetoValido(args.cap));
   const corpo = corpoEstoqueLi(S, args.linha.quantidade_reservada);
   if (corpo === null) return { tipo: 'recusa', motivo: 'reserva-ilegivel' };
@@ -191,7 +200,8 @@ const IRRELEVANTE: RelevanciaEventoEstoqueLi = { relevante: false, direta: false
 const DIRETA: RelevanciaEventoEstoqueLi = { relevante: true, direta: true };
 
 /**
- * A counter as the schema defaults it: absent or `null` ⇒ 0; a finite number ⇒ itself;
+ * A counter as the shared core reads it: absent or `null` ⇒ 0 (the schema defaults an absent
+ * one; the core's `finiteNumber(x) ?? 0` reads `null` as 0 too); a finite number ⇒ itself;
  * anything else ⇒ `NaN` (unreadable).
  */
 function contador(v: unknown): number {
@@ -212,9 +222,9 @@ function mesmoDeposito(a: unknown, b: unknown): boolean {
   return a === b && (a === null || typeof a !== 'object');
 }
 
-/** What a produto's own available quantity publishes: floored, clamped to 0..cap. */
+/** What a produto's own available quantity publishes: the core's floor and clamp, then the cap. */
 function publicado(disponivel: number, cap: number): number {
-  return Math.min(Math.max(Math.floor(disponivel), 0), cap);
+  return Math.min(quantidadePropriaLi(disponivel), cap);
 }
 
 /**
@@ -267,13 +277,21 @@ export type EstoqueNoDepositoLi =
  * (`makeEstoqueUid`) among several, since a legacy auto-id record may sit beside it; else
  * `ambiguo`. The same path read twice counts once.
  *
- * Throws `RangeError` on a path that does not parse or a record of another produto (a bug).
+ * `depositoId` is the depósito's BARE document id, never its ref (`documents/depositos/<id>` or
+ * `depositos/<id>`): a ref would build a canonical id no document can have, and every pair of a
+ * canonical and a legacy record would read `ambiguo` — the produto held for good.
+ *
+ * Throws `RangeError` on a path that does not parse, a record of another produto, or a
+ * `produtoId` / `depositoId` that is not one path segment (all three are bugs).
  */
 export function estoqueNoDepositoLi(args: {
   readonly produtoId: string;
   readonly depositoId: string;
   readonly registros: readonly DocEstoqueLi[];
 }): EstoqueNoDepositoLi {
+  if (!segmentoDeCaminhoLi(args.produtoId) || !segmentoDeCaminhoLi(args.depositoId)) {
+    throw new RangeError('estoqueNoDepositoLi: produto e depósito são ids, nunca refs');
+  }
   const porId = new Map<string, DocEstoqueLi>();
   for (const registro of args.registros) {
     const partes = caminhoEstoqueLi(registro.caminho);
@@ -321,12 +339,18 @@ export function envioDeEstoqueDesligadoLi(
 export interface EntradaPlanoEstoqueLi {
   readonly contaId: string;
   readonly produtoId: string;
+  /** The conta's depósito, as a BARE document id ({@link estoqueNoDepositoLi}). */
+  readonly depositoId: string;
   readonly produto: ProdutoEstoqueLi;
   /** The produto's OWN `produtolojaintegrada` documents, raw, every conta's. */
   readonly links: readonly unknown[];
   /** Its own record at the conta's depósito ({@link estoqueNoDepositoLi}). */
   readonly estoque: EstoqueNoDepositoLi;
-  /** One record per kit component at the same depósito (none for a non-kit). */
+  /**
+   * Every record of a kit component at the same depósito, as read (none for a non-kit). A
+   * component may come back with more than one (a canonical record beside a legacy one): the plan
+   * resolves each component as {@link estoqueNoDepositoLi} resolves the produto's own.
+   */
   readonly componentes: readonly DocEstoqueLi[];
   /** The task came from that record's DELETE: proof a record existed. */
   readonly apagado: boolean;
@@ -347,7 +371,7 @@ export type PlanoEstoqueLi =
   | { readonly tipo: 'pai' }
   /** A root link with no grades (a simple store product): unsupported by this step. */
   | { readonly tipo: 'nao-suportado' }
-  /** Two store products of the conta linked to this produto. */
+  /** Two store products of the conta linked to this produto, roots and children alike. */
   | { readonly tipo: 'vinculo-ambiguo' }
   /** This store product is also linked from another ERP produto: neither is sent. */
   | { readonly tipo: 'vinculo-duplicado'; readonly idLi: string }
@@ -357,7 +381,10 @@ export type PlanoEstoqueLi =
   | { readonly tipo: 'consultar-estoques'; readonly idLi: string }
   /** The produto never had an ERP stock record anywhere: the store keeps its own number. */
   | { readonly tipo: 'retido'; readonly idLi: string }
-  /** Two non-canonical records at the depósito ({@link estoqueNoDepositoLi}). */
+  /**
+   * Two non-canonical records at the depósito ({@link estoqueNoDepositoLi}): the produto's own
+   * when it feeds S, or a component that constrains the kit.
+   */
   | { readonly tipo: 'estoque-ambiguo'; readonly idLi: string }
   /** Send S, uncapped (the caller caps); `kitNaoVerificavel`: a kit none of whose constraining
    * components resolved, so S is the safe 0 and the caller logs a warning. */
@@ -374,15 +401,55 @@ function ehLinkPai(link: Readonly<Record<string, unknown>>): boolean {
   return Array.isArray(grades) && grades.length > 0;
 }
 
+/** The kit components' records at the depósito, each component resolved to at most one. */
+interface ComponentesNoDepositoLi {
+  /** One record per component that has exactly one, or a canonical one among several. */
+  readonly registros: readonly DocEstoqueLi[];
+  /** The components with two or more records and none of them canonical. */
+  readonly ambiguos: ReadonlySet<string>;
+}
+
+/**
+ * Groups the component records by the owner in their PATH (#932) and resolves each group as
+ * {@link estoqueNoDepositoLi} resolves the produto's own: the shared core keys a component by its
+ * owner, so two records of one component would otherwise let the last one in the query's row
+ * order decide S.
+ */
+function componentesNoDepositoLi(
+  depositoId: string,
+  registros: readonly DocEstoqueLi[],
+): ComponentesNoDepositoLi {
+  if (!segmentoDeCaminhoLi(depositoId)) {
+    throw new RangeError('planoEstoqueLi: o depósito é um id, nunca uma ref');
+  }
+  const porDono = new Map<string, DocEstoqueLi[]>();
+  for (const registro of registros) {
+    const partes = caminhoEstoqueLi(registro.caminho);
+    if (partes === null) throw new RangeError('planoEstoqueLi: caminho de estoque inválido');
+    const grupo = porDono.get(partes.produtoId);
+    if (grupo === undefined) porDono.set(partes.produtoId, [registro]);
+    else grupo.push(registro);
+  }
+  const resolvidos: DocEstoqueLi[] = [];
+  const ambiguos = new Set<string>();
+  for (const [dono, grupo] of porDono) {
+    const resolvido = estoqueNoDepositoLi({ produtoId: dono, depositoId, registros: grupo });
+    if (resolvido.tipo === 'um') resolvidos.push(resolvido.registro);
+    else if (resolvido.tipo === 'ambiguo') ambiguos.add(dono);
+  }
+  return { registros: resolvidos, ambiguos };
+}
+
 /**
  * The run's plan for one CHILD produto of one conta, in this order, the first match winning:
  *
  *  1. no counting link of the conta (`contaDoLinkLi` + `vinculoLiConta`, the anchor's readers)
  *     ⇒ `sem-vinculo`;
- *  2. no counting CHILD link (`paiProdutoIntegradaId` set): only parent roots ⇒ `pai`, any root
- *     without grades ⇒ `nao-suportado`;
- *  3. child links naming two store ids ⇒ `vinculo-ambiguo` (two documents of ONE id are one
- *     store product);
+ *  2. the conta's counting links — roots AND children — naming two store ids ⇒ `vinculo-ambiguo`
+ *     (two documents of ONE id are one store product): one ERP produto holds one store product
+ *     per conta, so a second one, whatever its kind, is a mapping nobody can send by;
+ *  3. no counting CHILD link (`paiProdutoIntegradaId` set; absent or `null` is a root): only
+ *     parent roots ⇒ `pai`, any root without grades ⇒ `nao-suportado`;
  *  4. `duplicado` ⇒ `vinculo-duplicado`;
  *  5. the parity skip ⇒ `paridade`;
  *  6. when the produto's own record feeds S (not a constrained kit, {@link kitRestritoLi}): no
@@ -390,14 +457,18 @@ function ehLinkPai(link: Readonly<Record<string, unknown>>): boolean {
  *     never-had-stock hold, read literally: a record elsewhere means the depósito's real 0 is
  *     pushed); that last fact unread ⇒ `consultar-estoques`; two non-canonical records ⇒
  *     `estoque-ambiguo`;
- *  7. otherwise `enviar` with S ({@link quantidadeEstoqueLi}).
+ *  7. a component that constrains the kit with two non-canonical records at the depósito ⇒
+ *     `estoque-ambiguo` too (which one bounds the kit is not ours to guess either);
+ *  8. otherwise `enviar` with S ({@link quantidadeEstoqueLi}).
  *
- * The store id is the child link's `id` through `inteiroPositivoCanonicoLi`, so a number and its
+ * The store id is the link's `id` through `inteiroPositivoCanonicoLi`, so a number and its
  * canonical text are one id (`3` and `'3'` ⇒ `'3'`); text the reader refuses (`'03'`) never
  * counted in the first place.
  *
  * ⚠️ The send run classifies with `duplicado: false` and pays the duplicate probe only when the
  * answer is `enviar`, then classifies again with what it found.
+ *
+ * Throws `RangeError` where {@link estoqueNoDepositoLi} and {@link membroEstoqueLi} do (bugs).
  */
 export function planoEstoqueLi(entrada: EntradaPlanoEstoqueLi): PlanoEstoqueLi {
   const daConta = entrada.links
@@ -405,19 +476,19 @@ export function planoEstoqueLi(entrada: EntradaPlanoEstoqueLi): PlanoEstoqueLi {
     .filter((link) => contaDoLinkLi(link) === entrada.contaId && vinculoLiConta(link));
   if (daConta.length === 0) return { tipo: 'sem-vinculo' };
 
-  const filhos = daConta.filter((link) => proprio(link, 'paiProdutoIntegradaId') != null);
-  if (filhos.length === 0) {
-    return daConta.every(ehLinkPai) ? { tipo: 'pai' } : { tipo: 'nao-suportado' };
-  }
   const ids = new Set<string>();
-  for (const link of filhos) {
+  for (const link of daConta) {
     const id = inteiroPositivoCanonicoLi(proprio(link, 'id'));
     if (id !== null) ids.add(id);
   }
+  if (ids.size > 1) return { tipo: 'vinculo-ambiguo' };
   const [idLi] = ids;
   // Unreachable: `vinculoLiConta` counts a link only when the same reader reads its id.
   if (idLi === undefined) return { tipo: 'sem-vinculo' };
-  if (ids.size > 1) return { tipo: 'vinculo-ambiguo' };
+
+  if (!daConta.some((link) => proprio(link, 'paiProdutoIntegradaId') != null)) {
+    return daConta.every(ehLinkPai) ? { tipo: 'pai' } : { tipo: 'nao-suportado' };
+  }
 
   if (entrada.duplicado) return { tipo: 'vinculo-duplicado', idLi };
   if (envioDeEstoqueDesligadoLi(entrada.produto.statusProdutosMarketplace, entrada.contaId, idLi)) {
@@ -433,12 +504,19 @@ export function planoEstoqueLi(entrada: EntradaPlanoEstoqueLi): PlanoEstoqueLi {
     return { tipo: 'estoque-ambiguo', idLi };
   }
 
+  const componentes = componentesNoDepositoLi(entrada.depositoId, entrada.componentes);
   const membro = membroEstoqueLi({
     produtoId: entrada.produtoId,
     produto: entrada.produto,
     estoque: entrada.estoque.tipo === 'um' ? entrada.estoque.registro : null,
-    componentes: entrada.componentes,
+    componentes: componentes.registros,
   });
+  // The core's own list of the constraining components the member could not resolve: an
+  // ambiguous one is among them exactly when it bounds the kit (never for a non-kit, an
+  // unconstrained kit, or a component with `limitarEstoque: false`).
+  if (componentesNaoResolvidos(membro).some((c) => componentes.ambiguos.has(c))) {
+    return { tipo: 'estoque-ambiguo', idLi };
+  }
   return {
     tipo: 'enviar',
     idLi,
@@ -466,42 +544,93 @@ export interface KitDoMapaLi {
 /** The header fields the eager filter reads. */
 export type CabecalhoKitsLi = Pick<KitsComponenteEstoqueLi, 'qMax' | 'comps' | 'kits'>;
 
+/** The inline kits of a header with at most 30; a sharded one (`kits: null`) is refused. */
+function kitsEmLinha(
+  cabecalho: CabecalhoKitsLi,
+  quem: string,
+): NonNullable<CabecalhoKitsLi['kits']> {
+  if (cabecalho.kits === null) {
+    throw new RangeError(`${quem}: os kits deste componente estão em fatias`);
+  }
+  return cabecalho.kits;
+}
+
 /**
- * The zero-cost skip: even the kit that needs the most of this component (`qMax`) keeps a
- * quotient above the cap on both sides, so no kit's published quantity can move and no sibling
- * needs reading. Never skips on an unreadable side.
+ * The divisor of the zero-cost skip: this component's largest quantity in any inline kit, never
+ * below the header's `qMax`. The header's number is a stored denorm, and the kits it summarises
+ * are right here (at most 30), so a writer that stored a smaller `qMax` can never make the skip
+ * hide a kit. `null` — never skip — when a kit does not list the component with a readable
+ * quantity (that kit flags anyway) or no positive bound exists at all.
+ */
+function qMaxDoComponente(
+  cabecalho: CabecalhoKitsLi,
+  kits: NonNullable<CabecalhoKitsLi['kits']>,
+  componenteId: string,
+): number | null {
+  let qMax = quantidadeDeKit(cabecalho.qMax) ? cabecalho.qMax : 0;
+  for (const kit of Object.values(kits)) {
+    const q = proprio(kit.q, componenteId);
+    if (!quantidadeDeKit(q)) return null;
+    qMax = Math.max(qMax, q);
+  }
+  return qMax > 0 ? qMax : null;
+}
+
+/**
+ * The zero-cost skip: even the kit that needs the most of this component keeps a quotient above
+ * the cap on both sides, so no kit's published quantity can move and no sibling needs reading.
+ * Never skips on an unreadable side or without a bound ({@link qMaxDoComponente}).
  */
 function dispensaIrmaos(
   antes: DisponivelDoEventoLi,
   depois: DisponivelDoEventoLi,
-  qMax: number,
+  qMax: number | null,
   cap: number,
 ): boolean {
   const menor = Math.min(antes ?? 0, depois ?? 0);
-  if (!Number.isFinite(menor) || !quantidadeDeKit(qMax)) return false;
+  if (!Number.isFinite(menor) || qMax === null) return false;
   return Math.floor(menor / qMax) > cap;
 }
 
 /**
- * The sibling stock records the eager filter must read for an event of `componenteId`: every
- * other component's record id in the header's `comps`, deduplicated, sorted — or NONE when the
- * zero-cost skip applies (⌊min(before, after) / qMax⌋ above the cap). A sibling with no record id
- * is not read: it flags its kits as unknown.
+ * The PATH of a component's record in the header's `comps` (`produtos/{c}/estoques/{id}`), or
+ * `undefined` when it has none there or the id is not one path segment. A record id is unique
+ * only under its owner: two components whose records share an id are two documents.
+ */
+function caminhoDoIrmao(comps: CabecalhoKitsLi['comps'], componente: string): string | undefined {
+  const estoqueId = proprio(comps, componente);
+  if (typeof estoqueId !== 'string') return undefined;
+  return caminhoDeEstoqueLi(componente, estoqueId) ?? undefined;
+}
+
+/**
+ * The sibling stock records the eager filter must read for an event of `componenteId`: the PATH
+ * of every other component's record in the header's `comps`, sorted — or NONE when the zero-cost
+ * skip applies (⌊min(before, after) / qMax⌋ above the cap). A sibling with no record id is not
+ * read: it flags its kits as unknown. Each path is one document read, keyed by the same path in
+ * {@link kitsSinalizadosLi}'s `leituras`.
+ *
+ * Throws `RangeError` for a header whose kits live in shards (`kits: null`), as
+ * {@link kitsSinalizadosLi} does.
  */
 export function irmaosParaLerLi(args: {
-  readonly cabecalho: Pick<CabecalhoKitsLi, 'qMax' | 'comps'>;
+  readonly cabecalho: CabecalhoKitsLi;
   readonly componenteId: string;
   readonly antes: DisponivelDoEventoLi;
   readonly depois: DisponivelDoEventoLi;
   readonly cap: number;
 }): string[] {
   const cap = tetoValido(args.cap);
-  if (dispensaIrmaos(args.antes, args.depois, args.cabecalho.qMax, cap)) return [];
-  const ids = new Set<string>();
-  for (const [componente, estoqueId] of Object.entries(args.cabecalho.comps)) {
-    if (componente !== args.componenteId && typeof estoqueId === 'string') ids.add(estoqueId);
+  const kits = kitsEmLinha(args.cabecalho, 'irmaosParaLerLi');
+  const qMax = qMaxDoComponente(args.cabecalho, kits, args.componenteId);
+  if (dispensaIrmaos(args.antes, args.depois, qMax, cap)) return [];
+  const caminhos: string[] = [];
+  for (const componente of Object.keys(args.cabecalho.comps)) {
+    if (componente === args.componenteId) continue;
+    const caminho = caminhoDoIrmao(args.cabecalho.comps, componente);
+    if (caminho !== undefined) caminhos.push(caminho);
   }
-  return [...ids].sort();
+  return caminhos.sort();
 }
 
 /**
@@ -542,8 +671,8 @@ export function kitSinalizadoLi(args: {
 
 /**
  * The eager fan-out of one component's header (kits inline, F ≤ 30): the kit produto ids to
- * enqueue, sorted. `leituras` maps a sibling's stock record id (from {@link irmaosParaLerLi}) to
- * its available quantity NOW at the conta's depósito; a record not found, at another depósito or
+ * enqueue, sorted. `leituras` maps a sibling record's PATH (from {@link irmaosParaLerLi}) to its
+ * available quantity NOW at the conta's depósito; a record not found, at another depósito or
  * unreadable is simply absent, and its kits flag. Nothing when the zero-cost skip applies.
  *
  * Throws `RangeError` for a header whose kits live in shards (`kits: null`): that component takes
@@ -558,14 +687,12 @@ export function kitsSinalizadosLi(args: {
   readonly leituras: ReadonlyMap<string, number>;
 }): string[] {
   const cap = tetoValido(args.cap);
-  const { kits, comps, qMax } = args.cabecalho;
-  if (kits === null) {
-    throw new RangeError('kitsSinalizadosLi: os kits deste componente estão em fatias');
-  }
+  const kits = kitsEmLinha(args.cabecalho, 'kitsSinalizadosLi');
+  const qMax = qMaxDoComponente(args.cabecalho, kits, args.componenteId);
   if (dispensaIrmaos(args.antes, args.depois, qMax, cap)) return [];
   const disponivelDe = (componente: string): number | undefined => {
-    const estoqueId = proprio(comps, componente);
-    return typeof estoqueId === 'string' ? args.leituras.get(estoqueId) : undefined;
+    const caminho = caminhoDoIrmao(args.cabecalho.comps, componente);
+    return caminho === undefined ? undefined : args.leituras.get(caminho);
   };
   return Object.entries(kits)
     .filter(([, kit]) =>
@@ -649,21 +776,24 @@ export type DiffLinhaEstoqueLi =
       readonly delta: number;
     };
 
-/** The store's effective quantity minus S (both bounded), or {@link DELTA_SEM_LIMITE_LI}. */
+/**
+ * The store's effective quantity minus S (both bounded), or {@link DELTA_SEM_LIMITE_LI}: the row's
+ * `quantidade` minus model A's target for S ({@link alvoEstoqueLi}, the one spelling of
+ * `S + max(0, R)`), so `quantidade − max(0, R) − S`; a reservation model A refuses is unbounded.
+ */
 function deltaDaLinha(linha: EstoqueNaLojaLi, S: number): number {
-  const { quantidade, quantidade_reservada: reservada } = linha;
+  const { quantidade } = linha;
   if (
     linha.gerenciado !== true ||
     linha.situacao_sem_estoque !== -1 ||
     typeof quantidade !== 'number' ||
-    !Number.isSafeInteger(quantidade) ||
-    typeof reservada !== 'number' ||
-    !Number.isSafeInteger(reservada)
+    !Number.isSafeInteger(quantidade)
   ) {
     return DELTA_SEM_LIMITE_LI;
   }
-  const delta = quantidade - Math.max(0, reservada) - S;
-  return Math.max(-Number.MAX_SAFE_INTEGER, Math.min(Number.MAX_SAFE_INTEGER, delta));
+  const alvo = alvoEstoqueLi(S, linha.quantidade_reservada);
+  if (alvo === null) return DELTA_SEM_LIMITE_LI;
+  return Math.max(-Number.MAX_SAFE_INTEGER, Math.min(Number.MAX_SAFE_INTEGER, quantidade - alvo));
 }
 
 /**

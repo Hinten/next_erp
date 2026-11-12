@@ -5,7 +5,7 @@ import {
   FLAG_ENTRADA_ESTOQUE_LI,
   type FlagEntradaEstoqueLi,
 } from '@delfrance/schemas';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   type CabecalhoKitsLi,
@@ -29,7 +29,22 @@ import {
 } from './planoEstoqueLi';
 import type { DocEstoqueLi } from './quantidadeEstoqueLi';
 
+// Per file: nothing here may reach the global `fetch` (the module is pure; no client exists).
+beforeEach(() => {
+  vi.stubGlobal('fetch', () => {
+    throw new Error('planoEstoqueLi.test: o fetch global não pode ser chamado');
+  });
+});
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
 const SEM_TETO = Number.POSITIVE_INFINITY;
+
+/** A stock record's path, as a read names it (and as the kit filter keys a sibling's reading). */
+function caminho(produtoId: string, estoqueId: string): string {
+  return `produtos/${produtoId}/estoques/${estoqueId}`;
+}
 
 /** A store row that shows `quantidade` with the four-field body, reservation `R`. */
 function linha(quantidade: number, R = 0, extra: EstoqueNaLojaLi = {}): EstoqueNaLojaLi {
@@ -49,7 +64,7 @@ function registro(
   estoqueId: string,
   dados: Record<string, unknown> = {},
 ): DocEstoqueLi {
-  return { caminho: `produtos/${produtoId}/estoques/${estoqueId}`, dados };
+  return { caminho: caminho(produtoId, estoqueId), dados };
 }
 
 function componentes(q: Record<string, number>): ComponentesKit {
@@ -68,9 +83,11 @@ describe('refletidoLi: the store already shows the body — ALL four fields, exa
     expect(refletidoLi(linha(12, 2), 12)).toBe(true);
   });
 
-  it('⚠️ NEAR-MISS gerenciado: false, "true" or absent is a write', () => {
+  it('⚠️ NEAR-MISS gerenciado: false, "true", 1 or absent is a write', () => {
     expect(refletidoLi(linha(12, 2, { gerenciado: false }), 12)).toBe(false);
     expect(refletidoLi(linha(12, 2, { gerenciado: 'true' }), 12)).toBe(false);
+    // A truthy non-boolean that loose equality (`== true`) would accept.
+    expect(refletidoLi(linha(12, 2, { gerenciado: 1 }), 12)).toBe(false);
     expect(refletidoLi(linha(12, 2, { gerenciado: undefined }), 12)).toBe(false);
   });
 
@@ -158,12 +175,75 @@ describe('decidirEnvioEstoqueLi: model A on the deciding GET', () => {
     });
   });
 
-  it.each([0, -1, 2.5, Number.NaN, Number.NEGATIVE_INFINITY])(
-    'a cap of %j is a bug: throws',
-    (cap) => {
-      expect(() => decidirEnvioEstoqueLi({ S: 1, cap, linha: linha(1) })).toThrow(RangeError);
-    },
-  );
+  it('⚠️ NEAR-MISS: a bad S throws even ABOVE a finite cap — the cap never launders it', () => {
+    // Capped first, 2.5 would become 2 and 2^60 would become 100, both sendable.
+    expect(() => decidirEnvioEstoqueLi({ S: 2.5, cap: 2, linha: linha(0) })).toThrow(RangeError);
+    expect(() => decidirEnvioEstoqueLi({ S: 2 ** 60, cap: 100, linha: linha(0) })).toThrow(
+      RangeError,
+    );
+    expect(() => decidirEnvioEstoqueLi({ S: -1, cap: 5, linha: linha(0) })).toThrow(RangeError);
+    // The control: a good S above the cap is capped.
+    expect(decidirEnvioEstoqueLi({ S: 150, cap: 100, linha: linha(0) })).toMatchObject({
+      corpo: { quantidade: 100 },
+    });
+  });
+});
+
+describe('every function that takes the cap refuses a bad one', () => {
+  const kitsVazios: CabecalhoKitsLi = { qMax: 1, comps: {}, kits: {} };
+  // Each call reaches its result with no other validation on the way, so only the cap check can
+  // throw: an entry-less diff returns before it would reach the send decision's own check.
+  const chamadas: [string, (cap: number) => unknown][] = [
+    ['decidirEnvioEstoqueLi', (cap) => decidirEnvioEstoqueLi({ S: 1, cap, linha: linha(1) })],
+    [
+      'relevanciaEventoEstoqueLi',
+      (cap) =>
+        relevanciaEventoEstoqueLi({ antes: { quantidade: 1 }, depois: { quantidade: 2 }, cap }),
+    ],
+    [
+      'irmaosParaLerLi',
+      (cap) =>
+        irmaosParaLerLi({ cabecalho: kitsVazios, componenteId: 'b', antes: 1, depois: 0, cap }),
+    ],
+    [
+      'kitSinalizadoLi',
+      (cap) =>
+        kitSinalizadoLi({
+          kit: { q: { b: 1 } },
+          componenteId: 'b',
+          antes: 1,
+          depois: 0,
+          cap,
+          disponivelDe: () => 0,
+        }),
+    ],
+    [
+      'kitsSinalizadosLi',
+      (cap) =>
+        kitsSinalizadosLi({
+          cabecalho: kitsVazios,
+          componenteId: 'b',
+          antes: 1,
+          depois: 0,
+          cap,
+          leituras: new Map(),
+        }),
+    ],
+    [
+      'diffLinhaEstoqueLi',
+      (cap) => diffLinhaEstoqueLi({ idLi: '1', linha: linha(1), entrada: undefined, cap }),
+    ],
+  ];
+  const ruins = [0, -1, 2.5, Number.NaN, Number.NEGATIVE_INFINITY];
+
+  it.each(chamadas)('%s: 0, −1, 2.5, NaN and −∞ each throw', (_nome, chamar) => {
+    for (const cap of ruins) expect(() => chamar(cap)).toThrow(RangeError);
+  });
+
+  it.each(chamadas)('%s: +∞ and a positive integer are accepted', (_nome, chamar) => {
+    expect(() => chamar(SEM_TETO)).not.toThrow();
+    expect(() => chamar(3)).not.toThrow();
+  });
 });
 
 /* -------------------------------------------------------------------------- */
@@ -286,6 +366,25 @@ describe('estoqueNoDepositoLi: the one record to read', () => {
       RangeError,
     );
   });
+
+  it('⚠️ NEAR-MISS: the depósito is a BARE id — a ref there is a bug, never "ambiguous"', () => {
+    const registros = [registro('p1', 'auto-1'), registro('p1', 'est-p1-dep1')];
+    // As a ref, the canonical id would be `est-p1-documents/depositos/dep1`, which no document
+    // can have: the pair would read `ambiguo` and the produto would be held for good.
+    for (const depositoId of ['documents/depositos/dep1', 'depositos/dep1', '']) {
+      expect(() => estoqueNoDepositoLi({ produtoId: 'p1', depositoId, registros })).toThrow(
+        RangeError,
+      );
+    }
+    expect(() => estoqueNoDepositoLi({ produtoId: '', depositoId: 'dep1', registros: [] })).toThrow(
+      RangeError,
+    );
+    // The control: the bare id finds the canonical record.
+    expect(estoqueNoDepositoLi({ produtoId: 'p1', depositoId: 'dep1', registros })).toEqual({
+      tipo: 'um',
+      registro: registro('p1', 'est-p1-dep1'),
+    });
+  });
 });
 
 /* -------------------------------------------------------------------------- */
@@ -310,6 +409,7 @@ describe('planoEstoqueLi: the run’s plan', () => {
   const entrada = (e: Partial<EntradaPlanoEstoqueLi> = {}): EntradaPlanoEstoqueLi => ({
     contaId: CONTA,
     produtoId: 'p1',
+    depositoId: 'dep1',
     produto: {},
     links: [filho()],
     estoque: { tipo: 'um', registro: registro('p1', 'est-p1-dep1', { quantidade: 7 }) },
@@ -354,10 +454,52 @@ describe('planoEstoqueLi: the run’s plan', () => {
     expect(planoEstoqueLi(entrada({ links: [raiz({ grades: [] })] })).tipo).toBe('nao-suportado');
   });
 
+  it('⚠️ NEAR-MISS: ANY root without grades is nao-suportado, even beside a parent root of the same id', () => {
+    // Two documents of one store id (a number and its canonical text) that disagree on grades.
+    expect(
+      planoEstoqueLi(
+        entrada({ links: [raiz({ grades: ['Cor'] }), raiz({ id: '7654321', grades: null })] }),
+      ).tipo,
+    ).toBe('nao-suportado');
+  });
+
+  it('⚠️ NEAR-MISS: a root whose paiProdutoIntegradaId is ABSENT is a root, never a child', () => {
+    // The link schema defaults the field to `null`, so an absent stored value is a legal root;
+    // read as a child, S would be PUT onto a parent's or a simple product's row.
+    const semPai = (link: Record<string, unknown>) =>
+      Object.fromEntries(Object.entries(link).filter(([k]) => k !== 'paiProdutoIntegradaId'));
+    expect(planoEstoqueLi(entrada({ links: [semPai(raiz({ grades: ['Cor'] }))] })).tipo).toBe(
+      'pai',
+    );
+    expect(planoEstoqueLi(entrada({ links: [semPai(raiz({ grades: null }))] })).tipo).toBe(
+      'nao-suportado',
+    );
+  });
+
   it('vinculo-ambiguo: child links naming two store ids', () => {
     expect(planoEstoqueLi(entrada({ links: [filho(), filho({ id: 999 })] })).tipo).toBe(
       'vinculo-ambiguo',
     );
+  });
+
+  it('⚠️ NEAR-MISS: a ROOT of the conta naming another store id beside the child is ambiguous too', () => {
+    // One ERP produto holds one store product per conta: sending S to the child would silently
+    // ignore the second mapping, whatever its kind.
+    for (const outra of [raiz({ id: 999, grades: ['Cor'] }), raiz({ id: 999, grades: null })]) {
+      expect(planoEstoqueLi(entrada({ links: [filho(), outra] })).tipo).toBe('vinculo-ambiguo');
+    }
+    expect(
+      planoEstoqueLi(
+        entrada({ links: [raiz({ grades: ['Cor'] }), raiz({ id: 999, grades: ['Cor'] })] }),
+      ).tipo,
+    ).toBe('vinculo-ambiguo');
+    // The controls: another conta's root, or one in the trash, is not this conta's mapping.
+    for (const outra of [
+      raiz({ id: 999, contaLojaIntegrada: 'documents/integracao/C2' }),
+      raiz({ id: 999, removido: true }),
+    ]) {
+      expect(planoEstoqueLi(entrada({ links: [filho(), outra] })).tipo).toBe('enviar');
+    }
   });
 
   it('⚠️ NEAR-MISS: two documents of ONE store id — a number and its canonical text — are one product', () => {
@@ -450,6 +592,23 @@ describe('planoEstoqueLi: the run’s plan', () => {
       ).toMatchObject({ tipo: 'enviar', S: 4 });
     });
 
+    it('⚠️ NEAR-MISS: a constrained VIRTUAL kit with no own record is exempt too', () => {
+      // A virtual kit usually has no own record at all: keyed on `ehKit` alone, it would be held
+      // and its components' stock never sent.
+      const kit = { ehKitVirtual: true, componentesKit: componentes({ blank: 3 }) };
+      expect(kitRestritoLi(kit)).toBe(true);
+      expect(
+        planoEstoqueLi(
+          entrada({
+            ...semRegistro,
+            temEstoqueEmQualquerDeposito: false,
+            produto: kit,
+            componentes: [registro('blank', 'est-blank-dep1', { quantidade: 10 })],
+          }),
+        ),
+      ).toMatchObject({ tipo: 'enviar', S: 3 });
+    });
+
     it('⚠️ NEAR-MISS: an UNCONSTRAINED kit is like a non-kit (its own record feeds S)', () => {
       const kit = { ehKit: true, componentesKit: {} };
       expect(kitRestritoLi(kit)).toBe(false);
@@ -504,6 +663,76 @@ describe('planoEstoqueLi: the run’s plan', () => {
       ),
     ).toMatchObject({ tipo: 'enviar', S: 3, kitNaoVerificavel: false });
   });
+
+  describe('a kit component with more than one record at the depósito', () => {
+    const kit = { ehKit: true, componentesKit: componentes({ blank: 1 }) };
+    const canonico = registro('blank', 'est-blank-dep1', { quantidade: 3 });
+    const legado = registro('blank', 'auto-1', { quantidade: 9 });
+    const outroLegado = registro('blank', 'auto-2', { quantidade: 9 });
+
+    it('the canonical record wins in EITHER order: S = 3, never the legacy 9', () => {
+      // Handed to the core raw, the last record of the component would win: 9 in one order,
+      // 3 in the other — an oversell decided by a query's row order.
+      for (const comps of [
+        [canonico, legado],
+        [legado, canonico],
+      ]) {
+        expect(planoEstoqueLi(entrada({ produto: kit, componentes: comps }))).toMatchObject({
+          tipo: 'enviar',
+          S: 3,
+        });
+      }
+    });
+
+    it('⚠️ NEAR-MISS: two non-canonical records of a constraining component ⇒ estoque-ambiguo, in either order', () => {
+      for (const comps of [
+        [legado, outroLegado],
+        [outroLegado, legado],
+      ]) {
+        expect(planoEstoqueLi(entrada({ produto: kit, componentes: comps }))).toEqual({
+          tipo: 'estoque-ambiguo',
+          idLi: '123456789',
+        });
+      }
+    });
+
+    it('an ambiguous component that does not constrain the kit decides nothing', () => {
+      const produto = {
+        ehKit: true,
+        componentesKit: {
+          ...componentes({ blank: 1 }),
+          tag: { quantidade: 1, limitarEstoque: false, timestamp: null },
+        },
+      };
+      expect(
+        planoEstoqueLi(
+          entrada({
+            produto,
+            componentes: [canonico, registro('tag', 'auto-1'), registro('tag', 'auto-2')],
+          }),
+        ),
+      ).toMatchObject({ tipo: 'enviar', S: 3 });
+    });
+
+    it('the same record read twice is one record', () => {
+      expect(
+        planoEstoqueLi(entrada({ produto: kit, componentes: [legado, legado] })),
+      ).toMatchObject({ tipo: 'enviar', S: 9 });
+    });
+
+    it('the depósito is a bare id here too — for a kit, and for a produto with no component', () => {
+      expect(() =>
+        planoEstoqueLi(
+          entrada({
+            produto: kit,
+            componentes: [canonico],
+            depositoId: 'documents/depositos/dep1',
+          }),
+        ),
+      ).toThrow(RangeError);
+      expect(() => planoEstoqueLi(entrada({ depositoId: 'depositos/dep1' }))).toThrow(RangeError);
+    });
+  });
 });
 
 /* -------------------------------------------------------------------------- */
@@ -557,8 +786,8 @@ describe('kits, at most 30 per component: the tie-inclusive, fail-open filter', 
           depois: e.depois,
           cap: SEM_TETO,
           leituras: new Map([
-            ['est-blank-dep1', e.outro],
-            ['est-print-dep1', e.outro],
+            [caminho('blank', 'est-blank-dep1'), e.outro],
+            [caminho('print', 'est-print-dep1'), e.outro],
           ]),
         }),
       ).toEqual(['kit-1']);
@@ -576,6 +805,23 @@ describe('kits, at most 30 per component: the tie-inclusive, fail-open filter', 
         disponivelDe: () => 3,
       }),
     ).toBe(false);
+  });
+
+  it('⚠️ NEAR-MISS: a RISING bottleneck flags — the before side bounds it, not the after side', () => {
+    // blank 3 → 5 beside print at 4: the kit goes min(3, 4) = 3 → min(5, 4) = 4. An after-only
+    // rule reads 5 > 4 and skips the rise; the minimum of both sides reads 3 ≤ 4 and flags.
+    const subir = (antes: number, depois: number) =>
+      kitSinalizadoLi({
+        kit: { q: { blank: 1, print: 1 } },
+        componenteId: 'blank',
+        antes,
+        depois,
+        cap: SEM_TETO,
+        disponivelDe: () => 4,
+      });
+    expect(subir(3, 5)).toBe(true);
+    // The control: a rise wholly above the sibling moves nothing.
+    expect(subir(6, 9)).toBe(false);
   });
 
   it('the cap is a pseudo-component: 9 → 8 under a cap of 5 moves nothing; 9 → 4 does', () => {
@@ -610,7 +856,7 @@ describe('kits, at most 30 per component: the tie-inclusive, fail-open filter', 
       kitsSinalizadosLi({
         ...evento,
         cabecalho: cabecalho(q, comps),
-        leituras: new Map([['est-print-dep1', Number.NaN]]),
+        leituras: new Map([[caminho('print', 'est-print-dep1'), Number.NaN]]),
       }),
     ).toEqual(['kit-1']);
     // NEAR-MISS: the same sibling READ, and low, holds the kit.
@@ -618,7 +864,7 @@ describe('kits, at most 30 per component: the tie-inclusive, fail-open filter', 
       kitsSinalizadosLi({
         ...evento,
         cabecalho: cabecalho(q, comps),
-        leituras: new Map([['est-print-dep1', 3]]),
+        leituras: new Map([[caminho('print', 'est-print-dep1'), 3]]),
       }),
     ).toEqual([]);
   });
@@ -629,7 +875,7 @@ describe('kits, at most 30 per component: the tie-inclusive, fail-open filter', 
     const q = { blank: 1, print: 1, tag: 1 };
     const evento = { componenteId: 'blank', antes: 9, depois: 8, cap: SEM_TETO };
     const todos = { blank: 'est-blank-dep1', print: 'est-print-dep1', tag: 'est-tag-dep1' };
-    const soTag = new Map([['est-tag-dep1', 3]]);
+    const soTag = new Map([[caminho('tag', 'est-tag-dep1'), 3]]);
     expect(
       kitsSinalizadosLi({
         ...evento,
@@ -653,8 +899,8 @@ describe('kits, at most 30 per component: the tie-inclusive, fail-open filter', 
         ...evento,
         cabecalho: cabecalho(q, todos),
         leituras: new Map([
-          ['est-print-dep1', 9],
-          ['est-tag-dep1', 3],
+          [caminho('print', 'est-print-dep1'), 9],
+          [caminho('tag', 'est-tag-dep1'), 3],
         ]),
       }),
     ).toEqual([]);
@@ -719,8 +965,8 @@ describe('kits, at most 30 per component: the tie-inclusive, fail-open filter', 
         depois: 5,
         cap: SEM_TETO,
         leituras: new Map([
-          ['e-p', 9],
-          ['e-t', 2],
+          [caminho('print', 'e-p'), 9],
+          [caminho('tag', 'e-t'), 2],
         ]),
       }),
     ).toEqual(['kit-a', 'kit-z']); // kit-a: min(3, 2) = 2 ≤ 2; kit-m: 5 > 2; kit-z: 5 ≤ 9
@@ -741,12 +987,17 @@ describe('kits, at most 30 per component: the tie-inclusive, fail-open filter', 
 });
 
 describe('irmaosParaLerLi: what the filter reads, and the zero-cost skip', () => {
-  const header = {
+  const header: CabecalhoKitsLi = {
     qMax: 2,
-    comps: { blank: 'e-b', print: 'e-p', tag: 'e-t', laco: 'e-p', sem: null },
+    comps: { blank: 'e-b', print: 'e-p', tag: 'e-t', sem: null },
+    kits: {
+      k1: { i: '1', q: { blank: 2, print: 1, sem: 1 } },
+      k2: { i: '2', q: { blank: 1, tag: 1 } },
+    },
   };
+  const lidos = [caminho('print', 'e-p'), caminho('tag', 'e-t')];
 
-  it('every OTHER component’s record id, deduplicated and sorted; a null id is not read', () => {
+  it('every OTHER component’s record PATH, sorted; a null id is not read', () => {
     expect(
       irmaosParaLerLi({
         cabecalho: header,
@@ -755,7 +1006,7 @@ describe('irmaosParaLerLi: what the filter reads, and the zero-cost skip', () =>
         depois: 5,
         cap: SEM_TETO,
       }),
-    ).toEqual(['e-p', 'e-t']);
+    ).toEqual(lidos);
   });
 
   it('⚠️ min(before, after) / qMax above the cap ⇒ 0 sibling reads, and nothing is flagged', () => {
@@ -764,7 +1015,7 @@ describe('irmaosParaLerLi: what the filter reads, and the zero-cost skip', () =>
     expect(
       kitsSinalizadosLi({
         ...evento,
-        cabecalho: { ...header, kits: { k: { i: '1', q: { blank: 2, print: 1 } } } },
+        cabecalho: header,
         leituras: new Map(), // nothing read — and the unknown siblings do not flag either
       }),
     ).toEqual([]);
@@ -773,7 +1024,7 @@ describe('irmaosParaLerLi: what the filter reads, and the zero-cost skip', () =>
   it('⚠️ NEAR-MISS: at the cap (⌊18 / 2⌋ = 9 with a cap of 9) the siblings ARE read', () => {
     expect(
       irmaosParaLerLi({ cabecalho: header, componenteId: 'blank', antes: 20, depois: 18, cap: 9 }),
-    ).toEqual(['e-p', 'e-t']);
+    ).toEqual(lidos);
     expect(
       irmaosParaLerLi({
         cabecalho: header,
@@ -782,7 +1033,76 @@ describe('irmaosParaLerLi: what the filter reads, and the zero-cost skip', () =>
         depois: 18,
         cap: SEM_TETO,
       }),
-    ).toEqual(['e-p', 'e-t']);
+    ).toEqual(lidos);
+  });
+
+  it('⚠️ NEAR-MISS: two components whose records share a doc id are TWO reads, never one', () => {
+    // A record id is unique only under its owner: produtos/print/estoques/X and
+    // produtos/laco/estoques/X are two documents. Keyed by the bare id, print's 2 would stand in
+    // for laco's 20, and the kit (laco-bound, 9 → 8) would go unflagged.
+    const dupla: CabecalhoKitsLi = {
+      qMax: 1,
+      comps: { blank: 'b1', print: 'X', laco: 'X' },
+      kits: {
+        K: { i: '1', q: { blank: 1, laco: 1 } },
+        K2: { i: '2', q: { blank: 1, print: 1 } },
+      },
+    };
+    const evento = { cabecalho: dupla, componenteId: 'blank', antes: 9, depois: 8, cap: SEM_TETO };
+    expect(irmaosParaLerLi(evento)).toEqual([caminho('laco', 'X'), caminho('print', 'X')]);
+    expect(
+      kitsSinalizadosLi({
+        ...evento,
+        leituras: new Map([
+          [caminho('print', 'X'), 2],
+          [caminho('laco', 'X'), 20],
+        ]),
+      }),
+    ).toEqual(['K']); // K: 8 ≤ laco 20; K2: 8 > print 2
+  });
+
+  it('⚠️ NEAR-MISS: a stored qMax BELOW a kit’s quantity never lets the skip hide that kit', () => {
+    // K needs 2 blanks; the header claims 1. Trusting it, ⌊3 / 1⌋ = 3 > cap 2 would skip, while
+    // K goes min(⌊4 / 2⌋, 5, 2) = 2 → min(⌊3 / 2⌋, 5, 2) = 1.
+    const baixo: CabecalhoKitsLi = {
+      qMax: 1,
+      comps: { blank: 'b', print: 'p' },
+      kits: { K: { i: '1', q: { blank: 2, print: 1 } } },
+    };
+    const evento = { cabecalho: baixo, componenteId: 'blank', antes: 4, depois: 3, cap: 2 };
+    expect(irmaosParaLerLi(evento)).toEqual([caminho('print', 'p')]);
+    expect(
+      kitsSinalizadosLi({ ...evento, leituras: new Map([[caminho('print', 'p'), 5]]) }),
+    ).toEqual(['K']);
+    // The control: with the header right (qMax 2) the same event is read and flagged alike, and
+    // a higher stock (20 → 18, ⌊18 / 2⌋ = 9 > 2) is skipped.
+    expect(irmaosParaLerLi({ ...evento, cabecalho: { ...baixo, qMax: 2 } })).toEqual([
+      caminho('print', 'p'),
+    ]);
+    expect(irmaosParaLerLi({ ...evento, antes: 20, depois: 18 })).toEqual([]);
+  });
+
+  it('a kit that does not list the component never lets the skip apply (it flags)', () => {
+    const torto: CabecalhoKitsLi = {
+      qMax: 1,
+      comps: { blank: 'b', print: 'p' },
+      kits: { K: { i: '1', q: { print: 1 } } },
+    };
+    const evento = { cabecalho: torto, componenteId: 'blank', antes: 50, depois: 40, cap: 2 };
+    expect(irmaosParaLerLi(evento)).toEqual([caminho('print', 'p')]);
+    expect(kitsSinalizadosLi({ ...evento, leituras: new Map() })).toEqual(['K']);
+  });
+
+  it('a header whose kits live in shards is refused here too', () => {
+    expect(() =>
+      irmaosParaLerLi({
+        cabecalho: { qMax: 1, comps: {}, kits: null },
+        componenteId: 'blank',
+        antes: 1,
+        depois: 0,
+        cap: SEM_TETO,
+      }),
+    ).toThrow(RangeError);
   });
 });
 
@@ -820,6 +1140,21 @@ describe('kits beyond 30: only a positive → 0 crossing is sent at once', () =>
     expect(disparaKitsZeradosLi({ antes: 0, depois: 0, qMax: 2 })).toBe(false);
     expect(disparaKitsZeradosLi({ antes: 0, depois: 1, qMax: 2 })).toBe(false);
     expect(disparaKitsZeradosLi({ antes: 1, depois: 1, qMax: 2 })).toBe(false);
+  });
+
+  it('⚠️ NEAR-MISS: a component already at or below 0 that falls further fires NOTHING', () => {
+    // No kit is positive before, so none can cross; firing here would fan a paced store read out
+    // over every kit of an oversold component on each further sale.
+    expect(disparaKitsZeradosLi({ antes: 0, depois: -1, qMax: 2 })).toBe(false);
+    expect(disparaKitsZeradosLi({ antes: -1, depois: -3, qMax: 2 })).toBe(false);
+    expect(disparaKitsZeradosLi({ antes: null, depois: -2, qMax: 2 })).toBe(false);
+    // The control: from a positive start the same fall fires.
+    expect(disparaKitsZeradosLi({ antes: 1, depois: -1, qMax: 2 })).toBe(true);
+  });
+
+  it('⚠️ NEAR-MISS: after == qMax keeps every quotient at 1 or more — no fire; just below fires', () => {
+    expect(disparaKitsZeradosLi({ antes: 5, depois: 2, qMax: 2 })).toBe(false);
+    expect(disparaKitsZeradosLi({ antes: 5, depois: 1.5, qMax: 2 })).toBe(true);
   });
 
   it('PROPERTY: the header decision is a superset of every kit’s own crossing', () => {

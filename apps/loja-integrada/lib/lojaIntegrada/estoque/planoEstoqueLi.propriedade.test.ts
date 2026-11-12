@@ -24,7 +24,7 @@
  * Deterministic: a 32-bit seeded generator (mulberry32), no new dependency.
  */
 import type { ComponentesKit } from '@delfrance/schemas';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   type CabecalhoKitsLi,
@@ -32,7 +32,17 @@ import {
   irmaosParaLerLi,
   kitsSinalizadosLi,
 } from './planoEstoqueLi';
-import { membroEstoqueLi, quantidadeEstoqueLi } from './quantidadeEstoqueLi';
+import { caminhoEstoqueLi, membroEstoqueLi, quantidadeEstoqueLi } from './quantidadeEstoqueLi';
+
+// Per file: nothing here may reach the global `fetch` (the module is pure; no client exists).
+beforeEach(() => {
+  vi.stubGlobal('fetch', () => {
+    throw new Error('planoEstoqueLi.propriedade.test: o fetch global não pode ser chamado');
+  });
+});
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 /** mulberry32: a deterministic generator in [0, 1). */
 function gerador(semente: number): () => number {
@@ -70,16 +80,22 @@ type Filtro = (args: {
   readonly antes: DisponivelDoEventoLi;
   readonly depois: DisponivelDoEventoLi;
   readonly cap: number;
-  /** A sibling's available quantity NOW by its record id, or `undefined` (gone). */
-  readonly ler: (estoqueId: string) => number | undefined;
+  /**
+   * A sibling's available quantity NOW: the record at `produtos/{componenteId}/estoques/{estoqueId}`,
+   * or `undefined` (gone, or re-created under another id).
+   */
+  readonly ler: (componenteId: string, estoqueId: string) => number | undefined;
 }) => boolean;
 
 /** The module's rule, through its two phases exactly as the trigger will call them. */
 const regraDoModulo: Filtro = ({ cabecalho, componenteId, antes, depois, cap, ler }) => {
   const leituras = new Map<string, number>();
-  for (const id of irmaosParaLerLi({ cabecalho, componenteId, antes, depois, cap })) {
-    const d = ler(id);
-    if (d !== undefined) leituras.set(id, d);
+  for (const caminho of irmaosParaLerLi({ cabecalho, componenteId, antes, depois, cap })) {
+    // A point read by PATH, as the trigger makes it.
+    const partes = caminhoEstoqueLi(caminho);
+    if (partes === null) throw new RangeError(`caminho inválido: ${caminho}`);
+    const d = ler(partes.produtoId, partes.estoqueId);
+    if (d !== undefined) leituras.set(caminho, d);
   }
   return kitsSinalizadosLi({ cabecalho, componenteId, antes, depois, cap, leituras }).includes(KIT);
 };
@@ -92,7 +108,7 @@ function quocientes(a: Parameters<Filtro>[0]): { b: number; d: number; limite: n
   for (const [c, qc] of Object.entries(q)) {
     if (c === a.componenteId) continue;
     const id = a.cabecalho.comps[c];
-    const disponivel = typeof id === 'string' ? a.ler(id) : undefined;
+    const disponivel = typeof id === 'string' ? a.ler(c, id) : undefined;
     if (disponivel === undefined) return null;
     limite = Math.min(limite, Math.floor(disponivel / qc));
   }
@@ -174,9 +190,9 @@ function simular(semente: number, filtro: Filtro): Resultado {
         }),
       ),
     );
-  const ler = (estoqueId: string): number | undefined => {
-    for (const r of estado.values()) if (r?.id === estoqueId) return r.d;
-    return undefined;
+  const ler = (componenteId: string, estoqueId: string): number | undefined => {
+    const r = estado.get(componenteId);
+    return r?.id === estoqueId ? r.d : undefined;
   };
 
   const inicial = kitVerdadeiro();
@@ -231,7 +247,7 @@ function simular(semente: number, filtro: Filtro): Resultado {
     if (cabecalho === undefined) throw new RangeError('processarEvento: sem cabeçalho');
     if (
       Object.entries(comps).some(
-        ([c, id]) => c !== e.componente && id !== null && ler(id) === undefined,
+        ([c, id]) => c !== e.componente && id !== null && ler(c, id) === undefined,
       )
     ) {
       leuIdObsoleto = true;
