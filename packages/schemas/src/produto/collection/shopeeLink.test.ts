@@ -1576,15 +1576,32 @@ describe('logisticaGravadaEm — a procedência de logistic_info (#2015)', () =>
     expect(fonte).toContain('Nine groups of fields have a named writer set');
     expect(fonte).toContain('none of the nine overlap');
     expect(fonte).toContain('**`logistic_info` + `logisticaGravadaEm`** (#2015)');
-    expect(fonte).toContain('FOUR writer sites');
+    // #1911 P15: a edição do rascunho é o QUINTO escritor (antes: 'FOUR writer sites').
+    expect(fonte).toContain('FIVE writer sites');
     expect(fonte).toMatch(
       /the stamp rides the SAME patch, under[\s*]+the SAME condition, as the list/,
     );
     expect(fonte).toContain('`dadosLinkListagem`');
     expect(fonte).toContain('`escreverVinculoDoKit`');
+    expect(fonte).toContain('`atualizarRascunhoShopee`');
     expect(fonte).toContain('logisticaGravadaPeloErpShopee');
     // O NEAR-MISS: a contagem antiga não pode sobreviver ao lado da nova.
     expect(fonte).not.toContain('Eight groups');
     expect(fonte).not.toContain('none of the eight');
+    expect(fonte).not.toContain('FOUR writer sites');
+  });
+
+  it('#1911 P15: o docblock do campo nomeia a lista que o operador escolheu num rascunho e os CINCO sítios — nunca os quatro', () => {
+    const fonte = readFileSync(join(import.meta.dirname, 'shopeeLink.ts'), 'utf8');
+    const campo = fonte.indexOf('logisticaGravadaEm: z.number().int().nullable().optional(),');
+    const bloco = fonte.lastIndexOf('// === #2015', campo);
+    expect(bloco).toBeGreaterThan(-1);
+    // Read the FIELD's own docblock (between its block comment and its
+    // declaration), so the header inventory cannot satisfy these by accident.
+    const docblock = fonte.slice(bloco, campo);
+    expect(docblock).toContain('or the one the operator chose on a draft');
+    expect(docblock).toMatch(/names[\s*]+the five sites/);
+    // O NEAR-MISS: a contagem antiga não sobrevive em lugar nenhum do arquivo.
+    expect(fonte).not.toMatch(/names[\s*]+the four sites/);
   });
 });

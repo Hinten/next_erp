@@ -1091,6 +1091,40 @@ describe('planejarPublicacao — a confiança na logística armazenada (#2015)',
   });
 });
 
+/*
+ * #1911 P15 (wiring): the item arm reaches the "a trusted off is honoured" rule
+ * through the ONE builder, `construirLogistica` — no rule of its own. The
+ * rule's pairs and near-misses live in `logisticaPublicacao.test.ts`.
+ */
+describe('planejarPublicacao — #1911 P15: um vínculo CARIMBADO desliga um canal só com enabled: false', () => {
+  const CANAL_IRMAO = 90005;
+  const LISTA = [
+    { logistic_id: CANAL, enabled: true },
+    { logistic_id: CANAL_IRMAO, enabled: false },
+  ];
+
+  function republicacao(logisticaConfiavel: boolean): ContextoPublicacao {
+    return contexto({
+      ehAtualizacao: true,
+      link: { ...LINK, logistic_info: LISTA, logisticaConfiavel },
+      canais: [canal(), canal({ logistics_channel_id: CANAL_IRMAO })],
+    });
+  }
+
+  it('#1911 P15: o vínculo carimbado [{CANAL, on}, {IRMAO, enabled: false}] ⇒ o corpo manda só CANAL', () => {
+    const plano = planejarPublicacao(republicacao(true), fotos());
+    expect(plano.logistica.logistic_info).toEqual([
+      { logistic_id: CANAL, enabled: true, is_free: false },
+    ]);
+    expect(plano.item.atualizar?.logistic_info).toEqual(plano.logistica.logistic_info);
+    expect(plano.problemas).toEqual([]);
+    // ⛔ QUASE-PAR: the SAME list on a distrusted link — its off is never
+    // honoured, so the full pass sends IRMAO too.
+    const legado = planejarPublicacao(republicacao(false), fotos());
+    expect(legado.logistica.logistic_info.map((e) => e.logistic_id)).toEqual([CANAL, CANAL_IRMAO]);
+  });
+});
+
 /* -------------------------------------------------------------------------- */
 /*              (9) a tabela de medidas — passo 18 (#1526), A.1                */
 /* -------------------------------------------------------------------------- */

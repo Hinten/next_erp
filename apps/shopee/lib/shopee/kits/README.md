@@ -258,7 +258,11 @@ unchanged. kit-criar (no alvo) and a `removido` recriar target have nothing to i
 keep `logistica-sem-canal`'s sentence. ⚠️ A republish writes no list back
 (`republicarKit.ts`), so an unstamped kit link takes the full pass on EVERY republish until an
 import rewrites it or a `--recriar` replaces the kit. The rule and its writers:
-`../anuncios/README.md`, "Logistics".
+`../anuncios/README.md`, "Logistics". Since #1911 P15 that one builder also
+honours a TRUSTED alvo list's explicit `enabled: false` (the channel is not
+sent, and the full-pass fallback skips it too) and never sends a fulfillment
+channel (`mask_channel_id` set and non-zero), so the kit arms get both rules
+without a line of their own.
 
 An append (`model_id: 0`, the child's price, `model_sku` and ERP projection, never a main)
 needs the WHOLE tier resent with the new option appended (the live options verbatim, never

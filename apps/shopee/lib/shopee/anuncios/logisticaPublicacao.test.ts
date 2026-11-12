@@ -15,7 +15,10 @@ import {
   UNIDADES_PARA_CM,
   type ArgsLogistica,
   type MotivoCanalPulado,
+  avaliarCanaisDaLojaShopee,
   cabeNoCanal,
+  canalInescapavel,
+  canalSelecionavel,
   construirLogistica,
   paraCm,
 } from './logisticaPublicacao';
@@ -30,12 +33,18 @@ const CANAL_RELACIONADO = 90009;
  * One channel, built THROUGH the package's own schema so every `.default(null)`
  * lands exactly as a live body would leave it — a hand-written literal would
  * quietly diverge from the shape the publisher actually receives.
+ *
+ * #1911 P15: `mask_channel_id: 0` is the BR shape (every channel of
+ * `get_channel_list.br.json` says 0). The schema's own default is `null`, which
+ * is what every OTHER suite's channels carry; both are selectable (D-LOG-1), and
+ * the anchor in the P15 mask describe pins the two.
  */
 function canal(parcial: Record<string, unknown> = {}): ShopeeLogisticsChannel {
   return shopeeLogisticsChannelSchema.parse({
     logistics_channel_id: CANAL_PADRAO,
     enabled: true,
     fee_type: SHOPEE_LOGISTICS_FEE_TYPE.sizeInput,
+    mask_channel_id: 0,
     ...parcial,
   });
 }
@@ -74,6 +83,8 @@ interface LinhaPulado {
   readonly motivo: MotivoCanalPulado;
   readonly canal: ShopeeLogisticsChannel;
   readonly pesoKg: number;
+  /** #1911 P15: a TRUSTED stored list (the `args()` default), for the one motivo only a list produces. */
+  readonly armazenado?: readonly unknown[];
 }
 
 const PULADOS: readonly LinhaPulado[] = [
@@ -114,27 +125,49 @@ const PULADOS: readonly LinhaPulado[] = [
     canal: canal({ fee_type: SHOPEE_LOGISTICS_FEE_TYPE.customPrice }),
     pesoKg: 0.5,
   },
+  // #1911 P15.
+  { motivo: 'canal-de-fulfillment', canal: canal({ mask_channel_id: 4000 }), pesoKg: 0.5 },
+  {
+    motivo: 'desligado-no-vinculo',
+    canal: canal(),
+    pesoKg: 0.5,
+    armazenado: [{ logistic_id: CANAL_PADRAO, enabled: false }],
+  },
 ];
 
-describe('construirLogistica — os sete motivos de pular um canal', () => {
+/**
+ * Every member of {@link MotivoCanalPulado}, keyed so the COMPILER checks the
+ * set (#1911 P15): a member added to the union without a key here, or a key
+ * the union lost, fails typecheck — a hand-written list could not.
+ */
+const TODOS_OS_MOTIVOS = {
+  'nao-habilitado-na-loja': true,
+  'peso-fora-do-limite': true,
+  'dimensao-fora-do-limite': true,
+  'soma-de-dimensoes-excedida': true,
+  'unidade-desconhecida': true,
+  'size-selection-sem-size-id': true,
+  'custom-price-sem-tarifa': true,
+  'canal-de-fulfillment': true,
+  'desligado-no-vinculo': true,
+} as const satisfies Record<MotivoCanalPulado, true>;
+
+// #1911 P15: antes «construirLogistica — os sete motivos de pular um canal».
+describe('construirLogistica — os nove motivos de pular um canal', () => {
   it.each(PULADOS)('$motivo é produzível com uma fixture real', (linha) => {
-    const r = construirLogistica(args({ canais: [linha.canal], pesoKg: linha.pesoKg }));
+    const r = construirLogistica(
+      args({ canais: [linha.canal], pesoKg: linha.pesoKg, armazenado: linha.armazenado ?? null }),
+    );
     expect(r.pulados).toEqual([{ logisticId: CANAL_PADRAO, motivo: linha.motivo }]);
     expect(r.logistic_info).toEqual([]);
   });
 
   it('a lista de motivos cobre TODOS os membros do tipo — nenhum fica sem produtor', () => {
     const cobertos = new Set(PULADOS.map((l) => l.motivo));
-    const todos: readonly MotivoCanalPulado[] = [
-      'nao-habilitado-na-loja',
-      'peso-fora-do-limite',
-      'dimensao-fora-do-limite',
-      'soma-de-dimensoes-excedida',
-      'unidade-desconhecida',
-      'size-selection-sem-size-id',
-      'custom-price-sem-tarifa',
-    ];
-    expect([...cobertos].sort()).toEqual([...todos].sort());
+    // #1911 P15: the list is now the compiler-checked record above, never a
+    // hand-written array a new member could quietly skip.
+    expect([...cobertos].sort()).toEqual(Object.keys(TODOS_OS_MOTIVOS).sort());
+    expect(Object.keys(TODOS_OS_MOTIVOS)).toHaveLength(9);
   });
 });
 
@@ -650,6 +683,23 @@ describe('disciplina do módulo', () => {
     expect(fonte).not.toMatch(
       /\.logisticaGravadaEm\b|\[['"]logisticaGravadaEm['"]\]|logisticaGravadaPeloErpShopee\(/,
     );
+  });
+
+  it('#1911 P15: o leitor vem de @delfrance/schemas — o módulo não declara paraInteiroWire, paraNumeroWire nem campo', () => {
+    // #1369: the stored entry is read by ONE function, shared with the draft
+    // projection. A local copy here is the two-readers smell — the publisher
+    // and the editor would read `'90003'` (or a `'0'` size) two ways.
+    const DECLARACAO = /function\s+(paraInteiroWire|paraNumeroWire|campo)\s*\(/;
+    expect(fonte).not.toMatch(DECLARACAO);
+    expect(fonte).toMatch(
+      /import\s*\{[^}]*\blerLogisticaArmazenadaShopee\b[^}]*\}\s*from\s*'@delfrance\/schemas'/,
+    );
+    expect(fonte).toContain('lerLogisticaArmazenadaShopee(');
+    // ⛔ QUASE: the pin bites — a re-spelled copy of any of the three matches,
+    // while prose naming them (as this file's own docblocks may) does not.
+    expect('function paraInteiroWire(bruto: unknown)').toMatch(DECLARACAO);
+    expect('function campo (bruto, nome)').toMatch(DECLARACAO);
+    expect('moved out of `paraNumeroWire(…)` in #1911 P15').not.toMatch(DECLARACAO);
   });
 });
 
@@ -1682,5 +1732,782 @@ describe('(13b) #2099 — quando TODO obrigatório perdido tomou N1 ou CPY-4, as
       ['logistica-sem-canal', FRASE_NENHUM_OBRIGATORIO],
       ['logistica-sem-canal', FRASE_NENHUM_CANAL],
     ]);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*   (14) #1911 P15 — a máscara, os desligados do vínculo, o leitor ÚNICO e o   */
+/*        veredito por canal da rota canais                                    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Sentence (3b), verbatim (#1911 P15) — the no-channel sentence when a channel
+ * the TRUSTED list switched off was among those left out.
+ */
+const FRASE_3B =
+  'Nenhum canal ligado neste vínculo aceita este item (os desligados nele não são usados): ' +
+  'confira peso, dimensões e os canais habilitados no Seller Centre — num rascunho, também ' +
+  'os canais escolhidos na aba Shopee do produto.';
+
+/** A fulfillment channel's `mask_channel_id` — any non-zero id. */
+const MASCARA = 4000;
+
+/** A weight band the default parcel (0.5 kg) does not fit. */
+const PESADO_DEMAIS = { weight_limit: { item_max_weight: 0.1 } };
+
+/** A dimension limit stated in a unit `UNIDADES_PARA_CM` does not know. */
+const UNIDADE_ESTRANHA = {
+  item_max_dimension: { height: 20, width: 20, length: 20, unit: 'polegada' },
+};
+
+/** Channel A (`CANAL_PADRAO`) and channel B (`CANAL_IRMAO`), both fit. */
+const A_E_B: readonly ShopeeLogisticsChannel[] = [
+  canal(),
+  canal({ logistics_channel_id: CANAL_IRMAO }),
+];
+
+/** Shape A of the switched-off read-back: A on, B listed with `enabled: false`. */
+const B_DESLIGADO: readonly unknown[] = [
+  { logistic_id: CANAL_PADRAO, enabled: true },
+  { logistic_id: CANAL_IRMAO, enabled: false },
+];
+
+function idsNoFio(r: ReturnType<typeof construirLogistica>): readonly number[] {
+  return r.logistic_info.map((e) => e.logistic_id);
+}
+
+/**
+ * One truth-table channel, through the schema. An `undefined` cell leaves the
+ * key OUT, so the schema's own default (`null`) lands — the "–" of the table.
+ */
+function canalDaTabela(enabled: unknown, force: unknown, mascara: unknown): ShopeeLogisticsChannel {
+  const cru: Record<string, unknown> = {
+    logistics_channel_id: CANAL_PADRAO,
+    fee_type: SHOPEE_LOGISTICS_FEE_TYPE.sizeInput,
+  };
+  if (enabled !== undefined) cru.enabled = enabled;
+  if (force !== undefined) cru.force_enable = force;
+  if (mascara !== undefined) cru.mask_channel_id = mascara;
+  return shopeeLogisticsChannelSchema.parse(cru);
+}
+
+/** `[enabled, force, mask, ⇒ selecionável, the three raw cells]` — the labels are the title's. */
+const TABELA_VERDADE: [string, string, string, boolean, unknown, unknown, unknown][] = [
+  ['true', '–', '0', true, true, undefined, 0],
+  ['true', '–', 'null', true, true, undefined, null],
+  ['true', '–', '4000', false, true, undefined, MASCARA],
+  // The fold's SCOPE: the nearest non-zero masks on BOTH sides of 0 are masked
+  // too — the rule is «≠ 0», never «= 4000» nor «> 0» (`wireInt()` checks no sign).
+  ['true', '–', '1', false, true, undefined, 1],
+  ['true', '–', '-1', false, true, undefined, -1],
+  ['true', '–', "'0'", true, true, undefined, '0'],
+  ['true', '–', "'4000'", false, true, undefined, '4000'],
+  ['false', '–', '0', false, false, undefined, 0],
+  ['false', '–', 'null', false, false, undefined, null],
+  ['null', '–', '0', false, null, undefined, 0],
+  ['false', 'true', '0', true, false, true, 0],
+  ['–', 'true', '4000', false, undefined, true, MASCARA],
+];
+
+describe('#1911 P15 — canalSelecionavel: habilitado na loja E máscara 0 ou ausente (D-LOG-1)', () => {
+  it('ÂNCORA: canal() traz mask_channel_id 0 (o formato do BR) ⟷ o canal do schema sem a chave traz null (o das outras suítes)', () => {
+    expect(canal().mask_channel_id).toBe(0);
+    const semChave = shopeeLogisticsChannelSchema.parse({
+      logistics_channel_id: CANAL_PADRAO,
+      enabled: true,
+    });
+    expect(semChave.mask_channel_id).toBeNull();
+    expect(canalSelecionavel(canal())).toBe(true);
+    expect(canalSelecionavel(semChave)).toBe(true);
+  });
+
+  it.each(TABELA_VERDADE)(
+    'tabela-verdade: enabled %s, force %s, mask %s ⇒ %s',
+    (_e, _f, _m, esperado, enabled, force, mascara) => {
+      expect(canalSelecionavel(canalDaTabela(enabled, force, mascara))).toBe(esperado);
+    },
+  );
+
+  it('ÂNCORA: um canal com mask_channel_id undefined (não parseado) é selecionável', () => {
+    const naoParseado = {
+      ...canal(),
+      mask_channel_id: undefined,
+    } as unknown as ShopeeLogisticsChannel;
+    expect(naoParseado.mask_channel_id).toBeUndefined();
+    expect(canalSelecionavel(naoParseado)).toBe(true);
+    // …and the publisher SENDS it: absent is never read as masked.
+    expect(idsNoFio(construirLogistica(args({ canais: [naoParseado] })))).toEqual([CANAL_PADRAO]);
+  });
+
+  it('UMA regra: o veredito de canalSelecionavel é o da passagem completa (não pulou por nao-habilitado-na-loja nem canal-de-fulfillment)', () => {
+    for (const [, , , esperado, enabled, force, mascara] of TABELA_VERDADE) {
+      const c = canalDaTabela(enabled, force, mascara);
+      const r = construirLogistica(args({ canais: [c] }));
+      const pulouNaSelecao = r.pulados.some(
+        (p) => p.motivo === 'nao-habilitado-na-loja' || p.motivo === 'canal-de-fulfillment',
+      );
+      const rotulo = JSON.stringify({ enabled, force, mascara });
+      expect(!pulouNaSelecao, rotulo).toBe(canalSelecionavel(c));
+      expect(canalSelecionavel(c), rotulo).toBe(esperado);
+      // The default parcel fits every row, so a selectable channel is SENT.
+      expect(idsNoFio(r), rotulo).toEqual(esperado ? [CANAL_PADRAO] : []);
+    }
+  });
+
+  it('ORDEM: desligado na loja E mask 4000 ⇒ nao-habilitado-na-loja, nunca canal-de-fulfillment', () => {
+    const r = construirLogistica(
+      args({ canais: [canal({ enabled: false, mask_channel_id: MASCARA })] }),
+    );
+    expect(r.pulados).toEqual([{ logisticId: CANAL_PADRAO, motivo: 'nao-habilitado-na-loja' }]);
+  });
+
+  it("⛔ ORDEM: mask 4000 acima do peso, ou com unidade 'polegada', ⇒ canal-de-fulfillment ⟷ PAR: os mesmos com mask 0 ⇒ peso-fora-do-limite e unidade-desconhecida", () => {
+    for (const [parcial, motivoSemMascara] of [
+      [PESADO_DEMAIS, 'peso-fora-do-limite'],
+      [UNIDADE_ESTRANHA, 'unidade-desconhecida'],
+    ] as const) {
+      const mascarado = construirLogistica(
+        args({ canais: [canal({ ...parcial, mask_channel_id: MASCARA })] }),
+      );
+      expect(mascarado.pulados, motivoSemMascara).toEqual([
+        { logisticId: CANAL_PADRAO, motivo: 'canal-de-fulfillment' },
+      ]);
+      const semMascara = construirLogistica(args({ canais: [canal(parcial)] }));
+      expect(semMascara.pulados, motivoSemMascara).toEqual([
+        { logisticId: CANAL_PADRAO, motivo: motivoSemMascara },
+      ]);
+    }
+  });
+
+  it('PAR da passagem completa: mask 4000 ⇒ pulado canal-de-fulfillment e fio vazio ⟷ mask 0 e mask ausente ⇒ enviado', () => {
+    const mascarado = construirLogistica(args({ canais: [canal({ mask_channel_id: MASCARA })] }));
+    expect(mascarado.pulados).toEqual([
+      { logisticId: CANAL_PADRAO, motivo: 'canal-de-fulfillment' },
+    ]);
+    expect(mascarado.logistic_info).toEqual([]);
+    // A masked skip is not a vínculo's off: the no-channel sentence is (3), never (3b).
+    expect(mascarado.problemas).toEqual([semCanal(FRASE_NENHUM_CANAL)]);
+
+    const semChave = shopeeLogisticsChannelSchema.parse({
+      logistics_channel_id: CANAL_PADRAO,
+      enabled: true,
+      fee_type: SHOPEE_LOGISTICS_FEE_TYPE.sizeInput,
+    });
+    for (const c of [canal(), semChave]) {
+      expect(
+        construirLogistica(args({ canais: [c] })).logistic_info,
+        String(c.mask_channel_id),
+      ).toEqual([{ logistic_id: CANAL_PADRAO, enabled: true, is_free: false }]);
+    }
+  });
+
+  it.each([1, 4001, -1])(
+    '⛔ QUASE: mask_channel_id %s (não zero, o sinal incluso) ⇒ não selecionável e pulado canal-de-fulfillment — a regra é «≠ 0», nunca «= 4000»',
+    (mascara) => {
+      expect(canalSelecionavel(canalDaTabela(true, undefined, mascara))).toBe(false);
+      const r = construirLogistica(args({ canais: [canal({ mask_channel_id: mascara })] }));
+      expect(idsNoFio(r)).toEqual([]);
+      expect(r.pulados).toEqual([{ logisticId: CANAL_PADRAO, motivo: 'canal-de-fulfillment' }]);
+    },
+  );
+
+  it('as DUAS passagens: a lista confiável [A] com A em mask 4000 ⇒ pulado nas duas; o irmão B em mask 0 vai', () => {
+    const r = construirLogistica(
+      args({
+        canais: [canal({ mask_channel_id: MASCARA }), canal({ logistics_channel_id: CANAL_IRMAO })],
+        armazenado: [{ logistic_id: CANAL_PADRAO }],
+      }),
+    );
+    // The stored pass skipped A (it would otherwise have sent A ALONE), and the
+    // full pass skipped it again — its `pulados` are the ones reported.
+    expect(idsNoFio(r)).toEqual([CANAL_IRMAO]);
+    expect(r.pulados).toEqual([{ logisticId: CANAL_PADRAO, motivo: 'canal-de-fulfillment' }]);
+    // ⚠️ PAR: the same list with A at mask 0 — the stored list wins, B stays off.
+    const semMascara = construirLogistica(
+      args({ canais: A_E_B, armazenado: [{ logistic_id: CANAL_PADRAO }] }),
+    );
+    expect(idsNoFio(semMascara)).toEqual([CANAL_PADRAO]);
+  });
+});
+
+describe('#1911 P15 — o canal de fulfillment obrigatório fica na frase (1), nunca N1/CPY-4', () => {
+  it('desconfiada, SIZE_SELECTION obrigatório em mask 4000 com tamanho legível ⇒ pulado canal-de-fulfillment e a frase (1), nunca logistica-nao-confirmada', () => {
+    const r = construirLogistica(
+      desconfiada({
+        canais: canaisComObrigatorio(SHOPEE_LOGISTICS_FEE_TYPE.sizeSelection, {
+          mask_channel_id: MASCARA,
+        }),
+        armazenado: TAMANHO_LEGIVEL,
+      }),
+    );
+    expect(r.pulados).toEqual([{ logisticId: CANAL_OBRIGATORIO, motivo: 'canal-de-fulfillment' }]);
+    expect(idsNoFio(r)).toEqual([CANAL_IRMAO]);
+    expect(r.problemas).toEqual([
+      semCanal(FRASE_CANAL_OBRIGATORIO_PERDIDO),
+      semCanal(FRASE_NENHUM_OBRIGATORIO),
+    ]);
+    expect(motivosDosProblemas(r)).not.toContain('logistica-nao-confirmada');
+    // ⚠️ PAR: the SAME channel at mask 0 is N1's (the #2015 table's row) — the mask moved it.
+    const semMascara = construirLogistica(
+      desconfiada({
+        canais: canaisComObrigatorio(SHOPEE_LOGISTICS_FEE_TYPE.sizeSelection),
+        armazenado: TAMANHO_LEGIVEL,
+      }),
+    );
+    expect(motivosDosProblemas(semMascara)).toEqual(['logistica-nao-confirmada']);
+  });
+
+  it('o mesmo sem valor gravado ⇒ a frase (1), nunca logistica-sem-valor-gravado', () => {
+    const r = construirLogistica(
+      desconfiada({
+        canais: canaisComObrigatorio(SHOPEE_LOGISTICS_FEE_TYPE.sizeSelection, {
+          mask_channel_id: MASCARA,
+        }),
+        armazenado: [],
+      }),
+    );
+    expect(r.pulados).toEqual([{ logisticId: CANAL_OBRIGATORIO, motivo: 'canal-de-fulfillment' }]);
+    expect(r.problemas).toEqual([
+      semCanal(FRASE_CANAL_OBRIGATORIO_PERDIDO),
+      semCanal(FRASE_NENHUM_OBRIGATORIO),
+    ]);
+    expect(motivosDosProblemas(r)).not.toContain('logistica-sem-valor-gravado');
+    // ⚠️ PAR: at mask 0 the same empty list is CPY-4's.
+    const semMascara = construirLogistica(
+      desconfiada({
+        canais: canaisComObrigatorio(SHOPEE_LOGISTICS_FEE_TYPE.sizeSelection),
+        armazenado: [],
+      }),
+    );
+    expect(semMascara.problemas).toEqual([semValorGravado()]);
+  });
+});
+
+describe('#1911 P15 — a lista CONFIÁVEL desliga um canal só com enabled: false (D-LOG-3, D-12)', () => {
+  it('⭐ PAR forma A ≡ forma B: [{A, on}, {B, enabled:false}] e [{A, on}] mandam o MESMO fio [A], ambas com problemas [] — a forma A registra B desligado-no-vinculo', () => {
+    const formaA = construirLogistica(args({ canais: A_E_B, armazenado: B_DESLIGADO }));
+    const formaB = construirLogistica(
+      args({ canais: A_E_B, armazenado: [{ logistic_id: CANAL_PADRAO, enabled: true }] }),
+    );
+    expect(formaA.logistic_info).toEqual([
+      { logistic_id: CANAL_PADRAO, enabled: true, is_free: false },
+    ]);
+    expect(formaB.logistic_info).toEqual(formaA.logistic_info);
+    expect(formaA.canaisHabilitados).toEqual(formaB.canaisHabilitados);
+    expect(formaA.problemas).toEqual([]);
+    expect(formaB.problemas).toEqual([]);
+    expect(formaA.pulados).toEqual([{ logisticId: CANAL_IRMAO, motivo: 'desligado-no-vinculo' }]);
+    expect(formaB.pulados).toEqual([]);
+  });
+
+  it.each([
+    ['true', { enabled: true }],
+    ['null', { enabled: null }],
+    ['ausente', {}],
+    ["'false'", { enabled: 'false' }],
+    ['0', { enabled: 0 }],
+  ] as [string, Record<string, unknown>][])(
+    '⛔ QUASE: B com enabled %s é ENVIADO',
+    (_rotulo, deB) => {
+      const r = construirLogistica(
+        args({
+          canais: A_E_B,
+          armazenado: [
+            { logistic_id: CANAL_PADRAO, enabled: true },
+            { logistic_id: CANAL_IRMAO, ...deB },
+          ],
+        }),
+      );
+      expect(idsNoFio(r)).toEqual([CANAL_PADRAO, CANAL_IRMAO]);
+      expect(r.pulados).toEqual([]);
+    },
+  );
+
+  it('⛔ QUASE: a MESMA lista DESCONFIADA manda A e B — o desligado de uma lista legada não vale', () => {
+    const r = construirLogistica(desconfiada({ canais: A_E_B, armazenado: B_DESLIGADO }));
+    expect(idsNoFio(r)).toEqual([CANAL_PADRAO, CANAL_IRMAO]);
+    expect(r.pulados).toEqual([]);
+    expect(r.problemas).toEqual([]);
+  });
+
+  it('no fio toda entrada é enabled: true e B não aparece', () => {
+    const r = construirLogistica(args({ canais: A_E_B, armazenado: B_DESLIGADO }));
+    expect(r.logistic_info.length).toBeGreaterThan(0);
+    expect(r.logistic_info.every((e) => e.enabled === true)).toBe(true);
+    expect(idsNoFio(r)).not.toContain(CANAL_IRMAO);
+    expect(r.canaisHabilitados).not.toContain(CANAL_IRMAO);
+  });
+
+  it('force_enable vence o desligado: B force, desligado e com is_free true guardados, A acima do peso ⇒ B enviado PELA PASSAGEM GUARDADA (is_free true com a flag do produto false), pulados só A peso, problemas []', () => {
+    const r = construirLogistica(
+      args({
+        canais: [
+          canal(PESADO_DEMAIS),
+          canal({ logistics_channel_id: CANAL_IRMAO, force_enable: true }),
+        ],
+        armazenado: [
+          { logistic_id: CANAL_PADRAO, enabled: true },
+          { logistic_id: CANAL_IRMAO, enabled: false, is_free: true },
+        ],
+        ofereceFreteGratis: false,
+      }),
+    );
+    // `is_free: true` exists only in the STORED entry: a full pass would send the produto's false.
+    expect(r.logistic_info).toEqual([{ logistic_id: CANAL_IRMAO, enabled: true, is_free: true }]);
+    expect(r.pulados).toEqual([{ logisticId: CANAL_PADRAO, motivo: 'peso-fora-do-limite' }]);
+    expect(r.problemas).toEqual([]);
+  });
+
+  it('um obrigatório (não force) desligado no vínculo NÃO vira a frase (1) e a frase (2) aparece ⟷ PAR: com outro obrigatório C guardado ligado e enviado, a (2) não aparece', () => {
+    const obrigatorioB = canal({ logistics_channel_id: CANAL_IRMAO, compulsory_channel: true });
+    const r = construirLogistica(
+      args({ canais: [canal(), obrigatorioB], armazenado: B_DESLIGADO }),
+    );
+    expect(idsNoFio(r)).toEqual([CANAL_PADRAO]);
+    expect(r.pulados).toEqual([{ logisticId: CANAL_IRMAO, motivo: 'desligado-no-vinculo' }]);
+    expect(r.problemas).toEqual([semCanal(FRASE_NENHUM_OBRIGATORIO)]);
+    expect(r.problemas.map((p) => p.mensagem)).not.toContain(frase1Do(CANAL_IRMAO));
+
+    const comC = construirLogistica(
+      args({
+        canais: [
+          canal(),
+          obrigatorioB,
+          canal({ logistics_channel_id: OUTRO_OBRIGATORIO, compulsory_channel: true }),
+        ],
+        armazenado: [...B_DESLIGADO, { logistic_id: OUTRO_OBRIGATORIO, enabled: true }],
+      }),
+    );
+    expect(idsNoFio(comC)).toEqual([CANAL_PADRAO, OUTRO_OBRIGATORIO]);
+    expect(comC.problemas).toEqual([]);
+  });
+
+  it('ORDEM do diagnóstico: um desligado guardado num canal desligado na loja ⇒ desligado-no-vinculo; num canal que sumiu da lista ⇒ nao-habilitado-na-loja', () => {
+    const desligadoNaLoja = construirLogistica(
+      args({
+        canais: [canal(), canal({ logistics_channel_id: CANAL_IRMAO, enabled: false })],
+        armazenado: B_DESLIGADO,
+      }),
+    );
+    expect(desligadoNaLoja.pulados).toEqual([
+      { logisticId: CANAL_IRMAO, motivo: 'desligado-no-vinculo' },
+    ]);
+    // The list's off is read before the channel's own checks — a masked B too.
+    const mascarado = construirLogistica(
+      args({
+        canais: [canal(), canal({ logistics_channel_id: CANAL_IRMAO, mask_channel_id: MASCARA })],
+        armazenado: B_DESLIGADO,
+      }),
+    );
+    expect(mascarado.pulados).toEqual([
+      { logisticId: CANAL_IRMAO, motivo: 'desligado-no-vinculo' },
+    ]);
+    const sumiu = construirLogistica(args({ canais: [canal()], armazenado: B_DESLIGADO }));
+    expect(sumiu.pulados).toEqual([{ logisticId: CANAL_IRMAO, motivo: 'nao-habilitado-na-loja' }]);
+  });
+});
+
+describe('#1911 P15 — o recurso à passagem completa não religa um canal desligado (D-LOG-4, D-11) e a frase (3b)', () => {
+  /** B first in the LIVE list, A first in the stored one — so the order says which pass reported. */
+  const B_E_A_PESADO: readonly ShopeeLogisticsChannel[] = [
+    canal({ logistics_channel_id: CANAL_IRMAO }),
+    canal(PESADO_DEMAIS),
+  ];
+
+  it('confiável [{A, on}, {B, off}], A acima do peso, B cabe ⇒ fio [], pulados A peso e B desligado (na ordem da lista viva), problemas = EXATAMENTE a (3b)', () => {
+    const r = construirLogistica(args({ canais: B_E_A_PESADO, armazenado: B_DESLIGADO }));
+    expect(r.logistic_info).toEqual([]);
+    expect(r.pulados).toEqual([
+      { logisticId: CANAL_IRMAO, motivo: 'desligado-no-vinculo' },
+      { logisticId: CANAL_PADRAO, motivo: 'peso-fora-do-limite' },
+    ]);
+    expect(r.problemas).toEqual([semCanal(FRASE_3B)]);
+  });
+
+  // D15-6: the full pass skips a `desligados` id BEFORE the channel's own
+  // checks. Every other full-pass test above has the off channel FITTING, so a
+  // pass that asked the off only of a channel that validates stayed green.
+  it.each([
+    ['acima do peso', PESADO_DEMAIS],
+    ['mascarado (mask 4000)', { mask_channel_id: MASCARA }],
+  ] as [string, Record<string, unknown>][])(
+    '⛔ ORDEM (D15-6): confiável [{A, on}, {B, off}], A acima do peso e B %s ⇒ B sai desligado-no-vinculo (nunca o motivo das próprias checagens) e a frase é a (3b); B obrigatório nunca vira a frase (1)',
+    (_rotulo, deB) => {
+      const r = construirLogistica(
+        args({
+          canais: [canal({ logistics_channel_id: CANAL_IRMAO, ...deB }), canal(PESADO_DEMAIS)],
+          armazenado: B_DESLIGADO,
+        }),
+      );
+      expect(r.logistic_info).toEqual([]);
+      expect(r.pulados).toEqual([
+        { logisticId: CANAL_IRMAO, motivo: 'desligado-no-vinculo' },
+        { logisticId: CANAL_PADRAO, motivo: 'peso-fora-do-limite' },
+      ]);
+      expect(r.problemas).toEqual([semCanal(FRASE_3B)]);
+
+      // A switched-off channel is never a lost compulsory one, on the fallback too.
+      const obrigatorio = construirLogistica(
+        args({
+          canais: [
+            canal({ logistics_channel_id: CANAL_IRMAO, compulsory_channel: true, ...deB }),
+            canal(PESADO_DEMAIS),
+          ],
+          armazenado: B_DESLIGADO,
+        }),
+      );
+      expect(obrigatorio.pulados.filter((p) => p.logisticId === CANAL_IRMAO)).toEqual([
+        { logisticId: CANAL_IRMAO, motivo: 'desligado-no-vinculo' },
+      ]);
+      expect(obrigatorio.problemas.map((p) => p.mensagem)).not.toContain(frase1Do(CANAL_IRMAO));
+      expect(obrigatorio.problemas).toEqual([
+        semCanal(FRASE_NENHUM_OBRIGATORIO),
+        semCanal(FRASE_3B),
+      ]);
+    },
+  );
+
+  it('RESÍDUO forma B (o do main): [{A, on}], A acima do peso ⇒ o recurso manda B', () => {
+    const r = construirLogistica(
+      args({ canais: B_E_A_PESADO, armazenado: [{ logistic_id: CANAL_PADRAO, enabled: true }] }),
+    );
+    expect(idsNoFio(r)).toEqual([CANAL_IRMAO]);
+    expect(r.problemas).toEqual([]);
+  });
+
+  it('⛔ QUASE: [{A, on}] com só A, acima do peso ⇒ a frase (3) VERBATIM, nunca a (3b)', () => {
+    const r = construirLogistica(
+      args({
+        canais: [canal(PESADO_DEMAIS)],
+        armazenado: [{ logistic_id: CANAL_PADRAO, enabled: true }],
+      }),
+    );
+    expect(r.problemas).toEqual([semCanal(FRASE_NENHUM_CANAL)]);
+  });
+
+  it('a lista confiável toda desligada [{A, off}] com A e B vivos ⇒ fio [B] (D-11 literal; inalcançável pelo P16 e pela Shopee)', () => {
+    const r = construirLogistica(
+      args({ canais: A_E_B, armazenado: [{ logistic_id: CANAL_PADRAO, enabled: false }] }),
+    );
+    expect(idsNoFio(r)).toEqual([CANAL_IRMAO]);
+    expect(r.pulados).toEqual([{ logisticId: CANAL_PADRAO, motivo: 'desligado-no-vinculo' }]);
+    expect(r.problemas).toEqual([]);
+  });
+
+  it('DISJUNTA do P14b: a MESMA lista desconfiada, tudo acima do peso ⇒ a (3), nunca a (3b)', () => {
+    const r = construirLogistica(
+      desconfiada({
+        canais: [
+          canal(PESADO_DEMAIS),
+          canal({ logistics_channel_id: CANAL_IRMAO, ...PESADO_DEMAIS }),
+        ],
+        armazenado: B_DESLIGADO,
+      }),
+    );
+    expect(r.pulados).toEqual([
+      { logisticId: CANAL_PADRAO, motivo: 'peso-fora-do-limite' },
+      { logisticId: CANAL_IRMAO, motivo: 'peso-fora-do-limite' },
+    ]);
+    expect(r.problemas).toEqual([semCanal(FRASE_NENHUM_CANAL)]);
+  });
+
+  it('a (3b) não é frase de terminal: sem --x, :anuncio nem comando; ≤ 500 caracteres', () => {
+    const r = construirLogistica(args({ canais: B_E_A_PESADO, armazenado: B_DESLIGADO }));
+    const frase3b = r.problemas[0];
+    expect(frase3b?.mensagem).toBe(FRASE_3B);
+    expect(frase3b).toBeDefined();
+    if (frase3b === undefined) return;
+    expect(() => exigirAcaoSeHaComando(frase3b)).not.toThrow();
+    expect(frase3b.mensagem).not.toMatch(/(^|[\s(])--[a-z]|:anuncio\b|\bcomandos?\b/i);
+    expect('acao' in frase3b).toBe(false);
+    expect(frase3b.mensagem.length).toBeLessThanOrEqual(500);
+  });
+});
+
+describe('#1911 P15 — o leitor ÚNICO (lerLogisticaArmazenadaShopee) no publicador', () => {
+  it("⚠️ PAR: confiável [{logistic_id: '90003'}] ≡ [{logistic_id: 90003}] ⇒ fio [A]", () => {
+    for (const id of [CANAL_PADRAO, String(CANAL_PADRAO), `0${String(CANAL_PADRAO)}`]) {
+      const r = construirLogistica(args({ canais: A_E_B, armazenado: [{ logistic_id: id }] }));
+      expect(idsNoFio(r), JSON.stringify(id)).toEqual([CANAL_PADRAO]);
+    }
+  });
+
+  it.each(['', ` ${String(CANAL_PADRAO)}`, `${String(CANAL_PADRAO)}.0`, 0, 1.5, -1, '1e5'])(
+    '⛔ QUASE: logistic_id %j sai ⇒ o recurso manda [A, B]',
+    (id) => {
+      const r = construirLogistica(args({ canais: A_E_B, armazenado: [{ logistic_id: id }] }));
+      expect(idsNoFio(r)).toEqual([CANAL_PADRAO, CANAL_IRMAO]);
+    },
+  );
+
+  it("a dobra do id chega ao remédio: desconfiada, SIZE_SELECTION obrigatório, [{logistic_id '90007', size_id '7'}] ⇒ N1 ⟷ QUASE: ' 90007' ⇒ CPY-4", () => {
+    const canais = canaisComObrigatorio(SHOPEE_LOGISTICS_FEE_TYPE.sizeSelection);
+    const n1 = construirLogistica(
+      desconfiada({
+        canais,
+        armazenado: [{ logistic_id: String(CANAL_OBRIGATORIO), size_id: '7' }],
+      }),
+    );
+    expect(n1.problemas).toEqual([
+      {
+        campo: 'logistic_info',
+        motivo: 'logistica-nao-confirmada',
+        mensagem: fraseNaoConfirmada('um tamanho'),
+      },
+    ]);
+    const cpy4 = construirLogistica(
+      desconfiada({
+        canais,
+        armazenado: [{ logistic_id: ` ${String(CANAL_OBRIGATORIO)}`, size_id: '7' }],
+      }),
+    );
+    expect(cpy4.problemas).toEqual([semValorGravado()]);
+  });
+
+  it('⛔ tarifa: CUSTOM_PRICE confiável só com estimated_shipping_fee ⇒ pulado custom-price-sem-tarifa e nenhum shipping_fee no fio ⟷ PAR: shipping_fee 7.18 ⇒ enviado com 7.18', () => {
+    const canais = [canal({ fee_type: SHOPEE_LOGISTICS_FEE_TYPE.customPrice })];
+    // The parsed read-back shape: `shipping_fee: null` beside an estimate.
+    const estimativa = construirLogistica(
+      args({
+        canais,
+        armazenado: [
+          { logistic_id: CANAL_PADRAO, shipping_fee: null, estimated_shipping_fee: 7.18 },
+        ],
+      }),
+    );
+    expect(estimativa.pulados).toEqual([
+      { logisticId: CANAL_PADRAO, motivo: 'custom-price-sem-tarifa' },
+    ]);
+    expect(estimativa.logistic_info.some((e) => 'shipping_fee' in e)).toBe(false);
+    const tarifa = construirLogistica(
+      args({ canais, armazenado: [{ logistic_id: CANAL_PADRAO, shipping_fee: 7.18 }] }),
+    );
+    expect(tarifa.logistic_info).toEqual([
+      { logistic_id: CANAL_PADRAO, enabled: true, is_free: false, shipping_fee: 7.18 },
+    ]);
+  });
+
+  it('⛔ desconfiada, CUSTOM_PRICE obrigatório só com estimated_shipping_fee ⇒ CPY-4, nunca N1 ⟷ PAR: shipping_fee 7.18 ⇒ N1', () => {
+    const canais = canaisComObrigatorio(SHOPEE_LOGISTICS_FEE_TYPE.customPrice);
+    const cpy4 = construirLogistica(
+      desconfiada({
+        canais,
+        armazenado: [
+          { logistic_id: CANAL_OBRIGATORIO, shipping_fee: null, estimated_shipping_fee: 7.18 },
+        ],
+      }),
+    );
+    expect(cpy4.problemas).toEqual([semValorGravado()]);
+    const n1 = construirLogistica(
+      desconfiada({
+        canais,
+        armazenado: [{ logistic_id: CANAL_OBRIGATORIO, shipping_fee: 7.18 }],
+      }),
+    );
+    expect(n1.problemas).toEqual([
+      {
+        campo: 'logistic_info',
+        motivo: 'logistica-nao-confirmada',
+        mensagem: fraseNaoConfirmada('uma tarifa de frete'),
+      },
+    ]);
+  });
+
+  it("⛔ SIZE_SELECTION confiável com size_id 0 ⇒ pulado size-selection-sem-size-id ⟷ PAR: size_id '7' ⇒ enviado com 7", () => {
+    const canais = [canal(SIZE_SELECTION)];
+    const zero = construirLogistica(
+      args({ canais, armazenado: [{ logistic_id: CANAL_PADRAO, size_id: 0 }] }),
+    );
+    expect(zero.pulados).toEqual([
+      { logisticId: CANAL_PADRAO, motivo: 'size-selection-sem-size-id' },
+    ]);
+    expect(zero.logistic_info).toEqual([]);
+    const sete = construirLogistica(
+      args({ canais, armazenado: [{ logistic_id: CANAL_PADRAO, size_id: '7' }] }),
+    );
+    expect(sete.logistic_info).toEqual([
+      { logistic_id: CANAL_PADRAO, enabled: true, is_free: false, size_id: 7 },
+    ]);
+  });
+
+  it("⛔ o remédio NÃO filtra por enabled: desconfiada, [{90007, size_id '7', enabled: false}] ⇒ N1, nunca CPY-4", () => {
+    const r = construirLogistica(
+      desconfiada({
+        canais: canaisComObrigatorio(SHOPEE_LOGISTICS_FEE_TYPE.sizeSelection),
+        armazenado: [{ logistic_id: CANAL_OBRIGATORIO, size_id: '7', enabled: false }],
+      }),
+    );
+    // A distrusted off is not honoured: the channel is skipped for its SIZE only.
+    expect(r.pulados).toEqual([
+      { logisticId: CANAL_OBRIGATORIO, motivo: 'size-selection-sem-size-id' },
+    ]);
+    expect(r.problemas).toEqual([
+      {
+        campo: 'logistic_info',
+        motivo: 'logistica-nao-confirmada',
+        mensagem: fraseNaoConfirmada('um tamanho'),
+      },
+    ]);
+  });
+});
+
+/** The ids of the mixed list — invented, never a real channel's. */
+const MISTA_BASE = 90_100;
+
+interface LinhaAvaliada {
+  readonly rotulo: string;
+  readonly canal: ShopeeLogisticsChannel;
+  readonly selecionavel: boolean;
+  readonly obrigatorio: boolean;
+  readonly motivo: MotivoCanalPulado | null;
+}
+
+/** `[rótulo, the channel's fields, selecionável, obrigatório, motivo]`. */
+type LinhaMistaCrua = [string, Record<string, unknown>, boolean, boolean, MotivoCanalPulado | null];
+
+/** One row of each class the `canais` route shows — fits, does not fit, not selectable. */
+const LINHAS_MISTAS: LinhaMistaCrua[] = [
+  ['habilitado', {}, true, false, null],
+  ['desligado na loja', { enabled: false }, false, false, 'nao-habilitado-na-loja'],
+  ['mascarado', { mask_channel_id: MASCARA }, false, false, 'canal-de-fulfillment'],
+  ['force + desligado', { enabled: false, force_enable: true }, true, true, null],
+  ['obrigatório', { compulsory_channel: true }, true, true, null],
+  ['acima do peso', PESADO_DEMAIS, true, false, 'peso-fora-do-limite'],
+  ["unidade 'polegada'", UNIDADE_ESTRANHA, true, false, 'unidade-desconhecida'],
+  [
+    'SIZE_SELECTION',
+    { fee_type: SHOPEE_LOGISTICS_FEE_TYPE.sizeSelection },
+    true,
+    false,
+    'size-selection-sem-size-id',
+  ],
+  [
+    'CUSTOM_PRICE',
+    { fee_type: SHOPEE_LOGISTICS_FEE_TYPE.customPrice },
+    true,
+    false,
+    'custom-price-sem-tarifa',
+  ],
+  ['bloqueio + frete grátis', { block_seller_cover_shipping_fee: true }, true, false, null],
+];
+
+const MISTA: readonly LinhaAvaliada[] = LINHAS_MISTAS.map(
+  ([rotulo, parcial, selecionavel, obrigatorio, motivo], i) => ({
+    rotulo,
+    canal: canal({ ...parcial, logistics_channel_id: MISTA_BASE + i }),
+    selecionavel,
+    obrigatorio,
+    motivo,
+  }),
+);
+
+/** The parcel of the mixed list: the default one, WITH the produto's free-shipping offer. */
+const PARCELA_GRATIS = { pesoKg: 0.5, dimensaoCm: DIM_10, ofereceFreteGratis: true } as const;
+
+describe('#1911 P15 — avaliarCanaisDaLojaShopee: o veredito por canal é o da passagem completa', () => {
+  const avaliados = avaliarCanaisDaLojaShopee({
+    ...PARCELA_GRATIS,
+    canais: MISTA.map((l) => l.canal),
+  });
+
+  it('para cada linha de uma lista mista: entrada ⇔ motivo null; motivo null ⇒ selecionavel; selecionavel = canalSelecionavel; obrigatorio = canalInescapavel', () => {
+    expect(avaliados).toHaveLength(MISTA.length);
+    MISTA.forEach((linha, i) => {
+      const a = avaliados[i];
+      expect(a?.canal, linha.rotulo).toBe(linha.canal);
+      expect(a?.selecionavel, linha.rotulo).toBe(linha.selecionavel);
+      expect(a?.obrigatorio, linha.rotulo).toBe(linha.obrigatorio);
+      expect(a?.motivo ?? null, linha.rotulo).toBe(linha.motivo);
+      expect(a?.entrada !== null, linha.rotulo).toBe(a?.motivo === null);
+      if (a?.motivo === null) expect(a.selecionavel, linha.rotulo).toBe(true);
+      expect(a?.selecionavel, linha.rotulo).toBe(canalSelecionavel(linha.canal));
+      expect(a?.obrigatorio, linha.rotulo).toBe(canalInescapavel(linha.canal));
+    });
+    // ÂNCORA: at least one row of each class the route shows.
+    expect(avaliados.some((a) => a.motivo === null)).toBe(true);
+    expect(avaliados.some((a) => a.selecionavel && a.motivo !== null)).toBe(true);
+    expect(avaliados.some((a) => !a.selecionavel)).toBe(true);
+    expect(avaliados.some((a) => a.obrigatorio && a.canal.compulsory_channel !== true)).toBe(true);
+  });
+
+  it('⭐ UMA cópia: as entradas de avaliar são EXATAMENTE o logistic_info de construirLogistica sem lista guardada, na mesma ordem', () => {
+    const canais = MISTA.map((l) => l.canal);
+    for (const construida of [
+      construirLogistica(args({ ...PARCELA_GRATIS, canais, armazenado: null })),
+      construirLogistica(desconfiada({ ...PARCELA_GRATIS, canais, armazenado: null })),
+    ]) {
+      const entradas = avaliados.flatMap((a) => (a.entrada === null ? [] : [a.entrada]));
+      expect(entradas.length).toBeGreaterThan(0);
+      expect(entradas).toEqual(construida.logistic_info);
+      // …and the skips are the full pass's, channel for channel.
+      expect(
+        avaliados.flatMap((a) =>
+          a.motivo === null ? [] : [{ logisticId: a.canal.logistics_channel_id, motivo: a.motivo }],
+        ),
+      ).toEqual(construida.pulados);
+    }
+  });
+
+  it('o bloqueio mascara is_free: block + ofereceFreteGratis ⇒ is_free false ⟷ QUASE: sem o bloqueio ⇒ true', () => {
+    const [bloqueado] = avaliarCanaisDaLojaShopee({
+      ...PARCELA_GRATIS,
+      canais: [canal({ block_seller_cover_shipping_fee: true })],
+    });
+    expect(bloqueado?.entrada?.is_free).toBe(false);
+    const [livre] = avaliarCanaisDaLojaShopee({ ...PARCELA_GRATIS, canais: [canal()] });
+    expect(livre?.entrada?.is_free).toBe(true);
+    // ⛔ QUASE: without the produto's offer, false on both.
+    const [semOferta] = avaliarCanaisDaLojaShopee({
+      ...PARCELA_GRATIS,
+      ofereceFreteGratis: false,
+      canais: [canal()],
+    });
+    expect(semOferta?.entrada?.is_free).toBe(false);
+  });
+
+  it('o canal mascarado acima do peso é canal-de-fulfillment, não selecionável e sem entrada', () => {
+    const [mascarado] = avaliarCanaisDaLojaShopee({
+      ...PARCELA_GRATIS,
+      canais: [canal({ ...PESADO_DEMAIS, mask_channel_id: MASCARA })],
+    });
+    expect(mascarado).toMatchObject({
+      motivo: 'canal-de-fulfillment',
+      selecionavel: false,
+      entrada: null,
+    });
+    // ⚠️ PAR: at mask 0 it is selectable and does not fit.
+    const [pesado] = avaliarCanaisDaLojaShopee({
+      ...PARCELA_GRATIS,
+      canais: [canal(PESADO_DEMAIS)],
+    });
+    expect(pesado).toMatchObject({
+      motivo: 'peso-fora-do-limite',
+      selecionavel: true,
+      entrada: null,
+    });
+  });
+
+  it('nunca responde desligado-no-vinculo (não há lista guardada aqui)', () => {
+    const todos = avaliarCanaisDaLojaShopee({
+      ...PARCELA_GRATIS,
+      canais: [...MISTA.map((l) => l.canal), ...PULADOS.map((l) => l.canal)],
+    });
+    expect(todos.some((a) => a.motivo !== null)).toBe(true);
+    expect(todos.map((a) => a.motivo)).not.toContain('desligado-no-vinculo');
+    // The PULADOS row for it is a fitting channel: here it is simply sent.
+    const [linhaDoDesligado] = PULADOS.filter((l) => l.motivo === 'desligado-no-vinculo');
+    expect(linhaDoDesligado).toBeDefined();
+    if (linhaDoDesligado === undefined) return;
+    const [avaliado] = avaliarCanaisDaLojaShopee({
+      ...PARCELA_GRATIS,
+      canais: [linhaDoDesligado.canal],
+    });
+    expect(avaliado?.motivo).toBeNull();
+  });
+
+  it('uma linha ilegível (null) da lista de canais sai, como em construirLogistica', () => {
+    const comNulo = [null, canal()] as unknown as readonly ShopeeLogisticsChannel[];
+    const avaliadosComNulo = avaliarCanaisDaLojaShopee({ ...PARCELA_GRATIS, canais: comNulo });
+    expect(avaliadosComNulo.map((a) => a.canal.logistics_channel_id)).toEqual([CANAL_PADRAO]);
   });
 });

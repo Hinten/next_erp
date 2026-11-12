@@ -22,7 +22,10 @@
  * The route owns the caller check, the STRICT body parse (an unknown key is a
  * 400; the `error` is Zod's own rendering — paths and the schema's sentences,
  * never a value), the CLOCK (ONE `Date.now()`, handed down as `nowMs`: it
- * measures a live lock's wait and stamps `ultimaModificacao`) and the HTTP
+ * measures a live lock's wait and stamps `ultimaModificacao` and, beside a
+ * logistics write, `logisticaGravadaEm` — #1911 P15: a patch naming
+ * `logistic_info`, a sorted channel list or `null` for «Automática», writes the
+ * list and that stamp in the same update) and the HTTP
  * shape, built BY NAME. Every decision is `rascunho.ts`'s. ZERO Shopee calls;
  * an edit never writes the publish lock.
  *

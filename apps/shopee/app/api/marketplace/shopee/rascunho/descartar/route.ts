@@ -10,9 +10,10 @@
  * a loss), and only when
  *
  *  - no publish holds its lock (live, or inside the post-expiry grace);
- *  - the stored draft is what the operator SAW — `base` carries EVERY
- *    projected field (K1-13), so an edit made meanwhile in another tab is
- *    never thrown away unseen;
+ *  - the stored draft is what the operator SAW — `base` carries the five form
+ *    fields (`logistic_info` optional, compared when named — the P15 → P16
+ *    deploy gap, #1911 D-LOG-10) (K1-13), so an edit made meanwhile in another
+ *    tab is never thrown away unseen;
  *  - its last create is not `incerta`, unless the operator attests it did not
  *    reach Shopee (`confirmarCriacaoIncerta: true`, K1-6): the draft is the
  *    only record of that attempt.
@@ -29,8 +30,9 @@
  *
  * **200** `{linkDocId, descartado: true, criacaoIncerta}` — `true` when the
  * draft discarded was `incerta` (if the listing appears after all, it is
- * imported, never re-created) · 400 a malformed body (a `base` missing a
- * field, a non-boolean attestation, an unknown key) · 401/403 · 404
+ * imported, never re-created) · 400 a malformed body (a `base` missing one of
+ * the five form fields — `logistic_info` optional, compared when named — a
+ * non-boolean attestation, an unknown key) · 401/403 · 404
  * `INEXISTENTE` · 409 `JA_PUBLICADO {linkDocId}` (a listing is never deleted
  * here), `EM_ANDAMENTO {aguardarMs}`, `CONFLITO {conflitos}`,
  * `CRIACAO_INCERTA`.

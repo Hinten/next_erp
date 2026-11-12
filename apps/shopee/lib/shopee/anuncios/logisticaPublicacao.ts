@@ -11,17 +11,22 @@
  * ## The two paths, and when the stored one wins
  *
  * On a REPUBLISH the link document may carry `logistic_info`. When THIS app
- * wrote it (Shopee's read-back of the live listing, an import's reading, or the
- * body a publish sent), it is the last list this app WROTE to this document —
+ * wrote it (Shopee's read-back of the live listing, an import's reading, the
+ * body a publish sent, or the list the operator chose on a draft — #1911 P15),
+ * it is the last list this app WROTE to this document —
  * for an item also the last it sent or read back; a kit republish sends a list
  * and writes none back (`../kits/vinculosKit.ts`). That may
  * include two values the ERP cannot produce at all: the `size_id` of a
  * `SIZE_SELECTION` channel and the `shipping_fee` of a `CUSTOM_PRICE` one. The
  * stamp records WHO wrote the list, never that it is current: a list a full
- * pass sent, or a kit link's create-time body, carries neither value.
+ * pass sent, a kit link's create-time body, or a draft's chosen list carries
+ * neither value.
  * Rebuilding from scratch on every publish would silently overwrite them where
  * they exist. So a TRUSTED stored list is re-validated against the live channel
- * list and, when anything survives, it WINS.
+ * list and, when anything survives, it WINS — and its explicit offs count
+ * (#1911 P15, D-12): an entry stored with the boolean `enabled: false` is not
+ * sent, unless the channel is `force_enable` (`desligado-no-vinculo`). Only a
+ * boolean `false` is an off; an absent, `null`, `'false'` or `0` reads ON.
  *
  * ⚠️ **The stored list is trusted only when this app wrote it (#2015).** The
  * legacy exporter rebuilt its own list from `get_channel_list` on every save,
@@ -34,10 +39,15 @@
  * (`@delfrance/schemas`) — the provenance stamp `logisticaGravadaEm` that every
  * writer of the list in this app writes in the same patch. A DISTRUSTED list
  * never reaches the stored pass: the full pass runs, and only its own skips
- * are reported.
+ * are reported — and none of its offs is honoured, because nothing in this app
+ * vouches for them.
  *
- * On a FIRST publish (or when nothing trusted survives) every shop-enabled
- * channel the parcel fits is enabled.
+ * On a FIRST publish (or when nothing trusted survives) every SELECTABLE
+ * channel ({@link canalSelecionavel}: shop-enabled, and not a fulfillment
+ * channel) the parcel fits is enabled, minus a trusted list's explicit offs
+ * (#1911 P15, D-11): the fallback never switches back on a channel the vínculo
+ * switched off, and when nothing else is left the refusal says so — sentence
+ * (3b) in {@link construirLogistica}.
  *
  * ## The two refusals a distrusted list adds
  *
@@ -58,7 +68,8 @@
  *   list carries no usable name, and names the listing to import.
  *
  * Everything else — a draft, a removido link, a trusted list, a parcel that
- * does not fit, a channel the shop does not enable — keeps
+ * does not fit, a channel the shop does not enable, a fulfillment channel —
+ * keeps
  * `logistica-sem-canal`'s sentence unchanged. Before #1911 P14b an absent or
  * unreadable value on an importable listing kept it too, and that sentence
  * («só o Seller Centre define») was a dead end: while the list stays
@@ -67,8 +78,9 @@
  *
  * When EVERY lost compulsory channel took one of the two, neither shop-wide
  * sentence (no compulsory channel enabled, no channel at all) is added.
- * Condition 3 of `remedioPelaImportacao` proves each such channel is enabled
- * and fits, so after the import records a readable value it is sent and
+ * Condition 3 of `remedioPelaImportacao` proves each such channel is enabled,
+ * is not a fulfillment channel and fits, so after the import records a
+ * readable value it is sent and
  * neither sentence could still hold. Under `logistica-sem-canal` each would
  * also carry the web's weight button, and the no-channel sentence says to
  * check weight and dimensions — but the produto's weight cannot fix a channel
@@ -82,12 +94,16 @@
  * `size_id` goes through `wireInt()`, which COERCES, where C32 requires a
  * refusal; and a whole-object parse failure would throw away the `logistic_id`
  * of an entry whose only defect is one unreadable field. Each field is therefore
- * read explicitly and refused rather than coerced — see {@link paraInteiroWire}.
+ * read explicitly and refused rather than coerced — by ONE reader, shared with
+ * the draft projection: `lerLogisticaArmazenadaShopee` (`@delfrance/schemas`,
+ * #1911 P15, #1369), whose docblock carries the fold and its scope. This module
+ * declares no reader of its own.
  *
  * Re-validation against the live list is the part that matters: the channel must
- * still exist, must still be enabled at shop level (or be `force_enable`), and
- * the parcel must still fit. A channel the seller closed last week is not sent
- * again because it is written down here.
+ * still exist, must still be enabled at shop level (or be `force_enable`), must
+ * not be a fulfillment channel (`mask_channel_id` set and non-zero — #1911 P15),
+ * and the parcel must still fit. A channel the seller closed last week is not
+ * sent again because it is written down here.
  *
  * ## Three rules that each cost money in the wrong direction
  *
@@ -111,7 +127,9 @@
  * **`enabled: false` never reaches the wire.** Only entries we want ON are sent.
  * Two consequences, both deliberate: `related_dependent_block_channels` cannot
  * fire (it triggers on DISABLING), and this ERP cannot turn a channel off —
- * closing a channel is a Seller Centre action.
+ * closing a channel is a Seller Centre action. An off recorded in a TRUSTED
+ * vínculo (#1911 P15) is honoured by NOT sending the channel; the ERP still
+ * never disables a channel on a live listing.
  *
  * ⚠️ There is no `preferred` field on `get_channel_list`. The legacy DTO carried
  * one; a port that copies it inherits a phantom nothing answers.
@@ -125,7 +143,11 @@ import {
   type ShopeeLogisticInfoRequest,
   type ShopeeLogisticsChannel,
 } from '@delfrance/integrations-shopee';
-import { textoUtilizavelShopee } from '@delfrance/schemas';
+import {
+  type EntradaLogisticaArmazenadaShopee,
+  lerLogisticaArmazenadaShopee,
+  textoUtilizavelShopee,
+} from '@delfrance/schemas';
 
 import {
   MOTIVO_PUBLICACAO_BLOQUEADA,
@@ -162,7 +184,8 @@ export const UNIDADES_PARA_CM: Readonly<Record<string, number>> = {
  *
  * ⚠️ Diagnostic, not persisted — it is logged and printed by the CLI so an
  * operator can see why a channel they expected is missing. A member here is a
- * MECHANISM; the seven are the seven ways a channel can fail to be usable.
+ * MECHANISM; the nine are the nine ways a channel can fail to be usable
+ * (#1911 P15 added the last two).
  */
 export type MotivoCanalPulado =
   /** Not `enabled` at shop level (and not `force_enable`), or gone from the list. */
@@ -182,16 +205,31 @@ export type MotivoCanalPulado =
    *
    * ⚠️ An ABSENT size and an UNREADABLE one are one verdict on purpose: in both
    * cases there is no size we may send, the operator's action is the same (pick
-   * one in Seller Centre) and inventing an eighth member would put a distinction
+   * one in Seller Centre) and inventing another member would put a distinction
    * in a log line that nobody can act on differently. The distrusted case is not
-   * an eighth member either: it is what the refusal tells apart, on a
+   * another member either: it is what the refusal tells apart, on a
    * compulsory channel of an importable listing only — a readable stored value
    * is `logistica-nao-confirmada` (#2015), none is `logistica-sem-valor-gravado`
    * (#2099); both say to import the listing.
    */
   | 'size-selection-sem-size-id'
   /** A `CUSTOM_PRICE` channel with no usable stored `shipping_fee` (same #2015 note). */
-  | 'custom-price-sem-tarifa';
+  | 'custom-price-sem-tarifa'
+  /**
+   * `mask_channel_id` set and non-zero — a fulfillment channel hanging off a
+   * checkout one (`types.ts`; guide 209 §7). An ABSENT mask is selectable
+   * (D-LOG-1). Checked right after the shop-level enable and BEFORE the fit,
+   * so a fulfillment channel never reads as one the parcel does not fit
+   * (#1911 P15).
+   */
+  | 'canal-de-fulfillment'
+  /**
+   * A TRUSTED stored entry says `enabled: false` and the channel is not
+   * `force_enable` (#1911 P15, D-12): skipped in BOTH passes, and never a lost
+   * compulsory channel — the vínculo switched it off on purpose. A distrusted
+   * list's off is never honoured, so it never produces this member.
+   */
+  | 'desligado-no-vinculo';
 
 /** One channel we did not send, and why. */
 export interface CanalPulado {
@@ -251,41 +289,32 @@ export interface ArgsLogistica {
   readonly ofereceFreteGratis: boolean;
 }
 
+/**
+ * The PARCEL half of {@link ArgsLogistica} — what one channel's verdict reads
+ * (#1911 P15). The per-channel build and {@link avaliarCanaisDaLojaShopee} take
+ * only this, so trust ({@link ArgsLogistica.armazenadoConfiavel}) stays a
+ * decision of the passes, made once, and is never re-spelled at a new call
+ * site — `logisticaProveniencia.test.ts` counts every place it is passed.
+ */
+export type ParcelaLogistica = Pick<ArgsLogistica, 'pesoKg' | 'dimensaoCm' | 'ofereceFreteGratis'>;
+
+/**
+ * One entry this module puts on the wire: a `ShopeeLogisticInfoRequest` whose
+ * `is_free` is REQUIRED. {@link construirEntrada} always sets it — the stored
+ * choice or the produto flag, masked by `block_seller_cover_shipping_fee` — so a
+ * reader of an entry (the `canais` route's `automatica.isFree`, #1911 P15)
+ * never has to invent a default for it.
+ */
+export type EntradaDoCanalShopee = ShopeeLogisticInfoRequest & { readonly is_free: boolean };
+
 /* -------------------------------------------------------------------------- */
 /*                              the small readers                             */
 /* -------------------------------------------------------------------------- */
 
-/**
- * A wire integer that is safe to send as an `int32` id, or `null`.
- *
- * ⚠️ `Number()` is reached ONLY behind a digits-only test, and that is the whole
- * point of the function: `Number('')` is `0`, `Number(' 12 ')` is `12` and
- * `Number('12.5')` is `12.5`, so a bare coercion invents ids. `0` is refused
- * here as well — no Shopee channel or size id is `0`, and a `'0'` that
- * round-tripped would send a size the seller did not pick (C32).
- */
-function paraInteiroWire(bruto: unknown): number | null {
-  if (typeof bruto === 'number') {
-    return Number.isSafeInteger(bruto) && bruto > 0 ? bruto : null;
-  }
-  if (typeof bruto !== 'string' || !/^\d+$/.test(bruto)) return null;
-  const n = Number(bruto);
-  return Number.isSafeInteger(n) && n > 0 ? n : null;
-}
-
-/** A finite wire number (a shipping fee), or `null`. Same refuse-don't-coerce rule. */
-function paraNumeroWire(bruto: unknown): number | null {
-  if (typeof bruto === 'number') return Number.isFinite(bruto) ? bruto : null;
-  if (typeof bruto !== 'string' || !/^\d+(\.\d+)?$/.test(bruto)) return null;
-  const n = Number(bruto);
-  return Number.isFinite(n) ? n : null;
-}
-
-/** Read one field off an unvalidated stored entry. */
-function campo(bruto: unknown, nome: string): unknown {
-  if (bruto == null || typeof bruto !== 'object' || Array.isArray(bruto)) return undefined;
-  return (bruto as Record<string, unknown>)[nome];
-}
+// The stored list's readers moved to `@delfrance/schemas` in #1911 P15
+// (`lerLogisticaArmazenadaShopee`, #1369): the publisher and the draft
+// projection read a stored entry through ONE function. Only the unit table's
+// reader is left here.
 
 /**
  * Convert a channel-stated length to centimetres, or `null` when the unit is one
@@ -380,8 +409,37 @@ function habilitadoNaLoja(canal: ShopeeLogisticsChannel): boolean {
   return canal.enabled === true || canal.force_enable === true;
 }
 
-/** A channel the item must carry: compulsory, or one the seller cannot close. */
-function canalInescapavel(canal: ShopeeLogisticsChannel): boolean {
+/**
+ * `mask_channel_id` 0 — a checkout channel — or ABSENT (D-LOG-1): never a
+ * fulfillment channel hanging off one (`types.ts`; guide 209 §7).
+ *
+ * ⚠️ `?? 0`, never `=== null`: the package schema folds an absent key to
+ * `null`, but a channel that never went through it carries `undefined`, and
+ * reading THAT as masked would skip every channel and refuse every publish.
+ * `force_enable` does NOT lift it: a channel the seller cannot close is still
+ * not one an item is published on.
+ */
+function mascaraSelecionavel(canal: ShopeeLogisticsChannel): boolean {
+  return (canal.mask_channel_id ?? 0) === 0;
+}
+
+/**
+ * Whether an item may be published on this channel at all, before any fit or
+ * fee question (#1911 P15): enabled at shop level (or `force_enable`) AND not a
+ * fulfillment channel. The SAME two checks, in the same order, open
+ * {@link construirEntrada}, so this verdict and the publisher's skips cannot
+ * disagree. Exported for the `canais` route, through
+ * {@link avaliarCanaisDaLojaShopee}.
+ */
+export function canalSelecionavel(canal: ShopeeLogisticsChannel): boolean {
+  return habilitadoNaLoja(canal) && mascaraSelecionavel(canal);
+}
+
+/**
+ * A channel the item must carry: compulsory, or one the seller cannot close.
+ * Exported for the `canais` route's `obrigatorio` (#1911 P15).
+ */
+export function canalInescapavel(canal: ShopeeLogisticsChannel): boolean {
   return canal.compulsory_channel === true || canal.force_enable === true;
 }
 
@@ -412,25 +470,33 @@ function relacionadosHabilitados(canal: ShopeeLogisticsChannel): readonly number
 
 /** One built entry, or the reason the channel was skipped. */
 type Tentativa =
-  | { readonly ok: true; readonly entrada: ShopeeLogisticInfoRequest }
+  | { readonly ok: true; readonly entrada: EntradaDoCanalShopee }
   | { readonly ok: false; readonly motivo: MotivoCanalPulado };
 
 /**
  * Build the `logistic_info` entry for ONE channel.
  *
- * `sizeId` / `shippingFee` / `isFreeArmazenado` are what the STORED entry said,
- * or `null` on a first publish and on the full pass — which is also the only
- * pass a distrusted list gets (#2015). The two fee types that need them have no
- * other source.
+ * The checks run in ONE order, and each is a near-miss test: the shop-level
+ * enable, then the mask ({@link canalSelecionavel}'s two), then the fit, then
+ * the fee type's stored value. So a fulfillment channel is never reported as
+ * one the parcel does not fit, and a size/fee skip proves the channel is
+ * selectable and fits.
+ *
+ * `sizeId` / `shippingFee` / `isFree` are what the STORED entry said, or `null`
+ * on a first publish and on the full pass — which is also the only pass a
+ * distrusted list gets (#2015). The two fee types that need them have no other
+ * source. `parcela` is the parcel alone ({@link ParcelaLogistica}): the trust
+ * question is the passes', never one channel's.
  */
 function construirEntrada(
   canal: ShopeeLogisticsChannel,
-  args: ArgsLogistica,
+  parcela: ParcelaLogistica,
   armazenado: { sizeId: number | null; shippingFee: number | null; isFree: boolean | null },
 ): Tentativa {
   if (!habilitadoNaLoja(canal)) return { ok: false, motivo: 'nao-habilitado-na-loja' };
+  if (!mascaraSelecionavel(canal)) return { ok: false, motivo: 'canal-de-fulfillment' };
 
-  const naoCabe = cabeNoCanal(canal, args.pesoKg, args.dimensaoCm);
+  const naoCabe = cabeNoCanal(canal, parcela.pesoKg, parcela.dimensaoCm);
   if (naoCabe !== null) return { ok: false, motivo: naoCabe };
 
   const feeType = canal.fee_type;
@@ -443,7 +509,7 @@ function construirEntrada(
 
   // The operator's stored choice wins over the produto flag on a republish; the
   // block flag masks both (rule 2).
-  const querGratis = armazenado.isFree ?? args.ofereceFreteGratis;
+  const querGratis = armazenado.isFree ?? parcela.ofereceFreteGratis;
   const isFree = querGratis && canal.block_seller_cover_shipping_fee !== true;
 
   return {
@@ -509,37 +575,42 @@ type RemedioPelaImportacao =
  * 3. the channel was skipped for the missing VALUE (`size-selection-sem-size-id`
  *    / `custom-price-sem-tarifa`), never for a fit or a shop-level reason —
  *    {@link construirEntrada} checks those first, so this motivo also proves the
- *    channel is enabled and the parcel fits.
+ *    channel is enabled, is not a fulfillment channel (#1911 P15) and the
+ *    parcel fits.
  *
  * Condition 4 then decides WHICH one, and the readable branch is tried FIRST:
  * - a stored entry for that channel holds that value READABLY — through the
- *   same {@link paraInteiroWire} / {@link paraNumeroWire} the stored pass uses,
- *   so the sentence's "not re-sent" is exactly what a trusted copy would have
- *   sent — ⇒ `logistica-nao-confirmada` (#2015). A size where a fee was
- *   missing (or the reverse) does not count;
+ *   same `lerLogisticaArmazenadaShopee` entries the stored pass uses (`lidas`,
+ *   read ONCE by {@link construirLogistica}), so the sentence's "not re-sent"
+ *   is exactly what a trusted copy would have sent — ⇒
+ *   `logistica-nao-confirmada` (#2015). A size where a fee was missing (or the
+ *   reverse) does not count;
  * - none does (absent, unreadable, or only the OTHER field) ⇒
  *   `logistica-sem-valor-gravado` (#2099, CPY-4). Decided only after every
  *   skip of the channel was read, so one readable entry beside an unreadable
  *   one is still #2015's.
+ *
+ * ⚠️ The entries are NOT filtered by `ligado` (#1911 P15): a distrusted list's
+ * off is never honoured, and condition 4 asks whether a VALUE is stored, never
+ * whether the channel is on.
  */
 function remedioPelaImportacao(
   args: ArgsLogistica,
+  lidas: readonly EntradaLogisticaArmazenadaShopee[],
   pulados: readonly CanalPulado[],
   logisticId: number,
 ): RemedioPelaImportacao | null {
   if (args.armazenadoConfiavel) return null;
   const itemId = args.itemIdImportavel;
   if (itemId === null) return null;
-  const doCanal = (args.armazenado ?? []).filter(
-    (bruto) => paraInteiroWire(campo(bruto, 'logistic_id')) === logisticId,
-  );
+  const doCanal = lidas.filter((lida) => lida.logisticId === logisticId);
   // Condition 3, seen for THIS channel — the only thing CPY-4 needs on top of 1–2.
   let faltouValor = false;
   for (const pulado of pulados) {
     if (pulado.logisticId !== logisticId) continue;
     if (pulado.motivo === 'size-selection-sem-size-id') {
       faltouValor = true;
-      if (doCanal.some((bruto) => paraInteiroWire(campo(bruto, 'size_id')) !== null)) {
+      if (doCanal.some((lida) => lida.sizeId !== null)) {
         return {
           motivo: MOTIVO_PUBLICACAO_BLOQUEADA.logisticaNaoConfirmada,
           falta: 'um tamanho',
@@ -549,7 +620,7 @@ function remedioPelaImportacao(
     }
     if (pulado.motivo === 'custom-price-sem-tarifa') {
       faltouValor = true;
-      if (doCanal.some((bruto) => paraNumeroWire(campo(bruto, 'shipping_fee')) !== null)) {
+      if (doCanal.some((lida) => lida.shippingFee !== null)) {
         return {
           motivo: MOTIVO_PUBLICACAO_BLOQUEADA.logisticaNaoConfirmada,
           falta: 'uma tarifa de frete',
@@ -605,43 +676,90 @@ function registrar(passagem: Passagem, canal: ShopeeLogisticsChannel, tentativa:
   if (canalInescapavel(canal)) passagem.inescapaveisPerdidos.push(canal.logistics_channel_id);
 }
 
-/** The stored list, re-validated against the live channel list. */
+/** The stored pass, and the channels its TRUSTED list switched off (#1911 P15). */
+interface PassagemArmazenada {
+  readonly passagem: Passagem;
+  /**
+   * The live channels a stored entry marks with the boolean `enabled: false`
+   * and that are not `force_enable` — the ones {@link passagemCompleta} must
+   * leave off too (D-11). Derived from the list alone, before any enable, mask
+   * or fit question.
+   */
+  readonly desligados: ReadonlySet<number>;
+}
+
+/** A pass that never ran: a distrusted list, or none. */
+function semPassagemArmazenada(): PassagemArmazenada {
+  return { passagem: novaPassagem(), desligados: new Set<number>() };
+}
+
+/**
+ * The stored list, re-validated against the live channel list.
+ *
+ * Per entry, in this order (#1911 P15): an unreadable `logistic_id` was
+ * already dropped by the reader; a channel gone from the live list is
+ * `nao-habilitado-na-loja` (main's); a stored off on a channel that is not
+ * `force_enable` is `desligado-no-vinculo`, pushed DIRECTLY onto `pulados` —
+ * never through {@link registrar}, so it is never a lost compulsory channel —
+ * and recorded in `desligados`; anything else is {@link construirEntrada}'s
+ * (enable → mask → fit → fee).
+ */
 function passagemArmazenada(
-  args: ArgsLogistica,
+  lidas: readonly EntradaLogisticaArmazenadaShopee[],
   porId: ReadonlyMap<number, ShopeeLogisticsChannel>,
-): Passagem {
+  parcela: ParcelaLogistica,
+): PassagemArmazenada {
   const passagem = novaPassagem();
-  for (const bruto of args.armazenado ?? []) {
-    const logisticId = paraInteiroWire(campo(bruto, 'logistic_id'));
-    if (logisticId === null) continue;
-    const canal = porId.get(logisticId);
+  const desligados = new Set<number>();
+  for (const lida of lidas) {
+    const canal = porId.get(lida.logisticId);
     if (canal === undefined) {
       // The channel disappeared from the shop's list since the last read-back.
-      passagem.pulados.push({ logisticId, motivo: 'nao-habilitado-na-loja' });
+      passagem.pulados.push({ logisticId: lida.logisticId, motivo: 'nao-habilitado-na-loja' });
       continue;
     }
-    const isFreeBruto = campo(bruto, 'is_free');
+    if (!lida.ligado && canal.force_enable !== true) {
+      // A boolean `false` in a list THIS app wrote is the vínculo's own off
+      // (D-12): honoured by not sending it. `force_enable` wins — the seller
+      // cannot close that channel, so a stored off cannot either.
+      passagem.pulados.push({ logisticId: lida.logisticId, motivo: 'desligado-no-vinculo' });
+      desligados.add(lida.logisticId);
+      continue;
+    }
     registrar(
       passagem,
       canal,
-      construirEntrada(canal, args, {
-        sizeId: paraInteiroWire(campo(bruto, 'size_id')),
-        shippingFee: paraNumeroWire(campo(bruto, 'shipping_fee')),
-        isFree: typeof isFreeBruto === 'boolean' ? isFreeBruto : null,
+      construirEntrada(canal, parcela, {
+        sizeId: lida.sizeId,
+        shippingFee: lida.shippingFee,
+        isFree: lida.isFree,
       }),
     );
   }
-  return passagem;
+  return { passagem, desligados };
 }
 
-/** Every shop-enabled channel the item fits. */
+/**
+ * Every selectable channel the item fits, minus the trusted list's offs
+ * (`desligados`, D-11): each of those is reported `desligado-no-vinculo` again
+ * and never reaches {@link registrar} — the fallback never switches back on a
+ * channel the vínculo switched off. A distrusted list hands over an empty set.
+ */
 function passagemCompleta(
-  args: ArgsLogistica,
+  parcela: ParcelaLogistica,
   canais: readonly ShopeeLogisticsChannel[],
+  desligados: ReadonlySet<number>,
 ): Passagem {
   const passagem = novaPassagem();
   for (const canal of canais) {
-    registrar(passagem, canal, construirEntrada(canal, args, SEM_ARMAZENADO));
+    if (desligados.has(canal.logistics_channel_id)) {
+      passagem.pulados.push({
+        logisticId: canal.logistics_channel_id,
+        motivo: 'desligado-no-vinculo',
+      });
+      continue;
+    }
+    registrar(passagem, canal, construirEntrada(canal, parcela, SEM_ARMAZENADO));
   }
   return passagem;
 }
@@ -651,27 +769,42 @@ function passagemCompleta(
  *
  * A TRUSTED stored list ({@link ArgsLogistica.armazenadoConfiavel}) wins when
  * anything in it still validates; otherwise — a distrusted list, none at all,
- * or nothing that survives — every shop-enabled channel the parcel fits is
- * enabled. An empty result is a `logistica-sem-canal` refusal — `logistic_info`
- * is REQUIRED on `add_item`, so there is no such thing as publishing with none.
+ * or nothing that survives — every selectable channel the parcel fits is
+ * enabled, minus the trusted list's explicit offs (#1911 P15, D-11). An empty
+ * result is a `logistica-sem-canal` refusal — `logistic_info` is REQUIRED on
+ * `add_item`, so there is no such thing as publishing with none: sentence (3),
+ * or (3b) when a trusted off was among the channels left out, because then
+ * weight and Seller Centre are not the only places the operator must look.
  * A lost compulsory channel is `logistica-sem-canal` too, except the two cases
  * {@link remedioPelaImportacao} names (`logistica-nao-confirmada`,
  * `logistica-sem-valor-gravado`). When every lost compulsory channel is one of
  * those, the two shop-wide sentences are left out (the module header's "The
- * two refusals a distrusted list adds").
+ * two refusals a distrusted list adds"). (3b) and those two never meet: (3b)
+ * needs a trusted list, and the remedies a distrusted one.
  */
 export function construirLogistica(args: ArgsLogistica): ResultadoLogistica {
   const canais = args.canais.filter((c): c is ShopeeLogisticsChannel => c != null);
   const porId = new Map<number, ShopeeLogisticsChannel>();
   for (const canal of canais) porId.set(canal.logistics_channel_id, canal);
 
+  // The stored list is read ONCE, through the shared reader (#1911 P15,
+  // #1369), and both the stored pass and the import remedy read these entries.
+  const lidas = lerLogisticaArmazenadaShopee(args.armazenado) ?? [];
+
   // ⚠️ When the stored list validates to EMPTY its `pulados` are discarded with
   // it: the full pass below walks the same channels and reports its own reasons,
-  // and keeping both would list every channel twice. A DISTRUSTED list (#2015)
-  // never runs the stored pass at all — an empty pass stands in for it, so the
-  // full pass runs and reports only its own reasons.
-  const armazenada = args.armazenadoConfiavel ? passagemArmazenada(args, porId) : novaPassagem();
-  const passagem = armazenada.entradas.length > 0 ? armazenada : passagemCompleta(args, canais);
+  // and keeping both would list every channel twice. Its `desligados` are NOT
+  // discarded — the full pass leaves those channels off too (D-11). A
+  // DISTRUSTED list (#2015) never runs the stored pass at all — an empty pass
+  // with no offs stands in for it, so the full pass runs and reports only its
+  // own reasons.
+  const armazenada = args.armazenadoConfiavel
+    ? passagemArmazenada(lidas, porId, args)
+    : semPassagemArmazenada();
+  const passagem =
+    armazenada.passagem.entradas.length > 0
+      ? armazenada.passagem
+      : passagemCompleta(args, canais, armazenada.desligados);
 
   const canaisHabilitados: number[] = [];
   const vistos = new Set<number>();
@@ -690,7 +823,7 @@ export function construirLogistica(args: ArgsLogistica): ResultadoLogistica {
   const problemas: ProblemaDeBloqueio[] = [];
   let pelaImportacao = 0;
   for (const logisticId of passagem.inescapaveisPerdidos) {
-    const remedio = remedioPelaImportacao(args, passagem.pulados, logisticId);
+    const remedio = remedioPelaImportacao(args, lidas, passagem.pulados, logisticId);
     if (remedio?.motivo === MOTIVO_PUBLICACAO_BLOQUEADA.logisticaNaoConfirmada) {
       // ⚠️ The claim is "no RECORD", never "not read / not sent": a missing
       // stamp proves only that nothing in this app vouches for the list. A
@@ -742,7 +875,8 @@ export function construirLogistica(args: ArgsLogistica): ResultadoLogistica {
   // compulsory channel took `logistica-nao-confirmada` or
   // `logistica-sem-valor-gravado`, the import their sentences name is the
   // remedy — `remedioPelaImportacao`'s condition 3 proves each of those
-  // channels is enabled and fits, so once the import records a readable value
+  // channels is enabled, is not a fulfillment channel and fits, so once the
+  // import records a readable value
   // they are sent and neither shop-wide sentence below holds. Under
   // `logistica-sem-canal` each would get the web's weight button on its
   // `logistic_info` row, and the no-channel one says to check weight and
@@ -767,10 +901,19 @@ export function construirLogistica(args: ArgsLogistica): ResultadoLogistica {
   }
 
   if (passagem.entradas.length === 0 && !soFaltaImportar) {
+    // (3b), #1911 P15 (D-11): a channel the TRUSTED list switched off was left
+    // out, so "the shop's channels" is not the whole story — the vínculo's own
+    // choice is part of it. Only that `pulados` member decides it; the motivo
+    // stays `logistica-sem-canal` either way, and (3) is byte-unchanged.
+    const deixouDesligado = passagem.pulados.some((p) => p.motivo === 'desligado-no-vinculo');
     problemas.push(
       problemaDeLogistica(
-        'Nenhum canal de logística da loja aceita este item: confira peso, ' +
-          'dimensões e os canais habilitados no Seller Centre.',
+        deixouDesligado
+          ? 'Nenhum canal ligado neste vínculo aceita este item (os desligados nele não ' +
+              'são usados): confira peso, dimensões e os canais habilitados no Seller ' +
+              'Centre — num rascunho, também os canais escolhidos na aba Shopee do produto.'
+          : 'Nenhum canal de logística da loja aceita este item: confira peso, ' +
+              'dimensões e os canais habilitados no Seller Centre.',
       ),
     );
   }
@@ -781,4 +924,57 @@ export function construirLogistica(args: ArgsLogistica): ResultadoLogistica {
     pulados: passagem.pulados,
     problemas,
   };
+}
+
+/* -------------------------------------------------------------------------- */
+/*                     the per-channel verdict (#1911 P15)                    */
+/* -------------------------------------------------------------------------- */
+
+/** One shop channel, with the verdict the publisher's full pass gives it. */
+export interface CanalAvaliadoShopee {
+  readonly canal: ShopeeLogisticsChannel;
+  /** {@link canalSelecionavel}: shop-enabled (or `force_enable`) and not a fulfillment channel. */
+  readonly selecionavel: boolean;
+  /** {@link canalInescapavel}: compulsory, or `force_enable`. */
+  readonly obrigatorio: boolean;
+  /**
+   * Why the full pass would skip it, or `null` when it would send it. The type
+   * is the WHOLE union, but `desligado-no-vinculo` never appears here: there
+   * is no stored list to switch anything off.
+   */
+  readonly motivo: MotivoCanalPulado | null;
+  /** The entry the full pass would send — non-`null` exactly when `motivo` is `null`. */
+  readonly entrada: EntradaDoCanalShopee | null;
+}
+
+/**
+ * Every shop channel with the verdict the publisher's FULL pass gives it, for
+ * the `canais` route (#1911 P15, #1369): the editor shows the operator the same
+ * decision a publish will take, never a second copy of the fit, mask, enable or
+ * `is_free` rules.
+ *
+ * Per channel, {@link construirEntrada} with no stored value — exactly what
+ * {@link passagemCompleta} calls with no offs — in `get_channel_list` order,
+ * unreadable (`null`) rows dropped as {@link construirLogistica} drops them. It
+ * takes the parcel alone ({@link ParcelaLogistica}): there is no stored list
+ * here, so there is no trust to decide.
+ *
+ * ⚠️ A verdict, never a decision: publish re-reads `get_channel_list` uncached
+ * and recomputes every one of them, so a stale answer can mislead a screen but
+ * never a send.
+ */
+export function avaliarCanaisDaLojaShopee(
+  entrada: ParcelaLogistica & { readonly canais: readonly ShopeeLogisticsChannel[] },
+): readonly CanalAvaliadoShopee[] {
+  const canais = entrada.canais.filter((c): c is ShopeeLogisticsChannel => c != null);
+  return canais.map((canal) => {
+    const tentativa = construirEntrada(canal, entrada, SEM_ARMAZENADO);
+    return {
+      canal,
+      selecionavel: canalSelecionavel(canal),
+      obrigatorio: canalInescapavel(canal),
+      motivo: tentativa.ok ? null : tentativa.motivo,
+      entrada: tentativa.ok ? tentativa.entrada : null,
+    };
+  });
 }
