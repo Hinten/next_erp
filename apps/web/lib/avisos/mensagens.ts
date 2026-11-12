@@ -2,6 +2,7 @@ import {
   ESTADO_RASTREIO_LI,
   MOTIVO_CATEGORIA_SEM_VINCULO_LI,
   MOTIVO_CONTA_AMAZON,
+  MOTIVO_ESTOQUE_VINCULO_LI,
   MOTIVO_FRETE_NAO_SUPORTADO_LI,
   MOTIVO_RASTREIO_DIVERGENTE_LI,
   MOTIVO_IMPORTACAO_PARADA_AMAZON,
@@ -14,6 +15,7 @@ import {
   TIPO_AVISO,
   motivoCategoriaSemVinculoLiSchema,
   motivoContaAmazonSchema,
+  motivoEstoqueVinculoLiSchema,
   motivoFreteNaoSuportadoLiSchema,
   motivoImportacaoParadaAmazonSchema,
   motivoImportacaoParadaLiSchema,
@@ -30,6 +32,7 @@ import {
   type MotivoRastreioDivergenteLi,
   type MotivoCategoriaSemVinculoLi,
   type MotivoContaAmazon,
+  type MotivoEstoqueVinculoLi,
   type MotivoFreteNaoSuportadoLi,
   type MotivoImportacaoParadaAmazon,
   type MotivoImportacaoParadaLi,
@@ -186,6 +189,41 @@ function fraseMotivoCategoriaSemVinculo(valor: Aviso['params'][string] | undefin
   return codigo.success
     ? FRASE_MOTIVO_CATEGORIA_SEM_VINCULO_LI[codigo.data]
     : 'confira o relatório da importação de produtos';
+}
+
+/**
+ * pt-BR of why linked products get no stock send, and what fixes it — TOTAL over the code
+ * (`params.motivo`, a {@link MOTIVO_ESTOQUE_VINCULO_LI}). The producer (the stock sync's daily
+ * reconcile) stores the CODE, never the sentence.
+ */
+const FRASE_MOTIVO_ESTOQUE_VINCULO_LI: Record<MotivoEstoqueVinculoLi, string> = {
+  [MOTIVO_ESTOQUE_VINCULO_LI.ambiguo]:
+    'um produto do ERP está vinculado a dois produtos da loja; deixe um só vínculo nele',
+  [MOTIVO_ESTOQUE_VINCULO_LI.duplicado]:
+    'um produto da loja está vinculado a dois produtos do ERP; desfaça o vínculo errado',
+  [MOTIVO_ESTOQUE_VINCULO_LI.semLinhaNaLoja]:
+    'a Loja Integrada não tem estoque para um produto vinculado (ele pode ter sido apagado ' +
+    'na loja); confira o produto no painel ou desfaça o vínculo',
+  [MOTIVO_ESTOQUE_VINCULO_LI.ausente]:
+    'o vínculo aponta para um produto do ERP que não existe mais; vincule o produto da loja ' +
+    'de novo ou desfaça o vínculo',
+  [MOTIVO_ESTOQUE_VINCULO_LI.estoqueAmbiguo]:
+    'o produto tem dois registros de estoque no depósito da conta e nenhum é o principal; ' +
+    'deixe um só registro nesse depósito',
+};
+
+/** The motivo's sentence, or a neutral one — the {@link fraseMotivoImportacaoParada} contract. */
+function fraseMotivoEstoqueVinculo(valor: Aviso['params'][string] | undefined): string {
+  const codigo = motivoEstoqueVinculoLiSchema.safeParse(valor);
+  return codigo.success
+    ? FRASE_MOTIVO_ESTOQUE_VINCULO_LI[codigo.data]
+    : 'confira os vínculos e o estoque desses produtos';
+}
+
+/** " Os primeiros: p1, p2." — only when the producer stored a sample; nothing otherwise. */
+function fraseAmostra(params: Aviso['params']): string {
+  const amostra = p(params, 'amostra', '');
+  return amostra === '' ? '' : ` Os primeiros: ${amostra}.`;
 }
 
 /**
@@ -1050,6 +1088,42 @@ export const MENSAGENS_POR_TIPO: Record<TipoAviso, MensagemAviso> = {
       'relatório da importação na tela da conta, corrija no ERP ou no painel da Loja Integrada e ' +
       'rode a importação de novo com "Todos"; o aviso se encerra quando uma importação completa ' +
       'terminar sem pendências.',
+  },
+  // The three avisos of the stock sync (step 12), all `atencao`. Meanwhile the store keeps its
+  // own number, so each sentence says what the store shows. No `runbook`: the fixes are in the
+  // ERP (a stock record, a link) or in the store's panel, and each sentence says which.
+  [TIPO_AVISO.lojaIntegradaEstoqueSemErp]: {
+    titulo: 'Produtos da Loja Integrada sem estoque no ERP',
+    corpo: (params) =>
+      `${p(params, 'produtos')} produto(s) vinculado(s) à loja ${p(params, 'loja')} nunca ` +
+      'tiveram estoque no ERP, em nenhum depósito, por isso o ERP não envia o estoque deles e a ' +
+      `Loja Integrada mantém o número que já tinha.${fraseAmostra(params)} Cadastre o estoque ` +
+      'deles no depósito da conta; o aviso se encerra quando a conferência diária de estoque ' +
+      'não encontrar mais nenhum.',
+  },
+  [TIPO_AVISO.lojaIntegradaEstoqueRecusado]: {
+    titulo: 'Estoque recusado pela Loja Integrada',
+    corpo: (params) => {
+      // `p()` decide o que é "ausente" (sem a chave OU ''), então a cláusula e o
+      // marcador nunca discordam: sem status, a cláusula inteira some.
+      const status = p(params, 'status', '');
+      return (
+        `A Loja Integrada recusou o estoque do produto ${p(params, 'produto')} ` +
+        `(produto ${p(params, 'idLi')} na loja ${p(params, 'loja')})` +
+        `${status === '' ? '' : ` com HTTP ${status}`}, e o número dele na loja não foi ` +
+        'atualizado. Confira o produto no painel da Loja Integrada; o aviso se encerra quando ' +
+        'um envio desse produto der certo, e a conferência diária tenta de novo enquanto a loja ' +
+        'estiver diferente do ERP.'
+      );
+    },
+  },
+  [TIPO_AVISO.lojaIntegradaEstoqueVinculo]: {
+    titulo: 'Estoque da Loja Integrada parado por um vínculo',
+    corpo: (params) =>
+      `Na loja ${p(params, 'loja')}, ${p(params, 'produtos')} produto(s) estão sem envio de ` +
+      `estoque: ${fraseMotivoEstoqueVinculo(params.motivo)}. Enquanto isso a Loja Integrada ` +
+      `mantém o número que já tinha.${fraseAmostra(params)} O aviso se encerra quando a ` +
+      'conferência diária de estoque não encontrar mais nenhum caso.',
   },
   // Sem `runbook` nos dois avisos por CONTA da Amazon: o conserto está no app —
   // uma nova autorização pelo painel de conexão da conta (o link do aviso).

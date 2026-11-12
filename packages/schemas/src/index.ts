@@ -1777,6 +1777,9 @@ export {
   MOTIVO_RASTREIO_DIVERGENTE_LI,
   motivoCategoriaSemVinculoLiSchema,
   MOTIVO_CATEGORIA_SEM_VINCULO_LI,
+  motivoEstoqueVinculoLiSchema,
+  MOTIVO_ESTOQUE_VINCULO_LI,
+  MAX_AMOSTRA_AVISO_ESTOQUE_LI,
   situacaoAnuncioForaDaSincronizacaoSchema,
   SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO,
   chaveDeAviso,
@@ -1803,6 +1806,7 @@ export {
   type MotivoReversaoComEtiquetaLi,
   type MotivoRastreioDivergenteLi,
   type MotivoCategoriaSemVinculoLi,
+  type MotivoEstoqueVinculoLi,
   type SituacaoAnuncioForaDaSincronizacao,
 } from './aviso';
 export * from './shared/inicio';
@@ -1847,6 +1851,15 @@ export * from './faseRetirada';
 // Bare: no Meta, never a combined `{ schema, meta }`, so `registry.test.ts` sees
 // nothing to register.
 export * from './notificacaoEscritaLojaIntegrada';
+
+// Admin-only / default-deny (NOT in ALL_DOMAINS) — the Loja Integrada stock sync
+// (master plan step 12, PR 12-a): the per-conta cursor, snapshot and kits map, the
+// daily reconcile's run document, and the stock tasks' ids-only payloads. Bare: no
+// Meta, never a combined `{ schema, meta }`, so `registry.test.ts` sees nothing to
+// register and the rules generator emits nothing.
+export * from './sincEstoqueLojaIntegrada';
+export * from './reconcileEstoqueLojaIntegrada';
+export * from './tarefaEstoqueLojaIntegrada';
 
 // The machine-readable next step of a Shopee publish refusal (step 21, #1529):
 // the refusal sites in `apps/shopee` produce it, the web's wire parses it per row

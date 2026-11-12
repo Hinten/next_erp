@@ -105,6 +105,14 @@ export { notificacaoShopeeCollection } from './notificacaoShopeeCollection';
 export { notificacaoLojaIntegradaCollection } from './notificacaoLojaIntegradaCollection';
 export { notificacaoEscritaLojaIntegradaCollection } from './notificacaoEscritaLojaIntegradaCollection';
 export { pollPedidosLojaIntegradaCollection } from './pollPedidosLojaIntegradaCollection';
+export {
+  fatiaKitsComponenteEstoqueLiCollection,
+  kitsComponenteEstoqueLiCollection,
+  paisSnapshotEstoqueLiCollection,
+  reconcileEstoqueLojaIntegradaCollection,
+  sincEstoqueLojaIntegradaCollection,
+  snapshotEstoqueLiCollection,
+} from './sincEstoqueLojaIntegradaCollection';
 export { notificacaoAmazonCollection } from './notificacaoAmazonCollection';
 export { pollPedidosAmazonCollection } from './pollPedidosAmazonCollection';
 export { clienteCollection } from './clienteCollection';

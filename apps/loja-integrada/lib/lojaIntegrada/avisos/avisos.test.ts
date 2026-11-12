@@ -9,6 +9,7 @@ import { describe, expect, it } from 'vitest';
 import { escreverAviso } from '@delfrance/data/admin/avisos';
 import {
   CANAL_AVISO,
+  MOTIVO_ESTOQUE_VINCULO_LI,
   MOTIVO_IMPORTACAO_PARADA_LI,
   ROTAS_AVISO,
   SEVERIDADE_AVISO,
@@ -20,6 +21,7 @@ import { FakeDb, asDb, grpc, increment } from '../testing/fakeDb';
 import { AGORA_MS, DIA_MS, caminhoAviso } from '../testing/fixtures';
 import {
   MOTIVO_AVISO_LI,
+  TIPOS_AVISO_ESTOQUE_LI,
   TIPOS_AVISO_IMPORTACAO_PRODUTOS_LI,
   TIPOS_AVISO_LI,
   TIPOS_AVISO_PEDIDO_LI,
@@ -28,6 +30,7 @@ import {
   avisarExpiracaoToken,
   avisarImportacaoParada,
   avisarReconexaoPendente,
+  chaveEstoqueSemErpLi,
   chaveExpiracao,
   chaveImportacaoComPendenciasLi,
   chaveImportacaoParada,
@@ -347,6 +350,10 @@ describe('the import-stopped tipo (step 3) in the orphan pass', () => {
         TIPO_AVISO.lojaIntegradaCategoriaSemVinculo,
         TIPO_AVISO.lojaIntegradaRevisaoFiscal,
         TIPO_AVISO.lojaIntegradaImportacaoComPendencias,
+        // The stock sync (step 12): one per conta, per produto and per motivo (both by key PREFIX).
+        TIPO_AVISO.lojaIntegradaEstoqueSemErp,
+        TIPO_AVISO.lojaIntegradaEstoqueRecusado,
+        TIPO_AVISO.lojaIntegradaEstoqueVinculo,
       ].sort(),
     );
     const { chave } = await raise(new FakeDb(), 1_000);
@@ -680,6 +687,58 @@ describe('the product import tipos (step 9)', () => {
   it('a job stamp in ms becomes the µs clock, through agoraUsDe', () => {
     expect(relogioDaImportacaoUs(AGORA_MS)).toBe(agoraUsDe({ nowMs: AGORA_MS }));
     expect(relogioDaImportacaoUs(AGORA_MS + 1)).toBe(relogioDaImportacaoUs(AGORA_MS) + 1_000);
+  });
+});
+
+describe('the stock sync tipos (step 12)', () => {
+  const ID = 'conta-li-1';
+
+  it('the per-conta key, apart from every other per-conta key', () => {
+    expect(chaveEstoqueSemErpLi(ID)).toBe(
+      chaveDeAviso({ tipo: TIPO_AVISO.lojaIntegradaEstoqueSemErp, conta: ID }),
+    );
+    const chaves = [
+      chaveExpiracao(ID),
+      chaveReconexao(ID),
+      chaveImportacaoParada(ID),
+      chaveRevisaoFiscalLi(ID),
+      chaveImportacaoComPendenciasLi(ID),
+      chaveEstoqueSemErpLi(ID),
+    ];
+    expect(new Set(chaves).size).toBe(chaves.length);
+    expect(chaveEstoqueSemErpLi(ID)).not.toBe(chaveEstoqueSemErpLi('conta-li-2'));
+  });
+
+  it('the per-produto and per-motivo tipos join the per-entity set; the per-conta one does not', () => {
+    expect([...TIPOS_AVISO_ESTOQUE_LI].sort()).toEqual(
+      [
+        TIPO_AVISO.lojaIntegradaEstoqueSemErp,
+        TIPO_AVISO.lojaIntegradaEstoqueRecusado,
+        TIPO_AVISO.lojaIntegradaEstoqueVinculo,
+      ].sort(),
+    );
+    expect(TIPOS_AVISO_POR_ENTIDADE_LI.has(TIPO_AVISO.lojaIntegradaEstoqueRecusado)).toBe(true);
+    expect(TIPOS_AVISO_POR_ENTIDADE_LI.has(TIPO_AVISO.lojaIntegradaEstoqueVinculo)).toBe(true);
+    expect(TIPOS_AVISO_POR_ENTIDADE_LI.has(TIPO_AVISO.lojaIntegradaEstoqueSemErp)).toBe(false);
+    for (const tipo of TIPOS_AVISO_ESTOQUE_LI) expect(TIPOS_AVISO_LI.has(tipo), tipo).toBe(true);
+  });
+
+  it('a per-produto and a per-motivo row’s prefix is its conta’s; near-miss: the per-conta row has none', () => {
+    for (const [tipo, entidade] of [
+      [TIPO_AVISO.lojaIntegradaEstoqueRecusado, 'p1'],
+      [TIPO_AVISO.lojaIntegradaEstoqueVinculo, MOTIVO_ESTOQUE_VINCULO_LI.semLinhaNaLoja],
+    ] as const) {
+      const chave = chaveDeAviso({ tipo, conta: ID, entidade });
+      expect(prefixoDoAvisoPorEntidadeLi(tipo, chave), tipo).toBe(
+        prefixoDaContaNoAvisoLi(tipo, ID),
+      );
+      expect(prefixoDoAvisoPorEntidadeLi(tipo, chave), tipo).not.toBe(
+        prefixoDaContaNoAvisoLi(tipo, 'conta-li-12'),
+      );
+    }
+    expect(
+      prefixoDoAvisoPorEntidadeLi(TIPO_AVISO.lojaIntegradaEstoqueSemErp, chaveEstoqueSemErpLi(ID)),
+    ).toBeNull();
   });
 });
 
