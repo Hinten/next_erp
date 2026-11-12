@@ -1353,7 +1353,7 @@ The step plan was approved on 2026-11-12 (D15), with the owner's answers of that
   - **Rulesets:** regenerate both + snapshots if a new collection is added.
   - **Env:** `_PRECO` valve and canary.
 - **Seam:** the ERP price-list readers.
-- **Rule 7:** **serialised**, like step 12: writes queue at concurrency 1, value derived at send time. The residual is bounded by the daily reconcile (≤ 24 h).
+- **Rule 7:** **serialised**: writes queue at concurrency 1 (step 12's stock runs on its own stock-only queue, with the same options), value derived at send time. The residual is bounded by the daily reconcile (≤ 24 h).
 - **Dry-run/valve:** `_PRECO`. **Rollback:** re-PUT the logged prior `cheio`/`promocional`/`custo`.
 - **Verification:**
   - Decimals as strings and as numbers.
@@ -1855,9 +1855,9 @@ Each item below becomes an issue **only after Lucas says yes to opening it**. Th
      - the rehearsal data is purged by a script within 7 days and never exported;
      - captures stay out of git.
    - Yes or no?
-5. **Stock reservation:** should LI orders awaiting payment hold ERP stock (then the stock push adds LI's `quantidade_reservada`, model A), or should LI alone reserve them (model B)? This decides step 12's quantity. Note that LI's own help articles disagree on whether Pedido Efetuado reserves (§1.2 item 3).
+5. ~~**Stock reservation:** should LI orders awaiting payment hold ERP stock (then the stock push adds LI's `quantidade_reservada`, model A), or should LI alone reserve them (model B)? This decides step 12's quantity. Note that LI's own help articles disagree on whether Pedido Efetuado reserves (§1.2 item 3).~~ **Decided on 2026-10-27:** model A. LI orders awaiting payment hold ERP stock like every channel's, so the stock push sends the ERP quantity plus LI's `quantidade_reservada`, read just before the PUT (step 12).
 6. ~~**Multi-envio orders:** do the stores ever split one order into several shipments? If never, the first `envios[]` entry plus an aviso is enough.~~ **Decided on 2026-10-14:** never. The first `envios[]` entry drives the freight, and any other raises a non-blocking incidente on the pedido, not an aviso (step 5).
-7. **Kit staleness:** a component sold on another channel reaches an LI kit's quantity only at the daily reconcile (≤ ~24 h). Acceptable, or should the step-12 plan cost a scoped propagation for LI-linked kits?
+7. ~~**Kit staleness:** a component sold on another channel reaches an LI kit's quantity only at the daily reconcile (≤ ~24 h). Acceptable, or should the step-12 plan cost a scoped propagation for LI-linked kits?~~ **Decided on 2026-10-27, refined on 2026-11-12:** a component's change reaches only the LI-linked kits that contain it. When a component is in at most 30 of them, they are sent at once; beyond that, a kit dropping to 0 is sent at once and every other kit change waits for the daily reconcile (step 12).
 8. ~~**Where the freight-mapping editor lives** (step 20/21).~~ **Decided on 2026-10-07** (Lucas delegated the choice): a "Mapeamento do Frete" tab plus a "Horário de Corte" tab on the LI conta screen `/canais/loja-integrada/[id]`, as in the legacy, because the operator maps methods where the conta is configured. The rejected option was a `/logistica/loja-integrada` page beside the other freight editors.
 
 ---
