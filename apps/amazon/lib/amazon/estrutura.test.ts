@@ -48,8 +48,8 @@
  *    14-b's LIGHT check of `nfe/tarefaNfe.ts`, `nfe/motivosNfe.ts` and
  *    `nfe/pedidoNfe.ts`, which sit in that closure. The task-SDK helpers live in
  *    `core/filaTarefas.ts`, the one production importer of the Cloud Tasks SDK
- *    under `lib/amazon`, and the app has exactly FOUR `getFunctions(` roots
- *    (since step 15, PR 15-c), each pinned to the queue it binds; and each of
+ *    under `lib/amazon`, and every `getFunctions(` root of the app (FIVE since
+ *    step 12a, PR 12-c) is pinned to the queue(s) it binds; and each of
  *    the two Delivery calls
  *    (`getInvoiceStatus`, `submitInvoice`) has exactly ONE caller module,
  *    `nfe/entregaAmazon.ts`, across `lib/`, `app/`, `functions/src` and
@@ -116,11 +116,18 @@
  *  - (step 12a, PR 12-b) `feeds/` is Next-free, reads no process environment
  *    and never imports the `@/` alias; the write engine's SECOND entry, the
  *    batch entry `executarLoteEscritaAmazon`, has its OWN caller roster, kept
- *    apart from the first entry's and EMPTY until a feed is wired (no
- *    production file calls it, and only the engine names it); both entries
- *    reach the write client through the engine's one private write helper, so
- *    the write-client builder keeps its three places and the observer seam its
- *    four sites.
+ *    apart from the first entry's; both entries reach the write client through
+ *    the engine's one private write helper, so the write-client builder keeps
+ *    its three places and the observer seam its four sites;
+ *  - (step 12a, PR 12-c) the batch entry's roster is the send handler alone
+ *    (`feeds/enviarFeed.ts`); the jobs queue has its OWN composition root
+ *    (`functions/src/agendadorEstoque.ts`, the fifth `getFunctions(` caller),
+ *    and the App Hosting root binds it too, for the receiver's feed wake-up;
+ *    the six feed helpers of the SP-API package are named in production code
+ *    by ONE module, `feeds/feedsAmazon.ts` (the redactor aside); the App
+ *    Hosting union walk reaches no feed handler — of `feeds/`, only the jobs
+ *    producer and the payload contract; and under `feeds/` only the lease I/O
+ *    and the record's two writers make a Firestore WRITE call.
  */
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, posix, relative, sep } from 'node:path';
@@ -587,9 +594,9 @@ function importadoresDoSdkDeTarefas(fontes: readonly (readonly [string, string])
 }
 
 /**
- * The App Hosting composition root of the reads queue (3-c) and, since step
- * 14 (PR 14-d), of the NF-e queue's re-drive producer: one of the app's four
- * `getFunctions(` callers.
+ * The App Hosting composition root of the reads queue (3-c), since step 14 (PR
+ * 14-d) of the NF-e queue's re-drive producer, and since step 12a (PR 12-c) of
+ * the jobs queue's feed wake-up: one of the app's five `getFunctions(` callers.
  */
 const ARQUIVO_RAIZ_DA_FILA = 'lib/firebase/filaLeitura.ts';
 
@@ -639,19 +646,33 @@ const ARQUIVO_RAIZ_DA_FILA_NFE = 'functions/src/agendadorNfe.ts';
 const ARQUIVO_RAIZ_DA_FILA_AGENDAMENTO = 'functions/src/agendadorAgendamento.ts';
 
 /**
+ * The functions codebase's composition root of the jobs queue (step 12a, PR
+ * 12-c): the FIFTH caller, for the feed handlers' own enqueues. Its own file,
+ * never a producer added to another root, whose closure would then reach the
+ * jobs producer.
+ */
+const ARQUIVO_RAIZ_DO_AGENDADOR_ESTOQUE = 'functions/src/agendadorEstoque.ts';
+
+/**
  * Each composition root and the queue(s) it binds, by the path builders it
  * calls: a root that binds another root's queue — the NF-e producer added to
  * the functions codebase's reads-queue root, whose closure the NF-e trigger
  * must never reach — is a different file than this table says. The App
- * Hosting root binds BOTH queues (since step 14, PR 14-d: the re-drive route's
- * NF-e producer), behind its ONE `getFunctions(` call
+ * Hosting root binds THREE queues (since step 14, PR 14-d: the re-drive route's
+ * NF-e producer; since step 12a, PR 12-c: the receiver's feed wake-up onto the
+ * jobs queue), behind its ONE `getFunctions(` call
  * (`lib/firebase/filaLeitura.test.ts` pins the single call).
  */
 const FILAS_DE_CADA_RAIZ: Readonly<Record<string, readonly string[]>> = {
-  [ARQUIVO_RAIZ_DA_FILA]: ['caminhoDaFilaAmazon', 'caminhoDaFilaNfeAmazon'],
+  [ARQUIVO_RAIZ_DA_FILA]: [
+    'caminhoDaFilaAmazon',
+    'caminhoDaFilaLotesAmazon',
+    'caminhoDaFilaNfeAmazon',
+  ],
   [ARQUIVO_RAIZ_DA_FILA_FUNCOES]: ['caminhoDaFilaAmazon'],
   [ARQUIVO_RAIZ_DA_FILA_NFE]: ['caminhoDaFilaNfeAmazon'],
   [ARQUIVO_RAIZ_DA_FILA_AGENDAMENTO]: ['caminhoDaFilaAgendamentoAmazon'],
+  [ARQUIVO_RAIZ_DO_AGENDADOR_ESTOQUE]: ['caminhoDaFilaLotesAmazon'],
 };
 
 /** The queue-path builders a source CALLS (comments aside), sorted and deduplicated. */
@@ -898,11 +919,18 @@ const importaModulo = (arquivo: string, texto: string, alvo: string) =>
       (espec.startsWith('.') || espec.startsWith('@/')) && moduloDe(arquivo, espec) === alvo,
   );
 
+/** The jobs queue's pure producer (step 12a, PR 12-c): on the App Hosting walk for the receiver's wake-up. */
+const PRODUTOR_DE_LOTES = 'lib/amazon/feeds/agendadorLotes.ts';
+
+/** The jobs queue's payload contract (step 12a, PR 12-b): what the producer and the receiver build. */
+const CONTRATO_DE_LOTES = 'lib/amazon/feeds/tarefaLote.ts';
+
 /**
  * The App Hosting bundle's entry points, relative to the APP root: every
  * production file under `app/` (the routes, the push receiver's included), the
  * proxy, and — named too, although the routes reach them — the receiver's body,
- * its queue producer and the queue's App Hosting composition root.
+ * its two queue producers (the reads queue's; since step 12a, PR 12-c, the jobs
+ * queue's) and the queues' App Hosting composition root.
  */
 const entradasDoAppHosting = (): string[] => [
   ...arquivosTs(join(RAIZ_APP, 'app'))
@@ -911,7 +939,24 @@ const entradasDoAppHosting = (): string[] => [
   'proxy.ts',
   'lib/amazon/notificacoes/receptor.ts',
   'lib/amazon/notificacoes/agendador.ts',
+  PRODUTOR_DE_LOTES,
   'lib/firebase/filaLeitura.ts',
+];
+
+/**
+ * The feed core's WIRING (step 12a, PR 12-c), none of which an App Hosting entry
+ * needs: the dispatcher, the four handlers, the one caller of the SP-API feed
+ * helpers and the lease I/O. The receiver's wake-up reaches only
+ * {@link PRODUTOR_DE_LOTES} and {@link CONTRATO_DE_LOTES} of `feeds/`.
+ */
+const MODULOS_DE_FEED_FORA_DO_APP_HOSTING = [
+  'lib/amazon/feeds/processarLote.ts',
+  'lib/amazon/feeds/enviarFeed.ts',
+  'lib/amazon/feeds/resultadoFeed.ts',
+  'lib/amazon/feeds/incertoFeed.ts',
+  'lib/amazon/feeds/recuperarFeed.ts',
+  'lib/amazon/feeds/feedsAmazon.ts',
+  'lib/amazon/feeds/vezFeedFirestore.ts',
 ];
 
 /**
@@ -954,7 +999,11 @@ const MOTOR_DE_ESCRITA = 'lib/amazon/core/escrita.ts';
  * client and bypass the task's valve and canary (step-14 plan §3 decision 20);
  * and since the label route (step 15, PR 15-d), the four scheduling modules no
  * App Hosting entry needs: the task, its producer, its two entries and its
- * payload (`notificacoes/notificacao.ts` declares the shapes it needs itself).
+ * payload (`notificacoes/notificacao.ts` declares the shapes it needs itself);
+ * and since the receiver's feed wake-up (step 12a, PR 12-c), the feed core's
+ * wiring ({@link MODULOS_DE_FEED_FORA_DO_APP_HOSTING}): a bundle that reaches a
+ * handler, the lease I/O or the one caller of the feed helpers can submit a feed
+ * outside the jobs queue.
  */
 const PROIBIDOS_NO_APP_HOSTING = [
   SEAM_DO_IMPORTADOR,
@@ -964,6 +1013,7 @@ const PROIBIDOS_NO_APP_HOSTING = [
   'lib/amazon/agendamento/entradasAgendamento.ts',
   'lib/amazon/agendamento/processarAgendamento.ts',
   'lib/amazon/agendamento/tarefaAgendamento.ts',
+  ...MODULOS_DE_FEED_FORA_DO_APP_HOSTING,
 ];
 
 /**
@@ -1296,12 +1346,13 @@ const CONSTRUTOR_LOCAL_DO_MOTOR = 'construirClienteEscrita';
 /* --------------------- step 12a (PR 12-b): the batch entry --------------------- */
 
 /**
- * The ONLY production callers of the write engine's batch entry: NONE until a
- * feed is wired. A roster of its own, never merged into
- * {@link CHAMADORES_DO_MOTOR_DE_ESCRITA}: that one is one caller per write
+ * The ONLY production callers of the write engine's batch entry: since the feed
+ * wiring (step 12a, PR 12-c), the send handler alone — every feed of every
+ * batch fluxo is built and submitted there. A roster of its own, never merged
+ * into {@link CHAMADORES_DO_MOTOR_DE_ESCRITA}: that one is one caller per write
  * flow of the FIRST entry, and its regexes would refuse a batch caller anyway.
  */
-const CHAMADORES_DO_LOTE_DE_ESCRITA: readonly string[] = [];
+const CHAMADORES_DO_LOTE_DE_ESCRITA: readonly string[] = ['lib/amazon/feeds/enviarFeed.ts'];
 
 /**
  * A CALL of the batch entry, in comment-free code — a type argument list
@@ -1326,6 +1377,65 @@ const nomeiaOLoteDeEscrita = (texto: string) =>
 
 /** The engine's one private write helper: both entries reach the write client through it. */
 const ESCRITA_UNICA_DO_MOTOR = 'escreverUmaVez';
+
+/* --------------------- step 12a (PR 12-c): the feed wiring --------------------- */
+
+/**
+ * The ONE module that may call the SP-API package's six feed helpers
+ * (`createFeedDocument`, `createFeed`, `getFeed`, `getFeedDocument`, the
+ * document upload and the report download): a second caller would spend the
+ * feed operations' small quotas outside the jobs queue's serial dispatch (and
+ * `createFeed` is not idempotent), and the two pre-signed URLs never leave it.
+ */
+const CHAMADOR_DOS_FEEDS = 'lib/amazon/feeds/feedsAmazon.ts';
+
+/**
+ * Production files that NAME a feed operation without calling it, each with
+ * why: the log and fixture redactor keys its allow-list tables by the operation
+ * and its path (its closure is pinned to `zod` and `@delfrance/core/*`, so it
+ * cannot reach a client). Every other mention — the handlers' docblocks, the
+ * sanitizer's method rows (a bare object key, `getFeed: ['GET']`) — is a comment
+ * or no call shape. Tests are exempt by construction (the scan reads no test
+ * file): they name the helpers to drive a scripted fetch.
+ */
+const NOMEIAM_FEEDS_SEM_CHAMAR = ['lib/amazon/core/redacao.ts'];
+
+/**
+ * A feed call site, in comment-free code: any of the six package helpers, the
+ * four operation-name constants, either path constant, the four answer schemas,
+ * any of the four operation names as a WHOLE string, or a feeds path anywhere
+ * in a string.
+ */
+const CHAMADA_DOS_FEEDS =
+  /\b(?:criarDocumentoFeedAmazon|criarFeedAmazon|lerFeedAmazon|lerDocumentoFeedAmazon|enviarDocumentoFeedAmazon|baixarRelatorioFeedAmazon|OPERACAO_CRIAR_DOCUMENTO_FEED|OPERACAO_CRIAR_FEED|OPERACAO_LER_FEED|OPERACAO_LER_DOCUMENTO_FEED|CAMINHO_DOCUMENTOS_FEED|CAMINHO_FEEDS|documentoFeedCriadoSchema|feedCriadoSchema|feedAmazonSchema|documentoFeedSchema)\b|['"`](?:createFeedDocument|createFeed|getFeed|getFeedDocument)['"`]|\/feeds\/2021-06-30\//;
+
+const nomeiaOsFeeds = (texto: string) => CHAMADA_DOS_FEEDS.test(semComentarios(texto));
+
+/**
+ * A Firestore WRITE call under `feeds/`, in comment-free code: `update`,
+ * `create`, `batch`, `merge` and `mergeIfExists` on any receiver, and `set`,
+ * `delete` and `add` on a ref (a name ending in `ref`/`Ref`), a collection
+ * handle (`…Collection`) or a call's result (`docRef(…).set(`). A bare
+ * `.set(`/`.delete(` on any other name is a `Map`'s or a `Set`'s — the report
+ * reducer groups its issues in one — so the scan stays out of it.
+ */
+const ESCRITA_FIRESTORE_EM_FEEDS =
+  /\.\s*(?:update|create|batch|merge|mergeIfExists)\s*\(|(?:\b\w*(?:ref|Ref|Collection)|\))\s*\.\s*(?:set|delete|add)\s*\(/g;
+
+/**
+ * The ONLY files under `feeds/` that write Firestore, each with its writes and
+ * why: the lease I/O (`create` on a missing lease, `update` on the read it
+ * decided from, through `vezFeedAmazonCollection`), the send handler's record
+ * `create` (tier 0, after the lease names the feed) and the result handler's
+ * record `update` (tier 1, through `feedAmazonCollection`). Every other module
+ * — the dispatcher, the uncertain path, the recovery, the producer, the seam —
+ * writes through these or through `avisos/avisos.ts`.
+ */
+const ESCRITORES_EM_FEEDS: Readonly<Record<string, number>> = {
+  'feeds/vezFeedFirestore.ts': 2,
+  'feeds/enviarFeed.ts': 1,
+  'feeds/resultadoFeed.ts': 1,
+};
 
 /** The source text of the top-level function `nome` in `texto`, or `null`. */
 function textoDaFuncao(texto: string, nome: string): string | null {
@@ -1767,17 +1877,19 @@ describe('the step-3 intake guards', () => {
 
   // An app-wide parse (≈ 0.2–0.4 s locally, more on a CI runner): CI headroom, not a budget.
   it(
-    'no file under lib/amazon calls getFunctions(, and the FOUR composition roots are the app’s only callers, each binding its own queue',
+    'no file under lib/amazon calls getFunctions(, and the FIVE composition roots are the app’s only callers, each binding its own queue',
     { timeout: 30_000 },
     () => {
       const lib = arquivosTs(RAIZ_LIB).filter((p) => !ehTeste(p));
       expect(lib.filter((p) => chamaGetFunctions(readFileSync(p, 'utf8'))).map(rel)).toEqual([]);
       // The EXACT list of composition roots, app-wide: the App Hosting
       // `lib/firebase/filaLeitura.ts` (3-c: the receiver's; since step 14, PR
-      // 14-d, the re-drive route's NF-e producer too), the functions codebase's
+      // 14-d, the re-drive route's NF-e producer too; since step 12a, PR 12-c,
+      // the receiver's jobs producer), the functions codebase's
       // `functions/src/agendador.ts` (3-d, the step-4 poll's), its NF-e root
-      // `functions/src/agendadorNfe.ts` (step 14, PR 14-c) and its scheduling
-      // root `functions/src/agendadorAgendamento.ts` (step 15, PR 15-c).
+      // `functions/src/agendadorNfe.ts` (step 14, PR 14-c), its scheduling
+      // root `functions/src/agendadorAgendamento.ts` (step 15, PR 15-c) and its
+      // jobs root `functions/src/agendadorEstoque.ts` (step 12a, PR 12-c).
       // Every file the walk returns (`.ts`, `.tsx`, `.mjs`): a `.tsx` page is app code too.
       const app = arquivosTs(RAIZ_APP).filter((p) => !ehTeste(p));
       expect(app.length).toBeGreaterThan(40);
@@ -1791,6 +1903,7 @@ describe('the step-3 intake guards', () => {
           ARQUIVO_RAIZ_DA_FILA,
           ARQUIVO_RAIZ_DA_FILA_NFE,
           ARQUIVO_RAIZ_DA_FILA_AGENDAMENTO,
+          ARQUIVO_RAIZ_DO_AGENDADOR_ESTOQUE,
         ].sort(),
       );
       // ★ Each root's queue set: the NF-e producer added to the functions
@@ -2986,17 +3099,26 @@ describe('the step-15 label route guards (15-d)', () => {
   });
 });
 
-describe('the step-12a feed core guards (12-b)', () => {
+describe('the step-12a feed core guards (12-b, 12-c)', () => {
   const feeds = arquivosTs(join(RAIZ_LIB, 'feeds')).filter((p) => !ehTeste(p));
 
   it('★ (1) feeds/ is Next-free, reads no process environment and never imports the @/ alias', () => {
     expect(feeds.map(rel).sort()).toEqual([
+      'feeds/agendadorLotes.ts',
+      'feeds/destinosLote.ts',
+      'feeds/enviarFeed.ts',
       'feeds/escadaFeed.ts',
+      'feeds/feedsAmazon.ts',
+      'feeds/incertoFeed.ts',
+      'feeds/processarLote.ts',
       'feeds/provedorLote.ts',
+      'feeds/recuperarFeed.ts',
       'feeds/registroFeed.ts',
       'feeds/relatorioFeed.ts',
+      'feeds/resultadoFeed.ts',
       'feeds/tarefaLote.ts',
       'feeds/vezFeed.ts',
+      'feeds/vezFeedFirestore.ts',
     ]);
     for (const arquivo of feeds) {
       const texto = readFileSync(arquivo, 'utf8');
@@ -3011,10 +3133,10 @@ describe('the step-12a feed core guards (12-b)', () => {
 
   // An app-wide parse: CI headroom, not a budget.
   it(
-    '★ (2) the batch entry is CALLED by no production file and NAMED only by the engine: its roster is pinned EMPTY',
+    `★ (2) the batch entry is CALLED by exactly one production file, the send handler, and NAMED by no other but the engine: ${CHAMADORES_DO_LOTE_DE_ESCRITA.join(', ')}`,
     { timeout: 30_000 },
     () => {
-      expect(CHAMADORES_DO_LOTE_DE_ESCRITA).toEqual([]);
+      expect(CHAMADORES_DO_LOTE_DE_ESCRITA).toEqual(['lib/amazon/feeds/enviarFeed.ts']);
       const fontes = fontesDoChamadorDeSearchOrders();
       const chamam = fontes
         .filter((p) => chamaOLoteDeEscrita(readFileSync(p, 'utf8')))
@@ -3110,6 +3232,165 @@ describe('the step-12a feed core guards (12-b)', () => {
       'const r = await executarEscritaAmazon({ valvula });',
     ]) {
       expect(nomeiaOLoteDeEscrita(fonte), fonte).toBe(false);
+    }
+  });
+
+  // An app-wide parse: CI headroom, not a budget.
+  it(
+    `★ (12-c) the six feed helpers have exactly ONE caller module under lib/amazon, app/, functions/src and scripts/: ${CHAMADOR_DOS_FEEDS}`,
+    { timeout: 30_000 },
+    () => {
+      const fontes = fontesDoChamadorDeSearchOrders();
+      const nomeiam = fontes
+        .filter((p) => nomeiaOsFeeds(readFileSync(p, 'utf8')))
+        .map(relApp)
+        .sort();
+      expect(nomeiam.filter((p) => !NOMEIAM_FEEDS_SEM_CHAMAR.includes(p))).toEqual([
+        CHAMADOR_DOS_FEEDS,
+      ]);
+      // Anti-vacuity: the scan sees the exempt redactor, by name, and the one
+      // caller really calls all six helpers.
+      expect(nomeiam).toEqual(expect.arrayContaining(NOMEIAM_FEEDS_SEM_CHAMAR));
+      const chamador = semComentarios(lerDoApp(CHAMADOR_DOS_FEEDS) ?? '');
+      for (const ajudante of [
+        'criarDocumentoFeedAmazon',
+        'enviarDocumentoFeedAmazon',
+        'criarFeedAmazon',
+        'lerFeedAmazon',
+        'lerDocumentoFeedAmazon',
+        'baixarRelatorioFeedAmazon',
+      ]) {
+        expect(chamador, ajudante).toMatch(new RegExp(`\\b${ajudante}\\s*\\(`));
+      }
+    },
+  );
+
+  it('(12-c) the feed scan finds every call shape, and nothing alike (near-misses)', () => {
+    for (const fonte of [
+      'await criarFeedAmazon(escritor, entrada);',
+      'const d = await lerDocumentoFeedAmazon(cliente, id);',
+      'await enviarDocumentoFeedAmazon(url, bytes, { fetch });',
+      'cliente.get({ operacao: OPERACAO_LER_FEED, caminho: c, schema });',
+      'escritor.post({ operacao: op, caminho: CAMINHO_FEEDS, corpo, schema: feedCriadoSchema });',
+      "cliente.get({ operacao: 'getFeedDocument', caminho: c, schema: s });",
+      'const c = `/feeds/2021-06-30/feeds/${feedId}`;',
+      "import { baixarRelatorioFeedAmazon as baixar } from '@delfrance/integrations-amazon-sp-api';",
+    ]) {
+      expect(nomeiaOsFeeds(fonte), fonte).toBe(true);
+    }
+    for (const fonte of [
+      '// criarFeedAmazon(escritor, entrada)',
+      '/** the ONE `createFeed` of a run */ const y = 1;',
+      'await criarFeedNaAmazon(escritor, entrada);',
+      'await lerFeedNaAmazon(contexto, feedId);',
+      "const nome = 'getFeeds';",
+      "const metodos = { getFeed: ['GET'] };",
+      'const r = registroFeedAmazonSchema.parse(x);',
+      'const v = vezFeedAmazonSchema.parse(x);',
+    ]) {
+      expect(nomeiaOsFeeds(fonte), fonte).toBe(false);
+    }
+  });
+
+  it('★ (12-c) the App Hosting union walk reaches, of feeds/, ONLY the jobs producer and its payload contract — no handler, no lease I/O, not the feed helpers’ caller; type edges and the @/ alias walked', () => {
+    const fecho = fechoDeImportacoes(
+      entradasDaUniaoDoAppHosting(),
+      lerDoApp,
+      resolverAliasDoApp(lerDoApp),
+    );
+    expect(fecho.arquivos.filter((a) => a.startsWith('lib/amazon/feeds/')).sort()).toEqual(
+      [CONTRATO_DE_LOTES, PRODUTOR_DE_LOTES].sort(),
+    );
+    expect(violacoesDoAppHosting(fecho)).toEqual([]);
+    for (const modulo of MODULOS_DE_FEED_FORA_DO_APP_HOSTING) {
+      expect(PROIBIDOS_NO_APP_HOSTING, modulo).toContain(modulo);
+      expect(fecho.arquivos, modulo).not.toContain(modulo);
+    }
+    // Anti-vacuity: the receiver and the App Hosting root are on the walk, and
+    // the root names the jobs producer it binds.
+    expect(fecho.arquivos).toEqual(
+      expect.arrayContaining([
+        'lib/amazon/notificacoes/receptor.ts',
+        ARQUIVO_RAIZ_DA_FILA,
+        PRODUTOR_DE_LOTES,
+      ]),
+    );
+    expect(filasDaRaiz(lerDoApp(ARQUIVO_RAIZ_DA_FILA) ?? '')).toContain('caminhoDaFilaLotesAmazon');
+    // …and the jobs queue's functions root DOES reach every one of them, so the
+    // list above is not vacuous: a bundle importing the queue's body would fail.
+    const fila = fechoDeImportacoes(['functions/src/filaLotes.ts'], lerDoApp);
+    expect(fila.arquivos).toEqual(expect.arrayContaining(MODULOS_DE_FEED_FORA_DO_APP_HOSTING));
+    expect(violacoesDoAppHosting(fila)).toEqual(
+      expect.arrayContaining(MODULOS_DE_FEED_FORA_DO_APP_HOSTING.map((m) => `reaches ${m}`)),
+    );
+  });
+
+  it('(12-c) the jobs root binds the jobs queue only, and only the jobs queue imports it', () => {
+    const raiz = lerDoApp(ARQUIVO_RAIZ_DO_AGENDADOR_ESTOQUE) ?? '';
+    expect(chamaGetFunctions(raiz)).toBe(true);
+    expect(filasDaRaiz(raiz)).toEqual(['caminhoDaFilaLotesAmazon']);
+    const importadores = fontesDasFuncoes()
+      .map((p) => [relApp(p), readFileSync(p, 'utf8')] as const)
+      .filter(([, texto]) => especificadores(texto).includes('./agendadorEstoque'))
+      .map(([arquivo]) => arquivo)
+      .sort();
+    expect(importadores).toEqual(['functions/src/filaLotes.ts']);
+  });
+
+  it('★ (12-c) under feeds/, ONLY the lease I/O and the record’s two writers make a Firestore WRITE call — each its own count; the lease handle is the lease I/O’s alone', () => {
+    const escritas = Object.fromEntries(
+      feeds
+        .map((p) => [rel(p), semComentarios(readFileSync(p, 'utf8'))] as const)
+        .map(
+          ([arquivo, codigo]) =>
+            [arquivo, (codigo.match(ESCRITA_FIRESTORE_EM_FEEDS) ?? []).length] as const,
+        )
+        .filter(([, n]) => n !== 0),
+    );
+    expect(escritas).toEqual(ESCRITORES_EM_FEEDS);
+    // The lease's handle is named by the lease I/O alone; the record's by its two writers.
+    const nomeiam = (re: RegExp) =>
+      feeds
+        .filter((p) => re.test(semComentarios(readFileSync(p, 'utf8'))))
+        .map(rel)
+        .sort();
+    expect(nomeiam(/\bvezFeedAmazonCollection\b/)).toEqual(['feeds/vezFeedFirestore.ts']);
+    expect(nomeiam(/\bfeedAmazonCollection\b/)).toEqual([
+      'feeds/enviarFeed.ts',
+      'feeds/resultadoFeed.ts',
+    ]);
+    // Anti-vacuity: the report reducer DOES group its issues in Maps (`.set(`),
+    // which the scan leaves alone; and every exempt writer exists.
+    const relatorio = semComentarios(lerDoApp('lib/amazon/feeds/relatorioFeed.ts') ?? '');
+    expect(relatorio).toMatch(/\.set\(/);
+    for (const arquivo of Object.keys(ESCRITORES_EM_FEEDS)) {
+      expect(feeds.map(rel), arquivo).toContain(arquivo);
+    }
+  });
+
+  it('(12-c) the feeds write scan flags what it exists for, and nothing alike (near-misses)', () => {
+    for (const escrita of [
+      'await ref.update(patch, { lastUpdateTime });',
+      'await ref.create(vez);',
+      'await vezRef.set(vez);',
+      'await feedAmazonCollection.docRef(db, {}, id).create(registro);',
+      'await feedAmazonCollection.docRef(db, {}, id).set(registro);',
+      'await feedAmazonCollection.merge(db, {}, id, { x: 1 });',
+      'await feedAmazonCollection.add(db, {}, {});',
+      'await ref.delete();',
+      'const lote = db.batch();',
+    ]) {
+      expect(escrita.match(ESCRITA_FIRESTORE_EM_FEEDS), escrita).toHaveLength(1);
+    }
+    for (const leitura of [
+      'porSku.set(sku, lista);',
+      'agrupados.set(sku, [p]);',
+      'vistos.delete(sku);',
+      'const c = new Set<string>(); c.add(x);',
+      'await feedAmazonCollection.docRef(db, {}, id).get();',
+      'await vezFeedAmazonCollection.ref(db, {}).doc;',
+    ]) {
+      expect(leitura.match(ESCRITA_FIRESTORE_EM_FEEDS), leitura).toBeNull();
     }
   });
 });

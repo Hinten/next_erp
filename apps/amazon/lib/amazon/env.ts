@@ -53,16 +53,18 @@ export const RELAY_SECRET_ENV = 'AMAZON_RELAY_SECRET';
  */
 export const RELAY_PREVIOUS_SECRET_ENV = 'AMAZON_RELAY_PREVIOUS_SECRET';
 /**
- * The region of the two Cloud Tasks queues App Hosting enqueues onto, of the
- * three in the functions codebase `amazon`: the reads queue
- * (`filaLeituraAmazon`, the push receiver's) and, since step 14, the NF-e queue
- * (`processAmazonNfeUpload` — on this surface, the re-drive route's, PR 14-d).
- * Read by the App Hosting composition root
+ * The region of the three Cloud Tasks queues App Hosting enqueues onto, of the
+ * four in the functions codebase `amazon`: the reads queue
+ * (`filaLeituraAmazon`, the push receiver's), since step 14 the NF-e queue
+ * (`processAmazonNfeUpload` — on this surface, the re-drive route's, PR 14-d)
+ * and, since step 12a, the jobs queue (`processAmazonListingsJob` — the
+ * receiver's feed wake-up, PR 12-c). Read by the App Hosting composition root
  * (`lib/firebase/filaLeitura.ts`) as a static member read of the process
  * environment, never through this module; named here so a refusal can report
- * it. Its companion `AMAZON_TASKS_DISABLED=1` closes both queues there: the
- * receiver persists for the reprocess sweep, and the re-drive answers 503
- * `AMAZON_TAREFAS_DESLIGADAS` (no NF-e sweep exists).
+ * it. Its companion `AMAZON_TASKS_DISABLED=1` closes all three there: the
+ * receiver persists an order push for the reprocess sweep and drops a feed
+ * wake-up with one WARNING (the feed's own poll chain still reads it), and the
+ * re-drive answers 503 `AMAZON_TAREFAS_DESLIGADAS` (no NF-e sweep exists).
  */
 export const TASKS_REGION_ENV = 'AMAZON_TASKS_REGION';
 

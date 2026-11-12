@@ -66,8 +66,9 @@
  *
  * {@link executarLoteEscritaAmazon} is the engine's SECOND entry: one
  * `JSON_LISTINGS_FEED` for a whole batch of stock or price, where the first
- * entry writes one target. It has NO caller yet: `estrutura.test.ts` keeps its
- * caller roster apart from the first entry's, and pins it empty. It decides
+ * entry writes one target. Its ONE caller is the feed send
+ * (`feeds/enviarFeed.ts`, PR 12-c): `estrutura.test.ts` keeps its caller
+ * roster apart from the first entry's, and pins it to that caller. It decides
  * nothing about the batch's data either — which SKUs belong to it is the
  * caller's `membros`, what the document holds is the caller's `montar`, the
  * submission is the caller's `escrever` — and gates it in this exact order:
