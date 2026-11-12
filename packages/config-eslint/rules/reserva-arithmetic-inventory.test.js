@@ -4,8 +4,8 @@ import { gitGrep } from './lib/repo-scan.js';
 /**
  * Every file that touches the stock RESERVATION is inventoried here, with how it
  * treats the value. Add a file that mentions `quantidadeReservada` (or any
- * `*Reservada` / bare `reservada`) and this test fails until you list it and say
- * which case you are in.
+ * `*Reservada` / `*_reservada` / bare `reservada`) and this test fails until you
+ * list it and say which case you are in.
  *
  * ## Why this is a test and not an ESLint rule (#931)
  *
@@ -36,14 +36,23 @@ import { gitGrep } from './lib/repo-scan.js';
  */
 
 /**
- * `Reservada` (the camelCase suffix) or a standalone lowercase `reservada`.
+ * `Reservada` (the camelCase suffix), a standalone lowercase `reservada`, or the
+ * snake_case suffix `_reservada`.
  *
  * ⚠️ NOT a case-insensitive `reservada`: that also matches **`preservada`**
  * ("preserved" in Portuguese), which appears in `IcmsSection.tsx` and has nothing
  * to do with stock. A false positive in a guard like this trains people to add
  * files to the inventory without reading them, which defeats it.
+ *
+ * ⚠️ `_reservada` was added by the Loja Integrada stock sync (master plan step 12):
+ * `\breservada\b` cannot see `quantidade_reservada`, because `_` is a word
+ * character, so the provider's wire spelling went past this guard unlisted. It is
+ * a DIFFERENT counter — the STORE's own pending reservations — which model A ADDS
+ * to the ERP quantity (`quantidade = S + max(0, quantidade_reservada)`); summed
+ * with, or mistaken for, the ERP counter it is the same bug class in another
+ * spelling, so its files are inventoried below with which reservation they mean.
  */
-const PATTERN = 'Reservada|\\breservada\\b';
+const PATTERN = 'Reservada|\\breservada\\b|_reservada';
 
 /**
  * Source only. Tests, e2e specs and seed fixtures are excluded: they *should*
@@ -104,6 +113,16 @@ const INVENTARIO = {
   // ---- A DIFFERENT reservation, named only to be told apart ---------------
   'apps/shopee/lib/shopee/estoque/reservaPromocao.ts':
     '⚠️ NOT this reservation. Shopee’s `total_reserved_stock` is a PROMOTION reserve that sets a FLOOR the stock sender clamps UP to, whereas `quantidadeReservada` is SUBTRACTED to get availability — two numbers with the same name pulling in OPPOSITE directions, which is exactly why the file is inventoried: the disclaimer has to be a reviewed artifact rather than folklore, and the two must never be summed, compared or folded into one another. The ERP counter is named once, in that sentence, and touched nowhere else — the quantity reaches this module already computed and already floored by `packages/data/src/admin/estoque/quantidades.ts`, and every function here only ever RAISES it. Pure: no Firestore, no clock, and no arithmetic on the ERP reservation at all.',
+
+  // ---- The STORE's reservation (Loja Integrada `quantidade_reservada`) ----
+  'apps/loja-integrada/lib/lojaIntegrada/estoque/quantidadeEstoqueLi.ts':
+    '⚠️ Two reservations, kept apart (master plan step 12, model A). The ERP counter is never touched here: S comes from the promoted core (`packages/data/src/admin/estoque/quantidades.ts` above), which floors it through `estoqueDisponivel`. The STORE’s `quantidade_reservada`, from its row read just before the PUT, is ADDED to S as `max(0, R)` in `alvoEstoqueLi` — the one spelling of model A — so a negative store value can never send less than S, and anything that is not a safe integer REFUSES (`null`) rather than being coerced to 0. `quantidade_disponivel` (the store’s own derived figure) is never read.',
+  'apps/loja-integrada/lib/lojaIntegrada/estoque/planoEstoqueLi.ts':
+    'The stock sync’s pure decisions (master plan step 12). The ERP `quantidadeReservada` is read only in the trigger’s relevance gate, for availability, through `estoqueDisponivel` (absent or `null` ⇒ 0, as the shared core reads it; a present non-finite value is UNREADABLE and fails open to "relevant", never coerced). The store’s `quantidade_reservada` reaches model A only through `alvoEstoqueLi` (above): in the send decision through `corpoEstoqueLi`, and in the reconcile’s ordering delta as `quantidade − alvoEstoqueLi(S, R)`; one model A refuses sorts the row FIRST (unbounded), never reads as 0. No write of either counter.',
+  'apps/loja-integrada/lib/lojaIntegrada/core/redacao.ts':
+    'The app’s traffic redactor (its `log` and `fixture` profiles). Names the store’s `quantidade_reservada` once, as a `decimal` leaf of the `ESTOQUE` keep-list that `manutencao` wires to the `produto-estoque` catalogue resource (the shape a captured value must have to be kept in a fixture). The store’s reservation, not the ERP counter; no arithmetic.',
+  'apps/loja-integrada/lib/lojaIntegrada/testing/especificacaoPii.ts':
+    'Test support (`testing/` is imported by tests only): the public OpenAPI document’s `GET /v1/produto_estoque/{produto_id}` example, transcribed with its `quantidade_reservada: 0`. The store’s reservation, as data; no arithmetic.',
 
   // ---- Writes it, floors the RESULT ---------------------------------------
   'apps/functions/src/estoques/aplicarEstoque.ts':
@@ -217,5 +236,8 @@ describe('every file touching the stock reservation is inventoried', () => {
     expect(regex.test('quantidadeReservada')).toBe(true);
     expect(regex.test('existingStock?.reservada')).toBe(true);
     expect(regex.test('movimentoReservada')).toBe(true);
+    // The store's wire spelling (step 12): invisible to `\breservada\b`.
+    expect(regex.test('linha.quantidade_reservada')).toBe(true);
+    expect(new RegExp('Reservada|\\breservada\\b').test('linha.quantidade_reservada')).toBe(false);
   });
 });
