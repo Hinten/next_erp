@@ -62,6 +62,46 @@
  * verification read never enters it — it writes nothing, and the valve governs
  * writes (step-14 plan §3 decision 25).
  *
+ * ## The batch entry (step 12a)
+ *
+ * {@link executarLoteEscritaAmazon} is the engine's SECOND entry: one
+ * `JSON_LISTINGS_FEED` for a whole batch of stock or price, where the first
+ * entry writes one target. It has NO caller yet: `estrutura.test.ts` keeps its
+ * caller roster apart from the first entry's, and pins it empty. It decides
+ * nothing about the batch's data either — which SKUs belong to it is the
+ * caller's `membros`, what the document holds is the caller's `montar`, the
+ * submission is the caller's `escrever` — and gates it in this exact order:
+ *
+ *  1. The conta: a batch of another conta than the context's is a `TypeError`,
+ *     as above.
+ *  2. The batch under the valve, `decidirLote`: `off` returns at once, nothing
+ *     built.
+ *  3. Every member under the valve, `decidirAlvo`: the members deciding `on`
+ *     are the batch's `on` members; every other member is counted by its
+ *     dry-run motivo (under `feed` an invalid SKU never reaches `montar`; the
+ *     dry-run, step 5, hands `montar` every member as given).
+ *  4. `so-patches-do-canario` (`on` under a canary LIST): nothing is built and
+ *     nothing written; the answer names exactly the `on` members, which the
+ *     CALLER hands to the per-SKU path.
+ *  5. `dry-run`: `montar` with EVERY member (the dry-run shows the whole
+ *     document) and ONE line (`evento` = the fluxo's,
+ *     {@link EVENTO_DO_LOTE_AMAZON}; `fase: 'feed'`; the message and byte
+ *     counts), a zero-message document included. Nothing is posted.
+ *  6. `feed` (`on` under exactly `*`): `montar` with the `on` members only; a
+ *     document with no message writes nothing; otherwise `escrever` runs ONCE,
+ *     through the same client and the same forced-refresh-once rule as the
+ *     first entry (one private helper serves both, so the engine still names
+ *     the write-client builder at exactly three places and keeps its one
+ *     observer site). A 401/403 re-runs the WHOLE `escrever` once — a new
+ *     document, a new submission — because an auth refusal was not processed.
+ *  7. A `montar` that refuses to build (`abortado`, in step 5 or 6) ends the
+ *     run there: nothing built further, nothing posted, no line; the refusal
+ *     comes back whole, for the caller to answer.
+ *
+ * Its valve is typed by the fluxos a batch can carry, not by the first entry's
+ * event map: a price batch type-checks here before price has a single-target
+ * writer.
+ *
  * ⚠️ D11: nothing here runs while the read switch is off — the flow builds its
  * context first (`loadAmazonContext` refuses before any read), and this engine
  * takes that context. Before the window no flow calls it at all.
@@ -85,10 +125,12 @@ import { executarComRenovacaoUnica } from './renovacaoUnica';
 import {
   FLUXO_AMAZON,
   type FluxoAmazon,
+  type FluxoComLoteAmazon,
   MODO_AMAZON,
   type MotivoDryRunAmazon,
   type ValvulaAmazon,
   decidirAlvo,
+  decidirLote,
 } from './valvulas';
 
 /**
@@ -99,10 +141,21 @@ import {
 export const EVENTO_DA_ESCRITA_AMAZON = {
   [FLUXO_AMAZON.nfe]: 'nfe',
   [FLUXO_AMAZON.agendamento]: 'agendamento',
+  [FLUXO_AMAZON.estoque]: 'estoque',
 } as const satisfies Partial<Record<FluxoAmazon, EventoAvulsoAmazon>>;
 
 /** The write flows the engine runs today. */
 export type FluxoDeEscritaAmazon = keyof typeof EVENTO_DA_ESCRITA_AMAZON;
+
+/**
+ * The log event of each batch fluxo's lines (module header, "The batch
+ * entry"): its OWN map, total over the fluxos a batch can carry, so the batch
+ * entry's valve is typed by them and never by {@link EVENTO_DA_ESCRITA_AMAZON}.
+ */
+export const EVENTO_DO_LOTE_AMAZON = {
+  [FLUXO_AMAZON.estoque]: 'estoque',
+  [FLUXO_AMAZON.preco]: 'preco',
+} as const satisfies Record<FluxoComLoteAmazon, EventoAvulsoAmazon>;
 
 /** What a flow's `planejar` answers. */
 export interface PlanoEscritaAmazon {
@@ -196,6 +249,13 @@ function registrarSimulacao(
   );
 }
 
+/** What a write client is built from: the same three fields in both entries. */
+interface OrigemDoClienteAmazon {
+  readonly contexto: Pick<ContextoAmazon, 'integracaoId' | 'obterAcesso'>;
+  readonly deps: DepsEscritaAmazon;
+  readonly registro?: RegistroDeChamadaAmazon;
+}
+
 /**
  * The engine's ONE client builder: the only place here that names the package's
  * write-client constructor and builds a call-line observer. Every client gets
@@ -203,10 +263,7 @@ function registrarSimulacao(
  * then the logger and the context's conta).
  */
 function construirClienteEscrita(
-  e: Pick<
-    EntradaEscritaAmazon<unknown, PlanoEscritaAmazon, unknown>,
-    'contexto' | 'deps' | 'registro'
-  >,
+  e: OrigemDoClienteAmazon,
   obterCredencial: () => CredencialSpApi | Promise<CredencialSpApi>,
 ): SpApiEscritaClient {
   return criarClienteEscritaSpApi({
@@ -221,6 +278,27 @@ function construirClienteEscrita(
     gerarCorrelationId: e.deps.gerarCorrelationId,
     agora: e.deps.agora,
   });
+}
+
+/**
+ * The ONE write of a run, for BOTH entries (module header, step 5 and the batch
+ * entry's step 6): the clients are built here and nowhere else, then
+ * `escrever` runs ONCE through the forced-refresh-once rule. The LWA client
+ * re-reads the context's getter on every request, as the context's own read
+ * client does; a restricted one sends the token it was handed, labelled with
+ * the CURRENT LWA credential's ref. Nothing is built before a run reaches its
+ * write.
+ */
+async function escreverUmaVez<R>(
+  e: OrigemDoClienteAmazon,
+  escrever: (cliente: SpApiEscritaClient, restrito: FabricaClienteRestritoAmazon) => Promise<R>,
+): Promise<R> {
+  const cliente = construirClienteEscrita(e, () => e.contexto.obterAcesso());
+  const restrito: FabricaClienteRestritoAmazon = async (token) => {
+    const { ref } = await e.contexto.obterAcesso();
+    return construirClienteEscrita(e, () => ({ accessToken: token, ref }));
+  };
+  return executarComRenovacaoUnica(e.contexto, () => escrever(cliente, restrito));
 }
 
 /** One write run (module header). */
@@ -246,17 +324,221 @@ export async function executarEscritaAmazon<A, P extends PlanoEscritaAmazon, R>(
   }
   if (!plano.escrever) return { tipo: 'sem-escrita', atual, plano };
 
-  // 5. One write, through clients built here and nowhere else. The LWA one
-  //    re-reads the context's getter on every request, as the context's own read
-  //    client does; a restricted one sends the token it was handed, labelled
-  //    with the CURRENT LWA credential's ref.
-  const cliente = construirClienteEscrita(e, () => e.contexto.obterAcesso());
-  const restrito: FabricaClienteRestritoAmazon = async (token) => {
-    const { ref } = await e.contexto.obterAcesso();
-    return construirClienteEscrita(e, () => ({ accessToken: token, ref }));
-  };
-  const resposta = await executarComRenovacaoUnica(e.contexto, () =>
+  // 5. One write, through the shared helper.
+  const resposta = await escreverUmaVez(e, (cliente, restrito) =>
     e.escrever(cliente, plano, restrito),
   );
   return { tipo: 'escrito', atual, plano, resposta };
+}
+
+/* ------------------------------------------------------------------------------ */
+/*                       The batch entry (step 12a, PR 12-b)                      */
+/* ------------------------------------------------------------------------------ */
+
+/** What a batch's `montar` answers when it built (module header, "The batch entry"). */
+export interface PlanoLoteAmazon {
+  /** The feed document's bytes; empty when it holds no message. */
+  readonly bytes: Uint8Array;
+  /** How many messages the document holds; 0 writes nothing. */
+  readonly mensagens: number;
+  /**
+   * The dry-run line's own campos — what the document would change, as
+   * primitives and CLOSED codes only: never a SKU list, a quantity per SKU or
+   * Amazon's text.
+   */
+  readonly diff: CamposLogAmazon;
+  /** Never set on a plan: `abortado` is what tells a refusal from a plan. */
+  readonly abortado?: never;
+}
+
+/** What a batch's `montar` answers when it refuses to build: nothing is posted. */
+export interface AbortoLoteEscritaAmazon {
+  /** The closed refusal motivo (the provider's). */
+  readonly abortado: string;
+}
+
+/** Why a member of a batch is not one of its `on` members: its own valve decision. */
+export type MotivoForaDoLoteAmazon = MotivoDryRunAmazon | typeof MODO_AMAZON.off;
+
+/** How the members of a batch decided, one by one (step 3). */
+export interface ContagemMembrosLoteAmazon {
+  /** Every member the caller handed in. */
+  readonly total: number;
+  /** The members deciding `on`. */
+  readonly on: number;
+  /** Every other member, by the motivo it decided. */
+  readonly fora: Readonly<Partial<Record<MotivoForaDoLoteAmazon, number>>>;
+}
+
+export interface EntradaLoteEscritaAmazon<
+  P extends PlanoLoteAmazon,
+  X extends AbortoLoteEscritaAmazon,
+  R,
+> extends OrigemDoClienteAmazon {
+  /**
+   * The batch fluxo's valve, read ONCE at the run's start by the caller — typed
+   * by the fluxos a batch can carry ({@link EVENTO_DO_LOTE_AMAZON}).
+   */
+  readonly valvula: ValvulaAmazon<FluxoComLoteAmazon>;
+  /** The conta the batch belongs to — the context's own. */
+  readonly contaId: string;
+  /** The batch's SKUs, deduplicated by the caller. */
+  readonly membros: readonly string[];
+  /** The document for exactly the SKUs handed in, or a refusal to build. */
+  readonly montar: (membrosOn: readonly string[]) => Promise<P | X>;
+  /** The ONE submission, through the LWA write client the engine built. */
+  readonly escrever: (cliente: SpApiEscritaClient, plano: P) => Promise<R>;
+}
+
+/** What one batch run did. Every arm past `desligado` carries how the members decided. */
+export type ResultadoLoteEscritaAmazon<P, X extends AbortoLoteEscritaAmazon, R> =
+  /** The valve is `off`: nothing was built. */
+  | { readonly tipo: 'desligado' }
+  /** `on` under a canary LIST: nothing built or written; `membros` go per SKU. */
+  | {
+      readonly tipo: 'so-patches';
+      readonly membros: readonly string[];
+      readonly contagem: ContagemMembrosLoteAmazon;
+    }
+  /** Dry-run: the whole document built, one line, nothing posted. */
+  | {
+      readonly tipo: 'simulado';
+      readonly motivo: 'valvula' | 'sem-canario';
+      readonly plano: P;
+      readonly contagem: ContagemMembrosLoteAmazon;
+    }
+  /** `feed`, and the document holds no message: nothing posted. */
+  | {
+      readonly tipo: 'sem-escrita';
+      readonly plano: P;
+      readonly contagem: ContagemMembrosLoteAmazon;
+    }
+  /** `feed`, and the one submission resolved. */
+  | {
+      readonly tipo: 'escrito';
+      readonly plano: P;
+      readonly resposta: R;
+      readonly contagem: ContagemMembrosLoteAmazon;
+    }
+  /** `montar` refused to build: nothing built further, nothing posted. */
+  | {
+      readonly tipo: 'abortado';
+      readonly motivo: X['abortado'];
+      /** The refusal, whole: what the caller raises comes with it. */
+      readonly aborto: X;
+      readonly contagem: ContagemMembrosLoteAmazon;
+    };
+
+/** Whether `montar` refused to build (step 7). */
+function ehAbortoDoLote<P extends PlanoLoteAmazon, X extends AbortoLoteEscritaAmazon>(
+  r: P | X,
+): r is X {
+  return Object.hasOwn(r, 'abortado');
+}
+
+/** Every member under the valve (step 3): the `on` ones, in order, and the counts. */
+function decidirMembros(
+  valvula: ValvulaAmazon<FluxoComLoteAmazon>,
+  contaId: string,
+  membros: readonly string[],
+): { readonly membrosOn: readonly string[]; readonly contagem: ContagemMembrosLoteAmazon } {
+  const membrosOn: string[] = [];
+  const fora: Partial<Record<MotivoForaDoLoteAmazon, number>> = {};
+  for (const sku of membros) {
+    const decisao = decidirAlvo(valvula, contaId, sku);
+    if (decisao.modo === MODO_AMAZON.on) {
+      membrosOn.push(sku);
+      continue;
+    }
+    const motivo = decisao.modo === MODO_AMAZON.off ? MODO_AMAZON.off : decisao.motivo;
+    fora[motivo] = (fora[motivo] ?? 0) + 1;
+  }
+  return { membrosOn, contagem: { total: membros.length, on: membrosOn.length, fora } };
+}
+
+/** The counts as one campo: `<motivo>:<n>` joined with `,`, sorted; `null` when none. */
+function camposDaContagem(c: ContagemMembrosLoteAmazon): CamposLogAmazon {
+  const fora = Object.entries(c.fora)
+    .map(([motivo, n]) => `${motivo}:${String(n)}`)
+    .sort();
+  return {
+    membros: c.total,
+    membrosOn: c.on,
+    foraDoLote: fora.length === 0 ? null : fora.join(','),
+  };
+}
+
+/**
+ * The batch's dry-run line (step 5): the plan's diff, then the engine's own
+ * campos LAST — the counts of the document and of the members.
+ */
+function registrarSimulacaoDoLote(
+  e: Pick<
+    EntradaLoteEscritaAmazon<PlanoLoteAmazon, AbortoLoteEscritaAmazon, unknown>,
+    'valvula' | 'contexto' | 'deps' | 'registro'
+  >,
+  motivo: 'valvula' | 'sem-canario',
+  plano: PlanoLoteAmazon,
+  contagem: ContagemMembrosLoteAmazon,
+): void {
+  const fluxo = e.valvula.fluxo;
+  registrarEventoAmazon(
+    e.deps.logger,
+    EVENTO_DO_LOTE_AMAZON[fluxo],
+    'INFO',
+    `[amazon] ${fluxo}: feed dry-run (${motivo})`,
+    {
+      ...plano.diff,
+      fase: 'feed',
+      modo: MODO_AMAZON.dryRun,
+      motivoDryRun: motivo,
+      mensagens: plano.mensagens,
+      bytes: plano.bytes.byteLength,
+      ...camposDaContagem(contagem),
+    },
+    { ...e.registro, conta: e.contexto.integracaoId, fluxo },
+  );
+}
+
+/** One batch run (module header, "The batch entry"). */
+export async function executarLoteEscritaAmazon<
+  P extends PlanoLoteAmazon,
+  X extends AbortoLoteEscritaAmazon,
+  R,
+>(e: EntradaLoteEscritaAmazon<P, X, R>): Promise<ResultadoLoteEscritaAmazon<P, X, R>> {
+  // 1. The conta.
+  if (e.contaId !== e.contexto.integracaoId) {
+    throw new TypeError('escrita.ts: o lote e o contexto nomeiam contas diferentes');
+  }
+
+  // 2. The batch under the valve; `off` builds nothing.
+  const lote = decidirLote(e.valvula);
+  if (lote.modo === MODO_AMAZON.off) return { tipo: 'desligado' };
+
+  // 3. Every member under the valve.
+  const { membrosOn, contagem } = decidirMembros(e.valvula, e.contaId, e.membros);
+
+  // 4. A canary list: the `on` members go per SKU, through the caller.
+  if (lote.modo === 'so-patches-do-canario') {
+    return { tipo: 'so-patches', membros: membrosOn, contagem };
+  }
+
+  // 5. Dry-run: the WHOLE document, one line, no write.
+  if (lote.modo === MODO_AMAZON.dryRun) {
+    const simulado = await e.montar(e.membros);
+    if (ehAbortoDoLote<P, X>(simulado)) {
+      return { tipo: 'abortado', motivo: simulado.abortado, aborto: simulado, contagem };
+    }
+    registrarSimulacaoDoLote(e, lote.motivo, simulado, contagem);
+    return { tipo: 'simulado', motivo: lote.motivo, plano: simulado, contagem };
+  }
+
+  // 6. A feed: the `on` members only; one submission, through the shared helper.
+  const plano = await e.montar(membrosOn);
+  if (ehAbortoDoLote<P, X>(plano)) {
+    return { tipo: 'abortado', motivo: plano.abortado, aborto: plano, contagem };
+  }
+  if (plano.mensagens === 0) return { tipo: 'sem-escrita', plano, contagem };
+  const resposta = await escreverUmaVez(e, (cliente) => e.escrever(cliente, plano));
+  return { tipo: 'escrito', plano, resposta, contagem };
 }

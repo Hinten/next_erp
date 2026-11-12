@@ -107,6 +107,8 @@ export { notificacaoEscritaLojaIntegradaCollection } from './notificacaoEscritaL
 export { pollPedidosLojaIntegradaCollection } from './pollPedidosLojaIntegradaCollection';
 export { notificacaoAmazonCollection } from './notificacaoAmazonCollection';
 export { pollPedidosAmazonCollection } from './pollPedidosAmazonCollection';
+export { feedAmazonCollection } from './feedAmazonCollection';
+export { vezFeedAmazonCollection } from './vezFeedAmazonCollection';
 export { clienteCollection } from './clienteCollection';
 export { clienteIdentidadeCollection } from './clienteIdentidadeCollection';
 export { conversaCollection } from './conversaCollection';

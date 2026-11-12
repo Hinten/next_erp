@@ -449,14 +449,30 @@ the checkout print and the `/pedidos` row action), which needs this backend depl
   checked against `PROIBIDOS_NO_GATILHO_NFE` by `violacoesD11`, type edges walked), which
   superseded 14-b's dedicated LIGHT guard — no SP-API value import, nothing of `pedidos/`
   but `orderIds.ts`, no unresolved or `@/` import.
-- Since step 15 (PR 15-b) the engine has TWO write flows and exactly two callers
-  (`estrutura.test.ts`): `nfe/processarNfe.ts` and `agendamento/executarAgendamento.ts`.
+- Since step 15 (PR 15-b) the engine's single-target entry has exactly two callers, one per
+  write flow that runs (`estrutura.test.ts`): `nfe/processarNfe.ts` and
+  `agendamento/executarAgendamento.ts`. (Step 12a gave it a third event row, `estoque`, for
+  the per-SKU stock write; that flow has no caller yet.)
   `escrever` gets a third argument, a restricted-client FACTORY (a Restricted Data Token in,
   a write client that sends it out); the engine builds BOTH clients through its ONE local
   builder (`construirClienteEscrita`), which holds the file's one observer site, so each
   client gets its own observer. The forced-refresh-once rule wraps the WHOLE `escrever`, so
   a 401/403 on the mint or the bulk refreshes once and mints a NEW token. The label route (PR
   15-d) adds no third caller: it runs through `executarAgendamento.ts`.
+- Since step 12a (PR 12-b) the engine has a SECOND entry, `executarLoteEscritaAmazon`: one
+  `JSON_LISTINGS_FEED` for a batch of stock or price, with NO caller yet. `decidirLote` first
+  (`off` builds nothing), then `decidirAlvo` for every member (under `on` + `*` an invalid SKU
+  never reaches `montar`; every member that is not `on` is counted by its motivo). A canary LIST answers
+  `so-patches` with exactly the `on` members (nothing built: the caller sends them per SKU);
+  `dry-run` builds the WHOLE document and writes ONE line (`evento` =
+  `EVENTO_DO_LOTE_AMAZON[fluxo]`, `fase: 'feed'`, the message and byte counts); `on` + exactly
+  `*` builds the `on` members only and submits ONCE, a document with no message writing
+  nothing; a `montar` refusal (`abortado`) comes back whole, nothing posted. Its valve is typed
+  by the batch fluxos through its OWN event map, so a price batch compiles before price has a
+  per-SKU writer. Both entries reach the write client through ONE private helper
+  (`escreverUmaVez`), so the builder keeps its three places and the observer seam its four
+  sites. Its roster, `CHAMADORES_DO_LOTE_DE_ESCRITA` (`estrutura.test.ts`), is separate from
+  the first entry's and pinned EMPTY.
 - The Easy Ship scheduling (step 15) lives in `lib/amazon/agendamento/`, Next-free, reading no
   process environment and never importing `@/` (`estrutura.test.ts`). PR 15-b shipped its
   pure half — the task contract
@@ -504,6 +520,31 @@ the checkout print and the `/pedidos` row action), which needs this backend depl
   (`estrutura.test.ts`, the whole app): a second reader of the pre-signed link would sit behind no
   valve, canary or live decision. The route file and every `agendamento/` file on its walk name
   no aviso writer and enqueue nothing (`estrutura.test.ts`).
+- The `JSON_LISTINGS_FEED` core (step 12a) lives in `lib/amazon/feeds/`. PR 12-b shipped its
+  pure, UNWIRED half (nothing calls it yet): `registroFeed.ts` (the record's forward-only
+  status, `processingStatus` read exactly, the 12-h deadline and 48-h abandonment counted from
+  `antesDoEnvioMs`, and the rung write — `rodadas` and `atualizadoEmMs` on EVERY rung, never a
+  terminal status, which is the tail's last write); `escadaFeed.ts` (the poll ladder);
+  `relatorioFeed.ts` (the report reduced: attribution by `sku` only, the link issue shape, at
+  most 200 SKUs written back); `tarefaLote.ts` (the strict jobs-queue payload union — a block
+  or a window batch — and every task name, each carrying the conta (the notification wake-up's
+  carries the seller)); `provedorLote.ts`
+  (the provider seam's TYPES, the closed abort motivos, the timing constants); and
+  `vezFeed.ts` (the lease's state machine: `decidirTomadaDaVez` classifies a read, a known
+  `feedId` is never submitted over and an uncertain `enviando` is never taken over before its
+  12 h; `destinoDoLoteRecusado` routes a batch the lease turns away — a tick-born window
+  batch records its start, MIN-merged, a recovery-born one waits then goes per SKU, a block
+  batch waits; the breaker and its hourly half-open probe; the 120-s submission floor on a
+  take only; and every write's exact field patch, each refused, writing nothing, unless its
+  HOLDER — the `execucaoId`, or the `feedId` once known — still holds the lease. A take keeps
+  `pendenteDesdeMs`, `falhasSeguidas`, `ultimaFalhaEmMs`, `ultimoEnvioMs` and
+  `ultimoFeedConcluidoEmMs`; every release reads the start it consumes from its READ and
+  answers it as `vezPara`, to be enqueued before the write; `REGRA_DA_LIBERACAO` is the closed
+  release table — 0 after a completed feed, +1 for exactly the releases that raise the feed
+  failure aviso). The record and
+  the lease are `feedsAmazon` / `feedsAmazonEmCurso` (`@delfrance/schemas` `feedAmazon.ts`,
+  Admin-only, no Meta; handles `feedAmazonCollection` / `vezFeedAmazonCollection`); only the
+  record carries the TTL stamp `expiraEm` (180 days).
 - The conta cache (`core/contaCache.ts`) is token-free and used by the context
   loader ONLY; the credential is re-read uncached on every request.
 - Routes never import the park (`core/estacionamento.ts`); step 3 is its first caller.
