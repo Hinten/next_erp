@@ -122,6 +122,40 @@ describe('RecusasAnuncioShopee — a stored refusal row reads the motivo copy fi
     ]);
   });
 
+  it('#2099 CPY-4: duas linhas guardadas `logistica-sem-valor-gravado` ⇒ a cópia UMA vez ⟷ QUASE-PAR: ao lado de N1, cada motivo mostra a SUA cópia (nunca dobradas por família) e `logistica-sem-canal` fica', () => {
+    const SEM_CANAL = 'Nenhum canal obrigatório da loja pôde ser habilitado para este item.';
+    const cpy4 = (canal: string) =>
+      `O canal obrigatório ${canal} precisa de um tamanho ou de uma tarifa de frete que este ` +
+      'vínculo não tem gravados.';
+    const copiaCpy4 = TEXTO_MOTIVO_ANUNCIO_SHOPEE[MOTIVO_ANUNCIO_SHOPEE.logisticaSemValorGravado];
+    const copiaN1 = TEXTO_MOTIVO_ANUNCIO_SHOPEE[MOTIVO_ANUNCIO_SHOPEE.logisticaNaoConfirmada];
+    expect(copiaCpy4).toBeDefined();
+    expect(copiaCpy4).not.toBe(copiaN1);
+    show(
+      link([
+        {
+          campo: 'logistic_info',
+          motivo: MOTIVO_ANUNCIO_SHOPEE.logisticaSemValorGravado,
+          mensagem: cpy4('«Canal inventado» (90007)'),
+        },
+        {
+          campo: 'logistic_info',
+          motivo: MOTIVO_ANUNCIO_SHOPEE.logisticaNaoConfirmada,
+          mensagem: 'O canal obrigatório 80003 precisa de um tamanho.',
+        },
+        {
+          campo: 'logistic_info',
+          motivo: MOTIVO_ANUNCIO_SHOPEE.logisticaSemValorGravado,
+          mensagem: cpy4('90008'),
+        },
+        { campo: 'logistic_info', motivo: 'logistica-sem-canal', mensagem: SEM_CANAL },
+      ]),
+    );
+    expect(itens()).toEqual([copiaCpy4, copiaN1, SEM_CANAL]);
+    // A stored row shows the copy alone: neither channel's sentence is on screen.
+    expect(screen.queryByText(cpy4('90008'))).toBeNull();
+  });
+
   it('no row at all ⇒ the stored summary sentence, as before', () => {
     show(link([], 'A Shopee recusou o anúncio.'));
     expect(itens()).toEqual([]);

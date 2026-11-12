@@ -179,8 +179,9 @@ function sentencaDaRecusa(
  * here, and Shopee's English prose (`anuncio-semelhante-existente`, its
  * `error_repeated_mtsku`) must not be what stays on screen once the outcome
  * panel is gone. A row with neither is dropped, and so is a later row of a
- * refusal-wide copy already shown (#2015's `logistica-nao-confirmada`, one
- * row per lost channel) — `textosDasRecusasGuardadasShopee`. The stored `etapa` is kept
+ * refusal-wide copy already shown (#2015's `logistica-nao-confirmada` and
+ * #1911 P14b's (CPY-4) `logistica-sem-valor-gravado`, one row per lost channel, each motivo
+ * folded on its own) — `textosDasRecusasGuardadasShopee`. The stored `etapa` is kept
  * as the CODE here and worded at render by `textoDaEtapaShopee` (an
  * own-property label lookup with a neutral fallback): the raw code — `add_item`,
  * an etapa this build does not know, `constructor` — is never printed.

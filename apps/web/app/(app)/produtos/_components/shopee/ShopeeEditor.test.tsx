@@ -7740,7 +7740,7 @@ describe('ShopeeEditor — a árvore de atributos da categoria EDITADA (#1911 P1
       integracaoId: 'int-1',
       produtoId: 'prod-1',
       linkDocId: 'L-rasc',
-      base: { attributes: null },
+      base: { category_id: 100087, attributes: null },
       patch: { attributes: SEM_FIO },
     });
   });
@@ -7956,7 +7956,7 @@ describe('ShopeeEditor — a árvore de atributos da categoria EDITADA (#1911 P1
     expect(formDe('L-rasc').bloco.sujo).toBe(false);
   });
 
-  it('⛔ uma lista editada cuja categoria OUTRA aba trocou: «Salvar rascunho» não envia nada e abre o conflito com «Categoria» — a rota não recusaria ⟷ QUASE-PAR: só a lista mudou ⇒ a rota decide (enviado)', async () => {
+  it('⛔ uma lista editada cuja categoria OUTRA aba trocou: «Salvar rascunho» não envia nada e abre o conflito com «Categoria» — a rota também recusaria (a base nomeia a categoria); a aba recusa antes, sem pedido ⟷ QUASE-PAR: só a lista mudou ⇒ a rota decide (enviado)', async () => {
     comAutoria();
     const atualizarRascunho = vi.fn<ShopeeClient['atualizarRascunho']>(async (input) => ({
       linkDocId: input.linkDocId,
@@ -7993,7 +7993,7 @@ describe('ShopeeEditor — a árvore de atributos da categoria EDITADA (#1911 P1
     fireEvent.click(botaoDoRascunho('L-rasc', 'Salvar rascunho'));
     await waitFor(() => expect(atualizarRascunho).toHaveBeenCalledTimes(1));
     expect(atualizarRascunho.mock.calls[0]?.[0]).toMatchObject({
-      base: { attributes: COM_FIO_GUARDADO },
+      base: { category_id: 100087, attributes: COM_FIO_GUARDADO },
       patch: { attributes: SEM_FIO },
     });
   });

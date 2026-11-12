@@ -1771,7 +1771,8 @@ test.describe.serial('Produto Shopee tab e2e — listing state, actions and the 
     // the children its chosen value shows, the next root — the list pick by
     // its id alone, each typed value as a custom one (`value_id: 0`), the
     // decimal in the wire's dot form with the unit picked; and beside it the
-    // attributes the operator saw stored: none.
+    // attributes the operator saw stored (none) and the category the list was
+    // built for — the route compares it, never writes it.
     await expect
       .poll(() => escritas(stubs), { timeout: 30_000 })
       .toEqual([
@@ -1782,7 +1783,7 @@ test.describe.serial('Produto Shopee tab e2e — listing state, actions and the 
             integracaoId: conta,
             produtoId: pronto.produtoId,
             linkDocId: pronto.rascunho,
-            base: { attributes: null },
+            base: { category_id: SHOPEE_E2E_CATEGORIA, attributes: null },
             patch: {
               attributes: [
                 {

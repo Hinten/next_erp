@@ -246,6 +246,44 @@ describe('o dedup — os `image_id` já cacheados NESTA integração', () => {
     await expect(idsDeImagemJaImportados(asDb(db), PRODUTO, INTEGRACAO)).resolves.toEqual(['i1']);
   });
 
+  describe('#2099 (L3): o dedup lê só as fotos ATUAIS do produto — uma foto removida volta', () => {
+    // The import recipe now says photos are APPENDED and that a photo removed
+    // from the produto comes back while it is still on the listing. That
+    // sentence is true only because the dedup reads the arquivos the produto's
+    // CURRENT `fotos[]` references — never every arquivo the integração ever
+    // cached for it. These two pin that scope from both sides.
+    const ARQUIVO = `${PRODUTO}_hash-antigo`;
+
+    function semearArquivoCacheado(db: FakeDb): void {
+      db.seed(`arquivos/${ARQUIVO}`, {
+        url: 'https://exemplo/x.jpeg',
+        externalIds: [{ externalId: 'i1', integracaoPath: INTEG_REF }],
+      });
+    }
+
+    it('PAR: o arquivo desta integração REFERENCIADO por `fotos` ⇒ o `image_id` volta, e o plano não baixa a foto de novo', async () => {
+      const db = new FakeDb();
+      semearProduto(db, [{ arquivoOuterRef: `arquivos/${ARQUIVO}` }]);
+      semearArquivoCacheado(db);
+      const cacheadas = await idsDeImagemJaImportados(asDb(db), PRODUTO, INTEGRACAO);
+      expect(cacheadas).toEqual(['i1']);
+      // Anchor for the near-miss below: a referenced arquivo IS read, in this shape.
+      expect(db.opLog).toContainEqual({ op: 'get', path: `arquivos/${ARQUIVO}` });
+      expect(paresDoPlano([URL_1], ['i1'], cacheadas)).toEqual([]);
+    });
+
+    it('⛔ QUASE-PAR: o MESMO arquivo, ainda com o `image_id` desta integração, mas fora de `fotos` (o operador removeu a foto) ⇒ nada volta, e o plano BAIXA a foto de novo', async () => {
+      const db = new FakeDb();
+      semearProduto(db, [{ arquivoOuterRef: 'arquivos/outro-arquivo' }]);
+      semearArquivoCacheado(db);
+      const cacheadas = await idsDeImagemJaImportados(asDb(db), PRODUTO, INTEGRACAO);
+      expect(cacheadas).toEqual([]);
+      // The arquivo was never read: only `fotos[]` names what is looked up.
+      expect(db.opLog).not.toContainEqual({ op: 'get', path: `arquivos/${ARQUIVO}` });
+      expect(paresDoPlano([URL_1], ['i1'], cacheadas)).toEqual([{ url: URL_1, imageId: 'i1' }]);
+    });
+  });
+
   it('produto inexistente: lista vazia e NENHUMA leitura de arquivo', async () => {
     const db = new FakeDb();
     await expect(idsDeImagemJaImportados(asDb(db), PRODUTO, INTEGRACAO)).resolves.toEqual([]);

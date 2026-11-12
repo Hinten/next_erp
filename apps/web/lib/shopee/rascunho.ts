@@ -73,8 +73,10 @@
  * changed field, so «Salvar rascunho» waits for it
  * ({@link planoDoRascunhoShopee}). The tie runs the other way too: a list was
  * built against ONE category's tree, so a save of an edited list that does not
- * change the category still checks that the category is the one the operator
- * loaded ({@link divergenciasDoServidorShopee}).
+ * change the category still names the category in its base
+ * (`camposDaBaseDoRascunhoShopee`, P13 Q1) — the route refuses a list whose
+ * category moved, and the tab refuses it first, without a request
+ * ({@link conflitosAntesDeSalvarShopee}).
  *
  * ## Rule 7 — the browser writes nothing
  *
@@ -82,16 +84,17 @@
  * methods): a create at a client id (tier 0), an edit and a discard compared
  * against the `base` the operator saw (tier 3 — a loser is a 409 the operator
  * sees, never a silent overwrite). ⚠️ The route compares only the fields of the
- * patch's `base`, and an attributes-only patch's base does not name the
- * category its list was built for: the TAB checks that one itself
- * ({@link divergenciasDoServidorShopee} names `category_id`; the save then
- * sends nothing and opens the conflict modal), and the rebase never moves the
- * category unseen while the list is edited ({@link rebasearEdicaoRascunhoShopee}).
- * Residual: another tab's category write landing between this tab's last
- * snapshot and its request is not seen by either check. After a 2xx the HELD
- * projection is never rebuilt from what was sent (`gravados` may name fields
- * the patch did not — a category change clears `attributes`): the block shows
- * what was saved,
+ * patch's `base` — and an attributes-only patch's base names the category its
+ * list was built for (`camposDaBaseDoRascunhoShopee`, P13 Q1): another
+ * writer's category is a 409, never this list written onto it. The tab checks
+ * that one first ({@link divergenciasDoServidorShopee} names `category_id`;
+ * the save then sends nothing and opens the conflict modal with the rows the
+ * route's 409 would carry), and the rebase never moves the category unseen
+ * while the list is edited ({@link rebasearEdicaoRascunhoShopee}). A category
+ * write landing between this tab's last snapshot and its request, which the
+ * tab cannot see, is the route's 409. After a 2xx the HELD projection is never
+ * rebuilt from what was sent (`gravados` may name fields the patch did not — a
+ * category change clears `attributes`): the block shows what was saved,
  * read-only, until the listener brings the stored draft back
  * ({@link marcarRascunhoShopeeSalvo}, {@link conciliarEdicaoRascunhoShopee}).
  */
@@ -775,8 +778,11 @@ function recorteDaProjecao(
  * an impediment. `patch` = the plan's (only the changed fields, normalised);
  * `base` = the HELD projection cut to `camposDaBaseDoRascunhoShopee(patch)` —
  * the patch's fields plus `attributes` whenever the patch changes
- * `category_id` (that write clears them, so it must prove the operator saw
- * them). VERBATIM: a legacy `''` title is sent back as `''`.
+ * `category_id` without them (that write clears them, so it must prove the
+ * operator saw them), and `category_id` whenever the patch writes `attributes`
+ * without it (the list was built for that category, so it must prove the
+ * category is still the one the operator saw — P13 Q1). VERBATIM: a legacy
+ * `''` title is sent back as `''`.
  */
 export function corpoAtualizarRascunhoShopee(
   edicao: EdicaoRascunhoShopee,
@@ -1039,11 +1045,15 @@ export function rebasearEdicaoRascunhoShopee(
  *
  * What the re-send overwrites is every field of its base that the rebase took
  * from the stored draft — the listed ones of an edit, every one of a create
- * retry ({@link rebasearEdicaoRascunhoShopee}); each must be a row whose value
- * is still what is stored, under the WRITE question (a brand renamed under the
- * same id counts: the modal showed the old name). A changed field of an edit
- * whose stored value moved after the 409 is added too: the re-send would only
- * answer 409 on it.
+ * retry ({@link rebasearEdicaoRascunhoShopee}) — except a `category_id` its
+ * patch does not name: beside an attributes-only list the route only COMPARES
+ * the category (P13 Q1), never writes it, so a create retry whose category is
+ * still the one it sent shows no «Categoria» row. Each must be a row whose
+ * value is still what is stored, under the WRITE question (a brand renamed
+ * under the same id counts: the modal showed the old name). A field of an
+ * edit's base whose stored value moved after the 409 is added too — that
+ * base-only category included ({@link divergenciasDoServidorShopee}): the
+ * re-send would only answer 409 on it.
  *
  * The refreshed rows carry the projection's own values, so the next click
  * compares like with like and goes through unless the draft moves again — a
@@ -1058,8 +1068,13 @@ export function conflitosAtualizadosDoRascunhoShopee(
   const rebaseada = rebasearEdicaoRascunhoShopee(edicao, link, [], listados);
   const { patch } = planoDoRascunhoShopee(rebaseada, { tipo: 'livre' });
   const guardado = camposDoRascunhoShopee(link);
+  // What the re-send OVERWRITES: its base's fields (the listed ones of an edit,
+  // every one of a create retry) — except a `category_id` the patch does not
+  // name, which the route only COMPARES beside an attributes-only list (P13 Q1).
   const sobrescritos = camposDaBaseDoRascunhoShopee(patch).filter(
-    (campo) => edicao.novo || listados.includes(campo),
+    (campo) =>
+      (campo !== CAMPO_RASCUNHO_SHOPEE.categoryId || campo in patch) &&
+      (edicao.novo || listados.includes(campo)),
   );
   const moveram = edicao.novo ? [] : divergenciasDoServidorShopee(rebaseada, link);
   const aindaMostrado = (campo: CampoRascunhoShopee): boolean => {
@@ -1233,12 +1248,11 @@ function jaEstaGuardado(edicao: EdicaoRascunhoShopee, link: Record<string, unkno
  * `rascunhoConflito`; the block can say so before the click. `[]` for a
  * `novo` or just-saved entry, or one with nothing to save.
  *
- * Plus `category_id` whenever the patch names `attributes` WITHOUT it: the
- * list was built against the category the operator loaded, but such a patch's
- * base does not name the category, so the route would NOT answer 409 when
- * another writer moved it — it would write this list onto the other category.
- * When this names `category_id` there, the tab refuses that save itself (no
- * request; the conflict modal opens with these rows), and «Salvar mesmo assim»
+ * That base includes `category_id` whenever the patch names `attributes`
+ * WITHOUT it (P13 Q1): the list was built against the category the operator
+ * loaded, so another writer's category is a divergence here exactly as it is a
+ * 409 at the route. When this names `category_id` there, the tab refuses that
+ * save itself ({@link conflitosAntesDeSalvarShopee}), and «Salvar mesmo assim»
  * re-checks through {@link conflitosAtualizadosDoRascunhoShopee}, whose
  * `moveram` is this.
  */
@@ -1249,25 +1263,19 @@ export function divergenciasDoServidorShopee(
   if (edicao.novo || edicao.salvo !== null) return [];
   const { patch } = planoDoRascunhoShopee(edicao, { tipo: 'livre' });
   const guardado = camposDoRascunhoShopee(link);
-  const daBase = camposDaBaseDoRascunhoShopee(patch);
-  const comparados =
-    daBase.includes(CAMPO_RASCUNHO_SHOPEE.attributes) &&
-    !daBase.includes(CAMPO_RASCUNHO_SHOPEE.categoryId)
-      ? CAMPOS_DO_FORMULARIO_RASCUNHO_SHOPEE.filter(
-          (campo) => campo === CAMPO_RASCUNHO_SHOPEE.categoryId || daBase.includes(campo),
-        )
-      : daBase;
-  return comparados.filter(
+  return camposDaBaseDoRascunhoShopee(patch).filter(
     (campo) => !mesmoValorDoRascunhoShopee(campo, edicao.base[campo], guardado[campo]),
   );
 }
 
 /**
- * The rows the tab shows INSTEAD of sending a save the route would not refuse:
+ * The rows the tab shows INSTEAD of sending a save the route would refuse too:
  * {@link divergenciasDoServidorShopee} names `category_id` while the patch does
- * not (an edited list whose category another writer moved). One row per
- * diverging field, with its STORED value — the 409's shape, so the conflict
- * modal and «Salvar mesmo assim» treat it as one. `null` ⇔ the save may go.
+ * not (an edited list whose category another writer moved). The route answers
+ * that save 409 (its base names the category, P13 Q1); the tab refuses first
+ * and spares the request. One row per diverging field, with its STORED value —
+ * the 409's shape, so the conflict modal and «Salvar mesmo assim» treat it as
+ * one. `null` ⇔ the save may go.
  */
 export function conflitosAntesDeSalvarShopee(
   edicao: EdicaoRascunhoShopee,
@@ -2400,10 +2408,14 @@ const RAIZES_DE_SKU: ReadonlySet<string> = new Set(['item_sku', 'sku']);
  *   the variations.
  * - `logistic_info` — the produto's weight (a channel the parcel does not fit,
  *   `logistica-sem-canal`, and Shopee's own logistics refusal), EXCEPT for
- *   `logistica-nao-confirmada` (#2015): a stored size or fee the ERP has no
- *   record of having written, fixed by importing the listing — no field of
- *   the produto is the fix, so the row keeps its copy and gets no button.
- *   Scoped to that ROOT: the same motivo on another root routes as usual.
+ *   the two import-remedy motivos: `logistica-nao-confirmada` (#2015, a
+ *   stored size or fee the ERP has no record of having written) and
+ *   `logistica-sem-valor-gravado` (#2099, no size or fee stored readably on a
+ *   list the ERP has no record of having written). Both are fixed by importing
+ *   the listing, and the channel they name already fits — no field of the
+ *   produto is the fix, so the row keeps its copy and gets no button. Matched
+ *   EXACTLY, and scoped to that ROOT: the same motivo on another root routes
+ *   as usual.
  */
 export function superficieDoCampoShopee(
   problema: Pick<ProblemaShopee, 'campo' | 'motivo' | 'acao'>,
@@ -2440,9 +2452,15 @@ export function superficieDoCampoShopee(
     case 'size_chart_info':
       return { tipo: 'medidas' };
     case 'logistic_info':
-      // #2015: the stored size/fee was not confirmed as this app's — the fix
-      // is importing the listing, never the produto's weight.
-      if (problema.motivo === MOTIVO_ANUNCIO_SHOPEE.logisticaNaoConfirmada) return null;
+      // #2015 / #2099: the stored size/fee was not confirmed as this app's, or
+      // none is stored readably — the fix is importing the listing (or setting
+      // the value in Seller Centre first), never the produto's weight.
+      if (
+        problema.motivo === MOTIVO_ANUNCIO_SHOPEE.logisticaNaoConfirmada ||
+        problema.motivo === MOTIVO_ANUNCIO_SHOPEE.logisticaSemValorGravado
+      ) {
+        return null;
+      }
       break;
   }
   if (RAIZES_DE_SKU.has(raiz)) {

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, type KeyboardEvent } from 'react';
+import { useState } from 'react';
 import {
   Badge,
   Button,
@@ -46,6 +46,7 @@ import { idDoCampoRascunhoShopee } from './DesfechoAcaoShopee';
 // Read only while rendering, so the import cycle with the form that mounts this
 // section (`RascunhoShopee` imports this file) never reads a binding early.
 import { ROTULO_LER_DE_NOVO_RASCUNHO_SHOPEE } from './RascunhoShopee';
+import { semEnviarOFormularioDoProduto } from './semEnviarOFormularioDoProduto';
 
 /* -------------------------------------------------------------------------- */
 /*                                    Props                                    */
@@ -284,6 +285,12 @@ const FRASE_VALOR_FORA_DA_LISTA =
   'Um valor gravado não está mais na lista da Shopee para esta categoria — escolha outro.';
 const FRASE_VALOR_FORA_DA_LISTA_SEM_SAIDA =
   'Um valor gravado não está mais na lista da Shopee para esta categoria.';
+/** The composer's `vazio` — shown only after Enter on an EMPTY composer ({@link Compositor}). */
+const FRASE_DIGITE_UM_VALOR = 'Digite um valor.';
+/** The composer's `repetido` — the typed value is one the attribute already holds. */
+const FRASE_VALOR_JA_NA_LISTA = 'Este valor já está na lista.';
+/** The accessible name of a single-choice Select's clear button. */
+const ROTULO_LIMPAR = 'Limpar';
 
 function fraseDoTipoDeValor(tipo: TipoDoValorAtributoShopee | null): string | null {
   if (tipo === 'decimal') return FRASE_TIPO_DECIMAL;
@@ -416,9 +423,10 @@ export function fraseDoProblemaDoAtributoShopee(
 /**
  * The sentence of a TYPED value's refusal (the single input's blocking
  * typing, or the composer's dry run), or `null` when the reason has no copy —
- * `vazio` (nothing typed) and `repetido` (the chip is on screen), and a custom
- * value refused where no editable control offers one; the input is still
- * marked.
+ * a custom value refused where no editable control offers one; the input is
+ * still marked. The composer's own two (#1911 P14b, P13 «no-sentence places»):
+ * `vazio` says «Digite um valor.» (the composer shows it only after Enter on
+ * an EMPTY composer) and `repetido` «Este valor já está na lista.».
  */
 export function fraseDaDigitacaoDoAtributoShopee(
   motivo: MotivoDigitacaoShopee,
@@ -432,9 +440,11 @@ export function fraseDaDigitacaoDoAtributoShopee(
       return fraseDoTipoDeValor(tipoDoValor);
     case MOTIVO_DIGITACAO_ATRIBUTO_SHOPEE.valoresDemais:
       return maximo === null ? null : fraseValoresDemais(maximo);
-    case MOTIVO_DIGITACAO_ATRIBUTO_SHOPEE.personalizadoNaoPermitido:
     case MOTIVO_DIGITACAO_ATRIBUTO_SHOPEE.vazio:
+      return FRASE_DIGITE_UM_VALOR;
     case MOTIVO_DIGITACAO_ATRIBUTO_SHOPEE.repetido:
+      return FRASE_VALOR_JA_NA_LISTA;
+    case MOTIVO_DIGITACAO_ATRIBUTO_SHOPEE.personalizadoNaoPermitido:
       return null;
   }
 }
@@ -453,17 +463,6 @@ const FRASE_DESFAZER_REMOCAO = 'Para mantê-los, use «Desfazer alterações».'
 
 /** The `Select` value of «Outro valor…» — never a `String(valueId)`. */
 const VALOR_OUTRO = 'outro-valor';
-
-/**
- * ⚠️ The draft sits INSIDE the produto's `<form>`: Enter in a single-line input
- * would submit THAT form (saving the produto, not the draft). A SEARCHABLE
- * `Select` / `MultiSelect` is a real text `<input>` too, and Mantine prevents
- * Enter there only while an option is highlighted in an open dropdown (its own
- * handler, which runs after this one, still picks that option).
- */
-function semEnviarOFormularioDoProduto(e: KeyboardEvent<HTMLInputElement>): void {
-  if (e.key === 'Enter') e.preventDefault();
-}
 
 /** A value as the screen prints it: the model's label, then the stored unit. */
 function textoDoValor(valor: ValorExibidoAtributoShopee): string {
@@ -927,6 +926,10 @@ function ControleDeEscolhaUnica(props: PropsDaLinha) {
         value={valor}
         onChange={escolher}
         clearable
+        // Named «Limpar». Mantine 9.2.0's `Combobox.ClearButton` defaults to
+        // `aria-hidden` (and `tabIndex={-1}`) and spreads these props after
+        // it, so the name is only exposed with `aria-hidden` lifted too.
+        clearButtonProps={{ 'aria-label': ROTULO_LIMPAR, 'aria-hidden': false }}
         // Re-clicking «Outro valor…» must not clear the typed value.
         allowDeselect={!comOutro}
         searchable
@@ -1104,6 +1107,12 @@ function ControleMultiplo(props: PropsDaLinha & { idDaLinha: string }) {
  * model's dry run accepts the value and the attribute is under its cap. It
  * stays MOUNTED while the section is read-only (`editavel` false — any write
  * of the tab in flight, a just-saved bridge): disabled, its typed text kept.
+ *
+ * The refusal is marked once something is typed — `repetido` reads «Este
+ * valor já está na lista.» — or once Enter is pressed on an EMPTY composer
+ * (`vazio`: «Digite um valor.»), which the next keystroke clears. A pristine
+ * empty composer is never marked: every chips attribute starts empty, and a
+ * red box on each would be noise.
  */
 function Compositor({
   linha,
@@ -1114,15 +1123,16 @@ function Compositor({
 }: PropsDaLinha & { maximo: number | null }) {
   const [texto, setTexto] = useState('');
   const [unidade, setUnidade] = useState<string | null>(null);
+  // Enter pressed with nothing typed — the only way `vazio` is ever shown.
+  const [pediuSemValor, setPediuSemValor] = useState(false);
   const digitou = texto.trim() !== '';
   const motivo = ensaiarAdicao(linha.attributeId, texto, unidade);
   const pode = editavel && linha.podeAdicionar && digitou && motivo === null;
-  const frase =
-    digitou && motivo !== null
-      ? fraseDaDigitacaoDoAtributoShopee(motivo, linha.tipoDoValor, maximo)
-      : null;
+  const marcado = (digitou || pediuSemValor) && motivo !== null;
+  const frase = marcado
+    ? fraseDaDigitacaoDoAtributoShopee(motivo, linha.tipoDoValor, maximo)
+    : null;
   const naUnidade = motivo === MOTIVO_DIGITACAO_ATRIBUTO_SHOPEE.unidadeInvalida;
-  const marcado = digitou && motivo !== null;
 
   const adicionar = (): void => {
     if (!pode) return;
@@ -1147,9 +1157,13 @@ function Compositor({
         onKeyDown={(e) => {
           if (e.key !== 'Enter') return;
           e.preventDefault();
+          if (!digitou) setPediuSemValor(true);
           adicionar();
         }}
-        onChange={(e) => setTexto(e.currentTarget.value)}
+        onChange={(e) => {
+          setPediuSemValor(false);
+          setTexto(e.currentTarget.value);
+        }}
       />
       {linha.unidades !== null && (
         <Select

@@ -16,6 +16,8 @@ import {
   marcaDaLinhaParaRascunhoShopee,
 } from '@/lib/shopee/rascunho';
 
+import { semEnviarOFormularioDoProduto } from './semEnviarOFormularioDoProduto';
+
 export interface MarcaRascunhoShopeeProps {
   /** The Firestore handle `useMarcasShopee` listens with; supplied by `RascunhoShopee` (from the editor). */
   db: Firestore;
@@ -77,6 +79,9 @@ export function rotuloDaMarcaRascunhoShopee(par: ParMarcaRascunhoShopee | null):
  *   nothing.
  * - Mantine's `searchable` filtering is display-only (it decides no write), so
  *   it is no fold to inventory.
+ * - The draft sits inside the produto's `<form>`: Enter in the search box never
+ *   submits it; ↓ + Enter still picks (`semEnviarOFormularioDoProduto`, the
+ *   guard the title and the attribute controls share).
  */
 export function MarcaRascunhoShopee({
   db,
@@ -157,6 +162,7 @@ export function MarcaRascunhoShopee({
         searchable
         nothingFoundMessage="Nenhuma marca encontrada"
         disabled={!editavel}
+        onKeyDown={semEnviarOFormularioDoProduto}
       />
       {marcas.length === 0 && (
         <Text size="xs" c="dimmed" data-testid={`${raiz}-vazia`}>

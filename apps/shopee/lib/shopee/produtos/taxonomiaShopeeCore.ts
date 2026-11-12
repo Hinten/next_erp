@@ -69,6 +69,7 @@ import {
   ehEntradaShopeeDaChave,
   idDoRef,
   linkVariacoesShopeeSchema,
+  nomeDeTierShopee,
   resolverEntradaShopeeDoGrupo,
   varianteFakePath,
   type ExternalVariacaoLink,
@@ -211,41 +212,16 @@ function inteiroOuZero(v: number | null | undefined): number {
 }
 
 /**
- * THE fold of a Shopee tier NAME or tier-option NAME: the ends trimmed
- * (`String.prototype.trim`, so an NBSP too) and nothing else. ONE function for
- * both sides of the wire (#1911 batch-A, the #1369 shape):
- *
- * - the READER: {@link tiersDoItem} reads every live tier and option name
- *   through it, so a listing's names always arrive trimmed;
- * - the PUBLISHER: `anuncios/tiersPublicacao.ts` folds every name it SENDS
- *   (`variation_name` and `variation_option_name`, on the create, the init and
- *   the update) and BOTH sides of every name it PAIRS (a grupo with a live
- *   custom tier; a variante, or a stored `shopee_option_name`, with a live
- *   option).
- *
- * So the string sent, the string read back and the string compared are one.
- * Before this, the reader trimmed while the publisher sent and compared
- * `grupo.nome` / `variante.nome` verbatim: a grupo `'Cor '` was refused on every
- * update of the listing its own create had made, and a variante `'Azul '`
- * appended a ghost option on every republish.
- *
- * EQUAL: `'Azul '` ≡ `' Azul'` ≡ `'Azul'`; `null`, absent and a non-string ≡
- * `''`. DISTINCT: case (`'Azul'` vs `'azul'`) and inner whitespace
- * (`'Azul Claro'` vs `'Azul  Claro'`). Pinned by "nomeDeTierShopee — IGUAL: as
- * pontas; DISTINTO: a caixa e o espaço de dentro" here and by the `(2d)` pairs
- * and near-misses of `tiersPublicacao.test.ts`.
- *
- * ⚠️ Not the import's cascades: {@link planejarTaxonomia}'s rung 2 compares a
- * STORED ERP grupo/variante name verbatim against this fold's output (`'Cor '`
- * ≠ `'Cor'` is pinned there), and {@link mesmaOpcao} compares two stored option
- * names byte-exact. Those are step 9's decisions; #1911 did not change them.
- * The ONE import consumer is rung 1's custom-option arm (#1911 P14a), which
- * reads the stored id-`0` row the publisher pairs a live custom option with —
- * so it folds both sides exactly as the publisher does.
+ * THE fold of a Shopee tier NAME or tier-option NAME — the ends trimmed, nothing
+ * else — is DEFINED in `@delfrance/schemas` (`shopeeLinkVariacoes.ts`, beside the
+ * binding key; moved there by #1911 P14b so the binding editor in `apps/web`
+ * folds with the same function) and RE-EXPORTED here, so `anuncios/`, `kits/`
+ * and every test of this app keep importing it from this module. Its scope, its
+ * consumers and its pins are documented at the definition. A local copy here
+ * would be the #1369 shape again; a test holds this re-export to BE that
+ * function.
  */
-export function nomeDeTierShopee(nome: string | null | undefined): string {
-  return typeof nome === 'string' ? nome.trim() : '';
-}
+export { nomeDeTierShopee };
 
 /**
  * The tier list of one listing — names from `tier_variation`, ids from
@@ -372,19 +348,30 @@ function mesmaOpcao(a: LinkVariacaoOpcaoShopee, b: LinkVariacaoOpcaoShopee): boo
  * `integracaoShopeeId` is the bare doc id the planner writes, which is the side
  * the predicate compares as given. Every readable element naming the pair is
  * merged, as before: a twin an older import appended stays in step with the
- * entry the publisher reads.
+ * entry the publisher reads — a twin of the same variation; a twin naming
+ * ANOTHER variation does not receive our rows (below).
  *
  * Field-by-field, on a matching entry:
  *  - `variation_id` / `variation_group_list`: take OURS **only** when theirs is
  *    `0` and ours is non-zero. A non-zero operator value is never overwritten.
  *    The group is filled only when the stored `variation_id` is `0` or ours: a
  *    group beside another variation is a pair no listing reports.
- *  - `name`: fill-blank only.
- *  - `variationOptions`: matched by {@link mesmaOpcao}; a match unions
- *    `arakene_variation_id` and fill-blanks the name; a new option is appended.
+ *  - `name`: fill-blank only, beside ANY variation — it is the LEAF category's
+ *    label, and the key already fixes the category.
+ *  - `variationOptions`: merged only into an entry of the SAME variation — a
+ *    stored `0` (filled with ours above) or ours. There a match by
+ *    {@link mesmaOpcao} unions `arakene_variation_id` and fill-blanks the name,
+ *    and a new option is appended. Beside ANOTHER stored variation the rows are
+ *    left byte-identical — the stored array itself, never re-serialised: a
+ *    standard tier's ids belong to its own variation and a custom tier's (or a
+ *    kit's) names were typed in another tier, yet the publisher authors an
+ *    option from any row that binds a variante, so it would send them under the
+ *    stored id (#2108 point 8). Our `0` (a custom live tier, a kit) is a VALUE,
+ *    never a wildcard. Such an entry is still FOUND, so no twin is appended.
  *
  * `mudou: false` when nothing changed, so a byte-identical re-import writes
- * nothing at all.
+ * nothing at all — and neither does a re-import facing another variation,
+ * unless the entry's `name` was blank.
  */
 export function fundirLinksVariacoesShopee(
   armazenado: readonly unknown[] | null | undefined,
@@ -413,6 +400,15 @@ export function fundirLinksVariacoesShopee(
     const fundido: Record<string, unknown> = { ...bruto };
     let mudouEsta = false;
 
+    // Beside ANOTHER stored variation our rows are not this binding's: a standard
+    // tier's ids belong to its own variation, and a custom tier's (or a kit's)
+    // names were typed in another tier. The publisher authors an option from ANY
+    // row that binds a variante (`opcaoDaVariante`), so on a create, an `init` or
+    // an appended option it would send them under the stored id. Our `0` is a
+    // VALUE, never a wildcard; a stored `0` is filled with ours just below, and
+    // then takes our group and our rows too (#2108 point 8).
+    const mesmaVariacao = atual.variation_id === 0 || atual.variation_id === nosso.variation_id;
+
     if (atual.variation_id === 0 && nosso.variation_id !== 0) {
       fundido.variation_id = nosso.variation_id;
       mudouEsta = true;
@@ -420,41 +416,47 @@ export function fundirLinksVariacoesShopee(
     // ⚠️ A group belongs to ITS variation: fill it only beside a stored id that
     // is ours or still `0`. Beside ANOTHER stored variation it would form a
     // pair no listing reports — sent by the publisher, never corrected (non-zero).
-    if (
-      atual.variation_group_list === 0 &&
-      nosso.variation_group_list !== 0 &&
-      (atual.variation_id === 0 || atual.variation_id === nosso.variation_id)
-    ) {
+    if (atual.variation_group_list === 0 && nosso.variation_group_list !== 0 && mesmaVariacao) {
       fundido.variation_group_list = nosso.variation_group_list;
       mudouEsta = true;
     }
+    // The category's label, not the variation's: filled beside any variation.
     if (atual.name.trim().length === 0 && nosso.name.trim().length > 0) {
       fundido.name = nosso.name;
       mudouEsta = true;
     }
 
-    const opcoes: LinkVariacaoOpcaoShopee[] = atual.variationOptions.map((o) => ({ ...o }));
-    for (const nossaOpcao of nosso.variationOptions) {
-      const existente = opcoes.find((o) => mesmaOpcao(o, nossaOpcao));
-      if (existente === undefined) {
-        opcoes.push({ ...nossaOpcao });
-        mudouEsta = true;
-        continue;
+    // ⚠️ The WHOLE option block — append, union, row-name fill and the
+    // re-serialisation below — runs only for the same variation, so a foreign
+    // entry's `variationOptions` stay the stored array itself, even when its
+    // blank `name` was just filled.
+    if (mesmaVariacao) {
+      const opcoes: LinkVariacaoOpcaoShopee[] = atual.variationOptions.map((o) => ({ ...o }));
+      for (const nossaOpcao of nosso.variationOptions) {
+        const existente = opcoes.find((o) => mesmaOpcao(o, nossaOpcao));
+        if (existente === undefined) {
+          opcoes.push({ ...nossaOpcao });
+          mudouEsta = true;
+          continue;
+        }
+        const uniao = unirVariantes(
+          existente.arakene_variation_id,
+          nossaOpcao.arakene_variation_id,
+        );
+        if (uniao.mudou) {
+          existente.arakene_variation_id = uniao.lista;
+          mudouEsta = true;
+        }
+        if (
+          existente.shopee_option_name.trim().length === 0 &&
+          nossaOpcao.shopee_option_name.trim().length > 0
+        ) {
+          existente.shopee_option_name = nossaOpcao.shopee_option_name;
+          mudouEsta = true;
+        }
       }
-      const uniao = unirVariantes(existente.arakene_variation_id, nossaOpcao.arakene_variation_id);
-      if (uniao.mudou) {
-        existente.arakene_variation_id = uniao.lista;
-        mudouEsta = true;
-      }
-      if (
-        existente.shopee_option_name.trim().length === 0 &&
-        nossaOpcao.shopee_option_name.trim().length > 0
-      ) {
-        existente.shopee_option_name = nossaOpcao.shopee_option_name;
-        mudouEsta = true;
-      }
+      if (mudouEsta) fundido.variationOptions = opcoes;
     }
-    if (mudouEsta) fundido.variationOptions = opcoes;
 
     saida.push(mudouEsta ? fundido : elemento);
     if (mudouEsta) mudou = true;
@@ -835,7 +837,8 @@ export function planejarTaxonomia(args: ArgsPlanejarTaxonomia): PlanoDeTaxonomia
       // binding model; the operator chooses it in the binding editor (#1911
       // P14). A re-import back-fills a stored `0` with no migration — but only
       // beside a stored `variation_id` that is `0` or this one: an entry naming
-      // ANOTHER variation keeps its group `0`.
+      // ANOTHER variation keeps its group `0`, and receives none of our option
+      // rows either (#2108 point 8).
       variation_group_list: tier.variationGroupId,
       // ⚠️ A BARE doc id, NOT a `documents/integracao/<id>` outer-ref — unlike
       // every other conta reference in the Shopee models (trap 2 of the
