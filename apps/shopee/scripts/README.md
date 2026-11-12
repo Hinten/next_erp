@@ -1136,8 +1136,18 @@ the item fields are already sent:
   binding it to another variante, or an earlier variante of the same name — then
   the refusal repeats naming the option itself), and the move only into a grupo
   named like the tier (else S1) where each used variante is claimed by its live
-  option (else, under a custom entry, the model moves unrefused). Two used
-  variantes on ONE option read as this refusal, never `combinacao-duplicada`. A
+  option (else, under a custom entry, the model moves unrefused). Since Q-B
+  (Lucas 2026-11-11) this refusal YIELDS when the option duplicate check would
+  refuse the very option the variante would append — an earlier option of
+  another variante, itself unrefused, already took its key (the same non-zero
+  id, or at id `0` the same name sent — one id-`0` row binding both, say): that
+  check then refuses it `combinacao-duplicada`, and since the yield asks that
+  check, a yielded option is never appended unrefused. Its child is placed in
+  that grupo, so it gets no "não tem posição" line THERE but meets the remaining
+  model checks like any placed child (another grupo's position, price, stock).
+  Otherwise this refusal speaks for each: a non-zero row two unclaimed variantes
+  share, or a key only an option the check refuses on its variante key would
+  have taken (one variante claiming two live options). A
   child bound to no live model (a brand-new variante, or an unlinked child whose
   live model's SKU differs) is refused the same way, although no model of it
   would move — open for Lucas (see `../lib/shopee/anuncios/README.md`).

@@ -1520,20 +1520,46 @@ a child's model unrefused (P14a open point 6's class). Pinned in
   order, used or not, and grupos are shared across produtos). Then the refusal
   repeats with `{v}` equal to the option's name, so «não casa pelo nome» reads
   false, and the way out is that row or that homonym, which the sentence does not
-  name. The MOVE leaves this pairing only into a grupo named like the live tier
-  (else S1); there, under a custom entry (a stored `0` or none), every used
-  variante must be claimed by its live option (named like it, or bound by an
-  id-`0` row named like it), or the custom-entry append moves the child's model
-  UNREFUSED (P14a open point 6's class); under another standard entry it meets
-  this refusal again. A refused option never reaches the option duplicate check,
-  so inside this pairing two used variantes that would land on ONE option (one
-  row binding both, id `0` or not) read as this refusal, never
-  `combinacao-duplicada` as under a custom entry or a live standard tier, and no
-  rename clears it. When every tier is authored the child also gets the
-  model-leg "não tem posição" refusal, as under §5-7 (a sibling grupo refused as
-  a whole — S1/S2/S3, an unreadable entry or position — suppresses every model
-  line). It lands after `update_item`, stamped (the plan has no live tree,
-  so a dry run never shows it). A create, the `init` arm (every model re-created,
+  name — unless the variante's own row would append that very option (an id-`0`
+  row whose SENT name is the option's: its own name, or — stored blank — the
+  renamed variante's; one row binding both, say), when `combinacao-duplicada`
+  answers instead (Q-B, next). The MOVE leaves this pairing only into a grupo
+  named like the live tier (else S1); there, under a custom entry (a stored `0`
+  or none), every used variante must be claimed by its live option (named like
+  it, or bound by an id-`0` row named like it), or the custom-entry append moves
+  the child's model UNREFUSED (P14a open point 6's class); under another standard
+  entry it meets this refusal again. **Q1 yields to the option duplicate check
+  (Q-B — Lucas, 2026-11-11):** when that check would refuse the very option a
+  variante would append — an EARLIER option of another variante, itself
+  unrefused, already took its key: the same non-zero option id or, at id `0`, the
+  same name SENT (one id-`0` row binding two used variantes, the second named
+  either way, before or after the rename; or the renamed variante's own name sent
+  through a row stored blank) — the option is pushed and the check refuses it
+  `combinacao-duplicada` with its own sentence, exactly as under a custom entry.
+  The yield ASKS the check (`opcoesDuplicadas`, one scan, also run by the check
+  itself), and its verdict on an option depends only on the options before it, so
+  a yielded option is always refused, never appended unrefused. The id arm is
+  reachable only through a live CUSTOM option that carries a non-zero
+  standardise option id (`tiersDoItem` reads one), a wire shape not yet measured.
+  A key no earlier unrefused option took keeps Q1: a non-zero row two unclaimed
+  variantes share (the first is refused and never pushed, so both get Q1), a name
+  carried only by a live option no variante claims, a non-zero id beside a live
+  custom option of the same name (`{11, «Azul»}` is not `{0, «Azul»}`), a name
+  that differs in case or in inner whitespace, and a key that only an option the
+  check refuses on its variante key would have taken (one variante claiming two
+  live options: a refused option takes no key). Pinned by
+  `⚠️ RECUSA (#1911 P14b, Q-B)` and the `⛔ QUASE (Q-B, …)`, `⚠️ RECUSA (Q-B, …)`
+  and `⚠️ PAR (Q-B, …)` tests after it. When every tier is authored the child of
+  a Q1-refused variante also gets the model-leg "não tem posição" refusal, as
+  under §5-7 (a sibling grupo refused as a whole — S1/S2/S3, an unreadable entry
+  or position — suppresses every model line). A yielded variante's child gets no
+  "não tem posição" line for THIS grupo: its option is pushed and places it, so
+  it meets the remaining model checks like any placed child, exactly as under a
+  custom entry — another grupo's position, price, stock, the model-combination
+  duplicate. The Q1 refusal lands after `update_item`, stamped (the plan has no
+  live tree, so a dry run never shows it; it can still show `combinacao-duplicada`
+  for the same rows, since with no live tree one id-`0` row binding two used
+  variantes appends both). A create, the `init` arm (every model re-created,
   so nothing moves), a live STANDARD tier and a custom entry append as before,
   and a variante with no row stays on the per-variante refusal above. The
   sentence is capped at 500 like every problema: its fixed text is 324

@@ -306,6 +306,72 @@ describe('montarTiers — a autoria por tier', () => {
     expect(motivos(r.problemas)).toContain(MOTIVO_PUBLICACAO_BLOQUEADA.combinacaoDuplicada);
   });
 
+  it('⛔ QUASE (a chave da checagem de duplicadas é o ID, nunca o nome): as linhas PADRÃO 5 e 6 com o MESMO nome «Azul» são DUAS opções, nunca combinacao-duplicada; e a linha 5 de nome em BRANCO que liga as duas variantes manda dois nomes diferentes e ainda é combinacao-duplicada', () => {
+    // The check's own key, pinned at the check itself (outside the Q1 pairing):
+    // the Q-B pins reach `opcoesDuplicadas` only through the yield, and the raw-text
+    // discipline pin catches only a second copy SPELLED with the template keys.
+    const mesmoNome = montarTiers(
+      args({
+        grupos: [
+          comDuasOpcoes({
+            variation_id: 77,
+            variationOptions: [
+              { shopee_option_id: 5, shopee_option_name: 'Azul', arakene_variation_id: ['v-azul'] },
+              {
+                shopee_option_id: 6,
+                shopee_option_name: 'Azul',
+                arakene_variation_id: ['v-verde'],
+              },
+            ],
+          }),
+        ],
+        filhos: doisFilhos,
+      }),
+    );
+    expect(mesmoNome.problemas).toEqual([]);
+    expect(
+      mesmoNome.tiers[0]!.opcoes.map((o) => [
+        o.varianteId,
+        o.variation_option_id,
+        o.variation_option_name,
+      ]),
+    ).toEqual([
+      ['v-azul', 5, 'Azul'],
+      ['v-verde', 6, 'Azul'],
+    ]);
+    const nomeEmBranco = montarTiers(
+      args({
+        grupos: [
+          comDuasOpcoes({
+            variation_id: 77,
+            variationOptions: [
+              {
+                shopee_option_id: 5,
+                shopee_option_name: '',
+                arakene_variation_id: ['v-azul', 'v-verde'],
+              },
+            ],
+          }),
+        ],
+        filhos: doisFilhos,
+      }),
+    );
+    expect(
+      nomeEmBranco.tiers[0]!.opcoes.map((o) => [o.variation_option_id, o.variation_option_name]),
+    ).toEqual([
+      [5, 'Azul'],
+      [5, 'Verde'],
+    ]);
+    expect(nomeEmBranco.problemas).toEqual([
+      {
+        campo: 'standardise_tier_variation',
+        motivo: MOTIVO_PUBLICACAO_BLOQUEADA.combinacaoDuplicada,
+        mensagem:
+          'As variantes "v-azul" e "v-verde" do grupo "Cor" caem na mesma opção da Shopee — duas variações ocupariam um único modelo.',
+      },
+    ]);
+  });
+
   it('tier_index é posicional e sem buracos', () => {
     const tam = grupo({
       grupoId: 'g-tam',
@@ -2611,6 +2677,13 @@ describe('montarTiers — #2043: na ATUALIZAÇÃO, um grupo de entrada PADRÃO q
       mensagem: TEXTO_ANEXO_SOB_PADRAO(varianteNome, grupoNome, tierNome, 88),
     });
 
+    /** The option duplicate check's refusal, verbatim — it names variante IDS. */
+    const recusaDuplicada = (anterior: string, atual: string, grupoNome = 'Cor') => ({
+      campo: 'standardise_tier_variation',
+      motivo: MOTIVO_PUBLICACAO_BLOQUEADA.combinacaoDuplicada,
+      mensagem: `As variantes "${anterior}" e "${atual}" do grupo "${grupoNome}" caem na mesma opção da Shopee — duas variações ocupariam um único modelo.`,
+    });
+
     it('⚠️ PAR / ⛔ QUASE (os dois caminhos do resíduo): o degrau 3 da importação (vogal de gênero, troca espaço/hífen) e a variante RENOMEADA no ERP — com a linha ainda «Tom inventado» — são RECUSADAS e {v} é o nome da VARIANTE, nunca o da linha', () => {
       for (const nome of ['Tom inventado', 'Tom-inventada', 'Tom renomeado no ERP']) {
         const r = montarTiers(
@@ -3120,11 +3193,20 @@ describe('montarTiers — #2043: na ATUALIZAÇÃO, um grupo de entrada PADRÃO q
       [modeloVivo({ model_id: AZUL, tier_index: [0], model_sku: 'AZ' })],
     );
 
-    it('⚠️ PERGUNTA (Lucas): DUAS variantes USADAS que cairiam na MESMA opção leem como a frase do anexo (Q1), nunca combinacao-duplicada como sob a entrada CUSTOM — e renomear a segunda para o nome da opção viva NÃO sai da recusa: {v} vira o próprio nome da opção', () => {
+    // #1911 P14b, Q-B (Lucas, 2026-11-11: «let duplicate speak») FLIPPED half (a)
+    // of this test and retitled it. It was «⚠️ PERGUNTA (Lucas): DUAS variantes
+    // USADAS que cairiam na MESMA opção leem como a frase do anexo (Q1), nunca
+    // combinacao-duplicada como sob a entrada CUSTOM — e renomear a segunda para o
+    // nome da opção viva NÃO sai da recusa: {v} vira o próprio nome da opção» — the
+    // Q1 branch now yields to the duplicate check when that check refuses the very
+    // option it would append. Half (b) is unchanged.
+    it('⚠️ RECUSA (#1911 P14b, Q-B): DUAS variantes USADAS que cairiam na MESMA opção — uma linha de id 0 liga as duas — leem como combinacao-duplicada, como sob a entrada CUSTOM, e renomear a segunda para o nome da opção viva também; ⛔ QUASE: a linha NÃO-ZERO 11 que liga duas variantes que nenhuma opção viva reivindica continua com a frase do anexo (Q1) para AS DUAS', () => {
       // (a) ONE id-0 row binds both variantes. The row claims the live «Azul» for
       // v-um (the first used variante in it); v-dois would be appended as
-      // {0, «Azul»}, and the Q1 branch refuses it BEFORE the duplicate-key check
-      // could see the second «Azul».
+      // {0, «Azul»}, the key v-um already holds, so the Q1 branch yields and the
+      // duplicate check refuses v-dois with its own sentence. The yielded option
+      // gives p-dois a position, so no «não tem posição» line follows; the leg is
+      // refused as a whole (`temProblemaDeBloqueio`), so nothing is sent.
       const linhaDeDuas: OpcaoDeEntrada = {
         shopee_option_id: 0,
         shopee_option_name: 'Azul',
@@ -3153,13 +3235,16 @@ describe('montarTiers — #2043: na ATUALIZAÇÃO, um grupo de entrada PADRÃO q
           }),
         );
       const sob88 = publicar('Dois inventado', [entrada88ComLinhas([linhaDeDuas])]);
-      expect(sob88.problemas).toEqual([recusaDoAnexo('Dois inventado'), naoTemPosicao('p-dois')]);
-      expect(opcoesDe(sob88)).toEqual([['v-um', 0, 'Azul']]);
-      // The sentence's first exit, followed: v-dois renamed to «Azul». Still refused,
-      // and «não casa pelo nome» is now false — the row gave the option to v-um.
+      expect(sob88.problemas).toEqual([recusaDuplicada('v-um', 'v-dois')]);
+      expect(opcoesDe(sob88)).toEqual([
+        ['v-um', 0, 'Azul'],
+        ['v-dois', 0, 'Azul'],
+      ]);
+      // The sentence's first exit, followed: v-dois renamed to «Azul». The row still
+      // gives the option to v-um, so the duplicate check answers again — never the
+      // Q1 sentence's «não casa pelo nome», which would be false here.
       expect(publicar('Azul', [entrada88ComLinhas([linhaDeDuas])]).problemas).toEqual([
-        recusaDoAnexo('Azul'),
-        naoTemPosicao('p-dois'),
+        recusaDuplicada('v-um', 'v-dois'),
       ]);
       // ⛔ The SAME rows under a CUSTOM entry: the accurate refusal, unchanged.
       expect(
@@ -3169,10 +3254,20 @@ describe('montarTiers — #2043: na ATUALIZAÇÃO, um grupo de entrada PADRÃO q
           ]).problemas,
         ),
       ).toEqual([MOTIVO_PUBLICACAO_BLOQUEADA.combinacaoDuplicada]);
+      // ...and it is the SAME sentence, byte for byte: under the custom entry the
+      // check alone speaks, under 88 the Q1 branch asked the same check and yielded.
+      expect(
+        publicar('Dois inventado', [entrada({ variation_id: 0, variationOptions: [linhaDeDuas] })])
+          .problemas,
+      ).toEqual([recusaDuplicada('v-um', 'v-dois')]);
 
-      // (b) ONE non-zero row 11 binds two used variantes, neither named like the live
-      // option. Before Q1 both were appended under 11 (combinacao-duplicada, id 11);
-      // now each gets the Q1 sentence, then each child its model line.
+      // (b) ⛔ QUASE: ONE non-zero row 11 binds two used variantes, neither named
+      // like the live option. Before Q1 both were appended under 11
+      // (combinacao-duplicada, id 11); now each gets the Q1 sentence, then each child
+      // its model line — and Q-B does NOT yield here: v-tom was refused, never
+      // pushed, so nothing holds id:11 when v-tom2 asks. Yielding on a key only a
+      // REFUSED variante would have taken would leave v-tom2 with no sentence at all
+      // (the duplicate check never sees v-tom) and append it under 11.
       const r = montarTiers(
         args({
           grupos: [
@@ -3212,6 +3307,324 @@ describe('montarTiers — #2043: na ATUALIZAÇÃO, um grupo de entrada PADRÃO q
         recusaDoAnexo('Tom inventado dois'),
         naoTemPosicao('p-tom'),
         naoTemPosicao('p-tom2'),
+      ]);
+    });
+
+    /* ---- Q-B: the yield asks the duplicate check — when it does NOT yield --- */
+
+    /** One grupo «Cor» under exactly the given STANDARD 88 rows, against a live CUSTOM tier. */
+    const publicarSob88 = (
+      variacoes: readonly VarianteDoTier[],
+      linhas: readonly OpcaoDeEntrada[],
+      filhos: readonly FilhoParaPublicar[],
+      viva: ArvoreVivaDoItem = VIVA_SO_AZUL,
+    ) =>
+      montarTiers(
+        args({
+          grupos: [
+            grupo({
+              grupoId: 'g-cor',
+              nome: 'Cor',
+              variacoes,
+              linksVariacoesShopee: [entrada88ComLinhas(linhas)],
+            }),
+          ],
+          filhos,
+          viva,
+        }),
+      );
+    const filhoDe = (produtoId: string, varianteId: string) =>
+      filho({ produtoId, variacoesUid: [varianteFakePath('g-cor', varianteId)] });
+
+    it('⛔ QUASE (Q-B, o dono da chave também colide): a linha {0, «Tom inventada»} dá a opção viva a v-um, que já tem «Um inventado» pelo nome — a checagem recusa a 2ª opção de v-um pela chave da VARIANTE e ela não guarda nome:Tom inventada; v-dois, que seria anexada como {0, «Tom inventada»}, NÃO cede: continua com a frase do anexo (Q1), nunca fica sem frase', () => {
+      // A yield on "some option of another variante has this key" alone would fire
+      // here: v-um's second option HAS the key. But the check refuses that option on
+      // its variante key and never registers the name, so v-dois would pass it
+      // unrefused — appended with no sentence of its own. The yield asks the check
+      // itself, so it does not fire, and every used variante keeps one sentence.
+      const r = publicarSob88(
+        [variante('v-um', 'Um inventado'), variante('v-dois', 'Dois inventado')],
+        [
+          {
+            shopee_option_id: 0,
+            shopee_option_name: 'Tom inventada',
+            arakene_variation_id: ['v-um', 'v-dois'],
+          },
+        ],
+        [filhoDe('p-um', 'v-um'), filhoDe('p-dois', 'v-dois')],
+        arvore(
+          ['Um inventado', 'Tom inventada'],
+          [
+            modeloVivo({ model_id: AZUL, tier_index: [0], model_sku: 'UM' }),
+            modeloVivo({ model_id: TOM, tier_index: [1], model_sku: 'TOM' }),
+          ],
+        ),
+      );
+      expect(r.problemas).toEqual([
+        recusaDoAnexo('Dois inventado'),
+        recusaDuplicada('v-um', 'v-um'),
+        naoTemPosicao('p-dois'),
+      ]);
+      expect(opcoesDe(r)).toEqual([
+        ['v-um', 0, 'Um inventado'],
+        ['v-um', 0, 'Tom inventada'],
+      ]);
+    });
+
+    it('⛔ QUASE (Q-B, as chaves diferem): a linha PADRÃO {11, «Azul»} de v-dois tem o MESMO nome da opção viva {0, «Azul»} que v-um reivindica pelo nome, mas a chave dela é id:11, não nome:Azul — ninguém a guarda, e v-dois é RECUSADA pela frase do anexo (Q1), nunca anexada sob 11', () => {
+      // A yield on the NAME alone would fire, and the duplicate check — which keys a
+      // non-zero option by its id — would then refuse nothing: v-dois appended under
+      // 11 inside the custom tier, unrefused, the exact harm Q1 exists for. The two
+      // PERGUNTA pins below (an earlier homonym; a stale id-0 row) are the same shape
+      // with rows 10 and 9.
+      const r = publicarSob88(
+        [variante('v-um', 'Azul'), variante('v-dois', 'Dois inventado')],
+        [{ shopee_option_id: 11, shopee_option_name: 'Azul', arakene_variation_id: ['v-dois'] }],
+        [filhoDe('p-um', 'v-um'), filhoDe('p-dois', 'v-dois')],
+      );
+      expect(r.problemas).toEqual([recusaDoAnexo('Dois inventado'), naoTemPosicao('p-dois')]);
+      expect(opcoesDe(r)).toEqual([['v-um', 0, 'Azul']]);
+    });
+
+    it('⛔ QUASE (Q-B, a opção viva sem variante não guarda a chave): a primeira linha {0, «Azul»}, de uma variante que já SAIU do grupo, deixa a opção viva «Azul» sem variante; v-um, com a linha {0, «Azul»} dela, seria anexada com o MESMO nome e é RECUSADA pela frase do anexo (Q1) — a checagem pula a opção sem variante, então não há duplicada a quem ceder', () => {
+      // `linhaDaOpcaoNaEntrada` reads the FIRST id-0 row named like the live option,
+      // whose variante left the grupo, so the live option binds no variante and the
+      // name rung finds none named «Azul». Yielding to a holder with no variante
+      // would append a second «Azul» with no refusal at all: the check skips the
+      // live option, so v-um's option would be the FIRST to take nome:Azul.
+      const r = publicarSob88(
+        [variante('v-um', 'Um inventado')],
+        [
+          { shopee_option_id: 0, shopee_option_name: 'Azul', arakene_variation_id: ['v-saiu'] },
+          { shopee_option_id: 0, shopee_option_name: 'Azul', arakene_variation_id: ['v-um'] },
+        ],
+        [filhoDe('p-um', 'v-um')],
+      );
+      expect(r.problemas).toEqual([recusaDoAnexo('Um inventado'), naoTemPosicao('p-um')]);
+      expect(opcoesDe(r)).toEqual([[null, 0, 'Azul']]);
+    });
+
+    // #1911 P14b Q-B fixer (TESTS-DOCS-1): rebuilt as a MINIMAL pair — one row
+    // binding both variantes, v-um named «Azul», only the row's CASE differs. The
+    // earlier version bound v-dois alone and claimed its «Azul» twin was the RECUSA
+    // above, which it is not: that twin hands the live option to v-dois through the
+    // row and leaves v-um rowless (§5-7).
+    it('⛔ QUASE (Q-B, escopo da chave): a linha {0, «azul»} (a CAIXA) que liga v-um e v-dois não é a chave nome:Azul que v-um guarda pelo nome — o nome ENVIADO é comparado exato — e v-dois é RECUSADA pela frase do anexo (Q1); ⚠️ PAR: a MESMA linha com «Azul» manda a chave de v-um e é combinacao-duplicada', () => {
+      // «azul» does not claim the live «Azul» (case is kept on both sides of the name
+      // fold), so the name rung gives it to v-um, and v-dois would be appended as
+      // {0, «azul»} — a key nobody took, so nothing to yield to. Spelled «Azul», the
+      // row claims the option for v-um (its first used variante) and v-dois would
+      // be appended as {0, «Azul»}: the key v-um took, so Q1 yields.
+      const variacoes = [variante('v-um', 'Azul'), variante('v-dois', 'Dois inventado')];
+      const filhos = [filhoDe('p-um', 'v-um'), filhoDe('p-dois', 'v-dois')];
+      const linha = (nome: string): OpcaoDeEntrada => ({
+        shopee_option_id: 0,
+        shopee_option_name: nome,
+        arakene_variation_id: ['v-um', 'v-dois'],
+      });
+      const caixa = publicarSob88(variacoes, [linha('azul')], filhos);
+      expect(caixa.problemas).toEqual([recusaDoAnexo('Dois inventado'), naoTemPosicao('p-dois')]);
+      expect(opcoesDe(caixa)).toEqual([['v-um', 0, 'Azul']]);
+      const igual = publicarSob88(variacoes, [linha('Azul')], filhos);
+      expect(igual.problemas).toEqual([recusaDuplicada('v-um', 'v-dois')]);
+      expect(opcoesDe(igual)).toEqual([
+        ['v-um', 0, 'Azul'],
+        ['v-dois', 0, 'Azul'],
+      ]);
+    });
+
+    it('⛔ QUASE (Q-B, escopo da chave — o espaço de DENTRO): a linha {0, «Azul  Claro»} (DOIS espaços) de v-dois não é a chave nome:Azul Claro que v-um guarda — v-dois é RECUSADA pela frase do anexo (Q1); e sob a entrada CUSTOM os dois nomes são DUAS opções, nunca combinacao-duplicada', () => {
+      // The key compares the name SENT exactly: the ends were already folded by
+      // `nomeDeTierShopee`, the inner whitespace never is. A key that collapsed it
+      // would yield here (and refuse the custom-entry pair below) on two names the
+      // live tree and the wire keep apart.
+      const VIVA_AZUL_CLARO = arvore(
+        ['Azul Claro'],
+        [modeloVivo({ model_id: AZUL, tier_index: [0], model_sku: 'AZ' })],
+      );
+      const linha: OpcaoDeEntrada = {
+        shopee_option_id: 0,
+        shopee_option_name: 'Azul  Claro',
+        arakene_variation_id: ['v-dois'],
+      };
+      const variacoes = [variante('v-um', 'Azul Claro'), variante('v-dois', 'Dois inventado')];
+      const filhos = [filhoDe('p-um', 'v-um'), filhoDe('p-dois', 'v-dois')];
+      const sob88 = publicarSob88(variacoes, [linha], filhos, VIVA_AZUL_CLARO);
+      expect(sob88.problemas).toEqual([recusaDoAnexo('Dois inventado'), naoTemPosicao('p-dois')]);
+      expect(opcoesDe(sob88)).toEqual([['v-um', 0, 'Azul Claro']]);
+      const sobCustom = montarTiers(
+        args({
+          grupos: [
+            grupo({
+              grupoId: 'g-cor',
+              nome: 'Cor',
+              variacoes,
+              linksVariacoesShopee: [entrada({ variation_id: 0, variationOptions: [linha] })],
+            }),
+          ],
+          filhos,
+          viva: VIVA_AZUL_CLARO,
+        }),
+      );
+      expect(sobCustom.problemas).toEqual([]);
+      expect(opcoesDe(sobCustom)).toEqual([
+        ['v-um', 0, 'Azul Claro'],
+        ['v-dois', 0, 'Azul  Claro'],
+      ]);
+    });
+
+    it('⚠️ RECUSA (Q-B, a chave de id NÃO-ZERO): a opção viva do tier CUSTOM que o fio traz com id 11 é reivindicada pela linha {11, «Azul»} para v-um; v-dois, ligada à MESMA linha, seria anexada como {11, «Azul»} — a chave id:11 que v-um guarda — e cede à combinacao-duplicada, nunca à frase do anexo (Q1)', () => {
+      // `tiersDoItem` reads a custom tier (variation_id 0) whose standardise entry
+      // carries a non-zero option id as id 11, and `linhaDaOpcaoNaEntrada` then binds
+      // it by the row's id. Contrast with half (b) of the RECUSA test above: the same
+      // row 11 against a live option of id 0 has no holder, and both keep Q1. This is
+      // the ONLY reachable route to the yield's id arm, and whether Shopee ever sends
+      // a custom tier with a non-zero option id is unmeasured.
+      const VIVA_CUSTOM_COM_ID: ArvoreVivaDoItem = {
+        tier_variation: [
+          shopeeTierVariationSchema.parse({ name: 'Cor', option_list: [{ option: 'Azul' }] }),
+        ],
+        standardise_tier_variation: [
+          shopeeStandardiseTierVariationSchema.parse({
+            variation_id: 0,
+            variation_name: 'Cor',
+            variation_option_list: [{ variation_option_id: 11, variation_option_name: 'Azul' }],
+          }),
+        ],
+        model: [modeloVivo({ model_id: AZUL, tier_index: [0], model_sku: 'AZ' })],
+      };
+      const r = publicarSob88(
+        [variante('v-um', 'Um inventado'), variante('v-dois', 'Dois inventado')],
+        [
+          {
+            shopee_option_id: 11,
+            shopee_option_name: 'Azul',
+            arakene_variation_id: ['v-um', 'v-dois'],
+          },
+        ],
+        [filhoDe('p-um', 'v-um'), filhoDe('p-dois', 'v-dois')],
+        VIVA_CUSTOM_COM_ID,
+      );
+      expect(r.problemas).toEqual([recusaDuplicada('v-um', 'v-dois')]);
+      expect(opcoesDe(r)).toEqual([
+        ['v-um', 11, 'Azul'],
+        ['v-dois', 11, 'Azul'],
+      ]);
+    });
+
+    it('⚠️ RECUSA (Q-B, a linha de id 0 em BRANCO manda o nome da variante): a homônima ANTERIOR v-um «Azul», sem filho, tem a opção viva pelo nome; v-dois RENOMEADA «Azul», com a linha {0, «»}, manda {0, «Azul»} — a chave que v-um guarda — e cede à combinacao-duplicada; ⛔ QUASE: antes da renomeação, {0, «Dois inventado»} não tem dono e segue com a frase do anexo (Q1)', () => {
+      // A blank stored row name falls back to the variante's (`nomeDaLinhaOuDaVariante`),
+      // so the yield compares the name SENT, never the row's stored one. A blank row
+      // never claims the live option (the row lookup compares folded names), so the
+      // name rung gives it to the earlier homonym — the shape of the homonym PERGUNTA
+      // below, but through an id-0 row, so the duplicate check answers instead of Q1.
+      const publicar = (nomeDoDois: string) =>
+        publicarSob88(
+          [variante('v-um', 'Azul'), variante('v-dois', nomeDoDois)],
+          [{ shopee_option_id: 0, shopee_option_name: '', arakene_variation_id: ['v-dois'] }],
+          [filhoDe('p-dois', 'v-dois')],
+        );
+      const renomeada = publicar('Azul');
+      expect(renomeada.problemas).toEqual([recusaDuplicada('v-um', 'v-dois')]);
+      expect(opcoesDe(renomeada)).toEqual([
+        ['v-um', 0, 'Azul'],
+        ['v-dois', 0, 'Azul'],
+      ]);
+      const antes = publicar('Dois inventado');
+      expect(antes.problemas).toEqual([recusaDoAnexo('Dois inventado'), naoTemPosicao('p-dois')]);
+      expect(opcoesDe(antes)).toEqual([['v-um', 0, 'Azul']]);
+    });
+
+    it('⚠️ PAR (Q-B, o filho da variante que CEDE): a opção cedida COLOCA o filho no grupo «Cor», e ele segue as checagens do modelo como qualquer filho colocado — a falta de posição passa ao PRÓXIMO grupo («Tam»), e um filho sem preço recebe filho-sem-preco; o leg segue recusado', () => {
+      // A Q1-refused variante's child stops at «não tem posição» in ITS grupo (the
+      // model loop breaks there). A yielded one is placed by its pushed option, so
+      // its model meets the remaining checks — exactly as under a custom entry.
+      const linhaDeDuas: OpcaoDeEntrada = {
+        shopee_option_id: 0,
+        shopee_option_name: 'Azul',
+        arakene_variation_id: ['v-um', 'v-dois'],
+      };
+      const cor = grupo({
+        grupoId: 'g-cor',
+        nome: 'Cor',
+        variacoes: [variante('v-um', 'Um inventado'), variante('v-dois', 'Dois inventado')],
+        linksVariacoesShopee: [entrada88ComLinhas([linhaDeDuas])],
+      });
+      const tam = grupo({
+        grupoId: 'g-tam',
+        nome: 'Tam',
+        ordem: 2,
+        variacoes: [variante('t-p', 'P'), variante('t-g', 'G inventado')],
+        linksVariacoesShopee: [
+          {
+            ...(entradaPadrao({
+              variation_id: 77,
+              variationOptions: [
+                {
+                  shopee_option_id: 21,
+                  shopee_option_name: 'G inventado',
+                  arakene_variation_id: ['t-g'],
+                },
+              ],
+            }) as object),
+            name: 'Camisetas',
+          },
+        ],
+      });
+      const VIVA_COR_E_TAM: ArvoreVivaDoItem = {
+        tier_variation: [
+          shopeeTierVariationSchema.parse({ name: 'Cor', option_list: [{ option: 'Azul' }] }),
+          shopeeTierVariationSchema.parse({ name: 'Tam', option_list: [{ option: 'P' }] }),
+        ],
+        standardise_tier_variation: null,
+        model: [modeloVivo({ model_id: AZUL, tier_index: [0, 0], model_sku: 'AZ' })],
+      };
+      const fundo = montarTiers(
+        args({
+          grupos: [cor, tam],
+          filhos: [
+            filho({
+              produtoId: 'p-um',
+              sku: 'AZ',
+              variacoesUid: [varianteFakePath('g-cor', 'v-um'), varianteFakePath('g-tam', 't-p')],
+            }),
+            filho({
+              produtoId: 'p-dois',
+              variacoesUid: [varianteFakePath('g-cor', 'v-dois'), varianteFakePath('g-tam', 't-g')],
+            }),
+          ],
+          viva: VIVA_COR_E_TAM,
+        }),
+      );
+      expect(fundo.problemas).toEqual([
+        recusaDuplicada('v-um', 'v-dois'),
+        {
+          campo: 'standardise_tier_variation',
+          motivo: MOTIVO_PUBLICACAO_BLOQUEADA.variacaoSemVinculo,
+          mensagem: TEXTO_ANEXO_SOB_PADRAO('G inventado', 'Tam', 'Tam', 77),
+        },
+        naoTemPosicao('p-dois', 'Tam'),
+      ]);
+      const semPreco = publicarSob88(
+        [variante('v-um', 'Um inventado'), variante('v-dois', 'Dois inventado')],
+        [linhaDeDuas],
+        [
+          filhoDe('p-um', 'v-um'),
+          filho({
+            produtoId: 'p-dois',
+            preco: null,
+            variacoesUid: [varianteFakePath('g-cor', 'v-dois')],
+          }),
+        ],
+      );
+      expect(semPreco.problemas).toEqual([
+        recusaDuplicada('v-um', 'v-dois'),
+        {
+          campo: 'model',
+          motivo: MOTIVO_PUBLICACAO_BLOQUEADA.filhoSemPreco,
+          mensagem:
+            'A variação p-dois não tem preço e a Shopee exige um original_price por modelo.',
+        },
       ]);
     });
 
@@ -5859,6 +6272,21 @@ describe('disciplina do módulo', () => {
     expect(fonte).toContain('nomeDeTierShopee(');
     expect(/\.trim\(\)/.test(fonte)).toBe(false);
     expect(/\.toLowerCase\(\)/.test(fonte)).toBe(false);
+  });
+
+  it('#1911 P14b (Q-B): a chave da checagem de duplicadas é soletrada UMA vez — o anexo (Q1) e a checagem perguntam à MESMA varredura', () => {
+    // The behaviour is fixed elsewhere: the yield's by the Q-B pins of the Q1
+    // describe, the check's own key (the id, never the name) by «⛔ QUASE (a chave da
+    // checagem de duplicadas é o ID, nunca o nome)…» in «a autoria por tier». This
+    // only catches a second, local spelling of the key or of the scan written with
+    // these template keys — a copy spelled otherwise passes it, and those pins are
+    // what then fail.
+    for (const prefixo of ['id:', 'nome:', 'variante:']) {
+      const trecho = ['`', prefixo, '$', '{'].join('');
+      expect(fonte.split(trecho).length - 1, trecho).toBe(1);
+    }
+    // The definition and its two callers: the yield and the check.
+    expect(fonte.split('opcoesDuplicadas(').length - 1).toBe(3);
   });
 
   it('não nomeia nenhum dos helpers GENÉRICOS de equivalência (as duas dobras compartilhadas que usa estão no inventário)', () => {

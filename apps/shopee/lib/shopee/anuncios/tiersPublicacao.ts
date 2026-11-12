@@ -211,24 +211,51 @@
  * `tiersDoItem` reads it (already through `nomeDeTierShopee`, the only form of a
  * live name this module ever holds — and the one it re-sends). The two exits are
  * the decided ones, each with a precondition the sentence does not state (pinned
- * `⚠️ PERGUNTA (Lucas):`). Renaming the variante to its live option's name lets the
- * name fold claim it and keep the position, unless another variante of the grupo
- * already claims that option — an id-`0` row binding it to another variante (the
- * row's first used variante, else its first), or an EARLIER variante of the same
- * name (the name rung takes the first homonym in grupo order, used or not): the
- * refusal then repeats with `{v}` equal to the option's name, and the way out is
- * that row or that homonym. Moving the listing's children to another grupo leaves
- * this pairing only into a grupo named like the live tier (else S1); there, under a
- * custom entry, every used variante must be claimed by its live option (named like
- * it, or bound by an id-`0` row named like it), or the custom-entry append moves
- * the child's model unrefused (P14a open point 6's class), and under another
- * standard entry it meets this refusal again. A refused option never reaches the
- * duplicate-key check below, so inside this pairing two used variantes that would
- * land on ONE option (one row binding both) read as this refusal, never
- * `combinacao-duplicada`, and no rename clears it. A variante with NO row stays on
- * the §5-7 refusal; a live STANDARD tier, a custom entry, a create and the `init`
- * arm (which re-creates every model, so nothing moves) append as before. The plan
- * runs with no live tree, so a dry run never shows this refusal.
+ * `⚠️ PERGUNTA (Lucas):`). Renaming the variante to its live option's name lets
+ * the name fold claim it and keep the position, unless another variante of the
+ * grupo already claims that option — an id-`0` row binding it to another
+ * variante (the row's first used variante, else its first), or an EARLIER
+ * variante of the same name (the name rung takes the first homonym in grupo
+ * order, used or not): the refusal then repeats with `{v}` equal to the
+ * option's name, and the way out is that row or that homonym — unless the
+ * variante's own row would append that very option (an id-`0` row whose SENT
+ * name is the option's: its own name, or — stored blank — the renamed
+ * variante's; one row binding both, say), when the duplicate check answers
+ * instead (next paragraph). Moving the listing's children to another grupo
+ * leaves this pairing only into a grupo named like the live tier (else S1);
+ * there, under a custom entry, every used variante must be claimed by its live
+ * option (named like it, or bound by an id-`0` row named like it), or the
+ * custom-entry append moves the child's model unrefused (P14a open point 6's
+ * class), and under another standard entry it meets this refusal again. A
+ * variante with NO row stays on the §5-7 refusal; a live STANDARD tier, a
+ * custom entry, a create and the `init` arm (which re-creates every model, so
+ * nothing moves) append as before. The plan runs with no live tree, so a dry
+ * run never shows this refusal.
+ *
+ * **Q1 yields to the option duplicate check (#1911 P14b, Q-B — Lucas,
+ * 2026-11-11).** When that check would refuse the very option a variante would
+ * append — an EARLIER option of another variante, itself unrefused, already
+ * took its key: the same non-zero option id, or at id `0` the same name SENT
+ * (an id-`0` row whose sent name — its own, else, stored blank, the
+ * variante's — is an option another variante took; one row binding two used
+ * variantes, the second named either way) — the variante is not refused here:
+ * its option is pushed, and the check refuses it `combinacao-duplicada` with
+ * its own sentence, as under a custom entry. The yield ASKS the check
+ * (`opcoesDuplicadas`, one scan), and the check's verdict on an option depends
+ * only on the options before it, so a yielded option is always refused there,
+ * never appended unrefused. Its child is then PLACED in this grupo by the
+ * pushed option and meets the remaining model checks like any placed child
+ * (another grupo's position, price, stock, the model-combination duplicate).
+ * The id arm is reachable only through a live CUSTOM option that carries a
+ * non-zero standardise option id (`tiersDoItem` reads one), a wire shape not
+ * yet measured. A key no earlier unrefused option took keeps the Q1 refusal: a
+ * non-zero row two unclaimed variantes share (the first is refused, never
+ * pushed, so both get Q1), a name carried only by a live option no variante
+ * claims, a non-zero id beside a live custom option of the same name
+ * (`{11, «Azul»}` is not `{0, «Azul»}`), a name that differs in case or in
+ * inner whitespace, and a key that only an option the check itself refuses on
+ * its variante key would have taken (one variante claiming two live options:
+ * a refused option takes no key).
  *
  * ⚠️ Open for Lucas (pinned `⚠️ PERGUNTA (Lucas):` for the brand-new variante): a
  * child the reconciler would bind to NO live model — a BRAND-NEW variante (its
@@ -935,6 +962,66 @@ function nomeDaOpcaoViva(
 }
 
 /**
+ * The option duplicate check's KEY of one option: its non-zero option id, else —
+ * a custom option, id `0` — the name SENT, compared exactly (it already went
+ * through `nomeDeTierShopee` when the option was authored: {@link
+ * nomeDaLinhaOuDaVariante} or {@link nomeDaOpcaoViva}). So `{11, «Azul»}` and
+ * `{0, «Azul»}` are two keys, `«azul»` is not `«Azul»`, and `«Azul  Claro»`
+ * (two inner spaces) is not `«Azul Claro»`.
+ */
+function chaveDaOpcao(opcao: OpcaoCrua): string {
+  return opcao.variation_option_id !== 0
+    ? `id:${String(opcao.variation_option_id)}`
+    : `nome:${opcao.variation_option_name}`;
+}
+
+/** One option the duplicate check refuses: its variante, and the one that held the key first. */
+interface OpcaoDuplicada {
+  readonly opcao: OpcaoCrua;
+  readonly varianteId: string;
+  readonly anterior: string;
+}
+
+/**
+ * The option duplicate check of ONE tier: a forward scan of `opcoes`, in order,
+ * over every option a variante holds (a live option no variante claims is
+ * skipped). An option is refused when an earlier one took its key
+ * ({@link chaveDaOpcao}) or — an id-`0` option — when its variante already took an
+ * id-`0` option. A custom option is keyed by the name SENT, and M1 sends each live
+ * option's own, so two live custom options landing on ONE variante have different
+ * names: the variante key is what still sees them. Unrefused, a full grid would
+ * fail loudly (the client's repeated-`tier_index` guard, after `update_item`), and
+ * only a free coordinate would reach Shopee, moving a model onto another option.
+ * Two same-named variantes with their OWN rows are not a collision: the key is the
+ * id, never the name. A refused option takes no key; its variante key is taken
+ * all the same.
+ *
+ * The ONE copy, asked twice by `montarTiers` (#1911 P14b, Q-B): by the duplicate
+ * check, and by the Q1 branch, which yields to it. The verdict on an option
+ * depends only on the options before it, so what the Q1 branch reads before
+ * pushing an option is what the check answers for it after.
+ */
+function opcoesDuplicadas(opcoes: readonly OpcaoCrua[]): readonly OpcaoDuplicada[] {
+  const duplicadas: OpcaoDuplicada[] = [];
+  const chaves = new Map<string, string>();
+  for (const opcao of opcoes) {
+    const { varianteId } = opcao;
+    if (varianteId === null) continue;
+    const chave = chaveDaOpcao(opcao);
+    const chaveDaVariante = opcao.variation_option_id === 0 ? `variante:${varianteId}` : null;
+    const anterior =
+      chaves.get(chave) ?? (chaveDaVariante === null ? undefined : chaves.get(chaveDaVariante));
+    if (chaveDaVariante !== null) chaves.set(chaveDaVariante, varianteId);
+    if (anterior !== undefined) {
+      duplicadas.push({ opcao, varianteId, anterior });
+      continue;
+    }
+    chaves.set(chave, varianteId);
+  }
+  return duplicadas;
+}
+
+/**
  * The refusal of ONE name this publish authors, against its band — `null` when
  * it may be sent (module header, "The name BANDS"). `enviado` is the name AS
  * SENT (already folded); `textoNaFaixaShopee` measures exactly that string.
@@ -1008,16 +1095,18 @@ function fraseDoTierSemPar(
  * The grupo's entry comes from `resolverEntradaShopeeDoGrupo` (module header):
  * a stored entry as before, a refusal when it is stored unreadable, the
  * implicit CUSTOM tier when there is none. On an update that rewrites the tiers
- * in place, a grupo that paired with no live tier — custom or standard (#2043) —
- * is refused before any option is authored: the re-code guard. Every live
- * option of a paired tier keeps its live index AND its live name (module header,
- * M1). Each used variante no live option claimed is then APPENDED, except two
- * per-variante refusals, both `variacao-sem-vinculo`: a STANDARD entry binding it
- * no option (§5-7), and — on that in-place update — a STANDARD entry whose paired
- * live tier is CUSTOM, where the append would move the child's model (#1911 P14b,
- * Q1). Every custom name the live tree does not already hold is then checked
- * against its band (`opcoes-demais`, module header) — on a create that is BEFORE
- * `add_item`, because the plan runs this.
+ * in place, a grupo that paired with no live tier — custom or standard (#2043)
+ * — is refused before any option is authored: the re-code guard. Every live
+ * option of a paired tier keeps its live index AND its live name (module
+ * header, M1). Each used variante no live option claimed is then APPENDED,
+ * except two per-variante refusals, both `variacao-sem-vinculo`: a STANDARD
+ * entry binding it no option (§5-7), and — on that in-place update — a STANDARD
+ * entry whose paired live tier is CUSTOM, where the append would move the
+ * child's model (#1911 P14b, Q1), unless the option duplicate check refuses
+ * that very option, which then speaks instead (Q-B). Every custom name the live
+ * tree does not already hold is then checked against its band (`opcoes-demais`,
+ * module header) — on a create that is BEFORE `add_item`, because the plan runs
+ * this.
  */
 export function montarTiers(args: ArgsMontarTiers): ResultadoMontarTiers {
   const problemas: ProblemaDeBloqueio[] = [];
@@ -1117,9 +1206,10 @@ export function montarTiers(args: ArgsMontarTiers): ResultadoMontarTiers {
     /**
      * The STANDARD entry paired BY NAME with a live CUSTOM tier, rewritten in
      * place (module header, "Refused (#1911 P14b, Q1)"): here every option this
-     * publish would APPEND moves a model, so the append loop below refuses it.
-     * `null` when the pairing is anything else — a create, the `init` arm, a live
-     * standard tier, a custom entry — and appending proceeds as before.
+     * publish would APPEND moves a model, so the append loop below refuses it —
+     * or, when the option duplicate check refuses that very option, yields to it
+     * (Q-B). `null` when the pairing is anything else — a create, the `init` arm,
+     * a live standard tier, a custom entry — and appending proceeds as before.
      */
     const tierPersonalizadoSobPadrao =
       par.vivo !== null &&
@@ -1173,51 +1263,36 @@ export function montarTiers(args: ArgsMontarTiers): ResultadoMontarTiers {
         // #1911 P14b, Q1 (Lucas, 2026-11-11): no live option claimed this variante
         // (no id-0 row of the entry and no variante name pairs it), so the row
         // would land as a NEW option of the custom tier and the child's model would
-        // move onto it. Refused per variante, never appended — the §5-7 shape. A
-        // refused option never reaches the duplicate-key check below (module header).
-        problemas.push(
-          problema(
-            'standardise_tier_variation',
-            MOTIVO_PUBLICACAO_BLOQUEADA.variacaoSemVinculo,
-            `A variante "${variante.nome}" do grupo "${grupo.nome}" não casa pelo nome com nenhuma opção do tier personalizado "${tierPersonalizadoSobPadrao.nome}" do anúncio, e o vínculo do grupo usa a variação padronizada ${String(entrada.variation_id)} — republicar acrescentaria uma opção e moveria o modelo. Renomeie a variante em Variações para o nome da opção do anúncio, ou mova as variações deste anúncio para outro grupo.`,
-          ),
-        );
-        continue;
+        // move onto it. Refused per variante, never appended — the §5-7 shape.
+        // Q-B (Lucas, 2026-11-11): unless the duplicate check below refuses that
+        // very option — an earlier, unrefused option of another variante already
+        // took its key — when Q1 yields and `combinacao-duplicada` speaks. The yield ASKS the check (one scan,
+        // whose verdict on an option depends only on the options before it), so a
+        // yielded option is refused there, never appended unrefused.
+        const cedeADuplicada = opcoesDuplicadas([...opcoes, crua]).some((d) => d.opcao === crua);
+        if (!cedeADuplicada) {
+          problemas.push(
+            problema(
+              'standardise_tier_variation',
+              MOTIVO_PUBLICACAO_BLOQUEADA.variacaoSemVinculo,
+              `A variante "${variante.nome}" do grupo "${grupo.nome}" não casa pelo nome com nenhuma opção do tier personalizado "${tierPersonalizadoSobPadrao.nome}" do anúncio, e o vínculo do grupo usa a variação padronizada ${String(entrada.variation_id)} — republicar acrescentaria uma opção e moveria o modelo. Renomeie a variante em Variações para o nome da opção do anúncio, ou mova as variações deste anúncio para outro grupo.`,
+            ),
+          );
+          continue;
+        }
       }
       jaAutoradas.add(variante.varianteId);
       opcoes.push(crua);
     }
 
-    const chaves = new Map<string, string>();
-    for (const opcao of opcoes) {
-      if (opcao.varianteId === null) continue;
-      const chave =
-        opcao.variation_option_id !== 0
-          ? `id:${String(opcao.variation_option_id)}`
-          : `nome:${opcao.variation_option_name}`;
-      // A custom option is keyed by the name SENT, and M1 sends each live option's
-      // own, so two live custom options landing on ONE variante have different
-      // names: the variante key is what still sees them. Unrefused, a full grid
-      // would fail loudly (the client's repeated-`tier_index` guard, after
-      // `update_item`), and only a free coordinate would reach Shopee, moving a
-      // model onto another option. Two same-named variantes with their OWN rows
-      // are not a collision: the key is the id, never the name.
-      const chaveDaVariante =
-        opcao.variation_option_id === 0 ? `variante:${opcao.varianteId}` : null;
-      const anterior =
-        chaves.get(chave) ?? (chaveDaVariante === null ? undefined : chaves.get(chaveDaVariante));
-      if (chaveDaVariante !== null) chaves.set(chaveDaVariante, opcao.varianteId);
-      if (anterior !== undefined) {
-        problemas.push(
-          problema(
-            'standardise_tier_variation',
-            MOTIVO_PUBLICACAO_BLOQUEADA.combinacaoDuplicada,
-            `As variantes "${anterior}" e "${opcao.varianteId}" do grupo "${grupo.nome}" caem na mesma opção da Shopee — duas variações ocupariam um único modelo.`,
-          ),
-        );
-        continue;
-      }
-      chaves.set(chave, opcao.varianteId);
+    for (const { varianteId, anterior } of opcoesDuplicadas(opcoes)) {
+      problemas.push(
+        problema(
+          'standardise_tier_variation',
+          MOTIVO_PUBLICACAO_BLOQUEADA.combinacaoDuplicada,
+          `As variantes "${anterior}" e "${varianteId}" do grupo "${grupo.nome}" caem na mesma opção da Shopee — duas variações ocupariam um único modelo.`,
+        ),
+      );
     }
 
     /* ---- the names we AUTHOR, against the shop's bands (#1911 batch-A) ---- */
