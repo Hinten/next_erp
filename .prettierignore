@@ -64,3 +64,7 @@ apps/amazon/lib/amazon/testing/especificacaoFolhas.json
 # Sanitized Amazon fixtures: `sanitizar` writes them with `JSON.stringify(v, null, 2)`,
 # and a re-run over an unchanged capture must write identical bytes.
 apps/amazon/lib/amazon/fixtures/__wire__/
+
+# Amazon's two published listings-feed JSON schemas, committed VERBATIM as test fixtures:
+# their sha256 is pinned, so reformatting them would break the pin.
+packages/integrations/amazon-sp-api/test/_fixtures/listings-feed-*schema-v2.json

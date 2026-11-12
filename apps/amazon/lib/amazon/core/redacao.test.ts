@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 import { validateCNPJ, validateCPF } from '@delfrance/core/documents';
+import { FEED_ID_AMAZON_REGEX } from '@delfrance/integrations-amazon-sp-api';
 import { z } from 'zod';
 
 import { gerarCnpj, gerarCpf, pontuarCnpj, pontuarCpf } from '../testing/documentos';
@@ -17,6 +18,7 @@ import {
   ISENTOS_DE_DIGITOS,
   LIMITE_ANALISE_BYTES,
   MODELOS_DE_CAMINHO_AMAZON,
+  MODELO_DA_OPERACAO_AMAZON,
   NOTIFICACAO_ORDER_CHANGE,
   PLACEHOLDERS_DOCUMENTO_AMAZON,
   PLACEHOLDERS_FIXTURE_AMAZON,
@@ -37,6 +39,7 @@ import {
   codigoDeErroSeguro,
   cortarUtf8,
   mascararTexto,
+  nomeDoModeloDaOperacaoAmazon,
   passaPredicadoAmazon,
   placeholderDeDocumento,
   profundidadeJson,
@@ -165,6 +168,13 @@ const OPERACOES_DO_PLANO = [
   'createScheduledPackageBulk',
   'getScheduledPackage',
   'createRestrictedDataToken',
+  'getListingsItem',
+  'searchListingsItems',
+  'patchListingsItem',
+  'createFeedDocument',
+  'createFeed',
+  'getFeed',
+  'getFeedDocument',
   'OrderChangeNotification',
 ];
 
@@ -172,7 +182,7 @@ const OPERACOES_DO_PLANO = [
 const CORPOS = INVENTARIO.operacoes.filter((o) => o.status !== 'erro');
 
 describe('spec coverage — against the committed leaf inventory', () => {
-  it('reads the inventory (anti-vacuity): the 7 operations plus the notification, hundreds of leaves', () => {
+  it('reads the inventory (anti-vacuity): the 14 operations plus the notification, hundreds of leaves', () => {
     expect(new Set(INVENTARIO.operacoes.map((o) => o.operationId))).toEqual(
       new Set(OPERACOES_DO_PLANO),
     );
@@ -220,25 +230,45 @@ describe('spec coverage — against the committed leaf inventory', () => {
   };
 
   it('every keep-list entry (allowed or soLog) resolves to a primitive leaf of its operation, or is named as off-spec', () => {
-    const casos: readonly (readonly [TabelaRedacaoAmazon, string])[] = [
-      [TABELAS_AMAZON.searchOrders, 'searchOrders'],
-      [TABELAS_AMAZON.getOrder, 'getOrder'],
-      [TABELAS_AMAZON.getInvoiceStatus, 'getInvoiceStatus'],
-      [TABELAS_AMAZON.submitInvoice, 'submitInvoice'],
-      [TABELAS_AMAZON.getScheduledPackage, 'getScheduledPackage'],
-      [TABELAS_AMAZON.createScheduledPackageBulk, 'createScheduledPackageBulk'],
-      [TABELAS_AMAZON.orderChange, 'OrderChangeNotification'],
+    // A shared template's table resolves against the UNION of its operations' leaves.
+    const casos: readonly (readonly [TabelaRedacaoAmazon, readonly string[]])[] = [
+      [TABELAS_AMAZON.searchOrders, ['searchOrders']],
+      [TABELAS_AMAZON.getOrder, ['getOrder']],
+      [TABELAS_AMAZON.getInvoiceStatus, ['getInvoiceStatus']],
+      [TABELAS_AMAZON.submitInvoice, ['submitInvoice']],
+      [TABELAS_AMAZON.getScheduledPackage, ['getScheduledPackage']],
+      [TABELAS_AMAZON.createScheduledPackageBulk, ['createScheduledPackageBulk']],
+      [TABELAS_AMAZON.orderChange, ['OrderChangeNotification']],
+      [TABELAS_AMAZON.getListingsItem, ['getListingsItem', 'patchListingsItem']],
+      [TABELAS_AMAZON.searchListingsItems, ['searchListingsItems']],
+      [TABELAS_AMAZON.getFeed, ['getFeed']],
+      [TABELAS_AMAZON.getFeeds, ['createFeed']],
     ];
+    // Every table is in the list (a new one cannot skip this check).
+    expect(casos.length).toBe(Object.keys(TABELAS_AMAZON).length);
+    for (const t of Object.values(TABELAS_AMAZON)) {
+      expect(
+        casos.some(([c]) => c === t),
+        t.nome,
+      ).toBe(true);
+    }
     const naoResolvidas: string[] = [];
     const usadas = new Set<string>();
-    for (const [t, operationId] of casos) {
-      const op = CORPOS.find((o) => o.operationId === operationId);
-      expect(op, operationId).toBeDefined();
-      const folhas = new Set(
-        (op?.folhas ?? []).filter((f) => ehPrimitivo(f.tipo)).map((f) => f.caminho),
-      );
+    for (const [t, operacoes] of casos) {
+      const folhas = new Set<string>();
+      // An open map (`aberto`) can only be DENIED: a keep entry never resolves to one.
+      const abertas = new Set<string>();
+      for (const operationId of operacoes) {
+        const op = CORPOS.find((o) => o.operationId === operationId);
+        expect(op, operationId).toBeDefined();
+        for (const f of op?.folhas ?? []) {
+          if (ehPrimitivo(f.tipo)) folhas.add(f.caminho);
+          else if (f.tipo === 'aberto') abertas.add(f.caminho);
+        }
+      }
       for (const entrada of [...t.permitidas.keys(), ...t.soLog.keys(), ...t.negadas]) {
         if (folhas.has(entrada)) continue;
+        if (t.negadas.has(entrada) && abertas.has(entrada)) continue;
         if (t === TABELAS_AMAZON.orderChange && Object.hasOwn(FORA_DA_ESPECIFICACAO, entrada)) {
           usadas.add(entrada);
           continue;
@@ -303,7 +333,14 @@ describe('spec coverage — against the committed leaf inventory', () => {
         ).not.toContain('permitida');
       }
     }
-    // Anti-vacuity on today's inventory (no open map in the in-scope models).
+    // Anti-vacuity: the listings item's `attributes` is the inventory's open map, denied
+    // by its table; a synthetic one is claimed by no allow.
+    expect(
+      CORPOS.flatMap((o) => o.folhas.filter((f) => f.tipo === 'aberto').map((f) => f.caminho)),
+    ).toEqual(['attributes.*', 'items.*.attributes.*']);
+    expect(regrasDaFolhaAmazon('getListingsItem', 'attributes.*')).toEqual([
+      { tipo: 'negadaNaTabela' },
+    ]);
     expect(regrasDaFolhaAmazon('getOrder', 'order.*').some((r) => r.tipo === 'permitida')).toBe(
       false,
     );
@@ -311,7 +348,7 @@ describe('spec coverage — against the committed leaf inventory', () => {
 
   it('every error entry carries errors[].code, and its message/details are denied keys', () => {
     const erros = INVENTARIO.operacoes.filter((o) => o.status === 'erro');
-    expect(erros.length).toBe(6);
+    expect(erros.length).toBe(13);
     for (const op of erros) {
       const caminhos = op.folhas.map((f) => f.caminho);
       expect(
@@ -419,6 +456,7 @@ describe('spec coverage — against the committed leaf inventory', () => {
         'itemPedido',
         'asin',
         'inteiro',
+        'digitos',
         'decimal',
         'dataIso',
         'chaveNfe',
@@ -443,10 +481,12 @@ describe('spec coverage — against the committed leaf inventory', () => {
   });
 });
 
+/** The policy of an inventory operation, through the operation-to-template alias. */
 function classificarPorNome(nome: string): string | null {
   if (nome === 'OrderChangeNotification')
     return classificarCaminho(NOTIFICACAO_ORDER_CHANGE).politica;
-  const m = MODELOS_DE_CAMINHO_AMAZON.find((x) => x.nome === nome);
+  const modelo = nomeDoModeloDaOperacaoAmazon(nome);
+  const m = MODELOS_DE_CAMINHO_AMAZON.find((x) => x.nome === modelo);
   return m?.politica ?? null;
 }
 
@@ -1669,5 +1709,387 @@ describe('the submitInvoice REQUEST table and the MD5 key (step 14)', () => {
     });
     expect(em(saida, 'errors.0.code')).toBe('EntityNotFound');
     expect(em(saida, 'errors.0.message')).toBe(REDIGIDO);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                         Listings and feeds (step 12a)                       */
+/* -------------------------------------------------------------------------- */
+
+describe('the listings and feeds tables (step 12a)', () => {
+  const LISTING = '/listings/2021-08-01/items/AXXXXXXXXXXXXX/SKU-1';
+  const BUSCA = '/listings/2021-08-01/items/AXXXXXXXXXXXXX';
+  const FEED = '/feeds/2021-06-30/feeds/123456789';
+  const FEEDS = '/feeds/2021-06-30/feeds';
+  /** A value no table may keep: it must reach neither profile. */
+  const SENTINELA = 'sentinela-fora-da-linha';
+
+  const issue = () => ({
+    code: '90220',
+    message: SENTINELA,
+    severity: 'ERROR',
+    attributeNames: ['size'],
+    categories: ['MISSING_ATTRIBUTE', 'LISTING'],
+    marketplaceIds: ['A2Q3Y263D00KWC'],
+    enforcements: {
+      actions: [{ action: 'SEARCH_SUPPRESSED' }],
+      exemption: { status: 'EXEMPT_UNTIL_EXPIRY_DATE', expiryDate: '2025-05-28T00:36:48.914Z' },
+    },
+  });
+  const item = () => ({
+    sku: 'SKU-1',
+    summaries: [
+      {
+        marketplaceId: 'A2Q3Y263D00KWC',
+        asin: 'B0ZZTESTE1',
+        productType: 'PRODUCT',
+        conditionType: 'new_new',
+        status: ['BUYABLE'],
+        itemName: SENTINELA,
+        createdDate: '2021-02-01T00:00:00Z',
+        lastUpdatedDate: '2021-03-01T00:00:00Z',
+      },
+    ],
+    fulfillmentAvailability: [{ fulfillmentChannelCode: 'DEFAULT', quantity: 7 }],
+    relationships: [
+      {
+        marketplaceId: 'A2Q3Y263D00KWC',
+        relationships: [
+          {
+            type: 'VARIATION',
+            parentSkus: ['SKU-PAI'],
+            variationTheme: { attributes: ['color_name'], theme: 'COLOR_NAME/STYLE_NAME' },
+          },
+        ],
+      },
+    ],
+    issues: [issue()],
+    offers: [{ offerType: 'B2C', price: { amount: '100.00', currencyCode: 'BRL' } }],
+    procurement: [{ costPrice: { amount: '50.00', currencyCode: 'BRL' } }],
+  });
+
+  it('★ the three leaves the coverage requires ALLOWED are permitida, under the root and under items.*', () => {
+    for (const folha of [
+      'offers.*.price.amount',
+      'procurement.*.costPrice.amount',
+      'issues.*.enforcements.exemption.status',
+    ]) {
+      for (const [operationId, caminho] of [
+        ['getListingsItem', folha],
+        ['searchListingsItems', `items.*.${folha}`],
+      ] as const) {
+        expect(
+          regrasDaFolhaAmazon(operationId, caminho).map((r) => r.tipo),
+          `${operationId} ${caminho}`,
+        ).toEqual(['permitida']);
+      }
+    }
+    // The submission's issues carry the exemption status too (the shared table).
+    expect(
+      regrasDaFolhaAmazon('patchListingsItem', 'issues.*.enforcements.exemption.status'),
+    ).toEqual([{ tipo: 'permitida', predicado: 'enumSnake' }]);
+  });
+
+  it('★ the operation-to-template alias: patchListingsItem and createFeed classify through their sibling', () => {
+    expect(MODELO_DA_OPERACAO_AMAZON).toEqual({
+      patchListingsItem: 'getListingsItem',
+      createFeed: 'getFeeds',
+    });
+    expect(regrasDaFolhaAmazon('patchListingsItem', 'status')).toEqual([
+      { tipo: 'permitida', predicado: 'enumSnake' },
+    ]);
+    expect(regrasDaFolhaAmazon('patchListingsItem', 'submissionId')).toEqual([
+      { tipo: 'soLog', predicado: 'opaco', classe: 'mensagem' },
+    ]);
+    expect(regrasDaFolhaAmazon('createFeed', 'feedId')).toEqual([
+      { tipo: 'permitida', predicado: 'digitos' },
+    ]);
+    // Near-miss: an operation with no alias and no template of its own has no rule at all.
+    expect(regrasDaFolhaAmazon('putListingsItem', 'status')).toEqual([]);
+    expect(nomeDoModeloDaOperacaoAmazon('constructor')).toBe('constructor');
+    expect(nomeDoModeloDaOperacaoAmazon('getFeed')).toBe('getFeed');
+  });
+
+  it('★ a patchListingsItem call line is redacted with the shared table (the PATCH path is the GET template)', () => {
+    expect(classificarCaminho(LISTING)).toEqual({
+      politica: 'estrutural',
+      modelo: 'getListingsItem',
+      tabela: TABELAS_AMAZON.getListingsItem,
+    });
+    const saida = logJson(LISTING, 200, {
+      sku: 'SKU-1',
+      status: 'ACCEPTED',
+      submissionId: 'f1dc2914-75dd-11ea-bc55-0242ac130003',
+      issues: [],
+    });
+    expect(saida).toEqual({
+      sku: 'SKU-1',
+      status: 'ACCEPTED',
+      submissionId: 'f1dc2914-75dd-11ea-bc55-0242ac130003',
+      issues: [],
+    });
+    // The fixture profile fakes the seller's SKU and Amazon's submission id.
+    const f = fixtureJson(LISTING, 200, {
+      sku: 'SKU-1',
+      status: 'INVALID',
+      submissionId: 'f1dc2914-75dd-11ea-bc55-0242ac130003',
+      issues: [{ code: '90000900', message: SENTINELA, severity: 'ERROR' }],
+    });
+    expect(em(f, 'sku')).toMatch(/^SKU-Z[0-9a-f]{8}$/);
+    expect(em(f, 'submissionId')).not.toBe('f1dc2914-75dd-11ea-bc55-0242ac130003');
+    expect(em(f, 'status')).toBe('INVALID');
+    expect(em(f, 'issues.0.code')).toBe('90000900');
+  });
+
+  it('★ issues.*.message never reaches a line or a fixture, in an item, a search page or a submission', () => {
+    for (const perfil of ['log', 'fixture'] as const) {
+      const corpos: readonly (readonly [string, unknown])[] = [
+        [LISTING, item()],
+        [BUSCA, { numberOfResults: 1, items: [item()] }],
+        [LISTING, { sku: 'SKU-1', status: 'INVALID', issues: [issue()] }],
+      ];
+      for (const [caminho, corpo] of corpos) {
+        const texto = JSON.stringify(
+          perfil === 'log' ? logJson(caminho, 200, corpo) : fixtureJson(caminho, 200, corpo),
+        );
+        expect(texto, `${perfil} ${caminho}`).not.toContain(SENTINELA);
+        // Anti-vacuity: the issue itself is there, its code kept.
+        expect(texto, `${perfil} ${caminho}`).toContain('"90220"');
+      }
+    }
+  });
+
+  it('★ resultFeedDocumentId and the pagination tokens never reach a line or a fixture', () => {
+    for (const perfil of ['log', 'fixture'] as const) {
+      const ler = (caminho: string, corpo: unknown) =>
+        JSON.stringify(
+          perfil === 'log' ? logJson(caminho, 200, corpo) : fixtureJson(caminho, 200, corpo),
+        );
+      const feed = ler(FEED, {
+        feedId: '123456789',
+        feedType: 'JSON_LISTINGS_FEED',
+        processingStatus: 'DONE',
+        marketplaceIds: ['A2Q3Y263D00KWC'],
+        createdTime: '2026-11-10T12:00:00Z',
+        processingEndTime: '2026-11-10T13:00:00Z',
+        resultFeedDocumentId: SENTINELA,
+      });
+      expect(feed, perfil).not.toContain(SENTINELA);
+      expect(feed, perfil).toContain('"processingStatus":"DONE"');
+      expect(feed, perfil).toContain('"feedId":"123456789"');
+      const busca = ler(BUSCA, {
+        numberOfResults: 3,
+        pagination: { nextToken: SENTINELA, previousToken: SENTINELA },
+        items: [item()],
+      });
+      expect(busca, perfil).not.toContain(SENTINELA);
+      expect(busca, perfil).toContain('"numberOfResults":3');
+    }
+    expect(regrasDaFolhaAmazon('getFeed', 'resultFeedDocumentId')).toEqual([
+      { tipo: 'negadaNaTabela' },
+    ]);
+    expect(regrasDaFolhaAmazon('searchListingsItems', 'pagination.nextToken')).toEqual([
+      { tipo: 'negadaNaTabela' },
+    ]);
+  });
+
+  it('★ an item, a submission and a feed are logged leaf by leaf exactly as their tables say', () => {
+    // Every leaf the tables name, each with a value its predicate accepts, so a
+    // kept leaf turned redacted, or a denied one turned kept, changes the line.
+    const ID_MKT = 'A2Q3Y263D00KWC';
+    const issueLogada = {
+      code: '90220',
+      message: REDIGIDO,
+      severity: 'ERROR',
+      attributeNames: ['size'],
+      categories: ['MISSING_ATTRIBUTE', 'LISTING'],
+      marketplaceIds: [ID_MKT],
+      enforcements: {
+        actions: [{ action: REDIGIDO }],
+        exemption: { status: 'EXEMPT_UNTIL_EXPIRY_DATE', expiryDate: REDIGIDO },
+      },
+    };
+    const completo = {
+      ...item(),
+      summaries: [
+        {
+          ...item().summaries[0],
+          fnSku: 'X00TESTE01',
+          mainImage: { link: 'https://imagem.example/teste.jpg', height: 500, width: 500 },
+        },
+      ],
+      attributes: { item_name: [{ value: SENTINELA, marketplace_id: ID_MKT }] },
+      relationships: [
+        {
+          marketplaceId: ID_MKT,
+          relationships: [
+            {
+              type: 'VARIATION',
+              parentSkus: ['SKU-PAI'],
+              childSkus: ['SKU-FILHO'],
+              variationTheme: { attributes: ['color_name'], theme: 'COLOR_NAME/STYLE_NAME' },
+            },
+          ],
+        },
+      ],
+      productTypes: [{ marketplaceId: ID_MKT, productType: 'PRODUCT' }],
+      offers: [
+        {
+          marketplaceId: ID_MKT,
+          offerType: 'B2C',
+          price: { amount: '100.00', currencyCode: 'BRL' },
+          points: { pointsNumber: 5 },
+          audience: { value: 'ALL', displayName: 'Todos' },
+        },
+      ],
+    };
+    expect(logJson(LISTING, 200, completo)).toEqual({
+      sku: 'SKU-1',
+      summaries: [
+        {
+          marketplaceId: ID_MKT,
+          asin: 'B0ZZTESTE1',
+          productType: 'PRODUCT',
+          conditionType: 'new_new',
+          status: ['BUYABLE'],
+          itemName: REDIGIDO,
+          fnSku: REDIGIDO,
+          mainImage: { link: REDIGIDO, height: REDIGIDO, width: REDIGIDO },
+          createdDate: '2021-02-01T00:00:00Z',
+          lastUpdatedDate: '2021-03-01T00:00:00Z',
+        },
+      ],
+      attributes: { item_name: [{ value: REDIGIDO, marketplace_id: REDIGIDO }] },
+      fulfillmentAvailability: [{ fulfillmentChannelCode: 'DEFAULT', quantity: 7 }],
+      relationships: [
+        {
+          marketplaceId: ID_MKT,
+          relationships: [
+            {
+              type: 'VARIATION',
+              parentSkus: ['SKU-PAI'],
+              childSkus: ['SKU-FILHO'],
+              variationTheme: { attributes: ['color_name'], theme: 'COLOR_NAME/STYLE_NAME' },
+            },
+          ],
+        },
+      ],
+      productTypes: [{ marketplaceId: ID_MKT, productType: 'PRODUCT' }],
+      issues: [issueLogada],
+      offers: [
+        {
+          marketplaceId: REDIGIDO,
+          offerType: REDIGIDO,
+          price: { amount: '100.00', currencyCode: REDIGIDO },
+          points: { pointsNumber: REDIGIDO },
+          audience: { value: REDIGIDO, displayName: REDIGIDO },
+        },
+      ],
+      procurement: [{ costPrice: { amount: '50.00', currencyCode: REDIGIDO } }],
+    });
+    // A submission answer: its own leaves beside the item's `sku` and `issues`.
+    const submissao = {
+      sku: 'SKU-1',
+      status: 'ACCEPTED',
+      submissionId: 'f1dc2914-75dd-11ea-bc55-0242ac130003',
+      issues: [issue()],
+      identifiers: [{ marketplaceId: ID_MKT, asin: 'B0ZZTESTE1' }],
+    };
+    expect(logJson(LISTING, 200, submissao)).toEqual({ ...submissao, issues: [issueLogada] });
+    // A whole `getFeed` answer.
+    const feed = {
+      feedId: '123456789',
+      feedType: 'JSON_LISTINGS_FEED',
+      marketplaceIds: [ID_MKT],
+      createdTime: '2026-11-10T12:00:00Z',
+      processingStatus: 'DONE',
+      processingStartTime: '2026-11-10T12:05:00Z',
+      processingEndTime: '2026-11-10T13:00:00Z',
+      resultFeedDocumentId: SENTINELA,
+    };
+    expect(logJson(FEED, 200, feed)).toEqual({ ...feed, resultFeedDocumentId: REDIGIDO });
+  });
+
+  it('the fixture profile fakes every SKU of an item and its ASIN', () => {
+    const f = fixtureJson(LISTING, 200, item());
+    expect(em(f, 'sku')).toMatch(/^SKU-Z[0-9a-f]{8}$/);
+    expect(em(f, 'relationships.0.relationships.0.parentSkus.0')).toMatch(/^SKU-Z[0-9a-f]{8}$/);
+    expect(em(f, 'summaries.0.asin')).toMatch(/^B0ZZ/);
+  });
+
+  it('★ the 2xx issue-code grammar keeps a listings code; near-misses are redacted, and none is an error code', () => {
+    for (const codigo of ['90220', '18027', '90000900', 'new_new', 'A_1']) {
+      expect(passaPredicadoAmazon('codigoListing', codigo), codigo).toBe(true);
+    }
+    for (const codigo of ['9022 0', '90220-1', '', 'x'.repeat(33), '9022é']) {
+      expect(passaPredicadoAmazon('codigoListing', codigo), codigo).toBe(false);
+    }
+    const linha = (code: string) =>
+      em(logJson(LISTING, 200, { sku: 'SKU-1', issues: [{ code }] }), 'issues.0.code');
+    expect(linha('90220')).toBe('90220');
+    expect(linha('9022 0')).toBe(REDIGIDO);
+    // A 2xx issue code never joins the closed error set.
+    expect(CODIGOS_ERRO_AMAZON.has('90220')).toBe(false);
+    expect(codigoDeErroSeguro('90000900')).toBe(CODIGO_OUTRO);
+    // A variation theme: upper-snake names joined by `/`, nothing else.
+    expect(passaPredicadoAmazon('temaVariacao', 'COLOR_NAME/STYLE_NAME')).toBe(true);
+    expect(passaPredicadoAmazon('temaVariacao', 'SIZE')).toBe(true);
+    expect(passaPredicadoAmazon('temaVariacao', 'Color Name')).toBe(false);
+    expect(passaPredicadoAmazon('temaVariacao', 'COLOR//SIZE')).toBe(false);
+  });
+
+  it('★ the listings and feeds error sandboxes: BAD_REQUEST and 400 survive the error walk, a message never does', () => {
+    expect(CODIGOS_ERRO_AMAZON.has('BAD_REQUEST')).toBe(true);
+    expect(CODIGOS_ERRO_AMAZON.has('400')).toBe(true);
+    const listing = logJson(LISTING, 400, {
+      errors: [{ code: 'BAD_REQUEST', message: SENTINELA, details: SENTINELA }],
+    });
+    expect(em(listing, 'errors.0.code')).toBe('BAD_REQUEST');
+    expect(JSON.stringify(listing)).not.toContain(SENTINELA);
+    const feed = logJson(FEEDS, 400, { errors: [{ code: '400', message: SENTINELA }] });
+    expect(em(feed, 'errors.0.code')).toBe('400');
+    expect(JSON.stringify(feed)).not.toContain(SENTINELA);
+  });
+
+  it('★ one feedId grammar: the package regex, the body predicate and the path slot keep exactly the same values', () => {
+    const amostras = [
+      '1',
+      '0',
+      '50001019000',
+      '9'.repeat(20),
+      '9'.repeat(21),
+      'POST_FLAT_FILE_X',
+      '12a',
+      '-1',
+      ' 1',
+      '١٢',
+    ];
+    const aceitas = amostras.filter((s) => FEED_ID_AMAZON_REGEX.test(s));
+    // Anti-vacuity: both outcomes occur.
+    expect(aceitas).toEqual(['1', '0', '50001019000', '9'.repeat(20)]);
+    for (const s of amostras) {
+      const aceita = FEED_ID_AMAZON_REGEX.test(s);
+      expect(passaPredicadoAmazon('digitos', s), s).toBe(aceita);
+      const caminho = `${FEEDS}/${encodeURIComponent(s)}`;
+      expect(redigirCaminhoEQuery(caminho, [], 'log').caminho === caminho, s).toBe(aceita);
+      expect(em(logJson(FEEDS, 202, { feedId: s }), 'feedId') === s, s).toBe(aceita);
+      expect(em(logJson(FEED, 200, { feedId: s }), 'feedId') === s, s).toBe(aceita);
+    }
+  });
+
+  it('the feed document templates stay segredo: no excerpt of their answers, refused as a fixture', () => {
+    const corpo = JSON.stringify({ feedDocumentId: 'amzn1.tortuga.4.na.x', url: SENTINELA });
+    expect(log('/feeds/2021-06-30/documents', 201, corpo)).toMatchObject({
+      politica: 'segredo',
+      trecho: null,
+    });
+    expect(fixture('/feeds/2021-06-30/documents/amzn1.tortuga.4.na.x', 200, corpo)).toEqual({
+      ok: false,
+      motivo: 'segredo',
+    });
+    expect(regrasDaFolhaAmazon('createFeedDocument', 'url')).toEqual([{ tipo: 'segredo' }]);
+    expect(regrasDaFolhaAmazon('getFeedDocument', 'compressionAlgorithm')).toEqual([
+      { tipo: 'segredo' },
+    ]);
   });
 });

@@ -10,10 +10,15 @@ sanitizer.
   either an Amazon model's own `x-amzn-api-sandbox` example (`credencial: modelo-sandbox`) or
   a read-only response the owner captured by hand, kept outside every repository checkout and
   converted offline by the sanitizer.
-- The nine `sb-*` fixtures are model-sandbox examples written by `amazon-doc.mjs exemplo` /
+- The twelve `sb-*` fixtures are model-sandbox examples written by `amazon-doc.mjs exemplo` /
   `notif-exemplo` into a folder outside the checkout, then run through the sanitizer like any
-  capture: the six of the starting corpus (step 2b) and the three Delivery ones of step 14
-  (`sb-submit-invoice-200`, `sb-submit-invoice-400`, `sb-invoice-status-400`). They are not
+  capture: the six of the starting corpus (step 2b), the three Delivery ones of step 14
+  (`sb-submit-invoice-200`, `sb-submit-invoice-400`, `sb-invoice-status-400`) and the three
+  Listings ones of step 12a (`sb-listing-200`, `sb-busca-listings-200`,
+  `sb-patch-listing-200`). No Listings 200 case supplies the seller id, and the item and patch
+  ones no SKU, so a `--parametro` fills each path slot: the seller id with a fake (the
+  sanitizer writes `<sellerId>` either way), and the SKU with the SKU the case's own answer
+  carries, so the keyed faker gives the path and the answer the same fake. They are not
   production data. From the repository root, with `<abs>` an absolute folder outside every
   checkout:
 
@@ -27,13 +32,17 @@ sanitizer.
   node .master_plans/amazon/evidence/amazon-doc.mjs exemplo submitInvoice delivery 0 --saida <abs> --nome sb-submit-invoice-200
   node .master_plans/amazon/evidence/amazon-doc.mjs exemplo submitInvoice delivery 1 --saida <abs> --nome sb-submit-invoice-400
   node .master_plans/amazon/evidence/amazon-doc.mjs exemplo getInvoiceStatus delivery 1 --saida <abs> --nome sb-invoice-status-400
+  node .master_plans/amazon/evidence/amazon-doc.mjs exemplo getListingsItem listings 0 --saida <abs> --nome sb-listing-200 --parametro sellerId=AXXXXXXXXXXXXX --parametro sku=GM-ZDPI-9B4E
+  node .master_plans/amazon/evidence/amazon-doc.mjs exemplo searchListingsItems listings 0 --saida <abs> --nome sb-busca-listings-200 --parametro sellerId=AXXXXXXXXXXXXX
+  node .master_plans/amazon/evidence/amazon-doc.mjs exemplo patchListingsItem listings 0 --saida <abs> --nome sb-patch-listing-200 --parametro sellerId=AXXXXXXXXXXXXX --parametro sku=GM-ZDPI-9B4E
   pnpm --filter @delfrance/amazon-app sanitizar --entrada <abs> --dry-run
   ```
 
   The salt that keyed them is never committed, and each sidecar's `data:` is the day it was
   generated: a regeneration under a new salt or on another day differs from every committed
   fixture, so it needs `--sobrescrever` and rewrites every fake (and `capturadoEm`). The three
-  step-14 ones were generated on another day, under another salt, than the first six.
+  step-14 ones were generated on another day, under another salt, than the first six, and the
+  three step-12a ones on a third day under a third salt.
 - The `c1-*` and `c2-*` fixtures are the owner's capture C1 (master plan §6), from
   2026-10-28, except the two C1b ones below. They are read-only production `getOrder`,
   `searchOrders` and `getInvoiceStatus` responses, taken by hand with
@@ -66,7 +75,7 @@ sanitizer.
 
 `wireCorpus.test.ts` reads this folder: every file must be a valid envelope, serialised as
 `JSON.stringify(v, null, 2) + '\n'`, and pass both layers of `piiScan.ts`.
-`MINIMO_DE_FIXTURES` is the number of committed fixtures (19: the 9 model-sandbox seeds, the 8 C1 captures and the 2
+`MINIMO_DE_FIXTURES` is the number of committed fixtures (22: the 12 model-sandbox seeds, the 8 C1 captures and the 2
 C1b ones), so a fixture that disappears fails the test. A change that adds or deliberately removes a fixture
 moves it in the same commit.
 

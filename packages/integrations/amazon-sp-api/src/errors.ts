@@ -128,13 +128,15 @@ export function lerCodigoErroLwa(valor: unknown): CodigoErroLwa | null {
 export type DestinoAmazon = 'sp-api' | 'lwa';
 
 /**
- * The only two methods this package sends to Amazon's APIs: SP-API reads
- * (`GET`), and a `POST` — the LWA token exchange, or one of the write client's
- * writes (`escrita.ts`). The Easy Ship document download is a `GET` on a
- * pre-signed object, not an SP-API call, and raises its own class
- * ({@link AmazonDocumentoEasyShipError}).
+ * The only three methods this package sends to Amazon's APIs: SP-API reads
+ * (`GET`); a `POST` — the LWA token exchange, or one of the write client's
+ * writes (`escrita.ts`); and a `PATCH`, the write client's listings patch
+ * (`listings.ts`). The pre-signed document transfers (the Easy Ship label
+ * download, the feed document upload and the feed report download) are not
+ * SP-API calls, and raise their own classes ({@link AmazonDocumentoEasyShipError},
+ * {@link AmazonDocumentoFeedError}).
  */
-export type MetodoAmazon = 'GET' | 'POST';
+export type MetodoAmazon = 'GET' | 'POST' | 'PATCH';
 
 /** What identifies one request on every error raised after it was built. */
 export interface ContextoRequisicaoAmazon {
@@ -186,7 +188,10 @@ export type MotivoConfigAmazon =
   | 'token-no-corpo'
   | 'pedido'
   | 'md5'
-  | 'base64';
+  | 'base64'
+  | 'sku'
+  | 'quantidade'
+  | 'feed';
 
 /**
  * OUR input was unusable, and **no request was made**.
@@ -196,7 +201,9 @@ export type MotivoConfigAmazon =
  *   anything non-ASCII.
  * - `'ref'` — empty, longer than 64 characters, or containing a secret.
  * - `'caminho'` — not `/<api>/…`, carrying `?`, `#`, `://`, `..` or an encoded
- *   `.`, `/` or `\`, or rewritten by the URL parser (a tab, a `%2e%2e` segment).
+ *   `.`, `/` or `\`, or rewritten by the URL parser (a tab, a `%2e%2e` segment);
+ *   or a listings `sellerId` that cannot be ONE non-empty path segment
+ *   (`listings.ts`).
  * - `'token-na-url'` — the access token appears in the path or in a query key or
  *   value. It travels in `x-amz-access-token` only.
  * - `'user-agent'` — missing, empty, longer than 500 characters, outside
@@ -219,12 +226,25 @@ export type MotivoConfigAmazon =
  *   16-byte digest (24 characters ending in `==`); a hex digest is refused.
  * - `'base64'` — `submitInvoice`'s `invoiceContent` is empty or not standard
  *   base64 (its alphabet, `=` padding only at the end, a length multiple of 4).
+ * - `'sku'` — a listings helper (`listings.ts`) was handed a SKU the request
+ *   cannot carry: one that is not ONE path segment (empty, holding `/` or `\`,
+ *   containing `..`, equal to `.`, or refused by the path check once encoded), or
+ *   one the `searchListingsItems` `identifiers` list cannot carry (a `,`, a space,
+ *   more than 40 code points), or a list that is empty, longer than 20 or holds a
+ *   duplicate.
+ * - `'quantidade'` — the stock patch's quantity is not a safe integer ≥ 0.
+ * - `'feed'` — a feed helper (`feeds.ts`) was handed a feed document over one of
+ *   its limits (no message, more than 25,000, a duplicate or empty SKU, a message
+ *   without patches, an empty `sellerId`, more bytes than allowed), a `feedId`
+ *   outside `FEED_ID_AMAZON_REGEX`, or a document id that cannot be ONE path
+ *   segment (or is empty).
  *
  * `'application-id'` and `'state'` are raised by `montarUrlConsentimento`
  * (`consentimento.ts`), which builds a URL and sends nothing; `'pedido'` by a
- * Delivery or Easy Ship helper (`entrega.ts`, `easyShip.ts`), and `'md5'` and
- * `'base64'` by the Delivery upload, before the credential is read: "no request
- * was made" holds trivially there.
+ * Delivery or Easy Ship helper (`entrega.ts`, `easyShip.ts`), `'md5'` and
+ * `'base64'` by the Delivery upload, and `'sku'`, `'quantidade'` and `'feed'` by
+ * the listings and feeds helpers (`listings.ts`, `feeds.ts`), before the
+ * credential is read: "no request was made" holds trivially there.
  *
  * ⚠️ The message never echoes the offending value: a rejected token is still a
  * token, a rejected `ref` may contain one, a rejected path may carry a query, and
@@ -275,6 +295,12 @@ function mensagemDeConfig(motivo: MotivoConfigAmazon, operacao: string): string 
       return `${prefixo} o contentMD5Value precisa ser o MD5 em base64 (24 caracteres terminando em ==), nunca em hexadecimal. ${nada}`;
     case 'base64':
       return `${prefixo} o invoiceContent está vazio ou não é base64 padrão. ${nada}`;
+    case 'sku':
+      return `${prefixo} o SKU não pode viajar nesta requisição: vazio, com / ou \\, com "..", igual a ".", com vírgula ou espaço numa busca, ou uma lista de busca vazia, repetida ou com mais de 20. ${nada}`;
+    case 'quantidade':
+      return `${prefixo} a quantidade precisa ser um inteiro seguro maior ou igual a zero. ${nada}`;
+    case 'feed':
+      return `${prefixo} o documento do feed passa de um limite (mensagens, bytes, SKU repetido ou vazio, mensagem sem patches, sellerId vazio), ou o id do feed ou do documento está fora do formato aceito. ${nada}`;
   }
 }
 
@@ -632,5 +658,124 @@ function mensagemDeDocumento(motivo: MotivoDocumentoEasyShip, status: number | n
       return `${prefixo} a etiqueta ZPL passa do tamanho máximo aceito.`;
     case 'zpl-invalido':
       return `${prefixo} a entrada da etiqueta não tem o conteúdo de uma etiqueta ZPL.`;
+  }
+}
+
+/** Why a feed document transfer failed (`documentosFeed.ts`, `feeds.ts`). */
+export type MotivoDocumentoFeed =
+  | 'url-invalida'
+  | 'recusado'
+  | 'expirado'
+  | 'http'
+  | 'grande-demais'
+  | 'rede'
+  | 'prazo'
+  | 'gzip-invalido'
+  | 'json-invalido'
+  | 'relatorio-invalido';
+
+/**
+ * The `<Code>` of an object-storage XML error answer, as a CLOSED set: the two
+ * codes a refused pre-signed request is documented to carry, and `'outro'` for
+ * any other code or none. The `<Message>` is never read.
+ */
+export type CodigoS3Amazon = 'SignatureDoesNotMatch' | 'AccessDenied' | 'outro';
+
+/**
+ * A feed document transfer failed: the upload of the feed document to the
+ * pre-signed URL `createFeedDocument` answered, or the download and reading of
+ * the processing report behind `getFeedDocument`'s URL.
+ *
+ * - Both: `'url-invalida'` (not an `https:` URL on an `.amazonaws.com` host,
+ *   with no port and no userinfo; nothing was sent), `'http'` (any other
+ *   non-2xx upload, any other non-200 download), `'rede'` (the connection
+ *   failed, or a redirect was refused) and `'prazo'` (the transfer's deadline
+ *   passed).
+ * - Upload: `'recusado'` (HTTP 403 within the URL's documented lifetime: most
+ *   likely a signature mismatch, such as a content type other than the signed
+ *   one) and `'expirado'` (HTTP 403 after that lifetime).
+ * - Download: `'expirado'` (HTTP 403), `'grande-demais'` (the body passed its
+ *   byte cap, or a gzip trailer declares more than the inflated cap),
+ *   `'gzip-invalido'` (a corrupt gzip, or an inflated length or CRC-32 that
+ *   disagrees with the trailer), `'json-invalido'` (not UTF-8, empty, or not
+ *   JSON) and `'relatorio-invalido'` (JSON that is not a listings feed
+ *   processing report).
+ *
+ * Rooted at {@link AmazonError} with `refCredencial: null`: the transfer sends
+ * no credential. `status` is the HTTP status of an HTTP answer (`'recusado'`,
+ * `'expirado'`, `'http'`), `null` otherwise. `codigoS3` is the closed
+ * {@link CodigoS3Amazon} of a 403's body, `null` otherwise.
+ *
+ * ⚠️ The message is FIXED per motivo. It never carries the URL (a bearer link
+ * to the seller's feed), its host, path or query, or a byte of a document or of
+ * an answer. And there is no `cause`: a platform error can name the host.
+ */
+export class AmazonDocumentoFeedError extends AmazonError {
+  readonly motivo: MotivoDocumentoFeed;
+  readonly status: number | null;
+  readonly codigoS3: CodigoS3Amazon | null;
+
+  constructor(
+    motivo: MotivoDocumentoFeed,
+    init: { readonly status?: number; readonly codigoS3?: CodigoS3Amazon } = {},
+  ) {
+    const status = init.status ?? null;
+    super(mensagemDeDocumentoFeed(motivo, status), { refCredencial: null });
+    this.name = 'AmazonDocumentoFeedError';
+    this.motivo = motivo;
+    this.status = status;
+    this.codigoS3 = init.codigoS3 ?? null;
+  }
+}
+
+/**
+ * Whether a later attempt of the WHOLE submission (or of the whole report
+ * read: a fresh `getFeedDocument`, then the download) can succeed: `'rede'`,
+ * `'prazo'`, `'expirado'` (a fresh URL fixes it) and an `'http'` 5xx. Every
+ * other motivo is deterministic: repeating it repeats the failure (a
+ * `'recusado'` upload is a signature refusal, never retried as a transient).
+ */
+export function ehTransitoriaDocumentoFeed(err: AmazonDocumentoFeedError): boolean {
+  switch (err.motivo) {
+    case 'rede':
+    case 'prazo':
+    case 'expirado':
+      return true;
+    case 'http':
+      return err.status !== null && err.status >= 500 && err.status <= 599;
+    case 'url-invalida':
+    case 'recusado':
+    case 'grande-demais':
+    case 'gzip-invalido':
+    case 'json-invalido':
+    case 'relatorio-invalido':
+      return false;
+  }
+}
+
+function mensagemDeDocumentoFeed(motivo: MotivoDocumentoFeed, status: number | null): string {
+  const prefixo = 'Documento do feed:';
+  const http = status === null ? '' : ` (HTTP ${String(status)})`;
+  switch (motivo) {
+    case 'url-invalida':
+      return `${prefixo} o link do documento não é uma URL https de um host de documentos da Amazon, sem porta e sem usuário. Nada foi enviado nem baixado.`;
+    case 'recusado':
+      return `${prefixo} o envio do documento foi recusado${http} dentro da validade do link; o tipo de conteúdo ou a assinatura não conferem.`;
+    case 'expirado':
+      return `${prefixo} o link do documento foi recusado${http}; ele pode ter expirado.`;
+    case 'http':
+      return `${prefixo} a transferência do documento não respondeu com sucesso${http}.`;
+    case 'grande-demais':
+      return `${prefixo} o relatório passou do tamanho máximo aceito; nada foi lido.`;
+    case 'rede':
+      return `${prefixo} falha de rede ao transferir o documento (redirecionamentos não são seguidos).`;
+    case 'prazo':
+      return `${prefixo} a transferência do documento não terminou dentro do prazo.`;
+    case 'gzip-invalido':
+      return `${prefixo} o relatório compactado está corrompido, ou o tamanho ou o CRC-32 não conferem com o gzip.`;
+    case 'json-invalido':
+      return `${prefixo} o relatório não é um texto JSON em UTF-8.`;
+    case 'relatorio-invalido':
+      return `${prefixo} o relatório não tem o formato de um relatório de processamento do feed de listings.`;
   }
 }

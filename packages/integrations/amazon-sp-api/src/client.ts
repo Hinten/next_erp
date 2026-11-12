@@ -8,14 +8,18 @@
  * there is no flag to flip, no verb parameter, no request body to fill. It
  * hands the core a `GET` built from its named fields, so nothing a caller adds
  * to the request object can ride along. The write path is a SEPARATE client in
- * `escrita.ts` (one `post`, for the package's SP-API writes), never a widened
- * `get`.
+ * `escrita.ts` (`post` and `patch`, for the package's SP-API writes), never a
+ * widened `get`.
  *
  * ## The request core is INTERNAL
  *
  * {@link prepararNucleoSpApi} and {@link executarSpApi} are exported from this
- * module for `escrita.ts` alone; the barrel (`index.ts`) lists this module's
- * public names one by one and leaves both out. One core means the path checks,
+ * module for `escrita.ts` alone, and the one-segment encoder
+ * {@link segmentoDeCaminho} for `listings.ts` and `feeds.ts`, beside the
+ * {@link caminhoValido} predicate it is built on (a path parameter is checked by
+ * the SAME predicate the request will be); the barrel
+ * (`index.ts`) lists this module's public names one by one and leaves all four
+ * out. One core means the path checks,
  * the token-in-URL refusal, the correlation id, the deadline and the status
  * classification can never drift between the two clients.
  *
@@ -67,13 +71,13 @@
  *  3. Generate the correlation id (ours only; Amazon documents no request
  *     header for it, so it is never sent).
  *  4. Build exactly `x-amz-access-token`, `x-amz-date`, `user-agent` and
- *     `accept`. No `Content-Type` on a GET; the write client's `POST` adds
- *     `content-type: application/json` and nothing else, after refusing a body
- *     that carries the token, or that is not text and so cannot be checked
- *     (`AmazonConfigError('token-no-corpo')`).
+ *     `accept`. No `Content-Type` on a GET; the write client's `POST` and
+ *     `PATCH` add `content-type: application/json` and nothing else, after
+ *     refusing a body that carries the token, or that is not text and so cannot
+ *     be checked (`AmazonConfigError('token-no-corpo')`).
  *  5. Send through `transporte.ts`: one deadline (`PRAZO_AMAZON_MS.leitura`
- *     for a GET, `.escrita` for the POST), `redirect: 'manual'`, the response
- *     body read inside the window, the deadline released in `finally`.
+ *     for a GET, `.escrita` for every other method), `redirect: 'manual'`, the
+ *     response body read inside the window, the deadline released in `finally`.
  *  6. Classify the outcome into the `errors.ts` taxonomy, by HTTP STATUS —
  *     never by `errors[].code`, which is free-form. The codes ride the
  *     observer event and the HTTP error (`codigosErro`) as labels only.
@@ -134,12 +138,14 @@ const PREFIXO_CAMINHO = /^\/[a-z][a-zA-Z0-9-]*\//;
 
 /**
  * A percent-encoded `.`, `/` or `\`. None of the three ever NEEDS encoding in a
- * path this client builds today, so the encoded form has no use but to slip a
- * parent segment or a separator past a literal check.
+ * path this client builds, so the encoded form has no use but to slip a parent
+ * segment or a separator past a literal check.
  *
  * ⚠️ Listings paths embed a URL-encoded SKU (`/listings/2021-08-01/items/{sellerId}/{sku}`),
- * and a SKU containing `/` would be refused here. No consumer exists yet; the
- * listing steps bring a reviewed segment encoder with their first such path.
+ * and a SKU containing `/` or `\` is refused here once encoded. The reviewed
+ * segment encoder is {@link segmentoDeCaminho} (below): it answers `null` for
+ * every value this check (or the literal `..` one) would refuse, so a listings
+ * helper refuses such a SKU as `'sku'` before it ever builds the path.
  */
 const SEPARADOR_CODIFICADO = /%(?:2e|2f|5c)/i;
 
@@ -230,8 +236,12 @@ export interface SpApiLeituraClient {
  * (so `.<tab>.` becomes `..`), and treats `\` as `/`. So the path must ALSO come
  * out of that parser unchanged, on our origin, with no query and no fragment —
  * whatever the parser would have rewritten, it refuses instead.
+ *
+ * ⚠️ INTERNAL: exported beside {@link segmentoDeCaminho} (the one-segment
+ * encoder the listings and feeds path parameters go through), so a test can
+ * hold that encoder to this very predicate; never from the barrel.
  */
-function caminhoValido(caminho: unknown): caminho is string {
+export function caminhoValido(caminho: unknown): caminho is string {
   if (
     typeof caminho !== 'string' ||
     !PREFIXO_CAMINHO.test(caminho) ||
@@ -256,6 +266,37 @@ function caminhoValido(caminho: unknown): caminho is string {
     url.search === '' &&
     url.hash === ''
   );
+}
+
+/** A first segment the path check accepts, under which a segment is probed. */
+const PREFIXO_DE_PROVA = '/segmento/';
+
+/**
+ * A value as ONE percent-encoded path segment (`'a b'` → `'a%20b'`, `'%'` →
+ * `'%25'`), or `null` when no path can carry it unchanged: not a string, empty,
+ * equal to `.`, holding `/` or `\`, containing `..`, or refused by
+ * {@link caminhoValido} once encoded. `encodeURIComponent` throws `URIError` on
+ * a lone surrogate; that, too, is a value no path can carry.
+ *
+ * The listings SKU and seller id (`listings.ts`) and the feed document id
+ * (`feeds.ts`) go through it, so a path parameter is held to the very predicate
+ * the request will be checked by. The literal checks and that probe overlap on
+ * purpose: today either one alone refuses every value the pair refuses, so no
+ * test can tell them apart; each stays in case the other changes.
+ *
+ * ⚠️ INTERNAL: exported for `listings.ts` and `feeds.ts`, never from the barrel.
+ */
+export function segmentoDeCaminho(valor: unknown): string | null {
+  if (typeof valor !== 'string' || valor === '' || valor === '.') return null;
+  if (valor.includes('/') || valor.includes('\\') || valor.includes('..')) return null;
+  let segmento: string;
+  try {
+    segmento = encodeURIComponent(valor);
+  } catch (err) {
+    if (err instanceof URIError) return null;
+    throw err;
+  }
+  return caminhoValido(`${PREFIXO_DE_PROVA}${segmento}`) ? segmento : null;
 }
 
 /**
@@ -366,12 +407,16 @@ export interface NucleoSpApi {
 
 /**
  * One request as a client hands it to the core. A `GET` has no body BY TYPE;
- * only the write client (`escrita.ts`) builds the `POST` arm, whose `corpo` is
- * the JSON text exactly as it will be sent.
+ * only the write client (`escrita.ts`) builds the `POST` and `PATCH` arms, whose
+ * `corpo` is the JSON text exactly as it will be sent.
  * ⚠️ INTERNAL: exported for `escrita.ts`, never from the barrel.
  */
 export type RequisicaoSpApi<S extends z.ZodType> = PedidoGetSpApi<S> &
-  ({ readonly metodo: 'GET' } | { readonly metodo: 'POST'; readonly corpo: string });
+  (
+    | { readonly metodo: 'GET' }
+    | { readonly metodo: 'POST'; readonly corpo: string }
+    | { readonly metodo: 'PATCH'; readonly corpo: string }
+  );
 
 /**
  * Check the options and resolve the defaults. `operacaoConstrucao` names the
@@ -431,10 +476,11 @@ export async function executarSpApi<S extends z.ZodType>(
   if (contemSegredo(n.userAgent, [accessToken])) {
     throw new AmazonConfigError('user-agent', { operacao, refCredencial: ref });
   }
-  // The write's body, checked on the exact text that would be sent. A body that
-  // is not text (bytes behind a cast) cannot be inspected, so it is never cleared.
-  const corpo = p.metodo === 'POST' ? p.corpo : undefined;
-  if (p.metodo === 'POST' && (!corpoDeTexto(corpo) || contemSegredo(corpo, [accessToken]))) {
+  // The write's body (POST and PATCH alike), checked on the exact text that would
+  // be sent. A body that is not text (bytes behind a cast) cannot be inspected,
+  // so it is never cleared. A GET carries none, whatever a cast smuggled in.
+  const corpo = p.metodo === 'GET' ? undefined : p.corpo;
+  if (p.metodo !== 'GET' && (!corpoDeTexto(corpo) || contemSegredo(corpo, [accessToken]))) {
     throw new AmazonConfigError('token-no-corpo', { operacao, refCredencial: ref });
   }
 
@@ -466,7 +512,7 @@ export async function executarSpApi<S extends z.ZodType>(
     n.opts.onChamada,
   );
 
-  // 5. Send. A write is bounded by its own class (`prazos.ts`).
+  // 5. Send. Every write (any method but GET) is bounded by its own class (`prazos.ts`).
   const r = await enviar({
     fetchImpl: n.fetchImpl,
     agora: n.agora,
@@ -474,7 +520,7 @@ export async function executarSpApi<S extends z.ZodType>(
     metodo,
     headers,
     ...(corpo === undefined ? {} : { corpo }),
-    prazoMs: metodo === 'POST' ? PRAZO_AMAZON_MS.escrita : PRAZO_AMAZON_MS.leitura,
+    prazoMs: metodo === 'GET' ? PRAZO_AMAZON_MS.leitura : PRAZO_AMAZON_MS.escrita,
     sinal,
     ctx: {
       destino: 'sp-api',

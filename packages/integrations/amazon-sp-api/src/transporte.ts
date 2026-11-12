@@ -262,7 +262,7 @@ export interface EnvioAmazon {
   readonly url: string;
   readonly metodo: MetodoAmazon;
   readonly headers: Readonly<Record<string, string>>;
-  /** The form body of the LWA POST; absent on a GET. */
+  /** The form body of the LWA POST, or a write's JSON text (POST, PATCH); absent on a GET. */
   readonly corpo?: string;
   readonly prazoMs: number;
   readonly sinal: AbortSignal | undefined;
