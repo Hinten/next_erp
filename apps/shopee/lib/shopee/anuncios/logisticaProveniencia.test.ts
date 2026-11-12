@@ -6,7 +6,7 @@
  * through ONE predicate, `logisticaGravadaPeloErpShopee` (`@delfrance/schemas`).
  * The behaviour suites prove what each reader and each writer does TODAY; none
  * of them can see a SECOND way in — a reader that re-derives trust from the raw
- * field (`!= null` accepts a string stamp the predicate refuses), or a fifth
+ * field (`!= null` accepts a string stamp the predicate refuses), or another
  * writer that stamps a list it did not write (an ENSURE adoption, a draft
  * create). That is the #1369 drift the root CLAUDE.md names: a faithful second
  * copy is green until the day the one copy changes.
@@ -17,9 +17,11 @@
  *    KEY of an object-literal property — a write. Any other occurrence is a
  *    read (a type member included: only `@delfrance/schemas` declares the
  *    field).
- * 2. **Exactly four writers**, in three files, each beside the list it vouches
+ * 2. **Exactly five writers**, in four files, each beside the list it vouches
  *    for: the stamp's object literal also holds `logistic_info`. So a stamp
- *    moved next to the unconditional `ultimaPublicacao` reds here too.
+ *    moved next to the unconditional `ultimaPublicacao` reds here too — and so
+ *    does the draft edit's stamp (#1911 P15) moved out of its list's literal
+ *    into the caller's spread.
  * 3. **Where trust reaches `construirLogistica`.** Every `armazenadoConfiavel:`
  *    in code is in `planoPublicacao.ts` (its value reads the projection's
  *    `.logisticaConfiavel`) or in `planoKit.ts` (its value calls the
@@ -83,17 +85,21 @@ const PLANO_ITEM = 'lib/shopee/anuncios/planoPublicacao.ts';
 const PLANO_KIT = 'lib/shopee/kits/planoKit.ts';
 const MAPEAMENTO = 'lib/shopee/produtos/mapeamento.ts';
 const VINCULOS_KIT = 'lib/shopee/kits/vinculosKit.ts';
+const RASCUNHO = 'lib/shopee/anuncios/rascunho.ts';
 
 /**
  * The writers, by file, and how many writes each holds — write-back #1 and #2
- * in `publicarAnuncio.ts`, the import builder, the kit create. A change here is
- * a review decision: the stamp must keep meaning "a list this app produced or
- * Shopee answered".
+ * in `publicarAnuncio.ts`, the import builder, the kit create, and the draft
+ * edit (`atualizarRascunhoShopee`'s `escritaDoCampo`, #1911 P15: the list the
+ * operator chose, or `null`, stamped in the same literal). A change here is a
+ * review decision: the stamp must keep meaning "a list this app produced,
+ * Shopee answered, or the operator chose on a draft".
  */
 const ESCRITORES: Readonly<Record<string, number>> = {
   [PUBLICAR]: 2,
   [MAPEAMENTO]: 1,
   [VINCULOS_KIT]: 1,
+  [RASCUNHO]: 1,
 };
 
 /* -------------------------------------------------------------------------- */
@@ -545,7 +551,9 @@ describe('#2015 no código do app', () => {
     expect(REAL.leituras, `leia com ${PREDICADO}(raw), nunca o campo`).toEqual([]);
   });
 
-  it('exatamente QUATRO escritores, em três arquivos, cada um no MESMO literal que a lista', () => {
+  // #1911 P15 retitled this test (it was «exatamente QUATRO escritores, em três
+  // arquivos, cada um no MESMO literal que a lista»): the draft edit is the fifth.
+  it('exatamente CINCO escritores, em quatro arquivos, cada um no MESMO literal que a lista', () => {
     expect(REAL.escritas).toEqual(ESCRITORES);
     expect(REAL.escritasSemALista).toEqual([]);
   });
@@ -618,7 +626,9 @@ describe('o pin MORDE — sobre uma CÓPIA do universo, nada muda no disco', () 
     expect(a.escritasSemALista[0]).toMatch(/^lib\/shopee\/anuncios\/publicarAnuncio\.ts:\d+$/);
   });
 
-  it('um QUINTO escritor: a adoção do ENSURE carimba uma lista que não escreveu', () => {
+  // #1911 P15 retitled this test (it was «um QUINTO escritor: a adoção do ENSURE
+  // carimba uma lista que não escreveu»): the draft edit is the fifth now.
+  it('um escritor A MAIS: a adoção do ENSURE carimba uma lista que não escreveu', () => {
     const arquivo = 'lib/shopee/anuncios/reservaRascunho.ts';
     const real = fonteReal(arquivo);
     const a = analisar(
@@ -633,6 +643,37 @@ describe('o pin MORDE — sobre uma CÓPIA do universo, nada muda no disco', () 
     expect(a.escritas).toEqual({ ...ESCRITORES, [arquivo]: 1 });
     // …and that stamp vouches for no list in its own literal.
     expect(a.escritasSemALista).toHaveLength(1);
+  });
+
+  it('o pin MORDE: o carimbo da edição do rascunho sai do literal da lista e vai para o spread do parseMerge', () => {
+    // #1911 P15: the draft edit's ONE literal (`escritaDoCampo`'s logistics
+    // arm) split in two — the list stays in the arm, the stamp moves into the
+    // caller's `parseMerge({ ...escrita, … })`, which holds no list of its own.
+    const real = fonteReal(RASCUNHO);
+    const doBraco = `return { ${LISTA}: patch.${LISTA} ?? null, ${CAMPO}: nowMs };`;
+    const doSpread = '...escrita,\n      ultimaModificacao: deps.nowMs,';
+    for (const de of [doBraco, doSpread]) {
+      expect(real.split(de), `o trecho do mutante existe uma vez: ${de}`).toHaveLength(2);
+    }
+    const mutante = new Map([
+      ...FONTES,
+      [
+        RASCUNHO,
+        real
+          .replace(doBraco, `return { ${LISTA}: patch.${LISTA} ?? null };`)
+          .replace(
+            doSpread,
+            `...escrita,\n      ${CAMPO}: deps.nowMs,\n      ultimaModificacao: deps.nowMs,`,
+          ),
+      ],
+    ]);
+    const a = analisar(mutante);
+    // Same count — the move is caught by the sibling check alone…
+    expect(a.escritas).toEqual(ESCRITORES);
+    expect(a.escritasSemALista).toHaveLength(1);
+    expect(a.escritasSemALista[0]).toMatch(/^lib\/shopee\/anuncios\/rascunho\.ts:\d+$/);
+    // …and, from the other direction, the arm's list now rides with no stamp.
+    expect(listasSemCarimbo(mutante)).toEqual({ ...LISTAS_SEM_CARIMBO, [RASCUNHO]: 1 });
   });
 
   it('o kit #2 carimba também (o arquivo passa de 1 para 2 escritas)', () => {
@@ -674,7 +715,7 @@ describe('o pin MORDE — sobre uma CÓPIA do universo, nada muda no disco', () 
  * `arquivo` → how many object literals hold a {@link LISTA} key with NO stamp
  * beside it. The pins above go stamp → list; this one goes list → stamp — the
  * other half of the schema header's ONE rule ("the ONE write of the list with
- * no stamp is the draft create's schema default"). A fifth WRITE of the list
+ * no stamp is the draft create's schema default"). Another WRITE of the list
  * with no stamp would leave an older stamp vouching for a list it never saw,
  * and nothing above would see it: it holds no stamp to count.
  */
@@ -718,11 +759,15 @@ const LISTAS_SEM_CARIMBO: Readonly<Record<string, number>> = {
 };
 
 describe('a outra direção: todo literal com a LISTA tem o carimbo, ou é leitura / corpo de requisição', () => {
-  it('fora dos quatro escritores carimbados, a lista só aparece nos literais nomeados', () => {
+  // #1911 P15 retitled this test (it was «fora dos quatro escritores carimbados,
+  // a lista só aparece nos literais nomeados»): the draft edit is the fifth.
+  it('fora dos cinco escritores carimbados, a lista só aparece nos literais nomeados', () => {
     expect(listasSemCarimbo(FONTES)).toEqual(LISTAS_SEM_CARIMBO);
   });
 
-  it('o pin MORDE: um QUINTO escritor grava a lista SEM o carimbo', () => {
+  // #1911 P15 retitled this test (it was «o pin MORDE: um QUINTO escritor grava
+  // a lista SEM o carimbo»): the draft edit is the fifth now.
+  it('o pin MORDE: um escritor A MAIS grava a lista SEM o carimbo', () => {
     const arquivo = 'lib/shopee/anuncios/reservaRascunho.ts';
     const mutante = new Map([
       ...FONTES,
@@ -743,6 +788,23 @@ describe('a outra direção: todo literal com a LISTA tem o carimbo, ou é leitu
       [PUBLICAR, real.replace(de, '      kitNativo: ehKitDe(base),')],
     ]);
     expect(listasSemCarimbo(mutante)).toEqual({ ...LISTAS_SEM_CARIMBO, [PUBLICAR]: 2 });
+  });
+
+  it('o pin MORDE: a edição do rascunho perde o carimbo — a lista fica sozinha', () => {
+    // #1911 P15: the draft edit writes the operator's list (or `null`) with no
+    // stamp — an older stamp would then vouch for a list it never saw.
+    const real = fonteReal(RASCUNHO);
+    const de = `return { ${LISTA}: patch.${LISTA} ?? null, ${CAMPO}: nowMs };`;
+    expect(real.split(de), 'o trecho do mutante existe uma vez').toHaveLength(2);
+    const mutante = new Map([
+      ...FONTES,
+      [RASCUNHO, real.replace(de, `return { ${LISTA}: patch.${LISTA} ?? null };`)],
+    ]);
+    expect(listasSemCarimbo(mutante)).toEqual({ ...LISTAS_SEM_CARIMBO, [RASCUNHO]: 1 });
+    // …and, from the other direction, the file is no writer any more.
+    expect(analisar(mutante).escritas).toEqual(
+      Object.fromEntries(Object.entries(ESCRITORES).filter(([arquivo]) => arquivo !== RASCUNHO)),
+    );
   });
 
   it('near-miss: o carimbo no MESMO literal não conta, nem uma desestruturação; a lista sozinha conta', () => {

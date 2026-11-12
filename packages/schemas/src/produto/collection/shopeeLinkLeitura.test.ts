@@ -9,6 +9,7 @@ import {
   anuncioShopeeVivo,
   contaDoLinkShopee,
   ehRascunhoShopee,
+  lerLogisticaArmazenadaShopee,
   logisticaGravadaPeloErpShopee,
   mecanismosDaRecusaAnterior,
   pularPorRecusaAnterior,
@@ -17,6 +18,7 @@ import {
   recusaPrecoDoAnuncioShopeeLegivel,
   recusaPrecoDoModeloShopeeLegivel,
   recusaShopeeLegivel,
+  type EntradaLogisticaArmazenadaShopee,
   type LeituraRecusaEstoqueShopee,
 } from './shopeeLinkLeitura';
 
@@ -814,5 +816,179 @@ describe('logisticaGravadaPeloErpShopee — só o carimbo decide (#2015, D1)', (
       pares.add(`${String(carimbado)}|${String(rascunho)}`);
     }
     expect(pares.size).toBe(4);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*   (7) lerLogisticaArmazenadaShopee — the stored list reader (#1911 P15)     */
+/*       MOVED from `apps/shopee/.../logisticaPublicacao.ts`; the publisher's  */
+/*       own pins of it stay there (P24–P29)                                   */
+/* -------------------------------------------------------------------------- */
+
+describe('lerLogisticaArmazenadaShopee — o leitor ÚNICO da lista armazenada (#1911 P15, #1369)', () => {
+  /** Two channel ids of the plan's synthetic range — never a real shop's. */
+  const A = 90003;
+  const B = 90005;
+  /** Marks a row whose key is ABSENT from the stored entry — not a stored `undefined`. */
+  const AUSENTE = Symbol('ausente');
+  const ler = lerLogisticaArmazenadaShopee;
+
+  /** A stored entry: `base` with `chave` set to `valor`, or WITHOUT the key for {@link AUSENTE}. */
+  function comCampo(
+    chave: string,
+    valor: unknown,
+    base: Record<string, unknown> = { logistic_id: A },
+  ): Record<string, unknown> {
+    if (valor === AUSENTE)
+      return Object.fromEntries(Object.entries(base).filter(([k]) => k !== chave));
+    return { ...base, [chave]: valor };
+  }
+
+  /** Channel A's reading with every optional field empty, overridden by `sobre`. */
+  function lida(
+    sobre: Partial<EntradaLogisticaArmazenadaShopee> = {},
+  ): EntradaLogisticaArmazenadaShopee {
+    return { logisticId: A, ligado: true, isFree: null, sizeId: null, shippingFee: null, ...sobre };
+  }
+
+  it("não é uma lista ⇒ null (null, undefined, {}, 'x', 7); [] ⇒ []", () => {
+    // The array-like object is the near-miss for an `Object.values` reader.
+    for (const bruto of [null, undefined, {}, 'x', 7, { 0: { logistic_id: A } }]) {
+      expect(ler(bruto), String(JSON.stringify(bruto))).toBeNull();
+    }
+    expect(ler([])).toEqual([]);
+  });
+
+  it("⚠️ PAR: logistic_id 90003, '90003' e '090003' são a MESMA entrada (o zero à esquerda é a regra do main, declarada)", () => {
+    // Kills the "numbers only" mutant: a digits-only STRING id is a real id.
+    for (const id of [A, String(A), `0${String(A)}`]) {
+      expect(ler([{ logistic_id: id, enabled: true }]), String(id)).toEqual([lida()]);
+    }
+  });
+
+  it.each<[string, unknown]>([
+    ["''", ''],
+    ["' 90003'", ' 90003'],
+    ["'90003 '", '90003 '],
+    ["'90003.0'", '90003.0'],
+    ["'+90003'", '+90003'],
+    ["'1e5'", '1e5'],
+    ['0', 0],
+    ["'0'", '0'],
+    ['-1', -1],
+    ['1.5', 1.5],
+    ['Number.MAX_SAFE_INTEGER + 2', Number.MAX_SAFE_INTEGER + 2],
+    ["'9007199254740993' (dígitos, inseguro)", '9007199254740993'],
+    ['true', true],
+    ['null', null],
+    ['ausente', AUSENTE],
+  ])('⛔ QUASE: logistic_id %s não é legível ⇒ a entrada SAI', (_, valor) => {
+    // The readable neighbour is the anti-vacuity control: a reader answering
+    // `[]` for everything would pass the drop alone.
+    const vizinha = { logistic_id: B, enabled: true };
+    expect(ler([comCampo('logistic_id', valor, { enabled: true }), vizinha])).toEqual([
+      lida({ logisticId: B }),
+    ]);
+  });
+
+  it("⛔ QUASE: uma entrada que não é objeto (null, 7, 'x', []) sai, e a vizinha legível fica", () => {
+    // A bare id (number or digits) is not an entry either — only an OBJECT's
+    // `logistic_id` is read.
+    expect(ler([null, 7, 'x', [], A, String(A), [A], { logistic_id: A }])).toEqual([lida()]);
+  });
+
+  it.each<[string, unknown]>([
+    ['true', true],
+    ['null', null],
+    ['ausente', AUSENTE],
+    ["'false'", 'false'],
+    ['0', 0],
+  ])('ligado: SÓ o booleano false desliga ⟷ QUASE: enabled %s fica LIGADO', (_, valor) => {
+    expect(ler([comCampo('enabled', false)])).toEqual([lida({ ligado: false })]);
+    expect(ler([comCampo('enabled', valor)])).toEqual([lida({ ligado: true })]);
+  });
+
+  it.each<[string, unknown]>([
+    ["'true'", 'true'],
+    ['1', 1],
+    ['null', null],
+    ['ausente', AUSENTE],
+  ])('isFree: true e false ficam ⟷ QUASE: is_free %s ⇒ null', (_, valor) => {
+    expect(ler([comCampo('is_free', true)])).toEqual([lida({ isFree: true })]);
+    expect(ler([comCampo('is_free', false)])).toEqual([lida({ isFree: false })]);
+    expect(ler([comCampo('is_free', valor)])).toEqual([lida({ isFree: null })]);
+  });
+
+  it.each<[string, unknown]>([
+    ['0', 0],
+    ["'0'", '0'],
+    ["''", ''],
+    ["'12.5'", '12.5'],
+    ['12.5', 12.5],
+    ["' 12 '", ' 12 '],
+  ])("sizeId: 7 e '7' ⇒ 7 ⟷ QUASE: size_id %s ⇒ null (C32)", (_, valor) => {
+    expect(ler([comCampo('size_id', 7)])).toEqual([lida({ sizeId: 7 })]);
+    expect(ler([comCampo('size_id', '7')])).toEqual([lida({ sizeId: 7 })]);
+    expect(ler([comCampo('size_id', valor)])).toEqual([lida({ sizeId: null })]);
+  });
+
+  it.each<[string, unknown]>([
+    ["'12,90'", '12,90'],
+    ["''", ''],
+    ["'grátis'", 'grátis'],
+    ['NaN', Number.NaN],
+    ['Infinity', Number.POSITIVE_INFINITY],
+    ["'-5'", '-5'],
+  ])("shippingFee: 12.9 e '12.90' ⇒ 12.9 ⟷ QUASE: shipping_fee %s ⇒ null", (_, valor) => {
+    expect(ler([comCampo('shipping_fee', 12.9)])).toEqual([lida({ shippingFee: 12.9 })]);
+    expect(ler([comCampo('shipping_fee', '12.90')])).toEqual([lida({ shippingFee: 12.9 })]);
+    expect(ler([comCampo('shipping_fee', valor)])).toEqual([lida({ shippingFee: null })]);
+  });
+
+  it('RESÍDUO (o ramo numérico do main): os NÚMEROS 0 e -5 ficam como tarifa — declarado, não mudado', () => {
+    // The STRING '-5' is refused above; the NUMBER is kept. The asymmetry is
+    // main's, moved verbatim — a change here is a decision, not a move.
+    expect(ler([comCampo('shipping_fee', 0)])).toEqual([lida({ shippingFee: 0 })]);
+    expect(ler([comCampo('shipping_fee', -5)])).toEqual([lida({ shippingFee: -5 })]);
+  });
+
+  it('⛔ QUASE: estimated_shipping_fee NUNCA é a tarifa (shippingFee null) ⟷ PAR: shipping_fee 7.18 é', () => {
+    // Kills the `shipping_fee ?? estimated_shipping_fee` mutant from both sides.
+    expect(ler([{ logistic_id: A, estimated_shipping_fee: 7.18 }])).toEqual([lida()]);
+    expect(ler([{ logistic_id: A, estimated_shipping_fee: '7.18' }])).toEqual([lida()]);
+    expect(ler([{ logistic_id: A, shipping_fee: 7.18 }])).toEqual([lida({ shippingFee: 7.18 })]);
+    expect(ler([{ logistic_id: A, shipping_fee: 7.18, estimated_shipping_fee: 99 }])).toEqual([
+      lida({ shippingFee: 7.18 }),
+    ]);
+  });
+
+  it('uma entrada no formato do retorno do BR sai com EXATAMENTE as cinco chaves — logistic_name, include_pickup e estimated_shipping_fee nunca passam', () => {
+    // The read-back shape (`get_item_base_info.logistic_info[]`), synthetic
+    // values. Kills the "spread the raw entry" mutant.
+    const retorno = {
+      logistic_id: A,
+      logistic_name: 'Entrega Padrão',
+      enabled: true,
+      is_free: false,
+      estimated_shipping_fee: 12.9,
+      include_pickup: false,
+    };
+    const [entrada, ...resto] = ler([retorno]) ?? [];
+    expect(resto).toEqual([]);
+    expect(Object.keys(entrada ?? {}).sort()).toEqual([
+      'isFree',
+      'ligado',
+      'logisticId',
+      'shippingFee',
+      'sizeId',
+    ]);
+    expect(entrada).toEqual(lida({ isFree: false }));
+  });
+
+  it('a ordem GUARDADA e as duplicatas ficam — o leitor nunca deduplica', () => {
+    // B (90005) is stored BEFORE A (90003), so a sorting reader fails too.
+    expect(
+      ler([{ logistic_id: B, size_id: '' }, { logistic_id: B, size_id: '7' }, { logistic_id: A }]),
+    ).toEqual([lida({ logisticId: B }), lida({ logisticId: B, sizeId: 7 }), lida()]);
   });
 });

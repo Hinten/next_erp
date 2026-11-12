@@ -1139,6 +1139,20 @@ export {
   type RespostaRecomendacaoCategoriaShopee,
 } from './taxonomiaShopeeDto';
 
+// The Shopee CHANNELS route envelope (#1911, P15), declared once like the
+// taxonomy ones above: `apps/shopee`'s `canais` route builds its 200 against it
+// and `apps/web` (P16) parses with it. Not a collection, so no `registry.ts`
+// entry.
+export {
+  motivoIndisponivelCanalShopeeSchema,
+  MOTIVO_INDISPONIVEL_CANAL_SHOPEE,
+  canalDaLojaShopeeDtoSchema,
+  respostaCanaisShopeeSchema,
+  type MotivoIndisponivelCanalShopee,
+  type CanalDaLojaShopeeDto,
+  type RespostaCanaisShopee,
+} from './logisticaShopeeDto';
+
 // …and THE band check + text resolution the publisher applies to a listing's
 // name and description — the draft editor's counter and pendências call the
 // same functions (#1369 — one copy).
