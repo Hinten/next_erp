@@ -101,16 +101,17 @@ function pedidoPost(extra: { corpo?: string; sinal?: AbortSignal; caminho?: stri
 const ok = () => mockFetch(() => json({}));
 
 describe('two separate clients, each with its own surface', () => {
-  it('the write client has exactly `post`, and no `get`', () => {
+  it('★ the write client has exactly `post` and `patch` (construction order), and no `get`', () => {
     const { c } = escritor(ok());
-    expect(Object.keys(c)).toEqual(['post']);
+    expect(Object.keys(c)).toEqual(['post', 'patch']);
     expect('get' in c).toBe(false);
   });
 
-  it('the read client still has `get` alone — no write method reaches it', () => {
+  it('★ the read client still has `get` alone — no write method reaches it', () => {
     const { c } = leitor(ok());
     expect(Object.keys(c)).toEqual(['get']);
     expect('post' in c).toBe(false);
+    expect('patch' in c).toBe(false);
   });
 
   it('neither client type stands for the other, and `get` takes no body (compile-time)', () => {
@@ -516,5 +517,137 @@ describe('the deadline: the write class, not the read one', () => {
     await vi.advanceTimersByTimeAsync(PRAZO_AMAZON_MS.leitura);
     await pronto;
     expect((estado.valor as AmazonTimeoutError).prazoMs).toBe(PRAZO_AMAZON_MS.leitura);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                     PATCH: the same core, the write class                  */
+/* -------------------------------------------------------------------------- */
+
+const CAMINHO_PATCH = '/listings/2021-08-01/items/SELLER-TESTE/SKU-TESTE-1';
+
+function pedidoPatch(extra: { corpo?: string; sinal?: AbortSignal } = {}) {
+  return {
+    operacao: 'patchListingsItem',
+    caminho: CAMINHO_PATCH,
+    query: { marketplaceIds: 'A2Q3Y263D00KWC' },
+    corpo: extra.corpo ?? CORPO,
+    schema,
+    sinal: extra.sinal,
+  };
+}
+
+describe('PATCH', () => {
+  it('★ is a PATCH carrying its body byte for byte, with the five headers and redirect: manual', async () => {
+    const f = ok();
+    const corpo = '{"productType":"PRODUCT","patches":[]}';
+    const { c, eventos } = escritor(f);
+    await c.patch(pedidoPatch({ corpo }));
+    const { init, headers, url } = requisicao(f);
+    expect(init.method).toBe('PATCH');
+    expect(init.body).toBe(corpo);
+    expect(init.redirect).toBe('manual');
+    expect(url.href).toBe(`${URL_BASE_SP_API}${CAMINHO_PATCH}?marketplaceIds=A2Q3Y263D00KWC`);
+    expect([...headers.keys()].sort()).toEqual([
+      'accept',
+      'content-type',
+      'user-agent',
+      'x-amz-access-token',
+      'x-amz-date',
+    ]);
+    expect(headers.get('content-type')).toBe('application/json');
+    expect(eventos.map((e) => [e.metodo, e.resultado])).toEqual([['PATCH', 'ok']]);
+  });
+
+  it('★ the body never reaches the observer: a sentinel in a PATCH body is absent from the event', async () => {
+    const f = ok();
+    const { c, eventos } = escritor(f);
+    await c.patch(pedidoPatch({ corpo: JSON.stringify({ x: SENTINELA }) }));
+    expect(requisicao(f).init.body).toContain(SENTINELA);
+    expect(JSON.stringify(eventos)).not.toContain(SENTINELA);
+  });
+
+  it('★ a PATCH body holding the token is refused before fetch runs: token-no-corpo', async () => {
+    const f = ok();
+    const { c, eventos } = escritor(f);
+    const err = await falha(c.patch(pedidoPatch({ corpo: JSON.stringify({ x: ACCESS_TOKEN }) })));
+    expect(err).toBeInstanceOf(AmazonConfigError);
+    expect(err).toMatchObject({
+      motivo: 'token-no-corpo',
+      operacao: 'patchListingsItem',
+      refCredencial: 'ref-A',
+    });
+    expect(f).not.toHaveBeenCalled();
+    expect(eventos).toEqual([]);
+    for (const t of textosDoErro(err)) expect(t).not.toContain(ACCESS_TOKEN);
+  });
+
+  it('★ a PATCH body that is not text (bytes behind a cast) is refused: nothing sent', async () => {
+    const f = ok();
+    const bytes = new TextEncoder().encode('{}');
+    const err = await falha(
+      escritor(f).c.patch({ ...pedidoPatch(), corpo: bytes as unknown as string }),
+    );
+    expect(err).toMatchObject({ motivo: 'token-no-corpo' });
+    expect(f).not.toHaveBeenCalled();
+  });
+
+  it('near-miss: a fragment of the token in a PATCH body is sent', async () => {
+    const f = ok();
+    await escritor(f).c.patch(
+      pedidoPatch({ corpo: JSON.stringify({ x: ACCESS_TOKEN.slice(0, 10) }) }),
+    );
+    expect(f).toHaveBeenCalledTimes(1);
+  });
+
+  it('classifies like the POST: a 400 is an AmazonHttpError with its codes and metodo PATCH', async () => {
+    const { c } = escritor(mockFetch(() => json(erro400InvalidInput, 400)));
+    const err = await falha(c.patch(pedidoPatch()));
+    expect(err).toBeInstanceOf(AmazonHttpError);
+    expect(err).toMatchObject({ status: 400, metodo: 'PATCH', operacao: 'patchListingsItem' });
+    expect((err as AmazonHttpError).codigosErro).toEqual(['InvalidInput']);
+  });
+});
+
+describe('★ a GET carries no body, even when the core is handed one', () => {
+  it('a GET request with a `corpo` smuggled behind a cast travels with no body and no content-type', async () => {
+    const f = ok();
+    const eventos: ChamadaAmazon[] = [];
+    const n = cliente_.prepararNucleoSpApi(opcoes(f, eventos), 'teste');
+    await cliente_.executarSpApi(n, {
+      metodo: 'GET',
+      operacao: 'getListingsItem',
+      caminho: CAMINHO_PATCH,
+      schema,
+      corpo: SENTINELA,
+    } as never);
+    const { init, headers } = requisicao(f);
+    expect(init.method).toBe('GET');
+    expect(init.body).toBeUndefined();
+    expect(headers.has('content-type')).toBe(false);
+  });
+});
+
+describe('★ the PATCH deadline is the write class', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('pending at the read budget (20 s), cut at the write budget (30 s)', async () => {
+    const { c, eventos } = escritor(fetchQueNuncaResponde());
+    const { estado, pronto } = observar(c.patch(pedidoPatch()));
+    await vi.advanceTimersByTimeAsync(PRAZO_AMAZON_MS.leitura);
+    expect(estado.settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(PRAZO_AMAZON_MS.escrita - PRAZO_AMAZON_MS.leitura - 1);
+    expect(estado.settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await pronto;
+    expect(estado.valor).toBeInstanceOf(AmazonTimeoutError);
+    expect((estado.valor as AmazonTimeoutError).prazoMs).toBe(PRAZO_AMAZON_MS.escrita);
+    expect(eventos.map((e) => [e.metodo, e.resultado])).toEqual([['PATCH', 'tempo-esgotado']]);
+    expect(vi.getTimerCount()).toBe(0);
   });
 });

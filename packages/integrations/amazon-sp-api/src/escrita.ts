@@ -2,25 +2,28 @@
  * The SP-API WRITE client, `criarClienteEscritaSpApi`: the package's only writer
  * to the Selling Partner API, kept apart from the read client (`client.ts`) on
  * purpose. Its consumers are the Delivery invoice upload (`entrega.ts`,
- * `enviarNotaFiscal`), the RDT mint (`tokens.ts`, `criarTokenRestrito`) and the
- * Easy Ship bulk (`easyShip.ts`, `agendarPacotesEasyShip`); the app builds it in
- * exactly one place, its write engine.
+ * `enviarNotaFiscal`), the RDT mint (`tokens.ts`, `criarTokenRestrito`), the
+ * Easy Ship bulk (`easyShip.ts`, `agendarPacotesEasyShip`), the listings stock
+ * patch (`listings.ts`, `enviarDisponibilidadeAmazon`) and the two feed
+ * submissions (`feeds.ts`, `criarDocumentoFeedAmazon` and `criarFeedAmazon`);
+ * the app builds it in exactly one place, its write engine.
  *
- * ## One method, `post`
+ * ## Two methods, `post` and `patch`
  *
- * `post` sends ONE `POST` through the SAME request core as `get`
- * (`executarSpApi`, `client.ts`): the same path checks, the same token-in-URL
- * refusal, the same correlation id, the same status classification. What
- * differs is only what a write needs:
+ * Each sends ONE request (`POST`, `PATCH`) through the SAME request core as
+ * `get` (`executarSpApi`, `client.ts`): the same path checks, the same
+ * token-in-URL refusal, the same correlation id, the same status
+ * classification. What differs is only what a write needs:
  *
  *  - **the body**, `corpo`, is a JSON STRING the caller already built from
- *    named keys (`entrega.ts`, `tokens.ts`, `easyShip.ts`), sent byte for
- *    byte. It is refused when it contains the access token, or is not text
- *    and so cannot be checked (`AmazonConfigError('token-no-corpo')`), before
- *    anything is sent;
+ *    named keys (`entrega.ts`, `tokens.ts`, `easyShip.ts`, `listings.ts`,
+ *    `feeds.ts`), sent byte for byte. It is refused when it contains the access
+ *    token, or is not text and so cannot be checked
+ *    (`AmazonConfigError('token-no-corpo')`), before anything is sent;
  *  - **exactly five headers**: `get`'s four plus `content-type:
- *    application/json`;
- *  - **the deadline class `'escrita'`** (`prazos.ts`), longer than a read's.
+ *    application/json` (the listings model `consumes` it for the `PATCH`);
+ *  - **the deadline class `'escrita'`** (`prazos.ts`), longer than a read's,
+ *    for both methods.
  *
  * ⚠️ **The request body never reaches the observer.** The event is built from
  * named fields (`criarEmissor`), and `ChamadaAmazon` has no request-body field:
@@ -72,9 +75,13 @@ export interface PedidoPostSpApi<S extends z.ZodType> {
   readonly sinal?: AbortSignal;
 }
 
-/** The write client. One method; no `get`. */
+/** A `PATCH` carries exactly what a `POST` does: a path, a query, the JSON text, a schema. */
+export type PedidoPatchSpApi<S extends z.ZodType> = PedidoPostSpApi<S>;
+
+/** The write client. Two methods; no `get`. */
 export interface SpApiEscritaClient {
   post<S extends z.ZodType>(p: PedidoPostSpApi<S>): Promise<RespostaSpApi<z.infer<S>>>;
+  patch<S extends z.ZodType>(p: PedidoPatchSpApi<S>): Promise<RespostaSpApi<z.infer<S>>>;
 }
 
 /** The options are the read client's own (`OpcoesClienteSpApi`): the same credential rule. */
@@ -96,5 +103,20 @@ export function criarClienteEscritaSpApi(opts: OpcoesClienteSpApi): SpApiEscrita
     });
   }
 
-  return { post };
+  // The same, as a PATCH: the method is the only difference.
+  async function patch<S extends z.ZodType>(
+    p: PedidoPatchSpApi<S>,
+  ): Promise<RespostaSpApi<z.infer<S>>> {
+    return executarSpApi(n, {
+      metodo: 'PATCH',
+      operacao: p.operacao,
+      caminho: p.caminho,
+      query: p.query,
+      corpo: p.corpo,
+      schema: p.schema,
+      sinal: p.sinal,
+    });
+  }
+
+  return { post, patch };
 }

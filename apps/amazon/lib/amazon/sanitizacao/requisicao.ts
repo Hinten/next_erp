@@ -270,6 +270,18 @@ const SEGMENTO_DOCUMENTOS = /(?:^|\/)documents(?:\/|$)/;
  * createScheduledPackage, which answer the same `Package`; its `PATCH`
  * (updateScheduledPackages) answers `Packages`, a shape the table does not
  * describe, so it is refused.
+ *
+ * The listings and feeds paths (step 12a), where the shared table describes
+ * exactly the answers this integration reads:
+ * - `/listings/2021-08-01/items/{sellerId}/{sku}`: `GET` getListingsItem and
+ *   `PATCH` patchListingsItem (one table holds the item and the submission
+ *   answer). `PUT` putListingsItem and `DELETE` deleteListingsItem are REFUSED:
+ *   nothing here ever calls them.
+ * - `/feeds/2021-06-30/feeds`: `POST` createFeed (its 202 is the table). `GET`
+ *   getFeeds is REFUSED: its list is a shape no table describes, and nothing
+ *   calls it.
+ * - `/feeds/2021-06-30/feeds/{feedId}`: `GET` getFeed. `DELETE` cancelFeed is
+ *   REFUSED (never called).
  */
 export const METODOS_DA_OPERACAO_AMAZON: Readonly<Record<string, readonly MetodoCapturaAmazon[]>> =
   {
@@ -282,6 +294,12 @@ export const METODOS_DA_OPERACAO_AMAZON: Readonly<Record<string, readonly Metodo
     // easyShip_2022-03-23
     getScheduledPackage: ['GET', 'POST'],
     createScheduledPackageBulk: ['POST'],
+    // listingsItems_2021-08-01
+    getListingsItem: ['GET', 'PATCH'],
+    searchListingsItems: ['GET'],
+    // feeds_2021-06-30 (the template `getFeeds` is the path createFeed POSTs to)
+    getFeed: ['GET'],
+    getFeeds: ['POST'],
   };
 
 /** Whether `metodo` is one the operation of template `modelo` is captured under. */
