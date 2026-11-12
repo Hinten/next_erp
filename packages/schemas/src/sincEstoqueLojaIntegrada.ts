@@ -1,8 +1,9 @@
 import { z } from 'zod';
+import { inteiroPositivoCanonicoLi } from './mapaFreteLojaIntegrada';
 import { millisSinceEpoch } from './shared/datetime';
 
 /**
- * `sincEstoqueLojaIntegrada/{integracaoId}` (TOP-LEVEL) and its two subcollections — the
+ * `sincEstoqueLojaIntegrada/{integracaoId}` (TOP-LEVEL) and its three subcollections — the
  * per-conta state of the Loja Integrada stock sync (master plan step 12, PR 12-a): the daily
  * reconcile's cursor and last-run stats, the ERP-side snapshot the reconcile diffs the store's
  * stock list against, and the component → store-kits map the kit fan-out reads. ONE root
@@ -29,8 +30,12 @@ import { millisSinceEpoch } from './shared/datetime';
  *    products, whose stock rows are never sent (only a child's row is);
  *  - `kits/{componenteProdutoId}`: {@link kitsComponenteEstoqueLiSchema} — for one ERP component,
  *    the store-linked kits that contain it, inline up to {@link MAX_KITS_EM_LINHA_ESTOQUE_LI},
- *    otherwise in shards `kits/{componenteProdutoId}~{n}` ({@link fatiaKitsComponenteEstoqueLiSchema},
- *    at most {@link MAX_KITS_POR_FATIA_ESTOQUE_LI} each, ids from {@link idFatiaKitsEstoqueLi}).
+ *    otherwise in shards;
+ *  - `kitsFatias/{componenteProdutoId}~{n}`: {@link fatiaKitsComponenteEstoqueLiSchema} — those
+ *    shards, at most {@link MAX_KITS_POR_FATIA_ESTOQUE_LI} kits each, ids from
+ *    {@link idFatiaKitsEstoqueLi}. A subcollection of their own, never beside the headers: a
+ *    produto id may itself end in `~0`, so a header and a shard sharing one collection could
+ *    share one document id, and a listing could not tell them apart.
  *
  * ## Units
  *
@@ -55,10 +60,11 @@ import { millisSinceEpoch } from './shared/datetime';
 /** The root collection's path. */
 export const COLECAO_SINC_ESTOQUE_LI = 'sincEstoqueLojaIntegrada';
 
-/** The two subcollections under one conta's root document. */
+/** The three subcollections under one conta's root document. */
 export const SUBCOLECOES_SINC_ESTOQUE_LI = {
   snapshot: 'snapshot',
   kits: 'kits',
+  kitsFatias: 'kitsFatias',
 } as const;
 
 /* -------------------------------------------------------------------------- */
@@ -69,13 +75,14 @@ export const SUBCOLECOES_SINC_ESTOQUE_LI = {
  * A store product id as these documents key it: its canonical decimal text — a positive
  * integer, no leading zero, no sign, at most 16 digits — and a safe integer. A Firestore map key
  * is text, so a stored number never appears here.
+ *
+ * The grammar has ONE spelling, the shared reader `inteiroPositivoCanonicoLi`, which the link's
+ * counts predicate reads ids through too: text is accepted exactly when the reader returns it
+ * unchanged, so nothing is folded here (`'01'` is not `'1'`; it is no id at all).
  */
-export const ID_PRODUTO_LI_TEXTO_REGEX = /^[1-9][0-9]{0,15}$/;
-
-export const idProdutoLiTextoSchema = z
-  .string()
-  .regex(ID_PRODUTO_LI_TEXTO_REGEX)
-  .refine((v) => Number.isSafeInteger(Number(v)), { message: 'id acima de 2^53 - 1' });
+export const idProdutoLiTextoSchema = z.string().refine((v) => inteiroPositivoCanonicoLi(v) === v, {
+  message: 'id da loja fora da forma canônica',
+});
 
 /** The bytes a Firestore document id may take. */
 const MAX_BYTES_ID_DOCUMENTO = 1500;
@@ -282,6 +289,8 @@ const kitsDoComponenteSchema = z.record(idDocumentoEstoqueLiSchema, kitDoCompone
  * Up to this many kits per component live inline in the header; beyond it they move to shards.
  * The same 30 is the default ceiling of the eager kit fan-out: a component with more store kits
  * than that sends only its zero-crossings at once and leaves the rest to the nightly reconcile.
+ * The eager path reads only the header, so a configured ceiling above this one has to be refused
+ * where the trigger reads its environment.
  */
 export const MAX_KITS_EM_LINHA_ESTOQUE_LI = 30;
 
@@ -299,17 +308,25 @@ export const MAX_KITS_POR_FATIA_ESTOQUE_LI = 1000;
  *    is read once however many kits share it;
  *  - `kits`: inline when `F` ≤ {@link MAX_KITS_EM_LINHA_ESTOQUE_LI}, else `null` and
  *    `fatias` = ⌈F / {@link MAX_KITS_POR_FATIA_ESTOQUE_LI}⌉ shards hold them.
+ *
+ * Two schemas, on the precedent of `clienteSchema`/`clienteFormSchema`: this one is the SHAPE
+ * alone, the one the admin handle validates writes with — a merge patch is checked against its
+ * `.partial()`, which Zod refuses (a plain `Error`) on an object carrying refinements. The
+ * cross-field rules above are {@link kitsComponenteEstoqueLiSchema}'s: a full write and every read
+ * that decides anything parse with THAT one.
  */
-export const kitsComponenteEstoqueLiSchema = z
-  .object({
-    execucaoId: idExecucaoEstoqueLiSchema,
-    F: z.number().int().min(1),
-    qMax: qtdComponenteKitSchema,
-    comps: z.record(idDocumentoEstoqueLiSchema, idDocumentoEstoqueLiSchema.nullable()).default({}),
-    kits: kitsDoComponenteSchema.nullable().default(null),
-    fatias: z.number().int().nonnegative().default(0),
-  })
-  .superRefine((cabecalho, ctx) => {
+export const kitsComponenteEstoqueLiBaseSchema = z.object({
+  execucaoId: idExecucaoEstoqueLiSchema,
+  F: z.number().int().min(1),
+  qMax: qtdComponenteKitSchema,
+  comps: z.record(idDocumentoEstoqueLiSchema, idDocumentoEstoqueLiSchema.nullable()).default({}),
+  kits: kitsDoComponenteSchema.nullable().default(null),
+  fatias: z.number().int().nonnegative().default(0),
+});
+
+/** {@link kitsComponenteEstoqueLiBaseSchema} with its invariants: `F`, `kits` and `fatias` agree. */
+export const kitsComponenteEstoqueLiSchema = kitsComponenteEstoqueLiBaseSchema.superRefine(
+  (cabecalho, ctx) => {
     if (cabecalho.kits !== null) {
       if (Object.keys(cabecalho.kits).length !== cabecalho.F) {
         ctx.addIssue({ code: 'custom', path: ['kits'], message: 'F difere dos kits em linha' });
@@ -325,10 +342,11 @@ export const kitsComponenteEstoqueLiSchema = z
     if (cabecalho.fatias !== Math.ceil(cabecalho.F / MAX_KITS_POR_FATIA_ESTOQUE_LI)) {
       ctx.addIssue({ code: 'custom', path: ['fatias'], message: 'fatias difere de F' });
     }
-  });
+  },
+);
 export type KitsComponenteEstoqueLi = z.infer<typeof kitsComponenteEstoqueLiSchema>;
 
-/** `kits/{componenteProdutoId}~{n}`: one shard of a component with more than 30 store kits. */
+/** `kitsFatias/{componenteProdutoId}~{n}`: one shard of a component with more than 30 store kits. */
 export const fatiaKitsComponenteEstoqueLiSchema = z.object({
   execucaoId: idExecucaoEstoqueLiSchema,
   kits: kitsDoComponenteSchema.refine(
@@ -342,8 +360,10 @@ export const fatiaKitsComponenteEstoqueLiSchema = z.object({
 export type FatiaKitsComponenteEstoqueLi = z.infer<typeof fatiaKitsComponenteEstoqueLiSchema>;
 
 /**
- * The document id of shard `n` of component `componenteId`: `<componenteId>~<n>`. The header's id
- * is the bare component id, so the two never collide while a shard id keeps its `~`.
+ * The document id of shard `n` of component `componenteId` in `kitsFatias`: `<componenteId>~<n>`.
+ * Unambiguous among the shards — `n` is digits only, so the LAST `~` splits any shard id back into
+ * exactly one (component, n), even for a component id that itself contains `~`. Never beside the
+ * headers (the module header says why), so no produto id can make a shard id a header id.
  *
  * Throws `RangeError` on an id {@link idDocumentoEstoqueLiSchema} refuses, an `n` that is not a
  * non-negative safe integer, or a result past the 1 500-byte document id limit: every input comes

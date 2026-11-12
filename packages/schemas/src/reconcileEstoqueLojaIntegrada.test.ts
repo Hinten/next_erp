@@ -76,6 +76,16 @@ describe('reconcileEstoqueLojaIntegradaSchema (the daily run’s lease and chain
         candidatos: [{ c: 1, i: '1', p: 'p1', d: 0 }],
       }).success,
     ).toBe(false);
+    // Below the list too: `contas[-1]` is no conta.
+    expect(
+      reconcileEstoqueLojaIntegradaSchema.safeParse({
+        ...base,
+        candidatos: [{ c: -1, i: '1', p: 'p1', d: 0 }],
+      }).success,
+    ).toBe(false);
+    expect(reconcileEstoqueLojaIntegradaSchema.safeParse({ ...base, idxConta: -1 }).success).toBe(
+      false,
+    );
     // `idxConta` may sit ONE past the end: the li phase is done with every conta.
     expect(reconcileEstoqueLojaIntegradaSchema.safeParse({ ...base, idxConta: 1 }).success).toBe(
       true,
@@ -94,6 +104,25 @@ describe('reconcileEstoqueLojaIntegradaSchema (the daily run’s lease and chain
     expect(ok('produtos/p1/produtoshopee/l1')).toBe(false);
     expect(ok('produtos/p1/produtolojaintegrada/')).toBe(false);
     expect(ok('produtos//produtolojaintegrada/l1')).toBe(false);
+    // NEAR-MISS: a document path has an EVEN number of segments; this one names a collection.
+    expect(ok('a/produtolojaintegrada/l1')).toBe(false);
+    expect(ok('a/b/c/produtolojaintegrada/l1')).toBe(false);
+  });
+
+  it('⚠️ NEAR-MISS: the lease and the chain keep their bounds — a null lease never reads as free', () => {
+    for (const ruim of [
+      { seq: -1 },
+      { seq: 1.5 },
+      { idxConta: -1 },
+      { contas: ['a/b'] },
+      { contas: [''] },
+      { emExecucaoAteMs: null },
+    ]) {
+      expect(
+        reconcileEstoqueLojaIntegradaSchema.safeParse({ execucaoId: RUN, ...ruim }).success,
+        JSON.stringify(ruim),
+      ).toBe(false);
+    }
   });
 
   it('a candidate is short: conta index, store id, produto, delta — the delta may be negative, never fractional', () => {

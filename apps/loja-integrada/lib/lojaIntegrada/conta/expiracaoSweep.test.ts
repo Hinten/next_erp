@@ -115,6 +115,8 @@ async function avisosDeEstoque(
         ...base,
         tipo: TIPO_AVISO.lojaIntegradaEstoqueRecusado,
         entidade: 'p1',
+        // A refusal links to the produto, not to the conta (the tipo's contract in `aviso.ts`).
+        urlInterna: { rota: ROTAS_AVISO.produto.build('p1'), campo: null },
         params: { loja: integracaoId, produto: 'p1', idLi: '123456789', status: 422 },
       },
       opts,

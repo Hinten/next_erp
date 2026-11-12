@@ -20,6 +20,19 @@ const TIPOS = [
   TIPO_AVISO.lojaIntegradaEstoqueVinculo,
 ] as const;
 
+/**
+ * Each motivo's DISTINCTIVE phrase — the fact that sends the operator to the right fix. A
+ * sentence that swapped in another motivo's fix (#1369's drift) would still differ from the
+ * other four, so distinctness alone never pins which sentence a motivo renders.
+ */
+const FRASE_DO_MOTIVO = [
+  [MOTIVO_ESTOQUE_VINCULO_LI.ambiguo, 'vinculado a dois produtos da loja'],
+  [MOTIVO_ESTOQUE_VINCULO_LI.duplicado, 'vinculado a dois produtos do ERP'],
+  [MOTIVO_ESTOQUE_VINCULO_LI.semLinhaNaLoja, 'não tem estoque para um produto vinculado'],
+  [MOTIVO_ESTOQUE_VINCULO_LI.ausente, 'não existe mais'],
+  [MOTIVO_ESTOQUE_VINCULO_LI.estoqueAmbiguo, 'dois registros de estoque no depósito'],
+] as const;
+
 describe('the stock-sync avisos', () => {
   it.each(TIPOS)(
     '%s is titled like its label and carries no runbook — the fix is in the ERP or the panel',
@@ -40,6 +53,7 @@ describe('the stock-sync avisos', () => {
     expect(corpo).toContain('mantém o número que já tinha');
     expect(corpo).toContain('Os primeiros: p1, p2.');
     expect(corpo).toContain('no depósito da conta');
+    expect(corpo).not.toContain('undefined');
   });
 
   it('near-miss: no sample stored ⇒ no "Os primeiros" clause at all, never a dash', () => {
@@ -61,6 +75,7 @@ describe('the stock-sync avisos', () => {
     expect(corpo).toContain('recusou o estoque do produto p1 (produto 123456789 na loja Conta A)');
     expect(corpo).toContain('com HTTP 422');
     expect(corpo).toContain('a conferência diária tenta de novo');
+    expect(corpo).not.toContain('undefined');
   });
 
   it('near-miss: a refusal with no status drops the whole clause', () => {
@@ -71,11 +86,16 @@ describe('the stock-sync avisos', () => {
     });
     expect(corpo).not.toContain('HTTP');
     expect(corpo).toContain('(produto 123456789 na loja Conta A), e o número');
+    expect(corpo).not.toContain('undefined');
   });
 
-  it.each(motivoEstoqueVinculoLiSchema.options)(
-    'the link aviso has its own sentence for %s',
-    (motivo) => {
+  it('the phrase table covers every motivo, once each', () => {
+    expect(FRASE_DO_MOTIVO.map(([motivo]) => motivo)).toEqual(motivoEstoqueVinculoLiSchema.options);
+  });
+
+  it.each(FRASE_DO_MOTIVO)(
+    '⚠️ the link aviso for %s says ITS fact, and none of the other four',
+    (motivo, frase) => {
       const corpo = MENSAGENS_POR_TIPO[TIPO_AVISO.lojaIntegradaEstoqueVinculo].corpo({
         loja: 'Conta A',
         motivo,
@@ -85,6 +105,11 @@ describe('the stock-sync avisos', () => {
       expect(corpo).toContain('Na loja Conta A, 2 produto(s) estão sem envio de estoque');
       expect(corpo).not.toContain('confira os vínculos e o estoque desses produtos');
       expect(corpo).toContain('Os primeiros: p3, p4.');
+      expect(corpo).not.toContain('undefined');
+      expect(corpo).toContain(frase);
+      for (const [outro, fraseDoOutro] of FRASE_DO_MOTIVO) {
+        if (outro !== motivo) expect(corpo, outro).not.toContain(fraseDoOutro);
+      }
     },
   );
 

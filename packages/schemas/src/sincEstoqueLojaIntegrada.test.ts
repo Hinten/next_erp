@@ -10,9 +10,11 @@ import {
   ID_PAIS_SNAPSHOT_ESTOQUE_LI,
   MAX_KITS_EM_LINHA_ESTOQUE_LI,
   MAX_KITS_POR_FATIA_ESTOQUE_LI,
+  SUBCOLECOES_SINC_ESTOQUE_LI,
   baldeSnapshotEstoqueLi,
   entradaSnapshotEstoqueLiSchema,
   fatiaKitsComponenteEstoqueLiSchema,
+  flagEntradaEstoqueLiSchema,
   idDocumentoEstoqueLiSchema,
   idFatiaKitsEstoqueLi,
   idProdutoLiTextoSchema,
@@ -46,6 +48,19 @@ describe('sincEstoqueLojaIntegradaSchema (the per-conta root)', () => {
     expect(sincEstoqueLojaIntegradaSchema.parse(doc)).toEqual(doc);
   });
 
+  it('an explicit null cursor and last run round-trip — null is the stored "none", not an absence', () => {
+    const doc = { reconcile: null, ultimoReconcile: null };
+    expect(sincEstoqueLojaIntegradaSchema.parse(doc)).toEqual(doc);
+  });
+
+  it('a last run stored without counters reads with none, never as a refusal', () => {
+    const ultimoReconcile = { execucaoId: RUN, iniciadoEmMs: AGORA_MS, concluidoEmMs: AGORA_MS };
+    expect(sincEstoqueLojaIntegradaSchema.parse({ ultimoReconcile }).ultimoReconcile).toEqual({
+      ...ultimoReconcile,
+      contadores: {},
+    });
+  });
+
   it('STRIPS unknown keys — no light-mode field survives a write', () => {
     const lido = sincEstoqueLojaIntegradaSchema.parse({
       modoPendente: 'completo',
@@ -66,6 +81,23 @@ describe('sincEstoqueLojaIntegradaSchema (the per-conta root)', () => {
     ]) {
       expect(sincEstoqueLojaIntegradaSchema.safeParse({ reconcile }).success).toBe(false);
     }
+  });
+
+  it('⚠️ NEAR-MISS: a cursor with no offset is refused — never a silent restart at row 0', () => {
+    expect(
+      sincEstoqueLojaIntegradaSchema.safeParse({
+        reconcile: { limite: 50, iniciadoEmMs: AGORA_MS },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('the page size is at most 1 000: 1 000 is a page, 1 001 is not', () => {
+    const ok = (limite: number) =>
+      sincEstoqueLojaIntegradaSchema.safeParse({
+        reconcile: { offset: 0, limite, iniciadoEmMs: AGORA_MS },
+      }).success;
+    expect(ok(1000)).toBe(true);
+    expect(ok(1001)).toBe(false);
   });
 
   it('a counter name is an identifier, and a count a non-negative integer', () => {
@@ -148,6 +180,21 @@ describe('baldeSnapshotEstoqueLi (the snapshot bucket)', () => {
 });
 
 describe('snapshotEstoqueLiSchema (one bucket)', () => {
+  it('the flags are exactly the seven, and the named members are those seven', () => {
+    expect(flagEntradaEstoqueLiSchema.options).toEqual(['v', 'r', 'par', 'amb', 'dup', 'ns', 'x']);
+    expect(Object.values(FLAG_ENTRADA_ESTOQUE_LI)).toEqual(flagEntradaEstoqueLiSchema.options);
+  });
+
+  it('⚠️ NEAR-MISS: no spelling of `v` but `v` itself makes an entry — only `v` is ever sent', () => {
+    for (const f of ['V', 'valido', '', ' v', 'v ']) {
+      expect(entradaSnapshotEstoqueLiSchema.safeParse({ p: 'p1', s: 1, f }).success, f).toBe(false);
+    }
+  });
+
+  it('a bucket stored with no entries reads as an empty one', () => {
+    expect(snapshotEstoqueLiSchema.parse({ execucaoId: RUN })).toEqual({ execucaoId: RUN, e: {} });
+  });
+
   it('round-trips a bucket with every flag', () => {
     const doc = {
       execucaoId: RUN,
@@ -185,6 +232,14 @@ describe('snapshotEstoqueLiSchema (one bucket)', () => {
     expect(ok({ p: 'p1', s: null, f: FLAG_ENTRADA_ESTOQUE_LI.semVinculo })).toBe(false);
     expect(ok({ p: null, s: null, f: FLAG_ENTRADA_ESTOQUE_LI.retido })).toBe(false);
     expect(ok({ p: null, s: null, f: FLAG_ENTRADA_ESTOQUE_LI.semVinculo, k: true })).toBe(false);
+  });
+
+  it('⚠️ NEAR-MISS: `s` is always written (null when not valid), and `p` is a document id', () => {
+    const ok = (e: unknown) => entradaSnapshotEstoqueLiSchema.safeParse(e).success;
+    expect(ok({ p: 'p1', s: null, f: FLAG_ENTRADA_ESTOQUE_LI.retido })).toBe(true);
+    expect(ok({ p: 'p1', f: FLAG_ENTRADA_ESTOQUE_LI.retido })).toBe(false);
+    expect(ok({ p: 'a/b', s: 1, f: FLAG_ENTRADA_ESTOQUE_LI.valido })).toBe(false);
+    expect(ok({ p: '__x__', s: 1, f: FLAG_ENTRADA_ESTOQUE_LI.valido })).toBe(false);
   });
 
   it('S is floored and clamped at 0 BEFORE it is stored: a negative or a fraction is refused', () => {
@@ -278,6 +333,43 @@ describe('the kits map', () => {
     ).toBe(true);
   });
 
+  it('⚠️ NEAR-MISS: inline kits carry no shard count, and a header names at least one kit', () => {
+    const base = { execucaoId: RUN, qMax: 1 };
+    expect(
+      kitsComponenteEstoqueLiSchema.safeParse({
+        ...base,
+        F: 2,
+        kits: { k1: kit('11'), k2: kit('12') },
+        fatias: 1,
+      }).success,
+    ).toBe(false);
+    expect(kitsComponenteEstoqueLiSchema.safeParse({ ...base, F: 0, kits: {} }).success).toBe(
+      false,
+    );
+  });
+
+  it('⚠️ NEAR-MISS: a kit’s store id and the sibling map keep their grammars', () => {
+    const base = { execucaoId: RUN, qMax: 1, F: 1 };
+    for (const ruim of [
+      { kits: { k1: { i: '011', q: { blank: 1 } } } },
+      { kits: { k1: { i: 'abc', q: { blank: 1 } } } },
+      { comps: { 'a/b': null }, kits: { k1: kit('11') } },
+      { comps: { blank: 'e/1' }, kits: { k1: kit('11') } },
+    ]) {
+      expect(
+        kitsComponenteEstoqueLiSchema.safeParse({ ...base, ...ruim }).success,
+        JSON.stringify(ruim),
+      ).toBe(false);
+    }
+    expect(
+      kitsComponenteEstoqueLiSchema.safeParse({
+        ...base,
+        comps: { blank: 'e-blank' },
+        kits: { k1: kit('11') },
+      }).success,
+    ).toBe(true);
+  });
+
   it('the shard count is ⌈F / 1000⌉, exactly', () => {
     const base = { execucaoId: RUN, qMax: 2 };
     const ok = (F: number, fatias: number) =>
@@ -326,10 +418,14 @@ describe('the kits map', () => {
     expect(ok(MAX_KITS_POR_FATIA_ESTOQUE_LI + 1)).toBe(false);
   });
 
-  it('a shard id is `<component>~<n>`, never the header id', () => {
+  it('a shard id is `<component>~<n>`, in a subcollection of its own beside the headers', () => {
     expect(idFatiaKitsEstoqueLi('blank', 0)).toBe('blank~0');
     expect(idFatiaKitsEstoqueLi('blank', 12)).toBe('blank~12');
     expect(idFatiaKitsEstoqueLi('blank', 0)).not.toBe('blank');
+    // A produto id may itself end in `~0`, so a shard id CAN equal a header id: the two never
+    // share a collection.
+    expect(SUBCOLECOES_SINC_ESTOQUE_LI.kitsFatias).not.toBe(SUBCOLECOES_SINC_ESTOQUE_LI.kits);
+    expect(new Set(Object.values(SUBCOLECOES_SINC_ESTOQUE_LI)).size).toBe(3);
     for (const [id, n] of [
       ['a/b', 0],
       ['', 0],
@@ -341,6 +437,22 @@ describe('the kits map', () => {
       expect(() => idFatiaKitsEstoqueLi(id, n), `${id.slice(0, 8)} ${String(n)}`).toThrow(
         RangeError,
       );
+    }
+  });
+
+  it('⚠️ NEAR-MISS: among the shards the LAST `~` splits an id back into ONE (component, n)', () => {
+    const pares = [
+      ['blank', 0],
+      ['blank', 10],
+      ['blank~0', 1],
+      ['blank~1', 0],
+      ['a~b', 3],
+    ] as const;
+    const ids = pares.map(([c, n]) => idFatiaKitsEstoqueLi(c, n));
+    expect(new Set(ids).size).toBe(ids.length);
+    for (const [n, id] of ids.entries()) {
+      const corte = id.lastIndexOf('~');
+      expect([id.slice(0, corte), Number(id.slice(corte + 1))]).toEqual(pares[n]);
     }
   });
 });

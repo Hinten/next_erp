@@ -32,10 +32,24 @@ import {
  * ## The lease (root `CLAUDE.md` rule 7, tier 1)
  *
  * `execucaoId` + `emExecucaoAteMs` are the lease, `seq` the dispatch a slice must carry: a slice
- * whose `execucaoId` or `seq` differs from the stored one is refused. Every write is
- * `update(patch, { lastUpdateTime })` on the slice's own read, advance-only; a lost precondition
- * re-reads. A running chain wins over a new one; a chain older than 48 h is abandoned with a
- * WARNING. No transaction.
+ * whose `execucaoId` or `seq` differs from the stored one is refused. A running chain wins over a
+ * new one; a chain older than 48 h is abandoned with a WARNING. No transaction.
+ *
+ * Two writers, both tier 1 (a lost precondition re-reads and re-derives):
+ *
+ *  - the slice holding the lease writes everything, each write `update(patch, { lastUpdateTime })`
+ *    on the slice's own read, advance-only (a chain that finds no document starts with a
+ *    `create`);
+ *  - the `estoque-kits` fan-out holds NO lease and writes ONLY `proximoSlotMs`, the one global
+ *    stagger slot every bulk producer takes: `create({ proximoSlotMs })` when the document is
+ *    absent (every other field reads its default, so no run is implied; `ALREADY_EXISTS` re-reads),
+ *    otherwise `update({ proximoSlotMs }, { lastUpdateTime })` on its own read, advance-only. Its
+ *    write moves the update time, so a slice's next precondition fails and re-reads: the slot is
+ *    never lost, and neither is the slice's state.
+ *
+ * Patches are validated through the handle's `parseMerge`, which needs an UNREFINED object
+ * ({@link reconcileEstoqueLojaIntegradaBaseSchema}); a full write and every slice's read parse with
+ * {@link reconcileEstoqueLojaIntegradaSchema}, which adds the cross-field invariants.
  *
  * ## Units
  *
@@ -89,28 +103,39 @@ export const candidatoReconcileEstoqueLiSchema = z.object({
 });
 export type CandidatoReconcileEstoqueLi = z.infer<typeof candidatoReconcileEstoqueLiSchema>;
 
-export const reconcileEstoqueLojaIntegradaSchema = z
-  .object({
-    /** The run holding the lease; null = none ever ran. */
-    execucaoId: idExecucaoEstoqueLiSchema.nullable().default(null),
-    /** MS. When the run began: the avisos' clock. */
-    iniciadoEmMs: millisSinceEpoch().nullable().default(null),
-    /** MS. The lease's expiry; 0 = free. */
-    emExecucaoAteMs: millisSinceEpoch().default(0),
-    /** The dispatch the next slice must carry. */
-    seq: z.number().int().nonnegative().default(0),
-    fase: faseReconcileEstoqueLiSchema.nullable().default(null),
-    /** The contas of the run, in processing order. */
-    contas: z.array(contaIdLiSchema).default([]),
-    /** The conta the `li` phase is on. */
-    idxConta: z.number().int().nonnegative().default(0),
-    walk: walkReconcileEstoqueLiSchema.nullable().default(null),
-    candidatos: z.array(candidatoReconcileEstoqueLiSchema).default([]),
-    /** MS. The next free instant of the global stagger slot for bulk enqueues. */
-    proximoSlotMs: millisSinceEpoch().nullable().default(null),
-    contadores: contadoresEstoqueLiSchema.default({}),
-  })
-  .superRefine((run, ctx) => {
+/**
+ * The run document's SHAPE alone — the schema the admin handle validates writes with, so a patch
+ * can be checked (`.partial()` is refused on a refined object). The invariants are
+ * {@link reconcileEstoqueLojaIntegradaSchema}'s.
+ */
+export const reconcileEstoqueLojaIntegradaBaseSchema = z.object({
+  /** The run holding the lease; null = none ever ran. */
+  execucaoId: idExecucaoEstoqueLiSchema.nullable().default(null),
+  /** MS. When the run began: the avisos' clock. */
+  iniciadoEmMs: millisSinceEpoch().nullable().default(null),
+  /** MS. The lease's expiry; 0 = free. */
+  emExecucaoAteMs: millisSinceEpoch().default(0),
+  /** The dispatch the next slice must carry. */
+  seq: z.number().int().nonnegative().default(0),
+  fase: faseReconcileEstoqueLiSchema.nullable().default(null),
+  /** The contas of the run, in processing order. */
+  contas: z.array(contaIdLiSchema).default([]),
+  /** The conta the `li` phase is on. */
+  idxConta: z.number().int().nonnegative().default(0),
+  walk: walkReconcileEstoqueLiSchema.nullable().default(null),
+  candidatos: z.array(candidatoReconcileEstoqueLiSchema).default([]),
+  /** MS. The next free instant of the global stagger slot for bulk enqueues. */
+  proximoSlotMs: millisSinceEpoch().nullable().default(null),
+  contadores: contadoresEstoqueLiSchema.default({}),
+});
+
+/**
+ * {@link reconcileEstoqueLojaIntegradaBaseSchema} with its invariants: the conta index sits at most
+ * one past the list (the `li` phase is done with every conta), and every candidate names a conta
+ * of the list.
+ */
+export const reconcileEstoqueLojaIntegradaSchema =
+  reconcileEstoqueLojaIntegradaBaseSchema.superRefine((run, ctx) => {
     if (run.idxConta > run.contas.length) {
       ctx.addIssue({ code: 'custom', path: ['idxConta'], message: 'idxConta além das contas' });
     }

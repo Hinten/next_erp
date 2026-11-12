@@ -23,7 +23,7 @@ import { idDocumentoEstoqueLiSchema, idExecucaoEstoqueLiSchema } from './sincEst
  *    produto of one conta;
  *  - `estoque-kits` ({@link tarefaEstoqueKitsLiSchema}) — on the stock queue: the fan-out of ONE
  *    component with more store kits than the eager ceiling, which enqueues an `estoque` task
- *    per kit whose quantity crossed from positive to 0;
+ *    per kit whose quantity went from positive to 0;
  *  - `estoque-reconcile` ({@link tarefaReconcileEstoqueLiSchema}) — on the READS queue: one
  *    time-boxed slice of the daily reconcile. Deliberately NOT a member of the persisted
  *    notification `tipo` (`notificacaoLojaIntegrada.ts`), like the import's task: it is never
@@ -118,9 +118,13 @@ export type TarefaEstoqueLi = z.infer<typeof tarefaEstoqueLiSchema>;
 
 /**
  * The fan-out of ONE component `componenteId` of conta `contaId` whose store kits exceed the
- * eager ceiling, enqueued when its quantity crossed from positive to 0: it reads the kits map
- * and enqueues an `estoque` task (`origem: 'kit'`) per kit that went to 0. Every other kit
- * change of such a component waits for the nightly reconcile.
+ * eager ceiling. The condition is per KIT, never the component's own quantity: it is enqueued
+ * when the moved component's available quantity falls below its quantity in some store kit, so
+ * that ⌊available / qty in the kit⌋ goes from positive to 0 for that kit — a component going
+ * 3 → 1 empties a kit that needs 2 of it while the component itself still shows 1. The header's
+ * `qMax` bounds the check (the new available is below `qMax` and it fell). The task reads the
+ * kits map and enqueues an `estoque` task (`origem: 'kit'`) for exactly the kits that went to 0.
+ * Every other kit change of such a component waits for the nightly reconcile.
  */
 export const tarefaEstoqueKitsLiSchema = z.strictObject({
   tipo: z.literal(TIPO_TAREFA_ESTOQUE_LI.estoqueKits),

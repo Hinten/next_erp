@@ -47,6 +47,46 @@ const RECONCILE = {
   seq: 3,
 } as const;
 
+/** Every spelling of a quantity a producer might be tempted to carry. */
+const QUANTIDADES = [
+  ['quantidade', 5],
+  ['S', 5],
+  ['Q', 7],
+  ['s', 5],
+  ['q', 7],
+  ['qtd', 5],
+  ['estoque', 5],
+  ['disponivel', 5],
+  ['quantidade_reservada', 2],
+  ['reservado', 2],
+  ['alvo', 7],
+] as const;
+
+describe.each([
+  ['estoque', tarefaEstoqueLiSchema, ESTOQUE],
+  ['estoque-kits', tarefaEstoqueKitsLiSchema, KITS],
+  ['estoque-reconcile', tarefaReconcileEstoqueLiSchema, RECONCILE],
+] as const)('the %s payload: IDS ONLY, every field required', (_tipo, schema, payload) => {
+  it('round-trips as given', () => {
+    expect(schema.parse(payload)).toEqual(payload);
+  });
+
+  it.each(QUANTIDADES)(
+    '⚠️ a payload carrying `%s` is REFUSED — S is derived at send time, never enqueued',
+    (chave, valor) => {
+      expect(schema.safeParse({ ...payload, [chave]: valor }).success).toBe(false);
+    },
+  );
+
+  it('every field is required: an old payload missing one is refused, never defaulted', () => {
+    for (const chave of Object.keys(payload)) {
+      const semChave: Record<string, unknown> = { ...payload };
+      Reflect.deleteProperty(semChave, chave);
+      expect(schema.safeParse(semChave).success, chave).toBe(false);
+    }
+  });
+});
+
 describe('tarefaEstoqueLiSchema (one send run)', () => {
   it('round-trips an event task and a kit task', () => {
     expect(tarefaEstoqueLiSchema.parse(ESTOQUE)).toEqual(ESTOQUE);
@@ -60,39 +100,19 @@ describe('tarefaEstoqueLiSchema (one send run)', () => {
     expect(tarefaEstoqueLiSchema.parse(kit)).toEqual(kit);
   });
 
-  it.each([
-    ['quantidade', 5],
-    ['S', 5],
-    ['Q', 7],
-    ['s', 5],
-    ['q', 7],
-    ['qtd', 5],
-    ['estoque', 5],
-    ['disponivel', 5],
-    ['quantidade_reservada', 2],
-    ['reservado', 2],
-    ['alvo', 7],
-  ])(
-    '⚠️ a payload carrying `%s` is REFUSED — S is derived at send time, never enqueued',
+  it.each(QUANTIDADES)(
+    '⚠️ through the stock queue’s union too, a payload carrying `%s` is REFUSED',
     (chave, valor) => {
-      expect(tarefaEstoqueLiSchema.safeParse({ ...ESTOQUE, [chave]: valor }).success).toBe(false);
       expect(tarefaFilaEstoqueLiSchema.safeParse({ ...ESTOQUE, [chave]: valor }).success).toBe(
         false,
       );
+      expect(tarefaFilaEstoqueLiSchema.safeParse({ ...KITS, [chave]: valor }).success).toBe(false);
     },
   );
 
   it('⚠️ STRICT: ANY extra key is refused, not stripped — a field nobody reviewed never rides', () => {
     expect(tarefaEstoqueLiSchema.safeParse({ ...ESTOQUE, extra: null }).success).toBe(false);
     expect(tarefaEstoqueLiSchema.safeParse({ ...ESTOQUE, nome: 'x' }).success).toBe(false);
-  });
-
-  it('every field is required: an old payload missing one is refused, never defaulted', () => {
-    for (const chave of Object.keys(ESTOQUE)) {
-      const semChave: Record<string, unknown> = { ...ESTOQUE };
-      Reflect.deleteProperty(semChave, chave);
-      expect(tarefaEstoqueLiSchema.safeParse(semChave).success, chave).toBe(false);
-    }
   });
 
   it('the origins are exactly the six, and nothing folds into one', () => {
@@ -146,6 +166,19 @@ describe('tarefaEstoqueLiSchema (one send run)', () => {
       ).toBe(false);
     }
   });
+
+  it('⚠️ NEAR-MISS: a component → NUMBER map is a kit recipe or a stock, never the ids it must be', () => {
+    // `estoqueIds` has the shape of a kit's `q` (component → quantity); only ids ride in it.
+    for (const estoqueIds of [{ blank: 5 }, { blank: 0 }, { blank: 'e-blank', print: 2 }]) {
+      const tarefa = { ...ESTOQUE, origem: ORIGEM_TAREFA_ESTOQUE_LI.kit, estoqueIds };
+      expect(tarefaEstoqueLiSchema.safeParse(tarefa).success, JSON.stringify(estoqueIds)).toBe(
+        false,
+      );
+      expect(tarefaFilaEstoqueLiSchema.safeParse(tarefa).success, JSON.stringify(estoqueIds)).toBe(
+        false,
+      );
+    }
+  });
 });
 
 describe('tarefaEstoqueKitsLiSchema (the zero-crossing fan-out of one component)', () => {
@@ -161,6 +194,25 @@ describe('tarefaEstoqueKitsLiSchema (the zero-crossing fan-out of one component)
         false,
       );
     }
+  });
+
+  it('⚠️ NEAR-MISS: ids are ids and the window a window — `a/b` would address another kits document', () => {
+    for (const ruim of [
+      { componenteId: 'a/b' },
+      { componenteId: '..' },
+      { componenteId: '' },
+      { contaId: 'conta/1' },
+      { contaId: '' },
+      { janela: -1 },
+      { janela: 1.5 },
+      { janela: '30000000' },
+    ]) {
+      expect(
+        tarefaEstoqueKitsLiSchema.safeParse({ ...KITS, ...ruim }).success,
+        JSON.stringify(ruim),
+      ).toBe(false);
+    }
+    expect(tarefaEstoqueKitsLiSchema.safeParse({ ...KITS, janela: 0 }).success).toBe(true);
   });
 });
 
