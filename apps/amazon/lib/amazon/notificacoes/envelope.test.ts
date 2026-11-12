@@ -202,6 +202,7 @@ describe('lerFeedProcessingFinished (camelCase)', () => {
         accountId: 'amzn1.merchant.o.AXXXXXXXXXXXXX',
         sellerId: null,
         notificationId: NOTIFICACAO,
+        documentoResultado: 'ausente',
       },
     });
     const comVendedor = definir(
@@ -216,6 +217,20 @@ describe('lerFeedProcessingFinished (camelCase)', () => {
       null,
     );
     expect(lerFeedProcessingFinished(nulo)).toMatchObject({ campos: { sellerId: null } });
+  });
+
+  it('resultFeedDocumentId (OPTIONAL) is read as present or absent only — never refused, never returned', () => {
+    const caminho = ['payload', 'feedProcessingFinishedNotification', 'resultFeedDocumentId'];
+    const presente = lerFeedProcessingFinished(definir(feed(), caminho, 'doc-0000'));
+    expect(presente).toMatchObject({ tipo: 'lida', campos: { documentoResultado: 'presente' } });
+    expect(JSON.stringify(presente)).not.toContain('doc-0000');
+    // Any non-null value counts as present: the receiver never uses it.
+    expect(lerFeedProcessingFinished(definir(feed(), caminho, 7))).toMatchObject({
+      campos: { documentoResultado: 'presente' },
+    });
+    expect(lerFeedProcessingFinished(definir(feed(), caminho, null))).toMatchObject({
+      campos: { documentoResultado: 'ausente' },
+    });
   });
 
   it('refuses a PascalCase envelope (casing pinned)', () => {

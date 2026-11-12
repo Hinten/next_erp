@@ -4,7 +4,8 @@
 # Firebase Admin init, the CORS proxy, the conta status route, the OAuth start
 # route and the public OAuth callback. Step 3 adds the public push receiver
 # (`POST /api/webhooks/amazon`, called by the AWS relay), which enqueues onto the
-# nested functions codebase's reads queue. Step 14 adds the NF-e re-drive route
+# nested functions codebase's reads queue (and, since step 12a, a feed result's
+# wake-up onto its jobs queue). Step 14 adds the NF-e re-drive route
 # (`POST /api/marketplace/amazon/enviar-nfe`, PR 14-d), which only enqueues onto
 # that codebase's NF-e queue `processAmazonNfeUpload` (no Amazon call, no
 # Firestore write). The step-4 backstop poll and the NF-e upload itself run in
@@ -94,18 +95,24 @@ runConfig:
 #                                confirmed sending the new one; then unset
 #                                (`infra/amazon-relay/README.md`). Each instance logs
 #                                one WARNING while it is set.
-#   AMAZON_TASKS_REGION          Console value. The region of BOTH queues — the reads
-#                                queue (`filaLeituraAmazon`) and the NF-e queue
-#                                (`processAmazonNfeUpload`, step 14) — equal to the
+#   AMAZON_TASKS_REGION          Console value. The region of the THREE queues this
+#                                backend enqueues onto — the reads queue
+#                                (`filaLeituraAmazon`), the NF-e queue
+#                                (`processAmazonNfeUpload`, step 14) and the jobs
+#                                queue (`processAmazonListingsJob`, step 12a: the
+#                                receiver's feed wake-up) — equal to the
 #                                functions codebase's FUNCTIONS_REGION. Falls back to
 #                                FUNCTIONS_REGION; with neither set the receiver
 #                                answers 503 and the NF-e re-drive fails (500, one
 #                                ERROR line) before any read. NO default: a wrong
 #                                region drops the task silently (#1108).
-#   AMAZON_TASKS_DISABLED        OPTIONAL queue valve of THIS backend's two
+#   AMAZON_TASKS_DISABLED        OPTIONAL queue valve of THIS backend's three
 #                                producers: exactly `1` makes the receiver persist
-#                                each push as `failed` for the reprocess sweep
-#                                instead of enqueuing, and makes the NF-e re-drive
+#                                each order push as `failed` for the reprocess sweep
+#                                instead of enqueuing, drops a feed result's wake-up
+#                                with ONE WARNING `feed-nao-enfileirado` (nothing
+#                                persisted: the feed's own poll chain still reads
+#                                it), and makes the NF-e re-drive
 #                                answer 503 AMAZON_TAREFAS_DESLIGADAS having read
 #                                nothing and written NO aviso (the caller retries
 #                                once it is open). It does NOT stop the NF-e
