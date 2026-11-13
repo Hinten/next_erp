@@ -1500,6 +1500,20 @@ describe('publishProduto — User-Products model resolution (#798)', () => {
     });
   }
 
+  it('republishes only the linked members of an UPtin split family', async () => {
+    const db = new FakeDb();
+    seedFamilyOfTwo(db);
+    seedPublishedFamily(db, ['child-1']);
+    db.seed(LINKS_PATH, 'ML-DOC-1', {
+      ...db.docs(LINKS_PATH).get('ML-DOC-1'),
+      uptinSomenteMembros: true,
+    });
+    const { api } = upApi();
+    await publishProduto(makeDeps(db, api), PROD);
+    expect(api.createItem).not.toHaveBeenCalled();
+    expect(api.updateItem).toHaveBeenCalledExactlyOnceWith('MLB901', expect.anything());
+  });
+
   it.each([false, true])(
     'publishing clears only an unchanged member failure (concurrent=%s)',
     async (concurrent) => {

@@ -41,6 +41,7 @@ import {
   estoqueDisponivel,
   fotosForVariacao,
   idFromRef,
+  ESTADO_PUBLICACAO_ML,
   mlSizeChartsForConta,
   parseFakePath,
   precisaConsultarModeracao,
@@ -81,6 +82,8 @@ import {
   resolveSkuPaiAtributo,
 } from './publishCore';
 import { garantirMembroUnico } from './upSoleMemberWrite';
+import { updateListingUnlessMigrating } from './updateListingDuringUptin';
+import { hasUptinOperation } from '../importacao/importMigration';
 import {
   type AlvoFiscal,
   type ResumoDadosFiscais,
@@ -309,15 +312,40 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
    * would warn). On `false` — or on a genuine first publish — we fall through
    * to a full, schema-valid `set`.
    */
+  let writebackItemId = link?.id || null;
   const writeLinkDoc = async (patch: Record<string, unknown>): Promise<void> => {
-    if (linkDoc) {
+    const writtenId = typeof patch.id === 'string' ? patch.id : writebackItemId;
+    if (writebackItemId) {
+      const written = await updateListingUnlessMigrating(
+        db,
+        { produtoId, linkDocId, itemId: writebackItemId },
+        patch,
+      );
+      if (written) {
+        writebackItemId = writtenId;
+        return;
+      }
+      // A removed legacy link used to be restored after a successful publish.
+      // A completed UPtin claim takes precedence over that recovery.
+      const current = await produtoMercadoLivreLinkCollection
+        .docRef(db, { produtoId }, linkDocId)
+        .get();
+      if (current.exists || (await hasUptinOperation(db, integracaoId, writebackItemId))) {
+        throw new MercadoLivrePublishError([
+          'O anúncio mudou durante a publicação. Atualize a página.',
+        ]);
+      }
+    } else if (linkDoc) {
       const merged = await produtoMercadoLivreLinkCollection.mergeIfExists(
         db,
         { produtoId },
         linkDocId,
         patch,
       );
-      if (merged) return;
+      if (merged) {
+        writebackItemId = writtenId;
+        return;
+      }
     }
     await produtoMercadoLivreLinkCollection.set(db, { produtoId }, linkDocId, {
       contaOuterRef: linkDoc?.data.contaOuterRef ?? toOuterRef(`integracao/${integracaoId}`),
@@ -327,6 +355,7 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
       dataCadastro: linkDoc?.data.dataCadastro ?? Date.now(),
       ...patch,
     });
+    writebackItemId = writtenId;
   };
 
   // Every ML API failure from here on stamps `estado: 'E'` + `errors` on the
@@ -474,6 +503,8 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
   /** Each child's existing ML state, for the User-Products fan-out. */
   const upMembers: UserProductMember[] = [];
   for (const child of children) {
+    const existingVar = linkDoc ? await findVariacaoLink(db, child.id, linkDoc.docId) : null;
+    if (linkDoc?.data.uptinSomenteMembros === true && !existingVar?.raw.itemId) continue;
     const childAvailable = quantidadeParaPublicar(
       child.data,
       await loadDisponivel(db, child.id, depositoId),
@@ -482,7 +513,6 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
     // No parent link for THIS integração yet ⇒ the child cannot have a
     // legitimate existing variation on this listing (any variacao docs it
     // holds belong to other accounts).
-    const existingVar = linkDoc ? await findVariacaoLink(db, child.id, linkDoc.docId) : null;
     upMembers.push({
       produtoId: child.id,
       varLinkDocId: existingVar?.docId ?? null,
@@ -504,6 +534,12 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
       mlVariationId: existingVar?.mlId ?? null,
       storedCombinations: storedCombinationsOf(existingVar?.raw),
     });
+  }
+
+  if (linkDoc?.data.uptinSomenteMembros === true && variations.length === 0) {
+    throw new MercadoLivrePublishError([
+      'Esta família de migração não tem variações vinculadas no ERP.',
+    ]);
   }
 
   // ---- Variation groups ---------------------------------------------------
@@ -675,6 +711,16 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
    * the two arrays are NOT interchangeable and the indices differ.
    */
   let attributesSent: readonly MlAttribute[] | null = null;
+  if (link?.id && listingModel !== 'user-products') {
+    const current = (
+      await produtoMercadoLivreLinkCollection.docRef(db, { produtoId }, linkDocId).get()
+    ).data();
+    if (current?.id !== link.id || current.estado === ESTADO_PUBLICACAO_ML.aguardandoMigracao) {
+      throw new MercadoLivrePublishError([
+        'O anúncio mudou ou está em migração para User Products. Atualize a página.',
+      ]);
+    }
+  }
   try {
     if (isUserProductFamily) {
       family = await publishUserProductMembers(
@@ -806,29 +852,46 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
     const existing = await findVariacaoLink(db, childId, linkDocId);
     const varDocId =
       existing?.docId ?? variacaoMercadoLivreLinkCollection.newDocId(db, { produtoId: childId });
-    await variacaoMercadoLivreLinkCollection.docRef(db, { produtoId: childId }, varDocId).set(
-      variacaoMercadoLivreLinkCollection.parse({
-        // Spread first: Flutter regenerates the NEXT publish's non-SIZE/COLOR
-        // attribute_combinations from the stored `attributes` — wiping them
-        // (or `itemId`) would corrupt its republish.
-        ...(existing?.raw ?? {}),
-        id: typeof respVar.id === 'number' ? respVar.id : (existing?.mlId ?? null),
-        produtoVariacaoOuterRef:
-          (existing?.raw.produtoVariacaoOuterRef as string | undefined) ??
-          toOuterRef(`produtos/${childId}`),
-        produtoMercadoLivreOuterRef:
-          (existing?.raw.produtoMercadoLivreOuterRef as string | undefined) ??
-          toOuterRef(`produtos/${produtoId}/produtoMercadoLivre/${linkDocId}`),
-        // #920: the conta, denormalized onto the child link the same way the
-        // parent link has always carried it. Unconditional (not
-        // preserved-or-null like the two refs above) so a re-publish self-heals
-        // a row that predates the field — `onVariacaoMercadoLivreLinkChanged`
-        // otherwise has to dereference the parent link, which yields nothing
-        // once that link is gone.
-        contaOuterRef: toOuterRef(`integracao/${integracaoId}`),
-        sku: child.produto.sku ?? null,
-      }),
+    const memberRef = variacaoMercadoLivreLinkCollection.docRef(
+      db,
+      { produtoId: childId },
+      varDocId,
     );
+    const memberData = variacaoMercadoLivreLinkCollection.parse({
+      // Spread first: Flutter regenerates the NEXT publish's non-SIZE/COLOR
+      // attribute_combinations from the stored `attributes` — wiping them
+      // (or `itemId`) would corrupt its republish.
+      ...(existing?.raw ?? {}),
+      id: typeof respVar.id === 'number' ? respVar.id : (existing?.mlId ?? null),
+      produtoVariacaoOuterRef:
+        (existing?.raw.produtoVariacaoOuterRef as string | undefined) ??
+        toOuterRef(`produtos/${childId}`),
+      produtoMercadoLivreOuterRef:
+        (existing?.raw.produtoMercadoLivreOuterRef as string | undefined) ??
+        toOuterRef(`produtos/${produtoId}/produtoMercadoLivre/${linkDocId}`),
+      // #920: the conta, denormalized onto the child link the same way the
+      // parent link has always carried it. Unconditional (not
+      // preserved-or-null like the two refs above) so a re-publish self-heals
+      // a row that predates the field — `onVariacaoMercadoLivreLinkChanged`
+      // otherwise has to dereference the parent link, which yields nothing
+      // once that link is gone.
+      contaOuterRef: toOuterRef(`integracao/${integracaoId}`),
+      sku: child.produto.sku ?? null,
+    });
+    if (link?.id) {
+      const parentRef = produtoMercadoLivreLinkCollection.docRef(db, { produtoId }, linkDocId);
+      await db.runTransaction(async (tx) => {
+        const parent = (await tx.get(parentRef)).data();
+        if (parent?.id !== item.id || parent.estado === ESTADO_PUBLICACAO_ML.aguardandoMigracao) {
+          throw new MercadoLivrePublishError([
+            'O anúncio mudou ou está em migração para User Products. Atualize a página.',
+          ]);
+        }
+        tx.set(memberRef, memberData);
+      });
+    } else {
+      await memberRef.set(memberData);
+    }
     const childDoc = children.find((c) => c.id === childId);
     if (childDoc) {
       alvosFiscaisLegado.push({

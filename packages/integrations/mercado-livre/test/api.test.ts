@@ -1459,6 +1459,38 @@ describe('createMercadoLivreApi — mass import seller scan (#621)', () => {
 });
 
 describe('createMercadoLivreApi — User-Products migration (#441)', () => {
+  it('validates the legacy item and sends the Brazilian UPtin POST only once on transport failure', async () => {
+    const fetchMock = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) =>
+      jsonResponse({ is_valid: true }),
+    );
+    const api = createMercadoLivreApi({ ...cfg(fetchMock), maxRetries: 3 });
+    expect(await api.validateUptin('MLB1')).toEqual({ is_valid: true });
+    expect(String(fetchMock.mock.calls[0]?.[0])).toMatch(
+      /\/items\/MLB1\/user_product_listings\/validate$/,
+    );
+    fetchMock.mockRejectedValueOnce(new TypeError('connection lost'));
+    await expect(api.startUptin('MLB1')).rejects.toThrow('connection lost');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(String(fetchMock.mock.calls[1]?.[0])).toMatch(
+      /\/sites\/MLB\/items\/user_product_listings$/,
+    );
+    expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({
+      method: 'POST',
+      body: '{"item_id":"MLB1"}',
+    });
+  });
+
+  it('preserves large numeric family IDs in the multiget response', async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response('[{"code":200,"body":{"id":"MLB1","family_id":18446744000000000615}}]'),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    expect(await api.getItemsByIds(['MLB1'])).toMatchObject([
+      { body: { family_id: '18446744000000000615' } },
+    ]);
+  });
+
   it('getMigrationLiveListing hits /items/{id}/migration_live_listing and parses new_items', async () => {
     const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
       jsonResponse({

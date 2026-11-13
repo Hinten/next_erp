@@ -1,413 +1,759 @@
-/**
- * User-Products (UPtin) migration handler — issue #441. When Mercado Livre
- * migrates a legacy `variations[]` listing to the User-Products model, the OLD
- * item is tagged `variations_migration_source` and closed; this module imports
- * every replacement UP member onto the SAME ERP produtos the old listing used
- * (parent + variation children), then prunes the now-obsolete legacy PML +
- * `variacaoMercadoLivre` links once every one of them has a replacement.
- *
- * Ports the migration branch of the legacy `_atualizarStatusProdutoMercadoLivre`
- * (`.old/packages/canais_de_venda/mercado_livre/lib/src/tasks.dart:871-1036`),
- * called out from the `items` status-sync (`itemsStatusSync.ts`) once it sees
- * the source tag + `status: 'closed'` (#441's sync-side seam).
- *
- * ---- The "old parent" — verified against `.old` (not just the migration
- * branch itself), because getting this wrong mints a duplicate family parent:
- *
- * `GET /items/{id}/migration_live_listing` returns `{ new_items: [{
- * new_item_id, variation_id }] }` — `variation_id` is the OLD, per-listing
- * numeric variation id (`VariacoesML.id`), NOT a produto id. Legacy resolves it
- * to a produto via `VariacoesML.documents.id__isEqualTo(oldVariationId)`
- * (tasks.dart:918-926) and passes `oldVariationMl.reference.parent!.docId!.id!`
- * — the produto OWNING that `VariacoesML` doc — as `produtoPaiUid` into
- * `cadastrarOuAtualizarProdutoMercadoLivre` (tasks.dart:930-944). Both legacy
- * `VariacoesML` write sites parent the doc under the VARIATION CHILD produto,
- * never the top-level listing parent (`produtos.dart:335-340` — legacy
- * `variations[]` import: `.copyWithParent(parent: produtoVariacaoInstace, ...)`;
- * `produtos.dart:770-774` — User-Products import: `.copyWithParent(parent:
- * produtoVariacaoInstace, ...)` again) — so `oldVariationMl.reference.parent` IS
- * that one variation's OWN child produto (call it `Ci`), NOT the shared parent.
- *
- * `cadastrarOuAtualizarProdutoMercadoLivre` forwards `produtoPaiUid` straight
- * into `_importarUserProductItem`'s `produtoArakeneId` (`produtos.dart:76-91`),
- * which does NOT use it as the family parent directly — it REDIRECTS
- * (`produtos.dart:517-527`):
- *   ```
- *   final produtoArakene = await Produto.documents.doc(produtoArakeneId);
- *   if (produtoArakene.paiId == null) {
- *     futuroPai = produtoArakene;               // Ci has no parent → Ci IS the family parent
- *   } else {
- *     oldProdutoVariacao = produtoArakene;       // Ci becomes the pre-resolved CHILD
- *     futuroPai = await Produto.documents.doc(produtoArakene.paiId!); // Ci's OWN parent → family parent
- *   }
- *   ```
- * Every `Ci` written by the legacy `variations[]` import has a non-null
- * `paiId` (`produtos.dart:280` / `toProdutoArakene`'s `paiId: oldProduto?.paiId
- * ?? paiUid`, first-write `paiUid` = the listing's shared top-level parent —
- * call it `TP`). So the redirect ALWAYS fires here: `futuroPai = TP` — the SAME
- * produto for every `Ci` of the same listing, because every `Ci` shares one
- * `paiId`. And `TP` is exactly `sourceLink.produtoId` — the produto that owns
- * the SOURCE `produtoMercadoLivre` doc this migration fires from (the whole
- * `variations[]` listing's link, per the identical parenting rule applied one
- * level up by the ORIGINAL, non-migration import).
- *
- * So the correct, legacy-equivalent override is `sourceLink.produtoId`
- * (constant for the WHOLE migration run — every `new_items` entry belongs to
- * the same source listing) — never a per-entry `Ci`. This also matches the
- * observed convergence property that motivated `resolveUpParentOverride`
- * existing at all (A2): the first member of the family mints a fresh
- * `produtoMercadoLivre` link under the override produto; every SUBSEQUENT
- * member of the SAME run (or a later replay) finds that SAME link via
- * `id == canonicalId` and reuses it — which only converges onto ONE doc when
- * every member is overridden onto the SAME produto. Per-entry `Ci` would give
- * every member ITS OWN "family" produto instead, breaking that convergence.
- *
- * `Ci` (the resolved OLD `VariacoesML`/`variacaoMercadoLivre` link's owning
- * produto) is still resolved here — but only to (a) confirm the old variation
- * actually exists (mirrors the legacy `UnimplementedError` guard) and (b) queue
- * it for deletion once the whole source listing is migrated. Its `paiId ==
- * sourceLink.produtoId` is exactly what lets `resolveExistingChild`'s SKU
- * fallback (`importVariations.ts`) rediscover `Ci` itself as the new member's
- * child — the "CHILD continuity for free" this module relies on instead of
- * replicating legacy's `oldProdutoVariacao` short-circuit.
- *
- * ---- Prune gating — verified directly against `tasks.dart:960-1012` (NOT
- * just the summarized version): SOURCE PML deletion is gated on "every
- * `variacaoMercadoLivre` link that still points
- * at the source PML is one we're deleting this run" — but the final loop that
- * deletes each `Ci`'s OLD link (:1003-1006) sits OUTSIDE that gate, applied
- * UNCONDITIONALLY to every entry this run resolved. So a PARTIAL migration
- * (one sibling variation not yet covered by `new_items`) still deletes the
- * OLD links this run replaced — only the source PML doc survives when the
- * source listing isn't fully migrated yet.
- *
- * ---- Error path — ported from `tasks.dart:1015-1027`, narrowed per this
- * repo's no-generic-catch rule: ANY throw during the migration stamps the
- * source PML `estado: 'E'` best-effort (a strict `.update()`, not `.merge()`,
- * so a doc that's ALREADY been pruned/deleted throws NOT_FOUND rather than
- * silently resurrecting a partial doc) and always rethrows the ORIGINAL error
- * — mirroring the existing `persistNotificationFailure` catch shape in
- * `notificacao.ts` (log-and-continue on an unexpected secondary failure,
- * never mask the original with it).
- */
-import type { Firestore } from 'firebase-admin/firestore';
-import type { MercadoLivreApi } from '@delfrance/integrations-mercado-livre';
-import { toOuterRef } from '@delfrance/schemas';
+import type {
+  DocumentSnapshot,
+  Firestore,
+  QueryDocumentSnapshot,
+  Transaction,
+} from 'firebase-admin/firestore';
+import { sha256Hex } from '@delfrance/data/admin';
 import {
+  migracaoUptinMercadoLivreCollection as operations,
+  produtoCollection,
   produtoMercadoLivreLinkCollection,
   variacaoMercadoLivreLinkCollection,
 } from '@delfrance/data/admin/collections';
+import {
+  ESTADO_PUBLICACAO_ML,
+  toOuterRef,
+  type MigracaoUptinVariacao as Variation,
+} from '@delfrance/schemas';
+import {
+  estadoFromMlStatus,
+  idLocalMercadoLivre,
+  itemSchema,
+  ML_MULTIGET_MAX_IDS,
+  MercadoLivreError,
+  MercadoLivreHttpError,
+  MercadoLivreReauthRequiredError,
+  skuFromAttributes,
+  skuPaiFromAttributes,
+  UPTIN_DESTINATION_TAG,
+  UPTIN_PENDING_TAG,
+  UPTIN_SOURCE_TAG,
+  type MercadoLivreApi,
+  type MlItem,
+} from '@delfrance/integrations-mercado-livre';
+import { randomUUID } from 'node:crypto';
 
-import { type ImportDeps, importProduto } from './import';
-import { type ImportOptions, MercadoLivreImportError } from './importCore';
-import { parsePmlOuterRef, refMatchesIntegracao } from '../core/linkRefs';
+import { naoDocId, refMatchesIntegracao } from '../core/linkRefs';
+import { foldFamilyCategoria, foldFamilyStatus } from '../anuncios/upFamilyStatus';
+import { consultarModeracoes } from '../anuncios/moderacoes';
 
-/** Every import side-effect OFF (#441) — the migration only converges existing
- * ERP data onto the new listing ids; it never (re)writes stock/price/photos/
- * category, and never fills the parent's null fields from the new item's data
- * (all fill-*, overwrite-* and atualizar* flags false, mirroring the legacy
- * migration call at `tasks.dart:930-944`). Family fan-out is ALSO off — THIS
- * loop already enumerates every family member via `migration_live_listing`.
- */
-const MIGRATION_IMPORT_OPTIONS: ImportOptions = {
-  importarEstoque: false,
-  sobrescreverEstoque: false,
-  importarPreco: false,
-  sobrescreverPreco: false,
-  atualizarProdutoPai: false,
-  sobrescreverDadosProduto: false,
-  importarFotos: false,
-  importarCategorias: false,
-};
+export class UptinError extends Error {
+  constructor(
+    message: string,
+    readonly status = 409,
+  ) {
+    super(message);
+  }
+}
 
 export interface UptinMigrationDeps {
   db: Firestore;
-  api: MercadoLivreApi;
+  api: Pick<
+    MercadoLivreApi,
+    | 'getItem'
+    | 'getItemsByIds'
+    | 'getLastModeration'
+    | 'getMigrationLiveListing'
+    | 'validateUptin'
+    | 'startUptin'
+  >;
   integracaoId: string;
   sellerUserId: number | null;
-  tabelaNormalOuterRef: string | null;
-  depositoOuterRef: string | null;
 }
 
-/** The SOURCE `produtoMercadoLivre` link the migration fires from — resolved
- * by the caller (`itemsStatusSync.ts`) before this module is invoked. */
 export interface UptinSourceLink {
   produtoId: string;
   linkDocId: string;
-  raw: Record<string, unknown>;
 }
 
-/**
- * Run the UPtin migration for one `items` notification whose tags + status
- * matched the migration guard (caller's job — see `itemsStatusSync.ts`).
- * Idempotent/replay-safe (every write below converges on retry); THROWS on any
- * failure so the caller's pipeline retries (after best-effort stamping the
- * source PML `estado: 'E'`).
- */
-export async function handleUptinMigration(
+export type UptinOutcome = 'iniciada' | 'pendente' | 'incerta' | 'concluida';
+
+const itemIdPattern = /^MLB\d+$/;
+const waiting = ESTADO_PUBLICACAO_ML.aguardandoMigracao;
+export const UPTIN_CHECK_DELAY_SECONDS = 300;
+
+function operationRef(deps: Pick<UptinMigrationDeps, 'db' | 'integracaoId'>, itemId: string) {
+  return operations.docRef(deps.db, {}, sha256Hex(`${deps.integracaoId}|${itemId}`));
+}
+
+export async function hasUptinOperation(db: Firestore, integracaoId: string, itemId: string) {
+  return (await operationRef({ db, integracaoId }, itemId).get()).exists;
+}
+
+function sourceRef(db: Firestore, target: UptinSourceLink) {
+  return produtoMercadoLivreLinkCollection.docRef(
+    db,
+    { produtoId: target.produtoId },
+    target.linkDocId,
+  );
+}
+
+function sourceVariations(db: Firestore, path: string) {
+  return variacaoMercadoLivreLinkCollection
+    .groupQuery(db)
+    .where('produtoMercadoLivreOuterRef', 'in', [path, toOuterRef(path)]);
+}
+
+function ownedLegacy(
+  raw: Record<string, unknown> | undefined,
+  integracaoId: string,
+  itemId: string,
+) {
+  return (
+    raw?.id === itemId &&
+    raw.isUserProductModel !== true &&
+    refMatchesIntegracao(raw.contaOuterRef, integracaoId)
+  );
+}
+
+function variationId(value: unknown): string | null {
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value > 0) return String(value);
+  return typeof value === 'string' && /^[1-9]\d*$/.test(value) ? value : null;
+}
+
+function exactMapping(
+  item: MlItem,
+  links: readonly DocumentSnapshot[],
+  integracaoId: string,
+  expectedIds?: readonly string[],
+): Variation[] {
+  const ids = expectedIds ?? (item.variations ?? []).map((row) => variationId(row.id));
+  const byId = new Map<string, Variation[]>();
+  for (const snap of links) {
+    const raw = snap.data();
+    const id = variationId(raw?.id);
+    const produtoId = snap.ref.parent.parent?.id;
+    if (
+      id == null ||
+      !produtoId ||
+      raw?.itemId ||
+      (raw?.contaOuterRef != null && !refMatchesIntegracao(raw.contaOuterRef, integracaoId))
+    )
+      continue;
+    const candidates = byId.get(id) ?? [];
+    candidates.push({ id, produtoId, linkDocId: snap.id });
+    byId.set(id, candidates);
+  }
+  if (ids.length === 0 || new Set(ids).size !== ids.length) {
+    throw new UptinError('O Mercado Livre não informou uma lista válida de variações de origem.');
+  }
+  const mapped = ids.map((id) => {
+    const candidates = id == null ? undefined : byId.get(id);
+    if (candidates?.length !== 1) {
+      throw new UptinError(
+        `Vincule a variação ${id ?? 'sem identificador'} a um único produto no ERP.`,
+      );
+    }
+    return candidates[0]!;
+  });
+  if (new Set(mapped.map((row) => row.produtoId)).size !== mapped.length) {
+    throw new UptinError('Há mais de uma variação do anúncio vinculada ao mesmo produto no ERP.');
+  }
+  return mapped;
+}
+
+async function verifyProducts(
+  tx: Transaction,
+  db: Firestore,
+  parentId: string,
+  rows: readonly Variation[],
+) {
+  const products = await tx.getAll(
+    ...[parentId, ...rows.map((row) => row.produtoId)].map((id) =>
+      produtoCollection.docRef(db, {}, id),
+    ),
+  );
+  if (
+    !products[0]?.exists ||
+    products[0].data()?.paiId ||
+    products.slice(1).some((snap) => snap.data()?.paiId !== parentId)
+  ) {
+    throw new UptinError(
+      'Os produtos vinculados às variações mudaram. Revise os vínculos do anúncio.',
+    );
+  }
+}
+
+async function verifyUniqueSource(
+  tx: Transaction,
+  db: Firestore,
+  integracaoId: string,
+  itemId: string,
+  path: string,
+) {
+  const matches = await tx.get(
+    produtoMercadoLivreLinkCollection.groupQuery(db).where('id', '==', itemId),
+  );
+  if (
+    matches.docs.some(
+      (doc) =>
+        doc.ref.path !== path && refMatchesIntegracao(doc.data().contaOuterRef, integracaoId),
+    )
+  ) {
+    throw new UptinError(
+      'O anúncio de origem tem mais de um vínculo nesta conta. Revise os vínculos no ERP.',
+    );
+  }
+}
+
+function verifySeller(deps: UptinMigrationDeps, itemId: string, item: MlItem) {
+  if (item.id !== itemId || deps.sellerUserId == null || item.seller_id !== deps.sellerUserId) {
+    throw new UptinError('O anúncio não pertence ao vendedor conectado a esta conta.');
+  }
+}
+
+async function releaseClaim(
+  deps: UptinMigrationDeps,
+  target: UptinSourceLink,
+  itemId: string,
+  attempt: string,
+  onlyBeforeDispatch = false,
+) {
+  const opRef = operationRef(deps, itemId);
+  const ref = sourceRef(deps.db, target);
+  await deps.db.runTransaction(async (tx) => {
+    const [op, source] = await tx.getAll(opRef, ref);
+    if (!op?.exists) return;
+    const claim = operations.parse(op.data());
+    if (claim.completed || claim.attempt !== attempt || (onlyBeforeDispatch && claim.dispatching))
+      return;
+    const raw = source?.data();
+    if (ownedLegacy(raw, deps.integracaoId, itemId) && raw?.estado === waiting) {
+      tx.update(ref, {
+        estado: claim.previousState ?? ESTADO_PUBLICACAO_ML.publicado,
+        ultimaModificacao: Date.now(),
+      });
+    }
+    tx.delete(opRef);
+  });
+}
+
+export async function startUptinMigration(
   deps: UptinMigrationDeps,
   itemId: string,
-  sourceLink: UptinSourceLink,
-): Promise<void> {
-  const { db, api, integracaoId } = deps;
-  const now = Date.now();
-  const sourcePmlOuterRef = toOuterRef(
-    `produtos/${sourceLink.produtoId}/produtoMercadoLivre/${sourceLink.linkDocId}`,
-  );
+  target: UptinSourceLink,
+  armCheck: () => Promise<void>,
+): Promise<UptinOutcome> {
+  const { db, api, integracaoId, sellerUserId } = deps;
+  const ref = sourceRef(db, target);
+  const opRef = operationRef(deps, itemId);
+  const source = (await ref.get()).data();
+  if (!ownedLegacy(source, integracaoId, itemId))
+    throw new UptinError('O vínculo do anúncio mudou. Atualize a página.');
+  if (source?.estado === waiting) return 'pendente';
+  const item = await api.getItem(itemId);
+  verifySeller(deps, itemId, item);
+  if (item.tags?.includes(UPTIN_SOURCE_TAG) || item.tags?.includes(UPTIN_PENDING_TAG)) {
+    return handleUptinMigration(deps, itemId, target, item);
+  }
+  if (
+    !itemIdPattern.test(itemId) ||
+    item.family_name != null ||
+    item.status === 'closed' ||
+    !item.variations?.length
+  ) {
+    throw new UptinError('A migração exige um anúncio legado publicado com variações.');
+  }
+  const eligibility = await api.validateUptin(itemId);
+  if (!eligibility.is_valid) {
+    const causes = eligibility.cause?.map((cause) => cause.message).join(' ');
+    throw new UptinError(
+      `Anúncio inelegível para migração UPtin.${causes ? ` ${causes}` : ''}`,
+      422,
+    );
+  }
 
+  const attempt = randomUUID();
+  const claimedAt = Date.now();
+  const claimed = await db.runTransaction(async (tx) => {
+    const [op, current] = await tx.getAll(opRef, ref);
+    if (op?.exists) {
+      if (operations.parse(op.data()).completed) {
+        throw new UptinError(
+          'A migração deste anúncio já foi concluída. Atualize os vínculos do produto.',
+        );
+      }
+      return false;
+    }
+    const raw = current?.data();
+    if (!ownedLegacy(raw, integracaoId, itemId))
+      throw new UptinError('O vínculo do anúncio mudou. Atualize a página.');
+    if (raw?.estado === waiting) return false;
+    await verifyUniqueSource(tx, db, integracaoId, itemId, ref.path);
+    const links = await tx.get(sourceVariations(db, ref.path));
+    const variations = exactMapping(item, links.docs, integracaoId);
+    await verifyProducts(tx, db, target.produtoId, variations);
+    tx.create(
+      opRef,
+      operations.parse({
+        ...target,
+        sellerUserId,
+        attempt,
+        claimedAt,
+        dispatching: false,
+        previousState: raw?.estado ?? null,
+        variations,
+      }),
+    );
+    tx.update(ref, { estado: waiting, ultimaModificacao: Date.now() });
+    return true;
+  });
+  if (!claimed) return 'pendente';
+
+  // If the backstop cannot be armed, the POST has yet to leave this process.
+  let armed = false;
   try {
-    const migrationData = await api.getMigrationLiveListing(itemId);
-
-    // A family shares ONE new produtoMercadoLivre link (tasks.dart:890-893
-    // comment) — dedup by its path so an already-fully-registered family only
-    // gets ONE stamp write regardless of how many `new_items` resolve to it.
-    const pmlsToStamp = new Map<string, { produtoId: string; linkDocId: string }>();
-    const oldLinksToDelete: Array<{ produtoId: string; docId: string }> = [];
-
-    for (const newItem of migrationData.new_items) {
-      const newItemId = asStringId(newItem.new_item_id);
-      if (newItemId == null) continue; // nothing usable to key on — skip
-
-      // Idempotency FIRST (tasks.dart:901-914): a previous run may have
-      // already imported this member — its own variacaoMercadoLivre link
-      // (itemId == newItemId) already exists, pointing at the family's PML.
-      const registered = await findRegisteredMember(db, newItemId, integracaoId);
-      if (registered) {
-        if (!pmlsToStamp.has(registered.pmlPath)) {
-          pmlsToStamp.set(registered.pmlPath, {
-            produtoId: registered.produtoId,
-            linkDocId: registered.linkDocId,
-          });
-        }
-        // Convergence after a mid-run crash: a previous attempt may have
-        // imported this member but died BEFORE the prune batch, leaving its
-        // OLD link alive — and this stamp-only path would then never enqueue
-        // it again, so `fullyMigrated` could never become true. Best-effort
-        // re-locate it (no throw — on a clean replay it's already deleted and
-        // this finds nothing, keeping "successful replay is stamp-only").
-        const staleVariationId = asNumericVariationId(newItem.variation_id);
-        const staleOldLink =
-          staleVariationId != null
-            ? await findOldVariacaoLink(db, staleVariationId, sourcePmlOuterRef)
-            : null;
-        if (staleOldLink) {
-          oldLinksToDelete.push({ produtoId: staleOldLink.produtoId, docId: staleOldLink.docId });
-        }
-        continue;
-      }
-
-      // Not yet imported: locate the OLD variation this new item replaces
-      // (tasks.dart:916-926) — required to exist (legacy `UnimplementedError`;
-      // ours `MercadoLivreImportError`), and queued for deletion once found.
-      const variationId = asNumericVariationId(newItem.variation_id);
-      const oldLink =
-        variationId != null ? await findOldVariacaoLink(db, variationId, sourcePmlOuterRef) : null;
-      if (!oldLink) {
-        throw new MercadoLivreImportError([
-          `não foi possível localizar a variação antiga (variation_id ${String(
-            newItem.variation_id ?? 'null',
-          )}) para o novo item ${newItemId} durante a migração UPtin do anúncio ${itemId}`,
-        ]);
-      }
-
-      // Import the new item onto the SAME family produto as every sibling —
-      // see the module doc for why this is `sourceLink.produtoId`, not `Ci`.
-      const importDeps: ImportDeps = {
-        db,
-        api,
-        integracaoId,
-        sellerUserId: deps.sellerUserId,
-        tabelaNormalOuterRef: deps.tabelaNormalOuterRef,
-        depositoOuterRef: deps.depositoOuterRef,
-        options: MIGRATION_IMPORT_OPTIONS,
-        familyFanOut: false,
-        upParentOverride: { produtoId: sourceLink.produtoId },
-      };
-      await importProduto(importDeps, newItemId);
-
-      oldLinksToDelete.push({ produtoId: oldLink.produtoId, docId: oldLink.docId });
-    }
-
-    // Already-registered members: bump their family PML to publicado
-    // (tasks.dart:951-958) — freshly-imported members already land at the
-    // correct estado via the import itself, so they're never stamped here.
-    for (const pml of pmlsToStamp.values()) {
-      // `mergeIfExists`: these targets were resolved by reads earlier in this
-      // run, so a concurrent delete must not resurrect them as ghosts.
-      await produtoMercadoLivreLinkCollection.mergeIfExists(
-        db,
-        { produtoId: pml.produtoId },
-        pml.linkDocId,
-        {
-          estado: 'p',
-          isUserProductModel: true,
-          ultimaModificacao: now,
-        },
-      );
-    }
-
-    if (oldLinksToDelete.length > 0) {
-      await pruneMigratedSource(db, sourceLink, sourcePmlOuterRef, oldLinksToDelete);
-    }
+    await armCheck();
+    armed = true;
+  } finally {
+    if (!armed) await releaseClaim(deps, target, itemId, attempt, true);
+  }
+  // A process can die while arming recovery. Mark the attempt before sending
+  // so a recheck may release only a claim that never reached dispatch.
+  const dispatch = await db.runTransaction(async (tx) => {
+    const [op, current] = await tx.getAll(opRef, ref);
+    const raw = current?.data();
+    if (!op?.exists || !ownedLegacy(raw, integracaoId, itemId) || raw?.estado !== waiting)
+      return false;
+    const claim = operations.parse(op.data());
+    if (claim.completed || claim.attempt !== attempt || claim.dispatching) return false;
+    tx.update(opRef, { dispatching: true });
+    return true;
+  });
+  if (!dispatch) return 'pendente';
+  try {
+    await api.startUptin(itemId);
+    return 'iniciada';
   } catch (err) {
-    try {
-      // A `false` here means the PML was already deleted (e.g. a prior attempt
-      // pruned it before crashing) — nothing to record, and nothing to report.
-      await stampSourceError(db, sourceLink, now);
-      // eslint-disable-next-line delfrance/no-error-as-sole-instanceof -- best-effort error stamp; the original migration failure still wins
-    } catch (stampErr) {
-      if (!(stampErr instanceof Error)) throw stampErr;
-      // Unexpected failure while recording the error state — never silently
-      // dropped, but the ORIGINAL migration failure below still wins (mirrors
-      // notificacao.ts's `persistNotificationFailure` catch shape).
-      console.error(
-        '[mercado-livre] falha ao marcar PML de origem como erro após falha na migração UPtin',
-        {
-          produtoId: sourceLink.produtoId,
-          linkDocId: sourceLink.linkDocId,
-          cause: stampErr.message,
-        },
-      );
+    if (
+      err instanceof MercadoLivreReauthRequiredError ||
+      (err instanceof MercadoLivreHttpError && [400, 401, 403, 422, 429].includes(err.status))
+    ) {
+      // An external start can win between validation and the POST. Keep the
+      // claim on ambiguous conflicts and consult the provider before releasing.
+      if (!(err instanceof MercadoLivreReauthRequiredError)) {
+        const result = await handleUptinMigration(deps, itemId, target);
+        if (result !== 'incerta') return result;
+      }
+      await releaseClaim(deps, target, itemId, attempt);
+      throw err;
+    }
+    if (err instanceof MercadoLivreError) {
+      console.warn('[mercado-livre] UPtin: confirmação da solicitação indisponível', {
+        integracaoId,
+        itemId,
+        error: err.name,
+        ...(err instanceof MercadoLivreHttpError ? { status: err.status } : {}),
+      });
+      return 'incerta';
     }
     throw err;
   }
 }
 
-/* -------------------------------------------------------------------------- */
+async function stampWaiting(deps: UptinMigrationDeps, target: UptinSourceLink, itemId: string) {
+  const ref = sourceRef(deps.db, target);
+  await deps.db.runTransaction(async (tx) => {
+    const raw = (await tx.get(ref)).data();
+    if (ownedLegacy(raw, deps.integracaoId, itemId) && raw?.estado !== waiting) {
+      tx.update(ref, { estado: waiting, ultimaModificacao: Date.now() });
+    }
+  });
+}
 
-/**
- * An already-imported family member for `newItemId` — a `variacaoMercadoLivre`
- * link with `itemId == newItemId`, scoped to THIS integração via its family
- * PML's `contaOuterRef` (tasks.dart's global `.first()` has no such scoping;
- * an MLB item id is globally unique so this is defense-in-depth, matching the
- * same pattern `import.ts`'s `resolveExistingUpParent` uses).
- */
-async function findRegisteredMember(
-  db: Firestore,
-  newItemId: string,
-  integracaoId: string,
-): Promise<{ produtoId: string; linkDocId: string; pmlPath: string } | null> {
-  const snap = await variacaoMercadoLivreLinkCollection
-    .groupQuery(db)
-    .where('itemId', '==', newItemId)
-    .limit(10)
-    .get();
-  for (const d of snap.docs) {
-    const raw = d.data() as Record<string, unknown>;
-    const pmlOuterRef = raw.produtoMercadoLivreOuterRef;
-    if (typeof pmlOuterRef !== 'string') continue;
-    const parsed = parsePmlOuterRef(pmlOuterRef);
-    if (!parsed) continue;
-    const pmlSnap = await produtoMercadoLivreLinkCollection
-      .docRef(db, { produtoId: parsed.produtoId }, parsed.linkId)
-      .get();
-    if (!pmlSnap.exists) continue;
-    const pmlRaw = pmlSnap.data() as Record<string, unknown>;
-    if (!refMatchesIntegracao(pmlRaw.contaOuterRef, integracaoId)) continue;
-    return { produtoId: parsed.produtoId, linkDocId: parsed.linkId, pmlPath: pmlOuterRef };
+export async function handleUptinMigration(
+  deps: UptinMigrationDeps,
+  itemId: string,
+  target: UptinSourceLink,
+  observedItem?: MlItem,
+): Promise<UptinOutcome> {
+  const { db, api, integracaoId, sellerUserId } = deps;
+  const ref = sourceRef(db, target);
+  const opRef = operationRef(deps, itemId);
+  const source = (await ref.get()).data();
+  if (source == null) {
+    const claim = await opRef.get();
+    if (claim.exists && operations.parse(claim.data()).completed) return 'concluida';
+    throw new UptinError('O vínculo de origem não está mais no ERP. Atualize a página.', 404);
   }
-  return null;
-}
+  if (!ownedLegacy(source, integracaoId, itemId))
+    throw new UptinError('O vínculo do anúncio mudou. Atualize a página.');
+  const item = observedItem ?? (await api.getItem(itemId));
+  verifySeller(deps, itemId, item);
+  const isSource = item.tags?.includes(UPTIN_SOURCE_TAG) === true;
+  if (isSource) await stampWaiting(deps, target, itemId);
+  if (!isSource) {
+    const claimSnap = await opRef.get();
+    if (claimSnap.exists) {
+      const claim = operations.parse(claimSnap.data());
+      if (!claim.dispatching && Date.now() - claim.claimedAt >= UPTIN_CHECK_DELAY_SECONDS * 1000) {
+        await releaseClaim(deps, target, itemId, claim.attempt, true);
+        return 'incerta';
+      }
+    }
+  }
+  let report;
+  try {
+    report = await api.getMigrationLiveListing(itemId);
+  } catch (err) {
+    if (err instanceof MercadoLivreHttpError && err.status === 404 && !isSource) {
+      // Flutter-era waiting links carry no claim. An open, untagged source
+      // with no provider migration can return to its observed status.
+      await db.runTransaction(async (tx) => {
+        const [current, op] = await tx.getAll(ref, opRef);
+        const raw = current?.data();
+        if (
+          op?.exists ||
+          !ownedLegacy(raw, integracaoId, itemId) ||
+          raw?.estado !== waiting ||
+          item.tags?.includes(UPTIN_PENDING_TAG) ||
+          !item.status ||
+          item.status === 'closed'
+        )
+          return;
+        tx.update(ref, {
+          estado: estadoFromMlStatus(item.status, item.sub_status ?? null),
+          status: item.status,
+          sub_status: item.sub_status ?? null,
+          ultimaModificacao: Date.now(),
+        });
+      });
+      return 'incerta';
+    }
+    throw err;
+  }
+  if (report.item_id != null && report.item_id !== itemId) {
+    throw new UptinError('O Mercado Livre retornou o status de outro anúncio.');
+  }
+  if (report.activation_completed == null || item.status !== 'closed' || !isSource) {
+    if (item.status === 'closed' && isSource) {
+      throw new UptinError(
+        'O anúncio de origem foi encerrado, mas o Mercado Livre ainda não confirmou a ativação das variações.',
+      );
+    }
+    return isSource || report.date_created || report.new_items.length ? 'pendente' : 'incerta';
+  }
 
-/**
- * The OLD `variacaoMercadoLivre` link for `variationId`, scoped to the SOURCE
- * PML (tasks.dart queries `VariacoesML` globally by numeric `id`; ours scopes
- * server-side to `produtoMercadoLivreOuterRef == sourcePmlOuterRef` — an
- * approved improvement, since a numeric variation id is only unique WITHIN its
- * own listing, not globally, mirroring `importVariations.ts`'s legacy
- * `variations[]` child resolve).
- */
-async function findOldVariacaoLink(
-  db: Firestore,
-  variationId: number,
-  sourcePmlOuterRef: string,
-): Promise<{ produtoId: string; docId: string } | null> {
-  const snap = await variacaoMercadoLivreLinkCollection
-    .groupQuery(db)
-    .where('id', '==', variationId)
-    .where('produtoMercadoLivreOuterRef', '==', sourcePmlOuterRef)
-    .limit(1)
-    .get();
-  const d = snap.docs[0];
-  if (!d) return null;
-  const produtoId = d.ref.parent?.parent?.id;
-  if (!produtoId) return null;
-  return { produtoId, docId: d.id };
-}
+  const replacements = new Map<string, string>();
+  const newIds = new Set<string>();
+  for (const row of report.new_items) {
+    const oldId = variationId(row.variation_id);
+    const newId = row.new_item_id;
+    if (
+      oldId == null ||
+      typeof newId !== 'string' ||
+      !itemIdPattern.test(newId) ||
+      newId === itemId ||
+      replacements.has(oldId) ||
+      newIds.has(newId)
+    ) {
+      throw new UptinError(
+        'O Mercado Livre retornou vínculos de migração incompletos ou duplicados.',
+      );
+    }
+    replacements.set(oldId, newId);
+    newIds.add(newId);
+  }
+  if (!newIds.size) throw new UptinError('O Mercado Livre ainda não informou os novos anúncios.');
 
-/**
- * Prune the source listing once every one of its OLD variation links has a
- * replacement (tasks.dart:960-1012 — see the module doc for the exact gating
- * this ports, including the deliberately-UNCONDITIONAL final delete loop).
- */
-async function pruneMigratedSource(
-  db: Firestore,
-  sourceLink: UptinSourceLink,
-  sourcePmlOuterRef: string,
-  oldLinksToDelete: ReadonlyArray<{ produtoId: string; docId: string }>,
-): Promise<void> {
-  const allLinksSnap = await variacaoMercadoLivreLinkCollection
-    .groupQuery(db)
-    .where('produtoMercadoLivreOuterRef', '==', sourcePmlOuterRef)
-    .get();
-  const deletedIds = new Set(oldLinksToDelete.map((l) => l.docId));
-  const fullyMigrated =
-    allLinksSnap.docs.length > 0 && allLinksSnap.docs.every((d) => deletedIds.has(d.id));
+  const ids = [...newIds];
+  const items = new Map<string, MlItem>();
+  for (let offset = 0; offset < ids.length; offset += ML_MULTIGET_MAX_IDS) {
+    const batch = ids.slice(offset, offset + ML_MULTIGET_MAX_IDS);
+    const response = await api.getItemsByIds(batch, [
+      'id',
+      'seller_id',
+      'family_id',
+      'family_name',
+      'user_product_id',
+      'status',
+      'sub_status',
+      'category_id',
+      'tags',
+      'attributes',
+      'attribute_combinations',
+    ]);
+    for (const entry of response) {
+      const result = itemSchema.safeParse(entry.body);
+      if (
+        entry.code !== 200 ||
+        !result.success ||
+        !batch.includes(result.data.id) ||
+        items.has(result.data.id)
+      ) {
+        throw new UptinError(
+          'O Mercado Livre não confirmou todos os novos anúncios. Verifique novamente.',
+        );
+      }
+      const member = result.data;
+      verifySeller(deps, member.id, member);
+      if (
+        !member.family_name ||
+        !member.user_product_id ||
+        !member.status ||
+        !member.tags?.includes(UPTIN_DESTINATION_TAG) ||
+        member.tags.includes(UPTIN_PENDING_TAG) ||
+        (member.family_id != null && !/^\d+$/.test(String(member.family_id)))
+      ) {
+        throw new UptinError(
+          `O Mercado Livre ainda não confirmou a família do anúncio ${member.id}.`,
+        );
+      }
+      items.set(member.id, member);
+    }
+  }
+  if (items.size !== ids.length)
+    throw new UptinError('O Mercado Livre não retornou todos os novos anúncios.');
 
-  // ONE atomic WriteBatch for the source-PML and old-link deletions, so a
-  // mid-prune failure cannot strand a half-pruned state.
-  const batch = db.batch();
-
-  if (fullyMigrated) {
-    batch.delete(
-      produtoMercadoLivreLinkCollection.docRef(
-        db,
-        { produtoId: sourceLink.produtoId },
-        sourceLink.linkDocId,
+  const moderations = new Map(
+    await Promise.all(
+      [...items.values()].map(
+        async (member) =>
+          [
+            member.id,
+            await consultarModeracoes(api, member.id, member.status, member.sub_status),
+          ] as const,
       ),
-    );
-  }
-
-  // Unconditional (tasks.dart:1003-1006, OUTSIDE the fully-migrated gate above):
-  // every old link THIS RUN just replaced is stale regardless of whether
-  // SIBLING variations of the same source listing are still pending.
-  for (const link of oldLinksToDelete) {
-    batch.delete(
-      variacaoMercadoLivreLinkCollection.docRef(db, { produtoId: link.produtoId }, link.docId),
-    );
-  }
-  await batch.commit();
-}
-
-/**
- * Best-effort `estado: 'E'` stamp on the source PML (tasks.dart:1017-1020).
- * `mergeIfExists` (never `merge`, which would silently CREATE a partial doc)
- * so a PML pruned by an earlier attempt resolves `false` instead of
- * resurrecting. Returns whether the stamp landed.
- */
-async function stampSourceError(
-  db: Firestore,
-  sourceLink: UptinSourceLink,
-  now: number,
-): Promise<boolean> {
-  return produtoMercadoLivreLinkCollection.mergeIfExists(
-    db,
-    { produtoId: sourceLink.produtoId },
-    sourceLink.linkDocId,
-    { estado: 'E', ultimaModificacao: now },
+    ),
   );
+  const now = Date.now();
+  await db.runTransaction(async (tx) => {
+    const [current, op] = await tx.getAll(ref, opRef);
+    const raw = current?.data();
+    if (raw == null) {
+      if (op?.exists && operations.parse(op.data()).completed) return;
+      throw new UptinError('O vínculo de origem foi removido durante a migração.');
+    }
+    if (!ownedLegacy(raw, integracaoId, itemId))
+      throw new UptinError('O vínculo do anúncio mudou durante a migração.');
+    const claim = op?.exists ? operations.parse(op.data()) : null;
+    if (
+      claim &&
+      (claim.produtoId !== target.produtoId ||
+        claim.linkDocId !== target.linkDocId ||
+        claim.sellerUserId !== sellerUserId)
+    ) {
+      throw new UptinError('A solicitação de migração pertence a outro vínculo ou vendedor.');
+    }
+    await verifyUniqueSource(tx, db, integracaoId, itemId, ref.path);
+    const sourceLinks = await tx.get(sourceVariations(db, ref.path));
+    const sourceByPath = new Map(sourceLinks.docs.map((doc) => [doc.ref.path, doc.data()]));
+    const expectedIds =
+      claim?.variations.map((row) => row.id) ??
+      (item.variations?.length ? undefined : [...replacements.keys()]);
+    const mapped = exactMapping(item, sourceLinks.docs, integracaoId, expectedIds);
+    const reportedSourceIds = (item.variations ?? []).map((row) => variationId(row.id));
+    const mappedById = new Map(mapped.map((row) => [row.id, row]));
+    const mappedPaths = new Set(mapped.map((row) => `${row.produtoId}/${row.linkDocId}`));
+    if (
+      mapped.length !== replacements.size ||
+      mapped.some((row) => !replacements.has(row.id)) ||
+      reportedSourceIds.some((id) => id == null || !mappedById.has(id)) ||
+      claim?.variations.some((row) => {
+        const current = mappedById.get(row.id);
+        return current?.produtoId !== row.produtoId || current.linkDocId !== row.linkDocId;
+      }) ||
+      sourceLinks.docs.some(
+        (snap) =>
+          snap.data().itemId ||
+          (snap.data().contaOuterRef != null &&
+            !refMatchesIntegracao(snap.data().contaOuterRef, integracaoId)) ||
+          (snap.data().id != null &&
+            !mappedPaths.has(`${snap.ref.parent.parent?.id}/${snap.id}`) &&
+            snap.data().status !== 'closed'),
+      )
+    ) {
+      throw new UptinError(
+        'A lista de variações do anúncio mudou ou a migração está incompleta. Revise os vínculos.',
+      );
+    }
+    await verifyProducts(tx, db, target.produtoId, mapped);
+
+    const families = new Map<string, { member: MlItem; row: Variation }[]>();
+    for (const row of mapped) {
+      const member = items.get(replacements.get(row.id)!)!;
+      const familyId = String(member.family_id ?? member.id);
+      const members = families.get(familyId) ?? [];
+      members.push({ member, row });
+      families.set(familyId, members);
+    }
+    const foundMembers = new Map<string, QueryDocumentSnapshot[]>();
+    for (let offset = 0; offset < ids.length; offset += ML_MULTIGET_MAX_IDS) {
+      const query = variacaoMercadoLivreLinkCollection
+        .groupQuery(db)
+        .where('itemId', 'in', ids.slice(offset, offset + ML_MULTIGET_MAX_IDS));
+      for (const doc of (await tx.get(query)).docs) {
+        const id: unknown = doc.data().itemId;
+        if (typeof id !== 'string') continue;
+        const matches = foundMembers.get(id) ?? [];
+        matches.push(doc);
+        foundMembers.set(id, matches);
+      }
+    }
+    const destinations = [];
+    for (const [familyId, members] of families) {
+      const query = produtoMercadoLivreLinkCollection.groupQuery(db).where('id', '==', familyId);
+      const matches = (await tx.get(query)).docs.filter((doc) =>
+        refMatchesIntegracao(doc.data().contaOuterRef, integracaoId),
+      );
+      const existing = matches[0];
+      if (
+        matches.length > 1 ||
+        (existing &&
+          (existing.ref.parent.parent?.id !== target.produtoId ||
+            existing.data().isUserProductModel !== true))
+      ) {
+        throw new UptinError(`A família ${familyId} já está vinculada a outro anúncio no ERP.`);
+      }
+      const parent =
+        existing?.ref ??
+        produtoMercadoLivreLinkCollection.docRef(
+          db,
+          { produtoId: target.produtoId },
+          `100000000000000000${familyId}`,
+        );
+      if (!existing && (await tx.get(parent)).exists)
+        throw new UptinError(`Conflito no vínculo da família ${familyId}.`);
+      const allMembers = existing ? (await tx.get(sourceVariations(db, parent.path))).docs : [];
+      const existingPaths = new Set(allMembers.map((doc) => doc.ref.path));
+      const memberWrites = [];
+      for (const { member, row } of members) {
+        const matches = foundMembers.get(member.id) ?? [];
+        const memberLink = matches[0];
+        if (
+          matches.length > 1 ||
+          (memberLink &&
+            (!existingPaths.has(memberLink.ref.path) ||
+              (memberLink.data().contaOuterRef != null &&
+                !refMatchesIntegracao(memberLink.data().contaOuterRef, integracaoId)) ||
+              memberLink.ref.parent.parent?.id !== row.produtoId)) ||
+          allMembers.some(
+            (doc) =>
+              doc.ref.parent.parent?.id === row.produtoId && doc.ref.path !== memberLink?.ref.path,
+          )
+        ) {
+          throw new UptinError(
+            `O novo anúncio ${member.id} já possui um vínculo incompatível no ERP.`,
+          );
+        }
+        const memberRef =
+          memberLink?.ref ??
+          variacaoMercadoLivreLinkCollection.docRef(
+            db,
+            { produtoId: row.produtoId },
+            idLocalMercadoLivre(parent.id, member.id),
+          );
+        if (!memberLink && (await tx.get(memberRef)).exists)
+          throw new UptinError(`Conflito no vínculo da variação ${member.id}.`);
+        const old = sourceByPath.get(
+          variacaoMercadoLivreLinkCollection.docPath({ produtoId: row.produtoId }, row.linkDocId),
+        );
+        memberWrites.push({
+          ref: memberRef,
+          data: {
+            ...old,
+            ...memberLink?.data(),
+            id: null,
+            itemId: member.id,
+            userProductId: member.user_product_id,
+            contaOuterRef: toOuterRef(`integracao/${integracaoId}`),
+            produtoMercadoLivreOuterRef: toOuterRef(parent.path),
+            produtoVariacaoOuterRef: toOuterRef(`produtos/${row.produtoId}`),
+            sku: skuFromAttributes(member.attributes) ?? old?.sku ?? null,
+            skuPaiAtributo: skuPaiFromAttributes(member.attributes) != null,
+            attributes: member.attribute_combinations ?? old?.attributes ?? null,
+            category_id: member.category_id ?? null,
+            status: member.status ?? null,
+            sub_status: member.sub_status ?? null,
+            moderacoes: moderations.get(member.id) ?? null,
+            estado: null,
+            errors: null,
+            causas: null,
+          },
+        });
+      }
+      const updated = new Set(memberWrites.map((write) => write.ref.path));
+      const facts = [
+        ...allMembers.filter((doc) => !updated.has(doc.ref.path)).map((doc) => doc.data()),
+        ...memberWrites.map((write) => write.data),
+      ];
+      const folded = foldFamilyStatus(
+        facts.map((fact) => ({
+          status: fact.status ?? null,
+          subStatus: fact.sub_status ?? null,
+          moderacoes: fact.moderacoes ?? null,
+        })),
+      );
+      const category = foldFamilyCategoria(
+        facts.map((fact) => ({
+          status: fact.status ?? null,
+          subStatus: fact.sub_status ?? null,
+          categoria: fact.category_id ?? null,
+        })),
+      );
+      if (!folded)
+        throw new UptinError(
+          `O Mercado Livre ainda não confirmou o estado da família ${familyId}.`,
+        );
+      destinations.push({
+        parent,
+        memberWrites,
+        data: {
+          ...raw,
+          ...existing?.data(),
+          contaOuterRef: toOuterRef(`integracao/${integracaoId}`),
+          id: familyId,
+          title: members[0]!.member.family_name,
+          category_id: category ?? existing?.data().category_id ?? raw.category_id ?? null,
+          isUserProductModel: true,
+          ...(families.size > 1 ? { uptinSomenteMembros: true } : {}),
+          userProductId: null,
+          precoPublicado: null,
+          estado: estadoFromMlStatus(folded.status, folded.subStatus),
+          status: folded.status,
+          sub_status: folded.subStatus,
+          moderacoes: folded.moderacoes,
+          errors: null,
+          causas: null,
+          ultimaModificacao: now,
+        },
+      });
+    }
+
+    for (const destination of destinations) {
+      tx.set(destination.parent, produtoMercadoLivreLinkCollection.parse(destination.data));
+      for (const member of destination.memberWrites) {
+        tx.set(member.ref, variacaoMercadoLivreLinkCollection.parse(member.data));
+      }
+    }
+    for (const oldLink of sourceLinks.docs) tx.delete(oldLink.ref);
+    tx.delete(ref);
+    tx.set(
+      opRef,
+      operations.parse({
+        ...target,
+        sellerUserId,
+        previousState: null,
+        attempt: claim?.attempt ?? '',
+        claimedAt: claim?.claimedAt ?? now,
+        dispatching: true,
+        completed: true,
+        variations: [],
+      }),
+    );
+  });
+  return 'concluida';
 }
 
-/* ------------------------------- small helpers ----------------------------- */
-
-function asStringId(v: unknown): string | null {
-  if (typeof v === 'string' && v.length > 0) return v;
-  if (typeof v === 'number' && Number.isFinite(v)) return String(v);
-  return null;
-}
-
-function asNumericVariationId(v: unknown): number | null {
-  if (typeof v === 'number' && Number.isFinite(v)) return Math.trunc(v);
-  if (typeof v === 'string' && /^-?\d+$/.test(v)) return Number(v);
-  return null;
+export function isUptinTarget(
+  target: UptinSourceLink & { integracaoId: string; itemId: unknown },
+): target is UptinSourceLink & { integracaoId: string; itemId: string } {
+  return (
+    !naoDocId(target.integracaoId) &&
+    !naoDocId(target.produtoId) &&
+    !naoDocId(target.linkDocId) &&
+    typeof target.itemId === 'string' &&
+    itemIdPattern.test(target.itemId)
+  );
 }

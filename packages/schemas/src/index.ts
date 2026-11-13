@@ -642,6 +642,10 @@ export {
   type NotificacaoStatus,
   type NotificacaoMercadoLivre,
 } from './notificacaoMercadoLivre';
+export {
+  migracaoUptinMercadoLivreSchema,
+  type MigracaoUptinVariacao,
+} from './migracaoUptinMercadoLivre';
 
 export {
   // ⚠️ LEGACY-PARITY ONLY (#829) — pre-sale ML questions, written only by the

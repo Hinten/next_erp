@@ -762,7 +762,9 @@ describe('processPriceSyncJob — per-item gates', () => {
   it('a mid-migration tagged listing skips AGUARDANDO_MIGRACAO without a PUT', async () => {
     const db = new FakeDb();
     seedJob(db, 'job6', { planejamentoConcluido: true, fila: [draft('MIG')] });
-    const api = makeApi({ MIG: mlItem('MIG', { tags: ['variations_migration_source'] }) });
+    const api = makeApi({
+      MIG: mlItem('MIG', { tags: ['variations_migration_source', 'variations_migration_pending'] }),
+    });
     const deps = runDeps(db, api);
 
     const outcome = await processPriceSyncJob(deps, { jobId: 'job6', integracaoId: CONTA }, 0);
@@ -773,6 +775,21 @@ describe('processPriceSyncJob — per-item gates', () => {
     expect((job.skips as Array<{ code: string }>).map((s) => s.code)).toEqual([
       'AGUARDANDO_MIGRACAO',
     ]);
+  });
+
+  it('sends price to a migrated member with the completed UPtin tag', async () => {
+    const db = new FakeDb();
+    seedJob(db, 'completedUptin', {
+      planejamentoConcluido: true,
+      fila: [draft('MLB201', { kind: 'variationItem' })],
+    });
+    const api = makeApi({ MLB201: mlItem('MLB201', { tags: ['variations_migration_uptin'] }) });
+    await processPriceSyncJob(
+      runDeps(db, api),
+      { jobId: 'completedUptin', integracaoId: CONTA },
+      0,
+    );
+    expect(api.updateItem).toHaveBeenCalledExactlyOnceWith('MLB201', { price: 50 });
   });
 });
 

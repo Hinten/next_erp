@@ -26,7 +26,8 @@ photos, variations and the link doc. The inverse direction (ERP → ML) is
   to `produto.fotos`.
 - `importTaxonomia.ts` — IO for the taxonomy resolver: loads
   `grupoDeVariacoes` candidates, runs `planTaxonomia`, persists misses.
-- `importMigration.ts` — the User-Products (UPtin) migration handler;
-  re-imports migrated members onto the same ERP produtos.
+- `importMigration.ts` — starts User Products (UPtin) for a single listing and
+  verifies Mercado Livre's activation report. It atomically replaces the old
+  ERP links using the original variation IDs and the existing produtos.
 - `taxonomiaCore.ts` — the pure ML → ERP taxonomy resolver
   (`attribute_combinations[]` → grupoDeVariacoes / Variante).
