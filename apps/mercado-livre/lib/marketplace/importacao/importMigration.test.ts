@@ -1,537 +1,293 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { Firestore } from 'firebase-admin/firestore';
-import { MercadoLivreError, type MercadoLivreApi } from '@delfrance/integrations-mercado-livre';
-import { toOuterRef } from '@delfrance/schemas';
-
 import {
-  type UptinMigrationDeps,
-  type UptinSourceLink,
+  MercadoLivreHttpError,
+  MercadoLivreNetworkError,
+  UPTIN_DESTINATION_TAG,
+  UPTIN_SOURCE_TAG,
+} from '@delfrance/integrations-mercado-livre';
+import { toOuterRef } from '@delfrance/schemas';
+import {
   handleUptinMigration,
+  startUptinMigration,
+  type UptinMigrationDeps,
 } from './importMigration';
-import { MercadoLivreImportError } from './importCore';
 
-/* ------------------------------ fake Firestore ---------------------------- */
-// Adapted from import.test.ts's FakeDb: adds `.delete()` and makes `.update()`
-// throw NOT_FOUND (code 5) on a missing doc — real Admin-SDK `.update()`
-// semantics, which `stampSourceError`'s tolerate-NOT_FOUND path depends on.
+type Data = Record<string, unknown>;
 
-type DocData = Record<string, unknown>;
-
-class FakeDb {
-  readonly cols = new Map<string, Map<string, DocData>>();
-  readonly updates: Array<{ path: string; patch: DocData }> = [];
-  private autoN = 0;
-
-  private col(path: string): Map<string, DocData> {
-    let c = this.cols.get(path);
-    if (!c) this.cols.set(path, (c = new Map()));
-    return c;
-  }
-  seed(path: string, id: string, data: DocData): void {
-    this.col(path).set(id, data);
-  }
-  docs(path: string): Map<string, DocData> {
-    return this.col(path);
-  }
-
-  private query(entries: Array<[string, DocData, string]>) {
-    const clauses: Array<[string, unknown]> = [];
-    let lim: number | null = null;
-    const q = {
-      where(field: string, _op: string, value: unknown) {
-        clauses.push([field, value]);
-        return q;
-      },
-      limit(n: number) {
-        lim = n;
-        return q;
-      },
-      async get() {
-        let rows = entries.filter(([, d]) => clauses.every(([f, v]) => d[f] === v));
-        if (lim != null) rows = rows.slice(0, lim);
-        return {
-          docs: rows.map(([id, d, colPath]) => ({
-            id,
-            data: () => d,
-            exists: true,
-            ref: { parent: { parent: { id: parentDocId(colPath) } } },
-          })),
-          empty: rows.length === 0,
-        };
-      },
-    };
-    return q;
-  }
-
-  /**
-   * Minimal WriteBatch fake for the atomic prune: queues update/delete thunks
-   * against the same fake doc refs and applies them ALL on commit() (the fake
-   * doesn't model rollback — atomicity itself is the real SDK's contract).
-   */
-  batch() {
-    const ops: Array<() => Promise<void>> = [];
-    return {
-      update(ref: { update: (patch: DocData) => Promise<void> }, patch: DocData) {
-        ops.push(() => ref.update(patch));
-        return this;
-      },
-      delete(ref: { delete: () => Promise<void> }) {
-        ops.push(() => ref.delete());
-        return this;
-      },
-      commit: async () => {
-        for (const op of ops) await op();
-      },
-    };
-  }
+class Db {
+  docs = new Map<string, Data>();
+  failCommit = false;
+  private queue: Promise<unknown> = Promise.resolve();
 
   collection(path: string) {
-    const col = this.col(path);
-    const self = this;
-    return {
-      doc: (id?: string) => {
-        const docId = id ?? `auto-${++self.autoN}`;
-        return {
-          id: docId,
-          get: async () => ({ exists: col.has(docId), id: docId, data: () => col.get(docId) }),
-          set: async (data: DocData, opts?: { merge?: boolean }) => {
-            col.set(docId, opts?.merge ? { ...(col.get(docId) ?? {}), ...data } : { ...data });
-          },
-          create: async (data: DocData) => {
-            if (col.has(docId)) throw Object.assign(new Error('already exists'), { code: 6 });
-            col.set(docId, { ...data });
-          },
-          update: async (patch: DocData) => {
-            if (!col.has(docId))
-              throw Object.assign(new Error('no document to update'), { code: 5 });
-            self.updates.push({ path: `${path}/${docId}`, patch });
-            col.set(docId, { ...(col.get(docId) ?? {}), ...patch });
-          },
-          delete: async () => {
-            col.delete(docId);
-          },
-        };
+    return { doc: (id: string) => this.ref(`${path}/${id}`) };
+  }
+
+  ref(path: string) {
+    const parts = path.split('/');
+    const id = parts.at(-1)!;
+    const ref = {
+      path,
+      id,
+      parent: { parent: { id: parts.at(-3) } },
+      get: async () => {
+        const value = this.docs.get(path);
+        return { id, ref, exists: value != null, data: () => value };
       },
-      where: (field: string, op: string, value: unknown) =>
-        self.query([...col.entries()].map(([id, d]) => [id, d, path])).where(field, op, value),
-      limit: (n: number) => self.query([...col.entries()].map(([id, d]) => [id, d, path])).limit(n),
-      get: async () => ({
-        docs: [...col.entries()].map(([id, d]) => ({ id, data: () => d, exists: true })),
+    };
+    return ref;
+  }
+
+  collectionGroup(group: string) {
+    return {
+      where: (field: string, op: string, value: unknown) => ({
+        get: async () => {
+          const paths = [...this.docs].filter(
+            ([path, data]) =>
+              path.split('/').at(-2) === group &&
+              (op === 'in' && Array.isArray(value)
+                ? value.includes(data[field])
+                : data[field] === value),
+          );
+          return { docs: await Promise.all(paths.map(([path]) => this.ref(path).get())) };
+        },
       }),
     };
   }
 
-  collectionGroup(groupId: string) {
-    const entries: Array<[string, DocData, string]> = [];
-    for (const [path, col] of this.cols) {
-      if (path.split('/').pop() === groupId) {
-        for (const [id, d] of col) entries.push([id, d, path]);
+  runTransaction<T>(fn: (tx: unknown) => Promise<T>): Promise<T> {
+    const result = this.queue.then(async () => {
+      const writes: Array<() => void> = [];
+      const set = (ref: { path: string }, data: Data) =>
+        writes.push(() => {
+          this.docs.set(ref.path, data);
+        });
+      const get = (ref: { get: () => Promise<unknown> }) => ref.get();
+      const result = await fn({
+        get,
+        getAll: (...refs: Array<{ get: () => Promise<unknown> }>) => Promise.all(refs.map(get)),
+        set,
+        create: set,
+        update: (ref: { path: string }, data: Data) =>
+          set(ref, { ...this.docs.get(ref.path), ...data }),
+        delete: (ref: { path: string }) =>
+          writes.push(() => {
+            this.docs.delete(ref.path);
+          }),
+      });
+      if (this.failCommit && writes.length > 0) {
+        this.failCommit = false;
+        throw new Error('commit failed');
       }
-    }
-    return this.query(entries);
-  }
-
-  // Minimal transaction fake for the taxonomy resolver (#519/#520/#521) that
-  // `importProduto` exercises internally — no real isolation/retry, enough for
-  // these single-threaded tests (same shape as import.test.ts's FakeDb).
-  async runTransaction<T>(fn: (tx: FakeTransaction) => Promise<T>): Promise<T> {
-    const tx: FakeTransaction = {
-      get: async (ref: { get: () => Promise<unknown> }) => ref.get(),
-      create: async (ref: { create: (d: DocData) => Promise<void> }, data: DocData) => {
-        await ref.create(data);
-      },
-      set: async (
-        ref: { set: (d: DocData, o?: { merge?: boolean }) => Promise<void> },
-        data: DocData,
-        opts?: { merge?: boolean },
-      ) => {
-        await ref.set(data, opts);
-      },
-      update: async (ref: { update: (d: DocData) => Promise<void> }, patch: DocData) => {
-        await ref.update(patch);
-      },
-    };
-    return fn(tx);
-  }
-}
-
-interface FakeTransaction {
-  get: (ref: { get: () => Promise<unknown> }) => Promise<unknown>;
-  create: (ref: { create: (d: DocData) => Promise<void> }, data: DocData) => Promise<void>;
-  set: (
-    ref: { set: (d: DocData, o?: { merge?: boolean }) => Promise<void> },
-    data: DocData,
-    opts?: { merge?: boolean },
-  ) => Promise<void>;
-  update: (ref: { update: (d: DocData) => Promise<void> }, patch: DocData) => Promise<void>;
-}
-
-function parentDocId(colPath: string): string {
-  const segs = colPath.split('/').filter(Boolean);
-  return segs[segs.length - 2] ?? '';
-}
-
-const asDb = (db: FakeDb) => db as unknown as Firestore;
-
-/* --------------------------------- fixtures ------------------------------- */
-
-const CONTA = 'conta-A';
-const SOURCE_ITEM_ID = 'MLB-SOURCE';
-const FAMILY_ID = 'FAM1';
-const MEMBER_1_ID = 'MLB-NEW-1';
-const MEMBER_2_ID = 'MLB-NEW-2';
-const TP1 = 'TP1'; // the source listing's own top-level parent produto
-const CHILD_1 = 'childAzulP'; // old variation #1's own produto (SKU-AZUL-P)
-const CHILD_2 = 'childVerdeM'; // old variation #2's own produto (SKU-VERDE-M)
-const CHILD_3 = 'childRoxoG'; // old variation #3 — used by the partial-migration test only
-const SOURCE_PML_DOC_ID = 'sourcePml1';
-const OLD_LINK_1 = 'oldLink1';
-const OLD_LINK_2 = 'oldLink2';
-const OLD_LINK_3 = 'oldLink3';
-
-const sourcePmlOuterRef = toOuterRef(`produtos/${TP1}/produtoMercadoLivre/${SOURCE_PML_DOC_ID}`);
-
-const SOURCE_PML_RAW: DocData = {
-  contaOuterRef: `documents/integracao/${CONTA}`,
-  id: SOURCE_ITEM_ID,
-  title: 'Camiseta Família (legado)',
-  estado: 'p',
-  status: 'closed',
-};
-
-function sourceLink(): UptinSourceLink {
-  return { produtoId: TP1, linkDocId: SOURCE_PML_DOC_ID, raw: SOURCE_PML_RAW };
-}
-
-/** Seeds the source listing's parent + 2 (optionally 3) old variation children,
- * each with an old `variacaoMercadoLivre` link pointing at the source PML. */
-function seedBaseline(db: FakeDb, opts: { withThirdChild?: boolean } = {}): void {
-  db.seed('produtos', TP1, {
-    nome: 'Camiseta Família (legado)',
-    sku: null,
-    paiId: null,
-    integracoesComProduto: [CONTA],
-  });
-  db.seed(`produtos/${TP1}/produtoMercadoLivre`, SOURCE_PML_DOC_ID, { ...SOURCE_PML_RAW });
-
-  db.seed('produtos', CHILD_1, { nome: 'Camiseta Azul P', sku: 'SKU-AZUL-P', paiId: TP1 });
-  db.seed('produtos', CHILD_2, { nome: 'Camiseta Verde M', sku: 'SKU-VERDE-M', paiId: TP1 });
-  db.seed(`produtos/${CHILD_1}/variacaoMercadoLivre`, OLD_LINK_1, {
-    id: 1001,
-    itemId: null,
-    produtoVariacaoOuterRef: toOuterRef(`produtos/${CHILD_1}`),
-    produtoMercadoLivreOuterRef: sourcePmlOuterRef,
-    sku: 'SKU-AZUL-P',
-  });
-  db.seed(`produtos/${CHILD_2}/variacaoMercadoLivre`, OLD_LINK_2, {
-    id: 1002,
-    itemId: null,
-    produtoVariacaoOuterRef: toOuterRef(`produtos/${CHILD_2}`),
-    produtoMercadoLivreOuterRef: sourcePmlOuterRef,
-    sku: 'SKU-VERDE-M',
-  });
-
-  if (opts.withThirdChild) {
-    db.seed('produtos', CHILD_3, { nome: 'Camiseta Roxa G', sku: 'SKU-ROXO-G', paiId: TP1 });
-    db.seed(`produtos/${CHILD_3}/variacaoMercadoLivre`, OLD_LINK_3, {
-      id: 1003,
-      itemId: null,
-      produtoVariacaoOuterRef: toOuterRef(`produtos/${CHILD_3}`),
-      produtoMercadoLivreOuterRef: sourcePmlOuterRef,
-      sku: 'SKU-ROXO-G',
+      for (const write of writes) write();
+      return result;
     });
+    this.queue = result.catch(() => undefined);
+    return result;
   }
 }
 
-const MEMBER_1: DocData = {
-  id: MEMBER_1_ID,
-  family_name: 'Camiseta Família',
-  family_id: FAMILY_ID,
-  title: 'Camiseta',
-  category_id: 'MLB1430',
-  base_price: 59.9,
-  price: 59.9,
-  available_quantity: 5,
-  condition: 'new',
-  status: 'active',
-  listing_type_id: 'gold_special',
-  seller_id: 55,
-  attributes: [{ id: 'SELLER_SKU', value_name: 'SKU-AZUL-P' }],
-  attribute_combinations: [{ id: 'COLOR', name: 'Cor', value_id: '1', value_name: 'Azul' }],
-};
-const MEMBER_2: DocData = {
-  ...MEMBER_1,
-  id: MEMBER_2_ID,
-  attributes: [{ id: 'SELLER_SKU', value_name: 'SKU-VERDE-M' }],
-  attribute_combinations: [{ id: 'COLOR', name: 'Cor', value_id: '2', value_name: 'Verde' }],
+const itemId = 'MLB100';
+const target = { produtoId: 'base', linkDocId: 'old' };
+const parent = 'produtos/base/produtoMercadoLivre/old';
+const left = 'produtos/left/variacaoMercadoLivre/old-left';
+const right = 'produtos/right/variacaoMercadoLivre/old-right';
+const variations = [{ id: 111 }, { id: 222 }];
+const active = { id: itemId, seller_id: 42, status: 'active', variations };
+const closed = { ...active, status: 'closed', tags: [UPTIN_SOURCE_TAG] };
+const completed = {
+  item_id: itemId,
+  activation_completed: '2026-10-01T12:00:00Z',
+  new_items: [
+    { variation_id: 111, new_item_id: 'MLB201' },
+    { variation_id: '222', new_item_id: 'MLB202' },
+  ],
 };
 
-function makeMigrationApi(opts: {
-  newItems: Array<{ new_item_id: string | number | null; variation_id: number | string | null }>;
-  items?: Record<string, DocData>;
-}): MercadoLivreApi {
-  const items = opts.items ?? {};
-  return {
-    getMigrationLiveListing: vi.fn(async () => ({ new_items: opts.newItems })),
-    getItem: vi.fn(async (id: string) => {
-      const it = items[id];
-      if (!it) throw new MercadoLivreError(`item não encontrado: ${id}`);
-      return it;
-    }),
-    getItemDescription: vi.fn(async () => ({ plain_text: 'Descrição' })),
-    getCategory: vi.fn(async () => ({ id: 'MLB1430', name: 'Roupas' })),
-    // ML reports no billable weight, so a migrated produto keeps exactly the
-    // dimensions its source listing declared.
-    getFreeShippingOptions: vi.fn(async () => ({ coverage: { all_country: {} } })),
-  } as unknown as MercadoLivreApi;
-}
-
-function migrationDeps(db: FakeDb, api: MercadoLivreApi): UptinMigrationDeps {
-  return {
-    db: asDb(db),
-    api,
-    integracaoId: CONTA,
-    sellerUserId: 55,
-    tabelaNormalOuterRef: 'documents/tabelasDePrecos/tabNormal',
-    depositoOuterRef: 'documents/depositos/dep1',
+function fixture() {
+  const store = new Db();
+  store.docs.set('produtos/base', { nome: 'Base' });
+  store.docs.set('produtos/left', { paiId: 'base', sku: 'mesmo-sku', precos: { tabela: 12 } });
+  store.docs.set('produtos/right', { paiId: 'base', sku: 'mesmo-sku' });
+  store.docs.set(parent, {
+    id: itemId,
+    title: 'Original',
+    contaOuterRef: 'integracao/conta',
+    estado: 'p',
+    descricao: 'Texto do operador',
+    crossdocking: 2,
+  });
+  store.docs.set(left, {
+    id: 111,
+    produtoMercadoLivreOuterRef: parent,
+    produtoVariacaoOuterRef: 'produtos/left',
+  });
+  store.docs.set(right, {
+    id: 222,
+    produtoMercadoLivreOuterRef: toOuterRef(parent),
+    produtoVariacaoOuterRef: 'produtos/right',
+  });
+  const api = {
+    getItem: vi.fn(async () => active),
+    validateUptin: vi.fn(async () => ({ is_valid: true, cause: [] as Array<{ message: string }> })),
+    startUptin: vi.fn(async () => {}),
+    getLastModeration: vi.fn(async () => []),
+    getMigrationLiveListing: vi.fn(async () => completed),
+    getItemsByIds: vi.fn(async () =>
+      ['MLB202', 'MLB201'].map((id) => ({
+        code: 200,
+        body: {
+          id,
+          seller_id: 42,
+          family_id: '18446744000000000615',
+          family_name: 'Família nova',
+          user_product_id: `UP-${id}`,
+          status: id === 'MLB201' ? 'paused' : 'active',
+          tags: [UPTIN_DESTINATION_TAG],
+        },
+      })),
+    ),
   };
+  const deps: UptinMigrationDeps = {
+    db: store as unknown as Firestore,
+    api,
+    sellerUserId: 42,
+    integracaoId: 'conta',
+  };
+  const arm = vi.fn(async () => {});
+  return { store, api, deps, arm };
 }
 
-const expectedFamilyLinkId = `100000000000000000${FAMILY_ID}`;
+function destination(store: Db, produtoId: string) {
+  return [...store.docs].find(([path]) =>
+    path.startsWith(`produtos/${produtoId}/variacaoMercadoLivre/`),
+  )?.[1];
+}
 
-beforeEach(() => {
-  vi.restoreAllMocks();
-});
-
-/**
- * Every test below drives the REAL `importProduto` (via `handleUptinMigration`)
- * with `upParentOverride` set — `import.ts`'s `resolveUpParentOverride` (#441)
- * forces the UP family parent onto the override produto instead of running
- * `resolveExistingUpParent`'s cascade. See importMigration.ts's module doc for
- * the full derivation of why `upParentOverride.produtoId` must be
- * `sourceLink.produtoId` (the source listing's OWN top-level parent), not the
- * resolved OLD variation's own produto.
- */
-describe('handleUptinMigration — fresh migration', () => {
-  it('imports every new member onto the source listing’s own parent — continuity + full prune', async () => {
-    const db = new FakeDb();
-    seedBaseline(db);
-    const api = makeMigrationApi({
-      newItems: [
-        { new_item_id: MEMBER_1_ID, variation_id: 1001 },
-        { new_item_id: MEMBER_2_ID, variation_id: 1002 },
-      ],
-      items: { [MEMBER_1_ID]: MEMBER_1, [MEMBER_2_ID]: MEMBER_2 },
-    });
-
-    await handleUptinMigration(migrationDeps(db, api), SOURCE_ITEM_ID, sourceLink());
-
-    // family PML minted UNDER the source listing's OWN parent produto (TP1) —
-    // no brand-new "family" produto was created.
-    expect(db.docs('produtos').size).toBe(3); // TP1 + CHILD_1 + CHILD_2, unchanged
-    const familyPml = db.docs(`produtos/${TP1}/produtoMercadoLivre`).get(expectedFamilyLinkId);
-    expect(familyPml).toMatchObject({ id: FAMILY_ID, isUserProductModel: true });
-
-    // both old variation children reused as the new members' own child (SKU +
-    // paiId==TP1 continuity) — asserted via the OLD produto ids still existing
-    // and no additional produtos having been minted (checked above).
-    expect(db.docs('produtos').get(CHILD_1)).toMatchObject({ sku: 'SKU-AZUL-P' });
-    expect(db.docs('produtos').get(CHILD_2)).toMatchObject({ sku: 'SKU-VERDE-M' });
-
-    // fully migrated → old links + source PML pruned.
-    expect(db.docs(`produtos/${CHILD_1}/variacaoMercadoLivre`).has(OLD_LINK_1)).toBe(false);
-    expect(db.docs(`produtos/${CHILD_2}/variacaoMercadoLivre`).has(OLD_LINK_2)).toBe(false);
-    expect(db.docs(`produtos/${TP1}/produtoMercadoLivre`).has(SOURCE_PML_DOC_ID)).toBe(false);
-
-    const tp1 = db.docs('produtos').get(TP1)!;
-    expect(tp1.integracoesComProduto).toEqual([CONTA]);
+describe('startUptinMigration', () => {
+  it('arms recovery before dispatch and coalesces concurrent starts', async () => {
+    const { deps, store, arm, api } = fixture();
+    const results = await Promise.all([
+      startUptinMigration(deps, itemId, target, arm),
+      startUptinMigration(deps, itemId, target, arm),
+    ]);
+    expect(results).toEqual(expect.arrayContaining(['iniciada', 'pendente']));
+    expect(arm).toHaveBeenCalledBefore(api.startUptin);
+    expect(api.startUptin).toHaveBeenCalledExactlyOnceWith(itemId);
+    expect(store.docs.get(parent)?.estado).toBe('am');
   });
-});
 
-describe('handleUptinMigration — partial migration', () => {
-  it('does NOT prune the source PML while a sibling variation is still unmigrated, but still deletes the processed old links', async () => {
-    const db = new FakeDb();
-    seedBaseline(db, { withThirdChild: true }); // CHILD_3/OLD_LINK_3 (variation 1003) never appears in new_items
-    const api = makeMigrationApi({
-      newItems: [
-        { new_item_id: MEMBER_1_ID, variation_id: 1001 },
-        { new_item_id: MEMBER_2_ID, variation_id: 1002 },
-      ],
-      items: { [MEMBER_1_ID]: MEMBER_1, [MEMBER_2_ID]: MEMBER_2 },
+  it('reports eligibility causes and never claims a missing ERP variation', async () => {
+    const { deps, store, arm, api } = fixture();
+    api.validateUptin.mockResolvedValueOnce({
+      is_valid: false,
+      cause: [{ message: 'Categoria não habilitada' }],
     });
-
-    await handleUptinMigration(migrationDeps(db, api), SOURCE_ITEM_ID, sourceLink());
-
-    // processed old links (1001/1002) deleted regardless of the sibling being pending.
-    expect(db.docs(`produtos/${CHILD_1}/variacaoMercadoLivre`).has(OLD_LINK_1)).toBe(false);
-    expect(db.docs(`produtos/${CHILD_2}/variacaoMercadoLivre`).has(OLD_LINK_2)).toBe(false);
-
-    // NOT fully migrated → source PML survives and the still-pending sibling's
-    // old link is untouched.
-    expect(db.docs(`produtos/${TP1}/produtoMercadoLivre`).has(SOURCE_PML_DOC_ID)).toBe(true);
-    expect(db.docs(`produtos/${CHILD_3}/variacaoMercadoLivre`).has(OLD_LINK_3)).toBe(true);
-  });
-});
-
-describe('handleUptinMigration — replay idempotency', () => {
-  it('crash-retry: registered members with SURVIVING old links re-enqueue them and the prune converges', async () => {
-    const db = new FakeDb();
-    seedBaseline(db);
-    // Simulate a PRIOR run that already imported both members under the family PML.
-    db.seed(`produtos/${TP1}/produtoMercadoLivre`, expectedFamilyLinkId, {
-      contaOuterRef: `documents/integracao/${CONTA}`,
-      id: FAMILY_ID,
-      title: 'Camiseta Família',
-      estado: 'am',
-      isUserProductModel: false,
-    });
-    const familyPmlOuterRef = toOuterRef(
-      `produtos/${TP1}/produtoMercadoLivre/${expectedFamilyLinkId}`,
+    await expect(startUptinMigration(deps, itemId, target, arm)).rejects.toThrow(
+      'Categoria não habilitada',
     );
-    db.seed(`produtos/${CHILD_1}/variacaoMercadoLivre`, 'newLink1', {
-      itemId: MEMBER_1_ID,
-      id: null,
-      produtoVariacaoOuterRef: toOuterRef(`produtos/${CHILD_1}`),
-      produtoMercadoLivreOuterRef: familyPmlOuterRef,
-      sku: 'SKU-AZUL-P',
-    });
-    db.seed(`produtos/${CHILD_2}/variacaoMercadoLivre`, 'newLink2', {
-      itemId: MEMBER_2_ID,
-      id: null,
-      produtoVariacaoOuterRef: toOuterRef(`produtos/${CHILD_2}`),
-      produtoMercadoLivreOuterRef: familyPmlOuterRef,
-      sku: 'SKU-VERDE-M',
-    });
-
-    const api = makeMigrationApi({
-      newItems: [
-        { new_item_id: MEMBER_1_ID, variation_id: 1001 },
-        { new_item_id: MEMBER_2_ID, variation_id: 1002 },
-      ],
-      items: { [MEMBER_1_ID]: MEMBER_1, [MEMBER_2_ID]: MEMBER_2 },
-    });
-
-    await handleUptinMigration(migrationDeps(db, api), SOURCE_ITEM_ID, sourceLink());
-
-    // no import — every member was already registered.
-    expect(api.getItem).not.toHaveBeenCalled();
-
-    // family PML stamped publicado (ONE write — both members share it).
-    expect(db.docs(`produtos/${TP1}/produtoMercadoLivre`).get(expectedFamilyLinkId)).toMatchObject({
-      estado: 'p',
-      isUserProductModel: true,
-    });
-
-    // CONVERGENCE (Copilot review, #617): this seeding IS the crash-retry
-    // scenario — a prior run imported both members but died before the prune
-    // batch (old links + source PML still present). The retry must re-locate
-    // the stale old links off the registered members and finish the prune,
-    // or `fullyMigrated` could never become true.
-    expect(db.docs(`produtos/${CHILD_1}/variacaoMercadoLivre`).has(OLD_LINK_1)).toBe(false);
-    expect(db.docs(`produtos/${CHILD_2}/variacaoMercadoLivre`).has(OLD_LINK_2)).toBe(false);
-    expect(db.docs(`produtos/${TP1}/produtoMercadoLivre`).has(SOURCE_PML_DOC_ID)).toBe(false);
+    store.docs.delete(right);
+    await expect(startUptinMigration(deps, itemId, target, arm)).rejects.toThrow('222');
+    expect(arm).not.toHaveBeenCalled();
+    expect(api.startUptin).not.toHaveBeenCalled();
+    expect(store.docs.get(parent)?.estado).toBe('p');
   });
 
-  it('partial family: registered members whose old links are ALREADY gone stay stamp-only (no prune)', async () => {
-    const db = new FakeDb();
-    // Third child = a sibling variation NOT covered by new_items — the source
-    // listing is genuinely not fully migrated yet.
-    seedBaseline(db, { withThirdChild: true });
-    // A prior PARTIAL run already imported member 1 AND deleted its old link
-    // (the unconditional delete loop) — so the retry's best-effort re-locate
-    // finds nothing for it: genuinely stamp-only, and the prune gate stays
-    // closed because of the uncovered third sibling.
-    db.docs(`produtos/${CHILD_1}/variacaoMercadoLivre`).delete(OLD_LINK_1);
-    db.seed(`produtos/${TP1}/produtoMercadoLivre`, expectedFamilyLinkId, {
-      contaOuterRef: `documents/integracao/${CONTA}`,
-      id: FAMILY_ID,
-      title: 'Camiseta Família',
-      estado: 'am',
-      isUserProductModel: false,
-    });
-    db.seed(`produtos/${CHILD_1}/variacaoMercadoLivre`, 'newLink1', {
-      itemId: MEMBER_1_ID,
-      id: null,
-      produtoVariacaoOuterRef: toOuterRef(`produtos/${CHILD_1}`),
-      produtoMercadoLivreOuterRef: toOuterRef(
-        `produtos/${TP1}/produtoMercadoLivre/${expectedFamilyLinkId}`,
-      ),
-      sku: 'SKU-AZUL-P',
-    });
+  it('rejects a different seller before validating or submitting', async () => {
+    const { deps, arm, api } = fixture();
+    api.getItem.mockResolvedValueOnce({ ...active, seller_id: 99 });
+    await expect(startUptinMigration(deps, itemId, target, arm)).rejects.toThrow('vendedor');
+    expect(api.validateUptin).not.toHaveBeenCalled();
+    expect(api.startUptin).not.toHaveBeenCalled();
+  });
 
-    const api = makeMigrationApi({
-      newItems: [{ new_item_id: MEMBER_1_ID, variation_id: 1001 }],
-    });
+  it('keeps a lost POST response pending and recovers without resubmitting', async () => {
+    const { deps, store, arm, api } = fixture();
+    api.startUptin.mockRejectedValueOnce(new MercadoLivreNetworkError('socket lost', null));
+    expect(await startUptinMigration(deps, itemId, target, arm)).toBe('incerta');
+    expect(await startUptinMigration(deps, itemId, target, arm)).toBe('pendente');
+    expect(api.startUptin).toHaveBeenCalledTimes(1);
+    expect(await handleUptinMigration(deps, itemId, target, closed)).toBe('concluida');
+    expect(store.docs.has(parent)).toBe(false);
+  });
 
-    await handleUptinMigration(migrationDeps(db, api), SOURCE_ITEM_ID, sourceLink());
-
-    expect(api.getItem).not.toHaveBeenCalled();
-    expect(db.docs(`produtos/${TP1}/produtoMercadoLivre`).get(expectedFamilyLinkId)).toMatchObject({
-      estado: 'p',
-      isUserProductModel: true,
-    });
-    // No prune: nothing was queued (member 1's old link already gone) and the
-    // third sibling's old link keeps the fully-migrated gate closed anyway.
-    expect(db.docs(`produtos/${TP1}/produtoMercadoLivre`).has(SOURCE_PML_DOC_ID)).toBe(true);
-    expect(db.docs(`produtos/${CHILD_2}/variacaoMercadoLivre`).has(OLD_LINK_2)).toBe(true);
+  it('releases a definitively refused request and restores the prior state', async () => {
+    const { deps, store, arm, api } = fixture();
+    api.startUptin.mockRejectedValueOnce(new MercadoLivreHttpError('refusado', 422, {}));
+    api.getMigrationLiveListing.mockRejectedValueOnce(
+      new MercadoLivreHttpError('sem migração', 404, {}),
+    );
+    await expect(startUptinMigration(deps, itemId, target, arm)).rejects.toThrow('refusado');
+    expect(store.docs.get(parent)?.estado).toBe('p');
+    expect(await startUptinMigration(deps, itemId, target, arm)).toBe('iniciada');
   });
 });
 
-describe('handleUptinMigration — missing old variation', () => {
-  it('throws MercadoLivreImportError and stamps the source PML estado=E', async () => {
-    const db = new FakeDb();
-    seedBaseline(db);
-    const api = makeMigrationApi({
-      newItems: [{ new_item_id: 'MLB-ORPHAN', variation_id: 9999 }], // no such old link
-    });
-
-    await expect(
-      handleUptinMigration(migrationDeps(db, api), SOURCE_ITEM_ID, sourceLink()),
-    ).rejects.toThrow(MercadoLivreImportError);
-
-    expect(db.docs(`produtos/${TP1}/produtoMercadoLivre`).get(SOURCE_PML_DOC_ID)).toMatchObject({
-      estado: 'E',
-    });
+describe('handleUptinMigration', () => {
+  it('keeps provider families separate when a migration splits the listing', async () => {
+    const { deps, store, api } = fixture();
+    const members = await api.getItemsByIds();
+    api.getItemsByIds.mockResolvedValueOnce(
+      members.map((row, index) => ({
+        ...row,
+        body: { ...row.body, family_id: `900${index}` },
+      })),
+    );
+    await expect(handleUptinMigration(deps, itemId, target, closed)).resolves.toBe('concluida');
+    const links = [...store.docs].filter(([path]) => path.includes('/produtoMercadoLivre/'));
+    expect(links.map(([, data]) => data.id)).toEqual(expect.arrayContaining(['9000', '9001']));
+    expect(links.every(([, data]) => data.uptinSomenteMembros === true)).toBe(true);
+    expect(destination(store, 'left')?.produtoMercadoLivreOuterRef).not.toBe(
+      destination(store, 'right')?.produtoMercadoLivreOuterRef,
+    );
   });
 
-  it('still throws the ORIGINAL error when the source PML was already deleted (tolerates NOT_FOUND on the stamp)', async () => {
-    const db = new FakeDb();
-    seedBaseline(db);
-    db.docs(`produtos/${TP1}/produtoMercadoLivre`).delete(SOURCE_PML_DOC_ID); // pre-deleted (e.g. a prior crashed attempt)
-    const api = makeMigrationApi({
-      newItems: [{ new_item_id: 'MLB-ORPHAN', variation_id: 9999 }],
+  it('links the exact children, folds actual status, preserves ERP data and makes duplicate delivery a no-op', async () => {
+    const { deps, store, api } = fixture();
+    expect(await handleUptinMigration(deps, itemId, target, closed)).toBe('concluida');
+    expect(store.docs.has(parent)).toBe(false);
+    expect(store.docs.has(left)).toBe(false);
+    expect(store.docs.has(right)).toBe(false);
+    expect(
+      store.docs.get('produtos/base/produtoMercadoLivre/10000000000000000018446744000000000615'),
+    ).toMatchObject({
+      id: '18446744000000000615',
+      isUserProductModel: true,
+      status: 'active',
+      descricao: 'Texto do operador',
+      crossdocking: 2,
     });
-
-    await expect(
-      handleUptinMigration(migrationDeps(db, api), SOURCE_ITEM_ID, sourceLink()),
-    ).rejects.toThrow(MercadoLivreImportError);
+    expect(destination(store, 'left')).toMatchObject({ itemId: 'MLB201', status: 'paused' });
+    expect(destination(store, 'right')).toMatchObject({ itemId: 'MLB202', status: 'active' });
+    expect(store.docs.get('produtos/left')?.precos).toEqual({ tabela: 12 });
+    expect(await handleUptinMigration(deps, itemId, target, closed)).toBe('concluida');
+    expect(api.getItemsByIds).toHaveBeenCalledTimes(1);
   });
 
-  it('a null/unparseable variation_id on a not-yet-imported item also throws MercadoLivreImportError', async () => {
-    const db = new FakeDb();
-    seedBaseline(db);
-    const api = makeMigrationApi({
-      newItems: [{ new_item_id: 'MLB-ORPHAN', variation_id: null }],
+  it('preserves all source links on partial results or conflicting destination links', async () => {
+    const { deps, store, api } = fixture();
+    api.getMigrationLiveListing.mockResolvedValueOnce({
+      ...completed,
+      new_items: completed.new_items.slice(0, 1),
     });
-
-    await expect(
-      handleUptinMigration(migrationDeps(db, api), SOURCE_ITEM_ID, sourceLink()),
-    ).rejects.toThrow(MercadoLivreImportError);
+    await expect(handleUptinMigration(deps, itemId, target, closed)).rejects.toThrow();
+    expect([parent, left, right].every((path) => store.docs.has(path))).toBe(true);
+    store.docs.set('produtos/other/variacaoMercadoLivre/conflict', { itemId: 'MLB202' });
+    await expect(handleUptinMigration(deps, itemId, target, closed)).rejects.toThrow(
+      'incompatível',
+    );
+    expect([parent, left, right].every((path) => store.docs.has(path))).toBe(true);
   });
-});
 
-describe('handleUptinMigration — unusable new_items entries', () => {
-  it('skips an entry with no usable new_item_id without throwing', async () => {
-    const db = new FakeDb();
-    seedBaseline(db);
-    const api = makeMigrationApi({
-      newItems: [{ new_item_id: null, variation_id: 1001 }],
-    });
-
-    await expect(
-      handleUptinMigration(migrationDeps(db, api), SOURCE_ITEM_ID, sourceLink()),
-    ).resolves.toBeUndefined();
-    // nothing imported, nothing pruned — the entry was simply skipped.
-    expect(db.docs(`produtos/${TP1}/produtoMercadoLivre`).has(SOURCE_PML_DOC_ID)).toBe(true);
+  it('can retry a failed atomic completion commit', async () => {
+    const { deps, store } = fixture();
+    store.docs.set(parent, { ...store.docs.get(parent), estado: 'am' });
+    store.failCommit = true;
+    await expect(handleUptinMigration(deps, itemId, target, closed)).rejects.toThrow(
+      'commit failed',
+    );
+    expect([parent, left, right].every((path) => store.docs.has(path))).toBe(true);
+    expect(await handleUptinMigration(deps, itemId, target, closed)).toBe('concluida');
   });
 });

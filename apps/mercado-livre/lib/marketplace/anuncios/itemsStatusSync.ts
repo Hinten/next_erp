@@ -115,6 +115,9 @@ import {
   createMercadoLivreApi,
   estadoFromMlStatus,
   itemStockLivesOnChildren,
+  UPTIN_SOURCE_TAG,
+  UPTIN_DESTINATION_TAG,
+  UPTIN_PENDING_TAG,
 } from '@delfrance/integrations-mercado-livre';
 import { produtoMercadoLivreLinkCollection } from '@delfrance/data/admin/collections';
 
@@ -123,9 +126,10 @@ import { podeEnviarEstoque } from '../estoque/bulkEstoquePlan';
 import { refMatchesIntegracao } from '../core/linkRefs';
 import { familyMemberQuery, resolveUpFamilyByMemberItemId } from './upMemberLink';
 import { type VotoCategoria, foldFamilyCategoria, foldFamilyStatus } from './upFamilyStatus';
-import type { UptinSourceLink } from '../importacao/importMigration';
+import type { UptinOutcome, UptinSourceLink } from '../importacao/importMigration';
 import { clearFalha, type FalhaPatch } from '../core/publishFalhas';
 import { consultarModeracoes, moderacoesArmazenadas, moderacoesIguais } from './moderacoes';
+import { updateListingUnlessMigrating } from './updateListingDuringUptin';
 
 /** The minimal ML API surface the status-sync needs (injectable for tests). */
 export interface ItemsSyncApi {
@@ -163,8 +167,6 @@ export const resolveItemsApiFromContext: ItemsApiResolver = async (db, integraca
  * one can trigger the takeover. `precoDraftSend.ts` matches the same pair by
  * its `variations_migration_` prefix.
  */
-const MIGRATION_SOURCE_TAG = 'variations_migration_source';
-const MIGRATION_UPTIN_TAG = 'variations_migration_uptin';
 
 /**
  * Executes the #441 UP-migration takeover for a `variations_migration_source`
@@ -178,7 +180,8 @@ export type MigrationRunner = (
   integracaoId: string,
   itemId: string,
   sourceLink: UptinSourceLink,
-) => Promise<void>;
+  item: MlItem,
+) => Promise<UptinOutcome>;
 
 export type ItemsSyncOutcome =
   | 'synced' // the link was updated
@@ -296,39 +299,47 @@ export async function syncItemStatus(
       item.category_id ?? null,
     );
 
-  if (link.member?.via === 'familia') return await foldMembro(link.member);
+  const tags = item.tags ?? [];
+  if (tags.includes(UPTIN_PENDING_TAG) && tags.includes(UPTIN_DESTINATION_TAG)) {
+    return 'deferred-migration-uptin';
+  }
+  if (link.member?.via === 'familia') {
+    return await foldMembro(link.member);
+  }
 
   // Migration-tagged item (needs the fetched item's `tags`) — the only reason
   // left to skip a listing, and it is ML's reason, not ours. The ONE takeover
   // case is this listing's source tag + it just went `closed` + a runner was
   // supplied: it hands off to the #441 UP-migration branch INSTEAD of the normal
   // estado merge below. Every other combination defers, but each says which.
-  const tags = item.tags ?? [];
-  if (tags.includes(MIGRATION_SOURCE_TAG) && item.status === 'closed') {
+  const closedSource = tags.includes(UPTIN_SOURCE_TAG) && item.status === 'closed';
+  if (
+    link.data.isUserProductModel !== true &&
+    (closedSource ||
+      (migrationRunner != null && link.data.estado === ESTADO_PUBLICACAO_ML.aguardandoMigracao))
+  ) {
     // Due — but only a supplied runner can actually take over. Reporting the
     // two apart is the difference between "ML is mid-migration" (normal) and
     // "the takeover never ran because nobody wired it" (a defect).
     if (!migrationRunner) {
-      await stampAguardandoMigracao(db, link);
+      await stampAguardandoMigracao(db, link, itemId);
       return 'no-migration-runner';
     }
     const sourceLink: UptinSourceLink = {
       produtoId: link.produtoId,
       linkDocId: link.docId,
-      raw: link.data,
     };
-    await migrationRunner(db, integracaoId, itemId, sourceLink);
-    return 'migrated';
+    const result = await migrationRunner(db, integracaoId, itemId, sourceLink, item);
+    return result === 'concluida' ? 'migrated' : 'deferred-migration-source';
   }
   // Of the two DEFERRALS the uptin one is tested first (the takeover above still
   // outranks both): that tag marks the migration's DESTINATION, so a listing
   // carrying both must not report as a source still waiting to close.
-  if (tags.includes(MIGRATION_UPTIN_TAG)) {
-    await stampAguardandoMigracao(db, link);
-    return 'deferred-migration-uptin';
-  }
-  if (tags.includes(MIGRATION_SOURCE_TAG)) {
-    await stampAguardandoMigracao(db, link);
+  if (
+    (tags.includes(UPTIN_SOURCE_TAG) || tags.includes(UPTIN_PENDING_TAG)) &&
+    link.data.isUserProductModel !== true
+  ) {
+    await stampAguardandoMigracao(db, link, itemId);
     return 'deferred-migration-source';
   }
 
@@ -1063,19 +1074,32 @@ function patchDoMembro(
  *
  * Idempotent: writes only when the value actually moves, so a redelivery is free.
  */
-async function stampAguardandoMigracao(db: Firestore, link: ResolvedLink): Promise<void> {
+async function stampAguardandoMigracao(
+  db: Firestore,
+  link: ResolvedLink,
+  itemId: string,
+): Promise<void> {
   if (link.data.estado === ESTADO_PUBLICACAO_ML.aguardandoMigracao) return;
   // `mergeIfExists`, never `merge` — same reason as the writeback below: the link
   // was resolved earlier and an upsert would resurrect a ghost with no schema.
-  await produtoMercadoLivreLinkCollection.mergeIfExists(
+  const ref = produtoMercadoLivreLinkCollection.docRef(
     db,
     { produtoId: link.produtoId },
     link.docId,
-    {
+  );
+  await db.runTransaction(async (tx) => {
+    const current = (await tx.get(ref)).data();
+    if (
+      current?.id !== itemId ||
+      current.isUserProductModel === true ||
+      current.estado === ESTADO_PUBLICACAO_ML.aguardandoMigracao
+    )
+      return;
+    tx.update(ref, {
       estado: ESTADO_PUBLICACAO_ML.aguardandoMigracao,
       ultimaModificacao: Date.now(),
-    },
-  );
+    });
+  });
 }
 
 /** The link doc one status refresh targets, plus the ML item id for diagnostics. */
@@ -1114,43 +1138,15 @@ export async function applyItemStatusToLink(
 ): Promise<boolean> {
   const estado = estadoFromMlStatus(item.status, item.sub_status ?? null);
 
-  // The link is the anchor: a queued writeback must not recreate a link deleted
-  // after it was planned.
-  const linkSnap = await produtoMercadoLivreLinkCollection
-    .docRef(db, { produtoId: target.produtoId }, target.linkDocId)
-    .get();
-  if (!linkSnap.exists) {
-    console.warn('[mercado-livre] link do anúncio já removido — writeback de status descartado', {
-      integracaoId,
-      produtoId: target.produtoId,
-      linkDocId: target.linkDocId,
-      itemId: target.itemId,
-    });
-    return false;
-  }
-
-  // `mergeIfExists`, never `merge`: `target` was resolved earlier (a queued task
-  // payload, a sweep row), so the link can have been deleted in between — by the
-  // produto delete cascade, an operator unlinking, or the UP-migration prune. An
-  // upsert would resurrect a ghost carrying only these keys and none of the
-  // schema's required fields, under a possibly-deleted parent.
-  const applied = await produtoMercadoLivreLinkCollection.mergeIfExists(
-    db,
-    { produtoId: target.produtoId },
-    target.linkDocId,
-    {
-      estado,
-      status: item.status ?? null,
-      sub_status: item.sub_status ?? null,
-      ultimaModificacao: opts.nowMs,
-      ...(opts.extra ?? {}),
-    },
-  );
+  const applied = await updateListingUnlessMigrating(db, target, {
+    estado,
+    status: item.status ?? null,
+    sub_status: item.sub_status ?? null,
+    ultimaModificacao: opts.nowMs,
+    ...(opts.extra ?? {}),
+  });
   if (!applied) {
-    // The guard above saw the link; it was deleted while these writes ran. Rare
-    // enough to deserve its own line — this is the residual race, not the
-    // ordinary "already gone" case.
-    console.warn('[mercado-livre] link do anúncio removido DURANTE o writeback', {
+    console.warn('[mercado-livre] vínculo alterado, em migração ou removido — status ignorado', {
       integracaoId,
       produtoId: target.produtoId,
       linkDocId: target.linkDocId,

@@ -395,6 +395,12 @@ export interface MercadoLivreClient {
     produtoId: string;
     linkDocId: string;
   }): Promise<MercadoLivreReverificarResult>;
+  migrarAnuncio(input: {
+    integracaoId: string;
+    produtoId: string;
+    linkDocId: string;
+    acao: 'iniciar' | 'reverificar';
+  }): Promise<z.infer<typeof wire.uptinResultSchema>>;
   /**
    * (Re-)send ONE anúncio's per-SKU fiscal data to ML's Faturador without
    * republishing it (PERM.integracao.write, #745) — after an imposto edit, say.
@@ -1099,6 +1105,8 @@ export function createMercadoLivreClient(config: {
         wire.reverificarResultSchema,
         input,
       ),
+    migrarAnuncio: (input) =>
+      call('/api/marketplace/mercado-livre/migrar-anuncio', wire.uptinResultSchema, input),
     enviarDadosFiscais: (input) =>
       call(
         '/api/marketplace/mercado-livre/dados-fiscais',

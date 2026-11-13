@@ -5,6 +5,8 @@ import type { Firestore } from 'firebase/firestore';
 import {
   type AcaoStatusAnuncio,
   ACAO_STATUS_ANUNCIO,
+  ESTADO_PUBLICACAO_ML,
+  estadoEncerraAnuncio,
   type MedidasDoPacote,
   type ProdutoMercadoLivreLink,
   acaoStatusAnuncio,
@@ -130,6 +132,9 @@ export interface AnuncioBlockProps {
    * the backend route enforces.
    */
   onEnviarDadosFiscais?: () => void;
+  onMigrar?: (acao: 'iniciar' | 'reverificar') => void;
+  migrando?: boolean;
+  migrationStartDisabled?: boolean;
   /** This listing's fiscal-data send is in flight. */
   enviandoDadosFiscais: boolean;
 }
@@ -176,6 +181,9 @@ export function AnuncioBlock({
   statusBusy,
   onEnviarDadosFiscais,
   enviandoDadosFiscais,
+  onMigrar,
+  migrando,
+  migrationStartDisabled,
 }: AnuncioBlockProps) {
   // A listing ML has never accepted. `''` counts as never published, matching
   // the backend's own `link.id !== ''` test: the schema permits it and the
@@ -187,6 +195,12 @@ export function AnuncioBlock({
   // ⚠️ Read from the LINK, so the control repaints from the live snapshot the
   // backend just wrote — the same feedback model "Reverificar" relies on.
   const acaoDeStatus = acaoStatusAnuncio(link as unknown as Record<string, unknown>);
+  const migrationPending = link.estado === ESTADO_PUBLICACAO_ML.aguardandoMigracao;
+  const showMigration =
+    onMigrar &&
+    link.isUserProductModel !== true &&
+    /^MLB\d+$/.test(link.id ?? '') &&
+    (migrationPending || !estadoEncerraAnuncio(link.estado));
   return (
     <Stack gap="sm" data-testid={`ml-anuncio-${linkDocId}`}>
       {showDivider && <Divider />}
@@ -348,10 +362,21 @@ export function AnuncioBlock({
             {acaoDeStatus === ACAO_STATUS_ANUNCIO.pausar ? 'Pausar anúncio' : 'Reativar anúncio'}
           </Button>
         )}
+        {showMigration && (
+          <Button
+            type="button"
+            variant="default"
+            loading={migrando}
+            disabled={Boolean(disabled) || loading || (!migrationPending && migrationStartDisabled)}
+            onClick={() => onMigrar(migrationPending ? 'reverificar' : 'iniciar')}
+          >
+            {migrationPending ? 'Verificar migração' : 'Migrar para User Products (UPtin)'}
+          </Button>
+        )}
         {/* #745 — every publish already sends the fiscal data; this re-sends it
             after an imposto edit, which ML would otherwise never hear about.
             Only for a listing ML knows: there is no item to link a SKU to yet. */}
-        {onEnviarDadosFiscais && !isFirstPublish && !removido && (
+        {onEnviarDadosFiscais && !isFirstPublish && !removido && !migrationPending && (
           <Button
             type="button"
             variant="default"

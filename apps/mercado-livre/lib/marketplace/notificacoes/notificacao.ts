@@ -676,39 +676,34 @@ export function userIdResolvivel(doc: Record<string, unknown> | null): number | 
   return typeof doc.user_id === 'number' ? doc.user_id : null;
 }
 
-function asStringOrNull(v: unknown): string | null {
-  return typeof v === 'string' && v.length > 0 ? v : null;
-}
 function asNumberOrNull(v: unknown): number | null {
   return typeof v === 'number' && Number.isFinite(v) ? v : null;
 }
 
 /**
  * The production #441 migration runner: loads the account's live ML API (same
- * seller-token path as `resolveItemsApiFromContext`) plus the price-table /
- * deposit refs the import needs (mirrors the `/importar` route's narrowing),
+ * seller-token path as `resolveItemsApiFromContext`),
  * then runs the UP-migration takeover. Wired as `processNotificationPayload`'s
  * default so an ordinary `items` notification needs no caller change; tests
  * inject their own runner.
  */
-const runUptinMigration: MigrationRunner = async (db, integracaoId, itemId, sourceLink) => {
+const runUptinMigration: MigrationRunner = async (db, integracaoId, itemId, sourceLink, item) => {
   const ctx = await loadMercadoLivreContext(db, integracaoId);
   const channelCtx = await ctx.resolveChannelContext();
   const api = createMercadoLivreApi({
     getAccessToken: channelCtx.getAccessToken,
     onAccessTokenRejected: channelCtx.invalidateAccessToken,
   });
-  await handleUptinMigration(
+  return handleUptinMigration(
     {
       db,
       api,
       integracaoId,
       sellerUserId: asNumberOrNull(ctx.conta.user_id),
-      tabelaNormalOuterRef: asStringOrNull(ctx.conta.tabelaNormalOuterRef),
-      depositoOuterRef: asStringOrNull(ctx.conta.depositoOuterRef),
     },
     itemId,
     sourceLink,
+    item,
   );
 };
 

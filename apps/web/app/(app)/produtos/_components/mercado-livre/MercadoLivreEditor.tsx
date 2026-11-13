@@ -291,6 +291,12 @@ export function MercadoLivreEditor({
   const [alterandoStatus, setAlterandoStatus] = useState<string | null>(null);
   /** The link doc whose fiscal-data send is in flight, if any (#745). */
   const [enviandoDadosFiscais, setEnviandoDadosFiscais] = useState<string | null>(null);
+  const [migrando, setMigrando] = useState<string | null>(null);
+  const [migrarAlvo, setMigrarAlvo] = useState<{
+    integracaoId: string;
+    linkDocId: string;
+    itemId: string;
+  } | null>(null);
   /**
    * The pause the operator is being asked to confirm, if any.
    *
@@ -720,6 +726,42 @@ export function MercadoLivreEditor({
    *  - `'moderacao'` (#1239) — "Consultar motivo" in the not-consulted notice.
    *    Nothing here is about stock: the listing may be `active` the whole time.
    */
+  async function handleMigrar(
+    integracaoId: string,
+    linkDocId: string,
+    acao: 'iniciar' | 'reverificar',
+  ) {
+    if (!client || migrando != null) return;
+    setMigrando(linkDocId);
+    try {
+      const result = await client.migrarAnuncio({ integracaoId, produtoId, linkDocId, acao });
+      const mensagens = {
+        iniciada: 'Migração solicitada. Acompanhe a situação neste anúncio.',
+        pendente: 'Aguardando a conclusão da migração no Mercado Livre.',
+        incerta:
+          'O Mercado Livre ainda não confirmou a migração. Use “Verificar migração” novamente.',
+        concluida: 'Migração concluída. Os novos anúncios estão vinculados ao produto.',
+      };
+      notifications.show({
+        color: result.estado === 'concluida' ? 'green' : 'blue',
+        message: mensagens[result.estado],
+      });
+      setMigrarAlvo(null);
+    } catch (err) {
+      if (
+        err instanceof MercadoLivreClientHttpError ||
+        err instanceof MercadoLivreClientNetworkError
+      ) {
+        notifications.show({ color: 'red', message: err.message });
+        setMigrarAlvo(null);
+        return;
+      }
+      throw err;
+    } finally {
+      setMigrando(null);
+    }
+  }
+
   async function handleReverificar(
     integracaoId: string,
     linkDocId: string,
@@ -1189,6 +1231,21 @@ export function MercadoLivreEditor({
                       : undefined
                   }
                   enviandoDadosFiscais={enviandoDadosFiscais}
+                  migrando={migrando}
+                  onMigrar={
+                    client && canPublish
+                      ? (integracaoId, linkDocId, acao) => {
+                          if (acao === 'reverificar') {
+                            void handleMigrar(integracaoId, linkDocId, acao);
+                            return;
+                          }
+                          const itemId = linksPorConta
+                            .get(integracaoId)
+                            ?.find((link) => link.id === linkDocId)?.data.id;
+                          if (itemId) setMigrarAlvo({ integracaoId, linkDocId, itemId });
+                        }
+                      : undefined
+                  }
                   onAbrirAnuncio={(integracaoId, linkDocId) =>
                     void handleAbrirAnuncio(integracaoId, linkDocId)
                   }
@@ -1199,6 +1256,44 @@ export function MercadoLivreEditor({
               );
             }}
           />
+          {migrarAlvo && (
+            <Modal
+              opened
+              centered
+              title="Migrar para User Products (UPtin)"
+              onClose={() => {
+                if (!migrando) setMigrarAlvo(null);
+              }}
+            >
+              <Stack gap="md">
+                <Text size="sm">
+                  Anúncio <strong>{migrarAlvo.itemId}</strong> da conta{' '}
+                  <strong>{contasPorId.get(migrarAlvo.integracaoId)?.data.nome}</strong>. O Mercado
+                  Livre verifica se o anúncio pode ser migrado e cria um anúncio por variação. Ao
+                  concluir, ele encerra o anúncio original.
+                </Text>
+                <Group justify="flex-end">
+                  <Button
+                    type="button"
+                    variant="default"
+                    disabled={migrando != null}
+                    onClick={() => setMigrarAlvo(null)}
+                  >
+                    Cancelar
+                  </Button>
+                  <Button
+                    type="button"
+                    loading={migrando != null}
+                    onClick={() =>
+                      void handleMigrar(migrarAlvo.integracaoId, migrarAlvo.linkDocId, 'iniciar')
+                    }
+                  >
+                    Migrar anúncio
+                  </Button>
+                </Group>
+              </Stack>
+            </Modal>
+          )}
           {novoAnuncioConta != null && (
             <NovoAnuncioModal
               opened

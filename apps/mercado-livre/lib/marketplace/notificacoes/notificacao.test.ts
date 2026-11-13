@@ -36,7 +36,7 @@ import {
 // dependency. Everything else these modules export stays real (spread from
 // `importActual`).
 const h = vi.hoisted(() => ({
-  handleUptinMigration: vi.fn(async () => {}),
+  handleUptinMigration: vi.fn(async () => 'concluida' as const),
   loadMercadoLivreContext: vi.fn(),
   createMercadoLivreApi: vi.fn(() => ({}) as never),
   importPedidoMercadoLivre: vi.fn(
@@ -1170,7 +1170,7 @@ describe('handleNotificationTask', () => {
     const getItem = vi.fn(async () => ({
       id: 'MLB1',
       status: 'active',
-      tags: ['variations_migration_uptin'],
+      tags: ['variations_migration_uptin', 'variations_migration_pending'],
     }));
     const r = await handleNotificationTask(
       asDb(db),
@@ -1261,6 +1261,7 @@ describe('handleNotificationTask — #441 migration takeover wiring', () => {
       expect.objectContaining({ integracaoId: 'conta-A', sellerUserId: 999 }),
       'MLB1',
       expect.objectContaining({ produtoId: 'prod1', linkDocId: 'link1' }),
+      expect.objectContaining({ status: 'closed' }),
     );
   });
 
@@ -1268,7 +1269,7 @@ describe('handleNotificationTask — #441 migration takeover wiring', () => {
     const db = new FakeDb();
     seedConta(db, 'conta-A', 55);
     seedMigrationLink(db);
-    const migrationRunner = vi.fn(async () => {});
+    const migrationRunner = vi.fn(async () => 'concluida' as const);
 
     const r = await handleNotificationTask(
       asDb(db),
@@ -1283,6 +1284,7 @@ describe('handleNotificationTask — #441 migration takeover wiring', () => {
       'conta-A',
       'MLB1',
       expect.objectContaining({ produtoId: 'prod1', linkDocId: 'link1' }),
+      expect.objectContaining({ status: 'closed' }),
     );
     expect(h.handleUptinMigration).not.toHaveBeenCalled(); // default bypassed entirely
     expect(h.loadMercadoLivreContext).not.toHaveBeenCalled();

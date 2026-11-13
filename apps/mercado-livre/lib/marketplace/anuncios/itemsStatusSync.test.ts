@@ -734,16 +734,17 @@ describe('syncItemStatus — the ERP owns estado (no dual-run)', () => {
     });
   });
 
-  // Nothing in this repo writes 'am' — it only ever arrived from Flutter, so
-  // with Flutter gone this was a value no writer could ever clear.
-  it('link left at estado "am" by Flutter → heals to the real ML status', async () => {
+  it('preserves a claimed migration before its provider tags are visible', async () => {
     const db = new FakeDb();
     seedLink(db, { estado: 'am' });
     const resolve = resolverFor({ status: 'active' });
-    const out = await syncItemStatus(asDb(db), CONTA, ITEM, resolve);
-    expect(out).toBe('synced');
-    expect(resolve).toHaveBeenCalled();
-    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ estado: 'p', status: 'active' });
+    const runner = vi.fn(async () => 'incerta' as const);
+    expect(await syncItemStatus(asDb(db), CONTA, ITEM, resolve, runner)).toBe(
+      'deferred-migration-source',
+    );
+    expect(runner).toHaveBeenCalledOnce();
+    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ estado: 'am' });
+    expect(db.updates).toEqual([]);
   });
 
   // The old guard's worst consequence, and the one nothing reported: it returned
@@ -752,7 +753,7 @@ describe('syncItemStatus — the ERP owns estado (no dual-run)', () => {
   it('an "am" link that is a closed migration source reaches the #441 takeover', async () => {
     const db = new FakeDb();
     seedLink(db, { estado: 'am' });
-    const migrationRunner = vi.fn(async () => {});
+    const migrationRunner = vi.fn(async () => 'concluida' as const);
     const out = await syncItemStatus(
       asDb(db),
       CONTA,
@@ -761,11 +762,16 @@ describe('syncItemStatus — the ERP owns estado (no dual-run)', () => {
       migrationRunner,
     );
     expect(out).toBe('migrated');
-    expect(migrationRunner).toHaveBeenCalledWith(asDb(db), CONTA, ITEM, {
-      produtoId: PRODUTO,
-      linkDocId: 'link1',
-      raw: expect.objectContaining({ estado: 'am' }),
-    });
+    expect(migrationRunner).toHaveBeenCalledWith(
+      asDb(db),
+      CONTA,
+      ITEM,
+      {
+        produtoId: PRODUTO,
+        linkDocId: 'link1',
+      },
+      expect.objectContaining({ status: 'closed' }),
+    );
     expect(db.updates).toEqual([]);
   });
 });
@@ -789,17 +795,20 @@ describe('syncItemStatus — migration deferrals each name themselves (#441)', (
     expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ status: 'active' });
   });
 
-  it('uptin-tagged item → deferred-migration-uptin, a DIFFERENT outcome, also stamped', async () => {
+  it('pending destination defers without stamping the link', async () => {
     const db = new FakeDb();
     seedLink(db);
     const out = await syncItemStatus(
       asDb(db),
       CONTA,
       ITEM,
-      resolverFor({ status: 'active', tags: ['variations_migration_uptin'] }),
+      resolverFor({
+        status: 'active',
+        tags: ['variations_migration_uptin', 'variations_migration_pending'],
+      }),
     );
     expect(out).toBe('deferred-migration-uptin');
-    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ estado: 'am' });
+    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ estado: 'p' });
   });
 
   // Idempotence: a redelivery of the same notification must cost no write.
@@ -827,7 +836,11 @@ describe('syncItemStatus — migration deferrals each name themselves (#441)', (
       ITEM,
       resolverFor({
         status: 'active',
-        tags: ['variations_migration_source', 'variations_migration_uptin'],
+        tags: [
+          'variations_migration_source',
+          'variations_migration_uptin',
+          'variations_migration_pending',
+        ],
       }),
     );
     expect(out).toBe('deferred-migration-uptin');
@@ -838,7 +851,7 @@ describe('syncItemStatus — #441 migration takeover', () => {
   it('source tag + closed + a runner supplied → migrated, runner gets the resolved link, no estado merge', async () => {
     const db = new FakeDb();
     seedLink(db);
-    const migrationRunner = vi.fn(async () => {});
+    const migrationRunner = vi.fn(async () => 'concluida' as const);
     const out = await syncItemStatus(
       asDb(db),
       CONTA,
@@ -847,11 +860,16 @@ describe('syncItemStatus — #441 migration takeover', () => {
       migrationRunner,
     );
     expect(out).toBe('migrated');
-    expect(migrationRunner).toHaveBeenCalledWith(asDb(db), CONTA, ITEM, {
-      produtoId: PRODUTO,
-      linkDocId: 'link1',
-      raw: expect.objectContaining({ id: ITEM }),
-    });
+    expect(migrationRunner).toHaveBeenCalledWith(
+      asDb(db),
+      CONTA,
+      ITEM,
+      {
+        produtoId: PRODUTO,
+        linkDocId: 'link1',
+      },
+      expect.objectContaining({ status: 'closed' }),
+    );
     // the takeover branch REPLACES the normal estado merge — no link/parent write here.
     expect(db.updates).toEqual([]);
     expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ estado: 'p', status: 'active' });
@@ -880,7 +898,7 @@ describe('syncItemStatus — #441 migration takeover', () => {
   it('source tag but NOT yet closed, even with a runner supplied → deferred, runner never invoked', async () => {
     const db = new FakeDb();
     seedLink(db);
-    const migrationRunner = vi.fn(async () => {});
+    const migrationRunner = vi.fn(async () => 'concluida' as const);
     const out = await syncItemStatus(
       asDb(db),
       CONTA,
@@ -895,12 +913,15 @@ describe('syncItemStatus — #441 migration takeover', () => {
   it('uptin tag (the OTHER migration tag) never takes over, even closed + a runner supplied', async () => {
     const db = new FakeDb();
     seedLink(db);
-    const migrationRunner = vi.fn(async () => {});
+    const migrationRunner = vi.fn(async () => 'concluida' as const);
     const out = await syncItemStatus(
       asDb(db),
       CONTA,
       ITEM,
-      resolverFor({ status: 'closed', tags: ['variations_migration_uptin'] }),
+      resolverFor({
+        status: 'closed',
+        tags: ['variations_migration_uptin', 'variations_migration_pending'],
+      }),
       migrationRunner,
     );
     expect(out).toBe('deferred-migration-uptin');
@@ -1173,7 +1194,10 @@ describe('syncItemStatus — a family member never speaks for the family un-fold
       asDb(db),
       CONTA,
       MEMBER_A,
-      resolverFor({ status: 'paused', tags: ['variations_migration_uptin'] }),
+      resolverFor({
+        status: 'paused',
+        tags: ['variations_migration_uptin'],
+      }),
     );
 
     expect(out).not.toBe('deferred-migration-uptin');
@@ -1187,7 +1211,7 @@ describe('syncItemStatus — a family member never speaks for the family un-fold
     // migration's source is a LEGACY listing, which resolves through stage 1.
     const db = new FakeDb();
     seedFamily(db, [{ itemId: MEMBER_A, child: 'childA' }]);
-    const migrationRunner = vi.fn(async () => {});
+    const migrationRunner = vi.fn(async () => 'concluida' as const);
 
     await syncItemStatus(
       asDb(db),
@@ -1299,27 +1323,19 @@ describe('syncItemStatus — a family whose parent carries a MEMBER id (#1142)',
     expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ estado: 'pa', status: 'paused' });
   });
 
-  it('⚠️ migration TAGS still outrank the fold on this path, unlike stage 2', async () => {
-    // The ordering that makes the stage-1 attach safe. A stage-2 member cannot be
-    // a migration SOURCE (a UPtin source is a legacy `variations[]` listing, which
-    // resolves through stage 1) — but THIS member matched exactly the way a legacy
-    // listing does, so its tags must be read before anything else.
+  it('a linked UP member with an old source tag is folded as a member', async () => {
     const db = new FakeDb();
     seedFamilySemFamilyId(db);
-    const migrationRunner = vi.fn(async () => {});
-
-    const out = await syncItemStatus(
+    const migrationRunner = vi.fn(async () => 'concluida' as const);
+    await syncItemStatus(
       asDb(db),
       CONTA,
       MEMBER_A,
       resolverFor({ status: 'closed', tags: ['variations_migration_source'] }),
       migrationRunner,
     );
-
-    expect(out).toBe('migrated');
-    expect(migrationRunner).toHaveBeenCalledTimes(1);
-    // And the fold never ran: the member's own link keeps its stored reading.
-    expect(db.docData(memberVarPath('childA'), 'v-childA')).toMatchObject({ status: 'active' });
+    expect(migrationRunner).not.toHaveBeenCalled();
+    expect(db.docData(memberVarPath('childA'), 'v-childA')).toMatchObject({ status: 'closed' });
   });
 
   it('a UP SINGLE-ITEM listing has no member link, so it keeps the simple path', async () => {
@@ -1619,7 +1635,7 @@ describe('syncItemStatus — ML moderations (#1087)', () => {
     const resolve = resolverFor({
       status: 'under_review',
       sub_status: ['waiting_for_patch'],
-      tags: ['variations_migration_uptin'],
+      tags: ['variations_migration_uptin', 'variations_migration_pending'],
     });
 
     expect(await syncItemStatus(asDb(db), CONTA, ITEM, resolve)).toBe('deferred-migration-uptin');
@@ -1917,11 +1933,15 @@ describe('syncItemStatus — ML recategorized the listing (#847)', () => {
       asDb(db),
       CONTA,
       ITEM,
-      resolverFor({ status: 'active', tags: ['variations_migration_uptin'], category_id: 'MLB2' }),
+      resolverFor({
+        status: 'active',
+        tags: ['variations_migration_uptin', 'variations_migration_pending'],
+        category_id: 'MLB2',
+      }),
     );
 
     expect(out).toBe('deferred-migration-uptin');
-    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ category_id: 'MLB1', estado: 'am' });
+    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ category_id: 'MLB1', estado: 'p' });
   });
 });
 

@@ -208,6 +208,80 @@ async function abrirConta(nome: string) {
   fireEvent.click(await screen.findByRole('tab', { name: new RegExp(nome) }));
 }
 
+describe('UPtin', () => {
+  const startLabel = 'Migrar para User Products (UPtin)';
+
+  it('places the action between the listing status and fiscal actions and confirms the exact account and item', async () => {
+    h.contas.push(conta('conta-2', 'Outra Loja'));
+    h.links = [
+      link('L-A', { id: 'MLB111' }),
+      link('L-B', {
+        id: 'MLB222',
+        status: 'active',
+        contaOuterRef: 'documents/integracao/conta-2',
+      }),
+      link('L-C', {
+        id: 'MLB333',
+        status: 'active',
+        contaOuterRef: 'documents/integracao/conta-2',
+      }),
+    ];
+    const migrarAnuncio = vi.fn(async () => ({ estado: 'iniciada' }));
+    h.client = { migrarAnuncio };
+    renderEditor();
+    await abrirConta('Outra Loja');
+    const listing = await screen.findByTestId('ml-anuncio-L-C');
+    const buttons = [...listing.querySelectorAll('button')];
+    const start = buttons.find((button) => button.textContent === startLabel)!;
+    const index = buttons.indexOf(start);
+    expect(buttons[index - 1]?.textContent).toBe('Pausar anúncio');
+    expect(buttons[index + 1]?.textContent).toBe('Enviar dados fiscais');
+    fireEvent.click(start);
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog.textContent).toContain('MLB333');
+    expect(dialog.textContent).toContain('Outra Loja');
+    expect(migrarAnuncio).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Migrar anúncio' }));
+    await waitFor(() =>
+      expect(migrarAnuncio).toHaveBeenCalledExactlyOnceWith({
+        integracaoId: 'conta-2',
+        produtoId: 'prod-1',
+        linkDocId: 'L-C',
+        acao: 'iniciar',
+      }),
+    );
+  });
+
+  it('uses the check action for a pending link and hides start on drafts and UP links', async () => {
+    h.links = [
+      link('L-WAIT', { id: 'MLB111', estado: ESTADO_PUBLICACAO_ML.aguardandoMigracao }),
+      link('L-UP', { id: '123456', isUserProductModel: true }),
+      link('L-DRAFT', { id: null }),
+    ];
+    const migrarAnuncio = vi.fn(async () => ({ estado: 'pendente' }));
+    h.client = { migrarAnuncio };
+    renderEditor();
+    fireEvent.click(await screen.findByRole('button', { name: 'Verificar migração' }));
+    await waitFor(() =>
+      expect(migrarAnuncio).toHaveBeenCalledExactlyOnceWith({
+        integracaoId: 'conta-1',
+        produtoId: 'prod-1',
+        linkDocId: 'L-WAIT',
+        acao: 'reverificar',
+      }),
+    );
+    expect(screen.queryByRole('button', { name: startLabel })).toBeNull();
+  });
+
+  it('requires integration write permission', async () => {
+    h.permitidos = new Set([PERM.produto.delete]);
+    h.links = [link('L-A', { id: 'MLB111' })];
+    renderEditor();
+    await screen.findByTestId('ml-anuncio-L-A');
+    expect(screen.queryByRole('button', { name: startLabel })).toBeNull();
+  });
+});
+
 describe('Enviar estoque is offered only for a PUBLISHED listing', () => {
   it('is absent when the conta holds only an unpublished draft', async () => {
     // ⚠️ The bug this pins. A draft from "Preparar anúncio" is a link doc with

@@ -139,6 +139,10 @@ export const reverificarResultSchema = z.object({
 });
 export type MercadoLivreReverificarResult = z.infer<typeof reverificarResultSchema>;
 
+export const uptinResultSchema = z.object({
+  estado: z.enum(['iniciada', 'pendente', 'incerta', 'concluida']),
+});
+
 export const importarResultSchema = z.object({
   /** The created/updated ERP produto id. */
   produtoId: z.string(),
