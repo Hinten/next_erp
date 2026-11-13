@@ -2,7 +2,11 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { resolverEntradaShopeeDoGrupo } from '@delfrance/schemas';
+import {
+  linkVariacoesShopeeSchema,
+  nomeDeTierShopee,
+  resolverEntradaShopeeDoGrupo,
+} from '@delfrance/schemas';
 import { DELETE_MARK } from '@delfrance/ui';
 import { ZodError } from 'zod';
 
@@ -10,21 +14,26 @@ import {
   CONFLITO_VINCULO_SHOPEE,
   MARCA_CONFLITO_VINCULO_SHOPEE,
   TIPO_ACHADO_SHOPEE,
+  TIPO_AVISO_REMOCAO_SHOPEE,
   TIPO_ITEM_VINCULO_SHOPEE,
   achadosDaLeituraShopee,
   achadosDoVinculadorShopee,
   agruparVinculosShopee,
   alternarRemocaoShopee,
+  avisosDaRemocaoShopee,
   chaveDoVinculoShopee,
   definirGrupoDoVinculoShopee,
   definirOpcaoDaVarianteShopee,
   ehVinculoNovoShopee,
   escolhaAtualDaVariante,
   escolhaDaLinhaShopee,
+  escolhaPersonalizadaDaVarianteShopee,
   grupoAusenteShopee,
   linkDoSeedShopee,
   marcaDeConflitoShopee,
   mensagemDoAchadoShopee,
+  mensagemDoAvisoDeRemocaoShopee,
+  nomePersonalizadoAusenteShopee,
   novoVinculoShopee,
   prepararVinculosShopee,
   rebaseVinculosShopee,
@@ -47,7 +56,11 @@ import {
  *  - the conta key folds a path to its last segment and nothing more;
  *  - a standard option is its id, whatever the name says; a custom one is its
  *    byte-exact name;
- *  - a name is displayed trimmed and stored verbatim;
+ *  - a name is displayed trimmed and stored verbatim — except a NEW custom row, which
+ *    stores the variante's name with the ends trimmed (`nomeDeTierShopee`), case and
+ *    inner whitespace kept (#1911 P14b);
+ *  - a staged removal's warning pairs names exactly as the publisher does: the ends
+ *    fold, case and inner whitespace do not;
  *  - the band measures custom names only;
  *  - re-choosing is not an edit, and only a row THIS call emptied is dropped;
  *  - a finding blocks only through an edited entry;
@@ -398,6 +411,25 @@ describe('definirOpcaoDaVarianteShopee — a regra da reconstrução', () => {
       },
     );
 
+    it('⚠️ PAR (#1911 P14b): a escolha «Personalizada» de « Cor do ERP » é a linha guardada «Cor do ERP» — a variante entra nela, nenhuma gêmea', () => {
+      const guardado = vinculo('int-1', FASHION, [linha(0, 'Cor do ERP', ['p'])]);
+      const escolha = escolhaPersonalizadaDaVarianteShopee(' Cor do ERP ');
+      if (escolha === null) throw new TypeError('a variante tem nome');
+      const novo = definirOpcaoDaVarianteShopee(guardado, 'm', escolha);
+      expect(opcoesDe(novo)).toEqual([linha(0, 'Cor do ERP', ['p', 'm'])]);
+    });
+
+    it('⛔ QUASE (#1911 P14b): a escolha «Personalizada» de «Cor  do ERP» (dois espaços DENTRO) é OUTRA linha', () => {
+      const guardado = vinculo('int-1', FASHION, [linha(0, 'Cor do ERP', ['p'])]);
+      const escolha = escolhaPersonalizadaDaVarianteShopee('Cor  do ERP');
+      if (escolha === null) throw new TypeError('a variante tem nome');
+      const novo = definirOpcaoDaVarianteShopee(guardado, 'm', escolha);
+      expect(opcoesDe(novo)).toEqual([
+        linha(0, 'Cor do ERP', ['p']),
+        linha(0, 'Cor  do ERP', ['m']),
+      ]);
+    });
+
     it('⚠️ QUASE-PAR: um id padrão não casa com uma personalizada de mesmo nome', () => {
       const guardado = vinculo('int-1', FASHION, [linha(0, 'Preto', ['p'])]);
       const novo = definirOpcaoDaVarianteShopee(guardado, 'm', {
@@ -429,7 +461,7 @@ describe('definirOpcaoDaVarianteShopee — a regra da reconstrução', () => {
       expect(opcoesDe(novo)).toEqual([linha(9632, ' Azul Turquesa ', ['p'])]);
     });
 
-    it('o nome de uma opção personalizada é o da variante, VERBATIM', () => {
+    it('a reconstrução guarda o nome da escolha como veio — quem apara é `escolhaPersonalizadaDaVarianteShopee`', () => {
       const novo = definirOpcaoDaVarianteShopee(vinculo('int-1', FASHION, []), 'p', {
         tipo: 'personalizada',
         nome: ' Cor do ERP ',
@@ -444,7 +476,9 @@ describe('definirOpcaoDaVarianteShopee — a regra da reconstrução', () => {
         indices: [0],
         opcao: { id: 9632, nome: ' Azul Turquesa ' },
       };
-      expect(mensagemDoAchadoShopee(achado, (id) => id)).toContain('A opção Azul Turquesa (9632) ');
+      expect(mensagemDoAchadoShopee(achado, (id) => id, { somenteLeitura: false })).toContain(
+        'A opção Azul Turquesa (9632) ',
+      );
     });
   });
 
@@ -658,6 +692,39 @@ describe('escolhaAtualDaVariante, valorDaLinhaShopee, escolhaDaLinhaShopee', () 
   });
 });
 
+describe('escolhaPersonalizadaDaVarianteShopee — o nome que uma linha personalizada NOVA guarda (#1911 P14b, Q1)', () => {
+  it.each([' Cor do ERP ', 'Cor do ERP ', ' Cor do ERP', '\tCor do ERP\n', '\u00A0Cor do ERP'])(
+    '⚠️ PAR: %j guarda "Cor do ERP" — só as pontas saem, pela MESMA dobra da publicação',
+    (nome) => {
+      const escolha = escolhaPersonalizadaDaVarianteShopee(nome);
+      expect(escolha).toEqual({ tipo: 'personalizada', nome: 'Cor do ERP' });
+      // One fold, not two: the string the publisher sends and the import reads back.
+      expect(escolha?.nome).toBe(nomeDeTierShopee(nome));
+    },
+  );
+
+  it.each(['cor do erp', 'Cor  do ERP', '\u200BCor do ERP'])(
+    '⛔ QUASE: %j fica como foi digitado — a caixa, o espaço de dentro e o espaço de largura zero não dobram',
+    (nome) => {
+      expect(escolhaPersonalizadaDaVarianteShopee(nome)).toEqual({ tipo: 'personalizada', nome });
+    },
+  );
+
+  it.each(['', '   ', '\t\n'])(
+    'o nome %j é nenhum: `null` (o item fica desligado), a mesma medida do achado de nome ausente',
+    (nome) => {
+      expect(escolhaPersonalizadaDaVarianteShopee(nome)).toBeNull();
+      expect(nomePersonalizadoAusenteShopee(nome)).toBe(true);
+    },
+  );
+
+  it('⛔ QUASE: uma linha GUARDADA com as pontas não é reescrita — a escolha dela mantém o nome', () => {
+    expect(
+      escolhaDaLinhaShopee({ shopee_option_id: 0, shopee_option_name: ' Cor do ERP ' }),
+    ).toEqual({ tipo: 'personalizada', nome: ' Cor do ERP ' });
+  });
+});
+
 describe('novoVinculoShopee', () => {
   it('nasce com a conta nua, sem opção, e nada mais', () => {
     expect(
@@ -805,6 +872,257 @@ describe('remover um vínculo — #1787', () => {
       const gemeo = vinculo('documents/integracao/int-1', FASHION, []);
       expect(ehVinculoNovoShopee([daChave, gemeo], 1, [daChave, gemeo])).toBe(false);
       expect(ehVinculoNovoShopee([daChave, gemeo, substituto], 2, [daChave, gemeo])).toBe(true);
+    });
+  });
+});
+
+describe('avisosDaRemocaoShopee — o que uma remoção preparada muda na publicação (#1911 P14b)', () => {
+  const CATEGORIA_PERSONALIZADA = 100017;
+  const personalizada = (linhas: Doc[], conta = 'int-1'): Doc =>
+    vinculo(conta, CATEGORIA_PERSONALIZADA, linhas, { variation_id: 0 });
+  const preparada = (entrada: Doc): Doc => ({ ...entrada, [DELETE_MARK]: true });
+  const v = (id: string, nome: string) => ({ id, nome });
+
+  describe('personalizada (Q2)', () => {
+    it('⚠️ PAR: a linha «Opção inventada 1» ligada à variante «P» ⇒ a publicação acrescenta «P» e a opção fica sem modelo', () => {
+      const avisos = avisosDaRemocaoShopee(
+        [preparada(personalizada([linha(0, 'Opção inventada 1', ['p'])]))],
+        0,
+        [v('p', 'P')],
+      );
+
+      expect(avisos).toEqual([
+        {
+          tipo: TIPO_AVISO_REMOCAO_SHOPEE.opcaoAcrescentada,
+          variante: 'P',
+          opcao: 'Opção inventada 1',
+        },
+      ]);
+      expect(avisos.map(mensagemDoAvisoDeRemocaoShopee)).toEqual([
+        'Ao remover este vínculo, a próxima publicação acrescenta a opção «P» e move o modelo para ela; «Opção inventada 1» fica sem modelo.',
+      ]);
+    });
+
+    it.each([
+      ['P ', 'P'],
+      ['P', ' P'],
+      ['\u00A0P', 'P\t'],
+    ])(
+      '⚠️ PAR (a dobra): a linha %j e a variante %j são a MESMA opção — a variante volta a casar, nada é acrescentado',
+      (nomeDaLinha, nomeDaVariante) => {
+        expect(
+          avisosDaRemocaoShopee([preparada(personalizada([linha(0, nomeDaLinha, ['p'])]))], 0, [
+            v('p', nomeDaVariante),
+          ]),
+        ).toEqual([]);
+      },
+    );
+
+    it('⚠️ PAR: a frase diz os nomes DOBRADOS — «P», nunca « P »', () => {
+      const [aviso] = avisosDaRemocaoShopee(
+        [preparada(personalizada([linha(0, ' Opção inventada 1 ', ['p'])]))],
+        0,
+        [v('p', ' P ')],
+      );
+      if (aviso === undefined) throw new TypeError('um aviso');
+
+      expect(mensagemDoAvisoDeRemocaoShopee(aviso)).toBe(
+        'Ao remover este vínculo, a próxima publicação acrescenta a opção «P» e move o modelo para ela; «Opção inventada 1» fica sem modelo.',
+      );
+    });
+
+    it.each([
+      ['p', 'P'],
+      ['Cor  inventada', 'Cor inventada'],
+    ])(
+      '⛔ QUASE (a dobra para): a linha %j NÃO é a variante %j — a caixa e o espaço de dentro ficam, e avisa',
+      (nomeDaLinha, nomeDaVariante) => {
+        expect(
+          avisosDaRemocaoShopee([preparada(personalizada([linha(0, nomeDaLinha, ['p'])]))], 0, [
+            v('p', nomeDaVariante),
+          ]),
+        ).toEqual([
+          {
+            tipo: TIPO_AVISO_REMOCAO_SHOPEE.opcaoAcrescentada,
+            variante: nomeDaVariante,
+            opcao: nomeDaLinha,
+          },
+        ]);
+      },
+    );
+
+    it('⛔ QUASE: a variante casa pelo nome com OUTRA linha da mesma entrada — volta a casar com ela, nada é acrescentado', () => {
+      expect(
+        avisosDaRemocaoShopee(
+          [preparada(personalizada([linha(0, 'P', ['p']), linha(0, 'Opção inventada 1', ['p'])]))],
+          0,
+          [v('p', 'P')],
+        ),
+      ).toEqual([]);
+    });
+
+    it('⛔ QUASE: sem a marca de remoção, nenhum aviso', () => {
+      expect(
+        avisosDaRemocaoShopee([personalizada([linha(0, 'Opção inventada 1', ['p'])])], 0, [
+          v('p', 'P'),
+        ]),
+      ).toEqual([]);
+    });
+
+    it.each(['int-1', 'documents/integracao/int-1'])(
+      '⛔ QUASE: a gêmea de TRÁS (conta %j) preparada nunca foi lida — nenhum aviso',
+      (conta) => {
+        const lida = personalizada([linha(0, 'Opção inventada 1', ['p'])]);
+        const gemea = preparada(personalizada([linha(0, 'Opção inventada 2', ['p'])], conta));
+        expect(avisosDaRemocaoShopee([lida, gemea], 1, [v('p', 'P')])).toEqual([]);
+      },
+    );
+
+    it('⛔ QUASE: a PRIMEIRA preparada com uma gêmea atrás — a gêmea passa a ser lida, nenhum aviso', () => {
+      const primeira = preparada(personalizada([linha(0, 'Opção inventada 1', ['p'])]));
+      const gemea = personalizada(
+        [linha(0, 'Opção inventada 1', ['p'])],
+        'documents/integracao/int-1',
+      );
+      expect(avisosDaRemocaoShopee([primeira, gemea], 0, [v('p', 'P')])).toEqual([]);
+    });
+
+    it('⛔ QUASE («trocar»): uma entrada PADRÃO da mesma chave continua gravada — ela responde, nenhum aviso', () => {
+      const trocada = preparada(personalizada([linha(0, 'Opção inventada 1', ['p'])]));
+      const padrao = vinculo('int-1', CATEGORIA_PERSONALIZADA, [linha(6258, 'Preto', ['p'])]);
+      expect(avisosDaRemocaoShopee([trocada, padrao], 0, [v('p', 'P')])).toEqual([]);
+    });
+
+    it('um elemento ilegível da mesma chave continua gravado: a publicação o recusa, nenhuma opção é acrescentada', () => {
+      const removida = preparada(personalizada([linha(0, 'Opção inventada 1', ['p'])]));
+      const ilegivel = { ...personalizada([]), lixo: 1 };
+      expect(avisosDaRemocaoShopee([removida, ilegivel], 0, [v('p', 'P')])).toEqual([]);
+    });
+
+    it.each<[string, Doc, { id: string; nome: string }[]]>([
+      [
+        'uma variante que o grupo não oferece',
+        linha(0, 'Opção inventada 1', ['fantasma']),
+        [v('p', 'P')],
+      ],
+      ['uma variante sem nome', linha(0, 'Opção inventada 1', ['p']), [v('p', '  ')]],
+      ['uma linha em branco', linha(0, '  ', ['p']), [v('p', 'P')]],
+      ['uma linha de id não-zero', linha(6258, 'Preto', ['p']), [v('p', 'P')]],
+    ])('%s não avisa', (_caso, unica, variantes) => {
+      const entrada = personalizada([unica]);
+      // Readable, or the empty answer would prove nothing.
+      expect(linkVariacoesShopeeSchema.safeParse(entrada).success).toBe(true);
+      expect(avisosDaRemocaoShopee([preparada(entrada)], 0, variantes)).toEqual([]);
+    });
+
+    it('uma linha com duas variantes renomeadas ⇒ dois avisos', () => {
+      expect(
+        avisosDaRemocaoShopee(
+          [preparada(personalizada([linha(0, 'Opção inventada 1', ['p', 'm'])]))],
+          0,
+          [v('p', 'P'), v('m', 'M')],
+        ),
+      ).toEqual([
+        {
+          tipo: TIPO_AVISO_REMOCAO_SHOPEE.opcaoAcrescentada,
+          variante: 'P',
+          opcao: 'Opção inventada 1',
+        },
+        {
+          tipo: TIPO_AVISO_REMOCAO_SHOPEE.opcaoAcrescentada,
+          variante: 'M',
+          opcao: 'Opção inventada 1',
+        },
+      ]);
+    });
+
+    it('o MESMO par (variante, opção) depois da dobra é um aviso só', () => {
+      const entrada = personalizada([
+        linha(0, 'Opção inventada 1', ['p', 'q']),
+        linha(0, 'Opção inventada 1 ', ['p']),
+      ]);
+      expect(avisosDaRemocaoShopee([preparada(entrada)], 0, [v('p', 'P'), v('q', ' P')])).toEqual([
+        {
+          tipo: TIPO_AVISO_REMOCAO_SHOPEE.opcaoAcrescentada,
+          variante: 'P',
+          opcao: 'Opção inventada 1',
+        },
+      ]);
+    });
+  });
+
+  describe('padrão (Q3b)', () => {
+    const padrao = (conta = 'int-1', extra: Doc = {}): Doc =>
+      vinculo(conta, FASHION, [linha(6258, 'Preto', ['p'])], extra);
+    const VARIANTES_P = [v('p', 'P')];
+
+    it('⚠️ PAR: a entrada padrão preparada, sozinha na chave ⇒ um anúncio que use a variação 101054 será recusado', () => {
+      const avisos = avisosDaRemocaoShopee([preparada(padrao())], 0, VARIANTES_P);
+
+      expect(avisos).toEqual([
+        { tipo: TIPO_AVISO_REMOCAO_SHOPEE.variacaoRecusada, variationId: 101054 },
+      ]);
+      expect(avisos.map(mensagemDoAvisoDeRemocaoShopee)).toEqual([
+        'Um anúncio publicado nesta categoria que use a variação 101054 será recusado ao republicar até que este vínculo seja recriado.',
+      ]);
+    });
+
+    it('⛔ QUASE: uma entrada da MESMA chave (em forma de caminho) e da MESMA variação continua gravada ⇒ nenhum aviso', () => {
+      expect(
+        avisosDaRemocaoShopee(
+          [preparada(padrao()), padrao('documents/integracao/int-1')],
+          0,
+          VARIANTES_P,
+        ),
+      ).toEqual([]);
+    });
+
+    it('⚠️ PAR: o substituto da mesma chave é de OUTRA variação (101056) ⇒ avisa, com o id da removida', () => {
+      expect(
+        avisosDaRemocaoShopee(
+          [preparada(padrao()), vinculo('int-1', FASHION, [], { variation_id: 101056 })],
+          0,
+          VARIANTES_P,
+        ),
+      ).toEqual([{ tipo: TIPO_AVISO_REMOCAO_SHOPEE.variacaoRecusada, variationId: 101054 }]);
+    });
+
+    it('⛔ QUASE: uma entrada de `int-12`, mesma categoria e variação, é OUTRA chave ⇒ avisa', () => {
+      expect(
+        avisosDaRemocaoShopee([preparada(padrao()), padrao('int-12')], 0, VARIANTES_P),
+      ).toEqual([{ tipo: TIPO_AVISO_REMOCAO_SHOPEE.variacaoRecusada, variationId: 101054 }]);
+    });
+
+    it('um elemento ilegível da mesma chave não responde por ela ⇒ avisa', () => {
+      expect(
+        avisosDaRemocaoShopee([preparada(padrao()), { ...padrao(), lixo: 1 }], 0, VARIANTES_P),
+      ).toEqual([{ tipo: TIPO_AVISO_REMOCAO_SHOPEE.variacaoRecusada, variationId: 101054 }]);
+    });
+
+    it('⛔ QUASE: a gêmea de TRÁS preparada nunca foi lida — nenhum aviso, mesmo sendo de OUTRA variação', () => {
+      const gemea = preparada(
+        vinculo('documents/integracao/int-1', FASHION, [], { variation_id: 101056 }),
+      );
+      expect(avisosDaRemocaoShopee([padrao(), gemea], 1, VARIANTES_P)).toEqual([]);
+    });
+
+    it('⛔ QUASE: sem a marca, ilegível, não-objeto, fora da lista ou sem lista ⇒ nenhum aviso', () => {
+      expect(avisosDaRemocaoShopee([padrao()], 0, VARIANTES_P)).toEqual([]);
+      expect(avisosDaRemocaoShopee([preparada({ ...padrao(), lixo: 1 })], 0, VARIANTES_P)).toEqual(
+        [],
+      );
+      expect(avisosDaRemocaoShopee(alternarRemocaoShopee(['lixo'], 0), 0, VARIANTES_P)).toEqual([]);
+      expect(avisosDaRemocaoShopee([preparada(padrao())], 1, VARIANTES_P)).toEqual([]);
+      expect(avisosDaRemocaoShopee(preparada(padrao()), 0, VARIANTES_P)).toEqual([]);
+    });
+
+    it('uma entrada personalizada nunca dá `variacao-recusada`, nem sozinha na chave', () => {
+      const avisos = avisosDaRemocaoShopee(
+        [preparada(vinculo('int-1', FASHION, [linha(0, 'P', ['p'])], { variation_id: 0 }))],
+        0,
+        VARIANTES_P,
+      );
+      expect(avisos).toEqual([]);
     });
   });
 });
@@ -1248,8 +1566,10 @@ describe('achadosDaLeituraShopee — o que depende de uma leitura da Shopee', ()
 
 describe('mensagemDoAchadoShopee — o texto do cartão, pt-BR', () => {
   const nome = (id: string) => id.toUpperCase();
+  const EDITAVEL = { somenteLeitura: false };
 
-  it.each<[AchadoVinculoShopee, string]>([
+  /** Every finding's sentence on an EDITABLE card. */
+  const FRASES: [AchadoVinculoShopee, string][] = [
     [
       {
         tipo: TIPO_ACHADO_SHOPEE.chaveRepetida,
@@ -1340,8 +1660,28 @@ describe('mensagemDoAchadoShopee — o texto do cartão, pt-BR', () => {
       },
       'A opção personalizada «Cor do ERP» tem 31 caracteres e a Shopee aceita 1..30 — encurte o nome da variante (aba Variantes) e escolha de novo a opção personalizada dela aqui.',
     ],
-  ])('%j', (achado, texto) => {
-    expect(mensagemDoAchadoShopee(achado, nome)).toBe(texto);
+  ];
+
+  it.each(FRASES)('%j', (achado, texto) => {
+    expect(mensagemDoAchadoShopee(achado, nome, EDITAVEL)).toBe(texto);
+  });
+
+  it('num cartão só de leitura (#1911 P14b, Q4), a #23 termina sem «Escolha uma.» — e nenhuma outra frase muda', () => {
+    let mudou = 0;
+    for (const [achado, texto] of FRASES) {
+      const lida = mensagemDoAchadoShopee(achado, nome, { somenteLeitura: true });
+      if (achado.tipo === TIPO_ACHADO_SHOPEE.varianteEmDuasOpcoes) {
+        mudou += 1;
+        expect(texto.endsWith(' Escolha uma.')).toBe(true);
+        expect(lida).toBe(texto.slice(0, -' Escolha uma.'.length));
+        expect(lida).toBe(
+          'A variante «P» está em mais de uma opção (Preto (6258), Preto (9585)) — a publicação pode usar qualquer uma delas, ou recusar o anúncio.',
+        );
+      } else {
+        expect(lida).toBe(texto);
+      }
+    }
+    expect(mudou).toBe(1);
   });
 
   it('uma opção sem nome se diz «Sem nome», e a personalizada dispensa o id 0', () => {
@@ -1359,6 +1699,7 @@ describe('mensagemDoAchadoShopee — o texto do cartão, pt-BR', () => {
           ],
         },
         nome,
+        EDITAVEL,
       ),
     ).toContain('(Sem nome (6258), Cor do ERP)');
   });

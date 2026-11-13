@@ -15,6 +15,12 @@ import { produtoLojaIntegradaLinkSchema } from './produto/collection/lojaIntegra
  * full-scans every link doc of every produto and bills the data scanned. So the
  * index is pinned here, against the link schema's own field names, until the
  * query that uses it lands with its own pin (PR 5-c).
+ *
+ * The group also carries a KEY-ONLY index, `produtolojaintegrada (__name__ ASC)`:
+ * the Loja Integrada anchor census in `tools/migrations` walks every link doc by
+ * document key, and that index is pinned there (`keyWalks.indexes.test.ts`,
+ * `key-walks.json`). It is no composite and serves no filter, so it is left out
+ * of the count below; any other index on the group still counts.
  */
 
 function findRepoRoot(startDir: string): string {
@@ -35,11 +41,17 @@ const parsed = JSON.parse(readFileSync(resolve(repoRoot, 'firestore.indexes.json
   }>;
 };
 
+/** A key-only index (`__name__` alone): a document-key walk's, never a filter's. */
+const soChave = (index: { fields?: Array<{ fieldPath?: string }> }): boolean =>
+  index.fields?.length === 1 && index.fields[0]?.fieldPath === '__name__';
+
 describe('the Loja Integrada link-doc index (step 5)', () => {
   it('declares exactly one collection-group (contaLojaIntegrada ASC, id ASC) index', () => {
     const matches = (parsed.indexes ?? []).filter(
       (index) =>
-        index.collectionGroup === 'produtolojaintegrada' && index.queryScope === 'COLLECTION_GROUP',
+        index.collectionGroup === 'produtolojaintegrada' &&
+        index.queryScope === 'COLLECTION_GROUP' &&
+        !soChave(index),
     );
     expect(matches).toHaveLength(1);
     expect(matches[0]?.fields).toEqual([

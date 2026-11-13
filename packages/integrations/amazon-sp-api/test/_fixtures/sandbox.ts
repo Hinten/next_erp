@@ -83,6 +83,50 @@
  *    `c2-status-aceita.json`, which this package cannot read): no
  *    `amazonShipmentId`, keys in the order Amazon sent them. Every value is a
  *    placeholder.
+ *  - `listing200` — listings `getListingsItem` 200 static[0], REDUCED to a KEPT
+ *    list: `sku`; per summary `marketplaceId`, `asin`, `productType`,
+ *    `conditionType`, `status`, `createdDate` and `lastUpdatedDate`; the
+ *    `fulfillmentAvailability` list; the first two `issues`, whole. Dropped: the
+ *    summaries' `itemName` and `mainImage`, the `offers`, the other three issues.
+ *    ⚠️ The ASIN takes the FAKE shape (`B0ZZTESTE1`, the app sanitizer's
+ *    `B0ZZ…` range), as a committed fixture's must; every other value kept is
+ *    the model's, byte for byte (its SKU is the model's own placeholder).
+ *  - `buscaListings200` — listings `searchListingsItems` 200 static[0]: its
+ *    `numberOfResults: 3`, its `pagination` (the model's placeholder tokens) and
+ *    its ONE item, reduced like `listing200`. The request asked `pageSize: 1`.
+ *  - `envioListing200Aceito` — listings `patchListingsItem` 200 static[0], as
+ *    printed (`ACCEPTED`).
+ *  - `envioListing200Invalido` — listings `patchListingsItem` 200 static[2], as
+ *    printed: a `VALIDATION_PREVIEW` answer (`INVALID`, issue `90000900`), a
+ *    mode this package never sends; it stands in for the shape of an `INVALID`
+ *    submission.
+ *  - `documentoFeedCriado201` — feeds `createFeedDocument` 201 static[0]. ⚠️ The
+ *    sandbox's `url` is a CloudFront host, which the pre-signed URL guard
+ *    refuses: it is REPLACED by the S3-shaped fake {@link URL_DOCUMENTO_FEED_FALSA}.
+ *    The original is kept as {@link URL_CLOUDFRONT_DO_SANDBOX}, for the test
+ *    that shows the guard refusing it. The `feedDocumentId` is the model's.
+ *  - `feedCriado202` — feeds `createFeed` 202 static[0], as printed (its
+ *    `feedId` is already digits). `feedCriado202NaoDigitos` — static[1], as
+ *    printed: a non-digit `feedId`, kept only to show the 202 schema refusing it.
+ *  - `feed200Concluido` — feeds `getFeed` 200 static[1] (`DONE`). ⚠️ Its
+ *    non-digit `feedId` is REPLACED by the digit id of `feedCriado202`
+ *    (`3485934`); every other value is the model's, byte for byte.
+ *  - `documentoFeed200` — feeds `getFeedDocument` 200 static[0]. ⚠️ Its CloudFront
+ *    `url` is REPLACED by {@link URL_DOCUMENTO_FEED_FALSA}; the `feedDocumentId`
+ *    is the model's. The sandbox sends no `compressionAlgorithm`.
+ *
+ * The two listings-feed JSON schemas beside this file are Amazon's PUBLISHED
+ * schemas (`amzn/selling-partner-api-models`, Apache-2.0), committed VERBATIM —
+ * never reformatted (`.prettierignore`), never hand-edited — and read only by
+ * the feeds tests. Each was written byte for byte by
+ * `node .master_plans/amazon/evidence/amazon-doc.mjs esquema schemas/feeds/<nome>.json --saida <file>`
+ * (the cache or raw.githubusercontent.com, never the SP-API):
+ *
+ *  - `listings-feed-schema-v2.json` — `schemas/feeds/listings-feed-schema-v2.json`,
+ *    sha256 `9f6c00a109f086c269427ae1bc4afe1f9ba49ff8df46de9de939fa2c9f00e1ef`.
+ *  - `listings-feed-processing-report-schema-v2.json` —
+ *    `schemas/feeds/listings-feed-processing-report-schema-v2.json`,
+ *    sha256 `03daac9d3fa97d729efb3f3c2836c664036a8ef32a9829363d8026bb097178fd`.
  *
  * The LWA token response is the shape of the example on
  * D:connecting-to-the-selling-partner-api (`token_type: 'bearer'`,
@@ -407,6 +451,127 @@ export const searchOrders200ComPacotes = {
     },
   ],
   createdBefore: '2024-12-24T15:00:00Z',
+} as const;
+
+/* -------------------------------------------------------------------------- */
+/*                   Listings and feeds — from the sandbox                    */
+/* -------------------------------------------------------------------------- */
+
+export const listing200 = {
+  sku: 'GM-ZDPI-9B4E',
+  summaries: [
+    {
+      marketplaceId: 'ATVPDKIKX0DER',
+      asin: 'B0ZZTESTE1',
+      productType: 'LUGGAGE',
+      conditionType: 'new_new',
+      status: ['BUYABLE'],
+      createdDate: '2021-02-01T00:00:00Z',
+      lastUpdatedDate: '2021-03-01T00:00:00Z',
+    },
+    {
+      marketplaceId: 'A2EUQ1WTGCTBG2',
+      asin: 'B0ZZTESTE1',
+      productType: 'LUGGAGE',
+      conditionType: 'new_new',
+      status: [],
+      createdDate: '2021-02-02T01:00:00Z',
+      lastUpdatedDate: '2021-03-05T00:00:00Z',
+    },
+  ],
+  fulfillmentAvailability: [{ fulfillmentChannelCode: 'DEFAULT', quantity: 100 }],
+  issues: [
+    {
+      code: '90220',
+      message: "'size' is required but not supplied.",
+      severity: 'ERROR',
+      attributeNames: ['size'],
+      categories: ['MISSING_ATTRIBUTE', 'LISTING'],
+      marketplaceIds: ['ATVPDKIKX0DER'],
+    },
+    {
+      code: '18027',
+      message:
+        'We believe the main image has text, logo, graphic, or watermark that is not permitted for this product type. Submit a compliant image to lift the suppression. Also refer to Product image requirements.',
+      severity: 'ERROR',
+      categories: ['INVALID_IMAGE', 'LISTING'],
+      enforcements: {
+        actions: [{ action: 'SEARCH_SUPPRESSED' }],
+        exemption: { status: 'EXEMPT_UNTIL_EXPIRY_DATE', expiryDate: '2025-05-28T00:36:48.914Z' },
+      },
+      marketplaceIds: ['ATVPDKIKX0DER', 'A2EUQ1WTGCTBG2'],
+    },
+  ],
+} as const;
+
+export const buscaListings200 = {
+  numberOfResults: 3,
+  pagination: {
+    nextToken: 'xsdflkj324lkjsdlkj3423klkjsdfkljlk2j34klj2l3k4jlksdjl234',
+    previousToken: 'ilkjsdflkj234lkjds234234lkjl234lksjdflkj234234lkjsfsdflkj333d',
+  },
+  items: [listing200],
+} as const;
+
+export const envioListing200Aceito = {
+  sku: 'GM-ZDPI-9B4E',
+  status: 'ACCEPTED',
+  submissionId: 'f1dc2914-75dd-11ea-bc55-0242ac130003',
+  issues: [],
+} as const;
+
+export const envioListing200Invalido = {
+  sku: 'VALIDATION_INVALID',
+  status: 'INVALID',
+  submissionId: 'a1c562c2-1695-11ee-be56-0242ac120002',
+  identifiers: [],
+  issues: [
+    {
+      code: '90000900',
+      message: 'The attributes are invalid.',
+      severity: 'ERROR',
+      attributeNames: ['fake_attribute'],
+      categories: ['INVALID_ATTRIBUTE', 'LISTING'],
+      enforcements: {
+        actions: [{ action: 'ATTRIBUTE_SUPPRESSED' }],
+        exemption: { status: 'NOT_EXEMPT' },
+      },
+    },
+  ],
+} as const;
+
+/** The sandbox's own document URL (a CloudFront host): kept only to show the guard refusing it. */
+export const URL_CLOUDFRONT_DO_SANDBOX =
+  'https://d34o8swod1owfl.cloudfront.net/Feed_101__POST_PRODUCT_DATA_.xml';
+
+/** The S3-shaped fake that replaces the sandbox's CloudFront URLs (no region, no real bucket). */
+export const URL_DOCUMENTO_FEED_FALSA =
+  'https://bucket-teste.s3.amazonaws.com/documento-feed-teste?X-Amz-Signature=0000';
+
+export const documentoFeedCriado201 = {
+  feedDocumentId: '3d4e42b5-1d6e-44e8-a89c-2abfca0625bb',
+  url: URL_DOCUMENTO_FEED_FALSA,
+} as const;
+
+export const feedCriado202 = { feedId: '3485934' } as const;
+
+export const feedCriado202NaoDigitos = {
+  feedId: 'POST_FLAT_FILE_FBA_CREATE_REMOVAL_feed_01_SUCCESS',
+} as const;
+
+export const feed200Concluido = {
+  feedId: '3485934',
+  feedType: 'POST_FLAT_FILE_FBA_CREATE_REMOVAL',
+  createdTime: '2024-03-11T13:16:24.630Z',
+  processingStatus: 'DONE',
+  processingStartTime: '2024-03-11T13:16:24.630Z',
+  processingEndTime: '2024-03-11T13:16:24.630Z',
+  resultFeedDocumentId: 'POST_FLAT_FILE_FBA_CREATE_REMOVAL_resultDoc_success_01',
+} as const;
+
+export const documentoFeed200 = {
+  feedDocumentId: '0356cf79-b8b0-4226-b4b9-0ee058ea5760',
+  url: URL_DOCUMENTO_FEED_FALSA,
 } as const;
 
 /* -------------------------------------------------------------------------- */

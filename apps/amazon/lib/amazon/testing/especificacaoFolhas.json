@@ -3,6 +3,8 @@
   "modelos": {
     "delivery": {"arquivo":"models/delivery-by-amazon/deliveryShipmentInvoiceV2022-07-01.json","sha256":"6c90c39266ac8138c5cbae1c2e20bfae125a40200aecb7331b1bb809bafe5c30"},
     "easyShip": {"arquivo":"models/easy-ship-model/easyShip_2022-03-23.json","sha256":"fa3e41886100ed28be343eb76eb71471509c2fcbf7de4cd6f35c6a8d03f4ad52"},
+    "feeds": {"arquivo":"models/feeds-api-model/feeds_2021-06-30.json","sha256":"0bc6e151fab39bc736d88b026c5a69d2419a10cda3ec50bd79a5122d731a1f38"},
+    "listings": {"arquivo":"models/listings-items-api-model/listingsItems_2021-08-01.json","sha256":"117617f4c86dbd5c1708913103806a24c0ef0bbcfb6054e415d044d07761faeb"},
     "orderChange": {"arquivo":"schemas/notifications/OrderChangeNotification.json","sha256":"f6ab36175ddd363d80a39964708f44ba311879ce603bdebd66e33740e87f5b9c"},
     "orders": {"arquivo":"models/orders-api-model/orders_2026-01-01.json","sha256":"cd5d1fda9b9b301970e3349868e19703f65af83213e24385b850bb46a2667588"},
     "tokens": {"arquivo":"models/tokens-api-model/tokens_2021-03-01.json","sha256":"3cd09ae7f218c83f32536a894cb8c42f2191c94b9c27f6bcf0a164442089b061"}
@@ -548,6 +550,240 @@
       ]
     },
     {
+      "modelo": "listings",
+      "operationId": "getListingsItem",
+      "status": "200",
+      "folhas": [
+        {"caminho":"attributes.*","tipo":"aberto"},
+        {"caminho":"fulfillmentAvailability.*.fulfillmentChannelCode","tipo":"string"},
+        {"caminho":"fulfillmentAvailability.*.quantity","tipo":"integer"},
+        {"caminho":"issues.*.attributeNames.*","tipo":"string"},
+        {"caminho":"issues.*.categories.*","tipo":"string"},
+        {"caminho":"issues.*.code","tipo":"string"},
+        {"caminho":"issues.*.enforcements.actions.*.action","tipo":"string"},
+        {"caminho":"issues.*.enforcements.exemption.expiryDate","tipo":"string"},
+        {"caminho":"issues.*.enforcements.exemption.status","tipo":"string"},
+        {"caminho":"issues.*.marketplaceIds.*","tipo":"string"},
+        {"caminho":"issues.*.message","tipo":"string"},
+        {"caminho":"issues.*.severity","tipo":"string"},
+        {"caminho":"offers.*.audience.displayName","tipo":"string"},
+        {"caminho":"offers.*.audience.value","tipo":"string"},
+        {"caminho":"offers.*.marketplaceId","tipo":"string"},
+        {"caminho":"offers.*.offerType","tipo":"string"},
+        {"caminho":"offers.*.points.pointsNumber","tipo":"integer"},
+        {"caminho":"offers.*.price.amount","tipo":"string"},
+        {"caminho":"offers.*.price.currencyCode","tipo":"string"},
+        {"caminho":"procurement.*.costPrice.amount","tipo":"string"},
+        {"caminho":"procurement.*.costPrice.currencyCode","tipo":"string"},
+        {"caminho":"productTypes.*.marketplaceId","tipo":"string"},
+        {"caminho":"productTypes.*.productType","tipo":"string"},
+        {"caminho":"relationships.*.marketplaceId","tipo":"string"},
+        {"caminho":"relationships.*.relationships.*.childSkus.*","tipo":"string"},
+        {"caminho":"relationships.*.relationships.*.parentSkus.*","tipo":"string"},
+        {"caminho":"relationships.*.relationships.*.type","tipo":"string"},
+        {"caminho":"relationships.*.relationships.*.variationTheme.attributes.*","tipo":"string"},
+        {"caminho":"relationships.*.relationships.*.variationTheme.theme","tipo":"string"},
+        {"caminho":"sku","tipo":"string"},
+        {"caminho":"summaries.*.asin","tipo":"string"},
+        {"caminho":"summaries.*.conditionType","tipo":"string"},
+        {"caminho":"summaries.*.createdDate","tipo":"string"},
+        {"caminho":"summaries.*.fnSku","tipo":"string"},
+        {"caminho":"summaries.*.itemName","tipo":"string"},
+        {"caminho":"summaries.*.lastUpdatedDate","tipo":"string"},
+        {"caminho":"summaries.*.mainImage.height","tipo":"integer"},
+        {"caminho":"summaries.*.mainImage.link","tipo":"string"},
+        {"caminho":"summaries.*.mainImage.width","tipo":"integer"},
+        {"caminho":"summaries.*.marketplaceId","tipo":"string"},
+        {"caminho":"summaries.*.productType","tipo":"string"},
+        {"caminho":"summaries.*.status.*","tipo":"string"}
+      ]
+    },
+    {
+      "modelo": "listings",
+      "operationId": "getListingsItem",
+      "status": "erro",
+      "folhas": [
+        {"caminho":"errors.*.code","tipo":"string"},
+        {"caminho":"errors.*.details","tipo":"string"},
+        {"caminho":"errors.*.message","tipo":"string"}
+      ]
+    },
+    {
+      "modelo": "listings",
+      "operationId": "searchListingsItems",
+      "status": "200",
+      "folhas": [
+        {"caminho":"items.*.attributes.*","tipo":"aberto"},
+        {"caminho":"items.*.fulfillmentAvailability.*.fulfillmentChannelCode","tipo":"string"},
+        {"caminho":"items.*.fulfillmentAvailability.*.quantity","tipo":"integer"},
+        {"caminho":"items.*.issues.*.attributeNames.*","tipo":"string"},
+        {"caminho":"items.*.issues.*.categories.*","tipo":"string"},
+        {"caminho":"items.*.issues.*.code","tipo":"string"},
+        {"caminho":"items.*.issues.*.enforcements.actions.*.action","tipo":"string"},
+        {"caminho":"items.*.issues.*.enforcements.exemption.expiryDate","tipo":"string"},
+        {"caminho":"items.*.issues.*.enforcements.exemption.status","tipo":"string"},
+        {"caminho":"items.*.issues.*.marketplaceIds.*","tipo":"string"},
+        {"caminho":"items.*.issues.*.message","tipo":"string"},
+        {"caminho":"items.*.issues.*.severity","tipo":"string"},
+        {"caminho":"items.*.offers.*.audience.displayName","tipo":"string"},
+        {"caminho":"items.*.offers.*.audience.value","tipo":"string"},
+        {"caminho":"items.*.offers.*.marketplaceId","tipo":"string"},
+        {"caminho":"items.*.offers.*.offerType","tipo":"string"},
+        {"caminho":"items.*.offers.*.points.pointsNumber","tipo":"integer"},
+        {"caminho":"items.*.offers.*.price.amount","tipo":"string"},
+        {"caminho":"items.*.offers.*.price.currencyCode","tipo":"string"},
+        {"caminho":"items.*.procurement.*.costPrice.amount","tipo":"string"},
+        {"caminho":"items.*.procurement.*.costPrice.currencyCode","tipo":"string"},
+        {"caminho":"items.*.productTypes.*.marketplaceId","tipo":"string"},
+        {"caminho":"items.*.productTypes.*.productType","tipo":"string"},
+        {"caminho":"items.*.relationships.*.marketplaceId","tipo":"string"},
+        {"caminho":"items.*.relationships.*.relationships.*.childSkus.*","tipo":"string"},
+        {"caminho":"items.*.relationships.*.relationships.*.parentSkus.*","tipo":"string"},
+        {"caminho":"items.*.relationships.*.relationships.*.type","tipo":"string"},
+        {"caminho":"items.*.relationships.*.relationships.*.variationTheme.attributes.*","tipo":"string"},
+        {"caminho":"items.*.relationships.*.relationships.*.variationTheme.theme","tipo":"string"},
+        {"caminho":"items.*.sku","tipo":"string"},
+        {"caminho":"items.*.summaries.*.asin","tipo":"string"},
+        {"caminho":"items.*.summaries.*.conditionType","tipo":"string"},
+        {"caminho":"items.*.summaries.*.createdDate","tipo":"string"},
+        {"caminho":"items.*.summaries.*.fnSku","tipo":"string"},
+        {"caminho":"items.*.summaries.*.itemName","tipo":"string"},
+        {"caminho":"items.*.summaries.*.lastUpdatedDate","tipo":"string"},
+        {"caminho":"items.*.summaries.*.mainImage.height","tipo":"integer"},
+        {"caminho":"items.*.summaries.*.mainImage.link","tipo":"string"},
+        {"caminho":"items.*.summaries.*.mainImage.width","tipo":"integer"},
+        {"caminho":"items.*.summaries.*.marketplaceId","tipo":"string"},
+        {"caminho":"items.*.summaries.*.productType","tipo":"string"},
+        {"caminho":"items.*.summaries.*.status.*","tipo":"string"},
+        {"caminho":"numberOfResults","tipo":"integer"},
+        {"caminho":"pagination.nextToken","tipo":"string"},
+        {"caminho":"pagination.previousToken","tipo":"string"}
+      ]
+    },
+    {
+      "modelo": "listings",
+      "operationId": "searchListingsItems",
+      "status": "erro",
+      "folhas": [
+        {"caminho":"errors.*.code","tipo":"string"},
+        {"caminho":"errors.*.details","tipo":"string"},
+        {"caminho":"errors.*.message","tipo":"string"}
+      ]
+    },
+    {
+      "modelo": "listings",
+      "operationId": "patchListingsItem",
+      "status": "200",
+      "folhas": [
+        {"caminho":"identifiers.*.asin","tipo":"string"},
+        {"caminho":"identifiers.*.marketplaceId","tipo":"string"},
+        {"caminho":"issues.*.attributeNames.*","tipo":"string"},
+        {"caminho":"issues.*.categories.*","tipo":"string"},
+        {"caminho":"issues.*.code","tipo":"string"},
+        {"caminho":"issues.*.enforcements.actions.*.action","tipo":"string"},
+        {"caminho":"issues.*.enforcements.exemption.expiryDate","tipo":"string"},
+        {"caminho":"issues.*.enforcements.exemption.status","tipo":"string"},
+        {"caminho":"issues.*.marketplaceIds.*","tipo":"string"},
+        {"caminho":"issues.*.message","tipo":"string"},
+        {"caminho":"issues.*.severity","tipo":"string"},
+        {"caminho":"sku","tipo":"string"},
+        {"caminho":"status","tipo":"string"},
+        {"caminho":"submissionId","tipo":"string"}
+      ]
+    },
+    {
+      "modelo": "listings",
+      "operationId": "patchListingsItem",
+      "status": "erro",
+      "folhas": [
+        {"caminho":"errors.*.code","tipo":"string"},
+        {"caminho":"errors.*.details","tipo":"string"},
+        {"caminho":"errors.*.message","tipo":"string"}
+      ]
+    },
+    {
+      "modelo": "feeds",
+      "operationId": "createFeedDocument",
+      "status": "200",
+      "folhas": [
+        {"caminho":"feedDocumentId","tipo":"string"},
+        {"caminho":"url","tipo":"string"}
+      ]
+    },
+    {
+      "modelo": "feeds",
+      "operationId": "createFeedDocument",
+      "status": "erro",
+      "folhas": [
+        {"caminho":"errors.*.code","tipo":"string"},
+        {"caminho":"errors.*.details","tipo":"string"},
+        {"caminho":"errors.*.message","tipo":"string"}
+      ]
+    },
+    {
+      "modelo": "feeds",
+      "operationId": "createFeed",
+      "status": "200",
+      "folhas": [
+        {"caminho":"feedId","tipo":"string"}
+      ]
+    },
+    {
+      "modelo": "feeds",
+      "operationId": "createFeed",
+      "status": "erro",
+      "folhas": [
+        {"caminho":"errors.*.code","tipo":"string"},
+        {"caminho":"errors.*.details","tipo":"string"},
+        {"caminho":"errors.*.message","tipo":"string"}
+      ]
+    },
+    {
+      "modelo": "feeds",
+      "operationId": "getFeed",
+      "status": "200",
+      "folhas": [
+        {"caminho":"createdTime","tipo":"string"},
+        {"caminho":"feedId","tipo":"string"},
+        {"caminho":"feedType","tipo":"string"},
+        {"caminho":"marketplaceIds.*","tipo":"string"},
+        {"caminho":"processingEndTime","tipo":"string"},
+        {"caminho":"processingStartTime","tipo":"string"},
+        {"caminho":"processingStatus","tipo":"string"},
+        {"caminho":"resultFeedDocumentId","tipo":"string"}
+      ]
+    },
+    {
+      "modelo": "feeds",
+      "operationId": "getFeed",
+      "status": "erro",
+      "folhas": [
+        {"caminho":"errors.*.code","tipo":"string"},
+        {"caminho":"errors.*.details","tipo":"string"},
+        {"caminho":"errors.*.message","tipo":"string"}
+      ]
+    },
+    {
+      "modelo": "feeds",
+      "operationId": "getFeedDocument",
+      "status": "200",
+      "folhas": [
+        {"caminho":"compressionAlgorithm","tipo":"string"},
+        {"caminho":"feedDocumentId","tipo":"string"},
+        {"caminho":"url","tipo":"string"}
+      ]
+    },
+    {
+      "modelo": "feeds",
+      "operationId": "getFeedDocument",
+      "status": "erro",
+      "folhas": [
+        {"caminho":"errors.*.code","tipo":"string"},
+        {"caminho":"errors.*.details","tipo":"string"},
+        {"caminho":"errors.*.message","tipo":"string"}
+      ]
+    },
+    {
       "modelo": "orderChange",
       "operationId": "OrderChangeNotification",
       "status": "notificacao",
@@ -727,6 +963,8 @@
     ]
   },
   "codigosDeErroDosExemplos": [
+    "400",
+    "BAD_REQUEST",
     "EntityNotFound",
     "InvalidInput",
     "InvalidRequest",

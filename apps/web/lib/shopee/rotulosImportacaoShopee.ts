@@ -2,10 +2,11 @@
  * The Shopee mass-import dialog's labels (#1529 step 21-5), in ONE module, so
  * the dialog (`app/(app)/canais/shopee/_components/ImportarTodosShopeeDialog.tsx`)
  * and the copy that tells the operator which boxes to tick
- * (`./anuncioProduto.ts`, the `logistica-nao-confirmada` row, #2015) read the
- * same strings. A copy that quotes «a label» typed out a second time is the
- * #1369 drift shape: both read correct while disagreeing, and nothing fails
- * when the box is renamed.
+ * (`./anuncioProduto.ts`: both import-remedy rows, `logistica-nao-confirmada`
+ * from #2015 and `logistica-sem-valor-gravado` from #1911 P14b, CPY-4) read the same
+ * strings. A copy that quotes «a label» typed out a second time is the #1369
+ * drift shape: both read correct while disagreeing, and nothing fails when the
+ * box is renamed.
  *
  * Display only. Each option's DEFAULT is `OPCOES_IMPORTACAO_SHOPEE_PADRAO` in
  * `@delfrance/schemas`, never restated here.
@@ -46,3 +47,20 @@ export const ROTULO_OPCAO_IMPORTACAO_SHOPEE = {
   atualizarCadastrados: 'Atualizar anúncios já cadastrados',
   janela: 'Janela de atualização (opcional)',
 } as const satisfies Record<OpcaoComRotulo, string>;
+
+/**
+ * What «Importar fotos» does, shown under that box (#2099). The import only
+ * APPENDS photos (an `arrayUnion` onto the produto's `fotos`), so it never
+ * removes or replaces one. Its dedup is not a history: it skips a listing
+ * picture only when an arquivo the produto CURRENTLY shows already caches that
+ * `image_id` (apps/shopee `idsDeImagemJaImportados`,
+ * `lib/shopee/produtos/fotosShopee.ts`), so a photo removed from the produto
+ * comes back while the listing still has it. Never word it as "the photos this
+ * conta has not brought yet": that history does not exist.
+ *
+ * A constant so the dialog test pins it verbatim and by reference. The import recipe in
+ * `./anuncioProduto.ts` states the same behaviour in its own sentence.
+ */
+export const DESCRICAO_IMPORTAR_FOTOS_SHOPEE =
+  'Acrescenta ao produto as fotos do anúncio; nunca remove nem substitui uma foto já ' +
+  'cadastrada. Uma foto removida do produto volta se ainda estiver no anúncio.';

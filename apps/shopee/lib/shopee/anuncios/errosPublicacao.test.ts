@@ -145,7 +145,7 @@ function recusado(
 }
 
 describe('MOTIVO_PUBLICACAO_BLOQUEADA', () => {
-  it('1 — o vocabulário bloqueado é EXATAMENTE estes cinquenta e nove slugs', () => {
+  it('1 — o vocabulário bloqueado é EXATAMENTE estes sessenta slugs', () => {
     // A PERSISTED vocabulary (`falhaPublicacao.motivo` e
     // `falhaPublicacao.problemas[].motivo`). Esta lista É o pino: o
     // `as const satisfies` garante o TIPO dos valores, mas não impede que um
@@ -172,7 +172,9 @@ describe('MOTIVO_PUBLICACAO_BLOQUEADA', () => {
     // — antes, o `-ja-vinculada` sem acao, o mesmo formato da busca que rodou).
     // O #2015 (Lucas D2) acrescentou `logistica-nao-confirmada`: o canal
     // obrigatório cujo tamanho/tarifa só uma lista gravada tem, sem registro de
-    // que ESTE app a gravou.
+    // que ESTE app a gravou. O #2099 (CPY-4) acrescentou
+    // `logistica-sem-valor-gravado`: o MESMO canal quando essa lista não guarda
+    // valor utilizável nenhum — o remédio também é importar o anúncio.
     expect([...Object.values(MOTIVO_PUBLICACAO_BLOQUEADA)].sort()).toEqual([
       'anuncio-existente-de-outro-produto',
       'anuncio-existente-sem-vinculo',
@@ -210,6 +212,7 @@ describe('MOTIVO_PUBLICACAO_BLOQUEADA', () => {
       'listagem-removida',
       'logistica-nao-confirmada',
       'logistica-sem-canal',
+      'logistica-sem-valor-gravado',
       'marca-nao-escolhida',
       'marca-sem-nome',
       'nome-fora-da-faixa',
@@ -234,7 +237,7 @@ describe('MOTIVO_PUBLICACAO_BLOQUEADA', () => {
       'vinculo-substituido',
       'vinculos-ambiguos',
     ]);
-    expect(Object.values(MOTIVO_PUBLICACAO_BLOQUEADA)).toHaveLength(59);
+    expect(Object.values(MOTIVO_PUBLICACAO_BLOQUEADA)).toHaveLength(60);
   });
 
   it('2 — ⛔ NEAR-MISS: `imposto-incompleto` NÃO é membro, e `estoque-abaixo-do-minimo` É', () => {
@@ -300,7 +303,7 @@ describe('MOTIVO_PROBLEMA_PUBLICACAO', () => {
         'desconhecido',
       ].sort(),
     );
-    expect(Object.values(MOTIVO_PROBLEMA_PUBLICACAO)).toHaveLength(72);
+    expect(Object.values(MOTIVO_PROBLEMA_PUBLICACAO)).toHaveLength(73);
   });
 
   it('6 — ⛔ NEAR-MISS: os treze slugs de WIRE não pertencem ao vocabulário BLOQUEADO', () => {
@@ -314,8 +317,9 @@ describe('MOTIVO_PROBLEMA_PUBLICACAO', () => {
     // despacho, PR 7), pelas duas de rascunho do despacho (#1911, P1), pela da
     // marca não escolhida do rascunho (#1911, P3), pelas quatro da criação
     // incerta (#1911, P5), pelas três da primeira criação (#1911, P5b), pela
-    // da expectativa sem criação incerta (#1911, revisão do lote B, round 4) e
-    // pela da logística não confirmada (#2015, Lucas D2) — 59 membros.
+    // da expectativa sem criação incerta (#1911, revisão do lote B, round 4),
+    // pela da logística não confirmada (#2015, Lucas D2) e pela da logística sem
+    // valor gravado (#2099, CPY-4) — 60 membros.
     // ⚠️ E os sete de KIT (passo 19) também: cada um é uma frase da Shopee
     // classificada DEPOIS de uma escrita, nunca algo lido no produto. O anúncio
     // SEMELHANTE (#1911, P5) idem: é a RESPOSTA de um `add_item`/`update_item`.
@@ -337,7 +341,7 @@ describe('MOTIVO_PROBLEMA_PUBLICACAO', () => {
     ]) {
       expect(bloqueados, slug).not.toContain(slug);
     }
-    expect(bloqueados).toHaveLength(59);
+    expect(bloqueados).toHaveLength(60);
   });
 
   it('6b — ⛔ NEAR-MISS: as 19 recusas de KIT do núcleo SÃO bloqueio, e as 7 de wire do kit NÃO', () => {
@@ -784,9 +788,9 @@ function produzPelaConstante(fonte: string, chave: string): boolean {
 }
 
 describe('O7 — todo membro do vocabulário tem um produtor fora de errosPublicacao.ts', () => {
-  it('os 59 motivos de bloqueio: cada um é escrito por ALGUM outro arquivo', () => {
+  it('os 60 motivos de bloqueio: cada um é escrito por ALGUM outro arquivo', () => {
     // O arquivo que DECLARA está fora do universo, senão a asserção seria
-    // vácua: a própria união de tipos soletra os 59 slugs.
+    // vácua: a própria união de tipos soletra os 60 slugs.
     const fontes = fontesQuePodemProduzir(['errosPublicacao.ts']);
     // Uma âncora: se a leitura da pasta falhar, o teste passa sozinho.
     expect(fontes.size).toBeGreaterThan(10);
@@ -802,7 +806,7 @@ describe('O7 — todo membro do vocabulário tem um produtor fora de errosPublic
     }
 
     expect(orfaos, 'motivos declarados que NINGUÉM produz').toEqual([]);
-    expect(Object.keys(MOTIVO_PUBLICACAO_BLOQUEADA)).toHaveLength(59);
+    expect(Object.keys(MOTIVO_PUBLICACAO_BLOQUEADA)).toHaveLength(60);
   });
 
   it('a recusa da LOGÍSTICA NÃO CONFIRMADA (#2015, Lucas D2): o produtor é `logisticaPublicacao.ts`, pela CONSTANTE — e só ele', () => {
@@ -826,6 +830,30 @@ describe('O7 — todo membro do vocabulário tem um produtor fora de errosPublic
       const produz =
         outra.includes('MOTIVO_PUBLICACAO_BLOQUEADA.logisticaNaoConfirmada') ||
         outra.includes('MOTIVO_PROBLEMA_PUBLICACAO.logisticaNaoConfirmada') ||
+        outra.includes(`'${slug}'`) ||
+        outra.includes(`"${slug}"`);
+      expect(produz, `${nome} produz ${slug}`).toBe(false);
+    }
+  });
+
+  it('a recusa da LOGÍSTICA SEM VALOR GRAVADO (#2099, CPY-4): o produtor é `logisticaPublicacao.ts`, pela CONSTANTE — e só ele', () => {
+    // `logistica-sem-valor-gravado` tem o MESMO produtor único que a sua irmã
+    // do #2015: só o construtor de canais sabe se a lista é confiável, se há
+    // anúncio a importar e se ALGUMA entrada do canal guarda o valor legível.
+    const fontes = fontesQuePodemProduzir(['errosPublicacao.ts']);
+    const logistica = fontes.get('logisticaPublicacao.ts');
+    expect(logistica, 'logisticaPublicacao.ts fora do universo de O7').toBeDefined();
+    const fonte = logistica ?? '';
+    expect(fonte).toContain('MOTIVO_PUBLICACAO_BLOQUEADA.logisticaSemValorGravado');
+    const slug = MOTIVO_PUBLICACAO_BLOQUEADA.logisticaSemValorGravado;
+    expect(fonte.includes(`'${slug}'`) || fonte.includes(`"${slug}"`)).toBe(false);
+    // ⛔ QUASE-PAR: nenhum OUTRO arquivo a produz — o plano do item e o do kit
+    // RELAIAM o que o construtor decide (uma segunda cópia é o cheiro do #1369).
+    for (const [nome, outra] of fontes) {
+      if (nome === 'logisticaPublicacao.ts') continue;
+      const produz =
+        outra.includes('MOTIVO_PUBLICACAO_BLOQUEADA.logisticaSemValorGravado') ||
+        outra.includes('MOTIVO_PROBLEMA_PUBLICACAO.logisticaSemValorGravado') ||
         outra.includes(`'${slug}'`) ||
         outra.includes(`"${slug}"`);
       expect(produz, `${nome} produz ${slug}`).toBe(false);
@@ -1169,9 +1197,9 @@ describe('O7 — todo membro do vocabulário tem um produtor fora de errosPublic
  * ⚠️ Round 4: `criacao-incerta-encerrada` is a refusal the web MUST word by
  * its slug — on `-ja-vinculada`'s acao-less row it was worded by the draft's
  * state at render time, which a NEW uncertain attempt makes false. So the pin
- * also names it among the slugs the web spells (13 since #2015): until the web keys its
- * copy on it, this reds — the server's new answer would otherwise reach a tab
- * that has no sentence for it.
+ * also names it among the slugs the web spells (13 since #2015, 14 since
+ * #2099): until the web keys its copy on it, this reds — the server's new
+ * answer would otherwise reach a tab that has no sentence for it.
  */
 describe('o vocabulário que a WEB soletra (#1911 batch-B review, R4-1369-fold#2)', () => {
   const FONTE_DA_WEB = new URL('../../../../web/lib/shopee/anuncioProduto.ts', import.meta.url);
@@ -1206,18 +1234,21 @@ describe('o vocabulário que a WEB soletra (#1911 batch-B review, R4-1369-fold#2
     return slugs.filter((s) => !VOCABULARIO.has(s));
   }
 
-  it('os 13 de MOTIVO_ANUNCIO_SHOPEE e os 7 de TEXTO_MOTIVO_KIT são TODOS motivos do servidor — e a web soletra a recusa SEM BUSCA (round 4) e a logística não confirmada (#2015)', () => {
+  it('os 14 de MOTIVO_ANUNCIO_SHOPEE e os 7 de TEXTO_MOTIVO_KIT são TODOS motivos do servidor — e a web soletra a recusa SEM BUSCA (round 4), a logística não confirmada (#2015) e a logística sem valor gravado (#2099)', () => {
     const fonte = readFileSync(fileURLToPath(FONTE_DA_WEB), 'utf8');
     const motivos = slugsDoMotivoDaWeb(fonte);
     const kit = slugsDoKitDaWeb(fonte);
 
     // Âncoras anti-vacuidade: o arquivo foi lido e cada fatia achou o seu bloco.
-    expect(motivos).toHaveLength(13);
+    expect(motivos).toHaveLength(14);
     expect(kit).toHaveLength(7);
-    expect(new Set(motivos).size).toBe(13);
+    expect(new Set(motivos).size).toBe(14);
     // #2015 (Lucas D3): the tab words the provenance refusal and keeps the
     // weight button off its row — a server rename would otherwise bring it back.
     expect(motivos).toContain(MOTIVO_PUBLICACAO_BLOQUEADA.logisticaNaoConfirmada);
+    // #2099 (CPY-4): the same for the import-remedy refusal with NO readable
+    // value — worded by the tab, no weight button on its row.
+    expect(motivos).toContain(MOTIVO_PUBLICACAO_BLOQUEADA.logisticaSemValorGravado);
     expect(motivos).toContain(MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaSemSku);
     expect(motivos).toContain(MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaJaVinculada);
     // Round 4: the attestation's refusal on a draft that no longer records the
@@ -1234,7 +1265,7 @@ describe('o vocabulário que a WEB soletra (#1911 batch-B review, R4-1369-fold#2
     const renomeado = fonte.replace(`'${semSku}'`, `'${semSku}-v2'`);
     expect(renomeado).not.toBe(fonte);
     expect(foraDoVocabulario(slugsDoMotivoDaWeb(renomeado))).toEqual([`${semSku}-v2`]);
-    expect(slugsDoMotivoDaWeb(renomeado)).toHaveLength(13);
+    expect(slugsDoMotivoDaWeb(renomeado)).toHaveLength(14);
 
     const kitRenomeado = fonte.replace(
       `'${MOTIVO_PUBLICACAO_BLOQUEADA.principalObrigatorio}':`,

@@ -1024,22 +1024,84 @@ describe('o cartão — as opções da variante', () => {
     ]);
   });
 
-  it('a opção personalizada leva o nome da variante, sem aparar nem dobrar', async () => {
+  it('⚠️ PAR (#1911 P14b, INVERTIDO DE PROPÓSITO): a opção personalizada NOVA guarda o nome da variante com as pontas aparadas', async () => {
     const variantes = [{ id: 'v9', nome: ' Cor do ERP ', codigo: null }];
     await renderTab([vinculo()], { variantes });
 
-    await escolher(
-      cartao(),
-      'Opção da Shopee para « Cor do ERP »',
-      'Personalizada: « Cor do ERP »',
-    );
+    await escolher(cartao(), 'Opção da Shopee para « Cor do ERP »', 'Personalizada: «Cor do ERP»');
 
-    expect((valorAtual() as Doc[])[0]?.variationOptions).toEqual([
-      opcao(0, ' Cor do ERP ', ['v9']),
-    ]);
+    expect((valorAtual() as Doc[])[0]?.variationOptions).toEqual([opcao(0, 'Cor do ERP', ['v9'])]);
     expect(entrada(cartao(), 'Opção da Shopee para « Cor do ERP »').value).toBe(
       'Personalizada: «Cor do ERP»',
     );
+  });
+
+  it.each(['Cor  do ERP', 'cor do erp'])(
+    '⛔ QUASE (#1911 P14b): a variante %j é guardada como foi digitada — o espaço de dentro e a caixa não dobram',
+    async (nome) => {
+      await renderTab([vinculo()], { variantes: [{ id: 'v9', nome, codigo: null }] });
+
+      // One variante, so one `Select` and one custom item (the accessible name
+      // collapses inner whitespace, so the labels are matched by prefix).
+      await clicar(within(cartao()).getAllByLabelText(/^Opção da Shopee para «/)[0]!);
+      await clicar(await within(cartao()).findByRole('option', { name: /^Personalizada: «/ }));
+
+      expect((valorAtual() as Doc[])[0]?.variationOptions).toEqual([opcao(0, nome, ['v9'])]);
+    },
+  );
+
+  it('⚠️ PAR (#1911 P14b): a linha guardada «Cor do ERP» e a variante « Cor do ERP » são UM item — escolhê-lo junta a variante à linha', async () => {
+    const variantes = [
+      { id: 'v1', nome: 'P', codigo: null },
+      { id: 'v9', nome: ' Cor do ERP ', codigo: null },
+    ];
+    await renderTab([vinculo({ variationOptions: [opcao(0, 'Cor do ERP', ['v1'])] })], {
+      variantes,
+    });
+    const SELECT_V9 = 'Opção da Shopee para « Cor do ERP »';
+
+    const oferecidos = await itens(cartao(), SELECT_V9);
+    expect(oferecidos.filter((o) => o === 'Personalizada: «Cor do ERP»')).toHaveLength(1);
+    await clicar(
+      await within(cartao()).findByRole('option', { name: 'Personalizada: «Cor do ERP»' }),
+    );
+
+    expect((valorAtual() as Doc[])[0]?.variationOptions).toEqual([
+      opcao(0, 'Cor do ERP', ['v1', 'v9']),
+    ]);
+  });
+
+  it('⚠️ RESÍDUO (#1911 P14b): uma linha LEGADA guardada « Cor do ERP » ao lado da variante « Cor do ERP » — dois itens com um rótulo só, e cada um vai para a sua linha', async () => {
+    const legada = opcao(0, ' Cor do ERP ', ['v1']);
+    const variantes = [
+      { id: 'v1', nome: 'P', codigo: null },
+      { id: 'v9', nome: ' Cor do ERP ', codigo: null },
+    ];
+    await renderTab([vinculo({ variationOptions: [legada] })], { variantes });
+    const SELECT_V9 = 'Opção da Shopee para « Cor do ERP »';
+
+    await clicar(entrada(cartao(), SELECT_V9));
+    // The stored row comes first (verbatim), the variante's custom item last (trimmed).
+    const doisItens = await within(cartao()).findAllByRole('option', {
+      name: 'Personalizada: «Cor do ERP»',
+    });
+    expect(doisItens).toHaveLength(2);
+    await clicar(doisItens[1]!);
+    expect((valorAtual() as Doc[])[0]?.variationOptions).toEqual([
+      legada,
+      opcao(0, 'Cor do ERP', ['v9']),
+    ]);
+
+    // Re-picking the stored one moves the variante back onto it: harmless either way.
+    await clicar(entrada(cartao(), SELECT_V9));
+    const deNovo = await within(cartao()).findAllByRole('option', {
+      name: 'Personalizada: «Cor do ERP»',
+    });
+    expect(deNovo).toHaveLength(2);
+    await clicar(deNovo[0]!);
+    expect((valorAtual() as Doc[])[0]?.variationOptions).toEqual([
+      opcao(0, ' Cor do ERP ', ['v1', 'v9']),
+    ]);
   });
 
   it('uma linha personalizada guardada com o nome da variante não repete o item', async () => {
@@ -1336,16 +1398,22 @@ describe('o cartão — um id que a árvore não lista', () => {
     expect(oferecidos).toStrictEqual(['Sem opção', 'Preto (6258)', 'Personalizada: «M»']);
   });
 
-  it('uma entrada preparada para remoção não avisa mais; desfazer traz o aviso de volta', async () => {
+  it('uma entrada preparada para remoção não diz mais que a opção está fora da lista; desfazer traz o aviso de volta', async () => {
     h.variacoes.mockResolvedValue(SEM_6933);
     await renderTab([COM_6933]);
     const noCartao = cartao(OUTRA_FASHION);
 
     await clicar(within(noCartao).getByRole('button', { name: 'Remover vínculo' }));
     expect(within(noCartao).queryByText(/não está entre as opções atuais/)).toBeNull();
+    expect(
+      within(noCartao).getByText(
+        'Um anúncio publicado nesta categoria que use a variação 101056 será recusado ao republicar até que este vínculo seja recriado.',
+      ),
+    ).toBeTruthy();
 
     await clicar(within(noCartao).getByRole('button', { name: 'Desfazer remoção' }));
     expect(within(noCartao).getByText(foraDaLista('M (6933)'))).toBeTruthy();
+    expect(within(noCartao).queryByText(/será recusado ao republicar/)).toBeNull();
   });
 
   it('⚠️ QUASE-PAR: sem ler a árvore, não se pode dizer que está fora: sem marca e sem aviso', async () => {
@@ -1589,6 +1657,237 @@ describe('o cartão — quando a leitura falha', () => {
     expect(within(cartao()).queryByText('Fora do ar')).toBeNull();
     expect(within(cartao()).getByText('Cor (101054)')).toBeTruthy();
     expect(h.variacoes).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('remover um vínculo — o que a publicação faz depois (#1911 P14b)', () => {
+  const FRASE_ACRESCENTA =
+    'Ao remover este vínculo, a próxima publicação acrescenta a opção «P» e move o modelo para ela; «Opção inventada 1» fica sem modelo.';
+  const FRASE_RECUSA_101054 =
+    'Um anúncio publicado nesta categoria que use a variação 101054 será recusado ao republicar até que este vínculo seja recriado.';
+  /** The import bound the live option «Opção inventada 1» to the variante «P». */
+  const RENOMEADA = vinculo({
+    ...PERSONALIZADO,
+    variationOptions: [opcao(0, 'Opção inventada 1', ['v1'])],
+  });
+  const PADRAO = vinculo({ variationOptions: [opcao(6258, 'Preto', ['v1'])] });
+
+  async function remover(escopo: () => HTMLElement) {
+    await clicar(within(escopo()).getByRole('button', { name: 'Remover vínculo' }));
+  }
+
+  describe('personalizada (Q2)', () => {
+    it('remover diz que a opção «P» será acrescentada; desfazer leva a frase embora', async () => {
+      await renderTab([RENOMEADA]);
+      expect(screen.queryByText(/Ao remover este vínculo/)).toBeNull();
+
+      await remover(() => somenteLeitura(0));
+      expect(within(somenteLeitura(0)).getByText(FRASE_ACRESCENTA)).toBeTruthy();
+
+      await clicar(within(somenteLeitura(0)).getByRole('button', { name: 'Desfazer remoção' }));
+      expect(screen.queryByText(/Ao remover este vínculo/)).toBeNull();
+    });
+
+    it('⛔ QUASE: a linha já tem o nome da variante — ela volta a casar, sem frase', async () => {
+      await renderTab([PERSONALIZADO]);
+
+      await remover(() => somenteLeitura(0));
+
+      expect(within(somenteLeitura(0)).getByText('Será removido')).toBeTruthy();
+      expect(screen.queryByText(/Ao remover este vínculo/)).toBeNull();
+    });
+  });
+
+  describe('padrão (Q3b)', () => {
+    it('remover diz que um anúncio da variação 101054 será recusado; desfazer leva a frase embora', async () => {
+      await renderTab([PADRAO]);
+
+      await remover(() => cartao());
+      expect(within(cartao()).getByText(FRASE_RECUSA_101054)).toBeTruthy();
+
+      await clicar(within(cartao()).getByRole('button', { name: 'Desfazer remoção' }));
+      expect(screen.queryByText(/será recusado ao republicar/)).toBeNull();
+    });
+
+    it('⚠️ PAR: trocar por OUTRA variação (101056) na mesma chave — a frase fica, com o id da removida', async () => {
+      await renderTab([PADRAO]);
+      await remover(() => cartao());
+      await abrirModal();
+      await escolherCategoria(FASHION);
+      await esperar();
+      await escolher(modal(), 'Variação da Shopee', 'Tamanho (101056)');
+      await escolher(modal(), 'Grupo de opções', `Tamanho (BR) (${BR})`);
+      await clicar(botaoDoModal('Adicionar'));
+
+      const [removida] = within(blocoDaConta()).getAllByTestId(`vinculo-shopee-int-1-${FASHION}`);
+      expect(within(removida!).getByText(FRASE_RECUSA_101054)).toBeTruthy();
+    });
+
+    it('⛔ QUASE: recriar a MESMA variação (101054) na mesma chave — a frase sai', async () => {
+      await renderTab([PADRAO]);
+      await remover(() => cartao());
+      await abrirModal();
+      await escolherCategoria(FASHION);
+      await esperar();
+      await escolher(modal(), 'Variação da Shopee', 'Cor (101054)');
+      await clicar(botaoDoModal('Adicionar'));
+
+      expect(within(blocoDaConta()).getAllByTestId(`vinculo-shopee-int-1-${FASHION}`)).toHaveLength(
+        2,
+      );
+      expect(screen.queryByText(/será recusado ao republicar/)).toBeNull();
+    });
+
+    it('⛔ QUASE: remover uma entrada NOVA (do modal) a tira de vez — não há frase', async () => {
+      await renderTab(null);
+      await abrirModal();
+      await escolherCategoria(FASHION);
+      await esperar();
+      await escolher(modal(), 'Variação da Shopee', 'Cor (101054)');
+      await clicar(botaoDoModal('Adicionar'));
+
+      await remover(() => cartao());
+
+      expect(screen.queryByTestId(`vinculo-shopee-int-1-${FASHION}`)).toBeNull();
+      expect(screen.queryByText(/será recusado ao republicar/)).toBeNull();
+    });
+  });
+
+  describe('vínculos de outras contas', () => {
+    it('uma conta INATIVA da Shopee ainda pode ser publicada: as duas frases aparecem', async () => {
+      await renderTab([
+        vinculo({ ...RENOMEADA, integracaoShopeeId: 'int-2' }),
+        vinculo({ ...PADRAO, integracaoShopeeId: 'int-2' }),
+      ]);
+
+      await remover(() => somenteLeitura(0));
+      await remover(() => somenteLeitura(1));
+
+      expect(within(somenteLeitura(0)).getByText(FRASE_ACRESCENTA)).toBeTruthy();
+      expect(within(somenteLeitura(1)).getByText(FRASE_RECUSA_101054)).toBeTruthy();
+    });
+
+    it.each(['ML1', 'int-9'])(
+      '⛔ QUASE: a conta %j não é uma conta da Shopee que exista — nenhuma publicação a lê, sem frase',
+      async (conta) => {
+        await renderTab([
+          vinculo({ ...RENOMEADA, integracaoShopeeId: conta }),
+          vinculo({ ...PADRAO, integracaoShopeeId: conta }),
+        ]);
+
+        await remover(() => somenteLeitura(0));
+        await remover(() => somenteLeitura(1));
+
+        expect(within(somenteLeitura(0)).getByText('Será removido')).toBeTruthy();
+        expect(within(somenteLeitura(1)).getByText('Será removido')).toBeTruthy();
+        expect(screen.queryByText(/Ao remover este vínculo/)).toBeNull();
+        expect(screen.queryByText(/será recusado ao republicar/)).toBeNull();
+      },
+    );
+
+    it.each([
+      ['lendo a lista de contas', 'pending', null],
+      ['sem permissão para a lista', 'error', new FirebaseError('permission-denied', 'negado')],
+    ] as const)(
+      'com a lista de contas %s, a conta pode ser publicável: a frase aparece',
+      async (_caso, status, erro) => {
+        h.statusIntegracoes = status;
+        h.erroIntegracoes = erro;
+        await renderTab([RENOMEADA, PADRAO]);
+
+        await remover(() => somenteLeitura(0));
+        await remover(() => somenteLeitura(1));
+
+        expect(within(somenteLeitura(0)).getByText(FRASE_ACRESCENTA)).toBeTruthy();
+        expect(within(somenteLeitura(1)).getByText(FRASE_RECUSA_101054)).toBeTruthy();
+      },
+    );
+
+    // The near-miss of the ML1/int-9 test above: there the READ list says the conta is
+    // not Shopee's; here no list was read, so even a conta named like another
+    // channel's may be Shopee's — the warning still shows.
+    it.each([
+      ['lendo a lista de contas', 'pending', null],
+      ['sem permissão para a lista', 'error', new FirebaseError('permission-denied', 'negado')],
+    ] as const)(
+      'com a lista de contas %s, até a conta ML1 pode ser da Shopee: a frase aparece',
+      async (_caso, status, erro) => {
+        h.statusIntegracoes = status;
+        h.erroIntegracoes = erro;
+        await renderTab([
+          vinculo({ ...RENOMEADA, integracaoShopeeId: 'ML1' }),
+          vinculo({ ...PADRAO, integracaoShopeeId: 'ML1' }),
+        ]);
+
+        await remover(() => somenteLeitura(0));
+        await remover(() => somenteLeitura(1));
+
+        expect(within(somenteLeitura(0)).getByText(FRASE_ACRESCENTA)).toBeTruthy();
+        expect(within(somenteLeitura(1)).getByText(FRASE_RECUSA_101054)).toBeTruthy();
+      },
+    );
+  });
+});
+
+describe('o cartão — «Escolha uma.» só onde há o que escolher (#1911 P14b, Q4)', () => {
+  const EM_DUAS = [opcao(6258, 'Preto', ['v1']), opcao(9632, 'Azul Turquesa', ['v1'])];
+  const SEM_ESCOLHA =
+    'A variante «P» está em mais de uma opção (Preto (6258), Azul Turquesa (9632)) — a publicação pode usar qualquer uma delas, ou recusar o anúncio.';
+
+  it('uma entrada personalizada: a frase termina sem «Escolha uma.»', async () => {
+    await renderTab([
+      vinculo({
+        ...PERSONALIZADO,
+        variationOptions: [opcao(0, 'P', ['v1']), opcao(0, 'Opção inventada 1', ['v1'])],
+      }),
+    ]);
+
+    expect(
+      within(somenteLeitura(0)).getByText(
+        'A variante «P» está em mais de uma opção (P, Opção inventada 1) — a publicação pode usar qualquer uma delas, ou recusar o anúncio.',
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByText(/Escolha uma\./)).toBeNull();
+  });
+
+  it('a entrada de uma conta inativa: a frase termina sem «Escolha uma.»', async () => {
+    await renderTab([vinculo({ integracaoShopeeId: 'int-2', variationOptions: EM_DUAS })]);
+
+    expect(within(outras()).getByText(SEM_ESCOLHA)).toBeTruthy();
+    expect(screen.queryByText(/Escolha uma\./)).toBeNull();
+  });
+
+  it('uma categoria desconhecida: a frase termina sem «Escolha uma.»', async () => {
+    h.variacoes.mockRejectedValue(categoriaDesconhecida());
+    await renderTab([vinculo({ variationOptions: EM_DUAS })]);
+
+    expect(within(cartao()).getByText(SEM_ESCOLHA)).toBeTruthy();
+    expect(screen.queryByText(/Escolha uma\./)).toBeNull();
+  });
+
+  it('um formulário só de leitura: a frase termina sem «Escolha uma.»', async () => {
+    await renderTab([vinculo({ variationOptions: EM_DUAS })], { disabled: true });
+
+    expect(within(cartao()).getByText(SEM_ESCOLHA)).toBeTruthy();
+    expect(screen.queryByText(/Escolha uma\./)).toBeNull();
+  });
+
+  it('⛔ QUASE: o cartão que espera o grupo vai poder escolher depois — mantém «Escolha uma.»', async () => {
+    await renderTab([
+      vinculo({
+        variation_id: 101056,
+        variationOptions: [opcao(6857, 'P', ['v1']), opcao(6933, 'M', ['v1'])],
+      }),
+    ]);
+
+    // The group is missing, so nothing is editable YET.
+    expect(within(cartao()).getByText(/A Shopee exige o grupo/)).toBeTruthy();
+    expect(entrada(cartao(), SELECT_P).disabled).toBe(true);
+    expect(
+      within(cartao()).getByText(
+        'A variante «P» está em mais de uma opção (P (6857), M (6933)) — a publicação pode usar qualquer uma delas, ou recusar o anúncio. Escolha uma.',
+      ),
+    ).toBeTruthy();
   });
 });
 

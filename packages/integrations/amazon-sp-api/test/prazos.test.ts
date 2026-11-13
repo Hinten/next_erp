@@ -10,6 +10,7 @@ describe('PRAZO_AMAZON_MS', () => {
       escrita: 30_000,
       leitura: 20_000,
       lwa: 20_000,
+      upload: 30_000,
     });
   });
 
@@ -25,7 +26,18 @@ describe('PRAZO_AMAZON_MS', () => {
     },
   );
 
+  it('★ the upload of a feed document has its own class, as long as a write', () => {
+    expect(PRAZO_AMAZON_MS.upload).toBe(30_000);
+    expect(PRAZO_AMAZON_MS.upload).toBe(PRAZO_AMAZON_MS.escrita);
+  });
+
   it('has a budget per class (the table above is not vacuous)', () => {
-    expect(Object.keys(PRAZO_AMAZON_MS).sort()).toEqual(['documento', 'escrita', 'leitura', 'lwa']);
+    expect(Object.keys(PRAZO_AMAZON_MS).sort()).toEqual([
+      'documento',
+      'escrita',
+      'leitura',
+      'lwa',
+      'upload',
+    ]);
   });
 });

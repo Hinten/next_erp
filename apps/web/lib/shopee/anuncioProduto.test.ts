@@ -1,3 +1,7 @@
+import { readFileSync, readdirSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   AGUARDAR_KIT_INCERTO_SHOPEE_MS,
@@ -67,8 +71,15 @@ import {
   FRASE_PUBLICAR_COM_ALTERACOES_SHOPEE,
   FRASE_PUBLICAR_PRODUTO_NAO_SALVO_SHOPEE,
   FRASE_PUBLICAR_RASCUNHO_NOVO_SHOPEE,
+  FRASE_PUBLICAR_SEM_ATRIBUTOS_SHOPEE,
   FRASE_PUBLICAR_SEM_FAIXAS_SHOPEE,
   FRASE_RASCUNHO_INEXISTENTE_NA_PUBLICACAO_SHOPEE,
+  FRASE_TROCA_DE_CATEGORIA_APAGA_ATRIBUTOS_SHOPEE,
+  FRASE_VOLTAR_A_CATEGORIA_GRAVADA_TRAZ_ATRIBUTOS_SHOPEE,
+  FRASE_VOLTAR_CATEGORIA_APAGA_ATRIBUTOS_SHOPEE,
+  FRASE_VOLTAR_CATEGORIA_GRAVADA_SHOPEE,
+  fraseDosAtributosNaoLidosShopee,
+  saidaPeloSellerCentreDoRascunhoShopee,
   MOTIVO_ANUNCIO_SHOPEE,
   ROTULO_CRIAR_PAUSADO_SHOPEE,
   TEXTO_MOTIVO_ANUNCIO_SEM_ACAO_SHOPEE,
@@ -98,6 +109,7 @@ import {
   FRASE_ATESTACAO_DE_RASCUNHO_JA_PUBLICADO_SHOPEE,
   FRASE_RASCUNHO_JA_PUBLICADO_SHOPEE,
   FRASE_RECUSA_SEM_PASSO_RASCUNHO_SHOPEE,
+  FRASE_COMO_IMPORTAR_ANUNCIO_VINCULADO_SHOPEE,
   PORTA_DA_IMPORTACAO_SHOPEE,
   TITULO_SEGUNDO_ANUNCIO_NA_PUBLICACAO_SHOPEE,
   type ContextoDoRascunhoNoProblemaShopee,
@@ -887,10 +899,11 @@ describe('the uncertain-create store (lerIncerto / gravarIncerto)', () => {
 describe('TEXTO_MOTIVO_ANUNCIO_SHOPEE (#1911 P10)', () => {
   const T = TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE;
 
-  it('words exactly the three P10 draft motivos, the nine of P11 and #2015’s logistics refusal — one constant per notice it shares', () => {
+  it('words exactly the three P10 draft motivos, the nine of P11 and the two import-remedy logistics refusals (#2015, #2099) — one constant per notice it shares', () => {
     // §C's map size: P10 3 keys + P11 9 keys = 12 (ambígua's second copy is
     // TEXTO_MOTIVO_ANUNCIO_SEM_ACAO_SHOPEE's; `criacao-incerta-encerrada`
-    // joined in review round 4), + #2015's `logistica-nao-confirmada` = 13.
+    // joined in review round 4), + #2015's `logistica-nao-confirmada` = 13,
+    // + #1911 P14b's (CPY-4) `logistica-sem-valor-gravado` = 14.
     expect(Object.keys(TEXTO_MOTIVO_ANUNCIO_SHOPEE).sort()).toEqual([
       'anuncio-existente-de-outro-produto',
       'anuncio-existente-sem-vinculo',
@@ -902,6 +915,7 @@ describe('TEXTO_MOTIVO_ANUNCIO_SHOPEE (#1911 P10)', () => {
       'criacao-incerta-ja-vinculada',
       'criacao-incerta-sem-sku',
       'logistica-nao-confirmada',
+      'logistica-sem-valor-gravado',
       'marca-nao-escolhida',
       'rascunho-em-kit-virtual',
       'rascunho-nao-nomeado',
@@ -1882,6 +1896,13 @@ describe('#1911 P11 — textoDoProblemaShopee: §C rows #4–#12', () => {
 
 describe('#1911 P11 — §C #13/#14: the P7 variation refusals keep their OWN sentence (no new row)', () => {
   it('variacao-sem-vinculo and opcoes-demais read verbatim — never the "no next step" stand-in', () => {
+    // The `variacao-sem-vinculo` sentences apps/shopee sends TODAY, spelled from
+    // `anuncios/tiersPublicacao.ts` (`fraseDoTierSemPar`'s S1/S2/S3, the
+    // per-variante refusal with its #1911 P14b exit, §5-7, and the per-variante
+    // refusal of an append under a standard entry paired with a live custom tier,
+    // #1911 P14b Q1) with invented names — the browser cannot import them, as the N1
+    // block spells its sentence. Widening `FRASE_DE_TERMINAL` to match «ou importe o
+    // anúncio» or «aba Shopee» reds this.
     for (const [motivo, frase] of [
       [
         'variacao-sem-vinculo',
@@ -1889,12 +1910,37 @@ describe('#1911 P11 — §C #13/#14: the P7 variation refusals keep their OWN se
       ],
       [
         'variacao-sem-vinculo',
-        'O tier "Cor" não casa pelo nome com nenhum tier do anúncio — republicar reescreveria as opções. Importe o anúncio ou ajuste o nome do grupo.',
+        'O tier "Cor inventada" não casa pelo nome com nenhum tier do anúncio (grupo renomeado, ou anúncio exportado pelo app antigo) — republicar reescreveria as opções. Ajuste o nome do grupo em Variações, ou o do tier no Seller Centre, para que os dois fiquem iguais.',
+      ],
+      [
+        'variacao-sem-vinculo',
+        'Para esta conta e a categoria 100087, o grupo "Cor inventada" não tem vínculo com a variação padronizada 77, que o anúncio usa — republicar reescreveria as opções. Vincule o grupo a essa variação nessa categoria em Variações (aba Shopee), ou importe o anúncio.',
+      ],
+      [
+        'variacao-sem-vinculo',
+        'O vínculo do grupo "Cor inventada" usa a variação padronizada 88, que nenhum tier do anúncio tem — republicar reescreveria as opções. Corrija o vínculo em Variações (aba Shopee): troque-o pela variação que o anúncio usa ou remova-o.',
+      ],
+      [
+        'variacao-sem-vinculo',
+        'A variante "Variante Azul" do grupo "Cor inventada" não está vinculada a nenhuma opção da variação padronizada 77. Corrija o vínculo em Variações (aba Shopee): vincule a variante a uma opção dessa variação, troque o vínculo por outra variação ou remova-o.',
+      ],
+      [
+        'variacao-sem-vinculo',
+        'A variante "Tom inventado" do grupo "Cor inventada" não casa pelo nome com nenhuma opção do tier personalizado "Cor inventada" do anúncio, e o vínculo do grupo usa a variação padronizada 88 — republicar acrescentaria uma opção e moveria o modelo. Renomeie a variante em Variações para o nome da opção do anúncio, ou mova as variações deste anúncio para outro grupo.',
       ],
       ['opcoes-demais', 'O tier "Tamanho" tem um nome longo demais: encurte o nome em Variações.'],
     ] as const) {
-      expect(ehFraseDeTerminal(frase)).toBe(false);
+      expect(ehFraseDeTerminal(frase), frase).toBe(false);
       expect(textoDoProblemaShopee({ motivo, mensagem: frase, acao: null })).toBe(frase);
+      // …and on a DRAFT's row too (the 4th argument), with no prefix and no copy.
+      expect(
+        textoDoProblemaShopee(
+          { motivo, mensagem: frase, acao: null },
+          undefined,
+          undefined,
+          contextoDeRascunho(),
+        ),
+      ).toBe(frase);
     }
   });
 });
@@ -2924,13 +2970,31 @@ describe('#2015 — logistica-nao-confirmada: the copy, then the server’s chan
       `«${R.janela}» vazia`,
       // Whole-conta re-read: at the defaults it would replace the ERP price.
       'A importação relê todos os anúncios da conta nesses status',
+      // #2099 (L4): the same run IMPORTS every unlinked listing of those statuses.
+      'nesses status e também importa os que ainda não têm vínculo no ERP',
+      'cada um é vinculado a um produto com o mesmo SKU, quando há exatamente um',
+      'ou vira um produto novo',
+      // The colon became a full stop: «… nesses status e também … novo. Para não trocar …».
+      'ou vira um produto novo. Para não trocar o preço',
       `desmarque «${R.sobrescreverPreco}» (vem marcado)`,
       `deixe desmarcados «${R.sobrescreverEstoque}» e «${R.sobrescreverDadosProduto}»`,
+      // #2099 (L3): photos are APPENDED, and a removed one comes back.
+      `Com «${R.importarFotos}» marcado (vem marcado)`,
+      'nunca remove nem substitui uma foto',
+      'traz de volta uma foto removida',
+      'para não acrescentar fotos, desmarque-o',
     ]) {
       expect(copia).toContain(trecho);
     }
-    // NEAR-MISS: unticking «Importar …» does NOT stop the overwrite (the
-    // greyed-out «Sobrescrever …» box is still sent), so the copy never says so.
+    // NEAR-MISS: the old «nesses status:» colon is gone (the run is no longer a re-read only).
+    expect(copia).not.toContain('nesses status:');
+    // NEAR-MISS: the dedup is not a history — never «ainda não trouxe», and
+    // never a promise that photos are replaced.
+    expect(copia).not.toContain('ainda não trouxe');
+    expect(copia).not.toMatch(/substituídas|trocadas/);
+    // Unticking «Importar preço» now stops it too (#2099: a greyed box is not
+    // sent), but it also leaves every produto the run CREATES without a price,
+    // so the copy names the «Sobrescrever» box itself — never «Importar …».
     expect(copia).not.toContain(`desmarque «${R.importarPreco}»`);
     expect(copia).not.toContain(`desmarque «${R.importarEstoque}»`);
     expect(copia).not.toContain(`«${R.importarPreco}»`);
@@ -2952,6 +3016,8 @@ describe('#2015 — logistica-nao-confirmada: the copy, then the server’s chan
     // «… vazia» — no window by default.
     expect(PADRAO.updateTimeFromS).toBeNull();
     expect(PADRAO.updateTimeToS).toBeNull();
+    // #2099: «Com «Importar fotos» marcado (vem marcado)».
+    expect(PADRAO.importarFotos).toBe(true);
     // The statuses the copy calls unticked are exactly the ones off by default.
     const padrao = new Set<ShopeeImportStatus>(PADRAO.statuses);
     const desmarcados = Object.values(SHOPEE_IMPORT_STATUS).filter((v) => !padrao.has(v));
@@ -3011,7 +3077,7 @@ describe('#2015 — logistica-nao-confirmada: the copy, then the server’s chan
     }
   });
 
-  it('the «Detalhe:» set is EXACTLY #11 and this row — every other worded motivo shows its copy alone', () => {
+  it('the «Detalhe:» set is EXACTLY #11 and the two import-remedy rows (this one and #2099’s CPY-4) — every other worded motivo shows its copy alone', () => {
     const neutra = 'frase neutra do servidor';
     const comDetalhe = Object.values(M).filter((motivo) =>
       textoDoProblemaShopee({ motivo, mensagem: neutra, acao: null }).includes(
@@ -3019,7 +3085,11 @@ describe('#2015 — logistica-nao-confirmada: the copy, then the server’s chan
       ),
     );
     expect(comDetalhe.sort()).toEqual(
-      [M.buscaDeAnuncioExistenteIncompleta, M.logisticaNaoConfirmada].sort(),
+      [
+        M.buscaDeAnuncioExistenteIncompleta,
+        M.logisticaNaoConfirmada,
+        M.logisticaSemValorGravado,
+      ].sort(),
     );
   });
 
@@ -3185,6 +3255,423 @@ describe('#2015 — logistica-nao-confirmada: the copy, then the server’s chan
     ).toEqual(['Primeira.', copia, 'Terceira.']);
     for (const valor of [undefined, null, {}, 'x', 3]) {
       expect(textosDasRecusasGuardadasShopee(valor)).toEqual([]);
+    }
+  });
+});
+
+/**
+ * #2099 CPY-4: the same distrusted list, but no stored entry of the compulsory
+ * channel holds the size or fee READABLY — Lucas's sentence (apps/shopee
+ * `anuncios/logisticaPublicacao.ts`) names the channel as «nome» (id), or the
+ * id alone, and the listing; the tab's copy is that sentence without the two
+ * ids, then the SAME import recipe as #2015's
+ * (`FRASE_COMO_IMPORTAR_ANUNCIO_VINCULADO_SHOPEE`, spelled once). Every name
+ * here is invented; 90007 / 123 are the committed fixture ids.
+ */
+describe('#2099 CPY-4 — logistica-sem-valor-gravado: a cópia, a receita da importação e a frase do servidor como «Detalhe:»', () => {
+  const M = MOTIVO_ANUNCIO_SHOPEE;
+  /** apps/shopee's CPY-4 sentence; `canal` is «nome» (id) or the bare id. */
+  const cpy4 = (canal: string, itemId: number) =>
+    `O canal obrigatório ${canal} precisa de um tamanho ou de uma tarifa de frete que este ` +
+    'vínculo não tem gravados, e o ERP não tem registro de ter gravado a lista de logística ' +
+    `dele. Se o valor já está no Seller Centre, importe o anúncio ${String(itemId)} e publique ` +
+    'de novo; se não está, defina-o no Seller Centre antes.';
+  /** apps/shopee's N1 (#2015), for the mixed refusal. */
+  const n1 = (canal: number, itemId: number) =>
+    `O canal obrigatório ${String(canal)} precisa de um tamanho, e o ERP não tem registro de ` +
+    'ter lido da Shopee nem de ter enviado a ela o valor gravado neste vínculo, então esse ' +
+    `valor não é reenviado. Importe o anúncio ${String(itemId)} para gravar os valores atuais ` +
+    'da Shopee e publique de novo.';
+  const NOMEADO = '«Canal inventado» (90007)';
+  const ABERTURA_N1 =
+    'Um canal obrigatório da loja precisa de um tamanho ou de uma tarifa de frete. O valor ' +
+    'gravado neste vínculo não é usado: o ERP não tem registro de tê-lo lido da Shopee nem de ' +
+    'tê-lo enviado a ela. Importe o anúncio para gravar os valores atuais da Shopee e publique ' +
+    'de novo.';
+  const ABERTURA_CPY4 =
+    'Um canal obrigatório da loja precisa de um tamanho ou de uma tarifa de frete que este ' +
+    'vínculo não tem gravados, e o ERP não tem registro de ter gravado a lista de logística ' +
+    'dele. Se o valor já está no Seller Centre, importe o anúncio e publique de novo; se não ' +
+    'está, defina-o no Seller Centre antes.';
+  const RECEITA = FRASE_COMO_IMPORTAR_ANUNCIO_VINCULADO_SHOPEE;
+  const copiaN1 = TEXTO_MOTIVO_ANUNCIO_SHOPEE[M.logisticaNaoConfirmada] ?? '?';
+  const copiaCpy4 = TEXTO_MOTIVO_ANUNCIO_SHOPEE[M.logisticaSemValorGravado] ?? '?';
+  const SEM_CANAL = 'Nenhum canal obrigatório da loja pôde ser habilitado para este item.';
+  const KIT = 'Já existe na Shopee um kit com o SKU deste produto';
+  const TERMINAL = 'rode importar:anuncio --item 123 e publique de novo';
+  const vezes = (texto: string, trecho: string) => texto.split(trecho).length - 1;
+  const textos = (linhas: readonly { readonly texto: string }[]) => linhas.map((l) => l.texto);
+
+  type Linha = Parameters<typeof textoDoProblemaShopee>[0];
+  const linha = (motivo: string, mensagem: string): Linha => ({ motivo, mensagem, acao: null });
+
+  it('o slug é soletrado como o do servidor, e a aba tem uma cópia própria para ele — distinta da de N1', () => {
+    expect(M.logisticaSemValorGravado).toBe('logistica-sem-valor-gravado');
+    expect(copiaCpy4).not.toBe('?');
+    expect(copiaCpy4).not.toBe(copiaN1);
+  });
+
+  it('a receita da importação é a frase decidida (C7), VERBATIM — «Para importar o anúncio», nunca «Para importá-lo»', () => {
+    expect(RECEITA).toBe(
+      'Para importar o anúncio, use a importação em massa (Canais de venda › Shopee) com ' +
+        '«Atualizar anúncios já cadastrados» marcado — sem essa opção um anúncio já vinculado é ' +
+        'pulado —, com o status atual do anúncio marcado em «Status dos anúncios» («Banidos» e ' +
+        '«Em revisão» vêm desmarcados) e com a «Janela de atualização (opcional)» vazia. A ' +
+        'importação relê todos os anúncios da conta nesses status e também importa os que ainda ' +
+        'não têm vínculo no ERP: cada um é vinculado a um produto com o mesmo SKU, quando há ' +
+        'exatamente um, ou vira um produto novo. Para não trocar o preço, o estoque registrado e ' +
+        'os dados dos produtos já cadastrados pelos da Shopee, desmarque «Sobrescrever preço ' +
+        'existente» (vem marcado) e deixe desmarcados «Sobrescrever estoque existente» e ' +
+        '«Sobrescrever dados do produto (marca, dimensões, SKU)». Com «Importar fotos» marcado ' +
+        '(vem marcado), a importação acrescenta fotos dos anúncios aos produtos e nunca remove ' +
+        'nem substitui uma foto, mas traz de volta uma foto removida de um produto se ela ainda ' +
+        'estiver no anúncio; para não acrescentar fotos, desmarque-o.',
+    );
+    // In CPY-4 the clause before it ends «defina-o»: a pronoun would point at «o valor».
+    expect(RECEITA).not.toContain('importá-lo');
+    // Every quoted label is the dialog's own (read from its module, never retyped).
+    expect(RECEITA).toContain(`«${ROTULO_OPCAO_IMPORTACAO_SHOPEE.importarFotos}» marcado`);
+    expect(RECEITA).toContain(`(${PORTA_DA_IMPORTACAO_SHOPEE})`);
+  });
+
+  it('PAR: as duas cópias TERMINAM com a MESMA receita (soletrada uma vez) e abrem cada uma com as suas frases — a de N1 byte a byte como antes do #2099', () => {
+    expect(copiaN1).toBe(`${ABERTURA_N1} ${RECEITA}`);
+    expect(copiaCpy4).toBe(`${ABERTURA_CPY4} ${RECEITA}`);
+    for (const copia of [copiaN1, copiaCpy4]) {
+      expect(copia.endsWith(RECEITA)).toBe(true);
+      expect(vezes(copia, RECEITA)).toBe(1);
+    }
+  });
+
+  it('⛔ QUASE-PAR de texto: CPY-4 nunca diz que um valor gravado «não é usado» (não há valor legível), e N1 nunca diz «não tem gravados» nem manda definir no Seller Centre', () => {
+    expect(copiaCpy4).not.toContain('O valor gravado neste vínculo não é usado');
+    expect(copiaCpy4).not.toContain('não é usado');
+    expect(copiaN1).not.toContain('que este vínculo não tem gravados');
+    expect(copiaN1).not.toContain('defina-o no Seller Centre');
+  });
+
+  it('a cópia de CPY-4 não manda mexer no peso nem nas dimensões do produto, e não é texto de terminal', () => {
+    expect(copiaCpy4).not.toMatch(TEXTO_DE_TERMINAL);
+    expect(ehFraseDeTerminal(copiaCpy4)).toBe(false);
+    // The ONE «dimensões» is inside a quoted dialog label (a box to leave unticked).
+    expect(copiaCpy4.replace(/«[^»]*»/g, '')).not.toMatch(/peso|dimens/i);
+  });
+
+  it('uma linha AO VIVO: a cópia, depois a frase do servidor VERBATIM como «Detalhe:» — o canal nomeado («nome» (id)) ou só o id, e o anúncio', () => {
+    for (const canal of [NOMEADO, '90007']) {
+      const frase = cpy4(canal, 123);
+      expect(ehFraseDeTerminal(frase)).toBe(false);
+      for (const rascunho of [undefined, null, contextoDeRascunho()]) {
+        const texto = textoDoProblemaShopee(
+          linha(M.logisticaSemValorGravado, frase),
+          'L1',
+          'p1',
+          rascunho,
+        );
+        expect(texto).toBe(`${copiaCpy4} Detalhe: ${frase}`);
+        expect(texto).toContain('90007');
+        expect(texto).toContain('anúncio 123');
+      }
+    }
+    expect(textoDoProblemaShopee(linha(M.logisticaSemValorGravado, cpy4(NOMEADO, 123)))).toContain(
+      `O canal obrigatório ${NOMEADO} precisa`,
+    );
+  });
+
+  it('nunca a frase do kit, «sem próximo passo» nem «a situação mudou» — e uma frase de terminal sob o MESMO motivo não aparece ao lado da cópia', () => {
+    for (const mensagem of [cpy4('90007', 123), TERMINAL]) {
+      for (const rascunho of [
+        undefined,
+        contextoDeRascunho(),
+        contextoDeRascunho({ respondeAtestacao: true }),
+      ]) {
+        const t = textoDoProblemaShopee(
+          linha(M.logisticaSemValorGravado, mensagem),
+          'L1',
+          'p1',
+          rascunho,
+        );
+        expect(t.startsWith(copiaCpy4), mensagem).toBe(true);
+        expect(t).not.toContain(KIT);
+        expect(t).not.toContain(FRASE_RECUSA_SEM_PASSO_SHOPEE);
+        expect(t).not.toContain(FRASE_RECUSA_SEM_PASSO_RASCUNHO_SHOPEE);
+        expect(t).not.toContain(FRASE_ATESTACAO_SUPERADA_SHOPEE);
+      }
+    }
+    expect(textoDoProblemaShopee(linha(M.logisticaSemValorGravado, TERMINAL))).toBe(copiaCpy4);
+  });
+
+  it('⛔ QUASE-PAR: um slug renomeado (`-v2`) volta à frase do servidor VERBATIM — nunca a cópia de CPY-4 nem a de N1', () => {
+    const frase = cpy4('90007', 123);
+    expect(
+      textoDoProblemaShopee(linha(`${M.logisticaSemValorGravado}-v2`, frase), 'L1', 'p1'),
+    ).toBe(frase);
+    expect(textoDaRecusaGuardadaShopee(`${M.logisticaSemValorGravado}-v2`, frase)).toBe(frase);
+  });
+
+  it('PAR: dois canais CPY-4 ⇒ a cópia UMA vez, e cada canal com o seu «Detalhe:» — os dois canais chegam à tela', () => {
+    const A = cpy4(NOMEADO, 123);
+    const B = cpy4('90008', 123);
+    const linhas = linhasDosProblemasShopee(
+      [linha(M.logisticaSemValorGravado, A), linha(M.logisticaSemValorGravado, B)],
+      'L1',
+      'p1',
+    );
+    expect(textos(linhas)).toEqual([`${copiaCpy4} Detalhe: ${A}`, `Detalhe: ${B}`]);
+    expect(linhas.map((l) => l.indice)).toEqual([0, 1]);
+    const tela = textos(linhas).join(' ');
+    expect(vezes(tela, copiaCpy4)).toBe(1);
+    expect(tela).toContain('90007');
+    expect(tela).toContain('90008');
+  });
+
+  it('⭐ uma recusa com N1 E CPY-4 ⇒ as DUAS cópias, uma vez cada, e cada linha com o seu próprio «Detalhe:» — a receita aparece DUAS vezes (resíduo declarado) ⟷ QUASE-PAR: nunca dobradas por família, em qualquer ordem', () => {
+    const N1A = n1(80003, 123);
+    const N1B = n1(80007, 123);
+    const C4A = cpy4(NOMEADO, 123);
+    const C4B = cpy4('90008', 123);
+    const linhas = linhasDosProblemasShopee(
+      [
+        linha(M.logisticaNaoConfirmada, N1A),
+        linha(M.logisticaSemValorGravado, C4A),
+        linha(M.logisticaNaoConfirmada, N1B),
+        linha('logistica-sem-canal', SEM_CANAL),
+        linha(M.logisticaSemValorGravado, C4B),
+      ],
+      'L1',
+      'p1',
+    );
+    expect(textos(linhas)).toEqual([
+      `${copiaN1} Detalhe: ${N1A}`,
+      `${copiaCpy4} Detalhe: ${C4A}`,
+      `Detalhe: ${N1B}`,
+      SEM_CANAL,
+      `Detalhe: ${C4B}`,
+    ]);
+    expect(linhas.map((l) => l.indice)).toEqual([0, 1, 2, 3, 4]);
+    const tela = textos(linhas).join(' ');
+    expect(vezes(tela, ABERTURA_N1)).toBe(1);
+    expect(vezes(tela, ABERTURA_CPY4)).toBe(1);
+    expect(vezes(tela, RECEITA)).toBe(2);
+    for (const frase of [N1A, N1B, C4A, C4B]) expect(vezes(tela, `Detalhe: ${frase}`)).toBe(1);
+    // The other order: CPY-4 first still leaves N1 its OWN copy.
+    expect(
+      textos(
+        linhasDosProblemasShopee([
+          linha(M.logisticaSemValorGravado, C4A),
+          linha(M.logisticaNaoConfirmada, N1A),
+        ]),
+      ),
+    ).toEqual([`${copiaCpy4} Detalhe: ${C4A}`, `${copiaN1} Detalhe: ${N1A}`]);
+  });
+
+  it('GUARDADAS: duas linhas CPY-4 ⇒ a cópia UMA vez; N1 + CPY-4 ⇒ as duas cópias, uma vez cada, sem frase — e `logistica-sem-canal` ao lado fica', () => {
+    const guardada = (motivo: string, mensagem: string) => ({
+      campo: 'logistic_info',
+      motivo,
+      mensagem,
+    });
+    expect(
+      textosDasRecusasGuardadasShopee([
+        guardada(M.logisticaSemValorGravado, cpy4(NOMEADO, 123)),
+        guardada(M.logisticaSemValorGravado, cpy4('90008', 123)),
+      ]),
+    ).toEqual([copiaCpy4]);
+    expect(
+      textosDasRecusasGuardadasShopee([
+        guardada(M.logisticaNaoConfirmada, n1(80003, 123)),
+        guardada(M.logisticaSemValorGravado, cpy4(NOMEADO, 123)),
+        guardada(M.logisticaNaoConfirmada, n1(80007, 123)),
+        guardada('logistica-sem-canal', SEM_CANAL),
+        guardada(M.logisticaSemValorGravado, cpy4('90008', 123)),
+      ]),
+    ).toEqual([copiaN1, copiaCpy4, SEM_CANAL]);
+    expect(textoDaRecusaGuardadaShopee(M.logisticaSemValorGravado, cpy4(NOMEADO, 123))).toBe(
+      copiaCpy4,
+    );
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*            #1911 P13 — the attribute editor's gate and its exit             */
+/* -------------------------------------------------------------------------- */
+
+describe('#1911 P13 — a saída pelo Seller Centre EXPORTADA é a mesma, lida no estado ATUAL do bloco', () => {
+  const NOW = 1_800_000_000_000;
+  const LIVRE = { tipo: 'livre' } as const;
+  const INCERTA = { tipo: 'incerta', desdeMs: NOW - 600_000 } as const;
+  const INCERTA_SEM_JANELA = { tipo: 'incerta', desdeMs: null } as const;
+  const EM_ANDAMENTO = {
+    tipo: 'em-andamento',
+    desdeMs: NOW - 60_000,
+    expiraEmMs: NOW + 240_000,
+    aguardarMs: 240_000,
+    aposIncerteza: false,
+    posExpiracao: false,
+  } as const;
+  /** The #11 row (`busca-de-anuncio-existente-incompleta`) ends with the PRIVATE exit — `SKU. <exit>`. */
+  const linhaDaBusca = {
+    motivo: MOTIVO_ANUNCIO_SHOPEE.buscaDeAnuncioExistenteIncompleta,
+    mensagem: 'rode publicar:anuncio pelo terminal',
+    acao: null,
+  };
+
+  it.each([
+    ['livre', LIVRE],
+    ['incerta, com janela', INCERTA],
+    ['incerta, sem janela', INCERTA_SEM_JANELA],
+    ['em-andamento', EM_ANDAMENTO],
+  ] as const)(
+    'PAR: em `%s`, o wrapper é EXATAMENTE a saída que a linha #11 já mostra (uma só grafia)',
+    (_n, publicacao) => {
+      const saida = saidaPeloSellerCentreDoRascunhoShopee(publicacao);
+      const linha = textoDoProblemaShopee(
+        linhaDaBusca,
+        'R1',
+        'p1',
+        contextoDeRascunho({ publicacao }),
+      );
+
+      expect(saida).not.toBe('');
+      expect(linha.endsWith(`SKU. ${saida}`)).toBe(true);
+    },
+  );
+
+  it('PAR: `livre` é o texto que a cauda «obrigatório» do editor compõe, VERBATIM', () => {
+    expect(
+      `Ele é obrigatório, então este rascunho não pode ser publicado pelo ERP. ${saidaPeloSellerCentreDoRascunhoShopee(LIVRE)}`,
+    ).toBe(
+      'Ele é obrigatório, então este rascunho não pode ser publicado pelo ERP. Procure o SKU ' +
+        'deste produto no Seller Centre: se já existe um anúncio com ele, importe-o ' +
+        `(${PORTA_DA_IMPORTACAO_SHOPEE}) e descarte este rascunho; se não existe, crie-o lá com ` +
+        'esse SKU e importe-o.',
+    );
+  });
+
+  it('QUASE-PAR: `livre` e `incerta` são saídas DIFERENTES — a incerta confere a última tentativa e nunca manda criar', () => {
+    const livre = saidaPeloSellerCentreDoRascunhoShopee(LIVRE);
+    const incerta = saidaPeloSellerCentreDoRascunhoShopee(INCERTA);
+
+    expect(incerta).not.toBe(livre);
+    expect(livre).toContain('Procure o SKU deste produto no Seller Centre');
+    expect(incerta).not.toContain('Procure o SKU');
+    expect(incerta).toContain('se o anúncio da última tentativa existe');
+    expect(incerta).not.toContain('crie-o');
+    expect(incerta).toContain('Não crie outro antes de conferir.');
+    // The window decides the incerta wording too: two readings, two exits.
+    expect(saidaPeloSellerCentreDoRascunhoShopee(INCERTA_SEM_JANELA)).not.toBe(incerta);
+    // em-andamento waits; it names neither exit.
+    const espera = saidaPeloSellerCentreDoRascunhoShopee(EM_ANDAMENTO);
+    expect(espera).not.toBe(livre);
+    expect(espera).not.toMatch(/Procure o SKU|crie-o|importe-o/);
+  });
+
+  it('nunca abre com «Esta tentativa não criou nada.» — um atributo que o editor não preenche não prova nada sobre tentativa alguma', () => {
+    for (const publicacao of [LIVRE, INCERTA, INCERTA_SEM_JANELA, EM_ANDAMENTO]) {
+      const saida = saidaPeloSellerCentreDoRascunhoShopee(publicacao);
+      expect(saida).not.toContain('Esta tentativa não criou nada.');
+      expect(saida).not.toMatch(TEXTO_DE_TERMINAL);
+    }
+  });
+
+  it('⭐ a saída é ESCRITA uma vez: nenhum outro fonte do lib nem da aba Shopee soletra «procure o SKU» (o editor de atributos chama o wrapper)', () => {
+    const aqui = dirname(fileURLToPath(import.meta.url));
+    const pastas = [aqui, join(aqui, '../../app/(app)/produtos/_components/shopee')];
+    const comAGrafia: string[] = [];
+    let ocorrencias = 0;
+    for (const pasta of pastas) {
+      for (const nome of readdirSync(pasta)) {
+        if (!/\.tsx?$/.test(nome) || /\.test\.tsx?$/.test(nome)) continue;
+        const fonte = readFileSync(join(pasta, nome), 'utf8');
+        // Case-insensitive: a lower-case «procure o SKU» after a colon is the same exit re-spelled.
+        const achados = fonte.match(/procure o SKU/gi) ?? [];
+        if (achados.length > 0) comAGrafia.push(nome);
+        ocorrencias += achados.length;
+      }
+    }
+
+    expect(comAGrafia).toEqual(['anuncioProduto.ts']);
+    expect(ocorrencias).toBe(1);
+  });
+});
+
+describe('#1911 P13 — Publicar espera a árvore de atributos da categoria', () => {
+  it('a espera: o texto exato, e NUNCA o das faixas (dois motivos, duas frases)', () => {
+    expect(FRASE_PUBLICAR_SEM_ATRIBUTOS_SHOPEE).toBe(
+      'Publicar fica disponível quando os atributos da categoria forem lidos da Shopee.',
+    );
+    expect(FRASE_PUBLICAR_SEM_ATRIBUTOS_SHOPEE).not.toBe(FRASE_PUBLICAR_SEM_FAIXAS_SHOPEE);
+  });
+
+  it('PAR: a leitura que FALHOU diz por quê — a frase base seguida da causa, aparada', () => {
+    const base =
+      'Publicar fica indisponível: os atributos da categoria não puderam ser lidos da Shopee.';
+    expect(fraseDosAtributosNaoLidosShopee('A Shopee está limitando as consultas agora.')).toBe(
+      `${base} A Shopee está limitando as consultas agora.`,
+    );
+    expect(fraseDosAtributosNaoLidosShopee('  Reconecte a conta.  ')).toBe(
+      `${base} Reconecte a conta.`,
+    );
+  });
+
+  it.each([
+    ['vazia', ''],
+    ['só espaços', '   '],
+    ['de terminal', 'rode publicar:anuncio --link L1'],
+  ])('QUASE-PAR: uma causa %s não é impressa — fica só a frase base', (_n, causa) => {
+    expect(fraseDosAtributosNaoLidosShopee(causa)).toBe(
+      'Publicar fica indisponível: os atributos da categoria não puderam ser lidos da Shopee.',
+    );
+  });
+
+  it('a falha nunca diz «fica disponível quando» — nada tornaria isso verdade', () => {
+    const t = fraseDosAtributosNaoLidosShopee('Tente de novo.');
+    expect(t).not.toBe(FRASE_PUBLICAR_SEM_ATRIBUTOS_SHOPEE);
+    expect(t).not.toMatch(/fica disponível quando/);
+  });
+
+  it('nenhuma frase nova é de terminal', () => {
+    for (const t of [
+      FRASE_PUBLICAR_SEM_ATRIBUTOS_SHOPEE,
+      fraseDosAtributosNaoLidosShopee(''),
+      FRASE_TROCA_DE_CATEGORIA_APAGA_ATRIBUTOS_SHOPEE,
+    ]) {
+      expect(t).not.toMatch(TEXTO_DE_TERMINAL);
+    }
+  });
+});
+
+describe('#1911 P13 — trocar a categoria apaga os atributos PREENCHIDOS', () => {
+  it('o texto exato: os preenchidos (gravados ou não), porque valem só para a categoria em que foram escolhidos', () => {
+    expect(FRASE_TROCA_DE_CATEGORIA_APAGA_ATRIBUTOS_SHOPEE).toBe(
+      'Trocar a categoria remove os atributos preenchidos neste rascunho: eles valem só para a ' +
+        'categoria em que foram escolhidos.',
+    );
+    // NEAR-MISS: never only the SAVED ones — a new draft's unsaved attributes are cleared too.
+    expect(FRASE_TROCA_DE_CATEGORIA_APAGA_ATRIBUTOS_SHOPEE).not.toMatch(/gravados/);
+    // NEAR-MISS: never «da categoria atual» — after an unsaved change the STORED ones are the saved category's.
+    expect(FRASE_TROCA_DE_CATEGORIA_APAGA_ATRIBUTOS_SHOPEE).not.toMatch(/categoria atual/);
+  });
+
+  it('voltar à categoria gravada: o que ela traz de volta, e o que a volta apaga — textos exatos', () => {
+    expect(FRASE_VOLTAR_A_CATEGORIA_GRAVADA_TRAZ_ATRIBUTOS_SHOPEE).toBe(
+      'Voltar à categoria gravada traz de volta os atributos gravados.',
+    );
+    expect(FRASE_VOLTAR_CATEGORIA_APAGA_ATRIBUTOS_SHOPEE).toBe(
+      'Voltar à categoria gravada remove os atributos preenchidos para a categoria atual.',
+    );
+    expect(FRASE_VOLTAR_CATEGORIA_GRAVADA_SHOPEE).toBe(
+      'Ou use «Voltar à categoria gravada» (em Categoria): desfaz a troca de categoria e os ' +
+        'atributos preenchidos para a categoria nova, e mantém as outras alterações.',
+    );
+    // NEAR-MISS: never «só a troca de categoria» — the new category's attributes go with it.
+    expect(FRASE_VOLTAR_CATEGORIA_GRAVADA_SHOPEE).not.toMatch(/só a troca/);
+    for (const t of [
+      FRASE_VOLTAR_A_CATEGORIA_GRAVADA_TRAZ_ATRIBUTOS_SHOPEE,
+      FRASE_VOLTAR_CATEGORIA_APAGA_ATRIBUTOS_SHOPEE,
+      FRASE_VOLTAR_CATEGORIA_GRAVADA_SHOPEE,
+    ]) {
+      expect(t).not.toMatch(TEXTO_DE_TERMINAL);
     }
   });
 });

@@ -27,6 +27,7 @@ import {
   ESTADO_ANUNCIO_SHOPEE,
   INTEGRACAO_TIPO,
   MOTIVO_RASCUNHO_INVALIDO_SHOPEE,
+  MSG_BASE_SEM_CATEGORIA_NOS_ATRIBUTOS_RASCUNHO_SHOPEE,
   PUBLICACAO_EM_CURSO_SHOPEE_TTL_MS,
   camposDoRascunhoShopee,
   conflitoRascunhoShopeeSchema,
@@ -1248,7 +1249,7 @@ describe('atualizarRascunhoShopee — base conferida (nível 3) + update guardad
       db.seed(CAMINHO, rascunho());
       const r = await atualizarRascunhoShopee(
         deps(db),
-        corpoAtualizar({ attributes: null }, { attributes: ATRIBUTOS }),
+        corpoAtualizar({ category_id: 100_017, attributes: null }, { attributes: ATRIBUTOS }),
       );
       expect(r).toEqual({ linkDocId: RASCUNHO, gravados: [CAMPO_RASCUNHO_SHOPEE.attributes] });
       expect(db.patches).toEqual([
@@ -1266,7 +1267,10 @@ describe('atualizarRascunhoShopee — base conferida (nível 3) + update guardad
       db.seed(CAMINHO, rascunho());
       const r = await atualizarRascunhoShopee(
         deps(db),
-        corpoAtualizar({ attributes: null }, { attributes: deOutraCategoria }),
+        corpoAtualizar(
+          { category_id: 100_017, attributes: null },
+          { attributes: deOutraCategoria },
+        ),
       );
       expect(r.gravados).toEqual([CAMPO_RASCUNHO_SHOPEE.attributes]);
       expect(doc(db)?.attributes).toStrictEqual(deOutraCategoria);
@@ -1278,7 +1282,7 @@ describe('atualizarRascunhoShopee — base conferida (nível 3) + update guardad
         db.seed(CAMINHO, rascunho({ attributes: ATRIBUTOS }));
         const r = await atualizarRascunhoShopee(
           deps(db),
-          corpoAtualizar({ attributes: ATRIBUTOS }, { attributes }),
+          corpoAtualizar({ category_id: 100_017, attributes: ATRIBUTOS }, { attributes }),
         );
         expect(r.gravados, JSON.stringify(attributes)).toEqual([CAMPO_RASCUNHO_SHOPEE.attributes]);
         expect(doc(db)?.attributes).toEqual(attributes);
@@ -1291,7 +1295,7 @@ describe('atualizarRascunhoShopee — base conferida (nível 3) + update guardad
       const r = await atualizarRascunhoShopee(
         deps(db),
         corpoAtualizar(
-          { attributes: ATRIBUTOS },
+          { category_id: 100_017, attributes: ATRIBUTOS },
           {
             attributes: [
               { attribute_value_list: [{ value_unit: ' ', value_id: 55 }], attribute_id: 100_001 },
@@ -1315,7 +1319,7 @@ describe('atualizarRascunhoShopee — base conferida (nível 3) + update guardad
       const invertida = [ATRIBUTOS[1], ATRIBUTOS[0]];
       const r = await atualizarRascunhoShopee(
         deps(db),
-        corpoAtualizar({ attributes: ATRIBUTOS }, { attributes: invertida }),
+        corpoAtualizar({ category_id: 100_017, attributes: ATRIBUTOS }, { attributes: invertida }),
       );
       expect(r.gravados).toEqual([CAMPO_RASCUNHO_SHOPEE.attributes]);
       expect(doc(db)?.attributes).toEqual(invertida);
@@ -1333,7 +1337,7 @@ describe('atualizarRascunhoShopee — base conferida (nível 3) + update guardad
       ];
       const r = await atualizarRascunhoShopee(
         deps(db),
-        corpoAtualizar({ attributes: ATRIBUTOS }, { attributes: maiuscula }),
+        corpoAtualizar({ category_id: 100_017, attributes: ATRIBUTOS }, { attributes: maiuscula }),
       );
       expect(r.gravados).toEqual([CAMPO_RASCUNHO_SHOPEE.attributes]);
     });
@@ -1358,7 +1362,7 @@ describe('atualizarRascunhoShopee — base conferida (nível 3) + update guardad
         [ATRIBUTOS[0], ATRIBUTOS[0]],
       ]) {
         expect(
-          () => corpoAtualizar({ attributes: null }, { attributes }),
+          () => corpoAtualizar({ category_id: 100_017, attributes: null }, { attributes }),
           JSON.stringify(attributes),
         ).toThrow(ZodError);
       }
@@ -1372,6 +1376,7 @@ describe('atualizarRascunhoShopee — base conferida (nível 3) + update guardad
           deps(db),
           corpoAtualizar(
             {
+              category_id: 100_017,
               attributes: [
                 { attribute_value_list: [{ value_id: 55 }], attribute_id: 100_001 },
                 {
@@ -1403,7 +1408,10 @@ describe('atualizarRascunhoShopee — base conferida (nível 3) + update guardad
           const err = await recusaDe(
             atualizarRascunhoShopee(
               deps(db),
-              corpoAtualizar({ attributes: visto }, { attributes: ATRIBUTOS_DE_OUTRA_ABA }),
+              corpoAtualizar(
+                { category_id: 100_017, attributes: visto },
+                { attributes: ATRIBUTOS_DE_OUTRA_ABA },
+              ),
             ),
           );
           expect(err.code, JSON.stringify(visto)).toBe(CODIGO_RASCUNHO_SHOPEE.conflito);
@@ -1435,7 +1443,10 @@ describe('atualizarRascunhoShopee — base conferida (nível 3) + update guardad
 
         const r = await atualizarRascunhoShopee(
           deps(db),
-          corpoAtualizar({ attributes: PROJETADO }, { attributes: PROJETADO }),
+          corpoAtualizar(
+            { category_id: 100_017, attributes: PROJETADO },
+            { attributes: PROJETADO },
+          ),
         );
         expect(r.gravados).toEqual([]);
         expect(db.writes).toEqual([]);
@@ -1447,7 +1458,10 @@ describe('atualizarRascunhoShopee — base conferida (nível 3) + update guardad
         db.seed(CAMINHO, rascunho({ attributes: LEGADO }));
         const r = await atualizarRascunhoShopee(
           deps(db),
-          corpoAtualizar({ attributes: PROJETADO }, { attributes: ATRIBUTOS }),
+          corpoAtualizar(
+            { category_id: 100_017, attributes: PROJETADO },
+            { attributes: ATRIBUTOS },
+          ),
         );
         expect(r.gravados).toEqual([CAMPO_RASCUNHO_SHOPEE.attributes]);
         expect(doc(db)?.attributes).toStrictEqual(ATRIBUTOS);
@@ -1459,7 +1473,7 @@ describe('atualizarRascunhoShopee — base conferida (nível 3) + update guardad
         const err = await recusaDe(
           atualizarRascunhoShopee(
             deps(db),
-            corpoAtualizar({ attributes: [] }, { attributes: ATRIBUTOS }),
+            corpoAtualizar({ category_id: 100_017, attributes: [] }, { attributes: ATRIBUTOS }),
           ),
         );
         expect(err.code).toBe(CODIGO_RASCUNHO_SHOPEE.conflito);
@@ -1479,7 +1493,7 @@ describe('atualizarRascunhoShopee — base conferida (nível 3) + update guardad
         );
         const r = await atualizarRascunhoShopee(
           deps(db2),
-          corpoAtualizar({ attributes: [] }, { attributes: ATRIBUTOS }),
+          corpoAtualizar({ category_id: 100_017, attributes: [] }, { attributes: ATRIBUTOS }),
         );
         expect(r.gravados).toEqual([CAMPO_RASCUNHO_SHOPEE.attributes]);
       });
@@ -1700,6 +1714,167 @@ describe('atualizarRascunhoShopee — base conferida (nível 3) + update guardad
         expect(doc(db)?.attributes).toBeNull();
       });
     });
+
+    describe('o espelho do K1-12 (P13 Q1): uma lista só de atributos prova a categoria em que foi escolhida', () => {
+      // A chose ATRIBUTOS in 100_017; B then moved the draft to 100_030 — the
+      // category write cleared the stored list (K1-12), so `attributes` is
+      // `null` both before and after B: only the CATEGORY tells them apart.
+      const movidoPorB = (): Record<string, unknown> => rascunho({ category_id: 100_030 });
+
+      it('⛔ PAR: B moveu a categoria; a lista de A com a base da categoria ANTIGA ⇒ 409 CONFLITO em category_id (atual = a de B), nada escrito', async () => {
+        const db = new FakeDb();
+        db.seed(CAMINHO, movidoPorB());
+
+        const err = await recusaDe(
+          atualizarRascunhoShopee(
+            deps(db),
+            corpoAtualizar({ category_id: 100_017, attributes: null }, { attributes: ATRIBUTOS }),
+          ),
+        );
+
+        expect(err.status).toBe(409);
+        expect(err.code).toBe(CODIGO_RASCUNHO_SHOPEE.conflito);
+        // ONLY the category: the attributes A saw (`null`) are still the stored ones.
+        expect(err.conflitos).toEqual([
+          { campo: CAMPO_RASCUNHO_SHOPEE.categoryId, atual: 100_030 },
+        ]);
+        for (const c of corpoDaRecusaDeRascunhoShopee(err).conflitos ?? []) {
+          expect(conflitoRascunhoShopeeSchema.parse(c)).toEqual(c);
+        }
+        expect(doc(db)).toEqual(movidoPorB());
+        expect(db.writes).toEqual([]);
+      });
+
+      it('QUASE-PAR: a MESMA lista sobre a categoria que A viu ⇒ grava SÓ attributes — a categoria é comparada, nunca escrita', async () => {
+        const db = new FakeDb();
+        db.seed(CAMINHO, rascunho());
+
+        const r = await atualizarRascunhoShopee(
+          deps(db),
+          corpoAtualizar({ category_id: 100_017, attributes: null }, { attributes: ATRIBUTOS }),
+        );
+
+        expect(r).toEqual({ linkDocId: RASCUNHO, gravados: [CAMPO_RASCUNHO_SHOPEE.attributes] });
+        expect(db.patches).toEqual([
+          { path: CAMINHO, patch: { attributes: ATRIBUTOS, ultimaModificacao: AGORA } },
+        ]);
+        expect(doc(db)?.category_id).toBe(100_017);
+      });
+
+      it('⛔ a categoria E os atributos movidos por B ⇒ 409 com OS DOIS, na ordem canônica', async () => {
+        const db = new FakeDb();
+        db.seed(CAMINHO, rascunho({ category_id: 100_030, attributes: ATRIBUTOS_DE_OUTRA_ABA }));
+
+        const err = await recusaDe(
+          atualizarRascunhoShopee(
+            deps(db),
+            corpoAtualizar({ category_id: 100_017, attributes: null }, { attributes: ATRIBUTOS }),
+          ),
+        );
+
+        expect(err.conflitos).toEqual([
+          { campo: CAMPO_RASCUNHO_SHOPEE.categoryId, atual: 100_030 },
+          { campo: CAMPO_RASCUNHO_SHOPEE.attributes, atual: ATRIBUTOS_DE_OUTRA_ABA },
+        ]);
+        expect(db.writes).toEqual([]);
+      });
+
+      it('⛔ B move a categoria ENTRE a leitura e o update de A ⇒ a precondição recusa, a re-leitura vê o conflito em category_id — nada escrito', async () => {
+        const db = new FakeDb();
+        db.seed(CAMINHO, rascunho());
+        const corrida = comEscritaConcorrente(db, CAMINHO, () => {
+          db.seed(CAMINHO, movidoPorB());
+        });
+
+        const err = await recusaDe(
+          atualizarRascunhoShopee(
+            deps(corrida),
+            corpoAtualizar({ category_id: 100_017, attributes: null }, { attributes: ATRIBUTOS }),
+          ),
+        );
+
+        expect(err.code).toBe(CODIGO_RASCUNHO_SHOPEE.conflito);
+        expect(err.conflitos).toEqual([
+          { campo: CAMPO_RASCUNHO_SHOPEE.categoryId, atual: 100_030 },
+        ]);
+        expect(doc(db)).toEqual(movidoPorB());
+        expect(db.writes).toEqual([]);
+        expect(db.opLog.filter((o) => o.op === 'get' && o.path === CAMINHO)).toHaveLength(2);
+      });
+
+      it('QUASE-PAR: B grava a DESCRIÇÃO entre a leitura e o update ⇒ a re-leitura passa e a lista grava — as duas edições ficam', async () => {
+        const db = new FakeDb();
+        db.seed(CAMINHO, rascunho());
+        const corrida = comEscritaConcorrente(db, CAMINHO, () => {
+          db.seed(CAMINHO, rascunho({ description: 'de outra aba' }));
+        });
+
+        const r = await atualizarRascunhoShopee(
+          deps(corrida),
+          corpoAtualizar({ category_id: 100_017, attributes: null }, { attributes: ATRIBUTOS }),
+        );
+
+        expect(r.gravados).toEqual([CAMPO_RASCUNHO_SHOPEE.attributes]);
+        expect(doc(db)).toMatchObject({
+          category_id: 100_017,
+          attributes: ATRIBUTOS,
+          description: 'de outra aba',
+        });
+      });
+
+      it('⛔ QUASE-PAR (escopo): um patch SEM attributes não compara a categoria — o título grava sobre a categoria que B moveu', async () => {
+        const db = new FakeDb();
+        db.seed(CAMINHO, movidoPorB());
+
+        const r = await atualizarRascunhoShopee(
+          deps(db),
+          corpoAtualizar({ item_name: 'Camiseta do rascunho' }, { item_name: 'Camiseta Azul' }),
+        );
+
+        expect(r.gravados).toEqual([CAMPO_RASCUNHO_SHOPEE.itemName]);
+        expect(db.patches).toEqual([
+          { path: CAMINHO, patch: { item_name: 'Camiseta Azul', ultimaModificacao: AGORA } },
+        ]);
+      });
+
+      it('QUASE-PAR: o patch que nomeia categoria E atributos não pede base extra — os dois são gravados', async () => {
+        const db = new FakeDb();
+        db.seed(CAMINHO, rascunho());
+        const corpo = corpoAtualizar(
+          { category_id: 100_017, attributes: null },
+          { category_id: 100_030, attributes: ATRIBUTOS_DA_NOVA_CATEGORIA },
+        );
+        expect(Object.keys(corpo.base).sort()).toEqual(['attributes', 'category_id']);
+
+        const r = await atualizarRascunhoShopee(deps(db), corpo);
+
+        expect(r.gravados).toEqual([
+          CAMPO_RASCUNHO_SHOPEE.categoryId,
+          CAMPO_RASCUNHO_SHOPEE.attributes,
+        ]);
+        expect(doc(db)).toMatchObject({
+          category_id: 100_030,
+          attributes: ATRIBUTOS_DA_NOVA_CATEGORIA,
+        });
+      });
+
+      it('⛔ a lista só de atributos SEM category_id na base ⇒ 400 no corpo, com a frase do espelho — nada lido nem escrito', () => {
+        const lido = corpoAtualizarRascunhoShopeeSchema.safeParse({
+          integracaoId: INTEGRACAO,
+          produtoId: PRODUTO,
+          linkDocId: RASCUNHO,
+          base: { attributes: null },
+          patch: { attributes: ATRIBUTOS },
+        });
+        expect(lido.success).toBe(false);
+        expect(lido.error?.issues.map((i) => i.message)).toEqual([
+          MSG_BASE_SEM_CATEGORIA_NOS_ATRIBUTOS_RASCUNHO_SHOPEE,
+        ]);
+        expect(() => corpoAtualizar({ attributes: null }, { attributes: ATRIBUTOS })).toThrow(
+          ZodError,
+        );
+      });
+    });
   });
 
   describe('a TRAVA da publicação (lida, nunca escrita)', () => {
@@ -1906,7 +2081,7 @@ describe('atualizarRascunhoShopee — base conferida (nível 3) + update guardad
       db.seed(CAMINHO, rascunho({ publicacaoEmCurso: trava }));
       const r = await atualizarRascunhoShopee(
         deps(db),
-        corpoAtualizar({ attributes: null }, { attributes: ATRIBUTOS }),
+        corpoAtualizar({ category_id: 100_017, attributes: null }, { attributes: ATRIBUTOS }),
       );
       expect(r.gravados).toEqual([CAMPO_RASCUNHO_SHOPEE.attributes]);
       expect(doc(db)?.publicacaoEmCurso).toEqual(trava);

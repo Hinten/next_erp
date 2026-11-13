@@ -39,6 +39,12 @@
  * {@link TEXTO_MOTIVO_ANUNCIO_SHOPEE}), the confirmation, and what each answer
  * of a draft's publish reads as — the 202, the lock's 409s, an answer that
  * never came. Again `./rascunho.ts` decides; this words.
+ *
+ * #1911 P13 adds the attribute editor's gate sentences — Publicar waiting on
+ * the category's attribute tree ({@link FRASE_PUBLICAR_SEM_ATRIBUTOS_SHOPEE},
+ * {@link fraseDosAtributosNaoLidosShopee}) — and EXPORTS the Seller Centre exit
+ * ({@link saidaPeloSellerCentreDoRascunhoShopee}) so a mandatory attribute the
+ * editor cannot fill names the same exit as every other row, never a copy.
  */
 import { z } from 'zod';
 import {
@@ -391,8 +397,9 @@ export const FRASE_RECUSA_SEM_PASSO_RASCUNHO_SHOPEE =
  *    unless it reads as a terminal instruction, which becomes
  *    {@link FRASE_RECUSA_SEM_PASSO_SHOPEE}. A worded motivo whose sentence
  *    carries a fact the copy cannot (`busca-de-anuncio-existente-incompleta`:
- *    WHICH listings Shopee left out; `logistica-nao-confirmada`: which channel,
- *    which listing) shows it beside the copy, when it is not terminal text.
+ *    WHICH listings Shopee left out; `logistica-nao-confirmada` and
+ *    `logistica-sem-valor-gravado`: which channel, which listing) shows it
+ *    beside the copy, when it is not terminal text.
  *  - `importar` (#1911 P11): an ordinary-listing motivo of
  *    {@link TEXTO_MOTIVO_ANUNCIO_SHOPEE} reads ITS copy and then every id with
  *    its state — «(sem vínculo)», «(deste produto)», «(do produto X)»
@@ -1091,7 +1098,8 @@ export const FRASE_MARCA_NAO_ESCOLHIDA_SHOPEE =
 
 /**
  * The ordinary listing's refusal motivos the tab words or BRANCHES on (#1911;
- * `logistica-nao-confirmada` since #2015) — apps/shopee's vocabulary
+ * `logistica-nao-confirmada` since #2015, `logistica-sem-valor-gravado` since
+ * #1911 P14b (CPY-4)) — apps/shopee's vocabulary
  * (`anuncios/errosPublicacao.ts`'s `MOTIVO_PUBLICACAO_BLOQUEADA` and the
  * wire-only `anuncio-semelhante-existente`), which the browser cannot import,
  * so spelled ONCE, here. Every reader — the copy maps below, the Seller-Centre
@@ -1103,7 +1111,8 @@ export const FRASE_MARCA_NAO_ESCOLHIDA_SHOPEE =
  * four `importar` rows fall back to `textoDoImportar`, which opens with the KIT
  * sentence, and a renamed `marca-nao-escolhida` ADDS the «a marca pode não
  * valer» aviso (`superficieDoCampoShopee` is a deny-list), as a renamed
- * `logistica-nao-confirmada` gets back the weight button. So a rename is
+ * `logistica-nao-confirmada` or `logistica-sem-valor-gravado` gets back the
+ * weight button. So a rename is
  * caught by apps/shopee's cross-app pin (`anuncios/errosPublicacao.test.ts`
  * reads this block as text — keep its header line byte-identical). Never a
  * prefix match.
@@ -1122,6 +1131,7 @@ export const MOTIVO_ANUNCIO_SHOPEE = {
   buscaDeAnuncioExistenteIncompleta: 'busca-de-anuncio-existente-incompleta',
   anuncioSemelhanteExistente: 'anuncio-semelhante-existente',
   logisticaNaoConfirmada: 'logistica-nao-confirmada',
+  logisticaSemValorGravado: 'logistica-sem-valor-gravado',
 } as const satisfies Record<string, string>;
 export type MotivoAnuncioShopee =
   (typeof MOTIVO_ANUNCIO_SHOPEE)[keyof typeof MOTIVO_ANUNCIO_SHOPEE];
@@ -1208,6 +1218,26 @@ function saidaPeloSellerCentreShopee(
         'dele antes de qualquer outra ação.'
       );
   }
+}
+
+/**
+ * {@link saidaPeloSellerCentreShopee} for a draft the ERP cannot publish for a
+ * reason no button here fixes — a MANDATORY attribute its editor cannot fill
+ * (a date, a search-only list, a list Shopee sent no values for; #1911 P13)
+ * while it holds NO value (`obrigatorio-ausente`: a stored value is carried
+ * and published, D-7, so that draft is publishable and this exit is not said).
+ * The exit is the SAME one, chosen from the block's CURRENT reading
+ * (`bloco.publicacao`: `livre` checks for the SKU first, `incerta` names the
+ * last attempt's listing first, `em-andamento` waits), so a caller composes its
+ * own opening with this and never writes a third spelling of it.
+ *
+ * ⚠️ Never opens with «Esta tentativa não criou nada.»: an attribute the editor
+ * cannot fill proves nothing about any attempt.
+ */
+export function saidaPeloSellerCentreDoRascunhoShopee(
+  publicacao: EstadoPublicacaoRascunhoShopee,
+): string {
+  return saidaPeloSellerCentreShopee(publicacao, false);
 }
 
 /**
@@ -1319,6 +1349,77 @@ const SAIDA_FORA_DO_RASCUNHO_SHOPEE =
 export const FRASE_ATESTACAO_SEM_CRIACAO_INCERTA_FORA_DO_RASCUNHO_SHOPEE = `${FATO_DA_ATESTACAO_SEM_CRIACAO_INCERTA_SHOPEE} ${SAIDA_FORA_DO_RASCUNHO_SHOPEE}`;
 
 /**
+ * How to import an ALREADY LINKED listing from this tab — the tail of BOTH
+ * import-remedy rows of {@link TEXTO_MOTIVO_ANUNCIO_SHOPEE},
+ * `logistica-nao-confirmada` (#2015) and `logistica-sem-valor-gravado`
+ * (#2099), spelled ONCE so the two can never drift apart (#1369). It opens
+ * «Para importar o anúncio», never «Para importá-lo»: in the #2099 copy the
+ * clause before it ends «defina-o», so the pronoun would read as «o valor».
+ *
+ * The one web door that re-reads a LINKED listing is the mass import with
+ * «Atualizar anúncios já cadastrados» ticked (off, it skips every linked
+ * listing). That door is a WHOLE-CONTA re-read, not a one-listing import, so
+ * the recipe names every box of it that decides whether the import reaches
+ * the listing or does anything else to the catálogo:
+ * - «Status dos anúncios»: the scan lists only the ticked statuses, and
+ *   «Banidos» and «Em revisão» come unticked — a banned or in-review listing
+ *   still gets these motivos (of the linked listings, only a `removido` one is
+ *   worded otherwise), so the operator must tick its status or the import
+ *   never sees it;
+ * - «Janela de atualização (opcional)»: a window can leave the listing out;
+ * - the run also IMPORTS every listing of those statuses that no link holds
+ *   yet (#2099): each is linked to the produto with the same SKU when exactly
+ *   one has it, or becomes a new produto;
+ * - «Sobrescrever preço existente» comes TICKED: on an already linked
+ *   produto the import's price step reads that box alone (apps/shopee
+ *   `planejarPreco`, `lib/shopee/produtos/mapeamento.ts`), so at the
+ *   dialog's defaults it would replace the ERP price of every childless
+ *   linked produto and every child of the conta with Shopee's (a parent with
+ *   children keeps its own). Unticking «Importar preço» now stops it too
+ *   (#2099: a greyed box is not sent), but it also leaves every produto the
+ *   run CREATES without a price, so the copy names the «Sobrescrever» box
+ *   itself;
+ * - «Sobrescrever estoque existente» and «Sobrescrever dados do produto
+ *   (marca, dimensões, SKU)» come unticked and must stay so. That keeps a
+ *   REGISTERED stock row; a linked produto with NO row in the conta's
+ *   depósito still gets one holding Shopee's count, under «Importar
+ *   estoque» (`planejarEstoque`, same file), which is why the copy says
+ *   «o estoque registrado» rather than promising every stock untouched;
+ * - «Importar fotos» comes TICKED (#2099): the import only APPENDS photos,
+ *   never removing or replacing one, and its dedup reads only the arquivos
+ *   the produto CURRENTLY shows (apps/shopee `idsDeImagemJaImportados`,
+ *   `lib/shopee/produtos/fotosShopee.ts`), so a photo removed from a produto
+ *   comes back while the listing still has it. Never worded as "the photos
+ *   this conta has not brought yet": that history does not exist. The dialog
+ *   says the same under that box in its own sentence
+ *   (`DESCRICAO_IMPORTAR_FOTOS_SHOPEE`).
+ * Every default the recipe claims is pinned against
+ * `OPCOES_IMPORTACAO_SHOPEE_PADRAO` (`./anuncioProduto.test.ts`) and on the
+ * dialog's screen (`ImportarTodosShopeeDialog.test.tsx`); every quoted label
+ * is read from `./rotulosImportacaoShopee`, the module the dialog renders,
+ * never typed out a second time (#1369).
+ *
+ * ONE sentence for every state of the listing: neither reader receives the
+ * link's `estadoAnuncio` (`textoDoProblemaShopee` gets the row and the
+ * block's ids, `textoDaRecusaGuardadaShopee` the stored row), so it says
+ * "the listing's current status" instead of naming it.
+ */
+export const FRASE_COMO_IMPORTAR_ANUNCIO_VINCULADO_SHOPEE =
+  `Para importar o anúncio, use a importação em massa (${PORTA_DA_IMPORTACAO_SHOPEE}) com ` +
+  `«${R.atualizarCadastrados}» marcado — sem essa opção um anúncio já vinculado é pulado —, ` +
+  `com o status atual do anúncio marcado em «${R.statuses}» («${S[SHOPEE_IMPORT_STATUS.banned]}» ` +
+  `e «${S[SHOPEE_IMPORT_STATUS.reviewing]}» vêm desmarcados) e com a «${R.janela}» vazia. A ` +
+  'importação relê todos os anúncios da conta nesses status e também importa os que ainda não ' +
+  'têm vínculo no ERP: cada um é vinculado a um produto com o mesmo SKU, quando há exatamente ' +
+  'um, ou vira um produto novo. Para não trocar o preço, o estoque registrado e os dados dos ' +
+  'produtos já cadastrados pelos da Shopee, desmarque ' +
+  `«${R.sobrescreverPreco}» (vem marcado) e deixe desmarcados «${R.sobrescreverEstoque}» e ` +
+  `«${R.sobrescreverDadosProduto}». Com «${R.importarFotos}» marcado (vem marcado), a ` +
+  'importação acrescenta fotos dos anúncios aos produtos e nunca remove nem substitui uma ' +
+  'foto, mas traz de volta uma foto removida de um produto se ela ainda estiver no anúncio; ' +
+  'para não acrescentar fotos, desmarque-o.';
+
+/**
  * The tab's OWN copy for the refusal motivos of an ORDINARY listing's draft
  * (#1911) — read by {@link textoDoProblemaShopee} right after
  * {@link TEXTO_MOTIVO_KIT}. The two maps' keys never overlap (pinned), so the
@@ -1369,53 +1470,34 @@ export const FRASE_ATESTACAO_SEM_CRIACAO_INCERTA_FORA_DO_RASCUNHO_SHOPEE = `${FA
  *   refusal (its sentence is Shopee's English); also stamped on the link, so
  *   the stored row reads it too ({@link textoDaRecusaGuardadaShopee}).
  *
- * #2015 — the logistics provenance refusal (Lucas D3):
- * - `logistica-nao-confirmada` — a compulsory channel needs a size or a fee
- *   that only the link's stored `logistic_info` holds, and nothing records
- *   that THIS app wrote that list (`logisticaGravadaEm` absent: the legacy
- *   app's, or written before the stamp existed), so publish does not re-send
- *   it. The server emits it only for a listing an import can re-read. The
- *   remedy is that import, and the one web door that re-reads an ALREADY
- *   LINKED listing is the mass import with «Atualizar anúncios já
- *   cadastrados» ticked (off, it skips every linked listing) — never a weight
- *   button (`./rascunho.ts`). Worded as "no record", never "this ERP never
- *   wrote it": true on any link the stamp does not vouch for. The server's
- *   sentence follows as «Detalhe:» ({@link MOTIVOS_COM_A_FRASE_DO_SERVIDOR}),
- *   and a refusal with several such rows shows this copy ONCE
- *   ({@link linhasDosProblemasShopee}, {@link textosDasRecusasGuardadasShopee}).
- *
- *   The copy names every other box of that door that decides whether the
- *   import reaches the listing or harms anything, because the door is a
- *   WHOLE-CONTA re-read, not a one-listing import:
- *   - «Status dos anúncios»: the scan lists only the ticked statuses, and
- *     «Banidos» and «Em revisão» come unticked — a banned or in-review
- *     listing still gets this motivo (of the linked listings, only a
- *     `removido` one is worded otherwise), so the operator must tick its
- *     status or the import never sees it;
- *   - «Janela de atualização (opcional)»: a window can leave the listing out;
- *   - «Sobrescrever preço existente» comes TICKED: on an already linked
- *     produto the import's price step reads that box alone (apps/shopee
- *     `planejarPreco`, `lib/shopee/produtos/mapeamento.ts`), so at the
- *     dialog's defaults it would replace the ERP price of every childless
- *     linked produto and every child of the conta with Shopee's (a parent with
- *     children keeps its own). Unticking «Importar preço» does not stop it
- *     (the greyed-out box is still sent), so the copy names the box itself;
- *   - «Sobrescrever estoque existente» and «Sobrescrever dados do produto
- *     (marca, dimensões, SKU)» come unticked and must stay so. That keeps a
- *     REGISTERED stock row; a linked produto with NO row in the conta's
- *     depósito still gets one holding Shopee's count, under «Importar
- *     estoque» (`planejarEstoque`, same file), which is why the copy says
- *     «o estoque registrado» rather than promising every stock untouched.
- *   Every default the copy claims is pinned against
- *   `OPCOES_IMPORTACAO_SHOPEE_PADRAO` (`./anuncioProduto.test.ts`) and on the
- *   dialog's screen (`ImportarTodosShopeeDialog.test.tsx`); every quoted
- *   label is read from `./rotulosImportacaoShopee`, the module the dialog
- *   renders, never typed out a second time (#1369).
- *
- *   ONE sentence for every state of the listing: neither reader receives the
- *   link's `estadoAnuncio` (`textoDoProblemaShopee` gets the row and the
- *   block's ids, `textoDaRecusaGuardadaShopee` the stored row), so the copy
- *   says "the listing's current status" instead of naming it.
+ * #2015 and #2099 — the two logistics refusals whose remedy is IMPORTING the
+ * listing. Each copy is its own opening sentences, then
+ * {@link FRASE_COMO_IMPORTAR_ANUNCIO_VINCULADO_SHOPEE} — the one web door that
+ * re-reads an ALREADY LINKED listing, spelled once for both. The server's
+ * sentence follows as «Detalhe:»: it names the channel and the listing
+ * ({@link MOTIVOS_COM_A_FRASE_DO_SERVIDOR}). A refusal with several rows of
+ * ONE of these motivos shows that copy once ({@link linhasDosProblemasShopee},
+ * {@link textosDasRecusasGuardadasShopee}); a refusal holding BOTH shows both
+ * copies, so the recipe twice (the PR's stated residual). Neither row gets a
+ * weight button (`./rascunho.ts`): the channel already fits, so no field of
+ * the produto is the fix.
+ * - `logistica-nao-confirmada` (#2015, Lucas D3) — a compulsory channel needs
+ *   a size or a fee that only the link's stored `logistic_info` holds, and
+ *   nothing records that THIS app wrote that list (`logisticaGravadaEm`
+ *   absent: the legacy app's, or written before the stamp existed), so
+ *   publish does not re-send it. The server emits it only for a listing an
+ *   import can re-read. Worded as "no record", never "this ERP never wrote
+ *   it": true on any link the stamp does not vouch for.
+ * - `logistica-sem-valor-gravado` (#2099, CPY-4) — the same distrusted list,
+ *   for a listing an import can re-read, but no stored entry of the channel
+ *   holds the size or fee READABLY (absent, blank or unreadable), so there is
+ *   nothing to withhold and the copy never says «não é usado». Lucas's
+ *   sentence, with «o canal obrigatório X» as «um canal obrigatório da loja»
+ *   and «o anúncio Y» as «o anúncio»: the server's own sentence, shown as
+ *   «Detalhe:», names both (the channel as «nome» (id), or its id alone when
+ *   Shopee gives no name). Both exits are real: an import records what Seller
+ *   Centre holds today, and a value Seller Centre does not hold yet must be
+ *   set there first.
  */
 export const TEXTO_MOTIVO_ANUNCIO_SHOPEE: Readonly<Record<string, string>> = {
   [M.rascunhoEmKitVirtual]: FRASE_RASCUNHO_EM_KIT_VIRTUAL_SHOPEE,
@@ -1462,14 +1544,12 @@ export const TEXTO_MOTIVO_ANUNCIO_SHOPEE: Readonly<Record<string, string>> = {
     'Um canal obrigatório da loja precisa de um tamanho ou de uma tarifa de frete. O valor ' +
     'gravado neste vínculo não é usado: o ERP não tem registro de tê-lo lido da Shopee nem de ' +
     'tê-lo enviado a ela. Importe o anúncio para gravar os valores atuais da Shopee e publique ' +
-    `de novo. Para importá-lo, use a importação em massa (${PORTA_DA_IMPORTACAO_SHOPEE}) com ` +
-    `«${R.atualizarCadastrados}» marcado — sem essa opção um anúncio já vinculado é pulado —, ` +
-    `com o status atual do anúncio marcado em «${R.statuses}» («${S[SHOPEE_IMPORT_STATUS.banned]}» ` +
-    `e «${S[SHOPEE_IMPORT_STATUS.reviewing]}» vêm desmarcados) e com a «${R.janela}» vazia. A ` +
-    'importação relê todos os anúncios da conta nesses status: para não trocar o preço, o ' +
-    'estoque registrado e os dados dos produtos já cadastrados pelos da Shopee, desmarque ' +
-    `«${R.sobrescreverPreco}» (vem marcado) e deixe desmarcados «${R.sobrescreverEstoque}» e ` +
-    `«${R.sobrescreverDadosProduto}».`,
+    `de novo. ${FRASE_COMO_IMPORTAR_ANUNCIO_VINCULADO_SHOPEE}`,
+  [M.logisticaSemValorGravado]:
+    'Um canal obrigatório da loja precisa de um tamanho ou de uma tarifa de frete que este ' +
+    'vínculo não tem gravados, e o ERP não tem registro de ter gravado a lista de logística ' +
+    'dele. Se o valor já está no Seller Centre, importe o anúncio e publique de novo; se não ' +
+    `está, defina-o no Seller Centre antes. ${FRASE_COMO_IMPORTAR_ANUNCIO_VINCULADO_SHOPEE}`,
 };
 
 /**
@@ -1562,22 +1642,30 @@ function textoDoMotivoSemAcaoShopee(
  * Worded motivos whose server sentence ALSO shows, after the copy (when it is
  * not terminal text): it carries a fact the copy cannot — which listings
  * Shopee left out of the look-up, or how far the walk got (§H); which
- * compulsory channel lacks what, and which listing to import (#2015).
+ * compulsory channel lacks what, and which listing to import (#2015, #2099 —
+ * whose copy says only «um canal obrigatório da loja» and «o anúncio»).
  */
 const MOTIVOS_COM_A_FRASE_DO_SERVIDOR: ReadonlySet<string> = new Set([
   M.buscaDeAnuncioExistenteIncompleta,
   M.logisticaNaoConfirmada,
+  M.logisticaSemValorGravado,
 ]);
 
 /**
  * Worded motivos whose copy is about the REFUSAL, not about its row, so one
  * refusal shows it once however many rows carry the motivo (#2015): the
- * server emits one `logistica-nao-confirmada` row per lost compulsory
- * channel, and each row's copy is the same paragraph. Exactly this one: #11's
- * rows (`busca-de-anuncio-existente-incompleta`) and every other motivo keep
- * their copy per row.
+ * server emits one `logistica-nao-confirmada` or `logistica-sem-valor-gravado`
+ * row per lost compulsory channel, and each row's copy is the same paragraph.
+ * Each motivo is folded on its OWN (#2099): a refusal holding both shows both
+ * copies, once each — they say different things — and every row still reads
+ * its own «Detalhe:». Exactly these two: #11's rows
+ * (`busca-de-anuncio-existente-incompleta`) and every other motivo keep their
+ * copy per row.
  */
-const MOTIVOS_DE_COPIA_UNICA_SHOPEE: ReadonlySet<string> = new Set([M.logisticaNaoConfirmada]);
+const MOTIVOS_DE_COPIA_UNICA_SHOPEE: ReadonlySet<string> = new Set([
+  M.logisticaNaoConfirmada,
+  M.logisticaSemValorGravado,
+]);
 
 /** One rendered row of a 422's `problemas`: the row, its ORIGINAL position, and its text. */
 export interface LinhaDoProblemaShopee<P> {
@@ -1594,11 +1682,13 @@ export interface LinhaDoProblemaShopee<P> {
  * reads the copy (and its own sentence as «Detalhe:»), and every LATER
  * acao-less row of the same motivo reads only `Detalhe: <its sentence>` —
  * which still names its channel and listing — or is DROPPED when that
- * sentence is blank or terminal text (it would say nothing: no acao, and this
- * motivo has no surface, `./rascunho.ts`).
+ * sentence is blank or terminal text (it would say nothing: no acao, and these
+ * motivos have no surface, `./rascunho.ts`).
  *
- * Matched by motivo `===` only, never by text: two `logistica-sem-canal` rows
- * with the same sentence are two rows. A row WITH an `acao` is never folded
+ * Matched by motivo `===` only, never by text and never by family: two
+ * `logistica-sem-canal` rows with the same sentence are two rows, and a
+ * `logistica-sem-valor-gravado` row after a `logistica-nao-confirmada` one
+ * still reads ITS copy (#2099). A row WITH an `acao` is never folded
  * and never counts as the first (its ids are its own). `indice` is the row's
  * position in `problemas`, so a dropped row leaves its siblings' testids
  * where they were.
@@ -1714,9 +1804,35 @@ export const FRASE_RASCUNHO_AGUARDANDO_SERVIDOR_SHOPEE =
 export const FRASE_LOGISTICA_RASCUNHO_SHOPEE =
   'Logística: escolhida automaticamente na publicação, entre os canais ativos da loja.';
 
-/** A category change on a draft that stores attributes: the change clears them (K1-12). */
+/**
+ * A category change on a draft whose attributes are filled — stored, or typed
+ * on this form and not saved yet, or a typing still on screen that blocks the
+ * save (`bloco.atributosPreenchidos`, #1911 P13): the attributes belong to the
+ * category they were chosen in, so the change clears them (K1-12). Never «da
+ * categoria atual»: after an unsaved category change the STORED ones belong to
+ * the saved category, not the one on screen.
+ */
 export const FRASE_TROCA_DE_CATEGORIA_APAGA_ATRIBUTOS_SHOPEE =
-  'Trocar a categoria remove os atributos já gravados neste rascunho.';
+  'Trocar a categoria remove os atributos preenchidos neste rascunho: eles valem só para a ' +
+  'categoria em que foram escolhidos.';
+
+/**
+ * Beside {@link FRASE_TROCA_DE_CATEGORIA_APAGA_ATRIBUTOS_SHOPEE} while the
+ * form shows ANOTHER category than the saved one and the saved draft stores
+ * attributes (`bloco.atributosGravadosForaDaCategoria`): picking the saved
+ * category again restores them — it removes nothing.
+ */
+export const FRASE_VOLTAR_A_CATEGORIA_GRAVADA_TRAZ_ATRIBUTOS_SHOPEE =
+  'Voltar à categoria gravada traz de volta os atributos gravados.';
+
+/**
+ * The confirmation of «Voltar à categoria gravada» while it would drop
+ * attribute work done for the category on screen
+ * (`bloco.voltarCategoriaApagaAtributos`): the put-back restores the saved
+ * list and drops what was filled or typed for the changed category.
+ */
+export const FRASE_VOLTAR_CATEGORIA_APAGA_ATRIBUTOS_SHOPEE =
+  'Voltar à categoria gravada remove os atributos preenchidos para a categoria atual.';
 
 /**
  * How the search for a create that may have happened works — the advice the
@@ -1796,7 +1912,11 @@ export function fraseDoTextoForaDaFaixaShopee(
   );
 }
 
-/** Mandatory attributes left empty (P13 renders them; the sentence is ready). */
+/**
+ * Mandatory attributes left empty — the `atributo-obrigatorio` pendência, which
+ * the draft's «Atributos» section fills (#1911 P13). `nomes` are the
+ * pendência's own, joined as they come.
+ */
 export function fraseDosAtributosObrigatoriosShopee(nomes: readonly string[]): string {
   return `Preencha os atributos obrigatórios: ${nomes.join(', ')}.`;
 }
@@ -2045,11 +2165,13 @@ export const ROTULO_VOLTAR_CATEGORIA_GRAVADA_SHOPEE = 'Voltar à categoria grava
  * {@link ROTULO_VOLTAR_CATEGORIA_GRAVADA_SHOPEE} (the local impediment of an
  * editable `incerta` block) — never with the route's 409, whose block may not
  * offer it yet: the way to keep the other edits. True with or without them
- * (it never says there are any).
+ * (it never says there are any). The attributes filled for the changed
+ * category go with the change (#1911 P13: they belong to it — the put-back
+ * restores the saved list), so «só a troca de categoria» would be false.
  */
 export const FRASE_VOLTAR_CATEGORIA_GRAVADA_SHOPEE =
-  `Ou use «${ROTULO_VOLTAR_CATEGORIA_GRAVADA_SHOPEE}» (em Categoria): desfaz só a troca ` +
-  'de categoria e mantém as outras alterações.';
+  `Ou use «${ROTULO_VOLTAR_CATEGORIA_GRAVADA_SHOPEE}» (em Categoria): desfaz a troca de ` +
+  'categoria e os atributos preenchidos para a categoria nova, e mantém as outras alterações.';
 
 /** 409 `rascunhoIdEmUso` (create only): never retried at the same id (C-19). */
 export const FRASE_RASCUNHO_ID_EM_USO_SHOPEE =
@@ -2155,6 +2277,29 @@ export const FRASE_PUBLICAR_PRODUTO_NAO_SALVO_SHOPEE =
 export const FRASE_PUBLICAR_SEM_FAIXAS_SHOPEE =
   'Publicar fica disponível quando os limites de título e descrição da categoria forem lidos ' +
   'da Shopee.';
+
+/**
+ * The category's attribute tree is not known yet (loading, or the read
+ * failed — #1911 P13, `atributos-desconhecidos`): until it is, a mandatory
+ * attribute left empty cannot be seen here, so Publicar waits for it too.
+ */
+export const FRASE_PUBLICAR_SEM_ATRIBUTOS_SHOPEE =
+  'Publicar fica disponível quando os atributos da categoria forem lidos da Shopee.';
+
+/**
+ * «Publicar» waits on the category's attribute tree and its read FAILED: what
+ * the button says instead of the pending {@link FRASE_PUBLICAR_SEM_ATRIBUTOS_SHOPEE},
+ * which nothing would make true. `causa` is `descreverFalhaShopee`'s sentence
+ * (it names its own exit — wait, reconnect, pick another category); a blank or
+ * terminal-worded cause is dropped, never printed. The twin of the bands'
+ * `fraseDosLimitesNaoLidosShopee` (`ShopeeEditor.tsx`).
+ */
+export function fraseDosAtributosNaoLidosShopee(causa: string): string {
+  const base =
+    'Publicar fica indisponível: os atributos da categoria não puderam ser lidos da Shopee.';
+  const texto = causa.trim();
+  return texto === '' || ehFraseDeTerminal(texto) ? base : `${base} ${texto}`;
+}
 
 /* ---- The confirmation (DC §2.6) ------------------------------------------- */
 

@@ -341,8 +341,8 @@ things about it are load-bearing:
 - ⚠️ **`workflow_run` matches by workflow `name:`**, silently and with no error
   when a name matches nothing. Renaming a lane un-alerts it. Assertion 14 in
   `ci-lane-gates.test.js` derives the real set (every workflow with
-  `push: branches:` containing `main`, minus the two self-referential Copilot
-  bootstraps) and pins the list against it.
+  `push: branches:` containing `main`, minus the self-referential Copilot review
+  bootstrap) and pins the list against it.
 - ⚠️ **`cancelled` is never an alert.** Every lane runs `cancel-in-progress: true`,
   so merges landing minutes apart cancel each other's runs constantly — 10 of the
   last 25 `ci.yml` runs on `main`. It costs nothing to ignore them: a cancelled run

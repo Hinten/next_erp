@@ -47,6 +47,7 @@ import {
   motivoRascunhoInvalidoShopeeSchema,
   MSG_BASE_DIFERENTE_DO_PATCH_RASCUNHO_SHOPEE,
   MSG_BASE_SEM_ATRIBUTOS_NA_TROCA_DE_CATEGORIA_RASCUNHO_SHOPEE,
+  MSG_BASE_SEM_CATEGORIA_NOS_ATRIBUTOS_RASCUNHO_SHOPEE,
   MSG_ITEM_NAME_EM_BRANCO_RASCUNHO_SHOPEE,
   MSG_PATCH_VAZIO_RASCUNHO_SHOPEE,
   PADRAO_ID_RASCUNHO_SHOPEE,
@@ -1665,7 +1666,7 @@ describe('camposPresentesDoRascunhoShopee — os campos que um valor NOMEIA', ()
   });
 });
 
-describe('camposDaBaseDoRascunhoShopee — o que a base PRECISA nomear (K1-12)', () => {
+describe('camposDaBaseDoRascunhoShopee — o que a base PRECISA nomear (K1-12 e o espelho, P13 Q1)', () => {
   it('os campos do patch — mais `attributes` quando o patch troca category_id sem eles', () => {
     expect(camposDaBaseDoRascunhoShopee({ item_name: 'x' })).toEqual(['item_name']);
     expect(camposDaBaseDoRascunhoShopee({ category_id: 1 })).toEqual(['category_id', 'attributes']);
@@ -1681,14 +1682,46 @@ describe('camposDaBaseDoRascunhoShopee — o que a base PRECISA nomear (K1-12)',
     ]);
   });
 
-  it('⛔ QUASE-PAR: o patch que JÁ traz attributes não ganha nada; sem category_id, nada também', () => {
+  it('PAR (o espelho, P13 Q1): o patch que grava attributes SEM category_id ganha `category_id` — a categoria em que a lista foi escolhida', () => {
+    expect(camposDaBaseDoRascunhoShopee({ attributes: null })).toEqual([
+      'category_id',
+      'attributes',
+    ]);
+    expect(camposDaBaseDoRascunhoShopee({ attributes: [] })).toEqual(['category_id', 'attributes']);
+    expect(camposDaBaseDoRascunhoShopee({ item_name: 'x', attributes: null })).toEqual([
+      'item_name',
+      'category_id',
+      'attributes',
+    ]);
+    // Key order is irrelevant: the answer is canonical.
+    expect(camposDaBaseDoRascunhoShopee({ attributes: [], marca: null, description: 'y' })).toEqual(
+      ['description', 'category_id', 'marca', 'attributes'],
+    );
+  });
+
+  it('⛔ QUASE-PAR: o patch que nomeia OS DOIS não ganha nada (os dois extras nunca se encontram); sem nenhum dos dois, nada também', () => {
     expect(camposDaBaseDoRascunhoShopee({ category_id: 1, attributes: [] })).toEqual([
       'category_id',
       'attributes',
     ]);
-    expect(camposDaBaseDoRascunhoShopee({ attributes: null })).toEqual(['attributes']);
+    expect(camposDaBaseDoRascunhoShopee({ category_id: null, attributes: null })).toEqual([
+      'category_id',
+      'attributes',
+    ]);
+    expect(camposDaBaseDoRascunhoShopee({ item_name: 'x' })).toEqual(['item_name']);
+    expect(camposDaBaseDoRascunhoShopee({ marca: null })).toEqual(['marca']);
     expect(camposDaBaseDoRascunhoShopee({ description: null })).toEqual(['description']);
     expect(camposDaBaseDoRascunhoShopee({})).toEqual([]);
+  });
+
+  it('⛔ QUASE-PAR: `attributes: undefined` NÃO nomeia o campo — o patch de título não ganha a categoria', () => {
+    expect(camposDaBaseDoRascunhoShopee({ item_name: 'x', attributes: undefined })).toEqual([
+      'item_name',
+    ]);
+    expect(camposDaBaseDoRascunhoShopee({ category_id: 1, attributes: undefined })).toEqual([
+      'category_id',
+      'attributes',
+    ]);
   });
 });
 
@@ -2197,9 +2230,102 @@ describe('corpoAtualizarRascunhoShopeeSchema — POST rascunho/atualizar', () =>
     ).toBe(true);
     expect(
       corpoAtualizarRascunhoShopeeSchema.safeParse(
-        atualizar({ attributes: null }, { attributes: ATRIBUTOS }),
+        atualizar({ category_id: 1, attributes: null }, { attributes: ATRIBUTOS }),
       ).success,
     ).toBe(true);
+  });
+
+  it('PAR (o espelho, P13 Q1): gravar attributes sem category_id no patch exige a base da CATEGORIA em que a lista foi escolhida — com ela, aceito, e a categoria não entra no patch', () => {
+    const lido = corpoAtualizarRascunhoShopeeSchema.parse(
+      atualizar({ attributes: null, category_id: 100087 }, { attributes: ATRIBUTOS }),
+    );
+    expect(lido.base).toEqual({ category_id: 100087, attributes: null });
+    expect(lido.patch).toEqual({ attributes: ATRIBUTOS });
+    // `category_id: null` IS a base (the operator saw no category) — absent is not
+    expect(
+      corpoAtualizarRascunhoShopeeSchema.safeParse(
+        atualizar({ category_id: null, attributes: null }, { attributes: [] }),
+      ).success,
+    ).toBe(true);
+    expect(
+      corpoAtualizarRascunhoShopeeSchema.safeParse(
+        atualizar(
+          { item_name: 'A', category_id: 1, attributes: [] },
+          { item_name: 'B', attributes: null },
+        ),
+      ).success,
+    ).toBe(true);
+  });
+
+  it('⛔ (o espelho, P13 Q1): gravar attributes SEM category_id na base é 400, com a frase própria, no caminho `base`', () => {
+    for (const [base, patch] of [
+      [{ attributes: null }, { attributes: ATRIBUTOS }],
+      [{ attributes: ATRIBUTOS }, { attributes: null }],
+      [
+        { item_name: 'A', attributes: null },
+        { item_name: 'B', attributes: [] },
+      ],
+    ] as const) {
+      const lido = corpoAtualizarRascunhoShopeeSchema.safeParse(atualizar(base, patch));
+      expect(lido.success, JSON.stringify([base, patch])).toBe(false);
+      expect(mensagens(lido)).toEqual([MSG_BASE_SEM_CATEGORIA_NOS_ATRIBUTOS_RASCUNHO_SHOPEE]);
+      expect(lido.error?.issues[0]?.path).toEqual(['base']);
+    }
+  });
+
+  it('a frase do 400 do espelho (C9), VERBATIM — distinta da do K1-12', () => {
+    expect(MSG_BASE_SEM_CATEGORIA_NOS_ATRIBUTOS_RASCUNHO_SHOPEE).toBe(
+      'base deve trazer também category_id ao gravar attributes sem category_id no patch: os ' +
+        'atributos valem só para a categoria em que foram escolhidos, e só podem ser gravados ' +
+        'sobre a categoria que o operador viu.',
+    );
+    expect(MSG_BASE_SEM_CATEGORIA_NOS_ATRIBUTOS_RASCUNHO_SHOPEE).not.toBe(
+      MSG_BASE_SEM_ATRIBUTOS_NA_TROCA_DE_CATEGORIA_RASCUNHO_SHOPEE,
+    );
+  });
+
+  it('⛔ QUASE-PAR (o espelho): a base com OUTRO desvio além da categoria ausente leva a frase GENÉRICA, nunca a do espelho', () => {
+    for (const [base, patch] of [
+      // the category is there, but so is a field the patch does not name
+      [{ category_id: 1, item_name: 'A' }, { item_name: 'B' }],
+      // the category is missing AND the attributes are too
+      [{ item_name: 'A' }, { item_name: 'B', attributes: [] }],
+      // the category is there, the attributes are not
+      [{ category_id: 1 }, { attributes: ATRIBUTOS }],
+      // the base names the category beside a title-only patch: a field too many
+      [
+        { category_id: 1, item_name: 'A' },
+        { item_name: 'B', description: null },
+      ],
+    ] as const) {
+      const lido = corpoAtualizarRascunhoShopeeSchema.safeParse(atualizar(base, patch));
+      expect(lido.success, JSON.stringify([base, patch])).toBe(false);
+      expect(mensagens(lido), JSON.stringify([base, patch])).toEqual([
+        MSG_BASE_DIFERENTE_DO_PATCH_RASCUNHO_SHOPEE,
+      ]);
+    }
+  });
+
+  it('(P13 Q1) o operador B moveu a categoria; a lista de atributos de A com a base VELHA diverge em `category_id` ⟷ com a ATUAL, não', () => {
+    // A chose the attributes in 100087; B then moved the draft to 100030
+    // (clearing the list, K1-12).
+    const guardadoDepoisDeB = camposDoRascunhoShopee({
+      item_id: null,
+      category_id: 100030,
+      attributes: null,
+    });
+    const divergentes = (base: unknown): CampoRascunhoShopee[] => {
+      const lido = corpoAtualizarRascunhoShopeeSchema.parse(
+        atualizar(base, { attributes: ATRIBUTOS }),
+      );
+      const vista = lido.base as unknown as Record<CampoRascunhoShopee, never>;
+      const atual = guardadoDepoisDeB as unknown as Record<CampoRascunhoShopee, never>;
+      return camposDaBaseDoRascunhoShopee(lido.patch).filter(
+        (campo) => !mesmoValorDoRascunhoShopee(campo, atual[campo], vista[campo]),
+      );
+    };
+    expect(divergentes({ category_id: 100087, attributes: null })).toEqual(['category_id']);
+    expect(divergentes({ category_id: 100030, attributes: null })).toEqual([]);
   });
 
   it('⛔ QUASE-PAR (P6): attributes na base SEM troca de categoria e sem attributes no patch — campo a mais, 400', () => {
@@ -2332,7 +2458,8 @@ describe('corpoAtualizarRascunhoShopeeSchema — POST rascunho/atualizar', () =>
       [{}, { item_id: 2500139861 }],
       [{ logistic_info: null }, { logistic_info: [] }],
       [
-        { attributes: null },
+        // the base the mirror demands (P13 Q1), so only the PATCH can refuse
+        { category_id: 1, attributes: null },
         {
           attributes: [
             {

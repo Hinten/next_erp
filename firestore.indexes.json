@@ -1813,6 +1813,16 @@
       ]
     },
     {
+      "collectionGroup": "produtolojaintegrada",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "variacaoMercadoLivre",
       "queryScope": "COLLECTION_GROUP",
       "fields": [

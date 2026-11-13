@@ -60,7 +60,7 @@ that moves membership — a counting link created or pulled back out of the
 trash adds its conta, the loss of a produto's last counting link removes it.
 It never fires for a link that arrives by IMPORT: a Firestore import fires no
 trigger, so the migrated links reach the anchor only through the window's
-anchor census (master plan §5 item 6, Prerequisites below).
+anchor census, `migrate:li-integracoes-com-produto` (Prerequisites below).
 
 ⚠️ **The product import (master-plan step 9) stops at the same switch.** Its
 job-creation trigger `onImportacaoLojaIntegradaCriada` makes no Loja Integrada
@@ -125,12 +125,13 @@ exists — so nothing is ever written to Loja Integrada before the window.
   `produtolojaintegrada (contaLojaIntegrada ASC, id ASC)` with every stored form
   of the conta reference; without it Enterprise full-scans every produto's link
   docs on each line, and bills the scan.
-- **The migrated links' anchor census planned, and run before the stock and
-  price valves reach `on`** (master plan §5 item 6, before item 3's `on`). The
-  anchor trigger derives `integracoesComProduto` from link WRITES, and the data
-  import writes none it sees, so a migrated link whose produto's array lacks the
-  conta is invisible to the stock and price sweeps — a silent outage, never an
-  error. The trigger needs
+- **The migrated links' anchor census run before the stock and price valves
+  reach `on`**: `migrate:li-integracoes-com-produto`, runbook
+  `tools/migrations/li-integracoes-com-produto.README.md` ("Verifying a first
+  deploy", item 7). The anchor trigger derives `integracoesComProduto` from
+  link WRITES, and the data import writes none it sees, so a migrated link
+  whose produto's array lacks the conta is invisible to the stock and price
+  sweeps — a silent outage, never an error. The trigger needs
   no index of its own: its survivor read takes the produto's whole
   `produtolojaintegrada` subcollection, a handful of documents, and filters in
   code.
@@ -868,10 +869,13 @@ of this section passes.
      array, and the log shows the `check` line with `removido: true`;
    - delete the test link and the test produto.
 
-   The anchor census for the MIGRATED links (master plan §5 item 6) runs after
-   this check and before the stock and price valves reach `on` (master plan §5
-   item 3); its re-run reports 0. Why the window: the production project exists
-   only then, and the imported corpus fired no trigger.
+   The anchor census for the MIGRATED links, `migrate:li-integracoes-com-produto`
+   (runbook: `tools/migrations/li-integracoes-com-produto.README.md`), runs after
+   this check and before the stock and price valves reach `on`. Its re-run must
+   read `GATE li: ausente=0 campo-invalido=0` with `contas-li` and
+   `vinculos-que-contam` above 0. A `GATE li: NAO-AVALIADO` line is a stop, never
+   a pass. Why the window: the production project exists only then, and the
+   imported corpus fired no trigger.
 
 8. **The product import's trigger (master-plan step 9).** The console lists
    `onImportacaoLojaIntegradaCriada` as a Firestore trigger on database

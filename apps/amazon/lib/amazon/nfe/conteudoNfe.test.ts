@@ -91,6 +91,7 @@ describe('the package accepts what this module builds', () => {
         corpos.push(p.corpo);
         return Promise.resolve({ dados: p.schema.parse({}) as z.infer<S> } as never);
       },
+      patch: () => Promise.reject(new Error('patch não esperado')),
     };
     const c = conteudoDaNfeAmazon(`${BOM}${XML_MINIMO}\n`);
     await expect(

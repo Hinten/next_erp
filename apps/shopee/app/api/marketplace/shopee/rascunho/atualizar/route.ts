@@ -8,7 +8,10 @@
  * what the operator SAW for exactly the fields `camposDaBaseDoRascunhoShopee(patch)`
  * names — `patch`'s, PLUS `attributes` whenever the patch NAMES `category_id`
  * without them (even unchanged), because a category change clears the stored
- * attributes (K1-12, P6) —
+ * attributes (K1-12, P6), and PLUS `category_id` whenever the patch names
+ * `attributes` without it, because a list is chosen in one category and may
+ * only land on the category the operator saw (P13 Q1; compared, never
+ * written) —
  * parsed by the TOLERANT `baseRascunhoShopeeSchema`: verbatim, never
  * normalised (K2-4), so a legacy `''` or an absent title stays editable. `anuncios/rascunho.ts` compares
  * `base` against the stored draft through `@delfrance/schemas`' ONE projection
@@ -31,7 +34,11 @@
  * attributes also lists `attributes` · 400 a malformed body (an unknown key,
  * an empty `patch`, a `base` that does not name exactly `patch`'s fields — plus
  * `attributes` beside a `category_id` patch without them,
- * `MSG_BASE_SEM_ATRIBUTOS_NA_TROCA_DE_CATEGORIA_RASCUNHO_SHOPEE`) · 401/403 ·
+ * `MSG_BASE_SEM_ATRIBUTOS_NA_TROCA_DE_CATEGORIA_RASCUNHO_SHOPEE`, or plus
+ * `category_id` beside an `attributes` patch without it,
+ * `MSG_BASE_SEM_CATEGORIA_NOS_ATRIBUTOS_RASCUNHO_SHOPEE` — the answer a web
+ * bundle older than that rule gets on every attribute save: loud, and nothing
+ * read or written) · 401/403 ·
  * 404 `INEXISTENTE` (no such draft, or another
  * conta's) · 409 `JA_PUBLICADO {linkDocId}` (the link is no longer a draft —
  * `ehRascunhoShopee` false: it RECORDS a listing, which Seller Centre may have
@@ -40,8 +47,9 @@
  * included), `CATEGORIA_TRAVADA` (a patch NAMING `category_id` — even the
  * stored value — while the last create is `incerta`: it may have made the
  * listing in the stored category),
- * `CONFLITO {conflitos}` (a stored value is not the operator's `base`; `[]`
- * when the write lost its precondition on every attempt).
+ * `CONFLITO {conflitos}` (a stored value is not the operator's `base` — the
+ * stored `category_id` under an attributes-only list included; `[]` when the
+ * write lost its precondition on every attempt).
  */
 import { NextResponse } from 'next/server';
 import { z } from 'zod';

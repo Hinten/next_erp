@@ -52,9 +52,10 @@ import type { AcoesShopee, ArmaKitShopee } from './AcoesAnuncioShopee';
  * — what a refusal row's «Corrigir no rascunho: …» button (a `rascunho`
  * surface of `superficieDoCampoShopee`) focuses. The title and the
  * description are the inputs themselves; the category and the brand are
- * their pickers' wrappers (the picker's first enabled control takes the
- * focus). It lives HERE, beside its one reader, so the form imports it from
- * the panel and never the reverse.
+ * their pickers' wrappers, and the attributes (#1911 P13) the «Atributos»
+ * section's own root, stamped by `AtributosRascunhoShopee` — in each, the
+ * first enabled control takes the focus. It lives HERE, beside its one
+ * reader, so the form imports it from the panel and never the reverse.
  */
 export function idDoCampoRascunhoShopee(
   linkDocId: string,
@@ -63,21 +64,37 @@ export function idDoCampoRascunhoShopee(
   return `shopee-rascunho-${linkDocId}-campo-${campo}`;
 }
 
-/** What can take the focus inside a picker's wrapper — its first enabled control. */
-const FOCAVEL = 'input:not([disabled]), textarea:not([disabled]), button:not([disabled])';
+/**
+ * What can take the focus inside a picker's wrapper or the attributes
+ * section: a FIELD first — its first enabled input or textarea; a button only
+ * when the wrapper has no enabled field (the category picker). Never a hidden
+ * input (Mantine's `Select` / `MultiSelect` carry one beside the visible field,
+ * and `focus()` on it is silently a no-op), and never a control kept out of
+ * the tab order or hidden from assistive tech — Mantine's Pill renders its
+ * remove «×» as a `tabindex="-1"`, `aria-hidden` button BEFORE the
+ * MultiSelect's field.
+ */
+const CAMPO_FOCAVEL =
+  'input:not([disabled]):not([type="hidden"]):not([tabindex="-1"]), textarea:not([disabled])';
+const BOTAO_FOCAVEL = 'button:not([disabled]):not([tabindex="-1"]):not([aria-hidden="true"])';
 
 /**
- * Brings one field of a draft's form into view and focuses it (a picker's
- * first enabled control). Navigation only — nothing is written. A field that
- * is read-only now (the reading is `em-andamento`, the category in `incerta`)
- * is still scrolled to; a form that is not on screen is a no-op.
+ * Brings one field of a draft's form into view and focuses it (a picker's —
+ * or the attributes section's — first enabled control). Navigation only —
+ * nothing is written. A field that is read-only now (the reading is
+ * `em-andamento`, the category in `incerta`) is still scrolled to; a form
+ * that is not on screen is a no-op.
  */
 function focarCampoRascunhoShopee(linkDocId: string, campo: CampoDoFormularioRascunhoShopee): void {
   const alvo = document.getElementById(idDoCampoRascunhoShopee(linkDocId, campo));
   if (alvo === null) return;
   // jsdom implements no layout, so the scroll is optional there.
   if (typeof alvo.scrollIntoView === 'function') alvo.scrollIntoView({ block: 'center' });
-  const focavel = alvo.matches(FOCAVEL) ? alvo : alvo.querySelector<HTMLElement>(FOCAVEL);
+  const focavel =
+    alvo.matches(CAMPO_FOCAVEL) || alvo.matches(BOTAO_FOCAVEL)
+      ? alvo
+      : (alvo.querySelector<HTMLElement>(CAMPO_FOCAVEL) ??
+        alvo.querySelector<HTMLElement>(BOTAO_FOCAVEL));
   focavel?.focus();
 }
 
@@ -847,9 +864,10 @@ function DesfechoRecusado({
         {desfecho.problemas.length === 0 ? (
           <Text size="sm">{semTerminal(desfecho.mensagem, ehRascunho)}</Text>
         ) : (
-          // One text per row, except a refusal-wide copy shown ONCE (#2015's
-          // `logistica-nao-confirmada`: one row per lost channel); `indice` is
-          // the row's position in `problemas`, so a dropped row moves no testid.
+          // One text per row, except a refusal-wide copy shown ONCE per motivo
+          // (#2015's `logistica-nao-confirmada` and #1911 P14b's (CPY-4)
+          // `logistica-sem-valor-gravado`: one row per lost channel); `indice`
+          // is the row's position in `problemas`, so a dropped row moves no testid.
           linhasDosProblemasShopee(
             desfecho.problemas,
             linkDocId,

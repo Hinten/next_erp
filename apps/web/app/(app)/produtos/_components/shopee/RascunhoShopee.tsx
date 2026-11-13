@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, type KeyboardEvent } from 'react';
+import { useState } from 'react';
 import {
   Alert,
   Button,
@@ -45,9 +45,10 @@ import {
   textoDoSegundoAnuncioNaPublicacaoShopee,
   tituloDoSegundoAnuncioNaPublicacaoShopee,
 } from '@/lib/shopee/anuncioProduto';
+import type { EdicaoDoAtributoShopee } from '@/lib/shopee/atributosRascunho';
 import type {
   BlocoRascunhoShopee,
-  CampoDoFormularioRascunhoShopee,
+  CampoSimplesDoFormularioRascunhoShopee,
   DescarteDoRascunhoShopee,
   ExistentesNaContaShopee,
   FormularioRascunhoShopee,
@@ -55,9 +56,14 @@ import type {
   SaidaDoProblemaShopee,
 } from '@/lib/shopee/rascunho';
 
+import {
+  AtributosRascunhoShopee,
+  type AtributosRascunhoShopeeProps,
+} from './AtributosRascunhoShopee';
 import { CategoriaRascunhoShopee } from './CategoriaRascunhoShopee';
 import { idDoCampoRascunhoShopee } from './DesfechoAcaoShopee';
 import { MarcaRascunhoShopee, rotuloDaMarcaRascunhoShopee } from './MarcaRascunhoShopee';
+import { semEnviarOFormularioDoProduto } from './semEnviarOFormularioDoProduto';
 
 /**
  * The two draft writes a block starts (DC §2.1). The editor's
@@ -152,6 +158,20 @@ export type TextosDoProdutoRascunhoShopee = Pick<
   'nomeProduto' | 'descricaoProduto'
 >;
 
+/**
+ * What the tab hands the «Atributos» section of one draft (#1911 P13): the
+ * reading of the EDITED category's attribute tree and — once it answered —
+ * the rows, the «sem lugar» and «Serão removidos ao salvar» lists and the
+ * composer's dry run, each from `@/lib/shopee/atributosRascunho` over the
+ * SAME state an edit applies to (`[]` and an inert dry run while the tree is
+ * unknown). The form adds the block's own facts — `publicacao`,
+ * `camposEditaveis` — and the handler.
+ */
+export type AtributosDoRascunhoShopee = Pick<
+  AtributosRascunhoShopeeProps,
+  'leitura' | 'linhas' | 'semLugar' | 'removidosAoSalvar' | 'ensaiarAdicao'
+>;
+
 export interface RascunhoShopeeProps {
   /** The Firestore handle — forwarded to the brand picker's shortlist listener (`useMarcasShopee`); supplied by the editor. */
   db: Firestore;
@@ -179,15 +199,21 @@ export interface RascunhoShopeeProps {
   emVoo: AcaoDoBlocoRascunhoShopee | null;
   /** The last draft operation's sentence on this block (editor state, R2), or `null`. */
   resultado: ResultadoDoRascunhoShopee | null;
-  /** One form field typed or picked: the editor creates the entry on the first one (`edicaoDoRascunhoGuardadoShopee`) and applies `comCampoRascunhoShopee`; fired only while `bloco.camposEditaveis` (`category_id` only while `bloco.categoriaEditavel`, or the held one put back while `bloco.podeVoltarCategoria` — the editor re-checks with `categoriaAceitaNoBlocoShopee`). */
-  onCampo: <C extends CampoDoFormularioRascunhoShopee>(
+  /** One form field typed or picked: the editor creates the entry on the first one (`edicaoDoRascunhoGuardadoShopee`) and applies `comCampoRascunhoShopee`; fired only while `bloco.camposEditaveis` (`category_id` only while `bloco.categoriaEditavel`, or the held one put back while `bloco.podeVoltarCategoria` — the editor re-checks with `categoriaAceitaNoBlocoShopee`). Never `attributes` — the type refuses it: a list goes only through {@link onAtributo}. */
+  onCampo: <C extends CampoSimplesDoFormularioRascunhoShopee>(
     campo: C,
     valor: FormularioRascunhoShopee[C],
   ) => void;
+  /** The «Atributos» section ({@link AtributosDoRascunhoShopee}) — the EDITED category's tree read and its rows; computed by the tab. */
+  atributos: AtributosDoRascunhoShopee;
+  /** One attribute edited (#1911 P13): the editor applies `comAtributoRascunhoShopee` over the tree of the category the block is EDITED to — ignored unless that tree is LOADED and `bloco.camposEditaveis`; the first edit of a stored draft creates its entry, as `onCampo` does. */
+  onAtributo: (attributeId: number, edicao: EdicaoDoAtributoShopee) => void;
   /** «Salvar rascunho» (enabled ⇔ `bloco.podeSalvar`): the editor sends the create (`novo`) or the edit through `executar`. */
   onSalvar: () => void;
   /** «Desfazer alterações» (enabled ⇔ `bloco.podeDesfazer`): the editor drops the entry; nothing is sent. */
   onDesfazer: () => void;
+  /** How many times «Desfazer alterações» ran on this draft (editor state) — the «Atributos» section's key, so its screen-only state («Outro valor…» chosen, a composer's un-added text) starts over after an undo. Never keyed on whether an entry exists: that flips on the first keystroke and would steal the focus. */
+  revisaoDoDesfazer: number;
   /** «Descartar» (enabled ⇔ `bloco.podeDescartar`) with `bloco.descarte`: the editor opens that confirmation — `local` (drop, no request), `confirmar`, or `atestar` (the three-case Seller-Centre dialog). */
   onDescartar: (descarte: DescarteDoRascunhoShopee) => void;
   /**
@@ -284,25 +310,18 @@ function descricaoDoCampo(
 }
 
 /**
- * ⚠️ The draft sits INSIDE the produto's `<form>`: Enter in a single-line input
- * would submit THAT form (an implicit submission) — saving the produto, not
- * the draft. The title swallows it.
- */
-function semEnviarOFormularioDoProduto(e: KeyboardEvent<HTMLInputElement>): void {
-  if (e.key === 'Enter') e.preventDefault();
-}
-
-/**
- * The draft form of ONE listing draft (#1911 P10/P11, DC §2.3/§2.6): Título,
+ * The draft form of ONE listing draft (#1911 P10/P11/P13, DC §2.3/§2.6): Título,
  * Descrição, Categoria (`CategoriaRascunhoShopee`), Marca
- * (`MarcaRascunhoShopee`), the read-only logistics line, the pendências, the
- * block's notices, and «Salvar rascunho» / «Desfazer alterações» /
- * «Publicar» / «Descartar» — with the «Publicar» confirmation. A virtual-kit
- * produto (`bloco.kitVirtual`) gets the notice and «Descartar» only: its first
- * publish is a native kit, never this draft (§C #1).
+ * (`MarcaRascunhoShopee`), Atributos (`AtributosRascunhoShopee` — the EDITED
+ * category's tree, read by the tab), the read-only logistics line, the
+ * pendências, the block's notices, and «Salvar rascunho» / «Desfazer
+ * alterações» / «Publicar» / «Descartar» — with the «Publicar» confirmation.
+ * A virtual-kit produto (`bloco.kitVirtual`) gets the notice and «Descartar»
+ * only: its first publish is a native kit, never this draft (§C #1).
  *
  * Presentational: every piece of state and every write is the editor's (R2);
- * it fetches nothing itself (its two pickers carry their own reads).
+ * it fetches nothing itself (its two pickers carry their own reads; the
+ * attribute tree and its rows are the tab's — {@link AtributosDoRascunhoShopee}).
  *
  * - **Every decision is `bloco`'s** (`estadoDoBlocoRascunhoShopee`): what the
  *   fields show, whether they accept typing (the category separately — never
@@ -336,7 +355,8 @@ function semEnviarOFormularioDoProduto(e: KeyboardEvent<HTMLInputElement>): void
  * `Modal`: portalled outside the root in the browser, so scope its buttons by
  * that test id or the `dialog` role — its confirm is also named «Publicar»,
  * or «Publicar mesmo assim» with the D15 warning); field ids
- * {@link idDoCampoRascunhoShopee}.
+ * {@link idDoCampoRascunhoShopee} — the attributes' is stamped by the section
+ * itself, on its own root (never a second wrapper here: one id, one element).
  */
 export function RascunhoShopee({
   db,
@@ -352,8 +372,11 @@ export function RascunhoShopee({
   emVoo,
   resultado,
   onCampo,
+  atributos,
+  onAtributo,
   onSalvar,
   onDesfazer,
+  revisaoDoDesfazer,
   onDescartar,
   decisaoDePublicar,
   falhaDaLeitura,
@@ -453,7 +476,9 @@ export function RascunhoShopee({
               categoryId={valores.category_id}
               titulo={valores.item_name}
               editavel={bloco.categoriaEditavel}
-              atributosGravados={bloco.atributosGravados}
+              atributosPreenchidos={bloco.atributosPreenchidos}
+              atributosGravadosForaDaCategoria={bloco.atributosGravadosForaDaCategoria}
+              voltarApagaAtributos={bloco.voltarCategoriaApagaAtributos}
               onEscolher={(categoryId) => onCampo(CAMPO_RASCUNHO_SHOPEE.categoryId, categoryId)}
               onVoltar={
                 bloco.podeVoltarCategoria
@@ -484,6 +509,15 @@ export function RascunhoShopee({
               />
             )}
           </div>
+          {/* Stamps the attributes' field id on its own root (the focus target). */}
+          <AtributosRascunhoShopee
+            key={revisaoDoDesfazer}
+            linkDocId={linkDocId}
+            {...atributos}
+            publicacao={bloco.publicacao}
+            editavel={bloco.camposEditaveis}
+            onAtributo={onAtributo}
+          />
           <Text size="xs" c="dimmed">
             {FRASE_LOGISTICA_RASCUNHO_SHOPEE}
           </Text>

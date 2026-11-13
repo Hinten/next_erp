@@ -469,7 +469,7 @@ describe('/variacoes/[id] — uma edição da Shopee vai na gravação do grupo'
     expect(guardado().linksVariacoesAmazon).toEqual([LINK_AMAZON]);
   });
 
-  it('uma variante digitada na aba Variantes vira opção personalizada, com o nome dela', async () => {
+  it('uma variante digitada na aba Variantes vira opção personalizada, com o nome dela aparado nas pontas (#1911 P14b)', async () => {
     semear(grupo());
     await renderPage();
     await abrirAba('Variantes');
@@ -480,19 +480,16 @@ describe('/variacoes/[id] — uma edição da Shopee vai na gravação do grupo'
     });
 
     await abrirAba('Shopee');
-    await escolher(
-      cartao(),
-      'Opção da Shopee para « Cor do ERP »',
-      'Personalizada: « Cor do ERP »',
-    );
+    await escolher(cartao(), 'Opção da Shopee para « Cor do ERP »', 'Personalizada: «Cor do ERP»');
     await salvar();
 
     expect(commits()).toBe(1);
     const nova = (guardado().variacoes as { id: string; nome: string }[]).at(-1)!;
+    // The variante keeps what was typed; the custom row stores what Shopee will hold.
     expect(nova.nome).toBe(' Cor do ERP ');
     expect((guardado().linksVariacoesShopee as Doc[])[0]?.variationOptions).toEqual([
       opcao(6258, 'Preto', ['v1']),
-      opcao(0, ' Cor do ERP ', [nova.id]),
+      opcao(0, 'Cor do ERP', [nova.id]),
     ]);
   });
 
@@ -521,6 +518,12 @@ describe('/variacoes/[id] — uma edição da Shopee vai na gravação do grupo'
 
     await clicar(within(cartao()).getByRole('button', { name: 'Remover vínculo' }));
     expect(within(cartao()).getByText('Será removido')).toBeTruthy();
+    // #1911 P14b (Q3b): what the next publication meets without it — a warning, never a block.
+    expect(
+      within(cartao()).getByText(
+        'Um anúncio publicado nesta categoria que use a variação 101054 será recusado ao republicar até que este vínculo seja recriado.',
+      ),
+    ).toBeTruthy();
     await salvar();
 
     expect(commits()).toBe(1);

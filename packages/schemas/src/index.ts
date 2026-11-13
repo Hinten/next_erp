@@ -1171,6 +1171,8 @@ export {
   validarAtributosShopee,
   atributosParaGravarShopee,
   atributosParaEnvioShopee,
+  decimalShopeeDaTela,
+  decimalShopeeParaTela,
   lerDataDeAtributoShopee,
   timestampDeDataShopee,
   origemValorAtributoShopeeSchema,

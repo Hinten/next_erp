@@ -39,25 +39,40 @@
  * On a FIRST publish (or when nothing trusted survives) every shop-enabled
  * channel the parcel fits is enabled.
  *
- * ## The one refusal a distrusted list adds
+ * ## The two refusals a distrusted list adds
  *
  * The full pass has no `size_id` or `shipping_fee` to send, so it skips every
  * `SIZE_SELECTION` / `CUSTOM_PRICE` channel. On an ordinary channel that is a
- * skip and nothing more. On a COMPULSORY one it is a refusal — and when the
- * distrusted list holds a readable value for exactly the field that channel
- * lacked, and there is a listing an import would re-read
- * ({@link ArgsLogistica.itemIdImportavel}), the refusal is
- * `logistica-nao-confirmada`, naming that listing. Everything else — a draft, a
- * removido link, a trusted list, an absent or unreadable value, a parcel that
- * does not fit — keeps `logistica-sem-canal`'s sentence unchanged.
+ * skip and nothing more. On a COMPULSORY one it is a refusal, and when there is
+ * a listing an import would re-read ({@link ArgsLogistica.itemIdImportavel})
+ * the import is its remedy, whatever the distrusted list holds:
  *
- * When EVERY lost compulsory channel took it, neither shop-wide sentence (no
- * compulsory channel enabled, no channel at all) is added. Condition 3 of
- * `faltaNaoConfirmada` proves each such channel is enabled and fits, so after
- * the import records a readable value it is sent and neither sentence could
- * still hold. Under `logistica-sem-canal` each would also carry the web's
- * weight button, and the no-channel sentence says to check weight and
- * dimensions. One lost compulsory channel that kept its own
+ * - `logistica-nao-confirmada` (#2015) — the list holds a READABLE value for
+ *   exactly the field that channel lacked: it is withheld, not missing, and the
+ *   sentence names the listing to import;
+ * - `logistica-sem-valor-gravado` (#2099, CPY-4) — it holds none: the value is
+ *   absent or unreadable (`''`, `'12.5'`, `'0'`, a fee of `'grátis'`), so
+ *   "não tem gravados" reads as "no usable value". The sentence names the
+ *   channel as `«name» (id)` — the remedy may send the operator into Seller
+ *   Centre, which lists channels by NAME — or by its id alone when the shop's
+ *   list carries no usable name, and names the listing to import.
+ *
+ * Everything else — a draft, a removido link, a trusted list, a parcel that
+ * does not fit, a channel the shop does not enable — keeps
+ * `logistica-sem-canal`'s sentence unchanged. Before #1911 P14b an absent or
+ * unreadable value on an importable listing kept it too, and that sentence
+ * («só o Seller Centre define») was a dead end: while the list stays
+ * distrusted the full pass never sends a stored value, so defining it in
+ * Seller Centre and republishing failed the same way.
+ *
+ * When EVERY lost compulsory channel took one of the two, neither shop-wide
+ * sentence (no compulsory channel enabled, no channel at all) is added.
+ * Condition 3 of `remedioPelaImportacao` proves each such channel is enabled
+ * and fits, so after the import records a readable value it is sent and
+ * neither sentence could still hold. Under `logistica-sem-canal` each would
+ * also carry the web's weight button, and the no-channel sentence says to
+ * check weight and dimensions — but the produto's weight cannot fix a channel
+ * the parcel already fits. One lost compulsory channel that kept its own
  * `logistica-sem-canal` sentence keeps both.
  *
  * ## What "re-validated" means, and why it is not a Zod parse
@@ -110,6 +125,7 @@ import {
   type ShopeeLogisticInfoRequest,
   type ShopeeLogisticsChannel,
 } from '@delfrance/integrations-shopee';
+import { textoUtilizavelShopee } from '@delfrance/schemas';
 
 import {
   MOTIVO_PUBLICACAO_BLOQUEADA,
@@ -117,10 +133,11 @@ import {
   limitarMensagemProblema,
 } from './errosPublicacao';
 
-/** The two refusals this module produces, and nothing else. */
+/** The three refusals this module produces, and nothing else. */
 type MotivoDeLogistica =
   | typeof MOTIVO_PUBLICACAO_BLOQUEADA.logisticaSemCanal
-  | typeof MOTIVO_PUBLICACAO_BLOQUEADA.logisticaNaoConfirmada;
+  | typeof MOTIVO_PUBLICACAO_BLOQUEADA.logisticaNaoConfirmada
+  | typeof MOTIVO_PUBLICACAO_BLOQUEADA.logisticaSemValorGravado;
 
 /**
  * Every length unit `item_max_dimension.unit` may carry that we can convert,
@@ -168,7 +185,9 @@ export type MotivoCanalPulado =
    * one in Seller Centre) and inventing an eighth member would put a distinction
    * in a log line that nobody can act on differently. The distrusted case is not
    * an eighth member either: it is what the refusal tells apart, on a
-   * compulsory channel only (`logistica-nao-confirmada`).
+   * compulsory channel of an importable listing only — a readable stored value
+   * is `logistica-nao-confirmada` (#2015), none is `logistica-sem-valor-gravado`
+   * (#2099); both say to import the listing.
    */
   | 'size-selection-sem-size-id'
   /** A `CUSTOM_PRICE` channel with no usable stored `shipping_fee` (same #2015 note). */
@@ -447,7 +466,7 @@ const SEM_ARMAZENADO = { sizeId: null, shippingFee: null, isFree: null } as cons
 
 /**
  * One problema naming the logistics refusal — `logistica-sem-canal` unless the
- * caller names the other member this module produces. Always campo
+ * caller names another member this module produces. Always campo
  * `logistic_info`, never an `acao`.
  */
 function problemaDeLogistica(
@@ -461,58 +480,105 @@ function problemaDeLogistica(
   };
 }
 
-/** What the `logistica-nao-confirmada` sentence names (#2015). */
-interface FaltaNaoConfirmada {
-  /** The value the compulsory channel lacked, worded for the sentence. */
-  readonly falta: 'um tamanho' | 'uma tarifa de frete';
-  /** {@link ArgsLogistica.itemIdImportavel}, never `null` here. */
-  readonly itemId: number;
-}
+/**
+ * The two refusals whose remedy is importing the listing, and what each
+ * sentence names. `itemId` is {@link ArgsLogistica.itemIdImportavel}, never
+ * `null` here.
+ */
+type RemedioPelaImportacao =
+  | {
+      /** #2015 — the distrusted list holds the value READABLY; it is withheld. */
+      readonly motivo: typeof MOTIVO_PUBLICACAO_BLOQUEADA.logisticaNaoConfirmada;
+      /** The value the compulsory channel lacked, worded for the sentence. */
+      readonly falta: 'um tamanho' | 'uma tarifa de frete';
+      readonly itemId: number;
+    }
+  | {
+      /** #2099 (CPY-4) — no stored entry of the channel holds the value readably. */
+      readonly motivo: typeof MOTIVO_PUBLICACAO_BLOQUEADA.logisticaSemValorGravado;
+      readonly itemId: number;
+    };
 
 /**
- * What a lost compulsory channel lacked, when a DISTRUSTED stored list held a
- * readable value for exactly that, plus the listing to import — or `null`,
- * which keeps the `logistica-sem-canal` sentence (#2015).
+ * Which import-remedy refusal a lost compulsory channel takes — or `null`,
+ * which keeps the `logistica-sem-canal` sentence.
  *
- * All four conditions, each one a near-miss test:
+ * Conditions 1–3 are shared by both refusals, and each one is a near-miss test:
  * 1. the list is distrusted (a trusted one already had its stored pass);
  * 2. there is a listing to import — a draft or a `removido` link has none;
  * 3. the channel was skipped for the missing VALUE (`size-selection-sem-size-id`
  *    / `custom-price-sem-tarifa`), never for a fit or a shop-level reason —
  *    {@link construirEntrada} checks those first, so this motivo also proves the
- *    channel is enabled and the parcel fits;
- * 4. a stored entry for that channel holds that value READABLY — through the
- *    same {@link paraInteiroWire} / {@link paraNumeroWire} the stored pass uses,
- *    so the sentence's "not re-sent" is exactly what a trusted copy would have
- *    sent. A size where a fee was missing (or the reverse) does not count.
+ *    channel is enabled and the parcel fits.
+ *
+ * Condition 4 then decides WHICH one, and the readable branch is tried FIRST:
+ * - a stored entry for that channel holds that value READABLY — through the
+ *   same {@link paraInteiroWire} / {@link paraNumeroWire} the stored pass uses,
+ *   so the sentence's "not re-sent" is exactly what a trusted copy would have
+ *   sent — ⇒ `logistica-nao-confirmada` (#2015). A size where a fee was
+ *   missing (or the reverse) does not count;
+ * - none does (absent, unreadable, or only the OTHER field) ⇒
+ *   `logistica-sem-valor-gravado` (#2099, CPY-4). Decided only after every
+ *   skip of the channel was read, so one readable entry beside an unreadable
+ *   one is still #2015's.
  */
-function faltaNaoConfirmada(
+function remedioPelaImportacao(
   args: ArgsLogistica,
   pulados: readonly CanalPulado[],
   logisticId: number,
-): FaltaNaoConfirmada | null {
+): RemedioPelaImportacao | null {
   if (args.armazenadoConfiavel) return null;
   const itemId = args.itemIdImportavel;
   if (itemId === null) return null;
   const doCanal = (args.armazenado ?? []).filter(
     (bruto) => paraInteiroWire(campo(bruto, 'logistic_id')) === logisticId,
   );
+  // Condition 3, seen for THIS channel — the only thing CPY-4 needs on top of 1–2.
+  let faltouValor = false;
   for (const pulado of pulados) {
     if (pulado.logisticId !== logisticId) continue;
-    if (
-      pulado.motivo === 'size-selection-sem-size-id' &&
-      doCanal.some((bruto) => paraInteiroWire(campo(bruto, 'size_id')) !== null)
-    ) {
-      return { falta: 'um tamanho', itemId };
+    if (pulado.motivo === 'size-selection-sem-size-id') {
+      faltouValor = true;
+      if (doCanal.some((bruto) => paraInteiroWire(campo(bruto, 'size_id')) !== null)) {
+        return {
+          motivo: MOTIVO_PUBLICACAO_BLOQUEADA.logisticaNaoConfirmada,
+          falta: 'um tamanho',
+          itemId,
+        };
+      }
     }
-    if (
-      pulado.motivo === 'custom-price-sem-tarifa' &&
-      doCanal.some((bruto) => paraNumeroWire(campo(bruto, 'shipping_fee')) !== null)
-    ) {
-      return { falta: 'uma tarifa de frete', itemId };
+    if (pulado.motivo === 'custom-price-sem-tarifa') {
+      faltouValor = true;
+      if (doCanal.some((bruto) => paraNumeroWire(campo(bruto, 'shipping_fee')) !== null)) {
+        return {
+          motivo: MOTIVO_PUBLICACAO_BLOQUEADA.logisticaNaoConfirmada,
+          falta: 'uma tarifa de frete',
+          itemId,
+        };
+      }
     }
   }
-  return null;
+  return faltouValor
+    ? { motivo: MOTIVO_PUBLICACAO_BLOQUEADA.logisticaSemValorGravado, itemId }
+    : null;
+}
+
+/**
+ * How the CPY-4 sentence names a channel (#2099, Lucas §5-3): `«name» (id)`,
+ * the shop's own `logistics_channel_name` — Seller Centre lists channels by
+ * NAME, and CPY-4's remedy may send the operator there — or the id alone when
+ * the channel is not in the list or its name is absent or blank.
+ *
+ * ⚠️ CPY-4 ONLY. `logistica-nao-confirmada` and `logistica-sem-canal` keep the
+ * bare id (their sentences are approved text, and the id is what the CLI's
+ * `pulados` lines print). The name is read through `textoUtilizavelShopee`
+ * (`@delfrance/schemas`), the publisher's one "blank ⇒ absent" reader: a
+ * whitespace-only name is ABSENT (never `«»`), and a usable one is shown
+ * trimmed.
+ */
+function canalNomeado(logisticId: number, canal: ShopeeLogisticsChannel | undefined): string {
+  const nome = textoUtilizavelShopee(canal?.logistics_channel_name);
+  return nome === null ? String(logisticId) : `«${nome}» (${String(logisticId)})`;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -588,10 +654,11 @@ function passagemCompleta(
  * or nothing that survives — every shop-enabled channel the parcel fits is
  * enabled. An empty result is a `logistica-sem-canal` refusal — `logistic_info`
  * is REQUIRED on `add_item`, so there is no such thing as publishing with none.
- * A lost compulsory channel is `logistica-sem-canal` too, except the one case
- * {@link faltaNaoConfirmada} names (`logistica-nao-confirmada`). When every
- * lost compulsory channel is that case, the two shop-wide sentences are left
- * out (the module header's "The one refusal a distrusted list adds").
+ * A lost compulsory channel is `logistica-sem-canal` too, except the two cases
+ * {@link remedioPelaImportacao} names (`logistica-nao-confirmada`,
+ * `logistica-sem-valor-gravado`). When every lost compulsory channel is one of
+ * those, the two shop-wide sentences are left out (the module header's "The
+ * two refusals a distrusted list adds").
  */
 export function construirLogistica(args: ArgsLogistica): ResultadoLogistica {
   const canais = args.canais.filter((c): c is ShopeeLogisticsChannel => c != null);
@@ -621,10 +688,10 @@ export function construirLogistica(args: ArgsLogistica): ResultadoLogistica {
   }
 
   const problemas: ProblemaDeBloqueio[] = [];
-  let naoConfirmados = 0;
+  let pelaImportacao = 0;
   for (const logisticId of passagem.inescapaveisPerdidos) {
-    const naoConfirmada = faltaNaoConfirmada(args, passagem.pulados, logisticId);
-    if (naoConfirmada !== null) {
+    const remedio = remedioPelaImportacao(args, passagem.pulados, logisticId);
+    if (remedio?.motivo === MOTIVO_PUBLICACAO_BLOQUEADA.logisticaNaoConfirmada) {
       // ⚠️ The claim is "no RECORD", never "not read / not sent": a missing
       // stamp proves only that nothing in this app vouches for the list. A
       // legacy import DID read it from Shopee, and a link this app wrote before
@@ -632,15 +699,34 @@ export function construirLogistica(args: ArgsLogistica): ResultadoLogistica {
       // this sentence beside it as «Detalhe:».
       problemas.push(
         problemaDeLogistica(
-          `O canal obrigatório ${String(logisticId)} precisa de ${naoConfirmada.falta}, ` +
+          `O canal obrigatório ${String(logisticId)} precisa de ${remedio.falta}, ` +
             `e o ERP não tem registro de ter lido da Shopee nem de ter enviado a ela o ` +
             `valor gravado neste vínculo, então esse valor não é reenviado. Importe o ` +
-            `anúncio ${String(naoConfirmada.itemId)} para gravar os valores atuais da ` +
+            `anúncio ${String(remedio.itemId)} para gravar os valores atuais da ` +
             `Shopee e publique de novo.`,
           MOTIVO_PUBLICACAO_BLOQUEADA.logisticaNaoConfirmada,
         ),
       );
-      naoConfirmados += 1;
+      pelaImportacao += 1;
+      continue;
+    }
+    if (remedio?.motivo === MOTIVO_PUBLICACAO_BLOQUEADA.logisticaSemValorGravado) {
+      // #2099 (CPY-4), Lucas's sentence verbatim. Nothing usable is stored, so
+      // it never says "não é reenviado" (there is nothing to withhold); the
+      // same "no RECORD" claim as #2015's, about the LIST this time. Both
+      // exits are real: an import records what Seller Centre holds today, and
+      // a value Seller Centre does not hold yet must be set there first.
+      problemas.push(
+        problemaDeLogistica(
+          `O canal obrigatório ${canalNomeado(logisticId, porId.get(logisticId))} precisa ` +
+            `de um tamanho ou de uma tarifa de frete que este vínculo não tem gravados, e o ` +
+            `ERP não tem registro de ter gravado a lista de logística dele. Se o valor já ` +
+            `está no Seller Centre, importe o anúncio ${String(remedio.itemId)} e publique ` +
+            `de novo; se não está, defina-o no Seller Centre antes.`,
+          MOTIVO_PUBLICACAO_BLOQUEADA.logisticaSemValorGravado,
+        ),
+      );
+      pelaImportacao += 1;
       continue;
     }
     problemas.push(
@@ -652,33 +738,35 @@ export function construirLogistica(args: ArgsLogistica): ResultadoLogistica {
     );
   }
 
-  // ⚠️ #2015 (V-REFUSAL-9): when EVERY lost compulsory channel took
-  // `logistica-nao-confirmada`, the import its sentence names is the whole
-  // remedy — `faltaNaoConfirmada`'s condition 3 proves each of those channels
-  // is enabled and fits, so once the import records a readable value they are
-  // sent and neither shop-wide sentence below holds. Under
+  // ⚠️ #2015 (V-REFUSAL-9), widened by #2099 (CPY-4): when EVERY lost
+  // compulsory channel took `logistica-nao-confirmada` or
+  // `logistica-sem-valor-gravado`, the import their sentences name is the
+  // remedy — `remedioPelaImportacao`'s condition 3 proves each of those
+  // channels is enabled and fits, so once the import records a readable value
+  // they are sent and neither shop-wide sentence below holds. Under
   // `logistica-sem-canal` each would get the web's weight button on its
   // `logistic_info` row, and the no-channel one says to check weight and
-  // dimensions — advice that contradicts that sentence. So neither is added.
+  // dimensions — advice that contradicts those sentences, since the produto's
+  // weight cannot fix a channel the parcel already fits. So neither is added.
   // One lost compulsory channel that kept the sentence above — a fit failure,
-  // an unreadable value, a draft — keeps both, because there weight or Seller
+  // a draft, a trusted list — keeps both, because there weight or Seller
   // Centre IS a remedy. `> 0` is load-bearing: with no lost compulsory channel
   // "every" is vacuous, and an empty list must still say so.
-  const soFaltaConfirmar =
-    naoConfirmados > 0 && naoConfirmados === passagem.inescapaveisPerdidos.length;
+  const soFaltaImportar =
+    pelaImportacao > 0 && pelaImportacao === passagem.inescapaveisPerdidos.length;
 
   const temInescapavel = canais.some((c) => canalInescapavel(c));
   const enviouInescapavel = passagem.entradas.some((e) => {
     const canal = porId.get(e.logistic_id);
     return canal !== undefined && canalInescapavel(canal);
   });
-  if (temInescapavel && !enviouInescapavel && !soFaltaConfirmar) {
+  if (temInescapavel && !enviouInescapavel && !soFaltaImportar) {
     problemas.push(
       problemaDeLogistica('Nenhum canal obrigatório da loja pôde ser habilitado para este item.'),
     );
   }
 
-  if (passagem.entradas.length === 0 && !soFaltaConfirmar) {
+  if (passagem.entradas.length === 0 && !soFaltaImportar) {
     problemas.push(
       problemaDeLogistica(
         'Nenhum canal de logística da loja aceita este item: confira peso, ' +
