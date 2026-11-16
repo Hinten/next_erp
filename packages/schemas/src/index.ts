@@ -29,6 +29,7 @@ export {
   TTL_POLICIES,
   RETENCAO_ENVIO_PRECO_ML_DIAS,
   RETENCAO_ENVIO_PRECO_SHOPEE_DIAS,
+  RETENCAO_FEED_AMAZON_DIAS,
   RETENCAO_HISTORICO_PEDIDO_ANOS,
   RETENCAO_HISTORICO_PRODUTO_DIAS,
   RETENCAO_VINCULO_WHATSAPP_DIAS,
@@ -1791,6 +1792,9 @@ export {
   MOTIVO_RASTREIO_DIVERGENTE_LI,
   motivoCategoriaSemVinculoLiSchema,
   MOTIVO_CATEGORIA_SEM_VINCULO_LI,
+  motivoEstoqueVinculoLiSchema,
+  MOTIVO_ESTOQUE_VINCULO_LI,
+  MAX_AMOSTRA_AVISO_ESTOQUE_LI,
   situacaoAnuncioForaDaSincronizacaoSchema,
   SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO,
   chaveDeAviso,
@@ -1817,6 +1821,7 @@ export {
   type MotivoReversaoComEtiquetaLi,
   type MotivoRastreioDivergenteLi,
   type MotivoCategoriaSemVinculoLi,
+  type MotivoEstoqueVinculoLi,
   type SituacaoAnuncioForaDaSincronizacao,
 } from './aviso';
 export * from './shared/inicio';
@@ -1862,9 +1867,57 @@ export * from './faseRetirada';
 // nothing to register.
 export * from './notificacaoEscritaLojaIntegrada';
 
+// Admin-only / default-deny (NOT in ALL_DOMAINS) — the Loja Integrada stock sync
+// (master plan step 12, PR 12-a): the per-conta cursor, snapshot and kits map, the
+// daily reconcile's run document, and the stock tasks' ids-only payloads. Bare: no
+// Meta, never a combined `{ schema, meta }`, so `registry.test.ts` sees nothing to
+// register and the rules generator emits nothing.
+export * from './sincEstoqueLojaIntegrada';
+export * from './reconcileEstoqueLojaIntegrada';
+export * from './tarefaEstoqueLojaIntegrada';
+
 // The machine-readable next step of a Shopee publish refusal (step 21, #1529):
 // the refusal sites in `apps/shopee` produce it, the web's wire parses it per row
 // and maps it to a button — one vocabulary, never a second copy (#1369). Also the
 // ONE copy of the wait an uncertain kit create asks for. Not a collection, so no
 // `registry.ts` entry.
 export * from './shopeeAcaoSugerida';
+
+export {
+  // Admin-only / default-deny (NOT in ALL_DOMAINS) — the Amazon feed core (step
+  // 12a, PR 12-b): the per-submission record `feedsAmazon` and the per-(fluxo,
+  // conta) lease `feedsAmazonEmCurso`. Bare: no Meta, never a combined
+  // `{ schema, meta }`, so rules-gen emits nothing for either.
+  DESFECHO_FEED_AMAZON,
+  ESTADO_VEZ_FEED_AMAZON,
+  FEED_ID_REGISTRO_AMAZON_REGEX,
+  FLUXO_FEED_AMAZON,
+  ID_LOTE_FEED_AMAZON_REGEX,
+  ORIGEM_LOTE_FEED_AMAZON_REGEX,
+  STATUS_REGISTRO_FEED_AMAZON,
+  TIPO_LOTE_FEED_AMAZON,
+  camposJanelaFeedAmazon,
+  desfechoFeedAmazonSchema,
+  estadoVezFeedAmazonSchema,
+  fluxoFeedAmazonSchema,
+  idRegistroFeedAmazon,
+  idVezFeedAmazon,
+  janelaFeedAmazonSchema,
+  problemasSemSkuFeedAmazonSchema,
+  registroFeedAmazonSchema,
+  resultadoFeedAmazonSchema,
+  statusRegistroFeedAmazonSchema,
+  tipoLoteFeedAmazonSchema,
+  verificarJanelaFeedAmazon,
+  vezFeedAmazonSchema,
+  type DesfechoFeedAmazon,
+  type EstadoVezFeedAmazon,
+  type FluxoFeedAmazon,
+  type JanelaFeedAmazon,
+  type ProblemasSemSkuFeedAmazon,
+  type RegistroFeedAmazon,
+  type ResultadoFeedAmazon,
+  type StatusRegistroFeedAmazon,
+  type TipoLoteFeedAmazon,
+  type VezFeedAmazon,
+} from './feedAmazon';

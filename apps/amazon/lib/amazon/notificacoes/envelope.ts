@@ -25,6 +25,8 @@
  * WHICH type key is present — both or neither is refused — and each parser
  * reads only its own casing: the Pascal parser refuses a camel envelope and
  * vice versa, so a casing slip can never read the wrong field as absent.
+ * `FEED_PROCESSING_FINISHED`'s camelCase is Amazon's own model example's (its
+ * notification schema), which `receptor.test.ts` drives with placeholder ids.
  *
  * Pure and total: no clock, no I/O, no throw. Every value is read as an OWN data
  * property of a plain object (`JSON.parse` output), and every field is checked
@@ -141,6 +143,14 @@ export function desembrulharRelay(json: unknown): DesembrulhoRelayAmazon {
 export const TIPO_ORDER_CHANGE = 'ORDER_CHANGE';
 export const TIPO_FEED_PROCESSING_FINISHED = 'FEED_PROCESSING_FINISHED';
 
+/**
+ * The one `feedType` this backend submits (step 12a), and so the only one whose
+ * `FEED_PROCESSING_FINISHED` wakes the result handler. A literal here, so the
+ * receiver's direct imports stay free of the SP-API package; `receptor.test.ts`
+ * pins it to the package's `TIPO_FEED_LISTINGS`.
+ */
+export const TIPO_FEED_JSON_LISTINGS = 'JSON_LISTINGS_FEED';
+
 /** What one parser read: refused as not its own, a field outside its grammar, or the fields. */
 export type LeituraNotificacaoAmazon<C, N extends string> =
   /** Not this parser's type in this parser's casing: nothing was read. */
@@ -204,7 +214,17 @@ export function lerOrderChange(
   };
 }
 
-/** The FEED_PROCESSING_FINISHED fields the receiver checks before dropping it (step 12a consumes it). */
+/**
+ * Whether a `FEED_PROCESSING_FINISHED` names its result document: the value of
+ * `resultFeedDocumentId` (OPTIONAL in Amazon's schema) is never read beyond
+ * that, so a log line can say which, and nothing more.
+ */
+export type DocumentoResultadoFeedAmazon = 'presente' | 'ausente';
+
+/**
+ * The FEED_PROCESSING_FINISHED fields the receiver checks before it wakes the
+ * result handler (step 12a, PR 12-c) or drops the delivery.
+ */
 export interface CamposFeedAmazon {
   readonly feedId: string;
   readonly feedType: string;
@@ -213,6 +233,11 @@ export interface CamposFeedAmazon {
   /** OPTIONAL in Amazon's schema (absent or `null` for a vendor group). */
   readonly sellerId: string | null;
   readonly notificationId: string;
+  /**
+   * `resultFeedDocumentId` as present or absent (`null` counts as absent). Never
+   * used: the result handler re-reads `getFeed`, which carries the same id.
+   */
+  readonly documentoResultado: DocumentoResultadoFeedAmazon;
 }
 
 export type CampoFeedAmazon =
@@ -227,8 +252,10 @@ export type CampoFeedAmazon =
  * `FEED_PROCESSING_FINISHED`, camelCase: `notificationMetadata.applicationId`,
  * `payload.feedProcessingFinishedNotification.{feedId, feedType,
  * processingStatus, accountId}` (required), its `sellerId` (optional) and
- * `notificationMetadata.notificationId`. Parsed and checked so its casing is
- * pinned; the receiver then drops it until step 12a (§3 decision 17).
+ * `notificationMetadata.notificationId`, plus whether its OPTIONAL
+ * `resultFeedDocumentId` is present (never its value). The receiver then wakes
+ * the result handler for its own listings feeds and drops the rest (step 12a,
+ * PR 12-c).
  */
 export function lerFeedProcessingFinished(
   env: unknown,
@@ -257,6 +284,7 @@ export function lerFeedProcessingFinished(
   if (typeof notificationId !== 'string' || !NOTIFICATION_ID_AMAZON_REGEX.test(notificationId)) {
     return invalido('notificationId');
   }
+  const documento = proprio(feed, 'resultFeedDocumentId');
   return {
     tipo: 'lida',
     applicationId,
@@ -267,6 +295,7 @@ export function lerFeedProcessingFinished(
       accountId,
       sellerId: sellerId ?? null,
       notificationId,
+      documentoResultado: documento === undefined || documento === null ? 'ausente' : 'presente',
     },
   };
 }
