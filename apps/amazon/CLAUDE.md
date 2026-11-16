@@ -597,6 +597,37 @@ the checkout print and the `/pedidos` row action), which needs this backend depl
   its row (the handlers are proved with fake window, block and price providers). Under
   `feeds/`, only the lease I/O and the record's two writers make a Firestore WRITE call
   (`estrutura.test.ts`).
+- The stock sync (step 12) lives in `lib/amazon/estoque/`. PR 12-d ships its PURE, UNWIRED half
+  (no production file imports it; by value it imports only its siblings, the shared quantity
+  core, the schemas, the SP-API package, `zod`, and of `@delfrance/data` only `sha256Hex` and
+  `contaRefForms` — `estrutura.test.ts`; both `@delfrance/data` barrels load Admin modules
+  transitively, and nothing under `estoque/` calls one): `opcoesEstoque.ts` (the core's
+  options, PINNED: component-min, no virtual-kit skip, no ceiling); `familiaEstoque.ts` (the
+  unit's row at the depósito — the canonical id, else the partition row in either ref form,
+  smallest doc id first; every kit component's produto from its PATH, never its stored `parentId`;
+  THE quantity = `quantidadeDoMembroCore` under those options, never a second rule);
+  `vinculoEstoque.ts` (the link verdict over the order import's OWN resolution, taken as given:
+  a gone `dono`'s doc ignored, an unreadable or dangling parent pointer refused, a child carrying
+  its parent's SKU or ASIN, a unit with variations (a kit root's own sole member is not one),
+  `enviarEstoque === false` under this conta's key only); `gateListing.ts` (the live listing:
+  not listed in BR, a BR `VARIATION` parent, any non-`DEFAULT` channel, two differing ASINs;
+  NOT BUYABLE at 0 stays enviável);
+  `planoEstoque.ts` (the engine's plan: write iff enviável and the ERP differs from Amazon's
+  live read — or the read is not yet trusted: our own `patch` of another quantity, `incerto`
+  included, or the conta's last stock feed's end, inside the documented 15-min lag; a `feed`
+  outcome is never read per SKU; a forced catch-up drops ONLY the equality shortcut — and the
+  batch form: ≤ 30 SKUs patches, 31+ one feed, a window batch above 3,000 a reconcile);
+  `descobertaEstoque.ts` (the tick's window, bounded both sides; the recovery's, `S − 5 min`
+  wide but keeping only rows COMMITTED after `S − 20 s`, plus every row past the pending start,
+  forced only by the commit test, the ONE `toMillis()`; rows → produtos by PATH → probes (the
+  parent too) → the conta's SKUs in both ref forms → per SKU its observation, the newest commit
+  `updateTime`, compared as a `Timestamp`); `tarefaEstoque.ts` (the strict, quantity-free
+  payload; the name `sha256Hex('estoque:<origem>:<conta>:<referencia>:<sku>')`, a delta's
+  reference the observation as `<seconds>.<nanoseconds>`, never the tick's clock or
+  `ultimaModificacao`; one read-back, never for a read-back or a reconcile); `envioEstoque.ts`
+  (the link outcome's three shapes, and its watermark: a STRICTLY newer `emMs` replaces, equal
+  keeps the stored); and `motivosEstoque.ts` (the closed outcomes, the counters, the refusals a
+  person must fix). `publicado` is never a gate: only the family projection names it.
 - The conta cache (`core/contaCache.ts`) is token-free and used by the context
   loader ONLY; the credential is re-read uncached on every request.
 - Routes never import the park (`core/estacionamento.ts`); step 3 is its first caller.

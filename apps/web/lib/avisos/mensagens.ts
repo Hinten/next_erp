@@ -714,6 +714,36 @@ const FRASE_MOTIVO_CONTA_AMAZON: Record<MotivoContaAmazon, string> = {
     'intermediador cadastrado na conta, que é o que vai na NF-e. Corrija o CNPJ do intermediador ' +
     'no cadastro da conta; o aviso se encerra quando um pedido importado depois da correção ' +
     'trouxer um CNPJ que confere',
+  // Os cinco motivos do estoque (passo 12). Uma linha por conta, sejam quantos
+  // forem os anúncios envolvidos: a frase não cita SKU nem quantidade.
+  [MOTIVO_CONTA_AMAZON.estoqueSemDeposito]:
+    'ela não tem depósito definido, então o ERP não calcula nem envia o estoque dos anúncios ' +
+    'dela para a Amazon. Defina o depósito no cadastro da conta; o aviso se encerra na próxima ' +
+    'sincronização de estoque, poucos minutos depois',
+  [MOTIVO_CONTA_AMAZON.estoqueDepositoSemLinhas]:
+    'a conferência diária de estoque não enviou nada à Amazon porque o depósito da conta não tem ' +
+    'estoque lançado para boa parte dos anúncios (ou foi trocado durante a conferência), e ' +
+    'enviar assim zeraria esses anúncios. Confira no cadastro da conta se o depósito é o certo e, ' +
+    'nos produtos, se o estoque está lançado nele; o aviso se encerra na próxima conferência ' +
+    'diária que terminar sem esse problema',
+  [MOTIVO_CONTA_AMAZON.estoqueVinculosRecusados]:
+    'há anúncios cujo estoque não é enviado porque o vínculo deles com um produto do ERP não pôde ' +
+    'ser confirmado (o mesmo SKU em mais de um produto, um SKU sem produto, um anúncio filho com ' +
+    'o SKU ou o ASIN do anúncio pai, um produto com variações, ou um vínculo com o anúncio pai ' +
+    'que não dá para conferir); esses anúncios continuam vendendo com a última quantidade ' +
+    'enviada. Confira os vínculos de anúncio da Amazon nos produtos do ERP; o aviso se encerra na ' +
+    'próxima conferência diária de estoque que terminar sem nenhum vínculo recusado',
+  [MOTIVO_CONTA_AMAZON.estoqueRecusadoPelaAmazon]:
+    'a Amazon recusou a atualização de estoque de ao menos um anúncio da conta, que continua com ' +
+    'a quantidade anterior. Confira os problemas do anúncio na Seller Central; o aviso se encerra ' +
+    'na próxima conferência diária de estoque que não encontrar nenhum anúncio recusado com o ' +
+    'estoque ainda diferente do ERP',
+  [MOTIVO_CONTA_AMAZON.feedEstoqueFalhou]:
+    'um envio de estoque em lote (feed) para a Amazon falhou ou não teve o resultado confirmado, ' +
+    'então parte das quantidades pode não ter chegado à Amazon. Confira os envios de arquivo ' +
+    '(feeds) da conta na Seller Central; o aviso se encerra quando a Amazon concluir um envio de ' +
+    'estoque em lote, ou na conferência diária de estoque que terminar sem diferença enquanto ' +
+    'os envios em lote não estiverem falhando seguidamente',
 };
 
 /** A frase do motivo, ou um texto neutro — o mesmo contrato de {@link fraseMotivoImportacaoParada}. */
@@ -1121,9 +1151,11 @@ export const MENSAGENS_POR_TIPO: Record<TipoAviso, MensagemAviso> = {
       'registro da varredura de pedidos (o período inicial de busca é AMAZON_POLL_LOOKBACK_H, no ' +
       'ambiente das funções).',
   },
-  // Os dois avisos da importação de pedidos da Amazon (passos 5 e 7). Sem
-  // `runbook`: o que fazer muda com o motivo, então cada frase de motivo o diz —
-  // no Seller Central ou no próprio ERP (o link abre o pedido ou a conta).
+  // Os dois avisos da Amazon: o por pedido (importação de pedidos, passos 5 e 7)
+  // e o por conta (a importação e, desde o passo 12, a sincronização de
+  // estoque). Sem `runbook`: o que fazer muda com o motivo, então cada frase de
+  // motivo o diz — na Seller Central ou no próprio ERP (o link abre o pedido ou
+  // a conta).
   [TIPO_AVISO.amazonPedidoPrecisaAtencao]: {
     titulo: 'Pedido da Amazon precisa de atenção',
     corpo: (params) =>

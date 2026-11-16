@@ -1154,24 +1154,28 @@ export const TIPO_AVISO_LABELS = {
  * ---
  *
  * **`amazonContaPrecisaAtencao`** (Amazon step 5, #1931 — producer in
- * `apps/amazon/lib/amazon/avisos/avisos.ts`, called by the order import) — an
- * Amazon conta's own setup needs a person, as seen while importing its orders.
- * One of the {@link MOTIVO_CONTA_AMAZON} reasons.
+ * `apps/amazon/lib/amazon/avisos/avisos.ts`, called by the order import and,
+ * from step 12, by the stock sync) — an Amazon conta's own setup needs a
+ * person, as seen while importing its orders or syncing its stock. One of the
+ * {@link MOTIVO_CONTA_AMAZON} reasons.
  *
  *  - **A tipo of its own, apart from `amazonPedidoPrecisaAtencao`**: this one IS
  *    in the expiry sweep's orphan pass, and its keys name no order, so the pass
- *    computes both of them for every listed conta (`conta/expiracaoSweep.ts`).
+ *    computes every one of them (one per motivo) for every listed conta
+ *    (`conta/expiracaoSweep.ts`).
  *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId, janela: motivo })` — no
  *    `entidade`; ONE row per (conta, motivo).
- *  - **Severity `atencao`** for both motivos, canal `amazon`, in-app only: the
+ *  - **Severity `atencao`** for every motivo, canal `amazon`, in-app only: the
  *    orders keep importing.
  *  - **`params` are exactly `motivo`** — a {@link MOTIVO_CONTA_AMAZON} CODE; the
  *    `motivo` field carries the same code. The route names the conta, so the
  *    wording prints no value.
- *  - **`relogioEvento`** = the µs read time of the import's UNCACHED conta read
- *    — the server timeline the orphan pass's conta enumeration shares — never an
- *    order's clock: one row gathers observations from many orders, whose clocks
- *    do not compare. ⚠️ Never compare it with another tipo's.
+ *  - **`relogioEvento`** = the µs read time of the raiser's own Firestore read:
+ *    for the two import motivos, the import's UNCACHED conta read; for the five
+ *    stock motivos, the read each bullet below names — a server read time, the
+ *    timeline the orphan pass's conta enumeration shares — never an order's
+ *    clock: one row gathers observations from many orders and SKUs, whose
+ *    clocks do not compare. ⚠️ Never compare it with another tipo's.
  *  - **Route**: the conta page (`ROTAS_AVISO.canalAmazon`).
  *  - **Machine resolvers** — per motivo, clocked as above — with each motivo's
  *    severity and residue:
@@ -1185,11 +1189,69 @@ export const TIPO_AVISO_LABELS = {
  *       Resolver: the next import whose verdict clears it. Residue: Amazon drops
  *       that document once an order ships, so a conta whose later orders carry
  *       none keeps its row until one does.
- *  - **Both motivos, once the conta is gone**: the expiry sweep's orphan pass
+ *     - `estoque-sem-deposito` — **atencao**. The conta names no depósito, so no
+ *       quantity can be computed and none of its listings' stock is sent.
+ *       RAISED only by the 5-minute stock tick, on the conta's transition to
+ *       "no depósito" (the flag on its stock sync document), clocked by the
+ *       tick's read of that document; the stock tasks only log it, so a batch
+ *       of tasks never writes one row per task. Resolver: the first tick that
+ *       finds a depósito again (the reverse transition), clocked the same way.
+ *       Residue: the tick walks ACTIVE contas only, so a conta deactivated while
+ *       flagged keeps its row until it is active again with a depósito, or is
+ *       deleted.
+ *     - `estoque-deposito-sem-linhas` — **atencao**. The daily stock reconcile
+ *       sent NOTHING because the depósito holds no estoque row for a
+ *       catalogue-scale share of the conta's listings (a wrong or emptied
+ *       depósito would publish zero for all of them), or because the conta's
+ *       depósito changed between the reconcile's walk and its send. RAISED by
+ *       the reconcile's decision, clocked by the run's FIRST read, and by the
+ *       reconcile's feed send when the depósito changed, clocked by that send's
+ *       read of the stock feed lease. Resolver: the next COMPLETED reconcile
+ *       under the bound, clocked by its first read. Residue: a truncated run
+ *       resolves nothing, so the row waits for a completed one (once a day).
+ *     - `estoque-vinculos-recusados` — **atencao**. A reconcile refused at least
+ *       one listing link a person must fix — a SKU two live produtos claim, a
+ *       SKU with no live produto, a child link carrying its parent's SKU or
+ *       ASIN, a unit with variations, or a parent pointer that cannot be
+ *       checked — and those listings keep selling at their last quantity.
+ *       RAISED by the reconcile's close when its run counted one, clocked by the
+ *       run's first read. Resolver: a COMPLETED run that counted none, clocked
+ *       the same way. Residue: which SKUs were refused is in the run's log line
+ *       only, never on the row; a truncated run resolves nothing.
+ *     - `estoque-recusado-pela-amazon` — **atencao**. Amazon rejected a stock
+ *       update of at least one listing, which keeps its previous quantity.
+ *       RAISED by the stock patch task on an `INVALID` answer (clocked by its
+ *       write-back's read of the link docs), by a stock feed's result when its
+ *       report rejects a SKU (clocked by the outcome clock the feed record
+ *       stores), and by a completed reconcile that counted a rejected listing
+ *       still out of sync (clocked by the run's first read). Resolver: a
+ *       COMPLETED reconcile that counted no such listing. Residue: a stored
+ *       rejection on a listing already in sync is stale and never counted, so it
+ *       cannot hold the row open; the rejected SKUs are on each link doc's stock
+ *       outcome and in the log, never on the row; a truncated run resolves
+ *       nothing.
+ *     - `feed-estoque-falhou` — **atencao**. A stock feed failed or could not be
+ *       confirmed: Amazon ended it `FATAL` or `CANCELLED`, it was abandoned or
+ *       overdue, the answer to its submission was lost, Amazon refused the
+ *       submission or its document, its build ran out of time, or the automatic
+ *       reconcile a failure requests was refused by its once-a-day guard. NEVER
+ *       raised for a report's per-SKU errors (those are
+ *       `estoque-recusado-pela-amazon`, so one listing Amazon keeps rejecting
+ *       cannot hold this row open). RAISED by the feed's send, result, deadline
+ *       and recovery paths, each clocked by its own Firestore read (a feed's
+ *       outcome by the clock its record stores, the same on every retry). A slow
+ *       feed raises nothing. Resolver: a stock feed Amazon ends `DONE`, or a
+ *       COMPLETED reconcile with no drift while the conta's stock feed lease
+ *       shows fewer than three consecutive failures and no unconfirmed
+ *       submission. Residue: while the feeds keep failing (three in a row) or a
+ *       submission stays unconfirmed, per-SKU patches keep Amazon in sync, so a
+ *       clean reconcile proves nothing about the feed path and leaves the row
+ *       open until a feed ends `DONE`.
+ *  - **Every motivo, once the conta is gone**: the expiry sweep's orphan pass
  *    (`conta-removida`), CLOCKED by the conta enumeration's read time, so a conta
  *    created after that read keeps its row. A DEACTIVATED conta is still listed,
- *    so its rows stay open until it imports again or is deleted (a documented
- *    residue).
+ *    so its rows stay open until a raiser resolves them or the conta is deleted
+ *    (a documented residue).
  *
  * ---
  *
@@ -1556,22 +1618,45 @@ export const MOTIVO_PEDIDO_AMAZON = {
 /**
  * Why an Amazon conta's own setup needs a person — the
  * `amazonContaPrecisaAtencao` aviso's `params.motivo` AND its key's `janela`, a
- * CODE the wording in `apps/web/lib/avisos/mensagens.ts` renders. Two members,
- * both **atencao**, each with its machine resolver and its residue in the tipo's
- * docblock entry above: `conta-sem-operacao` (the conta names no operação) and
- * `intermediador-divergente` (the marketplace document on an order does not
- * match the conta's).
+ * CODE the wording in `apps/web/lib/avisos/mensagens.ts` renders. Seven members,
+ * all **atencao**, each with its raiser, its machine resolver and its residue in
+ * the tipo's docblock entry above:
+ *
+ *  - raised by the order import (step 5): `conta-sem-operacao` (the conta names
+ *    no operação) and `intermediador-divergente` (the marketplace document on
+ *    an order does not match the conta's);
+ *  - raised by the stock sync (step 12), one row per conta however many SKUs
+ *    are involved (the per-SKU detail lives in the log and on each link doc):
+ *    `estoque-sem-deposito` (the conta names no depósito),
+ *    `estoque-deposito-sem-linhas` (the reconcile held back a send that would
+ *    have zeroed a catalogue-scale share of the listings),
+ *    `estoque-vinculos-recusados` (listing links a person must fix),
+ *    `estoque-recusado-pela-amazon` (Amazon rejected a listing's stock update)
+ *    and `feed-estoque-falhou` (a stock feed failed or could not be confirmed).
  *
  * Stored as an aviso PARAM, with the same fallback contract as
  * {@link MOTIVO_PEDIDO_AMAZON}.
  */
-export const motivoContaAmazonSchema = z.enum(['conta-sem-operacao', 'intermediador-divergente']);
+export const motivoContaAmazonSchema = z.enum([
+  'conta-sem-operacao',
+  'intermediador-divergente',
+  'estoque-sem-deposito',
+  'estoque-deposito-sem-linhas',
+  'estoque-vinculos-recusados',
+  'estoque-recusado-pela-amazon',
+  'feed-estoque-falhou',
+]);
 export type MotivoContaAmazon = z.infer<typeof motivoContaAmazonSchema>;
 
 /** Named members of {@link motivoContaAmazonSchema} — see `delfrance/prefer-schema-enum`. */
 export const MOTIVO_CONTA_AMAZON = {
   contaSemOperacao: 'conta-sem-operacao',
   intermediadorDivergente: 'intermediador-divergente',
+  estoqueSemDeposito: 'estoque-sem-deposito',
+  estoqueDepositoSemLinhas: 'estoque-deposito-sem-linhas',
+  estoqueVinculosRecusados: 'estoque-vinculos-recusados',
+  estoqueRecusadoPelaAmazon: 'estoque-recusado-pela-amazon',
+  feedEstoqueFalhou: 'feed-estoque-falhou',
 } as const satisfies Record<string, MotivoContaAmazon>;
 
 /**

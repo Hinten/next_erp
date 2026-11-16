@@ -1625,11 +1625,12 @@ describe('MENSAGENS_POR_TIPO.amazonImportacaoParada', () => {
 });
 
 /**
- * The two order-import tipos of Amazon (steps 5 and 7), rendered with the params
- * their producer (the order import of `apps/amazon`, `lib/amazon/avisos/avisos.ts`)
- * writes: per pedido `{ pedido, motivo }` (Amazon's order id and a
- * `MOTIVO_PEDIDO_AMAZON` CODE), per conta `{ motivo }` (a `MOTIVO_CONTA_AMAZON`
- * CODE). No other value is ever printed.
+ * The two Amazon tipos (steps 5, 7 and 12), rendered with the params their
+ * producers (the order import of `apps/amazon` and, from step 12, its stock
+ * sync, both through `lib/amazon/avisos/avisos.ts`) write: per pedido
+ * `{ pedido, motivo }` (Amazon's order id and a `MOTIVO_PEDIDO_AMAZON` CODE),
+ * per conta `{ motivo }` (a `MOTIVO_CONTA_AMAZON` CODE). No other value is ever
+ * printed.
  */
 describe('MENSAGENS_POR_TIPO.amazonPedidoPrecisaAtencao', () => {
   const mensagem = MENSAGENS_POR_TIPO[TIPO_AVISO.amazonPedidoPrecisaAtencao];
@@ -1782,7 +1783,8 @@ describe('MENSAGENS_POR_TIPO.amazonContaPrecisaAtencao', () => {
     );
   });
 
-  it('★ is TOTAL over the two motivo codes: every one has its own phrase, never the fallback', () => {
+  it('★ is TOTAL over the seven motivo codes: every one has its own phrase, never the fallback', () => {
+    expect(motivoContaAmazonSchema.options).toHaveLength(7);
     const frases = new Set<string>();
     for (const motivo of motivoContaAmazonSchema.options) {
       const corpo = mensagem.corpo({ motivo });
@@ -1792,6 +1794,77 @@ describe('MENSAGENS_POR_TIPO.amazonContaPrecisaAtencao', () => {
       frases.add(corpo);
     }
     expect(frases.size).toBe(motivoContaAmazonSchema.options.length);
+  });
+
+  describe('★ step 12: the five stock motivos', () => {
+    const ESTOQUE = [
+      MOTIVO_CONTA_AMAZON.estoqueSemDeposito,
+      MOTIVO_CONTA_AMAZON.estoqueDepositoSemLinhas,
+      MOTIVO_CONTA_AMAZON.estoqueVinculosRecusados,
+      MOTIVO_CONTA_AMAZON.estoqueRecusadoPelaAmazon,
+      MOTIVO_CONTA_AMAZON.feedEstoqueFalhou,
+    ];
+
+    it.each(ESTOQUE)('`%s` says when the aviso closes, and prints no digit', (motivo) => {
+      const corpo = mensagem.corpo({ motivo });
+      expect(corpo).toMatch(/^A conta da Amazon precisa de atenção: /);
+      expect(corpo).toContain('o aviso se encerra');
+      // One row stands for any number of SKUs: no count, no SKU, no quantity.
+      expect(corpo).not.toMatch(/[0-9]/);
+    });
+
+    it.each(ESTOQUE)('`%s` names where to look: the ERP or the Seller Central', (motivo) => {
+      const corpo = mensagem.corpo({ motivo });
+      expect(
+        ['no cadastro da conta', 'nos produtos do ERP', 'na Seller Central'].some((onde) =>
+          corpo.includes(onde),
+        ),
+        corpo,
+      ).toBe(true);
+    });
+
+    it('the two that point at Amazon say "na Seller Central" (feminine), never "no Seller Central"', () => {
+      for (const motivo of [
+        MOTIVO_CONTA_AMAZON.estoqueRecusadoPelaAmazon,
+        MOTIVO_CONTA_AMAZON.feedEstoqueFalhou,
+      ]) {
+        expect(mensagem.corpo({ motivo }), motivo).toContain('na Seller Central');
+      }
+      for (const motivo of ESTOQUE) {
+        expect(mensagem.corpo({ motivo }), motivo).not.toContain('no Seller Central');
+      }
+    });
+
+    it('`estoque-sem-deposito` sends the operator to the conta, and closes on the next sync', () => {
+      expect(mensagem.corpo({ motivo: MOTIVO_CONTA_AMAZON.estoqueSemDeposito })).toBe(
+        'A conta da Amazon precisa de atenção: ela não tem depósito definido, então o ERP não ' +
+          'calcula nem envia o estoque dos anúncios dela para a Amazon. Defina o depósito no ' +
+          'cadastro da conta; o aviso se encerra na próxima sincronização de estoque, poucos ' +
+          'minutos depois.',
+      );
+    });
+
+    it('the reconcile-closed motivos close on a daily stock check, never "na próxima importação"', () => {
+      for (const motivo of [
+        MOTIVO_CONTA_AMAZON.estoqueDepositoSemLinhas,
+        MOTIVO_CONTA_AMAZON.estoqueVinculosRecusados,
+        MOTIVO_CONTA_AMAZON.estoqueRecusadoPelaAmazon,
+      ]) {
+        const corpo = mensagem.corpo({ motivo });
+        expect(corpo, motivo).toContain('conferência diária');
+        expect(corpo, motivo).not.toContain('importação');
+      }
+      // NEAR-MISS: the import motivo closes on the next import.
+      expect(mensagem.corpo({ motivo: MOTIVO_CONTA_AMAZON.contaSemOperacao })).toContain(
+        'na próxima importação',
+      );
+    });
+
+    it('`feed-estoque-falhou` closes on a finished batch send, or on a clean daily check', () => {
+      const corpo = mensagem.corpo({ motivo: MOTIVO_CONTA_AMAZON.feedEstoqueFalhou });
+      expect(corpo).toContain('quando a Amazon concluir um envio de estoque em lote');
+      expect(corpo).toContain('não estiverem falhando seguidamente');
+    });
   });
 
   it('★ a code newer than this build, a per-pedido code, an inherited key or a missing motivo falls back', () => {
