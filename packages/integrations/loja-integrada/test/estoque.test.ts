@@ -23,17 +23,24 @@ import {
   liEstoqueProdutoDetalheSchema,
   liEstoqueProdutoLinhaSchema,
 } from '../src/types';
+import {
+  estoqueDetalheExemplo,
+  estoqueEcoExemplo,
+  estoquePaginaExemplo,
+} from './_fixtures/especificacao';
 import { json, mockFetch, requisicao, TOKEN, texto, verificarSoGet } from './_helpers/mockFetch';
 
 /**
  * The stock reads (`estoque.ts`) and the stock row schemas (`types.ts`).
  *
- * Every row here is INVENTED, shaped like the public document's stock examples
- * (its nine leaves, its quoted-free integers, its `-1`/`-2` values), with small
- * synthetic ids (`1001`, `5001`) that are no real store's: the owner's stock
- * captures are not in yet. Nothing here reaches Loja Integrada — every client
- * gets a stub `fetch`, the global one throws for the whole file, and the
- * `afterEach` asserts every request was a `GET` with no body.
+ * Two kinds of row. The public document's own stock examples
+ * (`_fixtures/especificacao.ts`: every leaf verbatim, the ids replaced) pin
+ * that the schemas read what the document shows. Every other row is INVENTED,
+ * shaped like them, with small synthetic ids (`1001`, `5001`) that are no real
+ * store's: the owner's stock captures are not in yet. Nothing here reaches Loja
+ * Integrada — every client gets a stub `fetch`, the global one throws for the
+ * whole file, and the `afterEach` asserts every request was a `GET` with no
+ * body.
  */
 
 const fetchGlobal = vi.fn(() => {
@@ -142,6 +149,28 @@ describe('the stock row schema — tolerant integers, a boolean, passthrough', (
     ).toBe(-3);
   });
 
+  it.each(['quantidade', 'quantidade_reservada', 'situacao_em_estoque', 'situacao_sem_estoque'])(
+    'EQUAL: %s as -1 and as "-1" both read -1 — any sign, on every integer leaf',
+    (campo) => {
+      const numero = liEstoqueProdutoLinhaSchema.parse(linha(1001, { [campo]: -1 }));
+      const textual = liEstoqueProdutoLinhaSchema.parse(linha(1001, { [campo]: '-1' }));
+      expect(numero[campo as keyof typeof numero]).toBe(-1);
+      expect(textual[campo as keyof typeof textual]).toBe(-1);
+    },
+  );
+
+  it.each(['quantidade', 'quantidade_reservada', 'situacao_em_estoque', 'situacao_sem_estoque'])(
+    'NEAR-MISS: %s as 1.5 and as "1.5" refuses the row — never a fraction, on every integer leaf',
+    (campo) => {
+      expect(liEstoqueProdutoLinhaSchema.safeParse(linha(1001, { [campo]: 1.5 })).success).toBe(
+        false,
+      );
+      expect(liEstoqueProdutoLinhaSchema.safeParse(linha(1001, { [campo]: '1.5' })).success).toBe(
+        false,
+      );
+    },
+  );
+
   it('an UNMANAGED row whose four leaves are all zero parses as it came', () => {
     const r = liEstoqueProdutoLinhaSchema.parse(
       linha(1001, {
@@ -227,6 +256,53 @@ describe('the stock row schema — tolerant integers, a boolean, passthrough', (
     expect(liEcoEstoqueProdutoSchema.parse({ quantidade: '' }).quantidade).toBeNull();
     // Near-miss: a quantity that is not one still fails its own leaf.
     expect(liEcoEstoqueProdutoSchema.safeParse({ quantidade: 'abc' }).success).toBe(false);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+
+describe('the public document’s own stock examples', () => {
+  it('every one of the 20 list rows parses, as it came — unmanaged rows, negative quantities and lead times included', () => {
+    const { objects } = estoquePaginaExemplo;
+    expect(objects).toHaveLength(20);
+    // Anti-vacuity: the example does hold the shapes a stricter schema would refuse.
+    expect(objects.some((r) => !r.gerenciado)).toBe(true);
+    expect(objects.map((r) => r.quantidade).filter((q) => q < 0)).toEqual([-2, -4, -1]);
+    expect(
+      objects.filter((r) => r.situacao_em_estoque !== 0 || r.situacao_sem_estoque !== -1),
+    ).toHaveLength(7);
+    for (const r of objects) expect(liEstoqueProdutoLinhaSchema.parse(r)).toEqual(r);
+  });
+
+  it('the whole list example reads as ONE page: every row, its meta, the next offset 20', async () => {
+    const f = ok(estoquePaginaExemplo);
+    const r = await umaPagina(f, { offset: 0, limite: 20 });
+    expect(r.ilegiveis).toEqual([]);
+    expect(r.linhas).toEqual(estoquePaginaExemplo.objects);
+    expect(r.meta).toEqual(estoquePaginaExemplo.meta);
+    expect(r.proximoOffset).toBe(20);
+  });
+
+  it('every list row names its produto by `produto`, never by its own `id`', () => {
+    for (const r of estoquePaginaExemplo.objects) {
+      const produtoId = produtoIdDoEstoqueLi(r.produto);
+      expect(produtoId).not.toBeNull();
+      expect(produtoId).not.toBe(r.id);
+      expect(r.resource_uri).toBe(`/api/v1/produto_estoque/${String(produtoId)}`);
+    }
+  });
+
+  it('the detail example parses with the detail schema, as it came', async () => {
+    expect(liEstoqueProdutoDetalheSchema.parse(estoqueDetalheExemplo)).toEqual(
+      estoqueDetalheExemplo,
+    );
+    const r = await buscarEstoqueProdutoLi(cliente(ok(estoqueDetalheExemplo)).c, 2101);
+    expect(r.dados).toEqual(estoqueDetalheExemplo);
+    expect(produtoIdDoEstoqueLi(r.dados.produto)).toBe(2101);
+  });
+
+  it('the PUT echo example parses with the echo schema, its other lead times kept as received', () => {
+    expect(liEcoEstoqueProdutoSchema.parse(estoqueEcoExemplo)).toEqual(estoqueEcoExemplo);
   });
 });
 
@@ -354,20 +430,94 @@ describe('lerPaginaEstoqueLi — ONE page of the stock list', () => {
     expect(err).toBeInstanceOf(LiPaginacaoError);
   });
 
-  it('a `next` with a key nobody sent is read for its offset only, and the next page asks exactly limit and offset', async () => {
-    const f = ok(pagina(0, '/api/v1/produto_estoque?limit=50&offset=50&order_by=-id'));
-    const r = await umaPagina(f);
+  it('a `next` with a key nobody sent is read for its offset only, and the page asked at that offset carries exactly limit and offset', async () => {
+    const f = mockFetch((input) => {
+      const href =
+        typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      const offset = new URL(href).searchParams.get('offset');
+      return json(
+        offset === '0'
+          ? pagina(0, '/api/v1/produto_estoque?limit=50&offset=50&order_by=-id')
+          : pagina(50, null),
+      );
+    });
+    const { c } = cliente(f);
+    const r = await lerPaginaEstoqueLi(c, { offset: 0, limite: 50 });
     expect(r.proximoOffset).toBe(50);
-    expect([...requisicao(f).url.searchParams.keys()]).toEqual(['limit', 'offset']);
+    const proxima = await lerPaginaEstoqueLi(c, { offset: r.proximoOffset ?? -1, limite: 50 });
+    expect(proxima.proximoOffset).toBeNull();
+    expect(f).toHaveBeenCalledTimes(2);
+    expect([...requisicao(f, 1).url.searchParams]).toEqual([
+      ['limit', '50'],
+      ['offset', '50'],
+    ]);
+    expect(requisicao(f, 1).url.pathname).toBe('/v1/produto_estoque');
   });
 
-  it('ONE odd row refuses the whole page, naming its field path', async () => {
-    const err = await falha(
-      umaPagina(ok(pagina(0, null, [linha(1001), linha(1002, { quantidade: 1.5 })]))),
+  it('ONE odd row is REPORTED with its position, its produto and its field path, and never costs the rows beside it', async () => {
+    const r = await umaPagina(
+      ok(pagina(0, null, [linha(1001), linha(1002, { quantidade: 1.5 }), linha(1003)])),
     );
+    expect(r.linhas.map((l) => produtoIdDoEstoqueLi(l.produto))).toEqual([1001, 1003]);
+    expect(r.ilegiveis).toEqual([{ indice: 1, produtoId: 1002, campos: ['quantidade'] }]);
+    expect(r.proximoOffset).toBeNull();
+  });
+
+  it('every row read ⇒ `ilegiveis` is empty', async () => {
+    const r = await umaPagina(ok(pagina(0, null)));
+    expect(r.ilegiveis).toEqual([]);
+    expect(r.linhas).toHaveLength(2);
+  });
+
+  it.each<[string, unknown, number | null, string[]]>([
+    ['without gerenciado', { ...linha(1002), gerenciado: undefined }, 1002, ['gerenciado']],
+    ['with gerenciado as text', linha(1002, { gerenciado: 'true' }), 1002, ['gerenciado']],
+    ['with a null produto', linha(1002, { produto: null }), null, ['produto']],
+    ['without produto', { ...linha(1002), produto: undefined }, null, ['produto']],
+    [
+      'with two odd leaves',
+      linha(1002, { quantidade_reservada: null, situacao_em_estoque: 'x' }),
+      1002,
+      ['quantidade_reservada', 'situacao_em_estoque'],
+    ],
+    ['that is null', null, null, ['(raiz)']],
+    ['that is a text', '/api/v1/produto/1002', null, ['(raiz)']],
+    ['that is an array', [linha(1002)], null, ['(raiz)']],
+  ])('a row %s is reported, and the rows beside it read', async (_caso, odd, produtoId, campos) => {
+    const r = await umaPagina(ok(pagina(0, null, [linha(1001), odd, linha(1003)])));
+    expect(r.linhas.map((l) => produtoIdDoEstoqueLi(l.produto))).toEqual([1001, 1003]);
+    expect(r.ilegiveis).toEqual([{ indice: 1, produtoId, campos }]);
+  });
+
+  it('near-miss: a `produto` TEXT that names another resource is no unreadable row — the URI is the caller’s to place', async () => {
+    const r = await umaPagina(
+      ok(pagina(0, null, [linha(1001, { produto: '/api/v1/marca/1001' })])),
+    );
+    expect(r.ilegiveis).toEqual([]);
+    expect(r.linhas).toHaveLength(1);
+    expect(produtoIdDoEstoqueLi(r.linhas[0]?.produto)).toBeNull();
+  });
+
+  it('an unreadable row reports field PATHS, never the values it carried', async () => {
+    const r = await umaPagina(
+      ok(pagina(0, null, [linha(1001, { quantidade: 'VALOR-QUE-NAO-PODE-SAIR' })])),
+    );
+    expect(r.ilegiveis).toEqual([{ indice: 0, produtoId: 1001, campos: ['quantidade'] }]);
+    expect(JSON.stringify(r.ilegiveis)).not.toContain('VALOR-QUE-NAO-PODE-SAIR');
+  });
+
+  it.each<[string, unknown]>([
+    ['`objects` that is not an array', { ...pagina(0, null), objects: { 0: linha(1001) } }],
+    ['`objects` missing', { meta: pagina(0, null).meta }],
+    ['`meta` missing', { objects: [linha(1001)] }],
+    [
+      '`meta.offset` a fraction',
+      { ...pagina(0, null), meta: { ...pagina(0, null).meta, offset: 0.5 } },
+    ],
+  ])('NEAR-MISS: a malformed ENVELOPE (%s) still refuses the page', async (_caso, corpo) => {
+    const err = await falha(umaPagina(ok(corpo)));
     expect(err).toBeInstanceOf(LiSchemaError);
-    expect(err).toMatchObject({ motivo: 'formato', status: 200 });
-    expect((err as LiSchemaError).campos).toEqual(['objects[].quantidade']);
+    expect(err).toMatchObject({ motivo: 'formato', status: 200, operacao: 'lerPaginaEstoque' });
   });
 
   it('pins the page bound', () => {
@@ -391,7 +541,8 @@ describe('lerPaginaEstoqueLi — ONE page of the stock list', () => {
       const { c, credenciais } = cliente(f);
       const err = await falha(lerPaginaEstoqueLi(c, { offset: 0, limite }));
       expect(err).toBeInstanceOf(LiConfigError);
-      expect((err as LiConfigError).motivo).toBe('limite');
+      // The operation names the call in the app's log: it is the stock page's own.
+      expect(err).toMatchObject({ motivo: 'limite', operacao: 'lerPaginaEstoque' });
       expect(f).not.toHaveBeenCalled();
       expect(credenciais()).toBe(0);
     },
@@ -476,7 +627,7 @@ describe('buscarEstoqueProdutoLi — one product’s stock', () => {
       const { c, credenciais } = cliente(f);
       const err = await falha(buscarEstoqueProdutoLi(c, id));
       expect(err).toBeInstanceOf(LiConfigError);
-      expect((err as LiConfigError).motivo).toBe('caminho');
+      expect(err).toMatchObject({ motivo: 'caminho', operacao: 'buscarEstoqueProduto' });
       expect(f).not.toHaveBeenCalled();
       expect(credenciais()).toBe(0);
     },
@@ -493,6 +644,20 @@ describe('buscarEstoqueProdutoLi — one product’s stock', () => {
     );
     expect(err).toBeInstanceOf(LiSchemaError);
   });
+
+  it.each(['gerenciado', 'produto', 'quantidade', 'quantidade_reservada', 'situacao_sem_estoque'])(
+    'NEAR-MISS: a detail without %s refuses the WHOLE read — a write decides on it, so it is never reported row-style',
+    async (campo) => {
+      const corpo = Object.fromEntries(Object.entries(linha(1001)).filter(([k]) => k !== campo));
+      const err = await falha(buscarEstoqueProdutoLi(cliente(ok(corpo)).c, 1001));
+      expect(err).toBeInstanceOf(LiSchemaError);
+      expect(err).toMatchObject({
+        motivo: 'formato',
+        campos: [campo],
+        operacao: 'buscarEstoqueProduto',
+      });
+    },
+  );
 
   it('a 404 is the client’s LiNotFoundError, rethrown as-is', async () => {
     const err = await falha(

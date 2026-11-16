@@ -70,6 +70,11 @@ export function objetoDeEnvioValidoLi(valor: unknown): valor is string {
  * lead time the store had set, by design (the master plan's step 12). The stock
  * route's schema is built from these same values, so a caller that compares a
  * stored row against what this package sends reads them here, never from a copy.
+ *
+ * ⚠️ The same strictness means no write can put a row BACK exactly when it held
+ * a negative quantity, an unmanaged product or another lead time: a rollback
+ * can only send `max(0, prior quantidade)` under these leaves
+ * (`estoqueEscrita.ts`).
  */
 export const ESTOQUE_FIXO_ESCRITA_LI = {
   gerenciado: true,

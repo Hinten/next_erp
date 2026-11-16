@@ -12,6 +12,7 @@ import {
 import * as barril from '../src/index';
 import * as rotas from '../src/rotasEscrita';
 import { liEcoEstoqueProdutoSchema } from '../src/types';
+import { estoqueEcoExemplo } from './_fixtures/especificacao';
 import {
   json,
   mensagensDaCadeia,
@@ -272,6 +273,35 @@ describe('atualizarEstoqueProdutoLi — PUT /v1/produto_estoque/{produto id}', (
     expect(torto).toMatchObject({ status: 200, aplicada: 'sim', eco: null, leituraEco: 'formato' });
   });
 
+  it('an echo with NO quantity still reads: every echo leaf is optional', async () => {
+    const r = await atualizarEstoqueProdutoLi(
+      cliente(mockFetch(() => json({ id: 5001 }))).c,
+      PRODUTO,
+      5,
+    );
+    expect(r).toMatchObject({ status: 200, aplicada: 'sim', leituraEco: 'ok' });
+    expect(r.eco).toEqual({ id: 5001 });
+  });
+
+  it('the public document’s own PUT echo reads whole, its other lead times kept as received', async () => {
+    const r = await atualizarEstoqueProdutoLi(
+      cliente(mockFetch(() => json(estoqueEcoExemplo))).c,
+      2101,
+      6,
+    );
+    expect(r).toMatchObject({ aplicada: 'sim', leituraEco: 'ok' });
+    expect(r.eco).toEqual(estoqueEcoExemplo);
+  });
+
+  it('a refusal names the stock write as its operation', async () => {
+    const f = ok();
+    const err = await falha(atualizarEstoqueProdutoLi(cliente(f).c, 0, 5));
+    expect(err).toMatchObject({ motivo: 'caminho', operacao: 'atualizarEstoqueProduto' });
+    const corpo = await falha(atualizarEstoqueProdutoLi(cliente(f).c, PRODUTO, -1));
+    expect(corpo).toMatchObject({ motivo: 'corpo', operacao: 'atualizarEstoqueProduto' });
+    expect(f).not.toHaveBeenCalled();
+  });
+
   it('forwards the caller signal: already aborted ⇒ nothing sent, its reason comes back', async () => {
     const controller = new AbortController();
     controller.abort(new RangeError('motivo do chamador'));
@@ -303,6 +333,10 @@ describe('the stock route — what ANY holder of a write client can send', () =>
     ['the list path with a slash', '/v1/produto_estoque/'],
     ['a longer path under the route', `${CAMINHO}/extra`],
     ['a non-numeric id', '/v1/produto_estoque/abc'],
+    ['an exponent id', '/v1/produto_estoque/1e3'],
+    ['trailing junk on the id', '/v1/produto_estoque/1001x'],
+    ['a fractional id', '/v1/produto_estoque/1001.0'],
+    ['a path that only ENDS like the route', '/v1/pedido/1/v1/produto_estoque/1001'],
     ['the produto resource', '/v1/produto/1001'],
     ['the price resource', '/v1/produto_preco/1001'],
   ])(
@@ -427,6 +461,23 @@ describe('the token never rides a stock body either', () => {
     expect(requisicao(f).init.body).toBe(corpoEsperado(4242));
   });
 
+  it('a token that appears VERBATIM across the body’s JSON structure is refused too, not only its escaped spelling', async () => {
+    // A visible-ASCII token holding `"`: JSON would escape it inside a string
+    // (`true,\"quantidade\":5`), so only the RAW spelling finds it here.
+    const TOKEN_ESTRUTURAL = 'true,"quantidade":5';
+    const f = ok();
+    const { c } = cliente(f, {
+      obterCredencial: () => ({ token: TOKEN_ESTRUTURAL, ref: 'ref-A' }),
+    });
+    // Anti-vacuity: the raw token IS in the body that would be sent, the escaped one is not.
+    expect(corpoEsperado(5)).toContain(TOKEN_ESTRUTURAL);
+    expect(corpoEsperado(5)).not.toContain(JSON.stringify(TOKEN_ESTRUTURAL).slice(1, -1));
+    const err = await falha(atualizarEstoqueProdutoLi(c, PRODUTO, 5));
+    expect(err).toBeInstanceOf(LiConfigError);
+    expect((err as LiConfigError).motivo).toBe('token-no-corpo');
+    expect(f).not.toHaveBeenCalled();
+  });
+
   it('the string routes still refuse the token in their body, after the widening', async () => {
     const f = ok();
     const err = await falha(
@@ -454,6 +505,19 @@ describe('every existing route serialises exactly as before', () => {
     await cliente(f).c.enviarEscritaLi(put(caminho, corpo));
     expect(requisicao(f).init.body).toBe(esperado);
   });
+
+  it.each([
+    ['/v1/pedido/1/v1/pedido_envio/1001', { objeto: 'AB123' }],
+    ['/v1/pedido/1/v1/situacao/pedido/1001', { codigo: 'pedido_enviado' }],
+  ])(
+    'a path that only ENDS like an existing route (%s) is still refused: every route is anchored at its start',
+    async (caminho, corpo) => {
+      const f = ok();
+      const err = await falha(cliente(f).c.enviarEscritaLi(put(caminho, corpo)));
+      expect((err as LiConfigError).motivo).toBe('rota-nao-permitida');
+      expect(f).not.toHaveBeenCalled();
+    },
+  );
 
   it('a quantity-like value on a string route is still refused: no route coerces', async () => {
     const f = ok();

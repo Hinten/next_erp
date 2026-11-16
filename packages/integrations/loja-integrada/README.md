@@ -108,8 +108,15 @@ token **raw** after `Basic ` (not base64-encoded by us).
   (`idDoRecursoLi`), the one the product import reads `filhos` and `pai` with,
   never by a copy — the package's one use of that dependency. The stock list is
   read one page at a time through `lerPaginaLi`, at most
-  `MAX_LIMITE_PAGINA_ESTOQUE_LI` rows a page (a bound, not yet measured), with
-  exactly `limit` and `offset` and no filter (the list has none).
+  `MAX_LIMITE_PAGINA_ESTOQUE_LI` rows a page (a bound, not yet measured, and the
+  one bound a caller's stored page size is held to), with exactly `limit` and
+  `offset` and no filter (the list has none). Each row is read on its own: a row
+  the schema refuses is reported in `ilegiveis` (its position, the produto it
+  names, the field paths) and never costs the rows beside it; only a malformed
+  envelope refuses the page. The detail, which a write decides on, is read whole
+  and strict. The stock write is strict too, so a rollback can only re-send a
+  non-negative quantity under the fixed situações: a prior negative, unmanaged
+  or other-lead-time row cannot be put back exactly.
 - **No catalogue decision.** `catalogo.ts` reads and parses: whether a category's
   parent URI names a parent, whether an option belongs to the grade asked for,
   and what a 403 or a 404 on a catalogue read means are the app's. Every URI is

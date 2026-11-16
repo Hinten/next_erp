@@ -411,10 +411,11 @@ export const liProdutoDetalheSchema = liProdutoLinhaSchema.extend({
  * `quantidade_disponivel`. Nothing here reads them, and a declared leaf can
  * only add a way to refuse a row.
  *
- * ⚠️ A row whose declared leaf is missing or of another type refuses its WHOLE
- * page (`LiSchemaError`, naming the field path), so one odd row costs every row
- * beside it. Deliberate until the captures show the store's real rows: a leaf
- * they show to need per-row tolerance gets it then, beside its capture.
+ * A LIST row whose declared leaf is missing or of another type costs only
+ * itself: `lerPaginaEstoqueLi` reads the rows one by one and reports such a row
+ * in `ilegiveis` (its position, the produto it names, the field paths), so one
+ * odd row never hides the rows beside it, as on the produto list above. The
+ * DETAIL is read whole (below).
  */
 export const liEstoqueProdutoLinhaSchema = z
   .object({
@@ -433,7 +434,8 @@ export type EstoqueProdutoLinhaLi = z.infer<typeof liEstoqueProdutoLinhaSchema>;
  * `GET /v1/produto_estoque/{produto_id}`: the row's leaves (above). One schema
  * under two names, so a capture that shows the detail to differ changes this
  * line and no caller. A stock write decides on this read, so a detail without a
- * leaf the write decides on refuses the read, and nothing is written.
+ * leaf the write decides on refuses the read (`LiSchemaError`), and nothing is
+ * written.
  */
 export const liEstoqueProdutoDetalheSchema = liEstoqueProdutoLinhaSchema;
 

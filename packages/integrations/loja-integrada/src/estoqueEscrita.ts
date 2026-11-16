@@ -41,6 +41,15 @@
  * ⚠️ The fixed leaves overwrite whatever per-product lead time the store had
  * set, on every write, by design (`rotasEscrita.ts`).
  *
+ * ⚠️ So a rollback through this package cannot put every row back as it was.
+ * Re-sending a logged prior row can only send a non-negative quantity under the
+ * three fixed leaves: a prior NEGATIVE quantity, an UNMANAGED product
+ * (`gerenciado: false`) or another lead time comes back as
+ * `max(0, prior quantidade)` under managed stock with the fixed situações,
+ * never exactly. The route is not loosened for that: its strictness is what
+ * holds every write this package can send to the one shape the stock sync
+ * means, so a row that must come back exactly is outside what it can send.
+ *
  * ## Echo
  *
  * Read through `liEcoEstoqueProdutoSchema` (`types.ts`), every field optional:

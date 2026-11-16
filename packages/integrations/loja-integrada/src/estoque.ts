@@ -2,12 +2,12 @@
  * The STOCK reads of master-plan step 12, over the GET-only client:
  *
  *  - {@link lerPaginaEstoqueLi} — ONE page of `GET /v1/produto_estoque`, the
- *    store's whole stock list, with the validated offset of the next page. The
- *    list has no filter, so the daily reconcile reads all of it, a checkpoint
- *    after each page. It goes through the one-page reader `lerPaginaLi`
- *    (`produtos.ts`), never through `paginarLi`: that pager's page cap is a
- *    ceiling a large store's list can exceed, and it throws rather than
- *    truncate;
+ *    store's whole stock list, with the validated offset of the next page and
+ *    the rows it could not read (below). The list has no filter, so the daily
+ *    reconcile reads all of it, a checkpoint after each page. It goes through
+ *    the one-page reader `lerPaginaLi` (`produtos.ts`), never through
+ *    `paginarLi`: that pager's page cap is a ceiling a large store's list can
+ *    exceed, and it throws rather than truncate;
  *  - {@link buscarEstoqueProdutoLi} — `GET /v1/produto_estoque/{produto_id}`,
  *    one product's stock;
  *  - {@link produtoIdDoEstoqueLi} — the produto id a stock row's `produto` URI
@@ -21,6 +21,22 @@
  * followed `LiSchemaError` or `LiPaginacaoError`). What a row means — whether it
  * is reflected, which ERP product it belongs to, what a missing row says — is
  * the caller's call (`apps/loja-integrada`).
+ *
+ * ## One odd row never costs the page
+ *
+ * The page is read in two layers. The ENVELOPE (`meta`, an `objects` array) is
+ * the pager's, and a malformed one refuses the page (`LiSchemaError`). Each ROW
+ * is then read on its own through `liEstoqueProdutoLinhaSchema`: a row it
+ * refuses is returned in `ilegiveis` — its position, the produto its `produto`
+ * leaf names when it names one, and the refused field paths, never a value —
+ * beside every row that did read. So a single odd row in a store of thousands
+ * hides nothing but itself, as on the produto list (`types.ts`), and a reconcile
+ * that resumes at a page never stalls there on one row. What an unreadable row
+ * means is the caller's call; nothing here guesses its leaves.
+ *
+ * The DETAIL ({@link buscarEstoqueProdutoLi}) is read whole and strict: a stock
+ * write decides on it, so a detail that does not parse refuses the read
+ * (`LiSchemaError`) and nothing is decided from it.
  *
  * ## Written ahead of the captures
  *
@@ -48,6 +64,15 @@
  * follows a redirect, so a wrong form fails VISIBLY — a 3xx `LiHttpError`,
  * never a silent second call.
  *
+ * ⚠️ Unproven until the captures: the document's path keys are known NOT to be
+ * the request form elsewhere (it keys `/v1/produto` and `/v1/categoria`, while
+ * the captured reads that answered 200 were `/v1/produto/` and
+ * `/v1/categoria/`). The change that adds the stock captures settles it: they
+ * are requested in exactly these two forms, the fixture records the request
+ * path it was taken with, and a test pins {@link CAMINHO_ESTOQUE_LI} against
+ * it. If only the slash form answers there, both GETs move to it, as the other
+ * reads use; the stock write keeps the document's key, as the order writes do.
+ *
  * ## The next offset
  *
  * Exactly as {@link lerPaginaLi} returns it: the caller stores the offset and
@@ -70,7 +95,9 @@
  * a stock row and a product link can never disagree about which produto an id
  * names. It keeps no rule of its own.
  */
+import { camposInvalidos } from '@delfrance/core/wire';
 import { idDoRecursoLi, RECURSO_URI_LI } from '@delfrance/schemas';
+import { z } from 'zod';
 
 import type { LiLeituraClient, RespostaLi } from './client';
 import { LiConfigError } from './errors';
@@ -96,6 +123,12 @@ export const CAMINHO_ESTOQUE_LI = '/v1/produto_estoque';
  * (`produtos.ts`, "Page size"); the stock list's own ceiling is not measured
  * yet, and nothing asks it for more than this. The page applied is read back in
  * `meta.limit`, never assumed.
+ *
+ * ⚠️ The ONE bound. A caller that keeps a page size — read from its
+ * environment, or stored in a resumable cursor — bounds it by THIS constant,
+ * never by a copy of its own: a stored size above it refuses every page read
+ * from it (`LiConfigError('limite')`), so a cursor that accepted one would stall
+ * its run at every resume.
  */
 export const MAX_LIMITE_PAGINA_ESTOQUE_LI = 100;
 
@@ -109,9 +142,36 @@ export interface OpcoesPaginaEstoqueLi {
 }
 
 /**
+ * One row of a stock page that `liEstoqueProdutoLinhaSchema` refused: REPORTED
+ * beside the rows that read, never thrown for the page, never dropped in silence
+ * and never guessed at (module header, "One odd row never costs the page").
+ */
+export interface LinhaIlegivelEstoqueLi {
+  /** Its 0-based position in the page's `objects`. */
+  readonly indice: number;
+  /**
+   * The produto its `produto` leaf names ({@link produtoIdDoEstoqueLi}), or
+   * `null` when that leaf names none: absent, of another form or type, or a row
+   * that is not an object at all.
+   */
+  readonly produtoId: number | null;
+  /** The field paths the row schema refused (`camposInvalidos`): paths only, never a value. */
+  readonly campos: readonly string[];
+}
+
+/** One page of the stock list: the rows that read, and the ones that did not. */
+export interface PaginaEstoqueLi extends PaginaUnicaLi<EstoqueProdutoLinhaLi> {
+  /** The rows the row schema refused, in page order; `[]` when every row read. */
+  readonly ilegiveis: readonly LinhaIlegivelEstoqueLi[];
+}
+
+/**
  * One page of `GET /v1/produto_estoque` with exactly `{ limit, offset }`, as
- * given, every row through `liEstoqueProdutoLinhaSchema`, `meta` as the provider
- * answered it and the next offset validated (`lerPaginaLi`).
+ * given, `meta` as the provider answered it and the next offset validated
+ * (`lerPaginaLi`). Every row is read on its own through
+ * `liEstoqueProdutoLinhaSchema`: the ones that parse are `linhas`, in the order
+ * received; the ones that do not are `ilegiveis` (module header). Only a
+ * malformed envelope refuses the page (`LiSchemaError`).
  *
  * Refused before anything is read or fetched: a `limite` outside 1 to
  * {@link MAX_LIMITE_PAGINA_ESTOQUE_LI} (`LiConfigError('limite')`), an `offset`
@@ -121,20 +181,43 @@ export interface OpcoesPaginaEstoqueLi {
 export async function lerPaginaEstoqueLi(
   cliente: LiLeituraClient,
   opts: OpcoesPaginaEstoqueLi,
-): Promise<PaginaUnicaLi<EstoqueProdutoLinhaLi>> {
+): Promise<PaginaEstoqueLi> {
   const operacao = 'lerPaginaEstoque';
   const { limite } = opts;
   if (!Number.isSafeInteger(limite) || limite <= 0 || limite > MAX_LIMITE_PAGINA_ESTOQUE_LI) {
     throw new LiConfigError('limite', { operacao, refCredencial: null });
   }
-  return lerPaginaLi(cliente, {
+  const pagina = await lerPaginaLi(cliente, {
     operacao,
     caminho: CAMINHO_ESTOQUE_LI,
-    esquema: liEstoqueProdutoLinhaSchema,
+    // The envelope alone can refuse the page; each row is read below.
+    esquema: z.unknown(),
     offset: opts.offset,
     limite,
     sinal: opts.sinal,
   });
+  const linhas: EstoqueProdutoLinhaLi[] = [];
+  const ilegiveis: LinhaIlegivelEstoqueLi[] = [];
+  for (const [indice, bruta] of pagina.linhas.entries()) {
+    const lida = liEstoqueProdutoLinhaSchema.safeParse(bruta);
+    if (lida.success) {
+      linhas.push(lida.data);
+    } else {
+      ilegiveis.push({
+        indice,
+        produtoId: produtoIdDoEstoqueLi(produtoDaLinhaBruta(bruta)),
+        campos: camposInvalidos(lida.error.issues),
+      });
+    }
+  }
+  return { ...pagina, linhas, ilegiveis };
+}
+
+/** The raw `produto` leaf of a row the schema refused, or `undefined` when it has none. */
+function produtoDaLinhaBruta(bruta: unknown): unknown {
+  return typeof bruta === 'object' && bruta !== null && 'produto' in bruta
+    ? bruta.produto
+    : undefined;
 }
 
 /**
