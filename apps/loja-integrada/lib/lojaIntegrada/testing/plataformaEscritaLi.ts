@@ -1,10 +1,11 @@
 /**
- * A stateful Loja Integrada for the status write-back suites, **for tests only**
- * (the `fakeDb.ts` rule: nothing outside a `*.test.ts` imports this) — shared
- * by the run's suite (`rastreio/processarRastreio.test.ts`) and the pipeline's
- * (`rastreio/notificacaoEscrita.test.ts`).
+ * A stateful Loja Integrada for the write suites, **for tests only** (the
+ * `fakeDb.ts` rule: nothing outside a `*.test.ts` imports this) — shared by the
+ * status write-back's run suite (`rastreio/processarRastreio.test.ts`), its
+ * pipeline's (`rastreio/notificacaoEscrita.test.ts`) and the write engine's
+ * stock suite (`core/escritaEstoque.test.ts`).
  *
- * One order, its situação history and the two write routes:
+ * One order, its situação history and the two order write routes:
  *
  *  - a code PUT stores the code and, as the painel does, moves the order to
  *    `pedido_enviado` (unless told not to), writing a history row;
@@ -12,13 +13,25 @@
  *    (`situacao_anterior` filled), so the check after a write reads `conferido`
  *    unless a test scripts otherwise.
  *
- * Every request is recorded, and so is every pacer wait, on ONE timeline. A
- * one-shot override queue (`fila`) answers the next request it claims. Nothing
+ * And the store's stock rows (`estoque`, none unless given), keyed by PRODUCT id:
+ *
+ *  - `GET /v1/produto_estoque/{produto id}` answers the row; an unknown id —
+ *    a stock row's OWN id included — answers 404 with an empty body;
+ *  - `PUT` on the same path sets exactly the four leaves a stock write sends
+ *    and recomputes the available quantity as the store does
+ *    (`quantidade_disponivel = quantidade − quantidade_reservada`, unfloored).
+ *
+ * Only the no-slash form is modelled, though the store answers the slash GET
+ * identically: the engine never asks it, so a path regression answers 500 here.
+ *
+ * Every request is recorded, and so is every pacer wait, on ONE timeline; the raw
+ * text of every PUT body too (`textosDosPuts`), so a test can pin unquoted numbers.
+ * A one-shot override queue (`fila`) answers the next request it claims. Nothing
  * here reaches a network: the platform IS the `fetch` the context's clients get
  * (D17), and any route it does not model answers 500.
  */
 import type { DocData, FakeDb } from './fakeDb';
-import { carimboLi, pedidoLiBruto, ID_ENVIO_LI, NUMERO_LI } from './pedidosLi';
+import { carimboLi, pedidoLiBruto, ID_ENVIO_LI, ID_PRODUTO_LI, NUMERO_LI } from './pedidosLi';
 
 export interface RequisicaoLi {
   readonly metodo: string;
@@ -41,6 +54,58 @@ export const CAMINHO_SITUACAO_LI = `/v1/situacao/pedido/${String(NUMERO_LI)}`;
 export const CAMINHO_ENVIO_LI = `/v1/pedido_envio/${String(ID_ENVIO_LI)}`;
 export const CAMINHO_HISTORICO_LI = '/v1/situacao_historico/search/';
 
+/** One product's stock detail, in the no-slash form the engine asks (`ID_PRODUTO_LI`'s). */
+export const CAMINHO_ESTOQUE_PRODUTO_LI = `/v1/produto_estoque/${String(ID_PRODUTO_LI)}`;
+
+/** A stock row's OWN id: never the product's, and never a path key (the store answers it 404). */
+export function idDaLinhaDeEstoqueLi(produtoId: number): number {
+  return produtoId + 90_000;
+}
+
+/** `ID_PRODUTO_LI`'s stock row id. */
+export const ID_LINHA_ESTOQUE_LI = idDaLinhaDeEstoqueLi(ID_PRODUTO_LI);
+
+/** The store's available quantity: its own formula, unfloored (test data only). */
+function recalcularDisponivel(linha: DocData): void {
+  const { quantidade, quantidade_reservada: reserva } = linha;
+  if (typeof quantidade === 'number' && typeof reserva === 'number') {
+    linha.quantidade_disponivel = quantidade - reserva;
+  }
+}
+
+/**
+ * One product's stock row, with the nine keys of a stock detail in the store's
+ * order: managed, the fixed situações, quantity and reservation 0 unless `over`
+ * says otherwise, and the available quantity recomputed from them unless `over`
+ * sets it. No floor: a negative row round-trips.
+ */
+export function linhaEstoqueLi(produtoId: number, over: DocData = {}): DocData {
+  const linha: DocData = {
+    gerenciado: true,
+    id: idDaLinhaDeEstoqueLi(produtoId),
+    produto: `/api/v1/produto/${String(produtoId)}`,
+    quantidade: 0,
+    quantidade_disponivel: 0,
+    quantidade_reservada: 0,
+    resource_uri: `/api/v1/produto_estoque/${String(produtoId)}`,
+    situacao_em_estoque: 0,
+    situacao_sem_estoque: -1,
+    ...over,
+  };
+  if (!Object.hasOwn(over, 'quantidade_disponivel')) recalcularDisponivel(linha);
+  return linha;
+}
+
+/** The product id a stock row names (its `produto` URI), or `null`. */
+function produtoDaLinha(linha: DocData): number | null {
+  const produto = linha.produto;
+  const m =
+    typeof produto === 'string' ? /^\/api\/v1\/produto\/([1-9][0-9]*)$/.exec(produto) : null;
+  return m === null ? null : Number(m[1]);
+}
+
+const ESTOQUE_DETALHE = /^\/v1\/produto_estoque\/([1-9][0-9]*)$/;
+
 export interface OpcoesPlataformaEscritaLi {
   /** The order's situação codigo at start. */
   readonly codigo?: string;
@@ -48,13 +113,21 @@ export interface OpcoesPlataformaEscritaLi {
   readonly objeto?: string | null;
   /** Whether a code PUT moves the order to `pedido_enviado` (default: yes). */
   readonly moverAoEscreverObjeto?: boolean;
+  /** The store's stock rows at start ({@link linhaEstoqueLi}), keyed by the product their `produto` names. */
+  readonly estoque?: readonly DocData[];
 }
 
 export function criarPlataformaEscritaLi(o: OpcoesPlataformaEscritaLi = {}) {
   const codigoInicial = o.codigo ?? 'pedido_pago';
   const pedido = pedidoLiBruto({ situacao: { codigo: codigoInicial } });
   (pedido.envios as DocData[])[0]!.objeto = o.objeto ?? null;
-  const estado: { pedido: DocData; historico: DocData[] } = {
+  const estoque = new Map<number, DocData>();
+  for (const linha of o.estoque ?? []) {
+    const produtoId = produtoDaLinha(linha);
+    if (produtoId === null) throw new TypeError('plataforma: linha de estoque sem produto');
+    estoque.set(produtoId, structuredClone(linha));
+  }
+  const estado: { pedido: DocData; historico: DocData[]; estoque: Map<number, DocData> } = {
     pedido,
     historico: [
       {
@@ -65,9 +138,11 @@ export function criarPlataformaEscritaLi(o: OpcoesPlataformaEscritaLi = {}) {
         situacao_anterior: { codigo: 'aguardando_pagamento' },
       },
     ],
+    estoque,
   };
   let proximaLinha = 2;
   const requisicoes: RequisicaoLi[] = [];
+  const textosDosPuts: string[] = [];
   const eventos: string[] = [];
   const fila: SobrescritaLi[] = [];
 
@@ -119,6 +194,21 @@ export function criarPlataformaEscritaLi(o: OpcoesPlataformaEscritaLi = {}) {
       mover((r.corpo as { codigo: string }).codigo);
       return respostaJson(200, estado.pedido.situacao);
     }
+    const estoqueDetalhe = ESTOQUE_DETALHE.exec(r.caminho);
+    if (estoqueDetalhe !== null && (r.metodo === 'GET' || r.metodo === 'PUT')) {
+      const linha = estado.estoque.get(Number(estoqueDetalhe[1]));
+      // The store's 404 for an unknown product (a row's own id included): an empty body.
+      if (linha === undefined) return respostaJson(404, undefined);
+      if (r.metodo === 'PUT') {
+        const corpo = r.corpo as DocData;
+        linha.gerenciado = corpo.gerenciado;
+        linha.quantidade = corpo.quantidade;
+        linha.situacao_em_estoque = corpo.situacao_em_estoque;
+        linha.situacao_sem_estoque = corpo.situacao_sem_estoque;
+        recalcularDisponivel(linha);
+      }
+      return respostaJson(200, linha);
+    }
     return respostaJson(500, { erro: 'rota nao roteirizada' });
   }
 
@@ -130,6 +220,7 @@ export function criarPlataformaEscritaLi(o: OpcoesPlataformaEscritaLi = {}) {
       caminho: url.pathname,
       corpo: typeof init?.body === 'string' ? (JSON.parse(init.body) as unknown) : null,
     };
+    if (metodo === 'PUT' && typeof init?.body === 'string') textosDosPuts.push(init.body);
     requisicoes.push(r);
     eventos.push(`${metodo} ${url.pathname}`);
     const primeira = fila[0];
@@ -156,6 +247,7 @@ export function criarPlataformaEscritaLi(o: OpcoesPlataformaEscritaLi = {}) {
   return {
     estado,
     requisicoes,
+    textosDosPuts,
     eventos,
     fila,
     fetch,
