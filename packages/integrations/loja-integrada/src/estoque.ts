@@ -38,21 +38,26 @@
  * write decides on it, so a detail that does not parse refuses the read
  * (`LiSchemaError`) and nothing is decided from it.
  *
- * ## Written ahead of the captures
+ * ## Checked against the captures
  *
- * The schemas (`types.ts`, the stock section) follow the public document
- * alone: the owner's read-only stock captures are not in yet, and the change
- * that adds them pins real rows against these reads before anything consumes
- * them. Four things only those captures can settle, so nothing here assumes
- * them:
+ * The schemas (`types.ts`, the stock section) were written against the public
+ * document, then checked against the owner's read-only stock captures (both
+ * stores, read 2026-11-16; replayed through these reads by
+ * `apps/loja-integrada/lib/lojaIntegrada/estoque/capturasEstoque.test.ts`).
+ * What those captures settled:
  *
- *  - the largest `limit` the stock list honours ({@link MAX_LIMITE_PAGINA_ESTOQUE_LI}
- *    is a bound, not a measurement), and whether it lists parents or the trash;
- *  - the order of the rows (nothing here relies on any);
- *  - whether the path id of the detail is the PRODUTO id. The document says so
- *    (its path parameter is `produto_id`, and its examples' `resource_uri`
- *    carries the produto id, while the row's own `id` differs), and this module
- *    sends the produto id;
+ *  - the page size: `limit` 20, 50 and 100 are honoured exactly, and 200 answers
+ *    a 400 from the API gateway, as on the produto list
+ *    ({@link MAX_LIMITE_PAGINA_ESTOQUE_LI});
+ *  - membership: the list holds a row for EVERY product — live parents and
+ *    their variations, the trash, and products created after the product
+ *    captures; the rows read equal `total_count`, with no produto twice;
+ *  - the order: the rows follow neither the row id nor the produto id, but a
+ *    page re-read minutes later returned the same rows in the same positions.
+ *    Nothing here relies on any order;
+ *  - the detail key: the detail path id IS the produto id. The row's own `id`
+ *    differs from it in every row, and asked as a detail path it answers 404
+ *    with an empty body, the same as an id that is no product;
  *  - the path form (below).
  *
  * ## Paths: the document's own keys, NO trailing slash
@@ -60,26 +65,28 @@
  * `/v1/produto_estoque` and `/v1/produto_estoque/{produto_id}`, exactly as the
  * public document keys them, which is also the stock write's route
  * (`rotasEscrita.ts`). The other reads use the slash form because their
- * captures were requested that way; none exists here yet. The client never
- * follows a redirect, so a wrong form fails VISIBLY — a 3xx `LiHttpError`,
- * never a silent second call.
+ * captures were requested that way. The client never follows a redirect, so a
+ * wrong form fails VISIBLY — a 3xx `LiHttpError`, never a silent second call.
  *
- * ⚠️ Unproven until the captures: the document's path keys are known NOT to be
- * the request form elsewhere (it keys `/v1/produto` and `/v1/categoria`, while
- * the captured reads that answered 200 were `/v1/produto/` and
- * `/v1/categoria/`). The change that adds the stock captures settles it: they
- * are requested in exactly these two forms, the fixture records the request
- * path it was taken with, and a test pins {@link CAMINHO_ESTOQUE_LI} against
- * it. If only the slash form answers there, both GETs move to it, as the other
- * reads use; the stock write keeps the document's key, as the order writes do.
+ * Proven for GET: the owner's read-only stock captures asked the list and a
+ * detail in both forms, and each answered 200 with the same rows (the same
+ * order, the same `total_count`) or the same body, with no redirect; a test
+ * pins {@link CAMINHO_ESTOQUE_LI} against the captured request path. ⚠️ The
+ * stock PUT's path form stays unproven: those captures are GET-only, and the
+ * document's path keys are known NOT to be the request form elsewhere (it keys
+ * `/v1/produto` and `/v1/categoria`, while the captured reads were
+ * `/v1/produto/` and `/v1/categoria/`).
  *
  * ## The next offset
  *
  * Exactly as {@link lerPaginaLi} returns it: the caller stores the offset and
  * asks again; the page is always requested at {@link CAMINHO_ESTOQUE_LI} with
- * exactly `limit` and `offset`, whatever `next` says (the document's `next` is
- * `/api/v1/produto_estoque?limit=20&offset=20`). An offset list edited while
- * it is read can repeat or skip a row: the caller must tolerate both.
+ * exactly `limit` and `offset`, whatever `next` says. The captured `next` is
+ * `/api/v1/produto_estoque?limit=<same>&offset=<offset + limit>` — the `/api`
+ * prefix and no slash before `?` — and it is never followed as a path. A page
+ * past the end answers 200 with no row, `next` null and the same
+ * `total_count`. An offset list edited while it is read can repeat or skip a
+ * row: the caller must tolerate both.
  *
  * ## Ids are checked before anything is built
  *
@@ -118,13 +125,14 @@ import {
 export const CAMINHO_ESTOQUE_LI = '/v1/produto_estoque';
 
 /**
- * The largest page the stock list is asked for: a BOUND, not a measurement. It is
- * `@delfrance/schemas`' `MAX_LIMITE_PAGINA_ESTOQUE_LI`, re-exported here as the
- * same binding, never a copy: the reconcile cursor's stored `limite` is held to
- * it, so a size a run stored is never one this reader refuses at every resume.
- * The produto list answered `limit=100` in full and refused 200 and above with a
- * 400 (`produtos.ts`, "Page size"); the stock list's own ceiling is not measured
- * yet. The page applied is read back in `meta.limit`, never assumed.
+ * The largest page the stock list is asked for, as measured: the owner's
+ * read-only stock captures saw `limit=100` honoured in full and `limit=200`
+ * answered with a 400 from the API gateway, as on the produto list
+ * (`produtos.ts`, "Page size"). It is `@delfrance/schemas`'
+ * `MAX_LIMITE_PAGINA_ESTOQUE_LI`, re-exported here as the same binding, never a
+ * copy: the reconcile cursor's stored `limite` is held to it, so a size a run
+ * stored is never one this reader refuses at every resume. The page applied is
+ * read back in `meta.limit`, never assumed.
  */
 export { MAX_LIMITE_PAGINA_ESTOQUE_LI };
 

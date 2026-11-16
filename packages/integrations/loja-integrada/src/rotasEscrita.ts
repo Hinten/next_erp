@@ -128,7 +128,9 @@ const ROTA_SITUACAO_PEDIDO: RotaEscritaLi = {
  * `PUT /v1/produto_estoque/{produto id}`: exactly the four leaves, the three
  * fixed ones ({@link ESTOQUE_FIXO_ESCRITA_LI}) as literals and a sendable
  * quantity ({@link quantidadeDeEstoqueValidaLi}). The path id is the PRODUTO's
- * id, the public document's path key; no trailing slash.
+ * id, the public document's path key; no trailing slash. A GET at this exact
+ * path form was captured answering 200 (the owner's read-only stock captures);
+ * the PUT itself stays unproven until the first canary write.
  */
 const ROTA_ESTOQUE_PRODUTO: RotaEscritaLi = {
   caminho: /^\/v1\/produto_estoque\/[1-9][0-9]*$/,

@@ -1,0 +1,36 @@
+{
+  "versao": 1,
+  "perfil": "fixture",
+  "credencial": "personal-token",
+  "capturadoEm": "2026-11-16",
+  "requisicao": {
+    "metodo": "GET",
+    "caminho": "/v1/produto_estoque",
+    "query": [
+      [
+        "limit",
+        "100"
+      ],
+      [
+        "offset",
+        "20000"
+      ]
+    ]
+  },
+  "resposta": {
+    "status": 200,
+    "politica": "catalogo",
+    "forma": "json",
+    "bytes": 141,
+    "corpo": {
+      "meta": {
+        "limit": 100,
+        "offset": 20000,
+        "total_count": 8118,
+        "previous": "/api/v1/produto_estoque?limit=100&offset=19900",
+        "next": null
+      },
+      "objects": []
+    }
+  }
+}
