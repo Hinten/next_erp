@@ -1297,6 +1297,16 @@ export type MlSellerItemsScan = z.infer<typeof sellerItemsScanSchema>;
 
 /* --------------------- User-Products migration (#441) --------------------- */
 
+export const UPTIN_SOURCE_TAG = 'variations_migration_source';
+export const UPTIN_DESTINATION_TAG = 'variations_migration_uptin';
+export const UPTIN_PENDING_TAG = 'variations_migration_pending';
+
+export const uptinEligibilitySchema = z.object({
+  is_valid: z.boolean(),
+  cause: z.array(z.object({ message: z.string() })).nullish(),
+});
+export type MlUptinEligibility = z.infer<typeof uptinEligibilitySchema>;
+
 /**
  * One entry of `GET /items/{id}/migration_live_listing` — only the two fields
  * the migration handler consumes (legacy `tasks.dart:871-1036`):
@@ -1319,6 +1329,9 @@ export type MlMigrationNewItem = z.infer<typeof migrationNewItemSchema>;
  */
 export const migrationLiveListingSchema = z
   .object({
+    item_id: z.string().nullish(),
+    date_created: z.string().nullish(),
+    activation_completed: z.iso.datetime({ offset: true }).nullish(),
     new_items: z.array(migrationNewItemSchema).default([]),
   })
   .passthrough();

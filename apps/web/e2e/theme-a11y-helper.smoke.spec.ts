@@ -63,6 +63,25 @@ function popupTargets(page: Page) {
   return { scheme: 'light' as const, scope: '#popup', required: [page.locator('#message')] };
 }
 
+async function scrollTableFixture(page: Page) {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const headers = Array.from(
+    { length: 8 },
+    (_, index) => `<th><span id="col-${index}">Header ${index}</span></th>`,
+  ).join('');
+  await page.setContent(`<!doctype html><html data-mantine-color-scheme="light"><style>
+    body { margin: 16px; background: #fff; color: #111; font: 14px Arial; }
+    #results { width: 310px; overflow-x: auto; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { min-width: 117px; padding: 4px; border-bottom: 1px solid #ccc; }
+    tbody tr { background: #f6f6f6; }
+  </style><body><h1>Catalog</h1><div id="results" tabindex="0"><table>
+    <thead><tr>${headers}</tr></thead>
+    <tbody><tr><td>One</td><td>Two</td><td>Three</td><td>Four</td><td>Five</td><td>Six</td><td>Seven</td><td>Eight</td></tr></tbody>
+  </table></div></body></html>`);
+  return { scheme: 'light' as const, required: [page.getByRole('heading')] };
+}
+
 async function shadowPopupFixture(page: Page): Promise<void> {
   await opaquePopupFixture(page);
   await page.locator('#popup .scroll-root').evaluate((outer) => {
@@ -495,6 +514,36 @@ test.describe('Theme readability checker rejects rendering defects', () => {
     const report = await auditThemeReadability(page, popupTargets(page));
     expect(report.issues.some((issue) => issue.code === 'glyph-contrast')).toBe(true);
     expect(report.resolvedTextTargets).toEqual([]);
+  });
+
+  test('checks contrast after scrolling an offscreen table header into view', async ({ page }) => {
+    const options = await scrollTableFixture(page);
+    const report = await auditThemeReadability(page, options);
+    expect(report.resolvedTextTargets).toContainEqual({
+      target: '#col-7',
+      reason: 'elmPartiallyObscured',
+    });
+    expect(report.issues).toEqual([]);
+  });
+
+  test('rejects low-contrast text in an offscreen table header', async ({ page }) => {
+    const options = await scrollTableFixture(page);
+    await page.locator('#col-7').evaluate((el) => {
+      el.style.color = '#eee';
+    });
+    const report = await auditThemeReadability(page, options);
+    expect(report.resolvedTextTargets).not.toContainEqual({
+      target: '#col-7',
+      reason: 'elmPartiallyObscured',
+    });
+    expect(report.issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: 'glyph-contrast',
+          target: expect.stringContaining('#col-7'),
+        }),
+      ]),
+    );
   });
 
   test('rejects a real foreground occluder over popup text', async ({ page }) => {
