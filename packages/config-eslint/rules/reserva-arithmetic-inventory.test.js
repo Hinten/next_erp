@@ -124,9 +124,9 @@ const INVENTARIO = {
   'apps/loja-integrada/lib/lojaIntegrada/testing/especificacaoPii.ts':
     'Test support (`testing/` is imported by tests only): the public OpenAPI document’s `GET /v1/produto_estoque/{produto_id}` example, transcribed with its `quantidade_reservada: 0`. The store’s reservation, as data; no arithmetic.',
   'packages/integrations/loja-integrada/src/types.ts':
-    'The package’s wire schemas. Declares the store’s `quantidade_reservada` once, as a `wireInt()` leaf of `liEstoqueProdutoLinhaSchema` (a stock row and detail), and names it in that schema’s doc (the nine leaves, and the store’s own `quantidade_disponivel` relation as the captures showed it). Read and parsed only: no arithmetic, no decision — model A’s sum lives in the app (`quantidadeEstoqueLi.ts` above). The store’s reservation, not the ERP counter.',
+    'The stock wire (master plan step 12): `liEstoqueProdutoLinhaSchema` declares the store’s `quantidade_reservada` as a REQUIRED `wireInt()` of any sign, so a list row without it lands in `ilegiveis` and a detail without it refuses the read — never read as 0. Parsing only: the value reaches model A through `alvoEstoqueLi` (`quantidadeEstoqueLi.ts` above), which floors it. The store’s reservation, not the ERP counter; no arithmetic.',
   'packages/integrations/loja-integrada/test/_fixtures/especificacao.ts':
-    'Test support (imported by the package’s tests only; not a `*.test.ts`, so the pathspec reaches it): the public OpenAPI document’s stock examples (`GET /v1/produto_estoque` and its detail), transcribed with their `quantidade_reservada: 0`. The store’s reservation, as data; no arithmetic.',
+    'Test fixtures: the public OpenAPI document’s `produto_estoque` examples (`estoquePaginaExemplo`, `estoqueDetalheExemplo`, `estoqueEcoExemplo`), transcribed with their `quantidade_reservada: 0`. The store’s reservation, as data; no arithmetic.',
 
   // ---- Writes it, floors the RESULT ---------------------------------------
   'apps/functions/src/estoques/aplicarEstoque.ts':
