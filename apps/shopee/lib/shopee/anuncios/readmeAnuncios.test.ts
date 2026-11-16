@@ -159,6 +159,15 @@ describe('README.md de anuncios/ — o que ele afirma sobre as recusas', () => {
    * channel, and the photo dedup whose scope the web's import recipe states
    * ("a removed photo comes back") — and it no longer says an absent or
    * unreadable value keeps the no-channel refusal's sentence.
+   *
+   * #1911 P15: the section also states the off rule (a TRUSTED list's
+   * `enabled: false`, `desligado-no-vinculo`), the fulfillment-channel rule
+   * (`canal-de-fulfillment`), the ONE stored-list reader, the draft edit as the
+   * fifth writer and the `canais` route — and its count of `MotivoCanalPulado`
+   * members is READ from the union in `logisticaPublicacao.ts`, so a member
+   * added there reds here until the doc names it and says the new count. The
+   * reader lives in `@delfrance/schemas`, so it is pinned as TEXT only: a
+   * cross-workspace read would be a turbo-cache hole.
    */
   const SECAO_LOGISTICA =
     '### Logistics: a stored list is re-sent only when THIS app wrote it, `get_channel_list` otherwise';
@@ -182,6 +191,10 @@ describe('README.md de anuncios/ — o que ele afirma sobre as recusas', () => {
     ['remedioPelaImportacao', './logisticaPublicacao.ts'],
     ['canalNomeado', './logisticaPublicacao.ts'],
     ['idsDeImagemJaImportados', '../produtos/fotosShopee.ts'],
+    ['avaliarCanaisDaLojaShopee', './logisticaPublicacao.ts'],
+    ['canalSelecionavel', './logisticaPublicacao.ts'],
+    ['lerCanaisDoRascunhoShopee', './canaisDoRascunho.ts'],
+    ['atualizarRascunhoShopee', './rascunho.ts'],
   ] as const;
 
   it('a seção de logística diz a regra da proveniência (#2015) e só cita funções que existem', () => {
@@ -194,6 +207,10 @@ describe('README.md de anuncios/ — o que ele afirma sobre as recusas', () => {
     expect(nomeia(secao, 'logisticaGravadaPeloErpShopee')).toBe(true);
     expect(nomeia(secao, 'logisticaProveniencia.test.ts')).toBe(true);
     expect(ler('./logisticaProveniencia.test.ts')).toContain("describe('#2015 no código do app'");
+    // #1911 P15: the two new skip reasons and the ONE stored-list reader.
+    expect(nomeia(secao, 'desligado-no-vinculo')).toBe(true);
+    expect(nomeia(secao, 'canal-de-fulfillment')).toBe(true);
+    expect(nomeia(secao, 'lerLogisticaArmazenadaShopee')).toBe(true);
     for (const [simbolo, arquivo] of CITADOS_NA_LOGISTICA) {
       expect(nomeia(secao, simbolo), simbolo).toBe(true);
       expect(ler(arquivo), `${simbolo} em ${arquivo}`).toMatch(
@@ -215,5 +232,120 @@ describe('README.md de anuncios/ — o que ele afirma sobre as recusas', () => {
     expect(secaoDeLogistica(`${SECAO_LOGISTICA}\na\n#### b\nc\n### d\n`)).toBe(
       `${SECAO_LOGISTICA} a #### b c`,
     );
+  });
+
+  /**
+   * The members of `MotivoCanalPulado`, read off the union in
+   * `logisticaPublicacao.ts` — one `| '<slug>'` per line, the last one closed
+   * by `;`. `[]` when the declaration is missing or never closes, so a renamed
+   * type reds the count instead of agreeing with nothing.
+   */
+  function membrosDoMotivoCanalPulado(fonte: string): string[] {
+    const inicio = fonte.indexOf('export type MotivoCanalPulado =');
+    if (inicio < 0) return [];
+    const membros: string[] = [];
+    for (const linha of fonte.slice(inicio).split('\n').slice(1)) {
+      const membro = /^\s*\| '([^']+)'(;?)\s*$/.exec(linha);
+      if (membro === null) continue;
+      membros.push(membro[1] ?? '');
+      if (membro[2] === ';') return membros;
+    }
+    return [];
+  }
+
+  /** The count words the README may use, by value. */
+  const CONTAGEM_POR_EXTENSO: Readonly<Record<number, string>> = {
+    7: 'Seven',
+    8: 'Eight',
+    9: 'Nine',
+    10: 'Ten',
+  };
+
+  /** Every "<Word> `MotivoCanalPulado` members" the text states, whitespace folded. */
+  function contagensDeMotivosCanal(texto: string): string[] {
+    return [...emUmaLinha(texto).matchAll(/\b([A-Z][a-z]+) `MotivoCanalPulado` members/g)].map(
+      (m) => m[1] ?? '',
+    );
+  }
+
+  it('#1911 P15: a seção nomeia CADA membro de MotivoCanalPulado e a contagem é a do tipo — lida do código', () => {
+    const membros = membrosDoMotivoCanalPulado(ler('./logisticaPublicacao.ts'));
+    // ÂNCORA: the parser found the union, with P15's two members in it.
+    expect(membros.length).toBeGreaterThanOrEqual(9);
+    expect(membros).toContain('canal-de-fulfillment');
+    expect(membros).toContain('desligado-no-vinculo');
+    const secao = secaoDeLogistica(LEIA_ME);
+    expect(membros.filter((m) => !nomeia(secao, m))).toEqual([]);
+    const palavra = CONTAGEM_POR_EXTENSO[membros.length];
+    expect(palavra, `contagem ${String(membros.length)} sem palavra na tabela`).toBeDefined();
+    // ONE statement in the whole README, and it is the type's count.
+    expect(contagensDeMotivosCanal(LEIA_ME)).toEqual([palavra]);
+  });
+
+  it("⛔ QUASE: 'Seven `MotivoCanalPulado`' e 'only the four writers' não sobrevivem; a contagem um a menos é outra", () => {
+    const secao = secaoDeLogistica(LEIA_ME);
+    expect(secao).not.toContain('Seven `MotivoCanalPulado`');
+    expect(secao).not.toContain('only the four writers');
+    expect(secao).toContain('only the five writers');
+    const total = membrosDoMotivoCanalPulado(ler('./logisticaPublicacao.ts')).length;
+    const umAMenos = CONTAGEM_POR_EXTENSO[total - 1] ?? '';
+    // Re-wrapped across a line, still read; one short of the type, still distinct.
+    const quebrada = `${umAMenos}\n\`MotivoCanalPulado\` members`;
+    expect(contagensDeMotivosCanal(quebrada)).toEqual([umAMenos]);
+    expect(contagensDeMotivosCanal(quebrada)).not.toEqual([CONTAGEM_POR_EXTENSO[total]]);
+    // The parser stops at the union's closing `;` — a comment holding one
+    // does not end it, and the next type's members are never counted.
+    const fonte =
+      "export type MotivoCanalPulado =\n  | 'a'\n  /** x; y */\n  | 'b';\n" +
+      "export type Outro =\n  | 'c';\n";
+    expect(membrosDoMotivoCanalPulado(fonte)).toEqual(['a', 'b']);
+    expect(membrosDoMotivoCanalPulado("export type MotivoCanalPulado =\n  | 'a'\n")).toEqual([]);
+  });
+
+  /**
+   * The members the COUNTING sentence — «<Word> `MotivoCanalPulado` members —
+   * … — all producible», whitespace folded — does not name. `null` when the
+   * sentence or its «— all producible» end is missing, so a reworded sentence
+   * reds instead of agreeing with nothing. Read off the sentence alone: the
+   * section also holds the `canais` route's motivo → `indisponivel` map, which
+   * names every member again, so the section-wide check above stays green
+   * when the sentence loses one.
+   */
+  function membrosForaDaFraseDaContagem(
+    secao: string,
+    palavra: string,
+    membros: readonly string[],
+  ): string[] | null {
+    if (palavra === '') return null;
+    const inicio = secao.indexOf(`${palavra} \`MotivoCanalPulado\` members —`);
+    if (inicio < 0) return null;
+    const fim = secao.indexOf('— all producible', inicio);
+    if (fim < 0) return null;
+    const frase = secao.slice(inicio, fim);
+    return membros.filter((m) => !nomeia(frase, m));
+  }
+
+  it('⛔ QUASE: a FRASE da contagem lista CADA membro — um membro nomeado só no mapa da rota canais não conta', () => {
+    const membros = membrosDoMotivoCanalPulado(ler('./logisticaPublicacao.ts'));
+    const palavra = CONTAGEM_POR_EXTENSO[membros.length] ?? '';
+    // ÂNCORA: the counting sentence is found, its list ends at «— all
+    // producible», and it names every member of the union.
+    expect(membrosForaDaFraseDaContagem(secaoDeLogistica(LEIA_ME), palavra, membros)).toEqual([]);
+    // The near-miss: `b` is named only in a `#### The \`canais\` route` bullet.
+    // The section-wide read finds it; the sentence's read reports it missing.
+    const secao = emUmaLinha(
+      'Two `MotivoCanalPulado` members — `a` — all\nproducible.\n' +
+        '#### The `canais` route (#1911 P15)\n- `b` ⇒ `nao-cabe`\n',
+    );
+    expect(['a', 'b'].filter((m) => !nomeia(secao, m))).toEqual([]);
+    expect(membrosForaDaFraseDaContagem(secao, 'Two', ['a', 'b'])).toEqual(['b']);
+    // A sentence without its «— all producible» end, or a count with no word, is not read.
+    expect(
+      membrosForaDaFraseDaContagem('Two `MotivoCanalPulado` members — `a`, `b`.', 'Two', [
+        'a',
+        'b',
+      ]),
+    ).toBeNull();
+    expect(membrosForaDaFraseDaContagem(secao, '', ['a', 'b'])).toBeNull();
   });
 });

@@ -12,7 +12,7 @@ Everything here is **offline-verified only**. The probe measured the wire
 through the package's own operations against the **SG sandbox** shop; no module
 in this folder has ever run against a BR shop, staging or production.
 
-## The twenty-nine modules, in five families
+## The thirty modules, in five families
 
 The families are the seam, not a filing convention.
 
@@ -54,6 +54,9 @@ The families are the seam, not a filing convention.
   in its ordinary mode; called only from `aplicarPublicacao`, under the lock;
   both look-ups ride that file's ONE `get_item_list` walk), `rascunho.ts` (#1911:
   the draft route's create / edit / discard — the one `prodshopee` delete),
+  `canaisDoRascunho.ts` (#1911 P15: the `canais` route's read — one produto read
+  by id, one UNCACHED `get_channel_list`, and the publisher's own per-channel
+  verdict, `avaliarCanaisDaLojaShopee`; it writes nothing),
   `fotosPublicacao.ts` (the photo up-direction), `lerImpostoDoProduto.ts` (the
   memoised imposto reader over the promoted NF-e cascade),
   `lerTabelaMedidasDoProduto.ts` (step 18: the produto's `tabMedi`, one read,
@@ -97,7 +100,8 @@ answers nothing usable otherwise and `montarAnuncio` refuses a non-leaf with
 `categoria-invalida` regardless — while the shop-wide item bands are read
 either way, because that read is documented rather than degraded.
 `get_channel_list` is paid ONCE per publish and is deliberately **uncached**
-(`preparar` is where it lives; step 10's caches are for taxonomy reads).
+(`preparar` is where it lives; step 10's caches are for taxonomy reads). The
+`canais` route reads it uncached too, once per request (#1911 P15).
 
 ### `preparar` → `planejar` → `aplicar`, and the split is structural
 
@@ -913,7 +917,11 @@ The browser never writes `prodshopee` (D1): three POST routes —
 `GET, POST, OPTIONS`, hence sub-paths, the `importar-todos/{cancelar,status}`
 shape) — all `PERM.integracao.write`, write a draft through ONE module,
 `rascunho.ts`. **Zero Shopee calls** on every path: the leaf gate, the bands and
-the brand are publish's (`montagemAnuncio.ts`), never the draft's.
+the brand are publish's (`montagemAnuncio.ts`), never the draft's. A fourth
+route, `GET canais` (#1911 P15), is NOT a draft route: `PERM.integracao.read`,
+one Shopee call and no write — the read the draft editor's logistics choice is
+made from ("The `canais` route", under Logistics below). "Zero Shopee calls"
+stays true of the three POST routes.
 
 **The route owns four things and decides nothing else**: the caller check, the
 JSON parse, the STRICT body parse (`corpo{Criar,Atualizar,Descartar}RascunhoShopeeSchema`
@@ -937,7 +945,7 @@ web builds the `base` it sends from the same projection. A `base`
 is parsed by the TOLERANT `baseRascunhoShopeeSchema` (what the operator SAW,
 never normalised); only `patch` / `conteudo` go through the write whitelist.
 
-`attributes` (P6, D9) is the one field read through a DECODER: the projection
+`attributes` (P6, D9) is read through a DECODER: the projection
 passes a stored list through `atributosShopee.ts`'s `lerAtributosArmazenadosShopee`
 into the REQUEST shape (the import's READ shape and the legacy no-`value_id`
 value read as the values publish sends; not a list ⇒ `null`; nothing usable ⇒
@@ -946,6 +954,27 @@ EQUAL; a reordered list, `value_unit` absent vs `''`, `[]` vs `null` DISTINCT.
 The write schema refuses the READ shape (a 400) and normalises to exactly what
 the decoder reads back, so an identical second save writes nothing — and a
 stored legacy list that reads EQUAL is never rewritten (D9: no migration).
+
+`logistic_info` (#1911 P15) — the channel choice, `null` = «Automática» — is
+read through the publisher's ONE stored-list reader, `lerLogisticaArmazenadaShopee`
+(`@delfrance/schemas`, `shopeeLinkLeitura.ts`), and projected only when the
+list is STAMPED (`logisticaGravadaPeloErpShopee`): each readable entry as
+`{logistic_id, enabled, is_free}` (`enabled` is `false` only for a boolean
+`false`; `is_free` a boolean, else `null`), stable-sorted by `logistic_id`,
+duplicates kept. An unstamped list — every migrated one — projects `null`,
+«Automática», which is what a publish does with it (the full pass, below);
+a stamped non-list projects `null` and a stamped `[]` projects `[]`. The
+compare is `valuesEqual`: keys in another order EQUAL, and through the
+projection the same channels stored in another order, `'90003'` vs `90003`
+and an unstamped list vs `null`; `enabled`, `is_free` (`true` / `false` /
+`null`), one channel more and `[]` vs `null` DISTINCT, and a `base` sent in
+another order is a conflict — only the projection sorts. The write whitelist
+takes a STRICT list (`{logistic_id: a positive integer, enabled: a boolean,
+is_free: a boolean}`, at most `MAX_CANAIS_LOGISTICA_RASCUNHO_SHOPEE` = 50
+entries, unique ids, at least ONE `enabled: true`) and returns it sorted, or
+`null`; `[]` and an all-off list answer the one sentence
+`MSG_LOGISTICA_SEM_CANAL_LIGADO_RASCUNHO_SHOPEE`, a repeated id
+`MSG_LOGISTICA_CANAL_REPETIDO_RASCUNHO_SHOPEE`.
 
 - **create** — tier 0, `create()` at the CLIENT-generated 20-character id.
   404 when the conta is absent or not Shopee, or the produto is absent · 422
@@ -962,7 +991,12 @@ stored legacy list that reads EQUAL is never rewritten (D9: no migration).
   the `null` (or, for the title, the produto's `nome`) it would write — never a
   wildcard: a retry that drops a brand the lost first create stored is a 409,
   not a 200 over a brand the tab believes cleared. (Rev. 2 §3 P4 said "the
-  retry's `conteudo` keys"; this tightens it in K1-9's direction.)
+  retry's `conteudo` keys"; this tightens it in K1-9's direction.) Logistics
+  are never part of a create (D-13, #1911 P15): a `conteudo` naming
+  `logistic_info` — a list or `null` — is a 400, and the create writes the link
+  schema's `null` with NO stamp. So a retry over a list another tab has chosen
+  since (stamped) is a 409 `CONFLITO` on `logistic_info`, while an unstamped
+  legacy list, which projects `null` too, is still the same draft.
 - **edit** — tier 3 + 1: the baseline compare, then `update(…, {lastUpdateTime})`,
   ≤ 3 re-derives. 404 `INEXISTENTE` (absent, or another conta's) · 409
   `JA_PUBLICADO` · 409 `EM_ANDAMENTO {aguardarMs}` (a live lock, its post-expiry
@@ -973,8 +1007,16 @@ stored legacy list that reads EQUAL is never rewritten (D9: no migration).
   `CONFLITO {conflitos}` (the stored projection ≠ `base` on a field
   `camposDaBaseDoRascunhoShopee` names — the PATCHED ones, plus `attributes`
   on a category change, or `category_id` beside an attributes-only patch,
-  below; a third lost precondition answers `conflitos: []`).
-- **discard** — tier 3 + 1: the baseline compare over EVERY projected field,
+  below; a third lost precondition answers `conflitos: []`). A patch naming
+  `logistic_info` (#1911 P15) writes the list AND `logisticaGravadaEm` (the
+  route's `nowMs`) in ONE object literal of that ONE update, a `null`
+  («Automática») included — the fifth writer of the Logistics table below; a
+  list equal to the stored projection (the same channels stored in another
+  order included) writes neither. In `incerta` a logistics-only patch is
+  written: only `category_id` locks.
+- **discard** — tier 3 + 1: the baseline compare over the five form fields,
+  plus `logistic_info` when the `base` names it — optional for the P15 → P16
+  deploy gap (#1911 P15, D-LOG-10: a web deployed before P16 sends five keys) —
   then `delete({lastUpdateTime})`, ≤ 3 re-derives. 404 · 409 `JA_PUBLICADO` ·
   409 `EM_ANDAMENTO` · 409 `CONFLITO` (stored ≠ `base`, K1-13: an edit made
   meanwhile is never discarded unseen) · 409 `CRIACAO_INCERTA` (`incerta`
@@ -999,7 +1041,7 @@ route's own — Zod's rendering of the issues, paths and the schema's sentences,
 never a value of the body — plus one of the module's: a create whose produto
 has no usable name and no `item_name`.
 
-Five rules a change must keep:
+Six rules a change must keep:
 
 - **An edit never writes the lock.** An `incerta` lock survives every edit; only
   publish takes, claims and releases it (above).
@@ -1007,7 +1049,8 @@ Five rules a change must keep:
   the `attributes` a category change clears — and, beside an attributes-only
   patch, the `category_id` the list was chosen in, which is compared and never
   written (#1911 P13 Q1, below); a field someone else edited that this request
-  does not touch is not a conflict. On a discard it is over every field, because
+  does not touch is not a conflict. On a discard it is over every field the
+  `base` names (the five form fields, and `logistic_info` when named), because
   a discard throws all of them away.
 - **`marca` is ONE field over two stored keys**: written whole (`brand_id` +
   `original_brand_name`; `null` ⇒ both `null`; `0` ⇒ the name `null`), compared
@@ -1036,6 +1079,13 @@ Five rules a change must keep:
   attribute save, and an older route answers a newer tab (whose base names the
   category) with the generic `MSG_BASE_DIFERENTE_DO_PATCH_RASCUNHO_SHOPEE` 400 —
   loud, and the typed list stays in the tab.
+- **The list and its stamp ride ONE literal of ONE update, under the patch's
+  own condition (#1911 P15).** `escritaDoCampo`'s `logistic_info` arm returns
+  `{logistic_info, logisticaGravadaEm}` together, and it runs only when the
+  list is written, so a title-only edit writes neither key and no edit writes
+  one without the other. `logisticaProveniencia.test.ts` reads that shape off
+  the syntax tree: a stamp spread in by the caller, a shorthand, a later
+  assignment or a computed key reds it.
 - **The discard is this app's ONE `prodshopee` delete**, of a draft only, so
   `../produtos/links.ts`'s "never delete" gains exactly this exception. A publish
   whose create lands after the discard does not resurrect the draft: its
@@ -1717,13 +1767,60 @@ once, and a raw-text test asserts no local `sincronizar*` exists in this folder
 `construirLogistica` has two passes. The STORED pass re-validates the link's
 `logistic_info` entry by entry against the live `get_channel_list`; if at least
 ONE entry survives, the stored list wins and the full build never runs. The
-FULL pass enables every shop-enabled channel the parcel fits, `enabled: true`,
-with `is_free` from the produto's `ofereceFreteGratis` (masked by
-`block_seller_cover_shipping_fee`) — and, having no `size_id` or
+FULL pass enables every SELECTABLE channel (`canalSelecionavel`: shop-enabled
+or `force_enable`, and not a fulfillment channel) the parcel fits,
+`enabled: true`, with `is_free` from the produto's `ofereceFreteGratis` (masked
+by `block_seller_cover_shipping_fee`) — and, having no `size_id` or
 `shipping_fee` to send, it skips every `SIZE_SELECTION` / `CUSTOM_PRICE`
 channel. It runs when there is no trusted list, or when the trusted one
 validates to EMPTY. `pulados` always describes the pass that actually produced
-`logistic_info`, so the two can never disagree.
+`logistic_info`, so the two can never disagree. The stored list is read ONCE,
+through the ONE reader the draft projection shares,
+`lerLogisticaArmazenadaShopee` (`@delfrance/schemas`, #1911 P15, #1369), and
+the stored pass and the import remedies below read those same entries.
+
+⚠️ **A TRUSTED list's explicit off is honoured (#1911 P15, D-12).** An entry
+stored with the boolean `enabled: false` is not sent — `pulados` says
+`desligado-no-vinculo` — unless the channel is `force_enable`, which wins (the
+seller cannot close that channel, so a stored off cannot either). Only a
+boolean `false` is an off: `true`, `null`, an absent key, `'false'` and `0`
+read ON and go on to the checks below. A switched-off channel is never a lost compulsory one,
+and a DISTRUSTED list's off is never honoured, because nothing in this app
+vouches for it. Per stored entry the order is: an unreadable `logistic_id`
+(the reader drops it) → a channel gone from the live list
+(`nao-habilitado-na-loja`) → a stored off (`desligado-no-vinculo`) → enable →
+mask → fit → fee. While a stored ON channel still validates, the two
+read-back shapes of an off — listed with `enabled: false` (shape A) or
+omitted (shape B) — send the SAME wire list. `enabled: false` itself never
+reaches the wire: the ERP never DISABLES a channel on a live listing, and on a
+draft the operator's chosen list decides what the CREATE enables.
+
+**A fulfillment channel is never sent (#1911 P15, D-LOG-1).** A channel whose
+`mask_channel_id` is set and non-zero hangs off a checkout channel; both passes
+skip it as `canal-de-fulfillment`, checked right after the shop-level enable
+and BEFORE the fit, so it never reads as a channel the parcel does not fit.
+An absent mask — `null` from the package's parse, `undefined` on a channel that
+never went through it — is selectable. A COMPULSORY fulfillment channel is a
+lost compulsory channel with `logistica-sem-canal`'s sentence, never an import
+remedy. On the BR shop every channel answers `mask_channel_id: 0` and no
+stored list holds an off, so both rules are behaviour-neutral there
+(`logisticaPublicacao.capturasBr.test.ts`).
+
+**The fallback never switches an off back on (#1911 P15, D-11).** When the
+trusted list validates to EMPTY, the full pass runs MINUS that list's explicit
+offs, each reported `desligado-no-vinculo` again. When nothing is left and a
+trusted off was among the channels left out, the `logistica-sem-canal`
+sentence is (3b): «Nenhum canal ligado neste vínculo aceita este item (os
+desligados nele não são usados): confira peso, dimensões e os canais
+habilitados no Seller Centre — num rascunho, também os canais escolhidos na aba
+Shopee do produto.» Otherwise it is (3), word for word: «Nenhum canal de
+logística da loja aceita este item: confira peso, dimensões e os canais
+habilitados no Seller Centre.» (3b) and the two import remedies below never
+meet: (3b) needs a TRUSTED list, `remedioPelaImportacao` a DISTRUSTED one. A
+trusted list whose every entry is off still leaves the full pass minus those
+offs (D-11 read literally; the draft's write whitelist refuses such a list,
+and the only all-off bodies Shopee has answered — a deleted kit's — are stored
+by no stamped writer, residual below).
 
 ⚠️ **The stored pass runs only for a list this app wrote (#2015).** The legacy
 exporter rebuilt its list from `get_channel_list` on every save (with a blanket
@@ -1735,12 +1832,13 @@ channel set back on a live listing. So every writer of the list in this app
 stamps `logisticaGravadaEm` (MILLISECONDS; only its PRESENCE is ever read) in
 the SAME patch and under the SAME condition as the list:
 
-| writer                                                                          | where                                             | when the stamp is written                                                             |
-| ------------------------------------------------------------------------------- | ------------------------------------------------- | ------------------------------------------------------------------------------------- |
-| write-back #1, the draft claim's three branches included                        | `publicarAnuncio.ts` (`dadosDoWriteBack1`)        | inside the list's own conditional spread — a body with no list writes neither key     |
-| write-back #2                                                                   | `publicarAnuncio.ts` (`escreverWriteBack2`)       | always: the read-back's list is an array or `null`, never absent                      |
-| the import builder — item, kit and mass import, and the import's draft adoption | `../produtos/mapeamento.ts` (`dadosLinkListagem`) | always, AFTER the `...existente` spread, so a stored `null` stamp never rides forward |
-| the kit create                                                                  | `../kits/vinculosKit.ts` (`escreverVinculoDoKit`) | always: the list is required on that body                                             |
+| writer                                                                          | where                                             | when the stamp is written                                                                                                   |
+| ------------------------------------------------------------------------------- | ------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| write-back #1, the draft claim's three branches included                        | `publicarAnuncio.ts` (`dadosDoWriteBack1`)        | inside the list's own conditional spread — a body with no list writes neither key                                           |
+| write-back #2                                                                   | `publicarAnuncio.ts` (`escreverWriteBack2`)       | always: the read-back's list is an array or `null`, never absent                                                            |
+| the import builder — item, kit and mass import, and the import's draft adoption | `../produtos/mapeamento.ts` (`dadosLinkListagem`) | always, AFTER the `...existente` spread, so a stored `null` stamp never rides forward                                       |
+| the kit create                                                                  | `../kits/vinculosKit.ts` (`escreverVinculoDoKit`) | always: the list is required on that body                                                                                   |
+| the draft edit (#1911 P15)                                                      | `rascunho.ts` (`atualizarRascunhoShopee`)         | only when the patch names `logistic_info` — the operator's list, or `null` («Automática») — in the same literal as the list |
 
 Trust is ONE predicate, `logisticaGravadaPeloErpShopee` (`@delfrance/schemas`),
 over the RAW link: a safe non-negative integer stamp, and nothing else — never
@@ -1753,12 +1851,14 @@ in `linkListagemLido` — and the kit plan over `ctx.alvo.raw` (the target kit's
 link, or the converter's ordinary PREDECESSOR; `../kits/README.md` §5).
 `logisticaProveniencia.test.ts` pins that shape on the source: both readers
 call the predicate, no file outside a test reads the field raw, and only the
-four writers above write it.
+five writers above write it.
 
 Nothing else stamps. The draft create writes `logistic_info: null` with no
-stamp on a NEW document (a null list takes the full pass anyway); a draft edit,
-every lock and ENSURE write, the failure stamp, pause, re-verify, stock, price,
-kit #2 and the superseded pointer are key-scoped merges or updates that leave
+stamp on a NEW document (a null list takes the full pass anyway), and a create
+body naming `logistic_info` is a 400; a draft edit that does not name
+`logistic_info`, every lock and ENSURE write, the failure stamp, pause,
+re-verify, stock, price, kit #2 and the superseded pointer are key-scoped
+merges or updates that leave
 both the list and the stamp alone, and the discard deletes the document. A
 DISTRUSTED list still reaches `construirLogistica`, because the refusal below
 reads it, but never its stored pass: the full pass runs and only ITS `pulados`
@@ -1767,8 +1867,8 @@ are reported.
 ⚠️ **No backfill, so the first Republicar of a migrated listing sends the FULL
 pass.** The legacy app never wrote the stamp: the migrated corpus arrives
 unstamped by construction, and each row heals at its first successful publish
-or import. Until then a publish enables every fitting channel with `is_free`
-from the produto flag, and a Seller Centre change made after the last legacy
+or import (a draft also at the first edit that writes its list). Until then a
+publish enables every fitting channel with `is_free` from the produto flag, and a Seller Centre change made after the last legacy
 export survives only if the listing is IMPORTED first (whether `update_item`
 disables a channel the request omits is UNVERIFIED). A staging link this app
 wrote before #2015 carries no stamp either and takes one full pass at its next
@@ -1793,20 +1893,26 @@ is a parcel dimension nobody chose. An unknown unit answers `null` from `paraCm`
 and never a factor of `1`. `canaisHabilitados` is REPORTING — it unions the live
 `related_enabled_channels` — and a channel can legitimately appear both there
 and in `pulados`: the first says "on anyway", the second says "not sent by us".
-Seven `MotivoCanalPulado` members, all producible, all pinned in
-`logisticaPublicacao.test.ts`. An empty `logistic_info`, or a compulsory channel
-we cannot satisfy, is the blocked motivo `logistica-sem-canal` — with TWO
+Nine `MotivoCanalPulado` members — `nao-habilitado-na-loja`,
+`peso-fora-do-limite`, `dimensao-fora-do-limite`, `soma-de-dimensoes-excedida`,
+`unidade-desconhecida`, `size-selection-sem-size-id`, `custom-price-sem-tarifa`,
+and since #1911 P15 `canal-de-fulfillment` and `desligado-no-vinculo` — all
+producible, all pinned in `logisticaPublicacao.test.ts`; they are diagnostic
+(logged, printed by the CLI) and never persisted. An empty `logistic_info`, or a
+compulsory channel we cannot satisfy, is the blocked motivo `logistica-sem-canal` — with TWO
 exceptions, both import remedies (`remedioPelaImportacao`). Each needs a
 compulsory `SIZE_SELECTION` / `CUSTOM_PRICE` channel the full pass skipped for its
-missing value (so the channel is enabled and the parcel fits), a DISTRUSTED list,
+missing value (so the channel is enabled, is not a fulfillment channel and the
+parcel fits), a DISTRUSTED list,
 and a listing an import would re-read — `itemIdImportavel`: the link's live
 `item_id`, on the kit converter its predecessor's. Campo `logistic_info`, no
 `acao`, and the sentence names that `item_id`:
 
 - **`logistica-nao-confirmada`** (#2015) when the distrusted list holds a
-  READABLE value for exactly that field (through the same readers the stored pass
-  uses): import the listing, then publish again. It is decided first, so one
-  readable entry beside an unreadable one is still this refusal.
+  READABLE value for exactly that field (through the same
+  `lerLogisticaArmazenadaShopee` entries the stored pass uses — a stored off
+  included, since an off is never honoured on a distrusted list): import the
+  listing, then publish again. It is decided first, so one readable entry beside an unreadable one is still this refusal.
 - **`logistica-sem-valor-gravado`** (#2099, CPY-4) when it holds none — absent,
   unreadable (`''`, `'12.5'`, `'0'`, a fee `'grátis'`), only the OTHER field, only
   another channel's, or no list at all: «O canal obrigatório {canal} precisa de um
@@ -1819,15 +1925,15 @@ and a listing an import would re-read — `itemIdImportavel`: the link's live
   and the id alone when the name is missing or blank (`canalNomeado`).
   `logistica-nao-confirmada` and `logistica-sem-canal` keep the bare id.
 
-A draft, a `removido` link, kit-criar, a trusted list, a parcel that does not fit
-and a channel the shop has not enabled keep `logistica-sem-canal`'s sentence word
-for word.
+A draft, a `removido` link, kit-criar, a trusted list, a parcel that does not
+fit, a channel the shop has not enabled and a fulfillment channel keep
+`logistica-sem-canal`'s sentence word for word.
 
 The two shop-wide sentences (no compulsory channel enabled; no channel at all)
 stay `logistica-sem-canal`, with ONE exception: when EVERY lost compulsory
 channel took one of the two import remedies, neither is added. Each of those
-channels is enabled and fits, so the import (and, for CPY-4, the value set in
-Seller Centre) is the whole remedy, and the produto's weight cannot fix it.
+channels is enabled, is not a fulfillment channel and fits, so the import (and,
+for CPY-4, the value set in Seller Centre) is the whole remedy, and the produto's weight cannot fix it.
 Either sentence would put weight advice, and the web's weight button on a
 `logistica-sem-canal` row, beside it; the web shows no weight button on an
 import-remedy row either (`superficieDoCampoShopee` in
@@ -1863,6 +1969,70 @@ The quoted labels are the dialog's own constants
 ⚠️ `update_item`'s request table omits `logistic_info` while every code sample,
 its own error list and `announcement 1395` carry it. It is sent, and write-back
 #1 stores it **as sent**; channel state is never read back from a write echo.
+
+Residuals of the off rule (#1911 P15), each accepted:
+
+- **Shape B (main's, D-LOG-4).** An off that a read-back OMITS cannot be told
+  from "never decided", so when every stored ON channel stops validating the
+  fallback can send it. Write-back #1 stores only the SENT (ON) entries, so
+  after a draft's first publish its explicit offs are gone too; published
+  logistics belong to Seller Centre (D8). Which shape a LIVE listing's
+  read-back takes is register 319. The committed SG deleted-kit bodies
+  (`get_item_base_info.sg-kit-apagado.json`, `get_kit_item_info.sg-apagado.json`)
+  list every channel `enabled: false`, so shape A exists at least on deleted
+  listings — and no stamped writer stores such a body (the mass import drops
+  deleted rows; the kit's write #2 stores no list).
+- **`related_enabled_channels`.** A SENT channel's related set can switch on a
+  channel the vínculo marks off: Shopee enables it, and `canaisHabilitados`
+  reports it "on anyway". The ERP never sends `enabled: false`, so it cannot
+  stop that. Unreachable on BR, where every relation set is `[]`.
+- **A duplicate id with mixed on/off** in a trusted list sends the ON copy and
+  records a `desligado-no-vinculo` for the same id — diagnostic only, and
+  unreachable from a draft (its whitelist refuses a repeated id).
+
+#### The `canais` route (#1911 P15)
+
+`GET /api/marketplace/shopee/canais?integracaoId=&produtoId=` answers the
+shop's channels for ONE produto, each with the verdict a publish of that
+produto would give it — the read the draft editor's Logística section (P16) is
+built from. `lerCanaisDoRascunhoShopee` (`canaisDoRascunho.ts`) reads the
+produto by id FIRST (absent ⇒ 404 `Produto {id} não encontrado.`, zero Shopee
+calls), takes its parcel through the publisher's own readers
+(`produtoParaPublicar`, `pesoParaPublicar`, `dimensaoParaPublicar`), so the fit
+is the STORED produto's and an unsaved weight edit is not reflected — then ONE
+uncached `get_channel_list`, and maps `avaliarCanaisDaLojaShopee` (the full
+pass's own per-channel decision, with no stored value) onto
+`respostaCanaisShopeeSchema` (`@delfrance/schemas`, `logisticaShopeeDto.ts`,
+the ONE envelope `apps/web` parses with), rows in `get_channel_list` order:
+
+- `logisticsChannelId`, and `nome`: the shop's `logistics_channel_name`, joined
+  by id from `get_channel_list` and never read from a stored `logistic_name`,
+  through `textoUtilizavelShopee` (trimmed, blank ⇒ `null`) — the reader
+  CPY-4's `canalNomeado` uses;
+- `selecionavel` = `canalSelecionavel`; `obrigatorio` = `canalInescapavel`
+  (compulsory, or `force_enable`); `bloqueiaFreteGratisDoVendedor` =
+  `block_seller_cover_shipping_fee === true`;
+- `indisponivel`, the publisher's motivo folded to three words:
+  `peso-fora-do-limite`, `dimensao-fora-do-limite` and
+  `soma-de-dimensoes-excedida` ⇒ `nao-cabe`; `unidade-desconhecida` ⇒
+  `limite-ilegivel`; `size-selection-sem-size-id` and `custom-price-sem-tarifa`
+  ⇒ `exige-valor-do-seller-centre`; `nao-habilitado-na-loja` and
+  `canal-de-fulfillment` ⇒ `null` (`selecionavel: false` already says it);
+  `desligado-no-vinculo` ⇒ `null` (unreachable: there is no stored list here);
+- `automatica`: the full pass's own entry as `{isFree}` (`is_free` already
+  masked by the block flag), or `null` when the full pass would skip the
+  channel;
+- and on the envelope `medidasCompletas`: a weight AND all three dimensions, by
+  the readers publish refuses `sem-peso` / `sem-dimensoes` with.
+
+No size, fee or `logistics_description` field (Lucas, 2026-11-04): the editor
+offers no size picker and no fee input. `PERM.integracao.read`,
+`Cache-Control: no-store` on EVERY answer (errors included), no read cache,
+zero writes; a conta error answers through `shopeeErrorResponse` before the
+produto read, and a Shopee failure is a 502 with its `kind`. The answer is a
+verdict, never a decision: publish re-reads `get_channel_list` uncached and
+recomputes every verdict, so a stale answer can mislead a screen but never a
+send.
 
 ### `tax_info` is whole or nothing
 
@@ -2299,7 +2469,7 @@ So nobody reads a gap as a bug:
 - **`apps/web` (step 21; #1911 P8–P11)** — the produto tab (since #1911 also a
   draft's editor, «Descartar» and «Publicar»), the `anuncioStatus` provider row
   and the registry rows. The routes (step 11's three, #1911's three draft
-  routes) and the CLI land HERE.
+  routes and its `canais` read) and the CLI land HERE.
 - **`batch_add_item`**, and authoring `scheduled_publish_time` (it is READ, for
   the fold and for code 27).
 - **`wholesale[]`** from the conta's `tabelasAtacado` — a recorded gap, and at
@@ -2387,6 +2557,7 @@ a regression.
 | 316 | a typed value on a unit attribute (`format_type` 2) sent WITHOUT a unit: refused or stored (#1911 P13)                                                                                                                         | ⏳ non-gating. The editor forces a unit (fail-closed), so only an imported or legacy value can lack one; a draft holding one shows `unidade-invalida` («nenhuma»), and it is sent as stored, so its first republish settles it                                                                                                                                                                                                                                            |
 | 317 | Shopee's answer to a `variation_option_name` beside a non-zero `variation_option_id` on `update_tier_variation`, when the name is the live option's own (#1911 P14a, R2)                                                       | ⏳ BR shop: the first republish of a listing with a standard option. A refusal arrives after `update_item`, in the model leg, as a provider failure naming no cause                                                                                                                                                                                                                                                                                                       |
 | 318 | Shopee's answer to a variante's ERP name as `variation_option_name` beside a non-zero `variation_option_id` (`init_tier_variation` / `update_tier_variation`) for a STANDARD row stored blank (#1911 P14b, P14a open point 7)  | ⏳ BR shop: the first publish that authors an option from a standard binding row stored blank. Before P14b the blank itself went beside the id, unrefused and just as unmeasured. A refusal arrives as a Shopee rejection at the tier call: after `add_item` on a create (the listing then linked, UNLIST and model-less), after `update_item` on an update                                                                                                               |
+| 319 | the read-back of a channel switched off in Seller Centre on a LIVE listing: listed `enabled: false` (shape A) or omitted (shape B) (#1911 P15)                                                                                 | ⏳ open, non-gating. BR shop: switch one channel off on a live listing, then one `get_item_base_info`. Shape B ⇒ the residual stands (an omitted off cannot be told from "never decided", and the fallback can send it once every stored ON channel stops validating); shape A ⇒ a trusted list carries the off and P15 honours it. The committed SG deleted-kit bodies already list every channel `enabled: false`: shape A exists, at least on deleted listings         |
 
 Also unmeasured, and not a register line: nothing in this folder has met a BR
 shop. The `esperar` of 5 000 ms, the re-list door order, the daily-quota reset

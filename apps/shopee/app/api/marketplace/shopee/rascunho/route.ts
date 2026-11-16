@@ -22,7 +22,9 @@
  *  - **the STRICT body parse** — an unknown key (`item_id` included) is a 400,
  *    never silently dropped, so a web deployed before this app fails loudly;
  *    the 400's `error` is Zod's own rendering of the issues (paths and the
- *    schema's sentences, never a value of the body);
+ *    schema's sentences, never a value of the body). A `conteudo.logistic_info`
+ *    (a list or `null`) is a 400 too (#1911 P15, D-13) — logistics are chosen
+ *    on a SAVED draft, through the edit route, never at create;
  *  - **the clock** — ONE `Date.now()`, handed down as `nowMs` (the draft's
  *    `dataCadastro` and `ultimaModificacao`); no module under `anuncios/`
  *    reads one;
@@ -37,7 +39,8 @@
  * criado: false}` — the draft already existed for this conta and produto
  * holding exactly what THIS create would write (K1-9: every projected field;
  * a key the retry omits is the `null` — or the produto's `nome` — it would
- * write, never a wildcard) · 400 a malformed body, or a produto with no usable
+ * write, never a wildcard) · 400 a malformed body (a `conteudo.logistic_info`
+ * included), or a produto with no usable
  * name and no `item_name` · 401/403 the caller · 404 the conta is absent or not
  * a Shopee one (`ShopeeContaNotConfiguredError`, `shopeeErrorResponse`'s
  * answer), or the produto does not exist (`INEXISTENTE`) · 409

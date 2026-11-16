@@ -264,6 +264,38 @@ describe('editar — 200', () => {
     ]);
   });
 
+  it("#1911 P15: um patch de logística ⇒ 200 gravados ['logistic_info'], a lista ordenada e o carimbo com o relógio da rota", async () => {
+    semear();
+    const res = await POST(
+      req(
+        corpo(
+          { logistic_info: null },
+          {
+            logistic_info: [
+              { logistic_id: 90_005, enabled: false, is_free: true },
+              { logistic_id: 90_003, enabled: true, is_free: false },
+            ],
+          },
+        ),
+      ),
+    );
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({
+      linkDocId: RASCUNHO,
+      gravados: [CAMPO_RASCUNHO_SHOPEE.logisticInfo],
+    });
+    expect(db.store[CAMINHO]?.data).toMatchObject({
+      logistic_info: [
+        { logistic_id: 90_003, enabled: true, is_free: false },
+        { logistic_id: 90_005, enabled: false, is_free: true },
+      ],
+      logisticaGravadaEm: T0,
+      ultimaModificacao: T0,
+    });
+    expect(Date.now).toHaveBeenCalledTimes(1);
+  });
+
   it('um patch igual ao que está gravado responde `gravados: []` e NÃO escreve', async () => {
     semear();
     const res = await POST(req(corpo({ item_name: 'Camiseta' }, { item_name: 'Camiseta' })));

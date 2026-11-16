@@ -147,6 +147,12 @@ describe('o chamador e o corpo — decididos ANTES de qualquer leitura', () => {
       'confirmarSegundoAnuncio',
     ],
     ['um produtoId com separador', { produtoId: 'a/b' }, 'produtoId'],
+    // #1911 P15 (D-13): logistics are chosen on a SAVED draft — even «Automática».
+    [
+      '`logistic_info` no conteúdo (nem null: a logística se escolhe num rascunho salvo)',
+      { conteudo: { logistic_info: null } },
+      'logistic_info',
+    ],
   ])('⛔ 400 para %s — nomeia o campo, sem ler nem escrever', async (_nome, over, campo) => {
     semear();
     const leiturasAntes = db.opLog.length;
