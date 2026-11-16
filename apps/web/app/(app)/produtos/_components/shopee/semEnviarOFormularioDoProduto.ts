@@ -8,8 +8,10 @@ import type { KeyboardEvent } from 'react';
  * own handler, which runs after this one, still picks that option). Only Enter (by `key`, so
  * NumpadEnter too): every other key passes.
  *
- * One guard for every draft input that needs it — the title, the attribute controls and the
- * brand `Select` — so the rule cannot drift between private copies.
+ * One guard for every draft input that needs it — the title, the attribute controls, the
+ * brand `Select` and the logistics controls (the channel switches and free-shipping checkboxes,
+ * and the mode picker, whose handler sits on its radiogroup root) — so the rule cannot drift
+ * between private copies.
  */
 export function semEnviarOFormularioDoProduto(e: KeyboardEvent<HTMLInputElement>): void {
   if (e.key === 'Enter') e.preventDefault();

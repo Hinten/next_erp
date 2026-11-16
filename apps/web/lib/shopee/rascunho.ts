@@ -49,9 +49,10 @@
  * ## A field is in the patch only when the operator changed it AND the write
  *    would change what is stored
  *
- * Only the five fields the form renders ({@link CAMPOS_DO_FORMULARIO_RASCUNHO_SHOPEE}),
- * `attributes` among them since the attribute editor (P13). The question is
- * asked of every field alike, and it matters most for `attributes`: the
+ * Only the six fields the form renders ({@link CAMPOS_DO_FORMULARIO_RASCUNHO_SHOPEE}),
+ * `attributes` among them since the attribute editor (P13) and `logistic_info`
+ * since the logistics editor (P16). The question is asked of every field
+ * alike, and it matters most for `attributes`: the
  * projection DECODES any stored list while the write schema demands positive
  * ids and re-normalises, so an UNTOUCHED legacy list (an `attribute_id` the
  * write refuses, an untrimmed custom name) is never piped through it — it
@@ -77,6 +78,16 @@
  * (`camposDaBaseDoRascunhoShopee`, P13 Q1) — the route refuses a list whose
  * category moved, and the tab refuses it first, without a request
  * ({@link conflitosAntesDeSalvarShopee}).
+ *
+ * `logistic_info` (P16) is a field like the others, set through the generic
+ * setter ({@link comCampoRascunhoShopee}; the full-list rebuild is
+ * `./logisticaRascunho.ts`'s `comCanalShopee`). The projection SORTS a stored
+ * list and the write whitelist sorts the operator's, so question (2) folds
+ * ORDER — a reordered list is no change — and nothing else: `enabled`,
+ * `is_free` and one channel more stay distinct, and a repeated id is invalid,
+ * never folded. Channels are chosen on a SAVED draft only (D-13): a create
+ * never names them, a local new draft holding a list is invalid, and a create
+ * retry takes the stored list ({@link rebasearEdicaoRascunhoShopee}).
  *
  * ## Rule 7 — the browser writes nothing
  *
@@ -107,6 +118,7 @@ import {
   conteudoRascunhoShopeeSchema,
   ehRascunhoShopee,
   estadoPublicacaoRascunhoShopee,
+  logisticaDoSistemaAnteriorShopee,
   marcaParaRascunhoShopee,
   mesmoValorDoRascunhoShopee,
   mesmoValorGravadoDoRascunhoShopee,
@@ -188,12 +200,17 @@ import {
   shopeeHttpFallbackMessage,
   type AtualizarRascunhoShopeeInput,
   type CamposDoCorpoRascunhoShopee,
+  type CanalLogisticaDoPatchShopee,
   type CriarRascunhoShopeeInput,
   type DescartarRascunhoShopeeInput,
   type PublicarShopeeInput,
   type ShopeeClientHttpError,
 } from './client';
 import { CODIGO_FALHA_SHOPEE, descreverFalhaShopee, motivoRascunhoInvalido } from './erros';
+import {
+  motivoDaLogisticaInvalidaShopee,
+  type MotivoDaLogisticaInvalidaShopee,
+} from './logisticaRascunho';
 import type { ProblemaShopee } from './wire';
 
 /* -------------------------------------------------------------------------- */
@@ -201,10 +218,11 @@ import type { ProblemaShopee } from './wire';
 /* -------------------------------------------------------------------------- */
 
 /**
- * The draft fields the form renders and may put in a patch, canonical order:
- * the P10 four, and `attributes` since the attribute editor (P13).
- * `logistic_info` joins with the logistics editor (P16) — until then it is
- * never sent by an edit.
+ * The draft fields the form renders and may put in a patch, canonical order
+ * (the schemas' `campoRascunhoShopeeSchema` order): the P10 four,
+ * `attributes` since the attribute editor (P13) and `logistic_info` since the
+ * logistics editor (P16) — every draft field the projection holds. Dirty, the
+ * leave-guard and the «Publicar» hold all iterate this list.
  */
 export const CAMPOS_DO_FORMULARIO_RASCUNHO_SHOPEE = [
   CAMPO_RASCUNHO_SHOPEE.itemName,
@@ -212,6 +230,7 @@ export const CAMPOS_DO_FORMULARIO_RASCUNHO_SHOPEE = [
   CAMPO_RASCUNHO_SHOPEE.categoryId,
   CAMPO_RASCUNHO_SHOPEE.marca,
   CAMPO_RASCUNHO_SHOPEE.attributes,
+  CAMPO_RASCUNHO_SHOPEE.logisticInfo,
 ] as const satisfies readonly CampoRascunhoShopee[];
 export type CampoDoFormularioRascunhoShopee = (typeof CAMPOS_DO_FORMULARIO_RASCUNHO_SHOPEE)[number];
 
@@ -221,6 +240,13 @@ export type CampoDoFormularioRascunhoShopee = (typeof CAMPOS_DO_FORMULARIO_RASCU
  * ({@link comAtributoRascunhoShopee}: the visible filter, the base-relative
  * order and the typings). A list set through the generic path would skip all
  * three, so the type refuses it.
+ *
+ * `logistic_info` goes through the generic setter (#1911 P16; reconcile §4's
+ * P13 seam): the full-list rule — every selectable channel, sorted, the
+ * compulsory ones ON — is `./logisticaRascunho.ts`'s `comCanalShopee`, which
+ * the Logística section calls before it sets the value. Whatever reaches the
+ * form, the save still normalises it through the write whitelist
+ * ({@link planoDoRascunhoShopee}).
  */
 export type CampoSimplesDoFormularioRascunhoShopee = Exclude<
   CampoDoFormularioRascunhoShopee,
@@ -233,16 +259,28 @@ export type CampoSimplesDoFormularioRascunhoShopee = Exclude<
  * `category_id` as picked, `marca` as the PAIR (`null` = not chosen; "Sem
  * marca" is {@link MARCA_SEM_MARCA_RASCUNHO_SHOPEE}), `attributes` in the
  * request shape the attribute editor keeps (the operator's own value objects —
- * a typed text RAW, a typed decimal in its wire form; `null` = none).
+ * a typed text RAW, a typed decimal in its wire form; `null` = none),
+ * `logistic_info` as the Logística section set it (`null` = «Automática»; a
+ * list = the channels chosen, in the projection's shape).
  */
 export type FormularioRascunhoShopee = {
   readonly [C in CampoDoFormularioRascunhoShopee]: CamposRascunhoShopee[C];
 };
 
-/** A patch: the CHANGED form fields, each normalised as the draft route stores it. */
-export type PatchDoRascunhoShopee = Partial<FormularioRascunhoShopee>;
+/**
+ * What a patch holds per field — the form's types, except `logistic_info`,
+ * narrowed to the write whitelist's OUTPUT (`is_free` a boolean, never the
+ * `null` a projection may carry): a patch value is always one that went
+ * through {@link normalizar} (#1911 P16, D16-8).
+ */
+interface ValoresDoPatchRascunhoShopee extends Omit<FormularioRascunhoShopee, 'logistic_info'> {
+  readonly logistic_info: readonly CanalLogisticaDoPatchShopee[] | null;
+}
 
-/** The form fields of a projection — its `attributes` list VERBATIM (by reference). */
+/** A patch: the CHANGED form fields, each normalised as the draft route stores it. */
+export type PatchDoRascunhoShopee = Partial<ValoresDoPatchRascunhoShopee>;
+
+/** The form fields of a projection — its `attributes` and `logistic_info` lists VERBATIM (by reference). */
 export function formularioDoRascunhoShopee(campos: CamposRascunhoShopee): FormularioRascunhoShopee {
   return {
     item_name: campos.item_name,
@@ -250,6 +288,7 @@ export function formularioDoRascunhoShopee(campos: CamposRascunhoShopee): Formul
     category_id: campos.category_id,
     marca: campos.marca,
     attributes: campos.attributes,
+    logistic_info: campos.logistic_info,
   };
 }
 
@@ -329,7 +368,9 @@ export function idDeNovoRascunhoShopee(): string {
  * A NEW local draft (DC §2.4–2.5, D2): the title prefilled with the stored
  * produto's `nome` VERBATIM (anything that is not a string is `null` — a blank
  * title blocks Salvar), the produto's own description (`null`), no category,
- * no brand chosen, no attributes. Nothing is sent until "Salvar rascunho".
+ * no brand chosen, no attributes, «Automática» logistics (`null` — channels
+ * are chosen once the draft is saved, D-13). Nothing is sent until "Salvar
+ * rascunho".
  */
 export function novaEdicaoRascunhoShopee(args: {
   readonly linkDocId: string;
@@ -342,6 +383,7 @@ export function novaEdicaoRascunhoShopee(args: {
     category_id: null,
     marca: null,
     attributes: null,
+    logistic_info: null,
   };
   return {
     linkDocId: args.linkDocId,
@@ -540,16 +582,20 @@ export interface PlanoDoRascunhoShopee {
   /**
    * The fields to WRITE, normalised (blank description ⇒ `null`, brand `0` or
    * a blank name ⇒ no name, an attribute's custom name trimmed and a blank
-   * unit omitted). For a `novo` entry: all five (the create's `conteudo`); for
-   * a stored one: the {@link alterados}.
+   * unit omitted, a channel list sorted by `logistic_id`). For a `novo` entry:
+   * all six — the create's `conteudo` takes five of them, never
+   * `logistic_info` (D-13), whose value there is always `null`; for a stored
+   * one: the {@link alterados}.
    */
   readonly patch: PatchDoRascunhoShopee;
   /** The fields in {@link patch}, canonical order. */
   readonly alterados: readonly CampoDoFormularioRascunhoShopee[];
   /**
-   * Fields the operator changed (all five on a `novo` entry) that no write
+   * Fields the operator changed (all six on a `novo` entry) that no write
    * accepts — and `attributes` whenever a typing BLOCKS
-   * (`digitacoesBloqueiam`), even over a list that did not change.
+   * (`digitacoesBloqueiam`), even over a list that did not change, and
+   * `logistic_info` whenever a `novo` entry holds a list (D16-5: the create
+   * never sends one, so it would be dropped behind a 201).
    */
   readonly invalidos: readonly CampoDoFormularioRascunhoShopee[];
   /** Unsaved work exists: a `novo` entry, a field to write, or a changed field still invalid. */
@@ -559,14 +605,16 @@ export interface PlanoDoRascunhoShopee {
 }
 
 type Normalizado<C extends CampoDoFormularioRascunhoShopee> =
-  | { readonly ok: true; readonly valor: FormularioRascunhoShopee[C] }
+  | { readonly ok: true; readonly valor: ValoresDoPatchRascunhoShopee[C] }
   | { readonly ok: false };
 
 /**
  * ONE form field through the draft route's write whitelist
  * (`conteudoRascunhoShopeeSchema` — every key optional, so a single key
  * parses alone). A field the schema refuses is `ok: false`; it never costs the
- * other fields.
+ * other fields. The answer is the whitelist's OUTPUT — for `logistic_info` a
+ * list sorted by `logistic_id` whose every `is_free` is a boolean — so the
+ * cast below only names what the parse already guarantees.
  */
 function normalizar<C extends CampoDoFormularioRascunhoShopee>(
   campo: C,
@@ -574,15 +622,15 @@ function normalizar<C extends CampoDoFormularioRascunhoShopee>(
 ): Normalizado<C> {
   const lido = conteudoRascunhoShopeeSchema.safeParse({ [campo]: valor });
   if (!lido.success) return { ok: false };
-  const saida = lido.data[campo] as FormularioRascunhoShopee[C] | undefined;
-  return { ok: true, valor: saida ?? (null as FormularioRascunhoShopee[C]) };
+  const saida = lido.data[campo] as ValoresDoPatchRascunhoShopee[C] | undefined;
+  return { ok: true, valor: saida ?? (null as ValoresDoPatchRascunhoShopee[C]) };
 }
 
 /** A patch built by name, field by field — never a spread of a wider object. */
 function comCampoNoPatch<C extends CampoDoFormularioRascunhoShopee>(
   patch: PatchDoRascunhoShopee,
   campo: C,
-  valor: FormularioRascunhoShopee[C],
+  valor: ValoresDoPatchRascunhoShopee[C],
 ): PatchDoRascunhoShopee {
   return { ...patch, [campo]: valor };
 }
@@ -611,6 +659,14 @@ function comCampoNoPatch<C extends CampoDoFormularioRascunhoShopee>(
  * An emptied list stays the held-list question (its `null` is what the clear
  * writes anyway).
  *
+ * `logistic_info` (P16) is asked the two questions like any field — so a
+ * reordered list is no change once normalised (the whitelist sorts), while a
+ * list with no channel ON, or a repeated id, is invalid — EXCEPT on a `novo`
+ * entry holding a list (D16-5): the create never names `logistic_info`
+ * (D-13), so the list would be dropped behind a 201; the field is invalid and
+ * nothing is sent (fail closed). The section never offers channels on a new
+ * draft, so only a caller bypassing it reaches this.
+ *
  * `dirty ⇔ patch non-empty` (rev. 2a #3) — plus a `novo` entry, and a changed
  * field still invalid (typed work the leave-guard must not lose). Never the
  * CONFLICT question: under it a legacy id-only brand re-picked with its name
@@ -633,6 +689,12 @@ export function planoDoRascunhoShopee(
       return;
     }
     const valor = edicao.atual[campo];
+    // D16-5: a create never names `logistic_info` (D-13) — a list on a new
+    // draft would be dropped behind a 201, so it blocks the save instead.
+    if (edicao.novo && campo === CAMPO_RASCUNHO_SHOPEE.logisticInfo && valor !== null) {
+      invalidos.push(campo);
+      return;
+    }
     // K1-12: a category write clears the stored list unless the patch names it.
     const comATrocaDeCategoria =
       campo === CAMPO_RASCUNHO_SHOPEE.attributes &&
@@ -710,10 +772,12 @@ export function algumRascunhoShopeeSujo(edicoes: Iterable<EdicaoRascunhoShopee>)
 /**
  * `criarRascunho`'s input for a `novo` entry, or `null` when its plan has an
  * impediment (a blank title, a blocking attribute typing, …). `conteudo` names
- * EVERY field — the five normalised form values, `attributes` the list the
- * operator filled (`null` when none) — so a create retry at the same id
- * compares like for like ({@link conflitosAtualizadosDoRascunhoShopee} reads
- * what it SENT the same way).
+ * EVERY field a create takes — the five normalised form values, `attributes`
+ * the list the operator filled (`null` when none) — so a create retry at the
+ * same id compares like for like ({@link conflitosAtualizadosDoRascunhoShopee}
+ * reads what it SENT the same way). NEVER `logistic_info` (D-13): channels are
+ * chosen on a SAVED draft, the create body refuses the key, and a new draft
+ * holding a list never gets here ({@link planoDoRascunhoShopee}, D16-5).
  * `confirmarSegundoAnuncio: true` only after the operator confirmed (D15).
  */
 export function corpoCriarRascunhoShopee(
@@ -766,7 +830,8 @@ function recorteDaProjecao(
         base.attributes = projecao.attributes;
         break;
       case CAMPO_RASCUNHO_SHOPEE.logisticInfo:
-        // RESERVED: no body accepts it, and no patch here ever names it.
+        // The projection's list (sorted; `is_free` may be `null`) or `null`.
+        base.logistic_info = projecao.logistic_info;
         break;
     }
   }
@@ -781,8 +846,9 @@ function recorteDaProjecao(
  * `category_id` without them (that write clears them, so it must prove the
  * operator saw them), and `category_id` whenever the patch writes `attributes`
  * without it (the list was built for that category, so it must prove the
- * category is still the one the operator saw — P13 Q1). VERBATIM: a legacy
- * `''` title is sent back as `''`.
+ * category is still the one the operator saw — P13 Q1). A logistics change
+ * pulls in nothing else: its base is the held `logistic_info` alone (P16).
+ * VERBATIM: a legacy `''` title is sent back as `''`.
  */
 export function corpoAtualizarRascunhoShopee(
   edicao: EdicaoRascunhoShopee,
@@ -818,8 +884,12 @@ export function projecaoGuardadaDoRascunhoShopee(
 
 /**
  * `descartarRascunho`'s input: `base` = EVERY projected field of the held
- * projection — `item_name`, `description`, `category_id`, `marca`,
- * `attributes` — verbatim (`null` allowed), NEVER `logistic_info`.
+ * projection, all SIX — `item_name`, `description`, `category_id`, `marca`,
+ * `attributes` and `logistic_info` (#1911 P16: the stamped list sorted as the
+ * projection reads it, `null` for «Automática» and for a legacy unstamped
+ * list) — verbatim (`null` allowed). A draft whose channels another tab chose
+ * meanwhile is then a 409, never deleted unseen; an unsaved logistics change
+ * never goes in it (the held projection, never the form).
  * `confirmarCriacaoIncerta: true` only after the operator's Seller-Centre
  * attestation (the three-case dialog's (a) or (b)). A `novo` entry is dropped
  * locally and never reaches this.
@@ -842,6 +912,7 @@ export function corpoDescartarRascunhoShopee(args: {
       category_id: projecao.category_id,
       marca: projecao.marca,
       attributes: projecao.attributes,
+      logistic_info: projecao.logistic_info,
     },
     ...(args.confirmarCriacaoIncerta === true ? { confirmarCriacaoIncerta: true } : {}),
   };
@@ -960,7 +1031,14 @@ function documentoNoSnapshot(snapshot: unknown, linkDocId: string): Record<strin
  * fields take the stored values. ⚠️ Never built from the 409's
  * `conflitos[].atual`, which is display-only: a list differing only in
  * `category_id` would make a base without the `attributes` that change clears —
- * a 400.
+ * a 400. **`logistic_info` always takes the stored value, base AND form**
+ * (#1911 P16, D16-9): a new draft never had a channel choice (D-13 — the
+ * section offers none before the first save, and the create never names the
+ * key), so the form's `null` is no choice the operator made. Kept, it would
+ * put `logistic_info: null` in the re-send and write «Automática» over the
+ * channels another tab chose; taken, the re-send never names it, so
+ * {@link conflitosAtualizadosDoRascunhoShopee} never counts it as overwritten
+ * and the conflict modal shows its «Sua alteração» as what stays stored.
  *
  * Both arms then re-apply §H Q1 to the form's brand against the new base (a
  * nameless pair with the stored `brand_id` takes the stored name), so a rebase
@@ -989,7 +1067,10 @@ export function rebasearEdicaoRascunhoShopee(
   };
 
   if (edicao.novo) {
-    for (const campo of CAMPOS_DO_FORMULARIO_RASCUNHO_SHOPEE) if (usar(campo)) tomar(campo);
+    for (const campo of CAMPOS_DO_FORMULARIO_RASCUNHO_SHOPEE) {
+      // D16-9: a new draft never chose channels — never re-send its `null`.
+      if (usar(campo) || campo === CAMPO_RASCUNHO_SHOPEE.logisticInfo) tomar(campo);
+    }
   } else {
     const mostrados =
       listados ??
@@ -1615,7 +1696,7 @@ export interface BlocoRascunhoShopee {
    * `em-andamento`), or `null` when time alone changes nothing.
    */
   readonly releituraEmMs: number | null;
-  /** What the five fields show. */
+  /** What the six fields show. */
   readonly valores: FormularioRascunhoShopee;
   /**
    * The block's draft in the projection's form — {@link valores} over the held
@@ -1677,6 +1758,34 @@ export interface BlocoRascunhoShopee {
    * new draft — it stores nothing.
    */
   readonly atributosGravadosForaDaCategoria: boolean;
+  /**
+   * The Logística section accepts a choice (#1911 P16, D16-5): the fields
+   * accept typing AND the draft is SAVED — channels are chosen on a saved
+   * draft only (D-13), so a local new draft never offers them. The tab also
+   * refuses a `logistic_info` set while this is false.
+   */
+  readonly logisticaEditavel: boolean;
+  /**
+   * The HELD projection's channel list — what «Escolher canais» puts back
+   * over «Automática» (D16-2; the {@link categoriaGravada} precedent): the
+   * stamped list sorted, or `null` (nothing chosen, or a legacy unstamped
+   * list). Never the form's value ({@link valores}).
+   */
+  readonly logisticaGravada: FormularioRascunhoShopee['logistic_info'];
+  /**
+   * The STORED document holds channels the ERP never chose — a non-empty list
+   * without the provenance stamp (`logisticaDoSistemaAnteriorShopee`,
+   * `@delfrance/schemas`): the section's banner. Never on a local new draft.
+   */
+  readonly logisticaDoSistemaAnterior: boolean;
+  /**
+   * Why the plan refuses the form's `logistic_info` — the whitelist's own
+   * verdict (`motivoDaLogisticaInvalidaShopee`), read ONLY when the plan
+   * marks the field invalid (a stored value nobody touched is never
+   * validated); `null` otherwise. The section's zero-ON sentence reads this,
+   * never a `some(enabled)` of its own (#1369).
+   */
+  readonly logisticaInvalida: MotivoDaLogisticaInvalidaShopee | null;
   /** The block's notices, in order of importance. */
   readonly avisos: readonly string[];
 }
@@ -1688,6 +1797,7 @@ const VAZIO: CamposRascunhoShopee = {
   category_id: null,
   marca: null,
   attributes: null,
+  logistic_info: null,
 };
 
 /**
@@ -1708,7 +1818,11 @@ const VAZIO: CamposRascunhoShopee = {
  * - **server truth** — a stored draft with no entry is read-only until the
  *   snapshot came from the server (an existing entry keeps editing through an
  *   Activity re-listen, which re-emits `fromCache: true`);
- * - **just saved** — read-only until the listener brings the stored draft back.
+ * - **just saved** — read-only until the listener brings the stored draft back;
+ * - **logistics** (#1911 P16) — chosen on a SAVED, editable draft only
+ *   (`logisticaEditavel`, D-13); the held list, the stored document's legacy
+ *   list and the plan's verdict on the form's list ride beside it, so the
+ *   section decides nothing itself.
  */
 export function estadoDoBlocoRascunhoShopee(e: EntradaDoBlocoRascunhoShopee): BlocoRascunhoShopee {
   const { link, edicao } = e;
@@ -1801,6 +1915,13 @@ export function estadoDoBlocoRascunhoShopee(e: EntradaDoBlocoRascunhoShopee): Bl
           ))),
     atributosGravadosForaDaCategoria:
       edicao !== null && !novo && (projecao?.attributes?.length ?? 0) > 0 && outraCategoria,
+    logisticaEditavel: camposEditaveis && !novo,
+    logisticaGravada: guardado.logistic_info,
+    logisticaDoSistemaAnterior: link !== null && logisticaDoSistemaAnteriorShopee(link),
+    logisticaInvalida:
+      plano !== null && plano.invalidos.includes(CAMPO_RASCUNHO_SHOPEE.logisticInfo)
+        ? motivoDaLogisticaInvalidaShopee(valores.logistic_info)
+        : null,
     avisos,
   };
 }
@@ -2406,20 +2527,33 @@ const RAIZES_DE_SKU: ReadonlySet<string> = new Set(['item_sku', 'sku']);
  * - weight, dimensions, photos, GTIN, price, stock, taxes, pre-order — the
  *   produto's field; `size_chart_info` — the size chart; the variation roots —
  *   the variations.
- * - `logistic_info` — the produto's weight (a channel the parcel does not fit,
- *   `logistica-sem-canal`, and Shopee's own logistics refusal), EXCEPT for
- *   the two import-remedy motivos: `logistica-nao-confirmada` (#2015, a
- *   stored size or fee the ERP has no record of having written) and
+ * - `logistic_info` — FIRST the two import-remedy motivos, which get NO
+ *   surface on a draft and a listing alike: `logistica-nao-confirmada`
+ *   (#2015, a stored size or fee the ERP has no record of having written) and
  *   `logistica-sem-valor-gravado` (#2099, no size or fee stored readably on a
  *   list the ERP has no record of having written). Both are fixed by importing
- *   the listing, and the channel they name already fits — no field of the
- *   produto is the fix, so the row keeps its copy and gets no button. Matched
- *   EXACTLY, and scoped to that ROOT: the same motivo on another root routes
- *   as usual.
+ *   the listing, and the channel they name already fits — no field is the
+ *   fix, so the row keeps its copy and gets no button. Matched EXACTLY, and
+ *   scoped to that ROOT: the same motivo on another root routes as usual.
+ *   THEN a draft whose STORED channels were chosen in its «Logística» section
+ *   (`contexto.logisticaEscolhida`, #1911 P16 — the stored link's projection,
+ *   never the form) routes to that section («Corrigir no rascunho:
+ *   Logística»): the operator's list is what the publish sent. Everything
+ *   else — a draft in «Automática», and every listing whatever the flag says
+ *   — is the produto's weight (a channel the parcel does not fit,
+ *   `logistica-sem-canal`, and Shopee's own logistics refusal).
+ *
+ * `contexto.logisticaEscolhida` is REQUIRED: a caller that forgets it fails
+ * typecheck, never routes a chosen list to the weight.
  */
 export function superficieDoCampoShopee(
   problema: Pick<ProblemaShopee, 'campo' | 'motivo' | 'acao'>,
-  contexto: { readonly ehRascunho: boolean; readonly descricaoPropria: boolean },
+  contexto: {
+    readonly ehRascunho: boolean;
+    readonly descricaoPropria: boolean;
+    /** The STORED draft holds an ERP-chosen channel list (`logisticaEscolhidaNoRascunhoShopee`). */
+    readonly logisticaEscolhida: boolean;
+  },
 ): SuperficieDoCampoShopee | null {
   const { campo } = problema;
   if (campo === null) return null;
@@ -2460,6 +2594,10 @@ export function superficieDoCampoShopee(
         problema.motivo === MOTIVO_ANUNCIO_SHOPEE.logisticaSemValorGravado
       ) {
         return null;
+      }
+      // #1911 P16: the channels the operator chose on this draft are the fix.
+      if (ehRascunho && contexto.logisticaEscolhida) {
+        return doRascunho(CAMPO_RASCUNHO_SHOPEE.logisticInfo);
       }
       break;
   }

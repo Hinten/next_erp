@@ -52,10 +52,15 @@ import type { AcoesShopee, ArmaKitShopee } from './AcoesAnuncioShopee';
  * — what a refusal row's «Corrigir no rascunho: …» button (a `rascunho`
  * surface of `superficieDoCampoShopee`) focuses. The title and the
  * description are the inputs themselves; the category and the brand are
- * their pickers' wrappers, and the attributes (#1911 P13) the «Atributos»
- * section's own root, stamped by `AtributosRascunhoShopee` — in each, the
- * first enabled control takes the focus. It lives HERE, beside its one
- * reader, so the form imports it from the panel and never the reverse.
+ * their pickers' wrappers, the attributes (#1911 P13) the «Atributos»
+ * section's own root, stamped by `AtributosRascunhoShopee`, and the logistics
+ * (#1911 P16) the «Logística» section's rows' container while its rows render
+ * (else the section's root), stamped by `LogisticaRascunhoShopee` — in each,
+ * the first enabled control takes the focus (in the rows, in DTO order: a
+ * row's «Ligado» switch, or its free-shipping checkbox where the switch is
+ * locked — an unavailable OFF first row; never the mode picker's
+ * «Automática»). It lives HERE, beside its one reader, so the form imports it
+ * from the panel and never the reverse.
  */
 export function idDoCampoRascunhoShopee(
   linkDocId: string,
@@ -65,8 +70,8 @@ export function idDoCampoRascunhoShopee(
 }
 
 /**
- * What can take the focus inside a picker's wrapper or the attributes
- * section: a FIELD first — its first enabled input or textarea; a button only
+ * What can take the focus inside a picker's wrapper or a section (the
+ * attributes; the logistics rows, whose switch is an `input`): a FIELD first — its first enabled input or textarea; a button only
  * when the wrapper has no enabled field (the category picker). Never a hidden
  * input (Mantine's `Select` / `MultiSelect` carry one beside the visible field,
  * and `focus()` on it is silently a no-op), and never a control kept out of
@@ -80,7 +85,7 @@ const BOTAO_FOCAVEL = 'button:not([disabled]):not([tabindex="-1"]):not([aria-hid
 
 /**
  * Brings one field of a draft's form into view and focuses it (a picker's —
- * or the attributes section's — first enabled control). Navigation only —
+ * or the attributes or logistics section's — first enabled control). Navigation only —
  * nothing is written. A field that is read-only now (the reading is
  * `em-andamento`, the category in `incerta`) is still scrolled to; a form
  * that is not on screen is a no-op.
@@ -254,6 +259,17 @@ export interface DesfechoDoRascunhoShopee {
   readonly podePublicar: boolean;
   /** `bloco.podeDescartar`: a `descartar-atestando` exit is disabled otherwise. */
   readonly podeDescartar: boolean;
+  /**
+   * The STORED draft holds a channel list the operator chose in its
+   * «Logística» section (#1911 P16, D16-7) —
+   * `logisticaEscolhidaNoRascunhoShopee(link)` over the stored link, never the
+   * form: «Publicar» sends the stored draft, so an unsaved switch to
+   * «Automática» changes nothing here. `true` ⇒ a `logistic_info` refusal row
+   * (other than the two import-remedy motivos) routes to «Corrigir no
+   * rascunho: Logística»; `false` ⇒ the produto's weight, as before. Supplied
+   * by the editor.
+   */
+  readonly logisticaEscolhida: boolean;
   /**
    * A refusal row's Seller-Centre attestation exit was clicked — one of
    * `saidasDoProblemaShopee(p, {ehRascunho: true})`, its button labelled
@@ -889,7 +905,12 @@ function DesfechoRecusado({
               />
               <BotaoDaSuperficie
                 linkDocId={linkDocId}
-                superficie={superficieDoCampoShopee(p, { ehRascunho, descricaoPropria })}
+                superficie={superficieDoCampoShopee(p, {
+                  ehRascunho,
+                  descricaoPropria,
+                  // A listing never routes to a draft section, whatever it stores.
+                  logisticaEscolhida: rascunho !== null && rascunho.logisticaEscolhida,
+                })}
                 destinos={destinos}
               />
               {rascunho !== null && acoes.permitidas && (

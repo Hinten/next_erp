@@ -13,10 +13,12 @@ import {
   type AtributoDto,
   type AtributoInfoDto,
   type CampoRascunhoShopee,
+  type CanalDaLojaShopeeDto,
   type CategoriaResumoDto,
   type FaixaDto,
   type RespostaAtributosShopee,
   type RespostaAtualizarRascunhoShopee,
+  type RespostaCanaisShopee,
   type RespostaCategoriasShopee,
   type RespostaCriarRascunhoShopee,
   type RespostaDescartarRascunhoShopee,
@@ -64,7 +66,10 @@ import { warmRoutes } from './helpers/warmup';
  * created or deleted by this suite: every test opens the seeded draft as
  * seeded. That draft has no category, so the editor reads no category bands
  * nor attribute tree and asks apps/shopee for nothing on render — no test of
- * ITS produto needs a taxonomy stub. Three tests open a SECOND produto, whose
+ * ITS produto needs a taxonomy stub. No seeded draft stores a channel list
+ * either, so every draft's «Logística» section is «Automática» and reads no
+ * channels on render; the one test that chooses them (#1911 P16) stubs
+ * `canais` for itself. Three tests open a SECOND produto, whose
  * draft has a category, each stubbing its own reads through
  * {@link instalarStubsShopee}'s per-test map: the category pick (the stubbed
  * tree — that category, its root and a sibling leaf —, Shopee's suggestions
@@ -261,6 +266,41 @@ function idDaSecaoDeAtributos(linkDocId: string): string {
 /** The test id of ONE attribute's row in that section. */
 function idDaLinhaDoAtributo(linkDocId: string, attributeId: number): string {
   return `shopee-atributo-${linkDocId}-${String(attributeId)}`;
+}
+
+/*
+ * The draft's «Logística» section (#1911 P16, `LogisticaRascunhoShopee.tsx`),
+ * spelled for the same reason — the section exports each string as a constant
+ * of its own.
+ */
+
+/** `ROTULO_LOGISTICA_RASCUNHO_SHOPEE` — the section's title, and the accessible name of its mode picker. */
+const ROTULO_LOGISTICA = 'Logística (canais de envio)';
+/** `ROTULO_LOGISTICA_AUTOMATICA_SHOPEE` — the mode of a draft that stores no channel list: the publish picks. */
+const ROTULO_LOGISTICA_AUTOMATICA = 'Automática';
+/** `ROTULO_ESCOLHER_CANAIS_SHOPEE` — the mode in which the draft names its channels. */
+const ROTULO_ESCOLHER_CANAIS = 'Escolher canais';
+/** `ROTULO_CANAL_LIGADO_SHOPEE` — a channel row's switch. */
+const ROTULO_CANAL_LIGADO = 'Ligado';
+/** `ROTULO_FRETE_GRATIS_CANAL_SHOPEE` — a channel row's free-shipping checkbox. */
+const ROTULO_FRETE_GRATIS_DO_CANAL = 'Frete grátis para o comprador (pago pelo vendedor)';
+/** `FRASE_SALVE_PARA_ESCOLHER_CANAIS_SHOPEE` — why a draft not saved yet offers no channel choice. */
+const FRASE_SALVE_PARA_ESCOLHER_CANAIS = 'Salve o rascunho para escolher os canais de envio.';
+
+/**
+ * The test id of a draft's «Logística» section. It starts with the draft
+ * root's prefix, but holds no «Salvar rascunho» ({@link idDoUnicoRascunho}).
+ */
+function idDaSecaoDeLogistica(linkDocId: string): string {
+  return `shopee-rascunho-logistica-${linkDocId}`;
+}
+/** The prefix of every channel row's test id in that section; the rest is the channel's `logistic_id`. */
+function prefixoDasLinhasDeCanal(linkDocId: string): string {
+  return `shopee-logistica-${linkDocId}-`;
+}
+/** The test id of ONE channel's row in that section. */
+function idDaLinhaDoCanal(linkDocId: string, logisticId: number): string {
+  return `${prefixoDasLinhasDeCanal(linkDocId)}${String(logisticId)}`;
 }
 
 type Resposta = { readonly status: number; readonly corpo: unknown };
@@ -759,6 +799,78 @@ function rotasDoRascunhoPronto(
   ]);
 }
 
+/*
+ * The stubbed shop channels (#1911 P16) — `canais?integracaoId=&produtoId=`,
+ * typed by the shared answer type. Fixture ids and invented names, never a
+ * real shop's channels.
+ */
+
+/** One stubbed channel: its fixture `logistics_channel_id` and its invented name. */
+interface CanalE2e {
+  readonly id: number;
+  readonly nome: string;
+}
+const CANAL_A_E2E: CanalE2e = { id: 90003, nome: 'Entrega A do e2e' };
+const CANAL_B_E2E: CanalE2e = { id: 90005, nome: 'Entrega B do e2e' };
+/** A channel the shop lists but a publish can never send (`selecionavel: false`). */
+const CANAL_FORA_DA_LOJA_E2E: CanalE2e = { id: 90007, nome: 'Canal fora da loja do e2e' };
+
+/**
+ * One row of the answer, with the publisher's verdicts for a plain channel:
+ * not compulsory, free shipping allowed, nothing making it unavailable. A
+ * selectable one is one the automatic pass sends, without free shipping —
+ * what the real route answers for this produto, which stores no weight nor
+ * dimensions, so no fit is judged.
+ */
+function canalDaLojaE2e(canal: CanalE2e, selecionavel: boolean): CanalDaLojaShopeeDto {
+  return {
+    logisticsChannelId: canal.id,
+    nome: canal.nome,
+    selecionavel,
+    obrigatorio: false,
+    bloqueiaFreteGratisDoVendedor: false,
+    indisponivel: null,
+    automatica: selecionavel ? { isFree: false } : null,
+  };
+}
+
+/**
+ * The shop's channels for the seeded draft's produto, in an order that is NOT
+ * the ids' — B, the non-selectable one, then A — so the rows show whose order
+ * they follow. `medidasCompletas: false`: that produto stores no weight nor
+ * dimensions.
+ */
+function canaisDaLojaE2e(): RespostaCanaisShopee {
+  return {
+    medidasCompletas: false,
+    canais: [
+      canalDaLojaE2e(CANAL_B_E2E, true),
+      canalDaLojaE2e(CANAL_FORA_DA_LOJA_E2E, false),
+      canalDaLojaE2e(CANAL_A_E2E, true),
+    ],
+  };
+}
+
+/**
+ * The per-test stub of the logistics choice (#1911 P16): `canais` answered
+ * for THAT conta and THAT produto only, with no body (a GET carries none).
+ * Any other call to it falls to `semStub` — as it does in every other test of
+ * this spec, whose drafts are «Automática» and read no channels at all.
+ */
+function rotasDosCanaisDoRascunho(conta: string, produtoId: string): ReadonlyMap<string, Stub> {
+  return new Map<string, Stub>([
+    [
+      'canais',
+      (corpo, url) =>
+        corpo === null &&
+        url.searchParams.get('integracaoId') === conta &&
+        url.searchParams.get('produtoId') === produtoId
+          ? { status: 200, corpo: canaisDaLojaE2e() }
+          : null,
+    ],
+  ]);
+}
+
 /**
  * `taxonomia/recomendacao-categoria` for the ready draft's title — Shopee's
  * suggestions resolved against the stubbed tree, typed by the shared answer
@@ -887,8 +999,8 @@ interface StubsShopee {
  * real requests land here. A route registered AFTER this one takes precedence
  * (Playwright tries the newest handler first) — how test 6 cuts one route off.
  * `porTeste` adds or REPLACES stubs by path for one test (the category pick's
- * and the publish case's taxonomy reads, and the latter's own publish); every
- * call is still recorded.
+ * and the publish case's taxonomy reads, and the latter's own publish; the
+ * logistics choice's `canais`); every call is still recorded.
  */
 async function instalarStubsShopee(
   page: Page,
@@ -927,7 +1039,7 @@ async function instalarStubsShopee(
   return stubs;
 }
 
-/** The recorded WRITES — the POSTs; the GETs are reads (here, the taxonomy). */
+/** The recorded WRITES — the POSTs; the GETs are reads (here, the taxonomy and the shop's channels). */
 function escritas(stubs: StubsShopee): Chamada[] {
   return stubs.chamadas.filter((c) => c.metodo === 'POST');
 }
@@ -947,8 +1059,8 @@ const RAIZ_DO_RASCUNHO = 'shopee-rascunho-';
 /**
  * The link doc id of the ONE draft editor in `painel` holding a "Salvar
  * rascunho" button — read off its root's test id. Its two pickers and its
- * «Atributos» section carry test ids under the same prefix, but none holds
- * that button, so only the root matches.
+ * «Atributos» and «Logística» sections carry test ids under the same prefix,
+ * but none holds that button, so only the root matches.
  */
 async function idDoUnicoRascunho(painel: Locator): Promise<string> {
   const raiz = painel.locator(`[data-testid^="${RAIZ_DO_RASCUNHO}"]`).filter({
@@ -956,6 +1068,20 @@ async function idDoUnicoRascunho(painel: Locator): Promise<string> {
   });
   const testId = (await raiz.getAttribute('data-testid')) ?? '';
   return testId.slice(RAIZ_DO_RASCUNHO.length);
+}
+
+/**
+ * Click a SegmentedControl segment: its radio is visually hidden (0×0, so
+ * Playwright refuses to click it), its label is not. A copy of
+ * `canais-loja-integrada.vendas.e2e.spec.ts`'s, kept local on purpose:
+ * `helpers/table-view.ts`'s `applySegmentedFilter` opens a column filter first
+ * and serves the /pedidos specs of other lanes.
+ */
+async function escolherSegmento(escopo: Locator, rotulo: string): Promise<void> {
+  const radio = escopo.getByRole('radio', { name: rotulo, exact: true });
+  const id = await radio.getAttribute('id');
+  expect(id, `segment "${rotulo}" has no id to bind a label to`).toBeTruthy();
+  await escopo.locator(`label[for="${id ?? ''}"]`).click();
 }
 
 test.describe.serial('Produto Shopee tab e2e — listing state, actions and the native kit', () => {
@@ -1344,6 +1470,120 @@ test.describe.serial('Produto Shopee tab e2e — listing state, actions and the 
     expect(stubs.semStub, 'Shopee routes this spec does not stub').toEqual([]);
   });
 
+  test("chooses a draft's shipping channels from the shop's list and saves them with explicit on/off and free shipping", async ({
+    page,
+  }) => {
+    const stubs = await instalarStubsShopee(
+      page,
+      links.kitRemovido,
+      rotasDosCanaisDoRascunho(conta, produtoId),
+    );
+    await page.goto(`/produtos/${produtoId}/editar`);
+    const painel = await abrirConta(page, conta);
+
+    const editor = painel.getByTestId(`${RAIZ_DO_RASCUNHO}${links.rascunho}`);
+    const logistica = editor.getByTestId(idDaSecaoDeLogistica(links.rascunho));
+    const modo = logistica.getByRole('radiogroup', { name: ROTULO_LOGISTICA, exact: true });
+    const automatica = modo.getByRole('radio', { name: ROTULO_LOGISTICA_AUTOMATICA, exact: true });
+    const escolher = modo.getByRole('radio', { name: ROTULO_ESCOLHER_CANAIS, exact: true });
+    const linha = (canal: CanalE2e): Locator =>
+      logistica.getByTestId(idDaLinhaDoCanal(links.rascunho, canal.id));
+    // By the row's test id, then the row's ONE switch: the switch's label wraps
+    // it together with any sentence of the row, so its accessible name only
+    // CONTAINS «Ligado».
+    const ligado = (canal: CanalE2e): Locator =>
+      linha(canal).getByRole('switch', { name: ROTULO_CANAL_LIGADO });
+    const freteGratis = (canal: CanalE2e): Locator =>
+      linha(canal).getByRole('checkbox', { name: ROTULO_FRETE_GRATIS_DO_CANAL, exact: true });
+
+    // Positive first: the stored draft's form loaded, and its logistics are
+    // «Automática» — the seeded draft stores no channel list.
+    await expect(editor.getByRole('textbox', { name: /^Título/ })).toHaveValue(tituloGuardado, {
+      timeout: 30_000,
+    });
+    await expect(modo).toBeVisible();
+    await expect(automatica).toBeChecked();
+
+    // Like typing, the mode takes a click once the links listener answered
+    // FROM THE SERVER — a label click on a disabled segment changes nothing,
+    // so wait for it. «Automática» reads no channels: by now the section has
+    // been on screen all along and asked apps/shopee nothing.
+    await expect(escolher).toBeEnabled({ timeout: 30_000 });
+    expect(stubs.chamadas).toEqual([]);
+    await escolherSegmento(modo, ROTULO_ESCOLHER_CANAIS);
+    await expect(escolher).toBeChecked();
+
+    // Choosing reads the shop's channels for THIS conta and THIS produto (a
+    // repeat of that read is not what this test is about).
+    await expect
+      .poll(() => leiturasDistintas(stubs), { timeout: 30_000 })
+      .toEqual([leitura('canais', { integracaoId: conta, produtoId })]);
+    // Each selectable channel is a row named by the shop's list, and the rows
+    // follow THAT list's order — B before A — never the ids'.
+    await expect(linha(CANAL_A_E2E)).toContainText(CANAL_A_E2E.nome, { timeout: 30_000 });
+    await expect(linha(CANAL_B_E2E)).toContainText(CANAL_B_E2E.nome);
+    const prefixo = prefixoDasLinhasDeCanal(links.rascunho);
+    const ordem = (
+      await logistica
+        .locator(`[data-testid^="${prefixo}"]`)
+        .evaluateAll((els) => els.map((e) => e.getAttribute('data-testid') ?? ''))
+    ).filter((id) => /^\d+$/.test(id.slice(prefixo.length)));
+    expect(ordem).toEqual([
+      idDaLinhaDoCanal(links.rascunho, CANAL_B_E2E.id),
+      idDaLinhaDoCanal(links.rascunho, CANAL_A_E2E.id),
+    ]);
+    // A channel the shop cannot send is no row, and the section never names it.
+    await expect(linha(CANAL_FORA_DA_LOJA_E2E)).toHaveCount(0);
+    await expect(logistica.getByText(CANAL_FORA_DA_LOJA_E2E.nome)).toHaveCount(0);
+    // The choice starts from what the automatic pass would send: both rows on,
+    // neither with free shipping.
+    await expect(ligado(CANAL_A_E2E)).toBeChecked();
+    await expect(ligado(CANAL_B_E2E)).toBeChecked();
+    await expect(freteGratis(CANAL_A_E2E)).not.toBeChecked();
+
+    // B off and free shipping on A, each through its own row's control.
+    await ligado(CANAL_B_E2E).uncheck();
+    await freteGratis(CANAL_A_E2E).check();
+    await expect(ligado(CANAL_B_E2E)).not.toBeChecked();
+    await expect(freteGratis(CANAL_A_E2E)).toBeChecked();
+    // Nothing leaves the browser before the operator saves.
+    expect(escritas(stubs)).toEqual([]);
+    await editor.getByRole('button', { name: 'Salvar rascunho', exact: true }).click();
+
+    // ONLY the logistics, as the WHOLE list of the shop's selectable channels —
+    // sorted by id, each with an explicit on/off and its own free shipping,
+    // the channel the shop cannot send left out — and beside it what the
+    // operator saw stored: no list («Automática»).
+    await expect
+      .poll(() => escritas(stubs), { timeout: 30_000 })
+      .toEqual([
+        {
+          metodo: 'POST',
+          rota: 'rascunho/atualizar',
+          corpo: {
+            integracaoId: conta,
+            produtoId,
+            linkDocId: links.rascunho,
+            base: { logistic_info: null },
+            patch: {
+              logistic_info: [
+                { logistic_id: CANAL_A_E2E.id, enabled: true, is_free: true },
+                { logistic_id: CANAL_B_E2E.id, enabled: false, is_free: false },
+              ],
+            },
+          },
+        },
+      ]);
+    await expect(page.getByText(TOAST_RASCUNHO_SALVO, { exact: true })).toBeVisible({
+      timeout: 30_000,
+    });
+    // Nothing read beyond the shop's channels, and nothing outside the stubs.
+    expect(leiturasDistintas(stubs)).toEqual([
+      leitura('canais', { integracaoId: conta, produtoId }),
+    ]);
+    expect(stubs.semStub, 'Shopee routes this spec does not stub').toEqual([]);
+  });
+
   test('discards a draft after a confirmation, sending every stored field as its baseline', async ({
     page,
   }) => {
@@ -1367,9 +1607,9 @@ test.describe.serial('Produto Shopee tab e2e — listing state, actions and the 
     expect(stubs.chamadas).toEqual([]);
     await dialogo.getByRole('button', { name: /^Descartar/ }).click();
 
-    // ALL FIVE stored fields, as stored — `null` included — so a draft edited
-    // meanwhile is refused instead of deleted unseen; never `logistic_info`,
-    // and no Seller-Centre attestation for a draft with no uncertain create.
+    // ALL SIX stored fields, as stored — `null` included — so a draft whose
+    // channels were chosen meanwhile is refused instead of deleted unseen; and
+    // no Seller-Centre attestation for a draft with no uncertain create.
     await expect
       .poll(() => stubs.chamadas, { timeout: 30_000 })
       .toEqual([
@@ -1386,6 +1626,7 @@ test.describe.serial('Produto Shopee tab e2e — listing state, actions and the 
               category_id: null,
               marca: null,
               attributes: null,
+              logistic_info: null,
             },
           },
         },
@@ -1430,11 +1671,18 @@ test.describe.serial('Produto Shopee tab e2e — listing state, actions and the 
     await expect(editor.getByText(FRASE_PUBLICAR_RASCUNHO_NOVO)).toBeVisible();
     // Opening it wrote nothing.
     expect(stubs.chamadas).toEqual([]);
+    // A draft's channels are chosen once it is saved: the section says so, and
+    // offers no choice (nor reads the shop's channels — `canais` has no stub here).
+    await expect(editor.getByText(FRASE_SALVE_PARA_ESCOLHER_CANAIS)).toBeVisible();
+    await expect(
+      editor.getByRole('radio', { name: ROTULO_ESCOLHER_CANAIS, exact: true }),
+    ).toHaveCount(0);
 
     await editor.getByRole('button', { name: 'Salvar rascunho', exact: true }).click();
-    // The create names EVERY field (`attributes: null`: this draft fills none) at the
-    // id minted when the draft was opened — and no second-listing flag, since
-    // nothing was confirmed.
+    // The create names every field it carries (`attributes: null`: this draft
+    // fills none) — never `logistic_info`: channels are chosen on a SAVED draft
+    // (D-13) — at the id minted when the draft was opened, and no second-listing
+    // flag, since nothing was confirmed.
     await expect
       .poll(() => stubs.chamadas, { timeout: 30_000 })
       .toEqual([

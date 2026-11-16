@@ -3488,6 +3488,8 @@ describe('ShopeeEditor — «Novo anúncio» and the create (#1911 P10)', () => 
       integracaoId: 'int-1',
       produtoId: 'prod-1',
       linkDocId: id,
+      // ⛔ FIVE keys, never `logistic_info` (#1911 P16, D-13): channels are
+      // chosen on a SAVED draft — a new one never had the control.
       conteudo: {
         item_name: 'Camiseta',
         description: null,
@@ -4533,7 +4535,9 @@ describe('ShopeeEditor — a draft write that loses (#1911 P10, rule 7 tier 3)',
 });
 
 describe('ShopeeEditor — discarding a draft (#1911 P10)', () => {
-  it('a `livre` draft is confirmed, then discarded with ALL FIVE held fields VERBATIM as its base — never logistic_info', async () => {
+  // Was: 'a `livre` draft is confirmed, then discarded with ALL FIVE held fields VERBATIM as its base — never logistic_info'
+  // (#1911 P16: `logistic_info` is the sixth form field, and the discard names it).
+  it('a `livre` draft is confirmed, then discarded with ALL SIX held fields VERBATIM as its base — an UNSTAMPED (legacy) channel list reads `logistic_info: null`', async () => {
     comAutoria();
     const descartarRascunho = vi.fn<ShopeeClient['descartarRascunho']>(async (input) => ({
       linkDocId: input.linkDocId,
@@ -4569,6 +4573,9 @@ describe('ShopeeEditor — discarding a draft (#1911 P10)', () => {
         category_id: null,
         marca: { brand_id: 0, original_brand_name: null },
         attributes: null,
+        // The stored list carries no provenance stamp: the projection — what
+        // every screen showed («Automática») — is `null`, never the raw list.
+        logistic_info: null,
       },
     });
     await waitFor(() =>
@@ -4577,6 +4584,54 @@ describe('ShopeeEditor — discarding a draft (#1911 P10)', () => {
         message: FRASE_RASCUNHO_DESCARTADO_SHOPEE,
       }),
     );
+  });
+
+  it('NEAR-MISS (#1911 P16): a STAMPED channel list is discarded as the projection holds it — every entry, SORTED by channel; an unsaved logistics change never reaches the base', async () => {
+    comAutoria();
+    const descartarRascunho = vi.fn<ShopeeClient['descartarRascunho']>(async (input) => ({
+      linkDocId: input.linkDocId,
+      descartado: true,
+      criacaoIncerta: false,
+    }));
+    h.client = shopeeClientFalso({ descartarRascunho });
+    h.links = [
+      rascunho('L-rasc', {
+        publicacaoEmCurso: null,
+        // Stored in another order: B before A.
+        logistic_info: [
+          { logistic_id: 90005, enabled: false, is_free: false },
+          { logistic_id: 90003, enabled: true, is_free: true },
+        ],
+        logisticaGravadaEm: 1_700_000_000_000,
+      }),
+    ];
+    renderEditor();
+    // An unsaved change: «Automática» picked in the form.
+    act(() => formDe('L-rasc').onCampo('logistic_info', null));
+    expect(formDe('L-rasc').bloco.valores.logistic_info).toBeNull();
+    fireEvent.click(botaoDoRascunho('L-rasc', 'Descartar'));
+    fireEvent.click(
+      within(screen.getByRole('dialog', { name: 'Descartar rascunho' })).getByRole('button', {
+        name: 'Descartar rascunho',
+      }),
+    );
+    await waitFor(() => expect(descartarRascunho).toHaveBeenCalledTimes(1));
+    expect(descartarRascunho.mock.calls[0]?.[0]).toStrictEqual({
+      integracaoId: 'int-1',
+      produtoId: 'prod-1',
+      linkDocId: 'L-rasc',
+      base: {
+        item_name: 'Camiseta azul',
+        description: null,
+        category_id: null,
+        marca: null,
+        attributes: null,
+        logistic_info: [
+          { logistic_id: 90003, enabled: true, is_free: true },
+          { logistic_id: 90005, enabled: false, is_free: false },
+        ],
+      },
+    });
   });
 
   it('`incerta` opens the three-case dialog: (a) and (b) send the SAME attested body, (c) offers no discard', async () => {
@@ -5070,6 +5125,7 @@ describe('ShopeeEditor — who may author a draft (#1911 P10, D6)', () => {
         category_id: 100087,
         marca: { brand_id: 77, original_brand_name: 'Acme' },
         attributes: null,
+        logistic_info: null,
       },
     });
   });
@@ -6626,6 +6682,7 @@ describe('ShopeeEditor — «Publicar» on a draft (#1911 P11)', () => {
         category_id: 100087,
         marca: { brand_id: 0, original_brand_name: null },
         attributes: null,
+        logistic_info: null,
       },
       confirmarCriacaoIncerta: true,
     });
@@ -8098,9 +8155,182 @@ describe('ShopeeEditor — a árvore de atributos da categoria EDITADA (#1911 P1
     // Compile-time only (never run): P16 relies on `logistic_info` staying a generic field.
     const _generico = (p: RascunhoShopeeProps) => {
       p.onCampo('item_name', 'Camiseta');
+      // #1911 P16: the Logística section's whole list goes through the generic path.
+      p.onCampo('logistic_info', null);
+      p.onCampo('logistic_info', [{ logistic_id: 90003, enabled: true, is_free: false }]);
       // @ts-expect-error — `attributes` goes only through `onAtributo` (the visible filter, the order, the typings).
       p.onCampo('attributes', null);
     };
     expect(typeof _generico).toBe('function');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*          #1911 P16 — the draft's «Logística»: the sixth form field          */
+/* -------------------------------------------------------------------------- */
+
+describe('ShopeeEditor — a logística do rascunho, o sexto campo (#1911 P16)', () => {
+  /* Channel ids as the designs number them (fixtures, no real channel). */
+  const A = 90003;
+  const B = 90005;
+  /** The provenance stamp the draft edit writes beside a list (P15): the projection reads a list only with it. */
+  const CARIMBO = 1_700_000_000_000;
+  const ligado = (logistic_id: number, is_free = false) => ({
+    logistic_id,
+    enabled: true,
+    is_free,
+  });
+  const desligado = (logistic_id: number) => ({ logistic_id, enabled: false, is_free: false });
+  /** A ready draft whose channels the ERP chose (stamped) — B stored BEFORE A. */
+  const comCanais = (id: string, extra: Record<string, unknown> = {}) =>
+    rascunhoPronto(id, {
+      logistic_info: [ligado(B), ligado(A)],
+      logisticaGravadaEm: CARIMBO,
+      ...extra,
+    });
+
+  it("⭐ `onCampo('logistic_info', […])` num guardado editável ⇒ sujo, `onDirtyChange(true)`, «Publicar» `alteracoes-nao-salvas` ⟷ ⛔ num bloco `novo` ⇒ ignorado", async () => {
+    prontoParaPublicar(vi.fn<ShopeeClient['publicar']>());
+    // A stored draft in «Automática» (no list): «Escolher canais» sets its first list.
+    h.links = [rascunhoPronto('L-rasc')];
+    const onDirtyChange = vi.fn();
+    const { unmount } = renderEditor({ onDirtyChange });
+    await waitFor(() => expect(publicarDo('L-rasc').disabled).toBe(false));
+    expect(formDe('L-rasc').bloco.logisticaEditavel).toBe(true);
+    expect(formDe('L-rasc').bloco.sujo).toBe(false);
+
+    const lista = [ligado(A), desligado(B)];
+    act(() => formDe('L-rasc').onCampo('logistic_info', lista));
+    expect(formDe('L-rasc').bloco.valores.logistic_info).toBe(lista);
+    expect(formDe('L-rasc').bloco.sujo).toBe(true);
+    expect(onDirtyChange).toHaveBeenLastCalledWith(true);
+    expect(formDe('L-rasc').decisaoDePublicar.impedimento).toBe('alteracoes-nao-salvas');
+    expect(publicarDo('L-rasc').disabled).toBe(true);
+    unmount();
+
+    // ⛔ A LOCAL new draft: it takes a title, never a channel list (D-13, D16-5).
+    h.links = [];
+    h.rascunhos.clear();
+    renderEditor();
+    novoAnuncio();
+    const [id] = idsLocais();
+    expect(formDe(id!).bloco.camposEditaveis).toBe(true);
+    expect(formDe(id!).bloco.logisticaEditavel).toBe(false);
+    act(() => formDe(id!).onCampo('logistic_info', lista));
+    expect(formDe(id!).bloco.valores.logistic_info).toBeNull();
+    // Never the plan's fail-closed refusal: nothing was set to refuse.
+    expect(formDe(id!).bloco.impedimento).not.toBe('campo-invalido');
+    // Anti-vacuity: the same block DOES take a title through the same path.
+    act(() => formDe(id!).onCampo('item_name', 'Camiseta nova'));
+    expect(formDe(id!).bloco.valores.item_name).toBe('Camiseta nova');
+    expect(formDe(id!).bloco.valores.logistic_info).toBeNull();
+  });
+
+  it('Salvar envia `{base:{logistic_info: guardada}, patch:{logistic_info: ordenada}}` — a base é SÓ a lista guardada, ambas ordenadas por canal', async () => {
+    comAutoria();
+    const atualizarRascunho = vi.fn<ShopeeClient['atualizarRascunho']>(async (input) => ({
+      linkDocId: input.linkDocId,
+      gravados: ['logistic_info'],
+    }));
+    h.client = shopeeClientFalso({ atualizarRascunho });
+    h.links = [
+      rascunho('L-rasc', { logistic_info: [ligado(B), ligado(A)], logisticaGravadaEm: CARIMBO }),
+    ];
+    renderEditor();
+    // The form holds B before A, B off and A shipping free.
+    act(() => formDe('L-rasc').onCampo('logistic_info', [desligado(B), ligado(A, true)]));
+    fireEvent.click(botaoDoRascunho('L-rasc', 'Salvar rascunho'));
+    await waitFor(() => expect(atualizarRascunho).toHaveBeenCalledTimes(1));
+    expect(atualizarRascunho.mock.calls[0]?.[0]).toStrictEqual({
+      integracaoId: 'int-1',
+      produtoId: 'prod-1',
+      linkDocId: 'L-rasc',
+      base: { logistic_info: [ligado(A), ligado(B)] },
+      patch: { logistic_info: [ligado(A, true), desligado(B)] },
+    });
+  });
+
+  it('um 409 [logistic_info] abre o modal; «Sua alteração» lê o formulário — «Quando você abriu», a lista guardada', async () => {
+    comAutoria();
+    const outraAba = [ligado(A), ligado(B, true)];
+    const atualizarRascunho = vi.fn<ShopeeClient['atualizarRascunho']>().mockRejectedValueOnce(
+      recusaDoRascunho(409, CODIGO_FALHA_SHOPEE.rascunhoConflito, {
+        conflitos: [{ campo: CAMPO_RASCUNHO_SHOPEE.logisticInfo, atual: outraAba }],
+      }),
+    );
+    h.client = shopeeClientFalso({ atualizarRascunho });
+    h.links = [
+      rascunho('L-rasc', { logistic_info: [ligado(A), ligado(B)], logisticaGravadaEm: CARIMBO }),
+    ];
+    renderEditor();
+    const lista = [ligado(A), desligado(B)];
+    act(() => formDe('L-rasc').onCampo('logistic_info', lista));
+    fireEvent.click(botaoDoRascunho('L-rasc', 'Salvar rascunho'));
+    await screen.findByTestId('shopee-rascunho-conflito');
+    expect(h.conflito?.conflito).toStrictEqual({
+      linkDocId: 'L-rasc',
+      operacao: 'atualizar',
+      conflitos: [{ campo: CAMPO_RASCUNHO_SHOPEE.logisticInfo, atual: outraAba }],
+    });
+    expect(h.conflito?.edicao?.atual.logistic_info).toBe(lista);
+    expect(h.conflito?.edicao?.base.logistic_info).toStrictEqual([ligado(A), ligado(B)]);
+    // Cancel keeps the operator's list.
+    fireEvent.click(screen.getByRole('button', { name: 'Cancelar' }));
+    expect(formDe('L-rasc').bloco.valores.logistic_info).toBe(lista);
+  });
+
+  it('⭐ `desfechoDoRascunhoDe` leva `logisticaEscolhida` do link GUARDADO ⟷ ⛔ trocar o formulário para Automática sem salvar não muda', async () => {
+    const problema: ProblemaShopee = {
+      campo: 'logistic_info',
+      motivo: 'logistica-sem-canal',
+      mensagem: 'Nenhum canal ligado aceita o pacote.',
+      acao: null,
+    };
+    const publicar = vi
+      .fn<ShopeeClient['publicar']>()
+      .mockRejectedValueOnce(recusa422([problema]))
+      .mockRejectedValueOnce(recusa422([problema]));
+    prontoParaPublicar(publicar);
+    h.links = [comCanais('L-rasc')];
+    const { rerender } = await renderPronto();
+    fireEvent.click(publicarDo('L-rasc'));
+    confirmarPublicacao();
+    await waitFor(() => expect(desfechoDe('L-rasc').desfecho.tipo).toBe('recusado'));
+    expect(desfechoDe('L-rasc').rascunho?.logisticaEscolhida).toBe(true);
+    // The REAL panel routes the row to the section.
+    expect(
+      within(bloco('L-rasc')).getByRole('button', { name: 'Corrigir no rascunho: Logística' }),
+    ).toBeDefined();
+
+    // ⛔ «Automática» picked in the form, NOT saved: the stored draft still holds the list.
+    act(() => formDe('L-rasc').onCampo('logistic_info', null));
+    expect(formDe('L-rasc').bloco.valores.logistic_info).toBeNull();
+    expect(desfechoDe('L-rasc').rascunho?.logisticaEscolhida).toBe(true);
+
+    // NEAR-MISS: the SAME list stored without the stamp (legacy) is no choice — and neither is «Automática».
+    h.links = [rascunhoPronto('L-rasc', { logistic_info: [ligado(B), ligado(A)] })];
+    rerenderEditor(rerender);
+    expect(desfechoDe('L-rasc').rascunho?.logisticaEscolhida).toBe(false);
+    h.links = [rascunhoPronto('L-rasc')];
+    rerenderEditor(rerender);
+    expect(desfechoDe('L-rasc').rascunho?.logisticaEscolhida).toBe(false);
+  });
+
+  it('`produtoId` e `revisaoDoProduto` (o `ultimaModificacao` do produto guardado) chegam às props ⟷ QUASE-PAR: um produto sem o carimbo ⇒ `null`', () => {
+    comAutoria();
+    h.produto = { nome: 'Camiseta', paiId: null, ultimaModificacao: 1_700_000_000_123 };
+    h.links = [rascunho('L-rasc')];
+    const { rerender } = renderEditor();
+    expect(formDe('L-rasc').produtoId).toBe('prod-1');
+    expect(formDe('L-rasc').revisaoDoProduto).toBe(1_700_000_000_123);
+
+    // A produto save stamps it again: the next render hands the new one.
+    h.produto = { nome: 'Camiseta', paiId: null, ultimaModificacao: 1_700_000_000_456 };
+    rerenderEditor(rerender);
+    expect(formDe('L-rasc').revisaoDoProduto).toBe(1_700_000_000_456);
+
+    h.produto = { nome: 'Camiseta', paiId: null };
+    rerenderEditor(rerender);
+    expect(formDe('L-rasc').revisaoDoProduto).toBeNull();
   });
 });

@@ -1,15 +1,20 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, within } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import {
   CAMPO_RASCUNHO_SHOPEE,
   TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE,
   estadoPublicacaoRascunhoShopee,
+  respostaCanaisShopeeSchema,
   type AtributoDto,
   type AtributoInfoDto,
+  type CanalLogisticaRascunhoShopee,
   type EstadoPublicacaoRascunhoShopee,
+  type RespostaCanaisShopee,
 } from '@delfrance/schemas';
 import type { ObjectViewSections } from '@delfrance/ui';
 
+import { QUERY_DEFAULT_OPTIONS } from '@/lib/query/QueryProvider';
 import { MantineTestProvider } from '@/lib/testing/mantine';
 import {
   FRASE_ATESTACAO_SEM_CRIACAO_INCERTA_FORA_DO_RASCUNHO_SHOPEE,
@@ -63,11 +68,18 @@ import type {
  * outcome, its 200, and the refusal rows' copy, surfaces and Seller-Centre
  * exits. Rendered for REAL over the REAL lib copy and the REAL state reading
  * (`estadoPublicacaoRascunhoShopee`); the only double is the ObjectView's
- * tab context (`useObjectViewSections`), which exists only inside the page.
+ * tab context (`useObjectViewSections`), which exists only inside the page —
+ * and (#1911 P16) the client's `canais` read, so the REAL «Logística» section
+ * renders its rows for the focus twin.
  */
 
-const h = vi.hoisted(() => ({ secoes: null as ObjectViewSections | null }));
+const h = vi.hoisted(() => ({ secoes: null as ObjectViewSections | null, canais: vi.fn() }));
 vi.mock('@delfrance/ui', () => ({ useObjectViewSections: () => h.secoes }));
+// The REAL error classes stay; only the hook the Logística section reads is doubled.
+vi.mock('@/lib/shopee/client', async (importActual) => {
+  const actual = await importActual<typeof import('@/lib/shopee/client')>();
+  return { ...actual, useShopeeClient: () => ({ canais: h.canais }) };
+});
 
 const {
   DesfechoAcaoShopee,
@@ -78,6 +90,7 @@ const {
 } = await import('./DesfechoAcaoShopee');
 const { AtributosRascunhoShopee, TIPO_LEITURA_ATRIBUTOS_RASCUNHO_SHOPEE } =
   await import('./AtributosRascunhoShopee');
+const { LogisticaRascunhoShopee } = await import('./LogisticaRascunhoShopee');
 
 const CONTA = 'int-1';
 const PRODUTO = 'prod-1';
@@ -134,6 +147,8 @@ function doRascunho(over: Partial<DesfechoDoRascunhoShopee> = {}): DesfechoDoRas
     skuEnviado: null,
     podePublicar: true,
     podeDescartar: true,
+    // #1911 P16: a draft in «Automática» unless a test says its channels were chosen.
+    logisticaEscolhida: false,
     onSaida: vi.fn(),
     ...over,
   };
@@ -1102,6 +1117,155 @@ describe('DesfechoAcaoShopee — «Corrigir no rascunho: Atributos» (#1911 P13)
     });
     expect(botoes()).toEqual([]);
     expect(linha().textContent).toContain(FRASE_CORRIGIR_NO_SELLER_CENTRE_SHOPEE);
+  });
+});
+
+/* #1911 P16 — channel fixtures (ids as the designs number them; invented names). */
+const CANAL_A = 90003;
+const CANAL_B = 90005;
+
+/** One selectable, available channel with an automatic entry (no lock, no block). */
+const canalDaLoja = (logisticsChannelId: number, nome: string) => ({
+  logisticsChannelId,
+  nome,
+  selecionavel: true,
+  obrigatorio: false,
+  bloqueiaFreteGratisDoVendedor: false,
+  indisponivel: null,
+  automatica: { isFree: false },
+});
+
+/** The shop's channels as the route answers them — `get_channel_list` order, B BEFORE A — through the SHARED schema. */
+const CANAIS_DA_LOJA: RespostaCanaisShopee = respostaCanaisShopeeSchema.parse({
+  medidasCompletas: true,
+  canais: [canalDaLoja(CANAL_B, 'Entrega B'), canalDaLoja(CANAL_A, 'Entrega A')],
+});
+
+/** The draft's chosen list (both ON), as the projection holds it — sorted by channel. */
+const ESCOLHIDA: readonly CanalLogisticaRascunhoShopee[] = [
+  { logistic_id: CANAL_A, enabled: true, is_free: false },
+  { logistic_id: CANAL_B, enabled: true, is_free: false },
+];
+
+/**
+ * The REAL «Logística» section of a draft whose channels were chosen, editable,
+ * its read answered: `raiz` is the section, `primeira` the FIRST row (DTO
+ * order: B's). It stamps the field id itself (D16-13).
+ */
+async function secaoDeLogistica() {
+  h.canais.mockResolvedValue(CANAIS_DA_LOJA);
+  render(
+    <MantineTestProvider>
+      <QueryClientProvider client={new QueryClient({ defaultOptions: QUERY_DEFAULT_OPTIONS })}>
+        <LogisticaRascunhoShopee
+          linkDocId={LINK}
+          contaId={CONTA}
+          produtoId={PRODUTO}
+          revisaoDoProduto={1}
+          valor={ESCOLHIDA}
+          guardada={ESCOLHIDA}
+          novo={false}
+          logisticaDoSistemaAnterior={false}
+          logisticaInvalida={null}
+          editavel
+          onMudar={vi.fn()}
+        />
+      </QueryClientProvider>
+    </MantineTestProvider>,
+  );
+  const primeira = await screen.findByTestId(`shopee-logistica-${LINK}-${String(CANAL_B)}`);
+  return { raiz: screen.getByTestId(`shopee-rascunho-logistica-${LINK}`), primeira };
+}
+
+describe('DesfechoAcaoShopee — «Corrigir no rascunho: Logística» (#1911 P16)', () => {
+  /** apps/shopee's refusal when no channel the package fits is ON (the publisher's own sentence). */
+  const semCanal = () =>
+    problema({
+      campo: 'logistic_info',
+      motivo: 'logistica-sem-canal',
+      mensagem: 'Nenhum canal ligado aceita o pacote.',
+    });
+  const LOGISTICA = { name: 'Corrigir no rascunho: Logística' };
+  const PESO = { name: 'Abrir no produto: Dimensões e peso' };
+
+  beforeEach(() => {
+    h.canais.mockReset();
+    h.secoes = {
+      activeSection: 'Shopee',
+      goToSection: vi.fn(),
+      sectionOfField: (k) => (k === 'pesoBrutoKg' ? 'Dimensões e peso' : null),
+    };
+  });
+
+  it('⭐ rascunho com canais escolhidos e `logistica-sem-canal` em `logistic_info` ⇒ «Corrigir no rascunho: Logística», que FOCA o switch «Ligado» da primeira linha habilitada ⟷ ⛔ o mesmo problema num rascunho Automática ⇒ o botão do peso', async () => {
+    const { raiz, primeira } = await secaoDeLogistica();
+    const alvo = document.getElementById(
+      idDoCampoRascunhoShopee(LINK, CAMPO_RASCUNHO_SHOPEE.logisticInfo),
+    );
+    // The field id sits on the rows' container, never on the section's root (D16-13).
+    expect(alvo).not.toBe(raiz);
+    expect(alvo?.contains(primeira)).toBe(true);
+
+    const r = show({
+      desfecho: recusado([semCanal()]),
+      rascunho: doRascunho({ logisticaEscolhida: true }),
+    });
+    expect(botoes()).toEqual([LOGISTICA.name]);
+    fireEvent.click(within(painel()).getByRole('button', LOGISTICA));
+    // The FIRST row in the shop's order (B), never the value's sorted first (A).
+    expect(document.activeElement).toBe(within(primeira).getByRole('switch'));
+    expect(
+      within(screen.getByTestId(`shopee-logistica-${LINK}-${String(CANAL_A)}`)).getByRole('switch'),
+    ).not.toBe(document.activeElement);
+
+    // ⛔ The same refusal on a draft in «Automática»: the produto's weight, as before P16.
+    r.rerender({
+      desfecho: recusado([semCanal()]),
+      rascunho: doRascunho({ logisticaEscolhida: false }),
+    });
+    expect(botoes()).toEqual([PESO.name]);
+    expect(within(painel()).queryByRole('button', LOGISTICA)).toBeNull();
+  });
+
+  it('QUASE-PAR: o mesmo id na RAIZ da seção levaria o foco ao rádio «Automática» (onde Espaço trocaria o modo) — por isso ele fica no contêiner das linhas', async () => {
+    const { raiz, primeira } = await secaoDeLogistica();
+    const id = idDoCampoRascunhoShopee(LINK, CAMPO_RASCUNHO_SHOPEE.logisticInfo);
+    // Moved by hand to the root: what a section stamping it there would offer the button.
+    document.getElementById(id)?.removeAttribute('id');
+    raiz.id = id;
+    show({
+      desfecho: recusado([semCanal()]),
+      rascunho: doRascunho({ logisticaEscolhida: true }),
+    });
+    fireEvent.click(within(painel()).getByRole('button', LOGISTICA));
+    expect(document.activeElement).toBe(within(raiz).getByRole('radio', { name: 'Automática' }));
+    expect(document.activeElement).not.toBe(within(primeira).getByRole('switch'));
+  });
+
+  it('um anúncio (`rascunho: null`) ⇒ o peso — a lista de um anúncio publicado nunca é seção de rascunho', () => {
+    show({ desfecho: recusado([semCanal()]), rascunho: null });
+    expect(botoes()).toEqual([PESO.name]);
+    expect(within(painel()).queryByRole('button', LOGISTICA)).toBeNull();
+  });
+
+  it('QUASE-PAR: `logistica-nao-confirmada` num rascunho com canais escolhidos continua SEM botão (o remédio é importar) ⟷ `logistica-sem-canal` no mesmo rascunho ganha o da seção', () => {
+    const r = show({
+      desfecho: recusado([
+        problema({
+          campo: 'logistic_info',
+          motivo: MOTIVO_ANUNCIO_SHOPEE.logisticaNaoConfirmada,
+          mensagem: 'Importe o anúncio.',
+        }),
+      ]),
+      rascunho: doRascunho({ logisticaEscolhida: true }),
+    });
+    expect(within(painel()).queryByRole('button', LOGISTICA)).toBeNull();
+    expect(within(painel()).queryByRole('button', PESO)).toBeNull();
+    r.rerender({
+      desfecho: recusado([semCanal()]),
+      rascunho: doRascunho({ logisticaEscolhida: true }),
+    });
+    expect(within(painel()).getByRole('button', LOGISTICA)).toBeTruthy();
   });
 });
 
