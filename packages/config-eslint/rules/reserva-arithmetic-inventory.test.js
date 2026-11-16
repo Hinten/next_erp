@@ -123,6 +123,10 @@ const INVENTARIO = {
     'The app’s traffic redactor (its `log` and `fixture` profiles). Names the store’s `quantidade_reservada` once, as a `decimal` leaf of the `ESTOQUE` keep-list that `manutencao` wires to the `produto-estoque` catalogue resource (the shape a captured value must have to be kept in a fixture). The store’s reservation, not the ERP counter; no arithmetic.',
   'apps/loja-integrada/lib/lojaIntegrada/testing/especificacaoPii.ts':
     'Test support (`testing/` is imported by tests only): the public OpenAPI document’s `GET /v1/produto_estoque/{produto_id}` example, transcribed with its `quantidade_reservada: 0`. The store’s reservation, as data; no arithmetic.',
+  'packages/integrations/loja-integrada/src/types.ts':
+    'The stock wire (master plan step 12): `liEstoqueProdutoLinhaSchema` declares the store’s `quantidade_reservada` as a REQUIRED `wireInt()` of any sign, so a list row without it lands in `ilegiveis` and a detail without it refuses the read — never read as 0. Parsing only: the value reaches model A through `alvoEstoqueLi` (`quantidadeEstoqueLi.ts` above), which floors it. The store’s reservation, not the ERP counter; no arithmetic.',
+  'packages/integrations/loja-integrada/test/_fixtures/especificacao.ts':
+    'Test fixtures: the public OpenAPI document’s `produto_estoque` examples (`estoquePaginaExemplo`, `estoqueDetalheExemplo`, `estoqueEcoExemplo`), transcribed with their `quantidade_reservada: 0`. The store’s reservation, as data; no arithmetic.',
 
   // ---- Writes it, floors the RESULT ---------------------------------------
   'apps/functions/src/estoques/aplicarEstoque.ts':
